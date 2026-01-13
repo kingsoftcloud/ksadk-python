@@ -1,0 +1,114 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ksadk"
+version = "0.1.0"
+description = "Kingsoft Cloud Agent Development Kit - 支持 LangChain/LangGraph/ADK 的本地运行与云端部署"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+    {name = "KsADK Team", email = "xiayu@kingsoft.com"}
+]
+keywords = ["agent", "langchain", "langgraph", "adk", "faas", "kingsoft cloud", "ai", "llm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    # CLI
+    "click>=8.0.0",
+    # 配置
+    "pyyaml>=6.0.0",
+    "python-dotenv>=1.0.0",
+    "pydantic>=2.0.0",
+    # API 服务 (run/web 命令)
+    "fastapi>=0.100.0",
+    "uvicorn>=0.23.0",
+    "httpx>=0.24.0",
+    # HTTP 请求 + AWS 签名
+    "requests>=2.28.0",
+    "requests-aws4auth>=1.2.0",
+    # KS3 上传 (build --push)
+    "ks3sdk>=1.15.0",
+]
+
+[project.optional-dependencies]
+# Google ADK 支持
+adk = [
+    "google-adk>=1.0.0",
+    "litellm>=1.0.0",
+]
+# LangChain 支持
+langchain = [
+    "langchain>=0.3.0",
+    "langchain-openai>=0.2.0",
+    "langchain-core>=0.3.0",
+]
+# LangGraph 支持
+langgraph = [
+    "langgraph>=0.2.0",
+    "langchain>=0.3.0",
+    "langchain-openai>=0.2.0",
+]
+# 可观测性
+tracing = [
+    "opentelemetry-api==1.37.0",
+    "opentelemetry-sdk==1.37.0",
+    "opentelemetry-exporter-otlp==1.37.0",
+    "openinference-instrumentation-langchain>=0.1.0",
+]
+# 开发依赖
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=22.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
+]
+# 全部依赖
+all = [
+    "ksadk[runtime,adk,langchain,langgraph,tracing,dev]",
+]
+
+[project.scripts]
+agentengin = "ksadk.cli:main"
+ksadk = "ksadk.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/kingsoftcloud/ksadk-python"
+Repository = "https://github.com/kingsoftcloud/ksadk-python"
+Documentation = "https://ksadk.kingsoft.com/docs"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ksadk*"]
+
+[tool.setuptools.package-data]
+ksadk = ["server/static/**/*"]
+
+[tool.black]
+line-length = 100
+target-version = ['py310']
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "W", "I"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+asyncio_mode = "auto"

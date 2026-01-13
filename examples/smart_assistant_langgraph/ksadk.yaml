@@ -1,0 +1,6 @@
+# KsADK 项目配置
+name: smart_assistant_langgraph
+framework: langgraph
+entry_point: agent.py
+package: .
+agent_variable: graph
