@@ -1,5 +1,5 @@
 """
-agentengin destroy - 停止并销毁 Agent 实例
+agentengine destroy - 停止并销毁 Agent 实例
 """
 
 import click
@@ -14,7 +14,7 @@ from ksadk.common.constants import DEFAULT_SERVERLESS_ENDPOINT
 @click.command(context_settings=dict(help_option_names=["-h", "--help"]))
 @click.option("--agent", "-a", help="Agent 名称或 ID")
 @click.option("--force", "-f", is_flag=True, help="强制删除，不提示确认")
-@click.option("--region", "-r", default="cn-beijing-6", help="区域")
+@click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
 @click.option("--account-id", envvar="KSYUN_ACCOUNT_ID", help="金山云账号 ID")
 @click.option("--dry-run", is_flag=True, help="只打印 curl 请求，不执行")
 def destroy(agent: str, force: bool, region: str, account_id: str, dry_run: bool):
@@ -22,13 +22,13 @@ def destroy(agent: str, force: bool, region: str, account_id: str, dry_run: bool
 
     \b
     示例:
-        agentengin destroy --agent my-agent
-        agentengin destroy --agent my-agent --force
-        agentengin destroy --agent my-agent --dry-run
+        agentengine destroy --agent my-agent
+        agentengine destroy --agent my-agent --force
+        agentengine destroy --agent my-agent --dry-run
     """
     if not agent:
         # 尝试从配置文件读取
-        config_path = Path(".") / "agentengin.yaml"
+        config_path = Path(".") / "agentengine.yaml"
         if not config_path.exists():
             config_path = Path(".") / "ksadk.yaml"
 

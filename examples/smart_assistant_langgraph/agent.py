@@ -26,9 +26,11 @@ from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
-# 尝试导入 ADK 工具集以支持 MCP (利用 ksadk 环境)
+# 尝试导入 LangChain MCP 适配器 (langchain-mcp-adapters)
 try:
-    from google.adk.tools.mcp_tool import MCPToolset, StreamableHTTPConnectionParams
+    from langchain_mcp_adapters.client import MultiServerMCPClient
+    from mcp.client.streamable_http import streamablehttp_client
+    from mcp import ClientSession
     _mcp_supported = True
 except ImportError:
     _mcp_supported = False
@@ -300,84 +302,58 @@ def complete_task(task_id: int) -> dict:
     }
 
 
-# ============== MCP 工具支持 ==============
+# ============== MCP 工具支持 (使用 langchain-mcp-adapters) ==============
 
-_metaso_mcp_toolset = None
+_mcp_session = None
+_mcp_tools = []
 
-def _get_mcp_toolset():
-    """获取单例 MCP 工具集 (懒加载)"""
-    global _metaso_mcp_toolset
+
+async def _init_mcp_tools():
+    """初始化 MCP 工具 (使用 langchain-mcp-adapters)"""
+    global _mcp_session, _mcp_tools
     
     if not _mcp_supported:
-        return None
+        print("[MCP] langchain-mcp-adapters 未安装，MCP 功能不可用")
+        return []
         
     api_key = os.getenv("KSC_AIPRO_API_KEY")
     if not api_key:
-        return None
-        
-    if _metaso_mcp_toolset is None:
-        try:
-            _metaso_mcp_toolset = MCPToolset(
-                connection_params=StreamableHTTPConnectionParams(
-                    url="https://metaso-ifih3vh.aipro.ksyun.com/api/mcp",
-                    headers={"Authorization": f"Bearer {api_key}"}
-                )
-            )
-        except Exception as e:
-            print(f"Failed to initialize MCP toolset: {e}")
-            return None
-            
-    return _metaso_mcp_toolset
-
-
-async def _invoke_mcp_tool(tool_name: str, **kwargs) -> str:
-    """调用指定的 MCP 工具 (绕过 ToolContext, 直接调用 MCP Session)"""
-    ts = _get_mcp_toolset()
-    if not ts:
-        return "错误: 未配置 KSC_AIPRO_API_KEY 或 MCP 初始化失败"
+        print("[MCP] 未配置 KSC_AIPRO_API_KEY，MCP 功能不可用")
+        return []
+    
+    if _mcp_tools:
+        return _mcp_tools
         
     try:
-        # 获取 MCP Session
-        # ts._mcp_session_manager 是 MCPSessionManager
-        session = await ts._mcp_session_manager.create_session()
+        from langchain_mcp_adapters.tools import load_mcp_tools
         
-        # 列出可用工具以便调试
-        tools_response = await session.list_tools()
-        available_tools = [t.name for t in tools_response.tools]
-        print(f"[DEBUG] Available MCP tools: {available_tools}")
+        mcp_url = "https://metaso-ifih3vh.aipro.ksyun.com/api/mcp"
+        headers = {"Authorization": f"Bearer {api_key}"}
         
-        if tool_name not in available_tools:
-            # 尝试模糊匹配
-            matched = next((t for t in available_tools if tool_name in t), None)
-            if matched:
-                tool_name = matched
-                print(f"[DEBUG] Fuzzy matched to: {tool_name}")
-            else:
-                return f"错误: 未找到工具 '{tool_name}'。可用工具: {available_tools}"
-        
-        print(f"[DEBUG] Calling MCP tool: {tool_name} with args: {kwargs}")
-        
-        # 直接调用 MCP Session 的 call_tool 方法
-        response = await session.call_tool(tool_name, arguments=kwargs)
-        result = response.model_dump(exclude_none=True, mode="json")
-        print(f"[DEBUG] Tool result: {type(result)}")
-        
-        # 提取结果文本
-        if isinstance(result, dict):
-            # MCP 响应格式: {"content": [{"type": "text", "text": "..."}]}
-            content = result.get("content", [])
-            if isinstance(content, list) and len(content) > 0:
-                first_item = content[0]
-                if isinstance(first_item, dict) and "text" in first_item:
-                    return first_item["text"]
-        
-        return str(result)
-        
+        # 使用 streamable HTTP 连接 MCP 服务器
+        async with streamablehttp_client(mcp_url, headers=headers) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                
+                # 使用 langchain-mcp-adapters 加载工具
+                _mcp_tools = await load_mcp_tools(session)
+                print(f"[MCP] 成功加载 {len(_mcp_tools)} 个 MCP 工具: {[t.name for t in _mcp_tools]}")
+                return _mcp_tools
+                
     except Exception as e:
         import traceback
+        print(f"[MCP] 初始化失败: {e}")
         traceback.print_exc()
-        return f"工具调用失败: {str(e)}"
+        return []
 
+
+def get_mcp_tools() -> list:
+    """获取已加载的 MCP 工具列表 (同步接口，供图构建时使用)"""
+    return _mcp_tools
+
+
+# MCP 工具包装函数 (用于 LangGraph ToolNode)
+# 注意: 这些是备用的手动包装，如果 load_mcp_tools 成功，可以直接使用返回的工具列表
 
 @tool
 async def metaso_search(query: str) -> str:
@@ -386,8 +362,36 @@ async def metaso_search(query: str) -> str:
     Args:
         query: 搜索关键词
     """
-    # 映射到 metaso_web_search, 参数名为 q
-    return await _invoke_mcp_tool("metaso_web_search", q=query, includeSummary=True)
+    if not _mcp_supported:
+        return "错误: MCP 功能不可用，请安装 langchain-mcp-adapters"
+    
+    api_key = os.getenv("KSC_AIPRO_API_KEY")
+    if not api_key:
+        return "错误: 未配置 KSC_AIPRO_API_KEY"
+    
+    try:
+        mcp_url = "https://metaso-ifih3vh.aipro.ksyun.com/api/mcp"
+        headers = {"Authorization": f"Bearer {api_key}"}
+        
+        async with streamablehttp_client(mcp_url, headers=headers) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                
+                # 调用 MCP 工具
+                response = await session.call_tool("metaso_web_search", arguments={"q": query, "includeSummary": True})
+                result = response.model_dump(exclude_none=True, mode="json")
+                
+                # 提取结果文本
+                content = result.get("content", [])
+                if isinstance(content, list) and len(content) > 0:
+                    first_item = content[0]
+                    if isinstance(first_item, dict) and "text" in first_item:
+                        return first_item["text"]
+                
+                return str(result)
+                
+    except Exception as e:
+        return f"搜索失败: {str(e)}"
 
 
 @tool
@@ -397,8 +401,34 @@ async def metaso_read(url: str) -> str:
     Args:
         url: 网页 URL
     """
-    # 映射到 metaso_web_reader, 参数名为 url
-    return await _invoke_mcp_tool("metaso_web_reader", url=url)
+    if not _mcp_supported:
+        return "错误: MCP 功能不可用，请安装 langchain-mcp-adapters"
+    
+    api_key = os.getenv("KSC_AIPRO_API_KEY")
+    if not api_key:
+        return "错误: 未配置 KSC_AIPRO_API_KEY"
+    
+    try:
+        mcp_url = "https://metaso-ifih3vh.aipro.ksyun.com/api/mcp"
+        headers = {"Authorization": f"Bearer {api_key}"}
+        
+        async with streamablehttp_client(mcp_url, headers=headers) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                
+                response = await session.call_tool("metaso_web_reader", arguments={"url": url})
+                result = response.model_dump(exclude_none=True, mode="json")
+                
+                content = result.get("content", [])
+                if isinstance(content, list) and len(content) > 0:
+                    first_item = content[0]
+                    if isinstance(first_item, dict) and "text" in first_item:
+                        return first_item["text"]
+                
+                return str(result)
+                
+    except Exception as e:
+        return f"读取失败: {str(e)}"
 
 
 @tool
@@ -408,8 +438,34 @@ async def metaso_answer(question: str) -> str:
     Args:
         question: 用户的问题
     """
-    # 映射到 metaso_chat, 参数名为 message
-    return await _invoke_mcp_tool("metaso_chat", message=question)
+    if not _mcp_supported:
+        return "错误: MCP 功能不可用，请安装 langchain-mcp-adapters"
+    
+    api_key = os.getenv("KSC_AIPRO_API_KEY")
+    if not api_key:
+        return "错误: 未配置 KSC_AIPRO_API_KEY"
+    
+    try:
+        mcp_url = "https://metaso-ifih3vh.aipro.ksyun.com/api/mcp"
+        headers = {"Authorization": f"Bearer {api_key}"}
+        
+        async with streamablehttp_client(mcp_url, headers=headers) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                
+                response = await session.call_tool("metaso_chat", arguments={"message": question})
+                result = response.model_dump(exclude_none=True, mode="json")
+                
+                content = result.get("content", [])
+                if isinstance(content, list) and len(content) > 0:
+                    first_item = content[0]
+                    if isinstance(first_item, dict) and "text" in first_item:
+                        return first_item["text"]
+                
+                return str(result)
+                
+    except Exception as e:
+        return f"问答失败: {str(e)}"
 
 
 # ============== LangGraph 图定义 ==============

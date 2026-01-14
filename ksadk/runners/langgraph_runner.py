@@ -26,25 +26,84 @@ _langfuse_callback = None
 
 
 def _get_langfuse_callback():
-    """获取 Langfuse CallbackHandler (懒加载)"""
-    global _langfuse_callback
+    """获取 Langfuse CallbackHandler
     
-    if _langfuse_callback is not None:
-        return _langfuse_callback
-    
+    Returns:
+        CallbackHandler 实例，未配置时返回 None
+    """
     # 检查是否配置了 Langfuse
-    if not os.getenv("LANGFUSE_PUBLIC_KEY"):
+    public_key = os.getenv("LANGFUSE_PUBLIC_KEY")
+    if not public_key:
         return None
     
     try:
-        # 使用官方推荐的 langfuse.langchain 模块
         from langfuse.langchain import CallbackHandler
-        _langfuse_callback = CallbackHandler()
-        return _langfuse_callback
+        
+        # CallbackHandler 会自动从环境变量读取配置
+        handler = CallbackHandler()
+        
+        import logging
+        logging.getLogger(__name__).info(f"Langfuse CallbackHandler initialized (host: {os.getenv('LANGFUSE_BASE_URL', 'default')})")
+        
+        return handler
+    except ImportError as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Langfuse not installed: {e}")
+        return None
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Failed to create Langfuse CallbackHandler: {e}")
+        return None
+
+
+def _get_langfuse_metadata(session_id: str = None) -> dict:
+    """获取 Langfuse 的 metadata 字典
+    
+    根据 Langfuse 官方文档，通过 metadata 字段传递 trace 属性:
+    - langfuse_user_id
+    - langfuse_session_id  
+    - langfuse_tags
+    
+    Args:
+        session_id: 会话 ID (可选)
+    
+    Returns:
+        包含 Langfuse 属性的 metadata 字典
+    """
+    metadata = {}
+    
+    # 设置 session_id
+    if session_id:
+        metadata["langfuse_session_id"] = session_id
+    
+    # 从 ksadk settings 获取 agent 元数据 (作为 fallback)
+    try:
+        from ksadk.configs import settings
+        agent_config = settings.agent
+        
+        # 设置 user_id
+        if agent_config.user_id:
+            metadata["langfuse_user_id"] = agent_config.user_id
+        
+        # 设置 session_id (如果未传入，使用环境变量)
+        if not session_id and agent_config.session_id:
+            metadata["langfuse_session_id"] = agent_config.session_id
+        
+        # 设置 tags
+        tags = list(agent_config.tags or [])
+        if agent_config.environment and agent_config.environment not in tags:
+            tags.append(agent_config.environment)
+        if agent_config.agent_name and agent_config.agent_name not in tags:
+            tags.append(agent_config.agent_name)
+        if tags:
+            metadata["langfuse_tags"] = tags
+            
     except ImportError:
-        return None
+        pass
     except Exception:
-        return None
+        pass
+    
+    return metadata
 
 
 def _make_llm_request_json(user_input: str) -> str:
@@ -94,17 +153,85 @@ class LangGraphRunner(BaseRunner):
         if not hasattr(self._agent, 'invoke'):
             raise TypeError("加载的对象不是有效的 LangGraph CompiledGraph")
     
+    def _prepare_trace_metadata(self, session_id: str):
+        """准备 Trace 元数据 (Tags, UserID, etc.)"""
+        user_id = None
+        tags = []
+        version = None
+        agent_name = None
+        
+        try:
+            from ksadk.configs import settings
+            agent_config = settings.agent
+            
+            user_id = agent_config.user_id
+            version = agent_config.version
+            tags = list(agent_config.tags or [])
+            
+            # Add Environment
+            if agent_config.environment and agent_config.environment not in tags:
+                tags.append(agent_config.environment)
+            
+            # Add Region (Kingsoft Cloud)
+            if settings.cloud.region and settings.cloud.region not in tags:
+                tags.append(settings.cloud.region)
+                
+            # Add Model Name
+            if settings.model.model_name and settings.model.model_name not in tags:
+                tags.append(settings.model.model_name)
+            
+            # Add Agent Name (Configured -> Fallback)
+            agent_name = agent_config.agent_name
+            if not agent_name and hasattr(self, "detection_result"):
+                 try:
+                     # Fallback to package name
+                     agent_name = Path(self.detection_result.package_path).name
+                 except Exception:
+                     pass
+            
+            if agent_name and agent_name not in tags:
+                tags.append(agent_name)
+                
+            # Add Agent ID
+            if agent_config.agent_id and agent_config.agent_id not in tags:
+                tags.append(agent_config.agent_id)
+                
+            # Add Tenant ID (Account ID)
+            if agent_config.tenant_id and agent_config.tenant_id not in tags:
+                tags.append(agent_config.tenant_id)
+                
+        except ImportError:
+            pass
+        except Exception:
+            pass
+            
+        return user_id, tags, version, agent_name
+
     async def invoke(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """调用 LangGraph 图 (非流式)"""
         user_input = input_data.get("input", "")
         history = input_data.get("history", [])
         invocation_id = str(uuid.uuid4()).replace("-", "")
         
-        with tracer.start_as_current_span("langgraph.invoke") as root_span:
+        session_id = input_data.get("session_id") or invocation_id
+        
+        # 1. 准备 Metadata (提前以此获取 Agent Name)
+        user_id, tags, version, agent_name = self._prepare_trace_metadata(session_id)
+        trace_name = agent_name or "langgraph.invoke"
+        
+        with tracer.start_as_current_span(trace_name) as root_span:
+            
             # Set ADK-compatible attributes on root span
             root_span.set_attribute("gcp.vertex.agent.invocation_id", invocation_id)
+            root_span.set_attribute("langfuse.session_id", session_id)
             root_span.set_attribute("user.input", user_input[:200])
             root_span.set_attribute("gcp.vertex.agent.llm_request", _make_llm_request_json(user_input))
+            
+            # 2. 更新 OTel Span Attributes
+            if tags:
+                root_span.set_attribute("langfuse.tags", ",".join(tags))
+            if user_id:
+                root_span.set_attribute("langfuse.user_id", user_id)
             
             # Build messages from history + current input
             from langchain_core.messages import AIMessage
@@ -125,9 +252,24 @@ class LangGraphRunner(BaseRunner):
                 llm_span.set_attribute("gcp.vertex.agent.invocation_id", invocation_id)
                 llm_span.set_attribute("gcp.vertex.agent.llm_request", _make_llm_request_json(user_input))
                 
-                # 获取 Langfuse 回调（用于图可视化）
+                # 配置 Langfuse Handler (通过 metadata)
                 langfuse_cb = _get_langfuse_callback()
-                config = {"callbacks": [langfuse_cb]} if langfuse_cb else None
+                if langfuse_cb:
+                    # 合并 metadata
+                    langfuse_metadata = _get_langfuse_metadata(session_id=session_id)
+                    
+                    # 如果有从 _prepare_trace_metadata 获取的更准确的 tags/user_id，覆盖之
+                    if user_id:
+                        langfuse_metadata["langfuse_user_id"] = user_id
+                    if tags:
+                        langfuse_metadata["langfuse_tags"] = tags
+                        
+                    config = {
+                        "callbacks": [langfuse_cb],
+                        "metadata": langfuse_metadata
+                    }
+                else:
+                    config = None
                 
                 if hasattr(self._agent, 'ainvoke'):
                     result = await self._agent.ainvoke(initial_state, config=config)
@@ -178,11 +320,26 @@ class LangGraphRunner(BaseRunner):
             "messages": messages
         }
         
+        # Get session_id (persistent across calls for memory)
+        session_id = input_data.get("session_id") or invocation_id
+        
+        # 1. 准备 Metadata (提前以此获取 Agent Name)
+        user_id, tags, version, agent_name = self._prepare_trace_metadata(session_id)
+        trace_name = agent_name or "langgraph.stream"
+        
         # Start root span for entire streaming operation
-        with tracer.start_as_current_span("langgraph.stream") as root_span:
+        with tracer.start_as_current_span(trace_name) as root_span:
+            
             root_span.set_attribute("gcp.vertex.agent.invocation_id", invocation_id)
+            root_span.set_attribute("langfuse.session_id", session_id)
             root_span.set_attribute("user.input", user_input[:200])
             root_span.set_attribute("gcp.vertex.agent.llm_request", _make_llm_request_json(user_input))
+            
+            # 2. 更新 OTel Span Attributes
+            if tags:
+                root_span.set_attribute("langfuse.tags", ",".join(tags))
+            if user_id:
+                root_span.set_attribute("langfuse.user_id", user_id)
             
             accumulated_text = ""
             tool_calls = []
@@ -193,9 +350,24 @@ class LangGraphRunner(BaseRunner):
                 llm_span.set_attribute("gcp.vertex.agent.llm_request", _make_llm_request_json(user_input))
                 
                 # Try astream_events for token-level streaming
-                # 获取 Langfuse 回调（用于图可视化）
+                # 配置 Langfuse Handler (通过 metadata)
                 langfuse_cb = _get_langfuse_callback()
-                config = {"callbacks": [langfuse_cb]} if langfuse_cb else None
+                if langfuse_cb:
+                    # 合并 metadata
+                    langfuse_metadata = _get_langfuse_metadata(session_id=session_id)
+                    
+                    # 如果有从 _prepare_trace_metadata 获取的更准确的 tags/user_id，覆盖之
+                    if user_id:
+                        langfuse_metadata["langfuse_user_id"] = user_id
+                    if tags:
+                        langfuse_metadata["langfuse_tags"] = tags
+                        
+                    config = {
+                        "callbacks": [langfuse_cb],
+                        "metadata": langfuse_metadata
+                    }
+                else:
+                    config = None
                 
                 if hasattr(self._agent, 'astream_events'):
                     try:

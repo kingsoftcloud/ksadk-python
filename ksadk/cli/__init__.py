@@ -2,15 +2,15 @@
 AgentEngine CLI - 命令行工具入口
 
 使用方式:
-    agentengin init myapp    # 初始化项目
-    agentengin run .         # 本地运行
-    agentengin web .         # 启动 Web UI
-    agentengin build .       # 构建镜像
-    agentengin deploy .      # 部署到云端
-    agentengin launch .      # 一键构建+部署
-    agentengin status        # 查看状态
-    agentengin invoke        # 与 Agent 交互
-    agentengin destroy       # 销毁实例
+    agentengine init myapp    # 初始化项目
+    agentengine run .         # 本地运行
+    agentengine web .         # 启动 Web UI
+    agentengine build .       # 构建镜像
+    agentengine deploy .      # 部署到云端
+    agentengine launch .      # 一键构建+部署
+    agentengine status        # 查看状态
+    agentengine invoke        # 与 Agent 交互
+    agentengine destroy       # 销毁实例
     
 别名: ksadk (向后兼容)
 """
@@ -83,26 +83,26 @@ class ColoredHelpGroup(click.Group):
         
         # 本地开发
         formatter.write(click.style("  📦 本地开发:\n\n", fg="green", bold=True))
-        formatter.write(click.style("      agentengin run .     ", fg="cyan"))
+        formatter.write(click.style("      agentengine run .     ", fg="cyan"))
         formatter.write(click.style("运行 API Server\n\n", fg="white"))
-        formatter.write(click.style("      agentengin web .     ", fg="cyan"))
+        formatter.write(click.style("      agentengine web .     ", fg="cyan"))
         formatter.write(click.style("启动 Web UI\n\n", fg="white"))
         
         # 云端部署
         formatter.write(click.style("  🚀 云端部署:\n\n", fg="blue", bold=True))
-        formatter.write(click.style("      agentengin init      ", fg="cyan"))
+        formatter.write(click.style("      agentengine init      ", fg="cyan"))
         formatter.write(click.style("初始化项目\n\n", fg="white"))
-        formatter.write(click.style("      agentengin build     ", fg="cyan"))
+        formatter.write(click.style("      agentengine build     ", fg="cyan"))
         formatter.write(click.style("构建镜像\n\n", fg="white"))
-        formatter.write(click.style("      agentengin deploy    ", fg="cyan"))
+        formatter.write(click.style("      agentengine deploy    ", fg="cyan"))
         formatter.write(click.style("部署到云端\n\n", fg="white"))
-        formatter.write(click.style("      agentengin launch    ", fg="cyan"))
+        formatter.write(click.style("      agentengine launch    ", fg="cyan"))
         formatter.write(click.style("一键构建+部署\n\n", fg="white"))
-        formatter.write(click.style("      agentengin status    ", fg="cyan"))
+        formatter.write(click.style("      agentengine status    ", fg="cyan"))
         formatter.write(click.style("查看状态\n\n", fg="white"))
-        formatter.write(click.style("      agentengin invoke    ", fg="cyan"))
+        formatter.write(click.style("      agentengine invoke    ", fg="cyan"))
         formatter.write(click.style("与 Agent 交互\n\n", fg="white"))
-        formatter.write(click.style("      agentengin destroy   ", fg="cyan"))
+        formatter.write(click.style("      agentengine destroy   ", fg="cyan"))
         formatter.write(click.style("销毁实例\n\n", fg="white"))
         
         # 自定义 Options 格式化

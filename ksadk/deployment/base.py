@@ -129,7 +129,7 @@ class BaseDeployProvider(ABC):
         Args:
             project_dir: 项目目录
             detection_result: 框架检测结果
-            config: 项目配置 (agentengin.yaml)
+            config: 项目配置 (agentengine.yaml)
             
         Returns:
             打包信息

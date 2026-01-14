@@ -21,7 +21,7 @@ sk = os.environ.get("KSYUN_SECRET_KEY")
 print(f"AK: {ak[:10]}..." if ak else "AK: 未设置")
 print(f"SK: {sk[:10]}..." if sk else "SK: 未设置")
 
-BUCKET_NAME = "agentengin"
+BUCKET_NAME = "agentengine"
 REGION = "cn-beijing"
 HOST = f"ks3-{REGION}.ksyuncs.com"
 

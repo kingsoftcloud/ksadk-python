@@ -30,6 +30,7 @@ dependencies = [
     "pyyaml>=6.0.0",
     "python-dotenv>=1.0.0",
     "pydantic>=2.0.0",
+    "questionary>=2.0.0",
     # API 服务 (run/web 命令)
     "fastapi>=0.100.0",
     "uvicorn>=0.23.0",
@@ -80,7 +81,7 @@ all = [
 ]
 
 [project.scripts]
-agentengin = "ksadk.cli:main"
+agentengine = "ksadk.cli:main"
 ksadk = "ksadk.cli:main"
 
 [project.urls]

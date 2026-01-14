@@ -39,7 +39,7 @@ cp .env.example .env
 ```bash
 # 使用 ksadk 统一启动
 cd smart_assistant_adk  # 或 smart_assistant_langgraph
-agentengin run .
+agentengine run .
 ```
 
 ## 示例对话

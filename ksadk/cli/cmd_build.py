@@ -1,5 +1,5 @@
 """
-agentengin build - 构建 Agent 应用
+agentengine build - 构建 Agent 应用
 
 支持两种模式:
 - code: 打包 zip + 依赖 → 上传 KS3 (默认)
@@ -24,8 +24,8 @@ from pathlib import Path
 @click.option("--registry", help="镜像仓库地址 (container 模式)")
 @click.option("--push", is_flag=True, help="构建后推送 (镜像到仓库 / zip到KS3)")
 @click.option("--no-cache", is_flag=True, help="不使用缓存 (container 模式)")
-@click.option("--region", "-r", default="cn-beijing-6", help="KS3 区域 (code 模式)")
-@click.option("--ks3-bucket", help="KS3 bucket 名称 (code 模式, 默认: agentengin-{region})")
+@click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="KS3 区域 (code 模式)")
+@click.option("--ks3-bucket", help="KS3 bucket 名称 (code 模式, 默认: agentengine-{region})")
 def build(
     agent_dir: str, mode: str, tag: str, registry: str, push: bool, no_cache: bool, region: str, ks3_bucket: str
 ):
@@ -39,9 +39,9 @@ def build(
         container: 构建 Docker 镜像
 
     示例:
-        agentengin build .
-        agentengin build . --mode code --push
-        agentengin build . --mode container --push --registry kcr.cn-beijing-6.ksyuncs.com
+        agentengine build .
+        agentengine build . --mode code --push
+        agentengine build . --mode container --push --registry kcr.cn-beijing-6.ksyuncs.com
     """
     agent_path = Path(agent_dir).resolve()
     click.echo(f"📁 项目目录: {agent_path}")
@@ -75,7 +75,7 @@ def _build_container(agent_path: Path, tag: str, registry: str, push: bool, no_c
         click.echo("")
         click.echo("下一步:")
         click.echo(
-            f"  agentengin deploy --target serverless --image {result.metadata['image']} --artifact-type Container"
+            f"  agentengine deploy --target serverless --image {result.metadata['image']} --artifact-type Container"
         )
 
     # 摘要
@@ -121,7 +121,7 @@ async def _build_code(agent_path: Path, push: bool, region: str, ks3_bucket: str
 
             click.echo("")
             click.echo("下一步:")
-            click.echo(f"  agentengin deploy --target serverless --ks3-path {ks3_path}")
+            click.echo(f"  agentengine deploy --target serverless --ks3-path {ks3_path}")
         else:
             click.secho("   ⚠️  上传失败，请检查 KS3 配置", fg="yellow")
     else:
@@ -150,4 +150,4 @@ def _print_summary(mode: str, result, show_next_step: bool = False):
 
     if show_next_step and not result.metadata.get("pushed"):
         click.echo("")
-        click.echo("下一步: agentengin build --push")
+        click.echo("下一步: agentengine build --push")

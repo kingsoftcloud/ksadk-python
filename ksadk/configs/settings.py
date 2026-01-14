@@ -123,7 +123,7 @@ class ModelConfig:
     
     标准环境变量 (优先):
         OPENAI_API_KEY       - API Key (OpenAI 标准)
-        OPENAI_API_BASE      - API Base URL (OpenAI 标准)
+        OPENAI_BASE_URL      - API Base URL (OpenAI 标准)
         OPENAI_MODEL_NAME    - 模型名称
     
     通用格式:
@@ -134,8 +134,11 @@ class ModelConfig:
         LLM_API_BASE         - 模型 API 地址
         LLM_MODEL            - 模型名称
     
+    别名 (兼容):
+        OPENAI_API_BASE      - API Base URL 别名
+    
     默认值:
-        OPENAI_API_BASE: 自动检测内网/外网，使用金山云模型服务
+        OPENAI_BASE_URL: 自动检测内网/外网，使用金山云模型服务
         MODEL_NAME: deepseek-v3.2
     """
     
@@ -155,8 +158,8 @@ class ModelConfig:
         如果未配置，默认使用金山云模型服务地址（自动检测内网）。
         """
         configured = _get_env(
-            "OPENAI_API_BASE",       # OpenAI 标准 (优先)
-            "OPENAI_BASE_URL",       # OpenAI 别名
+            "OPENAI_BASE_URL",       # OpenAI 标准 (优先)
+            "OPENAI_API_BASE",       # OpenAI 别名 (兼容)
             "LLM_API_BASE",          # Serverless 平台兼容
             "MODEL_API_BASE",        # 通用
         )
@@ -315,6 +318,11 @@ class AgentConfig:
         return os.getenv("USER_ID")
     
     @property
+    def session_id(self) -> Optional[str]:
+        """会话 ID (用于 Langfuse Sessions 功能)"""
+        return os.getenv("SESSION_ID")
+    
+    @property
     def environment(self) -> Optional[str]:
         """运行环境 (dev/staging/prod)"""
         return os.getenv("ENVIRONMENT")
@@ -367,6 +375,8 @@ class AgentConfig:
     def to_langfuse_params(self) -> dict:
         """转换为 Langfuse trace() 方法的原生参数"""
         params = {}
+        if self.session_id:
+            params["session_id"] = self.session_id
         if self.user_id:
             params["user_id"] = self.user_id
         if self.tags:

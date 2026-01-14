@@ -25,7 +25,7 @@ class KS3Uploader:
             bucket: bucket 名称 (可选)
                    - 如果指定，使用指定的 bucket
                    - 如果未指定，优先从环境变量 KS3_BUCKET 读取
-                   - 如果环境变量也未设置，默认使用 agentengin-{region}
+                   - 如果环境变量也未设置，默认使用 agentengine-{region}
         """
         self.region = region
         
@@ -33,7 +33,7 @@ class KS3Uploader:
         if bucket:
             self.bucket_name = bucket
         else:
-            self.bucket_name = os.getenv("KS3_BUCKET") or f"agentengin-{region}"
+            self.bucket_name = os.getenv("KS3_BUCKET") or f"agentengine-{region}"
         
         self.custom_domain = None  # 可选的自定义域名
 

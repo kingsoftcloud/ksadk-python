@@ -73,7 +73,7 @@ class K8sProvider(DockerProvider):
         """构建并推送镜像到仓库"""
         # 确定镜像地址
         registry = target.extra.get("registry", "")
-        namespace = target.extra.get("image_namespace", "agentengin")
+        namespace = target.extra.get("image_namespace", "agentengine")
         tag = target.extra.get("tag", "latest")
         
         if registry:

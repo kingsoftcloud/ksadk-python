@@ -50,7 +50,7 @@ class DockerProvider(BaseDeployProvider):
     async def package(self, project_dir: str, detection_result: Any, config: Dict[str, Any] = None) -> PackageInfo:
         """打包项目"""
         project_path = Path(project_dir)
-        output_dir = project_path / ".agentengin" / "build"
+        output_dir = project_path / ".agentengine" / "build"
         output_dir.mkdir(parents=True, exist_ok=True)
         
         package_name = Path(detection_result.package_path).name
@@ -97,7 +97,7 @@ class DockerProvider(BaseDeployProvider):
     
     async def build(self, package_info: PackageInfo, target: DeployTarget) -> PackageInfo:
         """构建 Docker 镜像"""
-        image_name = f"agentengin/{package_info.name}:latest"
+        image_name = f"agentengine/{package_info.name}:latest"
         
         cmd = [
             "docker", "build",
