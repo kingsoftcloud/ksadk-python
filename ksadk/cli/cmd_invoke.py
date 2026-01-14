@@ -1,5 +1,5 @@
 """
-agentengin invoke - 与已部署的 Agent 进行交互
+agentengine invoke - 与已部署的 Agent 进行交互
 
 支持 OpenAI 兼容格式调用，支持流式输出
 """
@@ -18,7 +18,7 @@ from typing import Optional
 @click.option('--message', '-m', help='发送的消息 (非交互模式)')
 @click.option('--session', '-s', help='Session ID (可选)')
 @click.option('--no-stream', is_flag=True, help='禁用流式输出')
-@click.option('--region', '-r', default='cn-beijing-6', help='区域')
+@click.option('--region', '-r', default='cn-beijing-6', envvar='KSYUN_REGION', help='区域')
 @click.option('--local', '-l', is_flag=True, help='连接本地服务 (http://localhost:8080)')
 @click.option('--insecure', '-k', is_flag=True, help='跳过 SSL 证书验证 (类似 curl -k)')
 def invoke(agent: str, endpoint: str, message: str, session: str, 
@@ -27,10 +27,10 @@ def invoke(agent: str, endpoint: str, message: str, session: str,
     
     \b
     使用方式:
-        agentengin invoke --local                  # 连接本地
-        agentengin invoke --agent my-agent         # 连接云端
-        agentengin invoke --endpoint http://...    # 指定地址
-        agentengin invoke -k --endpoint https://... # 跳过 SSL 验证
+        agentengine invoke --local                  # 连接本地
+        agentengine invoke --agent my-agent         # 连接云端
+        agentengine invoke --endpoint http://...    # 指定地址
+        agentengine invoke -k --endpoint https://... # 跳过 SSL 验证
     """
     # 确定 Endpoint
     if local:
@@ -66,7 +66,7 @@ def _get_agent_from_config() -> Optional[str]:
     """从配置文件读取 agent 名称"""
     import yaml
     
-    config_path = Path('.') / 'agentengin.yaml'
+    config_path = Path('.') / 'agentengine.yaml'
     if not config_path.exists():
         config_path = Path('.') / 'ksadk.yaml'
     

@@ -47,8 +47,18 @@ class BaseRunner(ABC):
         pass
     
     async def run_interactive(self) -> None:
-        """交互式运行"""
+        """交互式运行
+        
+        在整个交互会话期间保持同一个 session_id 和对话历史，
+        以便 Agent 可以记住上下文。
+        """
+        import uuid
+        
         print("🤖 交互模式已启动，输入 'exit' 退出\n")
+        
+        # 创建一个持久的 session_id 和对话历史
+        session_id = str(uuid.uuid4())[:8]
+        history = []
         
         while True:
             try:
@@ -63,8 +73,15 @@ class BaseRunner(ABC):
                 
                 print("🤖 助手: ", end="", flush=True)
                 
+                # 构建输入，包含 session_id 和 history
+                input_data = {
+                    "input": user_input,
+                    "session_id": session_id,
+                    "history": history
+                }
+                
                 response_text = ""
-                async for chunk in self.stream({"input": user_input}):
+                async for chunk in self.stream(input_data):
                     if "output" in chunk:
                         text = chunk["output"]
                         print(text, end="", flush=True)
@@ -76,10 +93,15 @@ class BaseRunner(ABC):
                 
                 if not response_text:
                     # 如果没有流式输出，使用同步调用
-                    result = await self.invoke({"input": user_input})
-                    print(result.get("output", "(无响应)"))
+                    result = await self.invoke(input_data)
+                    response_text = result.get("output", "(无响应)")
+                    print(response_text)
                 else:
                     print()  # 换行
+                
+                # 更新对话历史
+                history.append({"role": "user", "content": user_input})
+                history.append({"role": "model", "content": response_text})
                 
                 print()
                 

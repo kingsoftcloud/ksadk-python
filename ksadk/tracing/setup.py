@@ -76,12 +76,18 @@ def setup_tracing(
         logger.info("InMemory exporter enabled")
     
     # 2. Langfuse Exporter (auto-detect or explicit config)
+    # 注意: 对于 LangGraph/LangChain 框架，推荐使用 CallbackHandler 而非 OTel Exporter
+    # 同时使用两者会导致重复的 trace
     langfuse_enabled = enable_langfuse
     if langfuse_enabled is None:
         # Auto-detect from environment variables
         langfuse_enabled = bool(os.getenv("LANGFUSE_PUBLIC_KEY"))
     
-    if langfuse_enabled:
+    # 检查是否应该禁用 LangfuseExporter (当使用 LangChain/LangGraph 时)
+    # 可以通过环境变量 LANGFUSE_USE_CALLBACK=true 强制使用 CallbackHandler 方式
+    use_callback_only = os.getenv("LANGFUSE_USE_CALLBACK", "true").lower() == "true"
+    
+    if langfuse_enabled and not use_callback_only:
         try:
             from ksadk.tracing.exporters.langfuse_exporter import LangfuseExporter, LangfuseConfig
             
@@ -97,7 +103,7 @@ def setup_tracing(
                 config = LangfuseConfig(
                     public_key=os.getenv("LANGFUSE_PUBLIC_KEY", ""),
                     secret_key=os.getenv("LANGFUSE_SECRET_KEY", ""),
-                    host=os.getenv("LANGFUSE_BASE_URL", "http://localhost:3000")
+                    host=os.getenv("LANGFUSE_BASE_URL") or "http://localhost:3000"
                 )
             
             if config.public_key and config.secret_key:
@@ -113,6 +119,8 @@ def setup_tracing(
             logger.warning(f"Langfuse not available: {e}")
         except Exception as e:
             logger.error(f"Failed to initialize Langfuse: {e}")
+    elif langfuse_enabled:
+        logger.info("Langfuse will use CallbackHandler (recommended for LangChain/LangGraph)")
     
     # 3. OTLP Exporter (optional)
     if enable_otlp:

@@ -103,7 +103,7 @@ class ContainerBuilder(BaseBuilder):
         if image_registry:
             full_image = f"{image_registry}/{image_name}:{image_tag}"
         else:
-            full_image = f"agentengin/{image_name}:{image_tag}"
+            full_image = f"agentengine/{image_name}:{image_tag}"
         
         click.echo(f"🏷️  镜像名称: {full_image}")
         

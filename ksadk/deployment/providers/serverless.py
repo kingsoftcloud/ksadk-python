@@ -145,7 +145,7 @@ class ServerlessProvider(DockerProvider):
 
         if artifact_type == "Code":
             # Code 模式: 打包 zip 并上传 KS3
-            # 如果已经通过 agentengin build --mode code 完成，package_info 中会包含 ks3_path
+            # 如果已经通过 agentengine build --mode code 完成，package_info 中会包含 ks3_path
             ks3_path = target.extra.get("ks3_path") or package_info.metadata.get("ks3_path")
 
             if not ks3_path:
@@ -174,7 +174,7 @@ class ServerlessProvider(DockerProvider):
                     )
 
                 # KS3Uploader 从环境变量读取 AK/SK
-                # bucket 默认为 agentengin-{region}，可通过 KS3_BUCKET 环境变量或 --ks3-bucket 参数自定义
+                # bucket 默认为 agentengine-{region}，可通过 KS3_BUCKET 环境变量或 --ks3-bucket 参数自定义
                 # 预发特殊逻辑: target.region 为 pre-online 时，资源上传到 cn-beijing-6
                 upload_region = "cn-beijing-6" if target.region == "pre-online" else (target.region or "cn-beijing-6")
                 
@@ -282,10 +282,10 @@ class ServerlessProvider(DockerProvider):
                 bucket_name = parts[0]
                 object_name = parts[1] if len(parts) > 1 else ""
             else:
-                # 默认 Bucket 逻辑: agentengin-{region}
+                # 默认 Bucket 逻辑: agentengine-{region}
                 target_region = target.region or "cn-beijing-6"
                 upload_region = "cn-beijing-6" if target_region == "pre-online" else target_region
-                default_bucket = f"agentengin-{upload_region}"
+                default_bucket = f"agentengine-{upload_region}"
                 
                 bucket_name = target.extra.get("ks3_bucket") or default_bucket
                 object_name = target.extra.get("ks3_object") or f"agents/{package_info.name}/code.zip"
@@ -320,7 +320,7 @@ class ServerlessProvider(DockerProvider):
         # Container 模式配置
         else:
             input_obj.container_configuration = ContainerConfiguration(
-                image=package_info.image or f"agentengin/{package_info.name}:latest",
+                image=package_info.image or f"agentengine/{package_info.name}:latest",
                 command=["python", "entrypoint.py"],
             )
 
@@ -339,18 +339,19 @@ class ServerlessProvider(DockerProvider):
         # Langfuse 配置 (可选)
         enable_observability = target.extra.get("enable_observability", True)
 
-        langfuse_host = os.environ.get("LANGFUSE_HOST") or os.environ.get("LANGFUSE_BASE_URL")
+        langfuse_host = os.environ.get("LANGFUSE_BASE_URL")
         langfuse_public_key = os.environ.get("LANGFUSE_PUBLIC_KEY")
         langfuse_secret_key = os.environ.get("LANGFUSE_SECRET_KEY")
 
         # 只有在启用且有密钥的情况下才配置
-        if enable_observability and langfuse_public_key and langfuse_secret_key:
+        if enable_observability:
+            # 即使本地没有密钥，也发送启用配置 (Serverless 平台通过环境变量自动注入)
             input_obj.observability = ObservabilityConfiguration(
                 langfuse=LangfuseConfiguration(
                     enabled=True,
                     host=langfuse_host or "http://localhost:3000",
-                    public_key=langfuse_public_key,
-                    secret_key=langfuse_secret_key,
+                    public_key=langfuse_public_key or "",
+                    secret_key=langfuse_secret_key or "",
                 )
             )
 

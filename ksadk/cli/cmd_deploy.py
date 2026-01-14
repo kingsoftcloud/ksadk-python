@@ -1,5 +1,5 @@
 """
-agentengin deploy - 部署 Agent 到云端
+agentengine deploy - 部署 Agent 到云端
 
 支持多种部署目标:
 - serverless: 金山云 Serverless 计算引擎 (默认)
@@ -28,7 +28,7 @@ from ksadk.common.constants import (
     help="部署目标 (default: serverless)",
 )
 @click.option("--name", "-n", help="部署名称")
-@click.option("--region", "-r", default="cn-beijing-6", help="区域 (default: cn-beijing-6)")
+@click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域 (default: cn-beijing-6)")
 @click.option("--account-id", envvar="KSYUN_ACCOUNT_ID", help="金山云账号 ID")
 @click.option(
     "--artifact-type",
@@ -40,7 +40,7 @@ from ksadk.common.constants import (
 @click.option("--port", "-p", default=8000, help="服务端口 (default: 8000)")
 @click.option("--registry", help="镜像仓库地址 (k8s/serverless Container 模式)")
 @click.option("--ks3-path", help="KS3 代码包路径 (Serverless Code 模式)")
-@click.option("--ks3-bucket", help="KS3 bucket 名称 (Serverless Code 模式, 默认: agentengin-{region})")
+@click.option("--ks3-bucket", help="KS3 bucket 名称 (Serverless Code 模式, 默认: agentengine-{region})")
 @click.option("--image", help="Docker 镜像地址 (Container 模式)")
 @click.option(
     "--observability/--no-observability", default=True, help="是否启用可观测性 (默认开启)"
@@ -72,13 +72,13 @@ def deploy(
     AGENT_DIR: Agent 项目目录 (默认: 当前目录)
 
     示例:
-        agentengin deploy .                              # Serverless (默认)
-        agentengin deploy . --target docker              # 本地 Docker
-        agentengin deploy . --target k8s                 # K8s 集群
-        agentengin deploy . --artifact-type Container    # Serverless 容器模式
-        agentengin deploy . --dry-run                    # 打印 curl 请求
-        agentengin deploy . --region cn-shanghai-1
-        agentengin deploy . --account-id 2000003485
+        agentengine deploy .                              # Serverless (默认)
+        agentengine deploy . --target docker              # 本地 Docker
+        agentengine deploy . --target k8s                 # K8s 集群
+        agentengine deploy . --artifact-type Container    # Serverless 容器模式
+        agentengine deploy . --dry-run                    # 打印 curl 请求
+        agentengine deploy . --region cn-shanghai-1
+        agentengine deploy . --account-id 2000003485
     """
     # 列出 Provider
     if list_providers:
@@ -277,8 +277,8 @@ async def _deploy_async(
 
             click.echo("")
             click.echo("下一步:")
-            click.echo(f"  agentengin status --agent {deploy_name}")
-            click.echo(f"  agentengin invoke --agent {deploy_name}")
+            click.echo(f"  agentengine status --agent {deploy_name}")
+            click.echo(f"  agentengine invoke --agent {deploy_name}")
         else:
             click.secho(f"\n部署状态: {result.status.value}", fg="yellow")
             if result.message:
@@ -329,7 +329,7 @@ def _print_serverless_curl(package_info, deploy_target, account_id: str, region:
     # Container 模式
     if artifact_type == "Container":
         request_body["containerConfiguration"] = {
-            "image": package_info.image or f"agentengin/{package_info.name}:latest",
+            "image": package_info.image or f"agentengine/{package_info.name}:latest",
             "command": ["python", "entrypoint.py"],
         }
 
@@ -344,10 +344,10 @@ def _print_serverless_curl(package_info, deploy_target, account_id: str, region:
             bucket_name = parts[0]
             object_name = parts[1] if len(parts) > 1 else ""
         else:
-            # 默认 Bucket 逻辑: agentengin-{region}
+            # 默认 Bucket 逻辑: agentengine-{region}
             # 注意: pre-online 使用 cn-beijing-6 的资源
             ks3_region = "cn-beijing-6" if region == "pre-online" else region
-            bucket_name = f"agentengin-{ks3_region}"
+            bucket_name = f"agentengine-{ks3_region}"
             object_name = f"agents/{package_info.name}/code.zip"
 
         if os.environ.get("KS3_ENDPOINT"):
@@ -451,8 +451,8 @@ def _load_config(agent_path: Path) -> dict:
     """加载配置文件"""
     import yaml
 
-    # 优先 agentengin.yaml
-    config_path = agent_path / "agentengin.yaml"
+    # 优先 agentengine.yaml
+    config_path = agent_path / "agentengine.yaml"
     if not config_path.exists():
         config_path = agent_path / "ksadk.yaml"
 

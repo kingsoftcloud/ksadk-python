@@ -1,5 +1,5 @@
 """
-agentengin launch - 一键完成构建和部署
+agentengine launch - 一键完成构建和部署
 """
 
 import click
@@ -18,7 +18,7 @@ from pathlib import Path
     help="部署目标 (default: docker)",
 )
 @click.option("--name", "-n", help="部署名称")
-@click.option("--region", "-r", default="cn-beijing-6", help="区域 (serverless)")
+@click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域 (serverless)")
 @click.option("--account-id", envvar="KSYUN_ACCOUNT_ID", help="金山云账号 ID")
 @click.option("--observability/--no-observability", default=True, help="是否启用可观测性")
 def launch(
@@ -33,8 +33,8 @@ def launch(
     3. 调用 API 创建或更新 Agent
 
     示例:
-        agentengin launch .
-        agentengin launch . --target serverless
+        agentengine launch .
+        agentengine launch . --target serverless
     """
     asyncio.run(_launch_async(agent_dir, target, name, region, account_id, observability))
 
@@ -86,7 +86,7 @@ async def _launch_async(
             "enable_observability": observability,
             # Launch 默认行为
             "artifact_type": "Code" if target == "serverless" else None,
-            "ks3_bucket": "agentengin",
+            "ks3_bucket": None,
         },
     )
 
@@ -142,8 +142,8 @@ async def _launch_async(
                 click.echo(f"   信息:     {result.message}")
 
             click.echo("\n下一步:")
-            click.echo(f"  agentengin status --agent {result.agent_name}")
-            click.echo(f"  agentengin invoke --agent {result.agent_name}")
+            click.echo(f"  agentengine status --agent {result.agent_name}")
+            click.echo(f"  agentengine invoke --agent {result.agent_name}")
         else:
             click.secho(f"\n❌ 部署状态: {result.status.value}", fg="yellow")
             if result.message:
@@ -160,7 +160,7 @@ def _load_config(agent_path: Path) -> dict:
     """加载配置文件"""
     import yaml
 
-    config_path = agent_path / "agentengin.yaml"
+    config_path = agent_path / "agentengine.yaml"
     if not config_path.exists():
         config_path = agent_path / "ksadk.yaml"
 

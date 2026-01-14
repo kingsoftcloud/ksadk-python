@@ -138,6 +138,11 @@ class _LangfuseSpanExporter:
         user_input = attrs.get("user.input", "")
         agent_output = attrs.get("agent.output", "")
         
+        # Extract Langfuse-specific attributes from span
+        span_session_id = attrs.get("langfuse.session_id")
+        span_tags = attrs.get("langfuse.tags", "")
+        span_user_id = attrs.get("langfuse.user_id")
+        
         # Convert timestamps
         start_time = datetime.fromtimestamp(root_span.start_time / 1e9)
         end_time = datetime.fromtimestamp(root_span.end_time / 1e9)
@@ -167,6 +172,31 @@ class _LangfuseSpanExporter:
                 if agent_config.agent_name:
                     trace_name = agent_config.agent_name
             
+            # 优先使用 span attributes 中的值 (从 runner 传递)
+            if span_session_id:
+                langfuse_params["session_id"] = span_session_id
+            
+            if span_user_id:
+                langfuse_params["user_id"] = span_user_id
+            
+            # 处理 tags - 合并 span 和 config 中的 tags
+            existing_tags = langfuse_params.get("tags", []) or []
+            if span_tags:
+                span_tags_list = [t.strip() for t in span_tags.split(",") if t.strip()]
+                for tag in span_tags_list:
+                    if tag not in existing_tags:
+                        existing_tags.append(tag)
+            
+            # 确保 tags 包含 agent_name 和 environment
+            if agent_config:
+                if agent_config.agent_name and agent_config.agent_name not in existing_tags:
+                    existing_tags.append(agent_config.agent_name)
+                if agent_config.environment and agent_config.environment not in existing_tags:
+                    existing_tags.append(agent_config.environment)
+            
+            if existing_tags:
+                langfuse_params["tags"] = existing_tags
+            
             # Use create_trace method (available in v3)
             trace = self._langfuse.trace(
                 id=invocation_id,
@@ -174,7 +204,7 @@ class _LangfuseSpanExporter:
                 input={"text": user_input} if user_input else None,
                 output={"text": agent_output} if agent_output else None,
                 metadata=base_metadata,
-                **langfuse_params  # user_id, tags, version
+                **langfuse_params  # user_id, session_id, tags, version
             )
             
             # Add LLM generations

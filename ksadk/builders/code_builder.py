@@ -28,7 +28,7 @@ class CodeBuilder(BaseBuilder):
     
     def __init__(self, project_dir: Path, config: dict = None):
         super().__init__(project_dir, config)
-        self.build_dir = self.project_dir / ".agentengin" / "code_build"
+        self.build_dir = self.project_dir / ".agentengine" / "code_build"
         self.deps_dir = self.build_dir / "linux_deps"
     
     def build(self) -> BuildResult:
@@ -60,7 +60,7 @@ class CodeBuilder(BaseBuilder):
         if zip_path.exists() and not self._need_rebuild(zip_path):
             zip_size = zip_path.stat().st_size / (1024 * 1024)
             click.secho(f"\n✅ 使用已有构建: {zip_path.name} ({zip_size:.2f} MB)", fg='green')
-            click.echo("   (如需重新构建，请删除 .agentengin/code_build 目录)")
+            click.echo("   (如需重新构建，请删除 .agentengine/code_build 目录)")
             return BuildResult(
                 success=True,
                 artifact_path=zip_path,
@@ -163,15 +163,25 @@ class CodeBuilder(BaseBuilder):
             "opentelemetry-sdk>=1.37.0",
             "opentelemetry-exporter-otlp>=1.37.0",
             "openinference-instrumentation-langchain>=0.1.0",
+            "langfuse>=2.0.0",
         ]
         
         framework = detection_result.type.value
         if framework == "adk":
             deps += ["google-adk>=0.1.0", "litellm>=1.0.0"]
-        elif framework == "langchain":
-            deps += ["langchain>=0.1.0", "langchain-openai>=0.1.0"]
-        elif framework == "langgraph":
-            deps += ["langgraph>=0.1.0", "langchain-openai>=0.1.0"]
+        elif framework in ("langchain", "langgraph"):
+            # LangChain 生态统一依赖 (langchain 和 langgraph 经常混用)
+            deps += [
+                # LangChain 核心
+                "langchain>=0.1.0",
+                "langchain-openai>=0.1.0",
+                "langchain-core>=0.1.0",
+                # LangGraph (即使检测到 langchain，很多用户也会用 langgraph 构建工作流)
+                "langgraph>=0.1.0",
+                # MCP (Model Context Protocol) 支持
+                "mcp>=1.1.0",
+                "langchain-mcp-adapters>=0.0.1",
+            ]
         
         return deps
     
@@ -413,14 +423,75 @@ zip 包结构:
 
 import sys
 import os
+import logging
 from pathlib import Path
 
-# 添加代码路径
+# ========== 日志配置 ==========
+# 通过环境变量 LOG_LEVEL 控制日志级别 (DEBUG, INFO, WARNING, ERROR)
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+
+# 配置根日志
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    stream=sys.stdout,
+    force=True,  # 覆盖已有配置
+)
+
+logger = logging.getLogger("entrypoint")
+logger.info(f"日志级别: {{LOG_LEVEL}}")
+
+# 配置第三方库日志级别
+if LOG_LEVEL == "DEBUG":
+    # DEBUG 模式下显示所有日志
+    logging.getLogger("langchain").setLevel(logging.DEBUG)
+    logging.getLogger("langgraph").setLevel(logging.DEBUG)
+    logging.getLogger("httpx").setLevel(logging.DEBUG)
+    logging.getLogger("opentelemetry").setLevel(logging.DEBUG)
+else:
+    # 非 DEBUG 模式下减少第三方库噪音
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+# LangChain 调试模式 (默认开启, 会打印完整的 prompt 和 LLM 调用信息)
+# 设置 LANGCHAIN_VERBOSE=false 可关闭
+if os.environ.get("LANGCHAIN_VERBOSE", "true").lower() not in ("false", "0"):
+    try:
+        from langchain.globals import set_verbose, set_debug
+        set_verbose(True)
+        set_debug(True)
+        logger.info("LangChain 调试模式已启用")
+    except ImportError:
+        pass
+
+# ========== 路径设置 ==========
 CODE_ROOT = os.environ.get("CODE_PATH", "/app/code")
 sys.path.insert(0, CODE_ROOT)
 os.chdir(CODE_ROOT)
 
-# 加载环境变量
+# 打印启动信息
+logger.info("=" * 60)
+logger.info("AgentEngine 启动")
+logger.info("=" * 60)
+logger.info(f"CODE_ROOT: {{CODE_ROOT}}")
+logger.info(f"Python: {{sys.version}}")
+logger.info(f"PYTHONPATH: {{os.environ.get('PYTHONPATH', 'N/A')}}")
+
+# 打印关键环境变量 (隐藏敏感信息)
+env_keys = ["AGENT_RUNTIME_NAME", "AGENT_RUNTIME_ID", "ACCOUNT_ID", "PORT", 
+            "LANGFUSE_BASE_URL", "LANGCHAIN_TRACING_V2", "MODEL_NAME"]
+for key in env_keys:
+    value = os.environ.get(key)
+    if value:
+        # 隐藏敏感值
+        if "KEY" in key or "SECRET" in key:
+            value = value[:8] + "****" if len(value) > 8 else "****"
+        logger.info(f"  {{key}}: {{value}}")
+
+logger.info("=" * 60)
+
+# ========== 加载 Agent ==========
 from ksadk.configs import setup_environment
 setup_environment(Path(CODE_ROOT))
 
@@ -438,12 +509,27 @@ detection_result = DetectionResult(
     agent_variable="{detection_result.agent_variable}"
 )
 
+logger.info(f"框架: {{detection_result.name}}")
+logger.info(f"入口: {{detection_result.entry_point}}")
+
+# 初始化 Tracing (如果配置了 Langfuse)
+if os.environ.get("LANGFUSE_PUBLIC_KEY"):
+    try:
+        from ksadk.tracing import setup_tracing
+        setup_tracing()
+        logger.info("Tracing 已启用 (Langfuse)")
+    except Exception as e:
+        logger.warning(f"Tracing 初始化失败: {{e}}")
+
 # 创建 Runner 并加载 Agent
+logger.info("正在加载 Agent...")
 runner = create_runner(detection_result, CODE_ROOT)
 runner.load_agent()
 set_runner(runner)
+logger.info("Agent 加载成功!")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    logger.info(f"启动 HTTP Server: 0.0.0.0:{{port}}")
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level=LOG_LEVEL.lower())
 '''

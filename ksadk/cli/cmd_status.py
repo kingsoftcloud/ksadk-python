@@ -1,5 +1,5 @@
 """
-agentengin status - 查看 Agent 运行状态和 Endpoint
+agentengine status - 查看 Agent 运行状态和 Endpoint
 
 支持 watch 模式实时刷新
 """
@@ -21,7 +21,7 @@ from ksadk.common.constants import DEFAULT_SERVERLESS_ENDPOINT
 @click.option("--all", "show_all", is_flag=True, help="显示所有 Agent")
 @click.option("--watch", "-w", is_flag=True, help="Watch 模式，持续刷新")
 @click.option("--interval", "-i", default=2, help="Watch 刷新间隔 (秒)")
-@click.option("--region", "-r", default="cn-beijing-6", help="区域")
+@click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
 @click.option("--account-id", envvar="KSYUN_ACCOUNT_ID", help="金山云账号 ID")
 @click.option("--dry-run", is_flag=True, help="只打印 curl 请求，不执行")
 def status(
@@ -37,10 +37,10 @@ def status(
 
     \b
     示例:
-        agentengin status --agent my-agent
-        agentengin status --agent my-agent --watch
-        agentengin status --all
-        agentengin status --agent my-agent --dry-run
+        agentengine status --agent my-agent
+        agentengine status --agent my-agent --watch
+        agentengine status --all
+        agentengine status --agent my-agent --dry-run
     """
     if not agent and not show_all:
         # 尝试从当前目录的配置文件读取 agent 名称
@@ -48,7 +48,7 @@ def status(
 
         if not agent:
             click.secho("错误: 请指定 --agent 或使用 --all 查看所有", fg="red")
-            click.echo("提示: 也可以在包含 agentengin.yaml 的目录下运行")
+            click.echo("提示: 也可以在包含 agentengine.yaml 的目录下运行")
             raise SystemExit(1)
 
     # 检查账号 ID
@@ -74,7 +74,7 @@ def _get_agent_from_config() -> Optional[str]:
     """从配置文件读取 agent 名称"""
     import yaml
 
-    config_path = Path(".") / "agentengin.yaml"
+    config_path = Path(".") / "agentengine.yaml"
     if not config_path.exists():
         config_path = Path(".") / "ksadk.yaml"
 

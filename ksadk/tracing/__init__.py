@@ -13,7 +13,7 @@ KsADK Tracing - 可观测性模块 (OpenTelemetry)
 环境变量:
     LANGFUSE_PUBLIC_KEY   - 自动启用 Langfuse
     LANGFUSE_SECRET_KEY   - Langfuse Secret
-    LANGFUSE_HOST         - Langfuse 服务地址
+    LANGFUSE_BASE_URL     - Langfuse 服务地址
 
 Agent 信息通过 ksadk.configs.settings.agent 配置。
 """

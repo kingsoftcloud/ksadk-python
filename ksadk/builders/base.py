@@ -43,7 +43,7 @@ class BaseBuilder(ABC):
         """加载项目配置文件"""
         import yaml
         
-        config_path = self.project_dir / 'agentengin.yaml'
+        config_path = self.project_dir / 'agentengine.yaml'
         if not config_path.exists():
             config_path = self.project_dir / 'ksadk.yaml'
         

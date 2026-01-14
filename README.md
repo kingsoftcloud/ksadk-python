@@ -18,11 +18,11 @@
 
 ```bash
 # 安装核心 CLI
-pip install agentengin
+pip install agentengine
 
 # 或者安装带特定框架依赖的版本
-pip install "agentengin[langgraph]"
-pip install "agentengin[adk]"
+pip install "agentengine[langgraph]"
+pip install "agentengine[adk]"
 ```
 
 ### 2. 初始化项目
@@ -31,34 +31,33 @@ pip install "agentengin[adk]"
 
 ```bash
 # 初始化项目 (支持 -f langgraph / langchain / adk)
-agentengin init my_agent -f langgraph
+agentengine init my_agent -f langgraph
 
 cd my_agent
 ```
 
 ### 3. 配置环境变量
 
-编辑项目根目录下的 `.env` 文件，配置模型 API Key：
+使用交互式命令配置 API Key 和云端凭证：
 
 ```bash
-# .env
-OPENAI_API_KEY=sk-xxxxxx
-OPENAI_API_BASE=https://api.openai.com/v1  # 可选
-MODEL_NAME=gpt-4o-mini                    # 可选
+agentengine config
 ```
+
+该命令会自动生成或更新 `.env` 和 `agentengine.yaml` 文件。
 
 ### 4. 本地运行与调试
 
 **交互式调试模式** (在终端直接对话):
 
 ```bash
-agentengin run -i .
+agentengine run -i .
 ```
 
 **启动 API Server** (提供标准化 API):
 
 ```bash
-agentengin web . --port 8080
+agentengine web . --port 8080
 ```
 > API 文档地址: `http://localhost:8080/docs`
 
@@ -73,7 +72,7 @@ export KSYUN_SECRET_KEY=your-sk
 export KSYUN_ACCOUNT_ID=your-account-id
 
 # 一键部署 (默认 Code 模式)
-agentengin launch . --target serverless --region cn-beijing-6
+agentengine launch . --target serverless --region cn-beijing-6
 ```
 
 ---
@@ -82,23 +81,28 @@ agentengin launch . --target serverless --region cn-beijing-6
 
 ### 1. 项目管理
 
-#### `agentengin init`
+#### `agentengine init`
 初始化一个新的 Agent 项目模板。
 
 ```bash
-agentengin init <project-name> --framework [langgraph|langchain|adk]
+agentengine init <project-name> --framework [langgraph|langchain|adk]
 ```
 *   生成的项目包含推荐的目录结构和基础代码模板。
-*   自动生成 `agentengin.yaml` 配置文件。
+*   自动生成 `agentengine.yaml` 配置文件。
 
 ### 2. 开发调试
 
-#### `agentengin run`
+#### `agentengine config`
+交互式配置向导，用于管理 `agentengine.yaml` 和 `.env`。
+*   支持配置 Agent 名称、API Key、OSS/云厂商凭证等。
+*   **幂等设计**: 可以重复运行，会自动读取现有配置作为默认值。
+
+#### `agentengine run`
 本地运行 Agent。支持自动检测框架类型并加载环境。
 *   `-i, --interactive`: 进入终端交互模式。
 *   `--no-trace`: 禁用 Langfuse 链路追踪。
 
-#### `agentengin web`
+#### `agentengine web`
 启动生产级 API Server，提供标准化的 RESTful 接口：
 *   `POST /run_sse`: 流式对话接口
 *   `GET /health`: 健康检查
@@ -106,32 +110,32 @@ agentengin init <project-name> --framework [langgraph|langchain|adk]
 
 ### 3. 构建 (Build)
 
-#### `agentengin build`
+#### `agentengine build`
 将 Agent 打包为可部署的制品。
 
 **模式 1: Code (推荐)**
 打包代码和依赖描述文件为 zip 包，上传至 KS3。Serverless 运行时会自动安装依赖。
 ```bash
-agentengin build . --mode code --push
+agentengine build . --mode code --push
 ```
 
 **模式 2: Container**
 构建 Docker 镜像并推送至仓库。适用于有系统级依赖的复杂场景。
 ```bash
-agentengin build . --mode container --tag my-agent:v1 --push
+agentengine build . --mode container --tag my-agent:v1 --push
 ```
 
 ### 4. 部署 (Deploy)
 
-#### `agentengin deploy`
+#### `agentengine deploy`
 将构建好的制品部署到目标环境。
 
 ```bash
 # 部署到 Serverless (Code 模式)
-agentengin deploy . --target serverless --ks3-path ks3:// bucket/path/code.zip
+agentengine deploy . --target serverless --ks3-path ks3:// bucket/path/code.zip
 
 # 部署到 Serverless (Container 模式)
-agentengin deploy . --target serverless --image my-registry/my-agent:v1 --artifact-type Container
+agentengine deploy . --target serverless --image my-registry/my-agent:v1 --artifact-type Container
 ```
 
 参数说明：
@@ -139,34 +143,34 @@ agentengin deploy . --target serverless --image my-registry/my-agent:v1 --artifa
 *   `--observability`: 是否开启可观测性 (默认开启)。
 *   `--cpu / --memory`: 覆盖 CPU/内存配置 (如 `--cpu 2 --memory 4Gi`)。
 
-#### `agentengin launch`
+#### `agentengine launch`
 **构建 + 部署** 的组合命令，自动串联 `build --push` 和 `deploy` 流程。
 
 ### 5. 运维管理
 
-#### `agentengin status`
+#### `agentengine status`
 查看 Agent 的运行状态、Endpoint 地址和副本数。
 ```bash
-agentengin status --agent <agent-name> --watch
+agentengine status --agent <agent-name> --watch
 ```
 
-#### `agentengin invoke`
+#### `agentengine invoke`
 调用已部署的 Agent 进行测试。
 ```bash
-agentengin invoke --agent <agent-name> --message "你好"
+agentengine invoke --agent <agent-name> --message "你好"
 ```
 
-#### `agentengin destroy`
+#### `agentengine destroy`
 下线并删除 Agent 实例。
 ```bash
-agentengin destroy --agent <agent-name>
+agentengine destroy --agent <agent-name>
 ```
 
 ---
 
-## ⚙️ 配置文件 (agentengin.yaml)
+## ⚙️ 配置文件 (agentengine.yaml)
 
-在项目根目录下的 `agentengin.yaml` 用于定义 Agent 的元数据和部署配置。
+在项目根目录下的 `agentengine.yaml` 用于定义 Agent 的元数据和部署配置。
 
 ```yaml
 name: my_agent_demo
@@ -209,7 +213,7 @@ AgentEngine 会自动加载 `.env` 文件。常用变量如下：
 | `MODEL_NAME` | 使用的模型名称 |
 | `LANGFUSE_PUBLIC_KEY` | Langfuse 公钥 (用于 Tracing) |
 | `LANGFUSE_SECRET_KEY` | Langfuse 私钥 |
-| `LANGFUSE_HOST` | Langfuse 服务地址 |
+| `LANGFUSE_BASE_URL` | Langfuse 服务地址 |
 | `KSYUN_ACCESS_KEY` | 金山云 AK (部署用) |
 | `KSYUN_SECRET_KEY` | 金山云 SK (部署用) |
 | `KSYUN_ACCOUNT_ID` | 金山云账号 ID (部署用) |
