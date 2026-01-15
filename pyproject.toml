@@ -40,6 +40,8 @@ dependencies = [
     "requests-aws4auth>=1.2.0",
     # KS3 上传 (build --push)
     "ks3sdk>=1.15.0",
+    # 终端美化 (Markdown 渲染)
+    "rich>=10.0.0",
 ]
 
 [project.optional-dependencies]
@@ -47,6 +49,7 @@ dependencies = [
 adk = [
     "google-adk>=1.0.0",
     "litellm>=1.0.0",
+    "json_repair>=0.25.0",  # 用于修复大模型输出的非法 JSON
 ]
 # LangChain 支持
 langchain = [
@@ -59,6 +62,7 @@ langgraph = [
     "langgraph>=0.2.0",
     "langchain>=0.3.0",
     "langchain-openai>=0.2.0",
+    "protobuf>=6.32.1",
 ]
 # 可观测性
 tracing = [
@@ -77,7 +81,7 @@ dev = [
 ]
 # 全部依赖
 all = [
-    "ksadk[runtime,adk,langchain,langgraph,tracing,dev]",
+    "ksadk[adk,langchain,langgraph,tracing,dev]",
 ]
 
 [project.scripts]

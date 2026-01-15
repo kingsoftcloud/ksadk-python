@@ -11,7 +11,7 @@ AgentEngine CLI - 命令行工具入口
     agentengine status        # 查看状态
     agentengine invoke        # 与 Agent 交互
     agentengine destroy       # 销毁实例
-    
+
 别名: ksadk (向后兼容)
 """
 
@@ -58,20 +58,20 @@ BANNER = r"""
 
 class ColoredHelpGroup(click.Group):
     """带颜色帮助文本的命令组"""
-    
+
     def format_help(self, ctx, formatter):
         """覆盖默认帮助格式，添加颜色"""
         # 渐变 Banner
         formatter.write("\n")
         for line in BANNER.strip().split("\n"):
             formatter.write(_gradient_line("  " + line, BRAND_COLORS))
-        
+
         # 副标题 + 版本号
         formatter.write(click.style("\n  金山云", fg="red", bold=True))
         formatter.write(click.style(" AgentEngine", fg="yellow", bold=True))
         formatter.write(click.style(" v" + VERSION, fg="bright_black"))
         formatter.write(click.style(" - AI Agent 开发与部署平台\n\n", fg="white"))
-        
+
         # 描述
         formatter.write(click.style("  支持 ", fg="white"))
         formatter.write(click.style("LangGraph", fg="yellow"))
@@ -80,14 +80,14 @@ class ColoredHelpGroup(click.Group):
         formatter.write(click.style(" / ", fg="white"))
         formatter.write(click.style("Google ADK", fg="yellow"))
         formatter.write(click.style(" 的本地运行与云端部署\n\n", fg="white"))
-        
+
         # 本地开发
         formatter.write(click.style("  📦 本地开发:\n\n", fg="green", bold=True))
         formatter.write(click.style("      agentengine run .     ", fg="cyan"))
         formatter.write(click.style("运行 API Server\n\n", fg="white"))
         formatter.write(click.style("      agentengine web .     ", fg="cyan"))
         formatter.write(click.style("启动 Web UI\n\n", fg="white"))
-        
+
         # 云端部署
         formatter.write(click.style("  🚀 云端部署:\n\n", fg="blue", bold=True))
         formatter.write(click.style("      agentengine init      ", fg="cyan"))
@@ -104,13 +104,13 @@ class ColoredHelpGroup(click.Group):
         formatter.write(click.style("与 Agent 交互\n\n", fg="white"))
         formatter.write(click.style("      agentengine destroy   ", fg="cyan"))
         formatter.write(click.style("销毁实例\n\n", fg="white"))
-        
+
         # 自定义 Options 格式化
         self.format_options_colored(ctx, formatter)
-        
+
         # 自定义 Commands 格式化
         self.format_commands_colored(ctx, formatter)
-    
+
     def format_options_colored(self, ctx, formatter):
         """自定义选项格式化"""
         formatter.write(click.style("  ⚙️  选项:\n\n", fg="yellow", bold=True))
@@ -118,58 +118,59 @@ class ColoredHelpGroup(click.Group):
         formatter.write(click.style("显示版本号\n\n", fg="white"))
         formatter.write(click.style("      -h, --help     ", fg="cyan"))
         formatter.write(click.style("显示帮助信息\n", fg="white"))
-    
+
     def format_commands(self, ctx, formatter):
         """覆盖默认的 Commands 格式化，防止重复输出"""
         # 什么也不做，Commands 已在 format_help 中自定义输出
         pass
-    
+
     def format_commands_colored(self, ctx, formatter):
         """自定义命令列表格式，更简洁美观"""
         # 定义简短描述映射
         short_help_map = {
-            'build': '构建 Docker 镜像',
-            'config': '配置项目',
-            'deploy': '部署到云端',
-            'destroy': '销毁实例',
-            'init': '创建新项目',
-            'invoke': '交互测试',
-            'launch': '一键构建+部署',
-            'run': '运行 Agent',
-            'status': '查看状态',
-            'web': '启动 Web UI',
+            "build": "构建 Docker 镜像",
+            "config": "配置项目",
+            "deploy": "部署到云端",
+            "destroy": "销毁实例",
+            "init": "创建新项目",
+            "invoke": "交互测试",
+            "launch": "一键构建+部署",
+            "model": "切换默认模型",
+            "run": "运行 Agent",
+            "status": "查看状态",
+            "web": "启动 Web UI",
         }
-        
+
         commands = []
         for subcommand in self.list_commands(ctx):
             cmd = self.get_command(ctx, subcommand)
             if cmd is None:
                 continue
             commands.append((subcommand, cmd))
-        
+
         if not commands:
             return
-        
+
         formatter.write(click.style("\n  📋 可用命令:\n\n", fg="magenta", bold=True))
-        
+
         # 计算最大命令名长度用于对齐
         max_len = max(len(cmd[0]) for cmd in commands)
-        
+
         for subcommand, cmd in commands:
             # 使用预定义的简短描述
-            help_text = short_help_map.get(subcommand, '')
+            help_text = short_help_map.get(subcommand, "")
             if not help_text and cmd.help:
                 # 只取 docstring 第一行
-                help_text = cmd.help.split('\n')[0].strip()
-            
+                help_text = cmd.help.split("\n")[0].strip()
+
             # 格式化输出
-            padding = ' ' * (max_len - len(subcommand) + 2)
+            padding = " " * (max_len - len(subcommand) + 2)
             formatter.write(click.style(f"      {subcommand}", fg="cyan"))
             formatter.write(click.style(f"{padding}{help_text}\n\n", fg="white"))
 
 
 # 添加 -h 短选项支持
-CONTEXT_SETTINGS = dict(help_option_names=['-h', '--help'])
+CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
 
 
 @click.group(cls=ColoredHelpGroup, context_settings=CONTEXT_SETTINGS)
@@ -185,48 +186,61 @@ def _register_commands():
     from ksadk.cli.cmd_deploy import deploy
     from ksadk.cli.cmd_web import web
     from ksadk.cli.cmd_create import create
-    
+
     # 注册现有命令
     cli.add_command(run)
     cli.add_command(deploy)
     cli.add_command(web)
-    
+
     # init 作为主命令 (PRD 规范)
     cli.add_command(create, name="init")
-    
+
     # 注册新命令 (如果存在)
     try:
         from ksadk.cli.cmd_config import config
+
         cli.add_command(config)
     except ImportError:
         pass
-    
+
+    try:
+        from ksadk.cli.cmd_model import model
+
+        cli.add_command(model)
+    except ImportError:
+        pass
+
     try:
         from ksadk.cli.cmd_build import build
+
         cli.add_command(build)
     except ImportError:
         pass
-    
+
     try:
         from ksadk.cli.cmd_launch import launch
+
         cli.add_command(launch)
     except ImportError:
         pass
-    
+
     try:
         from ksadk.cli.cmd_status import status
+
         cli.add_command(status)
     except ImportError:
         pass
-    
+
     try:
         from ksadk.cli.cmd_invoke import invoke
+
         cli.add_command(invoke)
     except ImportError:
         pass
-    
+
     try:
         from ksadk.cli.cmd_destroy import destroy
+
         cli.add_command(destroy)
     except ImportError:
         pass
@@ -236,6 +250,7 @@ def main():
     # 全局加载 .env 文件
     try:
         from dotenv import load_dotenv, find_dotenv
+
         # 使用 find_dotenv(usecwd=True) 确保从当前工作目录开始查找 .env 文件
         dotenv_path = find_dotenv(usecwd=True)
         if dotenv_path:
@@ -245,7 +260,7 @@ def main():
             load_dotenv(override=False)
     except ImportError:
         pass
-    
+
     _register_commands()
     cli()
 
