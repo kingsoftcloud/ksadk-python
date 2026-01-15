@@ -516,8 +516,12 @@ logger.info(f"入口: {{detection_result.entry_point}}")
 if os.environ.get("LANGFUSE_PUBLIC_KEY"):
     try:
         from ksadk.tracing import setup_tracing
-        setup_tracing()
-        logger.info("Tracing 已启用 (Langfuse)")
+        
+        # 对于 LangGraph/LangChain，默认仅使用 Callback 以避免重复 Trace
+        is_langchain = "{detection_result.type.name}" in ("LANGCHAIN", "LANGGRAPH")
+        
+        setup_tracing(use_callback_only=is_langchain)
+        logger.info(f"Tracing 已启用 (Langfuse, CallbackOnly={{is_langchain}})")
     except Exception as e:
         logger.warning(f"Tracing 初始化失败: {{e}}")
 

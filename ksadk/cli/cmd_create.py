@@ -27,6 +27,7 @@ model = LiteLlm(
     model=f"openai/{{os.getenv('MODEL_NAME', 'deepseek-v3.2')}}",
     api_base=os.getenv("OPENAI_API_BASE"),
     api_key=os.getenv("OPENAI_API_KEY"),
+    stream=True,  # 启用流式输出
 )
 
 
@@ -70,6 +71,7 @@ llm = ChatOpenAI(
     model=os.getenv("MODEL_NAME", "deepseek-v3.2"),
     base_url=os.getenv("OPENAI_API_BASE"),
     api_key=os.getenv("OPENAI_API_KEY"),
+    streaming=True,
 )
 
 prompt = ChatPromptTemplate.from_messages([
@@ -100,6 +102,7 @@ llm = ChatOpenAI(
     model=os.getenv("MODEL_NAME", "deepseek-v3.2"),
     base_url=os.getenv("OPENAI_API_BASE"),
     api_key=os.getenv("OPENAI_API_KEY"),
+    streaming=True,
 )
 
 
