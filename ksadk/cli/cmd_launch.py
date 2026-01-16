@@ -165,7 +165,8 @@ def _load_config(agent_path: Path) -> dict:
         config_path = agent_path / "ksadk.yaml"
 
     if config_path.exists():
-        with open(config_path) as f:
+        # 使用 utf-8-sig 自动处理 BOM，确保 Windows 兼容性
+        with open(config_path, encoding='utf-8-sig') as f:
             return yaml.safe_load(f) or {}
 
     return {}

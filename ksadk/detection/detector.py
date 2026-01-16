@@ -72,8 +72,11 @@ class FrameworkDetector:
         return self._analyze_code(agent_file, package_path)
     
     def _check_config(self) -> Optional[DetectionResult]:
-        """检查 ksadk.yaml 配置文件"""
-        config_path = self.project_dir / "ksadk.yaml"
+        """检查配置文件 (agentengine.yaml 或 ksadk.yaml)"""
+        # 优先检查 agentengine.yaml
+        config_path = self.project_dir / "agentengine.yaml"
+        if not config_path.exists():
+            config_path = self.project_dir / "ksadk.yaml"
         if not config_path.exists():
             config_path = self.project_dir / "ksadk.yml"
         
@@ -81,7 +84,8 @@ class FrameworkDetector:
             return None
         
         try:
-            with open(config_path, 'r') as f:
+            # 使用 utf-8-sig 自动处理 BOM，确保 Windows 兼容性
+            with open(config_path, 'r', encoding='utf-8-sig') as f:
                 config = yaml.safe_load(f)
             
             framework = config.get("framework", "adk").lower()

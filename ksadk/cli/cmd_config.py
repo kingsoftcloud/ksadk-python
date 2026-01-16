@@ -28,7 +28,8 @@ custom_style = Style([
 def _load_env_file(path: Path) -> dict:
     """Safely load .env file if exists"""
     if path.exists():
-        return dotenv_values(path)
+        # 使用 utf-8-sig 自动处理 BOM，确保 Windows 兼容性
+        return dotenv_values(path, encoding="utf-8-sig")
     return {}
 
 
@@ -36,7 +37,8 @@ def _update_env_file(path: Path, updates: dict):
     """Update .env file preserving existing keys/comments where possible"""
     lines = []
     if path.exists():
-        content = path.read_text()
+        # 使用 utf-8-sig 自动处理 BOM，确保 Windows 兼容性
+        content = path.read_text(encoding="utf-8-sig")
         lines = content.splitlines()
 
     # Track which keys we've updated
@@ -71,7 +73,8 @@ def _update_env_file(path: Path, updates: dict):
             new_lines.append(f"{key}={value}")
             added_new = True
 
-    path.write_text("\n".join(new_lines) + "\n")
+    # 使用 utf-8-sig 编码 (带 BOM)，确保 Windows 程序正确识别为 UTF-8
+    path.write_text("\n".join(new_lines) + "\n", encoding="utf-8-sig")
 
 
 @click.command(context_settings=dict(help_option_names=['-h', '--help']))
@@ -96,7 +99,8 @@ def config(output: str):
     existing_config = {}
     if output_path.exists():
         try:
-            with open(output_path, 'r') as f:
+            # 使用 utf-8-sig 自动处理 BOM，确保 Windows 兼容性
+            with open(output_path, 'r', encoding='utf-8-sig') as f:
                 existing_config = yaml.safe_load(f) or {}
             click.echo(f"ℹ️  检测到现有配置文件: {output_path}")
         except Exception:
@@ -165,9 +169,9 @@ def config(output: str):
         style=custom_style
     ))
     
-    new_env['MODEL_NAME'] = _ask_or_exit(questionary.text(
-        "模型名称 (MODEL_NAME) [选填,默认使用金山云星流平台deepseek-v3.2]:",
-        default=existing_env.get('MODEL_NAME', ''),
+    new_env['OPENAI_MODEL_NAME'] = _ask_or_exit(questionary.text(
+        "模型名称 (OPENAI_MODEL_NAME) [选填,默认使用金山云星流平台deepseek-v3.2]:",
+        default=existing_env.get('OPENAI_MODEL_NAME', ''),
         style=custom_style
     ))
     
@@ -265,7 +269,8 @@ def config(output: str):
         final_config['version'] = "1.0.0"
 
     # 5.2 写入 agentengine.yaml
-    with open(output_path, 'w') as f:
+    # 使用 utf-8-sig 编码 (带 BOM)，确保 Windows 程序正确识别为 UTF-8
+    with open(output_path, 'w', encoding='utf-8-sig') as f:
         # 简单的字典转 YAML 可能丢失注释，但这是预期行为
         # 为了更好的体验，我们手动排版几个关键字段，其他用 dump
         
@@ -295,3 +300,31 @@ def config(output: str):
     click.secho(f"✅ 配置完成!", fg='green')
     click.echo(f"   配置文件: {output_path}")
     click.echo(f"   环境凭证: {env_path}")
+    
+    # 5.4 询问是否保存到全局配置
+    click.echo("")
+    from ksadk.configs.global_config import (
+        save_global_config,
+        build_global_config_from_env,
+        get_global_config_path,
+        global_config_exists,
+    )
+    
+    # 如果已有全局配置，提示会覆盖
+    if global_config_exists():
+        prompt_text = "是否更新全局配置 (~/.agentengine/settings.json)?"
+    else:
+        prompt_text = "是否保存到全局配置 (后续新项目可自动复用)?"
+    
+    should_save_global = _ask_or_exit(questionary.confirm(
+        prompt_text,
+        default=True,
+        style=custom_style
+    ))
+    
+    if should_save_global:
+        global_config = build_global_config_from_env(new_env)
+        if save_global_config(global_config):
+            click.secho(f"   ✅ 已保存到全局配置: {get_global_config_path()}", fg='green')
+        else:
+            click.secho(f"   ⚠️  保存全局配置失败", fg='yellow')
