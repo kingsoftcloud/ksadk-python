@@ -81,7 +81,8 @@ def _get_agent_from_config() -> Optional[str]:
         config_path = Path(".") / "ksadk.yaml"
 
     if config_path.exists():
-        with open(config_path) as f:
+        # 使用 utf-8-sig 自动处理 BOM，确保 Windows 兼容性
+        with open(config_path, encoding='utf-8-sig') as f:
             config = yaml.safe_load(f)
             return config.get("name")
     return None

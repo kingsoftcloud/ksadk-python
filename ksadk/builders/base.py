@@ -48,7 +48,8 @@ class BaseBuilder(ABC):
             config_path = self.project_dir / 'ksadk.yaml'
         
         if config_path.exists():
-            with open(config_path) as f:
+            # 使用 utf-8-sig 自动处理 BOM，确保 Windows 兼容性
+            with open(config_path, encoding='utf-8-sig') as f:
                 return yaml.safe_load(f) or {}
         
         return {}
@@ -59,6 +60,7 @@ class BaseBuilder(ABC):
         if env_file.exists():
             try:
                 from dotenv import load_dotenv
-                load_dotenv(env_file, override=True)
+                # 使用 utf-8-sig 自动处理 BOM，确保 Windows 兼容性
+                load_dotenv(env_file, override=True, encoding='utf-8-sig')
             except ImportError:
                 pass

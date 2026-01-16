@@ -195,6 +195,9 @@ check-build-deps:
 build: check-build-deps webui
 	@echo "📦 构建 Python 包 v$(VERSION)..."
 	python -m build
+	@# 删除 tar.gz 和临时目录，只保留 whl
+	@rm -f dist/*.tar.gz
+	@rm -rf build/ *.egg-info/
 	@echo "✅ 构建完成: dist/"
 	@ls -la dist/
 

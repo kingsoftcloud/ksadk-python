@@ -254,7 +254,40 @@ def main():
         # 使用 find_dotenv(usecwd=True) 确保从当前工作目录开始查找 .env 文件
         dotenv_path = find_dotenv(usecwd=True)
         if dotenv_path:
-            load_dotenv(dotenv_path, override=False)
+            # 编码尝试顺序: utf-8-sig (带BOM) -> utf-8 -> 系统默认编码
+            encodings_to_try = ["utf-8-sig", "utf-8"]
+            loaded = False
+            
+            for enc in encodings_to_try:
+                try:
+                    load_dotenv(dotenv_path, override=False, encoding=enc)
+                    loaded = True
+                    break
+                except UnicodeDecodeError:
+                    continue
+            
+            if not loaded:
+                # 回退到系统默认编码 (Windows 上通常是 GBK/cp936)
+                import locale
+                fallback_encoding = locale.getpreferredencoding(False)
+                try:
+                    load_dotenv(dotenv_path, override=False, encoding=fallback_encoding)
+                    click.echo(
+                        click.style(
+                            f"⚠️  警告: .env 文件使用 {fallback_encoding} 编码，建议转换为 UTF-8\n",
+                            fg="yellow"
+                        ),
+                        err=True
+                    )
+                except UnicodeDecodeError:
+                    click.echo(
+                        click.style(
+                            f"❌ 错误: .env 文件编码无法识别，请确保使用 UTF-8 编码保存\n"
+                            f"   文件路径: {dotenv_path}\n",
+                            fg="red"
+                        ),
+                        err=True
+                    )
         else:
             # 回退：直接尝试加载当前目录的 .env
             load_dotenv(override=False)

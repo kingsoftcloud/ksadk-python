@@ -20,6 +20,8 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
@@ -29,10 +31,11 @@ dependencies = [
     # 配置
     "pyyaml>=6.0.0",
     "python-dotenv>=1.0.0",
-    "pydantic>=2.0.0",
+    "pydantic>=2.0.0,<3.0.0",
     "questionary>=2.0.0",
     # API 服务 (run/web 命令)
-    "fastapi>=0.100.0",
+    # fastapi 限制上限以兼容 google-adk (需要 <0.124.0)
+    "fastapi>=0.100.0,<0.124.0",
     "uvicorn>=0.23.0",
     "httpx>=0.24.0",
     # HTTP 请求 + AWS 签名
@@ -42,6 +45,13 @@ dependencies = [
     "ks3sdk>=1.15.0",
     # 终端美化 (Markdown 渲染)
     "rich>=10.0.0",
+    # ========= 核心框架依赖 (默认安装) =========
+    # LangChain
+    "langchain>=0.3.0,<2.0.0",
+    "langchain-openai>=0.2.0,<2.0.0",
+    "langchain-core>=0.3.0,<2.0.0",
+    # LangGraph - 使用兼容的版本范围
+    "langgraph>=0.2.0,<2.0.0",
 ]
 
 [project.optional-dependencies]
