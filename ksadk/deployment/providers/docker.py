@@ -86,6 +86,7 @@ class DockerProvider(BaseDeployProvider):
             name=detection_result.name or project_path.name,
             framework=detection_result.type.value,
             build_dir=str(output_dir),
+            project_dir=str(project_path),  # 保存原始项目目录
             dockerfile=str(dockerfile_path),
             entry_point=detection_result.entry_point,
             metadata={

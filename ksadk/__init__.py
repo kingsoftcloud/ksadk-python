@@ -4,7 +4,7 @@ KsADK: Kingsoft Cloud Agent Development Kit
 支持 LangChain / LangGraph / Google ADK 多框架的本地运行与云端部署
 """
 
-__version__ = "0.2.0"
+__version__ = "0.1.1"
 __author__ = "KsADK Team"
 
 from ksadk.version import VERSION

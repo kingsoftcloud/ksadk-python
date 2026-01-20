@@ -2,13 +2,32 @@
 
 **[AgentEngine](https://www.ksyun.com/)** 是专为 **AI Agent 开发与部署** 设计的标准化工具链。它提供了一套统一的开发接口和命令行工具，支持多种主流 Agent 框架（**LangGraph**, **LangChain**, **Google ADK**），并能将 Agent 一键部署到金山云 Serverless 计算引擎。
 
+> **v0.1.1 更新说明**: ksADK v0.1.1 架构全面升级，默认接入 **AgentEngine Server** (控制面)，由 Server 统一负责鉴权、路由分发及底层 Serverless 资源的调度。
+
 ## 🌟 核心特性
 
 *   **多框架支持**: 原生支持 LangChain、LangGraph 和 Google ADK，自动识别并适配。
-*   **统一开发体验**: 无论使用何种框架，提供统一的项目结构、运行命令和 API 接口。
+*   **统一管控**: 接入 AgentEngine Server，实现统一的 API Key 管理、限流保护及动态路由。
 *   **Serverless 云原生**: 深度集成金山云 AgentEngine，支持秒级冷启动、自动扩缩容。
 *   **双模式部署**: 支持 **Code 模式** (轻量级 zip 包) 和 **Container 模式** (自定义 Docker 镜像)。
-*   **全链路可观测**: 内置 [Langfuse](https://langfuse.com/) 集成，一键开启 Trace、Metrics 和 Logs。
+*   **全链路可观测**: 内置 Langfuse 集成，一键开启 Trace、Metrics 和 Logs。
+
+---
+
+## 🏗️ 架构演进 (v0.1.0 vs v0.1.1)
+
+### v0.1.0 (Legacy)
+Client (CLI) 直接对接 Serverless 底层 API，架构简单但缺乏统一管控能力。
+```
+[CLI] --> [Serverless API] --> [Agent Instance]
+```
+
+### v0.1.1 (Current)
+Client (CLI) 对接 **AgentEngine Server** (控制面)，实现了标准化的管理与接入。
+```
+[CLI] --> [AgentEngine Server] --> [Serverless API] --> [Agent Instance]
+             (Auth/Route/Limit)
+```
 
 ---
 
@@ -196,8 +215,6 @@ scaling:
 
 # 部署配置
 deploy:
-  k8s:
-    namespace: default
   serverless:
     region: cn-beijing-6
 ```
@@ -221,7 +238,7 @@ AgentEngine 会自动加载 `.env` 文件。常用变量如下：
 
 ---
 
-## 🏗️ 架构说明
+## 🏗️ 架构说明 (KSADK Architecture)
 
 AgentEngine CLI 通过适配器模式支持多框架：
 

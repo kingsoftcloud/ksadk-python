@@ -42,23 +42,38 @@ def invoke(
         agentengine invoke --endpoint http://...    # 指定地址
         agentengine invoke -k --endpoint https://... # 跳过 SSL 验证
     """
+    # 加载本地状态
+    state = _load_state()
+    
     # 确定 Endpoint
     if local:
         endpoint = "http://localhost:8080"
     elif not endpoint:
-        if not agent:
-            # 尝试从配置文件读取
-            agent = _get_agent_from_config()
-
-        if not agent:
+        # 如果没指明 endpoint，优先从命令行参数 agent 找，然后从 state 找，最后从 config 找
+        target_agent = agent or state.get("agent_id") or state.get("name") or _get_agent_from_config()
+        
+        if not target_agent:
             click.secho("❌ 请指定 --local, --agent 或 --endpoint 参数", fg="red")
             raise SystemExit(1)
 
-        # 从 agent name 构造 endpoint (或调用 GetAgentRuntime API)
-        endpoint = _get_endpoint(agent, region)
+        # 优先使用 state 里的 endpoint (如果是对应的 agent)
+        if not agent or agent == state.get("agent_id") or agent == state.get("name"):
+            endpoint = state.get("endpoint")
+            
+        if not endpoint:
+            # 自动获取
+            endpoint = _get_endpoint(target_agent, region)
+
+    # API Key
+    api_key = state.get("api_key")
 
     click.secho(f"🤖 连接到 Agent", fg="blue", bold=True)
     click.echo(f"   Endpoint: {endpoint}")
+    if api_key:
+        click.echo(f"   Auth:     Bearer {api_key[:4]}****")
+    else:
+        click.secho("   ⚠️  未发现 API Key，尝试匿名调用", fg="yellow")
+    
     if insecure:
         click.secho("   ⚠️  SSL 证书验证已禁用", fg="yellow")
 
@@ -66,10 +81,10 @@ def invoke(
 
     if message:
         # 单次调用模式
-        asyncio.run(_invoke_once(endpoint, message, session, stream, insecure, model))
+        asyncio.run(_invoke_once(endpoint, message, api_key, session, stream, insecure, model))
     else:
         # 交互模式
-        asyncio.run(_invoke_interactive(endpoint, session, stream, insecure, model))
+        asyncio.run(_invoke_interactive(endpoint, api_key, session, stream, insecure, model))
 
 
 def _get_agent_from_config() -> Optional[str]:
@@ -88,21 +103,52 @@ def _get_agent_from_config() -> Optional[str]:
     return None
 
 
-def _get_endpoint(agent: str, region: str) -> str:
-    """获取 Agent Endpoint
+def _load_state() -> dict:
+    """从 .agentengine.state 加载状态"""
+    import yaml
+    state_file = Path(".") / ".agentengine.state"
+    if state_file.exists():
+        try:
+            with open(state_file, 'r', encoding='utf-8') as f:
+                return yaml.safe_load(f) or {}
+        except Exception:
+            pass
+    return {}
 
-    TODO: 调用 GetAgentRuntime API 获取真实 endpoint
-    目前使用约定格式
-    """
-    # 约定格式: https://{agent-id}.agent.kspmas.ksyun.com
-    return f"https://{agent}.agent.kspmas.ksyun.com"
+
+def _get_api_key() -> Optional[str]:
+    """兼容旧代码"""
+    return _load_state().get("api_key")
+
+
+def _get_endpoint(agent: str, region: str) -> str:
+    """获取 Agent Endpoint"""
+    from ksadk.api import AgentEngineClient
+    import asyncio
+
+    async def _get():
+        async with AgentEngineClient(region=region) as client:
+            res = await client.get_agent(agent)
+            return res.get("endpoint", "")
+
+    try:
+        endpoint = asyncio.run(_get())
+        if not endpoint:
+             click.secho(f"⚠️  Agent '{agent}' 未返回 Endpoint，尝试使用默认格式", fg="yellow")
+             return f"https://{agent}.agent.kspmas.ksyun.com"
+        return endpoint
+    except Exception as e:
+        # 如果是本地开发环境或者连接失败，降级处理
+        click.secho(f"⚠️  获取 Endpoint 失败: {e}，尝试使用默认格式", fg="yellow")
+        return f"https://{agent}.agent.kspmas.ksyun.com"
 
 
 async def _invoke_once(
     endpoint: str,
     message: str,
-    session_id: str,
-    stream: bool,
+    api_key: str = None,
+    session_id: str = None,
+    stream: bool = True,
     insecure: bool = False,
     model: str = None,
 ):
@@ -112,13 +158,13 @@ async def _invoke_once(
 
     try:
         if stream:
-            async for chunk in _stream_chat(endpoint, message, session_id, insecure, model):
+            async for chunk in _stream_chat(endpoint, message, api_key, session_id, True, insecure, model):
                 content = _extract_content(chunk)
                 if content:
                     click.echo(content, nl=False)
             click.echo()  # 换行
         else:
-            response = await _chat(endpoint, message, session_id, insecure, model)
+            response = await _chat(endpoint, message, api_key, session_id, insecure, model)
             content = _extract_response_content(response)
             click.echo(content)
     except Exception as e:
@@ -126,7 +172,7 @@ async def _invoke_once(
 
 
 async def _invoke_interactive(
-    endpoint: str, session_id: str, stream: bool, insecure: bool = False, model: str = None
+    endpoint: str, api_key: str = None, session_id: str = None, stream: bool = True, insecure: bool = False, model: str = None
 ):
     """交互模式"""
     click.echo("\n输入 'exit' 或 'quit' 退出\n")
@@ -158,13 +204,13 @@ async def _invoke_interactive(
             click.echo(f"🤖 Agent: ", nl=False)
 
             if stream:
-                async for chunk in _stream_chat(endpoint, user_input, session_id, insecure, model):
+                async for chunk in _stream_chat(endpoint, user_input, api_key, session_id, False, insecure, model):
                     content = _extract_content(chunk)
                     if content:
                         click.echo(content, nl=False)
                 click.echo()  # 换行
             else:
-                response = await _chat(endpoint, user_input, session_id, insecure, model)
+                response = await _chat(endpoint, user_input, api_key, session_id, insecure, model)
                 content = _extract_response_content(response)
                 click.echo(content)
 
@@ -192,6 +238,7 @@ async def _invoke_interactive(
 async def _chat(
     endpoint: str,
     message: str,
+    api_key: str = None,
     session_id: str = None,
     insecure: bool = False,
     model: str = None,
@@ -225,8 +272,13 @@ async def _chat(
     if insecure:
         client_kwargs["verify"] = False
 
+    # 构造 Headers
+    headers = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
     async with httpx.AsyncClient(**client_kwargs) as client:
-        response = await client.post(url, json=payload)
+        response = await client.post(url, json=payload, headers=headers)
         response.raise_for_status()
         return response.json()
 
@@ -234,7 +286,9 @@ async def _chat(
 async def _stream_chat(
     endpoint: str,
     message: str,
+    api_key: str = None,
     session_id: str = None,
+    is_once: bool = False,
     insecure: bool = False,
     model: str = None,
 ):
@@ -267,8 +321,13 @@ async def _stream_chat(
     if insecure:
         client_kwargs["verify"] = False
 
+    # 构造 Headers
+    headers = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
     async with httpx.AsyncClient(**client_kwargs) as client:
-        async with client.stream("POST", url, json=payload) as response:
+        async with client.stream("POST", url, json=payload, headers=headers) as response:
             response.raise_for_status()
             try:
                 # Use aiter_lines() for robust UTF-8 decoding and line splitting
@@ -283,20 +342,8 @@ async def _stream_chat(
 
                         try:
                             data = json.loads(data_str)
-
-                            # Handle text content
-                            if "delta" in data:
-                                content = data["delta"]
-                                # The original _stream_chat yields chunks,
-                                # and _invoke_once/_invoke_interactive extract and print.
-                                # This new logic seems to print directly, which is a change in behavior.
-                                # To maintain the original behavior of yielding chunks for _extract_content,
-                                # we should yield the parsed data.
-                                yield data
-                            elif "output" in data:  # Final output
-                                # If we haven't printed anything yet, print the full output
-                                # Otherwise, we assume it's redundant
-                                yield data  # Yield final output as well
+                            # 直接 yield 解析后的 JSON 数据，让 _extract_content 处理
+                            yield data
 
                             # Handle events/errors
                             if "error" in data:
