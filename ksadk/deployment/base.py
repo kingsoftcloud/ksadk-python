@@ -20,6 +20,7 @@ class DeployStatus(str, Enum):
     STOPPING = "stopping"
     STOPPED = "stopped"
     FAILED = "failed"
+    SKIPPED = "skipped"
     UNKNOWN = "unknown"
 
 
@@ -78,6 +79,7 @@ class PackageInfo(BaseModel):
     name: str
     framework: str
     build_dir: str
+    project_dir: str = ""  # 原始项目目录 (用于读取/写入本地状态)
     dockerfile: Optional[str] = None
     image: Optional[str] = None
     entry_point: str = "agent.py"

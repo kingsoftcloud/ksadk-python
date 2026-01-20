@@ -135,6 +135,7 @@ class ColoredHelpGroup(click.Group):
             "init": "创建新项目",
             "invoke": "交互测试",
             "launch": "一键构建+部署",
+            "mcp": "MCP Server 管理",
             "model": "切换默认模型",
             "run": "运行 Agent",
             "status": "查看状态",
@@ -245,6 +246,14 @@ def _register_commands():
     except ImportError:
         pass
 
+    # MCP 命令组
+    try:
+        from ksadk.cli.cmd_mcp import mcp
+
+        cli.add_command(mcp)
+    except ImportError:
+        pass
+
 
 def main():
     # 全局加载 .env 文件
@@ -252,7 +261,13 @@ def main():
         from dotenv import load_dotenv, find_dotenv
 
         # 使用 find_dotenv(usecwd=True) 确保从当前工作目录开始查找 .env 文件
-        dotenv_path = find_dotenv(usecwd=True)
+        # 如果当前目录不存在（已被删除），跳过 .env 加载
+        try:
+            dotenv_path = find_dotenv(usecwd=True)
+        except (FileNotFoundError, OSError):
+            # 当前工作目录不存在，跳过 .env 加载
+            dotenv_path = None
+            
         if dotenv_path:
             # 编码尝试顺序: utf-8-sig (带BOM) -> utf-8 -> 系统默认编码
             encodings_to_try = ["utf-8-sig", "utf-8"]
@@ -288,9 +303,6 @@ def main():
                         ),
                         err=True
                     )
-        else:
-            # 回退：直接尝试加载当前目录的 .env
-            load_dotenv(override=False)
     except ImportError:
         pass
 

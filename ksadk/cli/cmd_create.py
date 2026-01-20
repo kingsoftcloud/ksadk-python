@@ -187,7 +187,8 @@ def create(project_name: str, framework: str):
     
     # .env - 生成配置文件
     # 如果有全局配置，使用全局配置的值；否则使用占位符
-    api_key = global_env.get("OPENAI_API_KEY", "your-api-key-here")
+    # 如果有全局配置，使用全局配置的值；否则使用空字符串
+    api_key = global_env.get("OPENAI_API_KEY", "")
     base_url = global_env.get("OPENAI_BASE_URL", "")
     model_name = global_env.get("OPENAI_MODEL_NAME", "")
     

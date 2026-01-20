@@ -157,9 +157,14 @@ def config(output: str):
     click.secho("🤖 模型配置", fg='yellow', bold=True)
     click.echo("配置用于推理的大模型服务 (OpenAI 兼容接口)")
     
+    # 向后兼容: 如果是从旧版模板生成的，可能包含 'your-api-key-here' 占位符，视为空
+    default_api_key = existing_env.get('OPENAI_API_KEY', '')
+    if default_api_key == "your-api-key-here":
+        default_api_key = ""
+
     new_env['OPENAI_API_KEY'] = _ask_or_exit(questionary.password(
         "API Key (OPENAI_API_KEY):",
-        default=existing_env.get('OPENAI_API_KEY', ''),
+        default=default_api_key,
         style=custom_style
     ))
     

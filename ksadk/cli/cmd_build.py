@@ -114,6 +114,9 @@ async def _build_code(agent_path: Path, push: bool, region: str, ks3_bucket: str
 
         if ks3_path:
             click.secho(f"   ✅ 上传成功: {ks3_path}", fg="green")
+            # 更新 metadata 以便持久化
+            result.metadata["ks3_path"] = ks3_path
+            
             ks3_public_url = uploader.get_public_url(agent_name)
             ks3_internal_url = uploader.get_internal_url(agent_name)
             click.echo(f"   📎 公网地址: {ks3_public_url}")
@@ -126,6 +129,25 @@ async def _build_code(agent_path: Path, push: bool, region: str, ks3_bucket: str
             click.secho("   ⚠️  上传失败，请检查 KS3 配置", fg="yellow")
     else:
         click.echo("\n⏭️  跳过上传 (使用 --push 上传)")
+
+    # 持久化构建元数据 (供 deploy 命令使用)
+    # 持久化构建元数据 (供 deploy 命令使用)
+    metadata_file = agent_path / ".agentengine" / "build-metadata.json"
+    try:
+        import json
+        from dataclasses import asdict
+        
+        # 自定义序列化: 处理 Path 对象
+        def default_serializer(obj):
+            if isinstance(obj, Path):
+                return str(obj)
+            raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
+
+        data = asdict(result)
+        with open(metadata_file, "w") as f:
+            json.dump(data, f, indent=2, default=default_serializer)
+    except Exception as e:
+        click.secho(f"⚠️  无法保存构建元数据: {e}", fg="yellow")
 
     # 摘要
     _print_summary("Code", result, push)
