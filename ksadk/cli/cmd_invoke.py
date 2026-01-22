@@ -10,11 +10,34 @@ import json
 import sys
 from pathlib import Path
 from typing import Optional
+import time
+
+try:
+    import questionary
+except ImportError:
+    questionary = None
+
+try:
+    from rich.console import Console
+    from rich.markdown import Markdown
+    from rich.live import Live
+    from rich.theme import Theme
+
+    from rich.live import Live
+    from rich.theme import Theme
+    console = Console()
+except ImportError:
+    console = None
+    Markdown = None
+    Live = None
+    Theme = None
+    Theme = None
 
 
 @click.command()
 @click.option("--agent", "-a", help="Agent 名称或 ID")
 @click.option("--endpoint", "-e", help="Agent Endpoint URL (覆盖自动获取)")
+@click.option("--api-key", help="AgentEngine API Key (覆盖本地配置)")
 @click.option("--message", "-m", help="发送的消息 (非交互模式)")
 @click.option("--session", "-s", help="Session ID (可选)")
 @click.option("--no-stream", is_flag=True, help="禁用流式输出")
@@ -25,6 +48,7 @@ from typing import Optional
 def invoke(
     agent: str,
     endpoint: str,
+    api_key: str,
     message: str,
     session: str,
     no_stream: bool,
@@ -65,7 +89,7 @@ def invoke(
             endpoint = _get_endpoint(target_agent, region)
 
     # API Key
-    api_key = state.get("api_key")
+    api_key = api_key or state.get("api_key")
 
     click.secho(f"🤖 连接到 Agent", fg="blue", bold=True)
     click.echo(f"   Endpoint: {endpoint}")
@@ -84,7 +108,7 @@ def invoke(
         asyncio.run(_invoke_once(endpoint, message, api_key, session, stream, insecure, model))
     else:
         # 交互模式
-        asyncio.run(_invoke_interactive(endpoint, api_key, session, stream, insecure, model))
+        _invoke_interactive(endpoint, api_key, session, stream, insecure, model)
 
 
 def _get_agent_from_config() -> Optional[str]:
@@ -158,20 +182,42 @@ async def _invoke_once(
 
     try:
         if stream:
-            async for chunk in _stream_chat(endpoint, message, api_key, session_id, True, insecure, model):
-                content = _extract_content(chunk)
-                if content:
-                    click.echo(content, nl=False)
+            full_response = ""
+            if Live and Markdown:
+                # 降低刷新率减少闪烁，vertical_overflow="visible"防止回滚丢失
+                # 手动控制刷新以减少闪烁
+                with Live(Markdown("", justify="left"), console=console, auto_refresh=False, vertical_overflow="visible") as live:
+                    last_refresh_time = 0
+                    async for chunk in _stream_chat(endpoint, message, api_key, session_id, True, insecure, model):
+                        content = _extract_content(chunk)
+                        if content:
+                            full_response += content
+                            live.update(Markdown(full_response, justify="left"))
+                            
+                            # 基于时间限流刷新 (每0.2秒一次 = 5 FPS)
+                            now = time.time()
+                            if now - last_refresh_time > 0.2:
+                                live.refresh()
+                                last_refresh_time = now
+                    live.refresh() # 确保最后一次刷新
+            else:
+               async for chunk in _stream_chat(endpoint, message, api_key, session_id, True, insecure, model):
+                    content = _extract_content(chunk)
+                    if content:
+                        print(content, end="", flush=True)
             click.echo()  # 换行
         else:
             response = await _chat(endpoint, message, api_key, session_id, insecure, model)
             content = _extract_response_content(response)
-            click.echo(content)
+            if console and Markdown:
+                console.print(Markdown(content))
+            else:
+                click.echo(content)
     except Exception as e:
         click.secho(f"\n❌ 调用失败: {e}", fg="red")
 
 
-async def _invoke_interactive(
+def _invoke_interactive(
     endpoint: str, api_key: str = None, session_id: str = None, stream: bool = True, insecure: bool = False, model: str = None
 ):
     """交互模式"""
@@ -185,14 +231,18 @@ async def _invoke_interactive(
 
     while True:
         try:
-            # 使用 sys.stdin 读取并处理可能的编码问题
-            try:
-                user_input = input("👤 你: ").strip()
-            except UnicodeDecodeError:
-                # 某些终端在中文输入时可能出现编码问题
-                # 尝试使用 sys.stdin.buffer 读取原始字节并解码
-                click.secho("\n⚠️  输入编码异常，请重试", fg="yellow")
-                continue
+            if questionary:
+                user_input = questionary.text("👤 你: ").ask()
+                if user_input is None:  # Ctrl+C
+                    click.echo("\n👋 再见!")
+                    break
+            else:
+                # Fallback implementation
+                try:
+                    user_input = input("👤 你: ").strip()
+                except UnicodeDecodeError:
+                     click.secho("\n⚠️  输入编码异常，请重试", fg="yellow")
+                     continue
 
             if not user_input:
                 continue
@@ -204,15 +254,39 @@ async def _invoke_interactive(
             click.echo(f"🤖 Agent: ", nl=False)
 
             if stream:
-                async for chunk in _stream_chat(endpoint, user_input, api_key, session_id, False, insecure, model):
-                    content = _extract_content(chunk)
-                    if content:
-                        click.echo(content, nl=False)
+                async def run_stream():
+                    full_response = ""
+                    if Live and Markdown:
+                        # 手动控制刷新以减少闪烁
+                        with Live(Markdown("", justify="left"), console=console, auto_refresh=False, vertical_overflow="visible") as live:
+                            last_refresh_time = 0
+                            async for chunk in _stream_chat(endpoint, user_input, api_key, session_id, False, insecure, model):
+                                content = _extract_content(chunk)
+                                if content:
+                                    full_response += content
+                                    live.update(Markdown(full_response, justify="left"))
+                                    
+                                    # 基于时间限流刷新 (每0.2秒一次 = 5 FPS)
+                                    now = time.time()
+                                    if now - last_refresh_time > 0.2:
+                                        live.refresh()
+                                        last_refresh_time = now
+                            live.refresh()
+                    else:
+                        async for chunk in _stream_chat(endpoint, user_input, api_key, session_id, False, insecure, model):
+                            content = _extract_content(chunk)
+                            if content:
+                                print(content, end="", flush=True)
+                
+                asyncio.run(run_stream())
                 click.echo()  # 换行
             else:
-                response = await _chat(endpoint, user_input, api_key, session_id, insecure, model)
+                response = asyncio.run(_chat(endpoint, user_input, api_key, session_id, insecure, model))
                 content = _extract_response_content(response)
-                click.echo(content)
+                if console and Markdown:
+                    console.print(Markdown(content))
+                else:
+                    click.echo(content)
 
             print()  # 空行
 

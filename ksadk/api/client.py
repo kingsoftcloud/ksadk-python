@@ -46,9 +46,17 @@ class AgentEngineClient:
     ):
         self.base_url = (
             base_url 
-            or os.getenv("AGENTENGINE_SERVER_URL") 
-            or "http://localhost:8081"
+            or os.getenv("AGENTENGINE_SERVER_URL")
         )
+        if not self.base_url:
+            if region == "pre-online":
+                self.base_url = "http://agent-api-pre.kspmas-internal.ksyun.com"
+            else:
+                # 默认为线上环境
+                self.base_url = "http://agent-api.kspmas-internal.ksyun.com"
+        
+        # 本地调试覆盖 (如果需要)
+        # self.base_url = "http://localhost:8081"
         self.timeout = timeout
         self.region = region
         self.dry_run = dry_run

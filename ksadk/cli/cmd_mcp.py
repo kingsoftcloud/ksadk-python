@@ -190,7 +190,7 @@ async def _deploy_mcp_async(
         }
     
     try:
-        async with AgentEngineClient() as client:
+        async with AgentEngineClient(region=region) as client:
             if existing_mcp_id:
                 # 更新
                 click.echo(f"   检测到本地状态: {existing_mcp_id}")
@@ -246,7 +246,8 @@ async def _deploy_mcp_async(
 
 
 @mcp.command("list")
-def list_mcps():
+@click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
+def list_mcps(region: str):
     """列出已部署的 MCP"""
     from ksadk.api import AgentEngineClient
     import asyncio
@@ -258,7 +259,7 @@ def list_mcps():
             return
             
         try:
-            async with AgentEngineClient() as client:
+            async with AgentEngineClient(region=region) as client:
                 resp = await client.list_mcps()
                 
                 mcps = resp.get("mcps", [])
@@ -287,7 +288,8 @@ def list_mcps():
 
 @mcp.command("status")
 @click.argument("mcp_id")
-def status(mcp_id: str):
+@click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
+def status(mcp_id: str, region: str):
     """查看 MCP 状态
     
     MCP_ID: MCP 的 ID
@@ -303,7 +305,7 @@ def status(mcp_id: str):
             return
             
         try:
-            async with AgentEngineClient() as client:
+            async with AgentEngineClient(region=region) as client:
                 mcp = await client.get_mcp(mcp_id)
                 
                 click.echo(f"\n📊 MCP 状态: {click.style(mcp['name'], bold=True)}")
@@ -328,7 +330,8 @@ def status(mcp_id: str):
 @mcp.command("delete")
 @click.argument("mcp_id")
 @click.confirmation_option(prompt="确定要删除这个 MCP 吗?")
-def delete(mcp_id: str):
+@click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
+def delete(mcp_id: str, region: str):
     """删除 MCP
     
     MCP_ID: 要删除的 MCP ID
@@ -343,7 +346,7 @@ def delete(mcp_id: str):
             return
             
         try:
-            async with AgentEngineClient() as client:
+            async with AgentEngineClient(region=region) as client:
                 success = await client.delete_mcp(mcp_id)
                 if success:
                     click.secho(f"\n✅ MCP 已删除: {mcp_id}", fg='green')

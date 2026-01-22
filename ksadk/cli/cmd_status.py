@@ -283,7 +283,7 @@ async def _get_agent_runtime(agent: str, region: str, account_id: str, dry_run: 
             extra_headers["X-Ksyun-Access-Key"] = auth.access_key_id
             extra_headers["X-Ksyun-Secret-Key"] = auth.secret_access_key
 
-        async with AgentEngineClient(dry_run=dry_run, extra_headers=extra_headers) as client:
+        async with AgentEngineClient(region=region, dry_run=dry_run, extra_headers=extra_headers) as client:
             response = await client.get_agent(agent)
 
             return {
@@ -327,7 +327,7 @@ async def _list_agent_runtimes(region: str, account_id: str, dry_run: bool = Fal
             extra_headers["X-Ksyun-Access-Key"] = auth.access_key_id
             extra_headers["X-Ksyun-Secret-Key"] = auth.secret_access_key
 
-        async with AgentEngineClient(dry_run=dry_run, extra_headers=extra_headers) as client:
+        async with AgentEngineClient(region=region, dry_run=dry_run, extra_headers=extra_headers) as client:
             response = await client.list_agents(region=region)
 
             results = []

@@ -56,8 +56,8 @@ class ServerlessProvider(DockerProvider):
         if not server_url:
             # 默认回退到 localhost (与 AgentEngineClient 保持一致)
             # 但为了提示用户，我们可以打印一个警告，而不是报错
-            click.echo("⚠️  未配置 AGENTENGINE_SERVER_URL，将使用默认值: http://localhost:8081")
-            os.environ["AGENTENGINE_SERVER_URL"] = "http://localhost:8081"
+            click.echo("⚠️  未配置 AGENTENGINE_SERVER_URL，将尝试使用默认 Region 配置")
+            # os.environ["AGENTENGINE_SERVER_URL"] = "http://localhost:8081" # FIX: 此行会覆盖 Client 的 Region 逻辑，导致无法连接云端
         
         # 兼容性检查: 如果用户还在尝试用 Container 模式但没配 Registry
         artifact_type = target.extra.get("artifact_type", "Code")
@@ -220,7 +220,7 @@ class ServerlessProvider(DockerProvider):
                 }
         
         try:
-            async with AgentEngineClient() as client:
+            async with AgentEngineClient(region=target.region) as client:
                 if existing_agent_id:
                     # 有本地状态 → 执行更新
                     click.echo(f"   检测到本地状态: {existing_agent_id}")
@@ -247,14 +247,16 @@ class ServerlessProvider(DockerProvider):
                     
                     res = await client.update_agent(existing_agent_id, update_data)
                     
-                    # 更新本地状态
-                    self._save_state(state_file, {
+                    # 更新本地状态 (保留旧字段如 api_key)
+                    new_state = local_state.copy()
+                    new_state.update({
                         "agent_id": existing_agent_id,
                         "name": res.get("name"),
                         "region": target.region,
                         "endpoint": res.get("endpoint"),
                         "updated_at": self._now_iso(),
                     })
+                    self._save_state(state_file, new_state)
                     
                     return DeployResult(
                         status=DeployStatus.DEPLOYING, 
@@ -304,7 +306,7 @@ class ServerlessProvider(DockerProvider):
                     # 所以我们需要修改 AgentEngineClient 的初始化。
                     
                     # 重新构造一个带 Header 的 client
-                    async with AgentEngineClient(extra_headers=extra_headers) as new_client:
+                    async with AgentEngineClient(region=target.region, extra_headers=extra_headers) as new_client:
                         res = await new_client.create_agent(request_data)
                     
                     new_agent_id = res.get("agent_id")
@@ -359,7 +361,7 @@ class ServerlessProvider(DockerProvider):
                 extra_headers["X-Ksyun-Access-Key"] = auth.access_key_id
                 extra_headers["X-Ksyun-Secret-Key"] = auth.secret_access_key
                 
-            async with AgentEngineClient(dry_run=dry_run, extra_headers=extra_headers) as client:
+            async with AgentEngineClient(region=target.region, dry_run=dry_run, extra_headers=extra_headers) as client:
                 res = await client.get_agent(agent_id)
                 
                 status_map = {
@@ -410,7 +412,7 @@ class ServerlessProvider(DockerProvider):
                 extra_headers["X-Ksyun-Access-Key"] = auth.access_key_id
                 extra_headers["X-Ksyun-Secret-Key"] = auth.secret_access_key
 
-            async with AgentEngineClient(dry_run=dry_run, extra_headers=extra_headers) as client:
+            async with AgentEngineClient(region=target.region, dry_run=dry_run, extra_headers=extra_headers) as client:
                 click.echo(f"正在通过 Server 删除 Agent: {agent_id}...")
                 success = await client.delete_agent(agent_id)
                 return success
@@ -432,7 +434,7 @@ class ServerlessProvider(DockerProvider):
                 extra_headers["X-Ksyun-Access-Key"] = auth.access_key_id
                 extra_headers["X-Ksyun-Secret-Key"] = auth.secret_access_key
                 
-            async with AgentEngineClient(dry_run=dry_run, extra_headers=extra_headers) as client:
+            async with AgentEngineClient(region=target.region, dry_run=dry_run, extra_headers=extra_headers) as client:
                 res = await client.list_agents()
                 
                 results = []
@@ -455,7 +457,7 @@ class ServerlessProvider(DockerProvider):
         """调用 Agent"""
         dry_run = target.extra.get("dry_run", False)
         try:
-            async with AgentEngineClient(dry_run=dry_run) as client:
+            async with AgentEngineClient(region=target.region, dry_run=dry_run) as client:
                 response = await client.chat(agent_id, message, stream=False)
                 return response.get("output", "")
         except DryRunExit:
