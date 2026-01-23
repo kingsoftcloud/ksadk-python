@@ -57,7 +57,8 @@ class DockerProvider(BaseDeployProvider):
         
         # 复制项目文件
         for item in project_path.iterdir():
-            if item.name.startswith('.') or item.name in ('__pycache__', '.git', 'node_modules'):
+            # 排除隐藏文件(但保留 .env*) 和特定忽略目录
+            if (item.name.startswith('.') and not item.name.startswith('.env')) or item.name in ('__pycache__', '.git', 'node_modules'):
                 continue
             dest = output_dir / item.name
             if item.is_dir():

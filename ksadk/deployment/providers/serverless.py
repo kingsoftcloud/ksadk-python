@@ -76,6 +76,8 @@ class ServerlessProvider(DockerProvider):
         # 尝试加载 build 命令保存的元数据 (如 ks3_path)
         try:
             metadata_file = Path(project_dir) / ".agentengine" / "build-metadata.json"
+            # click.echo(f"Debug: Looking for metadata at {metadata_file}")
+            
             if metadata_file.exists():
                 import json
                 with open(metadata_file, "r") as f:
@@ -84,14 +86,18 @@ class ServerlessProvider(DockerProvider):
                          # 合并 metadata
                          count = 0
                          for k, v in saved_data["metadata"].items():
-                             if k not in package_info.metadata or not package_info.metadata[k]:
+                             # 只要值有效就覆盖
+                             if v:
                                  package_info.metadata[k] = v
                                  count += 1
                          
                          if count > 0:
                             click.echo(f"   📦 已加载上次构建元数据: {count} 项 (含 KS3 路径)")
-        except Exception:
-            pass
+            else:
+                 pass
+                 # click.echo(f"Debug: Metadata file not found")
+        except Exception as e:
+            click.secho(f"⚠️  加载构建元数据失败: {e}", fg="yellow")
             
         return package_info
 
@@ -188,6 +194,14 @@ class ServerlessProvider(DockerProvider):
                             click.echo(f"   Converted artifact path: {artifact_path}")
                 except Exception as e:
                     logger.warning(f"Failed to convert ks3 path to internal URL: {e}")
+            
+            if not artifact_path:
+                raise ValueError(
+                    "❌ 未找到代码包路径 (ks3_path)。\n"
+                    "   在 Serverless 模式下，必须先上传代码包。\n"
+                    "   👉 请先执行: agentengine build --mode code --push\n"
+                    "   或者在 deploy 命令中使用 --ks3-path 指定路径。"
+                )
                     
         else:
             artifact_path = package_info.image
@@ -200,12 +214,40 @@ class ServerlessProvider(DockerProvider):
             if auth.access_key_id and auth.secret_access_key:
                 # 智能推断 Bucket 和 Region
                 bucket_name = target.extra.get("ks3_bucket")
-                if not bucket_name and artifact_path.startswith("ks3://"):
-                    try:
-                        # ks3://bucket/key -> bucket
-                        bucket_name = artifact_path.split("/")[2]
-                    except IndexError:
-                        pass
+                
+                # 如果没有提供，尝试从 artifact_path 解析
+                if not bucket_name:
+                    if artifact_path.startswith("ks3://"):
+                        try:
+                            # ks3://bucket/key -> bucket
+                            bucket_name = artifact_path.split("/")[2]
+                            logger.info(f"Extracted bucket from ks3:// path: {bucket_name}")
+                        except IndexError:
+                            pass
+                    elif artifact_path.startswith("http")  and "." in artifact_path:
+                        try:
+                            # http://bucket.endpoint/key -> bucket
+                            from urllib.parse import urlparse
+                            parsed = urlparse(artifact_path)
+                            bucket_name = parsed.netloc.split(".")[0]
+                            logger.info(f"Extracted bucket from HTTP URL: {bucket_name}")
+                        except Exception as e:
+                            logger.warning(f"Failed to extract bucket from URL: {e}")
+                
+                # 如果仍然没有，使用智能默认值（与 KS3Uploader 逻辑一致）
+                if not bucket_name:
+                    account_id = os.getenv("KSYUN_ACCOUNT_ID")
+                    upload_region = "cn-beijing-6" if target.region == "pre-online" else target.region
+                    
+                    if not account_id:
+                        raise ValueError(
+                            "❌ 缺少 KSYUN_ACCOUNT_ID 环境变量\n"
+                            "   Bucket 名称格式必须为: agentengine-{account_id}-{region}\n"
+                            "   请在 .env 文件中设置: KSYUN_ACCOUNT_ID=你的账号ID"
+                        )
+                    
+                    bucket_name = f"agentengine-{account_id}-{upload_region}"
+                    logger.info(f"Using default bucket: {bucket_name}")
                 
                 # Region 逻辑需与 Build 阶段保持一致 (pre-online -> cn-beijing-6)
                 ks3_region = target.extra.get("ks3_region")
@@ -218,56 +260,99 @@ class ServerlessProvider(DockerProvider):
                     "region": ks3_region,
                     "bucket": bucket_name,
                 }
+                logger.info(f"📦 KS3 Config: bucket={bucket_name}, region={ks3_region}")
         
         try:
-            async with AgentEngineClient(region=target.region) as client:
-                if existing_agent_id:
-                    # 有本地状态 → 执行更新
-                    click.echo(f"   检测到本地状态: {existing_agent_id}")
-                    click.echo(f"   执行热更新 (endpoint 保持不变)...")
-                    
-                    update_data = {
-                        "artifact_path": artifact_path,
-                        "resources": {
-                            "cpu": target.resources.cpu,
-                            "memory": target.resources.memory
-                        },
-                        "scaling": {
-                            "min_replicas": target.scaling.min_replicas,
-                            "max_replicas": target.scaling.max_replicas,
-                            "concurrency": target.scaling.concurrency
-                        },
-                        "observability": {
-                            "langfuse_enabled": target.extra.get("enable_observability", True)
-                        }
-                    }
-                    
-                    if ks3_config:
-                        update_data["ks3"] = ks3_config
-                    
-                    res = await client.update_agent(existing_agent_id, update_data)
-                    
-                    # 更新本地状态 (保留旧字段如 api_key)
-                    new_state = local_state.copy()
-                    new_state.update({
-                        "agent_id": existing_agent_id,
-                        "name": res.get("name"),
-                        "region": target.region,
-                        "endpoint": res.get("endpoint"),
-                        "updated_at": self._now_iso(),
-                    })
-                    self._save_state(state_file, new_state)
-                    
-                    return DeployResult(
-                        status=DeployStatus.DEPLOYING, 
-                        agent_id=existing_agent_id,
-                        agent_name=res.get("name"),
-                        endpoint=res.get("endpoint"),
-                        message=f"✅ Agent 已更新: {existing_agent_id}"
-                    )
+            # 获取 dry_run 标识
+            is_dry_run = target.extra.get("dry_run", False)
+
+            async with AgentEngineClient(region=target.region, dry_run=is_dry_run) as client:
+                agent_exists = False
                 
-                else:
-                    # 没有本地状态 → 创建新 Agent
+                if existing_agent_id:
+                    # 有本地状态 → 先检查服务器上是否存在
+                    click.echo(f"   检测到本地状态: {existing_agent_id}")
+                    
+                    try:
+                        # 尝试获取 agent，确认是否存在
+                        existing_agent = await client.get_agent(existing_agent_id)
+                        if existing_agent:
+                            agent_exists = True
+                    except Exception as e:
+                        # Agent 不存在或查询失败
+                        err_msg = str(e).lower()
+                        if "not found" in err_msg or "404" in err_msg or "不存在" in err_msg:
+                            click.secho(f"   ⚠️  服务器上未找到 Agent {existing_agent_id}，将创建新 Agent", fg="yellow")
+                            agent_exists = False
+                        # 如果是 DryRun 抛出的异常（表明请求本来会发出去但被拦截了），我们认为 Agent 可能存在也可能不存在
+                        # 但为了安全起见，在 DryRun 模式下我们假设它存在并走更新路径，或者简单地打印日志
+                        elif "Dry Run" in str(e):
+                             click.secho(f"   [Dry Run] 假设 Agent {existing_agent_id} 存在", fg="cyan")
+                             agent_exists = True
+                        else:
+                            # 其他错误，重新抛出
+                            raise
+                    
+                    if agent_exists:
+                        # Agent 存在 → 执行更新
+                        click.echo(f"   执行热更新 (endpoint 保持不变)...")
+                        
+                        update_data = {
+                            "artifact_path": artifact_path,
+                            "resources": {
+                                "cpu": target.resources.cpu,
+                                "memory": target.resources.memory
+                            },
+                            "scaling": {
+                                "min_replicas": target.scaling.min_replicas,
+                                "max_replicas": target.scaling.max_replicas,
+                                "concurrency": target.scaling.concurrency
+                            },
+                            "observability": {
+                                "langfuse_enabled": target.extra.get("enable_observability", True)
+                            }
+                        }
+                        
+                        if ks3_config:
+                            update_data["ks3"] = ks3_config
+
+                        # 加载本地 .env 并注入到环境变量 (更新时也同步)
+                        env_file = Path(project_dir) / ".env"
+                        if env_file.exists():
+                             from dotenv import dotenv_values
+                             env_vars = dotenv_values(env_file)
+                             if env_vars:
+                                 update_data["env_vars"] = env_vars
+                                 click.echo(f"   📦 更新环境变量: {len(env_vars)} 项 from .env")
+                        
+                        res = await client.update_agent(existing_agent_id, update_data)
+                        
+                        # 如果是 Dry Run，手动构造假响应以避免崩溃
+                        if is_dry_run and not res:
+                            res = {"name": package_info.name, "endpoint": "http://dry-run-endpoint"}
+                        
+                        # 更新本地状态 (保留旧字段如 api_key)
+                        new_state = local_state.copy()
+                        new_state.update({
+                            "agent_id": existing_agent_id,
+                            "name": res.get("name"),
+                            "region": target.region,
+                            "endpoint": res.get("endpoint"),
+                            "updated_at": self._now_iso(),
+                        })
+                        self._save_state(state_file, new_state)
+                        
+                        return DeployResult(
+                            status=DeployStatus.DEPLOYING, 
+                            agent_id=existing_agent_id,
+                            agent_name=res.get("name"),
+                            endpoint=res.get("endpoint"),
+                            message=f"✅ Agent 已更新: {existing_agent_id}"
+                        )
+                    # else: agent_exists = False，继续执行创建逻辑
+                
+                # 没有本地状态，或本地状态对应的 Agent 在服务器上不存在 → 创建新 Agent
+                if not existing_agent_id or not agent_exists:
                     click.echo(f"   创建新 Agent: {package_info.name}")
                     
                     request_data = {
@@ -293,21 +378,37 @@ class ServerlessProvider(DockerProvider):
                     if ks3_config:
                         request_data["ks3"] = ks3_config
 
+                    # 加载本地 .env 并注入到环境变量
+                    env_file = Path(project_dir) / ".env"
+                    env_vars = {}
+                    if env_file.exists():
+                        from dotenv import dotenv_values
+                        # 读取 .env 文件内容
+                        env_vars = dotenv_values(env_file)
+                        # 过滤掉注释或空值 (dotenv_values 已处理大部分)
+                        click.echo(f"   📦 加载环境变量: {len(env_vars)} 项 from .env")
+                    
+                    if env_vars:
+                         request_data["env_vars"] = env_vars
+
                     # 获取 Account ID (用于 Server 端的 user_id)
                     extra_headers = {}
                     ksyun_account_id = os.getenv("KSYUN_ACCOUNT_ID")
                     if ksyun_account_id:
                         extra_headers["X-Ksyun-Account-Id"] = ksyun_account_id
                     
-                    # 注意: 这里需要重新实例化 client 以带上 extra_headers，或者我们应该一开始就带上
-                    # 但上面的 client 已经被实例化了。
-                    # 为了不破坏上面的 client 上下文，我们直接调用 client._request 的时候需要 headers
-                    # AgentEngineClient.create_agent 并不接受 external headers.
-                    # 所以我们需要修改 AgentEngineClient 的初始化。
-                    
                     # 重新构造一个带 Header 的 client
-                    async with AgentEngineClient(region=target.region, extra_headers=extra_headers) as new_client:
+                    async with AgentEngineClient(region=target.region, extra_headers=extra_headers, dry_run=is_dry_run) as new_client:
                         res = await new_client.create_agent(request_data)
+                    
+                    # 如果是 Dry Run，手动构造假响应
+                    if is_dry_run and not res:
+                        res = {
+                            "agent_id": "dry-run-agent-id", 
+                            "name": package_info.name, 
+                            "endpoint": "http://dry-run-endpoint", 
+                            "api_key": "dry-run-key"
+                        }
                     
                     new_agent_id = res.get("agent_id")
                     

@@ -30,20 +30,20 @@ class KS3Uploader:
         self.region = region
         
         # 确定 bucket 名称 (优先级: 参数 > 环境变量 > 默认值)
-        # 确定 bucket 名称 (优先级: 参数 > 环境变量 > 默认值)
         if bucket:
             self.bucket_name = bucket
         elif os.getenv("KS3_BUCKET"):
             self.bucket_name = os.getenv("KS3_BUCKET")
         else:
-            # 尝试生成唯一的 bucket 名: agentengine-{account_id}-{region}
-            # 以避免多用户冲突
+            # Bucket 名称格式: agentengine-{account_id}-{region}
             account_id = os.getenv("KSYUN_ACCOUNT_ID")
-            if account_id:
-                self.bucket_name = f"agentengine-{account_id}-{region}"
-            else:
-                # 回退到旧的默认值，但可能会遇到 403 错误 (如果 bucket 被别人占用了)
-                self.bucket_name = f"agentengine-{region}"
+            if not account_id:
+                raise ValueError(
+                    "❌ 缺少 KSYUN_ACCOUNT_ID 环境变量\n"
+                    "   Bucket 名称格式必须为: agentengine-{account_id}-{region}\n"
+                    "   请在 .env 文件中设置: KSYUN_ACCOUNT_ID=你的账号ID"
+                )
+            self.bucket_name = f"agentengine-{account_id}-{region}"
         
         self.custom_domain = None  # 可选的自定义域名
 

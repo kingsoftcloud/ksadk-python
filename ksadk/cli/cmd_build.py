@@ -116,6 +116,7 @@ async def _build_code(agent_path: Path, push: bool, region: str, ks3_bucket: str
             click.secho(f"   ✅ 上传成功: {ks3_path}", fg="green")
             # 更新 metadata 以便持久化
             result.metadata["ks3_path"] = ks3_path
+            result.metadata["pushed"] = True
             
             ks3_public_url = uploader.get_public_url(agent_name)
             ks3_internal_url = uploader.get_internal_url(agent_name)
@@ -124,13 +125,12 @@ async def _build_code(agent_path: Path, push: bool, region: str, ks3_bucket: str
 
             click.echo("")
             click.echo("下一步:")
-            click.echo(f"  agentengine deploy --target serverless --ks3-path {ks3_path}")
+            click.echo(f"  agentengine deploy --target serverless")
         else:
             click.secho("   ⚠️  上传失败，请检查 KS3 配置", fg="yellow")
     else:
         click.echo("\n⏭️  跳过上传 (使用 --push 上传)")
 
-    # 持久化构建元数据 (供 deploy 命令使用)
     # 持久化构建元数据 (供 deploy 命令使用)
     metadata_file = agent_path / ".agentengine" / "build-metadata.json"
     try:
@@ -144,13 +144,17 @@ async def _build_code(agent_path: Path, push: bool, region: str, ks3_bucket: str
             raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
 
         data = asdict(result)
+        # 确保目录存在
+        metadata_file.parent.mkdir(parents=True, exist_ok=True)
         with open(metadata_file, "w") as f:
             json.dump(data, f, indent=2, default=default_serializer)
     except Exception as e:
         click.secho(f"⚠️  无法保存构建元数据: {e}", fg="yellow")
 
     # 摘要
-    _print_summary("Code", result, push)
+    # show_next_step=True 意味着如果要引导用户做下一步操作的话。
+    # 如果当前没有 push (push=False)，那么下一步通常引导去 push。
+    _print_summary("Code", result, show_next_step=not push)
 
 
 def _print_summary(mode: str, result, show_next_step: bool = False):
