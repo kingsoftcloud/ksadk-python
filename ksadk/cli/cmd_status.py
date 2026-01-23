@@ -165,9 +165,22 @@ async def _show_agent_status(agent: str, region: str, account_id: str, dry_run: 
         click.echo(f"  Langfuse:   {langfuse_url}")
 
     # 时间
+    from dateutil import parser
     click.echo("")
-    click.echo(f"  创建时间:   {result.get('createdAt', '-')}")
-    click.echo(f"  更新时间:   {result.get('updatedAt', '-')}")
+    
+    created_at = result.get('createdAt')
+    if created_at:
+        dt = parser.parse(created_at)
+        click.echo(f"  创建时间:   {dt.astimezone().isoformat()}")
+    else:
+        click.echo(f"  创建时间:   -")
+        
+    updated_at = result.get('updatedAt')
+    if updated_at:
+       dt = parser.parse(updated_at)
+       click.echo(f"  更新时间:   {dt.astimezone().isoformat()}")
+    else:
+       click.echo(f"  更新时间:   -")
 
     # 消息
     message = result.get("message")
@@ -278,10 +291,14 @@ async def _get_agent_runtime(agent: str, region: str, account_id: str, dry_run: 
     try:
         # 获取本地凭证透传给 Server
         auth = AWSV4Auth()
-        extra_headers = {}
+        extra_headers = {} # Initialize extra_headers
         if auth.access_key_id and auth.secret_access_key:
             extra_headers["X-Ksyun-Access-Key"] = auth.access_key_id
             extra_headers["X-Ksyun-Secret-Key"] = auth.secret_access_key
+        
+        # 传递 Account ID
+        if account_id:
+            extra_headers["X-Ksyun-Account-Id"] = account_id
 
         async with AgentEngineClient(region=region, dry_run=dry_run, extra_headers=extra_headers) as client:
             response = await client.get_agent(agent)
@@ -322,10 +339,14 @@ async def _list_agent_runtimes(region: str, account_id: str, dry_run: bool = Fal
     try:
         # 获取本地凭证透传给 Server
         auth = AWSV4Auth()
-        extra_headers = {}
+        extra_headers = {} # Initialize extra_headers
         if auth.access_key_id and auth.secret_access_key:
             extra_headers["X-Ksyun-Access-Key"] = auth.access_key_id
             extra_headers["X-Ksyun-Secret-Key"] = auth.secret_access_key
+        
+        # 传递 Account ID
+        if account_id:
+            extra_headers["X-Ksyun-Account-Id"] = account_id
 
         async with AgentEngineClient(region=region, dry_run=dry_run, extra_headers=extra_headers) as client:
             response = await client.list_agents(region=region)

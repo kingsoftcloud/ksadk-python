@@ -112,7 +112,7 @@ def model():
                     env_file.touch()
 
                 # set_key 会保留注释和格式
-                success, key, value = set_key(env_file, "MODEL_NAME", selected)
+                success, key, value = set_key(env_file, "MODEL_NAME", selected, quote_mode="never")
                 if success:
                     click.secho(
                         f"✅ 已切换模型为: {click.style(selected, fg='green', bold=True)}",

@@ -254,6 +254,14 @@ def _register_commands():
     except ImportError:
         pass
 
+    # Completion 命令组
+    try:
+        from ksadk.cli.cmd_completion import completion
+
+        cli.add_command(completion)
+    except ImportError:
+        pass
+
 
 def main():
     # 全局加载 .env 文件
