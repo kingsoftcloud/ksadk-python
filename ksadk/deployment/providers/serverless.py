@@ -122,8 +122,14 @@ class ServerlessProvider(DockerProvider):
             dist_dir.mkdir(parents=True, exist_ok=True)
             zip_path = dist_dir / "code.zip"
             
-            if not zip_path.exists(): 
-                shutil.make_archive(str(zip_path.with_suffix("")), 'zip', root_dir=build_dir)
+            # 强制重新打包 (除非显式跳过，但目前没有 skip-build 选项)
+            # 之前的 if not zip_path.exists() 逻辑会导致使用了旧的 zip 包
+            no_cache = target.extra.get("no_cache", False)
+            if no_cache and zip_path.exists():
+                click.echo("   🚫 强制清除旧构建缓存 (--no-cache)")
+                os.remove(zip_path)
+            
+            shutil.make_archive(str(zip_path.with_suffix("")), 'zip', root_dir=build_dir)
             
             # 3. 直接上传 KS3 (使用本地 AK/SK)
             click.echo("Step 2/2: 上传代码包到 KS3...")

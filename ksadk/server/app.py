@@ -521,6 +521,21 @@ async def chat_completions(request: ChatCompletionRequest):
                                 'finish_reason': None
                             }]
                         }, ensure_ascii=False)}\n\n"
+                elif chunk.get("type") == "thinking":
+                    # 处理思考过程
+                    content = chunk.get("delta", "")
+                    if content:
+                        yield f"data: {json.dumps({
+                            'id': response_id,
+                            'object': 'chat.completion.chunk',
+                            'created': created_time,
+                            'model': request.model or 'agent',
+                            'choices': [{
+                                'index': 0,
+                                'delta': {'reasoning_content': content},
+                                'finish_reason': None
+                            }]
+                        }, ensure_ascii=False)}\n\n"
                 elif chunk.get("type") == "final":
                     final_text = chunk.get("output", "")
                     if final_text:

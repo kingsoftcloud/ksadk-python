@@ -20,6 +20,14 @@ def create_runner(detection_result: DetectionResult, project_dir: str) -> BaseRu
     Returns:
         对应框架的 Runner 实例
     """
+    # Apply langchain patch for reasoning_content support
+    try:
+        from ksadk.runners.patch_langchain import apply_patch
+
+        apply_patch()
+    except ImportError:
+        pass
+
     if detection_result.type == FrameworkType.ADK:
         from ksadk.runners.adk_runner import ADKRunner
         return ADKRunner(detection_result, project_dir)

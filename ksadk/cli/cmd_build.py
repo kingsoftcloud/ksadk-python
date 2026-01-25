@@ -50,7 +50,7 @@ def build(
     if mode == "container":
         _build_container(agent_path, tag, registry, push, no_cache)
     else:
-        asyncio.run(_build_code(agent_path, push, region, ks3_bucket))
+        asyncio.run(_build_code(agent_path, push, region, ks3_bucket, no_cache))
 
 
 def _build_container(agent_path: Path, tag: str, registry: str, push: bool, no_cache: bool):
@@ -82,11 +82,11 @@ def _build_container(agent_path: Path, tag: str, registry: str, push: bool, no_c
     _print_summary("Container", result)
 
 
-async def _build_code(agent_path: Path, push: bool, region: str, ks3_bucket: str = None):
+async def _build_code(agent_path: Path, push: bool, region: str, ks3_bucket: str = None, no_cache: bool = False):
     """Code 模式构建"""
     from ksadk.builders import CodeBuilder, KS3Uploader
 
-    builder = CodeBuilder(project_dir=agent_path)
+    builder = CodeBuilder(project_dir=agent_path, config={"no_cache": no_cache})
     result = builder.build()
 
     if not result.success:
