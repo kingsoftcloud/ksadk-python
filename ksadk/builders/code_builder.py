@@ -58,10 +58,11 @@ class CodeBuilder(BaseBuilder):
         zip_path = self.build_dir / f"{agent_name}.zip"
         
         # 检查是否需要重新构建
-        if zip_path.exists() and not self._need_rebuild(zip_path):
+        no_cache = self.config.get("no_cache", False) if self.config else False
+        if zip_path.exists() and not no_cache and not self._need_rebuild(zip_path):
             zip_size = zip_path.stat().st_size / (1024 * 1024)
             click.secho(f"\n✅ 使用已有构建: {zip_path.name} ({zip_size:.2f} MB)", fg='green')
-            click.echo("   (如需重新构建，请删除 .agentengine/code_build 目录)")
+            click.echo("   (如需重新构建，请使用 --no-cache 或删除 .agentengine/code_build 目录)")
             return BuildResult(
                 success=True,
                 artifact_path=zip_path,

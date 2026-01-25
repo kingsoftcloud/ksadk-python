@@ -188,11 +188,26 @@ async def _invoke_once(
                 # 手动控制刷新以减少闪烁
                 with Live(Markdown("", justify="left"), console=console, auto_refresh=False, vertical_overflow="visible") as live:
                     last_refresh_time = 0
+                    full_reasoning = ""
                     async for chunk in _stream_chat(endpoint, message, api_key, session_id, True, insecure, model):
-                        content = _extract_content(chunk)
+                        content, reasoning = _extract_content(chunk)
+                        
+                        updated = False
+                        if reasoning:
+                            full_reasoning += reasoning
+                            updated = True
                         if content:
                             full_response += content
-                            live.update(Markdown(full_response, justify="left"))
+                            updated = True
+                            
+                        if updated:
+                            # 构造显示文本
+                            display_text = ""
+                            if full_reasoning:
+                                display_text += f"> 🧠 **Thinking:**\n> {full_reasoning.replace('\n', '\n> ')}\n\n"
+                            display_text += full_response
+                            
+                            live.update(Markdown(display_text, justify="left"))
                             
                             # 基于时间限流刷新 (每0.2秒一次 = 5 FPS)
                             now = time.time()
@@ -202,7 +217,9 @@ async def _invoke_once(
                     live.refresh() # 确保最后一次刷新
             else:
                async for chunk in _stream_chat(endpoint, message, api_key, session_id, True, insecure, model):
-                    content = _extract_content(chunk)
+                    content, reasoning = _extract_content(chunk)
+                    if reasoning:
+                        click.secho(reasoning, fg="bright_black", nl=False)
                     if content:
                         print(content, end="", flush=True)
             click.echo()  # 换行
@@ -260,11 +277,25 @@ def _invoke_interactive(
                         # 手动控制刷新以减少闪烁
                         with Live(Markdown("", justify="left"), console=console, auto_refresh=False, vertical_overflow="visible") as live:
                             last_refresh_time = 0
+                            full_reasoning = ""
                             async for chunk in _stream_chat(endpoint, user_input, api_key, session_id, False, insecure, model):
-                                content = _extract_content(chunk)
+                                content, reasoning = _extract_content(chunk)
+                                
+                                updated = False
+                                if reasoning:
+                                    full_reasoning += reasoning
+                                    updated = True
                                 if content:
                                     full_response += content
-                                    live.update(Markdown(full_response, justify="left"))
+                                    updated = True
+
+                                if updated:
+                                    display_text = ""
+                                    if full_reasoning:
+                                        display_text += f"> 🧠 **Thinking:**\n> {full_reasoning.replace('\n', '\n> ')}\n\n"
+                                    display_text += full_response
+                                    
+                                    live.update(Markdown(display_text, justify="left"))
                                     
                                     # 基于时间限流刷新 (每0.2秒一次 = 5 FPS)
                                     now = time.time()
@@ -274,7 +305,9 @@ def _invoke_interactive(
                             live.refresh()
                     else:
                         async for chunk in _stream_chat(endpoint, user_input, api_key, session_id, False, insecure, model):
-                            content = _extract_content(chunk)
+                            content, reasoning = _extract_content(chunk)
+                            if reasoning:
+                                click.secho(reasoning, fg="bright_black", nl=False)
                             if content:
                                 print(content, end="", flush=True)
                 
@@ -429,17 +462,17 @@ async def _stream_chat(
                 click.secho(f"\nStream error: {e}", fg="red")
 
 
-def _extract_content(chunk: dict) -> str:
-    """从 OpenAI 流式响应中提取内容"""
-    # OpenAI 格式: {"choices": [{"delta": {"content": "xxx"}}]}
+def _extract_content(chunk: dict) -> tuple[str, str]:
+    """从 OpenAI 流式响应中提取内容 (包含 reasoning_content)"""
+    # OpenAI 格式: {"choices": [{"delta": {"content": "xxx", "reasoning_content": "thought"}}]}
     try:
         choices = chunk.get("choices", [])
         if choices:
             delta = choices[0].get("delta", {})
-            return delta.get("content", "")
+            return delta.get("content", "") or "", delta.get("reasoning_content", "") or ""
     except (KeyError, IndexError):
         pass
-    return ""
+    return "", ""
 
 
 def _extract_response_content(response: dict) -> str:

@@ -46,6 +46,7 @@ from ksadk.common.constants import (
     "--observability/--no-observability", default=True, help="是否启用可观测性 (默认开启)"
 )
 @click.option("--push", is_flag=True, help="构建后推送镜像")
+@click.option("--no-cache", is_flag=True, help="强制重新构建，不使用缓存")
 @click.option("--dry-run", is_flag=True, help="只生成配置，打印 curl 请求，不执行部署")
 @click.option("--list-providers", "list_providers", is_flag=True, help="列出可用的部署目标")
 def deploy(
@@ -63,6 +64,7 @@ def deploy(
     image: str,
     observability: bool,
     push: bool,
+    no_cache: bool,
     dry_run: bool,
     list_providers: bool,
 ):
@@ -102,6 +104,7 @@ def deploy(
             image,
             observability,
             push,
+            no_cache,
             dry_run,
         )
     )
@@ -149,6 +152,7 @@ async def _deploy_async(
     image: str,
     observability: bool,
     push: bool,
+    no_cache: bool,
     dry_run: bool,
 ):
     """异步部署流程"""
@@ -207,6 +211,7 @@ async def _deploy_async(
             "image": image,
             "enable_observability": observability,
             "dry_run": dry_run,
+            "no_cache": no_cache,
         },
     )
 

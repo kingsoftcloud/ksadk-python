@@ -322,12 +322,24 @@ agentengine deploy .    # 部署到云端
 {project_name}/
 ├── .env                 # 环境变量 (API Key 等)
 ├── agentengine.yaml      # Agent 配置
+├── requirements.txt      # Python 依赖
 ├── {package_name}/
 │   ├── __init__.py
 │   └── agent.py         # Agent 实现
 └── README.md
 ```
 """, encoding="utf-8-sig")
+
+    # requirements.txt
+    reqs = "requests_aws4auth\n"  # Minimum required for ksadk.common.auth
+    if framework == "langchain":
+        reqs += "langchain\nlangchain-openai\npython-dotenv\n"
+    elif framework == "langgraph":
+        reqs += "langchain\nlangchain-openai\nlanggraph\npython-dotenv\n"
+    elif framework == "adk":
+        reqs += "google-adk\npython-dotenv\n"
+    
+    (project_path / "requirements.txt").write_text(reqs, encoding="utf-8")
     
     click.echo(click.style("\n✅ 项目创建成功!", fg='green'))
     click.echo("")
