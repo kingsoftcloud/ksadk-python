@@ -47,7 +47,7 @@ def _get_env(*keys: str, default: str = None) -> Optional[str]:
 _endpoint_cache: Dict[str, bool] = {}
 
 
-def check_endpoint_reachable(host: str, port: int = 80, timeout: float = 0.5) -> bool:
+def check_endpoint_reachable(host: str, port: int = 80, timeout: float = 1.0) -> bool:
     """检测指定端点是否可达
     
     通用函数，可用于检测任意服务的内网地址是否可达。
@@ -56,7 +56,7 @@ def check_endpoint_reachable(host: str, port: int = 80, timeout: float = 0.5) ->
     Args:
         host: 主机名或 IP 地址
         port: 端口号 (默认 80)
-        timeout: 超时时间 (默认 0.5 秒)
+        timeout: 超时时间 (默认 1.0 秒)
     
     Returns:
         True 如果可达, False 否则
@@ -103,13 +103,52 @@ KSPMAS_PUBLIC_URL = "https://kspmas.ksyun.com/v1"
 DEFAULT_MODEL_NAME = "deepseek-v3.2"
 
 
+def optimize_kspmas_url(url: str) -> str:
+    """优化 KSPMAS URL
+    
+    如果是 KSPMAS 的公网地址，且检测到内网可达（或在 Serverless 环境），
+    将其替换为内网地址以提高速度和稳定性。
+    """
+    if not url:
+        return url
+        
+    # 仅优化 KSPMAS 域名
+    if "kspmas.ksyun.com" in url:
+        # 检测是否应该使用内网
+        use_internal = False
+        
+        # 1. Serverless 环境强制使用内网
+        if os.getenv("AGENT_RUNTIME_ID"):
+            use_internal = True
+        # 2. 自动检测内网可达性
+        elif check_endpoint_reachable(KSPMAS_INTERNAL_HOST):
+            use_internal = True
+            
+        if use_internal:
+            # 替换域名 (保持协议和路径不变)
+            # https://kspmas.ksyun.com/v1 -> http://kspmas-internal.sdns.ksyun.com/v1
+            # 注意: 内网通常是 http
+            return url.replace("https://kspmas.ksyun.com", f"http://{KSPMAS_INTERNAL_HOST}") \
+                      .replace("http://kspmas.ksyun.com", f"http://{KSPMAS_INTERNAL_HOST}")
+                      
+    return url
+
+
 def get_kspmas_api_base() -> str:
     """获取 KSPMAS 模型服务的 API Base URL
     
     自动检测内网可达性，优先使用内网地址。
+    **特殊逻辑**: 如果在 Serverless 托管环境 (AGENT_RUNTIME_ID 存在)，强制使用内网地址。
     """
+    # 1. Serverless 环境强制使用内网
+    if os.getenv("AGENT_RUNTIME_ID"):
+        return KSPMAS_INTERNAL_URL
+
+    # 2. 自动检测内网可达性
     if check_endpoint_reachable(KSPMAS_INTERNAL_HOST):
         return KSPMAS_INTERNAL_URL
+    
+    # 3. 默认使用公网
     return KSPMAS_PUBLIC_URL
 
 
@@ -156,6 +195,7 @@ class ModelConfig:
         """获取模型 API Base URL
         
         如果未配置，默认使用金山云模型服务地址（自动检测内网）。
+        如果已配置且为 KSPMAS 公网地址，也会尝试优化为内网地址。
         """
         configured = _get_env(
             "OPENAI_BASE_URL",       # OpenAI 标准 (优先)
@@ -163,7 +203,11 @@ class ModelConfig:
             "LLM_API_BASE",          # Serverless 平台兼容
             "MODEL_API_BASE",        # 通用
         )
-        return configured or get_kspmas_api_base()
+        
+        if configured:
+            return optimize_kspmas_url(configured)
+            
+        return get_kspmas_api_base()
     
     @property
     def model_name(self) -> str:
@@ -584,7 +628,8 @@ def setup_environment(agent_path: "Path"):
             
         env_file = agent_path / ".env"
         if env_file.exists():
-            load_dotenv(env_file, override=True)
+            # override=False: 保留通过 API/Serverless 平台注入的环境变量 (优先级高)
+            load_dotenv(env_file, override=False)
 
     # 2. 注入 Intelligent Defaults
     # API Base

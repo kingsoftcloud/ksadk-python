@@ -57,19 +57,15 @@ class DeploymentManager:
     
     # 向后兼容: create() 方法
     @classmethod
-    def create(cls, target: str) -> BaseDeployProvider:
-        """创建部署器 (向后兼容)
+    def create(cls, target: str) -> DeployTarget:
+        """创建部署目标
         
         Args:
             target: 部署目标 (docker, k8s, serverless)
             
         Returns:
-            部署器实例
+            部署目标实例
         """
-        # 兼容旧的 faas 参数
-        if target == "faas":
-            target = "serverless"
-        
         return cls.get_provider(target)
 
 

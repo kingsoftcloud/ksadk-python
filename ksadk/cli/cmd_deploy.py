@@ -23,7 +23,7 @@ from ksadk.common.constants import (
 @click.option(
     "--target",
     "-t",
-    type=click.Choice(["docker", "k8s", "serverless"]),
+    type=click.Choice(["serverless", "kcf", "kce"]),
     default="serverless",
     help="部署目标 (default: serverless)",
 )
@@ -75,11 +75,10 @@ def deploy(
 
     示例:
         agentengine deploy .                              # Serverless (默认)
-        agentengine deploy . --target docker              # 本地 Docker
-        agentengine deploy . --target k8s                 # K8s 集群
-        agentengine deploy . --artifact-type Container    # Serverless 容器模式
-        agentengine deploy . --dry-run                    # 打印 curl 请求
-        agentengine deploy . --region cn-shanghai-1
+        agentengine deploy . --target kcf                 # 部署到 KCF (云函数)
+        agentengine deploy . --target kce                 # 部署到 KCE (容器引擎)
+        agentengine deploy . --dry-run                    # 打印请求而不部署
+        agentengine deploy . --region cn-beijing-6
         agentengine deploy . --account-id 2000003485
     """
     # 列出 Provider

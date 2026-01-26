@@ -259,6 +259,8 @@ class AgentEngineClient:
             params["KS3SecretKey"] = data["ks3"].get("secret_key")
             params["KS3Region"] = data["ks3"].get("region")
             params["KS3Bucket"] = data["ks3"].get("bucket")
+        if data.get("env_vars") or data.get("environment_variables"):
+            params["EnvironmentVariables"] = data.get("env_vars") or data.get("environment_variables")
         return self._action("UpdateAgent", params)
 
     # ===== Session Actions =====

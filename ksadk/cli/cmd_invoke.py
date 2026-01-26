@@ -204,7 +204,8 @@ async def _invoke_once(
                             # 构造显示文本
                             display_text = ""
                             if full_reasoning:
-                                display_text += f"> 🧠 **Thinking:**\n> {full_reasoning.replace('\n', '\n> ')}\n\n"
+                                formatted_reasoning = full_reasoning.replace('\n', '\n> ')
+                                display_text += f"> 🧠 **Thinking:**\n> {formatted_reasoning}\n\n"
                             display_text += full_response
                             
                             live.update(Markdown(display_text, justify="left"))
@@ -292,7 +293,8 @@ def _invoke_interactive(
                                 if updated:
                                     display_text = ""
                                     if full_reasoning:
-                                        display_text += f"> 🧠 **Thinking:**\n> {full_reasoning.replace('\n', '\n> ')}\n\n"
+                                        formatted_reasoning = full_reasoning.replace('\n', '\n> ')
+                                    display_text += f"> 🧠 **Thinking:**\n> {formatted_reasoning}\n\n"
                                     display_text += full_response
                                     
                                     live.update(Markdown(display_text, justify="left"))
