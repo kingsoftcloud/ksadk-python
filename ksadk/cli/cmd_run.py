@@ -49,7 +49,16 @@ def run(agent_dir: str, port: int, interactive: bool, no_trace: bool, model: str
         click.echo("提示: 请确保项目包含正确的框架代码")
         raise SystemExit(1)
 
-    click.echo(f"📦 检测到框架: {click.style(result.name, fg='green')}")
+    framework_map = {
+        "adk": "Google ADK",
+        "langchain": "LangChain",
+        "langgraph": "LangGraph",
+        "unknown": "Unknown"
+    }
+    framework_name = framework_map.get(result.type.value, result.type.value)
+
+    click.echo(f"📦 检测到框架: {click.style(framework_name, fg='green')}")
+    click.echo(f"🤖 Agent 名称: {result.name}")
     click.echo(f"🎯 入口点: {result.entry_point}")
 
     # 2. 根据框架类型选择处理方式
@@ -169,7 +178,14 @@ def _run_custom(
     if interactive:
         click.clear()
         click.secho("🤖 KsADK Interactive Mode", fg="blue", bold=True)
-        click.echo(f"Framework: {result.name}")
+        framework_map = {
+            "adk": "Google ADK",
+            "langchain": "LangChain",
+            "langgraph": "LangGraph",
+            "unknown": "Unknown"
+        }
+        framework_name = framework_map.get(result.type.value, result.type.value)
+        click.echo(f"Framework: {framework_name}")
         click.echo("Type 'exit' to quit.\n")
         asyncio.run(UnifiedRunner.run_interactive(runner, show_thinking=True))
     else:
