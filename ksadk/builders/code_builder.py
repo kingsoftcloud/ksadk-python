@@ -263,6 +263,8 @@ class CodeBuilder(BaseBuilder):
             'grpc': 'grpcio',
             '_grpc': 'grpcio',
             'uuid_utils': 'uuid-utils',
+            'pydantic_core': 'pydantic-core',
+            '_pydantic_core': 'pydantic-core',
             # Windows 特有
             'win32': 'pywin32',
             'win32com': 'pywin32',

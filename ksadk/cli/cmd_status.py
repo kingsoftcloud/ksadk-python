@@ -38,10 +38,10 @@ def status(
 
     \b
     示例:
-        agentengine status --agent my-agent
-        agentengine status --agent my-agent --watch
+        agentengine status --agent my-agent-id
+        agentengine status --agent my-agent-id --watch
         agentengine status --all
-        agentengine status --agent my-agent --dry-run
+        agentengine status --agent my-agent-id --dry-run
     """
     if not agent and not show_all:
         # 尝试从当前目录的配置文件读取 agent 名称
@@ -129,6 +129,33 @@ async def _show_agent_status(agent: str, region: str, account_id: str, dry_run: 
 
     try:
         result = await _get_agent_runtime(agent, region, account_id, dry_run)
+        
+        # 检查是否查询失败 (ID 不存在)
+        if result.get("status") == "Error":
+             # 如果 ID 查询失败，尝试按名称查询
+            click.echo(f"按 ID 查询失败 ({result.get('error')}), 尝试按名称查询...")
+            try:
+                all_agents = await _list_agent_runtimes(region, account_id, dry_run)
+                matched = [a for a in all_agents if a.get("agentRuntimeName") == agent]
+                
+                if len(matched) == 1:
+                    # 找到唯一匹配
+                    target_id = matched[0].get("agentRuntimeId")
+                    if target_id:
+                        result = await _get_agent_runtime(target_id, region, account_id, dry_run)
+                    else:
+                        result = matched[0]
+                elif len(matched) > 1:
+                    click.secho(f"错误: 找到多个名称为 '{agent}' 的 Agent，请使用 ID:", fg="red")
+                    for m in matched:
+                        click.echo(f"  - {m.get('agentRuntimeId')} ({m.get('status')})")
+                    return # 退出
+                else:
+                     # 确实找不到，保留原始错误结果
+                     pass
+            except Exception:
+                 pass
+
     except DryRunExit:
         raise
 

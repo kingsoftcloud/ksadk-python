@@ -1,5 +1,5 @@
 """
-agentengine mcp - MCP Server 管理
+agentengine mcp - MCP Server 管理 (预览)
 
 支持操作:
 - deploy: 部署 MCP Server 到云端

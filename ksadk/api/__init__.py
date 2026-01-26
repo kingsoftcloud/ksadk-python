@@ -1,3 +1,3 @@
-from .client import AgentEngineClient
+from .client import AgentEngineClient, DryRunExit
 
-__all__ = ["AgentEngineClient"]
+__all__ = ["AgentEngineClient", "DryRunExit"]

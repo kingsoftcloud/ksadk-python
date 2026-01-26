@@ -14,6 +14,7 @@ from typing import Dict, Any, List, Optional
 import click
 
 from ksadk.builders.ks3_uploader import KS3Uploader
+from ksadk.builders.code_builder import CodeBuilder
 from ksadk.deployment.base import (
     BaseDeployProvider,
     DeployTarget,
@@ -23,13 +24,15 @@ from ksadk.deployment.base import (
 )
 from ksadk.deployment.registry import DeployProviderRegistry
 from ksadk.deployment.providers.docker import DockerProvider
-from ksadk.api import AgentEngineClient
+from ksadk.api import AgentEngineClient, DryRunExit
 
 
 logger = logging.getLogger(__name__)
 
 
 @DeployProviderRegistry.register("serverless")
+@DeployProviderRegistry.register("kcf")
+@DeployProviderRegistry.register("kce")
 class ServerlessProvider(DockerProvider):
     """金山云 Serverless 计算引擎 (AgentEngine Server 托管)"""
 
@@ -108,31 +111,45 @@ class ServerlessProvider(DockerProvider):
         artifact_type = target.extra.get("artifact_type", "Code")
 
         if artifact_type == "Code":
-            # 1. 检查是否已有 KS3 路径 (例如从外部传入)
-            ks3_path = target.extra.get("ks3_path") or package_info.metadata.get("ks3_path")
-            if ks3_path:
-                package_info.metadata["ks3_path"] = ks3_path
+            # 1. 检查是否已有 KS3 路径
+            # 优先级: CLI传入 > Metadata缓存 (仅当 !no_cache)
+            cli_ks3_path = target.extra.get("ks3_path")
+            cached_ks3_path = package_info.metadata.get("ks3_path")
+            no_cache = target.extra.get("no_cache", False)
+            
+            # 如果显式传入了 ks3-path，直接使用
+            if cli_ks3_path:
+                package_info.metadata["ks3_path"] = cli_ks3_path
+                return package_info
+            
+            # 如果没有 no_cache 且有缓存，才使用缓存
+            if not no_cache and cached_ks3_path:
+                logger.info(f"Using cached bundle: {cached_ks3_path}")
                 return package_info
 
-            # 2. 构建 ZIP 包
-            click.echo("\nStep 1/2: 构建代码包...")
+            # 2. 构建 ZIP 包 (委托给 CodeBuilder)
             
-            build_dir = Path(package_info.build_dir)
-            dist_dir = build_dir.parent / "dist"
-            dist_dir.mkdir(parents=True, exist_ok=True)
-            zip_path = dist_dir / "code.zip"
+            # 传递配置，包括 no_cache
+            builder_config = target.extra.copy()
+            builder_config["no_cache"] = no_cache
             
-            # 强制重新打包 (除非显式跳过，但目前没有 skip-build 选项)
-            # 之前的 if not zip_path.exists() 逻辑会导致使用了旧的 zip 包
-            no_cache = target.extra.get("no_cache", False)
-            if no_cache and zip_path.exists():
-                click.echo("   🚫 强制清除旧构建缓存 (--no-cache)")
-                os.remove(zip_path)
+            # 实例化 Builder
+            # 注意: CodeBuilder 目前设计为直接操作 project_dir，
+            # 这里传入原始 project_dir (package_info.project_dir)
+            builder = CodeBuilder(Path(package_info.project_dir), config=builder_config)
             
-            shutil.make_archive(str(zip_path.with_suffix("")), 'zip', root_dir=build_dir)
+            # 执行构建
+            build_result = builder.build()
+            
+            if not build_result.success:
+                raise Exception(f"构建失败: {build_result.error_message}")
+                
+            zip_path = build_result.artifact_path
+            # click.echo(f"   ✅ ZIP 已生成: {zip_path}")
             
             # 3. 直接上传 KS3 (使用本地 AK/SK)
-            click.echo("Step 2/2: 上传代码包到 KS3...")
+            # 3. 直接上传 KS3 (使用本地 AK/SK)
+            click.echo("\n正在上传代码包到 KS3...")
             
             ks3_bucket = target.extra.get("ks3_bucket")
             upload_region = "cn-beijing-6" if target.region == "pre-online" else target.region
@@ -324,12 +341,25 @@ class ServerlessProvider(DockerProvider):
 
                         # 加载本地 .env 并注入到环境变量 (更新时也同步)
                         env_file = Path(project_dir) / ".env"
+                        env_vars = {}
                         if env_file.exists():
                              from dotenv import dotenv_values
-                             env_vars = dotenv_values(env_file)
+                             raw_env = dotenv_values(env_file)
+                             # 过滤掉空 Key 和 None 值
+                             env_vars = {k: v for k, v in raw_env.items() if k and v is not None}
                              if env_vars:
                                  update_data["env_vars"] = env_vars
                                  click.echo(f"   📦 更新环境变量: {len(env_vars)} 项 from .env")
+                        
+                        # 注入更新时间戳，强制触发 Rolling Update (Pod 重启)
+                        if "env_vars" not in update_data:
+                            update_data["env_vars"] = {}
+                        
+                        import time
+                        update_data["env_vars"]["KSADK_UPDATED_AT"] = str(int(time.time()))
+                        
+                        # DEBUG: 打印 Payload 确认 trigger 是否存在
+                        click.echo(f"   🔄 更新 Trigger: KSADK_UPDATED_AT={update_data['env_vars']['KSADK_UPDATED_AT']}")
                         
                         res = await client.update_agent(existing_agent_id, update_data)
                         
@@ -390,8 +420,10 @@ class ServerlessProvider(DockerProvider):
                     if env_file.exists():
                         from dotenv import dotenv_values
                         # 读取 .env 文件内容
-                        env_vars = dotenv_values(env_file)
+                        raw_env = dotenv_values(env_file)
                         # 过滤掉注释或空值 (dotenv_values 已处理大部分)
+                        # 额外过滤掉空 Key 和 None 值 (防止 " ": null 这种情况)
+                        env_vars = {k: v for k, v in raw_env.items() if k and v is not None}
                         click.echo(f"   📦 加载环境变量: {len(env_vars)} 项 from .env")
                     
                     if env_vars:
@@ -438,7 +470,13 @@ class ServerlessProvider(DockerProvider):
                         api_key=res.get("api_key"),
                         message=f"✅ Agent ID: {new_agent_id} (首次部署)"
                     )
-                
+
+        except DryRunExit:
+            return DeployResult(
+                status=DeployStatus.SKIPPED,
+                message="✅ Dry Run Completed: 请求已打印，未执行实际变更。"
+            )
+            
         except Exception as e:
             logger.error(f"Deploy failed: {e}")
             

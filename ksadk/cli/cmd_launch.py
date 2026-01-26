@@ -13,16 +13,43 @@ from pathlib import Path
 @click.option(
     "--target",
     "-t",
-    type=click.Choice(["docker", "serverless"]),
-    default="docker",
-    help="部署目标 (default: docker)",
+    type=click.Choice(["serverless", "kcf", "kce"]),
+    default="serverless",
+    help="部署目标 (default: serverless)",
 )
 @click.option("--name", "-n", help="部署名称")
 @click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域 (serverless)")
 @click.option("--account-id", envvar="KSYUN_ACCOUNT_ID", help="金山云账号 ID")
 @click.option("--observability/--no-observability", default=True, help="是否启用可观测性")
+@click.option("--no-cache", is_flag=True, help="强制重新构建，不使用缓存")
+@click.option("--port", "-p", default=8000, help="服务端口 (default: 8000)")
+@click.option("--namespace", default="default", help="K8s 命名空间")
+@click.option("--registry", help="镜像仓库地址")
+@click.option("--ks3-bucket", help="KS3 bucket 名称")
+@click.option("--ks3-path", help="KS3 代码包路径")
+@click.option("--image", help="Docker 镜像地址")
+@click.option("--dry-run", is_flag=True, help="仅打印请求，不执行实际操作")
+@click.option(
+    "--artifact-type",
+    type=click.Choice(["Code", "Container"]),
+    help="部署模式 (serverless default: Code)",
+)
 def launch(
-    agent_dir: str, target: str, name: str, region: str, account_id: str, observability: bool
+    agent_dir: str,
+    target: str,
+    name: str,
+    region: str,
+    account_id: str,
+    observability: bool,
+    no_cache: bool,
+    port: int,
+    namespace: str,
+    registry: str,
+    ks3_bucket: str,
+    ks3_path: str,
+    image: str,
+    dry_run: bool,
+    artifact_type: str,
 ):
     """一键完成构建和部署 (Build + Deploy)
 
@@ -33,14 +60,48 @@ def launch(
     3. 调用 API 创建或更新 Agent
 
     示例:
-        agentengine launch .
-        agentengine launch . --target serverless
+        agentengine launch .                              # Serverless (默认, Code模式)
+        agentengine launch . --no-cache                   # 强制重新构建
+        agentengine launch . -t kcf                       # 部署到 KCF (云函数)
+        agentengine launch . -t kce                       # 部署到 KCE (容器引擎)
     """
-    asyncio.run(_launch_async(agent_dir, target, name, region, account_id, observability))
+    asyncio.run(
+        _launch_async(
+            agent_dir,
+            target,
+            name,
+            region,
+            account_id,
+            observability,
+            no_cache,
+            port,
+            namespace,
+            registry,
+            ks3_bucket,
+            ks3_path,
+            image,
+            dry_run,
+            artifact_type,
+        )
+    )
 
 
 async def _launch_async(
-    agent_dir: str, target: str, name: str, region: str, account_id: str, observability: bool
+    agent_dir: str,
+    target: str,
+    name: str,
+    region: str,
+    account_id: str,
+    observability: bool,
+    no_cache: bool,
+    port: int,
+    namespace: str,
+    registry: str,
+    ks3_bucket: str,
+    ks3_path: str,
+    image: str,
+    dry_run: bool,
+    artifact_type: str,
 ):
     from ksadk.detection import FrameworkDetector
     from ksadk.deployment import DeploymentManager, DeployTarget
@@ -52,6 +113,9 @@ async def _launch_async(
     click.echo(f"🎯 部署目标: {target}")
     if target == "serverless":
         click.echo(f"🌍 区域: {region}")
+        if not artifact_type:
+            artifact_type = "Code"
+        click.echo(f"📦 模式: {artifact_type}")
         if account_id:
             click.echo(f"👤 账号: {account_id}")
 
@@ -84,9 +148,15 @@ async def _launch_async(
         extra={
             "account_id": account_id,
             "enable_observability": observability,
-            # Launch 默认行为
-            "artifact_type": "Code" if target == "serverless" else None,
-            "ks3_bucket": None,
+            "no_cache": no_cache,
+            "artifact_type": artifact_type,
+            "port": port,
+            "namespace": namespace,
+            "registry": registry,
+            "ks3_bucket": ks3_bucket,
+            "ks3_path": ks3_path,
+            "image": image,
+            "dry_run": dry_run,
         },
     )
 
@@ -101,11 +171,26 @@ async def _launch_async(
         click.secho(f"❌ 配置验证失败: {error_msg}", fg="red")
         return
 
+    # 避免 package 阶段加载旧 metadata，如果在 no_cache 模式下，直接物理删除
+    if no_cache:
+        metadata_file = agent_path / ".agentengine" / "build-metadata.json"
+        if metadata_file.exists():
+            try:
+                os.remove(metadata_file)
+                click.secho(f"🗑️  [DEBUG] 已删除旧 build-metadata.json (--no-cache)", fg="yellow")
+            except Exception:
+                pass
+
     # 6. 打包 (Package)
     click.secho("\n📦 Step 1/3: 准备构建环境...", fg="cyan", bold=True)
     try:
         package_info = await provider.package(str(agent_path), detection_result, config)
         package_info.name = deploy_name
+        
+        # 传入额外的 metadata override
+        if ks3_path:
+            package_info.metadata["ks3_path"] = ks3_path
+        
         click.echo(f"   构建目录: {package_info.build_dir}")
     except Exception as e:
         click.secho(f"❌ 打包失败: {e}", fg="red")
@@ -118,7 +203,10 @@ async def _launch_async(
         package_info = await provider.build(package_info, deploy_target)
 
         if target == "serverless":
-            click.echo(f"   KS3 路径: {package_info.metadata.get('ks3_path')}")
+            # Serverless Provider 在 build 后会将 ks3_path 放入 metadata
+            ks3 = package_info.metadata.get("ks3_path")
+            if ks3:
+                click.echo(f"   KS3 路径: {ks3}")
         else:
             click.echo(f"   镜像: {package_info.image}")
 
@@ -141,9 +229,9 @@ async def _launch_async(
             if result.message:
                 click.echo(f"   信息:     {result.message}")
 
-            click.echo("\n下一步:")
-            click.echo(f"  agentengine status --agent {result.agent_name}")
-            click.echo(f"  agentengine invoke --agent {result.agent_name}")
+            click.echo(f"\n下一步查看或使用{result.agent_name}:")
+            click.echo(f"  agentengine status --agent {result.agent_id}")
+            click.echo(f"  agentengine invoke --agent {result.agent_id}")
         else:
             click.secho(f"\n❌ 部署状态: {result.status.value}", fg="yellow")
             if result.message:
