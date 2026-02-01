@@ -201,6 +201,19 @@ build: check-build-deps webui
 	@echo "✅ 构建完成: dist/"
 	@ls -la dist/
 
+# 仅构建 Python 包（跳过 webui，使用现有静态文件）
+build-only: check-build-deps
+	@echo "📦 构建 Python 包 v$(VERSION)（使用现有静态文件）..."
+	@if [ ! -f "ksadk/server/static/index.html" ]; then \
+		echo "❌ 错误: ksadk/server/static/ 目录为空，请先运行 make webui"; \
+		exit 1; \
+	fi
+	python -m build
+	@rm -f dist/*.tar.gz
+	@rm -rf build/ *.egg-info/
+	@echo "✅ 构建完成: dist/"
+	@ls -la dist/
+
 # 带版本号构建: make release V=0.2.0
 release:
 ifndef V
@@ -210,13 +223,28 @@ endif
 	@$(MAKE) build
 	@echo "🎉 v$(V) 发布包已准备就绪"
 
-publish: build
-	@echo "🚀 发布 v$(VERSION) 到 PyPI..."
-	python -m twine upload dist/*
+# 发布配置文件 (优先使用项目本地的 .pypirc)
+PYPIRC := $(shell [ -f .pypirc ] && echo ".pypirc" || echo "~/.pypirc")
 
-publish-test: build
+publish: build-only
+	@echo "🚀 发布 v$(VERSION) 到 PyPI..."
+	@if [ ! -f ".pypirc" ] && [ ! -f ~/.pypirc ]; then \
+		echo "❌ 错误: 找不到 .pypirc 配置文件"; \
+		echo "   请在项目根目录创建 .pypirc 文件:"; \
+		echo "   [pypi]"; \
+		echo "   username = __token__"; \
+		echo "   password = pypi-你的token"; \
+		exit 1; \
+	fi
+	python -m twine upload --config-file $(PYPIRC) dist/*
+
+publish-test: build-only
 	@echo "🧪 发布 v$(VERSION) 到 TestPyPI..."
-	python -m twine upload --repository testpypi dist/*
+	@if [ ! -f ".pypirc" ] && [ ! -f ~/.pypirc ]; then \
+		echo "❌ 错误: 找不到 .pypirc 配置文件"; \
+		exit 1; \
+	fi
+	python -m twine upload --config-file $(PYPIRC) --repository testpypi dist/*
 
 # ============================================================
 # 离线打包 (多平台支持)

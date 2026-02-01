@@ -16,10 +16,12 @@ from pathlib import Path
 @click.command(context_settings=dict(help_option_names=["-h", "--help"]))
 @click.argument("agent_dir", default=".", type=click.Path(exists=True))
 @click.option("--port", "-p", default=8080, help="Server 端口 (default: 8080)")
-@click.option("--interactive", "-i", is_flag=True, help="交互模式")
+@click.option("--interactive", "-i", is_flag=True, help="交互模式 (TUI)")
 @click.option("--no-trace", is_flag=True, help="禁用 Tracing")
 @click.option("--model", help="指定模型名称 (覆盖 .env 配置)")
-def run(agent_dir: str, port: int, interactive: bool, no_trace: bool, model: str):
+@click.option("--show-thinking", is_flag=True, help="显示模型思考过程")
+@click.option("--no-stream", is_flag=True, help="禁用流式渲染 (等待完整响应后再渲染)")
+def run(agent_dir: str, port: int, interactive: bool, no_trace: bool, model: str, show_thinking: bool, no_stream: bool):
     """运行 Agent (支持 LangChain / LangGraph / ADK)
 
     AGENT_DIR: Agent 项目目录 (默认: 当前目录)
@@ -64,7 +66,7 @@ def run(agent_dir: str, port: int, interactive: bool, no_trace: bool, model: str
     # 2. 根据框架类型选择处理方式
     # 所有框架统一使用 _run_custom() 以支持 Langfuse 自动插桩
     # (Langfuse instrumentation 需要在同一进程内生效)
-    _run_custom(result, agent_path, port, interactive, no_trace)
+    _run_custom(result, agent_path, port, interactive, no_trace, show_thinking, no_stream)
 
 
 def _run_adk_cli(agent_path: Path, port: int = 8080, command: str = "run"):
@@ -132,6 +134,8 @@ def _run_custom(
     port: int,
     interactive: bool,
     no_trace: bool,
+    show_thinking: bool,
+    no_stream: bool = False,
 ):
     """使用自定义实现 (LangChain/LangGraph)"""
     from ksadk.runners.unified_runner import UnifiedRunner
@@ -176,18 +180,14 @@ def _run_custom(
 
     # 运行
     if interactive:
-        click.clear()
-        click.secho("🤖 KsADK Interactive Mode", fg="blue", bold=True)
-        framework_map = {
-            "adk": "Google ADK",
-            "langchain": "LangChain",
-            "langgraph": "LangGraph",
-            "unknown": "Unknown"
-        }
-        framework_name = framework_map.get(result.type.value, result.type.value)
-        click.echo(f"Framework: {framework_name}")
-        click.echo("Type 'exit' to quit.\n")
-        asyncio.run(UnifiedRunner.run_interactive(runner, show_thinking=True))
+        # TUI 交互模式
+        from ksadk.tui import AgentTUI
+        app = AgentTUI(
+            runner=runner,
+            show_thinking=show_thinking,
+            project_dir=str(agent_path),
+        )
+        app.run()
     else:
         click.secho(f"\n🚀 Server running at http://0.0.0.0:{port}", fg="green", bold=True)
         click.echo("   - API Docs: http://0.0.0.0:{}/docs".format(port))

@@ -83,6 +83,8 @@ class ColoredHelpGroup(click.Group):
 
         # 本地开发
         formatter.write(click.style("  📦 本地开发:\n\n", fg="green", bold=True))
+        formatter.write(click.style("      agentengine init      ", fg="cyan"))
+        formatter.write(click.style("初始化项目\n\n", fg="white"))
         formatter.write(click.style("      agentengine run .     ", fg="cyan"))
         formatter.write(click.style("运行 API Server\n\n", fg="white"))
         formatter.write(click.style("      agentengine web .     ", fg="cyan"))
@@ -90,8 +92,6 @@ class ColoredHelpGroup(click.Group):
 
         # 云端部署
         formatter.write(click.style("  🚀 云端部署:\n\n", fg="blue", bold=True))
-        formatter.write(click.style("      agentengine init      ", fg="cyan"))
-        formatter.write(click.style("初始化项目\n\n", fg="white"))
         formatter.write(click.style("      agentengine build     ", fg="cyan"))
         formatter.write(click.style("构建镜像\n\n", fg="white"))
         formatter.write(click.style("      agentengine deploy    ", fg="cyan"))

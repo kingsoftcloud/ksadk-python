@@ -125,58 +125,10 @@ class ADKRunner(BaseRunner):
 
     def _prepare_trace_metadata(self, session_id: str):
         """准备 Trace 元数据 (Tags, UserID, etc.)"""
-        user_id = None
-        tags = []
-        version = None
-        agent_name = None
-
-        try:
-            from ksadk.configs import settings
-
-            agent_config = settings.agent
-
-            user_id = agent_config.user_id
-            version = agent_config.version
-            tags = list(agent_config.tags or [])
-
-            # Add Environment
-            if agent_config.environment and agent_config.environment not in tags:
-                tags.append(agent_config.environment)
-
-            # Add Region (Kingsoft Cloud)
-            if settings.cloud.region and settings.cloud.region not in tags:
-                tags.append(settings.cloud.region)
-
-            # Add Model Name
-            if settings.model.model_name and settings.model.model_name not in tags:
-                tags.append(settings.model.model_name)
-
-            # Add Agent Name (Configured -> Fallback)
-            agent_name = agent_config.agent_name
-            if not agent_name and hasattr(self, "detection_result"):
-                try:
-                    # Fallback to package name
-                    agent_name = Path(self.detection_result.package_path).name
-                except Exception:
-                    pass
-
-            if agent_name and agent_name not in tags:
-                tags.append(agent_name)
-
-            # Add Agent ID
-            if agent_config.agent_id and agent_config.agent_id not in tags:
-                tags.append(agent_config.agent_id)
-
-            # Add Tenant ID (Account ID)
-            if agent_config.tenant_id and agent_config.tenant_id not in tags:
-                tags.append(agent_config.tenant_id)
-
-        except ImportError:
-            pass
-        except Exception:
-            pass
-
-        return user_id, tags, version, agent_name
+        from ksadk.tracing.span_utils import prepare_trace_metadata
+        return prepare_trace_metadata(
+            detection_result=getattr(self, "detection_result", None)
+        )
 
     async def _ensure_session(self, external_session_id: str = None) -> str:
         """Get or create ADK session ID based on external ID"""

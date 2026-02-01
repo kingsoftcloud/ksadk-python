@@ -158,3 +158,4 @@ Thumbs.db
 /webui/node_modules/
 .agentengin/
 webui
+.pypirc

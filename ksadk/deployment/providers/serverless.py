@@ -414,6 +414,22 @@ class ServerlessProvider(DockerProvider):
                     if ks3_config:
                         request_data["ks3"] = ks3_config
 
+                    # Container 模式: 传递镜像凭证
+                    if artifact_type == "Container":
+                        kcr_username = os.getenv("KCR_USERNAME")
+                        kcr_password = os.getenv("KCR_PASSWORD")
+                        kcr_endpoint = os.getenv("KCR_ENDPOINT", "hub.kce.ksyun.com")
+
+                        if kcr_username and kcr_password:
+                            request_data["image_credential"] = {
+                                "endpoint": kcr_endpoint,
+                                "username": kcr_username,
+                                "password": kcr_password,
+                            }
+                            click.echo(f"   🔑 镜像凭证: {kcr_username}@{kcr_endpoint}")
+                        else:
+                            click.secho("   ⚠️  未配置镜像凭证 (KCR_USERNAME/KCR_PASSWORD)，私有镜像可能无法拉取", fg="yellow")
+
                     # 加载本地 .env 并注入到环境变量
                     env_file = Path(project_dir) / ".env"
                     env_vars = {}
