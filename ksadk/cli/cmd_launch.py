@@ -226,6 +226,9 @@ async def _launch_async(
             click.echo(f"   状态:     {result.status.value}")
             if result.endpoint:
                 click.echo(f"   Endpoint: {result.endpoint}")
+            if result.api_key:
+                click.secho(f"   API Key:  {result.api_key}", fg="yellow", bold=True)
+                click.secho("   ⚠️  请妥善保存此 API Key，它仅在首次部署时显示！", fg="yellow")
             if result.message:
                 click.echo(f"   信息:     {result.message}")
 

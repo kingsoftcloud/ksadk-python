@@ -48,8 +48,12 @@ def set_runner(r: BaseRunner):
 
 @app.get("/health")
 async def health_check():
-    framework = runner.detection_result.name if runner and hasattr(runner, 'detection_result') else "unknown"
-    return {"status": "ok", "framework": framework}
+    framework = "unknown"
+    agent_name = "unknown"
+    if runner and hasattr(runner, 'detection_result'):
+        framework = runner.detection_result.type.value  # langgraph, langchain, adk
+        agent_name = runner.detection_result.name
+    return {"status": "ok", "framework": framework, "agent": agent_name}
 
 
 @app.get("/list-apps")
@@ -668,15 +672,22 @@ async def get_traces(limit: int = 50):
 
 # 静态文件目录
 STATIC_DIR = Path(__file__).parent / "static"
+LANGCHAIN_UI_DIR = STATIC_DIR / "langchain"
 
-# 使用 StaticFiles 挂载静态文件（官方推荐方式）
+# 挂载 LangChain Web UI（/langchain/ 路径）
+if LANGCHAIN_UI_DIR.exists():
+    app.mount("/langchain", StaticFiles(directory=str(LANGCHAIN_UI_DIR), html=True), name="langchain-ui")
+    logger.info(f"LangChain Web UI mounted at /langchain/ from: {LANGCHAIN_UI_DIR}")
+
+# 使用 StaticFiles 挂载 ADK Web 静态文件（官方推荐方式）
 if STATIC_DIR.exists() and (STATIC_DIR / "index.html").exists():
     # html=True 使得访问目录时自动返回 index.html
     app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
-    logger.info(f"Static files mounted from: {STATIC_DIR}")
+    logger.info(f"ADK Web UI mounted from: {STATIC_DIR}")
 else:
     logger.warning(f"Static files not found at: {STATIC_DIR}")
     logger.warning("Run 'make sync-static' to build and sync the Web UI")
+
 
 
 

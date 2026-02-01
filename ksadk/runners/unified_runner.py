@@ -46,7 +46,3 @@ class UnifiedRunner:
 
         else:
             raise ValueError(f"不支持的框架类型: {detection_result.type}")
-
-    @staticmethod
-    def run_interactive(runner: BaseRunner, show_thinking: bool = False):
-        return runner.run_interactive(show_thinking=show_thinking)

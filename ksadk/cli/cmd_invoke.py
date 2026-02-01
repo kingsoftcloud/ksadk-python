@@ -7,63 +7,53 @@ agentengine invoke - 与已部署的 Agent 进行交互
 import click
 import asyncio
 import json
-import sys
 from pathlib import Path
 from typing import Optional
 import time
 
 try:
-    import questionary
-except ImportError:
-    questionary = None
-
-try:
     from rich.console import Console
     from rich.markdown import Markdown
     from rich.live import Live
-    from rich.theme import Theme
-
-    from rich.live import Live
-    from rich.theme import Theme
     console = Console()
 except ImportError:
     console = None
     Markdown = None
     Live = None
-    Theme = None
-    Theme = None
 
 
 @click.command()
 @click.option("--agent", "-a", help="Agent 名称或 ID")
 @click.option("--endpoint", "-e", help="Agent Endpoint URL (覆盖自动获取)")
 @click.option("--api-key", help="AgentEngine API Key (覆盖本地配置)")
-@click.option("--message", "-m", help="发送的消息 (非交互模式)")
+@click.option("--message", "-m", help="发送的消息 (单次调用模式)")
 @click.option("--session", "-s", help="Session ID (可选)")
-@click.option("--no-stream", is_flag=True, help="禁用流式输出")
 @click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
 @click.option("--local", "-l", is_flag=True, help="连接本地服务 (http://localhost:8080)")
 @click.option("--insecure", "-k", is_flag=True, help="跳过 SSL 证书验证 (类似 curl -k)")
 @click.option("--model", help="指定模型名称")
+@click.option("--show-thinking", is_flag=True, help="显示模型思考过程")
 def invoke(
     agent: str,
     endpoint: str,
     api_key: str,
     message: str,
     session: str,
-    no_stream: bool,
     region: str,
     local: bool,
     insecure: bool,
     model: str,
+    show_thinking: bool,
 ):
     """与 Agent 进行交互 (本地或远程)
 
-    \b
+    默认使用 TUI 交互模式，使用 -m 发送单条消息。
+
+    \\b
     使用方式:
-        agentengine invoke --local                  # 连接本地
-        agentengine invoke --agent my-agent         # 连接云端
-        agentengine invoke --endpoint http://...    # 指定地址
+        agentengine invoke --local                  # 本地 TUI 模式
+        agentengine invoke --agent my-agent         # 云端 TUI 模式
+        agentengine invoke --local -m "你好"        # 单次调用
         agentengine invoke -k --endpoint https://... # 跳过 SSL 验证
     """
     # 加载本地状态
@@ -101,14 +91,42 @@ def invoke(
     if insecure:
         click.secho("   ⚠️  SSL 证书验证已禁用", fg="yellow")
 
-    stream = not no_stream
-
     if message:
         # 单次调用模式
-        asyncio.run(_invoke_once(endpoint, message, api_key, session, stream, insecure, model))
+        asyncio.run(_invoke_once(endpoint, message, api_key, session, True, insecure, model))
     else:
-        # 交互模式
-        _invoke_interactive(endpoint, api_key, session, stream, insecure, model)
+        # 默认 TUI 模式
+        _invoke_tui(endpoint, api_key, session, insecure, model, show_thinking)
+
+
+
+
+def _invoke_tui(
+    endpoint: str,
+    api_key: str = None,
+    session_id: str = None,
+    insecure: bool = False,
+    model: str = None,
+    show_thinking: bool = False,
+):
+    """使用 TUI 模式调用"""
+    from ksadk.runners.remote_runner import RemoteRunner
+    from ksadk.tui import AgentTUI
+
+    runner = RemoteRunner(
+        endpoint=endpoint,
+        api_key=api_key,
+        session_id=session_id,
+        insecure=insecure,
+        model=model,
+    )
+
+    app = AgentTUI(
+        runner=runner,
+        show_thinking=show_thinking,
+        project_dir=".",
+    )
+    app.run()
 
 
 def _get_agent_from_config() -> Optional[str]:
@@ -234,114 +252,6 @@ async def _invoke_once(
     except Exception as e:
         click.secho(f"\n❌ 调用失败: {e}", fg="red")
 
-
-def _invoke_interactive(
-    endpoint: str, api_key: str = None, session_id: str = None, stream: bool = True, insecure: bool = False, model: str = None
-):
-    """交互模式"""
-    click.echo("\n输入 'exit' 或 'quit' 退出\n")
-
-    # 如果没有指定 session_id，生成一个
-    if not session_id:
-        import uuid
-
-        session_id = str(uuid.uuid4())[:8]
-
-    while True:
-        try:
-            if questionary:
-                user_input = questionary.text("👤 你: ").ask()
-                if user_input is None:  # Ctrl+C
-                    click.echo("\n👋 再见!")
-                    break
-            else:
-                # Fallback implementation
-                try:
-                    user_input = input("👤 你: ").strip()
-                except UnicodeDecodeError:
-                     click.secho("\n⚠️  输入编码异常，请重试", fg="yellow")
-                     continue
-
-            if not user_input:
-                continue
-
-            if user_input.lower() in ("exit", "quit", "退出"):
-                click.echo("\n👋 再见!")
-                break
-
-            click.echo(f"🤖 Agent: ", nl=False)
-
-            if stream:
-                async def run_stream():
-                    full_response = ""
-                    if Live and Markdown:
-                        # 手动控制刷新以减少闪烁
-                        with Live(Markdown("", justify="left"), console=console, auto_refresh=False, vertical_overflow="visible") as live:
-                            last_refresh_time = 0
-                            full_reasoning = ""
-                            async for chunk in _stream_chat(endpoint, user_input, api_key, session_id, False, insecure, model):
-                                content, reasoning = _extract_content(chunk)
-                                
-                                updated = False
-                                if reasoning:
-                                    full_reasoning += reasoning
-                                    updated = True
-                                if content:
-                                    full_response += content
-                                    updated = True
-
-                                if updated:
-                                    display_text = ""
-                                    if full_reasoning:
-                                        formatted_reasoning = full_reasoning.replace('\n', '\n> ')
-                                    display_text += f"> 🧠 **Thinking:**\n> {formatted_reasoning}\n\n"
-                                    display_text += full_response
-                                    
-                                    live.update(Markdown(display_text, justify="left"))
-                                    
-                                    # 基于时间限流刷新 (每0.2秒一次 = 5 FPS)
-                                    now = time.time()
-                                    if now - last_refresh_time > 0.2:
-                                        live.refresh()
-                                        last_refresh_time = now
-                            live.refresh()
-                    else:
-                        async for chunk in _stream_chat(endpoint, user_input, api_key, session_id, False, insecure, model):
-                            content, reasoning = _extract_content(chunk)
-                            if reasoning:
-                                click.secho(reasoning, fg="bright_black", nl=False)
-                            if content:
-                                print(content, end="", flush=True)
-                
-                asyncio.run(run_stream())
-                click.echo()  # 换行
-            else:
-                response = asyncio.run(_chat(endpoint, user_input, api_key, session_id, insecure, model))
-                content = _extract_response_content(response)
-                if console and Markdown:
-                    console.print(Markdown(content))
-                else:
-                    click.echo(content)
-
-            print()  # 空行
-
-        except KeyboardInterrupt:
-            click.echo("\n\n👋 再见!")
-            break
-        except EOFError:
-            click.echo("\n👋 再见!")
-            break
-        except UnicodeDecodeError as e:
-            # 捕获所有其他 Unicode 解码错误
-            click.secho(f"\n⚠️  输入编码错误，请重新输入 (错误: {e})", fg="yellow")
-            print()
-        except Exception as e:
-            # 检查是否是编码相关错误
-            if "codec" in str(e).lower() or "decode" in str(e).lower():
-                click.secho(f"\n⚠️  输入编码问题，请重新输入", fg="yellow")
-            else:
-                click.secho(f"\n❌ 错误: {e}", fg="red")
-            print()
 
 
 async def _chat(

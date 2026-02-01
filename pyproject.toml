@@ -33,6 +33,8 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "pydantic>=2.0.0,<3.0.0",
     "questionary>=2.0.0",
+    # TUI 交互界面 (Textual 包含 Rich，无需单独安装)
+    "textual>=0.50.0",
     # API 服务 (run/web 命令)
     # fastapi 限制上限以兼容 google-adk (需要 <0.124.0)
     "fastapi>=0.100.0,<0.124.0",
@@ -43,8 +45,6 @@ dependencies = [
     "requests-aws4auth>=1.2.0",
     # KS3 上传 (build --push)
     "ks3sdk>=1.15.0",
-    # 终端美化 (Markdown 渲染)
-    "rich>=10.0.0",
     # ========= 核心框架依赖 (默认安装) =========
     # LangChain
     "langchain>=0.3.0,<2.0.0",
@@ -52,6 +52,9 @@ dependencies = [
     "langchain-core>=0.3.0,<2.0.0",
     # LangGraph - 使用兼容的版本范围
     "langgraph>=0.2.0,<2.0.0",
+    # ========= Web UI =========
+    # Chainlit - LangChain/LangGraph 的 Web UI
+    "chainlit>=1.0.0",
     # ========= 可观测性 (默认安装) =========
     "opentelemetry-api==1.37.0",
     "opentelemetry-sdk==1.37.0",
