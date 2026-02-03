@@ -41,7 +41,7 @@ def build(
     示例:
         agentengine build .
         agentengine build . --mode code --push
-        agentengine build . --mode container --push --registry kcr.cn-beijing-6.ksyuncs.com
+        agentengine build . --mode container --push --registry hub-cn-beijing-6.kce.ksyun.com
     """
     agent_path = Path(agent_dir).resolve()
     click.echo(f"📁 项目目录: {agent_path}")

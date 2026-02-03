@@ -416,7 +416,8 @@ class ServerlessProvider(DockerProvider):
 
                     # Container 模式: 传递镜像凭证
                     if artifact_type == "Container":
-                        kcr_username = os.getenv("KCR_USERNAME")
+                        # KCR_USERNAME 默认使用 KSYUN_ACCOUNT_ID
+                        kcr_username = os.getenv("KCR_USERNAME", "") or os.getenv("KSYUN_ACCOUNT_ID", "")
                         kcr_password = os.getenv("KCR_PASSWORD")
                         kcr_endpoint = os.getenv("KCR_ENDPOINT", "hub.kce.ksyun.com")
 

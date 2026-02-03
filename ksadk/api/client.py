@@ -211,6 +211,13 @@ class AgentEngineClient:
             params["ModelName"] = data["model"].get("name")
             params["ModelApiBase"] = data["model"].get("api_base")
             params["ModelApiKey"] = data["model"].get("api_key")
+        # Container 模式: 传递镜像凭证
+        if data.get("image_credential"):
+            params["ImageCredential"] = {
+                "Endpoint": data["image_credential"].get("endpoint"),
+                "Username": data["image_credential"].get("username"),
+                "Password": data["image_credential"].get("password"),
+            }
         return self._action("CreateAgent", params)
 
     async def get_agent(self, agent_id: str) -> Dict[str, Any]:
