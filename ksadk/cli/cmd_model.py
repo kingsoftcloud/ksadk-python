@@ -14,20 +14,21 @@ from dotenv import set_key, find_dotenv, load_dotenv
 def model():
     """切换默认模型 (修改 .env)
 
-    从 OPENAI_API_BASE 获取可用模型列表，并更新 .env 中的 MODEL_NAME
+    从 OPENAI_BASE_URL 获取可用模型列表，并更新 .env 中的 OPENAI_MODEL_NAME
     """
     # 智能初始化 (加载 .env + 默认配置，支持自动推导 API Key/Base)
     from ksadk.configs import setup_environment
 
     setup_environment(Path.cwd())
 
-    api_base = os.getenv("OPENAI_API_BASE")
+    # 支持两种环境变量名 (OPENAI_BASE_URL 优先, OPENAI_API_BASE 兼容旧版)
+    api_base = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE")
     api_key = os.getenv("OPENAI_API_KEY")
-    current_model = os.getenv("MODEL_NAME")
+    current_model = os.getenv("OPENAI_MODEL_NAME") or os.getenv("MODEL_NAME")  # 兼容旧版
 
     if not api_base:
-        click.secho("❌ 未找到 OPENAI_API_BASE", fg="red")
-        click.echo("请先在 .env 文件中配置 API 地址")
+        click.secho("❌ 未找到 OPENAI_BASE_URL", fg="red")
+        click.echo("请先在 .env 文件中配置 API 地址 (OPENAI_BASE_URL)")
         return
 
     # 有些兼容接口可能不需要 Key，但通常都需要
@@ -112,7 +113,7 @@ def model():
                     env_file.touch()
 
                 # set_key 会保留注释和格式
-                success, key, value = set_key(env_file, "MODEL_NAME", selected, quote_mode="never")
+                success, key, value = set_key(env_file, "OPENAI_MODEL_NAME", selected, quote_mode="never")
                 if success:
                     click.secho(
                         f"✅ 已切换模型为: {click.style(selected, fg='green', bold=True)}",

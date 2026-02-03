@@ -77,9 +77,98 @@ def _update_env_file(path: Path, updates: dict):
     path.write_text("\n".join(new_lines) + "\n", encoding="utf-8-sig")
 
 
+def _handle_set_command(set_items: tuple, output_path: Path, env_path: Path, is_global: bool):
+    """处理 --set 命令逻辑"""
+    updates_yaml = {}
+    updates_env = {}
+    
+    for item in set_items:
+        if "=" not in item:
+            click.secho(f"⚠️  无效格式忽略: {item} (应为 key=value)", fg='yellow')
+            continue
+            
+        key, value = item.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        
+        # 键值映射逻辑
+        # 1. 环境变量 (OPENAI_*, KSYUN_*)
+        if key.startswith("OPENAI_") or key.startswith("KSYUN_"):
+            updates_env[key] = value
+            # 特殊联动: KSYUN_REGION -> region
+            if key == "KSYUN_REGION":
+                updates_yaml["region"] = value
+                
+        # 2. YAML 配置 (region 特殊处理联动)
+        elif key == "region":
+            updates_yaml["region"] = value
+            updates_env["KSYUN_REGION"] = value
+            
+        # 3. 其他默认视为 YAML 配置
+        else:
+            updates_yaml[key] = value
+
+    # 更新本地 .env
+    if updates_env:
+        _update_env_file(env_path, updates_env)
+        click.echo(f"✅ 更新环境变量 ({env_path}): {', '.join(updates_env.keys())}")
+        
+    # 更新本地 agentengine.yaml
+    if updates_yaml:
+        current_yaml = {}
+        if output_path.exists():
+            try:
+                with open(output_path, 'r', encoding='utf-8-sig') as f:
+                    current_yaml = yaml.safe_load(f) or {}
+            except Exception:
+                pass
+        
+        current_yaml.update(updates_yaml)
+        
+        # 简单回写 (注意：这会丢失原文件的注释，但为了 --set 功能这是权衡)
+        # 如果只想更新特定字段而不重写文件结构，需要更复杂的解析器
+        with open(output_path, 'w', encoding='utf-8-sig') as f:
+            yaml.dump(current_yaml, f, default_flow_style=False, allow_unicode=True)
+            
+        click.echo(f"✅ 更新项目配置 ({output_path}): {', '.join(updates_yaml.keys())}")
+
+    # 处理全局配置
+    if is_global:
+        from ksadk.configs.global_config import (
+            save_global_config,
+            build_global_config_from_env,
+            load_global_config,
+            get_global_config_path
+        )
+        
+        # 加载现有全局配置用于合并 (因为 build_from_env 是覆盖式构建)
+        # 这里简化逻辑：我们只更新本次 set 涉及的环境变量
+        # 但 build_global_config_from_env 需要完整的 env 字典才能构建出完整结构？
+        # 不，它会构建一个新的结构。我们需要合并到旧结构中。
+        
+        # 更好策略: 加载旧全局 -> 扁平化为 Env -> 更新 Env -> 重新构建 -> 保存
+        # 或者直接利用 config 模块的分组逻辑 (需要 config 模块支持 update)
+        
+        # 简易实现：
+        # 1. 获取当前全局配置的 env 视图
+        from ksadk.configs.global_config import get_env_from_global_config
+        
+        current_global_env = get_env_from_global_config()
+        # 2. 合并本次更新
+        current_global_env.update(updates_env)
+        # 3. 重新构建并保存
+        new_global_config = build_global_config_from_env(current_global_env)
+        
+        if save_global_config(new_global_config):
+            click.secho(f"✅ 更新全局配置 ({get_global_config_path()})", fg='green')
+        else:
+            click.secho(f"⚠️  保存全局配置失败", fg='yellow')
+
 @click.command(context_settings=dict(help_option_names=['-h', '--help']))
 @click.option('--output', '-o', default='agentengine.yaml', help='输出配置文件名')
-def config(output: str):
+@click.option('--set', '-s', 'set_items', multiple=True, help='设置配置项 key=value')
+@click.option('--global', 'is_global', is_flag=True, default=False, help='强制更新全局配置')
+def config(output: str, set_items: tuple, is_global: bool):
     """通过交互式向导配置 agentengine.yaml 和 .env 文件
     
     支持:
@@ -87,7 +176,9 @@ def config(output: str):
     2. 配置 模型服务 (API Key, Base URL)
     3. 配置 云厂商凭证 (KSYUN AK/SK)
     
-    命令是幂等的，再次运行会读取现有配置作为默认值。
+    参数:
+        --set: 非交互式设置配置项 (如 --set name=MyAgent --set KSYUN_REGION=cn-beijing-6)
+        --global: 强制更新全局配置 (~/.agentengine/settings.json)
     """
     click.secho("🔧 AgentEngine 全局配置向导", fg='blue', bold=True)
     click.echo("─" * 50)
@@ -95,6 +186,11 @@ def config(output: str):
     output_path = Path(output)
     env_path = Path(".env")
     
+    # === 0. 处理 --set 非交互模式 ===
+    if set_items:
+        _handle_set_command(set_items, output_path, env_path, is_global)
+        return
+
     # === 1. 加载现有配置 ===
     existing_config = {}
     if output_path.exists():
@@ -258,6 +354,45 @@ def config(output: str):
         new_config['region'] = existing_config.get('region', 'cn-beijing-6')
 
     click.echo("")
+
+    # === 4.5 容器镜像仓库认证 (仅 container 模式需要) ===
+    click.secho("🐳 容器镜像部署 (可选)", fg='yellow', bold=True)
+    click.echo("如果计划使用 container 模式 (agentengine build -m container)，需要配置镜像仓库认证")
+    
+    should_config_registry = _ask_or_exit(questionary.confirm(
+        "是否使用 container 模式部署?",
+        default=bool(existing_env.get('KCR_USERNAME')),
+        style=custom_style
+    ))
+
+    if should_config_registry:
+        # 密码 (必填)
+        new_env['KCR_PASSWORD'] = _ask_or_exit(questionary.password(
+            "KCR 临时密码:",
+            default=existing_env.get('KCR_PASSWORD', ''),
+            style=custom_style
+        ))
+        
+        # 仓库地址 (选填，默认使用企业版 KCR)
+        default_registry = existing_env.get('KCR_REGISTRY', '')
+        auto_registry = "hub.kce.ksyun.com/agentengine"
+        
+        custom_registry = _ask_or_exit(questionary.text(
+            f"镜像仓库地址 [选填,默认: {auto_registry}]:",
+            default=default_registry,
+            style=custom_style
+        ))
+        
+        if custom_registry:
+            new_env['KCR_REGISTRY'] = custom_registry
+        # 不填则不写入，运行时自动根据 KSYUN_REGION 生成
+        
+        click.echo("")
+        click.echo("💡 提示:")
+        click.echo("   用户名自动使用 KSYUN_ACCOUNT_ID (无需配置)")
+        click.echo("   KCR 临时密码获取: https://kcr.console.ksyun.com/ → 访问凭证")
+
+    click.echo("")
     
     # === 5. 写入文件 ===
     
@@ -306,7 +441,7 @@ def config(output: str):
     click.echo(f"   配置文件: {output_path}")
     click.echo(f"   环境凭证: {env_path}")
     
-    # 5.4 询问是否保存到全局配置
+    # 5.4 处理全局配置保存逻辑
     click.echo("")
     from ksadk.configs.global_config import (
         save_global_config,
@@ -314,19 +449,25 @@ def config(output: str):
         get_global_config_path,
         global_config_exists,
     )
+
+    should_save_global = False
     
-    # 如果已有全局配置，提示会覆盖
-    if global_config_exists():
-        prompt_text = "是否更新全局配置 (~/.agentengine/settings.json)?"
+    # 情况1: 用户显式指定 --global -> 总是保存 (或确认后保存)
+    if is_global:
+        should_save_global = True
+        
+    # 情况2: 全局配置不存在 -> 首次运行，提示保存
+    elif not global_config_exists():
+        should_save_global = _ask_or_exit(questionary.confirm(
+            "是否保存到全局配置 (后续新项目可自动复用)?",
+            default=True,
+            style=custom_style
+        ))
+        
+    # 情况3: 全局配置已存在 且 未指定 --global -> 静默跳过，不打扰用户
     else:
-        prompt_text = "是否保存到全局配置 (后续新项目可自动复用)?"
-    
-    should_save_global = _ask_or_exit(questionary.confirm(
-        prompt_text,
-        default=True,
-        style=custom_style
-    ))
-    
+        should_save_global = False
+
     if should_save_global:
         global_config = build_global_config_from_env(new_env)
         if save_global_config(global_config):

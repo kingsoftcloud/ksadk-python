@@ -134,7 +134,7 @@ class K8sDeployer(BaseDeployer):
         return {"status": "error", "message": "No config path provided"}
     
     def _generate_dockerfile(self, detection_result: Any) -> str:
-        return f'''FROM python:3.11-slim
+        return f'''FROM python:3.12-slim
 
 WORKDIR /app
 
