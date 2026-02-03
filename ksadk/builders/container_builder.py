@@ -120,10 +120,239 @@ class ContainerBuilder(BaseBuilder):
         
         return registry
     
+    def _package(self, detection_result) -> 'PackageInfo':
+        """打包项目 - 复制文件并生成 Dockerfile/requirements/entrypoint"""
+        from ksadk.deployment.base import PackageInfo
+        
+        project_path = self.project_dir
+        output_dir = project_path / ".agentengine" / "build"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        package_name = Path(detection_result.package_path).name
+        
+        # 复制项目文件
+        for item in project_path.iterdir():
+            # 排除隐藏文件(但保留 .env*) 和特定忽略目录
+            if (item.name.startswith('.') and not item.name.startswith('.env')) or item.name in ('__pycache__', '.git', 'node_modules'):
+                continue
+            dest = output_dir / item.name
+            if item.is_dir():
+                if dest.exists():
+                    shutil.rmtree(dest)
+                shutil.copytree(item, dest, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+            else:
+                shutil.copy2(item, dest)
+        
+        # 复制 ksadk 源码 (确保容器内可用)
+        import ksadk
+        ksadk_src = Path(ksadk.__file__).parent
+        ksadk_dest = output_dir / "ksadk"
+        if ksadk_dest.exists():
+            shutil.rmtree(ksadk_dest)
+        shutil.copytree(
+            ksadk_src, 
+            ksadk_dest, 
+            ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '*.pyd', '*.so', '*.dylib', '*.bin')
+        )
+        
+        # 生成 Dockerfile
+        dockerfile = self._generate_dockerfile(detection_result)
+        dockerfile_path = output_dir / "Dockerfile"
+        dockerfile_path.write_text(dockerfile)
+        
+        # 生成 requirements.txt (合并用户依赖)
+        requirements = self._generate_requirements(detection_result, project_path)
+        requirements_path = output_dir / "requirements.txt"
+        requirements_path.write_text(requirements)
+        
+        # 生成启动脚本
+        entrypoint = self._generate_entrypoint(detection_result, package_name)
+        entrypoint_path = output_dir / "entrypoint.py"
+        entrypoint_path.write_text(entrypoint)
+        
+        return PackageInfo(
+            name=detection_result.name or project_path.name,
+            framework=detection_result.type.value,
+            build_dir=str(output_dir),
+            project_dir=str(project_path),
+            dockerfile=str(dockerfile_path),
+            entry_point=detection_result.entry_point,
+            metadata={
+                "package_name": package_name,
+                "requirements": str(requirements_path),
+                "entrypoint": str(entrypoint_path),
+            }
+        )
+    
+    def _generate_dockerfile(self, detection_result) -> str:
+        """生成优化的 Dockerfile"""
+        base_image = "python:3.12-slim"
+        
+        return f'''FROM {base_image}
+
+# 设置环境变量
+ENV PYTHONUNBUFFERED=1 \\
+    PYTHONDONTWRITEBYTECODE=1 \\
+    PIP_NO_CACHE_DIR=1 \\
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /app
+
+# 先复制依赖文件 (利用 Docker Layer 缓存)
+COPY requirements.txt .
+
+# 使用清华镜像源加速安装
+RUN pip install -r requirements.txt -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
+
+# 复制应用代码
+COPY . .
+
+# 创建非 root 用户 (安全最佳实践)
+RUN useradd -m -u 1000 agent && chown -R agent:agent /app
+USER agent
+
+EXPOSE 8080
+
+# 使用 exec 形式确保信号正确传递
+CMD ["python", "entrypoint.py"]
+'''
+    
+    def _generate_requirements(self, detection_result, project_path: Path = None) -> str:
+        """生成 requirements.txt"""
+        base_deps = [
+            # Core
+            "fastapi>=0.100.0",
+            "uvicorn>=0.23.0",
+            "python-dotenv>=1.0.0",
+            "pydantic>=2.0.0",
+            "pyyaml>=6.0.0",
+            "httpx>=0.24.0",
+            # Tracing
+            "opentelemetry-api>=1.37.0",
+            "opentelemetry-sdk>=1.37.0",
+            "opentelemetry-exporter-otlp>=1.37.0",
+            "openinference-instrumentation-langchain>=0.1.0",
+            "langfuse>=2.0.0",
+        ]
+        
+        framework = detection_result.type.value
+        if framework == "adk":
+            base_deps += ["google-adk>=0.1.0", "litellm>=1.0.0"]
+        elif framework in ("langchain", "langgraph"):
+            base_deps += [
+                "langchain>=0.1.0",
+                "langchain-openai>=0.1.0",
+                "langchain-core>=0.1.0",
+                "langgraph>=0.1.0",
+                "mcp>=1.1.0",
+                "langchain-mcp-adapters>=0.0.1",
+            ]
+        
+        # 合并用户 requirements.txt (如果存在)
+        if project_path:
+            user_requirements = project_path / "requirements.txt"
+            if user_requirements.exists():
+                user_content = user_requirements.read_text()
+                user_deps = [l.strip() for l in user_content.split('\n') if l.strip() and not l.startswith('#')]
+                base_deps.extend(user_deps)
+        
+        return "\n".join(base_deps)
+    
+    def _generate_entrypoint(self, detection_result, package_name: str) -> str:
+        """生成 entrypoint.py"""
+        return f'''"""
+AgentEngine Container 模式入口
+"""
+
+import sys
+import os
+import logging
+from pathlib import Path
+
+# ========== 日志配置 ==========
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    stream=sys.stdout,
+    force=True,
+)
+
+logger = logging.getLogger("entrypoint")
+logger.info(f"日志级别: {{LOG_LEVEL}}")
+
+# 配置第三方库日志级别
+if LOG_LEVEL != "DEBUG":
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+# ========== 路径设置 ==========
+sys.path.insert(0, "/app")
+os.chdir("/app")
+
+logger.info("=" * 60)
+logger.info("AgentEngine 启动 (Container 模式)")
+logger.info("=" * 60)
+logger.info(f"Python: {{sys.version}}")
+
+# 加载环境变量
+try:
+    from dotenv import load_dotenv
+    if os.path.exists("/app/.env"):
+        load_dotenv("/app/.env")
+        logger.info("加载 .env 文件")
+except ImportError:
+    pass
+
+# ========== 加载 Agent ==========
+from ksadk.configs import setup_environment
+setup_environment(Path("/app"))
+
+from ksadk.runners import create_runner
+from ksadk.detection import DetectionResult, FrameworkType
+from ksadk.server import app, set_runner
+import uvicorn
+
+# 检测结果 (构建时固化)
+detection_result = DetectionResult(
+    type=FrameworkType.{detection_result.type.name},
+    name="{detection_result.name}",
+    entry_point="{detection_result.entry_point}",
+    package_path="/app/{package_name}",
+    agent_variable="{detection_result.agent_variable}"
+)
+
+logger.info(f"框架: {{detection_result.name}}")
+logger.info(f"入口: {{detection_result.entry_point}}")
+
+# 初始化 Tracing (如果配置了 Langfuse)
+if os.environ.get("LANGFUSE_PUBLIC_KEY"):
+    try:
+        from ksadk.tracing import setup_tracing
+        is_langchain = "{detection_result.type.name}" in ("LANGCHAIN", "LANGGRAPH")
+        setup_tracing(use_callback_only=is_langchain)
+        logger.info(f"Tracing 已启用 (Langfuse)")
+    except Exception as e:
+        logger.warning(f"Tracing 初始化失败: {{e}}")
+
+# 创建 Runner 并加载 Agent
+logger.info("正在加载 Agent...")
+runner = create_runner(detection_result, "/app")
+runner.load_agent()
+set_runner(runner)
+logger.info("Agent 加载成功!")
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8080))
+    logger.info(f"启动 HTTP Server: 0.0.0.0:{{port}}")
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level=LOG_LEVEL.lower())
+'''
+    
     def build(self) -> BuildResult:
         """构建 Docker 镜像"""
         from ksadk.detection import FrameworkDetector
-        from ksadk.deployment import DeploymentManager
         
         self._load_dotenv()
         config = self._load_config()
@@ -168,12 +397,10 @@ class ContainerBuilder(BaseBuilder):
         
         click.echo(f"🏷️  镜像名称: {full_image}")
         
-        # 打包
-        deployer = DeploymentManager.create("docker")
-        
+        # 打包 (内置打包逻辑，不再依赖 DockerProvider)
         click.echo("\n📦 打包中...")
         try:
-            package_info = asyncio.run(deployer.package(str(self.project_dir), result))
+            package_info = self._package(result)
             click.echo("✅ 打包完成")
         except Exception as e:
             return BuildResult(

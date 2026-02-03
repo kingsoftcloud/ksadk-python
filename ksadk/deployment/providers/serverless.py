@@ -23,7 +23,7 @@ from ksadk.deployment.base import (
     PackageInfo,
 )
 from ksadk.deployment.registry import DeployProviderRegistry
-from ksadk.deployment.providers.docker import DockerProvider
+from ksadk.builders.container_builder import ContainerBuilder
 from ksadk.api import AgentEngineClient, DryRunExit
 
 
@@ -33,8 +33,12 @@ logger = logging.getLogger(__name__)
 @DeployProviderRegistry.register("serverless")
 @DeployProviderRegistry.register("kcf")
 @DeployProviderRegistry.register("kce")
-class ServerlessProvider(DockerProvider):
-    """金山云 Serverless 计算引擎 (AgentEngine Server 托管)"""
+class ServerlessProvider(BaseDeployProvider):
+    """金山云 Serverless 计算引擎 (AgentEngine Server 托管)
+    
+    重构后直接继承 BaseDeployProvider，不再依赖 DockerProvider。
+    Container 模式使用 ContainerBuilder 进行打包和构建。
+    """
 
     name = "serverless"
     display_name = "AgentEngine Serverless (Managed)"
@@ -45,60 +49,64 @@ class ServerlessProvider(DockerProvider):
     requires_image_registry = False
 
     def __init__(self, config: Dict[str, Any] = None):
-        super().__init__(config)
-        # Serverless Provider 不再维护本地 API Client
-        # 统一使用 AgentEngineClient (在方法中按需实例化或在此处初始化)
-        pass
+        self.config = config or {}
 
     async def validate_config(self, target: DeployTarget) -> tuple[bool, str]:
         """验证配置: 确保已配置 AgentEngine Server"""
         
         server_url = os.getenv("AGENTENGINE_SERVER_URL")
-        # token = os.getenv("AGENTENGINE_TOKEN") # Token 可选 (如果是内网或开发模式)
         
         if not server_url:
-            # 默认回退到 localhost (与 AgentEngineClient 保持一致)
-            # 但为了提示用户，我们可以打印一个警告，而不是报错
             click.echo("⚠️  未配置 AGENTENGINE_SERVER_URL，将尝试使用默认 Region 配置")
-            # os.environ["AGENTENGINE_SERVER_URL"] = "http://localhost:8081" # FIX: 此行会覆盖 Client 的 Region 逻辑，导致无法连接云端
         
-        # 兼容性检查: 如果用户还在尝试用 Container 模式但没配 Registry
+        # Container 模式: 检查 Docker 是否可用
         artifact_type = target.extra.get("artifact_type", "Code")
         if artifact_type == "Container":
-             docker_ok, docker_msg = await super().validate_config(target)
-             if not docker_ok:
-                 return docker_ok, docker_msg
+            import subprocess
+            try:
+                result = subprocess.run(["docker", "version"], capture_output=True, timeout=10)
+                if result.returncode != 0:
+                    return False, "Docker 未正常运行"
+            except FileNotFoundError:
+                return False, "未找到 docker 命令，请确保已安装 Docker"
+            except Exception as e:
+                return False, f"Docker 检查失败: {e}"
 
         return True, ""
 
     async def package(self, project_dir: str, detection_result: Any, config: Dict[str, Any] = None) -> PackageInfo:
-        """打包项目: 复用父类逻辑，并恢复构建元数据"""
-        # 复用父类 (DockerProvider) 的打包逻辑 (复制文件, 生成 Dockerfile 等)
-        package_info = await super().package(project_dir, detection_result, config)
+        """打包项目
         
-        # 尝试加载 build 命令保存的元数据 (如 ks3_path)
+        Code 模式: 返回基本 PackageInfo，实际构建在 build() 中进行
+        Container 模式: 使用 ContainerBuilder 打包
+        """
+        project_path = Path(project_dir)
+        
+        # 创建基本 PackageInfo
+        package_info = PackageInfo(
+            name=detection_result.name or project_path.name,
+            framework=detection_result.type.value,
+            build_dir=str(project_path / ".agentengine" / "build"),
+            project_dir=str(project_path),
+            entry_point=detection_result.entry_point,
+            metadata={}
+        )
+        
+        # 尝试加载之前保存的构建元数据 (ks3_path 等)
         try:
-            metadata_file = Path(project_dir) / ".agentengine" / "build-metadata.json"
-            # click.echo(f"Debug: Looking for metadata at {metadata_file}")
-            
+            metadata_file = project_path / ".agentengine" / "build-metadata.json"
             if metadata_file.exists():
                 import json
                 with open(metadata_file, "r") as f:
                     saved_data = json.load(f)
                     if "metadata" in saved_data:
-                         # 合并 metadata
-                         count = 0
-                         for k, v in saved_data["metadata"].items():
-                             # 只要值有效就覆盖
-                             if v:
-                                 package_info.metadata[k] = v
-                                 count += 1
-                         
-                         if count > 0:
-                            click.echo(f"   📦 已加载上次构建元数据: {count} 项 (含 KS3 路径)")
-            else:
-                 pass
-                 # click.echo(f"Debug: Metadata file not found")
+                        count = 0
+                        for k, v in saved_data["metadata"].items():
+                            if v:
+                                package_info.metadata[k] = v
+                                count += 1
+                        if count > 0:
+                            click.echo(f"   📦 已加载上次构建元数据: {count} 项")
         except Exception as e:
             click.secho(f"⚠️  加载构建元数据失败: {e}", fg="yellow")
             
@@ -166,8 +174,32 @@ class ServerlessProvider(DockerProvider):
             package_info.metadata["ks3_path"] = ks3_path
 
         elif artifact_type == "Container":
-             # Container 模式: 使用 DockerProvider 的 build 推送镜像
-             return await super().build(package_info, target)
+            # Container 模式: 使用 ContainerBuilder 构建并推送镜像
+            registry = target.extra.get("registry", "")
+            tag = target.extra.get("tag", "latest")
+            no_cache = target.extra.get("no_cache", False)
+            
+            builder = ContainerBuilder(
+                project_dir=Path(package_info.project_dir),
+                tag=tag,
+                registry=registry,
+                no_cache=no_cache
+            )
+            
+            # 构建镜像
+            build_result = builder.build()
+            if not build_result.success:
+                raise Exception(f"镜像构建失败: {build_result.error_message}")
+            
+            image_name = build_result.metadata.get("image")
+            package_info.image = image_name
+            package_info.metadata["image"] = image_name
+            
+            # 推送镜像
+            if not builder.push(image_name):
+                raise Exception("镜像推送失败")
+            
+            click.secho(f"✅ 镜像已推送: {image_name}", fg="green")
              
         return package_info
 
