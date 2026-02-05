@@ -47,6 +47,8 @@ from ksadk.common.constants import (
 )
 @click.option("--push", is_flag=True, help="构建后推送镜像")
 @click.option("--no-cache", is_flag=True, help="强制重新构建，不使用缓存")
+@click.option("--no-version", is_flag=True, help="部署成功后不自动创建版本快照")
+@click.option("--auto-rollback", is_flag=True, help="部署失败时自动回滚到上一版本")
 @click.option("--dry-run", is_flag=True, help="只生成配置，打印 curl 请求，不执行部署")
 @click.option("--list-providers", "list_providers", is_flag=True, help="列出可用的部署目标")
 def deploy(
@@ -65,6 +67,8 @@ def deploy(
     observability: bool,
     push: bool,
     no_cache: bool,
+    no_version: bool,
+    auto_rollback: bool,
     dry_run: bool,
     list_providers: bool,
 ):
@@ -80,6 +84,7 @@ def deploy(
         agentengine deploy . --dry-run                    # 打印请求而不部署
         agentengine deploy . --region cn-beijing-6
         agentengine deploy . --account-id 2000003485
+        agentengine deploy . --no-version                 # 部署但不创建版本快照
     """
     # 列出 Provider
     if list_providers:
@@ -104,12 +109,17 @@ def deploy(
             observability,
             push,
             no_cache,
+            no_version,
+            auto_rollback,
             dry_run,
         )
     )
 
 
+
+
 def _list_providers():
+
     """列出所有可用的部署 Provider"""
     from ksadk.deployment import DeploymentManager
 
@@ -152,6 +162,8 @@ async def _deploy_async(
     observability: bool,
     push: bool,
     no_cache: bool,
+    no_version: bool,
+    auto_rollback: bool,
     dry_run: bool,
 ):
     """异步部署流程"""
@@ -270,6 +282,11 @@ async def _deploy_async(
                 click.echo(f"   APIKey:   {result.api_key}")
             if result.message:
                 click.echo(f"   信息:     {result.message}")
+            
+            # 9. 自动创建版本快照 (除非指定 --no-version)
+            if result.agent_id and not no_version and not dry_run:
+                from ksadk.cli.deploy_utils import auto_release_version
+                await auto_release_version(result.agent_id, region, deploy_name)
 
             click.echo("")
             click.echo("下一步:")
@@ -282,11 +299,21 @@ async def _deploy_async(
             click.secho(f"\n部署状态: {result.status.value}", fg=status_color)
             if result.message:
                 click.echo(f"   {result.message}")
+            
+            # 10. 部署失败时自动回滚 (如果启用了 --auto-rollback)
+            if auto_rollback and result.agent_id and result.status.name not in ["SKIPPED"]:
+                from ksadk.cli.deploy_utils import auto_rollback_to_previous
+                await auto_rollback_to_previous(result.agent_id, region)
+                
     except Exception as e:
         click.secho(f"错误: 部署失败: {e}", fg="red")
         import traceback
 
         traceback.print_exc()
+        
+        # 部署异常时也尝试回滚 (如果启用了 --auto-rollback，需要先获取 agent_id)
+        # 由于异常时可能没有 result，这里暂不处理，留待后续优化
+        
         raise SystemExit(1)
 
 

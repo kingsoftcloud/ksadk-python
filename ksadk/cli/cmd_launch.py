@@ -34,6 +34,8 @@ from pathlib import Path
     type=click.Choice(["Code", "Container"]),
     help="部署模式 (serverless default: Code)",
 )
+@click.option("--no-version", is_flag=True, help="部署成功后不自动创建版本快照")
+@click.option("--auto-rollback", is_flag=True, help="部署失败时自动回滚到上一版本")
 def launch(
     agent_dir: str,
     target: str,
@@ -50,6 +52,8 @@ def launch(
     image: str,
     dry_run: bool,
     artifact_type: str,
+    no_version: bool,
+    auto_rollback: bool,
 ):
     """一键完成构建和部署 (Build + Deploy)
 
@@ -82,6 +86,8 @@ def launch(
             image,
             dry_run,
             artifact_type,
+            no_version,
+            auto_rollback,
         )
     )
 
@@ -102,6 +108,8 @@ async def _launch_async(
     image: str,
     dry_run: bool,
     artifact_type: str,
+    no_version: bool,
+    auto_rollback: bool,
 ):
     from ksadk.detection import FrameworkDetector
     from ksadk.deployment import DeploymentManager, DeployTarget
@@ -231,6 +239,11 @@ async def _launch_async(
                 click.secho("   ⚠️  请妥善保存此 API Key，它仅在首次部署时显示！", fg="yellow")
             if result.message:
                 click.echo(f"   信息:     {result.message}")
+            
+            # 9. 自动创建版本快照 (除非指定 --no-version)
+            if result.agent_id and not no_version and not dry_run:
+                from ksadk.cli.deploy_utils import auto_release_version
+                await auto_release_version(result.agent_id, region, deploy_name)
 
             click.echo(f"\n下一步查看或使用{result.agent_name}:")
             click.echo(f"  agentengine status --agent {result.agent_id}")
@@ -239,6 +252,11 @@ async def _launch_async(
             click.secho(f"\n❌ 部署状态: {result.status.value}", fg="yellow")
             if result.message:
                 click.echo(f"   {result.message}")
+            
+            # 10. 自动回滚
+            if auto_rollback and result.agent_id and result.status.name not in ["SKIPPED"]:
+                from ksadk.cli.deploy_utils import auto_rollback_to_previous
+                await auto_rollback_to_previous(result.agent_id, region)
 
     except Exception as e:
         click.secho(f"❌ 部署异常: {e}", fg="red")
