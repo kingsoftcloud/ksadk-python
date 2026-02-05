@@ -120,7 +120,7 @@ async def _list_versions_async(agent_id: Optional[str], name: Optional[str], pag
         table.add_column("版本 (Tag)", style="green")
         table.add_column("状态", style="yellow")
         table.add_column("类型", style="blue")
-        table.add_column("创建时间 (北京)", style="dim")
+        table.add_column("创建时间", style="dim")
         table.add_column("描述", style="white", max_width=50)
         
         for v in versions:
@@ -142,12 +142,20 @@ async def _list_versions_async(agent_id: Optional[str], name: Optional[str], pag
             else:
                 created_at = "-"
 
+            # 描述处理：移除时间戳后缀，汉化旧数据
+            desc = v.get("description") or ""
+            if "Auto-released by" in desc:
+                # 移除 at 2026-xx-xx ...
+                desc = desc.split(" at ")[0]
+                desc = desc.replace("Auto-released by deploy", "部署自动发布")
+                desc = desc.replace("Auto-released by launch", "Launch自动发布")
+
             table.add_row(
                 v.get("tag", "-"),
                 f"[{status_style}]{status}[/{status_style}]",
                 v.get("artifact_type", "-"),
                 created_at,
-                (v.get("description") or "").strip(),
+                desc.strip(),
             )
         
         console.print(table)

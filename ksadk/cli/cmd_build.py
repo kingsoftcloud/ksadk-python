@@ -8,6 +8,7 @@ agentengine build - 构建 Agent 应用
 
 import asyncio
 import click
+from datetime import datetime
 from pathlib import Path
 
 
@@ -109,7 +110,10 @@ async def _build_code(agent_path: Path, push: bool, region: str, ks3_bucket: str
             click.echo(f"   ⚠️  预发环境: 资源将上传到 cn-beijing-6 region")
         
         uploader = KS3Uploader(region=upload_region, bucket=ks3_bucket)
-        object_key = f"agents/{agent_name}/code.zip"
+        
+        # 使用时间戳确保每次上传的代码包路径唯一，支持真正的版本回滚
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        object_key = f"agents/{agent_name}/code_{timestamp}.zip"
         ks3_path = await uploader.upload(result.artifact_path, object_key)
 
         if ks3_path:
