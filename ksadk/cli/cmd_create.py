@@ -244,6 +244,52 @@ def _fix_dotenv_paths_recursive(directory: Path, depth: int = 1) -> int:
     return fixed_count
 
 
+def _fix_nested_imports(file_path: Path, subdirs: list[str]) -> bool:
+    """
+    修复文件中的嵌套目录导入
+    
+    当源目录包含子包目录（如 my_agent/）时，
+    入口文件中的 `from my_agent import xxx` 需要改为 `from .my_agent import xxx`
+    
+    Args:
+        file_path: 需要修复的文件
+        subdirs: 同级子目录名列表
+    
+    Returns:
+        是否修改了文件
+    """
+    import re
+    
+    if not subdirs:
+        return False
+    
+    try:
+        content = file_path.read_text(encoding='utf-8')
+    except Exception:
+        return False
+    
+    original = content
+    
+    # 为每个子目录生成修复规则
+    for subdir in subdirs:
+        # from my_agent import xxx -> from .my_agent import xxx
+        pattern = rf'^(from\s+)({re.escape(subdir)})(\s+import\s+)'
+        replacement = rf'\1.\2\3'
+        content = re.sub(pattern, replacement, content, flags=re.MULTILINE)
+        
+        # import my_agent -> from . import my_agent
+        # 只处理独立的 import 语句
+        pattern_import = rf'^import\s+({re.escape(subdir)})\s*$'
+        replacement_import = rf'from . import \1'
+        content = re.sub(pattern_import, replacement_import, content, flags=re.MULTILINE)
+    
+    if content != original:
+        file_path.write_text(content, encoding='utf-8')
+        return True
+    
+    return False
+
+
 def _generate_env_content(global_env: dict) -> str:
     """生成 .env 文件内容"""
     api_key = global_env.get("OPENAI_API_KEY", "")
@@ -499,6 +545,19 @@ def _wrap_agent_directory(from_agent_dir: Path, project_name: str, framework: st
     fixed_count = _fix_dotenv_paths_recursive(dest_package_path, depth=2)
     if fixed_count > 0:
         click.echo(click.style(f"🔧 已自动修复 {fixed_count} 个文件的 .env 加载路径", fg='cyan'))
+    
+    # 修复嵌套目录导入路径
+    # 查找源目录中的子目录（作为 Python 包）
+    subdirs = [d.name for d in from_agent_dir.iterdir() 
+               if d.is_dir() and not d.name.startswith('.') and not d.name.startswith('_')
+               and (d / '__init__.py').exists()]
+    
+    if subdirs:
+        # 修复入口文件中的导入
+        dest_entry_file = dest_package_path / entry_file.relative_to(from_agent_dir)
+        if _fix_nested_imports(dest_entry_file, subdirs):
+            click.echo(click.style(f"🔧 已修复嵌套目录导入: {', '.join(subdirs)}", fg='cyan'))
+    
     
     # 检测全局配置
     from ksadk.configs.global_config import (

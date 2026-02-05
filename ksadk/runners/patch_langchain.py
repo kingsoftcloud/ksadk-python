@@ -81,9 +81,34 @@ def _patched_convert_delta_to_message_chunk(
     return default_class(content=content, id=id_)  # type: ignore[call-arg]
 
 
+_original_convert_message_to_dict = None
+
+
+def _patched_convert_message_to_dict(message):
+    """Patched version to include reasoning_content in outgoing requests."""
+    from langchain_core.messages import AIMessage
+    
+    # Call original function first
+    result = _original_convert_message_to_dict(message)
+    
+    # If this is an AIMessage with tool_calls and reasoning_content in additional_kwargs
+    if isinstance(message, AIMessage):
+        additional_kwargs = getattr(message, 'additional_kwargs', {}) or {}
+        reasoning = additional_kwargs.get('reasoning_content')
+        
+        # Only add if we have tool_calls (required by some thinking models)
+        if message.tool_calls and reasoning is not None:
+            result['reasoning_content'] = reasoning
+        elif message.tool_calls and reasoning is None:
+            # Force add empty reasoning_content for thinking models
+            result['reasoning_content'] = ''
+    
+    return result
+
+
 def apply_patch():
     """Apply the monkey patch to langchain_openai."""
-    global _original_convert_delta
+    global _original_convert_delta, _original_convert_message_to_dict
     try:
         import langchain_openai.chat_models.base as base_module
 
@@ -91,8 +116,14 @@ def apply_patch():
         if getattr(base_module, "_ksadk_patched", False):
             return
 
+        # Patch 1: Fix receiving responses (capture reasoning_content)
         _original_convert_delta = base_module._convert_delta_to_message_chunk
         base_module._convert_delta_to_message_chunk = _patched_convert_delta_to_message_chunk
+        
+        # Patch 2: Fix sending requests (include reasoning_content for tool_call messages)
+        _original_convert_message_to_dict = base_module._convert_message_to_dict
+        base_module._convert_message_to_dict = _patched_convert_message_to_dict
+        
         base_module._ksadk_patched = True
 
         # logger.info("Applied langchain-openai patch for reasoning_content support")

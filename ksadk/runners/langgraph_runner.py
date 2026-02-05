@@ -180,6 +180,16 @@ class LangGraphRunner(BaseRunner):
                         "type": "tool_call",
                         "tool_name": event.get("name", "unknown"),
                         "tool_args": event.get("data", {}).get("input", {}),
+                        "run_id": event.get("run_id"),
+                    }
+                
+                elif event_kind == "on_tool_end":
+                    tool_output = event.get("data", {}).get("output", "")
+                    yield {
+                        "type": "tool_result",
+                        "tool_name": event.get("name", "unknown"),
+                        "tool_output": str(tool_output) if tool_output else "",
+                        "run_id": event.get("run_id"),
                     }
                     
                 elif event_kind == "on_chain_end":

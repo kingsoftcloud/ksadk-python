@@ -395,3 +395,81 @@ class AgentEngineClient:
             params["SessionId"] = session_id
         return self._action("InvokeAgent", params)
 
+    # ===== Version Actions =====
+    
+    async def release_version(
+        self, 
+        agent_id: str, 
+        tag: Optional[str] = None, 
+        description: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """发布新版本
+        
+        Args:
+            agent_id: Agent ID
+            tag: 版本标签，不填则自动生成
+            description: 版本描述
+            
+        Returns:
+            版本信息
+        """
+        params = {"AgentId": agent_id}
+        if tag:
+            params["Tag"] = tag
+        if description:
+            params["Description"] = description
+        return self._action("ReleaseVersion", params)
+    
+    async def list_versions(
+        self, 
+        agent_id: str, 
+        page: int = 1, 
+        size: int = 10
+    ) -> Dict[str, Any]:
+        """列出版本历史
+        
+        Args:
+            agent_id: Agent ID
+            page: 页码
+            size: 每页数量
+            
+        Returns:
+            版本列表和分页信息
+        """
+        return self._action("ListVersions", {
+            "AgentId": agent_id,
+            "Page": page,
+            "Size": size
+        })
+    
+    async def rollback_version(
+        self, 
+        agent_id: str, 
+        target_version_id: Optional[str] = None,
+        target_tag: Optional[str] = None,
+        ks3_access_key: Optional[str] = None,
+        ks3_secret_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """回滚到指定版本
+        
+        Args:
+            agent_id: Agent ID
+            target_version_id: 目标版本 ID（与 target_tag 二选一）
+            target_tag: 目标版本标签（与 target_version_id 二选一）
+            ks3_access_key: KS3 Access Key (可选)
+            ks3_secret_key: KS3 Secret Key (可选)
+            
+        Returns:
+            回滚结果
+        """
+        params = {"AgentId": agent_id}
+        if target_version_id:
+            params["TargetVersionId"] = target_version_id
+        if target_tag:
+            params["TargetTag"] = target_tag
+        if ks3_access_key:
+            params["KS3AccessKey"] = ks3_access_key
+        if ks3_secret_key:
+            params["KS3SecretKey"] = ks3_secret_key
+            
+        return self._action("RollbackVersion", params)

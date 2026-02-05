@@ -139,6 +139,7 @@ class ColoredHelpGroup(click.Group):
             "model": "切换默认模型",
             "run": "运行 Agent",
             "status": "查看状态",
+            "version": "版本管理",
             "web": "启动 Web UI",
         }
 
@@ -262,6 +263,13 @@ def _register_commands():
     except ImportError:
         pass
 
+    # Version 命令组
+    try:
+        from ksadk.cli.cmd_version import version
+
+        cli.add_command(version)
+    except ImportError:
+        pass
 
 def main():
     # 全局加载 .env 文件

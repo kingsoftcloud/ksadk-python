@@ -86,9 +86,8 @@ async def on_message(message: cl.Message):
         await cl.Message(content="❌ Runner 未初始化").send()
         return
     
-    # 创建响应消息
-    msg = cl.Message(content="")
-    await msg.send()
+    # 创建响应消息 (延迟发送，确保 Thinking 在前)
+    msg = None
     
     # 准备输入（包含历史记录）
     input_data = {
@@ -103,6 +102,7 @@ async def on_message(message: cl.Message):
     full_response = ""
     thinking_content = ""
     thinking_step = None
+    active_tool_steps = {}  # type: dict[str, cl.Step]
     
     try:
         async for chunk in runner.stream(input_data):
@@ -111,9 +111,20 @@ async def on_message(message: cl.Message):
             if chunk_type == "text":
                 delta = chunk.get("delta", "")
                 full_response += delta
+                
+                if msg is None:
+                    msg = cl.Message(content="")
+                    await msg.send()
+                
                 await msg.stream_token(delta)
                 
             elif chunk_type == "thinking":
+                # 如果已有正在发送的消息，先结束它，确保 Thinking 在新消息之前显示
+                if msg:
+                    await msg.update()
+                    msg = None
+                    full_response = ""
+                
                 delta = chunk.get("delta", "")
                 thinking_content += delta
                 
@@ -124,6 +135,12 @@ async def on_message(message: cl.Message):
                 await thinking_step.stream_token(delta)
                 
             elif chunk_type == "tool_call":
+                # 如果已有正在发送的消息，先结束它
+                if msg:
+                    await msg.update()
+                    msg = None
+                    full_response = ""
+                
                 if thinking_step:
                     thinking_step.output = thinking_content
                     await thinking_step.__aexit__(None, None, None)
@@ -131,21 +148,47 @@ async def on_message(message: cl.Message):
                 
                 tool_name = chunk.get("tool_name", "unknown")
                 tool_args = chunk.get("tool_args", {})
+                run_id = chunk.get("run_id") or tool_name
                 
-                async with cl.Step(name=f"🔧 {tool_name}", type="tool") as step:
-                    step.input = tool_args
+                # 创建并未关闭 step
+                step = cl.Step(name=f"🔧 {tool_name}", type="tool")
+                step.input = tool_args
+                await step.__aenter__()
+                active_tool_steps[run_id] = step
+            
+            elif chunk_type == "tool_result":
+                tool_name = chunk.get("tool_name", "unknown")
+                tool_output = chunk.get("tool_output", "")
+                run_id = chunk.get("run_id") or tool_name
+                
+                if run_id in active_tool_steps:
+                    step = active_tool_steps.pop(run_id)
+                    step.output = tool_output
+                    await step.__aexit__(None, None, None)
                     
             elif chunk_type == "final":
                 if not full_response:
                     full_response = chunk.get("output", "")
+                    if msg is None:
+                        msg = cl.Message(content="")
+                        await msg.send()
                     await msg.stream_token(full_response)
         
         if thinking_step:
             thinking_step.output = thinking_content
             await thinking_step.__aexit__(None, None, None)
+            
+        # 关闭所有未关闭的工具 step
+        for step in active_tool_steps.values():
+            await step.__aexit__(None, None, None)
         
-        msg.content = full_response
-        await msg.update()
+        if msg is None:
+             # 如果没有任何输出，发送空消息或 final response (已处理)
+             msg = cl.Message(content=full_response)
+             await msg.send()
+        else:
+            msg.content = full_response
+            await msg.update()
         
         # 更新对话历史
         history.append({"role": "user", "content": message.content})
