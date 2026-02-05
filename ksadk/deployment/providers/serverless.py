@@ -163,7 +163,11 @@ class ServerlessProvider(BaseDeployProvider):
             upload_region = "cn-beijing-6" if target.region == "pre-online" else target.region
             
             uploader = KS3Uploader(region=upload_region, bucket=ks3_bucket)
-            object_key = f"agents/{package_info.name}/code.zip"
+            
+            # 使用时间戳确保每次上传的代码包路径唯一，支持真正的版本回滚
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+            object_key = f"agents/{package_info.name}/code_{timestamp}.zip"
             
             ks3_path = await uploader.upload(zip_path, object_key)
             
