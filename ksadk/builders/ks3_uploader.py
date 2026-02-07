@@ -32,8 +32,18 @@ class KS3Uploader:
         # 确定 bucket 名称 (优先级: 参数 > 环境变量 > 默认值)
         if bucket:
             self.bucket_name = bucket
+        elif os.getenv("KS3_BUCKET"):
+            self.bucket_name = os.getenv("KS3_BUCKET")
         else:
-            self.bucket_name = os.getenv("KS3_BUCKET") or f"agentengine-{region}"
+            # Bucket 名称格式: agentengine-{account_id}-{region}
+            account_id = os.getenv("KSYUN_ACCOUNT_ID")
+            if not account_id:
+                raise ValueError(
+                    "❌ 缺少 KSYUN_ACCOUNT_ID 环境变量\n"
+                    "   Bucket 名称格式必须为: agentengine-{account_id}-{region}\n"
+                    "   请在 .env 文件中设置: KSYUN_ACCOUNT_ID=你的账号ID"
+                )
+            self.bucket_name = f"agentengine-{account_id}-{region}"
         
         self.custom_domain = None  # 可选的自定义域名
 
@@ -119,6 +129,13 @@ class KS3Uploader:
                 else:
                     # 其他错误（如权限问题）
                     click.secho(f"   ✗ 检查 Bucket 失败: {e}", fg="red")
+                    if "AccessDenied" in error_str or "403" in error_str:
+                        click.secho(f"   ⚠️  提示: Bucket '{self.bucket_name}' 名称冲突或无权限访问 (403)。", fg="yellow")
+                        click.secho(f"      注意: KS3 Bucket 名称在全网范围内是全局唯一的！", fg="yellow")
+                        click.secho(f"      该名称已被其他用户占用，您无法使用。", fg="yellow")
+                        click.secho(f"   👉 解决方案:", fg="cyan")
+                        click.secho(f"      1. (推荐) 在 .env 中设置 KSYUN_ACCOUNT_ID 为您的账户 ID (自动生成唯一名称)。", fg="cyan")
+                        click.secho(f"      2. 或者，在 .env 中设置 KS3_BUCKET 为一个没人用过的唯一名称。", fg="cyan")
                     return None
             
             # 如果 bucket 不存在，创建它
@@ -128,6 +145,13 @@ class KS3Uploader:
                     click.secho(f"   ✓ Bucket 创建成功: {self.bucket_name}", fg="green")
                 except Exception as create_err:
                     click.secho(f"   ✗ Bucket 创建失败: {create_err}", fg="red")
+                    
+                    # 针对名称冲突 (Conflict) 的专门提示
+                    create_err_str = str(create_err)
+                    if "Conflict" in create_err_str or "409" in create_err_str or "BucketAlreadyExists" in create_err_str:
+                         click.secho(f"   ⚠️  提示: Bucket '{self.bucket_name}' 名称已被其他用户占用。", fg="yellow")
+                         click.secho(f"      注意: KS3 Bucket 名称是全局唯一的。", fg="yellow")
+                         click.secho(f"   👉 解决方法: 修改 .env 中的 KS3_BUCKET，换一个更复杂的名字再试。", fg="cyan")
                     click.echo(f"   提示: 请检查以下问题:")
                     click.echo(f"      1. AK/SK 是否有创建 bucket 的权限")
                     click.echo(f"      2. Bucket 名称 '{self.bucket_name}' 是否已被其他账号占用")
@@ -144,6 +168,7 @@ class KS3Uploader:
             else:
                 click.secho(f"   上传返回: {result}", fg="yellow")
                 return None
+
 
         except ImportError:
             click.secho("❌ ks3sdk 导入失败，请确保已安装: pip install ksadk[runtime]", fg="red")
@@ -167,3 +192,26 @@ class KS3Uploader:
         if not endpoint:
             endpoint = f"ks3-internal.{self.region}.ksyun.com"
         return f"https://{self.bucket_name}.{endpoint}/agents/{agent_name}/code.zip"
+
+    async def upload_with_url(self, file_path: Path, presigned_url: str) -> bool:
+        """使用预签名 URL 上传文件 (不依赖本地 AK/SK)"""
+        import httpx
+        
+        click.echo(f"   上传中 (使用预签名 URL)...")
+        
+        try:
+            async with httpx.AsyncClient() as client:
+                with open(file_path, 'rb') as f:
+                    response = await client.put(
+                        presigned_url, 
+                        content=f.read(),
+                        headers={"Content-Type": "application/octet-stream"},
+                        timeout=300.0
+                    )
+                    response.raise_for_status()
+                    click.secho("   ✓ 上传成功", fg="green")
+                    return True
+        except Exception as e:
+            click.secho(f"❌ 上传失败: {e}", fg="red")
+            return False
+

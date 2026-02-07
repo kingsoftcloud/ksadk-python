@@ -1,0 +1,8 @@
+[pypi]
+username = __token__
+password = pypi-替换为你的token
+
+[testpypi]
+repository = https://test.pypi.org/legacy/
+username = __token__
+password = pypi-替换为你的testpypi-token

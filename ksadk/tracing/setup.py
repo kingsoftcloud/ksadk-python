@@ -26,6 +26,7 @@ def setup_tracing(
     enable_otlp: bool = False,
     otlp_endpoint: str = "localhost:4317",
     enable_adk_instrumentation: bool = True,  # Auto-instrument ADK
+    use_callback_only: bool = None,  # Explicit override
     **kwargs
 ) -> Optional[InMemoryExporter]:
     """初始化 Tracing (支持多 Exporter)
@@ -37,6 +38,7 @@ def setup_tracing(
         enable_otlp: 是否启用 OTLP Exporter
         otlp_endpoint: OTLP 端点地址
         enable_adk_instrumentation: 是否启用 ADK 自动插桩
+        use_callback_only: 是否仅使用 CallbackHandler (防止 OTel 重复)
     
     Returns:
         InMemoryExporter 实例 (用于 Web UI 获取 traces)
@@ -84,8 +86,9 @@ def setup_tracing(
         langfuse_enabled = bool(os.getenv("LANGFUSE_PUBLIC_KEY"))
     
     # 检查是否应该禁用 LangfuseExporter (当使用 LangChain/LangGraph 时)
-    # 可以通过环境变量 LANGFUSE_USE_CALLBACK=true 强制使用 CallbackHandler 方式
-    use_callback_only = os.getenv("LANGFUSE_USE_CALLBACK", "true").lower() == "true"
+    # 优先使用显式参数，否则读取环境变量
+    if use_callback_only is None:
+        use_callback_only = os.getenv("LANGFUSE_USE_CALLBACK", "false").lower() == "true"
     
     if langfuse_enabled and not use_callback_only:
         try:
