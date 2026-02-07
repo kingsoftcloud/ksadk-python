@@ -8,7 +8,8 @@ import os
 import json
 import uuid
 from pathlib import Path
-from ksadk.common.constants import DEFAULT_SERVERLESS_ENDPOINT
+from ksadk.api.client import DryRunExit
+from ksadk.deployment import DeploymentManager, DeployTarget
 
 
 @click.command(context_settings=dict(help_option_names=["-h", "--help"]))
@@ -35,7 +36,8 @@ def destroy(agent: str, force: bool, region: str, account_id: str, dry_run: bool
         if config_path.exists():
             import yaml
 
-            with open(config_path) as f:
+            # 使用 utf-8-sig 自动处理 BOM，确保 Windows 兼容性
+            with open(config_path, encoding='utf-8-sig') as f:
                 config = yaml.safe_load(f)
                 agent = config.get("name")
 
@@ -49,154 +51,54 @@ def destroy(agent: str, force: bool, region: str, account_id: str, dry_run: bool
         click.echo("提示: 设置 KSYUN_ACCOUNT_ID 环境变量或使用 --account-id 参数")
         raise SystemExit(1)
 
-    # Dry Run 模式
+    # Dry Run 提示
     if dry_run:
-        _print_destroy_curl(agent, region, account_id)
-        return
+        click.secho(f"[Dry Run] 准备销毁 Agent: {agent} (Region: {region})", fg="yellow")
+    else:
+        click.secho(f"即将销毁 Agent: {agent}", fg="yellow", bold=True)
+        click.echo(f"   区域: {region}")
 
-    click.secho(f"即将销毁 Agent: {agent}", fg="yellow", bold=True)
-    click.echo(f"   区域: {region}")
-
-    if not force:
+    if not force and not dry_run:
         if not click.confirm(f"确定要销毁 Agent '{agent}' 吗? 此操作不可恢复"):
             click.echo("已取消")
             return
 
-    click.echo("")
-    click.echo("正在停止 Agent 实例...")
-
-    # 调用 Serverless API 删除
-    success = asyncio.run(_delete_agent_runtime(agent, region, account_id))
-
-    if success:
-        click.secho("\nAgent 已销毁!", fg="green")
-    else:
-        click.secho("\n销毁失败，请检查错误信息", fg="red")
+    # 构造 Provider 和 Target
+    provider_name = "serverless"  # 目前默认 serverless
+    
+    try:
+        provider = DeploymentManager.get_provider(provider_name)
+    except ValueError as e:
+        click.secho(f"错误: {e}", fg="red")
         raise SystemExit(1)
 
-
-async def _delete_agent_runtime(agent: str, region: str, account_id: str) -> bool:
-    """删除 Agent 运行时
-
-    调用 Serverless API - DeleteAgentRuntime
-    """
-    from ksadk.deployment.providers.serverless_api import (
-        ServerlessAPIClient,
-        DeleteAgentRuntimeInput,
-        GetAgentRuntimeInput,
-        ServerlessAPIError,
-    )
-
-    client = ServerlessAPIClient(
-        account_id=account_id,
+    deploy_target = DeployTarget(
+        provider=provider_name,
         region=region,
+        extra={
+            "account_id": account_id,
+            "dry_run": dry_run
+        }
     )
 
+    if not dry_run:
+        click.echo("")
+        click.echo("正在停止 Agent 实例...")
+
+    # 调用 Provider 销毁
     try:
-        # 如果传入的是名称，先查询获取 ID
-        agent_id = agent
-        if not agent.startswith("ar-"):
-            click.echo(f"正在查询 Agent ID...")
-            get_input = GetAgentRuntimeInput(agent_runtime_name=agent)
-            try:
-                get_response = await client.get_agent_runtime(get_input)
-                agent_id = get_response.agent_runtime_id
-                click.echo(f"  Agent ID: {agent_id}")
-            except ServerlessAPIError as e:
-                click.secho(f"  查询失败: {e.message}", fg="red")
-                return False
+        success = asyncio.run(provider.destroy(agent, deploy_target))
 
-        # 执行删除
-        click.echo(f"正在删除 Agent...")
-        delete_input = DeleteAgentRuntimeInput(agent_runtime_id=agent_id)
-        response = await client.delete_agent_runtime(delete_input)
+        if success:
+            click.secho("\nAgent 已销毁!", fg="green")
+        else:
+            if not dry_run:
+                click.secho("\n销毁失败，请检查错误信息", fg="red")
+                raise SystemExit(1)
+            
+    except DryRunExit:
+        pass  # Dry Run 完成
+    except Exception as e:
+        click.secho(f"操作失败: {e}", fg="red")
+        raise SystemExit(1)
 
-        click.echo(f"  状态: {response.status}")
-        click.echo(f"  请求 ID: {response.request_id}")
-
-        return True
-
-    except ServerlessAPIError as e:
-        click.secho(f"删除失败: {e.message}", fg="red")
-        if e.request_id:
-            click.echo(f"  请求 ID: {e.request_id}")
-        return False
-    finally:
-        await client.close()
-
-
-def _print_destroy_curl(agent: str, region: str, account_id: str):
-    """打印 destroy 的 curl 请求"""
-    endpoint = os.environ.get(
-        "SERVERLESS_ENDPOINT",
-        DEFAULT_SERVERLESS_ENDPOINT,
-    )
-    request_id = str(uuid.uuid4())
-
-    ak = os.environ.get("KSYUN_ACCESS_KEY", "")
-    sk = os.environ.get("KSYUN_SECRET_KEY", "")
-
-    click.echo("=" * 60)
-    click.secho("Dry Run 模式 - 只打印 curl 请求，不执行", fg="yellow", bold=True)
-    click.echo("=" * 60)
-
-    click.echo(f"\n配置信息:")
-    click.echo(f"   Endpoint:   {endpoint}")
-    click.echo(f"   Account ID: {account_id}")
-    click.echo(f"   Region:     {region}")
-    click.echo(f"   Agent:      {agent}")
-
-    # 如果是名称，需要先查询 ID
-    if not agent.startswith("ar-"):
-        click.echo(f"\n注意: 传入的是 Agent 名称，实际删除时需要先查询 ID")
-        click.echo("")
-
-        # Step 1: GetAgentRuntime
-        click.secho("Step 1: 查询 Agent ID (GetAgentRuntime)", fg="cyan")
-        get_body = {"agentRuntimeName": agent}
-        click.echo(f"\n请求体:")
-        click.echo(json.dumps(get_body, indent=2, ensure_ascii=False))
-
-        get_body_json = json.dumps(get_body, ensure_ascii=False)
-        click.echo(f"\ncurl 命令:")
-        click.echo("-" * 60)
-        curl_get = f'''curl -X POST "{endpoint}/GetAgentRuntime" \\
-  -H "Content-Type: application/json" \\
-  -H "Accept: application/json" \\
-  -H "X-Ksc-Request-Id: {request_id}" \\
-  -H "X-Ksc-Account-Id: {account_id}" \\
-  -H "X-Ksc-Region: {region}" \\
-  -d '{get_body_json}' '''
-        click.echo(curl_get)
-        click.echo("-" * 60)
-
-        # Step 2: DeleteAgentRuntime
-        click.echo("")
-        click.secho("Step 2: 删除 Agent (DeleteAgentRuntime)", fg="cyan")
-        delete_body = {"agentRuntimeId": "<从 Step 1 响应中获取>"}
-    else:
-        delete_body = {"agentRuntimeId": agent}
-
-    click.echo(f"\n请求体:")
-    click.echo(json.dumps(delete_body, indent=2, ensure_ascii=False))
-
-    delete_body_json = json.dumps(delete_body, ensure_ascii=False)
-    request_id2 = str(uuid.uuid4())
-
-    click.echo(f"\ncurl 命令 (需要 AWS V4 签名):")
-    click.echo("-" * 60)
-    curl_delete = f'''curl -X POST "{endpoint}/DeleteAgentRuntime" \\
-  -H "Content-Type: application/json" \\
-  -H "Accept: application/json" \\
-  -H "X-Ksc-Request-Id: {request_id2}" \\
-  -H "X-Ksc-Account-Id: {account_id}" \\
-  -H "X-Ksc-Region: {region}" \\
-  -d '{delete_body_json}' '''
-    click.echo(curl_delete)
-    click.echo("-" * 60)
-
-    click.secho("\n注意: 实际请求需要 AWS V4 签名，上述 curl 仅供参考", fg="yellow")
-    click.echo("环境变量:")
-    click.echo(f"   KSYUN_ACCOUNT_ID = {account_id}")
-    click.echo(f"   KSYUN_ACCESS_KEY = {ak[:8] + '****' if ak else '(未设置)'}")
-    click.echo(f"   KSYUN_SECRET_KEY = {'****' if sk else '(未设置)'}")

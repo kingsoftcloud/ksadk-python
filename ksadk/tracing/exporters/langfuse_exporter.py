@@ -118,8 +118,27 @@ class _LangfuseSpanExporter:
         tool_spans = []
         
         for span in spans:
-            name = span.name
-            if name.startswith("langgraph.") or name.startswith("langchain."):
+            # Robust Root Span Detection:
+            # 1. Check if parent is None (standard OTEL way)
+            # 2. Check for known prefixes (fallback)
+            is_root = False
+            if hasattr(span, "parent") and span.parent:
+                # Local parent exists
+                is_root = False
+            elif hasattr(span, "context") and hasattr(span.context, "is_remote") and span.context.is_remote:
+                 # Remote parent (distributed tracing) - treat as root for this service context?
+                 # For now, we treat standard root spans (no parent) as root.
+                 pass
+            elif not span.parent:
+                is_root = True
+            
+            # Fallback for SDKs that might not expose parent property easily or if it's None
+            if not is_root:
+                name = span.name
+                if name.startswith("langgraph.") or name.startswith("langchain.") or name.startswith("adk."):
+                    is_root = True
+            
+            if is_root:
                 root_span = span
             elif name == "call_llm":
                 llm_spans.append(span)
@@ -127,6 +146,8 @@ class _LangfuseSpanExporter:
                 tool_spans.append(span)
         
         if not root_span:
+            # If batch doesn't contain a clear root, use the first span to carry context if needed
+            # But be careful not to treat random child spans as root for attributes
             root_span = spans[0] if spans else None
         
         if not root_span:
@@ -134,7 +155,8 @@ class _LangfuseSpanExporter:
         
         # Extract attributes
         attrs = dict(root_span.attributes) if root_span.attributes else {}
-        invocation_id = attrs.get("gcp.vertex.agent.invocation_id", trace_id[:32])
+        # Use OTEL Trace ID as Langfuse Trace ID to ensure consistency between manual and auto-instrumented spans
+        invocation_id = trace_id 
         user_input = attrs.get("user.input", "")
         agent_output = attrs.get("agent.output", "")
         
@@ -142,10 +164,6 @@ class _LangfuseSpanExporter:
         span_session_id = attrs.get("langfuse.session_id")
         span_tags = attrs.get("langfuse.tags", "")
         span_user_id = attrs.get("langfuse.user_id")
-        
-        # Convert timestamps
-        start_time = datetime.fromtimestamp(root_span.start_time / 1e9)
-        end_time = datetime.fromtimestamp(root_span.end_time / 1e9)
         
         # Create trace using ingestion endpoint
         try:
@@ -168,8 +186,8 @@ class _LangfuseSpanExporter:
                 
                 langfuse_params = agent_config.to_langfuse_params()
                 
-                # Use agent_name if available
-                if agent_config.agent_name:
+                # Use agent_name if available (only if root span)
+                if agent_config.agent_name and root_span == spans[0]: # Rough check if it's main Span
                     trace_name = agent_config.agent_name
             
             # 优先使用 span attributes 中的值 (从 runner 传递)
@@ -179,7 +197,7 @@ class _LangfuseSpanExporter:
             if span_user_id:
                 langfuse_params["user_id"] = span_user_id
             
-            # 处理 tags - 合并 span 和 config 中的 tags
+            # 处理 tags
             existing_tags = langfuse_params.get("tags", []) or []
             if span_tags:
                 span_tags_list = [t.strip() for t in span_tags.split(",") if t.strip()]
@@ -187,25 +205,30 @@ class _LangfuseSpanExporter:
                     if tag not in existing_tags:
                         existing_tags.append(tag)
             
-            # 确保 tags 包含 agent_name 和 environment
             if agent_config:
-                if agent_config.agent_name and agent_config.agent_name not in existing_tags:
+                 if agent_config.agent_name and agent_config.agent_name not in existing_tags:
                     existing_tags.append(agent_config.agent_name)
-                if agent_config.environment and agent_config.environment not in existing_tags:
+                 if agent_config.environment and agent_config.environment not in existing_tags:
                     existing_tags.append(agent_config.environment)
             
             if existing_tags:
                 langfuse_params["tags"] = existing_tags
+
+            # Prepare kwargs for trace() to avoid passing None and overwriting existing values
+            trace_kwargs = {
+                "id": invocation_id,
+                "name": trace_name,
+                "metadata": base_metadata,
+                **langfuse_params
+            }
+            
+            if user_input:
+                trace_kwargs["input"] = {"text": user_input}
+            if agent_output:
+                trace_kwargs["output"] = {"text": agent_output}
             
             # Use create_trace method (available in v3)
-            trace = self._langfuse.trace(
-                id=invocation_id,
-                name=trace_name,
-                input={"text": user_input} if user_input else None,
-                output={"text": agent_output} if agent_output else None,
-                metadata=base_metadata,
-                **langfuse_params  # user_id, session_id, tags, version
-            )
+            trace = self._langfuse.trace(**trace_kwargs)
             
             # Add LLM generations
             for llm_span in llm_spans:

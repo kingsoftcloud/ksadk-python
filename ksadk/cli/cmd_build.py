@@ -8,6 +8,7 @@ agentengine build - 构建 Agent 应用
 
 import asyncio
 import click
+from datetime import datetime
 from pathlib import Path
 
 
@@ -41,7 +42,7 @@ def build(
     示例:
         agentengine build .
         agentengine build . --mode code --push
-        agentengine build . --mode container --push --registry kcr.cn-beijing-6.ksyuncs.com
+        agentengine build . --mode container --push --registry hub-cn-beijing-6.kce.ksyun.com
     """
     agent_path = Path(agent_dir).resolve()
     click.echo(f"📁 项目目录: {agent_path}")
@@ -50,7 +51,7 @@ def build(
     if mode == "container":
         _build_container(agent_path, tag, registry, push, no_cache)
     else:
-        asyncio.run(_build_code(agent_path, push, region, ks3_bucket))
+        asyncio.run(_build_code(agent_path, push, region, ks3_bucket, no_cache))
 
 
 def _build_container(agent_path: Path, tag: str, registry: str, push: bool, no_cache: bool):
@@ -82,11 +83,11 @@ def _build_container(agent_path: Path, tag: str, registry: str, push: bool, no_c
     _print_summary("Container", result)
 
 
-async def _build_code(agent_path: Path, push: bool, region: str, ks3_bucket: str = None):
+async def _build_code(agent_path: Path, push: bool, region: str, ks3_bucket: str = None, no_cache: bool = False):
     """Code 模式构建"""
     from ksadk.builders import CodeBuilder, KS3Uploader
 
-    builder = CodeBuilder(project_dir=agent_path)
+    builder = CodeBuilder(project_dir=agent_path, config={"no_cache": no_cache})
     result = builder.build()
 
     if not result.success:
@@ -109,11 +110,18 @@ async def _build_code(agent_path: Path, push: bool, region: str, ks3_bucket: str
             click.echo(f"   ⚠️  预发环境: 资源将上传到 cn-beijing-6 region")
         
         uploader = KS3Uploader(region=upload_region, bucket=ks3_bucket)
-        object_key = f"agents/{agent_name}/code.zip"
+        
+        # 使用时间戳确保每次上传的代码包路径唯一，支持真正的版本回滚
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        object_key = f"agents/{agent_name}/code_{timestamp}.zip"
         ks3_path = await uploader.upload(result.artifact_path, object_key)
 
         if ks3_path:
             click.secho(f"   ✅ 上传成功: {ks3_path}", fg="green")
+            # 更新 metadata 以便持久化
+            result.metadata["ks3_path"] = ks3_path
+            result.metadata["pushed"] = True
+            
             ks3_public_url = uploader.get_public_url(agent_name)
             ks3_internal_url = uploader.get_internal_url(agent_name)
             click.echo(f"   📎 公网地址: {ks3_public_url}")
@@ -121,14 +129,36 @@ async def _build_code(agent_path: Path, push: bool, region: str, ks3_bucket: str
 
             click.echo("")
             click.echo("下一步:")
-            click.echo(f"  agentengine deploy --target serverless --ks3-path {ks3_path}")
+            click.echo(f"  agentengine deploy --target serverless")
         else:
             click.secho("   ⚠️  上传失败，请检查 KS3 配置", fg="yellow")
     else:
         click.echo("\n⏭️  跳过上传 (使用 --push 上传)")
 
+    # 持久化构建元数据 (供 deploy 命令使用)
+    metadata_file = agent_path / ".agentengine" / "build-metadata.json"
+    try:
+        import json
+        from dataclasses import asdict
+        
+        # 自定义序列化: 处理 Path 对象
+        def default_serializer(obj):
+            if isinstance(obj, Path):
+                return str(obj)
+            raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
+
+        data = asdict(result)
+        # 确保目录存在
+        metadata_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(metadata_file, "w") as f:
+            json.dump(data, f, indent=2, default=default_serializer)
+    except Exception as e:
+        click.secho(f"⚠️  无法保存构建元数据: {e}", fg="yellow")
+
     # 摘要
-    _print_summary("Code", result, push)
+    # show_next_step=True 意味着如果要引导用户做下一步操作的话。
+    # 如果当前没有 push (push=False)，那么下一步通常引导去 push。
+    _print_summary("Code", result, show_next_step=not push)
 
 
 def _print_summary(mode: str, result, show_next_step: bool = False):

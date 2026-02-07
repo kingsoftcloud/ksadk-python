@@ -48,7 +48,8 @@ class CodeBuilder(BaseBuilder):
                 error_message="未检测到支持的框架"
             )
         
-        click.echo(f"📦 框架: {click.style(detection_result.name, fg='green')}")
+        click.echo(f"📦 框架: {click.style(detection_result.type.value, fg='green')}")
+        click.echo(f"🤖 Agent: {click.style(detection_result.name, fg='blue')}")
         
         agent_name = config.get('name', self.project_dir.name).replace('-', '_').replace('.', '_')
         
@@ -57,10 +58,11 @@ class CodeBuilder(BaseBuilder):
         zip_path = self.build_dir / f"{agent_name}.zip"
         
         # 检查是否需要重新构建
-        if zip_path.exists() and not self._need_rebuild(zip_path):
+        no_cache = self.config.get("no_cache", False) if self.config else False
+        if zip_path.exists() and not no_cache and not self._need_rebuild(zip_path):
             zip_size = zip_path.stat().st_size / (1024 * 1024)
             click.secho(f"\n✅ 使用已有构建: {zip_path.name} ({zip_size:.2f} MB)", fg='green')
-            click.echo("   (如需重新构建，请删除 .agentengine/code_build 目录)")
+            click.echo("   (如需重新构建，请使用 --no-cache 或删除 .agentengine/code_build 目录)")
             return BuildResult(
                 success=True,
                 artifact_path=zip_path,
@@ -224,9 +226,9 @@ class CodeBuilder(BaseBuilder):
                         click.echo(f"   {line}")
                 return False
             
-            # 替换 macOS 二进制为 Linux 版本
-            if sys.platform == 'darwin':
-                self._replace_macos_binaries()
+            # 替换非 Linux 平台的二进制文件 (macOS/Windows) 为 Linux 版本
+            if sys.platform in ('darwin', 'win32'):
+                self._replace_platform_binaries()
             
             deps_count = sum(1 for _ in self.deps_dir.rglob('*') if _.is_file())
             deps_size = sum(f.stat().st_size for f in self.deps_dir.rglob('*') if f.is_file()) / (1024 * 1024)
@@ -245,8 +247,8 @@ class CodeBuilder(BaseBuilder):
             click.secho(f"\r   ✗ 依赖安装失败: {e}", fg='red')
             return False
     
-    def _replace_macos_binaries(self) -> None:
-        """替换 macOS C 扩展为 Linux 版本"""
+    def _replace_platform_binaries(self) -> None:
+        """替换非 Linux 平台 (macOS/Windows) C 扩展为 Linux 版本"""
         # 模块名到 pip 包名的映射
         MODULE_TO_PACKAGE = {
             '_cffi_backend': 'cffi',
@@ -261,23 +263,41 @@ class CodeBuilder(BaseBuilder):
             'grpc': 'grpcio',
             '_grpc': 'grpcio',
             'uuid_utils': 'uuid-utils',
+            'pydantic_core': 'pydantic-core',
+            '_pydantic_core': 'pydantic-core',
+            # Windows 特有
+            'win32': 'pywin32',
+            'win32com': 'pywin32',
         }
         
-        # 找到所有 macOS .so 文件
-        darwin_so_files = list(self.deps_dir.rglob('*.so')) + list(self.deps_dir.rglob('*.dylib'))
+        # 找到所有二进制文件
+        binary_files = []
+        if sys.platform == 'darwin':
+            binary_files = list(self.deps_dir.rglob('*.so')) + list(self.deps_dir.rglob('*.dylib'))
+        elif sys.platform == 'win32':
+            binary_files = list(self.deps_dir.rglob('*.pyd')) + list(self.deps_dir.rglob('*.dll'))
         
-        if not darwin_so_files:
+        if not binary_files:
             return
         
         # 提取需要替换的包名
         packages_to_replace: Set[str] = set()
-        for so_file in darwin_so_files:
-            rel_path = so_file.relative_to(self.deps_dir)
+        for bin_file in binary_files:
+            rel_path = bin_file.relative_to(self.deps_dir)
             parts = rel_path.parts
+            
+            # 忽略 bin 目录下的 dll (通常是 runtime)
+            if 'bin' in parts:
+                continue
+                
             if len(parts) > 1:
                 detected_name = parts[0]
             else:
-                detected_name = so_file.name.split('.')[0]
+                detected_name = bin_file.name.split('.')[0]
+            
+            # 跳过特定文件夹
+            if detected_name in ('__pycache__', 'bin', 'include', 'lib', 'Scripts'):
+                continue
             
             if detected_name in MODULE_TO_PACKAGE:
                 pkg_name = MODULE_TO_PACKAGE[detected_name]
@@ -289,7 +309,7 @@ class CodeBuilder(BaseBuilder):
         if not packages_to_replace:
             return
         
-        click.echo(f"\r   检测到 {len(darwin_so_files)} 个 macOS .so 文件, 替换 {len(packages_to_replace)} 个包为 Linux 版本")
+        click.echo(f"\r   检测到 {len(binary_files)} 个二进制文件 ({sys.platform}), 替换 {len(packages_to_replace)} 个包为 Linux 版本")
         
         # 下载 Linux wheels
         wheels_dir = self.build_dir / "linux_wheels"
@@ -300,6 +320,7 @@ class CodeBuilder(BaseBuilder):
         replaced_count = 0
         for pkg_name in packages_to_replace:
             try:
+                # 尝试下载
                 download_cmd = [
                     "pip", "download",
                     pkg_name,
@@ -326,13 +347,20 @@ class CodeBuilder(BaseBuilder):
                 for old_dir in self.deps_dir.iterdir():
                     if old_dir.is_dir() and old_dir.name.lower().replace('_', '-') == wheel_name:
                         shutil.rmtree(old_dir)
-                        break
+                        # 不要 break，可能由多个目录 (e.g. pydantic_core, pydantic_core-2.x.dist-info)
                 
-                # 删除根目录下的 .so 文件
-                for so_file in self.deps_dir.glob(f"{wheel_name}*.so"):
-                    so_file.unlink()
-                for so_file in self.deps_dir.glob(f"{wheel_name.replace('-', '_')}*.so"):
-                    so_file.unlink()
+                # 删除根目录下的二进制文件
+                for ext in ('*.so', '*.dylib', '*.pyd', '*.dll'):
+                    for bin_file in self.deps_dir.glob(f"{wheel_name}*{ext[1:]}"):
+                        try:
+                            bin_file.unlink()
+                        except:
+                            pass
+                    for bin_file in self.deps_dir.glob(f"{wheel_name.replace('-', '_')}*{ext[1:]}"):
+                        try:
+                            bin_file.unlink()
+                        except:
+                            pass
                 
                 # 解压新的 wheel
                 with zipfile.ZipFile(wheel_file, 'r') as zf:
@@ -368,7 +396,7 @@ class CodeBuilder(BaseBuilder):
                         if '__pycache__' in str(file_path) or file_path.suffix == '.pyc':
                             continue
                         if file_path.is_file():
-                            arcname = str(file_path.relative_to(self.project_dir))
+                            arcname = file_path.relative_to(self.project_dir).as_posix()
                             zf.write(file_path, arcname)
                             file_count += 1
             
@@ -376,7 +404,7 @@ class CodeBuilder(BaseBuilder):
             deps_count = 0
             for file_path in self.deps_dir.rglob('*'):
                 if file_path.is_file():
-                    arcname = str(file_path.relative_to(self.deps_dir))
+                    arcname = file_path.relative_to(self.deps_dir).as_posix()
                     zf.write(file_path, arcname)
                     deps_count += 1
             
@@ -396,7 +424,7 @@ class CodeBuilder(BaseBuilder):
                         continue
                     continue
                 
-                arcname = "ksadk/" + str(file_path.relative_to(ksadk_src))
+                arcname = "ksadk/" + file_path.relative_to(ksadk_src).as_posix()
                 zf.write(file_path, arcname)
                 ksadk_count += 1
             
@@ -516,8 +544,12 @@ logger.info(f"入口: {{detection_result.entry_point}}")
 if os.environ.get("LANGFUSE_PUBLIC_KEY"):
     try:
         from ksadk.tracing import setup_tracing
-        setup_tracing()
-        logger.info("Tracing 已启用 (Langfuse)")
+        
+        # 对于 LangGraph/LangChain，默认仅使用 Callback 以避免重复 Trace
+        is_langchain = "{detection_result.type.name}" in ("LANGCHAIN", "LANGGRAPH")
+        
+        setup_tracing(use_callback_only=is_langchain)
+        logger.info(f"Tracing 已启用 (Langfuse, CallbackOnly={{is_langchain}})")
     except Exception as e:
         logger.warning(f"Tracing 初始化失败: {{e}}")
 
