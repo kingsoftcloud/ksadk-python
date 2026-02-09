@@ -122,9 +122,9 @@ async def _deploy_mcp_async(
     # 3. 上传到 KS3
     click.echo("\n☁️  上传到 KS3...")
     upload_region = "cn-beijing-6" if region == "pre-online" else region
-    bucket = ks3_bucket or f"agentengine-{upload_region}"
     
-    uploader = KS3Uploader(region=upload_region, bucket=bucket)
+    # 让 KS3Uploader 使用默认 bucket 逻辑 (ACCOUNT_ID)
+    uploader = KS3Uploader(region=upload_region, bucket=ks3_bucket)
     object_key = f"mcps/{mcp_name}/code.zip"
     
     ks3_path = await uploader.upload(build_result.artifact_path, object_key)
@@ -155,13 +155,8 @@ async def _deploy_mcp_async(
     if state.get("type") == "mcp":
         existing_mcp_id = state.get("mcp_id")
     
-    # 5. 调用 Server API
+    # 5. 调用 Server API (使用 AgentEngineClient 默认内网地址)
     click.echo("\n🚀 部署 MCP Server...")
-    
-    server_url = os.getenv("AGENTENGINE_SERVER_URL")
-    if not server_url:
-        click.secho("❌ 未配置 AGENTENGINE_SERVER_URL", fg='red')
-        return
     
     from ksadk.common.auth import AWSV4Auth
     auth = AWSV4Auth()
@@ -181,12 +176,12 @@ async def _deploy_mcp_async(
         }
     }
     
-    if auth.access_key and auth.secret_key:
+    if auth.access_key_id and auth.secret_access_key:
         request_data["ks3"] = {
-            "access_key": auth.access_key,
-            "secret_key": auth.secret_key,
+            "access_key": auth.access_key_id,
+            "secret_key": auth.secret_access_key,
             "region": upload_region,
-            "bucket": bucket,
+            "bucket": uploader.bucket_name,
         }
     
     try:

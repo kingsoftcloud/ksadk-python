@@ -303,23 +303,23 @@ class AgentEngineClient:
         params = {
             "Name": data.get("name"),
             "Description": data.get("description"),
-            "ArtifactType": data.get("artifact_type", "Code"),
+            # "ArtifactType": data.get("artifact_type", "Code"),
             "ArtifactPath": data.get("artifact_path"),
             "Region": data.get("region", "cn-beijing-6"),
             "Cpu": data.get("resources", {}).get("cpu", "1"),
             "Memory": data.get("resources", {}).get("memory", "2Gi"),
-            "MinReplicas": data.get("scaling", {}).get("min_replicas", 1),
-            "MaxReplicas": data.get("scaling", {}).get("max_replicas", 5),
-            "Concurrency": data.get("scaling", {}).get("concurrency", 20),
+            # "MinReplicas": data.get("scaling", {}).get("min_replicas", 1),
+            # "MaxReplicas": data.get("scaling", {}).get("max_replicas", 5),
+            # "Concurrency": data.get("scaling", {}).get("concurrency", 20),
             "EnableAuth": data.get("enable_auth", False),
         }
-        if data.get("metadata"):
-            params["McpVariable"] = data["metadata"].get("mcp_variable")
-            params["Tools"] = data["metadata"].get("tools")
+        # if data.get("metadata"):
+        #     params["McpVariable"] = data["metadata"].get("mcp_variable")
+        #     params["Tools"] = data["metadata"].get("tools")
         if data.get("ks3"):
             params["KS3AccessKey"] = data["ks3"].get("access_key")
             params["KS3SecretKey"] = data["ks3"].get("secret_key")
-            params["KS3Region"] = data["ks3"].get("region")
+            # params["KS3Region"] = data["ks3"].get("region")
             params["KS3Bucket"] = data["ks3"].get("bucket")
         return self._action("CreateMCP", params)
     
