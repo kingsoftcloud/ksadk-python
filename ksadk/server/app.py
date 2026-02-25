@@ -112,6 +112,52 @@ async def delete_session(app_name: str, user_id: str, session_id: str):
 
 
 # ============================================================
+# Memory API - Save session to long-term memory
+# ============================================================
+
+@app.post("/apps/{app_name}/users/{user_id}/sessions/{session_id}/save_memory")
+async def save_session_to_memory(app_name: str, user_id: str, session_id: str):
+    """将指定 session 保存到长期记忆
+
+    当配置了 KSADK_LTM_BACKEND 时，将 session 中的用户消息
+    持久化到长期记忆后端，供后续 session 通过 load_memory 工具检索。
+    """
+    if not runner:
+        raise HTTPException(status_code=500, detail="Runner not initialized")
+
+    # 检查 runner 是否支持长期记忆
+    from ksadk.runners.adk_runner import ADKRunner as _ADKRunner
+    if not isinstance(runner, _ADKRunner):
+        raise HTTPException(
+            status_code=400,
+            detail="Long-term memory is only supported with ADK runner"
+        )
+
+    if not runner._long_term_memory:
+        raise HTTPException(
+            status_code=400,
+            detail="Long-term memory not configured. "
+                   "Set KSADK_LTM_BACKEND environment variable."
+        )
+
+    # 查找 ADK 内部 session ID
+    internal_session_id = runner._session_map.get(session_id, session_id)
+
+    success = await runner.save_session_to_long_term_memory(
+        session_id=internal_session_id,
+        user_id=user_id,
+    )
+
+    if success:
+        return {"status": "saved", "session_id": session_id}
+    else:
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to save session to long-term memory"
+        )
+
+
+# ============================================================
 # Run SSE - Core Agent Execution Endpoint
 # ============================================================
 

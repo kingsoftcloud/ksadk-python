@@ -1,0 +1,5 @@
+# KsADK Agent 配置
+name: memory_assistant
+type: adk
+entry_point: agent.py
+agent_variable: root_agent
