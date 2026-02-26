@@ -331,18 +331,18 @@ async def _get_agent_runtime(agent: str, region: str, account_id: str, dry_run: 
             response = await client.get_agent(agent)
 
             return {
-                "agentRuntimeId": response.get("agent_id", ""),
-                "agentRuntimeName": response.get("name", ""),
-                "description": response.get("description", ""),
-                "status": response.get("status", "Unknown"),
-                "phase": response.get("phase", ""),
-                "replicas": response.get("replicas", 0),
-                "readyReplicas": response.get("ready_replicas", 0),
-                "endpoint": response.get("endpoint", ""),
-                "langfuseTraceUrl": response.get("langfuse_trace_url", ""),
-                "createdAt": response.get("created_at", ""),
-                "updatedAt": response.get("updated_at", ""),
-                "message": response.get("message", ""),
+                "agentRuntimeId": response.get("AgentId", ""),
+                "agentRuntimeName": response.get("Name", ""),
+                "description": response.get("Description", ""),
+                "status": response.get("Status", "Unknown"),
+                "phase": response.get("Phase", ""),
+                "replicas": response.get("Replicas", 0),
+                "readyReplicas": response.get("ReadyReplicas", 0),
+                "endpoint": response.get("Endpoint", ""),
+                "langfuseTraceUrl": response.get("LangfuseTraceUrl", ""),
+                "createdAt": response.get("CreatedAt", ""),
+                "updatedAt": response.get("UpdatedAt", ""),
+                "message": response.get("Message", ""),
             }
     except DryRunExit:
         raise
@@ -382,12 +382,12 @@ async def _list_agent_runtimes(region: str, account_id: str, dry_run: bool = Fal
             for agent in response.get("Agents", []):
                 results.append(
                     {
-                        "agentRuntimeId": agent.get("agent_id", ""),
-                        "agentRuntimeName": agent.get("name", ""),
-                        "status": agent.get("status", ""),
-                        "replicas": agent.get("replicas", 0),
-                        "readyReplicas": agent.get("ready_replicas", 0),
-                        "endpoint": agent.get("endpoint", ""),
+                        "agentRuntimeId": agent.get("AgentId", ""),
+                        "agentRuntimeName": agent.get("Name", ""),
+                        "status": agent.get("Status", ""),
+                        "replicas": agent.get("Replicas", 0),
+                        "readyReplicas": agent.get("ReadyReplicas", 0),
+                        "endpoint": agent.get("Endpoint", ""),
                     }
                 )
 

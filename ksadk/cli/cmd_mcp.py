@@ -195,6 +195,8 @@ async def _deploy_mcp_async(
             else:
                 # 创建
                 res = await client.create_mcp(request_data)
+                if not res:
+                    raise Exception("Server 返回空响应，可能是 MCP 名称已存在或 Server 内部错误，请查看 Server 日志")
                 mcp_id = res.get("mcp_id")
             
             endpoint = res.get("endpoint")
@@ -248,10 +250,6 @@ def list_mcps(region: str):
     import asyncio
     
     async def _list():
-        server_url = os.getenv("AGENTENGINE_SERVER_URL")
-        if not server_url:
-            click.secho("❌ 未配置 AGENTENGINE_SERVER_URL", fg='red')
-            return
             
         try:
             async with AgentEngineClient(region=region) as client:
