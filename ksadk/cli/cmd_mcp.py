@@ -20,9 +20,10 @@ def mcp():
     
     \b
     示例:
-        agentengine mcp deploy .       # 部署 MCP
-        agentengine mcp list           # 列出已部署的 MCP
-        agentengine mcp status <id>    # 查看状态
+        agentengine mcp deploy .                               # 部署 MCP (Code 模式, 默认)
+        agentengine mcp deploy . --artifact-type Container     # 镜像模式
+        agentengine mcp list                                   # 列出已部署的 MCP
+        agentengine mcp status <id>                            # 查看状态
     """
     pass
 
@@ -53,7 +54,13 @@ def mcp():
     is_flag=True,
     help="仅显示请求内容，不实际部署"
 )
-def deploy(mcp_dir: str, name: str, region: str, ks3_bucket: str, enable_auth: bool, dry_run: bool):
+@click.option(
+    "--artifact-type",
+    type=click.Choice(["Code", "Container"], case_sensitive=True),
+    default="Code",
+    help="部署模式: Code-代码包 (默认) 或 Container-镜像模式",
+)
+def deploy(mcp_dir: str, name: str, region: str, ks3_bucket: str, enable_auth: bool, dry_run: bool, artifact_type: str):
     """部署 MCP Server 到云端
     
     \b
@@ -63,6 +70,7 @@ def deploy(mcp_dir: str, name: str, region: str, ks3_bucket: str, enable_auth: b
     示例:
         agentengine mcp deploy .
         agentengine mcp deploy ./my-mcp --name my-tools
+        agentengine mcp deploy . --artifact-type Container # 部署为容器
     
     \b
     部署后的 endpoint 兼容标准 MCP 协议，可以被:
@@ -71,7 +79,7 @@ def deploy(mcp_dir: str, name: str, region: str, ks3_bucket: str, enable_auth: b
         - Cursor / Claude Code
         - Dify 等外部平台
     """
-    asyncio.run(_deploy_mcp_async(mcp_dir, name, region, ks3_bucket, enable_auth, dry_run))
+    asyncio.run(_deploy_mcp_async(mcp_dir, name, region, ks3_bucket, enable_auth, dry_run, artifact_type))
 
 
 async def _deploy_mcp_async(
@@ -80,12 +88,11 @@ async def _deploy_mcp_async(
     region: str,
     ks3_bucket: str,
     enable_auth: bool,
-    dry_run: bool
+    dry_run: bool,
+    artifact_type: str
 ):
     """异步 MCP 部署流程"""
     from ksadk.detection.mcp_detector import MCPDetector
-    from ksadk.builders.mcp_builder import MCPCodeBuilder
-    from ksadk.builders.ks3_uploader import KS3Uploader
     from ksadk.api import AgentEngineClient
     
     mcp_path = Path(mcp_dir).resolve()
@@ -110,42 +117,96 @@ async def _deploy_mcp_async(
     
     mcp_name = name or mcp_path.name.replace('-', '_').replace('.', '_')
     
-    # 2. 构建
-    click.echo(f"\n📦 构建 MCP: {mcp_name}")
-    builder = MCPCodeBuilder(mcp_path)
-    build_result = builder.build()
-    
-    if not build_result.success:
-        click.secho(f"❌ 构建失败: {build_result.error_message}", fg='red')
-        return
-    
-    # 3. 上传到 KS3
-    click.echo("\n☁️  上传到 KS3...")
+    artifact_path_final = None
     upload_region = "cn-beijing-6" if region == "pre-online" else region
-    
-    # 让 KS3Uploader 使用默认 bucket 逻辑 (ACCOUNT_ID)
-    uploader = KS3Uploader(region=upload_region, bucket=ks3_bucket)
-    object_key = f"mcps/{mcp_name}/code.zip"
-    
-    ks3_path = await uploader.upload(build_result.artifact_path, object_key)
-    
-    if not ks3_path:
-        click.secho("❌ KS3 上传失败", fg='red')
+
+    if artifact_type.lower() == "code":
+        # 2. 构建代码包
+        click.echo(f"\n📦 构建 MCP 代码包: {mcp_name} (模式: Code)")
+        from ksadk.builders.mcp_builder import MCPCodeBuilder
+        builder = MCPCodeBuilder(mcp_path)
+        if no_cache:
+            # 清除旧 zip 缓存，强制重新构建
+            zip_path = builder.build_dir / f"{mcp_name}.zip"
+            if zip_path.exists():
+                zip_path.unlink()
+                click.echo(f"   🗑️  已清除旧缓存: {zip_path.name}")
+        build_result = builder.build()
+        
+        if not build_result.success:
+            click.secho(f"❌ 构建失败: {build_result.error_message}", fg='red')
+            return
+        
+        # 3. 上传到 KS3
+        click.echo("\n☁️  上传到 KS3...")
+        from ksadk.builders.ks3_uploader import KS3Uploader
+        # 让 KS3Uploader 使用默认 bucket 逻辑 (ACCOUNT_ID)
+        uploader = KS3Uploader(region=upload_region, bucket=ks3_bucket)
+        object_key = f"mcps/{mcp_name}/code.zip"
+        
+        ks3_path = await uploader.upload(build_result.artifact_path, object_key)
+        
+        if not ks3_path:
+            click.secho("❌ KS3 上传失败", fg='red')
+            return
+        
+        click.echo(f"   ✓ 上传成功: {ks3_path}")
+        artifact_path_final = ks3_path
+        
+    elif artifact_type.lower() == "container":
+        # 2. 构建 MCP Docker 镜像 (复用 ContainerBuilder，和 agent container 模式一致)
+        click.echo(f"\n🐳 构建 MCP Docker 镜像: {mcp_name}")
+        
+        # 检查 Docker 是否可用
+        import subprocess
+        try:
+            docker_check = subprocess.run(["docker", "version"], capture_output=True, timeout=10)
+            if docker_check.returncode != 0:
+                click.secho("❌ Docker 未正常运行", fg='red')
+                return
+        except FileNotFoundError:
+            click.secho("❌ 未找到 docker 命令，请先安装 Docker", fg='red')
+            return
+        
+        from ksadk.builders.container_builder import ContainerBuilder
+        container_builder = ContainerBuilder(
+            project_dir=mcp_path,
+            no_cache=no_cache,
+        )
+        # 利用 ContainerBuilder 内置的 build()，它会自动检测项目、确定镜像名和推送
+        build_result = container_builder.build()
+        
+        if not build_result.success:
+            click.secho(f"❌ Docker 镜像构建失败: {build_result.error_message}", fg='red')
+            return
+        
+        image_name = build_result.metadata.get("image")
+        click.echo(f"   ✓ 镜像构建成功: {image_name}")
+        
+        # 3. 推送镜像
+        click.echo("\n📤 推送镜像到仓库...")
+        if not container_builder.push(image_name):
+            click.secho("❌ 镜像推送失败", fg='red')
+            return
+        
+        click.echo(f"   ✓ 推送成功: {image_name}")
+        artifact_path_final = image_name
+    else:
+        click.secho(f"❌ 不支持的 artifact_type: {artifact_type}", fg='red')
         return
-    
-    click.echo(f"   ✓ 上传成功: {ks3_path}")
-    
+
     if dry_run:
         click.echo("\n📋 [Dry Run] 请求数据:")
         import json
-        request_data = {
+        request_data_preview = {
             "name": mcp_name,
             "type": "mcp",
-            "artifact_path": ks3_path,
+            "artifact_type": artifact_type,
+            "artifact_path": artifact_path_final,
             "region": region,
             "tools": detection_result.tools,
         }
-        click.echo(json.dumps(request_data, indent=2, ensure_ascii=False))
+        click.echo(json.dumps(request_data_preview, indent=2, ensure_ascii=False))
         return
     
     # 4. 读取本地状态文件
@@ -164,10 +225,10 @@ async def _deploy_mcp_async(
     request_data = {
         "name": mcp_name,
         "type": "mcp",
-        "artifact_type": "Code",
-        "artifact_path": ks3_path,
+        "artifact_type": artifact_type,
+        "artifact_path": artifact_path_final,
         "region": region,
-        "enable_auth": enable_auth,  # 可选 API Key 保护
+        "enable_auth": enable_auth,
         "resources": {"cpu": "1", "memory": "2Gi"},
         "scaling": {"min_replicas": 1, "max_replicas": 5, "concurrency": 20},
         "metadata": {
@@ -177,12 +238,30 @@ async def _deploy_mcp_async(
     }
     
     if auth.access_key_id and auth.secret_access_key:
-        request_data["ks3"] = {
-            "access_key": auth.access_key_id,
-            "secret_key": auth.secret_access_key,
-            "region": upload_region,
-            "bucket": uploader.bucket_name,
-        }
+        if artifact_type.lower() == "code":
+            # Code 模式: 传递 KS3 凭证，让 Server 能从 KS3 拉取代码包
+            request_data["ks3"] = {
+                "access_key": auth.access_key_id,
+                "secret_key": auth.secret_access_key,
+                "region": upload_region,
+                "bucket": uploader.bucket_name,
+            }
+    
+    if artifact_type.lower() == "container":
+        # Container 模式: 传递 KCR 镜像凭证，让 Server 能拉取私有镜像
+        kcr_username = os.getenv("KCR_USERNAME", "") or os.getenv("KSYUN_ACCOUNT_ID", "")
+        kcr_password = os.getenv("KCR_PASSWORD")
+        kcr_endpoint = os.getenv("KCR_ENDPOINT", "hub.kce.ksyun.com")
+        
+        if kcr_username and kcr_password:
+            request_data["image_credential"] = {
+                "endpoint": kcr_endpoint,
+                "username": kcr_username,
+                "password": kcr_password,
+            }
+            click.echo(f"   🔑 镜像凭证: {kcr_username}@{kcr_endpoint}")
+        else:
+            click.secho("   ⚠️  未配置镜像凭证 (KCR_USERNAME/KCR_PASSWORD)，私有镜像可能无法拉取", fg="yellow")
     
     try:
         async with AgentEngineClient(region=region) as client:
@@ -209,6 +288,7 @@ async def _deploy_mcp_async(
                 "mcp_id": mcp_id,
                 "name": mcp_name,
                 "region": region,
+                "artifact_type": artifact_type,
                 "endpoint": endpoint,
                 "mcp_endpoint": f"{endpoint}/mcp" if endpoint else None,
                 "tools": detection_result.tools,
@@ -223,6 +303,7 @@ async def _deploy_mcp_async(
             # 输出结果
             click.secho(f"\n✅ MCP 部署成功!", fg='green')
             click.echo(f"   MCP ID: {mcp_id}")
+            click.echo(f"   模式: {artifact_type}")
             if endpoint:
                 click.echo(f"   Endpoint: {endpoint}")
                 click.echo(f"   MCP URL: {endpoint}/mcp")
