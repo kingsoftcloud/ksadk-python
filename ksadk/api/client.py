@@ -100,7 +100,13 @@ class AgentEngineClient:
             "Host": self._get_host(),
             "X-Ksc-Request-Id": request_id,
             "X-Ksc-Region": self.region,
+            "X-Ksc-Source": "ksadk-cli",
         }
+        
+        # 统一使用 X-Ksc-Account-Id (废弃 X-Ksc-Account-Id)
+        account_id = os.getenv("KSYUN_ACCOUNT_ID")
+        if account_id:
+            headers["X-Ksc-Account-Id"] = account_id
         if self.extra_headers:
             headers.update(self.extra_headers)
         return headers
@@ -179,11 +185,17 @@ class AgentEngineClient:
         body = params or {}
         result = self._request("POST", f"/agentengine/api/v1/{action}", body)
         
-        # 检查错误
+        # 检查错误 (统一返回格式 {"Code": 0, ...})
+        code = result.get("Code", 0)
+        if code != 0:
+            msg = result.get("Message", "Unknown API error")
+            raise Exception(f"Server API Error (Code: {code}): {msg}")
+            
         if result.get("Error"):
             raise Exception(result["Error"].get("Message", "Unknown error"))
         
-        return result.get("Data", result)
+        # 为了防止后端错误处理导致 Data=null 传给下游空指针异常，增加一个后备默认值
+        return result.get("Data") if result.get("Data") is not None else result
 
     # ===== Agent Actions =====
 
@@ -193,36 +205,64 @@ class AgentEngineClient:
             "Name": data.get("name"),
             "Description": data.get("description"),
             "Framework": data.get("framework", "langgraph"),
-            "ArtifactType": data.get("artifact_type", "Code"),
-            "ArtifactPath": data.get("artifact_path"),
+            "DeploymentType": data.get("artifact_type", "Code"),
             "Region": data.get("region", "cn-beijing-6"),
-            "Cpu": data.get("resources", {}).get("cpu", "2"),
-            "Memory": data.get("resources", {}).get("memory", "4Gi"),
-            "MinReplicas": data.get("scaling", {}).get("min_replicas", 1),
-            "MaxReplicas": data.get("scaling", {}).get("max_replicas", 10),
-            "Concurrency": data.get("scaling", {}).get("concurrency", 20),
+            "InstanceId": data.get("instance_id", "default"),
+            "Resource": {
+                "Cpu": int(float(data.get("resources", {}).get("cpu", 2))),
+                "Memory": int(str(data.get("resources", {}).get("memory", "4Gi")).replace("Gi", ""))
+            },
+            "Scaling": {
+                "MinReplicas": int(data.get("scaling", {}).get("min_replicas", 1)),
+                "MaxReplicas": int(data.get("scaling", {}).get("max_replicas", 10)),
+                "Concurrency": int(data.get("scaling", {}).get("concurrency", 20)),
+            },
         }
-        if data.get("ks3"):
-            params["KS3AccessKey"] = data["ks3"].get("access_key")
-            params["KS3SecretKey"] = data["ks3"].get("secret_key")
-            params["KS3Region"] = data["ks3"].get("region")
-            params["KS3Bucket"] = data["ks3"].get("bucket")
+
+        if params["DeploymentType"] == "Code":
+            ks3 = data.get("ks3", {})
+            params["CodeConfig"] = {
+                "Path": data.get("artifact_path", ""),
+                "AccessKey": ks3.get("access_key"),
+                "SecretKey": ks3.get("secret_key"),
+                "Region": ks3.get("region", "cn-beijing-6"),
+                "Bucket": ks3.get("bucket"),
+            }
+        else:
+            ic = data.get("image_credential", {})
+            params["ContainerConfig"] = {
+                "ImageType": "Personal",
+                "NameSpace": "default",
+                "ImageRepo": data.get("artifact_path", ""),
+                "ImageVersion": "latest",
+                "UserName": ic.get("username"),
+                "Password": ic.get("password"),
+            }
+
         if data.get("model"):
             params["ModelName"] = data["model"].get("name")
             params["ModelApiBase"] = data["model"].get("api_base")
             params["ModelApiKey"] = data["model"].get("api_key")
-        # Container 模式: 传递镜像凭证
-        if data.get("image_credential"):
-            params["ImageCredential"] = {
-                "Endpoint": data["image_credential"].get("endpoint"),
-                "Username": data["image_credential"].get("username"),
-                "Password": data["image_credential"].get("password"),
-            }
+
+        env_vars = []
+        envs = data.get("env_vars") or data.get("environment_variables")
+        if envs:
+            if isinstance(envs, dict):
+                for k, v in envs.items():
+                    env_vars.append({"Key": k, "Value": str(v), "IsSensitive": False})
+            elif isinstance(envs, list):
+                env_vars = envs
+
+        params["Advanced"] = {
+            "EnableObservability": True,
+            "EnvironmentVariables": env_vars
+        }
+
         return self._action("CreateAgent", params)
 
     async def get_agent(self, agent_id: str) -> Dict[str, Any]:
         """获取 Agent 详情"""
-        return self._action("GetAgent", {"Id": agent_id})
+        return self._action("GetAgent", {"Id": agent_id, "AgentId": agent_id})
         
     async def list_agents(self, region: Optional[str] = None) -> Dict[str, Any]:
         """列出 Agents"""
@@ -233,11 +273,8 @@ class AgentEngineClient:
 
     async def delete_agent(self, agent_id: str) -> bool:
         """删除 Agent"""
-        try:
-            self._action("DeleteAgent", {"Id": agent_id})
-            return True
-        except Exception:
-            return False
+        self._action("DeleteAgent", {"AgentId": agent_id})
+        return True
 
     async def get_agent_by_name(self, name: str) -> Optional[Dict[str, Any]]:
         """按名称查询 Agent"""
@@ -249,25 +286,43 @@ class AgentEngineClient:
 
     async def update_agent(self, agent_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """更新 Agent (热更新)"""
-        params = {"Id": agent_id}
-        if data.get("artifact_path"):
-            params["ArtifactPath"] = data["artifact_path"]
+        params = {"AgentId": agent_id}
         if data.get("description"):
             params["Description"] = data["description"]
+            
+        if data.get("artifact_path"):
+            ks3 = data.get("ks3", {})
+            params["CodeConfig"] = {
+                "Path": data["artifact_path"],
+                "AccessKey": ks3.get("access_key"),
+                "SecretKey": ks3.get("secret_key"),
+                "Region": ks3.get("region", "cn-beijing-6"),
+                "Bucket": ks3.get("bucket"),
+            }
+            
         if data.get("resources"):
-            params["Cpu"] = data["resources"].get("cpu")
-            params["Memory"] = data["resources"].get("memory")
+            params["Resource"] = {
+                "Cpu": int(float(data["resources"].get("cpu", 2))),
+                "Memory": int(str(data["resources"].get("memory", "4Gi")).replace("Gi", ""))
+            }
+            
         if data.get("scaling"):
-            params["MinReplicas"] = data["scaling"].get("min_replicas")
-            params["MaxReplicas"] = data["scaling"].get("max_replicas")
-            params["Concurrency"] = data["scaling"].get("concurrency")
-        if data.get("ks3"):
-            params["KS3AccessKey"] = data["ks3"].get("access_key")
-            params["KS3SecretKey"] = data["ks3"].get("secret_key")
-            params["KS3Region"] = data["ks3"].get("region")
-            params["KS3Bucket"] = data["ks3"].get("bucket")
-        if data.get("env_vars") or data.get("environment_variables"):
-            params["EnvironmentVariables"] = data.get("env_vars") or data.get("environment_variables")
+            params["Scaling"] = {
+                "MinReplicas": int(data["scaling"].get("min_replicas", 1)),
+                "MaxReplicas": int(data["scaling"].get("max_replicas", 10)),
+                "Concurrency": int(data["scaling"].get("concurrency", 20)),
+            }
+            
+        envs = data.get("env_vars") or data.get("environment_variables")
+        if envs:
+            env_vars = []
+            if isinstance(envs, dict):
+                for k, v in envs.items():
+                    env_vars.append({"Key": k, "Value": str(v), "IsSensitive": False})
+            elif isinstance(envs, list):
+                env_vars = envs
+            params["EnvironmentVariables"] = env_vars
+            
         return self._action("UpdateAgent", params)
 
     # ===== Session Actions =====
@@ -327,9 +382,12 @@ class AgentEngineClient:
         """获取 MCP 详情"""
         return self._action("GetMCP", {"Id": mcp_id})
     
-    async def list_mcps(self) -> Dict[str, Any]:
+    async def list_mcps(self, region: Optional[str] = None) -> Dict[str, Any]:
         """列出 MCP (注册中心)"""
-        result = self._action("ListMCPs", {"Page": 1, "Size": 100})
+        params = {"Page": 1, "PageSize": 100}
+        if region:
+            params["Region"] = region
+        result = self._action("ListMCPs", params)
         # 兼容返回格式
         return {"mcps": result.get("MCPs", []), "total": result.get("Total", 0)}
     
