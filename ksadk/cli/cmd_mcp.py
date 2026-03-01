@@ -60,7 +60,13 @@ def mcp():
     default="Code",
     help="部署模式: Code-代码包 (默认) 或 Container-镜像模式",
 )
-def deploy(mcp_dir: str, name: str, region: str, ks3_bucket: str, enable_auth: bool, dry_run: bool, artifact_type: str):
+@click.option(
+    "--no-cache",
+    is_flag=True,
+    default=False,
+    help="强制重新构建，不使用缓存 (Code/Container 模式均适用)",
+)
+def deploy(mcp_dir: str, name: str, region: str, ks3_bucket: str, enable_auth: bool, dry_run: bool, artifact_type: str, no_cache: bool):
     """部署 MCP Server 到云端
     
     \b
@@ -79,7 +85,7 @@ def deploy(mcp_dir: str, name: str, region: str, ks3_bucket: str, enable_auth: b
         - Cursor / Claude Code
         - Dify 等外部平台
     """
-    asyncio.run(_deploy_mcp_async(mcp_dir, name, region, ks3_bucket, enable_auth, dry_run, artifact_type))
+    asyncio.run(_deploy_mcp_async(mcp_dir, name, region, ks3_bucket, enable_auth, dry_run, artifact_type, no_cache))
 
 
 async def _deploy_mcp_async(
@@ -89,7 +95,8 @@ async def _deploy_mcp_async(
     ks3_bucket: str,
     enable_auth: bool,
     dry_run: bool,
-    artifact_type: str
+    artifact_type: str,
+    no_cache: bool = False,
 ):
     """异步 MCP 部署流程"""
     from ksadk.detection.mcp_detector import MCPDetector
@@ -334,7 +341,7 @@ def list_mcps(region: str):
             
         try:
             async with AgentEngineClient(region=region) as client:
-                resp = await client.list_mcps()
+                resp = await client.list_mcps(region=region)
                 
                 mcps = resp.get("mcps", [])
                 total = resp.get("total", 0)

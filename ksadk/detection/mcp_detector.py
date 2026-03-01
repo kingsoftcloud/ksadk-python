@@ -129,7 +129,8 @@ class MCPDetector:
         
         # 扫描所有 .py 文件
         for py_file in self.project_dir.rglob("*.py"):
-            if "__pycache__" in str(py_file):
+            path_str = str(py_file)
+            if "__pycache__" in path_str or "/.agentengine/" in path_str or "/.venv/" in path_str or "/venv/" in path_str:
                 continue
             if self._is_mcp_file(py_file):
                 return py_file

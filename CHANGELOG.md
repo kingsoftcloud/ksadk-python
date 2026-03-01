@@ -49,7 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - 规范化变量名: `MODEL_NAME` → `OPENAI_MODEL_NAME`, `OPENAI_API_BASE` → `OPENAI_BASE_URL`。
 - **多租户一致性 (Account ID Unification)**:
     - 废弃 `user_id`，统一使用 `account_id` 作为系统内唯一的租户标识。
-    - 实现了 `X-Ksyun-Account-Id` 在 CLI、Server 和 Serverless 后端之间的完整透传。
+    - 实现了 `X-Ksc-Account-Id` 在 CLI、Server 和 Serverless 后端之间的完整透传。
 - **Serverless 部署增强**:
     - **KS3 智能区域配置**: 支持动态推导区域 Bucket 名称 (`agentengine-{account_id}-{region}`)。
     - **状态透视**: `agentengine status` 现可实时显示 Agent 的副本数 (`replicas`) 和就绪副本数 (`ready_replicas`)。

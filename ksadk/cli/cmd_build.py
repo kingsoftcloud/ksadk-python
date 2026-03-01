@@ -24,7 +24,7 @@ from pathlib import Path
 @click.option("--tag", "-t", help="镜像标签 (container 模式)")
 @click.option("--registry", help="镜像仓库地址 (container 模式)")
 @click.option("--push", is_flag=True, help="构建后推送 (镜像到仓库 / zip到KS3)")
-@click.option("--no-cache", is_flag=True, help="不使用缓存 (container 模式)")
+@click.option("--no-cache", is_flag=True, help="强制重新构建，不使用缓存 (code: 忽略已有 zip；container: docker --no-cache)")
 @click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="KS3 区域 (code 模式)")
 @click.option("--ks3-bucket", help="KS3 bucket 名称 (code 模式, 默认: agentengine-{region})")
 def build(
@@ -42,6 +42,7 @@ def build(
     示例:
         agentengine build .
         agentengine build . --mode code --push
+        agentengine build . --mode code --push --no-cache   # 强制重新打包 zip（如依赖/二进制有问题时）
         agentengine build . --mode container --push --registry hub-cn-beijing-6.kce.ksyun.com
     """
     agent_path = Path(agent_dir).resolve()

@@ -325,24 +325,29 @@ async def _get_agent_runtime(agent: str, region: str, account_id: str, dry_run: 
         
         # 传递 Account ID
         if account_id:
-            extra_headers["X-Ksyun-Account-Id"] = account_id
+            extra_headers["X-Ksc-Account-Id"] = account_id
 
         async with AgentEngineClient(region=region, dry_run=dry_run, extra_headers=extra_headers) as client:
             response = await client.get_agent(agent)
 
+            basic = response.get("Basic", {})
+            deploy = response.get("Deployment", {})
+            quick = response.get("QuickAccess", {})
+            adv = response.get("Advanced", {})
+
             return {
-                "agentRuntimeId": response.get("AgentId", ""),
-                "agentRuntimeName": response.get("Name", ""),
-                "description": response.get("Description", ""),
-                "status": response.get("Status", "Unknown"),
-                "phase": response.get("Phase", ""),
-                "replicas": response.get("Replicas", 0),
+                "agentRuntimeId": basic.get("AgentId", "") or response.get("AgentId", ""),
+                "agentRuntimeName": basic.get("Name", "") or response.get("Name", ""),
+                "description": basic.get("Description", "") or response.get("Description", ""),
+                "status": basic.get("Status", "") or response.get("Status", "Unknown"),
+                "phase": basic.get("Phase", "") or response.get("Phase", ""),
+                "replicas": response.get("Replicas", deploy.get("Scaling", {}).get("MinReplicas", 1)),
                 "readyReplicas": response.get("ReadyReplicas", 0),
-                "endpoint": response.get("Endpoint", ""),
-                "langfuseTraceUrl": response.get("LangfuseTraceUrl", ""),
-                "createdAt": response.get("CreatedAt", ""),
-                "updatedAt": response.get("UpdatedAt", ""),
-                "message": response.get("Message", ""),
+                "endpoint": quick.get("PublicEndpoint") or quick.get("PrivateEndpoint") or response.get("Endpoint", ""),
+                "langfuseTraceUrl": adv.get("ObservabilityUrl", "") or response.get("LangfuseTraceUrl", ""),
+                "createdAt": basic.get("CreatedAt", "") or response.get("CreatedAt", ""),
+                "updatedAt": basic.get("UpdatedAt", "") or response.get("UpdatedAt", ""),
+                "message": basic.get("Message", "") or response.get("Message", ""),
             }
     except DryRunExit:
         raise
@@ -373,7 +378,7 @@ async def _list_agent_runtimes(region: str, account_id: str, dry_run: bool = Fal
         
         # 传递 Account ID
         if account_id:
-            extra_headers["X-Ksyun-Account-Id"] = account_id
+            extra_headers["X-Ksc-Account-Id"] = account_id
 
         async with AgentEngineClient(region=region, dry_run=dry_run, extra_headers=extra_headers) as client:
             response = await client.list_agents(region=region)

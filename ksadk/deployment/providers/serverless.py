@@ -433,6 +433,7 @@ class ServerlessProvider(BaseDeployProvider):
                         "artifact_type": artifact_type,
                         "artifact_path": artifact_path,
                         "region": target.region,
+                        "instance_id": target.extra.get("instance_id", "default"),
                         "resources": {
                             "cpu": target.resources.cpu,
                             "memory": target.resources.memory
@@ -486,7 +487,7 @@ class ServerlessProvider(BaseDeployProvider):
                     extra_headers = {}
                     ksyun_account_id = os.getenv("KSYUN_ACCOUNT_ID")
                     if ksyun_account_id:
-                        extra_headers["X-Ksyun-Account-Id"] = ksyun_account_id
+                        extra_headers["X-Ksc-Account-Id"] = ksyun_account_id
                     
                     # 重新构造一个带 Header 的 client
                     async with AgentEngineClient(region=target.region, extra_headers=extra_headers, dry_run=is_dry_run) as new_client:
