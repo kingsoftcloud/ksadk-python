@@ -37,6 +37,7 @@ def mcp():
 @click.option(
     "--region", "-r",
     default="cn-beijing-6",
+    envvar="KSYUN_REGION",
     help="部署区域 (default: cn-beijing-6)"
 )
 @click.option(

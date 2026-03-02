@@ -43,9 +43,18 @@ def status(
         agentengine status --all
         agentengine status --agent my-agent-id --dry-run
     """
+    # 当未显式指定 --agent 且未使用 --all 时，尝试从本地状态文件/配置中解析默认 Agent
+    fallback_agent_name: Optional[str] = None
     if not agent and not show_all:
-        # 尝试从当前目录的配置文件读取 agent 名称
-        agent = _get_agent_from_config()
+        # 1) 优先从 .agentengine.state 读取已部署的 agent_id（更精确）
+        state_agent_id, state_agent_name = _get_agent_from_state()
+        if state_agent_id:
+            agent = state_agent_id
+            fallback_agent_name = state_agent_name or None
+        else:
+            # 2) 回退到 agentengine.yaml / ksadk.yaml 中的 name
+            agent = _get_agent_from_config()
+            fallback_agent_name = agent or None
 
         if not agent:
             click.secho("错误: 请指定 --agent 或使用 --all 查看所有", fg="red")
@@ -70,7 +79,7 @@ def status(
         _watch_status(agent, region, account_id, interval)
     else:
         try:
-            asyncio.run(_show_agent_status(agent, region, account_id, dry_run))
+            asyncio.run(_show_agent_status(agent, region, account_id, dry_run, fallback_agent_name))
         except DryRunExit as e:
             pass
 
@@ -89,6 +98,31 @@ def _get_agent_from_config() -> Optional[str]:
             config = yaml.safe_load(f)
             return config.get("name")
     return None
+
+
+def _get_agent_from_state() -> tuple[Optional[str], Optional[str]]:
+    """从 .agentengine.state 读取 agent_id 和 name
+
+    优先使用该文件中的 agent_id 进行精确查询，失败时再按名称回退。
+    """
+    import yaml
+
+    state_path = Path(".") / ".agentengine.state"
+    if not state_path.exists():
+        return None, None
+
+    try:
+        with open(state_path, encoding='utf-8-sig') as f:
+            data = yaml.safe_load(f) or {}
+    except Exception:
+        return None, None
+
+    if not isinstance(data, dict):
+        return None, None
+
+    agent_id = data.get("agent_id")
+    name = data.get("name")
+    return agent_id, name
 
 
 def _watch_status(agent: str, region: str, account_id: str, interval: int):
@@ -123,7 +157,13 @@ def _watch_status(agent: str, region: str, account_id: str, interval: int):
         click.echo("\n\n退出 Watch 模式")
 
 
-async def _show_agent_status(agent: str, region: str, account_id: str, dry_run: bool = False):
+async def _show_agent_status(
+    agent: str,
+    region: str,
+    account_id: str,
+    dry_run: bool = False,
+    fallback_agent_name: Optional[str] = None,
+):
     """显示单个 Agent 的状态 (完整)"""
     click.echo(f"查询 Agent 状态... (region: {region})")
 
@@ -132,11 +172,16 @@ async def _show_agent_status(agent: str, region: str, account_id: str, dry_run: 
         
         # 检查是否查询失败 (ID 不存在)
         if result.get("status") == "Error":
-             # 如果 ID 查询失败，尝试按名称查询
-            click.echo(f"按 ID 查询失败 ({result.get('error')}), 尝试按名称查询...")
+            # 如果按 ID 查询失败，尝试按名称查询
+            target_name = fallback_agent_name or agent
+            click.echo(
+                f"按 ID 查询失败 ({result.get('error')}), 尝试按名称查询..."
+            )
             try:
                 all_agents = await _list_agent_runtimes(region, account_id, dry_run)
-                matched = [a for a in all_agents if a.get("agentRuntimeName") == agent]
+                matched = [
+                    a for a in all_agents if a.get("agentRuntimeName") == target_name
+                ]
                 
                 if len(matched) == 1:
                     # 找到唯一匹配
@@ -341,8 +386,8 @@ async def _get_agent_runtime(agent: str, region: str, account_id: str, dry_run: 
                 "description": basic.get("Description", "") or response.get("Description", ""),
                 "status": basic.get("Status", "") or response.get("Status", "Unknown"),
                 "phase": basic.get("Phase", "") or response.get("Phase", ""),
-                "replicas": response.get("Replicas", deploy.get("Scaling", {}).get("MinReplicas", 1)),
-                "readyReplicas": response.get("ReadyReplicas", 0),
+                "replicas": basic.get("Replicas") if basic.get("Replicas") is not None else response.get("Replicas", deploy.get("Scaling", {}).get("MinReplicas", 1)),
+                "readyReplicas": basic.get("ReadyReplicas") if basic.get("ReadyReplicas") is not None else response.get("ReadyReplicas", 0),
                 "endpoint": quick.get("PublicEndpoint") or quick.get("PrivateEndpoint") or response.get("Endpoint", ""),
                 "langfuseTraceUrl": adv.get("ObservabilityUrl", "") or response.get("LangfuseTraceUrl", ""),
                 "createdAt": basic.get("CreatedAt", "") or response.get("CreatedAt", ""),
