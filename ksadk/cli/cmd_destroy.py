@@ -10,6 +10,14 @@ import uuid
 from pathlib import Path
 from ksadk.api.client import DryRunExit
 from ksadk.deployment import DeploymentManager, DeployTarget
+from ksadk.cli.ui import (
+    print_error,
+    print_info,
+    print_kv,
+    print_success,
+    print_title,
+    print_warn,
+)
 
 
 @click.command(context_settings=dict(help_option_names=["-h", "--help"]))
@@ -42,25 +50,26 @@ def destroy(agent: str, force: bool, region: str, account_id: str, dry_run: bool
                 agent = config.get("name")
 
         if not agent:
-            click.secho("错误: 请指定 --agent 参数", fg="red")
+            print_error("错误: 请指定 --agent 参数")
             raise SystemExit(1)
 
     # 检查账号 ID
     if not account_id:
-        click.secho("错误: 需要金山云账号 ID", fg="red")
-        click.echo("提示: 设置 KSYUN_ACCOUNT_ID 环境变量或使用 --account-id 参数")
+        print_error("错误: 需要金山云账号 ID")
+        print_info("提示: 设置 KSYUN_ACCOUNT_ID 环境变量或使用 --account-id 参数")
         raise SystemExit(1)
 
     # Dry Run 提示
+    print_title("销毁 Agent")
     if dry_run:
-        click.secho(f"[Dry Run] 准备销毁 Agent: {agent} (Region: {region})", fg="yellow")
+        print_warn(f"[Dry Run] 准备销毁 Agent: {agent} (Region: {region})")
     else:
-        click.secho(f"即将销毁 Agent: {agent}", fg="yellow", bold=True)
-        click.echo(f"   区域: {region}")
+        print_warn(f"即将销毁 Agent: {agent}")
+        print_kv("区域", region)
 
     if not force and not dry_run:
         if not click.confirm(f"确定要销毁 Agent '{agent}' 吗? 此操作不可恢复"):
-            click.echo("已取消")
+            print_info("已取消")
             return
 
     # 构造 Provider 和 Target
@@ -69,7 +78,7 @@ def destroy(agent: str, force: bool, region: str, account_id: str, dry_run: bool
     try:
         provider = DeploymentManager.get_provider(provider_name)
     except ValueError as e:
-        click.secho(f"错误: {e}", fg="red")
+        print_error(f"错误: {e}")
         raise SystemExit(1)
 
     deploy_target = DeployTarget(
@@ -82,23 +91,21 @@ def destroy(agent: str, force: bool, region: str, account_id: str, dry_run: bool
     )
 
     if not dry_run:
-        click.echo("")
-        click.echo("正在停止 Agent 实例...")
+        print_info("正在停止 Agent 实例...")
 
     # 调用 Provider 销毁
     try:
         success = asyncio.run(provider.destroy(agent, deploy_target))
 
         if success:
-            click.secho("\nAgent 已销毁!", fg="green")
+            print_success("Agent 已销毁")
         else:
             if not dry_run:
-                click.secho("\n销毁失败，请检查错误信息", fg="red")
+                print_error("销毁失败，请检查错误信息")
                 raise SystemExit(1)
             
     except DryRunExit:
         pass  # Dry Run 完成
     except Exception as e:
-        click.secho(f"操作失败: {e}", fg="red")
+        print_error(f"操作失败: {e}")
         raise SystemExit(1)
-

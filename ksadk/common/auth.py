@@ -15,7 +15,7 @@ AWS Signature V4 签名认证
         access_key_id="your-ak",
         secret_access_key="your-sk",
         region="cn-beijing-6",
-        service="kmr",
+        service="aicp",
     )
 
     # 用于 requests
@@ -48,7 +48,7 @@ class AWSV4Auth:
         access_key_id: str = "",
         secret_access_key: str = "",
         region: str = "cn-beijing-6",
-        service: str = "kmr",
+        service: str = "aicp",
     ):
         """初始化签名器
 
@@ -56,7 +56,7 @@ class AWSV4Auth:
             access_key_id: 访问密钥 ID (AK)，默认从环境变量读取
             secret_access_key: 访问密钥 (SK)，默认从环境变量读取
             region: 区域 ID (如 cn-beijing-6)
-            service: 服务名称 (如 kmr, kcr, iam 等)
+            service: 服务名称 (如 kmr, aicp, iam 等)
         """
         self.access_key_id = (
             access_key_id
@@ -154,7 +154,7 @@ def create_auth(
     access_key_id: str = "",
     secret_access_key: str = "",
     region: str = "cn-beijing-6",
-    service: str = "kmr",
+    service: str = "aicp",
 ) -> AWSV4Auth:
     """创建签名认证器的便捷函数
 
@@ -173,7 +173,7 @@ def create_auth(
 
     Example:
         # 使用环境变量
-        auth = create_auth(region="cn-beijing-6", service="kmr")
+        auth = create_auth(region="cn-beijing-6", service="aicp")
 
         # 指定凭证
         auth = create_auth(
