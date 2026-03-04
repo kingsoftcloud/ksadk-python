@@ -5,10 +5,13 @@ AgentEngine Server API 客户端
 """
 
 import os
+import re
 import json
 import uuid
+import socket
 import logging
 from typing import Optional, Dict, Any
+from urllib.parse import urlparse
 
 import requests
 
@@ -39,7 +42,7 @@ class AgentEngineClient:
         access_key: Optional[str] = None,
         secret_key: Optional[str] = None,
         region: str = "cn-beijing-6",
-        service: str = "agentengine",
+        service: Optional[str] = None,
         timeout: float = 60.0,
         dry_run: bool = False,
         extra_headers: Optional[Dict[str, str]] = None,
@@ -49,11 +52,7 @@ class AgentEngineClient:
             or os.getenv("AGENTENGINE_SERVER_URL")
         )
         if not self.base_url:
-            if region == "pre-online":
-                self.base_url = "http://agent-api-pre.kspmas-internal.ksyun.com"
-            else:
-                # 默认为线上环境
-                self.base_url = "http://agent-api.kspmas-internal.ksyun.com"
+            self.base_url = self._detect_default_base_url()
         
         # 本地调试覆盖 (如果需要)
         # self.base_url = "http://localhost:8081"
@@ -61,13 +60,15 @@ class AgentEngineClient:
         self.region = region
         self.dry_run = dry_run
         self.extra_headers = extra_headers or {}
+        # 签名 service 可通过环境变量覆盖（例如 aicp）
+        self.service = service or os.getenv("AGENTENGINE_SIGN_SERVICE", "aicp")
         
         # AWS V4 签名
         self._auth = AWSV4Auth(
             access_key_id=access_key or "",
             secret_access_key=secret_key or "",
             region=region,
-            service=service,
+            service=self.service,
         )
         
         if self._auth.is_enabled:
@@ -76,6 +77,35 @@ class AgentEngineClient:
             logger.warning("AgentEngineClient: No credentials, signing disabled")
             
         self._session: Optional[requests.Session] = None
+
+    @staticmethod
+    def _is_connectable(url: str, timeout: float = 1.0) -> bool:
+        """检查目标地址 TCP 连通性。"""
+        try:
+            parsed = urlparse(url)
+            host = parsed.hostname
+            if not host:
+                return False
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            with socket.create_connection((host, port), timeout=timeout):
+                return True
+        except OSError:
+            return False
+
+    def _detect_default_base_url(self) -> str:
+        """默认地址自动探测: inner 优先，失败回落公网。"""
+        inner_url = "http://aicp.inner.api.ksyun.com"
+        public_url = "https://aicp.api.ksyun.com"
+
+        if self._is_connectable(inner_url):
+            logger.info(f"AgentEngineClient endpoint selected (inner): {inner_url}")
+            return inner_url
+
+        logger.warning(
+            f"AgentEngineClient endpoint fallback to public: {public_url} "
+            f"(inner unreachable: {inner_url})"
+        )
+        return public_url
 
     def _get_session(self) -> requests.Session:
         if self._session is None:
@@ -91,7 +121,11 @@ class AgentEngineClient:
             host = host[8:]
         return host.split("/")[0].rstrip("/")
 
-    def _build_headers(self, request_id: str = "") -> Dict[str, str]:
+    def _is_kop_mode(self) -> bool:
+        """是否使用 KOP 协议模式（按 base_url 是否包含 aicp 判断）。"""
+        return "aicp" in (self.base_url or "").lower()
+
+    def _build_headers(self, request_id: str = "", action: str = "", kop_mode: bool = False) -> Dict[str, str]:
         if not request_id:
             request_id = str(uuid.uuid4())
         headers = {
@@ -102,6 +136,11 @@ class AgentEngineClient:
             "X-Ksc-Region": self.region,
             "X-Ksc-Source": "ksadk-cli",
         }
+        if kop_mode and action:
+            headers["X-Action"] = action
+            headers["X-Version"] = os.getenv("AGENTENGINE_API_VERSION", "2026-03-04")
+        if self.region.lower() == "pre-online":
+            headers["X-KSC-CUSTOM-SOURCE"] = "pre"
         
         # 统一使用 X-Ksc-Account-Id (废弃 X-Ksc-Account-Id)
         account_id = os.getenv("KSYUN_ACCOUNT_ID")
@@ -118,22 +157,38 @@ class AgentEngineClient:
         body: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """同步 HTTP 请求"""
-        headers = self._build_headers()
-        full_url = f"{self.base_url}{path}"
+        action = path.rstrip("/").split("/")[-1] if path else ""
+        kop_mode = self._is_kop_mode()
+        headers = self._build_headers(action=action, kop_mode=kop_mode)
+        if kop_mode:
+            version = os.getenv("AGENTENGINE_API_VERSION", "2026-03-04")
+            full_url = f"{self.base_url.rstrip('/')}/?Action={action}&Version={version}"
+        else:
+            full_url = f"{self.base_url}{path}"
         body_str = json.dumps(body, ensure_ascii=False) if body else ""
         
         # DryRun 模式
         if self.dry_run:
+            signed_headers = headers
+            if self._auth.is_enabled:
+                # Dry-run 展示真实即将发送的签名头（不暴露明文 SK）
+                signed_headers = self._auth.sign_headers(
+                    method=method,
+                    url=full_url,
+                    headers=headers.copy(),
+                    body=body_str,
+                )
+
             print("=" * 60)
             print(f"Dry Run Mode: {method} {full_url}")
             print("=" * 60)
-            print(f"Headers: {json.dumps(headers, indent=2)}")
+            print(f"Headers: {json.dumps(signed_headers, indent=2)}")
             if body:
                 print(f"Body: {json.dumps(body, indent=2, ensure_ascii=False)}")
             
             # 生成 Curl 命令
             curl_cmd = f"curl -X {method} \"{full_url}\" \\\n"
-            for k, v in headers.items():
+            for k, v in signed_headers.items():
                 curl_cmd += f"  -H \"{k}: {v}\" \\\n"
             if body_str:
                 curl_cmd += f"  -d '{body_str}'"
@@ -180,6 +235,23 @@ class AgentEngineClient:
 
     # ===== Action API (推荐使用) =====
     
+    @staticmethod
+    def _pascal_key(key: str) -> str:
+        """PascalCase/camelCase 键名转 snake_case"""
+        # "MCPs" -> "mcps", "AgentId" -> "agent_id", "QuickAccess" -> "quick_access"
+        s1 = re.sub('([A-Z]+)([A-Z][a-z])', r'\1_\2', key)
+        s2 = re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1)
+        return s2.lower()
+
+    @classmethod
+    def _to_snake_case(cls, data):
+        """递归将字典的 PascalCase 键名转为 snake_case"""
+        if isinstance(data, dict):
+            return {cls._pascal_key(k): cls._to_snake_case(v) for k, v in data.items()}
+        elif isinstance(data, list):
+            return [cls._to_snake_case(item) for item in data]
+        return data
+
     def _action(self, action: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
         """通用 Action API 调用"""
         body = params or {}
@@ -194,20 +266,20 @@ class AgentEngineClient:
         if result.get("Error"):
             raise Exception(result["Error"].get("Message", "Unknown error"))
         
-        # 为了防止后端错误处理导致 Data=null 传给下游空指针异常，增加一个后备默认值
-        return result.get("Data") if result.get("Data") is not None else result
+        # 提取 Data 并统一转换为 snake_case
+        data = result.get("Data") if result.get("Data") is not None else result
+        return self._to_snake_case(data)
 
     # ===== Agent Actions =====
 
     async def create_agent(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """创建 Agent"""
+        """创建 Agent (通过 CreateProduct 走订单流程)"""
         params = {
             "Name": data.get("name"),
             "Description": data.get("description"),
             "Framework": data.get("framework", "langgraph"),
             "DeploymentType": data.get("artifact_type", "Code"),
             "Region": data.get("region", "cn-beijing-6"),
-            "InstanceId": data.get("instance_id", "default"),
             "Resource": {
                 "Cpu": int(float(data.get("resources", {}).get("cpu", 2))),
                 "Memory": int(str(data.get("resources", {}).get("memory", "4Gi")).replace("Gi", ""))
@@ -215,8 +287,9 @@ class AgentEngineClient:
             "Scaling": {
                 "MinReplicas": int(data.get("scaling", {}).get("min_replicas", 1)),
                 "MaxReplicas": int(data.get("scaling", {}).get("max_replicas", 10)),
-                "Concurrency": int(data.get("scaling", {}).get("concurrency", 20)),
+                "QpsPerInstance": int(data.get("scaling", {}).get("concurrency", 20)),
             },
+            "AutoPay": True,
         }
 
         if params["DeploymentType"] == "Code":
@@ -239,11 +312,6 @@ class AgentEngineClient:
                 "Password": ic.get("password"),
             }
 
-        if data.get("model"):
-            params["ModelName"] = data["model"].get("name")
-            params["ModelApiBase"] = data["model"].get("api_base")
-            params["ModelApiKey"] = data["model"].get("api_key")
-
         env_vars = []
         envs = data.get("env_vars") or data.get("environment_variables")
         if envs:
@@ -258,11 +326,16 @@ class AgentEngineClient:
             "EnvironmentVariables": env_vars
         }
 
-        return self._action("CreateAgent", params)
+        return self._action("CreateProduct", params)
 
-    async def get_agent(self, agent_id: str) -> Dict[str, Any]:
-        """获取 Agent 详情"""
-        return self._action("GetAgent", {"Id": agent_id, "AgentId": agent_id})
+    async def get_agent(self, agent_id: str = None, name: str = None) -> Dict[str, Any]:
+        """获取 Agent 详情（支持 AgentId 或 Name 查询）"""
+        params = {}
+        if agent_id:
+            params["AgentId"] = agent_id
+        if name:
+            params["Name"] = name
+        return self._action("GetAgent", params)
         
     async def list_agents(self, region: Optional[str] = None) -> Dict[str, Any]:
         """列出 Agents"""
@@ -276,13 +349,7 @@ class AgentEngineClient:
         self._action("DeleteAgent", {"AgentId": agent_id})
         return True
 
-    async def get_agent_by_name(self, name: str) -> Optional[Dict[str, Any]]:
-        """按名称查询 Agent"""
-        try:
-            result = self._action("GetAgentByName", {"Name": name})
-            return result.get("Agent")
-        except Exception:
-            return None
+
 
     async def update_agent(self, agent_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """更新 Agent (热更新)"""
@@ -388,8 +455,9 @@ class AgentEngineClient:
         if region:
             params["Region"] = region
         result = self._action("ListMCPs", params)
-        # 兼容返回格式
-        return {"mcps": result.get("MCPs", []), "total": result.get("Total", 0)}
+        # _action 已统一转 snake_case: "MCPs" -> "m_c_ps"... 
+        # 实际上 MCPs -> mcps, Total -> total
+        return {"mcps": result.get("mcps", []), "total": result.get("total", 0)}
     
     async def update_mcp(self, mcp_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """更新 MCP (热更新)"""
@@ -431,14 +499,7 @@ class AgentEngineClient:
     
     async def get_presigned_url(self, filename: str) -> Dict[str, Any]:
         """获取 KS3 预签名上传 URL"""
-        result = self._action("GetPresignedUrl", {"Filename": filename})
-        # 兼容返回格式
-        return {
-            "presigned_url": result.get("PresignedUrl"),
-            "object_key": result.get("ObjectKey"),
-            "bucket": result.get("Bucket"),
-            "expires_in": result.get("ExpiresIn")
-        }
+        return self._action("GetPresignedUrl", {"Filename": filename})
 
     # ===== Chat Actions =====
     
@@ -451,7 +512,7 @@ class AgentEngineClient:
         }
         if session_id:
             params["SessionId"] = session_id
-        return self._action("InvokeAgent", params)
+        return self._action("RunAgent", params)
 
     # ===== Version Actions =====
     
@@ -476,7 +537,7 @@ class AgentEngineClient:
             params["Tag"] = tag
         if description:
             params["Description"] = description
-        return self._action("ReleaseVersion", params)
+        return self._action("CreateVersion", params)
     
     async def list_versions(
         self, 
@@ -497,7 +558,7 @@ class AgentEngineClient:
         return self._action("ListVersions", {
             "AgentId": agent_id,
             "Page": page,
-            "Size": size
+            "PageSize": size
         })
     
     async def rollback_version(
