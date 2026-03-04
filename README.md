@@ -1,248 +1,251 @@
-# AgentEngine CLI (KsADK)
+# ksadk (AgentEngine CLI)
 
-**[AgentEngine](https://www.ksyun.com/)** 是专为 **AI Agent 开发与部署** 设计的标准化工具链。它提供了一套统一的开发接口和命令行工具，支持多种主流 Agent 框架（**LangGraph**, **LangChain**, **Google ADK**），并能将 Agent 一键部署到金山云 Serverless 计算引擎。
+`ksadk` 是金山云 Agent 开发与部署工具链，提供统一的 CLI 体验，覆盖本地开发、构建、部署、调用、版本管理与 MCP Server 管理。
 
-> **v0.1.1 更新说明**: ksADK v0.1.1 架构全面升级，默认接入 **AgentEngine Server** (控制面)，由 Server 统一负责鉴权、路由分发及底层 Serverless 资源的调度。
+当前版本：`0.2.0`
 
-## 🌟 核心特性
+## 核心能力
 
-*   **多框架支持**: 原生支持 LangChain、LangGraph 和 Google ADK，自动识别并适配。
-*   **统一管控**: 接入 AgentEngine Server，实现统一的 API Key 管理、限流保护及动态路由。
-*   **Serverless 云原生**: 深度集成金山云 AgentEngine，支持秒级冷启动、自动扩缩容。
-*   **双模式部署**: 支持 **Code 模式** (轻量级 zip 包) 和 **Container 模式** (自定义 Docker 镜像)。
-*   **全链路可观测**: 内置 Langfuse 集成，一键开启 Trace、Metrics 和 Logs。
+- 多框架支持：LangGraph、LangChain、Google ADK。
+- 本地开发：`run`（API/TUI）与 `web`（Web UI）。
+- 云端部署：`build`、`deploy`、`launch`，支持 `Code` / `Container` 两种制品模式。
+- 统一控制面：通过 `AgentEngine Server` 进行 Agent/MCP 管理。
+- 状态持久化：部署后保存 `.agentengine.state`，供后续 `status/invoke/destroy/version` 复用。
+- 版本管理：`version list/release/rollback`。
+- MCP 管理：`mcp deploy/list/status/delete`。
 
----
-
-## 🏗️ 架构演进 (v0.1.0 vs v0.1.1)
-
-### v0.1.0 (Legacy)
-Client (CLI) 直接对接 Serverless 底层 API，架构简单但缺乏统一管控能力。
-```
-[CLI] --> [Serverless API] --> [Agent Instance]
-```
-
-### v0.1.1 (Current)
-Client (CLI) 对接 **AgentEngine Server** (控制面)，实现了标准化的管理与接入。
-```
-[CLI] --> [AgentEngine Server] --> [Serverless API] --> [Agent Instance]
-             (Auth/Route/Limit)
-```
-
----
-
-## 🚀 快速开始
-
-### 1. 安装
+## 安装
 
 ```bash
-# 安装核心 CLI
-pip install agentengine
-
-# 或者安装带特定框架依赖的版本
-pip install "agentengine[langgraph]"
-pip install "agentengine[adk]"
+pip install -U ksadk
 ```
 
-### 2. 初始化项目
-
-创建一个基于 `LangGraph` 的 Agent 项目：
+可选依赖：
 
 ```bash
-# 初始化项目 (支持 -f langgraph / langchain / adk)
+pip install "ksadk[langgraph]"
+pip install "ksadk[langchain]"
+pip install "ksadk[adk]"
+```
+
+安装后可使用以下命令入口（等价）：
+
+```bash
+agentengine --help
+ksadk --help
+```
+
+## 快速开始
+
+### 1) 初始化项目
+
+```bash
 agentengine init my_agent -f langgraph
-
 cd my_agent
 ```
 
-### 3. 配置环境变量
+也可包装已有代码：
 
-使用交互式命令配置 API Key 和云端凭证：
+```bash
+agentengine init --from-agent ./my_agent.py
+agentengine init --from-agent ./my_agent_dir
+```
+
+### 2) 交互式配置
 
 ```bash
 agentengine config
 ```
 
-该命令会自动生成或更新 `.env` 和 `agentengine.yaml` 文件。
+会生成或更新：
 
-### 4. 本地运行与调试
+- `agentengine.yaml`
+- `.env`
 
-**交互式调试模式** (在终端直接对话):
+### 3) 本地调试
 
 ```bash
-agentengine run -i .
+agentengine run . -i
 ```
 
-**启动 API Server** (提供标准化 API):
+或启动 Web UI：
 
 ```bash
 agentengine web . --port 8080
 ```
-> API 文档地址: `http://localhost:8080/docs`
 
-### 5. 一键部署上云
-
-将 Agent 部署到金山云 Serverless 环境 (自动完成构建、上传和部署):
+### 4) 一键构建+部署
 
 ```bash
-# 需要先配置金山云凭证 (环境变量或参数)
 export KSYUN_ACCESS_KEY=your-ak
 export KSYUN_SECRET_KEY=your-sk
 export KSYUN_ACCOUNT_ID=your-account-id
+export KSYUN_REGION=cn-beijing-6
 
-# 一键部署 (默认 Code 模式)
-agentengine launch . --target serverless --region cn-beijing-6
+agentengine launch . --target serverless
 ```
 
----
+## 命令总览
 
-## 📖 CLI 命令详解
+- `agentengine init`：创建新项目（支持 `--from-agent`）。
+- `agentengine config`：交互式配置 `agentengine.yaml` + `.env`。
+- `agentengine model`：从模型服务拉取模型列表并更新 `.env` 的 `OPENAI_MODEL_NAME`。
+- `agentengine run`：本地运行 Agent（支持 `-i` TUI）。
+- `agentengine web`：启动 Web UI（ADK 项目用 ADK Web，其他用 Chainlit）。
+- `agentengine build`：构建制品（`code` 或 `container`）。
+- `agentengine deploy`：部署到 `serverless` / `kcf` / `kce`。
+- `agentengine launch`：`build + deploy` 一条命令完成。
+- `agentengine status`：查看运行状态与 endpoint。
+- `agentengine invoke`：调用远端或本地 Agent。
+- `agentengine destroy`：销毁 Agent。
+- `agentengine version`：版本管理（`list/release/rollback`）。
+- `agentengine mcp`：MCP Server 管理。
+- `agentengine completion`：Shell 补全脚本与自动安装。
 
-### 1. 项目管理
+## Agent 指定规则（统一）
 
-#### `agentengine init`
-初始化一个新的 Agent 项目模板。
+适用于：`status`、`invoke`、`destroy`、`version` 子命令。
+
+支持三种写法：
+
+- 推荐：`--agent <id-or-name>`
+- 兼容：`--agent-id <id-or-name>`
+- 位置参数：`<id-or-name>`
+
+示例：
 
 ```bash
-agentengine init <project-name> --framework [langgraph|langchain|adk]
-```
-*   生成的项目包含推荐的目录结构和基础代码模板。
-*   自动生成 `agentengine.yaml` 配置文件。
-
-### 2. 开发调试
-
-#### `agentengine config`
-交互式配置向导，用于管理 `agentengine.yaml` 和 `.env`。
-*   支持配置 Agent 名称、API Key、OSS/云厂商凭证等。
-*   **幂等设计**: 可以重复运行，会自动读取现有配置作为默认值。
-
-#### `agentengine run`
-本地运行 Agent。支持自动检测框架类型并加载环境。
-*   `-i, --interactive`: 进入终端交互模式。
-*   `--no-trace`: 禁用 Langfuse 链路追踪。
-
-#### `agentengine web`
-启动生产级 API Server，提供标准化的 RESTful 接口：
-*   `POST /run_sse`: 流式对话接口
-*   `GET /health`: 健康检查
-*   `GET /traces`: 查看 Trace 信息
-
-### 3. 构建 (Build)
-
-#### `agentengine build`
-将 Agent 打包为可部署的制品。
-
-**模式 1: Code (推荐)**
-打包代码和依赖描述文件为 zip 包，上传至 KS3。Serverless 运行时会自动安装依赖。
-```bash
-agentengine build . --mode code --push
+agentengine status --agent ar-xxxx
+agentengine status ar-xxxx
+agentengine invoke --agent my_agent -m "你好"
+agentengine destroy my_agent
+agentengine version list --agent ar-xxxx
 ```
 
-**模式 2: Container**
-构建 Docker 镜像并推送至仓库。适用于有系统级依赖的复杂场景。
-```bash
-agentengine build . --mode container --tag my-agent:v1 --push
-```
+未显式传 Agent 时，自动解析顺序为：
 
-### 4. 部署 (Deploy)
+1. `.agentengine.state`（优先 `agent_id`，其次 `name`）
+2. `agentengine.yaml` / `ksadk.yaml` 的 `name`
 
-#### `agentengine deploy`
-将构建好的制品部署到目标环境。
+## 构建与部署
+
+### build
 
 ```bash
-# 部署到 Serverless (Code 模式)
-agentengine deploy . --target serverless --ks3-path ks3:// bucket/path/code.zip
+# 1) 默认构建 (code 模式)
+agentengine build .
 
-# 部署到 Serverless (Container 模式)
-agentengine deploy . --target serverless --image my-registry/my-agent:v1 --artifact-type Container
+# 2) 显式指定构建参数
+agentengine build . --mode container --push --registry hub-cn-beijing-6.kce.ksyun.com
+# 3) 显式指定区域
+KSYUN_REGION=cn-beijing-6 agentengine build . --mode code --push --no-cache
 ```
 
-参数说明：
-*   `--target`: 部署目标，支持 `serverless` (默认), `k8s`, `docker` (本地测试)。
-*   `--observability`: 是否开启可观测性 (默认开启)。
-*   `--cpu / --memory`: 覆盖 CPU/内存配置 (如 `--cpu 2 --memory 4Gi`)。
+### deploy
 
-#### `agentengine launch`
-**构建 + 部署** 的组合命令，自动串联 `build --push` 和 `deploy` 流程。
-
-### 5. 运维管理
-
-#### `agentengine status`
-查看 Agent 的运行状态、Endpoint 地址和副本数。
 ```bash
-agentengine status --agent <agent-name> --watch
+# 1) 默认部署 (serverless)
+agentengine deploy .
+# 2) 显式指定部署参数
+agentengine deploy . --target kcf --account-id X-Ksc-Account-Id
+# 3) 显式指定区域
+KSYUN_REGION=cn-beijing-6 agentengine deploy . --target serverless --dry-run
 ```
 
-#### `agentengine invoke`
-调用已部署的 Agent 进行测试。
+常用参数：
+
+- `--artifact-type [Code|Container]`
+- `--region`
+- `--account-id`
+- `--observability/--no-observability`
+- `--no-version`
+- `--auto-rollback`
+
+### launch
+
 ```bash
-agentengine invoke --agent <agent-name> --message "你好"
+# 1) 默认一键部署 (serverless)
+agentengine launch .
+# 2) 显式指定部署参数
+agentengine launch . --target kce --artifact-type Container
+# 3) 显式指定区域
+KSYUN_REGION=cn-beijing-6 agentengine launch . --target serverless --no-cache
 ```
 
-#### `agentengine destroy`
-下线并删除 Agent 实例。
+## 版本管理
+
 ```bash
-agentengine destroy --agent <agent-name>
+# 1) 目录内自动解析 agent（优先 .agentengine.state）
+agentengine version list
+
+# 2) 显式指定 agent
+agentengine version list --agent ar-xxxx
+agentengine version release --agent ar-xxxx --tag v1.0.1 --description "release note"
+agentengine version rollback --agent ar-xxxx --to v1.0.0 -y
+
+# 3) 显式指定区域
+KSYUN_REGION=cn-beijing-6 agentengine version list --agent ar-xxxx
+KSYUN_REGION=cn-beijing-6 agentengine version release --agent ar-xxxx --tag v1.0.1
+KSYUN_REGION=cn-beijing-6 agentengine version rollback --agent ar-xxxx --to v1.0.0 -y
 ```
 
----
+## MCP Server 管理
 
-## ⚙️ 配置文件 (agentengine.yaml)
-
-在项目根目录下的 `agentengine.yaml` 用于定义 Agent 的元数据和部署配置。
-
-```yaml
-name: my_agent_demo
-version: "1.0.0"
-
-# 框架类型
-framework: langgraph
-
-# 入口定义
-entry_point: my_agent/agent.py
-agent_variable: root_agent  # 代码中 Agent 对象的变量名
-
-# 资源配置
-resources:
-  cpu: "2"          # 2 vCPU
-  memory: "4Gi"     # 4 GB 内存
-
-# 扩缩容策略
-scaling:
-  min_replicas: 1   # 最小副本数 (0 为缩容到零)
-  max_replicas: 10  # 最大副本数
-  concurrency: 20   # 单实例最大并发请求数
-
-# 部署配置
-deploy:
-  serverless:
-    region: cn-beijing-6
+```bash
+# 1) 默认部署
+agentengine mcp deploy .
+# 2) 常用查询
+agentengine mcp list
+# 3) 显式指定区域
+KSYUN_REGION=cn-beijing-6 agentengine mcp status <mcp_id>
+# 删除
+agentengine mcp delete <mcp_id> --yes
 ```
 
-## 🌐 环境变量
+## 关键文件
 
-AgentEngine 会自动加载 `.env` 文件。常用变量如下：
+- `agentengine.yaml`：项目配置（name/framework/entry_point 等）。
+- `.env`：模型、云凭证、可观测性配置。
+- `.agentengine.state`：部署后本地状态（`agent_id` / `endpoint` / `api_key` / `region`）。
+- `~/.agentengine/settings.json`：全局配置（可被 `config --global` 更新）。
+
+## 环境变量
 
 | 变量名 | 说明 |
-|--------|------|
-| `OPENAI_API_KEY` | 模型服务 API Key |
-| `OPENAI_API_BASE` | 模型服务 Base URL |
-| `MODEL_NAME` | 使用的模型名称 |
-| `LANGFUSE_PUBLIC_KEY` | Langfuse 公钥 (用于 Tracing) |
+|---|---|
+| `OPENAI_API_KEY` | 模型 API Key |
+| `OPENAI_BASE_URL` | 模型 API Base URL |
+| `OPENAI_MODEL_NAME` | 模型名称 |
+| `KSYUN_ACCESS_KEY` | 金山云 AK |
+| `KSYUN_SECRET_KEY` | 金山云 SK |
+| `KSYUN_ACCOUNT_ID` | 金山云账号 ID |
+| `KSYUN_REGION` | 默认区域 |
+| `LANGFUSE_PUBLIC_KEY` | Langfuse 公钥 |
 | `LANGFUSE_SECRET_KEY` | Langfuse 私钥 |
-| `LANGFUSE_BASE_URL` | Langfuse 服务地址 |
-| `KSYUN_ACCESS_KEY` | 金山云 AK (部署用) |
-| `KSYUN_SECRET_KEY` | 金山云 SK (部署用) |
-| `KSYUN_ACCOUNT_ID` | 金山云账号 ID (部署用) |
-| `KSYUN_REGION` | 默认部署区域 (如 cn-beijing-6) |
+| `LANGFUSE_BASE_URL` / `LANGFUSE_HOST` | Langfuse 地址 |
 
----
+兼容别名仍可识别：`OPENAI_API_BASE`、`MODEL_NAME`。
 
-## 🏗️ 架构说明 (KSADK Architecture)
+## 架构说明
 
-AgentEngine CLI 通过适配器模式支持多框架：
+云端链路：
 
-1.  **Framework Detection**: 自动扫描项目代码，识别框架类型 (LangChain/LangGraph/ADK)。
-2.  **Unified Runner**: 针对不同框架提供统一的运行包装器 (`UnifiedRunner`)，屏蔽底层差异。
-3.  **Standardized API**: 所有 Agent 最终都暴露为兼容 OpenAI 格式的 REST API，便于客户端集成。
-4.  **Auto Instrumentation**: 自动注入 OpenTelemetry/Langfuse 探针，无需修改业务代码即可实现可观测性。
+```text
+CLI (ksadk) -> AgentEngine Server (控制面) -> Serverless/KCF/KCE
+```
+
+本地链路：
+
+```text
+CLI (run/web) -> Unified Runner -> 本地 Agent 进程
+```
+
+## 补全
+
+```bash
+agentengine completion install --shell auto
+```
+
+## 示例项目
+
+见 [examples](./examples) 目录。

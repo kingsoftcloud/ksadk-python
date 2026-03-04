@@ -7,14 +7,10 @@ agentengine status - 查看 Agent 运行状态和 Endpoint
 import click
 import asyncio
 import time
-import os
-import json
-import uuid
 from pathlib import Path
-from typing import Optional
-from datetime import datetime
 from datetime import datetime
 from ksadk.api.client import DryRunExit
+from ksadk.cli.agent_ref import merge_agent_inputs, resolve_agent_ref
 from ksadk.cli.ui import (
     get_console,
     new_table,
@@ -33,7 +29,8 @@ console = get_console()
 
 
 @click.command()
-@click.option("--agent", "-a", help="Agent 名称或 ID")
+@click.argument("agent_ref", required=False)
+@click.option("--agent", "--agent-id", "agent_option", "-a", help="Agent 名称或 ID")
 @click.option("--all", "show_all", is_flag=True, help="显示所有 Agent")
 @click.option("--watch", "-w", is_flag=True, help="Watch 模式，持续刷新")
 @click.option("--interval", "-i", default=2, help="Watch 刷新间隔 (秒)")
@@ -41,7 +38,8 @@ console = get_console()
 @click.option("--account-id", envvar="KSYUN_ACCOUNT_ID", help="金山云账号 ID")
 @click.option("--dry-run", is_flag=True, help="只打印 curl 请求，不执行")
 def status(
-    agent: str,
+    agent_ref: str,
+    agent_option: str,
     show_all: bool,
     watch: bool,
     interval: int,
@@ -53,28 +51,41 @@ def status(
 
     \b
     示例:
-        agentengine status --agent my-agent-id
-        agentengine status --agent my-agent-id --watch
-        agentengine status --all
-        agentengine status --agent my-agent-id --dry-run
+        # 1) 目录内自动解析 agent
+        agentengine status
+        # 2) 显式指定 agent
+        agentengine status --agent ar-xxxx --watch --account-id X-Ksc-Account-Id
+        # 3) 显式指定区域
+        KSYUN_REGION=cn-beijing-6 agentengine status --agent ar-xxxx --account-id X-Ksc-Account-Id
     """
-    # 当未显式指定 --agent 且未使用 --all 时，尝试从本地状态文件/配置中解析默认 Agent
-    fallback_agent_name: Optional[str] = None
-    if not agent and not show_all:
-        # 1) 优先从 .agentengine.state 读取已部署的 agent_id（更精确）
-        state_agent_id, state_agent_name = _get_agent_from_state()
-        if state_agent_id:
-            agent = state_agent_id
-            fallback_agent_name = state_agent_name or None
-        else:
-            # 2) 回退到 agentengine.yaml / ksadk.yaml 中的 name
-            agent = _get_agent_from_config()
-            fallback_agent_name = agent or None
+    try:
+        agent_input = merge_agent_inputs(
+            agent_option=agent_option,
+            positional_agent=agent_ref,
+        )
+    except ValueError as e:
+        print_error(f"错误: {e}")
+        raise SystemExit(1)
 
-        if not agent:
-            print_error("错误: 请指定 --agent 或使用 --all 查看所有")
-            print_info("提示: 也可以在包含 agentengine.yaml 的目录下运行")
+    agent = None
+    if show_all and agent_input:
+        print_error("错误: --all 与 Agent 参数不能同时使用")
+        raise SystemExit(1)
+
+    if not show_all:
+        resolved = resolve_agent_ref(
+            agent_input,
+            cwd=Path("."),
+            include_state=True,
+            include_project_config=True,
+        )
+        if not resolved:
+            print_error("错误: 请指定 Agent（--agent 或位置参数），或在当前目录提供可解析的本地配置")
+            print_info("自动解析顺序: .agentengine.state -> agentengine.yaml/ksadk.yaml")
             raise SystemExit(1)
+        agent = resolved.value
+        if resolved.source != "cli":
+            print_info(f"未显式指定 Agent，使用 {resolved.source_text}: {agent}")
 
     # 检查账号 ID
     if not account_id:
@@ -94,50 +105,9 @@ def status(
         _watch_status(agent, region, account_id, interval)
     else:
         try:
-            asyncio.run(_show_agent_status(agent, region, account_id, dry_run, fallback_agent_name))
+            asyncio.run(_show_agent_status(agent, region, account_id, dry_run))
         except DryRunExit as e:
             pass
-
-
-def _get_agent_from_config() -> Optional[str]:
-    """从配置文件读取 agent 名称"""
-    import yaml
-
-    config_path = Path(".") / "agentengine.yaml"
-    if not config_path.exists():
-        config_path = Path(".") / "ksadk.yaml"
-
-    if config_path.exists():
-        # 使用 utf-8-sig 自动处理 BOM，确保 Windows 兼容性
-        with open(config_path, encoding='utf-8-sig') as f:
-            config = yaml.safe_load(f)
-            return config.get("name")
-    return None
-
-
-def _get_agent_from_state() -> tuple[Optional[str], Optional[str]]:
-    """从 .agentengine.state 读取 agent_id 和 name
-
-    优先使用该文件中的 agent_id 进行精确查询，失败时再按名称回退。
-    """
-    import yaml
-
-    state_path = Path(".") / ".agentengine.state"
-    if not state_path.exists():
-        return None, None
-
-    try:
-        with open(state_path, encoding='utf-8-sig') as f:
-            data = yaml.safe_load(f) or {}
-    except Exception:
-        return None, None
-
-    if not isinstance(data, dict):
-        return None, None
-
-    agent_id = data.get("agent_id")
-    name = data.get("name")
-    return agent_id, name
 
 
 def _watch_status(agent: str, region: str, account_id: str, interval: int):
@@ -177,44 +147,17 @@ async def _show_agent_status(
     region: str,
     account_id: str,
     dry_run: bool = False,
-    fallback_agent_name: Optional[str] = None,
 ):
     """显示单个 Agent 的状态 (完整)"""
     click.echo(f"查询 Agent 状态... (region: {region})")
 
     try:
-        result = await _get_agent_runtime(agent, region, account_id, dry_run)
-        
-        # 检查是否查询失败 (ID 不存在)
+        # 先按 ID 查询，失败后再按名称查询，避免依赖字符串前缀判断。
+        result = await _get_agent_runtime(agent, region, account_id, dry_run, is_name=False)
         if result.get("status") == "Error":
-            # 如果按 ID 查询失败，尝试按名称查询
-            target_name = fallback_agent_name or agent
-            click.echo(
-                f"按 ID 查询失败 ({result.get('error')}), 尝试按名称查询..."
-            )
-            try:
-                all_agents = await _list_agent_runtimes(region, account_id, dry_run)
-                matched = [
-                    a for a in all_agents if a.get("agentRuntimeName") == target_name
-                ]
-                
-                if len(matched) == 1:
-                    # 找到唯一匹配
-                    target_id = matched[0].get("agentRuntimeId")
-                    if target_id:
-                        result = await _get_agent_runtime(target_id, region, account_id, dry_run)
-                    else:
-                        result = matched[0]
-                elif len(matched) > 1:
-                    click.secho(f"错误: 找到多个名称为 '{agent}' 的 Agent，请使用 ID:", fg="red")
-                    for m in matched:
-                        click.echo(f"  - {m.get('agentRuntimeId')} ({m.get('status')})")
-                    return # 退出
-                else:
-                     # 确实找不到，保留原始错误结果
-                     pass
-            except Exception:
-                 pass
+            result_by_name = await _get_agent_runtime(agent, region, account_id, dry_run, is_name=True)
+            if result_by_name.get("status") != "Error":
+                result = result_by_name
 
     except DryRunExit:
         raise
@@ -282,7 +225,11 @@ async def _show_agent_status(
 async def _show_agent_status_compact(agent: str, region: str, account_id: str):
     """显示单个 Agent 的状态 (紧凑，用于 watch)"""
     # Watch 模式不支持 dry_run，默认为 False
-    result = await _get_agent_runtime(agent, region, account_id, False)
+    result = await _get_agent_runtime(agent, region, account_id, False, is_name=False)
+    if result.get("status") == "Error":
+        result_by_name = await _get_agent_runtime(agent, region, account_id, False, is_name=True)
+        if result_by_name.get("status") != "Error":
+            result = result_by_name
 
     # 状态
     status_value = result.get("status", "Unknown")
@@ -368,7 +315,7 @@ def _get_status_color(status: str) -> str:
     return status_click_color(status)
 
 
-async def _get_agent_runtime(agent: str, region: str, account_id: str, dry_run: bool = False) -> dict:
+async def _get_agent_runtime(agent: str, region: str, account_id: str, dry_run: bool = False, is_name: bool = False) -> dict:
     """获取 Agent 运行时状态
 
     调用 AgentEngine Server API
@@ -381,7 +328,10 @@ async def _get_agent_runtime(agent: str, region: str, account_id: str, dry_run: 
             extra_headers["X-Ksc-Account-Id"] = account_id
 
         async with AgentEngineClient(region=region, dry_run=dry_run, extra_headers=extra_headers) as client:
-            response = await client.get_agent(agent)
+            if is_name:
+                response = await client.get_agent(name=agent)
+            else:
+                response = await client.get_agent(agent_id=agent)
 
             # _action 已统一转为 snake_case
             basic = response.get("basic", {})

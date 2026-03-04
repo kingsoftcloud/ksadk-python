@@ -135,7 +135,7 @@ class ColoredHelpGroup(click.Group):
             "init": "创建新项目",
             "invoke": "交互测试",
             "launch": "一键构建+部署",
-            "mcp": "MCP Server 管理(预览)",
+            "mcp": "MCP Server 管理",
             "model": "切换默认模型",
             "run": "运行 Agent",
             "status": "查看状态",

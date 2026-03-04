@@ -73,11 +73,14 @@ def launch(
     2. 上传代码到 KS3 / 推送镜像到 KCR
     3. 调用 API 创建或更新 Agent
 
+    \b
     示例:
-        agentengine launch .                              # Serverless (默认, Code模式)
-        agentengine launch . --no-cache                   # 强制重新构建
-        agentengine launch . -t kcf                       # 部署到 KCF (云函数)
-        agentengine launch . -t kce                       # 部署到 KCE (容器引擎)
+        # 1) 默认一键部署 (serverless)
+        agentengine launch .
+        # 2) 显式指定部署参数
+        agentengine launch . --target kce --artifact-type Container
+        # 3) 显式指定区域
+        KSYUN_REGION=cn-beijing-6 agentengine launch . --target serverless --no-cache
     """
     asyncio.run(
         _launch_async(

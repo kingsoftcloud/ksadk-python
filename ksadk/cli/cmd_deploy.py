@@ -91,14 +91,14 @@ def deploy(
     \b
     AGENT_DIR: Agent 项目目录 (默认: 当前目录)
 
+    \b
     示例:
-        agentengine deploy .                              # Serverless (默认)
-        agentengine deploy . --target kcf                 # 部署到 KCF (云函数)
-        agentengine deploy . --target kce                 # 部署到 KCE (容器引擎)
-        agentengine deploy . --dry-run                    # 打印请求而不部署
-        agentengine deploy . --region cn-beijing-6
-        agentengine deploy . --account-id 2000003485
-        agentengine deploy . --no-version                 # 部署但不创建版本快照
+        # 1) 默认部署 (serverless)
+        agentengine deploy .
+        # 2) 显式指定部署参数
+        agentengine deploy . --target kcf --account-id X-Ksc-Account-Id
+        # 3) 显式指定区域
+        KSYUN_REGION=cn-beijing-6 agentengine deploy . --target serverless --dry-run
     """
     # 列出 Provider
     if list_providers:
