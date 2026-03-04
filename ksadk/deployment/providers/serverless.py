@@ -553,14 +553,7 @@ class ServerlessProvider(BaseDeployProvider):
         """获取 Agent 状态"""
         dry_run = target.extra.get("dry_run", False)
         try:
-            from ksadk.common.auth import AWSV4Auth
-            auth = AWSV4Auth()
-            extra_headers = {}
-            if auth.access_key_id and auth.secret_access_key:
-                extra_headers["X-Ksyun-Access-Key"] = auth.access_key_id
-                extra_headers["X-Ksyun-Secret-Key"] = auth.secret_access_key
-                
-            async with AgentEngineClient(region=target.region, dry_run=dry_run, extra_headers=extra_headers) as client:
+            async with AgentEngineClient(region=target.region, dry_run=dry_run) as client:
                 res = await client.get_agent(agent_id)
                 
                 status_map = {
@@ -604,14 +597,7 @@ class ServerlessProvider(BaseDeployProvider):
                 pass
 
         try:
-            from ksadk.common.auth import AWSV4Auth
-            auth = AWSV4Auth()
-            extra_headers = {}
-            if auth.access_key_id and auth.secret_access_key:
-                extra_headers["X-Ksyun-Access-Key"] = auth.access_key_id
-                extra_headers["X-Ksyun-Secret-Key"] = auth.secret_access_key
-
-            async with AgentEngineClient(region=target.region, dry_run=dry_run, extra_headers=extra_headers) as client:
+            async with AgentEngineClient(region=target.region, dry_run=dry_run) as client:
                 click.echo(f"正在通过 Server 删除 Agent: {agent_id}...")
                 success = await client.delete_agent(agent_id)
                 return success
@@ -626,14 +612,7 @@ class ServerlessProvider(BaseDeployProvider):
         """列出所有 Agent"""
         dry_run = target.extra.get("dry_run", False)
         try:
-            from ksadk.common.auth import AWSV4Auth
-            auth = AWSV4Auth()
-            extra_headers = {}
-            if auth.access_key_id and auth.secret_access_key:
-                extra_headers["X-Ksyun-Access-Key"] = auth.access_key_id
-                extra_headers["X-Ksyun-Secret-Key"] = auth.secret_access_key
-                
-            async with AgentEngineClient(region=target.region, dry_run=dry_run, extra_headers=extra_headers) as client:
+            async with AgentEngineClient(region=target.region, dry_run=dry_run) as client:
                 res = await client.list_agents()
                 
                 results = []
@@ -689,4 +668,3 @@ class ServerlessProvider(BaseDeployProvider):
         """返回当前时间 ISO 格式"""
         from datetime import datetime
         return datetime.now().isoformat()
-

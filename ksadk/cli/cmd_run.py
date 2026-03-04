@@ -11,6 +11,15 @@ import subprocess
 import sys
 import os
 from pathlib import Path
+from ksadk.cli.ui import (
+    print_error,
+    print_info,
+    print_kv,
+    print_rule,
+    print_success,
+    print_title,
+    print_warn,
+)
 
 
 @click.command(context_settings=dict(help_option_names=["-h", "--help"]))
@@ -29,13 +38,14 @@ def run(agent_dir: str, port: int, interactive: bool, no_trace: bool, model: str
     from ksadk.detection import FrameworkDetector, FrameworkType
 
     agent_path = Path(agent_dir).resolve()
-    click.echo(f"📁 项目目录: {agent_path}")
+    print_title("本地运行 Agent")
+    print_kv("项目目录", str(agent_path))
 
     # 设置模型名称 (CLI 参数优先级最高)
     if model:
         os.environ["MODEL_NAME"] = model
         os.environ["OPENAI_MODEL_NAME"] = model
-        click.echo(f"🔧 指定模型: {click.style(model, fg='cyan')}")
+        print_kv("指定模型", model, value_style="#58a6ff")
 
     # 0. 环境初始化 (加载 .env + 智能默认配置)
     from ksadk.configs import setup_environment
@@ -47,8 +57,8 @@ def run(agent_dir: str, port: int, interactive: bool, no_trace: bool, model: str
     result = detector.detect()
 
     if result.type.value == "unknown":
-        click.secho("❌ 未检测到支持的框架 (LangChain/LangGraph/ADK)", fg="red")
-        click.echo("提示: 请确保项目包含正确的框架代码")
+        print_error("未检测到支持的框架 (LangChain/LangGraph/ADK)")
+        print_info("提示: 请确保项目包含正确的框架代码")
         raise SystemExit(1)
 
     framework_map = {
@@ -59,9 +69,9 @@ def run(agent_dir: str, port: int, interactive: bool, no_trace: bool, model: str
     }
     framework_name = framework_map.get(result.type.value, result.type.value)
 
-    click.echo(f"📦 检测到框架: {click.style(framework_name, fg='green')}")
-    click.echo(f"🤖 Agent 名称: {result.name}")
-    click.echo(f"🎯 入口点: {result.entry_point}")
+    print_kv("检测到框架", framework_name, value_style="#2da44e")
+    print_kv("Agent 名称", str(result.name))
+    print_kv("入口点", str(result.entry_point))
 
     # 2. 根据框架类型选择处理方式
     # 所有框架统一使用 _run_custom() 以支持 Langfuse 自动插桩
@@ -89,11 +99,11 @@ def _run_adk_cli(agent_path: Path, port: int = 8080, command: str = "run"):
                 enable_langfuse=True,
                 enable_adk_instrumentation=True,
             )
-            click.echo("📊 Tracing: \033[92mEnabled\033[0m (Langfuse + ADK Instrumentation)")
+            print_info("Tracing: Enabled (Langfuse + ADK Instrumentation)")
         except Exception as e:
-            click.secho(f"⚠️ Langfuse 初始化失败: {e}", fg="yellow")
+            print_warn(f"Langfuse 初始化失败: {e}")
 
-    click.echo(f"🔧 调用 ADK 原生 CLI: adk {command}")
+    print_kv("调用 ADK 原生 CLI", f"adk {command}")
 
     # 使用 subprocess（Langfuse instrumentation 在子进程中不生效，但环境变量会传递）
     # ADK CLI 本身不支持 Langfuse，需要用户在项目中集成
@@ -111,20 +121,18 @@ def _run_adk_cli(agent_path: Path, port: int = 8080, command: str = "run"):
 
     # 提示用户如何在 ADK 项目中启用 Langfuse
     if has_langfuse:
-        click.echo("")
-        click.echo("💡 ADK 项目 Langfuse 集成提示:")
-        click.echo("   在 agent.py 中添加以下代码:")
-        click.echo("   from openinference.instrumentation.google_adk import GoogleADKInstrumentor")
-        click.echo("   GoogleADKInstrumentor().instrument()")
-        click.echo("")
+        print_rule("ADK 项目 Langfuse 集成提示")
+        print_info("在 agent.py 中添加以下代码:")
+        print_info("from openinference.instrumentation.google_adk import GoogleADKInstrumentor")
+        print_info("GoogleADKInstrumentor().instrument()")
 
     try:
         subprocess.run(cmd, cwd=str(agent_path), check=True, env=env)
     except subprocess.CalledProcessError as e:
-        click.secho(f"❌ ADK CLI 执行失败: {e}", fg="red")
+        print_error(f"ADK CLI 执行失败: {e}")
         raise SystemExit(1)
     except FileNotFoundError:
-        click.secho("❌ 未找到 adk CLI，请确保已安装 google-adk", fg="red")
+        print_error("未找到 adk CLI，请确保已安装 google-adk")
         raise SystemExit(1)
 
 
@@ -157,23 +165,20 @@ def _run_custom(
             )
 
             if has_langfuse:
-                click.echo(
-                    f"📊 Tracing: \033[92mEnabled\033[0m (InMemory + Langfuse, CallbackOnly={is_langchain})"
-                )
+                print_info(f"Tracing: Enabled (InMemory + Langfuse, CallbackOnly={is_langchain})")
             else:
-                click.echo("📊 Tracing: \033[92mEnabled\033[0m")
+                print_info("Tracing: Enabled")
         except Exception as e:
-            click.secho(f"⚠️ Tracing 初始化失败: {e}", fg="yellow")
+            print_warn(f"Tracing 初始化失败: {e}")
 
     # 创建 Runner
     try:
-        click.echo("🔄 初始化 Runner...", nl=False)
+        print_info("初始化 Runner...")
         runner = UnifiedRunner.create(result, str(agent_path))
         runner.load_agent()
-        click.echo("\r✅ Agent 加载成功        ")
+        print_success("Agent 加载成功")
     except Exception as e:
-        click.echo("\r❌ Agent 加载失败        ")
-        click.secho(f"Error: {e}", fg="red")
+        print_error(f"Agent 加载失败: {e}")
         # import traceback
         # traceback.print_exc()
         raise SystemExit(1)
@@ -189,8 +194,8 @@ def _run_custom(
         )
         app.run()
     else:
-        click.secho(f"\n🚀 Server running at http://0.0.0.0:{port}", fg="green", bold=True)
-        click.echo("   - API Docs: http://0.0.0.0:{}/docs".format(port))
-        click.echo("   - Chat API: http://0.0.0.0:{}/chat".format(port))
-        click.echo("\nPress Ctrl+C to stop")
+        print_success(f"Server running at http://0.0.0.0:{port}")
+        print_kv("API Docs", f"http://0.0.0.0:{port}/docs")
+        print_kv("Chat API", f"http://0.0.0.0:{port}/chat")
+        print_info("Press Ctrl+C to stop")
         runner.run_server(port=port)

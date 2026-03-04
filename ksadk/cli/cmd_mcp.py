@@ -12,6 +12,20 @@ import os
 import click
 import asyncio
 from pathlib import Path
+from ksadk.cli.ui import (
+    get_console,
+    new_table,
+    print_error,
+    print_info,
+    print_kv,
+    print_rule,
+    print_success,
+    print_title,
+    print_warn,
+    status_rich_style,
+)
+
+console = get_console()
 
 
 @click.group("mcp")
@@ -105,23 +119,23 @@ async def _deploy_mcp_async(
     
     mcp_path = Path(mcp_dir).resolve()
     from ksadk.deployment.state import load_state, save_state, clear_state
-    
-    click.echo(f"\n🔧 MCP 项目: {mcp_path}")
+    print_title("MCP 部署", f"region: {region}")
+    print_kv("项目目录", str(mcp_path))
     
     # 1. 检测 MCP 项目
     detector = MCPDetector(str(mcp_path))
     detection_result = detector.detect()
     
     if not detection_result.is_valid:
-        click.secho("❌ 未检测到 FastMCP 项目", fg='red')
-        click.echo("   请确保项目包含 `from fastmcp import FastMCP`")
+        print_error("未检测到 FastMCP 项目")
+        print_info("请确保项目包含 `from fastmcp import FastMCP`")
         return
     
-    click.echo(f"   ✓ 检测到 FastMCP 项目")
-    click.echo(f"   入口: {detection_result.entry_point}")
-    click.echo(f"   MCP 变量: {detection_result.mcp_variable}")
+    print_success("检测到 FastMCP 项目")
+    print_kv("入口", detection_result.entry_point)
+    print_kv("MCP 变量", detection_result.mcp_variable)
     if detection_result.tools:
-        click.echo(f"   工具: {', '.join(detection_result.tools)}")
+        print_kv("工具", ", ".join(detection_result.tools))
     
     mcp_name = name or mcp_path.name.replace('-', '_').replace('.', '_')
     
@@ -130,7 +144,7 @@ async def _deploy_mcp_async(
 
     if artifact_type.lower() == "code":
         # 2. 构建代码包
-        click.echo(f"\n📦 构建 MCP 代码包: {mcp_name} (模式: Code)")
+        print_rule(f"构建代码包: {mcp_name} (Code)")
         from ksadk.builders.mcp_builder import MCPCodeBuilder
         builder = MCPCodeBuilder(mcp_path)
         if no_cache:
@@ -138,15 +152,15 @@ async def _deploy_mcp_async(
             zip_path = builder.build_dir / f"{mcp_name}.zip"
             if zip_path.exists():
                 zip_path.unlink()
-                click.echo(f"   🗑️  已清除旧缓存: {zip_path.name}")
+                print_warn(f"已清除旧缓存: {zip_path.name}")
         build_result = builder.build()
         
         if not build_result.success:
-            click.secho(f"❌ 构建失败: {build_result.error_message}", fg='red')
+            print_error(f"构建失败: {build_result.error_message}")
             return
         
         # 3. 上传到 KS3
-        click.echo("\n☁️  上传到 KS3...")
+        print_rule("上传到 KS3")
         from ksadk.builders.ks3_uploader import KS3Uploader
         # 让 KS3Uploader 使用默认 bucket 逻辑 (ACCOUNT_ID)
         uploader = KS3Uploader(region=upload_region, bucket=ks3_bucket)
@@ -155,25 +169,25 @@ async def _deploy_mcp_async(
         ks3_path = await uploader.upload(build_result.artifact_path, object_key)
         
         if not ks3_path:
-            click.secho("❌ KS3 上传失败", fg='red')
+            print_error("KS3 上传失败")
             return
         
-        click.echo(f"   ✓ 上传成功: {ks3_path}")
+        print_success(f"上传成功: {ks3_path}")
         artifact_path_final = ks3_path
         
     elif artifact_type.lower() == "container":
         # 2. 构建 MCP Docker 镜像 (复用 ContainerBuilder，和 agent container 模式一致)
-        click.echo(f"\n🐳 构建 MCP Docker 镜像: {mcp_name}")
+        print_rule(f"构建 Docker 镜像: {mcp_name}")
         
         # 检查 Docker 是否可用
         import subprocess
         try:
             docker_check = subprocess.run(["docker", "version"], capture_output=True, timeout=10)
             if docker_check.returncode != 0:
-                click.secho("❌ Docker 未正常运行", fg='red')
+                print_error("Docker 未正常运行")
                 return
         except FileNotFoundError:
-            click.secho("❌ 未找到 docker 命令，请先安装 Docker", fg='red')
+            print_error("未找到 docker 命令，请先安装 Docker")
             return
         
         from ksadk.builders.container_builder import ContainerBuilder
@@ -185,26 +199,26 @@ async def _deploy_mcp_async(
         build_result = container_builder.build()
         
         if not build_result.success:
-            click.secho(f"❌ Docker 镜像构建失败: {build_result.error_message}", fg='red')
+            print_error(f"Docker 镜像构建失败: {build_result.error_message}")
             return
         
         image_name = build_result.metadata.get("image")
-        click.echo(f"   ✓ 镜像构建成功: {image_name}")
+        print_success(f"镜像构建成功: {image_name}")
         
         # 3. 推送镜像
-        click.echo("\n📤 推送镜像到仓库...")
+        print_rule("推送镜像到仓库")
         if not container_builder.push(image_name):
-            click.secho("❌ 镜像推送失败", fg='red')
+            print_error("镜像推送失败")
             return
         
-        click.echo(f"   ✓ 推送成功: {image_name}")
+        print_success(f"推送成功: {image_name}")
         artifact_path_final = image_name
     else:
-        click.secho(f"❌ 不支持的 artifact_type: {artifact_type}", fg='red')
+        print_error(f"不支持的 artifact_type: {artifact_type}")
         return
 
     if dry_run:
-        click.echo("\n📋 [Dry Run] 请求数据:")
+        print_rule("[Dry Run] 请求数据")
         import json
         request_data_preview = {
             "name": mcp_name,
@@ -214,7 +228,7 @@ async def _deploy_mcp_async(
             "region": region,
             "tools": detection_result.tools,
         }
-        click.echo(json.dumps(request_data_preview, indent=2, ensure_ascii=False))
+        console.print(json.dumps(request_data_preview, indent=2, ensure_ascii=False))
         return
     
     # 4. 读取本地状态文件
@@ -225,7 +239,7 @@ async def _deploy_mcp_async(
         existing_mcp_id = state.get("mcp_id")
     
     # 5. 调用 Server API (使用 AgentEngineClient 默认内网地址)
-    click.echo("\n🚀 部署 MCP Server...")
+    print_rule("部署 MCP Server")
     
     from ksadk.common.auth import AWSV4Auth
     auth = AWSV4Auth()
@@ -267,16 +281,16 @@ async def _deploy_mcp_async(
                 "username": kcr_username,
                 "password": kcr_password,
             }
-            click.echo(f"   🔑 镜像凭证: {kcr_username}@{kcr_endpoint}")
+            print_kv("镜像凭证", f"{kcr_username}@{kcr_endpoint}")
         else:
-            click.secho("   ⚠️  未配置镜像凭证 (KCR_USERNAME/KCR_PASSWORD)，私有镜像可能无法拉取", fg="yellow")
+            print_warn("未配置镜像凭证 (KCR_USERNAME/KCR_PASSWORD)，私有镜像可能无法拉取")
     
     try:
         async with AgentEngineClient(region=region) as client:
             if existing_mcp_id:
                 # 更新
-                click.echo(f"   检测到本地状态: {existing_mcp_id}")
-                click.echo(f"   执行热更新...")
+                print_info(f"检测到本地状态: {existing_mcp_id}")
+                print_info("执行热更新...")
                 res = await client.update_mcp(existing_mcp_id, request_data)
                 mcp_id = existing_mcp_id
             else:
@@ -306,29 +320,22 @@ async def _deploy_mcp_async(
             
             save_state(mcp_path, state_data)
             
-            click.echo(f"   💾 已保存状态到 .agentengine.state")
+            print_info("已保存状态到 .agentengine.state")
             
             # 输出结果
-            click.secho(f"\n✅ MCP 部署成功!", fg='green')
-            click.echo(f"   MCP ID: {mcp_id}")
-            click.echo(f"   模式: {artifact_type}")
+            print_success("MCP 部署成功")
+            print_kv("MCP ID", mcp_id)
+            print_kv("模式", artifact_type)
             if endpoint:
-                click.echo(f"   Endpoint: {endpoint}")
-                click.echo(f"   MCP URL: {endpoint}/mcp")
-            click.echo(f"\n📖 调用方式:")
-            click.echo(f"   # Cursor/Claude 配置:")
-            click.echo(f'   {{"url": "{endpoint}/mcp"}}')
-            click.echo(f"\n   # LangChain/LangGraph:")
-            click.echo(f'   from langchain_mcp_adapters.client import MCPClientToolkit')
-            click.echo(f'   toolkit = MCPClientToolkit(url="{endpoint}/mcp")')
-            click.echo(f"\n   # ADK:")
-            click.echo(f'   from google.adk.tools.mcp_tool import MCPToolset')
-            click.echo(f'   mcp = MCPToolset.from_server(connection_params={{')
-            click.echo(f'       "url": "{endpoint}/mcp"')
-            click.echo(f'   }})')
+                print_kv("Endpoint", endpoint, value_style="#58a6ff")
+                print_kv("MCP URL", f"{endpoint}/mcp", value_style="#58a6ff")
+            print_rule("调用方式")
+            print_info('# Cursor/Claude: {"url": "<endpoint>/mcp"}')
+            print_info('LangChain/LangGraph: MCPClientToolkit(url="<endpoint>/mcp")')
+            print_info('ADK: MCPToolset.from_server(connection_params={"url": "<endpoint>/mcp"})')
             
     except Exception as e:
-        click.secho(f"❌ 部署失败: {e}", fg='red')
+        print_error(f"部署失败: {e}")
 
 
 @mcp.command("list")
@@ -348,22 +355,26 @@ def list_mcps(region: str):
                 total = resp.get("total", 0)
                 
                 if not mcps:
-                    click.echo("没有找到已部署的 MCP Server")
+                    print_warn("没有找到已部署的 MCP Server")
                     return
-                
-                click.echo(f"\n📋 已部署的 MCP Server ({total}):\n")
-                
-                # 表头
-                click.echo(f"  {'ID':<24} {'NAME':<20} {'STATUS':<10} {'ENDPOINT'}")
-                click.echo(f"  {'-'*24} {'-'*20} {'-'*10} {'-'*40}")
-                
+
+                table = new_table(f"已部署 MCP Server [muted](总计: {total})[/]")
+                table.add_column("ID", style="#58a6ff", no_wrap=True)
+                table.add_column("NAME", style="white")
+                table.add_column("STATUS", no_wrap=True, justify="center")
+                table.add_column("ENDPOINT", style="#8b949e", overflow="ellipsis")
                 for m in mcps:
-                    status_color = 'green' if m['status'] == 'Running' else 'yellow' if m['status'] == 'Creating' else 'red'
-                    click.echo(f"  {m['mcp_id']:<24} {m['name']:<20} {click.style(m['status'], fg=status_color):<10} {m.get('mcp_endpoint', 'N/A')}")
-                click.echo("")
+                    status = (m.get("status") or "UNKNOWN").upper()
+                    table.add_row(
+                        m.get("mcp_id", "-"),
+                        m.get("name", "-"),
+                        f"[{status_rich_style(status)}]{status}[/]",
+                        m.get("mcp_endpoint", "N/A"),
+                    )
+                console.print(table)
                 
         except Exception as e:
-            click.secho(f"❌ 获取列表失败: {e}", fg='red')
+            print_error(f"获取列表失败: {e}")
 
     asyncio.run(_list())
 
@@ -383,28 +394,28 @@ def status(mcp_id: str, region: str):
     async def _get():
         server_url = os.getenv("AGENTENGINE_SERVER_URL")
         if not server_url:
-            click.secho("❌ 未配置 AGENTENGINE_SERVER_URL", fg='red')
+            print_error("未配置 AGENTENGINE_SERVER_URL")
             return
             
         try:
             async with AgentEngineClient(region=region) as client:
                 mcp = await client.get_mcp(mcp_id)
                 
-                click.echo(f"\n📊 MCP 状态: {click.style(mcp['name'], bold=True)}")
-                click.echo(f"   ID: {mcp['mcp_id']}")
-                click.echo(f"   Status: {click.style(mcp['status'], fg='green' if mcp['status']=='Running' else 'yellow')}")
-                click.echo(f"   Region: {mcp['region']}")
-                click.echo(f"   Endpoint: {mcp.get('endpoint', 'N/A')}")
-                click.echo(f"   MCP URL: {mcp.get('mcp_endpoint', 'N/A')}")
-                click.echo(f"   Auth: {'Enabled' if mcp.get('enable_auth') else 'Disabled'}")
+                print_title("MCP 状态", mcp.get("name", mcp_id))
+                print_kv("ID", mcp.get("mcp_id", "-"))
+                status = (mcp.get("status") or "UNKNOWN").upper()
+                print_kv("Status", status, value_style=status_rich_style(status))
+                print_kv("Region", mcp.get("region", "-"))
+                print_kv("Endpoint", mcp.get("endpoint", "N/A"))
+                print_kv("MCP URL", mcp.get("mcp_endpoint", "N/A"))
+                print_kv("Auth", "Enabled" if mcp.get("enable_auth") else "Disabled")
                 if mcp.get('tools'):
-                    click.echo(f"   Tools: {', '.join(mcp['tools'])}")
-                
-                click.echo(f"\n   Created: {mcp.get('created_at')}")
-                click.echo(f"   Updated: {mcp.get('updated_at')}")
+                    print_kv("Tools", ", ".join(mcp["tools"]))
+                print_kv("Created", str(mcp.get("created_at")))
+                print_kv("Updated", str(mcp.get("updated_at")))
                 
         except Exception as e:
-            click.secho(f"❌ 获取状态失败: {e}", fg='red')
+            print_error(f"获取状态失败: {e}")
 
     asyncio.run(_get())
 
@@ -424,27 +435,27 @@ def delete(mcp_id: str, region: str):
     async def _delete():
         server_url = os.getenv("AGENTENGINE_SERVER_URL")
         if not server_url:
-            click.secho("❌ 未配置 AGENTENGINE_SERVER_URL", fg='red')
+            print_error("未配置 AGENTENGINE_SERVER_URL")
             return
             
         try:
             async with AgentEngineClient(region=region) as client:
                 success = await client.delete_mcp(mcp_id)
                 if success:
-                    click.secho(f"\n✅ MCP 已删除: {mcp_id}", fg='green')
+                    print_success(f"MCP 已删除: {mcp_id}")
                     
                     # 尝试清理本地状态文件 (如果在项目目录中)
                     from ksadk.deployment.state import clear_state
                     try:
                         # 假设在当前目录运行
                         clear_state(Path("."), key=mcp_id)
-                        click.echo(f"   🗑️  本地状态文件已清理")
+                        print_info("本地状态文件已清理")
                     except Exception:
                         pass
                 else:
-                    click.secho(f"\n❌ 删除失败", fg='red')
+                    print_error("删除失败")
                 
         except Exception as e:
-            click.secho(f"❌ 删除失败: {e}", fg='red')
+            print_error(f"删除失败: {e}")
 
     asyncio.run(_delete())
