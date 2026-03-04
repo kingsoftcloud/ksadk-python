@@ -14,12 +14,9 @@ from pathlib import Path
 from typing import Optional
 from datetime import datetime, timedelta, timezone
 
-from rich.console import Console
-from rich.table import Table
-from rich import box
+from ksadk.cli.ui import get_console, new_table, status_rich_style
 
-
-console = Console()
+console = get_console()
 
 
 def _get_client():
@@ -49,9 +46,16 @@ def _load_agent_config(agent_dir: Path) -> Optional[dict]:
 
 async def _get_agent_id(name: str, client) -> Optional[str]:
     """按名称获取 Agent ID"""
-    agent = await client.get_agent_by_name(name)
-    if agent:
-        return agent.get("id")
+    try:
+        agent = await client.get_agent(name=name)
+        if agent:
+            # _action 已统一转为 snake_case
+            basic = agent.get("basic")
+            if basic:
+                return basic.get("agent_id")
+            return agent.get("agent_id") or agent.get("id")
+    except Exception:
+        pass
     return None
 
 
@@ -102,58 +106,55 @@ async def _list_versions_async(agent_id: Optional[str], name: Optional[str], pag
                     return
         
         result = await client.list_versions(agent_id, page, size)
-        versions = result.get("Versions", [])
-        total = result.get("Total", 0)
+        versions = result.get("versions", [])
+        total = result.get("total", 0)
         
         if not versions:
             console.print("[yellow]No versions found[/yellow]")
             return
         
         # 创建表格
-        table = Table(
-            title=f"版本列表 (总计: {total})",
-            box=box.ROUNDED,
-            show_header=True,
-            header_style="bold cyan"
-        )
+        table = new_table(f"版本列表  [muted](总计: {total})[/]")
         
         table.add_column("版本 (Tag)", style="green")
         table.add_column("状态", style="yellow")
-        table.add_column("类型", style="blue")
+        table.add_column("流量", style="blue")
         table.add_column("创建时间", style="dim")
         table.add_column("描述", style="white", max_width=50)
         
         for v in versions:
-            status = "✓ 当前" if v.get("is_current") else "历史"
-            status_style = "bold green" if v.get("is_current") else "dim"
+            # _action 已统一转为 snake_case
+            raw_status = v.get("status") or ""
+            is_current = raw_status.lower() == "current"
+            status = "CURRENT" if is_current else "HISTORY"
+            status_style = status_rich_style("RUNNING") if is_current else "muted"
             
             # 时间转换 (UTC -> Beijing)
             created_at = v.get("created_at")
             if created_at:
                 try:
-                    # 兼容 Python 3.7+ fromisoformat
                     dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
                     if dt.tzinfo is None:
                         dt = dt.replace(tzinfo=timezone.utc)
                     created_at = dt.astimezone(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
                 except Exception:
-                    # Fallback
                     created_at = created_at[:19]
             else:
                 created_at = "-"
 
-            # 描述处理：移除时间戳后缀，汉化旧数据
+            # 描述处理
             desc = v.get("description") or ""
             if "Auto-released by" in desc:
-                # 移除 at 2026-xx-xx ...
                 desc = desc.split(" at ")[0]
                 desc = desc.replace("Auto-released by deploy", "部署自动发布")
                 desc = desc.replace("Auto-released by launch", "Launch自动发布")
 
+            traffic = v.get("traffic_percentage") or 0
+
             table.add_row(
-                v.get("tag", "-"),
+                v.get("tag") or "-",
                 f"[{status_style}]{status}[/{status_style}]",
-                v.get("artifact_type", "-"),
+                f"{traffic}%",
                 created_at,
                 desc.strip(),
             )

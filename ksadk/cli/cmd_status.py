@@ -15,6 +15,21 @@ from typing import Optional
 from datetime import datetime
 from datetime import datetime
 from ksadk.api.client import DryRunExit
+from ksadk.cli.ui import (
+    get_console,
+    new_table,
+    print_error,
+    print_info,
+    print_kv,
+    print_title,
+    print_warn,
+    status_click_color,
+    status_rich_style,
+    replica_rich_style,
+    summary_panel,
+)
+
+console = get_console()
 
 
 @click.command()
@@ -57,14 +72,14 @@ def status(
             fallback_agent_name = agent or None
 
         if not agent:
-            click.secho("错误: 请指定 --agent 或使用 --all 查看所有", fg="red")
-            click.echo("提示: 也可以在包含 agentengine.yaml 的目录下运行")
+            print_error("错误: 请指定 --agent 或使用 --all 查看所有")
+            print_info("提示: 也可以在包含 agentengine.yaml 的目录下运行")
             raise SystemExit(1)
 
     # 检查账号 ID
     if not account_id:
-        click.secho("错误: 需要金山云账号 ID", fg="red")
-        click.echo("提示: 设置 KSYUN_ACCOUNT_ID 环境变量或使用 --account-id 参数")
+        print_error("错误: 需要金山云账号 ID")
+        print_info("提示: 设置 KSYUN_ACCOUNT_ID 环境变量或使用 --account-id 参数")
         raise SystemExit(1)
 
     # Dry Run 模式由 AgentEngineClient 处理
@@ -146,7 +161,7 @@ def _watch_status(agent: str, region: str, account_id: str, interval: int):
             try:
                 asyncio.run(_show_agent_status_compact(agent, region, account_id))
             except Exception as e:
-                click.secho(f"获取状态失败: {e}", fg="red")
+                print_error(f"获取状态失败: {e}")
 
             click.echo("")
             click.echo(f"下次刷新: {interval} 秒后 (Ctrl+C 退出)")
@@ -205,68 +220,63 @@ async def _show_agent_status(
         raise
 
     click.echo("")
-    click.secho("Agent 状态", fg="blue", bold=True)
-    click.echo("-" * 50)
+    print_title("Agent 状态", f"region: {region}")
 
     # 基本信息
-    click.echo(f"  名称:       {result.get('agentRuntimeName', agent)}")
-    click.echo(f"  ID:         {result.get('agentRuntimeId', 'N/A')}")
-    click.echo(f"  描述:       {result.get('description', '-')}")
+    print_kv("名称", result.get("agentRuntimeName", agent))
+    print_kv("ID", result.get("agentRuntimeId", "N/A"))
+    print_kv("描述", result.get("description", "-"))
 
     # 状态
     status_value = result.get("status", "Unknown")
     status_color = _get_status_color(status_value)
-    click.echo(f"  状态:       {click.style(status_value, fg=status_color)}")
-    click.echo(f"  阶段:       {result.get('phase', '-')}")
+    print_kv("状态", status_value, value_style=status_rich_style(status_value))
+    print_kv("阶段", result.get("phase", "-"))
 
     # 副本
     replicas = result.get("replicas", 0)
     ready = result.get("readyReplicas", 0)
-    click.echo(f"  副本:       {ready}/{replicas}")
+    print_kv("副本", f"{ready}/{replicas}", value_style=replica_rich_style(ready, replicas))
 
     # Endpoint
     endpoint = result.get("endpoint")
     if endpoint:
-        click.echo(f"  Endpoint:   {click.style(endpoint, fg='cyan')}")
+        print_kv("Endpoint", endpoint, value_style="#58a6ff")
     else:
-        click.echo(f"  Endpoint:   {click.style('未就绪', fg='yellow')}")
+        print_warn("Endpoint: 未就绪")
 
     # Langfuse
     langfuse_url = result.get("langfuseTraceUrl")
     if langfuse_url:
-        click.echo(f"  Langfuse:   {langfuse_url}")
+        print_kv("Langfuse", langfuse_url, value_style="#58a6ff")
 
     # 时间
     from dateutil import parser
-    click.echo("")
+    print_info("")
     
     created_at = result.get('createdAt')
     if created_at:
         dt = parser.parse(created_at)
-        click.echo(f"  创建时间:   {dt.astimezone().isoformat()}")
+        print_kv("创建时间", dt.astimezone().isoformat())
     else:
-        click.echo(f"  创建时间:   -")
+        print_kv("创建时间", "-")
         
     updated_at = result.get('updatedAt')
     if updated_at:
        dt = parser.parse(updated_at)
-       click.echo(f"  更新时间:   {dt.astimezone().isoformat()}")
+       print_kv("更新时间", dt.astimezone().isoformat())
     else:
-       click.echo(f"  更新时间:   -")
+       print_kv("更新时间", "-")
 
     # 消息
     message = result.get("message")
     if message:
-        click.echo("")
-        click.echo(f"  消息:       {message}")
+        print_kv("消息", message)
 
     # 错误信息
     error = result.get("error")
     if error:
-        click.echo("")
-        click.secho(f"  错误:       {error}", fg="red")
-
-    click.echo("")
+        print_error(f"错误: {error}")
 
 
 async def _show_agent_status_compact(agent: str, region: str, account_id: str):
@@ -310,46 +320,52 @@ async def _list_all_agents(region: str, account_id: str, dry_run: bool = False):
         raise
 
     click.echo("")
-    click.secho("Agent 列表", fg="blue", bold=True)
-    click.echo("-" * 130)
-    click.echo(f"{'ID':<22} {'名称':<30} {'状态':<12} {'副本':<8} {'Endpoint':<50}")
-    click.echo("-" * 130)
+    table = new_table(f"Agent 列表  [muted](region: {region})[/]")
+    table.add_column("ID", style="#58a6ff", no_wrap=True, min_width=24)
+    table.add_column("名称", style="#c9d1d9", min_width=20)
+    table.add_column("状态", no_wrap=True, justify="center", min_width=10)
+    table.add_column("副本", no_wrap=True, justify="center", min_width=8)
+    table.add_column("Endpoint", style="#8b949e", overflow="ellipsis")
 
     if not results:
-        click.secho("(暂无数据)", fg="yellow")
-    else:
-        for r in results:
-            agent_id = r.get("agentRuntimeId", "N/A")[:48]
-            name = r.get("agentRuntimeName", "N/A")[:48]
-            status_val = r.get("status", "Unknown")
-            status_color = _get_status_color(status_val)
-            replicas = f"{r.get('readyReplicas', 0)}/{r.get('replicas', 0)}"
-            endpoint = r.get("endpoint", "-")[:128] if r.get("endpoint") else "-"
+        table.add_row("-", "-", "[yellow]暂无数据[/]", "-", "-")
+        console.print(table)
+        console.print(summary_panel(total=0, healthy=0, attention=0, noun="Agent"))
+        return
 
-            click.echo(
-                f"{agent_id:<22} {name:<30} {click.style(status_val, fg=status_color):<22} {replicas:<8} {endpoint:<50}"
-            )
+    unhealthy = 0
+    running = 0
+    for r in results:
+        agent_id = (r.get("agentRuntimeId") or "N/A")
+        name = (r.get("agentRuntimeName") or "N/A")
+        status_val = r.get("status", "Unknown")
+        ready = int(r.get("readyReplicas", 0) or 0)
+        replicas = int(r.get("replicas", 0) or 0)
+        endpoint = r.get("endpoint", "-") or "-"
 
-    click.echo("")
-    click.echo(f"共 {len(results)} 个 Agent")
+        status_upper = status_val.upper()
+        status_style = status_rich_style(status_upper)
+        replica_style = replica_rich_style(ready, replicas)
+        if status_upper in {"RUNNING", "READY", "HEALTHY"}:
+            running += 1
+        else:
+            unhealthy += 1
+
+        table.add_row(
+            agent_id,
+            name,
+            f"[{status_style}]{status_upper}[/]",
+            f"[{replica_style}]{ready}/{replicas}[/]",
+            endpoint,
+        )
+
+    console.print(table)
+    console.print(summary_panel(total=len(results), healthy=running, attention=unhealthy, noun="Agent"))
 
 
 def _get_status_color(status: str) -> str:
     """根据状态返回颜色"""
-    status_colors = {
-        "Running": "green",
-        "Ready": "green",
-        "Healthy": "green",
-        "Creating": "yellow",
-        "Pending": "yellow",
-        "Updating": "yellow",
-        "Scaling": "yellow",
-        "Failed": "red",
-        "Error": "red",
-        "Terminated": "red",
-        "Unknown": "white",
-    }
-    return status_colors.get(status, "white")
+    return status_click_color(status)
 
 
 async def _get_agent_runtime(agent: str, region: str, account_id: str, dry_run: bool = False) -> dict:
@@ -358,16 +374,8 @@ async def _get_agent_runtime(agent: str, region: str, account_id: str, dry_run: 
     调用 AgentEngine Server API
     """
     from ksadk.api import AgentEngineClient
-    from ksadk.common.auth import AWSV4Auth
-
     try:
-        # 获取本地凭证透传给 Server
-        auth = AWSV4Auth()
-        extra_headers = {} # Initialize extra_headers
-        if auth.access_key_id and auth.secret_access_key:
-            extra_headers["X-Ksyun-Access-Key"] = auth.access_key_id
-            extra_headers["X-Ksyun-Secret-Key"] = auth.secret_access_key
-        
+        extra_headers = {}
         # 传递 Account ID
         if account_id:
             extra_headers["X-Ksc-Account-Id"] = account_id
@@ -375,24 +383,25 @@ async def _get_agent_runtime(agent: str, region: str, account_id: str, dry_run: 
         async with AgentEngineClient(region=region, dry_run=dry_run, extra_headers=extra_headers) as client:
             response = await client.get_agent(agent)
 
-            basic = response.get("Basic", {})
-            deploy = response.get("Deployment", {})
-            quick = response.get("QuickAccess", {})
-            adv = response.get("Advanced", {})
+            # _action 已统一转为 snake_case
+            basic = response.get("basic", {})
+            deploy = response.get("deployment", {})
+            quick = response.get("quick_access", {})
+            adv = response.get("advanced", {})
 
             return {
-                "agentRuntimeId": basic.get("AgentId", "") or response.get("AgentId", ""),
-                "agentRuntimeName": basic.get("Name", "") or response.get("Name", ""),
-                "description": basic.get("Description", "") or response.get("Description", ""),
-                "status": basic.get("Status", "") or response.get("Status", "Unknown"),
-                "phase": basic.get("Phase", "") or response.get("Phase", ""),
-                "replicas": basic.get("Replicas") if basic.get("Replicas") is not None else response.get("Replicas", deploy.get("Scaling", {}).get("MinReplicas", 1)),
-                "readyReplicas": basic.get("ReadyReplicas") if basic.get("ReadyReplicas") is not None else response.get("ReadyReplicas", 0),
-                "endpoint": quick.get("PublicEndpoint") or quick.get("PrivateEndpoint") or response.get("Endpoint", ""),
-                "langfuseTraceUrl": adv.get("ObservabilityUrl", "") or response.get("LangfuseTraceUrl", ""),
-                "createdAt": basic.get("CreatedAt", "") or response.get("CreatedAt", ""),
-                "updatedAt": basic.get("UpdatedAt", "") or response.get("UpdatedAt", ""),
-                "message": basic.get("Message", "") or response.get("Message", ""),
+                "agentRuntimeId": basic.get("agent_id", "") or response.get("agent_id", ""),
+                "agentRuntimeName": basic.get("name", "") or response.get("name", ""),
+                "description": basic.get("description", "") or response.get("description", ""),
+                "status": basic.get("status", "") or response.get("status", "Unknown"),
+                "phase": basic.get("phase", "") or response.get("phase", ""),
+                "replicas": basic.get("replicas") if basic.get("replicas") is not None else response.get("replicas", deploy.get("scaling", {}).get("min_replicas", 1)),
+                "readyReplicas": basic.get("ready_replicas") if basic.get("ready_replicas") is not None else response.get("ready_replicas", 0),
+                "endpoint": quick.get("public_endpoint") or quick.get("private_endpoint") or response.get("endpoint", ""),
+                "langfuseTraceUrl": adv.get("observability_url", "") or response.get("langfuse_trace_url", ""),
+                "createdAt": basic.get("created_at", "") or response.get("created_at", ""),
+                "updatedAt": basic.get("updated_at", "") or response.get("updated_at", ""),
+                "message": basic.get("message", "") or response.get("message", ""),
             }
     except DryRunExit:
         raise
@@ -411,16 +420,8 @@ async def _list_agent_runtimes(region: str, account_id: str, dry_run: bool = Fal
     调用 AgentEngine Server API
     """
     from ksadk.api import AgentEngineClient
-    from ksadk.common.auth import AWSV4Auth
-
     try:
-        # 获取本地凭证透传给 Server
-        auth = AWSV4Auth()
-        extra_headers = {} # Initialize extra_headers
-        if auth.access_key_id and auth.secret_access_key:
-            extra_headers["X-Ksyun-Access-Key"] = auth.access_key_id
-            extra_headers["X-Ksyun-Secret-Key"] = auth.secret_access_key
-        
+        extra_headers = {}
         # 传递 Account ID
         if account_id:
             extra_headers["X-Ksc-Account-Id"] = account_id
@@ -429,15 +430,15 @@ async def _list_agent_runtimes(region: str, account_id: str, dry_run: bool = Fal
             response = await client.list_agents(region=region)
 
             results = []
-            for agent in response.get("Agents", []):
+            for agent in response.get("agents", []):
                 results.append(
                     {
-                        "agentRuntimeId": agent.get("AgentId", ""),
-                        "agentRuntimeName": agent.get("Name", ""),
-                        "status": agent.get("Status", ""),
-                        "replicas": agent.get("Replicas", 0),
-                        "readyReplicas": agent.get("ReadyReplicas", 0),
-                        "endpoint": agent.get("Endpoint", ""),
+                        "agentRuntimeId": agent.get("agent_id", ""),
+                        "agentRuntimeName": agent.get("name", ""),
+                        "status": agent.get("status", ""),
+                        "replicas": agent.get("replicas", 0),
+                        "readyReplicas": agent.get("ready_replicas", 0),
+                        "endpoint": agent.get("endpoint", ""),
                     }
                 )
 
@@ -447,6 +448,3 @@ async def _list_agent_runtimes(region: str, account_id: str, dry_run: bool = Fal
     except Exception as e:
         click.secho(f"查询失败: {str(e)}", fg="red")
         return []
-
-
-

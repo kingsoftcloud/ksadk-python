@@ -47,22 +47,19 @@ async def auto_rollback_to_previous(agent_id: str, region: str):
     try:
         # 获取版本列表，找到最近的历史版本
         versions_result = await client.list_versions(agent_id, page=1, size=5)
-        versions = versions_result.get("Versions", [])
+        versions = versions_result.get("versions", [])
         
-        # 找到需要回滚的目标版本
-        # 部署失败意味着新配置未生效或有问题，我们需要恢复到"目前被认为是Current"的那个版本
-        # 如果当前版本就是导致问题的版本(即已经Release了但Deploy失败)，那么通常Release是在Deploy成功后，
-        # 所以Current版本应该是上一次成功的版本。
+        # 找到需要回滚的目标版本 (统一 snake_case)
         target_version = None
         for v in versions:
-            if v.get("status") == "current":
+            if (v.get("status") or "").lower() == "current":
                 target_version = v
                 break
         
-        # 如果没有 Current (理论上不应该，除非没有任何版本)，则找最新的 Historical
+        # 如果没有 Current，则找最新的 Historical
         if not target_version:
             for v in versions:
-                if v.get("status") == "historical":
+                if (v.get("status") or "").lower() == "historical":
                     target_version = v
                     break
         
@@ -70,18 +67,19 @@ async def auto_rollback_to_previous(agent_id: str, region: str):
             click.secho("⚠ 无可用稳定版本，跳过自动回滚", fg="yellow")
             return
         
+        target_tag = target_version.get("tag")
         click.echo("")
-        click.secho(f"⏪ 正在自动回滚到版本: {target_version.get('tag')}...", fg="yellow")
+        click.secho(f"⏪ 正在自动回滚到版本: {target_tag}...", fg="yellow")
         
         # 执行回滚
         result = await client.rollback_version(
             agent_id=agent_id,
-            target_tag=target_version.get("tag"),
+            target_tag=target_tag,
             ks3_access_key=access_key,
             ks3_secret_key=secret_key
         )
         
-        click.secho(f"✓ 已回滚到版本: {target_version.get('tag')}", fg="green")
+        click.secho(f"✓ 已回滚到版本: {target_tag}", fg="green")
         
     except Exception as e:
         click.secho(f"⚠ 自动回滚失败: {e}", fg="red")
