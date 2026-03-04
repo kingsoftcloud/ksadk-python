@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 from typing import Optional
 import time
+from ksadk.cli.agent_ref import merge_agent_inputs, resolve_agent_ref
 
 try:
     from rich.console import Console
@@ -23,7 +24,8 @@ except ImportError:
 
 
 @click.command()
-@click.option("--agent", "-a", help="Agent 名称或 ID")
+@click.argument("agent_ref", required=False)
+@click.option("--agent", "--agent-id", "agent_option", "-a", help="Agent 名称或 ID")
 @click.option("--endpoint", "-e", help="Agent Endpoint URL (覆盖自动获取)")
 @click.option("--api-key", help="AgentEngine API Key (覆盖本地配置)")
 @click.option("--message", "-m", help="发送的消息 (单次调用模式)")
@@ -34,7 +36,8 @@ except ImportError:
 @click.option("--model", help="指定模型名称")
 @click.option("--show-thinking", is_flag=True, help="显示模型思考过程")
 def invoke(
-    agent: str,
+    agent_ref: str,
+    agent_option: str,
     endpoint: str,
     api_key: str,
     message: str,
@@ -45,17 +48,28 @@ def invoke(
     model: str,
     show_thinking: bool,
 ):
-    """与 Agent 进行交互 (本地或远程)
+    """与 Agent 进行交互 (本地或远程)。
 
     默认使用 TUI 交互模式，使用 -m 发送单条消息。
 
-    \\b
-    使用方式:
-        agentengine invoke --local                  # 本地 TUI 模式
-        agentengine invoke --agent my-agent         # 云端 TUI 模式
-        agentengine invoke --local -m "你好"        # 单次调用
-        agentengine invoke -k --endpoint https://... # 跳过 SSL 验证
+    \b
+    示例:
+        # 1) 本地模式
+        agentengine invoke --local
+        # 2) 显式指定 agent
+        agentengine invoke --agent ar-xxxx -m "你好"
+        # 3) 显式指定区域
+        KSYUN_REGION=cn-beijing-6 agentengine invoke --agent ar-xxxx -m "你好"
     """
+    try:
+        agent_input = merge_agent_inputs(
+            agent_option=agent_option,
+            positional_agent=agent_ref,
+        )
+    except ValueError as e:
+        click.secho(f"❌ {e}", fg="red")
+        raise SystemExit(1)
+
     # 加载本地状态
     state = _load_state()
     
@@ -63,15 +77,22 @@ def invoke(
     if local:
         endpoint = "http://localhost:8080"
     elif not endpoint:
-        # 如果没指明 endpoint，优先从命令行参数 agent 找，然后从 state 找，最后从 config 找
-        target_agent = agent or state.get("agent_id") or state.get("name") or _get_agent_from_config()
-        
-        if not target_agent:
-            click.secho("❌ 请指定 --local, --agent 或 --endpoint 参数", fg="red")
+        resolved = resolve_agent_ref(
+            agent_input,
+            cwd=Path("."),
+            include_state=True,
+            include_project_config=True,
+        )
+        if not resolved:
+            click.secho("❌ 请指定 Agent（--agent 或位置参数）、--local 或 --endpoint", fg="red")
+            click.echo("   自动解析顺序: .agentengine.state -> agentengine.yaml/ksadk.yaml")
             raise SystemExit(1)
+        target_agent = resolved.value
+        if resolved.source != "cli":
+            click.echo(f"ℹ 未显式指定 Agent，使用 {resolved.source_text}: {target_agent}")
 
         # 优先使用 state 里的 endpoint (如果是对应的 agent)
-        if not agent or agent == state.get("agent_id") or agent == state.get("name"):
+        if not agent_input or target_agent == state.get("agent_id") or target_agent == state.get("name"):
             endpoint = state.get("endpoint")
             
         if not endpoint:
@@ -129,22 +150,6 @@ def _invoke_tui(
     app.run()
 
 
-def _get_agent_from_config() -> Optional[str]:
-    """从配置文件读取 agent 名称"""
-    import yaml
-
-    config_path = Path(".") / "agentengine.yaml"
-    if not config_path.exists():
-        config_path = Path(".") / "ksadk.yaml"
-
-    if config_path.exists():
-        # 使用 utf-8-sig 自动处理 BOM，确保 Windows 兼容性
-        with open(config_path, encoding='utf-8-sig') as f:
-            config = yaml.safe_load(f)
-            return config.get("name")
-    return None
-
-
 def _load_state() -> dict:
     """从 .agentengine.state 加载状态"""
     import yaml
@@ -163,26 +168,45 @@ def _get_api_key() -> Optional[str]:
     return _load_state().get("api_key")
 
 
-def _get_endpoint(agent: str, region: str) -> str:
-    """获取 Agent Endpoint"""
+def _get_endpoint(agent_ref: str, region: str) -> str:
+    """获取 Agent Endpoint（先按 ID，再按名称）"""
     from ksadk.api import AgentEngineClient
     import asyncio
 
     async def _get():
         async with AgentEngineClient(region=region) as client:
-            res = await client.get_agent(agent)
-            return res.get("endpoint", "")
+            # 1) 优先按 ID 查询
+            try:
+                res = await client.get_agent(agent_id=agent_ref)
+                endpoint = res.get("endpoint", "")
+                if endpoint:
+                    return endpoint
+            except Exception:
+                pass
+
+            # 2) 回退按名称查询
+            res = await client.get_agent(name=agent_ref)
+            endpoint = res.get("endpoint", "")
+            if endpoint:
+                return endpoint
+
+            # endpoint 为空时，尽量提取真实 ID 供默认域名拼接
+            basic = res.get("basic", {})
+            return basic.get("agent_id") or res.get("agent_id") or ""
 
     try:
-        endpoint = asyncio.run(_get())
-        if not endpoint:
-             click.secho(f"⚠️  Agent '{agent}' 未返回 Endpoint，尝试使用默认格式", fg="yellow")
-             return f"https://{agent}.agent.kspmas.ksyun.com"
-        return endpoint
+        resolved = asyncio.run(_get())
+        if resolved and resolved.startswith("http"):
+            return resolved
+        if resolved:
+            click.secho(f"⚠️  Agent '{agent_ref}' 未返回 Endpoint，尝试默认域名", fg="yellow")
+            return f"https://{resolved}.agent.kspmas.ksyun.com"
+        click.secho(f"⚠️  Agent '{agent_ref}' 未返回 Endpoint，尝试使用默认格式", fg="yellow")
+        return f"https://{agent_ref}.agent.kspmas.ksyun.com"
     except Exception as e:
         # 如果是本地开发环境或者连接失败，降级处理
         click.secho(f"⚠️  获取 Endpoint 失败: {e}，尝试使用默认格式", fg="yellow")
-        return f"https://{agent}.agent.kspmas.ksyun.com"
+        return f"https://{agent_ref}.agent.kspmas.ksyun.com"
 
 
 async def _invoke_once(

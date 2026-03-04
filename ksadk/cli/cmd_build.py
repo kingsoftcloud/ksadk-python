@@ -45,15 +45,19 @@ def build(
     \b
     AGENT_DIR: Agent 项目目录 (默认: 当前目录)
 
+    \b
     模式:
         code:      打包 zip + 依赖，上传 KS3 (默认)
         container: 构建 Docker 镜像
 
+    \b
     示例:
+        # 1) 默认构建 (code 模式)
         agentengine build .
-        agentengine build . --mode code --push
-        agentengine build . --mode code --push --no-cache   # 强制重新打包 zip（如依赖/二进制有问题时）
+        # 2) 显式指定构建参数
         agentengine build . --mode container --push --registry hub-cn-beijing-6.kce.ksyun.com
+        # 3) 显式指定区域
+        KSYUN_REGION=cn-beijing-6 agentengine build . --mode code --push --no-cache
     """
     agent_path = Path(agent_dir).resolve()
     print_title("Agent 构建", f"mode: {mode}")

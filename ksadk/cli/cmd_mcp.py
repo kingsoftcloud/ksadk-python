@@ -1,5 +1,5 @@
 """
-agentengine mcp - MCP Server 管理 (预览)
+agentengine mcp - MCP Server 管理
 
 支持操作:
 - deploy: 部署 MCP Server 到云端
@@ -34,10 +34,12 @@ def mcp():
     
     \b
     示例:
-        agentengine mcp deploy .                               # 部署 MCP (Code 模式, 默认)
-        agentengine mcp deploy . --artifact-type Container     # 镜像模式
-        agentengine mcp list                                   # 列出已部署的 MCP
-        agentengine mcp status <id>                            # 查看状态
+        # 1) 默认部署
+        agentengine mcp deploy .
+        # 2) 常用查询
+        agentengine mcp list
+        # 3) 显式指定区域
+        KSYUN_REGION=cn-beijing-6 agentengine mcp status <id>
     """
     pass
 
@@ -89,9 +91,12 @@ def deploy(mcp_dir: str, name: str, region: str, ks3_bucket: str, enable_auth: b
     
     \b
     示例:
+        # 1) 默认部署 (Code 模式)
         agentengine mcp deploy .
-        agentengine mcp deploy ./my-mcp --name my-tools
-        agentengine mcp deploy . --artifact-type Container # 部署为容器
+        # 2) 显式指定部署参数
+        agentengine mcp deploy ./my-mcp --name my-tools --artifact-type Container
+        # 3) 显式指定区域
+        KSYUN_REGION=cn-beijing-6 agentengine mcp deploy . --dry-run
     
     \b
     部署后的 endpoint 兼容标准 MCP 协议，可以被:
