@@ -355,8 +355,7 @@ offline-current: build
 #
 
 # OpenClaw 配置 (不使用版本号，永远 :latest)
-OPENCLAW_IMAGE := hub.kce.ksyun.com/agentengine/openclaw
-OPENCLAW_PUBLIC_IMAGE := hub.kce.ksyun.com/agentengine-public/openclaw
+OPENCLAW_IMAGE := hub.kce.ksyun.com/agentengine-public/openclaw
 OPENCLAW_CONTEXT := deploy/openclaw
 
 ## 构建 OpenClaw 镜像 (chromium + preset-skills)
@@ -380,9 +379,6 @@ openclaw-build:
 openclaw-push: openclaw-build
 	@echo "📤 推送 OpenClaw 镜像: $(OPENCLAW_IMAGE):latest"
 	@docker push $(OPENCLAW_IMAGE):latest
-	@echo "📤 推送 OpenClaw 公开镜像: $(OPENCLAW_PUBLIC_IMAGE):latest"
-	@docker tag $(OPENCLAW_IMAGE):latest $(OPENCLAW_PUBLIC_IMAGE):latest
-	@docker push $(OPENCLAW_PUBLIC_IMAGE):latest
 	@echo "✅ 推送完成"
 
 ## 查看 OpenClaw 镜像大小

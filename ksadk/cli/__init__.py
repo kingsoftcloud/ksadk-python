@@ -15,6 +15,8 @@ AgentEngine CLI - 命令行工具入口
 别名: ksadk (向后兼容)
 """
 
+import os
+
 import click
 from ksadk.version import VERSION
 
@@ -137,6 +139,7 @@ class ColoredHelpGroup(click.Group):
             "launch": "一键构建+部署",
             "mcp": "MCP Server 管理",
             "model": "切换默认模型",
+            "openclaw": "一键拉起 OpenClaw",
             "run": "运行 Agent",
             "status": "查看状态",
             "version": "版本管理",
@@ -271,6 +274,14 @@ def _register_commands():
     except ImportError:
         pass
 
+    # OpenClaw 命令组
+    try:
+        from ksadk.cli.cmd_openclaw import openclaw
+
+        cli.add_command(openclaw)
+    except ImportError:
+        pass
+
 def main():
     # 全局加载 .env 文件
     try:
@@ -320,6 +331,16 @@ def main():
                         err=True
                     )
     except ImportError:
+        pass
+
+    # 全局配置回退: .env 未设置的变量从 ~/.agentengine/settings.json 补充
+    try:
+        from ksadk.configs.global_config import get_env_from_global_config
+        global_env = get_env_from_global_config()
+        for key, value in global_env.items():
+            if not os.environ.get(key):
+                os.environ[key] = value
+    except Exception:
         pass
 
     _register_commands()

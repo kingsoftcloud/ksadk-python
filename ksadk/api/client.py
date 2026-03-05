@@ -349,6 +349,14 @@ class AgentEngineClient:
             "AutoPay": True,
         }
 
+        # 访问控制 (默认 ApiKey；OpenClaw 可显式传入 None 关闭平台层鉴权)
+        auth_type = data.get("auth_type")
+        if auth_type:
+            params["Access"] = {
+                "AuthType": auth_type,
+                "IamRole": data.get("iam_role", "KsyunAgentEngineDefaultRole"),
+            }
+
         if params["DeploymentType"] == "Code":
             ks3 = data.get("ks3", {})
             params["CodeConfig"] = {
@@ -390,10 +398,17 @@ class AgentEngineClient:
             elif isinstance(envs, list):
                 env_vars = envs
 
-        params["Advanced"] = {
+        advanced = {
             "EnableObservability": True,
-            "EnvironmentVariables": env_vars
+            "EnvironmentVariables": env_vars,
         }
+        inbound_identity_auth = data.get("inbound_identity_auth")
+        if inbound_identity_auth is not None:
+            advanced["InboundIdentityAuth"] = inbound_identity_auth
+        project_id = data.get("project_id")
+        if project_id:
+            advanced["ProjectId"] = project_id
+        params["Advanced"] = advanced
 
         return self._action("CreateProduct", params)
 
@@ -460,6 +475,25 @@ class AgentEngineClient:
             elif isinstance(envs, list):
                 env_vars = envs
             params["EnvironmentVariables"] = env_vars
+
+        # 访问控制 (可选)
+        auth_type = data.get("auth_type")
+        if auth_type:
+            params["Access"] = {
+                "AuthType": auth_type,
+                "IamRole": data.get("iam_role", "KsyunAgentEngineDefaultRole"),
+            }
+
+        # 高级配置 (可选)
+        advanced = {}
+        inbound_identity_auth = data.get("inbound_identity_auth")
+        if inbound_identity_auth is not None:
+            advanced["InboundIdentityAuth"] = inbound_identity_auth
+        project_id = data.get("project_id")
+        if project_id:
+            advanced["ProjectId"] = project_id
+        if advanced:
+            params["Advanced"] = advanced
             
         return self._action("UpdateAgent", params)
 
