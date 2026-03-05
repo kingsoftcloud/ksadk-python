@@ -502,15 +502,44 @@ class ServerlessProvider(BaseDeployProvider):
                             "api_key": "dry-run-key"
                         }
                     
+                    # CreateProduct 返回 order_id，需要轮询 list_agents 获取 agent_id
                     new_agent_id = res.get("agent_id")
+                    order_id = res.get("order_id")
+                    agent_name = res.get("name") or package_info.name
+                    agent_endpoint = res.get("endpoint")
+                    agent_api_key = res.get("api_key")
+
+                    if order_id and not new_agent_id:
+                        click.echo(f"   📋 订单已创建: {order_id}，等待实例创建...")
+                        import time
+                        for i in range(12):  # 最多等 60s
+                            time.sleep(5)
+                            try:
+                                detail = await client.get_agent(name=package_info.name, include_api_key=True)
+                                qa = detail.get("quick_access", {})
+                                basic = detail.get("basic", {})
+                                new_agent_id = basic.get("agent_id")
+                                agent_name = basic.get("name") or agent_name
+                                agent_endpoint = qa.get("public_endpoint")
+                                agent_api_key = qa.get("api_key")
+                                if new_agent_id:
+                                    click.secho(f"   ✅ 实例已创建: {new_agent_id}", fg="green")
+                                    break
+                            except Exception:
+                                pass
+                            click.echo(f"   ⏳ 等待中... ({(i+1)*5}s)")
+
+                        if not new_agent_id:
+                            click.secho("   ⚠️  实例仍在创建中，稍后使用 'agentengine status' 查看", fg="yellow")
                     
                     # 保存 agent_id 到本地状态文件
                     self._save_state(state_file, {
                         "agent_id": new_agent_id,
-                        "name": res.get("name"),
+                        "name": agent_name,
                         "region": target.region,
-                        "endpoint": res.get("endpoint"),
-                        "api_key": res.get("api_key"),  # 只在首次保存
+                        "endpoint": agent_endpoint,
+                        "api_key": agent_api_key,  # 只在首次保存
+                        "order_id": order_id,
                         "created_at": self._now_iso(),
                     })
                     
@@ -519,10 +548,10 @@ class ServerlessProvider(BaseDeployProvider):
                     return DeployResult(
                         status=DeployStatus.DEPLOYING, 
                         agent_id=new_agent_id,
-                        agent_name=res.get("name"),
-                        endpoint=res.get("endpoint"), 
-                        api_key=res.get("api_key"),
-                        message=f"✅ Agent ID: {new_agent_id} (首次部署)"
+                        agent_name=agent_name,
+                        endpoint=agent_endpoint, 
+                        api_key=agent_api_key,
+                        message=f"✅ Agent ID: {new_agent_id or '(创建中)'} (首次部署, 订单: {order_id or '-'})"
                     )
 
         except DryRunExit:
