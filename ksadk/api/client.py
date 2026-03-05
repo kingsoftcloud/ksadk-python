@@ -57,7 +57,9 @@ class AgentEngineClient:
         # 本地调试覆盖 (如果需要)
         # self.base_url = "http://localhost:8081"
         self.timeout = timeout
-        self.region = region
+        self.logical_region = region
+        self.region = self._normalize_control_region(region)
+        self.custom_source = self._resolve_custom_source(region)
         self.dry_run = dry_run
         self.extra_headers = extra_headers or {}
         # 签名 service 可通过环境变量覆盖（例如 aicp）
@@ -67,7 +69,7 @@ class AgentEngineClient:
         self._auth = AWSV4Auth(
             access_key_id=access_key or "",
             secret_access_key=secret_key or "",
-            region=region,
+            region=self.region,
             service=self.service,
         )
         
@@ -125,6 +127,25 @@ class AgentEngineClient:
         """是否使用 KOP 协议模式（按 base_url 是否包含 aicp 判断）。"""
         return "aicp" in (self.base_url or "").lower()
 
+    @staticmethod
+    def _normalize_control_region(region: Optional[str]) -> str:
+        """归一化控制面 Region（KOP 头部与签名使用）。"""
+        region = (region or "cn-beijing-6").strip()
+        if region.lower() == "pre-online":
+            return os.getenv("AGENTENGINE_PRE_CONTROL_REGION", "cn-beijing-6")
+        return region
+
+    @staticmethod
+    def _resolve_custom_source(region: Optional[str]) -> Optional[str]:
+        """根据逻辑环境决定是否附加 X-KSC-CUSTOM-SOURCE。"""
+        if (region or "").strip().lower() == "pre-online":
+            return os.getenv("AGENTENGINE_PRE_CUSTOM_SOURCE", "pre")
+        return None
+
+    def _normalize_payload_region(self, region: Optional[str]) -> str:
+        """归一化请求体中的 Region 字段。"""
+        return self._normalize_control_region(region or self.logical_region or "cn-beijing-6")
+
     def _build_headers(self, request_id: str = "", action: str = "", kop_mode: bool = False) -> Dict[str, str]:
         if not request_id:
             request_id = str(uuid.uuid4())
@@ -138,9 +159,9 @@ class AgentEngineClient:
         }
         if kop_mode and action:
             headers["X-Action"] = action
-            headers["X-Version"] = os.getenv("AGENTENGINE_API_VERSION", "2026-03-04")
-        if self.region.lower() == "pre-online":
-            headers["X-KSC-CUSTOM-SOURCE"] = "pre"
+            headers["X-Version"] = os.getenv("AGENTENGINE_API_VERSION", "2024-06-12")
+        if self.custom_source:
+            headers["X-KSC-CUSTOM-SOURCE"] = self.custom_source
         
         # 统一使用 X-Ksc-Account-Id (废弃 X-Ksc-Account-Id)
         account_id = os.getenv("KSYUN_ACCOUNT_ID")
@@ -161,7 +182,7 @@ class AgentEngineClient:
         kop_mode = self._is_kop_mode()
         headers = self._build_headers(action=action, kop_mode=kop_mode)
         if kop_mode:
-            version = os.getenv("AGENTENGINE_API_VERSION", "2026-03-04")
+            version = os.getenv("AGENTENGINE_API_VERSION", "2024-06-12")
             full_url = f"{self.base_url.rstrip('/')}/?Action={action}&Version={version}"
         else:
             full_url = f"{self.base_url}{path}"
@@ -214,11 +235,25 @@ class AgentEngineClient:
         )
         
         logger.debug(f"Response: {response.status_code}")
-        
-        response.raise_for_status()
-        
+
+        if response.status_code >= 400:
+            resp_text = response.text or ""
+            logger.error(
+                "Request failed: method=%s, url=%s, status=%s, body=%s",
+                method,
+                full_url,
+                response.status_code,
+                resp_text,
+            )
+            raise Exception(
+                f"HTTP {response.status_code} {method} {full_url}: {resp_text}"
+            )
+
         if response.text:
-            return response.json()
+            try:
+                return response.json()
+            except Exception as e:
+                raise Exception(f"Invalid JSON response from {full_url}: {response.text}") from e
         return {}
     
     # Async 包装 (保持兼容性)
@@ -252,6 +287,22 @@ class AgentEngineClient:
             return [cls._to_snake_case(item) for item in data]
         return data
 
+    @classmethod
+    def _fix_endpoints_protocol(cls, data):
+        """递归将 endpoint 相关字段的 https:// 替换为 http:// (预发环境)"""
+        _ENDPOINT_KEYS = {"endpoint", "public_endpoint", "private_endpoint"}
+        if isinstance(data, dict):
+            result = {}
+            for k, v in data.items():
+                if k in _ENDPOINT_KEYS and isinstance(v, str) and v.startswith("https://"):
+                    result[k] = "http://" + v[8:]
+                else:
+                    result[k] = cls._fix_endpoints_protocol(v)
+            return result
+        elif isinstance(data, list):
+            return [cls._fix_endpoints_protocol(item) for item in data]
+        return data
+
     def _action(self, action: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
         """通用 Action API 调用"""
         body = params or {}
@@ -268,7 +319,13 @@ class AgentEngineClient:
         
         # 提取 Data 并统一转换为 snake_case
         data = result.get("Data") if result.get("Data") is not None else result
-        return self._to_snake_case(data)
+        data = self._to_snake_case(data)
+        
+        # 预发环境 endpoint 协议归一化: https -> http
+        if self.logical_region and self.logical_region.strip().lower() == "pre-online":
+            data = self._fix_endpoints_protocol(data)
+        
+        return data
 
     # ===== Agent Actions =====
 
@@ -279,7 +336,7 @@ class AgentEngineClient:
             "Description": data.get("description"),
             "Framework": data.get("framework", "langgraph"),
             "DeploymentType": data.get("artifact_type", "Code"),
-            "Region": data.get("region", "cn-beijing-6"),
+            "Region": self._normalize_payload_region(data.get("region", "cn-beijing-6")),
             "Resource": {
                 "Cpu": int(float(data.get("resources", {}).get("cpu", 2))),
                 "Memory": int(str(data.get("resources", {}).get("memory", "4Gi")).replace("Gi", ""))
@@ -298,16 +355,28 @@ class AgentEngineClient:
                 "Path": data.get("artifact_path", ""),
                 "AccessKey": ks3.get("access_key"),
                 "SecretKey": ks3.get("secret_key"),
-                "Region": ks3.get("region", "cn-beijing-6"),
+                "Region": self._normalize_payload_region(ks3.get("region", "cn-beijing-6")),
                 "Bucket": ks3.get("bucket"),
             }
         else:
             ic = data.get("image_credential", {})
+            # 解析 artifact_path (格式: ns/repo:version 或 repo:version 或 repo)
+            artifact = data.get("artifact_path", "")
+            img_ns = "default"
+            img_repo = artifact
+            img_ver = "latest"
+            if ":" in artifact:
+                artifact, img_ver = artifact.rsplit(":", 1)
+            if "/" in artifact:
+                img_ns, img_repo = artifact.split("/", 1)
+            else:
+                img_repo = artifact
+
             params["ContainerConfig"] = {
                 "ImageType": "Personal",
-                "NameSpace": "default",
-                "ImageRepo": data.get("artifact_path", ""),
-                "ImageVersion": "latest",
+                "NameSpace": img_ns,
+                "ImageRepo": img_repo,
+                "ImageVersion": img_ver,
                 "UserName": ic.get("username"),
                 "Password": ic.get("password"),
             }
@@ -328,20 +397,22 @@ class AgentEngineClient:
 
         return self._action("CreateProduct", params)
 
-    async def get_agent(self, agent_id: str = None, name: str = None) -> Dict[str, Any]:
+    async def get_agent(self, agent_id: str = None, name: str = None, include_api_key: bool = False) -> Dict[str, Any]:
         """获取 Agent 详情（支持 AgentId 或 Name 查询）"""
         params = {}
         if agent_id:
             params["AgentId"] = agent_id
         if name:
             params["Name"] = name
+        if include_api_key:
+            params["IncludeApiKey"] = True
         return self._action("GetAgent", params)
         
     async def list_agents(self, region: Optional[str] = None) -> Dict[str, Any]:
         """列出 Agents"""
-        params = {}
-        if region:
-            params["Region"] = region
+        params = {
+            "Region": self._normalize_payload_region(region),
+        }
         return self._action("ListAgents", params)
 
     async def delete_agent(self, agent_id: str) -> bool:
@@ -363,7 +434,7 @@ class AgentEngineClient:
                 "Path": data["artifact_path"],
                 "AccessKey": ks3.get("access_key"),
                 "SecretKey": ks3.get("secret_key"),
-                "Region": ks3.get("region", "cn-beijing-6"),
+                "Region": self._normalize_payload_region(ks3.get("region", "cn-beijing-6")),
                 "Bucket": ks3.get("bucket"),
             }
             
@@ -427,7 +498,7 @@ class AgentEngineClient:
             "Description": data.get("description"),
             # "ArtifactType": data.get("artifact_type", "Code"),
             "ArtifactPath": data.get("artifact_path"),
-            "Region": data.get("region", "cn-beijing-6"),
+            "Region": self._normalize_payload_region(data.get("region", "cn-beijing-6")),
             "Cpu": data.get("resources", {}).get("cpu", "1"),
             "Memory": data.get("resources", {}).get("memory", "2Gi"),
             # "MinReplicas": data.get("scaling", {}).get("min_replicas", 1),
@@ -453,7 +524,7 @@ class AgentEngineClient:
         """列出 MCP (注册中心)"""
         params = {"Page": 1, "PageSize": 100}
         if region:
-            params["Region"] = region
+            params["Region"] = self._normalize_payload_region(region)
         result = self._action("ListMCPs", params)
         # _action 已统一转 snake_case: "MCPs" -> "m_c_ps"... 
         # 实际上 MCPs -> mcps, Total -> total

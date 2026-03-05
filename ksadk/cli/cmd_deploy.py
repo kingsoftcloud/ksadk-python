@@ -297,11 +297,15 @@ async def _deploy_async(
                 print_kv("Endpoint", result.endpoint, value_style="#58a6ff")
             if result.api_key:
                 print_kv("APIKey", result.api_key, value_style="#d29922")
+                # 首次部署提示 API Key 仅显示一次
+                if result.message and "首次部署" in result.message:
+                    print_warn("⚠️  API Key 仅在首次部署时明文显示，请妥善保存！")
             if result.message:
                 print_kv("信息", result.message)
             
-            # 9. 自动创建版本快照 (除非指定 --no-version)
-            if result.agent_id and not no_version and not dry_run:
+            # 9. 自动创建版本快照 (仅热更新时，首次部署平台自动创建 v1)
+            is_update = result.message and "已更新" in result.message
+            if result.agent_id and is_update and not no_version and not dry_run:
                 from ksadk.cli.deploy_utils import auto_release_version
                 await auto_release_version(result.agent_id, region, deploy_name)
 
