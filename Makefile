@@ -1,7 +1,7 @@
 # AgentEngine Makefile
 # 用于构建 Web UI 和管理项目
 
-.PHONY: help install build-webui sync-static clean dev test publish
+.PHONY: help install build-webui sync-static clean dev test publish openclaw-build openclaw-push openclaw-size
 
 # 默认目标
 help:
@@ -38,6 +38,11 @@ help:
 	@echo "    make offline-windows     Windows x64 离线包"
 	@echo "    make offline-all         打包所有平台"
 	@echo ""
+	@echo "  \033[1;32mOpenClaw 镜像:\033[0m"
+	@echo "    make openclaw-build         构建 OpenClaw 镜像 (alpine/openclaw:latest)"
+	@echo "    make openclaw-push          构建 + 推送到 KCR (:latest)"
+	@echo "    make openclaw-size          查看镜像大小"
+	@echo ""
 	@echo "  \033[1;32m清理:\033[0m"
 	@echo "    make clean          清理构建产物"
 	@echo ""
@@ -60,8 +65,8 @@ install-webui:
 # Web UI 构建
 # ============================================================
 
-# Web UI 输出目录 (支持软链接)
-WEBUI_DIR := $(shell cd webui && pwd)
+# Web UI 输出目录 (支持软链接，webui 目录不存在时跳过)
+WEBUI_DIR := $(shell cd webui 2>/dev/null && pwd || echo "")
 WEBUI_DIST = $(WEBUI_DIR)/dist/agent_framework_web/browser
 STATIC_DIR = ksadk/server/static
 
@@ -336,6 +341,55 @@ offline-current: build
 	@echo ""
 	@echo "💡 离线安装方法:"
 	@echo "   pip install --no-index --find-links=$(OFFLINE_DIR)/current ksadk"
+
+# ============================================================
+# OpenClaw 镜像构建
+# ============================================================
+#
+# 基于 alpine/openclaw:latest，叠加 chromium + 预装 skills
+# 构建上下文: deploy/openclaw/ (Dockerfile + bootstrap.sh + preset-skills)
+#
+# 用法:
+#   make openclaw-build    # 构建镜像
+#   make openclaw-push     # 构建 + 推送到 KCR
+#
+
+# OpenClaw 配置 (不使用版本号，永远 :latest)
+OPENCLAW_IMAGE := hub.kce.ksyun.com/agentengine/openclaw
+OPENCLAW_PUBLIC_IMAGE := hub.kce.ksyun.com/agentengine-public/openclaw
+OPENCLAW_CONTEXT := deploy/openclaw
+
+## 构建 OpenClaw 镜像 (chromium + preset-skills)
+openclaw-build:
+	@echo "🐳 构建 OpenClaw 镜像..."
+	@echo "============================================================"
+	@echo "   基础镜像: alpine/openclaw:latest"
+	@echo "   目标镜像: $(OPENCLAW_IMAGE):latest"
+	@echo "   构建上下文: $(OPENCLAW_CONTEXT)/"
+	@echo "============================================================"
+	@if [ ! -f "$(OPENCLAW_CONTEXT)/Dockerfile" ]; then \
+		echo "❌ 错误: $(OPENCLAW_CONTEXT)/Dockerfile 不存在"; \
+		exit 1; \
+	fi
+	@docker build --platform linux/amd64 \
+		-t $(OPENCLAW_IMAGE):latest \
+		$(OPENCLAW_CONTEXT)
+	@echo "✅ 构建完成: $(OPENCLAW_IMAGE):latest"
+
+## 推送 OpenClaw 镜像到 KCR (构建 + 推送)
+openclaw-push: openclaw-build
+	@echo "📤 推送 OpenClaw 镜像: $(OPENCLAW_IMAGE):latest"
+	@docker push $(OPENCLAW_IMAGE):latest
+	@echo "📤 推送 OpenClaw 公开镜像: $(OPENCLAW_PUBLIC_IMAGE):latest"
+	@docker tag $(OPENCLAW_IMAGE):latest $(OPENCLAW_PUBLIC_IMAGE):latest
+	@docker push $(OPENCLAW_PUBLIC_IMAGE):latest
+	@echo "✅ 推送完成"
+
+## 查看 OpenClaw 镜像大小
+openclaw-size:
+	@docker images $(OPENCLAW_IMAGE):latest --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}"
+
+
 
 # ============================================================
 # 清理
