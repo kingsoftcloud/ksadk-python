@@ -713,7 +713,7 @@ except Exception as e:
 
 @click.command(context_settings=dict(help_option_names=['-h', '--help']))
 @click.argument('project_name', required=False)
-@click.option('--framework', '-f', type=click.Choice(['adk', 'langchain', 'langgraph']),
+@click.option('--framework', '-f', type=click.Choice(['adk', 'langchain', 'langgraph', 'openclaw']),
               default='langgraph', help='框架类型 (default: langgraph)')
 @click.option('--from-agent', 'from_agent_path', type=click.Path(exists=True), 
               help='包装现有 Agent 文件或目录')
@@ -812,7 +812,7 @@ def create(project_name: str, framework: str, from_agent_path: str):
             
         framework = questionary.select(
             "请选择开发框架:",
-            choices=['langgraph', 'langchain', 'adk'],
+            choices=['langgraph', 'langchain', 'adk', 'openclaw'],
             default='langgraph',
             style=custom_style
         ).ask()

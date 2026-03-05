@@ -13,6 +13,9 @@ from __future__ import annotations
 import os
 import asyncio
 import secrets
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Optional
 
@@ -34,7 +37,7 @@ from ksadk.cli.ui import (
 console = get_console()
 
 # 默认 OpenClaw 镜像 (KCR 个人版)
-DEFAULT_OPENCLAW_NAMESPACE = "agentengine"
+DEFAULT_OPENCLAW_NAMESPACE = "agentengine-public"
 DEFAULT_OPENCLAW_REPO = "openclaw"
 DEFAULT_OPENCLAW_VERSION = "latest"
 DEFAULT_OPENCLAW_NAME = "openclaw-gateway"
@@ -146,6 +149,161 @@ def _parse_image(image: Optional[str]) -> tuple[str, str, str]:
         version = "latest"
 
     return ns, repo, version
+
+
+def _flatten_agent_detail(agent: dict) -> dict:
+    """将 GetAgent 响应转换为扁平结构，兼容旧字段和嵌套字段。"""
+    basic = agent.get("basic", {}) if isinstance(agent, dict) else {}
+    quick = agent.get("quick_access", {}) if isinstance(agent, dict) else {}
+    deploy = agent.get("deployment", {}) if isinstance(agent, dict) else {}
+
+    return {
+        "agent_id": basic.get("agent_id") or agent.get("agent_id") or "",
+        "name": basic.get("name") or agent.get("name") or "",
+        "status": (basic.get("status") or agent.get("status") or "UNKNOWN").upper(),
+        "framework": basic.get("framework") or agent.get("framework") or "",
+        "region": basic.get("region") or agent.get("region") or "",
+        "endpoint": quick.get("public_endpoint") or quick.get("private_endpoint") or agent.get("endpoint") or "",
+        "artifact_path": deploy.get("artifact_path") or agent.get("artifact_path") or "",
+        "created_at": basic.get("created_at") or agent.get("created_at") or "",
+        "updated_at": basic.get("updated_at") or agent.get("updated_at") or "",
+        "api_key": quick.get("api_key") or agent.get("api_key"),
+    }
+
+
+def _resolve_region(
+    cli_region: Optional[str],
+    state: Optional[dict],
+) -> str:
+    """解析 region: 显式参数 > state > 环境变量 > 默认值。"""
+    return (
+        cli_region
+        or (state or {}).get("region")
+        or _resolve_env("KSYUN_REGION")
+        or "cn-beijing-6"
+    )
+
+
+def _probe_endpoint(endpoint: str, api_key: Optional[str]) -> tuple[Optional[int], Optional[int], Optional[int]]:
+    """探测 endpoint 在无鉴权/带鉴权下的可访问性。
+
+    Returns:
+        (root_noauth, root_auth, health_auth)
+    """
+    try:
+        import httpx
+
+        root = endpoint.rstrip("/")
+        health = f"{root}/health"
+
+        with httpx.Client(timeout=8.0, follow_redirects=False, trust_env=True) as client:
+            noauth_resp = client.get(root)
+            noauth_code = noauth_resp.status_code
+
+            auth_code = None
+            health_code = None
+            if api_key:
+                headers = {"Authorization": f"Bearer {api_key}"}
+                auth_resp = client.get(root, headers=headers)
+                auth_code = auth_resp.status_code
+                health_resp = client.get(health, headers=headers)
+                health_code = health_resp.status_code
+
+            return noauth_code, auth_code, health_code
+    except Exception:
+        return None, None, None
+
+
+def _start_auth_proxy(endpoint: str, api_key: str, token: Optional[str], port: int = 19190):
+    """启动本地反向代理，为浏览器自动注入 Authorization 头。"""
+
+    target = endpoint.rstrip("/")
+    if not target.startswith("http://") and not target.startswith("https://"):
+        raise RuntimeError(f"invalid endpoint: {endpoint}")
+
+    class _ProxyHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def _forward(self):
+            import requests
+
+            body = b""
+            length = self.headers.get("Content-Length")
+            if length:
+                body = self.rfile.read(int(length))
+
+            req_headers = {}
+            for k, v in self.headers.items():
+                lk = k.lower()
+                if lk in {"host", "connection", "content-length"}:
+                    continue
+                req_headers[k] = v
+            req_headers["Authorization"] = f"Bearer {api_key}"
+
+            url = f"{target}{self.path}"
+            try:
+                resp = requests.request(
+                    method=self.command,
+                    url=url,
+                    headers=req_headers,
+                    data=body if body else None,
+                    allow_redirects=False,
+                    timeout=30,
+                )
+            except Exception as e:
+                self.send_response(502)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(f"Proxy upstream error: {e}".encode("utf-8"))
+                return
+
+            self.send_response(resp.status_code)
+            hop_by_hop = {
+                "connection",
+                "keep-alive",
+                "proxy-authenticate",
+                "proxy-authorization",
+                "te",
+                "trailers",
+                "transfer-encoding",
+                "upgrade",
+            }
+            for k, v in resp.headers.items():
+                if k.lower() in hop_by_hop:
+                    continue
+                self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(resp.content)
+
+        def do_GET(self):
+            self._forward()
+
+        def do_POST(self):
+            self._forward()
+
+        def do_PUT(self):
+            self._forward()
+
+        def do_PATCH(self):
+            self._forward()
+
+        def do_DELETE(self):
+            self._forward()
+
+        def do_OPTIONS(self):
+            self._forward()
+
+        def log_message(self, format, *args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", port), _ProxyHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    local_url = f"http://127.0.0.1:{port}"
+    if token:
+        local_url = f"{local_url}/#token={token}"
+    return server, local_url
 
 
 @click.group("openclaw")
@@ -283,6 +441,9 @@ async def _deploy_openclaw(
         "resources": {"cpu": "2", "memory": "8Gi"},
         "scaling": {"min_replicas": 1, "max_replicas": 3, "concurrency": 20},
         "env_vars": env_list,
+        # OpenClaw UI 需要浏览器直开；默认关闭平台层 ApiKey 保护，避免 dashboard 401
+        "auth_type": "None",
+        "inbound_identity_auth": "None",
     }
 
     # KCR 凭证 (Container 模式需要)
@@ -312,6 +473,8 @@ async def _deploy_openclaw(
                 res = await client.update_agent(existing_agent_id, {
                     "artifact_path": f"{ns}/{repo}:{version}",
                     "env_vars": env_list,
+                    "auth_type": "None",
+                    "inbound_identity_auth": "None",
                 })
                 agent_id = existing_agent_id
                 endpoint = res.get("endpoint") or state.get("endpoint")
@@ -420,17 +583,20 @@ def list_openclaws(region: str):
 
 @openclaw.command("status")
 @click.argument("agent_ref", required=False, default=None)
-@click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
-def status(agent_ref: Optional[str], region: str):
+@click.option("--region", "-r", default=None, help="区域 (默认优先读取 .agentengine.state)")
+def status(agent_ref: Optional[str], region: Optional[str]):
     """查看 OpenClaw 状态
 
     \b
     AGENT_REF: Agent ID 或名称 (可选，默认从 .agentengine.state 读取)
     """
+    from ksadk.deployment.state import load_state
+
+    state = load_state(Path(".").resolve())
+    region = _resolve_region(region, state)
+
     # 无参数时从本地状态读取
     if not agent_ref:
-        from ksadk.deployment.state import load_state
-        state = load_state(Path(".").resolve())
         if state.get("type") == "openclaw" and state.get("agent_id"):
             agent_ref = state["agent_id"]
             print_info(f"从本地状态读取: {agent_ref}")
@@ -454,20 +620,30 @@ def status(agent_ref: Optional[str], region: str):
                     print_error(f"未找到 OpenClaw: {agent_ref}")
                     return
 
-                print_title("OpenClaw 状态", agent.get("name", agent_ref))
-                print_kv("ID", agent.get("agent_id", "-"))
+                detail = _flatten_agent_detail(agent)
+                print_title("OpenClaw 状态", detail.get("name") or str(agent_ref))
+                print_kv("ID", detail.get("agent_id") or "-")
 
-                status_val = (agent.get("status") or "UNKNOWN").upper()
+                status_val = detail.get("status", "UNKNOWN")
                 print_kv("Status", status_val, value_style=status_rich_style(status_val))
-                print_kv("Framework", agent.get("framework", "-"))
-                print_kv("Region", agent.get("region", "-"))
-                print_kv("Endpoint", agent.get("endpoint", "N/A"), value_style="#58a6ff")
-                print_kv("镜像", agent.get("artifact_path", "-"))
-                print_kv("Created", str(agent.get("created_at", "-")))
-                print_kv("Updated", str(agent.get("updated_at", "-")))
+                print_kv("Framework", detail.get("framework") or "-")
+                print_kv("Region", detail.get("region") or region)
+                print_kv("Endpoint", detail.get("endpoint") or "N/A", value_style="#58a6ff")
+                print_kv("镜像", detail.get("artifact_path") or "-")
+                print_kv("Created", str(detail.get("created_at") or "-"))
+                print_kv("Updated", str(detail.get("updated_at") or "-"))
 
         except Exception as e:
             print_error(f"获取状态失败: {e}")
+            # 回退：显示本地状态，至少给出排障上下文
+            if state and state.get("type") == "openclaw":
+                print_rule("本地状态回退")
+                print_kv("ID", str(state.get("agent_id", "-")))
+                print_kv("Name", str(state.get("name", "-")))
+                print_kv("Region", str(state.get("region", region)))
+                print_kv("Endpoint", str(state.get("endpoint", "N/A")))
+                print_kv("API Key", "已保存" if state.get("api_key") else "未保存")
+                print_info("提示: 检查 KSYUN_ACCESS_KEY / KSYUN_SECRET_KEY 或 region 参数")
 
     asyncio.run(_get())
 
@@ -508,8 +684,10 @@ def delete(agent_ref: str, region: str):
 
 @openclaw.command("dashboard")
 @click.argument("agent_ref", required=False, default=None)
-@click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
-def dashboard(agent_ref: Optional[str], region: str):
+@click.option("--region", "-r", default=None, help="区域 (默认优先读取 .agentengine.state)")
+@click.option("--proxy-port", default=19190, show_default=True, help="本地鉴权代理端口")
+@click.option("--direct", is_flag=True, help="强制直接打开 endpoint（可能 401）")
+def dashboard(agent_ref: Optional[str], region: Optional[str], proxy_port: int, direct: bool):
     """在浏览器中打开 OpenClaw Dashboard
 
     \b
@@ -526,16 +704,22 @@ def dashboard(agent_ref: Optional[str], region: str):
 
     endpoint = None
     token = None
+    api_key = None
+    state = {}
 
     # 1. 尝试从本地状态读取
     if not agent_ref:
         from ksadk.deployment.state import load_state
         state = load_state(Path(".").resolve())
+        region = _resolve_region(region, state)
         if state.get("type") == "openclaw":
             endpoint = state.get("endpoint")
             token = state.get("gateway_token")
+            api_key = state.get("api_key")
             if endpoint:
                 print_info(f"从本地状态文件读取: {state.get('agent_id', '-')}")
+    else:
+        region = _resolve_region(region, state)
 
     # 2. 如果本地没有或指定了 agent_ref，通过 API 获取
     if not endpoint and agent_ref:
@@ -543,14 +727,20 @@ def dashboard(agent_ref: Optional[str], region: str):
 
         async def _get_endpoint():
             async with AgentEngineClient(region=region) as client:
-                if agent_ref.startswith("ar-"):
-                    agent = await client.get_agent(agent_id=agent_ref)
+                if str(agent_ref).startswith("ar-"):
+                    agent = await client.get_agent(agent_id=agent_ref, include_api_key=True)
                 else:
-                    agent = await client.get_agent(name=agent_ref)
-                return agent.get("endpoint") if agent else None
+                    agent = await client.get_agent(name=agent_ref, include_api_key=True)
+                if not agent:
+                    return None
+                detail = _flatten_agent_detail(agent)
+                return detail
 
         try:
-            endpoint = asyncio.run(_get_endpoint())
+            detail = asyncio.run(_get_endpoint())
+            if detail:
+                endpoint = detail.get("endpoint")
+                api_key = detail.get("api_key")
         except Exception as e:
             print_error(f"获取 Endpoint 失败: {e}")
             return
@@ -568,7 +758,47 @@ def dashboard(agent_ref: Optional[str], region: str):
     if token:
         dashboard_url = f"{dashboard_url}/#token={token}"
 
-    print_success("打开 OpenClaw Dashboard")
-    print_kv("URL", dashboard_url, value_style="#58a6ff")
+    noauth_code, auth_code, health_auth_code = _probe_endpoint(endpoint, api_key)
+    if noauth_code is not None:
+        print_kv("探测(root/no-auth)", str(noauth_code))
+    if auth_code is not None:
+        print_kv("探测(root/auth)", str(auth_code))
+    if health_auth_code is not None:
+        print_kv("探测(/health/auth)", str(health_auth_code))
 
+    # 无鉴权可直接访问
+    if direct or (noauth_code and noauth_code < 400):
+        print_success("打开 OpenClaw Dashboard")
+        print_kv("URL", dashboard_url, value_style="#58a6ff")
+        webbrowser.open(dashboard_url)
+        return
+
+    # 常见场景: no-auth 401，说明平台层需要 API Key Header
+    if noauth_code == 401 and api_key:
+        if auth_code == 502:
+            print_error("已携带 API Key 通过网关鉴权，但上游返回 502")
+            print_info("这通常表示 OpenClaw 实例未就绪或镜像入口异常，请先排障实例状态")
+            return
+
+        if auth_code and auth_code < 500:
+            print_warn("该实例需要 Authorization Header，浏览器直开会 401")
+            try:
+                server, proxy_url = _start_auth_proxy(endpoint, api_key, token, port=proxy_port)
+                print_success("已启动本地鉴权代理并打开 Dashboard")
+                print_kv("Proxy URL", proxy_url, value_style="#58a6ff")
+                print_info("按 Ctrl+C 停止本地代理")
+                webbrowser.open(proxy_url)
+                try:
+                    while True:
+                        time.sleep(1)
+                except KeyboardInterrupt:
+                    server.shutdown()
+            except Exception as e:
+                print_error(f"启动本地鉴权代理失败: {e}")
+                print_info("可临时使用浏览器插件注入 Authorization Header 后访问 endpoint")
+            return
+
+    # 默认回退
+    print_warn("自动鉴权打开失败，回退直接打开 URL")
+    print_kv("URL", dashboard_url, value_style="#58a6ff")
     webbrowser.open(dashboard_url)

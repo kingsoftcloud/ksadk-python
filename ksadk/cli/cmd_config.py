@@ -247,7 +247,7 @@ def config(output: str, set_items: tuple, is_global: bool):
         style=custom_style
     ))
     
-    frameworks = ['langgraph', 'langchain', 'adk']
+    frameworks = ['langgraph', 'langchain', 'adk', 'openclaw']
     new_config['framework'] = _ask_or_exit(questionary.select(
         "选择开发框架:",
         choices=frameworks,
