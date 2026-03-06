@@ -159,3 +159,4 @@ Thumbs.db
 .agentengin/
 webui
 .pypirc
+.claude/
