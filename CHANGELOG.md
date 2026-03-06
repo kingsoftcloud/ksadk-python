@@ -5,6 +5,71 @@ All notable changes to the **Kingsoft AgentEngine SDK (ksadk)** project will be 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-03-06
+
+### 🚀 新特性 (New Features)
+
+- **DeepAgents 框架支持**:
+    - 新增 `deepagents` 框架识别与初始化/构建/部署链路支持。
+    - Code/Container 构建流程自动注入 `deepagents>=0.3.0` 相关依赖，减少手工配置成本。
+- **ADK 长短期记忆体集成**:
+    - 新增 `ksadk.memory.adk` 记忆模块，支持 ShortTermMemory / LongTermMemory。
+    - 长期记忆支持 `local/http/sdk` 后端，Runner 可按环境变量自动初始化并注入 `load_memory` 工具。
+    - 新增会话持久化接口 `save_memory`，支持将 session 内容写入长期记忆后端。
+- **知识库集成能力**:
+    - 新增 `ksadk.knowledge_base` 模块，提供 ADK/LangChain 可用的知识库检索工具。
+    - 支持通过环境变量完成知识库配置，运行时可自动注入 `search_knowledge_base` 工具。
+- **CLI 版本管理**:
+    - 新增 `agentengine version` 命令组，支持版本发布、回滚、列表查看等流程。
+- **MCP 双制品部署能力**:
+    - `agentengine mcp deploy` 新增 `--artifact-type`，支持 `Code/Container` 双模式发布。
+- **统一云端 UI 入口 (`agentengine dashboard`)**:
+    - 新增统一命令 `agentengine dashboard [agent_ref]`，覆盖 OpenClaw 与普通 Agent Web UI。
+    - 支持从 `.agentengine.state` 和项目配置自动解析目标 Agent。
+- **网关 UI 访问能力重构**:
+    - 此前网关主要支持携带 API-Key 调用 Agent Endpoint（API 场景）。
+    - 本版本新增并打通 Agent 原生 Web UI 的云端访问链路（含 WebSocket 场景）。
+- **OpenClaw 一键拉起**:
+    - 默认镜像增强，免配置-默认内置SKILL & 浏览器工具 & 金山云星流模型服务 `hub.kce.ksyun.com/agentengine-public/openclaw:latest`。
+    - 部署链路自动补齐 OpenClaw 关键环境变量（模型目录、AllowedOrigins 等）。
+
+### 🛠 改进 (Improvements)
+
+- **构建与部署体验增强**:
+    - 优化跨平台构建/部署兼容性与交互体验。
+    - 增强构建缓存控制能力与部署流程提示。
+    - Container 模式部署链路优化，并统一由 `ContainerBuilder` 承载。
+- **CLI/TUI 交互优化**:
+    - 简化 TUI 交互，移除斜杠命令。
+    - CLI 输出统一收敛到 `ui.py`，帮助与示例文案标准化。
+    - 明确区分 `web`（本地调试 UI）与 `dashboard`（云端部署 UI）使用场景。
+- **状态解析与引用解析增强**:
+    - `status` 默认 Agent 解析和区域配置逻辑优化。
+    - Agent 引用解析（ID/Name/state）逻辑统一。
+- **协议与控制面适配增强**:
+    - 客户端公共层统一 `snake_case` 字段转换，提升接口兼容性。
+    - 控制面鉴权服务路由由 `kmr` 切换至 `aicp`。
+- **依赖与扩展项完善**:
+    - 新增 `kb` 可选依赖组（`kingsoftcloud-sdk-python`），`all` 聚合依赖同步纳入知识库能力。
+    
+### 🐛 修复 (Bug Fixes)
+
+- **部署与回滚稳定性修复**:
+    - 修复代码包路径，增加时间戳以支持稳定回滚。
+    - 优化部署轮询与 endpoint 回填，降低创建后短时状态抖动影响。
+- **MCP/CLI 兼容性修复**:
+    - 修复 MCP deploy API 参数与 bucket 配置问题。
+    - 适配 serverless API 驼峰字段响应，并增加 MCP 空响应防护。
+- **控制面 API 兼容性修复**:
+    - 兼容 KOP 的 API 版本（`2024-06-12`），修复部分环境下接口不匹配问题。
+- **OpenClaw 部署提示修复**:
+    - `openclaw deploy` 结束后明确提示先执行 `status` 再打开 `dashboard`。
+
+### ⚠️ 破坏性变更 (Breaking Changes)
+
+- 控制面创建接口从 `CreateAgent` 迁移为 `CreateAgentProduct(AutoPay)`，CLI 与服务端需匹配对应协议版本，请尽快升级。
+
+
 ## [0.2.0] - 2026-01-22
 
 ### 🚀 新特性 (New Features)
@@ -49,7 +114,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - 规范化变量名: `MODEL_NAME` → `OPENAI_MODEL_NAME`, `OPENAI_API_BASE` → `OPENAI_BASE_URL`。
 - **多租户一致性 (Account ID Unification)**:
     - 废弃 `user_id`，统一使用 `account_id` 作为系统内唯一的租户标识。
-    - 实现了 `X-Ksyun-Account-Id` 在 CLI、Server 和 Serverless 后端之间的完整透传。
+    - 实现了 `X-Ksc-Account-Id` 在 CLI、Server 和 Serverless 后端之间的完整透传。
 - **Serverless 部署增强**:
     - **KS3 智能区域配置**: 支持动态推导区域 Bucket 名称 (`agentengine-{account_id}-{region}`)。
     - **状态透视**: `agentengine status` 现可实时显示 Agent 的副本数 (`replicas`) 和就绪副本数 (`ready_replicas`)。

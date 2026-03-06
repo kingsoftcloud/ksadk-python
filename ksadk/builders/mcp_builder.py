@@ -55,25 +55,32 @@ class MCPCodeBuilder(CodeBuilder):
         zip_path = self.build_dir / f"{mcp_name}.zip"
         
         # 检查是否需要重新构建
-        if zip_path.exists() and not self._need_rebuild(zip_path):
-            zip_size = zip_path.stat().st_size / (1024 * 1024)
-            click.secho(f"\n✅ 使用已有构建: {zip_path.name} ({zip_size:.2f} MB)", fg='green')
-            return BuildResult(
-                success=True,
-                artifact_path=zip_path,
-                artifact_size=zip_path.stat().st_size,
-                metadata={
-                    "mcp_name": mcp_name,
-                    "mcp_variable": detection_result.mcp_variable,
-                    "tools": detection_result.tools
-                }
-            )
+        no_cache = self.config.get("no_cache", False) if self.config else False
+        if zip_path.exists() and not no_cache and not self._need_rebuild(zip_path):
+            incompatibles = self._scan_incompatible_binaries_in_zip(zip_path)
+            if incompatibles:
+                click.secho("\n⚠️ 检测到缓存 MCP 构建包含非 Linux 兼容关键二进制，自动重建...", fg='yellow')
+                for item in incompatibles[:5]:
+                    click.echo(f"   - {item}")
+            else:
+                zip_size = zip_path.stat().st_size / (1024 * 1024)
+                click.secho(f"\n✅ 使用已有构建: {zip_path.name} ({zip_size:.2f} MB)", fg='green')
+                return BuildResult(
+                    success=True,
+                    artifact_path=zip_path,
+                    artifact_size=zip_path.stat().st_size,
+                    metadata={
+                        "mcp_name": mcp_name,
+                        "mcp_variable": detection_result.mcp_variable,
+                        "tools": detection_result.tools
+                    }
+                )
         
         # Step 1: 准备依赖
         click.echo("\n📋 Step 1/3: 准备依赖清单...")
         requirements_path = self._prepare_mcp_requirements(detection_result)
         
-        # Step 2: 安装依赖
+        # Step 2: 安装依赖（在 Mac 上安装后自动替换为 Linux 二进制，和 agent code 模式一致）
         click.echo("\n📦 Step 2/3: 安装依赖...")
         if self.deps_dir.exists():
             import shutil
@@ -173,7 +180,7 @@ class MCPCodeBuilder(CodeBuilder):
                             zf.write(file_path, arcname)
                             file_count += 1
             
-            # 添加依赖
+            # 添加依赖（已替换为 Linux 二进制）
             deps_count = 0
             for file_path in self.deps_dir.rglob('*'):
                 if file_path.is_file():

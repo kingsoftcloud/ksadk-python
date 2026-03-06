@@ -433,6 +433,7 @@ class ServerlessProvider(BaseDeployProvider):
                         "artifact_type": artifact_type,
                         "artifact_path": artifact_path,
                         "region": target.region,
+                        "instance_id": target.extra.get("instance_id", "default"),
                         "resources": {
                             "cpu": target.resources.cpu,
                             "memory": target.resources.memory
@@ -486,7 +487,7 @@ class ServerlessProvider(BaseDeployProvider):
                     extra_headers = {}
                     ksyun_account_id = os.getenv("KSYUN_ACCOUNT_ID")
                     if ksyun_account_id:
-                        extra_headers["X-Ksyun-Account-Id"] = ksyun_account_id
+                        extra_headers["X-Ksc-Account-Id"] = ksyun_account_id
                     
                     # 重新构造一个带 Header 的 client
                     async with AgentEngineClient(region=target.region, extra_headers=extra_headers, dry_run=is_dry_run) as new_client:
@@ -501,15 +502,44 @@ class ServerlessProvider(BaseDeployProvider):
                             "api_key": "dry-run-key"
                         }
                     
+                    # CreateAgentProduct 返回 order_id，需要轮询 list_agents 获取 agent_id
                     new_agent_id = res.get("agent_id")
+                    order_id = res.get("order_id")
+                    agent_name = res.get("name") or package_info.name
+                    agent_endpoint = res.get("endpoint")
+                    agent_api_key = res.get("api_key")
+
+                    if order_id and not new_agent_id:
+                        click.echo(f"   📋 订单已创建: {order_id}，等待实例创建...")
+                        import time
+                        for i in range(12):  # 最多等 60s
+                            time.sleep(5)
+                            try:
+                                detail = await client.get_agent(name=package_info.name, include_api_key=True)
+                                qa = detail.get("quick_access", {})
+                                basic = detail.get("basic", {})
+                                new_agent_id = basic.get("agent_id")
+                                agent_name = basic.get("name") or agent_name
+                                agent_endpoint = qa.get("public_endpoint")
+                                agent_api_key = qa.get("api_key")
+                                if new_agent_id:
+                                    click.secho(f"   ✅ 实例已创建: {new_agent_id}", fg="green")
+                                    break
+                            except Exception:
+                                pass
+                            click.echo(f"   ⏳ 等待中... ({(i+1)*5}s)")
+
+                        if not new_agent_id:
+                            click.secho("   ⚠️  实例仍在创建中，稍后使用 'agentengine status' 查看", fg="yellow")
                     
                     # 保存 agent_id 到本地状态文件
                     self._save_state(state_file, {
                         "agent_id": new_agent_id,
-                        "name": res.get("name"),
+                        "name": agent_name,
                         "region": target.region,
-                        "endpoint": res.get("endpoint"),
-                        "api_key": res.get("api_key"),  # 只在首次保存
+                        "endpoint": agent_endpoint,
+                        "api_key": agent_api_key,  # 只在首次保存
+                        "order_id": order_id,
                         "created_at": self._now_iso(),
                     })
                     
@@ -518,10 +548,10 @@ class ServerlessProvider(BaseDeployProvider):
                     return DeployResult(
                         status=DeployStatus.DEPLOYING, 
                         agent_id=new_agent_id,
-                        agent_name=res.get("name"),
-                        endpoint=res.get("endpoint"), 
-                        api_key=res.get("api_key"),
-                        message=f"✅ Agent ID: {new_agent_id} (首次部署)"
+                        agent_name=agent_name,
+                        endpoint=agent_endpoint, 
+                        api_key=agent_api_key,
+                        message=f"✅ Agent ID: {new_agent_id or '(创建中)'} (首次部署, 订单: {order_id or '-'})"
                     )
 
         except DryRunExit:
@@ -552,14 +582,7 @@ class ServerlessProvider(BaseDeployProvider):
         """获取 Agent 状态"""
         dry_run = target.extra.get("dry_run", False)
         try:
-            from ksadk.common.auth import AWSV4Auth
-            auth = AWSV4Auth()
-            extra_headers = {}
-            if auth.access_key_id and auth.secret_access_key:
-                extra_headers["X-Ksyun-Access-Key"] = auth.access_key_id
-                extra_headers["X-Ksyun-Secret-Key"] = auth.secret_access_key
-                
-            async with AgentEngineClient(region=target.region, dry_run=dry_run, extra_headers=extra_headers) as client:
+            async with AgentEngineClient(region=target.region, dry_run=dry_run) as client:
                 res = await client.get_agent(agent_id)
                 
                 status_map = {
@@ -603,14 +626,7 @@ class ServerlessProvider(BaseDeployProvider):
                 pass
 
         try:
-            from ksadk.common.auth import AWSV4Auth
-            auth = AWSV4Auth()
-            extra_headers = {}
-            if auth.access_key_id and auth.secret_access_key:
-                extra_headers["X-Ksyun-Access-Key"] = auth.access_key_id
-                extra_headers["X-Ksyun-Secret-Key"] = auth.secret_access_key
-
-            async with AgentEngineClient(region=target.region, dry_run=dry_run, extra_headers=extra_headers) as client:
+            async with AgentEngineClient(region=target.region, dry_run=dry_run) as client:
                 click.echo(f"正在通过 Server 删除 Agent: {agent_id}...")
                 success = await client.delete_agent(agent_id)
                 return success
@@ -625,14 +641,7 @@ class ServerlessProvider(BaseDeployProvider):
         """列出所有 Agent"""
         dry_run = target.extra.get("dry_run", False)
         try:
-            from ksadk.common.auth import AWSV4Auth
-            auth = AWSV4Auth()
-            extra_headers = {}
-            if auth.access_key_id and auth.secret_access_key:
-                extra_headers["X-Ksyun-Access-Key"] = auth.access_key_id
-                extra_headers["X-Ksyun-Secret-Key"] = auth.secret_access_key
-                
-            async with AgentEngineClient(region=target.region, dry_run=dry_run, extra_headers=extra_headers) as client:
+            async with AgentEngineClient(region=target.region, dry_run=dry_run) as client:
                 res = await client.list_agents()
                 
                 results = []
@@ -688,4 +697,3 @@ class ServerlessProvider(BaseDeployProvider):
         """返回当前时间 ISO 格式"""
         from datetime import datetime
         return datetime.now().isoformat()
-

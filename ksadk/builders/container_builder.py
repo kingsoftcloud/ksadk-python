@@ -238,7 +238,7 @@ CMD ["python", "entrypoint.py"]
         framework = detection_result.type.value
         if framework == "adk":
             base_deps += ["google-adk>=0.1.0", "litellm>=1.0.0"]
-        elif framework in ("langchain", "langgraph"):
+        elif framework in ("langchain", "langgraph", "deepagents"):
             base_deps += [
                 "langchain>=0.1.0",
                 "langchain-openai>=0.1.0",
@@ -247,6 +247,8 @@ CMD ["python", "entrypoint.py"]
                 "mcp>=1.1.0",
                 "langchain-mcp-adapters>=0.0.1",
             ]
+            if framework == "deepagents":
+                base_deps += ["deepagents>=0.3.0"]
         
         # 合并用户 requirements.txt (如果存在)
         if project_path:
@@ -331,7 +333,7 @@ logger.info(f"入口: {{detection_result.entry_point}}")
 if os.environ.get("LANGFUSE_PUBLIC_KEY"):
     try:
         from ksadk.tracing import setup_tracing
-        is_langchain = "{detection_result.type.name}" in ("LANGCHAIN", "LANGGRAPH")
+        is_langchain = "{detection_result.type.name}" in ("LANGCHAIN", "LANGGRAPH", "DEEPAGENTS")
         setup_tracing(use_callback_only=is_langchain)
         logger.info(f"Tracing 已启用 (Langfuse)")
     except Exception as e:

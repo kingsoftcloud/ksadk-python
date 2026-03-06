@@ -9,6 +9,15 @@ from pathlib import Path
 from dotenv import dotenv_values
 import questionary
 from questionary import Style
+from ksadk.cli.ui import (
+    print_error,
+    print_info,
+    print_kv,
+    print_rule,
+    print_success,
+    print_title,
+    print_warn,
+)
 
 # 自定义样式，确保选中项高亮可见
 custom_style = Style([
@@ -84,7 +93,7 @@ def _handle_set_command(set_items: tuple, output_path: Path, env_path: Path, is_
     
     for item in set_items:
         if "=" not in item:
-            click.secho(f"⚠️  无效格式忽略: {item} (应为 key=value)", fg='yellow')
+            print_warn(f"无效格式忽略: {item} (应为 key=value)")
             continue
             
         key, value = item.split("=", 1)
@@ -111,7 +120,7 @@ def _handle_set_command(set_items: tuple, output_path: Path, env_path: Path, is_
     # 更新本地 .env
     if updates_env:
         _update_env_file(env_path, updates_env)
-        click.echo(f"✅ 更新环境变量 ({env_path}): {', '.join(updates_env.keys())}")
+        print_success(f"更新环境变量 ({env_path}): {', '.join(updates_env.keys())}")
         
     # 更新本地 agentengine.yaml
     if updates_yaml:
@@ -130,7 +139,7 @@ def _handle_set_command(set_items: tuple, output_path: Path, env_path: Path, is_
         with open(output_path, 'w', encoding='utf-8-sig') as f:
             yaml.dump(current_yaml, f, default_flow_style=False, allow_unicode=True)
             
-        click.echo(f"✅ 更新项目配置 ({output_path}): {', '.join(updates_yaml.keys())}")
+        print_success(f"更新项目配置 ({output_path}): {', '.join(updates_yaml.keys())}")
 
     # 处理全局配置
     if is_global:
@@ -160,9 +169,9 @@ def _handle_set_command(set_items: tuple, output_path: Path, env_path: Path, is_
         new_global_config = build_global_config_from_env(current_global_env)
         
         if save_global_config(new_global_config):
-            click.secho(f"✅ 更新全局配置 ({get_global_config_path()})", fg='green')
+            print_success(f"更新全局配置 ({get_global_config_path()})")
         else:
-            click.secho(f"⚠️  保存全局配置失败", fg='yellow')
+            print_warn("保存全局配置失败")
 
 @click.command(context_settings=dict(help_option_names=['-h', '--help']))
 @click.option('--output', '-o', default='agentengine.yaml', help='输出配置文件名')
@@ -180,8 +189,7 @@ def config(output: str, set_items: tuple, is_global: bool):
         --set: 非交互式设置配置项 (如 --set name=MyAgent --set KSYUN_REGION=cn-beijing-6)
         --global: 强制更新全局配置 (~/.agentengine/settings.json)
     """
-    click.secho("🔧 AgentEngine 全局配置向导", fg='blue', bold=True)
-    click.echo("─" * 50)
+    print_title("AgentEngine 配置向导")
     
     output_path = Path(output)
     env_path = Path(".env")
@@ -198,21 +206,21 @@ def config(output: str, set_items: tuple, is_global: bool):
             # 使用 utf-8-sig 自动处理 BOM，确保 Windows 兼容性
             with open(output_path, 'r', encoding='utf-8-sig') as f:
                 existing_config = yaml.safe_load(f) or {}
-            click.echo(f"ℹ️  检测到现有配置文件: {output_path}")
+            print_info(f"检测到现有配置文件: {output_path}")
         except Exception:
             pass
 
     existing_env = _load_env_file(env_path)
     if existing_env:
-        click.echo(f"ℹ️  检测到现有环境变量: {env_path}")
+        print_info(f"检测到现有环境变量: {env_path}")
 
-    click.echo("")
+    print_rule()
     
     # Helper to clean code and handle Ctrl+C
     def _ask_or_exit(question):
         result = question.ask()
         if result is None:
-            click.echo("\n❌取消配置")
+            print_error("取消配置")
             raise SystemExit(0)
         return result
 
@@ -220,7 +228,7 @@ def config(output: str, set_items: tuple, is_global: bool):
     new_env = {}
 
     # === 2. 基础配置 (agentengine.yaml) ===
-    click.secho("📝 基础配置", fg='yellow', bold=True)
+    print_rule("基础配置")
     
     # 智能默认值: 优先读文件 -> 其次用目录名 -> 最后 my-agent
     default_name = existing_config.get('name')
@@ -239,7 +247,7 @@ def config(output: str, set_items: tuple, is_global: bool):
         style=custom_style
     ))
     
-    frameworks = ['langgraph', 'langchain', 'adk']
+    frameworks = ['langgraph', 'langchain', 'deepagents', 'adk', 'openclaw']
     new_config['framework'] = _ask_or_exit(questionary.select(
         "选择开发框架:",
         choices=frameworks,
@@ -247,11 +255,11 @@ def config(output: str, set_items: tuple, is_global: bool):
         style=custom_style
     ))
     
-    click.echo("")
+    print_rule()
 
     # === 3. 模型配置 (.env) ===
-    click.secho("🤖 模型配置", fg='yellow', bold=True)
-    click.echo("配置用于推理的大模型服务 (OpenAI 兼容接口)")
+    print_rule("模型配置")
+    print_info("配置用于推理的大模型服务 (OpenAI 兼容接口)")
     
     # 向后兼容: 如果是从旧版模板生成的，可能包含 'your-api-key-here' 占位符，视为空
     default_api_key = existing_env.get('OPENAI_API_KEY', '')
@@ -276,11 +284,11 @@ def config(output: str, set_items: tuple, is_global: bool):
         style=custom_style
     ))
     
-    click.echo("")
+    print_rule()
 
     # === 4. 云厂商配置 (.env) ===
-    click.secho("☁️  金山云配置 (可选)", fg='yellow', bold=True)
-    click.echo("用于 agentengine deploy 部署到云端环境")
+    print_rule("金山云配置 (可选)")
+    print_info("用于 agentengine deploy 部署到云端环境")
     
     should_config_ksyun = _ask_or_exit(questionary.confirm(
         "是否配置金山云凭证?",
@@ -353,11 +361,11 @@ def config(output: str, set_items: tuple, is_global: bool):
         # 如果不配置，保留原值或设为默认
         new_config['region'] = existing_config.get('region', 'cn-beijing-6')
 
-    click.echo("")
+    print_rule()
 
     # === 4.5 容器镜像仓库认证 (仅 container 模式需要) ===
-    click.secho("🐳 容器镜像部署 (可选)", fg='yellow', bold=True)
-    click.echo("如果计划使用 container 模式 (agentengine build -m container)，需要配置镜像仓库认证")
+    print_rule("容器镜像部署 (可选)")
+    print_info("如果计划使用 container 模式 (agentengine build -m container)，需要配置镜像仓库认证")
     
     should_config_registry = _ask_or_exit(questionary.confirm(
         "是否使用 container 模式部署?",
@@ -387,12 +395,11 @@ def config(output: str, set_items: tuple, is_global: bool):
             new_env['KCR_REGISTRY'] = custom_registry
         # 不填则不写入，运行时自动根据 KSYUN_REGION 生成
         
-        click.echo("")
-        click.echo("💡 提示:")
-        click.echo("   用户名自动使用 KSYUN_ACCOUNT_ID (无需配置)")
-        click.echo("   KCR 临时密码获取: https://kcr.console.ksyun.com/ → 访问凭证")
+        print_info("提示:")
+        print_info("用户名自动使用 KSYUN_ACCOUNT_ID (无需配置)")
+        print_info("KCR 临时密码获取: https://kcr.console.ksyun.com/ → 访问凭证")
 
-    click.echo("")
+    print_rule()
     
     # === 5. 写入文件 ===
     
@@ -437,12 +444,12 @@ def config(output: str, set_items: tuple, is_global: bool):
     # 5.3 写入 .env
     _update_env_file(env_path, new_env)
     
-    click.secho(f"✅ 配置完成!", fg='green')
-    click.echo(f"   配置文件: {output_path}")
-    click.echo(f"   环境凭证: {env_path}")
+    print_success("配置完成")
+    print_kv("配置文件", str(output_path))
+    print_kv("环境凭证", str(env_path))
     
     # 5.4 处理全局配置保存逻辑
-    click.echo("")
+    print_rule()
     from ksadk.configs.global_config import (
         save_global_config,
         build_global_config_from_env,
@@ -471,6 +478,6 @@ def config(output: str, set_items: tuple, is_global: bool):
     if should_save_global:
         global_config = build_global_config_from_env(new_env)
         if save_global_config(global_config):
-            click.secho(f"   ✅ 已保存到全局配置: {get_global_config_path()}", fg='green')
+            print_success(f"已保存到全局配置: {get_global_config_path()}")
         else:
-            click.secho(f"   ⚠️  保存全局配置失败", fg='yellow')
+            print_warn("保存全局配置失败")

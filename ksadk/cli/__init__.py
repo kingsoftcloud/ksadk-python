@@ -3,17 +3,19 @@ AgentEngine CLI - 命令行工具入口
 
 使用方式:
     agentengine init myapp    # 初始化项目
-    agentengine run .         # 本地运行
-    agentengine web .         # 启动 Web UI
-    agentengine build .       # 构建镜像
-    agentengine deploy .      # 部署到云端
-    agentengine launch .      # 一键构建+部署
+    agentengine run           # 本地运行
+    agentengine web           # 本地调试 UI (Invoke)
+    agentengine build         # 构建镜像
+    agentengine deploy        # 部署到云端
+    agentengine launch        # 一键构建+部署
     agentengine status        # 查看状态
     agentengine invoke        # 与 Agent 交互
     agentengine destroy       # 销毁实例
 
 别名: ksadk (向后兼容)
 """
+
+import os
 
 import click
 from ksadk.version import VERSION
@@ -74,6 +76,8 @@ class ColoredHelpGroup(click.Group):
 
         # 描述
         formatter.write(click.style("  支持 ", fg="white"))
+        formatter.write(click.style("DeepAgents", fg="yellow"))
+        formatter.write(click.style(" / ", fg="white"))
         formatter.write(click.style("LangGraph", fg="yellow"))
         formatter.write(click.style(" / ", fg="white"))
         formatter.write(click.style("LangChain", fg="yellow"))
@@ -82,28 +86,32 @@ class ColoredHelpGroup(click.Group):
         formatter.write(click.style(" 的本地运行与云端部署\n\n", fg="white"))
 
         # 本地开发
-        formatter.write(click.style("  📦 本地开发:\n\n", fg="green", bold=True))
-        formatter.write(click.style("      agentengine init      ", fg="cyan"))
+        formatter.write(click.style("  📦  本地开发:\n\n", fg="green", bold=True))
+        formatter.write(click.style("      agentengine init             ", fg="cyan"))
         formatter.write(click.style("初始化项目\n\n", fg="white"))
-        formatter.write(click.style("      agentengine run .     ", fg="cyan"))
+        formatter.write(click.style("      agentengine run              ", fg="cyan"))
         formatter.write(click.style("运行 API Server\n\n", fg="white"))
-        formatter.write(click.style("      agentengine web .     ", fg="cyan"))
-        formatter.write(click.style("启动 Web UI\n\n", fg="white"))
+        formatter.write(click.style("      agentengine web              ", fg="cyan"))
+        formatter.write(click.style("本地调试 Agent Invoke UI\n\n", fg="white"))
 
         # 云端部署
-        formatter.write(click.style("  🚀 云端部署:\n\n", fg="blue", bold=True))
-        formatter.write(click.style("      agentengine build     ", fg="cyan"))
+        formatter.write(click.style("  🚀  云端部署:\n\n", fg="blue", bold=True))
+        formatter.write(click.style("      agentengine build            ", fg="cyan"))
         formatter.write(click.style("构建镜像\n\n", fg="white"))
-        formatter.write(click.style("      agentengine deploy    ", fg="cyan"))
+        formatter.write(click.style("      agentengine deploy           ", fg="cyan"))
         formatter.write(click.style("部署到云端\n\n", fg="white"))
-        formatter.write(click.style("      agentengine launch    ", fg="cyan"))
+        formatter.write(click.style("      agentengine launch           ", fg="cyan"))
         formatter.write(click.style("一键构建+部署\n\n", fg="white"))
-        formatter.write(click.style("      agentengine status    ", fg="cyan"))
+        formatter.write(click.style("      agentengine status           ", fg="cyan"))
         formatter.write(click.style("查看状态\n\n", fg="white"))
-        formatter.write(click.style("      agentengine invoke    ", fg="cyan"))
+        formatter.write(click.style("      agentengine invoke           ", fg="cyan"))
         formatter.write(click.style("与 Agent 交互\n\n", fg="white"))
-        formatter.write(click.style("      agentengine destroy   ", fg="cyan"))
+        formatter.write(click.style("      agentengine dashboard        ", fg="cyan"))
+        formatter.write(click.style("打开云端已部署 Agent UI\n\n", fg="white"))
+        formatter.write(click.style("      agentengine destroy          ", fg="cyan"))
         formatter.write(click.style("销毁实例\n\n", fg="white"))
+        formatter.write(click.style("      agentengine openclaw         ", fg="cyan"))
+        formatter.write(click.style("🦞 免配置一键拉起 OpenClaw\n\n", fg="white"))
 
         # 自定义 Options 格式化
         self.format_options_colored(ctx, formatter)
@@ -130,17 +138,37 @@ class ColoredHelpGroup(click.Group):
         short_help_map = {
             "build": "构建 Docker 镜像",
             "config": "配置项目",
+            "dashboard": "打开云端已部署 Agent UI",
             "deploy": "部署到云端",
             "destroy": "销毁实例",
             "init": "创建新项目",
             "invoke": "交互测试",
             "launch": "一键构建+部署",
-            "mcp": "MCP Server 管理(预览)",
+            "mcp": "MCP Server 管理",
             "model": "切换默认模型",
+            "openclaw": "免配置一键拉起 OpenClaw",
             "run": "运行 Agent",
             "status": "查看状态",
             "version": "版本管理",
-            "web": "启动 Web UI",
+            "web": "本地调试 Agent Invoke UI",
+        }
+        icon_map = {
+            "build": "🔨 ",
+            "completion": "⌨️ ",
+            "config": "⚙️ ",
+            "dashboard": "🖥️ ",
+            "deploy": "🚀 ",
+            "destroy": "🧹 ",
+            "init": "📁 ",
+            "invoke": "💬 ",
+            "launch": "✨ ",
+            "mcp": "🔌 ",
+            "model": "🧠 ",
+            "openclaw": "🦞 ",
+            "run": "▶️ ",
+            "status": "📊 ",
+            "version": "🏷️ ",
+            "web": "🌐 ",
         }
 
         commands = []
@@ -153,10 +181,11 @@ class ColoredHelpGroup(click.Group):
         if not commands:
             return
 
-        formatter.write(click.style("\n  📋 可用命令:\n\n", fg="magenta", bold=True))
+        formatter.write(click.style("\n  📋  可用命令:\n\n", fg="magenta", bold=True))
 
-        # 计算最大命令名长度用于对齐
-        max_len = max(len(cmd[0]) for cmd in commands)
+        # 仅按命令名对齐，避免 emoji 宽度在不同终端渲染不一致导致错位
+        # 并设置最小列宽，保持和「选项」区域类似的呼吸感
+        max_cmd_len = max(max(len(name) for name, _ in commands), 16)
 
         for subcommand, cmd in commands:
             # 使用预定义的简短描述
@@ -166,17 +195,33 @@ class ColoredHelpGroup(click.Group):
                 help_text = cmd.help.split("\n")[0].strip()
 
             # 格式化输出
-            padding = " " * (max_len - len(subcommand) + 2)
-            formatter.write(click.style(f"      {subcommand}", fg="cyan"))
-            formatter.write(click.style(f"{padding}{help_text}\n\n", fg="white"))
+            icon = icon_map.get(subcommand, "•")
+            formatter.write(click.style(f"      {icon} ", fg="cyan"))
+            formatter.write(click.style(f"{subcommand:<{max_cmd_len}}        ", fg="cyan"))
+            formatter.write(click.style(f"{help_text}\n\n", fg="white"))
 
 
 # 添加 -h 短选项支持
 CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
 
 
+def _set_global_dry_run(ctx: click.Context, _param: click.Option, value: bool):
+    """设置全局 dry-run 标记，供未显式透传参数的命令复用。"""
+    if value:
+        os.environ["AGENTENGINE_GLOBAL_DRY_RUN"] = "1"
+    return value
+
+
 @click.group(cls=ColoredHelpGroup, context_settings=CONTEXT_SETTINGS)
 @click.version_option(version=VERSION, prog_name="AgentEngine")
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    expose_value=False,
+    is_eager=True,
+    callback=_set_global_dry_run,
+    help="全局 Dry Run（仅打印请求，不执行）",
+)
 def cli():
     """AgentEngine CLI"""
     pass
@@ -241,6 +286,13 @@ def _register_commands():
         pass
 
     try:
+        from ksadk.cli.cmd_dashboard import dashboard
+
+        cli.add_command(dashboard)
+    except ImportError:
+        pass
+
+    try:
         from ksadk.cli.cmd_destroy import destroy
 
         cli.add_command(destroy)
@@ -268,6 +320,14 @@ def _register_commands():
         from ksadk.cli.cmd_version import version
 
         cli.add_command(version)
+    except ImportError:
+        pass
+
+    # OpenClaw 命令组
+    try:
+        from ksadk.cli.cmd_openclaw import openclaw
+
+        cli.add_command(openclaw)
     except ImportError:
         pass
 
@@ -320,6 +380,16 @@ def main():
                         err=True
                     )
     except ImportError:
+        pass
+
+    # 全局配置回退: .env 未设置的变量从 ~/.agentengine/settings.json 补充
+    try:
+        from ksadk.configs.global_config import get_env_from_global_config
+        global_env = get_env_from_global_config()
+        for key, value in global_env.items():
+            if not os.environ.get(key):
+                os.environ[key] = value
+    except Exception:
         pass
 
     _register_commands()

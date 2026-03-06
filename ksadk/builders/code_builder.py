@@ -15,6 +15,7 @@ import threading
 import itertools
 import time
 import zipfile
+import re
 from pathlib import Path
 from typing import List, Optional, Set
 
@@ -60,18 +61,24 @@ class CodeBuilder(BaseBuilder):
         # 检查是否需要重新构建
         no_cache = self.config.get("no_cache", False) if self.config else False
         if zip_path.exists() and not no_cache and not self._need_rebuild(zip_path):
-            zip_size = zip_path.stat().st_size / (1024 * 1024)
-            click.secho(f"\n✅ 使用已有构建: {zip_path.name} ({zip_size:.2f} MB)", fg='green')
-            click.echo("   (如需重新构建，请使用 --no-cache 或删除 .agentengine/code_build 目录)")
-            return BuildResult(
-                success=True,
-                artifact_path=zip_path,
-                artifact_size=zip_path.stat().st_size,
-                metadata={
-                    "agent_name": agent_name,
-                    "framework": detection_result.type.value
-                }
-            )
+            incompatibles = self._scan_incompatible_binaries_in_zip(zip_path)
+            if incompatibles:
+                click.secho("\n⚠️ 检测到缓存构建包含非 Linux 兼容关键二进制，自动重建...", fg='yellow')
+                for item in incompatibles[:5]:
+                    click.echo(f"   - {item}")
+            else:
+                zip_size = zip_path.stat().st_size / (1024 * 1024)
+                click.secho(f"\n✅ 使用已有构建: {zip_path.name} ({zip_size:.2f} MB)", fg='green')
+                click.echo("   (如需重新构建，请使用 --no-cache 或删除 .agentengine/code_build 目录)")
+                return BuildResult(
+                    success=True,
+                    artifact_path=zip_path,
+                    artifact_size=zip_path.stat().st_size,
+                    metadata={
+                        "agent_name": agent_name,
+                        "framework": detection_result.type.value
+                    }
+                )
         
         # Step 1: 准备依赖
         click.echo("\n📋 Step 1/3: 准备依赖清单...")
@@ -171,7 +178,7 @@ class CodeBuilder(BaseBuilder):
         framework = detection_result.type.value
         if framework == "adk":
             deps += ["google-adk>=0.1.0", "litellm>=1.0.0"]
-        elif framework in ("langchain", "langgraph"):
+        elif framework in ("langchain", "langgraph", "deepagents"):
             # LangChain 生态统一依赖 (langchain 和 langgraph 经常混用)
             deps += [
                 # LangChain 核心
@@ -184,8 +191,13 @@ class CodeBuilder(BaseBuilder):
                 "mcp>=1.1.0",
                 "langchain-mcp-adapters>=0.0.1",
             ]
+            if framework == "deepagents":
+                deps += ["deepagents>=0.3.0"]
         
         return deps
+    
+    # 目标 Python 版本 (必须与容器运行时一致)
+    TARGET_PYTHON_VERSION = "312"  # 容器中为 Python 3.12
     
     def _install_dependencies(self, requirements_path: Path) -> bool:
         """安装依赖到 deps_dir"""
@@ -202,17 +214,30 @@ class CodeBuilder(BaseBuilder):
         spinner_thread.start()
         
         try:
-            # pip install -t
-            install_cmd = [
-                sys.executable, "-m", "pip", "install",
-                "-r", str(requirements_path),
-                "-t", str(self.deps_dir),
-                "-i", "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple",
-                "--disable-pip-version-check",
-                "--no-warn-script-location"
+            # pip install -t，尝试多个镜像源
+            # 注意: 先正常安装所有依赖 (含纯 Python 包)，macOS 二进制在后续 _replace_platform_binaries() 中替换
+            mirror_sources = [
+                "https://mirrors.aliyun.com/pypi/simple",
+                "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple",
+                "https://mirrors.cloud.tencent.com/pypi/simple",
             ]
             
-            result = subprocess.run(install_cmd, capture_output=True, text=True, timeout=600)
+            result = None
+            for mirror in mirror_sources:
+                install_cmd = [
+                    sys.executable, "-m", "pip", "install",
+                    "-r", str(requirements_path),
+                    "-t", str(self.deps_dir),
+                    "-i", mirror,
+                    "--disable-pip-version-check",
+                    "--no-warn-script-location",
+                    "--retries", "3",
+                    "--timeout", "60",
+                ]
+                result = subprocess.run(install_cmd, capture_output=True, text=True, timeout=1200)
+                if result.returncode == 0:
+                    break
+                click.echo(f'\r   源 {mirror} 失败，尝试下一个...', nl=False)
             
             stop_spinner = True
             spinner_thread.join()
@@ -230,6 +255,17 @@ class CodeBuilder(BaseBuilder):
             if sys.platform in ('darwin', 'win32'):
                 self._replace_platform_binaries()
             
+            # 二进制兼容性校验（避免把不可运行的包部署到 Linux Runtime）
+            incompatibles = self._scan_incompatible_binaries_in_deps()
+            if incompatibles:
+                click.secho("\r   ✗ 检测到非 Linux 兼容关键二进制，构建终止", fg='red')
+                for item in incompatibles[:10]:
+                    click.echo(f"      - {item}")
+                if any("tiktoken" in i for i in incompatibles):
+                    click.echo("   提示: tiktoken 为 langchain-openai 必需；若替换失败可重试或检查网络/镜像")
+                click.echo("   建议: 删除 .agentengine/*_build 后重新构建，或在 Linux 环境重新打包")
+                return False
+            
             deps_count = sum(1 for _ in self.deps_dir.rglob('*') if _.is_file())
             deps_size = sum(f.stat().st_size for f in self.deps_dir.rglob('*') if f.is_file()) / (1024 * 1024)
             click.secho(f"\r   ✓ 依赖安装完成: {deps_count} 个文件, {deps_size:.1f} MB", fg='green')
@@ -239,7 +275,7 @@ class CodeBuilder(BaseBuilder):
         except subprocess.TimeoutExpired:
             stop_spinner = True
             spinner_thread.join()
-            click.secho("\r   ✗ 安装超时 (10分钟)", fg='red')
+            click.secho("\r   ✗ 安装超时 (20分钟)", fg='red')
             return False
         except Exception as e:
             stop_spinner = True
@@ -265,6 +301,18 @@ class CodeBuilder(BaseBuilder):
             'uuid_utils': 'uuid-utils',
             'pydantic_core': 'pydantic-core',
             '_pydantic_core': 'pydantic-core',
+            # tiktoken: langchain-openai 核心依赖, Rust 编译的 C 扩展
+            'tiktoken': 'tiktoken',
+            '_tiktoken': 'tiktoken',
+            # 其他常见原生扩展
+            'regex': 'regex',
+            '_regex': 'regex',
+            'multidict': 'multidict',
+            'yarl': 'yarl',
+            'aiohttp': 'aiohttp',
+            'frozenlist': 'frozenlist',
+            'charset_normalizer': 'charset-normalizer',
+            'msgpack': 'msgpack',
             # Windows 特有
             'win32': 'pywin32',
             'win32com': 'pywin32',
@@ -318,25 +366,57 @@ class CodeBuilder(BaseBuilder):
         wheels_dir.mkdir(parents=True)
         
         replaced_count = 0
+        mirror_sources = [
+            "https://mirrors.aliyun.com/pypi/simple",
+            "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple",
+            "https://mirrors.cloud.tencent.com/pypi/simple",
+            None,  # fallback to default index
+        ]
         for pkg_name in packages_to_replace:
+            # 提取确切的版本号以避免不兼容问题 (如 pydantic-core)
+            target_version = ""
+            search_name = pkg_name.replace('-', '_').lower()
+            for info_dir in self.deps_dir.glob(f"{search_name}-*.dist-info"):
+                version_str = info_dir.name[len(search_name)+1:-10]  # remove search_name + '-' and '.dist-info'
+                target_version = f"=={version_str}"
+                break
+                
+            pkg_with_version = f"{pkg_name}{target_version}"
+            
             try:
-                # 尝试下载
-                download_cmd = [
-                    "pip", "download",
-                    pkg_name,
-                    "-d", str(wheels_dir),
-                    "--platform", "manylinux2014_x86_64",
-                    "--platform", "manylinux_2_17_x86_64",
-                    "--python-version", "312",
-                    "--only-binary=:all:",
-                    "--no-deps",
-                    "--quiet"
-                ]
-                result = subprocess.run(download_cmd, capture_output=True, text=True, timeout=60)
-                if result.returncode == 0:
+                downloaded = False
+                for mirror in mirror_sources:
+                    download_cmd = [
+                        sys.executable, "-m", "pip", "download",
+                        pkg_with_version,
+                        "-d", str(wheels_dir),
+                        "--platform", "manylinux2014_x86_64",
+                        "--platform", "manylinux_2_17_x86_64",
+                        "--platform", "manylinux_2_28_x86_64",
+                        "--platform", "musllinux_1_2_x86_64",
+                        "--platform", "linux_x86_64",
+                        "--python-version", self.TARGET_PYTHON_VERSION,
+                        "--only-binary=:all:",
+                        "--implementation", "cp",
+                        "--no-deps",
+                        "--quiet",
+                        "--disable-pip-version-check",
+                        "--retries", "2",
+                        "--timeout", "30",
+                    ]
+                    if mirror:
+                        download_cmd += ["-i", mirror]
+                    result = subprocess.run(download_cmd, capture_output=True, text=True, timeout=90)
+                    if result.returncode == 0:
+                        downloaded = True
+                        break
+                if downloaded:
                     replaced_count += 1
-            except Exception:
-                pass
+                else:
+                    failed_msg = result.stderr.strip().split('\n')[-1] if result and result.stderr else 'unknown'
+                    click.secho(f"   ⚠ 替换失败: {pkg_with_version} ({failed_msg})", fg='yellow')
+            except Exception as e:
+                click.secho(f"   ⚠ 替换异常: {pkg_name} ({e})", fg='yellow')
         
         # 解压 wheel 覆盖到 deps_dir
         for wheel_file in wheels_dir.glob("*.whl"):
@@ -369,7 +449,78 @@ class CodeBuilder(BaseBuilder):
                 pass
         
         shutil.rmtree(wheels_dir, ignore_errors=True)
+        
+        # 清理所有残留的非 Linux 平台二进制文件
+        # (wheel 解压后可能有旧的 darwin/win .so 文件未被覆盖)
+        cleaned_count = 0
+        for so_file in list(self.deps_dir.rglob('*.so')):
+            name = so_file.name.lower()
+            if 'darwin' in name or 'win' in name:
+                try:
+                    so_file.unlink()
+                    cleaned_count += 1
+                except Exception:
+                    pass
+        for dylib_file in list(self.deps_dir.rglob('*.dylib')):
+            try:
+                dylib_file.unlink()
+                cleaned_count += 1
+            except Exception:
+                pass
+        if cleaned_count > 0:
+            click.echo(f"   ✓ 清理 {cleaned_count} 个残留平台二进制文件")
+        
         click.echo(f"   ✓ 成功替换 {replaced_count}/{len(packages_to_replace)} 个包")
+
+    def _is_linux_so(self, name: str) -> bool:
+        lower = name.lower()
+        return lower.endswith(".so") and "darwin" not in lower and "win" not in lower
+
+    def _scan_incompatible_binaries_in_zip(self, zip_path: Path) -> List[str]:
+        """扫描缓存 zip 中关键扩展模块是否缺失 Linux 版本。"""
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                names = zf.namelist()
+            return self._detect_critical_binary_issues(names)
+        except Exception:
+            # 缓存损坏时交给后续重建流程处理
+            return ["zip-read-failed"]
+
+    def _scan_incompatible_binaries_in_deps(self) -> List[str]:
+        """扫描 deps 目录中的关键扩展模块是否缺失 Linux 版本。"""
+        names = []
+        for file_path in self.deps_dir.rglob("*"):
+            if file_path.is_file():
+                names.append(file_path.relative_to(self.deps_dir).as_posix())
+        return self._detect_critical_binary_issues(names)
+
+    def _detect_critical_binary_issues(self, names: List[str]) -> List[str]:
+        issues: List[str] = []
+        
+        # 定义需要检查的关键原生扩展模块
+        # 格式: (描述, 正则模式)
+        critical_modules = [
+            # pydantic_core: pydantic v2 核心扩展，缺失会直接启动失败
+            ("pydantic_core/_pydantic_core", r"pydantic_core/_pydantic_core.*\.(so|pyd)$"),
+            # _cffi_backend: cryptography / cffi 常见依赖
+            ("_cffi_backend", r"(^|/)_cffi_backend.*\.(so|pyd)$"),
+            # tiktoken/_tiktoken: langchain-openai 核心依赖 (Rust 编译)
+            ("tiktoken/_tiktoken", r"tiktoken/_tiktoken.*\.(so|pyd)$"),
+        ]
+        
+        for module_name, pattern in critical_modules:
+            matched_bins = [n for n in names if re.search(pattern, n)]
+            if matched_bins:
+                if not any(self._is_linux_so(n) for n in matched_bins):
+                    issues.append(f"missing-linux:{module_name}")
+        
+        # 通用检查: 所有 .so 文件中不应包含 darwin/win 平台标识
+        all_so_files = [n for n in names if n.endswith('.so')]
+        darwin_so_count = sum(1 for n in all_so_files if 'darwin' in n.lower())
+        if darwin_so_count > 0:
+            issues.append(f"warning:found-{darwin_so_count}-darwin-so-files")
+        
+        return issues
     
     def _package_zip(self, zip_path: Path, detection_result) -> None:
         """打包 zip 文件"""
@@ -545,8 +696,8 @@ if os.environ.get("LANGFUSE_PUBLIC_KEY"):
     try:
         from ksadk.tracing import setup_tracing
         
-        # 对于 LangGraph/LangChain，默认仅使用 Callback 以避免重复 Trace
-        is_langchain = "{detection_result.type.name}" in ("LANGCHAIN", "LANGGRAPH")
+        # 对于 LangChain 生态（LangGraph/DeepAgents），默认仅使用 Callback 以避免重复 Trace
+        is_langchain = "{detection_result.type.name}" in ("LANGCHAIN", "LANGGRAPH", "DEEPAGENTS")
         
         setup_tracing(use_callback_only=is_langchain)
         logger.info(f"Tracing 已启用 (Langfuse, CallbackOnly={{is_langchain}})")
