@@ -8,6 +8,14 @@ import httpx
 import questionary
 from pathlib import Path
 from dotenv import set_key, find_dotenv, load_dotenv
+from ksadk.cli.ui import (
+    print_error,
+    print_info,
+    print_kv,
+    print_success,
+    print_title,
+    print_warn,
+)
 
 
 @click.command()
@@ -20,6 +28,7 @@ def model():
     from ksadk.configs import setup_environment
 
     setup_environment(Path.cwd())
+    print_title("模型切换")
 
     # 支持两种环境变量名 (OPENAI_BASE_URL 优先, OPENAI_API_BASE 兼容旧版)
     api_base = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE")
@@ -27,8 +36,8 @@ def model():
     current_model = os.getenv("OPENAI_MODEL_NAME") or os.getenv("MODEL_NAME")  # 兼容旧版
 
     if not api_base:
-        click.secho("❌ 未找到 OPENAI_BASE_URL", fg="red")
-        click.echo("请先在 .env 文件中配置 API 地址 (OPENAI_BASE_URL)")
+        print_error("未找到 OPENAI_BASE_URL")
+        print_info("请先在 .env 文件中配置 API 地址 (OPENAI_BASE_URL)")
         return
 
     # 有些兼容接口可能不需要 Key，但通常都需要
@@ -36,7 +45,7 @@ def model():
         # 尝试匿名访问或提示 warning
         pass
 
-    click.echo(f"🔄 正在获取模型列表: {click.style(api_base, fg='cyan')} ...")
+    print_kv("正在获取模型列表", api_base, value_style="#58a6ff")
 
     try:
         # 处理 API Base URL，防止重复添加 /v1
@@ -66,7 +75,7 @@ def model():
         models.sort()
 
         if not models:
-            click.secho("⚠️  接口返回了空模型列表", fg="yellow")
+            print_warn("接口返回了空模型列表")
             return
 
         # Mark current model in the list
@@ -101,31 +110,28 @@ def model():
 
         if selected:
             if selected == current_model:
-                click.echo(f"✅ 模型未变更 ({selected})")
+                print_success(f"模型未变更 ({selected})")
             else:
                 # Update .env
                 env_file = find_dotenv(usecwd=True)
                 if not env_file:
                     env_file = Path.cwd() / ".env"
                     # 如果不存在则创建? 或者是报错
-                    click.secho("⚠️  未找到 .env 文件，将在当前目录创建", fg="yellow")
+                    print_warn("未找到 .env 文件，将在当前目录创建")
                     env_file = Path.cwd() / ".env"
                     env_file.touch()
 
                 # set_key 会保留注释和格式
                 success, key, value = set_key(env_file, "OPENAI_MODEL_NAME", selected, quote_mode="never")
                 if success:
-                    click.secho(
-                        f"✅ 已切换模型为: {click.style(selected, fg='green', bold=True)}",
-                        fg="white",
-                    )
-                    click.echo(f"   (已更新 {env_file})")
+                    print_success(f"已切换模型为: {selected}")
+                    print_info(f"已更新 {env_file}")
                 else:
-                    click.secho("❌ 更新 .env 失败", fg="red")
+                    print_error("更新 .env 失败")
 
     except Exception as e:
-        click.secho(f"❌ 获取模型失败: {e}", fg="red")
+        print_error(f"获取模型失败: {e}")
         if "401" in str(e):
-            click.echo("提示: 请检查 OPENAI_API_KEY 是否正确")
+            print_info("提示: 请检查 OPENAI_API_KEY 是否正确")
         elif "404" in str(e):
-            click.echo("提示: 接口地址可能不正确，请检查 /v1/models 是否存在")
+            print_info("提示: 接口地址可能不正确，请检查 /v1/models 是否存在")

@@ -1,15 +1,20 @@
 """
 ADKRunner - Google ADK 框架运行时
 
-参考 adk-python 原生实现，缓存 Runner 和 SessionService
+参考 adk-python 原生实现，缓存 Runner 和 SessionService。
+支持通过环境变量配置记忆体 (ShortTermMemory / LongTermMemory)。
 """
 
+import logging
+import os
 import sys
 import uuid
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, Optional
 from ksadk.runners.base_runner import BaseRunner
 from opentelemetry import trace
+
+logger = logging.getLogger(__name__)
 
 tracer = trace.get_tracer(__name__)
 
@@ -25,6 +30,11 @@ class ADKRunner(BaseRunner):
         self._session_map: Dict[str, str] = {}
         # Fallback default session
         self._default_session_id: Optional[str] = None
+        # Memory integration
+        self._short_term_memory = None
+        self._long_term_memory = None
+        # Knowledge base integration
+        self._knowledge_base = None
 
     def _apply_json_patch(self):
         """Monkey patch google.adk.models.lite_llm to handle invalid JSON safely"""
@@ -67,6 +77,188 @@ class ADKRunner(BaseRunner):
             pass  # ADK not installed
         except Exception:
             pass
+
+    def _init_short_term_memory(self):
+        """从环境变量初始化短期记忆
+
+        环境变量:
+            KSADK_STM_BACKEND: local / sqlite / database
+            KSADK_STM_DB_URL: 数据库连接 URL
+        """
+        backend = os.environ.get("KSADK_STM_BACKEND", "")
+        if not backend:
+            return None
+
+        try:
+            from ksadk.memory.adk import ShortTermMemory
+            stm = ShortTermMemory(
+                backend=backend,
+                db_url=os.environ.get("KSADK_STM_DB_URL", ""),
+                local_database_path=os.environ.get(
+                    "KSADK_STM_DB_PATH", "/tmp/ksadk_local_database.db"
+                ),
+            )
+            logger.info(f"ShortTermMemory initialized: backend={backend}")
+            return stm
+        except Exception as e:
+            logger.warning(f"Failed to init ShortTermMemory: {e}. Using default.")
+            return None
+
+    def _init_long_term_memory(self):
+        """从环境变量初始化长期记忆
+
+        环境变量:
+            KSADK_LTM_BACKEND: local / http / sdk
+            KSADK_LTM_HTTP_URL: HTTP 记忆服务地址
+            KSADK_LTM_HTTP_TOKEN: 认证 Token
+            KSADK_LTM_ACCESS_KEY: SDK AK (fallback to KSYUN_ACCESS_KEY)
+            KSADK_LTM_SECRET_KEY: SDK SK (fallback to KSYUN_SECRET_KEY)
+            KSADK_LTM_TOP_K: 检索数量
+        """
+        backend = os.environ.get("KSADK_LTM_BACKEND", "")
+        if not backend:
+            return None
+
+        try:
+            from ksadk.memory.adk import LongTermMemory
+
+            backend_config = {}
+            if backend == "http":
+                base_url = os.environ.get("KSADK_LTM_HTTP_URL", "")
+                token = os.environ.get("KSADK_LTM_HTTP_TOKEN", "")
+                if not base_url:
+                    logger.warning(
+                        "KSADK_LTM_BACKEND=http but KSADK_LTM_HTTP_URL is empty."
+                    )
+                backend_config = {"base_url": base_url, "token": token}
+            elif backend == "sdk":
+                backend_config = {
+                    "access_key": (
+                        os.environ.get("KSADK_LTM_ACCESS_KEY")
+                        or os.environ.get("KSYUN_ACCESS_KEY", "")
+                    ),
+                    "secret_key": (
+                        os.environ.get("KSADK_LTM_SECRET_KEY")
+                        or os.environ.get("KSYUN_SECRET_KEY", "")
+                    ),
+                    "region": os.environ.get("KSADK_LTM_REGION", "cn-north-vip1"),
+                    "endpoint": os.environ.get("KSADK_LTM_ENDPOINT", "aicp.api.ksyun.com"),
+                    "scheme": os.environ.get("KSADK_LTM_SCHEME", "https"),
+                    "namespace": os.environ.get("KSADK_LTM_NAMESPACE", ""),
+                    "agent_id": os.environ.get("KSADK_LTM_AGENT_ID", ""),
+                    "scene_id": os.environ.get("KSADK_LTM_SCENE_ID", ""),
+                }
+
+            agent_name = self._agent.name if self._agent else "default"
+            ltm = LongTermMemory(
+                backend=backend,
+                backend_config=backend_config,
+                top_k=int(os.environ.get("KSADK_LTM_TOP_K", "5")),
+                index=os.environ.get("KSADK_LTM_INDEX", ""),
+                app_name=agent_name,
+            )
+            logger.info(
+                f"LongTermMemory initialized: backend={backend}, "
+                f"app_name={agent_name}"
+            )
+            return ltm
+        except Exception as e:
+            logger.warning(f"Failed to init LongTermMemory: {e}.")
+            return None
+
+    def _init_knowledge_base(self):
+        """从环境变量初始化知识库
+
+        环境变量:
+            KSADK_KB_DATASET_ID: 知识库 ID (必填，存在即启用)
+            KSADK_KB_ACCESS_KEY: AK (可选)
+            KSADK_KB_SECRET_KEY: SK (可选)
+            KSADK_KB_REGION: 区域 (默认 cn-north-vip1)
+            KSADK_KB_TOP_K: 返回结果数 (默认 5)
+        """
+        try:
+            from ksadk.knowledge_base.client import KnowledgeBaseClient
+
+            if not KnowledgeBaseClient.is_configured():
+                return None
+
+            kb = KnowledgeBaseClient.from_env()
+            logger.info(
+                f"KnowledgeBase initialized: dataset_id={kb.dataset_id}, "
+                f"region={kb.region}"
+            )
+            return kb
+        except ImportError:
+            logger.warning(
+                "kingsoftcloud-sdk-python not installed, "
+                "knowledge base disabled. "
+                "Install with: pip install kingsoftcloud-sdk-python"
+            )
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to init KnowledgeBase: {e}.")
+            return None
+
+    def _inject_search_knowledge_tool(self):
+        """自动注入 search_knowledge_base 工具到 Agent"""
+        try:
+            from ksadk.knowledge_base.adk_tool import search_knowledge_base
+
+            if hasattr(self._agent, "tools"):
+                tool_names = []
+                for t in self._agent.tools:
+                    name = getattr(t, "name", None) or getattr(t, "__name__", "")
+                    tool_names.append(name)
+
+                if "search_knowledge_base" not in tool_names:
+                    self._agent.tools.append(search_knowledge_base)
+                    logger.info(
+                        "Injected 'search_knowledge_base' tool into agent "
+                        f"(total tools: {len(self._agent.tools)})"
+                    )
+                else:
+                    logger.debug("Agent already has 'search_knowledge_base' tool")
+            else:
+                logger.warning(
+                    "Agent has no 'tools' attribute, "
+                    "cannot inject search_knowledge_base"
+                )
+        except ImportError as e:
+            logger.warning(f"Failed to import knowledge base tool: {e}")
+        except Exception as e:
+            logger.warning(f"Failed to inject search_knowledge_base tool: {e}")
+
+    def _inject_load_memory_tool(self):
+        """自动注入 load_memory 工具到 Agent"""
+        try:
+            from google.adk.tools import load_memory
+
+            if hasattr(self._agent, "tools"):
+                # 检查是否已有 load_memory
+                tool_names = []
+                for t in self._agent.tools:
+                    name = getattr(t, "name", None) or getattr(t, "__name__", "")
+                    tool_names.append(name)
+
+                if "load_memory" not in tool_names:
+                    self._agent.tools.append(load_memory)
+                    logger.info(
+                        "Injected 'load_memory' tool into agent "
+                        f"(total tools: {len(self._agent.tools)})"
+                    )
+                else:
+                    logger.debug("Agent already has 'load_memory' tool")
+            else:
+                logger.warning(
+                    "Agent has no 'tools' attribute, cannot inject load_memory"
+                )
+        except ImportError:
+            logger.warning(
+                "google.adk.tools.load_memory not available. "
+                "Ensure google-adk >= 1.0.0 is installed."
+            )
+        except Exception as e:
+            logger.warning(f"Failed to inject load_memory tool: {e}")
 
     def load_agent(self) -> None:
         """加载 ADK Agent"""
@@ -114,14 +306,40 @@ class ADKRunner(BaseRunner):
         if not hasattr(self._agent, "name"):
             raise TypeError(f"加载的对象不是有效的 ADK Agent")
 
-        # 初始化 Runner 和 SessionService (只做一次)
+        # 初始化记忆体 (从环境变量读取配置)
+        self._short_term_memory = self._init_short_term_memory()
+        self._long_term_memory = self._init_long_term_memory()
+
+        # 初始化知识库 (从环境变量读取配置)
+        self._knowledge_base = self._init_knowledge_base()
+        if self._knowledge_base:
+            self._inject_search_knowledge_tool()
+
+        # 初始化 SessionService
         from google.adk.runners import Runner
         from google.adk.sessions import InMemorySessionService
 
-        self._session_service = InMemorySessionService()
-        self._runner = Runner(
-            agent=self._agent, session_service=self._session_service, app_name=self._agent.name
+        if self._short_term_memory:
+            self._session_service = self._short_term_memory.session_service
+            logger.info("ADKRunner: using ShortTermMemory session service")
+        else:
+            self._session_service = InMemorySessionService()
+
+        # 如果配置了长期记忆，自动注入 load_memory 工具到 agent
+        if self._long_term_memory:
+            self._inject_load_memory_tool()
+
+        # 初始化 Runner (传入 memory_service)
+        runner_kwargs = dict(
+            agent=self._agent,
+            session_service=self._session_service,
+            app_name=self._agent.name,
         )
+        if self._long_term_memory:
+            runner_kwargs["memory_service"] = self._long_term_memory
+            logger.info("ADKRunner: LongTermMemory injected as memory_service")
+
+        self._runner = Runner(**runner_kwargs)
 
     def _prepare_trace_metadata(self, session_id: str):
         """准备 Trace 元数据 (Tags, UserID, etc.)"""
@@ -131,26 +349,76 @@ class ADKRunner(BaseRunner):
         )
 
     async def _ensure_session(self, external_session_id: str = None) -> str:
-        """Get or create ADK session ID based on external ID"""
+        """Get or create ADK session ID based on external ID
+
+        When ShortTermMemory is configured, uses its create_session method
+        which supports session retrieval (if session_id already exists).
+        """
         # Case 1: External ID provided
         if external_session_id:
             if external_session_id in self._session_map:
                 return self._session_map[external_session_id]
 
             # Create new ADK session and map it
-            session = await self._session_service.create_session(
-                app_name=self._agent.name, user_id="ksadk_user"
-            )
+            if self._short_term_memory:
+                session = await self._short_term_memory.create_session(
+                    app_name=self._agent.name,
+                    user_id="ksadk_user",
+                    session_id=external_session_id,
+                )
+            else:
+                session = await self._session_service.create_session(
+                    app_name=self._agent.name, user_id="ksadk_user"
+                )
             self._session_map[external_session_id] = session.id
             return session.id
 
         # Case 2: No external ID (use default singleton)
         if self._default_session_id is None:
-            session = await self._session_service.create_session(
-                app_name=self._agent.name, user_id="ksadk_user"
-            )
+            if self._short_term_memory:
+                session = await self._short_term_memory.create_session(
+                    app_name=self._agent.name,
+                    user_id="ksadk_user",
+                )
+            else:
+                session = await self._session_service.create_session(
+                    app_name=self._agent.name, user_id="ksadk_user"
+                )
             self._default_session_id = session.id
         return self._default_session_id
+
+    async def save_session_to_long_term_memory(
+        self, session_id: str, user_id: str = "ksadk_user"
+    ) -> bool:
+        """将指定 session 保存到长期记忆
+
+        Args:
+            session_id: ADK 内部 session ID
+            user_id: 用户 ID
+
+        Returns:
+            是否保存成功
+        """
+        if not self._long_term_memory:
+            logger.warning("LongTermMemory not configured, cannot save session.")
+            return False
+
+        try:
+            session = await self._session_service.get_session(
+                app_name=self._agent.name,
+                user_id=user_id,
+                session_id=session_id,
+            )
+            if not session:
+                logger.error(f"Session {session_id} not found, cannot save.")
+                return False
+
+            await self._long_term_memory.add_session_to_memory(session)
+            logger.info(f"Session {session_id} saved to long-term memory.")
+            return True
+        except Exception as e:
+            logger.error(f"Error saving session to long-term memory: {e}")
+            return False
 
     async def invoke(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """调用 ADK Agent"""

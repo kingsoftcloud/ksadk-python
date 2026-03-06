@@ -6,6 +6,15 @@ import click
 from pathlib import Path
 import questionary
 from ksadk.cli.cmd_config import custom_style
+from ksadk.cli.ui import (
+    print_error,
+    print_info,
+    print_kv,
+    print_rule,
+    print_success,
+    print_title,
+    print_warn,
+)
 
 
 TEMPLATES = {
@@ -124,12 +133,38 @@ graph.add_edge("chat", END)
 root_agent = graph.compile()
 ''',
     },
+    "deepagents": {
+        "agent.py": '''"""
+{package_name} - DeepAgents Agent
+"""
+
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).parent.parent / ".env")
+
+from deepagents import create_deep_agent
+from langchain_openai import ChatOpenAI
+
+llm = ChatOpenAI(
+    model=os.getenv("OPENAI_MODEL_NAME", "deepseek-v3.2"),
+    base_url=os.getenv("OPENAI_BASE_URL"),
+    api_key=os.getenv("OPENAI_API_KEY"),
+    streaming=True,
+)
+
+root_agent = create_deep_agent(model=llm)
+''',
+    },
 }
 
 
 def _detect_framework(content: str) -> str:
     """检测 Agent 文件使用的框架"""
-    if 'from langgraph' in content or 'import langgraph' in content:
+    if 'from deepagents' in content or 'import deepagents' in content or 'create_deep_agent(' in content:
+        return 'deepagents'
+    elif 'from langgraph' in content or 'import langgraph' in content:
         return 'langgraph'
     elif 'from google.adk' in content or 'import google.adk' in content:
         return 'adk'
@@ -346,6 +381,7 @@ def _generate_requirements_from_imports(directory: Path, framework: str) -> str:
         'langchain_core': 'langchain-core',
         'langchain_community': 'langchain-community',
         'langgraph': 'langgraph',
+        'deepagents': 'deepagents',
         'openai': 'openai',
         'anthropic': 'anthropic',
         'dotenv': 'python-dotenv',
@@ -397,6 +433,11 @@ def _generate_requirements_from_imports(directory: Path, framework: str) -> str:
         found_packages.add('langgraph')
         found_packages.add('langchain')
         found_packages.add('langchain-openai')
+    elif framework == 'deepagents':
+        found_packages.add('deepagents')
+        found_packages.add('langgraph')
+        found_packages.add('langchain')
+        found_packages.add('langchain-openai')
     elif framework == 'langchain':
         found_packages.add('langchain')
         found_packages.add('langchain-openai')
@@ -419,13 +460,14 @@ def _wrap_agent_file(from_agent_path: Path, project_name: str, framework: str, a
     package_name = project_name.replace('-', '_')
     
     if project_path.exists():
-        click.secho(f"❌ 目录 '{project_name}' 已存在", fg='red')
+        print_error(f"目录 '{project_name}' 已存在")
         raise SystemExit(1)
     
-    click.echo(f"📁 创建项目: {project_name}")
-    click.echo(f"🔧 框架: {framework}")
-    click.echo(f"📦 包装文件: {from_agent_path}")
-    click.echo(f"🔗 Agent 变量: {agent_var}")
+    print_title("包装 Agent 文件")
+    print_kv("创建项目", project_name)
+    print_kv("框架", framework)
+    print_kv("包装文件", str(from_agent_path))
+    print_kv("Agent 变量", agent_var)
     
     # 创建目录
     (project_path / package_name).mkdir(parents=True)
@@ -445,7 +487,7 @@ def _wrap_agent_file(from_agent_path: Path, project_name: str, framework: str, a
     )
     
     if fixed_content != source_content:
-        click.echo(click.style("🔧 已自动修复 .env 加载路径", fg='cyan'))
+        print_info("已自动修复 .env 加载路径")
     
     # 写入目标文件
     dest_path.write_text(fixed_content, encoding='utf-8')
@@ -460,7 +502,7 @@ def _wrap_agent_file(from_agent_path: Path, project_name: str, framework: str, a
     if global_config_exists():
         global_env = get_env_from_global_config()
         if global_env:
-            click.echo(click.style("ℹ️  检测到全局配置，已自动填充凭证", fg='cyan'))
+            print_info("检测到全局配置，已自动填充凭证")
     
     # 生成 .env
     (project_path / ".env").write_text(_generate_env_content(global_env), encoding="utf-8-sig")
@@ -490,6 +532,8 @@ __all__ = ["root_agent"]
         reqs = "langchain\nlangchain-openai\npython-dotenv\n"
     elif framework == "langgraph":
         reqs = "langchain\nlangchain-openai\nlanggraph\npython-dotenv\n"
+    elif framework == "deepagents":
+        reqs = "deepagents\nlangchain\nlangchain-openai\nlanggraph\npython-dotenv\n"
     elif framework == "adk":
         reqs = "google-adk\npython-dotenv\n"
     (project_path / "requirements.txt").write_text(reqs, encoding="utf-8")
@@ -507,10 +551,9 @@ agentengine run -i .
 ```
 """, encoding="utf-8-sig")
     
-    click.echo(click.style("\n✅ 包装完成!", fg='green'))
-    click.echo(f"\n📋 快速开始:\n")
-    click.echo(click.style(f"   cd {project_name} && agentengine run -i .", fg='yellow'))
-    click.echo("")
+    print_success("包装完成")
+    print_rule("快速开始")
+    print_info(f"cd {project_name} && agentengine run -i .")
 
 
 def _wrap_agent_directory(from_agent_dir: Path, project_name: str, framework: str, 
@@ -523,14 +566,15 @@ def _wrap_agent_directory(from_agent_dir: Path, project_name: str, framework: st
     source_dir_name = from_agent_dir.name
     
     if project_path.exists():
-        click.secho(f"❌ 目录 '{project_name}' 已存在", fg='red')
+        print_error(f"目录 '{project_name}' 已存在")
         raise SystemExit(1)
     
-    click.echo(f"📁 创建项目: {project_name}")
-    click.echo(f"🔧 框架: {framework}")
-    click.echo(f"📦 包装目录: {from_agent_dir}")
-    click.echo(f"📄 入口文件: {entry_file.name}")
-    click.echo(f"🔗 Agent 变量: {agent_var}")
+    print_title("包装 Agent 目录")
+    print_kv("创建项目", project_name)
+    print_kv("框架", framework)
+    print_kv("包装目录", str(from_agent_dir))
+    print_kv("入口文件", entry_file.name)
+    print_kv("Agent 变量", agent_var)
     
     # 创建项目目录
     project_path.mkdir(parents=True)
@@ -539,12 +583,12 @@ def _wrap_agent_directory(from_agent_dir: Path, project_name: str, framework: st
     dest_package_path = project_path / package_name
     shutil.copytree(from_agent_dir, dest_package_path)
     
-    click.echo(f"📋 已复制 {sum(1 for _ in dest_package_path.rglob('*.py'))} 个 Python 文件")
+    print_info(f"已复制 {sum(1 for _ in dest_package_path.rglob('*.py'))} 个 Python 文件")
     
     # 递归修复 .env 路径
     fixed_count = _fix_dotenv_paths_recursive(dest_package_path, depth=2)
     if fixed_count > 0:
-        click.echo(click.style(f"🔧 已自动修复 {fixed_count} 个文件的 .env 加载路径", fg='cyan'))
+        print_info(f"已自动修复 {fixed_count} 个文件的 .env 加载路径")
     
     # 修复嵌套目录导入路径
     # 查找源目录中的子目录（作为 Python 包）
@@ -556,7 +600,7 @@ def _wrap_agent_directory(from_agent_dir: Path, project_name: str, framework: st
         # 修复入口文件中的导入
         dest_entry_file = dest_package_path / entry_file.relative_to(from_agent_dir)
         if _fix_nested_imports(dest_entry_file, subdirs):
-            click.echo(click.style(f"🔧 已修复嵌套目录导入: {', '.join(subdirs)}", fg='cyan'))
+            print_info(f"已修复嵌套目录导入: {', '.join(subdirs)}")
     
     
     # 检测全局配置
@@ -569,7 +613,7 @@ def _wrap_agent_directory(from_agent_dir: Path, project_name: str, framework: st
     if global_config_exists():
         global_env = get_env_from_global_config()
         if global_env:
-            click.echo(click.style("ℹ️  检测到全局配置，已自动填充凭证", fg='cyan'))
+            print_info("检测到全局配置，已自动填充凭证")
     
     # 生成 .env
     (project_path / ".env").write_text(_generate_env_content(global_env), encoding="utf-8-sig")
@@ -608,7 +652,7 @@ __all__ = ["root_agent"]
             # 追加到现有文件
             with open(init_file, 'a', encoding='utf-8') as f:
                 f.write(export_code)
-            click.echo("🔧 已修复 __init__.py 导出")
+            print_info("已修复 __init__.py 导出")
         else:
             init_file.write_text(f'''"""
 {project_name} - Wrapped Agent
@@ -625,13 +669,18 @@ __all__ = ["root_agent"]
         # 如果源目录有 requirements.txt，复制并补充必要的依赖
         import shutil as shutil_req
         shutil_req.copy(source_requirements, dest_requirements)
-        click.echo("📄 已复制 requirements.txt")
+        print_info("已复制 requirements.txt")
         
         # 检查是否缺少必要依赖，追加
         existing_reqs = dest_requirements.read_text(encoding='utf-8').lower()
         missing = []
         if framework == "langgraph" and 'langgraph' not in existing_reqs:
             missing.append("langgraph")
+        if framework == "deepagents":
+            if 'deepagents' not in existing_reqs:
+                missing.append("deepagents")
+            if 'langgraph' not in existing_reqs:
+                missing.append("langgraph")
         if 'python-dotenv' not in existing_reqs and 'dotenv' not in existing_reqs:
             missing.append("python-dotenv")
         
@@ -640,12 +689,12 @@ __all__ = ["root_agent"]
                 f.write("\n# Added by agentengine\n")
                 for pkg in missing:
                     f.write(f"{pkg}\n")
-            click.echo(f"📋 已补充依赖: {', '.join(missing)}")
+            print_info(f"已补充依赖: {', '.join(missing)}")
     else:
         # 自动根据 import 生成 requirements.txt
         reqs = _generate_requirements_from_imports(dest_package_path, framework)
         dest_requirements.write_text(reqs, encoding="utf-8")
-        click.echo(f"📋 已自动生成 requirements.txt ({reqs.count(chr(10))} 个依赖)")
+        print_info(f"已自动生成 requirements.txt ({reqs.count(chr(10))} 个依赖)")
     
     # 生成 README.md
     (project_path / "README.md").write_text(f"""# {project_name}
@@ -661,7 +710,7 @@ agentengine run -i .
 """, encoding="utf-8-sig")
     
     # === 运行时验证 ===
-    click.echo("\n🔍 验证 Agent 加载...")
+    print_rule("验证 Agent 加载")
     import subprocess
     import sys
     
@@ -688,23 +737,22 @@ except Exception as e:
         output = result.stdout.strip()
         if output.startswith("TYPE:"):
             agent_type = output.split("TYPE:")[1]
-            click.echo(click.style(f"✅ Agent 加载成功! 类型: {agent_type}", fg='green'))
+            print_success(f"Agent 加载成功! 类型: {agent_type}")
         else:
-            click.echo(click.style("✅ Agent 加载成功!", fg='green'))
+            print_success("Agent 加载成功!")
     else:
         error_msg = result.stderr or result.stdout
-        click.secho(f"⚠️  Agent 加载警告: {error_msg[:200]}", fg='yellow')
-        click.echo("提示: 请检查依赖是否已安装，或代码是否有错误")
+        print_warn(f"Agent 加载警告: {error_msg[:200]}")
+        print_info("提示: 请检查依赖是否已安装，或代码是否有错误")
     
-    click.echo(click.style("\n✅ 包装完成!", fg='green'))
-    click.echo(f"\n📋 快速开始:\n")
-    click.echo(click.style(f"   cd {project_name} && agentengine run -i .", fg='yellow'))
-    click.echo("")
+    print_success("包装完成")
+    print_rule("快速开始")
+    print_info(f"cd {project_name} && agentengine run -i .")
 
 
 @click.command(context_settings=dict(help_option_names=['-h', '--help']))
 @click.argument('project_name', required=False)
-@click.option('--framework', '-f', type=click.Choice(['adk', 'langchain', 'langgraph']),
+@click.option('--framework', '-f', type=click.Choice(['adk', 'langchain', 'langgraph', 'deepagents', 'openclaw']),
               default='langgraph', help='框架类型 (default: langgraph)')
 @click.option('--from-agent', 'from_agent_path', type=click.Path(exists=True), 
               help='包装现有 Agent 文件或目录')
@@ -723,17 +771,17 @@ def create(project_name: str, framework: str, from_agent_path: str):
         
         # === 目录模式 ===
         if from_path.is_dir():
-            click.echo(f"🔍 扫描目录: {from_path}")
+            print_info(f"扫描目录: {from_path}")
             
             # 查找入口文件
             entry_result = _find_entry_file(from_path)
             if not entry_result:
-                click.secho("❌ 未找到有效的入口文件 (agent.py, main.py, __init__.py 或包含 Agent 定义的文件)", fg='red')
+                print_error("未找到有效的入口文件 (agent.py, main.py, __init__.py 或包含 Agent 定义的文件)")
                 raise SystemExit(1)
             
             entry_file, detected_var = entry_result
-            click.echo(f"🔍 检测到入口: {entry_file.name}")
-            click.echo(f"🔍 检测到变量: {detected_var}")
+            print_info(f"检测到入口: {entry_file.name}")
+            print_info(f"检测到变量: {detected_var}")
             
             # 检测框架
             entry_content = entry_file.read_text(encoding='utf-8')
@@ -748,10 +796,10 @@ def create(project_name: str, framework: str, from_agent_path: str):
                         break
             
             if detected_framework == 'unknown':
-                click.secho("⚠️  无法自动检测框架，将使用默认 langgraph", fg='yellow')
+                print_warn("无法自动检测框架，将使用默认 langgraph")
                 detected_framework = 'langgraph'
             else:
-                click.echo(f"🔍 检测到框架: {detected_framework}")
+                print_info(f"检测到框架: {detected_framework}")
             
             # 如果没有指定项目名，使用目录名
             if not project_name:
@@ -767,18 +815,18 @@ def create(project_name: str, framework: str, from_agent_path: str):
             # 自动检测框架
             detected_framework = _detect_framework(content)
             if detected_framework == 'unknown':
-                click.secho("⚠️  无法自动检测框架，将使用默认 langgraph", fg='yellow')
+                print_warn("无法自动检测框架，将使用默认 langgraph")
                 detected_framework = 'langgraph'
             else:
-                click.echo(f"🔍 检测到框架: {detected_framework}")
+                print_info(f"检测到框架: {detected_framework}")
             
             # 自动检测 Agent 变量
             detected_var = _detect_agent_variable(content)
             if not detected_var:
-                click.secho("⚠️  无法自动检测 Agent 变量，将使用默认 root_agent", fg='yellow')
+                print_warn("无法自动检测 Agent 变量，将使用默认 root_agent")
                 detected_var = 'root_agent'
             else:
-                click.echo(f"🔍 检测到变量: {detected_var}")
+                print_info(f"检测到变量: {detected_var}")
             
             # 如果没有指定项目名，使用文件名
             if not project_name:
@@ -790,8 +838,7 @@ def create(project_name: str, framework: str, from_agent_path: str):
     # === 正常模板模式 ===
     # 如果没有提供项目名称，进入交互模式
     if not project_name:
-        click.secho("🚀 初始化新项目", fg='blue', bold=True)
-        click.echo("─" * 50)
+        print_title("初始化新项目")
         
         project_name = questionary.text(
             "请输入项目名称:",
@@ -799,28 +846,28 @@ def create(project_name: str, framework: str, from_agent_path: str):
         ).ask()
         
         if not project_name:
-            click.echo("\n❌ 取消创建")
+            print_error("取消创建")
             raise SystemExit(0)
             
         framework = questionary.select(
             "请选择开发框架:",
-            choices=['langgraph', 'langchain', 'adk'],
+            choices=['langgraph', 'langchain', 'deepagents', 'adk', 'openclaw'],
             default='langgraph',
             style=custom_style
         ).ask()
         
         if not framework:
-            click.echo("\n❌ 取消创建")
+            print_error("取消创建")
             raise SystemExit(0)
             
     project_path = Path(project_name)
     
     if project_path.exists():
-        click.secho(f"❌ 目录 '{project_name}' 已存在", fg='red')
+        print_error(f"目录 '{project_name}' 已存在")
         raise SystemExit(1)
     
-    click.echo(f"📁 创建项目: {project_name}")
-    click.echo(f"🔧 框架: {framework}")
+    print_kv("创建项目", project_name)
+    print_kv("框架", framework)
     
     package_name = project_name.replace('-', '_')
     (project_path / package_name).mkdir(parents=True)
@@ -835,7 +882,7 @@ def create(project_name: str, framework: str, from_agent_path: str):
     if global_config_exists():
         global_env = get_env_from_global_config()
         if global_env:
-            click.echo(click.style("ℹ️  检测到全局配置，已自动填充凭证", fg='cyan'))
+            print_info("检测到全局配置，已自动填充凭证")
     
     # .env - 生成配置文件
     # 如果有全局配置，使用全局配置的值；否则使用占位符
@@ -921,7 +968,7 @@ OPENAI_API_KEY={api_key}
 name: {package_name}
 version: "1.0.0"
 
-# 框架类型: adk, langchain, langgraph
+# 框架类型: adk, langchain, langgraph, deepagents
 framework: {framework}
 
 # Agent 入口
@@ -988,13 +1035,15 @@ agentengine deploy .    # 部署到云端
         reqs += "langchain\nlangchain-openai\npython-dotenv\n"
     elif framework == "langgraph":
         reqs += "langchain\nlangchain-openai\nlanggraph\npython-dotenv\n"
+    elif framework == "deepagents":
+        reqs += "deepagents\nlangchain\nlangchain-openai\nlanggraph\npython-dotenv\n"
     elif framework == "adk":
         reqs += "google-adk\npython-dotenv\n"
     
     (project_path / "requirements.txt").write_text(reqs, encoding="utf-8")
     
-    click.echo(click.style("\n✅ 项目创建成功!", fg='green'))
-    click.echo("")
+    print_success("项目创建成功")
+    print_rule("快速开始")
     
     # 检测操作系统，提供对应的组合命令
     import platform
@@ -1009,11 +1058,7 @@ agentengine deploy .    # 部署到云端
         combined_cmd = f"cd {project_name} && agentengine config"
         run_cmd = f"cd {project_name} && agentengine run -i ."
     
-    click.echo(click.style("📋 快速开始 (复制并执行):", fg='cyan', bold=True))
-    click.echo("")
-    click.echo(click.style(f"   {combined_cmd}", fg='yellow'))
-    click.echo("")
-    click.echo(click.style("🚀 或直接运行 (环境变量中需包含模型 API Key):", fg='blue', bold=True))
-    click.echo("")
-    click.echo(click.style(f"   {run_cmd}", fg='blue'))
-    click.echo("")
+    print_info("快速开始 (复制并执行):")
+    print_info(combined_cmd)
+    print_info("或直接运行 (环境变量中需包含模型 API Key):")
+    print_info(run_cmd)

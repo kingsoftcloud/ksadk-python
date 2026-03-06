@@ -44,5 +44,10 @@ class UnifiedRunner:
 
             return LangChainRunner(detection_result, project_dir)
 
+        elif detection_result.type == FrameworkType.DEEPAGENTS:
+            from ksadk.runners.deepagents_runner import DeepAgentsRunner
+
+            return DeepAgentsRunner(detection_result, project_dir)
+
         else:
             raise ValueError(f"不支持的框架类型: {detection_result.type}")

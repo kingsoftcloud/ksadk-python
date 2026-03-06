@@ -16,6 +16,21 @@ from ksadk.common.constants import (
     get_ks3_endpoints,
     DEFAULT_SERVERLESS_ENDPOINT,
 )
+from ksadk.cli.dry_run import effective_dry_run
+from ksadk.cli.ui import (
+    get_console,
+    new_table,
+    print_error,
+    print_info,
+    print_kv,
+    print_next_steps,
+    print_rule,
+    print_success,
+    print_title,
+    print_warn,
+)
+
+console = get_console()
 
 
 @click.command(context_settings=dict(help_option_names=["-h", "--help"]))
@@ -77,15 +92,17 @@ def deploy(
     \b
     AGENT_DIR: Agent 项目目录 (默认: 当前目录)
 
+    \b
     示例:
-        agentengine deploy .                              # Serverless (默认)
-        agentengine deploy . --target kcf                 # 部署到 KCF (云函数)
-        agentengine deploy . --target kce                 # 部署到 KCE (容器引擎)
-        agentengine deploy . --dry-run                    # 打印请求而不部署
-        agentengine deploy . --region cn-beijing-6
-        agentengine deploy . --account-id 2000003485
-        agentengine deploy . --no-version                 # 部署但不创建版本快照
+        # 1) 默认部署 (serverless)
+        agentengine deploy .
+        # 2) 显式指定部署参数
+        agentengine deploy . --target kcf --account-id X-Ksc-Account-Id
+        # 3) 显式指定区域
+        KSYUN_REGION=cn-beijing-6 agentengine deploy . --target serverless --dry-run
     """
+    dry_run = effective_dry_run(dry_run)
+
     # 列出 Provider
     if list_providers:
         _list_providers()
@@ -125,8 +142,11 @@ def _list_providers():
 
     providers = DeploymentManager.list_providers()
 
-    click.secho("可用的部署目标:", fg="blue", bold=True)
-    click.echo("")
+    table = new_table("可用的部署目标")
+    table.add_column("名称", style="#58a6ff", no_wrap=True)
+    table.add_column("显示名", style="white")
+    table.add_column("说明", style="#8b949e")
+    table.add_column("特性", style="#c9d1d9")
 
     for p in providers:
         features = []
@@ -137,13 +157,14 @@ def _list_providers():
         if p.get("requires_image_registry"):
             features.append("需镜像仓库")
 
-        click.echo(f"  {click.style(p['name'], fg='green', bold=True)}")
-        click.echo(f"    {p.get('display_name', p['name'])}")
-        if p.get("description"):
-            click.echo(f"    {p['description']}")
-        if features:
-            click.echo(f"    特性: {', '.join(features)}")
-        click.echo("")
+        table.add_row(
+            p["name"],
+            p.get("display_name", p["name"]),
+            p.get("description", "-"),
+            ", ".join(features) if features else "-",
+        )
+
+    console.print(table)
 
 
 async def _deploy_async(
@@ -171,38 +192,38 @@ async def _deploy_async(
     from ksadk.deployment import DeploymentManager, DeployTarget, DeployStatus
 
     agent_path = Path(agent_dir).resolve()
-    click.echo(f"项目目录: {agent_path}")
-    click.echo(f"部署目标: {click.style(target, fg='cyan')}")
-    click.echo(f"区域: {region}")
+    print_title("Agent 部署", f"target: {target}")
+    print_kv("项目目录", str(agent_path))
+    print_kv("区域", region, value_style="#58a6ff")
     if target == "serverless":
-        click.echo(f"部署模式: {artifact_type}")
-        click.echo(f"可观测性: {'开启' if observability else '关闭'}")
+        print_kv("部署模式", artifact_type)
+        print_kv("可观测性", "开启" if observability else "关闭")
     if account_id:
-        click.echo(f"账号 ID: {account_id}")
+        print_kv("账号 ID", account_id)
 
     # 1. 检测框架
     detector = FrameworkDetector(str(agent_path))
     detection_result = detector.detect()
 
     if detection_result.type.value == "unknown":
-        click.secho("错误: 未检测到支持的框架", fg="red")
+        print_error("错误: 未检测到支持的框架")
         raise SystemExit(1)
 
-    click.echo(f"框架: {click.style(detection_result.name, fg='green')}")
+    print_kv("框架", detection_result.name, value_style="#2da44e")
 
     # 2. 加载配置
     config = _load_config(agent_path)
 
     # 3. 确定部署名称
     deploy_name = name or config.get("name") or agent_path.name.replace("-", "_").replace(".", "_")
-    click.echo(f"部署名称: {deploy_name}")
+    print_kv("部署名称", deploy_name)
 
     # 4. 获取 Provider
     try:
         provider = DeploymentManager.get_provider(target)
     except ValueError as e:
-        click.secho(f"错误: {e}", fg="red")
-        click.echo("使用 --list-providers 查看可用目标")
+        print_error(f"错误: {e}")
+        print_info("使用 --list-providers 查看可用目标")
         raise SystemExit(1)
 
     # 5. 构建部署目标配置
@@ -239,11 +260,11 @@ async def _deploy_async(
     # 6. 验证配置
     valid, error_msg = await provider.validate_config(deploy_target)
     if not valid:
-        click.secho(f"错误: 配置验证失败: {error_msg}", fg="red")
+        print_error(f"错误: 配置验证失败: {error_msg}")
         raise SystemExit(1)
 
     # 7. 打包 (Package 步骤仍需保留以获取框架信息等，但不构建制品)
-    click.echo("\nStep 1/2: 准备配置...")
+    print_rule("Step 1/2 准备配置")
     try:
         package_info = await provider.package(str(agent_path), detection_result, config)
         package_info.name = deploy_name
@@ -254,51 +275,56 @@ async def _deploy_async(
         if ks3_path:
             package_info.metadata["ks3_path"] = ks3_path
 
-        click.echo(f"   构建目录: {package_info.build_dir}")
-        click.echo(f"   框架: {package_info.framework}")
+        print_kv("构建目录", str(package_info.build_dir))
+        print_kv("框架", package_info.framework)
     except Exception as e:
-        click.secho(f"错误: 打包失败: {e}", fg="red")
+        print_error(f"错误: 打包失败: {e}")
         raise SystemExit(1)
 
     # Dry Run 模式将由 Provider 内部处理 (通过 AgentEngineClient)
 
 
     # 8. 部署
-    click.echo(f"\nStep 2/2: 部署到 {target}...")
+    print_rule(f"Step 2/2 部署到 {target}")
     try:
         result = await provider.deploy(package_info, deploy_target)
 
         if result.is_success():
-            click.echo("")
-            click.secho("部署成功!", fg="green", bold=True)
-            click.echo("-" * 50)
-            click.echo(f"   名称:     {result.agent_name or deploy_name}")
+            print_success("部署成功")
+            print_rule()
+            print_kv("名称", result.agent_name or deploy_name)
             if result.agent_id:
-                click.echo(f"   ID:       {result.agent_id}")
-            click.echo(f"   状态:     {result.status.value}")
+                print_kv("ID", result.agent_id)
+            print_kv("状态", result.status.value, value_style="#2da44e")
             if result.endpoint:
-                click.echo(f"   Endpoint: {result.endpoint}")
+                print_kv("Endpoint", result.endpoint, value_style="#58a6ff")
             if result.api_key:
-                click.echo(f"   APIKey:   {result.api_key}")
+                print_kv("APIKey", result.api_key, value_style="#d29922")
+                # 首次部署提示 API Key 仅显示一次
+                if result.message and "首次部署" in result.message:
+                    print_warn("⚠️  API Key 仅在首次部署时明文显示，请妥善保存！")
             if result.message:
-                click.echo(f"   信息:     {result.message}")
+                print_kv("信息", result.message)
             
-            # 9. 自动创建版本快照 (除非指定 --no-version)
-            if result.agent_id and not no_version and not dry_run:
+            # 9. 自动创建版本快照 (仅热更新时，首次部署平台自动创建 v1)
+            is_update = result.message and "已更新" in result.message
+            if result.agent_id and is_update and not no_version and not dry_run:
                 from ksadk.cli.deploy_utils import auto_release_version
                 await auto_release_version(result.agent_id, region, deploy_name)
 
-            click.echo("")
-            click.echo("下一步:")
             target_ref = result.agent_id or deploy_name
-            click.echo(f"  agentengine status --agent {target_ref}")
-            click.echo(f"  agentengine invoke --agent {target_ref}")
+            print_next_steps([
+                f"agentengine status --agent {target_ref}",
+                f"agentengine invoke --agent {target_ref}",
+            ])
         else:
             # 可能是 DryRun 的 SKIPPED
-            status_color = "yellow" if result.status.name == "SKIPPED" else "red"
-            click.secho(f"\n部署状态: {result.status.value}", fg=status_color)
+            if result.status.name == "SKIPPED":
+                print_warn(f"部署状态: {result.status.value}")
+            else:
+                print_error(f"部署状态: {result.status.value}")
             if result.message:
-                click.echo(f"   {result.message}")
+                print_info(result.message)
             
             # 10. 部署失败时自动回滚 (如果启用了 --auto-rollback)
             if auto_rollback and result.agent_id and result.status.name not in ["SKIPPED"]:
@@ -306,7 +332,7 @@ async def _deploy_async(
                 await auto_rollback_to_previous(result.agent_id, region)
                 
     except Exception as e:
-        click.secho(f"错误: 部署失败: {e}", fg="red")
+        print_error(f"错误: 部署失败: {e}")
         import traceback
 
         traceback.print_exc()

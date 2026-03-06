@@ -6,6 +6,17 @@ import click
 import asyncio
 import os
 from pathlib import Path
+from ksadk.cli.dry_run import effective_dry_run
+from ksadk.cli.ui import (
+    print_error,
+    print_info,
+    print_kv,
+    print_next_steps,
+    print_rule,
+    print_success,
+    print_title,
+    print_warn,
+)
 
 
 @click.command(context_settings=dict(help_option_names=["-h", "--help"]))
@@ -63,12 +74,16 @@ def launch(
     2. 上传代码到 KS3 / 推送镜像到 KCR
     3. 调用 API 创建或更新 Agent
 
+    \b
     示例:
-        agentengine launch .                              # Serverless (默认, Code模式)
-        agentengine launch . --no-cache                   # 强制重新构建
-        agentengine launch . -t kcf                       # 部署到 KCF (云函数)
-        agentengine launch . -t kce                       # 部署到 KCE (容器引擎)
+        # 1) 默认一键部署 (serverless)
+        agentengine launch .
+        # 2) 显式指定部署参数
+        agentengine launch . --target kce --artifact-type Container
+        # 3) 显式指定区域
+        KSYUN_REGION=cn-beijing-6 agentengine launch . --target serverless --no-cache
     """
+    dry_run = effective_dry_run(dry_run)
     asyncio.run(
         _launch_async(
             agent_dir,
@@ -115,37 +130,35 @@ async def _launch_async(
     from ksadk.deployment import DeploymentManager, DeployTarget
 
     agent_path = Path(agent_dir).resolve()
-    click.secho("🚀 AgentEngine Launch", fg="blue", bold=True)
-    click.echo("─" * 50)
-    click.echo(f"📁 项目目录: {agent_path}")
-    click.echo(f"🎯 部署目标: {target}")
+    print_title("AgentEngine Launch", f"target: {target}")
+    print_kv("项目目录", str(agent_path))
     if target == "serverless":
-        click.echo(f"🌍 区域: {region}")
+        print_kv("区域", region, value_style="#58a6ff")
         if not artifact_type:
             artifact_type = "Code"
-        click.echo(f"📦 模式: {artifact_type}")
+        print_kv("模式", artifact_type)
         if account_id:
-            click.echo(f"👤 账号: {account_id}")
+            print_kv("账号", account_id)
 
     # 1. 检测框架
     detector = FrameworkDetector(str(agent_path))
     detection_result = detector.detect()
     if detection_result.type.value == "unknown":
-        click.secho("❌ 错误: 未检测到支持的框架", fg="red")
+        print_error("错误: 未检测到支持的框架")
         return
 
-    click.echo(f"📦 框架: {click.style(detection_result.name, fg='green')}")
+    print_kv("框架", detection_result.name, value_style="#2da44e")
 
     # 2. 加载配置
     config = _load_config(agent_path)
     deploy_name = name or config.get("name") or agent_path.name.replace("-", "_").replace(".", "_")
-    click.echo(f"🏷️  部署名称: {deploy_name}")
+    print_kv("部署名称", deploy_name)
 
     # 3. 获取 Provider
     try:
         provider = DeploymentManager.get_provider(target)
     except ValueError as e:
-        click.secho(f"❌ 错误: {e}", fg="red")
+        print_error(f"错误: {e}")
         return
 
     # 4. 准备 Target 配置
@@ -176,7 +189,7 @@ async def _launch_async(
     # 5. 验证
     valid, error_msg = await provider.validate_config(deploy_target)
     if not valid:
-        click.secho(f"❌ 配置验证失败: {error_msg}", fg="red")
+        print_error(f"配置验证失败: {error_msg}")
         return
 
     # 避免 package 阶段加载旧 metadata，如果在 no_cache 模式下，直接物理删除
@@ -185,12 +198,12 @@ async def _launch_async(
         if metadata_file.exists():
             try:
                 os.remove(metadata_file)
-                click.secho(f"🗑️  [DEBUG] 已删除旧 build-metadata.json (--no-cache)", fg="yellow")
+                print_warn("[DEBUG] 已删除旧 build-metadata.json (--no-cache)")
             except Exception:
                 pass
 
     # 6. 打包 (Package)
-    click.secho("\n📦 Step 1/3: 准备构建环境...", fg="cyan", bold=True)
+    print_rule("Step 1/3 准备构建环境")
     try:
         package_info = await provider.package(str(agent_path), detection_result, config)
         package_info.name = deploy_name
@@ -199,13 +212,13 @@ async def _launch_async(
         if ks3_path:
             package_info.metadata["ks3_path"] = ks3_path
         
-        click.echo(f"   构建目录: {package_info.build_dir}")
+        print_kv("构建目录", str(package_info.build_dir))
     except Exception as e:
-        click.secho(f"❌ 打包失败: {e}", fg="red")
+        print_error(f"打包失败: {e}")
         return
 
     # 7. 构建与上传 (Build)
-    click.secho("\n🔨 Step 2/3: 构建与上传...", fg="cyan", bold=True)
+    print_rule("Step 2/3 构建与上传")
     try:
         # 这里会触发 Code 模式的 KS3 上传 或 Container 模式的 Docker Build
         package_info = await provider.build(package_info, deploy_target)
@@ -214,44 +227,45 @@ async def _launch_async(
             # Serverless Provider 在 build 后会将 ks3_path 放入 metadata
             ks3 = package_info.metadata.get("ks3_path")
             if ks3:
-                click.echo(f"   KS3 路径: {ks3}")
+                print_kv("KS3 路径", ks3)
         else:
-            click.echo(f"   镜像: {package_info.image}")
+            print_kv("镜像", package_info.image)
 
     except Exception as e:
-        click.secho(f"❌ 构建失败: {e}", fg="red")
+        print_error(f"构建失败: {e}")
         return
 
     # 8. 部署 (Deploy)
-    click.secho(f"\n🚀 Step 3/3: 部署到 {target}...", fg="cyan", bold=True)
+    print_rule(f"Step 3/3 部署到 {target}")
     try:
         result = await provider.deploy(package_info, deploy_target)
 
         if result.is_success():
-            click.echo("\n" + "─" * 50)
-            click.secho("✅ 部署成功!", fg="green", bold=True)
-            click.echo(f"   名称:     {result.agent_name}")
-            click.echo(f"   状态:     {result.status.value}")
+            print_success("部署成功")
+            print_rule()
+            print_kv("名称", result.agent_name or deploy_name)
+            print_kv("状态", result.status.value, value_style="#2da44e")
             if result.endpoint:
-                click.echo(f"   Endpoint: {result.endpoint}")
+                print_kv("Endpoint", result.endpoint, value_style="#58a6ff")
             if result.api_key:
-                click.secho(f"   API Key:  {result.api_key}", fg="yellow", bold=True)
-                click.secho("   ⚠️  请妥善保存此 API Key，它仅在首次部署时显示！", fg="yellow")
+                print_kv("API Key", result.api_key, value_style="#d29922")
+                print_warn("请妥善保存此 API Key，它仅在首次部署时显示")
             if result.message:
-                click.echo(f"   信息:     {result.message}")
+                print_kv("信息", result.message)
             
             # 9. 自动创建版本快照 (除非指定 --no-version)
             if result.agent_id and not no_version and not dry_run:
                 from ksadk.cli.deploy_utils import auto_release_version
                 await auto_release_version(result.agent_id, region, deploy_name)
 
-            click.echo(f"\n下一步查看或使用{result.agent_name}:")
-            click.echo(f"  agentengine status --agent {result.agent_id}")
-            click.echo(f"  agentengine invoke --agent {result.agent_id}")
+            print_next_steps([
+                f"agentengine status --agent {result.agent_id}",
+                f"agentengine invoke --agent {result.agent_id}",
+            ], title=f"下一步查看或使用 {result.agent_name}")
         else:
-            click.secho(f"\n❌ 部署状态: {result.status.value}", fg="yellow")
+            print_warn(f"部署状态: {result.status.value}")
             if result.message:
-                click.echo(f"   {result.message}")
+                print_info(result.message)
             
             # 10. 自动回滚
             if auto_rollback and result.agent_id and result.status.name not in ["SKIPPED"]:
@@ -259,7 +273,7 @@ async def _launch_async(
                 await auto_rollback_to_previous(result.agent_id, region)
 
     except Exception as e:
-        click.secho(f"❌ 部署异常: {e}", fg="red")
+        print_error(f"部署异常: {e}")
         import traceback
 
         traceback.print_exc()
