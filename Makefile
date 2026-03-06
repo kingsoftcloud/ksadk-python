@@ -1,7 +1,7 @@
 # AgentEngine Makefile
 # 用于构建 Web UI 和管理项目
 
-.PHONY: help install build-webui sync-static clean dev test publish openclaw-build openclaw-push openclaw-size
+.PHONY: help install build-webui sync-static clean clean-dist dev test publish publish-test openclaw-build openclaw-push openclaw-size
 
 # 默认目标
 help:
@@ -230,8 +230,13 @@ endif
 
 # 发布配置文件 (优先使用项目本地的 .pypirc)
 PYPIRC := $(shell [ -f .pypirc ] && echo ".pypirc" || echo "~/.pypirc")
+DIST_DIR := dist
 
-publish: build-only
+clean-dist:
+	@echo "🧹 清理 dist/build 临时产物..."
+	@rm -rf $(DIST_DIR)/* build/ *.egg-info/
+
+publish: clean-dist build-only
 	@echo "🚀 发布 v$(VERSION) 到 PyPI..."
 	@if [ ! -f ".pypirc" ] && [ ! -f ~/.pypirc ]; then \
 		echo "❌ 错误: 找不到 .pypirc 配置文件"; \
@@ -241,15 +246,33 @@ publish: build-only
 		echo "   password = pypi-你的token"; \
 		exit 1; \
 	fi
-	python -m twine upload --config-file $(PYPIRC) dist/*
+	@FILES=$$(ls $(DIST_DIR)/ksadk-$(VERSION)-*.whl 2>/dev/null || true); \
+	if [ -z "$$FILES" ]; then \
+		echo "❌ 错误: 未找到当前版本构建产物 (ksadk-$(VERSION)-*.whl)"; \
+		echo "   当前 dist 目录内容:"; \
+		ls -la $(DIST_DIR); \
+		exit 1; \
+	fi; \
+	echo "📦 将上传文件:"; \
+	echo "$$FILES"; \
+	python -m twine upload --config-file $(PYPIRC) $$FILES
 
-publish-test: build-only
+publish-test: clean-dist build-only
 	@echo "🧪 发布 v$(VERSION) 到 TestPyPI..."
 	@if [ ! -f ".pypirc" ] && [ ! -f ~/.pypirc ]; then \
 		echo "❌ 错误: 找不到 .pypirc 配置文件"; \
 		exit 1; \
 	fi
-	python -m twine upload --config-file $(PYPIRC) --repository testpypi dist/*
+	@FILES=$$(ls $(DIST_DIR)/ksadk-$(VERSION)-*.whl 2>/dev/null || true); \
+	if [ -z "$$FILES" ]; then \
+		echo "❌ 错误: 未找到当前版本构建产物 (ksadk-$(VERSION)-*.whl)"; \
+		echo "   当前 dist 目录内容:"; \
+		ls -la $(DIST_DIR); \
+		exit 1; \
+	fi; \
+	echo "📦 将上传文件:"; \
+	echo "$$FILES"; \
+	python -m twine upload --config-file $(PYPIRC) --repository testpypi $$FILES
 
 # ============================================================
 # 离线打包 (多平台支持)
@@ -409,4 +432,3 @@ clean-offline:
 	@echo "🧹 清理离线包..."
 	rm -rf $(OFFLINE_DIR)/
 	@echo "✅ 清理完成"
-
