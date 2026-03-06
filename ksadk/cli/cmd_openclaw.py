@@ -554,6 +554,7 @@ async def _deploy_openclaw(
     # 调用 API
     print_rule("部署 OpenClaw")
     try:
+        latest_status = None
         async with AgentEngineClient(region=region) as client:
             if existing_agent_id:
                 print_info(f"检测到本地状态: {existing_agent_id}，执行更新...")
@@ -651,8 +652,18 @@ async def _deploy_openclaw(
                 "gateway_token": env_vars.get("OPENCLAW_GATEWAY_TOKEN"),
             })
 
-            print_success("OpenClaw 部署成功")
+            # 再读一次状态，避免把“已创建”误认为“已稳定运行”。
+            if agent_id:
+                try:
+                    latest = await client.get_agent(agent_id=agent_id, include_api_key=False)
+                    latest_status = str(((latest.get("basic") or {}).get("status") or "")).upper() or None
+                except Exception:
+                    latest_status = None
+
+            print_success("OpenClaw 已提交部署")
             print_kv("Agent ID", agent_id or "(创建中)")
+            if latest_status:
+                print_kv("当前状态", latest_status)
             if endpoint:
                 print_kv("Endpoint", endpoint, value_style="#58a6ff")
             if api_key:
@@ -661,6 +672,16 @@ async def _deploy_openclaw(
             if token and endpoint:
                 print_kv("控制台", f"{endpoint}/#token={token}", value_style="#58a6ff")
             print_info("已保存状态到 .agentengine.state")
+            print_info("建议先确认实例状态:")
+            print_info("  agentengine openclaw status")
+            if latest_status != "RUNNING":
+                print_info("实例进入 RUNNING 后再打开 Dashboard:")
+            else:
+                print_info("可直接打开 Dashboard:")
+            if agent_id:
+                print_info(f"  agentengine dashboard {agent_id}")
+            else:
+                print_info("  agentengine dashboard")
 
     except DryRunExit:
         raise
@@ -829,4 +850,3 @@ def delete(agent_ref: str, region: str, yes: bool, dry_run: bool):
             print_error(f"删除失败: {e}")
 
     run_async_with_dry_run(_delete(), dry_run=dry_run)
-

@@ -3,11 +3,11 @@ AgentEngine CLI - 命令行工具入口
 
 使用方式:
     agentengine init myapp    # 初始化项目
-    agentengine run .         # 本地运行
-    agentengine web .         # 本地调试 UI (Invoke)
-    agentengine build .       # 构建镜像
-    agentengine deploy .      # 部署到云端
-    agentengine launch .      # 一键构建+部署
+    agentengine run           # 本地运行
+    agentengine web           # 本地调试 UI (Invoke)
+    agentengine build         # 构建镜像
+    agentengine deploy        # 部署到云端
+    agentengine launch        # 一键构建+部署
     agentengine status        # 查看状态
     agentengine invoke        # 与 Agent 交互
     agentengine destroy       # 销毁实例
@@ -86,16 +86,16 @@ class ColoredHelpGroup(click.Group):
         formatter.write(click.style(" 的本地运行与云端部署\n\n", fg="white"))
 
         # 本地开发
-        formatter.write(click.style("  📦 本地开发:\n\n", fg="green", bold=True))
+        formatter.write(click.style("  📦  本地开发:\n\n", fg="green", bold=True))
         formatter.write(click.style("      agentengine init             ", fg="cyan"))
         formatter.write(click.style("初始化项目\n\n", fg="white"))
-        formatter.write(click.style("      agentengine run .            ", fg="cyan"))
+        formatter.write(click.style("      agentengine run              ", fg="cyan"))
         formatter.write(click.style("运行 API Server\n\n", fg="white"))
-        formatter.write(click.style("      agentengine web .            ", fg="cyan"))
+        formatter.write(click.style("      agentengine web              ", fg="cyan"))
         formatter.write(click.style("本地调试 Agent Invoke UI\n\n", fg="white"))
 
         # 云端部署
-        formatter.write(click.style("  🚀 云端部署:\n\n", fg="blue", bold=True))
+        formatter.write(click.style("  🚀  云端部署:\n\n", fg="blue", bold=True))
         formatter.write(click.style("      agentengine build            ", fg="cyan"))
         formatter.write(click.style("构建镜像\n\n", fg="white"))
         formatter.write(click.style("      agentengine deploy           ", fg="cyan"))
@@ -153,22 +153,22 @@ class ColoredHelpGroup(click.Group):
             "web": "本地调试 Agent Invoke UI",
         }
         icon_map = {
-            "build": "🔨",
-            "completion": "⌨️",
-            "config": "⚙️",
-            "dashboard": "🖥️",
-            "deploy": "🚀",
-            "destroy": "🧹",
-            "init": "📁",
-            "invoke": "💬",
-            "launch": "✨",
-            "mcp": "🔌",
-            "model": "🧠",
-            "openclaw": "🦞",
-            "run": "▶️",
-            "status": "📊",
-            "version": "🏷️",
-            "web": "🌐",
+            "build": "🔨 ",
+            "completion": "⌨️ ",
+            "config": "⚙️ ",
+            "dashboard": "🖥️ ",
+            "deploy": "🚀 ",
+            "destroy": "🧹 ",
+            "init": "📁 ",
+            "invoke": "💬 ",
+            "launch": "✨ ",
+            "mcp": "🔌 ",
+            "model": "🧠 ",
+            "openclaw": "🦞 ",
+            "run": "▶️ ",
+            "status": "📊 ",
+            "version": "🏷️ ",
+            "web": "🌐 ",
         }
 
         commands = []
@@ -181,7 +181,7 @@ class ColoredHelpGroup(click.Group):
         if not commands:
             return
 
-        formatter.write(click.style("\n  📋 可用命令:\n\n", fg="magenta", bold=True))
+        formatter.write(click.style("\n  📋  可用命令:\n\n", fg="magenta", bold=True))
 
         # 仅按命令名对齐，避免 emoji 宽度在不同终端渲染不一致导致错位
         # 并设置最小列宽，保持和「选项」区域类似的呼吸感

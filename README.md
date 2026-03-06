@@ -2,13 +2,14 @@
 
 `ksadk` 是金山云 Agent 开发与部署工具链，提供统一的 CLI 体验，覆盖本地开发、构建、部署、调用、版本管理与 MCP Server 管理。
 
-当前版本：`0.2.0`
+当前版本：`0.3.0`
 
 ## 核心能力
 
 - 多框架支持：DeepAgents、LangGraph、LangChain、Google ADK。
-- 本地开发：`run`（API/TUI）与 `web`（Web UI）。
+- 本地开发：`run`（API/TUI）与 `web`（本地 Invoke 调试 UI）。
 - 云端部署：`build`、`deploy`、`launch`，支持 `Code` / `Container` 两种制品模式。
+- 云端 UI 访问：`dashboard` 统一打开已部署 Agent 的 Web UI（含 OpenClaw）。
 - 统一控制面：通过 `AgentEngine Server` 进行 Agent/MCP 管理。
 - 状态持久化：部署后保存 `.agentengine.state`，供后续 `status/invoke/destroy/version` 复用。
 - 版本管理：`version list/release/rollback`。
@@ -73,13 +74,13 @@ agentengine config
 ### 3) 本地调试
 
 ```bash
-agentengine run . -i
+agentengine run -i
 ```
 
 或启动 Web UI：
 
 ```bash
-agentengine web . --port 8080
+agentengine web --port 8080
 ```
 
 ### 4) 一键构建+部署
@@ -93,13 +94,27 @@ export KSYUN_REGION=cn-beijing-6
 agentengine launch . --target serverless
 ```
 
+### 5) 打开云端已部署 Agent UI
+
+```bash
+# 目录内自动解析 agent（.agentengine.state -> agentengine.yaml/ksadk.yaml）
+agentengine dashboard
+
+# 显式指定 Agent
+agentengine dashboard --agent ar-xxxx
+
+# OpenClaw 也走统一入口
+agentengine dashboard --agent openclaw-gateway-xxxx
+```
+
 ## 命令总览
 
 - `agentengine init`：创建新项目（支持 `--from-agent`）。
 - `agentengine config`：交互式配置 `agentengine.yaml` + `.env`。
 - `agentengine model`：从模型服务拉取模型列表并更新 `.env` 的 `OPENAI_MODEL_NAME`。
 - `agentengine run`：本地运行 Agent（支持 `-i` TUI）。
-- `agentengine web`：启动 Web UI（ADK 项目用 ADK Web，其他用 Chainlit）。
+- `agentengine web`：启动本地调试 UI（ADK 项目用 ADK Web，其他用 Chainlit）。
+- `agentengine dashboard`：打开云端已部署 Agent 的 Dashboard/WebUI。
 - `agentengine build`：构建制品（`code` 或 `container`）。
 - `agentengine deploy`：部署到 `serverless` / `kcf` / `kce`。
 - `agentengine launch`：`build + deploy` 一条命令完成。
@@ -108,7 +123,12 @@ agentengine launch . --target serverless
 - `agentengine destroy`：销毁 Agent。
 - `agentengine version`：版本管理（`list/release/rollback`）。
 - `agentengine mcp`：MCP Server 管理。
+- `agentengine openclaw`：一键拉起 OpenClaw（部署/状态/删除等）。
 - `agentengine completion`：Shell 补全脚本与自动安装。
+
+说明：
+- `agentengine openclaw dashboard` 已收敛为统一命令 `agentengine dashboard`。
+- `dashboard` 默认通过 `CreateDashboardTicket` 直开浏览器；`CreateDashboardTicket` 不可用时不会回退 API Key URL 票据。
 
 ## Agent 指定规则（统一）
 
