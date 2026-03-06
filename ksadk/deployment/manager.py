@@ -163,6 +163,13 @@ CMD ["python", "entrypoint.py"]
             base_deps += ["langchain>=0.1.0", "langchain-openai>=0.1.0"]
         elif framework == "langgraph":
             base_deps += ["langgraph>=0.1.0", "langchain-openai>=0.1.0"]
+        elif framework == "deepagents":
+            base_deps += [
+                "langchain>=0.1.0",
+                "langchain-openai>=0.1.0",
+                "langgraph>=0.1.0",
+                "deepagents>=0.3.0",
+            ]
         
         return "\n".join(base_deps)
     

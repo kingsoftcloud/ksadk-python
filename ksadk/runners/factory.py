@@ -39,6 +39,10 @@ def create_runner(detection_result: DetectionResult, project_dir: str) -> BaseRu
     elif detection_result.type == FrameworkType.LANGCHAIN:
         from ksadk.runners.langchain_runner import LangChainRunner
         return LangChainRunner(detection_result, project_dir)
+
+    elif detection_result.type == FrameworkType.DEEPAGENTS:
+        from ksadk.runners.deepagents_runner import DeepAgentsRunner
+        return DeepAgentsRunner(detection_result, project_dir)
     
     else:
         raise ValueError(f"不支持的框架类型: {detection_result.type}")

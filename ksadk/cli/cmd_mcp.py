@@ -10,8 +10,9 @@ agentengine mcp - MCP Server 管理
 
 import os
 import click
-import asyncio
 from pathlib import Path
+from ksadk.api.client import DryRunExit
+from ksadk.cli.dry_run import dry_run_option, run_async_with_dry_run, effective_dry_run
 from ksadk.cli.ui import (
     get_console,
     new_table,
@@ -66,11 +67,7 @@ def mcp():
     default=False,
     help="启用 API Key 保护 (可选)"
 )
-@click.option(
-    "--dry-run",
-    is_flag=True,
-    help="仅显示请求内容，不实际部署"
-)
+@dry_run_option("仅显示请求内容，不实际部署")
 @click.option(
     "--artifact-type",
     type=click.Choice(["Code", "Container"], case_sensitive=True),
@@ -105,7 +102,11 @@ def deploy(mcp_dir: str, name: str, region: str, ks3_bucket: str, enable_auth: b
         - Cursor / Claude Code
         - Dify 等外部平台
     """
-    asyncio.run(_deploy_mcp_async(mcp_dir, name, region, ks3_bucket, enable_auth, dry_run, artifact_type, no_cache))
+    dry_run = effective_dry_run(dry_run)
+    run_async_with_dry_run(
+        _deploy_mcp_async(mcp_dir, name, region, ks3_bucket, enable_auth, dry_run, artifact_type, no_cache),
+        dry_run=dry_run,
+    )
 
 
 async def _deploy_mcp_async(
@@ -345,15 +346,16 @@ async def _deploy_mcp_async(
 
 @mcp.command("list")
 @click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
-def list_mcps(region: str):
+@dry_run_option()
+def list_mcps(region: str, dry_run: bool):
     """列出已部署的 MCP"""
+    dry_run = effective_dry_run(dry_run)
     from ksadk.api import AgentEngineClient
-    import asyncio
     
     async def _list():
             
         try:
-            async with AgentEngineClient(region=region) as client:
+            async with AgentEngineClient(region=region, dry_run=dry_run) as client:
                 resp = await client.list_mcps(region=region)
                 
                 mcps = resp.get("mcps", [])
@@ -378,22 +380,25 @@ def list_mcps(region: str):
                     )
                 console.print(table)
                 
+        except DryRunExit:
+            raise
         except Exception as e:
             print_error(f"获取列表失败: {e}")
 
-    asyncio.run(_list())
+    run_async_with_dry_run(_list(), dry_run=dry_run)
 
 
 @mcp.command("status")
 @click.argument("mcp_id")
 @click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
-def status(mcp_id: str, region: str):
+@dry_run_option()
+def status(mcp_id: str, region: str, dry_run: bool):
     """查看 MCP 状态
     
     MCP_ID: MCP 的 ID
     """
+    dry_run = effective_dry_run(dry_run)
     from ksadk.api import AgentEngineClient
-    import asyncio
     import json
     
     async def _get():
@@ -403,7 +408,7 @@ def status(mcp_id: str, region: str):
             return
             
         try:
-            async with AgentEngineClient(region=region) as client:
+            async with AgentEngineClient(region=region, dry_run=dry_run) as client:
                 mcp = await client.get_mcp(mcp_id)
                 
                 print_title("MCP 状态", mcp.get("name", mcp_id))
@@ -419,23 +424,31 @@ def status(mcp_id: str, region: str):
                 print_kv("Created", str(mcp.get("created_at")))
                 print_kv("Updated", str(mcp.get("updated_at")))
                 
+        except DryRunExit:
+            raise
         except Exception as e:
             print_error(f"获取状态失败: {e}")
 
-    asyncio.run(_get())
+    run_async_with_dry_run(_get(), dry_run=dry_run)
 
 
 @mcp.command("delete")
 @click.argument("mcp_id")
-@click.confirmation_option(prompt="确定要删除这个 MCP 吗?")
 @click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
-def delete(mcp_id: str, region: str):
+@click.option("--yes", "-y", is_flag=True, help="跳过确认")
+@dry_run_option()
+def delete(mcp_id: str, region: str, yes: bool, dry_run: bool):
     """删除 MCP
     
     MCP_ID: 要删除的 MCP ID
     """
+    dry_run = effective_dry_run(dry_run)
     from ksadk.api import AgentEngineClient
-    import asyncio
+
+    if not yes and not dry_run:
+        if not click.confirm("确定要删除这个 MCP 吗?"):
+            print_info("已取消")
+            return
     
     async def _delete():
         server_url = os.getenv("AGENTENGINE_SERVER_URL")
@@ -444,7 +457,7 @@ def delete(mcp_id: str, region: str):
             return
             
         try:
-            async with AgentEngineClient(region=region) as client:
+            async with AgentEngineClient(region=region, dry_run=dry_run) as client:
                 success = await client.delete_mcp(mcp_id)
                 if success:
                     print_success(f"MCP 已删除: {mcp_id}")
@@ -453,14 +466,19 @@ def delete(mcp_id: str, region: str):
                     from ksadk.deployment.state import clear_state
                     try:
                         # 假设在当前目录运行
-                        clear_state(Path("."), key=mcp_id)
-                        print_info("本地状态文件已清理")
+                        removed = clear_state(Path("."), key=mcp_id)
+                        if removed:
+                            print_info("本地状态文件已清理")
+                        else:
+                            print_warn("未清理本地状态文件: 当前目录状态与目标 ID 不匹配")
                     except Exception:
                         pass
                 else:
                     print_error("删除失败")
                 
+        except DryRunExit:
+            raise
         except Exception as e:
             print_error(f"删除失败: {e}")
 
-    asyncio.run(_delete())
+    run_async_with_dry_run(_delete(), dry_run=dry_run)

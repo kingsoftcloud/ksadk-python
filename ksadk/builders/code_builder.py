@@ -178,7 +178,7 @@ class CodeBuilder(BaseBuilder):
         framework = detection_result.type.value
         if framework == "adk":
             deps += ["google-adk>=0.1.0", "litellm>=1.0.0"]
-        elif framework in ("langchain", "langgraph"):
+        elif framework in ("langchain", "langgraph", "deepagents"):
             # LangChain 生态统一依赖 (langchain 和 langgraph 经常混用)
             deps += [
                 # LangChain 核心
@@ -191,6 +191,8 @@ class CodeBuilder(BaseBuilder):
                 "mcp>=1.1.0",
                 "langchain-mcp-adapters>=0.0.1",
             ]
+            if framework == "deepagents":
+                deps += ["deepagents>=0.3.0"]
         
         return deps
     
@@ -694,8 +696,8 @@ if os.environ.get("LANGFUSE_PUBLIC_KEY"):
     try:
         from ksadk.tracing import setup_tracing
         
-        # 对于 LangGraph/LangChain，默认仅使用 Callback 以避免重复 Trace
-        is_langchain = "{detection_result.type.name}" in ("LANGCHAIN", "LANGGRAPH")
+        # 对于 LangChain 生态（LangGraph/DeepAgents），默认仅使用 Callback 以避免重复 Trace
+        is_langchain = "{detection_result.type.name}" in ("LANGCHAIN", "LANGGRAPH", "DEEPAGENTS")
         
         setup_tracing(use_callback_only=is_langchain)
         logger.info(f"Tracing 已启用 (Langfuse, CallbackOnly={{is_langchain}})")

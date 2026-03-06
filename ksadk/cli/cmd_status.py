@@ -11,6 +11,7 @@ from pathlib import Path
 from datetime import datetime
 from ksadk.api.client import DryRunExit
 from ksadk.cli.agent_ref import merge_agent_inputs, resolve_agent_ref
+from ksadk.cli.dry_run import dry_run_option, run_async_with_dry_run, effective_dry_run
 from ksadk.cli.ui import (
     get_console,
     new_table,
@@ -36,7 +37,7 @@ console = get_console()
 @click.option("--interval", "-i", default=2, help="Watch 刷新间隔 (秒)")
 @click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
 @click.option("--account-id", envvar="KSYUN_ACCOUNT_ID", help="金山云账号 ID")
-@click.option("--dry-run", is_flag=True, help="只打印 curl 请求，不执行")
+@dry_run_option()
 def status(
     agent_ref: str,
     agent_option: str,
@@ -58,6 +59,8 @@ def status(
         # 3) 显式指定区域
         KSYUN_REGION=cn-beijing-6 agentengine status --agent ar-xxxx --account-id X-Ksc-Account-Id
     """
+    dry_run = effective_dry_run(dry_run)
+
     try:
         agent_input = merge_agent_inputs(
             agent_option=agent_option,
@@ -93,21 +96,25 @@ def status(
         print_info("提示: 设置 KSYUN_ACCOUNT_ID 环境变量或使用 --account-id 参数")
         raise SystemExit(1)
 
+    if watch and dry_run:
+        print_warn("Watch 模式不支持 dry-run，请去掉 --watch 或取消 dry-run")
+        raise SystemExit(1)
+
     # Dry Run 模式由 AgentEngineClient 处理
     # 只要传入 dry_run=True，底层 client 会抛出 DryRunExit 异常
 
     if show_all:
-        try:
-            asyncio.run(_list_all_agents(region, account_id, dry_run))
-        except DryRunExit as e:
-            pass
+        run_async_with_dry_run(
+            _list_all_agents(region, account_id, dry_run),
+            dry_run=dry_run,
+        )
     elif watch:
         _watch_status(agent, region, account_id, interval)
     else:
-        try:
-            asyncio.run(_show_agent_status(agent, region, account_id, dry_run))
-        except DryRunExit as e:
-            pass
+        run_async_with_dry_run(
+            _show_agent_status(agent, region, account_id, dry_run),
+            dry_run=dry_run,
+        )
 
 
 def _watch_status(agent: str, region: str, account_id: str, interval: int):
