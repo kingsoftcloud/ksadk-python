@@ -7,6 +7,7 @@
 ## 核心能力
 
 - 多框架支持：DeepAgents、LangGraph、LangChain、Google ADK。
+- ADK 增强能力：支持短期/长期记忆体（STM/LTM）与知识库工具注入。
 - 本地开发：`run`（API/TUI）与 `web`（本地 Invoke 调试 UI）。
 - 云端部署：`build`、`deploy`、`launch`，支持 `Code` / `Container` 两种制品模式。
 - 云端 UI 访问：`dashboard` 统一打开已部署 Agent 的 Web UI（含 OpenClaw）。
@@ -28,6 +29,7 @@ pip install "ksadk[langgraph]"
 pip install "ksadk[langchain]"
 pip install "ksadk[deepagents]"
 pip install "ksadk[adk]"
+pip install "ksadk[kb]"
 ```
 
 安装后可使用以下命令入口（等价）：
@@ -105,6 +107,16 @@ agentengine dashboard --agent ar-xxxx
 
 # OpenClaw 也走统一入口
 agentengine dashboard --agent openclaw-gateway-xxxx
+```
+
+### 6)（可选）启用 ADK 记忆与知识库
+
+```bash
+# 记忆体后端: local | http | sdk
+export KSADK_LTM_BACKEND=local
+
+# 配置知识库后，Runner 会自动注入 search_knowledge_base 工具
+export KSADK_KB_DATASET_ID=your_dataset_id
 ```
 
 ## 命令总览
@@ -251,6 +263,9 @@ agentengine mcp delete <mcp_id> --yes
 | `LANGFUSE_PUBLIC_KEY` | Langfuse 公钥 |
 | `LANGFUSE_SECRET_KEY` | Langfuse 私钥 |
 | `LANGFUSE_BASE_URL` / `LANGFUSE_HOST` | Langfuse 地址 |
+| `KSADK_LTM_BACKEND` | ADK 长期记忆后端（`local/http/sdk`） |
+| `KSADK_LTM_HTTP_URL` | LTM HTTP 后端地址（当 `KSADK_LTM_BACKEND=http`） |
+| `KSADK_KB_DATASET_ID` | 知识库 Dataset ID（配置后启用知识库检索） |
 
 兼容别名仍可识别：`OPENAI_API_BASE`、`MODEL_NAME`。
 
@@ -281,3 +296,5 @@ agentengine completion install --shell auto
 ## 进阶文档
 
 - [DeepAgents 框架支持说明](./docs/deepagents.md)
+- [ADK 记忆能力使用说明](./docs/memory_usage_guide.md)
+- [知识库与记忆能力示例](./docs/knowledge_base_and_memory_examples.md)
