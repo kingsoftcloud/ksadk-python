@@ -12,6 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **DeepAgents 框架支持**:
     - 新增 `deepagents` 框架识别与初始化/构建/部署链路支持。
     - Code/Container 构建流程自动注入 `deepagents>=0.3.0` 相关依赖，减少手工配置成本。
+- **ADK 长短期记忆体集成**:
+    - 新增 `ksadk.memory.adk` 记忆模块，支持 ShortTermMemory / LongTermMemory。
+    - 长期记忆支持 `local/http/sdk` 后端，Runner 可按环境变量自动初始化并注入 `load_memory` 工具。
+    - 新增会话持久化接口 `save_memory`，支持将 session 内容写入长期记忆后端。
+- **知识库集成能力**:
+    - 新增 `ksadk.knowledge_base` 模块，提供 ADK/LangChain 可用的知识库检索工具。
+    - 支持通过环境变量完成知识库配置，运行时可自动注入 `search_knowledge_base` 工具。
 - **CLI 版本管理**:
     - 新增 `agentengine version` 命令组，支持版本发布、回滚、列表查看等流程。
 - **MCP 双制品部署能力**:
@@ -42,6 +49,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **协议与控制面适配增强**:
     - 客户端公共层统一 `snake_case` 字段转换，提升接口兼容性。
     - 控制面鉴权服务路由由 `kmr` 切换至 `aicp`。
+- **依赖与扩展项完善**:
+    - 新增 `kb` 可选依赖组（`kingsoftcloud-sdk-python`），`all` 聚合依赖同步纳入知识库能力。
     
 ### 🐛 修复 (Bug Fixes)
 
