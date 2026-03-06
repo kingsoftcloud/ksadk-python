@@ -60,7 +60,7 @@ class AgentEngineClient:
         self.logical_region = region
         self.region = self._normalize_control_region(region)
         self.custom_source = self._resolve_custom_source(region)
-        self.dry_run = dry_run
+        self.dry_run = bool(dry_run or self._is_global_dry_run_enabled())
         self.extra_headers = extra_headers or {}
         # 签名 service 可通过环境变量覆盖（例如 aicp）
         self.service = service or os.getenv("AGENTENGINE_SIGN_SERVICE", "aicp")
@@ -79,6 +79,16 @@ class AgentEngineClient:
             logger.warning("AgentEngineClient: No credentials, signing disabled")
             
         self._session: Optional[requests.Session] = None
+
+    @staticmethod
+    def _is_global_dry_run_enabled() -> bool:
+        """根命令 --dry-run 开关：支持未显式透传 dry_run 参数的命令。"""
+        return os.getenv("AGENTENGINE_GLOBAL_DRY_RUN", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
 
     @staticmethod
     def _is_connectable(url: str, timeout: float = 1.0) -> bool:
@@ -303,6 +313,46 @@ class AgentEngineClient:
             return [cls._fix_endpoints_protocol(item) for item in data]
         return data
 
+    @staticmethod
+    def _parse_container_image_ref(image_ref: str) -> tuple[str, str, str]:
+        """解析容器镜像地址，返回 (namespace, repo, tag)。"""
+        raw = (image_ref or "").strip()
+        if not raw:
+            return "default", "", "latest"
+
+        image = raw
+        for prefix in ("http://", "https://"):
+            if image.startswith(prefix):
+                image = image[len(prefix):]
+                break
+
+        image_no_tag = image
+        tag = "latest"
+        last_slash = image.rfind("/")
+        last_colon = image.rfind(":")
+        if last_colon > last_slash:
+            image_no_tag = image[:last_colon]
+            tag = image[last_colon + 1 :] or "latest"
+
+        path = image_no_tag
+        first = image_no_tag.split("/", 1)[0].strip()
+        has_registry = "." in first or ":" in first or first == "localhost"
+        if has_registry and "/" in image_no_tag:
+            path = image_no_tag.split("/", 1)[1]
+
+        if "/" in path:
+            namespace, repo = path.split("/", 1)
+        else:
+            namespace, repo = "default", path
+
+        return namespace or "default", repo, tag
+
+    @staticmethod
+    def _normalize_framework_name(framework: Optional[str]) -> str:
+        """规范化 framework 名称，默认 langgraph。"""
+        normalized = (framework or "langgraph").strip().lower()
+        return normalized or "langgraph"
+
     def _action(self, action: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
         """通用 Action API 调用"""
         body = params or {}
@@ -330,11 +380,12 @@ class AgentEngineClient:
     # ===== Agent Actions =====
 
     async def create_agent(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """创建 Agent (通过 CreateProduct 走订单流程)"""
+        """创建 Agent (通过 CreateAgentProduct 走订单流程)"""
+        framework = self._normalize_framework_name(data.get("framework"))
         params = {
             "Name": data.get("name"),
             "Description": data.get("description"),
-            "Framework": data.get("framework", "langgraph"),
+            "Framework": framework,
             "DeploymentType": data.get("artifact_type", "Code"),
             "Region": self._normalize_payload_region(data.get("region", "cn-beijing-6")),
             "Resource": {
@@ -367,27 +418,24 @@ class AgentEngineClient:
                 "Bucket": ks3.get("bucket"),
             }
         else:
-            ic = data.get("image_credential", {})
-            # 解析 artifact_path (格式: ns/repo:version 或 repo:version 或 repo)
-            artifact = data.get("artifact_path", "")
-            img_ns = "default"
-            img_repo = artifact
-            img_ver = "latest"
-            if ":" in artifact:
-                artifact, img_ver = artifact.rsplit(":", 1)
-            if "/" in artifact:
-                img_ns, img_repo = artifact.split("/", 1)
-            else:
-                img_repo = artifact
+            ic = data.get("image_credential", {}) or {}
+            image_username = (ic.get("username") or "").strip()
+            image_password = (ic.get("password") or "").strip()
+            artifact = (data.get("artifact_path", "") or "").strip()
+            img_ns, img_repo, img_ver = self._parse_container_image_ref(artifact)
 
-            params["ContainerConfig"] = {
+            container_config = {
                 "ImageType": "Personal",
                 "NameSpace": img_ns,
                 "ImageRepo": img_repo,
                 "ImageVersion": img_ver,
-                "UserName": ic.get("username"),
-                "Password": ic.get("password"),
+                "ImageAddr": artifact,
             }
+            # 仅在用户名和密码同时存在时才传鉴权，避免对公共镜像误触发失败鉴权重试。
+            if image_username and image_password:
+                container_config["UserName"] = image_username
+                container_config["Password"] = image_password
+            params["ContainerConfig"] = container_config
 
         env_vars = []
         envs = data.get("env_vars") or data.get("environment_variables")
@@ -410,7 +458,7 @@ class AgentEngineClient:
             advanced["ProjectId"] = project_id
         params["Advanced"] = advanced
 
-        return self._action("CreateProduct", params)
+        return self._action("CreateAgentProduct", params)
 
     async def get_agent(self, agent_id: str = None, name: str = None, include_api_key: bool = False) -> Dict[str, Any]:
         """获取 Agent 详情（支持 AgentId 或 Name 查询）"""
@@ -422,6 +470,23 @@ class AgentEngineClient:
         if include_api_key:
             params["IncludeApiKey"] = True
         return self._action("GetAgent", params)
+
+    async def create_dashboard_ticket(
+        self,
+        *,
+        agent_id: Optional[str] = None,
+        name: Optional[str] = None,
+        expires_seconds: int = 300,
+    ) -> Dict[str, Any]:
+        """创建短时效 Dashboard ticket（用于浏览器无 Header 访问）。"""
+        params: Dict[str, Any] = {
+            "ExpiresSeconds": int(expires_seconds),
+        }
+        if agent_id:
+            params["AgentId"] = agent_id
+        if name:
+            params["Name"] = name
+        return self._action("CreateDashboardTicket", params)
         
     async def list_agents(self, region: Optional[str] = None) -> Dict[str, Any]:
         """列出 Agents"""
@@ -444,14 +509,32 @@ class AgentEngineClient:
             params["Description"] = data["description"]
             
         if data.get("artifact_path"):
-            ks3 = data.get("ks3", {})
-            params["CodeConfig"] = {
-                "Path": data["artifact_path"],
-                "AccessKey": ks3.get("access_key"),
-                "SecretKey": ks3.get("secret_key"),
-                "Region": self._normalize_payload_region(ks3.get("region", "cn-beijing-6")),
-                "Bucket": ks3.get("bucket"),
-            }
+            artifact = (data.get("artifact_path", "") or "").strip()
+            if (data.get("artifact_type") or "").lower() == "container":
+                ic = data.get("image_credential", {}) or {}
+                image_username = (ic.get("username") or "").strip()
+                image_password = (ic.get("password") or "").strip()
+                img_ns, img_repo, img_ver = self._parse_container_image_ref(artifact)
+                container_config = {
+                    "ImageType": "Personal",
+                    "NameSpace": img_ns,
+                    "ImageRepo": img_repo,
+                    "ImageVersion": img_ver,
+                    "ImageAddr": artifact,
+                }
+                if image_username and image_password:
+                    container_config["UserName"] = image_username
+                    container_config["Password"] = image_password
+                params["ContainerConfig"] = container_config
+            else:
+                ks3 = data.get("ks3", {})
+                params["CodeConfig"] = {
+                    "Path": artifact,
+                    "AccessKey": ks3.get("access_key"),
+                    "SecretKey": ks3.get("secret_key"),
+                    "Region": self._normalize_payload_region(ks3.get("region", "cn-beijing-6")),
+                    "Bucket": ks3.get("bucket"),
+                }
             
         if data.get("resources"):
             params["Resource"] = {

@@ -2,7 +2,7 @@
 ksadk run - 本地运行 Agent
 
 对于 ADK 项目，直接调用 adk CLI
-对于 LangChain/LangGraph 项目，使用自己的实现
+对于 LangChain/LangGraph/DeepAgents 项目，使用自己的实现
 """
 
 import click
@@ -31,7 +31,7 @@ from ksadk.cli.ui import (
 @click.option("--show-thinking", is_flag=True, help="显示模型思考过程")
 @click.option("--no-stream", is_flag=True, help="禁用流式渲染 (等待完整响应后再渲染)")
 def run(agent_dir: str, port: int, interactive: bool, no_trace: bool, model: str, show_thinking: bool, no_stream: bool):
-    """运行 Agent (支持 LangChain / LangGraph / ADK)
+    """运行 Agent (支持 LangChain / LangGraph / DeepAgents / ADK)
 
     AGENT_DIR: Agent 项目目录 (默认: 当前目录)
     """
@@ -57,7 +57,7 @@ def run(agent_dir: str, port: int, interactive: bool, no_trace: bool, model: str
     result = detector.detect()
 
     if result.type.value == "unknown":
-        print_error("未检测到支持的框架 (LangChain/LangGraph/ADK)")
+        print_error("未检测到支持的框架 (LangChain/LangGraph/DeepAgents/ADK)")
         print_info("提示: 请确保项目包含正确的框架代码")
         raise SystemExit(1)
 
@@ -65,6 +65,7 @@ def run(agent_dir: str, port: int, interactive: bool, no_trace: bool, model: str
         "adk": "Google ADK",
         "langchain": "LangChain",
         "langgraph": "LangGraph",
+        "deepagents": "DeepAgents",
         "unknown": "Unknown"
     }
     framework_name = framework_map.get(result.type.value, result.type.value)
@@ -145,7 +146,7 @@ def _run_custom(
     show_thinking: bool,
     no_stream: bool = False,
 ):
-    """使用自定义实现 (LangChain/LangGraph)"""
+    """使用自定义实现 (LangChain/LangGraph/DeepAgents)"""
     from ksadk.runners.unified_runner import UnifiedRunner
 
     # 初始化 Tracing
@@ -157,8 +158,8 @@ def _run_custom(
             # Auto-detect Langfuse from environment
             has_langfuse = bool(os.getenv("LANGFUSE_PUBLIC_KEY"))
 
-            # 对于 Langchain/LangGraph，默认仅使用 Callback 以避免重复 Trace
-            is_langchain = result.type.value in ("langchain", "langgraph")
+            # 对于 LangChain 生态（LangGraph/DeepAgents），默认仅使用 Callback 以避免重复 Trace
+            is_langchain = result.type.value in ("langchain", "langgraph", "deepagents")
 
             setup_tracing(
                 enable_inmemory=True, enable_langfuse=has_langfuse, use_callback_only=is_langchain

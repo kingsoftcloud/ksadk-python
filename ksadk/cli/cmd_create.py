@@ -133,12 +133,38 @@ graph.add_edge("chat", END)
 root_agent = graph.compile()
 ''',
     },
+    "deepagents": {
+        "agent.py": '''"""
+{package_name} - DeepAgents Agent
+"""
+
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).parent.parent / ".env")
+
+from deepagents import create_deep_agent
+from langchain_openai import ChatOpenAI
+
+llm = ChatOpenAI(
+    model=os.getenv("OPENAI_MODEL_NAME", "deepseek-v3.2"),
+    base_url=os.getenv("OPENAI_BASE_URL"),
+    api_key=os.getenv("OPENAI_API_KEY"),
+    streaming=True,
+)
+
+root_agent = create_deep_agent(model=llm)
+''',
+    },
 }
 
 
 def _detect_framework(content: str) -> str:
     """检测 Agent 文件使用的框架"""
-    if 'from langgraph' in content or 'import langgraph' in content:
+    if 'from deepagents' in content or 'import deepagents' in content or 'create_deep_agent(' in content:
+        return 'deepagents'
+    elif 'from langgraph' in content or 'import langgraph' in content:
         return 'langgraph'
     elif 'from google.adk' in content or 'import google.adk' in content:
         return 'adk'
@@ -355,6 +381,7 @@ def _generate_requirements_from_imports(directory: Path, framework: str) -> str:
         'langchain_core': 'langchain-core',
         'langchain_community': 'langchain-community',
         'langgraph': 'langgraph',
+        'deepagents': 'deepagents',
         'openai': 'openai',
         'anthropic': 'anthropic',
         'dotenv': 'python-dotenv',
@@ -403,6 +430,11 @@ def _generate_requirements_from_imports(directory: Path, framework: str) -> str:
     
     # 确保框架相关的核心依赖在列表中
     if framework == 'langgraph':
+        found_packages.add('langgraph')
+        found_packages.add('langchain')
+        found_packages.add('langchain-openai')
+    elif framework == 'deepagents':
+        found_packages.add('deepagents')
         found_packages.add('langgraph')
         found_packages.add('langchain')
         found_packages.add('langchain-openai')
@@ -500,6 +532,8 @@ __all__ = ["root_agent"]
         reqs = "langchain\nlangchain-openai\npython-dotenv\n"
     elif framework == "langgraph":
         reqs = "langchain\nlangchain-openai\nlanggraph\npython-dotenv\n"
+    elif framework == "deepagents":
+        reqs = "deepagents\nlangchain\nlangchain-openai\nlanggraph\npython-dotenv\n"
     elif framework == "adk":
         reqs = "google-adk\npython-dotenv\n"
     (project_path / "requirements.txt").write_text(reqs, encoding="utf-8")
@@ -642,6 +676,11 @@ __all__ = ["root_agent"]
         missing = []
         if framework == "langgraph" and 'langgraph' not in existing_reqs:
             missing.append("langgraph")
+        if framework == "deepagents":
+            if 'deepagents' not in existing_reqs:
+                missing.append("deepagents")
+            if 'langgraph' not in existing_reqs:
+                missing.append("langgraph")
         if 'python-dotenv' not in existing_reqs and 'dotenv' not in existing_reqs:
             missing.append("python-dotenv")
         
@@ -713,7 +752,7 @@ except Exception as e:
 
 @click.command(context_settings=dict(help_option_names=['-h', '--help']))
 @click.argument('project_name', required=False)
-@click.option('--framework', '-f', type=click.Choice(['adk', 'langchain', 'langgraph', 'openclaw']),
+@click.option('--framework', '-f', type=click.Choice(['adk', 'langchain', 'langgraph', 'deepagents', 'openclaw']),
               default='langgraph', help='框架类型 (default: langgraph)')
 @click.option('--from-agent', 'from_agent_path', type=click.Path(exists=True), 
               help='包装现有 Agent 文件或目录')
@@ -812,7 +851,7 @@ def create(project_name: str, framework: str, from_agent_path: str):
             
         framework = questionary.select(
             "请选择开发框架:",
-            choices=['langgraph', 'langchain', 'adk', 'openclaw'],
+            choices=['langgraph', 'langchain', 'deepagents', 'adk', 'openclaw'],
             default='langgraph',
             style=custom_style
         ).ask()
@@ -929,7 +968,7 @@ OPENAI_API_KEY={api_key}
 name: {package_name}
 version: "1.0.0"
 
-# 框架类型: adk, langchain, langgraph
+# 框架类型: adk, langchain, langgraph, deepagents
 framework: {framework}
 
 # Agent 入口
@@ -996,6 +1035,8 @@ agentengine deploy .    # 部署到云端
         reqs += "langchain\nlangchain-openai\npython-dotenv\n"
     elif framework == "langgraph":
         reqs += "langchain\nlangchain-openai\nlanggraph\npython-dotenv\n"
+    elif framework == "deepagents":
+        reqs += "deepagents\nlangchain\nlangchain-openai\nlanggraph\npython-dotenv\n"
     elif framework == "adk":
         reqs += "google-adk\npython-dotenv\n"
     

@@ -6,7 +6,7 @@
 
 ## 核心能力
 
-- 多框架支持：LangGraph、LangChain、Google ADK。
+- 多框架支持：DeepAgents、LangGraph、LangChain、Google ADK。
 - 本地开发：`run`（API/TUI）与 `web`（Web UI）。
 - 云端部署：`build`、`deploy`、`launch`，支持 `Code` / `Container` 两种制品模式。
 - 统一控制面：通过 `AgentEngine Server` 进行 Agent/MCP 管理。
@@ -25,6 +25,7 @@ pip install -U ksadk
 ```bash
 pip install "ksadk[langgraph]"
 pip install "ksadk[langchain]"
+pip install "ksadk[deepagents]"
 pip install "ksadk[adk]"
 ```
 
@@ -42,6 +43,13 @@ ksadk --help
 ```bash
 agentengine init my_agent -f langgraph
 cd my_agent
+```
+
+DeepAgents 模板：
+
+```bash
+agentengine init my_deep_agent -f deepagents
+cd my_deep_agent
 ```
 
 也可包装已有代码：
@@ -249,3 +257,7 @@ agentengine completion install --shell auto
 ## 示例项目
 
 见 [examples](./examples) 目录。
+
+## 进阶文档
+
+- [DeepAgents 框架支持说明](./docs/deepagents.md)

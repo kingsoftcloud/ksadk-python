@@ -8,19 +8,20 @@ agentengine version - 版本管理命令组
 """
 
 import os
-import asyncio
 import click
 from pathlib import Path
 from typing import Optional
 from datetime import datetime, timedelta, timezone
 
+from ksadk.api.client import DryRunExit
 from ksadk.cli.agent_ref import merge_agent_inputs, resolve_agent_ref
+from ksadk.cli.dry_run import dry_run_option, run_async_with_dry_run, effective_dry_run
 from ksadk.cli.ui import get_console, new_table, status_rich_style
 
 console = get_console()
 
 
-def _get_client():
+def _get_client(dry_run: bool = False):
     """获取 API 客户端"""
     from ksadk.api import AgentEngineClient
 
@@ -32,6 +33,7 @@ def _get_client():
         access_key=access_key,
         secret_key=secret_key,
         region=region,
+        dry_run=dry_run,
     )
 
 
@@ -54,6 +56,8 @@ async def _resolve_agent_id(agent_ref: str, client) -> Optional[str]:
         agent_id = _extract_agent_id(agent)
         if agent_id:
             return agent_id
+    except DryRunExit:
+        raise
     except Exception:
         pass
 
@@ -63,6 +67,8 @@ async def _resolve_agent_id(agent_ref: str, client) -> Optional[str]:
         agent_id = _extract_agent_id(agent)
         if agent_id:
             return agent_id
+    except DryRunExit:
+        raise
     except Exception:
         pass
     return None
@@ -134,12 +140,14 @@ def version():
 @click.option("--name", "-n", hidden=True, help="(兼容) Agent 名称")
 @click.option("--page", "-p", default=1, help="页码")
 @click.option("--size", "-s", default=10, help="每页数量")
+@dry_run_option()
 def list_versions(
     agent_ref: Optional[str],
     agent_option: Optional[str],
     name: Optional[str],
     page: int,
     size: int,
+    dry_run: bool,
 ):
     """列出版本历史
 
@@ -152,7 +160,11 @@ def list_versions(
         # 3) 显式指定区域
         KSYUN_REGION=cn-beijing-6 agentengine version list --agent ar-xxxx
     """
-    asyncio.run(_list_versions_async(agent_ref, agent_option, name, page, size))
+    dry_run = effective_dry_run(dry_run)
+    run_async_with_dry_run(
+        _list_versions_async(agent_ref, agent_option, name, page, size, dry_run),
+        dry_run=dry_run,
+    )
 
 
 async def _list_versions_async(
@@ -161,8 +173,9 @@ async def _list_versions_async(
     name: Optional[str],
     page: int,
     size: int,
+    dry_run: bool,
 ):
-    client = _get_client()
+    client = _get_client(dry_run=dry_run)
 
     try:
         agent_id = await _resolve_target_agent_id(
@@ -230,6 +243,8 @@ async def _list_versions_async(
 
         console.print(table)
 
+    except DryRunExit:
+        raise
     except Exception as e:
         console.print(f"[red]✗ Error: {e}[/red]")
     finally:
@@ -242,12 +257,14 @@ async def _list_versions_async(
 @click.option("--name", "-n", hidden=True, help="(兼容) Agent 名称")
 @click.option("--tag", "-t", help="版本标签 (不填则自动生成)")
 @click.option("--description", "-d", help="版本描述")
+@dry_run_option()
 def release_version(
     agent_ref: Optional[str],
     agent_option: Optional[str],
     name: Optional[str],
     tag: Optional[str],
     description: Optional[str],
+    dry_run: bool,
 ):
     """发布新版本
 
@@ -263,7 +280,11 @@ def release_version(
         # 3) 显式指定区域
         KSYUN_REGION=cn-beijing-6 agentengine version release --agent ar-xxxx --tag v1.0.1
     """
-    asyncio.run(_release_version_async(agent_ref, agent_option, name, tag, description))
+    dry_run = effective_dry_run(dry_run)
+    run_async_with_dry_run(
+        _release_version_async(agent_ref, agent_option, name, tag, description, dry_run),
+        dry_run=dry_run,
+    )
 
 
 async def _release_version_async(
@@ -272,8 +293,9 @@ async def _release_version_async(
     name: Optional[str],
     tag: Optional[str],
     description: Optional[str],
+    dry_run: bool,
 ):
-    client = _get_client()
+    client = _get_client(dry_run=dry_run)
 
     try:
         agent_id = await _resolve_target_agent_id(
@@ -291,6 +313,8 @@ async def _release_version_async(
         console.print(f"  Version ID: [dim]{result.get('id')}[/dim]")
         console.print(f"  Artifact: [dim]{result.get('artifact_path')}[/dim]")
 
+    except DryRunExit:
+        raise
     except Exception as e:
         console.print(f"[red]✗ Error: {e}[/red]")
     finally:
@@ -303,12 +327,14 @@ async def _release_version_async(
 @click.option("--name", "-n", hidden=True, help="(兼容) Agent 名称")
 @click.option("--to", "target", required=True, help="目标版本 (tag 或 version ID)")
 @click.option("--yes", "-y", is_flag=True, help="跳过确认")
+@dry_run_option()
 def rollback_version(
     agent_ref: Optional[str],
     agent_option: Optional[str],
     name: Optional[str],
     target: str,
     yes: bool,
+    dry_run: bool,
 ):
     """回滚到指定版本
 
@@ -324,7 +350,11 @@ def rollback_version(
         # 3) 显式指定区域
         KSYUN_REGION=cn-beijing-6 agentengine version rollback --agent ar-xxxx --to v1.0.0 -y
     """
-    asyncio.run(_rollback_version_async(agent_ref, agent_option, name, target, yes))
+    dry_run = effective_dry_run(dry_run)
+    run_async_with_dry_run(
+        _rollback_version_async(agent_ref, agent_option, name, target, yes, dry_run),
+        dry_run=dry_run,
+    )
 
 
 async def _rollback_version_async(
@@ -333,8 +363,9 @@ async def _rollback_version_async(
     name: Optional[str],
     target: str,
     yes: bool,
+    dry_run: bool,
 ):
-    client = _get_client()
+    client = _get_client(dry_run=dry_run)
 
     try:
         agent_id = await _resolve_target_agent_id(
@@ -345,7 +376,7 @@ async def _rollback_version_async(
         )
 
         # 确认操作
-        if not yes:
+        if not yes and not dry_run:
             console.print(f"[yellow]⚠ This will rollback Agent to version: {target}[/yellow]")
             console.print("[yellow]  The agent may be briefly unavailable during rollback.[/yellow]")
             if not click.confirm("Do you want to continue?"):
@@ -381,6 +412,8 @@ async def _rollback_version_async(
         if result.get("message"):
             console.print(f"  {result.get('message')}")
 
+    except DryRunExit:
+        raise
     except Exception as e:
         console.print(f"[red]✗ Error: {e}[/red]")
     finally:

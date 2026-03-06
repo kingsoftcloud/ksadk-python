@@ -502,7 +502,7 @@ class ServerlessProvider(BaseDeployProvider):
                             "api_key": "dry-run-key"
                         }
                     
-                    # CreateProduct 返回 order_id，需要轮询 list_agents 获取 agent_id
+                    # CreateAgentProduct 返回 order_id，需要轮询 list_agents 获取 agent_id
                     new_agent_id = res.get("agent_id")
                     order_id = res.get("order_id")
                     agent_name = res.get("name") or package_info.name

@@ -6,6 +6,7 @@ import click
 import asyncio
 import os
 from pathlib import Path
+from ksadk.cli.dry_run import effective_dry_run
 from ksadk.cli.ui import (
     print_error,
     print_info,
@@ -82,6 +83,7 @@ def launch(
         # 3) 显式指定区域
         KSYUN_REGION=cn-beijing-6 agentengine launch . --target serverless --no-cache
     """
+    dry_run = effective_dry_run(dry_run)
     asyncio.run(
         _launch_async(
             agent_dir,

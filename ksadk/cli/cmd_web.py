@@ -1,8 +1,9 @@
 """
 ksadk web - 启动 Web UI
 
-对于 ADK 项目，使用 ADK Web
-对于 LangChain/LangGraph 项目，使用 Chainlit
+用于本地调试 Agent 的 Invoke UI（非云端 Dashboard）。
+- ADK 项目: 使用 ADK Web
+- LangChain/LangGraph/DeepAgents 项目: 使用 Chainlit
 """
 
 import click
@@ -24,17 +25,21 @@ from ksadk.cli.ui import (
 @click.option("--port", "-p", default=8080, help="Web UI 端口")
 @click.option("--model", help="指定模型名称 (覆盖 .env 配置)")
 def web(agent_dir: str, port: int, model: str):
-    """启动 Web UI
+    """启动本地调试 Web UI（Invoke UI）
 
+    \b
     AGENT_DIR: Agent 项目目录 (默认: 当前目录)
-    
-    - ADK 项目: 使用 ADK Web UI
-    - LangChain/LangGraph 项目: 使用 Chainlit
+
+    \b
+    用途说明:
+      本地调试 Agent Invoke UI（非云端 Dashboard）
+      ADK 项目使用 ADK Web UI
+      LangChain/LangGraph/DeepAgents 项目使用 Chainlit
     """
     from ksadk.detection import FrameworkDetector, FrameworkType
 
     agent_path = Path(agent_dir).resolve()
-    print_title("启动 Web UI")
+    print_title("启动本地调试 Web UI")
     print_kv("项目目录", str(agent_path))
 
     # 设置模型名称 (CLI 参数优先级最高)
@@ -60,6 +65,7 @@ def web(agent_dir: str, port: int, model: str):
         "adk": "ADK",
         "langchain": "LangChain",
         "langgraph": "LangGraph",
+        "deepagents": "DeepAgents",
     }
     display_name = framework_map.get(result.type.value, result.name)
     print_kv("框架", display_name, value_style="#2da44e")

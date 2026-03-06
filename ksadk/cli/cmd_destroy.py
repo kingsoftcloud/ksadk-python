@@ -5,8 +5,8 @@ agentengine destroy - 停止并销毁 Agent 实例
 import click
 import asyncio
 from pathlib import Path
-from ksadk.api.client import DryRunExit
 from ksadk.cli.agent_ref import merge_agent_inputs, resolve_agent_ref
+from ksadk.cli.dry_run import dry_run_option, run_async_with_dry_run, effective_dry_run
 from ksadk.deployment import DeploymentManager, DeployTarget
 from ksadk.cli.ui import (
     print_error,
@@ -24,7 +24,7 @@ from ksadk.cli.ui import (
 @click.option("--force", "-f", is_flag=True, help="强制删除，不提示确认")
 @click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
 @click.option("--account-id", envvar="KSYUN_ACCOUNT_ID", help="金山云账号 ID")
-@click.option("--dry-run", is_flag=True, help="只打印 curl 请求，不执行")
+@dry_run_option()
 def destroy(agent_ref: str, agent_option: str, force: bool, region: str, account_id: str, dry_run: bool):
     """停止并销毁 Agent 实例，释放相关资源
 
@@ -37,6 +37,8 @@ def destroy(agent_ref: str, agent_option: str, force: bool, region: str, account
         # 3) 显式指定区域
         KSYUN_REGION=cn-beijing-6 agentengine destroy --agent ar-xxxx --account-id X-Ksc-Account-Id --dry-run
     """
+    dry_run = effective_dry_run(dry_run)
+
     try:
         agent_input = merge_agent_inputs(
             agent_option=agent_option,
@@ -112,7 +114,10 @@ def destroy(agent_ref: str, agent_option: str, force: bool, region: str, account
 
     # 调用 Provider 销毁
     try:
-        success = asyncio.run(provider.destroy(agent_id, deploy_target))
+        success = run_async_with_dry_run(
+            provider.destroy(agent_id, deploy_target),
+            dry_run=dry_run,
+        )
 
         if success:
             print_success("Agent 已销毁")
@@ -120,9 +125,6 @@ def destroy(agent_ref: str, agent_option: str, force: bool, region: str, account
             if not dry_run:
                 print_error("销毁失败，请检查错误信息")
                 raise SystemExit(1)
-            
-    except DryRunExit:
-        pass  # Dry Run 完成
     except Exception as e:
         print_error(f"操作失败: {e}")
         raise SystemExit(1)

@@ -2,7 +2,7 @@
 agentengine openclaw - OpenClaw 云端部署管理
 
 设计目标:
-- 和 Agent 部署完全一致，复用 CreateProduct 接口 (Container 模式)
+- 和 Agent 部署完全一致，复用 CreateAgentProduct 接口 (Container 模式)
 - Framework 标记为 "openclaw"，区分于普通 Agent
 - 预构建公共镜像，用户无需自行构建
 - 模型配置通过 EnvironmentVariables 传递，自动复用 OPENAI_* 变量
@@ -13,14 +13,14 @@ from __future__ import annotations
 import os
 import asyncio
 import secrets
-import threading
-import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict
 
 import click
 
+from ksadk.api.client import DryRunExit
+from ksadk.cli.dry_run import dry_run_option, run_async_with_dry_run, effective_dry_run
 from ksadk.cli.ui import (
     get_console,
     new_table,
@@ -40,17 +40,94 @@ console = get_console()
 DEFAULT_OPENCLAW_NAMESPACE = "agentengine-public"
 DEFAULT_OPENCLAW_REPO = "openclaw"
 DEFAULT_OPENCLAW_VERSION = "latest"
+DEFAULT_OPENCLAW_REGISTRY = "hub.kce.ksyun.com"
 DEFAULT_OPENCLAW_NAME = "openclaw-gateway"
 DEFAULT_GATEWAY_TOKEN = "openclaw-default-token"
+_GLOBAL_ENV_CACHE: Optional[Dict[str, str]] = None
+
+
+def _get_global_env() -> Dict[str, str]:
+    """读取全局配置并转换为环境变量字典（带进程级缓存）。"""
+    global _GLOBAL_ENV_CACHE
+    if _GLOBAL_ENV_CACHE is not None:
+        return _GLOBAL_ENV_CACHE
+
+    try:
+        from ksadk.configs.global_config import get_env_from_global_config
+        _GLOBAL_ENV_CACHE = {
+            str(k): str(v).strip()
+            for k, v in get_env_from_global_config().items()
+            if k and v is not None and str(v).strip() != ""
+        }
+    except Exception:
+        _GLOBAL_ENV_CACHE = {}
+
+    return _GLOBAL_ENV_CACHE
 
 
 def _resolve_env(*keys: str, default: Optional[str] = None) -> Optional[str]:
-    """按优先级从多个环境变量中获取值"""
+    """按优先级从环境变量和全局配置中获取值。"""
     for key in keys:
         val = os.getenv(key)
         if val is not None and str(val).strip() != "":
             return str(val).strip()
+    global_env = _get_global_env()
+    for key in keys:
+        val = global_env.get(key)
+        if val is not None and str(val).strip() != "":
+            return str(val).strip()
     return default
+
+
+def _resolve_model_base_url(cli_value: Optional[str]) -> Optional[str]:
+    """解析模型 Base URL，缺失时回退到 settings.model.api_base（KSPMAS 自动探测）。"""
+    if cli_value and str(cli_value).strip():
+        return str(cli_value).strip()
+
+    from_env = _resolve_env(
+        "OPENCLAW_MODEL_BASE_URL",
+        "OPENAI_BASE_URL",
+        "OPENAI_API_BASE",
+        "LLM_API_BASE",
+        "MODEL_API_BASE",
+    )
+    if from_env:
+        return from_env
+
+    try:
+        from ksadk.configs.settings import settings
+        api_base = settings.model.api_base
+        if api_base and str(api_base).strip():
+            return str(api_base).strip()
+    except Exception:
+        pass
+
+    return None
+
+
+def _normalize_ui_locale(raw: Optional[str]) -> str:
+    """标准化 UI 语言代码，默认 zh-CN。"""
+    text = str(raw or "").strip()
+    if not text:
+        return "zh-CN"
+
+    base = text.split(".", 1)[0].replace("_", "-").strip()
+    low = base.lower()
+
+    if low in {"c", "c-utf-8", "c.utf-8", "posix"}:
+        return "zh-CN"
+    if low.startswith("zh-tw") or low.startswith("zh-hk") or low.startswith("zh-mo") or low.startswith("zh-hant"):
+        return "zh-TW"
+    if low.startswith("zh"):
+        return "zh-CN"
+    if low.startswith("pt"):
+        return "pt-BR"
+    if low.startswith("de"):
+        return "de"
+    if low.startswith("en"):
+        return "en"
+
+    return "zh-CN"
 
 
 def _build_openclaw_env_vars(
@@ -60,22 +137,21 @@ def _build_openclaw_env_vars(
     default_model: Optional[str] = None,
     gateway_token: Optional[str] = None,
     model_provider_id: Optional[str] = None,
+    gateway_port: Optional[str] = None,
+    public_port: Optional[str] = None,
 ) -> dict:
     """构建 OpenClaw 所需的环境变量，自动复用 OPENAI_* 环境变量"""
     env = {}
 
     # 模型配置 (CLI 参数 > OPENCLAW_* > OPENAI_* > 默认值)
-    base_url = (
-        model_base_url
-        or _resolve_env("OPENCLAW_MODEL_BASE_URL", "OPENAI_BASE_URL", "OPENAI_API_BASE")
-    )
+    base_url = _resolve_model_base_url(model_base_url)
     api_key = (
         model_api_key
-        or _resolve_env("OPENCLAW_MODEL_API_KEY", "OPENAI_API_KEY")
+        or _resolve_env("OPENCLAW_MODEL_API_KEY", "OPENAI_API_KEY", "LLM_API_KEY", "MODEL_API_KEY")
     )
     model = (
         default_model
-        or _resolve_env("OPENCLAW_DEFAULT_MODEL", "OPENAI_MODEL_NAME", "MODEL_NAME")
+        or _resolve_env("OPENCLAW_DEFAULT_MODEL", "OPENAI_MODEL_NAME", "MODEL_NAME", "LLM_MODEL")
     )
     provider_id = (
         model_provider_id
@@ -87,30 +163,106 @@ def _build_openclaw_env_vars(
         or _resolve_env("OPENCLAW_GATEWAY_TOKEN")
         or DEFAULT_GATEWAY_TOKEN
     )
+    resolved_gateway_port = (
+        gateway_port
+        or _resolve_env("OPENCLAW_GATEWAY_PORT", "PORT")
+        or "8080"
+    )
+    resolved_public_port = (
+        public_port
+        or _resolve_env("OPENCLAW_PUBLIC_PORT")
+        or "80"
+    )
     model_api = _resolve_env("OPENCLAW_MODEL_API") or "openai-completions"
+    browser_no_sandbox = _resolve_env("OPENCLAW_BROWSER_NO_SANDBOX") or "true"
+    browser_headless = _resolve_env("OPENCLAW_BROWSER_HEADLESS") or "true"
+    browser_executable = (
+        _resolve_env("OPENCLAW_BROWSER_EXECUTABLE_PATH", "OPENCLAW_BROWSER_EXECUTABLE")
+        or "/usr/bin/chromium"
+    )
+    ui_locale = _normalize_ui_locale(_resolve_env("OPENCLAW_UI_LOCALE", "LANG", "LC_ALL"))
 
     env["OPENCLAW_GATEWAY_BIND"] = "lan"
     env["OPENCLAW_GATEWAY_AUTH_MODE"] = "token"
     env["OPENCLAW_GATEWAY_TOKEN"] = token
+    env["OPENCLAW_GATEWAY_PORT"] = str(resolved_gateway_port)
+    env["OPENCLAW_PUBLIC_PORT"] = str(resolved_public_port)
     env["OPENCLAW_MODEL_PROVIDER_ID"] = provider_id
     env["OPENCLAW_MODEL_API"] = model_api
+    env["OPENCLAW_BROWSER_NO_SANDBOX"] = browser_no_sandbox
+    env["OPENCLAW_BROWSER_HEADLESS"] = browser_headless
+    env["OPENCLAW_BROWSER_EXECUTABLE_PATH"] = browser_executable
+    env["OPENCLAW_UI_LOCALE"] = ui_locale
 
     if base_url:
         env["OPENCLAW_MODEL_BASE_URL"] = base_url
     if api_key:
         env["OPENCLAW_MODEL_API_KEY"] = api_key
-    if model:
-        env["OPENCLAW_DEFAULT_MODEL"] = model
+    normalized_model = model.strip() if model else None
+    catalog_model_id = None
+    if normalized_model:
+        if "/" in normalized_model:
+            _, catalog_model_id = normalized_model.split("/", 1)
+            resolved_model = normalized_model
+        else:
+            catalog_model_id = normalized_model
+            resolved_model = f"{provider_id}/{normalized_model}" if provider_id else normalized_model
+        env["OPENCLAW_DEFAULT_MODEL"] = resolved_model
 
     # 额外的可选配置
     catalog = _resolve_env("OPENCLAW_MODEL_CATALOG_JSON")
     if catalog:
         env["OPENCLAW_MODEL_CATALOG_JSON"] = catalog
+    elif provider_id and catalog_model_id:
+        # OpenClaw 新版本要求 provider.models 为数组，默认补一个最小模型目录条目。
+        env["OPENCLAW_MODEL_CATALOG_JSON"] = json.dumps([
+            {
+                "id": catalog_model_id,
+                "name": catalog_model_id,
+                "api": model_api,
+                "reasoning": True,
+                "input": ["text"],
+                "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                "contextWindow": 128000,
+                "maxTokens": 8192,
+            }
+        ], ensure_ascii=False)
     origins = _resolve_env("OPENCLAW_ALLOWED_ORIGINS")
     if origins:
-        env["OPENCLAW_ALLOWED_ORIGINS"] = origins
+        env["OPENCLAW_ALLOWED_ORIGINS"] = _normalize_allowed_origins(origins)
+    else:
+        # 统一输出 JSON 数组字符串，兼容旧版 bootstrap（仅支持 JSON.parse）。
+        env["OPENCLAW_ALLOWED_ORIGINS"] = json.dumps(["*"])
+    allow_insecure_auth = _resolve_env("OPENCLAW_ALLOW_INSECURE_AUTH")
+    if allow_insecure_auth:
+        env["OPENCLAW_ALLOW_INSECURE_AUTH"] = allow_insecure_auth
+    disable_device_auth = _resolve_env("OPENCLAW_DISABLE_DEVICE_AUTH")
+    env["OPENCLAW_DISABLE_DEVICE_AUTH"] = disable_device_auth if disable_device_auth else "true"
 
     return env
+
+
+def _normalize_allowed_origins(raw: str) -> str:
+    """标准化 OPENCLAW_ALLOWED_ORIGINS，统一输出 JSON 数组字符串。"""
+    text = (raw or "").strip()
+    if not text:
+        return ""
+
+    origins = []
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, list):
+            origins = [str(x).strip() for x in parsed if str(x).strip()]
+    except Exception:
+        # Backward compatible: 支持逗号/分号/空白分隔字符串。
+        parts = [p.strip() for p in text.replace(";", ",").replace(" ", ",").split(",")]
+        origins = [p.strip() for p in parts if p.strip()]
+
+    if not origins:
+        origins = [text]
+
+    deduped = list(dict.fromkeys(origins))
+    return json.dumps(deduped, ensure_ascii=False)
 
 
 def _parse_image(image: Optional[str]) -> tuple[str, str, str]:
@@ -151,6 +303,20 @@ def _parse_image(image: Optional[str]) -> tuple[str, str, str]:
     return ns, repo, version
 
 
+def _resolve_image_ref(image: Optional[str]) -> str:
+    """解析并返回完整镜像地址。"""
+    if image and str(image).strip():
+        img = str(image).strip()
+        first = img.split("/", 1)[0]
+        if "." in first or ":" in first or first == "localhost":
+            return img
+        return f"{DEFAULT_OPENCLAW_REGISTRY}/{img}"
+    return (
+        f"{DEFAULT_OPENCLAW_REGISTRY}/"
+        f"{DEFAULT_OPENCLAW_NAMESPACE}/{DEFAULT_OPENCLAW_REPO}:{DEFAULT_OPENCLAW_VERSION}"
+    )
+
+
 def _flatten_agent_detail(agent: dict) -> dict:
     """将 GetAgent 响应转换为扁平结构，兼容旧字段和嵌套字段。"""
     basic = agent.get("basic", {}) if isinstance(agent, dict) else {}
@@ -184,128 +350,6 @@ def _resolve_region(
     )
 
 
-def _probe_endpoint(endpoint: str, api_key: Optional[str]) -> tuple[Optional[int], Optional[int], Optional[int]]:
-    """探测 endpoint 在无鉴权/带鉴权下的可访问性。
-
-    Returns:
-        (root_noauth, root_auth, health_auth)
-    """
-    try:
-        import httpx
-
-        root = endpoint.rstrip("/")
-        health = f"{root}/health"
-
-        with httpx.Client(timeout=8.0, follow_redirects=False, trust_env=True) as client:
-            noauth_resp = client.get(root)
-            noauth_code = noauth_resp.status_code
-
-            auth_code = None
-            health_code = None
-            if api_key:
-                headers = {"Authorization": f"Bearer {api_key}"}
-                auth_resp = client.get(root, headers=headers)
-                auth_code = auth_resp.status_code
-                health_resp = client.get(health, headers=headers)
-                health_code = health_resp.status_code
-
-            return noauth_code, auth_code, health_code
-    except Exception:
-        return None, None, None
-
-
-def _start_auth_proxy(endpoint: str, api_key: str, token: Optional[str], port: int = 19190):
-    """启动本地反向代理，为浏览器自动注入 Authorization 头。"""
-
-    target = endpoint.rstrip("/")
-    if not target.startswith("http://") and not target.startswith("https://"):
-        raise RuntimeError(f"invalid endpoint: {endpoint}")
-
-    class _ProxyHandler(BaseHTTPRequestHandler):
-        protocol_version = "HTTP/1.1"
-
-        def _forward(self):
-            import requests
-
-            body = b""
-            length = self.headers.get("Content-Length")
-            if length:
-                body = self.rfile.read(int(length))
-
-            req_headers = {}
-            for k, v in self.headers.items():
-                lk = k.lower()
-                if lk in {"host", "connection", "content-length"}:
-                    continue
-                req_headers[k] = v
-            req_headers["Authorization"] = f"Bearer {api_key}"
-
-            url = f"{target}{self.path}"
-            try:
-                resp = requests.request(
-                    method=self.command,
-                    url=url,
-                    headers=req_headers,
-                    data=body if body else None,
-                    allow_redirects=False,
-                    timeout=30,
-                )
-            except Exception as e:
-                self.send_response(502)
-                self.send_header("Content-Type", "text/plain; charset=utf-8")
-                self.end_headers()
-                self.wfile.write(f"Proxy upstream error: {e}".encode("utf-8"))
-                return
-
-            self.send_response(resp.status_code)
-            hop_by_hop = {
-                "connection",
-                "keep-alive",
-                "proxy-authenticate",
-                "proxy-authorization",
-                "te",
-                "trailers",
-                "transfer-encoding",
-                "upgrade",
-            }
-            for k, v in resp.headers.items():
-                if k.lower() in hop_by_hop:
-                    continue
-                self.send_header(k, v)
-            self.end_headers()
-            self.wfile.write(resp.content)
-
-        def do_GET(self):
-            self._forward()
-
-        def do_POST(self):
-            self._forward()
-
-        def do_PUT(self):
-            self._forward()
-
-        def do_PATCH(self):
-            self._forward()
-
-        def do_DELETE(self):
-            self._forward()
-
-        def do_OPTIONS(self):
-            self._forward()
-
-        def log_message(self, format, *args):
-            return
-
-    server = ThreadingHTTPServer(("127.0.0.1", port), _ProxyHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-
-    local_url = f"http://127.0.0.1:{port}"
-    if token:
-        local_url = f"{local_url}/#token={token}"
-    return server, local_url
-
-
 @click.group("openclaw")
 def openclaw():
     """OpenClaw 云端部署管理
@@ -337,7 +381,7 @@ def openclaw():
 @click.option("--model-api-key", default=None, help="模型 API Key (默认复用 OPENAI_API_KEY)")
 @click.option("--default-model", default=None, help="默认模型名 (默认复用 OPENAI_MODEL_NAME)")
 @click.option("--gateway-token", default=None, help="网关 Token (默认自动生成)")
-@click.option("--dry-run", is_flag=True, help="仅显示请求，不实际部署")
+@dry_run_option("仅显示请求，不实际部署")
 def deploy(
     name: Optional[str],
     region: str,
@@ -351,7 +395,7 @@ def deploy(
     """部署 OpenClaw 到云端
 
     \b
-    通过 CreateProduct (Container 模式) 部署预构建的 OpenClaw 镜像。
+    通过 CreateAgentProduct (Container 模式) 部署预构建的 OpenClaw 镜像。
     模型配置自动复用 OPENAI_* 环境变量。
 
     \b
@@ -363,7 +407,8 @@ def deploy(
         # 使用自定义镜像
         agentengine openclaw deploy --image hub.kce.ksyun.com/myns/openclaw:v2
     """
-    asyncio.run(
+    dry_run = effective_dry_run(dry_run)
+    run_async_with_dry_run(
         _deploy_openclaw(
             name=name,
             region=region,
@@ -373,7 +418,8 @@ def deploy(
             default_model=default_model,
             gateway_token=gateway_token,
             dry_run=dry_run,
-        )
+        ),
+        dry_run=dry_run,
     )
 
 
@@ -390,7 +436,31 @@ async def _deploy_openclaw(
 ):
     """异步部署 OpenClaw"""
     from ksadk.api import AgentEngineClient
-    from ksadk.deployment.state import load_state, save_state
+    from ksadk.deployment.state import load_state, save_state, clear_state
+    from dotenv import dotenv_values
+
+    # 自动加载当前目录 .env（仅补充未导出的变量，不覆盖已导出的 shell 环境）
+    project_dir = Path(".").resolve()
+    env_file = project_dir / ".env"
+    if env_file.exists():
+        try:
+            loaded = 0
+            for k, v in dotenv_values(env_file).items():
+                if not k or v is None:
+                    continue
+                if os.getenv(k) is None:
+                    os.environ[k] = str(v)
+                    loaded += 1
+            if loaded:
+                print_info(f"已从 .env 注入环境变量: {loaded} 项")
+        except Exception as e:
+            print_warn(f"读取 .env 失败，将继续使用当前 shell 环境: {e}")
+
+    # 读取本地状态 (判断创建 vs 更新)
+    state = load_state(project_dir)
+    existing_agent_id = None
+    if state.get("type") == "openclaw":
+        existing_agent_id = state.get("agent_id")
 
     if name:
         openclaw_name = name
@@ -398,36 +468,49 @@ async def _deploy_openclaw(
         from datetime import datetime
         ts = datetime.now().strftime("%m%d%H%M")
         openclaw_name = f"{DEFAULT_OPENCLAW_NAME}-{ts}"
-    ns, repo, version = _parse_image(image)
+    image_ref = _resolve_image_ref(image)
+
+    resolved_gateway_token = (
+        gateway_token
+        or _resolve_env("OPENCLAW_GATEWAY_TOKEN")
+        or (
+            (state.get("gateway_token") if state.get("type") == "openclaw" else None)
+            if existing_agent_id else None
+        )
+        or secrets.token_urlsafe(24)
+    )
+    if not gateway_token and not _resolve_env("OPENCLAW_GATEWAY_TOKEN") and not state.get("gateway_token"):
+        print_info("未指定 OPENCLAW_GATEWAY_TOKEN，已自动生成随机 token")
+    elif not gateway_token and not _resolve_env("OPENCLAW_GATEWAY_TOKEN") and state.get("gateway_token"):
+        print_info("未指定 OPENCLAW_GATEWAY_TOKEN，已沿用本地状态中的 token")
 
     # 构建环境变量
     env_vars = _build_openclaw_env_vars(
         model_base_url=model_base_url,
         model_api_key=model_api_key,
         default_model=default_model,
-        gateway_token=gateway_token,
+        gateway_token=resolved_gateway_token,
     )
 
     print_title("OpenClaw 云端部署", f"region: {region}")
     print_kv("名称", openclaw_name)
-    print_kv("镜像", f"{ns}/{repo}:{version}")
+    print_kv("镜像", image_ref)
     print_kv("区域", region, value_style="#58a6ff")
 
     if not env_vars.get("OPENCLAW_MODEL_API_KEY"):
         print_warn("未检测到模型 API Key (OPENAI_API_KEY / OPENCLAW_MODEL_API_KEY)")
         print_warn("OpenClaw 可启动，但无法正常调用模型")
 
-    # 读取本地状态 (判断创建 vs 更新)
-    project_dir = Path(".").resolve()
-    state = load_state(project_dir)
-    existing_agent_id = None
-    if state.get("type") == "openclaw":
-        existing_agent_id = state.get("agent_id")
-
     # 构建环境变量列表
     env_list = [
         {"Key": k, "Value": v, "IsSensitive": "KEY" in k or "TOKEN" in k or "SECRET" in k}
         for k, v in env_vars.items()
+    ]
+    # Ding CreateProducts 当前对部分 JSON 字符串环境变量存在解析问题：
+    # 先用安全子集创建，待实例创建后再通过 UpdateAgent 补齐完整环境变量。
+    create_env_list = [
+        item for item in env_list
+        if item.get("Key") not in {"OPENCLAW_MODEL_CATALOG_JSON", "OPENCLAW_ALLOWED_ORIGINS"}
     ]
 
     # 构建请求数据
@@ -436,25 +519,29 @@ async def _deploy_openclaw(
         "description": "OpenClaw Gateway (managed by AgentEngine)",
         "framework": "openclaw",
         "artifact_type": "Container",
-        "artifact_path": f"{ns}/{repo}:{version}",  # 会被 client 拆分
+        "artifact_path": image_ref,
         "region": region,
-        "resources": {"cpu": "2", "memory": "8Gi"},
+        "resources": {"cpu": "2", "memory": "4Gi"},
         "scaling": {"min_replicas": 1, "max_replicas": 3, "concurrency": 20},
-        "env_vars": env_list,
+        "env_vars": create_env_list,
         # OpenClaw UI 需要浏览器直开；默认关闭平台层 ApiKey 保护，避免 dashboard 401
         "auth_type": "None",
         "inbound_identity_auth": "None",
     }
 
-    # KCR 凭证 (Container 模式需要)
+    # KCR 凭证：仅在显式提供用户名+密码时注入，避免公共镜像触发无效鉴权重试。
+    image_credential = None
     kcr_username = _resolve_env("KCR_USERNAME", "KSYUN_ACCOUNT_ID")
     kcr_password = _resolve_env("KCR_PASSWORD")
-    if kcr_username:
-        request_data["image_credential"] = {
+    if kcr_username and kcr_password:
+        image_credential = {
             "username": kcr_username,
-            "password": kcr_password or "",
+            "password": kcr_password,
         }
-    if not kcr_password:
+        request_data["image_credential"] = image_credential
+    elif kcr_password and not kcr_username:
+        print_warn("检测到 KCR_PASSWORD 但缺少 KCR_USERNAME，已忽略镜像凭证")
+    elif "/agentengine-public/" not in image_ref:
         print_warn("未配置 KCR_PASSWORD，私有镜像可能无法拉取 (公共镜像可忽略)")
         print_info("获取方式: https://kcr.console.ksyun.com/ → 访问凭证")
 
@@ -470,21 +557,40 @@ async def _deploy_openclaw(
         async with AgentEngineClient(region=region) as client:
             if existing_agent_id:
                 print_info(f"检测到本地状态: {existing_agent_id}，执行更新...")
-                res = await client.update_agent(existing_agent_id, {
-                    "artifact_path": f"{ns}/{repo}:{version}",
-                    "env_vars": env_list,
-                    "auth_type": "None",
-                    "inbound_identity_auth": "None",
-                })
-                agent_id = existing_agent_id
-                endpoint = res.get("endpoint") or state.get("endpoint")
-                api_key = state.get("api_key")
-            else:
+                try:
+                    update_payload = {
+                        "artifact_type": "Container",
+                        "artifact_path": image_ref,
+                        "env_vars": env_list,
+                        "auth_type": "None",
+                        "inbound_identity_auth": "None",
+                    }
+                    if image_credential:
+                        update_payload["image_credential"] = image_credential
+                    res = await client.update_agent(existing_agent_id, update_payload)
+                    agent_id = existing_agent_id
+                    endpoint = res.get("endpoint") or state.get("endpoint")
+                    api_key = state.get("api_key")
+                except Exception as update_err:
+                    err_msg = str(update_err)
+                    not_found = (
+                        "code: 404" in err_msg.lower()
+                        or "agent not found" in err_msg.lower()
+                    )
+                    if not not_found:
+                        raise
+                    print_warn(f"本地状态失效 ({existing_agent_id})，将自动回退为新建: {update_err}")
+                    cleared = clear_state(project_dir, key=existing_agent_id)
+                    if cleared:
+                        print_info("已清理失效的 .agentengine.state")
+                    existing_agent_id = None
+
+            if not existing_agent_id:
                 res = await client.create_agent(request_data)
                 if not res:
                     raise Exception("Server 返回空响应，请查看 Server 日志")
 
-                # CreateProduct 返回 order_id，需要轮询获取 agent_id
+                # CreateAgentProduct 返回 order_id，需要轮询获取 agent_id
                 order_id = res.get("order_id")
                 agent_id = res.get("agent_id")
                 endpoint = res.get("endpoint")
@@ -512,15 +618,36 @@ async def _deploy_openclaw(
                     if not agent_id:
                         print_warn("实例创建中，稍后使用 'agentengine openclaw list' 查看")
 
+                # 新建链路：创建成功后立即补齐完整环境变量（含 JSON 字段）
+                if agent_id:
+                    try:
+                        update_payload = {
+                            "artifact_type": "Container",
+                            "artifact_path": image_ref,
+                            "env_vars": env_list,
+                            "auth_type": "None",
+                            "inbound_identity_auth": "None",
+                        }
+                        if image_credential:
+                            update_payload["image_credential"] = image_credential
+                        await client.update_agent(agent_id, update_payload)
+                        print_info("已补齐完整环境变量 (含模型目录与 AllowedOrigins)")
+                    except Exception as update_err:
+                        print_warn(f"补齐环境变量失败，可稍后重试 deploy: {update_err}")
+
             # 保存状态
+            saved_name = openclaw_name if not state.get("name") else state.get("name")
+            if not existing_agent_id:
+                saved_name = openclaw_name
+
             save_state(project_dir, {
                 "type": "openclaw",
                 "agent_id": agent_id,
-                "name": openclaw_name,
+                "name": saved_name,
                 "region": region,
                 "endpoint": endpoint,
                 "api_key": api_key,
-                "image": f"{ns}/{repo}:{version}",
+                "image": image_ref,
                 "gateway_token": env_vars.get("OPENCLAW_GATEWAY_TOKEN"),
             })
 
@@ -535,19 +662,23 @@ async def _deploy_openclaw(
                 print_kv("控制台", f"{endpoint}/#token={token}", value_style="#58a6ff")
             print_info("已保存状态到 .agentengine.state")
 
+    except DryRunExit:
+        raise
     except Exception as e:
         print_error(f"部署失败: {e}")
 
 
 @openclaw.command("list")
 @click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
-def list_openclaws(region: str):
+@dry_run_option()
+def list_openclaws(region: str, dry_run: bool):
     """列出已部署的 OpenClaw 实例"""
+    dry_run = effective_dry_run(dry_run)
     from ksadk.api import AgentEngineClient
 
     async def _list():
         try:
-            async with AgentEngineClient(region=region) as client:
+            async with AgentEngineClient(region=region, dry_run=dry_run) as client:
                 resp = await client.list_agents(region=region)
                 agents = resp.get("agents", [])
 
@@ -575,21 +706,25 @@ def list_openclaws(region: str):
                     )
                 console.print(table)
 
+        except DryRunExit:
+            raise
         except Exception as e:
             print_error(f"获取列表失败: {e}")
 
-    asyncio.run(_list())
+    run_async_with_dry_run(_list(), dry_run=dry_run)
 
 
 @openclaw.command("status")
 @click.argument("agent_ref", required=False, default=None)
 @click.option("--region", "-r", default=None, help="区域 (默认优先读取 .agentengine.state)")
-def status(agent_ref: Optional[str], region: Optional[str]):
+@dry_run_option()
+def status(agent_ref: Optional[str], region: Optional[str], dry_run: bool):
     """查看 OpenClaw 状态
 
     \b
     AGENT_REF: Agent ID 或名称 (可选，默认从 .agentengine.state 读取)
     """
+    dry_run = effective_dry_run(dry_run)
     from ksadk.deployment.state import load_state
 
     state = load_state(Path(".").resolve())
@@ -609,7 +744,7 @@ def status(agent_ref: Optional[str], region: Optional[str]):
 
     async def _get():
         try:
-            async with AgentEngineClient(region=region) as client:
+            async with AgentEngineClient(region=region, dry_run=dry_run) as client:
                 # 尝试按 ID 查询，失败则按 Name
                 if agent_ref.startswith("ar-"):
                     agent = await client.get_agent(agent_id=agent_ref)
@@ -633,6 +768,8 @@ def status(agent_ref: Optional[str], region: Optional[str]):
                 print_kv("Created", str(detail.get("created_at") or "-"))
                 print_kv("Updated", str(detail.get("updated_at") or "-"))
 
+        except DryRunExit:
+            raise
         except Exception as e:
             print_error(f"获取状态失败: {e}")
             # 回退：显示本地状态，至少给出排障上下文
@@ -645,23 +782,30 @@ def status(agent_ref: Optional[str], region: Optional[str]):
                 print_kv("API Key", "已保存" if state.get("api_key") else "未保存")
                 print_info("提示: 检查 KSYUN_ACCESS_KEY / KSYUN_SECRET_KEY 或 region 参数")
 
-    asyncio.run(_get())
+    run_async_with_dry_run(_get(), dry_run=dry_run)
 
 
 @openclaw.command("delete")
 @click.argument("agent_ref")
-@click.confirmation_option(prompt="确定要删除这个 OpenClaw 实例吗?")
 @click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
-def delete(agent_ref: str, region: str):
+@click.option("--yes", "-y", is_flag=True, help="跳过确认")
+@dry_run_option()
+def delete(agent_ref: str, region: str, yes: bool, dry_run: bool):
     """删除 OpenClaw 实例
 
     AGENT_REF: Agent ID
     """
+    dry_run = effective_dry_run(dry_run)
     from ksadk.api import AgentEngineClient
+
+    if not yes and not dry_run:
+        if not click.confirm("确定要删除这个 OpenClaw 实例吗?"):
+            print_info("已取消")
+            return
 
     async def _delete():
         try:
-            async with AgentEngineClient(region=region) as client:
+            async with AgentEngineClient(region=region, dry_run=dry_run) as client:
                 success = await client.delete_agent(agent_ref)
                 if success:
                     print_success(f"OpenClaw 已删除: {agent_ref}")
@@ -669,136 +813,20 @@ def delete(agent_ref: str, region: str):
                     # 清理本地状态
                     from ksadk.deployment.state import clear_state
                     try:
-                        clear_state(Path("."), key=agent_ref)
-                        print_info("本地状态文件已清理")
+                        removed = clear_state(Path("."), key=agent_ref)
+                        if removed:
+                            print_info("本地状态文件已清理")
+                        else:
+                            print_warn("未清理本地状态文件: 当前目录状态与目标 ID 不匹配")
                     except Exception:
                         pass
                 else:
                     print_error("删除失败")
 
+        except DryRunExit:
+            raise
         except Exception as e:
             print_error(f"删除失败: {e}")
 
-    asyncio.run(_delete())
+    run_async_with_dry_run(_delete(), dry_run=dry_run)
 
-
-@openclaw.command("dashboard")
-@click.argument("agent_ref", required=False, default=None)
-@click.option("--region", "-r", default=None, help="区域 (默认优先读取 .agentengine.state)")
-@click.option("--proxy-port", default=19190, show_default=True, help="本地鉴权代理端口")
-@click.option("--direct", is_flag=True, help="强制直接打开 endpoint（可能 401）")
-def dashboard(agent_ref: Optional[str], region: Optional[str], proxy_port: int, direct: bool):
-    """在浏览器中打开 OpenClaw Dashboard
-
-    \b
-    AGENT_REF: Agent ID 或名称 (可选，默认从 .agentengine.state 读取)
-
-    \b
-    示例:
-        # 从当前目录的 .agentengine.state 自动读取
-        agentengine openclaw dashboard
-        # 指定 Agent ID
-        agentengine openclaw dashboard ar-xxx
-    """
-    import webbrowser
-
-    endpoint = None
-    token = None
-    api_key = None
-    state = {}
-
-    # 1. 尝试从本地状态读取
-    if not agent_ref:
-        from ksadk.deployment.state import load_state
-        state = load_state(Path(".").resolve())
-        region = _resolve_region(region, state)
-        if state.get("type") == "openclaw":
-            endpoint = state.get("endpoint")
-            token = state.get("gateway_token")
-            api_key = state.get("api_key")
-            if endpoint:
-                print_info(f"从本地状态文件读取: {state.get('agent_id', '-')}")
-    else:
-        region = _resolve_region(region, state)
-
-    # 2. 如果本地没有或指定了 agent_ref，通过 API 获取
-    if not endpoint and agent_ref:
-        from ksadk.api import AgentEngineClient
-
-        async def _get_endpoint():
-            async with AgentEngineClient(region=region) as client:
-                if str(agent_ref).startswith("ar-"):
-                    agent = await client.get_agent(agent_id=agent_ref, include_api_key=True)
-                else:
-                    agent = await client.get_agent(name=agent_ref, include_api_key=True)
-                if not agent:
-                    return None
-                detail = _flatten_agent_detail(agent)
-                return detail
-
-        try:
-            detail = asyncio.run(_get_endpoint())
-            if detail:
-                endpoint = detail.get("endpoint")
-                api_key = detail.get("api_key")
-        except Exception as e:
-            print_error(f"获取 Endpoint 失败: {e}")
-            return
-
-    if not endpoint:
-        print_error("未找到 OpenClaw Endpoint")
-        print_info("请先部署 OpenClaw:")
-        print_info("  agentengine openclaw deploy")
-        print_info("或指定 Agent ID:")
-        print_info("  agentengine openclaw dashboard <agent-id>")
-        return
-
-    # 构建 Dashboard URL
-    dashboard_url = endpoint.rstrip("/")
-    if token:
-        dashboard_url = f"{dashboard_url}/#token={token}"
-
-    noauth_code, auth_code, health_auth_code = _probe_endpoint(endpoint, api_key)
-    if noauth_code is not None:
-        print_kv("探测(root/no-auth)", str(noauth_code))
-    if auth_code is not None:
-        print_kv("探测(root/auth)", str(auth_code))
-    if health_auth_code is not None:
-        print_kv("探测(/health/auth)", str(health_auth_code))
-
-    # 无鉴权可直接访问
-    if direct or (noauth_code and noauth_code < 400):
-        print_success("打开 OpenClaw Dashboard")
-        print_kv("URL", dashboard_url, value_style="#58a6ff")
-        webbrowser.open(dashboard_url)
-        return
-
-    # 常见场景: no-auth 401，说明平台层需要 API Key Header
-    if noauth_code == 401 and api_key:
-        if auth_code == 502:
-            print_error("已携带 API Key 通过网关鉴权，但上游返回 502")
-            print_info("这通常表示 OpenClaw 实例未就绪或镜像入口异常，请先排障实例状态")
-            return
-
-        if auth_code and auth_code < 500:
-            print_warn("该实例需要 Authorization Header，浏览器直开会 401")
-            try:
-                server, proxy_url = _start_auth_proxy(endpoint, api_key, token, port=proxy_port)
-                print_success("已启动本地鉴权代理并打开 Dashboard")
-                print_kv("Proxy URL", proxy_url, value_style="#58a6ff")
-                print_info("按 Ctrl+C 停止本地代理")
-                webbrowser.open(proxy_url)
-                try:
-                    while True:
-                        time.sleep(1)
-                except KeyboardInterrupt:
-                    server.shutdown()
-            except Exception as e:
-                print_error(f"启动本地鉴权代理失败: {e}")
-                print_info("可临时使用浏览器插件注入 Authorization Header 后访问 endpoint")
-            return
-
-    # 默认回退
-    print_warn("自动鉴权打开失败，回退直接打开 URL")
-    print_kv("URL", dashboard_url, value_style="#58a6ff")
-    webbrowser.open(dashboard_url)

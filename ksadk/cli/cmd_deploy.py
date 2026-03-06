@@ -16,6 +16,7 @@ from ksadk.common.constants import (
     get_ks3_endpoints,
     DEFAULT_SERVERLESS_ENDPOINT,
 )
+from ksadk.cli.dry_run import effective_dry_run
 from ksadk.cli.ui import (
     get_console,
     new_table,
@@ -100,6 +101,8 @@ def deploy(
         # 3) 显式指定区域
         KSYUN_REGION=cn-beijing-6 agentengine deploy . --target serverless --dry-run
     """
+    dry_run = effective_dry_run(dry_run)
+
     # 列出 Provider
     if list_providers:
         _list_providers()

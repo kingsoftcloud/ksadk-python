@@ -1,5 +1,5 @@
 """
-框架检测器 - 自动检测 LangChain / LangGraph / ADK 项目
+框架检测器 - 自动检测 LangChain / LangGraph / DeepAgents / ADK 项目
 """
 
 import ast
@@ -16,6 +16,7 @@ class FrameworkType(Enum):
     ADK = "adk"
     LANGCHAIN = "langchain"
     LANGGRAPH = "langgraph"
+    DEEPAGENTS = "deepagents"
     UNKNOWN = "unknown"
 
 
@@ -36,6 +37,7 @@ class DetectionResult:
 
 class FrameworkDetector:
     """框架检测器"""
+    _ENTRY_FILES = ("agent.py", "main.py", "app.py")
     
     def __init__(self, project_dir: str):
         self.project_dir = Path(project_dir).resolve()
@@ -93,6 +95,7 @@ class FrameworkDetector:
                 "adk": FrameworkType.ADK,
                 "langchain": FrameworkType.LANGCHAIN,
                 "langgraph": FrameworkType.LANGGRAPH,
+                "deepagents": FrameworkType.DEEPAGENTS,
             }.get(framework, FrameworkType.UNKNOWN)
             
             return DetectionResult(
@@ -111,34 +114,49 @@ class FrameworkDetector:
         # 优先查找与项目同名的包 (下划线版本)
         expected_name = self.project_dir.name.replace('-', '_')
         expected_path = self.project_dir / expected_name
-        if expected_path.exists() and (expected_path / "__init__.py").exists():
-            return expected_path
+        if expected_path.exists() and expected_path.is_dir():
+            if (expected_path / "__init__.py").exists() or any(
+                (expected_path / entry_file).exists() for entry_file in self._ENTRY_FILES
+            ):
+                return expected_path
         
         # 查找任何包含 __init__.py 的子目录
         for item in self.project_dir.iterdir():
-            if item.is_dir() and (item / "__init__.py").exists():
-                if not item.name.startswith('.') and item.name not in ('tests', 'test', '__pycache__'):
-                    return item
+            if (
+                item.is_dir()
+                and not item.name.startswith('.')
+                and item.name not in ('tests', 'test', '__pycache__')
+                and (
+                    (item / "__init__.py").exists()
+                    or any((item / entry_file).exists() for entry_file in self._ENTRY_FILES)
+                )
+            ):
+                return item
         
         # 当前目录本身也可能是一个包
         if (self.project_dir / "__init__.py").exists():
+            return self.project_dir
+
+        # 兼容脚本式项目: 当前目录直接包含 agent.py/main.py/app.py
+        if any((self.project_dir / entry_file).exists() for entry_file in self._ENTRY_FILES):
             return self.project_dir
         
         return None
     
     def _find_agent_file(self, package_path: Path) -> Optional[Path]:
         """查找 agent.py 文件"""
-        # 优先查找 agent.py
-        agent_py = package_path / "agent.py"
-        if agent_py.exists():
-            return agent_py
+        # 优先查找常见入口文件
+        for entry_file in self._ENTRY_FILES:
+            entry_path = package_path / entry_file
+            if entry_path.exists():
+                return entry_path
         
         # 检查 __init__.py 是否导出 root_agent
         init_py = package_path / "__init__.py"
         if init_py.exists():
             try:
-                content = init_py.read_text()
-                if "root_agent" in content or "graph" in content:
+                content = init_py.read_text(encoding="utf-8-sig")
+                if "root_agent" in content or "graph" in content or "app" in content:
                     return init_py
             except Exception:
                 pass
@@ -148,7 +166,8 @@ class FrameworkDetector:
     def _analyze_code(self, agent_file: Path, package_path: Path) -> DetectionResult:
         """分析代码确定框架类型"""
         try:
-            content = agent_file.read_text()
+            # 使用 utf-8-sig 自动处理 BOM，兼容 Windows/编辑器带 BOM 的脚本
+            content = agent_file.read_text(encoding="utf-8-sig")
             tree = ast.parse(content)
         except Exception:
             return DetectionResult(
@@ -171,6 +190,17 @@ class FrameworkDetector:
                 confidence=0.9
             )
         
+        # 检测 DeepAgents (LangChain 生态, 底层基于 LangGraph)
+        if self._is_deepagents(imports, content):
+            return DetectionResult(
+                type=FrameworkType.DEEPAGENTS,
+                name=package_path.name,
+                entry_point=str(agent_file.relative_to(self.project_dir)),
+                package_path=str(package_path),
+                agent_variable="root_agent",
+                confidence=0.9
+            )
+
         # 检测 LangGraph
         if self._is_langgraph(imports, content):
             return DetectionResult(
@@ -231,5 +261,13 @@ class FrameworkDetector:
         """检测是否为 LangChain 项目"""
         langchain_modules = {"langchain", "langchain_openai", "langchain_core", "langchain_community"}
         if langchain_modules & imports:
+            return True
+        return False
+
+    def _is_deepagents(self, imports: set, content: str) -> bool:
+        """检测是否为 DeepAgents 项目"""
+        if "deepagents" in imports:
+            return True
+        if "from deepagents import" in content or "create_deep_agent(" in content:
             return True
         return False

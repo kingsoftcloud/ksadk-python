@@ -51,16 +51,19 @@ def update_state(project_dir: Path, updates: Dict[str, Any]) -> Dict[str, Any]:
     return current_state
 
 
-def clear_state(project_dir: Path, key: str = None) -> None:
+def clear_state(project_dir: Path, key: str = None) -> bool:
     """清理状态文件
     
     Args:
         project_dir: 项目目录
         key: 如果指定，仅当状态中的 ID 与 key 匹配时才删除
+
+    Returns:
+        bool: 是否实际删除了状态文件
     """
     state_file = get_state_file_path(project_dir)
     if not state_file.exists():
-        return
+        return False
         
     if key:
         # 检查是否匹配
@@ -68,5 +71,8 @@ def clear_state(project_dir: Path, key: str = None) -> None:
         # 检查 agent_id 或 mcp_id
         if state.get("agent_id") == key or state.get("mcp_id") == key:
             state_file.unlink()
+            return True
+        return False
     else:
         state_file.unlink()
+        return True
