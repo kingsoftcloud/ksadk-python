@@ -85,6 +85,10 @@ langgraph = [
 tracing = [
     "openinference-instrumentation-langchain>=0.1.0",
 ]
+# 知识库 & 记忆库支持
+kb = [
+    "kingsoftcloud-sdk-python>=1.5.8.71",
+]
 # 开发依赖
 dev = [
     "pytest>=7.0.0",
@@ -95,7 +99,7 @@ dev = [
 ]
 # 全部依赖
 all = [
-    "ksadk[adk,langchain,langgraph,tracing,dev]",
+    "ksadk[adk,langchain,langgraph,kb,tracing,dev]",
 ]
 
 [project.scripts]

@@ -33,6 +33,8 @@ class ADKRunner(BaseRunner):
         # Memory integration
         self._short_term_memory = None
         self._long_term_memory = None
+        # Knowledge base integration
+        self._knowledge_base = None
 
     def _apply_json_patch(self):
         """Monkey patch google.adk.models.lite_llm to handle invalid JSON safely"""
@@ -106,9 +108,11 @@ class ADKRunner(BaseRunner):
         """从环境变量初始化长期记忆
 
         环境变量:
-            KSADK_LTM_BACKEND: local / http
+            KSADK_LTM_BACKEND: local / http / sdk
             KSADK_LTM_HTTP_URL: HTTP 记忆服务地址
             KSADK_LTM_HTTP_TOKEN: 认证 Token
+            KSADK_LTM_ACCESS_KEY: SDK AK (fallback to KSYUN_ACCESS_KEY)
+            KSADK_LTM_SECRET_KEY: SDK SK (fallback to KSYUN_SECRET_KEY)
             KSADK_LTM_TOP_K: 检索数量
         """
         backend = os.environ.get("KSADK_LTM_BACKEND", "")
@@ -127,6 +131,23 @@ class ADKRunner(BaseRunner):
                         "KSADK_LTM_BACKEND=http but KSADK_LTM_HTTP_URL is empty."
                     )
                 backend_config = {"base_url": base_url, "token": token}
+            elif backend == "sdk":
+                backend_config = {
+                    "access_key": (
+                        os.environ.get("KSADK_LTM_ACCESS_KEY")
+                        or os.environ.get("KSYUN_ACCESS_KEY", "")
+                    ),
+                    "secret_key": (
+                        os.environ.get("KSADK_LTM_SECRET_KEY")
+                        or os.environ.get("KSYUN_SECRET_KEY", "")
+                    ),
+                    "region": os.environ.get("KSADK_LTM_REGION", "cn-north-vip1"),
+                    "endpoint": os.environ.get("KSADK_LTM_ENDPOINT", "aicp.api.ksyun.com"),
+                    "scheme": os.environ.get("KSADK_LTM_SCHEME", "https"),
+                    "namespace": os.environ.get("KSADK_LTM_NAMESPACE", ""),
+                    "agent_id": os.environ.get("KSADK_LTM_AGENT_ID", ""),
+                    "scene_id": os.environ.get("KSADK_LTM_SCENE_ID", ""),
+                }
 
             agent_name = self._agent.name if self._agent else "default"
             ltm = LongTermMemory(
@@ -144,6 +165,68 @@ class ADKRunner(BaseRunner):
         except Exception as e:
             logger.warning(f"Failed to init LongTermMemory: {e}.")
             return None
+
+    def _init_knowledge_base(self):
+        """从环境变量初始化知识库
+
+        环境变量:
+            KSADK_KB_DATASET_ID: 知识库 ID (必填，存在即启用)
+            KSADK_KB_ACCESS_KEY: AK (可选)
+            KSADK_KB_SECRET_KEY: SK (可选)
+            KSADK_KB_REGION: 区域 (默认 cn-north-vip1)
+            KSADK_KB_TOP_K: 返回结果数 (默认 5)
+        """
+        try:
+            from ksadk.knowledge_base.client import KnowledgeBaseClient
+
+            if not KnowledgeBaseClient.is_configured():
+                return None
+
+            kb = KnowledgeBaseClient.from_env()
+            logger.info(
+                f"KnowledgeBase initialized: dataset_id={kb.dataset_id}, "
+                f"region={kb.region}"
+            )
+            return kb
+        except ImportError:
+            logger.warning(
+                "kingsoftcloud-sdk-python not installed, "
+                "knowledge base disabled. "
+                "Install with: pip install kingsoftcloud-sdk-python"
+            )
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to init KnowledgeBase: {e}.")
+            return None
+
+    def _inject_search_knowledge_tool(self):
+        """自动注入 search_knowledge_base 工具到 Agent"""
+        try:
+            from ksadk.knowledge_base.adk_tool import search_knowledge_base
+
+            if hasattr(self._agent, "tools"):
+                tool_names = []
+                for t in self._agent.tools:
+                    name = getattr(t, "name", None) or getattr(t, "__name__", "")
+                    tool_names.append(name)
+
+                if "search_knowledge_base" not in tool_names:
+                    self._agent.tools.append(search_knowledge_base)
+                    logger.info(
+                        "Injected 'search_knowledge_base' tool into agent "
+                        f"(total tools: {len(self._agent.tools)})"
+                    )
+                else:
+                    logger.debug("Agent already has 'search_knowledge_base' tool")
+            else:
+                logger.warning(
+                    "Agent has no 'tools' attribute, "
+                    "cannot inject search_knowledge_base"
+                )
+        except ImportError as e:
+            logger.warning(f"Failed to import knowledge base tool: {e}")
+        except Exception as e:
+            logger.warning(f"Failed to inject search_knowledge_base tool: {e}")
 
     def _inject_load_memory_tool(self):
         """自动注入 load_memory 工具到 Agent"""
@@ -226,6 +309,11 @@ class ADKRunner(BaseRunner):
         # 初始化记忆体 (从环境变量读取配置)
         self._short_term_memory = self._init_short_term_memory()
         self._long_term_memory = self._init_long_term_memory()
+
+        # 初始化知识库 (从环境变量读取配置)
+        self._knowledge_base = self._init_knowledge_base()
+        if self._knowledge_base:
+            self._inject_search_knowledge_tool()
 
         # 初始化 SessionService
         from google.adk.runners import Runner

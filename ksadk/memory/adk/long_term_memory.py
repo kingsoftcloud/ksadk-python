@@ -55,9 +55,15 @@ def _get_backend_cls(backend: str) -> type:
         )
         return HttpLTMBackend
 
+    if backend == "sdk":
+        from ksadk.memory.adk.backends.sdk_ltm_backend import (
+            SdkLTMBackend,
+        )
+        return SdkLTMBackend
+
     raise ValueError(
         f"Unsupported long term memory backend: {backend}. "
-        f"Available: local, http"
+        f"Available: local, http, sdk"
     )
 
 
@@ -93,7 +99,7 @@ class LongTermMemory(BaseMemoryService, BaseModel):
     """
 
     backend: Union[
-        Literal["local", "http"],
+        Literal["local", "http", "sdk"],
         BaseLongTermMemoryBackend,
     ] = "local"
 
@@ -276,9 +282,11 @@ class LongTermMemory(BaseMemoryService, BaseModel):
         """从环境变量创建 LongTermMemory
 
         环境变量:
-            KSADK_LTM_BACKEND: local / http
+            KSADK_LTM_BACKEND: local / http / sdk
             KSADK_LTM_HTTP_URL: HTTP 记忆服务地址
             KSADK_LTM_HTTP_TOKEN: HTTP 认证 Token
+            KSADK_LTM_ACCESS_KEY: SDK AK (fallback to KSYUN_ACCESS_KEY)
+            KSADK_LTM_SECRET_KEY: SDK SK (fallback to KSYUN_SECRET_KEY)
             KSADK_LTM_TOP_K: 检索数量 (默认 5)
             KSADK_LTM_INDEX: 索引名称
         """
@@ -292,6 +300,23 @@ class LongTermMemory(BaseMemoryService, BaseModel):
             backend_config = {
                 "base_url": os.environ.get("KSADK_LTM_HTTP_URL", ""),
                 "token": os.environ.get("KSADK_LTM_HTTP_TOKEN", ""),
+            }
+        elif backend == "sdk":
+            backend_config = {
+                "access_key": (
+                    os.environ.get("KSADK_LTM_ACCESS_KEY")
+                    or os.environ.get("KSYUN_ACCESS_KEY", "")
+                ),
+                "secret_key": (
+                    os.environ.get("KSADK_LTM_SECRET_KEY")
+                    or os.environ.get("KSYUN_SECRET_KEY", "")
+                ),
+                "region": os.environ.get("KSADK_LTM_REGION", "cn-north-vip1"),
+                "endpoint": os.environ.get("KSADK_LTM_ENDPOINT", "aicp.api.ksyun.com"),
+                "scheme": os.environ.get("KSADK_LTM_SCHEME", "https"),
+                "namespace": os.environ.get("KSADK_LTM_NAMESPACE", ""),
+                "agent_id": os.environ.get("KSADK_LTM_AGENT_ID", ""),
+                "scene_id": os.environ.get("KSADK_LTM_SCENE_ID", ""),
             }
 
         return cls(
