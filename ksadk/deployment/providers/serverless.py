@@ -23,6 +23,7 @@ from ksadk.deployment.base import (
     PackageInfo,
 )
 from ksadk.deployment.registry import DeployProviderRegistry
+from ksadk.deployment.ui_config import resolve_ui_config, ui_config_to_state_fields
 from ksadk.builders.container_builder import ContainerBuilder
 from ksadk.api import AgentEngineClient, DryRunExit
 
@@ -224,6 +225,14 @@ class ServerlessProvider(BaseDeployProvider):
         state_file = Path(project_dir) / ".agentengine.state"
         local_state = self._load_state(state_file)
         existing_agent_id = local_state.get("agent_id")
+        resolved_ui = resolve_ui_config(
+            framework=package_info.framework,
+            state=local_state,
+            cli_profile=target.extra.get("ui_profile"),
+            cli_path=target.extra.get("ui_path"),
+            cli_url=target.extra.get("ui_url"),
+        )
+        ui_state = ui_config_to_state_fields(resolved_ui)
         
         # 构造请求 payload
         artifact_type = target.extra.get("artifact_type", "Code")
@@ -411,6 +420,7 @@ class ServerlessProvider(BaseDeployProvider):
                             "region": target.region,
                             "endpoint": res.get("endpoint"),
                             "updated_at": self._now_iso(),
+                            **ui_state,
                         })
                         self._save_state(state_file, new_state)
                         
@@ -541,6 +551,7 @@ class ServerlessProvider(BaseDeployProvider):
                         "api_key": agent_api_key,  # 只在首次保存
                         "order_id": order_id,
                         "created_at": self._now_iso(),
+                        **ui_state,
                     })
                     
                     click.echo(f"   💾 已保存状态到 .agentengine.state")

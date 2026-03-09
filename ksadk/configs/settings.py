@@ -631,7 +631,29 @@ def setup_environment(agent_path: "Path"):
             # override=False: 保留通过 API/Serverless 平台注入的环境变量 (优先级高)
             load_dotenv(env_file, override=False)
 
-    # 2. 注入 Intelligent Defaults
+    # 2. Coze SDK 兼容映射
+    # 某些 Coze 导出项目（tool 内使用 coze_coding_dev_sdk）会强依赖 COZE_* 环境变量，
+    # 本地通常只配置了 OPENAI_*，这里做一次非覆盖式映射。
+    coze_api_key = os.getenv("COZE_WORKLOAD_IDENTITY_API_KEY")
+    coze_base_url = os.getenv("COZE_INTEGRATION_BASE_URL")
+    coze_model_base_url = os.getenv("COZE_INTEGRATION_MODEL_BASE_URL")
+
+    openai_api_key = _get_env("OPENAI_API_KEY", "LLM_API_KEY", "MODEL_API_KEY")
+    openai_base_url = _get_env(
+        "OPENAI_BASE_URL",
+        "OPENAI_API_BASE",
+        "LLM_API_BASE",
+        "MODEL_API_BASE",
+    )
+
+    if not coze_api_key and openai_api_key:
+        os.environ["COZE_WORKLOAD_IDENTITY_API_KEY"] = openai_api_key
+    if not coze_base_url and openai_base_url:
+        os.environ["COZE_INTEGRATION_BASE_URL"] = openai_base_url
+    if not coze_model_base_url and openai_base_url:
+        os.environ["COZE_INTEGRATION_MODEL_BASE_URL"] = openai_base_url
+
+    # 3. 注入 Intelligent Defaults
     # API Base
     if not os.getenv("OPENAI_API_BASE"):
         api_base = settings.model.api_base
@@ -647,4 +669,3 @@ def setup_environment(agent_path: "Path"):
         if not os.getenv("MODEL_NAME"):
             os.environ["MODEL_NAME"] = model_name
         click.echo(f"🧠 Model:    {click.style(model_name, fg='cyan')} (Default)")
-

@@ -462,14 +462,34 @@ class AgentEngineClient:
 
     async def get_agent(self, agent_id: str = None, name: str = None, include_api_key: bool = False) -> Dict[str, Any]:
         """获取 Agent 详情（支持 AgentId 或 Name 查询）"""
-        params = {}
         if agent_id:
-            params["AgentId"] = agent_id
+            params: Dict[str, Any] = {"AgentId": agent_id}
+            if include_api_key:
+                params["IncludeApiKey"] = True
+            try:
+                return self._action("GetAgent", params)
+            except Exception as e:
+                # 兼容旧控制面：极少数版本仍使用 Id 字段
+                text = str(e).lower()
+                if "422" in text or "invalid" in text or "id" in text:
+                    fallback = {"Id": agent_id}
+                    if include_api_key:
+                        fallback["IncludeApiKey"] = True
+                    return self._action("GetAgent", fallback)
+                raise
+
         if name:
-            params["Name"] = name
-        if include_api_key:
-            params["IncludeApiKey"] = True
-        return self._action("GetAgent", params)
+            params = {"Name": name}
+            if include_api_key:
+                params["IncludeApiKey"] = True
+            try:
+                return self._action("GetAgent", params)
+            except Exception:
+                # 兼容旧控制面
+                by_name = self._action("GetAgentByName", {"Name": name})
+                return by_name.get("agent") or by_name.get("Agent") or by_name
+
+        return self._action("GetAgent", {})
 
     async def create_dashboard_ticket(
         self,
@@ -487,6 +507,57 @@ class AgentEngineClient:
         if name:
             params["Name"] = name
         return self._action("CreateDashboardTicket", params)
+
+    async def create_dashboard_access_link(
+        self,
+        *,
+        agent_id: Optional[str] = None,
+        name: Optional[str] = None,
+        link_type: str = "private",
+        path: str = "/",
+        expires_seconds: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """创建 Dashboard 短链接。"""
+        params: Dict[str, Any] = {
+            "LinkType": link_type,
+            "Path": path,
+        }
+        if expires_seconds is not None:
+            params["ExpiresSeconds"] = int(expires_seconds)
+        if agent_id:
+            params["AgentId"] = agent_id
+        if name:
+            params["Name"] = name
+        return self._action("CreateDashboardAccessLink", params)
+
+    async def list_dashboard_access_links(
+        self,
+        *,
+        agent_id: Optional[str] = None,
+        name: Optional[str] = None,
+        link_type: Optional[str] = None,
+        status: Optional[str] = None,
+        page: int = 1,
+        size: int = 20,
+    ) -> Dict[str, Any]:
+        """列出 Dashboard 短链接。"""
+        params: Dict[str, Any] = {
+            "Page": int(page),
+            "Size": int(size),
+        }
+        if agent_id:
+            params["AgentId"] = agent_id
+        if name:
+            params["Name"] = name
+        if link_type:
+            params["LinkType"] = link_type
+        if status:
+            params["Status"] = status
+        return self._action("ListDashboardAccessLinks", params)
+
+    async def delete_dashboard_access_link(self, *, link_id: str) -> Dict[str, Any]:
+        """删除 Dashboard 短链接。"""
+        return self._action("DeleteDashboardAccessLink", {"LinkId": link_id})
         
     async def list_agents(self, region: Optional[str] = None) -> Dict[str, Any]:
         """列出 Agents"""

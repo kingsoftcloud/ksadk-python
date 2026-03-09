@@ -202,6 +202,48 @@ class TestDeployLogic:
         mock_client.update_agent.assert_called_once()
         mock_client.create_agent.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_deploy_persists_ui_config_to_state(
+        self,
+        temp_project_dir,
+        sample_package_info,
+        sample_deploy_target,
+    ):
+        """测试部署后会持久化 UI 配置，供 dashboard 无参打开使用。"""
+        provider = ServerlessProvider()
+        sample_deploy_target.extra.update(
+            {
+                "ui_profile": "langchain",
+                "ui_path": "/",
+                "ui_url": None,
+            }
+        )
+
+        mock_client = AsyncMock()
+        mock_client.create_agent = AsyncMock(
+            return_value={
+                "agent_id": "ar-20260119-newagent-ui",
+                "name": "test-agent",
+                "endpoint": "https://test.kspmas.ksyun.com",
+                "api_key": "ak-test-key",
+            }
+        )
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock()
+
+        with patch.dict(os.environ, {"AGENTENGINE_SERVER_URL": "http://localhost:8080"}), patch(
+            "ksadk.deployment.providers.serverless.AgentEngineClient", return_value=mock_client
+        ), patch("ksadk.common.auth.AWSV4Auth") as MockAuth:
+            MockAuth.return_value.access_key = "test-ak"
+            MockAuth.return_value.secret_key = "test-sk"
+
+            await provider.deploy(sample_package_info, sample_deploy_target)
+
+        state_file = temp_project_dir / ".agentengine.state"
+        state = yaml.safe_load(state_file.read_text())
+        assert state["ui_profile"] == "langchain"
+        assert state["ui_path"] == "/"
+
 
 # ============================================================================
 # State File Not Uploaded Tests

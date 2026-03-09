@@ -179,11 +179,14 @@ def _detect_agent_variable(content: str) -> str | None:
     
     # 优先级匹配: root_agent > compiled graph > StateGraph > Agent()
     patterns = [
-        (r'^(root_agent)\s*=', 'root_agent'),
-        (r'^(\w+)\s*=\s*\w*graph\w*\.compile\(', None),  # e.g., agent = graph.compile()
-        (r'^(\w+)\s*=\s*StateGraph', None),  # e.g., graph = StateGraph(...)
-        (r'^(\w+)\s*=\s*Agent\(', None),  # ADK: agent = Agent(...)
-        (r'^(\w+)\s*=\s*create_react_agent\(', None),  # create_react_agent
+        (r'^\s*(root_agent)\s*=', 'root_agent'),
+        (r'^\s*(root_agent)\s*:\s*[^=]+\s*=', 'root_agent'),  # type annotated root_agent
+        (r'^\s*(\w+)\s*=\s*\w*graph\w*\.compile\(', None),  # e.g., agent = graph.compile()
+        (r'^\s*(\w+)\s*=\s*StateGraph', None),  # e.g., graph = StateGraph(...)
+        (r'^\s*(\w+)\s*=\s*Agent\(', None),  # ADK: agent = Agent(...)
+        (r'^\s*(\w+)\s*=\s*create_react_agent\(', None),  # create_react_agent
+        (r'^\s*(\w+)\s*=\s*create_agent\(', None),  # langchain create_agent
+        (r'^\s*(\w+)\s*=\s*build_agent\(', None),  # adapter style build_agent
     ]
     
     for pattern, fixed_name in patterns:
@@ -194,31 +197,144 @@ def _detect_agent_variable(content: str) -> str | None:
     return None
 
 
+def _load_entry_from_agentengine_yaml(directory: Path) -> tuple[Path, str] | None:
+    """
+    从已有 agentengine.yaml 读取入口信息
+    返回 (入口文件路径, Agent 变量名) 或 None
+    """
+    config_path = directory / "agentengine.yaml"
+    if not config_path.exists():
+        return None
+
+    try:
+        import yaml  # type: ignore
+
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8-sig")) or {}
+    except Exception:
+        return None
+
+    entry_point = config.get("entry_point")
+    if not entry_point or not isinstance(entry_point, str):
+        return None
+
+    # 兼容 Windows 路径分隔符
+    entry_path = directory / Path(entry_point.replace("\\", "/"))
+    if not entry_path.exists() or not entry_path.is_file():
+        return None
+
+    agent_var = config.get("agent_variable")
+    if not isinstance(agent_var, str) or not agent_var.strip():
+        agent_var = "root_agent"
+
+    return entry_path, agent_var
+
+
+def _load_framework_from_agentengine_yaml(directory: Path) -> str | None:
+    """从已有 agentengine.yaml 读取 framework"""
+    config_path = directory / "agentengine.yaml"
+    if not config_path.exists():
+        return None
+
+    try:
+        import yaml  # type: ignore
+
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8-sig")) or {}
+    except Exception:
+        return None
+
+    framework = config.get("framework")
+    if not isinstance(framework, str):
+        return None
+    framework = framework.strip().lower()
+    if framework in {"adk", "langchain", "langgraph", "deepagents", "openclaw"}:
+        return framework
+    return None
+
+
+def _iter_python_files(directory: Path):
+    """递归迭代目录下的 Python 文件（排除常见无关目录）"""
+    excluded_dirs = {
+        ".git",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".tox",
+        "node_modules",
+    }
+
+    for py_file in directory.rglob("*.py"):
+        rel_parts = py_file.relative_to(directory).parts
+        if any(part in excluded_dirs or part.startswith(".venv") for part in rel_parts):
+            continue
+        yield py_file
+
+
 def _find_entry_file(directory: Path) -> tuple[Path, str] | None:
     """
     在目录中查找入口文件
     返回 (入口文件路径, Agent 变量名) 或 None
     """
-    # 优先级顺序
-    entry_candidates = ['agent.py', 'main.py', 'app.py', '__init__.py']
-    
+    # 1) 优先读取已有 agentengine.yaml（兼容已配置项目）
+    config_entry = _load_entry_from_agentengine_yaml(directory)
+    if config_entry:
+        entry_path, configured_var = config_entry
+        try:
+            content = entry_path.read_text(encoding="utf-8")
+            detected_var = _detect_agent_variable(content)
+            return (entry_path, detected_var or configured_var)
+        except Exception:
+            return (entry_path, configured_var)
+
+    # 2) 按候选文件名递归查找（agent.py/main.py/app.py/...）
+    entry_candidates = ["agent.py", "main.py", "app.py", "agentengine_adapter.py", "__init__.py"]
     for candidate in entry_candidates:
-        entry_path = directory / candidate
-        if entry_path.exists():
-            content = entry_path.read_text(encoding='utf-8')
+        candidate_files = sorted(
+            (p for p in _iter_python_files(directory) if p.name == candidate),
+            key=lambda p: (len(p.relative_to(directory).parts), str(p)),
+        )
+        for entry_path in candidate_files:
+            try:
+                content = entry_path.read_text(encoding="utf-8")
+            except Exception:
+                continue
             agent_var = _detect_agent_variable(content)
             if agent_var:
                 return (entry_path, agent_var)
-    
-    # 如果优先文件未找到变量，扫描所有 .py 文件
-    for py_file in directory.glob('*.py'):
-        if py_file.name.startswith('_') and py_file.name != '__init__.py':
+
+    # 3) 全量扫描，按得分选择最可能入口
+    best_match: tuple[int, Path, str] | None = None
+    for py_file in _iter_python_files(directory):
+        if py_file.name.startswith("_") and py_file.name != "__init__.py":
             continue
-        content = py_file.read_text(encoding='utf-8')
+        try:
+            content = py_file.read_text(encoding="utf-8")
+        except Exception:
+            continue
+
         agent_var = _detect_agent_variable(content)
-        if agent_var:
-            return (py_file, agent_var)
-    
+        if not agent_var:
+            continue
+
+        rel = py_file.relative_to(directory)
+        depth = len(rel.parts)
+        score = 0
+        if agent_var == "root_agent":
+            score += 100
+        if py_file.name in entry_candidates:
+            score += 50
+        if "src" in rel.parts:
+            score += 20
+        score -= depth
+
+        if best_match is None or score > best_match[0]:
+            best_match = (score, py_file, agent_var)
+
+    if best_match:
+        return (best_match[1], best_match[2])
+
     return None
 
 
@@ -457,7 +573,7 @@ def _wrap_agent_file(from_agent_path: Path, project_name: str, framework: str, a
     import re
     
     project_path = Path(project_name)
-    package_name = project_name.replace('-', '_')
+    package_name = project_path.name.replace('-', '_')
     
     if project_path.exists():
         print_error(f"目录 '{project_name}' 已存在")
@@ -562,7 +678,7 @@ def _wrap_agent_directory(from_agent_dir: Path, project_name: str, framework: st
     import shutil
     
     project_path = Path(project_name)
-    package_name = project_name.replace('-', '_')
+    package_name = project_path.name.replace('-', '_')
     source_dir_name = from_agent_dir.name
     
     if project_path.exists():
@@ -581,7 +697,32 @@ def _wrap_agent_directory(from_agent_dir: Path, project_name: str, framework: st
     
     # 复制整个源目录到项目中（作为 package）
     dest_package_path = project_path / package_name
-    shutil.copytree(from_agent_dir, dest_package_path)
+    ignore_names = {
+        ".git",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".tox",
+        "node_modules",
+        ".idea",
+        ".vscode",
+        ".DS_Store",
+    }
+
+    def _ignore_copytree(_dir: str, names: list[str]):
+        ignored = set()
+        for name in names:
+            if name in ignore_names or name.startswith(".venv"):
+                ignored.add(name)
+                continue
+            if name.endswith((".pyc", ".pyo")):
+                ignored.add(name)
+        return ignored
+
+    shutil.copytree(from_agent_dir, dest_package_path, ignore=_ignore_copytree)
     
     print_info(f"已复制 {sum(1 for _ in dest_package_path.rglob('*.py'))} 个 Python 文件")
     
@@ -632,20 +773,21 @@ agent_variable: {agent_var}
     
     # 确保 __init__.py 正确导出 root_agent
     init_file = dest_package_path / "__init__.py"
-    entry_module = entry_relative.stem  # 去掉 .py
+    entry_module = ".".join(entry_relative.with_suffix("").parts)  # e.g. src.agentengine_adapter
+    expected_export_line = f"from .{entry_module} import {agent_var} as root_agent"
     
     # 检查现有 __init__.py 是否已导出 root_agent
     init_has_export = False
     if init_file.exists():
         init_content = init_file.read_text(encoding='utf-8')
-        if 'root_agent' in init_content and 'import' in init_content:
+        if expected_export_line in init_content:
             init_has_export = True
     
     if not init_has_export:
         # 追加或创建导出语句
         export_code = f'''
 # AgentEngine 导出 (自动添加)
-from .{entry_module} import {agent_var} as root_agent
+{expected_export_line}
 __all__ = ["root_agent"]
 '''
         if init_file.exists():
@@ -657,7 +799,7 @@ __all__ = ["root_agent"]
             init_file.write_text(f'''"""
 {project_name} - Wrapped Agent
 """
-from .{entry_module} import {agent_var} as root_agent
+{expected_export_line}
 __all__ = ["root_agent"]
 ''', encoding="utf-8-sig")
     
@@ -783,14 +925,21 @@ def create(project_name: str, framework: str, from_agent_path: str):
             print_info(f"检测到入口: {entry_file.name}")
             print_info(f"检测到变量: {detected_var}")
             
-            # 检测框架
-            entry_content = entry_file.read_text(encoding='utf-8')
-            detected_framework = _detect_framework(entry_content)
+            # 检测框架：优先读取已有 agentengine.yaml
+            detected_framework = _load_framework_from_agentengine_yaml(from_path) or 'unknown'
+            if detected_framework != 'unknown':
+                print_info(f"从 agentengine.yaml 检测到框架: {detected_framework}")
+            else:
+                entry_content = entry_file.read_text(encoding='utf-8')
+                detected_framework = _detect_framework(entry_content)
             
             # 如果入口文件未检测到框架，扫描整个目录
             if detected_framework == 'unknown':
-                for py_file in from_path.rglob('*.py'):
-                    content = py_file.read_text(encoding='utf-8')
+                for py_file in _iter_python_files(from_path):
+                    try:
+                        content = py_file.read_text(encoding='utf-8')
+                    except Exception:
+                        continue
                     detected_framework = _detect_framework(content)
                     if detected_framework != 'unknown':
                         break
@@ -869,7 +1018,7 @@ def create(project_name: str, framework: str, from_agent_path: str):
     print_kv("创建项目", project_name)
     print_kv("框架", framework)
     
-    package_name = project_name.replace('-', '_')
+    package_name = project_path.name.replace('-', '_')
     (project_path / package_name).mkdir(parents=True)
     
     # 检测全局配置

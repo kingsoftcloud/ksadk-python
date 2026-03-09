@@ -13,10 +13,25 @@ class FunctionResponse(BaseModel):
     name: str
     response: Dict[str, Any]
 
+
+class InlineData(BaseModel):
+    data: Optional[str] = None
+    mimeType: Optional[str] = None
+    displayName: Optional[str] = None
+
+
+class FileData(BaseModel):
+    fileUri: Optional[str] = None
+    mimeType: Optional[str] = None
+    displayName: Optional[str] = None
+
+
 class Part(BaseModel):
     text: Optional[str] = None
     functionCall: Optional[FunctionCall] = None
     functionResponse: Optional[FunctionResponse] = None
+    inlineData: Optional[InlineData] = None
+    fileData: Optional[FileData] = None
     
     # Simple alias for JSON field mapping if needed, 
     # but Pydantic usually handles this with field aliases if inputs differ.

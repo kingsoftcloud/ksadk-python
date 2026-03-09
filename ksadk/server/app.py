@@ -8,6 +8,7 @@ import logging
 import uuid
 import time
 import asyncio
+import base64
 from typing import Dict, Any, List, Optional
 from pathlib import Path
 
@@ -38,9 +39,74 @@ app.add_middleware(
 # Global Runner instance
 runner: BaseRunner = None
 
+_TEXT_MIME_PREFIXES = ("text/",)
+_TEXT_MIME_TYPES = {
+    "application/json",
+    "application/xml",
+    "application/yaml",
+    "application/x-yaml",
+    "application/x-ndjson",
+}
+_MAX_INLINE_BASE64_CHARS = 4_000_000
+_MAX_INLINE_TEXT_CHARS = 20_000
+
 def set_runner(r: BaseRunner):
     global runner
     runner = r
+
+
+def _is_textual_mime(mime_type: str) -> bool:
+    mime = (mime_type or "").lower()
+    if not mime:
+        return False
+    return mime.startswith(_TEXT_MIME_PREFIXES) or mime in _TEXT_MIME_TYPES
+
+
+def _extract_user_input_from_parts(parts: List[Part]) -> str:
+    """将 ADK-Web message parts 转成可供 Agent 理解的文本输入。"""
+    segments: List[str] = []
+
+    for part in parts or []:
+        if part.text:
+            segments.append(part.text)
+            continue
+
+        inline = part.inlineData
+        if inline and inline.data:
+            display_name = inline.displayName or "uploaded_file"
+            mime_type = (inline.mimeType or "").strip()
+            data_b64 = inline.data.strip()
+
+            if len(data_b64) > _MAX_INLINE_BASE64_CHARS:
+                segments.append(
+                    f"[上传文件: {display_name}, mime={mime_type or 'unknown'}, 内容过大，未直接展开]"
+                )
+                continue
+
+            try:
+                raw = base64.b64decode(data_b64 + "===")
+            except Exception:
+                segments.append(f"[上传文件: {display_name}, 内容解码失败]")
+                continue
+
+            if _is_textual_mime(mime_type):
+                text = raw.decode("utf-8", errors="ignore")
+                if len(text) > _MAX_INLINE_TEXT_CHARS:
+                    text = text[:_MAX_INLINE_TEXT_CHARS] + "\n...[内容已截断]"
+                segments.append(f"[上传文件: {display_name}]\n{text}")
+            else:
+                segments.append(
+                    f"[上传文件: {display_name}, mime={mime_type or 'application/octet-stream'}, bytes={len(raw)}]"
+                )
+            continue
+
+        file_data = part.fileData
+        if file_data and (file_data.fileUri or file_data.displayName):
+            segments.append(
+                f"[上传文件引用: {file_data.displayName or file_data.fileUri}, mime={file_data.mimeType or 'unknown'}]"
+            )
+
+    return "\n\n".join(s for s in segments if s).strip()
 
 # ============================================================
 # Core ADK API Endpoints
@@ -185,12 +251,8 @@ async def run_sse(request: AgentRunRequest):
             session = store.create_session(request.appName, request.userId)
             session_id = session.id
     
-    # Extract user input
-    user_input = ""
-    if request.newMessage and request.newMessage.parts:
-        for part in request.newMessage.parts:
-            if part.text:
-                user_input += part.text
+    # Extract user input (text + uploaded file parts)
+    user_input = _extract_user_input_from_parts(request.newMessage.parts if request.newMessage else [])
     
     # Generate invocation ID for this run
     invocation_id = request.invocationId or str(uuid.uuid4())
@@ -718,12 +780,6 @@ async def get_traces(limit: int = 50):
 
 # 静态文件目录
 STATIC_DIR = Path(__file__).parent / "static"
-LANGCHAIN_UI_DIR = STATIC_DIR / "langchain"
-
-# 挂载 LangChain Web UI（/langchain/ 路径）
-if LANGCHAIN_UI_DIR.exists():
-    app.mount("/langchain", StaticFiles(directory=str(LANGCHAIN_UI_DIR), html=True), name="langchain-ui")
-    logger.info(f"LangChain Web UI mounted at /langchain/ from: {LANGCHAIN_UI_DIR}")
 
 # 使用 StaticFiles 挂载 ADK Web 静态文件（官方推荐方式）
 if STATIC_DIR.exists() and (STATIC_DIR / "index.html").exists():
@@ -733,8 +789,4 @@ if STATIC_DIR.exists() and (STATIC_DIR / "index.html").exists():
 else:
     logger.warning(f"Static files not found at: {STATIC_DIR}")
     logger.warning("Run 'make sync-static' to build and sync the Web UI")
-
-
-
-
 

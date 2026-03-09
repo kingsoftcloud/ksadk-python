@@ -563,7 +563,30 @@ class CodeBuilder(BaseBuilder):
             import ksadk
             ksadk_src = Path(ksadk.__file__).parent
             ksadk_count = 0
-            allowed_suffixes = {'.py', '.yaml', '.yml', '.json', '.jinja2', '.j2', '.txt', '.md', '.html'}
+            allowed_suffixes = {
+                '.py',
+                '.yaml',
+                '.yml',
+                '.json',
+                '.jinja2',
+                '.j2',
+                '.txt',
+                '.md',
+                '.html',
+                '.js',
+                '.css',
+                '.svg',
+                '.ico',
+                '.png',
+                '.jpg',
+                '.jpeg',
+                '.gif',
+                '.webp',
+                '.woff',
+                '.woff2',
+                '.ttf',
+                '.map',
+            }
             
             for file_path in ksadk_src.rglob('*'):
                 if not file_path.is_file():
