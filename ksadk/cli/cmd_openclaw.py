@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import os
 import asyncio
-import secrets
 import json
 from pathlib import Path
 from typing import Optional, Dict
@@ -42,7 +41,14 @@ DEFAULT_OPENCLAW_REPO = "openclaw"
 DEFAULT_OPENCLAW_VERSION = "latest"
 DEFAULT_OPENCLAW_REGISTRY = "hub.kce.ksyun.com"
 DEFAULT_OPENCLAW_NAME = "openclaw-gateway"
-DEFAULT_GATEWAY_TOKEN = "openclaw-default-token"
+DEFAULT_TRUSTED_PROXY_USER_HEADER = "x-forwarded-user"
+DEFAULT_TRUSTED_PROXY_CIDRS = [
+    "127.0.0.1",
+    "::1",
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+]
 _GLOBAL_ENV_CACHE: Optional[Dict[str, str]] = None
 
 
@@ -135,7 +141,6 @@ def _build_openclaw_env_vars(
     model_base_url: Optional[str] = None,
     model_api_key: Optional[str] = None,
     default_model: Optional[str] = None,
-    gateway_token: Optional[str] = None,
     model_provider_id: Optional[str] = None,
     gateway_port: Optional[str] = None,
     public_port: Optional[str] = None,
@@ -158,11 +163,6 @@ def _build_openclaw_env_vars(
         or _resolve_env("OPENCLAW_MODEL_PROVIDER_ID")
         or "openai"
     )
-    token = (
-        gateway_token
-        or _resolve_env("OPENCLAW_GATEWAY_TOKEN")
-        or DEFAULT_GATEWAY_TOKEN
-    )
     resolved_gateway_port = (
         gateway_port
         or _resolve_env("OPENCLAW_GATEWAY_PORT", "PORT")
@@ -174,24 +174,35 @@ def _build_openclaw_env_vars(
         or "80"
     )
     model_api = _resolve_env("OPENCLAW_MODEL_API") or "openai-completions"
+    auth_mode = "trusted-proxy"
+    trusted_proxy_user_header = (
+        _resolve_env(
+            "OPENCLAW_TRUSTED_PROXY_USER_HEADER",
+            "OPENCLAW_GATEWAY_TRUSTED_PROXY_USER_HEADER",
+        )
+        or DEFAULT_TRUSTED_PROXY_USER_HEADER
+    ).strip().lower()
+    trusted_proxies = _normalize_csv_list(
+        _resolve_env("OPENCLAW_TRUSTED_PROXIES") or "",
+        default_items=DEFAULT_TRUSTED_PROXY_CIDRS,
+    )
     browser_no_sandbox = _resolve_env("OPENCLAW_BROWSER_NO_SANDBOX") or "true"
     browser_headless = _resolve_env("OPENCLAW_BROWSER_HEADLESS") or "true"
-    browser_executable = (
-        _resolve_env("OPENCLAW_BROWSER_EXECUTABLE_PATH", "OPENCLAW_BROWSER_EXECUTABLE")
-        or "/usr/bin/chromium"
-    )
+    browser_executable = _resolve_env("OPENCLAW_BROWSER_EXECUTABLE_PATH", "OPENCLAW_BROWSER_EXECUTABLE")
     ui_locale = _normalize_ui_locale(_resolve_env("OPENCLAW_UI_LOCALE", "LANG", "LC_ALL"))
 
     env["OPENCLAW_GATEWAY_BIND"] = "lan"
-    env["OPENCLAW_GATEWAY_AUTH_MODE"] = "token"
-    env["OPENCLAW_GATEWAY_TOKEN"] = token
+    env["OPENCLAW_GATEWAY_AUTH_MODE"] = auth_mode
+    env["OPENCLAW_TRUSTED_PROXY_USER_HEADER"] = trusted_proxy_user_header or DEFAULT_TRUSTED_PROXY_USER_HEADER
+    env["OPENCLAW_TRUSTED_PROXIES"] = trusted_proxies
     env["OPENCLAW_GATEWAY_PORT"] = str(resolved_gateway_port)
     env["OPENCLAW_PUBLIC_PORT"] = str(resolved_public_port)
     env["OPENCLAW_MODEL_PROVIDER_ID"] = provider_id
     env["OPENCLAW_MODEL_API"] = model_api
     env["OPENCLAW_BROWSER_NO_SANDBOX"] = browser_no_sandbox
     env["OPENCLAW_BROWSER_HEADLESS"] = browser_headless
-    env["OPENCLAW_BROWSER_EXECUTABLE_PATH"] = browser_executable
+    if browser_executable:
+        env["OPENCLAW_BROWSER_EXECUTABLE_PATH"] = browser_executable
     env["OPENCLAW_UI_LOCALE"] = ui_locale
 
     if base_url:
@@ -262,6 +273,25 @@ def _normalize_allowed_origins(raw: str) -> str:
 
     deduped = list(dict.fromkeys(origins))
     return json.dumps(deduped, ensure_ascii=False)
+
+
+def _normalize_csv_list(raw: str, *, default_items: Optional[list[str]] = None) -> str:
+    """标准化字符串列表为逗号分隔格式。"""
+    text = (raw or "").strip()
+    items: list[str] = []
+    if text:
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                items = [str(x).strip() for x in parsed if str(x).strip()]
+        except Exception:
+            parts = [p.strip() for p in text.replace(";", ",").replace(" ", ",").split(",")]
+            items = [p for p in parts if p]
+
+    if not items:
+        items = [str(x).strip() for x in (default_items or []) if str(x).strip()]
+
+    return ",".join(list(dict.fromkeys(items)))
 
 
 def _parse_image(image: Optional[str]) -> tuple[str, str, str]:
@@ -379,7 +409,6 @@ def openclaw():
 @click.option("--model-base-url", default=None, help="模型 Base URL (默认复用 OPENAI_BASE_URL)")
 @click.option("--model-api-key", default=None, help="模型 API Key (默认复用 OPENAI_API_KEY)")
 @click.option("--default-model", default=None, help="默认模型名 (默认复用 OPENAI_MODEL_NAME)")
-@click.option("--gateway-token", default=None, help="网关 Token (默认自动生成)")
 @dry_run_option("仅显示请求，不实际部署")
 def deploy(
     name: Optional[str],
@@ -388,7 +417,6 @@ def deploy(
     model_base_url: Optional[str],
     model_api_key: Optional[str],
     default_model: Optional[str],
-    gateway_token: Optional[str],
     dry_run: bool,
 ):
     """部署 OpenClaw 到云端
@@ -415,7 +443,6 @@ def deploy(
             model_base_url=model_base_url,
             model_api_key=model_api_key,
             default_model=default_model,
-            gateway_token=gateway_token,
             dry_run=dry_run,
         ),
         dry_run=dry_run,
@@ -430,7 +457,6 @@ async def _deploy_openclaw(
     model_base_url: Optional[str],
     model_api_key: Optional[str],
     default_model: Optional[str],
-    gateway_token: Optional[str],
     dry_run: bool,
 ):
     """异步部署 OpenClaw"""
@@ -469,26 +495,11 @@ async def _deploy_openclaw(
         openclaw_name = f"{DEFAULT_OPENCLAW_NAME}-{ts}"
     image_ref = _resolve_image_ref(image)
 
-    resolved_gateway_token = (
-        gateway_token
-        or _resolve_env("OPENCLAW_GATEWAY_TOKEN")
-        or (
-            (state.get("gateway_token") if state.get("type") == "openclaw" else None)
-            if existing_agent_id else None
-        )
-        or secrets.token_urlsafe(24)
-    )
-    if not gateway_token and not _resolve_env("OPENCLAW_GATEWAY_TOKEN") and not state.get("gateway_token"):
-        print_info("未指定 OPENCLAW_GATEWAY_TOKEN，已自动生成随机 token")
-    elif not gateway_token and not _resolve_env("OPENCLAW_GATEWAY_TOKEN") and state.get("gateway_token"):
-        print_info("未指定 OPENCLAW_GATEWAY_TOKEN，已沿用本地状态中的 token")
-
     # 构建环境变量
     env_vars = _build_openclaw_env_vars(
         model_base_url=model_base_url,
         model_api_key=model_api_key,
         default_model=default_model,
-        gateway_token=resolved_gateway_token,
     )
 
     print_title("OpenClaw 云端部署", f"region: {region}")
@@ -648,7 +659,7 @@ async def _deploy_openclaw(
                 "endpoint": endpoint,
                 "api_key": api_key,
                 "image": image_ref,
-                "gateway_token": env_vars.get("OPENCLAW_GATEWAY_TOKEN"),
+                "openclaw_auth_mode": env_vars.get("OPENCLAW_GATEWAY_AUTH_MODE"),
             })
 
             # 再读一次状态，避免把“已创建”误认为“已稳定运行”。
@@ -667,9 +678,6 @@ async def _deploy_openclaw(
                 print_kv("Endpoint", endpoint, value_style="#58a6ff")
             if api_key:
                 print_kv("API Key", api_key, value_style="#d29922")
-            token = env_vars.get("OPENCLAW_GATEWAY_TOKEN", "")
-            if token and endpoint:
-                print_kv("控制台", f"{endpoint}/#token={token}", value_style="#58a6ff")
             print_info("已保存状态到 .agentengine.state")
             print_info("建议先确认实例状态:")
             print_info("  agentengine openclaw status")

@@ -6,7 +6,7 @@ CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-${STATE_DIR}/openclaw.json}"
 BOOTSTRAP_MARKER="${STATE_DIR}/.bootstrapped"
 PUBLIC_PORT="${OPENCLAW_PUBLIC_PORT:-19089}"
 BIND_MODE="${OPENCLAW_GATEWAY_BIND:-lan}"
-AUTH_MODE="${OPENCLAW_GATEWAY_AUTH_MODE:-token}"
+AUTH_MODE="trusted-proxy"
 
 mkdir -p "${STATE_DIR}"
 
@@ -34,6 +34,22 @@ const parseBool = (raw, fallback) => {
   if (['1', 'true', 'yes', 'on'].includes(text)) return true;
   if (['0', 'false', 'no', 'off'].includes(text)) return false;
   return fallback;
+};
+const parseStringList = (raw) => {
+  const text = String(raw ?? "").trim();
+  if (!text) return [];
+  try {
+    const parsed = JSON.parse(text);
+    if (Array.isArray(parsed)) {
+      return parsed.map((x) => String(x).trim()).filter(Boolean);
+    }
+  } catch {
+    // fallback
+  }
+  return text
+    .split(/[,\s;]+/)
+    .map((x) => x.trim())
+    .filter(Boolean);
 };
 
 let cfg = {};
@@ -85,9 +101,47 @@ if (['1', 'true', 'yes', 'on'].includes(disableDeviceAuthRaw)) {
 
 cfg.gateway.auth = cfg.gateway.auth || {};
 cfg.gateway.auth.mode = authMode;
-if (process.env.OPENCLAW_GATEWAY_TOKEN && process.env.OPENCLAW_GATEWAY_TOKEN.trim()) {
-  cfg.gateway.auth.token = process.env.OPENCLAW_GATEWAY_TOKEN.trim();
+const userHeader = (
+  process.env.OPENCLAW_TRUSTED_PROXY_USER_HEADER ||
+  process.env.OPENCLAW_GATEWAY_TRUSTED_PROXY_USER_HEADER ||
+  "x-forwarded-user"
+)
+  .trim()
+  .toLowerCase();
+const trustedProxies = parseStringList(process.env.OPENCLAW_TRUSTED_PROXIES);
+const trustedProxiesFallback = [
+  "127.0.0.1",
+  "::1",
+  "10.0.0.0/8",
+  "172.16.0.0/12",
+  "192.168.0.0/16",
+];
+
+cfg.gateway.auth.trustedProxy = cfg.gateway.auth.trustedProxy || {};
+cfg.gateway.auth.trustedProxy.userHeader = userHeader || "x-forwarded-user";
+
+const requiredHeaders = parseStringList(
+  process.env.OPENCLAW_TRUSTED_PROXY_REQUIRED_HEADERS ||
+    process.env.OPENCLAW_GATEWAY_TRUSTED_PROXY_REQUIRED_HEADERS,
+);
+if (requiredHeaders.length > 0) {
+  cfg.gateway.auth.trustedProxy.requiredHeaders = requiredHeaders;
+} else {
+  delete cfg.gateway.auth.trustedProxy.requiredHeaders;
 }
+
+const allowUsers = parseStringList(
+  process.env.OPENCLAW_TRUSTED_PROXY_ALLOW_USERS ||
+    process.env.OPENCLAW_GATEWAY_TRUSTED_PROXY_ALLOW_USERS,
+);
+if (allowUsers.length > 0) {
+  cfg.gateway.auth.trustedProxy.allowUsers = allowUsers;
+} else {
+  delete cfg.gateway.auth.trustedProxy.allowUsers;
+}
+
+cfg.gateway.trustedProxies =
+  trustedProxies.length > 0 ? trustedProxies : trustedProxiesFallback;
 
 cfg.browser = cfg.browser || {};
 cfg.browser.noSandbox = parseBool(process.env.OPENCLAW_BROWSER_NO_SANDBOX, true);
@@ -199,40 +253,10 @@ declare -a GATEWAY_CMD=(
   --port "${GATEWAY_PORT}"
   --auth "${AUTH_MODE}"
 )
-if [[ -n "${OPENCLAW_GATEWAY_TOKEN:-}" ]]; then
-  GATEWAY_CMD+=(--token "${OPENCLAW_GATEWAY_TOKEN}")
-fi
 
 ensure_browser_ready() {
-  local status_log="/tmp/openclaw-browser-status.log"
-  local start_log="/tmp/openclaw-browser-start.log"
-  local running="false"
-
-  if [[ -n "${OPENCLAW_GATEWAY_TOKEN:-}" ]]; then
-    if openclaw browser status --token "${OPENCLAW_GATEWAY_TOKEN}" >"${status_log}" 2>&1; then
-      if grep -Eq '^running:[[:space:]]*true$' "${status_log}"; then
-        running="true"
-      fi
-    fi
-    if [[ "${running}" != "true" ]]; then
-      if ! openclaw browser start --token "${OPENCLAW_GATEWAY_TOKEN}" >"${start_log}" 2>&1; then
-        echo "WARN: openclaw browser start failed; see ${start_log}" >&2
-        return 1
-      fi
-    fi
-  else
-    if openclaw browser status >"${status_log}" 2>&1; then
-      if grep -Eq '^running:[[:space:]]*true$' "${status_log}"; then
-        running="true"
-      fi
-    fi
-    if [[ "${running}" != "true" ]]; then
-      if ! openclaw browser start >"${start_log}" 2>&1; then
-        echo "WARN: openclaw browser start failed; see ${start_log}" >&2
-        return 1
-      fi
-    fi
-  fi
+  # trusted-proxy 下 browser 子命令在容器内通常无法带上代理身份头，跳过预热避免误告警。
+  return 0
 }
 
 "${GATEWAY_CMD[@]}" &
@@ -265,6 +289,9 @@ done
 if kill -0 "${GATEWAY_PID}" >/dev/null 2>&1; then
   ensure_browser_ready || true
   BROWSER_WATCH_INTERVAL="${OPENCLAW_BROWSER_WATCH_INTERVAL:-45}"
+  if ! [[ "${BROWSER_WATCH_INTERVAL}" =~ ^[0-9]+$ ]] || [[ "${BROWSER_WATCH_INTERVAL}" -lt 5 ]]; then
+    BROWSER_WATCH_INTERVAL=45
+  fi
   (
     while kill -0 "${GATEWAY_PID}" >/dev/null 2>&1; do
       sleep "${BROWSER_WATCH_INTERVAL}"
