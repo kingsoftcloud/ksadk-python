@@ -525,6 +525,29 @@ class AgentEngineClient:
             params["Name"] = name
         return self._action("CreateDashboardAccessLink", params)
 
+    async def get_client_bootstrap_config(
+        self,
+        *,
+        product: Optional[str] = None,
+        framework: Optional[str] = None,
+        client_type: str = "cli",
+        client_version: Optional[str] = None,
+        locale: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """获取客户端启动配置（动态默认值/升级提示/公告）。"""
+        params: Dict[str, Any] = {
+            "ClientType": client_type or "cli",
+        }
+        if product:
+            params["Product"] = product
+        if framework:
+            params["Framework"] = framework
+        if client_version:
+            params["ClientVersion"] = client_version
+        if locale:
+            params["Locale"] = locale
+        return self._action("GetClientBootstrapConfig", params)
+
     async def list_dashboard_access_links(
         self,
         *,
