@@ -482,12 +482,7 @@ class AgentEngineClient:
             params = {"Name": name}
             if include_api_key:
                 params["IncludeApiKey"] = True
-            try:
-                return self._action("GetAgent", params)
-            except Exception:
-                # 兼容旧控制面
-                by_name = self._action("GetAgentByName", {"Name": name})
-                return by_name.get("agent") or by_name.get("Agent") or by_name
+            return self._action("GetAgent", params)
 
         return self._action("GetAgent", {})
 
