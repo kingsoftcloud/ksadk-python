@@ -13,8 +13,9 @@ from __future__ import annotations
 import os
 import asyncio
 import json
+import re
 from pathlib import Path
-from typing import Optional, Dict
+from typing import Optional, Dict, Any
 
 import click
 
@@ -38,7 +39,7 @@ console = get_console()
 # 默认 OpenClaw 镜像 (KCR 个人版)
 DEFAULT_OPENCLAW_NAMESPACE = "agentengine-public"
 DEFAULT_OPENCLAW_REPO = "openclaw"
-DEFAULT_OPENCLAW_VERSION = "latest"
+DEFAULT_OPENCLAW_VERSION = "v2026.3.9-tpfix1"
 DEFAULT_OPENCLAW_REGISTRY = "hub.kce.ksyun.com"
 DEFAULT_OPENCLAW_NAME = "openclaw-gateway"
 DEFAULT_TRUSTED_PROXY_USER_HEADER = "x-forwarded-user"
@@ -346,6 +347,103 @@ def _resolve_image_ref(image: Optional[str]) -> str:
     )
 
 
+def _version_tuple(raw: str) -> tuple[int, ...]:
+    """将版本字符串转为可比较的整数元组。"""
+    parts = []
+    for token in str(raw or "").strip().split("."):
+        m = re.match(r"^(\d+)", token)
+        if not m:
+            break
+        parts.append(int(m.group(1)))
+    return tuple(parts)
+
+
+def _is_version_newer(candidate: str, current: str) -> bool:
+    """判断 candidate 是否高于 current。"""
+    cand = _version_tuple(candidate)
+    cur = _version_tuple(current)
+    if not cand or not cur:
+        return False
+    n = max(len(cand), len(cur))
+    cand = cand + (0,) * (n - len(cand))
+    cur = cur + (0,) * (n - len(cur))
+    return cand > cur
+
+
+async def _fetch_bootstrap_config(region: str) -> Optional[Dict[str, Any]]:
+    """从服务端获取客户端启动配置。失败时返回 None。"""
+    from ksadk.api import AgentEngineClient
+    from ksadk.version import VERSION as CLI_VERSION
+
+    try:
+        async with AgentEngineClient(region=region) as client:
+            return await client.get_client_bootstrap_config(
+                product="openclaw",
+                framework="openclaw",
+                client_type="cli",
+                client_version=CLI_VERSION,
+                locale=_resolve_env("OPENCLAW_UI_LOCALE", "LANG", "LC_ALL"),
+            )
+    except Exception as e:
+        print_warn(f"拉取服务端默认配置失败，回退本地默认镜像: {e}")
+        return None
+
+
+def _extract_bootstrap_image(bootstrap_cfg: Optional[Dict[str, Any]]) -> Optional[str]:
+    """从 bootstrap 配置中提取默认镜像。"""
+    if not isinstance(bootstrap_cfg, dict):
+        return None
+    configs = bootstrap_cfg.get("configs")
+    if not isinstance(configs, dict):
+        return None
+    value = configs.get("bootstrap.default_image") or configs.get("openclaw.default_image")
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _print_bootstrap_hints(bootstrap_cfg: Optional[Dict[str, Any]]) -> None:
+    """打印升级提示和公告（如果服务端下发）。"""
+    if not isinstance(bootstrap_cfg, dict):
+        return
+
+    from ksadk.version import VERSION as CLI_VERSION
+
+    configs = bootstrap_cfg.get("configs")
+    if isinstance(configs, dict):
+        latest = str(configs.get("upgrade.latest_cli_version") or "").strip()
+        min_required = str(configs.get("upgrade.min_cli_version") or "").strip()
+        upgrade_msg = str(configs.get("upgrade.message") or "").strip()
+
+        if latest and _is_version_newer(latest, CLI_VERSION):
+            hint = f"检测到 CLI 新版本: {latest} (当前 {CLI_VERSION})"
+            if upgrade_msg:
+                hint = f"{hint}，{upgrade_msg}"
+            print_warn(hint)
+
+        if min_required and _is_version_newer(min_required, CLI_VERSION):
+            print_warn(
+                f"当前 CLI 版本 {CLI_VERSION} 低于服务端建议最低版本 {min_required}，"
+                "建议尽快升级后继续使用。"
+            )
+
+    notices = bootstrap_cfg.get("notices")
+    if isinstance(notices, list):
+        for item in notices:
+            if not isinstance(item, dict):
+                continue
+            message = str(item.get("message") or "").strip()
+            if not message:
+                continue
+            level = str(item.get("level") or "info").lower()
+            if level in {"warn", "warning", "error"}:
+                print_warn(f"平台公告: {message}")
+            else:
+                print_info(f"平台公告: {message}")
+            break
+
+
 def _flatten_agent_detail(agent: dict) -> dict:
     """将 GetAgent 响应转换为扁平结构，兼容旧字段和嵌套字段。"""
     basic = agent.get("basic", {}) if isinstance(agent, dict) else {}
@@ -405,7 +503,11 @@ def openclaw():
     envvar="KSYUN_REGION",
     help="部署区域 (默认: cn-beijing-6)",
 )
-@click.option("--image", default=None, help="OpenClaw 镜像地址 (默认: 内置公共镜像)")
+@click.option(
+    "--image",
+    default=None,
+    help="OpenClaw 镜像地址 (默认: 内置公共镜像；也可用 OPENCLAW_IMAGE/OPENCLAW_DOCKER_IMAGE)",
+)
 @click.option("--model-base-url", default=None, help="模型 Base URL (默认复用 OPENAI_BASE_URL)")
 @click.option("--model-api-key", default=None, help="模型 API Key (默认复用 OPENAI_API_KEY)")
 @click.option("--default-model", default=None, help="默认模型名 (默认复用 OPENAI_MODEL_NAME)")
@@ -493,7 +595,16 @@ async def _deploy_openclaw(
         from datetime import datetime
         ts = datetime.now().strftime("%m%d%H%M")
         openclaw_name = f"{DEFAULT_OPENCLAW_NAME}-{ts}"
-    image_ref = _resolve_image_ref(image)
+    resolved_image = image or _resolve_env("OPENCLAW_IMAGE", "OPENCLAW_DOCKER_IMAGE")
+    bootstrap_cfg: Optional[Dict[str, Any]] = None
+    if not resolved_image:
+        bootstrap_cfg = await _fetch_bootstrap_config(region)
+        server_default_image = _extract_bootstrap_image(bootstrap_cfg)
+        if server_default_image:
+            resolved_image = server_default_image
+            print_info(f"未指定镜像，使用服务端默认镜像: {resolved_image}")
+        _print_bootstrap_hints(bootstrap_cfg)
+    image_ref = _resolve_image_ref(resolved_image)
 
     # 构建环境变量
     env_vars = _build_openclaw_env_vars(
