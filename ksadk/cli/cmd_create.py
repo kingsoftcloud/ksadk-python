@@ -157,6 +157,17 @@ llm = ChatOpenAI(
 root_agent = create_deep_agent(model=llm)
 ''',
     },
+    "openclaw": {
+        "agent.py": '''"""
+{package_name} - OpenClaw placeholder
+
+OpenClaw 使用预构建容器运行，当前目录主要用于保存 .env 和 .agentengine.state。
+此入口仅用于兼容项目模板结构。
+"""
+
+root_agent = None
+''',
+    },
 }
 
 
@@ -1146,7 +1157,28 @@ __all__ = ["root_agent"]
     )
     
     # README.md
-    (project_path / "README.md").write_text(f"""# {project_name}
+    if framework == "openclaw":
+        readme = f"""# {project_name}
+
+基于 AgentEngine 创建的 OpenClaw 项目。
+
+## 快速开始
+
+```bash
+cd {project_name}
+
+# 1. 编辑 .env（可选，覆盖模型/网关参数）
+vim .env
+
+# 2. 部署 OpenClaw（默认 trusted-proxy）
+agentengine openclaw deploy
+
+# 3. 打开 Dashboard
+agentengine dashboard --share
+```
+"""
+    else:
+        readme = f"""# {project_name}
 
 基于 AgentEngine 创建的 {framework.upper()} Agent.
 
@@ -1176,7 +1208,9 @@ agentengine deploy .    # 部署到云端
 │   └── agent.py         # Agent 实现
 └── README.md
 ```
-""", encoding="utf-8-sig")
+"""
+
+    (project_path / "README.md").write_text(readme, encoding="utf-8-sig")
 
     # requirements.txt
     reqs = "requests_aws4auth\n"  # Minimum required for ksadk.common.auth
@@ -1198,7 +1232,10 @@ agentengine deploy .    # 部署到云端
     import platform
     is_windows = platform.system() == "Windows"
     
-    if is_windows:
+    if framework == "openclaw":
+        combined_cmd = f"cd {project_name} && agentengine openclaw deploy"
+        run_cmd = f"cd {project_name} && agentengine dashboard --share"
+    elif is_windows:
         # Windows: 使用 && 连接命令
         combined_cmd = f"cd {project_name} && agentengine config"
         run_cmd = f"cd {project_name} && agentengine run -i ."

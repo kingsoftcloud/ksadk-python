@@ -202,6 +202,13 @@ class CodeBuilder(BaseBuilder):
     def _install_dependencies(self, requirements_path: Path) -> bool:
         """安装依赖到 deps_dir"""
         stop_spinner = False
+        current_python = f"{sys.version_info.major}.{sys.version_info.minor}"
+        target_python = self._target_python_display()
+        if current_python != target_python:
+            click.echo(
+                f"   ⚠ 构建机 Python={current_python}，目标运行时 Python={target_python}，"
+                "将执行二进制替换与 ABI 校验"
+            )
         
         def spinner():
             for c in itertools.cycle(['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']):
@@ -251,16 +258,25 @@ class CodeBuilder(BaseBuilder):
                         click.echo(f"   {line}")
                 return False
             
-            # 替换非 Linux 平台的二进制文件 (macOS/Windows) 为 Linux 版本
-            if sys.platform in ('darwin', 'win32'):
+            # 替换非 Linux 平台二进制，或 Linux 下非目标 Python ABI 的二进制
+            need_binary_replacement = (
+                sys.platform in ("darwin", "win32")
+                or (sys.platform.startswith("linux") and current_python != target_python)
+            )
+            if need_binary_replacement:
                 self._replace_platform_binaries()
             
             # 二进制兼容性校验（避免把不可运行的包部署到 Linux Runtime）
             incompatibles = self._scan_incompatible_binaries_in_deps()
             if incompatibles:
-                click.secho("\r   ✗ 检测到非 Linux 兼容关键二进制，构建终止", fg='red')
+                click.secho("\r   ✗ 检测到与 Linux Runtime 不兼容的关键二进制，构建终止", fg='red')
                 for item in incompatibles[:10]:
                     click.echo(f"      - {item}")
+                if any(i.startswith("python-abi-mismatch:") for i in incompatibles):
+                    click.echo(
+                        f"   提示: 目标运行时为 Python {target_python}，"
+                        f"请使用 Python {target_python} 构建，或改用 Container 模式部署"
+                    )
                 if any("tiktoken" in i for i in incompatibles):
                     click.echo("   提示: tiktoken 为 langchain-openai 必需；若替换失败可重试或检查网络/镜像")
                 click.echo("   建议: 删除 .agentengine/*_build 后重新构建，或在 Linux 环境重新打包")
@@ -284,7 +300,7 @@ class CodeBuilder(BaseBuilder):
             return False
     
     def _replace_platform_binaries(self) -> None:
-        """替换非 Linux 平台 (macOS/Windows) C 扩展为 Linux 版本"""
+        """替换非目标运行时平台/ABI 的 C 扩展为 Linux 目标版本。"""
         # 模块名到 pip 包名的映射
         MODULE_TO_PACKAGE = {
             '_cffi_backend': 'cffi',
@@ -324,6 +340,8 @@ class CodeBuilder(BaseBuilder):
             binary_files = list(self.deps_dir.rglob('*.so')) + list(self.deps_dir.rglob('*.dylib'))
         elif sys.platform == 'win32':
             binary_files = list(self.deps_dir.rglob('*.pyd')) + list(self.deps_dir.rglob('*.dll'))
+        elif sys.platform.startswith('linux'):
+            binary_files = list(self.deps_dir.rglob('*.so'))
         
         if not binary_files:
             return
@@ -476,6 +494,24 @@ class CodeBuilder(BaseBuilder):
         lower = name.lower()
         return lower.endswith(".so") and "darwin" not in lower and "win" not in lower
 
+    def _target_python_display(self) -> str:
+        if len(self.TARGET_PYTHON_VERSION) >= 2:
+            major = self.TARGET_PYTHON_VERSION[0]
+            minor = self.TARGET_PYTHON_VERSION[1:]
+            return f"{major}.{minor}"
+        return self.TARGET_PYTHON_VERSION
+
+    def _is_target_python_abi_binary(self, name: str) -> bool:
+        lower = name.lower()
+        if not lower.endswith(".so"):
+            return False
+        if "abi3" in lower:
+            return True
+        if "cpython-" in lower:
+            return f"cpython-{self.TARGET_PYTHON_VERSION}" in lower
+        # 无 ABI tag 的 .so 无法准确识别，按可用处理，避免误伤
+        return True
+
     def _scan_incompatible_binaries_in_zip(self, zip_path: Path) -> List[str]:
         """扫描缓存 zip 中关键扩展模块是否缺失 Linux 版本。"""
         try:
@@ -511,8 +547,15 @@ class CodeBuilder(BaseBuilder):
         for module_name, pattern in critical_modules:
             matched_bins = [n for n in names if re.search(pattern, n)]
             if matched_bins:
-                if not any(self._is_linux_so(n) for n in matched_bins):
+                linux_bins = [n for n in matched_bins if self._is_linux_so(n)]
+                if not linux_bins:
                     issues.append(f"missing-linux:{module_name}")
+                    continue
+                if not any(self._is_target_python_abi_binary(n) for n in linux_bins):
+                    issues.append(
+                        f"python-abi-mismatch:{module_name}:"
+                        f"expected-cpython-{self.TARGET_PYTHON_VERSION}-or-abi3"
+                    )
         
         # 通用检查: 所有 .so 文件中不应包含 darwin/win 平台标识
         all_so_files = [n for n in names if n.endswith('.so')]
