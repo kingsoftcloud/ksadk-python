@@ -17,6 +17,7 @@ from ksadk.common.constants import (
     DEFAULT_SERVERLESS_ENDPOINT,
 )
 from ksadk.cli.dry_run import effective_dry_run
+from ksadk.deployment.ui_config import SUPPORTED_UI_PROFILES
 from ksadk.cli.ui import (
     get_console,
     new_table,
@@ -57,6 +58,9 @@ console = get_console()
 @click.option("--ks3-path", help="KS3 代码包路径 (Serverless Code 模式)")
 @click.option("--ks3-bucket", help="KS3 bucket 名称 (Serverless Code 模式, 默认: agentengine-{region})")
 @click.option("--image", help="Docker 镜像地址 (Container 模式)")
+@click.option("--ui-profile", type=click.Choice(SUPPORTED_UI_PROFILES), help="Dashboard UI 类型")
+@click.option("--ui-path", help="Dashboard UI 路径 (例如 /)")
+@click.option("--ui-url", help="完整 Dashboard URL（自研前端）")
 @click.option(
     "--observability/--no-observability", default=True, help="是否启用可观测性 (默认开启)"
 )
@@ -79,6 +83,9 @@ def deploy(
     ks3_path: str,
     ks3_bucket: str,
     image: str,
+    ui_profile: str,
+    ui_path: str,
+    ui_url: str,
     observability: bool,
     push: bool,
     no_cache: bool,
@@ -123,6 +130,9 @@ def deploy(
             ks3_path,
             ks3_bucket,
             image,
+            ui_profile,
+            ui_path,
+            ui_url,
             observability,
             push,
             no_cache,
@@ -180,6 +190,9 @@ async def _deploy_async(
     ks3_path: str,
     ks3_bucket: str,
     image: str,
+    ui_profile: str,
+    ui_path: str,
+    ui_url: str,
     observability: bool,
     push: bool,
     no_cache: bool,
@@ -241,6 +254,9 @@ async def _deploy_async(
             "ks3_path": ks3_path,
             "ks3_bucket": ks3_bucket,
             "image": image,
+            "ui_profile": ui_profile,
+            "ui_path": ui_path,
+            "ui_url": ui_url,
             "enable_observability": observability,
             "dry_run": dry_run,
             "no_cache": no_cache,

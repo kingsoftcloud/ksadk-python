@@ -7,6 +7,7 @@ import asyncio
 import os
 from pathlib import Path
 from ksadk.cli.dry_run import effective_dry_run
+from ksadk.deployment.ui_config import SUPPORTED_UI_PROFILES
 from ksadk.cli.ui import (
     print_error,
     print_info,
@@ -39,6 +40,9 @@ from ksadk.cli.ui import (
 @click.option("--ks3-bucket", help="KS3 bucket 名称")
 @click.option("--ks3-path", help="KS3 代码包路径")
 @click.option("--image", help="Docker 镜像地址")
+@click.option("--ui-profile", type=click.Choice(SUPPORTED_UI_PROFILES), help="Dashboard UI 类型")
+@click.option("--ui-path", help="Dashboard UI 路径 (例如 /)")
+@click.option("--ui-url", help="完整 Dashboard URL（自研前端）")
 @click.option("--dry-run", is_flag=True, help="仅打印请求，不执行实际操作")
 @click.option(
     "--artifact-type",
@@ -61,6 +65,9 @@ def launch(
     ks3_bucket: str,
     ks3_path: str,
     image: str,
+    ui_profile: str,
+    ui_path: str,
+    ui_url: str,
     dry_run: bool,
     artifact_type: str,
     no_version: bool,
@@ -99,6 +106,9 @@ def launch(
             ks3_bucket,
             ks3_path,
             image,
+            ui_profile,
+            ui_path,
+            ui_url,
             dry_run,
             artifact_type,
             no_version,
@@ -121,6 +131,9 @@ async def _launch_async(
     ks3_bucket: str,
     ks3_path: str,
     image: str,
+    ui_profile: str,
+    ui_path: str,
+    ui_url: str,
     dry_run: bool,
     artifact_type: str,
     no_version: bool,
@@ -177,6 +190,9 @@ async def _launch_async(
             "ks3_bucket": ks3_bucket,
             "ks3_path": ks3_path,
             "image": image,
+            "ui_profile": ui_profile,
+            "ui_path": ui_path,
+            "ui_url": ui_url,
             "dry_run": dry_run,
         },
     )

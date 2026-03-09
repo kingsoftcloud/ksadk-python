@@ -10,7 +10,7 @@
 - ADK 增强能力：支持短期/长期记忆体（STM/LTM）与知识库工具注入。
 - 本地开发：`run`（API/TUI）与 `web`（本地 Invoke 调试 UI）。
 - 云端部署：`build`、`deploy`、`launch`，支持 `Code` / `Container` 两种制品模式。
-- 云端 UI 访问：`dashboard` 统一打开已部署 Agent 的 Web UI（含 OpenClaw）。
+- 云端 UI 访问：`dashboard` 统一打开已部署 Agent 的 Web UI（含 OpenClaw，默认短链接）。
 - 统一控制面：通过 `AgentEngine Server` 进行 Agent/MCP 管理。
 - 状态持久化：部署后保存 `.agentengine.state`，供后续 `status/invoke/destroy/version` 复用。
 - 版本管理：`version list/release/rollback`。
@@ -107,6 +107,12 @@ agentengine dashboard --agent ar-xxxx
 
 # OpenClaw 也走统一入口
 agentengine dashboard --agent openclaw-gateway-xxxx
+
+# 创建可分享链接（默认打开浏览器）
+agentengine dashboard --agent ar-xxxx --share --expires-seconds 86400
+
+# 仅输出 URL，不自动打开
+agentengine dashboard --agent ar-xxxx --no-open
 ```
 
 ### 6)（可选）启用 ADK 记忆与知识库
@@ -126,7 +132,7 @@ export KSADK_KB_DATASET_ID=your_dataset_id
 - `agentengine model`：从模型服务拉取模型列表并更新 `.env` 的 `OPENAI_MODEL_NAME`。
 - `agentengine run`：本地运行 Agent（支持 `-i` TUI）。
 - `agentengine web`：启动本地调试 UI（ADK 项目用 ADK Web，其他用 Chainlit）。
-- `agentengine dashboard`：打开云端已部署 Agent 的 Dashboard/WebUI。
+- `agentengine dashboard`：打开云端已部署 Agent 的 Dashboard/WebUI（默认创建 `/s/{link_id}` 短链接）。
 - `agentengine build`：构建制品（`code` 或 `container`）。
 - `agentengine deploy`：部署到 `serverless` / `kcf` / `kce`。
 - `agentengine launch`：`build + deploy` 一条命令完成。
@@ -140,7 +146,9 @@ export KSADK_KB_DATASET_ID=your_dataset_id
 
 说明：
 - `agentengine openclaw dashboard` 已收敛为统一命令 `agentengine dashboard`。
-- `dashboard` 默认通过 `CreateDashboardTicket` 直开浏览器；`CreateDashboardTicket` 不可用时不会回退 API Key URL 票据。
+- `dashboard` 默认通过 `CreateDashboardAccessLink` 生成短链接并打开浏览器。
+- 旧链路仅用于排障：`agentengine dashboard --legacy-ticket`。
+- 分享链接管理：`agentengine dashboard share list` / `agentengine dashboard share revoke <link_id>`（底层调用 `DeleteDashboardAccessLink`）。
 
 ## Agent 指定规则（统一）
 

@@ -41,23 +41,11 @@ class LangGraphRunner(BaseRunner):
         
         return config
 
-    async def invoke(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
-        """调用 LangGraph 图
-        
-        支持两种输入格式：
-        1. 简化格式: {"input": "hello"} - 自动转换为 messages
-        2. 原生格式: {"messages": [...]} 或自定义 State - 直接透传
-        """
-        session_id = input_data.pop("session_id", None) or str(uuid.uuid4())[:8]
-        is_resume = input_data.pop("resume", False)
-        history = input_data.pop("history", [])
-        
-        config = self._get_config(session_id)
-        
-        # 判断输入格式
-        if "input" in input_data and "messages" not in input_data:
-            # 简化格式 -> 转换为 messages（包含历史）
+    def _to_state(self, payload: Dict[str, Any], history: list) -> Dict[str, Any]:
+        """将简化输入转换为 state，并保留除 input 外的附加字段。"""
+        if "input" in payload and "messages" not in payload:
             from langchain_core.messages import HumanMessage, AIMessage
+
             messages = []
             for msg in history:
                 role = msg.get("role")
@@ -66,11 +54,39 @@ class LangGraphRunner(BaseRunner):
                     messages.append(HumanMessage(content=content))
                 elif role in ("assistant", "model"):
                     messages.append(AIMessage(content=content))
-            messages.append(HumanMessage(content=input_data["input"]))
-            state = {"messages": messages}
+
+            messages.append(HumanMessage(content=payload["input"]))
+            state = {k: v for k, v in payload.items() if k != "input"}
+            state["messages"] = messages
+            return state
+
+        return payload
+
+    async def invoke(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
+        """调用 LangGraph 图
+        
+        支持两种输入格式：
+        1. 简化格式: {"input": "hello"} - 自动转换为 messages
+        2. 原生格式: {"messages": [...]} 或自定义 State - 直接透传
+        """
+        payload = dict(input_data)
+        session_id = payload.pop("session_id", None) or str(uuid.uuid4())[:8]
+        is_resume = payload.pop("resume", False)
+        history = payload.pop("history", [])
+        
+        config = self._get_config(session_id)
+        
+        # 判断输入格式 / resume
+        if is_resume:
+            # resume 支持两种形态:
+            # 1) {"resume": true, "input": <resume_value>}
+            # 2) {"resume": true, ...任意 payload...}
+            if "input" in payload and len(payload) == 1:
+                state = payload["input"]
+            else:
+                state = payload
         else:
-            # 原生格式 -> 直接透传
-            state = input_data
+            state = self._to_state(payload, history)
 
         try:
             if is_resume:
@@ -121,37 +137,38 @@ class LangGraphRunner(BaseRunner):
 
     async def stream(self, input_data: Dict[str, Any]) -> AsyncIterator[Dict[str, Any]]:
         """流式调用 LangGraph 图"""
-        session_id = input_data.pop("session_id", None) or str(uuid.uuid4())[:8]
-        history = input_data.pop("history", [])
+        payload = dict(input_data)
+        session_id = payload.pop("session_id", None) or str(uuid.uuid4())[:8]
+        history = payload.pop("history", [])
+        is_resume = payload.pop("resume", False)
+
+        invoke_payload = dict(payload)
+        invoke_payload["session_id"] = session_id
+        if history:
+            invoke_payload["history"] = history
+        if is_resume:
+            invoke_payload["resume"] = True
         
         config = self._get_config(session_id)
-        
-        # 判断输入格式
-        if "input" in input_data and "messages" not in input_data:
-            # 简化格式 -> 转换为 messages（包含历史）
-            from langchain_core.messages import HumanMessage, AIMessage
-            messages = []
-            for msg in history:
-                role = msg.get("role")
-                content = msg.get("content", "")
-                if role == "user":
-                    messages.append(HumanMessage(content=content))
-                elif role in ("assistant", "model"):
-                    messages.append(AIMessage(content=content))
-            messages.append(HumanMessage(content=input_data["input"]))
-            state = {"messages": messages}
+
+        if is_resume:
+            if "input" in payload and len(payload) == 1:
+                state = payload["input"]
+            else:
+                state = payload
         else:
-            state = input_data
+            state = self._to_state(payload, history)
 
         accumulated_text = ""
 
         if not hasattr(self._agent, "astream_events"):
-            result = await self.invoke({**input_data, "session_id": session_id})
+            result = await self.invoke(invoke_payload)
             yield {"output": result.get("output", ""), "type": "final"}
             return
 
         try:
-            async for event in self._agent.astream_events(state, version="v2", config=config):
+            stream_input = Command(resume=state) if is_resume else state
+            async for event in self._agent.astream_events(stream_input, version="v2", config=config):
                 event_kind = event.get("event", "")
 
                 if event_kind == "on_chat_model_stream":
@@ -205,7 +222,7 @@ class LangGraphRunner(BaseRunner):
             raise
 
         if not accumulated_text:
-            result = await self.invoke({**input_data, "session_id": session_id})
+            result = await self.invoke(invoke_payload)
             yield {"output": result.get("output", ""), "type": "final"}
 
     def _filter_tool_tags(self, content: str) -> str:

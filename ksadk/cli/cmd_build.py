@@ -136,10 +136,11 @@ async def _build_code(agent_path: Path, push: bool, region: str, ks3_bucket: str
             result.metadata["ks3_path"] = ks3_path
             result.metadata["pushed"] = True
             
-            ks3_public_url = uploader.get_public_url(agent_name)
-            ks3_internal_url = uploader.get_internal_url(agent_name)
+            ks3_public_url = uploader.get_public_url_by_key(object_key)
+            ks3_internal_url = uploader.get_internal_url_by_key(object_key)
             print_kv("公网地址", ks3_public_url or "-")
             print_kv("内网地址", ks3_internal_url or "-")
+            print_info("回滚请使用历史不可变包路径 (ks3_path)")
             print_next_steps(["agentengine deploy --target serverless"])
         else:
             print_warn("上传失败，请检查 KS3 配置")

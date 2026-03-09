@@ -234,8 +234,7 @@ def _build_openclaw_env_vars(
         # 统一输出 JSON 数组字符串，兼容旧版 bootstrap（仅支持 JSON.parse）。
         env["OPENCLAW_ALLOWED_ORIGINS"] = json.dumps(["*"])
     allow_insecure_auth = _resolve_env("OPENCLAW_ALLOW_INSECURE_AUTH")
-    if allow_insecure_auth:
-        env["OPENCLAW_ALLOW_INSECURE_AUTH"] = allow_insecure_auth
+    env["OPENCLAW_ALLOW_INSECURE_AUTH"] = allow_insecure_auth if allow_insecure_auth else "true"
     disable_device_auth = _resolve_env("OPENCLAW_DISABLE_DEVICE_AUTH")
     env["OPENCLAW_DISABLE_DEVICE_AUTH"] = disable_device_auth if disable_device_auth else "true"
 

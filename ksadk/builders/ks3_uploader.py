@@ -181,17 +181,24 @@ class KS3Uploader:
             for var, val in saved_proxies.items():
                 os.environ[var] = val
 
-    def get_public_url(self, agent_name: str) -> str:
-        """获取公网访问 URL"""
-        endpoint, _ = get_ks3_endpoints(self.region)
-        return f"https://{self.bucket_name}.{endpoint}/agents/{agent_name}/code.zip"
+    @staticmethod
+    def _normalize_object_key(object_key: str) -> str:
+        """规范化 object_key，避免 URL 出现双斜杠。"""
+        return object_key.lstrip("/")
 
-    def get_internal_url(self, agent_name: str) -> str:
-        """获取内网访问 URL"""
+    def get_public_url_by_key(self, object_key: str) -> str:
+        """获取指定 object_key 的公网访问 URL。"""
+        endpoint, _ = get_ks3_endpoints(self.region)
+        key = self._normalize_object_key(object_key)
+        return f"https://{self.bucket_name}.{endpoint}/{key}"
+
+    def get_internal_url_by_key(self, object_key: str) -> str:
+        """获取指定 object_key 的内网访问 URL。"""
         _, endpoint = get_ks3_endpoints(self.region)
         if not endpoint:
             endpoint = f"ks3-internal.{self.region}.ksyun.com"
-        return f"https://{self.bucket_name}.{endpoint}/agents/{agent_name}/code.zip"
+        key = self._normalize_object_key(object_key)
+        return f"https://{self.bucket_name}.{endpoint}/{key}"
 
     async def upload_with_url(self, file_path: Path, presigned_url: str) -> bool:
         """使用预签名 URL 上传文件 (不依赖本地 AK/SK)"""
@@ -214,4 +221,3 @@ class KS3Uploader:
         except Exception as e:
             click.secho(f"❌ 上传失败: {e}", fg="red")
             return False
-
