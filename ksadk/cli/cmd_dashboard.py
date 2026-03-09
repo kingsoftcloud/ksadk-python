@@ -305,10 +305,6 @@ def _open_dashboard(
         print_error("CreateDashboardAccessLink 返回为空")
         raise SystemExit(1)
     open_url = access_url
-    if _is_openclaw_target(detail=detail, state=state):
-        token = _extract_openclaw_gateway_token(state)
-        if token:
-            open_url = _append_fragment_params(access_url, {"token": token})
 
     print_success("已创建 Dashboard 短链接")
     print_kv("LinkId", str(link_data.get("link_id") or "-"))
@@ -512,36 +508,6 @@ def _append_query_params(url: str, params: dict) -> str:
         query_items.append((k, str(v)))
     new_query = urlencode(query_items, doseq=True)
     return urlunsplit((parts.scheme, parts.netloc, parts.path, new_query, parts.fragment))
-
-
-def _append_fragment_params(url: str, params: dict) -> str:
-    parts = urlsplit(url)
-    fragment_items = parse_qsl(parts.fragment, keep_blank_values=True)
-    existing_keys = {k for k, _ in fragment_items}
-    for k, v in params.items():
-        if v is None:
-            continue
-        if k in existing_keys:
-            fragment_items = [(fk, fv) if fk != k else (k, str(v)) for fk, fv in fragment_items]
-        else:
-            fragment_items.append((k, str(v)))
-    new_fragment = urlencode(fragment_items, doseq=True)
-    return urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query, new_fragment))
-
-
-def _extract_openclaw_gateway_token(state: Optional[dict]) -> Optional[str]:
-    if not isinstance(state, dict):
-        return None
-    token = str(state.get("gateway_token") or "").strip()
-    return token or None
-
-
-def _is_openclaw_target(*, detail: dict, state: Optional[dict]) -> bool:
-    framework = str(detail.get("framework") or "").strip().lower()
-    if framework == "openclaw":
-        return True
-    state_type = str((state or {}).get("type") or "").strip().lower()
-    return state_type == "openclaw"
 
 
 def _is_not_found_error(err: Optional[Exception]) -> bool:
