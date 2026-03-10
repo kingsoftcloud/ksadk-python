@@ -39,7 +39,7 @@ console = get_console()
 # 默认 OpenClaw 镜像 (KCR 个人版)
 DEFAULT_OPENCLAW_NAMESPACE = "agentengine-public"
 DEFAULT_OPENCLAW_REPO = "openclaw"
-DEFAULT_OPENCLAW_VERSION = "v2026.3.9-tpfix1"
+DEFAULT_OPENCLAW_VERSION = "latest"
 DEFAULT_OPENCLAW_REGISTRY = "hub.kce.ksyun.com"
 DEFAULT_OPENCLAW_NAME = "openclaw-gateway"
 DEFAULT_TRUSTED_PROXY_USER_HEADER = "x-forwarded-user"
@@ -380,6 +380,7 @@ async def _fetch_bootstrap_config(region: str) -> Optional[Dict[str, Any]]:
             return await client.get_client_bootstrap_config(
                 product="openclaw",
                 framework="openclaw",
+                region=region,
                 client_type="cli",
                 client_version=CLI_VERSION,
                 locale=_resolve_env("OPENCLAW_UI_LOCALE", "LANG", "LC_ALL"),

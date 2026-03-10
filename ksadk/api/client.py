@@ -530,6 +530,7 @@ class AgentEngineClient:
         *,
         product: Optional[str] = None,
         framework: Optional[str] = None,
+        region: Optional[str] = None,
         client_type: str = "cli",
         client_version: Optional[str] = None,
         locale: Optional[str] = None,
@@ -542,6 +543,8 @@ class AgentEngineClient:
             params["Product"] = product
         if framework:
             params["Framework"] = framework
+        if region:
+            params["Region"] = region
         if client_version:
             params["ClientVersion"] = client_version
         if locale:
