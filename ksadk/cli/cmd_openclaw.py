@@ -14,6 +14,8 @@ import os
 import asyncio
 import json
 import re
+import secrets
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -21,6 +23,7 @@ import click
 
 from ksadk.api.client import DryRunExit
 from ksadk.cli.dry_run import dry_run_option, run_async_with_dry_run, effective_dry_run
+from ksadk.cli.error_utils import print_exception
 from ksadk.cli.ui import (
     get_console,
     new_table,
@@ -49,8 +52,21 @@ DEFAULT_TRUSTED_PROXY_CIDRS = [
     "10.0.0.0/8",
     "172.16.0.0/12",
     "192.168.0.0/16",
+    "35.0.0.0/8",
 ]
 _GLOBAL_ENV_CACHE: Optional[Dict[str, str]] = None
+
+
+def _generate_default_openclaw_name(prefix: str = DEFAULT_OPENCLAW_NAME) -> str:
+    """生成低碰撞默认名称。
+
+    格式: openclaw-gateway-MMDDHHMMSS-xxxxxx
+    - 时间粒度提升到秒
+    - 追加 6 位十六进制随机后缀（24-bit）
+    """
+    ts = datetime.now().strftime("%m%d%H%M%S")
+    suffix = secrets.token_hex(3)
+    return f"{prefix}-{ts}-{suffix}"
 
 
 def _get_global_env() -> Dict[str, str]:
@@ -162,7 +178,7 @@ def _build_openclaw_env_vars(
     provider_id = (
         model_provider_id
         or _resolve_env("OPENCLAW_MODEL_PROVIDER_ID")
-        or "openai"
+        or "ksyun"
     )
     resolved_gateway_port = (
         gateway_port
@@ -593,9 +609,7 @@ async def _deploy_openclaw(
     if name:
         openclaw_name = name
     else:
-        from datetime import datetime
-        ts = datetime.now().strftime("%m%d%H%M")
-        openclaw_name = f"{DEFAULT_OPENCLAW_NAME}-{ts}"
+        openclaw_name = _generate_default_openclaw_name()
     resolved_image = image or _resolve_env("OPENCLAW_IMAGE", "OPENCLAW_DOCKER_IMAGE")
     bootstrap_cfg: Optional[Dict[str, Any]] = None
     if not resolved_image:
@@ -805,7 +819,7 @@ async def _deploy_openclaw(
     except DryRunExit:
         raise
     except Exception as e:
-        print_error(f"部署失败: {e}")
+        print_exception("部署失败", e)
 
 
 @openclaw.command("list")
@@ -819,23 +833,20 @@ def list_openclaws(region: str, dry_run: bool):
     async def _list():
         try:
             async with AgentEngineClient(region=region, dry_run=dry_run) as client:
-                resp = await client.list_agents(region=region)
-                agents = resp.get("agents", [])
-
-                # 过滤 framework=openclaw
-                openclaws = [a for a in agents if a.get("framework") == "openclaw"]
-
-                if not openclaws:
+                resp = await client.list_agents(region=region, framework="openclaw", page_size=100)
+                agents = resp.get("agents", []) or []
+                if not agents:
                     print_warn("没有找到已部署的 OpenClaw 实例")
                     return
 
-                table = new_table(f"已部署 OpenClaw [muted](总计: {len(openclaws)})[/]")
+                total = int(resp.get("total") or len(agents))
+                table = new_table(f"已部署 OpenClaw [muted](总计: {total})[/]")
                 table.add_column("ID", style="#58a6ff", no_wrap=True)
                 table.add_column("NAME", style="white")
                 table.add_column("STATUS", no_wrap=True, justify="center")
                 table.add_column("ENDPOINT", style="#8b949e", overflow="ellipsis")
                 table.add_column("REGION", style="#8b949e")
-                for a in openclaws:
+                for a in agents:
                     status = (a.get("status") or "UNKNOWN").upper()
                     table.add_row(
                         a.get("agent_id", "-"),
@@ -849,7 +860,7 @@ def list_openclaws(region: str, dry_run: bool):
         except DryRunExit:
             raise
         except Exception as e:
-            print_error(f"获取列表失败: {e}")
+            print_exception("获取列表失败", e)
 
     run_async_with_dry_run(_list(), dry_run=dry_run)
 
@@ -911,7 +922,7 @@ def status(agent_ref: Optional[str], region: Optional[str], dry_run: bool):
         except DryRunExit:
             raise
         except Exception as e:
-            print_error(f"获取状态失败: {e}")
+            print_exception("获取状态失败", e)
             # 回退：显示本地状态，至少给出排障上下文
             if state and state.get("type") == "openclaw":
                 print_rule("本地状态回退")
@@ -966,6 +977,6 @@ def delete(agent_ref: str, region: str, yes: bool, dry_run: bool):
         except DryRunExit:
             raise
         except Exception as e:
-            print_error(f"删除失败: {e}")
+            print_exception("删除失败", e)
 
     run_async_with_dry_run(_delete(), dry_run=dry_run)
