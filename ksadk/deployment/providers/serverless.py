@@ -597,19 +597,21 @@ class ServerlessProvider(BaseDeployProvider):
                 res = await client.get_agent(agent_id)
                 
                 status_map = {
-                    "Running": DeployStatus.RUNNING,
-                    "Ready": DeployStatus.RUNNING,
-                    "Creating": DeployStatus.DEPLOYING,
-                    "Updating": DeployStatus.UPDATING,
-                    "Terminating": DeployStatus.STOPPING,
-                    "Scaling": DeployStatus.UPDATING,
-                    "Failed": DeployStatus.FAILED,
-                    "Error": DeployStatus.FAILED,
-                    "Unknown": DeployStatus.UNKNOWN
+                    "running": DeployStatus.RUNNING,
+                    "ready": DeployStatus.RUNNING,
+                    "creating": DeployStatus.DEPLOYING,
+                    "updating": DeployStatus.UPDATING,
+                    "terminating": DeployStatus.STOPPING,
+                    "scaling": DeployStatus.UPDATING,
+                    "failed": DeployStatus.FAILED,
+                    "error": DeployStatus.FAILED,
+                    "unknown": DeployStatus.UNKNOWN
                 }
                 
+                # 使状态匹配不区分大小写，以兼容服务端的改动 (Creating -> CREATING)
+                current_status = (res.get("status") or "").lower()
                 return DeployResult(
-                    status=status_map.get(res.get("status"), DeployStatus.UNKNOWN),
+                    status=status_map.get(current_status, DeployStatus.UNKNOWN),
                     agent_id=res.get("agent_id"),
                     agent_name=res.get("name"),
                     endpoint=res.get("endpoint"),
@@ -657,8 +659,11 @@ class ServerlessProvider(BaseDeployProvider):
                 
                 results = []
                 for agent in res.get("Agents", []):
+                    current_status = (agent.get("status") or "").lower()
                     results.append(DeployResult(
-                        status=DeployStatus.RUNNING if agent.get("status") == "Running" else DeployStatus.UNKNOWN,
+                        status=DeployStatus.RUNNING if current_status in ("running", "ready") else (
+                            DeployStatus.DEPLOYING if current_status == "creating" else DeployStatus.UNKNOWN
+                        ),
                         agent_id=agent.get("agent_id"),
                         agent_name=agent.get("name"),
                         endpoint=agent.get("endpoint"),
