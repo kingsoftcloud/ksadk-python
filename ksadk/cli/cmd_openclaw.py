@@ -249,7 +249,7 @@ def _build_openclaw_env_vars(
                 "name": catalog_model_id,
                 "api": model_api,
                 "reasoning": True,
-                "input": ["text"],
+                "input": ["text", "image"],
                 "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
                 "contextWindow": 128000,
                 "maxTokens": 8192,
