@@ -8,6 +8,7 @@ import os
 import sys
 import click
 from pathlib import Path
+from ksadk.cli.error_utils import print_exception
 from ksadk.cli.ui import (
     print_error,
     print_info,
@@ -142,7 +143,7 @@ def completion_install(shell: str):
         print_success(f"补全脚本已保存到: {completion_file}")
         
     except Exception as e:
-        print_error(f"生成补全脚本失败: {e}")
+        print_exception("生成补全脚本失败", e)
         print_info("请尝试手动安装:")
         print_info(f"{completion_cmd} > {completion_file}")
         print_info(f"echo 'source {completion_file}' >> {rc_file}")

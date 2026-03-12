@@ -1,0 +1,666 @@
+<!doctype html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AgentEngine 网关架构 | AgentEngine 技术白皮书</title>
+  <style>
+    :root {
+      --bg: #030712;
+      --bg-surface: rgba(17, 24, 39, 0.5);
+      --ink: #f8fafc;
+      --muted: #94a3b8;
+      --line: rgba(255, 255, 255, 0.08);
+      --cyan: #06b6d4;
+      --cyan-glow: rgba(6, 182, 212, 0.4);
+      --blue: #3b82f6;
+      --accent: linear-gradient(135deg, var(--cyan), var(--blue));
+      --radius: 20px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", "PingFang SC", "Noto Sans SC", sans-serif;
+      scroll-behavior: smooth;
+      overflow-x: hidden;
+    }
+
+    /* Ambient Data Particles Background */
+    .bg-mesh {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      z-index: 0;
+      pointer-events: none;
+      background-image:
+        radial-gradient(circle at 15% 50%, rgba(6, 182, 212, 0.1), transparent 40%),
+        radial-gradient(circle at 85% 30%, rgba(59, 130, 246, 0.1), transparent 40%);
+    }
+
+    .wrap {
+      width: min(1200px, 92vw);
+      margin: 0 auto;
+      position: relative;
+      z-index: 2;
+    }
+
+    .nav {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      padding: 20px 4%;
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border-bottom: 1px solid var(--line);
+      z-index: 100;
+      background: rgba(3, 7, 18, 0.6);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .nav-title {
+      font-size: 18px;
+      font-weight: 700;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .nav-title span {
+      background: var(--accent);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+
+    .hero {
+      padding: 160px 0 100px;
+      text-align: center;
+      position: relative;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 8px 16px;
+      background: rgba(59, 130, 246, 0.1);
+      border: 1px solid rgba(59, 130, 246, 0.3);
+      border-radius: 99px;
+      color: #60a5fa;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 2px;
+      margin-bottom: 30px;
+    }
+
+    h1 {
+      font-size: clamp(40px, 6vw, 68px);
+      line-height: 1.1;
+      margin: 0 0 24px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+    }
+
+    .gradient-text {
+      background: var(--accent);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+
+    .hero-desc {
+      font-size: 22px;
+      color: #cbd5e1;
+      max-width: 800px;
+      margin: 0 auto;
+      line-height: 1.6;
+      font-weight: 300;
+    }
+
+    .hero-stats {
+      display: flex;
+      justify-content: center;
+      gap: 24px;
+      margin-top: 50px;
+      flex-wrap: wrap;
+    }
+
+    .stat-card {
+      background: rgba(15, 23, 42, 0.4);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: 16px;
+      padding: 24px 32px;
+      backdrop-filter: blur(10px);
+      min-width: 220px;
+      transition: all 0.3s;
+    }
+
+    .stat-card:hover {
+      background: rgba(30, 41, 59, 0.6);
+      border-color: rgba(6, 182, 212, 0.3);
+      transform: translateY(-5px);
+    }
+
+    .stat-card strong {
+      display: block;
+      font-size: 32px;
+      color: #fff;
+      margin-bottom: 8px;
+    }
+
+    .stat-card span {
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    .block {
+      padding: 100px 0;
+      border-top: 1px solid var(--line);
+    }
+
+    .section-header {
+      margin-bottom: 60px;
+    }
+
+    .section-title {
+      font-size: clamp(32px, 4vw, 44px);
+      margin: 0 0 16px;
+      font-weight: 700;
+    }
+
+    .section-desc {
+      font-size: 18px;
+      color: var(--muted);
+      max-width: 700px;
+      line-height: 1.6;
+    }
+
+    /* Cards */
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+      gap: 30px;
+    }
+
+    .glass-panel {
+      background: var(--bg-surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 40px;
+      backdrop-filter: blur(24px);
+      transition: all 0.4s;
+    }
+
+    .glass-panel:hover {
+      background: rgba(30, 41, 59, 0.6);
+      border-color: rgba(59, 130, 246, 0.3);
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
+    }
+
+    .glass-panel h3 {
+      font-size: 24px;
+      margin: 0 0 16px;
+      color: #fff;
+    }
+
+    .glass-panel p {
+      color: #94a3b8;
+      line-height: 1.7;
+      font-size: 16px;
+      margin: 0;
+    }
+
+    /* Custom HTML Diagrams Focus */
+    .arch-diagram {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+      margin-top: 40px;
+      padding: 50px 30px;
+      background: rgba(15, 23, 42, 0.4);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: var(--radius);
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+    }
+
+    .arch-group {
+      background: rgba(3, 7, 18, 0.5);
+      border: 1px dashed rgba(6, 182, 212, 0.4);
+      border-radius: 16px;
+      padding: 30px 24px 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      position: relative;
+    }
+
+    .arch-group.runtime {
+      border-color: rgba(59, 130, 246, 0.4);
+    }
+
+    .arch-group-title {
+      position: absolute;
+      top: -12px;
+      left: 24px;
+      background: #060b16;
+      padding: 0 12px;
+      color: #94a3b8;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 1px;
+    }
+
+    .arch-node {
+      background: rgba(6, 182, 212, 0.1);
+      border: 1px solid rgba(6, 182, 212, 0.3);
+      padding: 16px 24px;
+      border-radius: 12px;
+      color: #e2e8f0;
+      font-weight: 500;
+      text-align: center;
+      transition: all 0.3s;
+      min-width: 240px;
+    }
+
+    .arch-node:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 10px 20px rgba(6, 182, 212, 0.2);
+      background: rgba(6, 182, 212, 0.15);
+    }
+
+    .arch-node.core {
+      background: rgba(59, 130, 246, 0.15);
+      border-color: rgba(59, 130, 246, 0.4);
+      color: #fff;
+      font-weight: 600;
+    }
+
+    .arch-node.skill {
+      background: rgba(255, 255, 255, 0.02);
+      border-color: rgba(255, 255, 255, 0.1);
+      font-size: 14px;
+    }
+
+    .arch-arrow {
+      color: var(--cyan);
+      font-size: 28px;
+      font-weight: bold;
+      animation: pulse 2s infinite cubic-bezier(0.4, 0, 0.6, 1);
+      margin: 0 10px;
+    }
+
+    @keyframes pulse {
+
+      0%,
+      100% {
+        opacity: 0.2;
+        transform: translateX(0);
+      }
+
+      50% {
+        opacity: 1;
+        transform: translateX(5px);
+      }
+    }
+
+    /* Sequence Timeline */
+    .flow-timeline {
+      margin-top: 40px;
+      padding: 40px;
+      background: rgba(15, 23, 42, 0.4);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: var(--radius);
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
+    }
+
+    .flow-step {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      padding: 24px;
+      background: rgba(255, 255, 255, 0.02);
+      border-radius: 16px;
+      border-left: 4px solid var(--cyan);
+      transition: all 0.3s;
+    }
+
+    .flow-step:hover {
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .flow-step.alt {
+      border-left-color: var(--blue);
+    }
+
+    .flow-actor {
+      font-size: 14px;
+      color: #94a3b8;
+      width: 130px;
+      text-align: right;
+      font-family: "SFMono-Regular", Consolas, monospace;
+    }
+
+    .flow-action {
+      flex: 1;
+      font-size: 16px;
+      color: #e2e8f0;
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .flow-badge {
+      background: rgba(59, 130, 246, 0.15);
+      padding: 6px 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      border: 1px solid rgba(59, 130, 246, 0.3);
+      color: #93c5fd;
+      font-family: "SFMono-Regular", monospace;
+    }
+
+    /* Modern Table */
+    .tech-table {
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0;
+      margin-top: 40px;
+      border-radius: var(--radius);
+      overflow: hidden;
+      border: 1px solid var(--line);
+    }
+
+    .tech-table th,
+    .tech-table td {
+      padding: 20px 24px;
+      text-align: left;
+      border-bottom: 1px solid var(--line);
+      font-size: 16px;
+      color: #cbd5e1;
+    }
+
+    .tech-table th {
+      background: rgba(15, 23, 42, 0.8);
+      color: #fff;
+      font-weight: 600;
+      font-size: 15px;
+      letter-spacing: 1px;
+    }
+
+    .tech-table tr:last-child td {
+      border-bottom: none;
+    }
+
+    .tech-table tr:nth-child(even) td {
+      background: rgba(15, 23, 42, 0.2);
+    }
+
+    .tech-table tr:hover td {
+      background: rgba(59, 130, 246, 0.05);
+    }
+
+    .highlight-cell {
+      color: #60a5fa;
+      font-family: monospace;
+      font-size: 14px;
+    }
+
+    /* Quote */
+    .closing-quote {
+      text-align: center;
+      padding: 80px 40px;
+      background: radial-gradient(circle at center, rgba(59, 130, 246, 0.1) 0%, transparent 60%);
+      border-radius: 40px;
+      margin-top: 60px;
+    }
+
+    .closing-quote h2 {
+      font-size: 32px;
+      font-weight: 300;
+      line-height: 1.5;
+      color: #e2e8f0;
+      margin: 0;
+    }
+
+    .closing-quote h2 strong {
+      color: #fff;
+      background: var(--accent);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+
+    .footer {
+      text-align: center;
+      color: #475569;
+      padding: 40px 0;
+      font-size: 14px;
+    }
+
+    /* Animation class */
+    .reveal {
+      opacity: 0;
+      transform: translateY(30px);
+      transition: all 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .reveal.active {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  </style>
+</head>
+
+<body>
+  <div class="bg-mesh"></div>
+
+  <nav class="nav">
+    <div class="nav-title">
+      <img src="preview/images/claw_logo.png" alt="OpenClaw Logo" height="28" style="margin-right: 8px;" />
+      AgentEngine <span>Gateway</span>
+    </div>
+    <a href="openclaw_client_one_click_deploy.html"
+      style="color: #cbd5e1; text-decoration: none; font-size: 14px; border: 1px solid rgba(255,255,255,0.2); padding: 8px 16px; border-radius: 8px;">返回部署页</a>
+  </nav>
+
+  <section class="hero wrap reveal active">
+    <div class="badge">TECHNICAL ARCHITECTURE</div>
+    <h1>网关不仅是中转站<br><span class="gradient-text">更是能力放大器</span></h1>
+    <p class="hero-desc">
+      不仅仅支撑“想养几只就养几只”的弹性扩繁。<br>
+      AgentEngine 网关打通短链入口、可信身份及协议路由，调度所有顶层执行能力。
+    </p>
+
+    <div class="hero-stats">
+      <div class="stat-card">
+        <strong>Trusted-Proxy</strong>
+        <span>100% 身份防伪造</span>
+      </div>
+      <div class="stat-card">
+        <strong>HTTP/WS</strong>
+        <span>双向实时总线</span>
+      </div>
+      <div class="stat-card">
+        <strong>能力联邦</strong>
+        <span>安全/记忆/浏览器统一管控</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="block">
+    <div class="wrap">
+      <div class="section-header reveal">
+        <h2 class="section-title">核心运转原理</h2>
+        <p class="section-desc">从外部请求的鉴权解析，到代理给内部 Runtime 引擎，这是一场精密的接力赛。</p>
+      </div>
+
+      <!-- Custom CSS Architecture Diagram -->
+      <div class="arch-diagram reveal">
+        <div class="arch-node"
+          style="min-width: 140px; background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.1);">
+          🌐 Browser<br><span
+            style="font-size: 12px; color: var(--muted); margin-top: 6px; display: block;">/s/link_id</span>
+        </div>
+
+        <div class="arch-arrow">⟿</div>
+
+        <div class="arch-group">
+          <div class="arch-group-title">AGENTENGINE GATEWAY</div>
+          <div class="arch-node">🔗 ShortLink 解析 & 路由</div>
+          <div class="arch-node">🛡️ Trusted-Proxy 身份注入</div>
+          <div class="arch-node">⚡ HTTP/WebSocket 协议复用</div>
+        </div>
+
+        <div class="arch-arrow" style="color: var(--blue);">⇌</div>
+
+        <div class="arch-group runtime">
+          <div class="arch-group-title" style="color: #93c5fd;">OPENCLAW RUNTIME 引擎</div>
+          <div class="arch-node core">🧠 Agent Core Framework</div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+            <div class="arch-node skill">🛡️ ClawSec Plugin</div>
+            <div class="arch-node skill">💾 Memory Context</div>
+            <div class="arch-node skill" style="grid-column: span 2;">🌍 Agent Reach & Browser Tools</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="block">
+    <div class="wrap">
+      <div class="section-header reveal">
+        <h2 class="section-title">全链路时序交锋</h2>
+        <p class="section-desc">CLI 端、网关层、Agent 层的精巧协同，保证每一次“出塘”安全且高效。</p>
+      </div>
+
+      <!-- Custom CSS Sequence Flow -->
+      <div class="flow-timeline reveal">
+        <div class="flow-step">
+          <div class="flow-actor">Client UI</div>
+          <div class="flow-action">
+            发起短链接资源访问
+            <div class="flow-badge">GET /s/a1b2c3d4</div>
+          </div>
+        </div>
+
+        <div class="flow-step alt">
+          <div class="flow-actor">Gateway</div>
+          <div class="flow-action">
+            向控制面解析该 Link 对应的 Agent 与 Framework 身份
+            <div class="flow-badge">Resolve & 302 Redirect + Set-Cookie</div>
+          </div>
+        </div>
+
+        <div class="flow-step">
+          <div class="flow-actor">Gateway</div>
+          <div class="flow-action">
+            拦截原生请求，植入服务端安全的身份信任头
+            <div class="flow-badge">Inject X-Trusted-Proxy Headers</div>
+          </div>
+        </div>
+
+        <div class="flow-step alt">
+          <div class="flow-actor">Runtime</div>
+          <div class="flow-action">
+            建立双向代理信道，唤醒所有底层智能体插件节点（安全/搜索等）
+            <div class="flow-badge">HTTP & Upgrade WS Proxy Pass</div>
+          </div>
+        </div>
+
+        <div class="flow-step">
+          <div class="flow-actor">Client UI</div>
+          <div class="flow-action">
+            完成包含一切监控管控能力的最终态 Agent 会话渲染
+            <div class="flow-badge">Receive Rendered Response</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="block">
+    <div class="wrap">
+      <div class="section-header reveal">
+        <h2 class="section-title">技术收益对照</h2>
+      </div>
+
+      <div class="reveal">
+        <table class="tech-table">
+          <thead>
+            <tr>
+              <th>核心能力项</th>
+              <th>代码层实现面</th>
+              <th>业务终端收益</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>高隔离访问治理</strong></td>
+              <td class="highlight-cell">ShortLink Resolver + Session Cookie</td>
+              <td>彻底隐藏实际服务器 IP 与端点，分享与回收完全可控</td>
+            </tr>
+            <tr>
+              <td><strong>绝对安全边界</strong></td>
+              <td class="highlight-cell">Inject X-Trusted-Proxy-User</td>
+              <td>切断前端伪造身份路径，实现金库级鉴权</td>
+            </tr>
+            <tr>
+              <td><strong>长短链一致性</strong></td>
+              <td class="highlight-cell">HTTP/1.1 Proxy + WebSocket Proxy</td>
+              <td>流式输出与实时指令无需两套鉴权体系</td>
+            </tr>
+            <tr>
+              <td><strong>全景运营切面</strong></td>
+              <td class="highlight-cell">Dynamic Config Polling</td>
+              <td>支持服务端热下发更新公告，告别高频发版</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="closing-quote reveal">
+        <h2>Gateway 的意义在于：<br>让你在“想养几只虾”的弹性之外，<br>拥有<strong>绝对的舰队调度指挥权</strong>。</h2>
+      </div>
+    </div>
+  </section>
+
+  <footer class="footer">
+    <div class="wrap">
+      OpenClaw Gateway Architecture © 2026. Made with AgentEngine Team.
+    </div>
+  </footer>
+
+  <script>
+    const observer = new IntersectionObserver((entries, obs) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add('active');
+          obs.unobserve(entry.target);
+        }
+      });
+    }, { threshold: 0.15 });
+
+    document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
+  </script>
+</body>
+
+</html>

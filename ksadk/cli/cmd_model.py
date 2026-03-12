@@ -8,6 +8,7 @@ import httpx
 import questionary
 from pathlib import Path
 from dotenv import set_key, find_dotenv, load_dotenv
+from ksadk.cli.error_utils import print_exception
 from ksadk.cli.ui import (
     print_error,
     print_info,
@@ -130,7 +131,7 @@ def model():
                     print_error("更新 .env 失败")
 
     except Exception as e:
-        print_error(f"获取模型失败: {e}")
+        print_exception("获取模型失败", e)
         if "401" in str(e):
             print_info("提示: 请检查 OPENAI_API_KEY 是否正确")
         elif "404" in str(e):

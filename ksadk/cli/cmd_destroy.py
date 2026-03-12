@@ -7,6 +7,7 @@ import asyncio
 from pathlib import Path
 from ksadk.cli.agent_ref import merge_agent_inputs, resolve_agent_ref
 from ksadk.cli.dry_run import dry_run_option, run_async_with_dry_run, effective_dry_run
+from ksadk.cli.error_utils import print_exception
 from ksadk.deployment import DeploymentManager, DeployTarget
 from ksadk.cli.ui import (
     print_error,
@@ -45,7 +46,7 @@ def destroy(agent_ref: str, agent_option: str, force: bool, region: str, account
             positional_agent=agent_ref,
         )
     except ValueError as e:
-        print_error(f"错误: {e}")
+        print_exception("错误", e)
         raise SystemExit(1)
 
     resolved = resolve_agent_ref(
@@ -73,7 +74,7 @@ def destroy(agent_ref: str, agent_option: str, force: bool, region: str, account
         try:
             agent_id = asyncio.run(_resolve_agent_id(agent, region, account_id))
         except Exception as e:
-            print_error(f"错误: 无法解析 Agent '{agent}'，{e}")
+            print_exception(f"错误: 无法解析 Agent '{agent}'", e)
             raise SystemExit(1)
         if agent_id != agent:
             print_info(f"已解析为 Agent ID: {agent_id}")
@@ -97,7 +98,7 @@ def destroy(agent_ref: str, agent_option: str, force: bool, region: str, account
     try:
         provider = DeploymentManager.get_provider(provider_name)
     except ValueError as e:
-        print_error(f"错误: {e}")
+        print_exception("错误", e)
         raise SystemExit(1)
 
     deploy_target = DeployTarget(
@@ -126,7 +127,7 @@ def destroy(agent_ref: str, agent_option: str, force: bool, region: str, account
                 print_error("销毁失败，请检查错误信息")
                 raise SystemExit(1)
     except Exception as e:
-        print_error(f"操作失败: {e}")
+        print_exception("操作失败", e)
         raise SystemExit(1)
 
 

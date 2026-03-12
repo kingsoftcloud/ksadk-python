@@ -18,6 +18,7 @@ AgentEngine CLI - 命令行工具入口
 import os
 
 import click
+from ksadk.cli.error_utils import is_debug_mode_enabled, print_exception
 from ksadk.version import VERSION
 
 
@@ -393,7 +394,13 @@ def main():
         pass
 
     _register_commands()
-    cli()
+    try:
+        cli()
+    except Exception as e:
+        if is_debug_mode_enabled():
+            raise
+        print_exception(None, e, show_help=True)
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ import click
 from pathlib import Path
 from ksadk.api.client import DryRunExit
 from ksadk.cli.dry_run import dry_run_option, run_async_with_dry_run, effective_dry_run
+from ksadk.cli.error_utils import print_exception
 from ksadk.cli.ui import (
     get_console,
     new_table,
@@ -341,7 +342,7 @@ async def _deploy_mcp_async(
             print_info('ADK: MCPToolset.from_server(connection_params={"url": "<endpoint>/mcp"})')
             
     except Exception as e:
-        print_error(f"部署失败: {e}")
+        print_exception("部署失败", e)
 
 
 @mcp.command("list")
@@ -383,7 +384,7 @@ def list_mcps(region: str, dry_run: bool):
         except DryRunExit:
             raise
         except Exception as e:
-            print_error(f"获取列表失败: {e}")
+            print_exception("获取列表失败", e)
 
     run_async_with_dry_run(_list(), dry_run=dry_run)
 
@@ -427,7 +428,7 @@ def status(mcp_id: str, region: str, dry_run: bool):
         except DryRunExit:
             raise
         except Exception as e:
-            print_error(f"获取状态失败: {e}")
+            print_exception("获取状态失败", e)
 
     run_async_with_dry_run(_get(), dry_run=dry_run)
 
@@ -479,6 +480,6 @@ def delete(mcp_id: str, region: str, yes: bool, dry_run: bool):
         except DryRunExit:
             raise
         except Exception as e:
-            print_error(f"删除失败: {e}")
+            print_exception("删除失败", e)
 
     run_async_with_dry_run(_delete(), dry_run=dry_run)

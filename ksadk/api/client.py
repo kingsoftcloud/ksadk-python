@@ -25,6 +25,23 @@ class DryRunExit(Exception):
     pass
 
 
+class AgentEngineAPIError(Exception):
+    """服务端 Action API 返回非零 Code 时抛出的结构化异常。"""
+
+    def __init__(self, code: Any, message: Optional[str] = None):
+        self.raw_code = code
+        try:
+            self.code = int(code)
+        except (TypeError, ValueError):
+            self.code = None
+        self.message = (message or "Unknown API error").strip() or "Unknown API error"
+        super().__init__(self.__str__())
+
+    def __str__(self) -> str:
+        code_text = self.code if self.code is not None else self.raw_code
+        return f"Server API Error (Code: {code_text}): {self.message}"
+
+
 class AgentEngineClient:
     """AgentEngine Server API 客户端
     
@@ -362,7 +379,7 @@ class AgentEngineClient:
         code = result.get("Code", 0)
         if code != 0:
             msg = result.get("Message", "Unknown API error")
-            raise Exception(f"Server API Error (Code: {code}): {msg}")
+            raise AgentEngineAPIError(code=code, message=msg)
             
         if result.get("Error"):
             raise Exception(result["Error"].get("Message", "Unknown error"))
@@ -486,23 +503,6 @@ class AgentEngineClient:
 
         return self._action("GetAgent", {})
 
-    async def create_dashboard_ticket(
-        self,
-        *,
-        agent_id: Optional[str] = None,
-        name: Optional[str] = None,
-        expires_seconds: int = 300,
-    ) -> Dict[str, Any]:
-        """创建短时效 Dashboard ticket（用于浏览器无 Header 访问）。"""
-        params: Dict[str, Any] = {
-            "ExpiresSeconds": int(expires_seconds),
-        }
-        if agent_id:
-            params["AgentId"] = agent_id
-        if name:
-            params["Name"] = name
-        return self._action("CreateDashboardTicket", params)
-
     async def create_dashboard_access_link(
         self,
         *,
@@ -580,11 +580,30 @@ class AgentEngineClient:
         """删除 Dashboard 短链接。"""
         return self._action("DeleteDashboardAccessLink", {"LinkId": link_id})
         
-    async def list_agents(self, region: Optional[str] = None) -> Dict[str, Any]:
+    async def list_agents(
+        self,
+        region: Optional[str] = None,
+        framework: Optional[str] = None,
+        status: Optional[str] = None,
+        name: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> Dict[str, Any]:
         """列出 Agents"""
         params = {
+            "Page": int(page),
+            "PageSize": int(page_size),
             "Region": self._normalize_payload_region(region),
         }
+        if framework:
+            params["Framework"] = framework
+        if status:
+            params["Status"] = status
+        if name:
+            params["Name"] = name
+        if agent_id:
+            params["Id"] = agent_id
         return self._action("ListAgents", params)
 
     async def delete_agent(self, agent_id: str) -> bool:

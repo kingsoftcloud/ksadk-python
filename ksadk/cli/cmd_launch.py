@@ -7,6 +7,7 @@ import asyncio
 import os
 from pathlib import Path
 from ksadk.cli.dry_run import effective_dry_run
+from ksadk.cli.error_utils import is_debug_mode_enabled, print_exception
 from ksadk.deployment.ui_config import SUPPORTED_UI_PROFILES
 from ksadk.cli.ui import (
     print_error,
@@ -171,7 +172,7 @@ async def _launch_async(
     try:
         provider = DeploymentManager.get_provider(target)
     except ValueError as e:
-        print_error(f"错误: {e}")
+        print_exception("错误", e)
         return
 
     # 4. 准备 Target 配置
@@ -230,7 +231,7 @@ async def _launch_async(
         
         print_kv("构建目录", str(package_info.build_dir))
     except Exception as e:
-        print_error(f"打包失败: {e}")
+        print_exception("打包失败", e)
         return
 
     # 7. 构建与上传 (Build)
@@ -248,7 +249,7 @@ async def _launch_async(
             print_kv("镜像", package_info.image)
 
     except Exception as e:
-        print_error(f"构建失败: {e}")
+        print_exception("构建失败", e)
         return
 
     # 8. 部署 (Deploy)
@@ -289,10 +290,11 @@ async def _launch_async(
                 await auto_rollback_to_previous(result.agent_id, region)
 
     except Exception as e:
-        print_error(f"部署异常: {e}")
-        import traceback
+        print_exception("部署异常", e)
+        if is_debug_mode_enabled():
+            import traceback
 
-        traceback.print_exc()
+            traceback.print_exc()
 
 
 def _load_config(agent_path: Path) -> dict:

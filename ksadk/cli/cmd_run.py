@@ -11,6 +11,7 @@ import subprocess
 import sys
 import os
 from pathlib import Path
+from ksadk.cli.error_utils import print_exception
 from ksadk.cli.ui import (
     print_error,
     print_info,
@@ -130,7 +131,7 @@ def _run_adk_cli(agent_path: Path, port: int = 8080, command: str = "run"):
     try:
         subprocess.run(cmd, cwd=str(agent_path), check=True, env=env)
     except subprocess.CalledProcessError as e:
-        print_error(f"ADK CLI 执行失败: {e}")
+        print_exception("ADK CLI 执行失败", e)
         raise SystemExit(1)
     except FileNotFoundError:
         print_error("未找到 adk CLI，请确保已安装 google-adk")
@@ -179,7 +180,7 @@ def _run_custom(
         runner.load_agent()
         print_success("Agent 加载成功")
     except Exception as e:
-        print_error(f"Agent 加载失败: {e}")
+        print_exception("Agent 加载失败", e)
         # import traceback
         # traceback.print_exc()
         raise SystemExit(1)

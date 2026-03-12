@@ -40,7 +40,9 @@ help:
 	@echo ""
 	@echo "  \033[1;32mOpenClaw 镜像:\033[0m"
 	@echo "    make openclaw-build         构建 OpenClaw 镜像 (alpine/openclaw:latest)"
-	@echo "    make openclaw-push          构建 + 推送到 KCR (:latest)"
+	@echo "    make openclaw-push          构建 + 推送到 KCR (默认 :latest)"
+	@echo "    make openclaw-push OPENCLAW_TAG=v2026.3.10-clawsec1"
+	@echo "    make openclaw-build OPENCLAW_PYPI_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple"
 	@echo "    make openclaw-size          查看镜像大小"
 	@echo ""
 	@echo "  \033[1;32m清理:\033[0m"
@@ -377,16 +379,22 @@ offline-current: build
 #   make openclaw-push     # 构建 + 推送到 KCR
 #
 
-# OpenClaw 配置 (不使用版本号，永远 :latest)
+# OpenClaw 配置
 OPENCLAW_IMAGE := hub.kce.ksyun.com/agentengine-public/openclaw
+OPENCLAW_TAG ?= latest
 OPENCLAW_CONTEXT := deploy/openclaw
+OPENCLAW_BASE_IMAGE ?= alpine/openclaw:latest
+OPENCLAW_PYPI_INDEX_URL ?= https://pypi.org/simple
+OPENCLAW_AGENT_REACH_ZIP_URL ?= https://github.com/Panniantong/agent-reach/archive/main.zip
+OPENCLAW_CLAWSEC_MONITOR_URL ?= https://raw.githubusercontent.com/chrisochrisochriso-cmyk/clawsec-monitor/main/clawsec-monitor.py
+OPENCLAW_BUSYBOX_URL ?= https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox
 
 ## 构建 OpenClaw 镜像 (chromium + preset-skills)
 openclaw-build:
 	@echo "🐳 构建 OpenClaw 镜像..."
 	@echo "============================================================"
-	@echo "   基础镜像: alpine/openclaw:latest"
-	@echo "   目标镜像: $(OPENCLAW_IMAGE):latest"
+	@echo "   基础镜像: $(OPENCLAW_BASE_IMAGE)"
+	@echo "   目标镜像: $(OPENCLAW_IMAGE):$(OPENCLAW_TAG)"
 	@echo "   构建上下文: $(OPENCLAW_CONTEXT)/"
 	@echo "============================================================"
 	@if [ ! -f "$(OPENCLAW_CONTEXT)/Dockerfile" ]; then \
@@ -394,19 +402,24 @@ openclaw-build:
 		exit 1; \
 	fi
 	@docker build --platform linux/amd64 \
-		-t $(OPENCLAW_IMAGE):latest \
+		--build-arg OPENCLAW_BASE_IMAGE=$(OPENCLAW_BASE_IMAGE) \
+		--build-arg PYPI_INDEX_URL=$(OPENCLAW_PYPI_INDEX_URL) \
+		--build-arg AGENT_REACH_ZIP_URL=$(OPENCLAW_AGENT_REACH_ZIP_URL) \
+		--build-arg CLAWSEC_MONITOR_URL=$(OPENCLAW_CLAWSEC_MONITOR_URL) \
+		--build-arg BUSYBOX_URL=$(OPENCLAW_BUSYBOX_URL) \
+		-t $(OPENCLAW_IMAGE):$(OPENCLAW_TAG) \
 		$(OPENCLAW_CONTEXT)
-	@echo "✅ 构建完成: $(OPENCLAW_IMAGE):latest"
+	@echo "✅ 构建完成: $(OPENCLAW_IMAGE):$(OPENCLAW_TAG)"
 
 ## 推送 OpenClaw 镜像到 KCR (构建 + 推送)
 openclaw-push: openclaw-build
-	@echo "📤 推送 OpenClaw 镜像: $(OPENCLAW_IMAGE):latest"
-	@docker push $(OPENCLAW_IMAGE):latest
+	@echo "📤 推送 OpenClaw 镜像: $(OPENCLAW_IMAGE):$(OPENCLAW_TAG)"
+	@docker push $(OPENCLAW_IMAGE):$(OPENCLAW_TAG)
 	@echo "✅ 推送完成"
 
 ## 查看 OpenClaw 镜像大小
 openclaw-size:
-	@docker images $(OPENCLAW_IMAGE):latest --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}"
+	@docker images $(OPENCLAW_IMAGE):$(OPENCLAW_TAG) --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}"
 
 
 
