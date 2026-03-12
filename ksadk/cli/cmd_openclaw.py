@@ -174,6 +174,7 @@ def _build_openclaw_env_vars(
     model = (
         default_model
         or _resolve_env("OPENCLAW_DEFAULT_MODEL", "OPENAI_MODEL_NAME", "MODEL_NAME", "LLM_MODEL")
+        or "kimi-k2.5"
     )
     provider_id = (
         model_provider_id

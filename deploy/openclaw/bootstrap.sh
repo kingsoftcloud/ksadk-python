@@ -115,6 +115,7 @@ const trustedProxiesFallback = [
   "10.0.0.0/8",
   "172.16.0.0/12",
   "192.168.0.0/16",
+  "35.0.0.0/8",
 ];
 
 cfg.gateway.auth.trustedProxy = cfg.gateway.auth.trustedProxy || {};
@@ -159,14 +160,52 @@ cfg.models = cfg.models || {};
 cfg.models.mode = cfg.models.mode || 'merge';
 cfg.models.providers = cfg.models.providers || {};
 
-const providerId = (process.env.OPENCLAW_MODEL_PROVIDER_ID || '').trim();
-const providerBaseUrl = (process.env.OPENCLAW_MODEL_BASE_URL || '').trim();
-const providerApiKey = (process.env.OPENCLAW_MODEL_API_KEY || '').trim();
+const providerId = (process.env.OPENCLAW_MODEL_PROVIDER_ID || 'ksyun').trim();
+const providerBaseUrl = (
+  process.env.OPENCLAW_MODEL_BASE_URL ||
+  process.env.OPENAI_BASE_URL ||
+  process.env.OPENAI_API_BASE ||
+  'http://kspmas-internal.sdns.ksyun.com/v1'
+).trim();
+const providerApiKeySecretSource = (
+  process.env.OPENCLAW_MODEL_API_KEY_SECRET_SOURCE ||
+  'env'
+).trim().toLowerCase();
+const providerApiKeySecretProvider = (
+  process.env.OPENCLAW_MODEL_API_KEY_SECRET_PROVIDER ||
+  'default'
+).trim();
+const providerApiKeySecretId = (
+  process.env.OPENCLAW_MODEL_API_KEY_SECRET_ID ||
+  'OPENCLAW_MODEL_API_KEY'
+).trim();
 const providerApi = (process.env.OPENCLAW_MODEL_API || 'openai-completions').trim();
-if (providerId && providerBaseUrl && providerApiKey) {
+if (providerId && providerBaseUrl && providerApiKeySecretSource && providerApiKeySecretProvider && providerApiKeySecretId) {
+  if (providerApiKeySecretSource === 'env') {
+    const apiKeyValue = String(process.env[providerApiKeySecretId] || '').trim();
+    if (!apiKeyValue) {
+      console.error(
+        `[bootstrap] missing secret env: ${providerApiKeySecretId}; ` +
+          'please inject it via deployment platform secret env.',
+      );
+      process.exit(1);
+    }
+  }
+
+  cfg.secrets = cfg.secrets || {};
+  cfg.secrets.providers = cfg.secrets.providers || {};
+  cfg.secrets.providers[providerApiKeySecretProvider] = cfg.secrets.providers[providerApiKeySecretProvider] || {};
+  cfg.secrets.providers[providerApiKeySecretProvider].source = providerApiKeySecretSource;
+  cfg.secrets.defaults = cfg.secrets.defaults || {};
+  cfg.secrets.defaults[providerApiKeySecretSource] = providerApiKeySecretProvider;
+
   cfg.models.providers[providerId] = cfg.models.providers[providerId] || {};
   cfg.models.providers[providerId].baseUrl = providerBaseUrl;
-  cfg.models.providers[providerId].apiKey = providerApiKey;
+  cfg.models.providers[providerId].apiKey = {
+    source: providerApiKeySecretSource,
+    provider: providerApiKeySecretProvider,
+    id: providerApiKeySecretId,
+  };
   cfg.models.providers[providerId].api = providerApi;
 
   const modelCatalogRaw = (process.env.OPENCLAW_MODEL_CATALOG_JSON || '').trim();
@@ -179,8 +218,19 @@ if (providerId && providerBaseUrl && providerApiKey) {
   }
 }
 
-const primaryModel = (process.env.OPENCLAW_DEFAULT_MODEL || '').trim();
-const explicitProviderConfigured = !!(providerId && providerBaseUrl && providerApiKey);
+const primaryModel = (
+  process.env.OPENCLAW_DEFAULT_MODEL ||
+  process.env.OPENAI_MODEL_NAME ||
+  process.env.MODEL_NAME ||
+  'ksyun/kimi-k2.5'
+).trim();
+const explicitProviderConfigured = !!(
+  providerId &&
+  providerBaseUrl &&
+  providerApiKeySecretSource &&
+  providerApiKeySecretProvider &&
+  providerApiKeySecretId
+);
 const primaryModelQualified = primaryModel.includes('/');
 if (primaryModel && (explicitProviderConfigured || primaryModelQualified)) {
   cfg.agents = cfg.agents || {};
@@ -232,6 +282,12 @@ if [[ ! -f "${BOOTSTRAP_MARKER}" ]]; then
   touch "${BOOTSTRAP_MARKER}"
 fi
 
+BOOTSTRAP_ONLY_RAW="$(printf '%s' "${OPENCLAW_BOOTSTRAP_ONLY:-}" | tr '[:upper:]' '[:lower:]')"
+if [[ "${BOOTSTRAP_ONLY_RAW}" == "1" || "${BOOTSTRAP_ONLY_RAW}" == "true" || "${BOOTSTRAP_ONLY_RAW}" == "yes" || "${BOOTSTRAP_ONLY_RAW}" == "on" ]]; then
+  echo "INFO: bootstrap-only mode enabled; config reconciled."
+  exit 0
+fi
+
 # Start cron daemon if available (for schedule tasks used by some skills/tools).
 if command -v cron >/dev/null 2>&1; then
   if ! ps -ef | grep -q '[c]ron'; then
@@ -242,7 +298,7 @@ if command -v cron >/dev/null 2>&1; then
 fi
 
 # Launch gateway first, then warm up browser control so browser tools work OOTB.
-GATEWAY_PORT="${OPENCLAW_GATEWAY_PORT:-18789}"
+GATEWAY_PORT="${OPENCLAW_GATEWAY_PORT:-8080}"
 declare -a GATEWAY_CMD=(
   node
   openclaw.mjs
