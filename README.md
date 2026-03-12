@@ -2,7 +2,7 @@
 
 `ksadk` 是金山云 Agent 开发与部署工具链，提供统一的 CLI 体验，覆盖本地开发、构建、部署、调用、版本管理与 MCP Server 管理。
 
-当前版本：`0.3.0`
+当前版本：`0.3.5`
 
 ## 核心能力
 
@@ -147,7 +147,6 @@ export KSADK_KB_DATASET_ID=your_dataset_id
 说明：
 - `agentengine openclaw dashboard` 已收敛为统一命令 `agentengine dashboard`。
 - `dashboard` 默认通过 `CreateDashboardAccessLink` 生成短链接并打开浏览器。
-- 旧链路仅用于排障：`agentengine dashboard --legacy-ticket`。
 - 分享链接管理：`agentengine dashboard share list` / `agentengine dashboard share revoke <link_id>`（底层调用 `DeleteDashboardAccessLink`）。
 
 ## Agent 指定规则（统一）

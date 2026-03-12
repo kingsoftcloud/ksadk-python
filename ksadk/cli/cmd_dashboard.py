@@ -7,12 +7,12 @@ import webbrowser
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, Tuple
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import click
 
-from ksadk.api import AgentEngineClient
+from ksadk.api import AgentEngineAPIError, AgentEngineClient
 from ksadk.cli.agent_ref import ResolvedAgentRef, merge_agent_inputs, resolve_agent_ref
+from ksadk.cli.error_utils import print_exception
 from ksadk.cli.ui import get_console, new_table, print_error, print_info, print_kv, print_success, print_warn
 from ksadk.deployment.state import load_state
 from ksadk.deployment.ui_config import resolve_ui_config
@@ -65,14 +65,6 @@ def _parse_expires_seconds_option(
 )
 @click.option("--no-open", is_flag=True, help="仅打印 URL，不自动打开浏览器")
 @click.option("--direct", is_flag=True, help="直接打开 endpoint/path（跳过短链接创建）")
-@click.option("--legacy-ticket", is_flag=True, help="使用旧版 CreateDashboardTicket（排障用途）")
-@click.option(
-    "--ticket-expires-seconds",
-    default=3600,
-    show_default=True,
-    type=click.IntRange(30, 3600),
-    help="旧版 ticket 有效期（仅 --legacy-ticket 生效）",
-)
 @click.pass_context
 def dashboard(
     ctx: click.Context,
@@ -83,8 +75,6 @@ def dashboard(
     expires_seconds: Optional[int],
     no_open: bool,
     direct: bool,
-    legacy_ticket: bool,
-    ticket_expires_seconds: int,
 ):
     """统一打开云端 Dashboard（默认短链接模式）。"""
     if ctx.invoked_subcommand is not None:
@@ -103,8 +93,6 @@ def dashboard(
         expires_seconds=expires_seconds,
         no_open=no_open,
         direct=direct,
-        legacy_ticket=legacy_ticket,
-        ticket_expires_seconds=ticket_expires_seconds,
     )
 
 
@@ -147,7 +135,7 @@ def dashboard_share_list(
     try:
         detail, _, _ = asyncio.run(_resolve_agent_detail(region, primary_ref, fallback_ref))
     except Exception as e:
-        print_error(f"获取 Agent 信息失败: {e}")
+        print_exception("获取 Agent 信息失败", e)
         raise SystemExit(1)
     agent_id = (detail.get("agent_id") or "").strip()
     agent_name = (detail.get("name") or "").strip()
@@ -168,7 +156,7 @@ def dashboard_share_list(
             )
         )
     except Exception as e:
-        print_error(f"查询 Dashboard 链接失败: {e}")
+        print_exception("查询 Dashboard 链接失败", e)
         raise SystemExit(1)
     links = result.get("links") or []
     total = int(result.get("total") or len(links))
@@ -206,7 +194,7 @@ def dashboard_share_revoke(link_id: str, region: str):
     try:
         result = asyncio.run(_delete_dashboard_access_link(region=region, link_id=link_id.strip()))
     except Exception as e:
-        print_error(f"撤销失败: {e}")
+        print_exception("撤销失败", e)
         raise SystemExit(1)
     deleted = bool(result.get("deleted", False))
     if deleted:
@@ -226,8 +214,6 @@ def _open_dashboard(
     expires_seconds: Optional[int],
     no_open: bool,
     direct: bool,
-    legacy_ticket: bool,
-    ticket_expires_seconds: int,
 ):
     try:
         explicit_ref = merge_agent_inputs(agent_option=agent_option, positional_agent=positional_agent)
@@ -269,23 +255,6 @@ def _open_dashboard(
 
     if direct:
         _emit_url("打开 Dashboard（direct）", base_url, no_open=no_open)
-        return
-
-    if legacy_ticket:
-        ticket_data = asyncio.run(
-            _create_dashboard_ticket(
-                region=region,
-                agent_id=(detail.get("agent_id") or "").strip() or None,
-                agent_name=(detail.get("name") or "").strip() or None,
-                expires_seconds=ticket_expires_seconds,
-            )
-        )
-        ui_ticket = (ticket_data.get("ticket") or "").strip()
-        if not ui_ticket:
-            print_error("CreateDashboardTicket 返回为空")
-            raise SystemExit(1)
-        open_url = _append_query_params(base_url, {"ae_ui_ticket": ui_ticket})
-        _emit_url("已创建旧版 UI Ticket，打开 Dashboard", open_url, no_open=no_open)
         return
 
     link_type = "share" if share else "private"
@@ -403,24 +372,6 @@ async def _try_get_agent_detail(client: AgentEngineClient, agent_ref: str) -> Tu
     return None, err
 
 
-async def _create_dashboard_ticket(
-    *,
-    region: str,
-    agent_id: Optional[str],
-    agent_name: Optional[str],
-    expires_seconds: int,
-) -> dict:
-    async with AgentEngineClient(region=region) as client:
-        kwargs = {"expires_seconds": int(expires_seconds)}
-        if agent_id:
-            kwargs["agent_id"] = agent_id
-        elif agent_name:
-            kwargs["name"] = agent_name
-        else:
-            raise Exception("missing agent reference")
-        return await client.create_dashboard_ticket(**kwargs)
-
-
 async def _create_dashboard_access_link(
     *,
     region: str,
@@ -499,18 +450,9 @@ def _build_base_ui_url(endpoint: str, ui_path: str) -> str:
     return f"{endpoint.rstrip('/')}{_normalize_ui_path(ui_path)}"
 
 
-def _append_query_params(url: str, params: dict) -> str:
-    parts = urlsplit(url)
-    query_items = parse_qsl(parts.query, keep_blank_values=True)
-    for k, v in params.items():
-        if v is None:
-            continue
-        query_items.append((k, str(v)))
-    new_query = urlencode(query_items, doseq=True)
-    return urlunsplit((parts.scheme, parts.netloc, parts.path, new_query, parts.fragment))
-
-
 def _is_not_found_error(err: Optional[Exception]) -> bool:
+    if isinstance(err, AgentEngineAPIError):
+        return err.code == 404 or "not found" in (err.message or "").lower()
     text = str(err or "").lower()
     return "code: 404" in text or "not found" in text
 

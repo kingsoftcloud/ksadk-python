@@ -11,6 +11,7 @@ from pathlib import Path
 import os
 import subprocess
 import sys
+from ksadk.cli.error_utils import print_exception
 from ksadk.cli.ui import (
     print_error,
     print_info,
@@ -86,7 +87,7 @@ def _run_adk_web(agent_path: Path, port: int):
     try:
         subprocess.run(cmd, cwd=str(agent_path), check=True)
     except subprocess.CalledProcessError as e:
-        print_error(f"ADK Web 启动失败: {e}")
+        print_exception("ADK Web 启动失败", e)
         raise SystemExit(1)
     except FileNotFoundError:
         print_error("未找到 google-adk，请安装: pip install google-adk")
@@ -120,7 +121,7 @@ def _run_chainlit(result, agent_path: Path, port: int):
     try:
         subprocess.run(cmd, check=True)
     except subprocess.CalledProcessError as e:
-        print_error(f"Chainlit 启动失败: {e}")
+        print_exception("Chainlit 启动失败", e)
         raise SystemExit(1)
     except FileNotFoundError:
         print_error("未找到 chainlit，请安装: pip install chainlit")

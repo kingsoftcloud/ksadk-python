@@ -12,6 +12,7 @@ from datetime import datetime
 from ksadk.api.client import DryRunExit
 from ksadk.cli.agent_ref import merge_agent_inputs, resolve_agent_ref
 from ksadk.cli.dry_run import dry_run_option, run_async_with_dry_run, effective_dry_run
+from ksadk.cli.error_utils import print_exception
 from ksadk.cli.ui import (
     get_console,
     new_table,
@@ -67,7 +68,7 @@ def status(
             positional_agent=agent_ref,
         )
     except ValueError as e:
-        print_error(f"错误: {e}")
+        print_exception("错误", e)
         raise SystemExit(1)
 
     agent = None
@@ -138,7 +139,7 @@ def _watch_status(agent: str, region: str, account_id: str, interval: int):
             try:
                 asyncio.run(_show_agent_status_compact(agent, region, account_id))
             except Exception as e:
-                print_error(f"获取状态失败: {e}")
+                print_exception("获取状态失败", e)
 
             click.echo("")
             click.echo(f"下次刷新: {interval} 秒后 (Ctrl+C 退出)")
@@ -265,13 +266,20 @@ async def _show_agent_status_compact(agent: str, region: str, account_id: str):
 
 
 async def _list_all_agents(region: str, account_id: str, dry_run: bool = False):
-    """列出所有 Agent"""
+    """列出所有 Agent（默认排除 openclaw，避免与专属命令重复）"""
     click.echo(f"查询 Agent 列表... (region: {region})")
 
     try:
         results = await _list_agent_runtimes(region, account_id, dry_run)
     except DryRunExit:
         raise
+
+    # openclaw 有专属命令组：agentengine openclaw *
+    filtered_results = [r for r in results if str(r.get("framework", "")).strip().lower() != "openclaw"]
+    hidden_openclaw = len(results) - len(filtered_results)
+    if hidden_openclaw > 0:
+        print_info(f"已隐藏 {hidden_openclaw} 个 OpenClaw 实例（使用 `agentengine openclaw list` 查看）")
+    results = filtered_results
 
     click.echo("")
     table = new_table(f"Agent 列表  [muted](region: {region})[/]")
@@ -384,20 +392,39 @@ async def _list_agent_runtimes(region: str, account_id: str, dry_run: bool = Fal
             extra_headers["X-Ksc-Account-Id"] = account_id
 
         async with AgentEngineClient(region=region, dry_run=dry_run, extra_headers=extra_headers) as client:
-            response = await client.list_agents(region=region)
-
+            page = 1
+            page_size = 100
             results = []
-            for agent in response.get("agents", []):
-                results.append(
-                    {
-                        "agentRuntimeId": agent.get("agent_id", ""),
-                        "agentRuntimeName": agent.get("name", ""),
-                        "status": agent.get("status", ""),
-                        "replicas": agent.get("replicas", 0),
-                        "readyReplicas": agent.get("ready_replicas", 0),
-                        "endpoint": agent.get("endpoint", ""),
-                    }
-                )
+            total = None
+            while True:
+                response = await client.list_agents(region=region, page=page, page_size=page_size)
+                agents = response.get("agents", []) or []
+                if total is None:
+                    try:
+                        total = int(response.get("total"))
+                    except (TypeError, ValueError):
+                        total = None
+                if not agents:
+                    break
+
+                for agent in agents:
+                    results.append(
+                        {
+                            "agentRuntimeId": agent.get("agent_id", ""),
+                            "agentRuntimeName": agent.get("name", ""),
+                            "status": agent.get("status", ""),
+                            "replicas": agent.get("replicas", 0),
+                            "readyReplicas": agent.get("ready_replicas", 0),
+                            "endpoint": agent.get("endpoint", ""),
+                            "framework": agent.get("framework", ""),
+                        }
+                    )
+
+                if total is not None and len(results) >= total:
+                    break
+                if len(agents) < page_size:
+                    break
+                page += 1
 
             return results
     except DryRunExit:

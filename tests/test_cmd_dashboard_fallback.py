@@ -24,10 +24,6 @@ async def _fake_create_access_link(*_args, **_kwargs):
     }
 
 
-async def _fake_create_ticket(*_args, **_kwargs):
-    return {"ticket": "ticket-demo"}
-
-
 def test_dashboard_uses_access_link_by_default(monkeypatch):
     opened = {}
     runner = CliRunner()
@@ -40,21 +36,6 @@ def test_dashboard_uses_access_link_by_default(monkeypatch):
     result = runner.invoke(cmd_dashboard.dashboard, ["ar-test"])
     assert result.exit_code == 0, result.output
     assert opened["url"] == "http://demo.example.com/s/lnk-1"
-
-
-def test_dashboard_legacy_ticket_mode(monkeypatch):
-    opened = {}
-    runner = CliRunner()
-
-    monkeypatch.setattr(cmd_dashboard, "load_state", lambda _cwd: {})
-    monkeypatch.setattr(cmd_dashboard, "_resolve_agent_detail", _fake_resolve_agent_detail)
-    monkeypatch.setattr(cmd_dashboard, "_create_dashboard_ticket", _fake_create_ticket)
-    monkeypatch.setattr(cmd_dashboard.webbrowser, "open", lambda url: opened.setdefault("url", url))
-
-    result = runner.invoke(cmd_dashboard.dashboard, ["ar-test", "--legacy-ticket"])
-    assert result.exit_code == 0, result.output
-    assert opened["url"].startswith("http://demo.example.com/")
-    assert "ae_ui_ticket=ticket-demo" in opened["url"]
 
 
 def test_dashboard_supports_share_subcommand(monkeypatch):

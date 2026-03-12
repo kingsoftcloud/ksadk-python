@@ -17,6 +17,7 @@ from ksadk.common.constants import (
     DEFAULT_SERVERLESS_ENDPOINT,
 )
 from ksadk.cli.dry_run import effective_dry_run
+from ksadk.cli.error_utils import is_debug_mode_enabled, print_exception
 from ksadk.deployment.ui_config import SUPPORTED_UI_PROFILES
 from ksadk.cli.ui import (
     get_console,
@@ -235,7 +236,7 @@ async def _deploy_async(
     try:
         provider = DeploymentManager.get_provider(target)
     except ValueError as e:
-        print_error(f"错误: {e}")
+        print_exception("错误", e)
         print_info("使用 --list-providers 查看可用目标")
         raise SystemExit(1)
 
@@ -294,7 +295,7 @@ async def _deploy_async(
         print_kv("构建目录", str(package_info.build_dir))
         print_kv("框架", package_info.framework)
     except Exception as e:
-        print_error(f"错误: 打包失败: {e}")
+        print_exception("错误: 打包失败", e)
         raise SystemExit(1)
 
     # Dry Run 模式将由 Provider 内部处理 (通过 AgentEngineClient)
@@ -348,10 +349,11 @@ async def _deploy_async(
                 await auto_rollback_to_previous(result.agent_id, region)
                 
     except Exception as e:
-        print_error(f"错误: 部署失败: {e}")
-        import traceback
+        print_exception("错误: 部署失败", e)
+        if is_debug_mode_enabled():
+            import traceback
 
-        traceback.print_exc()
+            traceback.print_exc()
         
         # 部署异常时也尝试回滚 (如果启用了 --auto-rollback，需要先获取 agent_id)
         # 由于异常时可能没有 result，这里暂不处理，留待后续优化

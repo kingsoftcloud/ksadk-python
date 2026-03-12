@@ -5,6 +5,17 @@ All notable changes to the **Kingsoft AgentEngine SDK (ksadk)** project will be 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.5] - 2026-03-12
+
+### 🛠 改进 (Improvements)
+
+- **Dashboard 与状态查询链路优化**:
+  - 统一 Dashboard 异常输出与 404 识别逻辑，降低排障成本。
+  - Agent 列表查询支持分页与筛选参数，提升大规模实例场景下的可用性。
+- **OpenClaw 构建与运维增强**:
+  - `openclaw` 镜像构建改为参数化配置，支持自定义基础镜像、镜像标签与依赖源。
+  - 增加 OpenClaw 相关文档与预设能力，便于快速落地与推广。
+
 ## [0.3.0] - 2026-03-06
 
 ### 🚀 新特性 (New Features)
