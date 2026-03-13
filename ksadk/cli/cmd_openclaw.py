@@ -643,12 +643,9 @@ async def _deploy_openclaw(
         {"Key": k, "Value": v, "IsSensitive": "KEY" in k or "TOKEN" in k or "SECRET" in k}
         for k, v in env_vars.items()
     ]
-    # Ding CreateProducts 当前对部分 JSON 字符串环境变量存在解析问题：
-    # 先用安全子集创建，待实例创建后再通过 UpdateAgent 补齐完整环境变量。
-    create_env_list = [
-        item for item in env_list
-        if item.get("Key") not in {"OPENCLAW_MODEL_CATALOG_JSON", "OPENCLAW_ALLOWED_ORIGINS"}
-    ]
+    # 资源规格（支持通过环境变量覆盖）
+    cpu = _resolve_env("OPENCLAW_CPU") or "2"
+    memory = _resolve_env("OPENCLAW_MEMORY") or "4Gi"
 
     # 构建请求数据
     request_data = {
@@ -658,9 +655,9 @@ async def _deploy_openclaw(
         "artifact_type": "Container",
         "artifact_path": image_ref,
         "region": region,
-        "resources": {"cpu": "2", "memory": "4Gi"},
-        "scaling": {"min_replicas": 1, "max_replicas": 3, "concurrency": 20},
-        "env_vars": create_env_list,
+        "resources": {"cpu": cpu, "memory": memory},
+        "scaling": {"min_replicas": 1, "max_replicas": 1, "concurrency": 1000},
+        "env_vars": env_list,
         # OpenClaw UI 需要浏览器直开；默认关闭平台层 ApiKey 保护，避免 dashboard 401
         "auth_type": "None",
         "inbound_identity_auth": "None",
@@ -699,6 +696,7 @@ async def _deploy_openclaw(
                     update_payload = {
                         "artifact_type": "Container",
                         "artifact_path": image_ref,
+                        "resources": {"cpu": cpu, "memory": memory},
                         "env_vars": env_list,
                         "auth_type": "None",
                         "inbound_identity_auth": "None",
@@ -755,23 +753,6 @@ async def _deploy_openclaw(
 
                     if not agent_id:
                         print_warn("实例创建中，稍后使用 'agentengine openclaw list' 查看")
-
-                # 新建链路：创建成功后立即补齐完整环境变量（含 JSON 字段）
-                if agent_id:
-                    try:
-                        update_payload = {
-                            "artifact_type": "Container",
-                            "artifact_path": image_ref,
-                            "env_vars": env_list,
-                            "auth_type": "None",
-                            "inbound_identity_auth": "None",
-                        }
-                        if image_credential:
-                            update_payload["image_credential"] = image_credential
-                        await client.update_agent(agent_id, update_payload)
-                        print_info("已补齐完整环境变量 (含模型目录与 AllowedOrigins)")
-                    except Exception as update_err:
-                        print_warn(f"补齐环境变量失败，可稍后重试 deploy: {update_err}")
 
             # 保存状态
             saved_name = openclaw_name if not state.get("name") else state.get("name")
