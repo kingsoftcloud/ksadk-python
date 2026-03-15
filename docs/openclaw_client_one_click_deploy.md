@@ -20,11 +20,11 @@
 
 ## 3. 内置能力亮点
 
-### 3.1 安全技能能力：ClawSec
+### 3.1 安全技能能力：TuanziGuardianClaw
 
-- 推荐安全技能：`ClawSec`（ClawHub）  
-  <https://clawhub.ai/chrisochrisochriso-cmyk/clawsec>
-- 对外可表达为：OpenClaw 支持将安全能力直接纳入智能体执行链路，用于风险识别、策略检查与安全运营协同。
+- 默认内置安全技能：`TuanziGuardianClaw`
+- 定位：作为默认安全审查技能，对高风险文件访问、外部网络请求、敏感命令执行做风险分类、确认提醒与安全建议。
+- 对外可表达为：OpenClaw 支持将安全策略能力直接纳入智能体执行链路，用于风险识别、策略检查与安全运营协同。
 
 ### 3.2 搜索与外部触达能力：agent-reach
 
@@ -36,10 +36,10 @@
 - 运行时已包含浏览器工具相关配置（headless/no-sandbox/executable path 等），便于开箱启用网页自动化能力。
 - 对外可表达为：客户无需额外采购或安装浏览器自动化运行环境。
 
-### 3.4 记忆上下文管理插件（Memory Context）
+### 3.4 可选上下文/记忆插件位
 
-- 运行时已集成上下文/记忆管理插件能力（`lossless-claw`），用于提升长会话场景下的上下文连续性。
-- 对外可表达为：龙虾智能体不仅能执行任务，还能“记住并延续”业务语境。
+- 运行时保留 OpenClaw 原生插件扩展位，可按需启用上下文/记忆类插件，而不是默认绑定第三方实现。
+- 对外可表达为：上下文增强能力支持按场景选装，默认镜像更轻、更稳、供应链面更小。
 
 ### 3.5 默认支持定时任务
 
@@ -104,6 +104,17 @@ agentengine dashboard --share
 
 - 默认创建短链接并打开浏览器。
 - 适用于企业内部演示、测试与受控分享访问。
+
+### 6.4 默认执行审批策略
+
+- 默认采用 `exec.host=gateway` + `exec.security=allowlist` + `exec.ask=off`：普通白名单命令自动执行，未命中白名单的高风险命令直接拒绝，不弹确认打断用户。
+- 默认 `askFallback=allowlist`：如后续显式开启审批模式，审批 UI 不可达时，白名单命令仍可自动放行。
+- 默认 `autoAllowSkills=false`：不自动放行 Skill CLI，避免第三方或自定义 Skill 借助宿主机执行路径扩大敏感面。
+- 镜像启动时会通过 `/opt/openclaw/safe-bin` 安全包装器为 `main` 智能体预置一组常用只读/开发命令白名单（如 `pwd`、`ls`、`whoami`、`id`、`uname`、`date`、`ps`、`df`、`du`、`stat`、`find`、`cat`、`head`、`tail`、`wc`、`git`），并对工作区边界与状态目录访问做额外检查。
+- 默认 `tools.fs.workspaceOnly=false`：文件工具不再被强制锁死在工作区，便于读取技能目录、项目外挂资料和常见挂载路径；敏感目录访问仍应结合 `tools.exec` 白名单与提示词安全边界一起约束。
+- 如需扩展自动审批命令，可通过环境变量 `OPENCLAW_EXEC_ALLOWLIST` 追加二进制路径模式；如需关闭默认白名单，可设 `OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED=false`。
+- 模型 API Key 默认不再以运行时环境变量方式提供给 Gateway 进程，而是在启动阶段转存到 `${OPENCLAW_STATE_DIR}/secrets.json` 并通过 OpenClaw `file` SecretRef 读取，以降低 `printenv` / 环境转储类泄露风险。
+- 默认工作区会内置一版安全导向的 `SOUL.md` 和 `AGENTS.md`，为 prompt injection、防泄密、外发审批、Skill 安装审批等场景提供软约束。
 
 ## 7. 企业常用扩展命令
 

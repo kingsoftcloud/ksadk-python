@@ -1,0 +1,591 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CMD_NAME="${OPENCLAW_SAFE_EXEC_COMMAND:-$(basename "$0")}"
+WORKSPACE_ROOT="${OPENCLAW_EXEC_SAFE_WORKSPACE_ROOT:-${HOME:-/root}/.openclaw/workspace}"
+STATE_DIR="${OPENCLAW_EXEC_SAFE_STATE_DIR:-${HOME:-/root}/.openclaw}"
+
+resolve_python_bin() {
+  local candidate
+  for candidate in /usr/bin/python3 /usr/local/bin/python3 /bin/python3; do
+    if [[ -x "${candidate}" ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+  command -v python3 2>/dev/null || return 1
+}
+
+resolve_env_bin() {
+  local candidate
+  for candidate in /usr/bin/env /bin/env; do
+    if [[ -x "${candidate}" ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+  command -v env 2>/dev/null || return 1
+}
+
+PYTHON_BIN="$(resolve_python_bin || true)"
+ENV_BIN="$(resolve_env_bin || true)"
+
+canon_path() {
+  local target="$1"
+  if [[ -n "${PYTHON_BIN}" ]]; then
+    "${PYTHON_BIN}" - "${target}" <<'PY'
+import os
+import sys
+
+print(os.path.realpath(os.path.abspath(sys.argv[1])))
+PY
+    return 0
+  fi
+
+  if command -v realpath >/dev/null 2>&1; then
+    realpath -m -- "${target}" 2>/dev/null || realpath "${target}"
+    return 0
+  fi
+
+  printf 'Unable to canonicalize path: %s\n' "${target}" >&2
+  exit 1
+}
+
+deny() {
+  printf 'Denied by OpenClaw safe exec policy: %s\n' "$*" >&2
+  exit 126
+}
+
+WRAPPER_PATH="$(canon_path "$0")"
+WRAPPER_DIR="${WRAPPER_PATH%/*}"
+SAFE_BIN_CANON="$(canon_path "${OPENCLAW_SAFE_BIN_DIR:-${WRAPPER_DIR}}")"
+WORKSPACE_CANON="$(canon_path "${WORKSPACE_ROOT}")"
+STATE_CANON="$(canon_path "${STATE_DIR}")"
+CWD_CANON="$(pwd -P 2>/dev/null || pwd)"
+
+is_under_root() {
+  local candidate root
+  candidate="$(canon_path "$1")"
+  root="$(canon_path "$2")"
+  [[ "${candidate}" == "${root}" || "${candidate}" == "${root}/"* ]]
+}
+
+ensure_workspace_cwd() {
+  if ! is_under_root "${CWD_CANON}" "${WORKSPACE_CANON}"; then
+    deny "working directory must stay inside workspace (${WORKSPACE_CANON})"
+  fi
+}
+
+token_looks_like_path() {
+  local token="$1"
+  if [[ "${token}" == "." || "${token}" == ".." || "${token}" == "/"* || "${token}" == "./"* || "${token}" == "../"* || "${token}" == "~"* || "${token}" == *"/"* ]]; then
+    return 0
+  fi
+  [[ -e "${token}" ]]
+}
+
+validate_workspace_path() {
+  local token="$1"
+  local candidate="${token}"
+
+  if [[ "${candidate}" == "~"* ]]; then
+    candidate="${HOME}${candidate#"~"}"
+  elif [[ "${candidate}" != /* ]]; then
+    candidate="${CWD_CANON}/${candidate}"
+  fi
+
+  candidate="$(canon_path "${candidate}")"
+
+  case "${candidate}" in
+    /proc/*|/dev/*|/sys/*|/etc/*)
+      deny "path is outside the safe workspace boundary: ${token}"
+      ;;
+  esac
+
+  if is_under_root "${candidate}" "${WORKSPACE_CANON}"; then
+    return 0
+  fi
+
+  if is_under_root "${candidate}" "${STATE_CANON}"; then
+    deny "state directory access is blocked: ${token}"
+  fi
+
+  if ! is_under_root "${candidate}" "${WORKSPACE_CANON}"; then
+    deny "path must remain inside workspace: ${token}"
+  fi
+}
+
+resolve_via_path() {
+  local bin_name="$1"
+  local original_ifs="${IFS}"
+  local dir
+  local candidate
+
+  IFS=':'
+  for dir in ${PATH}; do
+    [[ -n "${dir}" ]] || continue
+    candidate="${dir}/${bin_name}"
+    [[ -x "${candidate}" ]] || continue
+    if [[ "$(canon_path "${candidate}")" == "${WRAPPER_PATH}" ]]; then
+      continue
+    fi
+    printf '%s\n' "${candidate}"
+    IFS="${original_ifs}"
+    return 0
+  done
+  IFS="${original_ifs}"
+
+  return 1
+}
+
+resolve_real_bin() {
+  case "${CMD_NAME}" in
+    pwd) echo "/usr/bin/pwd" ;;
+    ls) echo "/usr/bin/ls" ;;
+    whoami) echo "/usr/bin/whoami" ;;
+    id) echo "/usr/bin/id" ;;
+    uname) echo "/usr/bin/uname" ;;
+    date) echo "/usr/bin/date" ;;
+    ps) echo "/usr/bin/ps" ;;
+    df) echo "/usr/bin/df" ;;
+    du) echo "/usr/bin/du" ;;
+    stat) echo "/usr/bin/stat" ;;
+    find) echo "/usr/bin/find" ;;
+    cat) echo "/usr/bin/cat" ;;
+    head) echo "/usr/bin/head" ;;
+    tail) echo "/usr/bin/tail" ;;
+    wc) echo "/usr/bin/wc" ;;
+    git) echo "/usr/bin/git" ;;
+    sh-safe)
+      if [[ -x "/bin/sh" ]]; then
+        echo "/bin/sh"
+      elif [[ -x "/usr/bin/sh" ]]; then
+        echo "/usr/bin/sh"
+      else
+        resolve_via_path "sh" || deny "wrapped binary not found for sh-safe"
+      fi
+      ;;
+    mcporter)
+      if [[ -x "/usr/local/bin/mcporter" ]]; then
+        echo "/usr/local/bin/mcporter"
+      elif [[ -x "/usr/bin/mcporter" ]]; then
+        echo "/usr/bin/mcporter"
+      else
+        resolve_via_path "mcporter" || deny "wrapped binary not found for mcporter"
+      fi
+      ;;
+    web-safe)
+      [[ -n "${PYTHON_BIN}" ]] || deny "python3 is required for web-safe"
+      echo "${PYTHON_BIN}"
+      ;;
+    *)
+      deny "command is not managed by safe exec wrapper: ${CMD_NAME}"
+      ;;
+  esac
+}
+
+REAL_BIN="$(resolve_real_bin)"
+[[ -x "${REAL_BIN}" ]] || deny "wrapped binary not found: ${REAL_BIN}"
+
+case "${CMD_NAME}" in
+  pwd|whoami|id|uname|date|ps|df)
+    exec "${REAL_BIN}" "$@"
+    ;;
+  ls|stat|du|cat|head|tail|wc)
+    ensure_workspace_cwd
+    for arg in "$@"; do
+      if [[ "${arg}" == "--" ]]; then
+        continue
+      fi
+      if [[ "${arg}" == -* ]]; then
+        continue
+      fi
+      if token_looks_like_path "${arg}"; then
+        validate_workspace_path "${arg}"
+      fi
+    done
+    exec "${REAL_BIN}" "$@"
+    ;;
+  find)
+    ensure_workspace_cwd
+    path_mode=1
+    for arg in "$@"; do
+      case "${arg}" in
+        "" )
+          continue
+          ;;
+        --)
+          path_mode=0
+          ;;
+        -*) path_mode=0 ;;
+        '!'|'(' | ')') path_mode=0 ;;
+      esac
+      if [[ "${path_mode}" == "1" ]]; then
+        validate_workspace_path "${arg}"
+      fi
+    done
+    exec "${REAL_BIN}" "$@"
+    ;;
+  git)
+    ensure_workspace_cwd
+    subcommand=""
+    previous_wants_value=0
+    for arg in "$@"; do
+      if [[ "${previous_wants_value}" == "1" ]]; then
+        previous_wants_value=0
+        continue
+      fi
+      case "${arg}" in
+        -C|--git-dir|--work-tree|--exec-path|--config-env|-c)
+          deny "git option is blocked by safe exec policy: ${arg}"
+          ;;
+        --no-pager|--paginate)
+          previous_wants_value=0
+          ;;
+        --help|-h)
+          previous_wants_value=0
+          ;;
+        --*)
+          ;;
+        -*)
+          ;;
+        *)
+          if [[ -z "${subcommand}" ]]; then
+            subcommand="${arg}"
+            case "${subcommand}" in
+              status|diff|log|show|branch|rev-parse|ls-files|blame)
+                ;;
+              *)
+                deny "git subcommand is not allowlisted: ${subcommand}"
+                ;;
+            esac
+            continue
+          fi
+          if token_looks_like_path "${arg}"; then
+            validate_workspace_path "${arg}"
+          fi
+          ;;
+      esac
+    done
+    [[ -n "${subcommand}" ]] || deny "git requires an allowlisted read-only subcommand"
+    exec "${REAL_BIN}" "$@"
+    ;;
+  sh-safe)
+    ensure_workspace_cwd
+    [[ "$#" -ge 1 ]] || deny "sh-safe requires a workspace script path"
+    [[ "$1" != -* ]] || deny "sh-safe does not accept shell options"
+
+    script_path="$1"
+    validate_workspace_path "${script_path}"
+    if [[ "${script_path}" == "~"* ]]; then
+      script_path="${HOME}${script_path#"~"}"
+    elif [[ "${script_path}" != /* ]]; then
+      script_path="${CWD_CANON}/${script_path}"
+    fi
+    script_path="$(canon_path "${script_path}")"
+
+    [[ -f "${script_path}" ]] || deny "sh-safe script must be a readable file inside workspace"
+    [[ -r "${script_path}" ]] || deny "sh-safe script must be a readable file inside workspace"
+    [[ -n "${ENV_BIN}" ]] || deny "env utility is required for sh-safe"
+
+    safe_tmp_dir="${WORKSPACE_CANON}/.tmp/openclaw"
+    mkdir -p "${safe_tmp_dir}"
+    shift
+    umask 077
+
+    # Clear inherited secrets and only expose the wrapper directory back to the script.
+    exec "${ENV_BIN}" -i \
+      HOME="${WORKSPACE_CANON}" \
+      LOGNAME="openclaw" \
+      USER="openclaw" \
+      PWD="${CWD_CANON}" \
+      PATH="${SAFE_BIN_CANON}" \
+      SHELL="${REAL_BIN}" \
+      TMPDIR="${safe_tmp_dir}" \
+      LANG="C.UTF-8" \
+      LC_ALL="C.UTF-8" \
+      OPENCLAW_EXEC_SAFE_WORKSPACE_ROOT="${WORKSPACE_CANON}" \
+      OPENCLAW_EXEC_SAFE_STATE_DIR="${STATE_CANON}" \
+      OPENCLAW_SAFE_BIN_DIR="${SAFE_BIN_CANON}" \
+      "${REAL_BIN}" -- "${script_path}" "$@" < /dev/null
+    ;;
+  mcporter)
+    ensure_workspace_cwd
+    subcommand=""
+    target=""
+    previous_wants_value=0
+    for arg in "$@"; do
+      if [[ "${previous_wants_value}" == "1" ]]; then
+        previous_wants_value=0
+        continue
+      fi
+      case "${arg}" in
+        --config|--root|--cwd|--env|--stdio|--http-url|--persist|--allow-http|--name|--server|--command|--from)
+          deny "mcporter option is blocked by safe exec policy: ${arg}"
+          ;;
+        --tool|--args|--output|--log-level|--oauth-timeout)
+          previous_wants_value=1
+          continue
+          ;;
+        --help|-h|--version|--json|--raw|--schema|--all-parameters|--verbose)
+          continue
+          ;;
+        --*)
+          continue
+          ;;
+        -*)
+          continue
+          ;;
+        *)
+          if [[ -z "${subcommand}" ]]; then
+            subcommand="${arg}"
+            continue
+          fi
+          if [[ -z "${target}" ]]; then
+            target="${arg}"
+          fi
+          ;;
+      esac
+    done
+
+    case "${subcommand}" in
+      ""|help)
+        exec "${REAL_BIN}" "$@"
+        ;;
+      list)
+        [[ "${target}" == "kdocs" ]] || deny "mcporter list is restricted to kdocs"
+        exec "${REAL_BIN}" "$@"
+        ;;
+      call)
+        if [[ "${target}" == "kdocs" || "${target}" == kdocs.* ]]; then
+          exec "${REAL_BIN}" "$@"
+        fi
+        deny "mcporter call is restricted to kdocs"
+        ;;
+      kdocs.*)
+        exec "${REAL_BIN}" "$@"
+        ;;
+      *)
+        deny "mcporter subcommand is not allowlisted: ${subcommand}"
+        ;;
+    esac
+    ;;
+  web-safe)
+    ensure_workspace_cwd
+    [[ -n "${ENV_BIN}" ]] || deny "env utility is required for web-safe"
+    safe_tmp_dir="${WORKSPACE_CANON}/.tmp/openclaw"
+    mkdir -p "${safe_tmp_dir}"
+    umask 077
+
+    exec "${ENV_BIN}" -i \
+      HOME="${WORKSPACE_CANON}" \
+      LOGNAME="openclaw" \
+      USER="openclaw" \
+      PWD="${CWD_CANON}" \
+      PATH="${SAFE_BIN_CANON}" \
+      TMPDIR="${safe_tmp_dir}" \
+      LANG="C.UTF-8" \
+      LC_ALL="C.UTF-8" \
+      OPENCLAW_EXEC_SAFE_WORKSPACE_ROOT="${WORKSPACE_CANON}" \
+      OPENCLAW_EXEC_SAFE_STATE_DIR="${STATE_CANON}" \
+      OPENCLAW_SAFE_BIN_DIR="${SAFE_BIN_CANON}" \
+      "${REAL_BIN}" - "$@" <<'PY'
+import html
+import ipaddress
+import socket
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+import xml.etree.ElementTree as ET
+
+
+USER_AGENT = "OpenClaw-WebSafe/1.0"
+READER_ENDPOINT = "https://r.jina.ai/"
+SEARCH_ENDPOINT = "https://cn.bing.com/search?format=rss&q={query}"
+BLOCKED_HOST_SUFFIXES = (
+    ".internal",
+    ".local",
+    ".localdomain",
+    ".cluster.local",
+)
+BLOCKED_HOSTS = {
+    "localhost",
+    "metadata",
+    "metadata.google.internal",
+    "kubernetes.default",
+    "kubernetes.default.svc",
+    "100.100.100.200",
+    "169.254.169.254",
+}
+
+
+def usage(message):
+    print(f"Usage error: {message}", file=sys.stderr)
+    sys.exit(2)
+
+
+def deny(message):
+    print(f"Denied by OpenClaw web-safe policy: {message}", file=sys.stderr)
+    sys.exit(126)
+
+
+def clean_text(value):
+    text = html.unescape(value or "")
+    return " ".join(text.replace("\xa0", " ").split())
+
+
+def resolve_ip(host):
+    resolved = []
+    try:
+      infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as exc:
+      deny(f"cannot resolve host: {host} ({exc})")
+    for info in infos:
+      raw_ip = info[4][0]
+      try:
+        resolved.append(ipaddress.ip_address(raw_ip))
+      except ValueError:
+        continue
+    return resolved
+
+
+def ensure_public_host(host):
+    host = (host or "").strip().lower().rstrip(".")
+    if not host:
+      deny("URL host is required")
+    if host in BLOCKED_HOSTS:
+      deny(f"host is blocked: {host}")
+    if any(host.endswith(suffix) for suffix in BLOCKED_HOST_SUFFIXES):
+      deny(f"host is blocked: {host}")
+    try:
+      host_ip = ipaddress.ip_address(host)
+      ips = [host_ip]
+    except ValueError:
+      ips = resolve_ip(host)
+    if not ips:
+      deny(f"host does not resolve to a public address: {host}")
+    for candidate in ips:
+      if (
+        candidate.is_private
+        or candidate.is_loopback
+        or candidate.is_link_local
+        or candidate.is_multicast
+        or candidate.is_reserved
+        or candidate.is_unspecified
+      ):
+        deny(f"host resolves to a non-public address: {host}")
+
+
+def http_get(url, accept=None):
+    headers = {"User-Agent": USER_AGENT}
+    if accept:
+      headers["Accept"] = accept
+    request = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+      with urllib.request.urlopen(request, timeout=20) as response:
+        charset = response.headers.get_content_charset() or "utf-8"
+        return response.read().decode(charset, errors="replace")
+    except urllib.error.HTTPError as exc:
+      body = exc.read().decode("utf-8", errors="replace")
+      print(body[:4000], file=sys.stderr)
+      sys.exit(exc.code if exc.code < 256 else 1)
+    except urllib.error.URLError as exc:
+      print(f"Network error: {exc}", file=sys.stderr)
+      sys.exit(1)
+
+
+def run_search(args):
+    limit = 5
+    query_parts = []
+    idx = 0
+    while idx < len(args):
+      token = args[idx]
+      if token == "--limit":
+        idx += 1
+        if idx >= len(args):
+          usage("--limit requires a value")
+        try:
+          limit = int(args[idx])
+        except ValueError:
+          usage("--limit must be an integer")
+        if limit < 1 or limit > 10:
+          usage("--limit must be between 1 and 10")
+      elif token.startswith("--limit="):
+        try:
+          limit = int(token.split("=", 1)[1])
+        except ValueError:
+          usage("--limit must be an integer")
+        if limit < 1 or limit > 10:
+          usage("--limit must be between 1 and 10")
+      elif token.startswith("-"):
+        usage(f"unsupported option: {token}")
+      else:
+        query_parts.append(token)
+      idx += 1
+    query = " ".join(query_parts).strip()
+    if not query:
+      usage("search requires a query")
+
+    search_url = SEARCH_ENDPOINT.format(query=urllib.parse.quote(query))
+    raw_xml = http_get(search_url, accept="application/rss+xml, application/xml;q=0.9, text/xml;q=0.8")
+    try:
+      root = ET.fromstring(raw_xml)
+    except ET.ParseError as exc:
+      print(f"Search parse error: {exc}", file=sys.stderr)
+      sys.exit(1)
+
+    items = root.findall("./channel/item")
+    print(f"Search query: {query}")
+    print("Source: Bing RSS (public web, no API key)")
+    if not items:
+      print("No results found.")
+      return
+
+    for index, item in enumerate(items[:limit], start=1):
+      title = clean_text(item.findtext("title", default=""))
+      link = clean_text(item.findtext("link", default=""))
+      description = clean_text(item.findtext("description", default=""))
+      pub_date = clean_text(item.findtext("pubDate", default=""))
+      print()
+      print(f"{index}. {title or '(untitled)'}")
+      if link:
+        print(f"URL: {link}")
+      if pub_date:
+        print(f"Published: {pub_date}")
+      if description:
+        print(f"Summary: {description}")
+
+
+def run_read(args):
+    if len(args) != 1:
+      usage("read requires exactly one URL")
+    target_url = args[0].strip()
+    parsed = urllib.parse.urlparse(target_url)
+    if parsed.scheme not in {"http", "https"}:
+      deny("only http/https URLs are allowed")
+    ensure_public_host(parsed.hostname or "")
+    reader_url = urllib.parse.urljoin(READER_ENDPOINT, target_url)
+    content = http_get(reader_url, accept="text/markdown, text/plain;q=0.9, */*;q=0.1")
+    print(content.rstrip())
+
+
+def main(argv):
+    if not argv:
+      usage("expected subcommand: search | read")
+    subcommand = argv[0]
+    remaining = argv[1:]
+    if subcommand == "search":
+      run_search(remaining)
+      return 0
+    if subcommand == "read":
+      run_read(remaining)
+      return 0
+    usage(f"unsupported subcommand: {subcommand}")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
+PY
+    ;;
+esac

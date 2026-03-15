@@ -1,9 +1,10 @@
-<!doctype html>
 <html lang="zh-CN">
 
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <!-- 防止有的浏览器对于未知 Schema 跳转到自身错误页 -->
+  <meta http-equiv="Content-Security-Policy" content="default-src * 'unsafe-inline' 'unsafe-eval'; frame-src * data: blob: kscc: claude: opencode: terminal:;" />
+  <title>OpenClaw 龙虾智能体 | 一键部署能力包</title>
   <title>OpenClaw 龙虾智能体 | 一键部署能力包</title>
   <style>
     :root {
@@ -594,11 +595,49 @@
         justify-content: center;
       }
 
-      .hero-subtitle {
-        margin: 0 auto 40px;
-      }
+
+    .hero-subtitle {
+      margin: 0 auto 40px;
     }
-  </style>
+  }
+
+  /* Command Copy Modal */
+  .agent-overlay {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(3, 7, 18, 0.85); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+    z-index: 1000; display: flex; align-items: center; justify-content: center;
+    opacity: 0; pointer-events: none; transition: opacity 0.4s ease;
+  }
+  .agent-overlay.active { opacity: 1; pointer-events: auto; }
+  .agent-modal {
+    background: #020617; border: 1px solid rgba(6, 182, 212, 0.3); border-radius: 20px;
+    padding: 40px; width: 90%; max-width: 580px;
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.8), 0 0 40px rgba(6, 182, 212, 0.15);
+    transform: scale(0.95) translateY(20px); transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+    text-align: left; position: relative;
+  }
+  .agent-overlay.active .agent-modal { transform: scale(1) translateY(0); }
+
+  .agent-modal h3 { margin: 0 0 16px; font-size: 24px; color: #fff; font-weight: 600; text-align: center; }
+  .agent-modal p { color: var(--muted); line-height: 1.6; font-size: 15px; margin: 0 0 30px; text-align: center; }
+
+  .copy-section { margin-bottom: 24px; }
+  .copy-section-title { font-size: 14px; font-weight: 600; color: #94a3b8; margin-bottom: 12px; display: block; letter-spacing: 0.5px; }
+
+  .copy-box {
+    background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255, 255, 255, 0.08); padding: 16px;
+    border-radius: 12px; display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    transition: all 0.3s;
+  }
+  .copy-box:hover { border-color: rgba(6, 182, 212, 0.3); background: rgba(15, 23, 42, 0.8); }
+  .copy-box code { color: #fff; font-size: 14px; font-family: "JetBrains Mono", Consolas, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; flex: 1; }
+  .copy-btn { background: var(--cyan); border: none; color: #000; padding: 8px 16px; border-radius: 8px; font-weight: 600; font-size: 13px; cursor: pointer; white-space: nowrap; transition: all 0.2s; box-shadow: 0 4px 12px rgba(6, 182, 212, 0.2); }
+  .copy-btn:hover { background: #fff; box-shadow: 0 4px 16px rgba(255, 255, 255, 0.3); transform: translateY(-1px); }
+
+  .close-modal { position: absolute; top: 16px; right: 20px; background: none; border: none; color: var(--muted); font-size: 28px; cursor: pointer; line-height: 1; transition: color 0.2s;}
+  .close-modal:hover { color: #fff; }
+</style>
+
 </head>
 
 <body>
@@ -615,8 +654,19 @@
       <img src="preview/images/claw_logo.png" alt="OpenClaw Logo" />
       <span>OpenClaw</span>
     </a>
-    <a href="https://github.com/openclaw/openclaw" target="_blank" class="btn btn-secondary"
-      style="padding: 8px 16px; font-size: 14px; border-radius: 8px;">View on GitHub</a>
+    <div style="display: flex; align-items: center; gap: 16px;">
+      <!-- 金山云品牌标识 -->
+      <a href="https://www.ksyun.com" target="_blank" style="display: flex; align-items: center; gap: 8px; text-decoration: none; padding: 6px 14px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08); background: rgba(255,255,255,0.03); transition: all 0.3s;" onmouseover="this.style.borderColor='rgba(6,182,212,0.3)';this.style.background='rgba(255,255,255,0.06)'" onmouseout="this.style.borderColor='rgba(255,255,255,0.08)';this.style.background='rgba(255,255,255,0.03)'">
+        <svg width="22" height="22" viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <defs><linearGradient id="ksyun-grad" x1="0" y1="0" x2="120" y2="120" gradientUnits="userSpaceOnUse"><stop stop-color="#36b7ff"/><stop offset="1" stop-color="#0078d4"/></linearGradient></defs>
+          <rect rx="24" width="120" height="120" fill="url(#ksyun-grad)"/>
+          <path d="M32 85V35h14l20 25 20-25h14v50H86V56L66 81H54L34 56v29H32z" fill="#fff" opacity="0.95"/>
+        </svg>
+        <span style="color: #94a3b8; font-size: 12px; font-weight: 500; letter-spacing: 0.5px;">Powered by 金山云</span>
+      </a>
+      <a href="https://github.com/openclaw/openclaw" target="_blank" class="btn btn-secondary"
+        style="padding: 8px 16px; font-size: 14px; border-radius: 8px;">View on GitHub</a>
+    </div>
   </nav>
 
   <section class="hero">
@@ -655,8 +705,8 @@
         </div>
 
         <div class="cta-group">
-          <a href="#terminal" class="btn btn-primary">一键部署 (Deploy)</a>
-          <a href="openclaw_gateway_technical.html" class="btn btn-secondary">查看架构原理</a>
+          <a href="javascript:void(0)" onclick="showDeployCommand()" class="btn btn-primary">⚡️ 智能接管部署</a>
+          <a href="#terminal" class="btn btn-secondary">终端手动部署</a>
         </div>
       </div>
 
@@ -841,8 +891,16 @@
   </section>
 
   <footer class="footer">
-    <div class="wrap">
-      <p>AgentEngine © 2026. The Next Generation Cognitive Workspace Architecture.</p>
+    <div class="wrap" style="display: flex; flex-direction: column; align-items: center; gap: 16px;">
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <svg width="20" height="20" viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <defs><linearGradient id="ksyun-ft" x1="0" y1="0" x2="120" y2="120" gradientUnits="userSpaceOnUse"><stop stop-color="#36b7ff"/><stop offset="1" stop-color="#0078d4"/></linearGradient></defs>
+          <rect rx="24" width="120" height="120" fill="url(#ksyun-ft)"/>
+          <path d="M32 85V35h14l20 25 20-25h14v50H86V56L66 81H54L34 56v29H32z" fill="#fff" opacity="0.95"/>
+        </svg>
+        <span style="color: #64748b; font-size: 13px;">Powered by <a href="https://www.ksyun.com" target="_blank" style="color: #94a3b8; text-decoration: none; font-weight: 500;">金山云 Kingsoft Cloud</a></span>
+      </div>
+      <p style="margin: 0;">AgentEngine © 2026. The Next Generation Cognitive Workspace Architecture.</p>
     </div>
   </footer>
 
@@ -876,6 +934,72 @@
     document.querySelectorAll('.reveal').forEach(element => {
       observer.observe(element);
     });
+  </script>
+
+  <!-- Auto Deploy Commands Modal -->
+  <div class="agent-overlay" id="agentOverlay">
+    <div class="agent-modal">
+      <button class="close-modal" onclick="closeLocalAgent()">×</button>
+      <h3>自动接管部署指令</h3>
+      <p>无需手动敲击复杂的启动配置，复制下方的一句话指令，发给您本地对应的智能基座或大语言模型即可完成自动化部署操作。</p>
+
+      <div class="copy-section">
+        <span class="copy-section-title">方案 A：若您使用的是 KSCC (金山云智能终端) 🚀</span>
+        <div class="copy-box">
+          <code id="promptCodeKscc" title="直接让 kscc 执行技能宏">指令生成中...</code>
+          <button class="copy-btn copy-btn-kscc" onclick="copyPrompt('kscc')">复制专用</button>
+        </div>
+      </div>
+
+      <div class="copy-section">
+        <span class="copy-section-title">方案 B：给 Claude / OpenAI / 任何本地大语言模型代理 🤖</span>
+        <div class="copy-box">
+          <code id="promptCodeNormal" title="附带云端技能链接的提示词">指令生成中...</code>
+          <button class="copy-btn copy-btn-normal" onclick="copyPrompt('normal')">复制通用</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // 远端存储技能的真实地址
+    const REMOTE_SKILL_URL = "https://agentengin-cn-beijing-6.ks3-cn-beijing.ksyuncs.com/skills/agentengine-openclaw-oneclick-deploy/SKILL.md";
+
+    // 生成对应的 Prompt
+    const PROMPTS = {
+      kscc: `kscc '你好，请严格遵守下面分享的技能操作手册，一步步在我的本地机器上自动化部署 OpenClaw。技能依赖地址：${REMOTE_SKILL_URL}'`,
+      normal: `请严格遵守下面分享的技能操作手册，一步步在我的本地机器上自动化部署 OpenClaw。技能依赖地址：${REMOTE_SKILL_URL}`
+    };
+
+    function showDeployCommand() {
+      const overlay = document.getElementById('agentOverlay');
+      // 直接写入文本
+      document.getElementById('promptCodeKscc').innerText = PROMPTS.kscc;
+      document.getElementById('promptCodeNormal').innerText = PROMPTS.normal;
+
+      // 显示纯净版的 Modal
+      overlay.classList.add('active');
+    }
+
+    function closeLocalAgent() {
+      document.getElementById('agentOverlay').classList.remove('active');
+    }
+
+    function copyPrompt(type) {
+      const content = PROMPTS[type];
+      navigator.clipboard.writeText(content).then(() => {
+        const btn = document.querySelector(`.copy-btn-${type}`);
+        const originalText = btn.innerText;
+        btn.innerText = '复制成功!';
+        btn.style.background = '#4ade80';
+        setTimeout(() => {
+          btn.innerText = originalText;
+          btn.style.background = 'var(--cyan)';
+        }, 2000);
+      }).catch(err => {
+        alert('复制失败，请尝试手动选中复制。');
+      });
+    }
   </script>
 </body>
 

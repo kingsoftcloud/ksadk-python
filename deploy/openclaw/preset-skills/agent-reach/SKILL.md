@@ -191,14 +191,24 @@ gh issue list -R owner/repo --state open
 gh issue view 123 -R owner/repo
 ```
 
-### Web — Any URL (Jina Reader)
+### Web — Any URL
+
+Prefer the built-in safe wrapper first:
 
 ```bash
-# Read any webpage as markdown
-curl -s "https://r.jina.ai/URL" -H "Accept: text/markdown"
+# Search the public web without a paid API key
+web-safe search "query" --limit 5
 
-# Search the web
-curl -s "https://s.jina.ai/query" -H "Accept: text/markdown"
+# Read any public webpage as markdown
+web-safe read "https://example.com/page"
+```
+
+`web-safe read` uses a readable page proxy under the hood and blocks private or
+loopback targets. Use browser tools if the page depends on heavy client-side JS.
+
+```bash
+# Direct reader fallback if you are outside the safe wrapper
+curl -s "https://r.jina.ai/https://example.com/page" -H "Accept: text/markdown"
 ```
 
 ### Exa Search (mcporter + exa MCP)

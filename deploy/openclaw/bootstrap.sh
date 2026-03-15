@@ -1,14 +1,392 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-STATE_DIR="${OPENCLAW_STATE_DIR:-/root/.openclaw}"
+STATE_DIR="${OPENCLAW_STATE_DIR:-${HOME:-/root}/.openclaw}"
 CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-${STATE_DIR}/openclaw.json}"
 BOOTSTRAP_MARKER="${STATE_DIR}/.bootstrapped"
 PUBLIC_PORT="${OPENCLAW_PUBLIC_PORT:-19089}"
 BIND_MODE="${OPENCLAW_GATEWAY_BIND:-lan}"
 AUTH_MODE="trusted-proxy"
+BROWSER_EXECUTABLE_DEFAULT="/usr/bin/chromium"
+WORKSPACE_DIR="${OPENCLAW_WORKSPACE_DIR:-${STATE_DIR}/workspace}"
+SAFE_BIN_DIR="${OPENCLAW_SAFE_BIN_DIR:-/opt/openclaw/safe-bin}"
+PRESET_SKILLS_DIR="${OPENCLAW_PRESET_SKILLS_DIR:-/opt/openclaw/preset-skills}"
+WORKSPACE_TEMPLATE_DIR="${OPENCLAW_WORKSPACE_TEMPLATE_DIR:-/opt/openclaw/workspace-template}"
+RUNTIME_DIST_DIR="${OPENCLAW_DIST_DIR:-/app/dist}"
+
+is_truthy() {
+  local raw
+  raw="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+  case "${raw}" in
+    1|true|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+configure_browser_executable() {
+  if [[ -n "${OPENCLAW_BROWSER_EXECUTABLE_PATH:-}" && -x "${OPENCLAW_BROWSER_EXECUTABLE_PATH}" ]]; then
+    return 0
+  fi
+
+  if [[ -n "${OPENCLAW_BROWSER_EXECUTABLE:-}" && -x "${OPENCLAW_BROWSER_EXECUTABLE}" ]]; then
+    export OPENCLAW_BROWSER_EXECUTABLE_PATH="${OPENCLAW_BROWSER_EXECUTABLE}"
+    return 0
+  fi
+
+  if [[ -x "${BROWSER_EXECUTABLE_DEFAULT}" ]]; then
+    export OPENCLAW_BROWSER_EXECUTABLE_PATH="${BROWSER_EXECUTABLE_DEFAULT}"
+    return 0
+  fi
+
+  return 1
+}
+
+resolve_allowlisted_command_path() {
+  local command_name="$1"
+  shift || true
+  local candidate
+
+  for candidate in "$@"; do
+    if [[ -n "${candidate}" && -x "${candidate}" ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+
+  candidate="$(command -v "${command_name}" 2>/dev/null || true)"
+  if [[ -n "${candidate}" && "${candidate}" == /* && -x "${candidate}" ]]; then
+    printf '%s\n' "${candidate}"
+    return 0
+  fi
+
+  return 1
+}
+
+sync_preset_skills() {
+  local src_dir="${PRESET_SKILLS_DIR}"
+  local dst_dir="${STATE_DIR}/skills"
+  local item
+  local skill_name
+
+  [[ -d "${src_dir}" ]] || return 0
+
+  mkdir -p "${dst_dir}"
+  for item in "${src_dir}"/*; do
+    [[ -d "${item}" ]] || continue
+    skill_name="$(basename "${item}")"
+    rm -rf "${dst_dir}/${skill_name}"
+    cp -R "${item}" "${dst_dir}/${skill_name}"
+  done
+}
+
+register_kdocs_skill() {
+  local skill_dir="${STATE_DIR}/skills/kdocs"
+  local setup_script="${skill_dir}/setup.sh"
+
+  [[ -d "${skill_dir}" ]] || return 0
+
+  if [[ -z "${KDOCS_TOKEN:-}" ]]; then
+    return 0
+  fi
+
+  if [[ ! -f "${setup_script}" ]]; then
+    echo "WARN: bundled kdocs skill found but setup.sh is missing; skipping auto-registration." >&2
+    return 0
+  fi
+
+  chmod 755 "${setup_script}" 2>/dev/null || true
+  echo "INFO: auto-registering bundled kdocs skill"
+  if ! OPENCLAW_KDOCS_BOOTSTRAP=1 bash "${setup_script}"; then
+    echo "WARN: bundled kdocs skill auto-registration failed; continuing startup." >&2
+  fi
+}
+
+sync_workspace_security_templates() {
+  local src_dir="${WORKSPACE_TEMPLATE_DIR}"
+  local dst_dir="${WORKSPACE_DIR}"
+  local file_name
+
+  [[ -d "${src_dir}" ]] || return 0
+
+  mkdir -p "${dst_dir}"
+  for file_name in AGENTS.md SOUL.md; do
+    if [[ -f "${src_dir}/${file_name}" && ! -f "${dst_dir}/${file_name}" ]]; then
+      cp "${src_dir}/${file_name}" "${dst_dir}/${file_name}"
+    fi
+  done
+}
+
+patch_control_ui_event_gap_reconnect() {
+  local control_ui_assets_dir="${RUNTIME_DIST_DIR}/control-ui/assets"
+
+  [[ -d "${control_ui_assets_dir}" ]] || return 0
+
+  node <<'NODE'
+const fs = require('fs');
+const path = require('path');
+
+const assetsDir = process.env.OPENCLAW_DIST_DIR
+  ? path.join(process.env.OPENCLAW_DIST_DIR, 'control-ui', 'assets')
+  : '/app/dist/control-ui/assets';
+const needle = 'this.ws.addEventListener(`open`,()=>this.queueConnect())';
+const replacement = 'this.ws.addEventListener(`open`,()=>{this.lastSeq=null,this.queueConnect()})';
+
+let patched = false;
+for (const entry of fs.readdirSync(assetsDir)) {
+  if (!entry.endsWith('.js')) continue;
+  const filePath = path.join(assetsDir, entry);
+  const source = fs.readFileSync(filePath, 'utf8');
+  if (!source.includes(needle) || source.includes(replacement)) continue;
+  fs.writeFileSync(filePath, source.replace(needle, replacement));
+  patched = true;
+}
+
+if (patched) {
+  console.error('[bootstrap] patched control-ui websocket reconnect gap handling');
+}
+NODE
+}
+
+patch_gateway_client_loopback_trusted_proxy_identity() {
+  local dist_dir="${RUNTIME_DIST_DIR}"
+
+  [[ -d "${dist_dir}" ]] || return 0
+
+  node <<'NODE'
+const fs = require('fs');
+const path = require('path');
+
+const distDir = process.env.OPENCLAW_DIST_DIR || '/app/dist';
+const replacements = [
+  {
+    label: 'gateway client loopback trusted-proxy identity',
+    marker: 'const internalTrustedProxyUser = String(process.env.OPENCLAW_INTERNAL_TRUSTED_PROXY_USER || "openclaw-backend").trim();',
+    needle: 'const wsOptions = { maxPayload: 25 * 1024 * 1024 };',
+    replacement: `const wsOptions = { maxPayload: 25 * 1024 * 1024 };
+		const internalTrustedProxyUser = String(process.env.OPENCLAW_INTERNAL_TRUSTED_PROXY_USER || "openclaw-backend").trim();
+		const internalTrustedProxyUserHeader = String(process.env.OPENCLAW_INTERNAL_TRUSTED_PROXY_USER_HEADER || process.env.OPENCLAW_TRUSTED_PROXY_USER_HEADER || "x-forwarded-user").trim().toLowerCase();
+		try {
+			const parsedGatewayUrl = new URL(url);
+			if (internalTrustedProxyUser && ["127.0.0.1", "::1", "localhost"].includes(parsedGatewayUrl.hostname)) wsOptions.headers = {
+				...wsOptions.headers,
+				[internalTrustedProxyUserHeader || "x-forwarded-user"]: internalTrustedProxyUser
+			};
+		} catch {}`,
+  },
+  {
+    label: 'gateway backend self-pairing trusted-proxy bypass',
+    marker: 'const usesLoopbackTrustedProxyAuth = params.authMethod === "trusted-proxy";',
+    needle: `function shouldSkipBackendSelfPairing(params) {
+	if (!(params.connectParams.client.id === GATEWAY_CLIENT_IDS.GATEWAY_CLIENT && params.connectParams.client.mode === GATEWAY_CLIENT_MODES.BACKEND)) return false;
+	const usesSharedSecretAuth = params.authMethod === "token" || params.authMethod === "password";
+	return params.isLocalClient && !params.hasBrowserOriginHeader && params.sharedAuthOk && usesSharedSecretAuth;
+}`,
+    replacement: `function shouldSkipBackendSelfPairing(params) {
+	if (!(params.connectParams.client.id === GATEWAY_CLIENT_IDS.GATEWAY_CLIENT && params.connectParams.client.mode === GATEWAY_CLIENT_MODES.BACKEND)) return false;
+	const usesSharedSecretAuth = params.authMethod === "token" || params.authMethod === "password";
+	const usesLoopbackTrustedProxyAuth = params.authMethod === "trusted-proxy";
+	return params.isLocalClient && !params.hasBrowserOriginHeader && (usesLoopbackTrustedProxyAuth || params.sharedAuthOk && usesSharedSecretAuth);
+}`,
+  },
+  {
+    label: 'gateway local override explicit-auth bypass',
+    marker: 'if (["127.0.0.1", "::1", "localhost"].includes(parsed.hostname)) return;',
+    needle: `function ensureExplicitGatewayAuth(params) {
+	if (!params.urlOverride) return;
+`,
+    replacement: `function ensureExplicitGatewayAuth(params) {
+	if (!params.urlOverride) return;
+	try {
+		const parsed = new URL(params.urlOverride);
+		if (["127.0.0.1", "::1", "localhost"].includes(parsed.hostname)) return;
+	} catch {}
+`,
+  },
+  {
+    label: 'gateway loopback device-identity bypass',
+    marker: 'function shouldAttachDeviceIdentityForGatewayCall(params) {\n\ttry {\n\t\tconst parsed = new URL(params.url);\n\t\tif ([\n\t\t\t"127.0.0.1",\n\t\t\t"::1",\n\t\t\t"localhost"\n\t\t].includes(parsed.hostname)) return false;',
+    needle: `function shouldAttachDeviceIdentityForGatewayCall(params) {
+	if (!(params.token || params.password)) return true;
+	try {
+		const parsed = new URL(params.url);
+		return ![
+			"127.0.0.1",
+			"::1",
+			"localhost"
+		].includes(parsed.hostname);
+	} catch {
+		return true;
+	}
+}`,
+    replacement: `function shouldAttachDeviceIdentityForGatewayCall(params) {
+	try {
+		const parsed = new URL(params.url);
+		if ([
+			"127.0.0.1",
+			"::1",
+			"localhost"
+		].includes(parsed.hostname)) return false;
+	} catch {
+		return true;
+	}
+	return true;
+}`,
+  },
+  {
+    label: 'gateway loopback device-identity null sentinel',
+    marker: 'deviceIdentity: shouldAttachDeviceIdentityForGatewayCall({\n\t\t\t\turl,\n\t\t\t\ttoken,\n\t\t\t\tpassword\n\t\t\t}) ? loadOrCreateDeviceIdentity() : null,',
+    needle: `deviceIdentity: shouldAttachDeviceIdentityForGatewayCall({
+				url,
+				token,
+				password
+			}) ? loadOrCreateDeviceIdentity() : void 0,`,
+    replacement: `deviceIdentity: shouldAttachDeviceIdentityForGatewayCall({
+				url,
+				token,
+				password
+			}) ? loadOrCreateDeviceIdentity() : null,`,
+  },
+  {
+    label: 'gateway local trusted-proxy scope retention',
+    marker: 'const keepUnboundScopes = !device && decision.kind === "allow" && authMethod === "trusted-proxy" && !hasBrowserOriginHeader;',
+    needle: 'if (!device && (!isControlUi || decision.kind !== "allow")) clearUnboundScopes();',
+    replacement: `const keepUnboundScopes = !device && decision.kind === "allow" && authMethod === "trusted-proxy" && !hasBrowserOriginHeader;
+					if (!device && (!isControlUi || decision.kind !== "allow") && !keepUnboundScopes) clearUnboundScopes();`,
+  },
+];
+
+const jsFiles = [];
+const walk = (dir) => {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      walk(fullPath);
+      continue;
+    }
+    if (entry.isFile() && entry.name.endsWith('.js')) {
+      jsFiles.push(fullPath);
+    }
+  }
+};
+
+walk(distDir);
+
+const patchedLabels = new Set();
+for (const filePath of jsFiles) {
+  let source = fs.readFileSync(filePath, 'utf8');
+  let changed = false;
+  for (const patch of replacements) {
+    if (source.includes(patch.marker) || !source.includes(patch.needle)) continue;
+    source = source.replaceAll(patch.needle, patch.replacement);
+    patchedLabels.add(patch.label);
+    changed = true;
+  }
+  if (!changed) continue;
+  fs.writeFileSync(filePath, source);
+}
+
+if (patchedLabels.size > 0) {
+  console.error(`[bootstrap] patched ${[...patchedLabels].join(', ')}`);
+}
+NODE
+}
+
+upsert_env_var() {
+  local key="$1"
+  local value="$2"
+  local file_path="$3"
+  local tmp_file
+
+  [[ -n "${key}" ]] || return 0
+  [[ -n "${value}" ]] || return 0
+
+  touch "${file_path}"
+  tmp_file="$(mktemp)"
+
+  awk -v k="${key}" -v v="${value}" '
+    BEGIN { done = 0 }
+    index($0, k "=") == 1 {
+      print k "=" v
+      done = 1
+      next
+    }
+    { print }
+    END {
+      if (!done) print k "=" v
+    }
+  ' "${file_path}" > "${tmp_file}"
+
+  mv "${tmp_file}" "${file_path}"
+}
+
+sync_runtime_env_file() {
+  local env_file="${STATE_DIR}/.env"
+  local tavily_key="${OPENCLAW_TAVILY_API_KEY:-${TAVILY_API_KEY:-}}"
+
+  if [[ -n "${tavily_key}" ]]; then
+    upsert_env_var "tavily_api_key" "${tavily_key}" "${env_file}"
+  fi
+}
+
+build_exec_default_allowlist() {
+  local -a wrapped_bins=(pwd ls whoami id uname date ps df du stat find cat head tail wc git mcporter sh-safe web-safe)
+  local -a direct_bins=(curl yt-dlp openclaw)
+  local -a patterns=()
+  local bin
+  local resolved
+  local joined=""
+
+  for bin in "${wrapped_bins[@]}"; do
+    resolved="${SAFE_BIN_DIR}/${bin}"
+    if [[ -z "${resolved}" || "${resolved}" != /* || ! -x "${resolved}" ]]; then
+      continue
+    fi
+    patterns+=("${resolved}")
+  done
+
+  for bin in "${direct_bins[@]}"; do
+    case "${bin}" in
+      curl)
+        resolved="$(resolve_allowlisted_command_path "${bin}" /usr/bin/curl /usr/local/bin/curl /bin/curl || true)"
+        ;;
+      yt-dlp)
+        resolved="$(resolve_allowlisted_command_path "${bin}" /usr/local/bin/yt-dlp /usr/bin/yt-dlp /bin/yt-dlp || true)"
+        ;;
+      openclaw)
+        resolved="$(resolve_allowlisted_command_path "${bin}" /usr/local/bin/openclaw /usr/bin/openclaw /bin/openclaw || true)"
+        ;;
+      *)
+        resolved=""
+        ;;
+    esac
+    if [[ -z "${resolved}" || "${resolved}" != /* || ! -x "${resolved}" ]]; then
+      continue
+    fi
+    patterns+=("${resolved}")
+  done
+
+  for resolved in "${patterns[@]}"; do
+    if [[ -n "${joined}" ]]; then
+      joined+=","
+    fi
+    joined+="${resolved}"
+  done
+
+  printf '%s\n' "${joined}"
+}
 
 mkdir -p "${STATE_DIR}"
+
+configure_browser_executable || true
+
+export OPENCLAW_INTERNAL_TRUSTED_PROXY_USER="${OPENCLAW_INTERNAL_TRUSTED_PROXY_USER:-openclaw-backend}"
+export OPENCLAW_INTERNAL_TRUSTED_PROXY_USER_HEADER="${OPENCLAW_INTERNAL_TRUSTED_PROXY_USER_HEADER:-${OPENCLAW_TRUSTED_PROXY_USER_HEADER:-x-forwarded-user}}"
+
+if is_truthy "${OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED:-1}"; then
+  if [[ -z "${OPENCLAW_EXEC_DEFAULT_ALLOWLIST:-}" ]]; then
+    export OPENCLAW_EXEC_DEFAULT_ALLOWLIST="$(build_exec_default_allowlist)"
+  fi
+fi
 
 if [[ ! -f "${CONFIG_PATH}" ]]; then
   echo '{}' > "${CONFIG_PATH}"
@@ -19,10 +397,10 @@ fi
 # - We intentionally apply env -> config on every startup so deployment-time
 #   env updates (e.g. OPENCLAW_ALLOWED_ORIGINS / OPENCLAW_DISABLE_DEVICE_AUTH)
 #   can take effect for existing instances.
-# - BOOTSTRAP_MARKER is kept only for one-time preset-skill copy below.
 export STATE_DIR CONFIG_PATH PUBLIC_PORT BIND_MODE AUTH_MODE
 node <<'NODE'
 const fs = require('fs');
+const path = require('path');
 
 const configPath = process.env.CONFIG_PATH;
 const publicPort = process.env.PUBLIC_PORT;
@@ -34,6 +412,24 @@ const parseBool = (raw, fallback) => {
   if (['1', 'true', 'yes', 'on'].includes(text)) return true;
   if (['0', 'false', 'no', 'off'].includes(text)) return false;
   return fallback;
+};
+const parseEnum = (raw, allowed, fallback) => {
+  const text = String(raw ?? '').trim().toLowerCase();
+  if (!text) return fallback;
+  return allowed.includes(text) ? text : fallback;
+};
+const uniqueStrings = (items) => {
+  const seen = new Set();
+  const result = [];
+  for (const item of items) {
+    const text = String(item ?? '').trim();
+    if (!text) continue;
+    const key = text.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(text);
+  }
+  return result;
 };
 const parseStringList = (raw) => {
   const text = String(raw ?? "").trim();
@@ -51,12 +447,109 @@ const parseStringList = (raw) => {
     .map((x) => x.trim())
     .filter(Boolean);
 };
+const normalizeAllowlistEntries = (entries) => {
+  if (!Array.isArray(entries)) return [];
+  return entries
+    .map((entry) => {
+      if (typeof entry === 'string') {
+        return { pattern: entry.trim() };
+      }
+      if (!entry || typeof entry !== 'object') {
+        return null;
+      }
+      const pattern = String(entry.pattern ?? '').trim();
+      if (!pattern) {
+        return null;
+      }
+      return { ...entry, pattern };
+    })
+    .filter(Boolean);
+};
+const mergeAllowlistEntries = (existingEntries, patterns) => {
+  const merged = [];
+  const seen = new Set();
+  for (const entry of normalizeAllowlistEntries(existingEntries)) {
+    const key = entry.pattern.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(entry);
+  }
+  for (const pattern of uniqueStrings(patterns)) {
+    const key = pattern.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push({ pattern });
+  }
+  return merged;
+};
+const readJsonFile = (filePath, fallback = {}) => {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch {
+    return fallback;
+  }
+};
+const ensureParentDir = (filePath) => {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
+};
+const writeJsonFile = (filePath, data, mode = 0o600) => {
+  ensureParentDir(filePath);
+  const tmpPath = `${filePath}.tmp-${process.pid}`;
+  fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2));
+  fs.chmodSync(tmpPath, mode);
+  fs.renameSync(tmpPath, filePath);
+  fs.chmodSync(filePath, mode);
+};
+const decodeJsonPointerSegment = (segment) =>
+  segment.replace(/~1/g, '/').replace(/~0/g, '~');
+const setJsonPointerValue = (target, pointer, value) => {
+  if (!pointer.startsWith('/')) {
+    throw new Error(`file secret id must be an absolute JSON pointer: ${pointer}`);
+  }
+  const segments = pointer
+    .slice(1)
+    .split('/')
+    .map(decodeJsonPointerSegment);
+  let cursor = target;
+  for (let i = 0; i < segments.length - 1; i += 1) {
+    const segment = segments[i];
+    if (!cursor[segment] || typeof cursor[segment] !== 'object' || Array.isArray(cursor[segment])) {
+      cursor[segment] = {};
+    }
+    cursor = cursor[segment];
+  }
+  cursor[segments[segments.length - 1]] = value;
+  return target;
+};
+const resolveBootstrapSecretValue = (preferredEnvKey) => {
+  const candidates = uniqueStrings([
+    preferredEnvKey,
+    process.env.OPENCLAW_MODEL_API_KEY_BOOTSTRAP_ENV,
+    'OPENCLAW_MODEL_API_KEY',
+    'OPENAI_API_KEY',
+    'LLM_API_KEY',
+    'MODEL_API_KEY',
+  ]);
+  for (const envKey of candidates) {
+    const value = String(process.env[envKey] || '').trim();
+    if (value) {
+      return { envKey, value };
+    }
+  }
+  return null;
+};
 
 let cfg = {};
 try {
   cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 } catch {
   cfg = {};
+}
+
+try {
+  fs.chmodSync(process.env.STATE_DIR, 0o700);
+} catch {
+  // best effort
 }
 
 cfg.gateway = cfg.gateway || {};
@@ -144,6 +637,48 @@ if (allowUsers.length > 0) {
 cfg.gateway.trustedProxies =
   trustedProxies.length > 0 ? trustedProxies : trustedProxiesFallback;
 
+cfg.session = cfg.session || {};
+cfg.session.dmScope = "per-channel-peer";
+cfg.session.reset = cfg.session.reset || {};
+cfg.session.reset.mode = "idle";
+cfg.session.reset.idleMinutes = 30; // 降低活不长死不断造成的污染
+cfg.session.resetTriggers = ["/new", "/reset", "/clear"]; // 给报错后的界面兜个底
+cfg.session.maintenance = cfg.session.maintenance || {};
+cfg.session.maintenance.mode = "enforce";
+cfg.agents = cfg.agents || {};
+cfg.agents.defaults = cfg.agents.defaults || {};
+cfg.agents.defaults.workspace = cfg.agents.defaults.workspace || process.env.OPENCLAW_WORKSPACE_DIR || path.join(process.env.STATE_DIR, 'workspace');
+
+cfg.tools = cfg.tools || {};
+cfg.tools.fs = cfg.tools.fs || {};
+cfg.tools.fs.workspaceOnly = parseBool(process.env.OPENCLAW_FS_WORKSPACE_ONLY, false);
+cfg.tools.exec = cfg.tools.exec || {};
+cfg.tools.exec.host = parseEnum(
+  process.env.OPENCLAW_EXEC_HOST,
+  ["sandbox", "gateway", "node"],
+  "gateway",
+);
+cfg.tools.exec.security = parseEnum(
+  process.env.OPENCLAW_EXEC_SECURITY,
+  ["deny", "allowlist", "full"],
+  "allowlist",
+);
+cfg.tools.exec.ask = parseEnum(
+  process.env.OPENCLAW_EXEC_ASK,
+  ["off", "on-miss", "always"],
+  "off",
+);
+const pathPrepend = uniqueStrings([
+  process.env.OPENCLAW_SAFE_BIN_DIR || '/opt/openclaw/safe-bin',
+  ...(Array.isArray(cfg.tools.exec.pathPrepend) ? cfg.tools.exec.pathPrepend : []),
+]);
+if (pathPrepend.length > 0) {
+  cfg.tools.exec.pathPrepend = pathPrepend;
+}
+
+cfg.tools.elevated = cfg.tools.elevated || {};
+cfg.tools.elevated.enabled = parseBool(process.env.OPENCLAW_ELEVATED_ENABLED, false);
+
 cfg.browser = cfg.browser || {};
 cfg.browser.noSandbox = parseBool(process.env.OPENCLAW_BROWSER_NO_SANDBOX, true);
 cfg.browser.headless = parseBool(process.env.OPENCLAW_BROWSER_HEADLESS, true);
@@ -161,6 +696,7 @@ cfg.models.mode = cfg.models.mode || 'merge';
 cfg.models.providers = cfg.models.providers || {};
 
 const providerId = (process.env.OPENCLAW_MODEL_PROVIDER_ID || 'ksyun').trim();
+const defaultModelApiKeyFilePath = path.join(process.env.STATE_DIR, 'secrets.json');
 const providerBaseUrl = (
   process.env.OPENCLAW_MODEL_BASE_URL ||
   process.env.OPENAI_BASE_URL ||
@@ -169,15 +705,20 @@ const providerBaseUrl = (
 ).trim();
 const providerApiKeySecretSource = (
   process.env.OPENCLAW_MODEL_API_KEY_SECRET_SOURCE ||
-  'env'
+  'file'
 ).trim().toLowerCase();
 const providerApiKeySecretProvider = (
   process.env.OPENCLAW_MODEL_API_KEY_SECRET_PROVIDER ||
   'default'
 ).trim();
+const providerApiKeySecretFilePath = (
+  process.env.OPENCLAW_MODEL_API_KEY_SECRET_FILE_PATH ||
+  defaultModelApiKeyFilePath
+).trim();
+const defaultFileSecretId = `/providers/${providerId || 'default'}/apiKey`;
 const providerApiKeySecretId = (
   process.env.OPENCLAW_MODEL_API_KEY_SECRET_ID ||
-  'OPENCLAW_MODEL_API_KEY'
+  (providerApiKeySecretSource === 'file' ? defaultFileSecretId : 'OPENCLAW_MODEL_API_KEY')
 ).trim();
 const providerApi = (process.env.OPENCLAW_MODEL_API || 'openai-completions').trim();
 if (providerId && providerBaseUrl && providerApiKeySecretSource && providerApiKeySecretProvider && providerApiKeySecretId) {
@@ -190,12 +731,28 @@ if (providerId && providerBaseUrl && providerApiKeySecretSource && providerApiKe
       );
       process.exit(1);
     }
+  } else if (providerApiKeySecretSource === 'file') {
+    const bootstrapSecret = resolveBootstrapSecretValue('OPENCLAW_MODEL_API_KEY');
+    if (!bootstrapSecret) {
+      console.error(
+        '[bootstrap] missing bootstrap secret env for file-backed model api key; ' +
+          'please inject OPENCLAW_MODEL_API_KEY (or OPENAI_API_KEY).',
+      );
+      process.exit(1);
+    }
+    const secretsPayload = readJsonFile(providerApiKeySecretFilePath, {});
+    setJsonPointerValue(secretsPayload, providerApiKeySecretId, bootstrapSecret.value);
+    writeJsonFile(providerApiKeySecretFilePath, secretsPayload, 0o600);
   }
 
   cfg.secrets = cfg.secrets || {};
   cfg.secrets.providers = cfg.secrets.providers || {};
   cfg.secrets.providers[providerApiKeySecretProvider] = cfg.secrets.providers[providerApiKeySecretProvider] || {};
   cfg.secrets.providers[providerApiKeySecretProvider].source = providerApiKeySecretSource;
+  if (providerApiKeySecretSource === 'file') {
+    cfg.secrets.providers[providerApiKeySecretProvider].path = providerApiKeySecretFilePath;
+    cfg.secrets.providers[providerApiKeySecretProvider].mode = 'json';
+  }
   cfg.secrets.defaults = cfg.secrets.defaults || {};
   cfg.secrets.defaults[providerApiKeySecretSource] = providerApiKeySecretProvider;
 
@@ -211,10 +768,15 @@ if (providerId && providerBaseUrl && providerApiKeySecretSource && providerApiKe
   const modelCatalogRaw = (process.env.OPENCLAW_MODEL_CATALOG_JSON || '').trim();
   if (modelCatalogRaw) {
     try {
-      cfg.models.providers[providerId].models = JSON.parse(modelCatalogRaw);
+      const parsed = JSON.parse(modelCatalogRaw);
+      cfg.models.providers[providerId].models = Array.isArray(parsed) ? parsed : [];
     } catch {
       // Keep existing models if invalid JSON is supplied.
     }
+  }
+  // Ensure models is always an array (new OpenClaw versions require it).
+  if (!Array.isArray(cfg.models.providers[providerId].models)) {
+    cfg.models.providers[providerId].models = [];
   }
 }
 
@@ -233,8 +795,6 @@ const explicitProviderConfigured = !!(
 );
 const primaryModelQualified = primaryModel.includes('/');
 if (primaryModel && (explicitProviderConfigured || primaryModelQualified)) {
-  cfg.agents = cfg.agents || {};
-  cfg.agents.defaults = cfg.agents.defaults || {};
   cfg.agents.defaults.model = cfg.agents.defaults.model || {};
   cfg.agents.defaults.model.primary = primaryModel;
   cfg.agents.defaults.models = cfg.agents.defaults.models || {};
@@ -242,6 +802,51 @@ if (primaryModel && (explicitProviderConfigured || primaryModelQualified)) {
 }
 
 fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2));
+
+const approvalsPath = path.join(process.env.STATE_DIR, 'exec-approvals.json');
+let approvals = {};
+try {
+  approvals = JSON.parse(fs.readFileSync(approvalsPath, 'utf8'));
+} catch {
+  approvals = {};
+}
+
+approvals.version = Number.isInteger(approvals.version) ? approvals.version : 1;
+approvals.defaults = approvals.defaults || {};
+approvals.defaults.security = parseEnum(
+  process.env.OPENCLAW_EXEC_SECURITY,
+  ["deny", "allowlist", "full"],
+  "allowlist",
+);
+approvals.defaults.ask = parseEnum(
+  process.env.OPENCLAW_EXEC_ASK,
+  ["off", "on-miss", "always"],
+  "off",
+);
+approvals.defaults.askFallback = parseEnum(
+  process.env.OPENCLAW_EXEC_ASK_FALLBACK,
+  ["deny", "allowlist", "full"],
+  "allowlist",
+);
+approvals.defaults.autoAllowSkills = parseBool(
+  process.env.OPENCLAW_EXEC_AUTO_ALLOW_SKILLS,
+  false,
+);
+
+const allowlistPatterns = uniqueStrings([
+  ...parseStringList(process.env.OPENCLAW_EXEC_DEFAULT_ALLOWLIST),
+  ...parseStringList(process.env.OPENCLAW_EXEC_ALLOWLIST),
+]);
+if (allowlistPatterns.length > 0) {
+  approvals.agents = approvals.agents || {};
+  approvals.agents.main = approvals.agents.main || {};
+  approvals.agents.main.allowlist = mergeAllowlistEntries(
+    approvals.agents.main.allowlist,
+    allowlistPatterns,
+  );
+}
+
+fs.writeFileSync(approvalsPath, JSON.stringify(approvals, null, 2));
 NODE
 
 # Seed UI locale in localStorage before Control UI app boots (first-load only).
@@ -272,15 +877,15 @@ if [[ -n "${UI_LOCALE}" && -f "${CONTROL_UI_INDEX}" ]]; then
   rm -f "${TMP_CLEAN}"
 fi
 
-# One-time bootstrap side-effects for filesystem assets.
-if [[ ! -f "${BOOTSTRAP_MARKER}" ]]; then
-  if [[ -d /opt/openclaw/preset-skills ]]; then
-    mkdir -p "${STATE_DIR}/skills"
-    cp -R /opt/openclaw/preset-skills/. "${STATE_DIR}/skills/"
-  fi
+patch_control_ui_event_gap_reconnect
+patch_gateway_client_loopback_trusted_proxy_identity
 
-  touch "${BOOTSTRAP_MARKER}"
-fi
+# Keep built-in skills in sync with image content so image upgrades can refresh skills.
+sync_preset_skills
+register_kdocs_skill
+sync_workspace_security_templates
+
+touch "${BOOTSTRAP_MARKER}"
 
 BOOTSTRAP_ONLY_RAW="$(printf '%s' "${OPENCLAW_BOOTSTRAP_ONLY:-}" | tr '[:upper:]' '[:lower:]')"
 if [[ "${BOOTSTRAP_ONLY_RAW}" == "1" || "${BOOTSTRAP_ONLY_RAW}" == "true" || "${BOOTSTRAP_ONLY_RAW}" == "yes" || "${BOOTSTRAP_ONLY_RAW}" == "on" ]]; then
@@ -288,76 +893,21 @@ if [[ "${BOOTSTRAP_ONLY_RAW}" == "1" || "${BOOTSTRAP_ONLY_RAW}" == "true" || "${
   exit 0
 fi
 
-# Start cron daemon if available (for schedule tasks used by some skills/tools).
-if command -v cron >/dev/null 2>&1; then
-  if ! ps -ef | grep -q '[c]ron'; then
-    if ! cron >/tmp/openclaw-cron.log 2>&1; then
-      echo "WARN: failed to start cron; see /tmp/openclaw-cron.log" >&2
-    fi
-  fi
+if [[ -z "${OPENCLAW_BROWSER_EXECUTABLE_PATH:-}" ]]; then
+  echo "WARN: browser executable not found in image PATH; browser tools may fail." >&2
 fi
 
-# Launch gateway first, then warm up browser control so browser tools work OOTB.
+sync_runtime_env_file
+
+MODEL_API_KEY_SECRET_SOURCE_RAW="$(printf '%s' "${OPENCLAW_MODEL_API_KEY_SECRET_SOURCE:-file}" | tr '[:upper:]' '[:lower:]')"
+if [[ "${MODEL_API_KEY_SECRET_SOURCE_RAW}" != "env" ]]; then
+  unset OPENCLAW_MODEL_API_KEY OPENAI_API_KEY LLM_API_KEY MODEL_API_KEY
+fi
+
+export OPENCLAW_EXEC_SAFE_WORKSPACE_ROOT="${OPENCLAW_EXEC_SAFE_WORKSPACE_ROOT:-${WORKSPACE_DIR}}"
+export OPENCLAW_EXEC_SAFE_STATE_DIR="${OPENCLAW_EXEC_SAFE_STATE_DIR:-${STATE_DIR}}"
+
+# Use OpenClaw's built-in cron scheduler only; do not start a system cron daemon.
+
 GATEWAY_PORT="${OPENCLAW_GATEWAY_PORT:-8080}"
-declare -a GATEWAY_CMD=(
-  node
-  openclaw.mjs
-  gateway
-  run
-  --allow-unconfigured
-  --bind "${BIND_MODE}"
-  --port "${GATEWAY_PORT}"
-  --auth "${AUTH_MODE}"
-)
-
-ensure_browser_ready() {
-  # trusted-proxy 下 browser 子命令在容器内通常无法带上代理身份头，跳过预热避免误告警。
-  return 0
-}
-
-"${GATEWAY_CMD[@]}" &
-GATEWAY_PID=$!
-BROWSER_WATCHDOG_PID=""
-
-cleanup() {
-  if [[ -n "${BROWSER_WATCHDOG_PID}" ]] && kill -0 "${BROWSER_WATCHDOG_PID}" >/dev/null 2>&1; then
-    kill "${BROWSER_WATCHDOG_PID}" >/dev/null 2>&1 || true
-    wait "${BROWSER_WATCHDOG_PID}" >/dev/null 2>&1 || true
-  fi
-  if kill -0 "${GATEWAY_PID}" >/dev/null 2>&1; then
-    kill "${GATEWAY_PID}" >/dev/null 2>&1 || true
-    wait "${GATEWAY_PID}" >/dev/null 2>&1 || true
-  fi
-}
-trap cleanup SIGTERM SIGINT
-
-for _ in $(seq 1 60); do
-  if ! kill -0 "${GATEWAY_PID}" >/dev/null 2>&1; then
-    wait "${GATEWAY_PID}"
-    exit $?
-  fi
-  if curl -fsS "http://127.0.0.1:${GATEWAY_PORT}/health" >/dev/null 2>&1; then
-    break
-  fi
-  sleep 1
-done
-
-if kill -0 "${GATEWAY_PID}" >/dev/null 2>&1; then
-  ensure_browser_ready || true
-  BROWSER_WATCH_INTERVAL="${OPENCLAW_BROWSER_WATCH_INTERVAL:-45}"
-  if ! [[ "${BROWSER_WATCH_INTERVAL}" =~ ^[0-9]+$ ]] || [[ "${BROWSER_WATCH_INTERVAL}" -lt 5 ]]; then
-    BROWSER_WATCH_INTERVAL=45
-  fi
-  (
-    while kill -0 "${GATEWAY_PID}" >/dev/null 2>&1; do
-      sleep "${BROWSER_WATCH_INTERVAL}"
-      if ! kill -0 "${GATEWAY_PID}" >/dev/null 2>&1; then
-        exit 0
-      fi
-      ensure_browser_ready || true
-    done
-  ) &
-  BROWSER_WATCHDOG_PID=$!
-fi
-
-wait "${GATEWAY_PID}"
+exec node openclaw.mjs gateway run --allow-unconfigured --bind "${BIND_MODE}" --port "${GATEWAY_PORT}" --auth "${AUTH_MODE}"
