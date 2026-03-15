@@ -174,7 +174,7 @@ def _build_openclaw_env_vars(
     model = (
         default_model
         or _resolve_env("OPENCLAW_DEFAULT_MODEL", "OPENAI_MODEL_NAME", "MODEL_NAME", "LLM_MODEL")
-        or "kimi-k2.5"
+        or "glm-5"
     )
     provider_id = (
         model_provider_id
@@ -200,6 +200,15 @@ def _build_openclaw_env_vars(
         )
         or DEFAULT_TRUSTED_PROXY_USER_HEADER
     ).strip().lower()
+    internal_trusted_proxy_user = (
+        _resolve_env("OPENCLAW_INTERNAL_TRUSTED_PROXY_USER")
+        or "openclaw-backend"
+    )
+    internal_trusted_proxy_user_header = (
+        _resolve_env("OPENCLAW_INTERNAL_TRUSTED_PROXY_USER_HEADER")
+        or trusted_proxy_user_header
+        or DEFAULT_TRUSTED_PROXY_USER_HEADER
+    ).strip().lower()
     trusted_proxies = _normalize_csv_list(
         _resolve_env("OPENCLAW_TRUSTED_PROXIES") or "",
         default_items=DEFAULT_TRUSTED_PROXY_CIDRS,
@@ -208,10 +217,25 @@ def _build_openclaw_env_vars(
     browser_headless = _resolve_env("OPENCLAW_BROWSER_HEADLESS") or "true"
     browser_executable = _resolve_env("OPENCLAW_BROWSER_EXECUTABLE_PATH", "OPENCLAW_BROWSER_EXECUTABLE")
     ui_locale = _normalize_ui_locale(_resolve_env("OPENCLAW_UI_LOCALE", "LANG", "LC_ALL"))
+    exec_host = _resolve_env("OPENCLAW_EXEC_HOST") or "gateway"
+    exec_security = _resolve_env("OPENCLAW_EXEC_SECURITY") or "allowlist"
+    exec_ask = _resolve_env("OPENCLAW_EXEC_ASK") or "off"
+    exec_ask_fallback = _resolve_env("OPENCLAW_EXEC_ASK_FALLBACK") or "allowlist"
+    exec_auto_allow_skills = _resolve_env("OPENCLAW_EXEC_AUTO_ALLOW_SKILLS") or "false"
+    elevated_enabled = _resolve_env("OPENCLAW_ELEVATED_ENABLED") or "false"
+    exec_default_allowlist_enabled = _resolve_env("OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED") or "true"
+    exec_allowlist = _resolve_env("OPENCLAW_EXEC_ALLOWLIST")
+    fs_workspace_only = _resolve_env("OPENCLAW_FS_WORKSPACE_ONLY") or "false"
+    model_api_key_secret_source = _resolve_env("OPENCLAW_MODEL_API_KEY_SECRET_SOURCE") or "file"
+    model_api_key_secret_file_path = _resolve_env("OPENCLAW_MODEL_API_KEY_SECRET_FILE_PATH")
 
     env["OPENCLAW_GATEWAY_BIND"] = "lan"
     env["OPENCLAW_GATEWAY_AUTH_MODE"] = auth_mode
     env["OPENCLAW_TRUSTED_PROXY_USER_HEADER"] = trusted_proxy_user_header or DEFAULT_TRUSTED_PROXY_USER_HEADER
+    env["OPENCLAW_INTERNAL_TRUSTED_PROXY_USER"] = internal_trusted_proxy_user
+    env["OPENCLAW_INTERNAL_TRUSTED_PROXY_USER_HEADER"] = (
+        internal_trusted_proxy_user_header or trusted_proxy_user_header or DEFAULT_TRUSTED_PROXY_USER_HEADER
+    )
     env["OPENCLAW_TRUSTED_PROXIES"] = trusted_proxies
     env["OPENCLAW_GATEWAY_PORT"] = str(resolved_gateway_port)
     env["OPENCLAW_PUBLIC_PORT"] = str(resolved_public_port)
@@ -222,6 +246,19 @@ def _build_openclaw_env_vars(
     if browser_executable:
         env["OPENCLAW_BROWSER_EXECUTABLE_PATH"] = browser_executable
     env["OPENCLAW_UI_LOCALE"] = ui_locale
+    env["OPENCLAW_EXEC_HOST"] = exec_host
+    env["OPENCLAW_EXEC_SECURITY"] = exec_security
+    env["OPENCLAW_EXEC_ASK"] = exec_ask
+    env["OPENCLAW_EXEC_ASK_FALLBACK"] = exec_ask_fallback
+    env["OPENCLAW_EXEC_AUTO_ALLOW_SKILLS"] = exec_auto_allow_skills
+    env["OPENCLAW_ELEVATED_ENABLED"] = elevated_enabled
+    env["OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED"] = exec_default_allowlist_enabled
+    env["OPENCLAW_FS_WORKSPACE_ONLY"] = fs_workspace_only
+    env["OPENCLAW_MODEL_API_KEY_SECRET_SOURCE"] = model_api_key_secret_source
+    if exec_allowlist:
+        env["OPENCLAW_EXEC_ALLOWLIST"] = exec_allowlist
+    if model_api_key_secret_file_path:
+        env["OPENCLAW_MODEL_API_KEY_SECRET_FILE_PATH"] = model_api_key_secret_file_path
 
     if base_url:
         env["OPENCLAW_MODEL_BASE_URL"] = base_url
@@ -252,7 +289,7 @@ def _build_openclaw_env_vars(
                 "reasoning": True,
                 "input": ["text", "image"],
                 "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-                "contextWindow": 128000,
+                "contextWindow": 200000,
                 "maxTokens": 8192,
             }
         ], ensure_ascii=False)
