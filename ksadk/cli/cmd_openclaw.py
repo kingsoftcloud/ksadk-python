@@ -164,23 +164,30 @@ def _build_openclaw_env_vars(
 ) -> dict:
     """构建 OpenClaw 所需的环境变量，自动复用 OPENAI_* 环境变量"""
     env = {}
+    default_provider_id = "ksyun"
+    default_model_api = "openai-completions"
+    default_model_base_url = "http://kspmas-internal.sdns.ksyun.com/v1"
 
-    # 模型配置 (CLI 参数 > OPENCLAW_* > OPENAI_* > 默认值)
-    base_url = _resolve_model_base_url(model_base_url)
+    # 模型配置：客户端只透传用户显式配置和必需的 API Key；
+    # 其余默认值交给镜像 bootstrap 兜底，避免创建请求把服务端默认行为短路掉。
+    openclaw_explicit_model = default_model or _resolve_env("OPENCLAW_DEFAULT_MODEL")
+    generic_model_preference = _resolve_env("OPENAI_MODEL_NAME", "MODEL_NAME", "LLM_MODEL")
+    model_preference = openclaw_explicit_model or generic_model_preference
+    explicit_base_url = (
+        model_base_url
+        or _resolve_env("OPENCLAW_MODEL_BASE_URL", "OPENAI_BASE_URL", "OPENAI_API_BASE")
+    )
+    base_url = _resolve_model_base_url(explicit_base_url)
     api_key = (
         model_api_key
         or _resolve_env("OPENCLAW_MODEL_API_KEY", "OPENAI_API_KEY", "LLM_API_KEY", "MODEL_API_KEY")
     )
-    model = (
-        default_model
-        or _resolve_env("OPENCLAW_DEFAULT_MODEL", "OPENAI_MODEL_NAME", "MODEL_NAME", "LLM_MODEL")
-        or "glm-5"
-    )
-    provider_id = (
-        model_provider_id
-        or _resolve_env("OPENCLAW_MODEL_PROVIDER_ID")
-        or "ksyun"
-    )
+    model = model_preference or "glm-5"
+    explicit_provider_id = model_provider_id or _resolve_env("OPENCLAW_MODEL_PROVIDER_ID")
+    inferred_provider_id = explicit_provider_id
+    if not inferred_provider_id and model and "/" in model:
+        inferred_provider_id = model.split("/", 1)[0].strip()
+    provider_id = inferred_provider_id or default_provider_id
     resolved_gateway_port = (
         gateway_port
         or _resolve_env("OPENCLAW_GATEWAY_PORT", "PORT")
@@ -191,7 +198,8 @@ def _build_openclaw_env_vars(
         or _resolve_env("OPENCLAW_PUBLIC_PORT")
         or "80"
     )
-    model_api = _resolve_env("OPENCLAW_MODEL_API") or "openai-completions"
+    explicit_model_api = _resolve_env("OPENCLAW_MODEL_API")
+    model_api = explicit_model_api or default_model_api
     auth_mode = "trusted-proxy"
     trusted_proxy_user_header = (
         _resolve_env(
@@ -239,8 +247,6 @@ def _build_openclaw_env_vars(
     env["OPENCLAW_TRUSTED_PROXIES"] = trusted_proxies
     env["OPENCLAW_GATEWAY_PORT"] = str(resolved_gateway_port)
     env["OPENCLAW_PUBLIC_PORT"] = str(resolved_public_port)
-    env["OPENCLAW_MODEL_PROVIDER_ID"] = provider_id
-    env["OPENCLAW_MODEL_API"] = model_api
     env["OPENCLAW_BROWSER_NO_SANDBOX"] = browser_no_sandbox
     env["OPENCLAW_BROWSER_HEADLESS"] = browser_headless
     if browser_executable:
@@ -260,12 +266,19 @@ def _build_openclaw_env_vars(
     if model_api_key_secret_file_path:
         env["OPENCLAW_MODEL_API_KEY_SECRET_FILE_PATH"] = model_api_key_secret_file_path
 
-    if base_url:
+    if explicit_provider_id and provider_id != default_provider_id:
+        env["OPENCLAW_MODEL_PROVIDER_ID"] = provider_id
+    elif not explicit_provider_id and provider_id and provider_id != default_provider_id:
+        env["OPENCLAW_MODEL_PROVIDER_ID"] = provider_id
+    if explicit_model_api and model_api != default_model_api:
+        env["OPENCLAW_MODEL_API"] = model_api
+    if explicit_base_url and base_url and base_url != default_model_base_url:
         env["OPENCLAW_MODEL_BASE_URL"] = base_url
     if api_key:
         env["OPENCLAW_MODEL_API_KEY"] = api_key
     normalized_model = model.strip() if model else None
     catalog_model_id = None
+    resolved_model = None
     if normalized_model:
         if "/" in normalized_model:
             _, catalog_model_id = normalized_model.split("/", 1)
@@ -273,26 +286,15 @@ def _build_openclaw_env_vars(
         else:
             catalog_model_id = normalized_model
             resolved_model = f"{provider_id}/{normalized_model}" if provider_id else normalized_model
-        env["OPENCLAW_DEFAULT_MODEL"] = resolved_model
+        if openclaw_explicit_model:
+            env["OPENCLAW_DEFAULT_MODEL"] = resolved_model
+        elif generic_model_preference:
+            env["OPENAI_MODEL_NAME"] = resolved_model
 
     # 额外的可选配置
     catalog = _resolve_env("OPENCLAW_MODEL_CATALOG_JSON")
     if catalog:
         env["OPENCLAW_MODEL_CATALOG_JSON"] = catalog
-    elif provider_id and catalog_model_id:
-        # OpenClaw 新版本要求 provider.models 为数组，默认补一个最小模型目录条目。
-        env["OPENCLAW_MODEL_CATALOG_JSON"] = json.dumps([
-            {
-                "id": catalog_model_id,
-                "name": catalog_model_id,
-                "api": model_api,
-                "reasoning": True,
-                "input": ["text", "image"],
-                "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-                "contextWindow": 200000,
-                "maxTokens": 8192,
-            }
-        ], ensure_ascii=False)
     origins = _resolve_env("OPENCLAW_ALLOWED_ORIGINS")
     if origins:
         env["OPENCLAW_ALLOWED_ORIGINS"] = _normalize_allowed_origins(origins)

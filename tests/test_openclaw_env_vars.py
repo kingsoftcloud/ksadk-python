@@ -1,4 +1,5 @@
 import re
+import json
 
 from ksadk.cli import cmd_openclaw
 
@@ -99,6 +100,58 @@ def test_build_openclaw_env_vars_exposes_exec_confirmation_controls(monkeypatch)
     assert env["OPENCLAW_FS_WORKSPACE_ONLY"] == "false"
     assert env["OPENCLAW_MODEL_API_KEY_SECRET_SOURCE"] == "env"
     assert env["OPENCLAW_MODEL_API_KEY_SECRET_FILE_PATH"] == "/tmp/runtime-secrets.json"
+
+
+def test_build_openclaw_env_vars_omits_redundant_model_defaults(monkeypatch):
+    monkeypatch.setattr(cmd_openclaw, "_GLOBAL_ENV_CACHE", {})
+    monkeypatch.delenv("OPENCLAW_DEFAULT_MODEL", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL_NAME", raising=False)
+    monkeypatch.delenv("MODEL_NAME", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.delenv("OPENCLAW_MODEL_CATALOG_JSON", raising=False)
+    monkeypatch.delenv("OPENCLAW_MODEL_PROVIDER_ID", raising=False)
+    monkeypatch.delenv("OPENCLAW_MODEL_API", raising=False)
+
+    env = cmd_openclaw._build_openclaw_env_vars()
+
+    assert "OPENCLAW_DEFAULT_MODEL" not in env
+    assert "OPENCLAW_MODEL_CATALOG_JSON" not in env
+    assert "OPENCLAW_MODEL_BASE_URL" not in env
+    assert "OPENCLAW_MODEL_PROVIDER_ID" not in env
+    assert "OPENCLAW_MODEL_API" not in env
+
+
+def test_build_openclaw_env_vars_global_model_preference_keeps_dual_catalog(monkeypatch):
+    monkeypatch.setattr(cmd_openclaw, "_GLOBAL_ENV_CACHE", {})
+    monkeypatch.delenv("OPENCLAW_DEFAULT_MODEL", raising=False)
+    monkeypatch.delenv("OPENCLAW_MODEL_CATALOG_JSON", raising=False)
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-5")
+
+    env = cmd_openclaw._build_openclaw_env_vars()
+
+    assert env["OPENAI_MODEL_NAME"] == "ksyun/glm-5"
+    assert "OPENCLAW_DEFAULT_MODEL" not in env
+    assert "OPENCLAW_MODEL_CATALOG_JSON" not in env
+
+
+def test_build_openclaw_env_vars_explicit_glm5_is_forwarded_without_catalog(monkeypatch):
+    monkeypatch.setattr(cmd_openclaw, "_GLOBAL_ENV_CACHE", {})
+    monkeypatch.delenv("OPENCLAW_MODEL_CATALOG_JSON", raising=False)
+    monkeypatch.setenv("OPENCLAW_DEFAULT_MODEL", "ksyun/glm-5")
+
+    env = cmd_openclaw._build_openclaw_env_vars()
+
+    assert env["OPENCLAW_DEFAULT_MODEL"] == "ksyun/glm-5"
+    assert "OPENCLAW_MODEL_CATALOG_JSON" not in env
+
+
+def test_build_openclaw_env_vars_preserves_explicit_model_catalog(monkeypatch):
+    monkeypatch.setattr(cmd_openclaw, "_GLOBAL_ENV_CACHE", {})
+    monkeypatch.setenv("OPENCLAW_MODEL_CATALOG_JSON", '[{"id":"glm-5"}]')
+
+    env = cmd_openclaw._build_openclaw_env_vars()
+
+    assert env["OPENCLAW_MODEL_CATALOG_JSON"] == '[{"id":"glm-5"}]'
 
 
 def test_generate_default_openclaw_name_is_high_entropy():
