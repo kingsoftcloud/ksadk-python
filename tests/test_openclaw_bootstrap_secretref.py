@@ -27,6 +27,7 @@ def _build_base_env(state_dir: str, config_path: str) -> dict:
         raw_bin_path.chmod(0o755)
     (workspace_template_dir / "SOUL.md").write_text("security soul\n")
     (workspace_template_dir / "AGENTS.md").write_text("security agents\n")
+    (workspace_template_dir / "MEMORY.md").write_text("persistent memory\n")
     (workspace_template_dir / "TOOLS.md").write_text("tool notes\n")
     env.pop("OPENCLAW_MODEL_API_KEY", None)
     env.pop("OPENAI_API_KEY", None)
@@ -127,6 +128,89 @@ def test_bootstrap_fails_without_secret_env_value():
         assert "missing bootstrap secret env for file-backed model api key" in combined
 
 
+def test_bootstrap_defaults_dual_ksyun_catalog_when_unspecified():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env.pop("OPENCLAW_DEFAULT_MODEL", None)
+        env.pop("OPENCLAW_MODEL_CATALOG_JSON", None)
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert cfg["agents"]["defaults"]["model"]["primary"] == "ksyun/glm-5"
+        models = cfg["models"]["providers"]["ksyun"]["models"]
+        assert [item["id"] for item in models] == ["glm-5", "kimi-k2.5"]
+        assert models[0]["input"] == ["text"]
+        assert models[1]["input"] == ["text", "image"]
+        selectable = cfg["agents"]["defaults"]["models"]
+        assert "ksyun/glm-5" in selectable
+        assert "ksyun/kimi-k2.5" in selectable
+
+
+def test_bootstrap_global_model_preference_keeps_dual_ksyun_catalog():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENAI_MODEL_NAME"] = "glm-5"
+        env.pop("OPENCLAW_DEFAULT_MODEL", None)
+        env.pop("OPENCLAW_MODEL_CATALOG_JSON", None)
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert cfg["agents"]["defaults"]["model"]["primary"] == "glm-5"
+        models = cfg["models"]["providers"]["ksyun"]["models"]
+        assert [item["id"] for item in models] == ["glm-5", "kimi-k2.5"]
+        assert models[0]["input"] == ["text"]
+        assert models[1]["input"] == ["text", "image"]
+
+
+def test_bootstrap_explicit_glm5_keeps_text_only_capability():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_DEFAULT_MODEL"] = "ksyun/glm-5"
+        env.pop("OPENCLAW_MODEL_CATALOG_JSON", None)
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert cfg["agents"]["defaults"]["model"]["primary"] == "ksyun/glm-5"
+        models = cfg["models"]["providers"]["ksyun"]["models"]
+        assert [item["id"] for item in models] == ["glm-5"]
+        assert models[0]["input"] == ["text"]
+        selectable = cfg["agents"]["defaults"]["models"]
+        assert list(selectable.keys()) == ["ksyun/glm-5"]
+
+
 def test_bootstrap_enforces_exec_approval_defaults():
     with TemporaryDirectory() as tmpdir:
         config_path = Path(tmpdir) / "openclaw.json"
@@ -177,7 +261,31 @@ def test_bootstrap_enforces_exec_approval_defaults():
         assert "xreach" in allowlist_basenames
         assert (workspace_path / "SOUL.md").exists()
         assert (workspace_path / "AGENTS.md").exists()
+        assert (workspace_path / "MEMORY.md").exists()
         assert (workspace_path / "TOOLS.md").exists()
+
+
+def test_bootstrap_preserves_existing_memory_file():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        workspace_path = Path(tmpdir) / "workspace"
+        workspace_path.mkdir(parents=True, exist_ok=True)
+        memory_path = workspace_path / "MEMORY.md"
+        memory_path.write_text("user customized memory\n")
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        assert memory_path.read_text() == "user customized memory\n"
 
 
 def test_bootstrap_merges_custom_exec_allowlist_patterns():
@@ -238,6 +346,41 @@ def test_bootstrap_scrubs_model_api_key_from_gateway_process_env():
         assert "OPENAI_API_KEY=" not in captured_env
         assert "OPENCLAW_INTERNAL_TRUSTED_PROXY_USER=openclaw-backend" in captured_env
         assert "OPENCLAW_INTERNAL_TRUSTED_PROXY_USER_HEADER=x-forwarded-user" in captured_env
+
+
+def test_bootstrap_registers_exa_with_home_scope():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        raw_bin_dir = Path(tmpdir) / "bin"
+        capture_path = Path(tmpdir) / "mcporter.log"
+        raw_bin_dir.mkdir(parents=True, exist_ok=True)
+        mcporter_path = raw_bin_dir / "mcporter"
+        mcporter_path.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = \"config\" ] && [ \"$2\" = \"get\" ]; then\n"
+            "  exit 1\n"
+            "fi\n"
+            "printf '%s\\n' \"$*\" >> \"$MCPORTER_CAPTURE_PATH\"\n"
+            "exit 0\n"
+        )
+        mcporter_path.chmod(0o755)
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["MCPORTER_CAPTURE_PATH"] = str(capture_path)
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        captured = capture_path.read_text()
+        assert "config add exa https://mcp.exa.ai/mcp --scope home" in captured
 
 
 def test_bootstrap_runs_bundled_kdocs_setup_when_token_present():

@@ -1,12 +1,12 @@
-## Tool Notes
+## 工具说明
 
-### Safe Execution
-- Use `sh-safe` or `bash-safe` for workspace scripts when shell execution is needed.
-- `sh-safe` and `bash-safe` only run scripts inside the workspace, reject shell flags like `-c`, and scrub inherited environment variables.
-- Use `web-safe` for public web search and page reads when raw network access is unnecessary.
+### 安全执行
+- 需要执行 workspace 内脚本时，优先使用 `sh-safe` 或 `bash-safe`。
+- `sh-safe` / `bash-safe` 只允许运行 workspace 内脚本，会拒绝 `-c` 这类高风险 shell 参数，并尽量清理继承环境变量。
+- 在不需要原始网络能力时，公开网页检索与阅读优先使用 `web-safe`。
 
-### Self-Improvement
-- `.learnings/LEARNINGS.md` stores corrections, best practices, and knowledge gaps.
-- `.learnings/ERRORS.md` stores command failures and integration breakages.
-- `.learnings/FEATURE_REQUESTS.md` stores user-requested capabilities that do not exist yet.
-- When a lesson keeps recurring, compress it into a short preventive rule and promote it into `AGENTS.md`, `SOUL.md`, or this file.
+### 自我改进
+- `.learnings/LEARNINGS.md` 用来记录纠正、最佳实践和认知缺口。
+- `.learnings/ERRORS.md` 用来记录命令失败、集成故障和排障线索。
+- `.learnings/FEATURE_REQUESTS.md` 用来记录用户提出但当前还不具备的能力。
+- 某条经验反复出现时，把它压缩成短规则，再提升到 `AGENTS.md`、`SOUL.md` 或本文件。

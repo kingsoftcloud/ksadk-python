@@ -129,7 +129,7 @@ register_agent_reach_defaults() {
   [[ -n "${mcporter_bin}" ]] || return 0
 
   if ! "${mcporter_bin}" config get exa --json >/dev/null 2>&1; then
-    if "${mcporter_bin}" config add exa https://mcp.exa.ai/mcp >/dev/null 2>&1; then
+    if "${mcporter_bin}" config add exa https://mcp.exa.ai/mcp --scope home >/dev/null 2>&1; then
       echo "INFO: registered built-in Exa MCP for agent-reach"
     else
       echo "WARN: failed to register built-in Exa MCP for agent-reach; continuing startup." >&2
@@ -145,7 +145,7 @@ sync_workspace_security_templates() {
   [[ -d "${src_dir}" ]] || return 0
 
   mkdir -p "${dst_dir}"
-  for file_name in AGENTS.md SOUL.md TOOLS.md; do
+  for file_name in AGENTS.md MEMORY.md SOUL.md TOOLS.md; do
     if [[ -f "${src_dir}/${file_name}" && ! -f "${dst_dir}/${file_name}" ]]; then
       cp "${src_dir}/${file_name}" "${dst_dir}/${file_name}"
     fi
@@ -782,6 +782,25 @@ const providerApiKeySecretId = (
   (providerApiKeySecretSource === 'file' ? defaultFileSecretId : 'OPENCLAW_MODEL_API_KEY')
 ).trim();
 const providerApi = (process.env.OPENCLAW_MODEL_API || 'openai-completions').trim();
+const explicitDefaultModel = (
+  process.env.OPENCLAW_DEFAULT_MODEL ||
+  ''
+).trim();
+const preferredDefaultModel = (
+  explicitDefaultModel ||
+  process.env.OPENAI_MODEL_NAME ||
+  process.env.MODEL_NAME ||
+  process.env.LLM_MODEL ||
+  ''
+).trim();
+const defaultModelInputs = (provider, modelId) => {
+  const normalizedProvider = String(provider || '').trim().toLowerCase();
+  const normalizedModelId = String(modelId || '').trim().toLowerCase();
+  if (normalizedProvider === 'ksyun' && normalizedModelId === 'glm-5') {
+    return ['text'];
+  }
+  return ['text', 'image'];
+};
 if (providerId && providerBaseUrl && providerApiKeySecretSource && providerApiKeySecretProvider && providerApiKeySecretId) {
   if (providerApiKeySecretSource === 'env') {
     const apiKeyValue = String(process.env[providerApiKeySecretId] || '').trim();
@@ -839,13 +858,53 @@ if (providerId && providerBaseUrl && providerApiKeySecretSource && providerApiKe
   if (!Array.isArray(cfg.models.providers[providerId].models)) {
     cfg.models.providers[providerId].models = [];
   }
+  if (cfg.models.providers[providerId].models.length === 0) {
+    const defaultModelId = preferredDefaultModel.includes('/')
+      ? preferredDefaultModel.split('/').slice(1).join('/')
+      : preferredDefaultModel;
+    if (providerId === 'ksyun' && !explicitDefaultModel) {
+      cfg.models.providers[providerId].models = [
+        {
+          id: 'glm-5',
+          name: 'glm-5',
+          api: providerApi,
+          reasoning: true,
+          input: ['text'],
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: 200000,
+          maxTokens: 8192,
+        },
+        {
+          id: 'kimi-k2.5',
+          name: 'kimi-k2.5',
+          api: providerApi,
+          reasoning: true,
+          input: ['text', 'image'],
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: 200000,
+          maxTokens: 8192,
+        },
+      ];
+    } else if (defaultModelId) {
+      cfg.models.providers[providerId].models = [
+        {
+          id: defaultModelId,
+          name: defaultModelId,
+          api: providerApi,
+          reasoning: true,
+          input: defaultModelInputs(providerId, defaultModelId),
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: 200000,
+          maxTokens: 8192,
+        },
+      ];
+    }
+  }
 }
 
 const primaryModel = (
-  process.env.OPENCLAW_DEFAULT_MODEL ||
-  process.env.OPENAI_MODEL_NAME ||
-  process.env.MODEL_NAME ||
-  'ksyun/kimi-k2.5'
+  preferredDefaultModel ||
+  'ksyun/glm-5'
 ).trim();
 const explicitProviderConfigured = !!(
   providerId &&
@@ -860,6 +919,15 @@ if (primaryModel && (explicitProviderConfigured || primaryModelQualified)) {
   cfg.agents.defaults.model.primary = primaryModel;
   cfg.agents.defaults.models = cfg.agents.defaults.models || {};
   cfg.agents.defaults.models[primaryModel] = cfg.agents.defaults.models[primaryModel] || {};
+  const selectableModels = Array.isArray(cfg.models.providers?.[providerId]?.models)
+    ? cfg.models.providers[providerId].models
+    : [];
+  for (const item of selectableModels) {
+    const modelId = String(item?.id || '').trim();
+    if (!modelId) continue;
+    const modelRef = modelId.includes('/') ? modelId : `${providerId}/${modelId}`;
+    cfg.agents.defaults.models[modelRef] = cfg.agents.defaults.models[modelRef] || {};
+  }
 }
 
 fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2));
