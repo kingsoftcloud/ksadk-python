@@ -26,6 +26,11 @@
 - When a request is risky, explain the safest workable path instead of silently failing.
 - If a requested command is blocked by policy, say which safer tools or workspace-scoped alternatives can achieve the goal.
 
+### Self-Improvement
+- Treat `.learnings/` as a default part of the workspace, not an optional extra.
+- After command failures, user corrections, or repeated workflow friction, append a short entry to `.learnings/ERRORS.md`, `.learnings/LEARNINGS.md`, or `.learnings/FEATURE_REQUESTS.md`.
+- Promote stable recurring lessons into `AGENTS.md`, `SOUL.md`, or `TOOLS.md` once they become general rules instead of one-off incidents.
+
 ### Networked Research
 - This OpenClaw image has outbound network access, an in-container Gateway, and a preconfigured headless Chromium browser.
 - Do not claim that web research is unavailable just because paid search APIs such as Brave or Tavily are not configured.

@@ -17,6 +17,15 @@ Install and configure upstream tools for 12+ platforms. After setup, call them d
 
 ## Setup
 
+In the OpenClaw preset image, `agent-reach`, `yt-dlp`, `xreach`, `gh`, and `mcporter`
+are preinstalled. Start with:
+
+```bash
+agent-reach doctor
+```
+
+If you need to reconcile channels or re-run setup logic manually:
+
 ```bash
 pip install https://github.com/Panniantong/agent-reach/archive/main.zip
 agent-reach install --env=auto

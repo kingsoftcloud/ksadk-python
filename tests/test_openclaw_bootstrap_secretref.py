@@ -17,16 +17,17 @@ def _build_base_env(state_dir: str, config_path: str) -> dict:
     safe_bin_dir.mkdir(parents=True, exist_ok=True)
     raw_bin_dir.mkdir(parents=True, exist_ok=True)
     workspace_template_dir.mkdir(parents=True, exist_ok=True)
-    for cmd in ["pwd", "ls", "whoami", "id", "uname", "date", "ps", "df", "du", "stat", "find", "cat", "head", "tail", "wc", "git", "mcporter", "sh-safe"]:
+    for cmd in ["pwd", "ls", "whoami", "id", "uname", "date", "ps", "df", "du", "stat", "find", "cat", "head", "tail", "wc", "git", "mcporter", "sh-safe", "bash-safe"]:
         wrapper_path = safe_bin_dir / cmd
         wrapper_path.write_text("#!/bin/sh\nexit 0\n")
         wrapper_path.chmod(0o755)
-    for cmd in ["curl", "yt-dlp", "openclaw"]:
+    for cmd in ["curl", "yt-dlp", "openclaw", "agent-reach", "gh", "xreach"]:
         raw_bin_path = raw_bin_dir / cmd
         raw_bin_path.write_text("#!/bin/sh\nexit 0\n")
         raw_bin_path.chmod(0o755)
     (workspace_template_dir / "SOUL.md").write_text("security soul\n")
     (workspace_template_dir / "AGENTS.md").write_text("security agents\n")
+    (workspace_template_dir / "TOOLS.md").write_text("tool notes\n")
     env.pop("OPENCLAW_MODEL_API_KEY", None)
     env.pop("OPENAI_API_KEY", None)
     env["OPENCLAW_STATE_DIR"] = state_dir
@@ -167,11 +168,16 @@ def test_bootstrap_enforces_exec_approval_defaults():
         assert any(entry["pattern"] == str(Path(tmpdir) / "safe-bin" / "git") for entry in allowlist)
         assert any(entry["pattern"] == str(Path(tmpdir) / "safe-bin" / "mcporter") for entry in allowlist)
         assert any(entry["pattern"] == str(Path(tmpdir) / "safe-bin" / "sh-safe") for entry in allowlist)
+        assert any(entry["pattern"] == str(Path(tmpdir) / "safe-bin" / "bash-safe") for entry in allowlist)
         assert "curl" in allowlist_basenames
         assert "yt-dlp" in allowlist_basenames
         assert "openclaw" in allowlist_basenames
+        assert "agent-reach" in allowlist_basenames
+        assert "gh" in allowlist_basenames
+        assert "xreach" in allowlist_basenames
         assert (workspace_path / "SOUL.md").exists()
         assert (workspace_path / "AGENTS.md").exists()
+        assert (workspace_path / "TOOLS.md").exists()
 
 
 def test_bootstrap_merges_custom_exec_allowlist_patterns():
@@ -251,6 +257,7 @@ def test_bootstrap_runs_bundled_kdocs_setup_when_token_present():
         env = _build_base_env(tmpdir, str(config_path))
         env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
         env["OPENCLAW_PRESET_SKILLS_DIR"] = str(Path(tmpdir) / "preset-skills")
+        env["OPENCLAW_PRESET_SKILLS_ALLOWLIST"] = "kdocs"
         env["OPENCLAW_KDOCS_MARKER_PATH"] = str(marker_path)
         env["KDOCS_TOKEN"] = "kdocs-test-token"
 
@@ -266,6 +273,79 @@ def test_bootstrap_runs_bundled_kdocs_setup_when_token_present():
         assert result.returncode == 0, result.stderr or result.stdout
         assert marker_path.read_text() == "kdocs-test-token\n"
         assert (Path(tmpdir) / "skills" / "kdocs" / "setup.sh").exists()
+
+
+def test_bootstrap_syncs_only_allowlisted_preset_skills():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        preset_skills_dir = Path(tmpdir) / "preset-skills"
+        for skill_name in [
+            "find-skills",
+            "self-improving-agent",
+            "kdocs",
+            "agent-reach",
+            "multi-search-engine",
+            "tavily-search",
+            "tuanziguardianclaw",
+        ]:
+            skill_dir = preset_skills_dir / skill_name
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            (skill_dir / "SKILL.md").write_text(f"{skill_name}\n")
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_PRESET_SKILLS_DIR"] = str(preset_skills_dir)
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        synced_skills = sorted(path.name for path in (Path(tmpdir) / "skills").iterdir() if path.is_dir())
+        assert synced_skills == [
+            "agent-reach",
+            "find-skills",
+            "kdocs",
+            "multi-search-engine",
+            "self-improving-agent",
+            "tavily-search",
+        ]
+
+
+def test_bootstrap_enables_self_improvement_workspace_files():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        preset_skills_dir = Path(tmpdir) / "preset-skills" / "self-improving-agent" / ".learnings"
+        preset_skills_dir.mkdir(parents=True, exist_ok=True)
+        (preset_skills_dir / "LEARNINGS.md").write_text("learning template\n")
+        (preset_skills_dir / "ERRORS.md").write_text("error template\n")
+        (preset_skills_dir / "FEATURE_REQUESTS.md").write_text("feature template\n")
+        (preset_skills_dir.parent / "SKILL.md").write_text("self-improving-agent\n")
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_PRESET_SKILLS_DIR"] = str(Path(tmpdir) / "preset-skills")
+        env["OPENCLAW_PRESET_SKILLS_ALLOWLIST"] = "self-improving-agent"
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        workspace_learnings = Path(tmpdir) / "workspace" / ".learnings"
+        assert (workspace_learnings / "LEARNINGS.md").read_text() == "learning template\n"
+        assert (workspace_learnings / "ERRORS.md").read_text() == "error template\n"
+        assert (workspace_learnings / "FEATURE_REQUESTS.md").read_text() == "feature template\n"
 
 
 def test_bootstrap_patches_runtime_bundles_for_loopback_gateway_clients():

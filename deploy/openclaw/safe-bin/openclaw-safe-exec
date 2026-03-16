@@ -76,6 +76,24 @@ ensure_workspace_cwd() {
   fi
 }
 
+mcporter_target_allowed() {
+  local target
+  target="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+  case "${target}" in
+    kdocs|exa|xiaohongshu|douyin|linkedin|weibo|bosszhipin)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+mcporter_namespace_allowed() {
+  local namespace="${1%%.*}"
+  mcporter_target_allowed "${namespace}"
+}
+
 token_looks_like_path() {
   local token="$1"
   if [[ "${token}" == "." || "${token}" == ".." || "${token}" == "/"* || "${token}" == "./"* || "${token}" == "../"* || "${token}" == "~"* || "${token}" == *"/"* ]]; then
@@ -163,6 +181,15 @@ resolve_real_bin() {
         echo "/usr/bin/sh"
       else
         resolve_via_path "sh" || deny "wrapped binary not found for sh-safe"
+      fi
+      ;;
+    bash-safe)
+      if [[ -x "/bin/bash" ]]; then
+        echo "/bin/bash"
+      elif [[ -x "/usr/bin/bash" ]]; then
+        echo "/usr/bin/bash"
+      else
+        resolve_via_path "bash" || deny "wrapped binary not found for bash-safe"
       fi
       ;;
     mcporter)
@@ -309,22 +336,65 @@ case "${CMD_NAME}" in
       OPENCLAW_SAFE_BIN_DIR="${SAFE_BIN_CANON}" \
       "${REAL_BIN}" -- "${script_path}" "$@" < /dev/null
     ;;
+  bash-safe)
+    ensure_workspace_cwd
+    [[ "$#" -ge 1 ]] || deny "bash-safe requires a workspace script path"
+    [[ "$1" != -* ]] || deny "bash-safe does not accept shell options"
+
+    script_path="$1"
+    validate_workspace_path "${script_path}"
+    if [[ "${script_path}" == "~"* ]]; then
+      script_path="${HOME}${script_path#"~"}"
+    elif [[ "${script_path}" != /* ]]; then
+      script_path="${CWD_CANON}/${script_path}"
+    fi
+    script_path="$(canon_path "${script_path}")"
+
+    [[ -f "${script_path}" ]] || deny "bash-safe script must be a readable file inside workspace"
+    [[ -r "${script_path}" ]] || deny "bash-safe script must be a readable file inside workspace"
+    [[ -n "${ENV_BIN}" ]] || deny "env utility is required for bash-safe"
+
+    safe_tmp_dir="${WORKSPACE_CANON}/.tmp/openclaw"
+    mkdir -p "${safe_tmp_dir}"
+    shift
+    umask 077
+
+    exec "${ENV_BIN}" -i \
+      HOME="${WORKSPACE_CANON}" \
+      LOGNAME="openclaw" \
+      USER="openclaw" \
+      PWD="${CWD_CANON}" \
+      PATH="${SAFE_BIN_CANON}" \
+      SHELL="${REAL_BIN}" \
+      TMPDIR="${safe_tmp_dir}" \
+      LANG="C.UTF-8" \
+      LC_ALL="C.UTF-8" \
+      OPENCLAW_EXEC_SAFE_WORKSPACE_ROOT="${WORKSPACE_CANON}" \
+      OPENCLAW_EXEC_SAFE_STATE_DIR="${STATE_CANON}" \
+      OPENCLAW_SAFE_BIN_DIR="${SAFE_BIN_CANON}" \
+      "${REAL_BIN}" --noprofile --norc "${script_path}" "$@" < /dev/null
+    ;;
   mcporter)
     ensure_workspace_cwd
     subcommand=""
+    config_action=""
     target=""
-    previous_wants_value=0
+    command_value=""
+    previous_wants_value=""
     for arg in "$@"; do
-      if [[ "${previous_wants_value}" == "1" ]]; then
-        previous_wants_value=0
+      if [[ -n "${previous_wants_value}" ]]; then
+        if [[ "${previous_wants_value}" == "--command" ]]; then
+          command_value="${arg}"
+        fi
+        previous_wants_value=""
         continue
       fi
       case "${arg}" in
-        --config|--root|--cwd|--env|--stdio|--http-url|--persist|--allow-http|--name|--server|--command|--from)
+        --config|--root|--cwd|--env|--stdio|--http-url|--persist|--allow-http|--name|--server|--from)
           deny "mcporter option is blocked by safe exec policy: ${arg}"
           ;;
-        --tool|--args|--output|--log-level|--oauth-timeout)
-          previous_wants_value=1
+        --command|--tool|--args|--output|--log-level|--oauth-timeout)
+          previous_wants_value="${arg}"
           continue
           ;;
         --help|-h|--version|--json|--raw|--schema|--all-parameters|--verbose)
@@ -341,6 +411,10 @@ case "${CMD_NAME}" in
             subcommand="${arg}"
             continue
           fi
+          if [[ "${subcommand}" == "config" && -z "${config_action}" ]]; then
+            config_action="${arg}"
+            continue
+          fi
           if [[ -z "${target}" ]]; then
             target="${arg}"
           fi
@@ -353,17 +427,43 @@ case "${CMD_NAME}" in
         exec "${REAL_BIN}" "$@"
         ;;
       list)
-        [[ "${target}" == "kdocs" ]] || deny "mcporter list is restricted to kdocs"
+        if [[ -n "${target}" ]] && ! mcporter_namespace_allowed "${target}"; then
+          deny "mcporter list is restricted to built-in namespaces"
+        fi
         exec "${REAL_BIN}" "$@"
         ;;
       call)
-        if [[ "${target}" == "kdocs" || "${target}" == kdocs.* ]]; then
+        if [[ -n "${target}" ]] && mcporter_namespace_allowed "${target}"; then
           exec "${REAL_BIN}" "$@"
         fi
-        deny "mcporter call is restricted to kdocs"
+        deny "mcporter call is restricted to built-in namespaces"
         ;;
-      kdocs.*)
-        exec "${REAL_BIN}" "$@"
+      config)
+        case "${config_action}" in
+          ""|help|list)
+            exec "${REAL_BIN}" "$@"
+            ;;
+          get|remove)
+            mcporter_target_allowed "${target}" || deny "mcporter config ${config_action} is restricted to built-in namespaces"
+            exec "${REAL_BIN}" "$@"
+            ;;
+          add)
+            mcporter_target_allowed "${target}" || deny "mcporter config add is restricted to built-in namespaces"
+            if [[ "${target}" == "weibo" && -n "${command_value}" && "${command_value}" != "mcp-server-weibo" ]]; then
+              deny "mcporter config add weibo only allows mcp-server-weibo"
+            fi
+            exec "${REAL_BIN}" "$@"
+            ;;
+          *)
+            deny "mcporter config subcommand is not allowlisted: ${config_action}"
+            ;;
+        esac
+        ;;
+      *.*)
+        if mcporter_namespace_allowed "${subcommand}"; then
+          exec "${REAL_BIN}" "$@"
+        fi
+        deny "mcporter namespace is not allowlisted: ${subcommand}"
         ;;
       *)
         deny "mcporter subcommand is not allowlisted: ${subcommand}"

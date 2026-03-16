@@ -67,13 +67,34 @@ sync_preset_skills() {
   local dst_dir="${STATE_DIR}/skills"
   local item
   local skill_name
+  local allowlist_raw="${OPENCLAW_PRESET_SKILLS_ALLOWLIST:-find-skills,self-improving-agent,kdocs,agent-reach,multi-search-engine,tavily-search}"
+  local existing
 
   [[ -d "${src_dir}" ]] || return 0
 
   mkdir -p "${dst_dir}"
+  for existing in "${dst_dir}"/*; do
+    [[ -d "${existing}" ]] || continue
+    skill_name="$(basename "${existing}")"
+    case ",${allowlist_raw}," in
+      *,"${skill_name}",*)
+        ;;
+      *)
+        rm -rf "${existing}"
+        ;;
+    esac
+  done
+
   for item in "${src_dir}"/*; do
     [[ -d "${item}" ]] || continue
     skill_name="$(basename "${item}")"
+    case ",${allowlist_raw}," in
+      *,"${skill_name}",*)
+        ;;
+      *)
+        continue
+        ;;
+    esac
     rm -rf "${dst_dir}/${skill_name}"
     cp -R "${item}" "${dst_dir}/${skill_name}"
   done
@@ -101,6 +122,21 @@ register_kdocs_skill() {
   fi
 }
 
+register_agent_reach_defaults() {
+  local mcporter_bin
+  mcporter_bin="$(command -v mcporter 2>/dev/null || true)"
+
+  [[ -n "${mcporter_bin}" ]] || return 0
+
+  if ! "${mcporter_bin}" config get exa --json >/dev/null 2>&1; then
+    if "${mcporter_bin}" config add exa https://mcp.exa.ai/mcp >/dev/null 2>&1; then
+      echo "INFO: registered built-in Exa MCP for agent-reach"
+    else
+      echo "WARN: failed to register built-in Exa MCP for agent-reach; continuing startup." >&2
+    fi
+  fi
+}
+
 sync_workspace_security_templates() {
   local src_dir="${WORKSPACE_TEMPLATE_DIR}"
   local dst_dir="${WORKSPACE_DIR}"
@@ -109,9 +145,25 @@ sync_workspace_security_templates() {
   [[ -d "${src_dir}" ]] || return 0
 
   mkdir -p "${dst_dir}"
-  for file_name in AGENTS.md SOUL.md; do
+  for file_name in AGENTS.md SOUL.md TOOLS.md; do
     if [[ -f "${src_dir}/${file_name}" && ! -f "${dst_dir}/${file_name}" ]]; then
       cp "${src_dir}/${file_name}" "${dst_dir}/${file_name}"
+    fi
+  done
+}
+
+enable_self_improvement_workspace() {
+  local skill_dir="${STATE_DIR}/skills/self-improving-agent"
+  local learnings_src_dir="${skill_dir}/.learnings"
+  local learnings_dst_dir="${WORKSPACE_DIR}/.learnings"
+  local file_name
+
+  [[ -d "${skill_dir}" ]] || return 0
+
+  mkdir -p "${learnings_dst_dir}"
+  for file_name in LEARNINGS.md ERRORS.md FEATURE_REQUESTS.md; do
+    if [[ -f "${learnings_src_dir}/${file_name}" && ! -f "${learnings_dst_dir}/${file_name}" ]]; then
+      cp "${learnings_src_dir}/${file_name}" "${learnings_dst_dir}/${file_name}"
     fi
   done
 }
@@ -329,8 +381,8 @@ sync_runtime_env_file() {
 }
 
 build_exec_default_allowlist() {
-  local -a wrapped_bins=(pwd ls whoami id uname date ps df du stat find cat head tail wc git mcporter sh-safe web-safe)
-  local -a direct_bins=(curl yt-dlp openclaw)
+  local -a wrapped_bins=(pwd ls whoami id uname date ps df du stat find cat head tail wc git mcporter sh-safe bash-safe web-safe)
+  local -a direct_bins=(curl yt-dlp openclaw agent-reach gh xreach)
   local -a patterns=()
   local bin
   local resolved
@@ -354,6 +406,15 @@ build_exec_default_allowlist() {
         ;;
       openclaw)
         resolved="$(resolve_allowlisted_command_path "${bin}" /usr/local/bin/openclaw /usr/bin/openclaw /bin/openclaw || true)"
+        ;;
+      agent-reach)
+        resolved="$(resolve_allowlisted_command_path "${bin}" /usr/local/bin/agent-reach /usr/bin/agent-reach /bin/agent-reach || true)"
+        ;;
+      gh)
+        resolved="$(resolve_allowlisted_command_path "${bin}" /usr/local/bin/gh /usr/bin/gh /bin/gh || true)"
+        ;;
+      xreach)
+        resolved="$(resolve_allowlisted_command_path "${bin}" /usr/local/bin/xreach /usr/bin/xreach /bin/xreach || true)"
         ;;
       *)
         resolved=""
@@ -883,7 +944,9 @@ patch_gateway_client_loopback_trusted_proxy_identity
 # Keep built-in skills in sync with image content so image upgrades can refresh skills.
 sync_preset_skills
 register_kdocs_skill
+register_agent_reach_defaults
 sync_workspace_security_templates
+enable_self_improvement_workspace
 
 touch "${BOOTSTRAP_MARKER}"
 
