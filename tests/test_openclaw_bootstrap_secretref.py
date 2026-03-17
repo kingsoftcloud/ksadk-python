@@ -178,14 +178,14 @@ def test_bootstrap_global_model_preference_keeps_dual_ksyun_catalog():
 
         assert result.returncode == 0, result.stderr or result.stdout
         cfg = json.loads(config_path.read_text())
-        assert cfg["agents"]["defaults"]["model"]["primary"] == "glm-5"
+        assert cfg["agents"]["defaults"]["model"]["primary"] == "ksyun/glm-5"
         models = cfg["models"]["providers"]["ksyun"]["models"]
         assert [item["id"] for item in models] == ["glm-5", "kimi-k2.5"]
         assert models[0]["input"] == ["text"]
         assert models[1]["input"] == ["text", "image"]
 
 
-def test_bootstrap_explicit_glm5_keeps_text_only_capability():
+def test_bootstrap_openclaw_default_model_alias_keeps_dual_catalog():
     with TemporaryDirectory() as tmpdir:
         config_path = Path(tmpdir) / "openclaw.json"
         env = _build_base_env(tmpdir, str(config_path))
@@ -206,10 +206,64 @@ def test_bootstrap_explicit_glm5_keeps_text_only_capability():
         cfg = json.loads(config_path.read_text())
         assert cfg["agents"]["defaults"]["model"]["primary"] == "ksyun/glm-5"
         models = cfg["models"]["providers"]["ksyun"]["models"]
-        assert [item["id"] for item in models] == ["glm-5"]
+        assert [item["id"] for item in models] == ["glm-5", "kimi-k2.5"]
         assert models[0]["input"] == ["text"]
+        assert models[1]["input"] == ["text", "image"]
         selectable = cfg["agents"]["defaults"]["models"]
-        assert list(selectable.keys()) == ["ksyun/glm-5"]
+        assert "ksyun/glm-5" in selectable
+        assert "ksyun/kimi-k2.5" in selectable
+
+
+def test_bootstrap_defaults_primary_to_first_catalog_model_when_unspecified():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env.pop("OPENCLAW_DEFAULT_MODEL", None)
+        env.pop("OPENAI_MODEL_NAME", None)
+        env["OPENCLAW_MODEL_CATALOG_JSON"] = (
+            '[{"id":"kimi-k2.5"},{"id":"glm-5"}]'
+        )
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert cfg["agents"]["defaults"]["model"]["primary"] == "ksyun/kimi-k2.5"
+        models = cfg["models"]["providers"]["ksyun"]["models"]
+        assert [item["id"] for item in models] == ["kimi-k2.5", "glm-5"]
+
+
+def test_bootstrap_appends_primary_model_when_default_catalog_does_not_include_it():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENAI_MODEL_NAME"] = "ksyun/deepseek-v3"
+        env.pop("OPENCLAW_DEFAULT_MODEL", None)
+        env.pop("OPENCLAW_MODEL_CATALOG_JSON", None)
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert cfg["agents"]["defaults"]["model"]["primary"] == "ksyun/deepseek-v3"
+        models = cfg["models"]["providers"]["ksyun"]["models"]
+        assert [item["id"] for item in models] == ["glm-5", "kimi-k2.5", "deepseek-v3"]
 
 
 def test_bootstrap_enforces_exec_approval_defaults():
