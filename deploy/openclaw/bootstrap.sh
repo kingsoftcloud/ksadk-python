@@ -797,17 +797,29 @@ const providerApiKeySecretId = (
   (providerApiKeySecretSource === 'file' ? defaultFileSecretId : 'OPENCLAW_MODEL_API_KEY')
 ).trim();
 const providerApi = (process.env.OPENCLAW_MODEL_API || 'openai-completions').trim();
-const explicitDefaultModel = (
-  process.env.OPENCLAW_DEFAULT_MODEL ||
-  ''
-).trim();
 const preferredDefaultModel = (
-  explicitDefaultModel ||
+  process.env.OPENCLAW_DEFAULT_MODEL ||
   process.env.OPENAI_MODEL_NAME ||
   process.env.MODEL_NAME ||
   process.env.LLM_MODEL ||
   ''
 ).trim();
+const normalizeModelRef = (provider, modelRef) => {
+  const rawModelRef = String(modelRef || '').trim();
+  if (!rawModelRef) return '';
+  if (rawModelRef.includes('/')) {
+    return rawModelRef;
+  }
+  const normalizedProvider = String(provider || '').trim();
+  return normalizedProvider ? `${normalizedProvider}/${rawModelRef}` : rawModelRef;
+};
+const extractModelId = (modelRef) => {
+  const rawModelRef = String(modelRef || '').trim();
+  if (!rawModelRef) return '';
+  return rawModelRef.includes('/')
+    ? rawModelRef.split('/').slice(1).join('/')
+    : rawModelRef;
+};
 const defaultModelInputs = (provider, modelId) => {
   const normalizedProvider = String(provider || '').trim().toLowerCase();
   const normalizedModelId = String(modelId || '').trim().toLowerCase();
@@ -815,6 +827,32 @@ const defaultModelInputs = (provider, modelId) => {
     return ['text'];
   }
   return ['text', 'image'];
+};
+const ensurePrimaryModelInCatalog = (models, provider, modelRef, modelApiName) => {
+  const normalizedPrimaryModel = normalizeModelRef(provider, modelRef);
+  const primaryModelId = extractModelId(normalizedPrimaryModel);
+  if (!primaryModelId) {
+    return Array.isArray(models) ? models : [];
+  }
+
+  const nextModels = Array.isArray(models) ? [...models] : [];
+  const exists = nextModels.some((item) => {
+    const itemModelId = String(item?.id || item?.name || '').trim();
+    return itemModelId === primaryModelId;
+  });
+  if (!exists) {
+    nextModels.push({
+      id: primaryModelId,
+      name: primaryModelId,
+      api: modelApiName,
+      reasoning: true,
+      input: defaultModelInputs(provider, primaryModelId),
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 200000,
+      maxTokens: 8192,
+    });
+  }
+  return nextModels;
 };
 if (providerId && providerBaseUrl && providerApiKeySecretSource && providerApiKeySecretProvider && providerApiKeySecretId) {
   if (providerApiKeySecretSource === 'env') {
@@ -874,10 +912,8 @@ if (providerId && providerBaseUrl && providerApiKeySecretSource && providerApiKe
     cfg.models.providers[providerId].models = [];
   }
   if (cfg.models.providers[providerId].models.length === 0) {
-    const defaultModelId = preferredDefaultModel.includes('/')
-      ? preferredDefaultModel.split('/').slice(1).join('/')
-      : preferredDefaultModel;
-    if (providerId === 'ksyun' && !explicitDefaultModel) {
+    const defaultModelId = extractModelId(preferredDefaultModel);
+    if (providerId === 'ksyun') {
       cfg.models.providers[providerId].models = [
         {
           id: 'glm-5',
@@ -915,12 +951,14 @@ if (providerId && providerBaseUrl && providerApiKeySecretSource && providerApiKe
       ];
     }
   }
+  cfg.models.providers[providerId].models = ensurePrimaryModelInCatalog(
+    cfg.models.providers[providerId].models,
+    providerId,
+    preferredDefaultModel,
+    providerApi,
+  );
 }
 
-const primaryModel = (
-  preferredDefaultModel ||
-  'ksyun/glm-5'
-).trim();
 const explicitProviderConfigured = !!(
   providerId &&
   providerBaseUrl &&
@@ -928,15 +966,23 @@ const explicitProviderConfigured = !!(
   providerApiKeySecretProvider &&
   providerApiKeySecretId
 );
+const selectableModels = Array.isArray(cfg.models.providers?.[providerId]?.models)
+  ? cfg.models.providers[providerId].models
+  : [];
+const catalogPrimaryModel = selectableModels
+  .map((item) => normalizeModelRef(providerId, String(item?.id || item?.name || '').trim()))
+  .find(Boolean);
+const primaryModel = (
+  normalizeModelRef(providerId, preferredDefaultModel) ||
+  catalogPrimaryModel ||
+  'ksyun/glm-5'
+).trim();
 const primaryModelQualified = primaryModel.includes('/');
 if (primaryModel && (explicitProviderConfigured || primaryModelQualified)) {
   cfg.agents.defaults.model = cfg.agents.defaults.model || {};
   cfg.agents.defaults.model.primary = primaryModel;
   cfg.agents.defaults.models = cfg.agents.defaults.models || {};
   cfg.agents.defaults.models[primaryModel] = cfg.agents.defaults.models[primaryModel] || {};
-  const selectableModels = Array.isArray(cfg.models.providers?.[providerId]?.models)
-    ? cfg.models.providers[providerId].models
-    : [];
   for (const item of selectableModels) {
     const modelId = String(item?.id || '').trim();
     if (!modelId) continue;
