@@ -14,6 +14,7 @@ def _run_sh_safe(workspace: Path, state_dir: Path, safe_bin_dir: Path, *args: st
     env["OPENCLAW_EXEC_SAFE_WORKSPACE_ROOT"] = str(workspace)
     env["OPENCLAW_EXEC_SAFE_STATE_DIR"] = str(state_dir)
     env["OPENCLAW_SAFE_BIN_DIR"] = str(safe_bin_dir)
+    env["OPENCLAW_EXEC_STRICT_MODE"] = "true"
     if extra_env:
         env.update(extra_env)
 
@@ -33,6 +34,7 @@ def _run_bash_safe(workspace: Path, state_dir: Path, safe_bin_dir: Path, *args: 
     env["OPENCLAW_EXEC_SAFE_WORKSPACE_ROOT"] = str(workspace)
     env["OPENCLAW_EXEC_SAFE_STATE_DIR"] = str(state_dir)
     env["OPENCLAW_SAFE_BIN_DIR"] = str(safe_bin_dir)
+    env["OPENCLAW_EXEC_STRICT_MODE"] = "true"
     if extra_env:
         env.update(extra_env)
 
@@ -52,6 +54,7 @@ def _run_web_safe(workspace: Path, state_dir: Path, safe_bin_dir: Path, *args: s
     env["OPENCLAW_EXEC_SAFE_WORKSPACE_ROOT"] = str(workspace)
     env["OPENCLAW_EXEC_SAFE_STATE_DIR"] = str(state_dir)
     env["OPENCLAW_SAFE_BIN_DIR"] = str(safe_bin_dir)
+    env["OPENCLAW_EXEC_STRICT_MODE"] = "true"
 
     return subprocess.run(
         ["bash", str(SAFE_EXEC_SCRIPT), *args],
@@ -75,6 +78,7 @@ def _run_mcporter_safe(
     env["OPENCLAW_EXEC_SAFE_WORKSPACE_ROOT"] = str(workspace)
     env["OPENCLAW_EXEC_SAFE_STATE_DIR"] = str(state_dir)
     env["OPENCLAW_SAFE_BIN_DIR"] = str(safe_bin_dir)
+    env["OPENCLAW_EXEC_STRICT_MODE"] = "true"
     env["PATH"] = f"{fake_bin_dir}:{env['PATH']}"
 
     return subprocess.run(
@@ -209,6 +213,78 @@ def test_bash_safe_rejects_shell_options():
 
         assert result.returncode == 126
         assert "does not accept shell options" in result.stderr
+
+
+def test_bash_safe_relaxed_mode_allows_shell_options_and_state_access():
+    with TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        workspace = root / "workspace"
+        state_dir = root / "state"
+        safe_bin_dir = root / "safe-bin"
+        marker_path = state_dir / "relaxed-ok.txt"
+
+        workspace.mkdir()
+        state_dir.mkdir()
+        safe_bin_dir.mkdir()
+
+        result = _run_bash_safe(
+            workspace,
+            state_dir,
+            safe_bin_dir,
+            "-lc",
+            f"echo ok > {marker_path}",
+            extra_env={"OPENCLAW_EXEC_STRICT_MODE": "false"},
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        assert marker_path.read_text().strip() == "ok"
+
+
+def test_bash_safe_allows_allowlisted_state_kdocs_setup_script():
+    with TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        workspace = root / "workspace"
+        state_dir = root / "state"
+        safe_bin_dir = root / "safe-bin"
+        script_path = state_dir / "skills" / "kdocs" / "setup.sh"
+
+        workspace.mkdir()
+        state_dir.mkdir()
+        safe_bin_dir.mkdir()
+        script_path.parent.mkdir(parents=True, exist_ok=True)
+        script_path.write_text(
+            "#!/usr/bin/env bash\n"
+            "printf 'home=%s\\n' \"$HOME\"\n"
+            "if command -v grep >/dev/null 2>&1; then printf 'grep=ok\\n'; fi\n"
+        )
+        script_path.chmod(0o755)
+
+        result = _run_bash_safe(workspace, state_dir, safe_bin_dir, str(script_path))
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        assert f"home={state_dir.resolve()}" in result.stdout
+        assert "grep=ok" in result.stdout
+
+
+def test_bash_safe_rejects_non_allowlisted_state_scripts():
+    with TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        workspace = root / "workspace"
+        state_dir = root / "state"
+        safe_bin_dir = root / "safe-bin"
+        script_path = state_dir / "skills" / "other-skill" / "setup.sh"
+
+        workspace.mkdir()
+        state_dir.mkdir()
+        safe_bin_dir.mkdir()
+        script_path.parent.mkdir(parents=True, exist_ok=True)
+        script_path.write_text("#!/usr/bin/env bash\nexit 0\n")
+        script_path.chmod(0o755)
+
+        result = _run_bash_safe(workspace, state_dir, safe_bin_dir, str(script_path))
+
+        assert result.returncode == 126
+        assert "state directory script is blocked unless allowlisted" in result.stderr
 
 
 def test_web_safe_rejects_private_targets():

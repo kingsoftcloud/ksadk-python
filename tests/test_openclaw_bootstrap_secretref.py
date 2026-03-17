@@ -28,6 +28,7 @@ def _build_base_env(state_dir: str, config_path: str) -> dict:
     (workspace_template_dir / "SOUL.md").write_text("security soul\n")
     (workspace_template_dir / "AGENTS.md").write_text("security agents\n")
     (workspace_template_dir / "MEMORY.md").write_text("persistent memory\n")
+    (workspace_template_dir / "USER.MD").write_text("user preferences\n")
     (workspace_template_dir / "TOOLS.md").write_text("tool notes\n")
     env.pop("OPENCLAW_MODEL_API_KEY", None)
     env.pop("OPENAI_API_KEY", None)
@@ -233,7 +234,7 @@ def test_bootstrap_enforces_exec_approval_defaults():
         cfg = json.loads(config_path.read_text())
         assert cfg["tools"]["fs"]["workspaceOnly"] is False
         assert cfg["tools"]["exec"]["host"] == "gateway"
-        assert cfg["tools"]["exec"]["security"] == "allowlist"
+        assert cfg["tools"]["exec"]["security"] == "full"
         assert cfg["tools"]["exec"]["ask"] == "off"
         assert cfg["tools"]["exec"]["pathPrepend"][0] == str(Path(tmpdir) / "safe-bin")
         assert cfg["tools"]["elevated"]["enabled"] is False
@@ -241,27 +242,16 @@ def test_bootstrap_enforces_exec_approval_defaults():
 
         approvals = json.loads(approvals_path.read_text())
         assert approvals["defaults"] == {
-            "security": "allowlist",
+            "security": "full",
             "ask": "off",
-            "askFallback": "allowlist",
+            "askFallback": "full",
             "autoAllowSkills": False,
         }
-        allowlist = approvals["agents"]["main"]["allowlist"]
-        allowlist_basenames = {Path(entry["pattern"]).name for entry in allowlist}
-        assert any(entry["pattern"] == str(Path(tmpdir) / "safe-bin" / "ls") for entry in allowlist)
-        assert any(entry["pattern"] == str(Path(tmpdir) / "safe-bin" / "git") for entry in allowlist)
-        assert any(entry["pattern"] == str(Path(tmpdir) / "safe-bin" / "mcporter") for entry in allowlist)
-        assert any(entry["pattern"] == str(Path(tmpdir) / "safe-bin" / "sh-safe") for entry in allowlist)
-        assert any(entry["pattern"] == str(Path(tmpdir) / "safe-bin" / "bash-safe") for entry in allowlist)
-        assert "curl" in allowlist_basenames
-        assert "yt-dlp" in allowlist_basenames
-        assert "openclaw" in allowlist_basenames
-        assert "agent-reach" in allowlist_basenames
-        assert "gh" in allowlist_basenames
-        assert "xreach" in allowlist_basenames
+        assert "agents" not in approvals or "main" not in approvals.get("agents", {})
         assert (workspace_path / "SOUL.md").exists()
         assert (workspace_path / "AGENTS.md").exists()
         assert (workspace_path / "MEMORY.md").exists()
+        assert (workspace_path / "USER.MD").exists()
         assert (workspace_path / "TOOLS.md").exists()
 
 
@@ -286,6 +276,32 @@ def test_bootstrap_preserves_existing_memory_file():
 
         assert result.returncode == 0, result.stderr or result.stdout
         assert memory_path.read_text() == "user customized memory\n"
+
+
+def test_bootstrap_strict_mode_restores_allowlist_defaults():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        approvals_path = Path(tmpdir) / "exec-approvals.json"
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_EXEC_STRICT_MODE"] = "true"
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert cfg["tools"]["exec"]["security"] == "allowlist"
+        approvals = json.loads(approvals_path.read_text())
+        assert approvals["defaults"]["security"] == "allowlist"
+        allowlist = approvals["agents"]["main"]["allowlist"]
+        assert any(entry["pattern"] == str(Path(tmpdir) / "safe-bin" / "bash-safe") for entry in allowlist)
 
 
 def test_bootstrap_merges_custom_exec_allowlist_patterns():
