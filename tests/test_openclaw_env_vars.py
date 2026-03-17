@@ -59,14 +59,19 @@ def test_build_openclaw_env_vars_defaults_to_auto_approval_first(monkeypatch):
     monkeypatch.delenv("OPENCLAW_FS_WORKSPACE_ONLY", raising=False)
     monkeypatch.delenv("OPENCLAW_MODEL_API_KEY_SECRET_SOURCE", raising=False)
     monkeypatch.delenv("OPENCLAW_MODEL_API_KEY_SECRET_FILE_PATH", raising=False)
+    monkeypatch.delenv("OPENCLAW_EXEC_STRICT_MODE", raising=False)
+    monkeypatch.delenv("OPENCLAW_EXEC_SAFE_MODE", raising=False)
 
     env = cmd_openclaw._build_openclaw_env_vars()
 
     assert env["OPENCLAW_EXEC_HOST"] == "gateway"
+    assert env["OPENCLAW_EXEC_STRICT_MODE"] == "false"
+    assert env["OPENCLAW_EXEC_UNSAFE_MODE"] == "true"
+    assert env["OPENCLAW_EXEC_SECURITY"] == "full"
     assert env["OPENCLAW_EXEC_ASK"] == "off"
-    assert env["OPENCLAW_EXEC_ASK_FALLBACK"] == "allowlist"
+    assert env["OPENCLAW_EXEC_ASK_FALLBACK"] == "full"
     assert env["OPENCLAW_EXEC_AUTO_ALLOW_SKILLS"] == "false"
-    assert env["OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED"] == "true"
+    assert env["OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED"] == "false"
     assert env["OPENCLAW_FS_WORKSPACE_ONLY"] == "false"
     assert env["OPENCLAW_MODEL_API_KEY_SECRET_SOURCE"] == "file"
     assert "OPENCLAW_EXEC_ALLOWLIST" not in env
@@ -100,6 +105,23 @@ def test_build_openclaw_env_vars_exposes_exec_confirmation_controls(monkeypatch)
     assert env["OPENCLAW_FS_WORKSPACE_ONLY"] == "false"
     assert env["OPENCLAW_MODEL_API_KEY_SECRET_SOURCE"] == "env"
     assert env["OPENCLAW_MODEL_API_KEY_SECRET_FILE_PATH"] == "/tmp/runtime-secrets.json"
+
+
+def test_build_openclaw_env_vars_enables_strict_mode_when_requested(monkeypatch):
+    monkeypatch.setattr(cmd_openclaw, "_GLOBAL_ENV_CACHE", {})
+    monkeypatch.setenv("OPENCLAW_EXEC_STRICT_MODE", "true")
+    monkeypatch.delenv("OPENCLAW_EXEC_SECURITY", raising=False)
+    monkeypatch.delenv("OPENCLAW_EXEC_ASK_FALLBACK", raising=False)
+    monkeypatch.delenv("OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED", raising=False)
+
+    env = cmd_openclaw._build_openclaw_env_vars()
+
+    assert env["OPENCLAW_EXEC_STRICT_MODE"] == "true"
+    assert env["OPENCLAW_EXEC_UNSAFE_MODE"] == "false"
+    assert env["OPENCLAW_EXEC_SECURITY"] == "allowlist"
+    assert env["OPENCLAW_EXEC_ASK"] == "off"
+    assert env["OPENCLAW_EXEC_ASK_FALLBACK"] == "allowlist"
+    assert env["OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED"] == "true"
 
 
 def test_build_openclaw_env_vars_omits_redundant_model_defaults(monkeypatch):

@@ -107,6 +107,7 @@
 1. 调用 `scrape_url` 传入网页URL获取 `jobID`
 2. 立即调用 `scrape_progress` 传入 `jobID` 查询进度（每隔2秒轮询一次）
 3. 当 `status=2` 时任务完成，服务端已自动创建智能文档，直接从响应获取 `file_id` 和 `file_url`，无需再调用其他创建文档工具
+   
 
 #### 调用示例
 ```json

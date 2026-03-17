@@ -145,7 +145,7 @@ sync_workspace_security_templates() {
   [[ -d "${src_dir}" ]] || return 0
 
   mkdir -p "${dst_dir}"
-  for file_name in AGENTS.md MEMORY.md SOUL.md TOOLS.md; do
+  for file_name in AGENTS.md MEMORY.md USER.MD SOUL.md TOOLS.md; do
     if [[ -f "${src_dir}/${file_name}" && ! -f "${dst_dir}/${file_name}" ]]; then
       cp "${src_dir}/${file_name}" "${dst_dir}/${file_name}"
     fi
@@ -442,6 +442,21 @@ configure_browser_executable || true
 
 export OPENCLAW_INTERNAL_TRUSTED_PROXY_USER="${OPENCLAW_INTERNAL_TRUSTED_PROXY_USER:-openclaw-backend}"
 export OPENCLAW_INTERNAL_TRUSTED_PROXY_USER_HEADER="${OPENCLAW_INTERNAL_TRUSTED_PROXY_USER_HEADER:-${OPENCLAW_TRUSTED_PROXY_USER_HEADER:-x-forwarded-user}}"
+
+# 默认宽松执行模式；仅在 OPENCLAW_EXEC_STRICT_MODE=true 时收紧到安全模式。
+EXEC_STRICT_MODE_RAW="$(printf '%s' "${OPENCLAW_EXEC_STRICT_MODE:-${OPENCLAW_EXEC_SAFE_MODE:-}}" | tr '[:upper:]' '[:lower:]')"
+if is_truthy "${EXEC_STRICT_MODE_RAW}"; then
+  export OPENCLAW_EXEC_STRICT_MODE="true"
+  export OPENCLAW_EXEC_UNSAFE_MODE="${OPENCLAW_EXEC_UNSAFE_MODE:-false}"
+else
+  export OPENCLAW_EXEC_STRICT_MODE="false"
+  export OPENCLAW_EXEC_UNSAFE_MODE="${OPENCLAW_EXEC_UNSAFE_MODE:-true}"
+  export OPENCLAW_EXEC_SECURITY="${OPENCLAW_EXEC_SECURITY:-full}"
+  export OPENCLAW_EXEC_ASK="${OPENCLAW_EXEC_ASK:-off}"
+  export OPENCLAW_EXEC_ASK_FALLBACK="${OPENCLAW_EXEC_ASK_FALLBACK:-full}"
+  export OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED="${OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED:-false}"
+  export OPENCLAW_FS_WORKSPACE_ONLY="${OPENCLAW_FS_WORKSPACE_ONLY:-false}"
+fi
 
 if is_truthy "${OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED:-1}"; then
   if [[ -z "${OPENCLAW_EXEC_DEFAULT_ALLOWLIST:-}" ]]; then

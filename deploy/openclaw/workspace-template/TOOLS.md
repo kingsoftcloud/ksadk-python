@@ -1,9 +1,10 @@
 ## 工具说明
 
 ### 安全执行
-- 需要执行 workspace 内脚本时，优先使用 `sh-safe` 或 `bash-safe`。
-- `sh-safe` / `bash-safe` 只允许运行 workspace 内脚本，会拒绝 `-c` 这类高风险 shell 参数，并尽量清理继承环境变量。
-- 在不需要原始网络能力时，公开网页检索与阅读优先使用 `web-safe`。
+- 默认是宽松执行模式（`OPENCLAW_EXEC_STRICT_MODE=false`）：可直接使用 `bash` / `sh` / `web-safe`，可访问 `/home/node/.openclaw`，并继承更多运行时环境变量。
+- 如需收紧权限，设置 `OPENCLAW_EXEC_STRICT_MODE=true`：会回到安全限制模式（优先 `sh-safe` / `bash-safe`，并限制路径与命令范围）。
+- 宽松模式下允许读取更多环境变量用于工具配置，但禁止把 token / key / cookie 明文打印到输出中。
+- 在不需要原始网络能力时，公开网页检索与阅读仍可优先使用 `web-safe`。
 
 ### 自我改进
 - `.learnings/LEARNINGS.md` 用来记录纠正、最佳实践和认知缺口。

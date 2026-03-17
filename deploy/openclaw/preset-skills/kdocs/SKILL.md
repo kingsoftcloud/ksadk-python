@@ -34,7 +34,7 @@ metadata: {"openclaw":{"primaryEnv":"KDOCS_TOKEN","category":"kdocs", "tokenUrl"
 
 ## 工具总览
 
-### 写文档（7 个工具）
+### 写文档（4 个工具）
 
 | 工具名 | 功能 | 参考文档 |
 |--------|------|----------|
@@ -50,7 +50,7 @@ metadata: {"openclaw":{"primaryEnv":"KDOCS_TOKEN","category":"kdocs", "tokenUrl"
 | `list_files` | 获取文件列表及详情 | `references/api_references.md` |
 | `download_file` | 下载文件 | `references/api_references.md` |
 
-### 管文档（5 个工具）
+### 管文档（4 个工具）
 
 | 工具名 | 功能 | 参考文档 |
 |--------|------|----------|
@@ -84,9 +84,6 @@ metadata: {"openclaw":{"primaryEnv":"KDOCS_TOKEN","category":"kdocs", "tokenUrl"
 ## ⚙️ 快速配置
 
 在 OpenClaw 中使用时，需先完成插件安装与 MCP 配置。
-
-> 在 OpenClaw 预置镜像中，如果运行时已经提供 `KDOCS_TOKEN`，bootstrap 会自动执行 `setup.sh` 完成注册。
-> 下述步骤主要用于本地手动排障或重新注册。
 
 **安装步骤：**
 
@@ -332,7 +329,7 @@ AI 遍历所有内容，识别情绪化表达
 | 找文档 + 读内容 | `search_files` → `read_file_content` |
 | 找文档 + 读内容 + 写新文档 | `search_files` → `read_file_content` → `create_file` |
 | 找文档 + 读内容 + 更新已有文档 | `search_files` → `read_file_content` → `upload_file`（传 file_id） |
-| 浏览目录 | `list_files` 或 `     ` |
+| 浏览目录 | `list_files` |
 | 整理归类文件 | `list_files` → `read_file_content` → `create_file`(folder) → `move_file` |
 | 网页保存为文档 | `scrape_url` → `scrape_progress` |
 | 分享文档 | `share_file` → `set_share_permission` |

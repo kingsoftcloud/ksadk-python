@@ -153,6 +153,11 @@ def _normalize_ui_locale(raw: Optional[str]) -> str:
     return "zh-CN"
 
 
+def _is_truthy(raw: Optional[str]) -> bool:
+    text = str(raw or "").strip().lower()
+    return text in {"1", "true", "yes", "on"}
+
+
 def _build_openclaw_env_vars(
     *,
     model_base_url: Optional[str] = None,
@@ -225,13 +230,18 @@ def _build_openclaw_env_vars(
     browser_headless = _resolve_env("OPENCLAW_BROWSER_HEADLESS") or "true"
     browser_executable = _resolve_env("OPENCLAW_BROWSER_EXECUTABLE_PATH", "OPENCLAW_BROWSER_EXECUTABLE")
     ui_locale = _normalize_ui_locale(_resolve_env("OPENCLAW_UI_LOCALE", "LANG", "LC_ALL"))
+    exec_strict_mode_raw = _resolve_env("OPENCLAW_EXEC_STRICT_MODE", "OPENCLAW_EXEC_SAFE_MODE") or "false"
+    exec_strict_mode = _is_truthy(exec_strict_mode_raw)
+
     exec_host = _resolve_env("OPENCLAW_EXEC_HOST") or "gateway"
-    exec_security = _resolve_env("OPENCLAW_EXEC_SECURITY") or "allowlist"
+    exec_security = _resolve_env("OPENCLAW_EXEC_SECURITY") or ("allowlist" if exec_strict_mode else "full")
     exec_ask = _resolve_env("OPENCLAW_EXEC_ASK") or "off"
-    exec_ask_fallback = _resolve_env("OPENCLAW_EXEC_ASK_FALLBACK") or "allowlist"
+    exec_ask_fallback = _resolve_env("OPENCLAW_EXEC_ASK_FALLBACK") or ("allowlist" if exec_strict_mode else "full")
     exec_auto_allow_skills = _resolve_env("OPENCLAW_EXEC_AUTO_ALLOW_SKILLS") or "false"
     elevated_enabled = _resolve_env("OPENCLAW_ELEVATED_ENABLED") or "false"
-    exec_default_allowlist_enabled = _resolve_env("OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED") or "true"
+    exec_default_allowlist_enabled = _resolve_env("OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED") or (
+        "true" if exec_strict_mode else "false"
+    )
     exec_allowlist = _resolve_env("OPENCLAW_EXEC_ALLOWLIST")
     fs_workspace_only = _resolve_env("OPENCLAW_FS_WORKSPACE_ONLY") or "false"
     model_api_key_secret_source = _resolve_env("OPENCLAW_MODEL_API_KEY_SECRET_SOURCE") or "file"
@@ -253,6 +263,8 @@ def _build_openclaw_env_vars(
         env["OPENCLAW_BROWSER_EXECUTABLE_PATH"] = browser_executable
     env["OPENCLAW_UI_LOCALE"] = ui_locale
     env["OPENCLAW_EXEC_HOST"] = exec_host
+    env["OPENCLAW_EXEC_STRICT_MODE"] = "true" if exec_strict_mode else "false"
+    env["OPENCLAW_EXEC_UNSAFE_MODE"] = "false" if exec_strict_mode else "true"
     env["OPENCLAW_EXEC_SECURITY"] = exec_security
     env["OPENCLAW_EXEC_ASK"] = exec_ask
     env["OPENCLAW_EXEC_ASK_FALLBACK"] = exec_ask_fallback

@@ -4,6 +4,26 @@ set -euo pipefail
 CMD_NAME="${OPENCLAW_SAFE_EXEC_COMMAND:-$(basename "$0")}"
 WORKSPACE_ROOT="${OPENCLAW_EXEC_SAFE_WORKSPACE_ROOT:-${HOME:-/root}/.openclaw/workspace}"
 STATE_DIR="${OPENCLAW_EXEC_SAFE_STATE_DIR:-${HOME:-/root}/.openclaw}"
+EXEC_STRICT_MODE_RAW="${OPENCLAW_EXEC_STRICT_MODE:-${OPENCLAW_EXEC_SAFE_MODE:-}}"
+EXEC_UNSAFE_MODE_RAW="${OPENCLAW_EXEC_UNSAFE_MODE:-${OPENCLAW_EXEC_RELAXED_MODE:-}}"
+
+is_truthy() {
+  local raw
+  raw="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+  case "${raw}" in
+    1|true|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+if is_truthy "${EXEC_STRICT_MODE_RAW}"; then
+  EXEC_UNSAFE_MODE=0
+elif is_truthy "${EXEC_UNSAFE_MODE_RAW}"; then
+  EXEC_UNSAFE_MODE=1
+else
+  # Default mode is relaxed unless OPENCLAW_EXEC_STRICT_MODE=true.
+  EXEC_UNSAFE_MODE=1
+fi
 
 resolve_python_bin() {
   local candidate
@@ -71,6 +91,9 @@ is_under_root() {
 }
 
 ensure_workspace_cwd() {
+  if [[ "${EXEC_UNSAFE_MODE}" == "1" ]]; then
+    return 0
+  fi
   if ! is_under_root "${CWD_CANON}" "${WORKSPACE_CANON}"; then
     deny "working directory must stay inside workspace (${WORKSPACE_CANON})"
   fi
@@ -103,6 +126,10 @@ token_looks_like_path() {
 }
 
 validate_workspace_path() {
+  if [[ "${EXEC_UNSAFE_MODE}" == "1" ]]; then
+    return 0
+  fi
+
   local token="$1"
   local candidate="${token}"
 
@@ -131,6 +158,66 @@ validate_workspace_path() {
   if ! is_under_root "${candidate}" "${WORKSPACE_CANON}"; then
     deny "path must remain inside workspace: ${token}"
   fi
+}
+
+is_allowlisted_state_shell_script() {
+  local candidate
+  candidate="$(canon_path "$1")"
+  case "${candidate}" in
+    "${STATE_CANON}/skills/kdocs/setup.sh"|\
+    "${STATE_CANON}/skills/kdocs/get-token.sh")
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+resolve_script_token_path() {
+  local token="$1"
+  local candidate="${token}"
+
+  if [[ "${candidate}" == "~"* ]]; then
+    candidate="${HOME}${candidate#"~"}"
+  elif [[ "${candidate}" != /* ]]; then
+    candidate="${CWD_CANON}/${candidate}"
+  fi
+
+  canon_path "${candidate}"
+}
+
+validate_shell_script_path() {
+  local token="$1"
+  local candidate
+  candidate="$(resolve_script_token_path "${token}")"
+
+  if [[ "${EXEC_UNSAFE_MODE}" == "1" ]]; then
+    printf '%s\n' "${candidate}"
+    return 0
+  fi
+
+  case "${candidate}" in
+    /proc/*|/dev/*|/sys/*|/etc/*)
+      deny "path is outside the safe workspace boundary: ${token}"
+      ;;
+  esac
+
+  if is_under_root "${candidate}" "${WORKSPACE_CANON}"; then
+    printf '%s\n' "${candidate}"
+    return 0
+  fi
+
+  if is_allowlisted_state_shell_script "${candidate}"; then
+    printf '%s\n' "${candidate}"
+    return 0
+  fi
+
+  if is_under_root "${candidate}" "${STATE_CANON}"; then
+    deny "state directory script is blocked unless allowlisted: ${token}"
+  fi
+
+  deny "path must remain inside workspace: ${token}"
 }
 
 resolve_via_path() {
@@ -299,34 +386,40 @@ case "${CMD_NAME}" in
     ;;
   sh-safe)
     ensure_workspace_cwd
+    if [[ "${EXEC_UNSAFE_MODE}" == "1" ]]; then
+      exec "${REAL_BIN}" "$@"
+    fi
     [[ "$#" -ge 1 ]] || deny "sh-safe requires a workspace script path"
     [[ "$1" != -* ]] || deny "sh-safe does not accept shell options"
 
-    script_path="$1"
-    validate_workspace_path "${script_path}"
-    if [[ "${script_path}" == "~"* ]]; then
-      script_path="${HOME}${script_path#"~"}"
-    elif [[ "${script_path}" != /* ]]; then
-      script_path="${CWD_CANON}/${script_path}"
+    script_path="$(validate_shell_script_path "$1")"
+    trusted_state_script=0
+    if is_allowlisted_state_shell_script "${script_path}"; then
+      trusted_state_script=1
     fi
-    script_path="$(canon_path "${script_path}")"
 
     [[ -f "${script_path}" ]] || deny "sh-safe script must be a readable file inside workspace"
     [[ -r "${script_path}" ]] || deny "sh-safe script must be a readable file inside workspace"
     [[ -n "${ENV_BIN}" ]] || deny "env utility is required for sh-safe"
 
     safe_tmp_dir="${WORKSPACE_CANON}/.tmp/openclaw"
+    safe_home="${WORKSPACE_CANON}"
+    safe_path="${SAFE_BIN_CANON}"
+    if [[ "${trusted_state_script}" == "1" ]]; then
+      safe_home="${STATE_CANON}"
+      safe_path="${SAFE_BIN_CANON}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    fi
     mkdir -p "${safe_tmp_dir}"
     shift
     umask 077
 
     # Clear inherited secrets and only expose the wrapper directory back to the script.
     exec "${ENV_BIN}" -i \
-      HOME="${WORKSPACE_CANON}" \
+      HOME="${safe_home}" \
       LOGNAME="openclaw" \
       USER="openclaw" \
       PWD="${CWD_CANON}" \
-      PATH="${SAFE_BIN_CANON}" \
+      PATH="${safe_path}" \
       SHELL="${REAL_BIN}" \
       TMPDIR="${safe_tmp_dir}" \
       LANG="C.UTF-8" \
@@ -338,33 +431,39 @@ case "${CMD_NAME}" in
     ;;
   bash-safe)
     ensure_workspace_cwd
+    if [[ "${EXEC_UNSAFE_MODE}" == "1" ]]; then
+      exec "${REAL_BIN}" "$@"
+    fi
     [[ "$#" -ge 1 ]] || deny "bash-safe requires a workspace script path"
     [[ "$1" != -* ]] || deny "bash-safe does not accept shell options"
 
-    script_path="$1"
-    validate_workspace_path "${script_path}"
-    if [[ "${script_path}" == "~"* ]]; then
-      script_path="${HOME}${script_path#"~"}"
-    elif [[ "${script_path}" != /* ]]; then
-      script_path="${CWD_CANON}/${script_path}"
+    script_path="$(validate_shell_script_path "$1")"
+    trusted_state_script=0
+    if is_allowlisted_state_shell_script "${script_path}"; then
+      trusted_state_script=1
     fi
-    script_path="$(canon_path "${script_path}")"
 
     [[ -f "${script_path}" ]] || deny "bash-safe script must be a readable file inside workspace"
     [[ -r "${script_path}" ]] || deny "bash-safe script must be a readable file inside workspace"
     [[ -n "${ENV_BIN}" ]] || deny "env utility is required for bash-safe"
 
     safe_tmp_dir="${WORKSPACE_CANON}/.tmp/openclaw"
+    safe_home="${WORKSPACE_CANON}"
+    safe_path="${SAFE_BIN_CANON}"
+    if [[ "${trusted_state_script}" == "1" ]]; then
+      safe_home="${STATE_CANON}"
+      safe_path="${SAFE_BIN_CANON}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    fi
     mkdir -p "${safe_tmp_dir}"
     shift
     umask 077
 
     exec "${ENV_BIN}" -i \
-      HOME="${WORKSPACE_CANON}" \
+      HOME="${safe_home}" \
       LOGNAME="openclaw" \
       USER="openclaw" \
       PWD="${CWD_CANON}" \
-      PATH="${SAFE_BIN_CANON}" \
+      PATH="${safe_path}" \
       SHELL="${REAL_BIN}" \
       TMPDIR="${safe_tmp_dir}" \
       LANG="C.UTF-8" \
@@ -376,6 +475,9 @@ case "${CMD_NAME}" in
     ;;
   mcporter)
     ensure_workspace_cwd
+    if [[ "${EXEC_UNSAFE_MODE}" == "1" ]]; then
+      exec "${REAL_BIN}" "$@"
+    fi
     subcommand=""
     config_action=""
     target=""
@@ -489,9 +591,11 @@ case "${CMD_NAME}" in
       OPENCLAW_EXEC_SAFE_WORKSPACE_ROOT="${WORKSPACE_CANON}" \
       OPENCLAW_EXEC_SAFE_STATE_DIR="${STATE_CANON}" \
       OPENCLAW_SAFE_BIN_DIR="${SAFE_BIN_CANON}" \
+      OPENCLAW_WEB_SAFE_UNRESTRICTED="${EXEC_UNSAFE_MODE}" \
       "${REAL_BIN}" - "$@" <<'PY'
 import html
 import ipaddress
+import os
 import socket
 import sys
 import urllib.error
@@ -518,6 +622,7 @@ BLOCKED_HOSTS = {
     "100.100.100.200",
     "169.254.169.254",
 }
+WEB_SAFE_UNRESTRICTED = str(os.getenv("OPENCLAW_WEB_SAFE_UNRESTRICTED", "")).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def usage(message):
@@ -551,6 +656,8 @@ def resolve_ip(host):
 
 
 def ensure_public_host(host):
+    if WEB_SAFE_UNRESTRICTED:
+      return
     host = (host or "").strip().lower().rstrip(".")
     if not host:
       deny("URL host is required")
