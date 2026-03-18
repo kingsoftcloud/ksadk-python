@@ -173,7 +173,7 @@ def _build_openclaw_env_vars(
     default_model_api = "openai-completions"
     default_model_base_url = "http://kspmas-internal.sdns.ksyun.com/v1"
 
-    # 模型配置：客户端只透传用户显式配置和必需的 API Key；
+    # 模型配置：客户端只透传用户显式配置和可选的 API Key；
     # 其余默认值交给镜像 bootstrap 兜底，避免创建请求把服务端默认行为短路掉。
     openclaw_explicit_model = default_model or _resolve_env("OPENCLAW_DEFAULT_MODEL")
     generic_model_preference = _resolve_env("OPENAI_MODEL_NAME", "MODEL_NAME", "LLM_MODEL")
@@ -578,7 +578,7 @@ def openclaw():
     help="OpenClaw 镜像地址 (默认: 内置公共镜像；也可用 OPENCLAW_IMAGE/OPENCLAW_DOCKER_IMAGE)",
 )
 @click.option("--model-base-url", default=None, help="模型 Base URL (默认复用 OPENAI_BASE_URL)")
-@click.option("--model-api-key", default=None, help="模型 API Key (默认复用 OPENAI_API_KEY)")
+@click.option("--model-api-key", default=None, help="模型 API Key (可选；默认复用 OPENAI_API_KEY)")
 @click.option("--default-model", default=None, help="默认模型名 (默认复用 OPENAI_MODEL_NAME)")
 @dry_run_option("仅显示请求，不实际部署")
 def deploy(
@@ -684,10 +684,6 @@ async def _deploy_openclaw(
     print_kv("名称", openclaw_name)
     print_kv("镜像", image_ref)
     print_kv("区域", region, value_style="#58a6ff")
-
-    if not env_vars.get("OPENCLAW_MODEL_API_KEY"):
-        print_warn("未检测到模型 API Key (OPENAI_API_KEY / OPENCLAW_MODEL_API_KEY)")
-        print_warn("OpenClaw 可启动，但无法正常调用模型")
 
     # 构建环境变量列表
     env_list = [
