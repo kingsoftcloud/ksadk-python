@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 
 import click
+from rich.measure import Measurement
+from rich.table import Table as RichTable
 
 from ksadk.api.client import DryRunExit
 from ksadk.cli.dry_run import dry_run_option, run_async_with_dry_run, effective_dry_run
@@ -127,6 +129,47 @@ def _resolve_model_base_url(cli_value: Optional[str]) -> Optional[str]:
         pass
 
     return None
+
+
+def _summarize_openclaw_account(agents: list[Dict[str, Any]]) -> str:
+    """汇总列表所属账号，优先使用响应字段，缺失时回退当前 CLI 上下文。"""
+    accounts = sorted(
+        {
+            str(item.get("account_id") or "").strip()
+            for item in agents
+            if str(item.get("account_id") or "").strip()
+        }
+    )
+    if accounts:
+        return ",".join(accounts)
+    return _resolve_env("KSYUN_ACCOUNT_ID", default="-") or "-"
+
+
+def _summarize_openclaw_region(agents: list[Dict[str, Any]], fallback_region: Optional[str]) -> str:
+    """汇总列表中的 region，缺失时回退命令参数。"""
+    regions = sorted(
+        {
+            str(item.get("region") or "").strip()
+            for item in agents
+            if str(item.get("region") or "").strip()
+        }
+    )
+    if regions:
+        return ",".join(regions)
+    return str(fallback_region or "-")
+
+
+def _print_openclaw_list_summary(table: RichTable, summary_text: str) -> None:
+    """将摘要贴在表格下方；宽度不足时退化成普通单行。"""
+    table_width = Measurement.get(console, console.options, table).maximum
+    summary_width = Measurement.get(console, console.options, summary_text).maximum
+    if table_width >= summary_width:
+        summary_grid = RichTable.grid(expand=False)
+        summary_grid.add_column(justify="right", width=table_width)
+        summary_grid.add_row(f"[muted]{summary_text}[/]")
+        console.print(summary_grid)
+        return
+    console.print(f"[muted]{summary_text}[/]")
 
 
 def _normalize_ui_locale(raw: Optional[str]) -> str:
@@ -978,7 +1021,9 @@ def list_openclaws(region: str, dry_run: bool):
                     return
 
                 total = int(resp.get("total") or len(agents))
-                table = new_table(f"已部署 OpenClaw [muted](总计: {total})[/]")
+                account_summary = _summarize_openclaw_account(agents)
+                region_summary = _summarize_openclaw_region(agents, region)
+                table = new_table("已部署 OpenClaw")
                 table.add_column("ID", style="#58a6ff", no_wrap=True)
                 table.add_column("NAME", style="white")
                 table.add_column("STATUS", no_wrap=True, justify="center")
@@ -994,6 +1039,10 @@ def list_openclaws(region: str, dry_run: bool):
                         a.get("region", "-"),
                     )
                 console.print(table)
+                _print_openclaw_list_summary(
+                    table,
+                    f"账号: {account_summary}  region: {region_summary}  总计: {total}",
+                )
 
         except DryRunExit:
             raise

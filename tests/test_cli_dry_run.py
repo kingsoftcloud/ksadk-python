@@ -50,6 +50,34 @@ class _FakeDryRunClient:
         return None
 
 
+class _FakeOpenClawListClient:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def list_agents(self, **_kwargs):
+        return {
+            "agents": [
+                {
+                    "agent_id": "ar-demo-1",
+                    "name": "demo-openclaw",
+                    "status": "running",
+                    "endpoint": "https://openclaw.example.com",
+                    "region": "cn-beijing-6",
+                }
+            ],
+            "total": 145,
+        }
+
+    async def close(self):
+        return None
+
+
 def test_run_async_with_dry_run_handles_exit(capsys):
     async def _boom():
         raise DryRunExit("done")
@@ -90,6 +118,24 @@ def test_openclaw_list_supports_dry_run(monkeypatch):
     assert result.exit_code == 0, result.output
     assert "Dry Run Completed" in result.output
     assert _FakeDryRunClient.last_init_kwargs.get("dry_run") is True
+
+
+def test_openclaw_list_shows_account_region_summary(monkeypatch):
+    runner = CliRunner()
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawListClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw._GLOBAL_ENV_CACHE", {})
+
+    result = runner.invoke(
+        openclaw,
+        ["list", "--region", "cn-beijing-6"],
+        env={"KSYUN_ACCOUNT_ID": "2000003485"},
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "已部署 OpenClaw" in result.output
+    assert "账号: 2000003485" in result.output
+    assert "region: cn-beijing-6" in result.output
+    assert "总计: 145" in result.output
 
 
 def test_openclaw_deploy_supports_security_profile_flags(monkeypatch):
