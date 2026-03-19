@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any, Dict
 
 from click.testing import CliRunner
@@ -89,6 +90,25 @@ def test_openclaw_list_supports_dry_run(monkeypatch):
     assert result.exit_code == 0, result.output
     assert "Dry Run Completed" in result.output
     assert _FakeDryRunClient.last_init_kwargs.get("dry_run") is True
+
+
+def test_openclaw_deploy_supports_security_profile_flags(monkeypatch):
+    runner = CliRunner()
+    captured: Dict[str, Any] = {}
+
+    async def _fake_deploy_openclaw(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw._deploy_openclaw", _fake_deploy_openclaw)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_openclaw.run_async_with_dry_run",
+        lambda coro, dry_run: asyncio.run(coro),
+    )
+
+    result = runner.invoke(openclaw, ["deploy", "--strictest"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["security_profile"] == "strictest"
 
 
 def test_version_list_supports_dry_run(monkeypatch):
