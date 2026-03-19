@@ -238,16 +238,104 @@ KSYUN_REGION=cn-beijing-6 agentengine version rollback --agent ar-xxxx --to v1.0
 
 ## MCP Server 管理
 
+`agentengine mcp` 用于部署 FastMCP 项目并输出标准 MCP endpoint（`<endpoint>/mcp`）。
+
+### 1) 支持命令
+
+- `agentengine mcp deploy [MCP_DIR]`：部署或热更新 MCP。
+- `agentengine mcp list`：列出 MCP 列表。
+- `agentengine mcp status <mcp_id>`：查看 MCP 详情。
+- `agentengine mcp delete <mcp_id>`：删除 MCP（可配 `--yes` 跳过确认）。
+
+### 2) 项目检测规则
+
+CLI 自动识别 FastMCP 项目，命中任一条件即可：
+
+- 配置文件声明：`agentengine.yaml` / `ksadk.yaml` / `mcp.yaml` 中 `type: mcp` 或 `framework: mcp`。
+- 代码特征：存在 `from fastmcp import FastMCP`（或等价导入）。
+
+并会尽量提取：
+
+- 入口文件（entry point）
+- MCP 实例变量名（默认 `mcp`）
+- `@mcp.tool` 对应的工具列表
+
+### 3) 部署参数
+
 ```bash
-# 1) 默认部署
+agentengine mcp deploy [MCP_DIR] \
+  [--name NAME] \
+  [--region REGION] \
+  [--artifact-type Code|Container] \
+  [--ks3-bucket BUCKET] \
+  [--enable-auth] \
+  [--no-cache] \
+  [--dry-run]
+```
+
+- `MCP_DIR`：项目目录，默认当前目录。
+- `--name`：实例名，默认目录名（会将 `-`、`.` 归一化为 `_`）。
+- `--region`：部署区域，默认 `cn-beijing-6`（可由 `KSYUN_REGION` 覆盖）。
+- `--artifact-type`：`Code`（默认）或 `Container`。
+- `--ks3-bucket`：Code 模式自定义 bucket。
+- `--enable-auth`：启用 API Key 保护（默认关闭）。
+- `--no-cache`：强制重建。
+- `--dry-run`：仅打印请求，不实际执行。
+
+### 4) 当前实现说明（与代码一致）
+
+#### Code 模式（推荐，当前最稳定）
+
+- 流程：打包代码 -> 上传 KS3 -> 调用 `CreateMCP/UpdateMCP`。
+- MCP 入口会自动生成 `entrypoint.py`，以 HTTP transport 启动 FastMCP。
+- 运行时支持通过 `<endpoint>/mcp` 接入外部客户端。
+
+#### Container 模式（可用但有兼容限制）
+
+- CLI 会执行本地 Docker build + push，并将镜像地址作为 `ArtifactPath` 提交。
+- 当前 CLI 到服务端的 MCP 接口仍以兼容旧参数为主，`ContainerConfig / image_credential` 不会完整透传。
+- 因此私有镜像鉴权等高级能力在 `mcp` CLI 链路中未完全打通，生产建议优先使用 Code 模式。
+
+### 5) 典型流程
+
+```bash
+# 1) 部署
 agentengine mcp deploy .
-# 2) 常用查询
+
+# 2) 查询
 agentengine mcp list
-# 3) 显式指定区域
-KSYUN_REGION=cn-beijing-6 agentengine mcp status <mcp_id>
-# 删除
+agentengine mcp status <mcp_id>
+
+# 3) 删除
 agentengine mcp delete <mcp_id> --yes
 ```
+
+### 6) 本地状态与热更新
+
+部署目录会保存 `.agentengine.state`（`type: mcp`），包含 `mcp_id`、`endpoint`、`mcp_endpoint` 等信息。
+
+- 存在 `mcp_id`：`mcp deploy` 走热更新（`update_mcp`）。
+- 不存在 `mcp_id`：走新建（`create_mcp`）。
+- 删除成功后会尝试清理当前目录匹配的状态文件。
+
+### 7) 环境与凭证
+
+- 控制面调用所需：`KSYUN_ACCESS_KEY`、`KSYUN_SECRET_KEY`（建议同时配置 `KSYUN_ACCOUNT_ID`）。
+- `status` / `delete` 当前实现会检查 `AGENTENGINE_SERVER_URL`，未配置会直接报错。
+
+### 8) 接入示例
+
+部署成功后可使用：
+
+- Cursor / Claude Code：`{"url": "<endpoint>/mcp"}`
+- LangChain/LangGraph：`MCPClientToolkit(url="<endpoint>/mcp")`
+- Google ADK：`MCPToolset.from_server(connection_params={"url": "<endpoint>/mcp"})`
+
+### 9) 常见问题
+
+- `mcp deploy` 提示未检测到 FastMCP 项目：检查导入语句或配置文件声明。
+- `status/delete` 提示未配置 `AGENTENGINE_SERVER_URL`：先设置服务端地址再执行。
+- `Container` 失败：确认 Docker 可用；如涉及私有镜像，建议改用 Code 模式或直接使用服务端原生 MCP API。
 
 ## 关键文件
 
