@@ -21,7 +21,7 @@ def _build_base_env(state_dir: str, config_path: str) -> dict:
         wrapper_path = safe_bin_dir / cmd
         wrapper_path.write_text("#!/bin/sh\nexit 0\n")
         wrapper_path.chmod(0o755)
-    for cmd in ["curl", "yt-dlp", "openclaw", "agent-reach", "gh", "xreach"]:
+    for cmd in ["curl", "yt-dlp", "openclaw", "gh", "xreach"]:
         raw_bin_path = raw_bin_dir / cmd
         raw_bin_path.write_text("#!/bin/sh\nexit 0\n")
         raw_bin_path.chmod(0o755)
@@ -688,7 +688,6 @@ def test_bootstrap_strict_mode_restores_allowlist_defaults():
         assert str(Path(tmpdir) / "safe-bin" / "bash-safe") in patterns
         assert "curl" in command_names
         assert "openclaw" in command_names
-        assert "agent-reach" in command_names
         assert "yt-dlp" not in command_names
         assert "gh" not in command_names
         assert "xreach" not in command_names
@@ -754,7 +753,7 @@ def test_bootstrap_scrubs_model_api_key_from_gateway_process_env():
         assert "OPENCLAW_INTERNAL_TRUSTED_PROXY_USER_HEADER=x-forwarded-user" in captured_env
 
 
-def test_bootstrap_registers_exa_with_home_scope():
+def test_bootstrap_does_not_auto_register_exa_defaults():
     with TemporaryDirectory() as tmpdir:
         config_path = Path(tmpdir) / "openclaw.json"
         raw_bin_dir = Path(tmpdir) / "bin"
@@ -785,8 +784,7 @@ def test_bootstrap_registers_exa_with_home_scope():
         )
 
         assert result.returncode == 0, result.stderr or result.stdout
-        captured = capture_path.read_text()
-        assert "config add exa https://mcp.exa.ai/mcp --scope home" in captured
+        assert not capture_path.exists()
 
 
 def test_bootstrap_runs_bundled_kdocs_setup_when_token_present():

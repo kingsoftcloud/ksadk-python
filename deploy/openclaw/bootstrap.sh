@@ -14,6 +14,9 @@ PRESET_SKILLS_DIR="${OPENCLAW_PRESET_SKILLS_DIR:-/opt/openclaw/preset-skills}"
 WORKSPACE_TEMPLATE_DIR="${OPENCLAW_WORKSPACE_TEMPLATE_DIR:-/opt/openclaw/workspace-template}"
 RUNTIME_DIST_DIR="${OPENCLAW_DIST_DIR:-/app/dist}"
 BOOTSTRAP_CACHE_DIR="${OPENCLAW_BOOTSTRAP_CACHE_DIR:-${STATE_DIR}/.bootstrap-cache}"
+PRESET_SKILLS_CONTENT_SIG_FILE="${OPENCLAW_PRESET_SKILLS_CONTENT_SIG_FILE:-${PRESET_SKILLS_DIR}/.content.sig}"
+DIST_PATCH_MARKER_VERSION="${OPENCLAW_DIST_PATCH_MARKER_VERSION:-2026.3.19.2}"
+DIST_PATCH_MARKER="${OPENCLAW_DIST_PATCH_MARKER:-${RUNTIME_DIST_DIR}/.agentengine-dist-patched-${DIST_PATCH_MARKER_VERSION}}"
 
 is_truthy() {
   local raw
@@ -22,6 +25,14 @@ is_truthy() {
     1|true|yes|on) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+bootstrap_now_seconds() {
+  date +%s
+}
+
+bootstrap_log() {
+  printf '[bootstrap] %s\n' "$*" >&2
 }
 
 configure_browser_executable() {
@@ -83,10 +94,12 @@ sync_preset_skills() {
   local src_dir="${PRESET_SKILLS_DIR}"
   local dst_dir="${STATE_DIR}/skills"
   local sig_file="${BOOTSTRAP_CACHE_DIR}/preset-skills.sig"
+  local content_sig_file="${PRESET_SKILLS_CONTENT_SIG_FILE}"
   local item
   local skill_name
   local allowlist_raw
   local signature=""
+  local content_signature=""
   local previous_signature=""
   allowlist_raw="$(resolve_preset_skills_allowlist)"
   local existing
@@ -94,12 +107,20 @@ sync_preset_skills() {
   [[ -d "${src_dir}" ]] || return 0
 
   mkdir -p "${BOOTSTRAP_CACHE_DIR}" "${dst_dir}"
+  if [[ -f "${content_sig_file}" ]]; then
+    content_signature="$(cat "${content_sig_file}" 2>/dev/null || true)"
+  fi
+  if [[ -z "${content_signature}" ]]; then
+    content_signature="$(
+      find "${src_dir}" -type f ! -name '.content.sig' | LC_ALL=C sort | while IFS= read -r file_path; do
+        cksum "${file_path}"
+      done | cksum | awk '{print $1 ":" $2}'
+    )"
+  fi
   signature="$(
     {
       printf '%s\n' "${allowlist_raw}"
-      find "${src_dir}" -type f | LC_ALL=C sort | while IFS= read -r file_path; do
-        cksum "${file_path}"
-      done
+      printf '%s\n' "${content_signature}"
     } | cksum | awk '{print $1 ":" $2}'
   )"
   if [[ -f "${sig_file}" ]]; then
@@ -162,23 +183,6 @@ register_kdocs_skill() {
   fi
 }
 
-register_agent_reach_defaults() {
-  local mcporter_bin
-  local agent_reach_bin
-  mcporter_bin="$(command -v mcporter 2>/dev/null || true)"
-  agent_reach_bin="$(command -v agent-reach 2>/dev/null || true)"
-
-  [[ -n "${mcporter_bin}" && -n "${agent_reach_bin}" ]] || return 0
-
-  if ! "${mcporter_bin}" config get exa --json >/dev/null 2>&1; then
-    if "${mcporter_bin}" config add exa https://mcp.exa.ai/mcp --scope home >/dev/null 2>&1; then
-      echo "INFO: registered built-in Exa MCP for agent-reach"
-    else
-      echo "WARN: failed to register built-in Exa MCP for agent-reach; continuing startup." >&2
-    fi
-  fi
-}
-
 sync_workspace_security_templates() {
   local src_dir="${WORKSPACE_TEMPLATE_DIR}"
   local dst_dir="${WORKSPACE_DIR}"
@@ -233,14 +237,19 @@ enable_self_improvement_workspace() {
 
 patch_gateway_client_loopback_trusted_proxy_identity() {
   local dist_dir="${RUNTIME_DIST_DIR}"
+  local marker_file="${DIST_PATCH_MARKER}"
 
   [[ -d "${dist_dir}" ]] || return 0
+  if [[ -n "${marker_file}" && -f "${marker_file}" ]]; then
+    return 0
+  fi
 
-  node <<'NODE'
+  OPENCLAW_DIST_PATCH_MARKER="${marker_file}" node <<'NODE'
 const fs = require('fs');
 const path = require('path');
 
 const distDir = process.env.OPENCLAW_DIST_DIR || '/app/dist';
+const markerFile = process.env.OPENCLAW_DIST_PATCH_MARKER || '';
 const replacements = [
   {
     label: 'control-ui websocket reconnect gap handling',
@@ -378,6 +387,10 @@ for (const filePath of jsFiles) {
 if (patchedLabels.size > 0) {
   console.error(`[bootstrap] patched ${[...patchedLabels].join(', ')}`);
 }
+
+if (markerFile) {
+  fs.writeFileSync(markerFile, `version=${path.basename(markerFile)}\n`, 'utf8');
+}
 NODE
 }
 
@@ -420,7 +433,7 @@ sync_runtime_env_file() {
 
 build_exec_default_allowlist() {
   local -a wrapped_bins=(pwd ls whoami id uname date ps df du stat find cat head tail wc git mcporter sh-safe bash-safe web-safe)
-  local -a direct_bins=(curl openclaw agent-reach)
+  local -a direct_bins=(curl openclaw)
   local -a patterns=()
   local bin
   local resolved
@@ -442,9 +455,6 @@ build_exec_default_allowlist() {
       openclaw)
         resolved="$(resolve_allowlisted_command_path "${bin}" /usr/local/bin/openclaw /usr/bin/openclaw /bin/openclaw || true)"
         ;;
-      agent-reach)
-        resolved="$(resolve_allowlisted_command_path "${bin}" /usr/local/bin/agent-reach /usr/bin/agent-reach /bin/agent-reach || true)"
-        ;;
       *)
         resolved=""
         ;;
@@ -464,6 +474,15 @@ build_exec_default_allowlist() {
 
   printf '%s\n' "${joined}"
 }
+
+DIST_PATCH_ONLY_RAW="$(printf '%s' "${OPENCLAW_DIST_PATCH_ONLY:-}" | tr '[:upper:]' '[:lower:]')"
+if [[ "${DIST_PATCH_ONLY_RAW}" == "1" || "${DIST_PATCH_ONLY_RAW}" == "true" || "${DIST_PATCH_ONLY_RAW}" == "yes" || "${DIST_PATCH_ONLY_RAW}" == "on" ]]; then
+  patch_gateway_client_loopback_trusted_proxy_identity
+  echo "INFO: dist-patch-only mode enabled; runtime assets reconciled."
+  exit 0
+fi
+
+BOOTSTRAP_STARTED_AT="$(bootstrap_now_seconds)"
 
 mkdir -p "${STATE_DIR}"
 
@@ -508,6 +527,7 @@ fi
 #   env updates (e.g. OPENCLAW_ALLOWED_ORIGINS / OPENCLAW_DISABLE_DEVICE_AUTH)
 #   can take effect for existing instances.
 export STATE_DIR CONFIG_PATH PUBLIC_PORT BIND_MODE AUTH_MODE
+CONFIG_RECONCILE_STARTED_AT="$(bootstrap_now_seconds)"
 node <<'NODE'
 const fs = require('fs');
 const path = require('path');
@@ -527,6 +547,10 @@ const parseEnum = (raw, allowed, fallback) => {
   const text = String(raw ?? '').trim().toLowerCase();
   if (!text) return fallback;
   return allowed.includes(text) ? text : fallback;
+};
+const parsePositiveInt = (raw, fallback) => {
+  const parsed = Number.parseInt(String(raw ?? '').trim(), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 const firstNonBlank = (...values) => {
   for (const value of values) {
@@ -755,13 +779,31 @@ cfg.gateway.trustedProxies =
   trustedProxies.length > 0 ? trustedProxies : trustedProxiesFallback;
 
 cfg.session = cfg.session || {};
-cfg.session.dmScope = "per-channel-peer";
-cfg.session.reset = cfg.session.reset || {};
-cfg.session.reset.mode = "idle";
-cfg.session.reset.idleMinutes = 30; // 降低活不长死不断造成的污染
-cfg.session.resetTriggers = ["/new", "/reset", "/clear"]; // 给报错后的界面兜个底
+cfg.session.dmScope = cfg.session.dmScope || "per-channel-peer";
+const hasExplicitResetConfig =
+  cfg.session.reset != null ||
+  cfg.session.resetByType != null ||
+  cfg.session.idleMinutes != null;
+if (!hasExplicitResetConfig) {
+  cfg.session.reset = {
+    mode: "idle",
+    idleMinutes: 720,
+  };
+} else if (cfg.session.reset?.mode === "idle" && cfg.session.reset.idleMinutes == null) {
+  cfg.session.reset.idleMinutes = 720;
+}
+if (!Array.isArray(cfg.session.resetTriggers) || cfg.session.resetTriggers.length === 0) {
+  cfg.session.resetTriggers = ["/new", "/reset", "/clear"]; // 给报错后的界面兜个底
+}
 cfg.session.maintenance = cfg.session.maintenance || {};
-cfg.session.maintenance.mode = "enforce";
+cfg.session.maintenance.mode = cfg.session.maintenance.mode || "enforce";
+cfg.session.maintenance.pruneAfter = cfg.session.maintenance.pruneAfter || "7d";
+if (cfg.session.maintenance.maxEntries == null) {
+  cfg.session.maintenance.maxEntries = 2000;
+}
+cfg.session.maintenance.rotateBytes = cfg.session.maintenance.rotateBytes || "20mb";
+cfg.session.maintenance.maxDiskBytes = cfg.session.maintenance.maxDiskBytes || "3gb";
+cfg.session.maintenance.highWaterBytes = cfg.session.maintenance.highWaterBytes || "2.4gb";
 cfg.agents = cfg.agents || {};
 cfg.agents.defaults = cfg.agents.defaults || {};
 cfg.agents.defaults.workspace = cfg.agents.defaults.workspace || process.env.OPENCLAW_WORKSPACE_DIR || path.join(process.env.STATE_DIR, 'workspace');
@@ -784,11 +826,20 @@ if (resolvedPresetSkillsAllowlist.length > 0) {
 // 默认折叠思考过程和工具执行详情，界面更干净。
 // 用户可通过 /think 和 /verbose 命令临时切换。
 cfg.agents.defaults.thinkingDefault = cfg.agents.defaults.thinkingDefault || parseEnum(
-  process.env.OPENCLAW_THINKING_DEFAULT, ['off', 'low', 'medium', 'high'], 'low',
+  process.env.OPENCLAW_THINKING_DEFAULT, ['off', 'low', 'medium', 'high'], 'off',
 );
 cfg.agents.defaults.verboseDefault = cfg.agents.defaults.verboseDefault || parseEnum(
   process.env.OPENCLAW_VERBOSE_DEFAULT, ['off', 'on', 'full'], 'off',
 );
+cfg.agents.defaults.typingMode = cfg.agents.defaults.typingMode || parseEnum(
+  process.env.OPENCLAW_TYPING_MODE, ['never', 'instant', 'thinking', 'message'], 'instant',
+);
+if (cfg.agents.defaults.typingIntervalSeconds == null) {
+  cfg.agents.defaults.typingIntervalSeconds = parsePositiveInt(
+    process.env.OPENCLAW_TYPING_INTERVAL_SECONDS,
+    4,
+  );
+}
 
 cfg.tools = cfg.tools || {};
 cfg.tools.fs = cfg.tools.fs || {};
@@ -1268,6 +1319,7 @@ if (allowlistPatterns.length > 0) {
 
 fs.writeFileSync(approvalsPath, JSON.stringify(approvals, null, 2));
 NODE
+bootstrap_log "config reconciled in $(( $(bootstrap_now_seconds) - CONFIG_RECONCILE_STARTED_AT ))s"
 
 # Seed UI locale in localStorage before Control UI app boots (first-load only).
 UI_LOCALE="${OPENCLAW_UI_LOCALE:-}"
@@ -1300,12 +1352,12 @@ if [[ -n "${UI_LOCALE}" && -f "${CONTROL_UI_INDEX}" ]]; then
 fi
 
 # ── 宽松模式：并行执行 JS 补丁和 skill 同步，最大化启动速度 ──
+RUNTIME_ASSET_SYNC_STARTED_AT="$(bootstrap_now_seconds)"
 if is_truthy "${EXEC_STRICT_MODE_RAW}"; then
   # 严格模式：按顺序执行（安全优先）
   patch_gateway_client_loopback_trusted_proxy_identity
   sync_preset_skills
   register_kdocs_skill 2>/dev/null || true
-  register_agent_reach_defaults 2>/dev/null || true
   sync_workspace_security_templates
   enable_self_improvement_workspace
   sync_runtime_env_file
@@ -1318,15 +1370,16 @@ else
   # 等待所有后台任务完成
   wait
   # 依赖 skill / workspace 同步结果的步骤放到 wait 之后，避免竞态。
-  register_agent_reach_defaults 2>/dev/null || true
   if [[ -n "${KDOCS_TOKEN:-}" ]]; then
     register_kdocs_skill 2>/dev/null || true
   fi
   enable_self_improvement_workspace
   cleanup_relaxed_workspace_security_templates
 fi
+bootstrap_log "runtime assets reconciled in $(( $(bootstrap_now_seconds) - RUNTIME_ASSET_SYNC_STARTED_AT ))s"
 
 touch "${BOOTSTRAP_MARKER}"
+bootstrap_log "bootstrap completed in $(( $(bootstrap_now_seconds) - BOOTSTRAP_STARTED_AT ))s"
 
 BOOTSTRAP_ONLY_RAW="$(printf '%s' "${OPENCLAW_BOOTSTRAP_ONLY:-}" | tr '[:upper:]' '[:lower:]')"
 if [[ "${BOOTSTRAP_ONLY_RAW}" == "1" || "${BOOTSTRAP_ONLY_RAW}" == "true" || "${BOOTSTRAP_ONLY_RAW}" == "yes" || "${BOOTSTRAP_ONLY_RAW}" == "on" ]]; then
