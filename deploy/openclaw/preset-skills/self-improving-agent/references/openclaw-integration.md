@@ -151,7 +151,7 @@ Is the learning project-specific?
 ```markdown
 ## Git
 - Don't push without confirming auth is configured
-- Use `gh auth status` to check GitHub CLI auth
+- Use `git ls-remote --exit-code origin HEAD` to verify remote access before pushing
 ```
 
 ## Inter-Agent Communication

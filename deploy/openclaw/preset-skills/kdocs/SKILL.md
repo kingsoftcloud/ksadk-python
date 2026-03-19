@@ -1,138 +1,266 @@
 ---
 name: kdocs
-description: 金山文档，提供金山文档操作能力。当用户需要操作金山文档时使用此 skill，包括：(1) 创建各类在线文档（智能文档、Word、PDF、智能表格、Excel）和文件夹(2) 查询、搜索文档空间与文件 (3) 管理空间节点、文件夹结构 (4) 读取文档内容 (5) 编辑操作各类在线文档（智能文档、Word、PDF、智能表格、Excel）（6）移动操作各类在线文档（智能文档、Word、PDF、智能表格、Excel）
+description: 金山文档 Skill。通过 MCP 工具与金山文档在线 API 交互，支持智能文档(otl)、Word(docx)、Excel(xlsx)、智能表格(ksheet)、PDF(dpdf) 的创建、读取、编辑、搜索、分享与整理。使用此 Skill 当用户需要操作金山文档云端文件——搜索文档、读取内容、创建/编辑文档、分享文件、整理归类时。
 homepage: https://365.kdocs.cn/latest
-metadata: {"openclaw":{"primaryEnv":"KDOCS_TOKEN","category":"kdocs", "tokenUrl":"https://365.kdocs.cn/latest","emoji":"📝"}}
+version: 1.0.0
+metadata: {"openclaw":{"category":"kdocs","tokenUrl":"https://365.kdocs.cn/latest","emoji":"📝"}}
 ---
 
-# 金山文档 MCP 使用指南
+# 金山文档 Skill 使用指南
 
-金山文档 MCP 提供了一套完整的在线文档操作工具，支持创建、查询、读取、编辑、分享、移动多种类型的在线文档。
+金山文档 Skill 提供了一套完整的在线文档操作工具，支持创建、查询、读取、编辑、分享、移动多种类型的在线文档。
 
-## 支持的文档类型
+## 版本自检
 
-| 类型 | 文件后缀 | 推荐度 | 说明 |
-|------|----------|--------|------|
-| **智能文档** | .otl | ⭐⭐⭐ **首选** | 排版美观，支持丰富组件 |
-| 表格 | .xlsx | ⭐⭐⭐ | 数据表格专用 |
-| PDF文档 | .dpdf | ⭐⭐⭐ | PDF文档专用 |
-| 文字文档 | .docx | ⭐⭐⭐ | 传统格式，排版一般 |
-| 智能表格 | .ksheet | ⭐⭐⭐ | 高级结构化表格，支持多视图、字段管理 |
+首次使用或间隔超过 24 小时后，需要确认当前 Skill 是否为最新版本。
 
-## 文档类型选择决策树
+从本文件头部 frontmatter 的 `version` 字段读取本地版本号（语义化版本 X.Y.Z），然后调用远端接口比对：
+
+```bash
+mcporter call "https://mcp-center.wps.cn/skill_hub/mcp" "check_skill_update" --args '{"version": "<本地版本号>"}'
+```
+
+接口返回 JSON 结构，包含三个关键字段：
+
+| 字段 | 含义 |
+|------|------|
+| `latest` | 远端最新版本号 (X.Y.Z) |
+| `release_note` | 该版本的变更摘要 |
+| `instruction` | 升级操作步骤 |
+
+若本地版本落后于 `latest`，按 `instruction` 中的指引完成升级或者把最新版信息用户告知用户。
+
+## 认证配置
+
+### Token 获取与管理
+
+| 步骤 | 操作 |
+|------|------|
+| 读取 | 优先从环境变量 `KINGSOFT_DOCS_TOKEN` 中读取，若已存在且有效则直接使用 |
+| 获取 | 若环境变量为空或 Token 过期（错误码 `400006`），优先运行 `bash get-token.sh` 获取新 Token；也可访问 [https://365.kdocs.cn/latest](https://365.kdocs.cn/latest) 登录后手动获取 |
+| 配置 | `export KINGSOFT_DOCS_TOKEN="你的Token值"` |
+| 验证 | 调用任意读取工具（如 `search_files`），返回 `code: 0` 即认证成功 |
+| 过期 | 收到错误码 `400006` 时，Token 已过期，按上述「获取」步骤重新获取 |
+
+> ⚠️ **KINGSOFT_DOCS_TOKEN 为空或过期时，所有工具调用将返回鉴权失败（400006）。**
+> 🔒 **Token 安全**：任何时候都不得将 Token 明文值展示给用户或拼接到命令中。需要引用时只使用 `$KINGSOFT_DOCS_TOKEN`。
+
+### drive_id 获取流程
+
+多数写/管工具需要 `drive_id` 参数。获取方式：
+
+1. **首选**：`search_files` 搜索目标文件/文件夹 → 返回结果中包含 `drive_id`
+2. **已知 file_id**：`get_file_info(file_id=xxx)` → 返回中取 `drive_id`
+3. **已知分享链接**：从链接路径（`/l/`、`/folder/`、`/view/l/`）提取末尾的 `link_id` → `get_share_info(link_id=xxx)` → 取 `drive_id` 和 `file_id`
+4. **创建文件**：用户指定了目标目录 → `search_files` 搜索该目录获取其 `drive_id` 和 `file_id`（作为 `parent_id`）；用户未指定目录 → 使用根目录（`parent_id` = `"0"`），通过 `list_files(parent_id="0")` 获取 `drive_id`
+
+> 根目录的 `parent_id` 固定为 `"0"`。
+
+### 环境配置
+
+**OpenClaw**：运行 `bash setup.sh` 注册 MCP 服务到 mcporter，首次使用或token过期时，运行`bash get-token.sh`获取新的Token。
+
+**Cursor / Claude Code 等客户端**：在 MCP 配置中添加金山文档服务，确保 `KINGSOFT_DOCS_TOKEN` 已设置。
+
+---
+
+## 操作限制
+
+以下为具体可判定的约束，违反将导致调用失败或数据异常：
+
+1. **文件名必须带后缀**：`create_file` 和 `rename_file` 时，`name` / `dst_name` 必须含正确后缀（`.otl` / `.docx` / `.xlsx` / `.ksheet` / `.pdf`），文件夹不需要后缀
+2. **upload_file 仅更新已有文件**：必须传 `file_id`，不能用于新建；新建用 `create_file`。**PDF 不支持 create_file 创建，仅能通过 upload_file 上传。**
+3. **move_file 是异步操作**：调用成功只表示任务提交，需验证实际结果
+4. **cancel_share 的 delete 模式不可逆**：`mode=delete` 永久删除分享链接，默认 `mode=pause` 仅暂停
+5. **search_files 有延迟**：新建文件后搜索可能无法立即命中，需等待索引更新
+6. **禁止泄露凭据**：不得将 KINGSOFT_DOCS_TOKEN 的值以明文形式出现在对话、日志、命令输出、代码注释或任何文件中。执行 shell 命令时必须使用变量引用（`$KINGSOFT_DOCS_TOKEN`），禁止将 Token 值直接拼接到命令字符串里
+7. **工具调用**: 当工具名包含 `.` 时，务必使用引号包裹工具名以确保正常调用（例如 `"otl.insert_content"`）
+
+---
+
+## 能力范围
+
+### 支持的文档类型
+
+| 类型 | 别名 | 文件后缀 | 推荐度 | 说明 |
+|------|------|----------|--------|------|
+| **智能文档** | ap | .otl | [===] **首选** | 排版美观，支持丰富组件 |
+| 表格 | et | .xlsx | [===] | 数据表格专用 |
+| PDF文档 | pdf | .pdf | [===] | PDF 文档专用 |
+| 文字文档 | wps | .docx | [===] | 传统格式 |
+| 智能表格 | as | .ksheet | [===] | 结构化表格，支持多视图、字段管理 |
+
+> **别名识别**：用户提到 `ap文件` = 智能文档(.otl)、`et文件` = 表格(.xlsx)、`wps文件` = 文字文档(.docx)、`as文件` = 智能表格(.ksheet)。遇到这些别名时，自动映射到对应的文档类型进行操作。
+
+### 文档类型选择
 
 ```
 用户需要创建文档
-├── 需要丰富排版/图文混排？ → otl（智能文档）⭐首选
+├── 需要丰富排版/图文混排？ → otl（智能文档）首选
 ├── 需要表格/数据处理？
-│   ├── 简单表格数据 → excel
+│   ├── 简单表格数据 → xlsx
 │   └── 需要多视图/字段管理/看板 → ksheet（智能表格）
-├── 需要生成 PDF？ → pdf
+├── 需要生成 PDF？ → dpdf
 ├── 需要兼容 Word？ → docx
-└── 不确定 → otl（智能文档）⭐默认推荐
+└── 不确定 → otl（智能文档）默认推荐
 ```
 
-## 工具总览
+### 工具总览
 
-### 写文档（4 个工具）
+| 类别          | 工具名                    | 功能 |
+|-------------|------------------------|------|
+| **写**       | `create_file`          | 创建文件/文件夹 |
+| **写**       | `upload_file`          | 更新已有文件内容（传 file_id + content_base64） |
+| **写**       | `scrape_url`           | 网页剪藏 |
+| **写**       | `scrape_progress`      | 查询剪藏进度 |
+| **读**       | `list_files`           | 列出目录内容 |
+| **读**       | `download_file`        | 下载文件 |
+| **读**       | `get_file_info`        | 获取文件信息（含 drive_id） |
+| **管**       | `move_file`            | 移动文件/文件夹 |
+| **管**       | `rename_file`          | 重命名 |
+| **管**       | `share_file`           | 开启分享 |
+| **管**       | `set_share_permission` | 设置分享权限 |
+| **管**       | `cancel_share`         | 取消分享 |
+| **管**       | `get_share_info`       | 获取分享信息 |
+| **用**       | `read_file_content`    | 读取文档转 Markdown |
+| **用**       | `search_files`         | 搜索文档 |
+| **用**       | `get_file_link`        | 获取在线链接 |
+| **表格类**     | `sheet.*`              | 表格文档操作                               |
+| **智能文档类**   | `otl.*`                | 智能文档操作                               |
 
-| 工具名 | 功能 | 参考文档 |
-|--------|------|----------|
-| `create_file` | 创建文件（支持 otl/docx/excel/ksheet/pdf） | `references/api_references.md` |
-| `upload_file` | 仅更新已有文件（传 file_id + content_base64，服务端三步上传后返回最终结果） | `references/api_references.md` |
-| `scrape_url` | 网页剪藏，抓取网页内容保存为智能文档 | `references/api_references.md` |
-| `scrape_progress` | 查询网页剪藏任务进度 | `references/api_references.md` |
+### 不支持的操作
 
-### 读文档（2 个工具）
+- 无批量删除文件工具（仅支持移动）
+- 无文件权限精细管控（仅支持分享链接级别）
+- 无文件版本回滚
+- 无实时协同编辑控制
 
-| 工具名 | 功能 | 参考文档 |
-|--------|------|----------|
-| `list_files` | 获取文件列表及详情 | `references/api_references.md` |
-| `download_file` | 下载文件 | `references/api_references.md` |
+完整参数、示例与返回值见 `references/api_references.md`。
 
-### 管文档（4 个工具）
+---
 
-| 工具名 | 功能 | 参考文档 |
-|--------|------|----------|
-| `move_file` | 移动文件/文件夹 | `references/api_references.md` |
-| `rename_file` | 重命名文件/文件夹 | `references/api_references.md` |
-| `share_file` | 开启文档分享 | `references/api_references.md` |
-| `set_share_permission` | 设置分享链接权限 | `references/api_references.md` |
+## 核心操作摘要
 
-### 用文档（4 个工具）
+### 创建并写入文档（两步流程）
 
-| 工具名 | 功能 | 参考文档 |
-|--------|------|----------|
-| `read_file_content` | 读取全文转换为 Markdown | `references/api_references.md` |
-| `convert_file_content` | 文件格式转换（如 Markdown → DOCX/PDF） | `references/api_references.md` |
-| `search_files` | 搜索文档 | `references/api_references.md` |
-| `get_file_link` | 获取云文档在线链接 | `references/api_references.md` |
-
-## 各文档类型详细参考
-
-根据操作的文档类型，阅读对应的详细参考文档：
-
-| 文档类型 | 参考文档 | 说明 |
-|----------|----------|------|
-| 通用 API | `references/api_references.md` | 所有工具的完整参数、示例、返回值 |
-| 智能文档 otl | `references/otl_references.md` | 智能文档专属元素操作（页面、文本、标题、待办等） |
-| 表格 excel | `references/excel_references.md` | Excel 表格查询、范围数据获取、批量更新 |
-| 智能表格 ksheet | `references/ksheet_references.md` | 工作表、视图、字段、记录的增删改查 |
-| 文字文档 docx | `references/docx_references.md` | Word 文字文档的创建与内容操作 |
-| PDF 文档 pdf | `references/pdf_references.md` | PDF 文档的创建与内容读取 |
-
-## ⚙️ 快速配置
-
-在 OpenClaw 中使用时，需先完成插件安装与 MCP 配置。
-
-**安装步骤：**
-
-1. 运行 setup.sh 完成 MCP 服务注册：
-
-```bash
-bash setup.sh
+```
+步骤1: create_file(drive_id, parent_id, name="xxx.otl", file_type="file")
+       → 获取新文件的 file_id
+步骤2: upload_file(drive_id, parent_id, file_id=新文件ID, content_base64=Base64编码内容)
+       → 写入内容（支持 content_format="markdown" 自动转换）
 ```
 
-> setup.sh 会自动将金山文档 MCP 服务注册到 mcporter，并验证配置是否成功。
-> 如果未执行 setup，所有工具调用将无法找到 `kdocs` 服务。
-> ⚠️ **如果 `KDOCS_TOKEN` 为空、未配置或者登录过期**，请先访问 [https://365.kdocs.cn/latest](https://365.kdocs.cn/latest) 获取 Token，并配置环境变量：`export KDOCS_TOKEN="你的Token值"`，否则所有工具调用将返回鉴权失败。
+### 读取文档内容
 
-## 🔧 调用方式
+- **Excel（.xlsx）**：使用 `sheets_list_worksheets` → `sheets_get_range_data` 原子化工具读取，**不使用 `read_file_content`**。详见 `references/sheet_references.md`
+- **其他类型**（.otl / .docx / .ksheet / .pdf）：使用 `read_file_content(file_id)` 读取
 
-### 获取工具列表
+### 搜索定位文档
 
-若通过 mcporter 调用，可先列出服务与工具：
-
-```bash
-mcporter list kdocs
+```
+search_files(keyword="关键词", type="all", page_size=20)
+→ 返回匹配文件列表，每项含 file_id、drive_id、name
 ```
 
-### 调用示例
+`type` 可选值：`all`（全部）、`file_name`（仅文件名）、`content`（全文）
 
-**详细参数与返回值见 `references/api_references.md`。**
+### 通过分享链接定位
 
-```bash
-# 搜索文档
-mcporter call "kdocs" "search_files" --args '{"keyword": "区域周报告", "type": "all", "page_size": 20}'
+用户发来的链接可能包含以下三种路径格式，均需提取末尾的 `link_id`：
 
-# 读取文档内容
-mcporter call "kdocs" "read_file_content" --args '{"file_id": "string"}'
+| URL 路径格式 | 目标类型 | 示例 | 提取的 link_id |
+|-------------|---------|------|---------------|
+| `/l/<link_id>` | 文件 | `https://365.kdocs.cn/l/cigLc2eDEwOm` | `cigLc2eDEwOm` |
+| `/folder/<link_id>` | 文件夹 | `https://365.kdocs.cn/folder/abc123XYZ` | `abc123XYZ` |
+| `/view/l/<link_id>` | 文件 | `https://365.kdocs.cn/view/l/defGHI456` | `defGHI456` |
 
-# 创建智能文档
-mcporter call "kdocs" "create_file" --args '{"drive_id": "string", "parent_id": "0", "file_type": "file", "name": "周报.otl"}'
+> ⚠️ **识别规则**：当用户发送的链接路径匹配 `/l/`、`/folder/` 或 `/view/l/` 时，应自动提取路径末尾的 `link_id`，然后调用 `get_share_info` 获取文件信息。
 
-# 新建文件夹
-mcporter call "kdocs" "create_file" --args '{"drive_id": "string", "parent_id": "0", "file_type": "folder", "name": "项目文档"}'
-
-# 重命名文件（须带后缀）
-mcporter call "kdocs" "rename_file" --args '{"drive_id": "string", "file_id": "string", "dst_name": "新名称.otl"}'
-
-# 开启文件分享
-mcporter call "kdocs" "share_file" --args '{"drive_id": "string", "file_id": "string", "role_id": "writer", "scope": "anyone"}'
-
-# 网页剪藏
-mcporter call "kdocs" "scrape_url" --args '{"url": "https://example.com/article"}'
 ```
+提取 link_id → get_share_info(link_id="xxx") → 获得 file_id 和 drive_id
+```
+
+### 网页剪藏
+
+> 🎯 **当用户要求保存网页/URL 到金山文档时，直接调用 `scrape_url`。禁止先用 `web_fetch`、`web_search` 或浏览器抓取内容。**
+
+**触发识别**：用户消息中同时包含 **URL**（非金山文档链接）+ **保存/存到/收藏/剪藏** 等意图词时，走此流程。
+
+```
+步骤 1: scrape_url(url="https://example.com")
+        → 返回 jobID
+
+步骤 2: scrape_progress(jobID=xxx)
+        → 轮询（每 2-5 秒），直到 status=1（完成）
+        → 获得 fileID → get_file_link 返回文档链接
+```
+
+| status | 含义 | 操作 |
+|--------|------|------|
+| 1 | 完成 | 获得 fileID，调用 get_file_link 返回文件链接 |
+| -1 | 失败 | 检查 URL 或重试 |
+| 其他 | 进行中 | 继续轮询 |
+
+---
+
+## 操作守护规则
+
+### 操作前检查
+
+| 操作类型 | 执行前必须确认 |
+|----------|---------------|
+| 创建文件 | `search_files` 检查同名文件是否已存在 |
+| 写入/更新 | `read_file_content` 读取现有内容，确认不会误覆盖 |
+| 移动文件 | `get_file_info` 确认目标文件夹存在且 ID 正确 |
+| 重命名 | `get_file_info` 确认文件存在 |
+| 删除分享 | `get_share_info` 确认分享信息，**向用户确认意图** |
+
+### 交付验证
+
+> **原则：不信任操作返回的 `code: 0`。用独立的读取请求验证实际结果。**
+
+| 操作 | 验证方式 | 通过条件 |
+|------|----------|----------|
+| `create_file` | `get_file_info(file_id=返回的id)` | 能读到且名称正确 |
+| `upload_file` | `read_file_content(file_id=xxx)` | 内容与写入一致 |
+| `move_file` | `get_file_info(file_id=xxx)` | `parent_id` 为目标文件夹 |
+| `rename_file` | `get_file_info(file_id=xxx)` | `name` 为新名称 |
+| `share_file` | `get_share_info(link_id=返回的link_id)` | 权限与设置一致 |
+| `cancel_share` | `get_share_info(link_id=xxx)` | 状态已变更 |
+| `scrape_url` | `scrape_progress` 轮询至 `status=1` | 获得 `fileID` |
+
+### 不可逆操作保护
+
+| 操作 | 风险 | 安全措施 |
+|------|------|----------|
+| `move_file` | 文件移出原目录 | 执行前记录原 `parent_id`，告知用户可移回 |
+| `cancel_share(mode=delete)` | 分享链接永久删除 | **必须**向用户确认；建议优先用 `mode=pause` |
+| `upload_file` | 覆盖已有内容 | 先 `read_file_content` 备份原内容摘要 |
+
+### 幂等性与重试
+
+| 操作 | 幂等 | 重试策略 |
+|------|------|----------|
+| 所有读取操作 | ✅ | 可安全重试 |
+| `create_file` | ❌ | 重试前 `search_files` 检查是否已创建 |
+| `upload_file` | ✅ | 可重试，以最后一次为准 |
+| `move_file` / `rename_file` / `share_file` | ✅ | 可重试 |
+| `cancel_share(pause)` | ✅ | 可重试 |
+| `cancel_share(delete)` | ❌ | **禁止重试** |
+| `scrape_url` | ❌ | 重试前查 `scrape_progress` 确认上次状态 |
+
+### 错误速查表
+
+| 错误特征 | 原因 | 处理方式 |
+|----------|------|----------|
+| `400006` / 鉴权失败 | Token 过期或未配置 | 提示用户重新获取 Token |
+| 工具找不到 | 未注册 MCP 服务 | OpenClaw: `bash setup.sh`；其他客户端: 检查 MCP 配置 |
+| 搜索无结果 | 关键词过精确 / 索引延迟 | 缩短关键词 / 等待 3-5 秒重试 |
+| 读取内容为空 | 文件无内容或格式不支持 | 确认文件非空且后缀正确 |
+| 创建文件失败 | 文件名后缀不正确 | 检查后缀：`.otl` / `.docx` / `.xlsx` / `.ksheet` / `.pdf` |
+| 移动文件失败 | 目标文件夹不存在 | 先搜索确认或创建文件夹 |
+| HTTP 5xx / 超时 | 服务端故障 | 等 3 秒重试 1 次 |
+| 验证不通过（回读值与预期不符） | 写入未生效或延迟 | 等 2 秒重新验证，仍不通过则报告用户 |
 
 ---
 
@@ -140,184 +268,39 @@ mcporter call "kdocs" "scrape_url" --args '{"url": "https://example.com/article"
 
 ### 搜索-读取-汇报撰写
 
-**场景**：用户需要搜索多份文档、提取信息、汇总撰写新报告。
+`search_files` → `read_file_content`（多次）→ AI 分析 → `create_file` → `upload_file` → `get_file_link`
 
-> 示例：「去我的金山文档里，找广州、珠海这三个团队本周刚更新的《区域周报告》，拉出来读一遍，提取核心的销售数据和卡点，然后模仿我上周的《南区总监月报》语气，帮我写一份本周的汇报文档」
+> 场景：搜索多份文档、提取信息、汇总撰写新报告
 
-**流程**：`search_files` → `read_file_content`（多次） → AI 分析汇总 → `create_file` → `upload_file`（传 file_id 写入内容）
+### 定期读取与播报
 
-```
-步骤1: search_files(keyword="区域周报告")
-       → 获取匹配的文件列表
+`search_files` → `read_file_content` → AI 摘要 → `get_file_link`
 
-步骤2: read_file_content(file_id=各文件ID)
-       → 逐个读取文档内容（支持所有格式：otl/docx/excel/pdf）
-
-步骤3: search_files(keyword="南区总监月报")
-       → 找到参考文档
-
-步骤4: read_file_content(file_id=参考文档ID)
-       → 读取参考文档的语气和格式
-
-步骤5: AI 分析提取核心数据，模仿语气撰写内容
-
-步骤6: create_file(name="本周区域总监周报.otl", file_type="file")
-       → 创建新文档
-
-步骤7: upload_file(drive_id=..., parent_id=..., file_id=新文档ID, content_base64=内容 Base64)
-       → 通过三步上传流程将内容写入文档
-
-步骤8: get_file_link(file_id=新文档ID) 或 share_file(drive_id=..., file_id=新文档ID, role_id=..., scope="anyone")
-       → 获取/分享文档链接
-```
-
----
-
-### 定期读取文档内容与播报
-
-**场景**：定期读取指定文档，提取关键信息并生成摘要，附上编辑链接。
-
-> 示例：「每天早上 9 点，自动读取金山文档里那个"每周汇报"文档的内容，把所有有期限需求和疑难点提出来，汇总成一段 100 字左右的"风险速报"，附上原文档编辑链接」
-
-**流程**：`search_files` → `read_file_content` → AI 摘要 → `get_file_link`
-
-```
-步骤1: search_files(keyword="每周汇报")
-       → 定位目标文档
-
-步骤2: read_file_content(file_id=目标文档ID)
-       → 读取全文内容
-
-步骤3: AI 提取有期限的需求和疑难点，生成 100 字风险速报
-
-步骤4: get_file_link(file_id=目标文档ID)
-       → 获取文档在线链接，附在速报末尾
-```
-
----
+> 场景：定期读取指定文档，提取关键信息生成摘要
 
 ### 智能分类整理
 
-**场景**：列出指定目录下的所有文件，按内容分类，创建文件夹并移动归类。
+`search_files` → `list_files` → `read_file_content`（批量）→ AI 分类 → `create_file(folder)` → `move_file`
 
-> 示例：「帮我整理一下金山文档里【我的云文档】目录下的文件，看看怎么分类合适」
-
-**流程**：`search_files`（定位目录）→ `list_files` → `read_file_content`（批量） → AI 分类 → `create_file`（file_type=folder） → `move_file`
-
-```
-步骤1: search_files(keyword="我的云文档", type="file_name", file_type="folder", page_size=20)
-       → 搜索定位目标目录，获取 drive_id 和 parent_id
-       → 若已知 drive_id，根目录 parent_id 为 "0"
-
-步骤2: list_files(drive_id=驱动盘ID, parent_id=目标目录ID, page_size=100)
-       → 获取目录下所有文件列表
-
-步骤3: read_file_content(drive_id=驱动盘ID, file_id=各文件ID, format="markdown")
-       → 批量读取文件内容，转为 Markdown 用于分析
-
-步骤4: AI 根据文件名和内容分析，建议分类方案
-
-步骤5: create_file(drive_id=驱动盘ID, parent_id=目标目录ID, file_type="folder", name="合同文件")
-       → 创建分类文件夹
-
-步骤6: move_file(drive_id=驱动盘ID, file_ids=[文件ID列表], dst_drive_id=驱动盘ID, dst_parent_id=新文件夹ID)
-       → 将文件批量移动到对应分类文件夹
-```
-
----
+> 场景：列出目录，按内容分类创建文件夹并归档。⚠️ `move_file` 前需向用户确认分类方案
 
 ### 网页剪藏收藏
 
-**场景**：将外部网页链接的内容转为金山文档并存到指定文件夹。
+`scrape_url` → `scrape_progress`（轮询至完成）→ `get_file_link`
 
-> 示例：「把这个外网长篇研报的链接（https://xxx）转成文档，存到我的文件夹下面」
+> 场景：将网页内容保存为金山文档
 
-**流程**：`search_files` → `scrape_url` → `scrape_progress`
+### 精准搜索与风险排查
 
-```
-步骤1: search_files(keyword="目标文件夹名")
-       → 搜索确认目标文件夹是否存在，获取 folder_id
-       → 如果不存在：create_file(drive_id=..., parent_id=..., file_type="folder", name="目标文件夹名") 创建
+`search_files`（定位目录）→ `search_files`（精确搜索）→ `read_file_content`（批量）→ AI 分析 → `create_file` + `upload_file`
 
-步骤2: scrape_url(url="https://xxx")
-       → 发起网页剪藏，获取 task_id
+> 场景：在特定目录批量搜索文档，逐一读取分析，汇总到新文档
 
-步骤3: scrape_progress(task_id=task_id, parent_id=folder_id)
-       → 轮询进度（每 2 秒一次），直到 status=2 完成
-       → 完成后获取 file_id 和 file_url
+### 分享链接定位与分析
 
-步骤4: 返回文档链接给用户
-```
+从链接提取 `link_id` → `get_share_info` → `read_file_content` → AI 分析
 
----
-
-### 精准搜寻与风险排查
-
-**场景**：在特定文件夹下搜索批量文档，逐一读取分析，提取关键信息汇总到新文档。
-
-> 示例：「去找我金山文档里【待签署】文件夹下的那 5 份《供应商合作协议》都扫一遍，找出所有"付款周期超过 60 天"或者包含"无限连带责任"的条款，汇总到我的《今日合同风险排查台账》文档里」
-
-**流程**：`search_files`（精准定位）→ `read_file_content`（批量读取）→ AI 分析 → `create_file` / `upload_file`
-
-```
-步骤1: search_files(keyword="待签署")
-       → 定位【待签署】文件夹，获取 parent_id
-
-步骤2: search_files(keyword="供应商合作协议", parent_id=待签署文件夹ID)
-       → 精准搜索目标文件
-
-步骤3: read_file_content(file_id=协议1ID)
-       read_file_content(file_id=协议2ID)
-       ... （逐个读取所有匹配文件）
-       → 批量读取全文内容
-
-步骤4: AI 分析每份协议，提取"付款周期超过60天"和"无限连带责任"相关条款
-
-步骤5: search_files(keyword="今日合同风险排查台账")
-       → 检查目标汇总文档是否已存在
-       → 已存在：upload_file(drive_id=..., parent_id=..., file_id=文档ID, content_base64=...) 更新
-      → 不存在：create_file(drive_id=..., parent_id="0", name="今日合同风险排查台账.otl", file_type="file") 新建
-                 → upload_file(drive_id=..., parent_id=..., file_id=新文档ID, content_base64=...) 写入内容
-
-步骤6: get_file_link(file_id=台账文档ID)
-       → 返回台账文档链接
-```
-
----
-
-### 总结分析与客户反馈拆分
-
-**场景**：搜索特定文档或通过分享链接定位文档，读取全文内容，进行深度分析和总结。
-
-> 示例：「看看这个金山文档里 500 条客户声量聚.docx，帮我遍历所有情绪化的内容，把客户最不满意的三个核心功能按缺陷维度挑出来」
-
-**流程A（通过关键词搜索）**：`search_files` → `read_file_content` → AI 深度分析
-
-**流程B（通过分享链接）**：从链接提取 link_id → `get_share_info` → `get_file_info` → `read_file_content` → AI 深度分析
-
-```
-# 流程A：通过关键词搜索
-步骤1: search_files(keyword="客户声量", type="all", page_size=20)
-       → 定位目标文档，获取 file_id 和 drive_id
-
-步骤2: read_file_content(drive_id=驱动盘ID, file_id=目标文档ID, format="markdown")
-       → 读取完整内容
-
-# 流程B：通过分享链接（如 https://365.kdocs.cn/l/cigLc2eDEwOm）
-步骤1: 从链接中提取 link_id（链接末尾部分，如 cigLc2eDEwOm）
-
-步骤2: get_share_info(link_id="cigLc2eDEwOm")
-       → 获取分享链接信息，得到 file_id 和 drive_id
-
-步骤3: read_file_content(drive_id=驱动盘ID, file_id=文件ID, format="markdown")
-       → 读取完整内容
-
-# 后续分析（两种流程共用）
-AI 遍历所有内容，识别情绪化表达
-       → 分类客户不满情绪
-       → 按缺陷维度提取 Top 3 核心功能问题
-       → 结构化输出分析结果
-```
+> 场景：通过分享链接定位并分析文档。支持 `/l/xxx`、`/folder/xxx`、`/view/l/xxx` 三种链接格式
 
 ---
 
@@ -326,33 +309,23 @@ AI 遍历所有内容，识别情绪化表达
 | 用户需求 | 推荐工具组合 |
 |----------|-------------|
 | 找文档 | `search_files` |
-| 找文档 + 读内容 | `search_files` → `read_file_content` |
-| 找文档 + 读内容 + 写新文档 | `search_files` → `read_file_content` → `create_file` |
-| 找文档 + 读内容 + 更新已有文档 | `search_files` → `read_file_content` → `upload_file`（传 file_id） |
+| 找 + 读 | `search_files` → `read_file_content` |
+| 找 + 读 + 写新 | `search_files` → `read_file_content` → `create_file` → `upload_file` |
+| 找 + 读 + 更新 | `search_files` → `read_file_content` → `upload_file`（传 file_id） |
 | 浏览目录 | `list_files` |
-| 整理归类文件 | `list_files` → `read_file_content` → `create_file`(folder) → `move_file` |
-| 网页保存为文档 | `scrape_url` → `scrape_progress` |
+| 整理归类 | `list_files` → `read_file_content` → `create_file(folder)` → `move_file` |
+| 网页保存 | `scrape_url` → `scrape_progress` |
 | 分享文档 | `share_file` → `set_share_permission` |
-| 获取文档链接 | `get_file_link` |
+| 获取链接 | `get_file_link` |
 
 ---
 
-## 问题定位指南
+## 各文档类型详细参考
 
-### 常见问题
-
-| 现象 | 可能原因 | 建议 |
-|------|----------|------|
-| **400006** | **Token 鉴权失败** | 🔑 检查 Token 配置：确认 Header 的 key **必须**使用 `Authorization`；同时确认 Token 值正确，可访问 [https://365.kdocs.cn/latest](https://365.kdocs.cn/latest) 重新获取 |
-| 工具调用找不到 | 未执行 setup.sh | 运行 `bash setup.sh` 注册 MCP 服务 |
-| 搜索无结果 | 关键词过于精确 | 尝试缩短关键词或分词搜索 |
-| 读取内容为空 | 文件无内容或格式不支持 | 确认文件非空且格式受支持 |
-| 创建文件失败 | 文件名后缀不正确 | 确认 `name` 带正确后缀：`.otl`/`.docx`/`.xlsx`/`.ksheet`/`.dpdf` |
-| 移动文件失败 | 目标文件夹不存在 | 先用 `search_files` 确认或 `create_file`(file_type=folder) 创建 |
-
-### 排查步骤
-
-1. 确认 OpenClaw 中已安装并启用金山文档插件，且已配置 MCP 端点与鉴权。
-2. 对照 `references/api_references.md` 核对工具名称、必填参数。
-3. 若使用 mcporter，用 `mcporter list kdocs` 确认服务与工具已注册。
-4. 若涉及特定文档类型的高级操作，阅读对应的类型参考文档（`references/otl_references.md` 等）。
+| 文档类型 | 参考文档 | 说明 |
+|----------|----------|------|
+| 通用 API | `references/api_references.md` | 所有工具完整参数、示例、返回值 |
+| 智能文档 otl | `references/otl_references.md` | 页面、文本、标题、待办等元素操作 |
+| 表格（Excel & 智能表格） | `references/sheet_references.md` | 工作表管理、范围数据获取、批量更新（同时适用于 .xlsx 和 .ksheet） |
+| 文字文档 docx | `references/docx_references.md` | Word 文档创建与内容操作 |
+| PDF 文档 pdf | `references/pdf_references.md` | PDF 创建与内容读取 |

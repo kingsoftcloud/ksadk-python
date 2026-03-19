@@ -1,5 +1,8 @@
 import os
+import json
 import subprocess
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -48,13 +51,21 @@ def _run_bash_safe(workspace: Path, state_dir: Path, safe_bin_dir: Path, *args: 
     )
 
 
-def _run_web_safe(workspace: Path, state_dir: Path, safe_bin_dir: Path, *args: str):
+def _run_web_safe(
+    workspace: Path,
+    state_dir: Path,
+    safe_bin_dir: Path,
+    *args: str,
+    extra_env: dict | None = None,
+):
     env = os.environ.copy()
     env["OPENCLAW_SAFE_EXEC_COMMAND"] = "web-safe"
     env["OPENCLAW_EXEC_SAFE_WORKSPACE_ROOT"] = str(workspace)
     env["OPENCLAW_EXEC_SAFE_STATE_DIR"] = str(state_dir)
     env["OPENCLAW_SAFE_BIN_DIR"] = str(safe_bin_dir)
     env["OPENCLAW_EXEC_STRICT_MODE"] = "true"
+    if extra_env:
+        env.update(extra_env)
 
     return subprocess.run(
         ["bash", str(SAFE_EXEC_SCRIPT), *args],
@@ -89,6 +100,13 @@ def _run_mcporter_safe(
         text=True,
         check=False,
     )
+
+
+def _start_http_server(handler_cls: type[BaseHTTPRequestHandler]) -> tuple[HTTPServer, threading.Thread]:
+    server = HTTPServer(("127.0.0.1", 0), handler_cls)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread
 
 
 def test_sh_safe_runs_workspace_script_with_scrubbed_env():
@@ -325,6 +343,235 @@ def test_web_safe_requires_query_for_search():
 
         assert result.returncode == 2
         assert "search requires a query" in result.stderr
+
+
+def test_web_safe_search_uses_bing_rss_by_default_even_when_model_provider_exists():
+    with TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        workspace = root / "workspace"
+        state_dir = root / "state"
+        safe_bin_dir = root / "safe-bin"
+
+        workspace.mkdir()
+        state_dir.mkdir()
+        safe_bin_dir.mkdir()
+        (state_dir / "secrets.json").write_text(
+            json.dumps({"providers": {"ksyun": {"apiKey": "search-secret"}}})
+        )
+
+        class ModelSearchHandler(BaseHTTPRequestHandler):
+            requests: list[dict] = []
+
+            def do_GET(self):
+                ModelSearchHandler.requests.append(
+                    {
+                        "path": self.path,
+                        "headers": dict(self.headers),
+                    }
+                )
+                payload = (
+                    "<?xml version='1.0' encoding='UTF-8'?>"
+                    "<rss><channel>"
+                    "<item>"
+                    "<title>Default Result</title>"
+                    "<link>https://example.com/default</link>"
+                    "<description>default summary</description>"
+                    "<pubDate>Tue, 18 Mar 2026 08:00:00 GMT</pubDate>"
+                    "</item>"
+                    "</channel></rss>"
+                ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/rss+xml")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, format, *args):
+                return
+
+        server, thread = _start_http_server(ModelSearchHandler)
+        try:
+            result = _run_web_safe(
+                workspace,
+                state_dir,
+                safe_bin_dir,
+                "search",
+                "OpenClaw",
+                extra_env={
+                    "OPENCLAW_MODEL_PROVIDER_ID": "ksyun",
+                    "OPENCLAW_MODEL_BASE_URL": f"http://127.0.0.1:{server.server_port}/v1",
+                    "OPENCLAW_MODEL_API_KEY_SECRET_SOURCE": "file",
+                    "OPENCLAW_WEB_SAFE_SEARCH_ENDPOINT": f"http://127.0.0.1:{server.server_port}/search?q={{query}}",
+                },
+            )
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        assert "Source: Bing RSS (public web, no API key)" in result.stdout
+        assert "https://example.com/default" in result.stdout
+        assert len(ModelSearchHandler.requests) == 1
+        assert ModelSearchHandler.requests[0]["path"].startswith("/search")
+
+
+def test_web_safe_search_uses_model_search_only_when_explicitly_enabled():
+    with TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        workspace = root / "workspace"
+        state_dir = root / "state"
+        safe_bin_dir = root / "safe-bin"
+
+        workspace.mkdir()
+        state_dir.mkdir()
+        safe_bin_dir.mkdir()
+        (state_dir / "secrets.json").write_text(
+            json.dumps({"providers": {"ksyun": {"apiKey": "search-secret"}}})
+        )
+
+        class ModelSearchHandler(BaseHTTPRequestHandler):
+            requests: list[dict] = []
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", "0"))
+                body = self.rfile.read(length).decode("utf-8")
+                ModelSearchHandler.requests.append(
+                    {
+                        "path": self.path,
+                        "headers": dict(self.headers),
+                        "body": json.loads(body),
+                    }
+                )
+                payload = json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": json.dumps(
+                                        {
+                                            "query": "OpenClaw",
+                                            "results": [
+                                                {
+                                                    "title": "OpenClaw 文档",
+                                                    "url": "https://example.com/openclaw",
+                                                    "snippet": "官方文档入口",
+                                                    "source": "Example",
+                                                    "published_at": "2026-03-18",
+                                                }
+                                            ],
+                                        }
+                                    )
+                                }
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, format, *args):
+                return
+
+        server, thread = _start_http_server(ModelSearchHandler)
+        try:
+            result = _run_web_safe(
+                workspace,
+                state_dir,
+                safe_bin_dir,
+                "search",
+                "OpenClaw",
+                extra_env={
+                    "OPENCLAW_WEB_SAFE_SEARCH_MODE": "model",
+                    "OPENCLAW_MODEL_PROVIDER_ID": "ksyun",
+                    "OPENCLAW_MODEL_BASE_URL": f"http://127.0.0.1:{server.server_port}/v1",
+                    "OPENCLAW_MODEL_API_KEY_SECRET_SOURCE": "file",
+                },
+            )
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        assert "Source: KSPMAS web_search (model: deepseek-v3.2)" in result.stdout
+        assert "https://example.com/openclaw" in result.stdout
+        assert ModelSearchHandler.requests
+        request = ModelSearchHandler.requests[0]
+        assert request["path"] == "/v1/chat/completions"
+        assert request["headers"]["Authorization"] == "Bearer search-secret"
+        assert request["body"]["model"] == "deepseek-v3.2"
+        assert request["body"]["response_format"] == {"type": "json_object"}
+        assert request["body"]["tools"] == [{"type": "web_search"}]
+
+
+def test_web_safe_search_falls_back_to_rss_when_model_search_fails():
+    with TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        workspace = root / "workspace"
+        state_dir = root / "state"
+        safe_bin_dir = root / "safe-bin"
+
+        workspace.mkdir()
+        state_dir.mkdir()
+        safe_bin_dir.mkdir()
+        (state_dir / "secrets.json").write_text(
+            json.dumps({"providers": {"ksyun": {"apiKey": "search-secret"}}})
+        )
+
+        class FallbackHandler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                payload = b'{"error":{"message":"web_search unavailable"}}'
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def do_GET(self):
+                payload = (
+                    "<?xml version='1.0' encoding='UTF-8'?>"
+                    "<rss><channel>"
+                    "<item>"
+                    "<title>Fallback Result</title>"
+                    "<link>https://example.com/fallback</link>"
+                    "<description>fallback summary</description>"
+                    "<pubDate>Tue, 18 Mar 2026 08:00:00 GMT</pubDate>"
+                    "</item>"
+                    "</channel></rss>"
+                ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/rss+xml")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, format, *args):
+                return
+
+        server, thread = _start_http_server(FallbackHandler)
+        try:
+            result = _run_web_safe(
+                workspace,
+                state_dir,
+                safe_bin_dir,
+                "search",
+                "OpenClaw",
+                extra_env={
+                    "OPENCLAW_MODEL_PROVIDER_ID": "ksyun",
+                    "OPENCLAW_MODEL_BASE_URL": f"http://127.0.0.1:{server.server_port}/v1",
+                    "OPENCLAW_MODEL_API_KEY_SECRET_SOURCE": "file",
+                    "OPENCLAW_WEB_SAFE_SEARCH_ENDPOINT": f"http://127.0.0.1:{server.server_port}/search?q={{query}}",
+                },
+            )
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        assert "Source: Bing RSS (public web, no API key)" in result.stdout
+        assert "https://example.com/fallback" in result.stdout
 
 
 def test_mcporter_allows_agent_reach_namespaces():

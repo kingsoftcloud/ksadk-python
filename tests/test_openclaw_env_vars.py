@@ -124,6 +124,43 @@ def test_build_openclaw_env_vars_enables_strict_mode_when_requested(monkeypatch)
     assert env["OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED"] == "true"
 
 
+def test_build_openclaw_env_vars_applies_strict_security_profile(monkeypatch):
+    monkeypatch.setattr(cmd_openclaw, "_GLOBAL_ENV_CACHE", {})
+    monkeypatch.setenv("OPENCLAW_EXEC_STRICT_MODE", "false")
+    monkeypatch.setenv("OPENCLAW_EXEC_SECURITY", "full")
+    monkeypatch.setenv("OPENCLAW_EXEC_ASK_FALLBACK", "full")
+    monkeypatch.setenv("OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED", "false")
+    monkeypatch.setenv("OPENCLAW_FS_WORKSPACE_ONLY", "true")
+
+    env = cmd_openclaw._build_openclaw_env_vars(security_profile="strict")
+
+    assert env["OPENCLAW_EXEC_STRICT_MODE"] == "true"
+    assert env["OPENCLAW_EXEC_UNSAFE_MODE"] == "false"
+    assert env["OPENCLAW_EXEC_SECURITY"] == "allowlist"
+    assert env["OPENCLAW_EXEC_ASK"] == "off"
+    assert env["OPENCLAW_EXEC_ASK_FALLBACK"] == "allowlist"
+    assert env["OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED"] == "true"
+    assert env["OPENCLAW_FS_WORKSPACE_ONLY"] == "false"
+
+
+def test_build_openclaw_env_vars_applies_strictest_security_profile(monkeypatch):
+    monkeypatch.setattr(cmd_openclaw, "_GLOBAL_ENV_CACHE", {})
+    monkeypatch.setenv("OPENCLAW_EXEC_SECURITY", "allowlist")
+    monkeypatch.setenv("OPENCLAW_EXEC_ASK_FALLBACK", "allowlist")
+    monkeypatch.setenv("OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED", "true")
+    monkeypatch.setenv("OPENCLAW_FS_WORKSPACE_ONLY", "false")
+
+    env = cmd_openclaw._build_openclaw_env_vars(security_profile="strictest")
+
+    assert env["OPENCLAW_EXEC_STRICT_MODE"] == "true"
+    assert env["OPENCLAW_EXEC_UNSAFE_MODE"] == "false"
+    assert env["OPENCLAW_EXEC_SECURITY"] == "deny"
+    assert env["OPENCLAW_EXEC_ASK"] == "off"
+    assert env["OPENCLAW_EXEC_ASK_FALLBACK"] == "deny"
+    assert env["OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED"] == "false"
+    assert env["OPENCLAW_FS_WORKSPACE_ONLY"] == "true"
+
+
 def test_build_openclaw_env_vars_omits_redundant_model_defaults(monkeypatch):
     monkeypatch.setattr(cmd_openclaw, "_GLOBAL_ENV_CACHE", {})
     monkeypatch.delenv("OPENCLAW_DEFAULT_MODEL", raising=False)
@@ -174,6 +211,27 @@ def test_build_openclaw_env_vars_preserves_explicit_model_catalog(monkeypatch):
     env = cmd_openclaw._build_openclaw_env_vars()
 
     assert env["OPENCLAW_MODEL_CATALOG_JSON"] == '[{"id":"glm-5"}]'
+
+
+def test_build_openclaw_env_vars_forwards_explicit_web_tool_overrides(monkeypatch):
+    monkeypatch.setattr(cmd_openclaw, "_GLOBAL_ENV_CACHE", {})
+    monkeypatch.setenv("OPENCLAW_WEB_FETCH_ENABLED", "true")
+    monkeypatch.setenv("OPENCLAW_WEB_SEARCH_PROVIDER", "perplexity")
+    monkeypatch.setenv("OPENCLAW_WEB_SEARCH_BASE_URL", "https://search.example.com/v1")
+    monkeypatch.setenv("OPENCLAW_WEB_SEARCH_MODEL", "sonar-pro")
+    monkeypatch.setenv("OPENCLAW_WEB_SEARCH_API_KEY_SECRET_SOURCE", "env")
+    monkeypatch.setenv("OPENCLAW_WEB_SEARCH_API_KEY_SECRET_PROVIDER", "default")
+    monkeypatch.setenv("OPENCLAW_WEB_SEARCH_API_KEY_SECRET_ID", "OPENCLAW_WEB_SEARCH_API_KEY")
+
+    env = cmd_openclaw._build_openclaw_env_vars()
+
+    assert env["OPENCLAW_WEB_FETCH_ENABLED"] == "true"
+    assert env["OPENCLAW_WEB_SEARCH_PROVIDER"] == "perplexity"
+    assert env["OPENCLAW_WEB_SEARCH_BASE_URL"] == "https://search.example.com/v1"
+    assert env["OPENCLAW_WEB_SEARCH_MODEL"] == "sonar-pro"
+    assert env["OPENCLAW_WEB_SEARCH_API_KEY_SECRET_SOURCE"] == "env"
+    assert env["OPENCLAW_WEB_SEARCH_API_KEY_SECRET_PROVIDER"] == "default"
+    assert env["OPENCLAW_WEB_SEARCH_API_KEY_SECRET_ID"] == "OPENCLAW_WEB_SEARCH_API_KEY"
 
 
 def test_generate_default_openclaw_name_is_high_entropy():

@@ -8,19 +8,7 @@
 
 ### PDF 文档特点
 
-- 支持通过 `upload_file`（传 `file_id`）更新内容
-
-### 创建 PDF 文档
-
-通过 `create_file` 创建，`name` 须带 `.dpdf` 后缀，`file_type` 设为 `file`：
-
-```json
-{
-  "name": "年度财务报告.dpdf",
-  "file_type": "file",
-  "parent_id": "folder_abc123"
-}
-```
+- 仅支持通过 `upload_file` 来创建或（传 `file_id`）更新内容
 
 ### 读取 PDF 内容
 

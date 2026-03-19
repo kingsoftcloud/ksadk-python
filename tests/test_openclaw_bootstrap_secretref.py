@@ -266,6 +266,244 @@ def test_bootstrap_appends_primary_model_when_default_catalog_does_not_include_i
         assert [item["id"] for item in models] == ["glm-5", "kimi-k2.5", "deepseek-v3"]
 
 
+def test_bootstrap_disables_builtin_web_search_by_default():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert cfg["tools"]["web"]["search"]["enabled"] is False
+        assert cfg["tools"]["web"]["fetch"]["enabled"] is False
+        assert "provider" not in cfg["tools"]["web"]["search"]
+        assert "plugins" not in cfg or "perplexity" not in cfg.get("plugins", {}).get("entries", {})
+
+
+def test_bootstrap_cleans_up_legacy_auto_builtin_web_search():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "tools": {
+                        "web": {
+                            "search": {
+                                "enabled": True,
+                                "provider": "perplexity",
+                            }
+                        }
+                    },
+                    "plugins": {
+                        "entries": {
+                            "perplexity": {
+                                "config": {
+                                    "webSearch": {
+                                        "baseUrl": "http://example.test/v1",
+                                        "model": "deepseek-v3.2",
+                                        "apiKey": {
+                                            "source": "file",
+                                            "provider": "default",
+                                            "id": "/providers/ksyun/apiKey",
+                                        },
+                                    }
+                                }
+                            }
+                        }
+                    },
+                }
+            )
+        )
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert cfg["tools"]["web"]["search"]["enabled"] is False
+        assert "provider" not in cfg["tools"]["web"]["search"]
+        assert "plugins" not in cfg or "perplexity" not in cfg.get("plugins", {}).get("entries", {})
+
+
+def test_bootstrap_preserves_explicit_builtin_web_search_provider():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "tools": {
+                        "web": {
+                            "search": {
+                                "enabled": True,
+                                "provider": "brave",
+                            }
+                        }
+                    }
+                }
+            )
+        )
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert cfg["tools"]["web"]["search"]["enabled"] is True
+        assert cfg["tools"]["web"]["search"]["provider"] == "brave"
+        assert "plugins" not in cfg or "perplexity" not in cfg.get("plugins", {}).get("entries", {})
+
+
+def test_bootstrap_disables_legacy_builtin_web_fetch_for_default_ksyun_runtime():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "tools": {
+                        "web": {
+                            "fetch": {
+                                "enabled": True,
+                            }
+                        }
+                    }
+                }
+            )
+        )
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_MODEL_BASE_URL"] = "http://kspmas-internal.sdns.ksyun.com/v1"
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert cfg["tools"]["web"]["fetch"]["enabled"] is False
+
+
+def test_bootstrap_preserves_explicit_builtin_web_fetch_enablement_via_env():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_WEB_FETCH_ENABLED"] = "true"
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert cfg["tools"]["web"]["fetch"]["enabled"] is True
+
+
+def test_bootstrap_recovers_from_blank_secret_ref_env_overrides():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_MODEL_API_KEY_SECRET_SOURCE"] = " file "
+        env["OPENCLAW_MODEL_API_KEY_SECRET_PROVIDER"] = " default "
+        env["OPENCLAW_MODEL_API_KEY_SECRET_FILE_PATH"] = " "
+        env["OPENCLAW_MODEL_API_KEY_SECRET_ID"] = " "
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert cfg["secrets"]["providers"]["default"] == {
+            "source": "file",
+            "path": str(Path(tmpdir) / "secrets.json"),
+            "mode": "json",
+        }
+        assert cfg["models"]["providers"]["ksyun"]["apiKey"] == {
+            "source": "file",
+            "provider": "default",
+            "id": "/providers/ksyun/apiKey",
+        }
+
+
+def test_bootstrap_syncs_kdocs_by_default_without_token():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        preset_skills_dir = Path(tmpdir) / "preset-skills"
+        for skill_name in [
+            "find-skills",
+            "kdocs",
+            "multi-search-engine",
+            "tavily-search",
+        ]:
+            skill_dir = preset_skills_dir / skill_name
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            (skill_dir / "SKILL.md").write_text(f"{skill_name}\n")
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_PRESET_SKILLS_DIR"] = str(preset_skills_dir)
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        synced_skills = sorted(
+            path.name for path in (Path(tmpdir) / "skills").iterdir() if path.is_dir()
+        )
+        assert synced_skills == [
+            "find-skills",
+            "kdocs",
+            "multi-search-engine",
+        ]
+
+
 def test_bootstrap_enforces_exec_approval_defaults():
     with TemporaryDirectory() as tmpdir:
         config_path = Path(tmpdir) / "openclaw.json"
@@ -290,7 +528,7 @@ def test_bootstrap_enforces_exec_approval_defaults():
         assert cfg["tools"]["exec"]["host"] == "gateway"
         assert cfg["tools"]["exec"]["security"] == "full"
         assert cfg["tools"]["exec"]["ask"] == "off"
-        assert cfg["tools"]["exec"]["pathPrepend"][0] == str(Path(tmpdir) / "safe-bin")
+        assert "pathPrepend" not in cfg["tools"]["exec"]
         assert cfg["tools"]["elevated"]["enabled"] is False
         assert cfg["agents"]["defaults"]["workspace"] == str(workspace_path)
 
@@ -302,11 +540,101 @@ def test_bootstrap_enforces_exec_approval_defaults():
             "autoAllowSkills": False,
         }
         assert "agents" not in approvals or "main" not in approvals.get("agents", {})
+        assert not (workspace_path / "SOUL.md").exists()
+        assert not (workspace_path / "AGENTS.md").exists()
+        assert not (workspace_path / "MEMORY.md").exists()
+        assert not (workspace_path / "USER.MD").exists()
+        assert not (workspace_path / "TOOLS.md").exists()
+
+
+def test_bootstrap_strict_mode_keeps_security_templates():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        workspace_path = Path(tmpdir) / "workspace"
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_EXEC_STRICT_MODE"] = "true"
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
         assert (workspace_path / "SOUL.md").exists()
         assert (workspace_path / "AGENTS.md").exists()
         assert (workspace_path / "MEMORY.md").exists()
         assert (workspace_path / "USER.MD").exists()
         assert (workspace_path / "TOOLS.md").exists()
+
+
+def test_bootstrap_relaxed_mode_cleans_legacy_builtin_security_templates():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        workspace_path = Path(tmpdir) / "workspace"
+        workspace_path.mkdir(parents=True, exist_ok=True)
+        (workspace_path / "SOUL.md").write_text("security soul\n")
+        (workspace_path / "AGENTS.md").write_text("security agents\n")
+        (workspace_path / "MEMORY.md").write_text("persistent memory\n")
+        (workspace_path / "USER.MD").write_text("user preferences\n")
+        (workspace_path / "TOOLS.md").write_text("tool notes\n")
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        assert not (workspace_path / "SOUL.md").exists()
+        assert not (workspace_path / "AGENTS.md").exists()
+        assert not (workspace_path / "MEMORY.md").exists()
+        assert not (workspace_path / "USER.MD").exists()
+        assert not (workspace_path / "TOOLS.md").exists()
+
+
+def test_bootstrap_relaxed_mode_preserves_customized_security_templates():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        workspace_path = Path(tmpdir) / "workspace"
+        workspace_path.mkdir(parents=True, exist_ok=True)
+        soul_path = workspace_path / "SOUL.md"
+        agents_path = workspace_path / "AGENTS.md"
+        memory_path = workspace_path / "MEMORY.md"
+        user_path = workspace_path / "USER.MD"
+        tools_path = workspace_path / "TOOLS.md"
+        soul_path.write_text("my custom soul\n")
+        agents_path.write_text("my custom agents\n")
+        memory_path.write_text("my custom memory\n")
+        user_path.write_text("my custom user prefs\n")
+        tools_path.write_text("my custom tools\n")
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        assert soul_path.read_text() == "my custom soul\n"
+        assert agents_path.read_text() == "my custom agents\n"
+        assert memory_path.read_text() == "my custom memory\n"
+        assert user_path.read_text() == "my custom user prefs\n"
+        assert tools_path.read_text() == "my custom tools\n"
 
 
 def test_bootstrap_preserves_existing_memory_file():
@@ -355,7 +683,15 @@ def test_bootstrap_strict_mode_restores_allowlist_defaults():
         approvals = json.loads(approvals_path.read_text())
         assert approvals["defaults"]["security"] == "allowlist"
         allowlist = approvals["agents"]["main"]["allowlist"]
-        assert any(entry["pattern"] == str(Path(tmpdir) / "safe-bin" / "bash-safe") for entry in allowlist)
+        patterns = {entry["pattern"] for entry in allowlist}
+        command_names = {Path(pattern).name for pattern in patterns}
+        assert str(Path(tmpdir) / "safe-bin" / "bash-safe") in patterns
+        assert "curl" in command_names
+        assert "openclaw" in command_names
+        assert "agent-reach" in command_names
+        assert "yt-dlp" not in command_names
+        assert "gh" not in command_names
+        assert "xreach" not in command_names
 
 
 def test_bootstrap_merges_custom_exec_allowlist_patterns():
@@ -521,12 +857,101 @@ def test_bootstrap_syncs_only_allowlisted_preset_skills():
         assert result.returncode == 0, result.stderr or result.stdout
         synced_skills = sorted(path.name for path in (Path(tmpdir) / "skills").iterdir() if path.is_dir())
         assert synced_skills == [
-            "agent-reach",
+            "find-skills",
+            "kdocs",
+            "multi-search-engine",
+        ]
+        cfg = json.loads(config_path.read_text())
+        assert cfg["skills"]["allowBundled"] == [
+            "find-skills",
+            "multi-search-engine",
+            "kdocs",
+        ]
+
+
+def test_bootstrap_strict_mode_keeps_tuanziguardianclaw_preset_skill():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        preset_skills_dir = Path(tmpdir) / "preset-skills"
+        for skill_name in [
             "find-skills",
             "kdocs",
             "multi-search-engine",
             "self-improving-agent",
-            "tavily-search",
+            "tuanziguardianclaw",
+        ]:
+            skill_dir = preset_skills_dir / skill_name
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            (skill_dir / "SKILL.md").write_text(f"{skill_name}\n")
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_PRESET_SKILLS_DIR"] = str(preset_skills_dir)
+        env["OPENCLAW_EXEC_STRICT_MODE"] = "true"
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        synced_skills = sorted(path.name for path in (Path(tmpdir) / "skills").iterdir() if path.is_dir())
+        assert synced_skills == [
+            "find-skills",
+            "kdocs",
+            "multi-search-engine",
+            "self-improving-agent",
+            "tuanziguardianclaw",
+        ]
+        cfg = json.loads(config_path.read_text())
+        assert cfg["skills"]["allowBundled"] == [
+            "find-skills",
+            "multi-search-engine",
+            "kdocs",
+            "self-improving-agent",
+            "tuanziguardianclaw",
+        ]
+
+
+def test_bootstrap_overrides_stale_bundled_skill_allowlist_from_existing_config():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "skills": {
+                        "allowBundled": [
+                            "find-skills",
+                            "tavily-search",
+                            "multi-search-engine",
+                            "agent-reach",
+                        ]
+                    }
+                }
+            )
+        )
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert cfg["skills"]["allowBundled"] == [
+            "find-skills",
+            "multi-search-engine",
+            "kdocs",
         ]
 
 

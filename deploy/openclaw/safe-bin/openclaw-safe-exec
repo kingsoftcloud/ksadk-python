@@ -578,6 +578,26 @@ case "${CMD_NAME}" in
     safe_tmp_dir="${WORKSPACE_CANON}/.tmp/openclaw"
     mkdir -p "${safe_tmp_dir}"
     umask 077
+    web_safe_search_api_key="${OPENCLAW_WEB_SAFE_SEARCH_API_KEY:-}"
+    if [[ -z "${web_safe_search_api_key}" ]]; then
+      web_safe_search_secret_env_name="${OPENCLAW_MODEL_API_KEY_SECRET_ID:-}"
+      if [[ -n "${web_safe_search_secret_env_name}" && "${web_safe_search_secret_env_name}" != */* ]]; then
+        web_safe_search_api_key="${!web_safe_search_secret_env_name:-}"
+      fi
+    fi
+    if [[ -z "${web_safe_search_api_key}" ]]; then
+      for candidate_key in \
+        "${OPENCLAW_MODEL_API_KEY:-}" \
+        "${OPENAI_API_KEY:-}" \
+        "${LLM_API_KEY:-}" \
+        "${MODEL_API_KEY:-}"
+      do
+        if [[ -n "${candidate_key}" ]]; then
+          web_safe_search_api_key="${candidate_key}"
+          break
+        fi
+      done
+    fi
 
     exec "${ENV_BIN}" -i \
       HOME="${WORKSPACE_CANON}" \
@@ -592,9 +612,30 @@ case "${CMD_NAME}" in
       OPENCLAW_EXEC_SAFE_STATE_DIR="${STATE_CANON}" \
       OPENCLAW_SAFE_BIN_DIR="${SAFE_BIN_CANON}" \
       OPENCLAW_WEB_SAFE_UNRESTRICTED="${EXEC_UNSAFE_MODE}" \
+      OPENCLAW_MODEL_PROVIDER_ID="${OPENCLAW_MODEL_PROVIDER_ID:-}" \
+      OPENCLAW_MODEL_BASE_URL="${OPENCLAW_MODEL_BASE_URL:-}" \
+      OPENCLAW_DEFAULT_MODEL="${OPENCLAW_DEFAULT_MODEL:-}" \
+      OPENAI_MODEL_NAME="${OPENAI_MODEL_NAME:-}" \
+      MODEL_NAME="${MODEL_NAME:-}" \
+      LLM_MODEL="${LLM_MODEL:-}" \
+      OPENCLAW_MODEL_API="${OPENCLAW_MODEL_API:-}" \
+      OPENCLAW_MODEL_API_KEY_SECRET_SOURCE="${OPENCLAW_MODEL_API_KEY_SECRET_SOURCE:-}" \
+      OPENCLAW_MODEL_API_KEY_SECRET_FILE_PATH="${OPENCLAW_MODEL_API_KEY_SECRET_FILE_PATH:-}" \
+      OPENCLAW_MODEL_API_KEY_SECRET_ID="${OPENCLAW_MODEL_API_KEY_SECRET_ID:-}" \
+      OPENCLAW_WEB_SAFE_SEARCH_MODE="${OPENCLAW_WEB_SAFE_SEARCH_MODE:-}" \
+      OPENCLAW_WEB_SAFE_SEARCH_MODEL="${OPENCLAW_WEB_SAFE_SEARCH_MODEL:-}" \
+      OPENCLAW_WEB_SAFE_SEARCH_BASE_URL="${OPENCLAW_WEB_SAFE_SEARCH_BASE_URL:-}" \
+      OPENCLAW_WEB_SAFE_SEARCH_API="${OPENCLAW_WEB_SAFE_SEARCH_API:-}" \
+      OPENCLAW_WEB_SAFE_SEARCH_SECRET_SOURCE="${OPENCLAW_WEB_SAFE_SEARCH_SECRET_SOURCE:-}" \
+      OPENCLAW_WEB_SAFE_SEARCH_SECRET_FILE_PATH="${OPENCLAW_WEB_SAFE_SEARCH_SECRET_FILE_PATH:-}" \
+      OPENCLAW_WEB_SAFE_SEARCH_SECRET_ID="${OPENCLAW_WEB_SAFE_SEARCH_SECRET_ID:-}" \
+      OPENCLAW_WEB_SAFE_SEARCH_API_KEY="${web_safe_search_api_key}" \
+      OPENCLAW_WEB_SAFE_SEARCH_ENDPOINT="${OPENCLAW_WEB_SAFE_SEARCH_ENDPOINT:-}" \
+      OPENCLAW_WEB_SAFE_READER_ENDPOINT="${OPENCLAW_WEB_SAFE_READER_ENDPOINT:-}" \
       "${REAL_BIN}" - "$@" <<'PY'
 import html
 import ipaddress
+import json
 import os
 import socket
 import sys
@@ -605,8 +646,11 @@ import xml.etree.ElementTree as ET
 
 
 USER_AGENT = "OpenClaw-WebSafe/1.0"
-READER_ENDPOINT = "https://r.jina.ai/"
-SEARCH_ENDPOINT = "https://cn.bing.com/search?format=rss&q={query}"
+DEFAULT_KSYUN_BASE_URL = "http://kspmas-internal.sdns.ksyun.com/v1"
+DEFAULT_KSYUN_MODEL_SEARCH_MODEL = "deepseek-v3.2"
+MODEL_SEARCH_TIMEOUT_SECONDS = 30
+READER_ENDPOINT = os.getenv("OPENCLAW_WEB_SAFE_READER_ENDPOINT", "https://r.jina.ai/")
+SEARCH_ENDPOINT = os.getenv("OPENCLAW_WEB_SAFE_SEARCH_ENDPOINT", "https://cn.bing.com/search?format=rss&q={query}")
 BLOCKED_HOST_SUFFIXES = (
     ".internal",
     ".local",
@@ -638,6 +682,284 @@ def deny(message):
 def clean_text(value):
     text = html.unescape(value or "")
     return " ".join(text.replace("\xa0", " ").split())
+
+
+def env_value(*names, default=""):
+    for name in names:
+      text = str(os.getenv(name, "")).strip()
+      if text:
+        return text
+    return default
+
+
+def trim_model_name(model_name):
+    raw_model_name = str(model_name or "").strip()
+    if not raw_model_name:
+      return ""
+    return raw_model_name.split("/", 1)[1] if "/" in raw_model_name else raw_model_name
+
+
+def json_pointer_get(payload, pointer):
+    current = payload
+    for token in str(pointer or "").split("/")[1:]:
+      key = token.replace("~1", "/").replace("~0", "~")
+      if isinstance(current, list):
+        try:
+          current = current[int(key)]
+        except (ValueError, IndexError):
+          return ""
+      elif isinstance(current, dict):
+        if key not in current:
+          return ""
+        current = current[key]
+      else:
+        return ""
+    return current
+
+
+def load_secret_from_file(file_path, secret_id):
+    if not file_path or not os.path.exists(file_path):
+      return ""
+    try:
+      with open(file_path, "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+      return ""
+    value = json_pointer_get(payload, secret_id)
+    return str(value).strip() if value is not None else ""
+
+
+def resolve_model_search_settings():
+    mode = env_value("OPENCLAW_WEB_SAFE_SEARCH_MODE", default="bing").lower()
+    if mode not in {"auto", "model", "bing"}:
+      mode = "auto"
+
+    provider_id = env_value("OPENCLAW_MODEL_PROVIDER_ID", default="ksyun").lower()
+    base_url = env_value(
+      "OPENCLAW_WEB_SAFE_SEARCH_BASE_URL",
+      "OPENCLAW_MODEL_BASE_URL",
+      "OPENAI_BASE_URL",
+      "OPENAI_API_BASE",
+      default=DEFAULT_KSYUN_BASE_URL if provider_id == "ksyun" else "",
+    )
+    api_name = env_value("OPENCLAW_WEB_SAFE_SEARCH_API", "OPENCLAW_MODEL_API", default="openai-completions").lower()
+    explicit_search_model = env_value("OPENCLAW_WEB_SAFE_SEARCH_MODEL")
+    default_model = env_value("OPENCLAW_DEFAULT_MODEL", "OPENAI_MODEL_NAME", "MODEL_NAME", "LLM_MODEL")
+    model_name = trim_model_name(explicit_search_model)
+    if not model_name:
+      if provider_id == "ksyun":
+        model_name = DEFAULT_KSYUN_MODEL_SEARCH_MODEL
+      else:
+        model_name = trim_model_name(default_model)
+
+    state_dir = env_value("OPENCLAW_EXEC_SAFE_STATE_DIR")
+    secret_source = env_value(
+      "OPENCLAW_WEB_SAFE_SEARCH_SECRET_SOURCE",
+      "OPENCLAW_MODEL_API_KEY_SECRET_SOURCE",
+      default="file",
+    ).lower()
+    secret_file_path = env_value(
+      "OPENCLAW_WEB_SAFE_SEARCH_SECRET_FILE_PATH",
+      "OPENCLAW_MODEL_API_KEY_SECRET_FILE_PATH",
+      default=os.path.join(state_dir, "secrets.json") if state_dir else "",
+    )
+    secret_id = env_value(
+      "OPENCLAW_WEB_SAFE_SEARCH_SECRET_ID",
+      "OPENCLAW_MODEL_API_KEY_SECRET_ID",
+      default=f"/providers/{provider_id or 'default'}/apiKey",
+    )
+    api_key = env_value("OPENCLAW_WEB_SAFE_SEARCH_API_KEY")
+
+    explicit_search_configured = bool(
+      explicit_search_model
+      or env_value("OPENCLAW_WEB_SAFE_SEARCH_BASE_URL")
+      or env_value("OPENCLAW_WEB_SAFE_SEARCH_API_KEY")
+    )
+    if mode == "bing":
+      return None
+    if mode == "auto":
+      provider_looks_supported = provider_id == "ksyun" or "kspmas" in base_url.lower()
+      if not explicit_search_configured and not provider_looks_supported:
+        return None
+
+    return {
+      "mode": mode,
+      "provider_id": provider_id,
+      "base_url": base_url,
+      "api_name": api_name,
+      "model_name": model_name,
+      "secret_source": secret_source,
+      "secret_file_path": secret_file_path,
+      "secret_id": secret_id,
+      "api_key": api_key,
+    }
+
+
+def model_search_api_key(settings):
+    api_key = str((settings or {}).get("api_key") or "").strip()
+    if api_key:
+      return api_key
+    if str((settings or {}).get("secret_source") or "").lower() == "file":
+      return load_secret_from_file(
+        str((settings or {}).get("secret_file_path") or "").strip(),
+        str((settings or {}).get("secret_id") or "").strip(),
+      )
+    return ""
+
+
+def strip_code_fence(raw_text):
+    text = str(raw_text or "").strip()
+    if not text.startswith("```"):
+      return text
+    lines = text.splitlines()
+    if lines and lines[0].startswith("```"):
+      lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+      lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def extract_message_content(response_payload):
+    choices = response_payload.get("choices") or []
+    if not choices:
+      raise ValueError("model search response missing choices")
+    message = choices[0].get("message") or {}
+    content = message.get("content")
+    if isinstance(content, list):
+      parts = []
+      for item in content:
+        if isinstance(item, dict):
+          text = item.get("text") or item.get("content") or ""
+        else:
+          text = str(item)
+        if text:
+          parts.append(str(text))
+      return "\n".join(parts).strip()
+    return str(content or "").strip()
+
+
+def normalize_model_search_results(results, limit):
+    normalized = []
+    for item in list(results or [])[:limit]:
+      if not isinstance(item, dict):
+        continue
+      title = clean_text(str(item.get("title") or item.get("name") or ""))
+      link = clean_text(str(item.get("url") or item.get("link") or ""))
+      description = clean_text(
+        str(
+          item.get("snippet")
+          or item.get("summary")
+          or item.get("description")
+          or ""
+        )
+      )
+      source = clean_text(str(item.get("source") or item.get("site") or item.get("domain") or ""))
+      pub_date = clean_text(
+        str(
+          item.get("published_at")
+          or item.get("publishedAt")
+          or item.get("published")
+          or item.get("date")
+          or ""
+        )
+      )
+      if not (title or link or description):
+        continue
+      normalized.append(
+        {
+          "title": title,
+          "link": link,
+          "description": description,
+          "pub_date": pub_date,
+          "source": source,
+        }
+      )
+    return normalized
+
+
+def post_json(url, payload, api_key):
+    request = urllib.request.Request(
+      url,
+      data=json.dumps(payload).encode("utf-8"),
+      headers={
+        "User-Agent": USER_AGENT,
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+      },
+      method="POST",
+    )
+    try:
+      with urllib.request.urlopen(request, timeout=MODEL_SEARCH_TIMEOUT_SECONDS) as response:
+        charset = response.headers.get_content_charset() or "utf-8"
+        return json.loads(response.read().decode(charset, errors="replace"))
+    except urllib.error.HTTPError as exc:
+      body = exc.read().decode("utf-8", errors="replace")
+      raise RuntimeError(body[:4000] or f"model search http error: {exc.code}") from exc
+    except urllib.error.URLError as exc:
+      raise RuntimeError(f"model search network error: {exc}") from exc
+
+
+def run_model_search(query, limit):
+    settings = resolve_model_search_settings()
+    if not settings:
+      return None
+    if settings["api_name"] and settings["api_name"] != "openai-completions":
+      return None
+    if not settings["base_url"] or not settings["model_name"]:
+      return None
+
+    api_key = model_search_api_key(settings)
+    if not api_key:
+      return None
+
+    base_url = settings["base_url"].rstrip("/")
+    chat_url = base_url if base_url.endswith("/chat/completions") else f"{base_url}/chat/completions"
+    response_payload = post_json(
+      chat_url,
+      {
+        "model": settings["model_name"],
+        "messages": [
+          {
+            "role": "system",
+            "content": (
+              "You are a web search formatter. "
+              "Use the web_search tool and return only a valid JSON object."
+            ),
+          },
+          {
+            "role": "user",
+            "content": (
+              f"Search the public web for the query: {query}\n"
+              f"Return a JSON object with keys query and results.\n"
+              f"results must contain at most {limit} items.\n"
+              "Each result item must include title, url, snippet, source, published_at.\n"
+              "Do not fabricate URLs. Use empty strings for missing fields."
+            ),
+          },
+        ],
+        "response_format": {
+          "type": "json_object",
+        },
+        "tools": [
+          {
+            "type": "web_search",
+          }
+        ],
+      },
+      api_key,
+    )
+    response_text = strip_code_fence(extract_message_content(response_payload))
+    parsed = json.loads(response_text)
+    results = normalize_model_search_results(
+      parsed.get("results") or parsed.get("items") or parsed.get("links") or [],
+      limit,
+    )
+    source_label = "KSPMAS web_search" if settings["provider_id"] == "ksyun" or "kspmas" in base_url.lower() else "Model web_search"
+    return {
+      "source": f"{source_label} (model: {settings['model_name']})",
+      "results": results,
+    }
 
 
 def resolve_ip(host):
@@ -702,6 +1024,31 @@ def http_get(url, accept=None):
       sys.exit(1)
 
 
+def print_search_results(query, source_label, items):
+    print(f"Search query: {query}")
+    print(f"Source: {source_label}")
+    if not items:
+      print("No results found.")
+      return
+
+    for index, item in enumerate(items, start=1):
+      title = clean_text(item.get("title", ""))
+      link = clean_text(item.get("link", ""))
+      description = clean_text(item.get("description", ""))
+      pub_date = clean_text(item.get("pub_date", ""))
+      source = clean_text(item.get("source", ""))
+      print()
+      print(f"{index}. {title or '(untitled)'}")
+      if link:
+        print(f"URL: {link}")
+      if source:
+        print(f"Site: {source}")
+      if pub_date:
+        print(f"Published: {pub_date}")
+      if description:
+        print(f"Summary: {description}")
+
+
 def run_search(args):
     limit = 5
     query_parts = []
@@ -734,6 +1081,14 @@ def run_search(args):
     if not query:
       usage("search requires a query")
 
+    try:
+      model_search_result = run_model_search(query, limit)
+    except Exception:
+      model_search_result = None
+    if model_search_result is not None:
+      print_search_results(query, model_search_result["source"], model_search_result["results"])
+      return
+
     search_url = SEARCH_ENDPOINT.format(query=urllib.parse.quote(query))
     raw_xml = http_get(search_url, accept="application/rss+xml, application/xml;q=0.9, text/xml;q=0.8")
     try:
@@ -743,25 +1098,20 @@ def run_search(args):
       sys.exit(1)
 
     items = root.findall("./channel/item")
-    print(f"Search query: {query}")
-    print("Source: Bing RSS (public web, no API key)")
-    if not items:
-      print("No results found.")
-      return
-
-    for index, item in enumerate(items[:limit], start=1):
-      title = clean_text(item.findtext("title", default=""))
-      link = clean_text(item.findtext("link", default=""))
-      description = clean_text(item.findtext("description", default=""))
-      pub_date = clean_text(item.findtext("pubDate", default=""))
-      print()
-      print(f"{index}. {title or '(untitled)'}")
-      if link:
-        print(f"URL: {link}")
-      if pub_date:
-        print(f"Published: {pub_date}")
-      if description:
-        print(f"Summary: {description}")
+    print_search_results(
+      query,
+      "Bing RSS (public web, no API key)",
+      [
+        {
+          "title": item.findtext("title", default=""),
+          "link": item.findtext("link", default=""),
+          "description": item.findtext("description", default=""),
+          "pub_date": item.findtext("pubDate", default=""),
+          "source": "",
+        }
+        for item in items[:limit]
+      ],
+    )
 
 
 def run_read(args):

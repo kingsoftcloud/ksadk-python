@@ -1,6 +1,6 @@
-# 金山文档 MCP 工具完整参考
+# 金山文档 Skill 工具完整参考
 
-本文件包含金山文档 MCP 所有工具的 API 说明、参数、返回值。
+本文件包含金山文档 Skill 所有工具的 API 说明、参数、返回值。
 
 > **通用返回字段**：所有接口均返回 `code`（状态码，0 表示成功）和 `msg`（人可阅读的文本信息）。
 
@@ -12,7 +12,7 @@
 
 #### 功能说明
 
-在云盘下新建文件或文件夹。通过 `file_type` 区分：`file` 创建文件，`folder` 创建文件夹，`shortcut` 创建快捷方式。
+在云盘下新建文件或文件夹。通过 `file_type` 区分：`file` 创建文件，`folder` 创建文件夹，`shortcut` 创建快捷方式。支持格式：doc,docx,form,xls,otl,ppt,dbt,xlsx,pptx。
 
 #### 调用示例
 
@@ -50,7 +50,7 @@
 **请求体：**
 
 - `file_type` (string, 必填): 文件类型。可选值：`file`（文件）/ `folder`（文件夹）/ `shortcut`（快捷方式）
-- `name` (string, 必填): 文件名。创建文件时须带上后缀，例: `doc.docx`(普通文件), `abc.docx.link`(快捷方式)；创建文件夹时不需要后缀。支持格式：doc, docx, form, xls, otl, ppt, dbt, xlsx, pptx，公网额外支持：pom, spt, dppt, link, resh, ckt, ddoc, dpdf, dxls, pof, wpsnote，私网额外支持：txt, ksheet
+- `name` (string, 必填): 文件名。创建文件时须带上后缀，例: `doc.docx`(普通文件), `abc.docx.link`(快捷方式)；创建文件夹时不需要后缀。支持格式：doc, docx, form, xls, otl, ppt, dbt, xlsx, pptx
 - `on_name_conflict` (string, 可选): 文件名冲突处理方式，默认 `rename`。该接口只识别 `rename` 和 `fail`。可选值：`fail` / `rename` / `overwrite` / `replace`
 - `parent_path` (array[string], 可选): 相对于当前文件目录的相对路径。每个元素为路径名（非路径 ID）。若路径不存在，系统将自动创建
 - `file_id` (string, 可选): 快捷方式的源文件 ID，仅在 `file_type = shortcut` 时需要
@@ -106,7 +106,7 @@
 #### 调用流程
 1. 调用 `scrape_url` 传入网页URL获取 `jobID`
 2. 立即调用 `scrape_progress` 传入 `jobID` 查询进度（每隔2秒轮询一次）
-3. 当 `status=2` 时任务完成，服务端已自动创建智能文档，直接从响应获取 `file_id` 和 `file_url`，无需再调用其他创建文档工具
+3. 当 `status=1` 时任务完成，服务端已自动创建智能文档，直接从响应获取 `file_id` 和 `file_url`，无需再调用其他创建文档工具
    
 
 #### 调用示例
@@ -164,7 +164,10 @@
 
 #### 功能说明
 
-**更新已有文件**：直接传要更新的 `file_id` 与源文件内容（`content_base64`）。
+**全量上传覆盖已有文件**：用于全量更新或空白文档写入。直接传要覆盖的 `file_id` 与源文件内容（`content_base64`），服务端完成三步上传并覆盖目标文件。
+
+- **支持类型**：仅支持目标文件为 **docx**、**pdf**（需与源内容同类型，或源为 Markdown 由服务端转换）。
+- **源为 Markdown 时**：务必传 `content_format=markdown`，再进行上传。
 
 #### 调用方式（单次调用）
 
@@ -172,20 +175,33 @@
 
 - `drive_id` (string, 必填): 驱动盘 ID
 - `parent_id` (string, 必填): 父文件夹 ID
-- `file_id` (string, 必填): 要更新的文件 ID
-- `content_base64` (string, 必填): 源文件内容，Base64 编码
+- `file_id` (string, 必填): 要覆盖的文件 ID（仅支持 docx/pdf 文件）
+- `content_base64` (string, 必填): 源文件内容，Base64 编码。若为 Markdown 文本需同时传 `content_format=markdown`，务必确保Markdown源内容使用 UTF-8 格式，再进行base64编码，特殊字符无需转义。
+- `content_format` (string, 可选): 源内容格式。`docx` / `pdf`（与目标文件同类型）或 `markdown`（会先转为目标格式再上传）
 - `file_sum` (string, 可选): 文件哈希值，与 `file_type` 同传时转成 hashes 请求第三方；不传则服务端按内容计算 md5/sha256
 - `file_type` (string, 可选): 哈希类型，如 `sha256` / `md5` / `sha1`
 - `parent_path` (array[string], 可选): 相对路径
 
 **调用示例**
 
+同类型覆盖（docx → docx）：
 ```json
 {
   "drive_id": "string",
   "parent_id": "string",
   "file_id": "m8WBrVXVMrMWKY9F7Aee1xXQRM8faegye",
   "content_base64": "JVBERi0xLjQK..."
+}
+```
+
+Markdown 覆盖（先转为 docx/pdf 再上传）：
+```json
+{
+  "drive_id": "string",
+  "parent_id": "string",
+  "file_id": "m8WBrVXVMrMWKY9F7Aee1xXQRM8faegye",
+  "content_base64": "<Markdown 内容的 Base64>",
+  "content_format": "markdown"
 }
 ```
 
@@ -199,7 +215,7 @@
   "msg": "ok",
   "data": {
     "id": "m8WBrVXVMrMWKY9F7Aee1xXQRM8faegye",
-    "name": "2024年度报告.pdf",
+    "name": "2024年度报告.docx",
     "link_url": "https://www.kdocs.cn/l/caiv0UfPiYui",
     "link_id": "caiv0UfPiYui",
     "size": 57081,
@@ -459,7 +475,6 @@
 {
   "drive_id": "string",
   "file_id": "string",
-  "role_id": "string",
   "scope": "anyone",
   "opts": {
     "allow_perm_apply": true,
@@ -480,8 +495,7 @@
 
 **请求体：**
 
-- `role_id` (string, 必填): 权限角色
-- `scope` (string, 必填): 链接权限范围。可选值：`anyone`（所有人，仅公网支持）/ `company`（仅企业）/ `users`（指定用户）。`login_users` 仅私有化支持
+- `scope` (string, 必填): 链接权限范围。可选值：`anyone`（所有人，仅公网支持）/ `company`（仅企业）/ `users`（指定用户）。
 - `opts` (object, 可选): 链接选项
   - `allow_perm_apply` (boolean, 可选): 允许申请权限
   - `check_code` (string, 可选): 访问密码
@@ -550,7 +564,6 @@
 ```json
 {
   "link_id": "string",
-  "role_id": "string",
   "scope": "anyone",
   "opts": {
     "allow_perm_apply": true,
@@ -570,7 +583,6 @@
 
 **请求体：**
 
-- `role_id` (string, 可选): 权限角色
 - `scope` (string, 可选): 链接权限范围。可选值：`anyone`（仅公网支持）/ `company` / `users`。`login_users` 仅私有化支持
 - `opts` (object, 可选): 链接设置
   - `allow_perm_apply` (boolean, 可选): 允许申请权限
@@ -824,7 +836,14 @@
 
 #### 功能说明
 
-文档内容抽取。支持将文档内容抽取为 markdown、纯文本或 KDC 结构化格式。支持同步和异步模式。
+文档内容抽取。支持将文档内容抽取为 markdown、纯文本或 KDC 结构化格式。**仅支持异步模式（mode=async）**：首次调用传入 `drive_id`、`file_id` 等，返回 `task_id`；通过 `task_id` 轮询直至 `task_status` 为 `success` 后获取内容。
+
+> ⚠️ **Excel（.xlsx）文件不使用此工具读取。** 读取 Excel 内容必须使用 Excel 原子化工具：
+>
+> 1. `sheets_list_worksheets(file_id)` → 获取所有工作表及数据区域范围
+> 2. `sheets_get_range_data(file_id, sheetId, range)` → 按区域精确读取单元格数据
+>
+> 详见 `sheet_references.md`。
 
 #### 调用示例
 
@@ -834,7 +853,7 @@
   "file_id": "string",
   "format": "markdown",
   "include_elements": ["para", "table"],
-  "mode": "sync",
+  "mode": "async",
   "task_id": "string"
 }
 ```
@@ -850,8 +869,8 @@
 
 - `format` (string, 可选): 文档内容目标格式。可选值：`kdc`（结构化表示）/ `plain`（纯文本）/ `markdown`
 - `include_elements` (array, 可选): 指定抽取元素。默认元素为 `para`（段落），且一定会被导出；其余附加元素根据参数选择性导出。可选值：`para` / `table` / `component` / `textbox` / `all`
-- `mode` (string, 可选): 接口模式。可选值：`sync`（同步模式，默认）/ `async`（异步模式）/ `auto`（自动模式，耗时较长的任务自动转为异步）
-- `task_id` (string, 可选): 异步任务 ID，用于内容抽取任务的结果查询，在 `mode=async/auto` 时生效
+- `mode` (string): **仅支持 `async`**，无需传或固定传 `async`
+- `task_id` (string, 可选): 异步任务 ID，用于结果轮询；首次调用不传，后续用返回的 `task_id` 查询直至 `task_status` 为 `success`
 
 #### 返回值说明
 
@@ -874,8 +893,8 @@
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `data.task_id` | string | 任务 ID，在 `mode=async/auto` 时返回 |
-| `data.task_status` | string | 任务状态，在 `mode=async/auto` 时返回。可选值：`success` / `running` / `failed` |
+| `data.task_id` | string | 任务 ID，异步模式下返回 |
+| `data.task_status` | string | 任务状态。可选值：`success` / `running` / `failed` |
 | `data.dst_format` | string | 目标格式：`kdc` / `plain` / `markdown` |
 | `data.markdown` | string | markdown 内容数据，目标格式为 `markdown` 时适用 |
 | `data.plain` | string | 纯文本内容数据，目标格式为 `plain` 时适用 |
@@ -885,68 +904,7 @@
 
 ---
 
----
-TODO: 内部备注：发布前删除。
-下方convert_file_content接口，是根据当前已实现的skill中迁移过来的。
-与 `upload_file`（传 `file_id` 更新）功能互补。convert_file_content 负责格式转换，upload_file 负责上传写入。
-使用模板的场景：当生成文字组件时，因没有内置模板设置标题n的样式，直接导入md的效果非常丑
----
-
-### 15. convert_file_content
-
-#### 功能说明
-
-将文件从一种格式转换为另一种格式（如 Markdown → DOCX、Markdown → PDF）。可选提供模板文件以控制转换后的排版样式。
-
-
-#### 调用示例
-
-```json
-{
-  "form_file": "<源文件内容>",
-  "filename": "report.md",
-  "target": "docx"
-}
-```
-
-带模板转换：
-
-```json
-{
-  "form_file": "<源文件内容>",
-  "filename": "report.md",
-  "target": "docx",
-  "template_file.form_file": "<模板文件内容>",
-  "template_file.filename": "template.docx"
-}
-```
-
-#### 参数说明
-
-- `form_file` (file, 必填): 源文件内容
-- `filename` (string, 必填): 源文件名，需带后缀。例: `report.md`
-- `target` (string, 必填): 目标格式。可选值：`docx` / `pdf` / `pptx`
-- `template_file.form_file` (file, 可选): 模板文件内容（如 `.docx` 模板），仅在 `target=docx` 时有效
-- `template_file.filename` (string, 可选): 模板文件名（提供模板文件时必填）
-
-#### 返回值说明
-
-```json
-{
-  "code": 0,
-  "data": "<转换后的文件内容>"
-}
-```
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `code` | integer | 状态码，0 表示成功 |
-| `data` | binary | 转换后的文件内容（成功时返回） |
-| `msg` | string | 错误信息（失败时返回） |
-
----
-
-### 16. search_files
+### 15. search_files
 
 #### 功能说明
 
@@ -972,10 +930,10 @@ TODO: 内部备注：发布前删除。
 **查询参数：**
 
 - `keyword` (string, 可选): 搜索关键字
-- `type` (string, 必填): 搜索类型。可选值：`file_name` / `content` / `all`
+- `type` (string, 必填): 搜索类型。可选值：`file_name`表示搜索文件名， `content`表示搜索文件内容， `all`表示全局搜索。
 - `page_size` (integer, 必填): 分页大小，公网限制最大为 500
 - `page_token` (string, 可选): 翻页 token
-- `file_type` (string, 可选): 文件类型，不传默认全搜。可选值：`folder` / `file` / `shortcut`
+- `file_type` (string, 可选): 文件类型，不传默认全搜。可选值：`folder` / `file`
 - `file_exts` (array, 可选): 文件后缀
 - `drive_ids` (array, 可选): 搜索盘列表
 - `parent_ids` (array, 可选): 搜索目录列表
@@ -1073,7 +1031,7 @@ TODO: 内部备注：发布前删除。
 
 ---
 
-### 17. get_file_link
+### 16. get_file_link
 
 #### 功能说明
 
@@ -1159,22 +1117,21 @@ TODO: 内部备注：发布前删除。
 
 ### B. 工具速查表
 
-| # | 工具名 | 分类 | 功能 | 必填参数 |
-|---|--------|------|------|----------|
-| 1 | `create_file` | 写文档 | 新建文件/文件夹（`file_type` 区分） | `drive_id`, `parent_id`, `name`, `file_type` |
-| 2 | `scrape_url` | 写文档 | 网页剪藏 | `url` |
-| 3 | `scrape_progress` | 写文档 | 剪藏进度查询 | `task_id` |
-| 4 | `upload_file` | 写文档 | 上传/更新文件（三步流程，传 `file_id` 为更新） | `drive_id`, `parent_id`, `size` |
-| 5 | `list_files` | 读文档 | 获取子文件列表（含原 list_folder 功能） | `drive_id`, `parent_id`, `page_size` |
-| 6 | `download_file` | 读文档 | 获取文件下载信息 | `drive_id`, `file_id` |
-| 7 | `move_file` | 管文档 | 批量移动文件(夹) | `drive_id`, `file_ids`, `dst_drive_id`, `dst_parent_id` |
-| 8 | `rename_file` | 管文档 | 重命名文件(夹) | `drive_id`, `file_id`, `dst_name` |
-| 9 | `share_file` | 管文档 | 开启文件分享 | `drive_id`, `file_id`, `role_id`, `scope` |
+| #  | 工具名 | 分类 | 功能 | 必填参数 |
+|----|--------|------|------|----------|
+| 1  | `create_file` | 写文档 | 新建文件/文件夹（`file_type` 区分） | `drive_id`, `parent_id`, `name`, `file_type` |
+| 2  | `scrape_url` | 写文档 | 网页剪藏 | `url` |
+| 3  | `scrape_progress` | 写文档 | 剪藏进度查询 | `task_id` |
+| 4  | `upload_file` | 写文档 | 上传/更新文件（三步流程，传 `file_id` 为更新） | `drive_id`, `parent_id`, `size` |
+| 5  | `list_files` | 读文档 | 获取子文件列表（含原 list_folder 功能） | `drive_id`, `parent_id`, `page_size` |
+| 6  | `download_file` | 读文档 | 获取文件下载信息 | `drive_id`, `file_id` |
+| 7  | `move_file` | 管文档 | 批量移动文件(夹) | `drive_id`, `file_ids`, `dst_drive_id`, `dst_parent_id` |
+| 8  | `rename_file` | 管文档 | 重命名文件(夹) | `drive_id`, `file_id`, `dst_name` |
+| 9  | `share_file` | 管文档 | 开启文件分享 | `drive_id`, `file_id`, `role_id`, `scope` |
 | 10 | `set_share_permission` | 管文档 | 修改分享链接属性 | `link_id` |
 | 11 | `cancel_share` | 管文档 | 取消文件分享 | `drive_id`, `file_id` |
 | 12 | `get_share_info` | 管文档 | 获取分享链接信息 | `link_id` |
 | 13 | `get_file_info` | 读文档 | 获取文件（夹）信息 | `file_id` |
 | 14 | `read_file_content` | 用文档 | 文档内容抽取 | `drive_id`, `file_id` |
-| 15 | `convert_file_content` | 用文档 | 文件格式转换 | `form_file`, `filename`, `target` |
-| 16 | `search_files` | 用文档 | 文件(夹)搜索 | `type`, `page_size` |
-| 17 | `get_file_link` | 用文档 | 获取文档链接 | `file_id` |
+| 15 | `search_files` | 用文档 | 文件(夹)搜索 | `type`, `page_size` |
+| 16 | `get_file_link` | 用文档 | 获取文档链接 | `file_id` |

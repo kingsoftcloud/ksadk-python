@@ -55,6 +55,7 @@ DEFAULT_TRUSTED_PROXY_CIDRS = [
     "35.0.0.0/8",
 ]
 _GLOBAL_ENV_CACHE: Optional[Dict[str, str]] = None
+OPENCLAW_SECURITY_PROFILES = ("relaxed", "strict", "strictest")
 
 
 def _generate_default_openclaw_name(prefix: str = DEFAULT_OPENCLAW_NAME) -> str:
@@ -158,6 +159,53 @@ def _is_truthy(raw: Optional[str]) -> bool:
     return text in {"1", "true", "yes", "on"}
 
 
+def _resolve_exec_profile_overrides(security_profile: Optional[str]) -> Dict[str, str]:
+    """根据 CLI 安全预设返回 OpenClaw 运行时环境变量覆盖项。"""
+    profile = str(security_profile or "").strip().lower()
+    if not profile:
+        return {}
+
+    common = {
+        "OPENCLAW_EXEC_HOST": "gateway",
+        "OPENCLAW_EXEC_AUTO_ALLOW_SKILLS": "false",
+        "OPENCLAW_ELEVATED_ENABLED": "false",
+    }
+    if profile == "relaxed":
+        return {
+            **common,
+            "OPENCLAW_EXEC_STRICT_MODE": "false",
+            "OPENCLAW_EXEC_UNSAFE_MODE": "true",
+            "OPENCLAW_EXEC_SECURITY": "full",
+            "OPENCLAW_EXEC_ASK": "off",
+            "OPENCLAW_EXEC_ASK_FALLBACK": "full",
+            "OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED": "false",
+            "OPENCLAW_FS_WORKSPACE_ONLY": "false",
+        }
+    if profile == "strict":
+        return {
+            **common,
+            "OPENCLAW_EXEC_STRICT_MODE": "true",
+            "OPENCLAW_EXEC_UNSAFE_MODE": "false",
+            "OPENCLAW_EXEC_SECURITY": "allowlist",
+            "OPENCLAW_EXEC_ASK": "off",
+            "OPENCLAW_EXEC_ASK_FALLBACK": "allowlist",
+            "OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED": "true",
+            "OPENCLAW_FS_WORKSPACE_ONLY": "false",
+        }
+    if profile == "strictest":
+        return {
+            **common,
+            "OPENCLAW_EXEC_STRICT_MODE": "true",
+            "OPENCLAW_EXEC_UNSAFE_MODE": "false",
+            "OPENCLAW_EXEC_SECURITY": "deny",
+            "OPENCLAW_EXEC_ASK": "off",
+            "OPENCLAW_EXEC_ASK_FALLBACK": "deny",
+            "OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED": "false",
+            "OPENCLAW_FS_WORKSPACE_ONLY": "true",
+        }
+    raise ValueError(f"unsupported OpenClaw security profile: {security_profile}")
+
+
 def _build_openclaw_env_vars(
     *,
     model_base_url: Optional[str] = None,
@@ -166,12 +214,14 @@ def _build_openclaw_env_vars(
     model_provider_id: Optional[str] = None,
     gateway_port: Optional[str] = None,
     public_port: Optional[str] = None,
+    security_profile: Optional[str] = None,
 ) -> dict:
     """构建 OpenClaw 所需的环境变量，自动复用 OPENAI_* 环境变量"""
     env = {}
     default_provider_id = "ksyun"
     default_model_api = "openai-completions"
     default_model_base_url = "http://kspmas-internal.sdns.ksyun.com/v1"
+    exec_profile_overrides = _resolve_exec_profile_overrides(security_profile)
 
     # 模型配置：客户端只透传用户显式配置和可选的 API Key；
     # 其余默认值交给镜像 bootstrap 兜底，避免创建请求把服务端默认行为短路掉。
@@ -230,20 +280,48 @@ def _build_openclaw_env_vars(
     browser_headless = _resolve_env("OPENCLAW_BROWSER_HEADLESS") or "true"
     browser_executable = _resolve_env("OPENCLAW_BROWSER_EXECUTABLE_PATH", "OPENCLAW_BROWSER_EXECUTABLE")
     ui_locale = _normalize_ui_locale(_resolve_env("OPENCLAW_UI_LOCALE", "LANG", "LC_ALL"))
-    exec_strict_mode_raw = _resolve_env("OPENCLAW_EXEC_STRICT_MODE", "OPENCLAW_EXEC_SAFE_MODE") or "false"
+    exec_strict_mode_raw = (
+        exec_profile_overrides.get("OPENCLAW_EXEC_STRICT_MODE")
+        or _resolve_env("OPENCLAW_EXEC_STRICT_MODE", "OPENCLAW_EXEC_SAFE_MODE")
+        or "false"
+    )
     exec_strict_mode = _is_truthy(exec_strict_mode_raw)
 
-    exec_host = _resolve_env("OPENCLAW_EXEC_HOST") or "gateway"
-    exec_security = _resolve_env("OPENCLAW_EXEC_SECURITY") or ("allowlist" if exec_strict_mode else "full")
-    exec_ask = _resolve_env("OPENCLAW_EXEC_ASK") or "off"
-    exec_ask_fallback = _resolve_env("OPENCLAW_EXEC_ASK_FALLBACK") or ("allowlist" if exec_strict_mode else "full")
-    exec_auto_allow_skills = _resolve_env("OPENCLAW_EXEC_AUTO_ALLOW_SKILLS") or "false"
-    elevated_enabled = _resolve_env("OPENCLAW_ELEVATED_ENABLED") or "false"
-    exec_default_allowlist_enabled = _resolve_env("OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED") or (
+    exec_host = exec_profile_overrides.get("OPENCLAW_EXEC_HOST") or _resolve_env("OPENCLAW_EXEC_HOST") or "gateway"
+    exec_security = (
+        exec_profile_overrides.get("OPENCLAW_EXEC_SECURITY")
+        or _resolve_env("OPENCLAW_EXEC_SECURITY")
+        or ("allowlist" if exec_strict_mode else "full")
+    )
+    exec_ask = exec_profile_overrides.get("OPENCLAW_EXEC_ASK") or _resolve_env("OPENCLAW_EXEC_ASK") or "off"
+    exec_ask_fallback = (
+        exec_profile_overrides.get("OPENCLAW_EXEC_ASK_FALLBACK")
+        or _resolve_env("OPENCLAW_EXEC_ASK_FALLBACK")
+        or ("allowlist" if exec_strict_mode else "full")
+    )
+    exec_auto_allow_skills = (
+        exec_profile_overrides.get("OPENCLAW_EXEC_AUTO_ALLOW_SKILLS")
+        or _resolve_env("OPENCLAW_EXEC_AUTO_ALLOW_SKILLS")
+        or "false"
+    )
+    elevated_enabled = (
+        exec_profile_overrides.get("OPENCLAW_ELEVATED_ENABLED")
+        or _resolve_env("OPENCLAW_ELEVATED_ENABLED")
+        or "false"
+    )
+    exec_default_allowlist_enabled = (
+        exec_profile_overrides.get("OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED")
+        or _resolve_env("OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED")
+        or (
         "true" if exec_strict_mode else "false"
     )
+    )
     exec_allowlist = _resolve_env("OPENCLAW_EXEC_ALLOWLIST")
-    fs_workspace_only = _resolve_env("OPENCLAW_FS_WORKSPACE_ONLY") or "false"
+    fs_workspace_only = (
+        exec_profile_overrides.get("OPENCLAW_FS_WORKSPACE_ONLY")
+        or _resolve_env("OPENCLAW_FS_WORKSPACE_ONLY")
+        or "false"
+    )
     model_api_key_secret_source = _resolve_env("OPENCLAW_MODEL_API_KEY_SECRET_SOURCE") or "file"
     model_api_key_secret_file_path = _resolve_env("OPENCLAW_MODEL_API_KEY_SECRET_FILE_PATH")
 
@@ -317,6 +395,19 @@ def _build_openclaw_env_vars(
     env["OPENCLAW_ALLOW_INSECURE_AUTH"] = allow_insecure_auth if allow_insecure_auth else "true"
     disable_device_auth = _resolve_env("OPENCLAW_DISABLE_DEVICE_AUTH")
     env["OPENCLAW_DISABLE_DEVICE_AUTH"] = disable_device_auth if disable_device_auth else "true"
+    for passthrough_key in [
+        "OPENCLAW_WEB_FETCH_ENABLED",
+        "OPENCLAW_WEB_SEARCH_PROVIDER",
+        "OPENCLAW_WEB_SEARCH_BASE_URL",
+        "OPENCLAW_WEB_SEARCH_MODEL",
+        "OPENCLAW_WEB_SEARCH_API_KEY",
+        "OPENCLAW_WEB_SEARCH_API_KEY_SECRET_SOURCE",
+        "OPENCLAW_WEB_SEARCH_API_KEY_SECRET_PROVIDER",
+        "OPENCLAW_WEB_SEARCH_API_KEY_SECRET_ID",
+    ]:
+        passthrough_value = _resolve_env(passthrough_key)
+        if passthrough_value:
+            env[passthrough_key] = passthrough_value
 
     return env
 
@@ -573,6 +664,14 @@ def openclaw():
     help="部署区域 (默认: cn-beijing-6)",
 )
 @click.option(
+    "--security-profile",
+    type=click.Choice(OPENCLAW_SECURITY_PROFILES, case_sensitive=False),
+    default=None,
+    help="安全预设: relaxed | strict | strictest (安全测试建议 strictest)",
+)
+@click.option("--strict-mode", "security_profile", flag_value="strict", help="快捷开启严格模式")
+@click.option("--strictest", "security_profile", flag_value="strictest", help="快捷开启最严格安全模式")
+@click.option(
     "--image",
     default=None,
     help="OpenClaw 镜像地址 (默认: 内置公共镜像；也可用 OPENCLAW_IMAGE/OPENCLAW_DOCKER_IMAGE)",
@@ -584,6 +683,7 @@ def openclaw():
 def deploy(
     name: Optional[str],
     region: str,
+    security_profile: Optional[str],
     image: Optional[str],
     model_base_url: Optional[str],
     model_api_key: Optional[str],
@@ -600,6 +700,10 @@ def deploy(
     示例:
         # 默认部署 (自动复用 .env 中的 OPENAI_* 变量)
         agentengine openclaw deploy
+        # 显式开启严格模式
+        agentengine openclaw deploy --strict-mode
+        # 一键创建最严格实例（适合安全测试）
+        agentengine openclaw deploy --security-profile strictest
         # 显式指定模型
         agentengine openclaw deploy --model-base-url https://api.example.com/v1 --model-api-key sk-xxx
         # 使用自定义镜像
@@ -610,6 +714,7 @@ def deploy(
         _deploy_openclaw(
             name=name,
             region=region,
+            security_profile=security_profile,
             image=image,
             model_base_url=model_base_url,
             model_api_key=model_api_key,
@@ -624,6 +729,7 @@ async def _deploy_openclaw(
     *,
     name: Optional[str],
     region: str,
+    security_profile: Optional[str],
     image: Optional[str],
     model_base_url: Optional[str],
     model_api_key: Optional[str],
@@ -678,12 +784,15 @@ async def _deploy_openclaw(
         model_base_url=model_base_url,
         model_api_key=model_api_key,
         default_model=default_model,
+        security_profile=security_profile,
     )
 
     print_title("OpenClaw 云端部署", f"region: {region}")
     print_kv("名称", openclaw_name)
     print_kv("镜像", image_ref)
     print_kv("区域", region, value_style="#58a6ff")
+    if security_profile:
+        print_kv("安全预设", security_profile.lower())
 
     # 构建环境变量列表
     env_list = [

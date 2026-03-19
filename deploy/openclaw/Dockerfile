@@ -22,7 +22,7 @@ RUN set -eux; \
   > /etc/apk/repositories; \
   fi; \
   apk update; \
-  apk add --no-cache tzdata chromium curl github-cli; \
+  apk add --no-cache tzdata chromium curl; \
   elif command -v apt-get >/dev/null 2>&1; then \
   # Debian bookworm+: 使用 DEB822 格式 (.sources) \
   if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
@@ -37,7 +37,7 @@ RUN set -eux; \
   DEBIAN_FRONTEND=noninteractive apt-get \
   -o APT::Get::AllowUnauthenticated=true \
   install -y --no-install-recommends \
-  tzdata chromium ca-certificates curl gh; \
+  tzdata chromium ca-certificates curl; \
   rm -rf /var/lib/apt/lists/*; \
   fi; \
   # ====== 2. 时区设为北京 ====== \
@@ -55,13 +55,12 @@ RUN set -eux; \
   --trusted-host "$(echo ${PYPI_INDEX_URL} | awk -F/ '{print $3}')" \
   "${AGENT_REACH_ZIP_URL}" \
   "browser-cookie3>=0.19" \
-  "cryptography>=42.0.0" \
-  "yt-dlp"; \
+  "cryptography>=42.0.0"; \
   python3 -m pip cache purge || true; \
   # ====== 4. npm 换淘宝镜像 ====== \
   if command -v npm >/dev/null 2>&1; then \
   npm config set registry "${NPM_REGISTRY}"; \
-  npm install -g mcporter xreach-cli undici; \
+  npm install -g mcporter undici; \
   npm cache clean --force || true; \
   fi; \
   # ====== 5. 清理缓存，最小化镜像体积 ====== \
@@ -82,5 +81,11 @@ RUN set -eux; \
 ENV HOME=/home/node \
     OPENCLAW_STATE_DIR=/home/node/.openclaw
 USER node
+
+RUN set -eux; \
+  mkdir -p "${HOME}"; \
+  if command -v mcporter >/dev/null 2>&1 && command -v agent-reach >/dev/null 2>&1; then \
+    mcporter config get exa --json >/dev/null 2>&1 || mcporter config add exa https://mcp.exa.ai/mcp --scope home >/dev/null 2>&1 || true; \
+  fi
 
 ENTRYPOINT ["/usr/local/bin/bootstrap.sh"]

@@ -13,6 +13,7 @@ SAFE_BIN_DIR="${OPENCLAW_SAFE_BIN_DIR:-/opt/openclaw/safe-bin}"
 PRESET_SKILLS_DIR="${OPENCLAW_PRESET_SKILLS_DIR:-/opt/openclaw/preset-skills}"
 WORKSPACE_TEMPLATE_DIR="${OPENCLAW_WORKSPACE_TEMPLATE_DIR:-/opt/openclaw/workspace-template}"
 RUNTIME_DIST_DIR="${OPENCLAW_DIST_DIR:-/app/dist}"
+BOOTSTRAP_CACHE_DIR="${OPENCLAW_BOOTSTRAP_CACHE_DIR:-${STATE_DIR}/.bootstrap-cache}"
 
 is_truthy() {
   local raw
@@ -62,17 +63,52 @@ resolve_allowlisted_command_path() {
   return 1
 }
 
+resolve_preset_skills_allowlist() {
+  local allowlist_raw="${OPENCLAW_PRESET_SKILLS_ALLOWLIST:-}"
+
+  if [[ -n "${allowlist_raw}" ]]; then
+    printf '%s\n' "${allowlist_raw}"
+    return 0
+  fi
+
+  allowlist_raw="find-skills,multi-search-engine,kdocs"
+  # self-improving-agent：仅严格模式
+  is_truthy "${OPENCLAW_EXEC_STRICT_MODE:-false}" && allowlist_raw="${allowlist_raw},self-improving-agent"
+  # tuanziguardianclaw：仅严格模式保留，宽松模式默认不内置
+  is_truthy "${OPENCLAW_EXEC_STRICT_MODE:-false}" && allowlist_raw="${allowlist_raw},tuanziguardianclaw"
+  printf '%s\n' "${allowlist_raw}"
+}
+
 sync_preset_skills() {
   local src_dir="${PRESET_SKILLS_DIR}"
   local dst_dir="${STATE_DIR}/skills"
+  local sig_file="${BOOTSTRAP_CACHE_DIR}/preset-skills.sig"
   local item
   local skill_name
-  local allowlist_raw="${OPENCLAW_PRESET_SKILLS_ALLOWLIST:-find-skills,self-improving-agent,kdocs,agent-reach,multi-search-engine,tavily-search}"
+  local allowlist_raw
+  local signature=""
+  local previous_signature=""
+  allowlist_raw="$(resolve_preset_skills_allowlist)"
   local existing
 
   [[ -d "${src_dir}" ]] || return 0
 
-  mkdir -p "${dst_dir}"
+  mkdir -p "${BOOTSTRAP_CACHE_DIR}" "${dst_dir}"
+  signature="$(
+    {
+      printf '%s\n' "${allowlist_raw}"
+      find "${src_dir}" -type f | LC_ALL=C sort | while IFS= read -r file_path; do
+        cksum "${file_path}"
+      done
+    } | cksum | awk '{print $1 ":" $2}'
+  )"
+  if [[ -f "${sig_file}" ]]; then
+    previous_signature="$(cat "${sig_file}" 2>/dev/null || true)"
+  fi
+  if [[ -n "${signature}" && "${signature}" == "${previous_signature}" ]]; then
+    return 0
+  fi
+
   for existing in "${dst_dir}"/*; do
     [[ -d "${existing}" ]] || continue
     skill_name="$(basename "${existing}")"
@@ -98,6 +134,10 @@ sync_preset_skills() {
     rm -rf "${dst_dir}/${skill_name}"
     cp -R "${item}" "${dst_dir}/${skill_name}"
   done
+
+  if [[ -n "${signature}" ]]; then
+    printf '%s\n' "${signature}" > "${sig_file}"
+  fi
 }
 
 register_kdocs_skill() {
@@ -124,9 +164,11 @@ register_kdocs_skill() {
 
 register_agent_reach_defaults() {
   local mcporter_bin
+  local agent_reach_bin
   mcporter_bin="$(command -v mcporter 2>/dev/null || true)"
+  agent_reach_bin="$(command -v agent-reach 2>/dev/null || true)"
 
-  [[ -n "${mcporter_bin}" ]] || return 0
+  [[ -n "${mcporter_bin}" && -n "${agent_reach_bin}" ]] || return 0
 
   if ! "${mcporter_bin}" config get exa --json >/dev/null 2>&1; then
     if "${mcporter_bin}" config add exa https://mcp.exa.ai/mcp --scope home >/dev/null 2>&1; then
@@ -145,9 +187,30 @@ sync_workspace_security_templates() {
   [[ -d "${src_dir}" ]] || return 0
 
   mkdir -p "${dst_dir}"
-  for file_name in AGENTS.md MEMORY.md USER.MD SOUL.md TOOLS.md; do
+  if is_truthy "${OPENCLAW_EXEC_STRICT_MODE:-false}"; then
+    set -- AGENTS.md MEMORY.md USER.MD SOUL.md TOOLS.md
+  else
+    set --
+  fi
+
+  for file_name in "$@"; do
     if [[ -f "${src_dir}/${file_name}" && ! -f "${dst_dir}/${file_name}" ]]; then
       cp "${src_dir}/${file_name}" "${dst_dir}/${file_name}"
+    fi
+  done
+}
+
+cleanup_relaxed_workspace_security_templates() {
+  local src_dir="${WORKSPACE_TEMPLATE_DIR}"
+  local dst_dir="${WORKSPACE_DIR}"
+  local file_name
+
+  is_truthy "${OPENCLAW_EXEC_STRICT_MODE:-false}" && return 0
+  [[ -d "${src_dir}" && -d "${dst_dir}" ]] || return 0
+
+  for file_name in AGENTS.md MEMORY.md USER.MD SOUL.md TOOLS.md; do
+    if [[ -f "${src_dir}/${file_name}" && -f "${dst_dir}/${file_name}" ]] && cmp -s "${src_dir}/${file_name}" "${dst_dir}/${file_name}"; then
+      rm -f "${dst_dir}/${file_name}"
     fi
   done
 }
@@ -168,37 +231,6 @@ enable_self_improvement_workspace() {
   done
 }
 
-patch_control_ui_event_gap_reconnect() {
-  local control_ui_assets_dir="${RUNTIME_DIST_DIR}/control-ui/assets"
-
-  [[ -d "${control_ui_assets_dir}" ]] || return 0
-
-  node <<'NODE'
-const fs = require('fs');
-const path = require('path');
-
-const assetsDir = process.env.OPENCLAW_DIST_DIR
-  ? path.join(process.env.OPENCLAW_DIST_DIR, 'control-ui', 'assets')
-  : '/app/dist/control-ui/assets';
-const needle = 'this.ws.addEventListener(`open`,()=>this.queueConnect())';
-const replacement = 'this.ws.addEventListener(`open`,()=>{this.lastSeq=null,this.queueConnect()})';
-
-let patched = false;
-for (const entry of fs.readdirSync(assetsDir)) {
-  if (!entry.endsWith('.js')) continue;
-  const filePath = path.join(assetsDir, entry);
-  const source = fs.readFileSync(filePath, 'utf8');
-  if (!source.includes(needle) || source.includes(replacement)) continue;
-  fs.writeFileSync(filePath, source.replace(needle, replacement));
-  patched = true;
-}
-
-if (patched) {
-  console.error('[bootstrap] patched control-ui websocket reconnect gap handling');
-}
-NODE
-}
-
 patch_gateway_client_loopback_trusted_proxy_identity() {
   local dist_dir="${RUNTIME_DIST_DIR}"
 
@@ -210,6 +242,12 @@ const path = require('path');
 
 const distDir = process.env.OPENCLAW_DIST_DIR || '/app/dist';
 const replacements = [
+  {
+    label: 'control-ui websocket reconnect gap handling',
+    marker: 'this.ws.addEventListener(`open`,()=>{this.lastSeq=null,this.queueConnect()})',
+    needle: 'this.ws.addEventListener(`open`,()=>this.queueConnect())',
+    replacement: 'this.ws.addEventListener(`open`,()=>{this.lastSeq=null,this.queueConnect()})',
+  },
   {
     label: 'gateway client loopback trusted-proxy identity',
     marker: 'const internalTrustedProxyUser = String(process.env.OPENCLAW_INTERNAL_TRUSTED_PROXY_USER || "openclaw-backend").trim();',
@@ -382,7 +420,7 @@ sync_runtime_env_file() {
 
 build_exec_default_allowlist() {
   local -a wrapped_bins=(pwd ls whoami id uname date ps df du stat find cat head tail wc git mcporter sh-safe bash-safe web-safe)
-  local -a direct_bins=(curl yt-dlp openclaw agent-reach gh xreach)
+  local -a direct_bins=(curl openclaw agent-reach)
   local -a patterns=()
   local bin
   local resolved
@@ -401,20 +439,11 @@ build_exec_default_allowlist() {
       curl)
         resolved="$(resolve_allowlisted_command_path "${bin}" /usr/bin/curl /usr/local/bin/curl /bin/curl || true)"
         ;;
-      yt-dlp)
-        resolved="$(resolve_allowlisted_command_path "${bin}" /usr/local/bin/yt-dlp /usr/bin/yt-dlp /bin/yt-dlp || true)"
-        ;;
       openclaw)
         resolved="$(resolve_allowlisted_command_path "${bin}" /usr/local/bin/openclaw /usr/bin/openclaw /bin/openclaw || true)"
         ;;
       agent-reach)
         resolved="$(resolve_allowlisted_command_path "${bin}" /usr/local/bin/agent-reach /usr/bin/agent-reach /bin/agent-reach || true)"
-        ;;
-      gh)
-        resolved="$(resolve_allowlisted_command_path "${bin}" /usr/local/bin/gh /usr/bin/gh /bin/gh || true)"
-        ;;
-      xreach)
-        resolved="$(resolve_allowlisted_command_path "${bin}" /usr/local/bin/xreach /usr/bin/xreach /bin/xreach || true)"
         ;;
       *)
         resolved=""
@@ -449,6 +478,7 @@ if is_truthy "${EXEC_STRICT_MODE_RAW}"; then
   export OPENCLAW_EXEC_STRICT_MODE="true"
   export OPENCLAW_EXEC_UNSAFE_MODE="${OPENCLAW_EXEC_UNSAFE_MODE:-false}"
 else
+  # 宽松模式：最大程度还原原版 OpenClaw 体验
   export OPENCLAW_EXEC_STRICT_MODE="false"
   export OPENCLAW_EXEC_UNSAFE_MODE="${OPENCLAW_EXEC_UNSAFE_MODE:-true}"
   export OPENCLAW_EXEC_SECURITY="${OPENCLAW_EXEC_SECURITY:-full}"
@@ -456,6 +486,8 @@ else
   export OPENCLAW_EXEC_ASK_FALLBACK="${OPENCLAW_EXEC_ASK_FALLBACK:-full}"
   export OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED="${OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED:-false}"
   export OPENCLAW_FS_WORKSPACE_ONLY="${OPENCLAW_FS_WORKSPACE_ONLY:-false}"
+  # 宽松模式下不注入 safe-bin，让命令走原生 PATH
+  export OPENCLAW_SKIP_SAFE_BIN_PATH="true"
 fi
 
 if is_truthy "${OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED:-1}"; then
@@ -463,6 +495,8 @@ if is_truthy "${OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED:-1}"; then
     export OPENCLAW_EXEC_DEFAULT_ALLOWLIST="$(build_exec_default_allowlist)"
   fi
 fi
+
+export OPENCLAW_RESOLVED_PRESET_SKILLS_ALLOWLIST="$(resolve_preset_skills_allowlist)"
 
 if [[ ! -f "${CONFIG_PATH}" ]]; then
   echo '{}' > "${CONFIG_PATH}"
@@ -493,6 +527,13 @@ const parseEnum = (raw, allowed, fallback) => {
   const text = String(raw ?? '').trim().toLowerCase();
   if (!text) return fallback;
   return allowed.includes(text) ? text : fallback;
+};
+const firstNonBlank = (...values) => {
+  for (const value of values) {
+    const text = String(value ?? '').trim();
+    if (text) return text;
+  }
+  return '';
 };
 const uniqueStrings = (items) => {
   const seen = new Set();
@@ -725,6 +766,30 @@ cfg.agents = cfg.agents || {};
 cfg.agents.defaults = cfg.agents.defaults || {};
 cfg.agents.defaults.workspace = cfg.agents.defaults.workspace || process.env.OPENCLAW_WORKSPACE_DIR || path.join(process.env.STATE_DIR, 'workspace');
 
+const resolvedPresetSkillsAllowlist = uniqueStrings(
+  parseStringList(
+    process.env.OPENCLAW_RESOLVED_PRESET_SKILLS_ALLOWLIST ||
+      process.env.OPENCLAW_PRESET_SKILLS_ALLOWLIST,
+  ),
+);
+cfg.skills = cfg.skills || {};
+if (resolvedPresetSkillsAllowlist.length > 0) {
+  // Keep bundled-skill loading aligned with our synced preset-skills directory so
+  // stale upstream defaults do not re-enable removed skills on persisted runtimes.
+  cfg.skills.allowBundled = resolvedPresetSkillsAllowlist;
+} else {
+  delete cfg.skills.allowBundled;
+}
+
+// 默认折叠思考过程和工具执行详情，界面更干净。
+// 用户可通过 /think 和 /verbose 命令临时切换。
+cfg.agents.defaults.thinkingDefault = cfg.agents.defaults.thinkingDefault || parseEnum(
+  process.env.OPENCLAW_THINKING_DEFAULT, ['off', 'low', 'medium', 'high'], 'low',
+);
+cfg.agents.defaults.verboseDefault = cfg.agents.defaults.verboseDefault || parseEnum(
+  process.env.OPENCLAW_VERBOSE_DEFAULT, ['off', 'on', 'full'], 'off',
+);
+
 cfg.tools = cfg.tools || {};
 cfg.tools.fs = cfg.tools.fs || {};
 cfg.tools.fs.workspaceOnly = parseBool(process.env.OPENCLAW_FS_WORKSPACE_ONLY, false);
@@ -744,16 +809,31 @@ cfg.tools.exec.ask = parseEnum(
   ["off", "on-miss", "always"],
   "off",
 );
-const pathPrepend = uniqueStrings([
-  process.env.OPENCLAW_SAFE_BIN_DIR || '/opt/openclaw/safe-bin',
-  ...(Array.isArray(cfg.tools.exec.pathPrepend) ? cfg.tools.exec.pathPrepend : []),
-]);
+// 宽松模式下跳过 safe-bin PATH 注入，使用原生命令路径
+const skipSafeBin = parseBool(process.env.OPENCLAW_SKIP_SAFE_BIN_PATH, false);
+const pathPrepend = skipSafeBin
+  ? uniqueStrings(Array.isArray(cfg.tools.exec.pathPrepend) ? cfg.tools.exec.pathPrepend : [])
+  : uniqueStrings([
+      process.env.OPENCLAW_SAFE_BIN_DIR || '/opt/openclaw/safe-bin',
+      ...(Array.isArray(cfg.tools.exec.pathPrepend) ? cfg.tools.exec.pathPrepend : []),
+    ]);
 if (pathPrepend.length > 0) {
   cfg.tools.exec.pathPrepend = pathPrepend;
+} else {
+  delete cfg.tools.exec.pathPrepend;
 }
 
 cfg.tools.elevated = cfg.tools.elevated || {};
 cfg.tools.elevated.enabled = parseBool(process.env.OPENCLAW_ELEVATED_ENABLED, false);
+
+cfg.tools.web = cfg.tools.web || {};
+cfg.tools.web.search = cfg.tools.web.search || {};
+cfg.tools.web.fetch = cfg.tools.web.fetch || {};
+const explicitWebFetchEnabledRaw = String(process.env.OPENCLAW_WEB_FETCH_ENABLED ?? '').trim();
+const hasExplicitWebFetchEnabled = explicitWebFetchEnabledRaw !== '';
+if (hasExplicitWebFetchEnabled) {
+  cfg.tools.web.fetch.enabled = parseBool(explicitWebFetchEnabledRaw, false);
+}
 
 cfg.browser = cfg.browser || {};
 cfg.browser.noSandbox = parseBool(process.env.OPENCLAW_BROWSER_NO_SANDBOX, true);
@@ -771,39 +851,43 @@ cfg.models = cfg.models || {};
 cfg.models.mode = cfg.models.mode || 'merge';
 cfg.models.providers = cfg.models.providers || {};
 
-const providerId = (process.env.OPENCLAW_MODEL_PROVIDER_ID || 'ksyun').trim();
-const defaultModelApiKeyFilePath = path.join(process.env.STATE_DIR, 'secrets.json');
-const providerBaseUrl = (
-  process.env.OPENCLAW_MODEL_BASE_URL ||
-  process.env.OPENAI_BASE_URL ||
-  process.env.OPENAI_API_BASE ||
-  'http://kspmas-internal.sdns.ksyun.com/v1'
-).trim();
-const providerApiKeySecretSource = (
-  process.env.OPENCLAW_MODEL_API_KEY_SECRET_SOURCE ||
-  'file'
-).trim().toLowerCase();
-const providerApiKeySecretProvider = (
-  process.env.OPENCLAW_MODEL_API_KEY_SECRET_PROVIDER ||
-  'default'
-).trim();
-const providerApiKeySecretFilePath = (
-  process.env.OPENCLAW_MODEL_API_KEY_SECRET_FILE_PATH ||
-  defaultModelApiKeyFilePath
-).trim();
+const resolvedStateDir = firstNonBlank(
+  process.env.STATE_DIR,
+  process.env.OPENCLAW_STATE_DIR,
+  configPath ? path.dirname(configPath) : '',
+);
+const providerId = firstNonBlank(process.env.OPENCLAW_MODEL_PROVIDER_ID, 'ksyun');
+const defaultModelApiKeyFilePath = path.join(resolvedStateDir || '/root/.openclaw', 'secrets.json');
+const providerBaseUrl = firstNonBlank(
+  process.env.OPENCLAW_MODEL_BASE_URL,
+  process.env.OPENAI_BASE_URL,
+  process.env.OPENAI_API_BASE,
+  'http://kspmas-internal.sdns.ksyun.com/v1',
+);
+const providerApiKeySecretSource = firstNonBlank(
+  process.env.OPENCLAW_MODEL_API_KEY_SECRET_SOURCE,
+  'file',
+).toLowerCase();
+const providerApiKeySecretProvider = firstNonBlank(
+  process.env.OPENCLAW_MODEL_API_KEY_SECRET_PROVIDER,
+  'default',
+);
+const providerApiKeySecretFilePath = firstNonBlank(
+  process.env.OPENCLAW_MODEL_API_KEY_SECRET_FILE_PATH,
+  defaultModelApiKeyFilePath,
+);
 const defaultFileSecretId = `/providers/${providerId || 'default'}/apiKey`;
-const providerApiKeySecretId = (
-  process.env.OPENCLAW_MODEL_API_KEY_SECRET_ID ||
-  (providerApiKeySecretSource === 'file' ? defaultFileSecretId : 'OPENCLAW_MODEL_API_KEY')
-).trim();
-const providerApi = (process.env.OPENCLAW_MODEL_API || 'openai-completions').trim();
-const preferredDefaultModel = (
-  process.env.OPENCLAW_DEFAULT_MODEL ||
-  process.env.OPENAI_MODEL_NAME ||
-  process.env.MODEL_NAME ||
-  process.env.LLM_MODEL ||
-  ''
-).trim();
+const providerApiKeySecretId = firstNonBlank(
+  process.env.OPENCLAW_MODEL_API_KEY_SECRET_ID,
+  providerApiKeySecretSource === 'file' ? defaultFileSecretId : 'OPENCLAW_MODEL_API_KEY',
+);
+const providerApi = firstNonBlank(process.env.OPENCLAW_MODEL_API, 'openai-completions');
+const preferredDefaultModel = firstNonBlank(
+  process.env.OPENCLAW_DEFAULT_MODEL,
+  process.env.OPENAI_MODEL_NAME,
+  process.env.MODEL_NAME,
+  process.env.LLM_MODEL,
+);
 const normalizeModelRef = (provider, modelRef) => {
   const rawModelRef = String(modelRef || '').trim();
   if (!rawModelRef) return '';
@@ -854,6 +938,49 @@ const ensurePrimaryModelInCatalog = (models, provider, modelRef, modelApiName) =
   }
   return nextModels;
 };
+const defaultKsyunWebSearchModel = 'deepseek-v3.2';
+const ensurePerplexityCompatWebSearch = ({
+  baseUrl,
+  model,
+  apiKey,
+}) => {
+  cfg.plugins = cfg.plugins || {};
+  cfg.plugins.entries = cfg.plugins.entries || {};
+  cfg.plugins.entries.perplexity = cfg.plugins.entries.perplexity || {};
+  cfg.plugins.entries.perplexity.config = cfg.plugins.entries.perplexity.config || {};
+  cfg.plugins.entries.perplexity.config.webSearch = cfg.plugins.entries.perplexity.config.webSearch || {};
+  if (baseUrl) {
+    cfg.plugins.entries.perplexity.config.webSearch.baseUrl = baseUrl;
+  }
+  if (model) {
+    cfg.plugins.entries.perplexity.config.webSearch.model = model;
+  }
+  if (apiKey && apiKey.source && apiKey.provider && apiKey.id) {
+    cfg.plugins.entries.perplexity.config.webSearch.apiKey = apiKey;
+  }
+};
+const clearPerplexityCompatWebSearch = () => {
+  if (cfg.plugins?.entries?.perplexity?.config) {
+    delete cfg.plugins.entries.perplexity.config.webSearch;
+    if (Object.keys(cfg.plugins.entries.perplexity.config).length === 0) {
+      delete cfg.plugins.entries.perplexity.config;
+    }
+    if (Object.keys(cfg.plugins.entries.perplexity).length === 0) {
+      delete cfg.plugins.entries.perplexity;
+    }
+    if (Object.keys(cfg.plugins.entries || {}).length === 0) {
+      delete cfg.plugins.entries;
+    }
+    if (Object.keys(cfg.plugins || {}).length === 0) {
+      delete cfg.plugins;
+    }
+  }
+};
+const secretRefEquals = (left, right) => (
+  String(left?.source || '').trim().toLowerCase() === String(right?.source || '').trim().toLowerCase() &&
+  String(left?.provider || '').trim() === String(right?.provider || '').trim() &&
+  String(left?.id || '').trim() === String(right?.id || '').trim()
+);
 if (providerId && providerBaseUrl && providerApiKeySecretSource && providerApiKeySecretProvider && providerApiKeySecretId) {
   if (providerApiKeySecretSource === 'env') {
     const apiKeyValue = String(process.env[providerApiKeySecretId] || '').trim();
@@ -959,6 +1086,109 @@ if (providerId && providerBaseUrl && providerApiKeySecretSource && providerApiKe
   );
 }
 
+const explicitWebSearchProvider = parseEnum(
+  process.env.OPENCLAW_WEB_SEARCH_PROVIDER,
+  ['brave', 'gemini', 'grok', 'kimi', 'perplexity', 'firecrawl'],
+  '',
+);
+const hasPerplexityCompatOverride = !!(
+  (process.env.OPENCLAW_WEB_SEARCH_BASE_URL || '').trim() ||
+  (process.env.OPENCLAW_WEB_SEARCH_MODEL || '').trim() ||
+  (process.env.OPENCLAW_WEB_SEARCH_API_KEY_SECRET_SOURCE || '').trim() ||
+  (process.env.OPENCLAW_WEB_SEARCH_API_KEY_SECRET_PROVIDER || '').trim() ||
+  (process.env.OPENCLAW_WEB_SEARCH_API_KEY_SECRET_ID || '').trim()
+);
+const existingWebSearchProvider = String(cfg.tools.web.search.provider || '').trim().toLowerCase();
+const existingPerplexityWebSearchConfig = cfg.plugins?.entries?.perplexity?.config?.webSearch;
+const legacyAutoKsyunWebSearch = (
+  !explicitWebSearchProvider &&
+  !process.env.BRAVE_API_KEY &&
+  !process.env.OPENCLAW_WEB_SEARCH_API_KEY &&
+  !hasPerplexityCompatOverride &&
+  providerId.trim().toLowerCase() === 'ksyun' &&
+  providerApi.trim().toLowerCase() === 'openai-completions' &&
+  !!providerBaseUrl &&
+  existingWebSearchProvider === 'perplexity' &&
+  String(existingPerplexityWebSearchConfig?.baseUrl || '').trim() === providerBaseUrl &&
+  String(existingPerplexityWebSearchConfig?.model || '').trim() === defaultKsyunWebSearchModel &&
+  secretRefEquals(existingPerplexityWebSearchConfig?.apiKey, {
+    source: providerApiKeySecretSource,
+    provider: providerApiKeySecretProvider,
+    id: providerApiKeySecretId,
+  })
+);
+if (legacyAutoKsyunWebSearch) {
+  delete cfg.tools.web.search.provider;
+  clearPerplexityCompatWebSearch();
+}
+const effectiveExistingWebSearchProvider = legacyAutoKsyunWebSearch
+  ? ''
+  : existingWebSearchProvider;
+const effectiveExistingPerplexityWebSearchConfig = legacyAutoKsyunWebSearch
+  ? null
+  : existingPerplexityWebSearchConfig;
+const hasExistingPerplexityCompatConfig = !!(
+  effectiveExistingPerplexityWebSearchConfig &&
+  (
+    String(effectiveExistingPerplexityWebSearchConfig.baseUrl || '').trim() ||
+    String(effectiveExistingPerplexityWebSearchConfig.model || '').trim() ||
+    effectiveExistingPerplexityWebSearchConfig.apiKey
+  )
+);
+const hasExplicitBuiltInWebSearchConfig = !!(
+  explicitWebSearchProvider ||
+  effectiveExistingWebSearchProvider ||
+  process.env.BRAVE_API_KEY ||
+  process.env.OPENCLAW_WEB_SEARCH_API_KEY ||
+  (process.env.OPENCLAW_WEB_SEARCH_BASE_URL || '').trim() ||
+  (process.env.OPENCLAW_WEB_SEARCH_MODEL || '').trim() ||
+  (process.env.OPENCLAW_WEB_SEARCH_API_KEY_SECRET_SOURCE || '').trim() ||
+  (process.env.OPENCLAW_WEB_SEARCH_API_KEY_SECRET_PROVIDER || '').trim() ||
+  (process.env.OPENCLAW_WEB_SEARCH_API_KEY_SECRET_ID || '').trim() ||
+  hasExistingPerplexityCompatConfig
+);
+const shouldDisableBuiltinWebFetchByDefault = !!(
+  !hasExplicitWebFetchEnabled &&
+  !hasExplicitBuiltInWebSearchConfig &&
+  providerId.trim().toLowerCase() === 'ksyun' &&
+  providerApi.trim().toLowerCase() === 'openai-completions' &&
+  providerBaseUrl.trim().toLowerCase().includes('kspmas-internal')
+);
+if (shouldDisableBuiltinWebFetchByDefault) {
+  // Reconcile legacy persisted configs as well. The browser and web-safe
+  // paths work reliably in VPC runtimes, while built-in web.fetch can fail
+  // against internal/special-use DNS resolutions during search.
+  cfg.tools.web.fetch.enabled = false;
+} else if (cfg.tools.web.fetch.enabled === undefined) {
+  cfg.tools.web.fetch.enabled = false;
+}
+const resolvedWebSearchProvider = explicitWebSearchProvider || effectiveExistingWebSearchProvider;
+const resolvedWebSearchBaseUrl = (process.env.OPENCLAW_WEB_SEARCH_BASE_URL || '').trim();
+const resolvedWebSearchModel = (process.env.OPENCLAW_WEB_SEARCH_MODEL || '').trim();
+const resolvedWebSearchApiKey = {
+  source: (process.env.OPENCLAW_WEB_SEARCH_API_KEY_SECRET_SOURCE || '').trim().toLowerCase(),
+  provider: (process.env.OPENCLAW_WEB_SEARCH_API_KEY_SECRET_PROVIDER || '').trim(),
+  id: (process.env.OPENCLAW_WEB_SEARCH_API_KEY_SECRET_ID || '').trim(),
+};
+if (explicitWebSearchProvider) {
+  cfg.tools.web.search.provider = explicitWebSearchProvider;
+}
+if (explicitWebSearchProvider === 'perplexity' && hasPerplexityCompatOverride) {
+  ensurePerplexityCompatWebSearch({
+    baseUrl: resolvedWebSearchBaseUrl,
+    model: resolvedWebSearchModel,
+    apiKey: resolvedWebSearchApiKey,
+  });
+}
+if (resolvedWebSearchProvider) {
+  cfg.tools.web.search.provider = resolvedWebSearchProvider;
+  if (cfg.tools.web.search.enabled === undefined || explicitWebSearchProvider) {
+    cfg.tools.web.search.enabled = true;
+  }
+} else if (!hasExplicitBuiltInWebSearchConfig) {
+  cfg.tools.web.search.enabled = false;
+}
+
 const explicitProviderConfigured = !!(
   providerId &&
   providerBaseUrl &&
@@ -1047,35 +1277,54 @@ if [[ -n "${UI_LOCALE}" && -f "${CONTROL_UI_INDEX}" ]]; then
   UI_LOCALE_ESCAPED="${UI_LOCALE_ESCAPED//\'/\\\'}"
   INJECT_LINE="<script id=\"__OPENCLAW_UI_LOCALE_BOOTSTRAP__\">try{if(!localStorage.getItem('openclaw.i18n.locale')){localStorage.setItem('openclaw.i18n.locale','${UI_LOCALE_ESCAPED}');}}catch(_e){}</script>"
 
-  TMP_CLEAN="$(mktemp)"
-  TMP_OUT="$(mktemp)"
-  grep -v '__OPENCLAW_UI_LOCALE_BOOTSTRAP__' "${CONTROL_UI_INDEX}" > "${TMP_CLEAN}" || true
-  awk -v inject="${INJECT_LINE}" '
-    BEGIN { done = 0 }
-    {
-      if (!done && index($0, "<script type=\"module\"") > 0) {
-        print inject;
-        done = 1;
+  if ! grep -Fq "${INJECT_LINE}" "${CONTROL_UI_INDEX}"; then
+    TMP_CLEAN="$(mktemp)"
+    TMP_OUT="$(mktemp)"
+    grep -v '__OPENCLAW_UI_LOCALE_BOOTSTRAP__' "${CONTROL_UI_INDEX}" > "${TMP_CLEAN}" || true
+    awk -v inject="${INJECT_LINE}" '
+      BEGIN { done = 0 }
+      {
+        if (!done && index($0, "<script type=\"module\"") > 0) {
+          print inject;
+          done = 1;
+        }
+        print;
       }
-      print;
-    }
-    END {
-      if (!done) print inject;
-    }
-  ' "${TMP_CLEAN}" > "${TMP_OUT}"
-  mv "${TMP_OUT}" "${CONTROL_UI_INDEX}"
-  rm -f "${TMP_CLEAN}"
+      END {
+        if (!done) print inject;
+      }
+    ' "${TMP_CLEAN}" > "${TMP_OUT}"
+    mv "${TMP_OUT}" "${CONTROL_UI_INDEX}"
+    rm -f "${TMP_CLEAN}"
+  fi
 fi
 
-patch_control_ui_event_gap_reconnect
-patch_gateway_client_loopback_trusted_proxy_identity
-
-# Keep built-in skills in sync with image content so image upgrades can refresh skills.
-sync_preset_skills
-register_kdocs_skill
-register_agent_reach_defaults
-sync_workspace_security_templates
-enable_self_improvement_workspace
+# ── 宽松模式：并行执行 JS 补丁和 skill 同步，最大化启动速度 ──
+if is_truthy "${EXEC_STRICT_MODE_RAW}"; then
+  # 严格模式：按顺序执行（安全优先）
+  patch_gateway_client_loopback_trusted_proxy_identity
+  sync_preset_skills
+  register_kdocs_skill 2>/dev/null || true
+  register_agent_reach_defaults 2>/dev/null || true
+  sync_workspace_security_templates
+  enable_self_improvement_workspace
+  sync_runtime_env_file
+else
+  # 宽松模式：并行启动耗时步骤（节省 ~1-2s）
+  patch_gateway_client_loopback_trusted_proxy_identity &
+  sync_preset_skills &
+  sync_workspace_security_templates &
+  sync_runtime_env_file &
+  # 等待所有后台任务完成
+  wait
+  # 依赖 skill / workspace 同步结果的步骤放到 wait 之后，避免竞态。
+  register_agent_reach_defaults 2>/dev/null || true
+  if [[ -n "${KDOCS_TOKEN:-}" ]]; then
+    register_kdocs_skill 2>/dev/null || true
+  fi
+  enable_self_improvement_workspace
+  cleanup_relaxed_workspace_security_templates
+fi
 
 touch "${BOOTSTRAP_MARKER}"
 
@@ -1084,12 +1333,6 @@ if [[ "${BOOTSTRAP_ONLY_RAW}" == "1" || "${BOOTSTRAP_ONLY_RAW}" == "true" || "${
   echo "INFO: bootstrap-only mode enabled; config reconciled."
   exit 0
 fi
-
-if [[ -z "${OPENCLAW_BROWSER_EXECUTABLE_PATH:-}" ]]; then
-  echo "WARN: browser executable not found in image PATH; browser tools may fail." >&2
-fi
-
-sync_runtime_env_file
 
 MODEL_API_KEY_SECRET_SOURCE_RAW="$(printf '%s' "${OPENCLAW_MODEL_API_KEY_SECRET_SOURCE:-file}" | tr '[:upper:]' '[:lower:]')"
 if [[ "${MODEL_API_KEY_SECRET_SOURCE_RAW}" != "env" ]]; then

@@ -381,6 +381,8 @@ offline-current: build
 
 # OpenClaw 配置
 OPENCLAW_IMAGE := hub.kce.ksyun.com/agentengine-public/openclaw
+OPENCLAW_VPC_REGISTRY ?= hub-vpc-cn-beijing-6.kce.ksyun.com
+OPENCLAW_VPC_IMAGE ?= $(subst hub.kce.ksyun.com,$(OPENCLAW_VPC_REGISTRY),$(OPENCLAW_IMAGE))
 OPENCLAW_TAG ?= latest
 OPENCLAW_CONTEXT := deploy/openclaw
 OPENCLAW_BASE_IMAGE ?= alpine/openclaw:latest
@@ -393,6 +395,7 @@ openclaw-build:
 	@echo "============================================================"
 	@echo "   基础镜像: $(OPENCLAW_BASE_IMAGE)"
 	@echo "   目标镜像: $(OPENCLAW_IMAGE):$(OPENCLAW_TAG)"
+	@echo "   内网地址: $(OPENCLAW_VPC_IMAGE):$(OPENCLAW_TAG)"
 	@echo "   PyPI 源:  $(OPENCLAW_PYPI_INDEX_URL)"
 	@echo "   NPM 源:   $(OPENCLAW_NPM_REGISTRY)"
 	@echo "   构建上下文: $(OPENCLAW_CONTEXT)/"
@@ -408,10 +411,12 @@ openclaw-build:
 		-t $(OPENCLAW_IMAGE):$(OPENCLAW_TAG) \
 		$(OPENCLAW_CONTEXT)
 	@echo "✅ 构建完成: $(OPENCLAW_IMAGE):$(OPENCLAW_TAG)"
+	@echo "🔗 对应内网地址: $(OPENCLAW_VPC_IMAGE):$(OPENCLAW_TAG)"
 
 ## 推送 OpenClaw 镜像到 KCR (构建 + 推送)
 openclaw-push: openclaw-build
 	@echo "📤 推送 OpenClaw 镜像: $(OPENCLAW_IMAGE):$(OPENCLAW_TAG)"
+	@echo "🔗 对应内网地址: $(OPENCLAW_VPC_IMAGE):$(OPENCLAW_TAG)"
 	@docker push $(OPENCLAW_IMAGE):$(OPENCLAW_TAG)
 	@echo "✅ 推送完成"
 

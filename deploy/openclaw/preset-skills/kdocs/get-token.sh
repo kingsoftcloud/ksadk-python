@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# WPS 授权工具 - 获取 skill_hub token (优化版 v2)
+# WPS 授权工具 - 获取 skill_hub token (优化版)
 #
 # 流程：
 #   1. 生成 code，构造登录链接（callback 指向 api.wps.cn）
@@ -8,17 +8,11 @@
 #   3. WPS 登录成功后回调服务端，将 wps_sid 转为 skill_hub token
 #   4. 本脚本轮询 exchange 接口获取 token
 #
-# 用法：bash get-token.sh [--json] [--notify] [--cache]
+# 用法：bash get-token.sh [--json] [--notify]
 # 优化点：
 #   - 轮询间隔从 3 秒缩短到 1 秒
 #   - 使用 jq 解析 JSON（如果可用），否则回退到 grep
 #   - 获取 token 后可选发送通知
-#   - 支持缓存 token 到 ~/.kdocs_token_cache
-
-set -e
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CACHE_FILE="$HOME/.kdocs_token_cache"
 
 generate_uuid() {
   if command -v uuidgen &>/dev/null; then
@@ -70,25 +64,14 @@ extract_json_value() {
 # 发送通知（如果启用）
 send_notify() {
   local message="$1"
-  local token_short="$2"
-  local expires_hours="$3"
-  
   if echo "$@" | grep -q "\-\-notify"; then
-    # 尝试发送系统通知（macOS）
-    if command -v osascript &>/dev/null; then
-      osascript -e "display notification \"Token: ${token_short}\\n有效期：${expires_hours}小时\" with title \"✅ WPS Token 已获取\"" 2>/dev/null || true
-    fi
-    
     # 尝试通过 openclaw 发送消息
     if command -v openclaw &>/dev/null; then
-      openclaw agent --message "🔑 WPS Token 获取成功！Token: ${token_short}, 有效期：${expires_hours}小时" 2>/dev/null || true
+      openclaw agent --message "🔑 WPS Token 获取成功！$message" 2>/dev/null || true
     fi
-    
-    # 保存到缓存文件
-    if echo "$@" | grep -q "\-\-cache"; then
-      echo "$TOKEN" > "$CACHE_FILE"
-      chmod 600 "$CACHE_FILE"
-      echo "💾 Token 已缓存到 ~/.kdocs_token_cache"
+    # 尝试发送系统通知
+    if command -v osascript &>/dev/null; then
+      osascript -e "display notification \"$message\" with title \"WPS Token 已获取\"" 2>/dev/null || true
     fi
   fi
 }
@@ -100,7 +83,7 @@ LOGIN_URL="https://account.wps.cn/login?cb=${ENCODED_CB}"
 
 echo ""
 echo "======================================================================"
-echo "  🔑 WPS 授权 - 获取 skill_hub token (优化版 v2)"
+echo "  WPS 授权 - 获取 skill_hub token (优化版)"
 echo "======================================================================"
 echo ""
 echo "📱 请在浏览器中打开以下链接登录："
@@ -114,10 +97,9 @@ echo ""
 echo "⏳ 等待登录... (轮询间隔 1 秒，最长 5 分钟)"
 
 TIMEOUT=300
-INTERVAL=1
+INTERVAL=1  # 优化：从 3 秒缩短到 1 秒
 START=$(date +%s)
 LAST_DOT=0
-DOT_COUNT=0
 
 while true; do
   NOW=$(date +%s)
@@ -127,12 +109,6 @@ while true; do
     echo ""
     echo ""
     echo "❌ 超时未登录（${TIMEOUT}秒）"
-    echo ""
-    echo "💡 提示："
-    echo "   - 确认链接已正确打开"
-    echo "   - 检查网络连接"
-    echo "   - 重新运行脚本获取新 auth_code"
-    echo ""
     exit 1
   fi
 
@@ -157,37 +133,18 @@ while true; do
     echo "🔑 skill_hub token:"
     echo "${TOKEN}"
     echo ""
-    
-    # 计算有效期
-    if [ -n "$EXPIRES" ] && [ "$EXPIRES" -gt 0 ] 2>/dev/null; then
-      HOURS=$((EXPIRES / 3600))
-      MINUTES=$(((EXPIRES % 3600) / 60))
-      echo "⏰ expires_in: ${EXPIRES}s (约 ${HOURS}小时${MINUTES}分钟)"
-    else
-      echo "⏰ expires_in: 未知"
-      HOURS=24
-    fi
+    echo "⏰ expires_in: ${EXPIRES}s (约 $((EXPIRES / 3600)) 小时)"
     echo ""
     echo "======================================================================"
     echo ""
 
     # 截断显示 token（前 20 位 + ...）
     TOKEN_SHORT="${TOKEN:0:20}..."
-    
-    # 发送通知
-    send_notify "$@" "$TOKEN_SHORT" "$HOURS"
+    send_notify "Token: ${TOKEN_SHORT}, 有效期：$((EXPIRES / 3600))小时"
 
-    # JSON 输出
     if echo "$@" | grep -q "\-\-json"; then
       echo "{\"token\":\"${TOKEN}\",\"expires_in\":${EXPIRES}}"
     fi
-    
-    echo ""
-    echo "💡 下次使用："
-    echo "   export KDOCS_TOKEN=\"${TOKEN}\""
-    echo "   或运行：bash setup.sh"
-    echo ""
-    
     exit 0
 
   elif [ "$RESP_CODE" = "202" ]; then
@@ -195,11 +152,6 @@ while true; do
     if [ $((ELAPSED % 5)) -eq 0 ] && [ "$ELAPSED" -ne "$LAST_DOT" ]; then
       printf "."
       LAST_DOT=$ELAPSED
-      DOT_COUNT=$((DOT_COUNT + 1))
-      # 每 30 秒显示一行状态
-      if [ $((DOT_COUNT % 6)) -eq 0 ]; then
-        echo " (已等待 ${ELAPSED}s)"
-      fi
     fi
   else
     echo ""

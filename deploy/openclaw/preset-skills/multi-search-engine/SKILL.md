@@ -11,17 +11,21 @@ description: >
 Use this skill to perform broad web search across multiple engines and then
 cross-check results before answering.
 
-## Default tool path
+## How to search
 
-Prefer the built-in no-key commands first:
+Use the built-in fetch tool or curl to retrieve search results from public engines.
+No API key is needed.
 
 ```bash
-web-safe search "query" --limit 5
-web-safe read "https://example.com/page"
+curl -sS "https://www.baidu.com/s?wd=QUERY" | head -200
+curl -sS "https://cn.bing.com/search?q=QUERY" | head -200
 ```
 
-`web-safe search` gives a fast public-web result set without paid API keys.
-`web-safe read` fetches a readable markdown version of a public page.
+Or use the browser tool for richer results:
+
+```text
+browser navigate https://www.baidu.com/s?wd=QUERY
+```
 
 ## When to use
 
@@ -40,14 +44,12 @@ Replace `{q}` with URL-encoded query text.
 - 360: `https://www.so.com/s?q={q}`
 - Google: `https://www.google.com/search?q={q}`
 - DuckDuckGo: `https://duckduckgo.com/?q={q}`
-- Brave: `https://search.brave.com/search?q={q}`
-- Kagi: `https://kagi.com/search?q={q}`
 
 ## Recommended workflow
 
-1. Start with `web-safe search "query" --limit 5`.
-2. If recall is weak, try a second query with a site filter or engine-specific wording.
-3. Open top results with `web-safe read "URL"` and keep authoritative links.
+1. Pick 1-2 engines best suited for the query language and topic.
+2. Fetch search result pages and extract top links.
+3. Read top results with fetch or browser and keep authoritative links.
 4. If facts conflict, run targeted follow-up queries with dates or `site:` filters.
 5. Return answer with source links and date context.
 
