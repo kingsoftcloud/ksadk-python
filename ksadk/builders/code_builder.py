@@ -16,6 +16,8 @@ import itertools
 import time
 import zipfile
 import re
+import json
+import hashlib
 from pathlib import Path
 from typing import List, Optional, Set
 
@@ -26,6 +28,36 @@ from ksadk.builders.base import BaseBuilder, BuildResult
 
 class CodeBuilder(BaseBuilder):
     """Code 模式构建器 - 打包 zip + 依赖"""
+
+    INPUT_FINGERPRINT_VERSION = 1
+    IGNORED_ROOT_NAMES = {
+        "__pycache__",
+        "node_modules",
+        ".git",
+        ".venv",
+        "venv",
+        "env",
+        "site-packages",
+        "dist-packages",
+        "lib",
+        "lib64",
+    }
+    IGNORED_DIR_NAMES = {
+        "__pycache__",
+        "node_modules",
+        ".git",
+        ".venv",
+        "venv",
+        "env",
+        "site-packages",
+        "dist-packages",
+        "lib",
+        "lib64",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+    }
+    IGNORED_FILE_NAMES = {".DS_Store"}
     
     def __init__(self, project_dir: Path, config: dict = None):
         super().__init__(project_dir, config)
@@ -60,13 +92,14 @@ class CodeBuilder(BaseBuilder):
         
         # 检查是否需要重新构建
         no_cache = self.config.get("no_cache", False) if self.config else False
-        if zip_path.exists() and not no_cache and not self._need_rebuild(zip_path):
+        if zip_path.exists() and not no_cache and not self._need_rebuild(zip_path, detection_result):
             incompatibles = self._scan_incompatible_binaries_in_zip(zip_path)
             if incompatibles:
                 click.secho("\n⚠️ 检测到缓存构建包含非 Linux 兼容关键二进制，自动重建...", fg='yellow')
                 for item in incompatibles[:5]:
                     click.echo(f"   - {item}")
             else:
+                self._save_input_fingerprint(zip_path, detection_result)
                 zip_size = zip_path.stat().st_size / (1024 * 1024)
                 click.secho(f"\n✅ 使用已有构建: {zip_path.name} ({zip_size:.2f} MB)", fg='green')
                 click.echo("   (如需重新构建，请使用 --no-cache 或删除 .agentengine/code_build 目录)")
@@ -99,6 +132,7 @@ class CodeBuilder(BaseBuilder):
         # Step 3: 打包 zip
         click.echo("\n📦 Step 3/3: 打包 zip...")
         self._package_zip(zip_path, detection_result)
+        self._save_input_fingerprint(zip_path, detection_result)
         
         zip_size = zip_path.stat().st_size
         click.echo(f"   zip 文件: {zip_path}")
@@ -115,8 +149,16 @@ class CodeBuilder(BaseBuilder):
             }
         )
     
-    def _need_rebuild(self, zip_path: Path) -> bool:
-        """检查是否需要重新构建"""
+    def _need_rebuild(self, zip_path: Path, detection_result) -> bool:
+        """检查是否需要重新构建。优先使用输入内容指纹，缺失时回退到 mtime。"""
+        manifest = self._load_input_fingerprint(zip_path)
+        if manifest:
+            current_fingerprint = self._build_input_fingerprint(detection_result)
+            return manifest.get("fingerprint") != current_fingerprint["fingerprint"]
+        return self._need_rebuild_from_mtime(zip_path)
+
+    def _need_rebuild_from_mtime(self, zip_path: Path) -> bool:
+        """兼容旧缓存：当没有指纹文件时，回退到 mtime 判断。"""
         zip_mtime = zip_path.stat().st_mtime
         
         for item in self.project_dir.iterdir():
@@ -129,19 +171,109 @@ class CodeBuilder(BaseBuilder):
                     if file_path.stat().st_mtime > zip_mtime:
                         return True
         return False
+
+    def _fingerprint_manifest_path(self, zip_path: Path) -> Path:
+        return zip_path.with_suffix(".inputs.json")
+
+    def _load_input_fingerprint(self, zip_path: Path) -> Optional[dict]:
+        manifest_path = self._fingerprint_manifest_path(zip_path)
+        if not manifest_path.exists():
+            return None
+        try:
+            with open(manifest_path, encoding="utf-8") as f:
+                data = json.load(f)
+            if data.get("version") != self.INPUT_FINGERPRINT_VERSION:
+                return None
+            return data
+        except Exception:
+            return None
+
+    def _save_input_fingerprint(self, zip_path: Path, detection_result) -> None:
+        manifest_path = self._fingerprint_manifest_path(zip_path)
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = self._build_input_fingerprint(detection_result)
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+
+    def _build_input_fingerprint(self, detection_result) -> dict:
+        digest = hashlib.sha256()
+        files = []
+
+        digest.update(f"fingerprint-version:{self.INPUT_FINGERPRINT_VERSION}\n".encode("utf-8"))
+        digest.update(f"framework:{detection_result.type.value}\n".encode("utf-8"))
+        digest.update(f"entry:{getattr(detection_result, 'entry_point', '')}\n".encode("utf-8"))
+        digest.update(f"target-python:{self.TARGET_PYTHON_VERSION}\n".encode("utf-8"))
+
+        for dep in self._build_requirements_list(detection_result):
+            digest.update(dep.encode("utf-8"))
+            digest.update(b"\n")
+
+        for file_path in self._iter_project_files():
+            relative = file_path.relative_to(self.project_dir).as_posix()
+            files.append(relative)
+            digest.update(relative.encode("utf-8"))
+            digest.update(b"\0")
+            with open(file_path, "rb") as f:
+                while True:
+                    chunk = f.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+            digest.update(b"\0")
+
+        return {
+            "version": self.INPUT_FINGERPRINT_VERSION,
+            "fingerprint": digest.hexdigest(),
+            "files": files,
+        }
+
+    def _iter_project_files(self):
+        for item in sorted(self.project_dir.iterdir(), key=lambda p: p.name):
+            if self._should_skip_root_path(item):
+                continue
+            if item.is_file():
+                yield item
+            elif item.is_dir():
+                yield from self._walk_project_dir(item)
+
+    def _walk_project_dir(self, root_dir: Path):
+        for current_root, dirnames, filenames in os.walk(root_dir):
+            dirnames[:] = sorted(d for d in dirnames if not self._should_skip_dir_name(d))
+            for filename in sorted(filenames):
+                file_path = Path(current_root) / filename
+                if self._should_skip_project_file(file_path):
+                    continue
+                yield file_path
+
+    def _should_skip_root_path(self, path: Path) -> bool:
+        if path.name.startswith(".") and path.name != ".env":
+            return True
+        if path.name in self.IGNORED_ROOT_NAMES:
+            return True
+        if path.is_dir() and self._should_skip_dir_name(path.name):
+            return True
+        if path.is_file() and self._should_skip_project_file(path):
+            return True
+        return False
+
+    def _should_skip_dir_name(self, dir_name: str) -> bool:
+        return dir_name in self.IGNORED_DIR_NAMES
+
+    def _should_skip_project_file(self, file_path: Path) -> bool:
+        if file_path.name in self.IGNORED_FILE_NAMES:
+            return True
+        if file_path.suffix == ".pyc":
+            return True
+        if "__pycache__" in file_path.parts:
+            return True
+        return False
     
     def _prepare_requirements(self, detection_result) -> Path:
         """准备 requirements.txt"""
-        base_deps = self._get_base_requirements(detection_result)
-        final_deps = list(base_deps)
-        
-        # 合并用户依赖
-        user_requirements = self.project_dir / "requirements.txt"
-        if user_requirements.exists():
+        final_deps = self._build_requirements_list(detection_result)
+
+        if (self.project_dir / "requirements.txt").exists():
             click.echo(f"   发现 requirements.txt，正在合并...")
-            user_content = user_requirements.read_text()
-            user_deps = [l.strip() for l in user_content.split('\n') if l.strip() and not l.startswith('#')]
-            final_deps.extend(user_deps)
         else:
             click.echo(f"   自动生成依赖清单")
         
@@ -156,6 +288,17 @@ class CodeBuilder(BaseBuilder):
             click.echo(f"      ... 及其他 {len(final_deps) - 5} 个")
         
         return requirements_path
+
+    def _build_requirements_list(self, detection_result) -> List[str]:
+        final_deps = list(self._get_base_requirements(detection_result))
+
+        user_requirements = self.project_dir / "requirements.txt"
+        if user_requirements.exists():
+            user_content = user_requirements.read_text(encoding="utf-8")
+            user_deps = [l.strip() for l in user_content.split('\n') if l.strip() and not l.startswith('#')]
+            final_deps.extend(user_deps)
+
+        return final_deps
     
     def _get_base_requirements(self, detection_result) -> List[str]:
         """获取基础依赖列表"""
@@ -571,28 +714,10 @@ class CodeBuilder(BaseBuilder):
         
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
             # 添加项目文件
-            for item in self.project_dir.iterdir():
-                if item.name.startswith('.'):
-                    if item.name != '.env':
-                        continue
-                
-                if item.name in (
-                    '__pycache__', 'node_modules', '.git', '.venv', 'venv', 'env',
-                    'site-packages', 'dist-packages', 'lib', 'lib64'
-                ):
-                    continue
-                
-                if item.is_file():
-                    zf.write(item, item.name)
-                    file_count += 1
-                elif item.is_dir():
-                    for file_path in item.rglob('*'):
-                        if '__pycache__' in str(file_path) or file_path.suffix == '.pyc':
-                            continue
-                        if file_path.is_file():
-                            arcname = file_path.relative_to(self.project_dir).as_posix()
-                            zf.write(file_path, arcname)
-                            file_count += 1
+            for file_path in self._iter_project_files():
+                arcname = file_path.relative_to(self.project_dir).as_posix()
+                zf.write(file_path, arcname)
+                file_count += 1
             
             # 添加依赖
             deps_count = 0

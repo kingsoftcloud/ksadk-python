@@ -56,13 +56,14 @@ class MCPCodeBuilder(CodeBuilder):
         
         # 检查是否需要重新构建
         no_cache = self.config.get("no_cache", False) if self.config else False
-        if zip_path.exists() and not no_cache and not self._need_rebuild(zip_path):
+        if zip_path.exists() and not no_cache and not self._need_rebuild(zip_path, detection_result):
             incompatibles = self._scan_incompatible_binaries_in_zip(zip_path)
             if incompatibles:
                 click.secho("\n⚠️ 检测到缓存 MCP 构建包含非 Linux 兼容关键二进制，自动重建...", fg='yellow')
                 for item in incompatibles[:5]:
                     click.echo(f"   - {item}")
             else:
+                self._save_input_fingerprint(zip_path, detection_result)
                 zip_size = zip_path.stat().st_size / (1024 * 1024)
                 click.secho(f"\n✅ 使用已有构建: {zip_path.name} ({zip_size:.2f} MB)", fg='green')
                 return BuildResult(
@@ -96,6 +97,7 @@ class MCPCodeBuilder(CodeBuilder):
         # Step 3: 打包
         click.echo("\n📦 Step 3/3: 打包 zip...")
         self._package_mcp_zip(zip_path, detection_result)
+        self._save_input_fingerprint(zip_path, detection_result)
         
         zip_size = zip_path.stat().st_size
         click.echo(f"   zip 文件: {zip_path}")
@@ -157,28 +159,10 @@ class MCPCodeBuilder(CodeBuilder):
         
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
             # 添加项目文件
-            for item in self.project_dir.iterdir():
-                if item.name.startswith('.'):
-                    if item.name != '.env':
-                        continue
-                
-                if item.name in (
-                    '__pycache__', 'node_modules', '.git', '.venv', 'venv', 'env',
-                    'site-packages', 'dist-packages', 'lib', 'lib64'
-                ):
-                    continue
-                
-                if item.is_file():
-                    zf.write(item, item.name)
-                    file_count += 1
-                elif item.is_dir():
-                    for file_path in item.rglob('*'):
-                        if '__pycache__' in str(file_path) or file_path.suffix == '.pyc':
-                            continue
-                        if file_path.is_file():
-                            arcname = str(file_path.relative_to(self.project_dir))
-                            zf.write(file_path, arcname)
-                            file_count += 1
+            for file_path in self._iter_project_files():
+                arcname = file_path.relative_to(self.project_dir).as_posix()
+                zf.write(file_path, arcname)
+                file_count += 1
             
             # 添加依赖（已替换为 Linux 二进制）
             deps_count = 0

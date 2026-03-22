@@ -1,4 +1,4 @@
-"""Agent reference resolution helpers for CLI commands."""
+"""Resource reference resolution helpers for CLI commands."""
 
 from __future__ import annotations
 
@@ -8,27 +8,31 @@ from typing import Optional
 
 
 @dataclass(frozen=True)
-class ResolvedAgentRef:
+class ResolvedResourceRef:
     value: str
     source: str
+    resource: str = "agent"
     source_path: Optional[Path] = None
 
     @property
     def source_text(self) -> str:
         if self.source == "cli":
             return "命令行参数"
-        if self.source == "state.agent_id":
-            return f"{self._path_name()} 的 agent_id"
-        if self.source == "state.name":
-            return f"{self._path_name()} 的 name"
-        if self.source == "config.name":
-            return f"{self._path_name()} 的 name"
+        if self.source.startswith("state."):
+            field = self.source.split(".", 1)[1]
+            return f"{self._path_name()} 的 {field}"
+        if self.source.startswith("config."):
+            field = self.source.split(".", 1)[1]
+            return f"{self._path_name()} 的 {field}"
         return self.source
 
     def _path_name(self) -> str:
         if self.source_path:
             return self.source_path.name
         return "本地文件"
+
+
+ResolvedAgentRef = ResolvedResourceRef
 
 
 def merge_agent_inputs(
@@ -63,8 +67,26 @@ def resolve_agent_ref(
     include_project_config: bool = True,
 ) -> Optional[ResolvedAgentRef]:
     """Resolve agent reference from CLI input and local files."""
+    return resolve_resource_ref(
+        explicit,
+        resource="agent",
+        cwd=cwd,
+        include_state=include_state,
+        include_project_config=include_project_config,
+    )
+
+
+def resolve_resource_ref(
+    explicit: Optional[str],
+    *,
+    resource: str,
+    cwd: Optional[Path] = None,
+    include_state: bool = True,
+    include_project_config: bool = False,
+) -> Optional[ResolvedResourceRef]:
+    """Resolve a resource reference from CLI input and local files."""
     if explicit:
-        return ResolvedAgentRef(value=explicit, source="cli")
+        return ResolvedResourceRef(value=explicit, source="cli", resource=resource)
 
     root = cwd or Path(".")
 
@@ -72,18 +94,11 @@ def resolve_agent_ref(
         state_path = root / ".agentengine.state"
         state_data = _read_yaml_dict(state_path)
         if state_data:
-            state_agent_id = _normalize(state_data.get("agent_id"))
-            if state_agent_id:
-                return ResolvedAgentRef(
-                    value=state_agent_id,
-                    source="state.agent_id",
-                    source_path=state_path,
-                )
-            state_name = _normalize(state_data.get("name"))
-            if state_name:
-                return ResolvedAgentRef(
-                    value=state_name,
-                    source="state.name",
+            for field_name, value in _state_candidates(state_data, resource):
+                return ResolvedResourceRef(
+                    value=value,
+                    source=f"state.{field_name}",
+                    resource=resource,
                     source_path=state_path,
                 )
 
@@ -95,13 +110,44 @@ def resolve_agent_ref(
                 continue
             name = _normalize(data.get("name"))
             if name:
-                return ResolvedAgentRef(
+                return ResolvedResourceRef(
                     value=name,
                     source="config.name",
+                    resource=resource,
                     source_path=path,
                 )
 
     return None
+
+
+def resolve_mcp_ref(
+    explicit: Optional[str],
+    *,
+    cwd: Optional[Path] = None,
+    include_state: bool = True,
+) -> Optional[ResolvedResourceRef]:
+    return resolve_resource_ref(
+        explicit,
+        resource="mcp",
+        cwd=cwd,
+        include_state=include_state,
+        include_project_config=False,
+    )
+
+
+def resolve_openclaw_ref(
+    explicit: Optional[str],
+    *,
+    cwd: Optional[Path] = None,
+    include_state: bool = True,
+) -> Optional[ResolvedResourceRef]:
+    return resolve_resource_ref(
+        explicit,
+        resource="openclaw",
+        cwd=cwd,
+        include_state=include_state,
+        include_project_config=False,
+    )
 
 
 def _normalize(value: Optional[object]) -> Optional[str]:
@@ -111,6 +157,36 @@ def _normalize(value: Optional[object]) -> Optional[str]:
         value = str(value)
     value = value.strip()
     return value or None
+
+
+def _state_candidates(state_data: dict, resource: str) -> list[tuple[str, str]]:
+    state_type = _normalize(state_data.get("type"))
+
+    if resource == "agent":
+        if state_type in {"mcp", "openclaw"}:
+            return []
+        return _pick_fields(state_data, ("agent_id", "name"))
+
+    if resource == "mcp":
+        if state_type != "mcp":
+            return []
+        return _pick_fields(state_data, ("mcp_id", "name"))
+
+    if resource == "openclaw":
+        if state_type != "openclaw":
+            return []
+        return _pick_fields(state_data, ("agent_id", "name"))
+
+    return []
+
+
+def _pick_fields(state_data: dict, fields: tuple[str, ...]) -> list[tuple[str, str]]:
+    values: list[tuple[str, str]] = []
+    for field in fields:
+        value = _normalize(state_data.get(field))
+        if value:
+            values.append((field, value))
+    return values
 
 
 def _read_yaml_dict(path: Path) -> Optional[dict]:
@@ -126,4 +202,3 @@ def _read_yaml_dict(path: Path) -> Optional[dict]:
     except Exception:
         return None
     return None
-

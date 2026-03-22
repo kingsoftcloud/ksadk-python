@@ -5,6 +5,43 @@ All notable changes to the **Kingsoft AgentEngine SDK (ksadk)** project will be 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.6] - 2026-03-22
+
+### 🚀 新特性 (New Features)
+
+- **CLI 双一等用户输出契约**:
+  - 资源命令与工作流命令统一支持 `--output pretty|json`，为人类用户和 AI Agent 同时提供稳定入口。
+  - 新增结构化 JSON envelope，用于 `list/status/result/dry_run/error` 场景，降低自动化解析成本。
+- **配置命令分层**:
+  - 新增 `agentengine config show` 与 `agentengine config set KEY=VALUE...` 非交互式入口。
+  - `agentengine config` / `agentengine config wizard` 明确为交互式向导路径。
+- **Dry Run 双层计划输出**:
+  - `deploy` / `launch` 的 dry-run 现同时输出本地执行计划与远端请求摘要。
+  - 计划节点细化为 `local_build`、`artifact_publish`、`deploy_request`，并附带完整 `curl` 便于调试。
+
+### 🛠 改进 (Improvements)
+
+- **CLI 平台化收口**:
+  - 新增 canonical `agent` 资源组，统一 `agent list/status/invoke/delete` 语义。
+  - `mcp`、`openclaw`、`version`、`dashboard share` 接入共享渲染、错误提示与帮助文案层。
+  - 根帮助页仅保留 canonical surface，历史入口改为隐藏兼容别名。
+- **工作流一致性增强**:
+  - `build` / `deploy` / `launch` 共享输出层、摘要风格、下一步提示与 dry-run 展示。
+  - 统一制品复用与 `--no-cache` 语义，减少无意义 rebuild。
+  - 构建缓存命中后会更稳定地复用已有 `ks3_path` / `image` 元数据。
+- **交互与终端体验收口**:
+  - 新增 `--no-color` 与非 TTY 感知，JSON / 非 TTY 场景下不再输出多余 Banner 与装饰。
+  - destructive 命令统一收敛到 `--yes/-y`，`--force/-f` / `destroy` 保留兼容但不再推荐。
+
+### 🐛 修复 (Bug Fixes)
+
+- **Serverless 部署与删除修复**:
+  - 修复部分 code 模式部署中 `ks3_path` 元数据缺失或格式不稳定导致的后续部署失败问题。
+  - 删除 Agent 时仅在远端删除成功后清理对应本地 `.agentengine.state`，并支持显式项目目录语义。
+- **SDK/测试契约修复**:
+  - 校正 `from ksadk import Agent/Runner` 相关测试用例，使其与当前 `load_agent_module` / `create_runner` / `BaseRunner.run_server` 契约对齐。
+  - 补齐 help snapshot、error hint snapshot、资源/工作流 JSON 契约回归测试。
+
 ## [0.3.5] - 2026-03-12
 
 ### 🛠 改进 (Improvements)

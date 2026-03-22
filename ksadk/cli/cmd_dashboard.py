@@ -1,4 +1,4 @@
-"""agentengine dashboard - 打开云端已部署 Agent UI（短链接模式）。"""
+"""agentengine dashboard - Dashboard 命令组（canonical: `dashboard open`）。"""
 
 from __future__ import annotations
 
@@ -12,21 +12,99 @@ import click
 
 from ksadk.api import AgentEngineAPIError, AgentEngineClient
 from ksadk.cli.agent_ref import ResolvedAgentRef, merge_agent_inputs, resolve_agent_ref
-from ksadk.cli.error_utils import print_exception
-from ksadk.cli.ui import get_console, new_table, print_error, print_info, print_kv, print_success, print_warn
+from ksadk.cli.dry_run import dry_run_option, effective_dry_run, run_async_with_dry_run
+from ksadk.cli.error_utils import abort_with_cli_error, remote_error, resolution_error, usage_error
+from ksadk.cli.resource_common import (
+    CONTEXT_SETTINGS,
+    ResourceActionSet,
+    ResourceDescriptor,
+    ResourceListSchema,
+    ResourceStatusSchema,
+    build_resource_group_help,
+    confirm_destructive,
+    confirm_options,
+    pagination_options,
+    print_compatibility_hint,
+    render_descriptor_list,
+    render_descriptor_status,
+)
+from ksadk.cli.ui import print_info, print_kv, print_success, print_warn
+from ksadk.cli.ui import is_json_output, is_stdout_tty, output_option as cli_output_option
 from ksadk.deployment.state import load_state
 from ksadk.deployment.ui_config import resolve_ui_config
 
-console = get_console()
+DASHBOARD_RESOURCE = ResourceDescriptor(
+    name="Dashboard",
+    summary="Dashboard 资源管理。",
+    resource_key="dashboard",
+    actions=ResourceActionSet(
+        open="agentengine dashboard open [agent_ref]",
+        extra=("share",),
+    ),
+    examples=(
+        "agentengine dashboard open",
+        "agentengine dashboard open ar-xxxx",
+        "agentengine dashboard share list ar-xxxx",
+    ),
+    missing_ref_message="未找到可用 Agent，请指定 Agent（--agent 或位置参数）",
+    resolution_commands=(
+        "agentengine agent list",
+        "agentengine dashboard open --agent <AgentName|AgentId>",
+    ),
+    open_action_help="打开 Agent Dashboard",
+    extra_action_help=(
+        ("share", "管理 Dashboard 分享链接"),
+    ),
+)
 
+DASHBOARD_SHARE_RESOURCE = ResourceDescriptor(
+    name="Dashboard 链接",
+    summary="Dashboard 分享链接管理。",
+    resource_key="dashboard_share",
+    actions=ResourceActionSet(
+        list="agentengine dashboard share list [agent_ref]",
+        delete="agentengine dashboard share revoke <link_id>",
+    ),
+    list_schema=ResourceListSchema(
+        title="Dashboard 链接列表",
+        noun="Dashboard 链接",
+        columns=(
+            {"header": "ID", "key": "id", "style": "#58a6ff", "no_wrap": True},
+            {"header": "类型", "key": "type", "no_wrap": True},
+            {"header": "状态", "key": "status", "no_wrap": True},
+            {"header": "路径", "key": "path", "no_wrap": True},
+            {"header": "过期时间", "key": "expires_at", "overflow": "fold"},
+            {"header": "创建时间", "key": "created_at", "overflow": "fold"},
+        ),
+        empty_message="没有找到匹配的 Dashboard 链接",
+        summary_lines=("使用 `agentengine dashboard share revoke <link_id>` 撤销链接。",),
+    ),
+    status_schema=ResourceStatusSchema(
+        title="Dashboard 链接结果",
+        next_steps=("agentengine dashboard share list --agent <AgentName|AgentId>",),
+    ),
+    missing_ref_message="未找到可用 Agent，请指定 Agent（--agent 或位置参数）",
+    resolution_commands=(
+        "agentengine agent list",
+        "agentengine dashboard open --agent <AgentName|AgentId>",
+    ),
+    list_action_help="列出 Dashboard 分享链接",
+    delete_action_help="撤销 Dashboard 分享链接",
+)
 
 class DashboardGroup(click.Group):
-    """支持 `agentengine dashboard [agent_ref]` + 子命令共存。"""
+    """支持 `dashboard open` canonical + `dashboard [agent_ref]` 兼容路径。"""
 
     def parse_args(self, ctx, args):
         ctx.ensure_object(dict)
         if args:
             first = args[0]
+            if first == "list":
+                raise click.UsageError(
+                    "不支持 `agentengine dashboard list`。打开 Dashboard 请使用 "
+                    "`agentengine dashboard open [agent_ref]`；查看分享链接请使用 "
+                    "`agentengine dashboard share list`。"
+                )
             if not first.startswith("-") and first not in self.commands:
                 ctx.obj["positional_agent_ref"] = first
                 args = args[1:]
@@ -51,7 +129,76 @@ def _parse_expires_seconds_option(
         raise click.BadParameter("必须是整数秒，或 never") from e
 
 
-@click.group("dashboard", cls=DashboardGroup, invoke_without_command=True)
+def _abort_dashboard_error(
+    err: Exception,
+    *,
+    context: str | None = None,
+    argv: list[str] | None = None,
+    show_help: bool = False,
+) -> None:
+    abort_with_cli_error(err, context=context, argv=argv, show_help=show_help)
+
+
+@click.group(
+    "dashboard",
+    cls=DashboardGroup,
+    invoke_without_command=True,
+    context_settings=CONTEXT_SETTINGS,
+    help=build_resource_group_help(DASHBOARD_RESOURCE),
+)
+@click.option("--agent", "--agent-id", "agent_option", "-a", hidden=True, help="(兼容) Agent 名称或 ID")
+@click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", hidden=True, help="(兼容) 区域")
+@click.option("--path", "ui_path", default=None, hidden=True, help="(兼容) 目标 UI 路径")
+@click.option("--share", is_flag=True, hidden=True, help="(兼容) 创建可分享链接")
+@click.option(
+    "--expires-seconds",
+    default=None,
+    type=str,
+    callback=_parse_expires_seconds_option,
+    hidden=True,
+    help="(兼容) 链接有效期（秒）；支持 never(=0)",
+)
+@click.option("--no-open", is_flag=True, hidden=True, help="(兼容) 仅打印 URL，不自动打开浏览器")
+@click.option("--direct", is_flag=True, hidden=True, help="(兼容) 直接打开 endpoint/path")
+@cli_output_option(hidden=True)
+@click.pass_context
+def dashboard(
+    ctx: click.Context,
+    agent_option: Optional[str],
+    region: str,
+    ui_path: Optional[str],
+    share: bool,
+    expires_seconds: Optional[int],
+    no_open: bool,
+    direct: bool,
+    output_mode: str | None,
+):
+    _ = output_mode
+    if ctx.invoked_subcommand is not None:
+        return
+
+    positional_ref = None
+    if isinstance(ctx.obj, dict):
+        positional_ref = ctx.obj.get("positional_agent_ref")
+
+    print_compatibility_hint(
+        legacy="agentengine dashboard",
+        canonical="agentengine dashboard open",
+    )
+    _open_dashboard(
+        positional_agent=positional_ref,
+        agent_option=agent_option,
+        region=region,
+        ui_path=ui_path,
+        share=share,
+        expires_seconds=expires_seconds,
+        no_open=no_open,
+        direct=direct,
+    )
+
+
+@dashboard.command("open", context_settings=CONTEXT_SETTINGS)
+@click.argument("agent_ref", required=False)
 @click.option("--agent", "--agent-id", "agent_option", "-a", help="Agent 名称或 ID")
 @click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
 @click.option("--path", "ui_path", default=None, help="目标 UI 路径（默认根据配置自动推导）")
@@ -65,9 +212,9 @@ def _parse_expires_seconds_option(
 )
 @click.option("--no-open", is_flag=True, help="仅打印 URL，不自动打开浏览器")
 @click.option("--direct", is_flag=True, help="直接打开 endpoint/path（跳过短链接创建）")
-@click.pass_context
-def dashboard(
-    ctx: click.Context,
+@cli_output_option()
+def dashboard_open(
+    agent_ref: Optional[str],
     agent_option: Optional[str],
     region: str,
     ui_path: Optional[str],
@@ -75,17 +222,12 @@ def dashboard(
     expires_seconds: Optional[int],
     no_open: bool,
     direct: bool,
+    output_mode: str | None,
 ):
-    """统一打开云端 Dashboard（默认短链接模式）。"""
-    if ctx.invoked_subcommand is not None:
-        return
-
-    positional_ref = None
-    if isinstance(ctx.obj, dict):
-        positional_ref = ctx.obj.get("positional_agent_ref")
-
+    """打开 Agent Dashboard。"""
+    _ = output_mode
     _open_dashboard(
-        positional_agent=positional_ref,
+        positional_agent=agent_ref,
         agent_option=agent_option,
         region=region,
         ui_path=ui_path,
@@ -96,19 +238,19 @@ def dashboard(
     )
 
 
-@dashboard.group("share")
+@dashboard.group("share", context_settings=CONTEXT_SETTINGS, help=build_resource_group_help(DASHBOARD_SHARE_RESOURCE))
 def dashboard_share():
-    """Dashboard 分享链接管理。"""
+    pass
 
 
-@dashboard_share.command("list")
+@dashboard_share.command("list", context_settings=CONTEXT_SETTINGS)
 @click.argument("agent_ref", required=False)
 @click.option("--agent", "--agent-id", "agent_option", "-a", help="Agent 名称或 ID")
 @click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
 @click.option("--type", "link_type", type=click.Choice(["private", "share"]), default=None, help="链接类型过滤")
 @click.option("--status", type=click.Choice(["active", "revoked"]), default=None, help="状态过滤")
-@click.option("--page", default=1, show_default=True, type=click.IntRange(1, 10_000))
-@click.option("--size", default=20, show_default=True, type=click.IntRange(1, 100))
+@pagination_options(default_page=1, default_size=20)
+@cli_output_option()
 def dashboard_share_list(
     agent_ref: Optional[str],
     agent_option: Optional[str],
@@ -117,31 +259,41 @@ def dashboard_share_list(
     status: Optional[str],
     page: int,
     size: int,
+    output_mode: str | None,
 ):
     """列出 Agent 的 Dashboard 分享链接。"""
+    _ = output_mode
     try:
         explicit_ref = merge_agent_inputs(agent_option=agent_option, positional_agent=agent_ref)
     except ValueError as e:
-        print_error(str(e))
-        raise SystemExit(1)
+        _abort_dashboard_error(
+            usage_error(str(e)),
+            argv=["dashboard", "share", "list"],
+        )
 
     cwd = Path(".").resolve()
     state = load_state(cwd)
     primary_ref, fallback_ref = _resolve_references(explicit_ref, cwd)
     if not primary_ref:
-        print_error("未找到可用 Agent，请指定 Agent（--agent 或位置参数）")
-        raise SystemExit(1)
+        _abort_dashboard_error(
+            resolution_error(
+                DASHBOARD_SHARE_RESOURCE.missing_ref_message or "未找到可用 Agent。",
+                hints=list(DASHBOARD_SHARE_RESOURCE.resolution_commands),
+            ),
+            argv=["dashboard", "share", "list"],
+        )
 
     try:
         detail, _, _ = asyncio.run(_resolve_agent_detail(region, primary_ref, fallback_ref))
     except Exception as e:
-        print_exception("获取 Agent 信息失败", e)
-        raise SystemExit(1)
+        _abort_dashboard_error(e, context="获取 Agent 信息失败", argv=["dashboard", "share", "list"])
     agent_id = (detail.get("agent_id") or "").strip()
     agent_name = (detail.get("name") or "").strip()
     if not agent_id and not agent_name:
-        print_error("无法解析 Agent 标识")
-        raise SystemExit(1)
+        _abort_dashboard_error(
+            resolution_error("无法解析 Agent 标识", hints=list(DASHBOARD_SHARE_RESOURCE.resolution_commands)),
+            argv=["dashboard", "share", "list"],
+        )
 
     try:
         result = asyncio.run(
@@ -156,52 +308,82 @@ def dashboard_share_list(
             )
         )
     except Exception as e:
-        print_exception("查询 Dashboard 链接失败", e)
-        raise SystemExit(1)
+        _abort_dashboard_error(e, context="查询 Dashboard 链接失败", argv=["dashboard", "share", "list"])
     links = result.get("links") or []
     total = int(result.get("total") or len(links))
-    if not links:
-        print_info("没有找到匹配的 Dashboard 链接")
-        return
-
-    table = new_table(f"Dashboard 链接 [muted](总计: {total})[/]")
-    table.add_column("LinkId", style="#58a6ff", no_wrap=True)
-    table.add_column("Type", no_wrap=True)
-    table.add_column("Status", no_wrap=True)
-    table.add_column("Path", no_wrap=True)
-    table.add_column("ExpiresAt", overflow="fold")
-    table.add_column("CreatedAt", overflow="fold")
-
-    for item in links:
-        table.add_row(
-            str(item.get("link_id") or "-"),
-            str(item.get("link_type") or "-"),
-            str(item.get("status") or "-"),
-            str(item.get("path") or "/"),
-            _format_dashboard_time(item.get("expires_at"), never_text="永久"),
-            _format_dashboard_time(item.get("created_at"), never_text="-"),
-        )
-    console.print(table)
+    render_descriptor_list(
+        DASHBOARD_SHARE_RESOURCE,
+        rows=[
+            (
+                str(item.get("link_id") or "-"),
+                str(item.get("link_type") or "-"),
+                str(item.get("status") or "-"),
+                str(item.get("path") or "/"),
+                _format_dashboard_time(item.get("expires_at"), never_text="永久"),
+                _format_dashboard_time(item.get("created_at"), never_text="-"),
+            )
+            for item in links
+        ],
+        total=total,
+        page=page,
+        size=size,
+    )
     if state and state.get("agent_id"):
         print_kv("当前状态文件 Agent", str(state.get("agent_id")))
 
 
-@dashboard_share.command("revoke")
+@dashboard_share.command("revoke", context_settings=CONTEXT_SETTINGS)
 @click.argument("link_id", required=True)
 @click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
-def dashboard_share_revoke(link_id: str, region: str):
+@confirm_options()
+@dry_run_option()
+@cli_output_option()
+def dashboard_share_revoke(
+    link_id: str,
+    region: str,
+    assume_yes: bool,
+    dry_run: bool,
+    output_mode: str | None,
+):
     """撤销 Dashboard 分享链接。"""
+    _ = output_mode
+    dry_run = effective_dry_run(dry_run)
+    if not confirm_destructive(
+        assume_yes=assume_yes,
+        dry_run=dry_run,
+        prompt=f"确定要撤销 Dashboard 分享链接 `{link_id}` 吗?",
+    ):
+        return
     try:
-        result = asyncio.run(_delete_dashboard_access_link(region=region, link_id=link_id.strip()))
+        result = run_async_with_dry_run(
+            _delete_dashboard_access_link(region=region, link_id=link_id.strip(), dry_run=dry_run),
+            dry_run=dry_run,
+            dry_run_resource="dashboard_share",
+            dry_run_action="revoke",
+        )
     except Exception as e:
-        print_exception("撤销失败", e)
-        raise SystemExit(1)
+        _abort_dashboard_error(e, context="撤销失败", argv=["dashboard", "share", "revoke"])
+        return
+    if result is None:
+        return
     deleted = bool(result.get("deleted", False))
     if deleted:
-        print_success("链接已删除")
-        print_kv("LinkId", link_id)
+        render_descriptor_status(
+            DASHBOARD_SHARE_RESOURCE,
+            title="Dashboard 链接撤销结果",
+            subtitle=link_id,
+            fields=[("ID", link_id, "#58a6ff"), ("状态", "已撤销", "ok")],
+            action="revoke",
+            item={"id": link_id, "status": "revoked", "deleted": True},
+        )
     else:
-        print_warn("接口未返回 Deleted=true，请检查服务端日志")
+        _abort_dashboard_error(
+            remote_error(
+                "接口未确认撤销成功。",
+                details={"id": link_id, "deleted": False},
+            ),
+            argv=["dashboard", "share", "revoke"],
+        )
 
 
 def _open_dashboard(
@@ -215,24 +397,32 @@ def _open_dashboard(
     no_open: bool,
     direct: bool,
 ):
+    no_open = bool(no_open or is_json_output() or not is_stdout_tty())
     try:
         explicit_ref = merge_agent_inputs(agent_option=agent_option, positional_agent=positional_agent)
     except ValueError as e:
-        print_error(str(e))
-        raise SystemExit(1)
+        _abort_dashboard_error(usage_error(str(e)), argv=["dashboard", "open"])
 
     cwd = Path(".").resolve()
     state = load_state(cwd)
     primary_ref, fallback_ref = _resolve_references(explicit_ref, cwd)
     if not primary_ref:
-        print_error("未找到可用 Agent，请指定 Agent（--agent 或位置参数）")
-        print_info("自动解析顺序: .agentengine.state -> agentengine.yaml/ksadk.yaml")
-        raise SystemExit(1)
+        _abort_dashboard_error(
+            resolution_error(
+                DASHBOARD_RESOURCE.missing_ref_message or "未找到可用 Agent。",
+                hints=list(DASHBOARD_RESOURCE.resolution_commands),
+            ),
+            argv=["dashboard", "open"],
+        )
 
     if primary_ref.source != "cli":
         print_info(f"未显式指定 Agent，使用 {primary_ref.source_text}: {primary_ref.value}")
 
-    detail, used_ref, state_stale = asyncio.run(_resolve_agent_detail(region, primary_ref, fallback_ref))
+    try:
+        detail, used_ref, state_stale = asyncio.run(_resolve_agent_detail(region, primary_ref, fallback_ref))
+    except Exception as e:
+        _abort_dashboard_error(e, context="获取 Agent 信息失败", argv=["dashboard", "open"])
+        return
     if state_stale:
         print_warn(".agentengine.state 指向的 Agent 不存在，已自动回退到项目配置")
     if used_ref.source != primary_ref.source:
@@ -240,8 +430,10 @@ def _open_dashboard(
 
     endpoint = (detail.get("endpoint") or "").strip()
     if not endpoint:
-        print_error("目标 Agent 未返回 Endpoint，无法打开 Dashboard")
-        raise SystemExit(1)
+        _abort_dashboard_error(
+            resolution_error("目标 Agent 未返回 Endpoint，无法打开 Dashboard"),
+            argv=["dashboard", "open"],
+        )
 
     resolved_ui = resolve_ui_config(
         framework=(detail.get("framework") or "").strip(),
@@ -259,26 +451,47 @@ def _open_dashboard(
 
     link_type = "share" if share else "private"
     validated_expires = _normalize_expires_seconds(link_type=link_type, expires_seconds=expires_seconds)
-    link_data = asyncio.run(
-        _create_dashboard_access_link(
-            region=region,
-            agent_id=(detail.get("agent_id") or "").strip() or None,
-            agent_name=(detail.get("name") or "").strip() or None,
-            link_type=link_type,
-            path=normalized_path,
-            expires_seconds=validated_expires,
+    try:
+        link_data = asyncio.run(
+            _create_dashboard_access_link(
+                region=region,
+                agent_id=(detail.get("agent_id") or "").strip() or None,
+                agent_name=(detail.get("name") or "").strip() or None,
+                link_type=link_type,
+                path=normalized_path,
+                expires_seconds=validated_expires,
+            )
         )
-    )
+    except Exception as e:
+        _abort_dashboard_error(e, context="创建 Dashboard 链接失败", argv=["dashboard", "open"])
+        return
     access_url = (link_data.get("access_url") or "").strip()
     if not access_url:
-        print_error("CreateDashboardAccessLink 返回为空")
-        raise SystemExit(1)
+        _abort_dashboard_error(
+            remote_error("CreateDashboardAccessLink 返回为空"),
+            argv=["dashboard", "open"],
+        )
     open_url = access_url
 
-    print_success("已创建 Dashboard 短链接")
-    print_kv("LinkId", str(link_data.get("link_id") or "-"))
-    print_kv("Type", link_type)
-    print_kv("ExpiresAt", _format_dashboard_time(link_data.get("expires_at"), never_text="server-default"))
+    render_descriptor_status(
+        DASHBOARD_SHARE_RESOURCE,
+        title="Dashboard 打开结果",
+        subtitle=str(detail.get("name") or detail.get("agent_id") or "-"),
+        fields=[
+            ("ID", str(link_data.get("link_id") or "-"), "#58a6ff"),
+            ("类型", link_type, None),
+            ("过期时间", _format_dashboard_time(link_data.get("expires_at"), never_text="server-default"), None),
+        ],
+        action="open",
+        item={
+            "link_id": str(link_data.get("link_id") or "-"),
+            "type": link_type,
+            "expires_at": _format_dashboard_time(link_data.get("expires_at"), never_text="server-default"),
+            "url": open_url,
+            "agent_id": str(detail.get("agent_id") or ""),
+            "agent_name": str(detail.get("name") or ""),
+        },
+    )
     _emit_url("打开 Dashboard", open_url, no_open=no_open)
 
 
@@ -422,8 +635,8 @@ async def _list_dashboard_access_links(
         return await client.list_dashboard_access_links(**kwargs)
 
 
-async def _delete_dashboard_access_link(*, region: str, link_id: str) -> dict:
-    async with AgentEngineClient(region=region) as client:
+async def _delete_dashboard_access_link(*, region: str, link_id: str, dry_run: bool = False) -> dict:
+    async with AgentEngineClient(region=region, dry_run=dry_run) as client:
         return await client.delete_dashboard_access_link(link_id=link_id)
 
 

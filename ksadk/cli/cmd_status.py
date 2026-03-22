@@ -12,10 +12,17 @@ from datetime import datetime
 from ksadk.api.client import DryRunExit
 from ksadk.cli.agent_ref import merge_agent_inputs, resolve_agent_ref
 from ksadk.cli.dry_run import dry_run_option, run_async_with_dry_run, effective_dry_run
-from ksadk.cli.error_utils import print_exception
+from ksadk.cli.error_utils import print_exception, resolution_error, usage_error, validation_error
+from ksadk.cli.resource_common import (
+    CONTEXT_SETTINGS,
+    CompatibilityAliasCommand,
+    print_compatibility_hint,
+    render_resource_list,
+    render_resource_status,
+)
 from ksadk.cli.ui import (
     get_console,
-    new_table,
+    is_json_output,
     print_error,
     print_info,
     print_kv,
@@ -30,7 +37,12 @@ from ksadk.cli.ui import (
 console = get_console()
 
 
-@click.command()
+@click.command(
+    context_settings=CONTEXT_SETTINGS,
+    hidden=True,
+    cls=CompatibilityAliasCommand,
+    canonical_command="agentengine agent status",
+)
 @click.argument("agent_ref", required=False)
 @click.option("--agent", "--agent-id", "agent_option", "-a", help="Agent 名称或 ID")
 @click.option("--all", "show_all", is_flag=True, help="显示所有 Agent")
@@ -49,18 +61,40 @@ def status(
     account_id: str,
     dry_run: bool,
 ):
-    """查看 Agent 的运行状态和 Endpoint
+    """查看 Agent 的运行状态和 Endpoint。"""
+    run_status_command(
+        agent_ref=agent_ref,
+        agent_option=agent_option,
+        show_all=show_all,
+        watch=watch,
+        interval=interval,
+        region=region,
+        account_id=account_id,
+        dry_run=dry_run,
+        compatibility_alias=True,
+    )
 
-    \b
-    示例:
-        # 1) 目录内自动解析 agent
-        agentengine status
-        # 2) 显式指定 agent
-        agentengine status --agent ar-xxxx --watch --account-id X-Ksc-Account-Id
-        # 3) 显式指定区域
-        KSYUN_REGION=cn-beijing-6 agentengine status --agent ar-xxxx --account-id X-Ksc-Account-Id
-    """
+
+def run_status_command(
+    *,
+    agent_ref: str | None,
+    agent_option: str | None,
+    show_all: bool,
+    watch: bool,
+    interval: int,
+    region: str,
+    account_id: str | None,
+    dry_run: bool,
+    compatibility_alias: bool = False,
+    page: int = 1,
+    size: int = 20,
+):
+    """查看 Agent 的运行状态和 Endpoint。"""
     dry_run = effective_dry_run(dry_run)
+    if compatibility_alias:
+        legacy = "agentengine status --all" if show_all else "agentengine status"
+        canonical = "agentengine agent list" if show_all else "agentengine agent status"
+        print_compatibility_hint(legacy=legacy, canonical=canonical)
 
     try:
         agent_input = merge_agent_inputs(
@@ -68,13 +102,11 @@ def status(
             positional_agent=agent_ref,
         )
     except ValueError as e:
-        print_exception("错误", e)
-        raise SystemExit(1)
+        raise usage_error(str(e))
 
     agent = None
     if show_all and agent_input:
-        print_error("错误: --all 与 Agent 参数不能同时使用")
-        raise SystemExit(1)
+        raise usage_error("--all 与 Agent 参数不能同时使用")
 
     if not show_all:
         resolved = resolve_agent_ref(
@@ -84,30 +116,35 @@ def status(
             include_project_config=True,
         )
         if not resolved:
-            print_error("错误: 请指定 Agent（--agent 或位置参数），或在当前目录提供可解析的本地配置")
-            print_info("自动解析顺序: .agentengine.state -> agentengine.yaml/ksadk.yaml")
-            raise SystemExit(1)
+            raise resolution_error(
+                "请指定 Agent（--agent 或位置参数），或在当前目录提供可解析的本地配置",
+                hints=["自动解析顺序: .agentengine.state -> agentengine.yaml/ksadk.yaml", "请先执行 `agentengine agent list`。"],
+            )
         agent = resolved.value
         if resolved.source != "cli":
             print_info(f"未显式指定 Agent，使用 {resolved.source_text}: {agent}")
 
     # 检查账号 ID
     if not account_id:
-        print_error("错误: 需要金山云账号 ID")
-        print_info("提示: 设置 KSYUN_ACCOUNT_ID 环境变量或使用 --account-id 参数")
-        raise SystemExit(1)
+        raise validation_error(
+            "需要金山云账号 ID",
+            hints=["设置 KSYUN_ACCOUNT_ID 环境变量或使用 --account-id 参数。"],
+        )
 
     if watch and dry_run:
-        print_warn("Watch 模式不支持 dry-run，请去掉 --watch 或取消 dry-run")
-        raise SystemExit(1)
+        raise usage_error("Watch 模式不支持 dry-run，请去掉 --watch 或取消 dry-run。")
+    if watch and is_json_output():
+        raise usage_error("Watch 模式不支持 `--output json`。", hints=["请去掉 `--watch` 或改用 `agentengine agent status --output json`。"])
 
     # Dry Run 模式由 AgentEngineClient 处理
     # 只要传入 dry_run=True，底层 client 会抛出 DryRunExit 异常
 
     if show_all:
         run_async_with_dry_run(
-            _list_all_agents(region, account_id, dry_run),
+            _list_all_agents(region, account_id, dry_run, page=page, size=size),
             dry_run=dry_run,
+            dry_run_resource="agent",
+            dry_run_action="list",
         )
     elif watch:
         _watch_status(agent, region, account_id, interval)
@@ -115,6 +152,8 @@ def status(
         run_async_with_dry_run(
             _show_agent_status(agent, region, account_id, dry_run),
             dry_run=dry_run,
+            dry_run_resource="agent",
+            dry_run_action="status",
         )
 
 
@@ -157,7 +196,8 @@ async def _show_agent_status(
     dry_run: bool = False,
 ):
     """显示单个 Agent 的状态 (完整)"""
-    click.echo(f"查询 Agent 状态... (region: {region})")
+    if not is_json_output():
+        click.echo(f"查询 Agent 状态... (region: {region})")
 
     try:
         # 先按 ID 查询，失败后再按名称查询，避免依赖字符串前缀判断。
@@ -170,64 +210,66 @@ async def _show_agent_status(
     except DryRunExit:
         raise
 
-    click.echo("")
-    print_title("Agent 状态", f"region: {region}")
-
-    # 基本信息
-    print_kv("名称", result.get("agentRuntimeName", agent))
-    print_kv("ID", result.get("agentRuntimeId", "N/A"))
-    print_kv("描述", result.get("description", "-"))
-
-    # 状态
     status_value = result.get("status", "Unknown")
-    status_color = _get_status_color(status_value)
-    print_kv("状态", status_value, value_style=status_rich_style(status_value))
-    print_kv("阶段", result.get("phase", "-"))
-
-    # 副本
     replicas = result.get("replicas", 0)
     ready = result.get("readyReplicas", 0)
-    print_kv("副本", f"{ready}/{replicas}", value_style=replica_rich_style(ready, replicas))
-
-    # Endpoint
     endpoint = result.get("endpoint")
-    if endpoint:
-        print_kv("Endpoint", endpoint, value_style="#58a6ff")
-    else:
-        print_warn("Endpoint: 未就绪")
-
-    # Langfuse
     langfuse_url = result.get("langfuseTraceUrl")
-    if langfuse_url:
-        print_kv("Langfuse", langfuse_url, value_style="#58a6ff")
-
-    # 时间
     from dateutil import parser
-    print_info("")
-    
+
     created_at = result.get('createdAt')
     if created_at:
         dt = parser.parse(created_at)
-        print_kv("创建时间", dt.astimezone().isoformat())
+        created_at = dt.astimezone().isoformat()
     else:
-        print_kv("创建时间", "-")
-        
+        created_at = "-"
+
     updated_at = result.get('updatedAt')
     if updated_at:
-       dt = parser.parse(updated_at)
-       print_kv("更新时间", dt.astimezone().isoformat())
+        dt = parser.parse(updated_at)
+        updated_at = dt.astimezone().isoformat()
     else:
-       print_kv("更新时间", "-")
+        updated_at = "-"
 
-    # 消息
     message = result.get("message")
-    if message:
-        print_kv("消息", message)
-
-    # 错误信息
     error = result.get("error")
+    fields = [
+        ("名称", str(result.get("agentRuntimeName", agent)), None),
+        ("ID", str(result.get("agentRuntimeId", "N/A")), None),
+        ("描述", str(result.get("description", "-")), None),
+        ("状态", str(status_value), status_rich_style(status_value)),
+        ("阶段", str(result.get("phase", "-")), None),
+        ("副本", f"{ready}/{replicas}", replica_rich_style(ready, replicas)),
+        ("Endpoint", str(endpoint or "未就绪"), "#58a6ff" if endpoint else "warn"),
+        ("Langfuse", str(langfuse_url or "-"), "#58a6ff" if langfuse_url else None),
+        ("创建时间", created_at, None),
+        ("更新时间", updated_at, None),
+    ]
+    if message:
+        fields.append(("消息", str(message), None))
     if error:
-        print_error(f"错误: {error}")
+        fields.append(("错误", str(error), "err"))
+    render_resource_status(
+        title="Agent 状态",
+        subtitle=f"region: {region}",
+        fields=fields,
+        resource="agent",
+        item={
+            "id": str(result.get("agentRuntimeId", "N/A")),
+            "name": str(result.get("agentRuntimeName", agent)),
+            "description": str(result.get("description", "-")),
+            "status": str(status_value),
+            "phase": str(result.get("phase", "-")),
+            "replicas": {"ready": int(ready), "total": int(replicas)},
+            "endpoint": str(endpoint or ""),
+            "langfuse_url": str(langfuse_url or ""),
+            "created_at": created_at,
+            "updated_at": updated_at,
+            "message": str(message or ""),
+            "error": str(error or ""),
+            "region": region,
+        },
+    )
 
 
 async def _show_agent_status_compact(agent: str, region: str, account_id: str):
@@ -265,38 +307,59 @@ async def _show_agent_status_compact(agent: str, region: str, account_id: str):
         click.echo(f"  消息:     {message}")
 
 
-async def _list_all_agents(region: str, account_id: str, dry_run: bool = False):
-    """列出所有 Agent（默认排除 openclaw，避免与专属命令重复）"""
-    click.echo(f"查询 Agent 列表... (region: {region})")
+async def _list_all_agents(
+    region: str,
+    account_id: str,
+    dry_run: bool = False,
+    *,
+    page: int = 1,
+    size: int = 20,
+):
+    """列出 Agent 列表（默认排除 OpenClaw，避免与专属命令重复）。"""
+    if not is_json_output():
+        click.echo(f"查询 Agent 列表... (region: {region}, page: {page}, size: {size})")
 
     try:
-        results = await _list_agent_runtimes(region, account_id, dry_run)
+        server_page = 1
+        server_page_size = max(size, 100)
+        all_visible_results = []
+        hidden_openclaw = 0
+        while True:
+            response = await _list_agent_runtimes(
+                region,
+                account_id,
+                dry_run,
+                page=server_page,
+                page_size=server_page_size,
+            )
+            raw_results = response.get("agents", [])
+            if not raw_results:
+                break
+
+            filtered_results = [
+                r for r in raw_results if str(r.get("framework", "")).strip().lower() != "openclaw"
+            ]
+            hidden_openclaw += len(raw_results) - len(filtered_results)
+            all_visible_results.extend(filtered_results)
+
+            if len(raw_results) < server_page_size:
+                break
+            server_page += 1
     except DryRunExit:
         raise
 
-    # openclaw 有专属命令组：agentengine openclaw *
-    filtered_results = [r for r in results if str(r.get("framework", "")).strip().lower() != "openclaw"]
-    hidden_openclaw = len(results) - len(filtered_results)
     if hidden_openclaw > 0:
         print_info(f"已隐藏 {hidden_openclaw} 个 OpenClaw 实例（使用 `agentengine openclaw list` 查看）")
-    results = filtered_results
 
-    click.echo("")
-    table = new_table(f"Agent 列表  [muted](region: {region})[/]")
-    table.add_column("ID", style="#58a6ff", no_wrap=True, min_width=24)
-    table.add_column("名称", style="#c9d1d9", min_width=20)
-    table.add_column("状态", no_wrap=True, justify="center", min_width=10)
-    table.add_column("副本", no_wrap=True, justify="center", min_width=8)
-    table.add_column("Endpoint", style="#8b949e", overflow="ellipsis")
-
-    if not results:
-        table.add_row("-", "-", "[yellow]暂无数据[/]", "-", "-")
-        console.print(table)
-        console.print(summary_panel(total=0, healthy=0, attention=0, noun="Agent"))
-        return
+    start = max(page - 1, 0) * size
+    end = start + size
+    results = all_visible_results[start:end]
+    visible_total = len(all_visible_results)
 
     unhealthy = 0
     running = 0
+    rows = []
+    items = []
     for r in results:
         agent_id = (r.get("agentRuntimeId") or "N/A")
         name = (r.get("agentRuntimeName") or "N/A")
@@ -313,16 +376,60 @@ async def _list_all_agents(region: str, account_id: str, dry_run: bool = False):
         else:
             unhealthy += 1
 
-        table.add_row(
-            agent_id,
-            name,
-            f"[{status_style}]{status_upper}[/]",
-            f"[{replica_style}]{ready}/{replicas}[/]",
-            endpoint,
+        rows.append(
+            (
+                agent_id,
+                name,
+                f"[{status_style}]{status_upper}[/]",
+                f"[{replica_style}]{ready}/{replicas}[/]",
+                endpoint,
+            )
+        )
+        items.append(
+            {
+                "id": agent_id,
+                "name": name,
+                "status": status_upper,
+                "replicas": {"ready": ready, "total": replicas},
+                "endpoint": endpoint,
+                "framework": str(r.get("framework") or ""),
+            }
         )
 
-    console.print(table)
-    console.print(summary_panel(total=len(results), healthy=running, attention=unhealthy, noun="Agent"))
+    render_resource_list(
+        title=f"Agent 列表  [muted](region: {region})[/]",
+        noun="Agent",
+        columns=(
+            {"header": "ID", "key": "id", "style": "#58a6ff", "no_wrap": True, "min_width": 24},
+            {"header": "名称", "key": "name", "style": "#c9d1d9", "min_width": 20},
+            {"header": "状态", "key": "status", "no_wrap": True, "justify": "center", "min_width": 10},
+            {"header": "副本", "key": "replicas_display", "no_wrap": True, "justify": "center", "min_width": 8},
+            {"header": "Endpoint", "key": "endpoint", "style": "#8b949e", "overflow": "ellipsis"},
+        ),
+        rows=rows,
+        total=visible_total,
+        page=page,
+        size=size,
+        empty_message="没有找到已部署的 Agent",
+        summary_lines=[
+            f"健康: {running}  待关注: {unhealthy}",
+            *(
+                [f"已隐藏 {hidden_openclaw} 个 OpenClaw 实例（使用 `agentengine openclaw list` 查看）"]
+                if hidden_openclaw > 0
+                else []
+            ),
+        ],
+        resource="agent",
+        items=[
+            {
+                **item,
+                "replicas_display": f"{item['replicas']['ready']}/{item['replicas']['total']}",
+            }
+            for item in items
+        ],
+    )
+    if not is_json_output():
+        console.print(summary_panel(total=len(results), healthy=running, attention=unhealthy, noun="Agent"))
 
 
 def _get_status_color(status: str) -> str:
@@ -379,7 +486,14 @@ async def _get_agent_runtime(agent: str, region: str, account_id: str, dry_run: 
         }
 
 
-async def _list_agent_runtimes(region: str, account_id: str, dry_run: bool = False) -> list:
+async def _list_agent_runtimes(
+    region: str,
+    account_id: str,
+    dry_run: bool = False,
+    *,
+    page: int = 1,
+    page_size: int = 20,
+) -> dict:
     """列出 Agent 运行时
 
     调用 AgentEngine Server API
@@ -392,43 +506,29 @@ async def _list_agent_runtimes(region: str, account_id: str, dry_run: bool = Fal
             extra_headers["X-Ksc-Account-Id"] = account_id
 
         async with AgentEngineClient(region=region, dry_run=dry_run, extra_headers=extra_headers) as client:
-            page = 1
-            page_size = 100
+            response = await client.list_agents(region=region, page=page, page_size=page_size)
+            agents = response.get("agents", []) or []
             results = []
-            total = None
-            while True:
-                response = await client.list_agents(region=region, page=page, page_size=page_size)
-                agents = response.get("agents", []) or []
-                if total is None:
-                    try:
-                        total = int(response.get("total"))
-                    except (TypeError, ValueError):
-                        total = None
-                if not agents:
-                    break
+            for agent in agents:
+                results.append(
+                    {
+                        "agentRuntimeId": agent.get("agent_id", ""),
+                        "agentRuntimeName": agent.get("name", ""),
+                        "status": agent.get("status", ""),
+                        "replicas": agent.get("replicas", 0),
+                        "readyReplicas": agent.get("ready_replicas", 0),
+                        "endpoint": agent.get("endpoint", ""),
+                        "framework": agent.get("framework", ""),
+                    }
+                )
 
-                for agent in agents:
-                    results.append(
-                        {
-                            "agentRuntimeId": agent.get("agent_id", ""),
-                            "agentRuntimeName": agent.get("name", ""),
-                            "status": agent.get("status", ""),
-                            "replicas": agent.get("replicas", 0),
-                            "readyReplicas": agent.get("ready_replicas", 0),
-                            "endpoint": agent.get("endpoint", ""),
-                            "framework": agent.get("framework", ""),
-                        }
-                    )
-
-                if total is not None and len(results) >= total:
-                    break
-                if len(agents) < page_size:
-                    break
-                page += 1
-
-            return results
+            return {
+                "agents": results,
+                "total": response.get("total", len(results)),
+            }
     except DryRunExit:
         raise
     except Exception as e:
-        click.secho(f"查询失败: {str(e)}", fg="red")
-        return []
+        if not is_json_output():
+            click.secho(f"查询失败: {str(e)}", fg="red")
+        return {"agents": [], "total": 0}

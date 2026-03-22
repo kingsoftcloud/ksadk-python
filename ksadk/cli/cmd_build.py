@@ -10,14 +10,18 @@ import asyncio
 import click
 from datetime import datetime
 from pathlib import Path
+from ksadk.cli.error_utils import abort_with_cli_error, is_debug_mode_enabled, remote_error, validation_error
+from ksadk.cli.workflow_common import print_workflow_header, render_workflow_result
 from ksadk.cli.ui import (
+    capture_standard_output,
+    is_json_output,
+    output_option as cli_output_option,
     print_error,
     print_info,
     print_kv,
     print_next_steps,
     print_rule,
     print_success,
-    print_title,
     print_warn,
 )
 
@@ -37,8 +41,17 @@ from ksadk.cli.ui import (
 @click.option("--no-cache", is_flag=True, help="强制重新构建，不使用缓存 (code: 忽略已有 zip；container: docker --no-cache)")
 @click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="KS3 区域 (code 模式)")
 @click.option("--ks3-bucket", help="KS3 bucket 名称 (code 模式, 默认: agentengine-{region})")
+@cli_output_option()
 def build(
-    agent_dir: str, mode: str, tag: str, registry: str, push: bool, no_cache: bool, region: str, ks3_bucket: str
+    agent_dir: str,
+    mode: str,
+    tag: str,
+    registry: str,
+    push: bool,
+    no_cache: bool,
+    region: str,
+    ks3_bucket: str,
+    output_mode: str | None,
 ):
     """将 Agent 应用构建为可部署的格式
 
@@ -59,15 +72,32 @@ def build(
         # 3) 显式指定区域
         KSYUN_REGION=cn-beijing-6 agentengine build . --mode code --push --no-cache
     """
+    _ = output_mode
     agent_path = Path(agent_dir).resolve()
-    print_title("Agent 构建", f"mode: {mode}")
-    print_kv("项目目录", str(agent_path))
-    print_kv("构建模式", mode, value_style="#58a6ff")
+    try:
+        with capture_standard_output():
+            print_workflow_header(
+                title="Agent 构建",
+                subtitle=f"mode: {mode}",
+                project_dir=agent_path,
+                target="build",
+                region=region if mode == "code" else None,
+                mode_label="构建模式",
+                mode_value=mode,
+            )
 
-    if mode == "container":
-        _build_container(agent_path, tag, registry, push, no_cache)
-    else:
-        asyncio.run(_build_code(agent_path, push, region, ks3_bucket, no_cache))
+            if mode == "container":
+                result = _build_container(agent_path, tag, registry, push, no_cache)
+            else:
+                result = asyncio.run(_build_code(agent_path, push, region, ks3_bucket, no_cache))
+    except Exception as e:
+        if is_debug_mode_enabled():
+            raise
+        abort_with_cli_error(e, context="构建失败")
+        return
+
+    if is_json_output():
+        render_workflow_result(action="build", result=result)
 
 
 def _build_container(agent_path: Path, tag: str, registry: str, push: bool, no_cache: bool):
@@ -81,13 +111,16 @@ def _build_container(agent_path: Path, tag: str, registry: str, push: bool, no_c
     result = builder.build()
 
     if not result.success:
-        print_error(result.error_message or "构建失败")
-        raise SystemExit(1)
+        raise validation_error(result.error_message or "构建失败")
 
     # 推送镜像
     if push and result.metadata.get("image"):
         if not builder.push(result.metadata["image"]):
-            raise SystemExit(1)
+            raise remote_error(
+                "镜像推送失败",
+                details={"image": str(result.metadata.get("image") or "")},
+                hints=["请检查镜像仓库凭证、网络连通性和目标 registry 配置。"],
+            )
 
         print_next_steps(
             [f"agentengine deploy --target serverless --image {result.metadata['image']} --artifact-type Container"]
@@ -95,6 +128,16 @@ def _build_container(agent_path: Path, tag: str, registry: str, push: bool, no_c
 
     # 摘要
     _print_summary("Container", result)
+    return {
+        "framework": result.metadata.get("framework", "unknown"),
+        "artifact_type": "container",
+        "artifact_source": "built_and_pushed" if push and result.metadata.get("image") else "built",
+        "artifact_reused": bool(result.metadata.get("reused", False)),
+        "artifact_built": True,
+        "artifact_reference": str(result.metadata.get("image") or ""),
+        "image": str(result.metadata.get("image") or ""),
+        "push": bool(push),
+    }
 
 
 async def _build_code(agent_path: Path, push: bool, region: str, ks3_bucket: str = None, no_cache: bool = False):
@@ -105,8 +148,7 @@ async def _build_code(agent_path: Path, push: bool, region: str, ks3_bucket: str
     result = builder.build()
 
     if not result.success:
-        print_error(result.error_message or "构建失败")
-        raise SystemExit(1)
+        raise validation_error(result.error_message or "构建失败")
 
     agent_name = result.metadata.get("agent_name", agent_path.name)
 
@@ -171,6 +213,20 @@ async def _build_code(agent_path: Path, push: bool, region: str, ks3_bucket: str
     # show_next_step=True 意味着如果要引导用户做下一步操作的话。
     # 如果当前没有 push (push=False)，那么下一步通常引导去 push。
     _print_summary("Code", result, show_next_step=not push)
+    return {
+        "framework": result.metadata.get("framework", "unknown"),
+        "artifact_type": "code",
+        "artifact_source": "built_and_uploaded" if push and result.metadata.get("ks3_path") else "built",
+        "artifact_reused": bool(result.metadata.get("reused", False)),
+        "artifact_built": True,
+        "artifact_reference": str(result.metadata.get("ks3_path") or result.artifact_path or ""),
+        "artifact_path": str(result.artifact_path or ""),
+        "artifact_size_mb": float(result.artifact_size_mb or 0),
+        "ks3_path": str(result.metadata.get("ks3_path") or ""),
+        "ks3_public_url": str(ks3_public_url or ""),
+        "ks3_internal_url": str(ks3_internal_url or ""),
+        "push": bool(push),
+    }
 
 
 def _print_summary(mode: str, result, show_next_step: bool = False):

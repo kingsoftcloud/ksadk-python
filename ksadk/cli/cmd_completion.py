@@ -8,7 +8,8 @@ import os
 import sys
 import click
 from pathlib import Path
-from ksadk.cli.error_utils import print_exception
+from ksadk.cli.error_utils import ensure_json_output_supported, print_exception
+from ksadk.cli.resource_common import CONTEXT_SETTINGS
 from ksadk.cli.ui import (
     print_error,
     print_info,
@@ -19,13 +20,13 @@ from ksadk.cli.ui import (
 )
 
 
-@click.group()
+@click.group("completion", context_settings=CONTEXT_SETTINGS)
 def completion():
-    """安装 Shell 自动补全"""
+    """Shell 补全管理。"""
     pass
 
 
-@completion.command("bash")
+@completion.command("bash", context_settings=CONTEXT_SETTINGS)
 def completion_bash():
     """输出 Bash 补全脚本"""
     script = '''
@@ -42,7 +43,7 @@ complete -o default -F _agentengine_completion agentengine
     click.echo(script.strip())
 
 
-@completion.command("zsh")
+@completion.command("zsh", context_settings=CONTEXT_SETTINGS)
 def completion_zsh():
     """输出 Zsh 补全脚本"""
     script = '''
@@ -78,12 +79,15 @@ compdef _agentengine agentengine
     click.echo(script.strip())
 
 
-@completion.command("install")
+@completion.command("install", context_settings=CONTEXT_SETTINGS)
 @click.option("--shell", type=click.Choice(["bash", "zsh", "auto"]), default="auto", 
               help="指定 Shell 类型")
 def completion_install(shell: str):
     """自动安装补全脚本到 Shell 配置文件"""
-    
+    ensure_json_output_supported(
+        "agentengine completion install",
+        suggestion="请直接使用 `agentengine completion bash` 或 `agentengine completion zsh` 获取脚本内容。",
+    )
     print_title("安装自动补全")
 
     # 自动检测 Shell

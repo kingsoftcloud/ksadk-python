@@ -7,6 +7,7 @@ Serverless Provider - 金山云 Serverless 计算引擎 (AgentEngine 托管)
 """
 
 import os
+import json
 import logging
 import shutil
 from pathlib import Path
@@ -51,6 +52,72 @@ class ServerlessProvider(BaseDeployProvider):
 
     def __init__(self, config: Dict[str, Any] = None):
         self.config = config or {}
+
+    @staticmethod
+    def _parse_code_artifact_path(artifact_path: str) -> tuple[Optional[str], Optional[str]]:
+        """解析代码包路径，返回 (bucket, object_key)。"""
+        if not artifact_path:
+            return None, None
+
+        path = artifact_path.strip()
+        if not path:
+            return None, None
+
+        if path.startswith("ks3://"):
+            raw = path[6:]
+            parts = raw.split("/", 1)
+            bucket = parts[0].strip() if parts else ""
+            object_key = parts[1].strip() if len(parts) > 1 else ""
+            return bucket or None, object_key or None
+
+        if path.startswith("http://") or path.startswith("https://"):
+            from urllib.parse import urlparse
+
+            parsed = urlparse(path)
+            bucket = (parsed.netloc.split(".", 1)[0] if parsed.netloc else "").strip()
+            object_key = parsed.path.lstrip("/").strip()
+            return bucket or None, object_key or None
+
+        if "/" in path:
+            bucket, object_key = path.split("/", 1)
+            return bucket.strip() or None, object_key.strip() or None
+
+        return None, None
+
+    @staticmethod
+    def _load_project_env_vars(env_file: Path) -> Dict[str, str]:
+        """读取项目 .env，并修正 UTF-8 BOM 导致的脏 key。"""
+        from dotenv import dotenv_values
+
+        raw_env = dotenv_values(env_file, encoding="utf-8-sig")
+        env_vars: Dict[str, str] = {}
+        for key, value in raw_env.items():
+            if not key or value is None:
+                continue
+            clean_key = str(key).lstrip("\ufeff").strip()
+            if not clean_key:
+                continue
+            env_vars[clean_key] = str(value)
+        return env_vars
+
+    @staticmethod
+    def _persist_build_metadata(package_info: PackageInfo) -> None:
+        """持久化最近一次成功构建的制品信息，供后续命中缓存。"""
+        metadata_file = Path(package_info.project_dir) / ".agentengine" / "build-metadata.json"
+        metadata_file.parent.mkdir(parents=True, exist_ok=True)
+
+        payload = {
+            "name": package_info.name,
+            "framework": package_info.framework,
+            "build_dir": package_info.build_dir,
+            "project_dir": package_info.project_dir,
+            "entry_point": package_info.entry_point,
+            "image": package_info.image,
+            "metadata": package_info.metadata,
+        }
+
+        with open(metadata_file, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
 
     async def validate_config(self, target: DeployTarget) -> tuple[bool, str]:
         """验证配置: 确保已配置 AgentEngine Server"""
@@ -180,9 +247,22 @@ class ServerlessProvider(BaseDeployProvider):
 
         elif artifact_type == "Container":
             # Container 模式: 使用 ContainerBuilder 构建并推送镜像
+            cli_image = target.extra.get("image") or package_info.image
+            if cli_image:
+                package_info.image = cli_image
+                package_info.metadata["image"] = cli_image
+                self._persist_build_metadata(package_info)
+                return package_info
+
             registry = target.extra.get("registry", "")
             tag = target.extra.get("tag", "latest")
             no_cache = target.extra.get("no_cache", False)
+            cached_image = package_info.metadata.get("image")
+
+            if not no_cache and cached_image:
+                logger.info(f"Using cached image: {cached_image}")
+                package_info.image = cached_image
+                return package_info
             
             builder = ContainerBuilder(
                 project_dir=Path(package_info.project_dir),
@@ -205,6 +285,8 @@ class ServerlessProvider(BaseDeployProvider):
                 raise Exception("镜像推送失败")
             
             click.secho(f"✅ 镜像已推送: {image_name}", fg="green")
+
+        self._persist_build_metadata(package_info)
              
         return package_info
 
@@ -238,7 +320,8 @@ class ServerlessProvider(BaseDeployProvider):
         artifact_type = target.extra.get("artifact_type", "Code")
         artifact_path = ""
         if artifact_type == "Code":
-            artifact_path = package_info.metadata.get("ks3_path", "")
+            original_artifact_path = package_info.metadata.get("ks3_path", "")
+            artifact_path = original_artifact_path
             
             # 转换为内网地址 (如果 serverless 无法解析 ks3://)
             if artifact_path.startswith("ks3://"):
@@ -254,10 +337,8 @@ class ServerlessProvider(BaseDeployProvider):
                     
                     if internal_endpoint:
                         # ks3://bucket/key -> http://bucket.internal_endpoint/key
-                        # 去掉 ks3://
-                        parts = artifact_path.replace("ks3://", "").split("/", 1)
-                        if len(parts) == 2:
-                            bucket, key = parts
+                        bucket, key = self._parse_code_artifact_path(artifact_path)
+                        if bucket and key:
                             artifact_path = f"http://{bucket}.{internal_endpoint}/{key}"
                             click.echo(f"   Converted artifact path: {artifact_path}")
                 except Exception as e:
@@ -269,6 +350,16 @@ class ServerlessProvider(BaseDeployProvider):
                     "   在 Serverless 模式下，必须先上传代码包。\n"
                     "   👉 请先执行: agentengine build --mode code --push\n"
                     "   或者在 deploy 命令中使用 --ks3-path 指定路径。"
+                )
+
+            parsed_bucket, parsed_object_key = self._parse_code_artifact_path(original_artifact_path)
+            if not parsed_bucket or not parsed_object_key:
+                raise ValueError(
+                    "❌ ks3_path 格式无效，缺少代码包对象路径。\n"
+                    f"   当前值: {original_artifact_path or '(empty)'}\n"
+                    "   期望格式: ks3://<bucket>/<object-key>\n"
+                    "   👉 请重新执行: agentengine build --mode code --push\n"
+                    "   或者传入完整的 --ks3-path。"
                 )
                     
         else:
@@ -282,6 +373,10 @@ class ServerlessProvider(BaseDeployProvider):
             if auth.access_key_id and auth.secret_access_key:
                 # 智能推断 Bucket 和 Region
                 bucket_name = target.extra.get("ks3_bucket")
+                if not bucket_name:
+                    bucket_name, _ = self._parse_code_artifact_path(
+                        package_info.metadata.get("ks3_path", "")
+                    )
                 
                 # 如果没有提供，尝试从 artifact_path 解析
                 if not bucket_name:
@@ -388,10 +483,7 @@ class ServerlessProvider(BaseDeployProvider):
                         env_file = Path(project_dir) / ".env"
                         env_vars = {}
                         if env_file.exists():
-                             from dotenv import dotenv_values
-                             raw_env = dotenv_values(env_file)
-                             # 过滤掉空 Key 和 None 值
-                             env_vars = {k: v for k, v in raw_env.items() if k and v is not None}
+                             env_vars = self._load_project_env_vars(env_file)
                              if env_vars:
                                  update_data["env_vars"] = env_vars
                                  click.echo(f"   📦 更新环境变量: {len(env_vars)} 项 from .env")
@@ -482,12 +574,7 @@ class ServerlessProvider(BaseDeployProvider):
                     env_file = Path(project_dir) / ".env"
                     env_vars = {}
                     if env_file.exists():
-                        from dotenv import dotenv_values
-                        # 读取 .env 文件内容
-                        raw_env = dotenv_values(env_file)
-                        # 过滤掉注释或空值 (dotenv_values 已处理大部分)
-                        # 额外过滤掉空 Key 和 None 值 (防止 " ": null 这种情况)
-                        env_vars = {k: v for k, v in raw_env.items() if k and v is not None}
+                        env_vars = self._load_project_env_vars(env_file)
                         click.echo(f"   📦 加载环境变量: {len(env_vars)} 项 from .env")
                     
                     if env_vars:
@@ -565,10 +652,11 @@ class ServerlessProvider(BaseDeployProvider):
                         message=f"✅ Agent ID: {new_agent_id or '(创建中)'} (首次部署, 订单: {order_id or '-'})"
                     )
 
-        except DryRunExit:
+        except DryRunExit as e:
             return DeployResult(
                 status=DeployStatus.SKIPPED,
-                message="✅ Dry Run Completed: 请求已打印，未执行实际变更。"
+                message="✅ Dry Run Completed: 请求已打印，未执行实际变更。",
+                metadata={"dry_run_request": e.payload or {}},
             )
             
         except Exception as e:
@@ -628,20 +716,21 @@ class ServerlessProvider(BaseDeployProvider):
     async def destroy(self, agent_id: str, target: DeployTarget) -> bool:
         """销毁 Agent"""
         dry_run = target.extra.get("dry_run", False)
-        
-        # 尝试清理本地状态文件
-        state_file = Path(".") / ".agentengine.state"
-        if state_file.exists():
-            try:
-                os.remove(state_file)
-                logger.info(f"Deleted local state file: {state_file}")
-            except Exception:
-                pass
+        project_dir = str(target.extra.get("project_dir") or "").strip()
+        state_file = (Path(project_dir).resolve() if project_dir else Path(".").resolve()) / ".agentengine.state"
 
         try:
             async with AgentEngineClient(region=target.region, dry_run=dry_run) as client:
                 click.echo(f"正在通过 Server 删除 Agent: {agent_id}...")
                 success = await client.delete_agent(agent_id)
+                if success and not dry_run and state_file.exists():
+                    local_state = self._load_state(state_file)
+                    if str(local_state.get("agent_id") or "").strip() == str(agent_id).strip():
+                        try:
+                            os.remove(state_file)
+                            logger.info(f"Deleted local state file: {state_file}")
+                        except Exception as cleanup_error:
+                            logger.warning(f"Failed to delete local state file {state_file}: {cleanup_error}")
                 return success
         except DryRunExit:
             # 让异常冒泡给 CLI 处理

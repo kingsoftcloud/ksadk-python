@@ -1,15 +1,24 @@
-"""
-agentengine config - 交互式配置向导
-"""
-
-import click
 import os
-import yaml
 from pathlib import Path
+import click
 from dotenv import dotenv_values
 import questionary
 from questionary import Style
+import yaml
+
+from ksadk.cli.error_utils import (
+    abort_with_cli_error,
+    cancelled_error,
+    ensure_json_output_supported,
+    usage_error,
+)
+from ksadk.cli.resource_common import CONTEXT_SETTINGS, build_result_envelope, build_status_envelope
 from ksadk.cli.ui import (
+    emit_json,
+    is_color_disabled,
+    is_json_output,
+    is_stdout_tty,
+    output_option as cli_output_option,
     print_error,
     print_info,
     print_kv,
@@ -32,6 +41,22 @@ custom_style = Style([
     ('text', ''),                       
     ('disabled', 'fg:#858585 italic')   
 ])
+
+
+def _questionary_style():
+    return None if is_color_disabled() else custom_style
+
+
+def _ensure_interactive_command(command: str, *, hints: list[str]) -> None:
+    if is_stdout_tty():
+        return
+    abort_with_cli_error(
+        usage_error(
+            f"`{command}` 需要交互式终端 (TTY)。",
+            hints=hints,
+        ),
+        argv=command.split()[1:],
+    )
 
 
 def _load_env_file(path: Path) -> dict:
@@ -86,98 +111,203 @@ def _update_env_file(path: Path, updates: dict):
     path.write_text("\n".join(new_lines) + "\n", encoding="utf-8-sig")
 
 
-def _handle_set_command(set_items: tuple, output_path: Path, env_path: Path, is_global: bool):
-    """处理 --set 命令逻辑"""
+def _load_yaml_file(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            return yaml.safe_load(f) or {}
+    except Exception:
+        return {}
+
+
+def _default_project_config_path() -> Path:
+    canonical = Path("agentengine.yaml")
+    if canonical.exists():
+        return canonical
+    legacy = Path("ksadk.yaml")
+    if legacy.exists():
+        return legacy
+    return canonical
+
+
+def _stringify_value(value) -> str:
+    if isinstance(value, (dict, list, tuple)):
+        return yaml.safe_dump(value, default_flow_style=True, allow_unicode=True).strip()
+    return str(value)
+
+
+def _parse_set_items(set_items: tuple) -> tuple[dict, dict, list[str]]:
+    """Parse KEY=VALUE assignments into project/env updates."""
     updates_yaml = {}
     updates_env = {}
-    
+    invalid_items: list[str] = []
+
     for item in set_items:
         if "=" not in item:
-            print_warn(f"无效格式忽略: {item} (应为 key=value)")
+            invalid_items.append(str(item))
             continue
-            
+
         key, value = item.split("=", 1)
         key = key.strip()
         value = value.strip()
-        
-        # 键值映射逻辑
-        # 1. 环境变量 (OPENAI_*, KSYUN_*)
+
         if key.startswith("OPENAI_") or key.startswith("KSYUN_"):
             updates_env[key] = value
-            # 特殊联动: KSYUN_REGION -> region
             if key == "KSYUN_REGION":
                 updates_yaml["region"] = value
-                
-        # 2. YAML 配置 (region 特殊处理联动)
         elif key == "region":
             updates_yaml["region"] = value
             updates_env["KSYUN_REGION"] = value
-            
-        # 3. 其他默认视为 YAML 配置
         else:
             updates_yaml[key] = value
+    return updates_yaml, updates_env, invalid_items
 
-    # 更新本地 .env
+
+def _apply_set_command(set_items: tuple, output_path: Path, env_path: Path, is_global: bool) -> dict:
+    """Apply non-interactive config mutations and return a structured summary."""
+    updates_yaml, updates_env, invalid_items = _parse_set_items(set_items)
+    if not updates_yaml and not updates_env and invalid_items:
+        raise usage_error(
+            "至少提供一个有效的 KEY=VALUE 配置项。",
+            hints=["示例: `agentengine config set region=cn-beijing-6 OPENAI_MODEL_NAME=deepseek-v3.2`"],
+        )
+
+    result = {
+        "project_config_path": str(output_path),
+        "project_env_path": str(env_path),
+        "updated_project_keys": [],
+        "updated_env_keys": [],
+        "invalid_items": invalid_items,
+        "global_updated": False,
+        "global_config_path": None,
+    }
+
     if updates_env:
         _update_env_file(env_path, updates_env)
-        print_success(f"更新环境变量 ({env_path}): {', '.join(updates_env.keys())}")
-        
-    # 更新本地 agentengine.yaml
-    if updates_yaml:
-        current_yaml = {}
-        if output_path.exists():
-            try:
-                with open(output_path, 'r', encoding='utf-8-sig') as f:
-                    current_yaml = yaml.safe_load(f) or {}
-            except Exception:
-                pass
-        
-        current_yaml.update(updates_yaml)
-        
-        # 简单回写 (注意：这会丢失原文件的注释，但为了 --set 功能这是权衡)
-        # 如果只想更新特定字段而不重写文件结构，需要更复杂的解析器
-        with open(output_path, 'w', encoding='utf-8-sig') as f:
-            yaml.dump(current_yaml, f, default_flow_style=False, allow_unicode=True)
-            
-        print_success(f"更新项目配置 ({output_path}): {', '.join(updates_yaml.keys())}")
+        result["updated_env_keys"] = sorted(updates_env.keys())
 
-    # 处理全局配置
+    if updates_yaml:
+        current_yaml = _load_yaml_file(output_path)
+        current_yaml.update(updates_yaml)
+
+        with open(output_path, "w", encoding="utf-8-sig") as f:
+            yaml.dump(current_yaml, f, default_flow_style=False, allow_unicode=True)
+        result["updated_project_keys"] = sorted(updates_yaml.keys())
+
     if is_global:
         from ksadk.configs.global_config import (
-            save_global_config,
             build_global_config_from_env,
-            load_global_config,
             get_global_config_path
         )
-        
-        # 加载现有全局配置用于合并 (因为 build_from_env 是覆盖式构建)
-        # 这里简化逻辑：我们只更新本次 set 涉及的环境变量
-        # 但 build_global_config_from_env 需要完整的 env 字典才能构建出完整结构？
-        # 不，它会构建一个新的结构。我们需要合并到旧结构中。
-        
-        # 更好策略: 加载旧全局 -> 扁平化为 Env -> 更新 Env -> 重新构建 -> 保存
-        # 或者直接利用 config 模块的分组逻辑 (需要 config 模块支持 update)
-        
-        # 简易实现：
-        # 1. 获取当前全局配置的 env 视图
-        from ksadk.configs.global_config import get_env_from_global_config
-        
-        current_global_env = get_env_from_global_config()
-        # 2. 合并本次更新
-        current_global_env.update(updates_env)
-        # 3. 重新构建并保存
-        new_global_config = build_global_config_from_env(current_global_env)
-        
-        if save_global_config(new_global_config):
-            print_success(f"更新全局配置 ({get_global_config_path()})")
-        else:
-            print_warn("保存全局配置失败")
 
-@click.command(context_settings=dict(help_option_names=['-h', '--help']))
-@click.option('--output', '-o', default='agentengine.yaml', help='输出配置文件名')
-@click.option('--set', '-s', 'set_items', multiple=True, help='设置配置项 key=value')
-@click.option('--global', 'is_global', is_flag=True, default=False, help='强制更新全局配置')
-def config(output: str, set_items: tuple, is_global: bool):
+        from ksadk.configs.global_config import get_env_from_global_config, save_global_config
+
+        current_global_env = get_env_from_global_config()
+        current_global_env.update(updates_env)
+        if "region" in updates_yaml and "KSYUN_REGION" not in current_global_env:
+            current_global_env["KSYUN_REGION"] = updates_yaml["region"]
+        new_global_config = build_global_config_from_env(current_global_env)
+        if save_global_config(new_global_config):
+            result["global_updated"] = True
+            result["global_config_path"] = str(get_global_config_path())
+    return result
+
+
+def _collect_config_snapshot(output_path: Path, env_path: Path) -> dict:
+    from ksadk.configs.global_config import get_env_from_global_config, get_global_config_path, load_global_config
+
+    project_config = _load_yaml_file(output_path)
+    project_env = {k: v for k, v in _load_env_file(env_path).items() if v not in (None, "")}
+    global_config = load_global_config()
+    global_env = get_env_from_global_config()
+    effective_env = dict(global_env)
+    effective_env.update(project_env)
+    return {
+        "project_config_path": str(output_path),
+        "project_env_path": str(env_path),
+        "global_config_path": str(get_global_config_path()),
+        "project_config": project_config,
+        "project_env": project_env,
+        "global_config": global_config,
+        "global_env": global_env,
+        "effective_env": effective_env,
+    }
+
+
+def _render_config_snapshot(snapshot: dict) -> None:
+    emit_json(build_status_envelope(resource="config", item=snapshot))
+
+
+def _render_config_snapshot_pretty(snapshot: dict) -> None:
+    print_title("配置概览")
+    print_kv("项目配置文件", snapshot["project_config_path"])
+    print_kv("环境文件", snapshot["project_env_path"])
+    print_kv("全局配置文件", snapshot["global_config_path"])
+
+    print_rule("项目配置")
+    if snapshot["project_config"]:
+        for key, value in snapshot["project_config"].items():
+            print_kv(str(key), _stringify_value(value))
+    else:
+        print_info("未检测到项目配置。")
+
+    print_rule("项目环境变量")
+    if snapshot["project_env"]:
+        for key, value in snapshot["project_env"].items():
+            print_kv(str(key), _stringify_value(value))
+    else:
+        print_info("未检测到项目 .env 配置。")
+
+    print_rule("全局配置")
+    if snapshot["global_env"]:
+        for key, value in snapshot["global_env"].items():
+            print_kv(str(key), _stringify_value(value))
+    else:
+        print_info("未检测到全局配置。")
+
+    print_rule("生效环境变量")
+    if snapshot["effective_env"]:
+        for key, value in snapshot["effective_env"].items():
+            print_kv(str(key), _stringify_value(value))
+    else:
+        print_info("当前没有可用的生效环境变量。")
+
+
+def _render_config_set_result(result: dict) -> None:
+    emit_json(
+        build_result_envelope(
+            resource="config",
+            action="set",
+            result=result,
+            hints=[],
+        )
+    )
+
+
+def _render_config_set_result_pretty(result: dict) -> None:
+    print_success("配置已更新")
+    print_kv("项目配置文件", result["project_config_path"])
+    print_kv("环境文件", result["project_env_path"])
+    if result["updated_project_keys"]:
+        print_kv("更新的项目键", ", ".join(result["updated_project_keys"]))
+    if result["updated_env_keys"]:
+        print_kv("更新的环境变量", ", ".join(result["updated_env_keys"]))
+    if result["invalid_items"]:
+        print_warn(f"已忽略无效配置项: {', '.join(result['invalid_items'])}")
+    if result["global_updated"]:
+        print_kv("全局配置", result["global_config_path"] or "~/.agentengine/settings.json")
+
+
+def _run_config_set_command(*, set_items: tuple, output_path: Path, env_path: Path, is_global: bool) -> dict:
+    if not set_items:
+        raise usage_error(
+            "请至少提供一个 KEY=VALUE 配置项。",
+            hints=["示例: `agentengine config set region=cn-beijing-6 OPENAI_MODEL_NAME=deepseek-v3.2`"],
+        )
+    return _apply_set_command(set_items, output_path, env_path, is_global)
+
+def run_config_wizard(config_file: str | None, set_items: tuple, is_global: bool):
     """通过交互式向导配置 agentengine.yaml 和 .env 文件
     
     支持:
@@ -189,15 +319,36 @@ def config(output: str, set_items: tuple, is_global: bool):
         --set: 非交互式设置配置项 (如 --set name=MyAgent --set KSYUN_REGION=cn-beijing-6)
         --global: 强制更新全局配置 (~/.agentengine/settings.json)
     """
-    print_title("AgentEngine 配置向导")
-    
-    output_path = Path(output)
+    output_path = Path(config_file) if config_file else _default_project_config_path()
     env_path = Path(".env")
-    
+
     # === 0. 处理 --set 非交互模式 ===
     if set_items:
-        _handle_set_command(set_items, output_path, env_path, is_global)
+        print_warn("`agentengine config wizard --set ...` 是兼容入口，推荐改用 `agentengine config set KEY=VALUE ...`。")
+        result = _run_config_set_command(
+            set_items=set_items,
+            output_path=output_path,
+            env_path=env_path,
+            is_global=is_global,
+        )
+        if is_json_output():
+            _render_config_set_result(result)
+        else:
+            _render_config_set_result_pretty(result)
         return
+
+    ensure_json_output_supported(
+        "agentengine config wizard",
+        suggestion="请改用 `agentengine config show --output json` 或 `agentengine config set KEY=VALUE`。",
+    )
+    _ensure_interactive_command(
+        "agentengine config wizard",
+        hints=[
+            "查看当前配置请使用 `agentengine config show`。",
+            "非交互修改请使用 `agentengine config set KEY=VALUE ...`。",
+        ],
+    )
+    print_title("AgentEngine 配置向导")
 
     # === 1. 加载现有配置 ===
     existing_config = {}
@@ -220,8 +371,7 @@ def config(output: str, set_items: tuple, is_global: bool):
     def _ask_or_exit(question):
         result = question.ask()
         if result is None:
-            print_error("取消配置")
-            raise SystemExit(0)
+            raise cancelled_error("取消配置")
         return result
 
     new_config = {}
@@ -238,13 +388,13 @@ def config(output: str, set_items: tuple, is_global: bool):
     new_config['name'] = _ask_or_exit(questionary.text(
         "Agent 名称:", 
         default=default_name,
-        style=custom_style
+        style=_questionary_style()
     ))
     
     new_config['description'] = _ask_or_exit(questionary.text(
         "Agent 描述:", 
         default=existing_config.get('description', ''),
-        style=custom_style
+        style=_questionary_style()
     ))
     
     frameworks = ['langgraph', 'langchain', 'deepagents', 'adk', 'openclaw']
@@ -252,7 +402,7 @@ def config(output: str, set_items: tuple, is_global: bool):
         "选择开发框架:",
         choices=frameworks,
         default=existing_config.get('framework', 'langgraph'),
-        style=custom_style
+        style=_questionary_style()
     ))
     
     print_rule()
@@ -269,19 +419,19 @@ def config(output: str, set_items: tuple, is_global: bool):
     new_env['OPENAI_API_KEY'] = _ask_or_exit(questionary.password(
         "API Key (OPENAI_API_KEY):",
         default=default_api_key,
-        style=custom_style
+        style=_questionary_style()
     ))
     
     new_env['OPENAI_BASE_URL'] = _ask_or_exit(questionary.text(
         "Base URL (OPENAI_BASE_URL) [选填,默认使用金山云星流平台URL]:",
         default=existing_env.get('OPENAI_BASE_URL', ''),
-        style=custom_style
+        style=_questionary_style()
     ))
     
     new_env['OPENAI_MODEL_NAME'] = _ask_or_exit(questionary.text(
         "模型名称 (OPENAI_MODEL_NAME) [选填,默认使用金山云星流平台deepseek-v3.2]:",
         default=existing_env.get('OPENAI_MODEL_NAME', ''),
-        style=custom_style
+        style=_questionary_style()
     ))
     
     print_rule()
@@ -293,26 +443,26 @@ def config(output: str, set_items: tuple, is_global: bool):
     should_config_ksyun = _ask_or_exit(questionary.confirm(
         "是否配置金山云凭证?",
         default=bool(existing_env.get('KSYUN_ACCESS_KEY')),
-        style=custom_style
+        style=_questionary_style()
     ))
 
     if should_config_ksyun:
         new_env['KSYUN_ACCESS_KEY'] = _ask_or_exit(questionary.password(
             "Access Key (AK):",
             default=existing_env.get('KSYUN_ACCESS_KEY', ''),
-            style=custom_style
+            style=_questionary_style()
         ))
         
         new_env['KSYUN_SECRET_KEY'] = _ask_or_exit(questionary.password(
             "Secret Key (SK):",
             default=existing_env.get('KSYUN_SECRET_KEY', ''),
-            style=custom_style
+            style=_questionary_style()
         ))
         
         new_env['KSYUN_ACCOUNT_ID'] = _ask_or_exit(questionary.text(
             "Account ID (账户ID):",
             default=existing_env.get('KSYUN_ACCOUNT_ID', ''),
-            style=custom_style
+            style=_questionary_style()
         ))
         
         
@@ -338,7 +488,7 @@ def config(output: str, set_items: tuple, is_global: bool):
             "默认区域 (Region):",
             choices=choices,
             default=default_region if default_region in choices else standard_regions[0],
-            style=custom_style
+            style=_questionary_style()
         ))
         
         # 如果选择了自定义，或者是点击了之前保留的自定义值，这里逻辑是这样的：
@@ -350,7 +500,7 @@ def config(output: str, set_items: tuple, is_global: bool):
              selected_region = _ask_or_exit(questionary.text(
                 "请输入区域 Code (如 cn-shanghai-2):",
                 default=default_region if default_region not in standard_regions else "",
-                style=custom_style
+                style=_questionary_style()
              ))
         
         new_env['KSYUN_REGION'] = selected_region
@@ -370,7 +520,7 @@ def config(output: str, set_items: tuple, is_global: bool):
     should_config_registry = _ask_or_exit(questionary.confirm(
         "是否使用 container 模式部署?",
         default=bool(existing_env.get('KCR_USERNAME')),
-        style=custom_style
+        style=_questionary_style()
     ))
 
     if should_config_registry:
@@ -378,7 +528,7 @@ def config(output: str, set_items: tuple, is_global: bool):
         new_env['KCR_PASSWORD'] = _ask_or_exit(questionary.password(
             "KCR 临时密码:",
             default=existing_env.get('KCR_PASSWORD', ''),
-            style=custom_style
+            style=_questionary_style()
         ))
         
         # 仓库地址 (选填，默认使用企业版 KCR)
@@ -388,7 +538,7 @@ def config(output: str, set_items: tuple, is_global: bool):
         custom_registry = _ask_or_exit(questionary.text(
             f"镜像仓库地址 [选填,默认: {auto_registry}]:",
             default=default_registry,
-            style=custom_style
+            style=_questionary_style()
         ))
         
         if custom_registry:
@@ -468,7 +618,7 @@ def config(output: str, set_items: tuple, is_global: bool):
         should_save_global = _ask_or_exit(questionary.confirm(
             "是否保存到全局配置 (后续新项目可自动复用)?",
             default=True,
-            style=custom_style
+            style=_questionary_style()
         ))
         
     # 情况3: 全局配置已存在 且 未指定 --global -> 静默跳过，不打扰用户
@@ -481,3 +631,99 @@ def config(output: str, set_items: tuple, is_global: bool):
             print_success(f"已保存到全局配置: {get_global_config_path()}")
         else:
             print_warn("保存全局配置失败")
+
+
+@click.group("config", context_settings=CONTEXT_SETTINGS, invoke_without_command=True)
+@click.option("--set", "-s", "set_items", multiple=True, hidden=True, help="(兼容) 设置配置项 key=value")
+@click.option("--global", "is_global", is_flag=True, default=False, hidden=True, help="(兼容) 强制更新全局配置")
+@cli_output_option(hidden=True)
+@click.pass_context
+def config(ctx: click.Context, set_items: tuple, is_global: bool, output_mode: str | None):
+    """配置命令组。
+
+    直接运行 `agentengine config` 会进入向导。
+    标准子命令为 `wizard` / `show` / `set` / `model`。
+    """
+    _ = output_mode
+    if ctx.invoked_subcommand is not None:
+        return
+
+    if set_items:
+        print_warn("`agentengine config --set ...` 是兼容入口，推荐改用 `agentengine config set KEY=VALUE ...`。")
+        result = _run_config_set_command(
+            set_items=set_items,
+            output_path=_default_project_config_path(),
+            env_path=Path(".env"),
+            is_global=is_global,
+        )
+        if is_json_output():
+            _render_config_set_result(result)
+        else:
+            _render_config_set_result_pretty(result)
+        return
+
+    ensure_json_output_supported(
+        "agentengine config",
+        suggestion="请改用 `agentengine config show --output json` 或 `agentengine config set KEY=VALUE`。",
+    )
+    run_config_wizard(config_file=None, set_items=(), is_global=is_global)
+
+
+@config.command("wizard", context_settings=CONTEXT_SETTINGS)
+@click.option("--file", "config_file", default=None, help="配置文件路径（默认自动复用 agentengine.yaml/ksadk.yaml）")
+@click.option('--set', '-s', 'set_items', multiple=True, help='设置配置项 key=value')
+@click.option('--global', 'is_global', is_flag=True, default=False, help='强制更新全局配置')
+@cli_output_option(hidden=True)
+def config_wizard(config_file: str | None, set_items: tuple, is_global: bool, output_mode: str | None):
+    """通过交互式向导配置项目。"""
+    _ = output_mode
+    run_config_wizard(config_file=config_file, set_items=set_items, is_global=is_global)
+
+
+@config.command("show", context_settings=CONTEXT_SETTINGS)
+@cli_output_option()
+def config_show(output_mode: str | None):
+    """查看项目配置、全局配置与当前生效环境变量。"""
+    _ = output_mode
+    snapshot = _collect_config_snapshot(_default_project_config_path(), Path(".env"))
+    if is_json_output():
+        _render_config_snapshot(snapshot)
+    else:
+        _render_config_snapshot_pretty(snapshot)
+
+
+@config.command("set", context_settings=CONTEXT_SETTINGS)
+@click.argument("set_items", nargs=-1)
+@click.option("--global", "is_global", is_flag=True, default=False, help="同时更新全局配置")
+@cli_output_option()
+def config_set(set_items: tuple, is_global: bool, output_mode: str | None):
+    """非交互式设置配置项。
+
+    示例:
+        agentengine config set region=cn-beijing-6
+        agentengine config set OPENAI_MODEL_NAME=deepseek-v3.2 OPENAI_BASE_URL=https://example.com/v1
+        agentengine config set KSYUN_REGION=cn-beijing-6 --global
+    """
+    _ = output_mode
+    result = _run_config_set_command(
+        set_items=set_items,
+        output_path=_default_project_config_path(),
+        env_path=Path(".env"),
+        is_global=is_global,
+    )
+    if is_json_output():
+        _render_config_set_result(result)
+    else:
+        _render_config_set_result_pretty(result)
+
+
+@config.command("model", context_settings=CONTEXT_SETTINGS)
+def config_model():
+    """切换默认模型。"""
+    ensure_json_output_supported(
+        "agentengine config model",
+        suggestion="请改用 `agentengine config show --output json` 查看当前配置。",
+    )
+    from ksadk.cli.cmd_model import run_model_command
+
+    run_model_command()

@@ -9,6 +9,8 @@ from typing import Awaitable, Callable, Optional, TypeVar
 import click
 
 from ksadk.api.client import DryRunExit
+from ksadk.cli.resource_common import build_dry_run_envelope
+from ksadk.cli.ui import emit_json, is_json_output
 
 _T = TypeVar("_T")
 _DEFAULT_DONE_MSG = "✅ Dry Run Completed: 请求已打印，未执行实际变更。"
@@ -37,14 +39,38 @@ def run_async_with_dry_run(
     *,
     dry_run: bool,
     done_message: str = _DEFAULT_DONE_MSG,
-    on_dry_run: Optional[Callable[[], None]] = None,
+    on_dry_run: Optional[Callable[[DryRunExit], None]] = None,
+    dry_run_resource: str | None = None,
+    dry_run_action: str | None = None,
+    dry_run_hints: Optional[list[str]] = None,
 ) -> Optional[_T]:
     """Run async coroutine and swallow DryRunExit in dry-run mode."""
     _ = dry_run
     try:
         return asyncio.run(coro)
-    except DryRunExit:
+    except DryRunExit as exc:
         if on_dry_run:
-            on_dry_run()
-        click.echo(done_message)
+            on_dry_run(exc)
+        elif is_json_output() and dry_run_resource and dry_run_action:
+            emit_json(
+                build_dry_run_envelope(
+                    resource=dry_run_resource,
+                    action=dry_run_action,
+                    request=exc.payload or {},
+                    hints=dry_run_hints or [],
+                )
+            )
+        elif exc.payload:
+            click.echo("=" * 60)
+            click.echo(f"Dry Run Mode: {exc.payload.get('method', 'REQUEST')} {exc.payload.get('url', '')}")
+            click.echo("=" * 60)
+            click.echo(f"Headers: {exc.payload.get('headers')}")
+            if exc.payload.get("body") is not None:
+                click.echo(f"Body: {exc.payload.get('body')}")
+            if exc.payload.get("curl"):
+                click.echo("\nCurl Command:")
+                click.echo(str(exc.payload["curl"]))
+            click.echo("=" * 60)
+        if not is_json_output():
+            click.echo(done_message)
         return None

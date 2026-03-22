@@ -4,19 +4,32 @@ agentengine launch - 一键完成构建和部署
 
 import click
 import asyncio
-import os
 from pathlib import Path
-from ksadk.cli.dry_run import effective_dry_run
-from ksadk.cli.error_utils import is_debug_mode_enabled, print_exception
+from ksadk.api.client import DryRunExit
+from ksadk.cli.dry_run import effective_dry_run, run_async_with_dry_run
+from ksadk.cli.error_utils import cli_error_from_exception, is_debug_mode_enabled, remote_error, usage_error, validation_error
+from ksadk.cli.workflow_common import (
+    build_workflow_local_plan,
+    clear_build_metadata,
+    emit_no_cache_hint,
+    load_cached_artifact_reference,
+    plan_artifact_build,
+    print_agent_next_steps,
+    print_workflow_header,
+    render_workflow_dry_run,
+    render_workflow_result,
+    resolve_artifact_build_plan,
+)
 from ksadk.deployment.ui_config import SUPPORTED_UI_PROFILES
 from ksadk.cli.ui import (
+    capture_standard_output,
+    is_json_output,
+    output_option as cli_output_option,
     print_error,
     print_info,
     print_kv,
-    print_next_steps,
     print_rule,
     print_success,
-    print_title,
     print_warn,
 )
 
@@ -52,6 +65,7 @@ from ksadk.cli.ui import (
 )
 @click.option("--no-version", is_flag=True, help="部署成功后不自动创建版本快照")
 @click.option("--auto-rollback", is_flag=True, help="部署失败时自动回滚到上一版本")
+@cli_output_option()
 def launch(
     agent_dir: str,
     target: str,
@@ -73,6 +87,7 @@ def launch(
     artifact_type: str,
     no_version: bool,
     auto_rollback: bool,
+    output_mode: str | None,
 ):
     """一键完成构建和部署 (Build + Deploy)
 
@@ -92,7 +107,9 @@ def launch(
         KSYUN_REGION=cn-beijing-6 agentengine launch . --target serverless --no-cache
     """
     dry_run = effective_dry_run(dry_run)
-    asyncio.run(
+    _ = output_mode
+    dry_run_context: dict[str, object] = {}
+    result = run_async_with_dry_run(
         _launch_async(
             agent_dir,
             target,
@@ -114,8 +131,19 @@ def launch(
             artifact_type,
             no_version,
             auto_rollback,
-        )
+            dry_run_context=dry_run_context,
+        ),
+        dry_run=dry_run,
+        on_dry_run=(
+            lambda exc: render_workflow_dry_run(
+                action="launch",
+                request=dict(exc.payload or {}),
+                plan=dict(dry_run_context.get("plan") or {}) or None,
+            )
+        ),
     )
+    if result is not None and is_json_output():
+        render_workflow_result(action="launch", result=result)
 
 
 async def _launch_async(
@@ -139,27 +167,30 @@ async def _launch_async(
     artifact_type: str,
     no_version: bool,
     auto_rollback: bool,
+    dry_run_context: dict[str, object] | None = None,
 ):
     from ksadk.detection import FrameworkDetector
     from ksadk.deployment import DeploymentManager, DeployTarget
 
     agent_path = Path(agent_dir).resolve()
-    print_title("AgentEngine Launch", f"target: {target}")
-    print_kv("项目目录", str(agent_path))
-    if target == "serverless":
-        print_kv("区域", region, value_style="#58a6ff")
-        if not artifact_type:
-            artifact_type = "Code"
-        print_kv("模式", artifact_type)
-        if account_id:
-            print_kv("账号", account_id)
+    effective_artifact_type = artifact_type or ("Code" if target == "serverless" else artifact_type)
+    print_workflow_header(
+        title="Agent Launch",
+        subtitle=f"target: {target}",
+        project_dir=agent_path,
+        target=target,
+        region=region if target == "serverless" else None,
+        mode_label="部署模式" if target == "serverless" else None,
+        mode_value=effective_artifact_type if target == "serverless" else None,
+        account_id=account_id if target == "serverless" else None,
+        observability=observability if target == "serverless" else None,
+    )
 
     # 1. 检测框架
     detector = FrameworkDetector(str(agent_path))
     detection_result = detector.detect()
     if detection_result.type.value == "unknown":
-        print_error("错误: 未检测到支持的框架")
-        return
+        raise validation_error("未检测到支持的框架")
 
     print_kv("框架", detection_result.name, value_style="#2da44e")
 
@@ -172,8 +203,7 @@ async def _launch_async(
     try:
         provider = DeploymentManager.get_provider(target)
     except ValueError as e:
-        print_exception("错误", e)
-        return
+        raise usage_error(str(e))
 
     # 4. 准备 Target 配置
     deploy_target = DeployTarget(
@@ -184,7 +214,7 @@ async def _launch_async(
             "account_id": account_id,
             "enable_observability": observability,
             "no_cache": no_cache,
-            "artifact_type": artifact_type,
+            "artifact_type": effective_artifact_type,
             "port": port,
             "namespace": namespace,
             "registry": registry,
@@ -198,64 +228,131 @@ async def _launch_async(
         },
     )
 
+    artifact_plan = plan_artifact_build(
+        target=target,
+        artifact_type=effective_artifact_type,
+        ks3_path=ks3_path,
+        image=image,
+        no_cache=no_cache,
+    )
+
     # 资源配置
     if "resources" in config:
         deploy_target.resources.cpu = config["resources"].get("cpu", "2")
         deploy_target.resources.memory = config["resources"].get("memory", "4Gi")
 
+    normalized_artifact_type = (effective_artifact_type or "Code").strip().lower()
+    explicit_artifact_reference = ks3_path if normalized_artifact_type == "code" else image
+    cached_artifact_reference = None
+    if not artifact_plan.should_clear_metadata:
+        cached_artifact_reference = load_cached_artifact_reference(agent_path, effective_artifact_type)
+    resolved_artifact_plan = resolve_artifact_build_plan(
+        plan=artifact_plan,
+        target=target,
+        artifact_type=effective_artifact_type,
+        dry_run=dry_run,
+        deploy_name=deploy_name,
+        region=region if target == "serverless" else None,
+        account_id=account_id,
+        ks3_bucket=ks3_bucket,
+        registry=registry,
+        explicit_reference=explicit_artifact_reference,
+        cached_reference=cached_artifact_reference,
+    )
+
     # 5. 验证
-    valid, error_msg = await provider.validate_config(deploy_target)
+    with capture_standard_output():
+        valid, error_msg = await provider.validate_config(deploy_target)
     if not valid:
-        print_error(f"配置验证失败: {error_msg}")
-        return
+        raise validation_error(f"配置验证失败: {error_msg}")
 
     # 避免 package 阶段加载旧 metadata，如果在 no_cache 模式下，直接物理删除
-    if no_cache:
-        metadata_file = agent_path / ".agentengine" / "build-metadata.json"
-        if metadata_file.exists():
-            try:
-                os.remove(metadata_file)
-                print_warn("[DEBUG] 已删除旧 build-metadata.json (--no-cache)")
-            except Exception:
-                pass
+    if artifact_plan.should_clear_metadata:
+        try:
+            if clear_build_metadata(agent_path):
+                print_warn("已清除旧构建元数据 (--no-cache)")
+        except Exception:
+            pass
+    emit_no_cache_hint(plan=artifact_plan, no_cache=no_cache)
 
     # 6. 打包 (Package)
-    print_rule("Step 1/3 准备构建环境")
+    total_steps = 3 if resolved_artifact_plan.will_build else 2
+    print_rule(f"Step 1/{total_steps} 准备构建环境")
     try:
-        package_info = await provider.package(str(agent_path), detection_result, config)
+        with capture_standard_output():
+            package_info = await provider.package(str(agent_path), detection_result, config)
         package_info.name = deploy_name
-        
-        # 传入额外的 metadata override
-        if ks3_path:
-            package_info.metadata["ks3_path"] = ks3_path
+
+        if resolved_artifact_plan.reference:
+            if normalized_artifact_type == "container":
+                package_info.image = resolved_artifact_plan.reference
+                package_info.metadata["image"] = resolved_artifact_plan.reference
+            else:
+                package_info.metadata["ks3_path"] = resolved_artifact_plan.reference
         
         print_kv("构建目录", str(package_info.build_dir))
     except Exception as e:
-        print_exception("打包失败", e)
-        return
+        raise cli_error_from_exception(e, context="打包失败")
+
+    if not resolved_artifact_plan.will_build and resolved_artifact_plan.reference:
+        source_label = {
+            "external": "外部制品",
+            "cached": "缓存制品",
+            "planned_build": "预测制品",
+        }.get(resolved_artifact_plan.source or "", "制品引用")
+        print_kv(source_label, resolved_artifact_plan.reference)
+        if resolved_artifact_plan.source == "cached":
+            print_info("检测到缓存制品，跳过重新构建")
+        elif resolved_artifact_plan.source == "planned_build":
+            print_info("Dry Run: 仅生成本地构建计划，不执行真实构建/上传")
 
     # 7. 构建与上传 (Build)
-    print_rule("Step 2/3 构建与上传")
-    try:
-        # 这里会触发 Code 模式的 KS3 上传 或 Container 模式的 Docker Build
-        package_info = await provider.build(package_info, deploy_target)
+    if resolved_artifact_plan.will_build:
+        print_rule(f"Step 2/{total_steps} 构建与上传")
+        try:
+            # 这里会触发 Code 模式的 KS3 上传 或 Container 模式的 Docker Build
+            with capture_standard_output():
+                package_info = await provider.build(package_info, deploy_target)
 
-        if target == "serverless":
-            # Serverless Provider 在 build 后会将 ks3_path 放入 metadata
-            ks3 = package_info.metadata.get("ks3_path")
-            if ks3:
-                print_kv("KS3 路径", ks3)
-        else:
-            print_kv("镜像", package_info.image)
+            if target == "serverless":
+                # Serverless Provider 在 build 后会将 ks3_path 放入 metadata
+                ks3 = package_info.metadata.get("ks3_path")
+                if ks3:
+                    print_kv("KS3 路径", ks3)
+            else:
+                print_kv("镜像", package_info.image)
 
-    except Exception as e:
-        print_exception("构建失败", e)
-        return
+        except Exception as e:
+            raise cli_error_from_exception(e, context="构建失败")
+
+    artifact_reference = (
+        package_info.metadata.get("ks3_path")
+        or package_info.image
+        or resolved_artifact_plan.reference
+        or ks3_path
+        or image
+        or ""
+    )
+    local_plan = build_workflow_local_plan(
+        project_dir=agent_path,
+        framework=detection_result.name,
+        target=target,
+        region=region if target == "serverless" else None,
+        deploy_name=deploy_name,
+        artifact_type=effective_artifact_type,
+        artifact_plan=resolved_artifact_plan,
+        build_dir=str(package_info.build_dir),
+        artifact_reference=str(artifact_reference),
+        no_cache=no_cache,
+    )
+    if dry_run_context is not None:
+        dry_run_context["plan"] = local_plan
 
     # 8. 部署 (Deploy)
-    print_rule(f"Step 3/3 部署到 {target}")
+    print_rule(f"Step {total_steps}/{total_steps} 部署到 {target}")
     try:
-        result = await provider.deploy(package_info, deploy_target)
+        with capture_standard_output():
+            result = await provider.deploy(package_info, deploy_target)
 
         if result.is_success():
             print_success("部署成功")
@@ -273,28 +370,90 @@ async def _launch_async(
             # 9. 自动创建版本快照 (除非指定 --no-version)
             if result.agent_id and not no_version and not dry_run:
                 from ksadk.cli.deploy_utils import auto_release_version
-                await auto_release_version(result.agent_id, region, deploy_name)
+                with capture_standard_output():
+                    await auto_release_version(result.agent_id, region, deploy_name)
 
-            print_next_steps([
-                f"agentengine status --agent {result.agent_id}",
-                f"agentengine invoke --agent {result.agent_id}",
-            ], title=f"下一步查看或使用 {result.agent_name}")
+            print_agent_next_steps(
+                str(result.agent_id or deploy_name),
+                title=f"下一步查看或使用 {result.agent_name}",
+            )
+            return {
+                "framework": detection_result.name,
+                "artifact_type": (effective_artifact_type or "").lower(),
+                "artifact_source": str(resolved_artifact_plan.source or ""),
+                "artifact_reused": bool((resolved_artifact_plan.source or "") == "cached"),
+                "artifact_built": bool(resolved_artifact_plan.will_build),
+                "artifact_reference": str(
+                    package_info.metadata.get("ks3_path")
+                    or package_info.image
+                    or resolved_artifact_plan.reference
+                    or ks3_path
+                    or image
+                    or ""
+                ),
+                "agent_id": str(result.agent_id or ""),
+                "agent_name": str(result.agent_name or deploy_name),
+                "endpoint": str(result.endpoint or ""),
+                "api_key_present": bool(result.api_key),
+                "status": result.status.value,
+                "message": str(result.message or ""),
+                "region": region,
+                "target": target,
+            }
         else:
-            print_warn(f"部署状态: {result.status.value}")
+            if result.status.name == "SKIPPED":
+                dry_run_request = result.metadata.get("dry_run_request") if isinstance(result.metadata, dict) else None
+                if dry_run and dry_run_request:
+                    raise DryRunExit(result.message or "Dry Run finished.", payload=dry_run_request)
+                print_warn(f"部署状态: {result.status.value}")
+                return {
+                    "framework": detection_result.name,
+                    "artifact_type": (effective_artifact_type or "").lower(),
+                    "artifact_source": str(resolved_artifact_plan.source or ""),
+                    "artifact_reused": bool((resolved_artifact_plan.source or "") == "cached"),
+                    "artifact_built": bool(resolved_artifact_plan.will_build),
+                    "artifact_reference": str(
+                        package_info.metadata.get("ks3_path")
+                        or package_info.image
+                        or resolved_artifact_plan.reference
+                        or ks3_path
+                        or image
+                        or ""
+                    ),
+                    "agent_id": str(result.agent_id or ""),
+                    "agent_name": str(result.agent_name or deploy_name),
+                    "endpoint": str(result.endpoint or ""),
+                    "api_key_present": bool(result.api_key),
+                    "status": result.status.value,
+                    "message": str(result.message or ""),
+                    "region": region,
+                    "target": target,
+                }
+            raise remote_error(
+                f"部署状态: {result.status.value}",
+                details={
+                    "status": result.status.value,
+                    "message": result.message or "",
+                    "agent_id": result.agent_id or "",
+                },
+            )
             if result.message:
                 print_info(result.message)
             
             # 10. 自动回滚
             if auto_rollback and result.agent_id and result.status.name not in ["SKIPPED"]:
                 from ksadk.cli.deploy_utils import auto_rollback_to_previous
-                await auto_rollback_to_previous(result.agent_id, region)
+                with capture_standard_output():
+                    await auto_rollback_to_previous(result.agent_id, region)
 
+    except DryRunExit:
+        raise
     except Exception as e:
-        print_exception("部署异常", e)
         if is_debug_mode_enabled():
             import traceback
 
             traceback.print_exc()
+        raise cli_error_from_exception(e, context="部署异常")
 
 
 def _load_config(agent_path: Path) -> dict:

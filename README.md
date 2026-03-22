@@ -2,17 +2,19 @@
 
 `ksadk` 是金山云 Agent 开发与部署工具链，提供统一的 CLI 体验，覆盖本地开发、构建、部署、调用、版本管理与 MCP Server 管理。
 
-当前版本：`0.3.5`
+当前版本：`0.3.6`
 
 ## 核心能力
 
 - 多框架支持：DeepAgents、LangGraph、LangChain、Google ADK。
 - ADK 增强能力：支持短期/长期记忆体（STM/LTM）与知识库工具注入。
 - 本地开发：`run`（API/TUI）与 `web`（本地 Invoke 调试 UI）。
-- 云端部署：`build`、`deploy`、`launch`，支持 `Code` / `Container` 两种制品模式。
-- 云端 UI 访问：`dashboard` 统一打开已部署 Agent 的 Web UI（含 OpenClaw，默认短链接）。
-- 统一控制面：通过 `AgentEngine Server` 进行 Agent/MCP 管理。
-- 状态持久化：部署后保存 `.agentengine.state`，供后续 `status/invoke/destroy/version` 复用。
+- 云端工作流：`build`、`deploy`、`launch`，支持 `Code` / `Container` 两种制品模式。
+- 统一资源命令：`agent`、`mcp`、`openclaw`、`version`、`dashboard` 采用统一的 `list/status/delete/open` 语义。
+- 双一等用户体验：默认 `pretty` 输出面向人类，`--output json` 为 AI Agent / 自动化调用提供稳定结构化契约。
+- 可调试 Dry Run：`build/deploy/launch --dry-run` 会输出本地执行计划、远端请求摘要和完整 `curl`。
+- 统一控制面：通过 `AgentEngine Server` 进行 Agent/MCP/OpenClaw 管理。
+- 状态持久化：部署后保存 `.agentengine.state`，供后续 `agent status`、`agent delete`、`version`、`dashboard open` 等命令自动解析。
 - 版本管理：`version list/release/rollback`。
 - MCP 管理：`mcp deploy/list/status/delete`。
 
@@ -62,10 +64,19 @@ agentengine init --from-agent ./my_agent.py
 agentengine init --from-agent ./my_agent_dir
 ```
 
-### 2) 交互式配置
+### 2) 配置项目
+
+交互式向导：
 
 ```bash
 agentengine config
+```
+
+非交互式查看/修改：
+
+```bash
+agentengine config show
+agentengine config set region=cn-beijing-6 OPENAI_MODEL_NAME=deepseek-v3.2
 ```
 
 会生成或更新：
@@ -100,19 +111,23 @@ agentengine launch . --target serverless
 
 ```bash
 # 目录内自动解析 agent（.agentengine.state -> agentengine.yaml/ksadk.yaml）
-agentengine dashboard
+agentengine dashboard open
 
 # 显式指定 Agent
-agentengine dashboard --agent ar-xxxx
+agentengine dashboard open --agent ar-xxxx
 
 # OpenClaw 也走统一入口
-agentengine dashboard --agent openclaw-gateway-xxxx
+agentengine dashboard open --agent openclaw-gateway-xxxx
 
 # 创建可分享链接（默认打开浏览器）
-agentengine dashboard --agent ar-xxxx --share --expires-seconds 86400
+agentengine dashboard open --agent ar-xxxx --share --expires-seconds 86400
 
 # 仅输出 URL，不自动打开
-agentengine dashboard --agent ar-xxxx --no-open
+agentengine dashboard open --agent ar-xxxx --no-open
+
+# 查看/撤销分享链接
+agentengine dashboard share list --agent ar-xxxx
+agentengine dashboard share revoke <link_id> --yes
 ```
 
 ### 6)（可选）启用 ADK 记忆与知识库
@@ -128,30 +143,49 @@ export KSADK_KB_DATASET_ID=your_dataset_id
 ## 命令总览
 
 - `agentengine init`：创建新项目（支持 `--from-agent`）。
-- `agentengine config`：交互式配置 `agentengine.yaml` + `.env`。
-- `agentengine model`：从模型服务拉取模型列表并更新 `.env` 的 `OPENAI_MODEL_NAME`。
+- `agentengine config`：进入交互式配置向导。
+- `agentengine config show`：查看项目配置、全局配置与当前生效环境变量。
+- `agentengine config set KEY=VALUE...`：非交互式更新配置。
+- `agentengine config model`：交互式切换默认模型。
 - `agentengine run`：本地运行 Agent（支持 `-i` TUI）。
 - `agentengine web`：启动本地调试 UI（ADK 项目用 ADK Web，其他用 Chainlit）。
-- `agentengine dashboard`：打开云端已部署 Agent 的 Dashboard/WebUI（默认创建 `/s/{link_id}` 短链接）。
 - `agentengine build`：构建制品（`code` 或 `container`）。
 - `agentengine deploy`：部署到 `serverless` / `kcf` / `kce`。
 - `agentengine launch`：`build + deploy` 一条命令完成。
-- `agentengine status`：查看运行状态与 endpoint。
-- `agentengine invoke`：调用远端或本地 Agent。
-- `agentengine destroy`：销毁 Agent。
-- `agentengine version`：版本管理（`list/release/rollback`）。
-- `agentengine mcp`：MCP Server 管理。
-- `agentengine openclaw`：一键拉起 OpenClaw（部署/状态/删除等）。
+- `agentengine agent list|status|invoke|delete`：远端 Agent 资源管理。
+- `agentengine dashboard open`：打开云端已部署 Agent 的 Dashboard/WebUI（默认创建 `/s/{link_id}` 短链接）。
+- `agentengine dashboard share list|revoke`：管理 Dashboard 分享链接。
+- `agentengine version list|release|rollback`：Agent 版本管理。
+- `agentengine mcp list|status|deploy|delete`：MCP Server 管理。
+- `agentengine openclaw list|status|deploy|delete`：OpenClaw 资源管理。
 - `agentengine completion`：Shell 补全脚本与自动安装。
 
 说明：
-- `agentengine openclaw dashboard` 已收敛为统一命令 `agentengine dashboard`。
-- `dashboard` 默认通过 `CreateDashboardAccessLink` 生成短链接并打开浏览器。
-- 分享链接管理：`agentengine dashboard share list` / `agentengine dashboard share revoke <link_id>`（底层调用 `DeleteDashboardAccessLink`）。
+- 文档只展示 canonical 命令；旧的 `status` / `delete` / `destroy` / `dashboard [agent_ref]` 等入口仍保留兼容，但不再推荐。
+- `dashboard open` 默认通过 `CreateDashboardAccessLink` 生成短链接并打开浏览器。
+- `dashboard share revoke`、`agent delete`、`mcp delete`、`openclaw delete` 在自动化场景下建议显式传 `--yes`。
+
+## AI Agent / 自动化调用
+
+核心云端命令支持统一的机器输出：
+
+```bash
+agentengine agent status --agent ar-xxxx --output json
+agentengine deploy --target serverless --dry-run --output json
+agentengine config show --output json
+```
+
+约定如下：
+
+- 默认输出为 `pretty`，适合人类阅读。
+- `--output json` 返回稳定 envelope，适合 AI Agent / CI / 脚本解析。
+- destructive 命令在 JSON 模式下必须显式传 `--yes`。
+- `dashboard open --output json` 不会自动打开浏览器，等价于 `--no-open`。
+- 交互式命令如 `config wizard`、`run`、`web` 不建议作为自动化入口；非交互推荐使用 `config show` / `config set`。
 
 ## Agent 指定规则（统一）
 
-适用于：`status`、`invoke`、`destroy`、`version` 子命令。
+适用于：`agent status`、`agent invoke`、`agent delete`、`version`、`dashboard open` 子命令。
 
 支持三种写法：
 
@@ -162,11 +196,12 @@ export KSADK_KB_DATASET_ID=your_dataset_id
 示例：
 
 ```bash
-agentengine status --agent ar-xxxx
-agentengine status ar-xxxx
-agentengine invoke --agent my_agent -m "你好"
-agentengine destroy my_agent
+agentengine agent status --agent ar-xxxx
+agentengine agent status ar-xxxx
+agentengine agent invoke --agent my_agent -m "你好"
+agentengine agent delete my_agent --yes
 agentengine version list --agent ar-xxxx
+agentengine dashboard open --agent ar-xxxx
 ```
 
 未显式传 Agent 时，自动解析顺序为：
@@ -188,6 +223,11 @@ agentengine build . --mode container --push --registry hub-cn-beijing-6.kce.ksyu
 KSYUN_REGION=cn-beijing-6 agentengine build . --mode code --push --no-cache
 ```
 
+说明：
+
+- `build` 支持 `--output pretty|json`。
+- `--no-cache` 会强制重建，不复用已缓存的本地制品元数据。
+
 ### deploy
 
 ```bash
@@ -199,6 +239,11 @@ agentengine deploy . --target kcf --account-id X-Ksc-Account-Id
 KSYUN_REGION=cn-beijing-6 agentengine deploy . --target serverless --dry-run
 ```
 
+Dry Run 会输出两层计划：
+
+- 本地计划：校验、打包、`local_build`、`artifact_publish`、`deploy_request`
+- 远端请求：请求方法、URL、字段摘要以及完整 `curl`
+
 常用参数：
 
 - `--artifact-type [Code|Container]`
@@ -207,6 +252,9 @@ KSYUN_REGION=cn-beijing-6 agentengine deploy . --target serverless --dry-run
 - `--observability/--no-observability`
 - `--no-version`
 - `--auto-rollback`
+- `--output [pretty|json]`
+- `--dry-run`
+- `--no-cache`
 
 ### launch
 
@@ -218,6 +266,8 @@ agentengine launch . --target kce --artifact-type Container
 # 3) 显式指定区域
 KSYUN_REGION=cn-beijing-6 agentengine launch . --target serverless --no-cache
 ```
+
+`launch --dry-run` 与 `deploy --dry-run` 一样，会同时展示本地执行计划和远端请求 `curl`，便于排查构建复用、上传与部署参数。
 
 ## 版本管理
 
@@ -342,7 +392,7 @@ agentengine mcp delete <mcp_id> --yes
 - `agentengine.yaml`：项目配置（name/framework/entry_point 等）。
 - `.env`：模型、云凭证、可观测性配置。
 - `.agentengine.state`：部署后本地状态（`agent_id` / `endpoint` / `api_key` / `region`）。
-- `~/.agentengine/settings.json`：全局配置（可被 `config --global` 更新）。
+- `~/.agentengine/settings.json`：全局配置（可被 `agentengine config set --global` 或配置向导更新）。
 
 ## 环境变量
 

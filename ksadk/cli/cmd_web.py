@@ -11,7 +11,7 @@ from pathlib import Path
 import os
 import subprocess
 import sys
-from ksadk.cli.error_utils import print_exception
+from ksadk.cli.error_utils import ensure_json_output_supported, print_exception
 from ksadk.cli.ui import (
     print_error,
     print_info,
@@ -37,6 +37,10 @@ def web(agent_dir: str, port: int, model: str):
       ADK 项目使用 ADK Web UI
       LangChain/LangGraph/DeepAgents 项目使用 Chainlit
     """
+    ensure_json_output_supported(
+        "agentengine web",
+        suggestion="请改用 `agentengine dashboard open` 或 `agentengine agent status --output json`。",
+    )
     from ksadk.detection import FrameworkDetector, FrameworkType
 
     agent_path = Path(agent_dir).resolve()
