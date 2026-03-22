@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional
 import time
 from ksadk.cli.agent_ref import merge_agent_inputs, resolve_agent_ref
+from ksadk.cli.resource_common import CONTEXT_SETTINGS, CompatibilityAliasCommand, print_compatibility_hint
 
 try:
     from rich.console import Console
@@ -23,7 +24,12 @@ except ImportError:
     Live = None
 
 
-@click.command()
+@click.command(
+    context_settings=CONTEXT_SETTINGS,
+    hidden=True,
+    cls=CompatibilityAliasCommand,
+    canonical_command="agentengine agent invoke",
+)
 @click.argument("agent_ref", required=False)
 @click.option("--agent", "--agent-id", "agent_option", "-a", help="Agent 名称或 ID")
 @click.option("--endpoint", "-e", help="Agent Endpoint URL (覆盖自动获取)")
@@ -48,19 +54,44 @@ def invoke(
     model: str,
     show_thinking: bool,
 ):
-    """与 Agent 进行交互 (本地或远程)。
+    """与 Agent 进行交互 (本地或远程)。"""
+    run_invoke_command(
+        agent_ref=agent_ref,
+        agent_option=agent_option,
+        endpoint=endpoint,
+        api_key=api_key,
+        message=message,
+        session=session,
+        region=region,
+        local=local,
+        insecure=insecure,
+        model=model,
+        show_thinking=show_thinking,
+        compatibility_alias=True,
+    )
 
-    默认使用 TUI 交互模式，使用 -m 发送单条消息。
 
-    \b
-    示例:
-        # 1) 本地模式
-        agentengine invoke --local
-        # 2) 显式指定 agent
-        agentengine invoke --agent ar-xxxx -m "你好"
-        # 3) 显式指定区域
-        KSYUN_REGION=cn-beijing-6 agentengine invoke --agent ar-xxxx -m "你好"
-    """
+def run_invoke_command(
+    *,
+    agent_ref: str | None,
+    agent_option: str | None,
+    endpoint: str | None,
+    api_key: str | None,
+    message: str | None,
+    session: str | None,
+    region: str,
+    local: bool,
+    insecure: bool,
+    model: str | None,
+    show_thinking: bool,
+    compatibility_alias: bool = False,
+):
+    """与 Agent 进行交互 (本地或远程)。"""
+    if compatibility_alias:
+        print_compatibility_hint(
+            legacy="agentengine invoke",
+            canonical="agentengine agent invoke",
+        )
     try:
         agent_input = merge_agent_inputs(
             agent_option=agent_option,

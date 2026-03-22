@@ -1,3 +1,5 @@
+import json
+
 from click.testing import CliRunner
 
 from ksadk.cli import cmd_dashboard
@@ -35,7 +37,23 @@ def test_dashboard_uses_access_link_by_default(monkeypatch):
 
     result = runner.invoke(cmd_dashboard.dashboard, ["ar-test"])
     assert result.exit_code == 0, result.output
-    assert opened["url"] == "http://demo.example.com/s/lnk-1"
+    assert opened == {}
+    assert "http://demo.example.com/s/lnk-1" in result.output
+
+
+def test_dashboard_open_is_canonical_command(monkeypatch):
+    opened = {}
+    runner = CliRunner()
+
+    monkeypatch.setattr(cmd_dashboard, "load_state", lambda _cwd: {})
+    monkeypatch.setattr(cmd_dashboard, "_resolve_agent_detail", _fake_resolve_agent_detail)
+    monkeypatch.setattr(cmd_dashboard, "_create_dashboard_access_link", _fake_create_access_link)
+    monkeypatch.setattr(cmd_dashboard.webbrowser, "open", lambda url: opened.setdefault("url", url))
+
+    result = runner.invoke(cmd_dashboard.dashboard, ["open", "ar-test"])
+    assert result.exit_code == 0, result.output
+    assert opened == {}
+    assert "http://demo.example.com/s/lnk-1" in result.output
 
 
 def test_dashboard_supports_share_subcommand(monkeypatch):
@@ -51,3 +69,42 @@ def test_dashboard_supports_share_subcommand(monkeypatch):
     result = runner.invoke(cmd_dashboard.dashboard, ["share", "list", "ar-test"])
     assert result.exit_code == 0, result.output
     assert "abc123" in result.output
+
+
+def test_dashboard_list_is_no_longer_ambiguous():
+    runner = CliRunner()
+
+    result = runner.invoke(cmd_dashboard.dashboard, ["list"])
+
+    assert result.exit_code != 0
+    assert "dashboard open" in result.output
+    assert "dashboard share list" in result.output
+
+
+def test_dashboard_help_shows_canonical_subcommands_only():
+    runner = CliRunner()
+
+    result = runner.invoke(cmd_dashboard.dashboard, ["--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "open" in result.output
+    assert "share" in result.output
+    assert "--agent" not in result.output
+
+
+def test_dashboard_direct_invocation_resets_output_mode_after_json(monkeypatch):
+    runner = CliRunner()
+
+    monkeypatch.setattr(cmd_dashboard, "load_state", lambda _cwd: {})
+    monkeypatch.setattr(cmd_dashboard, "_resolve_agent_detail", _fake_resolve_agent_detail)
+    monkeypatch.setattr(cmd_dashboard, "_create_dashboard_access_link", _fake_create_access_link)
+    monkeypatch.setattr(cmd_dashboard.webbrowser, "open", lambda _url: None)
+
+    json_result = runner.invoke(cmd_dashboard.dashboard, ["open", "ar-test", "--output", "json"])
+    assert json_result.exit_code == 0, json_result.output
+    assert json.loads(json_result.output)["ok"] is True
+
+    pretty_result = runner.invoke(cmd_dashboard.dashboard, ["ar-test"])
+    assert pretty_result.exit_code == 0, pretty_result.output
+    assert not pretty_result.output.lstrip().startswith("{")
+    assert "Dashboard 打开结果" in pretty_result.output

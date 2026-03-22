@@ -2,6 +2,7 @@
 Container Builder - Docker 镜像构建
 """
 
+import os
 import subprocess
 import shutil
 import time
@@ -423,8 +424,14 @@ if __name__ == "__main__":
             if self.no_cache:
                 cmd.append('--no-cache')
             cmd.append(package_info.build_dir)
-            
-            subprocess.run(cmd, check=True)
+
+            quiet_mode = os.getenv("AGENTENGINE_OUTPUT_MODE", "").strip().lower() == "json"
+            subprocess.run(
+                cmd,
+                check=True,
+                capture_output=quiet_mode,
+                text=quiet_mode,
+            )
             click.secho(f"\n✅ 镜像构建成功: {full_image}", fg='green')
             
             return BuildResult(
@@ -437,9 +444,16 @@ if __name__ == "__main__":
                 }
             )
         except subprocess.CalledProcessError as e:
+            error_message = f"镜像构建失败: {e}"
+            if quiet_mode:
+                stderr = (e.stderr or "").strip()
+                stdout = (e.stdout or "").strip()
+                detail = stderr or stdout
+                if detail:
+                    error_message = f"{error_message}: {detail}"
             return BuildResult(
                 success=False,
-                error_message=f"镜像构建失败: {e}"
+                error_message=error_message
             )
     
     def push(self, image_name: str) -> bool:

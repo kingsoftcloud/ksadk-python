@@ -21,8 +21,11 @@ logger = logging.getLogger(__name__)
 
 
 class DryRunExit(Exception):
-    """DryRun 模式退出异常"""
-    pass
+    """DryRun 模式退出异常。"""
+
+    def __init__(self, message: str = "Dry Run finished.", *, payload: Optional[Dict[str, Any]] = None):
+        self.payload = payload or {}
+        super().__init__(message)
 
 
 class AgentEngineAPIError(Exception):
@@ -227,26 +230,24 @@ class AgentEngineClient:
                     body=body_str,
                 )
 
-            print("=" * 60)
-            print(f"Dry Run Mode: {method} {full_url}")
-            print("=" * 60)
-            print(f"Headers: {json.dumps(signed_headers, indent=2)}")
-            if body:
-                print(f"Body: {json.dumps(body, indent=2, ensure_ascii=False)}")
-            
             # 生成 Curl 命令
             curl_cmd = f"curl -X {method} \"{full_url}\" \\\n"
             for k, v in signed_headers.items():
                 curl_cmd += f"  -H \"{k}: {v}\" \\\n"
             if body_str:
                 curl_cmd += f"  -d '{body_str}'"
-            
-            print("\nCurl Command:")
-            print(curl_cmd)
-            print("=" * 60)
-            
+
             # 抛出异常以中断流程 (CLI 应捕获此异常)
-            raise DryRunExit("Dry Run finished.")
+            raise DryRunExit(
+                "Dry Run finished.",
+                payload={
+                    "method": method,
+                    "url": full_url,
+                    "headers": signed_headers,
+                    "body": body,
+                    "curl": curl_cmd,
+                },
+            )
             
         logger.debug(f"Request: {method} {full_url}")
         
@@ -748,9 +749,14 @@ class AgentEngineClient:
         """获取 MCP 详情"""
         return self._action("GetMCP", {"Id": mcp_id})
     
-    async def list_mcps(self, region: Optional[str] = None) -> Dict[str, Any]:
+    async def list_mcps(
+        self,
+        region: Optional[str] = None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> Dict[str, Any]:
         """列出 MCP (注册中心)"""
-        params = {"Page": 1, "PageSize": 100}
+        params = {"Page": int(page), "PageSize": int(page_size)}
         if region:
             params["Region"] = self._normalize_payload_region(region)
         result = self._action("ListMCPs", params)
@@ -782,14 +788,21 @@ class AgentEngineClient:
         except Exception:
             return False
     
-    async def get_mcp_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+    async def get_mcp_by_name(self, name: str, region: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """按名称查询 MCP"""
         # 使用 ListMCPs 然后过滤 (Action API 暂不支持 by-name)
         try:
-            result = await self.list_mcps()
-            for mcp in result.get("mcps", []):
-                if mcp.get("name") == name:
-                    return mcp
+            page = 1
+            page_size = 100
+            while True:
+                result = await self.list_mcps(region=region, page=page, page_size=page_size)
+                mcps = result.get("mcps", [])
+                for mcp in mcps:
+                    if mcp.get("name") == name:
+                        return mcp
+                if len(mcps) < page_size:
+                    break
+                page += 1
             return None
         except Exception:
             return None

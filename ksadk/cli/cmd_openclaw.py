@@ -1,5 +1,5 @@
 """
-agentengine openclaw - OpenClaw 云端部署管理
+agentengine openclaw - OpenClaw 资源管理
 
 设计目标:
 - 和 Agent 部署完全一致，复用 CreateAgentProduct 接口 (Container 模式)
@@ -24,12 +24,28 @@ from rich.measure import Measurement
 from rich.table import Table as RichTable
 
 from ksadk.api.client import DryRunExit
+from ksadk.cli.agent_ref import resolve_openclaw_ref
 from ksadk.cli.dry_run import dry_run_option, run_async_with_dry_run, effective_dry_run
-from ksadk.cli.error_utils import print_exception
+from ksadk.cli.error_utils import abort_with_cli_error, remote_error, resolution_error
+from ksadk.cli.resource_common import (
+    CONTEXT_SETTINGS,
+    ResourceActionSet,
+    ResourceDescriptor,
+    ResourceListSchema,
+    ResourceStatusSchema,
+    build_resource_group_help,
+    confirm_destructive,
+    confirm_options,
+    pagination_options,
+    print_next_action_hint,
+    render_descriptor_list,
+    render_descriptor_status,
+    region_option,
+)
 from ksadk.cli.ui import (
     get_console,
-    new_table,
-    print_error,
+    is_json_output,
+    output_option as cli_output_option,
     print_info,
     print_kv,
     print_rule,
@@ -40,7 +56,6 @@ from ksadk.cli.ui import (
 )
 
 console = get_console()
-
 # 默认 OpenClaw 镜像 (KCR 个人版)
 DEFAULT_OPENCLAW_NAMESPACE = "agentengine-public"
 DEFAULT_OPENCLAW_REPO = "openclaw"
@@ -58,6 +73,55 @@ DEFAULT_TRUSTED_PROXY_CIDRS = [
 ]
 _GLOBAL_ENV_CACHE: Optional[Dict[str, str]] = None
 OPENCLAW_SECURITY_PROFILES = ("relaxed", "strict", "strictest")
+
+OPENCLAW_RESOURCE = ResourceDescriptor(
+    name="OpenClaw",
+    summary="OpenClaw 资源管理。",
+    resource_key="openclaw",
+    actions=ResourceActionSet(
+        list="agentengine openclaw list",
+        status="agentengine openclaw status [openclaw_ref]",
+        delete="agentengine openclaw delete [openclaw_ref...]",
+        deploy="agentengine openclaw deploy",
+    ),
+    list_schema=ResourceListSchema(
+        title="OpenClaw 列表",
+        noun="OpenClaw",
+        columns=(
+            {"header": "ID", "key": "id", "style": "#58a6ff", "no_wrap": True},
+            {"header": "名称", "key": "name", "style": "white"},
+            {"header": "状态", "key": "status", "no_wrap": True, "justify": "center"},
+            {"header": "Endpoint", "key": "endpoint", "style": "#8b949e", "overflow": "ellipsis"},
+            {"header": "区域", "key": "region", "style": "#8b949e"},
+        ),
+        empty_message="没有找到已部署的 OpenClaw",
+    ),
+    status_schema=ResourceStatusSchema(
+        title="OpenClaw 状态",
+        next_steps=("agentengine openclaw list",),
+    ),
+    examples=(
+        "agentengine openclaw deploy",
+        "agentengine openclaw list",
+        "agentengine openclaw status <id>",
+        "agentengine openclaw delete <id>",
+    ),
+    missing_ref_message="请指定 OpenClaw ID/名称，或在 OpenClaw 项目目录下运行",
+    resolution_commands=("agentengine openclaw list",),
+    list_action_help="列出已部署的 OpenClaw",
+    status_action_help="查看单个 OpenClaw 状态",
+    delete_action_help="删除一个或多个 OpenClaw",
+    deploy_action_help="部署 OpenClaw 到云端",
+)
+
+
+def _abort_openclaw_error(
+    err: Exception,
+    *,
+    context: str | None = None,
+    argv: list[str] | None = None,
+) -> None:
+    abort_with_cli_error(err, context=context, argv=argv)
 
 
 def _generate_default_openclaw_name(prefix: str = DEFAULT_OPENCLAW_NAME) -> str:
@@ -680,25 +744,12 @@ def _resolve_region(
     )
 
 
-@click.group("openclaw")
+@click.group("openclaw", context_settings=CONTEXT_SETTINGS, help=build_resource_group_help(OPENCLAW_RESOURCE))
 def openclaw():
-    """OpenClaw 云端部署管理
-
-    \b
-    示例:
-        # 1) 部署 OpenClaw 到云端
-        agentengine openclaw deploy
-        # 2) 查看已部署的 OpenClaw
-        agentengine openclaw list
-        # 3) 查看状态
-        agentengine openclaw status <id>
-        # 4) 删除
-        agentengine openclaw delete <id>
-    """
     pass
 
 
-@openclaw.command("deploy")
+@openclaw.command("deploy", context_settings=CONTEXT_SETTINGS)
 @click.option("--name", "-n", default=None, help="OpenClaw 名称 (默认: openclaw-gateway)")
 @click.option(
     "--region", "-r",
@@ -753,19 +804,22 @@ def deploy(
         agentengine openclaw deploy --image hub.kce.ksyun.com/myns/openclaw:v2
     """
     dry_run = effective_dry_run(dry_run)
-    run_async_with_dry_run(
-        _deploy_openclaw(
-            name=name,
-            region=region,
-            security_profile=security_profile,
-            image=image,
-            model_base_url=model_base_url,
-            model_api_key=model_api_key,
-            default_model=default_model,
+    try:
+        run_async_with_dry_run(
+            _deploy_openclaw(
+                name=name,
+                region=region,
+                security_profile=security_profile,
+                image=image,
+                model_base_url=model_base_url,
+                model_api_key=model_api_key,
+                default_model=default_model,
+                dry_run=dry_run,
+            ),
             dry_run=dry_run,
-        ),
-        dry_run=dry_run,
-    )
+        )
+    except Exception as e:
+        _abort_openclaw_error(e, context="部署失败", argv=["openclaw", "deploy"])
 
 
 async def _deploy_openclaw(
@@ -879,9 +933,21 @@ async def _deploy_openclaw(
         print_info("获取方式: https://kcr.console.ksyun.com/ → 访问凭证")
 
     if dry_run:
-        import json
-        print_rule("Dry Run — 请求数据")
-        console.print(json.dumps(request_data, indent=2, ensure_ascii=False))
+        async with AgentEngineClient(region=region, dry_run=True) as client:
+            if existing_agent_id:
+                update_payload = {
+                    "artifact_type": "Container",
+                    "artifact_path": image_ref,
+                    "resources": {"cpu": cpu, "memory": memory},
+                    "env_vars": env_list,
+                    "auth_type": "None",
+                    "inbound_identity_auth": "None",
+                }
+                if image_credential:
+                    update_payload["image_credential"] = image_credential
+                await client.update_agent(existing_agent_id, update_payload)
+            else:
+                await client.create_agent(request_data)
         return
 
     # 调用 API
@@ -999,153 +1065,178 @@ async def _deploy_openclaw(
 
     except DryRunExit:
         raise
-    except Exception as e:
-        print_exception("部署失败", e)
 
 
-@openclaw.command("list")
-@click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
+@openclaw.command("list", context_settings=CONTEXT_SETTINGS)
+@region_option()
+@pagination_options(default_page=1, default_size=20)
 @dry_run_option()
-def list_openclaws(region: str, dry_run: bool):
+@cli_output_option()
+def list_openclaws(region: str, page: int, size: int, dry_run: bool, output_mode: str | None):
     """列出已部署的 OpenClaw 实例"""
+    _ = output_mode
     dry_run = effective_dry_run(dry_run)
     from ksadk.api import AgentEngineClient
 
     async def _list():
-        try:
-            async with AgentEngineClient(region=region, dry_run=dry_run) as client:
-                resp = await client.list_agents(region=region, framework="openclaw", page_size=100)
-                agents = resp.get("agents", []) or []
-                if not agents:
-                    print_warn("没有找到已部署的 OpenClaw 实例")
-                    return
-
-                total = int(resp.get("total") or len(agents))
-                account_summary = _summarize_openclaw_account(agents)
-                region_summary = _summarize_openclaw_region(agents, region)
-                table = new_table("已部署 OpenClaw")
-                table.add_column("ID", style="#58a6ff", no_wrap=True)
-                table.add_column("NAME", style="white")
-                table.add_column("STATUS", no_wrap=True, justify="center")
-                table.add_column("ENDPOINT", style="#8b949e", overflow="ellipsis")
-                table.add_column("REGION", style="#8b949e")
-                for a in agents:
-                    status = (a.get("status") or "UNKNOWN").upper()
-                    table.add_row(
-                        a.get("agent_id", "-"),
-                        a.get("name", "-"),
+        async with AgentEngineClient(region=region, dry_run=dry_run) as client:
+            resp = await client.list_agents(region=region, framework="openclaw", page=page, page_size=size)
+            agents = resp.get("agents", []) or []
+            total = int(resp.get("total") or len(agents))
+            rows = []
+            items = []
+            for a in agents:
+                status = (a.get("status") or "UNKNOWN").upper()
+                rows.append(
+                    (
+                        str(a.get("agent_id", "-")),
+                        str(a.get("name", "-")),
                         f"[{status_rich_style(status)}]{status}[/]",
-                        a.get("endpoint", "N/A"),
-                        a.get("region", "-"),
+                        str(a.get("endpoint", "N/A")),
+                        str(a.get("region", "-")),
                     )
-                console.print(table)
-                _print_openclaw_list_summary(
-                    table,
-                    f"账号: {account_summary}  region: {region_summary}  总计: {total}",
+                )
+                items.append(
+                    {
+                        "id": str(a.get("agent_id", "-")),
+                        "name": str(a.get("name", "-")),
+                        "status": status,
+                        "endpoint": str(a.get("endpoint", "N/A")),
+                        "region": str(a.get("region", "-")),
+                    }
                 )
 
-        except DryRunExit:
-            raise
-        except Exception as e:
-            print_exception("获取列表失败", e)
+            if not render_descriptor_list(
+                OPENCLAW_RESOURCE,
+                rows=rows,
+                total=total,
+                page=page,
+                size=size,
+                items=items,
+            ):
+                return
 
-    run_async_with_dry_run(_list(), dry_run=dry_run)
+            account_summary = _summarize_openclaw_account(agents)
+            region_summary = _summarize_openclaw_region(agents, region)
+            print_info(f"账号: {account_summary}  region: {region_summary}  总计: {total}")
+
+    try:
+        run_async_with_dry_run(
+            _list(),
+            dry_run=dry_run,
+            dry_run_resource="openclaw",
+            dry_run_action="list",
+        )
+    except Exception as e:
+        _abort_openclaw_error(e, context="获取列表失败", argv=["openclaw", "list"])
 
 
-@openclaw.command("status")
+@openclaw.command("status", context_settings=CONTEXT_SETTINGS)
 @click.argument("agent_ref", required=False, default=None)
-@click.option("--region", "-r", default=None, help="区域 (默认优先读取 .agentengine.state)")
+@region_option(default=None, envvar=None, help_text="区域 (默认优先读取 .agentengine.state)")
 @dry_run_option()
-def status(agent_ref: Optional[str], region: Optional[str], dry_run: bool):
+@cli_output_option()
+def status(agent_ref: Optional[str], region: Optional[str], dry_run: bool, output_mode: str | None):
     """查看 OpenClaw 状态
 
     \b
     AGENT_REF: Agent ID 或名称 (可选，默认从 .agentengine.state 读取)
     """
+    _ = output_mode
     dry_run = effective_dry_run(dry_run)
     from ksadk.deployment.state import load_state
 
     state = load_state(Path(".").resolve())
     region = _resolve_region(region, state)
+    resolved = resolve_openclaw_ref(agent_ref, cwd=Path(".").resolve(), include_state=True)
 
     # 无参数时从本地状态读取
-    if not agent_ref:
-        if state.get("type") == "openclaw" and state.get("agent_id"):
-            agent_ref = state["agent_id"]
-            print_info(f"从本地状态读取: {agent_ref}")
-        elif state.get("type") == "openclaw" and state.get("name"):
-            agent_ref = state["name"]
-        else:
-            print_error("请指定 Agent ID 或在部署目录下运行")
-            return
+    if not resolved:
+        _abort_openclaw_error(
+            resolution_error(
+                OPENCLAW_RESOURCE.missing_ref_message or "请指定 OpenClaw。",
+                hints=list(OPENCLAW_RESOURCE.resolution_commands),
+            ),
+            argv=["openclaw", "status"],
+        )
+        return
+    agent_ref = resolved.value
+    if resolved.source != "cli":
+        print_info(f"未显式指定 OpenClaw，使用 {resolved.source_text}: {agent_ref}")
     from ksadk.api import AgentEngineClient
 
     async def _get():
-        try:
-            async with AgentEngineClient(region=region, dry_run=dry_run) as client:
-                # 尝试按 ID 查询，失败则按 Name
-                if agent_ref.startswith("ar-"):
-                    agent = await client.get_agent(agent_id=agent_ref)
-                else:
-                    agent = await client.get_agent(name=agent_ref)
+        async with AgentEngineClient(region=region, dry_run=dry_run) as client:
+            if agent_ref.startswith("ar-"):
+                agent = await client.get_agent(agent_id=agent_ref)
+            else:
+                agent = await client.get_agent(name=agent_ref)
 
-                if not agent:
-                    print_error(f"未找到 OpenClaw: {agent_ref}")
-                    return
+            if not agent:
+                raise resolution_error(f"未找到 OpenClaw: {agent_ref}", hints=["agentengine openclaw list"])
 
-                detail = _flatten_agent_detail(agent)
-                print_title("OpenClaw 状态", detail.get("name") or str(agent_ref))
-                print_kv("ID", detail.get("agent_id") or "-")
+            detail = _flatten_agent_detail(agent)
+            status_val = detail.get("status", "UNKNOWN")
+            render_descriptor_status(
+                OPENCLAW_RESOURCE,
+                subtitle=str(detail.get("name") or agent_ref),
+                fields=[
+                    ("ID", str(detail.get("agent_id") or "-"), None),
+                    ("状态", str(status_val), status_rich_style(status_val)),
+                    ("框架", str(detail.get("framework") or "-"), None),
+                    ("区域", str(detail.get("region") or region), None),
+                    ("Endpoint", str(detail.get("endpoint") or "N/A"), "#58a6ff"),
+                    ("镜像", str(detail.get("artifact_path") or "-"), None),
+                    ("创建时间", str(detail.get("created_at") or "-"), None),
+                    ("更新时间", str(detail.get("updated_at") or "-"), None),
+                ],
+                item={
+                    "id": str(detail.get("agent_id") or "-"),
+                    "name": str(detail.get("name") or agent_ref),
+                    "status": str(status_val),
+                    "framework": str(detail.get("framework") or "-"),
+                    "region": str(detail.get("region") or region),
+                    "endpoint": str(detail.get("endpoint") or "N/A"),
+                    "image": str(detail.get("artifact_path") or "-"),
+                    "created_at": str(detail.get("created_at") or "-"),
+                    "updated_at": str(detail.get("updated_at") or "-"),
+                },
+            )
 
-                status_val = detail.get("status", "UNKNOWN")
-                print_kv("Status", status_val, value_style=status_rich_style(status_val))
-                print_kv("Framework", detail.get("framework") or "-")
-                print_kv("Region", detail.get("region") or region)
-                print_kv("Endpoint", detail.get("endpoint") or "N/A", value_style="#58a6ff")
-                print_kv("镜像", detail.get("artifact_path") or "-")
-                print_kv("Created", str(detail.get("created_at") or "-"))
-                print_kv("Updated", str(detail.get("updated_at") or "-"))
-
-        except DryRunExit:
-            raise
-        except Exception as e:
-            print_exception("获取状态失败", e)
-            # 回退：显示本地状态，至少给出排障上下文
-            if state and state.get("type") == "openclaw":
-                print_rule("本地状态回退")
-                print_kv("ID", str(state.get("agent_id", "-")))
-                print_kv("Name", str(state.get("name", "-")))
-                print_kv("Region", str(state.get("region", region)))
-                print_kv("Endpoint", str(state.get("endpoint", "N/A")))
-                print_kv("API Key", "已保存" if state.get("api_key") else "未保存")
-                print_info("提示: 检查 KSYUN_ACCESS_KEY / KSYUN_SECRET_KEY 或 region 参数")
-
-    run_async_with_dry_run(_get(), dry_run=dry_run)
+    try:
+        run_async_with_dry_run(
+            _get(),
+            dry_run=dry_run,
+            dry_run_resource="openclaw",
+            dry_run_action="status",
+        )
+    except Exception as e:
+        _abort_openclaw_error(e, context="获取状态失败", argv=["openclaw", "status"])
 
 
-@openclaw.command("delete")
-@click.argument("agent_ref")
-@click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
-@click.option("--yes", "-y", is_flag=True, help="跳过确认")
-@dry_run_option()
-def delete(agent_ref: str, region: str, yes: bool, dry_run: bool):
-    """删除 OpenClaw 实例
+def _delete_impl(agent_refs: tuple[str, ...], region: str, assume_yes: bool, dry_run: bool):
+    """删除 OpenClaw 实例。
 
     AGENT_REF: Agent ID
     """
     dry_run = effective_dry_run(dry_run)
     from ksadk.api import AgentEngineClient
 
-    if not yes and not dry_run:
-        if not click.confirm("确定要删除这个 OpenClaw 实例吗?"):
-            print_info("已取消")
-            return
+    if not confirm_destructive(
+        assume_yes=assume_yes,
+        dry_run=dry_run,
+        prompt=f"确定要删除这 {len(agent_refs)} 个 OpenClaw 实例吗?",
+    ):
+        return
 
     async def _delete():
-        try:
-            async with AgentEngineClient(region=region, dry_run=dry_run) as client:
+        async with AgentEngineClient(region=region, dry_run=dry_run) as client:
+            failed_refs: list[str] = []
+            deleted_refs: list[str] = []
+            for agent_ref in agent_refs:
                 success = await client.delete_agent(agent_ref)
                 if success:
+                    deleted_refs.append(agent_ref)
                     print_success(f"OpenClaw 已删除: {agent_ref}")
 
                     # 清理本地状态
@@ -1159,11 +1250,64 @@ def delete(agent_ref: str, region: str, yes: bool, dry_run: bool):
                     except Exception:
                         pass
                 else:
-                    print_error("删除失败")
+                    failed_refs.append(agent_ref)
 
-        except DryRunExit:
-            raise
-        except Exception as e:
-            print_exception("删除失败", e)
+            if failed_refs:
+                raise remote_error(
+                    f"以下 OpenClaw 删除失败: {', '.join(failed_refs)}",
+                    details={"deleted": deleted_refs, "failed": failed_refs},
+                )
+            return {
+                "targets": list(agent_refs),
+                "deleted": deleted_refs,
+                "failed": failed_refs,
+            }
 
-    run_async_with_dry_run(_delete(), dry_run=dry_run)
+    dry_run_kwargs = {"dry_run": dry_run}
+    if is_json_output():
+        dry_run_kwargs.update(
+            dry_run_resource="openclaw",
+            dry_run_action="delete",
+        )
+    try:
+        result = run_async_with_dry_run(_delete(), **dry_run_kwargs)
+    except Exception as e:
+        _abort_openclaw_error(e, context="删除失败", argv=["openclaw", "delete"])
+        return
+    if result is not None:
+        render_descriptor_status(
+            OPENCLAW_RESOURCE,
+            title="OpenClaw 删除结果",
+            subtitle=", ".join(result["targets"]) if result["targets"] else "-",
+            fields=[
+                ("目标数量", str(len(result["targets"])), None),
+                ("已删除", ", ".join(result["deleted"]) or "-", None),
+                ("失败", ", ".join(result["failed"]) or "-", None),
+            ],
+            action="delete",
+            item=result,
+        )
+
+
+@openclaw.command("delete", context_settings=CONTEXT_SETTINGS)
+@click.argument("agent_refs", nargs=-1, required=True)
+@region_option()
+@confirm_options()
+@dry_run_option()
+@cli_output_option()
+def delete(agent_refs: tuple[str, ...], region: str, assume_yes: bool, dry_run: bool, output_mode: str | None):
+    """删除 OpenClaw 实例。"""
+    _ = output_mode
+    _delete_impl(agent_refs=agent_refs, region=region, assume_yes=assume_yes, dry_run=dry_run)
+
+
+@openclaw.command("destroy", context_settings=CONTEXT_SETTINGS, hidden=True)
+@click.argument("agent_refs", nargs=-1, required=True)
+@region_option()
+@confirm_options()
+@dry_run_option()
+@cli_output_option()
+def destroy(agent_refs: tuple[str, ...], region: str, assume_yes: bool, dry_run: bool, output_mode: str | None):
+    """删除 OpenClaw 实例。"""
+    _ = output_mode
+    _delete_impl(agent_refs=agent_refs, region=region, assume_yes=assume_yes, dry_run=dry_run)

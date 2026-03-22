@@ -1,0 +1,27 @@
+=== dashboard_not_found ===
+未找到 Agent。
+- 请确认 Agent 名称/ID 是否正确，可先执行 `agentengine agent list` 查看已部署 Agent。
+- 可显式指定 Agent：`agentengine dashboard open --agent <AgentName|AgentId>`。
+=== dashboard_list_not_found ===
+未找到 Agent。
+- 请确认 Agent 名称/ID 是否正确，可先执行 `agentengine agent list` 查看已部署 Agent。
+- `agentengine dashboard list` 不是有效命令。
+- 如果要查看分享链接，请使用 `agentengine dashboard share list --agent <AgentName|AgentId>`。
+=== dashboard_share_not_found ===
+未找到 Dashboard 分享链接或目标 Agent。
+- 请先执行 `agentengine dashboard share list --agent <AgentName|AgentId>` 查看分享链接。
+- 如需先确认 Agent，请执行 `agentengine agent list`。
+=== mcp_not_found ===
+未找到 MCP。
+- 请确认 MCP 名称/ID 是否正确，可先执行 `agentengine mcp list` 查看已部署 MCP。
+=== openclaw_not_found ===
+未找到 OpenClaw。
+- 请确认 OpenClaw 名称/ID 是否正确，可先执行 `agentengine openclaw list` 查看已部署实例。
+=== version_not_found ===
+未找到目标 Agent 或版本。
+- 请先执行 `agentengine agent list` 确认目标 Agent。
+- 然后执行 `agentengine version list --agent <AgentName|AgentId>` 查看版本。
+=== auth_failed ===
+鉴权失败。
+- 请检查 KSYUN_ACCESS_KEY / KSYUN_SECRET_KEY 是否正确。
+- 如使用子账号，请确认已授予对应接口权限。

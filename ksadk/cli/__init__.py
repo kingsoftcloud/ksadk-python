@@ -2,15 +2,16 @@
 AgentEngine CLI - 命令行工具入口
 
 使用方式:
-    agentengine init myapp    # 初始化项目
-    agentengine run           # 本地运行
-    agentengine web           # 本地调试 UI (Invoke)
-    agentengine build         # 构建镜像
-    agentengine deploy        # 部署到云端
-    agentengine launch        # 一键构建+部署
-    agentengine status        # 查看状态
-    agentengine invoke        # 与 Agent 交互
-    agentengine destroy       # 销毁实例
+    agentengine init myapp     # 初始化项目
+    agentengine run            # 本地运行
+    agentengine web            # 本地调试 UI (Invoke)
+    agentengine build          # 构建镜像
+    agentengine deploy         # 部署到云端
+    agentengine launch         # 一键构建+部署
+    agentengine agent list     # 列出已部署 Agent
+    agentengine agent status   # 查看单个 Agent 状态
+    agentengine agent invoke   # 与 Agent 交互
+    agentengine agent delete   # 删除实例
 
 别名: ksadk (向后兼容)
 """
@@ -18,7 +19,9 @@ AgentEngine CLI - 命令行工具入口
 import os
 
 import click
-from ksadk.cli.error_utils import is_debug_mode_enabled, print_exception
+from ksadk.cli.error_utils import CLIError, cli_error_from_exception, emit_cli_error, is_debug_mode_enabled
+from ksadk.cli.resource_common import CONTEXT_SETTINGS
+from ksadk.cli.ui import no_color_option, output_option, should_render_banner
 from ksadk.version import VERSION
 
 
@@ -47,6 +50,36 @@ def _gradient_line(text: str, colors: list) -> str:
 
 # 金山云品牌渐变色: 红 -> 橙 -> 黄
 BRAND_COLORS = [(255, 87, 51), (255, 140, 0), (255, 193, 7), (255, 215, 0)]
+ROOT_HELP_COMMANDS = {
+    "agent",
+    "build",
+    "dashboard",
+    "deploy",
+    "init",
+    "launch",
+    "mcp",
+    "openclaw",
+    "run",
+    "version",
+    "web",
+}
+ROOT_HELP_TOOL_COMMANDS = {
+    "config",
+}
+SHORT_HELP_MAP = {
+    "agent": "Agent 资源管理",
+    "build": "构建部署制品",
+    "dashboard": "打开云端 Agent Dashboard",
+    "deploy": "部署到云端",
+    "init": "创建新项目",
+    "launch": "一键构建+部署",
+    "mcp": "MCP 资源管理",
+    "openclaw": "OpenClaw 资源管理",
+    "run": "运行 Agent",
+    "version": "Agent 版本管理",
+    "web": "本地调试 Agent Invoke UI",
+    "config": "项目配置与模型设置",
+}
 
 # ASCII 艺术字 Banner
 BANNER = r"""
@@ -64,6 +97,9 @@ class ColoredHelpGroup(click.Group):
 
     def format_help(self, ctx, formatter):
         """覆盖默认帮助格式，添加颜色"""
+        if not should_render_banner():
+            return self.format_help_plain(ctx, formatter)
+
         # 渐变 Banner
         formatter.write("\n")
         for line in BANNER.strip().split("\n"):
@@ -98,21 +134,22 @@ class ColoredHelpGroup(click.Group):
         # 云端部署
         formatter.write(click.style("  🚀  云端部署:\n\n", fg="blue", bold=True))
         formatter.write(click.style("      agentengine build            ", fg="cyan"))
-        formatter.write(click.style("构建镜像\n\n", fg="white"))
+        formatter.write(click.style("构建部署制品\n\n", fg="white"))
         formatter.write(click.style("      agentengine deploy           ", fg="cyan"))
         formatter.write(click.style("部署到云端\n\n", fg="white"))
         formatter.write(click.style("      agentengine launch           ", fg="cyan"))
         formatter.write(click.style("一键构建+部署\n\n", fg="white"))
-        formatter.write(click.style("      agentengine status           ", fg="cyan"))
-        formatter.write(click.style("查看状态\n\n", fg="white"))
-        formatter.write(click.style("      agentengine invoke           ", fg="cyan"))
-        formatter.write(click.style("与 Agent 交互\n\n", fg="white"))
+        formatter.write(click.style("      agentengine agent            ", fg="cyan"))
+        formatter.write(click.style("Agent 资源管理\n\n", fg="white"))
         formatter.write(click.style("      agentengine dashboard        ", fg="cyan"))
-        formatter.write(click.style("打开云端已部署 Agent UI\n\n", fg="white"))
-        formatter.write(click.style("      agentengine destroy          ", fg="cyan"))
-        formatter.write(click.style("销毁实例\n\n", fg="white"))
+        formatter.write(click.style("打开云端 Agent Dashboard\n\n", fg="white"))
         formatter.write(click.style("      agentengine openclaw         ", fg="cyan"))
-        formatter.write(click.style("🦞 免配置一键拉起 OpenClaw\n\n", fg="white"))
+        formatter.write(click.style("OpenClaw 资源管理\n\n", fg="white"))
+
+        # 配置与工具
+        formatter.write(click.style("  🧰  配置:\n\n", fg="yellow", bold=True))
+        formatter.write(click.style("      agentengine config           ", fg="cyan"))
+        formatter.write(click.style("项目配置向导与模型配置\n\n", fg="white"))
 
         # 自定义 Options 格式化
         self.format_options_colored(ctx, formatter)
@@ -123,6 +160,10 @@ class ColoredHelpGroup(click.Group):
     def format_options_colored(self, ctx, formatter):
         """自定义选项格式化"""
         formatter.write(click.style("  ⚙️  选项:\n\n", fg="yellow", bold=True))
+        formatter.write(click.style("      --output       ", fg="cyan"))
+        formatter.write(click.style("输出格式（pretty/json）\n\n", fg="white"))
+        formatter.write(click.style("      --no-color     ", fg="cyan"))
+        formatter.write(click.style("禁用颜色输出\n\n", fg="white"))
         formatter.write(click.style("      --version      ", fg="cyan"))
         formatter.write(click.style("显示版本号\n\n", fg="white"))
         formatter.write(click.style("      -h, --help     ", fg="cyan"))
@@ -133,41 +174,45 @@ class ColoredHelpGroup(click.Group):
         # 什么也不做，Commands 已在 format_help 中自定义输出
         pass
 
+    def format_help_plain(self, ctx, formatter):
+        formatter.write_usage(ctx.command_path, "[OPTIONS] COMMAND [ARGS]...")
+        formatter.write_paragraph()
+        formatter.write_text("AgentEngine CLI")
+        formatter.write_text("支持 DeepAgents / LangGraph / LangChain / Google ADK 的本地运行与云端部署。")
+
+        formatter.write_paragraph()
+        formatter.write_text("工作流命令:")
+        for name in sorted(ROOT_HELP_COMMANDS):
+            formatter.write_text(f"  agentengine {name:<10} {SHORT_HELP_MAP.get(name, '')}")
+
+        formatter.write_paragraph()
+        formatter.write_text("配置:")
+        for name in sorted(ROOT_HELP_TOOL_COMMANDS):
+            formatter.write_text(f"  agentengine {name:<10} {SHORT_HELP_MAP.get(name, '')}")
+
+        formatter.write_paragraph()
+        formatter.write_text("全局选项:")
+        formatter.write_text("  --output       输出格式（pretty/json）")
+        formatter.write_text("  --no-color     禁用颜色输出")
+        formatter.write_text("  --dry-run      全局 Dry Run（仅打印请求，不执行）")
+        formatter.write_text("  --version      显示版本号")
+        formatter.write_text("  -h, --help     显示帮助信息")
+
+        formatter.write_paragraph()
+        formatter.write_text("使用 `agentengine <command> --help` 查看子命令帮助。")
+
     def format_commands_colored(self, ctx, formatter):
         """自定义命令列表格式，更简洁美观"""
-        # 定义简短描述映射
-        short_help_map = {
-            "build": "构建 Docker 镜像",
-            "config": "配置项目",
-            "dashboard": "打开云端已部署 Agent UI",
-            "deploy": "部署到云端",
-            "destroy": "销毁实例",
-            "init": "创建新项目",
-            "invoke": "交互测试",
-            "launch": "一键构建+部署",
-            "mcp": "MCP Server 管理",
-            "model": "切换默认模型",
-            "openclaw": "免配置一键拉起 OpenClaw",
-            "run": "运行 Agent",
-            "status": "查看状态",
-            "version": "版本管理",
-            "web": "本地调试 Agent Invoke UI",
-        }
         icon_map = {
+            "agent": "🤖 ",
             "build": "🔨 ",
-            "completion": "⌨️ ",
-            "config": "⚙️ ",
             "dashboard": "🖥️ ",
             "deploy": "🚀 ",
-            "destroy": "🧹 ",
             "init": "📁 ",
-            "invoke": "💬 ",
             "launch": "✨ ",
             "mcp": "🔌 ",
-            "model": "🧠 ",
             "openclaw": "🦞 ",
             "run": "▶️ ",
-            "status": "📊 ",
             "version": "🏷️ ",
             "web": "🌐 ",
         }
@@ -176,6 +221,10 @@ class ColoredHelpGroup(click.Group):
         for subcommand in self.list_commands(ctx):
             cmd = self.get_command(ctx, subcommand)
             if cmd is None:
+                continue
+            if getattr(cmd, "hidden", False):
+                continue
+            if subcommand not in ROOT_HELP_COMMANDS:
                 continue
             commands.append((subcommand, cmd))
 
@@ -190,7 +239,7 @@ class ColoredHelpGroup(click.Group):
 
         for subcommand, cmd in commands:
             # 使用预定义的简短描述
-            help_text = short_help_map.get(subcommand, "")
+            help_text = SHORT_HELP_MAP.get(subcommand, "")
             if not help_text and cmd.help:
                 # 只取 docstring 第一行
                 help_text = cmd.help.split("\n")[0].strip()
@@ -202,10 +251,6 @@ class ColoredHelpGroup(click.Group):
             formatter.write(click.style(f"{help_text}\n\n", fg="white"))
 
 
-# 添加 -h 短选项支持
-CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
-
-
 def _set_global_dry_run(ctx: click.Context, _param: click.Option, value: bool):
     """设置全局 dry-run 标记，供未显式透传参数的命令复用。"""
     if value:
@@ -215,6 +260,8 @@ def _set_global_dry_run(ctx: click.Context, _param: click.Option, value: bool):
 
 @click.group(cls=ColoredHelpGroup, context_settings=CONTEXT_SETTINGS)
 @click.version_option(version=VERSION, prog_name="AgentEngine")
+@no_color_option(hidden=False)
+@output_option()
 @click.option(
     "--dry-run",
     is_flag=True,
@@ -223,12 +270,19 @@ def _set_global_dry_run(ctx: click.Context, _param: click.Option, value: bool):
     callback=_set_global_dry_run,
     help="全局 Dry Run（仅打印请求，不执行）",
 )
-def cli():
+def cli(output_mode: str | None):
     """AgentEngine CLI"""
-    pass
+    _ = output_mode
 
 
 # 延迟导入子命令，避免循环依赖
+def _add_command_once(group: click.Group, command, *, name: str | None = None):
+    """仅在未注册时添加命令，避免重复导入时抛错。"""
+    command_name = name or command.name
+    if command_name and command_name not in group.commands:
+        group.add_command(command, name=name)
+
+
 def _register_commands():
     from ksadk.cli.cmd_run import run
     from ksadk.cli.cmd_deploy import deploy
@@ -236,67 +290,75 @@ def _register_commands():
     from ksadk.cli.cmd_create import create
 
     # 注册现有命令
-    cli.add_command(run)
-    cli.add_command(deploy)
-    cli.add_command(web)
+    _add_command_once(cli, run)
+    _add_command_once(cli, deploy)
+    _add_command_once(cli, web)
 
     # init 作为主命令 (PRD 规范)
-    cli.add_command(create, name="init")
+    _add_command_once(cli, create, name="init")
 
     # 注册新命令 (如果存在)
     try:
         from ksadk.cli.cmd_config import config
 
-        cli.add_command(config)
+        _add_command_once(cli, config)
     except ImportError:
         pass
 
     try:
         from ksadk.cli.cmd_model import model
 
-        cli.add_command(model)
+        _add_command_once(cli, model)
     except ImportError:
         pass
 
     try:
         from ksadk.cli.cmd_build import build
 
-        cli.add_command(build)
+        _add_command_once(cli, build)
     except ImportError:
         pass
 
     try:
         from ksadk.cli.cmd_launch import launch
 
-        cli.add_command(launch)
+        _add_command_once(cli, launch)
+    except ImportError:
+        pass
+
+    try:
+        from ksadk.cli.cmd_agent import agent
+
+        _add_command_once(cli, agent)
     except ImportError:
         pass
 
     try:
         from ksadk.cli.cmd_status import status
 
-        cli.add_command(status)
+        _add_command_once(cli, status)
     except ImportError:
         pass
 
     try:
         from ksadk.cli.cmd_invoke import invoke
 
-        cli.add_command(invoke)
+        _add_command_once(cli, invoke)
     except ImportError:
         pass
 
     try:
         from ksadk.cli.cmd_dashboard import dashboard
 
-        cli.add_command(dashboard)
+        _add_command_once(cli, dashboard)
     except ImportError:
         pass
 
     try:
-        from ksadk.cli.cmd_destroy import destroy
+        from ksadk.cli.cmd_destroy import delete, destroy
 
-        cli.add_command(destroy)
+        _add_command_once(cli, delete)
+        _add_command_once(cli, destroy)
     except ImportError:
         pass
 
@@ -304,7 +366,7 @@ def _register_commands():
     try:
         from ksadk.cli.cmd_mcp import mcp
 
-        cli.add_command(mcp)
+        _add_command_once(cli, mcp)
     except ImportError:
         pass
 
@@ -312,7 +374,7 @@ def _register_commands():
     try:
         from ksadk.cli.cmd_completion import completion
 
-        cli.add_command(completion)
+        _add_command_once(cli, completion)
     except ImportError:
         pass
 
@@ -320,7 +382,7 @@ def _register_commands():
     try:
         from ksadk.cli.cmd_version import version
 
-        cli.add_command(version)
+        _add_command_once(cli, version)
     except ImportError:
         pass
 
@@ -328,7 +390,7 @@ def _register_commands():
     try:
         from ksadk.cli.cmd_openclaw import openclaw
 
-        cli.add_command(openclaw)
+        _add_command_once(cli, openclaw)
     except ImportError:
         pass
 
@@ -395,12 +457,17 @@ def main():
 
     _register_commands()
     try:
-        cli()
+        cli.main(prog_name="agentengine", standalone_mode=False)
+    except click.exceptions.Exit as e:
+        raise SystemExit(e.exit_code) from None
     except Exception as e:
         if is_debug_mode_enabled():
             raise
-        print_exception(None, e, show_help=True)
-        raise SystemExit(1) from None
+        cli_error = cli_error_from_exception(e, show_help=True)
+        if isinstance(e, CLIError):
+            cli_error = e
+        emit_cli_error(cli_error)
+        raise SystemExit(cli_error.exit_code) from None
 
 
 if __name__ == "__main__":

@@ -1,0 +1,248 @@
+=== root_help ===
+Usage: cli [OPTIONS] COMMAND [ARGS]...
+
+AgentEngine CLI
+支持 DeepAgents / LangGraph / LangChain / Google ADK 的本地运行与云端部署。
+
+工作流命令:
+  agentengine agent      Agent 资源管理
+  agentengine build      构建部署制品
+  agentengine dashboard  打开云端 Agent Dashboard
+  agentengine deploy     部署到云端
+  agentengine init       创建新项目
+  agentengine launch     一键构建+部署
+  agentengine mcp        MCP 资源管理
+  agentengine openclaw   OpenClaw 资源管理
+  agentengine run        运行 Agent
+  agentengine version    Agent 版本管理
+  agentengine web        本地调试 Agent Invoke UI
+
+配置:
+  agentengine config     项目配置与模型设置
+
+全局选项:
+  --output       输出格式（pretty/json）
+  --no-color     禁用颜色输出
+  --dry-run      全局 Dry Run（仅打印请求，不执行）
+  --version      显示版本号
+  -h, --help     显示帮助信息
+
+使用 `agentengine <command> --help` 查看子命令帮助。
+
+=== agent_help ===
+Usage: cli agent [OPTIONS] COMMAND [ARGS]...
+
+  Agent 资源管理。
+
+Options:
+  -h, --help  Show this message and exit.
+
+Commands:
+  delete  删除一个或多个 Agent。
+  invoke  与 Agent 交互。
+  list    列出已部署的 Agent。
+  status  查看单个 Agent 状态。
+
+=== dashboard_help ===
+Usage: cli dashboard [OPTIONS] COMMAND [ARGS]...
+
+  Dashboard 资源管理。
+
+  标准动作:
+      open   打开 Agent Dashboard
+      share  管理 Dashboard 分享链接
+
+  示例:
+      agentengine dashboard open
+      agentengine dashboard open ar-xxxx
+      agentengine dashboard share list ar-xxxx
+
+Options:
+  -h, --help  Show this message and exit.
+
+Commands:
+  open   打开 Agent Dashboard。
+  share  Dashboard 分享链接管理。
+
+=== dashboard_open_help ===
+Usage: cli dashboard open [OPTIONS] [AGENT_REF]
+
+  打开 Agent Dashboard。
+
+Options:
+  -a, --agent, --agent-id TEXT  Agent 名称或 ID
+  -r, --region TEXT             区域
+  --path TEXT                   目标 UI 路径（默认根据配置自动推导）
+  --share                       创建可分享链接（默认创建私有临时链接）
+  --expires-seconds TEXT        链接有效期（秒）；支持 never(=0)
+  --no-open                     仅打印 URL，不自动打开浏览器
+  --direct                      直接打开 endpoint/path（跳过短链接创建）
+  --output [pretty|json]        输出格式
+  -h, --help                    Show this message and exit.
+
+=== mcp_help ===
+Usage: cli mcp [OPTIONS] COMMAND [ARGS]...
+
+  MCP 资源管理。
+
+  标准动作:
+      list    列出已部署的 MCP
+      status  查看单个 MCP 状态
+      delete  删除一个或多个 MCP
+      deploy  部署 MCP 到云端
+
+  示例:
+      agentengine mcp deploy .
+      agentengine mcp list
+      KSYUN_REGION=cn-beijing-6 agentengine mcp status <id>
+
+Options:
+  -h, --help  Show this message and exit.
+
+Commands:
+  delete  删除 MCP。
+  deploy  部署 MCP Server 到云端
+  list    列出已部署的 MCP
+  status  查看 MCP 状态
+
+=== openclaw_help ===
+Usage: cli openclaw [OPTIONS] COMMAND [ARGS]...
+
+  OpenClaw 资源管理。
+
+  标准动作:
+      list    列出已部署的 OpenClaw
+      status  查看单个 OpenClaw 状态
+      delete  删除一个或多个 OpenClaw
+      deploy  部署 OpenClaw 到云端
+
+  示例:
+      agentengine openclaw deploy
+      agentengine openclaw list
+      agentengine openclaw status <id>
+      agentengine openclaw delete <id>
+
+Options:
+  -h, --help  Show this message and exit.
+
+Commands:
+  delete  删除 OpenClaw 实例。
+  deploy  部署 OpenClaw 到云端
+  list    列出已部署的 OpenClaw 实例
+  status  查看 OpenClaw 状态
+
+=== version_help ===
+Usage: cli version [OPTIONS] COMMAND [ARGS]...
+
+  Agent 版本资源管理。
+
+  标准动作:
+      list      列出版本历史
+      release   发布新版本
+      rollback  回滚到指定版本
+
+  示例:
+      agentengine version list
+      agentengine version list --agent ar-xxxx
+      agentengine version release --agent ar-xxxx --tag vX.Y.Z
+      agentengine version rollback --agent ar-xxxx --to vX.Y.Z -y
+
+  说明:
+      在项目目录下可不传 --agent，会自动从本地状态/配置解析目标 Agent
+      也支持显式指定: --agent / --agent-id / 位置参数
+      跨环境执行时请显式设置 KSYUN_REGION
+
+Options:
+  -h, --help  Show this message and exit.
+
+Commands:
+  list      列出版本历史
+  release   发布新版本
+  rollback  回滚到指定版本
+
+=== config_help ===
+Usage: cli config [OPTIONS] COMMAND [ARGS]...
+
+  配置命令组。
+
+  直接运行 `agentengine config` 会进入向导。 标准子命令为 `wizard` / `show` / `set` / `model`。
+
+Options:
+  -h, --help  Show this message and exit.
+
+Commands:
+  model   切换默认模型。
+  set     非交互式设置配置项。
+  show    查看项目配置、全局配置与当前生效环境变量。
+  wizard  通过交互式向导配置项目。
+
+=== config_wizard_help ===
+Usage: cli config wizard [OPTIONS]
+
+  通过交互式向导配置项目。
+
+Options:
+  --file TEXT     配置文件路径（默认自动复用 agentengine.yaml/ksadk.yaml）
+  -s, --set TEXT  设置配置项 key=value
+  --global        强制更新全局配置
+  -h, --help      Show this message and exit.
+
+=== config_show_help ===
+Usage: cli config show [OPTIONS]
+
+  查看项目配置、全局配置与当前生效环境变量。
+
+Options:
+  --output [pretty|json]  输出格式
+  -h, --help              Show this message and exit.
+
+=== config_set_help ===
+Usage: cli config set [OPTIONS] [SET_ITEMS]...
+
+  非交互式设置配置项。
+
+  示例:     agentengine config set region=cn-beijing-6     agentengine config set
+  OPENAI_MODEL_NAME=deepseek-v3.2 OPENAI_BASE_URL=https://example.com/v1
+  agentengine config set KSYUN_REGION=cn-beijing-6 --global
+
+Options:
+  --global                同时更新全局配置
+  --output [pretty|json]  输出格式
+  -h, --help              Show this message and exit.
+
+=== config_model_help ===
+Usage: cli config model [OPTIONS]
+
+  切换默认模型。
+
+Options:
+  -h, --help  Show this message and exit.
+
+=== completion_help ===
+Usage: cli completion [OPTIONS] COMMAND [ARGS]...
+
+  Shell 补全管理。
+
+Options:
+  -h, --help  Show this message and exit.
+
+Commands:
+  bash     输出 Bash 补全脚本
+  install  自动安装补全脚本到 Shell 配置文件
+  zsh      输出 Zsh 补全脚本
+
+=== model_alias_help ===
+Usage: cli model [OPTIONS]
+
+这是兼容入口，建议迁移到新的 canonical 命令。
+
+推荐命令: agentengine config model
+查看帮助: agentengine config model --help
+
+=== status_alias_help ===
+Usage: cli status [OPTIONS] [AGENT_REF]
+
+这是兼容入口，建议迁移到新的 canonical 命令。
+
+推荐命令: agentengine agent status
+查看帮助: agentengine agent status --help

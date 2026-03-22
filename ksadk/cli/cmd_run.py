@@ -11,7 +11,7 @@ import subprocess
 import sys
 import os
 from pathlib import Path
-from ksadk.cli.error_utils import print_exception
+from ksadk.cli.error_utils import ensure_json_output_supported, print_exception
 from ksadk.cli.ui import (
     print_error,
     print_info,
@@ -36,6 +36,10 @@ def run(agent_dir: str, port: int, interactive: bool, no_trace: bool, model: str
 
     AGENT_DIR: Agent 项目目录 (默认: 当前目录)
     """
+    ensure_json_output_supported(
+        "agentengine run",
+        suggestion="请改用 `agentengine agent status --output json` 或 `agentengine build --output json` 获取结构化信息。",
+    )
     from ksadk.detection import FrameworkDetector, FrameworkType
 
     agent_path = Path(agent_dir).resolve()

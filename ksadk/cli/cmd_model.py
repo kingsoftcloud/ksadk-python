@@ -8,8 +8,11 @@ import httpx
 import questionary
 from pathlib import Path
 from dotenv import set_key, find_dotenv, load_dotenv
-from ksadk.cli.error_utils import print_exception
+from ksadk.cli.error_utils import abort_with_cli_error, print_exception, usage_error
+from ksadk.cli.resource_common import CONTEXT_SETTINGS, CompatibilityAliasCommand, print_compatibility_hint
 from ksadk.cli.ui import (
+    is_color_disabled,
+    is_stdout_tty,
     print_error,
     print_info,
     print_kv,
@@ -19,12 +22,27 @@ from ksadk.cli.ui import (
 )
 
 
-@click.command()
-def model():
+def run_model_command(*, compatibility_alias: bool = False):
     """切换默认模型 (修改 .env)
 
     从 OPENAI_BASE_URL 获取可用模型列表，并更新 .env 中的 OPENAI_MODEL_NAME
     """
+    if compatibility_alias:
+        print_compatibility_hint(
+            legacy="agentengine model",
+            canonical="agentengine config model",
+        )
+    if not is_stdout_tty():
+        abort_with_cli_error(
+            usage_error(
+                "`agentengine config model` 需要交互式终端 (TTY)。",
+                hints=[
+                    "查看当前模型配置请使用 `agentengine config show`。",
+                    "非交互修改请使用 `agentengine config set OPENAI_MODEL_NAME=<model>`。",
+                ],
+            ),
+            argv=["config", "model"],
+        )
     # 智能初始化 (加载 .env + 默认配置，支持自动推导 API Key/Base)
     from ksadk.configs import setup_environment
 
@@ -98,14 +116,18 @@ def model():
             "Select model:",
             choices=choices,
             default=default_choice,
-            style=questionary.Style(
-                [
-                    ("qmark", "fg:green bold"),
-                    ("question", "bold"),
-                    ("answer", "fg:green"),
-                    ("pointer", "fg:cyan bold"),
-                    ("highlighted", "fg:cyan bold"),
-                ]
+            style=(
+                None
+                if is_color_disabled()
+                else questionary.Style(
+                    [
+                        ("qmark", "fg:green bold"),
+                        ("question", "bold"),
+                        ("answer", "fg:green"),
+                        ("pointer", "fg:cyan bold"),
+                        ("highlighted", "fg:cyan bold"),
+                    ]
+                )
             ),
         ).ask()
 
@@ -136,3 +158,14 @@ def model():
             print_info("提示: 请检查 OPENAI_API_KEY 是否正确")
         elif "404" in str(e):
             print_info("提示: 接口地址可能不正确，请检查 /v1/models 是否存在")
+
+
+@click.command(
+    context_settings=CONTEXT_SETTINGS,
+    hidden=True,
+    cls=CompatibilityAliasCommand,
+    canonical_command="agentengine config model",
+)
+def model():
+    """切换默认模型 (兼容入口)。"""
+    run_model_command(compatibility_alias=True)
