@@ -9,6 +9,50 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 BOOTSTRAP_SCRIPT = REPO_ROOT / "deploy" / "openclaw" / "bootstrap.sh"
 
 
+def _write_weixin_plugin_package_json(
+    plugin_root: Path,
+    *,
+    version: str = "2.0.1",
+    package_name: str = "@tencent-weixin/openclaw-weixin",
+) -> None:
+    plugin_root.mkdir(parents=True, exist_ok=True)
+    (plugin_root / "package.json").write_text(
+        json.dumps(
+            {
+                "name": package_name,
+                "version": version,
+            }
+        )
+        + "\n"
+    )
+
+
+def _compute_directory_signature(dir_path: Path) -> str:
+    result = subprocess.run(
+        [
+            "bash",
+            "-lc",
+            r'''dir_path="$1"
+find "$dir_path" \( -type f -o -type l \) | LC_ALL=C sort | while IFS= read -r file_path; do
+  rel_path="${file_path#"$dir_path/"}"
+  if [[ -L "$file_path" ]]; then
+    printf 'link\t%s\t%s\n' "$rel_path" "$(readlink "$file_path")"
+    continue
+  fi
+  printf 'file\t%s\t' "$rel_path"
+  cksum "$file_path" | awk '{print $1 "\t" $2}'
+done | cksum | awk '{print $1 ":" $2}'
+''',
+            "_",
+            str(dir_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
 def _build_base_env(state_dir: str, config_path: str) -> dict:
     env = os.environ.copy()
     safe_bin_dir = Path(state_dir) / "safe-bin"
@@ -21,7 +65,7 @@ def _build_base_env(state_dir: str, config_path: str) -> dict:
         wrapper_path = safe_bin_dir / cmd
         wrapper_path.write_text("#!/bin/sh\nexit 0\n")
         wrapper_path.chmod(0o755)
-    for cmd in ["curl", "yt-dlp", "openclaw", "gh", "xreach"]:
+    for cmd in ["curl", "jq", "yt-dlp", "openclaw", "gh", "xreach"]:
         raw_bin_path = raw_bin_dir / cmd
         raw_bin_path.write_text("#!/bin/sh\nexit 0\n")
         raw_bin_path.chmod(0o755)
@@ -433,6 +477,103 @@ def test_bootstrap_preserves_explicit_builtin_web_fetch_enablement_via_env():
         assert cfg["tools"]["web"]["fetch"]["enabled"] is True
 
 
+def test_bootstrap_enables_builtin_browser_by_default():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert cfg["browser"]["enabled"] is True
+        assert cfg["browser"]["headless"] is True
+        assert cfg["browser"]["noSandbox"] is True
+
+
+def test_bootstrap_preserves_explicit_builtin_browser_enablement_in_config():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "browser": {
+                        "enabled": True,
+                        "headless": False,
+                        "noSandbox": False,
+                    }
+                }
+            )
+        )
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert cfg["browser"]["enabled"] is True
+        assert cfg["browser"]["headless"] is False
+        assert cfg["browser"]["noSandbox"] is False
+
+
+def test_bootstrap_allows_reenabling_builtin_browser_via_env():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_BROWSER_ENABLED"] = "true"
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert cfg["browser"]["enabled"] is True
+
+
+def test_bootstrap_allows_disabling_builtin_browser_via_env():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_BROWSER_ENABLED"] = "false"
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert cfg["browser"]["enabled"] is False
+
+
 def test_bootstrap_recovers_from_blank_secret_ref_env_overrides():
     with TemporaryDirectory() as tmpdir:
         config_path = Path(tmpdir) / "openclaw.json"
@@ -471,9 +612,9 @@ def test_bootstrap_syncs_kdocs_by_default_without_token():
         config_path = Path(tmpdir) / "openclaw.json"
         preset_skills_dir = Path(tmpdir) / "preset-skills"
         for skill_name in [
-            "find-skills",
+            "skillhub-store",
+            "agent-browser-clawdbot",
             "kdocs",
-            "multi-search-engine",
             "tavily-search",
         ]:
             skill_dir = preset_skills_dir / skill_name
@@ -498,9 +639,212 @@ def test_bootstrap_syncs_kdocs_by_default_without_token():
             path.name for path in (Path(tmpdir) / "skills").iterdir() if path.is_dir()
         )
         assert synced_skills == [
-            "find-skills",
+            "agent-browser-clawdbot",
+            "kdocs",
+            "skillhub-store",
+        ]
+
+
+def test_bootstrap_removes_previously_synced_removed_preset_skill_when_unchanged():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        preset_skills_dir = Path(tmpdir) / "preset-skills"
+        skills_dir = Path(tmpdir) / "skills"
+        managed_find_skills_dir = skills_dir / "find-skills"
+        managed_find_skills_dir.mkdir(parents=True, exist_ok=True)
+        (managed_find_skills_dir / "SKILL.md").write_text("legacy managed find-skills\n")
+
+        cache_dir = Path(tmpdir) / ".bootstrap-cache" / "preset-skills"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        (cache_dir / "find-skills.sig").write_text(
+            _compute_directory_signature(managed_find_skills_dir) + "\n"
+        )
+
+        for skill_name in [
+            "skillhub-store",
+            "agent-browser-clawdbot",
+            "kdocs",
+        ]:
+            skill_dir = preset_skills_dir / skill_name
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            (skill_dir / "SKILL.md").write_text(f"{skill_name}\n")
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_PRESET_SKILLS_DIR"] = str(preset_skills_dir)
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        assert not managed_find_skills_dir.exists()
+        assert not (cache_dir / "find-skills.sig").exists()
+
+
+def test_bootstrap_preserves_user_managed_removed_preset_skill():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        preset_skills_dir = Path(tmpdir) / "preset-skills"
+        user_find_skills_dir = Path(tmpdir) / "skills" / "find-skills"
+        user_find_skills_dir.mkdir(parents=True, exist_ok=True)
+        (user_find_skills_dir / "SKILL.md").write_text("custom user find-skills\n")
+        (user_find_skills_dir / "README.md").write_text("owned-by-user\n")
+
+        for skill_name in [
+            "skillhub-store",
+            "agent-browser-clawdbot",
+            "kdocs",
+        ]:
+            skill_dir = preset_skills_dir / skill_name
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            (skill_dir / "SKILL.md").write_text(f"{skill_name}\n")
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_PRESET_SKILLS_DIR"] = str(preset_skills_dir)
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        assert (user_find_skills_dir / "SKILL.md").read_text() == "custom user find-skills\n"
+        assert (user_find_skills_dir / "README.md").read_text() == "owned-by-user\n"
+        assert "preserved user-managed skill find-skills" in result.stderr
+
+
+def test_bootstrap_removes_previously_synced_multi_search_skill_when_no_longer_default():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        preset_skills_dir = Path(tmpdir) / "preset-skills"
+        skills_dir = Path(tmpdir) / "skills"
+        managed_multi_search_dir = skills_dir / "multi-search-engine"
+        managed_multi_search_dir.mkdir(parents=True, exist_ok=True)
+        (managed_multi_search_dir / "SKILL.md").write_text("legacy managed multi-search-engine\n")
+
+        cache_dir = Path(tmpdir) / ".bootstrap-cache" / "preset-skills"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        (cache_dir / "multi-search-engine.sig").write_text(
+            _compute_directory_signature(managed_multi_search_dir) + "\n"
+        )
+
+        for skill_name in [
+            "skillhub-store",
+            "agent-browser-clawdbot",
+            "kdocs",
+        ]:
+            skill_dir = preset_skills_dir / skill_name
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            (skill_dir / "SKILL.md").write_text(f"{skill_name}\n")
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_PRESET_SKILLS_DIR"] = str(preset_skills_dir)
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        assert not managed_multi_search_dir.exists()
+        assert not (cache_dir / "multi-search-engine.sig").exists()
+
+
+def test_bootstrap_removes_legacy_multi_search_skill_by_source_match_without_sig():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        preset_skills_dir = Path(tmpdir) / "preset-skills"
+        skills_dir = Path(tmpdir) / "skills"
+        bundled_multi_search_dir = preset_skills_dir / "multi-search-engine"
+        managed_multi_search_dir = skills_dir / "multi-search-engine"
+
+        bundled_multi_search_dir.mkdir(parents=True, exist_ok=True)
+        (bundled_multi_search_dir / "SKILL.md").write_text("legacy bundled multi-search-engine\n")
+        managed_multi_search_dir.mkdir(parents=True, exist_ok=True)
+        (managed_multi_search_dir / "SKILL.md").write_text("legacy bundled multi-search-engine\n")
+
+        for skill_name in [
+            "skillhub-store",
+            "agent-browser-clawdbot",
+            "kdocs",
+        ]:
+            skill_dir = preset_skills_dir / skill_name
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            (skill_dir / "SKILL.md").write_text(f"{skill_name}\n")
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_PRESET_SKILLS_DIR"] = str(preset_skills_dir)
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        assert not managed_multi_search_dir.exists()
+        assert "removed deprecated bundled skill multi-search-engine (legacy source match)" in result.stderr
+
+
+def test_bootstrap_syncs_multi_search_skill_when_explicitly_allowlisted():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        preset_skills_dir = Path(tmpdir) / "preset-skills"
+        for skill_name in [
+            "skillhub-store",
+            "agent-browser-clawdbot",
             "kdocs",
             "multi-search-engine",
+        ]:
+            skill_dir = preset_skills_dir / skill_name
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            (skill_dir / "SKILL.md").write_text(f"{skill_name}\n")
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_PRESET_SKILLS_DIR"] = str(preset_skills_dir)
+        env["OPENCLAW_PRESET_SKILLS_ALLOWLIST"] = (
+            "skillhub-store,agent-browser-clawdbot,kdocs,multi-search-engine"
+        )
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        synced_skills = sorted(
+            path.name for path in (Path(tmpdir) / "skills").iterdir() if path.is_dir()
+        )
+        assert synced_skills == [
+            "agent-browser-clawdbot",
+            "kdocs",
+            "multi-search-engine",
+            "skillhub-store",
         ]
 
 
@@ -687,10 +1031,48 @@ def test_bootstrap_strict_mode_restores_allowlist_defaults():
         command_names = {Path(pattern).name for pattern in patterns}
         assert str(Path(tmpdir) / "safe-bin" / "bash-safe") in patterns
         assert "curl" in command_names
+        assert "jq" in command_names
         assert "openclaw" in command_names
+        assert "agent-browser" in command_names
         assert "yt-dlp" not in command_names
         assert "gh" not in command_names
         assert "xreach" not in command_names
+
+
+def test_multi_search_skill_avoids_curl_head_broken_pipe_pattern():
+    skill_path = (
+        REPO_ROOT
+        / "deploy"
+        / "openclaw"
+        / "preset-skills"
+        / "multi-search-engine"
+        / "SKILL.md"
+    )
+
+    content = skill_path.read_text()
+
+    assert "curl -sS \"https://www.baidu.com/s?wd=QUERY\" | head -200" not in content
+
+
+def test_multi_search_skill_prefers_cn_bing_and_builtin_browser_first():
+    skill_path = (
+        REPO_ROOT
+        / "deploy"
+        / "openclaw"
+        / "preset-skills"
+        / "multi-search-engine"
+        / "SKILL.md"
+    )
+
+    content = skill_path.read_text()
+
+    assert "built-in fetch tool" not in content
+    assert "start with Bing CN / Sogou / 360 before trying Baidu" in content
+    assert "prefer the built-in `browser` tool first in this runtime" in content
+    assert "agent-browser open \"https://cn.bing.com/search?q=QUERY&ensearch=0\"" in content
+    assert "browser navigate https://www.baidu.com/s?wd=QUERY" not in content
+    assert "curl -sS \"https://cn.bing.com/search?q=QUERY\" | head -200" not in content
+    assert "Failure writing output to destination" in content
 
 
 def test_bootstrap_merges_custom_exec_allowlist_patterns():
@@ -751,6 +1133,62 @@ def test_bootstrap_scrubs_model_api_key_from_gateway_process_env():
         assert "OPENAI_API_KEY=" not in captured_env
         assert "OPENCLAW_INTERNAL_TRUSTED_PROXY_USER=openclaw-backend" in captured_env
         assert "OPENCLAW_INTERNAL_TRUSTED_PROXY_USER_HEADER=x-forwarded-user" in captured_env
+        assert "NPM_CONFIG_REGISTRY=https://registry.npmmirror.com" in captured_env
+        assert "PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple" in captured_env
+        assert "PIP_TRUSTED_HOST=mirrors.aliyun.com" in captured_env
+        assert "UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple" in captured_env
+        assert "PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright" in captured_env
+        assert "PUPPETEER_DOWNLOAD_BASE_URL=https://npmmirror.com/mirrors/chrome-for-testing" in captured_env
+
+
+def test_bootstrap_writes_domestic_runtime_defaults_to_env_file():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        runtime_env = (Path(tmpdir) / ".env").read_text()
+        assert "NPM_CONFIG_REGISTRY=https://registry.npmmirror.com" in runtime_env
+        assert "npm_config_registry=https://registry.npmmirror.com" in runtime_env
+        assert "YARN_NPM_REGISTRY_SERVER=https://registry.npmmirror.com" in runtime_env
+        assert "PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple" in runtime_env
+        assert "PIP_TRUSTED_HOST=mirrors.aliyun.com" in runtime_env
+        assert "UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple" in runtime_env
+        assert "PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright" in runtime_env
+        assert "PUPPETEER_DOWNLOAD_BASE_URL=https://npmmirror.com/mirrors/chrome-for-testing" in runtime_env
+
+
+def test_agent_browser_skill_prefers_domestic_examples():
+    skill_path = (
+        REPO_ROOT
+        / "deploy"
+        / "openclaw"
+        / "preset-skills"
+        / "agent-browser-clawdbot"
+        / "SKILL.md"
+    )
+
+    content = skill_path.read_text()
+
+    assert "agent-browser open https://www.google.com" not in content
+    assert "agent-browser open https://www.baidu.com" not in content
+    assert "agent-browser open https://cn.bing.com/search?q=AI+agents&ensearch=0" in content
+    assert "https://www.bing.com/news/search?q=AI&mkt=zh-CN" in content
+    assert "This image already bundles `agent-browser`" in content
+    assert "registry.npmmirror.com" in content
+    assert "Built-in `browser` is enabled by default in this image." in content
+    assert "Use `web-safe search` / `web-safe read` only when a cheap read-only fallback is enough" in content
+    assert "The task is small enough that a one-off interactive browser session is simpler" not in content
 
 
 def test_bootstrap_does_not_auto_register_exa_defaults():
@@ -785,6 +1223,435 @@ def test_bootstrap_does_not_auto_register_exa_defaults():
 
         assert result.returncode == 0, result.stderr or result.stdout
         assert not capture_path.exists()
+
+
+def test_bootstrap_seeds_and_auto_enables_bundled_weixin_plugin():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        default_extensions_dir = Path(tmpdir) / "default-extensions" / "openclaw-weixin"
+        default_extensions_dir.mkdir(parents=True, exist_ok=True)
+        (default_extensions_dir / "manifest.json").write_text('{"name":"openclaw-weixin"}\n')
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_DEFAULT_EXTENSIONS_DIR"] = str(Path(tmpdir) / "default-extensions")
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert (Path(tmpdir) / "extensions" / "openclaw-weixin" / "manifest.json").exists()
+        assert cfg["plugins"]["entries"]["openclaw-weixin"]["enabled"] is True
+
+
+def test_bootstrap_preserves_user_managed_weixin_plugin_in_existing_extension_dir():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        default_extensions_dir = Path(tmpdir) / "default-extensions" / "openclaw-weixin"
+        default_extensions_dir.mkdir(parents=True, exist_ok=True)
+        (default_extensions_dir / "manifest.json").write_text(
+            '{"name":"openclaw-weixin","version":"2.0.0"}\n'
+        )
+        (default_extensions_dir / "README.md").write_text("bundled-v2\n")
+
+        existing_extension_dir = Path(tmpdir) / "extensions" / "openclaw-weixin"
+        existing_extension_dir.mkdir(parents=True, exist_ok=True)
+        (existing_extension_dir / "manifest.json").write_text(
+            '{"name":"openclaw-weixin","version":"1.0.0"}\n'
+        )
+        (existing_extension_dir / "stale.txt").write_text("old-plugin-layout\n")
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_DEFAULT_EXTENSIONS_DIR"] = str(Path(tmpdir) / "default-extensions")
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        assert (existing_extension_dir / "manifest.json").read_text() == (
+            '{"name":"openclaw-weixin","version":"1.0.0"}\n'
+        )
+        assert not (existing_extension_dir / "README.md").exists()
+        assert (existing_extension_dir / "stale.txt").read_text() == "old-plugin-layout\n"
+
+
+def test_bootstrap_upgrades_previously_synced_weixin_plugin_when_bundle_changes():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        default_extensions_dir = Path(tmpdir) / "default-extensions" / "openclaw-weixin"
+        default_extensions_dir.mkdir(parents=True, exist_ok=True)
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_DEFAULT_EXTENSIONS_DIR"] = str(Path(tmpdir) / "default-extensions")
+
+        (default_extensions_dir / "manifest.json").write_text(
+            '{"name":"openclaw-weixin","version":"1.0.0"}\n'
+        )
+        (default_extensions_dir / "README.md").write_text("bundled-v1\n")
+
+        first = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert first.returncode == 0, first.stderr or first.stdout
+
+        (default_extensions_dir / "manifest.json").write_text(
+            '{"name":"openclaw-weixin","version":"2.0.0"}\n'
+        )
+        (default_extensions_dir / "README.md").write_text("bundled-v2\n")
+
+        second = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert second.returncode == 0, second.stderr or second.stdout
+
+        existing_extension_dir = Path(tmpdir) / "extensions" / "openclaw-weixin"
+        assert (existing_extension_dir / "manifest.json").read_text() == (
+            '{"name":"openclaw-weixin","version":"2.0.0"}\n'
+        )
+        assert (existing_extension_dir / "README.md").read_text() == "bundled-v2\n"
+
+
+def test_bootstrap_preserves_user_modified_weixin_plugin_after_initial_seed():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        default_extensions_dir = Path(tmpdir) / "default-extensions" / "openclaw-weixin"
+        default_extensions_dir.mkdir(parents=True, exist_ok=True)
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_DEFAULT_EXTENSIONS_DIR"] = str(Path(tmpdir) / "default-extensions")
+
+        (default_extensions_dir / "manifest.json").write_text(
+            '{"name":"openclaw-weixin","version":"1.0.0"}\n'
+        )
+
+        first = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert first.returncode == 0, first.stderr or first.stdout
+
+        existing_extension_dir = Path(tmpdir) / "extensions" / "openclaw-weixin"
+        (existing_extension_dir / "manifest.json").write_text(
+            '{"name":"openclaw-weixin","version":"9.9.9-user"}\n'
+        )
+        (existing_extension_dir / "USER.md").write_text("custom-user-plugin\n")
+        (default_extensions_dir / "manifest.json").write_text(
+            '{"name":"openclaw-weixin","version":"2.0.0"}\n'
+        )
+        (default_extensions_dir / "README.md").write_text("bundled-v2\n")
+
+        second = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert second.returncode == 0, second.stderr or second.stdout
+
+        assert (existing_extension_dir / "manifest.json").read_text() == (
+            '{"name":"openclaw-weixin","version":"9.9.9-user"}\n'
+        )
+        assert (existing_extension_dir / "USER.md").read_text() == "custom-user-plugin\n"
+        assert not (existing_extension_dir / "README.md").exists()
+
+
+def test_bootstrap_preserves_existing_weixin_plugin_disablement():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        default_extensions_dir = Path(tmpdir) / "default-extensions" / "openclaw-weixin"
+        default_extensions_dir.mkdir(parents=True, exist_ok=True)
+        (default_extensions_dir / "manifest.json").write_text('{"name":"openclaw-weixin"}\n')
+        config_path.write_text(
+            json.dumps(
+                {
+                    "plugins": {
+                        "entries": {
+                            "openclaw-weixin": {
+                                "enabled": False,
+                            }
+                        }
+                    }
+                }
+            )
+        )
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_DEFAULT_EXTENSIONS_DIR"] = str(Path(tmpdir) / "default-extensions")
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert (Path(tmpdir) / "extensions" / "openclaw-weixin" / "manifest.json").exists()
+        assert cfg["plugins"]["entries"]["openclaw-weixin"]["enabled"] is False
+
+
+def test_bootstrap_auto_enables_bundled_lark_plugin():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        default_extensions_dir = Path(tmpdir) / "default-extensions" / "openclaw-lark"
+        default_extensions_dir.mkdir(parents=True, exist_ok=True)
+        (default_extensions_dir / "manifest.json").write_text('{"name":"openclaw-lark"}\n')
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_DEFAULT_EXTENSIONS_DIR"] = str(Path(tmpdir) / "default-extensions")
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert (Path(tmpdir) / "extensions" / "openclaw-lark" / "manifest.json").exists()
+        assert cfg["plugins"]["entries"]["openclaw-lark"]["enabled"] is True
+
+
+def test_bootstrap_patches_bundled_weixin_gateway_login_methods_before_sync():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        plugin_root = Path(tmpdir) / "default-extensions" / "openclaw-weixin"
+        plugin_dir = plugin_root / "src"
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        _write_weixin_plugin_package_json(plugin_root)
+        (plugin_dir / "channel.ts").write_text(
+            "export const weixinPlugin = {\n"
+            "  status: {\n"
+            "    defaultRuntime: {},\n"
+            "  },\n"
+            "};\n"
+        )
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_DEFAULT_EXTENSIONS_DIR"] = str(Path(tmpdir) / "default-extensions")
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        bundled_source = (Path(tmpdir) / "default-extensions" / "openclaw-weixin" / "src" / "channel.ts").read_text()
+        assert 'gatewayMethods: ["web.login.start", "web.login.wait"],' in bundled_source
+        patched_source = (Path(tmpdir) / "extensions" / "openclaw-weixin" / "src" / "channel.ts").read_text()
+        assert 'gatewayMethods: ["web.login.start", "web.login.wait"],' in patched_source
+
+
+def test_bootstrap_only_adds_gateway_login_methods_for_target_weixin_version():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        plugin_root = Path(tmpdir) / "default-extensions" / "openclaw-weixin"
+        (plugin_root / "src").mkdir(parents=True, exist_ok=True)
+
+        _write_weixin_plugin_package_json(plugin_root)
+        (plugin_root / "index.ts").write_text(
+            'import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";\n'
+            'import { buildChannelConfigSchema } from "openclaw/plugin-sdk/channel-config-schema";\n'
+        )
+        (plugin_root / "src" / "channel.ts").write_text(
+            'import type { ChannelPlugin, OpenClawConfig } from "openclaw/plugin-sdk/core";\n'
+            'import { normalizeAccountId } from "openclaw/plugin-sdk/account-id";\n'
+            'import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/infra-runtime";\n'
+            'export const weixinPlugin = {\n'
+            '  status: {},\n'
+            '};\n'
+        )
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_DEFAULT_EXTENSIONS_DIR"] = str(Path(tmpdir) / "default-extensions")
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        synced_root = Path(tmpdir) / "extensions" / "openclaw-weixin"
+        assert 'openclaw/plugin-sdk/plugin-entry' in (synced_root / "index.ts").read_text()
+        patched_channel = (synced_root / "src" / "channel.ts").read_text()
+        assert 'openclaw/plugin-sdk/infra-runtime' in patched_channel
+        assert 'gatewayMethods: ["web.login.start", "web.login.wait"],' in patched_channel
+        assert not (synced_root / "node_modules" / "openclaw").exists()
+
+
+def test_bootstrap_skips_weixin_remote_login_patch_for_non_target_version():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        plugin_root = Path(tmpdir) / "default-extensions" / "openclaw-weixin"
+        plugin_src_dir = plugin_root / "src"
+
+        plugin_src_dir.mkdir(parents=True, exist_ok=True)
+
+        _write_weixin_plugin_package_json(plugin_root, version="2.0.2")
+        (plugin_src_dir / "channel.ts").write_text(
+            'import type { ChannelPlugin, OpenClawConfig } from "openclaw/plugin-sdk/core";\n'
+            'import { normalizeAccountId } from "openclaw/plugin-sdk/account-id";\n'
+            'import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/infra-runtime";\n'
+            'export const weixinPlugin = {\n'
+            '  status: {},\n'
+            '};\n'
+        )
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_DEFAULT_EXTENSIONS_DIR"] = str(Path(tmpdir) / "default-extensions")
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        bundled_source = (plugin_root / "src" / "channel.ts").read_text()
+        synced_source = (Path(tmpdir) / "extensions" / "openclaw-weixin" / "src" / "channel.ts").read_text()
+        assert 'openclaw/plugin-sdk/infra-runtime' in bundled_source
+        assert 'openclaw/plugin-sdk/infra-runtime' in synced_source
+        assert 'gatewayMethods: ["web.login.start", "web.login.wait"],' not in bundled_source
+        assert 'gatewayMethods: ["web.login.start", "web.login.wait"],' not in synced_source
+        assert "skipped bundled channel plugin compat patch" in result.stderr
+
+
+def test_bootstrap_does_not_runtime_patch_user_managed_weixin_plugin():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        bundled_plugin_root = Path(tmpdir) / "default-extensions" / "openclaw-weixin"
+        existing_plugin_root = Path(tmpdir) / "extensions" / "openclaw-weixin"
+        (bundled_plugin_root / "src").mkdir(parents=True, exist_ok=True)
+        (existing_plugin_root / "src").mkdir(parents=True, exist_ok=True)
+
+        _write_weixin_plugin_package_json(bundled_plugin_root, version="2.0.1")
+        _write_weixin_plugin_package_json(existing_plugin_root, version="9.9.9-user")
+        (bundled_plugin_root / "src" / "channel.ts").write_text(
+            'export const weixinPlugin = {\n'
+            '  status: {},\n'
+            '};\n'
+        )
+        original_user_source = (
+            'import type { ChannelPlugin, OpenClawConfig } from "openclaw/plugin-sdk/core";\n'
+            'import { normalizeAccountId } from "openclaw/plugin-sdk/account-id";\n'
+            'import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/infra-runtime";\n'
+            'export const weixinPlugin = {\n'
+            '  status: {},\n'
+            '};\n'
+        )
+        (existing_plugin_root / "src" / "channel.ts").write_text(original_user_source)
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_DEFAULT_EXTENSIONS_DIR"] = str(Path(tmpdir) / "default-extensions")
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        assert (existing_plugin_root / "src" / "channel.ts").read_text() == original_user_source
+        assert "preserved user-managed extension openclaw-weixin" in result.stderr
+
+
+def test_bootstrap_runtime_patches_existing_official_weixin_201_plugin():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        existing_plugin_root = Path(tmpdir) / "extensions" / "openclaw-weixin"
+
+        (existing_plugin_root / "src").mkdir(parents=True, exist_ok=True)
+
+        _write_weixin_plugin_package_json(existing_plugin_root, version="2.0.1")
+        (existing_plugin_root / "index.ts").write_text(
+            'import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";\n'
+        )
+        (existing_plugin_root / "src" / "channel.ts").write_text(
+            'import type { ChannelPlugin, OpenClawConfig } from "openclaw/plugin-sdk/core";\n'
+            'import { normalizeAccountId } from "openclaw/plugin-sdk/account-id";\n'
+            'import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/infra-runtime";\n'
+            'export const weixinPlugin = {\n'
+            '  status: {\n'
+            '    defaultRuntime: {},\n'
+            '  },\n'
+            '};\n'
+        )
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_DEFAULT_EXTENSIONS_DIR"] = str(Path(tmpdir) / "default-extensions")
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        assert 'openclaw/plugin-sdk/plugin-entry' in (existing_plugin_root / "index.ts").read_text()
+        patched_channel = (existing_plugin_root / "src" / "channel.ts").read_text()
+        assert 'openclaw/plugin-sdk/infra-runtime' in patched_channel
+        assert 'gatewayMethods: ["web.login.start", "web.login.wait"],' in patched_channel
+        assert not (existing_plugin_root / "node_modules" / "openclaw").exists()
 
 
 def test_bootstrap_runs_bundled_kdocs_setup_when_token_present():
@@ -827,11 +1694,11 @@ def test_bootstrap_syncs_only_allowlisted_preset_skills():
         config_path = Path(tmpdir) / "openclaw.json"
         preset_skills_dir = Path(tmpdir) / "preset-skills"
         for skill_name in [
-            "find-skills",
+            "skillhub-store",
+            "agent-browser-clawdbot",
             "self-improving-agent",
             "kdocs",
             "agent-reach",
-            "multi-search-engine",
             "tavily-search",
             "tuanziguardianclaw",
         ]:
@@ -855,14 +1722,14 @@ def test_bootstrap_syncs_only_allowlisted_preset_skills():
         assert result.returncode == 0, result.stderr or result.stdout
         synced_skills = sorted(path.name for path in (Path(tmpdir) / "skills").iterdir() if path.is_dir())
         assert synced_skills == [
-            "find-skills",
+            "agent-browser-clawdbot",
             "kdocs",
-            "multi-search-engine",
+            "skillhub-store",
         ]
         cfg = json.loads(config_path.read_text())
         assert cfg["skills"]["allowBundled"] == [
-            "find-skills",
-            "multi-search-engine",
+            "skillhub-store",
+            "agent-browser-clawdbot",
             "kdocs",
         ]
 
@@ -872,9 +1739,9 @@ def test_bootstrap_strict_mode_keeps_tuanziguardianclaw_preset_skill():
         config_path = Path(tmpdir) / "openclaw.json"
         preset_skills_dir = Path(tmpdir) / "preset-skills"
         for skill_name in [
-            "find-skills",
+            "skillhub-store",
+            "agent-browser-clawdbot",
             "kdocs",
-            "multi-search-engine",
             "self-improving-agent",
             "tuanziguardianclaw",
         ]:
@@ -899,16 +1766,16 @@ def test_bootstrap_strict_mode_keeps_tuanziguardianclaw_preset_skill():
         assert result.returncode == 0, result.stderr or result.stdout
         synced_skills = sorted(path.name for path in (Path(tmpdir) / "skills").iterdir() if path.is_dir())
         assert synced_skills == [
-            "find-skills",
+            "agent-browser-clawdbot",
             "kdocs",
-            "multi-search-engine",
             "self-improving-agent",
+            "skillhub-store",
             "tuanziguardianclaw",
         ]
         cfg = json.loads(config_path.read_text())
         assert cfg["skills"]["allowBundled"] == [
-            "find-skills",
-            "multi-search-engine",
+            "skillhub-store",
+            "agent-browser-clawdbot",
             "kdocs",
             "self-improving-agent",
             "tuanziguardianclaw",
@@ -923,9 +1790,8 @@ def test_bootstrap_overrides_stale_bundled_skill_allowlist_from_existing_config(
                 {
                     "skills": {
                         "allowBundled": [
-                            "find-skills",
+                            "skillhub-store",
                             "tavily-search",
-                            "multi-search-engine",
                             "agent-reach",
                         ]
                     }
@@ -947,8 +1813,8 @@ def test_bootstrap_overrides_stale_bundled_skill_allowlist_from_existing_config(
         assert result.returncode == 0, result.stderr or result.stdout
         cfg = json.loads(config_path.read_text())
         assert cfg["skills"]["allowBundled"] == [
-            "find-skills",
-            "multi-search-engine",
+            "skillhub-store",
+            "agent-browser-clawdbot",
             "kdocs",
         ]
 
@@ -999,20 +1865,11 @@ def test_bootstrap_patches_runtime_bundles_for_loopback_gateway_clients():
             'function shouldSkipBackendSelfPairing(params) {\n'
             '\tif (!(params.connectParams.client.id === GATEWAY_CLIENT_IDS.GATEWAY_CLIENT && params.connectParams.client.mode === GATEWAY_CLIENT_MODES.BACKEND)) return false;\n'
             '\tconst usesSharedSecretAuth = params.authMethod === "token" || params.authMethod === "password";\n'
-            '\treturn params.isLocalClient && !params.hasBrowserOriginHeader && params.sharedAuthOk && usesSharedSecretAuth;\n'
+            '\tconst usesDeviceTokenAuth = params.authMethod === "device-token";\n'
+            '\treturn params.isLocalClient && !params.hasBrowserOriginHeader && (params.sharedAuthOk && usesSharedSecretAuth || usesDeviceTokenAuth);\n'
             '}\n'
             'function shouldAttachDeviceIdentityForGatewayCall(params) {\n'
-            '\tif (!(params.token || params.password)) return true;\n'
-            '\ttry {\n'
-            '\t\tconst parsed = new URL(params.url);\n'
-            '\t\treturn ![\n'
-            '\t\t\t"127.0.0.1",\n'
-            '\t\t\t"::1",\n'
-            '\t\t\t"localhost"\n'
-            '\t\t].includes(parsed.hostname);\n'
-            '\t} catch {\n'
-            '\t\treturn true;\n'
-            '\t}\n'
+            '\treturn true;\n'
             '}\n'
             'deviceIdentity: shouldAttachDeviceIdentityForGatewayCall({\n'
             '\t\t\t\turl,\n'
@@ -1044,6 +1901,8 @@ def test_bootstrap_patches_runtime_bundles_for_loopback_gateway_clients():
         assert 'internalTrustedProxyUser' in client_bundle.read_text()
         gateway_source = gateway_bundle.read_text()
         assert 'usesLoopbackTrustedProxyAuth = params.authMethod === "trusted-proxy"' in gateway_source
+        assert 'const usesDeviceTokenAuth = params.authMethod === "device-token";' in gateway_source
+        assert 'usesLoopbackTrustedProxyAuth || params.sharedAuthOk && usesSharedSecretAuth || usesDeviceTokenAuth' in gateway_source
         assert 'function shouldAttachDeviceIdentityForGatewayCall(params) {' in gateway_source
         assert '].includes(parsed.hostname)) return false;' in gateway_source
         assert '}) ? loadOrCreateDeviceIdentity() : null,' in gateway_source
@@ -1051,6 +1910,33 @@ def test_bootstrap_patches_runtime_bundles_for_loopback_gateway_clients():
         assert 'if (["127.0.0.1", "::1", "localhost"].includes(parsed.hostname)) return;' in gateway_source
         assert 'const keepUnboundScopes = !device && decision.kind === "allow" && authMethod === "trusted-proxy" && !hasBrowserOriginHeader;' in gateway_source
         assert 'this.ws.addEventListener(`open`,()=>{this.lastSeq=null,this.queueConnect()})' in control_ui_bundle.read_text()
+
+
+def test_bootstrap_fails_when_required_runtime_patch_targets_are_missing():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        dist_dir = Path(tmpdir) / "dist"
+        dist_dir.mkdir(parents=True, exist_ok=True)
+        marker_file = dist_dir / ".agentengine-dist-marker"
+        (dist_dir / "control-ui-only.js").write_text('this.ws.addEventListener(`open`,()=>this.queueConnect())')
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_DIST_DIR"] = str(dist_dir)
+        env["OPENCLAW_DIST_PATCH_MARKER"] = str(marker_file)
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode != 0
+        assert "required dist patches missing:" in (result.stderr or result.stdout)
+        assert not marker_file.exists()
 
 
 def test_bootstrap_defaults_state_dir_under_home_for_non_root_runtime():

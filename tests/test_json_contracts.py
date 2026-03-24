@@ -65,7 +65,7 @@ def test_config_set_json_envelope_and_file_updates(tmp_path: Path, monkeypatch):
             "config",
             "set",
             "region=cn-beijing-6",
-            "OPENAI_MODEL_NAME=deepseek-v3.2",
+            "OPENAI_MODEL_NAME=glm-5",
         ],
     )
 
@@ -81,7 +81,7 @@ def test_config_set_json_envelope_and_file_updates(tmp_path: Path, monkeypatch):
     project_config = yaml.safe_load((tmp_path / "agentengine.yaml").read_text(encoding="utf-8-sig"))
     env_text = (tmp_path / ".env").read_text(encoding="utf-8-sig")
     assert project_config["region"] == "cn-beijing-6"
-    assert "OPENAI_MODEL_NAME=deepseek-v3.2" in env_text
+    assert "OPENAI_MODEL_NAME=glm-5" in env_text
     assert "KSYUN_REGION=cn-beijing-6" in env_text
 
 

@@ -735,7 +735,7 @@ async def get_agent_builder(app_name: str, ts: int = 0, tmp: bool = False, file_
     """Get agent builder config - stub for ADK-Web"""
     # Return minimal YAML config for non-ADK projects
     return f"""name: {app_name}
-model: deepseek-v3.2
+model: glm-5
 description: {app_name} agent
 instruction: You are a helpful assistant.
 """
@@ -789,4 +789,3 @@ if STATIC_DIR.exists() and (STATIC_DIR / "index.html").exists():
 else:
     logger.warning(f"Static files not found at: {STATIC_DIR}")
     logger.warning("Run 'make sync-static' to build and sync the Web UI")
-

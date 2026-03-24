@@ -1,6 +1,6 @@
 # ksadk (AgentEngine CLI)
 
-`ksadk` 是金山云 Agent 开发与部署工具链，提供统一的 CLI 体验，覆盖本地开发、构建、部署、调用、版本管理与 MCP Server 管理。
+`ksadk` 是金山云 Agent 开发与部署工具链，提供统一的 CLI 体验，覆盖本地开发、构建、部署、调用、版本管理、MCP Server 管理，以及 OpenClaw Gateway / Channel 运维接入。
 
 当前版本：`0.3.6`
 
@@ -14,7 +14,7 @@
 - 双一等用户体验：默认 `pretty` 输出面向人类，`--output json` 为 AI Agent / 自动化调用提供稳定结构化契约。
 - 可调试 Dry Run：`build/deploy/launch --dry-run` 会输出本地执行计划、远端请求摘要和完整 `curl`。
 - 统一控制面：通过 `AgentEngine Server` 进行 Agent/MCP/OpenClaw 管理。
-- 状态持久化：部署后保存 `.agentengine.state`，供后续 `agent status`、`agent delete`、`version`、`dashboard open` 等命令自动解析。
+- 状态持久化：部署后保存 `.agentengine.state`，供后续 `agent status`、`agent delete`、`version`、`dashboard open`、`openclaw channel/gateway` 等命令自动解析。
 - 版本管理：`version list/release/rollback`。
 - MCP 管理：`mcp deploy/list/status/delete`。
 
@@ -57,6 +57,14 @@ agentengine init my_deep_agent -f deepagents
 cd my_deep_agent
 ```
 
+OpenClaw 模板：
+
+```bash
+agentengine init my_claw -f openclaw
+cd my_claw
+agentengine openclaw deploy
+```
+
 也可包装已有代码：
 
 ```bash
@@ -76,7 +84,7 @@ agentengine config
 
 ```bash
 agentengine config show
-agentengine config set region=cn-beijing-6 OPENAI_MODEL_NAME=deepseek-v3.2
+agentengine config set region=cn-beijing-6 OPENAI_MODEL_NAME=glm-5
 ```
 
 会生成或更新：
@@ -119,6 +127,9 @@ agentengine dashboard open --agent ar-xxxx
 # OpenClaw 也走统一入口
 agentengine dashboard open --agent openclaw-gateway-xxxx
 
+# 在 OpenClaw 工作目录内也可直接无参打开（自动读取 .agentengine.state）
+agentengine dashboard open
+
 # 创建可分享链接（默认打开浏览器）
 agentengine dashboard open --agent ar-xxxx --share --expires-seconds 86400
 
@@ -158,6 +169,8 @@ export KSADK_KB_DATASET_ID=your_dataset_id
 - `agentengine version list|release|rollback`：Agent 版本管理。
 - `agentengine mcp list|status|deploy|delete`：MCP Server 管理。
 - `agentengine openclaw list|status|deploy|delete`：OpenClaw 资源管理。
+- `agentengine openclaw gateway open|ws-url|logs|doctor`：OpenClaw Gateway 打开、诊断与日志。
+- `agentengine openclaw channel status|connect|enable|disable|doctor`：OpenClaw 渠道接入与诊断。
 - `agentengine completion`：Shell 补全脚本与自动安装。
 
 说明：
@@ -185,7 +198,7 @@ agentengine config show --output json
 
 ## Agent 指定规则（统一）
 
-适用于：`agent status`、`agent invoke`、`agent delete`、`version`、`dashboard open` 子命令。
+适用于：`agent status`、`agent invoke`、`agent delete`、`version`、`dashboard open` 子命令；OpenClaw 目录下的 `dashboard open` 也会自动读取 `.agentengine.state`。
 
 支持三种写法：
 
@@ -208,6 +221,41 @@ agentengine dashboard open --agent ar-xxxx
 
 1. `.agentengine.state`（优先 `agent_id`，其次 `name`）
 2. `agentengine.yaml` / `ksadk.yaml` 的 `name`
+
+## OpenClaw 统一入口
+
+常用命令：
+
+```bash
+# 从空目录初始化一个最小 OpenClaw 项目
+agentengine init my_claw -f openclaw
+
+# 部署 / 状态 / 打开 Dashboard
+agentengine openclaw deploy
+agentengine openclaw status
+agentengine dashboard open
+
+# Gateway 诊断
+agentengine openclaw gateway doctor
+agentengine openclaw gateway ws-url
+
+# 渠道状态与扫码接入
+agentengine openclaw channel status --probe
+agentengine openclaw channel connect --channel weixin
+agentengine openclaw channel connect --channel feishu
+```
+
+行为说明：
+
+- OpenClaw 默认镜像会预置 `openclaw-weixin`、`openclaw-lark`、`agent-browser` 与 `skillhub` CLI。
+- 同一镜像也会预装常用检索/脚本依赖（如 `curl`、`jq`、`python3`），避免默认搜索/JSON 解析链路因基础工具缺失而失败。
+- 镜像默认固定安装 `@tencent-weixin/openclaw-weixin@2.0.1`。该版本已原生兼容当前 OpenClaw `plugin-sdk` / runtime 加载；但当前 host 侧仍不会自动暴露 `web.login.start/web.login.wait`，所以启动时仅额外补一层极小 shim，方便 `agentengine openclaw channel connect --channel weixin` 走统一入口远端扫码。
+- 默认 bundled skills 为 `skillhub-store`、`agent-browser-clawdbot`、`kdocs`。
+- 默认搜索主路径恢复为 OpenClaw 原生内建 `browser`；`agent-browser` 仍作为增强/备选能力随镜像预装，适合需要更强 CLI 可控性、会话隔离或可重放步骤的网页自动化任务。`multi-search-engine` 仍保留在镜像内作为可选技能，但不再默认同步到用户目录。需要轻量文本检索兜底时，可显式把它加入 `OPENCLAW_PRESET_SKILLS_ALLOWLIST`，例如 `skillhub-store,agent-browser-clawdbot,kdocs,multi-search-engine`。
+- 旧默认技能如 `find-skills` 仅会在“此前由镜像同步且用户未改动”的情况下被自动迁移移除；用户自己改过的同名技能目录会被保留。
+- 镜像默认开启 OpenClaw 内建 `browser`（headless Chromium），并修复 fresh deploy 下 `127.0.0.1` loopback 调用误入 pairing 的问题；如需显式关闭，可设置 `OPENCLAW_BROWSER_ENABLED=false`。
+- 微信 `channel connect` 在有 TTY 时默认打印终端二维码；传 `--open-qr` 会额外打开本地浏览器。
+- 飞书 `channel connect` 会启动官方 onboarding 流程，并把扫码/配置结果写回远端实例。
 
 ## 构建与部署
 
@@ -433,6 +481,14 @@ CLI (run/web) -> Unified Runner -> 本地 Agent 进程
 ```bash
 agentengine completion install --shell auto
 ```
+
+说明：
+
+- 当前自动安装支持 `zsh` 和 `bash`。
+- Linux / macOS / Git Bash / WSL 均可直接使用；`--shell auto` 会优先根据当前 shell 与运行环境选择合适的配置文件。
+- `bash` 下默认会优先写入当前环境更常用的 profile：macOS 倾向 `~/.bash_profile`，Linux / Git Bash / WSL 倾向 `~/.bashrc`。
+- 安装时会自动清理旧的 `eval "$(_AGENTENGINE_COMPLETE=...)"` 片段与重复 `source` 行，减少补全配置漂移。
+- PowerShell 暂未内建自动安装。
 
 ## 示例项目
 

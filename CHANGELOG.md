@@ -5,42 +5,53 @@ All notable changes to the **Kingsoft AgentEngine SDK (ksadk)** project will be 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.6] - 2026-03-22
+## [0.3.6] - 2026-03-24
 
-### 🚀 新特性 (New Features)
+### 重点主题
 
-- **CLI 双一等用户输出契约**:
-  - 资源命令与工作流命令统一支持 `--output pretty|json`，为人类用户和 AI Agent 同时提供稳定入口。
-  - 新增结构化 JSON envelope，用于 `list/status/result/dry_run/error` 场景，降低自动化解析成本。
-- **配置命令分层**:
-  - 新增 `agentengine config show` 与 `agentengine config set KEY=VALUE...` 非交互式入口。
-  - `agentengine config` / `agentengine config wizard` 明确为交互式向导路径。
-- **Dry Run 双层计划输出**:
-  - `deploy` / `launch` 的 dry-run 现同时输出本地执行计划与远端请求摘要。
-  - 计划节点细化为 `local_build`、`artifact_publish`、`deploy_request`，并附带完整 `curl` 便于调试。
+- CLI 平台化继续收口，`agent` 资源组、共享渲染/错误提示层、`config show/set`、`--output json` 与双层 dry-run 计划正式成为 `0.3.6` 的主体验。
+- OpenClaw 从“能部署”升级到“可接入、可诊断、可维护”：新增 `channel` / `gateway` 统一入口，默认镜像、预置插件、技能与运行时补丁策略同步升级。
+- 配置、模板和 shell 补全一并做了默认值与非交互体验优化，首批文档也统一到了新的命令模型。
 
-### 🛠 改进 (Improvements)
+### CLI 平台化与工作流
 
-- **CLI 平台化收口**:
-  - 新增 canonical `agent` 资源组，统一 `agent list/status/invoke/delete` 语义。
-  - `mcp`、`openclaw`、`version`、`dashboard share` 接入共享渲染、错误提示与帮助文案层。
-  - 根帮助页仅保留 canonical surface，历史入口改为隐藏兼容别名。
-- **工作流一致性增强**:
-  - `build` / `deploy` / `launch` 共享输出层、摘要风格、下一步提示与 dry-run 展示。
-  - 统一制品复用与 `--no-cache` 语义，减少无意义 rebuild。
-  - 构建缓存命中后会更稳定地复用已有 `ks3_path` / `image` 元数据。
-- **交互与终端体验收口**:
-  - 新增 `--no-color` 与非 TTY 感知，JSON / 非 TTY 场景下不再输出多余 Banner 与装饰。
-  - destructive 命令统一收敛到 `--yes/-y`，`--force/-f` / `destroy` 保留兼容但不再推荐。
+- 资源命令与工作流命令统一支持 `--output pretty|json`，为人类用户和 AI Agent 提供稳定双表面。
+- 新增结构化 JSON envelope，用于 `list/status/result/dry_run/error` 场景，降低自动化解析成本。
+- 新增 `agentengine config show` 与 `agentengine config set KEY=VALUE...` 非交互式入口；`agentengine config` / `agentengine config wizard` 明确为交互式向导路径。
+- `deploy` / `launch` 的 dry-run 现同时输出本地执行计划与远端请求摘要，计划节点细化为 `local_build`、`artifact_publish`、`deploy_request`，并附带完整 `curl` 便于调试。
+- 新增 canonical `agent` 资源组，统一 `agent list/status/invoke/delete` 语义；`mcp`、`openclaw`、`version`、`dashboard share` 接入共享渲染、错误提示与帮助文案层。
+- `build` / `deploy` / `launch` 共享输出层、摘要风格、下一步提示与 dry-run 展示；`--no-cache` 与制品复用语义进一步统一，减少无意义 rebuild。
+- 新增 `--no-color` 与非 TTY 感知，JSON / 非 TTY 场景下不再输出多余 Banner 与装饰；destructive 命令统一收敛到 `--yes/-y`，`--force/-f` / `destroy` 保留兼容但不再推荐。
 
-### 🐛 修复 (Bug Fixes)
+### OpenClaw 统一入口与默认镜像
 
-- **Serverless 部署与删除修复**:
-  - 修复部分 code 模式部署中 `ks3_path` 元数据缺失或格式不稳定导致的后续部署失败问题。
-  - 删除 Agent 时仅在远端删除成功后清理对应本地 `.agentengine.state`，并支持显式项目目录语义。
-- **SDK/测试契约修复**:
-  - 校正 `from ksadk import Agent/Runner` 相关测试用例，使其与当前 `load_agent_module` / `create_runner` / `BaseRunner.run_server` 契约对齐。
-  - 补齐 help snapshot、error hint snapshot、资源/工作流 JSON 契约回归测试。
+- 新增 `agentengine openclaw channel` 与 `agentengine openclaw gateway` 子命令组，支持 `channel status/connect/enable/disable/doctor` 与 `gateway open/ws-url/logs/doctor`。
+- 微信接入支持本地终端 ASCII 二维码输出；飞书接入复用官方 onboarding 扫码流程。
+- `agentengine dashboard open` 现支持在 OpenClaw 工作目录中直接读取 `.agentengine.state` 的 `openclaw` 类型实例，无需再显式传 `--agent`。
+- 默认镜像预置 `openclaw-weixin`、`openclaw-lark`、`agent-browser` 与 `skillhub` CLI；默认 bundled skills 调整为 `skillhub-store`、`agent-browser-clawdbot`、`kdocs`。
+- 启动阶段通过 `sync_default_extensions()` 将默认插件同步到挂载的 `~/.openclaw`，并保留用户手动升级后的漂移版本；旧默认技能迁移改为“仅清理此前由镜像同步且用户未改动的目录”。
+- OpenClaw 镜像构建与默认技能策略更明确地面向 x86 Serverless 运行环境；默认搜索主路径恢复为原生内建 `browser`，`agent-browser` 与 `multi-search-engine` 分别作为增强自动化与轻量文本检索的可选路径。
+- 微信插件默认版本切换到 `@tencent-weixin/openclaw-weixin@2.0.1`，直接跟随 npm 最新稳定版；Skillhub CLI 安装改为固定 tarball URL + SHA256 校验，减少构建期供应链漂移。
+
+### 配置、模板与补全
+
+- `ksadk-python` 通用配置默认模型、`agentengine config` 示例文案、`create` 模板代码与首批用户文档统一切换到 `glm-5`。
+- `init -f openclaw` 生成的项目模板调整为更轻量的最小部署目录，更适合直接进入 `agentengine openclaw deploy`。
+- `agentengine completion install --shell auto` 现支持更稳健地识别 `zsh` / `bash` / Git Bash / WSL 场景。
+- `bash` 会按当前平台更合理地选择 `~/.bash_profile` 或 `~/.bashrc`，并自动清理旧的重复补全片段。
+
+### 修复与稳定性
+
+- 修复部分 code 模式部署中 `ks3_path` 元数据缺失或格式不稳定导致的后续部署失败问题。
+- 删除 Agent 时仅在远端删除成功后清理对应本地 `.agentengine.state`，并支持显式项目目录语义。
+- 校正 `from ksadk import Agent/Runner` 相关测试用例，使其与当前 `load_agent_module` / `create_runner` / `BaseRunner.run_server` 契约对齐；同步补齐 help snapshot、error hint snapshot、资源/工作流 JSON 契约回归测试。
+- 修复 `web.login.wait` 与当前 OpenClaw gateway 协议的参数错位问题。
+- 修复 fresh deploy 下内建 `browser` / gateway 本地 loopback 调用被误附带 device identity、从而在 `127.0.0.1` 仍触发 pairing 的问题；runtime dist patch 仅对齐当前 `2026.3.23-2` 及之后的 upstream 代码形态，降低镜像维护复杂度。
+- CLI 现将微信登录返回的 `sessionKey` 映射到 gateway 兼容的等待参数，避免扫码成功后无法落库。
+- 修复默认插件同步时因直接修改 bundled 源目录导致的签名漂移问题，以及 `node` 用户对默认扩展目录无读权限导致的启动期同步失败问题。
+- 移除针对 `openclaw-weixin@1.0.3` 的旧版 `plugin-sdk` 导入重写与 runtime link 兼容逻辑；当前只对 `2.0.1` 保留一个最小 shim，用来补齐 `web.login.start/web.login.wait` 的 gateway methods 暴露。
+- 镜像补装 `jq`，并在严格模式默认 allowlist 中放行 `jq`；同时更新可选的 `multi-search-engine` 预置 skill，避免继续推荐会触发 `curl: (23)` 的 `curl | head` 用法。
+- `sync_default_extensions()` 改为优先复用镜像内嵌签名与 managed mtime 检测，避免每次启动都对大型插件目录全量 `cksum`，降低 channel 预置插件导致的冷启动超时风险。
 
 ## [0.3.5] - 2026-03-12
 

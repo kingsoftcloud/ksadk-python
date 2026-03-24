@@ -39,8 +39,8 @@ OpenClaw 状态 demo-openclaw
   区域: cn-beijing-6
   Endpoint: https://openclaw.example.com
   镜像: hub.kce.ksyun.com/openclaw:latest
-  创建时间: 2026-03-20T12:00:00Z
-  更新时间: 2026-03-20T12:05:00Z
+  创建时间: 2026-03-20 20:00:00 CST (2026-03-20 12:00:00 UTC)
+  更新时间: 2026-03-20 20:05:00 CST (2026-03-20 12:05:00 UTC)
 下一步建议
   • `agentengine openclaw list`
 === version_list ===

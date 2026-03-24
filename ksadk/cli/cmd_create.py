@@ -33,7 +33,7 @@ from google.adk.agents import Agent
 from google.adk.models.lite_llm import LiteLlm
 
 model = LiteLlm(
-    model=f"openai/{{os.getenv('OPENAI_MODEL_NAME', 'deepseek-v3.2')}}",
+    model=f"openai/{{os.getenv('OPENAI_MODEL_NAME', 'glm-5')}}",
     api_base=os.getenv("OPENAI_BASE_URL"),
     api_key=os.getenv("OPENAI_API_KEY"),
     stream=True,  # 启用流式输出
@@ -77,7 +77,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 llm = ChatOpenAI(
-    model=os.getenv("OPENAI_MODEL_NAME", "deepseek-v3.2"),
+    model=os.getenv("OPENAI_MODEL_NAME", "glm-5"),
     base_url=os.getenv("OPENAI_BASE_URL"),
     api_key=os.getenv("OPENAI_API_KEY"),
     streaming=True,
@@ -108,7 +108,7 @@ from typing import TypedDict, Annotated
 import operator
 
 llm = ChatOpenAI(
-    model=os.getenv("OPENAI_MODEL_NAME", "deepseek-v3.2"),
+    model=os.getenv("OPENAI_MODEL_NAME", "glm-5"),
     base_url=os.getenv("OPENAI_BASE_URL"),
     api_key=os.getenv("OPENAI_API_KEY"),
     streaming=True,
@@ -148,7 +148,7 @@ from deepagents import create_deep_agent
 from langchain_openai import ChatOpenAI
 
 llm = ChatOpenAI(
-    model=os.getenv("OPENAI_MODEL_NAME", "deepseek-v3.2"),
+    model=os.getenv("OPENAI_MODEL_NAME", "glm-5"),
     base_url=os.getenv("OPENAI_BASE_URL"),
     api_key=os.getenv("OPENAI_API_KEY"),
     streaming=True,
@@ -1030,7 +1030,9 @@ def create(project_name: str, framework: str, from_agent_path: str):
     print_kv("框架", framework)
     
     package_name = project_path.name.replace('-', '_')
-    (project_path / package_name).mkdir(parents=True)
+    project_path.mkdir(parents=True)
+    if framework != "openclaw":
+        (project_path / package_name).mkdir(parents=True)
     
     # 检测全局配置
     from ksadk.configs.global_config import (
@@ -1051,77 +1053,109 @@ def create(project_name: str, framework: str, from_agent_path: str):
     base_url = global_env.get("OPENAI_BASE_URL", "")
     model_name = global_env.get("OPENAI_MODEL_NAME", "")
     
-    langfuse_public = global_env.get("LANGFUSE_PUBLIC_KEY", "")
-    langfuse_secret = global_env.get("LANGFUSE_SECRET_KEY", "")
-    langfuse_url = global_env.get("LANGFUSE_BASE_URL", "")
-    
     ks_ak = global_env.get("KSYUN_ACCESS_KEY", "")
     ks_sk = global_env.get("KSYUN_SECRET_KEY", "")
     ks_region = global_env.get("KSYUN_REGION", "cn-beijing-6")
     ks_account = global_env.get("KSYUN_ACCOUNT_ID", "")
     
     # 构建 .env 内容
-    env_content = f"""# ======================
+    if framework == "openclaw":
+        env_content = f"""# ======================
+# OpenClaw 标准部署最小配置
+# ======================
+KSYUN_ACCESS_KEY={ks_ak}
+KSYUN_SECRET_KEY={ks_sk}
+KSYUN_REGION={ks_region}
+"""
+        if ks_account:
+            env_content += f"KSYUN_ACCOUNT_ID={ks_account}\n"
+        else:
+            env_content += "# KSYUN_ACCOUNT_ID=your-account-id\n"
+
+        env_content += f"\nOPENAI_API_KEY={api_key}\n"
+        if base_url:
+            env_content += f"OPENAI_BASE_URL={base_url}\n"
+        else:
+            env_content += "# OPENAI_BASE_URL=http://kspmas.ksyun.com/v1\n"
+
+        if model_name:
+            env_content += f"OPENAI_MODEL_NAME={model_name}\n"
+        else:
+            env_content += "# OPENAI_MODEL_NAME=glm-5\n"
+    else:
+        langfuse_public = global_env.get("LANGFUSE_PUBLIC_KEY", "")
+        langfuse_secret = global_env.get("LANGFUSE_SECRET_KEY", "")
+        langfuse_url = global_env.get("LANGFUSE_BASE_URL", "")
+
+        env_content = f"""# ======================
 # 模型配置 (必填, 可以从星流平台获取https://ksp.console.ksyun.com/#/apiKey)
 # ======================
 OPENAI_API_KEY={api_key}
 """
-    
-    # 可选字段：如果有值则启用，否则注释掉
-    if base_url:
-        env_content += f"OPENAI_BASE_URL={base_url}\n"
-    else:
-        env_content += "# OPENAI_BASE_URL=http://kspmas.ksyun.com/v1\n"
-    
-    if model_name:
-        env_content += f"OPENAI_MODEL_NAME={model_name}\n"
-    else:
-        env_content += "# OPENAI_MODEL_NAME=deepseek-v3.2\n"
-    
-    env_content += """
+
+        # 可选字段：如果有值则启用，否则注释掉
+        if base_url:
+            env_content += f"OPENAI_BASE_URL={base_url}\n"
+        else:
+            env_content += "# OPENAI_BASE_URL=http://kspmas.ksyun.com/v1\n"
+
+        if model_name:
+            env_content += f"OPENAI_MODEL_NAME={model_name}\n"
+        else:
+            env_content += "# OPENAI_MODEL_NAME=glm-5\n"
+
+        env_content += """
 # ======================
 # 可观测性 (可选)
 # ======================
 """
-    if langfuse_public:
-        env_content += f"LANGFUSE_PUBLIC_KEY={langfuse_public}\n"
-    else:
-        env_content += "# LANGFUSE_PUBLIC_KEY=pk-xxx\n"
-    
-    if langfuse_secret:
-        env_content += f"LANGFUSE_SECRET_KEY={langfuse_secret}\n"
-    else:
-        env_content += "# LANGFUSE_SECRET_KEY=sk-xxx\n"
-    
-    if langfuse_url:
-        env_content += f"LANGFUSE_BASE_URL={langfuse_url}\n"
-    else:
-        env_content += "# LANGFUSE_BASE_URL=https://cloud.langfuse.com\n"
-    
-    env_content += """
+        if langfuse_public:
+            env_content += f"LANGFUSE_PUBLIC_KEY={langfuse_public}\n"
+        else:
+            env_content += "# LANGFUSE_PUBLIC_KEY=pk-xxx\n"
+
+        if langfuse_secret:
+            env_content += f"LANGFUSE_SECRET_KEY={langfuse_secret}\n"
+        else:
+            env_content += "# LANGFUSE_SECRET_KEY=sk-xxx\n"
+
+        if langfuse_url:
+            env_content += f"LANGFUSE_BASE_URL={langfuse_url}\n"
+        else:
+            env_content += "# LANGFUSE_BASE_URL=https://cloud.langfuse.com\n"
+
+        env_content += """
 # ======================
 # 金山云配置 (可选,需要部署时必选)
 # ======================
 """
-    if ks_ak:
-        env_content += f"KSYUN_ACCESS_KEY={ks_ak}\n"
-    else:
-        env_content += "# KSYUN_ACCESS_KEY=your-api-key-here\n"
-    
-    if ks_sk:
-        env_content += f"KSYUN_SECRET_KEY={ks_sk}\n"
-    else:
-        env_content += "# KSYUN_SECRET_KEY=your-api-secret-here\n"
-    
-    env_content += f"KSYUN_REGION={ks_region}\n"
-    
-    if ks_account:
-        env_content += f"KSYUN_ACCOUNT_ID={ks_account}\n"
-    else:
-        env_content += "# KSYUN_ACCOUNT_ID=your-account-id\n"
+        if ks_ak:
+            env_content += f"KSYUN_ACCESS_KEY={ks_ak}\n"
+        else:
+            env_content += "# KSYUN_ACCESS_KEY=your-api-key-here\n"
+
+        if ks_sk:
+            env_content += f"KSYUN_SECRET_KEY={ks_sk}\n"
+        else:
+            env_content += "# KSYUN_SECRET_KEY=your-api-secret-here\n"
+
+        env_content += f"KSYUN_REGION={ks_region}\n"
+
+        if ks_account:
+            env_content += f"KSYUN_ACCOUNT_ID={ks_account}\n"
+        else:
+            env_content += "# KSYUN_ACCOUNT_ID=your-account-id\n"
     
     # 使用 utf-8-sig 编码 (带 BOM)，确保 Windows 程序正确识别为 UTF-8
     (project_path / ".env").write_text(env_content, encoding="utf-8-sig")
+
+    if framework == "openclaw":
+        print_success("项目创建成功")
+        print_rule("快速开始")
+        print_info("快速开始 (复制并执行):")
+        print_info(f"cd {project_name} && agentengine openclaw deploy")
+        print_info("部署前如需覆盖模型/网关参数，可先编辑 .env")
+        return
     
     # agentengine.yaml - Agent 配置
     (project_path / "agentengine.yaml").write_text(f"""# AgentEngine 项目配置

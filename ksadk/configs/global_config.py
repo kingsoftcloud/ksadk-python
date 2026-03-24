@@ -9,7 +9,7 @@
     "model": {
         "OPENAI_API_KEY": "sk-xxx",
         "OPENAI_BASE_URL": "http://kspmas.ksyun.com/v1",
-        "OPENAI_MODEL_NAME": "deepseek-v3.2"
+        "OPENAI_MODEL_NAME": "glm-5"
     },
     "cloud": {
         "KSYUN_ACCESS_KEY": "AKxxx",

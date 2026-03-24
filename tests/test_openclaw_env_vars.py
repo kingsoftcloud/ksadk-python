@@ -234,6 +234,17 @@ def test_build_openclaw_env_vars_forwards_explicit_web_tool_overrides(monkeypatc
     assert env["OPENCLAW_WEB_SEARCH_API_KEY_SECRET_ID"] == "OPENCLAW_WEB_SEARCH_API_KEY"
 
 
+def test_build_openclaw_env_vars_forwards_explicit_builtin_browser_toggle(monkeypatch):
+    monkeypatch.setattr(cmd_openclaw, "_GLOBAL_ENV_CACHE", {})
+    monkeypatch.setenv("OPENCLAW_BROWSER_ENABLED", "true")
+
+    env = cmd_openclaw._build_openclaw_env_vars()
+
+    assert env["OPENCLAW_BROWSER_ENABLED"] == "true"
+    assert env["OPENCLAW_BROWSER_NO_SANDBOX"] == "true"
+    assert env["OPENCLAW_BROWSER_HEADLESS"] == "true"
+
+
 def test_generate_default_openclaw_name_is_high_entropy():
     name1 = cmd_openclaw._generate_default_openclaw_name()
     name2 = cmd_openclaw._generate_default_openclaw_name()
