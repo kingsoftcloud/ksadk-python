@@ -6,11 +6,13 @@ from pathlib import Path
 import yaml
 from click.testing import CliRunner
 
+from ksadk.api.client import DryRunExit
 from ksadk.cli import _register_commands, cli
-from ksadk.cli import cmd_dashboard, cmd_deploy, cmd_launch
+from ksadk.cli import cmd_dashboard, cmd_deploy, cmd_launch, cmd_mcp
 from ksadk.cli.cmd_build import build
 from ksadk.cli.cmd_mcp import mcp
 from ksadk.deployment.base import DeployResult, DeployStatus, PackageInfo
+from ksadk.builders.base import BuildResult
 
 
 def _parse_json(output: str) -> dict:
@@ -164,20 +166,26 @@ class _FakeMCPBuildResult:
     metadata = {}
 
 
-class _FakeMCPCodeBuilder:
-    def __init__(self, *_args, **_kwargs):
-        pass
+async def _fake_build_code_artifact(*_args, **_kwargs):
+    build_result = BuildResult(
+        success=True,
+        artifact_path=Path("/tmp/demo-mcp.zip"),
+        artifact_size=1234,
+        metadata={"framework": "mcp"},
+    )
+    return build_result, "ks3://demo-bucket/mcps/demo-mcp/code_20260322120000.zip"
 
-    def build(self):
-        return _FakeMCPBuildResult()
 
-
-class _FakeMCPUploader:
-    def __init__(self, *_args, **_kwargs):
-        self.bucket_name = "demo-bucket"
-
-    async def upload(self, *_args, **_kwargs):
-        return "ks3://demo-bucket/mcps/demo-mcp/code_20260322120000.zip"
+async def _fake_build_mcp_async(*_args, **_kwargs):
+    return {
+        "framework": "mcp",
+        "artifact_type": "code",
+        "artifact_reference": "ks3://demo-bucket/mcps/demo-mcp/code_fake.zip",
+        "artifact_built": True,
+        "artifact_source": "built",
+        "artifact_reused": False,
+        "push": True,
+    }
 
 
 class _FakeMCPClient:
@@ -201,12 +209,28 @@ class _FakeMCPClient:
         raise AssertionError("update path should not be used in this test")
 
 
+class _FakeMCPDryRunClient:
+    def __init__(self, *args, **kwargs):
+        self.kwargs = kwargs
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def create_mcp(self, request):
+        raise DryRunExit("dry-run", payload={"body": request})
+
+    async def close(self):
+        return None
+
+
 def test_mcp_deploy_json_envelope(tmp_path: Path, monkeypatch):
     runner = CliRunner()
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("ksadk.detection.mcp_detector.MCPDetector", _FakeMCPDetector)
-    monkeypatch.setattr("ksadk.builders.mcp_builder.MCPCodeBuilder", _FakeMCPCodeBuilder)
-    monkeypatch.setattr("ksadk.builders.ks3_uploader.KS3Uploader", _FakeMCPUploader)
+    monkeypatch.setattr(cmd_mcp, "_build_code_artifact", _fake_build_code_artifact)
     monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeMCPClient)
 
     result = runner.invoke(mcp, ["deploy", str(tmp_path), "--output", "json"])
@@ -215,9 +239,11 @@ def test_mcp_deploy_json_envelope(tmp_path: Path, monkeypatch):
     payload = _parse_json(result.output)
     assert payload["ok"] is True
     assert payload["kind"] == "result"
-    assert payload["resource"] == "mcp"
+    assert payload["resource"] == "workflow"
     assert payload["action"] == "deploy"
-    assert payload["result"]["id"] == "mcp-demo"
+    assert payload["result"]["artifact_type"] == "code"
+    assert payload["result"]["artifact_reference"] == "ks3://demo-bucket/mcps/demo-mcp/code_20260322120000.zip"
+    assert payload["result"]["mcp_id"] == "mcp-demo"
     assert payload["result"]["mcp_url"] == "https://mcp.example.com/mcp"
 
 
@@ -225,19 +251,58 @@ def test_mcp_deploy_dry_run_json_envelope(tmp_path: Path, monkeypatch):
     runner = CliRunner()
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("ksadk.detection.mcp_detector.MCPDetector", _FakeMCPDetector)
-    monkeypatch.setattr("ksadk.builders.mcp_builder.MCPCodeBuilder", _FakeMCPCodeBuilder)
-    monkeypatch.setattr("ksadk.builders.ks3_uploader.KS3Uploader", _FakeMCPUploader)
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeMCPDryRunClient)
 
-    result = runner.invoke(mcp, ["deploy", str(tmp_path), "--dry-run", "--output", "json"])
+    def _should_not_build(*_args, **_kwargs):
+        raise AssertionError("Dry run should not build artifacts")
+
+    monkeypatch.setattr(cmd_mcp, "_build_code_artifact", _should_not_build)
+
+    result = runner.invoke(
+        mcp,
+        ["deploy", str(tmp_path), "--dry-run", "--output", "json", "--ks3-bucket", "demo-bucket"],
+    )
 
     assert result.exit_code == 0, result.output
     payload = _parse_json(result.output)
     assert payload["ok"] is True
     assert payload["kind"] == "dry_run"
-    assert payload["resource"] == "mcp"
+    assert payload["resource"] == "workflow"
     assert payload["action"] == "deploy"
-    assert "CreateMCP" in payload["request"]["curl"]
-    assert payload["request"]["body"]["ArtifactPath"].startswith("ks3://demo-bucket/")
+    assert payload["request"]["body"]["artifact_type"] == "Code"
+    assert payload["plan"]["artifact"]["reference"].startswith("ks3://demo-bucket/")
+
+
+async def _fake_build_mcp_async(**_kwargs):
+    return {
+        "framework": "mcp",
+        "artifact_type": "code",
+        "artifact_source": "built",
+        "artifact_reused": False,
+        "artifact_built": True,
+        "artifact_reference": "ks3://demo-bucket/mcps/demo-mcp/code_fake.zip",
+        "push": True,
+        "region": "cn-beijing-6",
+        "mcp_name": "demo-mcp",
+        "tools": ["ping", "add"],
+    }
+
+
+def test_mcp_build_json_envelope(tmp_path: Path, monkeypatch):
+    runner = CliRunner()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cmd_mcp, "_build_mcp_async", _fake_build_mcp_async)
+
+    result = runner.invoke(mcp, ["build", str(tmp_path), "--artifact-type", "Code", "--output", "json"])
+
+    assert result.exit_code == 0, result.output
+    payload = _parse_json(result.output)
+    assert payload["ok"] is True
+    assert payload["kind"] == "result"
+    assert payload["resource"] == "workflow"
+    assert payload["action"] == "build"
+    assert payload["result"]["artifact_type"] == "code"
+    assert payload["result"]["artifact_reference"] == "ks3://demo-bucket/mcps/demo-mcp/code_fake.zip"
 
 
 class _FakeBuildResult:

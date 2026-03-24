@@ -2110,6 +2110,7 @@ async def _deploy_openclaw(
     print_rule("部署 OpenClaw")
     try:
         latest_status = None
+        updated_existing_agent = False
         async with AgentEngineClient(region=region) as client:
             if existing_agent_id:
                 print_info(f"检测到本地状态: {existing_agent_id}，执行更新...")
@@ -2128,6 +2129,7 @@ async def _deploy_openclaw(
                     agent_id = existing_agent_id
                     endpoint = res.get("endpoint") or state.get("endpoint")
                     api_key = state.get("api_key")
+                    updated_existing_agent = True
                 except Exception as update_err:
                     err_msg = str(update_err)
                     not_found = (
@@ -2191,8 +2193,8 @@ async def _deploy_openclaw(
                 "openclaw_auth_mode": env_vars.get("OPENCLAW_GATEWAY_AUTH_MODE"),
             })
 
-            # 再读一次状态，避免把“已创建”误认为“已稳定运行”。
-            if agent_id:
+            # 仅在更新已有实例时回读一次状态；新建时底层可能尚未落库，立即按 ID 查询会产生误导性报错。
+            if updated_existing_agent and agent_id:
                 try:
                     latest = await client.get_agent(agent_id=agent_id, include_api_key=False)
                     latest_status = str(((latest.get("basic") or {}).get("status") or "")).upper() or None

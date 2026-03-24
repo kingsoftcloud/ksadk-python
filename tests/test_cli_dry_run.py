@@ -1,5 +1,6 @@
 import asyncio
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict
 
@@ -7,7 +8,7 @@ import yaml
 from click.testing import CliRunner
 
 from ksadk.api.client import AgentEngineClient, DryRunExit
-from ksadk.cli import _register_commands, cli
+from ksadk.cli import _register_commands, cli, cmd_mcp
 from ksadk.cli.cmd_agent import agent
 from ksadk.cli.cmd_destroy import delete as destroy_delete
 from ksadk.cli.cmd_destroy import destroy as destroy_cmd
@@ -49,6 +50,9 @@ class _FakeDryRunClient:
     async def delete_agent(self, *_args, **_kwargs):
         raise DryRunExit("dry-run")
 
+    async def create_mcp(self, request):
+        raise DryRunExit("dry-run", payload={"body": request})
+
     async def list_versions(self, *_args, **_kwargs):
         raise DryRunExit("dry-run")
 
@@ -60,6 +64,21 @@ class _FakeDryRunClient:
 
     async def close(self):
         return None
+
+
+class _FakeMCPDetectionResult:
+    is_valid = True
+    entry_point = "mcp_main.py"
+    mcp_variable = "mcp"
+    tools = ["test_tool"]
+
+
+class _FakeMCPDetector:
+    def __init__(self, *_args, **_kwargs):
+        pass
+
+    def detect(self):
+        return _FakeMCPDetectionResult()
 
 
 class _FakeOpenClawListClient:
@@ -260,6 +279,32 @@ class _FakeBatchDeleteClient:
         return None
 
 
+class _FakeOpenClawCreateClient:
+    get_agent_calls = 0
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def create_agent(self, _data):
+        return {
+            "agent_id": "ar-created-1",
+            "endpoint": "https://ar-created-1.agent.kspmas.ksyun.com",
+        }
+
+    async def get_agent(self, **_kwargs):
+        self.__class__.get_agent_calls += 1
+        raise AssertionError("newly created OpenClaw should not query GetAgent immediately")
+
+    async def close(self):
+        return None
+
+
 class _FakeDeleteClient:
     deleted_agents = []
     should_succeed = True
@@ -323,6 +368,31 @@ def test_mcp_status_supports_dry_run(monkeypatch):
     assert "Dry Run Completed" in result.output
     assert _FakeDryRunClient.last_init_kwargs.get("dry_run") is True
 
+
+def test_mcp_deploy_dry_run_json_plan(monkeypatch, tmp_path: Path):
+    runner = CliRunner()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("ksadk.detection.mcp_detector.MCPDetector", _FakeMCPDetector)
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeDryRunClient)
+
+    def _should_not_build(*_args, **_kwargs):
+        raise AssertionError("Dry run should not build artifacts")
+
+    monkeypatch.setattr(cmd_mcp, "_build_code_artifact", _should_not_build)
+
+    result = runner.invoke(
+        mcp,
+        ["deploy", ".", "--dry-run", "--output", "json", "--ks3-bucket", "agentengine-test"],
+        env={"AGENTENGINE_SERVER_URL": "http://example.com"},
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["resource"] == "workflow"
+    assert payload["action"] == "deploy"
+    assert payload["kind"] == "dry_run"
+    assert payload["request"]["body"]["artifact_type"] == "Code"
+    assert payload["plan"]["artifact"]["reference"].startswith("ks3://agentengine-test/")
 
 def test_openclaw_list_supports_dry_run(monkeypatch):
     runner = CliRunner()
@@ -579,6 +649,28 @@ def test_openclaw_deploy_supports_security_profile_flags(monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert captured["security_profile"] == "strictest"
+
+
+def test_openclaw_deploy_does_not_query_status_immediately_after_create(monkeypatch, tmp_path):
+    runner = CliRunner()
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawCreateClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw._GLOBAL_ENV_CACHE", {})
+    monkeypatch.chdir(tmp_path)
+    _FakeOpenClawCreateClient.get_agent_calls = 0
+
+    result = runner.invoke(
+        openclaw,
+        [
+            "deploy",
+            "--name",
+            "demo-openclaw",
+            "--image",
+            "hub.kce.ksyun.com/agentengine-public/openclaw:test",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _FakeOpenClawCreateClient.get_agent_calls == 0
 
 
 def test_version_list_supports_dry_run(monkeypatch):

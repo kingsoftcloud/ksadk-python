@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 新增 `agentengine config show` 与 `agentengine config set KEY=VALUE...` 非交互式入口；`agentengine config` / `agentengine config wizard` 明确为交互式向导路径。
 - `deploy` / `launch` 的 dry-run 现同时输出本地执行计划与远端请求摘要，计划节点细化为 `local_build`、`artifact_publish`、`deploy_request`，并附带完整 `curl` 便于调试。
 - 新增 canonical `agent` 资源组，统一 `agent list/status/invoke/delete` 语义；`mcp`、`openclaw`、`version`、`dashboard share` 接入共享渲染、错误提示与帮助文案层。
+- `agentengine mcp build` 作为独立工作流入口加入 MCP 资源组，支持 `Code` / `Container` 两种制品构建与 `--output json` 摘要输出。
 - `build` / `deploy` / `launch` 共享输出层、摘要风格、下一步提示与 dry-run 展示；`--no-cache` 与制品复用语义进一步统一，减少无意义 rebuild。
 - 新增 `--no-color` 与非 TTY 感知，JSON / 非 TTY 场景下不再输出多余 Banner 与装饰；destructive 命令统一收敛到 `--yes/-y`，`--force/-f` / `destroy` 保留兼容但不再推荐。
 
@@ -40,10 +41,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agentengine completion install --shell auto` 现支持更稳健地识别 `zsh` / `bash` / Git Bash / WSL 场景。
 - `bash` 会按当前平台更合理地选择 `~/.bash_profile` 或 `~/.bashrc`，并自动清理旧的重复补全片段。
 
+### MCP 构建与控制面兼容
+
+- FastMCP 项目新增专用 `MCPContainerBuilder`，Container 模式不再复用 Agent 框架探测，而是走 MCP 专属打包、Docker build 与 push 链路。
+- MCP deploy / update 到控制面的请求体改为优先透传嵌套服务端 schema，包括 `DeploymentType`、`CodeConfig`、`ContainerConfig`、`Resource`、`Scaling`、`Access`、`Advanced`。
+- MCP Container 模式现在会透传镜像仓库凭证与容器配置，Code 模式也会按新 schema 组织 KS3 信息。
+- MCP dry-run 进一步收口到“预测制品 + 打印最终请求体”的语义，本地构建在 dry-run 下不再真实执行。
+
 ### 修复与稳定性
 
 - 修复部分 code 模式部署中 `ks3_path` 元数据缺失或格式不稳定导致的后续部署失败问题。
 - 删除 Agent 时仅在远端删除成功后清理对应本地 `.agentengine.state`，并支持显式项目目录语义。
+- `GetAgent` 仅在明确识别为字段兼容问题时，才会从 `AgentId` 回退到旧控制面的 `Id` 字段，避免将正常 404 / not-found 误判为兼容回退场景。
 - 校正 `from ksadk import Agent/Runner` 相关测试用例，使其与当前 `load_agent_module` / `create_runner` / `BaseRunner.run_server` 契约对齐；同步补齐 help snapshot、error hint snapshot、资源/工作流 JSON 契约回归测试。
 - 修复 `web.login.wait` 与当前 OpenClaw gateway 协议的参数错位问题。
 - 修复 fresh deploy 下内建 `browser` / gateway 本地 loopback 调用被误附带 device identity、从而在 `127.0.0.1` 仍触发 pairing 的问题；runtime dist patch 仅对齐当前 `2026.3.23-2` 及之后的 upstream 代码形态，降低镜像维护复杂度。

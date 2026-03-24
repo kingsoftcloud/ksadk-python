@@ -172,6 +172,51 @@ class AgentEngineClient:
             return os.getenv("AGENTENGINE_PRE_CUSTOM_SOURCE", "pre")
         return None
 
+    @staticmethod
+    def _should_fallback_get_agent_with_legacy_id(error: Exception) -> bool:
+        """仅在明确识别为字段兼容问题时，才回退到旧控制面的 Id 字段。"""
+        text = str(error or "").lower()
+        if not text:
+            return False
+
+        # 404 / not found / 缺少入参都属于正常业务错误，不应被误判为字段兼容问题。
+        non_compat_markers = (
+            "http 404",
+            "status=404",
+            "not found",
+            "未找到对应的 agent",
+            "请至少传入 agentid 或 name",
+            "请至少传入 agent_id 或 name",
+        )
+        if any(marker in text for marker in non_compat_markers):
+            return False
+
+        agent_id_markers = (
+            "agentid",
+            "agent_id",
+            '"agentid"',
+            "'agentid'",
+            '"agent_id"',
+            "'agent_id'",
+        )
+        if not any(marker in text for marker in agent_id_markers):
+            return False
+
+        compat_markers = (
+            "422",
+            "invalid",
+            "validation error",
+            "field required",
+            "extra inputs are not permitted",
+            "extra fields not permitted",
+            "unexpected field",
+            "unknown field",
+            "unrecognized field",
+            "not permitted",
+            "not allowed",
+        )
+        return any(marker in text for marker in compat_markers)
+
     def _normalize_payload_region(self, region: Optional[str]) -> str:
         """归一化请求体中的 Region 字段。"""
         return self._normalize_control_region(region or self.logical_region or "cn-beijing-6")
@@ -488,8 +533,7 @@ class AgentEngineClient:
                 return self._action("GetAgent", params)
             except Exception as e:
                 # 兼容旧控制面：极少数版本仍使用 Id 字段
-                text = str(e).lower()
-                if "422" in text or "invalid" in text or "id" in text:
+                if self._should_fallback_get_agent_with_legacy_id(e):
                     fallback = {"Id": agent_id}
                     if include_api_key:
                         fallback["IncludeApiKey"] = True
@@ -754,30 +798,144 @@ class AgentEngineClient:
             return False
 
     # ===== MCP Actions =====
-    
+
+    @staticmethod
+    def _looks_like_nested_mcp_payload(data: Dict[str, Any]) -> bool:
+        return any(
+            key in data
+            for key in (
+                "DeploymentType",
+                "CodeConfig",
+                "ContainerConfig",
+                "Resource",
+                "Scaling",
+                "Access",
+                "Advanced",
+            )
+        )
+
+    @staticmethod
+    def _normalize_mcp_memory(memory: Any, default: int = 2) -> int:
+        raw = str(memory or "").strip()
+        if not raw:
+            return default
+        lowered = raw.lower()
+        if lowered.endswith("gi"):
+            raw = raw[:-2]
+        return int(float(raw))
+
+    @staticmethod
+    def _normalize_mcp_deployment_type(value: Optional[str], default: Optional[str] = None) -> Optional[str]:
+        raw = str(value or default or "").strip()
+        if not raw:
+            return None
+        return "Container" if raw.lower() == "container" else "Code"
+
+    def _infer_mcp_deployment_type(self, data: Dict[str, Any], default: Optional[str] = None) -> Optional[str]:
+        explicit = self._normalize_mcp_deployment_type(
+            data.get("deployment_type") or data.get("artifact_type"),
+            default=default,
+        )
+        if explicit:
+            return explicit
+        if data.get("container_config") or data.get("image_credential"):
+            return "Container"
+        artifact_path = str(data.get("artifact_path") or "").strip()
+        if artifact_path.startswith("ks3://") or data.get("ks3"):
+            return "Code"
+        return default
+
+    def _build_mcp_code_config(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        ks3 = data.get("ks3") or {}
+        code_config: Dict[str, Any] = {
+            "Path": str(data.get("artifact_path") or ""),
+        }
+        if ks3.get("access_key") is not None:
+            code_config["AccessKey"] = ks3.get("access_key")
+        if ks3.get("secret_key") is not None:
+            code_config["SecretKey"] = ks3.get("secret_key")
+        if ks3.get("region") is not None or data.get("region") is not None:
+            code_config["Region"] = self._normalize_payload_region(
+                ks3.get("region") or data.get("region") or self.logical_region
+            )
+        if ks3.get("bucket") is not None:
+            code_config["Bucket"] = ks3.get("bucket")
+        return code_config
+
+    def _build_mcp_container_config(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        container = data.get("container_config") or {}
+        artifact = str(data.get("artifact_path") or container.get("image_addr") or "").strip()
+        ic = data.get("image_credential", {}) or {}
+        img_ns, img_repo, img_ver = self._parse_container_image_ref(artifact)
+
+        image_type = container.get("image_type") or "Personal"
+        params: Dict[str, Any] = {
+            "ImageType": image_type,
+            "NameSpace": container.get("name_space") or img_ns,
+            "ImageRepo": container.get("image_repo") or img_repo,
+            "ImageVersion": container.get("image_version") or img_ver,
+            "ImageAddr": container.get("image_addr") or artifact,
+        }
+        if container.get("enterprise_instance"):
+            params["EnterpriseInstance"] = container.get("enterprise_instance")
+        if container.get("enterprise_instance_id"):
+            params["EnterpriseInstanceId"] = container.get("enterprise_instance_id")
+
+        username = (container.get("username") or ic.get("username") or "").strip()
+        password = (container.get("password") or ic.get("password") or "").strip()
+        if username and password:
+            params["UserName"] = username
+            params["Password"] = password
+        return params
+
+    def _build_mcp_resource(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        resources = data.get("resources", {}) or {}
+        return {
+            "Cpu": int(float(resources.get("cpu", 1))),
+            "Memory": self._normalize_mcp_memory(resources.get("memory", "2Gi"), default=2),
+        }
+
+    @staticmethod
+    def _build_mcp_scaling(data: Dict[str, Any]) -> Dict[str, Any]:
+        scaling = data.get("scaling", {}) or {}
+        return {
+            "MinReplicas": int(scaling.get("min_replicas", 1)),
+            "MaxReplicas": int(scaling.get("max_replicas", 5)),
+            "QpsPerInstance": int(scaling.get("concurrency", 20)),
+        }
+
+    @staticmethod
+    def _build_mcp_advanced(data: Dict[str, Any]) -> Dict[str, Any]:
+        metadata = data.get("metadata", {}) or {}
+        return {
+            "McpVariable": metadata.get("mcp_variable", "mcp"),
+            "Tools": metadata.get("tools", []) or [],
+        }
+
     async def create_mcp(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """创建 MCP"""
-        params = {
+        if self._looks_like_nested_mcp_payload(data):
+            params = dict(data)
+            params["Region"] = self._normalize_payload_region(
+                params.get("Region") or data.get("region") or self.logical_region or "cn-beijing-6"
+            )
+            return self._action("CreateMCP", params)
+
+        deployment_type = self._infer_mcp_deployment_type(data, default="Code") or "Code"
+        params: Dict[str, Any] = {
             "Name": data.get("name"),
             "Description": data.get("description"),
-            # "ArtifactType": data.get("artifact_type", "Code"),
-            "ArtifactPath": data.get("artifact_path"),
             "Region": self._normalize_payload_region(data.get("region", "cn-beijing-6")),
-            "Cpu": data.get("resources", {}).get("cpu", "1"),
-            "Memory": data.get("resources", {}).get("memory", "2Gi"),
-            # "MinReplicas": data.get("scaling", {}).get("min_replicas", 1),
-            # "MaxReplicas": data.get("scaling", {}).get("max_replicas", 5),
-            # "Concurrency": data.get("scaling", {}).get("concurrency", 20),
-            "EnableAuth": data.get("enable_auth", False),
+            "DeploymentType": deployment_type,
+            "Resource": self._build_mcp_resource(data),
+            "Scaling": self._build_mcp_scaling(data),
+            "Access": {"AuthType": "ApiKey" if data.get("enable_auth") else "None"},
+            "Advanced": self._build_mcp_advanced(data),
         }
-        # if data.get("metadata"):
-        #     params["McpVariable"] = data["metadata"].get("mcp_variable")
-        #     params["Tools"] = data["metadata"].get("tools")
-        if data.get("ks3"):
-            params["KS3AccessKey"] = data["ks3"].get("access_key")
-            params["KS3SecretKey"] = data["ks3"].get("secret_key")
-            # params["KS3Region"] = data["ks3"].get("region")
-            params["KS3Bucket"] = data["ks3"].get("bucket")
+        if deployment_type == "Container":
+            params["ContainerConfig"] = self._build_mcp_container_config(data)
+        else:
+            params["CodeConfig"] = self._build_mcp_code_config(data)
         return self._action("CreateMCP", params)
     
     async def get_mcp(self, mcp_id: str) -> Dict[str, Any]:
@@ -801,18 +959,56 @@ class AgentEngineClient:
     
     async def update_mcp(self, mcp_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """更新 MCP (热更新)"""
-        params = {"Id": mcp_id}
-        if data.get("artifact_path"):
-            params["ArtifactPath"] = data["artifact_path"]
-        if data.get("description"):
+        if self._looks_like_nested_mcp_payload(data):
+            params = dict(data)
+            params.setdefault("Id", mcp_id)
+            if "Region" in params or data.get("region") or self.logical_region:
+                params["Region"] = self._normalize_payload_region(
+                    params.get("Region") or data.get("region") or self.logical_region
+                )
+            return self._action("UpdateMCP", params)
+
+        params: Dict[str, Any] = {"Id": mcp_id}
+        deployment_type = self._infer_mcp_deployment_type(data)
+
+        if data.get("description") is not None:
             params["Description"] = data["description"]
+        if deployment_type:
+            params["DeploymentType"] = deployment_type
+
+        if data.get("artifact_path"):
+            if deployment_type == "Container":
+                params["ContainerConfig"] = self._build_mcp_container_config(data)
+            elif deployment_type == "Code":
+                params["CodeConfig"] = self._build_mcp_code_config(data)
+
+        resources = data.get("resources", {}) or {}
+        if any(resources.get(key) is not None for key in ("cpu", "memory")):
+            params["Resource"] = {
+                "Cpu": int(float(resources.get("cpu", 1))),
+                "Memory": self._normalize_mcp_memory(resources.get("memory", "2Gi"), default=2),
+            }
+
+        scaling = data.get("scaling", {}) or {}
+        if any(scaling.get(key) is not None for key in ("min_replicas", "max_replicas", "concurrency")):
+            params["Scaling"] = {
+                "MinReplicas": int(scaling.get("min_replicas", 1)),
+                "MaxReplicas": int(scaling.get("max_replicas", 5)),
+                "QpsPerInstance": int(scaling.get("concurrency", 20)),
+            }
+
         if data.get("enable_auth") is not None:
-            params["EnableAuth"] = data["enable_auth"]
-        if data.get("ks3"):
-            params["KS3AccessKey"] = data["ks3"].get("access_key")
-            params["KS3SecretKey"] = data["ks3"].get("secret_key")
-            params["KS3Region"] = data["ks3"].get("region")
-            params["KS3Bucket"] = data["ks3"].get("bucket")
+            params["Access"] = {"AuthType": "ApiKey" if data.get("enable_auth") else "None"}
+
+        metadata = data.get("metadata", {}) or {}
+        if metadata.get("mcp_variable") is not None or metadata.get("tools") is not None:
+            params["Advanced"] = {
+                "McpVariable": metadata.get("mcp_variable"),
+                "Tools": metadata.get("tools"),
+            }
+
+        if data.get("region") is not None:
+            params["Region"] = self._normalize_payload_region(data.get("region"))
         return self._action("UpdateMCP", params)
     
     async def delete_mcp(self, mcp_id: str) -> bool:
