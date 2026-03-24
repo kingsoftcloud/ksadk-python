@@ -47,6 +47,7 @@ def test_help_snapshots_match_canonical_cli_surface():
         "dashboard_help": ["dashboard", "--help"],
         "dashboard_open_help": ["dashboard", "open", "--help"],
         "mcp_help": ["mcp", "--help"],
+        "mcp_build_help": ["mcp", "build", "--help"],
         "openclaw_help": ["openclaw", "--help"],
         "version_help": ["version", "--help"],
         "config_help": ["config", "--help"],

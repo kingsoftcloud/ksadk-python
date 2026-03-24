@@ -16,7 +16,7 @@
 - 统一控制面：通过 `AgentEngine Server` 进行 Agent/MCP/OpenClaw 管理。
 - 状态持久化：部署后保存 `.agentengine.state`，供后续 `agent status`、`agent delete`、`version`、`dashboard open`、`openclaw channel/gateway` 等命令自动解析。
 - 版本管理：`version list/release/rollback`。
-- MCP 管理：`mcp deploy/list/status/delete`。
+- MCP 管理：`mcp build/deploy/list/status/delete`。
 
 ## 安装
 
@@ -167,7 +167,7 @@ export KSADK_KB_DATASET_ID=your_dataset_id
 - `agentengine dashboard open`：打开云端已部署 Agent 的 Dashboard/WebUI（默认创建 `/s/{link_id}` 短链接）。
 - `agentengine dashboard share list|revoke`：管理 Dashboard 分享链接。
 - `agentengine version list|release|rollback`：Agent 版本管理。
-- `agentengine mcp list|status|deploy|delete`：MCP Server 管理。
+- `agentengine mcp build|list|status|deploy|delete`：MCP Server 管理。
 - `agentengine openclaw list|status|deploy|delete`：OpenClaw 资源管理。
 - `agentengine openclaw gateway open|ws-url|logs|doctor`：OpenClaw Gateway 打开、诊断与日志。
 - `agentengine openclaw channel status|connect|enable|disable|doctor`：OpenClaw 渠道接入与诊断。
@@ -340,6 +340,7 @@ KSYUN_REGION=cn-beijing-6 agentengine version rollback --agent ar-xxxx --to v1.0
 
 ### 1) 支持命令
 
+- `agentengine mcp build [MCP_DIR]`：构建 MCP 制品（`Code` / `Container`）。
 - `agentengine mcp deploy [MCP_DIR]`：部署或热更新 MCP。
 - `agentengine mcp list`：列出 MCP 列表。
 - `agentengine mcp status <mcp_id>`：查看 MCP 详情。
@@ -388,23 +389,27 @@ agentengine mcp deploy [MCP_DIR] \
 - MCP 入口会自动生成 `entrypoint.py`，以 HTTP transport 启动 FastMCP。
 - 运行时支持通过 `<endpoint>/mcp` 接入外部客户端。
 
-#### Container 模式（可用但有兼容限制）
+#### Container 模式（可用）
 
 - CLI 会执行本地 Docker build + push，并将镜像地址作为 `ArtifactPath` 提交。
-- 当前 CLI 到服务端的 MCP 接口仍以兼容旧参数为主，`ContainerConfig / image_credential` 不会完整透传。
-- 因此私有镜像鉴权等高级能力在 `mcp` CLI 链路中未完全打通，生产建议优先使用 Code 模式。
+- FastMCP 项目会走专用的 MCP 容器构建链路，不再复用 Agent 框架探测。
+- CLI 会向服务端透传 `DeploymentType=Container`、`ContainerConfig` 以及镜像仓库凭证。
+- `--dry-run` 当前仅跳过最终的 `CreateMCP/UpdateMCP` 请求，本地 build/push 仍会执行。
 
 ### 5) 典型流程
 
 ```bash
-# 1) 部署
+# 1) 先构建（可选）
+agentengine mcp build . --artifact-type Code --push
+
+# 2) 部署
 agentengine mcp deploy .
 
-# 2) 查询
+# 3) 查询
 agentengine mcp list
 agentengine mcp status <mcp_id>
 
-# 3) 删除
+# 4) 删除
 agentengine mcp delete <mcp_id> --yes
 ```
 
@@ -433,7 +438,7 @@ agentengine mcp delete <mcp_id> --yes
 
 - `mcp deploy` 提示未检测到 FastMCP 项目：检查导入语句或配置文件声明。
 - `status/delete` 提示未配置 `AGENTENGINE_SERVER_URL`：先设置服务端地址再执行。
-- `Container` 失败：确认 Docker 可用；如涉及私有镜像，建议改用 Code 模式或直接使用服务端原生 MCP API。
+- `Container` 失败：确认 Docker 可用；如涉及私有镜像，确认已配置仓库凭证并检查 `ContainerConfig` / 镜像地址是否符合目标环境要求。
 
 ## 关键文件
 

@@ -4,24 +4,11 @@ from pathlib import Path
 import pytest
 
 from ksadk.api.client import DryRunExit
-from ksadk.builders.base import BuildResult
 from ksadk.cli import cmd_mcp
 
 
-class _FakeNow:
-    def strftime(self, _fmt: str) -> str:
-        return "20260320173045"
-
-
-class _FakeDatetime:
-    @staticmethod
-    def now():
-        return _FakeNow()
-
-
-class _FakeDetectionResult:
+class _FakeMCPDetectionResult:
     is_valid = True
-    name = "demo-mcp"
     entry_point = "server.py"
     mcp_variable = "mcp"
     tools = ["tool_a", "tool_b"]
@@ -32,43 +19,37 @@ class _FakeMCPDetector:
         pass
 
     def detect(self):
-        return _FakeDetectionResult()
+        return _FakeMCPDetectionResult()
 
 
-class _FakeMCPCodeBuilder:
-    last_config = None
+class _FakeDryRunClient:
+    def __init__(self, *args, **kwargs):
+        self.kwargs = kwargs
 
-    def __init__(self, project_dir: Path, config: dict = None):
-        self.project_dir = Path(project_dir)
-        self.config = config or {}
-        self.__class__.last_config = self.config
+    async def __aenter__(self):
+        return self
 
-    def build(self) -> BuildResult:
-        return BuildResult(
-            success=True,
-            artifact_path=self.project_dir / ".agentengine" / "mcp_build" / "demo_mcp.zip",
-            artifact_size=1234,
-            metadata={"mcp_name": "demo_mcp"},
-        )
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
 
+    async def create_mcp(self, request):
+        raise DryRunExit("dry-run", payload={"body": request})
 
-class _FakeKS3Uploader:
-    last_object_key = None
+    async def update_mcp(self, *_args, **_kwargs):
+        raise DryRunExit("dry-run", payload={"body": {}})
 
-    def __init__(self, region: str, bucket: str = None):
-        self.region = region
-        self.bucket = bucket
-
-    async def upload(self, _file_path: Path, object_key: str):
-        self.__class__.last_object_key = object_key
-        return f"ks3://agentengine-test/{object_key}"
+    async def close(self):
+        return None
 
 
-def test_mcp_deploy_no_cache_passes_builder_flag_and_uses_unique_object_key(tmp_path: Path, monkeypatch):
+def test_mcp_deploy_dry_run_skips_local_build_and_relies_on_plan(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("ksadk.detection.mcp_detector.MCPDetector", _FakeMCPDetector)
-    monkeypatch.setattr("ksadk.builders.mcp_builder.MCPCodeBuilder", _FakeMCPCodeBuilder)
-    monkeypatch.setattr("ksadk.builders.ks3_uploader.KS3Uploader", _FakeKS3Uploader)
-    monkeypatch.setattr(cmd_mcp, "datetime", _FakeDatetime)
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeDryRunClient)
+
+    def _should_not_build(*_args, **_kwargs):
+        raise AssertionError("Dry run should not trigger artifact build")
+
+    monkeypatch.setattr(cmd_mcp, "_build_code_artifact", _should_not_build)
 
     with pytest.raises(DryRunExit) as exc_info:
         asyncio.run(
@@ -83,12 +64,11 @@ def test_mcp_deploy_no_cache_passes_builder_flag_and_uses_unique_object_key(tmp_
                 no_cache=True,
             )
         )
-    expected_name = "code_20260320173045.zip"
-    expected_key = f"mcps/{tmp_path.name.replace('-', '_').replace('.', '_')}/{expected_name}"
+
     payload = exc_info.value.payload or {}
     body = payload.get("body") or {}
 
-    assert _FakeMCPCodeBuilder.last_config == {"no_cache": True}
-    assert _FakeKS3Uploader.last_object_key == expected_key
-    assert body["ArtifactPath"].endswith(expected_name)
-    assert "CreateMCP" in payload.get("curl", "")
+    assert body["artifact_type"] == "Code"
+    assert body["region"] == "cn-beijing-6"
+    assert body["artifact_path"].startswith("ks3://agentengine-test/")
+    assert "dry-run" in body["artifact_path"]
