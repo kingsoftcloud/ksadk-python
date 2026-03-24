@@ -497,10 +497,10 @@ agentengine completion install --shell auto
 
 ## 示例项目
 
-见 [examples](./examples) 目录。
+见 [examples](https://github.com/kingsoftcloud/ksadk-python/tree/master/examples) 目录。
 
 ## 进阶文档
 
-- [DeepAgents 框架支持说明](./docs/deepagents.md)
-- [ADK 记忆能力使用说明](./docs/memory_usage_guide.md)
-- [知识库与记忆能力示例](./docs/knowledge_base_and_memory_examples.md)
+- [DeepAgents 框架支持说明](https://github.com/kingsoftcloud/ksadk-python/blob/master/docs/deepagents.md)
+- [ADK 记忆能力使用说明](https://github.com/kingsoftcloud/ksadk-python/blob/master/docs/memory_usage_guide.md)
+- [知识库与记忆能力示例](https://github.com/kingsoftcloud/ksadk-python/blob/master/docs/knowledge_base_and_memory_examples.md)
