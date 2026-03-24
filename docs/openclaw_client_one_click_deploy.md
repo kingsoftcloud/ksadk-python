@@ -9,39 +9,51 @@
 - **开箱即用**：默认预构建 OpenClaw 镜像，免本地构建。
 - **安全免配置**：默认 `trusted-proxy` 身份模式，浏览器无需携带后端长期凭证。
 - **极速上线**：`agentengine openclaw deploy` 一条命令直连控制面。
-- **能力预集成**：模型映射、Dashboard 短链接、状态文件自动持久化全部内建。
+- **能力预集成**：模型映射、Dashboard 短链接、状态文件自动持久化、渠道插件/默认技能全部内建。
 - **弹性养殖**：按需扩缩实例与并发，业务高峰“多养几只”，平峰“少养几只”。
 
 ## 2. 养虾场景表达
 
 - 把一个 OpenClaw 实例理解成一只“数字虾苗”：部署后即可开工。
 - 新业务上来时，直接扩容“多放几只虾苗”；淡季时再缩容回收成本。
-- 安全能力（ClawSec）和搜索能力（agent-reach）相当于“虾场巡检与外部信息饲料”，部署即能接入能力链路。
+- 安全能力和搜索能力通过默认 bundled skills / 严格模式附加技能接入，部署后可按场景启用能力链路。
 
 ## 3. 内置能力亮点
 
-### 3.1 安全技能能力：TuanziGuardianClaw
+### 3.1 默认技能组合
 
-- 默认内置安全技能：`TuanziGuardianClaw`
-- 定位：作为默认安全审查技能，对高风险文件访问、外部网络请求、敏感命令执行做风险分类、确认提醒与安全建议。
-- 对外可表达为：OpenClaw 支持将安全策略能力直接纳入智能体执行链路，用于风险识别、策略检查与安全运营协同。
+- 默认 bundled skills 为：`skillhub-store`、`agent-browser-clawdbot`、`kdocs`。
+- 当 `OPENCLAW_EXEC_STRICT_MODE=true` 时，会额外补充 `self-improving-agent` 与 `tuanziguardianclaw`。
+- 对外可表达为：默认镜像即具备技能发现、浏览器自动化和文档协同能力；严格模式下再附加更强的安全/自优化技能。
 
-### 3.2 搜索与外部触达能力：agent-reach
+### 3.2 技能商店与搜索能力
 
-- 镜像侧已内置 `agent-reach` 相关能力入口，可用于多平台搜索与内容触达能力扩展。
-- 对外可表达为：平台在部署即具备“搜索 + 渠道触达”增强能力，不需要另起一套集成工程。
+- 镜像侧已内置 `skillhub` CLI 与 `skillhub-store` 技能，默认优先对接腾讯 Skillhub 商店。
+- 默认搜索主路径为 OpenClaw 原生内建 `browser`；`agent-browser` 作为增强/备选能力保留，适合需要更强 CLI 可控性、会话隔离或可重放步骤的场景。如需轻量文本多搜索源策略，可按需显式启用可选的 `multi-search-engine`，例如把 `OPENCLAW_PRESET_SKILLS_ALLOWLIST` 设为 `skillhub-store,agent-browser-clawdbot,kdocs,multi-search-engine`。
+- 对外可表达为：平台在部署即具备“技能商店 + 浏览器搜索/检索”基础能力，不需要再单独准备初始化脚本。
 
 ### 3.3 浏览器工具内置
 
-- 运行时已包含浏览器工具相关配置（headless/no-sandbox/executable path 等），便于开箱启用网页自动化能力。
+- 运行时已包含浏览器工具相关配置（headless/no-sandbox/executable path 等），并默认启用原生 browser 能力，便于开箱使用网页自动化与 JS 渲染能力。
 - 对外可表达为：客户无需额外采购或安装浏览器自动化运行环境。
 
-### 3.4 可选上下文/记忆插件位
+### 3.4 默认插件与技能预置
+
+- 镜像默认预置 `openclaw-weixin`、`openclaw-lark`、`agent-browser` 与 `skillhub` CLI。
+- 同时预装 `curl`、`jq`、`python3` 等常用基础工具，保证默认搜索、JSON 解析与技能初始化链路可直接运行。
+- 镜像默认固定安装 `@tencent-weixin/openclaw-weixin@2.0.1`。该版本已原生兼容当前 OpenClaw `plugin-sdk` / runtime 加载；但当前 host 侧仍不会自动暴露 `web.login.start/web.login.wait`，所以启动时只补一层极小 shim，方便统一入口远端触发扫码登录。
+- 启动时会通过 `sync_default_extensions()` 将默认插件同步到用户挂载的 `~/.openclaw`，缺失时自动补齐，用户手动升级后的插件版本不会被强制回滚。
+- 默认 bundled skills 包括：`skillhub-store`、`agent-browser-clawdbot`、`kdocs`。
+- fresh deploy 下默认启用 OpenClaw 内建 `browser`，并额外修复 `127.0.0.1` loopback Gateway 调用误入 pairing 的兼容问题。
+- 从旧默认集合迁移时，`find-skills` 这类已下线的预置技能只会在“之前由镜像同步且用户未改动”的情况下被自动清理；用户自管目录会被保留。
+- 对外可表达为：默认镜像即具备“渠道接入 + 浏览器自动化 + 技能商店”基础能力，不需要再单独准备初始化脚本。
+
+### 3.5 可选上下文/记忆插件位
 
 - 运行时保留 OpenClaw 原生插件扩展位，可按需启用上下文/记忆类插件，而不是默认绑定第三方实现。
 - 对外可表达为：上下文增强能力支持按场景选装，默认镜像更轻、更稳、供应链面更小。
 
-### 3.5 默认支持定时任务
+### 3.6 默认支持定时任务
 
 - 运行时默认支持定时任务能力（内置调度守护进程启动链路），无需客户再手动搭建额外调度组件。
 - 对外可表达为：可将例行巡检、日报汇总、定时抓取等任务纳入标准化自动执行流程。
@@ -71,10 +83,11 @@ cat > .env <<'ENV'
 KSYUN_ACCESS_KEY=你的AK
 KSYUN_SECRET_KEY=你的SK
 KSYUN_REGION=cn-beijing-6
+KSYUN_ACCOUNT_ID=你的账号ID
 
 OPENAI_API_KEY=你的模型APIKey
 # OPENAI_BASE_URL=https://你的openai兼容网关/v1
-# OPENAI_MODEL_NAME=deepseek-v3.2
+# OPENAI_MODEL_NAME=glm-5
 ENV
 
 # 3) 一键部署 OpenClaw
@@ -84,7 +97,11 @@ agentengine openclaw deploy
 agentengine openclaw status
 
 # 5) 打开云端 UI（短链接）
-agentengine dashboard --share
+agentengine dashboard open --share
+
+# 6) 连接默认渠道（本地终端打印二维码）
+agentengine openclaw channel connect --channel weixin
+agentengine openclaw channel connect --channel feishu
 ```
 
 ## 6. 关键行为说明
@@ -100,19 +117,27 @@ agentengine dashboard --share
 - 建议确认 `RUNNING` 后再打开 Dashboard。
 - 若非 `RUNNING`，等待后重试即可。
 
-### 6.3 `dashboard --share`
+### 6.3 `dashboard open`
 
 - 默认创建短链接并打开浏览器。
+- 在 OpenClaw 工作目录内可直接运行 `agentengine dashboard open`，会自动读取当前目录 `.agentengine.state` 的 OpenClaw 实例。
 - 适用于企业内部演示、测试与受控分享访问。
 
-### 6.4 默认执行审批策略
+### 6.4 `openclaw channel connect`
 
-- 默认采用 `exec.host=gateway` + `exec.security=allowlist` + `exec.ask=off`：普通白名单命令自动执行，未命中白名单的高风险命令直接拒绝，不弹确认打断用户。
-- 默认 `askFallback=allowlist`：如后续显式开启审批模式，审批 UI 不可达时，白名单命令仍可自动放行。
+- `agentengine openclaw channel connect --channel weixin` 会在本地终端打印 ASCII 二维码，并在扫码成功后把账号配置写回远端实例。
+- `agentengine openclaw channel connect --channel feishu` 会复用官方 onboarding 流程，在本地终端完成飞书扫码与 Bot 配置，然后通过 gateway `config.apply` 写回远端。
+- `agentengine openclaw channel status --probe` 可用于检查账号是否已真正落到远端实例中。
+
+### 6.5 默认执行审批策略
+
+- 默认采用宽松执行模式：`exec.host=gateway` + `exec.security=full` + `exec.ask=off`。目标是优先贴近原生 OpenClaw 体验，不在默认冷启动时强行切到白名单执行。
+- 默认 `askFallback=full`：若后续显式开启审批模式而审批 UI 不可达，则按 `full` 语义继续处理，避免渠道/自动化流程被无意阻断。
 - 默认 `autoAllowSkills=false`：不自动放行 Skill CLI，避免第三方或自定义 Skill 借助宿主机执行路径扩大敏感面。
-- 镜像启动时会通过 `/opt/openclaw/safe-bin` 安全包装器为 `main` 智能体预置一组常用只读/开发命令白名单（如 `pwd`、`ls`、`whoami`、`id`、`uname`、`date`、`ps`、`df`、`du`、`stat`、`find`、`cat`、`head`、`tail`、`wc`、`git`），并对工作区边界与状态目录访问做额外检查。
+- 若启用严格模式或显式开启默认白名单，镜像会通过 `/opt/openclaw/safe-bin` 安全包装器为 `main` 智能体预置一组常用只读/开发命令白名单（如 `pwd`、`ls`、`whoami`、`id`、`uname`、`date`、`ps`、`df`、`du`、`stat`、`find`、`cat`、`head`、`tail`、`wc`、`git`），并对工作区边界与状态目录访问做额外检查。
+- 严格模式下还会默认放行少量直接二进制，如 `curl`、`jq`、`openclaw`、`agent-browser`、`skillhub`、`clawhub`，避免常见检索、JSON 解析与渠道运维动作被基础白名单拦截。
 - 默认 `tools.fs.workspaceOnly=false`：文件工具不再被强制锁死在工作区，便于读取技能目录、项目外挂资料和常见挂载路径；敏感目录访问仍应结合 `tools.exec` 白名单与提示词安全边界一起约束。
-- 如需扩展自动审批命令，可通过环境变量 `OPENCLAW_EXEC_ALLOWLIST` 追加二进制路径模式；如需关闭默认白名单，可设 `OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED=false`。
+- 如需切到更保守的执行策略，可在部署时使用 `--exec-profile strict`，或通过环境变量显式设置 `OPENCLAW_EXEC_SECURITY=allowlist` / `OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED=true`。
 - 模型 API Key 默认不再以运行时环境变量方式提供给 Gateway 进程，而是在启动阶段转存到 `${OPENCLAW_STATE_DIR}/secrets.json` 并通过 OpenClaw `file` SecretRef 读取，以降低 `printenv` / 环境转储类泄露风险。
 - 默认工作区会内置一版安全导向的 `SOUL.md` 和 `AGENTS.md`，为 prompt injection、防泄密、外发审批、Skill 安装审批等场景提供软约束。
 
@@ -132,7 +157,7 @@ agentengine openclaw deploy --image hub.kce.ksyun.com/myns/openclaw:v2
 agentengine openclaw deploy \
   --model-base-url https://api.example.com/v1 \
   --model-api-key sk-xxx \
-  --default-model deepseek-v3.2
+  --default-model glm-5
 
 # 删除实例
 agentengine openclaw delete ar-xxxx -y
@@ -156,7 +181,7 @@ cat .env | rg 'OPENAI_API_KEY|OPENAI_BASE_URL|OPENAI_MODEL_NAME|OPENCLAW_'
 优先使用统一入口：
 
 ```bash
-agentengine dashboard --share
+agentengine dashboard open --share
 ```
 
 ### Q3: 私有镜像拉取失败

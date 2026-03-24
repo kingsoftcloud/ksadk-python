@@ -1,5 +1,6 @@
 import asyncio
 import json
+from types import SimpleNamespace
 from typing import Any, Dict
 
 import yaml
@@ -87,6 +88,142 @@ class _FakeOpenClawListClient:
 
     async def close(self):
         return None
+
+
+class _FakeOpenClawDetailClient:
+    last_log_kwargs: Dict[str, Any] = {}
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def get_agent(self, **_kwargs):
+        return {
+            "basic": {
+                "agent_id": "ar-demo-1",
+                "name": "demo-openclaw",
+                "status": "RUNNING",
+                "framework": "openclaw",
+                "region": "cn-beijing-6",
+            },
+            "quick_access": {
+                "public_endpoint": "https://openclaw.example.com",
+            },
+        }
+
+    async def get_agent_logs(self, **kwargs):
+        _FakeOpenClawDetailClient.last_log_kwargs = kwargs
+        return {
+            "logs": ["line-1", "line-2"],
+            "total": 2,
+            "page": 1,
+            "page_size": 200,
+            "agent_id": "ar-demo-1",
+            "instance": kwargs.get("instance"),
+            "log_type": "Stdout",
+        }
+
+    async def close(self):
+        return None
+
+
+class _FakeOpenClawCreatingDetailClient(_FakeOpenClawDetailClient):
+    async def get_agent(self, **_kwargs):
+        payload = await super().get_agent(**_kwargs)
+        payload["basic"]["status"] = "CREATING"
+        return payload
+
+
+class _FakeGatewayClient:
+    applied_configs: list[Dict[str, Any]] = []
+    last_wait_kwargs: Dict[str, Any] = {}
+
+    def __init__(self, *args, **kwargs):
+        self.methods = ["channels.status", "config.get", "web.login.start", "web.login.wait"]
+
+    async def build_access_info(self):
+        return SimpleNamespace(
+            access_url="https://dashboard.example.com/s/lnk-demo",
+            ws_url="wss://dashboard.example.com/",
+            link_id="lnk-demo",
+            expires_at="2026-03-23T12:00:00Z",
+        )
+
+    async def connect(self):
+        return {"features": {"methods": self.methods}}
+
+    async def close(self):
+        return None
+
+    async def channels_status(self, *, probe=False, timeout_ms=None):
+        return {
+            "channels": {
+                "weixin": {"connected": True, "probe": probe, "timeout_ms": timeout_ms},
+                "feishu": {"enabled": True},
+            }
+        }
+
+    async def config_get(self):
+        return {
+            "hash": "cfg-1",
+            "exists": True,
+            "config": {
+                "plugins": {"entries": {}},
+                "channels": {},
+            },
+        }
+
+    async def config_apply(self, *, config, base_hash, note=None, session_key=None, restart_delay_ms=None):
+        self.__class__.applied_configs.append(
+            {
+                "config": config,
+                "base_hash": base_hash,
+                "note": note,
+                "session_key": session_key,
+                "restart_delay_ms": restart_delay_ms,
+            }
+        )
+        return {"ok": True}
+
+    async def web_login_start(self, *, force=False, timeout_ms=None):
+        return {
+            "qrDataUrl": "https://qr.example.com/weixin-login",
+            "sessionKey": "sess-1",
+            "message": "scan now",
+        }
+
+    async def web_login_wait(self, *, account_id=None, session_key=None, timeout_ms=None):
+        self.__class__.last_wait_kwargs = {
+            "account_id": account_id,
+            "session_key": session_key,
+            "timeout_ms": timeout_ms,
+        }
+        return {"connected": True, "message": "connected"}
+
+
+class _FakeDoctorGatewayClient(_FakeGatewayClient):
+    async def config_get(self):
+        return {
+            "hash": "cfg-1",
+            "exists": True,
+            "config": {
+                "plugins": {
+                    "entries": {
+                        "openclaw-weixin": {"enabled": True},
+                        "openclaw-lark": {"enabled": True},
+                    }
+                },
+                "channels": {
+                    "feishu": {"enabled": True},
+                    "openclaw-weixin": {"accounts": {"default": {"enabled": True}}},
+                },
+            },
+        }
 
 
 class _FakeDeleteProvider:
@@ -214,6 +351,215 @@ def test_openclaw_list_shows_account_region_summary(monkeypatch):
     assert "账号: 2000003485" in result.output
     assert "region: cn-beijing-6" in result.output
     assert "总计: 145" in result.output
+
+
+def test_openclaw_help_exposes_channel_and_gateway_commands():
+    runner = CliRunner()
+
+    result = runner.invoke(openclaw, ["--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "channel" in result.output
+    assert "gateway" in result.output
+
+
+def test_openclaw_gateway_ws_url_prints_dashboard_and_ws(monkeypatch):
+    runner = CliRunner()
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawDetailClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeGatewayClient)
+
+    result = runner.invoke(openclaw, ["gateway", "ws-url", "ar-demo-1"])
+
+    assert result.exit_code == 0, result.output
+    assert "dashboard.example.com/s/lnk-demo" in result.output
+    assert "wss://dashboard.example.com/" in result.output
+    assert "cookie-session" in result.output
+
+
+def test_openclaw_gateway_logs_reads_agent_logs(monkeypatch):
+    runner = CliRunner()
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawDetailClient)
+
+    result = runner.invoke(
+        openclaw,
+        ["gateway", "logs", "ar-demo-1", "--instance", "oc-0", "--log-type", "stdout"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "line-1" in result.output
+    assert _FakeOpenClawDetailClient.last_log_kwargs["instance"] == "oc-0"
+    assert _FakeOpenClawDetailClient.last_log_kwargs["log_type"] == "stdout"
+
+
+def test_openclaw_gateway_doctor_checks_short_link_and_ws(monkeypatch):
+    runner = CliRunner()
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawDetailClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeGatewayClient)
+
+    result = runner.invoke(openclaw, ["gateway", "doctor", "ar-demo-1"])
+
+    assert result.exit_code == 0, result.output
+    assert "dashboard_short_link" in result.output
+    assert "cookie_ws_handshake" in result.output
+    assert "gateway_rpc" in result.output
+
+
+def test_openclaw_gateway_ws_url_allows_creating_when_gateway_is_reachable(monkeypatch):
+    runner = CliRunner()
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawCreatingDetailClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeGatewayClient)
+
+    result = runner.invoke(openclaw, ["gateway", "ws-url", "ar-demo-1"])
+
+    assert result.exit_code == 0, result.output
+    assert "dashboard.example.com/s/lnk-demo" in result.output
+    assert "wss://dashboard.example.com/" in result.output
+
+
+def test_openclaw_gateway_doctor_continues_probe_when_status_is_creating(monkeypatch):
+    runner = CliRunner()
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawCreatingDetailClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeGatewayClient)
+
+    result = runner.invoke(openclaw, ["gateway", "doctor", "ar-demo-1"])
+
+    assert result.exit_code == 0, result.output
+    assert '"status": "CREATING"' in result.output
+    assert '"dashboard_short_link"' in result.output
+    assert '"ok": true' in result.output.lower()
+
+
+def test_openclaw_channel_status_uses_gateway_snapshot(monkeypatch):
+    runner = CliRunner()
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawDetailClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeGatewayClient)
+
+    result = runner.invoke(openclaw, ["channel", "status", "ar-demo-1", "--channel", "weixin", "--probe"])
+
+    assert result.exit_code == 0, result.output
+    assert '"connected": true' in result.output.lower()
+    assert '"probe": true' in result.output.lower()
+
+
+def test_openclaw_channel_status_allows_creating_when_gateway_is_reachable(monkeypatch):
+    runner = CliRunner()
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawCreatingDetailClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeGatewayClient)
+
+    result = runner.invoke(openclaw, ["channel", "status", "ar-demo-1", "--channel", "weixin"])
+
+    assert result.exit_code == 0, result.output
+    assert '"connected": true' in result.output.lower()
+
+
+def test_openclaw_channel_enable_updates_weixin_account_config(monkeypatch):
+    runner = CliRunner()
+    _FakeGatewayClient.applied_configs = []
+    async def _fake_sleep(*_args, **_kwargs):
+        return None
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawDetailClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeGatewayClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw.asyncio.sleep", _fake_sleep)
+
+    result = runner.invoke(
+        openclaw,
+        ["channel", "enable", "ar-demo-1", "--channel", "weixin", "--account-id", "wx-demo"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _FakeGatewayClient.applied_configs
+    config = _FakeGatewayClient.applied_configs[-1]["config"]
+    assert config["channels"]["openclaw-weixin"]["accounts"]["wx-demo"]["enabled"] is True
+
+
+def test_openclaw_channel_connect_weixin_prints_qr_url(monkeypatch):
+    runner = CliRunner()
+    _FakeGatewayClient.applied_configs = []
+    _FakeGatewayClient.last_wait_kwargs = {}
+    async def _fake_sleep(*_args, **_kwargs):
+        return None
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawDetailClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeGatewayClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw.asyncio.sleep", _fake_sleep)
+
+    result = runner.invoke(openclaw, ["channel", "connect", "ar-demo-1", "--channel", "weixin"])
+
+    assert result.exit_code == 0, result.output
+    assert "https://qr.example.com/weixin-login" in result.output
+    assert _FakeGatewayClient.last_wait_kwargs["account_id"] == "sess-1"
+
+
+def test_openclaw_channel_connect_weixin_maps_session_key_to_account_id(monkeypatch):
+    runner = CliRunner()
+    _FakeGatewayClient.last_wait_kwargs = {}
+
+    async def _fake_sleep(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawDetailClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeGatewayClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw.asyncio.sleep", _fake_sleep)
+
+    result = runner.invoke(openclaw, ["channel", "connect", "ar-demo-1", "--channel", "weixin"])
+
+    assert result.exit_code == 0, result.output
+    assert _FakeGatewayClient.last_wait_kwargs == {
+        "account_id": "sess-1",
+        "session_key": None,
+        "timeout_ms": 120_000,
+    }
+
+
+def test_openclaw_channel_connect_feishu_applies_remote_config(monkeypatch):
+    runner = CliRunner()
+    _FakeGatewayClient.applied_configs = []
+
+    async def _fake_sleep(*_args, **_kwargs):
+        return None
+
+    async def _fake_onboarding(existing_app_id):
+        assert existing_app_id is None
+        return {
+            "appId": "cli-app-id",
+            "appSecret": "cli-app-secret",
+            "domain": "lark",
+            "userInfo": {"openId": "ou_demo"},
+        }
+
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawDetailClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeGatewayClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw.asyncio.sleep", _fake_sleep)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw._run_feishu_onboarding", _fake_onboarding)
+
+    result = runner.invoke(openclaw, ["channel", "connect", "ar-demo-1", "--channel", "feishu"])
+
+    assert result.exit_code == 0, result.output
+    assert _FakeGatewayClient.applied_configs
+    config = _FakeGatewayClient.applied_configs[-1]["config"]
+    assert config["plugins"]["entries"]["openclaw-lark"]["enabled"] is True
+    assert config["channels"]["feishu"]["enabled"] is True
+    assert config["channels"]["feishu"]["appId"] == "cli-app-id"
+    assert config["channels"]["feishu"]["appSecret"] == "cli-app-secret"
+    assert config["channels"]["feishu"]["domain"] == "lark"
+    assert config["channels"]["feishu"]["allowFrom"] == ["ou_demo"]
+    assert config["channels"]["feishu"]["groupAllowFrom"] == ["ou_demo"]
+
+
+def test_openclaw_channel_doctor_checks_snapshot_and_local_node(monkeypatch):
+    runner = CliRunner()
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawDetailClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeDoctorGatewayClient)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_openclaw.shutil.which",
+        lambda cmd: f"/usr/bin/{cmd}" if cmd in {"node", "npx"} else None,
+    )
+
+    result = runner.invoke(openclaw, ["channel", "doctor", "ar-demo-1", "--channel", "feishu"])
+
+    assert result.exit_code == 0, result.output
+    assert "feishu_plugin_visible" in result.output
+    assert "feishu_status_snapshot" in result.output
+    assert "feishu_local_node" in result.output
 
 
 def test_openclaw_deploy_supports_security_profile_flags(monkeypatch):

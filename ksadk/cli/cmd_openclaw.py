@@ -10,12 +10,20 @@ agentengine openclaw - OpenClaw 资源管理
 
 from __future__ import annotations
 
+import copy
+import io
 import os
 import asyncio
 import json
 import re
 import secrets
-from datetime import datetime
+import shutil
+import subprocess
+import tempfile
+import textwrap
+import time
+import webbrowser
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -27,6 +35,7 @@ from ksadk.api.client import DryRunExit
 from ksadk.cli.agent_ref import resolve_openclaw_ref
 from ksadk.cli.dry_run import dry_run_option, run_async_with_dry_run, effective_dry_run
 from ksadk.cli.error_utils import abort_with_cli_error, remote_error, resolution_error
+from ksadk.cli.resource_common import ResourceActionDescriptor
 from ksadk.cli.resource_common import (
     CONTEXT_SETTINGS,
     ResourceActionSet,
@@ -43,8 +52,11 @@ from ksadk.cli.resource_common import (
     region_option,
 )
 from ksadk.cli.ui import (
+    emit_json,
     get_console,
     is_json_output,
+    is_stdout_tty,
+    json_dumps,
     output_option as cli_output_option,
     print_info,
     print_kv,
@@ -54,6 +66,7 @@ from ksadk.cli.ui import (
     print_warn,
     status_rich_style,
 )
+from ksadk.openclaw_gateway import OpenClawGatewayClient, OpenClawGatewayError
 
 console = get_console()
 # 默认 OpenClaw 镜像 (KCR 个人版)
@@ -73,16 +86,66 @@ DEFAULT_TRUSTED_PROXY_CIDRS = [
 ]
 _GLOBAL_ENV_CACHE: Optional[Dict[str, str]] = None
 OPENCLAW_SECURITY_PROFILES = ("relaxed", "strict", "strictest")
+OPENCLAW_CHANNELS = ("weixin", "feishu")
+WEIXIN_PLUGIN_ID = "openclaw-weixin"
+FEISHU_PLUGIN_ID = "openclaw-lark"
+FEISHU_CHANNEL_KEY = "feishu"
+OPENCLAW_GATEWAY_READY_STATUSES = {"RUNNING", "READY", "HEALTHY"}
+OPENCLAW_GATEWAY_BLOCKED_STATUSES = {
+    "DELETED",
+    "DELETING",
+    "ERROR",
+    "FAILED",
+    "STOPPED",
+    "STOPPING",
+    "TERMINATED",
+    "TERMINATING",
+}
 
 OPENCLAW_RESOURCE = ResourceDescriptor(
     name="OpenClaw",
     summary="OpenClaw 资源管理。",
     resource_key="openclaw",
-    actions=ResourceActionSet(
-        list="agentengine openclaw list",
-        status="agentengine openclaw status [openclaw_ref]",
-        delete="agentengine openclaw delete [openclaw_ref...]",
-        deploy="agentengine openclaw deploy",
+    actions=(
+        ResourceActionDescriptor(
+            name="deploy",
+            canonical_command="agentengine openclaw deploy",
+            help_text="部署 OpenClaw 到云端",
+            kind="write",
+            supports_output=True,
+            supports_dry_run=True,
+        ),
+        ResourceActionDescriptor(
+            name="list",
+            canonical_command="agentengine openclaw list",
+            help_text="列出已部署的 OpenClaw",
+        ),
+        ResourceActionDescriptor(
+            name="status",
+            canonical_command="agentengine openclaw status [openclaw_ref]",
+            help_text="查看单个 OpenClaw 状态",
+        ),
+        ResourceActionDescriptor(
+            name="gateway",
+            canonical_command="agentengine openclaw gateway",
+            help_text="Gateway 入口、日志与诊断",
+            kind="interactive",
+        ),
+        ResourceActionDescriptor(
+            name="channel",
+            canonical_command="agentengine openclaw channel",
+            help_text="Channel 统一入口",
+            kind="interactive",
+        ),
+        ResourceActionDescriptor(
+            name="delete",
+            canonical_command="agentengine openclaw delete [openclaw_ref...]",
+            help_text="删除一个或多个 OpenClaw",
+            kind="destructive",
+            supports_output=True,
+            supports_dry_run=True,
+            supports_yes=True,
+        ),
     ),
     list_schema=ResourceListSchema(
         title="OpenClaw 列表",
@@ -104,14 +167,13 @@ OPENCLAW_RESOURCE = ResourceDescriptor(
         "agentengine openclaw deploy",
         "agentengine openclaw list",
         "agentengine openclaw status <id>",
+        "agentengine openclaw gateway open <id>",
+        "agentengine openclaw channel status <id> --probe",
+        "agentengine openclaw channel connect <id> --channel weixin",
         "agentengine openclaw delete <id>",
     ),
     missing_ref_message="请指定 OpenClaw ID/名称，或在 OpenClaw 项目目录下运行",
     resolution_commands=("agentengine openclaw list",),
-    list_action_help="列出已部署的 OpenClaw",
-    status_action_help="查看单个 OpenClaw 状态",
-    delete_action_help="删除一个或多个 OpenClaw",
-    deploy_action_help="部署 OpenClaw 到云端",
 )
 
 
@@ -383,6 +445,7 @@ def _build_openclaw_env_vars(
         _resolve_env("OPENCLAW_TRUSTED_PROXIES") or "",
         default_items=DEFAULT_TRUSTED_PROXY_CIDRS,
     )
+    browser_enabled = _resolve_env("OPENCLAW_BROWSER_ENABLED")
     browser_no_sandbox = _resolve_env("OPENCLAW_BROWSER_NO_SANDBOX") or "true"
     browser_headless = _resolve_env("OPENCLAW_BROWSER_HEADLESS") or "true"
     browser_executable = _resolve_env("OPENCLAW_BROWSER_EXECUTABLE_PATH", "OPENCLAW_BROWSER_EXECUTABLE")
@@ -442,6 +505,8 @@ def _build_openclaw_env_vars(
     env["OPENCLAW_TRUSTED_PROXIES"] = trusted_proxies
     env["OPENCLAW_GATEWAY_PORT"] = str(resolved_gateway_port)
     env["OPENCLAW_PUBLIC_PORT"] = str(resolved_public_port)
+    if browser_enabled:
+        env["OPENCLAW_BROWSER_ENABLED"] = browser_enabled
     env["OPENCLAW_BROWSER_NO_SANDBOX"] = browser_no_sandbox
     env["OPENCLAW_BROWSER_HEADLESS"] = browser_headless
     if browser_executable:
@@ -731,6 +796,22 @@ def _flatten_agent_detail(agent: dict) -> dict:
     }
 
 
+def _format_cli_timestamp(value: Optional[str], *, never_text: str = "-") -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return never_text
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        beijing = dt.astimezone(timezone(timedelta(hours=8)))
+        beijing_text = beijing.strftime("%Y-%m-%d %H:%M:%S CST")
+        utc_text = dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        return f"{beijing_text} ({utc_text})"
+    except Exception:
+        return raw
+
+
 def _resolve_region(
     cli_region: Optional[str],
     state: Optional[dict],
@@ -744,9 +825,1084 @@ def _resolve_region(
     )
 
 
+async def _resolve_openclaw_detail_or_raise(
+    agent_ref: Optional[str],
+    *,
+    region: Optional[str],
+) -> tuple[str, dict[str, Any]]:
+    from ksadk.api import AgentEngineClient
+    from ksadk.deployment.state import load_state
+
+    state = load_state(Path(".").resolve())
+    resolved_region = _resolve_region(region, state)
+    resolved = resolve_openclaw_ref(agent_ref, cwd=Path(".").resolve(), include_state=True)
+    if not resolved:
+        raise resolution_error(
+            OPENCLAW_RESOURCE.missing_ref_message or "请指定 OpenClaw。",
+            hints=list(OPENCLAW_RESOURCE.resolution_commands),
+        )
+
+    async with AgentEngineClient(region=resolved_region) as client:
+        if resolved.value.startswith("ar-"):
+            agent = await client.get_agent(agent_id=resolved.value)
+        else:
+            agent = await client.get_agent(name=resolved.value)
+
+    if not agent:
+        raise resolution_error(f"未找到 OpenClaw: {resolved.value}", hints=["agentengine openclaw list"])
+    return resolved_region, _flatten_agent_detail(agent)
+
+
+def _build_gateway_client(region: str, detail: dict[str, Any]) -> OpenClawGatewayClient:
+    return OpenClawGatewayClient(
+        region=region,
+        agent_id=str(detail.get("agent_id") or "").strip(),
+        agent_name=str(detail.get("name") or "").strip() or None,
+    )
+
+
+def _gateway_status_value(detail: dict[str, Any]) -> str:
+    return str(detail.get("status") or "UNKNOWN").upper()
+
+
+def _build_gateway_instance_check(detail: dict[str, Any]) -> dict[str, Any]:
+    status_val = _gateway_status_value(detail)
+    ready = status_val in OPENCLAW_GATEWAY_READY_STATUSES
+    blocked = status_val in OPENCLAW_GATEWAY_BLOCKED_STATUSES
+    payload: dict[str, Any] = {
+        "name": "instance",
+        "ok": not blocked,
+        "status": status_val,
+        "ready": ready,
+    }
+    if not blocked and not ready:
+        payload["note"] = "控制面状态尚未进入 RUNNING，继续按网关实际连通性探测"
+    return payload
+
+
+async def _ensure_openclaw_gateway_available(
+    region: str,
+    detail: dict[str, Any],
+    *,
+    timeout_seconds: float = 60.0,
+) -> None:
+    status_val = str(detail.get("status") or "UNKNOWN").upper()
+    if status_val in OPENCLAW_GATEWAY_BLOCKED_STATUSES:
+        raise remote_error(
+            f"目标 OpenClaw 当前状态为 {status_val}，暂不支持 gateway/channel 操作",
+            details={"status": status_val},
+        )
+    if status_val not in OPENCLAW_GATEWAY_READY_STATUSES:
+        await _wait_for_gateway_ready(region, detail, timeout_seconds=timeout_seconds)
+
+
+def _emit_data_payload(title: str, payload: dict[str, Any], *, subtitle: Optional[str] = None) -> None:
+    if is_json_output():
+        emit_json(payload)
+        return
+    print_title(title, subtitle)
+    console.print(json_dumps(payload), markup=False)
+
+
+async def _wait_for_gateway_ready(
+    region: str,
+    detail: dict[str, Any],
+    *,
+    timeout_seconds: float = 60.0,
+    interval_seconds: float = 2.0,
+) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    last_error: Optional[Exception] = None
+    while time.monotonic() < deadline:
+        gateway = _build_gateway_client(region, detail)
+        try:
+            await gateway.connect()
+            return
+        except Exception as exc:
+            last_error = exc
+        finally:
+            await gateway.close()
+        await asyncio.sleep(interval_seconds)
+
+    message = f"gateway 在 {int(timeout_seconds)} 秒内未恢复可用"
+    if last_error:
+        message = f"{message}: {last_error}"
+    raise OpenClawGatewayError(message)
+
+
+async def _fetch_channel_snapshot_with_retry(
+    region: str,
+    detail: dict[str, Any],
+    *,
+    probe: bool,
+    timeout_seconds: float = 30.0,
+    interval_seconds: float = 2.0,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout_seconds
+    last_error: Optional[Exception] = None
+    while time.monotonic() < deadline:
+        gateway = _build_gateway_client(region, detail)
+        try:
+            await gateway.connect()
+            return await gateway.channels_status(probe=probe, timeout_ms=8_000 if probe else None)
+        except Exception as exc:
+            last_error = exc
+        finally:
+            await gateway.close()
+        await asyncio.sleep(interval_seconds)
+
+    message = f"channel 状态在 {int(timeout_seconds)} 秒内未恢复可用"
+    if last_error:
+        message = f"{message}: {last_error}"
+    raise OpenClawGatewayError(message)
+
+
+def _channel_aliases(channel: str) -> tuple[str, ...]:
+    if channel == "weixin":
+        return (channel, WEIXIN_PLUGIN_ID)
+    if channel == "feishu":
+        return (channel, FEISHU_CHANNEL_KEY, FEISHU_PLUGIN_ID)
+    return (channel,)
+
+
+def _extract_channel_snapshot(snapshot: Any, channel: Optional[str]) -> Any:
+    if channel is None:
+        return snapshot
+    aliases = set(_channel_aliases(channel))
+    if isinstance(snapshot, dict):
+        for key in aliases:
+            if key in snapshot:
+                return snapshot[key]
+        channels = snapshot.get("channels")
+        if isinstance(channels, dict):
+            for key in aliases:
+                if key in channels:
+                    return channels[key]
+        if isinstance(channels, list):
+            for item in channels:
+                if not isinstance(item, dict):
+                    continue
+                candidates = {
+                    str(item.get("id") or "").strip(),
+                    str(item.get("channel") or "").strip(),
+                    str(item.get("name") or "").strip(),
+                    str(item.get("pluginId") or "").strip(),
+                }
+                if candidates & aliases:
+                    return item
+    return None
+
+
+def _parse_time_arg(raw: Optional[str]) -> Optional[int]:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return int(text)
+    normalized = text.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise click.BadParameter("时间格式必须是 Unix 毫秒时间戳或 ISO-8601") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return int(parsed.timestamp() * 1000)
+
+
+def _render_terminal_qr(qr_url: str) -> None:
+    if not is_stdout_tty():
+        return
+    try:
+        import qrcode
+    except Exception:
+        print_warn("未检测到 Python `qrcode` 依赖，已退化为仅输出二维码 URL")
+        return
+
+    qr = qrcode.QRCode(border=1)
+    qr.add_data(qr_url)
+    qr.make(fit=True)
+    out = io.StringIO()
+    qr.print_ascii(out=out, tty=False)
+    console.print(out.getvalue(), markup=False)
+
+
+def _ensure_local_node_tools() -> dict[str, str]:
+    node_path = shutil.which("node")
+    npx_path = shutil.which("npx")
+    if not node_path or not npx_path:
+        raise resolution_error(
+            "本地缺少 `node` 或 `npx`，飞书接入依赖官方 onboarding 工具",
+            hints=["先安装 Node.js，然后重试 `agentengine openclaw channel connect --channel feishu`"],
+        )
+    return {"node": node_path, "npx": npx_path}
+
+
+async def _resolve_npx_cached_package_file(package_spec: str, relative_path: str) -> Path:
+    tools = _ensure_local_node_tools()
+    package_name = package_spec.strip()
+    if package_name.startswith("@"):
+        slash_idx = package_name.find("/")
+        version_idx = package_name.rfind("@")
+        if slash_idx > 0 and version_idx > slash_idx:
+            package_name = package_name[:version_idx]
+    elif "@" in package_name:
+        package_name = package_name.split("@", 1)[0]
+    warmup_cmd = [
+        tools["npx"],
+        "-y",
+        "--package",
+        package_spec,
+        "-c",
+        "true",
+    ]
+    completed = await asyncio.to_thread(
+        subprocess.run,
+        warmup_cmd,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        raise OpenClawGatewayError(
+            f"无法准备官方 npm 包缓存: {completed.stderr.strip() or completed.stdout.strip() or package_spec}"
+        )
+
+    npm_cache_root = Path(
+        os.getenv("NPM_CONFIG_CACHE")
+        or os.getenv("npm_config_cache")
+        or str(Path.home() / ".npm")
+    )
+    pattern = f"_npx/**/node_modules/{package_name}/{relative_path}"
+    matches = list(npm_cache_root.glob(pattern))
+    if not matches:
+        raise OpenClawGatewayError(f"未找到官方 npm 包缓存文件: {package_name}/{relative_path}")
+    return max(matches, key=lambda item: item.stat().st_mtime)
+
+
+async def _run_feishu_onboarding(existing_app_id: Optional[str]) -> dict[str, Any]:
+    tools = _ensure_local_node_tools()
+    script_path = ""
+    result_path = ""
+    try:
+        install_prompts_path = await _resolve_npx_cached_package_file(
+            "@larksuite/openclaw-lark-tools@latest",
+            "dist/utils/install-prompts.js",
+        )
+        script_body = textwrap.dedent(
+            """
+            const fs = require("fs");
+            const { runInstallAuthFlow } = require(__INSTALL_PROMPTS_PATH__);
+
+            (async () => {
+              try {
+                const result = await runInstallAuthFlow(
+                  process.env.KSADK_FEISHU_APP_ID || undefined,
+                  undefined,
+                  {},
+                  false,
+                );
+                fs.writeFileSync(process.env.KSADK_FEISHU_RESULT_PATH, JSON.stringify(result), "utf8");
+              } catch (error) {
+                console.error(error);
+                process.exit(1);
+              }
+            })();
+            """
+        ).replace("__INSTALL_PROMPTS_PATH__", json.dumps(str(install_prompts_path)))
+        with tempfile.NamedTemporaryFile("w", suffix=".cjs", delete=False, encoding="utf-8") as script_file:
+            script_file.write(script_body.strip())
+            script_path = script_file.name
+
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as result_file:
+            result_path = result_file.name
+
+        env = os.environ.copy()
+        if existing_app_id:
+            env["KSADK_FEISHU_APP_ID"] = existing_app_id
+        env["KSADK_FEISHU_RESULT_PATH"] = result_path
+        cmd = [tools["node"], script_path]
+        completed = await asyncio.to_thread(subprocess.run, cmd, env=env, check=False)
+        if completed.returncode != 0:
+            raise OpenClawGatewayError("飞书官方 onboarding 流程执行失败")
+        raw = Path(result_path).read_text(encoding="utf-8").strip()
+        if not raw:
+            raise OpenClawGatewayError("飞书官方 onboarding 未返回结果")
+        result = json.loads(raw)
+        if not isinstance(result, dict):
+            raise OpenClawGatewayError("飞书官方 onboarding 返回了无效结果")
+        return result
+    finally:
+        for temp_path in (script_path, result_path):
+            if temp_path and Path(temp_path).exists():
+                try:
+                    Path(temp_path).unlink()
+                except Exception:
+                    pass
+
+
+def _ensure_plugin_enabled(config: dict[str, Any], plugin_id: str) -> bool:
+    changed = False
+    plugins = config.setdefault("plugins", {})
+    allow = plugins.setdefault("allow", [])
+    if plugin_id not in allow:
+        allow.append(plugin_id)
+        changed = True
+    entries = plugins.setdefault("entries", {})
+    entry = entries.setdefault(plugin_id, {})
+    if entry.get("enabled") is not True:
+        entry["enabled"] = True
+        changed = True
+    return changed
+
+
+def _extract_config_state(snapshot: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    config = snapshot.get("config")
+    if not isinstance(config, dict):
+        raise OpenClawGatewayError("config.get 未返回可编辑的配置快照")
+    base_hash = str(snapshot.get("hash") or "").strip()
+    if not base_hash and snapshot.get("exists", True):
+        raise OpenClawGatewayError("config.get 未返回 base hash，请稍后重试")
+    return copy.deepcopy(config), base_hash
+
+
+def _resolve_weixin_account_id(
+    config: dict[str, Any],
+    *,
+    account_id: Optional[str],
+    create_if_missing: bool,
+) -> str:
+    if account_id:
+        return str(account_id).strip()
+    channels = config.get("channels") or {}
+    weixin_cfg = channels.get(WEIXIN_PLUGIN_ID) or {}
+    accounts = weixin_cfg.get("accounts")
+    if isinstance(accounts, dict):
+        account_keys = [str(key).strip() for key in accounts.keys() if str(key).strip()]
+        if "default" in account_keys:
+            return "default"
+        if len(account_keys) == 1:
+            return account_keys[0]
+        if len(account_keys) > 1:
+            raise click.ClickException("检测到多个微信账号，请显式传入 --account-id")
+    if create_if_missing:
+        return "default"
+    raise click.ClickException("尚未检测到微信账号，请先执行 `agentengine openclaw channel connect --channel weixin`")
+
+
+def _mutate_weixin_account_enabled(
+    config: dict[str, Any],
+    *,
+    enabled: bool,
+    account_id: Optional[str],
+) -> tuple[bool, str]:
+    changed = _ensure_plugin_enabled(config, WEIXIN_PLUGIN_ID) if enabled else False
+    channels = config.setdefault("channels", {})
+    weixin_cfg = channels.setdefault(WEIXIN_PLUGIN_ID, {})
+    accounts = weixin_cfg.setdefault("accounts", {})
+    resolved_account_id = _resolve_weixin_account_id(
+        config,
+        account_id=account_id,
+        create_if_missing=enabled,
+    )
+    account_cfg = accounts.setdefault(resolved_account_id, {})
+    if account_cfg.get("enabled") is not enabled:
+        account_cfg["enabled"] = enabled
+        changed = True
+    return changed, resolved_account_id
+
+
+def _mutate_feishu_enabled(
+    config: dict[str, Any],
+    *,
+    enabled: bool,
+    account_id: Optional[str],
+) -> bool:
+    normalized_account = str(account_id or "default").strip()
+    if normalized_account not in {"", "default"}:
+        raise click.ClickException("V1 仅支持飞书默认账号，`--account-id` 仅支持 default")
+    changed = _ensure_plugin_enabled(config, FEISHU_PLUGIN_ID) if enabled else False
+    channels = config.setdefault("channels", {})
+    feishu_cfg = channels.setdefault(FEISHU_CHANNEL_KEY, {})
+    if feishu_cfg.get("enabled") is not enabled:
+        feishu_cfg["enabled"] = enabled
+        changed = True
+    return changed
+
+
+def _mutate_feishu_connect_config(config: dict[str, Any], onboarding: dict[str, Any]) -> bool:
+    changed = _ensure_plugin_enabled(config, FEISHU_PLUGIN_ID)
+    channels = config.setdefault("channels", {})
+    feishu_cfg = channels.setdefault(FEISHU_CHANNEL_KEY, {})
+
+    desired_pairs = {
+        "enabled": True,
+        "appId": str(onboarding.get("appId") or "").strip(),
+        "appSecret": str(onboarding.get("appSecret") or "").strip(),
+        "domain": str(onboarding.get("domain") or "feishu").strip() or "feishu",
+    }
+    if not desired_pairs["appId"] or not desired_pairs["appSecret"]:
+        raise OpenClawGatewayError("飞书 onboarding 结果缺少 appId/appSecret")
+
+    defaults = {
+        "connectionMode": "websocket",
+        "requireMention": True,
+    }
+    for key, value in {**defaults, **desired_pairs}.items():
+        if feishu_cfg.get(key) != value:
+            feishu_cfg[key] = value
+            changed = True
+
+    user_info = onboarding.get("userInfo") if isinstance(onboarding.get("userInfo"), dict) else {}
+    open_id = str(user_info.get("openId") or "").strip()
+    if open_id:
+        if feishu_cfg.get("dmPolicy") != "allowlist":
+            feishu_cfg["dmPolicy"] = "allowlist"
+            changed = True
+        allow_from = feishu_cfg.setdefault("allowFrom", [])
+        if open_id not in allow_from:
+            allow_from.append(open_id)
+            changed = True
+        if feishu_cfg.get("groupPolicy") != "allowlist":
+            feishu_cfg["groupPolicy"] = "allowlist"
+            changed = True
+        group_allow_from = feishu_cfg.setdefault("groupAllowFrom", [])
+        if open_id not in group_allow_from:
+            group_allow_from.append(open_id)
+            changed = True
+        groups = feishu_cfg.get("groups")
+        if not isinstance(groups, dict) or "*" not in groups:
+            feishu_cfg["groups"] = {"*": {"enabled": True}}
+            changed = True
+    else:
+        if feishu_cfg.get("dmPolicy") not in {"pairing", "allowlist", "open"}:
+            feishu_cfg["dmPolicy"] = "pairing"
+            changed = True
+        if not feishu_cfg.get("groupPolicy"):
+            feishu_cfg["groupPolicy"] = "open"
+            changed = True
+
+    return changed
+
+
 @click.group("openclaw", context_settings=CONTEXT_SETTINGS, help=build_resource_group_help(OPENCLAW_RESOURCE))
 def openclaw():
     pass
+
+
+@openclaw.group(
+    "gateway",
+    context_settings=CONTEXT_SETTINGS,
+    help="OpenClaw gateway 入口、日志与诊断。",
+)
+def openclaw_gateway():
+    pass
+
+
+@openclaw_gateway.command("open", context_settings=CONTEXT_SETTINGS)
+@click.argument("agent_ref", required=False)
+@region_option(default=None, envvar=None, help_text="区域 (默认优先读取 .agentengine.state)")
+@click.option("--no-open", is_flag=True, help="仅打印 URL，不自动打开浏览器")
+@cli_output_option()
+def gateway_open(agent_ref: Optional[str], region: Optional[str], no_open: bool, output_mode: str | None):
+    """打开 OpenClaw gateway Dashboard。"""
+    _ = output_mode
+    no_open = no_open or is_json_output()
+
+    async def _run():
+        resolved_region, detail = await _resolve_openclaw_detail_or_raise(agent_ref, region=region)
+        await _ensure_openclaw_gateway_available(resolved_region, detail)
+        gateway = _build_gateway_client(resolved_region, detail)
+        try:
+            info = await gateway.build_access_info()
+        finally:
+            await gateway.close()
+
+        payload = {
+            "ok": True,
+            "agent_id": detail.get("agent_id"),
+            "name": detail.get("name"),
+            "region": resolved_region,
+            "status": detail.get("status"),
+            "dashboard_url": info.access_url,
+            "ws_url": info.ws_url,
+            "auth_mode": "cookie-session",
+            "link_id": info.link_id,
+            "expires_at": info.expires_at,
+        }
+        if is_json_output():
+            emit_json(payload)
+            return
+
+        print_success("OpenClaw gateway 短链已生成")
+        print_kv("OpenClaw", str(detail.get("name") or detail.get("agent_id") or "-"))
+        print_kv("Dashboard", info.access_url, value_style="#58a6ff")
+        print_kv("WebSocket", info.ws_url, value_style="#58a6ff")
+        print_kv("认证方式", "cookie-session")
+        if not no_open:
+            webbrowser.open(info.access_url)
+
+    try:
+        asyncio.run(_run())
+    except Exception as e:
+        _abort_openclaw_error(e, context="打开 gateway 失败", argv=["openclaw", "gateway", "open"])
+
+
+@openclaw_gateway.command("ws-url", context_settings=CONTEXT_SETTINGS)
+@click.argument("agent_ref", required=False)
+@region_option(default=None, envvar=None, help_text="区域 (默认优先读取 .agentengine.state)")
+@cli_output_option()
+def gateway_ws_url(agent_ref: Optional[str], region: Optional[str], output_mode: str | None):
+    """打印 gateway 短链与推导后的 websocket 地址。"""
+    _ = output_mode
+
+    async def _run():
+        resolved_region, detail = await _resolve_openclaw_detail_or_raise(agent_ref, region=region)
+        await _ensure_openclaw_gateway_available(resolved_region, detail)
+        gateway = _build_gateway_client(resolved_region, detail)
+        try:
+            info = await gateway.build_access_info()
+        finally:
+            await gateway.close()
+
+        payload = {
+            "ok": True,
+            "agent_id": detail.get("agent_id"),
+            "name": detail.get("name"),
+            "region": resolved_region,
+            "dashboard_url": info.access_url,
+            "ws_url": info.ws_url,
+            "auth_mode": "cookie-session",
+            "note": "该 ws-url 依赖短链 cookie session，不承诺长期复用。",
+        }
+        _emit_data_payload("OpenClaw Gateway 连接信息", payload, subtitle=str(detail.get("name") or "-"))
+
+    try:
+        asyncio.run(_run())
+    except Exception as e:
+        _abort_openclaw_error(e, context="获取 gateway ws-url 失败", argv=["openclaw", "gateway", "ws-url"])
+
+
+@openclaw_gateway.command("logs", context_settings=CONTEXT_SETTINGS)
+@click.argument("agent_ref", required=False)
+@region_option(default=None, envvar=None, help_text="区域 (默认优先读取 .agentengine.state)")
+@click.option("--instance", default=None, help="实例名；不填则查询全部实例")
+@click.option("--log-type", type=click.Choice(["stdout", "log"], case_sensitive=False), default="stdout", show_default=True, help="日志类型")
+@click.option("--start-time", default=None, help="开始时间，支持 Unix 毫秒或 ISO-8601")
+@click.option("--end-time", default=None, help="结束时间，支持 Unix 毫秒或 ISO-8601")
+@cli_output_option()
+def gateway_logs(
+    agent_ref: Optional[str],
+    region: Optional[str],
+    instance: Optional[str],
+    log_type: str,
+    start_time: Optional[str],
+    end_time: Optional[str],
+    output_mode: str | None,
+):
+    """读取 OpenClaw gateway 日志。"""
+    _ = output_mode
+
+    async def _run():
+        from ksadk.api import AgentEngineClient
+
+        resolved_region, detail = await _resolve_openclaw_detail_or_raise(agent_ref, region=region)
+        async with AgentEngineClient(region=resolved_region) as client:
+            resp = await client.get_agent_logs(
+                agent_id=str(detail.get("agent_id") or ""),
+                instance=instance,
+                log_type=log_type,
+                start_time=_parse_time_arg(start_time),
+                end_time=_parse_time_arg(end_time),
+                page=1,
+                page_size=200,
+            )
+
+        payload = {
+            "ok": True,
+            "agent_id": detail.get("agent_id"),
+            "name": detail.get("name"),
+            "region": resolved_region,
+            "instance": resp.get("instance"),
+            "log_type": resp.get("log_type"),
+            "total": resp.get("total"),
+            "logs": resp.get("logs", []),
+        }
+        if is_json_output():
+            emit_json(payload)
+            return
+
+        print_title("OpenClaw Gateway 日志", str(detail.get("name") or detail.get("agent_id") or "-"))
+        print_kv("实例", str(resp.get("instance") or "all"))
+        print_kv("日志类型", str(resp.get("log_type") or log_type))
+        print_kv("日志条数", str(resp.get("total") or 0))
+        logs = resp.get("logs", []) or []
+        if not logs:
+            print_warn("没有查询到日志")
+            return
+        for line in logs:
+            console.print(str(line), markup=False)
+
+    try:
+        asyncio.run(_run())
+    except Exception as e:
+        _abort_openclaw_error(e, context="获取 gateway 日志失败", argv=["openclaw", "gateway", "logs"])
+
+
+@openclaw_gateway.command("doctor", context_settings=CONTEXT_SETTINGS)
+@click.argument("agent_ref", required=False)
+@region_option(default=None, envvar=None, help_text="区域 (默认优先读取 .agentengine.state)")
+@cli_output_option()
+def gateway_doctor(agent_ref: Optional[str], region: Optional[str], output_mode: str | None):
+    """检查 gateway 短链、cookie 与 websocket 链路。"""
+    _ = output_mode
+
+    async def _run() -> dict[str, Any]:
+        checks: list[dict[str, Any]] = []
+        resolved_region, detail = await _resolve_openclaw_detail_or_raise(agent_ref, region=region)
+        checks.append(_build_gateway_instance_check(detail))
+
+        if checks[-1]["ok"]:
+            gateway = _build_gateway_client(resolved_region, detail)
+            try:
+                info = await gateway.build_access_info()
+                checks.append(
+                    {
+                        "name": "dashboard_short_link",
+                        "ok": True,
+                        "dashboard_url": info.access_url,
+                        "ws_url": info.ws_url,
+                    }
+                )
+                hello = await gateway.connect()
+                checks.append(
+                    {
+                        "name": "cookie_ws_handshake",
+                        "ok": True,
+                        "methods": len(gateway.methods),
+                    }
+                )
+                cfg = await gateway.config_get()
+                checks.append(
+                    {
+                        "name": "gateway_rpc",
+                        "ok": isinstance(cfg, dict),
+                        "config_path": cfg.get("path"),
+                    }
+                )
+            except Exception as exc:
+                checks.append({"name": "gateway_connectivity", "ok": False, "error": str(exc)})
+            finally:
+                await gateway.close()
+
+        return {
+            "ok": all(bool(item.get("ok")) for item in checks),
+            "agent_id": detail.get("agent_id"),
+            "name": detail.get("name"),
+            "region": resolved_region,
+            "checks": checks,
+        }
+
+    try:
+        payload = asyncio.run(_run())
+        _emit_data_payload("OpenClaw Gateway Doctor", payload, subtitle=str(payload.get("name") or "-"))
+    except Exception as e:
+        _abort_openclaw_error(e, context="gateway doctor 执行失败", argv=["openclaw", "gateway", "doctor"])
+
+
+@openclaw.group(
+    "channel",
+    context_settings=CONTEXT_SETTINGS,
+    help="OpenClaw Channel 统一入口。",
+)
+def openclaw_channel():
+    pass
+
+
+@openclaw_channel.command("status", context_settings=CONTEXT_SETTINGS)
+@click.argument("agent_ref", required=False)
+@region_option(default=None, envvar=None, help_text="区域 (默认优先读取 .agentengine.state)")
+@click.option("--channel", type=click.Choice(OPENCLAW_CHANNELS, case_sensitive=False), default=None, help="指定 channel")
+@click.option("--probe", is_flag=True, help="触发远端 probe 刷新 channel 快照")
+@cli_output_option()
+def channel_status(
+    agent_ref: Optional[str],
+    region: Optional[str],
+    channel: Optional[str],
+    probe: bool,
+    output_mode: str | None,
+):
+    """查看远端 channel 状态快照。"""
+    _ = output_mode
+    normalized_channel = str(channel).lower() if channel else None
+
+    async def _run():
+        resolved_region, detail = await _resolve_openclaw_detail_or_raise(agent_ref, region=region)
+        await _ensure_openclaw_gateway_available(resolved_region, detail)
+        gateway = _build_gateway_client(resolved_region, detail)
+        try:
+            await gateway.connect()
+            snapshot = await gateway.channels_status(probe=probe, timeout_ms=8_000 if probe else None)
+        finally:
+            await gateway.close()
+
+        payload = {
+            "ok": True,
+            "agent_id": detail.get("agent_id"),
+            "name": detail.get("name"),
+            "region": resolved_region,
+            "channel": normalized_channel,
+            "probe": probe,
+            "snapshot": snapshot,
+            "selected": _extract_channel_snapshot(snapshot, normalized_channel),
+        }
+        _emit_data_payload("OpenClaw Channel 状态", payload, subtitle=str(detail.get("name") or "-"))
+
+    try:
+        asyncio.run(_run())
+    except Exception as e:
+        _abort_openclaw_error(e, context="获取 channel 状态失败", argv=["openclaw", "channel", "status"])
+
+
+@openclaw_channel.command("connect", context_settings=CONTEXT_SETTINGS)
+@click.argument("agent_ref", required=False)
+@region_option(default=None, envvar=None, help_text="区域 (默认优先读取 .agentengine.state)")
+@click.option("--channel", "channel_name", type=click.Choice(OPENCLAW_CHANNELS, case_sensitive=False), required=True, help="目标 channel")
+@click.option("--open-qr", is_flag=True, help="在本地浏览器额外打开二维码链接")
+def channel_connect(
+    agent_ref: Optional[str],
+    region: Optional[str],
+    channel_name: str,
+    open_qr: bool,
+):
+    """连接微信或飞书 channel。"""
+    normalized_channel = channel_name.lower()
+
+    async def _run():
+        resolved_region, detail = await _resolve_openclaw_detail_or_raise(agent_ref, region=region)
+        await _ensure_openclaw_gateway_available(resolved_region, detail)
+
+        if normalized_channel == "weixin":
+            preflight_changed = False
+            preflight_gateway = _build_gateway_client(resolved_region, detail)
+            try:
+                await preflight_gateway.connect()
+                cfg_snapshot = await preflight_gateway.config_get()
+                config, base_hash = _extract_config_state(cfg_snapshot)
+                preflight_changed = _ensure_plugin_enabled(config, WEIXIN_PLUGIN_ID)
+                if preflight_changed:
+                    await preflight_gateway.config_apply(
+                        config=config,
+                        base_hash=base_hash,
+                        note="ksadk enable bundled weixin plugin",
+                    )
+            finally:
+                await preflight_gateway.close()
+
+            if preflight_changed:
+                await _wait_for_gateway_ready(resolved_region, detail)
+
+            gateway = _build_gateway_client(resolved_region, detail)
+            try:
+                await gateway.connect()
+                start = await gateway.web_login_start(force=False, timeout_ms=30_000)
+                qr_url = str(start.get("qrDataUrl") or "").strip()
+                session_key = str(start.get("sessionKey") or "").strip()
+                if not qr_url:
+                    raise OpenClawGatewayError("微信扫码登录未返回二维码 URL")
+
+                print_success("请使用微信扫码完成连接")
+                print_kv("二维码链接", qr_url, value_style="#58a6ff")
+                _render_terminal_qr(qr_url)
+                if open_qr:
+                    webbrowser.open(qr_url)
+
+                wait_result = await gateway.web_login_wait(
+                    account_id=session_key or None,
+                    timeout_ms=120_000,
+                )
+            finally:
+                await gateway.close()
+
+            snapshot = await _fetch_channel_snapshot_with_retry(
+                resolved_region,
+                detail,
+                probe=True,
+            )
+
+            payload = {
+                "ok": True,
+                "agent_id": detail.get("agent_id"),
+                "name": detail.get("name"),
+                "region": resolved_region,
+                "channel": normalized_channel,
+                "qr_url": qr_url,
+                "login": wait_result,
+                "status": _extract_channel_snapshot(snapshot, normalized_channel),
+            }
+            _emit_data_payload("OpenClaw Channel Connect", payload, subtitle="weixin")
+            return
+
+        bootstrap_gateway = _build_gateway_client(resolved_region, detail)
+        try:
+            await bootstrap_gateway.connect()
+            cfg_snapshot = await bootstrap_gateway.config_get()
+        finally:
+            await bootstrap_gateway.close()
+
+        config, _ = _extract_config_state(cfg_snapshot)
+        existing_app_id = str(
+            ((config.get("channels") or {}).get(FEISHU_CHANNEL_KEY) or {}).get("appId") or ""
+        ).strip() or None
+        onboarding = await _run_feishu_onboarding(existing_app_id)
+        changed_config = copy.deepcopy(config)
+        changed = _mutate_feishu_connect_config(changed_config, onboarding)
+        base_hash = str(cfg_snapshot.get("hash") or "").strip()
+        if changed:
+            apply_gateway = _build_gateway_client(resolved_region, detail)
+            try:
+                await apply_gateway.connect()
+                await apply_gateway.config_apply(
+                    config=changed_config,
+                    base_hash=base_hash,
+                    note="ksadk configure feishu channel",
+                )
+            finally:
+                await apply_gateway.close()
+            await _wait_for_gateway_ready(resolved_region, detail)
+
+        snapshot = await _fetch_channel_snapshot_with_retry(
+            resolved_region,
+            detail,
+            probe=True,
+        )
+
+        payload = {
+            "ok": True,
+            "agent_id": detail.get("agent_id"),
+            "name": detail.get("name"),
+            "region": resolved_region,
+            "channel": normalized_channel,
+            "configured": True,
+            "changed": changed,
+            "status": _extract_channel_snapshot(snapshot, normalized_channel),
+        }
+        _emit_data_payload("OpenClaw Channel Connect", payload, subtitle="feishu")
+
+    try:
+        asyncio.run(_run())
+    except Exception as e:
+        _abort_openclaw_error(e, context="channel connect 失败", argv=["openclaw", "channel", "connect"])
+
+
+def _run_channel_toggle_command(
+    *,
+    action: str,
+    enabled: bool,
+    agent_ref: Optional[str],
+    region: Optional[str],
+    channel_name: str,
+    account_id: Optional[str],
+) -> None:
+    normalized_channel = channel_name.lower()
+
+    async def _run():
+        resolved_region, detail = await _resolve_openclaw_detail_or_raise(agent_ref, region=region)
+        await _ensure_openclaw_gateway_available(resolved_region, detail)
+
+        gateway = _build_gateway_client(resolved_region, detail)
+        try:
+            await gateway.connect()
+            cfg_snapshot = await gateway.config_get()
+            config, base_hash = _extract_config_state(cfg_snapshot)
+            if normalized_channel == "weixin":
+                changed, resolved_account_id = _mutate_weixin_account_enabled(
+                    config,
+                    enabled=enabled,
+                    account_id=account_id,
+                )
+            else:
+                changed = _mutate_feishu_enabled(config, enabled=enabled, account_id=account_id)
+                resolved_account_id = "default"
+
+            if changed:
+                await gateway.config_apply(
+                    config=config,
+                    base_hash=base_hash,
+                    note=f"ksadk {action} {normalized_channel} channel",
+                )
+        finally:
+            await gateway.close()
+
+        if changed:
+            await _wait_for_gateway_ready(resolved_region, detail)
+        snapshot = await _fetch_channel_snapshot_with_retry(
+            resolved_region,
+            detail,
+            probe=True,
+        )
+
+        payload = {
+            "ok": True,
+            "agent_id": detail.get("agent_id"),
+            "name": detail.get("name"),
+            "region": resolved_region,
+            "channel": normalized_channel,
+            "account_id": resolved_account_id,
+            "changed": changed,
+            "enabled": enabled,
+            "status": _extract_channel_snapshot(snapshot, normalized_channel),
+        }
+        _emit_data_payload(f"OpenClaw Channel {action.title()}", payload, subtitle=normalized_channel)
+
+    try:
+        asyncio.run(_run())
+    except Exception as e:
+        _abort_openclaw_error(e, context=f"channel {action} 失败", argv=["openclaw", "channel", action])
+
+
+@openclaw_channel.command("enable", context_settings=CONTEXT_SETTINGS)
+@click.argument("agent_ref", required=False)
+@region_option(default=None, envvar=None, help_text="区域 (默认优先读取 .agentengine.state)")
+@click.option("--channel", "channel_name", type=click.Choice(OPENCLAW_CHANNELS, case_sensitive=False), required=True, help="目标 channel")
+@click.option("--account-id", default=None, help="账号 ID；飞书 V1 仅支持 default")
+def channel_enable(
+    agent_ref: Optional[str],
+    region: Optional[str],
+    channel_name: str,
+    account_id: Optional[str],
+):
+    """启用远端 channel 配置。"""
+    _run_channel_toggle_command(
+        action="enable",
+        enabled=True,
+        agent_ref=agent_ref,
+        region=region,
+        channel_name=channel_name,
+        account_id=account_id,
+    )
+
+
+@openclaw_channel.command("disable", context_settings=CONTEXT_SETTINGS)
+@click.argument("agent_ref", required=False)
+@region_option(default=None, envvar=None, help_text="区域 (默认优先读取 .agentengine.state)")
+@click.option("--channel", "channel_name", type=click.Choice(OPENCLAW_CHANNELS, case_sensitive=False), required=True, help="目标 channel")
+@click.option("--account-id", default=None, help="账号 ID；飞书 V1 仅支持 default")
+def channel_disable(
+    agent_ref: Optional[str],
+    region: Optional[str],
+    channel_name: str,
+    account_id: Optional[str],
+):
+    """禁用远端 channel 配置。"""
+    _run_channel_toggle_command(
+        action="disable",
+        enabled=False,
+        agent_ref=agent_ref,
+        region=region,
+        channel_name=channel_name,
+        account_id=account_id,
+    )
+
+
+@openclaw_channel.command("doctor", context_settings=CONTEXT_SETTINGS)
+@click.argument("agent_ref", required=False)
+@region_option(default=None, envvar=None, help_text="区域 (默认优先读取 .agentengine.state)")
+@click.option("--channel", type=click.Choice(OPENCLAW_CHANNELS, case_sensitive=False), default=None, help="指定 channel")
+@cli_output_option()
+def channel_doctor(agent_ref: Optional[str], region: Optional[str], channel: Optional[str], output_mode: str | None):
+    """检查 channel 接入前置条件。"""
+    _ = output_mode
+    normalized_channel = str(channel).lower() if channel else None
+
+    async def _run():
+        checks: list[dict[str, Any]] = []
+        resolved_region, detail = await _resolve_openclaw_detail_or_raise(agent_ref, region=region)
+        checks.append(_build_gateway_instance_check(detail))
+
+        snapshot = None
+        methods: list[str] = []
+        config: dict[str, Any] = {}
+        if checks[-1]["ok"]:
+            gateway = _build_gateway_client(resolved_region, detail)
+            try:
+                info = await gateway.build_access_info()
+                checks.append({"name": "dashboard_short_link", "ok": True, "dashboard_url": info.access_url})
+                await gateway.connect()
+                methods = gateway.methods
+                checks.append({"name": "cookie_ws_handshake", "ok": True, "methods": len(methods)})
+                snapshot = await gateway.channels_status(probe=False)
+                config_snapshot = await gateway.config_get()
+                config = config_snapshot.get("config") if isinstance(config_snapshot.get("config"), dict) else {}
+            except Exception as exc:
+                checks.append({"name": "gateway_connectivity", "ok": False, "error": str(exc)})
+            finally:
+                await gateway.close()
+
+        channels_to_check = [normalized_channel] if normalized_channel else list(OPENCLAW_CHANNELS)
+        plugin_entries = ((config.get("plugins") or {}).get("entries") or {}) if isinstance(config, dict) else {}
+        for item in channels_to_check:
+            selected_snapshot = _extract_channel_snapshot(snapshot, item)
+            if item == "weixin":
+                checks.append(
+                    {
+                        "name": "weixin_plugin_visible",
+                        "ok": WEIXIN_PLUGIN_ID in plugin_entries or selected_snapshot is not None,
+                        "plugin_id": WEIXIN_PLUGIN_ID,
+                    }
+                )
+                checks.append(
+                    {
+                        "name": "weixin_status_snapshot",
+                        "ok": selected_snapshot is not None,
+                    }
+                )
+                checks.append(
+                    {
+                        "name": "weixin_qr_rpc",
+                        "ok": "web.login.start" in methods and "web.login.wait" in methods,
+                        "required_methods": ["web.login.start", "web.login.wait"],
+                    }
+                )
+            elif item == "feishu":
+                checks.append(
+                    {
+                        "name": "feishu_plugin_visible",
+                        "ok": FEISHU_PLUGIN_ID in plugin_entries or selected_snapshot is not None,
+                        "plugin_id": FEISHU_PLUGIN_ID,
+                    }
+                )
+                checks.append(
+                    {
+                        "name": "feishu_status_snapshot",
+                        "ok": selected_snapshot is not None,
+                    }
+                )
+                node_path = shutil.which("node")
+                npx_path = shutil.which("npx")
+                checks.append(
+                    {
+                        "name": "feishu_local_node",
+                        "ok": bool(node_path and npx_path),
+                        "node": node_path,
+                        "npx": npx_path,
+                    }
+                )
+
+        return {
+            "ok": all(bool(item.get("ok")) for item in checks),
+            "agent_id": detail.get("agent_id"),
+            "name": detail.get("name"),
+            "region": resolved_region,
+            "channel": normalized_channel,
+            "checks": checks,
+            "snapshot": snapshot,
+        }
+
+    try:
+        payload = asyncio.run(_run())
+        _emit_data_payload("OpenClaw Channel Doctor", payload, subtitle=str(payload.get("name") or "-"))
+    except Exception as e:
+        _abort_openclaw_error(e, context="channel doctor 执行失败", argv=["openclaw", "channel", "doctor"])
 
 
 @openclaw.command("deploy", context_settings=CONTEXT_SETTINGS)
@@ -1177,6 +2333,8 @@ def status(agent_ref: Optional[str], region: Optional[str], dry_run: bool, outpu
 
             detail = _flatten_agent_detail(agent)
             status_val = detail.get("status", "UNKNOWN")
+            created_at_display = _format_cli_timestamp(detail.get("created_at"))
+            updated_at_display = _format_cli_timestamp(detail.get("updated_at"))
             render_descriptor_status(
                 OPENCLAW_RESOURCE,
                 subtitle=str(detail.get("name") or agent_ref),
@@ -1187,8 +2345,8 @@ def status(agent_ref: Optional[str], region: Optional[str], dry_run: bool, outpu
                     ("区域", str(detail.get("region") or region), None),
                     ("Endpoint", str(detail.get("endpoint") or "N/A"), "#58a6ff"),
                     ("镜像", str(detail.get("artifact_path") or "-"), None),
-                    ("创建时间", str(detail.get("created_at") or "-"), None),
-                    ("更新时间", str(detail.get("updated_at") or "-"), None),
+                    ("创建时间", created_at_display, None),
+                    ("更新时间", updated_at_display, None),
                 ],
                 item={
                     "id": str(detail.get("agent_id") or "-"),

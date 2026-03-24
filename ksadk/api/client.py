@@ -607,6 +607,41 @@ class AgentEngineClient:
             params["Id"] = agent_id
         return self._action("ListAgents", params)
 
+    async def get_agent_logs(
+        self,
+        *,
+        agent_id: str,
+        instance: Optional[str] = None,
+        log_type: str = "Stdout",
+        start_time: Optional[int] = None,
+        end_time: Optional[int] = None,
+        keyword: Optional[str] = None,
+        page: int = 1,
+        page_size: int = 100,
+    ) -> Dict[str, Any]:
+        """获取 Agent 日志。"""
+        normalized_log_type = (log_type or "Stdout").strip()
+        if normalized_log_type.lower() == "stdout":
+            normalized_log_type = "Stdout"
+        elif normalized_log_type.lower() == "log":
+            normalized_log_type = "Log"
+
+        params: Dict[str, Any] = {
+            "AgentId": agent_id,
+            "LogType": normalized_log_type,
+            "Page": int(page),
+            "PageSize": int(page_size),
+        }
+        if instance:
+            params["Instance"] = instance
+        if start_time is not None:
+            params["StartTime"] = int(start_time)
+        if end_time is not None:
+            params["EndTime"] = int(end_time)
+        if keyword:
+            params["Keyword"] = keyword
+        return self._action("GetAgentLogs", params)
+
     async def delete_agent(self, agent_id: str) -> bool:
         """删除 Agent"""
         self._action("DeleteAgent", {"AgentId": agent_id})

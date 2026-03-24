@@ -111,25 +111,32 @@ Usage: cli openclaw [OPTIONS] COMMAND [ARGS]...
   OpenClaw 资源管理。
 
   标准动作:
-      list    列出已部署的 OpenClaw
-      status  查看单个 OpenClaw 状态
-      delete  删除一个或多个 OpenClaw
-      deploy  部署 OpenClaw 到云端
+      deploy   部署 OpenClaw 到云端
+      list     列出已部署的 OpenClaw
+      status   查看单个 OpenClaw 状态
+      gateway  Gateway 入口、日志与诊断
+      channel  Channel 统一入口
+      delete   删除一个或多个 OpenClaw
 
   示例:
       agentengine openclaw deploy
       agentengine openclaw list
       agentengine openclaw status <id>
+      agentengine openclaw gateway open <id>
+      agentengine openclaw channel status <id> --probe
+      agentengine openclaw channel connect <id> --channel weixin
       agentengine openclaw delete <id>
 
 Options:
   -h, --help  Show this message and exit.
 
 Commands:
-  delete  删除 OpenClaw 实例。
-  deploy  部署 OpenClaw 到云端
-  list    列出已部署的 OpenClaw 实例
-  status  查看 OpenClaw 状态
+  channel  OpenClaw Channel 统一入口。
+  delete   删除 OpenClaw 实例。
+  deploy   部署 OpenClaw 到云端
+  gateway  OpenClaw gateway 入口、日志与诊断。
+  list     列出已部署的 OpenClaw 实例
+  status   查看 OpenClaw 状态
 
 === version_help ===
 Usage: cli version [OPTIONS] COMMAND [ARGS]...
@@ -201,9 +208,10 @@ Usage: cli config set [OPTIONS] [SET_ITEMS]...
 
   非交互式设置配置项。
 
-  示例:     agentengine config set region=cn-beijing-6     agentengine config set
-  OPENAI_MODEL_NAME=deepseek-v3.2 OPENAI_BASE_URL=https://example.com/v1
-  agentengine config set KSYUN_REGION=cn-beijing-6 --global
+  示例:
+    agentengine config set region=cn-beijing-6
+    agentengine config set OPENAI_MODEL_NAME=glm-5 OPENAI_BASE_URL=https://example.com/v1
+    agentengine config set KSYUN_REGION=cn-beijing-6 --global
 
 Options:
   --global                同时更新全局配置

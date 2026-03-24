@@ -385,7 +385,7 @@ OPENCLAW_VPC_REGISTRY ?= hub-vpc-cn-beijing-6.kce.ksyun.com
 OPENCLAW_VPC_IMAGE ?= $(subst hub.kce.ksyun.com,$(OPENCLAW_VPC_REGISTRY),$(OPENCLAW_IMAGE))
 OPENCLAW_TAG ?= latest
 OPENCLAW_CONTEXT := deploy/openclaw
-OPENCLAW_BASE_IMAGE ?= alpine/openclaw:latest
+OPENCLAW_BASE_IMAGE ?= alpine/openclaw:2026.3.23-2
 OPENCLAW_PYPI_INDEX_URL ?= https://mirrors.aliyun.com/pypi/simple
 OPENCLAW_NPM_REGISTRY ?= https://registry.npmmirror.com
 

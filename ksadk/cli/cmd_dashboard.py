@@ -11,7 +11,12 @@ from typing import Optional, Tuple
 import click
 
 from ksadk.api import AgentEngineAPIError, AgentEngineClient
-from ksadk.cli.agent_ref import ResolvedAgentRef, merge_agent_inputs, resolve_agent_ref
+from ksadk.cli.agent_ref import (
+    ResolvedAgentRef,
+    merge_agent_inputs,
+    resolve_agent_ref,
+    resolve_openclaw_ref,
+)
 from ksadk.cli.dry_run import dry_run_option, effective_dry_run, run_async_with_dry_run
 from ksadk.cli.error_utils import abort_with_cli_error, remote_error, resolution_error, usage_error
 from ksadk.cli.resource_common import (
@@ -530,6 +535,11 @@ def _resolve_references(
         include_state=True,
         include_project_config=False,
     )
+    openclaw_state_ref = resolve_openclaw_ref(
+        None,
+        cwd=cwd,
+        include_state=True,
+    )
     config_ref = resolve_agent_ref(
         None,
         cwd=cwd,
@@ -541,6 +551,18 @@ def _resolve_references(
         if config_ref and config_ref.value != state_ref.value:
             fallback = config_ref
         return state_ref, fallback
+    if openclaw_state_ref:
+        fallback = None
+        if config_ref and config_ref.value != openclaw_state_ref.value:
+            fallback = config_ref
+        return (
+            ResolvedAgentRef(
+                value=openclaw_state_ref.value,
+                source=openclaw_state_ref.source,
+                source_path=openclaw_state_ref.source_path,
+            ),
+            fallback,
+        )
     return config_ref, None
 
 
