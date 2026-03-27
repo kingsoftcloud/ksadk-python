@@ -20,8 +20,8 @@ from pydantic import BaseModel
 
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.server.api_models import AgentRunRequest, LlmResponse, GenAiContent, Part
+from ksadk.sessions import Session, SessionEvent, get_session_service
 from ksadk.tracing import get_memory_exporter
-from ksadk.server.session_store import get_session_store, Session
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +108,47 @@ def _extract_user_input_from_parts(parts: List[Part]) -> str:
 
     return "\n\n".join(s for s in segments if s).strip()
 
+
+def _extract_text_from_event_parts(parts: List[Dict[str, Any]]) -> str:
+    segments: List[str] = []
+    for part in parts or []:
+        if isinstance(part, dict) and part.get("text"):
+            segments.append(str(part["text"]))
+    return "".join(segments)
+
+
+def _build_history_from_events(events: List[SessionEvent]) -> List[Dict[str, str]]:
+    history: List[Dict[str, str]] = []
+    for event in events:
+        content = event.content or {}
+        role = str(content.get("role") or "")
+        if role == "assistant":
+            role = "model"
+        text = _extract_text_from_event_parts(content.get("parts") or [])
+        if text and role in ("user", "model"):
+            history.append({"role": role, "content": text})
+    return history
+
+
+async def _hydrate_session(session: Optional[Session]) -> Optional[Session]:
+    if not session:
+        return None
+    session.events = await get_session_service().get_events(session.id)
+    return session
+
+
+async def _ensure_session(agent_id: str, user_id: str, session_id: Optional[str]) -> Session:
+    service = get_session_service()
+    if session_id:
+        existing = await service.get_session(session_id)
+        if existing:
+            return await _hydrate_session(existing) or existing
+        created = await service.create_session(agent_id, user_id, session_id=session_id)
+        return await _hydrate_session(created) or created
+
+    created = await service.create_session(agent_id, user_id)
+    return await _hydrate_session(created) or created
+
 # ============================================================
 # Core ADK API Endpoints
 # ============================================================
@@ -136,43 +177,50 @@ async def list_apps(relative_path: str = "./"):
 @app.post("/apps/{app_name}/users/{user_id}/sessions")
 async def create_session(app_name: str, user_id: str, request: Request):
     """Create a new session"""
-    store = get_session_store()
-    
     # Check if importing existing events
     body = {}
     try:
         body = await request.json()
     except:
         pass
-    
-    events = body.get("events", [])
-    session = store.create_session(app_name, user_id, events)
-    return session.to_dict()
+
+    service = get_session_service()
+    session = await _ensure_session(app_name, user_id, body.get("sessionId") or body.get("id"))
+
+    for raw_event in body.get("events", []):
+        await service.append_event(session.id, SessionEvent.from_dict(raw_event, session_id=session.id))
+
+    hydrated = await _hydrate_session(await service.get_session(session.id))
+    return hydrated.to_legacy_dict() if hydrated else session.to_legacy_dict()
 
 
 @app.get("/apps/{app_name}/users/{user_id}/sessions")
 async def list_sessions(app_name: str, user_id: str):
     """List all sessions for a user"""
-    store = get_session_store()
-    sessions = store.list_sessions(app_name, user_id)
-    return [s.to_dict() for s in sessions]
+    service = get_session_service()
+    sessions = await service.list_sessions(app_name, user_id)
+    hydrated: List[Dict[str, Any]] = []
+    for session in sessions:
+        session.events = await service.get_events(session.id)
+        hydrated.append(session.to_legacy_dict())
+    return hydrated
 
 
 @app.get("/apps/{app_name}/users/{user_id}/sessions/{session_id}")
 async def get_session(app_name: str, user_id: str, session_id: str):
     """Get a specific session with its events"""
-    store = get_session_store()
-    session = store.get_session(session_id)
+    service = get_session_service()
+    session = await _hydrate_session(await service.get_session(session_id))
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    return session.to_dict()
+    return session.to_legacy_dict()
 
 
 @app.delete("/apps/{app_name}/users/{user_id}/sessions/{session_id}")
 async def delete_session(app_name: str, user_id: str, session_id: str):
     """Delete a session"""
-    store = get_session_store()
-    if store.delete_session(session_id):
+    service = get_session_service()
+    if await service.delete_session(session_id):
         return {"status": "deleted"}
     raise HTTPException(status_code=404, detail="Session not found")
 
@@ -238,18 +286,10 @@ async def run_sse(request: AgentRunRequest):
     if not runner:
         raise HTTPException(status_code=500, detail="Runner not initialized")
 
-    store = get_session_store()
-    
-    # Ensure session exists
-    session_id = request.sessionId
-    if not session_id:
-        session = store.create_session(request.appName, request.userId)
-        session_id = session.id
-    else:
-        session = store.get_session(session_id)
-        if not session:
-            session = store.create_session(request.appName, request.userId)
-            session_id = session.id
+    service = get_session_service()
+
+    session = await _ensure_session(request.appName, request.userId, request.sessionId)
+    session_id = session.id
     
     # Extract user input (text + uploaded file parts)
     user_input = _extract_user_input_from_parts(request.newMessage.parts if request.newMessage else [])
@@ -258,17 +298,22 @@ async def run_sse(request: AgentRunRequest):
     invocation_id = request.invocationId or str(uuid.uuid4())
     
     # Store user message event
-    user_event = {
-        "id": str(uuid.uuid4()),
-        "author": "user",
-        "invocationId": invocation_id,
-        "content": {
-            "role": "user",
-            "parts": [{"text": user_input}]
-        },
-        "timestamp": int(time.time() * 1000)
-    }
-    store.add_event(session_id, user_event)
+    await service.append_event(
+        session_id,
+        SessionEvent(
+            id=str(uuid.uuid4()),
+            session_id=session_id,
+            author="user",
+            event_type="text",
+            invocation_id=invocation_id,
+            content={
+                "role": "user",
+                "parts": [{"text": user_input}],
+            },
+            timestamp=time.time(),
+            state_delta=request.stateDelta or {},
+        ),
+    )
     
     # Common metadata for responses
     common_metadata = {
@@ -281,17 +326,7 @@ async def run_sse(request: AgentRunRequest):
     }
     
     # Build history from session events (for LangGraph memory)
-    history = []
-    for event in session.events:
-        content = event.get("content", {})
-        role = content.get("role", "")
-        parts = content.get("parts", [])
-        text = ""
-        for part in parts:
-            if isinstance(part, dict) and "text" in part:
-                text += part["text"]
-        if text and role in ("user", "model"):
-            history.append({"role": role, "content": text})
+    history = _build_history_from_events(await service.get_events(session_id))
 
     # Determine streaming mode from request
     use_streaming = request.streaming
@@ -311,6 +346,7 @@ async def run_sse(request: AgentRunRequest):
                 response_event = {
                     "id": str(uuid.uuid4()),
                     "author": agent_name,
+                    "sessionId": session_id,
                     "invocationId": invocation_id,
                     "content": {
                         "role": "model",
@@ -328,12 +364,13 @@ async def run_sse(request: AgentRunRequest):
                 yield f"data: {json.dumps(response_event, ensure_ascii=False)}\n\n"
                 
                 # Store assistant event
-                store.add_event(session_id, response_event)
+                await service.append_event(session_id, SessionEvent.from_dict(response_event, session_id=session_id))
                 
             except Exception as e:
                 logger.error(f"Error in invoke: {e}")
                 error_event = {
                     "id": str(uuid.uuid4()),
+                    "sessionId": session_id,
                     "invocationId": invocation_id,
                     "error": str(e),
                     "errorMessage": str(e),
@@ -358,6 +395,7 @@ async def run_sse(request: AgentRunRequest):
                         response_event = {
                             "id": event_id,
                             "author": chunk.get("node", agent_name),
+                            "sessionId": session_id,
                             "invocationId": invocation_id,
                             "content": {
                                 "role": "model",
@@ -373,6 +411,7 @@ async def run_sse(request: AgentRunRequest):
                         tool_event = {
                             "id": event_id,
                             "author": chunk.get("node", "tool"),
+                            "sessionId": session_id,
                             "invocationId": invocation_id,
                             "content": {
                                 "role": "model",
@@ -393,7 +432,7 @@ async def run_sse(request: AgentRunRequest):
                         }
                         yield f"data: {json.dumps(tool_event, ensure_ascii=False)}\n\n"
                         # Persist tool event
-                        store.add_event(session_id, tool_event)
+                        await service.append_event(session_id, SessionEvent.from_dict(tool_event, session_id=session_id))
                         
                     elif chunk.get("type") == "final":
                         final_text = chunk.get("output", "")
@@ -404,6 +443,7 @@ async def run_sse(request: AgentRunRequest):
                     final_event = {
                         "id": str(uuid.uuid4()),
                         "author": agent_name,
+                        "sessionId": session_id,
                         "invocationId": invocation_id,
                         "content": {
                             "role": "model",
@@ -420,12 +460,13 @@ async def run_sse(request: AgentRunRequest):
                     }
                     # Don't yield final again for streaming (already sent tokens)
                     # Just store for session history
-                    store.add_event(session_id, final_event)
+                    await service.append_event(session_id, SessionEvent.from_dict(final_event, session_id=session_id))
                     
             except Exception as e:
                 logger.error(f"Error in stream: {e}")
                 error_event = {
                     "id": str(uuid.uuid4()),
+                    "sessionId": session_id,
                     "invocationId": invocation_id,
                     "error": str(e),
                     "errorMessage": str(e),
@@ -451,17 +492,14 @@ async def get_session_trace(session_id: str):
     raw_spans = exporter.get_finished_spans()
     
     # Get session events for invocation mapping
-    store = get_session_store()
-    session = store.get_session(session_id)
+    service = get_session_service()
+    events = await service.get_events(session_id)
     
     # Build invocation ID mapping from session events
     invocation_ids = {}
-    if session:
-        for event in session.events:
-            event_id = event.get("id")
-            invoc_id = event.get("invocationId")
-            if event_id and invoc_id:
-                invocation_ids[event_id] = invoc_id
+    for event in events:
+        if event.id and event.invocation_id:
+            invocation_ids[event.id] = event.invocation_id
     
     # Transform spans to ADK-Web format
     spans = []
@@ -562,40 +600,13 @@ async def chat_completions(request: ChatCompletionRequest):
                     request_history.append({"role": role, "content": content})
     
     # Session 管理 - 从 store 读取累积历史
-    store = get_session_store()
-    session_id = request.session_id
-    
-    if session_id:
-        # 使用指定的 session_id
-        session = store.get_session(session_id)
-        if not session:
-            # 创建新 session，使用指定的 ID
-            session = Session(
-                id=session_id,
-                app_name=runner.detection_result.name,
-                user_id="user",
-                events=[]
-            )
-            store._sessions[session_id] = session
-    else:
-        # 未指定 session_id，每次创建新 session（无记忆模式）
-        session = store.create_session(runner.detection_result.name, "user", [])
-        session_id = session.id
+    service = get_session_service()
+    session = await _ensure_session(runner.detection_result.name, "user", request.session_id)
+    session_id = session.id
     
     # 构建历史：从 session store 读取 + 请求中的历史
     # 优先使用 session store 中的累积历史
-    history = []
-    if session and session.events:
-        for event in session.events:
-            content = event.get("content", {})
-            role = content.get("role", "")
-            parts = content.get("parts", [])
-            text = ""
-            for part in parts:
-                if isinstance(part, dict) and "text" in part:
-                    text += part["text"]
-            if text and role in ("user", "model"):
-                history.append({"role": role, "content": text})
+    history = _build_history_from_events(await service.get_events(session_id))
     
     # 如果 session store 为空，使用请求中的历史
     if not history and request_history:
@@ -607,7 +618,18 @@ async def chat_completions(request: ChatCompletionRequest):
         "content": {"role": "user", "parts": [{"text": user_input}]},
         "timestamp": int(time.time() * 1000)
     }
-    store.add_event(session_id, user_event)
+    await service.append_event(
+        session_id,
+        SessionEvent.from_dict(
+            {
+                "id": str(uuid.uuid4()),
+                "author": "user",
+                "content": {"role": "user", "parts": [{"text": user_input}]},
+                "timestamp": int(time.time() * 1000),
+            },
+            session_id=session_id,
+        ),
+    )
     
     # 分支：流式 vs 非流式
     if request.stream:
@@ -672,7 +694,7 @@ async def chat_completions(request: ChatCompletionRequest):
                     "content": {"role": "model", "parts": [{"text": accumulated_text}]},
                     "timestamp": int(time.time() * 1000)
                 }
-                store.add_event(session_id, assistant_event)
+                await service.append_event(session_id, SessionEvent.from_dict(assistant_event, session_id=session_id))
             
             yield "data: [DONE]\n\n"
 
@@ -690,7 +712,7 @@ async def chat_completions(request: ChatCompletionRequest):
             "content": {"role": "model", "parts": [{"text": output_text}]},
             "timestamp": int(time.time() * 1000)
         }
-        store.add_event(session_id, assistant_event)
+        await service.append_event(session_id, SessionEvent.from_dict(assistant_event, session_id=session_id))
         
         return {
             "id": f"chatcmpl-{uuid.uuid4()}",
