@@ -21,6 +21,7 @@ class EngineSessionService(BaseSessionService):
         self.token = token or os.getenv("AGENTENGINE_SESSION_TOKEN", "")
         self._transport = transport
         self._timeout = timeout
+        self._client: httpx.AsyncClient | None = None
 
     async def create_session(
         self,
@@ -76,13 +77,18 @@ class EngineSessionService(BaseSessionService):
     async def get_events(
         self,
         session_id: str,
+        offset: Optional[int] = None,
         limit: Optional[int] = None,
     ) -> list[SessionEvent]:
-        params = {"limit": limit} if limit is not None else None
+        params = {}
+        if offset is not None:
+            params["offset"] = offset
+        if limit is not None:
+            params["limit"] = limit
         data = await self._request(
             "GET",
             f"/conversations/sessions/{session_id}/events",
-            params=params,
+            params=params or None,
         )
         return [SessionEvent.from_dict(item, session_id=session_id) for item in data]
 
@@ -133,20 +139,31 @@ class EngineSessionService(BaseSessionService):
         json: Optional[dict] = None,
         allow_404: bool = False,
     ):
-        async with httpx.AsyncClient(
-            base_url=self.endpoint,
-            headers=self._headers(),
-            transport=self._transport,
-            timeout=self._timeout,
-        ) as client:
-            response = await client.request(method, path, params=params, json=json)
+        client = self._get_client()
+        response = await client.request(method, path, params=params, json=json)
         if allow_404 and response.status_code == 404:
             return None
         response.raise_for_status()
         return response.json()
+
+    async def aclose(self) -> None:
+        if self._client is None:
+            return
+        await self._client.aclose()
+        self._client = None
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         return headers
+
+    def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None or getattr(self._client, "is_closed", False):
+            self._client = httpx.AsyncClient(
+                base_url=self.endpoint,
+                headers=self._headers(),
+                transport=self._transport,
+                timeout=self._timeout,
+            )
+        return self._client

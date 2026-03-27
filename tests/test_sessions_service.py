@@ -213,6 +213,158 @@ async def test_engine_session_service_uses_conversation_http_api():
     ]
 
 
+@pytest.mark.asyncio
+async def test_in_memory_session_service_get_events_supports_offset_and_limit():
+    service = InMemorySessionService()
+    await service.create_session(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-1",
+    )
+
+    for index in range(4):
+        await service.append_event(
+            "sess-1",
+            SessionEvent(
+                id=f"evt-{index + 1}",
+                author="user",
+                event_type="text",
+                content={"index": index},
+            ),
+        )
+
+    events = await service.get_events("sess-1", offset=1, limit=2)
+
+    assert [event.seq_id for event in events] == [2, 3]
+
+
+@pytest.mark.asyncio
+async def test_engine_session_service_reuses_client_until_closed(monkeypatch):
+    created_clients = []
+
+    def build_response(method: str, path: str, payload: dict) -> httpx.Response:
+        request = httpx.Request(method, f"https://engine.example.test{path}")
+        return httpx.Response(200, json=payload, request=request)
+
+    class RecordingAsyncClient:
+        def __init__(self, *, base_url, headers, transport=None, timeout=None):
+            self.base_url = str(base_url)
+            self.headers = headers
+            self.transport = transport
+            self.timeout = timeout
+            self.closed = False
+            self.requests = []
+            created_clients.append(self)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            await self.aclose()
+
+        async def request(self, method, path, params=None, json=None):
+            self.requests.append((method, path, params, json))
+            if method == "POST" and path == "/conversations/sessions":
+                return build_response(
+                    method,
+                    path,
+                    {
+                        "id": "sess-1",
+                        "agent_id": "demo-agent",
+                        "user_id": "user-1",
+                        "state": {},
+                        "events": [],
+                        "created_at": 1.0,
+                        "updated_at": 1.0,
+                        "version": 0,
+                    },
+                )
+            if method == "GET" and path == "/conversations/sessions/sess-1":
+                return build_response(
+                    method,
+                    path,
+                    {
+                        "id": "sess-1",
+                        "agent_id": "demo-agent",
+                        "user_id": "user-1",
+                        "state": {},
+                        "events": [],
+                        "created_at": 1.0,
+                        "updated_at": 1.0,
+                        "version": 0,
+                    },
+                )
+            raise AssertionError(f"unexpected request: {method} {path}")
+
+        async def aclose(self):
+            self.closed = True
+
+    monkeypatch.setattr("ksadk.sessions.engine_service.httpx.AsyncClient", RecordingAsyncClient)
+
+    service = EngineSessionService(
+        endpoint="https://engine.example.test",
+        token="secret-token",
+    )
+
+    created = await service.create_session(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-1",
+    )
+    fetched = await service.get_session("sess-1")
+
+    assert created is not None
+    assert fetched is not None
+    assert len(created_clients) == 1
+    assert created_clients[0].headers["Authorization"] == "Bearer secret-token"
+    assert created_clients[0].closed is False
+
+    await service.aclose()
+    assert created_clients[0].closed is True
+
+    await service.aclose()
+    assert len(created_clients) == 1
+
+
+@pytest.mark.asyncio
+async def test_engine_session_service_get_events_supports_offset_and_limit():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params == httpx.QueryParams({"offset": "1", "limit": "2"})
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "id": "evt-2",
+                    "session_id": "sess-1",
+                    "author": "user",
+                    "event_type": "text",
+                    "content": {"index": 1},
+                    "seq_id": 2,
+                    "timestamp": 2.0,
+                },
+                {
+                    "id": "evt-3",
+                    "session_id": "sess-1",
+                    "author": "user",
+                    "event_type": "text",
+                    "content": {"index": 2},
+                    "seq_id": 3,
+                    "timestamp": 3.0,
+                },
+            ],
+            request=request,
+        )
+
+    service = EngineSessionService(
+        endpoint="https://engine.example.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    events = await service.get_events("sess-1", offset=1, limit=2)
+
+    assert [event.seq_id for event in events] == [2, 3]
+
+
 def test_get_session_service_auto_selects_implementation(monkeypatch):
     monkeypatch.delenv("AGENTENGINE_SESSION_ENDPOINT", raising=False)
     monkeypatch.delenv("AGENTENGINE_SESSION_TOKEN", raising=False)

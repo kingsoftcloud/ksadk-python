@@ -22,6 +22,17 @@ def get_session_service() -> BaseSessionService:
     return _service_instance
 
 
+async def close_session_service() -> None:
+    global _service_instance
+    if _service_instance is None:
+        return
+
+    close = getattr(_service_instance, "aclose", None)
+    if close is not None:
+        await close()
+    _service_instance = None
+
+
 __all__ = [
     "BaseSessionService",
     "EngineSessionService",
@@ -29,5 +40,6 @@ __all__ = [
     "Session",
     "SessionEvent",
     "SessionState",
+    "close_session_service",
     "get_session_service",
 ]

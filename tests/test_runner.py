@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import textwrap
 from types import ModuleType
 from typing import Any
+from uuid import uuid4
 
 import pytest
 
@@ -39,6 +41,26 @@ def _install_runner_module(monkeypatch, module_path: str, class_name: str):
     return _FrameworkRunner
 
 
+def _write_adk_project(tmp_path, source: str) -> DetectionResult:
+    package_name = f"demo_agent_{uuid4().hex[:8]}"
+    package_dir = tmp_path / package_name
+    package_dir.mkdir()
+    (package_dir / "__init__.py").write_text("", encoding="utf-8")
+    (package_dir / "agent.py").write_text(textwrap.dedent(source), encoding="utf-8")
+    return DetectionResult(
+        type=FrameworkType.ADK,
+        name="demo-agent",
+        entry_point=f"{package_name}/agent.py",
+        package_path=str(package_dir),
+        agent_variable="root_agent",
+        confidence=1.0,
+    )
+
+
+def _tool_names(tools: list[Any]) -> list[str]:
+    return [getattr(tool, "name", None) or getattr(tool, "__name__", "") for tool in tools]
+
+
 @pytest.mark.parametrize(
     ("framework_type", "module_path", "class_name"),
     [
@@ -48,7 +70,12 @@ def _install_runner_module(monkeypatch, module_path: str, class_name: str):
         (FrameworkType.DEEPAGENTS, "ksadk.runners.deepagents_runner", "DeepAgentsRunner"),
     ],
 )
-def test_create_runner_dispatches_by_framework(monkeypatch, framework_type, module_path: str, class_name: str):
+def test_create_runner_dispatches_by_framework(
+    monkeypatch,
+    framework_type,
+    module_path: str,
+    class_name: str,
+):
     expected_class = _install_runner_module(monkeypatch, module_path, class_name)
     detection = DetectionResult(
         type=framework_type,
@@ -110,3 +137,124 @@ def test_base_runner_run_server_registers_runner(monkeypatch):
     assert recorded["app"] is fake_server_module.app
     assert recorded["host"] == "0.0.0.0"
     assert recorded["port"] == 9000
+
+
+def test_adk_runner_load_agent_injects_default_sandbox_tools(monkeypatch, tmp_path):
+    import google.adk.runners as adk_runners
+
+    from ksadk.runners.adk_runner import ADKRunner
+
+    detection = _write_adk_project(
+        tmp_path,
+        """
+        class DemoAgent:
+            def __init__(self):
+                self.name = "demo-agent"
+                self.tools = []
+                self.instruction = "Be helpful."
+
+        root_agent = DemoAgent()
+        """,
+    )
+
+    class FakeRunner:
+        instances: list["FakeRunner"] = []
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            FakeRunner.instances.append(self)
+
+    monkeypatch.delenv("KSADK_ENABLE_SANDBOX_TOOLS", raising=False)
+    monkeypatch.setattr(ADKRunner, "_apply_json_patch", lambda self: None)
+    monkeypatch.setattr(ADKRunner, "_init_short_term_memory", lambda self: None)
+    monkeypatch.setattr(ADKRunner, "_init_long_term_memory", lambda self: None)
+    monkeypatch.setattr(ADKRunner, "_init_knowledge_base", lambda self: None)
+    monkeypatch.setattr(adk_runners, "Runner", FakeRunner)
+    runner = ADKRunner(detection, str(tmp_path))
+    runner.load_agent()
+
+    tool_names = _tool_names(runner._agent.tools)
+    assert "execute_python" in tool_names
+    assert "execute_bash" in tool_names
+    assert "execute_javascript" in tool_names
+    assert len(FakeRunner.instances) == 1
+
+
+def test_adk_runner_load_agent_deduplicates_existing_sandbox_tools(monkeypatch, tmp_path):
+    import google.adk.runners as adk_runners
+
+    from ksadk.runners.adk_runner import ADKRunner
+
+    detection = _write_adk_project(
+        tmp_path,
+        """
+        def execute_python(code: str) -> str:
+            return code
+
+        def keep_tool(value: str) -> str:
+            return value
+
+        class DemoAgent:
+            def __init__(self):
+                self.name = "demo-agent"
+                self.tools = [keep_tool, execute_python]
+                self.instruction = "Be helpful."
+
+        root_agent = DemoAgent()
+        """,
+    )
+
+    class FakeRunner:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.delenv("KSADK_ENABLE_SANDBOX_TOOLS", raising=False)
+    monkeypatch.setattr(ADKRunner, "_apply_json_patch", lambda self: None)
+    monkeypatch.setattr(ADKRunner, "_init_short_term_memory", lambda self: None)
+    monkeypatch.setattr(ADKRunner, "_init_long_term_memory", lambda self: None)
+    monkeypatch.setattr(ADKRunner, "_init_knowledge_base", lambda self: None)
+    monkeypatch.setattr(adk_runners, "Runner", FakeRunner)
+
+    runner = ADKRunner(detection, str(tmp_path))
+    runner.load_agent()
+
+    tool_names = _tool_names(runner._agent.tools)
+    assert tool_names.count("execute_python") == 1
+    assert "keep_tool" in tool_names
+    assert "execute_bash" in tool_names
+    assert "execute_javascript" in tool_names
+
+
+def test_adk_runner_load_agent_skips_sandbox_tools_when_disabled(monkeypatch, tmp_path):
+    import google.adk.runners as adk_runners
+
+    from ksadk.runners.adk_runner import ADKRunner
+
+    detection = _write_adk_project(
+        tmp_path,
+        """
+        class DemoAgent:
+            def __init__(self):
+                self.name = "demo-agent"
+                self.tools = []
+                self.instruction = "Be helpful."
+
+        root_agent = DemoAgent()
+        """,
+    )
+
+    class FakeRunner:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.setenv("KSADK_ENABLE_SANDBOX_TOOLS", "0")
+    monkeypatch.setattr(ADKRunner, "_apply_json_patch", lambda self: None)
+    monkeypatch.setattr(ADKRunner, "_init_short_term_memory", lambda self: None)
+    monkeypatch.setattr(ADKRunner, "_init_long_term_memory", lambda self: None)
+    monkeypatch.setattr(ADKRunner, "_init_knowledge_base", lambda self: None)
+    monkeypatch.setattr(adk_runners, "Runner", FakeRunner)
+
+    runner = ADKRunner(detection, str(tmp_path))
+    runner.load_agent()
+
+    assert _tool_names(runner._agent.tools) == []

@@ -5,6 +5,7 @@ AgentEngine CLI
 支持 DeepAgents / LangGraph / LangChain / Google ADK 的本地运行与云端部署。
 
 工作流命令:
+  agentengine a2a        暴露 A2A 服务与 Agent Card
   agentengine agent      Agent 资源管理
   agentengine build      构建部署制品
   agentengine dashboard  打开云端 Agent Dashboard
@@ -28,6 +29,45 @@ AgentEngine CLI
   -h, --help     显示帮助信息
 
 使用 `agentengine <command> --help` 查看子命令帮助。
+
+=== a2a_help ===
+Usage: cli a2a [OPTIONS] COMMAND [ARGS]...
+
+  A2A 协议服务与 Agent Card
+
+Options:
+  -h, --help  Show this message and exit.
+
+Commands:
+  card   输出 Agent Card JSON。
+  serve  启动 A2A 协议服务。
+
+=== a2a_serve_help ===
+Usage: cli a2a serve [OPTIONS] [AGENT_DIR]
+
+  启动 A2A 协议服务。
+
+Options:
+  --host TEXT         服务监听地址  [default: 0.0.0.0]
+  --port INTEGER      服务端口  [default: 8081]
+  --url TEXT          Agent Card 对外宣告地址
+  --name TEXT         覆盖 Agent 名称
+  --description TEXT  覆盖 Agent 描述
+  --skill TEXT        可重复传入，追加 Agent Card 技能
+  --no-trace          禁用 Tracing
+  -h, --help          Show this message and exit.
+
+=== a2a_card_help ===
+Usage: cli a2a card [OPTIONS] [AGENT_DIR]
+
+  输出 Agent Card JSON。
+
+Options:
+  --url TEXT          Agent Card 对外宣告地址  [default: http://127.0.0.1:8081]
+  --name TEXT         覆盖 Agent 名称
+  --description TEXT  覆盖 Agent 描述
+  --skill TEXT        可重复传入，追加 Agent Card 技能
+  -h, --help          Show this message and exit.
 
 === agent_help ===
 Usage: cli agent [OPTIONS] COMMAND [ARGS]...
