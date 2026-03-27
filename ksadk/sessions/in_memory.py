@@ -109,13 +109,16 @@ class InMemorySessionService(BaseSessionService):
     async def get_events(
         self,
         session_id: str,
+        offset: Optional[int] = None,
         limit: Optional[int] = None,
     ) -> list[SessionEvent]:
         async with self._lock:
             session = self._sessions.get(session_id)
             if not session:
                 return []
-            events = session.events[:limit] if limit else session.events
+            start = offset or 0
+            end = None if limit is None else start + limit
+            events = session.events[start:end]
             return copy.deepcopy(events)
 
     async def get_state(

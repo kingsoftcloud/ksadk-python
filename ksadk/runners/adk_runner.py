@@ -8,11 +8,12 @@ ADKRunner - Google ADK 框架运行时
 import logging
 import os
 import sys
-import uuid
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, Optional
-from ksadk.runners.base_runner import BaseRunner
+
 from opentelemetry import trace
+
+from ksadk.runners.base_runner import BaseRunner
 
 logger = logging.getLogger(__name__)
 
@@ -35,11 +36,14 @@ class ADKRunner(BaseRunner):
         self._long_term_memory = None
         # Knowledge base integration
         self._knowledge_base = None
+        # Keep runtime toolsets alive for the lifetime of the runner.
+        self._runtime_toolsets: list[Any] = []
 
     def _apply_json_patch(self):
         """Monkey patch google.adk.models.lite_llm to handle invalid JSON safely"""
         try:
             import json
+
             import google.adk.models.lite_llm as adk_lite_llm
 
             # Create a proxy for the json module
@@ -204,25 +208,14 @@ class ADKRunner(BaseRunner):
         try:
             from ksadk.knowledge_base.adk_tool import search_knowledge_base
 
-            if hasattr(self._agent, "tools"):
-                tool_names = []
-                for t in self._agent.tools:
-                    name = getattr(t, "name", None) or getattr(t, "__name__", "")
-                    tool_names.append(name)
-
-                if "search_knowledge_base" not in tool_names:
-                    self._agent.tools.append(search_knowledge_base)
-                    logger.info(
-                        "Injected 'search_knowledge_base' tool into agent "
-                        f"(total tools: {len(self._agent.tools)})"
-                    )
-                else:
-                    logger.debug("Agent already has 'search_knowledge_base' tool")
-            else:
-                logger.warning(
-                    "Agent has no 'tools' attribute, "
-                    "cannot inject search_knowledge_base"
+            added = self._append_tools_by_name([search_knowledge_base])
+            if added:
+                logger.info(
+                    "Injected 'search_knowledge_base' tool into agent "
+                    f"(total tools: {len(self._agent.tools)})"
                 )
+            else:
+                logger.debug("Agent already has 'search_knowledge_base' tool")
         except ImportError as e:
             logger.warning(f"Failed to import knowledge base tool: {e}")
         except Exception as e:
@@ -233,25 +226,14 @@ class ADKRunner(BaseRunner):
         try:
             from google.adk.tools import load_memory
 
-            if hasattr(self._agent, "tools"):
-                # 检查是否已有 load_memory
-                tool_names = []
-                for t in self._agent.tools:
-                    name = getattr(t, "name", None) or getattr(t, "__name__", "")
-                    tool_names.append(name)
-
-                if "load_memory" not in tool_names:
-                    self._agent.tools.append(load_memory)
-                    logger.info(
-                        "Injected 'load_memory' tool into agent "
-                        f"(total tools: {len(self._agent.tools)})"
-                    )
-                else:
-                    logger.debug("Agent already has 'load_memory' tool")
-            else:
-                logger.warning(
-                    "Agent has no 'tools' attribute, cannot inject load_memory"
+            added = self._append_tools_by_name([load_memory])
+            if added:
+                logger.info(
+                    "Injected 'load_memory' tool into agent "
+                    f"(total tools: {len(self._agent.tools)})"
                 )
+            else:
+                logger.debug("Agent already has 'load_memory' tool")
         except ImportError:
             logger.warning(
                 "google.adk.tools.load_memory not available. "
@@ -259,6 +241,64 @@ class ADKRunner(BaseRunner):
             )
         except Exception as e:
             logger.warning(f"Failed to inject load_memory tool: {e}")
+
+    def _inject_sandbox_tools(self):
+        """默认注入本地沙箱工具。"""
+        if not self._sandbox_tools_enabled():
+            logger.info("ADKRunner: sandbox tools disabled via KSADK_ENABLE_SANDBOX_TOOLS=0")
+            return
+
+        try:
+            from ksadk.sandbox import LocalCodeSandbox, SandboxToolset
+
+            toolset = SandboxToolset(LocalCodeSandbox())
+            added = self._append_tools_by_name(toolset.get_tools())
+            if not added:
+                logger.debug("ADKRunner: sandbox tools already present")
+                return
+
+            self._runtime_toolsets.append(toolset)
+            logger.info(
+                "Injected sandbox tools into agent "
+                f"(added: {', '.join(added)})"
+            )
+        except ImportError as exc:
+            logger.warning(f"Failed to import sandbox toolset: {exc}")
+        except Exception as exc:
+            logger.warning(f"Failed to inject sandbox tools: {exc}")
+
+    @staticmethod
+    def _tool_name(tool: Any) -> str:
+        return getattr(tool, "name", None) or getattr(tool, "__name__", "")
+
+    def _append_tools_by_name(self, tools: list[Any]) -> list[str]:
+        if not hasattr(self._agent, "tools"):
+            logger.warning("Agent has no 'tools' attribute, cannot inject runtime tools")
+            return []
+
+        if self._agent.tools is None:
+            self._agent.tools = []
+
+        existing_names = {
+            self._tool_name(tool)
+            for tool in self._agent.tools
+            if self._tool_name(tool)
+        }
+        added_names: list[str] = []
+        for tool in tools:
+            tool_name = self._tool_name(tool)
+            if tool_name and tool_name in existing_names:
+                continue
+            self._agent.tools.append(tool)
+            if tool_name:
+                existing_names.add(tool_name)
+                added_names.append(tool_name)
+        return added_names
+
+    @staticmethod
+    def _sandbox_tools_enabled() -> bool:
+        value = os.environ.get("KSADK_ENABLE_SANDBOX_TOOLS", "1").strip().lower()
+        return value not in {"0", "false", "no", "off"}
 
     def load_agent(self) -> None:
         """加载 ADK Agent"""
@@ -273,7 +313,8 @@ class ADKRunner(BaseRunner):
         if str(project_path) not in sys.path:
             sys.path.insert(0, str(project_path))
 
-        # 确定模块名：从 entry_point 获取 (e.g., "smart_assistant_adk/agent.py" -> "smart_assistant_adk.agent")
+        # 确定模块名: 从 entry_point 获取
+        # (e.g. "smart_assistant_adk/agent.py" -> "smart_assistant_adk.agent")
         entry_point = self.detection_result.entry_point
         if entry_point.endswith(".py"):
             module_name = entry_point[:-3]  # 移除 .py 后缀
@@ -304,7 +345,7 @@ class ADKRunner(BaseRunner):
 
         # 验证是否为 ADK Agent
         if not hasattr(self._agent, "name"):
-            raise TypeError(f"加载的对象不是有效的 ADK Agent")
+            raise TypeError("加载的对象不是有效的 ADK Agent")
 
         # 初始化记忆体 (从环境变量读取配置)
         self._short_term_memory = self._init_short_term_memory()
@@ -328,6 +369,8 @@ class ADKRunner(BaseRunner):
         # 如果配置了长期记忆，自动注入 load_memory 工具到 agent
         if self._long_term_memory:
             self._inject_load_memory_tool()
+
+        self._inject_sandbox_tools()
 
         # 初始化 Runner (传入 memory_service)
         runner_kwargs = dict(
@@ -425,7 +468,6 @@ class ADKRunner(BaseRunner):
         from google.genai import types
 
         user_input = input_data.get("input", "")
-        invocation_id = str(uuid.uuid4()).replace("-", "")
 
         # 1. 准备 Metadata (提前以此获取 Agent Name)
         _, _, _, agent_name = self._prepare_trace_metadata(None)
@@ -478,11 +520,10 @@ class ADKRunner(BaseRunner):
 
         使用 StreamingMode.SSE 启用真正的流式 token 输出
         """
-        from google.genai import types
         from google.adk.agents.run_config import RunConfig, StreamingMode
+        from google.genai import types
 
         user_input = input_data.get("input", "")
-        invocation_id = str(uuid.uuid4()).replace("-", "")
 
         # 1. 准备 Metadata (提前以此获取 Agent Name)
         _, _, _, agent_name = self._prepare_trace_metadata(None)

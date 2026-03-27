@@ -267,6 +267,7 @@ class BaseSessionService(abc.ABC):
     async def get_events(
         self,
         session_id: str,
+        offset: Optional[int] = None,
         limit: Optional[int] = None,
     ) -> list[SessionEvent]:
         raise NotImplementedError

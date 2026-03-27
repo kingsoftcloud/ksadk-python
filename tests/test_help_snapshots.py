@@ -43,6 +43,9 @@ def test_help_snapshots_match_canonical_cli_surface():
 
     commands = {
         "root_help": ["--help"],
+        "a2a_help": ["a2a", "--help"],
+        "a2a_serve_help": ["a2a", "serve", "--help"],
+        "a2a_card_help": ["a2a", "card", "--help"],
         "agent_help": ["agent", "--help"],
         "dashboard_help": ["dashboard", "--help"],
         "dashboard_open_help": ["dashboard", "open", "--help"],
