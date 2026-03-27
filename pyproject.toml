@@ -40,6 +40,9 @@ dependencies = [
     "fastapi>=0.100.0,<0.124.0",
     "uvicorn>=0.23.0",
     "httpx>=0.24.0",
+    "a2a-sdk>=0.3.22",
+    "httpx-sse>=0.4.0",
+    "sse-starlette>=2.1.0",
     # HTTP 请求 + AWS 签名
     "requests>=2.28.0",
     "requests-aws4auth>=1.2.0",
@@ -91,6 +94,10 @@ deepagents = [
     "langchain>=0.3.0",
     "langchain-openai>=0.2.0",
 ]
+# A2A 协议集成
+a2a = [
+    "a2a-sdk[http-server]>=0.3.22",
+]
 # 可观测性
 tracing = [
     "openinference-instrumentation-langchain>=0.1.0",
@@ -109,7 +116,7 @@ dev = [
 ]
 # 全部依赖
 all = [
-    "ksadk[adk,langchain,langgraph,deepagents,kb,tracing,dev]",
+    "ksadk[a2a,adk,langchain,langgraph,deepagents,kb,tracing,dev]",
 ]
 
 [project.scripts]
