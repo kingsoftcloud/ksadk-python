@@ -1,7 +1,7 @@
 # AgentEngine Makefile
 # 用于构建 Web UI 和管理项目
 
-.PHONY: help install build-webui sync-static clean clean-dist dev test publish publish-test openclaw-build openclaw-push openclaw-size
+.PHONY: help install build-webui sync-static clean clean-dist dev test publish publish-test openclaw-refresh-agentspace-assets openclaw-build openclaw-push openclaw-size
 
 # 默认目标
 help:
@@ -41,6 +41,7 @@ help:
 	@echo "  \033[1;32mOpenClaw 镜像:\033[0m"
 	@echo "    make openclaw-build         构建 OpenClaw 镜像 (默认国内源)"
 	@echo "    make openclaw-push          构建 + 推送到 KCR (默认 :latest)"
+	@echo "    make openclaw-refresh-agentspace-assets  刷新 Agentspace 最新插件/技能并写 lock"
 	@echo "    make openclaw-push OPENCLAW_TAG=v2026.3.13-guardian1"
 	@echo "    make openclaw-build OPENCLAW_PYPI_INDEX_URL=https://pypi.org/simple  # 海外源"
 	@echo "    make openclaw-size          查看镜像大小"
@@ -385,12 +386,18 @@ OPENCLAW_VPC_REGISTRY ?= hub-vpc-cn-beijing-6.kce.ksyun.com
 OPENCLAW_VPC_IMAGE ?= $(subst hub.kce.ksyun.com,$(OPENCLAW_VPC_REGISTRY),$(OPENCLAW_IMAGE))
 OPENCLAW_TAG ?= latest
 OPENCLAW_CONTEXT := deploy/openclaw
-OPENCLAW_BASE_IMAGE ?= alpine/openclaw:2026.3.23-2
+OPENCLAW_BASE_IMAGE ?= alpine/openclaw:2026.3.24
 OPENCLAW_PYPI_INDEX_URL ?= https://mirrors.aliyun.com/pypi/simple
 OPENCLAW_NPM_REGISTRY ?= https://registry.npmmirror.com
 
+## 刷新 Agentspace 最新插件/技能资产并更新 lock manifest
+openclaw-refresh-agentspace-assets:
+	@echo "🔄 刷新 Agentspace 最新资产..."
+	@python3 deploy/openclaw/scripts/refresh_agentspace_assets.py --repo-root .
+	@echo "✅ Agentspace 资产已刷新"
+
 ## 构建 OpenClaw 镜像 (chromium + preset-skills)
-openclaw-build:
+openclaw-build: openclaw-refresh-agentspace-assets
 	@echo "🐳 构建 OpenClaw 镜像..."
 	@echo "============================================================"
 	@echo "   基础镜像: $(OPENCLAW_BASE_IMAGE)"
@@ -404,11 +411,12 @@ openclaw-build:
 		echo "❌ 错误: $(OPENCLAW_CONTEXT)/Dockerfile 不存在"; \
 		exit 1; \
 	fi
-	@docker build --platform linux/amd64 \
+	@DOCKER_BUILDKIT=1 docker build --platform linux/amd64 \
 		--build-arg OPENCLAW_BASE_IMAGE=$(OPENCLAW_BASE_IMAGE) \
 		--build-arg PYPI_INDEX_URL=$(OPENCLAW_PYPI_INDEX_URL) \
 		--build-arg NPM_REGISTRY=$(OPENCLAW_NPM_REGISTRY) \
 		-t $(OPENCLAW_IMAGE):$(OPENCLAW_TAG) \
+		-t $(OPENCLAW_VPC_IMAGE):$(OPENCLAW_TAG) \
 		$(OPENCLAW_CONTEXT)
 	@echo "✅ 构建完成: $(OPENCLAW_IMAGE):$(OPENCLAW_TAG)"
 	@echo "🔗 对应内网地址: $(OPENCLAW_VPC_IMAGE):$(OPENCLAW_TAG)"
@@ -418,6 +426,7 @@ openclaw-push: openclaw-build
 	@echo "📤 推送 OpenClaw 镜像: $(OPENCLAW_IMAGE):$(OPENCLAW_TAG)"
 	@echo "🔗 对应内网地址: $(OPENCLAW_VPC_IMAGE):$(OPENCLAW_TAG)"
 	@docker push $(OPENCLAW_IMAGE):$(OPENCLAW_TAG)
+	@docker push $(OPENCLAW_VPC_IMAGE):$(OPENCLAW_TAG)
 	@echo "✅ 推送完成"
 
 ## 查看 OpenClaw 镜像大小

@@ -1,0 +1,20 @@
+{
+  "source": {
+    "installer_entry_url": "https://agentspace.wps.cn/openclaw/plugins/installer",
+    "installer_resolved_url": "https://qn.cache.wpscdn.cn/open_static/libs/widgets/openclaw_agentspace/2.0.9/ecis-agentspace-installer-2.0.9.tgz",
+    "installer_sha256": "71f623b35327373776d16102ed8042d16c9a1d6da95923d137f6d24f9aafec0a",
+    "installer_version": "2.0.9"
+  },
+  "assets": {
+    "agentspace_plugin": {
+      "url": "https://qn.cache.wpscdn.cn/open_static/libs/widgets/openclaw_agentspace/2.0.9/ecis-agentspace-2.0.9.tgz",
+      "sha256": "5a23991cf7e13f0603dadccc8704f928e272413da1e027158d2651328b05f8fa"
+    },
+    "wps365_skill": {
+      "url": "https://qn.cache.wpscdn.cn/open_static/libs/widgets/openclaw_agentspace/2.0.9/wps365-skill-0316.zip",
+      "sha256": "4d661720d66f87f8118713912b12661ab753c06f641bf1a2b16d968edc56866d",
+      "preset_path": "deploy/openclaw/preset-skills/wps365-skill"
+    }
+  },
+  "refreshed_at_utc": "2026-03-26T08:34:18Z"
+}

@@ -2,7 +2,7 @@
 
 本文件包含金山文档 Skill 中表格相关工具的完整 API 说明、详细调用示例、参数说明和返回值说明。
 
-**适用范围**：本文档中的所有 `sheets_*` 工具同时适用于 Excel（.xlsx）和智能表格（.ksheet）。
+**适用范围**：本文档中的所有 `sheet.*` 工具同时适用于 Excel（.xlsx）和智能表格（.ksheet）。
 
 ---
 
@@ -49,7 +49,7 @@
 | 视图 | 单一表格视图 | 多视图（表格/看板/日历/甘特图等） |
 | 字段类型 | 通用单元格 | 丰富字段类型（单选/多选/日期/附件/关联等） |
 | 适用场景 | 数据计算、报表、财务报表 | 项目管理、CRM、任务跟踪、库存管理 |
-| 工作表/数据接口 | 使用本文档的 `sheets_*` 工具 | **同样使用本文档的 `sheets_*` 工具** |
+| 工作表/数据接口 | 使用本文档的 `sheet.*` 工具 | **同样使用本文档的 `sheet.*` 工具** |
 
 ### 使用场景
 
@@ -78,7 +78,7 @@
 - 需要做任务管理/项目跟踪 → 选 **ksheet**
 - 需要做财务报表 → 选 **Excel**
 
-> **注意**：无论是 Excel 还是 ksheet，工作表管理和数据操作都使用相同的 `sheets_*` 接口。只需将对应的文件 ID 传入即可。
+> **注意**：无论是 Excel 还是 ksheet，工作表管理和数据操作都使用相同的 `sheet.*` 接口。只需将对应的文件 ID 传入即可。
 
 ---
 
@@ -486,3 +486,31 @@
 | 2 | `sheet.add_sheet` | 工作表管理 | 新增工作表 | `file_id` | Excel & ksheet |
 | 3 | `sheet.get_range_data` | 数据操作 | 获取选区数据 | `file_id`, `sheetId`, `range` | Excel & ksheet |
 | 4 | `sheet.update_range_data` | 数据操作 | 批量更新选区数据 | `file_id`, `sheetId`, `rangeData` | Excel & ksheet |
+
+---
+
+## 工具组合速查
+
+| 用户需求 | 推荐工具组合 |
+|----------|-------------|
+| 读表格（矩形区域） | `sheet.get_sheets_info` → `sheet.get_range_data` |
+| 写表格（批量改单元格） | `sheet.get_range_data`（可选对照）→ `sheet.update_range_data` → `sheet.get_range_data` 验证 |
+
+---
+
+## 错误速查表
+| 错误特征 | 原因 | 处理方式 |
+|----------|------|----------|
+| 表格读不到或结构不明 | 未先取工作表列表 / 区域错误 | 先 `sheet.get_sheets_info`，再 `sheet.get_range_data` |
+
+---
+
+## 附录
+
+### 错误响应
+
+| 情况 | 响应示例 |
+|------|---------|
+| 命令不支持 | `{"msg":"core not support","result":"unSupport"}` |
+| 内核错误 | `{"errno":-1880935404,"msg":"Invalid request","result":"ExecuteFailed"}` |
+| HTTP 状态非 200 | 请求本身失败，检查鉴权信息（Cookie/Origin） |

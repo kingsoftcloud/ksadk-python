@@ -133,7 +133,7 @@ resolve_preset_skills_allowlist() {
     return 0
   fi
 
-  allowlist_raw="skillhub-store,agent-browser-clawdbot,kdocs"
+  allowlist_raw="skillhub-store,agent-browser-clawdbot,kdocs,wps365-skill"
   # self-improving-agent：仅严格模式
   is_truthy "${OPENCLAW_EXEC_STRICT_MODE:-false}" && allowlist_raw="${allowlist_raw},self-improving-agent"
   # tuanziguardianclaw：仅严格模式保留，宽松模式默认不内置
@@ -1356,6 +1356,9 @@ const bundledPlugins = [
   {
     pluginId: 'openclaw-lark',
   },
+  {
+    pluginId: 'agentspace',
+  },
 ];
 for (const bundledPlugin of bundledPlugins) {
   const pluginInstallPath = path.join(
@@ -1421,6 +1424,51 @@ const extractModelId = (modelRef) => {
   return rawModelRef.includes('/')
     ? rawModelRef.split('/').slice(1).join('/')
     : rawModelRef;
+};
+const normalizeModelInputList = (model) => {
+  if (!model || typeof model !== 'object') return [];
+  return uniqueStrings(
+    (Array.isArray(model.input) ? model.input : [])
+      .map((item) => String(item ?? '').trim().toLowerCase())
+      .filter(Boolean),
+  );
+};
+const modelSupportsInput = (model, inputType) => {
+  const normalizedInputType = String(inputType || '').trim().toLowerCase();
+  if (!normalizedInputType) return false;
+  const inputs = normalizeModelInputList(model);
+  if (inputs.length === 0) {
+    return normalizedInputType === 'text';
+  }
+  return inputs.includes(normalizedInputType);
+};
+const resolveAgentModelPrimaryValue = (value) => {
+  if (typeof value === 'string') {
+    return value.trim();
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return '';
+  }
+  return firstNonBlank(value.primary, value.model, value.id, value.value);
+};
+const resolveAgentModelFallbackValues = (value) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return [];
+  }
+  const rawFallbacks = Array.isArray(value.fallbacks)
+    ? value.fallbacks
+    : Array.isArray(value.fallback)
+      ? value.fallback
+      : [];
+  return uniqueStrings(rawFallbacks);
+};
+const buildAgentModelConfig = (primary, fallbacks = []) => {
+  const nextConfig = { primary };
+  const normalizedFallbacks = uniqueStrings(fallbacks);
+  if (normalizedFallbacks.length > 0) {
+    nextConfig.fallbacks = normalizedFallbacks;
+  }
+  return nextConfig;
 };
 const defaultModelInputs = (provider, modelId) => {
   const normalizedProvider = String(provider || '').trim().toLowerCase();
@@ -1717,6 +1765,13 @@ const explicitProviderConfigured = !!(
 const selectableModels = Array.isArray(cfg.models.providers?.[providerId]?.models)
   ? cfg.models.providers[providerId].models
   : [];
+const selectableModelRefs = selectableModels
+  .map((item) => normalizeModelRef(providerId, String(item?.id || item?.name || '').trim()))
+  .filter(Boolean);
+const imageCapableModelRefs = selectableModels
+  .filter((item) => modelSupportsInput(item, 'image'))
+  .map((item) => normalizeModelRef(providerId, String(item?.id || item?.name || '').trim()))
+  .filter(Boolean);
 const catalogPrimaryModel = selectableModels
   .map((item) => normalizeModelRef(providerId, String(item?.id || item?.name || '').trim()))
   .find(Boolean);
@@ -1726,9 +1781,49 @@ const primaryModel = (
   'ksyun/glm-5'
 ).trim();
 const primaryModelQualified = primaryModel.includes('/');
+const preferredKimiModel = normalizeModelRef(providerId, 'kimi-k2.5');
+const defaultTextFallbacks = (() => {
+  if (
+    primaryModel &&
+    preferredKimiModel &&
+    primaryModel !== preferredKimiModel &&
+    selectableModelRefs.includes(preferredKimiModel)
+  ) {
+    return [preferredKimiModel];
+  }
+  return selectableModelRefs.filter((modelRef) => modelRef !== primaryModel).slice(0, 1);
+})();
+const defaultImagePrimaryModel = (() => {
+  if (preferredKimiModel && imageCapableModelRefs.includes(preferredKimiModel)) {
+    return preferredKimiModel;
+  }
+  const primaryCatalogModel = selectableModels.find((item) => (
+    normalizeModelRef(providerId, String(item?.id || item?.name || '').trim()) === primaryModel
+  ));
+  if (primaryCatalogModel && modelSupportsInput(primaryCatalogModel, 'image')) {
+    return primaryModel;
+  }
+  return imageCapableModelRefs[0] || '';
+})();
+const existingDefaultsModelPrimary = resolveAgentModelPrimaryValue(cfg.agents.defaults.model);
+const existingDefaultsModelFallbacks = resolveAgentModelFallbackValues(cfg.agents.defaults.model);
+const existingDefaultsImagePrimary = resolveAgentModelPrimaryValue(cfg.agents.defaults.imageModel);
 if (primaryModel && (explicitProviderConfigured || primaryModelQualified)) {
-  cfg.agents.defaults.model = cfg.agents.defaults.model || {};
-  cfg.agents.defaults.model.primary = primaryModel;
+  if (!existingDefaultsModelPrimary) {
+    cfg.agents.defaults.model = buildAgentModelConfig(primaryModel, defaultTextFallbacks);
+  } else if (
+    cfg.agents.defaults.model &&
+    typeof cfg.agents.defaults.model === 'object' &&
+    !Array.isArray(cfg.agents.defaults.model) &&
+    existingDefaultsModelFallbacks.length === 0 &&
+    defaultTextFallbacks.length > 0 &&
+    existingDefaultsModelPrimary === primaryModel
+  ) {
+    cfg.agents.defaults.model.fallbacks = defaultTextFallbacks;
+  }
+  if (!existingDefaultsImagePrimary && defaultImagePrimaryModel) {
+    cfg.agents.defaults.imageModel = buildAgentModelConfig(defaultImagePrimaryModel);
+  }
   cfg.agents.defaults.models = cfg.agents.defaults.models || {};
   cfg.agents.defaults.models[primaryModel] = cfg.agents.defaults.models[primaryModel] || {};
   for (const item of selectableModels) {
