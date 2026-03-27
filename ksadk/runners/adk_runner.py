@@ -267,6 +267,41 @@ class ADKRunner(BaseRunner):
         except Exception as exc:
             logger.warning(f"Failed to inject sandbox tools: {exc}")
 
+    def _inject_mcp_toolsets(self):
+        """默认注入远端 MCP toolset。"""
+        try:
+            from ksadk.mcp_runtime import (
+                MCP_TOOLSET_KEY_ATTR,
+                load_mcp_toolsets_from_env,
+                mcp_tools_enabled,
+            )
+
+            if not mcp_tools_enabled():
+                logger.info("ADKRunner: MCP tools disabled via KSADK_ENABLE_MCP_TOOLS=0")
+                return
+
+            toolsets = load_mcp_toolsets_from_env()
+            if not toolsets:
+                return
+
+            added = self._append_toolsets_by_key(
+                toolsets,
+                key_attr=MCP_TOOLSET_KEY_ATTR,
+            )
+            if not added:
+                logger.debug("ADKRunner: MCP toolsets already present")
+                return
+
+            for toolset in toolsets:
+                key = getattr(toolset, MCP_TOOLSET_KEY_ATTR, None)
+                if key in added:
+                    self._runtime_toolsets.append(toolset)
+            logger.info("Injected MCP toolsets into agent (added: %s)", ", ".join(added))
+        except ImportError as exc:
+            logger.warning(f"Failed to import MCP runtime helpers: {exc}")
+        except Exception as exc:
+            logger.warning(f"Failed to inject MCP toolsets: {exc}")
+
     @staticmethod
     def _tool_name(tool: Any) -> str:
         return getattr(tool, "name", None) or getattr(tool, "__name__", "")
@@ -294,6 +329,30 @@ class ADKRunner(BaseRunner):
                 existing_names.add(tool_name)
                 added_names.append(tool_name)
         return added_names
+
+    def _append_toolsets_by_key(self, toolsets: list[Any], *, key_attr: str) -> list[str]:
+        if not hasattr(self._agent, "tools"):
+            logger.warning("Agent has no 'tools' attribute, cannot inject MCP toolsets")
+            return []
+
+        if self._agent.tools is None:
+            self._agent.tools = []
+
+        existing_keys = {
+            getattr(tool, key_attr)
+            for tool in self._agent.tools
+            if getattr(tool, key_attr, None)
+        }
+        added_keys: list[str] = []
+        for toolset in toolsets:
+            key = getattr(toolset, key_attr, None)
+            if key and key in existing_keys:
+                continue
+            self._agent.tools.append(toolset)
+            if key:
+                existing_keys.add(key)
+                added_keys.append(key)
+        return added_keys
 
     @staticmethod
     def _sandbox_tools_enabled() -> bool:
@@ -371,6 +430,7 @@ class ADKRunner(BaseRunner):
             self._inject_load_memory_tool()
 
         self._inject_sandbox_tools()
+        self._inject_mcp_toolsets()
 
         # 初始化 Runner (传入 memory_service)
         runner_kwargs = dict(
