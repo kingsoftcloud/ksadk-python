@@ -7,7 +7,6 @@ from click.testing import CliRunner
 
 from ksadk.cli import _register_commands, cli
 
-
 SNAPSHOT_FILE = Path(__file__).parent / "snapshots" / "help_snapshots.txt"
 
 
