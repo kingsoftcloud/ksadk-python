@@ -193,6 +193,8 @@ def test_bootstrap_defaults_dual_ksyun_catalog_when_unspecified():
         assert result.returncode == 0, result.stderr or result.stdout
         cfg = json.loads(config_path.read_text())
         assert cfg["agents"]["defaults"]["model"]["primary"] == "ksyun/glm-5"
+        assert cfg["agents"]["defaults"]["model"]["fallbacks"] == ["ksyun/kimi-k2.5"]
+        assert cfg["agents"]["defaults"]["imageModel"]["primary"] == "ksyun/kimi-k2.5"
         models = cfg["models"]["providers"]["ksyun"]["models"]
         assert [item["id"] for item in models] == ["glm-5", "kimi-k2.5"]
         assert models[0]["input"] == ["text"]
@@ -223,6 +225,8 @@ def test_bootstrap_global_model_preference_keeps_dual_ksyun_catalog():
         assert result.returncode == 0, result.stderr or result.stdout
         cfg = json.loads(config_path.read_text())
         assert cfg["agents"]["defaults"]["model"]["primary"] == "ksyun/glm-5"
+        assert cfg["agents"]["defaults"]["model"]["fallbacks"] == ["ksyun/kimi-k2.5"]
+        assert cfg["agents"]["defaults"]["imageModel"]["primary"] == "ksyun/kimi-k2.5"
         models = cfg["models"]["providers"]["ksyun"]["models"]
         assert [item["id"] for item in models] == ["glm-5", "kimi-k2.5"]
         assert models[0]["input"] == ["text"]
@@ -249,6 +253,8 @@ def test_bootstrap_openclaw_default_model_alias_keeps_dual_catalog():
         assert result.returncode == 0, result.stderr or result.stdout
         cfg = json.loads(config_path.read_text())
         assert cfg["agents"]["defaults"]["model"]["primary"] == "ksyun/glm-5"
+        assert cfg["agents"]["defaults"]["model"]["fallbacks"] == ["ksyun/kimi-k2.5"]
+        assert cfg["agents"]["defaults"]["imageModel"]["primary"] == "ksyun/kimi-k2.5"
         models = cfg["models"]["providers"]["ksyun"]["models"]
         assert [item["id"] for item in models] == ["glm-5", "kimi-k2.5"]
         assert models[0]["input"] == ["text"]
@@ -256,6 +262,47 @@ def test_bootstrap_openclaw_default_model_alias_keeps_dual_catalog():
         selectable = cfg["agents"]["defaults"]["models"]
         assert "ksyun/glm-5" in selectable
         assert "ksyun/kimi-k2.5" in selectable
+
+
+def test_bootstrap_preserves_existing_defaults_model_fallbacks_and_image_model():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "agents": {
+                        "defaults": {
+                            "model": {
+                                "primary": "ksyun/deepseek-v3",
+                                "fallbacks": ["ksyun/glm-5"],
+                            },
+                            "imageModel": {
+                                "primary": "ksyun/kimi-k2.5",
+                            },
+                        }
+                    }
+                }
+            )
+        )
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_DEFAULT_MODEL"] = "ksyun/glm-5"
+        env.pop("OPENCLAW_MODEL_CATALOG_JSON", None)
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert cfg["agents"]["defaults"]["model"]["primary"] == "ksyun/deepseek-v3"
+        assert cfg["agents"]["defaults"]["model"]["fallbacks"] == ["ksyun/glm-5"]
+        assert cfg["agents"]["defaults"]["imageModel"]["primary"] == "ksyun/kimi-k2.5"
 
 
 def test_bootstrap_defaults_primary_to_first_catalog_model_when_unspecified():
@@ -1731,6 +1778,7 @@ def test_bootstrap_syncs_only_allowlisted_preset_skills():
             "skillhub-store",
             "agent-browser-clawdbot",
             "kdocs",
+            "wps365-skill",
         ]
 
 
@@ -1777,6 +1825,7 @@ def test_bootstrap_strict_mode_keeps_tuanziguardianclaw_preset_skill():
             "skillhub-store",
             "agent-browser-clawdbot",
             "kdocs",
+            "wps365-skill",
             "self-improving-agent",
             "tuanziguardianclaw",
         ]
@@ -1816,6 +1865,7 @@ def test_bootstrap_overrides_stale_bundled_skill_allowlist_from_existing_config(
             "skillhub-store",
             "agent-browser-clawdbot",
             "kdocs",
+            "wps365-skill",
         ]
 
 
