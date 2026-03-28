@@ -83,6 +83,60 @@ async def test_parallel_agent_isolates_branch_context_and_merges_results():
 
 
 @pytest.mark.asyncio
+async def test_parallel_agent_does_not_leak_nested_state_between_branches():
+    async def alpha(context: OrchestrationContext) -> dict:
+        context.state["shared"]["items"].append("alpha")
+        return {"state_delta": {"alpha_only": 1}}
+
+    async def beta(context: OrchestrationContext) -> dict:
+        context.state["shared"]["items"].append("beta")
+        return {"state_delta": {"beta_only": 2}}
+
+    agent = ParallelAgent(name="fanout", sub_agents=[alpha, beta])
+    context = OrchestrationContext(state={"shared": {"items": []}})
+
+    await _collect_events(agent, context)
+
+    assert context.state["shared"] == {"items": []}
+    assert context.state["fanout_results"]["alpha"]["shared"] == {"items": ["alpha"]}
+    assert context.state["fanout_results"]["beta"]["shared"] == {"items": ["beta"]}
+    assert context.state["fanout_conflicts"]["shared"] == {
+        "alpha": {"items": ["alpha"]},
+        "beta": {"items": ["beta"]},
+    }
+
+
+@pytest.mark.asyncio
+async def test_parallel_agent_reraises_branch_failures():
+    async def ok(context: OrchestrationContext) -> dict:
+        return {"data": "ok", "state_delta": {"ok": True}}
+
+    async def boom(context: OrchestrationContext) -> dict:
+        raise RuntimeError("boom")
+
+    agent = ParallelAgent(name="fanout", sub_agents=[ok, boom])
+    context = OrchestrationContext()
+    events: list[AgentEvent] = []
+
+    with pytest.raises(RuntimeError, match="boom"):
+        async for event in agent.run_async(context):
+            events.append(event)
+
+    assert any(
+        event.agent_name == "boom"
+        and event.event_type == EventType.ERROR
+        and event.data == "boom"
+        for event in events
+    )
+    assert any(
+        event.agent_name == "fanout"
+        and event.event_type == EventType.ERROR
+        and event.data == "boom"
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
 async def test_loop_agent_exits_on_max_iterations():
     async def tick(context: OrchestrationContext) -> dict:
         count = context.get("count", 0) + 1

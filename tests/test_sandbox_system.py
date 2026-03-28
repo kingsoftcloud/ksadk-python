@@ -44,6 +44,21 @@ async def test_local_bash_execution_success(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_local_bash_blocks_embedded_network_access_when_network_disabled(tmp_path: Path):
+    sandbox = LocalCodeSandbox(base_dir=str(tmp_path))
+
+    result = await sandbox.execute(
+        "python3 - <<'PY'\nimport urllib.request\nprint('network')\nPY",
+        language=Language.BASH,
+        config=ExecutionConfig(allow_network=False),
+    )
+
+    assert result.status is ExecutionStatus.ERROR
+    assert "network access is disabled" in result.stderr.lower()
+    assert "urllib.request" in result.stderr
+
+
+@pytest.mark.asyncio
 async def test_local_javascript_execution_success(tmp_path: Path):
     sandbox = LocalCodeSandbox(base_dir=str(tmp_path))
 
@@ -78,6 +93,22 @@ async def test_local_security_policy_blocks_dangerous_python(tmp_path: Path):
     assert result.status is ExecutionStatus.ERROR
     assert "security violation" in result.stderr.lower()
     assert "os.system" in result.stderr
+
+
+@pytest.mark.asyncio
+async def test_local_python_blocks_importfrom_network_access_when_network_disabled(
+    tmp_path: Path,
+):
+    sandbox = LocalCodeSandbox(base_dir=str(tmp_path))
+
+    result = await sandbox.execute(
+        "from urllib import request\nprint(request)\n",
+        config=ExecutionConfig(allow_network=False),
+    )
+
+    assert result.status is ExecutionStatus.ERROR
+    assert "network access is disabled" in result.stderr.lower()
+    assert "urllib.request" in result.stderr
 
 
 @pytest.mark.asyncio

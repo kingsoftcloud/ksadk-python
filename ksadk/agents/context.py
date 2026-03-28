@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -24,11 +25,14 @@ class OrchestrationContext:
     def update(self, values: dict[str, Any]) -> None:
         self.state.update(values)
 
+    def snapshot_state(self) -> dict[str, Any]:
+        return copy.deepcopy(self.state)
+
     def create_branch(self, branch_name: str) -> "OrchestrationContext":
         branch = f"{self.branch}.{branch_name}" if self.branch else branch_name
         return OrchestrationContext(
             session_id=self.session_id,
-            state=dict(self.state),
+            state=self.snapshot_state(),
             branch=branch,
             parent_context=self,
         )

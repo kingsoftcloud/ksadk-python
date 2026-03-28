@@ -21,6 +21,9 @@ class InMemorySessionService(BaseSessionService):
         session_id: Optional[str] = None,
     ) -> Session:
         async with self._lock:
+            if session_id and session_id in self._sessions:
+                return copy.deepcopy(self._sessions[session_id])
+
             session = Session(
                 id=session_id or generate_id(),
                 agent_id=agent_id,

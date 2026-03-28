@@ -22,10 +22,41 @@ DEFAULT_JAVASCRIPT_BLOCKED_PATTERNS = (
 )
 
 NETWORK_PATTERNS = {
-    Language.PYTHON: ("import requests", "urllib.request", "http.client", "socket."),
-    Language.BASH: ("curl ", "wget ", "nc ", "ssh "),
-    Language.JAVASCRIPT: ("fetch(", "XMLHttpRequest", "require('http')", 'require("http")'),
+    Language.PYTHON: (
+        "import requests",
+        "requests.",
+        "urllib.request",
+        "urllib.",
+        "http.client",
+        "socket.",
+        "socket(",
+        "aiohttp",
+    ),
+    Language.BASH: (
+        "curl ",
+        "wget ",
+        "nc ",
+        "ssh ",
+        "python -m http.server",
+        "python3 -m http.server",
+    ),
+    Language.JAVASCRIPT: (
+        "fetch(",
+        "XMLHttpRequest",
+        "require('http')",
+        'require("http")',
+        "require('https')",
+        'require("https")',
+    ),
 }
+
+PYTHON_NETWORK_IMPORT_PREFIXES = (
+    "requests",
+    "urllib.request",
+    "http.client",
+    "socket",
+    "aiohttp",
+)
 
 
 @dataclass(slots=True)
@@ -108,7 +139,45 @@ class SecurityPolicy:
         return None
 
     def _check_network_usage(self, code: str, language: Language) -> str | None:
-        for pattern in NETWORK_PATTERNS.get(language, ()):
+        if language is Language.PYTHON:
+            network_import = self._check_python_network_import_usage(code)
+            if network_import:
+                return network_import
+
+        patterns = list(NETWORK_PATTERNS.get(language, ()))
+        if language is Language.BASH:
+            patterns.extend(NETWORK_PATTERNS.get(Language.PYTHON, ()))
+            patterns.extend(NETWORK_PATTERNS.get(Language.JAVASCRIPT, ()))
+
+        for pattern in dict.fromkeys(patterns):
             if pattern in code:
                 return pattern
+        return None
+
+    def _check_python_network_import_usage(self, code: str) -> str | None:
+        try:
+            tree = ast.parse(code)
+        except SyntaxError:
+            return None
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if violation := self._match_python_network_import(alias.name):
+                        return violation
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                for alias in node.names:
+                    full_name = f"{module}.{alias.name}" if module else alias.name
+                    if violation := self._match_python_network_import(full_name):
+                        return violation
+
+        return None
+
+    @staticmethod
+    def _match_python_network_import(name: str) -> str | None:
+        normalized = name.strip()
+        for prefix in PYTHON_NETWORK_IMPORT_PREFIXES:
+            if normalized == prefix or normalized.startswith(f"{prefix}."):
+                return normalized
         return None

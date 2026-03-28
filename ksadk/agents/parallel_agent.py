@@ -23,7 +23,8 @@ class ParallelAgent(BaseOrchestrationAgent):
 
         queue: asyncio.Queue[tuple[str, AgentEvent | None]] = asyncio.Queue()
         branch_contexts: dict[str, OrchestrationContext] = {}
-        base_state = dict(context.state)
+        base_state = context.snapshot_state()
+        branch_errors: list[Exception] = []
         tasks: list[asyncio.Task[None]] = []
 
         async def run_branch(
@@ -36,8 +37,8 @@ class ParallelAgent(BaseOrchestrationAgent):
                     if not event.branch:
                         event = replace(event, branch=branch_context.branch)
                     await queue.put((agent_name, event))
-            except Exception:
-                pass
+            except Exception as exc:
+                branch_errors.append(exc)
             finally:
                 await queue.put((agent_name, None))
 
@@ -57,6 +58,9 @@ class ParallelAgent(BaseOrchestrationAgent):
                 yield item
         finally:
             await asyncio.gather(*tasks, return_exceptions=True)
+
+        if branch_errors:
+            raise branch_errors[0]
 
         merge_delta = self._merge_branch_states(context, base_state, branch_contexts)
         if merge_delta:
