@@ -57,12 +57,15 @@ class EngineSessionService(BaseSessionService):
         return [Session.from_dict(item) for item in data]
 
     async def delete_session(self, session_id: str) -> bool:
-        data = await self._request(
-            "DELETE",
-            f"/conversations/sessions/{session_id}",
-            allow_404=True,
-        )
-        return bool(data and data.get("deleted"))
+        client = self._get_client()
+        response = await client.request("DELETE", f"/conversations/sessions/{session_id}")
+        if response.status_code == 404:
+            return False
+        response.raise_for_status()
+        if response.status_code in {204, 205} or not response.content:
+            return True
+        data = response.json()
+        return bool(data.get("deleted", True)) if isinstance(data, dict) else True
 
     async def append_event(self, session_id: str, event: SessionEvent) -> SessionEvent:
         payload = event.to_dict()

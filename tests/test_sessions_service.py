@@ -239,6 +239,44 @@ async def test_in_memory_session_service_get_events_supports_offset_and_limit():
 
 
 @pytest.mark.asyncio
+async def test_in_memory_session_service_create_session_is_idempotent_for_existing_explicit_id():
+    service = InMemorySessionService()
+    created = await service.create_session(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-1",
+    )
+    await service.append_event(
+        "sess-1",
+        SessionEvent(
+            id="evt-1",
+            author="user",
+            event_type="text",
+            content={"role": "user", "parts": [{"text": "hello"}]},
+            state_delta={"turns": 1},
+        ),
+    )
+
+    fetched_before = await service.get_session("sess-1")
+    recreated = await service.create_session(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-1",
+    )
+    fetched_after = await service.get_session("sess-1")
+
+    assert fetched_before is not None
+    assert fetched_after is not None
+    assert recreated.id == "sess-1"
+    assert recreated.created_at == created.created_at
+    assert recreated.state == {"turns": 1}
+    assert [event.id for event in recreated.events] == ["evt-1"]
+    assert fetched_after.created_at == fetched_before.created_at
+    assert fetched_after.state == {"turns": 1}
+    assert [event.id for event in await service.get_events("sess-1")] == ["evt-1"]
+
+
+@pytest.mark.asyncio
 async def test_engine_session_service_reuses_client_until_closed(monkeypatch):
     created_clients = []
 
@@ -324,6 +362,21 @@ async def test_engine_session_service_reuses_client_until_closed(monkeypatch):
 
     await service.aclose()
     assert len(created_clients) == 1
+
+
+@pytest.mark.asyncio
+async def test_engine_session_service_delete_session_accepts_no_content_response():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "DELETE"
+        assert request.url.path == "/conversations/sessions/sess-1"
+        return httpx.Response(204, request=request)
+
+    service = EngineSessionService(
+        endpoint="https://engine.example.test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert await service.delete_session("sess-1") is True
 
 
 @pytest.mark.asyncio

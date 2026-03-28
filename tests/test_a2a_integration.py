@@ -39,6 +39,22 @@ class _StreamingRunner:
         yield {"delta": " world", "type": "text"}
 
 
+class _StreamingRunnerWithFinalChunk(_StreamingRunner):
+    async def stream(self, input_data):
+        self.calls.append(input_data)
+        yield {"delta": "hello", "type": "text"}
+        yield {"delta": " world", "type": "text"}
+        yield {"output": "hello world", "type": "final"}
+
+
+class _StreamingRunnerWithOverrideFinalChunk(_StreamingRunner):
+    async def stream(self, input_data):
+        self.calls.append(input_data)
+        yield {"delta": "hello", "type": "text"}
+        yield {"delta": " world", "type": "text"}
+        yield {"output": "goodbye", "type": "final"}
+
+
 class _FailingRunner:
     async def invoke(self, input_data):
         raise RuntimeError(f"boom:{input_data['input']}")
@@ -172,6 +188,42 @@ async def test_remote_a2a_agent_streams_chunks_and_adapts_runner_contract():
             },
         },
     ]
+
+
+@pytest.mark.asyncio
+async def test_remote_a2a_client_ignores_duplicate_final_stream_output():
+    server = KsA2AServer(
+        runner=_StreamingRunnerWithFinalChunk(),
+        app_name="stream_agent",
+        url="http://testserver",
+        skills=["stream"],
+    )
+    app = server.build()
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as http_client:
+        client = RemoteA2AClient(endpoint="http://testserver", http_client=http_client)
+        result = await client.invoke("hi", context_id="thread-1")
+
+    assert result["output"] == "hello world"
+
+
+@pytest.mark.asyncio
+async def test_remote_a2a_client_uses_non_prefix_final_stream_output_as_authoritative():
+    server = KsA2AServer(
+        runner=_StreamingRunnerWithOverrideFinalChunk(),
+        app_name="stream_agent",
+        url="http://testserver",
+        skills=["stream"],
+    )
+    app = server.build()
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as http_client:
+        client = RemoteA2AClient(endpoint="http://testserver", http_client=http_client)
+        result = await client.invoke("hi", context_id="thread-1")
+
+    assert result["output"] == "goodbye"
 
 
 @pytest.mark.asyncio

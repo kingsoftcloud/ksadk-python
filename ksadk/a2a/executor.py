@@ -96,23 +96,60 @@ class KsAgentExecutor(AgentExecutor):
         stream: Any,
         runner_input: dict[str, Any],
     ) -> str:
-        output_parts: list[str] = []
+        output_text = ""
+        emitted_chunks = 0
         artifact_id = f"{context.task_id}-response"
 
         async for chunk, last_chunk in self._with_last_flag(stream(runner_input)):
+            chunk_type = chunk.get("type") if isinstance(chunk, dict) else None
+            if chunk_type == "final":
+                final_text = (
+                    self._coerce_text(chunk.get("output"))
+                    if isinstance(chunk, dict)
+                    else ""
+                )
+                if not final_text:
+                    continue
+                if not output_text:
+                    output_text = final_text
+                elif final_text.startswith(output_text):
+                    suffix = final_text[len(output_text) :]
+                    output_text = final_text
+                    if suffix:
+                        emitted_chunks += 1
+                        await updater.add_artifact(
+                            parts=[Part(root=TextPart(text=suffix))],
+                            artifact_id=artifact_id,
+                            name="response",
+                            append=bool(emitted_chunks > 1),
+                            last_chunk=last_chunk,
+                        )
+                    continue
+                else:
+                    output_text = final_text
+                    await updater.add_artifact(
+                        parts=[Part(root=TextPart(text=final_text))],
+                        artifact_id=artifact_id,
+                        name="response",
+                        append=False,
+                        last_chunk=last_chunk,
+                    )
+                continue
+
             text = self._coerce_text(chunk)
             if not text:
                 continue
-            output_parts.append(text)
+            output_text += text
+            emitted_chunks += 1
             await updater.add_artifact(
                 parts=[Part(root=TextPart(text=text))],
                 artifact_id=artifact_id,
                 name="response",
-                append=bool(len(output_parts) > 1),
+                append=bool(emitted_chunks > 1),
                 last_chunk=last_chunk,
             )
 
-        return "".join(output_parts)
+        return output_text
 
     async def _with_last_flag(
         self,
