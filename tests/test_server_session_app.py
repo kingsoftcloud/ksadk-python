@@ -70,7 +70,7 @@ async def test_run_sse_uses_new_session_service(monkeypatch):
     service = InMemorySessionService()
     runner = _DummyRunner()
 
-    monkeypatch.setattr(server_app_module, "get_session_service", lambda: service)
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     server_app_module.set_runner(runner)
 
     transport = httpx.ASGITransport(app=server_app_module.app)
@@ -119,7 +119,7 @@ async def test_create_session_rejects_explicit_session_owned_by_other_agent_or_u
         session_id="shared-session",
     )
 
-    monkeypatch.setattr(server_app_module, "get_session_service", lambda: service)
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
 
     transport = httpx.ASGITransport(app=server_app_module.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
@@ -143,7 +143,7 @@ async def test_run_sse_rejects_explicit_session_owned_by_other_agent_or_user(mon
         session_id="shared-session",
     )
 
-    monkeypatch.setattr(server_app_module, "get_session_service", lambda: service)
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     server_app_module.set_runner(runner)
 
     transport = httpx.ASGITransport(app=server_app_module.app)
@@ -172,7 +172,7 @@ async def test_run_sse_stream_emits_authoritative_final_event_when_output_overri
     service = InMemorySessionService()
     runner = _OverrideStreamingRunner()
 
-    monkeypatch.setattr(server_app_module, "get_session_service", lambda: service)
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     server_app_module.set_runner(runner)
 
     transport = httpx.ASGITransport(app=server_app_module.app)

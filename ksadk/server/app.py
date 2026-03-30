@@ -6,6 +6,7 @@ FastAPI 应用 - 提供 HTTP API 接口 (ADK Web 兼容)
 import base64
 import json
 import logging
+import os
 import time
 import uuid
 from pathlib import Path
@@ -13,13 +14,13 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.server.api_models import AgentRunRequest, Part
-from ksadk.sessions import Session, SessionEvent, get_session_service
+from ksadk.sessions import Session, SessionEvent, resolve_session_service
 from ksadk.tracing import get_memory_exporter
 
 logger = logging.getLogger(__name__)
@@ -144,12 +145,12 @@ def _build_history_from_events(events: List[SessionEvent]) -> List[Dict[str, str
 async def _hydrate_session(session: Optional[Session]) -> Optional[Session]:
     if not session:
         return None
-    session.events = await get_session_service().get_events(session.id)
+    session.events = await resolve_session_service().get_events(session.id)
     return session
 
 
 async def _ensure_session(agent_id: str, user_id: str, session_id: Optional[str]) -> Session:
-    service = get_session_service()
+    service = resolve_session_service()
     if session_id:
         existing = await service.get_session(session_id)
         if existing:
@@ -164,6 +165,243 @@ async def _ensure_session(agent_id: str, user_id: str, session_id: Optional[str]
 
     created = await service.create_session(agent_id, user_id)
     return await _hydrate_session(created) or created
+
+
+def _request_id() -> str:
+    return f"req-{uuid.uuid4().hex[:12]}"
+
+
+def _action_response(action: str, data: Any, *, request_id: Optional[str] = None, message: str = "Success") -> dict:
+    payload = {
+        "Code": 0,
+        "Message": message,
+        "RequestId": request_id or _request_id(),
+        "Data": data,
+    }
+    if action:
+        payload["Action"] = action
+    return payload
+
+
+def _normalize_kop_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    normalized: List[Dict[str, str]] = []
+    for message in messages or []:
+        role = str(message.get("role") or "user")
+        content = message.get("content", "")
+        if isinstance(content, list):
+            text_parts = []
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") in {"input_text", "output_text", "text"} and item.get("text"):
+                    text_parts.append(str(item["text"]))
+            content = "".join(text_parts)
+        normalized.append({"role": role, "content": str(content or "")})
+    return normalized
+
+
+def _normalize_responses_input(input_payload: Any) -> List[Dict[str, str]]:
+    if isinstance(input_payload, str):
+        return [{"role": "user", "content": input_payload}]
+    if isinstance(input_payload, list):
+        return _normalize_kop_messages(input_payload)
+    return []
+
+
+def _build_responses_payload(*, output_text: str, model: Optional[str], session_id: str) -> dict[str, Any]:
+    response_id = f"resp_{uuid.uuid4().hex}"
+    created_at = int(time.time())
+    message_id = f"msg_{uuid.uuid4().hex[:12]}"
+    return {
+        "id": response_id,
+        "object": "response",
+        "created_at": created_at,
+        "status": "completed",
+        "model": model or "agent",
+        "output": [
+            {
+                "id": message_id,
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": output_text,
+                    }
+                ],
+            }
+        ],
+        "output_text": output_text,
+        "session_id": session_id,
+    }
+
+
+def _build_chat_completions_payload(*, output_text: str, model: Optional[str], session_id: str) -> dict[str, Any]:
+    return {
+        "id": f"chatcmpl-{uuid.uuid4()}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model or "agent",
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": output_text},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 0,
+            "completion_tokens": len(output_text),
+            "total_tokens": len(output_text),
+        },
+        "session_id": session_id,
+    }
+
+
+async def _append_text_event(
+    *,
+    session_id: str,
+    author: str,
+    role: str,
+    text: str,
+    invocation_id: Optional[str] = None,
+    state_delta: Optional[dict[str, Any]] = None,
+) -> SessionEvent:
+    service = resolve_session_service()
+    return await service.append_event(
+        session_id,
+        SessionEvent.from_dict(
+            {
+                "id": str(uuid.uuid4()),
+                "author": author,
+                "invocationId": invocation_id,
+                "content": {"role": role, "parts": [{"text": text}]},
+                "timestamp": int(time.time() * 1000),
+                "stateDelta": state_delta or {},
+            },
+            session_id=session_id,
+        ),
+    )
+
+
+async def _prepare_runtime_request(
+    *,
+    agent_id: str,
+    user_id: str,
+    session_id: Optional[str],
+    messages: List[Dict[str, str]],
+) -> tuple[str, str, list[dict[str, str]], str]:
+    service = resolve_session_service()
+    resolved_user_id = user_id
+    if session_id:
+        existing_session = await service.get_session(session_id)
+        if existing_session and existing_session.user_id:
+            resolved_user_id = existing_session.user_id
+
+    session = await _ensure_session(agent_id, resolved_user_id, session_id)
+    resolved_session_id = session.id
+    invocation_id = str(uuid.uuid4())
+
+    user_input = ""
+    if messages:
+        last_message = messages[-1]
+        if last_message.get("role") == "user":
+            user_input = last_message.get("content", "")
+
+    await _append_text_event(
+        session_id=resolved_session_id,
+        author="user",
+        role="user",
+        text=user_input,
+        invocation_id=invocation_id,
+    )
+    history = _build_history_from_events(await service.get_events(resolved_session_id))
+    return resolved_session_id, user_input, history, invocation_id
+
+
+async def _invoke_agent_once(
+    *,
+    agent_id: str,
+    messages: List[Dict[str, str]],
+    session_id: Optional[str],
+    model: Optional[str],
+) -> tuple[str, dict[str, Any]]:
+    resolved_session_id, user_input, history, invocation_id = await _prepare_runtime_request(
+        agent_id=agent_id,
+        user_id="user",
+        session_id=session_id,
+        messages=messages,
+    )
+    result = await runner.invoke({"input": user_input, "history": history})
+    output_text = str(result.get("output", ""))
+    await _append_text_event(
+        session_id=resolved_session_id,
+        author=runner.detection_result.name if runner else agent_id,
+        role="model",
+        text=output_text,
+        invocation_id=invocation_id,
+    )
+    return resolved_session_id, {"output_text": output_text, "model": model}
+
+
+async def _responses_stream(
+    *,
+    agent_id: str,
+    messages: List[Dict[str, str]],
+    session_id: Optional[str],
+    model: Optional[str],
+):
+    resolved_session_id, user_input, history, invocation_id = await _prepare_runtime_request(
+        agent_id=agent_id,
+        user_id="user",
+        session_id=session_id,
+        messages=messages,
+    )
+    accumulated_text = ""
+    async for chunk in runner.stream({"input": user_input, "history": history}):
+        chunk_type = chunk.get("type")
+        if chunk_type == "thinking":
+            delta = str(chunk.get("delta", ""))
+            if delta:
+                yield f"event: response.reasoning.delta\ndata: {json.dumps({'delta': delta}, ensure_ascii=False)}\n\n"
+            continue
+        if chunk_type == "text":
+            delta = str(chunk.get("delta", ""))
+            if delta:
+                accumulated_text += delta
+                yield f"event: response.output_text.delta\ndata: {json.dumps({'delta': delta}, ensure_ascii=False)}\n\n"
+            continue
+        if chunk_type == "tool_call":
+            yield (
+                "event: response.tool_call\n"
+                f"data: {json.dumps({'name': chunk.get('tool_name'), 'args': chunk.get('tool_args', {})}, ensure_ascii=False)}\n\n"
+            )
+            continue
+        if chunk_type == "interrupt":
+            yield (
+                "event: response.approval_request\n"
+                f"data: {json.dumps({'interrupt_info': chunk.get('interrupt_info')}, ensure_ascii=False)}\n\n"
+            )
+            continue
+        if chunk_type == "final":
+            final_text = str(chunk.get("output", ""))
+            if final_text:
+                accumulated_text = final_text
+
+    await _append_text_event(
+        session_id=resolved_session_id,
+        author=runner.detection_result.name if runner else agent_id,
+        role="model",
+        text=accumulated_text,
+        invocation_id=invocation_id,
+    )
+    final_payload = _build_responses_payload(
+        output_text=accumulated_text,
+        model=model,
+        session_id=resolved_session_id,
+    )
+    yield f"event: response.completed\ndata: {json.dumps(final_payload, ensure_ascii=False)}\n\n"
 
 
 # ============================================================
@@ -188,6 +426,190 @@ async def list_apps(relative_path: str = "./"):
     return [name]
 
 
+class UiBootstrapRequest(BaseModel):
+    AgentId: Optional[str] = None
+
+
+class CreateSessionActionRequest(BaseModel):
+    AgentId: str
+    UserId: Optional[str] = "user"
+    SessionId: Optional[str] = None
+
+
+class ListSessionsActionRequest(BaseModel):
+    AgentId: str
+    UserId: Optional[str] = None
+
+
+class SessionIdRequest(BaseModel):
+    SessionId: str
+
+
+class RunAgentActionRequest(BaseModel):
+    AgentId: str
+    Messages: List[Dict[str, Any]]
+    SessionId: Optional[str] = None
+    ApiFormat: str = "responses"
+    Stream: bool = False
+    Model: Optional[str] = None
+
+
+class ResponsesRequest(BaseModel):
+    input: Any
+    model: Optional[str] = None
+    stream: bool = False
+    session_id: Optional[str] = None
+
+
+def _session_to_action_payload(session: Session) -> dict[str, Any]:
+    return {
+        "SessionId": session.id,
+        "AgentId": session.agent_id,
+        "UserId": session.user_id,
+        "State": session.state,
+        "CreatedAt": session.created_at,
+        "UpdatedAt": session.updated_at,
+        "Version": session.version,
+    }
+
+
+def _event_to_action_payload(event: SessionEvent) -> dict[str, Any]:
+    payload = {
+        "EventId": event.id,
+        "SessionId": event.session_id,
+        "Author": event.author,
+        "EventType": event.event_type,
+        "Content": event.content,
+        "Timestamp": event.timestamp,
+        "SeqId": event.seq_id,
+        "Metadata": event.metadata,
+    }
+    if event.invocation_id:
+        payload["InvocationId"] = event.invocation_id
+    return payload
+
+
+@app.post("/agentengine/api/v1/GetAgentUiBootstrap")
+async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
+    agent_id = request.AgentId or (runner.detection_result.name if runner else "default-agent")
+    description = getattr(runner.detection_result, "description", "") if runner else ""
+    return _action_response(
+        "GetAgentUiBootstrap",
+        {
+            "Agent": {
+                "AgentId": agent_id,
+                "Name": runner.detection_result.name if runner else agent_id,
+                "Description": description or "",
+            },
+            "Modules": ["Chat", "Build", "Deploy"],
+            "Capabilities": {
+                "Attachments": True,
+                "Approval": True,
+                "Thinking": True,
+                "StopRun": False,
+                "SlashCommands": ["/new", "/clear", "/stop", "/help", "/attach"],
+            },
+            "AccessMode": "Owner",
+            "SharePermissions": {
+                "Interactive": True,
+            },
+        },
+    )
+
+
+@app.post("/agentengine/api/v1/CreateSession")
+async def create_session_action(request: CreateSessionActionRequest):
+    session = await _ensure_session(request.AgentId, request.UserId or "user", request.SessionId)
+    return _action_response("CreateSession", {"Session": _session_to_action_payload(session)})
+
+
+@app.post("/agentengine/api/v1/ListSessions")
+async def list_sessions_action(request: ListSessionsActionRequest):
+    service = resolve_session_service()
+    sessions = await service.list_sessions(request.AgentId, request.UserId)
+    return _action_response(
+        "ListSessions",
+        {"Sessions": [_session_to_action_payload(session) for session in sessions]},
+    )
+
+
+@app.post("/agentengine/api/v1/GetSession")
+async def get_session_action(request: SessionIdRequest):
+    service = resolve_session_service()
+    session = await _hydrate_session(await service.get_session(request.SessionId))
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return _action_response("GetSession", {"Session": _session_to_action_payload(session)})
+
+
+@app.post("/agentengine/api/v1/DeleteSession")
+async def delete_session_action(request: SessionIdRequest):
+    service = resolve_session_service()
+    deleted = await service.delete_session(request.SessionId)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return _action_response("DeleteSession", {"Deleted": True})
+
+
+@app.post("/agentengine/api/v1/ListSessionEvents")
+async def list_session_events_action(request: SessionIdRequest):
+    service = resolve_session_service()
+    events = await service.get_events(request.SessionId)
+    return _action_response(
+        "ListSessionEvents",
+        {"Events": [_event_to_action_payload(event) for event in events]},
+    )
+
+
+@app.post("/agentengine/api/v1/RunAgent")
+async def run_agent_action(request: RunAgentActionRequest):
+    if not runner:
+        raise HTTPException(status_code=500, detail="Runner 未初始化")
+
+    messages = _normalize_kop_messages(request.Messages)
+    api_format = (request.ApiFormat or "responses").strip().lower()
+
+    if request.Stream:
+        if api_format == "chat_completions":
+            completion_request = ChatCompletionRequest(
+                messages=messages,
+                model=request.Model,
+                stream=True,
+                session_id=request.SessionId,
+            )
+            return await chat_completions(completion_request)
+        return StreamingResponse(
+            _responses_stream(
+                agent_id=request.AgentId,
+                messages=messages,
+                session_id=request.SessionId,
+                model=request.Model,
+            ),
+            media_type="text/event-stream",
+        )
+
+    resolved_session_id, result = await _invoke_agent_once(
+        agent_id=request.AgentId,
+        messages=messages,
+        session_id=request.SessionId,
+        model=request.Model,
+    )
+    output_text = result["output_text"]
+    if api_format == "chat_completions":
+        payload = _build_chat_completions_payload(
+            output_text=output_text,
+            model=request.Model,
+            session_id=resolved_session_id,
+        )
+    else:
+        payload = _build_responses_payload(
+            output_text=output_text,
+            model=request.Model,
+            session_id=resolved_session_id,
+        )
+    return _action_response("RunAgent", payload)
+
+
 # ============================================================
 # Session Management API (ADK Web Compatible)
 # ============================================================
@@ -203,7 +625,7 @@ async def create_session(app_name: str, user_id: str, request: Request):
     except Exception:
         pass
 
-    service = get_session_service()
+    service = resolve_session_service()
     session = await _ensure_session(app_name, user_id, body.get("sessionId") or body.get("id"))
 
     for raw_event in body.get("events", []):
@@ -217,7 +639,7 @@ async def create_session(app_name: str, user_id: str, request: Request):
 @app.get("/apps/{app_name}/users/{user_id}/sessions")
 async def list_sessions(app_name: str, user_id: str):
     """List all sessions for a user"""
-    service = get_session_service()
+    service = resolve_session_service()
     sessions = await service.list_sessions(app_name, user_id)
     hydrated: List[Dict[str, Any]] = []
     for session in sessions:
@@ -229,7 +651,7 @@ async def list_sessions(app_name: str, user_id: str):
 @app.get("/apps/{app_name}/users/{user_id}/sessions/{session_id}")
 async def get_session(app_name: str, user_id: str, session_id: str):
     """Get a specific session with its events"""
-    service = get_session_service()
+    service = resolve_session_service()
     session = await _hydrate_session(await service.get_session(session_id))
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -239,7 +661,7 @@ async def get_session(app_name: str, user_id: str, session_id: str):
 @app.delete("/apps/{app_name}/users/{user_id}/sessions/{session_id}")
 async def delete_session(app_name: str, user_id: str, session_id: str):
     """Delete a session"""
-    service = get_session_service()
+    service = resolve_session_service()
     if await service.delete_session(session_id):
         return {"status": "deleted"}
     raise HTTPException(status_code=404, detail="Session not found")
@@ -304,7 +726,7 @@ async def run_sse(request: AgentRunRequest):
     if not runner:
         raise HTTPException(status_code=500, detail="Runner not initialized")
 
-    service = get_session_service()
+    service = resolve_session_service()
 
     session = await _ensure_session(request.appName, request.userId, request.sessionId)
     session_id = session.id
@@ -540,7 +962,7 @@ async def get_session_trace(session_id: str):
     raw_spans = exporter.get_finished_spans()
 
     # Get session events for invocation mapping
-    service = get_session_service()
+    service = resolve_session_service()
     events = await service.get_events(session_id)
 
     # Build invocation ID mapping from session events
@@ -637,6 +1059,39 @@ class ChatCompletionRequest(BaseModel):
     max_tokens: Optional[int] = None
 
 
+@app.post("/v1/responses")
+async def responses(request: ResponsesRequest):
+    """OpenAI Responses 兼容接口。"""
+    if not runner:
+        raise HTTPException(status_code=500, detail="Runner 未初始化")
+
+    messages = _normalize_responses_input(request.input)
+    agent_id = runner.detection_result.name if runner else "agent"
+
+    if request.stream:
+        return StreamingResponse(
+            _responses_stream(
+                agent_id=agent_id,
+                messages=messages,
+                session_id=request.session_id,
+                model=request.model,
+            ),
+            media_type="text/event-stream",
+        )
+
+    resolved_session_id, result = await _invoke_agent_once(
+        agent_id=agent_id,
+        messages=messages,
+        session_id=request.session_id,
+        model=request.model,
+    )
+    return _build_responses_payload(
+        output_text=result["output_text"],
+        model=request.model,
+        session_id=resolved_session_id,
+    )
+
+
 @app.post("/v1/chat/completions")
 async def chat_completions(request: ChatCompletionRequest):
     """OpenAI 兼容的聊天补全接口 (支持流式和非流式)"""
@@ -663,7 +1118,7 @@ async def chat_completions(request: ChatCompletionRequest):
                     request_history.append({"role": role, "content": content})
 
     # Session 管理 - 从 store 读取累积历史
-    service = get_session_service()
+    service = resolve_session_service()
     session = await _ensure_session(runner.detection_result.name, "user", request.session_id)
     session_id = session.id
 
@@ -887,11 +1342,16 @@ async def get_traces(limit: int = 50):
 # 静态文件目录
 STATIC_DIR = Path(__file__).parent / "static"
 
-# 使用 StaticFiles 挂载 ADK Web 静态文件（官方推荐方式）
+# 使用 StaticFiles 挂载统一 Agent UI 静态文件
 if STATIC_DIR.exists() and (STATIC_DIR / "index.html").exists():
-    # html=True 使得访问目录时自动返回 index.html
+    @app.get("/chat", include_in_schema=False)
+    @app.get("/build", include_in_schema=False)
+    @app.get("/deploy", include_in_schema=False)
+    async def serve_agent_workbench_shell():
+        return FileResponse(STATIC_DIR / "index.html")
+
     app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
-    logger.info(f"ADK Web UI mounted from: {STATIC_DIR}")
+    logger.info(f"Unified Agent UI mounted from: {STATIC_DIR}")
 else:
     logger.warning(f"Static files not found at: {STATIC_DIR}")
-    logger.warning("Run 'make sync-static' to build and sync the Web UI")
+    logger.warning("Build and sync the unified Agent UI static bundle first")

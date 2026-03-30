@@ -12,7 +12,7 @@ import warnings
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from ksadk.sessions import SessionEvent, get_session_service
+from ksadk.sessions import SessionEvent, resolve_session_service
 
 
 @dataclass
@@ -99,7 +99,7 @@ class InMemorySessionStore:
         return cls._instance
 
     def create_session(self, app_name: str, user_id: str, events: List[Dict] = None) -> Session:
-        service = get_session_service()
+        service = resolve_session_service()
         session = _run_sync(service.create_session(app_name, user_id))
         for raw_event in events or []:
             event = SessionEvent.from_dict(raw_event, session_id=session.id)
@@ -111,7 +111,7 @@ class InMemorySessionStore:
         return _legacy_session_from_new(session)
 
     def get_session(self, session_id: str) -> Optional[Session]:
-        service = get_session_service()
+        service = resolve_session_service()
         session = _run_sync(service.get_session(session_id))
         if not session:
             return None
@@ -119,7 +119,7 @@ class InMemorySessionStore:
         return _legacy_session_from_new(session)
 
     def list_sessions(self, app_name: str, user_id: str) -> List[Session]:
-        service = get_session_service()
+        service = resolve_session_service()
         sessions = _run_sync(service.list_sessions(app_name, user_id))
         items: List[Session] = []
         for session in sessions:
@@ -128,12 +128,12 @@ class InMemorySessionStore:
         return items
 
     def delete_session(self, session_id: str) -> bool:
-        return bool(_run_sync(get_session_service().delete_session(session_id)))
+        return bool(_run_sync(resolve_session_service().delete_session(session_id)))
 
     def add_event(self, session_id: str, event: Dict[str, Any]) -> bool:
         try:
             _run_sync(
-                get_session_service().append_event(
+                resolve_session_service().append_event(
                     session_id,
                     SessionEvent.from_dict(event, session_id=session_id),
                 )
@@ -143,7 +143,7 @@ class InMemorySessionStore:
             return False
 
     def update_state(self, session_id: str, state_delta: Dict[str, Any]) -> bool:
-        service = get_session_service()
+        service = resolve_session_service()
         session = _run_sync(service.get_session(session_id))
         if not session:
             return False
@@ -163,7 +163,7 @@ def get_session_store() -> InMemorySessionStore:
     warnings.warn(
         (
             "ksadk.server.session_store is deprecated; use "
-            "ksadk.sessions.get_session_service() instead."
+            "ksadk.sessions.resolve_session_service() instead."
         ),
         DeprecationWarning,
         stacklevel=2,
