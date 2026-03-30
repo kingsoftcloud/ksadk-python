@@ -1,0 +1,262 @@
+:root {
+  color-scheme: light;
+  --bg: #f3efe8;
+  --panel: #fffaf2;
+  --panel-strong: #f6ecdb;
+  --line: #d8ccb8;
+  --text: #2d261c;
+  --muted: #6f6557;
+  --accent: #b64f18;
+  --accent-strong: #8d3f15;
+  --user: #efe0c2;
+  --assistant: #fffdf8;
+  --thinking: #f5efe4;
+  --shadow: 0 12px 32px rgba(90, 67, 37, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: "SF Pro Text", "PingFang SC", "Noto Sans SC", sans-serif;
+  background:
+    radial-gradient(circle at top left, rgba(255, 214, 153, 0.45), transparent 28%),
+    linear-gradient(180deg, #fbf7f0 0%, var(--bg) 100%);
+  color: var(--text);
+}
+
+.app-shell {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+.sidebar {
+  border-right: 1px solid var(--line);
+  background: rgba(255, 248, 236, 0.88);
+  backdrop-filter: blur(18px);
+  padding: 20px;
+}
+
+.sidebar-header,
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.eyebrow {
+  font-size: 12px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.sidebar h1,
+.agent-name {
+  margin: 6px 0 0;
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.session-list {
+  margin-top: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.session-item {
+  border: 1px solid transparent;
+  border-radius: 16px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  padding: 14px 16px;
+  text-align: left;
+}
+
+.session-item.active {
+  border-color: var(--accent);
+  background: var(--panel-strong);
+}
+
+.session-title {
+  font-weight: 600;
+}
+
+.session-meta,
+.agent-meta,
+.event-meta,
+.composer-status {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.main-panel {
+  display: grid;
+  grid-template-rows: auto 1fr auto auto auto;
+  min-height: 100vh;
+}
+
+.panel-header {
+  padding: 24px 28px 16px;
+  border-bottom: 1px solid rgba(216, 204, 184, 0.7);
+}
+
+.header-actions {
+  display: flex;
+  gap: 12px;
+}
+
+.message-list {
+  padding: 24px 28px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.bubble {
+  max-width: min(760px, 100%);
+  border-radius: 20px;
+  border: 1px solid rgba(216, 204, 184, 0.8);
+  box-shadow: var(--shadow);
+  padding: 16px 18px;
+  background: var(--assistant);
+}
+
+.bubble.user {
+  align-self: flex-end;
+  background: var(--user);
+}
+
+.bubble.thinking {
+  background: var(--thinking);
+}
+
+.bubble-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.bubble-role {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-strong);
+}
+
+.bubble-content {
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.bubble-content pre {
+  margin: 12px 0 0;
+  padding: 14px;
+  border-radius: 14px;
+  overflow: auto;
+  background: #241e18;
+  color: #f7f0e7;
+}
+
+.bubble-content code {
+  font-family: "SF Mono", "JetBrains Mono", monospace;
+}
+
+.composer,
+.attachment-list,
+.composer-status {
+  padding: 0 28px 20px;
+}
+
+.composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: end;
+}
+
+.composer-input textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 60px;
+  max-height: 220px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  padding: 16px 18px;
+  background: rgba(255, 250, 242, 0.95);
+  color: var(--text);
+  font: inherit;
+}
+
+.composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.primary-button,
+.ghost-button {
+  appearance: none;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 12px 18px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.primary-button {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fffaf2;
+}
+
+.ghost-button {
+  background: rgba(255, 250, 242, 0.9);
+  color: var(--text);
+}
+
+.attachment-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.attachment-chip {
+  border-radius: 999px;
+  background: var(--panel-strong);
+  border: 1px solid var(--line);
+  padding: 8px 12px;
+  font-size: 13px;
+}
+
+.empty-state {
+  color: var(--muted);
+  text-align: center;
+  padding: 48px 20px;
+}
+
+.hidden {
+  display: none;
+}
+
+@media (max-width: 920px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+}

@@ -1,14 +1,23 @@
 from __future__ import annotations
 
+import importlib
 import json
+from pathlib import Path
 
 import httpx
 import pytest
 
-from ksadk.sessions import get_session_service
+from ksadk.sessions import (
+    close_session_service,
+    create_session_service,
+    get_session_service,
+    reset_session_service,
+    resolve_session_service,
+)
 from ksadk.sessions.base import SessionEvent
 from ksadk.sessions.engine_service import EngineSessionService
 from ksadk.sessions.in_memory import InMemorySessionService
+from ksadk.sessions.local_service import LocalSessionService
 
 
 @pytest.mark.asyncio
@@ -418,18 +427,128 @@ async def test_engine_session_service_get_events_supports_offset_and_limit():
     assert [event.seq_id for event in events] == [2, 3]
 
 
-def test_get_session_service_auto_selects_implementation(monkeypatch):
+@pytest.mark.asyncio
+async def test_sqlite_session_service_persists_sessions_events_and_state(tmp_path):
+    db_path = tmp_path / "sessions.sqlite"
+    service = LocalSessionService(db_path=db_path)
+
+    session = await service.create_session(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-1",
+    )
+    await service.append_event(
+        "sess-1",
+        SessionEvent(
+            id="evt-1",
+            author="user",
+            event_type="text",
+            content={"role": "user", "parts": [{"text": "hello"}]},
+            state_delta={"turns": 1},
+        ),
+    )
+    await service.update_state(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-1",
+        scope="session",
+        state_delta={"topic": "billing"},
+    )
+    await service.aclose()
+
+    reopened = LocalSessionService(db_path=db_path)
+    fetched = await reopened.get_session("sess-1")
+    assert fetched is not None
+    assert fetched.id == session.id
+    assert fetched.state == {"turns": 1, "topic": "billing"}
+
+    events = await reopened.get_events("sess-1")
+    assert [event.id for event in events] == ["evt-1"]
+    assert events[0].content["parts"][0]["text"] == "hello"
+
+    state = await reopened.get_state(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-1",
+        scope="session",
+    )
+    assert state is not None
+    assert state.state == {"turns": 1, "topic": "billing"}
+
+    await reopened.aclose()
+
+
+@pytest.mark.asyncio
+async def test_resolve_session_service_defaults_to_local_backend(monkeypatch, tmp_path):
+    module = importlib.import_module("ksadk.sessions")
+    monkeypatch.delenv("AGENTENGINE_SESSION_ENDPOINT", raising=False)
+    monkeypatch.setenv("AGENTENGINE_UI_DIR", str(tmp_path / ".agentengine" / "ui"))
+
+    await reset_session_service()
+    module._cached_session_service = None
+
+    service = resolve_session_service()
+
+    assert isinstance(service, LocalSessionService)
+    assert Path(service.db_path).parent == tmp_path / ".agentengine" / "ui"
+
+    await reset_session_service()
+
+
+def test_resolve_session_service_auto_selects_implementation(monkeypatch):
     monkeypatch.delenv("AGENTENGINE_SESSION_ENDPOINT", raising=False)
     monkeypatch.delenv("AGENTENGINE_SESSION_TOKEN", raising=False)
-    monkeypatch.setattr("ksadk.sessions._service_instance", None)
+    monkeypatch.delenv("AGENTENGINE_SESSION_BACKEND", raising=False)
+    monkeypatch.setattr("ksadk.sessions._cached_session_service", None)
 
-    service = get_session_service()
+    service = resolve_session_service()
+    assert isinstance(service, LocalSessionService)
+
+    monkeypatch.setenv("AGENTENGINE_SESSION_BACKEND", "memory")
+    monkeypatch.setattr("ksadk.sessions._cached_session_service", None)
+
+    service = resolve_session_service()
     assert isinstance(service, InMemorySessionService)
 
     monkeypatch.setenv("AGENTENGINE_SESSION_ENDPOINT", "https://engine.example.test")
     monkeypatch.setenv("AGENTENGINE_SESSION_TOKEN", "secret-token")
-    monkeypatch.setattr("ksadk.sessions._service_instance", None)
+    monkeypatch.setattr("ksadk.sessions._cached_session_service", None)
 
-    service = get_session_service()
+    service = resolve_session_service()
     assert isinstance(service, EngineSessionService)
     assert service.endpoint == "https://engine.example.test"
+
+
+def test_create_session_service_hides_backend_selection(monkeypatch, tmp_path):
+    monkeypatch.delenv("AGENTENGINE_SESSION_ENDPOINT", raising=False)
+    monkeypatch.setenv("AGENTENGINE_UI_DIR", str(tmp_path / ".agentengine" / "ui"))
+
+    local_service = create_session_service()
+    assert isinstance(local_service, LocalSessionService)
+
+    memory_service = create_session_service(backend="memory")
+    assert isinstance(memory_service, InMemorySessionService)
+
+    engine_service = create_session_service(
+        endpoint="https://engine.example.test",
+        backend="engine",
+    )
+    assert isinstance(engine_service, EngineSessionService)
+
+
+@pytest.mark.asyncio
+async def test_legacy_session_service_aliases_remain_compatible(monkeypatch, tmp_path):
+    monkeypatch.delenv("AGENTENGINE_SESSION_ENDPOINT", raising=False)
+    monkeypatch.setenv("AGENTENGINE_UI_DIR", str(tmp_path / ".agentengine" / "ui"))
+    monkeypatch.setattr("ksadk.sessions._cached_session_service", None)
+
+    service = get_session_service()
+    assert isinstance(service, LocalSessionService)
+    assert get_session_service() is resolve_session_service()
+
+    await close_session_service()
+
+
+def test_legacy_sqlite_service_import_path_remains_available():
+    module = importlib.import_module("ksadk.sessions.sqlite_service")
+    assert module.LocalSessionService is LocalSessionService
