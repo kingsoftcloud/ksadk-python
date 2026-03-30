@@ -33,7 +33,7 @@
 - repo: `agentengine-server`
 - branch: `arch/ksadk-platform-coordination`
 - paths:
-  - `docs/ksadk-platform-north-star.md`
+  - `docs/ksadk-platform-architecture-draft.md`
   - `docs/ksadk-next-2-weeks.md`
   - `docs/ksadk-worktree-owners.md`
   - `docs/ksadk-rfc-map.md`
@@ -51,7 +51,7 @@
 - worktree 纪律
 - superpowers 使用规则
 
-不要把新的平台架构版本继续只写在当前工作区根目录的非 git `docs/` 下。
+不要把新的平台架构草案继续只写在当前工作区根目录的非 git `docs/` 下。
 不要用 `../agentengine-server/...` 这类本机相对路径作为团队协同约定；统一使用 `repo + branch + repo-relative path`。
 
 ## 3. 当前优先级
