@@ -36,6 +36,12 @@ class RemoteRunner(BaseRunner):
         """远程 Runner 不需要加载 Agent"""
         pass
 
+    def prepare_for_request(self, model: Optional[str]) -> None:
+        normalized = self.normalize_requested_model(model)
+        if normalized is None:
+            return
+        self.model = normalized
+
     def _get_client_kwargs(self) -> dict:
         """获取 httpx 客户端配置"""
         is_local = any(x in self.endpoint for x in ["localhost", "127.0.0.1", "0.0.0.0"])

@@ -4,6 +4,7 @@ FastAPI 应用 - 提供 HTTP API 接口 (ADK Web 兼容)
 """
 
 import base64
+import io
 import json
 import logging
 import os
@@ -12,22 +13,41 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+import ksadk.conversations as conversation
 from ksadk.runners.base_runner import BaseRunner
-from ksadk.server.api_models import AgentRunRequest, Part
+from ksadk.server.api_models import AgentRunRequest
 from ksadk.sessions import Session, SessionEvent, resolve_session_service
+from ksadk.sessions.local_service import resolve_local_session_dir
 from ksadk.tracing import get_memory_exporter
+from ksadk.conversations.model_context import normalize_model_metadata
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="KsADK API Server")
+# Create and configure the FastAPI application
+app = FastAPI(
+    title="ADK Core API",
+    description="Agent Development Kit HTTP API",
+    version="1.0.0",
+)
 
-# Allow CORS for local development
+# Middleware for disabling cache on frontend entry points
+@app.middleware("http")
+async def no_cache_frontend(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path == "/" or path.endswith(".html"):
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
+# Configure CORS (permissive by default for ADK tools)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -38,22 +58,78 @@ app.add_middleware(
 
 # Global Runner instance
 runner: BaseRunner = None
+_runner_loaded = False
 
 _TEXT_MIME_PREFIXES = ("text/",)
 _TEXT_MIME_TYPES = {
     "application/json",
+    "application/pdf",
     "application/xml",
     "application/yaml",
     "application/x-yaml",
     "application/x-ndjson",
 }
+_TEXT_FILE_EXTENSIONS = {
+    ".txt",
+    ".md",
+    ".markdown",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".csv",
+    ".tsv",
+    ".log",
+    ".py",
+    ".js",
+    ".ts",
+    ".jsx",
+    ".tsx",
+    ".html",
+    ".css",
+    ".sql",
+    ".xml",
+    ".sh",
+}
 _MAX_INLINE_BASE64_CHARS = 4_000_000
 _MAX_INLINE_TEXT_CHARS = 20_000
+_MAX_REFERENCE_TEXT_BYTES = 3_000_000
+_UPLOAD_URI_SCHEME = "ksadk-upload://"
 
 
 def set_runner(r: BaseRunner):
-    global runner
+    global runner, _runner_loaded
     runner = r
+    _runner_loaded = False
+
+
+def _ensure_runner_loaded() -> BaseRunner:
+    global _runner_loaded
+    if not runner:
+        raise HTTPException(status_code=500, detail="Runner 未初始化")
+    if _runner_loaded:
+        return runner
+
+    runner.load_agent()
+    _runner_loaded = True
+    return runner
+
+
+def _resolve_active_runner() -> BaseRunner:
+    try:
+        return _ensure_runner_loaded()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("Runner 加载失败: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc) or "Runner 加载失败") from exc
+
+
+def _prepare_runner_for_model(active_runner: BaseRunner, model: Optional[str]) -> None:
+    try:
+        active_runner.prepare_for_request(model)
+    except Exception as exc:
+        logger.warning("Runner 模型切换失败: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc) or "Runner 模型切换失败") from exc
 
 
 def _is_textual_mime(mime_type: str) -> bool:
@@ -63,83 +139,181 @@ def _is_textual_mime(mime_type: str) -> bool:
     return mime.startswith(_TEXT_MIME_PREFIXES) or mime in _TEXT_MIME_TYPES
 
 
-def _extract_user_input_from_parts(parts: List[Part]) -> str:
-    """将 ADK-Web message parts 转成可供 Agent 理解的文本输入。"""
+def _looks_like_textual_attachment(mime_type: str, display_name: str) -> bool:
+    suffix = Path(display_name or "").suffix.lower()
+    return _is_textual_mime(mime_type) or suffix in _TEXT_FILE_EXTENSIONS
+
+
+def _extract_pdf_text(raw: bytes) -> str:
+    try:
+        from pypdf import PdfReader
+    except Exception:
+        return ""
+
+    try:
+        reader = PdfReader(io.BytesIO(raw))
+    except Exception:
+        return ""
+
     segments: List[str] = []
+    for page in reader.pages[:10]:
+        try:
+            page_text = page.extract_text() or ""
+        except Exception:
+            page_text = ""
+        if page_text:
+            segments.append(page_text)
 
-    for part in parts or []:
-        if part.text:
-            segments.append(part.text)
-            continue
+    return "\n".join(segments).strip()
 
-        inline = part.inlineData
-        if inline and inline.data:
-            display_name = inline.displayName or "uploaded_file"
-            mime_type = (inline.mimeType or "").strip()
-            data_b64 = inline.data.strip()
 
-            if len(data_b64) > _MAX_INLINE_BASE64_CHARS:
-                size_notice = (
-                    "[上传文件: "
-                    f"{display_name}, "
-                    f"mime={mime_type or 'unknown'}, "
-                    "内容过大，未直接展开]"
-                )
-                segments.append(size_notice)
-                continue
+def _decode_inline_data(data_b64: str) -> bytes:
+    return base64.b64decode((data_b64 or "").strip() + "===")
 
-            try:
-                raw = base64.b64decode(data_b64 + "===")
-            except Exception:
-                segments.append(f"[上传文件: {display_name}, 内容解码失败]")
-                continue
 
-            if _is_textual_mime(mime_type):
-                text = raw.decode("utf-8", errors="ignore")
-                if len(text) > _MAX_INLINE_TEXT_CHARS:
-                    text = text[:_MAX_INLINE_TEXT_CHARS] + "\n...[内容已截断]"
-                segments.append(f"[上传文件: {display_name}]\n{text}")
-            else:
-                binary_notice = (
-                    "[上传文件: "
-                    f"{display_name}, "
-                    f"mime={mime_type or 'application/octet-stream'}, "
-                    f"bytes={len(raw)}]"
-                )
-                segments.append(binary_notice)
-            continue
+def _resolve_uploads_dir() -> Path:
+    uploads_dir = resolve_local_session_dir() / "files"
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+    return uploads_dir
 
-        file_data = part.fileData
-        if file_data and (file_data.fileUri or file_data.displayName):
-            file_reference_notice = (
-                "[上传文件引用: "
-                f"{file_data.displayName or file_data.fileUri}, "
-                f"mime={file_data.mimeType or 'unknown'}]"
+
+def _resolve_attachment_storage_path(file_uri: str) -> Optional[Path]:
+    normalized_uri = (file_uri or "").strip()
+    if not normalized_uri:
+        return None
+
+    if normalized_uri.startswith("local:"):
+        path = Path(normalized_uri[6:]).expanduser()
+        return path.resolve()
+
+    if normalized_uri.startswith(_UPLOAD_URI_SCHEME):
+        file_id = normalized_uri.removeprefix(_UPLOAD_URI_SCHEME).strip("/")
+        if not file_id:
+            return None
+
+        for candidate in sorted(_resolve_uploads_dir().glob(f"{file_id}*")):
+            if candidate.is_file():
+                return candidate.resolve()
+
+    return None
+
+
+def _read_attachment_bytes(storage_path: Optional[Path], *, size_limit: Optional[int] = None) -> Optional[bytes]:
+    if storage_path is None or not storage_path.is_file():
+        return None
+
+    try:
+        if size_limit is not None and storage_path.stat().st_size > size_limit:
+            return None
+        return storage_path.read_bytes()
+    except OSError:
+        return None
+
+
+def _extract_inline_attachment_text(*, display_name: str, mime_type: str, raw: bytes) -> str:
+    if mime_type == "application/pdf" or display_name.lower().endswith(".pdf"):
+        text = _extract_pdf_text(raw)
+        if not text:
+            return ""
+        if len(text) > _MAX_INLINE_TEXT_CHARS:
+            return text[:_MAX_INLINE_TEXT_CHARS] + "\n...[内容已截断]"
+        return text
+
+    if _looks_like_textual_attachment(mime_type, display_name):
+        text = raw.decode("utf-8", errors="ignore")
+        if len(text) > _MAX_INLINE_TEXT_CHARS:
+            return text[:_MAX_INLINE_TEXT_CHARS] + "\n...[内容已截断]"
+        return text
+
+    return ""
+
+
+def _attachment_prompt_text(attachment: Dict[str, Any]) -> str:
+    display_name = str(attachment.get("display_name") or "uploaded_file")
+    mime_type = str(attachment.get("mime_type") or "application/octet-stream")
+    transport = str(attachment.get("transport") or "")
+
+    if transport == "inline":
+        data_b64 = str(attachment.get("data") or "").strip()
+        if len(data_b64) > _MAX_INLINE_BASE64_CHARS:
+            return (
+                "[上传文件: "
+                f"{display_name}, "
+                f"mime={mime_type or 'unknown'}, "
+                "内容过大，未直接展开]"
             )
-            segments.append(file_reference_notice)
 
-    return "\n\n".join(s for s in segments if s).strip()
+        try:
+            raw = _decode_inline_data(data_b64)
+        except Exception:
+            return f"[上传文件: {display_name}, 内容解码失败]"
+
+        text = _extract_inline_attachment_text(
+            display_name=display_name,
+            mime_type=mime_type,
+            raw=raw,
+        )
+        if text:
+            return f"[上传文件: {display_name}]\n{text}"
+        return (
+            "[上传文件: "
+            f"{display_name}, "
+            f"mime={mime_type or 'application/octet-stream'}, "
+            f"bytes={len(raw)}]"
+        )
+
+    storage_path_value = attachment.get("storage_path")
+    storage_path = Path(str(storage_path_value)) if storage_path_value else None
+    size_bytes = attachment.get("size_bytes")
+    if size_bytes is None and storage_path is not None and storage_path.exists():
+        try:
+            size_bytes = storage_path.stat().st_size
+        except OSError:
+            size_bytes = None
+
+    raw = _read_attachment_bytes(storage_path, size_limit=_MAX_REFERENCE_TEXT_BYTES)
+    if raw is not None:
+        text = _extract_inline_attachment_text(
+            display_name=display_name,
+            mime_type=mime_type,
+            raw=raw,
+        )
+        if text:
+            return f"[上传文件: {display_name}]\n{text}"
+        return (
+            "[上传文件: "
+            f"{display_name}, "
+            f"mime={mime_type or 'application/octet-stream'}, "
+            f"bytes={len(raw)}]"
+        )
+
+    if size_bytes and size_bytes > _MAX_REFERENCE_TEXT_BYTES:
+        return (
+            "[上传文件: "
+            f"{display_name}, "
+            f"mime={mime_type or 'unknown'}, "
+            f"bytes={size_bytes}, "
+            "内容过大，未直接展开]"
+        )
+
+    file_uri = attachment.get("file_uri") or ""
+    return (
+        "[上传文件引用: "
+        f"{display_name or file_uri}, "
+        f"mime={mime_type or 'unknown'}]"
+    )
 
 
-def _extract_text_from_event_parts(parts: List[Dict[str, Any]]) -> str:
-    segments: List[str] = []
-    for part in parts or []:
-        if isinstance(part, dict) and part.get("text"):
-            segments.append(str(part["text"]))
-    return "".join(segments)
+def _extract_user_input_from_parts(parts: List[Any]) -> str:
+    """兼容旧测试/旧调用点，统一复用 conversations 层的规范化逻辑。"""
+
+    return conversation.extract_user_input_from_parts(parts)
 
 
-def _build_history_from_events(events: List[SessionEvent]) -> List[Dict[str, str]]:
-    history: List[Dict[str, str]] = []
-    for event in events:
-        content = event.content or {}
-        role = str(content.get("role") or "")
-        if role == "assistant":
-            role = "model"
-        text = _extract_text_from_event_parts(content.get("parts") or [])
-        if text and role in ("user", "model"):
-            history.append({"role": role, "content": text})
-    return history
+def _attachment_from_part(part: Any) -> Optional[Dict[str, Any]]:
+    """兼容旧入口，真实实现已经收口到 conversations.normalize。"""
+
+    return conversation.attachment_from_part(part)
 
 
 async def _hydrate_session(session: Optional[Session]) -> Optional[Session]:
@@ -181,227 +355,6 @@ def _action_response(action: str, data: Any, *, request_id: Optional[str] = None
     if action:
         payload["Action"] = action
     return payload
-
-
-def _normalize_kop_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
-    normalized: List[Dict[str, str]] = []
-    for message in messages or []:
-        role = str(message.get("role") or "user")
-        content = message.get("content", "")
-        if isinstance(content, list):
-            text_parts = []
-            for item in content:
-                if not isinstance(item, dict):
-                    continue
-                if item.get("type") in {"input_text", "output_text", "text"} and item.get("text"):
-                    text_parts.append(str(item["text"]))
-            content = "".join(text_parts)
-        normalized.append({"role": role, "content": str(content or "")})
-    return normalized
-
-
-def _normalize_responses_input(input_payload: Any) -> List[Dict[str, str]]:
-    if isinstance(input_payload, str):
-        return [{"role": "user", "content": input_payload}]
-    if isinstance(input_payload, list):
-        return _normalize_kop_messages(input_payload)
-    return []
-
-
-def _build_responses_payload(*, output_text: str, model: Optional[str], session_id: str) -> dict[str, Any]:
-    response_id = f"resp_{uuid.uuid4().hex}"
-    created_at = int(time.time())
-    message_id = f"msg_{uuid.uuid4().hex[:12]}"
-    return {
-        "id": response_id,
-        "object": "response",
-        "created_at": created_at,
-        "status": "completed",
-        "model": model or "agent",
-        "output": [
-            {
-                "id": message_id,
-                "type": "message",
-                "status": "completed",
-                "role": "assistant",
-                "content": [
-                    {
-                        "type": "output_text",
-                        "text": output_text,
-                    }
-                ],
-            }
-        ],
-        "output_text": output_text,
-        "session_id": session_id,
-    }
-
-
-def _build_chat_completions_payload(*, output_text: str, model: Optional[str], session_id: str) -> dict[str, Any]:
-    return {
-        "id": f"chatcmpl-{uuid.uuid4()}",
-        "object": "chat.completion",
-        "created": int(time.time()),
-        "model": model or "agent",
-        "choices": [
-            {
-                "index": 0,
-                "message": {"role": "assistant", "content": output_text},
-                "finish_reason": "stop",
-            }
-        ],
-        "usage": {
-            "prompt_tokens": 0,
-            "completion_tokens": len(output_text),
-            "total_tokens": len(output_text),
-        },
-        "session_id": session_id,
-    }
-
-
-async def _append_text_event(
-    *,
-    session_id: str,
-    author: str,
-    role: str,
-    text: str,
-    invocation_id: Optional[str] = None,
-    state_delta: Optional[dict[str, Any]] = None,
-) -> SessionEvent:
-    service = resolve_session_service()
-    return await service.append_event(
-        session_id,
-        SessionEvent.from_dict(
-            {
-                "id": str(uuid.uuid4()),
-                "author": author,
-                "invocationId": invocation_id,
-                "content": {"role": role, "parts": [{"text": text}]},
-                "timestamp": int(time.time() * 1000),
-                "stateDelta": state_delta or {},
-            },
-            session_id=session_id,
-        ),
-    )
-
-
-async def _prepare_runtime_request(
-    *,
-    agent_id: str,
-    user_id: str,
-    session_id: Optional[str],
-    messages: List[Dict[str, str]],
-) -> tuple[str, str, list[dict[str, str]], str]:
-    service = resolve_session_service()
-    resolved_user_id = user_id
-    if session_id:
-        existing_session = await service.get_session(session_id)
-        if existing_session and existing_session.user_id:
-            resolved_user_id = existing_session.user_id
-
-    session = await _ensure_session(agent_id, resolved_user_id, session_id)
-    resolved_session_id = session.id
-    invocation_id = str(uuid.uuid4())
-
-    user_input = ""
-    if messages:
-        last_message = messages[-1]
-        if last_message.get("role") == "user":
-            user_input = last_message.get("content", "")
-
-    await _append_text_event(
-        session_id=resolved_session_id,
-        author="user",
-        role="user",
-        text=user_input,
-        invocation_id=invocation_id,
-    )
-    history = _build_history_from_events(await service.get_events(resolved_session_id))
-    return resolved_session_id, user_input, history, invocation_id
-
-
-async def _invoke_agent_once(
-    *,
-    agent_id: str,
-    messages: List[Dict[str, str]],
-    session_id: Optional[str],
-    model: Optional[str],
-) -> tuple[str, dict[str, Any]]:
-    resolved_session_id, user_input, history, invocation_id = await _prepare_runtime_request(
-        agent_id=agent_id,
-        user_id="user",
-        session_id=session_id,
-        messages=messages,
-    )
-    result = await runner.invoke({"input": user_input, "history": history})
-    output_text = str(result.get("output", ""))
-    await _append_text_event(
-        session_id=resolved_session_id,
-        author=runner.detection_result.name if runner else agent_id,
-        role="model",
-        text=output_text,
-        invocation_id=invocation_id,
-    )
-    return resolved_session_id, {"output_text": output_text, "model": model}
-
-
-async def _responses_stream(
-    *,
-    agent_id: str,
-    messages: List[Dict[str, str]],
-    session_id: Optional[str],
-    model: Optional[str],
-):
-    resolved_session_id, user_input, history, invocation_id = await _prepare_runtime_request(
-        agent_id=agent_id,
-        user_id="user",
-        session_id=session_id,
-        messages=messages,
-    )
-    accumulated_text = ""
-    async for chunk in runner.stream({"input": user_input, "history": history}):
-        chunk_type = chunk.get("type")
-        if chunk_type == "thinking":
-            delta = str(chunk.get("delta", ""))
-            if delta:
-                yield f"event: response.reasoning.delta\ndata: {json.dumps({'delta': delta}, ensure_ascii=False)}\n\n"
-            continue
-        if chunk_type == "text":
-            delta = str(chunk.get("delta", ""))
-            if delta:
-                accumulated_text += delta
-                yield f"event: response.output_text.delta\ndata: {json.dumps({'delta': delta}, ensure_ascii=False)}\n\n"
-            continue
-        if chunk_type == "tool_call":
-            yield (
-                "event: response.tool_call\n"
-                f"data: {json.dumps({'name': chunk.get('tool_name'), 'args': chunk.get('tool_args', {})}, ensure_ascii=False)}\n\n"
-            )
-            continue
-        if chunk_type == "interrupt":
-            yield (
-                "event: response.approval_request\n"
-                f"data: {json.dumps({'interrupt_info': chunk.get('interrupt_info')}, ensure_ascii=False)}\n\n"
-            )
-            continue
-        if chunk_type == "final":
-            final_text = str(chunk.get("output", ""))
-            if final_text:
-                accumulated_text = final_text
-
-    await _append_text_event(
-        session_id=resolved_session_id,
-        author=runner.detection_result.name if runner else agent_id,
-        role="model",
-        text=accumulated_text,
-        invocation_id=invocation_id,
-    )
-    final_payload = _build_responses_payload(
-        output_text=accumulated_text,
-        model=model,
-        session_id=resolved_session_id,
-    )
-    yield f"event: response.completed\ndata: {json.dumps(final_payload, ensure_ascii=False)}\n\n"
 
 
 # ============================================================
@@ -559,14 +512,119 @@ async def list_session_events_action(request: SessionIdRequest):
         "ListSessionEvents",
         {"Events": [_event_to_action_payload(event) for event in events]},
     )
+@app.post("/agentengine/api/v1/UploadFile")
+async def upload_file_action(file: UploadFile = File(...)):
+    uploads_dir = _resolve_uploads_dir()
+    ext = Path(file.filename or "").suffix
+    file_id = uuid.uuid4().hex
+    target_path = uploads_dir / f"{file_id}{ext}"
+    size_bytes = 0
 
+    with open(target_path, "wb") as f:
+        while chunk := await file.read(1024 * 1024):
+            size_bytes += len(chunk)
+            f.write(chunk)
+
+    return _action_response(
+        "UploadFile",
+        {
+            "FileData": {
+                "fileUri": f"{_UPLOAD_URI_SCHEME}{file_id}",
+                "displayName": file.filename or "uploaded_file",
+                "mimeType": file.content_type or "application/octet-stream",
+                "sizeBytes": size_bytes,
+            }
+        }
+    )
+
+from pydantic import BaseModel
+class SetModelRequest(BaseModel):
+    model: str
+
+@app.post("/agentengine/api/v1/models")
+async def set_model_action(request: SetModelRequest):
+    import os
+    from pathlib import Path
+    from dotenv import set_key, find_dotenv
+
+    env_file = find_dotenv(usecwd=True)
+    if not env_file:
+        env_file = Path.cwd() / ".env"
+        env_file.touch()
+
+    # Update OPENAI_MODEL_NAME in .env
+    success, _, _ = set_key(str(env_file), "OPENAI_MODEL_NAME", request.model, quote_mode="never")
+    if success:
+        # Also update os.environ immediately just in case Uvicorn doesn't reload instantly
+        os.environ["OPENAI_MODEL_NAME"] = request.model
+        os.environ["MODEL_NAME"] = request.model
+        if runner and _runner_loaded:
+            _prepare_runner_for_model(runner, request.model)
+        return {"success": True, "model": request.model}
+    else:
+        raise HTTPException(status_code=500, detail="Failed to update .env")
+
+
+def _normalize_model_catalog_items(raw_models: list[Any]) -> list[dict[str, Any]]:
+    """统一模型目录 shape，并按 id 去重。
+
+    这里刻意保留上游原始 dict 字段，再补 canonical metadata。
+    这样两周后模型服务扩展字段时，这一层不会再次把信息裁掉。
+    """
+
+    normalized_by_id: dict[str, dict[str, Any]] = {}
+    for raw_model in raw_models:
+        item = normalize_model_metadata(raw_model)
+        normalized_by_id[item["id"]] = item
+    return sorted(normalized_by_id.values(), key=lambda item: item["id"])
+
+@app.get("/agentengine/api/v1/models")
+async def list_models_action():
+    import os
+    import httpx
+
+    api_base = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE")
+    api_key = os.getenv("OPENAI_API_KEY")
+    current_model = os.getenv("OPENAI_MODEL_NAME") or os.getenv("MODEL_NAME")
+
+    if not api_base:
+        return {
+            "data": _normalize_model_catalog_items([current_model or "gemini-pro", "gpt-4o"]),
+            "current": current_model,
+        }
+
+    try:
+        base_url = api_base.rstrip("/")
+        if base_url.endswith("/v1"):
+            url = f"{base_url}/models"
+        else:
+            url = f"{base_url}/v1/models"
+
+        headers = {}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        async with httpx.AsyncClient(verify=False, timeout=10) as client:
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+
+            if isinstance(data, list):
+                models = _normalize_model_catalog_items(list(data))
+            else:
+                models = _normalize_model_catalog_items(list(data.get("data", [])))
+            return {"data": models, "current": current_model}
+    except Exception as e:
+        logger.error(f"Failed to fetch models: {e}")
+        return {
+            "data": _normalize_model_catalog_items([current_model or "default-model"]),
+            "current": current_model,
+            "error": str(e),
+        }
 
 @app.post("/agentengine/api/v1/RunAgent")
 async def run_agent_action(request: RunAgentActionRequest):
-    if not runner:
-        raise HTTPException(status_code=500, detail="Runner 未初始化")
-
-    messages = _normalize_kop_messages(request.Messages)
+    messages = conversation.normalize_kop_messages(request.Messages)
     api_format = (request.ApiFormat or "responses").strip().lower()
 
     if request.Stream:
@@ -579,30 +637,38 @@ async def run_agent_action(request: RunAgentActionRequest):
             )
             return await chat_completions(completion_request)
         return StreamingResponse(
-            _responses_stream(
+            conversation.stream_conversation_turn(
+                runner=_resolve_active_runner(),
                 agent_id=request.AgentId,
+                user_id="user",
                 messages=messages,
                 session_id=request.SessionId,
                 model=request.Model,
+                prepare_runner=_prepare_runner_for_model,
+                session_service_provider=resolve_session_service,
             ),
             media_type="text/event-stream",
         )
 
-    resolved_session_id, result = await _invoke_agent_once(
+    resolved_session_id, result = await conversation.invoke_conversation_once(
+        runner=_resolve_active_runner(),
         agent_id=request.AgentId,
+        user_id="user",
         messages=messages,
         session_id=request.SessionId,
         model=request.Model,
+        prepare_runner=_prepare_runner_for_model,
+        session_service_provider=resolve_session_service,
     )
     output_text = result["output_text"]
     if api_format == "chat_completions":
-        payload = _build_chat_completions_payload(
+        payload = conversation.build_chat_completions_payload(
             output_text=output_text,
             model=request.Model,
             session_id=resolved_session_id,
         )
     else:
-        payload = _build_responses_payload(
+        payload = conversation.build_responses_payload(
             output_text=output_text,
             model=request.Model,
             session_id=resolved_session_id,
@@ -679,27 +745,26 @@ async def save_session_to_memory(app_name: str, user_id: str, session_id: str):
     当配置了 KSADK_LTM_BACKEND 时，将 session 中的用户消息
     持久化到长期记忆后端，供后续 session 通过 load_memory 工具检索。
     """
-    if not runner:
-        raise HTTPException(status_code=500, detail="Runner not initialized")
+    active_runner = _ensure_runner_loaded()
 
     # 检查 runner 是否支持长期记忆
     from ksadk.runners.adk_runner import ADKRunner as _ADKRunner
 
-    if not isinstance(runner, _ADKRunner):
+    if not isinstance(active_runner, _ADKRunner):
         raise HTTPException(
             status_code=400, detail="Long-term memory is only supported with ADK runner"
         )
 
-    if not runner._long_term_memory:
+    if not active_runner._long_term_memory:
         raise HTTPException(
             status_code=400,
             detail="Long-term memory not configured. Set KSADK_LTM_BACKEND environment variable.",
         )
 
     # 查找 ADK 内部 session ID
-    internal_session_id = runner._session_map.get(session_id, session_id)
+    internal_session_id = active_runner._session_map.get(session_id, session_id)
 
-    success = await runner.save_session_to_long_term_memory(
+    success = await active_runner.save_session_to_long_term_memory(
         session_id=internal_session_id,
         user_id=user_id,
     )
@@ -723,71 +788,75 @@ async def run_sse(request: AgentRunRequest):
     - streaming=False: Accumulate full response, send as single event
     - streaming=True: Stream tokens as they arrive (real-time)
     """
-    if not runner:
-        raise HTTPException(status_code=500, detail="Runner not initialized")
-
-    service = resolve_session_service()
-
-    session = await _ensure_session(request.appName, request.userId, request.sessionId)
-    session_id = session.id
-
-    # Extract user input (text + uploaded file parts)
-    user_parts = request.newMessage.parts if request.newMessage else []
-    user_input = _extract_user_input_from_parts(user_parts)
-
-    # Generate invocation ID for this run
-    invocation_id = request.invocationId or str(uuid.uuid4())
-
-    # Store user message event
-    await service.append_event(
-        session_id,
-        SessionEvent(
-            id=str(uuid.uuid4()),
-            session_id=session_id,
-            author="user",
-            event_type="text",
-            invocation_id=invocation_id,
-            content={
-                "role": "user",
-                "parts": [{"text": user_input}],
-            },
-            timestamp=time.time(),
-            state_delta=request.stateDelta or {},
-        ),
-    )
-
-    # Common metadata for responses
-    model_version = "models/gemini-pro" if "gemini" in request.appName.lower() else "models/unknown"
-    common_metadata = {
-        "modelVersion": model_version,
-        "usageMetadata": {
-            "promptTokenCount": len(user_input),  # Approximate
-            "candidatesTokenCount": 0,
-            "totalTokenCount": len(user_input),
-        },
+    active_runner = _ensure_runner_loaded()
+    _prepare_runner_for_model(active_runner, request.model)
+    use_streaming = request.streaming
+    normalized_message = conversation.normalize_parts_content(request.newMessage.parts if request.newMessage else [])
+    user_message = {
+        "role": "user",
+        "content": str(normalized_message.get("content") or ""),
+        "display_content": str(normalized_message.get("display_content") or ""),
+        "parts": list(normalized_message.get("parts") or []),
+        "attachments": list(normalized_message.get("attachments") or []),
     }
 
-    # Build history from session events (for LangGraph memory)
-    history = _build_history_from_events(await service.get_events(session_id))
-
-    # Determine streaming mode from request
-    use_streaming = request.streaming
+    model_version = "models/gemini-pro" if "gemini" in request.appName.lower() else "models/unknown"
+    prepared_non_stream: conversation.PreparedConversationTurn | None = None
+    if request.sessionId:
+        await conversation.ensure_conversation_session(
+            agent_id=request.appName,
+            user_id=request.userId,
+            session_id=request.sessionId,
+            session_service_provider=resolve_session_service,
+        )
+    if not use_streaming:
+        prepared_non_stream = await conversation.build_run_input(
+            agent_id=request.appName,
+            user_id=request.userId,
+            session_id=request.sessionId,
+            messages=[user_message],
+            state_delta=request.stateDelta or {},
+            invocation_id=request.invocationId,
+            session_service_provider=resolve_session_service,
+        )
+        await conversation.append_run_status_event(
+            session_id=prepared_non_stream.session_id,
+            author=active_runner.detection_result.name,
+            status="in_progress",
+            invocation_id=prepared_non_stream.invocation_id,
+            session_service_provider=resolve_session_service,
+        )
 
     async def event_generator():
-        """Generate SSE events for agent response"""
-        agent_name = runner.detection_result.name if runner else "agent"
-
         if not use_streaming:
-            # ================ NON-STREAMING MODE ================
-            # Accumulate complete response, then send as single event
             try:
-                result = await runner.invoke({"input": user_input, "history": history})
+                assert prepared_non_stream is not None
+                session_id = prepared_non_stream.session_id
+                user_input = prepared_non_stream.user_input
+                attachments = prepared_non_stream.attachments
+                user_parts = prepared_non_stream.user_parts
+                history = prepared_non_stream.history
+                invocation_id = prepared_non_stream.invocation_id
+                common_metadata = {
+                    "modelVersion": model_version,
+                    "usageMetadata": {
+                        "promptTokenCount": len(user_input),
+                        "candidatesTokenCount": 0,
+                        "totalTokenCount": len(user_input),
+                    },
+                }
+                input_data = {
+                    "input": user_input,
+                    "history": history,
+                    "input_parts": list(user_parts),
+                    "attachments": attachments,
+                    "model": request.model,
+                }
+                result = await active_runner.invoke(input_data)
                 final_text = result.get("output", "")
-
-                # Create single response event with complete text
                 response_event = {
                     "id": str(uuid.uuid4()),
-                    "author": agent_name,
+                    "author": active_runner.detection_result.name,
                     "sessionId": session_id,
                     "invocationId": invocation_id,
                     "content": {"role": "model", "parts": [{"text": final_text}]},
@@ -801,16 +870,34 @@ async def run_sse(request: AgentRunRequest):
                     "timestamp": int(time.time() * 1000),
                 }
                 yield f"data: {json.dumps(response_event, ensure_ascii=False)}\n\n"
-
-                # Store assistant event
-                response_session_event = SessionEvent.from_dict(
-                    response_event,
+                if final_text:
+                    await conversation.append_conversation_event(
+                        session_id=session_id,
+                        author=active_runner.detection_result.name,
+                        role="model",
+                        text=final_text,
+                        invocation_id=invocation_id,
+                        event_type="assistant_message",
+                        session_service_provider=resolve_session_service,
+                    )
+                await conversation.append_run_status_event(
                     session_id=session_id,
+                    author=active_runner.detection_result.name,
+                    status="completed",
+                    invocation_id=invocation_id,
+                    session_service_provider=resolve_session_service,
                 )
-                await service.append_event(session_id, response_session_event)
 
             except Exception as e:
                 logger.error(f"Error in invoke: {e}")
+                await conversation.append_run_status_event(
+                    session_id=session_id,
+                    author=active_runner.detection_result.name,
+                    status="failed",
+                    invocation_id=invocation_id,
+                    detail=str(e),
+                    session_service_provider=resolve_session_service,
+                )
                 error_event = {
                     "id": str(uuid.uuid4()),
                     "sessionId": session_id,
@@ -821,35 +908,99 @@ async def run_sse(request: AgentRunRequest):
                 }
                 yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n"
         else:
-            # ================ STREAMING MODE ================
-            # Stream tokens as they arrive, then send final accumulated event
-            client_visible_text = ""
-            authoritative_text = ""
-
             try:
-                input_data = {"input": user_input, "history": history}
-                async for chunk in runner.stream(input_data):
-                    event_id = str(uuid.uuid4())
+                compaction_preview = await conversation.preview_auto_compaction(
+                    agent_id=request.appName,
+                    user_id=request.userId,
+                    session_id=request.sessionId,
+                    messages=[user_message],
+                    session_service_provider=resolve_session_service,
+                )
+                if compaction_preview.should_compact:
+                    yield conversation.build_compaction_sse_event(
+                        phase="start",
+                        trigger="auto",
+                        total_chars=compaction_preview.total_chars,
+                        group_count=compaction_preview.group_count,
+                    )
 
+                prepared = await conversation.build_run_input(
+                    agent_id=request.appName,
+                    user_id=request.userId,
+                    session_id=request.sessionId,
+                    messages=[user_message],
+                    state_delta=request.stateDelta or {},
+                    invocation_id=request.invocationId,
+                    session_service_provider=resolve_session_service,
+                )
+                if prepared.compaction_triggered:
+                    yield conversation.build_compaction_sse_event(
+                        phase="done",
+                        trigger=str(prepared.compaction_trigger or "auto"),
+                        compacted_until_seq_id=prepared.compacted_until_seq_id,
+                        total_chars=compaction_preview.total_chars if compaction_preview.should_compact else None,
+                        group_count=compaction_preview.group_count if compaction_preview.should_compact else None,
+                    )
+
+                session_id = prepared.session_id
+                user_input = prepared.user_input
+                attachments = prepared.attachments
+                user_parts = prepared.user_parts
+                history = prepared.history
+                invocation_id = prepared.invocation_id
+                common_metadata = {
+                    "modelVersion": model_version,
+                    "usageMetadata": {
+                        "promptTokenCount": len(user_input),
+                        "candidatesTokenCount": 0,
+                        "totalTokenCount": len(user_input),
+                    },
+                }
+                await conversation.append_run_status_event(
+                    session_id=session_id,
+                    author=active_runner.detection_result.name,
+                    status="in_progress",
+                    invocation_id=invocation_id,
+                    session_service_provider=resolve_session_service,
+                )
+
+                client_visible_text = ""
+                authoritative_text = ""
+                async for chunk in active_runner.stream(
+                    {
+                        "input": user_input,
+                        "history": history,
+                        "input_parts": list(user_parts),
+                        "attachments": attachments,
+                        "model": request.model,
+                    }
+                ):
+                    event_id = str(uuid.uuid4())
+                    if chunk.get("type") == "thinking":
+                        delta = str(chunk.get("delta", ""))
+                        if delta:
+                            yield f"event: response.reasoning.delta\ndata: {json.dumps({'delta': delta}, ensure_ascii=False)}\n\n"
+                        continue
                     if chunk.get("type") == "text":
                         delta_text = chunk.get("delta", "")
                         client_visible_text += delta_text
                         authoritative_text = client_visible_text
-
-                        # Send streaming chunk - ADK-Web expects partial content
                         response_event = {
                             "id": event_id,
-                            "author": chunk.get("node", agent_name),
+                            "author": chunk.get("node", active_runner.detection_result.name),
                             "sessionId": session_id,
                             "invocationId": invocation_id,
                             "content": {"role": "model", "parts": [{"text": delta_text}]},
-                            # Mark as partial response
                             "partial": True,
                             "timestamp": int(time.time() * 1000),
                         }
                         yield f"data: {json.dumps(response_event, ensure_ascii=False)}\n\n"
-
-                    elif chunk.get("type") == "tool_call":
+                        continue
+                    if chunk.get("type") == "tool_call":
+                        yield (
+                            "event: response.tool_call\n"
+                            f"data: {json.dumps({'name': chunk.get('tool_name'), 'args': chunk.get('tool_args', {})}, ensure_ascii=False)}\n\n"
+                        )
                         tool_event = {
                             "id": event_id,
                             "author": chunk.get("node", "tool"),
@@ -866,7 +1017,6 @@ async def run_sse(request: AgentRunRequest):
                                     }
                                 ],
                             },
-                            # Add required ADK fields for tool events
                             "actions": {
                                 "finishReason": "STOP",
                                 "stateDelta": {},
@@ -875,14 +1025,56 @@ async def run_sse(request: AgentRunRequest):
                             "timestamp": int(time.time() * 1000),
                         }
                         yield f"data: {json.dumps(tool_event, ensure_ascii=False)}\n\n"
-                        # Persist tool event
-                        tool_session_event = SessionEvent.from_dict(
-                            tool_event,
+                        await conversation.append_conversation_event(
                             session_id=session_id,
+                            author=chunk.get("node", "tool"),
+                            role="model",
+                            text="",
+                            invocation_id=invocation_id,
+                            event_type="tool_call",
+                            session_service_provider=resolve_session_service,
+                            metadata={
+                                "tool_name": chunk.get("tool_name", "unknown"),
+                                "tool_args": chunk.get("tool_args", {}),
+                            },
                         )
-                        await service.append_event(session_id, tool_session_event)
-
-                    elif chunk.get("type") == "final":
+                        continue
+                    if chunk.get("type") == "tool_result":
+                        await conversation.append_conversation_event(
+                            session_id=session_id,
+                            author=active_runner.detection_result.name,
+                            role="user",
+                            text=str(chunk.get("tool_output", "")),
+                            invocation_id=invocation_id,
+                            event_type="tool_result",
+                            session_service_provider=resolve_session_service,
+                            metadata={
+                                "tool_name": chunk.get("tool_name"),
+                                "tool_output": chunk.get("tool_output", {}),
+                            },
+                        )
+                        yield (
+                            "event: response.tool_result\n"
+                            f"data: {json.dumps({'name': chunk.get('tool_name'), 'output': chunk.get('tool_output', {})}, ensure_ascii=False)}\n\n"
+                        )
+                        continue
+                    if chunk.get("type") == "interrupt":
+                        await conversation.append_conversation_event(
+                            session_id=session_id,
+                            author=active_runner.detection_result.name,
+                            role="model",
+                            text="approval requested",
+                            invocation_id=invocation_id,
+                            event_type="approval_request",
+                            session_service_provider=resolve_session_service,
+                            metadata={"interrupt_info": chunk.get("interrupt_info")},
+                        )
+                        yield (
+                            "event: response.approval_request\n"
+                            f"data: {json.dumps({'interrupt_info': chunk.get('interrupt_info')}, ensure_ascii=False)}\n\n"
+                        )
+                        continue
+                    if chunk.get("type") == "final":
                         final_text = chunk.get("output", "")
                         if not final_text:
                             continue
@@ -890,7 +1082,7 @@ async def run_sse(request: AgentRunRequest):
                         if final_text != client_visible_text:
                             final_event = {
                                 "id": event_id,
-                                "author": agent_name,
+                                "author": active_runner.detection_result.name,
                                 "sessionId": session_id,
                                 "invocationId": invocation_id,
                                 "content": {"role": "model", "parts": [{"text": final_text}]},
@@ -906,11 +1098,10 @@ async def run_sse(request: AgentRunRequest):
                             yield f"data: {json.dumps(final_event, ensure_ascii=False)}\n\n"
                             client_visible_text = final_text
 
-                # Send final complete event (for proper trace id)
                 if authoritative_text:
                     final_event = {
                         "id": str(uuid.uuid4()),
-                        "author": agent_name,
+                        "author": active_runner.detection_result.name,
                         "sessionId": session_id,
                         "invocationId": invocation_id,
                         "content": {"role": "model", "parts": [{"text": authoritative_text}]},
@@ -923,16 +1114,33 @@ async def run_sse(request: AgentRunRequest):
                         },
                         "timestamp": int(time.time() * 1000),
                     }
-                    # Don't yield final again for streaming (already sent tokens)
-                    # Just store for session history
-                    final_session_event = SessionEvent.from_dict(
-                        final_event,
+                    await conversation.append_conversation_event(
                         session_id=session_id,
+                        author=active_runner.detection_result.name,
+                        role="model",
+                        text=authoritative_text,
+                        invocation_id=invocation_id,
+                        event_type="assistant_message",
+                        session_service_provider=resolve_session_service,
                     )
-                    await service.append_event(session_id, final_session_event)
+                    await conversation.append_run_status_event(
+                        session_id=session_id,
+                        author=active_runner.detection_result.name,
+                        status="completed",
+                        invocation_id=invocation_id,
+                        session_service_provider=resolve_session_service,
+                    )
 
             except Exception as e:
                 logger.error(f"Error in stream: {e}")
+                await conversation.append_run_status_event(
+                    session_id=session_id,
+                    author=active_runner.detection_result.name,
+                    status="failed",
+                    invocation_id=invocation_id,
+                    detail=str(e),
+                    session_service_provider=resolve_session_service,
+                )
                 error_event = {
                     "id": str(uuid.uuid4()),
                     "sessionId": session_id,
@@ -1062,30 +1270,37 @@ class ChatCompletionRequest(BaseModel):
 @app.post("/v1/responses")
 async def responses(request: ResponsesRequest):
     """OpenAI Responses 兼容接口。"""
-    if not runner:
-        raise HTTPException(status_code=500, detail="Runner 未初始化")
+    active_runner = _resolve_active_runner()
 
-    messages = _normalize_responses_input(request.input)
-    agent_id = runner.detection_result.name if runner else "agent"
+    messages = conversation.normalize_responses_input(request.input)
+    agent_id = active_runner.detection_result.name
 
     if request.stream:
         return StreamingResponse(
-            _responses_stream(
+            conversation.stream_conversation_turn(
+                runner=active_runner,
                 agent_id=agent_id,
+                user_id="user",
                 messages=messages,
                 session_id=request.session_id,
                 model=request.model,
+                prepare_runner=_prepare_runner_for_model,
+                session_service_provider=resolve_session_service,
             ),
             media_type="text/event-stream",
         )
 
-    resolved_session_id, result = await _invoke_agent_once(
+    resolved_session_id, result = await conversation.invoke_conversation_once(
+        runner=active_runner,
         agent_id=agent_id,
+        user_id="user",
         messages=messages,
         session_id=request.session_id,
         model=request.model,
+        prepare_runner=_prepare_runner_for_model,
+        session_service_provider=resolve_session_service,
     )
-    return _build_responses_payload(
+    return conversation.build_responses_payload(
         output_text=result["output_text"],
         model=request.model,
         session_id=resolved_session_id,
@@ -1095,181 +1310,40 @@ async def responses(request: ResponsesRequest):
 @app.post("/v1/chat/completions")
 async def chat_completions(request: ChatCompletionRequest):
     """OpenAI 兼容的聊天补全接口 (支持流式和非流式)"""
-    if not runner:
-        raise HTTPException(status_code=500, detail="Runner 未初始化")
+    active_runner = _resolve_active_runner()
+    messages = conversation.normalize_kop_messages(request.messages)
+    agent_id = active_runner.detection_result.name
 
-    # 从 messages 中提取用户输入
-    user_input = ""
-    request_history = []
-
-    # 简单的转换逻辑：最后一条消息作为当前输入，其余作为历史
-    if request.messages:
-        last_msg = request.messages[-1]
-        if last_msg.get("role") == "user":
-            user_input = last_msg.get("content", "")
-            # 将前面的消息转换为历史记录
-            for msg in request.messages[:-1]:
-                role = msg.get("role")
-                content = msg.get("content")
-                if role in ("user", "assistant", "model") and content:
-                    # 映射 'assistant' 到 'model' (如果需要)
-                    if role == "assistant":
-                        role = "model"
-                    request_history.append({"role": role, "content": content})
-
-    # Session 管理 - 从 store 读取累积历史
-    service = resolve_session_service()
-    session = await _ensure_session(runner.detection_result.name, "user", request.session_id)
-    session_id = session.id
-
-    # 构建历史：从 session store 读取 + 请求中的历史
-    # 优先使用 session store 中的累积历史
-    history = _build_history_from_events(await service.get_events(session_id))
-
-    # 如果 session store 为空，使用请求中的历史
-    if not history and request_history:
-        history = request_history
-
-    # 保存用户消息到 session
-    await service.append_event(
-        session_id,
-        SessionEvent.from_dict(
-            {
-                "id": str(uuid.uuid4()),
-                "author": "user",
-                "content": {"role": "user", "parts": [{"text": user_input}]},
-                "timestamp": int(time.time() * 1000),
-            },
-            session_id=session_id,
-        ),
-    )
-
-    # 分支：流式 vs 非流式
     if request.stream:
-
-        async def openai_stream_generator():
-            input_data = {"input": user_input, "history": history}
-            response_id = f"chatcmpl-{uuid.uuid4()}"
-            created_time = int(time.time())
-            accumulated_text = ""
-
-            async for chunk in runner.stream(input_data):
-                if chunk.get("type") == "text":
-                    content = chunk.get("delta", "")
-                    if content:
-                        accumulated_text += content
-                        yield f"data: {
-                            json.dumps(
-                                {
-                                    'id': response_id,
-                                    'object': 'chat.completion.chunk',
-                                    'created': created_time,
-                                    'model': request.model or 'agent',
-                                    'choices': [
-                                        {
-                                            'index': 0,
-                                            'delta': {'content': content},
-                                            'finish_reason': None,
-                                        }
-                                    ],
-                                },
-                                ensure_ascii=False,
-                            )
-                        }\n\n"
-                elif chunk.get("type") == "thinking":
-                    # 处理思考过程
-                    content = chunk.get("delta", "")
-                    if content:
-                        yield f"data: {
-                            json.dumps(
-                                {
-                                    'id': response_id,
-                                    'object': 'chat.completion.chunk',
-                                    'created': created_time,
-                                    'model': request.model or 'agent',
-                                    'choices': [
-                                        {
-                                            'index': 0,
-                                            'delta': {'reasoning_content': content},
-                                            'finish_reason': None,
-                                        }
-                                    ],
-                                },
-                                ensure_ascii=False,
-                            )
-                        }\n\n"
-                elif chunk.get("type") == "final":
-                    final_text = chunk.get("output", "")
-                    if final_text:
-                        accumulated_text = final_text
-                    # 发送结束标志
-                    yield f"data: {
-                        json.dumps(
-                            {
-                                'id': response_id,
-                                'object': 'chat.completion.chunk',
-                                'created': created_time,
-                                'model': request.model or 'agent',
-                                'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}],
-                            },
-                            ensure_ascii=False,
-                        )
-                    }\n\n"
-
-            # 保存助手响应到 session
-            if accumulated_text:
-                assistant_event = {
-                    "id": str(uuid.uuid4()),
-                    "content": {"role": "model", "parts": [{"text": accumulated_text}]},
-                    "timestamp": int(time.time() * 1000),
-                }
-                assistant_session_event = SessionEvent.from_dict(
-                    assistant_event,
-                    session_id=session_id,
-                )
-                await service.append_event(session_id, assistant_session_event)
-
-            yield "data: [DONE]\n\n"
-
-        return StreamingResponse(openai_stream_generator(), media_type="text/event-stream")
-
-    else:
-        # 非流式模式
-        input_data = {"input": user_input, "history": history}
-        result = await runner.invoke(input_data)
-        output_text = result.get("output", "")
-
-        # 保存助手响应到 session
-        assistant_event = {
-            "id": str(uuid.uuid4()),
-            "content": {"role": "model", "parts": [{"text": output_text}]},
-            "timestamp": int(time.time() * 1000),
-        }
-        assistant_session_event = SessionEvent.from_dict(
-            assistant_event,
-            session_id=session_id,
+        return StreamingResponse(
+            conversation.stream_conversation_turn(
+                runner=active_runner,
+                agent_id=agent_id,
+                user_id="user",
+                messages=messages,
+                session_id=request.session_id,
+                model=request.model,
+                prepare_runner=_prepare_runner_for_model,
+                session_service_provider=resolve_session_service,
+            ),
+            media_type="text/event-stream",
         )
-        await service.append_event(session_id, assistant_session_event)
 
-        return {
-            "id": f"chatcmpl-{uuid.uuid4()}",
-            "object": "chat.completion",
-            "created": int(time.time()),
-            "model": request.model or "agent",
-            "choices": [
-                {
-                    "index": 0,
-                    "message": {"role": "assistant", "content": output_text},
-                    "finish_reason": "stop",
-                }
-            ],
-            "usage": {
-                "prompt_tokens": len(user_input),
-                "completion_tokens": len(output_text),
-                "total_tokens": len(user_input) + len(output_text),
-            },
-            "session_id": session_id,  # 返回 session_id 方便客户端使用
-        }
+    resolved_session_id, result = await conversation.invoke_conversation_once(
+        runner=active_runner,
+        agent_id=agent_id,
+        user_id="user",
+        messages=messages,
+        session_id=request.session_id,
+        model=request.model,
+        prepare_runner=_prepare_runner_for_model,
+        session_service_provider=resolve_session_service,
+    )
+    return conversation.build_chat_completions_payload(
+        output_text=result["output_text"],
+        model=request.model,
+        session_id=resolved_session_id,
+    )
 
 
 # ============================================================

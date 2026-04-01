@@ -1,60 +1,32 @@
 <!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Agent Workbench</title>
-  <link rel="icon" type="image/svg+xml" href="./adk_favicon.svg">
-  <link rel="stylesheet" href="./agent-workbench.css">
-</head>
-<body>
-  <div id="app" class="app-shell">
-    <aside class="sidebar">
-      <div class="sidebar-header">
-        <div>
-          <div class="eyebrow">AgentEngine</div>
-          <h1>Agent Workbench</h1>
-        </div>
-        <button id="new-session-button" class="ghost-button">New</button>
-      </div>
-      <div id="session-list" class="session-list"></div>
-    </aside>
-
-    <main class="main-panel">
-      <header class="panel-header">
-        <div>
-          <div id="agent-name" class="agent-name">Loading...</div>
-          <div id="agent-meta" class="agent-meta"></div>
-        </div>
-        <div class="header-actions">
-          <button id="stop-button" class="ghost-button" disabled>Stop</button>
-        </div>
-      </header>
-
-      <section id="message-list" class="message-list"></section>
-
-      <section id="composer-status" class="composer-status hidden"></section>
-
-      <form id="composer-form" class="composer">
-        <label class="composer-input">
-          <textarea id="message-input" rows="1" placeholder="Send a message. Use /new, /clear, /help, /stop."></textarea>
-        </label>
-        <div class="composer-actions">
-          <label class="ghost-button" for="attachment-input">Attach</label>
-          <input id="attachment-input" type="file" multiple hidden>
-          <button id="send-button" type="submit" class="primary-button">Send</button>
-        </div>
-      </form>
-      <div id="attachment-list" class="attachment-list"></div>
-    </main>
-  </div>
-
-  <script>
-    window.__AGENTENGINE_UI__ = {
-      version: "v1",
-      hostMode: "embedded",
-    };
-  </script>
-  <script type="module" src="./agent-workbench.js"></script>
-</body>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>web-ui</title>
+    <script type="module" crossorigin src="./assets/index-Cm-FIpoL.js"></script>
+    <link rel="modulepreload" crossorigin href="./assets/chunk-CFjPhJqf.js">
+    <link rel="modulepreload" crossorigin href="./assets/src-B0URjIBy.js">
+    <link rel="modulepreload" crossorigin href="./assets/chunk-7R4GIKGN-DNIeN2at.js">
+    <link rel="modulepreload" crossorigin href="./assets/dist-gCDI6f_8.js">
+    <link rel="modulepreload" crossorigin href="./assets/math-CqsWNv0u.js">
+    <link rel="modulepreload" crossorigin href="./assets/_createAssigner-B77N2m6U.js">
+    <link rel="modulepreload" crossorigin href="./assets/chunk-GEFDOKGD-B9zQfwrE.js">
+    <link rel="modulepreload" crossorigin href="./assets/chunk-PU5JKC2W-jUWMt1Dt.js">
+    <link rel="modulepreload" crossorigin href="./assets/katex-BwW3UVD4.js">
+    <link rel="modulepreload" crossorigin href="./assets/chunk-PQ6SQG4A-DsnMPhsm.js">
+    <link rel="modulepreload" crossorigin href="./assets/chunk-YBOYWFTD-DJRKvCEE.js">
+    <link rel="modulepreload" crossorigin href="./assets/rough.esm-DEh6Frf9.js">
+    <link rel="modulepreload" crossorigin href="./assets/chunk-KYZI473N-DkyWZcZw.js">
+    <link rel="modulepreload" crossorigin href="./assets/chunk-MX3YWQON-De213iwi.js">
+    <link rel="modulepreload" crossorigin href="./assets/path-BCgwsvmy.js">
+    <link rel="modulepreload" crossorigin href="./assets/array-DKReyB4R.js">
+    <link rel="modulepreload" crossorigin href="./assets/line-B2ykwqfE.js">
+    <link rel="modulepreload" crossorigin href="./assets/chunk-O4XLMI2P-B9Y9mnB-.js">
+    <link rel="stylesheet" crossorigin href="./assets/index-D3lo3KaC.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
 </html>

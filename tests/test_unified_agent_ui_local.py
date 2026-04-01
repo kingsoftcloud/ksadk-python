@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 import importlib
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -25,8 +27,10 @@ class _UiRunner(BaseRunner):
         )
         self.invocations: list[dict] = []
         self.run_server_calls: list[int] = []
+        self.load_agent_calls = 0
 
     def load_agent(self) -> None:
+        self.load_agent_calls += 1
         return None
 
     async def invoke(self, input_data: dict) -> dict:
@@ -35,12 +39,20 @@ class _UiRunner(BaseRunner):
 
     async def stream(self, input_data: dict):
         self.invocations.append(input_data)
+        yield {"type": "tool_call", "tool_name": "resume_lookup", "tool_args": {"keyword": "jd"}}
+        yield {"type": "tool_result", "tool_name": "resume_lookup", "tool_output": '{"score": 91}'}
         yield {"type": "thinking", "delta": "plan"}
         yield {"type": "text", "delta": "hello"}
         yield {"type": "final", "output": "hello world"}
 
     def run_server(self, port: int = 8000) -> None:
         self.run_server_calls.append(port)
+
+
+class _BrokenLoadRunner(_UiRunner):
+    def load_agent(self) -> None:
+        self.load_agent_calls += 1
+        raise RuntimeError("runner load failed")
 
 
 def _build_transport(monkeypatch):
@@ -55,7 +67,7 @@ def _build_transport(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_get_agent_ui_bootstrap_returns_modules_and_capabilities(monkeypatch):
-    _, _, _, transport = _build_transport(monkeypatch)
+    _, runner, _, transport = _build_transport(monkeypatch)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
         response = await client.post(
@@ -70,6 +82,7 @@ async def test_get_agent_ui_bootstrap_returns_modules_and_capabilities(monkeypat
     assert payload["Data"]["Modules"] == ["Chat", "Build", "Deploy"]
     assert payload["Data"]["Capabilities"]["Thinking"] is True
     assert payload["Data"]["Capabilities"]["Attachments"] is True
+    assert runner.load_agent_calls == 0
 
 
 @pytest.mark.asyncio
@@ -98,8 +111,298 @@ async def test_run_agent_action_returns_responses_payload_and_persists_session(m
     session = await service.get_session(session_id)
     assert session is not None
     events = await service.get_events(session_id)
-    assert [event.author for event in events] == ["user", "demo-agent"]
+    assert [event.author for event in events] == ["user", "demo-agent", "demo-agent", "demo-agent"]
+    assert [event.event_type for event in events] == [
+        "user_message",
+        "run_status",
+        "assistant_message",
+        "run_status",
+    ]
     assert runner.invocations[-1]["history"] == [{"role": "user", "content": "hello"}]
+    assert runner.load_agent_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_run_agent_action_normalizes_structured_text_and_inline_attachment(monkeypatch):
+    _, runner, service, transport = _build_transport(monkeypatch)
+    attachment_bytes = "候选人简历内容".encode("utf-8")
+    attachment_b64 = base64.b64encode(attachment_bytes).decode("ascii")
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/RunAgent",
+            json={
+                "AgentId": "demo-agent",
+                "Messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": "请总结附件"},
+                            {
+                                "type": "input_file",
+                                "inlineData": {
+                                    "displayName": "resume.txt",
+                                    "mimeType": "text/plain",
+                                    "data": attachment_b64,
+                                },
+                            },
+                        ],
+                    }
+                ],
+                "ApiFormat": "responses",
+                "Stream": False,
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    normalized_input = runner.invocations[-1]["input"]
+    assert "请总结附件" in normalized_input
+    assert "resume.txt" in normalized_input
+    assert "候选人简历内容" in normalized_input
+    assert runner.invocations[-1]["attachments"] == [
+        {
+            "display_name": "resume.txt",
+            "mime_type": "text/plain",
+            "transport": "inline",
+            "data": attachment_b64,
+            "is_text": True,
+            "size_bytes": len(attachment_bytes),
+        }
+    ]
+
+    session_id = payload["Data"]["session_id"]
+    events = await service.get_events(session_id)
+    assert events[0].content["parts"][0]["text"] == "请总结附件\n\n## 附件\n- resume.txt"
+    assert "候选人简历内容" not in events[0].content["parts"][0]["text"]
+    assert events[0].metadata["agent_input"] == normalized_input
+    assert events[0].event_type == "user_message"
+
+
+@pytest.mark.asyncio
+async def test_run_agent_action_passes_binary_zip_attachment_to_runner(monkeypatch):
+    _, runner, _, transport = _build_transport(monkeypatch)
+    archive_bytes = b"PK\x03\x04demo-zip"
+    archive_b64 = base64.b64encode(archive_bytes).decode("ascii")
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/RunAgent",
+            json={
+                "AgentId": "demo-agent",
+                "Messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": "分析这个压缩包"},
+                            {
+                                "type": "input_file",
+                                "inlineData": {
+                                    "displayName": "bundle.zip",
+                                    "mimeType": "application/zip",
+                                    "data": archive_b64,
+                                },
+                            },
+                        ],
+                    }
+                ],
+                "ApiFormat": "responses",
+                "Stream": False,
+            },
+        )
+
+    assert response.status_code == 200
+    normalized_input = runner.invocations[-1]["input"]
+    assert "bundle.zip" in normalized_input
+    assert "bytes=12" in normalized_input
+    assert runner.invocations[-1]["attachments"] == [
+        {
+            "display_name": "bundle.zip",
+            "mime_type": "application/zip",
+            "transport": "inline",
+            "data": archive_b64,
+            "is_text": False,
+            "size_bytes": len(archive_bytes),
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_upload_file_action_returns_server_handle_and_stores_file(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENTENGINE_UI_DIR", str(tmp_path / ".agentengine" / "ui"))
+    _, _, _, transport = _build_transport(monkeypatch)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/UploadFile",
+            files={"file": ("resume.txt", b"hello", "text/plain")},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    file_data = payload["Data"]["FileData"]
+    assert file_data["fileUri"].startswith("ksadk-upload://")
+    assert file_data["displayName"] == "resume.txt"
+    assert file_data["mimeType"] == "text/plain"
+    assert file_data["sizeBytes"] == 5
+
+    file_id = file_data["fileUri"].removeprefix("ksadk-upload://")
+    stored_files = list((tmp_path / ".agentengine" / "ui" / "files").glob(f"{file_id}*"))
+    assert len(stored_files) == 1
+    assert stored_files[0].read_bytes() == b"hello"
+
+
+@pytest.mark.asyncio
+async def test_run_agent_action_normalizes_uploaded_file_handle_and_persists_compact_metadata(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENTENGINE_UI_DIR", str(tmp_path / ".agentengine" / "ui"))
+    _, runner, service, transport = _build_transport(monkeypatch)
+    attachment_bytes = "候选人简历内容".encode("utf-8")
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        upload_response = await client.post(
+            "/agentengine/api/v1/UploadFile",
+            files={"file": ("resume.txt", attachment_bytes, "text/plain")},
+        )
+        uploaded = upload_response.json()["Data"]["FileData"]
+
+        response = await client.post(
+            "/agentengine/api/v1/RunAgent",
+            json={
+                "AgentId": "demo-agent",
+                "Messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": "请总结附件"},
+                            {
+                                "type": "input_file",
+                                "fileData": uploaded,
+                            },
+                        ],
+                    }
+                ],
+                "ApiFormat": "responses",
+                "Stream": False,
+            },
+        )
+
+    assert response.status_code == 200
+    normalized_input = runner.invocations[-1]["input"]
+    assert "请总结附件" in normalized_input
+    assert "resume.txt" in normalized_input
+    assert "候选人简历内容" in normalized_input
+
+    attachment = runner.invocations[-1]["attachments"][0]
+    assert attachment["display_name"] == "resume.txt"
+    assert attachment["mime_type"] == "text/plain"
+    assert attachment["transport"] == "reference"
+    assert attachment["file_uri"] == uploaded["fileUri"]
+    assert attachment["size_bytes"] == len(attachment_bytes)
+    assert attachment["is_text"] is True
+    assert attachment["storage_path"].endswith(".txt")
+    assert "data" not in attachment
+
+    session_id = response.json()["Data"]["session_id"]
+    events = await service.get_events(session_id)
+    assert events[0].content["parts"][0]["text"] == "请总结附件\n\n## 附件\n- resume.txt"
+    assert events[0].metadata["attachments"] == [
+        {
+            "display_name": "resume.txt",
+            "mime_type": "text/plain",
+            "transport": "reference",
+            "size_bytes": len(attachment_bytes),
+            "is_text": True,
+            "file_uri": uploaded["fileUri"],
+        }
+    ]
+    assert "storage_path" not in events[0].metadata["attachments"][0]
+    assert events[0].event_type == "user_message"
+
+
+@pytest.mark.asyncio
+async def test_run_agent_action_long_history_generates_semantic_checkpoint(monkeypatch):
+    server_app_module, runner, service, transport = _build_transport(monkeypatch)
+    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
+    model_context_module = importlib.import_module("ksadk.conversations.model_context")
+
+    session = await service.create_session(
+        agent_id="demo-agent",
+        user_id="user",
+        session_id="sess-ui-semantic",
+    )
+    for turn_index in range(3):
+        invocation_id = f"ui-sem-{turn_index}"
+        user_text = f"长历史用户消息 {turn_index} " + ("甲方要求很多 " * 10)
+        assistant_text = f"长历史助手回复 {turn_index} " + ("当前已经分析过 " * 10)
+        await conversation_runtime.append_conversation_event(
+            session_id=session.id,
+            author="user",
+            role="user",
+            text=user_text,
+            invocation_id=invocation_id,
+            event_type="user_message",
+            metadata={"agent_input": user_text},
+            session_service_provider=lambda: service,
+        )
+        await conversation_runtime.append_conversation_event(
+            session_id=session.id,
+            author="demo-agent",
+            role="model",
+            text=assistant_text,
+            invocation_id=invocation_id,
+            event_type="assistant_message",
+            session_service_provider=lambda: service,
+        )
+
+    class _SemanticSummaryClient:
+        is_available = True
+
+        async def summarize(self, *, model, messages, timeout_ms):
+            assert model == "glm-5"
+            assert timeout_ms > 0
+            assert any("当前用户目标" in item["content"] for item in messages)
+            return (
+                "<analysis>draft</analysis><summary>当前用户目标\n- 继续处理默认 UI 长会话\n\n关键约束与偏好\n- 摘要质量优先\n\n已完成进展\n- 已为较早轮次生成 checkpoint\n\n重要决策/代码上下文\n- 仍然保留 append-only transcript\n\n未完成事项\n- 继续回答用户追问\n\n下一步工作位置\n- /agentengine/api/v1/RunAgent</summary>",
+                {"prompt_tokens": 88, "completion_tokens": 22, "total_tokens": 110},
+            )
+
+    monkeypatch.setattr(
+        "ksadk.conversations.semantic_summary.resolve_summary_model_client",
+        lambda: _SemanticSummaryClient(),
+    )
+    monkeypatch.setattr(conversation_runtime, "AUTOCOMPACT_KEEP_TAIL_GROUPS", 1)
+    monkeypatch.setattr(model_context_module, "DEFAULT_CONTEXT_WINDOW_TOKENS", 40)
+    monkeypatch.setattr(model_context_module, "DEFAULT_MAX_OUTPUT_TOKENS", 0)
+    monkeypatch.setattr(model_context_module, "AUTOCOMPACT_SUMMARY_RESERVE_TOKENS", 0)
+    monkeypatch.setattr(model_context_module, "AUTOCOMPACT_BUFFER_TOKENS", 2)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/RunAgent",
+            json={
+                "AgentId": "demo-agent",
+                "Messages": [{"role": "user", "content": "继续基于之前内容给结论"}],
+                "SessionId": session.id,
+                "Model": "glm-5",
+                "ApiFormat": "responses",
+                "Stream": False,
+            },
+        )
+        events_response = await client.post(
+            "/agentengine/api/v1/ListSessionEvents",
+            json={"SessionId": session.id},
+        )
+
+    assert response.status_code == 200
+    assert runner.invocations[-1]["history"][0]["role"] == "model"
+    assert "当前用户目标" in runner.invocations[-1]["history"][0]["content"]
+    event_items = events_response.json()["Data"]["Events"]
+    checkpoint = next(item for item in event_items if item["EventType"] == "context_checkpoint")
+    assert checkpoint["Metadata"]["summary_strategy"] == "semantic"
+    assert checkpoint["Metadata"]["summary_version"] == "v1"
+    assert checkpoint["Metadata"]["summary_model"] == "glm-5"
+    assert checkpoint["Metadata"]["summary_usage"]["total_tokens"] == 110
+    assert "当前用户目标" in checkpoint["Content"]["parts"][0]["text"]
 
 
 @pytest.mark.asyncio
@@ -147,7 +450,18 @@ async def test_session_kop_actions_crud_and_event_listing(monkeypatch):
     assert deleted.status_code == 200
     assert [item["SessionId"] for item in listed.json()["Data"]["Sessions"]] == [session_id]
     assert fetched.json()["Data"]["Session"]["SessionId"] == session_id
-    assert [item["Author"] for item in events.json()["Data"]["Events"]] == ["user", "demo-agent"]
+    assert [item["Author"] for item in events.json()["Data"]["Events"]] == [
+        "user",
+        "demo-agent",
+        "demo-agent",
+        "demo-agent",
+    ]
+    assert [item["EventType"] for item in events.json()["Data"]["Events"]] == [
+        "user_message",
+        "run_status",
+        "assistant_message",
+        "run_status",
+    ]
     assert deleted.json()["Data"]["Deleted"] is True
 
 
@@ -166,9 +480,35 @@ async def test_responses_endpoint_streams_thinking_and_text_events(monkeypatch):
 
     assert response.status_code == 200
     lines = [line for line in response.text.splitlines() if line.startswith("event: ")]
+    assert "event: response.tool_call" in lines
+    assert "event: response.tool_result" in lines
     assert "event: response.reasoning.delta" in lines
     assert "event: response.output_text.delta" in lines
     assert "event: response.completed" in lines
+
+
+@pytest.mark.asyncio
+async def test_streaming_run_agent_fails_before_starting_sse_when_runner_load_fails(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _BrokenLoadRunner()
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+    transport = httpx.ASGITransport(app=server_app_module.app, raise_app_exceptions=False)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/RunAgent",
+            json={
+                "AgentId": "demo-agent",
+                "Messages": [{"role": "user", "content": "hello"}],
+                "ApiFormat": "responses",
+                "Stream": True,
+            },
+        )
+
+    assert response.status_code == 500
+    assert runner.load_agent_calls == 1
 
 
 def test_cmd_web_launches_unified_local_server(monkeypatch, tmp_path):
@@ -203,6 +543,7 @@ def test_cmd_web_launches_unified_local_server(monkeypatch, tmp_path):
 
     assert result.exit_code == 0, result.output
     assert fake_runner.run_server_calls == [8899]
+    assert fake_runner.load_agent_calls == 0
     assert "Chainlit" not in result.output
 
 
@@ -213,9 +554,22 @@ async def test_static_routes_serve_unified_agent_ui_shell(monkeypatch):
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
         root_response = await client.get("/")
         chat_response = await client.get("/chat")
+        script_match = re.search(r'src="(\./assets/[^"]+\.js)"', root_response.text)
+        style_match = re.search(r'href="(\./assets/[^"]+\.css)"', root_response.text)
+        assert script_match is not None
+        assert style_match is not None
+        js_response = await client.get(script_match.group(1).removeprefix("."))
+        css_response = await client.get(style_match.group(1).removeprefix("."))
 
     assert root_response.status_code == 200
     assert chat_response.status_code == 200
-    assert "Agent Workbench" in root_response.text
-    assert "window.__AGENTENGINE_UI__" in root_response.text
-    assert "window.__AGENTENGINE_UI__" in chat_response.text
+    assert js_response.status_code == 200
+    assert css_response.status_code == 200
+    assert '<div id="root"></div>' in root_response.text
+    assert '<div id="root"></div>' in chat_response.text
+    assert root_response.text == chat_response.text
+    assert 'type="module" crossorigin src="./assets/index-' in root_response.text
+    assert 'rel="stylesheet" crossorigin href="./assets/index-' in root_response.text
+    assert "/agentengine/api/v1/UploadFile" in js_response.text
+    assert "/agentengine/api/v1/ListSessionEvents" in js_response.text
+    assert "overflow" in css_response.text
