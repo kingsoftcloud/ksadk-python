@@ -68,3 +68,30 @@ async def test_stream_resume_uses_command():
     assert isinstance(runner._agent.last_ainvoke_state, Command)
     assert runner._agent.last_ainvoke_state.resume == {"approved": True}
     assert chunks and chunks[-1]["type"] == "final"
+
+
+@pytest.mark.asyncio
+async def test_invoke_with_binary_attachment_does_not_convert_reference_to_image_url():
+    runner = _make_runner()
+
+    await runner.invoke(
+        {
+            "session_id": "s1",
+            "input": "分析压缩包",
+            "attachments": [
+                {
+                    "display_name": "bundle.zip",
+                    "mime_type": "application/zip",
+                    "transport": "reference",
+                    "file_uri": "ksadk-upload://abc123",
+                    "storage_path": "/tmp/abc123.zip",
+                }
+            ],
+        }
+    )
+
+    content = runner._agent.last_ainvoke_state["messages"][-1].content
+    if isinstance(content, list):
+        assert not any(item.get("type") == "image_url" for item in content if isinstance(item, dict))
+    else:
+        assert content == "分析压缩包"

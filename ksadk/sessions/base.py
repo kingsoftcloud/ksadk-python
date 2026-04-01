@@ -224,13 +224,21 @@ class Session:
 
 def _infer_event_type(payload: dict[str, Any]) -> str:
     content = payload.get("content") or {}
+    role = str(content.get("role") or "")
+    author = str(payload.get("author") or "")
     parts = content.get("parts") or []
     for part in parts:
         if isinstance(part, dict) and part.get("functionCall"):
             return "tool_call"
         if isinstance(part, dict) and part.get("functionResponse"):
             return "tool_result"
-    return "text"
+    try:
+        from ksadk.conversations.context import canonical_event_type
+    except Exception:
+        if role in {"assistant", "model"} or author in {"assistant", "model"}:
+            return "assistant_message"
+        return "user_message"
+    return canonical_event_type(None, author=author, role=role)
 
 
 class BaseSessionService(abc.ABC):

@@ -73,7 +73,6 @@ def web(agent_dir: str, port: int, model: str):
     try:
         print_info("初始化 Runner...")
         runner = UnifiedRunner.create(result, str(agent_path))
-        runner.load_agent()
     except Exception as e:
         print_exception("Runner 初始化失败", e)
         raise SystemExit(1)

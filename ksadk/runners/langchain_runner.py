@@ -4,6 +4,7 @@ LangChainRunner - LangChain 框架运行时（精简版）
 透传 LangChain 原生能力，Tracing 通过 Callback 集成
 """
 
+import os
 import uuid
 from typing import Any, AsyncIterator, Dict
 
@@ -20,12 +21,27 @@ class LangChainRunner(BaseRunner):
     """LangChain 框架运行时"""
 
     def load_agent(self) -> None:
+        self._load_agent(force_reload=False)
+
+    def _load_agent(self, *, force_reload: bool) -> None:
         """加载 LangChain Agent/Chain"""
         self._agent, self._module = load_agent_module(
             self.project_dir,
             self.detection_result.entry_point,
             self.detection_result.agent_variable,
+            force_reload=force_reload,
         )
+        self._loaded_model_name = self.normalize_requested_model(
+            os.getenv("OPENAI_MODEL_NAME") or os.getenv("MODEL_NAME")
+        )
+
+    def prepare_for_request(self, model: str | None) -> None:
+        normalized = self.sync_process_model_env(model)
+        if normalized is None or self._agent is None:
+            return
+        if normalized == getattr(self, "_loaded_model_name", None):
+            return
+        self._load_agent(force_reload=True)
 
     def _get_config(self, session_id: str = None) -> dict:
         """获取运行配置（包含 Langfuse Callback）"""

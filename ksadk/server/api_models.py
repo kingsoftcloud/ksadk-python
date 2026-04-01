@@ -54,6 +54,7 @@ class AgentRunRequest(BaseModel):
     invocationId: Optional[str] = None
     stateDelta: Optional[Dict[str, Any]] = None
     functionCallEventId: Optional[str] = None
+    model: Optional[str] = None
 
 # --- Response Types ---
 

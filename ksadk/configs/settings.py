@@ -665,7 +665,6 @@ def setup_environment(agent_path: "Path"):
     if not os.getenv("OPENAI_MODEL_NAME"):
         model_name = settings.model.model_name
         os.environ["OPENAI_MODEL_NAME"] = model_name
-        # 兼容性 Model Name
-        if not os.getenv("MODEL_NAME"):
-            os.environ["MODEL_NAME"] = model_name
         click.echo(f"🧠 Model:    {click.style(model_name, fg='cyan')} (Default)")
+    if not os.getenv("MODEL_NAME") and os.getenv("OPENAI_MODEL_NAME"):
+        os.environ["MODEL_NAME"] = os.getenv("OPENAI_MODEL_NAME", "")

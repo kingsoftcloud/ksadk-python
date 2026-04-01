@@ -5,6 +5,7 @@ ADKRunner - Google ADK 框架运行时
 支持通过环境变量配置记忆体 (ShortTermMemory / LongTermMemory)。
 """
 
+import base64
 import logging
 import os
 import sys
@@ -443,6 +444,57 @@ class ADKRunner(BaseRunner):
             logger.info("ADKRunner: LongTermMemory injected as memory_service")
 
         self._runner = Runner(**runner_kwargs)
+        self._active_model_name = self.normalize_requested_model(
+            os.getenv("OPENAI_MODEL_NAME") or os.getenv("MODEL_NAME")
+        )
+
+    @staticmethod
+    def _resolve_model_reference(existing_model: Any, requested_model: str) -> str:
+        existing = str(existing_model or "").strip()
+        requested = requested_model.strip()
+        if "/" in requested:
+            return requested
+        if "/" in existing:
+            provider_prefix = existing.split("/", 1)[0]
+            return f"{provider_prefix}/{requested}"
+        return requested
+
+    def _apply_model_to_agent_tree(self, agent: Any, requested_model: str) -> None:
+        visited: set[int] = set()
+
+        def _visit(node: Any) -> None:
+            if node is None:
+                return
+            node_id = id(node)
+            if node_id in visited:
+                return
+            visited.add(node_id)
+
+            current_model = getattr(node, "model", None)
+            if hasattr(current_model, "model"):
+                current_reference = getattr(current_model, "model", None)
+                next_reference = self._resolve_model_reference(current_reference, requested_model)
+                if current_reference != next_reference:
+                    setattr(current_model, "model", next_reference)
+            elif isinstance(current_model, str):
+                next_reference = self._resolve_model_reference(current_model, requested_model)
+                if current_model != next_reference:
+                    setattr(node, "model", next_reference)
+
+            for child in getattr(node, "sub_agents", []) or []:
+                _visit(child)
+
+        _visit(agent)
+
+    def prepare_for_request(self, model: str | None) -> None:
+        normalized = self.sync_process_model_env(model)
+        if normalized is None:
+            return
+        if normalized == getattr(self, "_active_model_name", None):
+            return
+        if self._agent is not None:
+            self._apply_model_to_agent_tree(self._agent, normalized)
+        self._active_model_name = normalized
 
     def _prepare_trace_metadata(self, session_id: str):
         """准备 Trace 元数据 (Tags, UserID, etc.)"""
@@ -523,6 +575,46 @@ class ADKRunner(BaseRunner):
             logger.error(f"Error saving session to long-term memory: {e}")
             return False
 
+    def _build_adk_content(self, text: str, attachments: list[Dict[str, Any]]) -> "types.Content":
+        from google.genai import types
+        parts = []
+        if text:
+            parts.append(types.Part(text=text))
+        for att in attachments:
+            data: Optional[bytes] = None
+
+            inline_data = att.get("data")
+            if att.get("transport") == "inline" and inline_data:
+                try:
+                    data = base64.b64decode(str(inline_data).strip() + "===")
+                except Exception as e:
+                    logger.warning(f"Failed to decode inline attachment {att.get('display_name', 'uploaded_file')}: {e}")
+
+            if data is None:
+                storage_path = att.get("storage_path")
+                if storage_path:
+                    try:
+                        data = Path(str(storage_path)).read_bytes()
+                    except Exception as e:
+                        logger.warning(f"Failed to load stored attachment {storage_path}: {e}")
+
+            if data is None:
+                file_uri = att.get("file_uri", "")
+                if file_uri.startswith("local:"):
+                    try:
+                        data = Path(file_uri[6:]).read_bytes()
+                    except Exception as e:
+                        logger.warning(f"Failed to load local attachment {file_uri}: {e}")
+
+            if data is not None:
+                parts.append(types.Part.from_bytes(data=data, mime_type=att.get("mime_type", "application/octet-stream")))
+
+        # If no parts were found at all (e.g. empty message), fallback to prevent crash
+        if not parts:
+            parts.append(types.Part(text="[empty message]"))
+
+        return types.Content(role="user", parts=parts)
+
     async def invoke(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """调用 ADK Agent"""
         from google.genai import types
@@ -552,8 +644,7 @@ class ADKRunner(BaseRunner):
             if tags:
                 span.set_attribute("langfuse.tags", ",".join(tags))
 
-            # 创建 Content 对象
-            new_message = types.Content(role="user", parts=[types.Part(text=user_input)])
+            new_message = self._build_adk_content(user_input, input_data.get("attachments", []))
 
             final_response = ""
 
@@ -607,7 +698,7 @@ class ADKRunner(BaseRunner):
             if tags:
                 span.set_attribute("langfuse.tags", ",".join(tags))
 
-            new_message = types.Content(role="user", parts=[types.Part(text=user_input)])
+            new_message = self._build_adk_content(user_input, input_data.get("attachments", []))
 
             accumulated_text = ""
 

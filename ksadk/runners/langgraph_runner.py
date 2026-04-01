@@ -4,6 +4,7 @@ LangGraphRunner - LangGraph 框架运行时
 直接透传 LangGraph 原生能力，最小化封装
 """
 
+import os
 import uuid
 import re
 from typing import Any, AsyncIterator, Dict
@@ -20,15 +21,30 @@ class LangGraphRunner(BaseRunner):
     """
 
     def load_agent(self) -> None:
+        self._load_agent(force_reload=False)
+
+    def _load_agent(self, *, force_reload: bool) -> None:
         """加载 LangGraph 编译后的图"""
         self._agent, self._module = load_agent_module(
             self.project_dir,
             self.detection_result.entry_point,
             self.detection_result.agent_variable,
+            force_reload=force_reload,
+        )
+        self._loaded_model_name = self.normalize_requested_model(
+            os.getenv("OPENAI_MODEL_NAME") or os.getenv("MODEL_NAME")
         )
         
         if not hasattr(self._agent, "invoke"):
             raise TypeError("加载的对象不是有效的 LangGraph CompiledGraph")
+
+    def prepare_for_request(self, model: str | None) -> None:
+        normalized = self.sync_process_model_env(model)
+        if normalized is None or self._agent is None:
+            return
+        if normalized == getattr(self, "_loaded_model_name", None):
+            return
+        self._load_agent(force_reload=True)
 
     def _get_config(self, session_id: str) -> dict:
         """获取运行配置"""
@@ -55,8 +71,8 @@ class LangGraphRunner(BaseRunner):
                 elif role in ("assistant", "model"):
                     messages.append(AIMessage(content=content))
 
-            messages.append(HumanMessage(content=payload["input"]))
-            state = {k: v for k, v in payload.items() if k != "input"}
+            messages.append(HumanMessage(content=payload["input"] or "[empty message]"))
+            state = {k: v for k, v in payload.items() if k not in ("input", "attachments", "input_parts")}
             state["messages"] = messages
             return state
 
