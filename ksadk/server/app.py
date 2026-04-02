@@ -132,6 +132,29 @@ def _prepare_runner_for_model(active_runner: BaseRunner, model: Optional[str]) -
         raise HTTPException(status_code=500, detail=str(exc) or "Runner 模型切换失败") from exc
 
 
+def _resolve_current_model() -> tuple[Optional[str], Optional[str]]:
+    candidates = (
+        ("OPENAI_MODEL_NAME", os.getenv("OPENAI_MODEL_NAME")),
+        ("MODEL_NAME", os.getenv("MODEL_NAME")),
+        ("COZE_MODEL_NAME", os.getenv("COZE_MODEL_NAME")),
+    )
+    for source, value in candidates:
+        model = str(value or "").strip()
+        if model:
+            return model, source
+    return None, None
+
+
+def _build_bootstrap_model_payload() -> Optional[dict[str, Any]]:
+    current_model, source = _resolve_current_model()
+    if not current_model:
+        return None
+
+    payload = normalize_model_metadata({"id": current_model})
+    payload["source"] = source
+    return payload
+
+
 def _is_textual_mime(mime_type: str) -> bool:
     mime = (mime_type or "").lower()
     if not mime:
@@ -381,6 +404,7 @@ async def list_apps(relative_path: str = "./"):
 
 class UiBootstrapRequest(BaseModel):
     AgentId: Optional[str] = None
+    SessionId: Optional[str] = None
 
 
 class CreateSessionActionRequest(BaseModel):
@@ -391,7 +415,7 @@ class CreateSessionActionRequest(BaseModel):
 
 class ListSessionsActionRequest(BaseModel):
     AgentId: str
-    UserId: Optional[str] = None
+    UserId: Optional[str] = "user"
 
 
 class SessionIdRequest(BaseModel):
@@ -460,12 +484,21 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
                 "Approval": True,
                 "Thinking": True,
                 "StopRun": False,
-                "SlashCommands": ["/new", "/clear", "/stop", "/help", "/attach"],
+                "ResumeRun": False,
+                "MCP": False,
+                "HostedRuntime": False,
             },
             "AccessMode": "Owner",
             "SharePermissions": {
                 "Interactive": True,
+                "DefaultPath": "/chat",
+                "SharePath": "/chat",
             },
+            "ApiFormats": ["responses", "chat_completions"],
+            "Stream": True,
+            "SessionId": request.SessionId,
+            "HostedRuntime": None,
+            "Model": _build_bootstrap_model_payload(),
         },
     )
 
@@ -479,7 +512,7 @@ async def create_session_action(request: CreateSessionActionRequest):
 @app.post("/agentengine/api/v1/ListSessions")
 async def list_sessions_action(request: ListSessionsActionRequest):
     service = resolve_session_service()
-    sessions = await service.list_sessions(request.AgentId, request.UserId)
+    sessions = await service.list_sessions(request.AgentId, request.UserId or "user")
     return _action_response(
         "ListSessions",
         {"Sessions": [_session_to_action_payload(session) for session in sessions]},
@@ -578,20 +611,25 @@ def _normalize_model_catalog_items(raw_models: list[Any]) -> list[dict[str, Any]
         normalized_by_id[item["id"]] = item
     return sorted(normalized_by_id.values(), key=lambda item: item["id"])
 
-@app.get("/agentengine/api/v1/models")
-async def list_models_action():
+
+async def _build_models_payload() -> dict[str, Any]:
     import os
     import httpx
 
     api_base = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE")
     api_key = os.getenv("OPENAI_API_KEY")
-    current_model = os.getenv("OPENAI_MODEL_NAME") or os.getenv("MODEL_NAME")
+    current_model, source = _resolve_current_model()
+
+    def _fallback_catalog() -> dict[str, Any]:
+        models = _normalize_model_catalog_items([current_model]) if current_model else []
+        return {
+            "data": models,
+            "current": current_model,
+            "source": source,
+        }
 
     if not api_base:
-        return {
-            "data": _normalize_model_catalog_items([current_model or "gemini-pro", "gpt-4o"]),
-            "current": current_model,
-        }
+        return _fallback_catalog()
 
     try:
         base_url = api_base.rstrip("/")
@@ -613,14 +651,36 @@ async def list_models_action():
                 models = _normalize_model_catalog_items(list(data))
             else:
                 models = _normalize_model_catalog_items(list(data.get("data", [])))
-            return {"data": models, "current": current_model}
+            if current_model and all(str(item.get("id") or "").strip() != current_model for item in models):
+                models = _normalize_model_catalog_items([*models, current_model])
+            return {"data": models, "current": current_model, "source": source}
     except Exception as e:
         logger.error(f"Failed to fetch models: {e}")
-        return {
-            "data": _normalize_model_catalog_items([current_model or "default-model"]),
-            "current": current_model,
-            "error": str(e),
-        }
+        fallback = _fallback_catalog()
+        fallback["error"] = str(e)
+        return fallback
+
+@app.get("/agentengine/api/v1/models")
+async def list_models_action():
+    return await _build_models_payload()
+
+
+class ListAgentModelsRequest(BaseModel):
+    AgentId: Optional[str] = None
+    Name: Optional[str] = None
+
+
+@app.post("/agentengine/api/v1/ListAgentModels")
+async def list_agent_models_action(_request: ListAgentModelsRequest):
+    payload = await _build_models_payload()
+    return _action_response(
+        "ListAgentModels",
+        {
+            "Models": payload.get("data", []),
+            "Current": payload.get("current"),
+            "Source": payload.get("source", ""),
+        },
+    )
 
 @app.post("/agentengine/api/v1/RunAgent")
 async def run_agent_action(request: RunAgentActionRequest):
