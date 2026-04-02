@@ -23,6 +23,7 @@
 - 资源治理后台
 - gateway discovery 入口
 - SkillHub 管理平台
+- serverless pod 生命周期治理
 
 这些控制面能力的 canonical 归属在 `agentengine-server`。
 
@@ -58,14 +59,15 @@
 
 近期优先级严格按下面顺序执行：
 
-1. 打通 `MCP` 主流程
-2. 稳住 session / A2A / sandbox 现有边界
+1. 打通托管 runtime 主流程
+2. 稳住 session / transcript / sandbox / approval 现有边界
 3. 把能力统一收口到 `ksadk-python-v040-foundation`
-4. 再考虑 A2A discovery、SkillHub、Tool Registry
+4. 让 `MCP` 以 managed attachment 方式接入 runner
+5. 再考虑 A2A discovery、SkillHub、Tool Registry
 
 近期唯一认可的主流程是：
 
-`Create/Publish MCP -> server 存元数据 -> gateway resolve -> KSADK bind -> demo agent 调用`
+`用户提供 agent 代码/镜像 -> agentengine-server 管理 artifact 与 runtime 生命周期 -> gateway 路由到 serverless pod -> KSADK 负责运行/事件/managed bind -> hosted/local UI 共享 transcript 与 control 语义`
 
 如果某个改动和这条主流程没有直接关系，默认不要抢占当前迭代优先级。
 
@@ -76,7 +78,7 @@
 - `ksadk-python-v040-foundation`
   - v0.4 主集成落点，优先承接已成熟能力
 - `ksadk-python-mcp-runtime`
-  - MCP runtime 与 registry-aware bind 主战场
+  - MCP runtime 与 managed attachment bind 主战场
 - `ksadk-python-rfc02`
   - session/control-plane client 稳定边界
 - `ksadk-python-rfc03`
@@ -137,9 +139,9 @@
 当前阶段的默认策略：
 
 - 文档协同阶段：默认不启用 subagents
-- 进入 `MCP Registry MVP` 实现前：可启 2 个 explorer
-  - Explorer A：`agentengine-server` 的 MCP model/service/gateway resolve 改造面
-  - Explorer B：`ksadk` 的 `mcp_runtime + adk_runner + foundation` 绑定面
+- 进入托管 runtime 主流程实现前：可启 2 个 explorer
+  - Explorer A：`agentengine-server` 的 `CreateAgent + agent_service + router_service + conversation_runtime_service` 改造面
+  - Explorer B：`ksadk` 的 `conversations/runtime + adk_runner + mcp_runtime + foundation` 收口面
 
 ## 7. E2E 与验证规则
 
@@ -153,7 +155,7 @@
 
 - 你改了跨仓契约：API、schema、payload、CLI 参数、gateway resolve 语义
 - 你宣称“主流程打通”或“可以联调”
-- 你改了 `publish -> resolve -> bind -> invoke` 这类完整链路
+- 你改了 `artifact -> create runtime -> route -> invoke -> replay` 这类完整链路
 - 你改了部署、启动、鉴权、审计等生产路径能力
 - 你准备把改动合入 `v040` 集成分支或主线
 
@@ -200,10 +202,12 @@
 
 `agentengine-server` 负责：
 
+- artifact / runtime lifecycle
 - registry 元数据
 - 统一 resolve
 - policy / auth / visibility
 - discovery 入口
+- route / observe / hosted control
 
 遇到边界不清时，优先把“运行与消费”留在 `ksadk-python`，把“注册与治理”交给 `agentengine-server`。
 

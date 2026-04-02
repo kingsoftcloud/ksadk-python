@@ -58,6 +58,30 @@ class CodeBuilder(BaseBuilder):
         ".ruff_cache",
     }
     IGNORED_FILE_NAMES = {".DS_Store"}
+    KSADK_ALLOWED_SUFFIXES = {
+        '.py',
+        '.yaml',
+        '.yml',
+        '.json',
+        '.jinja2',
+        '.j2',
+        '.txt',
+        '.md',
+        '.html',
+        '.js',
+        '.css',
+        '.svg',
+        '.ico',
+        '.png',
+        '.jpg',
+        '.jpeg',
+        '.gif',
+        '.webp',
+        '.woff',
+        '.woff2',
+        '.ttf',
+        '.map',
+    }
     
     def __init__(self, project_dir: Path, config: dict = None):
         super().__init__(project_dir, config)
@@ -221,11 +245,38 @@ class CodeBuilder(BaseBuilder):
                     digest.update(chunk)
             digest.update(b"\0")
 
+        for relative, file_path in self._iter_ksadk_source_files():
+            fingerprint_name = f"ksadk/{relative}"
+            files.append(fingerprint_name)
+            digest.update(fingerprint_name.encode("utf-8"))
+            digest.update(b"\0")
+            with open(file_path, "rb") as f:
+                while True:
+                    chunk = f.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+            digest.update(b"\0")
+
         return {
             "version": self.INPUT_FINGERPRINT_VERSION,
             "fingerprint": digest.hexdigest(),
             "files": files,
         }
+
+    def _iter_ksadk_source_files(self):
+        import ksadk
+
+        ksadk_src = Path(ksadk.__file__).resolve().parent
+        for file_path in sorted(ksadk_src.rglob('*')):
+            if not file_path.is_file():
+                continue
+            if '__pycache__' in file_path.parts:
+                continue
+            suffix = file_path.suffix.lower()
+            if suffix not in self.KSADK_ALLOWED_SUFFIXES:
+                continue
+            yield file_path.relative_to(ksadk_src).as_posix(), file_path
 
     def _iter_project_files(self):
         for item in sorted(self.project_dir.iterdir(), key=lambda p: p.name):
@@ -728,45 +779,9 @@ class CodeBuilder(BaseBuilder):
                     deps_count += 1
             
             # 添加 ksadk 源码
-            import ksadk
-            ksadk_src = Path(ksadk.__file__).parent
             ksadk_count = 0
-            allowed_suffixes = {
-                '.py',
-                '.yaml',
-                '.yml',
-                '.json',
-                '.jinja2',
-                '.j2',
-                '.txt',
-                '.md',
-                '.html',
-                '.js',
-                '.css',
-                '.svg',
-                '.ico',
-                '.png',
-                '.jpg',
-                '.jpeg',
-                '.gif',
-                '.webp',
-                '.woff',
-                '.woff2',
-                '.ttf',
-                '.map',
-            }
-            
-            for file_path in ksadk_src.rglob('*'):
-                if not file_path.is_file():
-                    continue
-                if '__pycache__' in str(file_path):
-                    continue
-                if file_path.suffix not in allowed_suffixes:
-                    if file_path.suffix in {'.pyc', '.pyd', '.so', '.dylib', '.dll', '.bin'}:
-                        continue
-                    continue
-                
-                arcname = "ksadk/" + file_path.relative_to(ksadk_src).as_posix()
+            for relative, file_path in self._iter_ksadk_source_files():
+                arcname = "ksadk/" + relative
                 zf.write(file_path, arcname)
                 ksadk_count += 1
             

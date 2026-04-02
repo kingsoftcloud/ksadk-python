@@ -54,7 +54,7 @@ class InMemorySessionService(BaseSessionService):
                 for session in self._sessions.values()
                 if session.agent_id == agent_id and (user_id is None or session.user_id == user_id)
             ]
-            sessions.sort(key=lambda item: item.created_at)
+            sessions.sort(key=lambda item: (item.updated_at, item.created_at), reverse=True)
             return sessions
 
     async def delete_session(self, session_id: str) -> bool:
@@ -72,6 +72,33 @@ class InMemorySessionService(BaseSessionService):
                 None,
             )
             return True
+
+    async def update_session_metadata(
+        self,
+        session_id: str,
+        *,
+        title: Optional[str] = None,
+        title_source: Optional[str] = None,
+        summary: Optional[str] = None,
+        first_prompt: Optional[str] = None,
+        last_prompt: Optional[str] = None,
+    ) -> Session:
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            if not session:
+                raise ValueError(f"Session {session_id} not found")
+            if title is not None:
+                session.title = title
+            if title_source is not None:
+                session.title_source = title_source
+            if summary is not None:
+                session.summary = summary
+            if first_prompt is not None:
+                session.first_prompt = first_prompt
+            if last_prompt is not None:
+                session.last_prompt = last_prompt
+            session.updated_at = time.time()
+            return copy.deepcopy(session)
 
     async def append_event(self, session_id: str, event: SessionEvent) -> SessionEvent:
         async with self._lock:

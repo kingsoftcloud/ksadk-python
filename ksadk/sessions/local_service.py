@@ -59,6 +59,27 @@ class LocalSessionService(BaseSessionService):
         async with self._lock:
             return await asyncio.to_thread(self._delete_session_sync, session_id)
 
+    async def update_session_metadata(
+        self,
+        session_id: str,
+        *,
+        title: Optional[str] = None,
+        title_source: Optional[str] = None,
+        summary: Optional[str] = None,
+        first_prompt: Optional[str] = None,
+        last_prompt: Optional[str] = None,
+    ) -> Session:
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._update_session_metadata_sync,
+                session_id,
+                title,
+                title_source,
+                summary,
+                first_prompt,
+                last_prompt,
+            )
+
     async def append_event(self, session_id: str, event: SessionEvent) -> SessionEvent:
         async with self._lock:
             return await asyncio.to_thread(self._append_event_sync, session_id, event)
@@ -123,6 +144,11 @@ class LocalSessionService(BaseSessionService):
                     id TEXT PRIMARY KEY,
                     agent_id TEXT NOT NULL,
                     user_id TEXT NOT NULL,
+                    title TEXT NOT NULL DEFAULT '',
+                    title_source TEXT NOT NULL DEFAULT '',
+                    summary TEXT NOT NULL DEFAULT '',
+                    first_prompt TEXT NOT NULL DEFAULT '',
+                    last_prompt TEXT NOT NULL DEFAULT '',
                     state_json TEXT NOT NULL DEFAULT '{}',
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL,
@@ -158,6 +184,20 @@ class LocalSessionService(BaseSessionService):
                 );
                 """
             )
+            columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(sessions)").fetchall()
+            }
+            required_columns = {
+                "title": "TEXT NOT NULL DEFAULT ''",
+                "title_source": "TEXT NOT NULL DEFAULT ''",
+                "summary": "TEXT NOT NULL DEFAULT ''",
+                "first_prompt": "TEXT NOT NULL DEFAULT ''",
+                "last_prompt": "TEXT NOT NULL DEFAULT ''",
+            }
+            for column_name, ddl in required_columns.items():
+                if column_name not in columns:
+                    connection.execute(f"ALTER TABLE sessions ADD COLUMN {column_name} {ddl}")
+            connection.commit()
 
     def _create_session_sync(
         self,
@@ -181,10 +221,26 @@ class LocalSessionService(BaseSessionService):
             )
             connection.execute(
                 """
-                INSERT INTO sessions (id, agent_id, user_id, state_json, created_at, updated_at, version)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO sessions (
+                    id, agent_id, user_id, title, title_source, summary, first_prompt, last_prompt,
+                    state_json, created_at, updated_at, version
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (session.id, agent_id, user_id, "{}", session.created_at, session.updated_at, session.version),
+                (
+                    session.id,
+                    agent_id,
+                    user_id,
+                    session.title,
+                    session.title_source,
+                    session.summary,
+                    session.first_prompt,
+                    session.last_prompt,
+                    "{}",
+                    session.created_at,
+                    session.updated_at,
+                    session.version,
+                ),
             )
             connection.execute(
                 """
@@ -202,7 +258,9 @@ class LocalSessionService(BaseSessionService):
         try:
             row = connection.execute(
                 """
-                SELECT id, agent_id, user_id, state_json, created_at, updated_at, version
+                SELECT
+                    id, agent_id, user_id, title, title_source, summary, first_prompt, last_prompt,
+                    state_json, created_at, updated_at, version
                 FROM sessions
                 WHERE id = ?
                 """,
@@ -214,6 +272,11 @@ class LocalSessionService(BaseSessionService):
                 id=row["id"],
                 agent_id=row["agent_id"],
                 user_id=row["user_id"],
+                title=row["title"],
+                title_source=row["title_source"],
+                summary=row["summary"],
+                first_prompt=row["first_prompt"],
+                last_prompt=row["last_prompt"],
                 state=json.loads(row["state_json"] or "{}"),
                 events=self._get_events_sync(session_id, connection=connection),
                 created_at=row["created_at"],
@@ -231,7 +294,9 @@ class LocalSessionService(BaseSessionService):
     ) -> list[Session]:
         with self._connect() as connection:
             query = """
-                SELECT id, agent_id, user_id, state_json, created_at, updated_at, version
+                SELECT
+                    id, agent_id, user_id, title, title_source, summary, first_prompt, last_prompt,
+                    state_json, created_at, updated_at, version
                 FROM sessions
                 WHERE agent_id = ?
             """
@@ -239,13 +304,18 @@ class LocalSessionService(BaseSessionService):
             if user_id is not None:
                 query += " AND user_id = ?"
                 params.append(user_id)
-            query += " ORDER BY created_at ASC"
+            query += " ORDER BY updated_at DESC, created_at DESC"
             rows = connection.execute(query, params).fetchall()
             return [
                 Session(
                     id=row["id"],
                     agent_id=row["agent_id"],
                     user_id=row["user_id"],
+                    title=row["title"],
+                    title_source=row["title_source"],
+                    summary=row["summary"],
+                    first_prompt=row["first_prompt"],
+                    last_prompt=row["last_prompt"],
                     state=json.loads(row["state_json"] or "{}"),
                     events=[],
                     created_at=row["created_at"],
@@ -278,7 +348,11 @@ class LocalSessionService(BaseSessionService):
     def _append_event_sync(self, session_id: str, event: SessionEvent) -> SessionEvent:
         with self._connect() as connection:
             session_row = connection.execute(
-                "SELECT agent_id, user_id, state_json, version FROM sessions WHERE id = ?",
+                """
+                SELECT agent_id, user_id, state_json, version
+                FROM sessions
+                WHERE id = ?
+                """,
                 (session_id,),
             ).fetchone()
             if session_row is None:
@@ -356,6 +430,69 @@ class LocalSessionService(BaseSessionService):
                 )
             connection.commit()
             return stored
+
+    def _update_session_metadata_sync(
+        self,
+        session_id: str,
+        title: Optional[str],
+        title_source: Optional[str],
+        summary: Optional[str],
+        first_prompt: Optional[str],
+        last_prompt: Optional[str],
+    ) -> Session:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    id, agent_id, user_id, title, title_source, summary, first_prompt, last_prompt,
+                    state_json, created_at, updated_at, version
+                FROM sessions
+                WHERE id = ?
+                """,
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"Session {session_id} not found")
+
+            updated_at = time.time()
+            next_title = row["title"] if title is None else title
+            next_title_source = row["title_source"] if title_source is None else title_source
+            next_summary = row["summary"] if summary is None else summary
+            next_first_prompt = row["first_prompt"] if first_prompt is None else first_prompt
+            next_last_prompt = row["last_prompt"] if last_prompt is None else last_prompt
+            connection.execute(
+                """
+                UPDATE sessions
+                SET title = ?, title_source = ?, summary = ?, first_prompt = ?, last_prompt = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    next_title,
+                    next_title_source,
+                    next_summary,
+                    next_first_prompt,
+                    next_last_prompt,
+                    updated_at,
+                    session_id,
+                ),
+            )
+            connection.commit()
+            return Session(
+                id=row["id"],
+                agent_id=row["agent_id"],
+                user_id=row["user_id"],
+                title=next_title,
+                title_source=next_title_source,
+                summary=next_summary,
+                first_prompt=next_first_prompt,
+                last_prompt=next_last_prompt,
+                state=json.loads(row["state_json"] or "{}"),
+                events=[],
+                created_at=row["created_at"],
+                updated_at=updated_at,
+                version=row["version"],
+            )
 
     def _get_events_sync(
         self,

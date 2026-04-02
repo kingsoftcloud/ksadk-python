@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build && node scripts/sync-static.mjs",
+    "build:hosted": "VITE_BASE_PATH=/chat/ vite build --outDir dist-hosted",
     "lint": "eslint .",
     "preview": "vite preview"
   },

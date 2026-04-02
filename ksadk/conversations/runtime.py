@@ -30,6 +30,16 @@ from ksadk.conversations.semantic_summary import (
     find_pinned_group_indexes,
     summarize_compaction,
 )
+from ksadk.conversations.session_title import (
+    DEFAULT_SESSION_TITLE_TIMEOUT_MS,
+    HEURISTIC_SESSION_TITLE_SOURCE,
+    build_fallback_title,
+    build_heuristic_title,
+    build_session_title_messages,
+    is_low_quality_title,
+    resolve_session_title_client,
+    resolve_session_title_model,
+)
 from ksadk.sessions import Session, SessionEvent, resolve_session_service
 
 AUTOCOMPACT_KEEP_TAIL_GROUPS = 4
@@ -42,6 +52,7 @@ PROMPT_TOO_LONG_MARKERS = (
     "context_length_exceeded",
     "413",
 )
+SESSION_SUMMARY_MAX_CHARS = 160
 
 
 @dataclass
@@ -169,6 +180,85 @@ def _is_prompt_too_long_error(exc: Exception) -> bool:
 
 def _runner_name(runner: Any) -> str:
     return str(getattr(getattr(runner, "detection_result", None), "name", "assistant"))
+
+
+def _truncate_text(text: str | None, limit: int) -> str:
+    raw = " ".join(str(text or "").strip().split())
+    if len(raw) <= limit:
+        return raw
+    return f"{raw[: max(limit - 1, 0)].rstrip()}…"
+
+
+async def _update_session_metadata_after_user_turn(
+    *,
+    service: Any,
+    session: Session,
+    user_input: str,
+) -> None:
+    text = _truncate_text(user_input, SESSION_SUMMARY_MAX_CHARS)
+    if not text:
+        return
+    updates: dict[str, str] = {"last_prompt": text}
+    if not (session.first_prompt or "").strip():
+        updates["first_prompt"] = text
+    if not (session.title or "").strip():
+        updates["title"] = build_fallback_title(session.first_prompt or text)
+        updates["title_source"] = "fallback_first_prompt"
+    await service.update_session_metadata(session.id, **updates)
+
+
+async def _update_session_metadata_after_assistant_turn(
+    *,
+    service: Any,
+    session_id: str,
+    assistant_text: str,
+    model: str | None,
+) -> None:
+    summary = _truncate_text(assistant_text, SESSION_SUMMARY_MAX_CHARS)
+    if summary:
+        await service.update_session_metadata(session_id, summary=summary)
+
+    session = await service.get_session(session_id)
+    if not session:
+        return
+    if (session.title_source or "").strip() != "fallback_first_prompt":
+        return
+    first_prompt = str(session.first_prompt or "").strip()
+    if not first_prompt or not summary:
+        return
+
+    next_title = build_heuristic_title(first_prompt=first_prompt, assistant_text=summary)
+    next_title_source = (
+        HEURISTIC_SESSION_TITLE_SOURCE
+        if next_title and next_title != (session.title or "").strip()
+        else ""
+    )
+    title_client = resolve_session_title_client()
+    title_model = resolve_session_title_model(model)
+    if title_client.is_available and title_model:
+        try:
+            title, _usage = await title_client.generate_title(
+                model=title_model,
+                messages=build_session_title_messages(
+                    first_prompt=first_prompt,
+                    assistant_text=summary,
+                ),
+                timeout_ms=DEFAULT_SESSION_TITLE_TIMEOUT_MS,
+            )
+        except Exception:
+            title = ""
+
+        if title and not is_low_quality_title(title, first_prompt=first_prompt):
+            next_title = title
+            next_title_source = "ai"
+
+    if not next_title or next_title == (session.title or "").strip():
+        return
+    await service.update_session_metadata(
+        session_id,
+        title=next_title,
+        title_source=next_title_source,
+    )
 
 
 def _resolve_model_metadata(model: Optional[str]) -> dict[str, Any]:
@@ -657,6 +747,11 @@ async def build_run_input(
             "attachments": [compact_attachment_for_session(item) for item in attachments if item],
         },
     )
+    await _update_session_metadata_after_user_turn(
+        service=service,
+        session=session,
+        user_input=user_input or user_display_input,
+    )
 
     checkpoint = await compact_conversation_history(
         session_id=resolved_session_id,
@@ -780,6 +875,12 @@ async def invoke_conversation_once(
         invocation_id=prepared.invocation_id,
         event_type="assistant_message",
         session_service_provider=provider,
+    )
+    await _update_session_metadata_after_assistant_turn(
+        service=provider(),
+        session_id=prepared.session_id,
+        assistant_text=output_text,
+        model=model,
     )
     await append_run_status_event(
         session_id=prepared.session_id,
@@ -1000,6 +1101,12 @@ async def stream_conversation_turn(
         invocation_id=prepared.invocation_id,
         event_type="assistant_message",
         session_service_provider=provider,
+    )
+    await _update_session_metadata_after_assistant_turn(
+        service=provider(),
+        session_id=prepared.session_id,
+        assistant_text=accumulated_text,
+        model=model,
     )
     await append_run_status_event(
         session_id=prepared.session_id,

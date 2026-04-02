@@ -66,23 +66,95 @@ def _build_transport(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_get_agent_ui_bootstrap_returns_modules_and_capabilities(monkeypatch):
+async def test_get_agent_ui_bootstrap_matches_local_shape_parity(monkeypatch):
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-5")
     _, runner, _, transport = _build_transport(monkeypatch)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
         response = await client.post(
             "/agentengine/api/v1/GetAgentUiBootstrap",
+            json={"AgentId": "demo-agent", "SessionId": "sess-bootstrap"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["Code"] == 0
+    assert set(payload["Data"].keys()) == {
+        "Agent",
+        "Modules",
+        "Capabilities",
+        "AccessMode",
+        "SharePermissions",
+        "ApiFormats",
+        "Stream",
+        "SessionId",
+        "HostedRuntime",
+        "Model",
+    }
+    assert payload["Data"]["Agent"]["AgentId"] == "demo-agent"
+    assert payload["Data"]["Modules"] == ["Chat", "Build", "Deploy"]
+    assert payload["Data"]["Capabilities"] == {
+        "Attachments": True,
+        "Thinking": True,
+        "Approval": True,
+        "StopRun": False,
+        "ResumeRun": False,
+        "MCP": False,
+        "HostedRuntime": False,
+    }
+    assert payload["Data"]["AccessMode"] == "Owner"
+    assert payload["Data"]["SharePermissions"] == {
+        "Interactive": True,
+        "DefaultPath": "/chat",
+        "SharePath": "/chat",
+    }
+    assert payload["Data"]["ApiFormats"] == ["responses", "chat_completions"]
+    assert payload["Data"]["Stream"] is True
+    assert payload["Data"]["SessionId"] == "sess-bootstrap"
+    assert payload["Data"]["HostedRuntime"] is None
+    assert payload["Data"]["Model"]["id"] == "glm-5"
+    assert payload["Data"]["Model"]["source"] == "OPENAI_MODEL_NAME"
+    assert runner.load_agent_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_list_agent_models_action_uses_real_current_model_without_gemini_fallback(monkeypatch):
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-5")
+    monkeypatch.delenv("MODEL_NAME", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_BASE", raising=False)
+    _, _, _, transport = _build_transport(monkeypatch)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ListAgentModels",
+            json={"AgentId": "demo-agent"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["Data"]["Current"] == "glm-5"
+    assert payload["Data"]["Source"] == "OPENAI_MODEL_NAME"
+    assert [item["id"] for item in payload["Data"]["Models"]] == ["glm-5"]
+
+
+@pytest.mark.asyncio
+async def test_list_agent_models_action_matches_hosted_shape(monkeypatch):
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-5")
+    _, _, _, transport = _build_transport(monkeypatch)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ListAgentModels",
             json={"AgentId": "demo-agent"},
         )
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["Code"] == 0
-    assert payload["Data"]["Agent"]["AgentId"] == "demo-agent"
-    assert payload["Data"]["Modules"] == ["Chat", "Build", "Deploy"]
-    assert payload["Data"]["Capabilities"]["Thinking"] is True
-    assert payload["Data"]["Capabilities"]["Attachments"] is True
-    assert runner.load_agent_calls == 0
+    assert payload["Data"]["Current"] == "glm-5"
+    assert payload["Data"]["Source"] == "OPENAI_MODEL_NAME"
+    assert [item["id"] for item in payload["Data"]["Models"]] == ["glm-5"]
 
 
 @pytest.mark.asyncio
@@ -448,8 +520,19 @@ async def test_session_kop_actions_crud_and_event_listing(monkeypatch):
     assert fetched.status_code == 200
     assert events.status_code == 200
     assert deleted.status_code == 200
+    created_session = created.json()["Data"]["Session"]
+    fetched_session = fetched.json()["Data"]["Session"]
+    assert created_session["Title"] == ""
+    assert created_session["Summary"] == ""
+    assert created_session["FirstPrompt"] == ""
+    assert created_session["LastPrompt"] == ""
     assert [item["SessionId"] for item in listed.json()["Data"]["Sessions"]] == [session_id]
-    assert fetched.json()["Data"]["Session"]["SessionId"] == session_id
+    assert fetched_session["SessionId"] == session_id
+    assert fetched_session["Title"] == "hello"
+    assert fetched_session["TitleSource"] == "fallback_first_prompt"
+    assert fetched_session["FirstPrompt"] == "hello"
+    assert fetched_session["LastPrompt"] == "hello"
+    assert fetched_session["Summary"] == "assistant says hi"
     assert [item["Author"] for item in events.json()["Data"]["Events"]] == [
         "user",
         "demo-agent",
@@ -570,6 +653,18 @@ async def test_static_routes_serve_unified_agent_ui_shell(monkeypatch):
     assert root_response.text == chat_response.text
     assert 'type="module" crossorigin src="./assets/index-' in root_response.text
     assert 'rel="stylesheet" crossorigin href="./assets/index-' in root_response.text
+    assert "/agentengine/api/v1/AttachmentContent" in js_response.text
     assert "/agentengine/api/v1/UploadFile" in js_response.text
     assert "/agentengine/api/v1/ListSessionEvents" in js_response.text
+    assert "/agentengine/api/v1/ListAgentModels" in js_response.text
+    assert "/agentengine/api/v1/RunAgent" in js_response.text
+    assert "/run_sse" not in js_response.text
+    assert "/agentengine/api/v1/models" not in js_response.text
     assert "overflow" in css_response.text
+
+
+def test_web_ui_source_uses_title_and_summary_in_sidebar():
+    source = Path("ksadk/server/web-ui/src/App.tsx").read_text(encoding="utf-8")
+    assert "session.Title" in source
+    assert "session.Summary" in source
+    assert "session.SessionId.slice(0, 12)" not in source

@@ -3,6 +3,8 @@ import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
+import ksadk
+
 from ksadk.builders.code_builder import CodeBuilder
 
 
@@ -80,6 +82,39 @@ def test_code_builder_rebuilds_when_file_content_changes(tmp_path: Path, monkeyp
 
     agent_file = tmp_path / "agent.py"
     agent_file.write_text("print('changed')\n", encoding="utf-8")
+
+    second = builder.build()
+    assert second.success is True
+    assert len(package_calls) == 2
+
+
+def test_code_builder_rebuilds_when_ksadk_source_changes(tmp_path: Path, monkeypatch):
+    (tmp_path / "agent.py").write_text("print('ok')\n", encoding="utf-8")
+    (tmp_path / "agentengine.yaml").write_text("name: demo-agent\nframework: langgraph\n", encoding="utf-8")
+
+    fake_ksadk_root = tmp_path.parent / f"{tmp_path.name}_fake_ksadk" / "ksadk"
+    (fake_ksadk_root / "configs").mkdir(parents=True, exist_ok=True)
+    (fake_ksadk_root / "__init__.py").write_text("__version__ = 'test'\n", encoding="utf-8")
+    settings_file = fake_ksadk_root / "configs" / "settings.py"
+    settings_file.write_text("VALUE = 'v1'\n", encoding="utf-8")
+
+    package_calls = []
+
+    monkeypatch.setattr("ksadk.detection.FrameworkDetector", _FakeFrameworkDetector)
+    monkeypatch.setattr(CodeBuilder, "_install_dependencies", lambda self, _req: True)
+    monkeypatch.setattr(
+        CodeBuilder,
+        "_package_zip",
+        lambda self, zip_path, detection_result: (package_calls.append(zip_path), _fake_package_zip(zip_path, detection_result)),
+    )
+    monkeypatch.setattr(ksadk, "__file__", str(fake_ksadk_root / "__init__.py"))
+
+    builder = CodeBuilder(tmp_path)
+    first = builder.build()
+    assert first.success is True
+    assert len(package_calls) == 1
+
+    settings_file.write_text("VALUE = 'v2'\n", encoding="utf-8")
 
     second = builder.build()
     assert second.success is True

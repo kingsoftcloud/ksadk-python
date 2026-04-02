@@ -66,7 +66,7 @@ class _ModelAwareRunner(_DummyRunner):
 
 
 class _ExternalModelsAsyncClient:
-    """给 /agentengine/api/v1/models 用的外部模型目录假客户端。"""
+    """给 ListAgentModels 用的外部模型目录假客户端。"""
 
     def __init__(self, *args, payload=None, error: Exception | None = None, **kwargs):
         self._payload = payload
@@ -219,6 +219,66 @@ async def test_run_sse_rejects_explicit_session_owned_by_other_agent_or_user(mon
     assert response.status_code == 409
     assert "different agent or user" in response.json()["detail"]
     assert runner.calls == []
+
+
+@pytest.mark.asyncio
+async def test_attachment_content_route_serves_uploaded_binary(monkeypatch, tmp_path):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    ui_dir = tmp_path / ".agentengine" / "ui"
+    monkeypatch.setenv("AGENTENGINE_UI_DIR", str(ui_dir))
+    service = InMemorySessionService()
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        upload_response = await client.post(
+            "/agentengine/api/v1/UploadFile",
+            files={"file": ("arch.png", b"\x89PNG\r\n\x1a\nbinary", "image/png")},
+        )
+
+        assert upload_response.status_code == 200
+        file_uri = upload_response.json()["Data"]["FileData"]["fileUri"]
+
+        content_response = await client.get(
+            "/agentengine/api/v1/AttachmentContent",
+            params={"FileUri": file_uri},
+        )
+
+    assert content_response.status_code == 200
+    assert content_response.headers["content-type"].startswith("image/png")
+    assert content_response.content == b"\x89PNG\r\n\x1a\nbinary"
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_projects_heuristic_title_for_existing_fallback_session(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    created = await service.create_session(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-heuristic-read",
+    )
+    await service.update_session_metadata(
+        created.id,
+        title="你好，请介绍一下你自己",
+        title_source="fallback_first_prompt",
+        first_prompt="你好，请介绍一下你自己",
+        summary="你好！我是企业高端招聘全流程助手，可以协助你完成职位分析、候选人筛选和面试建议生成。",
+    )
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ListSessions",
+            json={"AgentId": "demo-agent", "UserId": "user-1"},
+        )
+
+    assert response.status_code == 200
+    session = response.json()["Data"]["Sessions"][0]
+    assert session["Title"] == "招聘助手能力"
+    assert session["TitleSource"] == "heuristic"
 
 
 @pytest.mark.asyncio
@@ -403,36 +463,7 @@ async def test_chat_completions_forwards_model_to_runner(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_set_model_action_updates_process_env_and_applies_to_loaded_runner(
-    monkeypatch,
-    tmp_path,
-):
-    server_app_module = importlib.import_module("ksadk.server.app")
-    runner = _ModelAwareRunner()
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("OPENAI_MODEL_NAME", raising=False)
-    monkeypatch.delenv("MODEL_NAME", raising=False)
-
-    server_app_module.set_runner(runner)
-    server_app_module._ensure_runner_loaded()
-
-    transport = httpx.ASGITransport(app=server_app_module.app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
-        response = await client.post(
-            "/agentengine/api/v1/models",
-            json={"model": "deepseek-v3"},
-        )
-
-    assert response.status_code == 200
-    assert response.json() == {"success": True, "model": "deepseek-v3"}
-    assert runner.prepared_models == ["deepseek-v3"]
-    assert server_app_module.os.environ["OPENAI_MODEL_NAME"] == "deepseek-v3"
-    assert server_app_module.os.environ["MODEL_NAME"] == "deepseek-v3"
-    assert (tmp_path / ".env").read_text(encoding="utf-8").strip() == "OPENAI_MODEL_NAME=deepseek-v3"
-
-
-@pytest.mark.asyncio
-async def test_list_models_action_normalizes_default_metadata(monkeypatch):
+async def test_list_agent_models_action_normalizes_default_metadata(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     real_async_client = httpx.AsyncClient
     monkeypatch.setenv("OPENAI_BASE_URL", "https://kspmas.ksyun.com/v1")
@@ -449,12 +480,15 @@ async def test_list_models_action_normalizes_default_metadata(monkeypatch):
 
     transport = httpx.ASGITransport(app=server_app_module.app)
     async with real_async_client(transport=transport, base_url="http://ksadk.local") as client:
-        response = await client.get("/agentengine/api/v1/models")
+        response = await client.post(
+            "/agentengine/api/v1/ListAgentModels",
+            json={"AgentId": "demo-agent"},
+        )
 
     assert response.status_code == 200
-    payload = response.json()
-    assert payload["current"] == "glm-5"
-    assert payload["data"] == [
+    payload = response.json()["Data"]
+    assert payload["Current"] == "glm-5"
+    assert payload["Models"] == [
         {
             "id": "glm-5",
             "display_name": "glm-5",
@@ -488,7 +522,7 @@ async def test_list_models_action_normalizes_default_metadata(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_list_models_action_preserves_upstream_fields_and_normalizes_aliases(monkeypatch):
+async def test_list_agent_models_action_preserves_upstream_fields_and_normalizes_aliases(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     real_async_client = httpx.AsyncClient
     monkeypatch.setenv("OPENAI_BASE_URL", "https://kspmas.ksyun.com/v1")
@@ -513,10 +547,13 @@ async def test_list_models_action_preserves_upstream_fields_and_normalizes_alias
 
     transport = httpx.ASGITransport(app=server_app_module.app)
     async with real_async_client(transport=transport, base_url="http://ksadk.local") as client:
-        response = await client.get("/agentengine/api/v1/models")
+        response = await client.post(
+            "/agentengine/api/v1/ListAgentModels",
+            json={"AgentId": "demo-agent"},
+        )
 
     assert response.status_code == 200
-    item = response.json()["data"][0]
+    item = response.json()["Data"]["Models"][0]
     assert item["id"] == "kimi-k2.5"
     assert item["owned_by"] == "ksyun"
     assert item["context_length"] == 131072
@@ -528,7 +565,7 @@ async def test_list_models_action_preserves_upstream_fields_and_normalizes_alias
 
 
 @pytest.mark.asyncio
-async def test_list_models_action_without_api_base_returns_default_metadata(monkeypatch):
+async def test_list_agent_models_action_without_api_base_returns_default_metadata(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.delenv("OPENAI_API_BASE", raising=False)
@@ -536,11 +573,27 @@ async def test_list_models_action_without_api_base_returns_default_metadata(monk
 
     transport = httpx.ASGITransport(app=server_app_module.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
-        response = await client.get("/agentengine/api/v1/models")
+        response = await client.post(
+            "/agentengine/api/v1/ListAgentModels",
+            json={"AgentId": "demo-agent"},
+        )
 
     assert response.status_code == 200
-    payload = response.json()
-    assert payload["current"] == "glm-5"
-    assert [item["id"] for item in payload["data"]] == ["glm-5", "gpt-4o"]
-    assert payload["data"][0]["context_window_tokens"] == 200000
-    assert payload["data"][0]["limits"]["max_output_tokens"] == 32000
+    payload = response.json()["Data"]
+    assert payload["Current"] == "glm-5"
+    assert [item["id"] for item in payload["Models"]] == ["glm-5"]
+    assert payload["Models"][0]["context_window_tokens"] == 200000
+    assert payload["Models"][0]["limits"]["max_output_tokens"] == 32000
+
+
+@pytest.mark.asyncio
+async def test_legacy_models_routes_are_not_exposed(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    transport = httpx.ASGITransport(app=server_app_module.app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        get_response = await client.get("/agentengine/api/v1/models")
+        post_response = await client.post("/agentengine/api/v1/models", json={"model": "glm-5"})
+
+    assert get_response.status_code == 404
+    assert post_response.status_code in {404, 405}

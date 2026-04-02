@@ -8,6 +8,13 @@ function cn(...classes: (string | undefined | null | false)[]) {
   return classes.filter(Boolean).join(' ');
 }
 
+type MessageAttachment = {
+  name: string;
+  url: string;
+  type: string;
+  fileUri?: string;
+};
+
 type Message = {
   id: string;
   role: 'user' | 'model' | 'tool' | 'system';
@@ -28,15 +35,16 @@ type Message = {
       status: 'running' | 'completed' | 'error' | 'paused';
     }
   };
-  attachments?: {
-    name: string;
-    url: string;
-    type: string;
-  }[];
+  attachments?: MessageAttachment[];
 };
 
 type Session = {
   SessionId: string;
+  Title?: string;
+  TitleSource?: string;
+  Summary?: string;
+  FirstPrompt?: string;
+  LastPrompt?: string;
   UpdatedAt?: string | number | null;
 };
 
@@ -56,11 +64,7 @@ type SessionEventRecord = {
 
 type ParsedMessageContent = {
   text: string;
-  attachments?: {
-    name: string;
-    url: string;
-    type: string;
-  }[];
+  attachments?: MessageAttachment[];
 };
 
 type CompactionStreamPayload = {
@@ -143,10 +147,37 @@ function upsertSessions(current: Session[], incoming: Session[]): Session[] {
   );
 }
 
+function sessionTitle(session: Session): string {
+  const title = String(session.Title || '').trim();
+  if (title) {
+    return title;
+  }
+  const firstPrompt = String(session.FirstPrompt || '').trim();
+  if (firstPrompt) {
+    return firstPrompt;
+  }
+  return '新对话';
+}
+
+function attachmentContentUrl(fileUri?: string): string {
+  const normalized = String(fileUri || '').trim();
+  if (!normalized) {
+    return '';
+  }
+  return `/agentengine/api/v1/AttachmentContent?FileUri=${encodeURIComponent(normalized)}`;
+}
+
 function parseMessageContent(evt: SessionEventRecord): ParsedMessageContent {
   const parts = evt.Content?.parts || [];
   const textSegments: string[] = [];
-  const attachments: ParsedMessageContent['attachments'] = [];
+  const attachmentsByKey = new Map<string, MessageAttachment>();
+
+  const pushAttachment = (attachment: MessageAttachment) => {
+    const key = `${attachment.fileUri || attachment.url || attachment.name}|${attachment.type}`;
+    if (!attachmentsByKey.has(key)) {
+      attachmentsByKey.set(key, attachment);
+    }
+  };
 
   for (const part of parts) {
     if (part?.type === 'input_text' || part?.text) {
@@ -154,7 +185,7 @@ function parseMessageContent(evt: SessionEventRecord): ParsedMessageContent {
       continue;
     }
     if (part?.type === 'input_file' && part.inlineData) {
-      attachments.push({
+      pushAttachment({
         name: part.inlineData.displayName || 'attachment',
         url: `data:${part.inlineData.mimeType || 'application/octet-stream'};base64,${part.inlineData.data}`,
         type: part.inlineData.mimeType || 'application/octet-stream',
@@ -162,10 +193,12 @@ function parseMessageContent(evt: SessionEventRecord): ParsedMessageContent {
       continue;
     }
     if (part?.type === 'input_file' && part.fileData) {
-      attachments.push({
+      const fileUri = String(part.fileData.fileUri || '').trim();
+      pushAttachment({
         name: part.fileData.displayName || 'attachment',
-        url: '',
+        url: attachmentContentUrl(fileUri),
         type: part.fileData.mimeType || 'application/octet-stream',
+        fileUri,
       });
     }
   }
@@ -173,13 +206,16 @@ function parseMessageContent(evt: SessionEventRecord): ParsedMessageContent {
   // canonical transcript 默认把附件元数据放在 Metadata 里，这里兜底恢复展示。
   const metadataAttachments = Array.isArray(evt.Metadata?.attachments) ? evt.Metadata?.attachments : [];
   for (const attachment of metadataAttachments) {
-    attachments.push({
+    const fileUri = String(attachment.file_uri || '').trim();
+    pushAttachment({
       name: attachment.display_name || 'attachment',
-      url: '',
+      url: attachmentContentUrl(fileUri),
       type: attachment.mime_type || 'application/octet-stream',
+      fileUri,
     });
   }
 
+  const attachments = Array.from(attachmentsByKey.values());
   return {
     text: textSegments.join(''),
     attachments: attachments.length > 0 ? attachments : undefined,
@@ -283,6 +319,7 @@ export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<File[]>([]);
+  const [previewAttachment, setPreviewAttachment] = useState<MessageAttachment | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -814,7 +851,12 @@ export default function App() {
                )}
              >
                <div className="flex-1 min-w-0 pr-2">
-                 <div className="truncate">{session.SessionId.slice(0, 12)}...</div>
+                 <div className="truncate">{sessionTitle(session)}</div>
+                 {session.Summary ? (
+                   <div className="truncate text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                     {session.Summary}
+                   </div>
+                 ) : null}
                  <div className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">{formatDate(session.UpdatedAt)}</div>
                </div>
                <button 
@@ -966,11 +1008,43 @@ export default function App() {
                       <div className="flex flex-wrap gap-3 mb-3">
                         {msg.attachments.map((att, attIdx) => (
                            att.type.startsWith('image/') ? (
-                             <img key={attIdx} src={att.url || '#'} alt={att.name} className="max-w-[200px] max-h-[200px] object-cover rounded-lg border border-slate-200 dark:border-slate-700 shadow-sm" />
+                             att.url ? (
+                               <button
+                                 key={attIdx}
+                                 type="button"
+                                 onClick={() => setPreviewAttachment(att)}
+                                 className="group relative overflow-hidden rounded-lg border border-slate-200 dark:border-slate-700 shadow-sm"
+                               >
+                                 <img
+                                   src={att.url}
+                                   alt={att.name}
+                                   className="max-w-[200px] max-h-[200px] object-cover transition group-hover:scale-[1.02]"
+                                 />
+                               </button>
+                             ) : (
+                               <div
+                                 key={attIdx}
+                                 className="flex h-[120px] w-[200px] items-center justify-center rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 text-sm text-slate-500 dark:border-slate-700 dark:bg-slate-900/40 dark:text-slate-400"
+                               >
+                                 {att.name}
+                               </div>
+                             )
                            ) : (
                              <div key={attIdx} className="flex items-center gap-2 px-3 py-2 bg-slate-100 dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 w-max shadow-sm">
                                <Paperclip className="w-4 h-4 text-blue-500" />
-                               <span className="text-sm text-slate-700 dark:text-slate-300 truncate max-w-[150px]" title={att.name}>{att.name}</span>
+                               {att.url ? (
+                                 <a
+                                   href={att.url}
+                                   target="_blank"
+                                   rel="noreferrer"
+                                   className="text-sm text-slate-700 dark:text-slate-300 truncate max-w-[150px] hover:underline"
+                                   title={att.name}
+                                 >
+                                   {att.name}
+                                 </a>
+                               ) : (
+                                 <span className="text-sm text-slate-700 dark:text-slate-300 truncate max-w-[150px]" title={att.name}>{att.name}</span>
+                               )}
                              </div>
                            )
                         ))}
@@ -1163,6 +1237,36 @@ export default function App() {
         </div>
 
       </main>
+
+      {previewAttachment?.url && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-6"
+          onClick={() => setPreviewAttachment(null)}
+        >
+          <div
+            className="max-h-full max-w-6xl overflow-hidden rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-4 border-b border-slate-800 px-4 py-3 text-sm text-slate-200">
+              <span className="truncate">{previewAttachment.name}</span>
+              <button
+                type="button"
+                className="rounded-md px-2 py-1 text-slate-300 hover:bg-slate-800 hover:text-white"
+                onClick={() => setPreviewAttachment(null)}
+              >
+                关闭
+              </button>
+            </div>
+            <div className="flex max-h-[85vh] max-w-[85vw] items-center justify-center bg-slate-950 p-4">
+              <img
+                src={previewAttachment.url}
+                alt={previewAttachment.name}
+                className="max-h-[80vh] max-w-[80vw] object-contain"
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       <style dangerouslySetInnerHTML={{__html: `
         .custom-scrollbar::-webkit-scrollbar {

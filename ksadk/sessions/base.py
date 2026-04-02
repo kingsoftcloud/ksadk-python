@@ -170,6 +170,11 @@ class Session:
     id: str = field(default_factory=generate_id)
     agent_id: str = ""
     user_id: str = ""
+    title: str = ""
+    title_source: str = ""
+    summary: str = ""
+    first_prompt: str = ""
+    last_prompt: str = ""
     state: dict[str, Any] = field(default_factory=dict)
     events: list[SessionEvent] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
@@ -191,6 +196,11 @@ class Session:
                 or ""
             ),
             user_id=str(payload.get("user_id") or payload.get("userId") or ""),
+            title=str(payload.get("title") or payload.get("Title") or ""),
+            title_source=str(payload.get("title_source") or payload.get("TitleSource") or ""),
+            summary=str(payload.get("summary") or payload.get("Summary") or ""),
+            first_prompt=str(payload.get("first_prompt") or payload.get("FirstPrompt") or ""),
+            last_prompt=str(payload.get("last_prompt") or payload.get("LastPrompt") or ""),
             state=dict(payload.get("state") or {}),
             events=events,
             created_at=normalize_timestamp(payload.get("created_at") or payload.get("createdAt")),
@@ -203,6 +213,11 @@ class Session:
             "id": self.id,
             "agent_id": self.agent_id,
             "user_id": self.user_id,
+            "title": self.title,
+            "title_source": self.title_source,
+            "summary": self.summary,
+            "first_prompt": self.first_prompt,
+            "last_prompt": self.last_prompt,
             "state": self.state,
             "events": [event.to_dict() for event in self.events],
             "created_at": self.created_at,
@@ -215,6 +230,8 @@ class Session:
             "id": self.id,
             "appName": self.agent_id,
             "userId": self.user_id,
+            "title": self.title,
+            "summary": self.summary,
             "events": [event.to_legacy_dict() for event in self.events],
             "state": self.state,
             "createdAt": self.created_at,
@@ -265,6 +282,19 @@ class BaseSessionService(abc.ABC):
 
     @abc.abstractmethod
     async def delete_session(self, session_id: str) -> bool:
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    async def update_session_metadata(
+        self,
+        session_id: str,
+        *,
+        title: Optional[str] = None,
+        title_source: Optional[str] = None,
+        summary: Optional[str] = None,
+        first_prompt: Optional[str] = None,
+        last_prompt: Optional[str] = None,
+    ) -> Session:
         raise NotImplementedError
 
     @abc.abstractmethod

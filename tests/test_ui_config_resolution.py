@@ -1,7 +1,7 @@
 from ksadk.deployment.ui_config import is_same_origin, resolve_ui_config
 
 
-def test_langgraph_defaults_to_root_ui_path():
+def test_langgraph_defaults_to_chat_ui_path():
     cfg = resolve_ui_config(
         framework="langgraph",
         state={},
@@ -11,7 +11,7 @@ def test_langgraph_defaults_to_root_ui_path():
     )
 
     assert cfg.profile == "langchain"
-    assert cfg.path == "/"
+    assert cfg.path == "/chat"
     assert cfg.url is None
 
 
@@ -51,7 +51,7 @@ def test_cli_overrides_state_and_can_clear_ui_url():
     assert cfg.url is None
 
 
-def test_legacy_langchain_state_path_is_migrated_to_root():
+def test_legacy_langchain_state_path_is_migrated_to_chat():
     cfg = resolve_ui_config(
         framework="langgraph",
         state={
@@ -64,7 +64,23 @@ def test_legacy_langchain_state_path_is_migrated_to_root():
     )
 
     assert cfg.profile == "langchain"
-    assert cfg.path == "/"
+    assert cfg.path == "/chat"
+
+
+def test_legacy_root_state_path_is_migrated_to_chat_for_managed_profiles():
+    cfg = resolve_ui_config(
+        framework="langgraph",
+        state={
+            "ui_profile": "langchain",
+            "ui_path": "/",
+        },
+        cli_profile=None,
+        cli_path=None,
+        cli_url=None,
+    )
+
+    assert cfg.profile == "langchain"
+    assert cfg.path == "/chat"
 
 
 def test_same_origin_requires_scheme_and_netloc_match():
