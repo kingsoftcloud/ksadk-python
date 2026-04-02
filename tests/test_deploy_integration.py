@@ -159,6 +159,55 @@ class TestDeployLogic:
         
         state = yaml.safe_load(state_file.read_text())
         assert state["agent_id"] == "ar-20260119-newagent"
+
+    @pytest.mark.asyncio
+    async def test_deploy_create_new_agent_refreshes_quick_access_when_agent_id_is_immediate(
+        self,
+        temp_project_dir,
+        sample_package_info,
+        sample_deploy_target,
+    ):
+        """测试首次部署即使立即拿到 agent_id，也会回查并持久化 quick access。"""
+        provider = ServerlessProvider()
+
+        mock_client = AsyncMock()
+        mock_client.create_agent = AsyncMock(
+            return_value={
+                "agent_id": "ar-20260119-newagent",
+                "name": "test-agent",
+                "endpoint": "http://stale.example.com",
+                "api_key": None,
+                "order_id": "ord-123",
+            }
+        )
+        mock_client.get_agent = AsyncMock(
+            return_value={
+                "basic": {
+                    "agent_id": "ar-20260119-newagent",
+                    "name": "test-agent",
+                },
+                "quick_access": {
+                    "public_endpoint": "https://fresh.example.com",
+                    "api_key": "ak-fresh-key",
+                },
+            }
+        )
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock()
+
+        with patch.dict(os.environ, {"AGENTENGINE_SERVER_URL": "http://localhost:8080"}), \
+             patch("ksadk.deployment.providers.serverless.AgentEngineClient", return_value=mock_client), \
+             patch("ksadk.common.auth.AWSV4Auth") as MockAuth:
+
+            MockAuth.return_value.access_key = "test-ak"
+            MockAuth.return_value.secret_key = "test-sk"
+
+            await provider.deploy(sample_package_info, sample_deploy_target)
+
+        state_file = temp_project_dir / ".agentengine.state"
+        state = yaml.safe_load(state_file.read_text())
+        assert state["endpoint"] == "https://fresh.example.com"
+        assert state["api_key"] == "ak-fresh-key"
     
     @pytest.mark.asyncio
     async def test_deploy_update_existing_agent(
@@ -203,6 +252,72 @@ class TestDeployLogic:
         # 验证调用了 update_agent 而不是 create_agent
         mock_client.update_agent.assert_called_once()
         mock_client.create_agent.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_deploy_update_existing_agent_refreshes_quick_access_in_state(
+        self,
+        temp_project_dir,
+        sample_package_info,
+        sample_deploy_target,
+    ):
+        """测试热更新后会把最新 quick access endpoint/api_key 回填到本地状态。"""
+        provider = ServerlessProvider()
+
+        state_file = temp_project_dir / ".agentengine.state"
+        state_file.write_text(
+            yaml.dump(
+                {
+                    "agent_id": "ar-20260119-existing",
+                    "name": "test-agent",
+                    "endpoint": "http://stale.example.com",
+                    "api_key": None,
+                }
+            )
+        )
+
+        mock_client = AsyncMock()
+        mock_client.get_agent = AsyncMock(
+            side_effect=[
+                {
+                    "basic": {
+                        "agent_id": "ar-20260119-existing",
+                        "name": "test-agent",
+                    }
+                },
+                {
+                    "basic": {
+                        "agent_id": "ar-20260119-existing",
+                        "name": "test-agent",
+                    },
+                    "quick_access": {
+                        "public_endpoint": "https://fresh.example.com",
+                        "api_key": "ak-fresh-key",
+                    },
+                },
+            ]
+        )
+        mock_client.update_agent = AsyncMock(
+            return_value={
+                "agent_id": "ar-20260119-existing",
+                "name": "test-agent",
+                "endpoint": "http://stale.example.com",
+            }
+        )
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock()
+
+        with patch.dict(os.environ, {"AGENTENGINE_SERVER_URL": "http://localhost:8080"}), \
+             patch("ksadk.deployment.providers.serverless.AgentEngineClient", return_value=mock_client), \
+             patch("ksadk.common.auth.AWSV4Auth") as MockAuth:
+
+            MockAuth.return_value.access_key = "test-ak"
+            MockAuth.return_value.secret_key = "test-sk"
+
+            await provider.deploy(sample_package_info, sample_deploy_target)
+
+        state = yaml.safe_load(state_file.read_text())
+        assert state["endpoint"] == "https://fresh.example.com"
+        assert state["api_key"] == "ak-fresh-key"
 
     @pytest.mark.asyncio
     async def test_deploy_rejects_ks3_path_without_object_key(

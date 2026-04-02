@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib
+import json
+import time
 
 import pytest
 
@@ -8,6 +10,7 @@ from ksadk.conversations.context import build_history_from_events
 from ksadk.conversations.model_context import estimate_text_tokens
 from ksadk.conversations.runtime import (
     append_context_checkpoint_event,
+    build_compaction_sse_event,
     build_run_input,
     compact_conversation_history,
     invoke_conversation_once,
@@ -44,11 +47,53 @@ class _PromptTooLongRunner(_StubRunner):
         return {"output": "compacted answer"}
 
 
+@pytest.fixture(autouse=True)
+def _disable_session_title_ai(monkeypatch):
+    class _UnavailableTitleClient:
+        @property
+        def is_available(self):
+            return False
+
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.resolve_session_title_client",
+        lambda: _UnavailableTitleClient(),
+    )
+
+
 def test_estimate_text_tokens_is_less_optimistic_for_cjk():
     assert estimate_text_tokens("") == 0
     assert estimate_text_tokens("hello world") == 3
     assert estimate_text_tokens("你好世界") == 4
     assert estimate_text_tokens("Agent平台设计") == 6
+
+
+def test_build_compaction_sse_event_returns_str_with_millisecond_timestamp():
+    before_ms = int(time.time() * 1000)
+    event = build_compaction_sse_event(
+        phase="start",
+        trigger="auto",
+        compacted_until_seq_id=42,
+        total_chars=1200,
+        total_estimated_tokens=512,
+        group_count=9,
+        threshold_percentage=80,
+    )
+    after_ms = int(time.time() * 1000)
+
+    assert isinstance(event, str)
+    assert event.startswith("event: response.compaction.start\n")
+    payload_line = event.splitlines()[1]
+    assert payload_line.startswith("data: ")
+    payload = json.loads(payload_line.removeprefix("data: "))
+    assert payload["phase"] == "start"
+    assert payload["trigger"] == "auto"
+    assert payload["compacted_until_seq_id"] == 42
+    assert payload["total_chars"] == 1200
+    assert payload["total_estimated_tokens"] == 512
+    assert payload["group_count"] == 9
+    assert payload["threshold_percentage"] == 80
+    assert isinstance(payload["timestamp"], int)
+    assert before_ms <= payload["timestamp"] <= after_ms
 
 
 @pytest.mark.asyncio
@@ -118,6 +163,7 @@ async def test_invoke_conversation_once_persists_canonical_turn_events(monkeypat
     assert runner.calls[-1]["history"] == [{"role": "user", "content": "hello"}]
 
     events = await service.get_events(session_id)
+    session = await service.get_session(session_id)
     assert [event.event_type for event in events] == [
         "user_message",
         "run_status",
@@ -125,6 +171,124 @@ async def test_invoke_conversation_once_persists_canonical_turn_events(monkeypat
         "run_status",
     ]
     assert [event.author for event in events] == ["user", "demo-agent", "demo-agent", "demo-agent"]
+    assert session is not None
+    assert session.title == "hello"
+    assert session.title_source == "fallback_first_prompt"
+    assert session.first_prompt == "hello"
+    assert session.last_prompt == "hello"
+    assert session.summary == "assistant says hi"
+
+
+@pytest.mark.asyncio
+async def test_invoke_conversation_once_refines_session_title_after_first_turn(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    class _FakeTitleClient:
+        @property
+        def is_available(self):
+            return True
+
+        async def generate_title(self, *, model, messages, timeout_ms):
+            assert model == "glm-5"
+            assert messages[0]["role"] == "system"
+            assert "你好，请介绍一下你自己" in messages[-1]["content"]
+            return "自我介绍", {"total_tokens": 12}
+
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.resolve_session_title_client",
+        lambda: _FakeTitleClient(),
+    )
+
+    runner = _StubRunner()
+    session_id, _ = await invoke_conversation_once(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id=None,
+        messages=[{"role": "user", "content": "你好，请介绍一下你自己"}],
+        model="glm-5",
+        prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+    )
+
+    session = await service.get_session(session_id)
+    assert session is not None
+    assert session.first_prompt == "你好，请介绍一下你自己"
+    assert session.title == "自我介绍"
+    assert session.title_source == "ai"
+
+
+@pytest.mark.asyncio
+async def test_invoke_conversation_once_uses_heuristic_title_for_agent_intro(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    class _IntroRunner(_StubRunner):
+        async def invoke(self, input_data: dict) -> dict:
+            self.calls.append(input_data)
+            return {
+                "output": "你好！我是企业高端招聘全流程助手，可以协助你完成职位分析、候选人筛选和面试建议生成。"
+            }
+
+    runner = _IntroRunner()
+    session_id, _ = await invoke_conversation_once(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id=None,
+        messages=[{"role": "user", "content": "你好，请介绍一下你自己"}],
+        model="glm-5",
+        prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+    )
+
+    session = await service.get_session(session_id)
+    assert session is not None
+    assert session.title == "招聘助手能力"
+    assert session.title_source == "heuristic"
+
+
+@pytest.mark.asyncio
+async def test_invoke_conversation_once_uses_heuristic_title_for_architecture_attachment(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    class _ArchitectureRunner(_StubRunner):
+        async def invoke(self, input_data: dict) -> dict:
+            self.calls.append(input_data)
+            return {
+                "output": "这张图展示了典型的微服务分层架构，包含网关、业务服务、数据库和异步消息链路。"
+            }
+
+    runner = _ArchitectureRunner()
+    session_id, _ = await invoke_conversation_once(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id=None,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "看看这个上传文件，直接开始分析吧，这里还有他画的架构图"},
+                    {
+                        "type": "input_file",
+                        "fileData": {
+                            "fileUri": "ksadk-upload://arch.png",
+                            "displayName": "架构.png",
+                            "mimeType": "image/png",
+                        },
+                    },
+                ],
+            }
+        ],
+        model="glm-5",
+        prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+    )
+
+    session = await service.get_session(session_id)
+    assert session is not None
+    assert session.title == "架构图分析"
+    assert session.title_source == "heuristic"
 
 
 @pytest.mark.asyncio

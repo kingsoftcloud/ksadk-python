@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 
 from ksadk.sessions.base import BaseSessionService, Session, SessionEvent, SessionState
-from ksadk.sessions.engine_service import EngineSessionService
 from ksadk.sessions.in_memory import InMemorySessionService
 from ksadk.sessions.local_service import create_local_session_service
 
@@ -16,11 +15,8 @@ def create_session_service(
     backend: str | None = None,
     project_dir: str | None = None,
 ) -> BaseSessionService:
-    resolved_endpoint = (endpoint or os.getenv("AGENTENGINE_SESSION_ENDPOINT", "")).strip()
     resolved_backend = (backend or os.getenv("AGENTENGINE_SESSION_BACKEND", "")).strip().lower()
 
-    if resolved_endpoint or resolved_backend == "engine":
-        return EngineSessionService(endpoint=resolved_endpoint)
     if resolved_backend == "memory":
         return InMemorySessionService()
     return create_local_session_service(project_dir=project_dir)
@@ -55,7 +51,6 @@ async def close_session_service() -> None:
 
 __all__ = [
     "BaseSessionService",
-    "EngineSessionService",
     "InMemorySessionService",
     "Session",
     "SessionEvent",

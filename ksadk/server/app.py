@@ -7,19 +7,24 @@ import base64
 import io
 import json
 import logging
+import mimetypes
 import os
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, Request, File, UploadFile
+from fastapi import FastAPI, HTTPException, Request, File, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import ksadk.conversations as conversation
+from ksadk.conversations.session_title import (
+    HEURISTIC_SESSION_TITLE_SOURCE,
+    build_heuristic_title,
+)
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.server.api_models import AgentRunRequest
 from ksadk.sessions import Session, SessionEvent, resolve_session_service
@@ -439,10 +444,25 @@ class ResponsesRequest(BaseModel):
 
 
 def _session_to_action_payload(session: Session) -> dict[str, Any]:
+    title = session.title
+    title_source = session.title_source
+    if title_source == "fallback_first_prompt":
+        heuristic = build_heuristic_title(
+            first_prompt=session.first_prompt or title,
+            assistant_text=session.summary or "",
+        )
+        if heuristic and heuristic != title:
+            title = heuristic
+            title_source = HEURISTIC_SESSION_TITLE_SOURCE
     return {
         "SessionId": session.id,
         "AgentId": session.agent_id,
         "UserId": session.user_id,
+        "Title": title,
+        "TitleSource": title_source,
+        "Summary": session.summary,
+        "FirstPrompt": session.first_prompt,
+        "LastPrompt": session.last_prompt,
         "State": session.state,
         "CreatedAt": session.created_at,
         "UpdatedAt": session.updated_at,
@@ -570,33 +590,20 @@ async def upload_file_action(file: UploadFile = File(...)):
         }
     )
 
-from pydantic import BaseModel
-class SetModelRequest(BaseModel):
-    model: str
 
-@app.post("/agentengine/api/v1/models")
-async def set_model_action(request: SetModelRequest):
-    import os
-    from pathlib import Path
-    from dotenv import set_key, find_dotenv
+@app.get("/agentengine/api/v1/AttachmentContent", include_in_schema=False)
+async def attachment_content_action(FileUri: str = Query(...)):
+    storage_path = _resolve_attachment_storage_path(FileUri)
+    if storage_path is None or not storage_path.is_file():
+        raise HTTPException(status_code=404, detail="Attachment not found")
 
-    env_file = find_dotenv(usecwd=True)
-    if not env_file:
-        env_file = Path.cwd() / ".env"
-        env_file.touch()
-
-    # Update OPENAI_MODEL_NAME in .env
-    success, _, _ = set_key(str(env_file), "OPENAI_MODEL_NAME", request.model, quote_mode="never")
-    if success:
-        # Also update os.environ immediately just in case Uvicorn doesn't reload instantly
-        os.environ["OPENAI_MODEL_NAME"] = request.model
-        os.environ["MODEL_NAME"] = request.model
-        if runner and _runner_loaded:
-            _prepare_runner_for_model(runner, request.model)
-        return {"success": True, "model": request.model}
-    else:
-        raise HTTPException(status_code=500, detail="Failed to update .env")
-
+    media_type, _ = mimetypes.guess_type(storage_path.name)
+    return FileResponse(
+        path=storage_path,
+        media_type=media_type or "application/octet-stream",
+        filename=storage_path.name,
+        content_disposition_type="inline",
+    )
 
 def _normalize_model_catalog_items(raw_models: list[Any]) -> list[dict[str, Any]]:
     """统一模型目录 shape，并按 id 去重。
@@ -659,11 +666,6 @@ async def _build_models_payload() -> dict[str, Any]:
         fallback = _fallback_catalog()
         fallback["error"] = str(e)
         return fallback
-
-@app.get("/agentengine/api/v1/models")
-async def list_models_action():
-    return await _build_models_payload()
-
 
 class ListAgentModelsRequest(BaseModel):
     AgentId: Optional[str] = None

@@ -119,6 +119,35 @@ class ServerlessProvider(BaseDeployProvider):
         with open(metadata_file, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, ensure_ascii=False)
 
+    @staticmethod
+    def _extract_agent_access_fields(detail: Dict[str, Any]) -> Dict[str, Any]:
+        """从 GetAgent 响应中提取 quick access/state 相关字段。"""
+        if not isinstance(detail, dict):
+            return {}
+
+        basic = detail.get("basic") if isinstance(detail.get("basic"), dict) else {}
+        quick = detail.get("quick_access") if isinstance(detail.get("quick_access"), dict) else {}
+
+        return {
+            "agent_id": basic.get("agent_id") or detail.get("agent_id"),
+            "name": basic.get("name") or detail.get("name"),
+            "endpoint": quick.get("public_endpoint")
+            or quick.get("private_endpoint")
+            or detail.get("endpoint"),
+            "api_key": quick.get("api_key") or detail.get("api_key"),
+        }
+
+    async def _get_latest_agent_access(self, client: AgentEngineClient, agent_id: str) -> Dict[str, Any]:
+        """回查最新 Agent 详情，优先使用 quick access 字段修正本地状态。"""
+        if not agent_id:
+            return {}
+        try:
+            detail = await client.get_agent(agent_id=agent_id, include_api_key=True)
+        except Exception as exc:
+            logger.warning(f"Failed to refresh quick access for {agent_id}: {exc}")
+            return {}
+        return self._extract_agent_access_fields(detail)
+
     async def validate_config(self, target: DeployTarget) -> tuple[bool, str]:
         """验证配置: 确保已配置 AgentEngine Server"""
         
@@ -499,6 +528,9 @@ class ServerlessProvider(BaseDeployProvider):
                         click.echo(f"   🔄 更新 Trigger: KSADK_UPDATED_AT={update_data['env_vars']['KSADK_UPDATED_AT']}")
                         
                         res = await client.update_agent(existing_agent_id, update_data)
+                        latest_access = {}
+                        if not is_dry_run:
+                            latest_access = await self._get_latest_agent_access(client, existing_agent_id)
                         
                         # 如果是 Dry Run，手动构造假响应以避免崩溃
                         if is_dry_run and not res:
@@ -507,13 +539,15 @@ class ServerlessProvider(BaseDeployProvider):
                         # 更新本地状态 (保留旧字段如 api_key)
                         new_state = local_state.copy()
                         new_state.update({
-                            "agent_id": existing_agent_id,
-                            "name": res.get("name"),
+                            "agent_id": latest_access.get("agent_id") or existing_agent_id,
+                            "name": latest_access.get("name") or res.get("name"),
                             "region": target.region,
-                            "endpoint": res.get("endpoint"),
+                            "endpoint": latest_access.get("endpoint") or res.get("endpoint"),
                             "updated_at": self._now_iso(),
                             **ui_state,
                         })
+                        if latest_access.get("api_key"):
+                            new_state["api_key"] = latest_access["api_key"]
                         self._save_state(state_file, new_state)
                         
                         return DeployResult(
@@ -628,6 +662,14 @@ class ServerlessProvider(BaseDeployProvider):
 
                         if not new_agent_id:
                             click.secho("   ⚠️  实例仍在创建中，稍后使用 'agentengine status' 查看", fg="yellow")
+
+                    latest_access = {}
+                    if new_agent_id and not is_dry_run:
+                        latest_access = await self._get_latest_agent_access(new_client, new_agent_id)
+                        new_agent_id = latest_access.get("agent_id") or new_agent_id
+                        agent_name = latest_access.get("name") or agent_name
+                        agent_endpoint = latest_access.get("endpoint") or agent_endpoint
+                        agent_api_key = latest_access.get("api_key") or agent_api_key
                     
                     # 保存 agent_id 到本地状态文件
                     self._save_state(state_file, {
