@@ -37,7 +37,7 @@ type Message = {
 
 type Session = {
   SessionId: string;
-  UpdatedAt: number;
+  UpdatedAt?: string | number | null;
 };
 
 type SessionEventRecord = {
@@ -94,7 +94,54 @@ type ModelCatalogItem = {
   [key: string]: any;
 };
 
+type BootstrapModel = ModelCatalogItem & {
+  source?: string;
+};
+
 const COMPOSER_MAX_HEIGHT = 160;
+
+function upsertModelOptions(
+  current: ModelCatalogItem[],
+  incoming: ModelCatalogItem[],
+): ModelCatalogItem[] {
+  const merged = new Map<string, ModelCatalogItem>();
+  for (const item of current) {
+    if (!item?.id) continue;
+    merged.set(item.id, item);
+  }
+  for (const item of incoming) {
+    if (!item?.id) continue;
+    merged.set(item.id, { ...(merged.get(item.id) || {}), ...item });
+  }
+  return Array.from(merged.values()).sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function sessionUpdatedAtValue(session: Session): number {
+  const raw = session.UpdatedAt;
+  if (typeof raw === 'string') {
+    const parsed = Date.parse(raw);
+    return Number.isNaN(parsed) ? 0 : parsed;
+  }
+  if (typeof raw === 'number') {
+    return raw;
+  }
+  return 0;
+}
+
+function upsertSessions(current: Session[], incoming: Session[]): Session[] {
+  const merged = new Map<string, Session>();
+  for (const session of current) {
+    if (!session?.SessionId) continue;
+    merged.set(session.SessionId, session);
+  }
+  for (const session of incoming) {
+    if (!session?.SessionId) continue;
+    merged.set(session.SessionId, { ...(merged.get(session.SessionId) || {}), ...session });
+  }
+  return Array.from(merged.values()).sort(
+    (left, right) => sessionUpdatedAtValue(right) - sessionUpdatedAtValue(left),
+  );
+}
 
 function parseMessageContent(evt: SessionEventRecord): ParsedMessageContent {
   const parts = evt.Content?.parts || [];
@@ -230,6 +277,7 @@ function buildMessageFromSessionEvent(evt: SessionEventRecord): Message | null {
 }
 
 export default function App() {
+  const [agentId, setAgentId] = useState('default-agent');
   const [sessions, setSessions] = useState<Session[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -240,8 +288,10 @@ export default function App() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [agentName, setAgentName] = useState('AgentEngine');
-  const [selectedModel, setSelectedModel] = useState('gemini-pro');
+  const [selectedModel, setSelectedModel] = useState('');
   const [availableModels, setAvailableModels] = useState<ModelCatalogItem[]>([]);
+  const [modelSource, setModelSource] = useState('');
+  const [modelCatalogLoaded, setModelCatalogLoaded] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const activeCompactionMessageIdRef = useRef<string | null>(null);
@@ -256,7 +306,6 @@ export default function App() {
   // Initial load
   useEffect(() => {
     fetchBootstrap();
-    fetchModels();
   }, []);
 
   useEffect(() => {
@@ -267,18 +316,28 @@ export default function App() {
     textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, COMPOSER_MAX_HEIGHT)}px`;
   }, [input]);
 
-  const fetchModels = async () => {
+  const fetchModels = async (targetAgentId: string) => {
     try {
-      const res = await fetch('/agentengine/api/v1/models');
+      const res = await fetch('/agentengine/api/v1/ListAgentModels', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ AgentId: targetAgentId }),
+      });
       const data = await res.json();
-      if (data?.data && Array.isArray(data.data)) {
-        setAvailableModels(data.data);
+      const models = data?.Data?.Models;
+      if (Array.isArray(models)) {
+        setAvailableModels((current) => upsertModelOptions(current, models));
       }
-      if (data?.current) {
-        setSelectedModel(data.current);
+      if (data?.Data?.Current) {
+        setSelectedModel(data.Data.Current);
+      }
+      if (data?.Data?.Source) {
+        setModelSource(String(data.Data.Source));
       }
     } catch (e) {
       console.error('Failed to fetch models:', e);
+    } finally {
+      setModelCatalogLoaded(true);
     }
   };
 
@@ -290,30 +349,38 @@ export default function App() {
         body: JSON.stringify({}),
       });
       const data = await res.json();
+      const bootstrapAgentId = data?.Data?.Agent?.AgentId || 'default-agent';
+      setAgentId(bootstrapAgentId);
       if (data?.Data?.Agent?.Name) {
         setAgentName(data.Data.Agent.Name);
-        fetchSessions(data.Data.Agent.Name);
+        fetchSessions(bootstrapAgentId);
       } else {
-        fetchSessions('default-agent');
+        fetchSessions(bootstrapAgentId);
       }
+      const bootstrapModel: BootstrapModel | undefined = data?.Data?.Model;
+      if (bootstrapModel?.id) {
+        setSelectedModel(bootstrapModel.id);
+        setAvailableModels((current) => upsertModelOptions(current, [bootstrapModel]));
+        setModelSource(bootstrapModel.source || '');
+      }
+      fetchModels(bootstrapAgentId);
     } catch (e) {
       console.error('Failed to fetch bootstrap:', e);
       fetchSessions('default-agent');
+      fetchModels('default-agent');
     }
   };
 
   const fetchSessions = async (agentId = 'default-agent') => {
     try {
-      // Trying to fetch sessions loosely
       const res = await fetch('/agentengine/api/v1/ListSessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ AgentId: agentId, UserId: 'user' }),
+        body: JSON.stringify({ AgentId: agentId }),
       });
       const data = await res.json();
       if (data?.Data?.Sessions) {
-        // Sort by UpdatedAt descending
-        const sorted = data.Data.Sessions.sort((a: any, b: any) => (b.UpdatedAt || 0) - (a.UpdatedAt || 0));
+        const sorted = upsertSessions([], data.Data.Sessions as Session[]);
         setSessions(sorted);
         if (sorted.length > 0 && !currentSessionId) {
           loadSession(sorted[0].SessionId);
@@ -353,12 +420,13 @@ export default function App() {
       const res = await fetch('/agentengine/api/v1/CreateSession', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ AgentId: agentName, UserId: 'user' }), // Best guess for AgentId
+        body: JSON.stringify({ AgentId: agentId }),
       });
       const data = await res.json();
       const newId = data?.Data?.Session?.SessionId;
       if (newId) {
-        fetchSessions(agentName);
+        setSessions(prev => upsertSessions(prev, [{ SessionId: newId, UpdatedAt: new Date().toISOString() }]));
+        fetchSessions(agentId);
         setCurrentSessionId(newId);
         setMessages([]);
       }
@@ -409,7 +477,24 @@ export default function App() {
     if ((!input.trim() && attachments.length === 0) || isStreaming) return;
     
     // Fallback ID if none
-    const sId = currentSessionId || 'default-session-' + Date.now();
+    let sId = currentSessionId;
+    if (!sId) {
+      try {
+        const sessionResponse = await fetch('/agentengine/api/v1/CreateSession', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ AgentId: agentId }),
+        });
+        const sessionPayload = await sessionResponse.json();
+        sId = sessionPayload?.Data?.Session?.SessionId || null;
+      } catch (err) {
+        console.error('Failed to create session before RunAgent:', err);
+      }
+    }
+    if (!sId) {
+      sId = 'default-session-' + Date.now();
+    }
+    setSessions(prev => upsertSessions(prev, [{ SessionId: sId, UpdatedAt: new Date().toISOString() }]));
     setCurrentSessionId(sId);
 
     const userText = input.trim();
@@ -489,17 +574,21 @@ export default function App() {
     abortControllerRef.current = new AbortController();
 
     try {
-      const response = await fetch('/run_sse', {
+      const response = await fetch('/agentengine/api/v1/RunAgent', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
         body: JSON.stringify({
-          appName: agentName,
-          userId: 'user',
-          sessionId: sId,
-          streaming: true,
-          newMessage: { parts },
-          model: selectedModel,
-          parameters: { enable_reasoning: true, reasoning: true } // Default enable reasoning
+          AgentId: agentId,
+          SessionId: sId,
+          Stream: true,
+          ApiFormat: 'responses',
+          Model: selectedModel || undefined,
+          Messages: [
+            {
+              role: 'user',
+              content: parts,
+            },
+          ],
         }),
         signal: abortControllerRef.current.signal
       });
@@ -647,7 +736,7 @@ export default function App() {
       setIsStreaming(false);
       abortControllerRef.current = null;
       activeCompactionMessageIdRef.current = null;
-      fetchSessions(agentName);
+      fetchSessions(agentId);
     }
   };
 
@@ -669,13 +758,20 @@ export default function App() {
     }
   };
 
-  const formatDate = (ts: number) => {
+  const formatDate = (ts?: string | number | null) => {
     if (!ts) return '';
+    if (typeof ts === 'string') {
+      const parsed = Date.parse(ts);
+      return Number.isNaN(parsed)
+        ? ''
+        : new Date(parsed).toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    }
     const date = new Date(ts > 1e11 ? ts : ts * 1000); // handle ms/s mix
     return date.toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   };
 
   const selectedModelMetadata = availableModels.find((model) => model.id === selectedModel) || null;
+  const selectedModelLabel = selectedModelMetadata?.display_name || selectedModel || '';
   const composerContextIndicator = buildComposerContextIndicator({
     messages,
     draftInput: input,
@@ -757,30 +853,27 @@ export default function App() {
             </div>
           </div>
           <div className="flex items-center gap-3">
-             {availableModels.length > 0 ? (
+             {availableModels.length > 1 ? (
                <select 
                  value={selectedModel}
-                 onChange={async (e) => {
-                   const m = e.target.value;
-                   setSelectedModel(m);
-                   try {
-                     await fetch('/agentengine/api/v1/models', {
-                       method: 'POST',
-                       headers: { 'Content-Type': 'application/json' },
-                       body: JSON.stringify({ model: m })
-                     });
-                   } catch (err) {
-                     console.error("Failed to update model", err);
-                   }
+                 onChange={(e) => {
+                   setSelectedModel(e.target.value);
                  }}
                  className="text-xs bg-slate-50 border border-slate-200 dark:bg-slate-800 dark:border-slate-700 text-slate-700 dark:text-slate-300 rounded px-2 py-1 outline-none focus:ring-1 focus:ring-blue-500 transition-colors max-w-[150px] truncate"
                >
                  {availableModels.map(m => (
-                   <option key={m.id} value={m.id}>{m.id}</option>
+                   <option key={m.id} value={m.id}>{m.display_name || m.id}</option>
                  ))}
                </select>
+             ) : selectedModelLabel ? (
+               <span
+                 className="text-xs bg-slate-50 border border-slate-200 dark:bg-slate-800 dark:border-slate-700 text-slate-700 dark:text-slate-300 rounded px-2 py-1 max-w-[180px] truncate"
+                 title={modelSource || selectedModelLabel}
+               >
+                 {selectedModelLabel}
+               </span>
              ) : (
-               <span className="text-xs text-slate-400">Loading models...</span>
+               <span className="text-xs text-slate-400">{modelCatalogLoaded ? '未配置模型' : 'Loading models...'}</span>
              )}
              {currentSessionId && (
                <span className="text-xs text-slate-400 font-mono bg-slate-50 dark:bg-slate-800 px-2 py-1 rounded">
