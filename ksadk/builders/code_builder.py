@@ -30,6 +30,12 @@ class CodeBuilder(BaseBuilder):
     """Code 模式构建器 - 打包 zip + 依赖"""
 
     INPUT_FINGERPRINT_VERSION = 1
+    PIP_INDEX_FALLBACKS = (
+        "https://pypi.org/simple",
+        "https://mirrors.aliyun.com/pypi/simple",
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple",
+        "https://mirrors.cloud.tencent.com/pypi/simple",
+    )
     IGNORED_ROOT_NAMES = {
         "__pycache__",
         "node_modules",
@@ -415,30 +421,26 @@ class CodeBuilder(BaseBuilder):
         spinner_thread.start()
         
         try:
-            # pip install -t，尝试多个镜像源
-            # 注意: 先正常安装所有依赖 (含纯 Python 包)，macOS 二进制在后续 _replace_platform_binaries() 中替换
-            mirror_sources = [
-                "https://mirrors.aliyun.com/pypi/simple",
-                "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple",
-                "https://mirrors.cloud.tencent.com/pypi/simple",
-            ]
-            
             result = None
-            for mirror in mirror_sources:
+            for index_url in self._pip_index_candidates():
                 install_cmd = [
                     sys.executable, "-m", "pip", "install",
                     "-r", str(requirements_path),
                     "-t", str(self.deps_dir),
-                    "-i", mirror,
                     "--disable-pip-version-check",
                     "--no-warn-script-location",
                     "--retries", "3",
                     "--timeout", "60",
                 ]
+                if index_url:
+                    install_cmd += ["-i", index_url]
                 result = subprocess.run(install_cmd, capture_output=True, text=True, timeout=1200)
                 if result.returncode == 0:
                     break
-                click.echo(f'\r   源 {mirror} 失败，尝试下一个...', nl=False)
+                click.echo(
+                    f'\r   源 {self._pip_index_label(index_url)} 失败，尝试下一个...',
+                    nl=False,
+                )
             
             stop_spinner = True
             spinner_thread.join()
@@ -578,12 +580,6 @@ class CodeBuilder(BaseBuilder):
         wheels_dir.mkdir(parents=True)
         
         replaced_count = 0
-        mirror_sources = [
-            "https://mirrors.aliyun.com/pypi/simple",
-            "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple",
-            "https://mirrors.cloud.tencent.com/pypi/simple",
-            None,  # fallback to default index
-        ]
         for pkg_name in packages_to_replace:
             # 提取确切的版本号以避免不兼容问题 (如 pydantic-core)
             target_version = ""
@@ -597,7 +593,7 @@ class CodeBuilder(BaseBuilder):
             
             try:
                 downloaded = False
-                for mirror in mirror_sources:
+                for index_url in self._pip_index_candidates():
                     download_cmd = [
                         sys.executable, "-m", "pip", "download",
                         pkg_with_version,
@@ -616,8 +612,8 @@ class CodeBuilder(BaseBuilder):
                         "--retries", "2",
                         "--timeout", "30",
                     ]
-                    if mirror:
-                        download_cmd += ["-i", mirror]
+                    if index_url:
+                        download_cmd += ["-i", index_url]
                     result = subprocess.run(download_cmd, capture_output=True, text=True, timeout=90)
                     if result.returncode == 0:
                         downloaded = True
@@ -922,3 +918,34 @@ if __name__ == "__main__":
     logger.info(f"启动 HTTP Server: 0.0.0.0:{{port}}")
     uvicorn.run(app, host="0.0.0.0", port=port, log_level=LOG_LEVEL.lower())
 '''
+
+    def _pip_index_candidates(self) -> List[Optional[str]]:
+        """返回 pip index 尝试顺序。显式环境变量优先，其次是官方与内置镜像源。"""
+        candidates: List[Optional[str]] = []
+        if os.environ.get("PIP_INDEX_URL") or os.environ.get("UV_INDEX_URL"):
+            candidates.append(None)
+        else:
+            candidates.append(None)
+
+        seen: Set[str] = set()
+        default_added = False
+        for candidate in [*candidates, *self.PIP_INDEX_FALLBACKS]:
+            if candidate is None:
+                if default_added:
+                    continue
+                default_added = True
+                yield None
+                continue
+            normalized = candidate.rstrip("/")
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            yield candidate
+
+    def _pip_index_label(self, index_url: Optional[str]) -> str:
+        if index_url:
+            return index_url
+        env_index = os.environ.get("PIP_INDEX_URL") or os.environ.get("UV_INDEX_URL")
+        if env_index:
+            return f"default pip index ({env_index})"
+        return "default pip index"
