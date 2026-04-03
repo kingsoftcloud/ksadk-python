@@ -5,6 +5,14 @@ All notable changes to the **Kingsoft AgentEngine SDK (ksadk)** project will be 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.8] - 2026-04-03
+
+### 构建与部署修复
+
+- 修复 `CodeBuilder` 在 code 模式下硬编码内置 PyPI 镜像、忽略显式 `PIP_INDEX_URL` / `UV_INDEX_URL` 的问题。
+- `pip install` 与 Linux wheel `pip download` 统一改为优先尊重显式环境配置，再回退官方 PyPI 与内置镜像源，避免刚发布的新版本在镜像同步窗口内无法立刻部署。
+- 新增回归测试覆盖依赖安装与二进制替换两条路径的 pip index 选择逻辑。
+
 ## [0.3.7] - 2026-04-03
 
 ### 重点主题
