@@ -5,6 +5,29 @@ All notable changes to the **Kingsoft AgentEngine SDK (ksadk)** project will be 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.7] - 2026-04-03
+
+### 重点主题
+
+- 附件能力统一收口到单一主链路：hosted/local transcript 结构化透传、`attachment_results` canonical contract、runner parity、agent 结构化消费以及统一 Web UI 上传体验在同一版本里完成闭环。
+
+### 附件处理与 runner 一致性
+
+- 新增统一附件处理管线，覆盖图片、常见文档、文本与 ZIP 的 canonical 归一化、文本抽取、OCR fallback 与安全枚举。
+- `PreparedConversationTurn` 与 conversation runtime 统一保留 `attachments`、`attachment_results`、`input_parts`，并在 follow-up turn 复用最近一次有效附件上下文，避免后续轮次丢附件语义。
+- `LangGraphRunner` 与 `ADKRunner` 对齐附件输入契约，结构化附件不再依赖把二进制重编码进 message content。
+
+### Hosted 回放与 Agent 消费
+
+- hosted replay 保持 `input_text` / `input_file` 的结构化 `content.parts` 回放，不再把附件降格成纯文本摘要。
+- transcript metadata 在保留兼容文本视图的同时，新增紧凑附件处理结果摘要，保证标题、压缩估算与 replay 各自消费正确视图。
+- LangGraph HR agent 切到优先消费 `attachment_results`，文档/图片/文本附件统一映射成候选人材料输入，并在抽取失败时输出具体 warning 与下一步建议。
+
+### Web UI
+
+- 本地统一 Web UI 支持直接粘贴图片/文件进入现有上传队列。
+- 图片预览改为按图片自然尺寸自适应显示，仅在超出视口时缩放。
+
 ## [0.3.6] - 2026-03-24
 
 ### 重点主题
