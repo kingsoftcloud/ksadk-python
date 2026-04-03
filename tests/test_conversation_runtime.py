@@ -143,6 +143,156 @@ async def test_build_run_input_projects_history_from_append_only_events(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_build_run_input_persists_attachment_results_and_passes_them_to_runner(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    message = {
+        "role": "user",
+        "content": "[上传文件: resume.pdf]\n张三 8年经验",
+        "display_content": "请分析附件\n\n## 附件\n- resume.pdf",
+        "parts": [{"text": "请分析附件"}],
+        "attachments": [
+            {
+                "display_name": "resume.pdf",
+                "mime_type": "application/pdf",
+                "transport": "reference",
+                "file_uri": "ksadk-upload://resume",
+                "size_bytes": 128,
+            }
+        ],
+        "attachment_results": [
+            {
+                "display_name": "resume.pdf",
+                "mime_type": "application/pdf",
+                "transport": "reference",
+                "file_uri": "ksadk-upload://resume",
+                "size_bytes": 128,
+                "kind": "document",
+                "status": "ok",
+                "warnings": [],
+                "extraction_method": "pdf_native",
+                "text_excerpt": "张三 8年经验",
+                "text": "张三 8年经验",
+                "document": {"format": "pdf"},
+            }
+        ],
+    }
+
+    prepared = await build_run_input(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id=None,
+        messages=[message],
+    )
+
+    assert prepared.attachments == message["attachments"]
+    assert prepared.attachment_results == message["attachment_results"]
+
+    events = await service.get_events(prepared.session_id)
+    assert events[0].metadata["attachment_results"] == [
+        {
+            "display_name": "resume.pdf",
+            "mime_type": "application/pdf",
+            "transport": "reference",
+            "file_uri": "ksadk-upload://resume",
+            "size_bytes": 128,
+            "kind": "document",
+            "status": "ok",
+            "warnings": [],
+            "extraction_method": "pdf_native",
+            "text_excerpt": "张三 8年经验",
+            "document": {"format": "pdf"},
+        }
+    ]
+
+    runner = _StubRunner()
+    session_id, result = await invoke_conversation_once(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id=prepared.session_id,
+        messages=[message],
+        model="gpt-4o",
+        prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+        session_service_provider=lambda: service,
+    )
+
+    assert session_id == prepared.session_id
+    assert result["output_text"] == "assistant says hi"
+    assert runner.calls[-1]["attachment_results"] == message["attachment_results"]
+
+
+@pytest.mark.asyncio
+async def test_build_run_input_reuses_last_attachment_results_for_follow_up_turn(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    message = {
+        "role": "user",
+        "content": "[上传文件: resume.txt]\n张三 8年经验",
+        "display_content": "请分析附件\n\n## 附件\n- resume.txt",
+        "parts": [{"text": "请分析附件"}],
+        "attachments": [
+            {
+                "display_name": "resume.txt",
+                "mime_type": "text/plain",
+                "transport": "reference",
+                "file_uri": "ksadk-upload://resume",
+                "size_bytes": 64,
+            }
+        ],
+        "attachment_results": [
+            {
+                "display_name": "resume.txt",
+                "mime_type": "text/plain",
+                "transport": "reference",
+                "file_uri": "ksadk-upload://resume",
+                "size_bytes": 64,
+                "kind": "text",
+                "status": "ok",
+                "warnings": [],
+                "extraction_method": "text_decode",
+                "text_excerpt": "张三 8年经验",
+                "text": "张三 8年经验",
+            }
+        ],
+    }
+
+    first = await build_run_input(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id=None,
+        messages=[message],
+    )
+    follow_up = await build_run_input(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id=first.session_id,
+        messages=[{"role": "user", "content": "继续分析"}],
+    )
+
+    assert follow_up.attachments == message["attachments"]
+    assert follow_up.attachment_results == message["attachment_results"]
+
+    runner = _StubRunner()
+    session_id, result = await invoke_conversation_once(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id=first.session_id,
+        messages=[{"role": "user", "content": "继续分析"}],
+        model="gpt-4o",
+        prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+        session_service_provider=lambda: service,
+    )
+
+    assert session_id == first.session_id
+    assert result["output_text"] == "assistant says hi"
+    assert runner.calls[-1]["attachment_results"] == message["attachment_results"]
+
+
+@pytest.mark.asyncio
 async def test_invoke_conversation_once_persists_canonical_turn_events(monkeypatch):
     service = InMemorySessionService()
     monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)

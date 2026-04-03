@@ -242,6 +242,21 @@ async def test_run_agent_action_normalizes_structured_text_and_inline_attachment
             "size_bytes": len(attachment_bytes),
         }
     ]
+    assert runner.invocations[-1]["attachment_results"] == [
+        {
+            "display_name": "resume.txt",
+            "mime_type": "text/plain",
+            "transport": "inline",
+            "file_uri": "",
+            "size_bytes": len(attachment_bytes),
+            "kind": "text",
+            "status": "ok",
+            "warnings": [],
+            "extraction_method": "text_decode",
+            "text_excerpt": "候选人简历内容",
+            "text": "候选人简历内容",
+        }
+    ]
 
     session_id = payload["Data"]["session_id"]
     events = await service.get_events(session_id)
@@ -286,7 +301,7 @@ async def test_run_agent_action_passes_binary_zip_attachment_to_runner(monkeypat
     assert response.status_code == 200
     normalized_input = runner.invocations[-1]["input"]
     assert "bundle.zip" in normalized_input
-    assert "bytes=12" in normalized_input
+    assert "ZIP 压缩包无法打开" in normalized_input
     assert runner.invocations[-1]["attachments"] == [
         {
             "display_name": "bundle.zip",
@@ -295,6 +310,20 @@ async def test_run_agent_action_passes_binary_zip_attachment_to_runner(monkeypat
             "data": archive_b64,
             "is_text": False,
             "size_bytes": len(archive_bytes),
+        }
+    ]
+    assert runner.invocations[-1]["attachment_results"] == [
+        {
+            "display_name": "bundle.zip",
+            "mime_type": "application/zip",
+            "transport": "inline",
+            "file_uri": "",
+            "size_bytes": len(archive_bytes),
+            "kind": "archive",
+            "status": "failed",
+            "warnings": ["ZIP 压缩包无法打开，请确认文件未损坏后重试。"],
+            "extraction_method": "zip_enumeration",
+            "text_excerpt": "",
         }
     ]
 
@@ -373,6 +402,21 @@ async def test_run_agent_action_normalizes_uploaded_file_handle_and_persists_com
     assert attachment["is_text"] is True
     assert attachment["storage_path"].endswith(".txt")
     assert "data" not in attachment
+    assert runner.invocations[-1]["attachment_results"] == [
+        {
+            "display_name": "resume.txt",
+            "mime_type": "text/plain",
+            "transport": "reference",
+            "file_uri": uploaded["fileUri"],
+            "size_bytes": len(attachment_bytes),
+            "kind": "text",
+            "status": "ok",
+            "warnings": [],
+            "extraction_method": "text_decode",
+            "text_excerpt": "候选人简历内容",
+            "text": "候选人简历内容",
+        }
+    ]
 
     session_id = response.json()["Data"]["session_id"]
     events = await service.get_events(session_id)
@@ -571,6 +615,53 @@ async def test_responses_endpoint_streams_thinking_and_text_events(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_responses_endpoint_passes_attachment_results_to_runner(monkeypatch):
+    _, runner, _, transport = _build_transport(monkeypatch)
+    attachment_b64 = base64.b64encode("候选人简历内容".encode("utf-8")).decode("ascii")
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/v1/responses",
+            json={
+                "input": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": "请分析附件"},
+                            {
+                                "type": "input_file",
+                                "inlineData": {
+                                    "displayName": "resume.txt",
+                                    "mimeType": "text/plain",
+                                    "data": attachment_b64,
+                                },
+                            },
+                        ],
+                    }
+                ],
+                "stream": False,
+            },
+        )
+
+    assert response.status_code == 200
+    assert runner.invocations[-1]["attachment_results"] == [
+        {
+            "display_name": "resume.txt",
+            "mime_type": "text/plain",
+            "transport": "inline",
+            "file_uri": "",
+            "size_bytes": len("候选人简历内容".encode("utf-8")),
+            "kind": "text",
+            "status": "ok",
+            "warnings": [],
+            "extraction_method": "text_decode",
+            "text_excerpt": "候选人简历内容",
+            "text": "候选人简历内容",
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_streaming_run_agent_fails_before_starting_sse_when_runner_load_fails(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()
@@ -668,3 +759,17 @@ def test_web_ui_source_uses_title_and_summary_in_sidebar():
     assert "session.Title" in source
     assert "session.Summary" in source
     assert "session.SessionId.slice(0, 12)" not in source
+
+
+def test_web_ui_source_supports_clipboard_file_paste():
+    source = Path("ksadk/server/web-ui/src/App.tsx").read_text(encoding="utf-8")
+    assert "clipboardData.items" in source
+    assert "onPaste" in source
+    assert "getAsFile" in source
+
+
+def test_web_ui_source_uses_adaptive_image_preview_sizing():
+    source = Path("ksadk/server/web-ui/src/App.tsx").read_text(encoding="utf-8")
+    assert "naturalWidth" in source
+    assert "naturalHeight" in source
+    assert "setPreviewImageSize" in source

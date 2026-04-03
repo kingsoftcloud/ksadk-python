@@ -49,6 +49,28 @@ async def test_invoke_simplified_input_preserves_extra_state():
 
 
 @pytest.mark.asyncio
+async def test_invoke_simplified_input_preserves_attachment_contract_fields():
+    runner = _make_runner()
+
+    await runner.invoke(
+        {
+            "session_id": "s1",
+            "input": "请分析附件",
+            "history": [{"role": "user", "content": "上一轮"}],
+            "input_parts": [{"text": "请分析附件"}],
+            "attachments": [{"display_name": "resume.pdf"}],
+            "attachment_results": [{"display_name": "resume.pdf", "kind": "document"}],
+        }
+    )
+
+    state = runner._agent.last_ainvoke_state
+    assert state["input_parts"] == [{"text": "请分析附件"}]
+    assert state["attachments"] == [{"display_name": "resume.pdf"}]
+    assert state["attachment_results"] == [{"display_name": "resume.pdf", "kind": "document"}]
+    assert len(state["messages"]) == 2
+
+
+@pytest.mark.asyncio
 async def test_stream_resume_uses_command():
     runner = _make_runner()
 

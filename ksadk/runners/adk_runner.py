@@ -601,10 +601,10 @@ class ADKRunner(BaseRunner):
             if data is None:
                 file_uri = att.get("file_uri", "")
                 if file_uri.startswith("local:"):
-                    try:
-                        data = Path(file_uri[6:]).read_bytes()
-                    except Exception as e:
-                        logger.warning(f"Failed to load local attachment {file_uri}: {e}")
+                    logger.warning(
+                        "Ignoring direct local attachment reference %s; only resolved storage paths are allowed.",
+                        file_uri,
+                    )
 
             if data is not None:
                 parts.append(types.Part.from_bytes(data=data, mime_type=att.get("mime_type", "application/octet-stream")))
@@ -614,6 +614,13 @@ class ADKRunner(BaseRunner):
             parts.append(types.Part(text="[empty message]"))
 
         return types.Content(role="user", parts=parts)
+
+    def _build_state_delta(self, input_data: Dict[str, Any]) -> dict[str, Any]:
+        state_delta: dict[str, Any] = {}
+        for key in ("input_parts", "attachments", "attachment_results"):
+            if key in input_data:
+                state_delta[key] = input_data.get(key)
+        return state_delta
 
     async def invoke(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """调用 ADK Agent"""
@@ -645,12 +652,16 @@ class ADKRunner(BaseRunner):
                 span.set_attribute("langfuse.tags", ",".join(tags))
 
             new_message = self._build_adk_content(user_input, input_data.get("attachments", []))
+            state_delta = self._build_state_delta(input_data)
 
             final_response = ""
 
             events_list = []
             async for event in self._runner.run_async(
-                session_id=session_id, user_id="ksadk_user", new_message=new_message
+                session_id=session_id,
+                user_id="ksadk_user",
+                new_message=new_message,
+                state_delta=state_delta or None,
             ):
                 events_list.append(event)
                 if hasattr(event, "content") and event.content:
@@ -699,6 +710,7 @@ class ADKRunner(BaseRunner):
                 span.set_attribute("langfuse.tags", ",".join(tags))
 
             new_message = self._build_adk_content(user_input, input_data.get("attachments", []))
+            state_delta = self._build_state_delta(input_data)
 
             accumulated_text = ""
 
@@ -709,6 +721,7 @@ class ADKRunner(BaseRunner):
                 session_id=session_id,
                 user_id="ksadk_user",
                 new_message=new_message,
+                state_delta=state_delta or None,
                 run_config=run_config,
             ):
                 # Only yield text delta if event is partial to avoid duplication of final summary
