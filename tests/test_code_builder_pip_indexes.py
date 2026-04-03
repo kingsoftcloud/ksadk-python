@@ -40,6 +40,31 @@ def test_install_dependencies_respects_explicit_pip_index(tmp_path, monkeypatch)
     assert "-i" not in calls[0]
 
 
+def test_install_dependencies_prefers_target_runtime_wheels(tmp_path, monkeypatch):
+    builder = CodeBuilder(tmp_path)
+    builder.deps_dir.mkdir(parents=True, exist_ok=True)
+    requirements_path = tmp_path / "requirements.txt"
+    requirements_path.write_text("demo==1.0\n", encoding="utf-8")
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return _completed_process(cmd)
+
+    monkeypatch.setattr("ksadk.builders.code_builder.threading.Thread", _DummyThread)
+    monkeypatch.setattr("ksadk.builders.code_builder.subprocess.run", fake_run)
+    monkeypatch.setattr(CodeBuilder, "_scan_incompatible_binaries_in_deps", lambda self: [])
+
+    assert builder._install_dependencies(requirements_path) is True
+    assert calls
+    assert "--platform" in calls[0]
+    assert "manylinux2014_x86_64" in calls[0]
+    assert "--python-version" in calls[0]
+    assert builder.TARGET_PYTHON_VERSION in calls[0]
+    assert "--only-binary=:all:" in calls[0]
+
+
 def test_replace_platform_binaries_respects_explicit_pip_index(tmp_path, monkeypatch):
     builder = CodeBuilder(tmp_path)
     builder.build_dir.mkdir(parents=True, exist_ok=True)

@@ -30,6 +30,13 @@ class CodeBuilder(BaseBuilder):
     """Code 模式构建器 - 打包 zip + 依赖"""
 
     INPUT_FINGERPRINT_VERSION = 1
+    TARGET_INSTALL_PLATFORMS = (
+        "manylinux2014_x86_64",
+        "manylinux_2_17_x86_64",
+        "manylinux_2_28_x86_64",
+        "musllinux_1_2_x86_64",
+        "linux_x86_64",
+    )
     PIP_INDEX_FALLBACKS = (
         "https://pypi.org/simple",
         "https://mirrors.aliyun.com/pypi/simple",
@@ -421,27 +428,35 @@ class CodeBuilder(BaseBuilder):
         spinner_thread.start()
         
         try:
+            need_binary_replacement = (
+                sys.platform in ("darwin", "win32")
+                or (sys.platform.startswith("linux") and current_python != target_python)
+            )
+            used_target_runtime_wheels = False
             result = None
-            for index_url in self._pip_index_candidates():
-                install_cmd = [
-                    sys.executable, "-m", "pip", "install",
-                    "-r", str(requirements_path),
-                    "-t", str(self.deps_dir),
-                    "--disable-pip-version-check",
-                    "--no-warn-script-location",
-                    "--retries", "3",
-                    "--timeout", "60",
-                ]
-                if index_url:
-                    install_cmd += ["-i", index_url]
-                result = subprocess.run(install_cmd, capture_output=True, text=True, timeout=1200)
-                if result.returncode == 0:
-                    break
-                click.echo(
-                    f'\r   源 {self._pip_index_label(index_url)} 失败，尝试下一个...',
-                    nl=False,
+
+            if need_binary_replacement:
+                result = self._run_pip_install(
+                    requirements_path,
+                    target_runtime_wheels=True,
                 )
-            
+                if result.returncode == 0:
+                    used_target_runtime_wheels = True
+                else:
+                    click.echo(
+                        "\r   目标运行时 wheel 安装失败，回退到宿主机安装并替换二进制...",
+                        nl=False,
+                    )
+                    if self.deps_dir.exists():
+                        shutil.rmtree(self.deps_dir)
+                    self.deps_dir.mkdir(parents=True, exist_ok=True)
+
+            if result is None or result.returncode != 0:
+                result = self._run_pip_install(
+                    requirements_path,
+                    target_runtime_wheels=False,
+                )
+
             stop_spinner = True
             spinner_thread.join()
             click.echo('\r                                        ', nl=False)
@@ -455,11 +470,7 @@ class CodeBuilder(BaseBuilder):
                 return False
             
             # 替换非 Linux 平台二进制，或 Linux 下非目标 Python ABI 的二进制
-            need_binary_replacement = (
-                sys.platform in ("darwin", "win32")
-                or (sys.platform.startswith("linux") and current_python != target_python)
-            )
-            if need_binary_replacement:
+            if need_binary_replacement and not used_target_runtime_wheels:
                 self._replace_platform_binaries()
             
             # 二进制兼容性校验（避免把不可运行的包部署到 Linux Runtime）
@@ -949,3 +960,43 @@ if __name__ == "__main__":
         if env_index:
             return f"default pip index ({env_index})"
         return "default pip index"
+
+    def _run_pip_install(self, requirements_path: Path, *, target_runtime_wheels: bool):
+        result = None
+        for index_url in self._pip_index_candidates():
+            install_cmd = [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "-r",
+                str(requirements_path),
+                "-t",
+                str(self.deps_dir),
+                "--disable-pip-version-check",
+                "--no-warn-script-location",
+                "--retries",
+                "3",
+                "--timeout",
+                "60",
+            ]
+            if target_runtime_wheels:
+                for platform in self.TARGET_INSTALL_PLATFORMS:
+                    install_cmd += ["--platform", platform]
+                install_cmd += [
+                    "--python-version",
+                    self.TARGET_PYTHON_VERSION,
+                    "--implementation",
+                    "cp",
+                    "--only-binary=:all:",
+                ]
+            if index_url:
+                install_cmd += ["-i", index_url]
+            result = subprocess.run(install_cmd, capture_output=True, text=True, timeout=1200)
+            if result.returncode == 0:
+                break
+            click.echo(
+                f'\r   源 {self._pip_index_label(index_url)} 失败，尝试下一个...',
+                nl=False,
+            )
+        return result

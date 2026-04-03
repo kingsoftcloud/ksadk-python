@@ -5,6 +5,14 @@ All notable changes to the **Kingsoft AgentEngine SDK (ksadk)** project will be 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.9] - 2026-04-03
+
+### Code Build 依赖安装优化
+
+- `CodeBuilder` 依赖安装改为优先直接解析并安装目标运行时 `cp312 Linux` wheel，避免在 macOS / 非目标 Python 版本构建机上触发 `pandas` 等包的本地源码编译。
+- 当目标运行时 wheel 安装失败时，仍保留原有“宿主机安装 + 二进制替换”的回退链路，兼顾构建速度与兼容性。
+- 新增回归测试覆盖目标运行时 wheel 安装路径，确保 code mode 构建优先命中 runtime-compatible wheels。
+
 ## [0.3.8] - 2026-04-03
 
 ### 构建与部署修复
