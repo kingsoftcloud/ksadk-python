@@ -72,7 +72,7 @@ class LangGraphRunner(BaseRunner):
                     messages.append(AIMessage(content=content))
 
             messages.append(HumanMessage(content=payload["input"] or "[empty message]"))
-            state = {k: v for k, v in payload.items() if k not in ("input", "attachments", "input_parts")}
+            state = {k: v for k, v in payload.items() if k != "input"}
             state["messages"] = messages
             return state
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import importlib
 import json
 from types import SimpleNamespace
@@ -8,7 +9,7 @@ import httpx
 import pytest
 
 from ksadk.runners.base_runner import BaseRunner
-from ksadk.server.api_models import AgentRunRequest
+from ksadk.server.api_models import AgentRunRequest, InlineData, Part
 from ksadk.sessions.in_memory import InMemorySessionService
 
 
@@ -161,7 +162,60 @@ async def test_run_sse_uses_new_session_service(monkeypatch):
             "history": [{"role": "user", "content": "hello"}],
             "input_parts": [{"text": "hello"}],
             "attachments": [],
+            "attachment_results": [],
             "model": None,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_sse_passes_attachment_results_to_runner(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _DummyRunner()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/run_sse",
+            json=AgentRunRequest(
+                appName="demo-agent",
+                userId="user-1",
+                sessionId=None,
+                newMessage={
+                    "role": "user",
+                    "parts": [
+                        {"text": "请分析附件"},
+                        Part(
+                            inlineData=InlineData(
+                                displayName="resume.txt",
+                                mimeType="text/plain",
+                                data=base64.b64encode("候选人简历内容".encode("utf-8")).decode("ascii"),
+                            )
+                        ).model_dump(exclude_none=True),
+                    ],
+                },
+                streaming=False,
+            ).model_dump(),
+        )
+
+    assert response.status_code == 200
+    assert runner.calls[-1]["attachment_results"] == [
+        {
+            "display_name": "resume.txt",
+            "mime_type": "text/plain",
+            "transport": "inline",
+            "file_uri": "",
+            "size_bytes": len("候选人简历内容".encode("utf-8")),
+            "kind": "text",
+            "status": "ok",
+            "warnings": [],
+            "extraction_method": "text_decode",
+            "text_excerpt": "候选人简历内容",
+            "text": "候选人简历内容",
         }
     ]
 
@@ -460,6 +514,122 @@ async def test_chat_completions_forwards_model_to_runner(monkeypatch):
     assert response.status_code == 200
     assert runner.prepared_models == ["glm-5"]
     assert runner.calls[-1]["model"] == "glm-5"
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_passes_attachment_results_to_runner(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _DummyRunner()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    attachment_b64 = base64.b64encode("候选人简历内容".encode("utf-8")).decode("ascii")
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"text": "请分析附件"},
+                            {
+                                "inlineData": {
+                                    "displayName": "resume.txt",
+                                    "mimeType": "text/plain",
+                                    "data": attachment_b64,
+                                }
+                            },
+                        ],
+                    }
+                ],
+                "stream": False,
+            },
+        )
+
+    assert response.status_code == 200
+    assert runner.calls[-1]["attachment_results"] == [
+        {
+            "display_name": "resume.txt",
+            "mime_type": "text/plain",
+            "transport": "inline",
+            "file_uri": "",
+            "size_bytes": len("候选人简历内容".encode("utf-8")),
+            "kind": "text",
+            "status": "ok",
+            "warnings": [],
+            "extraction_method": "text_decode",
+            "text_excerpt": "候选人简历内容",
+            "text": "候选人简历内容",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_reuses_prior_attachment_results_on_follow_up_turn(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _DummyRunner()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    attachment_b64 = base64.b64encode("候选人简历内容".encode("utf-8")).decode("ascii")
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        first_response = await client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"text": "请分析附件"},
+                            {
+                                "inlineData": {
+                                    "displayName": "resume.txt",
+                                    "mimeType": "text/plain",
+                                    "data": attachment_b64,
+                                }
+                            },
+                        ],
+                    }
+                ],
+                "stream": False,
+            },
+        )
+        first_payload = first_response.json()
+        session_id = first_payload["session_id"]
+
+        second_response = await client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "继续分析"}],
+                "session_id": session_id,
+                "stream": False,
+            },
+        )
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert runner.calls[-1]["attachment_results"] == [
+        {
+            "display_name": "resume.txt",
+            "mime_type": "text/plain",
+            "transport": "inline",
+            "file_uri": "",
+            "size_bytes": len("候选人简历内容".encode("utf-8")),
+            "kind": "text",
+            "status": "ok",
+            "warnings": [],
+            "extraction_method": "text_decode",
+            "text_excerpt": "候选人简历内容",
+            "text": "候选人简历内容",
+        }
+    ]
 
 
 @pytest.mark.asyncio

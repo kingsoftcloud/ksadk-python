@@ -15,6 +15,11 @@ type MessageAttachment = {
   fileUri?: string;
 };
 
+type PreviewImageSize = {
+  width: number;
+  height: number;
+};
+
 type Message = {
   id: string;
   role: 'user' | 'model' | 'tool' | 'system';
@@ -103,6 +108,47 @@ type BootstrapModel = ModelCatalogItem & {
 };
 
 const COMPOSER_MAX_HEIGHT = 160;
+
+function fileFingerprint(file: File): string {
+  return [file.name, file.size, file.lastModified, file.type].join(':');
+}
+
+function mergeAttachmentFiles(current: File[], incoming: File[]): File[] {
+  const merged = new Map<string, File>();
+  for (const file of current) {
+    merged.set(fileFingerprint(file), file);
+  }
+  for (const file of incoming) {
+    merged.set(fileFingerprint(file), file);
+  }
+  return Array.from(merged.values());
+}
+
+function extractClipboardFiles(event: React.ClipboardEvent<HTMLTextAreaElement>): File[] {
+  return Array.from(event.clipboardData.items || [])
+    .filter((item) => item.kind === 'file')
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => Boolean(file));
+}
+
+function buildPreviewImageStyle(size: PreviewImageSize | null): React.CSSProperties | undefined {
+  if (!size) {
+    return undefined;
+  }
+  return {
+    width: `min(${size.width}px, calc(100vw - 5rem))`,
+    height: `min(${size.height}px, calc(100vh - 9rem))`,
+  };
+}
+
+function buildPreviewDialogStyle(size: PreviewImageSize | null): React.CSSProperties | undefined {
+  if (!size) {
+    return undefined;
+  }
+  return {
+    width: `min(${size.width + 32}px, calc(100vw - 3rem))`,
+  };
+}
 
 function upsertModelOptions(
   current: ModelCatalogItem[],
@@ -320,6 +366,7 @@ export default function App() {
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<File[]>([]);
   const [previewAttachment, setPreviewAttachment] = useState<MessageAttachment | null>(null);
+  const [previewImageSize, setPreviewImageSize] = useState<PreviewImageSize | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -352,6 +399,33 @@ export default function App() {
     textareaRef.current.style.height = 'auto';
     textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, COMPOSER_MAX_HEIGHT)}px`;
   }, [input]);
+
+  const appendAttachments = (incoming: File[]) => {
+    if (!incoming.length) {
+      return;
+    }
+    setAttachments((prev) => mergeAttachmentFiles(prev, incoming));
+  };
+
+  const openAttachmentPreview = (attachment: MessageAttachment) => {
+    setPreviewAttachment(attachment);
+    setPreviewImageSize(null);
+  };
+
+  const closeAttachmentPreview = () => {
+    setPreviewAttachment(null);
+    setPreviewImageSize(null);
+  };
+
+  const handleComposerPaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const pastedFiles = extractClipboardFiles(event);
+    if (!pastedFiles.length) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    appendAttachments(pastedFiles);
+  };
 
   const fetchModels = async (targetAgentId: string) => {
     try {
@@ -1012,7 +1086,7 @@ export default function App() {
                                <button
                                  key={attIdx}
                                  type="button"
-                                 onClick={() => setPreviewAttachment(att)}
+                                 onClick={() => openAttachmentPreview(att)}
                                  className="group relative overflow-hidden rounded-lg border border-slate-200 dark:border-slate-700 shadow-sm"
                                >
                                  <img
@@ -1142,7 +1216,7 @@ export default function App() {
                 e.preventDefault();
                 e.stopPropagation();
                 if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-                  setAttachments(prev => [...prev, ...Array.from(e.dataTransfer.files)]);
+                  appendAttachments(Array.from(e.dataTransfer.files));
                 }
               }}
               className={cn(
@@ -1166,13 +1240,13 @@ export default function App() {
                   title="上传附件"
                 >
                   <input
+                    ref={fileInputRef}
                     type="file"
                     multiple
                     className="hidden"
                     onChange={(e) => {
                       if (e.target.files && e.target.files.length > 0) {
-                        const newFiles = Array.from(e.target.files);
-                        setAttachments(prev => [...prev, ...newFiles]);
+                        appendAttachments(Array.from(e.target.files));
                         e.target.value = "";
                       }
                     }}
@@ -1195,6 +1269,7 @@ export default function App() {
                       handleSubmit(e);
                     }
                   }}
+                  onPaste={handleComposerPaste}
                   placeholder="发送消息... (Shift + Enter 换行)"
                   className="custom-scrollbar min-h-[36px] w-full max-h-[160px] resize-none border-0 bg-transparent px-2 py-2 text-[15px] leading-6 outline-none placeholder:text-slate-400 dark:text-slate-100 dark:placeholder:text-slate-500"
                   style={{ overflowY: 'auto' }}
@@ -1241,10 +1316,11 @@ export default function App() {
       {previewAttachment?.url && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-6"
-          onClick={() => setPreviewAttachment(null)}
+          onClick={closeAttachmentPreview}
         >
           <div
-            className="max-h-full max-w-6xl overflow-hidden rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl"
+            className="max-h-full max-w-[calc(100vw-3rem)] overflow-hidden rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl"
+            style={buildPreviewDialogStyle(previewImageSize)}
             onClick={(event) => event.stopPropagation()}
           >
             <div className="flex items-center justify-between gap-4 border-b border-slate-800 px-4 py-3 text-sm text-slate-200">
@@ -1252,16 +1328,24 @@ export default function App() {
               <button
                 type="button"
                 className="rounded-md px-2 py-1 text-slate-300 hover:bg-slate-800 hover:text-white"
-                onClick={() => setPreviewAttachment(null)}
+                onClick={closeAttachmentPreview}
               >
                 关闭
               </button>
             </div>
-            <div className="flex max-h-[85vh] max-w-[85vw] items-center justify-center bg-slate-950 p-4">
+            <div className="flex max-h-[calc(100vh-7rem)] max-w-[calc(100vw-3rem)] items-center justify-center overflow-auto bg-slate-950 p-4">
               <img
                 src={previewAttachment.url}
                 alt={previewAttachment.name}
-                className="max-h-[80vh] max-w-[80vw] object-contain"
+                className="h-auto w-auto max-h-[calc(100vh-9rem)] max-w-[calc(100vw-5rem)] object-contain"
+                style={buildPreviewImageStyle(previewImageSize)}
+                onLoad={(event) => {
+                  const image = event.currentTarget;
+                  setPreviewImageSize({
+                    width: image.naturalWidth,
+                    height: image.naturalHeight,
+                  });
+                }}
               />
             </div>
           </div>

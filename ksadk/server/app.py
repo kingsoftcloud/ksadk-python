@@ -860,6 +860,7 @@ async def run_sse(request: AgentRunRequest):
         "display_content": str(normalized_message.get("display_content") or ""),
         "parts": list(normalized_message.get("parts") or []),
         "attachments": list(normalized_message.get("attachments") or []),
+        "attachment_results": list(normalized_message.get("attachment_results") or []),
     }
 
     model_version = "models/gemini-pro" if "gemini" in request.appName.lower() else "models/unknown"
@@ -896,6 +897,7 @@ async def run_sse(request: AgentRunRequest):
                 session_id = prepared_non_stream.session_id
                 user_input = prepared_non_stream.user_input
                 attachments = prepared_non_stream.attachments
+                attachment_results = prepared_non_stream.attachment_results
                 user_parts = prepared_non_stream.user_parts
                 history = prepared_non_stream.history
                 invocation_id = prepared_non_stream.invocation_id
@@ -912,6 +914,7 @@ async def run_sse(request: AgentRunRequest):
                     "history": history,
                     "input_parts": list(user_parts),
                     "attachments": attachments,
+                    "attachment_results": attachment_results,
                     "model": request.model,
                 }
                 result = await active_runner.invoke(input_data)
@@ -1007,6 +1010,7 @@ async def run_sse(request: AgentRunRequest):
                 session_id = prepared.session_id
                 user_input = prepared.user_input
                 attachments = prepared.attachments
+                attachment_results = prepared.attachment_results
                 user_parts = prepared.user_parts
                 history = prepared.history
                 invocation_id = prepared.invocation_id
@@ -1034,6 +1038,7 @@ async def run_sse(request: AgentRunRequest):
                         "history": history,
                         "input_parts": list(user_parts),
                         "attachments": attachments,
+                        "attachment_results": attachment_results,
                         "model": request.model,
                     }
                 ):

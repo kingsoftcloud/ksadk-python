@@ -389,3 +389,81 @@ def test_adk_runner_build_adk_content_supports_inline_and_reference_attachments(
     assert content.parts[0].text == "请总结附件"
     assert content.parts[1].inline_data.data == "候选人简历内容".encode("utf-8")
     assert content.parts[2].inline_data.data == b"PK\x03\x04demo-zip"
+
+
+def test_adk_runner_build_adk_content_does_not_read_arbitrary_local_file_uri(tmp_path):
+    from ksadk.runners.adk_runner import ADKRunner
+
+    detection = SimpleNamespace(
+        entry_point="agent.py",
+        agent_variable="root_agent",
+        name="demo-agent",
+    )
+    runner = ADKRunner(detection, str(tmp_path))
+
+    secret_path = tmp_path / "secret.txt"
+    secret_path.write_text("should-not-leak", encoding="utf-8")
+
+    content = runner._build_adk_content(
+        "请分析附件",
+        [
+            {
+                "display_name": "secret.txt",
+                "mime_type": "text/plain",
+                "transport": "reference",
+                "file_uri": f"local:{secret_path}",
+            }
+        ],
+    )
+
+    assert len(content.parts) == 1
+    assert content.parts[0].text == "请分析附件"
+
+
+@pytest.mark.asyncio
+async def test_adk_runner_invoke_forwards_attachment_results_via_state_delta(tmp_path, monkeypatch):
+    from google.genai import types
+    from ksadk.runners.adk_runner import ADKRunner
+
+    detection = SimpleNamespace(
+        entry_point="agent.py",
+        agent_variable="root_agent",
+        name="demo-agent",
+    )
+    runner = ADKRunner(detection, str(tmp_path))
+    runner._agent = SimpleNamespace(name="demo-agent")
+
+    captured: dict[str, Any] = {}
+
+    class _FakeRunner:
+        async def run_async(self, *, session_id, user_id, new_message, state_delta=None, run_config=None):
+            captured["session_id"] = session_id
+            captured["user_id"] = user_id
+            captured["new_message"] = new_message
+            captured["state_delta"] = state_delta
+            yield SimpleNamespace(content=SimpleNamespace(parts=[types.Part(text="ok")]))
+
+    async def _fake_ensure_session(external_session_id=None):
+        return "adk-session-1"
+
+    monkeypatch.setattr(runner, "_ensure_session", _fake_ensure_session)
+    monkeypatch.setattr(runner, "_prepare_trace_metadata", lambda session_id: ("", [], "", "demo-agent"))
+    runner._runner = _FakeRunner()
+
+    result = await runner.invoke(
+        {
+            "session_id": "external-session",
+            "input": "请分析附件",
+            "attachments": [],
+            "input_parts": [{"text": "请分析附件"}],
+            "attachment_results": [{"display_name": "resume.pdf", "kind": "document"}],
+        }
+    )
+
+    assert result["output"] == "ok"
+    assert captured["session_id"] == "adk-session-1"
+    assert captured["state_delta"] == {
+        "input_parts": [{"text": "请分析附件"}],
+        "attachments": [],
+        "attachment_results": [{"display_name": "resume.pdf", "kind": "document"}],
+    }

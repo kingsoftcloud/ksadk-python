@@ -61,7 +61,7 @@ def test_extract_user_input_from_file_reference():
     assert "a.txt" in text
 
 
-def test_extract_user_input_from_local_file_reference_reads_text(tmp_path):
+def test_extract_user_input_from_local_file_reference_outside_uploads_dir_keeps_reference_only(tmp_path):
     attachment_path = tmp_path / "resume.txt"
     attachment_path.write_text("张三\n8年经验\n熟悉LangGraph", encoding="utf-8")
     parts = [
@@ -75,8 +75,9 @@ def test_extract_user_input_from_local_file_reference_reads_text(tmp_path):
     ]
 
     text = _extract_user_input_from_parts(parts)
-    assert "[上传文件: resume.txt]" in text
-    assert "8年经验" in text
+    assert "上传文件引用" in text
+    assert "resume.txt" in text
+    assert "8年经验" not in text
 
 
 def test_extract_user_input_from_opaque_upload_handle_reads_text(monkeypatch, tmp_path):

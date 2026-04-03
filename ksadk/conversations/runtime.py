@@ -24,6 +24,7 @@ from ksadk.conversations.model_context import (
     get_auto_compact_threshold_tokens,
     normalize_model_metadata,
 )
+from ksadk.conversations.attachments import compact_attachment_result_for_session
 from ksadk.conversations.normalize import compact_attachment_for_session, normalize_kop_messages
 from ksadk.conversations.semantic_summary import (
     extract_pinned_state,
@@ -53,6 +54,7 @@ PROMPT_TOO_LONG_MARKERS = (
     "413",
 )
 SESSION_SUMMARY_MAX_CHARS = 160
+ATTACHMENT_CONTEXT_STATE_KEY = "__ksadk_attachment_context__"
 
 
 @dataclass
@@ -70,6 +72,7 @@ class PreparedConversationTurn:
     history: list[dict[str, str]]
     user_parts: list[dict[str, Any]]
     attachments: list[dict[str, Any]]
+    attachment_results: list[dict[str, Any]]
     compaction_triggered: bool = False
     compaction_trigger: str | None = None
     compacted_until_seq_id: int | None = None
@@ -278,7 +281,7 @@ def _normalized_conversation_messages(messages: Sequence[Dict[str, Any]]) -> lis
     normalized_messages: list[dict[str, Any]] = []
     for message in list(messages or []):
         if isinstance(message, dict) and any(
-            key in message for key in ("display_content", "attachments", "parts")
+            key in message for key in ("display_content", "attachments", "attachment_results", "parts")
         ):
             normalized_messages.append(
                 {
@@ -289,6 +292,7 @@ def _normalized_conversation_messages(messages: Sequence[Dict[str, Any]]) -> lis
                     ),
                     "parts": list(message.get("parts") or []),
                     "attachments": list(message.get("attachments") or []),
+                    "attachment_results": list(message.get("attachment_results") or []),
                 }
             )
             continue
@@ -298,7 +302,7 @@ def _normalized_conversation_messages(messages: Sequence[Dict[str, Any]]) -> lis
 
 def _latest_user_turn(
     normalized_messages: Sequence[Dict[str, Any]],
-) -> tuple[str, str, list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[str, str, list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     latest_user_message = next(
         (message for message in reversed(normalized_messages) if message.get("role") == "user"),
         {},
@@ -307,7 +311,67 @@ def _latest_user_turn(
     user_display_input = str(latest_user_message.get("display_content") or user_input)
     user_parts = list(latest_user_message.get("parts") or [])
     attachments = list(latest_user_message.get("attachments") or [])
-    return user_input, user_display_input, user_parts, attachments
+    attachment_results = list(latest_user_message.get("attachment_results") or [])
+    return user_input, user_display_input, user_parts, attachments, attachment_results
+
+
+def _latest_attachment_context_from_messages(
+    normalized_messages: Sequence[Dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    attachments: list[dict[str, Any]] = []
+    attachment_results: list[dict[str, Any]] = []
+    for message in normalized_messages:
+        if str(message.get("role") or "user") != "user":
+            continue
+        message_attachments = list(message.get("attachments") or [])
+        message_attachment_results = list(message.get("attachment_results") or [])
+        if message_attachments or message_attachment_results:
+            attachments = message_attachments
+            attachment_results = message_attachment_results
+    return attachments, attachment_results
+
+
+def _attachment_context_from_session(
+    session: Session | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    state = getattr(session, "state", None) or {}
+    payload = state.get(ATTACHMENT_CONTEXT_STATE_KEY)
+    if not isinstance(payload, dict):
+        return [], []
+    return (
+        list(payload.get("attachments") or []),
+        list(payload.get("attachment_results") or []),
+    )
+
+
+def _build_attachment_context_state_delta(
+    *,
+    base_state_delta: dict[str, Any] | None,
+    attachments: Sequence[dict[str, Any]],
+    attachment_results: Sequence[dict[str, Any]],
+) -> dict[str, Any]:
+    merged = dict(base_state_delta or {})
+    if attachments or attachment_results:
+        merged[ATTACHMENT_CONTEXT_STATE_KEY] = {
+            "attachments": [dict(item) for item in attachments if isinstance(item, dict)],
+            "attachment_results": [dict(item) for item in attachment_results if isinstance(item, dict)],
+        }
+    return merged
+
+
+def _resolve_effective_attachment_context(
+    *,
+    normalized_messages: Sequence[Dict[str, Any]],
+    session: Session | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    message_attachments, message_attachment_results = _latest_attachment_context_from_messages(
+        normalized_messages
+    )
+    if message_attachments or message_attachment_results:
+        return message_attachments, message_attachment_results
+
+    session_attachments, session_attachment_results = _attachment_context_from_session(session)
+    return session_attachments, session_attachment_results
 
 
 def _transcript_event_type(event: SessionEvent) -> str:
@@ -325,6 +389,7 @@ def _build_pending_user_event(
     user_input: str,
     user_display_input: str,
     attachments: Sequence[dict[str, Any]],
+    attachment_results: Sequence[dict[str, Any]],
 ) -> SessionEvent:
     """构造一条未落库的用户事件，专供 compaction 预览使用。"""
 
@@ -339,6 +404,11 @@ def _build_pending_user_event(
             "metadata": {
                 "agent_input": user_input,
                 "attachments": [compact_attachment_for_session(item) for item in attachments if item],
+                "attachment_results": [
+                    compact_attachment_result_for_session(item)
+                    for item in attachment_results
+                    if item
+                ],
             },
             "stateDelta": {},
         },
@@ -486,13 +556,18 @@ async def preview_auto_compaction(
         )
 
     normalized_messages = _normalized_conversation_messages(messages)
-    user_input, user_display_input, _, attachments = _latest_user_turn(normalized_messages)
+    user_input, user_display_input, _, attachments, attachment_results = _latest_user_turn(normalized_messages)
+    effective_attachments, effective_attachment_results = _resolve_effective_attachment_context(
+        normalized_messages=normalized_messages,
+        session=existing_session,
+    )
     pending_event = _build_pending_user_event(
         session_id=session_id,
         invocation_id=f"preview-{uuid.uuid4()}",
         user_input=user_input,
         user_display_input=user_display_input or user_input,
-        attachments=attachments,
+        attachments=effective_attachments,
+        attachment_results=effective_attachment_results,
     )
     events = await service.get_events(session_id)
     return _plan_compaction(events, model=model, pending_events=[pending_event])
@@ -731,7 +806,18 @@ async def build_run_input(
     resolved_invocation_id = str(invocation_id or uuid.uuid4())
 
     normalized_messages = _normalized_conversation_messages(messages)
-    user_input, user_display_input, user_parts, attachments = _latest_user_turn(normalized_messages)
+    user_input, user_display_input, user_parts, attachments, attachment_results = _latest_user_turn(
+        normalized_messages
+    )
+    effective_attachments, effective_attachment_results = _resolve_effective_attachment_context(
+        normalized_messages=normalized_messages,
+        session=session,
+    )
+    effective_state_delta = _build_attachment_context_state_delta(
+        base_state_delta=state_delta,
+        attachments=attachments,
+        attachment_results=attachment_results,
+    )
 
     await append_conversation_event(
         session_id=resolved_session_id,
@@ -740,11 +826,16 @@ async def build_run_input(
         text=user_display_input or user_input,
         invocation_id=resolved_invocation_id,
         event_type="user_message",
-        state_delta=state_delta or {},
+        state_delta=effective_state_delta,
         session_service_provider=provider,
         metadata={
             "agent_input": user_input,
             "attachments": [compact_attachment_for_session(item) for item in attachments if item],
+            "attachment_results": [
+                compact_attachment_result_for_session(item)
+                for item in attachment_results
+                if item
+            ],
         },
     )
     await _update_session_metadata_after_user_turn(
@@ -771,7 +862,8 @@ async def build_run_input(
         user_display_input=user_display_input or user_input,
         history=history,
         user_parts=user_parts,
-        attachments=attachments,
+        attachments=effective_attachments,
+        attachment_results=effective_attachment_results,
         compaction_triggered=checkpoint is not None,
         compaction_trigger=str((checkpoint.metadata or {}).get("trigger") or "auto")
         if checkpoint
@@ -836,6 +928,7 @@ async def invoke_conversation_once(
                     "history": prepared.history,
                     "input_parts": prepared.user_parts,
                     "attachments": prepared.attachments,
+                    "attachment_results": prepared.attachment_results,
                     "model": model,
                 }
             )
@@ -971,6 +1064,7 @@ async def stream_conversation_turn(
                     "history": prepared.history,
                     "input_parts": prepared.user_parts,
                     "attachments": prepared.attachments,
+                    "attachment_results": prepared.attachment_results,
                     "model": model,
                 }
             ):
