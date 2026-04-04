@@ -6,6 +6,7 @@ import click
 import asyncio
 from pathlib import Path
 from ksadk.api.client import DryRunExit
+from ksadk.cli.cmd_deploy import _apply_network_config
 from ksadk.cli.dry_run import effective_dry_run, run_async_with_dry_run
 from ksadk.cli.error_utils import cli_error_from_exception, is_debug_mode_enabled, remote_error, usage_error, validation_error
 from ksadk.cli.workflow_common import (
@@ -240,6 +241,8 @@ async def _launch_async(
     if "resources" in config:
         deploy_target.resources.cpu = config["resources"].get("cpu", "2")
         deploy_target.resources.memory = config["resources"].get("memory", "4Gi")
+
+    _apply_network_config(config, deploy_target)
 
     normalized_artifact_type = (effective_artifact_type or "Code").strip().lower()
     explicit_artifact_reference = ks3_path if normalized_artifact_type == "code" else image

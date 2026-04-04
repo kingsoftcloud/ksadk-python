@@ -88,6 +88,51 @@ def test_run_invoke_command_refreshes_stale_state_from_remote(monkeypatch, tmp_p
     }
 
 
+def test_run_invoke_command_persists_generated_session_id(monkeypatch, tmp_path: Path):
+    captured_sessions = []
+
+    async def _fake_invoke_once(endpoint, message, api_key, session_id, stream, insecure, model):
+        captured_sessions.append(session_id)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("ksadk.cli.cmd_invoke._invoke_once", _fake_invoke_once)
+
+    run_invoke_command(
+        agent_ref=None,
+        agent_option=None,
+        endpoint=None,
+        api_key=None,
+        message="hello",
+        session=None,
+        region="pre-online",
+        local=True,
+        insecure=False,
+        model=None,
+        show_thinking=False,
+    )
+
+    state_file = tmp_path / ".agentengine.state"
+    state = yaml.safe_load(state_file.read_text(encoding="utf-8"))
+    assert captured_sessions[0]
+    assert state["session_id"] == captured_sessions[0]
+
+    run_invoke_command(
+        agent_ref=None,
+        agent_option=None,
+        endpoint=None,
+        api_key=None,
+        message="continue",
+        session=None,
+        region="pre-online",
+        local=True,
+        insecure=False,
+        model=None,
+        show_thinking=False,
+    )
+
+    assert captured_sessions[1] == captured_sessions[0]
+
+
 def test_extract_content_supports_response_output_text_delta():
     content, reasoning = _extract_content(
         {

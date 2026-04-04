@@ -158,6 +158,7 @@ async def test_run_sse_uses_new_session_service(monkeypatch):
 
     assert runner.calls == [
         {
+            "session_id": session_id,
             "input": "hello",
             "history": [{"role": "user", "content": "hello"}],
             "input_parts": [{"text": "hello"}],

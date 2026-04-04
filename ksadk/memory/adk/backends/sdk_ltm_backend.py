@@ -10,7 +10,7 @@
     KSADK_LTM_BACKEND: sdk
     KSADK_LTM_ACCESS_KEY: AK (可选，默认取 KSYUN_ACCESS_KEY)
     KSADK_LTM_SECRET_KEY: SK (可选，默认取 KSYUN_SECRET_KEY)
-    KSADK_LTM_REGION: 区域 (默认 cn-north-vip1)
+    KSADK_LTM_REGION: 区域 (默认 cn-beijing-6)
     KSADK_LTM_ENDPOINT: API 端点 (默认 aicp.api.ksyun.com)
     KSADK_LTM_SCHEME: http/https (默认 https)
     KSADK_LTM_NAMESPACE: 记忆库命名空间
@@ -60,12 +60,13 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
 
     access_key: str = ""
     secret_key: str = ""
-    region: str = "cn-north-vip1"
+    region: str = "cn-beijing-6"
     endpoint: str = "aicp.api.ksyun.com"
     scheme: str = "https"
     namespace: str = ""
     agent_id: str = ""
     scene_id: str = ""
+    last_error: str = ""
 
     _aicp_client: Any = None
 
@@ -202,6 +203,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
         effective_namespace = self.namespace or self.index
 
         try:
+            self.last_error = ""
             conversation = self._build_conversation(event_strings)
             if not conversation:
                 logger.info("No valid conversation items to save")
@@ -229,6 +231,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
             return True
 
         except Exception as e:
+            self.last_error = str(e)
             logger.error(f"CreateMemorySdk failed: {e}")
             return False
 
@@ -250,6 +253,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
         effective_namespace = self.namespace or self.index
 
         try:
+            self.last_error = ""
             params = {
                 "Namespace": effective_namespace,
                 "UserId": user_id,
@@ -286,6 +290,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
             return memories
 
         except Exception as e:
+            self.last_error = str(e)
             logger.error(f"QueryMemorySdk failed: {e}")
             return []
 

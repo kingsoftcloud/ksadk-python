@@ -546,6 +546,40 @@ class TestLongTermMemoryInit:
         assert ltm.backend_config["access_key"] == "fallback_ak"
         assert ltm.backend_config["secret_key"] == "fallback_sk"
 
+    def test_from_env_sdk_prefers_explicit_region_over_ksyun_region(
+        self, monkeypatch
+    ):
+        from ksadk.memory.adk.long_term_memory import LongTermMemory
+
+        monkeypatch.setenv("KSADK_LTM_BACKEND", "sdk")
+        monkeypatch.setenv("KSADK_LTM_REGION", "cn-beijing-6")
+        monkeypatch.setenv("KSYUN_REGION", "pre-online")
+
+        ltm = LongTermMemory.from_env()
+        assert ltm.backend_config["region"] == "cn-beijing-6"
+
+    def test_from_env_sdk_falls_back_to_ksyun_region(self, monkeypatch):
+        from ksadk.memory.adk.long_term_memory import LongTermMemory
+
+        monkeypatch.setenv("KSADK_LTM_BACKEND", "sdk")
+        monkeypatch.delenv("KSADK_LTM_REGION", raising=False)
+        monkeypatch.setenv("KSYUN_REGION", "pre-online")
+
+        ltm = LongTermMemory.from_env()
+        assert ltm.backend_config["region"] == "pre-online"
+
+    def test_from_env_sdk_uses_http_for_inner_endpoint_when_scheme_unset(
+        self, monkeypatch
+    ):
+        from ksadk.memory.adk.long_term_memory import LongTermMemory
+
+        monkeypatch.setenv("KSADK_LTM_BACKEND", "sdk")
+        monkeypatch.delenv("KSADK_LTM_SCHEME", raising=False)
+        monkeypatch.setenv("KSADK_LTM_ENDPOINT", "aicp.inner.api.ksyun.com")
+
+        ltm = LongTermMemory.from_env()
+        assert ltm.backend_config["scheme"] == "http"
+
     def test_from_env_top_k(self, monkeypatch):
         from ksadk.memory.adk.long_term_memory import LongTermMemory
 
@@ -847,8 +881,13 @@ class TestShortTermMemory:
         from ksadk.memory.adk.short_term_memory import ShortTermMemory
 
         monkeypatch.delenv("KSADK_STM_BACKEND", raising=False)
+        monkeypatch.delenv("KSADK_STM_PATH", raising=False)
         monkeypatch.delenv("KSADK_STM_DB_URL", raising=False)
         monkeypatch.delenv("KSADK_STM_DB_PATH", raising=False)
+        monkeypatch.delenv("KSADK_STM_URL", raising=False)
+        monkeypatch.delenv("KSADK_ADK_SESSION_BACKEND", raising=False)
+        monkeypatch.delenv("KSADK_ADK_SESSION_PATH", raising=False)
+        monkeypatch.delenv("KSADK_ADK_SESSION_URL", raising=False)
 
         stm = ShortTermMemory.from_env()
         assert stm.backend == "local"
@@ -863,6 +902,8 @@ class TestShortTermMemory:
     def test_from_env_db_path(self, monkeypatch):
         from ksadk.memory.adk.short_term_memory import ShortTermMemory
 
+        monkeypatch.delenv("KSADK_STM_PATH", raising=False)
+        monkeypatch.delenv("KSADK_ADK_SESSION_PATH", raising=False)
         monkeypatch.setenv("KSADK_STM_DB_PATH", "/custom/path.db")
         stm = ShortTermMemory.from_env()
         assert stm.local_database_path == "/custom/path.db"
@@ -887,6 +928,13 @@ class TestADKRunnerMemoryIntegration:
 
     def test_init_stm_no_env(self, monkeypatch):
         monkeypatch.delenv("KSADK_STM_BACKEND", raising=False)
+        monkeypatch.delenv("KSADK_STM_PATH", raising=False)
+        monkeypatch.delenv("KSADK_STM_URL", raising=False)
+        monkeypatch.delenv("KSADK_STM_DB_PATH", raising=False)
+        monkeypatch.delenv("KSADK_STM_DB_URL", raising=False)
+        monkeypatch.delenv("KSADK_ADK_SESSION_BACKEND", raising=False)
+        monkeypatch.delenv("KSADK_ADK_SESSION_PATH", raising=False)
+        monkeypatch.delenv("KSADK_ADK_SESSION_URL", raising=False)
         runner = self._make_runner()
         result = runner._init_short_term_memory()
         assert result is None
@@ -925,6 +973,26 @@ class TestADKRunnerMemoryIntegration:
         result = runner._init_long_term_memory()
         assert result is not None
 
+    def test_init_ltm_sdk_uses_ksyun_region_and_inner_http(self, monkeypatch):
+        monkeypatch.setenv("KSADK_LTM_BACKEND", "sdk")
+        monkeypatch.setenv("KSADK_LTM_ACCESS_KEY", "ak")
+        monkeypatch.setenv("KSADK_LTM_SECRET_KEY", "sk")
+        monkeypatch.setenv("KSADK_LTM_NAMESPACE", "ns")
+        monkeypatch.delenv("KSADK_LTM_REGION", raising=False)
+        monkeypatch.delenv("KSADK_LTM_SCHEME", raising=False)
+        monkeypatch.setenv("KSYUN_REGION", "pre-online")
+        monkeypatch.setenv("KSADK_LTM_ENDPOINT", "aicp.inner.api.ksyun.com")
+
+        runner = self._make_runner()
+        mock_agent = MagicMock()
+        mock_agent.name = "test_agent"
+        runner._agent = mock_agent
+        result = runner._init_long_term_memory()
+
+        assert result is not None
+        assert result.backend_config["region"] == "pre-online"
+        assert result.backend_config["scheme"] == "http"
+
     def test_inject_tool_into_empty(self):
         runner = self._make_runner()
         runner._agent = MagicMock()
@@ -955,6 +1023,18 @@ class TestADKRunnerMemoryIntegration:
 
         # Should not crash
         runner._inject_load_memory_tool()
+
+    def test_inject_save_memory_tool_into_empty(self):
+        runner = self._make_runner()
+        runner._agent = MagicMock()
+        runner._agent.tools = []
+
+        runner._inject_save_memory_tool()
+        tool_names = [
+            getattr(t, "name", None) or getattr(t, "__name__", "")
+            for t in runner._agent.tools
+        ]
+        assert "save_memory" in tool_names
 
     async def test_ensure_session_new_external(self):
         from google.adk.sessions import InMemorySessionService

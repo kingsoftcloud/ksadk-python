@@ -15,6 +15,7 @@ from typing import Any, AsyncIterator, Dict, Optional
 from opentelemetry import trace
 
 from ksadk.runners.base_runner import BaseRunner
+from ksadk.sessions.continuity import ADKSessionAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -87,27 +88,38 @@ class ADKRunner(BaseRunner):
         """从环境变量初始化短期记忆
 
         环境变量:
-            KSADK_STM_BACKEND: local / sqlite / database
-            KSADK_STM_DB_URL: 数据库连接 URL
+            KSADK_ADK_SESSION_BACKEND / PATH / URL: ADK 专用 session 配置
+            KSADK_STM_BACKEND / PATH / URL: 平台级 STM 配置
         """
-        backend = os.environ.get("KSADK_STM_BACKEND", "")
-        if not backend:
+        configured_names = (
+            "KSADK_ADK_SESSION_BACKEND",
+            "KSADK_ADK_SESSION_PATH",
+            "KSADK_ADK_SESSION_URL",
+            "KSADK_STM_BACKEND",
+            "KSADK_STM_PATH",
+            "KSADK_STM_URL",
+            "KSADK_STM_DB_PATH",
+            "KSADK_STM_DB_URL",
+        )
+        if not any(str(os.environ.get(name, "")).strip() for name in configured_names):
             return None
 
         try:
             from ksadk.memory.adk import ShortTermMemory
-            stm = ShortTermMemory(
-                backend=backend,
-                db_url=os.environ.get("KSADK_STM_DB_URL", ""),
-                local_database_path=os.environ.get(
-                    "KSADK_STM_DB_PATH", "/tmp/ksadk_local_database.db"
-                ),
+
+            stm = ShortTermMemory.from_env()
+            logger.info(
+                "ShortTermMemory initialized: backend=%s path=%s",
+                stm.backend,
+                stm.local_database_path,
             )
-            logger.info(f"ShortTermMemory initialized: backend={backend}")
             return stm
         except Exception as e:
             logger.warning(f"Failed to init ShortTermMemory: {e}. Using default.")
             return None
+
+    def get_session_adapter(self):
+        return ADKSessionAdapter()
 
     def _init_long_term_memory(self):
         """从环境变量初始化长期记忆
@@ -127,41 +139,8 @@ class ADKRunner(BaseRunner):
         try:
             from ksadk.memory.adk import LongTermMemory
 
-            backend_config = {}
-            if backend == "http":
-                base_url = os.environ.get("KSADK_LTM_HTTP_URL", "")
-                token = os.environ.get("KSADK_LTM_HTTP_TOKEN", "")
-                if not base_url:
-                    logger.warning(
-                        "KSADK_LTM_BACKEND=http but KSADK_LTM_HTTP_URL is empty."
-                    )
-                backend_config = {"base_url": base_url, "token": token}
-            elif backend == "sdk":
-                backend_config = {
-                    "access_key": (
-                        os.environ.get("KSADK_LTM_ACCESS_KEY")
-                        or os.environ.get("KSYUN_ACCESS_KEY", "")
-                    ),
-                    "secret_key": (
-                        os.environ.get("KSADK_LTM_SECRET_KEY")
-                        or os.environ.get("KSYUN_SECRET_KEY", "")
-                    ),
-                    "region": os.environ.get("KSADK_LTM_REGION", "cn-north-vip1"),
-                    "endpoint": os.environ.get("KSADK_LTM_ENDPOINT", "aicp.api.ksyun.com"),
-                    "scheme": os.environ.get("KSADK_LTM_SCHEME", "https"),
-                    "namespace": os.environ.get("KSADK_LTM_NAMESPACE", ""),
-                    "agent_id": os.environ.get("KSADK_LTM_AGENT_ID", ""),
-                    "scene_id": os.environ.get("KSADK_LTM_SCENE_ID", ""),
-                }
-
             agent_name = self._agent.name if self._agent else "default"
-            ltm = LongTermMemory(
-                backend=backend,
-                backend_config=backend_config,
-                top_k=int(os.environ.get("KSADK_LTM_TOP_K", "5")),
-                index=os.environ.get("KSADK_LTM_INDEX", ""),
-                app_name=agent_name,
-            )
+            ltm = LongTermMemory.from_env(app_name=agent_name)
             logger.info(
                 f"LongTermMemory initialized: backend={backend}, "
                 f"app_name={agent_name}"
@@ -178,7 +157,7 @@ class ADKRunner(BaseRunner):
             KSADK_KB_DATASET_ID: 知识库 ID (必填，存在即启用)
             KSADK_KB_ACCESS_KEY: AK (可选)
             KSADK_KB_SECRET_KEY: SK (可选)
-            KSADK_KB_REGION: 区域 (默认 cn-north-vip1)
+            KSADK_KB_REGION: 区域 (默认 cn-beijing-6)
             KSADK_KB_TOP_K: 返回结果数 (默认 5)
         """
         try:
@@ -242,6 +221,25 @@ class ADKRunner(BaseRunner):
             )
         except Exception as e:
             logger.warning(f"Failed to inject load_memory tool: {e}")
+
+    def _inject_save_memory_tool(self):
+        """自动注入 save_memory 工具到 Agent"""
+        try:
+            from ksadk.memory.adk_tool import create_adk_tool
+
+            save_memory_tool = create_adk_tool()
+            added = self._append_tools_by_name([save_memory_tool])
+            if added:
+                logger.info(
+                    "Injected 'save_memory' tool into agent "
+                    f"(total tools: {len(self._agent.tools)})"
+                )
+            else:
+                logger.debug("Agent already has 'save_memory' tool")
+        except ImportError as e:
+            logger.warning(f"Failed to import save_memory tool: {e}")
+        except Exception as e:
+            logger.warning(f"Failed to inject save_memory tool: {e}")
 
     def _inject_sandbox_tools(self):
         """默认注入本地沙箱工具。"""
@@ -429,6 +427,7 @@ class ADKRunner(BaseRunner):
         # 如果配置了长期记忆，自动注入 load_memory 工具到 agent
         if self._long_term_memory:
             self._inject_load_memory_tool()
+            self._inject_save_memory_tool()
 
         self._inject_sandbox_tools()
         self._inject_mcp_toolsets()
@@ -444,9 +443,43 @@ class ADKRunner(BaseRunner):
             logger.info("ADKRunner: LongTermMemory injected as memory_service")
 
         self._runner = Runner(**runner_kwargs)
-        self._active_model_name = self.normalize_requested_model(
+        self._default_model_name = self.normalize_requested_model(
             os.getenv("OPENAI_MODEL_NAME") or os.getenv("MODEL_NAME")
         )
+        self._default_model_reference = self._discover_model_reference(self._agent)
+        self._active_model_name = (
+            self._default_model_reference
+            or self._default_model_name
+        )
+
+    def _discover_model_reference(self, agent: Any) -> Optional[str]:
+        visited: set[int] = set()
+
+        def _visit(node: Any) -> Optional[str]:
+            if node is None:
+                return None
+            node_id = id(node)
+            if node_id in visited:
+                return None
+            visited.add(node_id)
+
+            current_model = getattr(node, "model", None)
+            if hasattr(current_model, "model"):
+                candidate = str(getattr(current_model, "model", None) or "").strip()
+                if candidate:
+                    return candidate
+            elif isinstance(current_model, str):
+                candidate = current_model.strip()
+                if candidate:
+                    return candidate
+
+            for child in getattr(node, "sub_agents", []) or []:
+                discovered = _visit(child)
+                if discovered:
+                    return discovered
+            return None
+
+        return _visit(agent)
 
     @staticmethod
     def _resolve_model_reference(existing_model: Any, requested_model: str) -> str:
@@ -489,12 +522,41 @@ class ADKRunner(BaseRunner):
     def prepare_for_request(self, model: str | None) -> None:
         normalized = self.sync_process_model_env(model)
         if normalized is None:
+            default_model_name = (
+                getattr(self, "_default_model_name", None)
+                or self.normalize_requested_model(
+                    os.getenv("OPENAI_MODEL_NAME") or os.getenv("MODEL_NAME")
+                )
+            )
+            if default_model_name:
+                self.sync_process_model_env(default_model_name)
+            target_reference = (
+                getattr(self, "_default_model_reference", None)
+                or default_model_name
+            )
+            if target_reference and self._agent is not None:
+                current_reference = self._discover_model_reference(self._agent)
+                if current_reference != target_reference:
+                    self._apply_model_to_agent_tree(self._agent, target_reference)
+            self._active_model_name = target_reference
             return
-        if normalized == getattr(self, "_active_model_name", None):
+        target_reference = (
+            self._resolve_model_reference(
+                self._discover_model_reference(self._agent)
+                or getattr(self, "_default_model_reference", None)
+                or normalized,
+                normalized,
+            )
+            if self._agent is not None
+            else normalized
+        )
+        if target_reference == getattr(self, "_active_model_name", None):
             return
         if self._agent is not None:
             self._apply_model_to_agent_tree(self._agent, normalized)
-        self._active_model_name = normalized
+            self._active_model_name = self._discover_model_reference(self._agent) or target_reference
+            return
+        self._active_model_name = target_reference
 
     def _prepare_trace_metadata(self, session_id: str):
         """准备 Trace 元数据 (Tags, UserID, etc.)"""

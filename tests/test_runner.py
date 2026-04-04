@@ -200,6 +200,40 @@ def test_adk_runner_prepare_for_request_updates_explicit_model_tree(monkeypatch,
     assert os.environ["MODEL_NAME"] == "gpt-4o"
 
 
+def test_adk_runner_prepare_for_request_restores_default_model_when_request_omits_model(
+    monkeypatch,
+    tmp_path,
+):
+    from ksadk.runners.adk_runner import ADKRunner
+
+    class FakeLiteLlm:
+        def __init__(self, model: str):
+            self.model = model
+
+    child_agent = SimpleNamespace(model=FakeLiteLlm("openai/deepseek-v3.2"), sub_agents=[])
+    root_agent = SimpleNamespace(model=FakeLiteLlm("openai/deepseek-v3.2"), sub_agents=[child_agent])
+
+    runner = ADKRunner(_write_detection(FrameworkType.ADK), str(tmp_path))
+    runner._agent = root_agent
+    runner._default_model_name = "deepseek-v3.2"
+    runner._default_model_reference = "openai/deepseek-v3.2"
+    runner._active_model_name = "openai/deepseek-v3.2"
+
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "deepseek-v3.2")
+    monkeypatch.setenv("MODEL_NAME", "deepseek-v3.2")
+
+    runner.prepare_for_request("dummy")
+    assert root_agent.model.model == "openai/dummy"
+    assert child_agent.model.model == "openai/dummy"
+
+    runner.prepare_for_request(None)
+
+    assert root_agent.model.model == "openai/deepseek-v3.2"
+    assert child_agent.model.model == "openai/deepseek-v3.2"
+    assert os.environ["OPENAI_MODEL_NAME"] == "deepseek-v3.2"
+    assert os.environ["MODEL_NAME"] == "deepseek-v3.2"
+
+
 def test_base_runner_run_server_registers_runner(monkeypatch):
     recorded: dict[str, Any] = {}
 

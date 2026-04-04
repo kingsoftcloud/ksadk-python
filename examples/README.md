@@ -1,6 +1,6 @@
 # 智能助手 Demo
 
-两个功能完全相同的智能助手 Agent，分别使用 Google ADK 和 LangGraph 框架实现。
+两个功能完全相同的智能助手 Agent，分别使用 Google ADK 和 LangGraph 框架实现。两者都可以叠加平台级 KB / LTM 能力；ADK 默认走原生注入，LangGraph 可走 env-only ambient context 或手动 tools。
 
 ## 功能
 

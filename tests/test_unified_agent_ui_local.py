@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import importlib
 import json
+import os
 import re
 from pathlib import Path
 from types import SimpleNamespace
@@ -719,6 +720,89 @@ def test_cmd_web_launches_unified_local_server(monkeypatch, tmp_path):
     assert fake_runner.run_server_calls == [8899]
     assert fake_runner.load_agent_calls == 0
     assert "Chainlit" not in result.output
+
+
+def test_cmd_web_defaults_adk_stm_to_persistent_sqlite(monkeypatch, tmp_path):
+    runner = CliRunner()
+    fake_runner = _UiRunner()
+    project_dir = tmp_path / "demo-adk-agent"
+    project_dir.mkdir()
+
+    class _Detector:
+        def __init__(self, path: str):
+            self.path = path
+
+        def detect(self):
+            return SimpleNamespace(
+                type=SimpleNamespace(value="adk"),
+                name="demo-agent",
+                entry_point="agent.py",
+            )
+
+    import ksadk.cli.cmd_web as cmd_web_module
+
+    monkeypatch.delenv("KSADK_STM_BACKEND", raising=False)
+    monkeypatch.delenv("KSADK_STM_PATH", raising=False)
+    monkeypatch.delenv("KSADK_STM_DB_PATH", raising=False)
+    monkeypatch.delenv("AGENTENGINE_UI_DIR", raising=False)
+    monkeypatch.delenv("KSADK_PROJECT_DIR", raising=False)
+    monkeypatch.setattr(cmd_web_module, "FrameworkDetector", _Detector, raising=False)
+    monkeypatch.setattr(cmd_web_module, "setup_environment", lambda path: None, raising=False)
+    monkeypatch.setattr(
+        "ksadk.runners.unified_runner.UnifiedRunner.create",
+        lambda result, project_dir: fake_runner,
+        raising=False,
+    )
+    monkeypatch.chdir(project_dir)
+
+    result = runner.invoke(cmd_web_module.web, [str(project_dir), "--port", "8899"])
+
+    assert result.exit_code == 0, result.output
+    assert fake_runner.run_server_calls == [8899]
+    assert os.environ["KSADK_STM_BACKEND"] == "sqlite"
+    assert os.environ["KSADK_STM_PATH"] == str(
+        project_dir / ".agentengine" / "ui" / "sessions.sqlite"
+    )
+
+
+def test_cmd_web_preserves_explicit_adk_stm_configuration(monkeypatch, tmp_path):
+    runner = CliRunner()
+    fake_runner = _UiRunner()
+    project_dir = tmp_path / "demo-adk-agent"
+    project_dir.mkdir()
+
+    class _Detector:
+        def __init__(self, path: str):
+            self.path = path
+
+        def detect(self):
+            return SimpleNamespace(
+                type=SimpleNamespace(value="adk"),
+                name="demo-agent",
+                entry_point="agent.py",
+            )
+
+    import ksadk.cli.cmd_web as cmd_web_module
+
+    monkeypatch.setenv("KSADK_STM_BACKEND", "local")
+    monkeypatch.setenv("KSADK_STM_PATH", "/tmp/custom-sessions.db")
+    monkeypatch.delenv("AGENTENGINE_UI_DIR", raising=False)
+    monkeypatch.delenv("KSADK_PROJECT_DIR", raising=False)
+    monkeypatch.setattr(cmd_web_module, "FrameworkDetector", _Detector, raising=False)
+    monkeypatch.setattr(cmd_web_module, "setup_environment", lambda path: None, raising=False)
+    monkeypatch.setattr(
+        "ksadk.runners.unified_runner.UnifiedRunner.create",
+        lambda result, project_dir: fake_runner,
+        raising=False,
+    )
+    monkeypatch.chdir(project_dir)
+
+    result = runner.invoke(cmd_web_module.web, [str(project_dir), "--port", "8899"])
+
+    assert result.exit_code == 0, result.output
+    assert fake_runner.run_server_calls == [8899]
+    assert os.environ["KSADK_STM_BACKEND"] == "local"
+    assert os.environ["KSADK_STM_PATH"] == "/tmp/custom-sessions.db"
 
 
 @pytest.mark.asyncio

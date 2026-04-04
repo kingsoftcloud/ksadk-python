@@ -9,13 +9,16 @@ import pytest
 from ksadk.conversations.context import build_history_from_events
 from ksadk.conversations.model_context import estimate_text_tokens
 from ksadk.conversations.runtime import (
+    _build_runner_ambient_contexts,
     append_context_checkpoint_event,
     build_compaction_sse_event,
     build_run_input,
     compact_conversation_history,
     invoke_conversation_once,
     preview_auto_compaction,
+    stream_conversation_turn,
 )
+from ksadk.runtime_context import get_current_invocation_context
 from ksadk.sessions.base import SessionEvent
 from ksadk.sessions.in_memory import InMemorySessionService
 
@@ -45,6 +48,28 @@ class _PromptTooLongRunner(_StubRunner):
         if self.invocation_count == 1:
             raise RuntimeError("prompt-too-long")
         return {"output": "compacted answer"}
+
+
+class _StreamingRunner(_StubRunner):
+    def __init__(self):
+        super().__init__()
+        self.stream_calls: list[dict] = []
+
+    async def stream(self, input_data: dict):
+        self.stream_calls.append(input_data)
+        yield {"type": "text", "delta": "hello"}
+        yield {"type": "final", "output": "hello"}
+
+
+class _ContextCapturingRunner(_StubRunner):
+    def __init__(self):
+        super().__init__()
+        self.captured_runtime_context = None
+
+    async def invoke(self, input_data: dict) -> dict:
+        self.calls.append(input_data)
+        self.captured_runtime_context = get_current_invocation_context()
+        return {"output": "captured"}
 
 
 @pytest.fixture(autouse=True)
@@ -327,6 +352,513 @@ async def test_invoke_conversation_once_persists_canonical_turn_events(monkeypat
     assert session.first_prompt == "hello"
     assert session.last_prompt == "hello"
     assert session.summary == "assistant says hi"
+
+
+@pytest.mark.asyncio
+async def test_invoke_conversation_once_passes_session_id_to_runner(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _StubRunner()
+
+    session_id, _ = await invoke_conversation_once(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id=None,
+        messages=[{"role": "user", "content": "hello"}],
+        model="gpt-4o",
+        prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+    )
+
+    assert runner.calls[-1]["session_id"] == session_id
+
+
+@pytest.mark.asyncio
+async def test_invoke_conversation_once_binds_platform_invocation_context_and_ambient_contexts(
+    monkeypatch,
+):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime._build_runner_ambient_contexts",
+        lambda **kwargs: {
+            "kb_context": {"formatted_text": "KB facts"},
+            "memory_context": {"formatted_text": "Memory facts"},
+        },
+    )
+    runner = _ContextCapturingRunner()
+
+    session_id, result = await invoke_conversation_once(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id=None,
+        messages=[{"role": "user", "content": "继续"}],
+        model="gpt-4o",
+        prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+        session_service_provider=lambda: service,
+    )
+
+    assert result["output_text"] == "captured"
+    assert session_id
+    assert runner.calls[-1]["kb_context"] == {"formatted_text": "KB facts"}
+    assert runner.calls[-1]["memory_context"] == {"formatted_text": "Memory facts"}
+    assert runner.calls[-1]["platform_context"]["agent_id"] == "demo-agent"
+    assert runner.calls[-1]["platform_context"]["user_id"] == "user-1"
+    assert runner.calls[-1]["platform_context"]["session_id"] == session_id
+    assert runner.captured_runtime_context is not None
+    assert runner.captured_runtime_context.agent_id == "demo-agent"
+    assert runner.captured_runtime_context.user_id == "user-1"
+    assert runner.captured_runtime_context.session_id == session_id
+    assert runner.captured_runtime_context.kb_context == {"formatted_text": "KB facts"}
+    assert runner.captured_runtime_context.memory_context == {"formatted_text": "Memory facts"}
+    assert get_current_invocation_context() is None
+
+
+def test_build_runner_ambient_contexts_skips_memory_when_disabled(monkeypatch):
+    monkeypatch.setenv("KSADK_LTM_AMBIENT_ENABLED", "false")
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.LongTermMemoryService.is_configured",
+        staticmethod(lambda: True),
+    )
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.LongTermMemoryService.from_env",
+        staticmethod(lambda: (_ for _ in ()).throw(AssertionError("memory ambient should be skipped"))),
+    )
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.KnowledgeBaseService.is_configured",
+        staticmethod(lambda: False),
+    )
+
+    contexts = _build_runner_ambient_contexts(
+        runner=_StubRunner(),
+        user_id="user-1",
+        user_input="hello",
+    )
+
+    assert contexts == {"kb_context": None, "memory_context": None}
+
+
+def test_build_runner_ambient_contexts_skips_kb_when_disabled(monkeypatch):
+    monkeypatch.setenv("KSADK_KB_AMBIENT_ENABLED", "0")
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.KnowledgeBaseService.is_configured",
+        staticmethod(lambda: True),
+    )
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.KnowledgeBaseService.from_env",
+        staticmethod(lambda: (_ for _ in ()).throw(AssertionError("kb ambient should be skipped"))),
+    )
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.LongTermMemoryService.is_configured",
+        staticmethod(lambda: False),
+    )
+
+    contexts = _build_runner_ambient_contexts(
+        runner=_StubRunner(),
+        user_id="user-1",
+        user_input="hello",
+    )
+
+    assert contexts == {"kb_context": None, "memory_context": None}
+
+
+def test_build_runner_ambient_contexts_default_on_demand_skips_chitchat(monkeypatch):
+    monkeypatch.delenv("KSADK_KB_AMBIENT_POLICY", raising=False)
+    monkeypatch.delenv("KSADK_LTM_AMBIENT_POLICY", raising=False)
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.KnowledgeBaseService.is_configured",
+        staticmethod(lambda: True),
+    )
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.LongTermMemoryService.is_configured",
+        staticmethod(lambda: True),
+    )
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.KnowledgeBaseService.from_env",
+        staticmethod(lambda: (_ for _ in ()).throw(AssertionError("kb ambient should not run for chitchat"))),
+    )
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.LongTermMemoryService.from_env",
+        staticmethod(lambda: (_ for _ in ()).throw(AssertionError("memory ambient should not run for chitchat"))),
+    )
+
+    contexts = _build_runner_ambient_contexts(
+        runner=_StubRunner(),
+        user_id="user-1",
+        user_input="你好，请介绍一下你自己",
+    )
+
+    assert contexts == {"kb_context": None, "memory_context": None}
+
+
+def test_build_runner_ambient_contexts_non_adk_runner_name_does_not_disable_ambient(monkeypatch):
+    class _FakeKnowledgeBaseService:
+        def build_context(self, query: str):
+            return {"formatted_text": f"kb:{query}"}
+
+    runner = _StubRunner()
+    runner.detection_result = type(
+        "Detection",
+        (),
+        {
+            "name": "adk-migration-helper",
+            "type": type("RunnerType", (), {"value": "langgraph"})(),
+        },
+    )()
+
+    monkeypatch.delenv("KSADK_KB_AMBIENT_POLICY", raising=False)
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.KnowledgeBaseService.is_configured",
+        staticmethod(lambda: True),
+    )
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.KnowledgeBaseService.from_env",
+        staticmethod(lambda: _FakeKnowledgeBaseService()),
+    )
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.LongTermMemoryService.is_configured",
+        staticmethod(lambda: False),
+    )
+
+    contexts = _build_runner_ambient_contexts(
+        runner=runner,
+        user_id="user-1",
+        user_input="解释一下 KCE 和 KCF 的区别",
+    )
+
+    assert contexts["kb_context"] == {"formatted_text": "kb:解释一下 KCE 和 KCF 的区别"}
+    assert contexts["memory_context"] is None
+
+
+def test_build_runner_ambient_contexts_default_on_demand_loads_memory_for_explicit_recall(monkeypatch):
+    class _FakeMemoryService:
+        def build_context(self, *, user_id: str, query: str):
+            return {"formatted_text": f"memory:{user_id}:{query}"}
+
+    monkeypatch.delenv("KSADK_LTM_AMBIENT_POLICY", raising=False)
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.KnowledgeBaseService.is_configured",
+        staticmethod(lambda: False),
+    )
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.LongTermMemoryService.is_configured",
+        staticmethod(lambda: True),
+    )
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.LongTermMemoryService.from_env",
+        staticmethod(lambda: _FakeMemoryService()),
+    )
+
+    contexts = _build_runner_ambient_contexts(
+        runner=_StubRunner(),
+        user_id="user-1",
+        user_input="你还记得我上次说过的偏好吗？",
+    )
+
+    assert contexts["kb_context"] is None
+    assert contexts["memory_context"] == {
+        "formatted_text": "memory:user-1:你还记得我上次说过的偏好吗？"
+    }
+
+
+def test_build_runner_ambient_contexts_default_on_demand_skips_memory_for_short_term_follow_up(
+    monkeypatch,
+):
+    monkeypatch.delenv("KSADK_LTM_AMBIENT_POLICY", raising=False)
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.KnowledgeBaseService.is_configured",
+        staticmethod(lambda: False),
+    )
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.LongTermMemoryService.is_configured",
+        staticmethod(lambda: True),
+    )
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.LongTermMemoryService.from_env",
+        staticmethod(
+            lambda: (_ for _ in ()).throw(
+                AssertionError("memory ambient should not run for short-term follow-up")
+            )
+        ),
+    )
+
+    contexts = _build_runner_ambient_contexts(
+        runner=_StubRunner(),
+        user_id="user-1",
+        user_input="把前面的回答翻译成英文",
+    )
+
+    assert contexts == {"kb_context": None, "memory_context": None}
+
+
+def test_build_runner_ambient_contexts_default_on_demand_skips_memory_for_mixed_short_term_prompt(
+    monkeypatch,
+):
+    monkeypatch.delenv("KSADK_LTM_AMBIENT_POLICY", raising=False)
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.KnowledgeBaseService.is_configured",
+        staticmethod(lambda: False),
+    )
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.LongTermMemoryService.is_configured",
+        staticmethod(lambda: True),
+    )
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.LongTermMemoryService.from_env",
+        staticmethod(
+            lambda: (_ for _ in ()).throw(
+                AssertionError("memory ambient should not run for mixed short-term prompt")
+            )
+        ),
+    )
+
+    contexts = _build_runner_ambient_contexts(
+        runner=_StubRunner(),
+        user_id="user-1",
+        user_input="你还记得刚才的回答吗",
+    )
+
+    assert contexts == {"kb_context": None, "memory_context": None}
+
+
+def test_build_runner_ambient_contexts_default_on_demand_loads_memory_for_profile_prompt(monkeypatch):
+    class _FakeMemoryService:
+        def build_context(self, *, user_id: str, query: str):
+            return {"formatted_text": f"memory:{user_id}:{query}"}
+
+    monkeypatch.delenv("KSADK_LTM_AMBIENT_POLICY", raising=False)
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.KnowledgeBaseService.is_configured",
+        staticmethod(lambda: False),
+    )
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.LongTermMemoryService.is_configured",
+        staticmethod(lambda: True),
+    )
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.LongTermMemoryService.from_env",
+        staticmethod(lambda: _FakeMemoryService()),
+    )
+
+    contexts = _build_runner_ambient_contexts(
+        runner=_StubRunner(),
+        user_id="user-1",
+        user_input="按照我的风格来写",
+    )
+
+    assert contexts["kb_context"] is None
+    assert contexts["memory_context"] == {
+        "formatted_text": "memory:user-1:按照我的风格来写"
+    }
+
+
+def test_build_runner_ambient_contexts_default_on_demand_loads_kb_for_information_query(monkeypatch):
+    class _FakeKnowledgeBaseService:
+        def build_context(self, query: str):
+            return {"formatted_text": f"kb:{query}"}
+
+    monkeypatch.delenv("KSADK_KB_AMBIENT_POLICY", raising=False)
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.KnowledgeBaseService.is_configured",
+        staticmethod(lambda: True),
+    )
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.KnowledgeBaseService.from_env",
+        staticmethod(lambda: _FakeKnowledgeBaseService()),
+    )
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.LongTermMemoryService.is_configured",
+        staticmethod(lambda: False),
+    )
+
+    contexts = _build_runner_ambient_contexts(
+        runner=_StubRunner(),
+        user_id="user-1",
+        user_input="查一下云主机现在有哪些机型",
+    )
+
+    assert contexts["kb_context"] == {"formatted_text": "kb:查一下云主机现在有哪些机型"}
+    assert contexts["memory_context"] is None
+
+
+def test_build_runner_ambient_contexts_default_on_demand_loads_kb_for_explanatory_query(monkeypatch):
+    class _FakeKnowledgeBaseService:
+        def build_context(self, query: str):
+            return {"formatted_text": f"kb:{query}"}
+
+    monkeypatch.delenv("KSADK_KB_AMBIENT_POLICY", raising=False)
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.KnowledgeBaseService.is_configured",
+        staticmethod(lambda: True),
+    )
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.KnowledgeBaseService.from_env",
+        staticmethod(lambda: _FakeKnowledgeBaseService()),
+    )
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.LongTermMemoryService.is_configured",
+        staticmethod(lambda: False),
+    )
+
+    contexts = _build_runner_ambient_contexts(
+        runner=_StubRunner(),
+        user_id="user-1",
+        user_input="帮我总结一下 AgentEngine 部署步骤",
+    )
+
+    assert contexts["kb_context"] == {"formatted_text": "kb:帮我总结一下 AgentEngine 部署步骤"}
+    assert contexts["memory_context"] is None
+
+
+def test_build_runner_ambient_contexts_drops_kb_error_text_returned_by_service(monkeypatch):
+    class _BrokenKnowledgeBaseService:
+        def build_context(self, query: str):
+            return {"formatted_text": "知识库检索失败: timeout", "query": query}
+
+    monkeypatch.delenv("KSADK_KB_AMBIENT_POLICY", raising=False)
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.KnowledgeBaseService.is_configured",
+        staticmethod(lambda: True),
+    )
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.KnowledgeBaseService.from_env",
+        staticmethod(lambda: _BrokenKnowledgeBaseService()),
+    )
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.LongTermMemoryService.is_configured",
+        staticmethod(lambda: False),
+    )
+
+    contexts = _build_runner_ambient_contexts(
+        runner=_StubRunner(),
+        user_id="user-1",
+        user_input="帮我总结一下 AgentEngine 部署步骤",
+    )
+
+    assert contexts == {"kb_context": None, "memory_context": None}
+
+
+def test_build_runner_ambient_contexts_drops_memory_error_text_returned_by_service(monkeypatch):
+    class _BrokenMemoryService:
+        def build_context(self, *, user_id: str, query: str):
+            return {"formatted_text": "长期记忆检索失败: timeout", "query": query}
+
+    monkeypatch.delenv("KSADK_LTM_AMBIENT_POLICY", raising=False)
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.KnowledgeBaseService.is_configured",
+        staticmethod(lambda: False),
+    )
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.LongTermMemoryService.is_configured",
+        staticmethod(lambda: True),
+    )
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.LongTermMemoryService.from_env",
+        staticmethod(lambda: _BrokenMemoryService()),
+    )
+
+    contexts = _build_runner_ambient_contexts(
+        runner=_StubRunner(),
+        user_id="user-1",
+        user_input="按照我的风格来写",
+    )
+
+    assert contexts == {"kb_context": None, "memory_context": None}
+
+
+def test_build_runner_ambient_contexts_ambient_failures_degrade_quietly(monkeypatch):
+    class _BrokenKnowledgeBaseService:
+        def build_context(self, query: str):
+            raise RuntimeError(f"kb boom: {query}")
+
+    class _BrokenMemoryService:
+        def build_context(self, *, user_id: str, query: str):
+            raise RuntimeError(f"memory boom: {user_id}:{query}")
+
+    monkeypatch.delenv("KSADK_KB_AMBIENT_POLICY", raising=False)
+    monkeypatch.delenv("KSADK_LTM_AMBIENT_POLICY", raising=False)
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.KnowledgeBaseService.is_configured",
+        staticmethod(lambda: True),
+    )
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.KnowledgeBaseService.from_env",
+        staticmethod(lambda: _BrokenKnowledgeBaseService()),
+    )
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.LongTermMemoryService.is_configured",
+        staticmethod(lambda: True),
+    )
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.LongTermMemoryService.from_env",
+        staticmethod(lambda: _BrokenMemoryService()),
+    )
+
+    contexts = _build_runner_ambient_contexts(
+        runner=_StubRunner(),
+        user_id="user-1",
+        user_input="你还记得我上次说过的偏好吗？",
+    )
+
+    assert contexts == {"kb_context": None, "memory_context": None}
+
+
+def test_build_runner_ambient_contexts_always_policy_preserves_legacy_behavior(monkeypatch):
+    class _FakeMemoryService:
+        def build_context(self, *, user_id: str, query: str):
+            return {"formatted_text": f"memory:{query}"}
+
+    monkeypatch.setenv("KSADK_LTM_AMBIENT_POLICY", "always")
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.KnowledgeBaseService.is_configured",
+        staticmethod(lambda: False),
+    )
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.LongTermMemoryService.is_configured",
+        staticmethod(lambda: True),
+    )
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.LongTermMemoryService.from_env",
+        staticmethod(lambda: _FakeMemoryService()),
+    )
+
+    contexts = _build_runner_ambient_contexts(
+        runner=_StubRunner(),
+        user_id="user-1",
+        user_input="你好",
+    )
+
+    assert contexts["memory_context"] == {"formatted_text": "memory:你好"}
+
+
+@pytest.mark.asyncio
+async def test_stream_conversation_turn_passes_session_id_to_runner(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _StreamingRunner()
+
+    session = await service.create_session(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-stream",
+    )
+
+    events = []
+    async for event in stream_conversation_turn(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id=session.id,
+        messages=[{"role": "user", "content": "继续"}],
+        model="gpt-4o",
+        prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+        session_service_provider=lambda: service,
+    ):
+        events.append(event)
+
+    assert events
+    assert runner.stream_calls[-1]["session_id"] == session.id
 
 
 @pytest.mark.asyncio

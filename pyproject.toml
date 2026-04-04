@@ -30,6 +30,7 @@ dependencies = [
     "click>=8.0.0",
     # 配置
     "pyyaml>=6.0.0",
+    "packaging>=23.0",
     "python-dotenv>=1.0.0",
     "pydantic>=2.0.0,<3.0.0",
     "questionary>=2.0.0",
@@ -51,6 +52,10 @@ dependencies = [
     "qrcode>=7.4.0",
     # KS3 上传 (build --push)
     "ks3sdk>=1.15.0",
+    # ========= 附件处理（默认安装，hosted/local 统一能力） =========
+    "pypdf>=6.0.0",
+    "beautifulsoup4>=4.12.0",
+    "rapidocr-onnxruntime>=1.2.0",
     # ========= 核心框架依赖 (默认安装) =========
     # LangChain
     "langchain>=0.3.0,<2.0.0",

@@ -3,6 +3,16 @@ from __future__ import annotations
 import os
 
 from ksadk.sessions.base import BaseSessionService, Session, SessionEvent, SessionState
+from ksadk.sessions.continuity import (
+    ADKSessionAdapter,
+    ConversationSessionCore,
+    LangChainSessionAdapter,
+    LangGraphSessionAdapter,
+    RunnerSessionAdapter,
+    SessionContinuityLevel,
+    SessionContinuityStatus,
+    TranscriptReplayAdapter,
+)
 from ksadk.sessions.in_memory import InMemorySessionService
 from ksadk.sessions.local_service import create_local_session_service
 
@@ -15,7 +25,16 @@ def create_session_service(
     backend: str | None = None,
     project_dir: str | None = None,
 ) -> BaseSessionService:
-    resolved_backend = (backend or os.getenv("AGENTENGINE_SESSION_BACKEND", "")).strip().lower()
+    del endpoint
+    resolved_backend = (
+        backend
+        or os.getenv("AGENTENGINE_SESSION_BACKEND")
+        or os.getenv("KSADK_STM_BACKEND")
+        or ""
+    ).strip().lower()
+
+    if resolved_backend == "local":
+        resolved_backend = "memory"
 
     if resolved_backend == "memory":
         return InMemorySessionService()
@@ -50,11 +69,19 @@ async def close_session_service() -> None:
 
 
 __all__ = [
+    "ADKSessionAdapter",
     "BaseSessionService",
+    "ConversationSessionCore",
     "InMemorySessionService",
+    "LangChainSessionAdapter",
+    "LangGraphSessionAdapter",
+    "RunnerSessionAdapter",
     "Session",
+    "SessionContinuityLevel",
+    "SessionContinuityStatus",
     "SessionEvent",
     "SessionState",
+    "TranscriptReplayAdapter",
     "close_session_service",
     "create_session_service",
     "get_session_service",

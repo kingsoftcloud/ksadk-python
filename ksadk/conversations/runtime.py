@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -41,6 +43,9 @@ from ksadk.conversations.session_title import (
     resolve_session_title_client,
     resolve_session_title_model,
 )
+from ksadk.knowledge_base.service import KnowledgeBaseService
+from ksadk.memory.service import LongTermMemoryService
+from ksadk.runtime_context import PlatformInvocationContext, platform_invocation_scope
 from ksadk.sessions import Session, SessionEvent, resolve_session_service
 
 AUTOCOMPACT_KEEP_TAIL_GROUPS = 4
@@ -55,6 +60,8 @@ PROMPT_TOO_LONG_MARKERS = (
 )
 SESSION_SUMMARY_MAX_CHARS = 160
 ATTACHMENT_CONTEXT_STATE_KEY = "__ksadk_attachment_context__"
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -183,6 +190,373 @@ def _is_prompt_too_long_error(exc: Exception) -> bool:
 
 def _runner_name(runner: Any) -> str:
     return str(getattr(getattr(runner, "detection_result", None), "name", "assistant"))
+
+
+def _runner_type_name(runner: Any) -> str:
+    runner_type = getattr(getattr(runner, "detection_result", None), "type", None)
+    runner_value = getattr(runner_type, "value", runner_type)
+    normalized = str(runner_value or "").strip()
+    if normalized:
+        return normalized
+    return runner.__class__.__name__.lower()
+
+
+def _env_flag(name: str, default: bool = True) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    normalized = str(raw).strip().lower()
+    if not normalized:
+        return default
+    return normalized not in {"0", "false", "no", "off"}
+
+
+def _ambient_policy(prefix: str, default: str = "on_demand") -> str:
+    if not _env_flag(f"{prefix}_AMBIENT_ENABLED", True):
+        return "disabled"
+
+    raw = str(os.getenv(f"{prefix}_AMBIENT_POLICY", default) or "").strip().lower()
+    if raw in {"", "on_demand", "ondemand", "heuristic", "auto"}:
+        return "on_demand"
+    if raw in {"always", "eager"}:
+        return "always"
+    if raw in {"disabled", "off", "false", "0"}:
+        return "disabled"
+    return default
+
+
+def _normalize_ambient_query(text: str) -> str:
+    return " ".join(str(text or "").strip().lower().split())
+
+
+def _contains_any_fragment(text: str, fragments: Sequence[str]) -> bool:
+    return any(fragment in text for fragment in fragments)
+
+
+def _ambient_context_has_error(context: Any) -> bool:
+    if not isinstance(context, dict):
+        return True
+
+    formatted_text = str(context.get("formatted_text") or "").strip()
+    if not formatted_text:
+        return True
+
+    failure_prefixes = (
+        "知识库检索失败",
+        "长期记忆检索失败",
+    )
+    return formatted_text.startswith(failure_prefixes)
+
+
+def _is_chitchat_query(text: str) -> bool:
+    normalized = _normalize_ambient_query(text)
+    if not normalized:
+        return True
+
+    exact_matches = {
+        "hi",
+        "hello",
+        "hey",
+        "你好",
+        "您好",
+        "嗨",
+        "在吗",
+        "收到",
+        "好的",
+        "ok",
+        "okay",
+        "thanks",
+        "thank you",
+        "谢谢",
+        "测试",
+        "test",
+        "ping",
+    }
+    if normalized in exact_matches:
+        return True
+
+    chatter_fragments = (
+        "介绍一下你自己",
+        "介绍你自己",
+        "你是谁",
+        "你能做什么",
+        "what can you do",
+        "who are you",
+        "introduce yourself",
+        "一句测试",
+    )
+    return any(fragment in normalized for fragment in chatter_fragments)
+
+
+def _should_load_kb_ambient_context(user_input: str) -> bool:
+    normalized = _normalize_ambient_query(user_input)
+    if not normalized or _is_chitchat_query(normalized):
+        return False
+
+    kb_fragments = (
+        "知识库",
+        "文档",
+        "手册",
+        "说明",
+        "wiki",
+        "资料",
+        "教程",
+        "api",
+        "接口",
+        "参数",
+        "配置",
+        "规格",
+        "机型",
+        "实例",
+        "部署",
+        "步骤",
+        "区别",
+        "差异",
+        "原理",
+        "架构",
+        "能力",
+        "限制",
+        "最佳实践",
+        "价格",
+        "套餐",
+        "支持",
+        "有哪些",
+        "什么是",
+        "为什么",
+        "怎么",
+        "如何",
+        "查询",
+        "查一下",
+        "列一下",
+        "介绍一下",
+        "总结",
+        "概述",
+        "解释",
+        "说明一下",
+        "对比",
+        "比较",
+        "what",
+        "how",
+        "why",
+        "which",
+        "list",
+        "show me",
+        "tell me",
+        "summarize",
+        "summary",
+        "explain",
+        "difference",
+        "steps",
+        "deployment",
+        "lookup",
+        "look up",
+        "search",
+        "compare",
+    )
+    if _contains_any_fragment(normalized, kb_fragments):
+        return True
+
+    query_verbs = (
+        "查",
+        "查一下",
+        "查询",
+        "列出",
+        "列一下",
+        "总结",
+        "概述",
+        "解释",
+        "说明",
+        "介绍",
+        "对比",
+        "比较",
+        "看看",
+        "告诉我",
+        "what",
+        "how",
+        "why",
+        "which",
+        "list",
+        "show",
+        "tell",
+        "summarize",
+        "explain",
+        "compare",
+    )
+    kb_subjects = (
+        "知识库",
+        "文档",
+        "手册",
+        "教程",
+        "wiki",
+        "部署",
+        "步骤",
+        "api",
+        "接口",
+        "参数",
+        "配置",
+        "规格",
+        "机型",
+        "实例",
+        "价格",
+        "套餐",
+        "支持",
+        "区别",
+        "差异",
+        "原理",
+        "架构",
+        "能力",
+        "限制",
+    )
+    return _contains_any_fragment(normalized, query_verbs) and _contains_any_fragment(
+        normalized, kb_subjects
+    )
+
+
+def _should_load_memory_ambient_context(user_input: str) -> bool:
+    normalized = _normalize_ambient_query(user_input)
+    if not normalized or _is_chitchat_query(normalized):
+        return False
+
+    explicit_memory_fragments = (
+        "记得",
+        "记住",
+        "记忆",
+        "回忆",
+        "历史",
+        "偏好",
+        "习惯",
+        "还记得",
+        "记得我",
+        "记住这个",
+        "remember",
+        "memory",
+        "recall",
+        "history",
+        "preference",
+    )
+    profile_fragments = (
+        "我的名字",
+        "我叫什么",
+        "你知道我的名字",
+        "我的风格",
+        "按我的风格",
+        "按照我的风格",
+        "我的偏好",
+        "我的习惯",
+        "我的背景",
+        "关于我的",
+        "我喜欢",
+        "我不喜欢",
+        "my name",
+        "my style",
+        "my preference",
+        "about me",
+    )
+    short_term_fragments = (
+        "前面的回答",
+        "前面的内容",
+        "上面的回答",
+        "上面的内容",
+        "刚才的回答",
+        "刚刚的回答",
+        "上一条",
+        "上一轮",
+        "继续刚才",
+        "继续上面",
+        "翻译成英文",
+        "翻译成中文",
+    )
+    temporal_fragments = ("上次", "之前", "以前", "earlier", "last time", "previous")
+    speech_fragments = ("聊过", "说过", "提过", "告诉过", "mentioned", "told")
+
+    if _contains_any_fragment(normalized, short_term_fragments) and not _contains_any_fragment(
+        normalized, profile_fragments
+    ):
+        return False
+
+    if _contains_any_fragment(normalized, explicit_memory_fragments) or _contains_any_fragment(
+        normalized, profile_fragments
+    ):
+        return True
+
+    return _contains_any_fragment(normalized, temporal_fragments) and _contains_any_fragment(
+        normalized, speech_fragments
+    )
+
+
+def _should_use_platform_ambient_context(runner: Any) -> bool:
+    detection_type = getattr(getattr(runner, "detection_result", None), "type", None)
+    runner_type = str(getattr(detection_type, "value", detection_type) or "").strip().lower()
+    if runner_type:
+        return runner_type != "adk"
+
+    class_name = runner.__class__.__name__.lower()
+    module_name = getattr(runner.__class__, "__module__", "").lower()
+    return class_name != "adkrunner" and "google_adk" not in module_name
+
+
+def _build_runner_ambient_contexts(
+    *,
+    runner: Any,
+    user_id: str,
+    user_input: str,
+) -> dict[str, Any]:
+    contexts: dict[str, Any] = {
+        "kb_context": None,
+        "memory_context": None,
+    }
+    normalized_input = str(user_input or "").strip()
+    if not normalized_input or not _should_use_platform_ambient_context(runner):
+        return contexts
+
+    kb_policy = _ambient_policy("KSADK_KB", "on_demand")
+    if (
+        kb_policy == "always"
+        or (kb_policy == "on_demand" and _should_load_kb_ambient_context(normalized_input))
+    ) and KnowledgeBaseService.is_configured():
+        try:
+            kb_context = KnowledgeBaseService.from_env().build_context(normalized_input)
+            if not _ambient_context_has_error(kb_context):
+                contexts["kb_context"] = kb_context
+        except Exception as exc:
+            logger.warning("Failed to build ambient knowledge context: %s", exc)
+
+    ltm_policy = _ambient_policy("KSADK_LTM", "on_demand")
+    if (
+        ltm_policy == "always"
+        or (ltm_policy == "on_demand" and _should_load_memory_ambient_context(normalized_input))
+    ) and LongTermMemoryService.is_configured():
+        try:
+            memory_context = LongTermMemoryService.from_env().build_context(
+                user_id=user_id,
+                query=normalized_input,
+            )
+            if not _ambient_context_has_error(memory_context):
+                contexts["memory_context"] = memory_context
+        except Exception as exc:
+            logger.warning("Failed to build ambient memory context: %s", exc)
+
+    return contexts
+
+
+def _build_runner_request_payload(
+    *,
+    prepared: PreparedConversationTurn,
+    model: str | None,
+    runtime_context: PlatformInvocationContext,
+) -> dict[str, Any]:
+    return {
+        "session_id": prepared.session_id,
+        "input": prepared.user_input,
+        "history": prepared.history,
+        "input_parts": prepared.user_parts,
+        "attachments": prepared.attachments,
+        "attachment_results": prepared.attachment_results,
+        "model": model,
+        "platform_context": runtime_context.to_payload(),
+        "kb_context": runtime_context.kb_context,
+        "memory_context": runtime_context.memory_context,
+    }
 
 
 def _truncate_text(text: str | None, limit: int) -> str:
@@ -910,6 +1284,24 @@ async def invoke_conversation_once(
         state_delta=state_delta,
         session_service_provider=provider,
     )
+    ambient_contexts = _build_runner_ambient_contexts(
+        runner=runner,
+        user_id=user_id,
+        user_input=prepared.user_input,
+    )
+    runtime_context = PlatformInvocationContext(
+        agent_id=agent_id,
+        user_id=user_id,
+        session_id=prepared.session_id,
+        history=list(prepared.history),
+        input_parts=list(prepared.user_parts),
+        attachments=list(prepared.attachments),
+        attachment_results=list(prepared.attachment_results),
+        runner_type=_runner_type_name(runner),
+        model=model,
+        kb_context=ambient_contexts.get("kb_context"),
+        memory_context=ambient_contexts.get("memory_context"),
+    )
     runner_name = _runner_name(runner)
     await append_run_status_event(
         session_id=prepared.session_id,
@@ -922,16 +1314,15 @@ async def invoke_conversation_once(
     result: dict[str, Any] | None = None
     for attempt in range(2):
         try:
-            result = await runner.invoke(
-                {
-                    "input": prepared.user_input,
-                    "history": prepared.history,
-                    "input_parts": prepared.user_parts,
-                    "attachments": prepared.attachments,
-                    "attachment_results": prepared.attachment_results,
-                    "model": model,
-                }
-            )
+            runtime_context.history = list(prepared.history)
+            with platform_invocation_scope(runtime_context):
+                result = await runner.invoke(
+                    _build_runner_request_payload(
+                        prepared=prepared,
+                        model=model,
+                        runtime_context=runtime_context,
+                    )
+                )
             break
         except Exception as exc:
             if attempt == 0 and _is_prompt_too_long_error(exc):
@@ -947,6 +1338,7 @@ async def invoke_conversation_once(
                 )
                 if checkpoint:
                     prepared = await _refresh_history(prepared, session_service_provider=provider)
+                    runtime_context.history = list(prepared.history)
                     continue
             await append_run_status_event(
                 session_id=prepared.session_id,
@@ -1031,6 +1423,24 @@ async def stream_conversation_turn(
         state_delta=state_delta,
         session_service_provider=provider,
     )
+    ambient_contexts = _build_runner_ambient_contexts(
+        runner=runner,
+        user_id=user_id,
+        user_input=prepared.user_input,
+    )
+    runtime_context = PlatformInvocationContext(
+        agent_id=agent_id,
+        user_id=user_id,
+        session_id=prepared.session_id,
+        history=list(prepared.history),
+        input_parts=list(prepared.user_parts),
+        attachments=list(prepared.attachments),
+        attachment_results=list(prepared.attachment_results),
+        runner_type=_runner_type_name(runner),
+        model=model,
+        kb_context=ambient_contexts.get("kb_context"),
+        memory_context=ambient_contexts.get("memory_context"),
+    )
     if prepared.compaction_triggered:
         yield build_compaction_sse_event(
             phase="done",
@@ -1058,93 +1468,92 @@ async def stream_conversation_turn(
     emitted_anything = False
     for attempt in range(2):
         try:
-            async for chunk in runner.stream(
-                {
-                    "input": prepared.user_input,
-                    "history": prepared.history,
-                    "input_parts": prepared.user_parts,
-                    "attachments": prepared.attachments,
-                    "attachment_results": prepared.attachment_results,
-                    "model": model,
-                }
-            ):
-                chunk_type = chunk.get("type")
-                if chunk_type == "thinking":
-                    delta = str(chunk.get("delta", ""))
-                    if delta:
+            runtime_context.history = list(prepared.history)
+            with platform_invocation_scope(runtime_context):
+                async for chunk in runner.stream(
+                    _build_runner_request_payload(
+                        prepared=prepared,
+                        model=model,
+                        runtime_context=runtime_context,
+                    )
+                ):
+                    chunk_type = chunk.get("type")
+                    if chunk_type == "thinking":
+                        delta = str(chunk.get("delta", ""))
+                        if delta:
+                            emitted_anything = True
+                            yield f"event: response.reasoning.delta\ndata: {json.dumps({'delta': delta}, ensure_ascii=False)}\n\n"
+                        continue
+                    if chunk_type == "text":
+                        delta = str(chunk.get("delta", ""))
+                        if delta:
+                            accumulated_text += delta
+                            emitted_anything = True
+                            yield f"event: response.output_text.delta\ndata: {json.dumps({'delta': delta}, ensure_ascii=False)}\n\n"
+                        continue
+                    if chunk_type == "tool_call":
+                        await append_conversation_event(
+                            session_id=prepared.session_id,
+                            author=runner_name,
+                            role="model",
+                            text=str(chunk.get("tool_name") or "tool"),
+                            invocation_id=prepared.invocation_id,
+                            event_type="tool_call",
+                            metadata={
+                                "tool_name": chunk.get("tool_name"),
+                                "tool_args": chunk.get("tool_args", {}),
+                                "run_id": chunk.get("run_id"),
+                            },
+                            session_service_provider=provider,
+                        )
                         emitted_anything = True
-                        yield f"event: response.reasoning.delta\ndata: {json.dumps({'delta': delta}, ensure_ascii=False)}\n\n"
-                    continue
-                if chunk_type == "text":
-                    delta = str(chunk.get("delta", ""))
-                    if delta:
-                        accumulated_text += delta
+                        yield (
+                            "event: response.tool_call\n"
+                            f"data: {json.dumps({'name': chunk.get('tool_name'), 'args': chunk.get('tool_args', {}), 'run_id': chunk.get('run_id')}, ensure_ascii=False)}\n\n"
+                        )
+                        continue
+                    if chunk_type == "tool_result":
+                        await append_conversation_event(
+                            session_id=prepared.session_id,
+                            author=runner_name,
+                            role="user",
+                            text=str(chunk.get("tool_output", "")),
+                            invocation_id=prepared.invocation_id,
+                            event_type="tool_result",
+                            metadata={
+                                "tool_name": chunk.get("tool_name"),
+                                "tool_output": chunk.get("tool_output", ""),
+                                "run_id": chunk.get("run_id"),
+                            },
+                            session_service_provider=provider,
+                        )
                         emitted_anything = True
-                        yield f"event: response.output_text.delta\ndata: {json.dumps({'delta': delta}, ensure_ascii=False)}\n\n"
-                    continue
-                if chunk_type == "tool_call":
-                    await append_conversation_event(
-                        session_id=prepared.session_id,
-                        author=runner_name,
-                        role="model",
-                        text=str(chunk.get("tool_name") or "tool"),
-                        invocation_id=prepared.invocation_id,
-                        event_type="tool_call",
-                        metadata={
-                            "tool_name": chunk.get("tool_name"),
-                            "tool_args": chunk.get("tool_args", {}),
-                            "run_id": chunk.get("run_id"),
-                        },
-                        session_service_provider=provider,
-                    )
-                    emitted_anything = True
-                    yield (
-                        "event: response.tool_call\n"
-                        f"data: {json.dumps({'name': chunk.get('tool_name'), 'args': chunk.get('tool_args', {}), 'run_id': chunk.get('run_id')}, ensure_ascii=False)}\n\n"
-                    )
-                    continue
-                if chunk_type == "tool_result":
-                    await append_conversation_event(
-                        session_id=prepared.session_id,
-                        author=runner_name,
-                        role="user",
-                        text=str(chunk.get("tool_output", "")),
-                        invocation_id=prepared.invocation_id,
-                        event_type="tool_result",
-                        metadata={
-                            "tool_name": chunk.get("tool_name"),
-                            "tool_output": chunk.get("tool_output", ""),
-                            "run_id": chunk.get("run_id"),
-                        },
-                        session_service_provider=provider,
-                    )
-                    emitted_anything = True
-                    yield (
-                        "event: response.tool_result\n"
-                        f"data: {json.dumps({'name': chunk.get('tool_name'), 'output': chunk.get('tool_output', ''), 'run_id': chunk.get('run_id')}, ensure_ascii=False)}\n\n"
-                    )
-                    continue
-                if chunk_type == "interrupt":
-                    await append_conversation_event(
-                        session_id=prepared.session_id,
-                        author=runner_name,
-                        role="model",
-                        text="approval requested",
-                        invocation_id=prepared.invocation_id,
-                        event_type="approval_request",
-                        metadata={"interrupt_info": chunk.get("interrupt_info")},
-                        session_service_provider=provider,
-                    )
-                    emitted_anything = True
-                    yield (
-                        "event: response.approval_request\n"
-                        f"data: {json.dumps({'interrupt_info': chunk.get('interrupt_info')}, ensure_ascii=False)}\n\n"
-                    )
-                    continue
-                if chunk_type == "final":
-                    final_text = str(chunk.get("output", ""))
-                    if final_text:
-                        accumulated_text = final_text
+                        yield (
+                            "event: response.tool_result\n"
+                            f"data: {json.dumps({'name': chunk.get('tool_name'), 'output': chunk.get('tool_output', ''), 'run_id': chunk.get('run_id')}, ensure_ascii=False)}\n\n"
+                        )
+                        continue
+                    if chunk_type == "interrupt":
+                        await append_conversation_event(
+                            session_id=prepared.session_id,
+                            author=runner_name,
+                            role="model",
+                            text="approval requested",
+                            invocation_id=prepared.invocation_id,
+                            event_type="approval_request",
+                            metadata={"interrupt_info": chunk.get("interrupt_info")},
+                            session_service_provider=provider,
+                        )
+                        emitted_anything = True
+                        yield (
+                            "event: response.approval_request\n"
+                            f"data: {json.dumps({'interrupt_info': chunk.get('interrupt_info')}, ensure_ascii=False)}\n\n"
+                        )
+                        continue
+                    if chunk_type == "final":
+                        final_text = str(chunk.get("output", ""))
+                        if final_text:
+                            accumulated_text = final_text
             break
         except Exception as exc:
             if attempt == 0 and not emitted_anything and _is_prompt_too_long_error(exc):
@@ -1172,6 +1581,7 @@ async def stream_conversation_turn(
                         or None,
                     )
                     prepared = await _refresh_history(prepared, session_service_provider=provider)
+                    runtime_context.history = list(prepared.history)
                     continue
             await append_run_status_event(
                 session_id=prepared.session_id,

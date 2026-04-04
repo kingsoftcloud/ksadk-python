@@ -120,6 +120,26 @@ class ServerlessProvider(BaseDeployProvider):
             json.dump(payload, f, indent=2, ensure_ascii=False)
 
     @staticmethod
+    def _serialize_network_config(target: DeployTarget) -> Optional[Dict[str, Any]]:
+        network = getattr(target, "network", None)
+        if network is None:
+            return None
+
+        payload: Dict[str, Any] = {
+            "enable_public_access": bool(getattr(network, "enable_public_access", False)),
+            "enable_vpc_access": bool(getattr(network, "enable_vpc_access", False)),
+        }
+
+        for field in ("vpc_id", "subnet_id", "security_group_id", "availability_zone"):
+            value = str(getattr(network, field, "") or "").strip()
+            if value:
+                payload[field] = value
+
+        if not payload["enable_public_access"] and not payload["enable_vpc_access"] and len(payload) == 2:
+            return None
+        return payload
+
+    @staticmethod
     def _extract_agent_access_fields(detail: Dict[str, Any]) -> Dict[str, Any]:
         """从 GetAgent 响应中提取 quick access/state 相关字段。"""
         if not isinstance(detail, dict):
@@ -516,6 +536,10 @@ class ServerlessProvider(BaseDeployProvider):
                              if env_vars:
                                  update_data["env_vars"] = env_vars
                                  click.echo(f"   📦 更新环境变量: {len(env_vars)} 项 from .env")
+
+                        network_config = self._serialize_network_config(target)
+                        if network_config:
+                            update_data["network"] = network_config
                         
                         # 注入更新时间戳，强制触发 Rolling Update (Pod 重启)
                         if "env_vars" not in update_data:
@@ -613,6 +637,10 @@ class ServerlessProvider(BaseDeployProvider):
                     
                     if env_vars:
                          request_data["env_vars"] = env_vars
+
+                    network_config = self._serialize_network_config(target)
+                    if network_config:
+                        request_data["network"] = network_config
 
                     # 获取 Account ID (用于 Server 端的 user_id)
                     extra_headers = {}

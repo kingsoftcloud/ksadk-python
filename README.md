@@ -7,7 +7,7 @@
 ## 核心能力
 
 - 多框架支持：DeepAgents、LangGraph、LangChain、Google ADK。
-- ADK 增强能力：支持短期/长期记忆体（STM/LTM）与知识库工具注入。
+- 平台级 KB / LTM：保留 `KSADK_KB_*` / `KSADK_LTM_*` 配置，覆盖 ADK、LangChain、LangGraph、DeepAgents。
 - 本地开发：`run`（API/TUI）与 `web`（本地 Invoke 调试 UI）。
 - 云端工作流：`build`、`deploy`、`launch`，支持 `Code` / `Container` 两种制品模式。
 - 统一资源命令：`agent`、`mcp`、`openclaw`、`version`、`dashboard` 采用统一的 `list/status/delete/open` 语义。
@@ -141,15 +141,24 @@ agentengine dashboard share list --agent ar-xxxx
 agentengine dashboard share revoke <link_id> --yes
 ```
 
-### 6)（可选）启用 ADK 记忆与知识库
+### 6)（可选）启用平台级 KB / LTM
 
 ```bash
-# 记忆体后端: local | http | sdk
+# 长期记忆后端: local | http | sdk
 export KSADK_LTM_BACKEND=local
 
-# 配置知识库后，Runner 会自动注入 search_knowledge_base 工具
+# 配置知识库后启用平台知识库能力
 export KSADK_KB_DATASET_ID=your_dataset_id
 ```
+
+行为说明：
+
+- ADK：保持原生路径，自动注入 `search_knowledge_base`、`load_memory`、`save_memory`。
+- LangChain / LangGraph / DeepAgents：仅配 env 也会在调用前按需检索 KB/LTM 并注入上下文；显式 import `search_knowledge_base` / `load_memory` / `save_memory` 仍然可用。
+- 默认策略是 `on_demand`：闲聊和自我介绍类输入不会触发 ambient KB/LTM 预加载；信息查询会触发 KB，显式回忆历史/偏好类输入会触发 LTM。
+- 需要兼容旧行为时，可设置 `KSADK_KB_AMBIENT_POLICY=always` 或 `KSADK_LTM_AMBIENT_POLICY=always`；若要彻底关闭 ambient 路径，可设置 `KSADK_KB_AMBIENT_ENABLED=false` / `KSADK_LTM_AMBIENT_ENABLED=false`。
+- `KSADK_KB_REGION` / `KSADK_LTM_REGION` 未显式设置时，会回退到 `KSYUN_REGION`。
+- 当 endpoint 是 `*.inner.api.ksyun.com` 且未显式设置 `KSADK_*_SCHEME` 时，默认走 `http`；其他 endpoint 默认 `https`。
 
 ## 命令总览
 
@@ -461,9 +470,14 @@ agentengine mcp delete <mcp_id> --yes
 | `LANGFUSE_PUBLIC_KEY` | Langfuse 公钥 |
 | `LANGFUSE_SECRET_KEY` | Langfuse 私钥 |
 | `LANGFUSE_BASE_URL` / `LANGFUSE_HOST` | Langfuse 地址 |
-| `KSADK_LTM_BACKEND` | ADK 长期记忆后端（`local/http/sdk`） |
+| `KSADK_LTM_BACKEND` | 平台长期记忆后端（`local/http/sdk`） |
 | `KSADK_LTM_HTTP_URL` | LTM HTTP 后端地址（当 `KSADK_LTM_BACKEND=http`） |
-| `KSADK_KB_DATASET_ID` | 知识库 Dataset ID（配置后启用知识库检索） |
+| `KSADK_LTM_NAMESPACE` | SDK 记忆库命名空间（`KSADK_LTM_BACKEND=sdk`） |
+| `KSADK_LTM_ENDPOINT` / `KSADK_LTM_SCHEME` | SDK 记忆库端点与协议 |
+| `KSADK_LTM_AMBIENT_POLICY` / `KSADK_LTM_AMBIENT_ENABLED` | 跨框架 LTM ambient 策略（默认 `on_demand`，可设 `always` 或显式关闭） |
+| `KSADK_KB_DATASET_ID` | 平台知识库 ID（配置后启用知识库检索） |
+| `KSADK_KB_ENDPOINT` / `KSADK_KB_SCHEME` | 知识库端点与协议 |
+| `KSADK_KB_AMBIENT_POLICY` / `KSADK_KB_AMBIENT_ENABLED` | 跨框架 KB ambient 策略（默认 `on_demand`，可设 `always` 或显式关闭） |
 
 兼容别名仍可识别：`OPENAI_API_BASE`、`MODEL_NAME`。
 
