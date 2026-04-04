@@ -5,6 +5,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from google.genai import types as genai_types
 
 from ksadk.sandbox import (
     BaseSandbox,
@@ -165,6 +166,7 @@ class StubSandbox(BaseSandbox):
     def __init__(self, result: ExecutionResult):
         self._result = result
         self.calls: list[tuple[str, Language]] = []
+        self.execute_calls: list[tuple[str, Language, ExecutionConfig | None]] = []
 
     async def execute(
         self,
@@ -173,6 +175,7 @@ class StubSandbox(BaseSandbox):
         config: ExecutionConfig | None = None,
     ) -> ExecutionResult:
         self.calls.append((code, language))
+        self.execute_calls.append((code, language, config))
         return self._result
 
     async def execute_file(
@@ -201,6 +204,61 @@ async def test_sandbox_toolset_wraps_results():
         "execute_bash",
         "execute_javascript",
     ]
+
+
+def test_sandbox_toolset_adk_declaration_uses_json_safe_config_schema():
+    google_adk = pytest.importorskip("google.adk.tools._automatic_function_calling_util")
+
+    sandbox = StubSandbox(
+        ExecutionResult(status=ExecutionStatus.SUCCESS, stdout="tool-output\n"),
+    )
+    toolset = SandboxToolset(sandbox)
+
+    declaration = google_adk.build_function_declaration(toolset.execute_python)
+
+    assert declaration.parameters is not None
+    config_schema = declaration.parameters.properties["config"]
+    assert config_schema.type is genai_types.Type.OBJECT
+    assert config_schema.nullable is True
+
+
+@pytest.mark.asyncio
+async def test_sandbox_toolset_accepts_json_safe_config_dict():
+    sandbox = StubSandbox(
+        ExecutionResult(status=ExecutionStatus.SUCCESS, stdout="tool-output\n"),
+    )
+    toolset = SandboxToolset(sandbox)
+
+    output = await toolset.execute_python(
+        "print('tool')",
+        config={
+            "timeout_seconds": 1.5,
+            "allow_network": True,
+            "allowed_imports": ["math"],
+        },
+    )
+
+    assert output == "tool-output\n"
+    assert sandbox.calls == [("print('tool')", Language.PYTHON)]
+    _, _, config = sandbox.execute_calls[0]
+    assert isinstance(config, ExecutionConfig)
+    assert config.timeout_seconds == 1.5
+    assert config.allow_network is True
+    assert config.allowed_imports == ["math"]
+
+
+@pytest.mark.asyncio
+async def test_sandbox_toolset_still_accepts_execution_config_instance():
+    sandbox = StubSandbox(
+        ExecutionResult(status=ExecutionStatus.SUCCESS, stdout="tool-output\n"),
+    )
+    toolset = SandboxToolset(sandbox)
+    raw_config = ExecutionConfig(timeout_seconds=2.0, allow_network=True)
+
+    await toolset.execute_python("print('tool')", config=raw_config)
+
+    _, _, config = sandbox.execute_calls[0]
+    assert config is raw_config
 
 
 @pytest.mark.asyncio

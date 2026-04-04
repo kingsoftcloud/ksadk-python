@@ -3,6 +3,11 @@ import { Send, Plus, Paperclip, PanelLeftClose, PanelLeft, Bot, User, Trash2, St
 import { MessageMarkdown } from './components/MessageMarkdown';
 import { Check } from 'lucide-react';
 import { buildComposerContextIndicator } from './utils/context.js';
+import {
+  readPersistedSessionId,
+  resolveSessionToRestore,
+  writePersistedSessionId,
+} from './utils/session.js';
 
 function cn(...classes: (string | undefined | null | false)[]) {
   return classes.filter(Boolean).join(' ');
@@ -379,6 +384,7 @@ export default function App() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const activeCompactionMessageIdRef = useRef<string | null>(null);
+  const currentSessionIdRef = useRef<string | null>(null);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -399,6 +405,11 @@ export default function App() {
     textareaRef.current.style.height = 'auto';
     textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, COMPOSER_MAX_HEIGHT)}px`;
   }, [input]);
+
+  useEffect(() => {
+    currentSessionIdRef.current = currentSessionId;
+    writePersistedSessionId(agentId, currentSessionId);
+  }, [agentId, currentSessionId]);
 
   const appendAttachments = (incoming: File[]) => {
     if (!incoming.length) {
@@ -464,9 +475,9 @@ export default function App() {
       setAgentId(bootstrapAgentId);
       if (data?.Data?.Agent?.Name) {
         setAgentName(data.Data.Agent.Name);
-        fetchSessions(bootstrapAgentId);
+        fetchSessions(bootstrapAgentId, readPersistedSessionId(bootstrapAgentId));
       } else {
-        fetchSessions(bootstrapAgentId);
+        fetchSessions(bootstrapAgentId, readPersistedSessionId(bootstrapAgentId));
       }
       const bootstrapModel: BootstrapModel | undefined = data?.Data?.Model;
       if (bootstrapModel?.id) {
@@ -477,24 +488,36 @@ export default function App() {
       fetchModels(bootstrapAgentId);
     } catch (e) {
       console.error('Failed to fetch bootstrap:', e);
-      fetchSessions('default-agent');
+      fetchSessions('default-agent', readPersistedSessionId('default-agent'));
       fetchModels('default-agent');
     }
   };
 
-  const fetchSessions = async (agentId = 'default-agent') => {
+  const fetchSessions = async (
+    targetAgentId = 'default-agent',
+    preferredSessionId: string | null = null,
+  ) => {
     try {
       const res = await fetch('/agentengine/api/v1/ListSessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ AgentId: agentId }),
+        body: JSON.stringify({ AgentId: targetAgentId }),
       });
       const data = await res.json();
       if (data?.Data?.Sessions) {
         const sorted = upsertSessions([], data.Data.Sessions as Session[]);
         setSessions(sorted);
-        if (sorted.length > 0 && !currentSessionId) {
-          loadSession(sorted[0].SessionId);
+        const activeSessionId = currentSessionIdRef.current;
+        const restoredSessionId = resolveSessionToRestore(
+          sorted,
+          activeSessionId || preferredSessionId || readPersistedSessionId(targetAgentId),
+        );
+        if (restoredSessionId && restoredSessionId !== activeSessionId) {
+          loadSession(restoredSessionId);
+        } else if (!restoredSessionId && activeSessionId) {
+          currentSessionIdRef.current = null;
+          setCurrentSessionId(null);
+          setMessages([]);
         }
       }
     } catch (e) {
@@ -503,6 +526,7 @@ export default function App() {
   };
 
   const loadSession = async (sessionId: string) => {
+    currentSessionIdRef.current = sessionId;
     setCurrentSessionId(sessionId);
     activeCompactionMessageIdRef.current = null;
     try {
@@ -537,9 +561,10 @@ export default function App() {
       const newId = data?.Data?.Session?.SessionId;
       if (newId) {
         setSessions(prev => upsertSessions(prev, [{ SessionId: newId, UpdatedAt: new Date().toISOString() }]));
-        fetchSessions(agentId);
+        currentSessionIdRef.current = newId;
         setCurrentSessionId(newId);
         setMessages([]);
+        fetchSessions(agentId, newId);
       }
     } catch (e) {
       console.error('Failed to create session:', e);
@@ -606,6 +631,7 @@ export default function App() {
       sId = 'default-session-' + Date.now();
     }
     setSessions(prev => upsertSessions(prev, [{ SessionId: sId, UpdatedAt: new Date().toISOString() }]));
+    currentSessionIdRef.current = sId;
     setCurrentSessionId(sId);
 
     const userText = input.trim();
@@ -847,7 +873,7 @@ export default function App() {
       setIsStreaming(false);
       abortControllerRef.current = null;
       activeCompactionMessageIdRef.current = null;
-      fetchSessions(agentId);
+      fetchSessions(agentId, sId);
     }
   };
 
@@ -861,8 +887,10 @@ export default function App() {
       });
       setSessions(prev => prev.filter(s => s.SessionId !== id));
       if (currentSessionId === id) {
+         currentSessionIdRef.current = null;
          setMessages([]);
          setCurrentSessionId(null);
+         fetchSessions(agentId);
       }
     } catch (e) {
       console.error('Failed to delete session', e);

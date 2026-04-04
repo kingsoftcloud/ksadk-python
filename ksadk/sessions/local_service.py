@@ -10,7 +10,23 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from ksadk.sessions.base import BaseSessionService, Session, SessionEvent, SessionState, generate_id
+from ksadk.sessions.base import (
+    BaseSessionService,
+    Session,
+    SessionEvent,
+    SessionState,
+    generate_id,
+)
+
+KSADK_SESSIONS_TABLE = "ksadk_sessions"
+KSADK_EVENTS_TABLE = "ksadk_events"
+KSADK_STATES_TABLE = "ksadk_states"
+
+LEGACY_SESSIONS_TABLE = "sessions"
+LEGACY_EVENTS_TABLE = "events"
+LEGACY_STATES_TABLE = "states"
+
+DEFAULT_SESSION_DB_NAME = "sessions.sqlite"
 
 
 def resolve_local_session_dir(project_dir: Optional[str] = None) -> Path:
@@ -22,14 +38,25 @@ def resolve_local_session_dir(project_dir: Optional[str] = None) -> Path:
     return root / ".agentengine" / "ui"
 
 
+def resolve_local_session_path(project_dir: Optional[str] = None) -> Path:
+    configured_ui_dir = (os.getenv("AGENTENGINE_UI_DIR") or "").strip()
+    if configured_ui_dir:
+        return Path(configured_ui_dir).expanduser().resolve() / DEFAULT_SESSION_DB_NAME
+
+    explicit_path = (os.getenv("KSADK_STM_PATH") or os.getenv("KSADK_STM_DB_PATH") or "").strip()
+    if explicit_path:
+        return Path(explicit_path).expanduser().resolve()
+
+    return resolve_local_session_dir(project_dir) / DEFAULT_SESSION_DB_NAME
+
+
 class LocalSessionService(BaseSessionService):
     def __init__(self, db_path: Optional[Path] = None, *, project_dir: Optional[str] = None):
-        ui_dir = (
-            resolve_local_session_dir(project_dir)
-            if db_path is None
-            else Path(db_path).expanduser().resolve().parent
+        self.db_path = (
+            Path(db_path).expanduser().resolve()
+            if db_path is not None
+            else resolve_local_session_path(project_dir)
         )
-        self.db_path = Path(db_path).expanduser().resolve() if db_path else ui_dir / "sessions.sqlite"
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = asyncio.Lock()
         self._ensure_schema()
@@ -134,13 +161,76 @@ class LocalSessionService(BaseSessionService):
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(str(self.db_path))
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
         return connection
+
+    @staticmethod
+    def _table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
+        row = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table_name,),
+        ).fetchone()
+        return row is not None
+
+    @classmethod
+    def _table_columns(cls, connection: sqlite3.Connection, table_name: str) -> set[str]:
+        if not cls._table_exists(connection, table_name):
+            return set()
+        rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+        return {str(row["name"]) for row in rows}
+
+    @staticmethod
+    def _ensure_columns(
+        connection: sqlite3.Connection,
+        table_name: str,
+        required_columns: dict[str, str],
+    ) -> None:
+        existing_columns = {
+            str(row["name"])
+            for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+        }
+        for column_name, ddl in required_columns.items():
+            if column_name not in existing_columns:
+                connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {ddl}")
+
+    def _migrate_legacy_schema(self, connection: sqlite3.Connection) -> None:
+        legacy_session_columns = self._table_columns(connection, LEGACY_SESSIONS_TABLE)
+        if (
+            legacy_session_columns
+            and not self._table_exists(connection, KSADK_SESSIONS_TABLE)
+            and "agent_id" in legacy_session_columns
+            and "app_name" not in legacy_session_columns
+        ):
+            connection.execute(
+                f"ALTER TABLE {LEGACY_SESSIONS_TABLE} RENAME TO {KSADK_SESSIONS_TABLE}"
+            )
+
+        legacy_event_columns = self._table_columns(connection, LEGACY_EVENTS_TABLE)
+        if (
+            legacy_event_columns
+            and not self._table_exists(connection, KSADK_EVENTS_TABLE)
+            and {"session_id", "author", "event_type"}.issubset(legacy_event_columns)
+        ):
+            connection.execute(
+                f"ALTER TABLE {LEGACY_EVENTS_TABLE} RENAME TO {KSADK_EVENTS_TABLE}"
+            )
+
+        legacy_state_columns = self._table_columns(connection, LEGACY_STATES_TABLE)
+        if (
+            legacy_state_columns
+            and not self._table_exists(connection, KSADK_STATES_TABLE)
+            and {"scope", "agent_id", "state_json"}.issubset(legacy_state_columns)
+        ):
+            connection.execute(
+                f"ALTER TABLE {LEGACY_STATES_TABLE} RENAME TO {KSADK_STATES_TABLE}"
+            )
 
     def _ensure_schema(self) -> None:
         with self._connect() as connection:
+            self._migrate_legacy_schema(connection)
             connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS sessions (
+                f"""
+                CREATE TABLE IF NOT EXISTS {KSADK_SESSIONS_TABLE} (
                     id TEXT PRIMARY KEY,
                     agent_id TEXT NOT NULL,
                     user_id TEXT NOT NULL,
@@ -149,54 +239,71 @@ class LocalSessionService(BaseSessionService):
                     summary TEXT NOT NULL DEFAULT '',
                     first_prompt TEXT NOT NULL DEFAULT '',
                     last_prompt TEXT NOT NULL DEFAULT '',
-                    state_json TEXT NOT NULL DEFAULT '{}',
+                    state_json TEXT NOT NULL DEFAULT '{{}}',
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL,
                     version INTEGER NOT NULL DEFAULT 0
                 );
 
-                CREATE TABLE IF NOT EXISTS events (
+                CREATE TABLE IF NOT EXISTS {KSADK_EVENTS_TABLE} (
                     id TEXT PRIMARY KEY,
                     session_id TEXT NOT NULL,
                     author TEXT NOT NULL,
                     event_type TEXT NOT NULL,
-                    content_json TEXT NOT NULL DEFAULT '{}',
+                    content_json TEXT NOT NULL DEFAULT '{{}}',
                     timestamp REAL NOT NULL,
-                    state_delta_json TEXT NOT NULL DEFAULT '{}',
+                    state_delta_json TEXT NOT NULL DEFAULT '{{}}',
                     seq_id INTEGER NOT NULL,
                     invocation_id TEXT,
-                    metadata_json TEXT NOT NULL DEFAULT '{}',
-                    FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+                    metadata_json TEXT NOT NULL DEFAULT '{{}}',
+                    FOREIGN KEY(session_id) REFERENCES {KSADK_SESSIONS_TABLE}(id) ON DELETE CASCADE
                 );
 
-                CREATE INDEX IF NOT EXISTS idx_events_session_seq
-                ON events (session_id, seq_id);
+                CREATE INDEX IF NOT EXISTS idx_ksadk_events_session_seq
+                ON {KSADK_EVENTS_TABLE} (session_id, seq_id);
 
-                CREATE TABLE IF NOT EXISTS states (
+                CREATE TABLE IF NOT EXISTS {KSADK_STATES_TABLE} (
                     scope TEXT NOT NULL,
                     agent_id TEXT NOT NULL,
                     user_id TEXT NOT NULL DEFAULT '',
                     session_id TEXT NOT NULL DEFAULT '',
-                    state_json TEXT NOT NULL DEFAULT '{}',
+                    state_json TEXT NOT NULL DEFAULT '{{}}',
                     version INTEGER NOT NULL DEFAULT 0,
                     updated_at REAL NOT NULL,
                     PRIMARY KEY (scope, agent_id, user_id, session_id)
                 );
                 """
             )
-            columns = {
-                row["name"] for row in connection.execute("PRAGMA table_info(sessions)").fetchall()
-            }
-            required_columns = {
-                "title": "TEXT NOT NULL DEFAULT ''",
-                "title_source": "TEXT NOT NULL DEFAULT ''",
-                "summary": "TEXT NOT NULL DEFAULT ''",
-                "first_prompt": "TEXT NOT NULL DEFAULT ''",
-                "last_prompt": "TEXT NOT NULL DEFAULT ''",
-            }
-            for column_name, ddl in required_columns.items():
-                if column_name not in columns:
-                    connection.execute(f"ALTER TABLE sessions ADD COLUMN {column_name} {ddl}")
+            self._ensure_columns(
+                connection,
+                KSADK_SESSIONS_TABLE,
+                {
+                    "title": "TEXT NOT NULL DEFAULT ''",
+                    "title_source": "TEXT NOT NULL DEFAULT ''",
+                    "summary": "TEXT NOT NULL DEFAULT ''",
+                    "first_prompt": "TEXT NOT NULL DEFAULT ''",
+                    "last_prompt": "TEXT NOT NULL DEFAULT ''",
+                    "state_json": "TEXT NOT NULL DEFAULT '{}'",
+                    "version": "INTEGER NOT NULL DEFAULT 0",
+                },
+            )
+            self._ensure_columns(
+                connection,
+                KSADK_EVENTS_TABLE,
+                {
+                    "state_delta_json": "TEXT NOT NULL DEFAULT '{}'",
+                    "invocation_id": "TEXT",
+                    "metadata_json": "TEXT NOT NULL DEFAULT '{}'",
+                },
+            )
+            self._ensure_columns(
+                connection,
+                KSADK_STATES_TABLE,
+                {
+                    "version": "INTEGER NOT NULL DEFAULT 0",
+                    "updated_at": "REAL NOT NULL DEFAULT 0",
+                },
+            )
             connection.commit()
 
     def _create_session_sync(
@@ -208,7 +315,7 @@ class LocalSessionService(BaseSessionService):
         with self._connect() as connection:
             if session_id:
                 existing = self._get_session_sync(session_id, connection=connection)
-                if existing:
+                if existing is not None:
                     return existing
 
             now = time.time()
@@ -220,8 +327,8 @@ class LocalSessionService(BaseSessionService):
                 updated_at=now,
             )
             connection.execute(
-                """
-                INSERT INTO sessions (
+                f"""
+                INSERT INTO {KSADK_SESSIONS_TABLE} (
                     id, agent_id, user_id, title, title_source, summary, first_prompt, last_prompt,
                     state_json, created_at, updated_at, version
                 )
@@ -229,39 +336,46 @@ class LocalSessionService(BaseSessionService):
                 """,
                 (
                     session.id,
-                    agent_id,
-                    user_id,
+                    session.agent_id,
+                    session.user_id,
                     session.title,
                     session.title_source,
                     session.summary,
                     session.first_prompt,
                     session.last_prompt,
-                    "{}",
+                    json.dumps(session.state),
                     session.created_at,
                     session.updated_at,
                     session.version,
                 ),
             )
             connection.execute(
-                """
-                INSERT OR REPLACE INTO states (scope, agent_id, user_id, session_id, state_json, version, updated_at)
+                f"""
+                INSERT OR REPLACE INTO {KSADK_STATES_TABLE} (
+                    scope, agent_id, user_id, session_id, state_json, version, updated_at
+                )
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                ("session", agent_id, user_id, session.id, "{}", 0, now),
+                ("session", session.agent_id, session.user_id, session.id, "{}", 0, now),
             )
             connection.commit()
             return session
 
-    def _get_session_sync(self, session_id: str, *, connection: Optional[sqlite3.Connection] = None) -> Optional[Session]:
+    def _get_session_sync(
+        self,
+        session_id: str,
+        *,
+        connection: Optional[sqlite3.Connection] = None,
+    ) -> Optional[Session]:
         owns_connection = connection is None
         connection = connection or self._connect()
         try:
             row = connection.execute(
-                """
+                f"""
                 SELECT
                     id, agent_id, user_id, title, title_source, summary, first_prompt, last_prompt,
                     state_json, created_at, updated_at, version
-                FROM sessions
+                FROM {KSADK_SESSIONS_TABLE}
                 WHERE id = ?
                 """,
                 (session_id,),
@@ -293,11 +407,11 @@ class LocalSessionService(BaseSessionService):
         user_id: Optional[str],
     ) -> list[Session]:
         with self._connect() as connection:
-            query = """
+            query = f"""
                 SELECT
                     id, agent_id, user_id, title, title_source, summary, first_prompt, last_prompt,
                     state_json, created_at, updated_at, version
-                FROM sessions
+                FROM {KSADK_SESSIONS_TABLE}
                 WHERE agent_id = ?
             """
             params: list[object] = [agent_id]
@@ -328,29 +442,24 @@ class LocalSessionService(BaseSessionService):
     def _delete_session_sync(self, session_id: str) -> bool:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT agent_id, user_id FROM sessions WHERE id = ?",
+                f"SELECT 1 FROM {KSADK_SESSIONS_TABLE} WHERE id = ?",
                 (session_id,),
             ).fetchone()
             if row is None:
                 return False
-            connection.execute("DELETE FROM events WHERE session_id = ?", (session_id,))
-            connection.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
-            connection.execute(
-                """
-                DELETE FROM states
-                WHERE scope = 'session' AND agent_id = ? AND user_id = ? AND session_id = ?
-                """,
-                (row["agent_id"], row["user_id"], session_id),
-            )
+
+            connection.execute(f"DELETE FROM {KSADK_EVENTS_TABLE} WHERE session_id = ?", (session_id,))
+            connection.execute(f"DELETE FROM {KSADK_STATES_TABLE} WHERE session_id = ?", (session_id,))
+            connection.execute(f"DELETE FROM {KSADK_SESSIONS_TABLE} WHERE id = ?", (session_id,))
             connection.commit()
             return True
 
     def _append_event_sync(self, session_id: str, event: SessionEvent) -> SessionEvent:
         with self._connect() as connection:
             session_row = connection.execute(
-                """
+                f"""
                 SELECT agent_id, user_id, state_json, version
-                FROM sessions
+                FROM {KSADK_SESSIONS_TABLE}
                 WHERE id = ?
                 """,
                 (session_id,),
@@ -360,7 +469,7 @@ class LocalSessionService(BaseSessionService):
 
             next_seq = int(
                 connection.execute(
-                    "SELECT COALESCE(MAX(seq_id), 0) + 1 FROM events WHERE session_id = ?",
+                    f"SELECT COALESCE(MAX(seq_id), 0) + 1 FROM {KSADK_EVENTS_TABLE} WHERE session_id = ?",
                     (session_id,),
                 ).fetchone()[0]
             )
@@ -369,23 +478,24 @@ class LocalSessionService(BaseSessionService):
                 session_id=session_id,
                 author=event.author,
                 event_type=event.event_type,
-                content=event.content,
+                content=dict(event.content),
                 timestamp=event.timestamp,
-                state_delta=event.state_delta,
+                state_delta=dict(event.state_delta),
                 seq_id=next_seq,
                 invocation_id=event.invocation_id,
-                metadata=event.metadata,
+                metadata=dict(event.metadata),
             )
             connection.execute(
-                """
-                INSERT INTO events (
+                f"""
+                INSERT INTO {KSADK_EVENTS_TABLE} (
                     id, session_id, author, event_type, content_json, timestamp,
                     state_delta_json, seq_id, invocation_id, metadata_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     stored.id,
-                    session_id,
+                    stored.session_id,
                     stored.author,
                     stored.event_type,
                     json.dumps(stored.content),
@@ -403,20 +513,23 @@ class LocalSessionService(BaseSessionService):
             if stored.state_delta:
                 state.update(stored.state_delta)
                 version += 1
+
             connection.execute(
-                """
-                UPDATE sessions
+                f"""
+                UPDATE {KSADK_SESSIONS_TABLE}
                 SET state_json = ?, updated_at = ?, version = ?
                 WHERE id = ?
                 """,
                 (json.dumps(state), updated_at, version, session_id),
             )
+
             if stored.state_delta:
                 connection.execute(
-                    """
-                    INSERT OR REPLACE INTO states (
+                    f"""
+                    INSERT OR REPLACE INTO {KSADK_STATES_TABLE} (
                         scope, agent_id, user_id, session_id, state_json, version, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         "session",
@@ -428,6 +541,7 @@ class LocalSessionService(BaseSessionService):
                         updated_at,
                     ),
                 )
+
             connection.commit()
             return stored
 
@@ -442,11 +556,11 @@ class LocalSessionService(BaseSessionService):
     ) -> Session:
         with self._connect() as connection:
             row = connection.execute(
-                """
+                f"""
                 SELECT
                     id, agent_id, user_id, title, title_source, summary, first_prompt, last_prompt,
                     state_json, created_at, updated_at, version
-                FROM sessions
+                FROM {KSADK_SESSIONS_TABLE}
                 WHERE id = ?
                 """,
                 (session_id,),
@@ -460,9 +574,10 @@ class LocalSessionService(BaseSessionService):
             next_summary = row["summary"] if summary is None else summary
             next_first_prompt = row["first_prompt"] if first_prompt is None else first_prompt
             next_last_prompt = row["last_prompt"] if last_prompt is None else last_prompt
+
             connection.execute(
-                """
-                UPDATE sessions
+                f"""
+                UPDATE {KSADK_SESSIONS_TABLE}
                 SET title = ?, title_source = ?, summary = ?, first_prompt = ?, last_prompt = ?,
                     updated_at = ?
                 WHERE id = ?
@@ -505,10 +620,10 @@ class LocalSessionService(BaseSessionService):
         owns_connection = connection is None
         connection = connection or self._connect()
         try:
-            query = """
+            query = f"""
                 SELECT id, session_id, author, event_type, content_json, timestamp,
                        state_delta_json, seq_id, invocation_id, metadata_json
-                FROM events
+                FROM {KSADK_EVENTS_TABLE}
                 WHERE session_id = ?
                 ORDER BY seq_id ASC
             """
@@ -560,21 +675,22 @@ class LocalSessionService(BaseSessionService):
                     agent_id=session.agent_id,
                     user_id=session.user_id,
                     session_id=session.id,
-                    state=session.state,
+                    state=dict(session.state),
                     version=session.version,
                     updated_at=session.updated_at,
                 )
 
             row = connection.execute(
-                """
+                f"""
                 SELECT scope, agent_id, user_id, session_id, state_json, version, updated_at
-                FROM states
+                FROM {KSADK_STATES_TABLE}
                 WHERE scope = ? AND agent_id = ? AND user_id = ? AND session_id = ?
                 """,
                 (scope, agent_id, user_id or "", session_id or ""),
             ).fetchone()
             if row is None:
                 return None
+
             return SessionState(
                 scope=row["scope"],
                 agent_id=row["agent_id"],
@@ -595,30 +711,41 @@ class LocalSessionService(BaseSessionService):
     ) -> SessionState:
         with self._connect() as connection:
             updated_at = time.time()
+
             if scope == "session":
                 if not session_id:
                     raise ValueError("session_id is required for session scope")
                 session = self._get_session_sync(session_id, connection=connection)
                 if session is None:
                     raise ValueError(f"Session {session_id} not found")
+
                 next_state = dict(session.state)
                 next_state.update(state_delta)
                 next_version = session.version + 1
                 connection.execute(
-                    """
-                    UPDATE sessions
+                    f"""
+                    UPDATE {KSADK_SESSIONS_TABLE}
                     SET state_json = ?, updated_at = ?, version = ?
                     WHERE id = ?
                     """,
                     (json.dumps(next_state), updated_at, next_version, session_id),
                 )
                 connection.execute(
-                    """
-                    INSERT OR REPLACE INTO states (
+                    f"""
+                    INSERT OR REPLACE INTO {KSADK_STATES_TABLE} (
                         scope, agent_id, user_id, session_id, state_json, version, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    ("session", session.agent_id, session.user_id, session.id, json.dumps(next_state), next_version, updated_at),
+                    (
+                        "session",
+                        session.agent_id,
+                        session.user_id,
+                        session.id,
+                        json.dumps(next_state),
+                        next_version,
+                        updated_at,
+                    ),
                 )
                 connection.commit()
                 return SessionState(
@@ -632,23 +759,33 @@ class LocalSessionService(BaseSessionService):
                 )
 
             row = connection.execute(
-                """
+                f"""
                 SELECT state_json, version
-                FROM states
+                FROM {KSADK_STATES_TABLE}
                 WHERE scope = ? AND agent_id = ? AND user_id = ? AND session_id = ?
                 """,
                 (scope, agent_id, user_id or "", session_id or ""),
             ).fetchone()
             next_state = json.loads(row["state_json"] or "{}") if row else {}
             next_state.update(state_delta)
-            next_version = int(row["version"] or 0) + 1 if row else 1
+            next_version = (int(row["version"] or 0) + 1) if row else 1
+
             connection.execute(
-                """
-                INSERT OR REPLACE INTO states (
+                f"""
+                INSERT OR REPLACE INTO {KSADK_STATES_TABLE} (
                     scope, agent_id, user_id, session_id, state_json, version, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (scope, agent_id, user_id or "", session_id or "", json.dumps(next_state), next_version, updated_at),
+                (
+                    scope,
+                    agent_id,
+                    user_id or "",
+                    session_id or "",
+                    json.dumps(next_state),
+                    next_version,
+                    updated_at,
+                ),
             )
             connection.commit()
             return SessionState(
@@ -667,7 +804,12 @@ def create_local_session_service(*, project_dir: Optional[str] = None) -> BaseSe
 
 
 __all__ = [
+    "DEFAULT_SESSION_DB_NAME",
+    "KSADK_EVENTS_TABLE",
+    "KSADK_SESSIONS_TABLE",
+    "KSADK_STATES_TABLE",
     "LocalSessionService",
     "create_local_session_service",
     "resolve_local_session_dir",
+    "resolve_local_session_path",
 ]

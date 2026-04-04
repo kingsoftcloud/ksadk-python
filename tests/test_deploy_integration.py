@@ -428,6 +428,56 @@ class TestDeployLogic:
         assert env_vars["OPENAI_MODEL_NAME"] == "test-model"
 
     @pytest.mark.asyncio
+    async def test_deploy_forwards_network_configuration_to_create_agent(
+        self,
+        temp_project_dir,
+        sample_package_info,
+        sample_deploy_target,
+    ):
+        """测试 serverless deploy 会把网络配置透传给 CreateAgent。"""
+        provider = ServerlessProvider()
+        sample_deploy_target.network.enable_public_access = False
+        sample_deploy_target.network.enable_vpc_access = True
+        sample_deploy_target.network.vpc_id = "vpc-demo"
+        sample_deploy_target.network.subnet_id = "subnet-demo"
+        sample_deploy_target.network.security_group_id = "sg-demo"
+        sample_deploy_target.network.availability_zone = "cn-beijing-6a"
+
+        captured = {}
+        mock_client = AsyncMock()
+
+        async def _fake_create_agent(payload):
+            captured["payload"] = payload
+            return {
+                "agent_id": "ar-20260119-network",
+                "name": "test-agent",
+                "endpoint": "https://test.kspmas.ksyun.com",
+                "api_key": "ak-test-key",
+            }
+
+        mock_client.create_agent = AsyncMock(side_effect=_fake_create_agent)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock()
+
+        with patch.dict(os.environ, {"AGENTENGINE_SERVER_URL": "http://localhost:8080"}), \
+             patch("ksadk.deployment.providers.serverless.AgentEngineClient", return_value=mock_client), \
+             patch("ksadk.common.auth.AWSV4Auth") as MockAuth:
+
+            MockAuth.return_value.access_key_id = "test-ak"
+            MockAuth.return_value.secret_access_key = "test-sk"
+
+            await provider.deploy(sample_package_info, sample_deploy_target)
+
+        assert captured["payload"]["network"] == {
+            "enable_public_access": False,
+            "enable_vpc_access": True,
+            "vpc_id": "vpc-demo",
+            "subnet_id": "subnet-demo",
+            "security_group_id": "sg-demo",
+            "availability_zone": "cn-beijing-6a",
+        }
+
+    @pytest.mark.asyncio
     async def test_build_persists_ks3_path_metadata_for_followup_cache(
         self,
         temp_project_dir,

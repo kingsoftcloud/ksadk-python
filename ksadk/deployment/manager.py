@@ -8,6 +8,8 @@ from pathlib import Path
 import shutil
 import os
 
+from ksadk.builders.requirements_utils import merge_requirement_lists
+
 
 class BaseDeployer(ABC):
     """部署器基类"""
@@ -171,7 +173,7 @@ CMD ["python", "entrypoint.py"]
                 "deepagents>=0.3.0",
             ]
         
-        return "\n".join(base_deps)
+        return "\n".join(merge_requirement_lists(base_deps))
     
     def _generate_k8s_config(self) -> str:
         return '''apiVersion: apps/v1

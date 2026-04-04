@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 import time
+import uuid
 from ksadk.cli.agent_ref import merge_agent_inputs, resolve_agent_ref
 from ksadk.cli.resource_common import CONTEXT_SETTINGS, CompatibilityAliasCommand, print_compatibility_hint
 
@@ -105,6 +106,7 @@ def run_invoke_command(
     # 加载本地状态
     state = _load_state()
     latest_access: dict[str, Any] = {}
+    reuse_state_session = True
     
     # 确定 Endpoint
     if local:
@@ -130,6 +132,7 @@ def run_invoke_command(
             state=state,
             persist=_state_matches_target(state, target_agent),
         )
+        reuse_state_session = not agent_input or _state_matches_target(state, target_agent)
 
         # 优先使用 state 里的 endpoint (如果是对应的 agent)
         if latest_access.get("endpoint"):
@@ -143,6 +146,18 @@ def run_invoke_command(
 
     # API Key
     api_key = api_key or latest_access.get("api_key") or state.get("api_key")
+    session_id = (
+        session
+        or (state.get("session_id") if reuse_state_session else None)
+        or str(uuid.uuid4())[:8]
+    )
+
+    next_state = _load_state() or dict(state)
+    for key in ("agent_id", "name", "endpoint", "api_key"):
+        if latest_access.get(key):
+            next_state[key] = latest_access[key]
+    next_state["session_id"] = session_id
+    _save_state(next_state)
 
     click.secho(f"🤖 连接到 Agent", fg="blue", bold=True)
     click.echo(f"   Endpoint: {endpoint}")
@@ -156,10 +171,10 @@ def run_invoke_command(
 
     if message:
         # 单次调用模式
-        asyncio.run(_invoke_once(endpoint, message, api_key, session, True, insecure, model))
+        asyncio.run(_invoke_once(endpoint, message, api_key, session_id, True, insecure, model))
     else:
         # 默认 TUI 模式
-        _invoke_tui(endpoint, api_key, session, insecure, model, show_thinking)
+        _invoke_tui(endpoint, api_key, session_id, insecure, model, show_thinking)
 
 
 

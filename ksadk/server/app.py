@@ -27,7 +27,7 @@ from ksadk.conversations.session_title import (
 )
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.server.api_models import AgentRunRequest
-from ksadk.sessions import Session, SessionEvent, resolve_session_service
+from ksadk.sessions import ConversationSessionCore, Session, SessionEvent, resolve_session_service
 from ksadk.sessions.local_service import resolve_local_session_dir
 from ksadk.tracing import get_memory_exporter
 from ksadk.conversations.model_context import normalize_model_metadata
@@ -443,7 +443,7 @@ class ResponsesRequest(BaseModel):
     session_id: Optional[str] = None
 
 
-def _session_to_action_payload(session: Session) -> dict[str, Any]:
+async def _session_to_action_payload(session: Session) -> dict[str, Any]:
     title = session.title
     title_source = session.title_source
     if title_source == "fallback_first_prompt":
@@ -454,7 +454,7 @@ def _session_to_action_payload(session: Session) -> dict[str, Any]:
         if heuristic and heuristic != title:
             title = heuristic
             title_source = HEURISTIC_SESSION_TITLE_SOURCE
-    return {
+    payload = {
         "SessionId": session.id,
         "AgentId": session.agent_id,
         "UserId": session.user_id,
@@ -468,6 +468,17 @@ def _session_to_action_payload(session: Session) -> dict[str, Any]:
         "UpdatedAt": session.updated_at,
         "Version": session.version,
     }
+    if runner is not None:
+        try:
+            continuity = await runner.get_session_adapter().describe_continuity(
+                runner=runner,
+                session=session,
+                core=ConversationSessionCore(resolve_session_service()),
+            )
+            payload["Continuity"] = continuity.to_payload()
+        except Exception as exc:
+            logger.debug("Failed to describe continuity for session %s: %s", session.id, exc)
+    return payload
 
 
 def _event_to_action_payload(event: SessionEvent) -> dict[str, Any]:
@@ -526,16 +537,17 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
 @app.post("/agentengine/api/v1/CreateSession")
 async def create_session_action(request: CreateSessionActionRequest):
     session = await _ensure_session(request.AgentId, request.UserId or "user", request.SessionId)
-    return _action_response("CreateSession", {"Session": _session_to_action_payload(session)})
+    return _action_response("CreateSession", {"Session": await _session_to_action_payload(session)})
 
 
 @app.post("/agentengine/api/v1/ListSessions")
 async def list_sessions_action(request: ListSessionsActionRequest):
     service = resolve_session_service()
     sessions = await service.list_sessions(request.AgentId, request.UserId or "user")
+    session_payloads = [await _session_to_action_payload(session) for session in sessions]
     return _action_response(
         "ListSessions",
-        {"Sessions": [_session_to_action_payload(session) for session in sessions]},
+        {"Sessions": session_payloads},
     )
 
 
@@ -545,7 +557,7 @@ async def get_session_action(request: SessionIdRequest):
     session = await _hydrate_session(await service.get_session(request.SessionId))
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    return _action_response("GetSession", {"Session": _session_to_action_payload(session)})
+    return _action_response("GetSession", {"Session": await _session_to_action_payload(session)})
 
 
 @app.post("/agentengine/api/v1/DeleteSession")
@@ -910,6 +922,7 @@ async def run_sse(request: AgentRunRequest):
                     },
                 }
                 input_data = {
+                    "session_id": session_id,
                     "input": user_input,
                     "history": history,
                     "input_parts": list(user_parts),
@@ -1034,6 +1047,7 @@ async def run_sse(request: AgentRunRequest):
                 authoritative_text = ""
                 async for chunk in active_runner.stream(
                     {
+                        "session_id": session_id,
                         "input": user_input,
                         "history": history,
                         "input_parts": list(user_parts),

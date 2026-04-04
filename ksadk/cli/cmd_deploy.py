@@ -321,6 +321,8 @@ async def _deploy_async(
         deploy_target.scaling.max_replicas = config["scaling"].get("max_replicas", 10)
         deploy_target.scaling.concurrency = config["scaling"].get("concurrency", 10)
 
+    _apply_network_config(config, deploy_target)
+
     normalized_artifact_type = (effective_artifact_type or "Code").strip().lower()
     explicit_artifact_reference = ks3_path if normalized_artifact_type == "code" else image
     cached_artifact_reference = None
@@ -558,3 +560,32 @@ def _load_config(agent_path: Path) -> dict:
             return yaml.safe_load(f) or {}
 
     return {}
+
+
+def _apply_network_config(config: dict, deploy_target: "DeployTarget") -> None:
+    raw_network = (config.get("network") or config.get("deploy", {}).get("network") or {})
+    if not isinstance(raw_network, dict):
+        return
+
+    def _pick(*keys: str, default=None):
+        for key in keys:
+            if key in raw_network and raw_network[key] is not None:
+                return raw_network[key]
+        return default
+
+    deploy_target.network.enable_public_access = bool(
+        _pick("enable_public_access", "enablePublicAccess", default=deploy_target.network.enable_public_access)
+    )
+    deploy_target.network.enable_vpc_access = bool(
+        _pick("enable_vpc_access", "enableVpcAccess", default=deploy_target.network.enable_vpc_access)
+    )
+    deploy_target.network.vpc_id = str(_pick("vpc_id", "vpcId", default=deploy_target.network.vpc_id) or "").strip()
+    deploy_target.network.subnet_id = str(
+        _pick("subnet_id", "subnetId", default=deploy_target.network.subnet_id) or ""
+    ).strip()
+    deploy_target.network.security_group_id = str(
+        _pick("security_group_id", "securityGroupId", default=deploy_target.network.security_group_id) or ""
+    ).strip()
+    deploy_target.network.availability_zone = str(
+        _pick("availability_zone", "availabilityZone", default=deploy_target.network.availability_zone) or ""
+    ).strip()
