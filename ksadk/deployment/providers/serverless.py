@@ -6,6 +6,7 @@ Serverless Provider - 金山云 Serverless 计算引擎 (AgentEngine 托管)
 - Deploy 阶段: 客户端调用 AgentEngine Server API 发起部署
 """
 
+import asyncio
 import os
 import json
 import logging
@@ -157,16 +158,46 @@ class ServerlessProvider(BaseDeployProvider):
             "api_key": quick.get("api_key") or detail.get("api_key"),
         }
 
-    async def _get_latest_agent_access(self, client: AgentEngineClient, agent_id: str) -> Dict[str, Any]:
+    @staticmethod
+    def _is_agent_not_visible_yet_error(exc: Exception) -> bool:
+        """CreateAgent 后短时间内 GetAgent 404，视为可重试的可见性延迟。"""
+        text = str(exc or "").lower()
+        if not text:
+            return False
+        return (
+            ("http 404" in text or "status=404" in text or "code: 404" in text)
+            and ("未找到对应的 agent" in text or "not found" in text)
+        )
+
+    async def _get_latest_agent_access(
+        self,
+        client: AgentEngineClient,
+        agent_id: str,
+        *,
+        retry_on_not_found: bool = False,
+    ) -> Dict[str, Any]:
         """回查最新 Agent 详情，优先使用 quick access 字段修正本地状态。"""
         if not agent_id:
             return {}
-        try:
-            detail = await client.get_agent(agent_id=agent_id, include_api_key=True)
-        except Exception as exc:
-            logger.warning(f"Failed to refresh quick access for {agent_id}: {exc}")
-            return {}
-        return self._extract_agent_access_fields(detail)
+
+        retry_delays = (0.3, 0.7, 1.0) if retry_on_not_found else ()
+        attempts = 1 + len(retry_delays)
+        last_exc: Optional[Exception] = None
+
+        for idx in range(attempts):
+            try:
+                detail = await client.get_agent(agent_id=agent_id, include_api_key=True)
+                return self._extract_agent_access_fields(detail)
+            except Exception as exc:
+                last_exc = exc
+                if idx < len(retry_delays) and self._is_agent_not_visible_yet_error(exc):
+                    await asyncio.sleep(retry_delays[idx])
+                    continue
+                break
+
+        if last_exc is not None:
+            logger.warning(f"Failed to refresh quick access for {agent_id}: {last_exc}")
+        return {}
 
     async def validate_config(self, target: DeployTarget) -> tuple[bool, str]:
         """验证配置: 确保已配置 AgentEngine Server"""
@@ -693,7 +724,11 @@ class ServerlessProvider(BaseDeployProvider):
 
                     latest_access = {}
                     if new_agent_id and not is_dry_run:
-                        latest_access = await self._get_latest_agent_access(new_client, new_agent_id)
+                        latest_access = await self._get_latest_agent_access(
+                            new_client,
+                            new_agent_id,
+                            retry_on_not_found=True,
+                        )
                         new_agent_id = latest_access.get("agent_id") or new_agent_id
                         agent_name = latest_access.get("name") or agent_name
                         agent_endpoint = latest_access.get("endpoint") or agent_endpoint
