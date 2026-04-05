@@ -208,6 +208,66 @@ class TestDeployLogic:
         state = yaml.safe_load(state_file.read_text())
         assert state["endpoint"] == "https://fresh.example.com"
         assert state["api_key"] == "ak-fresh-key"
+
+    @pytest.mark.asyncio
+    async def test_deploy_create_new_agent_retries_quick_access_when_agent_not_yet_visible(
+        self,
+        temp_project_dir,
+        sample_package_info,
+        sample_deploy_target,
+    ):
+        """测试首次部署后 GetAgent 短暂 404 时，会短退避重试而不是立即打印警告。"""
+        provider = ServerlessProvider()
+
+        mock_client = AsyncMock()
+        mock_client.create_agent = AsyncMock(
+            return_value={
+                "agent_id": "ar-20260119-newagent",
+                "name": "test-agent",
+                "endpoint": "http://stale.example.com",
+                "api_key": None,
+                "order_id": "ord-123",
+            }
+        )
+        mock_client.get_agent = AsyncMock(
+            side_effect=[
+                Exception(
+                    'HTTP 404 POST http://aicp.inner.api.ksyun.com/?Action=GetAgent&Version=2024-06-12: '
+                    '{"Code":404,"Message":"未找到对应的 Agent","RequestId":"req-1","Data":null}'
+                ),
+                {
+                    "basic": {
+                        "agent_id": "ar-20260119-newagent",
+                        "name": "test-agent",
+                    },
+                    "quick_access": {
+                        "public_endpoint": "https://fresh.example.com",
+                        "api_key": "ak-fresh-key",
+                    },
+                },
+            ]
+        )
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock()
+
+        with patch.dict(os.environ, {"AGENTENGINE_SERVER_URL": "http://localhost:8080"}), \
+             patch("ksadk.deployment.providers.serverless.AgentEngineClient", return_value=mock_client), \
+             patch("ksadk.deployment.providers.serverless.asyncio.sleep", new=AsyncMock()) as mock_sleep, \
+             patch("ksadk.deployment.providers.serverless.logger.warning") as mock_warning, \
+             patch("ksadk.common.auth.AWSV4Auth") as MockAuth:
+
+            MockAuth.return_value.access_key = "test-ak"
+            MockAuth.return_value.secret_key = "test-sk"
+
+            await provider.deploy(sample_package_info, sample_deploy_target)
+
+        state_file = temp_project_dir / ".agentengine.state"
+        state = yaml.safe_load(state_file.read_text())
+        assert state["endpoint"] == "https://fresh.example.com"
+        assert state["api_key"] == "ak-fresh-key"
+        assert mock_client.get_agent.await_count == 2
+        mock_sleep.assert_awaited_once_with(0.3)
+        mock_warning.assert_not_called()
     
     @pytest.mark.asyncio
     async def test_deploy_update_existing_agent(
