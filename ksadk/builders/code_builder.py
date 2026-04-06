@@ -37,6 +37,7 @@ class CodeBuilder(BaseBuilder):
     """Code 模式构建器 - 打包 zip + 依赖"""
 
     INPUT_FINGERPRINT_VERSION = 1
+    DEPENDENCY_FINGERPRINT_VERSION = 1
     TARGET_INSTALL_PLATFORMS = (
         "manylinux2014_x86_64",
         "manylinux_2_17_x86_64",
@@ -196,15 +197,26 @@ class CodeBuilder(BaseBuilder):
         
         # Step 2: 安装依赖
         click.echo("\n📦 Step 2/3: 安装依赖...")
-        if self.deps_dir.exists():
-            shutil.rmtree(self.deps_dir)
-        self.deps_dir.mkdir(parents=True)
-        
-        if not self._install_dependencies(requirements_path):
-            return BuildResult(
-                success=False,
-                error_message="依赖安装失败"
+        reuse_dependencies, reuse_reason = self._can_reuse_dependency_cache(requirements_path)
+        if reuse_dependencies:
+            stats = self._current_dependency_stats()
+            click.secho(
+                f"   ✓ 复用 Linux 依赖缓存: {stats['file_count']} 个文件, {stats['size_mb']:.1f} MB",
+                fg="green",
             )
+            click.echo(f"   {reuse_reason}")
+        else:
+            if reuse_reason:
+                click.echo(f"   {reuse_reason}")
+            self._clear_dependency_cache()
+            self.deps_dir.mkdir(parents=True, exist_ok=True)
+            
+            if not self._install_dependencies(requirements_path):
+                return BuildResult(
+                    success=False,
+                    error_message="依赖安装失败"
+                )
+            self._save_dependency_fingerprint(requirements_path)
         
         # Step 3: 打包 zip
         click.echo("\n📦 Step 3/3: 打包 zip...")
@@ -252,6 +264,9 @@ class CodeBuilder(BaseBuilder):
     def _fingerprint_manifest_path(self, zip_path: Path) -> Path:
         return zip_path.with_suffix(".inputs.json")
 
+    def _dependency_fingerprint_manifest_path(self) -> Path:
+        return self.build_dir / "linux_deps.inputs.json"
+
     def _load_input_fingerprint(self, zip_path: Path) -> Optional[dict]:
         manifest_path = self._fingerprint_manifest_path(zip_path)
         if not manifest_path.exists():
@@ -271,6 +286,92 @@ class CodeBuilder(BaseBuilder):
         payload = self._build_input_fingerprint(detection_result)
         with open(manifest_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, ensure_ascii=False)
+
+    def _load_dependency_fingerprint(self) -> Optional[dict]:
+        manifest_path = self._dependency_fingerprint_manifest_path()
+        if not manifest_path.exists():
+            return None
+        try:
+            with open(manifest_path, encoding="utf-8") as f:
+                data = json.load(f)
+            if data.get("version") != self.DEPENDENCY_FINGERPRINT_VERSION:
+                return None
+            return data
+        except Exception:
+            return None
+
+    def _save_dependency_fingerprint(self, requirements_path: Path) -> None:
+        manifest_path = self._dependency_fingerprint_manifest_path()
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = self._build_dependency_fingerprint(requirements_path)
+        payload.update(self._current_dependency_stats())
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+
+    def _clear_dependency_cache(self) -> None:
+        if self.deps_dir.exists():
+            shutil.rmtree(self.deps_dir)
+        manifest_path = self._dependency_fingerprint_manifest_path()
+        if manifest_path.exists():
+            manifest_path.unlink()
+
+    def _build_dependency_fingerprint(self, requirements_path: Path) -> dict:
+        digest = hashlib.sha256()
+        requirements_text = requirements_path.read_text(encoding="utf-8")
+
+        digest.update(f"deps-fingerprint-version:{self.DEPENDENCY_FINGERPRINT_VERSION}\n".encode("utf-8"))
+        digest.update(f"builder-platform:{sys.platform}\n".encode("utf-8"))
+        digest.update(
+            f"builder-python:{sys.version_info.major}.{sys.version_info.minor}\n".encode("utf-8")
+        )
+        digest.update(f"target-python:{self.TARGET_PYTHON_VERSION}\n".encode("utf-8"))
+        digest.update(f"target-platforms:{','.join(self.TARGET_INSTALL_PLATFORMS)}\n".encode("utf-8"))
+        digest.update(requirements_text.encode("utf-8"))
+
+        requirements = [line for line in requirements_text.splitlines() if line.strip()]
+        return {
+            "version": self.DEPENDENCY_FINGERPRINT_VERSION,
+            "fingerprint": digest.hexdigest(),
+            "requirements": requirements,
+        }
+
+    def _current_dependency_stats(self) -> dict:
+        file_count = 0
+        size_bytes = 0
+        if self.deps_dir.exists():
+            for file_path in self.deps_dir.rglob("*"):
+                if not file_path.is_file():
+                    continue
+                file_count += 1
+                size_bytes += file_path.stat().st_size
+        return {
+            "file_count": file_count,
+            "size_bytes": size_bytes,
+            "size_mb": round(size_bytes / (1024 * 1024), 2),
+        }
+
+    def _can_reuse_dependency_cache(self, requirements_path: Path) -> tuple[bool, str]:
+        if not self.deps_dir.exists():
+            return False, "未发现现成 Linux 依赖缓存，重新安装"
+
+        manifest = self._load_dependency_fingerprint()
+        if manifest is None:
+            return False, "缺少依赖缓存指纹，重新安装"
+
+        current_fingerprint = self._build_dependency_fingerprint(requirements_path)
+        if manifest.get("fingerprint") != current_fingerprint["fingerprint"]:
+            return False, "依赖清单发生变化，重新安装"
+
+        stats = self._current_dependency_stats()
+        if stats["file_count"] == 0:
+            return False, "依赖缓存为空，重新安装"
+
+        incompatibles = self._scan_incompatible_binaries_in_deps()
+        if incompatibles:
+            preview = ", ".join(incompatibles[:3])
+            return False, f"依赖缓存存在兼容性问题 ({preview})，重新安装"
+
+        return True, "requirements 未变化，跳过依赖重装"
 
     def _build_input_fingerprint(self, detection_result) -> dict:
         digest = hashlib.sha256()

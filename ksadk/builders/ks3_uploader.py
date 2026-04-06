@@ -3,19 +3,28 @@ KS3 上传模块 - 金山云对象存储上传
 """
 
 import os
+import socket
+import time
 from pathlib import Path
-from typing import Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Optional
 import click
 
 
 from ksadk.common.constants import get_ks3_endpoints
-from ksadk.configs.settings import check_endpoint_reachable
 
 # KS3 Region 映射表 已移动到 ksadk.common.constants
 
 
 class KS3Uploader:
     """KS3 上传器"""
+
+    ENDPOINT_PROBE_TIMEOUT_SECONDS = 1.5
+    UPLOAD_CONNECT_PORT = 443
+    UPLOAD_CONNECT_TIMEOUT_SECONDS = 60
+    UPLOAD_TIMEOUT_BASE_SECONDS = 120
+    UPLOAD_TIMEOUT_PER_MB_SECONDS = 1.2
+    UPLOAD_TIMEOUT_MAX_SECONDS = 900
 
     def __init__(self, region: str = "cn-beijing-6", bucket: str = None):
         """初始化 KS3 上传器
@@ -48,23 +57,165 @@ class KS3Uploader:
         self.custom_domain = None  # 可选的自定义域名
 
     def get_endpoint(self) -> str:
-        """根据 region 获取合适的 endpoint (自动选择内网或公网)"""
+        """根据 region 获取首选 endpoint (自动测速/回退)。"""
+        targets, _summary = self._rank_upload_endpoints()
+        return targets[0]["host"]
+
+    def _endpoint_mode(self) -> str:
+        mode = (os.getenv("KS3_ENDPOINT_MODE") or "auto").strip().lower()
+        if mode in {"auto", "internal", "public"}:
+            return mode
+        return "auto"
+
+    def _endpoint_probe_timeout_seconds(self) -> float:
+        configured = os.getenv("KS3_ENDPOINT_PROBE_TIMEOUT_SECONDS")
+        if configured:
+            try:
+                return max(0.2, float(configured))
+            except ValueError:
+                pass
+        return self.ENDPOINT_PROBE_TIMEOUT_SECONDS
+
+    def _upload_timeout_seconds(self, file_path: Path) -> int:
+        configured = os.getenv("KS3_UPLOAD_TIMEOUT_SECONDS")
+        if configured:
+            try:
+                return max(30, int(float(configured)))
+            except ValueError:
+                pass
+
+        size_mb = file_path.stat().st_size / (1024 * 1024)
+        calculated = self.UPLOAD_TIMEOUT_BASE_SECONDS + int(size_mb * self.UPLOAD_TIMEOUT_PER_MB_SECONDS)
+        return min(self.UPLOAD_TIMEOUT_MAX_SECONDS, max(self.UPLOAD_CONNECT_TIMEOUT_SECONDS, calculated))
+
+    def _probe_endpoint_latency(self, host: str) -> Optional[float]:
+        started_at = time.monotonic()
+        try:
+            with socket.create_connection(
+                (host, self.UPLOAD_CONNECT_PORT),
+                timeout=self._endpoint_probe_timeout_seconds(),
+            ):
+                return time.monotonic() - started_at
+        except OSError:
+            return None
+
+    def _rank_upload_endpoints(self) -> tuple[list[dict[str, str]], str]:
         if self.custom_domain:
-            return self.custom_domain
+            return (
+                [{"host": self.custom_domain, "label": "自定义域名"}],
+                f"使用自定义域名 {self.custom_domain}",
+            )
 
-        # 获取 endpoints (public, internal)
         public_endpoint, internal_endpoint = get_ks3_endpoints(self.region)
+        mode = self._endpoint_mode()
 
-        # 使用统一的网络检测函数检查内网是否可达
-        if internal_endpoint:
-            click.echo(f"   检测内网连接: {internal_endpoint} ...", nl=False)
-            if check_endpoint_reachable(internal_endpoint, port=443):
-                click.secho(" ✓ 可用 (使用内网加速)", fg="green")
-                return internal_endpoint
+        candidates: list[dict[str, str]] = []
+        seen: set[str] = set()
+
+        def add_candidate(host: Optional[str], label: str) -> None:
+            normalized = (host or "").strip()
+            if not normalized or normalized in seen:
+                return
+            seen.add(normalized)
+            candidates.append({"host": normalized, "label": label})
+
+        if mode == "internal":
+            add_candidate(internal_endpoint, "内网")
+            add_candidate(public_endpoint, "公网")
+            return candidates, f"强制优先内网 {candidates[0]['host']}" if candidates else "未找到可用 KS3 endpoint"
+
+        if mode == "public":
+            add_candidate(public_endpoint, "公网")
+            add_candidate(internal_endpoint, "内网")
+            return candidates, f"强制优先公网 {candidates[0]['host']}" if candidates else "未找到可用 KS3 endpoint"
+
+        add_candidate(internal_endpoint, "内网")
+        add_candidate(public_endpoint, "公网")
+        if not candidates:
+            return [], "未找到可用 KS3 endpoint"
+
+        timings: dict[str, Optional[float]] = {}
+        with ThreadPoolExecutor(max_workers=min(2, len(candidates))) as executor:
+            future_to_host = {
+                executor.submit(self._probe_endpoint_latency, item["host"]): item["host"]
+                for item in candidates
+            }
+            for future in as_completed(future_to_host):
+                host = future_to_host[future]
+                try:
+                    timings[host] = future.result()
+                except Exception:
+                    timings[host] = None
+
+        reachable = [item for item in candidates if timings.get(item["host"]) is not None]
+        unreachable = [item for item in candidates if timings.get(item["host"]) is None]
+
+        if not reachable:
+            return candidates, "测速失败，按默认顺序尝试内外网端点"
+
+        ordered = sorted(reachable, key=lambda item: timings[item["host"]] or float("inf"))
+        ordered.extend(unreachable)
+        best = ordered[0]
+        best_ms = round((timings[best["host"]] or 0.0) * 1000)
+        return ordered, f"测速优先 {best['label']} {best['host']} ({best_ms} ms)"
+
+    def _ensure_bucket(self, conn):
+        bucket = conn.get_bucket(self.bucket_name)
+        bucket_exists = False
+
+        try:
+            list(bucket.list(max_keys=1))
+            bucket_exists = True
+            click.echo(f"   ✓ Bucket 已存在: {self.bucket_name}")
+        except Exception as e:
+            error_str = str(e)
+            if "NoSuchBucket" in error_str or "404" in error_str:
+                click.echo(f"   Bucket 不存在，正在创建: {self.bucket_name}")
+                bucket_exists = False
             else:
-                click.secho(" ✗ 不可用", fg="yellow")
+                if "AccessDenied" in error_str or "403" in error_str:
+                    click.secho(f"   ⚠️  提示: Bucket '{self.bucket_name}' 名称冲突或无权限访问 (403)。", fg="yellow")
+                    click.secho("      注意: KS3 Bucket 名称在全网范围内是全局唯一的！", fg="yellow")
+                    click.secho("      该名称已被其他用户占用，您无法使用。", fg="yellow")
+                    click.secho("   👉 解决方案:", fg="cyan")
+                    click.secho("      1. (推荐) 在 .env 中设置 KSYUN_ACCOUNT_ID 为您的账户 ID (自动生成唯一名称)。", fg="cyan")
+                    click.secho("      2. 或者，在 .env 中设置 KS3_BUCKET 为一个没人用过的唯一名称。", fg="cyan")
+                raise
 
-        return public_endpoint
+        if not bucket_exists:
+            try:
+                bucket = conn.create_bucket(self.bucket_name)
+                click.secho(f"   ✓ Bucket 创建成功: {self.bucket_name}", fg="green")
+            except Exception as create_err:
+                create_err_str = str(create_err)
+                if "Conflict" in create_err_str or "409" in create_err_str or "BucketAlreadyExists" in create_err_str:
+                    click.secho(f"   ⚠️  提示: Bucket '{self.bucket_name}' 名称已被其他用户占用。", fg="yellow")
+                    click.secho("      注意: KS3 Bucket 名称是全局唯一的。", fg="yellow")
+                    click.secho("   👉 解决方法: 修改 .env 中的 KS3_BUCKET，换一个更复杂的名字再试。", fg="cyan")
+                raise
+
+        return bucket
+
+    def _upload_via_host(self, file_path: Path, object_key: str, host: str) -> bool:
+        from ks3.connection import Connection
+
+        ak = os.environ.get("KSYUN_ACCESS_KEY") or os.environ.get("KS3_ACCESS_KEY")
+        sk = os.environ.get("KSYUN_SECRET_KEY") or os.environ.get("KS3_SECRET_KEY")
+
+        conn = Connection(
+            ak,
+            sk,
+            host=host,
+            port=self.UPLOAD_CONNECT_PORT,
+            is_secure=True,
+            timeout=self._upload_timeout_seconds(file_path),
+        )
+
+        bucket = self._ensure_bucket(conn)
+
+        key = bucket.new_key(object_key)
+        result = key.set_contents_from_filename(str(file_path), policy="public-read")
+        return bool(result and result.status == 200)
 
     async def upload(self, file_path: Path, object_key: str) -> Optional[str]:
         """上传文件到 KS3
@@ -86,9 +237,13 @@ class KS3Uploader:
             click.echo("   KSYUN_SECRET_KEY=your_secret_key")
             return None
 
-        # 获取 KS3 endpoint
-        ks3_host = self.get_endpoint()
-        click.echo(f"   KS3 Endpoint: {ks3_host}")
+        upload_targets, selection_summary = self._rank_upload_endpoints()
+        if not upload_targets:
+            click.secho("❌ 未找到可用的 KS3 Endpoint", fg="red")
+            return None
+
+        click.echo(f"   KS3 Endpoint 策略: {selection_summary}")
+        click.echo(f"   上传超时: {self._upload_timeout_seconds(file_path)} 秒")
 
         # 临时禁用系统代理 (ClashX 等会导致 KS3 上传走代理而失败)
         proxy_env_vars = [
@@ -105,76 +260,30 @@ class KS3Uploader:
                 saved_proxies[var] = os.environ.pop(var)
 
         try:
-            from ks3.connection import Connection
-
-            conn = Connection(ak, sk, host=ks3_host)
-
-            # 检查 bucket 是否真的存在
-            # 注意: get_bucket() 只是返回一个对象，不会验证存在性
-            # 需要实际调用 API 来确认
-            bucket = conn.get_bucket(self.bucket_name)
-            bucket_exists = False
-            
-            try:
-                # 尝试列出 bucket（限制1个对象），这会真正验证 bucket 是否存在
-                list(bucket.list(max_keys=1))
-                bucket_exists = True
-                click.echo(f"   ✓ Bucket 已存在: {self.bucket_name}")
-            except Exception as e:
-                # Bucket 不存在或无权限访问
-                error_str = str(e)
-                if "NoSuchBucket" in error_str or "404" in error_str:
-                    click.echo(f"   Bucket 不存在，正在创建: {self.bucket_name}")
-                    bucket_exists = False
-                else:
-                    # 其他错误（如权限问题）
-                    click.secho(f"   ✗ 检查 Bucket 失败: {e}", fg="red")
-                    if "AccessDenied" in error_str or "403" in error_str:
-                        click.secho(f"   ⚠️  提示: Bucket '{self.bucket_name}' 名称冲突或无权限访问 (403)。", fg="yellow")
-                        click.secho(f"      注意: KS3 Bucket 名称在全网范围内是全局唯一的！", fg="yellow")
-                        click.secho(f"      该名称已被其他用户占用，您无法使用。", fg="yellow")
-                        click.secho(f"   👉 解决方案:", fg="cyan")
-                        click.secho(f"      1. (推荐) 在 .env 中设置 KSYUN_ACCOUNT_ID 为您的账户 ID (自动生成唯一名称)。", fg="cyan")
-                        click.secho(f"      2. 或者，在 .env 中设置 KS3_BUCKET 为一个没人用过的唯一名称。", fg="cyan")
-                    return None
-            
-            # 如果 bucket 不存在，创建它
-            if not bucket_exists:
-                try:
-                    bucket = conn.create_bucket(self.bucket_name)
-                    click.secho(f"   ✓ Bucket 创建成功: {self.bucket_name}", fg="green")
-                except Exception as create_err:
-                    click.secho(f"   ✗ Bucket 创建失败: {create_err}", fg="red")
-                    
-                    # 针对名称冲突 (Conflict) 的专门提示
-                    create_err_str = str(create_err)
-                    if "Conflict" in create_err_str or "409" in create_err_str or "BucketAlreadyExists" in create_err_str:
-                         click.secho(f"   ⚠️  提示: Bucket '{self.bucket_name}' 名称已被其他用户占用。", fg="yellow")
-                         click.secho(f"      注意: KS3 Bucket 名称是全局唯一的。", fg="yellow")
-                         click.secho(f"   👉 解决方法: 修改 .env 中的 KS3_BUCKET，换一个更复杂的名字再试。", fg="cyan")
-                    click.echo(f"   提示: 请检查以下问题:")
-                    click.echo(f"      1. AK/SK 是否有创建 bucket 的权限")
-                    click.echo(f"      2. Bucket 名称 '{self.bucket_name}' 是否已被其他账号占用")
-                    click.echo(f"      3. Region '{self.region}' 配置是否正确")
-                    click.echo(f"   临时方案: 使用 --ks3-bucket 参数指定已存在的 bucket")
-                    return None
-
-            # 上传 (设置为公开可读，方便调试)
-            key = bucket.new_key(object_key)
-            result = key.set_contents_from_filename(str(file_path), policy="public-read")
-
-            if result and result.status == 200:
-                return f"ks3://{self.bucket_name}/{object_key}"
-            else:
-                click.secho(f"   上传返回: {result}", fg="yellow")
-                return None
-
-
+            from ks3.connection import Connection as _Connection  # noqa: F401
         except ImportError:
             click.secho("❌ ks3sdk 导入失败，请确保已安装: pip install ksadk[runtime]", fg="red")
             return None
-        except Exception as e:
-            click.secho(f"❌ KS3 上传失败: {e}", fg="red")
+
+        try:
+            last_error: Optional[Exception] = None
+            for index, target in enumerate(upload_targets, start=1):
+                host = target["host"]
+                label = target["label"]
+                click.echo(f"   尝试上传 [{index}/{len(upload_targets)}]: {label} {host}")
+                try:
+                    if self._upload_via_host(file_path, object_key, host):
+                        click.secho(f"   ✓ 上传成功 ({label})", fg="green")
+                        return f"ks3://{self.bucket_name}/{object_key}"
+                    click.secho(f"   ⚠ 上传未确认成功，准备切换其他端点: {host}", fg="yellow")
+                except Exception as e:
+                    last_error = e
+                    click.secho(f"   ⚠ {label} 上传失败: {e}", fg="yellow")
+
+            if last_error is not None:
+                click.secho(f"❌ KS3 上传失败: {last_error}", fg="red")
+            else:
+                click.secho("❌ KS3 上传失败: 所有端点均未返回成功状态", fg="red")
             return None
         finally:
             # 恢复代理环境变量
