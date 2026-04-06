@@ -6,7 +6,7 @@ import click
 import asyncio
 from pathlib import Path
 from ksadk.api.client import DryRunExit
-from ksadk.cli.cmd_deploy import _apply_network_config
+from ksadk.cli.cmd_deploy import _apply_network_config, _resolve_ui_config_inputs
 from ksadk.cli.dry_run import effective_dry_run, run_async_with_dry_run
 from ksadk.cli.error_utils import cli_error_from_exception, is_debug_mode_enabled, remote_error, usage_error, validation_error
 from ksadk.cli.workflow_common import (
@@ -199,6 +199,12 @@ async def _launch_async(
     config = _load_config(agent_path)
     deploy_name = name or config.get("name") or agent_path.name.replace("-", "_").replace(".", "_")
     print_kv("部署名称", deploy_name)
+    resolved_ui_profile, resolved_ui_path, resolved_ui_url = _resolve_ui_config_inputs(
+        config,
+        ui_profile=ui_profile,
+        ui_path=ui_path,
+        ui_url=ui_url,
+    )
 
     # 3. 获取 Provider
     try:
@@ -222,9 +228,9 @@ async def _launch_async(
             "ks3_bucket": ks3_bucket,
             "ks3_path": ks3_path,
             "image": image,
-            "ui_profile": ui_profile,
-            "ui_path": ui_path,
-            "ui_url": ui_url,
+            "ui_profile": resolved_ui_profile,
+            "ui_path": resolved_ui_path,
+            "ui_url": resolved_ui_url,
             "dry_run": dry_run,
         },
     )

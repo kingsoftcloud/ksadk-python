@@ -1,62 +1,27 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Send, Plus, Paperclip, PanelLeftClose, PanelLeft, Bot, User, Trash2, StopCircle, RefreshCcw } from 'lucide-react';
-import { MessageMarkdown } from './components/MessageMarkdown';
-import { Check } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+
 import { buildComposerContextIndicator } from './utils/context.js';
+import { resolveComposerMaxHeight, resolveSidebarVisibility } from './utils/mobile-layout.js';
 import {
   readPersistedSessionId,
   resolveSessionToRestore,
   writePersistedSessionId,
 } from './utils/session.js';
-
-function cn(...classes: (string | undefined | null | false)[]) {
-  return classes.filter(Boolean).join(' ');
-}
-
-type MessageAttachment = {
-  name: string;
-  url: string;
-  type: string;
-  fileUri?: string;
-};
-
-type PreviewImageSize = {
-  width: number;
-  height: number;
-};
-
-type Message = {
-  id: string;
-  role: 'user' | 'model' | 'tool' | 'system';
-  content: string;
-  timestamp: number;
-  eventType?: string;
-  status?: 'running' | 'completed' | 'failed';
-  summary?: string;
-  trigger?: string;
-  compactedUntilSeqId?: number;
-  historical?: boolean;
-  reasoning?: string;
-  tools?: {
-    [name: string]: {
-      name: string;
-      args: string;
-      output?: string;
-      status: 'running' | 'completed' | 'error' | 'paused';
-    }
-  };
-  attachments?: MessageAttachment[];
-};
-
-type Session = {
-  SessionId: string;
-  Title?: string;
-  TitleSource?: string;
-  Summary?: string;
-  FirstPrompt?: string;
-  LastPrompt?: string;
-  UpdatedAt?: string | number | null;
-};
+import { useResponsiveViewport } from './hooks/useResponsiveViewport';
+import { cn } from './lib/utils';
+import { AttachmentPreview } from './components/chat/AttachmentPreview';
+import { ChatComposer } from './components/chat/ChatComposer';
+import { ChatHeader } from './components/chat/ChatHeader';
+import { ChatMessageList } from './components/chat/ChatMessageList';
+import { ChatSidebar } from './components/chat/ChatSidebar';
+import type {
+  Message,
+  MessageAttachment,
+  ModelCatalogItem,
+  PreviewImageSize,
+  Session,
+} from './components/chat/types';
+import { Sheet, SheetContent, SheetTitle } from './components/ui/sheet';
 
 type SessionEventRecord = {
   EventId?: string;
@@ -65,10 +30,23 @@ type SessionEventRecord = {
     role?: string;
     status?: string;
     detail?: string;
-    parts?: Array<any>;
+    parts?: Array<{
+      type?: string;
+      text?: string;
+      inlineData?: {
+        displayName?: string;
+        mimeType?: string;
+        data?: string;
+      };
+      fileData?: {
+        fileUri?: string;
+        displayName?: string;
+        mimeType?: string;
+      };
+    }>;
   };
   Timestamp?: number;
-  Metadata?: Record<string, any>;
+  Metadata?: Record<string, unknown>;
   SeqId?: number;
 };
 
@@ -84,35 +62,30 @@ type CompactionStreamPayload = {
   timestamp?: number;
 };
 
-type ModelCatalogItem = {
-  id: string;
-  display_name?: string;
-  context_window_tokens?: number;
-  max_output_tokens?: number;
-  auto_compact_threshold_tokens?: number;
-  auto_compact_threshold_percentage?: number;
-  limits?: {
-    context_window_tokens?: number;
-    max_input_tokens?: number;
-    max_output_tokens?: number;
-    max_reasoning_tokens?: number;
-    rpm?: number;
-    tpm?: number;
-  };
-  capabilities?: {
-    function_calling?: boolean;
-    structured_output?: boolean;
-    context_caching?: boolean;
-  };
-  pricing?: Record<string, number>;
-  [key: string]: any;
-};
-
 type BootstrapModel = ModelCatalogItem & {
   source?: string;
 };
 
-const COMPOSER_MAX_HEIGHT = 160;
+type AgentInputPart =
+  | {
+      type: 'input_text';
+      text: string;
+    }
+  | {
+      type: 'input_file';
+      fileData: {
+        fileUri: string;
+        displayName: string;
+        mimeType: string;
+      };
+    };
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error);
+}
 
 function fileFingerprint(file: File): string {
   return [file.name, file.size, file.lastModified, file.type].join(':');
@@ -134,25 +107,6 @@ function extractClipboardFiles(event: React.ClipboardEvent<HTMLTextAreaElement>)
     .filter((item) => item.kind === 'file')
     .map((item) => item.getAsFile())
     .filter((file): file is File => Boolean(file));
-}
-
-function buildPreviewImageStyle(size: PreviewImageSize | null): React.CSSProperties | undefined {
-  if (!size) {
-    return undefined;
-  }
-  return {
-    width: `min(${size.width}px, calc(100vw - 5rem))`,
-    height: `min(${size.height}px, calc(100vh - 9rem))`,
-  };
-}
-
-function buildPreviewDialogStyle(size: PreviewImageSize | null): React.CSSProperties | undefined {
-  if (!size) {
-    return undefined;
-  }
-  return {
-    width: `min(${size.width + 32}px, calc(100vw - 3rem))`,
-  };
 }
 
 function upsertModelOptions(
@@ -218,8 +172,8 @@ function attachmentContentUrl(fileUri?: string): string {
   return `/agentengine/api/v1/AttachmentContent?FileUri=${encodeURIComponent(normalized)}`;
 }
 
-function parseMessageContent(evt: SessionEventRecord): ParsedMessageContent {
-  const parts = evt.Content?.parts || [];
+function parseMessageContent(event: SessionEventRecord): ParsedMessageContent {
+  const parts = event.Content?.parts || [];
   const textSegments: string[] = [];
   const attachmentsByKey = new Map<string, MessageAttachment>();
 
@@ -254,8 +208,10 @@ function parseMessageContent(evt: SessionEventRecord): ParsedMessageContent {
     }
   }
 
-  // canonical transcript 默认把附件元数据放在 Metadata 里，这里兜底恢复展示。
-  const metadataAttachments = Array.isArray(evt.Metadata?.attachments) ? evt.Metadata?.attachments : [];
+  const metadataAttachments = Array.isArray(event.Metadata?.attachments)
+    ? event.Metadata.attachments
+    : [];
+
   for (const attachment of metadataAttachments) {
     const fileUri = String(attachment.file_uri || '').trim();
     pushAttachment({
@@ -315,30 +271,30 @@ function buildCompactionMessage(options: {
   };
 }
 
-function buildMessageFromSessionEvent(evt: SessionEventRecord): Message | null {
-  const eventType = evt.EventType || '';
+function buildMessageFromSessionEvent(event: SessionEventRecord): Message | null {
+  const eventType = event.EventType || '';
   if (eventType === 'run_status') {
-    if (evt.Content?.status === 'failed') {
+    if (event.Content?.status === 'failed') {
       return {
-        id: evt.EventId || String(Date.now() + Math.random()),
+        id: event.EventId || String(Date.now() + Math.random()),
         role: 'system',
-        content: evt.Content?.detail || '本轮运行失败。',
+        content: event.Content?.detail || '本轮运行失败。',
         eventType,
         status: 'failed',
-        timestamp: evt.Timestamp || Date.now(),
+        timestamp: event.Timestamp || Date.now(),
       };
     }
     return null;
   }
 
   if (eventType === 'context_checkpoint') {
-    const parsed = parseMessageContent(evt);
+    const parsed = parseMessageContent(event);
     return buildCompactionMessage({
-      id: evt.EventId || String(Date.now() + Math.random()),
-      timestamp: evt.Timestamp || Date.now(),
+      id: event.EventId || String(Date.now() + Math.random()),
+      timestamp: event.Timestamp || Date.now(),
       status: 'completed',
-      trigger: String(evt.Metadata?.trigger || 'auto'),
-      compactedUntilSeqId: Number(evt.Metadata?.compacted_until_seq_id || 0) || undefined,
+      trigger: String(event.Metadata?.trigger || 'auto'),
+      compactedUntilSeqId: Number(event.Metadata?.compacted_until_seq_id || 0) || undefined,
       summary: parsed.text || undefined,
       historical: true,
     });
@@ -348,19 +304,41 @@ function buildMessageFromSessionEvent(evt: SessionEventRecord): Message | null {
     return null;
   }
 
-  const parsed = parseMessageContent(evt);
+  const parsed = parseMessageContent(event);
   if (!parsed.text && !parsed.attachments?.length) {
     return null;
   }
 
   return {
-    id: evt.EventId || String(Date.now() + Math.random()),
+    id: event.EventId || String(Date.now() + Math.random()),
     role: eventType === 'user_message' ? 'user' : 'model',
     content: parsed.text,
-    timestamp: evt.Timestamp || Date.now(),
+    timestamp: event.Timestamp || Date.now(),
     eventType,
     attachments: parsed.attachments,
   };
+}
+
+function formatDate(ts?: string | number | null) {
+  if (!ts) return '';
+  if (typeof ts === 'string') {
+    const parsed = Date.parse(ts);
+    return Number.isNaN(parsed)
+      ? ''
+      : new Date(parsed).toLocaleString('zh-CN', {
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+  }
+  const date = new Date(ts > 1e11 ? ts : ts * 1000);
+  return date.toLocaleString('zh-CN', {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }
 
 export default function App() {
@@ -373,29 +351,40 @@ export default function App() {
   const [previewAttachment, setPreviewAttachment] = useState<MessageAttachment | null>(null);
   const [previewImageSize, setPreviewImageSize] = useState<PreviewImageSize | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
   const [agentName, setAgentName] = useState('AgentEngine');
   const [selectedModel, setSelectedModel] = useState('');
   const [availableModels, setAvailableModels] = useState<ModelCatalogItem[]>([]);
   const [modelSource, setModelSource] = useState('');
   const [modelCatalogLoaded, setModelCatalogLoaded] = useState(false);
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const activeCompactionMessageIdRef = useRef<string | null>(null);
   const currentSessionIdRef = useRef<string | null>(null);
 
-  // Auto-scroll to bottom
+  const { isMobile, viewportHeight } = useResponsiveViewport();
+  const composerMaxHeight = resolveComposerMaxHeight({ isMobile, viewportHeight });
+  const { desktopSidebarVisible } = resolveSidebarVisibility({
+    isMobile,
+    desktopSidebarOpen: sidebarOpen,
+    mobileSidebarOpen,
+  });
+
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages, isStreaming]);
 
-  // Initial load
   useEffect(() => {
-    fetchBootstrap();
+    void fetchBootstrap();
+    // fetchBootstrap intentionally runs once on initial mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -403,19 +392,32 @@ export default function App() {
       return;
     }
     textareaRef.current.style.height = 'auto';
-    textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, COMPOSER_MAX_HEIGHT)}px`;
-  }, [input]);
+    textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, composerMaxHeight)}px`;
+  }, [input, composerMaxHeight]);
 
   useEffect(() => {
     currentSessionIdRef.current = currentSessionId;
     writePersistedSessionId(agentId, currentSessionId);
   }, [agentId, currentSessionId]);
 
+  useEffect(() => {
+    if (!isMobile) {
+      setMobileSidebarOpen(false);
+      setMobileActionsOpen(false);
+    }
+  }, [isMobile]);
+
   const appendAttachments = (incoming: File[]) => {
     if (!incoming.length) {
       return;
     }
     setAttachments((prev) => mergeAttachmentFiles(prev, incoming));
+  };
+
+  const handleInputChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setInput(event.target.value);
+    event.target.style.height = 'auto';
+    event.target.style.height = `${Math.min(event.target.scrollHeight, composerMaxHeight)}px`;
   };
 
   const openAttachmentPreview = (attachment: MessageAttachment) => {
@@ -440,12 +442,12 @@ export default function App() {
 
   const fetchModels = async (targetAgentId: string) => {
     try {
-      const res = await fetch('/agentengine/api/v1/ListAgentModels', {
+      const response = await fetch('/agentengine/api/v1/ListAgentModels', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ AgentId: targetAgentId }),
       });
-      const data = await res.json();
+      const data = await response.json();
       const models = data?.Data?.Models;
       if (Array.isArray(models)) {
         setAvailableModels((current) => upsertModelOptions(current, models));
@@ -456,40 +458,38 @@ export default function App() {
       if (data?.Data?.Source) {
         setModelSource(String(data.Data.Source));
       }
-    } catch (e) {
-      console.error('Failed to fetch models:', e);
+    } catch (error) {
+      console.error('Failed to fetch models:', error);
     } finally {
       setModelCatalogLoaded(true);
     }
   };
 
-  const fetchBootstrap = async () => {
+  const loadSession = async (sessionId: string) => {
+    currentSessionIdRef.current = sessionId;
+    setCurrentSessionId(sessionId);
+    activeCompactionMessageIdRef.current = null;
+    if (isMobile) {
+      setMobileSidebarOpen(false);
+    }
+
     try {
-      const res = await fetch('/agentengine/api/v1/GetAgentUiBootstrap', {
+      const response = await fetch('/agentengine/api/v1/ListSessionEvents', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ SessionId: sessionId }),
       });
-      const data = await res.json();
-      const bootstrapAgentId = data?.Data?.Agent?.AgentId || 'default-agent';
-      setAgentId(bootstrapAgentId);
-      if (data?.Data?.Agent?.Name) {
-        setAgentName(data.Data.Agent.Name);
-        fetchSessions(bootstrapAgentId, readPersistedSessionId(bootstrapAgentId));
+      const data = await response.json();
+      if (data?.Data?.Events) {
+        const history = data.Data.Events
+          .map((event: SessionEventRecord) => buildMessageFromSessionEvent(event))
+          .filter((event: Message | null): event is Message => Boolean(event));
+        setMessages(history);
       } else {
-        fetchSessions(bootstrapAgentId, readPersistedSessionId(bootstrapAgentId));
+        setMessages([]);
       }
-      const bootstrapModel: BootstrapModel | undefined = data?.Data?.Model;
-      if (bootstrapModel?.id) {
-        setSelectedModel(bootstrapModel.id);
-        setAvailableModels((current) => upsertModelOptions(current, [bootstrapModel]));
-        setModelSource(bootstrapModel.source || '');
-      }
-      fetchModels(bootstrapAgentId);
-    } catch (e) {
-      console.error('Failed to fetch bootstrap:', e);
-      fetchSessions('default-agent', readPersistedSessionId('default-agent'));
-      fetchModels('default-agent');
+    } catch (error) {
+      console.error('Failed to load session events:', error);
     }
   };
 
@@ -498,12 +498,12 @@ export default function App() {
     preferredSessionId: string | null = null,
   ) => {
     try {
-      const res = await fetch('/agentengine/api/v1/ListSessions', {
+      const response = await fetch('/agentengine/api/v1/ListSessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ AgentId: targetAgentId }),
       });
-      const data = await res.json();
+      const data = await response.json();
       if (data?.Data?.Sessions) {
         const sorted = upsertSessions([], data.Data.Sessions as Session[]);
         setSessions(sorted);
@@ -513,61 +513,74 @@ export default function App() {
           activeSessionId || preferredSessionId || readPersistedSessionId(targetAgentId),
         );
         if (restoredSessionId && restoredSessionId !== activeSessionId) {
-          loadSession(restoredSessionId);
+          void loadSession(restoredSessionId);
         } else if (!restoredSessionId && activeSessionId) {
           currentSessionIdRef.current = null;
           setCurrentSessionId(null);
           setMessages([]);
         }
       }
-    } catch (e) {
-      console.error('Failed to fetch sessions:', e);
+    } catch (error) {
+      console.error('Failed to fetch sessions:', error);
     }
   };
 
-  const loadSession = async (sessionId: string) => {
-    currentSessionIdRef.current = sessionId;
-    setCurrentSessionId(sessionId);
-    activeCompactionMessageIdRef.current = null;
+  const fetchBootstrap = async () => {
     try {
-      const res = await fetch('/agentengine/api/v1/ListSessionEvents', {
+      const response = await fetch('/agentengine/api/v1/GetAgentUiBootstrap', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ SessionId: sessionId }),
+        body: JSON.stringify({}),
       });
-      const data = await res.json();
-      if (data?.Data?.Events) {
-        const history = data.Data.Events
-          .map((evt: SessionEventRecord) => buildMessageFromSessionEvent(evt))
-          .filter((evt: Message | null): evt is Message => Boolean(evt));
-        setMessages(history);
-      } else {
-        setMessages([]);
+      const data = await response.json();
+      const bootstrapAgentId = data?.Data?.Agent?.AgentId || 'default-agent';
+      setAgentId(bootstrapAgentId);
+      if (data?.Data?.Agent?.Name) {
+        setAgentName(data.Data.Agent.Name);
       }
-    } catch (e) {
-      console.error('Failed to load session events:', e);
+
+      void fetchSessions(bootstrapAgentId, readPersistedSessionId(bootstrapAgentId));
+
+      const bootstrapModel: BootstrapModel | undefined = data?.Data?.Model;
+      if (bootstrapModel?.id) {
+        setSelectedModel(bootstrapModel.id);
+        setAvailableModels((current) => upsertModelOptions(current, [bootstrapModel]));
+        setModelSource(bootstrapModel.source || '');
+      }
+      void fetchModels(bootstrapAgentId);
+    } catch (error) {
+      console.error('Failed to fetch bootstrap:', error);
+      void fetchSessions('default-agent', readPersistedSessionId('default-agent'));
+      void fetchModels('default-agent');
     }
   };
 
   const createNewSession = async () => {
     if (isStreaming) return;
+
     try {
-      const res = await fetch('/agentengine/api/v1/CreateSession', {
+      const response = await fetch('/agentengine/api/v1/CreateSession', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ AgentId: agentId }),
       });
-      const data = await res.json();
+      const data = await response.json();
       const newId = data?.Data?.Session?.SessionId;
       if (newId) {
-        setSessions(prev => upsertSessions(prev, [{ SessionId: newId, UpdatedAt: new Date().toISOString() }]));
+        setSessions((prev) =>
+          upsertSessions(prev, [{ SessionId: newId, UpdatedAt: new Date().toISOString() }]),
+        );
         currentSessionIdRef.current = newId;
         setCurrentSessionId(newId);
         setMessages([]);
-        fetchSessions(agentId, newId);
+        if (isMobile) {
+          setMobileSidebarOpen(false);
+          setMobileActionsOpen(false);
+        }
+        void fetchSessions(agentId, newId);
       }
-    } catch (e) {
-      console.error('Failed to create session:', e);
+    } catch (error) {
+      console.error('Failed to create session:', error);
     }
   };
 
@@ -586,7 +599,11 @@ export default function App() {
     }
 
     const nextStatus: Message['status'] =
-      payload.phase === 'start' ? 'running' : payload.phase === 'failed' ? 'failed' : 'completed';
+      payload.phase === 'start'
+        ? 'running'
+        : payload.phase === 'failed'
+          ? 'failed'
+          : 'completed';
     const nextMessage = buildCompactionMessage({
       id: currentId,
       timestamp: payload.timestamp || Date.now(),
@@ -595,12 +612,12 @@ export default function App() {
       compactedUntilSeqId: payload.compacted_until_seq_id,
     });
 
-    setMessages(prev => {
-      const existingIndex = prev.findIndex(msg => msg.id === currentId);
+    setMessages((prev) => {
+      const existingIndex = prev.findIndex((message) => message.id === currentId);
       if (existingIndex < 0) {
         return [...prev, nextMessage];
       }
-      return prev.map(msg => msg.id === currentId ? { ...msg, ...nextMessage } : msg);
+      return prev.map((message) => (message.id === currentId ? { ...message, ...nextMessage } : message));
     });
 
     if (nextStatus !== 'running') {
@@ -608,13 +625,12 @@ export default function App() {
     }
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
     if ((!input.trim() && attachments.length === 0) || isStreaming) return;
-    
-    // Fallback ID if none
-    let sId = currentSessionId;
-    if (!sId) {
+
+    let sessionId = currentSessionId;
+    if (!sessionId) {
       try {
         const sessionResponse = await fetch('/agentengine/api/v1/CreateSession', {
           method: 'POST',
@@ -622,101 +638,116 @@ export default function App() {
           body: JSON.stringify({ AgentId: agentId }),
         });
         const sessionPayload = await sessionResponse.json();
-        sId = sessionPayload?.Data?.Session?.SessionId || null;
-      } catch (err) {
-        console.error('Failed to create session before RunAgent:', err);
+        sessionId = sessionPayload?.Data?.Session?.SessionId || null;
+      } catch (error) {
+        console.error('Failed to create session before RunAgent:', error);
       }
     }
-    if (!sId) {
-      sId = 'default-session-' + Date.now();
+
+    if (!sessionId) {
+      sessionId = `default-session-${Date.now()}`;
     }
-    setSessions(prev => upsertSessions(prev, [{ SessionId: sId, UpdatedAt: new Date().toISOString() }]));
-    currentSessionIdRef.current = sId;
-    setCurrentSessionId(sId);
+
+    setSessions((prev) =>
+      upsertSessions(prev, [{ SessionId: sessionId, UpdatedAt: new Date().toISOString() }]),
+    );
+    currentSessionIdRef.current = sessionId;
+    setCurrentSessionId(sessionId);
 
     const userText = input.trim();
     setInput('');
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
-    
-    const msgAttachments = attachments.map(f => ({
-      name: f.name,
-      url: URL.createObjectURL(f),
-      type: f.type || 'application/octet-stream'
+
+    const messageAttachments = attachments.map((file) => ({
+      name: file.name,
+      url: URL.createObjectURL(file),
+      type: file.type || 'application/octet-stream',
     }));
 
-    const userMsg: Message = {
+    const userMessage: Message = {
       id: String(Date.now()),
       role: 'user',
       content: userText,
       timestamp: Date.now(),
-      attachments: msgAttachments.length > 0 ? msgAttachments : undefined
+      attachments: messageAttachments.length > 0 ? messageAttachments : undefined,
     };
-    
-    setMessages(prev => [...prev, userMsg]);
-    setIsStreaming(true);
 
-    const parts: any[] = [{ type: 'input_text', text: userText }];
-    
-    // Process attachments via UploadFile API
+    setMessages((prev) => [...prev, userMessage]);
+    setIsStreaming(true);
+    setMobileActionsOpen(false);
+
+    const parts: AgentInputPart[] = [{ type: 'input_text', text: userText }];
+
     for (const file of attachments) {
       if (file.size > 100 * 1024 * 1024) {
-        setMessages(prev => [...prev, {
+        setMessages((prev) => [
+          ...prev,
+          {
             id: String(Date.now()),
             role: 'model',
             content: `【系统提示】文件 ${file.name} 超过 100MB 限制，未发送。`,
-            timestamp: Date.now()
-        }]);
+            timestamp: Date.now(),
+          },
+        ]);
         continue;
       }
 
       const formData = new FormData();
-      formData.append("file", file);
+      formData.append('file', file);
+
       try {
-          const uploadRes = await fetch('/agentengine/api/v1/UploadFile', {
-              method: 'POST',
-              body: formData
+        const uploadResponse = await fetch('/agentengine/api/v1/UploadFile', {
+          method: 'POST',
+          body: formData,
+        });
+        if (!uploadResponse.ok) {
+          const errorText = await uploadResponse.text();
+          throw new Error(`HTTP ${uploadResponse.status}: ${errorText}`);
+        }
+
+        const uploadData = await uploadResponse.json();
+        if (uploadData?.Data?.FileData) {
+          parts.push({
+            type: 'input_file',
+            fileData: {
+              fileUri: uploadData.Data.FileData.fileUri,
+              displayName: uploadData.Data.FileData.displayName || file.name,
+              mimeType:
+                uploadData.Data.FileData.mimeType || file.type || 'application/octet-stream',
+            },
           });
-          if (!uploadRes.ok) {
-              const errorText = await uploadRes.text();
-              throw new Error(`HTTP ${uploadRes.status}: ${errorText}`);
-          }
-          const uploadData = await uploadRes.json();
-          if (uploadData?.Data?.FileData) {
-              parts.push({
-                  type: 'input_file',
-                  fileData: {
-                      fileUri: uploadData.Data.FileData.fileUri,
-                      displayName: uploadData.Data.FileData.displayName || file.name,
-                      mimeType: uploadData.Data.FileData.mimeType || file.type || "application/octet-stream"
-                  }
-              });
-          } else if (uploadData?.Message !== "Success") {
-              throw new Error(`服务端返回异常: ${uploadData?.Message || JSON.stringify(uploadData)}`);
-          }
-      } catch (err: any) {
-          console.error("Upload failed", err);
-          setMessages(prev => [...prev, {
-              id: String(Date.now()),
-              role: 'model',
-              content: `【系统提示】文件 ${file.name} 上传失败，原因: ${err.message}`,
-              timestamp: Date.now()
-          }]);
+        } else if (uploadData?.Message !== 'Success') {
+          throw new Error(`服务端返回异常: ${uploadData?.Message || JSON.stringify(uploadData)}`);
+        }
+      } catch (error: unknown) {
+        console.error('Upload failed', error);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: String(Date.now()),
+            role: 'model',
+            content: `【系统提示】文件 ${file.name} 上传失败，原因: ${getErrorMessage(error)}`,
+            timestamp: Date.now(),
+          },
+        ]);
       }
     }
 
-    setAttachments([]); // Clear attachments after sending
-
+    setAttachments([]);
     abortControllerRef.current = new AbortController();
 
     try {
       const response = await fetch('/agentengine/api/v1/RunAgent', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
+        },
         body: JSON.stringify({
           AgentId: agentId,
-          SessionId: sId,
+          SessionId: sessionId,
           Stream: true,
           ApiFormat: 'responses',
           Model: selectedModel || undefined,
@@ -727,21 +758,21 @@ export default function App() {
             },
           ],
         }),
-        signal: abortControllerRef.current.signal
+        signal: abortControllerRef.current.signal,
       });
 
       if (!response.body) throw new Error('No readable stream');
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
-      
-      let assistantMsgId = String(Date.now() + 1);
+
+      const assistantMessageId = String(Date.now() + 1);
       let assistantMessageCreated = false;
       const ensureAssistantMessage = () => {
         if (assistantMessageCreated) return;
         assistantMessageCreated = true;
-        setMessages(prev => [
+        setMessages((prev) => [
           ...prev,
-          { id: assistantMsgId, role: 'model', content: '', timestamp: Date.now(), reasoning: '' },
+          { id: assistantMessageId, role: 'model', content: '', timestamp: Date.now(), reasoning: '' },
         ]);
       };
 
@@ -751,12 +782,11 @@ export default function App() {
       while (!isDone) {
         const { value, done } = await reader.read();
         if (done) break;
-        
+
         buffer += decoder.decode(value, { stream: true });
         const chunks = buffer.split('\n\n');
         buffer = chunks.pop() || '';
 
-        // 按 SSE block 解析，避免上一条 event 名称泄漏到下一条消息。
         for (const chunk of chunks) {
           if (!chunk.trim()) continue;
 
@@ -770,15 +800,15 @@ export default function App() {
             }
           }
 
-          const dataStr = dataLines.join('\n').trim();
-          if (dataStr === '[DONE]') {
+          const dataString = dataLines.join('\n').trim();
+          if (dataString === '[DONE]') {
             isDone = true;
             break;
           }
-          if (!dataStr) continue;
+          if (!dataString) continue;
 
           try {
-            const data = JSON.parse(dataStr);
+            const data = JSON.parse(dataString);
             if (currentEvent === 'response.compaction.start') {
               upsertCompactionMessage({ ...data, phase: 'start' });
               continue;
@@ -792,124 +822,159 @@ export default function App() {
               continue;
             }
 
-            // Handle ADK event format or newer SSE formats
             if (currentEvent === 'response.tool_call') {
-               ensureAssistantMessage();
-               setMessages(prev => prev.map(m => {
-                 if (m.id === assistantMsgId) {
-                   const name = String(data.name || "tool");
-                   const args = typeof data.args === 'object' ? JSON.stringify(data.args, null, 2) : String(data.args || "");
-                   return {
-                     ...m,
-                     tools: {
-                       ...(m.tools || {}),
-                       [name]: { name, args, status: 'running' }
-                     }
-                   };
-                 }
-                 return m;
-               }));
+              ensureAssistantMessage();
+              setMessages((prev) =>
+                prev.map((message) => {
+                  if (message.id === assistantMessageId) {
+                    const name = String(data.name || 'tool');
+                    const args =
+                      typeof data.args === 'object'
+                        ? JSON.stringify(data.args, null, 2)
+                        : String(data.args || '');
+                    return {
+                      ...message,
+                      tools: {
+                        ...(message.tools || {}),
+                        [name]: { name, args, status: 'running' },
+                      },
+                    };
+                  }
+                  return message;
+                }),
+              );
             } else if (currentEvent === 'response.tool_result') {
-               ensureAssistantMessage();
-               setMessages(prev => prev.map(m => {
-                 if (m.id === assistantMsgId) {
-                   const name = String(data.name || "tool");
-                   const output = typeof data.output === 'object' ? JSON.stringify(data.output, null, 2) : String(data.output || "");
-                   return {
-                     ...m,
-                     tools: {
-                       ...(m.tools || {}),
-                       [name]: { ...(m.tools?.[name] || { name, args: '' }), output, status: 'completed' }
-                     }
-                   };
-                 }
-                 return m;
-               }));
+              ensureAssistantMessage();
+              setMessages((prev) =>
+                prev.map((message) => {
+                  if (message.id === assistantMessageId) {
+                    const name = String(data.name || 'tool');
+                    const output =
+                      typeof data.output === 'object'
+                        ? JSON.stringify(data.output, null, 2)
+                        : String(data.output || '');
+                    return {
+                      ...message,
+                      tools: {
+                        ...(message.tools || {}),
+                        [name]: {
+                          ...(message.tools?.[name] || { name, args: '' }),
+                          output,
+                          status: 'completed',
+                        },
+                      },
+                    };
+                  }
+                  return message;
+                }),
+              );
             } else if (currentEvent === 'response.reasoning.delta') {
               const delta = data.delta || '';
               if (delta) {
                 ensureAssistantMessage();
-                setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, reasoning: (m.reasoning || '') + delta } : m));
+                setMessages((prev) =>
+                  prev.map((message) =>
+                    message.id === assistantMessageId
+                      ? { ...message, reasoning: (message.reasoning || '') + delta }
+                      : message,
+                  ),
+                );
               }
             } else if (currentEvent === 'response.output_text.delta') {
               const delta = data.delta || '';
               if (delta) {
                 ensureAssistantMessage();
-                setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, content: m.content + delta } : m));
+                setMessages((prev) =>
+                  prev.map((message) =>
+                    message.id === assistantMessageId
+                      ? { ...message, content: message.content + delta }
+                      : message,
+                  ),
+                );
               }
             } else if (currentEvent === 'response.completed') {
               const finalText = data.output_text || '';
               if (finalText) {
                 ensureAssistantMessage();
-                setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, content: finalText } : m));
+                setMessages((prev) =>
+                  prev.map((message) =>
+                    message.id === assistantMessageId ? { ...message, content: finalText } : message,
+                  ),
+                );
               }
             } else if (data.content?.parts?.[0]?.text) {
-              // Legacy ADK style
               const delta = data.content.parts[0].text;
               if (!data.actions?.finishReason) {
-                 ensureAssistantMessage();
-                 setMessages(prev => prev.map(m => m.id === assistantMsgId ? { ...m, content: m.content + delta } : m));
+                ensureAssistantMessage();
+                setMessages((prev) =>
+                  prev.map((message) =>
+                    message.id === assistantMessageId
+                      ? { ...message, content: message.content + delta }
+                      : message,
+                  ),
+                );
               }
             }
-          } catch (err) {
-            console.warn("Failed to parse SSE data", dataStr, err);
+          } catch (error) {
+            console.warn('Failed to parse SSE data', dataString, error);
           }
         }
       }
-    } catch (err: any) {
-      if (err.name === 'AbortError') {
-         if (activeCompactionMessageIdRef.current) {
-           upsertCompactionMessage({ phase: 'failed' });
-         }
-         console.log('Stream aborted');
+    } catch (error: unknown) {
+      const isAbortError = error instanceof DOMException && error.name === 'AbortError';
+      if (isAbortError) {
+        if (activeCompactionMessageIdRef.current) {
+          upsertCompactionMessage({ phase: 'failed' });
+        }
+        console.log('Stream aborted');
       } else {
-         if (activeCompactionMessageIdRef.current) {
-           upsertCompactionMessage({ phase: 'failed' });
-         }
-         console.error('SSE Error:', err);
-         setMessages(prev => [...prev, { id: String(Date.now()), role: 'model', content: '连接断开或生成出错。', timestamp: Date.now() }]);
+        if (activeCompactionMessageIdRef.current) {
+          upsertCompactionMessage({ phase: 'failed' });
+        }
+        console.error('SSE Error:', error);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: String(Date.now()),
+            role: 'model',
+            content: isAbortError ? '连接已中断。' : '连接断开或生成出错。',
+            timestamp: Date.now(),
+          },
+        ]);
       }
     } finally {
       setIsStreaming(false);
       abortControllerRef.current = null;
       activeCompactionMessageIdRef.current = null;
-      fetchSessions(agentId, sId);
+      void fetchSessions(agentId, sessionId);
     }
   };
 
-  const deleteSession = async (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
+  const deleteSession = async (
+    sessionId: string,
+    event: React.MouseEvent<HTMLButtonElement>,
+  ) => {
+    event.stopPropagation();
     try {
       await fetch('/agentengine/api/v1/DeleteSession', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ SessionId: id }),
+        body: JSON.stringify({ SessionId: sessionId }),
       });
-      setSessions(prev => prev.filter(s => s.SessionId !== id));
-      if (currentSessionId === id) {
-         currentSessionIdRef.current = null;
-         setMessages([]);
-         setCurrentSessionId(null);
-         fetchSessions(agentId);
+      setSessions((prev) => prev.filter((session) => session.SessionId !== sessionId));
+      if (currentSessionId === sessionId) {
+        currentSessionIdRef.current = null;
+        setMessages([]);
+        setCurrentSessionId(null);
+        void fetchSessions(agentId);
       }
-    } catch (e) {
-      console.error('Failed to delete session', e);
+    } catch (error) {
+      console.error('Failed to delete session', error);
     }
   };
 
-  const formatDate = (ts?: string | number | null) => {
-    if (!ts) return '';
-    if (typeof ts === 'string') {
-      const parsed = Date.parse(ts);
-      return Number.isNaN(parsed)
-        ? ''
-        : new Date(parsed).toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-    }
-    const date = new Date(ts > 1e11 ? ts : ts * 1000); // handle ms/s mix
-    return date.toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-  };
-
-  const selectedModelMetadata = availableModels.find((model) => model.id === selectedModel) || null;
+  const selectedModelMetadata =
+    availableModels.find((model) => model.id === selectedModel) || null;
   const selectedModelLabel = selectedModelMetadata?.display_name || selectedModel || '';
   const composerContextIndicator = buildComposerContextIndicator({
     messages,
@@ -918,484 +983,132 @@ export default function App() {
   });
 
   return (
-    <div className="flex h-screen bg-white text-slate-800 font-sans overflow-hidden dark:bg-slate-900 dark:text-slate-200">
-      
-      {/* Sidebar - Open WebUI style (minimal dark/light gray) */}
-      <aside className={cn(
-        "flex-shrink-0 flex flex-col transition-all duration-300 ease-in-out border-r border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50",
-        sidebarOpen ? "w-[260px]" : "w-0 overflow-hidden border-none"
-      )}>
-        <div className="p-4 flex flex-col gap-2">
-          <button 
-            onClick={createNewSession}
-            disabled={isStreaming}
-            className="flex items-center justify-between w-full px-3 py-2.5 rounded-lg hover:bg-slate-200/50 dark:hover:bg-slate-800 transition-colors text-sm font-medium disabled:opacity-50"
-          >
-            <div className="flex items-center gap-2">
-              <Plus className="w-4 h-4" />
-              <span>新对话</span>
-            </div>
-            <span className="text-xs bg-white dark:bg-slate-800 px-1.5 py-0.5 rounded border border-slate-200 dark:border-slate-700 shadow-sm text-slate-500">⌘ N</span>
-          </button>
-        </div>
-
-        <div className="flex-1 overflow-y-auto px-3 pb-4 flex flex-col gap-1 custom-scrollbar">
-          <div className="px-2 py-2 text-xs font-semibold text-slate-400 dark:text-slate-500 mt-2">历史记录</div>
-          {sessions.map((session) => (
-             <div
-               key={session.SessionId}
-               onClick={() => !isStreaming && loadSession(session.SessionId)}
-               className={cn(
-                 "group flex items-center justify-between px-3 py-2.5 rounded-lg cursor-pointer transition-colors text-sm",
-                 currentSessionId === session.SessionId 
-                   ? "bg-slate-200 dark:bg-slate-800 text-slate-900 dark:text-slate-100 font-medium" 
-                   : "hover:bg-slate-100 dark:hover:bg-slate-800/50 text-slate-600 dark:text-slate-400"
-               )}
-             >
-               <div className="flex-1 min-w-0 pr-2">
-                 <div className="truncate">{sessionTitle(session)}</div>
-                 {session.Summary ? (
-                   <div className="truncate text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                     {session.Summary}
-                   </div>
-                 ) : null}
-                 <div className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">{formatDate(session.UpdatedAt)}</div>
-               </div>
-               <button 
-                 onClick={(e) => deleteSession(session.SessionId, e)}
-                 className="opacity-0 group-hover:opacity-100 p-1.5 text-slate-400 hover:text-red-500 transition-opacity"
-                 title="Delete Chat"
-               >
-                 <Trash2 className="w-3.5 h-3.5" />
-               </button>
-             </div>
-          ))}
-        </div>
-
-        {/* Brand Footer */}
-        <div className="flex-shrink-0 p-3 pt-4 border-t border-slate-200 dark:border-slate-800 flex flex-col items-center justify-center opacity-80">
-          <div className="text-[10px] text-slate-400 dark:text-slate-500 font-medium mb-0.5">POWERED BY</div>
-          <div className="font-bold text-xs text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-indigo-500 dark:from-blue-400 dark:to-indigo-300">
-            Ksyun AgentEngine
-          </div>
-        </div>
-      </aside>
-
-      {/* Main Container */}
-      <main className="flex-1 flex flex-col min-w-0 bg-white dark:bg-slate-900 relative h-full">
-        {/* Top Header */}
-        <header className="flex-shrink-0 h-14 px-4 flex items-center justify-between border-b border-transparent">
-          <div className="flex items-center gap-2">
-            <button 
-              onClick={() => setSidebarOpen(!sidebarOpen)}
-              className="p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md transition-colors"
-            >
-              {sidebarOpen ? <PanelLeftClose className="w-5 h-5" /> : <PanelLeft className="w-5 h-5" />}
-            </button>
-            <div className="font-semibold text-base py-1 px-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer">
-              {agentName} <span className="text-slate-400 font-normal text-sm ml-1">智能体</span>
-            </div>
-          </div>
-          <div className="flex items-center gap-3">
-             {availableModels.length > 1 ? (
-               <select 
-                 value={selectedModel}
-                 onChange={(e) => {
-                   setSelectedModel(e.target.value);
-                 }}
-                 className="text-xs bg-slate-50 border border-slate-200 dark:bg-slate-800 dark:border-slate-700 text-slate-700 dark:text-slate-300 rounded px-2 py-1 outline-none focus:ring-1 focus:ring-blue-500 transition-colors max-w-[150px] truncate"
-               >
-                 {availableModels.map(m => (
-                   <option key={m.id} value={m.id}>{m.display_name || m.id}</option>
-                 ))}
-               </select>
-             ) : selectedModelLabel ? (
-               <span
-                 className="text-xs bg-slate-50 border border-slate-200 dark:bg-slate-800 dark:border-slate-700 text-slate-700 dark:text-slate-300 rounded px-2 py-1 max-w-[180px] truncate"
-                 title={modelSource || selectedModelLabel}
-               >
-                 {selectedModelLabel}
-               </span>
-             ) : (
-               <span className="text-xs text-slate-400">{modelCatalogLoaded ? '未配置模型' : 'Loading models...'}</span>
-             )}
-             {currentSessionId && (
-               <span className="text-xs text-slate-400 font-mono bg-slate-50 dark:bg-slate-800 px-2 py-1 rounded">
-                 ID: {currentSessionId.slice(0, 8)}
-               </span>
-             )}
-          </div>
-        </header>
-
-        {/* Output Scroll Area */}
-        <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-5 scroll-smooth">
-          <div className="max-w-[64rem] mx-auto flex flex-col pb-8">
-            {messages.length === 0 ? (
-              <div className="flex flex-col items-center justify-center min-h-[50vh] text-center px-4">
-                <div className="w-16 h-16 bg-slate-100 dark:bg-slate-800 rounded-full flex items-center justify-center mb-6">
-                  <Bot className="w-8 h-8 text-slate-600 dark:text-slate-300" />
-                </div>
-                <h2 className="text-2xl font-semibold mb-2">有什么我可以帮您的吗？</h2>
-                <p className="text-slate-500 dark:text-slate-400 text-sm max-w-md mx-auto">
-                  我是 {agentName}，一个由 <span className="font-semibold text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-indigo-500 dark:from-blue-400 dark:to-indigo-300">Ksyun AgentEngine</span> 驱动的智能体。您可以在下方输入消息开始对话。
-                </p>
-                <div className="mt-8 grid grid-cols-1 sm:grid-cols-2 gap-3 w-full max-w-2xl">
-                   <button onClick={() => setInput('你好，请介绍一下你自己')} className="p-3 text-left border border-slate-200 dark:border-slate-800 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
-                     <div className="text-sm font-medium">✨ 你好，请介绍一下你自己</div>
-                   </button>
-                   <button onClick={() => setInput('你能做什么？有什么特色技能？')} className="p-3 text-left border border-slate-200 dark:border-slate-800 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
-                     <div className="text-sm font-medium">💡 工具探究</div>
-                     <div className="text-xs text-slate-500 mt-1">你能做什么？有什么特色技能？</div>
-                   </button>
-                </div>
-              </div>
-	            ) : (
-	              messages.map((msg, idx) => (
-	                msg.role === 'system' ? (
-	                  <div key={msg.id || idx} className="px-4 py-2 w-full">
-	                    <div className="mx-auto max-w-3xl rounded-2xl border border-amber-200/80 bg-amber-50/80 px-4 py-3 text-sm text-amber-900 shadow-sm dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-100">
-	                      <div className="flex items-center gap-2 font-medium">
-	                        {msg.status === 'running' ? (
-	                          <RefreshCcw className="h-4 w-4 animate-spin text-amber-600 dark:text-amber-300" />
-	                        ) : msg.status === 'failed' ? (
-	                          <StopCircle className="h-4 w-4 text-rose-600 dark:text-rose-400" />
-	                        ) : (
-	                          <Check className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
-	                        )}
-	                        <span>{msg.content}</span>
-	                      </div>
-	                      {msg.compactedUntilSeqId && (
-	                        <div className="mt-1 text-xs text-amber-700/80 dark:text-amber-200/80">
-	                          已折叠到会话事件 #{msg.compactedUntilSeqId}
-	                        </div>
-	                      )}
-	                      {msg.summary && (
-	                        <details className="mt-3 rounded-xl border border-amber-200/80 bg-white/70 px-3 py-2 dark:border-amber-900/60 dark:bg-slate-950/40">
-	                          <summary className="cursor-pointer select-none text-xs font-medium text-amber-800 dark:text-amber-200">
-	                            查看压缩摘要
-	                          </summary>
-	                          <div className="mt-2 text-[13px] leading-relaxed text-slate-700 dark:text-slate-200">
-	                            <MessageMarkdown content={msg.summary} />
-	                          </div>
-	                        </details>
-	                      )}
-	                    </div>
-	                  </div>
-	                ) : (
-	                <div key={msg.id || idx} className={cn(
-	                  "px-4 py-4 flex gap-4 w-full group",
-	                  msg.role === 'user' ? "" : ""
-	                )}>
-                  {/* Avatar */}
-                  <div className="flex-shrink-0 mt-0.5">
-                    {msg.role === 'user' ? (
-                      <div className="w-7 h-7 bg-slate-800 dark:bg-slate-200 rounded-full flex items-center justify-center text-white dark:text-slate-900">
-                        <User className="w-4 h-4" />
-                      </div>
-                    ) : (
-                      <div className="w-7 h-7 bg-emerald-600 rounded-full flex items-center justify-center text-white p-1">
-                        <Bot className="w-4 h-4" />
-                      </div>
-                    )}
-                  </div>
-                  
-                  {/* Content Container */}
-                  <div className="flex-1 min-w-0 w-full overflow-hidden">
-	                    <div className="font-semibold text-sm mb-1 text-slate-800 dark:text-slate-200">
-	                      {msg.role === 'user' ? 'You' : agentName}
-                    </div>
-
-                    {/* Attachments rendering */}
-                    {msg.attachments && msg.attachments.length > 0 && (
-                      <div className="flex flex-wrap gap-3 mb-3">
-                        {msg.attachments.map((att, attIdx) => (
-                           att.type.startsWith('image/') ? (
-                             att.url ? (
-                               <button
-                                 key={attIdx}
-                                 type="button"
-                                 onClick={() => openAttachmentPreview(att)}
-                                 className="group relative overflow-hidden rounded-lg border border-slate-200 dark:border-slate-700 shadow-sm"
-                               >
-                                 <img
-                                   src={att.url}
-                                   alt={att.name}
-                                   className="max-w-[200px] max-h-[200px] object-cover transition group-hover:scale-[1.02]"
-                                 />
-                               </button>
-                             ) : (
-                               <div
-                                 key={attIdx}
-                                 className="flex h-[120px] w-[200px] items-center justify-center rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 text-sm text-slate-500 dark:border-slate-700 dark:bg-slate-900/40 dark:text-slate-400"
-                               >
-                                 {att.name}
-                               </div>
-                             )
-                           ) : (
-                             <div key={attIdx} className="flex items-center gap-2 px-3 py-2 bg-slate-100 dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 w-max shadow-sm">
-                               <Paperclip className="w-4 h-4 text-blue-500" />
-                               {att.url ? (
-                                 <a
-                                   href={att.url}
-                                   target="_blank"
-                                   rel="noreferrer"
-                                   className="text-sm text-slate-700 dark:text-slate-300 truncate max-w-[150px] hover:underline"
-                                   title={att.name}
-                                 >
-                                   {att.name}
-                                 </a>
-                               ) : (
-                                 <span className="text-sm text-slate-700 dark:text-slate-300 truncate max-w-[150px]" title={att.name}>{att.name}</span>
-                               )}
-                             </div>
-                           )
-                        ))}
-                      </div>
-                    )}
-                    
-                    {/* Reasoning Block */}
-                    {msg.reasoning && (
-                       <details className="group/details mb-4 rounded-xl border border-slate-200 dark:border-slate-700/50 bg-slate-50/50 dark:bg-slate-800/20 px-4 py-3 text-sm text-slate-600 dark:text-slate-400 marker:content-[''] transition-all">
-                         <summary className="flex cursor-pointer select-none items-center gap-2 font-medium list-none justify-between">
-                            <div className="flex items-center gap-2">
-                               {isStreaming && idx === messages.length - 1 && !msg.content ? (
-                                   <RefreshCcw className="h-4 w-4 animate-spin text-emerald-500" />
-                               ) : (
-                                   <Check className="h-4 w-4 text-emerald-500" />
-                               )}
-                               <span>思考过程</span>
-                            </div>
-                         </summary>
-                         <div className="mt-3 border-l-2 border-slate-200 dark:border-slate-700 pl-4 py-1 text-[14px] leading-relaxed opacity-90 mx-1">
-                            <MessageMarkdown content={msg.reasoning} />
-                         </div>
-                       </details>
-                    )}
-
-                    {/* Tools Block */}
-                    {msg.tools && Object.values(msg.tools).map((tool, tIdx) => (
-                       <details key={tIdx} className="group/details mb-4 rounded-xl border border-blue-200 dark:border-blue-900/50 bg-blue-50/30 dark:bg-blue-950/20 px-4 py-3 text-sm text-blue-600 dark:text-blue-400 marker:content-[''] transition-all">
-                         <summary className="flex cursor-pointer select-none items-center gap-2 font-medium list-none justify-between">
-                            <div className="flex items-center gap-2">
-                               {tool.status === 'running' ? (
-                                   <RefreshCcw className="h-4 w-4 animate-spin text-blue-500" />
-                               ) : (
-                                   <Check className="h-4 w-4 text-emerald-500" />
-                               )}
-                               <span>工具调用：{tool.name}</span>
-                            </div>
-                         </summary>
-                         <div className="mt-3 border-l-2 border-blue-200 dark:border-blue-800 pl-4 py-1 text-[13px] font-mono leading-relaxed opacity-90 mx-1 flex flex-col gap-3">
-                            {tool.args && (
-                              <div>
-                                <div className="text-xs font-semibold uppercase text-blue-500 mb-1">入参 (Args)</div>
-                                <div className="text-slate-600 dark:text-slate-300 whitespace-pre-wrap">{tool.args}</div>
-                              </div>
-                            )}
-                            {tool.output && (
-                              <div>
-                                <div className="text-xs font-semibold uppercase text-emerald-500 mb-1">输出 (Output)</div>
-                                <div className="text-slate-600 dark:text-slate-300 whitespace-pre-wrap max-h-[300px] overflow-y-auto custom-scrollbar">{tool.output}</div>
-                              </div>
-                            )}
-                         </div>
-                       </details>
-                    ))}
-
-                    {/* Text Content */}
-                    <div className="w-full">
-                      {msg.content ? (
-                        <MessageMarkdown content={msg.content} />
-                      ) : (
-                         isStreaming && idx === messages.length - 1 && !msg.reasoning && !msg.tools && (
-                           <span className="inline-block w-2 h-4 bg-emerald-500 animate-pulse align-middle ml-1 rounded-sm shadow-sm opacity-80 mt-2"></span>
-                         )
-                      )}
-                    </div>
-                  </div>
-	                </div>
-	                )
-	              ))
-	            )}
-          </div>
-        </div>
-
-        {/* Input Area */}
-        <div className="relative z-10 w-full flex-shrink-0 bg-gradient-to-t from-white via-white to-transparent px-4 pb-4 pt-2 dark:from-slate-900 dark:via-slate-900">
-          <div className="max-w-[64rem] mx-auto relative">
-            {isStreaming && (
-               <div className="absolute -top-10 left-1/2 z-20 flex -translate-x-1/2 justify-center">
-                 <button 
-                   onClick={stopGeneration}
-                   className="flex items-center gap-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-full px-4 py-1.5 shadow-sm text-sm hover:bg-slate-50 dark:hover:bg-slate-700 transition"
-                 >
-                   <StopCircle className="w-4 h-4 text-slate-500" />
-                   <span>停止生成</span>
-                 </button>
-               </div>
-            )}
-            <form
-              onSubmit={handleSubmit}
-              onDragOver={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-              }}
-              onDrop={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-                  appendAttachments(Array.from(e.dataTransfer.files));
-                }
-              }}
-              className={cn(
-                "relative flex w-full flex-col rounded-2xl border bg-white shadow-sm transition-all focus-within:border-slate-300 focus-within:ring-1 focus-within:ring-slate-300 dark:bg-slate-900 dark:focus-within:border-slate-600 dark:focus-within:ring-slate-600",
-                "border-slate-200 p-1.5 dark:border-slate-700"
-              )}
-            >
-              {attachments.length > 0 && (
-                <div className="mb-1.5 flex flex-wrap gap-2 px-1.5 pt-1.5">
-                  {attachments.map((file, i) => (
-                    <div key={i} className="flex items-center gap-2 bg-slate-100 dark:bg-slate-800 text-xs text-slate-600 dark:text-slate-300 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700">
-                      <span className="truncate max-w-[120px] font-medium">{file.name}</span>
-                      <button type="button" onClick={() => setAttachments(prev => prev.filter((_, idx) => idx !== i))} className="hover:text-red-500 text-slate-400">×</button>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <div className="flex items-end w-full">
-                <label 
-                  className="relative ml-0.5 flex h-9 w-9 flex-shrink-0 items-center justify-center overflow-hidden rounded-xl transition hover:bg-slate-100 dark:hover:bg-slate-800"
-                  title="上传附件"
-                >
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    multiple
-                    className="hidden"
-                    onChange={(e) => {
-                      if (e.target.files && e.target.files.length > 0) {
-                        appendAttachments(Array.from(e.target.files));
-                        e.target.value = "";
-                      }
-                    }}
-                  />
-                  <Paperclip className="w-5 h-5 text-slate-400" />
-                </label>
-                
-                <textarea
-                  ref={textareaRef}
-                  rows={1}
-                  value={input}
-                  onChange={(e) => {
-                    setInput(e.target.value);
-                    e.target.style.height = 'auto';
-                    e.target.style.height = `${Math.min(e.target.scrollHeight, COMPOSER_MAX_HEIGHT)}px`;
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault();
-                      handleSubmit(e);
-                    }
-                  }}
-                  onPaste={handleComposerPaste}
-                  placeholder="发送消息... (Shift + Enter 换行)"
-                  className="custom-scrollbar min-h-[36px] w-full max-h-[160px] resize-none border-0 bg-transparent px-2 py-2 text-[15px] leading-6 outline-none placeholder:text-slate-400 dark:text-slate-100 dark:placeholder:text-slate-500"
-                  style={{ overflowY: 'auto' }}
-                />
-                
-                <button
-                  type="submit"
-                  disabled={!input.trim() && attachments.length === 0 || isStreaming}
-                  className={cn(
-                    "mb-0.5 ml-1 flex-shrink-0 rounded-xl p-2 transition-all",
-                    (input.trim() || attachments.length > 0) && !isStreaming
-                      ? "bg-slate-900 text-white hover:bg-slate-800 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white"
-                      : "bg-slate-100 text-slate-400 dark:bg-slate-800 dark:text-slate-600"
-                  )}
-                >
-                   <Send className="w-4 h-4 ml-0.5" />
-                </button>
-              </div>
-            </form>
-            <div className="mt-1.5 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-1">
-              <div className="text-[11px] text-slate-400 dark:text-slate-500">
-                Agent 可能产生不准确的信息，请独立验证。
-              </div>
-              {composerContextIndicator && (
-                <div
-                  className={cn(
-                    "ml-auto text-[11px] leading-5 text-right transition-colors",
-                    composerContextIndicator.phase === 'compressing'
-                      ? "text-amber-500 dark:text-amber-300"
-                      : composerContextIndicator.phase === 'warning'
-                        ? "text-rose-500 dark:text-rose-300"
-                        : "text-slate-400 dark:text-slate-500"
-                  )}
-                >
-                  {composerContextIndicator.label}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-      </main>
-
-      {previewAttachment?.url && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-6"
-          onClick={closeAttachmentPreview}
+    <div className="flex h-[var(--app-height)] min-h-[var(--app-height)] overflow-hidden bg-white font-sans text-slate-800 dark:bg-slate-900 dark:text-slate-200">
+      {!isMobile ? (
+        <aside
+          className={cn(
+            'flex-shrink-0 overflow-hidden border-r border-slate-200 transition-[width] duration-300 ease-in-out dark:border-slate-800',
+            desktopSidebarVisible ? 'w-[280px]' : 'w-0 border-r-0',
+          )}
         >
-          <div
-            className="max-h-full max-w-[calc(100vw-3rem)] overflow-hidden rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl"
-            style={buildPreviewDialogStyle(previewImageSize)}
-            onClick={(event) => event.stopPropagation()}
+          <ChatSidebar
+            sessions={sessions}
+            currentSessionId={currentSessionId}
+            isStreaming={isStreaming}
+            onCreateNewSession={createNewSession}
+            onSelectSession={loadSession}
+            onDeleteSession={deleteSession}
+            formatDate={formatDate}
+            sessionTitle={sessionTitle}
+          />
+        </aside>
+      ) : (
+        <Sheet open={mobileSidebarOpen} onOpenChange={setMobileSidebarOpen}>
+          <SheetContent
+            side="left"
+            className="w-[88vw] max-w-sm border-slate-200 bg-slate-50 p-0 dark:border-slate-800 dark:bg-slate-950"
           >
-            <div className="flex items-center justify-between gap-4 border-b border-slate-800 px-4 py-3 text-sm text-slate-200">
-              <span className="truncate">{previewAttachment.name}</span>
-              <button
-                type="button"
-                className="rounded-md px-2 py-1 text-slate-300 hover:bg-slate-800 hover:text-white"
-                onClick={closeAttachmentPreview}
-              >
-                关闭
-              </button>
-            </div>
-            <div className="flex max-h-[calc(100vh-7rem)] max-w-[calc(100vw-3rem)] items-center justify-center overflow-auto bg-slate-950 p-4">
-              <img
-                src={previewAttachment.url}
-                alt={previewAttachment.name}
-                className="h-auto w-auto max-h-[calc(100vh-9rem)] max-w-[calc(100vw-5rem)] object-contain"
-                style={buildPreviewImageStyle(previewImageSize)}
-                onLoad={(event) => {
-                  const image = event.currentTarget;
-                  setPreviewImageSize({
-                    width: image.naturalWidth,
-                    height: image.naturalHeight,
-                  });
-                }}
-              />
-            </div>
-          </div>
-        </div>
+            <SheetTitle className="sr-only">历史记录</SheetTitle>
+            <ChatSidebar
+              sessions={sessions}
+              currentSessionId={currentSessionId}
+              isStreaming={isStreaming}
+              onCreateNewSession={createNewSession}
+              onSelectSession={loadSession}
+              onDeleteSession={deleteSession}
+              formatDate={formatDate}
+              sessionTitle={sessionTitle}
+            />
+          </SheetContent>
+        </Sheet>
       )}
 
-      <style dangerouslySetInnerHTML={{__html: `
-        .custom-scrollbar::-webkit-scrollbar {
-          width: 6px;
-          height: 6px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-track {
-          background: transparent;
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb {
-          background-color: rgba(156, 163, 175, 0.3);
-          border-radius: 20px;
-        }
-        .custom-scrollbar:hover::-webkit-scrollbar-thumb {
-          background-color: rgba(156, 163, 175, 0.5);
-        }
-      `}} />
+      <main className="relative flex min-w-0 flex-1 flex-col bg-white dark:bg-slate-900">
+        <ChatHeader
+          agentName={agentName}
+          currentSessionId={currentSessionId}
+          isMobile={isMobile}
+          sidebarOpen={sidebarOpen}
+          mobileSidebarOpen={mobileSidebarOpen}
+          onToggleSidebar={() => {
+            if (isMobile) {
+              setMobileSidebarOpen((prev) => !prev);
+            } else {
+              setSidebarOpen((prev) => !prev);
+            }
+          }}
+          availableModels={availableModels}
+          selectedModel={selectedModel}
+          onSelectModel={(modelId) => {
+            setSelectedModel(modelId);
+            if (isMobile) {
+              setMobileActionsOpen(false);
+            }
+          }}
+          selectedModelLabel={selectedModelLabel}
+          modelCatalogLoaded={modelCatalogLoaded}
+          modelSource={modelSource}
+          mobileActionsOpen={mobileActionsOpen}
+          onMobileActionsOpenChange={setMobileActionsOpen}
+        />
+
+        <ChatMessageList
+          agentName={agentName}
+          isMobile={isMobile}
+          isStreaming={isStreaming}
+          messages={messages}
+          onOpenAttachmentPreview={openAttachmentPreview}
+          scrollRef={scrollRef}
+        />
+
+        <ChatComposer
+          attachments={attachments}
+          composerContextIndicator={composerContextIndicator}
+          composerMaxHeight={composerMaxHeight}
+          fileInputRef={fileInputRef}
+          input={input}
+          isMobile={isMobile}
+          isStreaming={isStreaming}
+          onAppendAttachments={appendAttachments}
+          onInputChange={handleInputChange}
+          onPaste={handleComposerPaste}
+          onRemoveAttachment={(index) =>
+            setAttachments((prev) => prev.filter((_, attachmentIndex) => attachmentIndex !== index))
+          }
+          onStopGeneration={stopGeneration}
+          onSubmit={handleSubmit}
+          textareaRef={textareaRef}
+        />
+      </main>
+
+      <AttachmentPreview
+        attachment={previewAttachment}
+        isMobile={isMobile}
+        previewImageSize={previewImageSize}
+        onClose={closeAttachmentPreview}
+        onImageLoad={setPreviewImageSize}
+      />
+
+      <style
+        dangerouslySetInnerHTML={{
+          __html: `
+            .custom-scrollbar::-webkit-scrollbar {
+              width: 6px;
+              height: 6px;
+            }
+            .custom-scrollbar::-webkit-scrollbar-track {
+              background: transparent;
+            }
+            .custom-scrollbar::-webkit-scrollbar-thumb {
+              background-color: rgba(156, 163, 175, 0.3);
+              border-radius: 20px;
+            }
+            .custom-scrollbar:hover::-webkit-scrollbar-thumb {
+              background-color: rgba(156, 163, 175, 0.5);
+            }
+          `,
+        }}
+      />
     </div>
   );
 }

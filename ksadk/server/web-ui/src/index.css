@@ -24,6 +24,11 @@
     --input: 214.3 31.8% 91.4%;
     --ring: 222.2 84% 4.9%;
     --radius: 0.5rem;
+    --app-height: 100vh;
+    --safe-area-top: env(safe-area-inset-top, 0px);
+    --safe-area-right: env(safe-area-inset-right, 0px);
+    --safe-area-bottom: env(safe-area-inset-bottom, 0px);
+    --safe-area-left: env(safe-area-inset-left, 0px);
   }
 
   .dark {
@@ -53,8 +58,25 @@
   * {
     border-color: hsl(var(--border));
   }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
   body {
+    min-height: var(--app-height);
     background-color: hsl(var(--background));
     color: hsl(var(--foreground));
+    overflow: hidden;
+    overscroll-behavior-y: none;
+  }
+  #root {
+    min-height: 100%;
+  }
+}
+
+@supports (height: 100dvh) {
+  :root {
+    --app-height: 100dvh;
   }
 }

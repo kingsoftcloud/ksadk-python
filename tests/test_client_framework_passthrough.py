@@ -68,6 +68,33 @@ async def test_create_agent_forwards_network_configuration(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_create_agent_forwards_ui_config(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    calls = []
+
+    def fake_action(action: str, params: dict):
+        calls.append((action, params.copy()))
+        return {"agent_id": "ar-ui"}
+
+    monkeypatch.setattr(client, "_action", fake_action)
+
+    payload = _build_create_payload()
+    payload["ui_config"] = {
+        "profile": "custom",
+        "path": "/chat",
+        "url": "https://ui.example.com/custom-ui/",
+    }
+
+    await client.create_agent(payload)
+
+    assert calls[0][1]["UiConfig"] == {
+        "Profile": "custom",
+        "Path": "/chat",
+        "Url": "https://ui.example.com/custom-ui/",
+    }
+
+
+@pytest.mark.asyncio
 async def test_update_agent_forwards_network_configuration(monkeypatch):
     client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
     calls = []
@@ -98,4 +125,34 @@ async def test_update_agent_forwards_network_configuration(monkeypatch):
         "VpcId": "vpc-demo",
         "SubnetId": "subnet-demo",
         "SecurityGroupId": "sg-demo",
+    }
+
+
+@pytest.mark.asyncio
+async def test_update_agent_forwards_ui_config(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    calls = []
+
+    def fake_action(action: str, params: dict):
+        calls.append((action, params.copy()))
+        return {"agent_id": "ar-ui"}
+
+    monkeypatch.setattr(client, "_action", fake_action)
+
+    await client.update_agent(
+        "ar-ui",
+        {
+            "ui_config": {
+                "profile": "custom",
+                "path": "/chat",
+                "url": "https://ui.example.com/custom-ui/",
+            }
+        },
+    )
+
+    assert calls[0][0] == "UpdateAgent"
+    assert calls[0][1]["UiConfig"] == {
+        "Profile": "custom",
+        "Path": "/chat",
+        "Url": "https://ui.example.com/custom-ui/",
     }

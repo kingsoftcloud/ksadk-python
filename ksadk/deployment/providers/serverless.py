@@ -553,7 +553,12 @@ class ServerlessProvider(BaseDeployProvider):
                             },
                             "observability": {
                                 "langfuse_enabled": target.extra.get("enable_observability", True)
-                            }
+                            },
+                            "ui_config": {
+                                "profile": resolved_ui.profile,
+                                "path": resolved_ui.path,
+                                "url": resolved_ui.url,
+                            },
                         }
                         
                         if ks3_config:
@@ -636,7 +641,12 @@ class ServerlessProvider(BaseDeployProvider):
                         },
                         "observability": {
                             "langfuse_enabled": target.extra.get("enable_observability", True)
-                        }
+                        },
+                        "ui_config": {
+                            "profile": resolved_ui.profile,
+                            "path": resolved_ui.path,
+                            "url": resolved_ui.url,
+                        },
                     }
                     
                     if ks3_config:

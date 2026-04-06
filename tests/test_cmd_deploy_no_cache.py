@@ -185,3 +185,52 @@ def test_deploy_reads_network_config_from_agentengine_yaml(tmp_path: Path, monke
     assert provider.last_target.network.subnet_id == "subnet-demo"
     assert provider.last_target.network.security_group_id == "sg-demo"
     assert provider.last_target.network.availability_zone == "cn-beijing-6a"
+
+
+def test_deploy_reads_ui_config_from_agentengine_yaml_when_cli_not_set(tmp_path: Path, monkeypatch):
+    provider = _FakeProvider()
+
+    monkeypatch.setattr("ksadk.detection.FrameworkDetector", lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})())
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_deploy._load_config",
+        lambda *_args, **_kwargs: {
+            "name": "demo-agent",
+            "ui": {
+                "profile": "custom",
+                "path": "/custom-chat",
+                "url": "https://ui.example.com/custom-chat",
+            },
+        },
+    )
+    monkeypatch.setattr("ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider)
+
+    asyncio.run(
+        cmd_deploy._deploy_async(
+            agent_dir=str(tmp_path),
+            target="serverless",
+            name=None,
+            region="cn-beijing-6",
+            account_id="2000003485",
+            artifact_type="Code",
+            namespace="default",
+            port=8000,
+            registry=None,
+            ks3_path="ks3://bucket/agents/demo-agent/code_manual.zip",
+            ks3_bucket=None,
+            image=None,
+            ui_profile=None,
+            ui_path=None,
+            ui_url=None,
+            observability=True,
+            push=False,
+            no_cache=False,
+            no_version=True,
+            auto_rollback=False,
+            dry_run=False,
+        )
+    )
+
+    assert provider.last_target is not None
+    assert provider.last_target.extra["ui_profile"] == "custom"
+    assert provider.last_target.extra["ui_path"] == "/custom-chat"
+    assert provider.last_target.extra["ui_url"] == "https://ui.example.com/custom-chat"
