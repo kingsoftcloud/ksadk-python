@@ -119,3 +119,76 @@ def test_code_builder_rebuilds_when_ksadk_source_changes(tmp_path: Path, monkeyp
     second = builder.build()
     assert second.success is True
     assert len(package_calls) == 2
+
+
+def test_code_builder_no_cache_reuses_dependencies_when_requirements_unchanged(
+    tmp_path: Path,
+    monkeypatch,
+):
+    (tmp_path / "agent.py").write_text("print('ok')\n", encoding="utf-8")
+    (tmp_path / "agentengine.yaml").write_text("name: demo-agent\nframework: langgraph\n", encoding="utf-8")
+    (tmp_path / "requirements.txt").write_text("httpx==0.28.1\n", encoding="utf-8")
+
+    install_calls = []
+    package_calls = []
+
+    def fake_install(self, _req):
+        install_calls.append("install")
+        self.deps_dir.mkdir(parents=True, exist_ok=True)
+        (self.deps_dir / "httpx.py").write_text("# dep\n", encoding="utf-8")
+        return True
+
+    monkeypatch.setattr("ksadk.detection.FrameworkDetector", _FakeFrameworkDetector)
+    monkeypatch.setattr(CodeBuilder, "_install_dependencies", fake_install)
+    monkeypatch.setattr(CodeBuilder, "_scan_incompatible_binaries_in_deps", lambda self: [])
+    monkeypatch.setattr(
+        CodeBuilder,
+        "_package_zip",
+        lambda self, zip_path, detection_result: (package_calls.append(zip_path), _fake_package_zip(zip_path, detection_result)),
+    )
+
+    builder = CodeBuilder(tmp_path, config={"no_cache": True})
+    first = builder.build()
+    second = builder.build()
+
+    assert first.success is True
+    assert second.success is True
+    assert len(package_calls) == 2
+    assert len(install_calls) == 1
+
+
+def test_code_builder_no_cache_reinstalls_dependencies_when_requirements_change(
+    tmp_path: Path,
+    monkeypatch,
+):
+    (tmp_path / "agent.py").write_text("print('ok')\n", encoding="utf-8")
+    (tmp_path / "agentengine.yaml").write_text("name: demo-agent\nframework: langgraph\n", encoding="utf-8")
+    requirements = tmp_path / "requirements.txt"
+    requirements.write_text("httpx==0.28.1\n", encoding="utf-8")
+
+    install_calls = []
+
+    def fake_install(self, _req):
+        install_calls.append("install")
+        self.deps_dir.mkdir(parents=True, exist_ok=True)
+        marker = self.deps_dir / f"dep-{len(install_calls)}.txt"
+        marker.write_text("ok\n", encoding="utf-8")
+        return True
+
+    monkeypatch.setattr("ksadk.detection.FrameworkDetector", _FakeFrameworkDetector)
+    monkeypatch.setattr(CodeBuilder, "_install_dependencies", fake_install)
+    monkeypatch.setattr(CodeBuilder, "_scan_incompatible_binaries_in_deps", lambda self: [])
+    monkeypatch.setattr(
+        CodeBuilder,
+        "_package_zip",
+        lambda self, zip_path, detection_result: _fake_package_zip(zip_path, detection_result),
+    )
+
+    builder = CodeBuilder(tmp_path, config={"no_cache": True})
+    first = builder.build()
+    requirements.write_text("httpx==0.28.1\nrequests==2.32.3\n", encoding="utf-8")
+    second = builder.build()
+
+    assert first.success is True
+    assert second.success is True
+    assert len(install_calls) == 2
