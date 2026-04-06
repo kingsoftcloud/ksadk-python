@@ -475,6 +475,32 @@ class AgentEngineClient:
 
         return payload
 
+    @staticmethod
+    def _normalize_ui_config_payload(ui_config: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not isinstance(ui_config, dict):
+            return None
+
+        def _extract(*keys: str) -> tuple[bool, Any]:
+            for key in keys:
+                if key in ui_config:
+                    return True, ui_config.get(key)
+            return False, None
+
+        profile_present, profile = _extract("profile", "Profile")
+        path_present, path = _extract("path", "Path")
+        url_present, url = _extract("url", "Url")
+        if not (profile_present or path_present or url_present):
+            return None
+
+        payload: Dict[str, Any] = {}
+        if profile_present:
+            payload["Profile"] = str(profile).strip() if profile is not None else None
+        if path_present:
+            payload["Path"] = str(path).strip() if path is not None else None
+        if url_present:
+            payload["Url"] = str(url).strip() if url is not None else None
+        return payload
+
     async def create_agent(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """创建 Agent (通过 CreateAgentProduct 走订单流程)"""
         framework = self._normalize_framework_name(data.get("framework"))
@@ -499,6 +525,10 @@ class AgentEngineClient:
         network_payload = self._normalize_network_payload(data.get("network"))
         if network_payload:
             params["Network"] = network_payload
+
+        ui_config_payload = self._normalize_ui_config_payload(data.get("ui_config"))
+        if ui_config_payload is not None:
+            params["UiConfig"] = ui_config_payload
 
         # 访问控制 (默认 ApiKey；OpenClaw 可显式传入 None 关闭平台层鉴权)
         auth_type = data.get("auth_type")
@@ -790,6 +820,10 @@ class AgentEngineClient:
         network_payload = self._normalize_network_payload(data.get("network"))
         if network_payload:
             params["Network"] = network_payload
+
+        ui_config_payload = self._normalize_ui_config_payload(data.get("ui_config"))
+        if ui_config_payload is not None:
+            params["UiConfig"] = ui_config_payload
 
         # 访问控制 (可选)
         auth_type = data.get("auth_type")

@@ -417,15 +417,18 @@ class TestDeployLogic:
             }
         )
 
+        captured = {}
         mock_client = AsyncMock()
-        mock_client.create_agent = AsyncMock(
-            return_value={
+        async def _fake_create_agent(payload):
+            captured["payload"] = payload
+            return {
                 "agent_id": "ar-20260119-newagent-ui",
                 "name": "test-agent",
                 "endpoint": "https://test.kspmas.ksyun.com",
                 "api_key": "ak-test-key",
             }
-        )
+
+        mock_client.create_agent = AsyncMock(side_effect=_fake_create_agent)
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock()
 
@@ -441,6 +444,76 @@ class TestDeployLogic:
         state = yaml.safe_load(state_file.read_text())
         assert state["ui_profile"] == "langchain"
         assert state["ui_path"] == "/"
+        assert captured["payload"]["ui_config"] == {
+            "profile": "langchain",
+            "path": "/",
+            "url": None,
+        }
+
+    @pytest.mark.asyncio
+    async def test_deploy_update_forwards_ui_config_to_control_plane(
+        self,
+        temp_project_dir,
+        sample_package_info,
+        sample_deploy_target,
+    ):
+        provider = ServerlessProvider()
+        sample_deploy_target.extra.update(
+            {
+                "ui_profile": "custom",
+                "ui_path": "/chat",
+                "ui_url": "https://ui.example.com/custom-ui/",
+            }
+        )
+
+        state_file = temp_project_dir / ".agentengine.state"
+        state_file.write_text(
+            yaml.dump(
+                {
+                    "agent_id": "ar-20260119-existing",
+                    "name": "test-agent",
+                    "endpoint": "https://existing.kspmas.ksyun.com",
+                }
+            )
+        )
+
+        captured = {}
+        mock_client = AsyncMock()
+        mock_client.get_agent = AsyncMock(
+            side_effect=[
+                {"basic": {"agent_id": "ar-20260119-existing", "name": "test-agent"}},
+                {"basic": {"agent_id": "ar-20260119-existing", "name": "test-agent"}},
+            ]
+        )
+
+        async def _fake_update_agent(agent_id, payload):
+            captured["agent_id"] = agent_id
+            captured["payload"] = payload
+            return {
+                "agent_id": agent_id,
+                "name": "test-agent",
+                "endpoint": "https://existing.kspmas.ksyun.com",
+            }
+
+        mock_client.update_agent = AsyncMock(side_effect=_fake_update_agent)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock()
+
+        with patch.dict(os.environ, {"AGENTENGINE_SERVER_URL": "http://localhost:8080"}), \
+             patch("ksadk.deployment.providers.serverless.AgentEngineClient", return_value=mock_client), \
+             patch("ksadk.common.auth.AWSV4Auth") as MockAuth:
+
+            MockAuth.return_value.access_key = "test-ak"
+            MockAuth.return_value.secret_key = "test-sk"
+
+            await provider.deploy(sample_package_info, sample_deploy_target)
+
+        assert captured["agent_id"] == "ar-20260119-existing"
+        assert captured["payload"]["ui_config"] == {
+            "profile": "custom",
+            "path": "/chat",
+            "url": "https://ui.example.com/custom-ui/",
+        }
 
     @pytest.mark.asyncio
     async def test_deploy_strips_bom_from_env_keys(

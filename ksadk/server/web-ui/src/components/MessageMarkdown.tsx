@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useId, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -71,7 +71,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ language, value }) => {
 
 const MermaidBlock: React.FC<{ chart: string }> = ({ chart }) => {
   const [svg, setSvg] = useState<string>('');
-  const [id] = useState(`mermaid-${Math.random().toString(36).substr(2, 9)}`);
+  const id = useId().replace(/:/g, '-');
 
   useEffect(() => {
     let isCancelled = false;
@@ -79,7 +79,7 @@ const MermaidBlock: React.FC<{ chart: string }> = ({ chart }) => {
       try {
         const { svg: renderedSvg } = await mermaid.render(id, chart);
         if (!isCancelled) setSvg(renderedSvg);
-      } catch (err) {
+      } catch {
         if (!isCancelled) setSvg(`<div class="text-red-500 p-4 border border-red-200 rounded">Failed to render flowchart</div>`);
       }
     };
@@ -95,10 +95,21 @@ const MermaidBlock: React.FC<{ chart: string }> = ({ chart }) => {
   );
 };
 
-const markdownComponents: any = {
-  code({ node, inline, className, children, ...props }: any) {
+type MarkdownCodeProps = React.HTMLAttributes<HTMLElement> & {
+  className?: string;
+  children?: React.ReactNode;
+};
+
+type MarkdownTableProps = React.TableHTMLAttributes<HTMLTableElement>;
+type MarkdownCellProps = React.ThHTMLAttributes<HTMLTableCellElement>;
+type MarkdownDataCellProps = React.TdHTMLAttributes<HTMLTableCellElement>;
+type MarkdownLinkProps = React.AnchorHTMLAttributes<HTMLAnchorElement>;
+
+const markdownComponents = {
+  code({ className, children, ...props }: MarkdownCodeProps) {
     const match = /language-(\w+)/.exec(className || '');
-    const isInline = !match && inline;
+    const rawValue = String(children ?? '');
+    const isInline = !match && !rawValue.includes('\n');
     
     if (isInline) {
       return (
@@ -108,9 +119,9 @@ const markdownComponents: any = {
       );
     }
     const lang = match ? match[1] : '';
-    return <CodeBlock language={lang} value={String(children)} />;
+    return <CodeBlock language={lang} value={rawValue} />;
   },
-  table({ children, ...props }: any) {
+  table({ children, ...props }: MarkdownTableProps) {
     return (
       <div className="overflow-x-auto my-4 border border-slate-200 dark:border-slate-700 rounded-lg">
         <table className="w-full text-sm text-left my-0" {...props}>
@@ -119,13 +130,13 @@ const markdownComponents: any = {
       </div>
     );
   },
-  th({ children, ...props }: any) {
+  th({ children, ...props }: MarkdownCellProps) {
     return <th className="bg-slate-50 dark:bg-slate-800/50 px-4 py-2 font-semibold border-b border-slate-200 dark:border-slate-700" {...props}>{children}</th>;
   },
-  td({ children, ...props }: any) {
+  td({ children, ...props }: MarkdownDataCellProps) {
     return <td className="px-4 py-2 border-b border-slate-100 dark:border-slate-800 last:border-0" {...props}>{children}</td>;
   },
-  a({ children, href, ...props }: any) {
+  a({ children, href, ...props }: MarkdownLinkProps) {
      return <a href={href} className="text-blue-600 dark:text-blue-400 hover:underline" target="_blank" rel="noopener noreferrer" {...props}>{children}</a>
   }
 };

@@ -63,6 +63,34 @@ def test_dashboard_open_is_canonical_command(monkeypatch):
     assert "http://demo.example.com/s/lnk-1" in result.output
 
 
+def test_dashboard_remote_open_uses_hosted_chat_path_even_with_custom_ui_state(monkeypatch):
+    runner = CliRunner()
+    captured = {}
+
+    monkeypatch.setattr(
+        cmd_dashboard,
+        "load_state",
+        lambda _cwd: {
+            "ui_profile": "custom",
+            "ui_path": "/custom-chat",
+            "ui_url": "https://ui.example.com/custom-chat/",
+        },
+    )
+    monkeypatch.setattr(cmd_dashboard, "_resolve_agent_detail", _fake_resolve_agent_detail)
+
+    async def _fake_create(*_args, **kwargs):
+        captured.update(kwargs)
+        return await _fake_create_access_link()
+
+    monkeypatch.setattr(cmd_dashboard, "_create_dashboard_access_link", _fake_create)
+    monkeypatch.setattr(cmd_dashboard.webbrowser, "open", lambda _url: None)
+
+    result = runner.invoke(cmd_dashboard.dashboard, ["open", "ar-test"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["path"] == "/chat"
+
+
 def test_dashboard_open_resolves_openclaw_state_from_cwd(tmp_path: Path, monkeypatch):
     runner = CliRunner()
     opened = {}
@@ -161,3 +189,27 @@ def test_dashboard_direct_invocation_resets_output_mode_after_json(monkeypatch):
     assert pretty_result.exit_code == 0, pretty_result.output
     assert not pretty_result.output.lstrip().startswith("{")
     assert "Dashboard 打开结果" in pretty_result.output
+
+
+def test_dashboard_open_json_uses_server_returned_link_type(monkeypatch):
+    runner = CliRunner()
+
+    monkeypatch.setattr(cmd_dashboard, "load_state", lambda _cwd: {})
+    monkeypatch.setattr(cmd_dashboard, "_resolve_agent_detail", _fake_resolve_agent_detail)
+
+    async def _fake_create_access_link_with_private_type(*_args, **_kwargs):
+        return {
+            "link_id": "lnk-1",
+            "link_type": "private",
+            "access_url": "http://demo.example.com/s/lnk-1",
+            "expires_at": "2026-03-09T00:00:00Z",
+        }
+
+    monkeypatch.setattr(cmd_dashboard, "_create_dashboard_access_link", _fake_create_access_link_with_private_type)
+    monkeypatch.setattr(cmd_dashboard.webbrowser, "open", lambda _url: None)
+
+    result = runner.invoke(cmd_dashboard.dashboard, ["open", "ar-test", "--share", "--output", "json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["result"]["type"] == "private"

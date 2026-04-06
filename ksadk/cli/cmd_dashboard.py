@@ -448,6 +448,7 @@ def _open_dashboard(
         cli_url=None,
     )
     normalized_path = _normalize_ui_path(resolved_ui.path or "/")
+    hosted_entry_path = "/chat"
     base_url = _build_base_ui_url(endpoint, normalized_path)
 
     if direct:
@@ -463,7 +464,7 @@ def _open_dashboard(
                 agent_id=(detail.get("agent_id") or "").strip() or None,
                 agent_name=(detail.get("name") or "").strip() or None,
                 link_type=link_type,
-                path=normalized_path,
+                path=hosted_entry_path,
                 expires_seconds=validated_expires,
             )
         )
@@ -477,6 +478,7 @@ def _open_dashboard(
             argv=["dashboard", "open"],
         )
     open_url = access_url
+    actual_link_type = str(link_data.get("link_type") or link_type or "").strip() or link_type
 
     render_descriptor_status(
         DASHBOARD_SHARE_RESOURCE,
@@ -484,13 +486,13 @@ def _open_dashboard(
         subtitle=str(detail.get("name") or detail.get("agent_id") or "-"),
         fields=[
             ("ID", str(link_data.get("link_id") or "-"), "#58a6ff"),
-            ("类型", link_type, None),
+            ("类型", actual_link_type, None),
             ("过期时间", _format_dashboard_time(link_data.get("expires_at"), never_text="server-default"), None),
         ],
         action="open",
         item={
             "link_id": str(link_data.get("link_id") or "-"),
-            "type": link_type,
+            "type": actual_link_type,
             "expires_at": _format_dashboard_time(link_data.get("expires_at"), never_text="server-default"),
             "url": open_url,
             "agent_id": str(detail.get("agent_id") or ""),
