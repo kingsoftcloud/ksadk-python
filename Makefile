@@ -372,7 +372,7 @@ offline-current: build
 # OpenClaw 镜像构建
 # ============================================================
 #
-# 基于 alpine/openclaw:latest，叠加 chromium + 预装 skills
+# 基于 alpine/openclaw:2026.4.5，叠加 chromium + 预装 skills
 # 构建上下文: deploy/openclaw/ (Dockerfile + bootstrap.sh + preset-skills)
 #
 # 用法:
@@ -386,7 +386,7 @@ OPENCLAW_VPC_REGISTRY ?= hub-vpc-cn-beijing-6.kce.ksyun.com
 OPENCLAW_VPC_IMAGE ?= $(subst hub.kce.ksyun.com,$(OPENCLAW_VPC_REGISTRY),$(OPENCLAW_IMAGE))
 OPENCLAW_TAG ?= latest
 OPENCLAW_CONTEXT := deploy/openclaw
-OPENCLAW_BASE_IMAGE ?= alpine/openclaw:2026.3.24
+OPENCLAW_BASE_IMAGE ?= alpine/openclaw:2026.4.5
 OPENCLAW_PYPI_INDEX_URL ?= https://mirrors.aliyun.com/pypi/simple
 OPENCLAW_NPM_REGISTRY ?= https://registry.npmmirror.com
 

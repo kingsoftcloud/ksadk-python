@@ -30,7 +30,7 @@ BOOTSTRAP_CACHE_DIR="${OPENCLAW_BOOTSTRAP_CACHE_DIR:-${STATE_DIR}/.bootstrap-cac
 DIST_PATCH_MARKER_VERSION="${OPENCLAW_DIST_PATCH_MARKER_VERSION:-2026.3.19.2}"
 DIST_PATCH_MARKER="${OPENCLAW_DIST_PATCH_MARKER:-${RUNTIME_DIST_DIR}/.agentengine-dist-patched-${DIST_PATCH_MARKER_VERSION}}"
 OPENCLAW_WEIXIN_REMOTE_LOGIN_PATCH_TARGET_PACKAGE_NAME="${OPENCLAW_WEIXIN_REMOTE_LOGIN_PATCH_TARGET_PACKAGE_NAME:-@tencent-weixin/openclaw-weixin}"
-OPENCLAW_WEIXIN_REMOTE_LOGIN_PATCH_TARGET_VERSION="${OPENCLAW_WEIXIN_REMOTE_LOGIN_PATCH_TARGET_VERSION:-2.0.1}"
+OPENCLAW_WEIXIN_REMOTE_LOGIN_PATCH_MIN_VERSION="${OPENCLAW_WEIXIN_REMOTE_LOGIN_PATCH_MIN_VERSION:-${OPENCLAW_WEIXIN_REMOTE_LOGIN_PATCH_TARGET_VERSION:-2.1.7}}"
 export PATH="${HOME:-/root}/.local/bin:${PATH}"
 
 # -----------------------------------------------------------------------------
@@ -133,7 +133,7 @@ resolve_preset_skills_allowlist() {
     return 0
   fi
 
-  allowlist_raw="skillhub-store,agent-browser-clawdbot,kdocs,wps365-skill"
+  allowlist_raw="clawhub-store,agent-browser-clawdbot,kdocs,wps365-skill"
   # self-improving-agent：仅严格模式
   is_truthy "${OPENCLAW_EXEC_STRICT_MODE:-false}" && allowlist_raw="${allowlist_raw},self-improving-agent"
   # tuanziguardianclaw：仅严格模式保留，宽松模式默认不内置
@@ -391,7 +391,7 @@ sync_default_extensions() {
 
 # -----------------------------------------------------------------------------
 # 渠道插件最小补丁
-# 这里只保留对最新版微信插件的一个极小 shim：
+# 这里只保留对官方稳定版微信插件（2.1.7+）的一个极小 shim：
 # - 最新 upstream 已兼容新版 plugin-sdk
 # - 但在 OpenClaw 2026.3.23-1 下 `plugins inspect` 仍不会暴露
 #   `web.login.start/web.login.wait`
@@ -402,7 +402,7 @@ sync_default_extensions() {
 patch_bundled_channel_plugins() {
   OPENCLAW_PATCH_ROOTS="${OPENCLAW_PATCH_ROOTS:-${STATE_DIR}/extensions}" \
   OPENCLAW_WEIXIN_REMOTE_LOGIN_PATCH_TARGET_PACKAGE_NAME="${OPENCLAW_WEIXIN_REMOTE_LOGIN_PATCH_TARGET_PACKAGE_NAME:-@tencent-weixin/openclaw-weixin}" \
-  OPENCLAW_WEIXIN_REMOTE_LOGIN_PATCH_TARGET_VERSION="${OPENCLAW_WEIXIN_REMOTE_LOGIN_PATCH_TARGET_VERSION:-2.0.1}" \
+  OPENCLAW_WEIXIN_REMOTE_LOGIN_PATCH_MIN_VERSION="${OPENCLAW_WEIXIN_REMOTE_LOGIN_PATCH_MIN_VERSION:-${OPENCLAW_WEIXIN_REMOTE_LOGIN_PATCH_TARGET_VERSION:-2.1.7}}" \
   node <<'NODE'
 const fs = require('fs');
 const path = require('path');
@@ -413,7 +413,11 @@ const rawRoots = String(process.env.OPENCLAW_PATCH_ROOTS || '')
   .filter(Boolean);
 const uniqueRoots = [...new Set(rawRoots)];
 const targetPackageName = String(process.env.OPENCLAW_WEIXIN_REMOTE_LOGIN_PATCH_TARGET_PACKAGE_NAME || '@tencent-weixin/openclaw-weixin').trim();
-const targetVersion = String(process.env.OPENCLAW_WEIXIN_REMOTE_LOGIN_PATCH_TARGET_VERSION || '2.0.1').trim();
+const minimumSupportedVersion = String(
+  process.env.OPENCLAW_WEIXIN_REMOTE_LOGIN_PATCH_MIN_VERSION ||
+    process.env.OPENCLAW_WEIXIN_REMOTE_LOGIN_PATCH_TARGET_VERSION ||
+    '2.1.7'
+).trim();
 const inlinePatches = [
   {
     label: 'weixin remote login methods',
@@ -434,6 +438,24 @@ const inlinePatches = [
 const patched = new Set();
 const skipped = new Set();
 
+function parseStableSemver(rawVersion) {
+  const match = String(rawVersion || '').trim().match(/^(\d+)\.(\d+)\.(\d+)$/);
+  if (!match) return null;
+  return match.slice(1).map((item) => Number.parseInt(item, 10));
+}
+
+function compareSemver(left, right) {
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    const leftPart = Number(left[index] || 0);
+    const rightPart = Number(right[index] || 0);
+    if (leftPart > rightPart) return 1;
+    if (leftPart < rightPart) return -1;
+  }
+  return 0;
+}
+
+const minimumSupportedVersionParsed = parseStableSemver(minimumSupportedVersion);
+
 function resolvePatchDecision(pluginRoot) {
   const packageJsonPath = path.join(pluginRoot, 'package.json');
   if (!fs.existsSync(packageJsonPath)) {
@@ -452,13 +474,24 @@ function resolvePatchDecision(pluginRoot) {
         packageVersion,
       };
     }
-    if (packageVersion !== targetVersion) {
-      return {
-        ok: false,
-        reason: `version ${packageVersion || 'unknown'} does not match ${targetVersion}`,
-        packageName,
-        packageVersion,
-      };
+    if (minimumSupportedVersionParsed) {
+      const parsedPackageVersion = parseStableSemver(packageVersion);
+      if (!parsedPackageVersion) {
+        return {
+          ok: false,
+          reason: `version ${packageVersion || 'unknown'} is not a stable semver >= ${minimumSupportedVersion}`,
+          packageName,
+          packageVersion,
+        };
+      }
+      if (compareSemver(parsedPackageVersion, minimumSupportedVersionParsed) < 0) {
+        return {
+          ok: false,
+          reason: `version ${packageVersion || 'unknown'} is below supported floor ${minimumSupportedVersion}`,
+          packageName,
+          packageVersion,
+        };
+      }
     }
     return {
       ok: true,
@@ -594,8 +627,9 @@ const requiredLabels = new Set([
   'gateway client loopback trusted-proxy identity',
   'gateway backend self-pairing trusted-proxy bypass',
   'gateway local override explicit-auth bypass',
-  'gateway loopback device-identity bypass',
-  'gateway loopback device-identity null sentinel',
+  // NOTE: 以下两个 patch 已在 openclaw >= 2026.4.5 中由上游原生修复
+  //   - 'gateway loopback device-identity bypass'  → resolveDeviceIdentityForGatewayCall() + try/catch
+  //   - 'gateway loopback device-identity null sentinel' → catch 返回 null 而非 void 0
 ]);
 const replacements = [
   {
@@ -603,6 +637,51 @@ const replacements = [
     marker: 'this.ws.addEventListener(`open`,()=>{this.lastSeq=null,this.queueConnect()})',
     needle: 'this.ws.addEventListener(`open`,()=>this.queueConnect())',
     replacement: 'this.ws.addEventListener(`open`,()=>{this.lastSeq=null,this.queueConnect()})',
+  },
+  {
+    // Container image code under /app/dist is immutable; hide upstream self-update affordance.
+    label: 'gateway container self-update availability disabled',
+    marker: 'function getUpdateAvailable() {\n\treturn null;\n}',
+    needle: `function getUpdateAvailable() {
+\treturn updateAvailableCache;
+}`,
+    replacement: `function getUpdateAvailable() {
+\treturn null;
+}`,
+  },
+  {
+    label: 'gateway container self-update scheduler disabled',
+    marker: 'function scheduleGatewayUpdateCheck(params) {\n\treturn () => {};\n}',
+    needle: `function scheduleGatewayUpdateCheck(params) {
+\tlet stopped = false;
+\tlet timer = null;
+\tlet running = false;
+\tconst tick = async () => {
+\t\tif (stopped || running) return;
+\t\trunning = true;
+\t\ttry {
+\t\t\tawait runGatewayUpdateCheck(params);
+\t\t} catch {} finally {
+\t\t\trunning = false;
+\t\t}
+\t\tif (stopped) return;
+\t\tconst intervalMs = resolveCheckIntervalMs(params.cfg);
+\t\ttimer = setTimeout(() => {
+\t\t\ttick();
+\t\t}, intervalMs);
+\t};
+\ttick();
+\treturn () => {
+\t\tstopped = true;
+\t\tif (timer) {
+\t\t\tclearTimeout(timer);
+\t\t\ttimer = null;
+\t\t}
+\t};
+}`,
+    replacement: `function scheduleGatewayUpdateCheck(params) {
+\treturn () => {};
+}`,
   },
   {
     label: 'gateway client loopback trusted-proxy identity',
@@ -620,20 +699,39 @@ const replacements = [
 		} catch {}`,
   },
   {
+    // openclaw >= 2026.4.5: 函数重命名为 shouldSkipLocalBackendSelfPairing, isLocalClient → locality
     label: 'gateway backend self-pairing trusted-proxy bypass',
     marker: 'const usesLoopbackTrustedProxyAuth = params.authMethod === "trusted-proxy";',
-    needle: `function shouldSkipBackendSelfPairing(params) {
+    needle: `function shouldSkipLocalBackendSelfPairing(params) {
 	if (!(params.connectParams.client.id === GATEWAY_CLIENT_IDS.GATEWAY_CLIENT && params.connectParams.client.mode === GATEWAY_CLIENT_MODES.BACKEND)) return false;
 	const usesSharedSecretAuth = params.authMethod === "token" || params.authMethod === "password";
 	const usesDeviceTokenAuth = params.authMethod === "device-token";
-	return params.isLocalClient && !params.hasBrowserOriginHeader && (params.sharedAuthOk && usesSharedSecretAuth || usesDeviceTokenAuth);
+	return params.locality === "direct_local" && !params.hasBrowserOriginHeader && (params.sharedAuthOk && usesSharedSecretAuth || usesDeviceTokenAuth);
 }`,
-    replacement: `function shouldSkipBackendSelfPairing(params) {
+    replacement: `function shouldSkipLocalBackendSelfPairing(params) {
 	if (!(params.connectParams.client.id === GATEWAY_CLIENT_IDS.GATEWAY_CLIENT && params.connectParams.client.mode === GATEWAY_CLIENT_MODES.BACKEND)) return false;
 	const usesSharedSecretAuth = params.authMethod === "token" || params.authMethod === "password";
 	const usesDeviceTokenAuth = params.authMethod === "device-token";
 	const usesLoopbackTrustedProxyAuth = params.authMethod === "trusted-proxy";
-	return params.isLocalClient && !params.hasBrowserOriginHeader && (usesLoopbackTrustedProxyAuth || params.sharedAuthOk && usesSharedSecretAuth || usesDeviceTokenAuth);
+	return params.locality === "direct_local" && !params.hasBrowserOriginHeader && (usesLoopbackTrustedProxyAuth || params.sharedAuthOk && usesSharedSecretAuth || usesDeviceTokenAuth);
+}`,
+  },
+  {
+    // openclaw < 2026.4.5: 旧函数名 shouldSkipBackendSelfPairing, 旧参数 isLocalClient
+    label: 'gateway backend self-pairing trusted-proxy bypass',
+    marker: 'const usesLoopbackTrustedProxyAuth = params.authMethod === "trusted-proxy";',
+    needle: `function shouldSkipBackendSelfPairing(params) {
+\tif (!(params.connectParams.client.id === GATEWAY_CLIENT_IDS.GATEWAY_CLIENT && params.connectParams.client.mode === GATEWAY_CLIENT_MODES.BACKEND)) return false;
+\tconst usesSharedSecretAuth = params.authMethod === "token" || params.authMethod === "password";
+\tconst usesDeviceTokenAuth = params.authMethod === "device-token";
+\treturn params.isLocalClient && !params.hasBrowserOriginHeader && (params.sharedAuthOk && usesSharedSecretAuth || usesDeviceTokenAuth);
+}`,
+    replacement: `function shouldSkipBackendSelfPairing(params) {
+\tif (!(params.connectParams.client.id === GATEWAY_CLIENT_IDS.GATEWAY_CLIENT && params.connectParams.client.mode === GATEWAY_CLIENT_MODES.BACKEND)) return false;
+\tconst usesSharedSecretAuth = params.authMethod === "token" || params.authMethod === "password";
+\tconst usesDeviceTokenAuth = params.authMethod === "device-token";
+\tconst usesLoopbackTrustedProxyAuth = params.authMethod === "trusted-proxy";
+\treturn params.isLocalClient && !params.hasBrowserOriginHeader && (usesLoopbackTrustedProxyAuth || params.sharedAuthOk && usesSharedSecretAuth || usesDeviceTokenAuth);
 }`,
   },
   {
@@ -711,6 +809,10 @@ walk(distDir);
 
 const patchedLabels = new Set();
 const satisfiedLabels = new Set();
+const skippedLabels = new Set();
+console.error(`[bootstrap] 开始扫描 dist 目录: ${distDir} (共 ${jsFiles.length} 个 JS 文件)`);
+console.error(`[bootstrap] 需验证的必需补丁: ${[...requiredLabels].join(', ')}`);
+console.error(`[bootstrap] 共 ${replacements.length} 个候选补丁规则`);
 for (const filePath of jsFiles) {
   let source = fs.readFileSync(filePath, 'utf8');
   let changed = false;
@@ -719,7 +821,10 @@ for (const filePath of jsFiles) {
       satisfiedLabels.add(patch.label);
       continue;
     }
-    if (!source.includes(patch.needle)) continue;
+    if (!source.includes(patch.needle)) {
+      skippedLabels.add(patch.label);
+      continue;
+    }
     source = source.replaceAll(patch.needle, patch.replacement);
     patchedLabels.add(patch.label);
     satisfiedLabels.add(patch.label);
@@ -730,13 +835,23 @@ for (const filePath of jsFiles) {
 }
 
 if (patchedLabels.size > 0) {
-  console.error(`[bootstrap] patched ${[...patchedLabels].join(', ')}`);
+  console.error(`[bootstrap] 已应用补丁: ${[...patchedLabels].join(', ')}`);
+}
+const alreadySatisfied = [...satisfiedLabels].filter((l) => !patchedLabels.has(l));
+if (alreadySatisfied.length > 0) {
+  console.error(`[bootstrap] 已由上游原生满足（无需补丁）: ${alreadySatisfied.join(', ')}`);
 }
 
 const missingRequiredLabels = [...requiredLabels].filter((label) => !satisfiedLabels.has(label));
 if (missingRequiredLabels.length > 0) {
-  throw new Error(`required dist patches missing: ${missingRequiredLabels.join(', ')}`);
+  console.error(`[bootstrap] ❌ 缺失的必需补丁: ${missingRequiredLabels.join(', ')}`);
+  console.error(`[bootstrap] 已满足: ${[...satisfiedLabels].join(', ') || '无'}`);
+  console.error(`[bootstrap] 未匹配（needle 和 marker 均未命中）: ${[...skippedLabels].filter((l) => !satisfiedLabels.has(l)).join(', ') || '无'}`);
+  console.error('[bootstrap] 提示: 这通常是因为基础镜像版本更新导致上游代码结构变化，需要更新 bootstrap.sh 中的 patch 定义');
+  throw new Error(`必需的 dist 补丁缺失: ${missingRequiredLabels.join(', ')}`);
 }
+
+console.error(`[bootstrap] ✅ 所有必需补丁验证通过 (${satisfiedLabels.size}/${requiredLabels.size})`);
 
 if (markerFile) {
   fs.writeFileSync(markerFile, `version=${path.basename(markerFile)}\n`, 'utf8');
@@ -756,6 +871,8 @@ configure_runtime_network_defaults() {
   local runtime_playwright_download_host="${OPENCLAW_RUNTIME_PLAYWRIGHT_DOWNLOAD_HOST:-https://npmmirror.com/mirrors/playwright}"
   local runtime_puppeteer_download_base_url="${OPENCLAW_RUNTIME_PUPPETEER_DOWNLOAD_BASE_URL:-https://npmmirror.com/mirrors/chrome-for-testing}"
   local runtime_puppeteer_download_host="${OPENCLAW_RUNTIME_PUPPETEER_DOWNLOAD_HOST:-https://npmmirror.com/mirrors}"
+  local runtime_clawhub_site="${OPENCLAW_RUNTIME_CLAWHUB_SITE:-https://cn.clawhub-mirror.com}"
+  local runtime_clawhub_registry="${OPENCLAW_RUNTIME_CLAWHUB_REGISTRY:-${runtime_clawhub_site}}"
 
   export NPM_CONFIG_REGISTRY="${NPM_CONFIG_REGISTRY:-${runtime_npm_registry}}"
   export npm_config_registry="${npm_config_registry:-${NPM_CONFIG_REGISTRY}}"
@@ -766,8 +883,10 @@ configure_runtime_network_defaults() {
   export PLAYWRIGHT_DOWNLOAD_HOST="${PLAYWRIGHT_DOWNLOAD_HOST:-${runtime_playwright_download_host}}"
   export PUPPETEER_DOWNLOAD_BASE_URL="${PUPPETEER_DOWNLOAD_BASE_URL:-${runtime_puppeteer_download_base_url}}"
   export PUPPETEER_DOWNLOAD_HOST="${PUPPETEER_DOWNLOAD_HOST:-${runtime_puppeteer_download_host}}"
+  export CLAWHUB_SITE="${CLAWHUB_SITE:-${runtime_clawhub_site}}"
+  export CLAWHUB_REGISTRY="${CLAWHUB_REGISTRY:-${runtime_clawhub_registry}}"
 
-  bootstrap_log "已启用国内优先运行时源: npm=${NPM_CONFIG_REGISTRY}, pip=${PIP_INDEX_URL}, playwright=${PLAYWRIGHT_DOWNLOAD_HOST}"
+  bootstrap_log "已启用国内优先运行时源: npm=${NPM_CONFIG_REGISTRY}, pip=${PIP_INDEX_URL}, clawhub=${CLAWHUB_REGISTRY}, playwright=${PLAYWRIGHT_DOWNLOAD_HOST}"
 }
 
 upsert_env_var() {
@@ -806,6 +925,8 @@ sync_runtime_env_file() {
     upsert_env_var "tavily_api_key" "${tavily_key}" "${env_file}"
   fi
 
+  upsert_env_var "CLAWHUB_SITE" "${CLAWHUB_SITE:-}" "${env_file}"
+  upsert_env_var "CLAWHUB_REGISTRY" "${CLAWHUB_REGISTRY:-}" "${env_file}"
   upsert_env_var "NPM_CONFIG_REGISTRY" "${NPM_CONFIG_REGISTRY:-}" "${env_file}"
   upsert_env_var "npm_config_registry" "${npm_config_registry:-}" "${env_file}"
   upsert_env_var "YARN_NPM_REGISTRY_SERVER" "${YARN_NPM_REGISTRY_SERVER:-}" "${env_file}"
@@ -823,7 +944,7 @@ sync_runtime_env_file() {
 
 build_exec_default_allowlist() {
   local -a wrapped_bins=(pwd ls whoami id uname date ps df du stat find cat head tail wc git mcporter sh-safe bash-safe web-safe)
-  local -a direct_bins=(curl jq openclaw agent-browser skillhub clawhub)
+  local -a direct_bins=(curl jq openclaw agent-browser clawhub)
   local -a patterns=()
   local bin
   local resolved
@@ -851,9 +972,6 @@ build_exec_default_allowlist() {
       agent-browser)
         resolved="$(resolve_allowlisted_command_path "${bin}" /usr/local/bin/agent-browser /usr/bin/agent-browser /bin/agent-browser || true)"
         ;;
-      skillhub)
-        resolved="$(resolve_allowlisted_command_path "${bin}" /home/node/.local/bin/skillhub /root/.local/bin/skillhub /usr/local/bin/skillhub /usr/bin/skillhub || true)"
-        ;;
       clawhub)
         resolved="$(resolve_allowlisted_command_path "${bin}" /home/node/.local/bin/clawhub /root/.local/bin/clawhub /usr/local/bin/clawhub /usr/bin/clawhub || true)"
         ;;
@@ -880,9 +998,12 @@ build_exec_default_allowlist() {
 DIST_PATCH_ONLY_RAW="$(printf '%s' "${OPENCLAW_DIST_PATCH_ONLY:-}" | tr '[:upper:]' '[:lower:]')"
 if [[ "${DIST_PATCH_ONLY_RAW}" == "1" || "${DIST_PATCH_ONLY_RAW}" == "true" || "${DIST_PATCH_ONLY_RAW}" == "yes" || "${DIST_PATCH_ONLY_RAW}" == "on" ]]; then
   bootstrap_phase "仅执行镜像内置资源补丁"
+  echo "INFO: [dist-patch-only] 运行时目录: ${RUNTIME_DIST_DIR:-/app/dist}"
+  echo "INFO: [dist-patch-only] 开始应用 gateway 运行时补丁..."
   patch_gateway_client_loopback_trusted_proxy_identity
+  echo "INFO: [dist-patch-only] gateway 补丁完成，开始处理渠道插件补丁..."
   OPENCLAW_PATCH_ROOTS="${DEFAULT_EXTENSIONS_DIR}" patch_bundled_channel_plugins
-  echo "INFO: 已完成 dist-patch-only 模式，仅修补镜像内置运行时资源。"
+  echo "INFO: [dist-patch-only] ✅ 已完成 dist-patch-only 模式，所有镜像内置运行时资源补丁已就绪。"
   exit 0
 fi
 

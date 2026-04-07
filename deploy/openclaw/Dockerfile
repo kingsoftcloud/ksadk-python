@@ -1,5 +1,5 @@
 ## syntax=docker/dockerfile:1.7
-ARG OPENCLAW_BASE_IMAGE=alpine/openclaw:2026.3.24
+ARG OPENCLAW_BASE_IMAGE=alpine/openclaw:2026.4.5
 FROM ${OPENCLAW_BASE_IMAGE}
 
 # ── 可通过 --build-arg 覆盖的参数 ──────────────────────────────
@@ -16,9 +16,6 @@ ARG OPENCLAW_INSTALL_AGENTSPACE_PLUGIN=true
 ARG OPENCLAW_AGENTSPACE_PLUGIN_ID=agentspace
 ARG OPENCLAW_INSTALL_AGENT_BROWSER=true
 ARG OPENCLAW_AGENT_BROWSER_SPEC=agent-browser
-ARG OPENCLAW_INSTALL_SKILLHUB=true
-ARG OPENCLAW_SKILLHUB_KIT_URL=https://skillhub-1388575217.cos.ap-guangzhou.myqcloud.com/install/latest.tar.gz
-ARG OPENCLAW_SKILLHUB_KIT_SHA256=79a3b78a47f76c14a2411639b7205bf0ed539879f8ffff67f6202b61ec3ca004
 
 USER root
 ENV TZ=${TZ}
@@ -63,7 +60,7 @@ RUN --mount=type=cache,target=/root/.npm \
   # ====== 3. npm 换淘宝镜像 ====== \
   if command -v npm >/dev/null 2>&1; then \
   npm config set registry "${NPM_REGISTRY}"; \
-  npm install -g --no-audit --no-fund mcporter; \
+  npm install -g --no-audit --no-fund mcporter clawhub@latest; \
   fi; \
   # ====== 4. 清理缓存，最小化镜像体积 ====== \
   rm -rf /tmp/* /var/tmp/* /root/.cache 2>/dev/null || true
@@ -206,16 +203,6 @@ RUN --mount=type=cache,target=/root/.npm \
   set -eux; \
   if [ "${OPENCLAW_INSTALL_AGENT_BROWSER}" = "true" ] && command -v npm >/dev/null 2>&1; then \
     npm install -g --no-audit --no-fund "${OPENCLAW_AGENT_BROWSER_SPEC}"; \
-  fi; \
-  mkdir -p /home/node; \
-  if [ "${OPENCLAW_INSTALL_SKILLHUB}" = "true" ]; then \
-    tmp_dir="$(mktemp -d)"; \
-    curl -fsSL "${OPENCLAW_SKILLHUB_KIT_URL}" -o "${tmp_dir}/skillhub.tar.gz"; \
-    echo "${OPENCLAW_SKILLHUB_KIT_SHA256}  ${tmp_dir}/skillhub.tar.gz" | sha256sum -c -; \
-    tar -xzf "${tmp_dir}/skillhub.tar.gz" -C "${tmp_dir}"; \
-    HOME=/home/node bash "${tmp_dir}/cli/install.sh" --cli-only; \
-    rm -rf "${tmp_dir}"; \
-    chown -R node:node /home/node/.skillhub /home/node/.local; \
   fi; \
   OPENCLAW_DIST_PATCH_ONLY=1 /usr/local/bin/bootstrap.sh
 

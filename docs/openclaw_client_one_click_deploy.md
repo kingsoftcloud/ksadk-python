@@ -1,5 +1,9 @@
 # OpenClaw 客户端环境部署与 API 接入指南
 
+> 主入口已迁移：OpenClaw 的标准 CLI 路径与统一入口说明请先看 [ksadk_usage_guide.md](./ksadk_usage_guide.md)。
+>
+> 本文保留为 OpenClaw 专项部署与 SDK 接入参考，重点放在一键部署、渠道接入和自动化接入样例。
+
 > 目标：通过 AgentEngine CLI，快速完成 OpenClaw 云端部署与安全访问开通。  
 > 核心卖点：**开箱即用、极速启动、安全免配置、内置技能能力栈**。  
 > 行业场景口径（养虾）：**快速养虾，想养几只就养几只**（按需部署、按需扩缩）。
@@ -22,14 +26,15 @@
 
 ### 3.1 默认技能组合
 
-- 默认 bundled skills 为：`skillhub-store`、`agent-browser-clawdbot`、`kdocs`。
+- 默认 bundled skills 为：`clawhub-store`、`agent-browser-clawdbot`、`kdocs`。
 - 当 `OPENCLAW_EXEC_STRICT_MODE=true` 时，会额外补充 `self-improving-agent` 与 `tuanziguardianclaw`。
 - 对外可表达为：默认镜像即具备技能发现、浏览器自动化和文档协同能力；严格模式下再附加更强的安全/自优化技能。
 
 ### 3.2 技能商店与搜索能力
 
-- 镜像侧已内置 `skillhub` CLI 与 `skillhub-store` 技能，默认优先对接腾讯 Skillhub 商店。
-- 默认搜索主路径为 OpenClaw 原生内建 `browser`；`agent-browser` 作为增强/备选能力保留，适合需要更强 CLI 可控性、会话隔离或可重放步骤的场景。如需轻量文本多搜索源策略，可按需显式启用可选的 `multi-search-engine`，例如把 `OPENCLAW_PRESET_SKILLS_ALLOWLIST` 设为 `skillhub-store,agent-browser-clawdbot,kdocs,multi-search-engine`。
+- 镜像侧不再内置 `skillhub`；默认改为使用 `clawhub-store` 技能，并将 `CLAWHUB_SITE` / `CLAWHUB_REGISTRY` 预设到 `https://cn.clawhub-mirror.com`。
+- 默认搜索主路径为 OpenClaw 原生内建 `browser`；`agent-browser` 作为增强/备选能力保留，适合需要更强 CLI 可控性、会话隔离或可重放步骤的场景。如需轻量文本多搜索源策略，可按需显式启用可选的 `multi-search-engine`，例如把 `OPENCLAW_PRESET_SKILLS_ALLOWLIST` 设为 `clawhub-store,agent-browser-clawdbot,kdocs,multi-search-engine`。
+- 如需手动安装技能，可直接使用 `clawhub install <slug> --registry=https://cn.clawhub-mirror.com`；若运行环境里没有全局 CLI，也可用 `npx clawhub@latest install <slug> --registry=https://cn.clawhub-mirror.com`。
 - 对外可表达为：平台在部署即具备“技能商店 + 浏览器搜索/检索”基础能力，不需要再单独准备初始化脚本。
 
 ### 3.3 浏览器工具内置
@@ -39,11 +44,12 @@
 
 ### 3.4 默认插件与技能预置
 
-- 镜像默认预置 `openclaw-weixin`、`openclaw-lark`、`agent-browser` 与 `skillhub` CLI。
+- 镜像默认预置 `openclaw-weixin`、`openclaw-lark`、`agent-browser` 与 `clawhub` CLI。
 - 同时预装 `curl`、`jq`、`python3` 等常用基础工具，保证默认搜索、JSON 解析与技能初始化链路可直接运行。
-- 镜像默认固定安装 `@tencent-weixin/openclaw-weixin@2.0.1`。该版本已原生兼容当前 OpenClaw `plugin-sdk` / runtime 加载；但当前 host 侧仍不会自动暴露 `web.login.start/web.login.wait`，所以启动时只补一层极小 shim，方便统一入口远端触发扫码登录。
+- 镜像默认让 `openclaw-weixin` 与 `openclaw-lark` 直接跟随 npm 官方 `latest` 稳定版；其中微信远端扫码链路额外保留一个极小 shim，对官方稳定版 `2.1.7+` 自动补齐 `web.login.start/web.login.wait` 的 gateway methods 暴露，避免高速迭代期因显式锁版本导致默认镜像快速过时。
 - 启动时会通过 `sync_default_extensions()` 将默认插件同步到用户挂载的 `~/.openclaw`，缺失时自动补齐，用户手动升级后的插件版本不会被强制回滚。
-- 默认 bundled skills 包括：`skillhub-store`、`agent-browser-clawdbot`、`kdocs`。
+- 默认 bundled skills 包括：`clawhub-store`、`agent-browser-clawdbot`、`kdocs`。
+- 当前自定义镜像构建默认固定基础镜像为 `alpine/openclaw:2026.4.5`。
 - fresh deploy 下默认启用 OpenClaw 内建 `browser`，并额外修复 `127.0.0.1` loopback Gateway 调用误入 pairing 的兼容问题。
 - 从旧默认集合迁移时，`find-skills` 这类已下线的预置技能只会在“之前由镜像同步且用户未改动”的情况下被自动清理；用户自管目录会被保留。
 - 对外可表达为：默认镜像即具备“渠道接入 + 浏览器自动化 + 技能商店”基础能力，不需要再单独准备初始化脚本。
@@ -88,6 +94,8 @@ KSYUN_ACCOUNT_ID=你的账号ID
 OPENAI_API_KEY=你的模型APIKey
 # OPENAI_BASE_URL=https://你的openai兼容网关/v1
 # OPENAI_MODEL_NAME=glm-5
+# CLAWHUB_SITE=https://cn.clawhub-mirror.com
+# CLAWHUB_REGISTRY=https://cn.clawhub-mirror.com
 ENV
 
 # 3) 一键部署 OpenClaw
@@ -135,7 +143,7 @@ agentengine openclaw channel connect --channel feishu
 - 默认 `askFallback=full`：若后续显式开启审批模式而审批 UI 不可达，则按 `full` 语义继续处理，避免渠道/自动化流程被无意阻断。
 - 默认 `autoAllowSkills=false`：不自动放行 Skill CLI，避免第三方或自定义 Skill 借助宿主机执行路径扩大敏感面。
 - 若启用严格模式或显式开启默认白名单，镜像会通过 `/opt/openclaw/safe-bin` 安全包装器为 `main` 智能体预置一组常用只读/开发命令白名单（如 `pwd`、`ls`、`whoami`、`id`、`uname`、`date`、`ps`、`df`、`du`、`stat`、`find`、`cat`、`head`、`tail`、`wc`、`git`），并对工作区边界与状态目录访问做额外检查。
-- 严格模式下还会默认放行少量直接二进制，如 `curl`、`jq`、`openclaw`、`agent-browser`、`skillhub`、`clawhub`，避免常见检索、JSON 解析与渠道运维动作被基础白名单拦截。
+- 严格模式下还会默认放行少量直接二进制，如 `curl`、`jq`、`openclaw`、`agent-browser`、`clawhub`，避免常见检索、JSON 解析与渠道运维动作被基础白名单拦截。
 - 默认 `tools.fs.workspaceOnly=false`：文件工具不再被强制锁死在工作区，便于读取技能目录、项目外挂资料和常见挂载路径；敏感目录访问仍应结合 `tools.exec` 白名单与提示词安全边界一起约束。
 - 如需切到更保守的执行策略，可在部署时使用 `--exec-profile strict`，或通过环境变量显式设置 `OPENCLAW_EXEC_SECURITY=allowlist` / `OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED=true`。
 - 模型 API Key 默认不再以运行时环境变量方式提供给 Gateway 进程，而是在启动阶段转存到 `${OPENCLAW_STATE_DIR}/secrets.json` 并通过 OpenClaw `file` SecretRef 读取，以降低 `printenv` / 环境转储类泄露风险。

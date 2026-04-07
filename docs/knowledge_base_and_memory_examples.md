@@ -1,5 +1,9 @@
 # KsADK 平台级 Knowledge Base / Long-term Memory 示例
 
+> 主入口已迁移：完整使用说明请先看 [ksadk_usage_guide.md](./ksadk_usage_guide.md)。
+>
+> 本文保留为 KB / LTM 示例参考，重点放在跨框架示例和工具调用样例，而不是完整主线说明。
+
 本文档对应当前平台语义：
 
 - `KSADK_KB_*` 是平台知识库配置。

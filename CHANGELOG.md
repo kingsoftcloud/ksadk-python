@@ -5,44 +5,55 @@ All notable changes to the **Kingsoft AgentEngine SDK (ksadk)** project will be 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.9] - 2026-04-03
-
-### Code Build 依赖安装优化
-
-- `CodeBuilder` 依赖安装改为优先直接解析并安装目标运行时 `cp312 Linux` wheel，避免在 macOS / 非目标 Python 版本构建机上触发 `pandas` 等包的本地源码编译。
-- 当目标运行时 wheel 安装失败时，仍保留原有“宿主机安装 + 二进制替换”的回退链路，兼顾构建速度与兼容性。
-- 新增回归测试覆盖目标运行时 wheel 安装路径，确保 code mode 构建优先命中 runtime-compatible wheels。
-
-## [0.3.8] - 2026-04-03
-
-### 构建与部署修复
-
-- 修复 `CodeBuilder` 在 code 模式下硬编码内置 PyPI 镜像、忽略显式 `PIP_INDEX_URL` / `UV_INDEX_URL` 的问题。
-- `pip install` 与 Linux wheel `pip download` 统一改为优先尊重显式环境配置，再回退官方 PyPI 与内置镜像源，避免刚发布的新版本在镜像同步窗口内无法立刻部署。
-- 新增回归测试覆盖依赖安装与二进制替换两条路径的 pip index 选择逻辑。
-
-## [0.3.7] - 2026-04-03
+## [0.4.0] - 2026-04-07
 
 ### 重点主题
 
+- 当前版本把 `ksadk` 对外文档入口正式重构为“使用文档 + 技术文档”双主文档，README 降为入口页。
+- hosted/local UI 继续向统一能力面收口，补齐 hosted-first UI metadata、移动端聊天 UI、Agent 创建后 quick access 回查与刷新链路。
+- OpenClaw 默认镜像切到 `alpine/openclaw:2026.4.5`，去掉内置 `skillhub`，改为 `clawhub` 中国镜像源默认策略。
+- code mode 构建链路继续增强制品可用性，优化 KS3 上传 fallback、依赖缓存复用，以及目标运行时 wheel 安装命中率。
+
+### 文档体系重构
+
+- 新增 `docs/ksadk_usage_guide.md`，统一承接本地开发、构建部署、远端资源管理、MCP、OpenClaw、KB/LTM 与 JSON 输出说明。
+- 新增 `docs/ksadk_technical_design.md`，以当前实现为准说明 ksadk 的架构边界、核心子系统、关键调用链以及与 `agentengine-server` 的职责分工。
+- `README.md` 收口为入口页，仅保留安装、最快路径、主文档链接和少量专题参考。
+- `deepagents.md`、`knowledge_base_and_memory_examples.md`、`memory_usage_guide.md`、`openclaw_client_one_click_deploy.md` 增加主入口迁移说明，降低主线文档继续漂移的风险。
+
+### Unified UI 与会话连续性
+
+- 增加 hosted-first UI metadata 支持，统一 dashboard / hosted UI 的能力协商入口。
+- 新增移动端聊天 UI 适配，改善 hosted/local 统一 UI 在窄屏场景下的可用性。
+- Agent 创建后补充 quick access refresh 重试链路，减少首次部署后短时间内 access 信息不完整的问题。
+- 平台 session continuity 与 KB/LTM runtime 路径继续收口，本地与托管路径在对话、标题与上下文注入语义上更一致。
+
+### OpenClaw 默认镜像与技能商店
+
+- OpenClaw 自定义镜像构建默认基础镜像升级到 `alpine/openclaw:2026.4.5`，跟进上游最新稳定运行时。
+- 移除镜像内置 `skillhub` 安装链路，改为默认预置 `clawhub` CLI 与 `clawhub-store` bundled skill。
+- 运行时默认写入 `CLAWHUB_SITE=https://cn.clawhub-mirror.com` 与 `CLAWHUB_REGISTRY=https://cn.clawhub-mirror.com`，国内网络下可直接使用 `clawhub install <slug> --registry=https://cn.clawhub-mirror.com` 或 `npx clawhub@latest install <slug> --registry=https://cn.clawhub-mirror.com`。
+- 严格模式默认直接放行二进制同步收口为 `curl`、`jq`、`openclaw`、`agent-browser`、`clawhub`，不再把 `skillhub` 当作内置基础能力。
+
+### 构建与部署优化
+
+- 优化 KS3 上传 fallback，减少 code mode 制品上传阶段的偶发失败。
+- 优化依赖缓存复用，降低重复构建时的依赖处理开销。
+- `CodeBuilder` 依赖安装改为优先直接解析并安装目标运行时 `cp312 Linux` wheel，避免在 macOS / 非目标 Python 版本构建机上触发 `pandas` 等包的本地源码编译。
+- 当目标运行时 wheel 安装失败时，仍保留原有“宿主机安装 + 二进制替换”的回退链路，兼顾构建速度与兼容性。
+- 修复 code 模式下硬编码内置 PyPI 镜像、忽略显式 `PIP_INDEX_URL` / `UV_INDEX_URL` 的问题；`pip install` 与 Linux wheel `pip download` 现统一优先尊重显式环境配置。
+- 补充构建链路相关回归测试，确保 bundled `ksadk` 依赖在运行时 requirements 中继续被正确剔除，并覆盖目标运行时 wheel 安装与 index 选择逻辑。
+
+### 附件处理与 Web UI
+
 - 附件能力统一收口到单一主链路：hosted/local transcript 结构化透传、`attachment_results` canonical contract、runner parity、agent 结构化消费以及统一 Web UI 上传体验在同一版本里完成闭环。
-
-### 附件处理与 runner 一致性
-
 - 新增统一附件处理管线，覆盖图片、常见文档、文本与 ZIP 的 canonical 归一化、文本抽取、OCR fallback 与安全枚举。
 - `PreparedConversationTurn` 与 conversation runtime 统一保留 `attachments`、`attachment_results`、`input_parts`，并在 follow-up turn 复用最近一次有效附件上下文，避免后续轮次丢附件语义。
 - `LangGraphRunner` 与 `ADKRunner` 对齐附件输入契约，结构化附件不再依赖把二进制重编码进 message content。
-
-### Hosted 回放与 Agent 消费
-
 - hosted replay 保持 `input_text` / `input_file` 的结构化 `content.parts` 回放，不再把附件降格成纯文本摘要。
 - transcript metadata 在保留兼容文本视图的同时，新增紧凑附件处理结果摘要，保证标题、压缩估算与 replay 各自消费正确视图。
 - LangGraph HR agent 切到优先消费 `attachment_results`，文档/图片/文本附件统一映射成候选人材料输入，并在抽取失败时输出具体 warning 与下一步建议。
-
-### Web UI
-
-- 本地统一 Web UI 支持直接粘贴图片/文件进入现有上传队列。
-- 图片预览改为按图片自然尺寸自适应显示，仅在超出视口时缩放。
+- 本地统一 Web UI 支持直接粘贴图片/文件进入现有上传队列，图片预览改为按图片自然尺寸自适应显示，仅在超出视口时缩放。
 
 ## [0.3.6] - 2026-03-24
 
@@ -68,10 +79,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 新增 `agentengine openclaw channel` 与 `agentengine openclaw gateway` 子命令组，支持 `channel status/connect/enable/disable/doctor` 与 `gateway open/ws-url/logs/doctor`。
 - 微信接入支持本地终端 ASCII 二维码输出；飞书接入复用官方 onboarding 扫码流程。
 - `agentengine dashboard open` 现支持在 OpenClaw 工作目录中直接读取 `.agentengine.state` 的 `openclaw` 类型实例，无需再显式传 `--agent`。
-- 默认镜像预置 `openclaw-weixin`、`openclaw-lark`、`agent-browser` 与 `skillhub` CLI；默认 bundled skills 调整为 `skillhub-store`、`agent-browser-clawdbot`、`kdocs`。
+- 默认镜像预置 `openclaw-weixin`、`openclaw-lark`、`agent-browser` 与 `clawhub` CLI；默认 bundled skills 调整为 `clawhub-store`、`agent-browser-clawdbot`、`kdocs`。
 - 启动阶段通过 `sync_default_extensions()` 将默认插件同步到挂载的 `~/.openclaw`，并保留用户手动升级后的漂移版本；旧默认技能迁移改为“仅清理此前由镜像同步且用户未改动的目录”。
 - OpenClaw 镜像构建与默认技能策略更明确地面向 x86 Serverless 运行环境；默认搜索主路径恢复为原生内建 `browser`，`agent-browser` 与 `multi-search-engine` 分别作为增强自动化与轻量文本检索的可选路径。
-- 微信插件默认版本切换到 `@tencent-weixin/openclaw-weixin@2.0.1`，直接跟随 npm 最新稳定版；Skillhub CLI 安装改为固定 tarball URL + SHA256 校验，减少构建期供应链漂移。
+- 微信与飞书默认插件改为直接跟随 npm 最新稳定版；微信远端扫码 shim 放宽到官方稳定版 `2.1.7+`，避免高速迭代期因显式锁版本导致镜像默认链路快速失效。
 
 ### 配置、模板与补全
 
@@ -97,7 +108,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 修复 fresh deploy 下内建 `browser` / gateway 本地 loopback 调用被误附带 device identity、从而在 `127.0.0.1` 仍触发 pairing 的问题；runtime dist patch 仅对齐当前 `2026.3.23-2` 及之后的 upstream 代码形态，降低镜像维护复杂度。
 - CLI 现将微信登录返回的 `sessionKey` 映射到 gateway 兼容的等待参数，避免扫码成功后无法落库。
 - 修复默认插件同步时因直接修改 bundled 源目录导致的签名漂移问题，以及 `node` 用户对默认扩展目录无读权限导致的启动期同步失败问题。
-- 移除针对 `openclaw-weixin@1.0.3` 的旧版 `plugin-sdk` 导入重写与 runtime link 兼容逻辑；当前只对 `2.0.1` 保留一个最小 shim，用来补齐 `web.login.start/web.login.wait` 的 gateway methods 暴露。
+- 移除针对 `openclaw-weixin@1.0.3` 的旧版 `plugin-sdk` 导入重写与 runtime link 兼容逻辑；当前只对官方稳定版 `2.1.7+` 保留一个最小 shim，用来补齐 `web.login.start/web.login.wait` 的 gateway methods 暴露。
 - 镜像补装 `jq`，并在严格模式默认 allowlist 中放行 `jq`；同时更新可选的 `multi-search-engine` 预置 skill，避免继续推荐会触发 `curl: (23)` 的 `curl | head` 用法。
 - `sync_default_extensions()` 改为优先复用镜像内嵌签名与 managed mtime 检测，避免每次启动都对大型插件目录全量 `cksum`，降低 channel 预置插件导致的冷启动超时风险。
 

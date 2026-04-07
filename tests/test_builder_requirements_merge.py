@@ -65,7 +65,7 @@ def test_mcp_builder_prefers_user_pins_over_base_requirements(tmp_path):
 
 def test_code_builder_omits_bundled_ksadk_package_from_runtime_requirements(tmp_path):
     (tmp_path / "requirements.txt").write_text(
-        "fastapi==0.121.2\nksadk==0.3.9\n",
+        "fastapi==0.121.2\nksadk==0.4.0\n",
         encoding="utf-8",
     )
     builder = CodeBuilder(tmp_path)
@@ -73,7 +73,7 @@ def test_code_builder_omits_bundled_ksadk_package_from_runtime_requirements(tmp_
     deps = builder._build_requirements_list(_detection_result("langgraph"))
 
     assert "fastapi==0.121.2" in deps
-    assert "ksadk==0.3.9" not in deps
+    assert "ksadk==0.4.0" not in deps
     assert all(not dep.startswith("ksadk") for dep in deps)
     assert "a2a-sdk>=0.3.22" in deps
     assert "requests-aws4auth>=1.2.0" in deps
@@ -81,7 +81,7 @@ def test_code_builder_omits_bundled_ksadk_package_from_runtime_requirements(tmp_
 
 def test_container_builder_omits_bundled_ksadk_package_from_runtime_requirements(tmp_path):
     (tmp_path / "requirements.txt").write_text(
-        "fastapi==0.121.2\nksadk==0.3.9\n",
+        "fastapi==0.121.2\nksadk==0.4.0\n",
         encoding="utf-8",
     )
     builder = ContainerBuilder(tmp_path)
@@ -92,7 +92,7 @@ def test_container_builder_omits_bundled_ksadk_package_from_runtime_requirements
     ).splitlines()
 
     assert "fastapi==0.121.2" in deps
-    assert "ksadk==0.3.9" not in deps
+    assert "ksadk==0.4.0" not in deps
     assert all(not dep.startswith("ksadk") for dep in deps)
     assert "a2a-sdk>=0.3.22" in deps
     assert "requests-aws4auth>=1.2.0" in deps

@@ -102,6 +102,23 @@ AGENTSPACE_LOGIN_URL_API = "https://agentspace.wps.cn/v7/devhub/users/login_url"
 AGENTSPACE_USER_TOKEN_API = "https://agentspace.wps.cn/v7/devhub/users/user_token"
 AGENTSPACE_CURRENT_USER_API = "https://agentspace.wps.cn/v7/devhub/users/current"
 AGENTSPACE_SKILL_NAME = "wps365-skill"
+OPENCLAW_CHANNEL_SPECS = {
+    "weixin": {
+        "plugin_id": WEIXIN_PLUGIN_ID,
+        "channel_key": WEIXIN_PLUGIN_ID,
+        "default_account_id": "default",
+    },
+    "feishu": {
+        "plugin_id": FEISHU_PLUGIN_ID,
+        "channel_key": FEISHU_CHANNEL_KEY,
+        "default_account_id": "default",
+    },
+    "agentspace": {
+        "plugin_id": AGENTSPACE_PLUGIN_ID,
+        "channel_key": AGENTSPACE_CHANNEL_KEY,
+        "default_account_id": AGENTSPACE_DEFAULT_ACCOUNT_ID,
+    },
+}
 OPENCLAW_GATEWAY_READY_STATUSES = {"RUNNING", "READY", "HEALTHY"}
 OPENCLAW_GATEWAY_BLOCKED_STATUSES = {
     "DELETED",
@@ -942,6 +959,18 @@ async def _wait_for_gateway_ready(
     raise OpenClawGatewayError(message)
 
 
+async def _wait_for_gateway_reload_after_config_apply(
+    gateway: OpenClawGatewayClient,
+    region: str,
+    detail: dict[str, Any],
+    *,
+    disconnect_timeout_seconds: float = 5.0,
+    ready_timeout_seconds: float = 90.0,
+) -> None:
+    await gateway.wait_for_disconnect(timeout_ms=int(disconnect_timeout_seconds * 1000))
+    await _wait_for_gateway_ready(region, detail, timeout_seconds=ready_timeout_seconds)
+
+
 async def _fetch_channel_snapshot_with_retry(
     region: str,
     detail: dict[str, Any],
@@ -970,13 +999,89 @@ async def _fetch_channel_snapshot_with_retry(
 
 
 def _channel_aliases(channel: str) -> tuple[str, ...]:
+    spec = OPENCLAW_CHANNEL_SPECS.get(channel) or {}
+    aliases = [channel]
+    for candidate in (spec.get("channel_key"), spec.get("plugin_id")):
+        if candidate and candidate not in aliases:
+            aliases.append(candidate)
+    return tuple(aliases)
+
+
+def _channel_config_section(config: dict[str, Any], channel: str) -> dict[str, Any]:
+    channels = config.get("channels") if isinstance(config.get("channels"), dict) else {}
+    if not isinstance(channels, dict):
+        return {}
+    spec = OPENCLAW_CHANNEL_SPECS.get(channel) or {}
+    section = channels.get(spec.get("channel_key") or channel)
+    return section if isinstance(section, dict) else {}
+
+
+def _channel_default_account_id(channel: str) -> str:
+    spec = OPENCLAW_CHANNEL_SPECS.get(channel) or {}
+    return str(spec.get("default_account_id") or "default")
+
+
+def _is_channel_configured(
+    channel: str,
+    *,
+    config: dict[str, Any],
+    snapshot: Any,
+) -> bool:
+    if isinstance(snapshot, dict) and isinstance(snapshot.get("configured"), bool):
+        return bool(snapshot.get("configured"))
+
+    channel_cfg = _channel_config_section(config, channel)
     if channel == "weixin":
-        return (channel, WEIXIN_PLUGIN_ID)
+        accounts = channel_cfg.get("accounts")
+        return isinstance(accounts, dict) and any(str(key).strip() for key in accounts.keys())
     if channel == "feishu":
-        return (channel, FEISHU_CHANNEL_KEY, FEISHU_PLUGIN_ID)
+        return bool(str(channel_cfg.get("appId") or "").strip() and str(channel_cfg.get("appSecret") or "").strip())
     if channel == "agentspace":
-        return (channel, AGENTSPACE_CHANNEL_KEY, AGENTSPACE_PLUGIN_ID)
-    return (channel,)
+        accounts = channel_cfg.get("accounts")
+        if not isinstance(accounts, dict):
+            return False
+        default_account = accounts.get(AGENTSPACE_DEFAULT_ACCOUNT_ID)
+        if not isinstance(default_account, dict):
+            return False
+        return bool(
+            str(default_account.get("token") or "").strip()
+            or str(default_account.get("app_id") or "").strip()
+        )
+    return bool(channel_cfg)
+
+
+def _build_channel_doctor_availability_check(
+    *,
+    name: str,
+    available: bool,
+    configured: bool,
+    connect_required_message: str,
+    connect_required_ok: bool = True,
+    **extra: Any,
+) -> dict[str, Any]:
+    if available:
+        state = "ready"
+        ok = True
+        message = None
+    elif configured:
+        state = "missing"
+        ok = False
+        message = None
+    else:
+        state = "connect_required"
+        ok = connect_required_ok
+        message = connect_required_message
+
+    payload = {
+        "name": name,
+        "ok": ok,
+        "configured": configured,
+        "state": state,
+        **extra,
+    }
+    if message:
+        payload["message"] = message
+    return payload
 
 
 def _extract_channel_snapshot(snapshot: Any, channel: Optional[str]) -> Any:
@@ -2023,18 +2128,24 @@ def channel_connect(
                 await preflight_gateway.connect()
                 cfg_snapshot = await preflight_gateway.config_get()
                 config, base_hash = _extract_config_state(cfg_snapshot)
-                preflight_changed = _ensure_plugin_enabled(config, WEIXIN_PLUGIN_ID)
+                preflight_changed, _ = _mutate_weixin_account_enabled(
+                    config,
+                    enabled=True,
+                    account_id="default",
+                )
                 if preflight_changed:
                     await preflight_gateway.config_apply(
                         config=config,
                         base_hash=base_hash,
-                        note="ksadk enable bundled weixin plugin",
+                        note="ksadk seed weixin channel config",
+                    )
+                    await _wait_for_gateway_reload_after_config_apply(
+                        preflight_gateway,
+                        resolved_region,
+                        detail,
                     )
             finally:
                 await preflight_gateway.close()
-
-            if preflight_changed:
-                await _wait_for_gateway_ready(resolved_region, detail)
 
             gateway = _build_gateway_client(resolved_region, detail)
             try:
@@ -2121,10 +2232,13 @@ def channel_connect(
                         base_hash=fresh_base_hash,
                         note="ksadk configure agentspace channel",
                     )
+                    await _wait_for_gateway_reload_after_config_apply(
+                        apply_gateway,
+                        resolved_region,
+                        detail,
+                    )
             finally:
                 await apply_gateway.close()
-            if changed:
-                await _wait_for_gateway_ready(resolved_region, detail)
 
             snapshot = await _fetch_channel_snapshot_with_retry(
                 resolved_region,
@@ -2171,9 +2285,13 @@ def channel_connect(
                     base_hash=base_hash,
                     note="ksadk configure feishu channel",
                 )
+                await _wait_for_gateway_reload_after_config_apply(
+                    apply_gateway,
+                    resolved_region,
+                    detail,
+                )
             finally:
                 await apply_gateway.close()
-            await _wait_for_gateway_ready(resolved_region, detail)
 
         snapshot = await _fetch_channel_snapshot_with_retry(
             resolved_region,
@@ -2231,10 +2349,10 @@ def _run_channel_toggle_command(
                     enabled=enabled,
                     account_id=account_id,
                 )
-                resolved_account_id = AGENTSPACE_DEFAULT_ACCOUNT_ID
+                resolved_account_id = _channel_default_account_id(normalized_channel)
             else:
                 changed = _mutate_feishu_enabled(config, enabled=enabled, account_id=account_id)
-                resolved_account_id = "default"
+                resolved_account_id = _channel_default_account_id(normalized_channel)
 
             if changed:
                 await gateway.config_apply(
@@ -2242,11 +2360,14 @@ def _run_channel_toggle_command(
                     base_hash=base_hash,
                     note=f"ksadk {action} {normalized_channel} channel",
                 )
+                await _wait_for_gateway_reload_after_config_apply(
+                    gateway,
+                    resolved_region,
+                    detail,
+                )
         finally:
             await gateway.close()
 
-        if changed:
-            await _wait_for_gateway_ready(resolved_region, detail)
         snapshot = await _fetch_channel_snapshot_with_retry(
             resolved_region,
             detail,
@@ -2354,40 +2475,49 @@ def channel_doctor(agent_ref: Optional[str], region: Optional[str], channel: Opt
         plugin_entries = ((config.get("plugins") or {}).get("entries") or {}) if isinstance(config, dict) else {}
         for item in channels_to_check:
             selected_snapshot = _extract_channel_snapshot(snapshot, item)
+            configured = _is_channel_configured(item, config=config, snapshot=selected_snapshot)
+            plugin_id = str((OPENCLAW_CHANNEL_SPECS.get(item) or {}).get("plugin_id") or "")
             if item == "weixin":
                 checks.append(
                     {
                         "name": "weixin_plugin_visible",
-                        "ok": WEIXIN_PLUGIN_ID in plugin_entries or selected_snapshot is not None,
-                        "plugin_id": WEIXIN_PLUGIN_ID,
+                        "ok": plugin_id in plugin_entries or selected_snapshot is not None,
+                        "plugin_id": plugin_id,
                     }
                 )
                 checks.append(
-                    {
-                        "name": "weixin_status_snapshot",
-                        "ok": selected_snapshot is not None,
-                    }
+                    _build_channel_doctor_availability_check(
+                        name="weixin_status_snapshot",
+                        available=selected_snapshot is not None,
+                        configured=configured,
+                        connect_required_message="首次连接前微信状态快照可能为空，执行 channel connect 后会自动补齐",
+                    )
                 )
                 checks.append(
-                    {
-                        "name": "weixin_qr_rpc",
-                        "ok": "web.login.start" in methods and "web.login.wait" in methods,
-                        "required_methods": ["web.login.start", "web.login.wait"],
-                    }
+                    _build_channel_doctor_availability_check(
+                        name="weixin_qr_rpc",
+                        available="web.login.start" in methods and "web.login.wait" in methods,
+                        configured=configured,
+                        connect_required_message="首次连接会先自动启用 bundled weixin plugin，然后再暴露扫码 RPC",
+                        connect_required_ok=False,
+                        required_methods=["web.login.start", "web.login.wait"],
+                    )
                 )
             elif item == "feishu":
                 checks.append(
                     {
                         "name": "feishu_plugin_visible",
-                        "ok": FEISHU_PLUGIN_ID in plugin_entries or selected_snapshot is not None,
-                        "plugin_id": FEISHU_PLUGIN_ID,
+                        "ok": plugin_id in plugin_entries or selected_snapshot is not None,
+                        "plugin_id": plugin_id,
                     }
                 )
                 checks.append(
-                    {
-                        "name": "feishu_status_snapshot",
-                        "ok": selected_snapshot is not None,
-                    }
+                    _build_channel_doctor_availability_check(
+                        name="feishu_status_snapshot",
+                        available=selected_snapshot is not None,
+                        configured=configured,
+                        connect_required_message="飞书尚未完成 connect/onboarding，首次接入前不会出现在 channel snapshot 中",
+                    )
                 )
                 node_path = shutil.which("node")
                 npx_path = shutil.which("npx")
@@ -2403,15 +2533,17 @@ def channel_doctor(agent_ref: Optional[str], region: Optional[str], channel: Opt
                 checks.append(
                     {
                         "name": "agentspace_plugin_visible",
-                        "ok": AGENTSPACE_PLUGIN_ID in plugin_entries or selected_snapshot is not None,
-                        "plugin_id": AGENTSPACE_PLUGIN_ID,
+                        "ok": plugin_id in plugin_entries or selected_snapshot is not None,
+                        "plugin_id": plugin_id,
                     }
                 )
                 checks.append(
-                    {
-                        "name": "agentspace_status_snapshot",
-                        "ok": selected_snapshot is not None,
-                    }
+                    _build_channel_doctor_availability_check(
+                        name="agentspace_status_snapshot",
+                        available=selected_snapshot is not None,
+                        configured=configured,
+                        connect_required_message="Agentspace 尚未完成授权，首次 connect 前不会出现在 channel snapshot 中",
+                    )
                 )
                 skills_cfg = config.get("skills") if isinstance(config.get("skills"), dict) else {}
                 allow_bundled = skills_cfg.get("allowBundled") if isinstance(skills_cfg, dict) else []

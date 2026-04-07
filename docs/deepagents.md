@@ -1,5 +1,9 @@
 # DeepAgents 框架支持说明
 
+> 主入口已迁移：完整用户路径请先看 [ksadk_usage_guide.md](./ksadk_usage_guide.md)，当前实现边界请看 [ksadk_technical_design.md](./ksadk_technical_design.md)。
+>
+> 本文保留为 DeepAgents 专项参考，重点说明框架识别、runner 复用和平台能力接入细节。
+
 ## 目标
 
 `ksadk` 新增 `deepagents` 框架支持，遵循两个原则：
