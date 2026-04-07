@@ -782,7 +782,7 @@ class CodeBuilder(BaseBuilder):
         probe_url = f"{self._normalize_pip_index_url(index_url)}/pip/"
         request = Request(
             probe_url,
-            headers={"User-Agent": "ksadk-build/0.3.9"},
+            headers={"User-Agent": "ksadk-build/0.4.0"},
         )
         started_at = time.monotonic()
         try:

@@ -1,0 +1,2 @@
+prune ksadk/server/web-ui/node_modules
+recursive-exclude ksadk/server/web-ui/node_modules *

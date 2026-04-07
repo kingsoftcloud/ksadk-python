@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ksadk"
-version = "0.3.9"
+version = "0.4.0"
 description = "Kingsoft Cloud Agent Development Kit - 支持 LangChain/LangGraph/DeepAgents/ADK 的本地运行与云端部署"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -138,7 +138,7 @@ where = ["."]
 include = ["ksadk*"]
 
 [tool.setuptools.package-data]
-ksadk = ["server/static/**/*"]
+ksadk = ["server/static/**/*", "server/web-ui/dist-hosted/**/*"]
 
 [tool.black]
 line-length = 100

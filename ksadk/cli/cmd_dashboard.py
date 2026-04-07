@@ -37,6 +37,7 @@ from ksadk.cli.ui import print_info, print_kv, print_success, print_warn
 from ksadk.cli.ui import is_json_output, is_stdout_tty, output_option as cli_output_option
 from ksadk.deployment.state import load_state
 from ksadk.deployment.ui_config import resolve_ui_config
+from ksadk.openclaw_gateway import OpenClawGatewayClient
 
 DASHBOARD_RESOURCE = ResourceDescriptor(
     name="Dashboard",
@@ -448,11 +449,29 @@ def _open_dashboard(
         cli_url=None,
     )
     normalized_path = _normalize_ui_path(resolved_ui.path or "/")
-    hosted_entry_path = "/chat"
     base_url = _build_base_ui_url(endpoint, normalized_path)
 
     if direct:
         _emit_url("打开 Dashboard（direct）", base_url, no_open=no_open)
+        return
+
+    if _is_openclaw_target(state=state, detail=detail):
+        try:
+            link_data = asyncio.run(
+                _create_openclaw_gateway_access_link(
+                    region=region,
+                    detail=detail,
+                    link_type="share" if share else "private",
+                    expires_seconds=_normalize_expires_seconds(
+                        link_type="share" if share else "private",
+                        expires_seconds=expires_seconds,
+                    ),
+                )
+            )
+        except Exception as e:
+            _abort_dashboard_error(e, context="创建 OpenClaw gateway 链接失败", argv=["dashboard", "open"])
+            return
+        _render_dashboard_open_result(detail=detail, link_data=link_data, no_open=no_open)
         return
 
     link_type = "share" if share else "private"
@@ -464,7 +483,7 @@ def _open_dashboard(
                 agent_id=(detail.get("agent_id") or "").strip() or None,
                 agent_name=(detail.get("name") or "").strip() or None,
                 link_type=link_type,
-                path=hosted_entry_path,
+                path=normalized_path,
                 expires_seconds=validated_expires,
             )
         )
@@ -477,8 +496,18 @@ def _open_dashboard(
             remote_error("CreateDashboardAccessLink 返回为空"),
             argv=["dashboard", "open"],
         )
-    open_url = access_url
-    actual_link_type = str(link_data.get("link_type") or link_type or "").strip() or link_type
+    _render_dashboard_open_result(detail=detail, link_data=link_data, no_open=no_open, default_link_type=link_type)
+
+
+def _render_dashboard_open_result(
+    *,
+    detail: dict,
+    link_data: dict,
+    no_open: bool,
+    default_link_type: str = "private",
+):
+    open_url = (link_data.get("access_url") or "").strip()
+    actual_link_type = str(link_data.get("link_type") or default_link_type or "").strip() or default_link_type
 
     render_descriptor_status(
         DASHBOARD_SHARE_RESOURCE,
@@ -500,6 +529,12 @@ def _open_dashboard(
         },
     )
     _emit_url("打开 Dashboard", open_url, no_open=no_open)
+
+
+def _is_openclaw_target(*, state: Optional[dict], detail: dict) -> bool:
+    state_type = str((state or {}).get("type") or "").strip().lower()
+    framework = str(detail.get("framework") or "").strip().lower()
+    return state_type == "openclaw" or framework == "openclaw"
 
 
 def _emit_url(title: str, url: str, *, no_open: bool):
@@ -631,6 +666,38 @@ async def _create_dashboard_access_link(
         else:
             raise Exception("missing agent reference")
         return await client.create_dashboard_access_link(**kwargs)
+
+
+def _build_openclaw_gateway_client(region: str, detail: dict) -> OpenClawGatewayClient:
+    return OpenClawGatewayClient(
+        region=region,
+        agent_id=str(detail.get("agent_id") or "").strip(),
+        agent_name=str(detail.get("name") or "").strip() or None,
+    )
+
+
+async def _create_openclaw_gateway_access_link(
+    *,
+    region: str,
+    detail: dict,
+    link_type: str,
+    expires_seconds: Optional[int],
+) -> dict:
+    gateway = _build_openclaw_gateway_client(region, detail)
+    try:
+        info = await gateway.build_access_info(
+            path="/",
+            expires_seconds=expires_seconds,
+            link_type=link_type,
+        )
+    finally:
+        await gateway.close()
+    return {
+        "link_id": info.link_id,
+        "link_type": link_type,
+        "expires_at": info.expires_at,
+        "access_url": info.access_url,
+    }
 
 
 async def _list_dashboard_access_links(
