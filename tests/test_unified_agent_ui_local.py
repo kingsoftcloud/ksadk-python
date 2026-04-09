@@ -839,10 +839,13 @@ async def test_static_routes_serve_unified_agent_ui_shell(monkeypatch):
 
 
 def test_web_ui_source_uses_title_and_summary_in_sidebar():
-    source = Path("ksadk/server/web-ui/src/App.tsx").read_text(encoding="utf-8")
-    assert "session.Title" in source
-    assert "session.Summary" in source
-    assert "session.SessionId.slice(0, 12)" not in source
+    app_source = Path("ksadk/server/web-ui/src/App.tsx").read_text(encoding="utf-8")
+    sidebar_source = Path("ksadk/server/web-ui/src/components/chat/ChatSidebar.tsx").read_text(
+        encoding="utf-8"
+    )
+    assert "session.Title" in app_source
+    assert "session.Summary" in sidebar_source
+    assert "session.SessionId.slice(0, 12)" not in sidebar_source
 
 
 def test_web_ui_source_supports_clipboard_file_paste():
@@ -853,7 +856,10 @@ def test_web_ui_source_supports_clipboard_file_paste():
 
 
 def test_web_ui_source_uses_adaptive_image_preview_sizing():
-    source = Path("ksadk/server/web-ui/src/App.tsx").read_text(encoding="utf-8")
-    assert "naturalWidth" in source
-    assert "naturalHeight" in source
-    assert "setPreviewImageSize" in source
+    app_source = Path("ksadk/server/web-ui/src/App.tsx").read_text(encoding="utf-8")
+    preview_source = Path(
+        "ksadk/server/web-ui/src/components/chat/AttachmentPreview.tsx"
+    ).read_text(encoding="utf-8")
+    assert "naturalWidth" in preview_source
+    assert "naturalHeight" in preview_source
+    assert "setPreviewImageSize" in app_source

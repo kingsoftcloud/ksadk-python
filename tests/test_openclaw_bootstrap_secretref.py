@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -92,7 +93,7 @@ def _build_base_env(state_dir: str, config_path: str) -> dict:
 def test_openclaw_dockerfile_tracks_latest_official_channel_plugins():
     dockerfile = OPENCLAW_DOCKERFILE.read_text(encoding="utf-8")
 
-    assert "ARG OPENCLAW_BASE_IMAGE=alpine/openclaw:2026.4.5" in dockerfile
+    assert "ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:" in dockerfile
     assert "ARG OPENCLAW_WEIXIN_PLUGIN_SPEC=@tencent-weixin/openclaw-weixin" in dockerfile
     assert "ARG OPENCLAW_LARK_PLUGIN_SPEC=@larksuite/openclaw-lark" in dockerfile
 
@@ -1161,10 +1162,20 @@ def test_bootstrap_scrubs_model_api_key_from_gateway_process_env():
         captured_env_path = Path(tmpdir) / "gateway.env"
         fake_bin_dir = Path(tmpdir) / "bin"
         fake_node_path = fake_bin_dir / "node"
+        real_node_path = subprocess.run(
+            ["bash", "-lc", "command -v node"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
         fake_bin_dir.mkdir()
         fake_node_path.write_text(
             "#!/bin/sh\n"
-            'printenv | sort > "${BOOTSTRAP_CAPTURE_ENV_PATH}"\n'
+            'if [ "$1" = "openclaw.mjs" ] && [ "$2" = "gateway" ] && [ "$3" = "run" ]; then\n'
+            '  printenv | sort > "${BOOTSTRAP_CAPTURE_ENV_PATH}"\n'
+            "  exit 0\n"
+            "fi\n"
+            f'exec "{real_node_path}" "$@"\n'
         )
         fake_node_path.chmod(0o755)
 
@@ -1174,16 +1185,26 @@ def test_bootstrap_scrubs_model_api_key_from_gateway_process_env():
         env["PATH"] = f"{fake_bin_dir}:{env['PATH']}"
         env.pop("OPENCLAW_BOOTSTRAP_ONLY", None)
 
-        result = subprocess.run(
+        process = subprocess.Popen(
             ["bash", str(BOOTSTRAP_SCRIPT)],
             cwd=str(REPO_ROOT),
             env=env,
-            capture_output=True,
             text=True,
-            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
 
-        assert result.returncode == 0, result.stderr or result.stdout
+        deadline = time.monotonic() + 5
+        while not captured_env_path.exists() and time.monotonic() < deadline:
+            if process.poll() is not None:
+                break
+            time.sleep(0.05)
+
+        assert captured_env_path.exists(), process.stderr.read() or process.stdout.read()
+
+        process.terminate()
+        process.communicate(timeout=5)
+
         captured_env = captured_env_path.read_text()
         assert "OPENCLAW_MODEL_API_KEY=" not in captured_env
         assert "OPENAI_API_KEY=" not in captured_env

@@ -299,7 +299,15 @@ async def test_adk_runner_invoke_roundtrip_with_remote_mcp_tools(
         def __init__(self, **kwargs):
             self.agent = kwargs["agent"]
 
-        async def run_async(self, *, session_id, user_id, new_message):
+        async def run_async(
+            self,
+            *,
+            session_id,
+            user_id,
+            new_message,
+            state_delta=None,
+            run_config=None,
+        ):
             toolsets = [
                 tool for tool in self.agent.tools if hasattr(tool, "get_tools_with_prefix")
             ]
