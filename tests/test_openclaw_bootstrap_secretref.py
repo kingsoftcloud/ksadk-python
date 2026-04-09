@@ -164,6 +164,13 @@ def test_bootstrap_keeps_env_secretref_when_explicitly_requested():
         assert cfg["secrets"]["defaults"]["env"] == "default"
 
 
+def test_bootstrap_keeps_model_env_fallbacks_for_background_runs():
+    source = BOOTSTRAP_SCRIPT.read_text(encoding="utf-8")
+
+    assert "false missing-auth failures against auth-profiles.json" in source
+    assert "unset OPENCLAW_MODEL_API_KEY OPENAI_API_KEY LLM_API_KEY MODEL_API_KEY" not in source
+
+
 def test_bootstrap_fails_without_secret_env_value():
     with TemporaryDirectory() as tmpdir:
         config_path = Path(tmpdir) / "openclaw.json"
@@ -1156,7 +1163,7 @@ def test_bootstrap_merges_custom_exec_allowlist_patterns():
         assert "/custom/bin/inspect" in patterns
 
 
-def test_bootstrap_scrubs_model_api_key_from_gateway_process_env():
+def test_bootstrap_keeps_model_api_key_in_gateway_process_env_for_deferred_auth_paths():
     with TemporaryDirectory() as tmpdir:
         config_path = Path(tmpdir) / "openclaw.json"
         captured_env_path = Path(tmpdir) / "gateway.env"
@@ -1206,7 +1213,7 @@ def test_bootstrap_scrubs_model_api_key_from_gateway_process_env():
         process.communicate(timeout=5)
 
         captured_env = captured_env_path.read_text()
-        assert "OPENCLAW_MODEL_API_KEY=" not in captured_env
+        assert "OPENCLAW_MODEL_API_KEY=dummy-secret-value" in captured_env
         assert "OPENAI_API_KEY=" not in captured_env
         assert "OPENCLAW_INTERNAL_TRUSTED_PROXY_USER=openclaw-backend" in captured_env
         assert "OPENCLAW_INTERNAL_TRUSTED_PROXY_USER_HEADER=x-forwarded-user" in captured_env
@@ -1529,6 +1536,87 @@ def test_bootstrap_auto_enables_bundled_lark_plugin():
         cfg = json.loads(config_path.read_text())
         assert (Path(tmpdir) / "extensions" / "openclaw-lark" / "manifest.json").exists()
         assert cfg["plugins"]["entries"]["openclaw-lark"]["enabled"] is True
+
+
+def test_bootstrap_configures_agentspace_channel_from_env():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        default_extensions_dir = Path(tmpdir) / "default-extensions" / "agentspace"
+        default_extensions_dir.mkdir(parents=True, exist_ok=True)
+        (default_extensions_dir / "manifest.json").write_text('{"name":"agentspace"}\n')
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_DEFAULT_EXTENSIONS_DIR"] = str(Path(tmpdir) / "default-extensions")
+        env["OPENCLAW_AGENTSPACE_WPS_SID"] = "wps_sid_demo"
+        env["OPENCLAW_AGENTSPACE_APP_ID"] = "app-demo"
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert (Path(tmpdir) / "extensions" / "agentspace" / "manifest.json").exists()
+        assert cfg["plugins"]["entries"]["agentspace"]["enabled"] is True
+        account = cfg["channels"]["agentspace"]["accounts"]["default"]
+        assert account["enabled"] is True
+        assert account["app_id"] == "app-demo"
+        assert account["device_uuid"]
+        assert len(str(account["token"]).split(":")) == 4
+        assert account["token"] != "wps_sid_demo"
+        assert cfg["channels"]["agentspace"]["dmPolicy"] == "open"
+        assert cfg["channels"]["agentspace"]["allowFrom"] == ["*"]
+
+
+def test_bootstrap_clears_stale_agentspace_app_id_when_only_wps_sid_is_provided():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "channels": {
+                        "agentspace": {
+                            "accounts": {
+                                "default": {
+                                    "app_id": "app-stale",
+                                    "device_uuid": "device-1",
+                                }
+                            }
+                        }
+                    }
+                }
+            )
+        )
+        default_extensions_dir = Path(tmpdir) / "default-extensions" / "agentspace"
+        default_extensions_dir.mkdir(parents=True, exist_ok=True)
+        (default_extensions_dir / "manifest.json").write_text('{"name":"agentspace"}\n')
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_DEFAULT_EXTENSIONS_DIR"] = str(Path(tmpdir) / "default-extensions")
+        env["OPENCLAW_AGENTSPACE_WPS_SID"] = "wps_sid_demo"
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        account = cfg["channels"]["agentspace"]["accounts"]["default"]
+        assert account["app_id"] == ""
+        assert account["device_uuid"] == "device-1"
+        assert len(str(account["token"]).split(":")) == 4
 
 
 def test_bootstrap_patches_bundled_weixin_gateway_login_methods_before_sync():
@@ -2027,6 +2115,7 @@ def test_bootstrap_patches_runtime_bundles_for_loopback_gateway_clients():
             '\tconst usesDeviceTokenAuth = params.authMethod === "device-token";\n'
             '\treturn params.isLocalClient && !params.hasBrowserOriginHeader && (params.sharedAuthOk && usesSharedSecretAuth || usesDeviceTokenAuth);\n'
             '}\n'
+            'if (isLoopbackAddress(remoteAddr)) return { reason: "trusted_proxy_loopback_source" };\n'
             'function shouldAttachDeviceIdentityForGatewayCall(params) {\n'
             '\treturn true;\n'
             '}\n'
@@ -2062,6 +2151,9 @@ def test_bootstrap_patches_runtime_bundles_for_loopback_gateway_clients():
         assert 'usesLoopbackTrustedProxyAuth = params.authMethod === "trusted-proxy"' in gateway_source
         assert 'const usesDeviceTokenAuth = params.authMethod === "device-token";' in gateway_source
         assert 'usesLoopbackTrustedProxyAuth || params.sharedAuthOk && usesSharedSecretAuth || usesDeviceTokenAuth' in gateway_source
+        assert 'const internalLoopbackUserHeader = String(process.env.OPENCLAW_INTERNAL_TRUSTED_PROXY_USER_HEADER || process.env.OPENCLAW_TRUSTED_PROXY_USER_HEADER || "x-forwarded-user").trim().toLowerCase();' in gateway_source
+        assert 'const loopbackUser = headerValue(req.headers[internalLoopbackUserHeader || "x-forwarded-user"]);' in gateway_source
+        assert 'if (!internalLoopbackUser || !loopbackUser || loopbackUser.trim() !== internalLoopbackUser) return { reason: "trusted_proxy_loopback_source" };' in gateway_source
         assert 'function shouldAttachDeviceIdentityForGatewayCall(params) {' in gateway_source
         assert '].includes(parsed.hostname)) return false;' in gateway_source
         assert '}) ? loadOrCreateDeviceIdentity() : null,' in gateway_source
@@ -2090,6 +2182,7 @@ def test_bootstrap_disables_container_self_update_runtime_hooks():
             '\tconst usesDeviceTokenAuth = params.authMethod === "device-token";\n'
             '\treturn params.isLocalClient && !params.hasBrowserOriginHeader && (params.sharedAuthOk && usesSharedSecretAuth || usesDeviceTokenAuth);\n'
             '}\n'
+            'if (isLoopbackAddress(remoteAddr)) return { reason: "trusted_proxy_loopback_source" };\n'
             'function shouldAttachDeviceIdentityForGatewayCall(params) {\n'
             '\treturn true;\n'
             '}\n'

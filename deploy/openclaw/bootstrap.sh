@@ -646,6 +646,7 @@ const markerFile = process.env.OPENCLAW_DIST_PATCH_MARKER || '';
 const requiredLabels = new Set([
   'gateway client loopback trusted-proxy identity',
   'gateway backend self-pairing trusted-proxy bypass',
+  'gateway trusted-proxy loopback internal auth compatibility',
   'gateway local override explicit-auth bypass',
   // NOTE: 以下两个 patch 已在 openclaw >= 2026.4.5 中由上游原生修复
   //   - 'gateway loopback device-identity bypass'  → resolveDeviceIdentityForGatewayCall() + try/catch
@@ -701,6 +702,17 @@ const replacements = [
 }`,
     replacement: `function scheduleGatewayUpdateCheck(params) {
 \treturn () => {};
+}`,
+  },
+  {
+    label: 'gateway trusted-proxy loopback internal auth compatibility',
+    marker: 'const internalLoopbackUserHeader = String(process.env.OPENCLAW_INTERNAL_TRUSTED_PROXY_USER_HEADER || process.env.OPENCLAW_TRUSTED_PROXY_USER_HEADER || "x-forwarded-user").trim().toLowerCase();',
+    needle: 'if (isLoopbackAddress(remoteAddr)) return { reason: "trusted_proxy_loopback_source" };',
+    replacement: `if (isLoopbackAddress(remoteAddr)) {
+\tconst internalLoopbackUserHeader = String(process.env.OPENCLAW_INTERNAL_TRUSTED_PROXY_USER_HEADER || process.env.OPENCLAW_TRUSTED_PROXY_USER_HEADER || "x-forwarded-user").trim().toLowerCase();
+\tconst internalLoopbackUser = String(process.env.OPENCLAW_INTERNAL_TRUSTED_PROXY_USER || "openclaw-backend").trim();
+\tconst loopbackUser = headerValue(req.headers[internalLoopbackUserHeader || "x-forwarded-user"]);
+\tif (!internalLoopbackUser || !loopbackUser || loopbackUser.trim() !== internalLoopbackUser) return { reason: "trusted_proxy_loopback_source" };
 }`,
   },
   {
@@ -1089,6 +1101,7 @@ CONFIG_RECONCILE_STARTED_AT="$(bootstrap_now_seconds)"
 node <<'NODE'
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const configPath = process.env.CONFIG_PATH;
 const publicPort = process.env.PUBLIC_PORT;
@@ -1193,6 +1206,58 @@ const ensurePluginEntry = (pluginId) => {
   cfg.plugins.entries = cfg.plugins.entries || {};
   cfg.plugins.entries[pluginId] = cfg.plugins.entries[pluginId] || {};
   return cfg.plugins.entries[pluginId];
+};
+const AGENTSPACE_DEFAULT_KEY_SOURCE = 'openclaw_agentspace';
+const encryptAgentspaceToken = (wpsSid, appId = '') => {
+  const token = String(wpsSid ?? '').trim();
+  if (!token) return '';
+  const keySource = String(appId ?? '').trim() || AGENTSPACE_DEFAULT_KEY_SOURCE;
+  const salt = crypto.randomBytes(16);
+  const iv = crypto.randomBytes(12);
+  const key = crypto.scryptSync(keySource, salt, 32, { N: 16384, r: 8, p: 1 });
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const cipherBytes = Buffer.concat([cipher.update(token, 'utf8'), cipher.final()]);
+  const tagBytes = cipher.getAuthTag();
+  return `${salt.toString('hex')}:${iv.toString('hex')}:${tagBytes.toString('hex')}:${cipherBytes.toString('hex')}`;
+};
+const configureAgentspaceFromEnv = () => {
+  const wpsSid = firstNonBlank(process.env.OPENCLAW_AGENTSPACE_WPS_SID);
+  if (!wpsSid) return;
+
+  const appId = firstNonBlank(process.env.OPENCLAW_AGENTSPACE_APP_ID);
+  const currentUser = firstNonBlank(process.env.OPENCLAW_AGENTSPACE_CURRENT_USER);
+  const token = encryptAgentspaceToken(wpsSid, appId);
+  const deviceUuid =
+    firstNonBlank(
+      cfg.channels?.agentspace?.accounts?.default?.device_uuid,
+      typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : '',
+    ) || crypto.randomBytes(16).toString('hex');
+
+  cfg.plugins = cfg.plugins || {};
+  cfg.plugins.allow = uniqueStrings([
+    ...(Array.isArray(cfg.plugins.allow) ? cfg.plugins.allow : []),
+    'agentspace',
+  ]);
+  ensurePluginEntry('agentspace').enabled = true;
+
+  cfg.channels = cfg.channels || {};
+  cfg.channels.agentspace = cfg.channels.agentspace || {};
+  cfg.channels.agentspace.accounts = cfg.channels.agentspace.accounts || {};
+  cfg.channels.agentspace.accounts.default = cfg.channels.agentspace.accounts.default || {};
+
+  const defaultAccount = cfg.channels.agentspace.accounts.default;
+  defaultAccount.enabled = true;
+  defaultAccount.token = token;
+  defaultAccount.currentUser = currentUser;
+  defaultAccount.app_id = appId;
+  defaultAccount.device_uuid = deviceUuid;
+
+  if (!String(cfg.channels.agentspace.dmPolicy || '').trim()) {
+    cfg.channels.agentspace.dmPolicy = 'open';
+  }
+  if (!Array.isArray(cfg.channels.agentspace.allowFrom) || cfg.channels.agentspace.allowFrom.length === 0) {
+    cfg.channels.agentspace.allowFrom = ['*'];
+  }
 };
 const ensureParentDir = (filePath) => {
   fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
@@ -1518,6 +1583,7 @@ for (const bundledPlugin of bundledPlugins) {
     ensurePluginEntry(bundledPlugin.pluginId).enabled = true;
   }
 }
+configureAgentspaceFromEnv();
 const providerId = firstNonBlank(process.env.OPENCLAW_MODEL_PROVIDER_ID, 'ksyun');
 const defaultModelApiKeyFilePath = path.join(resolvedStateDir || '/root/.openclaw', 'secrets.json');
 const providerBaseUrl = firstNonBlank(
@@ -2105,10 +2171,10 @@ if [[ "${BOOTSTRAP_ONLY_RAW}" == "1" || "${BOOTSTRAP_ONLY_RAW}" == "true" || "${
   exit 0
 fi
 
-MODEL_API_KEY_SECRET_SOURCE_RAW="$(printf '%s' "${OPENCLAW_MODEL_API_KEY_SECRET_SOURCE:-file}" | tr '[:upper:]' '[:lower:]')"
-if [[ "${MODEL_API_KEY_SECRET_SOURCE_RAW}" != "env" ]]; then
-  unset OPENCLAW_MODEL_API_KEY OPENAI_API_KEY LLM_API_KEY MODEL_API_KEY
-fi
+# Keep bootstrap model env vars available even when config materializes file-backed
+# secret refs. Newer OpenClaw background paths (heartbeat/cron) can still resolve
+# provider auth from ambient env during deferred runs; clearing these variables
+# causes false missing-auth failures against auth-profiles.json.
 
 export OPENCLAW_EXEC_SAFE_WORKSPACE_ROOT="${OPENCLAW_EXEC_SAFE_WORKSPACE_ROOT:-${WORKSPACE_DIR}}"
 export OPENCLAW_EXEC_SAFE_STATE_DIR="${OPENCLAW_EXEC_SAFE_STATE_DIR:-${STATE_DIR}}"
