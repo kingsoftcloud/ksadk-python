@@ -1436,6 +1436,19 @@ cfg.session.maintenance.highWaterBytes = cfg.session.maintenance.highWaterBytes 
 cfg.agents = cfg.agents || {};
 cfg.agents.defaults = cfg.agents.defaults || {};
 cfg.agents.defaults.workspace = cfg.agents.defaults.workspace || process.env.OPENCLAW_WORKSPACE_DIR || path.join(process.env.STATE_DIR, 'workspace');
+cfg.agents.defaults.heartbeat = cfg.agents.defaults.heartbeat || {};
+if (cfg.agents.defaults.heartbeat.isolatedSession == null) {
+  cfg.agents.defaults.heartbeat.isolatedSession = parseBool(
+    process.env.OPENCLAW_HEARTBEAT_ISOLATED_SESSION,
+    true,
+  );
+}
+if (cfg.agents.defaults.heartbeat.lightContext == null) {
+  cfg.agents.defaults.heartbeat.lightContext = parseBool(
+    process.env.OPENCLAW_HEARTBEAT_LIGHT_CONTEXT,
+    true,
+  );
+}
 
 const resolvedPresetSkillsAllowlist = uniqueStrings(
   parseStringList(
@@ -1489,6 +1502,15 @@ cfg.tools.exec.ask = parseEnum(
   ["off", "on-miss", "always"],
   "off",
 );
+if (cfg.tools.exec.notifyOnExit == null) {
+  cfg.tools.exec.notifyOnExit = parseBool(process.env.OPENCLAW_EXEC_NOTIFY_ON_EXIT, false);
+}
+if (cfg.tools.exec.notifyOnExitEmptySuccess == null) {
+  cfg.tools.exec.notifyOnExitEmptySuccess = parseBool(
+    process.env.OPENCLAW_EXEC_NOTIFY_ON_EXIT_EMPTY_SUCCESS,
+    false,
+  );
+}
 // 宽松模式下跳过 safe-bin PATH 注入，使用原生命令路径
 const skipSafeBin = parseBool(process.env.OPENCLAW_SKIP_SAFE_BIN_PATH, false);
 const pathPrepend = skipSafeBin

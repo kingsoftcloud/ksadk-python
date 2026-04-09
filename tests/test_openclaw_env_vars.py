@@ -245,6 +245,19 @@ def test_build_openclaw_env_vars_forwards_explicit_builtin_browser_toggle(monkey
     assert env["OPENCLAW_BROWSER_HEADLESS"] == "true"
 
 
+def test_build_openclaw_env_vars_forwards_agentspace_bootstrap_env(monkeypatch):
+    monkeypatch.setattr(cmd_openclaw, "_GLOBAL_ENV_CACHE", {})
+    monkeypatch.setenv("OPENCLAW_AGENTSPACE_WPS_SID", "wps-sid-demo")
+    monkeypatch.setenv("OPENCLAW_AGENTSPACE_APP_ID", "app-demo")
+    monkeypatch.setenv("OPENCLAW_AGENTSPACE_CURRENT_USER", "user-demo")
+
+    env = cmd_openclaw._build_openclaw_env_vars()
+
+    assert env["OPENCLAW_AGENTSPACE_WPS_SID"] == "wps-sid-demo"
+    assert env["OPENCLAW_AGENTSPACE_APP_ID"] == "app-demo"
+    assert env["OPENCLAW_AGENTSPACE_CURRENT_USER"] == "user-demo"
+
+
 def test_generate_default_openclaw_name_is_high_entropy():
     name1 = cmd_openclaw._generate_default_openclaw_name()
     name2 = cmd_openclaw._generate_default_openclaw_name()

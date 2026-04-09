@@ -171,6 +171,48 @@ def test_bootstrap_keeps_model_env_fallbacks_for_background_runs():
     assert "unset OPENCLAW_MODEL_API_KEY OPENAI_API_KEY LLM_API_KEY MODEL_API_KEY" not in source
 
 
+def test_bootstrap_defaults_heartbeat_to_isolated_light_context():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert cfg["agents"]["defaults"]["heartbeat"]["isolatedSession"] is True
+        assert cfg["agents"]["defaults"]["heartbeat"]["lightContext"] is True
+
+
+def test_bootstrap_disables_exec_notify_on_exit_by_default():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert cfg["tools"]["exec"]["notifyOnExit"] is False
+        assert cfg["tools"]["exec"]["notifyOnExitEmptySuccess"] is False
+
+
 def test_bootstrap_fails_without_secret_env_value():
     with TemporaryDirectory() as tmpdir:
         config_path = Path(tmpdir) / "openclaw.json"
