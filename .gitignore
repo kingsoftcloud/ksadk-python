@@ -156,6 +156,7 @@ Thumbs.db
 *.tmp
 .cache/
 /webui/node_modules/
+.agentengine*
 .agentengin/
 webui
 .pypirc

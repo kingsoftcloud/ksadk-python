@@ -37,34 +37,9 @@ from pydantic import BaseModel, Field
 from typing_extensions import Union, override
 
 from ksadk.memory.adk.backends.base_ltm_backend import BaseLongTermMemoryBackend
+from ksadk.memory.service import LongTermMemoryService
 
 logger = logging.getLogger(__name__)
-
-
-def _get_backend_cls(backend: str) -> type:
-    """根据名称获取后端类"""
-    if backend == "local":
-        from ksadk.memory.adk.backends.inmemory_ltm_backend import (
-            InMemoryLTMBackend,
-        )
-        return InMemoryLTMBackend
-
-    if backend == "http":
-        from ksadk.memory.adk.backends.http_ltm_backend import (
-            HttpLTMBackend,
-        )
-        return HttpLTMBackend
-
-    if backend == "sdk":
-        from ksadk.memory.adk.backends.sdk_ltm_backend import (
-            SdkLTMBackend,
-        )
-        return SdkLTMBackend
-
-    raise ValueError(
-        f"Unsupported long term memory backend: {backend}. "
-        f"Available: local, http, sdk"
-    )
 
 
 class LongTermMemory(BaseMemoryService, BaseModel):
@@ -109,50 +84,36 @@ class LongTermMemory(BaseMemoryService, BaseModel):
     app_name: str = ""
 
     _backend: BaseLongTermMemoryBackend = None
+    _service: LongTermMemoryService = None
 
     class Config:
         arbitrary_types_allowed = True
 
     def model_post_init(self, __context: Any) -> None:
-        # 情况 1: 用户直接传入了 backend 实例
-        if isinstance(self.backend, BaseLongTermMemoryBackend):
-            self._backend = self.backend
-            self.index = self._backend.index
-            logger.info(
-                f"LongTermMemory initialized with provided backend: "
-                f"{self._backend.__class__.__name__}, index={self.index}"
-            )
-            return
-
-        # 确定 index
-        self.index = self.index or self.app_name
-        if not self.index:
-            self.index = "default_app"
-            logger.warning(
-                "LongTermMemory: index and app_name both empty, "
-                "using 'default_app'"
-            )
-
-        # 情况 2: 用户传入了 backend_config
-        if self.backend_config:
-            if "index" not in self.backend_config:
-                self.backend_config["index"] = self.index
-
-            backend_cls = _get_backend_cls(self.backend)
-            self._backend = backend_cls(**self.backend_config)
-            logger.info(
-                f"LongTermMemory initialized: backend={self.backend}, "
-                f"index={self.index}"
-            )
-            return
-
-        # 情况 3: 仅指定 backend 名称，使用默认配置
-        backend_cls = _get_backend_cls(self.backend)
-        self._backend = backend_cls(index=self.index)
-        logger.info(
-            f"LongTermMemory initialized: backend={self.backend}, "
-            f"index={self.index}"
+        self._service = LongTermMemoryService(
+            backend=self.backend,
+            backend_config=self.backend_config,
+            top_k=self.top_k,
+            index=self.index,
+            app_name=self.app_name,
         )
+        self._backend = self._service._backend
+        self.index = self._service.index
+        logger.info(
+            "LongTermMemory initialized: backend=%s, index=%s",
+            self.backend,
+            self.index,
+        )
+
+    def _get_service(self) -> LongTermMemoryService:
+        if self._service is None:
+            self.model_post_init(None)
+        if self._backend is not None and self._service._backend is not self._backend:
+            self._service.backend = self._backend
+            self._service._backend = self._backend
+            self._service.index = getattr(self._backend, "index", self._service.index)
+            self.index = self._service.index
+        return self._service
 
     def _filter_and_convert_events(self, events: List[Event]) -> List[str]:
         """过滤并序列化 session 事件
@@ -207,10 +168,10 @@ class LongTermMemory(BaseMemoryService, BaseModel):
             f"index={self.index}, user_id={user_id}"
         )
 
-        self._backend.save_memory(
+        self._get_service().save_event_strings(
             user_id=user_id,
             event_strings=event_strings,
-            **kwargs,
+            metadata=kwargs.get("metadata"),
         )
 
         logger.info(
@@ -236,7 +197,7 @@ class LongTermMemory(BaseMemoryService, BaseModel):
 
         memory_chunks = []
         try:
-            memory_chunks = self._backend.search_memory(
+            memory_chunks = self._get_service().search_entries(
                 query=query, top_k=self.top_k, user_id=user_id
             )
         except Exception as e:
@@ -278,7 +239,12 @@ class LongTermMemory(BaseMemoryService, BaseModel):
         return SearchMemoryResponse(memories=memory_events)
 
     @classmethod
-    def from_env(cls) -> "LongTermMemory":
+    def from_env(
+        cls,
+        *,
+        app_name: str = "",
+        backend: str | None = None,
+    ) -> "LongTermMemory":
         """从环境变量创建 LongTermMemory
 
         环境变量:
@@ -290,39 +256,19 @@ class LongTermMemory(BaseMemoryService, BaseModel):
             KSADK_LTM_TOP_K: 检索数量 (默认 5)
             KSADK_LTM_INDEX: 索引名称
         """
-        backend = os.environ.get("KSADK_LTM_BACKEND", "local")
-        top_k = int(os.environ.get("KSADK_LTM_TOP_K", "5"))
-        index = os.environ.get("KSADK_LTM_INDEX", "")
-        app_name = os.environ.get("KSADK_LTM_APP_NAME", "")
-
-        backend_config = {}
-        if backend == "http":
-            backend_config = {
-                "base_url": os.environ.get("KSADK_LTM_HTTP_URL", ""),
-                "token": os.environ.get("KSADK_LTM_HTTP_TOKEN", ""),
-            }
-        elif backend == "sdk":
-            backend_config = {
-                "access_key": (
-                    os.environ.get("KSADK_LTM_ACCESS_KEY")
-                    or os.environ.get("KSYUN_ACCESS_KEY", "")
-                ),
-                "secret_key": (
-                    os.environ.get("KSADK_LTM_SECRET_KEY")
-                    or os.environ.get("KSYUN_SECRET_KEY", "")
-                ),
-                "region": os.environ.get("KSADK_LTM_REGION", "cn-north-vip1"),
-                "endpoint": os.environ.get("KSADK_LTM_ENDPOINT", "aicp.api.ksyun.com"),
-                "scheme": os.environ.get("KSADK_LTM_SCHEME", "https"),
-                "namespace": os.environ.get("KSADK_LTM_NAMESPACE", ""),
-                "agent_id": os.environ.get("KSADK_LTM_AGENT_ID", ""),
-                "scene_id": os.environ.get("KSADK_LTM_SCENE_ID", ""),
-            }
+        service = LongTermMemoryService.from_env(app_name=app_name, backend=backend)
+        backend_name = (
+            backend
+            or os.environ.get("KSADK_LTM_BACKEND", "local")
+        )
+        backend_config = dict(service.backend_config)
+        if "index" in backend_config and backend_name != "local":
+            backend_config.pop("index", None)
 
         return cls(
-            backend=backend,
+            backend=backend_name,
             backend_config=backend_config,
-            top_k=top_k,
-            index=index,
-            app_name=app_name,
+            top_k=service.top_k,
+            index=service.index,
+            app_name=service.app_name,
         )

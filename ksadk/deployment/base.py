@@ -41,6 +41,12 @@ class NetworkConfig(BaseModel):
     """网络配置"""
     access_type: str = "public"  # public | private
     enable_https: bool = True
+    enable_public_access: bool = False
+    enable_vpc_access: bool = False
+    vpc_id: str = ""
+    subnet_id: str = ""
+    security_group_id: str = ""
+    availability_zone: str = ""
 
 
 class DeployTarget(BaseModel):

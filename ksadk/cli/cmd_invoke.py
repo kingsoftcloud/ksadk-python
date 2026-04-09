@@ -7,9 +7,11 @@ agentengine invoke - 与已部署的 Agent 进行交互
 import click
 import asyncio
 import json
+from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 import time
+import uuid
 from ksadk.cli.agent_ref import merge_agent_inputs, resolve_agent_ref
 from ksadk.cli.resource_common import CONTEXT_SETTINGS, CompatibilityAliasCommand, print_compatibility_hint
 
@@ -103,6 +105,8 @@ def run_invoke_command(
 
     # 加载本地状态
     state = _load_state()
+    latest_access: dict[str, Any] = {}
+    reuse_state_session = True
     
     # 确定 Endpoint
     if local:
@@ -122,8 +126,18 @@ def run_invoke_command(
         if resolved.source != "cli":
             click.echo(f"ℹ 未显式指定 Agent，使用 {resolved.source_text}: {target_agent}")
 
+        latest_access = _refresh_remote_access(
+            target_agent=target_agent,
+            region=region,
+            state=state,
+            persist=_state_matches_target(state, target_agent),
+        )
+        reuse_state_session = not agent_input or _state_matches_target(state, target_agent)
+
         # 优先使用 state 里的 endpoint (如果是对应的 agent)
-        if not agent_input or target_agent == state.get("agent_id") or target_agent == state.get("name"):
+        if latest_access.get("endpoint"):
+            endpoint = latest_access["endpoint"]
+        elif not agent_input or _state_matches_target(state, target_agent):
             endpoint = state.get("endpoint")
             
         if not endpoint:
@@ -131,7 +145,19 @@ def run_invoke_command(
             endpoint = _get_endpoint(target_agent, region)
 
     # API Key
-    api_key = api_key or state.get("api_key")
+    api_key = api_key or latest_access.get("api_key") or state.get("api_key")
+    session_id = (
+        session
+        or (state.get("session_id") if reuse_state_session else None)
+        or str(uuid.uuid4())[:8]
+    )
+
+    next_state = _load_state() or dict(state)
+    for key in ("agent_id", "name", "endpoint", "api_key"):
+        if latest_access.get(key):
+            next_state[key] = latest_access[key]
+    next_state["session_id"] = session_id
+    _save_state(next_state)
 
     click.secho(f"🤖 连接到 Agent", fg="blue", bold=True)
     click.echo(f"   Endpoint: {endpoint}")
@@ -145,10 +171,10 @@ def run_invoke_command(
 
     if message:
         # 单次调用模式
-        asyncio.run(_invoke_once(endpoint, message, api_key, session, True, insecure, model))
+        asyncio.run(_invoke_once(endpoint, message, api_key, session_id, True, insecure, model))
     else:
         # 默认 TUI 模式
-        _invoke_tui(endpoint, api_key, session, insecure, model, show_thinking)
+        _invoke_tui(endpoint, api_key, session_id, insecure, model, show_thinking)
 
 
 
@@ -194,6 +220,71 @@ def _load_state() -> dict:
     return {}
 
 
+def _save_state(state: dict) -> None:
+    """保存 .agentengine.state。"""
+    import yaml
+
+    state_file = Path(".") / ".agentengine.state"
+    payload = dict(state)
+    payload["updated_at"] = datetime.now().isoformat()
+    with open(state_file, "w", encoding="utf-8") as f:
+        yaml.safe_dump(payload, f, allow_unicode=True)
+
+
+def _state_matches_target(state: dict, target_agent: str | None) -> bool:
+    if not state or not target_agent:
+        return False
+    return target_agent == state.get("agent_id") or target_agent == state.get("name")
+
+
+def _extract_remote_access(detail: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(detail, dict):
+        return {}
+
+    basic = detail.get("basic") if isinstance(detail.get("basic"), dict) else {}
+    quick = detail.get("quick_access") if isinstance(detail.get("quick_access"), dict) else {}
+
+    return {
+        "agent_id": basic.get("agent_id") or detail.get("agent_id"),
+        "name": basic.get("name") or detail.get("name"),
+        "endpoint": quick.get("public_endpoint")
+        or quick.get("private_endpoint")
+        or detail.get("endpoint"),
+        "api_key": quick.get("api_key") or detail.get("api_key"),
+    }
+
+
+async def _fetch_remote_access(target_agent: str, region: str) -> Dict[str, Any]:
+    from ksadk.api import AgentEngineClient
+
+    async with AgentEngineClient(region=region) as client:
+        try:
+            return _extract_remote_access(await client.get_agent(agent_id=target_agent, include_api_key=True))
+        except Exception:
+            return _extract_remote_access(await client.get_agent(name=target_agent, include_api_key=True))
+
+
+def _refresh_remote_access(
+    *,
+    target_agent: str,
+    region: str,
+    state: dict,
+    persist: bool,
+) -> Dict[str, Any]:
+    try:
+        latest = asyncio.run(_fetch_remote_access(target_agent, region))
+    except Exception:
+        return {}
+
+    if persist and latest:
+        merged = dict(state)
+        for key in ("agent_id", "name", "endpoint", "api_key"):
+            if latest.get(key):
+                merged[key] = latest[key]
+        _save_state(merged)
+    return latest
+
+
 def _get_api_key() -> Optional[str]:
     """兼容旧代码"""
     return _load_state().get("api_key")
@@ -209,7 +300,7 @@ def _get_endpoint(agent_ref: str, region: str) -> str:
             # 1) 优先按 ID 查询
             try:
                 res = await client.get_agent(agent_id=agent_ref)
-                endpoint = res.get("endpoint", "")
+                endpoint = _extract_remote_access(res).get("endpoint", "")
                 if endpoint:
                     return endpoint
             except Exception:
@@ -217,7 +308,7 @@ def _get_endpoint(agent_ref: str, region: str) -> str:
 
             # 2) 回退按名称查询
             res = await client.get_agent(name=agent_ref)
-            endpoint = res.get("endpoint", "")
+            endpoint = _extract_remote_access(res).get("endpoint", "")
             if endpoint:
                 return endpoint
 
@@ -404,9 +495,14 @@ async def _stream_chat(
         async with client.stream("POST", url, json=payload, headers=headers) as response:
             response.raise_for_status()
             try:
+                current_event = ""
                 # Use aiter_lines() for robust UTF-8 decoding and line splitting
                 async for line in response.aiter_lines():
                     if not line:
+                        continue
+
+                    if line.startswith("event: "):
+                        current_event = line[7:].strip()
                         continue
 
                     if line.startswith("data: "):
@@ -416,6 +512,8 @@ async def _stream_chat(
 
                         try:
                             data = json.loads(data_str)
+                            if current_event and isinstance(data, dict):
+                                data = {**data, "_event": current_event}
                             # 直接 yield 解析后的 JSON 数据，让 _extract_content 处理
                             yield data
 
@@ -431,6 +529,14 @@ async def _stream_chat(
 
 def _extract_content(chunk: dict) -> tuple[str, str]:
     """从 OpenAI 流式响应中提取内容 (包含 reasoning_content)"""
+    event_name = str(chunk.get("_event") or "")
+    if event_name == "response.output_text.delta":
+        return str(chunk.get("delta") or ""), ""
+    if event_name == "response.reasoning.delta":
+        return "", str(chunk.get("delta") or "")
+    if event_name == "response.completed":
+        return "", ""
+
     # OpenAI 格式: {"choices": [{"delta": {"content": "xxx", "reasoning_content": "thought"}}]}
     try:
         choices = chunk.get("choices", [])
@@ -439,6 +545,11 @@ def _extract_content(chunk: dict) -> tuple[str, str]:
             return delta.get("content", "") or "", delta.get("reasoning_content", "") or ""
     except (KeyError, IndexError):
         pass
+
+    if isinstance(chunk.get("output_text"), str):
+        return chunk["output_text"], ""
+    if isinstance(chunk.get("delta"), str):
+        return chunk["delta"], ""
     return "", ""
 
 

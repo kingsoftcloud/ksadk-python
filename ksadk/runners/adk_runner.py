@@ -5,14 +5,17 @@ ADKRunner - Google ADK 框架运行时
 支持通过环境变量配置记忆体 (ShortTermMemory / LongTermMemory)。
 """
 
+import base64
 import logging
 import os
 import sys
-import uuid
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, Optional
-from ksadk.runners.base_runner import BaseRunner
+
 from opentelemetry import trace
+
+from ksadk.runners.base_runner import BaseRunner
+from ksadk.sessions.continuity import ADKSessionAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -35,11 +38,14 @@ class ADKRunner(BaseRunner):
         self._long_term_memory = None
         # Knowledge base integration
         self._knowledge_base = None
+        # Keep runtime toolsets alive for the lifetime of the runner.
+        self._runtime_toolsets: list[Any] = []
 
     def _apply_json_patch(self):
         """Monkey patch google.adk.models.lite_llm to handle invalid JSON safely"""
         try:
             import json
+
             import google.adk.models.lite_llm as adk_lite_llm
 
             # Create a proxy for the json module
@@ -82,27 +88,38 @@ class ADKRunner(BaseRunner):
         """从环境变量初始化短期记忆
 
         环境变量:
-            KSADK_STM_BACKEND: local / sqlite / database
-            KSADK_STM_DB_URL: 数据库连接 URL
+            KSADK_ADK_SESSION_BACKEND / PATH / URL: ADK 专用 session 配置
+            KSADK_STM_BACKEND / PATH / URL: 平台级 STM 配置
         """
-        backend = os.environ.get("KSADK_STM_BACKEND", "")
-        if not backend:
+        configured_names = (
+            "KSADK_ADK_SESSION_BACKEND",
+            "KSADK_ADK_SESSION_PATH",
+            "KSADK_ADK_SESSION_URL",
+            "KSADK_STM_BACKEND",
+            "KSADK_STM_PATH",
+            "KSADK_STM_URL",
+            "KSADK_STM_DB_PATH",
+            "KSADK_STM_DB_URL",
+        )
+        if not any(str(os.environ.get(name, "")).strip() for name in configured_names):
             return None
 
         try:
             from ksadk.memory.adk import ShortTermMemory
-            stm = ShortTermMemory(
-                backend=backend,
-                db_url=os.environ.get("KSADK_STM_DB_URL", ""),
-                local_database_path=os.environ.get(
-                    "KSADK_STM_DB_PATH", "/tmp/ksadk_local_database.db"
-                ),
+
+            stm = ShortTermMemory.from_env()
+            logger.info(
+                "ShortTermMemory initialized: backend=%s path=%s",
+                stm.backend,
+                stm.local_database_path,
             )
-            logger.info(f"ShortTermMemory initialized: backend={backend}")
             return stm
         except Exception as e:
             logger.warning(f"Failed to init ShortTermMemory: {e}. Using default.")
             return None
+
+    def get_session_adapter(self):
+        return ADKSessionAdapter()
 
     def _init_long_term_memory(self):
         """从环境变量初始化长期记忆
@@ -122,41 +139,8 @@ class ADKRunner(BaseRunner):
         try:
             from ksadk.memory.adk import LongTermMemory
 
-            backend_config = {}
-            if backend == "http":
-                base_url = os.environ.get("KSADK_LTM_HTTP_URL", "")
-                token = os.environ.get("KSADK_LTM_HTTP_TOKEN", "")
-                if not base_url:
-                    logger.warning(
-                        "KSADK_LTM_BACKEND=http but KSADK_LTM_HTTP_URL is empty."
-                    )
-                backend_config = {"base_url": base_url, "token": token}
-            elif backend == "sdk":
-                backend_config = {
-                    "access_key": (
-                        os.environ.get("KSADK_LTM_ACCESS_KEY")
-                        or os.environ.get("KSYUN_ACCESS_KEY", "")
-                    ),
-                    "secret_key": (
-                        os.environ.get("KSADK_LTM_SECRET_KEY")
-                        or os.environ.get("KSYUN_SECRET_KEY", "")
-                    ),
-                    "region": os.environ.get("KSADK_LTM_REGION", "cn-north-vip1"),
-                    "endpoint": os.environ.get("KSADK_LTM_ENDPOINT", "aicp.api.ksyun.com"),
-                    "scheme": os.environ.get("KSADK_LTM_SCHEME", "https"),
-                    "namespace": os.environ.get("KSADK_LTM_NAMESPACE", ""),
-                    "agent_id": os.environ.get("KSADK_LTM_AGENT_ID", ""),
-                    "scene_id": os.environ.get("KSADK_LTM_SCENE_ID", ""),
-                }
-
             agent_name = self._agent.name if self._agent else "default"
-            ltm = LongTermMemory(
-                backend=backend,
-                backend_config=backend_config,
-                top_k=int(os.environ.get("KSADK_LTM_TOP_K", "5")),
-                index=os.environ.get("KSADK_LTM_INDEX", ""),
-                app_name=agent_name,
-            )
+            ltm = LongTermMemory.from_env(app_name=agent_name)
             logger.info(
                 f"LongTermMemory initialized: backend={backend}, "
                 f"app_name={agent_name}"
@@ -173,7 +157,7 @@ class ADKRunner(BaseRunner):
             KSADK_KB_DATASET_ID: 知识库 ID (必填，存在即启用)
             KSADK_KB_ACCESS_KEY: AK (可选)
             KSADK_KB_SECRET_KEY: SK (可选)
-            KSADK_KB_REGION: 区域 (默认 cn-north-vip1)
+            KSADK_KB_REGION: 区域 (默认 cn-beijing-6)
             KSADK_KB_TOP_K: 返回结果数 (默认 5)
         """
         try:
@@ -204,25 +188,14 @@ class ADKRunner(BaseRunner):
         try:
             from ksadk.knowledge_base.adk_tool import search_knowledge_base
 
-            if hasattr(self._agent, "tools"):
-                tool_names = []
-                for t in self._agent.tools:
-                    name = getattr(t, "name", None) or getattr(t, "__name__", "")
-                    tool_names.append(name)
-
-                if "search_knowledge_base" not in tool_names:
-                    self._agent.tools.append(search_knowledge_base)
-                    logger.info(
-                        "Injected 'search_knowledge_base' tool into agent "
-                        f"(total tools: {len(self._agent.tools)})"
-                    )
-                else:
-                    logger.debug("Agent already has 'search_knowledge_base' tool")
-            else:
-                logger.warning(
-                    "Agent has no 'tools' attribute, "
-                    "cannot inject search_knowledge_base"
+            added = self._append_tools_by_name([search_knowledge_base])
+            if added:
+                logger.info(
+                    "Injected 'search_knowledge_base' tool into agent "
+                    f"(total tools: {len(self._agent.tools)})"
                 )
+            else:
+                logger.debug("Agent already has 'search_knowledge_base' tool")
         except ImportError as e:
             logger.warning(f"Failed to import knowledge base tool: {e}")
         except Exception as e:
@@ -233,25 +206,14 @@ class ADKRunner(BaseRunner):
         try:
             from google.adk.tools import load_memory
 
-            if hasattr(self._agent, "tools"):
-                # 检查是否已有 load_memory
-                tool_names = []
-                for t in self._agent.tools:
-                    name = getattr(t, "name", None) or getattr(t, "__name__", "")
-                    tool_names.append(name)
-
-                if "load_memory" not in tool_names:
-                    self._agent.tools.append(load_memory)
-                    logger.info(
-                        "Injected 'load_memory' tool into agent "
-                        f"(total tools: {len(self._agent.tools)})"
-                    )
-                else:
-                    logger.debug("Agent already has 'load_memory' tool")
-            else:
-                logger.warning(
-                    "Agent has no 'tools' attribute, cannot inject load_memory"
+            added = self._append_tools_by_name([load_memory])
+            if added:
+                logger.info(
+                    "Injected 'load_memory' tool into agent "
+                    f"(total tools: {len(self._agent.tools)})"
                 )
+            else:
+                logger.debug("Agent already has 'load_memory' tool")
         except ImportError:
             logger.warning(
                 "google.adk.tools.load_memory not available. "
@@ -259,6 +221,142 @@ class ADKRunner(BaseRunner):
             )
         except Exception as e:
             logger.warning(f"Failed to inject load_memory tool: {e}")
+
+    def _inject_save_memory_tool(self):
+        """自动注入 save_memory 工具到 Agent"""
+        try:
+            from ksadk.memory.adk_tool import create_adk_tool
+
+            save_memory_tool = create_adk_tool()
+            added = self._append_tools_by_name([save_memory_tool])
+            if added:
+                logger.info(
+                    "Injected 'save_memory' tool into agent "
+                    f"(total tools: {len(self._agent.tools)})"
+                )
+            else:
+                logger.debug("Agent already has 'save_memory' tool")
+        except ImportError as e:
+            logger.warning(f"Failed to import save_memory tool: {e}")
+        except Exception as e:
+            logger.warning(f"Failed to inject save_memory tool: {e}")
+
+    def _inject_sandbox_tools(self):
+        """默认注入本地沙箱工具。"""
+        if not self._sandbox_tools_enabled():
+            logger.info("ADKRunner: sandbox tools disabled via KSADK_ENABLE_SANDBOX_TOOLS=0")
+            return
+
+        try:
+            from ksadk.sandbox import LocalCodeSandbox, SandboxToolset
+
+            toolset = SandboxToolset(LocalCodeSandbox())
+            added = self._append_tools_by_name(toolset.get_tools())
+            if not added:
+                logger.debug("ADKRunner: sandbox tools already present")
+                return
+
+            self._runtime_toolsets.append(toolset)
+            logger.info(
+                "Injected sandbox tools into agent "
+                f"(added: {', '.join(added)})"
+            )
+        except ImportError as exc:
+            logger.warning(f"Failed to import sandbox toolset: {exc}")
+        except Exception as exc:
+            logger.warning(f"Failed to inject sandbox tools: {exc}")
+
+    def _inject_mcp_toolsets(self):
+        """默认注入远端 MCP toolset。"""
+        try:
+            from ksadk.mcp_runtime import (
+                MCP_TOOLSET_KEY_ATTR,
+                load_mcp_toolsets_from_env,
+                mcp_tools_enabled,
+            )
+
+            if not mcp_tools_enabled():
+                logger.info("ADKRunner: MCP tools disabled via KSADK_ENABLE_MCP_TOOLS=0")
+                return
+
+            toolsets = load_mcp_toolsets_from_env()
+            if not toolsets:
+                return
+
+            added = self._append_toolsets_by_key(
+                toolsets,
+                key_attr=MCP_TOOLSET_KEY_ATTR,
+            )
+            if not added:
+                logger.debug("ADKRunner: MCP toolsets already present")
+                return
+
+            for toolset in toolsets:
+                key = getattr(toolset, MCP_TOOLSET_KEY_ATTR, None)
+                if key in added:
+                    self._runtime_toolsets.append(toolset)
+            logger.info("Injected MCP toolsets into agent (added: %s)", ", ".join(added))
+        except ImportError as exc:
+            logger.warning(f"Failed to import MCP runtime helpers: {exc}")
+        except Exception as exc:
+            logger.warning(f"Failed to inject MCP toolsets: {exc}")
+
+    @staticmethod
+    def _tool_name(tool: Any) -> str:
+        return getattr(tool, "name", None) or getattr(tool, "__name__", "")
+
+    def _append_tools_by_name(self, tools: list[Any]) -> list[str]:
+        if not hasattr(self._agent, "tools"):
+            logger.warning("Agent has no 'tools' attribute, cannot inject runtime tools")
+            return []
+
+        if self._agent.tools is None:
+            self._agent.tools = []
+
+        existing_names = {
+            self._tool_name(tool)
+            for tool in self._agent.tools
+            if self._tool_name(tool)
+        }
+        added_names: list[str] = []
+        for tool in tools:
+            tool_name = self._tool_name(tool)
+            if tool_name and tool_name in existing_names:
+                continue
+            self._agent.tools.append(tool)
+            if tool_name:
+                existing_names.add(tool_name)
+                added_names.append(tool_name)
+        return added_names
+
+    def _append_toolsets_by_key(self, toolsets: list[Any], *, key_attr: str) -> list[str]:
+        if not hasattr(self._agent, "tools"):
+            logger.warning("Agent has no 'tools' attribute, cannot inject MCP toolsets")
+            return []
+
+        if self._agent.tools is None:
+            self._agent.tools = []
+
+        existing_keys = {
+            getattr(tool, key_attr)
+            for tool in self._agent.tools
+            if getattr(tool, key_attr, None)
+        }
+        added_keys: list[str] = []
+        for toolset in toolsets:
+            key = getattr(toolset, key_attr, None)
+            if key and key in existing_keys:
+                continue
+            self._agent.tools.append(toolset)
+            if key:
+                existing_keys.add(key)
+                added_keys.append(key)
+        return added_keys
+
+    @staticmethod
+    def _sandbox_tools_enabled() -> bool:
+        value = os.environ.get("KSADK_ENABLE_SANDBOX_TOOLS", "1").strip().lower()
+        return value not in {"0", "false", "no", "off"}
 
     def load_agent(self) -> None:
         """加载 ADK Agent"""
@@ -273,7 +371,8 @@ class ADKRunner(BaseRunner):
         if str(project_path) not in sys.path:
             sys.path.insert(0, str(project_path))
 
-        # 确定模块名：从 entry_point 获取 (e.g., "smart_assistant_adk/agent.py" -> "smart_assistant_adk.agent")
+        # 确定模块名: 从 entry_point 获取
+        # (e.g. "smart_assistant_adk/agent.py" -> "smart_assistant_adk.agent")
         entry_point = self.detection_result.entry_point
         if entry_point.endswith(".py"):
             module_name = entry_point[:-3]  # 移除 .py 后缀
@@ -304,7 +403,7 @@ class ADKRunner(BaseRunner):
 
         # 验证是否为 ADK Agent
         if not hasattr(self._agent, "name"):
-            raise TypeError(f"加载的对象不是有效的 ADK Agent")
+            raise TypeError("加载的对象不是有效的 ADK Agent")
 
         # 初始化记忆体 (从环境变量读取配置)
         self._short_term_memory = self._init_short_term_memory()
@@ -328,6 +427,10 @@ class ADKRunner(BaseRunner):
         # 如果配置了长期记忆，自动注入 load_memory 工具到 agent
         if self._long_term_memory:
             self._inject_load_memory_tool()
+            self._inject_save_memory_tool()
+
+        self._inject_sandbox_tools()
+        self._inject_mcp_toolsets()
 
         # 初始化 Runner (传入 memory_service)
         runner_kwargs = dict(
@@ -340,6 +443,120 @@ class ADKRunner(BaseRunner):
             logger.info("ADKRunner: LongTermMemory injected as memory_service")
 
         self._runner = Runner(**runner_kwargs)
+        self._default_model_name = self.normalize_requested_model(
+            os.getenv("OPENAI_MODEL_NAME") or os.getenv("MODEL_NAME")
+        )
+        self._default_model_reference = self._discover_model_reference(self._agent)
+        self._active_model_name = (
+            self._default_model_reference
+            or self._default_model_name
+        )
+
+    def _discover_model_reference(self, agent: Any) -> Optional[str]:
+        visited: set[int] = set()
+
+        def _visit(node: Any) -> Optional[str]:
+            if node is None:
+                return None
+            node_id = id(node)
+            if node_id in visited:
+                return None
+            visited.add(node_id)
+
+            current_model = getattr(node, "model", None)
+            if hasattr(current_model, "model"):
+                candidate = str(getattr(current_model, "model", None) or "").strip()
+                if candidate:
+                    return candidate
+            elif isinstance(current_model, str):
+                candidate = current_model.strip()
+                if candidate:
+                    return candidate
+
+            for child in getattr(node, "sub_agents", []) or []:
+                discovered = _visit(child)
+                if discovered:
+                    return discovered
+            return None
+
+        return _visit(agent)
+
+    @staticmethod
+    def _resolve_model_reference(existing_model: Any, requested_model: str) -> str:
+        existing = str(existing_model or "").strip()
+        requested = requested_model.strip()
+        if "/" in requested:
+            return requested
+        if "/" in existing:
+            provider_prefix = existing.split("/", 1)[0]
+            return f"{provider_prefix}/{requested}"
+        return requested
+
+    def _apply_model_to_agent_tree(self, agent: Any, requested_model: str) -> None:
+        visited: set[int] = set()
+
+        def _visit(node: Any) -> None:
+            if node is None:
+                return
+            node_id = id(node)
+            if node_id in visited:
+                return
+            visited.add(node_id)
+
+            current_model = getattr(node, "model", None)
+            if hasattr(current_model, "model"):
+                current_reference = getattr(current_model, "model", None)
+                next_reference = self._resolve_model_reference(current_reference, requested_model)
+                if current_reference != next_reference:
+                    setattr(current_model, "model", next_reference)
+            elif isinstance(current_model, str):
+                next_reference = self._resolve_model_reference(current_model, requested_model)
+                if current_model != next_reference:
+                    setattr(node, "model", next_reference)
+
+            for child in getattr(node, "sub_agents", []) or []:
+                _visit(child)
+
+        _visit(agent)
+
+    def prepare_for_request(self, model: str | None) -> None:
+        normalized = self.sync_process_model_env(model)
+        if normalized is None:
+            default_model_name = (
+                getattr(self, "_default_model_name", None)
+                or self.normalize_requested_model(
+                    os.getenv("OPENAI_MODEL_NAME") or os.getenv("MODEL_NAME")
+                )
+            )
+            if default_model_name:
+                self.sync_process_model_env(default_model_name)
+            target_reference = (
+                getattr(self, "_default_model_reference", None)
+                or default_model_name
+            )
+            if target_reference and self._agent is not None:
+                current_reference = self._discover_model_reference(self._agent)
+                if current_reference != target_reference:
+                    self._apply_model_to_agent_tree(self._agent, target_reference)
+            self._active_model_name = target_reference
+            return
+        target_reference = (
+            self._resolve_model_reference(
+                self._discover_model_reference(self._agent)
+                or getattr(self, "_default_model_reference", None)
+                or normalized,
+                normalized,
+            )
+            if self._agent is not None
+            else normalized
+        )
+        if target_reference == getattr(self, "_active_model_name", None):
+            return
+        if self._agent is not None:
+            self._apply_model_to_agent_tree(self._agent, normalized)
+            self._active_model_name = self._discover_model_reference(self._agent) or target_reference
+            return
+        self._active_model_name = target_reference
 
     def _prepare_trace_metadata(self, session_id: str):
         """准备 Trace 元数据 (Tags, UserID, etc.)"""
@@ -420,12 +637,58 @@ class ADKRunner(BaseRunner):
             logger.error(f"Error saving session to long-term memory: {e}")
             return False
 
+    def _build_adk_content(self, text: str, attachments: list[Dict[str, Any]]) -> "types.Content":
+        from google.genai import types
+        parts = []
+        if text:
+            parts.append(types.Part(text=text))
+        for att in attachments:
+            data: Optional[bytes] = None
+
+            inline_data = att.get("data")
+            if att.get("transport") == "inline" and inline_data:
+                try:
+                    data = base64.b64decode(str(inline_data).strip() + "===")
+                except Exception as e:
+                    logger.warning(f"Failed to decode inline attachment {att.get('display_name', 'uploaded_file')}: {e}")
+
+            if data is None:
+                storage_path = att.get("storage_path")
+                if storage_path:
+                    try:
+                        data = Path(str(storage_path)).read_bytes()
+                    except Exception as e:
+                        logger.warning(f"Failed to load stored attachment {storage_path}: {e}")
+
+            if data is None:
+                file_uri = att.get("file_uri", "")
+                if file_uri.startswith("local:"):
+                    logger.warning(
+                        "Ignoring direct local attachment reference %s; only resolved storage paths are allowed.",
+                        file_uri,
+                    )
+
+            if data is not None:
+                parts.append(types.Part.from_bytes(data=data, mime_type=att.get("mime_type", "application/octet-stream")))
+
+        # If no parts were found at all (e.g. empty message), fallback to prevent crash
+        if not parts:
+            parts.append(types.Part(text="[empty message]"))
+
+        return types.Content(role="user", parts=parts)
+
+    def _build_state_delta(self, input_data: Dict[str, Any]) -> dict[str, Any]:
+        state_delta: dict[str, Any] = {}
+        for key in ("input_parts", "attachments", "attachment_results"):
+            if key in input_data:
+                state_delta[key] = input_data.get(key)
+        return state_delta
+
     async def invoke(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """调用 ADK Agent"""
         from google.genai import types
 
         user_input = input_data.get("input", "")
-        invocation_id = str(uuid.uuid4()).replace("-", "")
 
         # 1. 准备 Metadata (提前以此获取 Agent Name)
         _, _, _, agent_name = self._prepare_trace_metadata(None)
@@ -450,14 +713,17 @@ class ADKRunner(BaseRunner):
             if tags:
                 span.set_attribute("langfuse.tags", ",".join(tags))
 
-            # 创建 Content 对象
-            new_message = types.Content(role="user", parts=[types.Part(text=user_input)])
+            new_message = self._build_adk_content(user_input, input_data.get("attachments", []))
+            state_delta = self._build_state_delta(input_data)
 
             final_response = ""
 
             events_list = []
             async for event in self._runner.run_async(
-                session_id=session_id, user_id="ksadk_user", new_message=new_message
+                session_id=session_id,
+                user_id="ksadk_user",
+                new_message=new_message,
+                state_delta=state_delta or None,
             ):
                 events_list.append(event)
                 if hasattr(event, "content") and event.content:
@@ -478,11 +744,10 @@ class ADKRunner(BaseRunner):
 
         使用 StreamingMode.SSE 启用真正的流式 token 输出
         """
-        from google.genai import types
         from google.adk.agents.run_config import RunConfig, StreamingMode
+        from google.genai import types
 
         user_input = input_data.get("input", "")
-        invocation_id = str(uuid.uuid4()).replace("-", "")
 
         # 1. 准备 Metadata (提前以此获取 Agent Name)
         _, _, _, agent_name = self._prepare_trace_metadata(None)
@@ -506,7 +771,8 @@ class ADKRunner(BaseRunner):
             if tags:
                 span.set_attribute("langfuse.tags", ",".join(tags))
 
-            new_message = types.Content(role="user", parts=[types.Part(text=user_input)])
+            new_message = self._build_adk_content(user_input, input_data.get("attachments", []))
+            state_delta = self._build_state_delta(input_data)
 
             accumulated_text = ""
 
@@ -517,6 +783,7 @@ class ADKRunner(BaseRunner):
                 session_id=session_id,
                 user_id="ksadk_user",
                 new_message=new_message,
+                state_delta=state_delta or None,
                 run_config=run_config,
             ):
                 # Only yield text delta if event is partial to avoid duplication of final summary

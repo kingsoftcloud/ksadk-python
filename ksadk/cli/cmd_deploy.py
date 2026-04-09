@@ -32,7 +32,7 @@ from ksadk.cli.workflow_common import (
     resolve_artifact_build_plan,
     should_build_artifact as _workflow_should_build_artifact,
 )
-from ksadk.deployment.ui_config import SUPPORTED_UI_PROFILES
+from ksadk.deployment.ui_config import SUPPORTED_UI_PROFILES, extract_ui_state
 from ksadk.cli.ui import (
     capture_standard_output,
     get_console,
@@ -265,6 +265,12 @@ async def _deploy_async(
     # 3. 确定部署名称
     deploy_name = name or config.get("name") or agent_path.name.replace("-", "_").replace(".", "_")
     print_kv("部署名称", deploy_name)
+    resolved_ui_profile, resolved_ui_path, resolved_ui_url = _resolve_ui_config_inputs(
+        config,
+        ui_profile=ui_profile,
+        ui_path=ui_path,
+        ui_url=ui_url,
+    )
 
     # 4. 获取 Provider
     try:
@@ -287,9 +293,9 @@ async def _deploy_async(
             "ks3_path": ks3_path,
             "ks3_bucket": ks3_bucket,
             "image": image,
-            "ui_profile": ui_profile,
-            "ui_path": ui_path,
-            "ui_url": ui_url,
+            "ui_profile": resolved_ui_profile,
+            "ui_path": resolved_ui_path,
+            "ui_url": resolved_ui_url,
             "enable_observability": observability,
             "dry_run": dry_run,
             "no_cache": no_cache,
@@ -320,6 +326,8 @@ async def _deploy_async(
         deploy_target.scaling.min_replicas = config["scaling"].get("min_replicas", 1)
         deploy_target.scaling.max_replicas = config["scaling"].get("max_replicas", 10)
         deploy_target.scaling.concurrency = config["scaling"].get("concurrency", 10)
+
+    _apply_network_config(config, deploy_target)
 
     normalized_artifact_type = (effective_artifact_type or "Code").strip().lower()
     explicit_artifact_reference = ks3_path if normalized_artifact_type == "code" else image
@@ -558,3 +566,47 @@ def _load_config(agent_path: Path) -> dict:
             return yaml.safe_load(f) or {}
 
     return {}
+
+
+def _resolve_ui_config_inputs(
+    config: dict,
+    *,
+    ui_profile: str | None,
+    ui_path: str | None,
+    ui_url: str | None,
+) -> tuple[str | None, str | None, str | None]:
+    config_profile, config_path, config_url = extract_ui_state(config if isinstance(config, dict) else None)
+    return (
+        ui_profile if ui_profile is not None else config_profile,
+        ui_path if ui_path is not None else config_path,
+        ui_url if ui_url is not None else config_url,
+    )
+
+
+def _apply_network_config(config: dict, deploy_target: "DeployTarget") -> None:
+    raw_network = (config.get("network") or config.get("deploy", {}).get("network") or {})
+    if not isinstance(raw_network, dict):
+        return
+
+    def _pick(*keys: str, default=None):
+        for key in keys:
+            if key in raw_network and raw_network[key] is not None:
+                return raw_network[key]
+        return default
+
+    deploy_target.network.enable_public_access = bool(
+        _pick("enable_public_access", "enablePublicAccess", default=deploy_target.network.enable_public_access)
+    )
+    deploy_target.network.enable_vpc_access = bool(
+        _pick("enable_vpc_access", "enableVpcAccess", default=deploy_target.network.enable_vpc_access)
+    )
+    deploy_target.network.vpc_id = str(_pick("vpc_id", "vpcId", default=deploy_target.network.vpc_id) or "").strip()
+    deploy_target.network.subnet_id = str(
+        _pick("subnet_id", "subnetId", default=deploy_target.network.subnet_id) or ""
+    ).strip()
+    deploy_target.network.security_group_id = str(
+        _pick("security_group_id", "securityGroupId", default=deploy_target.network.security_group_id) or ""
+    ).strip()
+    deploy_target.network.availability_zone = str(
+        _pick("availability_zone", "availabilityZone", default=deploy_target.network.availability_zone) or ""
+    ).strip()

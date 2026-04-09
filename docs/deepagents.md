@@ -1,5 +1,9 @@
 # DeepAgents 框架支持说明
 
+> 主入口已迁移：完整用户路径请先看 [ksadk_usage_guide.md](./ksadk_usage_guide.md)，当前实现边界请看 [ksadk_technical_design.md](./ksadk_technical_design.md)。
+>
+> 本文保留为 DeepAgents 专项参考，重点说明框架识别、runner 复用和平台能力接入细节。
+
 ## 目标
 
 `ksadk` 新增 `deepagents` 框架支持，遵循两个原则：
@@ -22,6 +26,9 @@
 - 新增 `DeepAgentsRunner`，直接继承 `LangGraphRunner`
 - 原因：官方 `create_deep_agent` 返回 LangGraph `CompiledStateGraph`，天然兼容 LangGraph invoke/stream 语义
 - 结果：保留 DeepAgents 原生能力，`ksadk` 仅做统一入口与协议封装
+- 平台级 `KSADK_KB_*` / `KSADK_LTM_*` 也沿用 LangGraph 路径：
+  - env-only 时，调用前自动注入 KB / LTM ambient context
+  - 手动导入 `search_knowledge_base` / `load_memory` / `save_memory` 也可直接使用
 
 3. 构建与部署
 - `code/container/deploy manager` 依赖生成增加 `deepagents>=0.3.0`
@@ -62,3 +69,4 @@ root_agent = create_deep_agent(model=llm)
 
 - `create_deep_agent()` 返回可直接 `invoke/stream` 的 LangGraph 图
 - 输入以 `messages` 为核心，`ksadk` 继续沿用统一输入协议并在运行时转换
+- 若 agent / tool 定义了 `context_schema`，`ksadk` 会优先尝试走原生 `context=` 注入；否则回退到 system-context / preamble 语义

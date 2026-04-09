@@ -7,7 +7,7 @@
     KSADK_KB_DATASET_ID: 知识库 ID (必填，存在即启用)
     KSADK_KB_ACCESS_KEY: AK (可选，默认取 KSYUN_ACCESS_KEY)
     KSADK_KB_SECRET_KEY: SK (可选，默认取 KSYUN_SECRET_KEY)
-    KSADK_KB_REGION: 区域 (默认 cn-north-vip1)
+    KSADK_KB_REGION: 区域 (默认 cn-beijing-6)
     KSADK_KB_ENDPOINT: API 端点 (默认 aicp.api.ksyun.com)
     KSADK_KB_TOP_K: 返回结果数 (默认 5)
     KSADK_KB_SEARCH_METHOD: 检索方法 (默认 intelligence_search)
@@ -15,7 +15,9 @@
 使用方式:
     # ADK: 设置环境变量后自动注入，无需代码改动
 
-    # LangGraph / LangChain: 一行 import
+    # LangGraph / LangChain / DeepAgents:
+    # 1) 仅配 env，平台会在调用前自动注入知识库上下文
+    # 2) 也支持一行 import 手动加入 tools
     from ksadk.knowledge_base import search_knowledge_base
     tools = [search_knowledge_base, ...]
 

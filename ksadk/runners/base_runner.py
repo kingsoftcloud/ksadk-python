@@ -4,8 +4,12 @@ BaseRunner - 运行时基类
 所有框架 Runner 的抽象基类，定义统一接口
 """
 
+import inspect
+import os
 from abc import ABC, abstractmethod
-from typing import Any, AsyncIterator, Dict
+from typing import Any, AsyncIterator, Dict, Optional
+
+from ksadk.sessions.continuity import RunnerSessionAdapter, TranscriptReplayAdapter
 
 
 class BaseRunner(ABC):
@@ -44,6 +48,67 @@ class BaseRunner(ABC):
             流式输出的数据块
         """
         pass
+
+    @staticmethod
+    def normalize_requested_model(model: Optional[str]) -> Optional[str]:
+        if not isinstance(model, str):
+            return None
+        normalized = model.strip()
+        return normalized or None
+
+    @classmethod
+    def sync_process_model_env(cls, model: Optional[str]) -> Optional[str]:
+        normalized = cls.normalize_requested_model(model)
+        if normalized is None:
+            return None
+        os.environ["OPENAI_MODEL_NAME"] = normalized
+        os.environ["MODEL_NAME"] = normalized
+        return normalized
+
+    def prepare_for_request(self, model: Optional[str]) -> None:
+        """在请求进入实际 runner 前同步模型或做必要刷新。"""
+        self.sync_process_model_env(model)
+
+    def get_session_adapter(self) -> RunnerSessionAdapter:
+        return TranscriptReplayAdapter()
+
+    @staticmethod
+    def _callable_accepts_keyword(callable_obj: Any, keyword: str) -> bool:
+        try:
+            signature = inspect.signature(callable_obj)
+        except (TypeError, ValueError):
+            return False
+
+        for parameter in signature.parameters.values():
+            if parameter.kind == inspect.Parameter.VAR_KEYWORD:
+                return True
+        return keyword in signature.parameters
+
+    @classmethod
+    def _build_optional_call_kwargs(
+        cls,
+        callable_obj: Any,
+        *,
+        config: Optional[dict[str, Any]] = None,
+        context: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {}
+        if config is not None and cls._callable_accepts_keyword(callable_obj, "config"):
+            kwargs["config"] = config
+        if context is not None and cls._callable_accepts_keyword(callable_obj, "context"):
+            kwargs["context"] = context
+        return kwargs
+
+    @staticmethod
+    def build_native_context(platform_context: Any) -> dict[str, Any] | None:
+        if not isinstance(platform_context, dict):
+            return None
+        native_context = {
+            key: platform_context[key]
+            for key in ("agent_id", "user_id", "session_id")
+            if platform_context.get(key) is not None
+        }
+        return native_context or None
 
 
     def run_server(self, port: int = 8000) -> None:

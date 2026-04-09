@@ -1,5 +1,5 @@
 ## syntax=docker/dockerfile:1.7
-ARG OPENCLAW_BASE_IMAGE=alpine/openclaw:2026.3.24
+ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.4.9@sha256:894d39a9acfd31726ce3c019a23b3fede4dfa4e03a49b246ffba37027177fdf4
 FROM ${OPENCLAW_BASE_IMAGE}
 
 # ── 可通过 --build-arg 覆盖的参数 ──────────────────────────────
@@ -16,9 +16,6 @@ ARG OPENCLAW_INSTALL_AGENTSPACE_PLUGIN=true
 ARG OPENCLAW_AGENTSPACE_PLUGIN_ID=agentspace
 ARG OPENCLAW_INSTALL_AGENT_BROWSER=true
 ARG OPENCLAW_AGENT_BROWSER_SPEC=agent-browser
-ARG OPENCLAW_INSTALL_SKILLHUB=true
-ARG OPENCLAW_SKILLHUB_KIT_URL=https://skillhub-1388575217.cos.ap-guangzhou.myqcloud.com/install/latest.tar.gz
-ARG OPENCLAW_SKILLHUB_KIT_SHA256=79a3b78a47f76c14a2411639b7205bf0ed539879f8ffff67f6202b61ec3ca004
 
 USER root
 ENV TZ=${TZ}
@@ -39,7 +36,7 @@ RUN --mount=type=cache,target=/root/.npm \
   > /etc/apk/repositories; \
   fi; \
   apk update; \
-  apk add --no-cache tzdata chromium curl jq python3 py3-pip; \
+  apk add --no-cache tzdata chromium curl jq python3 py3-pip ca-certificates tini; \
   elif command -v apt-get >/dev/null 2>&1; then \
   # Debian bookworm+: 使用 DEB822 格式 (.sources) \
   if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
@@ -54,8 +51,11 @@ RUN --mount=type=cache,target=/root/.npm \
   DEBIAN_FRONTEND=noninteractive apt-get \
   -o APT::Get::AllowUnauthenticated=true \
   install -y --no-install-recommends \
-  tzdata chromium ca-certificates curl jq python3 python3-pip; \
+  tzdata chromium ca-certificates curl jq python3 python3-pip tini; \
   rm -rf /var/lib/apt/lists/*; \
+  fi; \
+  if command -v tini >/dev/null 2>&1; then \
+  ln -sf "$(command -v tini)" /usr/local/bin/tini; \
   fi; \
   # ====== 2. 时区设为北京 ====== \
   cp /usr/share/zoneinfo/${TZ} /etc/localtime; \
@@ -63,7 +63,7 @@ RUN --mount=type=cache,target=/root/.npm \
   # ====== 3. npm 换淘宝镜像 ====== \
   if command -v npm >/dev/null 2>&1; then \
   npm config set registry "${NPM_REGISTRY}"; \
-  npm install -g --no-audit --no-fund mcporter; \
+  npm install -g --no-audit --no-fund mcporter clawhub@latest; \
   fi; \
   # ====== 4. 清理缓存，最小化镜像体积 ====== \
   rm -rf /tmp/* /var/tmp/* /root/.cache 2>/dev/null || true
@@ -207,16 +207,6 @@ RUN --mount=type=cache,target=/root/.npm \
   if [ "${OPENCLAW_INSTALL_AGENT_BROWSER}" = "true" ] && command -v npm >/dev/null 2>&1; then \
     npm install -g --no-audit --no-fund "${OPENCLAW_AGENT_BROWSER_SPEC}"; \
   fi; \
-  mkdir -p /home/node; \
-  if [ "${OPENCLAW_INSTALL_SKILLHUB}" = "true" ]; then \
-    tmp_dir="$(mktemp -d)"; \
-    curl -fsSL "${OPENCLAW_SKILLHUB_KIT_URL}" -o "${tmp_dir}/skillhub.tar.gz"; \
-    echo "${OPENCLAW_SKILLHUB_KIT_SHA256}  ${tmp_dir}/skillhub.tar.gz" | sha256sum -c -; \
-    tar -xzf "${tmp_dir}/skillhub.tar.gz" -C "${tmp_dir}"; \
-    HOME=/home/node bash "${tmp_dir}/cli/install.sh" --cli-only; \
-    rm -rf "${tmp_dir}"; \
-    chown -R node:node /home/node/.skillhub /home/node/.local; \
-  fi; \
   OPENCLAW_DIST_PATCH_ONLY=1 /usr/local/bin/bootstrap.sh
 
 RUN node <<'NODE'
@@ -265,6 +255,6 @@ ENV HOME=/home/node \
 USER node
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=5 \
-  CMD node -e "const net=require('node:net'); const port=Number(process.env.OPENCLAW_PUBLIC_PORT||process.env.PORT||8080); const socket=net.connect({host:'127.0.0.1', port}, ()=>{socket.end(); process.exit(0);}); socket.on('error', ()=>process.exit(1)); socket.setTimeout(5000, ()=>{socket.destroy(); process.exit(1);});"
+  CMD sh -lc 'curl -fsS "http://127.0.0.1:${OPENCLAW_GATEWAY_PORT:-8080}/healthz" >/dev/null || exit 1'
 
-ENTRYPOINT ["/usr/local/bin/bootstrap.sh"]
+ENTRYPOINT ["/usr/local/bin/tini","--","/usr/local/bin/bootstrap.sh"]

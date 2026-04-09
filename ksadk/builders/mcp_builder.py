@@ -17,6 +17,7 @@ import click
 from ksadk.builders.code_builder import CodeBuilder
 from ksadk.builders.base import BuildResult
 from ksadk.builders.container_builder import ContainerBuilder, ensure_docker_running
+from ksadk.builders.requirements_utils import merge_requirement_lists, parse_requirements_text
 from ksadk.detection.mcp_detector import MCPDetector, MCPDetectionResult
 
 
@@ -128,8 +129,8 @@ class MCPCodeBuilder(CodeBuilder):
         if user_requirements.exists():
             click.echo(f"   发现 requirements.txt，正在合并...")
             user_content = user_requirements.read_text()
-            user_deps = [l.strip() for l in user_content.split('\n') if l.strip() and not l.startswith('#')]
-            final_deps.extend(user_deps)
+            user_deps = parse_requirements_text(user_content)
+            final_deps = merge_requirement_lists(final_deps, user_deps)
         else:
             click.echo(f"   使用默认 MCP 依赖")
         
@@ -416,8 +417,8 @@ class MCPContainerBuilder(ContainerBuilder):
         user_requirements = project_path / "requirements.txt"
         if user_requirements.exists():
             user_content = user_requirements.read_text()
-            user_deps = [line.strip() for line in user_content.split('\n') if line.strip() and not line.startswith('#')]
-            base_deps.extend(user_deps)
+            user_deps = parse_requirements_text(user_content)
+            base_deps = merge_requirement_lists(base_deps, user_deps)
 
         return "\n".join(base_deps)
 

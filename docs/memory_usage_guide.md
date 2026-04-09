@@ -1,5 +1,9 @@
 # KsADK 记忆库使用与配置指南
 
+> 主入口已迁移：完整 CLI 与平台能力说明请先看 [ksadk_usage_guide.md](./ksadk_usage_guide.md)。
+>
+> 本文保留为 ADK 记忆能力专项参考，重点放在记忆后端、ADK 自动注入和更细的 FAQ。
+
 ## 概述
 
 KsADK 记忆库为 ADK Agent 提供跨会话的记忆能力，让 Agent 能"记住"用户之前的对话内容。记忆库分为两层：

@@ -9,6 +9,29 @@ resolution-markers = [
 ]
 
 [[package]]
+name = "a2a-sdk"
+version = "0.3.25"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "google-api-core" },
+    { name = "httpx" },
+    { name = "httpx-sse" },
+    { name = "protobuf" },
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/55/83/3c99b276d09656cce039464509f05bf385e5600d6dc046a131bbcf686930/a2a_sdk-0.3.25.tar.gz", hash = "sha256:afda85bab8d6af0c5d15e82f326c94190f6be8a901ce562d045a338b7127242f", size = 270638, upload-time = "2026-03-10T13:08:46.417Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/bd/f9/6a62520b7ecb945188a6e1192275f4732ff9341cd4629bc975a6c146aeab/a2a_sdk-0.3.25-py3-none-any.whl", hash = "sha256:2fce38faea82eb0b6f9f9c2bcf761b0d78612c80ef0e599b50d566db1b2654b5", size = 149609, upload-time = "2026-03-10T13:08:44.7Z" },
+]
+
+[package.optional-dependencies]
+http-server = [
+    { name = "fastapi" },
+    { name = "sse-starlette" },
+    { name = "starlette" },
+]
+
+[[package]]
 name = "aiofiles"
 version = "23.2.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2101,13 +2124,16 @@ wheels = [
 
 [[package]]
 name = "ksadk"
-version = "0.3.5"
+version = "0.3.6"
 source = { editable = "." }
 dependencies = [
+    { name = "a2a-sdk" },
     { name = "chainlit" },
     { name = "click" },
+    { name = "cryptography" },
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "httpx-sse" },
     { name = "ks3sdk" },
     { name = "langchain" },
     { name = "langchain-core" },
@@ -2119,20 +2145,27 @@ dependencies = [
     { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
+    { name = "qrcode" },
     { name = "questionary" },
     { name = "requests" },
     { name = "requests-aws4auth" },
+    { name = "sse-starlette" },
     { name = "textual" },
     { name = "uvicorn" },
+    { name = "websockets" },
 ]
 
 [package.optional-dependencies]
+a2a = [
+    { name = "a2a-sdk", extra = ["http-server"] },
+]
 adk = [
     { name = "google-adk" },
     { name = "json-repair" },
     { name = "litellm" },
 ]
 all = [
+    { name = "a2a-sdk", extra = ["http-server"] },
     { name = "black" },
     { name = "deepagents", marker = "python_full_version >= '3.11'" },
     { name = "google-adk" },
@@ -2183,17 +2216,21 @@ tracing = [
 
 [package.metadata]
 requires-dist = [
+    { name = "a2a-sdk", specifier = ">=0.3.22" },
+    { name = "a2a-sdk", extras = ["http-server"], marker = "extra == 'a2a'", specifier = ">=0.3.22" },
     { name = "black", marker = "extra == 'dev'", specifier = ">=22.0.0" },
     { name = "chainlit", specifier = ">=1.0.0" },
     { name = "click", specifier = ">=8.0.0" },
+    { name = "cryptography", specifier = ">=44.0.0" },
     { name = "deepagents", marker = "python_full_version >= '3.11' and extra == 'deepagents'", specifier = ">=0.3.0" },
     { name = "fastapi", specifier = ">=0.100.0,<0.124.0" },
     { name = "google-adk", marker = "extra == 'adk'", specifier = ">=1.0.0" },
     { name = "httpx", specifier = ">=0.24.0" },
+    { name = "httpx-sse", specifier = ">=0.4.0" },
     { name = "json-repair", marker = "extra == 'adk'", specifier = ">=0.25.0" },
     { name = "kingsoftcloud-sdk-python", marker = "extra == 'kb'", specifier = ">=1.5.8.71" },
     { name = "ks3sdk", specifier = ">=1.15.0" },
-    { name = "ksadk", extras = ["adk", "langchain", "langgraph", "deepagents", "kb", "tracing", "dev"], marker = "extra == 'all'" },
+    { name = "ksadk", extras = ["a2a", "adk", "langchain", "langgraph", "deepagents", "kb", "tracing", "dev"], marker = "extra == 'all'" },
     { name = "langchain", specifier = ">=0.3.0,<2.0.0" },
     { name = "langchain", marker = "extra == 'deepagents'", specifier = ">=0.3.0" },
     { name = "langchain", marker = "extra == 'langchain'", specifier = ">=0.3.0" },
@@ -2219,14 +2256,17 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.21.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "pyyaml", specifier = ">=6.0.0" },
+    { name = "qrcode", specifier = ">=7.4.0" },
     { name = "questionary", specifier = ">=2.0.0" },
     { name = "requests", specifier = ">=2.28.0" },
     { name = "requests-aws4auth", specifier = ">=1.2.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
+    { name = "sse-starlette", specifier = ">=2.1.0" },
     { name = "textual", specifier = ">=0.50.0" },
     { name = "uvicorn", specifier = ">=0.23.0" },
+    { name = "websockets", specifier = ">=12.0,<16.0" },
 ]
-provides-extras = ["adk", "langchain", "langgraph", "deepagents", "tracing", "kb", "dev", "all"]
+provides-extras = ["adk", "langchain", "langgraph", "deepagents", "a2a", "tracing", "kb", "dev", "all"]
 
 [[package]]
 name = "langchain"
@@ -4656,6 +4696,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/da/92/1446574745d74df0c92e6aa4a7b0b3130706a4142b2d1a5869f2eaa423c6/pyyaml-6.0.3-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:16249ee61e95f858e83976573de0f5b2893b3677ba71c9dd36b9cf8be9ac6d65", size = 829923, upload-time = "2025-09-25T21:32:54.537Z" },
     { url = "https://files.pythonhosted.org/packages/f0/7a/1c7270340330e575b92f397352af856a8c06f230aa3e76f86b39d01b416a/pyyaml-6.0.3-cp314-cp314t-win_amd64.whl", hash = "sha256:4ad1906908f2f5ae4e5a8ddfce73c320c2a1429ec52eafd27138b7f1cbe341c9", size = 174062, upload-time = "2025-09-25T21:32:55.767Z" },
     { url = "https://files.pythonhosted.org/packages/f1/12/de94a39c2ef588c7e6455cfbe7343d3b2dc9d6b6b2f40c4c6565744c873d/pyyaml-6.0.3-cp314-cp314t-win_arm64.whl", hash = "sha256:ebc55a14a21cb14062aa4162f906cd962b28e2e9ea38f9b4391244cd8de4ae0b", size = 149341, upload-time = "2025-09-25T21:32:56.828Z" },
+]
+
+[[package]]
+name = "qrcode"
+version = "8.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "colorama", marker = "sys_platform == 'win32'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8f/b2/7fc2931bfae0af02d5f53b174e9cf701adbb35f39d69c2af63d4a39f81a9/qrcode-8.2.tar.gz", hash = "sha256:35c3f2a4172b33136ab9f6b3ef1c00260dd2f66f858f24d88418a015f446506c", size = 43317, upload-time = "2025-05-01T15:44:24.726Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/dd/b8/d2d6d731733f51684bbf76bf34dab3b70a9148e8f2cef2bb544fccec681a/qrcode-8.2-py3-none-any.whl", hash = "sha256:16e64e0716c14960108e85d853062c9e8bba5ca8252c0b4d0231b9df4060ff4f", size = 45986, upload-time = "2025-05-01T15:44:22.781Z" },
 ]
 
 [[package]]

@@ -159,6 +159,115 @@ class TestDeployLogic:
         
         state = yaml.safe_load(state_file.read_text())
         assert state["agent_id"] == "ar-20260119-newagent"
+
+    @pytest.mark.asyncio
+    async def test_deploy_create_new_agent_refreshes_quick_access_when_agent_id_is_immediate(
+        self,
+        temp_project_dir,
+        sample_package_info,
+        sample_deploy_target,
+    ):
+        """测试首次部署即使立即拿到 agent_id，也会回查并持久化 quick access。"""
+        provider = ServerlessProvider()
+
+        mock_client = AsyncMock()
+        mock_client.create_agent = AsyncMock(
+            return_value={
+                "agent_id": "ar-20260119-newagent",
+                "name": "test-agent",
+                "endpoint": "http://stale.example.com",
+                "api_key": None,
+                "order_id": "ord-123",
+            }
+        )
+        mock_client.get_agent = AsyncMock(
+            return_value={
+                "basic": {
+                    "agent_id": "ar-20260119-newagent",
+                    "name": "test-agent",
+                },
+                "quick_access": {
+                    "public_endpoint": "https://fresh.example.com",
+                    "api_key": "ak-fresh-key",
+                },
+            }
+        )
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock()
+
+        with patch.dict(os.environ, {"AGENTENGINE_SERVER_URL": "http://localhost:8080"}), \
+             patch("ksadk.deployment.providers.serverless.AgentEngineClient", return_value=mock_client), \
+             patch("ksadk.common.auth.AWSV4Auth") as MockAuth:
+
+            MockAuth.return_value.access_key = "test-ak"
+            MockAuth.return_value.secret_key = "test-sk"
+
+            await provider.deploy(sample_package_info, sample_deploy_target)
+
+        state_file = temp_project_dir / ".agentengine.state"
+        state = yaml.safe_load(state_file.read_text())
+        assert state["endpoint"] == "https://fresh.example.com"
+        assert state["api_key"] == "ak-fresh-key"
+
+    @pytest.mark.asyncio
+    async def test_deploy_create_new_agent_retries_quick_access_when_agent_not_yet_visible(
+        self,
+        temp_project_dir,
+        sample_package_info,
+        sample_deploy_target,
+    ):
+        """测试首次部署后 GetAgent 短暂 404 时，会短退避重试而不是立即打印警告。"""
+        provider = ServerlessProvider()
+
+        mock_client = AsyncMock()
+        mock_client.create_agent = AsyncMock(
+            return_value={
+                "agent_id": "ar-20260119-newagent",
+                "name": "test-agent",
+                "endpoint": "http://stale.example.com",
+                "api_key": None,
+                "order_id": "ord-123",
+            }
+        )
+        mock_client.get_agent = AsyncMock(
+            side_effect=[
+                Exception(
+                    'HTTP 404 POST http://aicp.inner.api.ksyun.com/?Action=GetAgent&Version=2024-06-12: '
+                    '{"Code":404,"Message":"未找到对应的 Agent","RequestId":"req-1","Data":null}'
+                ),
+                {
+                    "basic": {
+                        "agent_id": "ar-20260119-newagent",
+                        "name": "test-agent",
+                    },
+                    "quick_access": {
+                        "public_endpoint": "https://fresh.example.com",
+                        "api_key": "ak-fresh-key",
+                    },
+                },
+            ]
+        )
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock()
+
+        with patch.dict(os.environ, {"AGENTENGINE_SERVER_URL": "http://localhost:8080"}), \
+             patch("ksadk.deployment.providers.serverless.AgentEngineClient", return_value=mock_client), \
+             patch("ksadk.deployment.providers.serverless.asyncio.sleep", new=AsyncMock()) as mock_sleep, \
+             patch("ksadk.deployment.providers.serverless.logger.warning") as mock_warning, \
+             patch("ksadk.common.auth.AWSV4Auth") as MockAuth:
+
+            MockAuth.return_value.access_key = "test-ak"
+            MockAuth.return_value.secret_key = "test-sk"
+
+            await provider.deploy(sample_package_info, sample_deploy_target)
+
+        state_file = temp_project_dir / ".agentengine.state"
+        state = yaml.safe_load(state_file.read_text())
+        assert state["endpoint"] == "https://fresh.example.com"
+        assert state["api_key"] == "ak-fresh-key"
+        assert mock_client.get_agent.await_count == 2
+        mock_sleep.assert_awaited_once_with(0.3)
+        mock_warning.assert_not_called()
     
     @pytest.mark.asyncio
     async def test_deploy_update_existing_agent(
@@ -205,6 +314,72 @@ class TestDeployLogic:
         mock_client.create_agent.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_deploy_update_existing_agent_refreshes_quick_access_in_state(
+        self,
+        temp_project_dir,
+        sample_package_info,
+        sample_deploy_target,
+    ):
+        """测试热更新后会把最新 quick access endpoint/api_key 回填到本地状态。"""
+        provider = ServerlessProvider()
+
+        state_file = temp_project_dir / ".agentengine.state"
+        state_file.write_text(
+            yaml.dump(
+                {
+                    "agent_id": "ar-20260119-existing",
+                    "name": "test-agent",
+                    "endpoint": "http://stale.example.com",
+                    "api_key": None,
+                }
+            )
+        )
+
+        mock_client = AsyncMock()
+        mock_client.get_agent = AsyncMock(
+            side_effect=[
+                {
+                    "basic": {
+                        "agent_id": "ar-20260119-existing",
+                        "name": "test-agent",
+                    }
+                },
+                {
+                    "basic": {
+                        "agent_id": "ar-20260119-existing",
+                        "name": "test-agent",
+                    },
+                    "quick_access": {
+                        "public_endpoint": "https://fresh.example.com",
+                        "api_key": "ak-fresh-key",
+                    },
+                },
+            ]
+        )
+        mock_client.update_agent = AsyncMock(
+            return_value={
+                "agent_id": "ar-20260119-existing",
+                "name": "test-agent",
+                "endpoint": "http://stale.example.com",
+            }
+        )
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock()
+
+        with patch.dict(os.environ, {"AGENTENGINE_SERVER_URL": "http://localhost:8080"}), \
+             patch("ksadk.deployment.providers.serverless.AgentEngineClient", return_value=mock_client), \
+             patch("ksadk.common.auth.AWSV4Auth") as MockAuth:
+
+            MockAuth.return_value.access_key = "test-ak"
+            MockAuth.return_value.secret_key = "test-sk"
+
+            await provider.deploy(sample_package_info, sample_deploy_target)
+
+        state = yaml.safe_load(state_file.read_text())
+        assert state["endpoint"] == "https://fresh.example.com"
+        assert state["api_key"] == "ak-fresh-key"
+
+    @pytest.mark.asyncio
     async def test_deploy_rejects_ks3_path_without_object_key(
         self,
         temp_project_dir,
@@ -242,15 +417,18 @@ class TestDeployLogic:
             }
         )
 
+        captured = {}
         mock_client = AsyncMock()
-        mock_client.create_agent = AsyncMock(
-            return_value={
+        async def _fake_create_agent(payload):
+            captured["payload"] = payload
+            return {
                 "agent_id": "ar-20260119-newagent-ui",
                 "name": "test-agent",
                 "endpoint": "https://test.kspmas.ksyun.com",
                 "api_key": "ak-test-key",
             }
-        )
+
+        mock_client.create_agent = AsyncMock(side_effect=_fake_create_agent)
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock()
 
@@ -266,6 +444,76 @@ class TestDeployLogic:
         state = yaml.safe_load(state_file.read_text())
         assert state["ui_profile"] == "langchain"
         assert state["ui_path"] == "/"
+        assert captured["payload"]["ui_config"] == {
+            "profile": "langchain",
+            "path": "/",
+            "url": None,
+        }
+
+    @pytest.mark.asyncio
+    async def test_deploy_update_forwards_ui_config_to_control_plane(
+        self,
+        temp_project_dir,
+        sample_package_info,
+        sample_deploy_target,
+    ):
+        provider = ServerlessProvider()
+        sample_deploy_target.extra.update(
+            {
+                "ui_profile": "custom",
+                "ui_path": "/chat",
+                "ui_url": "https://ui.example.com/custom-ui/",
+            }
+        )
+
+        state_file = temp_project_dir / ".agentengine.state"
+        state_file.write_text(
+            yaml.dump(
+                {
+                    "agent_id": "ar-20260119-existing",
+                    "name": "test-agent",
+                    "endpoint": "https://existing.kspmas.ksyun.com",
+                }
+            )
+        )
+
+        captured = {}
+        mock_client = AsyncMock()
+        mock_client.get_agent = AsyncMock(
+            side_effect=[
+                {"basic": {"agent_id": "ar-20260119-existing", "name": "test-agent"}},
+                {"basic": {"agent_id": "ar-20260119-existing", "name": "test-agent"}},
+            ]
+        )
+
+        async def _fake_update_agent(agent_id, payload):
+            captured["agent_id"] = agent_id
+            captured["payload"] = payload
+            return {
+                "agent_id": agent_id,
+                "name": "test-agent",
+                "endpoint": "https://existing.kspmas.ksyun.com",
+            }
+
+        mock_client.update_agent = AsyncMock(side_effect=_fake_update_agent)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock()
+
+        with patch.dict(os.environ, {"AGENTENGINE_SERVER_URL": "http://localhost:8080"}), \
+             patch("ksadk.deployment.providers.serverless.AgentEngineClient", return_value=mock_client), \
+             patch("ksadk.common.auth.AWSV4Auth") as MockAuth:
+
+            MockAuth.return_value.access_key = "test-ak"
+            MockAuth.return_value.secret_key = "test-sk"
+
+            await provider.deploy(sample_package_info, sample_deploy_target)
+
+        assert captured["agent_id"] == "ar-20260119-existing"
+        assert captured["payload"]["ui_config"] == {
+            "profile": "custom",
+            "path": "/chat",
+            "url": "https://ui.example.com/custom-ui/",
+        }
 
     @pytest.mark.asyncio
     async def test_deploy_strips_bom_from_env_keys(
@@ -311,6 +559,56 @@ class TestDeployLogic:
         assert "OPENAI_API_KEY" in env_vars
         assert "\ufeffOPENAI_API_KEY" not in env_vars
         assert env_vars["OPENAI_MODEL_NAME"] == "test-model"
+
+    @pytest.mark.asyncio
+    async def test_deploy_forwards_network_configuration_to_create_agent(
+        self,
+        temp_project_dir,
+        sample_package_info,
+        sample_deploy_target,
+    ):
+        """测试 serverless deploy 会把网络配置透传给 CreateAgent。"""
+        provider = ServerlessProvider()
+        sample_deploy_target.network.enable_public_access = False
+        sample_deploy_target.network.enable_vpc_access = True
+        sample_deploy_target.network.vpc_id = "vpc-demo"
+        sample_deploy_target.network.subnet_id = "subnet-demo"
+        sample_deploy_target.network.security_group_id = "sg-demo"
+        sample_deploy_target.network.availability_zone = "cn-beijing-6a"
+
+        captured = {}
+        mock_client = AsyncMock()
+
+        async def _fake_create_agent(payload):
+            captured["payload"] = payload
+            return {
+                "agent_id": "ar-20260119-network",
+                "name": "test-agent",
+                "endpoint": "https://test.kspmas.ksyun.com",
+                "api_key": "ak-test-key",
+            }
+
+        mock_client.create_agent = AsyncMock(side_effect=_fake_create_agent)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock()
+
+        with patch.dict(os.environ, {"AGENTENGINE_SERVER_URL": "http://localhost:8080"}), \
+             patch("ksadk.deployment.providers.serverless.AgentEngineClient", return_value=mock_client), \
+             patch("ksadk.common.auth.AWSV4Auth") as MockAuth:
+
+            MockAuth.return_value.access_key_id = "test-ak"
+            MockAuth.return_value.secret_access_key = "test-sk"
+
+            await provider.deploy(sample_package_info, sample_deploy_target)
+
+        assert captured["payload"]["network"] == {
+            "enable_public_access": False,
+            "enable_vpc_access": True,
+            "vpc_id": "vpc-demo",
+            "subnet_id": "subnet-demo",
+            "security_group_id": "sg-demo",
+            "availability_zone": "cn-beijing-6a",
+        }
 
     @pytest.mark.asyncio
     async def test_build_persists_ks3_path_metadata_for_followup_cache(

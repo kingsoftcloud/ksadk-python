@@ -14,6 +14,12 @@ from typing import Optional
 import click
 
 from ksadk.builders.base import BaseBuilder, BuildResult
+from ksadk.builders.code_builder import CodeBuilder
+from ksadk.builders.requirements_utils import (
+    exclude_requirement_names,
+    merge_requirement_lists,
+    parse_requirements_text,
+)
 
 
 def ensure_docker_running() -> bool:
@@ -150,10 +156,27 @@ class ContainerBuilder(BaseBuilder):
         ksadk_dest = output_dir / "ksadk"
         if ksadk_dest.exists():
             shutil.rmtree(ksadk_dest)
+
+        def _ignore_ksadk_source(current_dir: str, names: list[str]):
+            ignored = set(
+                shutil.ignore_patterns(
+                    "__pycache__",
+                    "*.pyc",
+                    "*.pyd",
+                    "*.so",
+                    "*.dylib",
+                    "*.bin",
+                )(current_dir, names)
+            )
+            relative_dir = Path(current_dir).resolve().relative_to(ksadk_src.resolve())
+            if relative_dir == Path("server") and "web-ui" in names:
+                ignored.add("web-ui")
+            return ignored
+
         shutil.copytree(
             ksadk_src, 
             ksadk_dest, 
-            ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '*.pyd', '*.so', '*.dylib', '*.bin')
+            ignore=_ignore_ksadk_source,
         )
         
         # 生成 Dockerfile
@@ -250,14 +273,22 @@ CMD ["python", "entrypoint.py"]
             ]
             if framework == "deepagents":
                 base_deps += ["deepagents>=0.3.0"]
+
+        base_deps = merge_requirement_lists(
+            base_deps,
+            CodeBuilder.BUNDLED_KSADK_RUNTIME_REQUIREMENTS,
+        )
         
         # 合并用户 requirements.txt (如果存在)
         if project_path:
             user_requirements = project_path / "requirements.txt"
             if user_requirements.exists():
                 user_content = user_requirements.read_text()
-                user_deps = [l.strip() for l in user_content.split('\n') if l.strip() and not l.startswith('#')]
-                base_deps.extend(user_deps)
+                user_deps = exclude_requirement_names(
+                    parse_requirements_text(user_content),
+                    excluded_names={"ksadk"},
+                )
+                base_deps = merge_requirement_lists(base_deps, user_deps)
         
         return "\n".join(base_deps)
     

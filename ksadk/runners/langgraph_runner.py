@@ -4,11 +4,13 @@ LangGraphRunner - LangGraph 框架运行时
 直接透传 LangGraph 原生能力，最小化封装
 """
 
+import os
 import uuid
 import re
 from typing import Any, AsyncIterator, Dict
 
 from ksadk.runners.base_runner import BaseRunner
+from ksadk.sessions.continuity import LangGraphSessionAdapter
 from ksadk.runners.utils import get_langfuse_callback, get_langfuse_metadata, load_agent_module
 from langgraph.types import Command
 
@@ -20,15 +22,33 @@ class LangGraphRunner(BaseRunner):
     """
 
     def load_agent(self) -> None:
+        self._load_agent(force_reload=False)
+
+    def _load_agent(self, *, force_reload: bool) -> None:
         """加载 LangGraph 编译后的图"""
         self._agent, self._module = load_agent_module(
             self.project_dir,
             self.detection_result.entry_point,
             self.detection_result.agent_variable,
+            force_reload=force_reload,
+        )
+        self._loaded_model_name = self.normalize_requested_model(
+            os.getenv("OPENAI_MODEL_NAME") or os.getenv("MODEL_NAME")
         )
         
         if not hasattr(self._agent, "invoke"):
             raise TypeError("加载的对象不是有效的 LangGraph CompiledGraph")
+
+    def prepare_for_request(self, model: str | None) -> None:
+        normalized = self.sync_process_model_env(model)
+        if normalized is None or self._agent is None:
+            return
+        if normalized == getattr(self, "_loaded_model_name", None):
+            return
+        self._load_agent(force_reload=True)
+
+    def get_session_adapter(self):
+        return LangGraphSessionAdapter()
 
     def _get_config(self, session_id: str) -> dict:
         """获取运行配置"""
@@ -41,9 +61,39 @@ class LangGraphRunner(BaseRunner):
         
         return config
 
+    @staticmethod
+    def _ambient_context_text(payload: Dict[str, Any]) -> str:
+        sections: list[str] = []
+        kb_context = payload.get("kb_context") or {}
+        kb_text = str(kb_context.get("formatted_text") or "").strip() if isinstance(kb_context, dict) else ""
+        if kb_text:
+            sections.append(f"Knowledge base context:\n{kb_text}")
+
+        memory_context = payload.get("memory_context") or {}
+        memory_text = (
+            str(memory_context.get("formatted_text") or "").strip()
+            if isinstance(memory_context, dict)
+            else ""
+        )
+        if memory_text:
+            sections.append(f"Long-term memory context:\n{memory_text}")
+
+        return "\n\n".join(section for section in sections if section)
+
+    @staticmethod
+    def _strip_platform_context_fields(payload: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            key: value
+            for key, value in payload.items()
+            if key not in {"platform_context", "kb_context", "memory_context"}
+        }
+
     def _to_state(self, payload: Dict[str, Any], history: list) -> Dict[str, Any]:
         """将简化输入转换为 state，并保留除 input 外的附加字段。"""
-        if "input" in payload and "messages" not in payload:
+        normalized_payload = self._strip_platform_context_fields(payload)
+        ambient_text = self._ambient_context_text(payload)
+
+        if "input" in normalized_payload and "messages" not in normalized_payload:
             from langchain_core.messages import HumanMessage, AIMessage
 
             messages = []
@@ -55,12 +105,44 @@ class LangGraphRunner(BaseRunner):
                 elif role in ("assistant", "model"):
                     messages.append(AIMessage(content=content))
 
-            messages.append(HumanMessage(content=payload["input"]))
-            state = {k: v for k, v in payload.items() if k != "input"}
+            user_input = normalized_payload["input"] or "[empty message]"
+            if ambient_text:
+                user_input = f"{ambient_text}\n\nCurrent user input:\n{user_input}"
+            messages.append(HumanMessage(content=user_input))
+            state = {k: v for k, v in normalized_payload.items() if k != "input"}
             state["messages"] = messages
             return state
 
-        return payload
+        if "messages" in normalized_payload:
+            state = dict(normalized_payload)
+            if ambient_text and isinstance(state.get("messages"), list):
+                from langchain_core.messages import SystemMessage
+
+                state["messages"] = [SystemMessage(content=ambient_text), *state["messages"]]
+            return state
+
+        return normalized_payload
+
+    async def _invoke_graph(
+        self,
+        payload: Any,
+        *,
+        config: dict[str, Any],
+        context: dict[str, Any] | None,
+    ) -> Any:
+        if hasattr(self._agent, "ainvoke"):
+            kwargs = self._build_optional_call_kwargs(
+                self._agent.ainvoke,
+                config=config,
+                context=context,
+            )
+            return await self._agent.ainvoke(payload, **kwargs)
+        kwargs = self._build_optional_call_kwargs(
+            self._agent.invoke,
+            config=config,
+            context=context,
+        )
+        return self._agent.invoke(payload, **kwargs)
 
     async def invoke(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """调用 LangGraph 图
@@ -73,6 +155,8 @@ class LangGraphRunner(BaseRunner):
         session_id = payload.pop("session_id", None) or str(uuid.uuid4())[:8]
         is_resume = payload.pop("resume", False)
         history = payload.pop("history", [])
+        native_context = self.build_native_context(payload.get("platform_context"))
+        normalized_payload = self._strip_platform_context_fields(payload)
         
         config = self._get_config(session_id)
         
@@ -81,22 +165,26 @@ class LangGraphRunner(BaseRunner):
             # resume 支持两种形态:
             # 1) {"resume": true, "input": <resume_value>}
             # 2) {"resume": true, ...任意 payload...}
-            if "input" in payload and len(payload) == 1:
-                state = payload["input"]
+            if "input" in normalized_payload and len(normalized_payload) == 1:
+                state = normalized_payload["input"]
             else:
-                state = payload
+                state = normalized_payload
         else:
             state = self._to_state(payload, history)
 
         try:
             if is_resume:
-                result = await self._agent.ainvoke(Command(resume=state), config=config) \
-                    if hasattr(self._agent, "ainvoke") \
-                    else self._agent.invoke(Command(resume=state), config=config)
+                result = await self._invoke_graph(
+                    Command(resume=state),
+                    config=config,
+                    context=native_context,
+                )
             else:
-                result = await self._agent.ainvoke(state, config=config) \
-                    if hasattr(self._agent, "ainvoke") \
-                    else self._agent.invoke(state, config=config)
+                result = await self._invoke_graph(
+                    state,
+                    config=config,
+                    context=native_context,
+                )
 
             return {"output": self._extract_output(result), "raw": result}
             
@@ -141,6 +229,8 @@ class LangGraphRunner(BaseRunner):
         session_id = payload.pop("session_id", None) or str(uuid.uuid4())[:8]
         history = payload.pop("history", [])
         is_resume = payload.pop("resume", False)
+        native_context = self.build_native_context(payload.get("platform_context"))
+        normalized_payload = self._strip_platform_context_fields(payload)
 
         invoke_payload = dict(payload)
         invoke_payload["session_id"] = session_id
@@ -152,10 +242,10 @@ class LangGraphRunner(BaseRunner):
         config = self._get_config(session_id)
 
         if is_resume:
-            if "input" in payload and len(payload) == 1:
-                state = payload["input"]
+            if "input" in normalized_payload and len(normalized_payload) == 1:
+                state = normalized_payload["input"]
             else:
-                state = payload
+                state = normalized_payload
         else:
             state = self._to_state(payload, history)
 
@@ -168,7 +258,10 @@ class LangGraphRunner(BaseRunner):
 
         try:
             stream_input = Command(resume=state) if is_resume else state
-            async for event in self._agent.astream_events(stream_input, version="v2", config=config):
+            stream_kwargs = {"version": "v2", "config": config}
+            if native_context and self._callable_accepts_keyword(self._agent.astream_events, "context"):
+                stream_kwargs["context"] = native_context
+            async for event in self._agent.astream_events(stream_input, **stream_kwargs):
                 event_kind = event.get("event", "")
 
                 if event_kind == "on_chat_model_stream":

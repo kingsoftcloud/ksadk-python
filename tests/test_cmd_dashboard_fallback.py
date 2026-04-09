@@ -29,16 +29,22 @@ async def _fake_create_access_link(*_args, **_kwargs):
 
 def test_dashboard_uses_access_link_by_default(monkeypatch):
     opened = {}
+    captured = {}
     runner = CliRunner()
 
     monkeypatch.setattr(cmd_dashboard, "load_state", lambda _cwd: {})
     monkeypatch.setattr(cmd_dashboard, "_resolve_agent_detail", _fake_resolve_agent_detail)
-    monkeypatch.setattr(cmd_dashboard, "_create_dashboard_access_link", _fake_create_access_link)
+    async def _fake_create(*_args, **kwargs):
+        captured.update(kwargs)
+        return await _fake_create_access_link()
+
+    monkeypatch.setattr(cmd_dashboard, "_create_dashboard_access_link", _fake_create)
     monkeypatch.setattr(cmd_dashboard.webbrowser, "open", lambda url: opened.setdefault("url", url))
 
     result = runner.invoke(cmd_dashboard.dashboard, ["ar-test"])
     assert result.exit_code == 0, result.output
     assert opened == {}
+    assert captured["path"] == "/chat"
     assert "http://demo.example.com/s/lnk-1" in result.output
 
 
@@ -57,9 +63,38 @@ def test_dashboard_open_is_canonical_command(monkeypatch):
     assert "http://demo.example.com/s/lnk-1" in result.output
 
 
+def test_dashboard_remote_open_uses_hosted_chat_path_even_with_custom_ui_state(monkeypatch):
+    runner = CliRunner()
+    captured = {}
+
+    monkeypatch.setattr(
+        cmd_dashboard,
+        "load_state",
+        lambda _cwd: {
+            "ui_profile": "custom",
+            "ui_path": "/custom-chat",
+            "ui_url": "https://ui.example.com/custom-chat/",
+        },
+    )
+    monkeypatch.setattr(cmd_dashboard, "_resolve_agent_detail", _fake_resolve_agent_detail)
+
+    async def _fake_create(*_args, **kwargs):
+        captured.update(kwargs)
+        return await _fake_create_access_link()
+
+    monkeypatch.setattr(cmd_dashboard, "_create_dashboard_access_link", _fake_create)
+    monkeypatch.setattr(cmd_dashboard.webbrowser, "open", lambda _url: None)
+
+    result = runner.invoke(cmd_dashboard.dashboard, ["open", "ar-test"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["path"] == "/custom-chat"
+
+
 def test_dashboard_open_resolves_openclaw_state_from_cwd(tmp_path: Path, monkeypatch):
     runner = CliRunner()
     opened = {}
+    captured = {}
 
     state_path = tmp_path / ".agentengine.state"
     state_path.write_text(
@@ -91,16 +126,114 @@ def test_dashboard_open_resolves_openclaw_state_from_cwd(tmp_path: Path, monkeyp
             False,
         )
 
+    class _FakeGateway:
+        async def build_access_info(self, *, path="/", expires_seconds=None, link_type="private"):
+            captured.update(
+                {
+                    "path": path,
+                    "expires_seconds": expires_seconds,
+                    "link_type": link_type,
+                }
+            )
+            return type(
+                "Info",
+                (),
+                {
+                    "access_url": "http://demo.example.com/s/gateway-1",
+                    "ws_url": "ws://demo.example.com/",
+                    "link_id": "gateway-1",
+                    "expires_at": None,
+                },
+            )()
+
+        async def close(self):
+            return None
+
     monkeypatch.setattr(cmd_dashboard, "_resolve_agent_detail", _fake_resolve)
-    monkeypatch.setattr(cmd_dashboard, "_create_dashboard_access_link", _fake_create_access_link)
+    monkeypatch.setattr(cmd_dashboard, "_build_openclaw_gateway_client", lambda _region, _detail: _FakeGateway())
     monkeypatch.setattr(cmd_dashboard.webbrowser, "open", lambda url: opened.setdefault("url", url))
 
     result = runner.invoke(cmd_dashboard.dashboard, ["open"])
 
     assert result.exit_code == 0, result.output
     assert opened == {}
+    assert captured == {"path": "/", "expires_seconds": None, "link_type": "private"}
     assert "未显式指定 Agent，使用 .agentengine.state 的 agent_id: ar-openclaw-1" in result.output
-    assert "http://demo.example.com/s/lnk-1" in result.output
+    assert "http://demo.example.com/s/gateway-1" in result.output
+
+
+def test_dashboard_open_routes_openclaw_to_gateway_short_link(tmp_path: Path, monkeypatch):
+    runner = CliRunner()
+    opened = {}
+    captured = {}
+
+    (tmp_path / ".agentengine.state").write_text(
+        "agent_id: ar-openclaw-1\n"
+        "name: demo-openclaw\n"
+        "type: openclaw\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        cmd_dashboard,
+        "load_state",
+        lambda _cwd: {"agent_id": "ar-openclaw-1", "name": "demo-openclaw", "type": "openclaw"},
+    )
+
+    async def _fake_resolve(_region, primary_ref, fallback_ref):
+        return (
+            {
+                "agent_id": "ar-openclaw-1",
+                "name": "demo-openclaw",
+                "framework": "-",
+                "endpoint": "http://demo.example.com",
+            },
+            primary_ref,
+            False,
+        )
+
+    class _FakeGateway:
+        async def build_access_info(self, *, path="/", expires_seconds=None, link_type="private"):
+            captured.update(
+                {
+                    "path": path,
+                    "expires_seconds": expires_seconds,
+                    "link_type": link_type,
+                }
+            )
+            return type(
+                "Info",
+                (),
+                {
+                    "access_url": "http://demo.example.com/s/gateway-1",
+                    "ws_url": "ws://demo.example.com/",
+                    "link_id": "gateway-1",
+                    "expires_at": None,
+                },
+            )()
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(cmd_dashboard, "_resolve_agent_detail", _fake_resolve)
+    monkeypatch.setattr(cmd_dashboard, "_build_openclaw_gateway_client", lambda _region, _detail: _FakeGateway())
+    monkeypatch.setattr(
+        cmd_dashboard,
+        "_create_dashboard_access_link",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("should not create generic dashboard link")),
+    )
+    monkeypatch.setattr(cmd_dashboard.webbrowser, "open", lambda url: opened.setdefault("url", url))
+
+    result = runner.invoke(
+        cmd_dashboard.dashboard,
+        ["--share", "--expires-seconds", "0", "--no-open"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert opened == {}
+    assert captured == {"path": "/", "expires_seconds": 0, "link_type": "share"}
+    assert "http://demo.example.com/s/gateway-1" in result.output
 
 
 def test_dashboard_supports_share_subcommand(monkeypatch):
@@ -155,3 +288,27 @@ def test_dashboard_direct_invocation_resets_output_mode_after_json(monkeypatch):
     assert pretty_result.exit_code == 0, pretty_result.output
     assert not pretty_result.output.lstrip().startswith("{")
     assert "Dashboard 打开结果" in pretty_result.output
+
+
+def test_dashboard_open_json_uses_server_returned_link_type(monkeypatch):
+    runner = CliRunner()
+
+    monkeypatch.setattr(cmd_dashboard, "load_state", lambda _cwd: {})
+    monkeypatch.setattr(cmd_dashboard, "_resolve_agent_detail", _fake_resolve_agent_detail)
+
+    async def _fake_create_access_link_with_private_type(*_args, **_kwargs):
+        return {
+            "link_id": "lnk-1",
+            "link_type": "private",
+            "access_url": "http://demo.example.com/s/lnk-1",
+            "expires_at": "2026-03-09T00:00:00Z",
+        }
+
+    monkeypatch.setattr(cmd_dashboard, "_create_dashboard_access_link", _fake_create_access_link_with_private_type)
+    monkeypatch.setattr(cmd_dashboard.webbrowser, "open", lambda _url: None)
+
+    result = runner.invoke(cmd_dashboard.dashboard, ["open", "ar-test", "--share", "--output", "json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["result"]["type"] == "private"
