@@ -597,6 +597,9 @@ def _build_openclaw_env_vars(
     disable_device_auth = _resolve_env("OPENCLAW_DISABLE_DEVICE_AUTH")
     env["OPENCLAW_DISABLE_DEVICE_AUTH"] = disable_device_auth if disable_device_auth else "true"
     for passthrough_key in [
+        "OPENCLAW_AGENTSPACE_WPS_SID",
+        "OPENCLAW_AGENTSPACE_APP_ID",
+        "OPENCLAW_AGENTSPACE_CURRENT_USER",
         "OPENCLAW_WEB_FETCH_ENABLED",
         "OPENCLAW_WEB_SEARCH_PROVIDER",
         "OPENCLAW_WEB_SEARCH_BASE_URL",
