@@ -7,7 +7,7 @@
     KSADK_KB_DATASET_ID: 知识库 ID (必填，存在即启用)
     KSADK_KB_ACCESS_KEY: AK (可选，默认取 KSYUN_ACCESS_KEY)
     KSADK_KB_SECRET_KEY: SK (可选，默认取 KSYUN_SECRET_KEY)
-    KSADK_KB_REGION: 区域 (默认 cn-north-vip1)
+    KSADK_KB_REGION: 区域 (默认 cn-beijing-6)
     KSADK_KB_ENDPOINT: API 端点 (默认 aicp.api.ksyun.com)
     KSADK_KB_TOP_K: 返回结果数 (默认 5)
     KSADK_KB_SEARCH_METHOD: 检索方法 (默认 intelligence_search)
@@ -33,6 +33,8 @@ import os
 from typing import Any, List, Optional
 
 from pydantic import BaseModel
+
+from ksadk.common.aicp_env import resolve_aicp_connection
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +71,7 @@ class KnowledgeBaseClient(BaseModel):
     dataset_id: str
     access_key: str = ""
     secret_key: str = ""
-    region: str = "cn-north-vip1"
+    region: str = "cn-beijing-6"
     endpoint: str = "aicp.api.ksyun.com"
     scheme: str = "https"
     top_k: int = 5
@@ -272,14 +274,15 @@ class KnowledgeBaseClient(BaseModel):
 
         reranking_str = os.environ.get("KSADK_KB_RERANKING_ENABLE", "false")
         reranking_enable = reranking_str.lower() in ("true", "1", "yes")
+        connection = resolve_aicp_connection("KSADK_KB")
 
         return cls(
             dataset_id=dataset_id,
             access_key=access_key,
             secret_key=secret_key,
-            region=os.environ.get("KSADK_KB_REGION", "cn-north-vip1"),
-            endpoint=os.environ.get("KSADK_KB_ENDPOINT", "aicp.api.ksyun.com"),
-            scheme=os.environ.get("KSADK_KB_SCHEME", "https"),
+            region=connection["region"],
+            endpoint=connection["endpoint"],
+            scheme=connection["scheme"],
             top_k=int(os.environ.get("KSADK_KB_TOP_K", "5")),
             search_method=os.environ.get(
                 "KSADK_KB_SEARCH_METHOD", "intelligence_search"

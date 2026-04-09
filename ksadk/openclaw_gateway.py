@@ -281,6 +281,21 @@ class OpenClawGatewayClient:
         await self._ws.send(json.dumps(payload, ensure_ascii=False))
         return await self._wait_for_response(request_id, timeout_ms=timeout_ms)
 
+    async def wait_for_disconnect(self, *, timeout_ms: int = 5_000) -> bool:
+        """Wait briefly for the current websocket to close, typically after config-triggered restart."""
+        if self._ws is None:
+            return True
+
+        deadline = asyncio.get_running_loop().time() + (timeout_ms / 1000)
+        while True:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return False
+            try:
+                await self._recv_json(timeout=remaining)
+            except OpenClawGatewayError as exc:
+                return "timed out" not in str(exc).lower()
+
     def _build_cookie_header(self) -> str:
         cookies = self.session.cookies.get_dict()
         return "; ".join(f"{name}={value}" for name, value in cookies.items())

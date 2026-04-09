@@ -6,6 +6,7 @@ Serverless Provider - 金山云 Serverless 计算引擎 (AgentEngine 托管)
 - Deploy 阶段: 客户端调用 AgentEngine Server API 发起部署
 """
 
+import asyncio
 import os
 import json
 import logging
@@ -118,6 +119,85 @@ class ServerlessProvider(BaseDeployProvider):
 
         with open(metadata_file, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, ensure_ascii=False)
+
+    @staticmethod
+    def _serialize_network_config(target: DeployTarget) -> Optional[Dict[str, Any]]:
+        network = getattr(target, "network", None)
+        if network is None:
+            return None
+
+        payload: Dict[str, Any] = {
+            "enable_public_access": bool(getattr(network, "enable_public_access", False)),
+            "enable_vpc_access": bool(getattr(network, "enable_vpc_access", False)),
+        }
+
+        for field in ("vpc_id", "subnet_id", "security_group_id", "availability_zone"):
+            value = str(getattr(network, field, "") or "").strip()
+            if value:
+                payload[field] = value
+
+        if not payload["enable_public_access"] and not payload["enable_vpc_access"] and len(payload) == 2:
+            return None
+        return payload
+
+    @staticmethod
+    def _extract_agent_access_fields(detail: Dict[str, Any]) -> Dict[str, Any]:
+        """从 GetAgent 响应中提取 quick access/state 相关字段。"""
+        if not isinstance(detail, dict):
+            return {}
+
+        basic = detail.get("basic") if isinstance(detail.get("basic"), dict) else {}
+        quick = detail.get("quick_access") if isinstance(detail.get("quick_access"), dict) else {}
+
+        return {
+            "agent_id": basic.get("agent_id") or detail.get("agent_id"),
+            "name": basic.get("name") or detail.get("name"),
+            "endpoint": quick.get("public_endpoint")
+            or quick.get("private_endpoint")
+            or detail.get("endpoint"),
+            "api_key": quick.get("api_key") or detail.get("api_key"),
+        }
+
+    @staticmethod
+    def _is_agent_not_visible_yet_error(exc: Exception) -> bool:
+        """CreateAgent 后短时间内 GetAgent 404，视为可重试的可见性延迟。"""
+        text = str(exc or "").lower()
+        if not text:
+            return False
+        return (
+            ("http 404" in text or "status=404" in text or "code: 404" in text)
+            and ("未找到对应的 agent" in text or "not found" in text)
+        )
+
+    async def _get_latest_agent_access(
+        self,
+        client: AgentEngineClient,
+        agent_id: str,
+        *,
+        retry_on_not_found: bool = False,
+    ) -> Dict[str, Any]:
+        """回查最新 Agent 详情，优先使用 quick access 字段修正本地状态。"""
+        if not agent_id:
+            return {}
+
+        retry_delays = (0.3, 0.7, 1.0) if retry_on_not_found else ()
+        attempts = 1 + len(retry_delays)
+        last_exc: Optional[Exception] = None
+
+        for idx in range(attempts):
+            try:
+                detail = await client.get_agent(agent_id=agent_id, include_api_key=True)
+                return self._extract_agent_access_fields(detail)
+            except Exception as exc:
+                last_exc = exc
+                if idx < len(retry_delays) and self._is_agent_not_visible_yet_error(exc):
+                    await asyncio.sleep(retry_delays[idx])
+                    continue
+                break
+
+        if last_exc is not None:
+            logger.warning(f"Failed to refresh quick access for {agent_id}: {last_exc}")
+        return {}
 
     async def validate_config(self, target: DeployTarget) -> tuple[bool, str]:
         """验证配置: 确保已配置 AgentEngine Server"""
@@ -473,7 +553,12 @@ class ServerlessProvider(BaseDeployProvider):
                             },
                             "observability": {
                                 "langfuse_enabled": target.extra.get("enable_observability", True)
-                            }
+                            },
+                            "ui_config": {
+                                "profile": resolved_ui.profile,
+                                "path": resolved_ui.path,
+                                "url": resolved_ui.url,
+                            },
                         }
                         
                         if ks3_config:
@@ -487,6 +572,10 @@ class ServerlessProvider(BaseDeployProvider):
                              if env_vars:
                                  update_data["env_vars"] = env_vars
                                  click.echo(f"   📦 更新环境变量: {len(env_vars)} 项 from .env")
+
+                        network_config = self._serialize_network_config(target)
+                        if network_config:
+                            update_data["network"] = network_config
                         
                         # 注入更新时间戳，强制触发 Rolling Update (Pod 重启)
                         if "env_vars" not in update_data:
@@ -499,6 +588,9 @@ class ServerlessProvider(BaseDeployProvider):
                         click.echo(f"   🔄 更新 Trigger: KSADK_UPDATED_AT={update_data['env_vars']['KSADK_UPDATED_AT']}")
                         
                         res = await client.update_agent(existing_agent_id, update_data)
+                        latest_access = {}
+                        if not is_dry_run:
+                            latest_access = await self._get_latest_agent_access(client, existing_agent_id)
                         
                         # 如果是 Dry Run，手动构造假响应以避免崩溃
                         if is_dry_run and not res:
@@ -507,13 +599,15 @@ class ServerlessProvider(BaseDeployProvider):
                         # 更新本地状态 (保留旧字段如 api_key)
                         new_state = local_state.copy()
                         new_state.update({
-                            "agent_id": existing_agent_id,
-                            "name": res.get("name"),
+                            "agent_id": latest_access.get("agent_id") or existing_agent_id,
+                            "name": latest_access.get("name") or res.get("name"),
                             "region": target.region,
-                            "endpoint": res.get("endpoint"),
+                            "endpoint": latest_access.get("endpoint") or res.get("endpoint"),
                             "updated_at": self._now_iso(),
                             **ui_state,
                         })
+                        if latest_access.get("api_key"):
+                            new_state["api_key"] = latest_access["api_key"]
                         self._save_state(state_file, new_state)
                         
                         return DeployResult(
@@ -547,7 +641,12 @@ class ServerlessProvider(BaseDeployProvider):
                         },
                         "observability": {
                             "langfuse_enabled": target.extra.get("enable_observability", True)
-                        }
+                        },
+                        "ui_config": {
+                            "profile": resolved_ui.profile,
+                            "path": resolved_ui.path,
+                            "url": resolved_ui.url,
+                        },
                     }
                     
                     if ks3_config:
@@ -579,6 +678,10 @@ class ServerlessProvider(BaseDeployProvider):
                     
                     if env_vars:
                          request_data["env_vars"] = env_vars
+
+                    network_config = self._serialize_network_config(target)
+                    if network_config:
+                        request_data["network"] = network_config
 
                     # 获取 Account ID (用于 Server 端的 user_id)
                     extra_headers = {}
@@ -628,6 +731,18 @@ class ServerlessProvider(BaseDeployProvider):
 
                         if not new_agent_id:
                             click.secho("   ⚠️  实例仍在创建中，稍后使用 'agentengine status' 查看", fg="yellow")
+
+                    latest_access = {}
+                    if new_agent_id and not is_dry_run:
+                        latest_access = await self._get_latest_agent_access(
+                            new_client,
+                            new_agent_id,
+                            retry_on_not_found=True,
+                        )
+                        new_agent_id = latest_access.get("agent_id") or new_agent_id
+                        agent_name = latest_access.get("name") or agent_name
+                        agent_endpoint = latest_access.get("endpoint") or agent_endpoint
+                        agent_api_key = latest_access.get("api_key") or agent_api_key
                     
                     # 保存 agent_id 到本地状态文件
                     self._save_state(state_file, {

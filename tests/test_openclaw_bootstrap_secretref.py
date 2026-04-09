@@ -1,18 +1,20 @@
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BOOTSTRAP_SCRIPT = REPO_ROOT / "deploy" / "openclaw" / "bootstrap.sh"
+OPENCLAW_DOCKERFILE = REPO_ROOT / "deploy" / "openclaw" / "Dockerfile"
 
 
 def _write_weixin_plugin_package_json(
     plugin_root: Path,
     *,
-    version: str = "2.0.1",
+    version: str = "2.1.7",
     package_name: str = "@tencent-weixin/openclaw-weixin",
 ) -> None:
     plugin_root.mkdir(parents=True, exist_ok=True)
@@ -86,6 +88,14 @@ def _build_base_env(state_dir: str, config_path: str) -> dict:
     env["OPENCLAW_WORKSPACE_TEMPLATE_DIR"] = str(workspace_template_dir)
     env["PATH"] = f"{raw_bin_dir}:{env['PATH']}"
     return env
+
+
+def test_openclaw_dockerfile_tracks_latest_official_channel_plugins():
+    dockerfile = OPENCLAW_DOCKERFILE.read_text(encoding="utf-8")
+
+    assert "ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:" in dockerfile
+    assert "ARG OPENCLAW_WEIXIN_PLUGIN_SPEC=@tencent-weixin/openclaw-weixin" in dockerfile
+    assert "ARG OPENCLAW_LARK_PLUGIN_SPEC=@larksuite/openclaw-lark" in dockerfile
 
 
 def test_bootstrap_writes_secretref_for_model_api_key():
@@ -659,7 +669,7 @@ def test_bootstrap_syncs_kdocs_by_default_without_token():
         config_path = Path(tmpdir) / "openclaw.json"
         preset_skills_dir = Path(tmpdir) / "preset-skills"
         for skill_name in [
-            "skillhub-store",
+            "clawhub-store",
             "agent-browser-clawdbot",
             "kdocs",
             "tavily-search",
@@ -687,8 +697,8 @@ def test_bootstrap_syncs_kdocs_by_default_without_token():
         )
         assert synced_skills == [
             "agent-browser-clawdbot",
+            "clawhub-store",
             "kdocs",
-            "skillhub-store",
         ]
 
 
@@ -708,7 +718,7 @@ def test_bootstrap_removes_previously_synced_removed_preset_skill_when_unchanged
         )
 
         for skill_name in [
-            "skillhub-store",
+            "clawhub-store",
             "agent-browser-clawdbot",
             "kdocs",
         ]:
@@ -744,7 +754,7 @@ def test_bootstrap_preserves_user_managed_removed_preset_skill():
         (user_find_skills_dir / "README.md").write_text("owned-by-user\n")
 
         for skill_name in [
-            "skillhub-store",
+            "clawhub-store",
             "agent-browser-clawdbot",
             "kdocs",
         ]:
@@ -787,7 +797,7 @@ def test_bootstrap_removes_previously_synced_multi_search_skill_when_no_longer_d
         )
 
         for skill_name in [
-            "skillhub-store",
+            "clawhub-store",
             "agent-browser-clawdbot",
             "kdocs",
         ]:
@@ -827,7 +837,7 @@ def test_bootstrap_removes_legacy_multi_search_skill_by_source_match_without_sig
         (managed_multi_search_dir / "SKILL.md").write_text("legacy bundled multi-search-engine\n")
 
         for skill_name in [
-            "skillhub-store",
+            "clawhub-store",
             "agent-browser-clawdbot",
             "kdocs",
         ]:
@@ -858,7 +868,7 @@ def test_bootstrap_syncs_multi_search_skill_when_explicitly_allowlisted():
         config_path = Path(tmpdir) / "openclaw.json"
         preset_skills_dir = Path(tmpdir) / "preset-skills"
         for skill_name in [
-            "skillhub-store",
+            "clawhub-store",
             "agent-browser-clawdbot",
             "kdocs",
             "multi-search-engine",
@@ -871,7 +881,7 @@ def test_bootstrap_syncs_multi_search_skill_when_explicitly_allowlisted():
         env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
         env["OPENCLAW_PRESET_SKILLS_DIR"] = str(preset_skills_dir)
         env["OPENCLAW_PRESET_SKILLS_ALLOWLIST"] = (
-            "skillhub-store,agent-browser-clawdbot,kdocs,multi-search-engine"
+            "clawhub-store,agent-browser-clawdbot,kdocs,multi-search-engine"
         )
 
         result = subprocess.run(
@@ -889,9 +899,9 @@ def test_bootstrap_syncs_multi_search_skill_when_explicitly_allowlisted():
         )
         assert synced_skills == [
             "agent-browser-clawdbot",
+            "clawhub-store",
             "kdocs",
             "multi-search-engine",
-            "skillhub-store",
         ]
 
 
@@ -1152,10 +1162,20 @@ def test_bootstrap_scrubs_model_api_key_from_gateway_process_env():
         captured_env_path = Path(tmpdir) / "gateway.env"
         fake_bin_dir = Path(tmpdir) / "bin"
         fake_node_path = fake_bin_dir / "node"
+        real_node_path = subprocess.run(
+            ["bash", "-lc", "command -v node"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
         fake_bin_dir.mkdir()
         fake_node_path.write_text(
             "#!/bin/sh\n"
-            'printenv | sort > "${BOOTSTRAP_CAPTURE_ENV_PATH}"\n'
+            'if [ "$1" = "openclaw.mjs" ] && [ "$2" = "gateway" ] && [ "$3" = "run" ]; then\n'
+            '  printenv | sort > "${BOOTSTRAP_CAPTURE_ENV_PATH}"\n'
+            "  exit 0\n"
+            "fi\n"
+            f'exec "{real_node_path}" "$@"\n'
         )
         fake_node_path.chmod(0o755)
 
@@ -1165,21 +1185,33 @@ def test_bootstrap_scrubs_model_api_key_from_gateway_process_env():
         env["PATH"] = f"{fake_bin_dir}:{env['PATH']}"
         env.pop("OPENCLAW_BOOTSTRAP_ONLY", None)
 
-        result = subprocess.run(
+        process = subprocess.Popen(
             ["bash", str(BOOTSTRAP_SCRIPT)],
             cwd=str(REPO_ROOT),
             env=env,
-            capture_output=True,
             text=True,
-            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
 
-        assert result.returncode == 0, result.stderr or result.stdout
+        deadline = time.monotonic() + 5
+        while not captured_env_path.exists() and time.monotonic() < deadline:
+            if process.poll() is not None:
+                break
+            time.sleep(0.05)
+
+        assert captured_env_path.exists(), process.stderr.read() or process.stdout.read()
+
+        process.terminate()
+        process.communicate(timeout=5)
+
         captured_env = captured_env_path.read_text()
         assert "OPENCLAW_MODEL_API_KEY=" not in captured_env
         assert "OPENAI_API_KEY=" not in captured_env
         assert "OPENCLAW_INTERNAL_TRUSTED_PROXY_USER=openclaw-backend" in captured_env
         assert "OPENCLAW_INTERNAL_TRUSTED_PROXY_USER_HEADER=x-forwarded-user" in captured_env
+        assert "CLAWHUB_SITE=https://cn.clawhub-mirror.com" in captured_env
+        assert "CLAWHUB_REGISTRY=https://cn.clawhub-mirror.com" in captured_env
         assert "NPM_CONFIG_REGISTRY=https://registry.npmmirror.com" in captured_env
         assert "PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple" in captured_env
         assert "PIP_TRUSTED_HOST=mirrors.aliyun.com" in captured_env
@@ -1205,6 +1237,8 @@ def test_bootstrap_writes_domestic_runtime_defaults_to_env_file():
 
         assert result.returncode == 0, result.stderr or result.stdout
         runtime_env = (Path(tmpdir) / ".env").read_text()
+        assert "CLAWHUB_SITE=https://cn.clawhub-mirror.com" in runtime_env
+        assert "CLAWHUB_REGISTRY=https://cn.clawhub-mirror.com" in runtime_env
         assert "NPM_CONFIG_REGISTRY=https://registry.npmmirror.com" in runtime_env
         assert "npm_config_registry=https://registry.npmmirror.com" in runtime_env
         assert "YARN_NPM_REGISTRY_SERVER=https://registry.npmmirror.com" in runtime_env
@@ -1532,6 +1566,42 @@ def test_bootstrap_patches_bundled_weixin_gateway_login_methods_before_sync():
         assert 'gatewayMethods: ["web.login.start", "web.login.wait"],' in patched_source
 
 
+def test_bootstrap_patches_latest_weixin_gateway_login_methods_without_version_skip():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        plugin_root = Path(tmpdir) / "default-extensions" / "openclaw-weixin"
+        plugin_src_dir = plugin_root / "src"
+
+        plugin_src_dir.mkdir(parents=True, exist_ok=True)
+        _write_weixin_plugin_package_json(plugin_root, version="2.1.7")
+        (plugin_src_dir / "channel.ts").write_text(
+            'import type { ChannelPlugin, OpenClawConfig } from "openclaw/plugin-sdk/core";\n'
+            'import { normalizeAccountId } from "openclaw/plugin-sdk/account-id";\n'
+            'import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/infra-runtime";\n'
+            'export const weixinPlugin = {\n'
+            '  status: {},\n'
+            '};\n'
+        )
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_DEFAULT_EXTENSIONS_DIR"] = str(Path(tmpdir) / "default-extensions")
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        patched_source = (Path(tmpdir) / "extensions" / "openclaw-weixin" / "src" / "channel.ts").read_text()
+        assert 'gatewayMethods: ["web.login.start", "web.login.wait"],' in patched_source
+        assert "skipped bundled channel plugin compat patch" not in result.stderr
+
+
 def test_bootstrap_only_adds_gateway_login_methods_for_target_weixin_version():
     with TemporaryDirectory() as tmpdir:
         config_path = Path(tmpdir) / "openclaw.json"
@@ -1574,7 +1644,46 @@ def test_bootstrap_only_adds_gateway_login_methods_for_target_weixin_version():
         assert not (synced_root / "node_modules" / "openclaw").exists()
 
 
-def test_bootstrap_skips_weixin_remote_login_patch_for_non_target_version():
+def test_bootstrap_patches_weixin_remote_login_patch_for_newer_official_version():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        plugin_root = Path(tmpdir) / "default-extensions" / "openclaw-weixin"
+        plugin_src_dir = plugin_root / "src"
+
+        plugin_src_dir.mkdir(parents=True, exist_ok=True)
+
+        _write_weixin_plugin_package_json(plugin_root, version="2.1.8")
+        (plugin_src_dir / "channel.ts").write_text(
+            'import type { ChannelPlugin, OpenClawConfig } from "openclaw/plugin-sdk/core";\n'
+            'import { normalizeAccountId } from "openclaw/plugin-sdk/account-id";\n'
+            'import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/infra-runtime";\n'
+            'export const weixinPlugin = {\n'
+            '  status: {},\n'
+            '};\n'
+        )
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_DEFAULT_EXTENSIONS_DIR"] = str(Path(tmpdir) / "default-extensions")
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        bundled_source = (plugin_root / "src" / "channel.ts").read_text()
+        synced_source = (Path(tmpdir) / "extensions" / "openclaw-weixin" / "src" / "channel.ts").read_text()
+        assert 'gatewayMethods: ["web.login.start", "web.login.wait"],' in bundled_source
+        assert 'gatewayMethods: ["web.login.start", "web.login.wait"],' in synced_source
+        assert "skipped bundled channel plugin compat patch" not in result.stderr
+
+
+def test_bootstrap_skips_weixin_remote_login_patch_for_older_official_version():
     with TemporaryDirectory() as tmpdir:
         config_path = Path(tmpdir) / "openclaw.json"
         plugin_root = Path(tmpdir) / "default-extensions" / "openclaw-weixin"
@@ -1623,7 +1732,7 @@ def test_bootstrap_does_not_runtime_patch_user_managed_weixin_plugin():
         (bundled_plugin_root / "src").mkdir(parents=True, exist_ok=True)
         (existing_plugin_root / "src").mkdir(parents=True, exist_ok=True)
 
-        _write_weixin_plugin_package_json(bundled_plugin_root, version="2.0.1")
+        _write_weixin_plugin_package_json(bundled_plugin_root, version="2.1.7")
         _write_weixin_plugin_package_json(existing_plugin_root, version="9.9.9-user")
         (bundled_plugin_root / "src" / "channel.ts").write_text(
             'export const weixinPlugin = {\n'
@@ -1658,14 +1767,14 @@ def test_bootstrap_does_not_runtime_patch_user_managed_weixin_plugin():
         assert "preserved user-managed extension openclaw-weixin" in result.stderr
 
 
-def test_bootstrap_runtime_patches_existing_official_weixin_201_plugin():
+def test_bootstrap_runtime_patches_existing_official_weixin_216_plugin():
     with TemporaryDirectory() as tmpdir:
         config_path = Path(tmpdir) / "openclaw.json"
         existing_plugin_root = Path(tmpdir) / "extensions" / "openclaw-weixin"
 
         (existing_plugin_root / "src").mkdir(parents=True, exist_ok=True)
 
-        _write_weixin_plugin_package_json(existing_plugin_root, version="2.0.1")
+        _write_weixin_plugin_package_json(existing_plugin_root, version="2.1.7")
         (existing_plugin_root / "index.ts").write_text(
             'import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";\n'
         )
@@ -1741,7 +1850,7 @@ def test_bootstrap_syncs_only_allowlisted_preset_skills():
         config_path = Path(tmpdir) / "openclaw.json"
         preset_skills_dir = Path(tmpdir) / "preset-skills"
         for skill_name in [
-            "skillhub-store",
+            "clawhub-store",
             "agent-browser-clawdbot",
             "self-improving-agent",
             "kdocs",
@@ -1770,12 +1879,12 @@ def test_bootstrap_syncs_only_allowlisted_preset_skills():
         synced_skills = sorted(path.name for path in (Path(tmpdir) / "skills").iterdir() if path.is_dir())
         assert synced_skills == [
             "agent-browser-clawdbot",
+            "clawhub-store",
             "kdocs",
-            "skillhub-store",
         ]
         cfg = json.loads(config_path.read_text())
         assert cfg["skills"]["allowBundled"] == [
-            "skillhub-store",
+            "clawhub-store",
             "agent-browser-clawdbot",
             "kdocs",
             "wps365-skill",
@@ -1787,7 +1896,7 @@ def test_bootstrap_strict_mode_keeps_tuanziguardianclaw_preset_skill():
         config_path = Path(tmpdir) / "openclaw.json"
         preset_skills_dir = Path(tmpdir) / "preset-skills"
         for skill_name in [
-            "skillhub-store",
+            "clawhub-store",
             "agent-browser-clawdbot",
             "kdocs",
             "self-improving-agent",
@@ -1815,14 +1924,14 @@ def test_bootstrap_strict_mode_keeps_tuanziguardianclaw_preset_skill():
         synced_skills = sorted(path.name for path in (Path(tmpdir) / "skills").iterdir() if path.is_dir())
         assert synced_skills == [
             "agent-browser-clawdbot",
+            "clawhub-store",
             "kdocs",
             "self-improving-agent",
-            "skillhub-store",
             "tuanziguardianclaw",
         ]
         cfg = json.loads(config_path.read_text())
         assert cfg["skills"]["allowBundled"] == [
-            "skillhub-store",
+            "clawhub-store",
             "agent-browser-clawdbot",
             "kdocs",
             "wps365-skill",
@@ -1839,7 +1948,7 @@ def test_bootstrap_overrides_stale_bundled_skill_allowlist_from_existing_config(
                 {
                     "skills": {
                         "allowBundled": [
-                            "skillhub-store",
+                            "clawhub-store",
                             "tavily-search",
                             "agent-reach",
                         ]
@@ -1862,7 +1971,7 @@ def test_bootstrap_overrides_stale_bundled_skill_allowlist_from_existing_config(
         assert result.returncode == 0, result.stderr or result.stdout
         cfg = json.loads(config_path.read_text())
         assert cfg["skills"]["allowBundled"] == [
-            "skillhub-store",
+            "clawhub-store",
             "agent-browser-clawdbot",
             "kdocs",
             "wps365-skill",
@@ -1962,6 +2071,93 @@ def test_bootstrap_patches_runtime_bundles_for_loopback_gateway_clients():
         assert 'this.ws.addEventListener(`open`,()=>{this.lastSeq=null,this.queueConnect()})' in control_ui_bundle.read_text()
 
 
+def test_bootstrap_disables_container_self_update_runtime_hooks():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        dist_dir = Path(tmpdir) / "dist"
+        control_ui_assets_dir = dist_dir / "control-ui" / "assets"
+        control_ui_assets_dir.mkdir(parents=True, exist_ok=True)
+        client_bundle = dist_dir / "reply-test.js"
+        gateway_bundle = dist_dir / "gateway-cli-test.js"
+        server_bundle = dist_dir / "server-test.js"
+        control_ui_bundle = control_ui_assets_dir / "main-test.js"
+
+        client_bundle.write_text('const wsOptions = { maxPayload: 25 * 1024 * 1024 };')
+        gateway_bundle.write_text(
+            'function shouldSkipBackendSelfPairing(params) {\n'
+            '\tif (!(params.connectParams.client.id === GATEWAY_CLIENT_IDS.GATEWAY_CLIENT && params.connectParams.client.mode === GATEWAY_CLIENT_MODES.BACKEND)) return false;\n'
+            '\tconst usesSharedSecretAuth = params.authMethod === "token" || params.authMethod === "password";\n'
+            '\tconst usesDeviceTokenAuth = params.authMethod === "device-token";\n'
+            '\treturn params.isLocalClient && !params.hasBrowserOriginHeader && (params.sharedAuthOk && usesSharedSecretAuth || usesDeviceTokenAuth);\n'
+            '}\n'
+            'function shouldAttachDeviceIdentityForGatewayCall(params) {\n'
+            '\treturn true;\n'
+            '}\n'
+            'deviceIdentity: shouldAttachDeviceIdentityForGatewayCall({\n'
+            '\t\t\t\turl,\n'
+            '\t\t\t\ttoken,\n'
+            '\t\t\t\tpassword\n'
+            '\t\t\t}) ? loadOrCreateDeviceIdentity() : void 0,\n'
+            'function ensureExplicitGatewayAuth(params) {\n'
+            '\tif (!params.urlOverride) return;\n'
+            '\tconst explicitToken = params.explicitAuth?.token;\n'
+            '}\n'
+            'if (!device && (!isControlUi || decision.kind !== "allow")) clearUnboundScopes();\n'
+        )
+        server_bundle.write_text(
+            'let updateAvailableCache = null;\n'
+            'function getUpdateAvailable() {\n'
+            '\treturn updateAvailableCache;\n'
+            '}\n'
+            'function scheduleGatewayUpdateCheck(params) {\n'
+            '\tlet stopped = false;\n'
+            '\tlet timer = null;\n'
+            '\tlet running = false;\n'
+            '\tconst tick = async () => {\n'
+            '\t\tif (stopped || running) return;\n'
+            '\t\trunning = true;\n'
+            '\t\ttry {\n'
+            '\t\t\tawait runGatewayUpdateCheck(params);\n'
+            '\t\t} catch {} finally {\n'
+            '\t\t\trunning = false;\n'
+            '\t\t}\n'
+            '\t\tif (stopped) return;\n'
+            '\t\tconst intervalMs = resolveCheckIntervalMs(params.cfg);\n'
+            '\t\ttimer = setTimeout(() => {\n'
+            '\t\t\ttick();\n'
+            '\t\t}, intervalMs);\n'
+            '\t};\n'
+            '\ttick();\n'
+            '\treturn () => {\n'
+            '\t\tstopped = true;\n'
+            '\t\tif (timer) {\n'
+            '\t\t\tclearTimeout(timer);\n'
+            '\t\t\ttimer = null;\n'
+            '\t\t}\n'
+            '\t};\n'
+            '}\n'
+        )
+        control_ui_bundle.write_text('this.ws.addEventListener(`open`,()=>this.queueConnect())')
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_DIST_DIR"] = str(dist_dir)
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        patched_source = server_bundle.read_text()
+        assert 'function getUpdateAvailable() {\n\treturn null;\n}' in patched_source
+        assert 'function scheduleGatewayUpdateCheck(params) {\n\treturn () => {};\n}' in patched_source
+
+
 def test_bootstrap_fails_when_required_runtime_patch_targets_are_missing():
     with TemporaryDirectory() as tmpdir:
         config_path = Path(tmpdir) / "openclaw.json"
@@ -1985,7 +2181,11 @@ def test_bootstrap_fails_when_required_runtime_patch_targets_are_missing():
         )
 
         assert result.returncode != 0
-        assert "required dist patches missing:" in (result.stderr or result.stdout)
+        combined = result.stderr or result.stdout
+        assert (
+            "required dist patches missing:" in combined
+            or "必需的 dist 补丁缺失:" in combined
+        )
         assert not marker_file.exists()
 
 

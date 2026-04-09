@@ -19,7 +19,13 @@ AgentEngine CLI - 命令行工具入口
 import os
 
 import click
-from ksadk.cli.error_utils import CLIError, cli_error_from_exception, emit_cli_error, is_debug_mode_enabled
+
+from ksadk.cli.error_utils import (
+    CLIError,
+    cli_error_from_exception,
+    emit_cli_error,
+    is_debug_mode_enabled,
+)
 from ksadk.cli.resource_common import CONTEXT_SETTINGS
 from ksadk.cli.ui import no_color_option, output_option, should_render_banner
 from ksadk.version import VERSION
@@ -51,6 +57,7 @@ def _gradient_line(text: str, colors: list) -> str:
 # 金山云品牌渐变色: 红 -> 橙 -> 黄
 BRAND_COLORS = [(255, 87, 51), (255, 140, 0), (255, 193, 7), (255, 215, 0)]
 ROOT_HELP_COMMANDS = {
+    "a2a",
     "agent",
     "build",
     "dashboard",
@@ -67,6 +74,7 @@ ROOT_HELP_TOOL_COMMANDS = {
     "config",
 }
 SHORT_HELP_MAP = {
+    "a2a": "暴露 A2A 服务与 Agent Card",
     "agent": "Agent 资源管理",
     "build": "构建部署制品",
     "dashboard": "打开云端 Agent Dashboard",
@@ -178,7 +186,9 @@ class ColoredHelpGroup(click.Group):
         formatter.write_usage(ctx.command_path, "[OPTIONS] COMMAND [ARGS]...")
         formatter.write_paragraph()
         formatter.write_text("AgentEngine CLI")
-        formatter.write_text("支持 DeepAgents / LangGraph / LangChain / Google ADK 的本地运行与云端部署。")
+        formatter.write_text(
+            "支持 DeepAgents / LangGraph / LangChain / Google ADK 的本地运行与云端部署。"
+        )
 
         formatter.write_paragraph()
         formatter.write_text("工作流命令:")
@@ -204,6 +214,7 @@ class ColoredHelpGroup(click.Group):
     def format_commands_colored(self, ctx, formatter):
         """自定义命令列表格式，更简洁美观"""
         icon_map = {
+            "a2a": "↔️ ",
             "agent": "🤖 ",
             "build": "🔨 ",
             "dashboard": "🖥️ ",
@@ -284,10 +295,10 @@ def _add_command_once(group: click.Group, command, *, name: str | None = None):
 
 
 def _register_commands():
-    from ksadk.cli.cmd_run import run
-    from ksadk.cli.cmd_deploy import deploy
-    from ksadk.cli.cmd_web import web
     from ksadk.cli.cmd_create import create
+    from ksadk.cli.cmd_deploy import deploy
+    from ksadk.cli.cmd_run import run
+    from ksadk.cli.cmd_web import web
 
     # 注册现有命令
     _add_command_once(cli, run)
@@ -298,6 +309,13 @@ def _register_commands():
     _add_command_once(cli, create, name="init")
 
     # 注册新命令 (如果存在)
+    try:
+        from ksadk.cli.cmd_a2a import a2a
+
+        _add_command_once(cli, a2a)
+    except ImportError:
+        pass
+
     try:
         from ksadk.cli.cmd_config import config
 
@@ -397,7 +415,7 @@ def _register_commands():
 def main():
     # 全局加载 .env 文件
     try:
-        from dotenv import load_dotenv, find_dotenv
+        from dotenv import find_dotenv, load_dotenv
 
         # 使用 find_dotenv(usecwd=True) 确保从当前工作目录开始查找 .env 文件
         # 如果当前目录不存在（已被删除），跳过 .env 加载
@@ -406,12 +424,12 @@ def main():
         except (FileNotFoundError, OSError):
             # 当前工作目录不存在，跳过 .env 加载
             dotenv_path = None
-            
+
         if dotenv_path:
             # 编码尝试顺序: utf-8-sig (带BOM) -> utf-8 -> 系统默认编码
             encodings_to_try = ["utf-8-sig", "utf-8"]
             loaded = False
-            
+
             for enc in encodings_to_try:
                 try:
                     load_dotenv(dotenv_path, override=False, encoding=enc)
@@ -419,7 +437,7 @@ def main():
                     break
                 except UnicodeDecodeError:
                     continue
-            
+
             if not loaded:
                 # 回退到系统默认编码 (Windows 上通常是 GBK/cp936)
                 import locale

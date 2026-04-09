@@ -12,24 +12,45 @@ import sys
 import shutil
 import subprocess
 import threading
-import itertools
 import time
 import zipfile
 import re
 import json
 import hashlib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Optional, Set
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 import click
 
 from ksadk.builders.base import BaseBuilder, BuildResult
+from ksadk.builders.requirements_utils import (
+    exclude_requirement_names,
+    merge_requirement_lists,
+    parse_requirements_text,
+)
 
 
 class CodeBuilder(BaseBuilder):
     """Code 模式构建器 - 打包 zip + 依赖"""
 
     INPUT_FINGERPRINT_VERSION = 1
+    DEPENDENCY_FINGERPRINT_VERSION = 1
+    TARGET_INSTALL_PLATFORMS = (
+        "manylinux2014_x86_64",
+        "manylinux_2_17_x86_64",
+        "manylinux_2_28_x86_64",
+        "musllinux_1_2_x86_64",
+        "linux_x86_64",
+    )
+    PIP_INDEX_FALLBACKS = (
+        "https://pypi.org/simple",
+        "https://mirrors.aliyun.com/pypi/simple",
+        "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple",
+        "https://mirrors.cloud.tencent.com/pypi/simple",
+    )
     IGNORED_ROOT_NAMES = {
         "__pycache__",
         "node_modules",
@@ -58,11 +79,68 @@ class CodeBuilder(BaseBuilder):
         ".ruff_cache",
     }
     IGNORED_FILE_NAMES = {".DS_Store"}
+    KSADK_ALLOWED_SUFFIXES = {
+        '.py',
+        '.yaml',
+        '.yml',
+        '.json',
+        '.jinja2',
+        '.j2',
+        '.txt',
+        '.md',
+        '.html',
+        '.js',
+        '.css',
+        '.svg',
+        '.ico',
+        '.png',
+        '.jpg',
+        '.jpeg',
+        '.gif',
+        '.webp',
+        '.woff',
+        '.woff2',
+        '.ttf',
+        '.map',
+    }
+    BUNDLED_KSADK_CORE_RUNTIME_REQUIREMENTS = (
+        "a2a-sdk>=0.3.22",
+        "httpx-sse>=0.4.0",
+        "sse-starlette>=2.1.0",
+        "requests>=2.28.0",
+        "requests-aws4auth>=1.2.0",
+        "kingsoftcloud-sdk-python>=1.5.8.78",
+        "cryptography>=44.0.0",
+        "websockets>=12.0,<16.0",
+        "qrcode>=7.4.0",
+    )
+    BUNDLED_KSADK_ATTACHMENT_RUNTIME_REQUIREMENTS = (
+        "pypdf>=6.0.0",
+        "beautifulsoup4>=4.12.0",
+        "rapidocr-onnxruntime>=1.2.0",
+    )
+    BUNDLED_KSADK_RUNTIME_REQUIREMENTS = (
+        *BUNDLED_KSADK_CORE_RUNTIME_REQUIREMENTS,
+        *BUNDLED_KSADK_ATTACHMENT_RUNTIME_REQUIREMENTS,
+    )
+    INSTALL_PROGRESS_BAR_WIDTH = 24
+    INSTALL_PROGRESS_EVENT_MILESTONES = frozenset({1, 5, 10})
+    PIP_INDEX_CACHE_VERSION = 1
+    PIP_INDEX_CACHE_TTL_SECONDS = 6 * 60 * 60
+    PIP_INDEX_PROBE_TIMEOUT_SECONDS = 1.5
     
     def __init__(self, project_dir: Path, config: dict = None):
         super().__init__(project_dir, config)
         self.build_dir = self.project_dir / ".agentengine" / "code_build"
         self.deps_dir = self.build_dir / "linux_deps"
+        self._install_progress_width = 0
+        self._install_progress_percent = 0
+        self._install_progress_stage_name = ""
+        self._install_progress_summary_text = ""
+        self._install_progress_last_line = ""
+        self._install_progress_event_counts: dict[str, int] = {}
+        self._pip_index_candidates_cache: Optional[list[Optional[str]]] = None
+        self._pip_index_selection_summary = ""
     
     def build(self) -> BuildResult:
         """执行 Code 模式构建"""
@@ -119,15 +197,26 @@ class CodeBuilder(BaseBuilder):
         
         # Step 2: 安装依赖
         click.echo("\n📦 Step 2/3: 安装依赖...")
-        if self.deps_dir.exists():
-            shutil.rmtree(self.deps_dir)
-        self.deps_dir.mkdir(parents=True)
-        
-        if not self._install_dependencies(requirements_path):
-            return BuildResult(
-                success=False,
-                error_message="依赖安装失败"
+        reuse_dependencies, reuse_reason = self._can_reuse_dependency_cache(requirements_path)
+        if reuse_dependencies:
+            stats = self._current_dependency_stats()
+            click.secho(
+                f"   ✓ 复用 Linux 依赖缓存: {stats['file_count']} 个文件, {stats['size_mb']:.1f} MB",
+                fg="green",
             )
+            click.echo(f"   {reuse_reason}")
+        else:
+            if reuse_reason:
+                click.echo(f"   {reuse_reason}")
+            self._clear_dependency_cache()
+            self.deps_dir.mkdir(parents=True, exist_ok=True)
+            
+            if not self._install_dependencies(requirements_path):
+                return BuildResult(
+                    success=False,
+                    error_message="依赖安装失败"
+                )
+            self._save_dependency_fingerprint(requirements_path)
         
         # Step 3: 打包 zip
         click.echo("\n📦 Step 3/3: 打包 zip...")
@@ -175,6 +264,9 @@ class CodeBuilder(BaseBuilder):
     def _fingerprint_manifest_path(self, zip_path: Path) -> Path:
         return zip_path.with_suffix(".inputs.json")
 
+    def _dependency_fingerprint_manifest_path(self) -> Path:
+        return self.build_dir / "linux_deps.inputs.json"
+
     def _load_input_fingerprint(self, zip_path: Path) -> Optional[dict]:
         manifest_path = self._fingerprint_manifest_path(zip_path)
         if not manifest_path.exists():
@@ -194,6 +286,92 @@ class CodeBuilder(BaseBuilder):
         payload = self._build_input_fingerprint(detection_result)
         with open(manifest_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, ensure_ascii=False)
+
+    def _load_dependency_fingerprint(self) -> Optional[dict]:
+        manifest_path = self._dependency_fingerprint_manifest_path()
+        if not manifest_path.exists():
+            return None
+        try:
+            with open(manifest_path, encoding="utf-8") as f:
+                data = json.load(f)
+            if data.get("version") != self.DEPENDENCY_FINGERPRINT_VERSION:
+                return None
+            return data
+        except Exception:
+            return None
+
+    def _save_dependency_fingerprint(self, requirements_path: Path) -> None:
+        manifest_path = self._dependency_fingerprint_manifest_path()
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = self._build_dependency_fingerprint(requirements_path)
+        payload.update(self._current_dependency_stats())
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+
+    def _clear_dependency_cache(self) -> None:
+        if self.deps_dir.exists():
+            shutil.rmtree(self.deps_dir)
+        manifest_path = self._dependency_fingerprint_manifest_path()
+        if manifest_path.exists():
+            manifest_path.unlink()
+
+    def _build_dependency_fingerprint(self, requirements_path: Path) -> dict:
+        digest = hashlib.sha256()
+        requirements_text = requirements_path.read_text(encoding="utf-8")
+
+        digest.update(f"deps-fingerprint-version:{self.DEPENDENCY_FINGERPRINT_VERSION}\n".encode("utf-8"))
+        digest.update(f"builder-platform:{sys.platform}\n".encode("utf-8"))
+        digest.update(
+            f"builder-python:{sys.version_info.major}.{sys.version_info.minor}\n".encode("utf-8")
+        )
+        digest.update(f"target-python:{self.TARGET_PYTHON_VERSION}\n".encode("utf-8"))
+        digest.update(f"target-platforms:{','.join(self.TARGET_INSTALL_PLATFORMS)}\n".encode("utf-8"))
+        digest.update(requirements_text.encode("utf-8"))
+
+        requirements = [line for line in requirements_text.splitlines() if line.strip()]
+        return {
+            "version": self.DEPENDENCY_FINGERPRINT_VERSION,
+            "fingerprint": digest.hexdigest(),
+            "requirements": requirements,
+        }
+
+    def _current_dependency_stats(self) -> dict:
+        file_count = 0
+        size_bytes = 0
+        if self.deps_dir.exists():
+            for file_path in self.deps_dir.rglob("*"):
+                if not file_path.is_file():
+                    continue
+                file_count += 1
+                size_bytes += file_path.stat().st_size
+        return {
+            "file_count": file_count,
+            "size_bytes": size_bytes,
+            "size_mb": round(size_bytes / (1024 * 1024), 2),
+        }
+
+    def _can_reuse_dependency_cache(self, requirements_path: Path) -> tuple[bool, str]:
+        if not self.deps_dir.exists():
+            return False, "未发现现成 Linux 依赖缓存，重新安装"
+
+        manifest = self._load_dependency_fingerprint()
+        if manifest is None:
+            return False, "缺少依赖缓存指纹，重新安装"
+
+        current_fingerprint = self._build_dependency_fingerprint(requirements_path)
+        if manifest.get("fingerprint") != current_fingerprint["fingerprint"]:
+            return False, "依赖清单发生变化，重新安装"
+
+        stats = self._current_dependency_stats()
+        if stats["file_count"] == 0:
+            return False, "依赖缓存为空，重新安装"
+
+        incompatibles = self._scan_incompatible_binaries_in_deps()
+        if incompatibles:
+            preview = ", ".join(incompatibles[:3])
+            return False, f"依赖缓存存在兼容性问题 ({preview})，重新安装"
+
+        return True, "requirements 未变化，跳过依赖重装"
 
     def _build_input_fingerprint(self, detection_result) -> dict:
         digest = hashlib.sha256()
@@ -221,11 +399,45 @@ class CodeBuilder(BaseBuilder):
                     digest.update(chunk)
             digest.update(b"\0")
 
+        for relative, file_path in self._iter_ksadk_source_files():
+            fingerprint_name = f"ksadk/{relative}"
+            files.append(fingerprint_name)
+            digest.update(fingerprint_name.encode("utf-8"))
+            digest.update(b"\0")
+            with open(file_path, "rb") as f:
+                while True:
+                    chunk = f.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+            digest.update(b"\0")
+
         return {
             "version": self.INPUT_FINGERPRINT_VERSION,
             "fingerprint": digest.hexdigest(),
             "files": files,
         }
+
+    def _iter_ksadk_source_files(self):
+        import ksadk
+
+        ksadk_src = Path(ksadk.__file__).resolve().parent
+        for file_path in sorted(ksadk_src.rglob('*')):
+            if not file_path.is_file():
+                continue
+            relative_path = file_path.relative_to(ksadk_src)
+            if self._should_skip_ksadk_relative_path(relative_path):
+                continue
+            if '__pycache__' in file_path.parts:
+                continue
+            suffix = file_path.suffix.lower()
+            if suffix not in self.KSADK_ALLOWED_SUFFIXES:
+                continue
+            yield relative_path.as_posix(), file_path
+
+    def _should_skip_ksadk_relative_path(self, relative_path: Path) -> bool:
+        parts = relative_path.parts
+        return len(parts) >= 2 and parts[0] == "server" and parts[1] == "web-ui"
 
     def _iter_project_files(self):
         for item in sorted(self.project_dir.iterdir(), key=lambda p: p.name):
@@ -290,13 +502,19 @@ class CodeBuilder(BaseBuilder):
         return requirements_path
 
     def _build_requirements_list(self, detection_result) -> List[str]:
-        final_deps = list(self._get_base_requirements(detection_result))
+        final_deps = merge_requirement_lists(
+            self._get_base_requirements(detection_result),
+            self.BUNDLED_KSADK_RUNTIME_REQUIREMENTS,
+        )
 
         user_requirements = self.project_dir / "requirements.txt"
         if user_requirements.exists():
             user_content = user_requirements.read_text(encoding="utf-8")
-            user_deps = [l.strip() for l in user_content.split('\n') if l.strip() and not l.startswith('#')]
-            final_deps.extend(user_deps)
+            user_deps = exclude_requirement_names(
+                parse_requirements_text(user_content),
+                excluded_names={"ksadk"},
+            )
+            final_deps = merge_requirement_lists(final_deps, user_deps)
 
         return final_deps
     
@@ -341,10 +559,273 @@ class CodeBuilder(BaseBuilder):
     
     # 目标 Python 版本 (必须与容器运行时一致)
     TARGET_PYTHON_VERSION = "312"  # 容器中为 Python 3.12
+
+    def _install_progress_stage(self, line: str) -> tuple[int, str] | None:
+        normalized = line.strip()
+        if not normalized:
+            return None
+
+        patterns = (
+            ("Looking in indexes:", (8, "检查依赖源")),
+            ("Collecting ", (18, "解析依赖")),
+            ("Preparing metadata", (28, "准备元数据")),
+            ("Using cached ", (40, "下载依赖")),
+            ("Downloading ", (45, "下载依赖")),
+            ("Building wheel for ", (58, "构建 wheel")),
+            ("Installing collected packages:", (72, "安装依赖")),
+            ("Requirement already satisfied:", (74, "复用已安装依赖")),
+            ("Successfully installed ", (90, "安装完成")),
+        )
+        for prefix, value in patterns:
+            if normalized.startswith(prefix):
+                return value
+        return None
+
+    def _truncate_progress_summary(self, summary: str, max_length: int = 80) -> str:
+        normalized = " ".join(summary.strip().split())
+        if len(normalized) <= max_length:
+            return normalized
+        return normalized[: max_length - 3] + "..."
+
+    def _render_install_progress(self, percent: int, stage: str, summary: str = "") -> str:
+        clamped = max(0, min(percent, 100))
+        filled = round((clamped / 100) * self.INSTALL_PROGRESS_BAR_WIDTH)
+        if filled <= 0:
+            bar = "." * self.INSTALL_PROGRESS_BAR_WIDTH
+        elif filled >= self.INSTALL_PROGRESS_BAR_WIDTH:
+            bar = "=" * self.INSTALL_PROGRESS_BAR_WIDTH
+        else:
+            bar = "=" * (filled - 1) + ">" + "." * (self.INSTALL_PROGRESS_BAR_WIDTH - filled)
+        message = f"   [{bar}] {clamped:>3}% {stage}"
+        if summary:
+            message += f" | {self._truncate_progress_summary(summary)}"
+        return message
+
+    def _emit_install_progress(self, percent: int, stage: str, summary: str = "") -> None:
+        clamped = max(0, min(percent, 100))
+        if clamped < self._install_progress_percent:
+            return
+
+        line = self._render_install_progress(clamped, stage, summary)
+        if line == self._install_progress_last_line:
+            return
+
+        self._install_progress_percent = clamped
+        self._install_progress_stage_name = stage
+        self._install_progress_summary_text = summary
+        padding = " " * max(0, self._install_progress_width - len(line))
+        if sys.stdout.isatty():
+            click.echo(f"\r{line}{padding}", nl=False)
+            self._install_progress_width = len(line)
+        else:
+            click.echo(line)
+            self._install_progress_width = 0
+        self._install_progress_last_line = line
+
+    def _finish_install_progress(self) -> None:
+        if self._install_progress_width and sys.stdout.isatty():
+            click.echo()
+        self._install_progress_width = 0
+        self._install_progress_percent = 0
+        self._install_progress_stage_name = ""
+        self._install_progress_summary_text = ""
+        self._install_progress_last_line = ""
+        self._install_progress_event_counts = {}
+
+    def _result_error_summary(self, result: subprocess.CompletedProcess[str] | None) -> str:
+        if result is None:
+            return "unknown"
+        combined = "\n".join(
+            part for part in (result.stderr or "", result.stdout or "") if part
+        )
+        for line in reversed(combined.splitlines()):
+            normalized = line.strip()
+            if normalized:
+                return self._truncate_progress_summary(normalized)
+        return "unknown"
+
+    def _extract_pip_artifact_name(self, value: str) -> str:
+        token = value.strip().split()[0] if value.strip() else ""
+        parsed = urlparse(token)
+        if parsed.scheme and parsed.path:
+            basename = os.path.basename(parsed.path)
+            if basename:
+                return basename
+        basename = os.path.basename(token)
+        return basename or token or value.strip()
+
+    def _summarize_pip_progress_line(self, percent: int, stage: str, line: str) -> Optional[str]:
+        normalized = line.strip()
+        if not normalized:
+            return None
+
+        force_emit = percent > self._install_progress_percent or stage != self._install_progress_stage_name
+        count = self._install_progress_event_counts.get(stage, 0) + 1
+        self._install_progress_event_counts[stage] = count
+
+        if stage == "检查依赖源":
+            return self._truncate_progress_summary(normalized)
+
+        if stage == "解析依赖":
+            detail = normalized[len("Collecting "):].split(" (from ", 1)[0]
+            summary = f"已解析 {count} 个依赖，最近: {detail}"
+            if force_emit or count in self.INSTALL_PROGRESS_EVENT_MILESTONES or count % 10 == 0:
+                return summary
+            return None
+
+        if stage == "准备元数据":
+            if force_emit or count in {1, 3} or count % 10 == 0:
+                return f"准备元数据: {self._truncate_progress_summary(normalized)}"
+            return None
+
+        if stage == "下载依赖":
+            if normalized.startswith("Using cached "):
+                payload = normalized[len("Using cached "):]
+            elif normalized.startswith("Downloading "):
+                payload = normalized[len("Downloading "):]
+            else:
+                payload = normalized
+            target = self._extract_pip_artifact_name(payload)
+            summary = f"已处理 {count} 个 wheel，最近: {target}"
+            if force_emit or count in self.INSTALL_PROGRESS_EVENT_MILESTONES or count % 25 == 0:
+                return summary
+            return None
+
+        if stage == "构建 wheel":
+            detail = normalized[len("Building wheel for "):].split(" ", 1)[0]
+            if force_emit or count == 1 or count % 5 == 0:
+                return f"构建 wheel: {detail}"
+            return None
+
+        if stage == "安装依赖":
+            detail = normalized[len("Installing collected packages:"):].strip()
+            return f"安装包: {self._truncate_progress_summary(detail, max_length=60)}"
+
+        if stage == "复用已安装依赖":
+            detail = normalized[len("Requirement already satisfied:"):].split(" in ", 1)[0].strip()
+            if force_emit or count in self.INSTALL_PROGRESS_EVENT_MILESTONES or count % 10 == 0:
+                return f"复用依赖: {detail}"
+            return None
+
+        if stage == "安装完成":
+            detail = normalized[len("Successfully installed "):].strip()
+            return f"最近结果: {self._truncate_progress_summary(detail, max_length=60)}"
+
+        return self._truncate_progress_summary(normalized)
+
+    def _pip_index_cache_path(self) -> Path:
+        return Path.home() / ".agentengine" / "pip-index-cache.json"
+
+    def _normalize_pip_index_url(self, index_url: str) -> str:
+        return index_url.rstrip("/")
+
+    def _short_pip_index_label(self, index_url: str) -> str:
+        parsed = urlparse(index_url)
+        if not parsed.scheme:
+            return index_url
+        label = parsed.netloc
+        path = parsed.path.rstrip("/")
+        if path:
+            label += path
+        return label
+
+    def _load_cached_pip_index_order(self, urls: list[str]) -> Optional[list[str]]:
+        cache_path = self._pip_index_cache_path()
+        if not cache_path.exists():
+            return None
+
+        try:
+            with open(cache_path, encoding="utf-8") as f:
+                payload = json.load(f)
+        except Exception:
+            return None
+
+        if payload.get("version") != self.PIP_INDEX_CACHE_VERSION:
+            return None
+
+        updated_at = payload.get("updated_at")
+        if not isinstance(updated_at, (int, float)):
+            return None
+        if time.time() - float(updated_at) > self.PIP_INDEX_CACHE_TTL_SECONDS:
+            return None
+
+        cached_order = [
+            self._normalize_pip_index_url(item)
+            for item in payload.get("order", [])
+            if isinstance(item, str)
+        ]
+        required = {self._normalize_pip_index_url(url) for url in urls}
+        if not required.issubset(cached_order):
+            return None
+
+        return [item for item in cached_order if item in required]
+
+    def _save_pip_index_order(self, order: list[str]) -> None:
+        cache_path = self._pip_index_cache_path()
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(cache_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "version": self.PIP_INDEX_CACHE_VERSION,
+                        "updated_at": time.time(),
+                        "order": order,
+                    },
+                    f,
+                    indent=2,
+                    ensure_ascii=False,
+                )
+        except Exception:
+            return
+
+    def _probe_pip_index_latency(self, index_url: str) -> Optional[float]:
+        probe_url = f"{self._normalize_pip_index_url(index_url)}/pip/"
+        request = Request(
+            probe_url,
+            headers={"User-Agent": "ksadk-build/0.4.0"},
+        )
+        started_at = time.monotonic()
+        try:
+            with urlopen(request, timeout=self.PIP_INDEX_PROBE_TIMEOUT_SECONDS) as response:
+                response.read(1)
+            return time.monotonic() - started_at
+        except Exception:
+            return None
+
+    def _rank_pip_index_urls(self, urls: list[str]) -> tuple[list[str], str]:
+        cached_order = self._load_cached_pip_index_order(urls)
+        if cached_order:
+            best = cached_order[0]
+            return cached_order, f"缓存优先 {self._short_pip_index_label(best)}"
+
+        timings: dict[str, Optional[float]] = {}
+        with ThreadPoolExecutor(max_workers=min(4, len(urls))) as executor:
+            future_to_url = {
+                executor.submit(self._probe_pip_index_latency, url): url
+                for url in urls
+            }
+            for future in as_completed(future_to_url):
+                url = future_to_url[future]
+                try:
+                    timings[url] = future.result()
+                except Exception:
+                    timings[url] = None
+
+        successful = [url for url in urls if timings.get(url) is not None]
+        if not successful:
+            return urls, "测速失败，按默认顺序尝试源"
+
+        successful.sort(key=lambda item: timings[item] or float("inf"))
+        failed = [url for url in urls if timings.get(url) is None]
+        ordered = [*successful, *failed]
+        self._save_pip_index_order(ordered)
+
+        best = ordered[0]
+        best_ms = round((timings[best] or 0.0) * 1000)
+        return ordered, f"测速优先 {self._short_pip_index_label(best)} ({best_ms} ms)"
     
     def _install_dependencies(self, requirements_path: Path) -> bool:
         """安装依赖到 deps_dir"""
-        stop_spinner = False
         current_python = f"{sys.version_info.major}.{sys.version_info.minor}"
         target_python = self._target_python_display()
         if current_python != target_python:
@@ -352,49 +833,51 @@ class CodeBuilder(BaseBuilder):
                 f"   ⚠ 构建机 Python={current_python}，目标运行时 Python={target_python}，"
                 "将执行二进制替换与 ABI 校验"
             )
-        
-        def spinner():
-            for c in itertools.cycle(['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']):
-                if stop_spinner:
-                    break
-                click.echo(f'\r   {c} 正在安装依赖...', nl=False)
-                time.sleep(0.1)
-        
-        spinner_thread = threading.Thread(target=spinner)
-        spinner_thread.start()
-        
+
         try:
-            # pip install -t，尝试多个镜像源
-            # 注意: 先正常安装所有依赖 (含纯 Python 包)，macOS 二进制在后续 _replace_platform_binaries() 中替换
-            mirror_sources = [
-                "https://mirrors.aliyun.com/pypi/simple",
-                "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple",
-                "https://mirrors.cloud.tencent.com/pypi/simple",
-            ]
-            
+            need_binary_replacement = (
+                sys.platform in ("darwin", "win32")
+                or (sys.platform.startswith("linux") and current_python != target_python)
+            )
+            used_target_runtime_wheels = False
             result = None
-            for mirror in mirror_sources:
-                install_cmd = [
-                    sys.executable, "-m", "pip", "install",
-                    "-r", str(requirements_path),
-                    "-t", str(self.deps_dir),
-                    "-i", mirror,
-                    "--disable-pip-version-check",
-                    "--no-warn-script-location",
-                    "--retries", "3",
-                    "--timeout", "60",
-                ]
-                result = subprocess.run(install_cmd, capture_output=True, text=True, timeout=1200)
+
+            if need_binary_replacement:
+                self._emit_install_progress(
+                    4,
+                    "准备安装",
+                    f"目标运行时 Python {target_python}",
+                )
+                result = self._run_pip_install(
+                    requirements_path,
+                    target_runtime_wheels=True,
+                )
                 if result.returncode == 0:
-                    break
-                click.echo(f'\r   源 {mirror} 失败，尝试下一个...', nl=False)
-            
-            stop_spinner = True
-            spinner_thread.join()
-            click.echo('\r                                        ', nl=False)
+                    used_target_runtime_wheels = True
+                else:
+                    self._emit_install_progress(
+                        34,
+                        "回退安装",
+                        "目标运行时 wheel 安装失败，改用宿主机构建并替换二进制",
+                    )
+                    if self.deps_dir.exists():
+                        shutil.rmtree(self.deps_dir)
+                    self.deps_dir.mkdir(parents=True, exist_ok=True)
+
+            if result is None or result.returncode != 0:
+                self._emit_install_progress(
+                    10,
+                    "准备安装",
+                    "开始宿主机依赖安装",
+                )
+                result = self._run_pip_install(
+                    requirements_path,
+                    target_runtime_wheels=False,
+                )
             
             if result.returncode != 0:
-                click.secho(f"\r   ✗ 安装失败", fg='red')
+                self._finish_install_progress()
+                click.secho("   ✗ 安装失败", fg='red')
                 if result.stderr:
                     error_lines = [l for l in result.stderr.split('\n') if 'ERROR' in l.upper()][:3]
                     for line in error_lines:
@@ -402,17 +885,24 @@ class CodeBuilder(BaseBuilder):
                 return False
             
             # 替换非 Linux 平台二进制，或 Linux 下非目标 Python ABI 的二进制
-            need_binary_replacement = (
-                sys.platform in ("darwin", "win32")
-                or (sys.platform.startswith("linux") and current_python != target_python)
-            )
-            if need_binary_replacement:
+            if need_binary_replacement and not used_target_runtime_wheels:
+                self._emit_install_progress(
+                    88,
+                    "替换 Linux wheels",
+                    "检测并替换平台相关二进制",
+                )
                 self._replace_platform_binaries()
             
             # 二进制兼容性校验（避免把不可运行的包部署到 Linux Runtime）
+            self._emit_install_progress(
+                96,
+                "校验运行时兼容性",
+                "扫描关键原生扩展",
+            )
             incompatibles = self._scan_incompatible_binaries_in_deps()
             if incompatibles:
-                click.secho("\r   ✗ 检测到与 Linux Runtime 不兼容的关键二进制，构建终止", fg='red')
+                self._finish_install_progress()
+                click.secho("   ✗ 检测到与 Linux Runtime 不兼容的关键二进制，构建终止", fg='red')
                 for item in incompatibles[:10]:
                     click.echo(f"      - {item}")
                 if any(i.startswith("python-abi-mismatch:") for i in incompatibles):
@@ -427,19 +917,22 @@ class CodeBuilder(BaseBuilder):
             
             deps_count = sum(1 for _ in self.deps_dir.rglob('*') if _.is_file())
             deps_size = sum(f.stat().st_size for f in self.deps_dir.rglob('*') if f.is_file()) / (1024 * 1024)
-            click.secho(f"\r   ✓ 依赖安装完成: {deps_count} 个文件, {deps_size:.1f} MB", fg='green')
+            self._emit_install_progress(
+                100,
+                "依赖安装完成",
+                f"{deps_count} 个文件, {deps_size:.1f} MB",
+            )
+            self._finish_install_progress()
             
             return True
             
         except subprocess.TimeoutExpired:
-            stop_spinner = True
-            spinner_thread.join()
-            click.secho("\r   ✗ 安装超时 (20分钟)", fg='red')
+            self._finish_install_progress()
+            click.secho("   ✗ 安装超时 (20分钟)", fg='red')
             return False
         except Exception as e:
-            stop_spinner = True
-            spinner_thread.join()
-            click.secho(f"\r   ✗ 依赖安装失败: {e}", fg='red')
+            self._finish_install_progress()
+            click.secho(f"   ✗ 依赖安装失败: {e}", fg='red')
             return False
     
     def _replace_platform_binaries(self) -> None:
@@ -527,13 +1020,8 @@ class CodeBuilder(BaseBuilder):
         wheels_dir.mkdir(parents=True)
         
         replaced_count = 0
-        mirror_sources = [
-            "https://mirrors.aliyun.com/pypi/simple",
-            "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple",
-            "https://mirrors.cloud.tencent.com/pypi/simple",
-            None,  # fallback to default index
-        ]
-        for pkg_name in packages_to_replace:
+        total_packages = len(packages_to_replace)
+        for index, pkg_name in enumerate(sorted(packages_to_replace), start=1):
             # 提取确切的版本号以避免不兼容问题 (如 pydantic-core)
             target_version = ""
             search_name = pkg_name.replace('-', '_').lower()
@@ -543,10 +1031,15 @@ class CodeBuilder(BaseBuilder):
                 break
                 
             pkg_with_version = f"{pkg_name}{target_version}"
+            self._emit_install_progress(
+                88 + min(6, round((index / max(total_packages, 1)) * 6)),
+                "替换 Linux wheels",
+                f"{index}/{total_packages} {pkg_with_version}",
+            )
             
             try:
                 downloaded = False
-                for mirror in mirror_sources:
+                for index_url in self._pip_index_candidates():
                     download_cmd = [
                         sys.executable, "-m", "pip", "download",
                         pkg_with_version,
@@ -565,8 +1058,8 @@ class CodeBuilder(BaseBuilder):
                         "--retries", "2",
                         "--timeout", "30",
                     ]
-                    if mirror:
-                        download_cmd += ["-i", mirror]
+                    if index_url:
+                        download_cmd += ["-i", index_url]
                     result = subprocess.run(download_cmd, capture_output=True, text=True, timeout=90)
                     if result.returncode == 0:
                         downloaded = True
@@ -728,45 +1221,9 @@ class CodeBuilder(BaseBuilder):
                     deps_count += 1
             
             # 添加 ksadk 源码
-            import ksadk
-            ksadk_src = Path(ksadk.__file__).parent
             ksadk_count = 0
-            allowed_suffixes = {
-                '.py',
-                '.yaml',
-                '.yml',
-                '.json',
-                '.jinja2',
-                '.j2',
-                '.txt',
-                '.md',
-                '.html',
-                '.js',
-                '.css',
-                '.svg',
-                '.ico',
-                '.png',
-                '.jpg',
-                '.jpeg',
-                '.gif',
-                '.webp',
-                '.woff',
-                '.woff2',
-                '.ttf',
-                '.map',
-            }
-            
-            for file_path in ksadk_src.rglob('*'):
-                if not file_path.is_file():
-                    continue
-                if '__pycache__' in str(file_path):
-                    continue
-                if file_path.suffix not in allowed_suffixes:
-                    if file_path.suffix in {'.pyc', '.pyd', '.so', '.dylib', '.dll', '.bin'}:
-                        continue
-                    continue
-                
-                arcname = "ksadk/" + file_path.relative_to(ksadk_src).as_posix()
+            for relative, file_path in self._iter_ksadk_source_files():
+                arcname = "ksadk/" + relative
                 zf.write(file_path, arcname)
                 ksadk_count += 1
             
@@ -907,3 +1364,153 @@ if __name__ == "__main__":
     logger.info(f"启动 HTTP Server: 0.0.0.0:{{port}}")
     uvicorn.run(app, host="0.0.0.0", port=port, log_level=LOG_LEVEL.lower())
 '''
+
+    def _pip_index_candidates(self) -> List[Optional[str]]:
+        """返回 pip index 尝试顺序。显式环境变量优先，其次是官方与内置镜像源。"""
+        if self._pip_index_candidates_cache is not None:
+            return list(self._pip_index_candidates_cache)
+
+        env_index = os.environ.get("PIP_INDEX_URL") or os.environ.get("UV_INDEX_URL")
+        if env_index:
+            candidates: list[Optional[str]] = [None]
+            seen = {self._normalize_pip_index_url(env_index)}
+            for candidate in self.PIP_INDEX_FALLBACKS:
+                normalized = self._normalize_pip_index_url(candidate)
+                if normalized in seen:
+                    continue
+                seen.add(normalized)
+                candidates.append(normalized)
+            self._pip_index_selection_summary = (
+                f"使用显式依赖源 {self._short_pip_index_label(env_index)}"
+            )
+            self._pip_index_candidates_cache = candidates
+            return list(candidates)
+
+        seen: Set[str] = set()
+        urls: list[str] = []
+        for candidate in self.PIP_INDEX_FALLBACKS:
+            normalized = self._normalize_pip_index_url(candidate)
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            urls.append(normalized)
+
+        ordered, summary = self._rank_pip_index_urls(urls)
+        self._pip_index_selection_summary = summary
+        self._pip_index_candidates_cache = list(ordered)
+        return list(self._pip_index_candidates_cache)
+
+    def _pip_index_label(self, index_url: Optional[str]) -> str:
+        if index_url:
+            return self._short_pip_index_label(index_url)
+        env_index = os.environ.get("PIP_INDEX_URL") or os.environ.get("UV_INDEX_URL")
+        if env_index:
+            return f"default pip index ({self._short_pip_index_label(env_index)})"
+        return "default pip index"
+
+    def _run_pip_install(self, requirements_path: Path, *, target_runtime_wheels: bool):
+        index_candidates = self._pip_index_candidates()
+        if self._pip_index_selection_summary:
+            self._emit_install_progress(
+                6 if target_runtime_wheels else 11,
+                "选择依赖源",
+                self._pip_index_selection_summary,
+            )
+        result = None
+        for index_url in index_candidates:
+            source_label = self._pip_index_label(index_url)
+            install_mode = "目标运行时 wheel" if target_runtime_wheels else "宿主机依赖"
+            self._emit_install_progress(
+                8 if target_runtime_wheels else 12,
+                "准备安装",
+                f"{install_mode}，源 {source_label}",
+            )
+            install_cmd = [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "-r",
+                str(requirements_path),
+                "-t",
+                str(self.deps_dir),
+                "--disable-pip-version-check",
+                "--no-warn-script-location",
+                "--retries",
+                "3",
+                "--timeout",
+                "60",
+            ]
+            if target_runtime_wheels:
+                for platform in self.TARGET_INSTALL_PLATFORMS:
+                    install_cmd += ["--platform", platform]
+                install_cmd += [
+                    "--python-version",
+                    self.TARGET_PYTHON_VERSION,
+                    "--implementation",
+                    "cp",
+                    "--only-binary=:all:",
+                ]
+            if index_url:
+                install_cmd += ["-i", index_url]
+            result = self._run_streamed_pip_install(install_cmd, timeout=1200)
+            if result.returncode == 0:
+                break
+            self._emit_install_progress(
+                22 if target_runtime_wheels else 18,
+                "切换依赖源",
+                f"{source_label} 失败：{self._result_error_summary(result)}",
+            )
+        return result
+
+    def _run_streamed_pip_install(
+        self,
+        install_cmd: list[str],
+        *,
+        timeout: int,
+    ) -> subprocess.CompletedProcess[str]:
+        output_lines: list[str] = []
+        self._install_progress_event_counts = {}
+        process = subprocess.Popen(
+            install_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+
+        def _consume_output() -> None:
+            if process.stdout is None:
+                return
+            try:
+                for raw_line in process.stdout:
+                    output_lines.append(raw_line)
+                    progress = self._install_progress_stage(raw_line)
+                    if progress:
+                        percent, stage = progress
+                        summary = self._summarize_pip_progress_line(percent, stage, raw_line)
+                        if summary:
+                            self._emit_install_progress(percent, stage, summary)
+            except ValueError:
+                return
+
+        reader = threading.Thread(target=_consume_output, daemon=True)
+        reader.start()
+        try:
+            returncode = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            reader.join(timeout=1)
+            raise
+
+        reader.join(timeout=1)
+        if process.stdout is not None:
+            process.stdout.close()
+        stdout = "".join(output_lines)
+        stderr = stdout if returncode != 0 else ""
+        return subprocess.CompletedProcess(
+            install_cmd,
+            returncode,
+            stdout,
+            stderr,
+        )

@@ -161,6 +161,7 @@ class _FakeOpenClawCreatingDetailClient(_FakeOpenClawDetailClient):
 class _FakeGatewayClient:
     applied_configs: list[Dict[str, Any]] = []
     last_wait_kwargs: Dict[str, Any] = {}
+    disconnect_waits: list[int] = []
 
     def __init__(self, *args, **kwargs):
         self.methods = ["channels.status", "config.get", "web.login.start", "web.login.wait"]
@@ -178,6 +179,10 @@ class _FakeGatewayClient:
 
     async def close(self):
         return None
+
+    async def wait_for_disconnect(self, *, timeout_ms=5_000):
+        self.__class__.disconnect_waits.append(timeout_ms)
+        return True
 
     async def channels_status(self, *, probe=False, timeout_ms=None):
         return {
@@ -247,6 +252,59 @@ class _FakeDoctorGatewayClient(_FakeGatewayClient):
                 },
             },
         }
+
+
+class _FakeDoctorFreshGatewayClient(_FakeGatewayClient):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.methods = ["channels.status", "config.get"]
+
+    async def channels_status(self, *, probe=False, timeout_ms=None):
+        return {
+            "channels": {
+                "openclaw-weixin": {"configured": False, "probe": probe, "timeout_ms": timeout_ms},
+            }
+        }
+
+    async def config_get(self):
+        return {
+            "hash": "cfg-1",
+            "exists": True,
+            "config": {
+                "plugins": {
+                    "entries": {
+                        "openclaw-weixin": {"enabled": True},
+                        "openclaw-lark": {"enabled": True},
+                        "agentspace": {"enabled": True},
+                    }
+                },
+                "skills": {"allowBundled": ["wps365-skill"]},
+                "channels": {},
+            },
+        }
+
+
+class _FakeDoctorBrokenWeixinGatewayClient(_FakeDoctorFreshGatewayClient):
+    async def channels_status(self, *, probe=False, timeout_ms=None):
+        return {
+            "channels": {
+                "openclaw-weixin": {"configured": True, "probe": probe, "timeout_ms": timeout_ms},
+            }
+        }
+
+    async def config_get(self):
+        snapshot = await super().config_get()
+        snapshot["config"]["channels"] = {
+            "openclaw-weixin": {"accounts": {"default": {"enabled": True}}},
+        }
+        return snapshot
+
+
+class _FakeRestartingWeixinGatewayClient(_FakeGatewayClient):
+    async def web_login_start(self, *, force=False, timeout_ms=None):
+        if not self.__class__.disconnect_waits:
+            raise AssertionError("expected gateway restart wait before weixin login")
+        return await super().web_login_start(force=force, timeout_ms=timeout_ms)
 
 
 class _FakeDeleteProvider:
@@ -550,6 +608,7 @@ def test_openclaw_channel_connect_weixin_prints_qr_url(monkeypatch):
     runner = CliRunner()
     _FakeGatewayClient.applied_configs = []
     _FakeGatewayClient.last_wait_kwargs = {}
+    _FakeGatewayClient.disconnect_waits = []
     async def _fake_sleep(*_args, **_kwargs):
         return None
     monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawDetailClient)
@@ -560,12 +619,37 @@ def test_openclaw_channel_connect_weixin_prints_qr_url(monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert "https://qr.example.com/weixin-login" in result.output
+    assert _FakeGatewayClient.applied_configs
+    config = _FakeGatewayClient.applied_configs[-1]["config"]
+    assert config["plugins"]["entries"]["openclaw-weixin"]["enabled"] is True
+    assert config["channels"]["openclaw-weixin"]["accounts"]["default"]["enabled"] is True
     assert _FakeGatewayClient.last_wait_kwargs["account_id"] == "sess-1"
+
+
+def test_openclaw_channel_connect_weixin_waits_for_gateway_restart(monkeypatch):
+    runner = CliRunner()
+    _FakeRestartingWeixinGatewayClient.applied_configs = []
+    _FakeRestartingWeixinGatewayClient.last_wait_kwargs = {}
+    _FakeRestartingWeixinGatewayClient.disconnect_waits = []
+
+    async def _fake_sleep(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawDetailClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeRestartingWeixinGatewayClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw.asyncio.sleep", _fake_sleep)
+
+    result = runner.invoke(openclaw, ["channel", "connect", "ar-demo-1", "--channel", "weixin"])
+
+    assert result.exit_code == 0, result.output
+    assert _FakeRestartingWeixinGatewayClient.disconnect_waits == [5_000]
+    assert _FakeRestartingWeixinGatewayClient.last_wait_kwargs["account_id"] == "sess-1"
 
 
 def test_openclaw_channel_connect_weixin_maps_session_key_to_account_id(monkeypatch):
     runner = CliRunner()
     _FakeGatewayClient.last_wait_kwargs = {}
+    _FakeGatewayClient.disconnect_waits = []
 
     async def _fake_sleep(*_args, **_kwargs):
         return None
@@ -1060,6 +1144,63 @@ def test_openclaw_channel_doctor_checks_agentspace_plugin_skill_and_deps(monkeyp
     assert "agentspace_status_snapshot" in result.output
     assert "agentspace_skill_visible" in result.output
     assert "agentspace_local_deps" in result.output
+
+
+def test_openclaw_channel_doctor_treats_unconfigured_channels_as_connect_required(monkeypatch):
+    runner = CliRunner()
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawDetailClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeDoctorFreshGatewayClient)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_openclaw.shutil.which",
+        lambda cmd: f"/usr/bin/{cmd}" if cmd in {"node", "npx"} else None,
+    )
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_openclaw._check_agentspace_local_deps",
+        lambda: {
+            "ok": True,
+            "cryptography": "/venv/lib/cryptography/__init__.py",
+            "requests": "/venv/lib/requests/__init__.py",
+            "cryptography_error": None,
+        },
+    )
+
+    result = runner.invoke(openclaw, ["channel", "doctor", "ar-demo-1", "--output", "json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    checks = {item["name"]: item for item in payload["checks"]}
+    assert payload["ok"] is False
+    assert checks["weixin_qr_rpc"]["ok"] is False
+    assert checks["weixin_qr_rpc"]["state"] == "connect_required"
+    assert checks["feishu_status_snapshot"]["state"] == "connect_required"
+    assert checks["agentspace_status_snapshot"]["state"] == "connect_required"
+
+
+def test_openclaw_channel_doctor_keeps_configured_weixin_qr_rpc_as_hard_failure(monkeypatch):
+    runner = CliRunner()
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawDetailClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeDoctorBrokenWeixinGatewayClient)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_openclaw.shutil.which",
+        lambda cmd: f"/usr/bin/{cmd}" if cmd in {"node", "npx"} else None,
+    )
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_openclaw._check_agentspace_local_deps",
+        lambda: {
+            "ok": True,
+            "cryptography": "/venv/lib/cryptography/__init__.py",
+            "requests": "/venv/lib/requests/__init__.py",
+            "cryptography_error": None,
+        },
+    )
+
+    result = runner.invoke(openclaw, ["channel", "doctor", "ar-demo-1", "--channel", "weixin", "--output", "json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    checks = {item["name"]: item for item in payload["checks"]}
+    assert payload["ok"] is False
+    assert checks["weixin_qr_rpc"]["state"] == "missing"
 
 
 def test_openclaw_deploy_supports_security_profile_flags(monkeypatch):

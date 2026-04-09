@@ -47,6 +47,24 @@ def _get_env(*keys: str, default: str = None) -> Optional[str]:
 _endpoint_cache: Dict[str, bool] = {}
 
 
+def _is_internal_runtime_env() -> bool:
+    return any(
+        os.getenv(key)
+        for key in (
+            "AGENT_RUNTIME_ID",
+            "K_SERVICE",
+            "KUBERNETES_SERVICE_HOST",
+        )
+    )
+
+
+def _is_public_kspmas_url(url: Optional[str]) -> bool:
+    value = (url or "").strip().rstrip("/")
+    if not value:
+        return False
+    return "kspmas.ksyun.com/v1" in value
+
+
 def check_endpoint_reachable(host: str, port: int = 80, timeout: float = 1.0) -> bool:
     """检测指定端点是否可达
     
@@ -117,8 +135,8 @@ def optimize_kspmas_url(url: str) -> str:
         # 检测是否应该使用内网
         use_internal = False
         
-        # 1. Serverless 环境强制使用内网
-        if os.getenv("AGENT_RUNTIME_ID"):
+        # 1. 托管 / 集群环境优先使用内网
+        if _is_internal_runtime_env():
             use_internal = True
         # 2. 自动检测内网可达性
         elif check_endpoint_reachable(KSPMAS_INTERNAL_HOST):
@@ -140,8 +158,8 @@ def get_kspmas_api_base() -> str:
     自动检测内网可达性，优先使用内网地址。
     **特殊逻辑**: 如果在 Serverless 托管环境 (AGENT_RUNTIME_ID 存在)，强制使用内网地址。
     """
-    # 1. Serverless 环境强制使用内网
-    if os.getenv("AGENT_RUNTIME_ID"):
+    # 1. 托管 / 集群环境强制使用内网
+    if _is_internal_runtime_env():
         return KSPMAS_INTERNAL_URL
 
     # 2. 自动检测内网可达性
@@ -631,6 +649,14 @@ def setup_environment(agent_path: "Path"):
             # override=False: 保留通过 API/Serverless 平台注入的环境变量 (优先级高)
             load_dotenv(env_file, override=False)
 
+    # 1.5. 托管运行时里不要保留公网 KSPMAS 地址，否则用户代码优先读取 OPENAI_BASE_URL
+    # 会绕开后续的内网自动探测，导致 Serverless Pod 访问公网模型网关超时。
+    if _is_internal_runtime_env():
+        for env_key in ("OPENAI_BASE_URL", "OPENAI_API_BASE"):
+            raw_value = os.getenv(env_key, "")
+            if _is_public_kspmas_url(raw_value):
+                os.environ.pop(env_key, None)
+
     # 2. Coze SDK 兼容映射
     # 某些 Coze 导出项目（tool 内使用 coze_coding_dev_sdk）会强依赖 COZE_* 环境变量，
     # 本地通常只配置了 OPENAI_*，这里做一次非覆盖式映射。
@@ -665,7 +691,6 @@ def setup_environment(agent_path: "Path"):
     if not os.getenv("OPENAI_MODEL_NAME"):
         model_name = settings.model.model_name
         os.environ["OPENAI_MODEL_NAME"] = model_name
-        # 兼容性 Model Name
-        if not os.getenv("MODEL_NAME"):
-            os.environ["MODEL_NAME"] = model_name
         click.echo(f"🧠 Model:    {click.style(model_name, fg='cyan')} (Default)")
+    if not os.getenv("MODEL_NAME") and os.getenv("OPENAI_MODEL_NAME"):
+        os.environ["MODEL_NAME"] = os.getenv("OPENAI_MODEL_NAME", "")

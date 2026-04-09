@@ -160,7 +160,9 @@ class AgentTUI(App):
         self.show_thinking = show_thinking
         self.project_dir = Path(project_dir).resolve()
 
-        self.session_id = str(uuid.uuid4())[:8]
+        self.session_id = getattr(runner, "session_id", None) or str(uuid.uuid4())[:8]
+        if getattr(self.runner, "session_id", None) is None:
+            self.runner.session_id = self.session_id
         self.history: List[Dict[str, str]] = []
         self._is_streaming = False
         self._started = False

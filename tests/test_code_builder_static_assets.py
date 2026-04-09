@@ -35,3 +35,6 @@ def test_code_builder_packages_web_static_assets(tmp_path):
     assert any(n.endswith(".html") for n in static_files), "应包含 html 入口"
     assert any(n.endswith(".js") for n in static_files), "应包含 js 资源"
     assert any(n.endswith(".css") for n in static_files), "应包含 css 资源"
+    assert not any(n.startswith("ksadk/server/web-ui/") for n in names), (
+        "runtime 产物不应包含前端源码/node_modules"
+    )

@@ -4,12 +4,19 @@
 提供通用的 Agent 模块加载逻辑
 """
 
+import importlib
 import sys
 from pathlib import Path
 from typing import Any
 
 
-def load_agent_module(project_dir: str, entry_point: str, agent_variable: str) -> Any:
+def load_agent_module(
+    project_dir: str,
+    entry_point: str,
+    agent_variable: str,
+    *,
+    force_reload: bool = False,
+) -> Any:
     """加载 Agent 模块
     
     Args:
@@ -40,7 +47,10 @@ def load_agent_module(project_dir: str, entry_point: str, agent_variable: str) -
     module_name = module_name.replace("/", ".").replace("\\", ".")
     
     try:
-        module = __import__(module_name, fromlist=[agent_variable])
+        if force_reload and module_name in sys.modules:
+            module = importlib.reload(sys.modules[module_name])
+        else:
+            module = importlib.import_module(module_name)
         agent = getattr(module, agent_variable)
         return agent, module
     except ImportError as e:
