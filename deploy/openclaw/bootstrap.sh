@@ -58,6 +58,26 @@ bootstrap_phase() {
   bootstrap_log "=== $* ==="
 }
 
+start_gateway_process() {
+  node openclaw.mjs gateway run --allow-unconfigured --bind "${BIND_MODE}" --port "${GATEWAY_PORT}" --auth "${AUTH_MODE}" &
+  GATEWAY_CHILD_PID=$!
+  set +e
+  wait "${GATEWAY_CHILD_PID}"
+  local exit_code=$?
+  set -e
+  GATEWAY_CHILD_PID=""
+  return "${exit_code}"
+}
+
+forward_gateway_shutdown() {
+  GATEWAY_SHUTDOWN_REQUESTED="true"
+  if [[ -n "${GATEWAY_CHILD_PID:-}" ]]; then
+    kill -TERM "${GATEWAY_CHILD_PID}" 2>/dev/null || true
+    wait "${GATEWAY_CHILD_PID}" 2>/dev/null || true
+    GATEWAY_CHILD_PID=""
+  fi
+}
+
 # -----------------------------------------------------------------------------
 # 浏览器与命令路径探测
 # -----------------------------------------------------------------------------
@@ -2100,4 +2120,44 @@ bootstrap_phase "启动 OpenClaw Gateway"
 bootstrap_log "监听端口: ${GATEWAY_PORT}"
 bootstrap_log "绑定模式: ${BIND_MODE}"
 bootstrap_log "认证模式: ${AUTH_MODE}"
-exec node openclaw.mjs gateway run --allow-unconfigured --bind "${BIND_MODE}" --port "${GATEWAY_PORT}" --auth "${AUTH_MODE}"
+
+GATEWAY_LOCAL_RESTART_MAX="${OPENCLAW_GATEWAY_LOCAL_RESTART_MAX:-3}"
+GATEWAY_LOCAL_RESTART_WINDOW_SECONDS="${OPENCLAW_GATEWAY_LOCAL_RESTART_WINDOW_SECONDS:-120}"
+GATEWAY_LOCAL_RESTART_BACKOFF_SECONDS="${OPENCLAW_GATEWAY_LOCAL_RESTART_BACKOFF_SECONDS:-1}"
+GATEWAY_SHUTDOWN_REQUESTED="false"
+GATEWAY_CHILD_PID=""
+GATEWAY_FAILURE_COUNT=0
+GATEWAY_FAILURE_WINDOW_STARTED_AT="$(bootstrap_now_seconds)"
+
+trap 'forward_gateway_shutdown; exit 0' TERM INT
+
+while true; do
+  GATEWAY_EXIT_CODE=0
+  start_gateway_process || GATEWAY_EXIT_CODE=$?
+
+  if [[ "${GATEWAY_SHUTDOWN_REQUESTED}" == "true" ]]; then
+    exit "${GATEWAY_EXIT_CODE}"
+  fi
+
+  if [[ "${GATEWAY_EXIT_CODE}" -eq 0 ]]; then
+    bootstrap_log "gateway 正常退出，准备在容器内原地拉起。"
+    sleep "${GATEWAY_LOCAL_RESTART_BACKOFF_SECONDS}"
+    continue
+  fi
+
+  GATEWAY_NOW="$(bootstrap_now_seconds)"
+  if (( GATEWAY_NOW - GATEWAY_FAILURE_WINDOW_STARTED_AT > GATEWAY_LOCAL_RESTART_WINDOW_SECONDS )); then
+    GATEWAY_FAILURE_WINDOW_STARTED_AT="${GATEWAY_NOW}"
+    GATEWAY_FAILURE_COUNT=0
+  fi
+
+  GATEWAY_FAILURE_COUNT=$((GATEWAY_FAILURE_COUNT + 1))
+  bootstrap_log "gateway 异常退出 code=${GATEWAY_EXIT_CODE}，本地重启次数 ${GATEWAY_FAILURE_COUNT}/${GATEWAY_LOCAL_RESTART_MAX}。"
+
+  if (( GATEWAY_FAILURE_COUNT > GATEWAY_LOCAL_RESTART_MAX )); then
+    bootstrap_log "gateway 本地重启预算已耗尽，退出容器交由平台接管。"
+    exit "${GATEWAY_EXIT_CODE}"
+  fi
+
+  sleep "${GATEWAY_LOCAL_RESTART_BACKOFF_SECONDS}"
+done
