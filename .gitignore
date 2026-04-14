@@ -155,6 +155,7 @@ Thumbs.db
 *.log
 *.tmp
 .cache/
+.worktrees/
 /webui/node_modules/
 .agentengine*
 .agentengin/
