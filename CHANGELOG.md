@@ -12,7 +12,7 @@
 - 文档体系重构为“使用指南 + 技术设计”双主文档，`README.md` 收口为轻量入口页。
 - 增加 hosted-first UI metadata、移动端聊天 UI 和 quick access 刷新重试，收口本地与 hosted OpenClaw 体验。
 - 统一附件处理链路，覆盖 hosted/local transcript、runner 输入、replay 和 Web UI 上传，并引入结构化 `attachment_results` 与 OCR fallback。
-- 默认 OpenClaw 基础镜像切换到官方 `ghcr.io/openclaw/openclaw`，当前 `Dockerfile` 默认 pin 到 `2026.4.9`。
+- 默认 OpenClaw 基础镜像切换到官方 `ghcr.io/openclaw/openclaw`，当前 `Dockerfile` 默认 pin 到 `2026.4.14`。
 - 默认内置能力从 `skillhub` 切换为 `clawhub`，同时写入中国镜像源默认配置并更新 strict-mode allowlist。
 - 优化 code mode 构建链路，包括 KS3 上传 fallback、依赖缓存复用和目标运行时优先安装 Linux wheel。
 

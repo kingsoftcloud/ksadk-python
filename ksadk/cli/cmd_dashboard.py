@@ -164,6 +164,7 @@ def _abort_dashboard_error(
     hidden=True,
     help="(兼容) 链接有效期（秒）；支持 never(=0)",
 )
+@click.option("--force-new", is_flag=True, hidden=True, help="(兼容) 强制新建链接（跳过复用）")
 @click.option("--no-open", is_flag=True, hidden=True, help="(兼容) 仅打印 URL，不自动打开浏览器")
 @click.option("--direct", is_flag=True, hidden=True, help="(兼容) 直接打开 endpoint/path")
 @cli_output_option(hidden=True)
@@ -175,6 +176,7 @@ def dashboard(
     ui_path: Optional[str],
     share: bool,
     expires_seconds: Optional[int],
+    force_new: bool,
     no_open: bool,
     direct: bool,
     output_mode: str | None,
@@ -198,6 +200,7 @@ def dashboard(
         ui_path=ui_path,
         share=share,
         expires_seconds=expires_seconds,
+        force_new=force_new,
         no_open=no_open,
         direct=direct,
     )
@@ -216,6 +219,7 @@ def dashboard(
     callback=_parse_expires_seconds_option,
     help="链接有效期（秒）；支持 never(=0)",
 )
+@click.option("--force-new", is_flag=True, help="强制新建链接（跳过复用）")
 @click.option("--no-open", is_flag=True, help="仅打印 URL，不自动打开浏览器")
 @click.option("--direct", is_flag=True, help="直接打开 endpoint/path（跳过短链接创建）")
 @cli_output_option()
@@ -226,6 +230,7 @@ def dashboard_open(
     ui_path: Optional[str],
     share: bool,
     expires_seconds: Optional[int],
+    force_new: bool,
     no_open: bool,
     direct: bool,
     output_mode: str | None,
@@ -239,6 +244,7 @@ def dashboard_open(
         ui_path=ui_path,
         share=share,
         expires_seconds=expires_seconds,
+        force_new=force_new,
         no_open=no_open,
         direct=direct,
     )
@@ -400,6 +406,7 @@ def _open_dashboard(
     ui_path: Optional[str],
     share: bool,
     expires_seconds: Optional[int],
+    force_new: bool,
     no_open: bool,
     direct: bool,
 ):
@@ -478,15 +485,16 @@ def _open_dashboard(
     validated_expires = _normalize_expires_seconds(link_type=link_type, expires_seconds=expires_seconds)
     try:
         link_data = asyncio.run(
-            _create_dashboard_access_link(
-                region=region,
-                agent_id=(detail.get("agent_id") or "").strip() or None,
-                agent_name=(detail.get("name") or "").strip() or None,
-                link_type=link_type,
-                path=normalized_path,
-                expires_seconds=validated_expires,
+                _create_dashboard_access_link(
+                    region=region,
+                    agent_id=(detail.get("agent_id") or "").strip() or None,
+                    agent_name=(detail.get("name") or "").strip() or None,
+                    link_type=link_type,
+                    path=normalized_path,
+                    expires_seconds=validated_expires,
+                    force_new=force_new,
+                )
             )
-        )
     except Exception as e:
         _abort_dashboard_error(e, context="创建 Dashboard 链接失败", argv=["dashboard", "open"])
         return
@@ -652,12 +660,14 @@ async def _create_dashboard_access_link(
     link_type: str,
     path: str,
     expires_seconds: Optional[int],
+    force_new: bool,
 ) -> dict:
     async with AgentEngineClient(region=region) as client:
         kwargs = {
             "link_type": link_type,
             "path": path,
             "expires_seconds": expires_seconds,
+            "force_new": force_new,
         }
         if agent_id:
             kwargs["agent_id"] = agent_id

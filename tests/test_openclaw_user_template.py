@@ -56,6 +56,12 @@ def test_openclaw_user_template_default_config_seeds_trusted_proxy_runtime():
 def test_openclaw_user_template_dockerfile_uses_official_startup_path():
     dockerfile = (TEMPLATE_ROOT / "Dockerfile").read_text(encoding="utf-8")
 
+    assert (
+        "ARG OPENCLAW_BASE_IMAGE="
+        "ghcr.io/openclaw/openclaw:2026.4.14@"
+        "sha256:a65101a8aed6259c4f057076005ede737335d5f2e39b233d0d7dec1fc9e9e496"
+        in dockerfile
+    )
     assert "FROM ${OPENCLAW_BASE_IMAGE}" in dockerfile
     assert "COPY custom/extensions /opt/openclaw-template/extensions" in dockerfile
     assert "COPY custom/skills /opt/openclaw-template/skills" in dockerfile
@@ -97,6 +103,12 @@ def test_openclaw_user_template_readme_mentions_direct_build_and_run():
 def test_openclaw_user_template_makefile_provides_basic_commands():
     makefile = (TEMPLATE_ROOT / "Makefile").read_text(encoding="utf-8")
 
+    assert (
+        "OPENCLAW_BASE_IMAGE ?= "
+        "ghcr.io/openclaw/openclaw:2026.4.14@"
+        "sha256:a65101a8aed6259c4f057076005ede737335d5f2e39b233d0d7dec1fc9e9e496"
+        in makefile
+    )
     assert "build:" in makefile
     assert "run:" in makefile
     assert "push:" in makefile
@@ -177,6 +189,19 @@ def test_openclaw_user_template_advanced_example_enables_custom_plugin():
 
     assert config["plugins"]["entries"]["demo-now"]["enabled"] is True
     assert config["gateway"]["auth"]["trustedProxy"]["userHeader"] == "x-forwarded-user"
+
+
+def test_openclaw_user_template_advanced_example_pins_latest_official_base_image():
+    dockerfile = (EXAMPLE_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    makefile = (EXAMPLE_ROOT / "Makefile").read_text(encoding="utf-8")
+
+    expected = (
+        "ghcr.io/openclaw/openclaw:2026.4.14@"
+        "sha256:a65101a8aed6259c4f057076005ede737335d5f2e39b233d0d7dec1fc9e9e496"
+    )
+
+    assert expected in dockerfile
+    assert expected in makefile
 
 
 def test_openclaw_user_template_advanced_example_builds_plugin_deps():
