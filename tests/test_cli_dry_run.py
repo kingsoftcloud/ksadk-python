@@ -158,6 +158,29 @@ class _FakeOpenClawCreatingDetailClient(_FakeOpenClawDetailClient):
         return payload
 
 
+class _FakeOpenClawFailedDetailClient(_FakeOpenClawDetailClient):
+    last_repair_kwargs: Dict[str, Any] = {}
+
+    async def get_agent(self, **_kwargs):
+        payload = await super().get_agent(**_kwargs)
+        payload["basic"]["status"] = "FAILED"
+        return payload
+
+    async def run_openclaw_repair(self, agent_id: str, *, repair_action: str = "doctor-fix"):
+        self.__class__.last_repair_kwargs = {
+            "agent_id": agent_id,
+            "repair_action": repair_action,
+        }
+        return {
+            "ok": True,
+            "agent_id": agent_id,
+            "repair_action": repair_action,
+            "status": "succeeded",
+            "exit_code": 0,
+            "logs": "fixed",
+        }
+
+
 class _FakeGatewayClient:
     applied_configs: list[Dict[str, Any]] = []
     last_wait_kwargs: Dict[str, Any] = {}
@@ -559,6 +582,36 @@ def test_openclaw_gateway_doctor_continues_probe_when_status_is_creating(monkeyp
     assert '"status": "CREATING"' in result.output
     assert '"dashboard_short_link"' in result.output
     assert '"ok": true' in result.output.lower()
+
+
+def test_openclaw_gateway_doctor_fix_uses_control_plane_repair_for_failed_runtime(monkeypatch):
+    runner = CliRunner()
+    _FakeOpenClawFailedDetailClient.last_repair_kwargs = {}
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawFailedDetailClient)
+
+    result = runner.invoke(openclaw, ["gateway", "doctor", "ar-demo-1", "--fix"])
+
+    assert result.exit_code == 0, result.output
+    assert '"repair_action": "doctor-fix"' in result.output
+    assert _FakeOpenClawFailedDetailClient.last_repair_kwargs == {
+        "agent_id": "ar-demo-1",
+        "repair_action": "doctor-fix",
+    }
+
+
+def test_openclaw_repair_command_runs_doctor_fix_via_control_plane(monkeypatch):
+    runner = CliRunner()
+    _FakeOpenClawFailedDetailClient.last_repair_kwargs = {}
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawFailedDetailClient)
+
+    result = runner.invoke(openclaw, ["repair", "ar-demo-1"])
+
+    assert result.exit_code == 0, result.output
+    assert '"repair_action": "doctor-fix"' in result.output
+    assert _FakeOpenClawFailedDetailClient.last_repair_kwargs == {
+        "agent_id": "ar-demo-1",
+        "repair_action": "doctor-fix",
+    }
 
 
 def test_openclaw_channel_status_uses_gateway_snapshot(monkeypatch):

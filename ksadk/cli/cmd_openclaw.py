@@ -162,6 +162,13 @@ OPENCLAW_RESOURCE = ResourceDescriptor(
             kind="interactive",
         ),
         ResourceActionDescriptor(
+            name="repair",
+            canonical_command="agentengine openclaw repair [openclaw_ref]",
+            help_text="通过控制面执行 OpenClaw 修复动作",
+            kind="write",
+            supports_output=True,
+        ),
+        ResourceActionDescriptor(
             name="channel",
             canonical_command="agentengine openclaw channel",
             help_text="Channel 统一入口",
@@ -198,6 +205,7 @@ OPENCLAW_RESOURCE = ResourceDescriptor(
         "agentengine openclaw list",
         "agentengine openclaw status <id>",
         "agentengine openclaw gateway open <id>",
+        "agentengine openclaw repair <id>",
         "agentengine openclaw channel status <id> --probe",
         "agentengine openclaw channel connect <id> --channel weixin",
         "agentengine openclaw delete <id>",
@@ -599,6 +607,7 @@ def _build_openclaw_env_vars(
     env["OPENCLAW_DISABLE_DEVICE_AUTH"] = disable_device_auth if disable_device_auth else "true"
     for passthrough_key in [
         "OPENCLAW_CHANNEL_BOOTSTRAP_JSON",
+        "OPENCLAW_BROWSER_SSRF_POLICY_JSON",
         "OPENCLAW_WEB_FETCH_ENABLED",
         "OPENCLAW_WEB_SEARCH_PROVIDER",
         "OPENCLAW_WEB_SEARCH_BASE_URL",
@@ -1854,6 +1863,31 @@ def openclaw_gateway():
     pass
 
 
+async def _run_openclaw_repair_action(
+    agent_ref: Optional[str],
+    *,
+    region: Optional[str],
+    repair_action: str = "doctor-fix",
+) -> dict[str, Any]:
+    from ksadk.api import AgentEngineClient
+
+    resolved_region, detail = await _resolve_openclaw_detail_or_raise(agent_ref, region=region)
+    async with AgentEngineClient(region=resolved_region) as client:
+        repair_payload = await client.run_openclaw_repair(
+            str(detail.get("agent_id") or ""),
+            repair_action=repair_action,
+        )
+
+    return {
+        "ok": bool(repair_payload.get("ok", False)),
+        "agent_id": detail.get("agent_id"),
+        "name": detail.get("name"),
+        "region": resolved_region,
+        "current_status": detail.get("status"),
+        **repair_payload,
+    }
+
+
 @openclaw_gateway.command("open", context_settings=CONTEXT_SETTINGS)
 @click.argument("agent_ref", required=False)
 @region_option(default=None, envvar=None, help_text="区域 (默认优先读取 .agentengine.state)")
@@ -2007,12 +2041,24 @@ def gateway_logs(
 @openclaw_gateway.command("doctor", context_settings=CONTEXT_SETTINGS)
 @click.argument("agent_ref", required=False)
 @region_option(default=None, envvar=None, help_text="区域 (默认优先读取 .agentengine.state)")
+@click.option("--fix", "do_fix", is_flag=True, help="不走 gateway 内诊断，改为通过控制面执行 openclaw doctor --fix")
 @cli_output_option()
-def gateway_doctor(agent_ref: Optional[str], region: Optional[str], output_mode: str | None):
+def gateway_doctor(
+    agent_ref: Optional[str],
+    region: Optional[str],
+    do_fix: bool,
+    output_mode: str | None,
+):
     """检查 gateway 短链、cookie 与 websocket 链路。"""
     _ = output_mode
 
     async def _run() -> dict[str, Any]:
+        if do_fix:
+            return await _run_openclaw_repair_action(
+                agent_ref,
+                region=region,
+                repair_action="doctor-fix",
+            )
         checks: list[dict[str, Any]] = []
         resolved_region, detail = await _resolve_openclaw_detail_or_raise(agent_ref, region=region)
         checks.append(_build_gateway_instance_check(detail))
@@ -2060,9 +2106,48 @@ def gateway_doctor(agent_ref: Optional[str], region: Optional[str], output_mode:
 
     try:
         payload = asyncio.run(_run())
-        _emit_data_payload("OpenClaw Gateway Doctor", payload, subtitle=str(payload.get("name") or "-"))
+        title = "OpenClaw Gateway Doctor Fix" if do_fix else "OpenClaw Gateway Doctor"
+        _emit_data_payload(title, payload, subtitle=str(payload.get("name") or "-"))
     except Exception as e:
-        _abort_openclaw_error(e, context="gateway doctor 执行失败", argv=["openclaw", "gateway", "doctor"])
+        argv = ["openclaw", "gateway", "doctor"]
+        if do_fix:
+            argv.append("--fix")
+        _abort_openclaw_error(e, context="gateway doctor 执行失败", argv=argv)
+
+
+@openclaw.command("repair", context_settings=CONTEXT_SETTINGS)
+@click.argument("agent_ref", required=False)
+@region_option(default=None, envvar=None, help_text="区域 (默认优先读取 .agentengine.state)")
+@click.option(
+    "--action",
+    "repair_action",
+    type=click.Choice(["doctor-fix"], case_sensitive=False),
+    default="doctor-fix",
+    show_default=True,
+    help="控制面修复动作",
+)
+@cli_output_option()
+def openclaw_repair(
+    agent_ref: Optional[str],
+    region: Optional[str],
+    repair_action: str,
+    output_mode: str | None,
+):
+    """通过控制面执行 OpenClaw 修复动作。"""
+    _ = output_mode
+
+    async def _run() -> dict[str, Any]:
+        return await _run_openclaw_repair_action(
+            agent_ref,
+            region=region,
+            repair_action=str(repair_action or "doctor-fix").strip().lower(),
+        )
+
+    try:
+        payload = asyncio.run(_run())
+        _emit_data_payload("OpenClaw Repair", payload, subtitle=str(payload.get("name") or "-"))
+    except Exception as e:
+        _abort_openclaw_error(e, context="OpenClaw repair 执行失败", argv=["openclaw", "repair"])
 
 
 @openclaw.group(

@@ -1262,6 +1262,48 @@ const deepMergeObjects = (base, overlay) => {
   }
   return result;
 };
+const normalizeBrowserSsrfPolicy = (rawPolicy) => {
+  if (!isPlainObject(rawPolicy)) {
+    return null;
+  }
+  const allowPrivateNetwork = rawPolicy.allowPrivateNetwork;
+  const dangerouslyAllowPrivateNetwork = rawPolicy.dangerouslyAllowPrivateNetwork;
+  const allowedHostnames = uniqueStrings(
+    Array.isArray(rawPolicy.allowedHostnames) ? rawPolicy.allowedHostnames : [],
+  );
+  const hostnameAllowlist = uniqueStrings(
+    Array.isArray(rawPolicy.hostnameAllowlist) ? rawPolicy.hostnameAllowlist : [],
+  );
+  const hasExplicitPrivateSetting =
+    allowPrivateNetwork !== undefined || dangerouslyAllowPrivateNetwork !== undefined;
+  const resolvedAllowPrivateNetwork =
+    dangerouslyAllowPrivateNetwork !== false && allowPrivateNetwork !== false;
+
+  if (
+    resolvedAllowPrivateNetwork &&
+    !hasExplicitPrivateSetting &&
+    allowedHostnames.length === 0 &&
+    hostnameAllowlist.length === 0
+  ) {
+    return { dangerouslyAllowPrivateNetwork: true };
+  }
+
+  const policy = {};
+  if (
+    resolvedAllowPrivateNetwork ||
+    dangerouslyAllowPrivateNetwork === false ||
+    allowPrivateNetwork === false
+  ) {
+    policy.dangerouslyAllowPrivateNetwork = resolvedAllowPrivateNetwork;
+  }
+  if (allowedHostnames.length > 0) {
+    policy.allowedHostnames = allowedHostnames;
+  }
+  if (hostnameAllowlist.length > 0) {
+    policy.hostnameAllowlist = hostnameAllowlist;
+  }
+  return policy;
+};
 const AGENTSPACE_DEFAULT_KEY_SOURCE = 'openclaw_agentspace';
 const OPENCLAW_CHANNEL_SPECS = {
   weixin: {
@@ -1368,6 +1410,20 @@ const applyChannelBootstrapDefaults = (channelName, spec, channelCfg) => {
     if (!Array.isArray(channelCfg.allowFrom) || channelCfg.allowFrom.length === 0) {
       channelCfg.allowFrom = ['*'];
     }
+  }
+};
+const normalizePersistedChannelConfig = (cfg) => {
+  const feishuCfg = isPlainObject(cfg?.channels?.feishu) ? cfg.channels.feishu : null;
+  if (feishuCfg && String(feishuCfg.dmPolicy || '').trim() === 'open') {
+    const allowFrom = uniqueStrings(
+      (Array.isArray(feishuCfg.allowFrom) ? feishuCfg.allowFrom : [])
+        .map((item) => String(item || '').trim())
+        .filter(Boolean),
+    );
+    if (!allowFrom.includes('*')) {
+      allowFrom.push('*');
+    }
+    feishuCfg.allowFrom = allowFrom;
   }
 };
 const applyChannelBootstrapFromEnv = () => {
@@ -1710,6 +1766,32 @@ const browserExecutablePath = (
 if (browserExecutablePath) {
   cfg.browser.executablePath = browserExecutablePath;
 }
+const explicitBrowserSsrfPolicyRaw = String(process.env.OPENCLAW_BROWSER_SSRF_POLICY_JSON ?? '').trim();
+if (explicitBrowserSsrfPolicyRaw !== '') {
+  let parsedPolicy;
+  try {
+    parsedPolicy = JSON.parse(explicitBrowserSsrfPolicyRaw);
+  } catch (error) {
+    throw new Error(`OPENCLAW_BROWSER_SSRF_POLICY_JSON is not valid JSON: ${error.message}`);
+  }
+  const normalizedPolicy = normalizeBrowserSsrfPolicy(parsedPolicy);
+  if (!normalizedPolicy) {
+    throw new Error('OPENCLAW_BROWSER_SSRF_POLICY_JSON must be a JSON object');
+  }
+  cfg.browser.ssrfPolicy = normalizedPolicy;
+} else if (cfg.browser.ssrfPolicy !== undefined) {
+  const normalizedPolicy = normalizeBrowserSsrfPolicy(cfg.browser.ssrfPolicy);
+  if (normalizedPolicy) {
+    cfg.browser.ssrfPolicy = normalizedPolicy;
+  } else {
+    delete cfg.browser.ssrfPolicy;
+  }
+} else if (!parseBool(process.env.OPENCLAW_EXEC_STRICT_MODE, false)) {
+  // Align our managed runtime with current upstream browser defaults:
+  // trusted-network navigation is enabled unless the deployment opted into
+  // strict exec security, or the operator/user explicitly configured browser SSRF policy.
+  cfg.browser.ssrfPolicy = { dangerouslyAllowPrivateNetwork: true };
+}
 
 cfg.models = cfg.models || {};
 cfg.models.mode = cfg.models.mode || 'merge';
@@ -1744,6 +1826,7 @@ for (const bundledPlugin of bundledPlugins) {
   }
 }
 applyChannelBootstrapFromEnv();
+normalizePersistedChannelConfig(cfg);
 const providerId = firstNonBlank(process.env.OPENCLAW_MODEL_PROVIDER_ID, 'ksyun');
 const defaultModelApiKeyFilePath = path.join(resolvedStateDir || '/root/.openclaw', 'secrets.json');
 const providerBaseUrl = firstNonBlank(

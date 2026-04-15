@@ -828,6 +828,21 @@ class AgentEngineClient:
             params["Keyword"] = keyword
         return self._action("GetAgentLogs", params)
 
+    async def run_openclaw_repair(
+        self,
+        agent_id: str,
+        *,
+        repair_action: str = "doctor-fix",
+    ) -> Dict[str, Any]:
+        """在控制面触发 OpenClaw runtime 修复动作。"""
+        return self._action(
+            "RunOpenClawRepair",
+            {
+                "AgentId": agent_id,
+                "RepairAction": repair_action,
+            },
+        )
+
     async def delete_agent(self, agent_id: str) -> bool:
         """删除 Agent"""
         self._action("DeleteAgent", {"AgentId": agent_id})

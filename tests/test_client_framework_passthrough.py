@@ -156,3 +156,28 @@ async def test_update_agent_forwards_ui_config(monkeypatch):
         "Path": "/chat",
         "Url": "https://ui.example.com/custom-ui/",
     }
+
+
+@pytest.mark.asyncio
+async def test_run_openclaw_repair_forwards_control_plane_action(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    calls = []
+
+    def fake_action(action: str, params: dict):
+        calls.append((action, params.copy()))
+        return {"ok": True, "repair_action": "doctor-fix"}
+
+    monkeypatch.setattr(client, "_action", fake_action)
+
+    result = await client.run_openclaw_repair("ar-openclaw-1")
+
+    assert result == {"ok": True, "repair_action": "doctor-fix"}
+    assert calls == [
+        (
+            "RunOpenClawRepair",
+            {
+                "AgentId": "ar-openclaw-1",
+                "RepairAction": "doctor-fix",
+            },
+        )
+    ]
