@@ -2,7 +2,7 @@
 
 本文档描述 `ksadk-python` 当前实现形态，口径固定为“最新代码对应的当前设计”，不承担跨仓路线图职责。
 
-当前实现基于 `ksadk-python` 最新代码状态整理，覆盖到 2026-04-06 前的近期变更，包括 hosted-first UI metadata、mobile chat UI、quick access refresh、KS3 upload fallback 和依赖缓存复用优化。
+当前实现基于 `ksadk-python` 最新代码状态整理，覆盖到 2026-04-14 前的近期变更，包括 hosted-first UI metadata、Hermes 原生远程 TUI、quick access refresh、KS3 upload fallback 和依赖缓存复用优化。
 
 ## 1. 产品定位与边界
 
@@ -15,7 +15,7 @@
 - A2A `serve/card`
 - sandbox / approval / tool safety
 - 面向开发者的 CLI / SDK 接口
-- 本地 Web UI 与云端 Dashboard 的运行时消费侧适配
+- 本地 Web UI 与云端 Dashboard / framework-native UI 的运行时消费侧适配
 
 `ksadk-python` 不负责：
 
@@ -41,20 +41,23 @@
 
 本地开发态以项目目录为中心：
 
-- `FrameworkDetector` 识别 ADK、LangGraph、LangChain、DeepAgents 项目
+- `FrameworkDetector` 识别 ADK、LangGraph、LangChain、DeepAgents、OpenClaw、Hermes 项目模板
 - `UnifiedRunner` 根据检测结果分发到具体 runner
 - `agentengine run` 负责本地交互式运行
 - `agentengine web` 启动统一本地 Web UI
 - 本地 UI 会话默认落在项目目录下的 `.agentengine/ui`
 
-`agentengine web` 当前统一走 ksadk 内建 Web UI，而不是再按框架分叉到 `Chainlit` / `adk-web`。命令入口见 [ksadk/cli/cmd_web.py](../ksadk/cli/cmd_web.py)。
+`agentengine web` 当前统一走 ksadk 内建 Web UI，而不是再按框架分叉到旧的框架专属本地 Web UI。命令入口见 [ksadk/cli/cmd_web.py](../ksadk/cli/cmd_web.py)。
+
+Hermes 在本地项目态属于 container-first 模板：`init -f hermes` 会生成参考 runtime 资产，但实际交互主线是云端 `agentengine hermes ...` 生命周期命令与远程 TUI，而不是本地 runner。
 
 ### 2.2 托管调用态
 
 云端托管态下，`ksadk-python` 主要承担“运行与消费”职责，而不是“创建与治理”职责：
 
 - `build/deploy/launch` 负责把本地项目打包成 `Code` 或 `Container` 制品，并调用控制面 API
-- 远端 Agent / MCP / OpenClaw 的创建、更新、删除和 Dashboard 链接生成由 `AgentEngine Server` 承担
+- `agentengine hermes ...` 负责共享 Hermes runtime 镜像的生命周期管理、原生终端 attach 与受限子命令透传
+- 远端 Agent / MCP / OpenClaw / Hermes 的创建、更新、删除和 Dashboard 链接生成由 `AgentEngine Server` 承担
 - `ksadk-python` 消费这些控制面能力，并把本地项目状态持久化到 `.agentengine.state`
 
 因此，仓库里的部署逻辑更接近“面向开发者的制品构建与控制面客户端”，而不是独立的托管平台。
@@ -83,8 +86,16 @@
 - LangGraph
 - LangChain
 - DeepAgents
+- OpenClaw
+- Hermes
 
 `UnifiedRunner.create(...)` 会根据检测结果分发到具体 runner。DeepAgents 当前单独有 `DeepAgentsRunner`，但实现上复用 LangGraph 路径，因此框架扩展保持了“检测层 + runner 分发层 + CLI 展示层”一致接入。
+
+Hermes 是一个特例：它被识别为正式 framework，并参与项目模板、状态识别、Dashboard/Open 路径和 `invoke` transport 决策，但不复用本地 runner。它的交互主线是：
+
+- `agentengine invoke <hermes-agent>` -> 原生远程 TUI websocket
+- `agentengine hermes open <hermes-agent> --chat` -> hosted chat 页面
+- `agentengine hermes exec <agent> -- <readonly-subcommand>` -> 受限运维透传
 
 ### 3.2 Conversation Runtime 与 Session Continuity
 
@@ -178,11 +189,18 @@ ADK runner 默认会尝试注入：
 - 默认通过 `CreateDashboardAccessLink` 生成短链接
 - 支持 `--share`、`--no-open`、`--direct`
 - 支持从 `.agentengine.state` 自动解析 agent/openclaw 引用
+- Hermes `agentengine hermes open` 默认打开管理 UI `/`，`--chat` 打开统一 hosted chat `/chat`
 
 当前 UI 相关实现体现出两点：
 
 - `ksadk-python` 已经承担本地 UI 与 hosted UI runtime 消费侧的收口
 - hosted bootstrap / session façade / capability 协商依赖 `agentengine-server` 提供
+
+对 Hermes 而言，云端 UI/终端面被拆成三类 contract：
+
+- `/`：Hermes 管理 UI
+- `/chat`：统一 hosted chat
+- `/_ksadk/terminal/ws`：原生远程 TUI 与受限 `hermes exec`
 
 ### 3.7 Build / Deploy / Launch 与 Artifact 路径
 
@@ -191,6 +209,7 @@ CLI 主线包括：
 - `build`
 - `deploy`
 - `launch`
+- `hermes deploy/status/open/exec/delete`
 
 当前实现支持：
 
@@ -200,6 +219,14 @@ CLI 主线包括：
 - `dry-run`
 - 机器可读 JSON 输出
 
+Hermes 生命周期则走另一条主线：
+
+- 默认共享镜像：`hub.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.13-ks8`
+- 不要求用户本地 build/push
+- deploy 时把模型 env 注入到共享 runtime
+- 若配置的是 `kspmas.ksyun.com` 公网模型地址，deploy 会自动改写成 `kspmas-internal.sdns.ksyun.com` 供云端 Pod 使用
+- runtime 同时聚合 `/`、`/v1/*`、`/_ksadk/terminal/ws` 与 `/health`
+
 与“平台生命周期治理”不同，仓库内实现聚焦于：
 
 - 检测项目
@@ -207,6 +234,8 @@ CLI 主线包括：
 - 生成并上传制品
 - 调控制面 API 发起部署
 - 把状态回填到本地 `.agentengine.state`
+
+对 Hermes 来说，这里的“制品”不是用户本地 build 结果，而是平台共享 runtime 镜像引用和对应的环境变量 / UI metadata。
 
 近期行为变化包括：
 

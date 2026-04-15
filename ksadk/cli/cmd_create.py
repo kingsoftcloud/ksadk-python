@@ -4,6 +4,7 @@ ksadk create - 创建项目模板
 
 import click
 from pathlib import Path
+import shutil
 import questionary
 from ksadk.cli.cmd_config import custom_style
 from ksadk.cli.ui import (
@@ -257,7 +258,7 @@ def _load_framework_from_agentengine_yaml(directory: Path) -> str | None:
     if not isinstance(framework, str):
         return None
     framework = framework.strip().lower()
-    if framework in {"adk", "langchain", "langgraph", "deepagents", "openclaw"}:
+    if framework in {"adk", "langchain", "langgraph", "deepagents", "openclaw", "hermes"}:
         return framework
     return None
 
@@ -903,9 +904,397 @@ except Exception as e:
     print_info(f"cd {project_name} && agentengine run -i .")
 
 
+def _write_hermes_project_template(project_path: Path, project_name: str, package_name: str) -> None:
+    """生成 Hermes container-first 项目骨架。"""
+    repo_template_root = Path(__file__).resolve().parents[2] / "deploy" / "hermes"
+    if repo_template_root.exists():
+        replacements = {
+            "{{PROJECT_NAME}}": project_name,
+            "{{PACKAGE_NAME}}": package_name,
+        }
+        for source in repo_template_root.rglob("*"):
+            relative = source.relative_to(repo_template_root)
+            if source.is_dir():
+                (project_path / relative).mkdir(parents=True, exist_ok=True)
+                continue
+            destination_relative = relative
+            if source.name.endswith(".template"):
+                destination_relative = relative.with_name(source.name[:-9])
+                content = source.read_text(encoding="utf-8")
+                for key, value in replacements.items():
+                    content = content.replace(key, value)
+                destination = project_path / destination_relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_text(content, encoding="utf-8-sig")
+                continue
+            destination = project_path / destination_relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+        entrypoint = project_path / "entrypoint.sh"
+        if entrypoint.exists():
+            entrypoint.chmod(0o755)
+        return
+
+    runtime_dir = project_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+
+    (project_path / "agentengine.yaml").write_text(f"""# AgentEngine Hermes 项目配置
+name: {package_name}
+version: "1.0.0"
+
+framework: hermes
+artifact_type: Container
+
+ui_profile: hermes
+ui_path: /
+
+deploy:
+  resources:
+    cpu: "2"
+    memory: "4Gi"
+  scaling:
+    min_replicas: 1
+    max_replicas: 1
+    concurrency: 1000
+""", encoding="utf-8-sig")
+
+    (project_path / "Dockerfile").write_text("""FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 \\
+    PYTHONDONTWRITEBYTECODE=1 \\
+    PIP_NO_CACHE_DIR=1 \\
+    PORT=8080 \\
+    API_SERVER_HOST=127.0.0.1 \\
+    API_SERVER_PORT=8642 \\
+    HERMES_DASHBOARD_HOST=127.0.0.1 \\
+    HERMES_DASHBOARD_PORT=9119
+
+WORKDIR /app
+
+RUN apt-get update \\
+    && apt-get install -y --no-install-recommends bash curl tini \\
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir \\
+    "fastapi>=0.100" \\
+    "uvicorn[standard]>=0.23" \\
+    "httpx>=0.24" \\
+    "pyyaml>=6.0" \\
+    "python-dotenv>=1.0" \\
+    "hermes-agent==0.9.0"
+
+COPY runtime ./runtime
+COPY entrypoint.sh ./entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+EXPOSE 8080
+
+ENTRYPOINT ["tini", "--"]
+CMD ["/app/entrypoint.sh"]
+""", encoding="utf-8")
+
+    (project_path / "entrypoint.sh").write_text("""#!/usr/bin/env bash
+set -euo pipefail
+
+export HOME="${HOME:-/home/agent}"
+export PORT="${PORT:-8080}"
+export API_SERVER_HOST="${API_SERVER_HOST:-127.0.0.1}"
+export API_SERVER_PORT="${API_SERVER_PORT:-8642}"
+export HERMES_DASHBOARD_HOST="${HERMES_DASHBOARD_HOST:-127.0.0.1}"
+export HERMES_DASHBOARD_PORT="${HERMES_DASHBOARD_PORT:-9119}"
+export API_SERVER_ENABLED="${API_SERVER_ENABLED:-true}"
+
+mkdir -p "${HOME}/.hermes"
+
+cat > "${HOME}/.hermes/.env" <<EOF
+OPENAI_API_KEY=${OPENAI_API_KEY:-}
+OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
+OPENAI_MODEL_NAME=${OPENAI_MODEL_NAME:-}
+API_SERVER_ENABLED=${API_SERVER_ENABLED}
+API_SERVER_KEY=${API_SERVER_KEY:-}
+API_SERVER_HOST=${API_SERVER_HOST}
+API_SERVER_PORT=${API_SERVER_PORT}
+EOF
+
+cat > "${HOME}/.hermes/config.yaml" <<EOF
+model:
+  provider: custom
+  default: "${OPENAI_MODEL_NAME:-}"
+  base_url: "${OPENAI_BASE_URL:-}"
+api_server:
+  enabled: true
+  host: "${API_SERVER_HOST}"
+  port: ${API_SERVER_PORT}
+EOF
+
+hermes gateway run --replace &
+HERMES_API_PID=$!
+
+hermes dashboard --host "${HERMES_DASHBOARD_HOST}" --port "${HERMES_DASHBOARD_PORT}" --no-open &
+HERMES_DASHBOARD_PID=$!
+
+cleanup() {
+  kill "${HERMES_API_PID}" "${HERMES_DASHBOARD_PID}" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+exec uvicorn runtime.app:app --host 0.0.0.0 --port "${PORT}"
+""", encoding="utf-8")
+
+    (runtime_dir / "__init__.py").write_text("", encoding="utf-8")
+    (runtime_dir / "app.py").write_text("""from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import os
+import pty
+import select
+import signal
+import termios
+from typing import Iterable
+
+import httpx
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import Response
+from starlette.websockets import WebSocketState
+
+
+TERMINAL_SUBPROTOCOL = "ks-terminal.v1"
+SHELL_METACHARS = set("|&;<>()$`\\\\\\n\\r")
+SINGLE_READONLY = {"status", "doctor", "version", "insights"}
+NESTED_READONLY = {
+    "sessions": {"list": (2, 2), "show": (3, 3), "export": (3, 3)},
+    "config": {"show": (2, 2), "check": (2, 2), "path": (2, 2), "env-path": (2, 2)},
+    "skills": {"list": (2, 2), "audit": (2, 2), "check": (2, 2)},
+    "tools": {"list": (2, 2)},
+    "cron": {"list": (2, 2), "status": (2, 2)},
+    "gateway": {"status": (2, 2)},
+}
+
+app = FastAPI()
+
+
+def _api_base() -> str:
+    return f"http://{os.getenv('API_SERVER_HOST', '127.0.0.1')}:{os.getenv('API_SERVER_PORT', '8642')}"
+
+
+def _dashboard_base() -> str:
+    return f"http://{os.getenv('HERMES_DASHBOARD_HOST', '127.0.0.1')}:{os.getenv('HERMES_DASHBOARD_PORT', '9119')}"
+
+
+def _validate_exec_argv(argv: Iterable[str]) -> list[str]:
+    normalized = [str(item).strip() for item in argv]
+    if not normalized:
+        raise ValueError("missing argv")
+    for item in normalized:
+        if not item or item.startswith("-") or any(char in SHELL_METACHARS for char in item):
+            raise ValueError(f"unsafe argv: {item}")
+    if normalized[0] in SINGLE_READONLY:
+        if len(normalized) != 1:
+            raise ValueError("unsupported argv")
+        return normalized
+    nested = NESTED_READONLY.get(normalized[0])
+    if not nested or len(normalized) < 2:
+        raise ValueError("unsupported argv")
+    bounds = nested.get(normalized[1])
+    if not bounds:
+        raise ValueError("unsupported argv")
+    if not (bounds[0] <= len(normalized) <= bounds[1]):
+        raise ValueError("unsupported argv")
+    return normalized
+
+
+async def _proxy_http(request: Request, base_url: str, path: str) -> Response:
+    target = f"{base_url}/{path.lstrip('/')}"
+    if request.url.query:
+        target = f"{target}?{request.url.query}"
+    headers = {
+        key: value
+        for key, value in request.headers.items()
+        if key.lower() not in {"host", "content-length"}
+    }
+    async with httpx.AsyncClient(timeout=None) as client:
+        upstream = await client.request(
+            request.method,
+            target,
+            headers=headers,
+            content=await request.body(),
+        )
+    response_headers = {
+        key: value
+        for key, value in upstream.headers.items()
+        if key.lower() not in {"content-encoding", "transfer-encoding", "connection"}
+    }
+    return Response(upstream.content, status_code=upstream.status_code, headers=response_headers)
+
+
+@app.get("/health")
+async def health() -> dict:
+    return {"ok": True}
+
+
+@app.api_route("/v1/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+async def proxy_api(path: str, request: Request) -> Response:
+    return await _proxy_http(request, _api_base(), f"v1/{path}")
+
+
+def _set_winsize(fd: int, rows: int, cols: int) -> None:
+    termios.tcsetwinsize(fd, (int(rows or 24), int(cols or 80)))
+
+
+async def _pty_reader(ws: WebSocket, fd: int) -> None:
+    loop = asyncio.get_running_loop()
+    while True:
+        await loop.run_in_executor(None, lambda: select.select([fd], [], [], None))
+        data = os.read(fd, 4096)
+        if not data:
+            return
+        await ws.send_bytes(data)
+
+
+async def _wait_process(pid: int) -> int:
+    loop = asyncio.get_running_loop()
+    _, status = await loop.run_in_executor(None, os.waitpid, pid, 0)
+    if os.WIFEXITED(status):
+        return os.WEXITSTATUS(status)
+    if os.WIFSIGNALED(status):
+        return 128 + os.WTERMSIG(status)
+    return status
+
+
+@app.websocket("/_ksadk/terminal/ws")
+async def terminal_ws(ws: WebSocket) -> None:
+    if TERMINAL_SUBPROTOCOL not in (ws.headers.get("sec-websocket-protocol") or ""):
+        await ws.close(code=4400, reason="missing ks-terminal.v1 subprotocol")
+        return
+    await ws.accept(subprotocol=TERMINAL_SUBPROTOCOL)
+    pid = None
+    fd = None
+    receive_task = None
+    reader_task = None
+    wait_task = None
+    try:
+        first = await ws.receive_text()
+        payload = json.loads(first)
+        if payload.get("type") != "start":
+            raise ValueError("first frame must be start")
+        mode = payload.get("mode")
+        argv = payload.get("argv") or []
+        if mode == "tui":
+            command = ["hermes", "chat"]
+        elif mode == "exec":
+            command = ["hermes", *_validate_exec_argv(argv)]
+        else:
+            raise ValueError("unsupported mode")
+
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.execvp(command[0], command)
+
+        _set_winsize(fd, int(payload.get("rows") or 24), int(payload.get("cols") or 80))
+        await ws.send_text(json.dumps({"type": "ready"}))
+        reader_task = asyncio.create_task(_pty_reader(ws, fd))
+        wait_task = asyncio.create_task(_wait_process(pid))
+        receive_task = asyncio.create_task(ws.receive())
+
+        while True:
+            done, _pending = await asyncio.wait({wait_task, receive_task}, return_when=asyncio.FIRST_COMPLETED)
+            if wait_task in done:
+                if reader_task:
+                    reader_task.cancel()
+                if receive_task:
+                    receive_task.cancel()
+                code = wait_task.result()
+                if ws.client_state == WebSocketState.CONNECTED:
+                    await ws.send_text(json.dumps({"type": "exit", "code": code}))
+                return
+
+            message = receive_task.result()
+            receive_task = asyncio.create_task(ws.receive())
+            if message.get("bytes") is not None:
+                os.write(fd, message["bytes"])
+                continue
+            text = message.get("text")
+            if not text:
+                continue
+            control = json.loads(text)
+            if control.get("type") == "resize":
+                _set_winsize(fd, int(control.get("rows") or 24), int(control.get("cols") or 80))
+            elif control.get("type") == "signal":
+                sig = signal.SIGINT if control.get("signal") == "SIGINT" else signal.SIGTERM
+                os.kill(pid, sig)
+            elif control.get("type") == "stdin_eof":
+                os.close(fd)
+                fd = None
+    except WebSocketDisconnect:
+        return
+    except Exception as exc:
+        if ws.client_state == WebSocketState.CONNECTED:
+            await ws.send_text(json.dumps({"type": "error", "message": str(exc)}))
+            await ws.close()
+    finally:
+        for task in (receive_task, reader_task):
+            if task and not task.done():
+                task.cancel()
+        if pid is not None and (wait_task is None or not wait_task.done()):
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(pid, signal.SIGTERM)
+        if wait_task and not wait_task.done():
+            wait_task.cancel()
+        if fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+
+
+@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+async def proxy_dashboard(path: str, request: Request) -> Response:
+    return await _proxy_http(request, _dashboard_base(), path)
+""", encoding="utf-8")
+
+    (project_path / "README.md").write_text(f"""# {project_name}
+
+Hermes AgentEngine container-first 项目。
+
+## 快速开始
+
+```bash
+cd {project_name}
+
+# 1. 编辑 .env，填写模型配置
+vim .env
+
+# 2. 部署平台预置 Hermes runtime 镜像
+agentengine hermes deploy
+
+# 3. 打开 Hermes 管理 UI
+agentengine hermes open
+
+# 4. 进入 pod 内 Hermes 原生 TUI
+agentengine invoke
+
+# 5. 使用统一 hosted chat
+agentengine hermes open --chat
+
+# 6. 受限只读运维子命令
+agentengine hermes exec <agent> -- status
+
+# 7. Pairing 审批透传
+agentengine hermes pairing <agent> -- list
+```
+
+## Runtime Contract
+
+- `/` 反代到 Hermes dashboard 管理 UI
+- `/chat` 由 AgentEngine hosted UI/router 处理
+- `/v1/*` 反代到 Hermes OpenAI-compatible API server
+- `/_ksadk/terminal/ws` 提供 `ks-terminal.v1` 原生 TUI/exec/pairing websocket
+""", encoding="utf-8-sig")
+
+
 @click.command(context_settings=dict(help_option_names=['-h', '--help']))
 @click.argument('project_name', required=False)
-@click.option('--framework', '-f', type=click.Choice(['adk', 'langchain', 'langgraph', 'deepagents', 'openclaw']),
+@click.option('--framework', '-f', type=click.Choice(['adk', 'langchain', 'langgraph', 'deepagents', 'openclaw', 'hermes']),
               default='langgraph', help='框架类型 (default: langgraph)')
 @click.option('--from-agent', 'from_agent_path', type=click.Path(exists=True), 
               help='包装现有 Agent 文件或目录')
@@ -1011,7 +1400,7 @@ def create(project_name: str, framework: str, from_agent_path: str):
             
         framework = questionary.select(
             "请选择开发框架:",
-            choices=['langgraph', 'langchain', 'deepagents', 'adk', 'openclaw'],
+            choices=['langgraph', 'langchain', 'deepagents', 'adk', 'openclaw', 'hermes'],
             default='langgraph',
             style=custom_style
         ).ask()
@@ -1031,7 +1420,7 @@ def create(project_name: str, framework: str, from_agent_path: str):
     
     package_name = project_path.name.replace('-', '_')
     project_path.mkdir(parents=True)
-    if framework != "openclaw":
+    if framework not in {"openclaw", "hermes"}:
         (project_path / package_name).mkdir(parents=True)
     
     # 检测全局配置
@@ -1082,6 +1471,44 @@ KSYUN_REGION={ks_region}
             env_content += f"OPENAI_MODEL_NAME={model_name}\n"
         else:
             env_content += "# OPENAI_MODEL_NAME=glm-5.1\n"
+    elif framework == "hermes":
+        env_content = f"""# ======================
+# Hermes 标准部署最小配置
+# ======================
+KSYUN_ACCESS_KEY={ks_ak}
+KSYUN_SECRET_KEY={ks_sk}
+KSYUN_REGION={ks_region}
+"""
+        if ks_account:
+            env_content += f"KSYUN_ACCOUNT_ID={ks_account}\n"
+        else:
+            env_content += "# KSYUN_ACCOUNT_ID=your-account-id\n"
+
+        env_content += f"""
+OPENAI_API_KEY={api_key}
+"""
+        if base_url:
+            env_content += f"OPENAI_BASE_URL={base_url}\n"
+        else:
+            env_content += "# OPENAI_BASE_URL=http://kspmas.ksyun.com/v1\n"
+
+        if model_name:
+            env_content += f"OPENAI_MODEL_NAME={model_name}\n"
+        else:
+            env_content += "# OPENAI_MODEL_NAME=glm-5.1\n"
+
+        env_content += """
+# Hermes runtime
+API_SERVER_ENABLED=true
+API_SERVER_HOST=127.0.0.1
+API_SERVER_PORT=8642
+HERMES_DASHBOARD_HOST=127.0.0.1
+HERMES_DASHBOARD_PORT=9119
+PORT=8080
+# HERMES_CONTEXT_LENGTH=200000
+# HERMES_FALLBACK_MODEL=kimi-k2.5
+# HERMES_IMAGE=hub.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.13-ks8
+"""
     else:
         langfuse_public = global_env.get("LANGFUSE_PUBLIC_KEY", "")
         langfuse_secret = global_env.get("LANGFUSE_SECRET_KEY", "")
@@ -1155,6 +1582,14 @@ OPENAI_API_KEY={api_key}
         print_info("快速开始 (复制并执行):")
         print_info(f"cd {project_name} && agentengine openclaw deploy")
         print_info("部署前如需覆盖模型/网关参数，可先编辑 .env")
+        return
+    if framework == "hermes":
+        _write_hermes_project_template(project_path, project_name, package_name)
+        print_success("项目创建成功")
+        print_rule("快速开始")
+        print_info("快速开始 (复制并执行):")
+        print_info(f"cd {project_name} && agentengine hermes deploy")
+        print_info("部署前如需覆盖模型/运行时参数，可先编辑 .env")
         return
     
     # agentengine.yaml - Agent 配置

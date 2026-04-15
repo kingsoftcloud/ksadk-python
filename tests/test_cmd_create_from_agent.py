@@ -1,8 +1,10 @@
 from pathlib import Path
+import py_compile
 
 from click.testing import CliRunner
 
 from ksadk.cli import cmd_create
+from ksadk.cli.cmd_deploy import _resolve_artifact_type_input
 
 
 def test_find_entry_file_from_agentengine_yaml(tmp_path: Path):
@@ -101,3 +103,53 @@ def test_create_openclaw_only_generates_env_file(tmp_path: Path, monkeypatch):
     assert "OPENAI_BASE_URL=https://model.example.com/v1" in env_text
     assert "OPENAI_MODEL_NAME=glm-5.1" in env_text
     assert "LANGFUSE_" not in env_text
+
+
+def test_create_hermes_generates_container_first_template(tmp_path: Path, monkeypatch):
+    runner = CliRunner()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("ksadk.configs.global_config.global_config_exists", lambda: True)
+    monkeypatch.setattr(
+        "ksadk.configs.global_config.get_env_from_global_config",
+        lambda: {
+            "OPENAI_API_KEY": "sk-hermes",
+            "OPENAI_BASE_URL": "https://model.example.com/v1",
+            "OPENAI_MODEL_NAME": "glm-hermes",
+            "KSYUN_ACCESS_KEY": "ak-demo",
+            "KSYUN_SECRET_KEY": "sk-demo",
+            "KSYUN_REGION": "cn-beijing-6",
+        },
+    )
+
+    result = runner.invoke(cmd_create.create, ["demo-hermes", "-f", "hermes"])
+
+    assert result.exit_code == 0, result.output
+    project_dir = tmp_path / "demo-hermes"
+    assert (project_dir / ".env").exists()
+    assert (project_dir / ".env.example").exists()
+    assert (project_dir / "agentengine.yaml").exists()
+    assert (project_dir / "Dockerfile").exists()
+    assert (project_dir / "entrypoint.sh").exists()
+    assert (project_dir / "runtime" / "app.py").exists()
+    assert (project_dir / "README.md").exists()
+    assert not (project_dir / "demo_hermes" / "agent.py").exists()
+
+    config_text = (project_dir / "agentengine.yaml").read_text(encoding="utf-8-sig")
+    assert "framework: hermes" in config_text
+    assert "artifact_type: Container" in config_text
+    assert "ui_profile: hermes" in config_text
+
+    readme_text = (project_dir / "README.md").read_text(encoding="utf-8-sig")
+    assert "agentengine hermes deploy" in readme_text
+    assert "agentengine launch . --artifact-type Container" not in readme_text
+
+    env_text = (project_dir / ".env").read_text(encoding="utf-8-sig")
+    assert "OPENAI_API_KEY=sk-hermes" in env_text
+    assert "OPENAI_BASE_URL=https://model.example.com/v1" in env_text
+    assert "OPENAI_MODEL_NAME=glm-hermes" in env_text
+    py_compile.compile(str(project_dir / "runtime" / "app.py"), doraise=True)
+
+
+def test_deploy_artifact_type_defaults_to_config_for_hermes_template():
+    assert _resolve_artifact_type_input({"artifact_type": "Container"}, None) == "Container"
+    assert _resolve_artifact_type_input({"artifact_type": "Container"}, "Code") == "Code"

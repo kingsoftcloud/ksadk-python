@@ -86,6 +86,13 @@ def status_agent(
 @click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
 @click.option("--local", "-l", is_flag=True, help="连接本地服务 (http://localhost:8080)")
 @click.option("--insecure", "-k", is_flag=True, help="跳过 SSL 证书验证 (类似 curl -k)")
+@click.option(
+    "--transport",
+    type=click.Choice(["auto", "chat", "native"], case_sensitive=False),
+    default="auto",
+    show_default=True,
+    help="交互传输层: auto(自动), chat(HTTP /v1/chat/completions), native(Hermes 远端终端)",
+)
 @click.option("--model", help="指定模型名称")
 @click.option("--show-thinking", is_flag=True, help="显示模型思考过程")
 @cli_output_option()
@@ -99,6 +106,7 @@ def invoke_agent(
     region: str,
     local: bool,
     insecure: bool,
+    transport: str,
     model: str | None,
     show_thinking: bool,
     output_mode: str | None,
@@ -123,6 +131,7 @@ def invoke_agent(
         region=region,
         local=local,
         insecure=insecure,
+        transport=transport,
         model=model,
         show_thinking=show_thinking,
         compatibility_alias=False,

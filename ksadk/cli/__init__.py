@@ -65,6 +65,7 @@ ROOT_HELP_COMMANDS = {
     "dashboard",
     "deploy",
     "init",
+    "hermes",
     "launch",
     "mcp",
     "openclaw",
@@ -81,6 +82,7 @@ SHORT_HELP_MAP = {
     "build": "构建部署制品",
     "dashboard": "打开云端 Agent Dashboard",
     "deploy": "部署到云端",
+    "hermes": "Hermes Agent 资源管理",
     "init": "创建新项目",
     "launch": "一键构建+部署",
     "mcp": "MCP 资源管理",
@@ -123,6 +125,10 @@ class ColoredHelpGroup(click.Group):
 
         # 描述
         formatter.write(click.style("  支持 ", fg="white"))
+        formatter.write(click.style("Hermes", fg="yellow"))
+        formatter.write(click.style(" / ", fg="white"))
+        formatter.write(click.style("OpenClaw", fg="yellow"))
+        formatter.write(click.style(" / ", fg="white"))
         formatter.write(click.style("DeepAgents", fg="yellow"))
         formatter.write(click.style(" / ", fg="white"))
         formatter.write(click.style("LangGraph", fg="yellow"))
@@ -153,6 +159,8 @@ class ColoredHelpGroup(click.Group):
         formatter.write(click.style("Agent 资源管理\n\n", fg="white"))
         formatter.write(click.style("      agentengine dashboard        ", fg="cyan"))
         formatter.write(click.style("打开云端 Agent Dashboard\n\n", fg="white"))
+        formatter.write(click.style("      agentengine hermes           ", fg="cyan"))
+        formatter.write(click.style("Hermes Agent 资源管理\n\n", fg="white"))
         formatter.write(click.style("      agentengine openclaw         ", fg="cyan"))
         formatter.write(click.style("OpenClaw 资源管理\n\n", fg="white"))
 
@@ -189,7 +197,7 @@ class ColoredHelpGroup(click.Group):
         formatter.write_paragraph()
         formatter.write_text("AgentEngine CLI")
         formatter.write_text(
-            "支持 DeepAgents / LangGraph / LangChain / Google ADK 的本地运行与云端部署。"
+            "支持 Hermes / OpenClaw / DeepAgents / LangGraph / LangChain / Google ADK 的本地运行与云端部署。"
         )
 
         formatter.write_paragraph()
@@ -221,6 +229,7 @@ class ColoredHelpGroup(click.Group):
             "build": "🔨 ",
             "dashboard": "🖥️ ",
             "deploy": "🚀 ",
+            "hermes": "⌁ ",
             "init": "📁 ",
             "launch": "✨ ",
             "mcp": "🔌 ",
@@ -397,6 +406,14 @@ def _register_commands():
         from ksadk.cli.cmd_openclaw import openclaw
 
         _add_command_once(cli, openclaw)
+    except ImportError:
+        pass
+
+    # Hermes 命令组
+    try:
+        from ksadk.cli.cmd_hermes import hermes
+
+        _add_command_once(cli, hermes)
     except ImportError:
         pass
 

@@ -1,0 +1,18 @@
+# AgentEngine Hermes 项目配置
+name: {{PACKAGE_NAME}}
+version: "1.0.0"
+
+framework: hermes
+artifact_type: Container
+
+ui_profile: hermes
+ui_path: /
+
+deploy:
+  resources:
+    cpu: "2"
+    memory: "4Gi"
+  scaling:
+    min_replicas: 1
+    max_replicas: 1
+    concurrency: 1000
