@@ -632,7 +632,7 @@ Regardless of agent, apply self-improvement when you:
 1. **Discover something non-obvious** - solution wasn't immediate
 2. **Correct yourself** - initial approach was wrong
 3. **Learn project conventions** - discovered undocumented patterns
-4. **Hit unexpected errors** - especially if diagnosis was difficult
+4. **Hit unexpected errors** - especially if doctor was difficult
 5. **Find better approaches** - improved on your original solution
 
 ### Copilot Chat Integration

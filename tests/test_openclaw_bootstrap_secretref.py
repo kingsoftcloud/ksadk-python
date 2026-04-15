@@ -83,7 +83,7 @@ def _build_base_env(state_dir: str, config_path: str) -> dict:
     env["OPENCLAW_BOOTSTRAP_ONLY"] = "1"
     env["OPENCLAW_MODEL_PROVIDER_ID"] = "ksyun"
     env["OPENCLAW_MODEL_BASE_URL"] = "http://example.test/v1"
-    env["OPENCLAW_DEFAULT_MODEL"] = "ksyun/glm-5"
+    env["OPENCLAW_DEFAULT_MODEL"] = "ksyun/glm-5.1"
     env["OPENCLAW_SAFE_BIN_DIR"] = str(safe_bin_dir)
     env["OPENCLAW_WORKSPACE_TEMPLATE_DIR"] = str(workspace_template_dir)
     env["PATH"] = f"{raw_bin_dir}:{env['PATH']}"
@@ -251,15 +251,15 @@ def test_bootstrap_defaults_dual_ksyun_catalog_when_unspecified():
 
         assert result.returncode == 0, result.stderr or result.stdout
         cfg = json.loads(config_path.read_text())
-        assert cfg["agents"]["defaults"]["model"]["primary"] == "ksyun/glm-5"
+        assert cfg["agents"]["defaults"]["model"]["primary"] == "ksyun/glm-5.1"
         assert cfg["agents"]["defaults"]["model"]["fallbacks"] == ["ksyun/kimi-k2.5"]
         assert cfg["agents"]["defaults"]["imageModel"]["primary"] == "ksyun/kimi-k2.5"
         models = cfg["models"]["providers"]["ksyun"]["models"]
-        assert [item["id"] for item in models] == ["glm-5", "kimi-k2.5"]
+        assert [item["id"] for item in models] == ["glm-5.1", "kimi-k2.5"]
         assert models[0]["input"] == ["text"]
         assert models[1]["input"] == ["text", "image"]
         selectable = cfg["agents"]["defaults"]["models"]
-        assert "ksyun/glm-5" in selectable
+        assert "ksyun/glm-5.1" in selectable
         assert "ksyun/kimi-k2.5" in selectable
 
 
@@ -268,7 +268,7 @@ def test_bootstrap_global_model_preference_keeps_dual_ksyun_catalog():
         config_path = Path(tmpdir) / "openclaw.json"
         env = _build_base_env(tmpdir, str(config_path))
         env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
-        env["OPENAI_MODEL_NAME"] = "glm-5"
+        env["OPENAI_MODEL_NAME"] = "glm-5.1"
         env.pop("OPENCLAW_DEFAULT_MODEL", None)
         env.pop("OPENCLAW_MODEL_CATALOG_JSON", None)
 
@@ -283,11 +283,11 @@ def test_bootstrap_global_model_preference_keeps_dual_ksyun_catalog():
 
         assert result.returncode == 0, result.stderr or result.stdout
         cfg = json.loads(config_path.read_text())
-        assert cfg["agents"]["defaults"]["model"]["primary"] == "ksyun/glm-5"
+        assert cfg["agents"]["defaults"]["model"]["primary"] == "ksyun/glm-5.1"
         assert cfg["agents"]["defaults"]["model"]["fallbacks"] == ["ksyun/kimi-k2.5"]
         assert cfg["agents"]["defaults"]["imageModel"]["primary"] == "ksyun/kimi-k2.5"
         models = cfg["models"]["providers"]["ksyun"]["models"]
-        assert [item["id"] for item in models] == ["glm-5", "kimi-k2.5"]
+        assert [item["id"] for item in models] == ["glm-5.1", "kimi-k2.5"]
         assert models[0]["input"] == ["text"]
         assert models[1]["input"] == ["text", "image"]
 
@@ -297,7 +297,7 @@ def test_bootstrap_openclaw_default_model_alias_keeps_dual_catalog():
         config_path = Path(tmpdir) / "openclaw.json"
         env = _build_base_env(tmpdir, str(config_path))
         env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
-        env["OPENCLAW_DEFAULT_MODEL"] = "ksyun/glm-5"
+        env["OPENCLAW_DEFAULT_MODEL"] = "ksyun/glm-5.1"
         env.pop("OPENCLAW_MODEL_CATALOG_JSON", None)
 
         result = subprocess.run(
@@ -311,15 +311,15 @@ def test_bootstrap_openclaw_default_model_alias_keeps_dual_catalog():
 
         assert result.returncode == 0, result.stderr or result.stdout
         cfg = json.loads(config_path.read_text())
-        assert cfg["agents"]["defaults"]["model"]["primary"] == "ksyun/glm-5"
+        assert cfg["agents"]["defaults"]["model"]["primary"] == "ksyun/glm-5.1"
         assert cfg["agents"]["defaults"]["model"]["fallbacks"] == ["ksyun/kimi-k2.5"]
         assert cfg["agents"]["defaults"]["imageModel"]["primary"] == "ksyun/kimi-k2.5"
         models = cfg["models"]["providers"]["ksyun"]["models"]
-        assert [item["id"] for item in models] == ["glm-5", "kimi-k2.5"]
+        assert [item["id"] for item in models] == ["glm-5.1", "kimi-k2.5"]
         assert models[0]["input"] == ["text"]
         assert models[1]["input"] == ["text", "image"]
         selectable = cfg["agents"]["defaults"]["models"]
-        assert "ksyun/glm-5" in selectable
+        assert "ksyun/glm-5.1" in selectable
         assert "ksyun/kimi-k2.5" in selectable
 
 
@@ -333,7 +333,7 @@ def test_bootstrap_preserves_existing_defaults_model_fallbacks_and_image_model()
                         "defaults": {
                             "model": {
                                 "primary": "ksyun/deepseek-v3",
-                                "fallbacks": ["ksyun/glm-5"],
+                                "fallbacks": ["ksyun/glm-5.1"],
                             },
                             "imageModel": {
                                 "primary": "ksyun/kimi-k2.5",
@@ -345,7 +345,7 @@ def test_bootstrap_preserves_existing_defaults_model_fallbacks_and_image_model()
         )
         env = _build_base_env(tmpdir, str(config_path))
         env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
-        env["OPENCLAW_DEFAULT_MODEL"] = "ksyun/glm-5"
+        env["OPENCLAW_DEFAULT_MODEL"] = "ksyun/glm-5.1"
         env.pop("OPENCLAW_MODEL_CATALOG_JSON", None)
 
         result = subprocess.run(
@@ -360,7 +360,7 @@ def test_bootstrap_preserves_existing_defaults_model_fallbacks_and_image_model()
         assert result.returncode == 0, result.stderr or result.stdout
         cfg = json.loads(config_path.read_text())
         assert cfg["agents"]["defaults"]["model"]["primary"] == "ksyun/deepseek-v3"
-        assert cfg["agents"]["defaults"]["model"]["fallbacks"] == ["ksyun/glm-5"]
+        assert cfg["agents"]["defaults"]["model"]["fallbacks"] == ["ksyun/glm-5.1"]
         assert cfg["agents"]["defaults"]["imageModel"]["primary"] == "ksyun/kimi-k2.5"
 
 
@@ -372,7 +372,7 @@ def test_bootstrap_defaults_primary_to_first_catalog_model_when_unspecified():
         env.pop("OPENCLAW_DEFAULT_MODEL", None)
         env.pop("OPENAI_MODEL_NAME", None)
         env["OPENCLAW_MODEL_CATALOG_JSON"] = (
-            '[{"id":"kimi-k2.5"},{"id":"glm-5"}]'
+            '[{"id":"kimi-k2.5"},{"id":"glm-5.1"}]'
         )
 
         result = subprocess.run(
@@ -388,7 +388,7 @@ def test_bootstrap_defaults_primary_to_first_catalog_model_when_unspecified():
         cfg = json.loads(config_path.read_text())
         assert cfg["agents"]["defaults"]["model"]["primary"] == "ksyun/kimi-k2.5"
         models = cfg["models"]["providers"]["ksyun"]["models"]
-        assert [item["id"] for item in models] == ["kimi-k2.5", "glm-5"]
+        assert [item["id"] for item in models] == ["kimi-k2.5", "glm-5.1"]
 
 
 def test_bootstrap_appends_primary_model_when_default_catalog_does_not_include_it():
@@ -413,7 +413,7 @@ def test_bootstrap_appends_primary_model_when_default_catalog_does_not_include_i
         cfg = json.loads(config_path.read_text())
         assert cfg["agents"]["defaults"]["model"]["primary"] == "ksyun/deepseek-v3"
         models = cfg["models"]["providers"]["ksyun"]["models"]
-        assert [item["id"] for item in models] == ["glm-5", "kimi-k2.5", "deepseek-v3"]
+        assert [item["id"] for item in models] == ["glm-5.1", "kimi-k2.5", "deepseek-v3"]
 
 
 def test_bootstrap_disables_builtin_web_search_by_default():
@@ -1580,7 +1580,7 @@ def test_bootstrap_auto_enables_bundled_lark_plugin():
         assert cfg["plugins"]["entries"]["openclaw-lark"]["enabled"] is True
 
 
-def test_bootstrap_configures_agentspace_channel_from_env():
+def test_bootstrap_configures_agentspace_channel_from_channel_bootstrap_json():
     with TemporaryDirectory() as tmpdir:
         config_path = Path(tmpdir) / "openclaw.json"
         default_extensions_dir = Path(tmpdir) / "default-extensions" / "agentspace"
@@ -1590,8 +1590,15 @@ def test_bootstrap_configures_agentspace_channel_from_env():
         env = _build_base_env(tmpdir, str(config_path))
         env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
         env["OPENCLAW_DEFAULT_EXTENSIONS_DIR"] = str(Path(tmpdir) / "default-extensions")
-        env["OPENCLAW_AGENTSPACE_WPS_SID"] = "wps_sid_demo"
-        env["OPENCLAW_AGENTSPACE_APP_ID"] = "app-demo"
+        env["OPENCLAW_CHANNEL_BOOTSTRAP_JSON"] = json.dumps(
+            {
+                "agentspace": {
+                    "wps_sid": "wps_sid_demo",
+                    "app_id": "app-demo",
+                    "current_user": "alice",
+                }
+            }
+        )
 
         result = subprocess.run(
             ["bash", str(BOOTSTRAP_SCRIPT)],
@@ -1609,6 +1616,7 @@ def test_bootstrap_configures_agentspace_channel_from_env():
         account = cfg["channels"]["agentspace"]["accounts"]["default"]
         assert account["enabled"] is True
         assert account["app_id"] == "app-demo"
+        assert account["currentUser"] == "alice"
         assert account["device_uuid"]
         assert len(str(account["token"]).split(":")) == 4
         assert account["token"] != "wps_sid_demo"
@@ -1616,7 +1624,7 @@ def test_bootstrap_configures_agentspace_channel_from_env():
         assert cfg["channels"]["agentspace"]["allowFrom"] == ["*"]
 
 
-def test_bootstrap_clears_stale_agentspace_app_id_when_only_wps_sid_is_provided():
+def test_bootstrap_clears_stale_agentspace_app_id_when_only_wps_sid_is_in_channel_bootstrap_json():
     with TemporaryDirectory() as tmpdir:
         config_path = Path(tmpdir) / "openclaw.json"
         config_path.write_text(
@@ -1642,7 +1650,13 @@ def test_bootstrap_clears_stale_agentspace_app_id_when_only_wps_sid_is_provided(
         env = _build_base_env(tmpdir, str(config_path))
         env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
         env["OPENCLAW_DEFAULT_EXTENSIONS_DIR"] = str(Path(tmpdir) / "default-extensions")
-        env["OPENCLAW_AGENTSPACE_WPS_SID"] = "wps_sid_demo"
+        env["OPENCLAW_CHANNEL_BOOTSTRAP_JSON"] = json.dumps(
+            {
+                "agentspace": {
+                    "wps_sid": "wps_sid_demo",
+                }
+            }
+        )
 
         result = subprocess.run(
             ["bash", str(BOOTSTRAP_SCRIPT)],
@@ -1659,6 +1673,77 @@ def test_bootstrap_clears_stale_agentspace_app_id_when_only_wps_sid_is_provided(
         assert account["app_id"] == ""
         assert account["device_uuid"] == "device-1"
         assert len(str(account["token"]).split(":")) == 4
+
+
+def test_bootstrap_configures_feishu_channel_from_channel_bootstrap_json():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        default_extensions_dir = Path(tmpdir) / "default-extensions" / "openclaw-lark"
+        default_extensions_dir.mkdir(parents=True, exist_ok=True)
+        (default_extensions_dir / "manifest.json").write_text('{"name":"openclaw-lark"}\n')
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_DEFAULT_EXTENSIONS_DIR"] = str(Path(tmpdir) / "default-extensions")
+        env["OPENCLAW_CHANNEL_BOOTSTRAP_JSON"] = json.dumps(
+            {
+                "feishu": {
+                    "appId": "cli-app-id",
+                    "appSecret": "cli-app-secret",
+                    "domain": "lark",
+                }
+            }
+        )
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert cfg["plugins"]["entries"]["openclaw-lark"]["enabled"] is True
+        assert cfg["channels"]["feishu"]["enabled"] is True
+        assert cfg["channels"]["feishu"]["appId"] == "cli-app-id"
+        assert cfg["channels"]["feishu"]["appSecret"] == "cli-app-secret"
+        assert cfg["channels"]["feishu"]["domain"] == "lark"
+        assert cfg["channels"]["feishu"]["connectionMode"] == "websocket"
+        assert cfg["channels"]["feishu"]["requireMention"] is True
+        assert cfg["channels"]["feishu"]["dmPolicy"] == "pairing"
+        assert cfg["channels"]["feishu"]["groupPolicy"] == "open"
+
+
+def test_bootstrap_does_not_configure_agentspace_channel_from_legacy_env():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        default_extensions_dir = Path(tmpdir) / "default-extensions" / "agentspace"
+        default_extensions_dir.mkdir(parents=True, exist_ok=True)
+        (default_extensions_dir / "manifest.json").write_text('{"name":"agentspace"}\n')
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_DEFAULT_EXTENSIONS_DIR"] = str(Path(tmpdir) / "default-extensions")
+        env["OPENCLAW_AGENTSPACE_WPS_SID"] = "wps_sid_demo"
+        env["OPENCLAW_AGENTSPACE_APP_ID"] = "app-demo"
+        env["OPENCLAW_AGENTSPACE_CURRENT_USER"] = "alice"
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert cfg["plugins"]["entries"]["agentspace"]["enabled"] is True
+        assert cfg.get("channels", {}).get("agentspace") in (None, {})
 
 
 def test_bootstrap_patches_bundled_weixin_gateway_login_methods_before_sync():
@@ -2205,6 +2290,64 @@ def test_bootstrap_patches_runtime_bundles_for_loopback_gateway_clients():
         assert 'this.ws.addEventListener(`open`,()=>{this.lastSeq=null,this.queueConnect()})' in control_ui_bundle.read_text()
 
 
+def test_bootstrap_accepts_upstream_2026_3_28_loopback_gateway_runtime_logic():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        dist_dir = Path(tmpdir) / "dist"
+        control_ui_assets_dir = dist_dir / "control-ui" / "assets"
+        control_ui_assets_dir.mkdir(parents=True, exist_ok=True)
+        client_bundle = dist_dir / "reply-test.js"
+        auth_bundle = dist_dir / "gateway-auth-test.js"
+        connect_policy_bundle = dist_dir / "connect-policy-test.js"
+        gateway_call_bundle = dist_dir / "call-test.js"
+        control_ui_bundle = control_ui_assets_dir / "main-test.js"
+
+        client_bundle.write_text('const wsOptions = { maxPayload: 25 * 1024 * 1024 };')
+        auth_bundle.write_text(
+            'function authorizeTrustedProxy(params) {\n'
+            '\tconst { req, trustedProxies, trustedProxyConfig } = params;\n'
+            '\tif (!req) return { reason: "trusted_proxy_no_request" };\n'
+            '\tconst remoteAddr = req.socket?.remoteAddress;\n'
+            '\tif (!remoteAddr || !isTrustedProxyAddress$1(remoteAddr, trustedProxies)) return { reason: "trusted_proxy_untrusted_source" };\n'
+            '\tconst userHeaderValue = headerValue(req.headers[trustedProxyConfig.userHeader.toLowerCase()]);\n'
+            '\treturn { user: userHeaderValue.trim() };\n'
+            '}\n'
+        )
+        connect_policy_bundle.write_text(
+            'function shouldSkipControlUiPairing(policy, role, trustedProxyAuthOk = false, authMode) {\n'
+            '\tif (trustedProxyAuthOk) {\n'
+            '\t\treturn true;\n'
+            '\t}\n'
+            '\treturn role === "operator" && policy.allowBypass;\n'
+            '}\n'
+        )
+        gateway_call_bundle.write_text(
+            'function ensureExplicitGatewayAuth(params) {\n'
+            '\tif (!params.urlOverride) return;\n'
+            '\tconst explicitToken = params.explicitAuth?.token;\n'
+            '}\n'
+        )
+        control_ui_bundle.write_text('this.ws.addEventListener(`open`,()=>this.queueConnect())')
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_DIST_DIR"] = str(dist_dir)
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        assert 'if (!remoteAddr || !isTrustedProxyAddress$1(remoteAddr, trustedProxies)) return { reason: "trusted_proxy_untrusted_source" };' in auth_bundle.read_text()
+        assert 'if (trustedProxyAuthOk) {' in connect_policy_bundle.read_text()
+        assert 'const parsed = new URL(params.urlOverride);' in gateway_call_bundle.read_text()
+
+
 def test_bootstrap_disables_container_self_update_runtime_hooks():
     with TemporaryDirectory() as tmpdir:
         config_path = Path(tmpdir) / "openclaw.json"
@@ -2337,7 +2480,7 @@ def test_bootstrap_defaults_state_dir_under_home_for_non_root_runtime():
         env["OPENCLAW_BOOTSTRAP_ONLY"] = "1"
         env["OPENCLAW_MODEL_PROVIDER_ID"] = "ksyun"
         env["OPENCLAW_MODEL_BASE_URL"] = "http://example.test/v1"
-        env["OPENCLAW_DEFAULT_MODEL"] = "ksyun/glm-5"
+        env["OPENCLAW_DEFAULT_MODEL"] = "ksyun/glm-5.1"
         env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
 
         result = subprocess.run(

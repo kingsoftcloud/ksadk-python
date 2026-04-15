@@ -705,6 +705,22 @@ const replacements = [
 }`,
   },
   {
+    // openclaw 2026.3.28+: trusted-proxy loopback now rides on trustedProxies
+    // and no longer emits the legacy trusted_proxy_loopback_source branch.
+    label: 'gateway trusted-proxy loopback internal auth compatibility',
+    marker: 'if (!remoteAddr || !isTrustedProxyAddress$1(remoteAddr, trustedProxies)) return { reason: "trusted_proxy_untrusted_source" };',
+    needle: 'if (!remoteAddr || !isTrustedProxyAddress$1(remoteAddr, trustedProxies)) return { reason: "trusted_proxy_untrusted_source" };',
+    replacement: 'if (!remoteAddr || !isTrustedProxyAddress$1(remoteAddr, trustedProxies)) return { reason: "trusted_proxy_untrusted_source" };',
+  },
+  {
+    // openclaw 2026.3.28 source-like bundles may keep the helper name
+    // unaliased and expand the early return into a block.
+    label: 'gateway trusted-proxy loopback internal auth compatibility',
+    marker: 'if (!remoteAddr || !isTrustedProxyAddress(remoteAddr, trustedProxies)) {',
+    needle: 'if (!remoteAddr || !isTrustedProxyAddress(remoteAddr, trustedProxies)) {',
+    replacement: 'if (!remoteAddr || !isTrustedProxyAddress(remoteAddr, trustedProxies)) {',
+  },
+  {
     label: 'gateway trusted-proxy loopback internal auth compatibility',
     marker: 'const internalLoopbackUserHeader = String(process.env.OPENCLAW_INTERNAL_TRUSTED_PROXY_USER_HEADER || process.env.OPENCLAW_TRUSTED_PROXY_USER_HEADER || "x-forwarded-user").trim().toLowerCase();',
     needle: 'if (isLoopbackAddress(remoteAddr)) return { reason: "trusted_proxy_loopback_source" };',
@@ -729,6 +745,14 @@ const replacements = [
 				[internalTrustedProxyUserHeader || "x-forwarded-user"]: internalTrustedProxyUser
 			};
 		} catch {}`,
+  },
+  {
+    // openclaw 2026.3.28+: pairing/device-identity bypass moved into
+    // shouldSkipControlUiPairing(... trustedProxyAuthOk = false ...)
+    label: 'gateway backend self-pairing trusted-proxy bypass',
+    marker: 'function shouldSkipControlUiPairing(policy, role, trustedProxyAuthOk = false, authMode) {',
+    needle: 'function shouldSkipControlUiPairing(policy, role, trustedProxyAuthOk = false, authMode) {',
+    replacement: 'function shouldSkipControlUiPairing(policy, role, trustedProxyAuthOk = false, authMode) {',
   },
   {
     // openclaw >= 2026.4.5: 函数重命名为 shouldSkipLocalBackendSelfPairing, isLocalClient → locality
@@ -1207,7 +1231,54 @@ const ensurePluginEntry = (pluginId) => {
   cfg.plugins.entries[pluginId] = cfg.plugins.entries[pluginId] || {};
   return cfg.plugins.entries[pluginId];
 };
+const enablePlugin = (pluginId) => {
+  cfg.plugins = cfg.plugins || {};
+  cfg.plugins.allow = uniqueStrings([
+    ...(Array.isArray(cfg.plugins.allow) ? cfg.plugins.allow : []),
+    pluginId,
+  ]);
+  ensurePluginEntry(pluginId).enabled = true;
+};
+const isPlainObject = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+const cloneJsonValue = (value) => {
+  if (Array.isArray(value)) {
+    return value.map(cloneJsonValue);
+  }
+  if (isPlainObject(value)) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, child]) => [key, cloneJsonValue(child)]),
+    );
+  }
+  return value;
+};
+const deepMergeObjects = (base, overlay) => {
+  const result = isPlainObject(base) ? cloneJsonValue(base) : {};
+  for (const [key, value] of Object.entries(overlay || {})) {
+    if (isPlainObject(value)) {
+      result[key] = deepMergeObjects(result[key], value);
+      continue;
+    }
+    result[key] = cloneJsonValue(value);
+  }
+  return result;
+};
 const AGENTSPACE_DEFAULT_KEY_SOURCE = 'openclaw_agentspace';
+const OPENCLAW_CHANNEL_SPECS = {
+  weixin: {
+    pluginId: 'openclaw-weixin',
+    channelKey: 'openclaw-weixin',
+    defaultAccountId: 'default',
+  },
+  feishu: {
+    pluginId: 'openclaw-lark',
+    channelKey: 'feishu',
+  },
+  agentspace: {
+    pluginId: 'agentspace',
+    channelKey: 'agentspace',
+    defaultAccountId: 'default',
+  },
+};
 const encryptAgentspaceToken = (wpsSid, appId = '') => {
   const token = String(wpsSid ?? '').trim();
   if (!token) return '';
@@ -1220,43 +1291,115 @@ const encryptAgentspaceToken = (wpsSid, appId = '') => {
   const tagBytes = cipher.getAuthTag();
   return `${salt.toString('hex')}:${iv.toString('hex')}:${tagBytes.toString('hex')}:${cipherBytes.toString('hex')}`;
 };
-const configureAgentspaceFromEnv = () => {
-  const wpsSid = firstNonBlank(process.env.OPENCLAW_AGENTSPACE_WPS_SID);
-  if (!wpsSid) return;
+const normalizeAgentspaceBootstrapPayload = (payload, existingChannelCfg) => {
+  const rawWpsSid = firstNonBlank(payload.wps_sid, payload.wpsSid);
+  if (!rawWpsSid) {
+    return cloneJsonValue(payload);
+  }
 
-  const appId = firstNonBlank(process.env.OPENCLAW_AGENTSPACE_APP_ID);
-  const currentUser = firstNonBlank(process.env.OPENCLAW_AGENTSPACE_CURRENT_USER);
-  const token = encryptAgentspaceToken(wpsSid, appId);
+  const appId = firstNonBlank(payload.app_id, payload.appId);
+  const currentUser = firstNonBlank(payload.current_user, payload.currentUser);
   const deviceUuid =
     firstNonBlank(
-      cfg.channels?.agentspace?.accounts?.default?.device_uuid,
+      payload.device_uuid,
+      payload.deviceUuid,
+      existingChannelCfg?.accounts?.default?.device_uuid,
       typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : '',
     ) || crypto.randomBytes(16).toString('hex');
+  const extraPayload = cloneJsonValue(payload);
+  for (const key of ['wps_sid', 'wpsSid', 'app_id', 'appId', 'current_user', 'currentUser', 'device_uuid', 'deviceUuid']) {
+    delete extraPayload[key];
+  }
 
-  cfg.plugins = cfg.plugins || {};
-  cfg.plugins.allow = uniqueStrings([
-    ...(Array.isArray(cfg.plugins.allow) ? cfg.plugins.allow : []),
-    'agentspace',
-  ]);
-  ensurePluginEntry('agentspace').enabled = true;
+  return deepMergeObjects(extraPayload, {
+    accounts: {
+      default: {
+        enabled: true,
+        token: encryptAgentspaceToken(rawWpsSid, appId),
+        currentUser,
+        app_id: appId,
+        device_uuid: deviceUuid,
+      },
+    },
+    dmPolicy: 'open',
+    allowFrom: ['*'],
+  });
+};
+const normalizeFeishuBootstrapPayload = (payload) => {
+  const normalized = cloneJsonValue(payload);
+  const appId = firstNonBlank(normalized.appId);
+  const appSecret = firstNonBlank(normalized.appSecret);
+  if (appId || appSecret) {
+    normalized.enabled = normalized.enabled == null ? true : normalized.enabled;
+    normalized.domain = firstNonBlank(normalized.domain, 'feishu');
+    normalized.connectionMode = firstNonBlank(normalized.connectionMode, 'websocket');
+    if (normalized.requireMention == null) {
+      normalized.requireMention = true;
+    }
+    if (!['pairing', 'allowlist', 'open'].includes(String(normalized.dmPolicy || '').trim())) {
+      normalized.dmPolicy = 'pairing';
+    }
+    if (!firstNonBlank(normalized.groupPolicy)) {
+      normalized.groupPolicy = 'open';
+    }
+  }
+  return normalized;
+};
+const normalizeChannelBootstrapPayload = (channelName, payload, existingChannelCfg) => {
+  if (channelName === 'agentspace') {
+    return normalizeAgentspaceBootstrapPayload(payload, existingChannelCfg);
+  }
+  if (channelName === 'feishu') {
+    return normalizeFeishuBootstrapPayload(payload);
+  }
+  return cloneJsonValue(payload);
+};
+const applyChannelBootstrapDefaults = (channelName, spec, channelCfg) => {
+  const defaultAccountId = spec.defaultAccountId;
+  if (defaultAccountId && isPlainObject(channelCfg.accounts?.[defaultAccountId])) {
+    if (channelCfg.accounts[defaultAccountId].enabled == null) {
+      channelCfg.accounts[defaultAccountId].enabled = true;
+    }
+  }
+  if (channelName === 'agentspace') {
+    if (!String(channelCfg.dmPolicy || '').trim()) {
+      channelCfg.dmPolicy = 'open';
+    }
+    if (!Array.isArray(channelCfg.allowFrom) || channelCfg.allowFrom.length === 0) {
+      channelCfg.allowFrom = ['*'];
+    }
+  }
+};
+const applyChannelBootstrapFromEnv = () => {
+  const rawBootstrapJson = firstNonBlank(process.env.OPENCLAW_CHANNEL_BOOTSTRAP_JSON);
+  if (!rawBootstrapJson) return;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(rawBootstrapJson);
+  } catch (error) {
+    throw new Error(`OPENCLAW_CHANNEL_BOOTSTRAP_JSON is not valid JSON: ${error.message}`);
+  }
+  if (!isPlainObject(parsed)) {
+    throw new Error('OPENCLAW_CHANNEL_BOOTSTRAP_JSON must be a JSON object keyed by channel name');
+  }
 
   cfg.channels = cfg.channels || {};
-  cfg.channels.agentspace = cfg.channels.agentspace || {};
-  cfg.channels.agentspace.accounts = cfg.channels.agentspace.accounts || {};
-  cfg.channels.agentspace.accounts.default = cfg.channels.agentspace.accounts.default || {};
+  for (const [channelName, rawPayload] of Object.entries(parsed)) {
+    const spec = OPENCLAW_CHANNEL_SPECS[channelName];
+    if (!spec) {
+      throw new Error(`OPENCLAW_CHANNEL_BOOTSTRAP_JSON contains unsupported channel: ${channelName}`);
+    }
+    if (!isPlainObject(rawPayload)) {
+      throw new Error(`OPENCLAW_CHANNEL_BOOTSTRAP_JSON channel payload must be object: ${channelName}`);
+    }
 
-  const defaultAccount = cfg.channels.agentspace.accounts.default;
-  defaultAccount.enabled = true;
-  defaultAccount.token = token;
-  defaultAccount.currentUser = currentUser;
-  defaultAccount.app_id = appId;
-  defaultAccount.device_uuid = deviceUuid;
-
-  if (!String(cfg.channels.agentspace.dmPolicy || '').trim()) {
-    cfg.channels.agentspace.dmPolicy = 'open';
-  }
-  if (!Array.isArray(cfg.channels.agentspace.allowFrom) || cfg.channels.agentspace.allowFrom.length === 0) {
-    cfg.channels.agentspace.allowFrom = ['*'];
+    const existingChannelCfg = isPlainObject(cfg.channels[spec.channelKey]) ? cfg.channels[spec.channelKey] : {};
+    const normalizedPayload = normalizeChannelBootstrapPayload(channelName, rawPayload, existingChannelCfg);
+    const mergedChannelCfg = deepMergeObjects(existingChannelCfg, normalizedPayload);
+    applyChannelBootstrapDefaults(channelName, spec, mergedChannelCfg);
+    enablePlugin(spec.pluginId);
+    cfg.channels[spec.channelKey] = mergedChannelCfg;
   }
 };
 const ensureParentDir = (filePath) => {
@@ -1597,15 +1740,10 @@ for (const bundledPlugin of bundledPlugins) {
   const pluginInstalled = fs.existsSync(pluginInstallPath);
   const existingEnabled = cfg.plugins?.entries?.[bundledPlugin.pluginId]?.enabled;
   if (pluginInstalled && existingEnabled == null) {
-    cfg.plugins = cfg.plugins || {};
-    cfg.plugins.allow = uniqueStrings([
-      ...(Array.isArray(cfg.plugins.allow) ? cfg.plugins.allow : []),
-      bundledPlugin.pluginId,
-    ]);
-    ensurePluginEntry(bundledPlugin.pluginId).enabled = true;
+    enablePlugin(bundledPlugin.pluginId);
   }
 }
-configureAgentspaceFromEnv();
+applyChannelBootstrapFromEnv();
 const providerId = firstNonBlank(process.env.OPENCLAW_MODEL_PROVIDER_ID, 'ksyun');
 const defaultModelApiKeyFilePath = path.join(resolvedStateDir || '/root/.openclaw', 'secrets.json');
 const providerBaseUrl = firstNonBlank(
@@ -1702,7 +1840,7 @@ const buildAgentModelConfig = (primary, fallbacks = []) => {
 const defaultModelInputs = (provider, modelId) => {
   const normalizedProvider = String(provider || '').trim().toLowerCase();
   const normalizedModelId = String(modelId || '').trim().toLowerCase();
-  if (normalizedProvider === 'ksyun' && normalizedModelId === 'glm-5') {
+  if (normalizedProvider === 'ksyun' && normalizedModelId === 'glm-5.1') {
     return ['text'];
   }
   return ['text', 'image'];
@@ -1838,8 +1976,8 @@ if (providerId && providerBaseUrl && providerApiKeySecretSource && providerApiKe
     if (providerId === 'ksyun') {
       cfg.models.providers[providerId].models = [
         {
-          id: 'glm-5',
-          name: 'glm-5',
+          id: 'glm-5.1',
+          name: 'glm-5.1',
           api: providerApi,
           reasoning: true,
           input: ['text'],
@@ -2007,7 +2145,7 @@ const catalogPrimaryModel = selectableModels
 const primaryModel = (
   normalizeModelRef(providerId, preferredDefaultModel) ||
   catalogPrimaryModel ||
-  'ksyun/glm-5'
+  'ksyun/glm-5.1'
 ).trim();
 const primaryModelQualified = primaryModel.includes('/');
 const preferredKimiModel = normalizeModelRef(providerId, 'kimi-k2.5');

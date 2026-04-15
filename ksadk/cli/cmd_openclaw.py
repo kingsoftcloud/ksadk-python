@@ -91,6 +91,7 @@ DEFAULT_TRUSTED_PROXY_CIDRS = [
 _GLOBAL_ENV_CACHE: Optional[Dict[str, str]] = None
 OPENCLAW_SECURITY_PROFILES = ("relaxed", "strict", "strictest")
 OPENCLAW_CHANNELS = ("weixin", "feishu", "agentspace")
+OPENCLAW_ENV_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 WEIXIN_PLUGIN_ID = "openclaw-weixin"
 FEISHU_PLUGIN_ID = "openclaw-lark"
 FEISHU_CHANNEL_KEY = "feishu"
@@ -435,7 +436,7 @@ def _build_openclaw_env_vars(
         model_api_key
         or _resolve_env("OPENCLAW_MODEL_API_KEY", "OPENAI_API_KEY", "LLM_API_KEY", "MODEL_API_KEY")
     )
-    model = model_preference or "glm-5"
+    model = model_preference or "glm-5.1"
     explicit_provider_id = model_provider_id or _resolve_env("OPENCLAW_MODEL_PROVIDER_ID")
     inferred_provider_id = explicit_provider_id
     if not inferred_provider_id and model and "/" in model:
@@ -597,9 +598,7 @@ def _build_openclaw_env_vars(
     disable_device_auth = _resolve_env("OPENCLAW_DISABLE_DEVICE_AUTH")
     env["OPENCLAW_DISABLE_DEVICE_AUTH"] = disable_device_auth if disable_device_auth else "true"
     for passthrough_key in [
-        "OPENCLAW_AGENTSPACE_WPS_SID",
-        "OPENCLAW_AGENTSPACE_APP_ID",
-        "OPENCLAW_AGENTSPACE_CURRENT_USER",
+        "OPENCLAW_CHANNEL_BOOTSTRAP_JSON",
         "OPENCLAW_WEB_FETCH_ENABLED",
         "OPENCLAW_WEB_SEARCH_PROVIDER",
         "OPENCLAW_WEB_SEARCH_BASE_URL",
@@ -656,6 +655,26 @@ def _normalize_csv_list(raw: str, *, default_items: Optional[list[str]] = None) 
         items = [str(x).strip() for x in (default_items or []) if str(x).strip()]
 
     return ",".join(list(dict.fromkeys(items)))
+
+
+def _parse_extra_openclaw_env_pairs(items: tuple[str, ...] | list[str] | None) -> dict[str, str]:
+    """解析 deploy --env 传入的自定义环境变量。"""
+    parsed: dict[str, str] = {}
+    for raw_item in items or ():
+        item = str(raw_item or "").strip()
+        if not item or "=" not in item:
+            raise ValueError(f"自定义环境变量格式错误: {raw_item!r}，应为 KEY=VALUE")
+        key, value = item.split("=", 1)
+        key = key.strip()
+        if not OPENCLAW_ENV_KEY_PATTERN.fullmatch(key):
+            raise ValueError(f"自定义环境变量名不合法: {key!r}，请使用合法的环境变量名")
+        if key == "OPENCLAW_GATEWAY_AUTH_MODE":
+            normalized = value.strip().lower()
+            if normalized not in {"trusted-proxy", "none"}:
+                raise ValueError("OPENCLAW_GATEWAY_AUTH_MODE 仅支持 trusted-proxy 或 none，不能使用 token 模式")
+            value = normalized
+        parsed[key] = value
+    return parsed
 
 
 def _parse_image(image: Optional[str]) -> tuple[str, str, str]:
@@ -2611,6 +2630,12 @@ def channel_doctor(agent_ref: Optional[str], region: Optional[str], channel: Opt
 @click.option("--model-base-url", default=None, help="模型 Base URL (默认复用 OPENAI_BASE_URL)")
 @click.option("--model-api-key", default=None, help="模型 API Key (可选；默认复用 OPENAI_API_KEY)")
 @click.option("--default-model", default=None, help="默认模型名 (默认复用 OPENAI_MODEL_NAME)")
+@click.option(
+    "--env",
+    "extra_env",
+    multiple=True,
+    help="额外透传自定义环境变量，格式 KEY=VALUE，可重复传入",
+)
 @dry_run_option("仅显示请求，不实际部署")
 def deploy(
     name: Optional[str],
@@ -2620,6 +2645,7 @@ def deploy(
     model_base_url: Optional[str],
     model_api_key: Optional[str],
     default_model: Optional[str],
+    extra_env: tuple[str, ...],
     dry_run: bool,
 ):
     """部署 OpenClaw 到云端
@@ -2640,6 +2666,8 @@ def deploy(
         agentengine openclaw deploy --model-base-url https://api.example.com/v1 --model-api-key sk-xxx
         # 使用自定义镜像
         agentengine openclaw deploy --image hub.kce.ksyun.com/myns/openclaw:v2
+        # 透传业务自定义环境变量
+        agentengine openclaw deploy --env APP_MODE=prod --env API_BASE=https://example.com
     """
     dry_run = effective_dry_run(dry_run)
     try:
@@ -2652,6 +2680,7 @@ def deploy(
                 model_base_url=model_base_url,
                 model_api_key=model_api_key,
                 default_model=default_model,
+                extra_env=extra_env,
                 dry_run=dry_run,
             ),
             dry_run=dry_run,
@@ -2669,6 +2698,7 @@ async def _deploy_openclaw(
     model_base_url: Optional[str],
     model_api_key: Optional[str],
     default_model: Optional[str],
+    extra_env: tuple[str, ...] = (),
     dry_run: bool,
 ):
     """异步部署 OpenClaw"""
@@ -2721,6 +2751,9 @@ async def _deploy_openclaw(
         default_model=default_model,
         security_profile=security_profile,
     )
+    custom_env_vars = _parse_extra_openclaw_env_pairs(extra_env)
+    if custom_env_vars:
+        env_vars.update(custom_env_vars)
 
     print_title("OpenClaw 云端部署", f"region: {region}")
     print_kv("名称", openclaw_name)

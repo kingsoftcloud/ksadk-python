@@ -253,6 +253,7 @@ def output_option(
     *,
     supported_modes: tuple[str, ...] = (OUTPUT_MODE_PRETTY, OUTPUT_MODE_JSON),
     hidden: bool = False,
+    expose_value: bool = True,
 ):
     """Add a shared output format option."""
     return click.option(
@@ -261,19 +262,52 @@ def output_option(
         type=click.Choice(supported_modes, case_sensitive=False),
         default=None,
         callback=_set_output_mode_callback,
-        expose_value=True,
+        expose_value=expose_value,
         hidden=hidden,
         help="输出格式",
     )
 
 
-def no_color_option(*, hidden: bool = False):
+def build_output_click_option(
+    *,
+    supported_modes: tuple[str, ...] = (OUTPUT_MODE_PRETTY, OUTPUT_MODE_JSON),
+    hidden: bool = False,
+    expose_value: bool = True,
+) -> click.Option:
+    """Build a shared output option for command injection."""
+    return click.Option(
+        ["--output", "output_mode"],
+        type=click.Choice(supported_modes, case_sensitive=False),
+        default=None,
+        callback=_set_output_mode_callback,
+        expose_value=expose_value,
+        hidden=hidden,
+        help="输出格式",
+    )
+
+
+def no_color_option(*, hidden: bool = False, expose_value: bool = False):
     """Add a shared no-color option."""
     return click.option(
         "--no-color",
+        "no_color",
         is_flag=True,
         default=False,
-        expose_value=False,
+        expose_value=expose_value,
+        is_eager=True,
+        hidden=hidden,
+        callback=_set_no_color_callback,
+        help="禁用颜色输出",
+    )
+
+
+def build_no_color_click_option(*, hidden: bool = False, expose_value: bool = False) -> click.Option:
+    """Build a shared no-color option for command injection."""
+    return click.Option(
+        ["--no-color", "no_color"],
+        is_flag=True,
+        default=False,
+        expose_value=expose_value,
         is_eager=True,
         hidden=hidden,
         callback=_set_no_color_callback,

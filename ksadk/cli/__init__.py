@@ -20,12 +20,14 @@ import os
 
 import click
 
+from ksadk.cli.dry_run import dry_run_option
 from ksadk.cli.error_utils import (
     CLIError,
     cli_error_from_exception,
     emit_cli_error,
     is_debug_mode_enabled,
 )
+from ksadk.cli.global_options import ensure_global_cli_options
 from ksadk.cli.resource_common import CONTEXT_SETTINGS
 from ksadk.cli.ui import no_color_option, output_option, should_render_banner
 from ksadk.version import VERSION
@@ -261,26 +263,11 @@ class ColoredHelpGroup(click.Group):
             formatter.write(click.style(f"{subcommand:<{max_cmd_len}}        ", fg="cyan"))
             formatter.write(click.style(f"{help_text}\n\n", fg="white"))
 
-
-def _set_global_dry_run(ctx: click.Context, _param: click.Option, value: bool):
-    """设置全局 dry-run 标记，供未显式透传参数的命令复用。"""
-    if value:
-        os.environ["AGENTENGINE_GLOBAL_DRY_RUN"] = "1"
-    return value
-
-
 @click.group(cls=ColoredHelpGroup, context_settings=CONTEXT_SETTINGS)
 @click.version_option(version=VERSION, prog_name="AgentEngine")
 @no_color_option(hidden=False)
 @output_option()
-@click.option(
-    "--dry-run",
-    is_flag=True,
-    expose_value=False,
-    is_eager=True,
-    callback=_set_global_dry_run,
-    help="全局 Dry Run（仅打印请求，不执行）",
-)
+@dry_run_option("全局 Dry Run（仅打印请求，不执行）", expose_value=False)
 def cli(output_mode: str | None):
     """AgentEngine CLI"""
     _ = output_mode
@@ -291,6 +278,7 @@ def _add_command_once(group: click.Group, command, *, name: str | None = None):
     """仅在未注册时添加命令，避免重复导入时抛错。"""
     command_name = name or command.name
     if command_name and command_name not in group.commands:
+        ensure_global_cli_options(command)
         group.add_command(command, name=name)
 
 

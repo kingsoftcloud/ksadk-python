@@ -96,7 +96,7 @@ agentengine config
 
 ```bash
 agentengine config show
-agentengine config set region=cn-beijing-6 OPENAI_MODEL_NAME=glm-5
+agentengine config set region=cn-beijing-6 OPENAI_MODEL_NAME=glm-5.1
 ```
 
 常见配置文件：
@@ -151,7 +151,7 @@ agentengine dashboard open
 如果要覆盖模型：
 
 ```bash
-agentengine web --model glm-5
+agentengine web --model glm-5.1
 ```
 
 ### 3.2 构建

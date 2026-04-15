@@ -270,7 +270,7 @@ Usage: cli config set [OPTIONS] [SET_ITEMS]...
 
   示例:
     agentengine config set region=cn-beijing-6
-    agentengine config set OPENAI_MODEL_NAME=glm-5 OPENAI_BASE_URL=https://example.com/v1
+    agentengine config set OPENAI_MODEL_NAME=glm-5.1 OPENAI_BASE_URL=https://example.com/v1
     agentengine config set KSYUN_REGION=cn-beijing-6 --global
 
 Options:

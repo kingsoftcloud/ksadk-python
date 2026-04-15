@@ -56,6 +56,10 @@ class AgentEngineClient:
     3. 环境变量 KS3_ACCESS_KEY / KS3_SECRET_KEY
     """
 
+    _DEFAULT_PERMISSION_ROLE = "KsyunAgentEngineDefaultRole"
+    _PERMISSION_PROBE_ACTIONS = {"CreateAgentProduct", "CreateAgent", "ListAgents", "GetAgent"}
+    _permission_probe_cache: dict[tuple[str, str, str], bool] = {}
+
     def __init__(
         self, 
         base_url: Optional[str] = None, 
@@ -246,6 +250,74 @@ class AgentEngineClient:
             headers.update(self.extra_headers)
         return headers
 
+    def _resolve_account_id(self) -> Optional[str]:
+        for key, value in self.extra_headers.items():
+            if key.lower() == "x-ksc-account-id" and str(value or "").strip():
+                return str(value).strip()
+        account_id = os.getenv("KSYUN_ACCOUNT_ID", "").strip()
+        return account_id or None
+
+    def _resolve_permission_role_name(self, action: str, params: Dict[str, Any]) -> str:
+        if action in {"CreateAgentProduct", "CreateAgent"}:
+            access = params.get("Access") if isinstance(params, dict) else None
+            if isinstance(access, dict):
+                explicit_role = (
+                    access.get("IamRole")
+                    or access.get("iamRole")
+                    or access.get("iam_role")
+                )
+                if str(explicit_role or "").strip():
+                    return str(explicit_role).strip()
+        return self._DEFAULT_PERMISSION_ROLE
+
+    def _maybe_precheck_permission(self, action: str, params: Dict[str, Any]) -> None:
+        if action not in self._PERMISSION_PROBE_ACTIONS or action == "CheckIamRole":
+            return
+
+        account_id = self._resolve_account_id()
+        if not account_id:
+            logger.warning("Skip permission precheck for %s: missing KSYUN_ACCOUNT_ID", action)
+            return
+
+        role_name = self._resolve_permission_role_name(action, params)
+        cache_key = (account_id, self.region, role_name)
+        cached = self._permission_probe_cache.get(cache_key)
+        if cached is True:
+            return
+        if cached is False:
+            raise AgentEngineAPIError(403, f"当前账号没有 {role_name} 权限")
+
+        try:
+            result = self._request(
+                "POST",
+                "/agentengine/api/v1/CheckIamRole",
+                {"RoleName": role_name},
+            )
+        except Exception as exc:
+            logger.warning("Permission probe failed for %s: %s", action, exc)
+            return
+
+        code = int(result.get("Code", 0) or 0)
+        data = result.get("Data") or {}
+        has_permission = data.get("HasPermission")
+        if has_permission is False or code in {401, 403}:
+            self._permission_probe_cache[cache_key] = False
+            raise AgentEngineAPIError(
+                code=code or 403,
+                message=result.get("Message") or f"当前账号没有 {role_name} 权限",
+            )
+
+        if code != 0:
+            logger.warning(
+                "Permission probe unavailable for %s: code=%s message=%s",
+                action,
+                code,
+                result.get("Message", ""),
+            )
+            return
+
+        self._permission_probe_cache[cache_key] = True
+
     def _request(
         self, 
         method: str,
@@ -419,6 +491,7 @@ class AgentEngineClient:
     def _action(self, action: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
         """通用 Action API 调用"""
         body = params or {}
+        self._maybe_precheck_permission(action, body)
         result = self._request("POST", f"/agentengine/api/v1/{action}", body)
         
         # 检查错误 (统一返回格式 {"Code": 0, ...})

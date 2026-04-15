@@ -68,7 +68,7 @@ def _build_transport(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_get_agent_ui_bootstrap_matches_local_shape_parity(monkeypatch):
-    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-5")
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-5.1")
     _, runner, _, transport = _build_transport(monkeypatch)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
@@ -113,14 +113,14 @@ async def test_get_agent_ui_bootstrap_matches_local_shape_parity(monkeypatch):
     assert payload["Data"]["Stream"] is True
     assert payload["Data"]["SessionId"] == "sess-bootstrap"
     assert payload["Data"]["HostedRuntime"] is None
-    assert payload["Data"]["Model"]["id"] == "glm-5"
+    assert payload["Data"]["Model"]["id"] == "glm-5.1"
     assert payload["Data"]["Model"]["source"] == "OPENAI_MODEL_NAME"
     assert runner.load_agent_calls == 0
 
 
 @pytest.mark.asyncio
 async def test_list_agent_models_action_uses_real_current_model_without_gemini_fallback(monkeypatch):
-    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-5")
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-5.1")
     monkeypatch.delenv("MODEL_NAME", raising=False)
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.delenv("OPENAI_API_BASE", raising=False)
@@ -134,14 +134,14 @@ async def test_list_agent_models_action_uses_real_current_model_without_gemini_f
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["Data"]["Current"] == "glm-5"
+    assert payload["Data"]["Current"] == "glm-5.1"
     assert payload["Data"]["Source"] == "OPENAI_MODEL_NAME"
-    assert [item["id"] for item in payload["Data"]["Models"]] == ["glm-5"]
+    assert [item["id"] for item in payload["Data"]["Models"]] == ["glm-5.1"]
 
 
 @pytest.mark.asyncio
 async def test_list_agent_models_action_matches_hosted_shape(monkeypatch):
-    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-5")
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-5.1")
     _, _, _, transport = _build_transport(monkeypatch)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
@@ -153,9 +153,9 @@ async def test_list_agent_models_action_matches_hosted_shape(monkeypatch):
     assert response.status_code == 200
     payload = response.json()
     assert payload["Code"] == 0
-    assert payload["Data"]["Current"] == "glm-5"
+    assert payload["Data"]["Current"] == "glm-5.1"
     assert payload["Data"]["Source"] == "OPENAI_MODEL_NAME"
-    assert [item["id"] for item in payload["Data"]["Models"]] == ["glm-5"]
+    assert [item["id"] for item in payload["Data"]["Models"]] == ["glm-5.1"]
 
 
 @pytest.mark.asyncio
@@ -475,7 +475,7 @@ async def test_run_agent_action_long_history_generates_semantic_checkpoint(monke
         is_available = True
 
         async def summarize(self, *, model, messages, timeout_ms):
-            assert model == "glm-5"
+            assert model == "glm-5.1"
             assert timeout_ms > 0
             assert any("当前用户目标" in item["content"] for item in messages)
             return (
@@ -500,7 +500,7 @@ async def test_run_agent_action_long_history_generates_semantic_checkpoint(monke
                 "AgentId": "demo-agent",
                 "Messages": [{"role": "user", "content": "继续基于之前内容给结论"}],
                 "SessionId": session.id,
-                "Model": "glm-5",
+                "Model": "glm-5.1",
                 "ApiFormat": "responses",
                 "Stream": False,
             },
@@ -517,7 +517,7 @@ async def test_run_agent_action_long_history_generates_semantic_checkpoint(monke
     checkpoint = next(item for item in event_items if item["EventType"] == "context_checkpoint")
     assert checkpoint["Metadata"]["summary_strategy"] == "semantic"
     assert checkpoint["Metadata"]["summary_version"] == "v1"
-    assert checkpoint["Metadata"]["summary_model"] == "glm-5"
+    assert checkpoint["Metadata"]["summary_model"] == "glm-5.1"
     assert checkpoint["Metadata"]["summary_usage"]["total_tokens"] == 110
     assert "当前用户目标" in checkpoint["Content"]["parts"][0]["text"]
 

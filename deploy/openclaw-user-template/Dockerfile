@@ -1,0 +1,79 @@
+## syntax=docker/dockerfile:1.7
+
+# -----------------------------------------------------------------------------
+# OpenClaw 用户自定义镜像模板（极简直启版）
+# -----------------------------------------------------------------------------
+# 设计目标：
+# 1. 不引入独立 bootstrap 脚本，只保留 Dockerfile 内最小启动链路。
+# 2. 兼容我们的运行时约束：只持久化 /home/node/.openclaw，默认网关端口 8080。
+# 3. 用户创建实例时额外传入的自定义环境变量，容器内可以直接读取。
+# 4. 只允许 trusted-proxy / none 两种网关鉴权模式，显式拒绝 token。
+# 5. 预置中国大陆常用镜像源，方便用户后续在容器内按需安装依赖。
+#
+# 重要说明：
+# - 自定义环境变量不会自动写进 openclaw.json。
+# - 如果你的插件 / skill / 业务代码要使用 env，请在代码里直接读取 process.env。
+# - 如果你希望做复杂的 env -> config 映射，那已经超出这份极简模板的职责。
+# -----------------------------------------------------------------------------
+
+ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.3.28
+FROM ${OPENCLAW_BASE_IMAGE}
+
+USER root
+
+# -----------------------------------------------------------------------------
+# 一、写入镜像内的“模板基线”
+# -----------------------------------------------------------------------------
+# 因为运行时真正会持久化的只有 /home/node/.openclaw，所以不能把默认内容只放在
+# 持久化目录里；否则卷挂载后会被覆盖。这里把用户内容先放到只读模板区，再在
+# 启动时按“缺什么补什么”的方式初始化到 state dir。
+COPY custom/extensions /opt/openclaw-template/extensions
+COPY custom/skills /opt/openclaw-template/skills
+COPY custom/config/openclaw.json /opt/openclaw-template/config/openclaw.json
+
+RUN set -eux; \
+  mkdir -p /opt/openclaw-template/extensions /opt/openclaw-template/skills /opt/openclaw-template/config /home/node/.openclaw; \
+  chown -R node:node /opt/openclaw-template /home/node/.openclaw
+
+# -----------------------------------------------------------------------------
+# 二、默认运行时环境
+# -----------------------------------------------------------------------------
+# 这里显式兼容 8080 和 trusted-proxy，同时预置中国大陆常用源。
+# 其中也包含 ClawHub 中国镜像源，方便用户后续直接使用 clawhub CLI 或基于它的能力市场安装链路。
+# 用户创建实例时新增的自定义 env 不会被覆盖，仍然会出现在容器环境里。
+ENV HOME=/home/node \
+    OPENCLAW_STATE_DIR=/home/node/.openclaw \
+    OPENCLAW_GATEWAY_BIND=lan \
+    OPENCLAW_GATEWAY_AUTH_MODE=trusted-proxy \
+    OPENCLAW_TRUSTED_PROXY_USER_HEADER=x-forwarded-user \
+    OPENCLAW_INTERNAL_TRUSTED_PROXY_USER=openclaw-backend \
+    OPENCLAW_INTERNAL_TRUSTED_PROXY_USER_HEADER=x-forwarded-user \
+    OPENCLAW_TRUSTED_PROXIES=127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,35.0.0.0/8 \
+    OPENCLAW_GATEWAY_PORT=8080 \
+    PORT=8080 \
+    CLAWHUB_SITE=https://cn.clawhub-mirror.com \
+    CLAWHUB_REGISTRY=https://cn.clawhub-mirror.com \
+    NPM_CONFIG_REGISTRY=https://registry.npmmirror.com \
+    npm_config_registry=https://registry.npmmirror.com \
+    YARN_NPM_REGISTRY_SERVER=https://registry.npmmirror.com \
+    PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple \
+    PIP_TRUSTED_HOST=mirrors.aliyun.com \
+    UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple \
+    PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright \
+    PUPPETEER_DOWNLOAD_BASE_URL=https://npmmirror.com/mirrors/chromium-browser-snapshots \
+    PATH=/home/node/.local/bin:${PATH}
+
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=5 \
+  CMD node -e "const net=require('net'); const port=Number(process.env.OPENCLAW_GATEWAY_PORT||process.env.PORT||8080); const socket=net.connect({host:'127.0.0.1', port},()=>{socket.end(); process.exit(0);}); socket.on('error',()=>process.exit(1)); setTimeout(()=>process.exit(1), 3000);"
+
+USER node
+
+# -----------------------------------------------------------------------------
+# 三、最小启动逻辑
+# -----------------------------------------------------------------------------
+# 这里只做三件事：
+# 1. 首次启动时，把镜像内模板内容补到 /home/node/.openclaw
+# 2. 校验鉴权模式只能是 trusted-proxy|none
+# 3. 直接启动 OpenClaw Gateway
+CMD ["sh","-lc","set -eu; STATE_DIR=\"${OPENCLAW_STATE_DIR:-/home/node/.openclaw}\"; TEMPLATE_DIR=\"/opt/openclaw-template\"; mkdir -p \"$STATE_DIR\" \"$STATE_DIR/extensions\" \"$STATE_DIR/skills\"; chmod 700 \"$STATE_DIR\" 2>/dev/null || true; if [ -f \"$STATE_DIR/secrets.json\" ]; then chmod 600 \"$STATE_DIR/secrets.json\" 2>/dev/null || true; fi; if [ ! -f \"$STATE_DIR/openclaw.json\" ] && [ -f \"$TEMPLATE_DIR/config/openclaw.json\" ]; then cp \"$TEMPLATE_DIR/config/openclaw.json\" \"$STATE_DIR/openclaw.json\"; fi; if [ -d \"$TEMPLATE_DIR/extensions\" ]; then for src in \"$TEMPLATE_DIR\"/extensions/*; do [ -e \"$src\" ] || continue; name=\"$(basename \"$src\")\"; dst=\"$STATE_DIR/extensions/$name\"; [ -e \"$dst\" ] || cp -R \"$src\" \"$dst\"; done; fi; if [ -d \"$TEMPLATE_DIR/skills\" ]; then for src in \"$TEMPLATE_DIR\"/skills/*; do [ -e \"$src\" ] || continue; name=\"$(basename \"$src\")\"; dst=\"$STATE_DIR/skills/$name\"; [ -e \"$dst\" ] || cp -R \"$src\" \"$dst\"; done; fi; auth_mode=\"$(printf '%s' \"${OPENCLAW_GATEWAY_AUTH_MODE:-trusted-proxy}\" | tr '[:upper:]' '[:lower:]')\"; case \"$auth_mode\" in trusted-proxy|none) ;; *) echo >&2 'OPENCLAW_GATEWAY_AUTH_MODE 仅支持 trusted-proxy|none；token 模式会导致网关无法通过平台接入'; exit 1 ;; esac; bind_mode=\"${OPENCLAW_GATEWAY_BIND:-lan}\"; if [ \"$auth_mode\" = \"none\" ] && [ \"$bind_mode\" = \"lan\" ]; then bind_mode=\"loopback\"; fi; exec node openclaw.mjs gateway run --allow-unconfigured --bind \"$bind_mode\" --port \"${OPENCLAW_GATEWAY_PORT:-${PORT:-8080}}\" --auth \"$auth_mode\""]

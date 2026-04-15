@@ -32,7 +32,7 @@
 - `agentengine dashboard open` 现可在 OpenClaw 工作目录中直接解析 `.agentengine.state`。
 - 统一 build、deploy、launch 的输出层、dry-run 摘要、下一步提示和 `--no-cache` 语义。
 - 优化非 TTY 与 JSON 场景输出，破坏性命令统一收口到 `--yes/-y`。
-- 默认模型、示例和模板切换到 `glm-5`。
+- 默认模型、示例和模板切换到 `glm-5.1`。
 - 简化 `init -f openclaw` 模板，并改进 `zsh`、`bash`、Git Bash、WSL 下的补全安装体验。
 - 更新默认 OpenClaw 镜像、预置插件、预置技能和搜索默认策略，适配当前 x86 Serverless 运行环境。
 - MCP deploy / update 请求体改为更完整透传服务端嵌套 schema 以及显式 `Code` / `Container` 字段。

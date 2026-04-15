@@ -1449,7 +1449,7 @@ async def get_agent_builder(app_name: str, ts: int = 0, tmp: bool = False, file_
     """Get agent builder config - stub for ADK-Web"""
     # Return minimal YAML config for non-ADK projects
     return f"""name: {app_name}
-model: glm-5
+model: glm-5.1
 description: {app_name} agent
 instruction: You are a helpful assistant.
 """

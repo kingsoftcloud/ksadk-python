@@ -93,7 +93,7 @@ KSYUN_ACCOUNT_ID=你的账号ID
 
 OPENAI_API_KEY=你的模型APIKey
 # OPENAI_BASE_URL=https://你的openai兼容网关/v1
-# OPENAI_MODEL_NAME=glm-5
+# OPENAI_MODEL_NAME=glm-5.1
 # CLAWHUB_SITE=https://cn.clawhub-mirror.com
 # CLAWHUB_REGISTRY=https://cn.clawhub-mirror.com
 ENV
@@ -165,7 +165,7 @@ agentengine openclaw deploy --image hub.kce.ksyun.com/myns/openclaw:v2
 agentengine openclaw deploy \
   --model-base-url https://api.example.com/v1 \
   --model-api-key sk-xxx \
-  --default-model glm-5
+  --default-model glm-5.1
 
 # 删除实例
 agentengine openclaw delete ar-xxxx -y

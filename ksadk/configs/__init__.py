@@ -13,7 +13,7 @@ AgentEngine 统一配置管理
 
 默认值:
     OPENAI_API_BASE: 自动检测内网/外网，使用金山云模型服务
-    MODEL_NAME: glm-5
+    MODEL_NAME: glm-5.1
 """
 
 from ksadk.configs.settings import (

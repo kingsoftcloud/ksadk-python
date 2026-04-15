@@ -33,7 +33,7 @@ from google.adk.agents import Agent
 from google.adk.models.lite_llm import LiteLlm
 
 model = LiteLlm(
-    model=f"openai/{{os.getenv('OPENAI_MODEL_NAME', 'glm-5')}}",
+    model=f"openai/{{os.getenv('OPENAI_MODEL_NAME', 'glm-5.1')}}",
     api_base=os.getenv("OPENAI_BASE_URL"),
     api_key=os.getenv("OPENAI_API_KEY"),
     stream=True,  # 启用流式输出
@@ -77,7 +77,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 llm = ChatOpenAI(
-    model=os.getenv("OPENAI_MODEL_NAME", "glm-5"),
+    model=os.getenv("OPENAI_MODEL_NAME", "glm-5.1"),
     base_url=os.getenv("OPENAI_BASE_URL"),
     api_key=os.getenv("OPENAI_API_KEY"),
     streaming=True,
@@ -108,7 +108,7 @@ from typing import TypedDict, Annotated
 import operator
 
 llm = ChatOpenAI(
-    model=os.getenv("OPENAI_MODEL_NAME", "glm-5"),
+    model=os.getenv("OPENAI_MODEL_NAME", "glm-5.1"),
     base_url=os.getenv("OPENAI_BASE_URL"),
     api_key=os.getenv("OPENAI_API_KEY"),
     streaming=True,
@@ -148,7 +148,7 @@ from deepagents import create_deep_agent
 from langchain_openai import ChatOpenAI
 
 llm = ChatOpenAI(
-    model=os.getenv("OPENAI_MODEL_NAME", "glm-5"),
+    model=os.getenv("OPENAI_MODEL_NAME", "glm-5.1"),
     base_url=os.getenv("OPENAI_BASE_URL"),
     api_key=os.getenv("OPENAI_API_KEY"),
     streaming=True,
@@ -1081,7 +1081,7 @@ KSYUN_REGION={ks_region}
         if model_name:
             env_content += f"OPENAI_MODEL_NAME={model_name}\n"
         else:
-            env_content += "# OPENAI_MODEL_NAME=glm-5\n"
+            env_content += "# OPENAI_MODEL_NAME=glm-5.1\n"
     else:
         langfuse_public = global_env.get("LANGFUSE_PUBLIC_KEY", "")
         langfuse_secret = global_env.get("LANGFUSE_SECRET_KEY", "")
@@ -1102,7 +1102,7 @@ OPENAI_API_KEY={api_key}
         if model_name:
             env_content += f"OPENAI_MODEL_NAME={model_name}\n"
         else:
-            env_content += "# OPENAI_MODEL_NAME=glm-5\n"
+            env_content += "# OPENAI_MODEL_NAME=glm-5.1\n"
 
         env_content += """
 # ======================

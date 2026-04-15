@@ -1,0 +1,10 @@
+{
+  "id": "demo-now",
+  "name": "Demo Now Plugin",
+  "description": "Registers a tiny tool for checking the current time and a few runtime fields.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
