@@ -364,7 +364,7 @@ def test_bootstrap_preserves_existing_defaults_model_fallbacks_and_image_model()
         assert cfg["agents"]["defaults"]["imageModel"]["primary"] == "ksyun/kimi-k2.5"
 
 
-def test_bootstrap_defaults_primary_to_first_catalog_model_when_unspecified():
+def test_bootstrap_prefers_glm51_as_default_primary_when_catalog_is_present():
     with TemporaryDirectory() as tmpdir:
         config_path = Path(tmpdir) / "openclaw.json"
         env = _build_base_env(tmpdir, str(config_path))
@@ -386,7 +386,7 @@ def test_bootstrap_defaults_primary_to_first_catalog_model_when_unspecified():
 
         assert result.returncode == 0, result.stderr or result.stdout
         cfg = json.loads(config_path.read_text())
-        assert cfg["agents"]["defaults"]["model"]["primary"] == "ksyun/kimi-k2.5"
+        assert cfg["agents"]["defaults"]["model"]["primary"] == "ksyun/glm-5.1"
         models = cfg["models"]["providers"]["ksyun"]["models"]
         assert [item["id"] for item in models] == ["kimi-k2.5", "glm-5.1"]
 

@@ -136,6 +136,11 @@ class ContainerBuilder(BaseBuilder):
         output_dir.mkdir(parents=True, exist_ok=True)
         
         package_name = Path(detection_result.package_path).name
+        is_container_first_template = (
+            getattr(getattr(detection_result, "type", None), "value", "") == "hermes"
+            and (project_path / "Dockerfile").exists()
+            and (project_path / "entrypoint.sh").exists()
+        )
         
         # 复制项目文件
         for item in project_path.iterdir():
@@ -179,10 +184,10 @@ class ContainerBuilder(BaseBuilder):
             ignore=_ignore_ksadk_source,
         )
         
-        # 生成 Dockerfile
-        dockerfile = self._generate_dockerfile(detection_result)
         dockerfile_path = output_dir / "Dockerfile"
-        dockerfile_path.write_text(dockerfile)
+        if not is_container_first_template:
+            dockerfile = self._generate_dockerfile(detection_result)
+            dockerfile_path.write_text(dockerfile)
         
         # 生成 requirements.txt (合并用户依赖)
         requirements = self._generate_requirements(detection_result, project_path)
@@ -190,9 +195,12 @@ class ContainerBuilder(BaseBuilder):
         requirements_path.write_text(requirements)
         
         # 生成启动脚本
-        entrypoint = self._generate_entrypoint(detection_result, package_name)
-        entrypoint_path = output_dir / "entrypoint.py"
-        entrypoint_path.write_text(entrypoint)
+        if is_container_first_template:
+            entrypoint_path = output_dir / "entrypoint.sh"
+        else:
+            entrypoint = self._generate_entrypoint(detection_result, package_name)
+            entrypoint_path = output_dir / "entrypoint.py"
+            entrypoint_path.write_text(entrypoint)
         
         return PackageInfo(
             name=detection_result.name or project_path.name,

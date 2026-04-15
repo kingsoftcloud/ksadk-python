@@ -9,6 +9,7 @@ from typing import Any, Sequence
 
 import click
 
+from ksadk.cli.dry_run import sanitize_dry_run_request
 from ksadk.cli.ui import (
     emit_json,
     is_json_output,
@@ -448,7 +449,7 @@ def build_workflow_dry_run_envelope(
         "kind": "dry_run",
         "resource": "workflow",
         "action": action,
-        "request": dict(request),
+        "request": sanitize_dry_run_request(request),
         "hints": list(hints or []),
     }
     if plan is not None:
@@ -479,11 +480,12 @@ def render_workflow_dry_run(
     plan: dict[str, Any] | None = None,
     hints: Sequence[str] | None = None,
 ) -> None:
+    safe_request = sanitize_dry_run_request(request)
     if is_json_output():
         emit_json(
             build_workflow_dry_run_envelope(
                 action=action,
-                request=request,
+                request=safe_request,
                 plan=plan,
                 hints=hints,
             )
@@ -538,10 +540,10 @@ def render_workflow_dry_run(
                     click.echo(f"      原因: {reason}")
 
     print_rule("远端请求")
-    print_kv("请求方法", str(request.get("method", "REQUEST")))
-    print_kv("请求地址", str(request.get("url", "")))
-    print_kv("请求头", _request_header_summary(request.get("headers")))
-    print_kv("请求字段", _request_body_summary(request.get("body")))
-    if request.get("curl"):
+    print_kv("请求方法", str(safe_request.get("method", "REQUEST")))
+    print_kv("请求地址", str(safe_request.get("url", "")))
+    print_kv("请求头", _request_header_summary(safe_request.get("headers")))
+    print_kv("请求字段", _request_body_summary(safe_request.get("body")))
+    if safe_request.get("curl"):
         print_info("Curl:")
-        click.echo(str(request["curl"]))
+        click.echo(str(safe_request["curl"]))

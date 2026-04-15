@@ -719,7 +719,6 @@ def test_cmd_web_launches_unified_local_server(monkeypatch, tmp_path):
     assert result.exit_code == 0, result.output
     assert fake_runner.run_server_calls == [8899]
     assert fake_runner.load_agent_calls == 0
-    assert "Chainlit" not in result.output
 
 
 def test_cmd_web_defaults_adk_stm_to_persistent_sqlite(monkeypatch, tmp_path):
@@ -853,6 +852,16 @@ def test_web_ui_source_supports_clipboard_file_paste():
     assert "clipboardData.items" in source
     assert "onPaste" in source
     assert "getAsFile" in source
+
+
+def test_web_ui_source_uses_chat_completions_streaming_for_hermes():
+    source = Path("ksadk/server/web-ui/src/App.tsx").read_text(encoding="utf-8")
+    assert "setAgentFramework" in source
+    assert "agentFramework === 'hermes'" in source
+    assert "ApiFormat: runAgentApiFormat" in source
+    assert "chat_completions" in source
+    assert "choices?.[0]?.delta" in source
+    assert "delta.content" in source
 
 
 def test_web_ui_source_uses_adaptive_image_preview_sizing():

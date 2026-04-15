@@ -237,7 +237,8 @@ async def _deploy_async(
     from ksadk.deployment import DeploymentManager, DeployTarget, DeployStatus
 
     agent_path = Path(agent_dir).resolve()
-    effective_artifact_type = artifact_type or "Code"
+    config = _load_config(agent_path)
+    effective_artifact_type = _resolve_artifact_type_input(config, artifact_type)
     print_workflow_header(
         title="Agent 部署",
         subtitle=f"target: {target}",
@@ -259,10 +260,7 @@ async def _deploy_async(
 
     print_kv("框架", detection_result.name, value_style="#2da44e")
 
-    # 2. 加载配置
-    config = _load_config(agent_path)
-
-    # 3. 确定部署名称
+    # 2. 确定部署名称
     deploy_name = name or config.get("name") or agent_path.name.replace("-", "_").replace(".", "_")
     print_kv("部署名称", deploy_name)
     resolved_ui_profile, resolved_ui_path, resolved_ui_url = _resolve_ui_config_inputs(
@@ -581,6 +579,15 @@ def _resolve_ui_config_inputs(
         ui_path if ui_path is not None else config_path,
         ui_url if ui_url is not None else config_url,
     )
+
+
+def _resolve_artifact_type_input(config: dict, cli_artifact_type: str | None) -> str:
+    raw = cli_artifact_type
+    if raw is None and isinstance(config, dict):
+        deploy_config = config.get("deploy") if isinstance(config.get("deploy"), dict) else {}
+        raw = config.get("artifact_type") or deploy_config.get("artifact_type")
+    normalized = str(raw or "Code").strip().lower()
+    return "Container" if normalized == "container" else "Code"
 
 
 def _apply_network_config(config: dict, deploy_target: "DeployTarget") -> None:

@@ -17,6 +17,7 @@ class FrameworkType(Enum):
     LANGCHAIN = "langchain"
     LANGGRAPH = "langgraph"
     DEEPAGENTS = "deepagents"
+    HERMES = "hermes"
     UNKNOWN = "unknown"
 
 
@@ -96,6 +97,7 @@ class FrameworkDetector:
                 "langchain": FrameworkType.LANGCHAIN,
                 "langgraph": FrameworkType.LANGGRAPH,
                 "deepagents": FrameworkType.DEEPAGENTS,
+                "hermes": FrameworkType.HERMES,
             }.get(framework, FrameworkType.UNKNOWN)
             
             return DetectionResult(

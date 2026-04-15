@@ -162,6 +162,42 @@ def test_dashboard_open_resolves_openclaw_state_from_cwd(tmp_path: Path, monkeyp
     assert "http://demo.example.com/s/gateway-1" in result.output
 
 
+def test_dashboard_open_defaults_hermes_to_root_generic_access_link(monkeypatch):
+    runner = CliRunner()
+    captured = {}
+
+    async def _fake_resolve(_region, primary_ref, fallback_ref):
+        return (
+            {
+                "agent_id": "ar-hermes-1",
+                "name": "demo-hermes",
+                "framework": "hermes",
+                "endpoint": "http://hermes.example.com",
+            },
+            primary_ref,
+            False,
+        )
+
+    async def _fake_create(*_args, **kwargs):
+        captured.update(kwargs)
+        return await _fake_create_access_link()
+
+    monkeypatch.setattr(cmd_dashboard, "load_state", lambda _cwd: {})
+    monkeypatch.setattr(cmd_dashboard, "_resolve_agent_detail", _fake_resolve)
+    monkeypatch.setattr(cmd_dashboard, "_create_dashboard_access_link", _fake_create)
+    monkeypatch.setattr(
+        cmd_dashboard,
+        "_create_openclaw_gateway_access_link",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("Hermes must not use OpenClaw gateway link")),
+    )
+    monkeypatch.setattr(cmd_dashboard.webbrowser, "open", lambda _url: None)
+
+    result = runner.invoke(cmd_dashboard.dashboard, ["open", "ar-hermes-1"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["path"] == "/"
+
+
 def test_dashboard_open_routes_openclaw_to_gateway_short_link(tmp_path: Path, monkeypatch):
     runner = CliRunner()
     opened = {}

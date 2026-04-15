@@ -48,6 +48,7 @@ def test_help_snapshots_match_canonical_cli_surface():
         "agent_help": ["agent", "--help"],
         "dashboard_help": ["dashboard", "--help"],
         "dashboard_open_help": ["dashboard", "open", "--help"],
+        "hermes_help": ["hermes", "--help"],
         "mcp_help": ["mcp", "--help"],
         "mcp_build_help": ["mcp", "build", "--help"],
         "openclaw_help": ["openclaw", "--help"],
