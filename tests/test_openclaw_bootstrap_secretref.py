@@ -608,6 +608,7 @@ def test_bootstrap_enables_builtin_browser_by_default():
         assert cfg["browser"]["enabled"] is True
         assert cfg["browser"]["headless"] is True
         assert cfg["browser"]["noSandbox"] is True
+        assert cfg["browser"]["ssrfPolicy"] == {"dangerouslyAllowPrivateNetwork": True}
 
 
 def test_bootstrap_preserves_explicit_builtin_browser_enablement_in_config():
@@ -620,6 +621,10 @@ def test_bootstrap_preserves_explicit_builtin_browser_enablement_in_config():
                         "enabled": True,
                         "headless": False,
                         "noSandbox": False,
+                        "ssrfPolicy": {
+                            "dangerouslyAllowPrivateNetwork": False,
+                            "hostnameAllowlist": ["docs.example.com"],
+                        },
                     }
                 }
             )
@@ -641,6 +646,10 @@ def test_bootstrap_preserves_explicit_builtin_browser_enablement_in_config():
         assert cfg["browser"]["enabled"] is True
         assert cfg["browser"]["headless"] is False
         assert cfg["browser"]["noSandbox"] is False
+        assert cfg["browser"]["ssrfPolicy"] == {
+            "dangerouslyAllowPrivateNetwork": False,
+            "hostnameAllowlist": ["docs.example.com"],
+        }
 
 
 def test_bootstrap_allows_reenabling_builtin_browser_via_env():
@@ -683,6 +692,27 @@ def test_bootstrap_allows_disabling_builtin_browser_via_env():
         assert result.returncode == 0, result.stderr or result.stdout
         cfg = json.loads(config_path.read_text())
         assert cfg["browser"]["enabled"] is False
+
+
+def test_bootstrap_keeps_browser_ssrf_policy_strict_in_strict_mode():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_EXEC_STRICT_MODE"] = "true"
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert "ssrfPolicy" not in cfg["browser"]
 
 
 def test_bootstrap_recovers_from_blank_secret_ref_env_overrides():
@@ -1720,6 +1750,47 @@ def test_bootstrap_configures_feishu_channel_from_channel_bootstrap_json():
         assert cfg["channels"]["feishu"]["requireMention"] is True
         assert cfg["channels"]["feishu"]["dmPolicy"] == "pairing"
         assert cfg["channels"]["feishu"]["groupPolicy"] == "open"
+
+
+def test_bootstrap_keeps_feishu_open_dm_policy_valid_when_existing_allow_from_is_specific():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "channels": {
+                        "feishu": {
+                            "enabled": True,
+                            "appId": "cli-app-id",
+                            "appSecret": "cli-app-secret",
+                            "dmPolicy": "open",
+                            "allowFrom": ["ou_demo_1", "ou_demo_2"],
+                        }
+                    }
+                }
+            )
+        )
+        default_extensions_dir = Path(tmpdir) / "default-extensions" / "openclaw-lark"
+        default_extensions_dir.mkdir(parents=True, exist_ok=True)
+        (default_extensions_dir / "manifest.json").write_text('{"name":"openclaw-lark"}\n')
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_DEFAULT_EXTENSIONS_DIR"] = str(Path(tmpdir) / "default-extensions")
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert cfg["channels"]["feishu"]["dmPolicy"] == "open"
+        assert cfg["channels"]["feishu"]["allowFrom"] == ["ou_demo_1", "ou_demo_2", "*"]
 
 
 def test_bootstrap_does_not_configure_agentspace_channel_from_legacy_env():

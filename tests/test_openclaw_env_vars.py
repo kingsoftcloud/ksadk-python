@@ -162,6 +162,22 @@ def test_build_openclaw_env_vars_applies_strictest_security_profile(monkeypatch)
     assert env["OPENCLAW_FS_WORKSPACE_ONLY"] == "true"
 
 
+def test_build_openclaw_env_vars_defaults_exec_to_relaxed_without_explicit_profile(monkeypatch):
+    monkeypatch.setattr(cmd_openclaw, "_GLOBAL_ENV_CACHE", {})
+    monkeypatch.delenv("OPENCLAW_EXEC_STRICT_MODE", raising=False)
+    monkeypatch.delenv("OPENCLAW_EXEC_SECURITY", raising=False)
+    monkeypatch.delenv("OPENCLAW_EXEC_ASK_FALLBACK", raising=False)
+    monkeypatch.delenv("OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED", raising=False)
+
+    env = cmd_openclaw._build_openclaw_env_vars()
+
+    assert env["OPENCLAW_EXEC_STRICT_MODE"] == "false"
+    assert env["OPENCLAW_EXEC_UNSAFE_MODE"] == "true"
+    assert env["OPENCLAW_EXEC_SECURITY"] == "full"
+    assert env["OPENCLAW_EXEC_ASK_FALLBACK"] == "full"
+    assert env["OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED"] == "false"
+
+
 def test_build_openclaw_env_vars_omits_redundant_model_defaults(monkeypatch):
     monkeypatch.setattr(cmd_openclaw, "_GLOBAL_ENV_CACHE", {})
     monkeypatch.delenv("OPENCLAW_DEFAULT_MODEL", raising=False)
@@ -244,6 +260,20 @@ def test_build_openclaw_env_vars_forwards_explicit_builtin_browser_toggle(monkey
     assert env["OPENCLAW_BROWSER_ENABLED"] == "true"
     assert env["OPENCLAW_BROWSER_NO_SANDBOX"] == "true"
     assert env["OPENCLAW_BROWSER_HEADLESS"] == "true"
+
+
+def test_build_openclaw_env_vars_forwards_explicit_browser_ssrf_policy_json(monkeypatch):
+    monkeypatch.setattr(cmd_openclaw, "_GLOBAL_ENV_CACHE", {})
+    monkeypatch.setenv(
+        "OPENCLAW_BROWSER_SSRF_POLICY_JSON",
+        '{"dangerouslyAllowPrivateNetwork":false,"hostnameAllowlist":["docs.example.com"]}',
+    )
+
+    env = cmd_openclaw._build_openclaw_env_vars()
+
+    assert env["OPENCLAW_BROWSER_SSRF_POLICY_JSON"] == (
+        '{"dangerouslyAllowPrivateNetwork":false,"hostnameAllowlist":["docs.example.com"]}'
+    )
 
 
 def test_build_openclaw_env_vars_forwards_channel_bootstrap_json(monkeypatch):
