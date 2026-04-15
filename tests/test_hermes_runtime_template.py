@@ -246,11 +246,42 @@ def test_entrypoint_writes_explicit_context_length_override():
     assert "glm-5.1" in entrypoint
     assert "fallback_model:" in entrypoint
     assert "model: \"${HERMES_FALLBACK_MODEL}\"" in entrypoint
-    assert ".hermes/skills" in entrypoint
+    assert '${HERMES_HOME}/skills' in entrypoint
     assert "for bundled_skill in /app/skills/*" in entrypoint
     assert 'cp -R "${bundled_skill}"' in entrypoint
     assert "TAVILY_API_KEY" in entrypoint
     assert "EXA_API_KEY" in entrypoint
+    assert 'export HOME="${HOME:-/home/node}"' in entrypoint
+    assert 'export HERMES_STATE_DIR="${HERMES_STATE_DIR:-${HOME}/.hermes}"' in entrypoint
+    assert 'export HERMES_HOME="${HERMES_HOME:-${HERMES_STATE_DIR}}"' in entrypoint
+    assert 'export HERMES_WORKDIR="${HERMES_WORKDIR:-${HERMES_HOME}/workspace}"' in entrypoint
+    assert 'export HERMES_RUN_DIR="${HERMES_RUN_DIR:-${HERMES_HOME}/run}"' in entrypoint
+    assert 'export HERMES_SESSION_DIR="${HERMES_SESSION_DIR:-${HERMES_HOME}/sessions}"' in entrypoint
+    assert 'export AGENT_BROWSER_HOME="${AGENT_BROWSER_HOME:-/usr/local/lib/node_modules/agent-browser}"' in entrypoint
+    assert 'export MCPORTER_HOME="${MCPORTER_HOME:-${HERMES_HOME}/mcporter}"' in entrypoint
+    assert 'export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-${HERMES_HOME}/xdg/config}"' in entrypoint
+    assert 'export XDG_CACHE_HOME="${XDG_CACHE_HOME:-${HERMES_HOME}/xdg/cache}"' in entrypoint
+    assert 'export XDG_STATE_HOME="${XDG_STATE_HOME:-${HERMES_HOME}/xdg/state}"' in entrypoint
+    assert 'export AGENT_BROWSER_STATE_DIR="${AGENT_BROWSER_STATE_DIR:-${HERMES_HOME}/browser}"' in entrypoint
+    assert 'export AGENT_BROWSER_RUN_DIR="${AGENT_BROWSER_RUN_DIR:-${AGENT_BROWSER_STATE_DIR}/run}"' in entrypoint
+    assert 'export AGENT_BROWSER_SESSION_DIR="${AGENT_BROWSER_SESSION_DIR:-${AGENT_BROWSER_STATE_DIR}/sessions}"' in entrypoint
+    assert 'export AGENT_BROWSER_SOCKET_DIR="${AGENT_BROWSER_SOCKET_DIR:-${AGENT_BROWSER_RUN_DIR}}"' in entrypoint
+    assert 'export KDOCS_OPEN_BROWSER="${KDOCS_OPEN_BROWSER:-0}"' in entrypoint
+    assert 'mkdir -p "${HERMES_WORKDIR}"' in entrypoint
+    assert 'mkdir -p "${HERMES_HOME}" "${HERMES_HOME}/skills" "${HERMES_RUN_DIR}" "${HERMES_SESSION_DIR}"' in entrypoint
+    assert 'mkdir -p "${AGENT_BROWSER_STATE_DIR}" "${AGENT_BROWSER_RUN_DIR}" "${AGENT_BROWSER_SESSION_DIR}"' in entrypoint
+    assert 'cd "${HERMES_WORKDIR}"' in entrypoint
+
+
+def test_entrypoint_runs_uvicorn_with_explicit_app_dir():
+    entrypoint = (
+        Path(__file__).resolve().parents[1]
+        / "deploy"
+        / "hermes"
+        / "entrypoint.sh"
+    ).read_text(encoding="utf-8")
+
+    assert 'exec uvicorn --app-dir /app runtime.app:app --host 0.0.0.0 --port "${PORT}"' in entrypoint
 
 
 def test_runtime_dockerfile_installs_browser_runtime_and_skills_assets():
@@ -266,6 +297,9 @@ def test_runtime_dockerfile_installs_browser_runtime_and_skills_assets():
     assert "agent-browser" in dockerfile
     assert "/usr/local/lib/python3.12/site-packages/node_modules/agent-browser" in dockerfile
     assert "COPY skills ./skills" in dockerfile
+    assert "/usr/local/bin/npm" in dockerfile
+    assert "/usr/local/bin/npx" in dockerfile
+    assert "/usr/local/bin/mcporter" in dockerfile
 
 
 def test_runtime_bundles_cn_search_and_kdocs_skills():
@@ -279,6 +313,24 @@ def test_runtime_bundles_cn_search_and_kdocs_skills():
     assert (skills_root / "multi-search-engine" / "SKILL.md").exists()
     assert (skills_root / "agent-browser-clawdbot" / "SKILL.md").exists()
     assert (skills_root / "kdocs" / "SKILL.md").exists()
+
+
+def test_runtime_readme_documents_single_persistent_home_layout():
+    readme = (
+        Path(__file__).resolve().parents[1]
+        / "deploy"
+        / "hermes"
+        / "README.md"
+    ).read_text(encoding="utf-8")
+
+    assert "~/.hermes" in readme
+    assert "HOME=/home/node" in readme
+    assert "HERMES_HOME=/home/node/.hermes" in readme
+    assert "HERMES_WORKDIR=/home/node/.hermes/workspace" in readme
+    assert "AGENT_BROWSER_HOME=/usr/local/lib/node_modules/agent-browser" in readme
+    assert "AGENT_BROWSER_STATE_DIR=/home/node/.hermes/browser" in readme
+    assert "AGENT_BROWSER_SOCKET_DIR=/home/node/.hermes/browser/run" in readme
+    assert "single persistent directory" in readme.lower()
 
 
 def test_runtime_exec_allowlist_rejects_unsupported_config_query():

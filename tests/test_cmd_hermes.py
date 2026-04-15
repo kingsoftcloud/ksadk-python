@@ -341,6 +341,39 @@ def test_hermes_open_defaults_to_manage_and_supports_chat_override(monkeypatch):
     assert opened[1]["ui_path"] == "/chat"
 
 
+def test_hermes_open_force_new_forwards_to_dashboard(monkeypatch):
+    runner = CliRunner()
+    opened = []
+
+    monkeypatch.setattr(
+        cmd_hermes,
+        "_get_hermes_detail",
+        lambda *args, **kwargs: asyncio.sleep(
+            0,
+            result={
+                "agent_id": "ar-hermes-1",
+                "framework": "hermes",
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        cmd_hermes,
+        "_open_dashboard",
+        lambda **kwargs: opened.append(kwargs),
+    )
+
+    result = runner.invoke(
+        cmd_hermes.hermes,
+        ["open", "ar-hermes-1", "--chat", "--share", "--expires-seconds", "86400", "--force-new", "--no-open"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert opened[0]["ui_path"] == "/chat"
+    assert opened[0]["share"] is True
+    assert opened[0]["expires_seconds"] == 86400
+    assert opened[0]["force_new"] is True
+
+
 def test_hermes_open_dry_run_does_not_resolve_or_open(monkeypatch):
     runner = CliRunner()
 
@@ -445,6 +478,10 @@ def test_hermes_deploy_rewrites_public_kspmas_url_for_runtime(tmp_path: Path, mo
     result = runner.invoke(cmd_hermes.hermes, ["deploy", "--name", "demo-hermes"])
 
     assert result.exit_code == 0, result.output
+    assert (
+        _FakeHermesClient.create_payload["artifact_path"]
+        == "hub.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.15-ks10"
+    )
     assert any(
         item["Key"] == "OPENAI_BASE_URL" and item["Value"] == "http://kspmas-internal.sdns.ksyun.com/v1"
         for item in _FakeHermesClient.create_payload["env_vars"]

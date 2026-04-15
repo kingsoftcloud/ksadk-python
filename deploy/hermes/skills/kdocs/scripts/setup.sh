@@ -4,8 +4,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SKILL_FILE="$SCRIPT_DIR/SKILL.md"
-LEGACY_ENV_FILE="$SCRIPT_DIR/.env"
+SKILL_FILE="$SCRIPT_DIR/../SKILL.md"
+LEGACY_ENV_FILE="$SCRIPT_DIR/../.env"
 MCP_URL="https://mcp-center.wps.cn/skill_hub/mcp"
 AUTO_INSTALL_MCPORTER=0
 
@@ -93,6 +93,7 @@ ensure_mcporter() {
     if [ "$AUTO_INSTALL_MCPORTER" -eq 1 ]; then
         if ! command -v npm >/dev/null 2>&1; then
             echo "❌ 未找到 mcporter，且当前环境没有 npm，无法自动安装"
+            echo "💡 在官方 Hermes runtime 镜像里，mcporter 应该已预装。请先检查镜像或 PATH。"
             exit 1
         fi
         echo "⚠️  未找到 mcporter，已按参数要求自动安装..."
@@ -101,7 +102,7 @@ ensure_mcporter() {
     fi
     if ! command -v mcporter >/dev/null 2>&1; then
         echo "❌ 未找到 mcporter"
-        echo "💡 默认不会自动修改系统环境。"
+        echo "💡 在官方 Hermes runtime 镜像里，mcporter 应该已预装。默认不会自动修改系统环境。"
         echo "   - 手动安装后重试；或"
         echo "   - 追加参数 --auto-install-mcporter 允许脚本自动安装"
         exit 1

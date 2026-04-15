@@ -15,14 +15,14 @@ For this phase, `agentengine hermes deploy` does not build locally. It deploys a
 The default public image is:
 
 ```text
-hub.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.13-ks8
+hub.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.15-ks10
 ```
 
 When we need to refresh that shared image, do it from the `ksadk-python` repo root:
 
 ```bash
 make hermes-build
-make hermes-push HERMES_TAG=v2026.4.13-ks8
+make hermes-push HERMES_TAG=v2026.4.15-ks10
 make hermes-size
 ```
 
@@ -52,6 +52,36 @@ The published image serves all Hermes runtime surfaces from one port:
 - `/health` -> wrapper health probe that checks both API and dashboard upstreams
 
 The wrapper must proxy `/v1/*` with a real streaming response for SSE. Do not read `upstream.content` into memory before returning, or hosted `/chat` will degrade into burst output after a long stall.
+
+## Persistent Directory Layout
+
+The runtime now assumes a single persistent directory rooted at `~/.hermes`.
+The entrypoint explicitly pins the mutable runtime state under that one tree:
+
+```bash
+HOME=/home/node
+HERMES_HOME=/home/node/.hermes
+HERMES_WORKDIR=/home/node/.hermes/workspace
+AGENT_BROWSER_HOME=/usr/local/lib/node_modules/agent-browser
+AGENT_BROWSER_STATE_DIR=/home/node/.hermes/browser
+AGENT_BROWSER_SOCKET_DIR=/home/node/.hermes/browser/run
+AGENT_BROWSER_SESSION_DIR=/home/node/.hermes/browser/sessions
+MCPORTER_HOME=/home/node/.hermes/mcporter
+```
+
+If you deploy this image with a PVC or hostPath mount and only get one persistent path, mount that storage at `/home/node/.hermes`.
+That keeps Hermes config, sessions, workspace state, `mcporter` config, and browser sockets/sessions in one place and avoids split-brain behavior after restarts.
+`AGENT_BROWSER_HOME` points at the installed package root so the CLI can find its bundled daemon assets; browser runtime state still stays under `~/.hermes/browser`.
+
+The entrypoint also precreates:
+
+- `/home/node/.hermes/run`
+- `/home/node/.hermes/sessions`
+- `/home/node/.hermes/browser/run`
+- `/home/node/.hermes/browser/sessions`
+
+That layout is the recommended default for both local container runs and cluster deployments, and it matches the OpenClaw-style “single state directory” model more closely than mounting a separate workspace root.
+The bundled kdocs skill also assumes this remote-pod-friendly layout: `mcporter` is preinstalled in the image, and token acquisition prints a login URL by default instead of trying to auto-open a browser inside the pod.
 
 ## Generated Project Relationship
 

@@ -221,7 +221,7 @@ CLI 主线包括：
 
 Hermes 生命周期则走另一条主线：
 
-- 默认共享镜像：`hub.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.13-ks8`
+- 默认共享镜像：`hub.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.15-ks10`
 - 不要求用户本地 build/push
 - deploy 时把模型 env 注入到共享 runtime
 - 若配置的是 `kspmas.ksyun.com` 公网模型地址，deploy 会自动改写成 `kspmas-internal.sdns.ksyun.com` 供云端 Pod 使用

@@ -93,7 +93,12 @@ def _build_base_env(state_dir: str, config_path: str) -> dict:
 def test_openclaw_dockerfile_tracks_latest_official_channel_plugins():
     dockerfile = OPENCLAW_DOCKERFILE.read_text(encoding="utf-8")
 
-    assert "ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:" in dockerfile
+    assert (
+        "ARG OPENCLAW_BASE_IMAGE="
+        "ghcr.io/openclaw/openclaw:2026.4.14@"
+        "sha256:a65101a8aed6259c4f057076005ede737335d5f2e39b233d0d7dec1fc9e9e496"
+        in dockerfile
+    )
     assert "ARG OPENCLAW_WEIXIN_PLUGIN_SPEC=@tencent-weixin/openclaw-weixin" in dockerfile
     assert "ARG OPENCLAW_LARK_PLUGIN_SPEC=@larksuite/openclaw-lark" in dockerfile
 

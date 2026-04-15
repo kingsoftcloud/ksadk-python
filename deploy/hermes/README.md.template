@@ -38,6 +38,19 @@ agentengine hermes pairing <agent> -- list
 
 `runtime/app.py` 必须对 `/v1/*` 保持真正的 SSE 转发。不要把上游响应先读成完整 `content` 再返回，否则 hosted `/chat` 会表现成“长时间无输出后一次性吐完”。
 
+## 持久化建议
+
+Hermes runtime 默认把所有可变状态集中到 `~/.hermes` 这个状态根目录：
+
+- `HOME=/home/node`
+- `HERMES_HOME=/home/node/.hermes`
+- `HERMES_WORKDIR=/home/node/.hermes/workspace`
+- `MCPORTER_HOME=/home/node/.hermes/mcporter`
+- `AGENT_BROWSER_HOME=/usr/local/lib/node_modules/agent-browser`
+- `AGENT_BROWSER_STATE_DIR=/home/node/.hermes/browser`
+
+如果你的 pod 只持久化一个目录，建议直接挂载到 `/home/node/.hermes`。这样 Hermes 配置、session、workspace、mcporter 配置、浏览器会话和运行 socket 都会落在同一棵目录下，重启后行为更稳定。
+
 ## 自定义镜像
 
 当前目录保留了一份 Hermes runtime 参考实现：

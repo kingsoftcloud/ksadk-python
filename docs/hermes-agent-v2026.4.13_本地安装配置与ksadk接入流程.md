@@ -81,8 +81,8 @@ make hermes-build HERMES_AGENT_REF=v2026.4.13
 默认发布地址：
 
 ```text
-hub.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.13-ks8
-hub-vpc-cn-beijing-6.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.13-ks8
+hub.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.15-ks10
+hub-vpc-cn-beijing-6.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.15-ks10
 ```
 
 说明：
@@ -159,7 +159,7 @@ agentengine hermes deploy --name demo-hermes
 ```bash
 agentengine hermes deploy \
   --name demo-hermes \
-  --image hub.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.13-ks8
+  --image hub.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.15-ks10
 ```
 
 部署命令当前行为：

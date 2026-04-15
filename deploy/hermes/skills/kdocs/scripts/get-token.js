@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // get-token.js - WPS Authorization Tool (Node.js)
-// Usage: node get-token.js [--auto-install-mcporter|-AutoInstallMcporter]
+// Usage: node get-token.js [--open-browser] [--auto-install-mcporter|-AutoInstallMcporter]
 
 const runtimeRequire = typeof require === "function" ? require : null;
 
@@ -16,6 +16,11 @@ const AUTH_EXCHANGE_URL =
 const AUTO_INSTALL_MCPORTER =
   process.argv.includes("--auto-install-mcporter") ||
   process.argv.includes("-AutoInstallMcporter");
+const SHOULD_OPEN_BROWSER =
+  process.argv.includes("--open-browser") ||
+  ["1", "true", "yes"].includes(
+    String(process.env.KDOCS_OPEN_BROWSER || "").toLowerCase()
+  );
 
 async function importBuiltin(specifier) {
   const mod = await import(specifier);
@@ -52,11 +57,11 @@ function getScriptDir() {
 }
 
 function getLegacyEnvFile() {
-  return path.join(getScriptDir(), ".env");
+  return path.resolve(getScriptDir(), "..", ".env");
 }
 
 function getSkillFile() {
-  return path.join(getScriptDir(), "SKILL.md");
+  return path.resolve(getScriptDir(), "..", "SKILL.md");
 }
 
 function getSkillVersion() {
@@ -179,14 +184,14 @@ function ensureMcporter() {
       }
     } else {
       throw new Error(
-        "mcporter is missing and npm is unavailable. Install mcporter manually or rerun with --auto-install-mcporter (or -AutoInstallMcporter) in an npm-enabled environment."
+        "mcporter is missing and npm is unavailable. In the official Hermes runtime image it should already be preinstalled. Install mcporter manually, or rerun with --auto-install-mcporter (or -AutoInstallMcporter) in an npm-enabled environment."
       );
     }
   }
 
   if (!isCommandAvailable("mcporter")) {
     throw new Error(
-      "mcporter is required to save the kdocs config. Default behavior will not auto-install globally. Install mcporter manually, or rerun with --auto-install-mcporter (or -AutoInstallMcporter)."
+      "mcporter is required to save the kdocs config. In the official Hermes runtime image it should already be preinstalled. Default behavior will not auto-install globally. Install mcporter manually, or rerun with --auto-install-mcporter (or -AutoInstallMcporter)."
     );
   }
 }
@@ -390,10 +395,16 @@ async function main() {
   console.log("");
   console.log(`  ${loginUrl}`);
   console.log("");
+  console.log(
+    "The script will keep polling in the background after you finish the WPS login."
+  );
+  console.log("");
 
-  if (!openBrowser(loginUrl)) {
+  if (SHOULD_OPEN_BROWSER && !openBrowser(loginUrl)) {
+    console.log("[!] Cannot open browser automatically. Please copy the link above manually.");
+  } else if (!SHOULD_OPEN_BROWSER) {
     console.log(
-      "[!] Cannot open browser automatically. Please copy the link above manually."
+      "[i] Browser auto-open is disabled by default for remote pods. Use --open-browser or set KDOCS_OPEN_BROWSER=1 if you want the script to open the link for you."
     );
   }
 

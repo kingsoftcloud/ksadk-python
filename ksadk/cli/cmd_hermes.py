@@ -47,7 +47,7 @@ from ksadk.hermes_terminal import (
 )
 
 
-DEFAULT_HERMES_IMAGE = "hub.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.13-ks8"
+DEFAULT_HERMES_IMAGE = "hub.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.15-ks10"
 DEFAULT_HERMES_CONTEXT_LENGTHS = (
     ("glm-5.1", "200000"),
 )
@@ -612,6 +612,7 @@ def status(agent_ref: Optional[str], region: str, dry_run: bool, output_mode: st
 @click.option("--path", "ui_path", default=None, help="目标 UI 路径")
 @click.option("--share", is_flag=True, help="创建可分享链接")
 @click.option("--expires-seconds", default=None, type=str, help="链接有效期（秒）")
+@click.option("--force-new", is_flag=True, help="强制新建链接（跳过复用）")
 @click.option("--no-open", is_flag=True, help="仅打印 URL，不自动打开浏览器")
 @click.option("--direct", is_flag=True, help="直接打开 endpoint/path（跳过短链接创建）")
 @dry_run_option()
@@ -625,6 +626,7 @@ def open_hermes(
     ui_path: Optional[str],
     share: bool,
     expires_seconds: Optional[str],
+    force_new: bool,
     no_open: bool,
     direct: bool,
     dry_run: bool,
@@ -649,6 +651,7 @@ def open_hermes(
                 "path": target_path,
                 "share": share,
                 "expires_seconds": parsed_expires,
+                "force_new": force_new,
                 "no_open": no_open,
                 "direct": direct,
             },
@@ -665,6 +668,7 @@ def open_hermes(
         ui_path=target_path,
         share=share,
         expires_seconds=parsed_expires,
+        force_new=force_new,
         no_open=no_open,
         direct=direct,
     )

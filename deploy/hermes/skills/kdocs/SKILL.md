@@ -37,7 +37,7 @@ mcporter call kdocs.check_skill_update version=<本地版本号>
 | 步骤 | 操作 |
 |------|------|
 | 读取 | 仅从 `mcporter` 的 `kdocs` 配置读取 `Authorization` header；不再依赖 `.env` 或环境变量 |
-| 获取 | 若 Token 为空或过期（错误码 `400006`），运行 `bash scripts/get-token.sh` 或 `node scripts/get-token.js` 获取新 Token，并直接写入 `mcporter`；mac/Linux 下 `get-token.sh` 会自动尝试打开浏览器登录页；Windows 下若本机有 Node.js，优先运行 `node scripts/get-token.js`，若本机没有 Node.js，则改为运行 `powershell -ExecutionPolicy Bypass -File scripts\get-token.ps1`；如需允许脚本自动安装 `mcporter`，可显式追加 `--auto-install-mcporter`（Node / Bash）或 `-AutoInstallMcporter`（PowerShell）；**脚本失败时改用「手动获取 Token」兜底** |
+| 获取 | 若 Token 为空或过期（错误码 `400006`），运行 `node scripts/get-token.js` 或 `bash scripts/get-token.sh` 获取新 Token，并直接写入 `mcporter`；默认流程会打印登录链接，等待你在浏览器完成 WPS 登录，然后脚本在后台轮询并写入 Token，默认不会自动打开浏览器，适合远程 pod / SSH 场景；如需自动打开，可显式追加 `--open-browser` 或设置 `KDOCS_OPEN_BROWSER=1`；Windows 下若本机有 Node.js，优先运行 `node scripts/get-token.js`，若本机没有 Node.js，则改为运行 `powershell -ExecutionPolicy Bypass -File scripts\get-token.ps1`；如需允许脚本自动安装 `mcporter`，可显式追加 `--auto-install-mcporter`（Node / Bash）或 `-AutoInstallMcporter`（PowerShell）；**脚本失败时改用「手动获取 Token」兜底** |
 | 配置 | 仅允许将 Token 保存到 `mcporter`；禁止继续写入 `.env`、`KINGSOFT_DOCS_TOKEN` 或其他环境变量 |
 | 验证 | 调用任意读取工具（如 `search_files`），返回 `code: 0` 即认证成功 |
 | 过期 | 收到错误码 `400006` 时，Token 已过期，按上述「获取」步骤重新获取 |
@@ -46,6 +46,7 @@ mcporter call kdocs.check_skill_update version=<本地版本号>
 > 🔒 **Token 安全**：任何时候都不得将 Token 明文值展示给用户、写入 `.env`、导出到环境变量，或拼接到命令中。Token 仅允许保存在 `mcporter` 的 `kdocs` 配置中。
 > 🔄 **旧配置迁移**：若检测到历史 `.env` 或环境变量 `KINGSOFT_DOCS_TOKEN`，只允许做一次性迁移到 `mcporter`；`.env` 仅移除 `KINGSOFT_DOCS_TOKEN` 键（其他键保留），若 `.env` 仅含该键则直接删除空 `.env` 文件。
 > 🛡️ **避免改动系统环境**：默认不会执行 `npm install -g` 这类全局安装命令；只有你明确加上参数时，才会自动安装 `mcporter`（Node / bash: `--auto-install-mcporter`，PowerShell: `-AutoInstallMcporter`）。
+> 📦 **Hermes runtime 默认镜像**：mcporter 由 Hermes runtime 镜像预装；若在官方 Hermes 镜像中提示未找到 `mcporter`，应优先视为镜像或 PATH 问题，而不是让 Agent 现场修环境。
 
 #### 手动获取 Token（脚本失败时的兜底方案）
 
@@ -66,7 +67,7 @@ mcporter config remove kdocs 2>/dev/null; mcporter config add kdocs "https://mcp
 
 本 Skill 通过 MCP 协议提供服务，不限定特定客户端，可在任何支持 MCP 的 Agent 中运行（如 OpenClaw、Cursor、Claude Code 等）。
 
-**自动化注册（mcporter 环境）**：运行 `bash scripts/setup.sh` 即可完成 MCP 服务注册。首次使用时会自动拉起授权；若检测到 Token 过期，`setup.sh` 也会自动调用 `get-token.sh` 重新获取。mac/Linux 下 `get-token.sh` 会自动尝试打开浏览器登录页并等待回调完成。默认不会自动全局安装 `mcporter`，若需要可显式追加 `--auto-install-mcporter`。
+**自动化注册（mcporter 环境）**：运行 `bash scripts/setup.sh` 即可完成 MCP 服务注册。首次使用时会自动拉起授权；若检测到 Token 过期，`setup.sh` 也会自动调用 `get-token.sh` 重新获取。推荐默认运行 `node scripts/get-token.js`：脚本会输出授权链接，你在本地浏览器完成登录后，它会继续轮询并把 Token 写入 `mcporter`。默认不会自动打开浏览器，适合远程 pod / SSH 场景；若需要，可显式追加 `--open-browser` 或设置 `KDOCS_OPEN_BROWSER=1`。默认不会自动全局安装 `mcporter`，若需要可显式追加 `--auto-install-mcporter`。
 
 `scripts/setup.sh` 会自动完成：
 1. 从 `SKILL.md` frontmatter 提取 `version` 版本号
@@ -496,7 +497,7 @@ search_files(keyword="关键词", type="all", page_size=20)
 |----------|------|----------|
 | `400006` / 鉴权失败 | Token 过期或未配置 | 先运行 get-token 脚本重新获取；脚本失败则引导用户手动获取（见「认证配置」章节） |
 | 工具找不到 | 未注册 MCP 服务 | 运行 `bash scripts/setup.sh` 重新注册（mcporter 环境），或检查客户端 MCP 配置 |
-| `mcporter` 未找到 | 运行环境缺少 mcporter | 默认不会改动系统环境（不执行全局安装）；可先手动安装后重试，或显式使用 `bash scripts/setup.sh --auto-install-mcporter` / `bash scripts/get-token.sh --auto-install-mcporter`（PowerShell: `-AutoInstallMcporter`） |
+| `mcporter` 未找到 | 运行环境缺少 mcporter | 官方 Hermes runtime 镜像默认应已预装 `mcporter`；若镜像内缺失，优先检查镜像或 PATH。默认不会改动系统环境（不执行全局安装）；需要时也可显式使用 `bash scripts/setup.sh --auto-install-mcporter` / `bash scripts/get-token.sh --auto-install-mcporter`（PowerShell: `-AutoInstallMcporter`） |
 | `.env` 迁移后其他配置丢失 | 脚本会整文件删除 `.env` | 新流程仅移除 `KINGSOFT_DOCS_TOKEN` 键并保留其他键；若 `.env` 仅含该键会直接删除空 `.env` |
 | 搜索无结果 | 关键词过精确 / 索引延迟 | 缩短关键词 / 等待 3-5 秒重试 |
 | 读取内容为空 | 文件无内容或格式不支持 | 确认文件非空且后缀正确 |

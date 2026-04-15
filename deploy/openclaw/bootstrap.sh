@@ -2139,9 +2139,15 @@ const imageCapableModelRefs = selectableModels
   .filter((item) => modelSupportsInput(item, 'image'))
   .map((item) => normalizeModelRef(providerId, String(item?.id || item?.name || '').trim()))
   .filter(Boolean);
-const catalogPrimaryModel = selectableModels
+const catalogModelCandidates = selectableModels
   .map((item) => normalizeModelRef(providerId, String(item?.id || item?.name || '').trim()))
-  .find(Boolean);
+  .filter(Boolean);
+const preferredGlmModel = normalizeModelRef(providerId, 'glm-5.1');
+const catalogPrimaryModel = (
+  (preferredGlmModel && catalogModelCandidates.includes(preferredGlmModel) ? preferredGlmModel : '') ||
+  catalogModelCandidates[0] ||
+  ''
+);
 const primaryModel = (
   normalizeModelRef(providerId, preferredDefaultModel) ||
   catalogPrimaryModel ||

@@ -1,4 +1,4 @@
-OPENCLAW_BASE_IMAGE ?= ghcr.io/openclaw/openclaw:2026.3.28
+OPENCLAW_BASE_IMAGE ?= ghcr.io/openclaw/openclaw:2026.4.14@sha256:a65101a8aed6259c4f057076005ede737335d5f2e39b233d0d7dec1fc9e9e496
 IMAGE ?= hub-vpc-cn-beijing-6.kce.ksyun.com/agentengine-public/openclaw-user-custom
 TAG ?= demo
 PLATFORM ?= linux/amd64

@@ -1,7 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-export HOME="${HOME:-/home/agent}"
+export HOME="${HOME:-/home/node}"
+export HERMES_STATE_DIR="${HERMES_STATE_DIR:-${HOME}/.hermes}"
+export HERMES_HOME="${HERMES_HOME:-${HERMES_STATE_DIR}}"
+export HERMES_WORKDIR="${HERMES_WORKDIR:-${HERMES_HOME}/workspace}"
+export HERMES_RUN_DIR="${HERMES_RUN_DIR:-${HERMES_HOME}/run}"
+export HERMES_SESSION_DIR="${HERMES_SESSION_DIR:-${HERMES_HOME}/sessions}"
+export MCPORTER_HOME="${MCPORTER_HOME:-${HERMES_HOME}/mcporter}"
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-${HERMES_HOME}/xdg/config}"
+export XDG_CACHE_HOME="${XDG_CACHE_HOME:-${HERMES_HOME}/xdg/cache}"
+export XDG_STATE_HOME="${XDG_STATE_HOME:-${HERMES_HOME}/xdg/state}"
+export AGENT_BROWSER_HOME="${AGENT_BROWSER_HOME:-/usr/local/lib/node_modules/agent-browser}"
+export AGENT_BROWSER_STATE_DIR="${AGENT_BROWSER_STATE_DIR:-${HERMES_HOME}/browser}"
+export AGENT_BROWSER_RUN_DIR="${AGENT_BROWSER_RUN_DIR:-${AGENT_BROWSER_STATE_DIR}/run}"
+export AGENT_BROWSER_SESSION_DIR="${AGENT_BROWSER_SESSION_DIR:-${AGENT_BROWSER_STATE_DIR}/sessions}"
+export AGENT_BROWSER_SOCKET_DIR="${AGENT_BROWSER_SOCKET_DIR:-${AGENT_BROWSER_RUN_DIR}}"
+export AGENT_BROWSER_ARTIFACTS_DIR="${AGENT_BROWSER_ARTIFACTS_DIR:-${AGENT_BROWSER_STATE_DIR}/artifacts}"
+export AGENT_BROWSER_LOG_DIR="${AGENT_BROWSER_LOG_DIR:-${AGENT_BROWSER_STATE_DIR}/logs}"
 export PORT="${PORT:-8080}"
 export API_SERVER_HOST="${API_SERVER_HOST:-127.0.0.1}"
 export API_SERVER_PORT="${API_SERVER_PORT:-8642}"
@@ -14,6 +30,8 @@ export HERMES_FALLBACK_PROVIDER="${HERMES_FALLBACK_PROVIDER:-custom}"
 export HERMES_FALLBACK_MODEL="${HERMES_FALLBACK_MODEL:-${OPENAI_FALLBACK_MODEL_NAME:-}}"
 export HERMES_FALLBACK_BASE_URL="${HERMES_FALLBACK_BASE_URL:-${OPENAI_BASE_URL:-}}"
 export AGENT_BROWSER_EXECUTABLE_PATH="${AGENT_BROWSER_EXECUTABLE_PATH:-/usr/bin/chromium}"
+export KDOCS_OPEN_BROWSER="${KDOCS_OPEN_BROWSER:-0}"
+export PATH="/usr/local/bin:${HOME}/.local/bin:${PATH}"
 
 if [[ -z "${HERMES_CONTEXT_LENGTH}" ]]; then
   case "${OPENAI_MODEL_NAME,,}" in
@@ -24,9 +42,16 @@ if [[ -z "${HERMES_CONTEXT_LENGTH}" ]]; then
   esac
 fi
 
-mkdir -p "${HOME}/.hermes" "${HOME}/.hermes/skills"
+mkdir -p "${HOME}"
+mkdir -p "${HERMES_HOME}" "${HERMES_HOME}/skills" "${HERMES_RUN_DIR}" "${HERMES_SESSION_DIR}"
+mkdir -p "${HERMES_WORKDIR}"
+mkdir -p "${MCPORTER_HOME}" "${XDG_CONFIG_HOME}" "${XDG_CACHE_HOME}" "${XDG_STATE_HOME}"
+mkdir -p "${AGENT_BROWSER_STATE_DIR}" "${AGENT_BROWSER_RUN_DIR}" "${AGENT_BROWSER_SESSION_DIR}"
+mkdir -p "${AGENT_BROWSER_ARTIFACTS_DIR}" "${AGENT_BROWSER_LOG_DIR}"
+find "${AGENT_BROWSER_RUN_DIR}" -mindepth 1 -maxdepth 1 -type s -delete 2>/dev/null || true
+cd "${HERMES_WORKDIR}"
 
-cat > "${HOME}/.hermes/.env" <<EOF
+cat > "${HERMES_HOME}/.env" <<EOF
 OPENAI_API_KEY=${OPENAI_API_KEY:-}
 OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
 OPENAI_MODEL_NAME=${OPENAI_MODEL_NAME:-}
@@ -42,16 +67,23 @@ BROWSERBASE_API_KEY=${BROWSERBASE_API_KEY:-}
 BROWSER_USE_API_KEY=${BROWSER_USE_API_KEY:-}
 CAMOFOX_URL=${CAMOFOX_URL:-}
 AGENT_BROWSER_EXECUTABLE_PATH=${AGENT_BROWSER_EXECUTABLE_PATH}
+AGENT_BROWSER_HOME=${AGENT_BROWSER_HOME}
+AGENT_BROWSER_STATE_DIR=${AGENT_BROWSER_STATE_DIR}
+AGENT_BROWSER_SOCKET_DIR=${AGENT_BROWSER_SOCKET_DIR}
+AGENT_BROWSER_SESSION_DIR=${AGENT_BROWSER_SESSION_DIR}
+AGENT_BROWSER_ARTIFACTS_DIR=${AGENT_BROWSER_ARTIFACTS_DIR}
+AGENT_BROWSER_LOG_DIR=${AGENT_BROWSER_LOG_DIR}
+KDOCS_OPEN_BROWSER=${KDOCS_OPEN_BROWSER}
 EOF
 
 for bundled_skill in /app/skills/*; do
   [[ -d "${bundled_skill}" ]] || continue
   skill_name="$(basename "${bundled_skill}")"
-  rm -rf "${HOME}/.hermes/skills/${skill_name}"
-  cp -R "${bundled_skill}" "${HOME}/.hermes/skills/${skill_name}"
+  rm -rf "${HERMES_HOME}/skills/${skill_name}"
+  cp -R "${bundled_skill}" "${HERMES_HOME}/skills/${skill_name}"
 done
 
-cat > "${HOME}/.hermes/config.yaml" <<EOF
+cat > "${HERMES_HOME}/config.yaml" <<EOF
 model:
   provider: "${HERMES_MODEL_PROVIDER}"
   default: "${OPENAI_MODEL_NAME:-}"
@@ -59,25 +91,25 @@ model:
 EOF
 
 if [[ -n "${HERMES_CONTEXT_LENGTH}" ]]; then
-  cat >> "${HOME}/.hermes/config.yaml" <<EOF
+  cat >> "${HERMES_HOME}/config.yaml" <<EOF
   context_length: ${HERMES_CONTEXT_LENGTH}
 EOF
 fi
 
 if [[ -n "${HERMES_FALLBACK_MODEL}" && -n "${HERMES_FALLBACK_PROVIDER}" ]]; then
-  cat >> "${HOME}/.hermes/config.yaml" <<EOF
+  cat >> "${HERMES_HOME}/config.yaml" <<EOF
 fallback_model:
   provider: "${HERMES_FALLBACK_PROVIDER}"
   model: "${HERMES_FALLBACK_MODEL}"
 EOF
   if [[ -n "${HERMES_FALLBACK_BASE_URL}" ]]; then
-    cat >> "${HOME}/.hermes/config.yaml" <<EOF
+    cat >> "${HERMES_HOME}/config.yaml" <<EOF
   base_url: "${HERMES_FALLBACK_BASE_URL}"
 EOF
   fi
 fi
 
-cat >> "${HOME}/.hermes/config.yaml" <<EOF
+cat >> "${HERMES_HOME}/config.yaml" <<EOF
 api_server:
   enabled: true
   host: "${API_SERVER_HOST}"
@@ -95,4 +127,4 @@ cleanup() {
 }
 trap cleanup EXIT
 
-exec uvicorn runtime.app:app --host 0.0.0.0 --port "${PORT}"
+exec uvicorn --app-dir /app runtime.app:app --host 0.0.0.0 --port "${PORT}"

@@ -9,16 +9,17 @@
 #   4. 本脚本轮询 exchange 接口获取 token
 #   5. 将 token 仅写入 mcporter，不再写入 .env 或环境变量
 #
-# 用法：bash get-token.sh [--json] [--notify] [--auto-install-mcporter]
+# 用法：bash get-token.sh [--json] [--notify] [--open-browser] [--auto-install-mcporter]
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SKILL_FILE="$SCRIPT_DIR/SKILL.md"
-LEGACY_ENV_FILE="$SCRIPT_DIR/.env"
+SKILL_FILE="$SCRIPT_DIR/../SKILL.md"
+LEGACY_ENV_FILE="$SCRIPT_DIR/../.env"
 MCP_URL="https://mcp-center.wps.cn/skill_hub/mcp"
 OUTPUT_JSON=0
 SHOULD_NOTIFY=0
+SHOULD_OPEN_BROWSER=0
 AUTO_INSTALL_MCPORTER=0
 
 for arg in "$@"; do
@@ -26,10 +27,16 @@ for arg in "$@"; do
     OUTPUT_JSON=1
   elif [ "$arg" = "--notify" ]; then
     SHOULD_NOTIFY=1
+  elif [ "$arg" = "--open-browser" ]; then
+    SHOULD_OPEN_BROWSER=1
   elif [ "$arg" = "--auto-install-mcporter" ]; then
     AUTO_INSTALL_MCPORTER=1
   fi
 done
+
+if [ "${KDOCS_OPEN_BROWSER:-0}" = "1" ]; then
+  SHOULD_OPEN_BROWSER=1
+fi
 
 generate_uuid() {
   if command -v uuidgen >/dev/null 2>&1; then
@@ -132,13 +139,13 @@ ensure_mcporter() {
       echo "✅ mcporter 安装完成"
     else
       echo "❌ 未找到 mcporter，且当前环境没有 npm，无法自动安装"
-      echo "💡 请先手动安装 mcporter，或在可用 npm 环境下重试"
+      echo "💡 在官方 Hermes runtime 镜像里，mcporter 应该已预装。请检查镜像或 PATH；或者在可用 npm 环境下重试。"
       exit 1
     fi
   fi
   if ! command -v mcporter >/dev/null 2>&1; then
     echo "❌ 未找到 mcporter"
-    echo "💡 默认不会自动修改系统环境。"
+    echo "💡 在官方 Hermes runtime 镜像里，mcporter 应该已预装。默认不会自动修改系统环境。"
     echo "   - 手动安装后重试；或"
     echo "   - 追加参数 --auto-install-mcporter 允许脚本自动安装"
     exit 1
@@ -226,10 +233,17 @@ echo ""
 echo "======================================================================"
 echo ""
 
-if open_login_url "$LOGIN_URL"; then
-  echo "🌐 已自动打开浏览器，请完成 WPS 登录授权"
+echo "ℹ️  完成 WPS 登录后，脚本会继续在后台轮询并自动写入 mcporter。"
+
+if [ "$SHOULD_OPEN_BROWSER" -eq 1 ]; then
+  if open_login_url "$LOGIN_URL"; then
+    echo "🌐 已自动打开浏览器，请完成 WPS 登录授权"
+  else
+    echo "⚠️  未能自动打开浏览器，请手动复制上方链接访问"
+  fi
 else
-  echo "⚠️  未能自动打开浏览器，请手动复制上方链接访问"
+  echo "ℹ️  默认不会自动打开浏览器，适合远程 pod / SSH 场景。"
+  echo "   如需自动打开，请追加 --open-browser 或设置 KDOCS_OPEN_BROWSER=1。"
 fi
 echo ""
 
