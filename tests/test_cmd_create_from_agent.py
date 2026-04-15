@@ -73,7 +73,7 @@ def test_create_openclaw_only_generates_env_file(tmp_path: Path, monkeypatch):
         lambda: {
             "OPENAI_API_KEY": "sk-openclaw",
             "OPENAI_BASE_URL": "https://model.example.com/v1",
-            "OPENAI_MODEL_NAME": "glm-5",
+            "OPENAI_MODEL_NAME": "glm-5.1",
             "LANGFUSE_PUBLIC_KEY": "pk-should-not-exist",
             "LANGFUSE_SECRET_KEY": "sk-should-not-exist",
             "LANGFUSE_BASE_URL": "https://langfuse.example.com",
@@ -99,5 +99,5 @@ def test_create_openclaw_only_generates_env_file(tmp_path: Path, monkeypatch):
     assert "KSYUN_ACCOUNT_ID=1234567890" in env_text
     assert "OPENAI_API_KEY=sk-openclaw" in env_text
     assert "OPENAI_BASE_URL=https://model.example.com/v1" in env_text
-    assert "OPENAI_MODEL_NAME=glm-5" in env_text
+    assert "OPENAI_MODEL_NAME=glm-5.1" in env_text
     assert "LANGFUSE_" not in env_text

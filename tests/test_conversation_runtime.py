@@ -872,7 +872,7 @@ async def test_invoke_conversation_once_refines_session_title_after_first_turn(m
             return True
 
         async def generate_title(self, *, model, messages, timeout_ms):
-            assert model == "glm-5"
+            assert model == "glm-5.1"
             assert messages[0]["role"] == "system"
             assert "你好，请介绍一下你自己" in messages[-1]["content"]
             return "自我介绍", {"total_tokens": 12}
@@ -889,7 +889,7 @@ async def test_invoke_conversation_once_refines_session_title_after_first_turn(m
         user_id="user-1",
         session_id=None,
         messages=[{"role": "user", "content": "你好，请介绍一下你自己"}],
-        model="glm-5",
+        model="glm-5.1",
         prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
     )
 
@@ -919,7 +919,7 @@ async def test_invoke_conversation_once_uses_heuristic_title_for_agent_intro(mon
         user_id="user-1",
         session_id=None,
         messages=[{"role": "user", "content": "你好，请介绍一下你自己"}],
-        model="glm-5",
+        model="glm-5.1",
         prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
     )
 
@@ -963,7 +963,7 @@ async def test_invoke_conversation_once_uses_heuristic_title_for_architecture_at
                 ],
             }
         ],
-        model="glm-5",
+        model="glm-5.1",
         prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
     )
 
@@ -1087,7 +1087,7 @@ async def test_build_run_input_auto_compacts_old_rounds_into_checkpoint(monkeypa
         user_id="user-1",
         session_id="sess-compact",
         messages=[{"role": "user", "content": "follow up"}],
-        model="glm-5",
+        model="glm-5.1",
         session_service_provider=lambda: service,
     )
     prepared = await build_run_input(
@@ -1095,7 +1095,7 @@ async def test_build_run_input_auto_compacts_old_rounds_into_checkpoint(monkeypa
         user_id="user-1",
         session_id="sess-compact",
         messages=[{"role": "user", "content": "follow up"}],
-        model="glm-5",
+        model="glm-5.1",
     )
 
     events = await service.get_events("sess-compact")
@@ -1198,7 +1198,7 @@ async def test_compact_conversation_history_prefers_semantic_summary_and_records
         is_available = True
 
         async def summarize(self, *, model, messages, timeout_ms):
-            assert model == "glm-5"
+            assert model == "glm-5.1"
             assert timeout_ms > 0
             assert any("当前用户目标" in item["content"] for item in messages)
             return (
@@ -1216,7 +1216,7 @@ async def test_compact_conversation_history_prefers_semantic_summary_and_records
         session_id="sess-semantic",
         author="demo-agent",
         invocation_id="inv-semantic",
-        model="glm-5",
+        model="glm-5.1",
         force=True,
         keep_tail_groups=1,
         session_service_provider=lambda: service,
@@ -1228,7 +1228,7 @@ async def test_compact_conversation_history_prefers_semantic_summary_and_records
     assert "当前用户目标" in checkpoint.content["parts"][0]["text"]
     assert checkpoint.metadata["summary_strategy"] == "semantic"
     assert checkpoint.metadata["summary_version"] == "v1"
-    assert checkpoint.metadata["summary_model"] == "glm-5"
+    assert checkpoint.metadata["summary_model"] == "glm-5.1"
     assert checkpoint.metadata["summary_usage"]["total_tokens"] == 168
 
 
@@ -1275,7 +1275,7 @@ async def test_compact_conversation_history_falls_back_to_extractive_when_semant
         session_id="sess-fallback",
         author="demo-agent",
         invocation_id="inv-fallback",
-        model="glm-5",
+        model="glm-5.1",
         force=True,
         keep_tail_groups=1,
         session_service_provider=lambda: service,

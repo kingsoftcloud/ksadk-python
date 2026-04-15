@@ -7,6 +7,7 @@ import os
 from typing import Awaitable, Callable, Optional, TypeVar
 
 import click
+from click.core import ParameterSource
 
 from ksadk.api.client import DryRunExit
 from ksadk.cli.resource_common import build_dry_run_envelope
@@ -14,10 +15,11 @@ from ksadk.cli.ui import emit_json, is_json_output
 
 _T = TypeVar("_T")
 _DEFAULT_DONE_MSG = "✅ Dry Run Completed: 请求已打印，未执行实际变更。"
+_GLOBAL_DRY_RUN_ENV = "AGENTENGINE_GLOBAL_DRY_RUN"
 
 
 def is_global_dry_run_enabled() -> bool:
-    return os.getenv("AGENTENGINE_GLOBAL_DRY_RUN", "").strip().lower() in {
+    return os.getenv(_GLOBAL_DRY_RUN_ENV, "").strip().lower() in {
         "1",
         "true",
         "yes",
@@ -29,9 +31,59 @@ def effective_dry_run(local_dry_run: bool = False) -> bool:
     return bool(local_dry_run or is_global_dry_run_enabled())
 
 
-def dry_run_option(help_text: str = "只打印 curl 请求，不执行"):
+def _set_dry_run_callback(ctx: click.Context, _param: click.Parameter, value: bool):
+    ctx.ensure_object(dict)
+    inherited = False
+    if ctx.parent is not None and isinstance(ctx.parent.obj, dict):
+        inherited = bool(ctx.parent.obj.get("dry_run"))
+
+    source = ctx.get_parameter_source("dry_run")
+    selected = inherited if source == ParameterSource.DEFAULT else bool(value)
+
+    if selected:
+        os.environ[_GLOBAL_DRY_RUN_ENV] = "1"
+    else:
+        os.environ.pop(_GLOBAL_DRY_RUN_ENV, None)
+
+    ctx.obj["dry_run"] = selected
+    return selected
+
+
+def dry_run_option(
+    help_text: str = "只打印 curl 请求，不执行",
+    *,
+    hidden: bool = False,
+    expose_value: bool = True,
+):
     """Reusable Click option for dry-run support."""
-    return click.option("--dry-run", is_flag=True, default=False, help=help_text)
+    return click.option(
+        "--dry-run",
+        "dry_run",
+        is_flag=True,
+        default=False,
+        hidden=hidden,
+        expose_value=expose_value,
+        callback=_set_dry_run_callback,
+        help=help_text,
+    )
+
+
+def build_dry_run_click_option(
+    help_text: str = "只打印 curl 请求，不执行",
+    *,
+    hidden: bool = False,
+    expose_value: bool = True,
+) -> click.Option:
+    """Build a dry-run option for command injection."""
+    return click.Option(
+        ["--dry-run", "dry_run"],
+        is_flag=True,
+        default=False,
+        hidden=hidden,
+        expose_value=expose_value,
+        callback=_set_dry_run_callback,
+        help=help_text,
+    )
 
 
 def run_async_with_dry_run(

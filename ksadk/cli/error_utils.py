@@ -10,6 +10,7 @@ from typing import Any, Optional, Sequence, Tuple
 
 import click
 
+from ksadk.cli.dry_run import is_global_dry_run_enabled
 from ksadk.cli.ui import emit_json, is_json_output, print_error, print_info
 
 _SERVER_API_ERROR_RE = re.compile(
@@ -238,7 +239,21 @@ def unsupported_json_output_error(command: str, *, suggestion: str | None = None
 
 def ensure_json_output_supported(command: str, *, suggestion: str | None = None) -> None:
     if is_json_output():
-        raise unsupported_json_output_error(command, suggestion=suggestion)
+        abort_with_cli_error(unsupported_json_output_error(command, suggestion=suggestion))
+
+
+def unsupported_dry_run_error(command: str, *, suggestion: str | None = None) -> CLIError:
+    hints = [suggestion] if suggestion else []
+    return usage_error(
+        f"`{command}` 暂不支持 `--dry-run`。",
+        hints=hints,
+        details={"command": command, "dry_run": True},
+    )
+
+
+def ensure_dry_run_supported(command: str, *, suggestion: str | None = None) -> None:
+    if is_global_dry_run_enabled():
+        abort_with_cli_error(unsupported_dry_run_error(command, suggestion=suggestion))
 
 
 def cli_error_from_exception(

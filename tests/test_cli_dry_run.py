@@ -1222,6 +1222,34 @@ def test_openclaw_deploy_supports_security_profile_flags(monkeypatch):
     assert captured["security_profile"] == "strictest"
 
 
+def test_openclaw_deploy_forwards_custom_env_pairs(monkeypatch):
+    runner = CliRunner()
+    captured: Dict[str, Any] = {}
+
+    async def _fake_deploy_openclaw(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw._deploy_openclaw", _fake_deploy_openclaw)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_openclaw.run_async_with_dry_run",
+        lambda coro, dry_run: asyncio.run(coro),
+    )
+
+    result = runner.invoke(
+        openclaw,
+        [
+            "deploy",
+            "--env",
+            "FOO=bar",
+            "--env",
+            "OPENCLAW_GATEWAY_PORT=9090",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["extra_env"] == ("FOO=bar", "OPENCLAW_GATEWAY_PORT=9090")
+
+
 def test_openclaw_deploy_does_not_query_status_immediately_after_create(monkeypatch, tmp_path):
     runner = CliRunner()
     monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawCreateClient)

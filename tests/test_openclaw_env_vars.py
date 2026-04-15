@@ -1,5 +1,6 @@
 import re
 import json
+import pytest
 
 from ksadk.cli import cmd_openclaw
 
@@ -184,11 +185,11 @@ def test_build_openclaw_env_vars_global_model_preference_keeps_dual_catalog(monk
     monkeypatch.setattr(cmd_openclaw, "_GLOBAL_ENV_CACHE", {})
     monkeypatch.delenv("OPENCLAW_DEFAULT_MODEL", raising=False)
     monkeypatch.delenv("OPENCLAW_MODEL_CATALOG_JSON", raising=False)
-    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-5")
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-5.1")
 
     env = cmd_openclaw._build_openclaw_env_vars()
 
-    assert env["OPENAI_MODEL_NAME"] == "ksyun/glm-5"
+    assert env["OPENAI_MODEL_NAME"] == "ksyun/glm-5.1"
     assert "OPENCLAW_DEFAULT_MODEL" not in env
     assert "OPENCLAW_MODEL_CATALOG_JSON" not in env
 
@@ -196,21 +197,21 @@ def test_build_openclaw_env_vars_global_model_preference_keeps_dual_catalog(monk
 def test_build_openclaw_env_vars_explicit_glm5_is_forwarded_without_catalog(monkeypatch):
     monkeypatch.setattr(cmd_openclaw, "_GLOBAL_ENV_CACHE", {})
     monkeypatch.delenv("OPENCLAW_MODEL_CATALOG_JSON", raising=False)
-    monkeypatch.setenv("OPENCLAW_DEFAULT_MODEL", "ksyun/glm-5")
+    monkeypatch.setenv("OPENCLAW_DEFAULT_MODEL", "ksyun/glm-5.1")
 
     env = cmd_openclaw._build_openclaw_env_vars()
 
-    assert env["OPENCLAW_DEFAULT_MODEL"] == "ksyun/glm-5"
+    assert env["OPENCLAW_DEFAULT_MODEL"] == "ksyun/glm-5.1"
     assert "OPENCLAW_MODEL_CATALOG_JSON" not in env
 
 
 def test_build_openclaw_env_vars_preserves_explicit_model_catalog(monkeypatch):
     monkeypatch.setattr(cmd_openclaw, "_GLOBAL_ENV_CACHE", {})
-    monkeypatch.setenv("OPENCLAW_MODEL_CATALOG_JSON", '[{"id":"glm-5"}]')
+    monkeypatch.setenv("OPENCLAW_MODEL_CATALOG_JSON", '[{"id":"glm-5.1"}]')
 
     env = cmd_openclaw._build_openclaw_env_vars()
 
-    assert env["OPENCLAW_MODEL_CATALOG_JSON"] == '[{"id":"glm-5"}]'
+    assert env["OPENCLAW_MODEL_CATALOG_JSON"] == '[{"id":"glm-5.1"}]'
 
 
 def test_build_openclaw_env_vars_forwards_explicit_web_tool_overrides(monkeypatch):
@@ -245,17 +246,46 @@ def test_build_openclaw_env_vars_forwards_explicit_builtin_browser_toggle(monkey
     assert env["OPENCLAW_BROWSER_HEADLESS"] == "true"
 
 
-def test_build_openclaw_env_vars_forwards_agentspace_bootstrap_env(monkeypatch):
+def test_build_openclaw_env_vars_forwards_channel_bootstrap_json(monkeypatch):
     monkeypatch.setattr(cmd_openclaw, "_GLOBAL_ENV_CACHE", {})
-    monkeypatch.setenv("OPENCLAW_AGENTSPACE_WPS_SID", "wps-sid-demo")
-    monkeypatch.setenv("OPENCLAW_AGENTSPACE_APP_ID", "app-demo")
-    monkeypatch.setenv("OPENCLAW_AGENTSPACE_CURRENT_USER", "user-demo")
+    monkeypatch.setenv(
+        "OPENCLAW_CHANNEL_BOOTSTRAP_JSON",
+        '{"agentspace":{"wps_sid":"wps-sid-demo"},"feishu":{"appId":"app-demo"}}',
+    )
 
     env = cmd_openclaw._build_openclaw_env_vars()
 
-    assert env["OPENCLAW_AGENTSPACE_WPS_SID"] == "wps-sid-demo"
-    assert env["OPENCLAW_AGENTSPACE_APP_ID"] == "app-demo"
-    assert env["OPENCLAW_AGENTSPACE_CURRENT_USER"] == "user-demo"
+    assert env["OPENCLAW_CHANNEL_BOOTSTRAP_JSON"] == (
+        '{"agentspace":{"wps_sid":"wps-sid-demo"},"feishu":{"appId":"app-demo"}}'
+    )
+
+
+def test_parse_extra_openclaw_env_pairs_supports_custom_keys_and_explicit_override():
+    parsed = cmd_openclaw._parse_extra_openclaw_env_pairs(
+        (
+            "FOO=bar",
+            "OPENCLAW_GATEWAY_PORT=9090",
+            "FOO=baz",
+            "EMPTY_VALUE=",
+        )
+    )
+
+    assert parsed == {
+        "FOO": "baz",
+        "OPENCLAW_GATEWAY_PORT": "9090",
+        "EMPTY_VALUE": "",
+    }
+
+
+def test_parse_extra_openclaw_env_pairs_rejects_invalid_items():
+    with pytest.raises(ValueError, match="KEY=VALUE"):
+        cmd_openclaw._parse_extra_openclaw_env_pairs(("MISSING_EQUALS",))
+
+    with pytest.raises(ValueError, match="合法的环境变量名"):
+        cmd_openclaw._parse_extra_openclaw_env_pairs(("1BAD=value",))
+
+    with pytest.raises(ValueError, match="trusted-proxy 或 none"):
+        cmd_openclaw._parse_extra_openclaw_env_pairs(("OPENCLAW_GATEWAY_AUTH_MODE=token",))
 
 
 def test_generate_default_openclaw_name_is_high_entropy():

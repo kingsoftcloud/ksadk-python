@@ -8,7 +8,7 @@ from ksadk.cli.cmd_destroy import run_delete_command
 from ksadk.cli.cmd_invoke import run_invoke_command
 from ksadk.cli.cmd_status import run_status_command
 from ksadk.cli.dry_run import dry_run_option
-from ksadk.cli.error_utils import ensure_json_output_supported
+from ksadk.cli.error_utils import ensure_dry_run_supported, ensure_json_output_supported
 from ksadk.cli.resource_common import CONTEXT_SETTINGS, pagination_options
 from ksadk.cli.ui import output_option as cli_output_option
 
@@ -105,6 +105,10 @@ def invoke_agent(
 ):
     """与 Agent 交互。"""
     _ = output_mode
+    ensure_dry_run_supported(
+        "agentengine agent invoke",
+        suggestion="请使用 `agentengine agent status --output json` 获取结构化元数据。",
+    )
     ensure_json_output_supported(
         "agentengine agent invoke",
         suggestion="请使用 `agentengine agent status --output json` 获取结构化元数据。",

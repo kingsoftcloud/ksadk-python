@@ -22,7 +22,7 @@ test('buildComposerContextIndicator shows warning near threshold and compressing
     ],
     draftInput: '',
     selectedModel: {
-      id: 'glm-5',
+      id: 'glm-5.1',
       context_window_tokens: 200,
       auto_compact_threshold_percentage: 80,
     },
@@ -41,7 +41,7 @@ test('buildComposerContextIndicator shows warning near threshold and compressing
     ],
     draftInput: '',
     selectedModel: {
-      id: 'glm-5',
+      id: 'glm-5.1',
       context_window_tokens: 200000,
     },
   });

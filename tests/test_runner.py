@@ -137,8 +137,8 @@ def test_langchain_runner_prepare_for_request_reloads_agent_when_model_changes(
         return SimpleNamespace(invoke=lambda *args, **kwargs: None), ModuleType("demo.agent")
 
     monkeypatch.setattr(langchain_runner_module, "load_agent_module", fake_load_agent_module)
-    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-5")
-    monkeypatch.setenv("MODEL_NAME", "glm-5")
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-5.1")
+    monkeypatch.setenv("MODEL_NAME", "glm-5.1")
 
     runner = langchain_runner_module.LangChainRunner(
         _write_detection(FrameworkType.LANGCHAIN),
@@ -147,7 +147,7 @@ def test_langchain_runner_prepare_for_request_reloads_agent_when_model_changes(
     runner.load_agent()
     runner.prepare_for_request("gpt-4o")
 
-    assert loaded_models == [("glm-5", False), ("gpt-4o", True)]
+    assert loaded_models == [("glm-5.1", False), ("gpt-4o", True)]
 
 
 def test_langgraph_runner_prepare_for_request_reloads_agent_when_model_changes(
@@ -163,8 +163,8 @@ def test_langgraph_runner_prepare_for_request_reloads_agent_when_model_changes(
         return SimpleNamespace(invoke=lambda *args, **kwargs: None), ModuleType("demo.agent")
 
     monkeypatch.setattr(langgraph_runner_module, "load_agent_module", fake_load_agent_module)
-    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-5")
-    monkeypatch.setenv("MODEL_NAME", "glm-5")
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-5.1")
+    monkeypatch.setenv("MODEL_NAME", "glm-5.1")
 
     runner = langgraph_runner_module.LangGraphRunner(
         _write_detection(FrameworkType.LANGGRAPH),
@@ -173,7 +173,7 @@ def test_langgraph_runner_prepare_for_request_reloads_agent_when_model_changes(
     runner.load_agent()
     runner.prepare_for_request("gpt-4o")
 
-    assert loaded_models == [("glm-5", False), ("gpt-4o", True)]
+    assert loaded_models == [("glm-5.1", False), ("gpt-4o", True)]
 
 
 def test_adk_runner_prepare_for_request_updates_explicit_model_tree(monkeypatch, tmp_path):
@@ -183,8 +183,8 @@ def test_adk_runner_prepare_for_request_updates_explicit_model_tree(monkeypatch,
         def __init__(self, model: str):
             self.model = model
 
-    child_agent = SimpleNamespace(model=FakeLiteLlm("openai/glm-5"), sub_agents=[])
-    root_agent = SimpleNamespace(model=FakeLiteLlm("openai/glm-5"), sub_agents=[child_agent])
+    child_agent = SimpleNamespace(model=FakeLiteLlm("openai/glm-5.1"), sub_agents=[])
+    root_agent = SimpleNamespace(model=FakeLiteLlm("openai/glm-5.1"), sub_agents=[child_agent])
 
     runner = ADKRunner(_write_detection(FrameworkType.ADK), str(tmp_path))
     runner._agent = root_agent
