@@ -1,6 +1,6 @@
 # KSADK 使用文档
 
-本文档是 `ksadk` 当前对外主使用文档，覆盖本地开发、构建部署、远端资源管理、MCP、OpenClaw、平台级 KB/LTM 以及自动化输出约定。
+本文档是 `ksadk` 当前对外主使用文档，覆盖本地开发、构建部署、远端资源管理、MCP、OpenClaw、Hermes、平台级 KB/LTM 以及自动化输出约定。
 
 当前版本：`0.4.0`
 
@@ -77,6 +77,13 @@ agentengine init my_claw -f openclaw
 cd my_claw
 ```
 
+Hermes 示例：
+
+```bash
+agentengine init my_hermes -f hermes
+cd my_hermes
+```
+
 也可以包装已有代码：
 
 ```bash
@@ -125,7 +132,7 @@ agentengine web --port 8080
 - `web` 是本地 UI，不是云端 Dashboard
 - 所有受支持框架当前统一使用 ksadk 内建 Web UI
 
-### 2.4 一键部署与打开云端 UI
+### 2.4 一键部署代码框架并打开云端 UI
 
 ```bash
 export KSYUN_ACCESS_KEY=your-ak
@@ -136,6 +143,34 @@ export KSYUN_REGION=cn-beijing-6
 agentengine launch . --target serverless
 agentengine dashboard open
 ```
+
+这条路径适用于 LangGraph / LangChain / DeepAgents / ADK / OpenClaw 等本地项目构建型框架。
+
+### 2.5 Hermes 云端生命周期
+
+Hermes 走共享 runtime 镜像，不要求用户先本地 build/push：
+
+```bash
+agentengine init my_hermes -f hermes
+cd my_hermes
+
+agentengine hermes deploy --name my-hermes
+agentengine hermes status my-hermes
+agentengine invoke my-hermes
+agentengine hermes open my-hermes --chat
+agentengine hermes exec my-hermes -- status
+agentengine hermes pairing my-hermes -- list
+agentengine hermes open my-hermes --manage
+```
+
+说明：
+
+- `agentengine invoke <hermes-agent>` 默认进入 Hermes 原生远程 TUI。
+- `agentengine invoke <hermes-agent> -m "hello"` 继续走 `/v1/chat/completions`。
+- `agentengine hermes open <hermes-agent> --chat` 打开统一 hosted chat 页面。
+- `agentengine hermes exec` 只允许只读运维子命令，不是远程 shell。
+- `agentengine hermes pairing` 只透传 Hermes 原生 pairing 审批子命令。
+- 当 `OPENAI_BASE_URL` 指向 `kspmas.ksyun.com` 公网模型网关时，`agentengine hermes deploy` 会在云端 runtime 配置里自动改写成 `http://kspmas-internal.sdns.ksyun.com/v1`，避免 Pod 访问公网模型网关超时。
 
 ## 3. 日常开发主线
 
@@ -170,6 +205,8 @@ agentengine build . --dry-run
 
 当前实现支持 `Code` 与 `Container` 两类制品，适合作为 `deploy` 或 `launch` 的前置验证。
 
+Hermes 不走这条本地 build 主线；它默认消费平台共享的 Hermes runtime 镜像。
+
 ### 3.3 部署
 
 ```bash
@@ -189,6 +226,14 @@ agentengine deploy . --target serverless --dry-run
 agentengine deploy . --target kcf --account-id X-Ksc-Account-Id
 ```
 
+Hermes 例外：
+
+```bash
+agentengine hermes deploy --name demo-hermes
+```
+
+Hermes deploy 直接调用控制面 `CreateAgentProduct` / `UpdateAgent`，使用共享 runtime 镜像，不依赖本地 `build` 产物。
+
 ### 3.4 Launch
 
 `launch` 是 `build + deploy` 的主入口：
@@ -201,6 +246,8 @@ agentengine launch . --target serverless
 
 - 从本地项目直接发起一键部署
 - 想保留统一的 dry-run / JSON 输出 / 状态回填语义
+
+Hermes 不推荐走 `launch`；它有独立的 `agentengine hermes deploy/status/open/delete/exec` 生命周期命令组。
 
 ## 4. 远端资源管理
 
@@ -217,6 +264,21 @@ agentengine agent delete --agent ar-xxxx --yes
 agentengine version list --agent ar-xxxx
 agentengine version release --agent ar-xxxx
 agentengine version rollback --agent ar-xxxx --version v1
+```
+
+### 4.2 Hermes
+
+Hermes 是带原生远程 TUI 的一等公民资源组：
+
+```bash
+agentengine hermes list
+agentengine hermes status ar-xxxx
+agentengine hermes open ar-xxxx
+agentengine hermes exec ar-xxxx -- doctor
+agentengine hermes pairing ar-xxxx -- list
+agentengine hermes delete ar-xxxx -y
+agentengine invoke ar-xxxx
+agentengine hermes open ar-xxxx --chat
 ```
 
 ### 4.2 Dashboard

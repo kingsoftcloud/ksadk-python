@@ -63,9 +63,6 @@ dependencies = [
     "langchain-core>=0.3.0,<2.0.0",
     # LangGraph - 使用兼容的版本范围
     "langgraph>=0.2.0,<2.0.0",
-    # ========= Web UI =========
-    # Chainlit - LangChain/LangGraph 的 Web UI
-    "chainlit>=1.0.0",
     # ========= 可观测性 (默认安装) =========
     "opentelemetry-api==1.37.0",
     "opentelemetry-sdk==1.37.0",

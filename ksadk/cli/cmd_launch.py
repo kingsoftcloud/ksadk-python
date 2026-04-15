@@ -6,7 +6,7 @@ import click
 import asyncio
 from pathlib import Path
 from ksadk.api.client import DryRunExit
-from ksadk.cli.cmd_deploy import _apply_network_config, _resolve_ui_config_inputs
+from ksadk.cli.cmd_deploy import _apply_network_config, _resolve_artifact_type_input, _resolve_ui_config_inputs
 from ksadk.cli.dry_run import effective_dry_run, run_async_with_dry_run
 from ksadk.cli.error_utils import cli_error_from_exception, is_debug_mode_enabled, remote_error, usage_error, validation_error
 from ksadk.cli.workflow_common import (
@@ -174,7 +174,8 @@ async def _launch_async(
     from ksadk.deployment import DeploymentManager, DeployTarget
 
     agent_path = Path(agent_dir).resolve()
-    effective_artifact_type = artifact_type or ("Code" if target == "serverless" else artifact_type)
+    config = _load_config(agent_path)
+    effective_artifact_type = _resolve_artifact_type_input(config, artifact_type) if target == "serverless" else artifact_type
     print_workflow_header(
         title="Agent Launch",
         subtitle=f"target: {target}",
@@ -195,8 +196,7 @@ async def _launch_async(
 
     print_kv("框架", detection_result.name, value_style="#2da44e")
 
-    # 2. 加载配置
-    config = _load_config(agent_path)
+    # 2. 确定部署名称
     deploy_name = name or config.get("name") or agent_path.name.replace("-", "_").replace(".", "_")
     print_kv("部署名称", deploy_name)
     resolved_ui_profile, resolved_ui_path, resolved_ui_url = _resolve_ui_config_inputs(

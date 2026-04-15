@@ -1,7 +1,7 @@
 # AgentEngine Makefile
 # 用于构建 Web UI 和管理项目
 
-.PHONY: help install build-webui sync-static clean clean-dist dev test publish publish-test openclaw-refresh-agentspace-assets openclaw-build openclaw-push openclaw-size
+.PHONY: help install build-webui sync-static clean clean-dist dev test publish publish-test openclaw-refresh-agentspace-assets openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size
 
 # 默认目标
 help:
@@ -45,6 +45,13 @@ help:
 	@echo "    make openclaw-push OPENCLAW_TAG=v2026.3.13-guardian1"
 	@echo "    make openclaw-build OPENCLAW_PYPI_INDEX_URL=https://pypi.org/simple  # 海外源"
 	@echo "    make openclaw-size          查看镜像大小"
+	@echo ""
+	@echo "  \033[1;32mHermes 镜像:\033[0m"
+	@echo "    make hermes-build           构建 Hermes runtime 镜像"
+	@echo "    make hermes-push            构建 + 推送 Hermes runtime 镜像"
+	@echo "    make hermes-size            查看 Hermes 镜像大小"
+	@echo "    make hermes-build HERMES_TAG=v2026.4.13-ks8"
+	@echo "    make hermes-build HERMES_AGENT_REF=v2026.4.13  # 切换 Hermes 上游 release"
 	@echo ""
 	@echo "  \033[1;32m清理:\033[0m"
 	@echo "    make clean          清理构建产物"
@@ -432,6 +439,64 @@ openclaw-push: openclaw-build
 ## 查看 OpenClaw 镜像大小
 openclaw-size:
 	@docker images $(OPENCLAW_IMAGE):$(OPENCLAW_TAG) --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}"
+
+
+# ============================================================
+# Hermes 镜像构建
+# ============================================================
+#
+# 基于 deploy/hermes/ 里的 Dockerfile + wrapper runtime 构建 Hermes runtime
+#
+# 用法:
+#   make hermes-build
+#   make hermes-push HERMES_TAG=v2026.4.13-ks8
+#
+
+HERMES_IMAGE := hub.kce.ksyun.com/agentengine-public/hermes-agent
+HERMES_VPC_REGISTRY ?= hub-vpc-cn-beijing-6.kce.ksyun.com
+HERMES_VPC_IMAGE ?= $(subst hub.kce.ksyun.com,$(HERMES_VPC_REGISTRY),$(HERMES_IMAGE))
+HERMES_TAG ?= v2026.4.13-ks8
+HERMES_CONTEXT := deploy/hermes
+HERMES_PYPI_INDEX_URL ?= https://mirrors.aliyun.com/pypi/simple
+HERMES_AGENT_REF ?= v2026.4.13
+HERMES_APT_MIRROR ?= https://mirrors.aliyun.com/debian
+HERMES_NPM_REGISTRY ?= https://registry.npmmirror.com
+
+hermes-build:
+	@echo "🐳 构建 Hermes runtime 镜像..."
+	@echo "============================================================"
+	@echo "   目标镜像: $(HERMES_IMAGE):$(HERMES_TAG)"
+	@echo "   内网地址: $(HERMES_VPC_IMAGE):$(HERMES_TAG)"
+	@echo "   Hermes Git ref: $(HERMES_AGENT_REF)"
+	@echo "   PyPI 源:  $(HERMES_PYPI_INDEX_URL)"
+	@echo "   APT 源:   $(HERMES_APT_MIRROR)"
+	@echo "   NPM 源:   $(HERMES_NPM_REGISTRY)"
+	@echo "   构建上下文: $(HERMES_CONTEXT)/"
+	@echo "============================================================"
+	@if [ ! -f "$(HERMES_CONTEXT)/Dockerfile" ]; then \
+		echo "❌ 错误: $(HERMES_CONTEXT)/Dockerfile 不存在"; \
+		exit 1; \
+	fi
+	@DOCKER_BUILDKIT=1 docker build --platform linux/amd64 \
+		--build-arg PYPI_INDEX_URL=$(HERMES_PYPI_INDEX_URL) \
+		--build-arg HERMES_AGENT_REF=$(HERMES_AGENT_REF) \
+		--build-arg APT_MIRROR=$(HERMES_APT_MIRROR) \
+		--build-arg NPM_REGISTRY=$(HERMES_NPM_REGISTRY) \
+		-t $(HERMES_IMAGE):$(HERMES_TAG) \
+		-t $(HERMES_VPC_IMAGE):$(HERMES_TAG) \
+		$(HERMES_CONTEXT)
+	@echo "✅ 构建完成: $(HERMES_IMAGE):$(HERMES_TAG)"
+	@echo "🔗 对应内网地址: $(HERMES_VPC_IMAGE):$(HERMES_TAG)"
+
+hermes-push: hermes-build
+	@echo "📤 推送 Hermes 镜像: $(HERMES_IMAGE):$(HERMES_TAG)"
+	@echo "🔗 对应内网地址: $(HERMES_VPC_IMAGE):$(HERMES_TAG)"
+	@docker push $(HERMES_IMAGE):$(HERMES_TAG)
+	@docker push $(HERMES_VPC_IMAGE):$(HERMES_TAG)
+	@echo "✅ 推送完成"
+
+hermes-size:
+	@docker images $(HERMES_IMAGE):$(HERMES_TAG) --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}"
 
 
 

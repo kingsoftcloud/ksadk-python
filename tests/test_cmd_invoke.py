@@ -1,8 +1,9 @@
 from pathlib import Path
 
+import pytest
 import yaml
 
-from ksadk.cli.cmd_invoke import _extract_content, run_invoke_command
+from ksadk.cli.cmd_invoke import _extract_content, _invoke_hermes_terminal_tui, run_invoke_command
 
 
 class _FakeInvokeClient:
@@ -72,6 +73,7 @@ def test_run_invoke_command_refreshes_stale_state_from_remote(monkeypatch, tmp_p
         region="pre-online",
         local=False,
         insecure=False,
+        transport="auto",
         model=None,
         show_thinking=False,
     )
@@ -107,6 +109,7 @@ def test_run_invoke_command_persists_generated_session_id(monkeypatch, tmp_path:
         region="pre-online",
         local=True,
         insecure=False,
+        transport="auto",
         model=None,
         show_thinking=False,
     )
@@ -126,6 +129,7 @@ def test_run_invoke_command_persists_generated_session_id(monkeypatch, tmp_path:
         region="pre-online",
         local=True,
         insecure=False,
+        transport="auto",
         model=None,
         show_thinking=False,
     )
@@ -167,3 +171,169 @@ def test_extract_content_ignores_response_completed_payload():
 
     assert content == ""
     assert reasoning == ""
+
+
+def test_run_invoke_command_defaults_to_hermes_native_tui_for_hermes_state(monkeypatch, tmp_path: Path):
+    (tmp_path / ".agentengine.state").write_text(
+        yaml.safe_dump(
+            {
+                "type": "hermes",
+                "framework": "hermes",
+                "endpoint": "https://hermes.example.com",
+                "api_key": "ak-hermes",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    captured = {"native": 0, "chat": 0}
+
+    def _fake_native(endpoint, api_key=None, session_id=None, insecure=False):
+        captured["native"] += 1
+        captured["endpoint"] = endpoint
+        captured["api_key"] = api_key
+
+    def _fake_chat(*_args, **_kwargs):
+        captured["chat"] += 1
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("ksadk.cli.cmd_invoke._invoke_hermes_terminal_tui", _fake_native)
+    monkeypatch.setattr("ksadk.cli.cmd_invoke._invoke_tui", _fake_chat)
+
+    run_invoke_command(
+        agent_ref=None,
+        agent_option=None,
+        endpoint="https://hermes.example.com",
+        api_key=None,
+        message=None,
+        session=None,
+        region="cn-beijing-6",
+        local=False,
+        insecure=False,
+        model=None,
+        show_thinking=False,
+        transport="auto",
+    )
+
+    assert captured["native"] == 1
+    assert captured["chat"] == 0
+    assert captured["endpoint"] == "https://hermes.example.com"
+    assert captured["api_key"] == "ak-hermes"
+
+
+def test_run_invoke_command_transport_chat_rejects_generic_chat_tui_for_hermes(monkeypatch, tmp_path: Path):
+    (tmp_path / ".agentengine.state").write_text(
+        yaml.safe_dump(
+            {
+                "type": "hermes",
+                "framework": "hermes",
+                "endpoint": "https://hermes.example.com",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    captured = {"native": 0, "chat": 0}
+
+    def _fake_native(*_args, **_kwargs):
+        captured["native"] += 1
+
+    def _fake_chat(*_args, **_kwargs):
+        captured["chat"] += 1
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("ksadk.cli.cmd_invoke._invoke_hermes_terminal_tui", _fake_native)
+    monkeypatch.setattr("ksadk.cli.cmd_invoke._invoke_tui", _fake_chat)
+
+    with pytest.raises(SystemExit) as exc_info:
+        run_invoke_command(
+            agent_ref=None,
+            agent_option=None,
+            endpoint="https://hermes.example.com",
+            api_key=None,
+            message=None,
+            session=None,
+            region="cn-beijing-6",
+            local=False,
+            insecure=False,
+            model=None,
+            show_thinking=False,
+            transport="chat",
+        )
+
+    assert exc_info.value.code == 1
+    assert captured["native"] == 0
+    assert captured["chat"] == 0
+
+
+def test_run_invoke_command_message_mode_keeps_http_chat_path(monkeypatch, tmp_path: Path):
+    (tmp_path / ".agentengine.state").write_text(
+        yaml.safe_dump(
+            {
+                "type": "hermes",
+                "framework": "hermes",
+                "endpoint": "https://hermes.example.com",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    captured = {"once": 0, "native": 0, "chat": 0}
+
+    async def _fake_invoke_once(endpoint, message, api_key, session_id, stream, insecure, model):
+        captured["once"] += 1
+        captured["endpoint"] = endpoint
+        captured["message"] = message
+
+    def _fake_native(*_args, **_kwargs):
+        captured["native"] += 1
+
+    def _fake_chat(*_args, **_kwargs):
+        captured["chat"] += 1
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("ksadk.cli.cmd_invoke._invoke_once", _fake_invoke_once)
+    monkeypatch.setattr("ksadk.cli.cmd_invoke._invoke_hermes_terminal_tui", _fake_native)
+    monkeypatch.setattr("ksadk.cli.cmd_invoke._invoke_tui", _fake_chat)
+
+    run_invoke_command(
+        agent_ref=None,
+        agent_option=None,
+        endpoint="https://hermes.example.com",
+        api_key=None,
+        message="hello",
+        session=None,
+        region="cn-beijing-6",
+        local=False,
+        insecure=False,
+        model="glm-5",
+        show_thinking=False,
+        transport="auto",
+    )
+
+    assert captured["once"] == 1
+    assert captured["native"] == 0
+    assert captured["chat"] == 0
+    assert captured["endpoint"] == "https://hermes.example.com"
+    assert captured["message"] == "hello"
+
+
+def test_invoke_hermes_terminal_tui_exits_cleanly_on_keyboard_interrupt(monkeypatch):
+    def _fake_terminal_session(**_kwargs):
+        return object()
+
+    def _raise_keyboard_interrupt(_awaitable):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("ksadk.cli.cmd_invoke.run_hermes_terminal_session", _fake_terminal_session)
+    monkeypatch.setattr("ksadk.cli.cmd_invoke.asyncio.run", _raise_keyboard_interrupt)
+
+    with pytest.raises(SystemExit) as exc_info:
+        _invoke_hermes_terminal_tui(
+            endpoint="https://hermes.example.com",
+            api_key="ak-hermes",
+            session_id="sess-1",
+            insecure=False,
+        )
+
+    assert exc_info.value.code == 130

@@ -66,6 +66,8 @@ type BootstrapModel = ModelCatalogItem & {
   source?: string;
 };
 
+type RuntimeApiFormat = 'responses' | 'chat_completions';
+
 type AgentInputPart =
   | {
       type: 'input_text';
@@ -89,6 +91,65 @@ function getErrorMessage(error: unknown): string {
 
 function fileFingerprint(file: File): string {
   return [file.name, file.size, file.lastModified, file.type].join(':');
+}
+
+function resolveRunAgentApiFormat(options: {
+  agentFramework: string;
+  apiFormats: RuntimeApiFormat[];
+}): RuntimeApiFormat {
+  const { agentFramework, apiFormats } = options;
+  if (agentFramework === 'hermes' && apiFormats.includes('chat_completions')) {
+    return 'chat_completions';
+  }
+  if (apiFormats.includes('responses')) {
+    return 'responses';
+  }
+  if (apiFormats.includes('chat_completions')) {
+    return 'chat_completions';
+  }
+  return 'responses';
+}
+
+function normalizeApiFormats(value: unknown): RuntimeApiFormat[] {
+  if (!Array.isArray(value)) {
+    return ['responses', 'chat_completions'];
+  }
+  const formats = value.filter(
+    (item): item is RuntimeApiFormat => item === 'responses' || item === 'chat_completions',
+  );
+  return formats.length > 0 ? formats : ['responses', 'chat_completions'];
+}
+
+function textFromUnknown(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => {
+        if (typeof item === 'string') return item;
+        if (item && typeof item === 'object' && 'text' in item && typeof item.text === 'string') {
+          return item.text;
+        }
+        return '';
+      })
+      .join('');
+  }
+  return '';
+}
+
+function extractChatCompletionsStreamDelta(data: any): {
+  content: string;
+  reasoning: string;
+  finalText: string;
+} {
+  const delta = data?.choices?.[0]?.delta;
+  const message = data?.choices?.[0]?.message;
+  return {
+    content: delta ? textFromUnknown(delta.content) : '',
+    reasoning: delta ? textFromUnknown(delta.reasoning_content) : '',
+    finalText: message ? textFromUnknown(message.content) : '',
+  };
 }
 
 function mergeAttachmentFiles(current: File[], incoming: File[]): File[] {
@@ -359,6 +420,11 @@ export default function App() {
   const [availableModels, setAvailableModels] = useState<ModelCatalogItem[]>([]);
   const [modelSource, setModelSource] = useState('');
   const [modelCatalogLoaded, setModelCatalogLoaded] = useState(false);
+  const [agentFramework, setAgentFramework] = useState('');
+  const [apiFormats, setApiFormats] = useState<RuntimeApiFormat[]>([
+    'responses',
+    'chat_completions',
+  ]);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -538,6 +604,8 @@ export default function App() {
       if (data?.Data?.Agent?.Name) {
         setAgentName(data.Data.Agent.Name);
       }
+      setAgentFramework(String(data?.Data?.Agent?.Framework || '').trim().toLowerCase());
+      setApiFormats(normalizeApiFormats(data?.Data?.ApiFormats));
 
       void fetchSessions(bootstrapAgentId, readPersistedSessionId(bootstrapAgentId));
 
@@ -737,6 +805,7 @@ export default function App() {
 
     setAttachments([]);
     abortControllerRef.current = new AbortController();
+    const runAgentApiFormat = resolveRunAgentApiFormat({ agentFramework, apiFormats });
 
     try {
       const response = await fetch('/agentengine/api/v1/RunAgent', {
@@ -749,7 +818,7 @@ export default function App() {
           AgentId: agentId,
           SessionId: sessionId,
           Stream: true,
-          ApiFormat: 'responses',
+          ApiFormat: runAgentApiFormat,
           Model: selectedModel || undefined,
           Messages: [
             {
@@ -809,6 +878,41 @@ export default function App() {
 
           try {
             const data = JSON.parse(dataString);
+            const chatDelta = extractChatCompletionsStreamDelta(data);
+            if (chatDelta.reasoning) {
+              ensureAssistantMessage();
+              setMessages((prev) =>
+                prev.map((message) =>
+                  message.id === assistantMessageId
+                    ? { ...message, reasoning: (message.reasoning || '') + chatDelta.reasoning }
+                    : message,
+                ),
+              );
+            }
+            if (chatDelta.content) {
+              ensureAssistantMessage();
+              setMessages((prev) =>
+                prev.map((message) =>
+                  message.id === assistantMessageId
+                    ? { ...message, content: message.content + chatDelta.content }
+                    : message,
+                ),
+              );
+            }
+            if (chatDelta.finalText) {
+              ensureAssistantMessage();
+              setMessages((prev) =>
+                prev.map((message) =>
+                  message.id === assistantMessageId
+                    ? { ...message, content: chatDelta.finalText }
+                    : message,
+                ),
+              );
+            }
+            if (chatDelta.reasoning || chatDelta.content || chatDelta.finalText) {
+              continue;
+            }
+
             if (currentEvent === 'response.compaction.start') {
               upsertCompactionMessage({ ...data, phase: 'start' });
               continue;

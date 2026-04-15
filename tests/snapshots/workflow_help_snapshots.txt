@@ -59,7 +59,7 @@ Options:
   --ks3-bucket TEXT               KS3 bucket 名称 (Serverless Code 模式, 默认:
                                   agentengine-{region})
   --image TEXT                    Docker 镜像地址 (Container 模式)
-  --ui-profile [auto|adk|langchain|openclaw|custom]
+  --ui-profile [auto|adk|langchain|openclaw|hermes|custom]
                                   Dashboard UI 类型
   --ui-path TEXT                  Dashboard UI 路径 (例如 /)
   --ui-url TEXT                   完整 Dashboard URL（自研前端）
@@ -107,7 +107,7 @@ Options:
   --ks3-bucket TEXT               KS3 bucket 名称
   --ks3-path TEXT                 KS3 代码包路径
   --image TEXT                    Docker 镜像地址
-  --ui-profile [auto|adk|langchain|openclaw|custom]
+  --ui-profile [auto|adk|langchain|openclaw|hermes|custom]
                                   Dashboard UI 类型
   --ui-path TEXT                  Dashboard UI 路径 (例如 /)
   --ui-url TEXT                   完整 Dashboard URL（自研前端）
