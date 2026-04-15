@@ -14,6 +14,7 @@ import time
 import uuid
 from ksadk.cli.agent_ref import merge_agent_inputs, resolve_agent_ref
 from ksadk.cli.resource_common import CONTEXT_SETTINGS, CompatibilityAliasCommand, print_compatibility_hint
+from ksadk.hermes_terminal import run_hermes_terminal_session
 
 try:
     from rich.console import Console
@@ -41,6 +42,13 @@ except ImportError:
 @click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
 @click.option("--local", "-l", is_flag=True, help="连接本地服务 (http://localhost:8080)")
 @click.option("--insecure", "-k", is_flag=True, help="跳过 SSL 证书验证 (类似 curl -k)")
+@click.option(
+    "--transport",
+    type=click.Choice(["auto", "chat", "native"], case_sensitive=False),
+    default="auto",
+    show_default=True,
+    help="交互传输层: auto(自动), chat(HTTP /v1/chat/completions), native(Hermes 远端终端)",
+)
 @click.option("--model", help="指定模型名称")
 @click.option("--show-thinking", is_flag=True, help="显示模型思考过程")
 def invoke(
@@ -53,6 +61,7 @@ def invoke(
     region: str,
     local: bool,
     insecure: bool,
+    transport: str,
     model: str,
     show_thinking: bool,
 ):
@@ -67,6 +76,7 @@ def invoke(
         region=region,
         local=local,
         insecure=insecure,
+        transport=transport,
         model=model,
         show_thinking=show_thinking,
         compatibility_alias=True,
@@ -84,6 +94,7 @@ def run_invoke_command(
     region: str,
     local: bool,
     insecure: bool,
+    transport: str,
     model: str | None,
     show_thinking: bool,
     compatibility_alias: bool = False,
@@ -108,6 +119,8 @@ def run_invoke_command(
     latest_access: dict[str, Any] = {}
     reuse_state_session = True
     
+    normalized_transport = (transport or "auto").strip().lower() or "auto"
+
     # 确定 Endpoint
     if local:
         endpoint = "http://localhost:8080"
@@ -153,9 +166,11 @@ def run_invoke_command(
     )
 
     next_state = _load_state() or dict(state)
-    for key in ("agent_id", "name", "endpoint", "api_key"):
+    for key in ("agent_id", "name", "endpoint", "api_key", "framework"):
         if latest_access.get(key):
             next_state[key] = latest_access[key]
+    if latest_access.get("framework") == "hermes":
+        next_state["type"] = "hermes"
     next_state["session_id"] = session_id
     _save_state(next_state)
 
@@ -173,8 +188,25 @@ def run_invoke_command(
         # 单次调用模式
         asyncio.run(_invoke_once(endpoint, message, api_key, session_id, True, insecure, model))
     else:
+        if normalized_transport == "chat" and _is_hermes_target(next_state, latest_access):
+            click.secho("❌ Hermes 不再支持 ksadk 通用 chat TUI。", fg="red")
+            click.echo("   浏览器聊天页请改用: agentengine hermes open --chat")
+            raise SystemExit(1)
         # 默认 TUI 模式
-        _invoke_tui(endpoint, api_key, session_id, insecure, model, show_thinking)
+        if _should_use_hermes_native_tui(
+            transport=normalized_transport,
+            local=local,
+            state=next_state,
+            latest_access=latest_access,
+        ):
+            _invoke_hermes_terminal_tui(
+                endpoint=endpoint,
+                api_key=api_key,
+                session_id=session_id,
+                insecure=insecure,
+            )
+        else:
+            _invoke_tui(endpoint, api_key, session_id, insecure, model, show_thinking)
 
 
 
@@ -244,6 +276,13 @@ def _extract_remote_access(detail: Dict[str, Any]) -> Dict[str, Any]:
     basic = detail.get("basic") if isinstance(detail.get("basic"), dict) else {}
     quick = detail.get("quick_access") if isinstance(detail.get("quick_access"), dict) else {}
 
+    deployment = detail.get("deployment") if isinstance(detail.get("deployment"), dict) else {}
+    framework = (
+        deployment.get("framework")
+        or basic.get("framework")
+        or detail.get("framework")
+    )
+
     return {
         "agent_id": basic.get("agent_id") or detail.get("agent_id"),
         "name": basic.get("name") or detail.get("name"),
@@ -251,6 +290,7 @@ def _extract_remote_access(detail: Dict[str, Any]) -> Dict[str, Any]:
         or quick.get("private_endpoint")
         or detail.get("endpoint"),
         "api_key": quick.get("api_key") or detail.get("api_key"),
+        "framework": str(framework or "").strip().lower() or None,
     }
 
 
@@ -278,11 +318,62 @@ def _refresh_remote_access(
 
     if persist and latest:
         merged = dict(state)
-        for key in ("agent_id", "name", "endpoint", "api_key"):
+        for key in ("agent_id", "name", "endpoint", "api_key", "framework"):
             if latest.get(key):
                 merged[key] = latest[key]
+        if latest.get("framework") == "hermes":
+            merged["type"] = "hermes"
         _save_state(merged)
     return latest
+
+
+def _is_hermes_target(state: dict, latest_access: dict) -> bool:
+    framework = str(
+        latest_access.get("framework")
+        or state.get("framework")
+        or state.get("type")
+        or ""
+    ).strip().lower()
+    return framework == "hermes"
+
+
+def _should_use_hermes_native_tui(*, transport: str, local: bool, state: dict, latest_access: dict) -> bool:
+    if transport == "chat":
+        return False
+    if transport == "native":
+        return True
+    if local:
+        return False
+    return _is_hermes_target(state, latest_access)
+
+
+def _invoke_hermes_terminal_tui(
+    endpoint: str,
+    api_key: str = None,
+    session_id: str = None,
+    insecure: bool = False,
+):
+    click.secho("🖥️  Hermes Native Remote TUI", fg="blue", bold=True)
+    click.echo("   退出: Ctrl-D 或 Ctrl-C")
+    try:
+        exit_code = asyncio.run(
+            run_hermes_terminal_session(
+                endpoint=endpoint,
+                api_key=api_key,
+                session_id=session_id,
+                insecure=insecure,
+                mode="tui",
+                argv=[],
+            )
+        )
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        raise SystemExit(130)
+    except Exception as e:
+        click.secho(f"\n❌ Hermes 终端连接失败: {e}", fg="red")
+        click.echo("   浏览器聊天页请改用: agentengine hermes open --chat")
+        raise SystemExit(1)
+    if exit_code:
+        raise SystemExit(exit_code)
 
 
 def _get_api_key() -> Optional[str]:

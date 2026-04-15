@@ -15,6 +15,20 @@ def test_langgraph_defaults_to_chat_ui_path():
     assert cfg.url is None
 
 
+def test_hermes_defaults_to_root_ui_path():
+    cfg = resolve_ui_config(
+        framework="hermes",
+        state={},
+        cli_profile=None,
+        cli_path=None,
+        cli_url=None,
+    )
+
+    assert cfg.profile == "hermes"
+    assert cfg.path == "/"
+    assert cfg.url is None
+
+
 def test_state_ui_config_applies_when_cli_not_set():
     cfg = resolve_ui_config(
         framework="adk",

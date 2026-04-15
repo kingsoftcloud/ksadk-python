@@ -10,6 +10,7 @@ AgentEngine CLI
   agentengine build      构建部署制品
   agentengine dashboard  打开云端 Agent Dashboard
   agentengine deploy     部署到云端
+  agentengine hermes     Hermes Agent 资源管理
   agentengine init       创建新项目
   agentengine launch     一键构建+部署
   agentengine mcp        MCP 资源管理
@@ -119,6 +120,22 @@ Options:
   --direct                      直接打开 endpoint/path（跳过短链接创建）
   --output [pretty|json]        输出格式
   -h, --help                    Show this message and exit.
+
+=== hermes_help ===
+Usage: cli hermes [OPTIONS] COMMAND [ARGS]...
+
+  Hermes Agent 资源管理。
+
+Options:
+  -h, --help  Show this message and exit.
+
+Commands:
+  delete  删除 Hermes Agent。
+  deploy  部署 Hermes runtime 到云端。
+  exec    透传受限 Hermes 只读运维子命令。
+  list    列出 Hermes Agent。
+  open    打开 Hermes 管理 UI，或使用 --chat 打开统一聊天页。
+  status  查看 Hermes Agent 状态。
 
 === mcp_help ===
 Usage: cli mcp [OPTIONS] COMMAND [ARGS]...
