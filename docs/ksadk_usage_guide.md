@@ -2,7 +2,14 @@
 
 本文档是 `ksadk` 当前对外主使用文档，覆盖本地开发、构建部署、远端资源管理、MCP、OpenClaw、Hermes、平台级 KB/LTM 以及自动化输出约定。
 
-当前版本：`0.4.0`
+当前版本：`0.5.0`
+
+## 0.5.0 重点更新
+
+- `Hermes` 进入 ksadk 主线，新增独立资源组、共享 runtime 镜像和原生远程 TUI / pairing / connect 路径。
+- OpenClaw 新增用户自定义镜像模板，适合按平台约束直接交付给业务做二次定制。
+- `agentengine openclaw deploy` 新增 `--env KEY=VALUE`，并支持 `OPENCLAW_CHANNEL_BOOTSTRAP_JSON`、Agentspace bootstrap 与浏览器 SSRF 策略透传。
+- 新增 `agentengine openclaw repair` 与 `agentengine openclaw gateway doctor --fix`，补齐运行时修复入口。
 
 ## 1. 安装与环境准备
 
@@ -40,7 +47,7 @@ ksadk --help
 
 | 变量 | 用途 |
 |------|------|
-| `OPENAI_API_BASE` / `OPENAI_API_KEY` / `MODEL_NAME` | 本地运行和调试时的模型调用配置 |
+| `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL_NAME` | 本地运行和调试时的模型调用配置 |
 | `KSYUN_ACCESS_KEY` / `KSYUN_SECRET_KEY` | 构建、部署、KB/LTM、OpenClaw 等金山云能力 |
 | `KSYUN_ACCOUNT_ID` | 远端资源创建和部署 |
 | `KSYUN_REGION` | 默认区域 |
@@ -157,6 +164,7 @@ cd my_hermes
 agentengine hermes deploy --name my-hermes
 agentengine hermes status my-hermes
 agentengine invoke my-hermes
+agentengine hermes connect my-hermes
 agentengine hermes open my-hermes --chat
 agentengine hermes exec my-hermes -- status
 agentengine hermes pairing my-hermes -- list
@@ -166,10 +174,12 @@ agentengine hermes open my-hermes --manage
 说明：
 
 - `agentengine invoke <hermes-agent>` 默认进入 Hermes 原生远程 TUI。
+- `agentengine hermes connect` 会进入远端 Hermes gateway setup 向导，适合在托管实例内执行扫码连接。
 - `agentengine invoke <hermes-agent> -m "hello"` 继续走 `/v1/chat/completions`。
 - `agentengine hermes open <hermes-agent> --chat` 打开统一 hosted chat 页面。
 - `agentengine hermes exec` 只允许只读运维子命令，不是远程 shell。
 - `agentengine hermes pairing` 只透传 Hermes 原生 pairing 审批子命令。
+- `agentengine hermes deploy` 默认使用共享 runtime 镜像，不要求用户本地 `build/push`。
 - 当 `OPENAI_BASE_URL` 指向 `kspmas.ksyun.com` 公网模型网关时，`agentengine hermes deploy` 会在云端 runtime 配置里自动改写成 `http://kspmas-internal.sdns.ksyun.com/v1`，避免 Pod 访问公网模型网关超时。
 
 ## 3. 日常开发主线
@@ -274,6 +284,7 @@ Hermes 是带原生远程 TUI 的一等公民资源组：
 agentengine hermes list
 agentengine hermes status ar-xxxx
 agentengine hermes open ar-xxxx
+agentengine hermes connect ar-xxxx
 agentengine hermes exec ar-xxxx -- doctor
 agentengine hermes pairing ar-xxxx -- list
 agentengine hermes delete ar-xxxx -y
@@ -281,7 +292,7 @@ agentengine invoke ar-xxxx
 agentengine hermes open ar-xxxx --chat
 ```
 
-### 4.2 Dashboard
+### 4.3 Dashboard
 
 打开云端 UI：
 
@@ -307,7 +318,7 @@ agentengine dashboard share revoke <link_id> --yes
 - `--direct` 直接打开 endpoint/path，跳过短链接创建
 - OpenClaw 也走同一个 `dashboard open` 入口
 
-### 4.3 MCP
+### 4.4 MCP
 
 MCP 资源管理：
 
@@ -321,21 +332,32 @@ agentengine mcp delete <mcp_id> --yes
 
 当前实现会自动识别 FastMCP 项目。MCP 项目入口需要满足配置声明或代码特征识别。
 
-### 4.4 OpenClaw
+### 4.5 OpenClaw
 
 OpenClaw 统一入口：
 
 ```bash
 agentengine openclaw deploy
+agentengine openclaw deploy --env APP_MODE=prod
 agentengine openclaw status
+agentengine openclaw repair
 agentengine dashboard open
 agentengine openclaw gateway doctor
+agentengine openclaw gateway doctor --fix
 agentengine openclaw channel status --probe
 agentengine openclaw channel connect --channel weixin
 agentengine openclaw channel connect --channel feishu
 ```
 
 OpenClaw 工作目录内可直接运行 `agentengine dashboard open`，会自动读取当前目录 `.agentengine.state` 中的 OpenClaw 实例引用。
+
+补充说明：
+
+- 如需定制镜像、插件、skills 和默认配置，可直接参考 `deploy/openclaw-user-template/` 下的模板与示例。
+- `agentengine openclaw deploy --env KEY=VALUE` 会把业务自定义环境变量原样透传到容器，不会自动改写 `openclaw.json`。
+- 如果提前配置 `OPENCLAW_CHANNEL_BOOTSTRAP_JSON`，部署时会把 Feishu / Weixin / Agentspace 渠道初始化参数带进 managed runtime。
+- `OPENCLAW_BROWSER_SSRF_POLICY_JSON` 可用于显式覆盖浏览器访问策略；需要企业内网放行时建议显式配置。
+- 当实例状态异常或 runtime patch 需要重放时，优先使用 `agentengine openclaw repair` 或 `agentengine openclaw gateway doctor --fix`。
 
 ## 5. 平台级能力：KB / LTM
 
@@ -390,8 +412,8 @@ export KSADK_LTM_AMBIENT_ENABLED=false
 ```ini
 # 模型
 OPENAI_API_KEY=your-api-key
-OPENAI_API_BASE=http://kspmas.ksyun.com/v1
-MODEL_NAME=deepseek-v3.2
+OPENAI_BASE_URL=http://kspmas.ksyun.com/v1
+OPENAI_MODEL_NAME=glm-5.1
 
 # 全局 AK/SK
 KSYUN_ACCESS_KEY=your-ak

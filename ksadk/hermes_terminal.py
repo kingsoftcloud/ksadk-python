@@ -110,7 +110,7 @@ def build_terminal_ws_url(endpoint: str) -> str:
 
 def build_start_frame(*, mode: str, argv: Sequence[str], cols: int, rows: int) -> str:
     normalized_mode = str(mode or "").strip().lower()
-    if normalized_mode not in {"tui", "exec", "pairing"}:
+    if normalized_mode not in {"tui", "exec", "pairing", "connect"}:
         raise ValueError(f"unsupported terminal mode: {mode}")
     payload = {
         "type": "start",
@@ -334,6 +334,9 @@ async def run_hermes_terminal_session(
         normalized_argv = validate_hermes_exec_argv(normalized_argv)
     elif normalized_mode == "pairing":
         normalized_argv = validate_hermes_pairing_argv(normalized_argv)
+    elif normalized_mode == "connect":
+        if normalized_argv:
+            raise ValueError(f"Hermes connect does not allow argv: {' '.join(normalized_argv)}")
     elif normalized_mode != "tui":
         raise ValueError(f"unsupported terminal mode: {mode}")
 

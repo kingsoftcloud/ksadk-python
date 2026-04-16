@@ -25,7 +25,10 @@ agentengine hermes open --chat
 # 6. 受限只读运维子命令
 agentengine hermes exec <agent> -- status
 
-# 7. Pairing 审批透传
+# 7. 远端扫码连接向导
+agentengine hermes connect <agent>
+
+# 8. Pairing 审批透传
 agentengine hermes pairing <agent> -- list
 ```
 
@@ -34,7 +37,11 @@ agentengine hermes pairing <agent> -- list
 - `/` 反代到 Hermes dashboard 管理 UI
 - `/chat` 由 AgentEngine hosted UI/router 处理
 - `/v1/*` 反代到 Hermes OpenAI-compatible API server
-- `/_ksadk/terminal/ws` 提供 `ks-terminal.v1` 原生 TUI/exec/pairing websocket
+- `/_ksadk/terminal/ws` 提供 `ks-terminal.v1` 原生 TUI/connect/exec/pairing websocket
+
+Hosted Hermes 会在容器内默认启动并托管 `hermes gateway run --replace`。
+这里不依赖 `systemd` / `launchd`。`agentengine hermes connect` 只负责远端配置
+Feishu / Weixin，并在需要时触发容器内 gateway 重载。
 
 `runtime/app.py` 必须对 `/v1/*` 保持真正的 SSE 转发。不要把上游响应先读成完整 `content` 再返回，否则 hosted `/chat` 会表现成“长时间无输出后一次性吐完”。
 
@@ -50,6 +57,7 @@ Hermes runtime 默认把所有可变状态集中到 `~/.hermes` 这个状态根�
 - `AGENT_BROWSER_STATE_DIR=/home/node/.hermes/browser`
 
 如果你的 pod 只持久化一个目录，建议直接挂载到 `/home/node/.hermes`。这样 Hermes 配置、session、workspace、mcporter 配置、浏览器会话和运行 socket 都会落在同一棵目录下，重启后行为更稳定。
+另外建议保留默认 `TERM=xterm-256color`，这样远端 `hermes gateway setup` 菜单可以正常使用上下键。
 
 ## 自定义镜像
 

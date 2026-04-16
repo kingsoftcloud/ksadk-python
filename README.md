@@ -2,7 +2,14 @@
 
 `ksadk` 是金山云 Agent 开发与部署工具链，统一提供本地调试、构建部署、远端资源管理，以及平台级 KB/LTM、MCP、OpenClaw、Hermes 接入能力。
 
-当前版本：`0.4.0`
+当前版本：`0.5.0`
+
+## 0.5.0 亮点
+
+- `Hermes` 正式进入 ksadk 主线，新增独立资源组、共享 runtime 镜像和原生远程 TUI。
+- OpenClaw 新增用户自定义镜像模板，适合直接打包给业务或客户做二次定制。
+- `agentengine openclaw deploy` 新增 `--env KEY=VALUE` 透传，可把业务自定义环境变量直接注入容器。
+- 新增 `agentengine openclaw repair` 与 `agentengine openclaw gateway doctor --fix`，补齐控制面修复入口。
 
 ## 安装
 
@@ -93,7 +100,9 @@ agentengine dashboard open --agent ar-xxxx
 - [KB / LTM 示例参考](./docs/knowledge_base_and_memory_examples.md)
 - [ADK 记忆能力专项参考](./docs/memory_usage_guide.md)
 - [OpenClaw 一键部署与接入参考](./docs/openclaw_client_one_click_deploy.md)
+- [OpenClaw 用户自定义镜像模板参考](./deploy/openclaw-user-template/README.md)
 - [Hermes Agent 本地安装、云端部署与远程 TUI 参考](./docs/hermes-agent-v2026.4.13_本地安装配置与ksadk接入流程.md)
+- [Hermes Runtime 共享镜像与运行时约定](./deploy/hermes/README.md)
 - [Runner Approval 架构草案](./docs/Runner_Approval_Architecture.md)
 
 ## 说明

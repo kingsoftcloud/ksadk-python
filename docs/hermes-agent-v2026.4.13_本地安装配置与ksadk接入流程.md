@@ -68,7 +68,7 @@ Hermes runtime 资产位于：
 cd /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python
 
 make hermes-build
-make hermes-push HERMES_TAG=v2026.4.13
+make hermes-push HERMES_TAG=v2026.4.13-ks16
 make hermes-size
 ```
 
@@ -81,8 +81,8 @@ make hermes-build HERMES_AGENT_REF=v2026.4.13
 默认发布地址：
 
 ```text
-hub.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.15-ks10
-hub-vpc-cn-beijing-6.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.15-ks10
+hub.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.13-ks16
+hub-vpc-cn-beijing-6.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.13-ks16
 ```
 
 说明：
@@ -122,13 +122,13 @@ Hermes runtime 对外暴露一个统一端口，聚合四类入口：
 - `/`：Hermes dashboard 管理 WebUI
 - `/chat`：由平台 router 转到 hosted chat
 - `/v1/*`：Hermes OpenAI-compatible API
-- `/_ksadk/terminal/ws`：原生远程 TUI 和受限 `hermes exec`
+- `/_ksadk/terminal/ws`：原生远程 TUI、`hermes connect`、受限 `hermes exec` 和 `hermes pairing`
 
 `deploy/hermes/runtime/app.py` 当前额外负责：
 
 - `/health` 同时检查 Hermes API upstream 和 dashboard upstream
 - 只允许 `ks-terminal.v1` 子协议建立终端 websocket
-- 在服务端二次校验 `exec` 白名单，防止客户端绕过本地校验
+- 在服务端二次校验 `exec` / `pairing` 白名单，防止客户端绕过本地校验
 
 ## 6. 本地容器运行模型
 
@@ -136,7 +136,7 @@ Hermes runtime 对外暴露一个统一端口，聚合四类入口：
 
 1. 写入 `~/.hermes/.env`
 2. 写入 `~/.hermes/config.yaml`
-3. 启动 `hermes gateway run --replace`
+3. 启动并监督 `hermes gateway run --replace`
 4. 启动 `hermes dashboard --host 127.0.0.1 --port 9119 --no-open`
 5. 启动 wrapper ASGI 服务，对外统一暴露一个端口
 
@@ -145,6 +145,8 @@ Hermes runtime 对外暴露一个统一端口，聚合四类入口：
 - 不需要等 Hermes 上游提供远程原生 attach 协议
 - 平台可以稳定约束 `/v1/*`、WebUI 和终端协议
 - 容器健康探针不会只检查 wrapper 自己，而会探测 Hermes API/dashboard upstream
+- gateway 退出时优先在容器内自拉起，超过本地重启预算后再让 Kubernetes 重建 Pod
+- 默认补齐 `TERM=xterm-256color`，远端 `hermes gateway setup` 尽量保持上下键交互
 
 ## 7. 部署到云上
 
@@ -159,7 +161,7 @@ agentengine hermes deploy --name demo-hermes
 ```bash
 agentengine hermes deploy \
   --name demo-hermes \
-  --image hub.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.15-ks10
+  --image hub.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.13-ks16
 ```
 
 部署命令当前行为：
@@ -180,7 +182,9 @@ agentengine hermes list
 agentengine hermes status <agent>
 agentengine hermes open <agent>
 agentengine hermes open <agent> --chat
+agentengine hermes connect <agent>
 agentengine hermes exec <agent> -- status
+agentengine hermes pairing <agent> -- list
 agentengine hermes delete <agent> -y
 ```
 
@@ -188,7 +192,9 @@ agentengine hermes delete <agent> -y
 
 - `agentengine invoke <agent>`：默认进入 Hermes 原生远程 TUI
 - `agentengine hermes open <agent> --chat`：打开 hosted chat
+- `agentengine hermes connect <agent>`：进入远端 gateway setup 向导，完成 Feishu / Weixin 扫码配置
 - `agentengine invoke <agent> -m "hello"`：继续走 `/v1/chat/completions`
+- `agentengine hermes pairing <agent> -- approve feishu <code>`：透传 pairing 审批子命令
 - `agentengine hermes destroy`：保留为 hidden 兼容别名
 
 ## 9. `hermes exec` 白名单
@@ -248,13 +254,13 @@ make status ENV=pre NAMESPACE=agentengine
 在 `ksadk-python` worktree 中：
 
 ```bash
-make hermes-push HERMES_TAG=v2026.4.13
+make hermes-push HERMES_TAG=v2026.4.13-ks16
 ```
 
 ### 10.3 再执行 CLI 侧预发 E2E
 
 ```bash
-agentengine hermes deploy --name demo-hermes --image hub.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.13
+agentengine hermes deploy --name demo-hermes --image hub.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.13-ks16
 agentengine hermes status demo-hermes
 agentengine invoke demo-hermes
 agentengine hermes open demo-hermes --chat

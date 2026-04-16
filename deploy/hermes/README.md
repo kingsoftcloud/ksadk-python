@@ -15,14 +15,14 @@ For this phase, `agentengine hermes deploy` does not build locally. It deploys a
 The default public image is:
 
 ```text
-hub.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.15-ks10
+hub.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.13-ks16
 ```
 
 When we need to refresh that shared image, do it from the `ksadk-python` repo root:
 
 ```bash
 make hermes-build
-make hermes-push HERMES_TAG=v2026.4.15-ks10
+make hermes-push HERMES_TAG=v2026.4.13-ks16
 make hermes-size
 ```
 
@@ -48,10 +48,25 @@ The published image serves all Hermes runtime surfaces from one port:
 - `/` -> Hermes dashboard WebUI
 - `/chat` -> handled by the platform router / hosted chat
 - `/v1/*` -> Hermes OpenAI-compatible API
-- `/_ksadk/terminal/ws` -> native remote TUI, restricted `hermes exec`, and `hermes pairing`
+- `/_ksadk/terminal/ws` -> native remote TUI, remote `hermes gateway setup`, restricted `hermes exec`, and `hermes pairing`
 - `/health` -> wrapper health probe that checks both API and dashboard upstreams
 
 The wrapper must proxy `/v1/*` with a real streaming response for SSE. Do not read `upstream.content` into memory before returning, or hosted `/chat` will degrade into burst output after a long stall.
+
+## Hosted Gateway Behavior
+
+AgentEngine-hosted Hermes treats the messaging gateway as a container-managed
+runtime process, not a desktop daemon:
+
+- `entrypoint.sh` starts `hermes gateway run --replace` automatically
+- the container supervises and restarts the gateway locally when it exits
+- if local restart attempts are exhausted, the entrypoint terminates the main
+  process so Kubernetes can recreate the pod
+- hosted `agentengine hermes connect` configures Feishu / Weixin inside the pod
+  and skips `systemd` / `launchd` installation flows
+
+In other words: hosted Hermes does not rely on `systemd`, `launchd`, `loginctl`,
+or sudo to keep the gateway alive.
 
 ## Persistent Directory Layout
 
@@ -82,6 +97,8 @@ The entrypoint also precreates:
 
 That layout is the recommended default for both local container runs and cluster deployments, and it matches the OpenClaw-style “single state directory” model more closely than mounting a separate workspace root.
 The bundled kdocs skill also assumes this remote-pod-friendly layout: `mcporter` is preinstalled in the image, and token acquisition prints a login URL by default instead of trying to auto-open a browser inside the pod.
+Hosted runtime also defaults `TERM=xterm-256color` so interactive Hermes setup
+menus keep curses / arrow-key navigation instead of degrading to numeric input.
 
 ## Generated Project Relationship
 

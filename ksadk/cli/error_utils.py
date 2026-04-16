@@ -80,6 +80,95 @@ def parse_server_api_error(err: Exception | str) -> Tuple[Optional[int], str]:
     return code, msg
 
 
+def _extract_agentengine_error_details(err: Exception | str) -> dict[str, Any]:
+    if isinstance(err, BaseException):
+        try:
+            from ksadk.api import AgentEngineAPIError
+
+            if isinstance(err, AgentEngineAPIError):
+                return dict(getattr(err, "details", {}) or {})
+        except Exception:
+            pass
+    return {}
+
+
+def _looks_like_missing_cloud_credentials(details: dict[str, Any], msg_lower: str) -> bool:
+    remote_code = str(details.get("remote_error_code") or "").strip().lower()
+    if remote_code in {"missingaccesskey", "missingsecretkey"}:
+        return True
+    markers = (
+        "missingaccesskey",
+        "missingsecretkey",
+        "access key is missing",
+        "secret key is missing",
+    )
+    return any(marker in msg_lower for marker in markers)
+
+
+def _looks_like_invalid_cloud_credentials(details: dict[str, Any], msg_lower: str) -> bool:
+    remote_code = str(details.get("remote_error_code") or "").strip().lower()
+    if remote_code in {
+        "invalidaccesskey",
+        "invalidsignature",
+        "signaturedoesnotmatch",
+        "signaturemismatch",
+        "invalidclienttokenid",
+        "authfailure",
+    }:
+        return True
+    markers = (
+        "invalidaccesskey",
+        "invalidsignature",
+        "signaturedoesnotmatch",
+        "signature mismatch",
+        "access key id you provided does not exist",
+        "the security token included in the request is invalid",
+        "authfailure",
+    )
+    return any(marker in msg_lower for marker in markers)
+
+
+def _looks_like_runtime_permission_error(details: dict[str, Any], msg_lower: str, code: int | None) -> bool:
+    remote_code = str(details.get("remote_error_code") or "").strip().lower()
+    if remote_code in {"accessdenied", "accessdeniedexception", "unauthorized", "unauthorizedoperation"}:
+        return True
+    if code in {401, 403} and (
+        ("权限" in msg_lower)
+        or ("permission" in msg_lower)
+        or ("access denied" in msg_lower)
+        or ("当前账号没有" in msg_lower)
+        or ("未授予" in msg_lower)
+    ):
+        return True
+    return False
+
+
+def _credential_setup_hints() -> list[str]:
+    return [
+        "请检查当前 shell 或项目 `.env` 中是否设置了 `KSYUN_ACCESS_KEY` / `KSYUN_SECRET_KEY`（兼容 `KS3_ACCESS_KEY` / `KS3_SECRET_KEY`）。",
+        "先到 AgentEngine Runtime 控制台确认账号是否具备运行时权限: https://ksp.console.ksyun.com/#/agentEngineRuntime",
+        "如当前子账号没有权限，请到 IAM 授权页授权: https://uc.console.ksyun.com/pro/iam/#/permission/authorize",
+        "如果还没有金山云 AK/SK，请让主账号先到 IAM 控制台创建子账号并生成访问密钥: https://uc.console.ksyun.com/pro/iam/",
+    ]
+
+
+def _invalid_credential_hints() -> list[str]:
+    return [
+        "请检查当前 shell 或项目 `.env` 中的 `KSYUN_ACCESS_KEY` / `KSYUN_SECRET_KEY` 是否填写正确，且没有多余空格。",
+        "确认该 AK/SK 未被禁用、删除或重置，并且属于当前要操作的金山云账号。",
+        "如需确认账号是否具备 AgentEngine Runtime 权限，可先查看: https://ksp.console.ksyun.com/#/agentEngineRuntime",
+        "如果凭证属于子账号但仍然被拒绝，请到 IAM 授权页检查授权: https://uc.console.ksyun.com/pro/iam/#/permission/authorize",
+    ]
+
+
+def _runtime_permission_hints() -> list[str]:
+    return [
+        "请先到 AgentEngine Runtime 控制台确认当前账号是否具备运行时权限: https://ksp.console.ksyun.com/#/agentEngineRuntime",
+        "如当前子账号没有权限，请到 IAM 授权页授权: https://uc.console.ksyun.com/pro/iam/#/permission/authorize",
+        "如果还没有可用的金山云 AK/SK，请让主账号先到 IAM 控制台创建子账号并生成访问密钥: https://uc.console.ksyun.com/pro/iam/",
+    ]
+
+
 def infer_help_command(argv: Optional[Sequence[str]] = None) -> str:
     args = [a for a in (list(argv) if argv is not None else sys.argv[1:]) if a]
     if args and not args[0].startswith("-"):
@@ -284,6 +373,7 @@ def cli_error_from_exception(
         return validation_error(str(err), context=context, argv=argv)
 
     code, msg = parse_server_api_error(err)
+    details = _extract_agentengine_error_details(err)
     args = [a for a in (list(argv) if argv is not None else sys.argv[1:]) if a]
     msg_lower = (msg or "").lower()
 
@@ -324,6 +414,30 @@ def cli_error_from_exception(
         hints.append("请确认 OpenClaw 名称/ID 是否正确，可先执行 `agentengine openclaw list` 查看已部署实例。")
         error_code = "resolution_error"
         exit_code = EXIT_CODE_RESOLUTION
+    elif _looks_like_missing_cloud_credentials(details, msg_lower):
+        return auth_error(
+            message="未检测到金山云 AK/SK。",
+            hints=_credential_setup_hints(),
+            details={"server_code": code, **details},
+            context=context,
+            argv=argv,
+        )
+    elif _looks_like_invalid_cloud_credentials(details, msg_lower):
+        return auth_error(
+            message="金山云 AK/SK 不正确或已失效。",
+            hints=_invalid_credential_hints(),
+            details={"server_code": code, **details},
+            context=context,
+            argv=argv,
+        )
+    elif _looks_like_runtime_permission_error(details, msg_lower, code):
+        return auth_error(
+            message="当前金山云账号没有 AgentEngine Runtime 所需权限。",
+            hints=_runtime_permission_hints(),
+            details={"server_code": code, **details},
+            context=context,
+            argv=argv,
+        )
     elif code in {401, 403}:
         return auth_error(context=context, argv=argv)
     elif code == 429:
@@ -342,7 +456,7 @@ def cli_error_from_exception(
         message=summary,
         exit_code=exit_code,
         hints=hints,
-        details={"server_code": code} if code is not None else {},
+        details=({"server_code": code, **details} if code is not None else dict(details)),
         context=context,
         show_help=show_help,
         argv=list(argv or []),

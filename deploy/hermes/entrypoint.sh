@@ -7,6 +7,7 @@ export HERMES_HOME="${HERMES_HOME:-${HERMES_STATE_DIR}}"
 export HERMES_WORKDIR="${HERMES_WORKDIR:-${HERMES_HOME}/workspace}"
 export HERMES_RUN_DIR="${HERMES_RUN_DIR:-${HERMES_HOME}/run}"
 export HERMES_SESSION_DIR="${HERMES_SESSION_DIR:-${HERMES_HOME}/sessions}"
+export HERMES_HOSTED_RUNTIME="${HERMES_HOSTED_RUNTIME:-1}"
 export MCPORTER_HOME="${MCPORTER_HOME:-${HERMES_HOME}/mcporter}"
 export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-${HERMES_HOME}/xdg/config}"
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-${HERMES_HOME}/xdg/cache}"
@@ -31,7 +32,22 @@ export HERMES_FALLBACK_MODEL="${HERMES_FALLBACK_MODEL:-${OPENAI_FALLBACK_MODEL_N
 export HERMES_FALLBACK_BASE_URL="${HERMES_FALLBACK_BASE_URL:-${OPENAI_BASE_URL:-}}"
 export AGENT_BROWSER_EXECUTABLE_PATH="${AGENT_BROWSER_EXECUTABLE_PATH:-/usr/bin/chromium}"
 export KDOCS_OPEN_BROWSER="${KDOCS_OPEN_BROWSER:-0}"
+if [[ -z "${TERM:-}" || "${TERM}" == "dumb" ]]; then
+  export TERM="xterm-256color"
+fi
+export PYTHONPATH="/app/runtime${PYTHONPATH:+:${PYTHONPATH}}"
 export PATH="/usr/local/bin:${HOME}/.local/bin:${PATH}"
+
+MAIN_PID="$$"
+GATEWAY_PID_FILE="${HERMES_RUN_DIR}/gateway.pid"
+export HERMES_GATEWAY_PID_FILE="${GATEWAY_PID_FILE}"
+GATEWAY_LOCAL_RESTART_MAX="${GATEWAY_LOCAL_RESTART_MAX:-5}"
+GATEWAY_LOCAL_RESTART_BACKOFF_SECONDS="${GATEWAY_LOCAL_RESTART_BACKOFF_SECONDS:-2}"
+HERMES_GATEWAY_SHUTDOWN_REQUESTED=0
+
+entrypoint_log() {
+  printf '[hermes-entrypoint] %s\n' "$*" >&2
+}
 
 if [[ -z "${HERMES_CONTEXT_LENGTH}" ]]; then
   case "${OPENAI_MODEL_NAME,,}" in
@@ -111,20 +127,75 @@ fi
 
 cat >> "${HERMES_HOME}/config.yaml" <<EOF
 api_server:
-  enabled: true
+  enabled: ${API_SERVER_ENABLED}
   host: "${API_SERVER_HOST}"
   port: ${API_SERVER_PORT}
 EOF
 
-hermes gateway run --replace &
-HERMES_API_PID=$!
+start_gateway_process() {
+  hermes gateway run --replace &
+  HERMES_GATEWAY_PID=$!
+  printf '%s\n' "${HERMES_GATEWAY_PID}" > "${GATEWAY_PID_FILE}"
+  set +e
+  wait "${HERMES_GATEWAY_PID}"
+  local exit_code=$?
+  set -e
+  rm -f "${GATEWAY_PID_FILE}"
+  HERMES_GATEWAY_PID=""
+  return "${exit_code}"
+}
+
+forward_gateway_shutdown() {
+  HERMES_GATEWAY_SHUTDOWN_REQUESTED=1
+  if [[ -n "${HERMES_GATEWAY_PID:-}" ]]; then
+    kill -TERM "${HERMES_GATEWAY_PID}" 2>/dev/null || true
+    wait "${HERMES_GATEWAY_PID}" 2>/dev/null || true
+    HERMES_GATEWAY_PID=""
+  fi
+  rm -f "${GATEWAY_PID_FILE}"
+}
+
+supervise_gateway() {
+  local failure_count=0
+  local gateway_exit_code=0
+  while true; do
+    gateway_exit_code=0
+    start_gateway_process || gateway_exit_code=$?
+
+    if [[ "${HERMES_GATEWAY_SHUTDOWN_REQUESTED}" == "1" ]]; then
+      return 0
+    fi
+
+    if [[ "${gateway_exit_code}" -eq 0 || "${gateway_exit_code}" -eq 130 || "${gateway_exit_code}" -eq 143 ]]; then
+      failure_count=0
+      entrypoint_log "gateway exited code=${gateway_exit_code}; restarting under container supervision"
+      sleep "${GATEWAY_LOCAL_RESTART_BACKOFF_SECONDS}"
+      continue
+    fi
+
+    failure_count="$((failure_count + 1))"
+    entrypoint_log "gateway exited code=${gateway_exit_code}; local restart ${failure_count}/${GATEWAY_LOCAL_RESTART_MAX}"
+    if [[ "${failure_count}" -ge "${GATEWAY_LOCAL_RESTART_MAX}" ]]; then
+      entrypoint_log "gateway restart budget exhausted; terminating main process so the platform can recreate the pod"
+      kill -TERM "${MAIN_PID}" 2>/dev/null || true
+      return "${gateway_exit_code}"
+    fi
+
+    sleep "${GATEWAY_LOCAL_RESTART_BACKOFF_SECONDS}"
+  done
+}
+
+supervise_gateway &
+HERMES_GATEWAY_SUPERVISOR_PID=$!
 
 hermes dashboard --host "${HERMES_DASHBOARD_HOST}" --port "${HERMES_DASHBOARD_PORT}" --no-open &
 HERMES_DASHBOARD_PID=$!
 
 cleanup() {
-  kill "${HERMES_API_PID}" "${HERMES_DASHBOARD_PID}" 2>/dev/null || true
+  HERMES_GATEWAY_SHUTDOWN_REQUESTED=1
+  forward_gateway_shutdown
+  kill "${HERMES_GATEWAY_SUPERVISOR_PID}" "${HERMES_DASHBOARD_PID}" 2>/dev/null || true
 }
-trap cleanup EXIT
+trap cleanup EXIT TERM INT
 
 exec uvicorn --app-dir /app runtime.app:app --host 0.0.0.0 --port "${PORT}"

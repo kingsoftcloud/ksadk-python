@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from ksadk.api.client import AgentEngineAPIError
 from ksadk.cli.error_utils import explain_exception
 
 
@@ -75,9 +76,68 @@ def test_error_hint_snapshots_match_canonical_hints():
             Exception("Server API Error (Code: 401): unauthorized"),
             ["mcp", "status"],
         ),
+        "missing_aksk": (
+            AgentEngineAPIError(
+                400,
+                "Access Key is Missing",
+                details={
+                    "http_status": 400,
+                    "remote_error_code": "MissingAccesskey",
+                    "remote_error_message": "Access Key is Missing",
+                    "request_id": "req-missing-ak",
+                },
+            ),
+            ["hermes", "status"],
+        ),
+        "invalid_aksk": (
+            AgentEngineAPIError(
+                403,
+                "The Access Key Id you provided does not exist",
+                details={
+                    "http_status": 403,
+                    "remote_error_code": "InvalidAccessKey",
+                    "remote_error_message": "The Access Key Id you provided does not exist",
+                    "request_id": "req-invalid-ak",
+                },
+            ),
+            ["agent", "status"],
+        ),
+        "missing_runtime_permission": (
+            AgentEngineAPIError(
+                403,
+                "当前账号没有 KsyunAgentEngineDefaultRole 权限",
+                details={
+                    "http_status": 403,
+                    "remote_error_code": "AccessDenied",
+                    "remote_error_message": "当前账号没有 KsyunAgentEngineDefaultRole 权限",
+                    "request_id": "req-no-role",
+                },
+            ),
+            ["openclaw", "status"],
+        ),
     }
 
     for name, (err, argv) in cases.items():
         summary, hints = explain_exception(err, argv=argv)
         actual = "\n".join([summary, *[f"- {hint}" for hint in hints]]).rstrip() + "\n"
         assert actual == snapshots[name]
+
+
+def test_missing_aksk_hint_points_to_credential_and_permission_docs():
+    err = AgentEngineAPIError(
+        400,
+        "Access Key is Missing",
+        details={
+            "http_status": 400,
+            "remote_error_code": "MissingAccesskey",
+            "remote_error_message": "Access Key is Missing",
+        },
+    )
+
+    summary, hints = explain_exception(err, argv=["hermes", "status"])
+
+    assert "AK/SK" in summary
+    assert any("KSYUN_ACCESS_KEY" in hint for hint in hints)
+    assert any("agentEngineRuntime" in hint for hint in hints)
+    assert any("/permission/authorize" in hint for hint in hints)
+    assert any("/pro/iam/" in hint for hint in hints)

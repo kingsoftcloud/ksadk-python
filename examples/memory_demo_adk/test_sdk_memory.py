@@ -116,7 +116,7 @@ def diagnose_error(err_msg: str):
         print(f"      KSADK_LTM_ENDPOINT=aicp.inner.api.ksyun.com")
         print(f"      KSADK_LTM_SCHEME=http")
     elif "MissingAccesskey" in err_msg:
-        print(f"\n  >>> 诊断: AK/SK 未配置，请检查 KSYUN_ACCESS_KEY / KSYUN_SECRET_KEY")
+        print(f"\n  >>> 诊断: AK/SK 未配置或配置错误或缺失权限，请检查 KSYUN_ACCESS_KEY / KSYUN_SECRET_KEY")
     elif "ServerNetworkError" in err_msg:
         print(f"\n  >>> 诊断: 网络错误，可能是本地代理劫持了请求")
         print(f"      尝试: NO_PROXY='*.ksyun.com' python test_sdk_memory.py")

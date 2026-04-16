@@ -2,7 +2,7 @@
 
 本文档描述 `ksadk-python` 当前实现形态，口径固定为“最新代码对应的当前设计”，不承担跨仓路线图职责。
 
-当前实现基于 `ksadk-python` 最新代码状态整理，覆盖到 2026-04-14 前的近期变更，包括 hosted-first UI metadata、Hermes 原生远程 TUI、quick access refresh、KS3 upload fallback 和依赖缓存复用优化。
+当前实现基于 `ksadk-python` 最新代码状态整理，覆盖到 2026-04-15 前的近期变更，包括 Hermes 一等公民 CLI、共享 runtime 镜像、OpenClaw managed runtime repair / env passthrough，以及前一阶段的 hosted-first UI metadata 与构建链路优化。
 
 ## 1. 产品定位与边界
 
@@ -57,6 +57,7 @@ Hermes 在本地项目态属于 container-first 模板：`init -f hermes` 会生
 
 - `build/deploy/launch` 负责把本地项目打包成 `Code` 或 `Container` 制品，并调用控制面 API
 - `agentengine hermes ...` 负责共享 Hermes runtime 镜像的生命周期管理、原生终端 attach 与受限子命令透传
+- `agentengine openclaw ...` 负责 OpenClaw 运行时的部署参数归一化、渠道 bootstrap 透传与 repair 入口暴露
 - 远端 Agent / MCP / OpenClaw / Hermes 的创建、更新、删除和 Dashboard 链接生成由 `AgentEngine Server` 承担
 - `ksadk-python` 消费这些控制面能力，并把本地项目状态持久化到 `.agentengine.state`
 
@@ -202,6 +203,13 @@ ADK runner 默认会尝试注入：
 - `/chat`：统一 hosted chat
 - `/_ksadk/terminal/ws`：原生远程 TUI 与受限 `hermes exec`
 
+Hermes hosted runtime 还显式把 gateway 视为“容器内受管进程”而不是桌面 daemon：
+
+- 容器入口负责启动并监督 Hermes gateway
+- 本地重启耗尽后由主进程退出，让 Kubernetes 重建 Pod
+- 默认统一持久化到 `~/.hermes`
+- 默认补齐 `TERM=xterm-256color`，尽量保留 curses / 箭头键交互
+
 ### 3.7 Build / Deploy / Launch 与 Artifact 路径
 
 CLI 主线包括：
@@ -209,7 +217,8 @@ CLI 主线包括：
 - `build`
 - `deploy`
 - `launch`
-- `hermes deploy/status/open/exec/delete`
+- `hermes deploy/list/status/open/connect/exec/pairing/delete`
+- `openclaw deploy/gateway/channel/repair`
 
 当前实现支持：
 
@@ -221,11 +230,19 @@ CLI 主线包括：
 
 Hermes 生命周期则走另一条主线：
 
-- 默认共享镜像：`hub.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.15-ks10`
+- 默认共享镜像：`hub.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.13-ks16`
 - 不要求用户本地 build/push
 - deploy 时把模型 env 注入到共享 runtime
 - 若配置的是 `kspmas.ksyun.com` 公网模型地址，deploy 会自动改写成 `kspmas-internal.sdns.ksyun.com` 供云端 Pod 使用
 - runtime 同时聚合 `/`、`/v1/*`、`/_ksadk/terminal/ws` 与 `/health`
+
+OpenClaw managed runtime 则继续沿另一条“启动期配置收口”路径演进：
+
+- bootstrap 会在每次启动时做 env -> runtime config reconcile，而不是只在首启时写入
+- `OPENCLAW_CHANNEL_BOOTSTRAP_JSON` 支持 Weixin / Feishu / Agentspace 的渠道预配置
+- `OPENCLAW_BROWSER_SSRF_POLICY_JSON` 用于显式覆盖浏览器访问策略
+- `agentengine openclaw deploy --env KEY=VALUE` 允许把业务自定义 env 原样透传到容器
+- `agentengine openclaw repair` / `gateway doctor --fix` 暴露控制面修复动作，而不是要求用户手动进入 pod 执行诊断
 
 与“平台生命周期治理”不同，仓库内实现聚焦于：
 
@@ -239,10 +256,9 @@ Hermes 生命周期则走另一条主线：
 
 近期行为变化包括：
 
-- 优化 KS3 上传 fallback
-- 优化依赖缓存复用
-- 部署后回查并持久化 quick access 信息
-- Agent 创建后重试 quick access refresh
+- OpenClaw deploy 支持自定义 env 透传与渠道 bootstrap 配置
+- OpenClaw managed runtime 增加 control-plane repair 入口与 browser / trusted-proxy 兼容补丁收口
+- Hermes gateway 改为容器内托管与重启，并显式约束远程终端 contract
 
 ## 4. 关键调用链
 

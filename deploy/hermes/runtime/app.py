@@ -48,6 +48,17 @@ NESTED_READONLY = {
 
 app = FastAPI()
 
+os.environ.setdefault("HERMES_HOSTED_RUNTIME", "1")
+
+
+def _normalize_term_env() -> None:
+    current = str(os.getenv("TERM", "")).strip().lower()
+    if current in {"", "dumb"}:
+        os.environ["TERM"] = "xterm-256color"
+
+
+_normalize_term_env()
+
 
 def _api_base() -> str:
     return f"http://{os.getenv('API_SERVER_HOST', '127.0.0.1')}:{os.getenv('API_SERVER_PORT', '8642')}"
@@ -101,6 +112,22 @@ def _validate_pairing_argv(argv: Iterable[str]) -> list[str]:
         normalized[1] = platform
         return normalized
     raise ValueError("unsupported argv")
+
+
+def _resolve_terminal_command(mode: str, argv: Iterable[str]) -> list[str]:
+    normalized_mode = str(mode or "").strip().lower()
+    normalized_argv = [str(item).strip() for item in argv]
+    if normalized_mode == "tui":
+        return ["hermes", "chat"]
+    if normalized_mode == "exec":
+        return ["hermes", *_validate_exec_argv(normalized_argv)]
+    if normalized_mode == "pairing":
+        return ["hermes", "pairing", *_validate_pairing_argv(normalized_argv)]
+    if normalized_mode == "connect":
+        if normalized_argv:
+            raise ValueError("unsupported argv")
+        return ["hermes", "gateway", "setup"]
+    raise ValueError("unsupported mode")
 
 
 async def _proxy_http(request: Request, base_url: str, path: str) -> Response:
@@ -231,14 +258,7 @@ async def terminal_ws(ws: WebSocket) -> None:
             raise ValueError("first frame must be start")
         mode = payload.get("mode")
         argv = payload.get("argv") or []
-        if mode == "tui":
-            command = ["hermes", "chat"]
-        elif mode == "exec":
-            command = ["hermes", *_validate_exec_argv(argv)]
-        elif mode == "pairing":
-            command = ["hermes", "pairing", *_validate_pairing_argv(argv)]
-        else:
-            raise ValueError("unsupported mode")
+        command = _resolve_terminal_command(mode, argv)
 
         pid, fd = pty.fork()
         if pid == 0:

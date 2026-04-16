@@ -65,13 +65,13 @@ RUN if [ -n "${APT_MIRROR}" ]; then \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=agent_browser /usr/local/bin/node /usr/local/bin/node
-COPY --from=agent_browser /usr/local/bin/npm /usr/local/bin/npm
-COPY --from=agent_browser /usr/local/bin/npx /usr/local/bin/npx
-COPY --from=agent_browser /usr/local/bin/corepack /usr/local/bin/corepack
 COPY --from=agent_browser /usr/local/bin/agent-browser /usr/local/bin/agent-browser
-COPY --from=agent_browser /usr/local/bin/mcporter /usr/local/bin/mcporter
 COPY --from=agent_browser /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN mkdir -p /usr/local/lib/python3.12/site-packages/node_modules \
+    && ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -sf ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+    && ln -sf ../lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack \
+    && ln -sf ../lib/node_modules/mcporter/dist/cli.js /usr/local/bin/mcporter \
     && ln -s /usr/local/lib/node_modules/agent-browser /usr/local/lib/python3.12/site-packages/node_modules/agent-browser \
     && mkdir -p /home/node/.hermes \
     && chown -R node:node /home/node /app
@@ -84,7 +84,11 @@ RUN pip install --no-cache-dir \
     "httpx>=0.24" \
     "pyyaml>=6.0" \
     "python-dotenv>=1.0" \
-    "/tmp/hermes-src[web,messaging,feishu]" \
+    "aiohttp>=3.13.3,<4" \
+    "websockets>=15.0.1,<16" \
+    "cryptography>=46.0.5,<47" \
+    "qrcode>=8.2,<9" \
+    "/tmp/hermes-src[web,feishu,pty,cron,mcp,cli]" \
     -i "${PYPI_INDEX_URL}" \
     --extra-index-url "${PYPI_EXTRA_INDEX_URL}" \
     && rm -rf /tmp/hermes-src

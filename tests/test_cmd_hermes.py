@@ -242,6 +242,35 @@ def test_hermes_pairing_accepts_safe_subcommand_and_uses_remote_terminal(monkeyp
     assert captured["argv"] == ["approve", "feishu", "ABC123"]
 
 
+def test_hermes_pairing_without_agent_ref_uses_state_resolution(monkeypatch):
+    runner = CliRunner()
+    captured = {}
+    resolved = {}
+
+    async def _fake_pairing(**kwargs):
+        captured.update(kwargs)
+
+    def _fake_resolve(**kwargs):
+        resolved.update(kwargs)
+        return {
+            "endpoint": "https://hermes.example.com",
+            "api_key": "ak-hermes",
+        }
+
+    monkeypatch.setattr(cmd_hermes, "run_hermes_terminal_session", _fake_pairing)
+    monkeypatch.setattr(cmd_hermes, "_resolve_hermes_access", _fake_resolve)
+
+    result = runner.invoke(
+        cmd_hermes.hermes,
+        ["pairing", "--", "approve", "feishu", "ABC123"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert resolved["agent_ref"] is None
+    assert captured["mode"] == "pairing"
+    assert captured["argv"] == ["approve", "feishu", "ABC123"]
+
+
 def test_hermes_pairing_rejects_invalid_platform_before_remote_call(monkeypatch):
     runner = CliRunner()
 
@@ -257,6 +286,60 @@ def test_hermes_pairing_rejects_invalid_platform_before_remote_call(monkeypatch)
 
     assert result.exit_code != 0
     assert "不允许" in result.output or "not allowed" in result.output
+
+
+def test_hermes_exec_without_agent_ref_uses_state_resolution(monkeypatch):
+    runner = CliRunner()
+    captured = {}
+    resolved = {}
+
+    async def _fake_exec(**kwargs):
+        captured.update(kwargs)
+
+    def _fake_resolve(**kwargs):
+        resolved.update(kwargs)
+        return {
+            "endpoint": "https://hermes.example.com",
+            "api_key": "ak-hermes",
+        }
+
+    monkeypatch.setattr(cmd_hermes, "run_hermes_terminal_session", _fake_exec)
+    monkeypatch.setattr(cmd_hermes, "_resolve_hermes_access", _fake_resolve)
+
+    result = runner.invoke(
+        cmd_hermes.hermes,
+        ["exec", "--", "status"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert resolved["agent_ref"] is None
+    assert captured["mode"] == "exec"
+    assert captured["argv"] == ["status"]
+
+
+def test_hermes_connect_enters_remote_gateway_setup(monkeypatch):
+    runner = CliRunner()
+    captured = {}
+
+    async def _fake_connect(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cmd_hermes, "run_hermes_terminal_session", _fake_connect)
+    monkeypatch.setattr(
+        cmd_hermes,
+        "_resolve_hermes_access",
+        lambda **_kwargs: {
+            "endpoint": "https://hermes.example.com",
+            "api_key": "ak-hermes",
+        },
+    )
+
+    result = runner.invoke(cmd_hermes.hermes, ["connect", "ar-hermes-1"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["mode"] == "connect"
+    assert captured["endpoint"] == "https://hermes.example.com"
+    assert captured["api_key"] == "ak-hermes"
 
 
 def test_hermes_exec_dry_run_does_not_resolve_or_connect(monkeypatch):
@@ -283,6 +366,32 @@ def test_hermes_exec_dry_run_does_not_resolve_or_connect(monkeypatch):
     assert payload["resource"] == "hermes"
     assert payload["action"] == "exec"
     assert payload["request"]["argv"] == ["status"]
+
+
+def test_hermes_connect_dry_run_does_not_resolve_or_connect(monkeypatch):
+    runner = CliRunner()
+
+    async def _forbidden_connect(**_kwargs):
+        raise AssertionError("remote terminal should not be called")
+
+    monkeypatch.setattr(cmd_hermes, "run_hermes_terminal_session", _forbidden_connect)
+    monkeypatch.setattr(
+        cmd_hermes,
+        "_resolve_hermes_access",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("agent access should not be resolved")),
+    )
+
+    result = runner.invoke(
+        cmd_hermes.hermes,
+        ["connect", "ar-hermes-1", "--dry-run", "--output", "json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["kind"] == "dry_run"
+    assert payload["resource"] == "hermes"
+    assert payload["action"] == "connect"
+    assert payload["request"]["mode"] == "connect"
 
 
 def test_hermes_pairing_dry_run_does_not_resolve_or_connect(monkeypatch):
@@ -480,7 +589,7 @@ def test_hermes_deploy_rewrites_public_kspmas_url_for_runtime(tmp_path: Path, mo
     assert result.exit_code == 0, result.output
     assert (
         _FakeHermesClient.create_payload["artifact_path"]
-        == "hub.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.15-ks10"
+        == "hub.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.13-ks16"
     )
     assert any(
         item["Key"] == "OPENAI_BASE_URL" and item["Value"] == "http://kspmas-internal.sdns.ksyun.com/v1"
