@@ -1087,15 +1087,21 @@ def _delete_impl(mcp_ids: tuple[str, ...], region: str, assume_yes: bool, dry_ru
         _abort_mcp_error(e, context="删除失败", argv=["mcp", "delete"])
         return
     if result is not None:
+        deleted_text = ", ".join(result["deleted"]) or "-"
+        failed_text = ", ".join(result["failed"]) or "-"
         render_descriptor_status(
             MCP_RESOURCE,
             title="MCP 删除结果",
             subtitle=", ".join(result["targets"]) if result["targets"] else "-",
             fields=[
                 ("目标数量", str(len(result["targets"])), None),
-                ("已删除", ", ".join(result["deleted"]) or "-", None),
-                ("失败", ", ".join(result["failed"]) or "-", None),
+                ("已删除", deleted_text, "ok" if result["deleted"] else "muted"),
+                ("失败", failed_text, "err" if result["failed"] else "muted"),
             ],
+            next_steps=(
+                "agentengine mcp list",
+                "agentengine mcp deploy",
+            ),
             action="delete",
             item=result,
         )
