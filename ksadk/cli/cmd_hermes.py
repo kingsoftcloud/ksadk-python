@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import click
 
@@ -47,7 +47,7 @@ from ksadk.hermes_terminal import (
 )
 
 
-DEFAULT_HERMES_IMAGE = "hub.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.15-ks10"
+DEFAULT_HERMES_IMAGE = "hub.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.13-ks16"
 DEFAULT_HERMES_CONTEXT_LENGTHS = (
     ("glm-5.1", "200000"),
 )
@@ -70,7 +70,7 @@ HERMES_RESOURCE = ResourceDescriptor(
         status="agentengine hermes status [agent_ref]",
         delete="agentengine hermes delete <agent_ref...>",
         open="agentengine hermes open [agent_ref]",
-        extra=("exec", "pairing"),
+        extra=("connect", "exec", "pairing"),
     ),
     list_schema=ResourceListSchema(
         title="Hermes 实例列表",
@@ -88,6 +88,7 @@ HERMES_RESOURCE = ResourceDescriptor(
         title="Hermes 状态",
         next_steps=(
             "agentengine invoke <agent>        # 原生 Hermes TUI",
+            "agentengine hermes connect <agent>  # 远端配置 Feishu/Weixin，gateway 由容器托管",
             "agentengine hermes open <agent> --chat",
             "agentengine hermes exec <agent> -- status",
             "agentengine hermes pairing <agent> -- list",
@@ -97,6 +98,7 @@ HERMES_RESOURCE = ResourceDescriptor(
         "agentengine hermes deploy --name demo-hermes",
         "agentengine hermes list",
         "agentengine hermes status ar-xxxx",
+        "agentengine hermes connect ar-xxxx",
         "agentengine hermes open ar-xxxx --manage",
         "agentengine hermes open ar-xxxx --chat",
         "agentengine hermes exec ar-xxxx -- status",
@@ -328,6 +330,23 @@ def _resolve_hermes_access(
         "agent_id": detail.get("agent_id"),
         "name": detail.get("name"),
     }
+
+
+def _split_terminal_agent_ref_and_argv(
+    argv: tuple[str, ...],
+    *,
+    validator: Callable[[tuple[str, ...] | list[str]], list[str]],
+) -> tuple[str | None, list[str]]:
+    raw = [str(item) for item in argv]
+    try:
+        return None, validator(raw)
+    except ValueError as direct_error:
+        if len(raw) >= 2:
+            try:
+                return raw[0], validator(raw[1:])
+            except ValueError:
+                pass
+        raise direct_error
 
 
 def _render_hermes_dry_run(action: str, request: dict[str, Any], hints: tuple[str, ...] = ()) -> None:
@@ -675,7 +694,6 @@ def open_hermes(
 
 
 @hermes.command("exec", context_settings=CONTEXT_SETTINGS)
-@click.argument("agent_ref", required=False)
 @click.argument("argv", nargs=-1, required=True)
 @click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
 @click.option("--endpoint", "-e", default=None, help="Agent Endpoint URL (覆盖自动获取)")
@@ -685,7 +703,6 @@ def open_hermes(
 @dry_run_option()
 @cli_output_option()
 def exec_hermes(
-    agent_ref: Optional[str],
     argv: tuple[str, ...],
     region: str,
     endpoint: Optional[str],
@@ -698,7 +715,10 @@ def exec_hermes(
     """透传受限 Hermes 只读运维子命令。"""
     _ = output_mode
     try:
-        validated_argv = validate_hermes_exec_argv(argv)
+        agent_ref, validated_argv = _split_terminal_agent_ref_and_argv(
+            argv,
+            validator=validate_hermes_exec_argv,
+        )
         dry_run = effective_dry_run(dry_run)
         if dry_run:
             _render_hermes_dry_run(
@@ -734,7 +754,6 @@ def exec_hermes(
 
 
 @hermes.command("pairing", context_settings=CONTEXT_SETTINGS)
-@click.argument("agent_ref", required=False)
 @click.argument("argv", nargs=-1, required=True)
 @click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
 @click.option("--endpoint", "-e", default=None, help="Agent Endpoint URL (覆盖自动获取)")
@@ -744,7 +763,6 @@ def exec_hermes(
 @dry_run_option()
 @cli_output_option()
 def pairing_hermes(
-    agent_ref: Optional[str],
     argv: tuple[str, ...],
     region: str,
     endpoint: Optional[str],
@@ -757,7 +775,10 @@ def pairing_hermes(
     """透传 Hermes pairing 审批子命令。"""
     _ = output_mode
     try:
-        validated_argv = validate_hermes_pairing_argv(argv)
+        agent_ref, validated_argv = _split_terminal_agent_ref_and_argv(
+            argv,
+            validator=validate_hermes_pairing_argv,
+        )
         dry_run = effective_dry_run(dry_run)
         if dry_run:
             _render_hermes_dry_run(
@@ -788,6 +809,59 @@ def pairing_hermes(
         raise SystemExit(130)
     except ValueError as e:
         raise click.ClickException(f"不允许的 Hermes pairing 子命令: {e}") from e
+    if exit_code:
+        raise SystemExit(exit_code)
+
+
+@hermes.command("connect", context_settings=CONTEXT_SETTINGS)
+@click.argument("agent_ref", required=False)
+@click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
+@click.option("--endpoint", "-e", default=None, help="Agent Endpoint URL (覆盖自动获取)")
+@click.option("--api-key", default=None, help="AgentEngine API Key (覆盖自动获取)")
+@click.option("--session", "-s", default=None, help="Session ID")
+@click.option("--insecure", "-k", is_flag=True, help="跳过 SSL 证书验证")
+@dry_run_option()
+@cli_output_option()
+def connect_hermes(
+    agent_ref: Optional[str],
+    region: str,
+    endpoint: Optional[str],
+    api_key: Optional[str],
+    session: Optional[str],
+    insecure: bool,
+    dry_run: bool,
+    output_mode: str | None,
+):
+    """进入远端 Hermes gateway setup 向导，执行扫码连接。"""
+    _ = output_mode
+    dry_run = effective_dry_run(dry_run)
+    if dry_run:
+        _render_hermes_dry_run(
+            "connect",
+            {
+                "agent_ref": agent_ref,
+                "endpoint": endpoint,
+                "mode": "connect",
+                "session": session,
+                "insecure": insecure,
+            },
+            hints=("dry-run 未解析远端 Agent，也未建立 websocket。",),
+        )
+        return
+
+    try:
+        access = _resolve_hermes_access(agent_ref=agent_ref, region=region, endpoint=endpoint, api_key=api_key)
+        exit_code = asyncio.run(
+            run_hermes_terminal_session(
+                endpoint=str(access["endpoint"]),
+                api_key=access.get("api_key"),
+                session_id=session,
+                insecure=insecure,
+                mode="connect",
+            )
+        )
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        raise SystemExit(130)
     if exit_code:
         raise SystemExit(exit_code)
 

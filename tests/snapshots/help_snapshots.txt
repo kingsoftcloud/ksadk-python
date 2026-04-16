@@ -117,6 +117,7 @@ Options:
   --path TEXT                   目标 UI 路径（默认根据配置自动推导）
   --share                       创建可分享链接（默认创建私有临时链接）
   --expires-seconds TEXT        链接有效期（秒）；支持 never(=0)
+  --force-new                   强制新建链接（跳过复用）
   --no-open                     仅打印 URL，不自动打开浏览器
   --direct                      直接打开 endpoint/path（跳过短链接创建）
   --output [pretty|json]        输出格式
@@ -131,6 +132,7 @@ Options:
   -h, --help  Show this message and exit.
 
 Commands:
+  connect  进入远端 Hermes gateway setup 向导，执行扫码连接。
   delete   删除 Hermes Agent。
   deploy   部署 Hermes runtime 到云端。
   exec     透传受限 Hermes 只读运维子命令。
@@ -194,6 +196,7 @@ Usage: cli openclaw [OPTIONS] COMMAND [ARGS]...
       list     列出已部署的 OpenClaw
       status   查看单个 OpenClaw 状态
       gateway  Gateway 入口、日志与诊断
+      repair   通过控制面执行 OpenClaw 修复动作
       channel  Channel 统一入口
       delete   删除一个或多个 OpenClaw
 
@@ -202,6 +205,7 @@ Usage: cli openclaw [OPTIONS] COMMAND [ARGS]...
       agentengine openclaw list
       agentengine openclaw status <id>
       agentengine openclaw gateway open <id>
+      agentengine openclaw repair <id>
       agentengine openclaw channel status <id> --probe
       agentengine openclaw channel connect <id> --channel weixin
       agentengine openclaw delete <id>
@@ -215,6 +219,7 @@ Commands:
   deploy   部署 OpenClaw 到云端
   gateway  OpenClaw gateway 入口、日志与诊断。
   list     列出已部署的 OpenClaw 实例
+  repair   通过控制面执行 OpenClaw 修复动作。
   status   查看 OpenClaw 状态
 
 === version_help ===

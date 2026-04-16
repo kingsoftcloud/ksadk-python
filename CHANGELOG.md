@@ -5,6 +5,23 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [0.5.0] - 2026-04-16
+
+### 变更
+
+- 新增 `agentengine hermes` 一等公民资源组，支持 `deploy`、`list`、`status`、`open`、`connect`、`exec`、`pairing`、`delete`，并让 `agentengine invoke <hermes-agent>` 默认进入 Hermes 原生远程 TUI。
+- Hermes 以共享 runtime 镜像方式接入，不要求用户本地 `build/push`；新增 runtime 资产、公共镜像工作流，以及 `/`、`/chat`、`/v1/*`、`/_ksadk/terminal/ws` 的统一运行时 contract。
+- 新增 OpenClaw 用户自定义镜像模板与示例，支持在平台运行时约束下自定义插件、skills 和默认配置。
+- `agentengine openclaw deploy` 新增 `--env KEY=VALUE` 透传能力，允许业务自定义环境变量直接进入容器运行时。
+- OpenClaw 部署新增 `OPENCLAW_CHANNEL_BOOTSTRAP_JSON`、Agentspace bootstrap 配置与 `OPENCLAW_BROWSER_SSRF_POLICY_JSON` 透传，便于渠道预配置和内网访问策略收口。
+- 新增 `agentengine openclaw repair`，并支持 `agentengine openclaw gateway doctor --fix` 通过控制面直接触发 `doctor-fix` 修复动作。
+
+### 修复
+
+- 进一步完善 OpenClaw managed runtime 在当前 upstream bundle 下的 trusted-proxy loopback、backend self-pairing 与默认 browser 行为兼容性，降低诊断和修复成本。
+- 改进 hosted Hermes 运行时默认行为，网关进程改为容器内托管与重启，减少对宿主机 daemon 能力的依赖。
+- hosted Hermes 运行时默认补齐 `TERM=xterm-256color` 与统一状态目录布局，提升远端 setup / pairing 交互稳定性。
+
 ## [0.4.0] - 2026-04-07
 
 ### 变更

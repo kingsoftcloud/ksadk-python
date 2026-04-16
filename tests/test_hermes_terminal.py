@@ -47,6 +47,13 @@ def test_build_start_frame_supports_pairing_mode():
     assert payload["argv"] == ["list"]
 
 
+def test_build_start_frame_supports_connect_mode():
+    payload = json.loads(build_start_frame(mode="connect", argv=[], cols=120, rows=40))
+
+    assert payload["mode"] == "connect"
+    assert payload["argv"] == []
+
+
 @pytest.mark.parametrize(
     "argv",
     [

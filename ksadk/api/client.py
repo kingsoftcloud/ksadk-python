@@ -31,13 +31,20 @@ class DryRunExit(Exception):
 class AgentEngineAPIError(Exception):
     """服务端 Action API 返回非零 Code 时抛出的结构化异常。"""
 
-    def __init__(self, code: Any, message: Optional[str] = None):
+    def __init__(
+        self,
+        code: Any,
+        message: Optional[str] = None,
+        *,
+        details: Optional[Dict[str, Any]] = None,
+    ):
         self.raw_code = code
         try:
             self.code = int(code)
         except (TypeError, ValueError):
             self.code = None
         self.message = (message or "Unknown API error").strip() or "Unknown API error"
+        self.details = dict(details or {})
         super().__init__(self.__str__())
 
     def __str__(self) -> str:
@@ -100,7 +107,7 @@ class AgentEngineClient:
         if self._auth.is_enabled:
             logger.debug(f"AgentEngineClient initialized with V4Auth: {self.base_url}")
         else:
-            logger.warning("AgentEngineClient: No credentials, signing disabled")
+            logger.debug("AgentEngineClient: No credentials, signing disabled")
             
         self._session: Optional[requests.Session] = None
 
@@ -225,6 +232,84 @@ class AgentEngineClient:
         """归一化请求体中的 Region 字段。"""
         return self._normalize_control_region(region or self.logical_region or "cn-beijing-6")
 
+    @staticmethod
+    def _extract_http_error_details(resp_text: str) -> Dict[str, Any]:
+        text = str(resp_text or "").strip()
+        details: Dict[str, Any] = {}
+        if not text:
+            return details
+        try:
+            payload = json.loads(text)
+        except Exception:
+            return details
+        if not isinstance(payload, dict):
+            return details
+
+        request_id = str(payload.get("RequestId") or payload.get("RequestID") or "").strip()
+        if request_id:
+            details["request_id"] = request_id
+
+        error = payload.get("Error")
+        if isinstance(error, dict):
+            remote_code = str(error.get("Code") or "").strip()
+            remote_message = str(error.get("Message") or "").strip()
+            remote_type = str(error.get("Type") or "").strip()
+            if remote_code:
+                details["remote_error_code"] = remote_code
+            if remote_message:
+                details["remote_error_message"] = remote_message
+            if remote_type:
+                details["remote_error_type"] = remote_type
+
+        message = str(payload.get("Message") or "").strip()
+        if message:
+            details["message"] = message
+
+        return details
+
+    @staticmethod
+    def _is_auth_related_error_details(details: Dict[str, Any]) -> bool:
+        remote_code = str(details.get("remote_error_code") or "").strip().lower()
+        remote_message = str(details.get("remote_error_message") or details.get("message") or "").strip().lower()
+        if remote_code in {
+            "missingaccesskey",
+            "missingsecretkey",
+            "invalidaccesskey",
+            "signaturedoesnotmatch",
+            "invalidsignature",
+            "signaturemismatch",
+            "accessdenied",
+            "accessdeniedexception",
+            "unauthorized",
+            "unauthorizedoperation",
+            "invalidclienttokenid",
+            "authfailure",
+        }:
+            return True
+        markers = (
+            "access key is missing",
+            "secret key is missing",
+            "invalid access key",
+            "access key id you provided does not exist",
+            "signature",
+            "access denied",
+            "unauthorized",
+            "没有",
+            "权限",
+            "permission",
+        )
+        return any(marker in remote_message for marker in markers)
+
+    def _log_http_error(self, *, method: str, full_url: str, status_code: int, resp_text: str, details: Dict[str, Any]) -> None:
+        log_fn = logger.debug if self._is_auth_related_error_details(details) else logger.error
+        log_fn(
+            "Request failed: method=%s, url=%s, status=%s, body=%s",
+            method,
+            full_url,
+            status_code,
+            resp_text,
+        )
+
     def _build_headers(self, request_id: str = "", action: str = "", kop_mode: bool = False) -> Dict[str, str]:
         if not request_id:
             request_id = str(uuid.uuid4())
@@ -294,7 +379,11 @@ class AgentEngineClient:
                 {"RoleName": role_name},
             )
         except Exception as exc:
-            logger.warning("Permission probe failed for %s: %s", action, exc)
+            details = getattr(exc, "details", {}) if isinstance(exc, AgentEngineAPIError) else {}
+            if self._is_auth_related_error_details(details):
+                logger.debug("Permission probe auth failure for %s: %s", action, exc)
+            else:
+                logger.warning("Permission probe failed for %s: %s", action, exc)
             return
 
         code = int(result.get("Code", 0) or 0)
@@ -383,16 +472,22 @@ class AgentEngineClient:
 
         if response.status_code >= 400:
             resp_text = response.text or ""
-            logger.error(
-                "Request failed: method=%s, url=%s, status=%s, body=%s",
-                method,
-                full_url,
-                response.status_code,
-                resp_text,
+            details = self._extract_http_error_details(resp_text)
+            details.setdefault("http_status", response.status_code)
+            self._log_http_error(
+                method=method,
+                full_url=full_url,
+                status_code=response.status_code,
+                resp_text=resp_text,
+                details=details,
             )
-            raise Exception(
-                f"HTTP {response.status_code} {method} {full_url}: {resp_text}"
+            message = (
+                str(details.get("remote_error_message") or details.get("message") or "").strip()
+                or resp_text
             )
+            if details:
+                raise AgentEngineAPIError(response.status_code, message, details=details)
+            raise Exception(f"HTTP {response.status_code} {method} {full_url}: {resp_text}")
 
         if response.text:
             try:

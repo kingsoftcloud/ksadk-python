@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 from starlette.testclient import TestClient
@@ -18,10 +19,25 @@ MODULE_PATH = (
     / "runtime"
     / "app.py"
 )
+HOSTED_GATEWAY_MODULE_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "deploy"
+    / "hermes"
+    / "runtime"
+    / "hosted_gateway.py"
+)
 
 
 def _load_runtime_module():
     spec = importlib.util.spec_from_file_location("ksadk_hermes_runtime_test", MODULE_PATH)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_hosted_gateway_module():
+    spec = importlib.util.spec_from_file_location("ksadk_hosted_gateway_test", HOSTED_GATEWAY_MODULE_PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -233,6 +249,14 @@ def test_health_returns_503_when_dashboard_check_fails(monkeypatch):
     assert payload["checks"]["dashboard"]["ok"] is False
 
 
+def test_runtime_promotes_dumb_term_to_xterm_256color(monkeypatch):
+    monkeypatch.setenv("TERM", "dumb")
+
+    _load_runtime_module()
+
+    assert os.environ["TERM"] == "xterm-256color"
+
+
 def test_entrypoint_writes_explicit_context_length_override():
     entrypoint = (
         Path(__file__).resolve().parents[1]
@@ -257,6 +281,10 @@ def test_entrypoint_writes_explicit_context_length_override():
     assert 'export HERMES_WORKDIR="${HERMES_WORKDIR:-${HERMES_HOME}/workspace}"' in entrypoint
     assert 'export HERMES_RUN_DIR="${HERMES_RUN_DIR:-${HERMES_HOME}/run}"' in entrypoint
     assert 'export HERMES_SESSION_DIR="${HERMES_SESSION_DIR:-${HERMES_HOME}/sessions}"' in entrypoint
+    assert 'export HERMES_HOSTED_RUNTIME="${HERMES_HOSTED_RUNTIME:-1}"' in entrypoint
+    assert 'if [[ -z "${TERM:-}" || "${TERM}" == "dumb" ]]; then' in entrypoint
+    assert 'export TERM="xterm-256color"' in entrypoint
+    assert 'export PYTHONPATH="/app/runtime${PYTHONPATH:+:${PYTHONPATH}}"' in entrypoint
     assert 'export AGENT_BROWSER_HOME="${AGENT_BROWSER_HOME:-/usr/local/lib/node_modules/agent-browser}"' in entrypoint
     assert 'export MCPORTER_HOME="${MCPORTER_HOME:-${HERMES_HOME}/mcporter}"' in entrypoint
     assert 'export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-${HERMES_HOME}/xdg/config}"' in entrypoint
@@ -266,11 +294,19 @@ def test_entrypoint_writes_explicit_context_length_override():
     assert 'export AGENT_BROWSER_RUN_DIR="${AGENT_BROWSER_RUN_DIR:-${AGENT_BROWSER_STATE_DIR}/run}"' in entrypoint
     assert 'export AGENT_BROWSER_SESSION_DIR="${AGENT_BROWSER_SESSION_DIR:-${AGENT_BROWSER_STATE_DIR}/sessions}"' in entrypoint
     assert 'export AGENT_BROWSER_SOCKET_DIR="${AGENT_BROWSER_SOCKET_DIR:-${AGENT_BROWSER_RUN_DIR}}"' in entrypoint
+    assert 'export API_SERVER_ENABLED="${API_SERVER_ENABLED:-true}"' in entrypoint
     assert 'export KDOCS_OPEN_BROWSER="${KDOCS_OPEN_BROWSER:-0}"' in entrypoint
+    assert 'GATEWAY_PID_FILE="${HERMES_RUN_DIR}/gateway.pid"' in entrypoint
+    assert 'start_gateway_process() {' in entrypoint
+    assert 'while true; do' in entrypoint
+    assert 'GATEWAY_LOCAL_RESTART_MAX="${GATEWAY_LOCAL_RESTART_MAX:-5}"' in entrypoint
+    assert 'GATEWAY_LOCAL_RESTART_BACKOFF_SECONDS="${GATEWAY_LOCAL_RESTART_BACKOFF_SECONDS:-2}"' in entrypoint
+    assert 'kill -TERM "${MAIN_PID}"' in entrypoint
     assert 'mkdir -p "${HERMES_WORKDIR}"' in entrypoint
     assert 'mkdir -p "${HERMES_HOME}" "${HERMES_HOME}/skills" "${HERMES_RUN_DIR}" "${HERMES_SESSION_DIR}"' in entrypoint
     assert 'mkdir -p "${AGENT_BROWSER_STATE_DIR}" "${AGENT_BROWSER_RUN_DIR}" "${AGENT_BROWSER_SESSION_DIR}"' in entrypoint
     assert 'cd "${HERMES_WORKDIR}"' in entrypoint
+    assert 'enabled: ${API_SERVER_ENABLED}' in entrypoint
 
 
 def test_entrypoint_runs_uvicorn_with_explicit_app_dir():
@@ -282,6 +318,52 @@ def test_entrypoint_runs_uvicorn_with_explicit_app_dir():
     ).read_text(encoding="utf-8")
 
     assert 'exec uvicorn --app-dir /app runtime.app:app --host 0.0.0.0 --port "${PORT}"' in entrypoint
+
+
+def test_runtime_bundles_hosted_gateway_patches():
+    runtime_root = (
+        Path(__file__).resolve().parents[1]
+        / "deploy"
+        / "hermes"
+        / "runtime"
+    )
+
+    sitecustomize = (runtime_root / "sitecustomize.py").read_text(encoding="utf-8")
+    hosted_gateway = (runtime_root / "hosted_gateway.py").read_text(encoding="utf-8")
+
+    assert "HERMES_HOSTED_RUNTIME" in sitecustomize
+    assert "apply_hosted_patches" in sitecustomize
+    assert "gateway_setup" in hosted_gateway
+    assert "gateway.pid" in hosted_gateway
+    assert "container-managed" in hosted_gateway
+
+
+def test_hosted_gateway_command_falls_back_to_original_handler_without_recursing():
+    module = _load_hosted_gateway_module()
+    calls: list[str] = []
+
+    def _original(args):
+        calls.append(args.gateway_command)
+
+    module._ORIGINAL_GATEWAY_COMMAND = _original
+
+    module.hosted_gateway_command(SimpleNamespace(gateway_command="run"))
+
+    assert calls == ["run"]
+
+
+def test_hosted_gateway_command_exits_cleanly_on_keyboard_interrupt(monkeypatch):
+    module = _load_hosted_gateway_module()
+
+    def _raise_keyboard_interrupt():
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(module, "hosted_gateway_setup", _raise_keyboard_interrupt)
+
+    with pytest.raises(SystemExit) as exc:
+        module.hosted_gateway_command(SimpleNamespace(gateway_command="setup"))
+
+    assert exc.value.code == 130
 
 
 def test_runtime_dockerfile_installs_browser_runtime_and_skills_assets():
@@ -364,6 +446,12 @@ def test_runtime_pairing_allowlist_rejects_unsafe_commands():
 
     with pytest.raises(ValueError):
         module._validate_pairing_argv(["approve", "feishu", "A;B"])
+
+
+def test_runtime_terminal_command_supports_connect_mode():
+    module = _load_runtime_module()
+
+    assert module._resolve_terminal_command("connect", []) == ["hermes", "gateway", "setup"]
 
 
 def test_terminal_ws_keeps_streaming_after_stdin_eof(monkeypatch):

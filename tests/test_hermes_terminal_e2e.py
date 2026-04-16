@@ -88,3 +88,36 @@ async def test_terminal_session_real_websocket_pairing_start_frame():
     assert exit_code == 0
     assert observed["start"]["mode"] == "pairing"
     assert observed["start"]["argv"] == ["list"]
+
+
+@pytest.mark.asyncio
+async def test_terminal_session_real_websocket_connect_start_frame():
+    observed = {}
+
+    async def _handler(ws):
+        observed["start"] = json.loads(await ws.recv())
+        await ws.send(json.dumps({"type": "ready"}))
+        await ws.send(json.dumps({"type": "exit", "code": 0}))
+
+    server = await websockets.serve(
+        _handler,
+        "127.0.0.1",
+        0,
+        subprotocols=[TERMINAL_SUBPROTOCOL],
+    )
+    port = server.sockets[0].getsockname()[1]
+
+    try:
+        exit_code = await run_hermes_terminal_session(
+            endpoint=f"http://127.0.0.1:{port}",
+            mode="connect",
+            stdin=io.BytesIO(),
+            stdout=io.BytesIO(),
+        )
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    assert exit_code == 0
+    assert observed["start"]["mode"] == "connect"
+    assert observed["start"]["argv"] == []

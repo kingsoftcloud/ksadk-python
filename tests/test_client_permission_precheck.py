@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from ksadk.api.client import AgentEngineAPIError, AgentEngineClient
@@ -194,3 +196,67 @@ async def test_create_agent_precheck_uses_explicit_iam_role(monkeypatch):
         {"RoleName": "CustomRuntimeRole"},
     )
 
+
+def test_request_parses_kop_auth_error_payload(monkeypatch, caplog):
+    client = AgentEngineClient(
+        base_url="https://aicp.api.ksyun.com",
+        access_key="ak",
+        secret_key="sk",
+        region="cn-beijing-6",
+    )
+
+    class _FakeResponse:
+        status_code = 400
+        text = (
+            '{"RequestId":"req-missing-ak","Error":{"Code":"MissingAccesskey",'
+            '"Message":"Access Key is Missing","Type":"Sender"}}'
+        )
+
+        def json(self):
+            return {
+                "RequestId": "req-missing-ak",
+                "Error": {
+                    "Code": "MissingAccesskey",
+                    "Message": "Access Key is Missing",
+                    "Type": "Sender",
+                },
+            }
+
+    class _FakeSession:
+        def request(self, **_kwargs):
+            return _FakeResponse()
+
+    monkeypatch.setattr(client, "_get_session", lambda: _FakeSession())
+
+    with caplog.at_level(logging.WARNING, logger="ksadk.api.client"):
+        with pytest.raises(AgentEngineAPIError) as exc:
+            client._request("POST", "/agentengine/api/v1/GetAgent", {"AgentId": "ar-demo"})
+
+    assert exc.value.code == 400
+    assert exc.value.details["remote_error_code"] == "MissingAccesskey"
+    assert exc.value.details["request_id"] == "req-missing-ak"
+    assert not [record for record in caplog.records if record.levelno >= logging.WARNING]
+
+
+def test_permission_probe_auth_failure_is_quiet(monkeypatch, caplog):
+    client = _build_client()
+    monkeypatch.setenv("KSYUN_ACCOUNT_ID", "2000003485")
+
+    def fake_request(_method: str, _path: str, _body: dict | None = None):
+        raise AgentEngineAPIError(
+            400,
+            "Access Key is Missing",
+            details={
+                "http_status": 400,
+                "remote_error_code": "MissingAccesskey",
+                "remote_error_message": "Access Key is Missing",
+                "request_id": "req-missing-ak",
+            },
+        )
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    with caplog.at_level(logging.WARNING, logger="ksadk.api.client"):
+        client._maybe_precheck_permission("GetAgent", {"AgentId": "ar-demo"})
+
+    assert not [record for record in caplog.records if "Permission probe failed" in record.message]

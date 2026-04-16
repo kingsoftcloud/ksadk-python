@@ -50,7 +50,7 @@ help:
 	@echo "    make hermes-build           构建 Hermes runtime 镜像"
 	@echo "    make hermes-push            构建 + 推送 Hermes runtime 镜像"
 	@echo "    make hermes-size            查看 Hermes 镜像大小"
-	@echo "    make hermes-build HERMES_TAG=v2026.4.15-ks10"
+	@echo "    make hermes-build HERMES_TAG=v2026.4.13-ks16"
 	@echo "    make hermes-build HERMES_AGENT_REF=v2026.4.13  # 切换 Hermes 上游 release"
 	@echo ""
 	@echo "  \033[1;32m清理:\033[0m"
@@ -449,13 +449,13 @@ openclaw-size:
 #
 # 用法:
 #   make hermes-build
-#   make hermes-push HERMES_TAG=v2026.4.15-ks10
+#   make hermes-push HERMES_TAG=v2026.4.13-ks16
 #
 
 HERMES_IMAGE := hub.kce.ksyun.com/agentengine-public/hermes-agent
 HERMES_VPC_REGISTRY ?= hub-vpc-cn-beijing-6.kce.ksyun.com
 HERMES_VPC_IMAGE ?= $(subst hub.kce.ksyun.com,$(HERMES_VPC_REGISTRY),$(HERMES_IMAGE))
-HERMES_TAG ?= v2026.4.15-ks10
+HERMES_TAG ?= v2026.4.13-ks16
 HERMES_CONTEXT := deploy/hermes
 HERMES_PYPI_INDEX_URL ?= https://mirrors.aliyun.com/pypi/simple
 HERMES_AGENT_REF ?= v2026.4.13

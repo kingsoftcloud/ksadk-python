@@ -82,7 +82,7 @@ class AWSV4Auth:
             )
             logger.debug(f"AWSV4Auth initialized: service={service}, region={region}")
         else:
-            logger.warning("AWSV4Auth: credentials not provided, signing disabled")
+            logger.debug("AWSV4Auth: credentials not provided, signing disabled")
 
     @property
     def is_enabled(self) -> bool:
