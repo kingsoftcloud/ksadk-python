@@ -588,11 +588,16 @@ def render_descriptor_status(
     """Render a resource detail view from descriptor metadata."""
     if descriptor.status_schema is None:
         raise ValueError(f"{descriptor.name} 未定义详情 schema")
+    resolved_next_steps = (
+        descriptor.status_schema.next_steps
+        if next_steps is None and action == "status"
+        else tuple(next_steps or ())
+    )
     render_resource_status(
         title=title or descriptor.status_schema.title,
         subtitle=subtitle,
         fields=fields,
-        next_steps=next_steps or descriptor.status_schema.next_steps,
+        next_steps=resolved_next_steps,
         resource=get_descriptor_resource_key(descriptor),
         action=action,
         item=item,

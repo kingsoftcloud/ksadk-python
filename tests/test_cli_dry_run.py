@@ -1513,6 +1513,35 @@ def test_openclaw_destroy_supports_multiple_ids(monkeypatch):
     assert _FakeBatchDeleteClient.deleted_agents == ["ar-demo-1", "ar-demo-2"]
 
 
+def test_openclaw_delete_passes_result_styles_to_descriptor(monkeypatch):
+    runner = CliRunner()
+    _FakeBatchDeleteClient.deleted_agents = []
+    captured = {}
+
+    def _fake_render_descriptor_status(*args, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeBatchDeleteClient)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_openclaw.run_async_with_dry_run",
+        lambda coro, dry_run: asyncio.run(coro),
+    )
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_openclaw.render_descriptor_status",
+        _fake_render_descriptor_status,
+    )
+
+    result = runner.invoke(openclaw, ["delete", "ar-demo-1", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["fields"][1] == ("已删除", "ar-demo-1", "ok")
+    assert captured["fields"][2] == ("失败", "-", "muted")
+    assert captured["next_steps"] == (
+        "agentengine openclaw list",
+        "agentengine openclaw deploy",
+    )
+
+
 def test_mcp_destroy_supports_multiple_ids(monkeypatch):
     runner = CliRunner()
     _FakeBatchDeleteClient.deleted_mcps = []
@@ -1530,6 +1559,39 @@ def test_mcp_destroy_supports_multiple_ids(monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert _FakeBatchDeleteClient.deleted_mcps == ["mcp-123", "mcp-456"]
+
+
+def test_mcp_delete_passes_result_styles_to_descriptor(monkeypatch):
+    runner = CliRunner()
+    _FakeBatchDeleteClient.deleted_mcps = []
+    captured = {}
+
+    def _fake_render_descriptor_status(*args, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeBatchDeleteClient)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_mcp.run_async_with_dry_run",
+        lambda coro, dry_run: asyncio.run(coro),
+    )
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_mcp.render_descriptor_status",
+        _fake_render_descriptor_status,
+    )
+
+    result = runner.invoke(
+        mcp,
+        ["delete", "mcp-123", "--yes"],
+        env={"AGENTENGINE_SERVER_URL": "http://example.com"},
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["fields"][1] == ("已删除", "mcp-123", "ok")
+    assert captured["fields"][2] == ("失败", "-", "muted")
+    assert captured["next_steps"] == (
+        "agentengine mcp list",
+        "agentengine mcp deploy",
+    )
 
 
 def test_agent_delete_json_requires_yes(monkeypatch):

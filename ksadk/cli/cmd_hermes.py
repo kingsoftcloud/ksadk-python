@@ -25,6 +25,7 @@ from ksadk.cli.resource_common import (
     confirm_destructive,
     confirm_options,
     pagination_options,
+    print_next_action_hint,
     render_descriptor_list,
     render_descriptor_status,
 )
@@ -38,6 +39,7 @@ from ksadk.cli.ui import (
     print_success,
     print_title,
     print_warn,
+    status_rich_style,
 )
 from ksadk.deployment.state import clear_state, load_state, save_state
 from ksadk.hermes_terminal import (
@@ -54,11 +56,15 @@ DEFAULT_HERMES_CONTEXT_LENGTHS = (
 DEFAULT_HERMES_FALLBACK_MODELS = (
     ("glm-5.1", "kimi-k2.5"),
 )
+DEFAULT_HERMES_MODEL_NAME = "glm-5.1"
+DEFAULT_HERMES_PUBLIC_BASE_URL = "https://kspmas.ksyun.com/v1/"
+DEFAULT_HERMES_RUNTIME_BASE_URL = "http://kspmas-internal.sdns.ksyun.com/v1"
 KSPMAS_PUBLIC_BASES = (
     "http://kspmas.ksyun.com",
     "https://kspmas.ksyun.com",
 )
 KSPMAS_INTERNAL_BASE = "http://kspmas-internal.sdns.ksyun.com"
+_HERMES_GLOBAL_ENV_CACHE: dict[str, str] | None = None
 
 HERMES_RESOURCE = ResourceDescriptor(
     name="Hermes",
@@ -128,9 +134,31 @@ def _load_dotenv_into_env(project_dir: Path) -> None:
             os.environ[key] = str(value)
 
 
+def _get_hermes_global_env() -> dict[str, str]:
+    global _HERMES_GLOBAL_ENV_CACHE
+    if _HERMES_GLOBAL_ENV_CACHE is not None:
+        return _HERMES_GLOBAL_ENV_CACHE
+    try:
+        from ksadk.configs.global_config import get_env_from_global_config
+
+        _HERMES_GLOBAL_ENV_CACHE = {
+            str(key): str(value).strip()
+            for key, value in get_env_from_global_config().items()
+            if key and value is not None and str(value).strip()
+        }
+    except Exception:
+        _HERMES_GLOBAL_ENV_CACHE = {}
+    return _HERMES_GLOBAL_ENV_CACHE
+
+
 def _env_value(*names: str) -> str:
     for name in names:
         value = os.getenv(name)
+        if value:
+            return value
+    global_env = _get_hermes_global_env()
+    for name in names:
+        value = global_env.get(name)
         if value:
             return value
     return ""
@@ -192,10 +220,13 @@ def _build_hermes_env_vars(
     model_api_key: str | None = None,
     default_model: str | None = None,
 ) -> list[dict[str, Any]]:
-    resolved_model_base_url = _normalize_hermes_runtime_base_url(
-        model_base_url or _env_value("OPENAI_BASE_URL")
+    raw_model_base_url = model_base_url or _env_value("OPENAI_BASE_URL")
+    resolved_model_base_url = (
+        _normalize_hermes_runtime_base_url(raw_model_base_url)
+        if raw_model_base_url
+        else DEFAULT_HERMES_RUNTIME_BASE_URL
     )
-    resolved_default_model = default_model or _env_value("OPENAI_MODEL_NAME")
+    resolved_default_model = default_model or _env_value("OPENAI_MODEL_NAME") or DEFAULT_HERMES_MODEL_NAME
     context_length = (
         _env_value("HERMES_CONTEXT_LENGTH", "OPENAI_CONTEXT_LENGTH", "MODEL_CONTEXT_LENGTH")
         or _default_context_length_for_model(resolved_default_model)
@@ -227,8 +258,25 @@ def _build_hermes_env_vars(
     return [
         {"Key": key, "Value": str(value), "IsSensitive": any(token in key for token in ("KEY", "TOKEN", "SECRET"))}
         for key, value in raw.items()
-        if value is not None
+        if value is not None and str(value).strip() != ""
     ]
+
+
+def _validate_hermes_model_config(
+    *,
+    model_base_url: str | None = None,
+    model_api_key: str | None = None,
+    default_model: str | None = None,
+) -> None:
+    _ = model_api_key
+    resolved_model_base_url = model_base_url or _env_value("OPENAI_BASE_URL")
+    resolved_default_model = default_model or _env_value("OPENAI_MODEL_NAME")
+    if not resolved_model_base_url:
+        print_info(f"未配置 OPENAI_BASE_URL，默认使用: {DEFAULT_HERMES_PUBLIC_BASE_URL}")
+    if not resolved_default_model:
+        print_info(f"未配置 OPENAI_MODEL_NAME，默认使用: {DEFAULT_HERMES_MODEL_NAME}")
+    if not (model_api_key or _env_value("OPENAI_API_KEY")):
+        print_info("未配置 OPENAI_API_KEY，将由服务端在需要时自动创建。")
 
 
 def _normalize_hermes_runtime_base_url(base_url: str | None) -> str:
@@ -441,6 +489,11 @@ async def _deploy_hermes(
         if image_ref:
             print_info(f"未指定镜像，使用服务端默认镜像: {image_ref}")
     image_ref = image_ref or DEFAULT_HERMES_IMAGE
+    _validate_hermes_model_config(
+        model_base_url=model_base_url,
+        model_api_key=model_api_key,
+        default_model=default_model,
+    )
     env_vars = _build_hermes_env_vars(
         model_base_url=model_base_url,
         model_api_key=model_api_key,
@@ -492,6 +545,7 @@ async def _deploy_hermes(
     agent_id = res.get("agent_id")
     endpoint = res.get("endpoint")
     api_key = res.get("api_key")
+    deployment_status = str(res.get("status") or res.get("phase") or "SUBMITTED").upper()
     save_state(
         project_dir,
         {
@@ -516,7 +570,7 @@ async def _deploy_hermes(
                     "id": str(agent_id or ""),
                     "agent_id": str(agent_id or ""),
                     "name": str(res.get("name") or agent_name),
-                    "status": str(res.get("status") or res.get("phase") or "SUBMITTED"),
+                    "status": deployment_status,
                     "framework": "hermes",
                     "region": region,
                     "endpoint": str(endpoint or ""),
@@ -530,9 +584,15 @@ async def _deploy_hermes(
         return
     print_success("Hermes 已提交部署")
     print_kv("Agent ID", str(agent_id or "(创建中)"))
+    print_kv("当前状态", deployment_status, value_style=status_rich_style(deployment_status))
     if endpoint:
         print_kv("Endpoint", str(endpoint), value_style="#58a6ff")
     print_info("已保存状态到 .agentengine.state")
+    print_next_action_hint(
+        "agentengine hermes status",
+        "agentengine hermes open --chat",
+        "agentengine hermes connect",
+    )
 
 
 @hermes.command("list", context_settings=CONTEXT_SETTINGS)
@@ -557,7 +617,7 @@ def list_hermes(region: str, page: int, size: int, dry_run: bool, output_mode: s
             row = (
                 str(detail.get("agent_id") or "-"),
                 str(detail.get("name") or "-"),
-                status,
+                f"[{status_rich_style(status)}]{status}[/]",
                 str(detail.get("endpoint") or "-"),
                 str(detail.get("region") or region),
             )
@@ -597,12 +657,13 @@ def status(agent_ref: Optional[str], region: str, dry_run: bool, output_mode: st
     async def _status():
         async with AgentEngineClient(region=region, dry_run=dry_run) as client:
             detail = await _get_hermes_detail_with_client(client, resolved)
+        status_value = str(detail.get("status") or "UNKNOWN").upper()
         render_descriptor_status(
             HERMES_RESOURCE,
             subtitle=str(detail.get("name") or resolved),
             fields=[
                 ("ID", str(detail.get("agent_id") or "-"), "#58a6ff"),
-                ("状态", str(detail.get("status") or "UNKNOWN"), None),
+                ("状态", status_value, status_rich_style(status_value)),
                 ("框架", str(detail.get("framework") or "-"), None),
                 ("区域", str(detail.get("region") or region), None),
                 ("Endpoint", str(detail.get("endpoint") or "-"), "#58a6ff"),
@@ -611,7 +672,7 @@ def status(agent_ref: Optional[str], region: str, dry_run: bool, output_mode: st
             item={
                 "id": str(detail.get("agent_id") or "-"),
                 "name": str(detail.get("name") or resolved),
-                "status": str(detail.get("status") or "UNKNOWN"),
+                "status": status_value,
                 "framework": str(detail.get("framework") or "-"),
                 "region": str(detail.get("region") or region),
                 "endpoint": str(detail.get("endpoint") or "-"),
@@ -897,15 +958,21 @@ def _delete_impl(agent_refs: tuple[str, ...], region: str, assume_yes: bool, dry
 
     result = run_async_with_dry_run(_delete(), dry_run=dry_run, dry_run_resource="hermes", dry_run_action="delete")
     if result is not None:
+        deleted_text = ", ".join(result["deleted"]) or "-"
+        failed_text = ", ".join(result["failed"]) or "-"
         render_descriptor_status(
             HERMES_RESOURCE,
             title="Hermes 删除结果",
             subtitle=", ".join(result["targets"]) if result["targets"] else "-",
             fields=[
                 ("目标数量", str(len(result["targets"])), None),
-                ("已删除", ", ".join(result["deleted"]) or "-", None),
-                ("失败", ", ".join(result["failed"]) or "-", None),
+                ("已删除", deleted_text, "ok" if result["deleted"] else "muted"),
+                ("失败", failed_text, "err" if result["failed"] else "muted"),
             ],
+            next_steps=(
+                "agentengine hermes list",
+                "agentengine hermes deploy",
+            ),
             action="delete",
             item=result,
         )

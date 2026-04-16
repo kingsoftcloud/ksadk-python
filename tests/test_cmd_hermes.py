@@ -6,6 +6,7 @@ from click.testing import CliRunner
 
 from ksadk.api.client import DryRunExit
 from ksadk.cli import cmd_hermes
+from ksadk.cli.ui import OUTPUT_MODE_PRETTY, configure_ui_runtime, status_rich_style
 
 
 class _FakeHermesClient:
@@ -550,6 +551,74 @@ def test_hermes_deploy_creates_container_framework_and_persists_state(tmp_path: 
     assert "agent_id: ar-hermes-1" in (tmp_path / ".agentengine.state").read_text(encoding="utf-8")
 
 
+def test_hermes_deploy_defaults_model_base_url_and_omits_api_key(tmp_path: Path, monkeypatch):
+    runner = CliRunner()
+    _FakeHermesClient.create_payload = None
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cmd_hermes, "_get_hermes_global_env", lambda: {}, raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL_NAME", raising=False)
+    monkeypatch.setattr(cmd_hermes, "AgentEngineClient", _FakeHermesClient)
+
+    result = runner.invoke(cmd_hermes.hermes, ["deploy"])
+
+    assert result.exit_code == 0, result.output
+    assert "https://kspmas.ksyun.com/v1/" in result.output
+    assert "glm-5.1" in result.output
+    assert any(
+        item["Key"] == "OPENAI_BASE_URL" and item["Value"] == "http://kspmas-internal.sdns.ksyun.com/v1"
+        for item in _FakeHermesClient.create_payload["env_vars"]
+    )
+    assert any(
+        item["Key"] == "OPENAI_MODEL_NAME" and item["Value"] == "glm-5.1"
+        for item in _FakeHermesClient.create_payload["env_vars"]
+    )
+    assert not any(item["Key"] == "OPENAI_API_KEY" for item in _FakeHermesClient.create_payload["env_vars"])
+
+
+def test_hermes_deploy_reads_model_config_from_global_settings(tmp_path: Path, monkeypatch):
+    runner = CliRunner()
+    _FakeHermesClient.create_payload = None
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        cmd_hermes,
+        "_get_hermes_global_env",
+        lambda: {
+            "OPENAI_API_KEY": "sk-global",
+            "OPENAI_BASE_URL": "https://model.example.com/v1",
+            "OPENAI_MODEL_NAME": "glm-global",
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(cmd_hermes, "AgentEngineClient", _FakeHermesClient)
+
+    result = runner.invoke(cmd_hermes.hermes, ["deploy", "--name", "demo-hermes", "--image", "registry/hermes:test"])
+
+    assert result.exit_code == 0, result.output
+    assert any(item["Key"] == "OPENAI_API_KEY" and item["Value"] == "sk-global" for item in _FakeHermesClient.create_payload["env_vars"])
+    assert any(item["Key"] == "OPENAI_BASE_URL" and item["Value"] == "https://model.example.com/v1" for item in _FakeHermesClient.create_payload["env_vars"])
+    assert any(item["Key"] == "OPENAI_MODEL_NAME" and item["Value"] == "glm-global" for item in _FakeHermesClient.create_payload["env_vars"])
+
+
+def test_hermes_deploy_defaults_kspmas_base_url_when_missing(tmp_path: Path, monkeypatch):
+    runner = CliRunner()
+    _FakeHermesClient.create_payload = None
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cmd_hermes, "_get_hermes_global_env", lambda: {}, raising=False)
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-5.1")
+    monkeypatch.setattr(cmd_hermes, "AgentEngineClient", _FakeHermesClient)
+
+    result = runner.invoke(cmd_hermes.hermes, ["deploy", "--name", "demo-hermes"])
+
+    assert result.exit_code == 0, result.output
+    assert "https://kspmas.ksyun.com/v1/" in result.output
+    assert any(
+        item["Key"] == "OPENAI_BASE_URL" and item["Value"] == "http://kspmas-internal.sdns.ksyun.com/v1"
+        for item in _FakeHermesClient.create_payload["env_vars"]
+    )
+
+
 def test_hermes_deploy_output_json_emits_result_envelope(tmp_path: Path, monkeypatch):
     runner = CliRunner()
     _FakeHermesClient.create_payload = None
@@ -624,6 +693,8 @@ def test_hermes_deploy_prefers_bootstrap_default_image(tmp_path: Path, monkeypat
     _FakeHermesBootstrapImageClient.create_payload = None
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://model.example.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-test")
     monkeypatch.setattr(cmd_hermes, "AgentEngineClient", _FakeHermesBootstrapImageClient)
 
     result = runner.invoke(cmd_hermes.hermes, ["deploy", "--name", "demo-hermes"])
@@ -646,6 +717,8 @@ def test_hermes_deploy_updates_existing_hermes_state(tmp_path: Path, monkeypatch
         encoding="utf-8",
     )
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://model.example.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-test")
     monkeypatch.setattr(cmd_hermes, "AgentEngineClient", _FakeHermesClient)
 
     result = runner.invoke(cmd_hermes.hermes, ["deploy", "--image", "registry/hermes:new"])
@@ -661,6 +734,8 @@ def test_hermes_deploy_updates_existing_hermes_state(tmp_path: Path, monkeypatch
 def test_hermes_deploy_dry_run_redacts_sensitive_values(monkeypatch, tmp_path: Path):
     runner = CliRunner()
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://model.example.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-test")
     monkeypatch.setattr(cmd_hermes, "AgentEngineClient", _FakeHermesDryRunClient)
 
     result = runner.invoke(cmd_hermes.hermes, ["deploy", "--name", "demo-hermes", "--dry-run"])
@@ -677,6 +752,8 @@ def test_hermes_deploy_polls_order_until_agent_access_is_available(tmp_path: Pat
     _FakeHermesOrderClient.get_agent_calls = 0
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://model.example.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-test")
     monkeypatch.setattr(cmd_hermes, "AgentEngineClient", _FakeHermesOrderClient)
 
     async def _fake_sleep(*_args, **_kwargs):
@@ -710,6 +787,57 @@ def test_hermes_list_status_and_delete_use_hermes_resource(monkeypatch):
     assert "ar-hermes-1" in list_result.output
     assert "RUNNING" in status_result.output
     assert _FakeHermesClient.deleted == ["ar-hermes-1"]
+
+
+def test_hermes_status_passes_status_style_to_descriptor(monkeypatch):
+    runner = CliRunner()
+    configure_ui_runtime(output_mode=OUTPUT_MODE_PRETTY, no_color=False, stdout_is_tty=True)
+    monkeypatch.setattr(cmd_hermes, "AgentEngineClient", _FakeHermesClient)
+    captured = {}
+
+    def _fake_render_descriptor_status(*args, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cmd_hermes, "render_descriptor_status", _fake_render_descriptor_status)
+
+    result = runner.invoke(cmd_hermes.hermes, ["status", "ar-hermes-1"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["fields"][1] == ("状态", "RUNNING", status_rich_style("RUNNING"))
+
+
+def test_hermes_delete_uses_delete_specific_next_steps(monkeypatch):
+    runner = CliRunner()
+    _FakeHermesClient.deleted = []
+    monkeypatch.setattr(cmd_hermes, "AgentEngineClient", _FakeHermesClient)
+    monkeypatch.setattr(cmd_hermes, "confirm_destructive", lambda **_kwargs: True)
+
+    result = runner.invoke(cmd_hermes.hermes, ["delete", "ar-hermes-1", "-y"])
+
+    assert result.exit_code == 0, result.output
+    assert "agentengine hermes list" in result.output
+    assert "agentengine hermes deploy" in result.output
+    assert "agentengine hermes connect" not in result.output
+    assert "agentengine hermes pairing" not in result.output
+
+
+def test_hermes_delete_passes_result_styles_to_descriptor(monkeypatch):
+    runner = CliRunner()
+    _FakeHermesClient.deleted = []
+    monkeypatch.setattr(cmd_hermes, "AgentEngineClient", _FakeHermesClient)
+    monkeypatch.setattr(cmd_hermes, "confirm_destructive", lambda **_kwargs: True)
+    captured = {}
+
+    def _fake_render_descriptor_status(*args, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cmd_hermes, "render_descriptor_status", _fake_render_descriptor_status)
+
+    result = runner.invoke(cmd_hermes.hermes, ["delete", "ar-hermes-1", "-y"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["fields"][1] == ("已删除", "ar-hermes-1", "ok")
+    assert captured["fields"][2] == ("失败", "-", "muted")
 
 
 def test_hermes_delete_resolves_name_to_agent_id_and_rejects_non_hermes(monkeypatch):
