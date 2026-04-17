@@ -165,11 +165,111 @@ def test_proxy_dashboard_routes_root_to_hermes_dashboard(monkeypatch):
         response = client.get("/")
 
     assert response.status_code == 200
-    assert response.text == "<html>dashboard</html>"
+    assert "dashboard" in response.text
+    assert "__KSADK_HERMES_FETCH_SHIM__" in response.text
     method, url, _headers, _content, stream = _FakeAsyncClient.send_calls[0]
     assert method == "GET"
     assert url == "http://127.0.0.1:9119/"
     assert stream is True
+
+
+def test_proxy_dashboard_translates_session_header_back_to_authorization(monkeypatch):
+    module = _load_runtime_module()
+    _FakeAsyncClient.send_calls = []
+    _FakeAsyncClient.routes = {
+        (
+            "GET",
+            "http://127.0.0.1:9119/api/sessions?limit=1",
+        ): _FakeResponse(status_code=200, content=b'{"sessions":[]}', headers={"content-type": "application/json"}),
+    }
+    monkeypatch.setattr(module.httpx, "AsyncClient", _FakeAsyncClient)
+
+    with TestClient(module.app) as client:
+        response = client.get(
+            "/api/sessions?limit=1",
+            headers={"X-Hermes-Session-Token": "demo-token"},
+        )
+
+    assert response.status_code == 200
+    method, url, headers, _content, stream = _FakeAsyncClient.send_calls[0]
+    assert method == "GET"
+    assert url == "http://127.0.0.1:9119/api/sessions?limit=1"
+    assert stream is True
+    assert headers is not None
+    assert headers["Authorization"] == "Bearer demo-token"
+    assert "X-Hermes-Session-Token" not in headers
+
+
+def test_proxy_dashboard_injects_fetch_shim_into_html(monkeypatch):
+    module = _load_runtime_module()
+    _FakeAsyncClient.send_calls = []
+    _FakeAsyncClient.routes = {
+        (
+            "GET",
+            "http://127.0.0.1:9119/",
+        ): _FakeResponse(
+            status_code=200,
+            content=b'<html><head><script>window.__HERMES_SESSION_TOKEN__="demo-token";</script></head><body>dashboard</body></html>',
+            headers={"content-type": "text/html; charset=utf-8"},
+        ),
+    }
+    monkeypatch.setattr(module.httpx, "AsyncClient", _FakeAsyncClient)
+
+    with TestClient(module.app) as client:
+        response = client.get("/")
+
+    assert response.status_code == 200
+    assert "__KSADK_HERMES_FETCH_SHIM__" in response.text
+    assert "X-Hermes-Session-Token" in response.text
+    assert 'window.__HERMES_SESSION_TOKEN__="demo-token"' in response.text
+
+
+def test_proxy_dashboard_injects_default_zh_locale_bootstrap(monkeypatch):
+    monkeypatch.delenv("HERMES_UI_LOCALE", raising=False)
+    module = _load_runtime_module()
+    _FakeAsyncClient.send_calls = []
+    _FakeAsyncClient.routes = {
+        (
+            "GET",
+            "http://127.0.0.1:9119/",
+        ): _FakeResponse(
+            status_code=200,
+            content=b"<html><head></head><body>dashboard</body></html>",
+            headers={"content-type": "text/html; charset=utf-8"},
+        ),
+    }
+    monkeypatch.setattr(module.httpx, "AsyncClient", _FakeAsyncClient)
+
+    with TestClient(module.app) as client:
+        response = client.get("/")
+
+    assert response.status_code == 200
+    assert "hermes-locale" in response.text
+    assert "zh" in response.text
+
+
+def test_proxy_dashboard_injects_explicit_en_locale_bootstrap(monkeypatch):
+    monkeypatch.setenv("HERMES_UI_LOCALE", "en_US.UTF-8")
+    module = _load_runtime_module()
+    _FakeAsyncClient.send_calls = []
+    _FakeAsyncClient.routes = {
+        (
+            "GET",
+            "http://127.0.0.1:9119/",
+        ): _FakeResponse(
+            status_code=200,
+            content=b"<html><head></head><body>dashboard</body></html>",
+            headers={"content-type": "text/html; charset=utf-8"},
+        ),
+    }
+    monkeypatch.setattr(module.httpx, "AsyncClient", _FakeAsyncClient)
+
+    with TestClient(module.app) as client:
+        response = client.get("/")
+
+    assert response.status_code == 200
+    assert "hermes-locale" in response.text
+    assert "en" in response.text
 
 
 def test_proxy_api_preserves_sse_streaming(monkeypatch):
@@ -296,6 +396,7 @@ def test_entrypoint_writes_explicit_context_length_override():
     assert 'export AGENT_BROWSER_SOCKET_DIR="${AGENT_BROWSER_SOCKET_DIR:-${AGENT_BROWSER_RUN_DIR}}"' in entrypoint
     assert 'export API_SERVER_ENABLED="${API_SERVER_ENABLED:-true}"' in entrypoint
     assert 'export KDOCS_OPEN_BROWSER="${KDOCS_OPEN_BROWSER:-0}"' in entrypoint
+    assert 'export HERMES_UI_LOCALE="${HERMES_UI_LOCALE:-zh}"' in entrypoint
     assert 'GATEWAY_PID_FILE="${HERMES_RUN_DIR}/gateway.pid"' in entrypoint
     assert 'start_gateway_process() {' in entrypoint
     assert 'while true; do' in entrypoint
@@ -307,6 +408,8 @@ def test_entrypoint_writes_explicit_context_length_override():
     assert 'mkdir -p "${AGENT_BROWSER_STATE_DIR}" "${AGENT_BROWSER_RUN_DIR}" "${AGENT_BROWSER_SESSION_DIR}"' in entrypoint
     assert 'cd "${HERMES_WORKDIR}"' in entrypoint
     assert 'enabled: ${API_SERVER_ENABLED}' in entrypoint
+    assert 'export HERMES_UI_LOCALE="$(normalize_hermes_ui_locale "${HERMES_UI_LOCALE}")"' in entrypoint
+    assert "HERMES_UI_LOCALE" in entrypoint
 
 
 def test_entrypoint_runs_uvicorn_with_explicit_app_dir():
@@ -318,6 +421,19 @@ def test_entrypoint_runs_uvicorn_with_explicit_app_dir():
     ).read_text(encoding="utf-8")
 
     assert 'exec uvicorn --app-dir /app runtime.app:app --host 0.0.0.0 --port "${PORT}"' in entrypoint
+
+
+def test_entrypoint_does_not_patch_hermes_package_files():
+    entrypoint = (
+        Path(__file__).resolve().parents[1]
+        / "deploy"
+        / "hermes"
+        / "entrypoint.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "web_dist/index.html" not in entrypoint
+    assert "__HERMES_UI_LOCALE_BOOTSTRAP__" not in entrypoint
+    assert 'mv "${tmp_out}" "${control_ui_index}"' not in entrypoint
 
 
 def test_runtime_bundles_hosted_gateway_patches():

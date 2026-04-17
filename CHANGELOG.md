@@ -5,6 +5,20 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [0.5.1] - 2026-04-17
+
+### 变更
+
+- code mode 构建新增 Linux Runtime 兼容性 / ABI 校验，关键原生扩展不兼容时会在打包阶段提前失败。
+- 默认 Hermes 共享 runtime 镜像更新为 `hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.4.16`，并把构建默认 `HERMES_AGENT_REF` 同步到上游 `v2026.4.16`。
+- 默认 OpenClaw 基础镜像 pin 到官方 `ghcr.io/openclaw/openclaw:2026.4.15@sha256:0e6bebecf4623216420851f5edd133a748335f45c3508b635f7c5c4bfbc6da7d`，同步刷新自定义镜像模板和一键部署文档。
+
+### 修复
+
+- Hermes hosted 默认模型进一步收口：对 `glm-5.1` 在未显式配置时自动补齐 `context_length=200000`，并把 fallback model 默认设为 `kimi-k2.5`。
+- OpenClaw heartbeat 默认改为 `every=30m`、`target=none`、`isolatedSession=true`，并继续保留 `lightContext=true`，避免心跳占用当前聊天窗口和会话历史。
+- OpenClaw 默认模型目录和自动补齐的 primary model 项把 `maxTokens` 基线从 `8192` 提升到 `20000`。
+
 ## [0.5.0] - 2026-04-16
 
 ### 变更

@@ -8,6 +8,10 @@ BUNDLED_FEISHU_EXAMPLE_ROOT = (
     TEMPLATE_ROOT / "examples" / "bundled-feishu-plugin-skills"
 )
 EXAMPLE_ROOT = TEMPLATE_ROOT / "examples" / "minimal-skill-plugin-deps"
+LATEST_OPENCLAW_BASE_IMAGE = (
+    "ghcr.io/openclaw/openclaw:2026.4.15@"
+    "sha256:0e6bebecf4623216420851f5edd133a748335f45c3508b635f7c5c4bfbc6da7d"
+)
 
 
 def test_openclaw_user_template_is_minimal_direct_start_bundle():
@@ -56,12 +60,7 @@ def test_openclaw_user_template_default_config_seeds_trusted_proxy_runtime():
 def test_openclaw_user_template_dockerfile_uses_official_startup_path():
     dockerfile = (TEMPLATE_ROOT / "Dockerfile").read_text(encoding="utf-8")
 
-    assert (
-        "ARG OPENCLAW_BASE_IMAGE="
-        "ghcr.io/openclaw/openclaw:2026.4.14@"
-        "sha256:a65101a8aed6259c4f057076005ede737335d5f2e39b233d0d7dec1fc9e9e496"
-        in dockerfile
-    )
+    assert f"ARG OPENCLAW_BASE_IMAGE={LATEST_OPENCLAW_BASE_IMAGE}" in dockerfile
     assert "FROM ${OPENCLAW_BASE_IMAGE}" in dockerfile
     assert "COPY custom/extensions /opt/openclaw-template/extensions" in dockerfile
     assert "COPY custom/skills /opt/openclaw-template/skills" in dockerfile
@@ -103,12 +102,7 @@ def test_openclaw_user_template_readme_mentions_direct_build_and_run():
 def test_openclaw_user_template_makefile_provides_basic_commands():
     makefile = (TEMPLATE_ROOT / "Makefile").read_text(encoding="utf-8")
 
-    assert (
-        "OPENCLAW_BASE_IMAGE ?= "
-        "ghcr.io/openclaw/openclaw:2026.4.14@"
-        "sha256:a65101a8aed6259c4f057076005ede737335d5f2e39b233d0d7dec1fc9e9e496"
-        in makefile
-    )
+    assert f"OPENCLAW_BASE_IMAGE ?= {LATEST_OPENCLAW_BASE_IMAGE}" in makefile
     assert "build:" in makefile
     assert "run:" in makefile
     assert "push:" in makefile
@@ -195,10 +189,7 @@ def test_openclaw_user_template_advanced_example_pins_latest_official_base_image
     dockerfile = (EXAMPLE_ROOT / "Dockerfile").read_text(encoding="utf-8")
     makefile = (EXAMPLE_ROOT / "Makefile").read_text(encoding="utf-8")
 
-    expected = (
-        "ghcr.io/openclaw/openclaw:2026.4.14@"
-        "sha256:a65101a8aed6259c4f057076005ede737335d5f2e39b233d0d7dec1fc9e9e496"
-    )
+    expected = LATEST_OPENCLAW_BASE_IMAGE
 
     assert expected in dockerfile
     assert expected in makefile

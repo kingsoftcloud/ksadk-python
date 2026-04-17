@@ -49,7 +49,7 @@ from ksadk.hermes_terminal import (
 )
 
 
-DEFAULT_HERMES_IMAGE = "hub.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.13-ks16"
+DEFAULT_HERMES_IMAGE = "hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.4.16"
 DEFAULT_HERMES_CONTEXT_LENGTHS = (
     ("glm-5.1", "200000"),
 )
@@ -164,6 +164,22 @@ def _env_value(*names: str) -> str:
     return ""
 
 
+def _normalize_hermes_ui_locale(raw: Optional[str]) -> str:
+    """标准化 Hermes UI 语言代码，当前 upstream 只支持 en / zh。"""
+    text = str(raw or "").strip()
+    if not text:
+        return "zh"
+
+    base = text.split(".", 1)[0].replace("_", "-").strip().lower()
+    if base in {"c", "c-utf-8", "c.utf-8", "posix"}:
+        return "zh"
+    if base.startswith("en"):
+        return "en"
+    if base.startswith("zh"):
+        return "zh"
+    return "zh"
+
+
 async def _fetch_hermes_bootstrap_config(region: str) -> dict[str, Any] | None:
     """从服务端获取 Hermes 客户端启动配置。失败时返回 None。"""
     from ksadk.version import VERSION as CLI_VERSION
@@ -235,6 +251,7 @@ def _build_hermes_env_vars(
         _env_value("HERMES_FALLBACK_MODEL", "OPENAI_FALLBACK_MODEL_NAME")
         or _default_fallback_model_for_model(resolved_default_model, resolved_model_base_url)
     )
+    ui_locale = _normalize_hermes_ui_locale(_env_value("HERMES_UI_LOCALE", "LANG", "LC_ALL"))
     raw = {
         "OPENAI_API_KEY": model_api_key or _env_value("OPENAI_API_KEY"),
         "OPENAI_BASE_URL": resolved_model_base_url,
@@ -245,6 +262,7 @@ def _build_hermes_env_vars(
         "HERMES_DASHBOARD_HOST": "127.0.0.1",
         "HERMES_DASHBOARD_PORT": "9119",
         "KSADK_RUNTIME_PORT": _env_value("PORT") or "8080",
+        "HERMES_UI_LOCALE": ui_locale,
     }
     if context_length:
         raw["HERMES_CONTEXT_LENGTH"] = context_length
