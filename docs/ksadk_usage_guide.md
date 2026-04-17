@@ -2,14 +2,15 @@
 
 本文档是 `ksadk` 当前对外主使用文档，覆盖本地开发、构建部署、远端资源管理、MCP、OpenClaw、Hermes、平台级 KB/LTM 以及自动化输出约定。
 
-当前版本：`0.5.0`
+当前版本：`0.5.1`
 
-## 0.5.0 重点更新
+## 0.5.1 重点更新
 
-- `Hermes` 进入 ksadk 主线，新增独立资源组、共享 runtime 镜像和原生远程 TUI / pairing / connect 路径。
-- OpenClaw 新增用户自定义镜像模板，适合按平台约束直接交付给业务做二次定制。
-- `agentengine openclaw deploy` 新增 `--env KEY=VALUE`，并支持 `OPENCLAW_CHANNEL_BOOTSTRAP_JSON`、Agentspace bootstrap 与浏览器 SSRF 策略透传。
-- 新增 `agentengine openclaw repair` 与 `agentengine openclaw gateway doctor --fix`，补齐运行时修复入口。
+- code mode 构建新增 Linux Runtime 兼容性 / ABI 校验，关键原生扩展不兼容时会在打包阶段提前失败。
+- Hermes 默认共享 runtime 镜像更新为 `hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.4.16`，并在未显式配置时为 `glm-5.1` 补齐 `context_length=200000` / `kimi-k2.5` fallback。
+- OpenClaw 默认基线切到官方 `ghcr.io/openclaw/openclaw:2026.4.15@sha256:0e6bebecf4623216420851f5edd133a748335f45c3508b635f7c5c4bfbc6da7d`。
+- OpenClaw heartbeat 默认收口为 `every=30m`、`target=none`、`isolatedSession=true`，避免心跳写回当前聊天窗口。
+- OpenClaw 默认模型目录和自动补齐的 primary model 项把 `maxTokens` 基线提升到 `20000`。
 
 ## 1. 安装与环境准备
 
@@ -177,9 +178,12 @@ agentengine hermes open my-hermes --manage
 - `agentengine hermes connect` 会进入远端 Hermes gateway setup 向导，适合在托管实例内执行扫码连接。
 - `agentengine invoke <hermes-agent> -m "hello"` 继续走 `/v1/chat/completions`。
 - `agentengine hermes open <hermes-agent> --chat` 打开统一 hosted chat 页面。
+- `agentengine hermes open <hermes-agent> --manage` 以及 `agentengine dashboard open --path / --share` 打开的 Hermes 管理 UI，会保留 Hermes 自身 `/api/*` session token，不再把它误当作平台 API Key。
 - `agentengine hermes exec` 只允许只读运维子命令，不是远程 shell。
 - `agentengine hermes pairing` 只透传 Hermes 原生 pairing 审批子命令。
 - `agentengine hermes deploy` 默认使用共享 runtime 镜像，不要求用户本地 `build/push`。
+- Hermes 管理 UI 首次加载默认显示中文；需要英文时可设置 `HERMES_UI_LOCALE=en`。
+- 对 `glm-5.1`，Hermes runtime 在未显式配置时会补齐 `HERMES_CONTEXT_LENGTH=200000`，并把 fallback model 默认设为 `kimi-k2.5`；需要覆盖时可显式设置 `HERMES_CONTEXT_LENGTH`、`HERMES_FALLBACK_MODEL`、`HERMES_FALLBACK_PROVIDER`。
 - 当 `OPENAI_BASE_URL` 指向 `kspmas.ksyun.com` 公网模型网关时，`agentengine hermes deploy` 会在云端 runtime 配置里自动改写成 `http://kspmas-internal.sdns.ksyun.com/v1`，避免 Pod 访问公网模型网关超时。
 
 ## 3. 日常开发主线
@@ -214,6 +218,12 @@ agentengine build . --dry-run
 ```
 
 当前实现支持 `Code` 与 `Container` 两类制品，适合作为 `deploy` 或 `launch` 的前置验证。
+
+补充说明：
+
+- 当构建机平台不是目标 Linux Runtime，或当前 Python 版本与目标运行时 Python 不一致时，code mode 会优先尝试目标运行时 wheels / 二进制替换。
+- 在依赖安装完成后，构建器会扫描关键原生扩展的 Linux Runtime 兼容性；若发现 ABI 或平台不兼容，会直接终止构建并给出回退建议。
+- 如果构建机环境和目标运行时差异较大，优先考虑使用目标 Python 版本构建，或直接改用 `Container` 模式部署。
 
 Hermes 不走这条本地 build 主线；它默认消费平台共享的 Hermes runtime 镜像。
 

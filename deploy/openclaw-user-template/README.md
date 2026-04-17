@@ -159,7 +159,7 @@ make run IMAGE=hub-vpc-cn-beijing-6.kce.ksyun.com/your-namespace/openclaw-user-c
 默认行为：
 
 - 默认平台：`linux/amd64`
-- 默认基础镜像：`ghcr.io/openclaw/openclaw:2026.4.14@sha256:a65101a8aed6259c4f057076005ede737335d5f2e39b233d0d7dec1fc9e9e496`
+- 默认基础镜像：`ghcr.io/openclaw/openclaw:2026.4.15@sha256:0e6bebecf4623216420851f5edd133a748335f45c3508b635f7c5c4bfbc6da7d`
 - 默认运行端口：`8080`
 
 例如推送镜像：

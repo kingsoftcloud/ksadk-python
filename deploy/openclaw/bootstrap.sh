@@ -1636,6 +1636,18 @@ cfg.agents = cfg.agents || {};
 cfg.agents.defaults = cfg.agents.defaults || {};
 cfg.agents.defaults.workspace = cfg.agents.defaults.workspace || process.env.OPENCLAW_WORKSPACE_DIR || path.join(process.env.STATE_DIR, 'workspace');
 cfg.agents.defaults.heartbeat = cfg.agents.defaults.heartbeat || {};
+if (!firstNonBlank(cfg.agents.defaults.heartbeat.every)) {
+  cfg.agents.defaults.heartbeat.every = firstNonBlank(
+    process.env.OPENCLAW_HEARTBEAT_EVERY,
+    '30m',
+  );
+}
+if (!firstNonBlank(cfg.agents.defaults.heartbeat.target)) {
+  cfg.agents.defaults.heartbeat.target = firstNonBlank(
+    process.env.OPENCLAW_HEARTBEAT_TARGET,
+    'none',
+  );
+}
 if (cfg.agents.defaults.heartbeat.isolatedSession == null) {
   cfg.agents.defaults.heartbeat.isolatedSession = parseBool(
     process.env.OPENCLAW_HEARTBEAT_ISOLATED_SESSION,
@@ -1868,12 +1880,22 @@ const normalizeModelRef = (provider, modelRef) => {
   const normalizedProvider = String(provider || '').trim();
   return normalizedProvider ? `${normalizedProvider}/${rawModelRef}` : rawModelRef;
 };
-const extractModelId = (modelRef) => {
+const extractModelId = (provider, modelRef) => {
   const rawModelRef = String(modelRef || '').trim();
   if (!rawModelRef) return '';
-  return rawModelRef.includes('/')
-    ? rawModelRef.split('/').slice(1).join('/')
-    : rawModelRef;
+  if (!rawModelRef.includes('/')) {
+    return rawModelRef;
+  }
+  const normalizedProvider = String(provider || '').trim().toLowerCase();
+  const [modelPrefix, ...modelParts] = rawModelRef.split('/');
+  if (
+    !normalizedProvider ||
+    modelParts.length === 0 ||
+    modelPrefix.trim().toLowerCase() !== normalizedProvider
+  ) {
+    return rawModelRef;
+  }
+  return modelParts.join('/');
 };
 const normalizeModelInputList = (model) => {
   if (!model || typeof model !== 'object') return [];
@@ -1928,9 +1950,10 @@ const defaultModelInputs = (provider, modelId) => {
   }
   return ['text', 'image'];
 };
+const defaultModelMaxTokens = 20000;
 const ensurePrimaryModelInCatalog = (models, provider, modelRef, modelApiName) => {
   const normalizedPrimaryModel = normalizeModelRef(provider, modelRef);
-  const primaryModelId = extractModelId(normalizedPrimaryModel);
+  const primaryModelId = extractModelId(provider, normalizedPrimaryModel);
   if (!primaryModelId) {
     return Array.isArray(models) ? models : [];
   }
@@ -1949,7 +1972,7 @@ const ensurePrimaryModelInCatalog = (models, provider, modelRef, modelApiName) =
       input: defaultModelInputs(provider, primaryModelId),
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: 200000,
-      maxTokens: 8192,
+      maxTokens: defaultModelMaxTokens,
     });
   }
   return nextModels;
@@ -2055,7 +2078,7 @@ if (providerId && providerBaseUrl && providerApiKeySecretSource && providerApiKe
     cfg.models.providers[providerId].models = [];
   }
   if (cfg.models.providers[providerId].models.length === 0) {
-    const defaultModelId = extractModelId(preferredDefaultModel);
+    const defaultModelId = extractModelId(providerId, preferredDefaultModel);
     if (providerId === 'ksyun') {
       cfg.models.providers[providerId].models = [
         {
@@ -2066,7 +2089,7 @@ if (providerId && providerBaseUrl && providerApiKeySecretSource && providerApiKe
           input: ['text'],
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
           contextWindow: 200000,
-          maxTokens: 8192,
+          maxTokens: defaultModelMaxTokens,
         },
         {
           id: 'kimi-k2.5',
@@ -2076,7 +2099,7 @@ if (providerId && providerBaseUrl && providerApiKeySecretSource && providerApiKe
           input: ['text', 'image'],
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
           contextWindow: 200000,
-          maxTokens: 8192,
+          maxTokens: defaultModelMaxTokens,
         },
       ];
     } else if (defaultModelId) {
@@ -2089,7 +2112,7 @@ if (providerId && providerBaseUrl && providerApiKeySecretSource && providerApiKe
           input: defaultModelInputs(providerId, defaultModelId),
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
           contextWindow: 200000,
-          maxTokens: 8192,
+          maxTokens: defaultModelMaxTokens,
         },
       ];
     }

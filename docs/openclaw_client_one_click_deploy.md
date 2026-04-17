@@ -49,7 +49,7 @@
 - 镜像默认让 `openclaw-weixin` 与 `openclaw-lark` 直接跟随 npm 官方 `latest` 稳定版；其中微信远端扫码链路额外保留一个极小 shim，对官方稳定版 `2.1.7+` 自动补齐 `web.login.start/web.login.wait` 的 gateway methods 暴露，避免高速迭代期因显式锁版本导致默认镜像快速过时。
 - 启动时会通过 `sync_default_extensions()` 将默认插件同步到用户挂载的 `~/.openclaw`，缺失时自动补齐，用户手动升级后的插件版本不会被强制回滚。
 - 默认 bundled skills 包括：`clawhub-store`、`agent-browser-clawdbot`、`kdocs`。
-- 当前自定义镜像构建默认固定基础镜像为 `ghcr.io/openclaw/openclaw:2026.4.14@sha256:a65101a8aed6259c4f057076005ede737335d5f2e39b233d0d7dec1fc9e9e496`。
+- 当前自定义镜像构建默认固定基础镜像为 `ghcr.io/openclaw/openclaw:2026.4.15@sha256:0e6bebecf4623216420851f5edd133a748335f45c3508b635f7c5c4bfbc6da7d`。
 - fresh deploy 下默认启用 OpenClaw 内建 `browser`，并额外修复 `127.0.0.1` loopback Gateway 调用误入 pairing 的兼容问题。
 - 从旧默认集合迁移时，`find-skills` 这类已下线的预置技能只会在“之前由镜像同步且用户未改动”的情况下被自动清理；用户自管目录会被保留。
 - 对外可表达为：默认镜像即具备“渠道接入 + 浏览器自动化 + 技能商店”基础能力，不需要再单独准备初始化脚本。

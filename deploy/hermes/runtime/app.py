@@ -18,6 +18,8 @@ from starlette.websockets import WebSocketState
 
 
 TERMINAL_SUBPROTOCOL = "ks-terminal.v1"
+HERMES_SESSION_PROXY_HEADER = "X-Hermes-Session-Token"
+HERMES_UI_LOCALE_BOOTSTRAP_ID = "__KSADK_HERMES_UI_LOCALE_BOOTSTRAP__"
 SHELL_METACHARS = set("|&;<>()$`\\\\\n\r")
 PAIRING_PLATFORMS = {
     "discord",
@@ -59,6 +61,44 @@ def _normalize_term_env() -> None:
 
 _normalize_term_env()
 
+HERMES_FETCH_SHIM = f"""<script id="__KSADK_HERMES_FETCH_SHIM__">
+(() => {{
+  const HEADER = "{HERMES_SESSION_PROXY_HEADER}";
+  const originalFetch = window.fetch.bind(window);
+  window.fetch = (input, init) => {{
+    const request = input instanceof Request ? input : null;
+    let url;
+    try {{
+      url = new URL(request ? request.url : String(input), window.location.href);
+    }} catch (_error) {{
+      return originalFetch(input, init);
+    }}
+    if (url.origin !== window.location.origin || !url.pathname.startsWith("/api/")) {{
+      return originalFetch(input, init);
+    }}
+    const headers = new Headers((init && init.headers) || (request ? request.headers : undefined));
+    const requestAuth = request ? (request.headers.get("Authorization") || request.headers.get("authorization") || "") : "";
+    const auth = headers.get("Authorization") || headers.get("authorization") || requestAuth;
+    let token = "";
+    if (auth && auth.startsWith("Bearer ")) {{
+      token = auth.slice(7);
+    }} else if (window.__HERMES_SESSION_TOKEN__) {{
+      token = window.__HERMES_SESSION_TOKEN__;
+    }}
+    if (!token) {{
+      return originalFetch(input, init);
+    }}
+    headers.delete("Authorization");
+    headers.delete("authorization");
+    headers.set(HEADER, token);
+    if (request) {{
+      return originalFetch(new Request(request, {{ headers }}));
+    }}
+    return originalFetch(input, {{ ...(init || {{}}), headers }});
+  }};
+}})();
+</script>"""
+
 
 def _api_base() -> str:
     return f"http://{os.getenv('API_SERVER_HOST', '127.0.0.1')}:{os.getenv('API_SERVER_PORT', '8642')}"
@@ -66,6 +106,72 @@ def _api_base() -> str:
 
 def _dashboard_base() -> str:
     return f"http://{os.getenv('HERMES_DASHBOARD_HOST', '127.0.0.1')}:{os.getenv('HERMES_DASHBOARD_PORT', '9119')}"
+
+
+def _normalize_hermes_ui_locale(raw: str | None) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return "zh"
+
+    base = text.split(".", 1)[0].replace("_", "-").strip().lower()
+    if base in {"c", "c-utf-8", "c.utf-8", "posix"}:
+        return "zh"
+    if base.startswith("en"):
+        return "en"
+    if base.startswith("zh"):
+        return "zh"
+    return "zh"
+
+
+def _dashboard_locale_bootstrap() -> str:
+    ui_locale = _normalize_hermes_ui_locale(os.getenv("HERMES_UI_LOCALE"))
+    escaped = ui_locale.replace("\\", "\\\\").replace("'", "\\'")
+    return (
+        f'<script id="{HERMES_UI_LOCALE_BOOTSTRAP_ID}">'
+        f"try{{if(!localStorage.getItem('hermes-locale')){{localStorage.setItem('hermes-locale','{escaped}');}}}}catch(_error){{}}"
+        "</script>"
+    )
+
+
+def _is_dashboard_api_path(path: str) -> bool:
+    normalized = path.strip("/")
+    return normalized == "api" or normalized.startswith("api/")
+
+
+def _rewrite_dashboard_request_headers(headers: dict[str, str], path: str) -> dict[str, str]:
+    if not _is_dashboard_api_path(path):
+        return headers
+
+    token = ""
+    for key in list(headers):
+        if key.lower() == HERMES_SESSION_PROXY_HEADER.lower():
+            token = headers.pop(key)
+            break
+
+    if token and not any(key.lower() == "authorization" for key in headers):
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _inject_dashboard_fetch_shim(body: bytes, content_type: str) -> bytes:
+    if "text/html" not in (content_type or "").lower():
+        return body
+
+    html = body.decode("utf-8")
+    injections: list[str] = []
+    if "__KSADK_HERMES_FETCH_SHIM__" not in html:
+        injections.append(HERMES_FETCH_SHIM)
+    if HERMES_UI_LOCALE_BOOTSTRAP_ID not in html:
+        injections.append(_dashboard_locale_bootstrap())
+    if not injections:
+        return body
+
+    combined = "".join(injections)
+    if "</head>" in html:
+        html = html.replace("</head>", f"{combined}</head>", 1)
+    else:
+        html = f"{combined}{html}"
+    return html.encode("utf-8")
 
 
 def _validate_exec_argv(argv: Iterable[str]) -> list[str]:
@@ -139,6 +245,8 @@ async def _proxy_http(request: Request, base_url: str, path: str) -> Response:
         for key, value in request.headers.items()
         if key.lower() not in {"host", "content-length"}
     }
+    if base_url == _dashboard_base():
+        headers = _rewrite_dashboard_request_headers(headers, path)
     client = httpx.AsyncClient(timeout=None)
     upstream = await client.send(
         client.build_request(
@@ -152,7 +260,7 @@ async def _proxy_http(request: Request, base_url: str, path: str) -> Response:
     response_headers = {
         key: value
         for key, value in upstream.headers.items()
-        if key.lower() not in {"content-encoding", "transfer-encoding", "connection"}
+        if key.lower() not in {"content-encoding", "transfer-encoding", "connection", "content-length"}
     }
 
     async def _close_proxy_stream() -> None:
@@ -172,6 +280,8 @@ async def _proxy_http(request: Request, base_url: str, path: str) -> Response:
     finally:
         await upstream.aclose()
         await client.aclose()
+    if base_url == _dashboard_base():
+        body = _inject_dashboard_fetch_shim(body, upstream.headers.get("content-type", ""))
     return Response(body, status_code=upstream.status_code, headers=response_headers)
 
 

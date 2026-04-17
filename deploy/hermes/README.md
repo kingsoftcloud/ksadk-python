@@ -15,21 +15,21 @@ For this phase, `agentengine hermes deploy` does not build locally. It deploys a
 The default public image is:
 
 ```text
-hub.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.13-ks16
+hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.4.16
 ```
 
 When we need to refresh that shared image, do it from the `ksadk-python` repo root:
 
 ```bash
 make hermes-build
-make hermes-push HERMES_TAG=v2026.4.13-ks16
+make hermes-push HERMES_TAG=2026.4.16
 make hermes-size
 ```
 
 The Dockerfile installs Hermes from the official GitHub release ref by default:
 
 ```bash
-make hermes-build HERMES_AGENT_REF=v2026.4.13
+make hermes-build HERMES_AGENT_REF=v2026.4.16
 ```
 
 During build, the Dockerfile also compiles the Hermes dashboard frontend and copies the resulting `web_dist` assets into the installed `hermes_cli` package so `/` can serve the UI.
@@ -52,6 +52,7 @@ The published image serves all Hermes runtime surfaces from one port:
 - `/health` -> wrapper health probe that checks both API and dashboard upstreams
 
 The wrapper must proxy `/v1/*` with a real streaming response for SSE. Do not read `upstream.content` into memory before returning, or hosted `/chat` will degrade into burst output after a long stall.
+For cookie-backed dashboard sessions, the data-plane router strips `Authorization` by default but explicitly preserves Hermes dashboard `/api/*` bearer tokens, so shared `/` links can keep using Hermes' own session auth without leaking browser bearer headers to other runtimes.
 
 ## Hosted Gateway Behavior
 
@@ -64,6 +65,7 @@ runtime process, not a desktop daemon:
   process so Kubernetes can recreate the pod
 - hosted `agentengine hermes connect` configures Feishu / Weixin inside the pod
   and skips `systemd` / `launchd` installation flows
+- the entrypoint seeds `localStorage["hermes-locale"]` to `zh` on first load by default; override it with `HERMES_UI_LOCALE=en` when needed
 
 In other words: hosted Hermes does not rely on `systemd`, `launchd`, `loginctl`,
 or sudo to keep the gateway alive.

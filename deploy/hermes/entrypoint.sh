@@ -32,6 +32,7 @@ export HERMES_FALLBACK_MODEL="${HERMES_FALLBACK_MODEL:-${OPENAI_FALLBACK_MODEL_N
 export HERMES_FALLBACK_BASE_URL="${HERMES_FALLBACK_BASE_URL:-${OPENAI_BASE_URL:-}}"
 export AGENT_BROWSER_EXECUTABLE_PATH="${AGENT_BROWSER_EXECUTABLE_PATH:-/usr/bin/chromium}"
 export KDOCS_OPEN_BROWSER="${KDOCS_OPEN_BROWSER:-0}"
+export HERMES_UI_LOCALE="${HERMES_UI_LOCALE:-zh}"
 if [[ -z "${TERM:-}" || "${TERM}" == "dumb" ]]; then
   export TERM="xterm-256color"
 fi
@@ -48,6 +49,28 @@ HERMES_GATEWAY_SHUTDOWN_REQUESTED=0
 entrypoint_log() {
   printf '[hermes-entrypoint] %s\n' "$*" >&2
 }
+
+normalize_hermes_ui_locale() {
+  local raw="${1:-}"
+  local normalized="${raw%%.*}"
+  normalized="${normalized//_/-}"
+  normalized="${normalized,,}"
+  case "${normalized}" in
+    ""|c|c-utf-8|posix)
+      printf 'zh\n'
+      ;;
+    en*)
+      printf 'en\n'
+      ;;
+    zh*)
+      printf 'zh\n'
+      ;;
+    *)
+      printf 'zh\n'
+      ;;
+  esac
+}
+export HERMES_UI_LOCALE="$(normalize_hermes_ui_locale "${HERMES_UI_LOCALE}")"
 
 if [[ -z "${HERMES_CONTEXT_LENGTH}" ]]; then
   case "${OPENAI_MODEL_NAME,,}" in

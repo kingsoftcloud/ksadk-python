@@ -1,4 +1,4 @@
-# Hermes Agent v2026.4.13 本地安装、配置与 KsADK 接入流程
+# Hermes Agent v2026.4.16 本地安装、配置与 KsADK 接入流程
 
 本文档沉淀当前这一期 Hermes 接入 AgentEngine / KsADK 的可复用流程。
 
@@ -68,21 +68,21 @@ Hermes runtime 资产位于：
 cd /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python
 
 make hermes-build
-make hermes-push HERMES_TAG=v2026.4.13-ks16
+make hermes-push HERMES_TAG=2026.4.16
 make hermes-size
 ```
 
 如需显式切换 Hermes 上游 release ref：
 
 ```bash
-make hermes-build HERMES_AGENT_REF=v2026.4.13
+make hermes-build HERMES_AGENT_REF=v2026.4.16
 ```
 
 默认发布地址：
 
 ```text
-hub.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.13-ks16
-hub-vpc-cn-beijing-6.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.13-ks16
+hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.4.16
+hub-vpc-cn-beijing-6.kce.ksyun.com/agentengine-public/hermes-agent:2026.4.16
 ```
 
 说明：
@@ -161,7 +161,7 @@ agentengine hermes deploy --name demo-hermes
 ```bash
 agentengine hermes deploy \
   --name demo-hermes \
-  --image hub.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.13-ks16
+  --image hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.4.16
 ```
 
 部署命令当前行为：
@@ -254,13 +254,13 @@ make status ENV=pre NAMESPACE=agentengine
 在 `ksadk-python` worktree 中：
 
 ```bash
-make hermes-push HERMES_TAG=v2026.4.13-ks16
+make hermes-push HERMES_TAG=2026.4.16
 ```
 
 ### 10.3 再执行 CLI 侧预发 E2E
 
 ```bash
-agentengine hermes deploy --name demo-hermes --image hub.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.13-ks16
+agentengine hermes deploy --name demo-hermes --image hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.4.16
 agentengine hermes status demo-hermes
 agentengine invoke demo-hermes
 agentengine hermes open demo-hermes --chat

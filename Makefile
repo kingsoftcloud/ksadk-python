@@ -50,8 +50,8 @@ help:
 	@echo "    make hermes-build           构建 Hermes runtime 镜像"
 	@echo "    make hermes-push            构建 + 推送 Hermes runtime 镜像"
 	@echo "    make hermes-size            查看 Hermes 镜像大小"
-	@echo "    make hermes-build HERMES_TAG=v2026.4.13-ks16"
-	@echo "    make hermes-build HERMES_AGENT_REF=v2026.4.13  # 切换 Hermes 上游 release"
+	@echo "    make hermes-build HERMES_TAG=2026.4.16"
+	@echo "    make hermes-build HERMES_AGENT_REF=v2026.4.16  # 切换 Hermes 上游 release"
 	@echo ""
 	@echo "  \033[1;32m清理:\033[0m"
 	@echo "    make clean          清理构建产物"
@@ -393,7 +393,7 @@ OPENCLAW_VPC_REGISTRY ?= hub-vpc-cn-beijing-6.kce.ksyun.com
 OPENCLAW_VPC_IMAGE ?= $(subst hub.kce.ksyun.com,$(OPENCLAW_VPC_REGISTRY),$(OPENCLAW_IMAGE))
 OPENCLAW_TAG ?= latest
 OPENCLAW_CONTEXT := deploy/openclaw
-OPENCLAW_BASE_IMAGE ?= ghcr.io/openclaw/openclaw:2026.4.14@sha256:a65101a8aed6259c4f057076005ede737335d5f2e39b233d0d7dec1fc9e9e496
+OPENCLAW_BASE_IMAGE ?= ghcr.io/openclaw/openclaw:2026.4.15@sha256:0e6bebecf4623216420851f5edd133a748335f45c3508b635f7c5c4bfbc6da7d
 OPENCLAW_PYPI_INDEX_URL ?= https://mirrors.aliyun.com/pypi/simple
 OPENCLAW_NPM_REGISTRY ?= https://registry.npmmirror.com
 
@@ -449,16 +449,16 @@ openclaw-size:
 #
 # 用法:
 #   make hermes-build
-#   make hermes-push HERMES_TAG=v2026.4.13-ks16
+#   make hermes-push HERMES_TAG=2026.4.16
 #
 
 HERMES_IMAGE := hub.kce.ksyun.com/agentengine-public/hermes-agent
 HERMES_VPC_REGISTRY ?= hub-vpc-cn-beijing-6.kce.ksyun.com
 HERMES_VPC_IMAGE ?= $(subst hub.kce.ksyun.com,$(HERMES_VPC_REGISTRY),$(HERMES_IMAGE))
-HERMES_TAG ?= v2026.4.13-ks16
+HERMES_TAG ?= 2026.4.16
 HERMES_CONTEXT := deploy/hermes
 HERMES_PYPI_INDEX_URL ?= https://mirrors.aliyun.com/pypi/simple
-HERMES_AGENT_REF ?= v2026.4.13
+HERMES_AGENT_REF ?= v2026.4.16
 HERMES_APT_MIRROR ?= https://mirrors.aliyun.com/debian
 HERMES_NPM_REGISTRY ?= https://registry.npmmirror.com
 

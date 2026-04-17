@@ -1,6 +1,6 @@
 FROM node:20-bookworm-slim AS hermes_src
 
-ARG HERMES_AGENT_REF=v2026.4.13
+ARG HERMES_AGENT_REF=v2026.4.16
 
 WORKDIR /src
 
@@ -31,7 +31,7 @@ FROM python:3.12-bookworm
 
 ARG PYPI_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
 ARG PYPI_EXTRA_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
-ARG HERMES_AGENT_REF=v2026.4.13
+ARG HERMES_AGENT_REF=v2026.4.16
 ARG APT_MIRROR=https://mirrors.aliyun.com/debian
 
 ENV PYTHONUNBUFFERED=1 \

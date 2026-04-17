@@ -9,6 +9,10 @@ from tempfile import TemporaryDirectory
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BOOTSTRAP_SCRIPT = REPO_ROOT / "deploy" / "openclaw" / "bootstrap.sh"
 OPENCLAW_DOCKERFILE = REPO_ROOT / "deploy" / "openclaw" / "Dockerfile"
+LATEST_OPENCLAW_BASE_IMAGE = (
+    "ghcr.io/openclaw/openclaw:2026.4.15@"
+    "sha256:0e6bebecf4623216420851f5edd133a748335f45c3508b635f7c5c4bfbc6da7d"
+)
 
 
 def _write_weixin_plugin_package_json(
@@ -90,13 +94,19 @@ def _build_base_env(state_dir: str, config_path: str) -> dict:
     return env
 
 
+def _assert_model_token_defaults(models: list[dict], *, minimum_max_tokens: int = 20000) -> None:
+    for model in models:
+        if "contextWindow" not in model and "maxTokens" not in model:
+            continue
+        assert model["contextWindow"] == 200000
+        assert model["maxTokens"] >= minimum_max_tokens
+
+
 def test_openclaw_dockerfile_tracks_latest_official_channel_plugins():
     dockerfile = OPENCLAW_DOCKERFILE.read_text(encoding="utf-8")
 
     assert (
-        "ARG OPENCLAW_BASE_IMAGE="
-        "ghcr.io/openclaw/openclaw:2026.4.14@"
-        "sha256:a65101a8aed6259c4f057076005ede737335d5f2e39b233d0d7dec1fc9e9e496"
+        f"ARG OPENCLAW_BASE_IMAGE={LATEST_OPENCLAW_BASE_IMAGE}"
         in dockerfile
     )
     assert "ARG OPENCLAW_WEIXIN_PLUGIN_SPEC=@tencent-weixin/openclaw-weixin" in dockerfile
@@ -193,6 +203,8 @@ def test_bootstrap_defaults_heartbeat_to_isolated_light_context():
 
         assert result.returncode == 0, result.stderr or result.stdout
         cfg = json.loads(config_path.read_text())
+        assert cfg["agents"]["defaults"]["heartbeat"]["every"] == "30m"
+        assert cfg["agents"]["defaults"]["heartbeat"]["target"] == "none"
         assert cfg["agents"]["defaults"]["heartbeat"]["isolatedSession"] is True
         assert cfg["agents"]["defaults"]["heartbeat"]["lightContext"] is True
 
@@ -263,6 +275,7 @@ def test_bootstrap_defaults_dual_ksyun_catalog_when_unspecified():
         assert [item["id"] for item in models] == ["glm-5.1", "kimi-k2.5"]
         assert models[0]["input"] == ["text"]
         assert models[1]["input"] == ["text", "image"]
+        _assert_model_token_defaults(models)
         selectable = cfg["agents"]["defaults"]["models"]
         assert "ksyun/glm-5.1" in selectable
         assert "ksyun/kimi-k2.5" in selectable
@@ -295,6 +308,7 @@ def test_bootstrap_global_model_preference_keeps_dual_ksyun_catalog():
         assert [item["id"] for item in models] == ["glm-5.1", "kimi-k2.5"]
         assert models[0]["input"] == ["text"]
         assert models[1]["input"] == ["text", "image"]
+        _assert_model_token_defaults(models)
 
 
 def test_bootstrap_openclaw_default_model_alias_keeps_dual_catalog():
@@ -323,6 +337,7 @@ def test_bootstrap_openclaw_default_model_alias_keeps_dual_catalog():
         assert [item["id"] for item in models] == ["glm-5.1", "kimi-k2.5"]
         assert models[0]["input"] == ["text"]
         assert models[1]["input"] == ["text", "image"]
+        _assert_model_token_defaults(models)
         selectable = cfg["agents"]["defaults"]["models"]
         assert "ksyun/glm-5.1" in selectable
         assert "ksyun/kimi-k2.5" in selectable
@@ -419,6 +434,83 @@ def test_bootstrap_appends_primary_model_when_default_catalog_does_not_include_i
         assert cfg["agents"]["defaults"]["model"]["primary"] == "ksyun/deepseek-v3"
         models = cfg["models"]["providers"]["ksyun"]["models"]
         assert [item["id"] for item in models] == ["glm-5.1", "kimi-k2.5", "deepseek-v3"]
+        _assert_model_token_defaults(models)
+
+
+def test_bootstrap_preserves_namespaced_model_ids_when_provider_differs_from_prefix():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_MODEL_PROVIDER_ID"] = "hanhai"
+        env["OPENAI_MODEL_NAME"] = "Qzhou/glm-5"
+        env.pop("OPENCLAW_DEFAULT_MODEL", None)
+        env["OPENCLAW_MODEL_CATALOG_JSON"] = json.dumps(
+            [
+                {
+                    "id": "Qzhou/glm-5",
+                    "name": "glm-5",
+                    "api": "openai-completions",
+                    "reasoning": False,
+                    "input": ["text"],
+                },
+                {
+                    "id": "Qzhou/kimi-k2.5",
+                    "name": "kimi-k2.5",
+                    "api": "openai-completions",
+                    "reasoning": False,
+                    "input": ["text", "image"],
+                },
+            ]
+        )
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert cfg["agents"]["defaults"]["model"]["primary"] == "Qzhou/glm-5"
+        assert cfg["agents"]["defaults"]["model"]["fallbacks"] == ["Qzhou/kimi-k2.5"]
+        assert cfg["agents"]["defaults"]["imageModel"]["primary"] == "Qzhou/kimi-k2.5"
+        models = cfg["models"]["providers"]["hanhai"]["models"]
+        assert [item["id"] for item in models] == ["Qzhou/glm-5", "Qzhou/kimi-k2.5"]
+        selectable = cfg["agents"]["defaults"]["models"]
+        assert sorted(selectable) == ["Qzhou/glm-5", "Qzhou/kimi-k2.5"]
+
+
+def test_bootstrap_preserves_namespaced_model_ids_without_catalog_when_provider_differs():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_MODEL_PROVIDER_ID"] = "hanhai"
+        env["OPENAI_MODEL_NAME"] = "Qzhou/glm-5"
+        env.pop("OPENCLAW_DEFAULT_MODEL", None)
+        env.pop("OPENCLAW_MODEL_CATALOG_JSON", None)
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert cfg["agents"]["defaults"]["model"]["primary"] == "Qzhou/glm-5"
+        assert "fallbacks" not in cfg["agents"]["defaults"]["model"]
+        models = cfg["models"]["providers"]["hanhai"]["models"]
+        assert [item["id"] for item in models] == ["Qzhou/glm-5"]
+        selectable = cfg["agents"]["defaults"]["models"]
+        assert sorted(selectable) == ["Qzhou/glm-5"]
 
 
 def test_bootstrap_disables_builtin_web_search_by_default():

@@ -2,7 +2,7 @@
 
 本文档描述 `ksadk-python` 当前实现形态，口径固定为“最新代码对应的当前设计”，不承担跨仓路线图职责。
 
-当前实现基于 `ksadk-python` 最新代码状态整理，覆盖到 2026-04-15 前的近期变更，包括 Hermes 一等公民 CLI、共享 runtime 镜像、OpenClaw managed runtime repair / env passthrough，以及前一阶段的 hosted-first UI metadata 与构建链路优化。
+当前实现基于 `ksadk-python` 最新代码状态整理，覆盖到 2026-04-17 前的近期变更，包括 Hermes 一等公民 CLI、共享 runtime 镜像、OpenClaw managed runtime repair / env passthrough，以及新增的构建阶段 Linux Runtime 兼容性 / ABI 校验、Hermes 默认模型收口、OpenClaw 官方 `2026.4.15` 基线与 heartbeat 默认收口。
 
 ## 1. 产品定位与边界
 
@@ -203,6 +203,11 @@ ADK runner 默认会尝试注入：
 - `/chat`：统一 hosted chat
 - `/_ksadk/terminal/ws`：原生远程 TUI 与受限 `hermes exec`
 
+其中 `/` 的 cookie-backed dashboard/share 会话还有两个 Hermes 特有约束：
+
+- router 默认会剥离 runtime `Authorization`，但对 Hermes 管理 UI 的 `/api/*` 会保留 Hermes 自身注入的 session bearer token，避免把它误送去平台 API Key 鉴权链路
+- runtime entrypoint 会在首次加载时向 `localStorage["hermes-locale"]` 种入 `zh`，让托管管理 UI 默认以中文启动；如需覆盖，走 `HERMES_UI_LOCALE`
+
 Hermes hosted runtime 还显式把 gateway 视为“容器内受管进程”而不是桌面 daemon：
 
 - 容器入口负责启动并监督 Hermes gateway
@@ -230,10 +235,11 @@ CLI 主线包括：
 
 Hermes 生命周期则走另一条主线：
 
-- 默认共享镜像：`hub.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.13-ks16`
+- 默认共享镜像：`hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.4.16`
 - 不要求用户本地 build/push
 - deploy 时把模型 env 注入到共享 runtime
 - 若配置的是 `kspmas.ksyun.com` 公网模型地址，deploy 会自动改写成 `kspmas-internal.sdns.ksyun.com` 供云端 Pod 使用
+- 对 `glm-5.1`，runtime 在未显式配置时会补齐 `context_length=200000`，并默认把 fallback model 设为 `kimi-k2.5`
 - runtime 同时聚合 `/`、`/v1/*`、`/_ksadk/terminal/ws` 与 `/health`
 
 OpenClaw managed runtime 则继续沿另一条“启动期配置收口”路径演进：
@@ -254,11 +260,19 @@ OpenClaw managed runtime 则继续沿另一条“启动期配置收口”路径�
 
 对 Hermes 来说，这里的“制品”不是用户本地 build 结果，而是平台共享 runtime 镜像引用和对应的环境变量 / UI metadata。
 
+对 code mode 来说，近期构建链路还补了一层“先替换、再校验”的保护：
+
+- 在非目标平台或非目标 Python 版本下，优先尝试目标运行时 wheels
+- 必要时回退到宿主机构建并替换平台相关二进制
+- 打包前再扫描关键原生扩展的 Linux Runtime 兼容性，避免把明显不可运行的二进制发布到远端
+
 近期行为变化包括：
 
 - OpenClaw deploy 支持自定义 env 透传与渠道 bootstrap 配置
 - OpenClaw managed runtime 增加 control-plane repair 入口与 browser / trusted-proxy 兼容补丁收口
 - Hermes gateway 改为容器内托管与重启，并显式约束远程终端 contract
+- code mode 构建新增 Linux Runtime 兼容性 / ABI 校验
+- Hermes 对 `glm-5.1` 默认补齐上下文长度与 fallback model
 
 ## 4. 关键调用链
 

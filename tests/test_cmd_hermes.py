@@ -9,6 +9,11 @@ from ksadk.cli import cmd_hermes
 from ksadk.cli.ui import OUTPUT_MODE_PRETTY, configure_ui_runtime, status_rich_style
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+HERMES_DOCKERFILE = REPO_ROOT / "deploy" / "hermes" / "Dockerfile"
+MAKEFILE = REPO_ROOT / "Makefile"
+
+
 class _FakeHermesClient:
     create_payload = None
     update_payload = None
@@ -156,6 +161,16 @@ class _FakeHermesBootstrapImageClient(_FakeHermesClient):
                 "bootstrap.default_image": "registry.example.com/agentengine-public/hermes-agent:db-meta"
             }
         }
+
+
+def test_hermes_build_defaults_track_v2026_4_16_release():
+    dockerfile = HERMES_DOCKERFILE.read_text(encoding="utf-8")
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+
+    assert 'ARG HERMES_AGENT_REF=v2026.4.16' in dockerfile
+    assert 'HERMES_TAG ?= 2026.4.16' in makefile
+    assert 'HERMES_AGENT_REF ?= v2026.4.16' in makefile
+    assert cmd_hermes.DEFAULT_HERMES_IMAGE.endswith(':2026.4.16')
 
 
 def test_hermes_exec_accepts_readonly_subcommand_and_uses_remote_terminal(monkeypatch):
@@ -658,7 +673,7 @@ def test_hermes_deploy_rewrites_public_kspmas_url_for_runtime(tmp_path: Path, mo
     assert result.exit_code == 0, result.output
     assert (
         _FakeHermesClient.create_payload["artifact_path"]
-        == "hub.kce.ksyun.com/agentengine-public/hermes-agent:v2026.4.13-ks16"
+        == "hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.4.16"
     )
     assert any(
         item["Key"] == "OPENAI_BASE_URL" and item["Value"] == "http://kspmas-internal.sdns.ksyun.com/v1"
@@ -684,6 +699,43 @@ def test_hermes_deploy_sets_glm_51_context_length_by_default(tmp_path: Path, mon
     )
     assert any(
         item["Key"] == "HERMES_FALLBACK_MODEL" and item["Value"] == "kimi-k2.5"
+        for item in _FakeHermesClient.create_payload["env_vars"]
+    )
+
+
+def test_hermes_deploy_defaults_ui_locale_to_zh(tmp_path: Path, monkeypatch):
+    runner = CliRunner()
+    _FakeHermesClient.create_payload = None
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cmd_hermes, "_get_hermes_global_env", lambda: {}, raising=False)
+    monkeypatch.delenv("HERMES_UI_LOCALE", raising=False)
+    monkeypatch.delenv("LANG", raising=False)
+    monkeypatch.delenv("LC_ALL", raising=False)
+    monkeypatch.setattr(cmd_hermes, "AgentEngineClient", _FakeHermesClient)
+
+    result = runner.invoke(cmd_hermes.hermes, ["deploy", "--name", "demo-hermes"])
+
+    assert result.exit_code == 0, result.output
+    assert any(
+        item["Key"] == "HERMES_UI_LOCALE" and item["Value"] == "zh"
+        for item in _FakeHermesClient.create_payload["env_vars"]
+    )
+
+
+def test_hermes_deploy_normalizes_ui_locale_from_lang(tmp_path: Path, monkeypatch):
+    runner = CliRunner()
+    _FakeHermesClient.create_payload = None
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cmd_hermes, "_get_hermes_global_env", lambda: {}, raising=False)
+    monkeypatch.delenv("HERMES_UI_LOCALE", raising=False)
+    monkeypatch.setenv("LANG", "en_US.UTF-8")
+    monkeypatch.setattr(cmd_hermes, "AgentEngineClient", _FakeHermesClient)
+
+    result = runner.invoke(cmd_hermes.hermes, ["deploy", "--name", "demo-hermes"])
+
+    assert result.exit_code == 0, result.output
+    assert any(
+        item["Key"] == "HERMES_UI_LOCALE" and item["Value"] == "en"
         for item in _FakeHermesClient.create_payload["env_vars"]
     )
 
