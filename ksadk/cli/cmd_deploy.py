@@ -13,6 +13,7 @@ import click
 import asyncio
 from pathlib import Path
 from ksadk.api.client import DryRunExit
+from ksadk.cli.storage import build_storage_config
 from ksadk.common.constants import (
     get_ks3_endpoints,
     DEFAULT_SERVERLESS_ENDPOINT,
@@ -77,6 +78,9 @@ console = get_console()
 @click.option("--ui-profile", type=click.Choice(SUPPORTED_UI_PROFILES), help="Dashboard UI 类型")
 @click.option("--ui-path", help="Dashboard UI 路径 (例如 /)")
 @click.option("--ui-url", help="完整 Dashboard URL（自研前端）")
+@click.option("--storage-size-gi", type=int, default=20, show_default=True, help="PVC 容量（Gi）")
+@click.option("--storage-mount-path", default=None, help="PVC 挂载目录（默认按框架推导）")
+@click.option("--no-storage", is_flag=True, help="禁用默认 PVC 挂载")
 @click.option(
     "--observability/--no-observability", default=True, help="是否启用可观测性 (默认开启)"
 )
@@ -103,6 +107,9 @@ def deploy(
     ui_profile: str,
     ui_path: str,
     ui_url: str,
+    storage_size_gi: int,
+    storage_mount_path: str | None,
+    no_storage: bool,
     observability: bool,
     push: bool,
     no_cache: bool,
@@ -159,6 +166,9 @@ def deploy(
             no_version,
             auto_rollback,
             dry_run,
+            storage_size_gi,
+            storage_mount_path,
+            no_storage,
             dry_run_context=dry_run_context,
         ),
         dry_run=dry_run,
@@ -230,6 +240,9 @@ async def _deploy_async(
     no_version: bool,
     auto_rollback: bool,
     dry_run: bool,
+    storage_size_gi: int = 20,
+    storage_mount_path: str | None = None,
+    no_storage: bool = False,
     dry_run_context: dict[str, object] | None = None,
 ):
     """异步部署流程"""
@@ -326,6 +339,16 @@ async def _deploy_async(
         deploy_target.scaling.concurrency = config["scaling"].get("concurrency", 10)
 
     _apply_network_config(config, deploy_target)
+    storage_config = build_storage_config(
+        detection_result.type.value,
+        target=target,
+        no_storage=no_storage,
+        mount_path=storage_mount_path,
+        size_gi=storage_size_gi,
+    )
+    if storage_config:
+        deploy_target.storage.mount_path = storage_config["mount_path"]
+        deploy_target.storage.size_gi = storage_config["size_gi"]
 
     normalized_artifact_type = (effective_artifact_type or "Code").strip().lower()
     explicit_artifact_reference = ks3_path if normalized_artifact_type == "code" else image

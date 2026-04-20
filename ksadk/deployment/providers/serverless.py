@@ -141,6 +141,24 @@ class ServerlessProvider(BaseDeployProvider):
         return payload
 
     @staticmethod
+    def _serialize_storage_config(target: DeployTarget) -> Optional[Dict[str, Any]]:
+        storage = getattr(target, "storage", None)
+        if storage is None:
+            return None
+
+        mount_path = str(getattr(storage, "mount_path", "") or "").strip()
+        size_gi = getattr(storage, "size_gi", None)
+        if not mount_path and size_gi is None:
+            return None
+
+        payload: Dict[str, Any] = {}
+        if mount_path:
+            payload["mount_path"] = mount_path
+        if size_gi is not None:
+            payload["size_gi"] = int(size_gi)
+        return payload
+
+    @staticmethod
     def _extract_agent_access_fields(detail: Dict[str, Any]) -> Dict[str, Any]:
         """从 GetAgent 响应中提取 quick access/state 相关字段。"""
         if not isinstance(detail, dict):
@@ -576,6 +594,10 @@ class ServerlessProvider(BaseDeployProvider):
                         network_config = self._serialize_network_config(target)
                         if network_config:
                             update_data["network"] = network_config
+
+                        storage_config = self._serialize_storage_config(target)
+                        if storage_config:
+                            update_data["storage"] = storage_config
                         
                         # 注入更新时间戳，强制触发 Rolling Update (Pod 重启)
                         if "env_vars" not in update_data:
@@ -682,6 +704,10 @@ class ServerlessProvider(BaseDeployProvider):
                     network_config = self._serialize_network_config(target)
                     if network_config:
                         request_data["network"] = network_config
+
+                    storage_config = self._serialize_storage_config(target)
+                    if storage_config:
+                        request_data["storage"] = storage_config
 
                     # 获取 Account ID (用于 Server 端的 user_id)
                     extra_headers = {}

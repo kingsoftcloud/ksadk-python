@@ -765,6 +765,28 @@ class AgentEngineClient:
             payload["Url"] = str(url).strip() if url is not None else None
         return payload
 
+    @staticmethod
+    def _normalize_storage_payload(storage: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not isinstance(storage, dict):
+            return None
+
+        mount_path = str(
+            storage.get("mount_path")
+            or storage.get("mountPath")
+            or storage.get("MountPath")
+            or ""
+        ).strip()
+        size_gi = storage.get("size_gi", storage.get("sizeGi", storage.get("SizeGi")))
+        if not mount_path and size_gi is None:
+            return None
+
+        payload: Dict[str, Any] = {}
+        if mount_path:
+            payload["MountPath"] = mount_path
+        if size_gi is not None:
+            payload["SizeGi"] = int(size_gi)
+        return payload
+
     async def create_agent(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """创建 Agent (通过 CreateAgentProduct 走订单流程)"""
         framework = self._normalize_framework_name(data.get("framework"))
@@ -793,6 +815,10 @@ class AgentEngineClient:
         ui_config_payload = self._normalize_ui_config_payload(data.get("ui_config"))
         if ui_config_payload is not None:
             params["UiConfig"] = ui_config_payload
+
+        storage_payload = self._normalize_storage_payload(data.get("storage"))
+        if storage_payload is not None:
+            params["Storage"] = storage_payload
 
         # 访问控制 (默认 ApiKey；OpenClaw 可显式传入 None 关闭平台层鉴权)
         auth_type = data.get("auth_type")
@@ -1105,6 +1131,10 @@ class AgentEngineClient:
         ui_config_payload = self._normalize_ui_config_payload(data.get("ui_config"))
         if ui_config_payload is not None:
             params["UiConfig"] = ui_config_payload
+
+        storage_payload = self._normalize_storage_payload(data.get("storage"))
+        if storage_payload is not None:
+            params["Storage"] = storage_payload
 
         # 访问控制 (可选)
         auth_type = data.get("auth_type")

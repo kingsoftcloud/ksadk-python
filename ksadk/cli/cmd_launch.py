@@ -9,6 +9,7 @@ from ksadk.api.client import DryRunExit
 from ksadk.cli.cmd_deploy import _apply_network_config, _resolve_artifact_type_input, _resolve_ui_config_inputs
 from ksadk.cli.dry_run import effective_dry_run, run_async_with_dry_run
 from ksadk.cli.error_utils import cli_error_from_exception, is_debug_mode_enabled, remote_error, usage_error, validation_error
+from ksadk.cli.storage import build_storage_config
 from ksadk.cli.workflow_common import (
     build_workflow_local_plan,
     clear_build_metadata,
@@ -58,6 +59,9 @@ from ksadk.cli.ui import (
 @click.option("--ui-profile", type=click.Choice(SUPPORTED_UI_PROFILES), help="Dashboard UI 类型")
 @click.option("--ui-path", help="Dashboard UI 路径 (例如 /)")
 @click.option("--ui-url", help="完整 Dashboard URL（自研前端）")
+@click.option("--storage-size-gi", type=int, default=20, show_default=True, help="PVC 容量（Gi）")
+@click.option("--storage-mount-path", default=None, help="PVC 挂载目录（默认按框架推导）")
+@click.option("--no-storage", is_flag=True, help="禁用默认 PVC 挂载")
 @click.option("--dry-run", is_flag=True, help="仅打印请求，不执行实际操作")
 @click.option(
     "--artifact-type",
@@ -84,6 +88,9 @@ def launch(
     ui_profile: str,
     ui_path: str,
     ui_url: str,
+    storage_size_gi: int,
+    storage_mount_path: str | None,
+    no_storage: bool,
     dry_run: bool,
     artifact_type: str,
     no_version: bool,
@@ -132,6 +139,9 @@ def launch(
             artifact_type,
             no_version,
             auto_rollback,
+            storage_size_gi,
+            storage_mount_path,
+            no_storage,
             dry_run_context=dry_run_context,
         ),
         dry_run=dry_run,
@@ -168,6 +178,9 @@ async def _launch_async(
     artifact_type: str,
     no_version: bool,
     auto_rollback: bool,
+    storage_size_gi: int = 20,
+    storage_mount_path: str | None = None,
+    no_storage: bool = False,
     dry_run_context: dict[str, object] | None = None,
 ):
     from ksadk.detection import FrameworkDetector
@@ -249,6 +262,16 @@ async def _launch_async(
         deploy_target.resources.memory = config["resources"].get("memory", "4Gi")
 
     _apply_network_config(config, deploy_target)
+    storage_config = build_storage_config(
+        detection_result.type.value,
+        target=target,
+        no_storage=no_storage,
+        mount_path=storage_mount_path,
+        size_gi=storage_size_gi,
+    )
+    if storage_config:
+        deploy_target.storage.mount_path = storage_config["mount_path"]
+        deploy_target.storage.size_gi = storage_config["size_gi"]
 
     normalized_artifact_type = (effective_artifact_type or "Code").strip().lower()
     explicit_artifact_reference = ks3_path if normalized_artifact_type == "code" else image

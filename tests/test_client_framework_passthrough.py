@@ -95,6 +95,31 @@ async def test_create_agent_forwards_ui_config(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_create_agent_forwards_storage_configuration(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    calls = []
+
+    def fake_action(action: str, params: dict):
+        calls.append((action, params.copy()))
+        return {"agent_id": "ar-storage"}
+
+    monkeypatch.setattr(client, "_action", fake_action)
+
+    payload = _build_create_payload()
+    payload["storage"] = {
+        "mount_path": "/home/node/.agentengine",
+        "size_gi": 20,
+    }
+
+    await client.create_agent(payload)
+
+    assert calls[0][1]["Storage"] == {
+        "MountPath": "/home/node/.agentengine",
+        "SizeGi": 20,
+    }
+
+
+@pytest.mark.asyncio
 async def test_update_agent_forwards_network_configuration(monkeypatch):
     client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
     calls = []
@@ -155,6 +180,34 @@ async def test_update_agent_forwards_ui_config(monkeypatch):
         "Profile": "custom",
         "Path": "/chat",
         "Url": "https://ui.example.com/custom-ui/",
+    }
+
+
+@pytest.mark.asyncio
+async def test_update_agent_forwards_storage_disable_configuration(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    calls = []
+
+    def fake_action(action: str, params: dict):
+        calls.append((action, params.copy()))
+        return {"agent_id": "ar-storage"}
+
+    monkeypatch.setattr(client, "_action", fake_action)
+
+    await client.update_agent(
+        "ar-storage",
+        {
+            "storage": {
+                "mount_path": "/home/node/.agentengine",
+                "size_gi": 64,
+            }
+        },
+    )
+
+    assert calls[0][0] == "UpdateAgent"
+    assert calls[0][1]["Storage"] == {
+        "MountPath": "/home/node/.agentengine",
+        "SizeGi": 64,
     }
 
 
