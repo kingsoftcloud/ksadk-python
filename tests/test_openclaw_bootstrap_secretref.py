@@ -437,7 +437,7 @@ def test_bootstrap_appends_primary_model_when_default_catalog_does_not_include_i
         _assert_model_token_defaults(models)
 
 
-def test_bootstrap_preserves_namespaced_model_ids_when_provider_differs_from_prefix():
+def test_bootstrap_qualifies_namespaced_model_selection_refs_when_provider_differs_from_prefix():
     with TemporaryDirectory() as tmpdir:
         config_path = Path(tmpdir) / "openclaw.json"
         env = _build_base_env(tmpdir, str(config_path))
@@ -475,16 +475,16 @@ def test_bootstrap_preserves_namespaced_model_ids_when_provider_differs_from_pre
 
         assert result.returncode == 0, result.stderr or result.stdout
         cfg = json.loads(config_path.read_text())
-        assert cfg["agents"]["defaults"]["model"]["primary"] == "Qzhou/glm-5"
-        assert cfg["agents"]["defaults"]["model"]["fallbacks"] == ["Qzhou/kimi-k2.5"]
-        assert cfg["agents"]["defaults"]["imageModel"]["primary"] == "Qzhou/kimi-k2.5"
+        assert cfg["agents"]["defaults"]["model"]["primary"] == "hanhai/Qzhou/glm-5"
+        assert cfg["agents"]["defaults"]["model"]["fallbacks"] == ["hanhai/Qzhou/kimi-k2.5"]
+        assert cfg["agents"]["defaults"]["imageModel"]["primary"] == "hanhai/Qzhou/kimi-k2.5"
         models = cfg["models"]["providers"]["hanhai"]["models"]
         assert [item["id"] for item in models] == ["Qzhou/glm-5", "Qzhou/kimi-k2.5"]
         selectable = cfg["agents"]["defaults"]["models"]
-        assert sorted(selectable) == ["Qzhou/glm-5", "Qzhou/kimi-k2.5"]
+        assert sorted(selectable) == ["hanhai/Qzhou/glm-5", "hanhai/Qzhou/kimi-k2.5"]
 
 
-def test_bootstrap_preserves_namespaced_model_ids_without_catalog_when_provider_differs():
+def test_bootstrap_qualifies_namespaced_model_selection_refs_without_catalog_when_provider_differs():
     with TemporaryDirectory() as tmpdir:
         config_path = Path(tmpdir) / "openclaw.json"
         env = _build_base_env(tmpdir, str(config_path))
@@ -505,12 +505,104 @@ def test_bootstrap_preserves_namespaced_model_ids_without_catalog_when_provider_
 
         assert result.returncode == 0, result.stderr or result.stdout
         cfg = json.loads(config_path.read_text())
-        assert cfg["agents"]["defaults"]["model"]["primary"] == "Qzhou/glm-5"
+        assert cfg["agents"]["defaults"]["model"]["primary"] == "hanhai/Qzhou/glm-5"
         assert "fallbacks" not in cfg["agents"]["defaults"]["model"]
         models = cfg["models"]["providers"]["hanhai"]["models"]
         assert [item["id"] for item in models] == ["Qzhou/glm-5"]
         selectable = cfg["agents"]["defaults"]["models"]
-        assert sorted(selectable) == ["Qzhou/glm-5"]
+        assert sorted(selectable) == ["hanhai/Qzhou/glm-5"]
+
+
+def test_bootstrap_migrates_legacy_namespaced_model_selection_refs_for_custom_provider():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "agents": {
+                        "defaults": {
+                            "model": {
+                                "primary": "Qzhou/glm-5",
+                                "fallbacks": ["Qzhou/kimi-k2.5"],
+                            },
+                            "imageModel": {
+                                "primary": "Qzhou/kimi-k2.5",
+                            },
+                            "models": {
+                                "Qzhou/glm-5": {},
+                                "Qzhou/kimi-k2.5": {},
+                            },
+                        }
+                    },
+                    "models": {
+                        "providers": {
+                            "hanhai": {
+                                "models": [
+                                    {
+                                        "id": "Qzhou/glm-5",
+                                        "name": "glm-5",
+                                        "api": "openai-completions",
+                                        "reasoning": False,
+                                        "input": ["text"],
+                                    },
+                                    {
+                                        "id": "Qzhou/kimi-k2.5",
+                                        "name": "kimi-k2.5",
+                                        "api": "openai-completions",
+                                        "reasoning": False,
+                                        "input": ["text", "image"],
+                                    },
+                                ]
+                            }
+                        }
+                    },
+                }
+            )
+        )
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_MODEL_PROVIDER_ID"] = "hanhai"
+        env["OPENAI_MODEL_NAME"] = "Qzhou/glm-5"
+        env.pop("OPENCLAW_DEFAULT_MODEL", None)
+        env["OPENCLAW_MODEL_CATALOG_JSON"] = json.dumps(
+            [
+                {
+                    "id": "Qzhou/glm-5",
+                    "name": "glm-5",
+                    "api": "openai-completions",
+                    "reasoning": False,
+                    "input": ["text"],
+                },
+                {
+                    "id": "Qzhou/kimi-k2.5",
+                    "name": "kimi-k2.5",
+                    "api": "openai-completions",
+                    "reasoning": False,
+                    "input": ["text", "image"],
+                },
+            ]
+        )
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert cfg["agents"]["defaults"]["model"]["primary"] == "hanhai/Qzhou/glm-5"
+        assert cfg["agents"]["defaults"]["model"]["fallbacks"] == ["hanhai/Qzhou/kimi-k2.5"]
+        assert cfg["agents"]["defaults"]["imageModel"]["primary"] == "hanhai/Qzhou/kimi-k2.5"
+        assert sorted(cfg["agents"]["defaults"]["models"]) == [
+            "hanhai/Qzhou/glm-5",
+            "hanhai/Qzhou/kimi-k2.5",
+        ]
+        models = cfg["models"]["providers"]["hanhai"]["models"]
+        assert [item["id"] for item in models] == ["Qzhou/glm-5", "Qzhou/kimi-k2.5"]
 
 
 def test_bootstrap_disables_builtin_web_search_by_default():

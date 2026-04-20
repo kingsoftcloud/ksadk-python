@@ -105,6 +105,7 @@ agentengine dashboard open --agent ar-xxxx
 - [ADK 记忆能力专项参考](./docs/memory_usage_guide.md)
 - [OpenClaw 一键部署与接入参考](./docs/openclaw_client_one_click_deploy.md)
 - [OpenClaw 用户自定义镜像模板参考](./deploy/openclaw-user-template/README.md)
+- [Hermes AgentEngine 实战手册（从初始化到 IM 连接）](./docs/hermes-agentengine-guide.md)
 - [Hermes Agent 本地安装、云端部署与远程 TUI 参考](./docs/hermes-agent-v2026.4.16_本地安装配置与ksadk接入流程.md)
 - [Hermes Runtime 共享镜像与运行时约定](./deploy/hermes/README.md)
 - [Runner Approval 架构草案](./docs/Runner_Approval_Architecture.md)
