@@ -1,386 +1,683 @@
-# KSADK 技术文档
+# KSADK 技术设计
 
-本文档描述 `ksadk-python` 当前实现形态，口径固定为“最新代码对应的当前设计”，不承担跨仓路线图职责。
+本文档描述 `ksadk-python` 在 2026-04-19 对应的当前实现形态。
 
-当前实现基于 `ksadk-python` 最新代码状态整理，覆盖到 2026-04-17 前的近期变更，包括 Hermes 一等公民 CLI、共享 runtime 镜像、OpenClaw managed runtime repair / env passthrough，以及新增的构建阶段 Linux Runtime 兼容性 / ABI 校验、Hermes 默认模型收口、OpenClaw 官方 `2026.4.15` 基线与 heartbeat 默认收口。
+文档目标有两个：
 
-## 1. 产品定位与边界
+- 帮助零上下文工程师快速建立 `ksadk` 的整体心智模型
+- 明确 `ksadk-python` 与 `agentengine-server` 的边界和契约面
 
-`ksadk-python` 是 KSADK 的数据面仓库，负责：
+本文档只描述“当前代码已经具备的能力”和“当前代码依赖的跨仓契约”，不承担中长期路线图职责。跨仓中长期架构草案仍以 `agentengine-server/docs/ksadk-platform-architecture-draft.md` 为准。
 
-- 本地运行与 runner 编排
-- framework detection 与统一入口分发
-- session / transcript / conversation runtime
-- MCP runtime 与 toolset bind
-- A2A `serve/card`
-- sandbox / approval / tool safety
-- 面向开发者的 CLI / SDK 接口
-- 本地 Web UI 与云端 Dashboard / framework-native UI 的运行时消费侧适配
+## 1. 文档定位与边界
 
-`ksadk-python` 不负责：
+### 1.1 `ksadk-python` 负责什么
 
-- registry server
-- artifact / runtime 生命周期治理
-- gateway discovery 入口
-- hosted control plane
-- 统一版本治理后台
-- SkillHub / Tool Registry / A2A Registry 这类控制面系统
+当前 `ksadk-python` 负责的数据面能力包括：
 
-这些能力的 canonical 归属仍在 `agentengine-server`。跨仓架构主线请看：
+- 本地项目检测与命令分发
+- 本地 runner 加载与运行
+- 会话、事件、状态的本地持久化与 transcript 编排
+- conversation runtime
+- 附件规范化、抽取与本地文件落盘
+- KB / LTM ambient context 注入
+- MCP toolset 绑定
+- 本地 Web UI 与远端调用消费侧适配
+- 面向开发者的 `build / deploy / launch / invoke` CLI
+- Hermes / OpenClaw 这类 runtime 产品的消费侧 CLI
 
-- repo: `agentengine-server`
-- path: `docs/ksadk-platform-architecture-draft.md`
-- path: `docs/ksadk-next-2-weeks.md`
-- path: `docs/unified-agent-ui-v1-technical-design.md`
+### 1.2 `ksadk-python` 不负责什么
 
-仓库内边界约束与优先级说明见 [AGENTS.md](../AGENTS.md)。
+以下能力的 canonical 真相源不在 `ksadk-python`：
+
+- artifact 生命周期治理
+- 托管 runtime 创建、更新、删除
+- Dashboard access link 与 hosted 分享能力
+- 统一 registry / resolve / auth / visibility
+- hosted conversation façade
+- control plane 的版本治理与权限策略
+
+这些能力当前主要由 `agentengine-server` 承担，`ksadk-python` 以客户端和运行时消费层的方式接入。
+
+### 1.3 当前采用的支持模型
+
+本文档采用“代码框架 + runtime 产品”的口径，而不是“六个并列 framework”。
+
+| 支持面 | 当前对象 | 本地真相源 | 主入口 |
+| --- | --- | --- | --- |
+| 代码框架 | `ADK`、`LangChain`、`LangGraph`、`DeepAgents` | 用户代码 | `run` / `web` / 通用 `build` / `deploy` |
+| runtime 产品 | `Hermes`、`OpenClaw` | 部署工作区 + `.agentengine.state` | `agentengine hermes ...` / `agentengine openclaw ...` |
+
+注意：
+
+- `Hermes` 在当前代码中仍保留了一部分历史兼容路径，例如出现在 `FrameworkDetector` 的配置识别里，但它并不复用本地 runner。
+- `OpenClaw` 更明确地处于产品型路径，不进入通用本地 runner 抽象。
 
 ## 2. 整体架构
 
-### 2.1 本地开发态
+### 2.1 仓库内总览
 
-本地开发态以项目目录为中心：
+```mermaid
+flowchart LR
+    U["开发者 / 调用方"] --> CLI["CLI / SDK / 本地 Web UI"]
+    CLI --> W["项目目录或部署工作区"]
 
-- `FrameworkDetector` 识别 ADK、LangGraph、LangChain、DeepAgents、OpenClaw、Hermes 项目模板
-- `UnifiedRunner` 根据检测结果分发到具体 runner
-- `agentengine run` 负责本地交互式运行
-- `agentengine web` 启动统一本地 Web UI
-- 本地 UI 会话默认落在项目目录下的 `.agentengine/ui`
+    W --> D["识别层<br/>FrameworkDetector / 状态解析"]
+    D -->|代码框架| R["UnifiedRunner / Framework Runners"]
+    D -->|runtime 产品| P["Hermes / OpenClaw 资源命令组"]
 
-`agentengine web` 当前统一走 ksadk 内建 Web UI，而不是再按框架分叉到旧的框架专属本地 Web UI。命令入口见 [ksadk/cli/cmd_web.py](../ksadk/cli/cmd_web.py)。
+    R --> C["Conversation Runtime"]
+    C --> S["Session Service<br/>SQLite / Hosted facade"]
+    C --> A["Attachments / Normalize"]
+    C --> K["KB / LTM Ambient Context"]
+    C --> M["MCP Toolset Bind"]
 
-Hermes 在本地项目态属于 container-first 模板：`init -f hermes` 会生成参考 runtime 资产，但实际交互主线是云端 `agentengine hermes ...` 生命周期命令与远程 TUI，而不是本地 runner。
+    CLI --> B["Build / Deploy / Launch"]
+    B --> CP["AgentEngine Server"]
+    P --> CP
 
-### 2.2 托管调用态
+    CP --> RT["托管 Runtime / Serverless Pod"]
+    RT --> UI["Hosted UI / Runtime API / Terminal WS"]
+```
 
-云端托管态下，`ksadk-python` 主要承担“运行与消费”职责，而不是“创建与治理”职责：
+### 2.2 跨仓视角
 
-- `build/deploy/launch` 负责把本地项目打包成 `Code` 或 `Container` 制品，并调用控制面 API
-- `agentengine hermes ...` 负责共享 Hermes runtime 镜像的生命周期管理、原生终端 attach 与受限子命令透传
-- `agentengine openclaw ...` 负责 OpenClaw 运行时的部署参数归一化、渠道 bootstrap 透传与 repair 入口暴露
-- 远端 Agent / MCP / OpenClaw / Hermes 的创建、更新、删除和 Dashboard 链接生成由 `AgentEngine Server` 承担
-- `ksadk-python` 消费这些控制面能力，并把本地项目状态持久化到 `.agentengine.state`
+如果放到 `ksadk ↔ server` 的协同链路里，当前关系更接近下面这个模型：
 
-因此，仓库里的部署逻辑更接近“面向开发者的制品构建与控制面客户端”，而不是独立的托管平台。
+```mermaid
+flowchart TB
+    subgraph SDK["ksadk-python 数据面"]
+      SDK1["runner / conversation runtime"]
+      SDK2["local session / local UI"]
+      SDK3["build / deploy / invoke CLI"]
+    end
 
-### 2.3 本地 UI 与云端 UI 的关系
+    subgraph Server["agentengine-server 控制面"]
+      SV1["artifact / runtime lifecycle"]
+      SV2["hosted session facade"]
+      SV3["dashboard access / bootstrap"]
+      SV4["resolve / auth / visibility"]
+    end
 
-当前 UI 分为两层：
+    subgraph Runtime["云上 Runtime"]
+      RT1["agent pod / managed image"]
+      RT2["/v1/* / /chat / terminal ws"]
+    end
 
-- 本地：`agentengine web` 启动本地统一 Invoke UI
-- 云端：`agentengine dashboard open` 打开 hosted Dashboard / WebUI
+    SDK3 --> SV1
+    SDK3 --> SV3
+    SDK1 --> SV2
+    SDK3 --> SV4
+    SV1 --> RT1
+    SV3 --> RT2
+    RT1 --> RT2
+```
 
-二者的关系不是“两套完全不同的产品”，而是同一类对话与控制语义在本地和 hosted 场景下的不同宿主。当前跨仓 canonical 方向是 hosted/local 共享 transcript 与 control 语义；`ksadk-python` 负责本地实现与 hosted runtime 侧消费，server 负责 hosted bootstrap、session façade 与分享链接。
+这也是为什么 `ksadk-python` 可以负责“运行与消费”，但不适合单独承担完整 registry 与托管治理。
 
 ## 3. 核心子系统
 
-### 3.1 Framework Detection 与 Runner 分发
+### 3.1 支持面识别与入口分发
 
-入口文件：
+关键文件：
 
-- [ksadk/runners/unified_runner.py](../ksadk/runners/unified_runner.py)
-- `ksadk/detection/*`
+- `ksadk/detection/detector.py`
+- `ksadk/runners/unified_runner.py`
+- `ksadk/cli/cmd_run.py`
+- `ksadk/cli/cmd_web.py`
+- `ksadk/cli/cmd_hermes.py`
+- `ksadk/cli/cmd_openclaw.py`
 
-当前支持框架：
+当前识别层的实际语义是：
 
-- ADK
-- LangGraph
-- LangChain
-- DeepAgents
-- OpenClaw
-- Hermes
+1. 对代码框架，`FrameworkDetector.detect()` 负责解析 `agentengine.yaml/ksadk.yaml`、入口文件和导入语句。
+2. `UnifiedRunner.create(...)` 仅为 `ADK`、`LangChain`、`LangGraph`、`DeepAgents` 创建 runner。
+3. `run` 和 `web` 命令本质依赖 `FrameworkDetector + UnifiedRunner` 这条链。
+4. `Hermes/OpenClaw` 的主路径不是本地 runner，而是资源命令组 + 远端 runtime。
 
-`UnifiedRunner.create(...)` 会根据检测结果分发到具体 runner。DeepAgents 当前单独有 `DeepAgentsRunner`，但实现上复用 LangGraph 路径，因此框架扩展保持了“检测层 + runner 分发层 + CLI 展示层”一致接入。
+这意味着：
 
-Hermes 是一个特例：它被识别为正式 framework，并参与项目模板、状态识别、Dashboard/Open 路径和 `invoke` transport 决策，但不复用本地 runner。它的交互主线是：
+- `ADK / LangChain / LangGraph / DeepAgents` 是典型代码框架
+- `Hermes / OpenClaw` 是镜像型 runtime 产品
 
-- `agentengine invoke <hermes-agent>` -> 原生远程 TUI websocket
-- `agentengine hermes open <hermes-agent> --chat` -> hosted chat 页面
-- `agentengine hermes exec <agent> -- <readonly-subcommand>` -> 受限运维透传
+`Hermes` 是当前代码里的历史特例：它在配置识别层可被识别为 `framework: hermes`，但在运行层没有 `HermesRunner`，而是转向：
 
-### 3.2 Conversation Runtime 与 Session Continuity
+- `agentengine hermes deploy`
+- `agentengine hermes open`
+- `agentengine hermes exec`
+- `agentengine agent invoke` 的 Hermes native TUI 分流
 
-主入口：
+### 3.2 Session / Transcript 存储层
 
-- [ksadk/conversations/runtime.py](../ksadk/conversations/runtime.py)
+关键文件：
 
-当前 conversation runtime 负责：
+- `ksadk/sessions/local_service.py`
+- `ksadk/sessions/base.py`
+- `ksadk/conversations/context.py`
 
-- 规范化用户输入、附件和 session 上下文
-- 统一构造 runner request payload
-- 管理 session title / summary / metadata 更新
-- 对非 ADK runner 注入平台级 ambient context
+当前本地持久化的真相源是 `LocalSessionService`：
 
-近期的 session continuity 收口包括：
+- 默认会话目录：`.agentengine/ui/`
+- 默认数据库：`.agentengine/ui/sessions.sqlite`
+- 默认附件目录：`.agentengine/ui/files/`
 
-- 本地/托管路径都以 session 为真相源，而不是依赖客户端回传整段历史
-- 会话标题与 summary 在 assistant turn 后统一回填
-- 本地 UI 目录与项目根目录绑定，默认提供跨重启续聊能力
+`resolve_local_session_dir()` 与 `resolve_local_session_path()` 负责把本地 UI、会话 SQLite 和附件目录绑定到项目目录或 `AGENTENGINE_UI_DIR` 指向的路径。
 
-### 3.3 KB / LTM Ambient Context 与 ADK Native Path
+这里的设计重点是：
 
-当前 KB/LTM 有两条路径：
+- transcript 是 append-only event log，而不是整段历史字符串
+- 会话元数据、事件正文、状态增量分开存储
+- 本地 UI 和 runtime 都消费同一份 transcript 语义
+
+### 3.3 Conversation Runtime
+
+关键文件：
+
+- `ksadk/conversations/runtime.py`
+- `ksadk/conversations/context.py`
+- `ksadk/conversations/model_context.py`
+- `ksadk/conversations/semantic_summary.py`
+- `ksadk/conversations/session_title.py`
+
+`conversation runtime` 是当前仓库最核心的编排层，负责把“用户输入、会话、附件、上下文、runner 调用、事件回写”收口为同一条链路。
+
+它的核心职责不是简单地“转发消息”，而是：
+
+1. 规范化不同协议入口的消息形态
+2. 统一构造 `PreparedConversationTurn`
+3. 维护会话归属与 transcript 真相源
+4. 在进入模型前做 compaction 规划与必要压缩
+5. 在流式/非流式路径中统一 run status、tool、approval、assistant 事件
+6. 在 PTL（prompt too long）场景下做二次 compaction 与重试
+7. 更新会话标题、摘要和附件上下文状态
+
+#### 3.3.1 输入规范化
+
+入口函数主要是：
+
+- `normalize_kop_messages(...)`
+- `normalize_parts_content(...)`
+- `_normalized_conversation_messages(...)`
+- `_latest_user_turn(...)`
+
+不同协议入口进入 runtime 前，都会被收敛为内部统一 message shape：
+
+- `role`
+- `content`
+- `display_content`
+- `parts`
+- `attachments`
+- `attachment_results`
+
+这样做的目的，是避免不同 API 路径分别拼装 history、附件和 display 文本。
+
+#### 3.3.2 会话归属与用户事件写入
+
+关键函数：
+
+- `ensure_conversation_session(...)`
+- `append_conversation_event(...)`
+- `_update_session_metadata_after_user_turn(...)`
+
+在真正调用 runner 前，runtime 会先：
+
+1. 校验或创建 session
+2. 将用户输入落为 `user_message`
+3. 把附件上下文通过 state delta 写入会话状态
+4. 更新 `first_prompt`、`last_prompt`、fallback title
+
+这里的设计原则是：
+
+- 会话真相源永远在 transcript / state store
+- 客户端不再依赖回传完整历史
+- 标题与 summary 作为 metadata 统一维护
+
+#### 3.3.3 Compaction 规划与 token 预算
+
+关键函数：
+
+- `_plan_compaction(...)`
+- `preview_auto_compaction(...)`
+- `compact_conversation_history(...)`
+- `append_context_checkpoint_event(...)`
+
+token 预算相关逻辑在 `model_context.py` 中集中管理：
+
+- `estimate_text_tokens(...)`
+- `get_effective_context_window_tokens(...)`
+- `get_auto_compact_threshold_tokens(...)`
+- `get_auto_compact_threshold_percentage(...)`
+- `normalize_model_metadata(...)`
+
+当前 compaction 机制不是“粗暴截断历史”，而是：
+
+1. 先将 transcript 按 API round 分组
+2. 识别不能被压缩的 pinned 轮次
+3. 根据模型上下文窗口推导 auto-compact 阈值
+4. 保留尾部若干轮，将更早轮次折叠为 checkpoint summary
+5. 通过 `compaction_boundary` + `context_checkpoint` 两类事件把压缩结果显式写回 transcript
+
+`semantic_summary.py` 进一步把摘要层拆成独立客户端：
+
+- 优先使用 summary model 做 semantic summary
+- 不可用时自动回退到 extractive summary
+- pending approvals、pending tools、attachment refs、current user goal 会作为 pinned state 显式保留
+
+这套设计比“直接覆盖旧 history”更稳，因为它保留了边界事件和摘要语义，便于后续 replay 和恢复。
+
+#### 3.3.4 Prompt-too-long 恢复
+
+关键函数：
+
+- `_is_prompt_too_long_error(...)`
+- `invoke_conversation_once(...)`
+- `stream_conversation_turn(...)`
+
+当前 runtime 对 PTL 的处理不是直接失败，而是：
+
+1. 首次调用失败后识别 PTL 类错误
+2. 触发 `force=True` 的 compaction
+3. 使用更激进的 `keep_tail_groups`
+4. 刷新 history 视图后重试一次
+
+这让 compaction 同时承担了“常规自动压缩”和“故障恢复”两类职责。
+
+#### 3.3.5 流式编排
+
+关键函数：
+
+- `stream_conversation_turn(...)`
+- `build_compaction_sse_event(...)`
+- `append_run_status_event(...)`
+
+流式路径中，runtime 不仅负责向前端发 SSE，还负责把模型运行态写回 transcript：
+
+- `response.compaction.start/done`
+- `response.reasoning.delta`
+- `response.output_text.delta`
+- `response.tool_call`
+- `response.tool_result`
+- `response.approval_request`
+- `response.completed`
+
+同时，正式持久化的事件仍然是：
+
+- `user_message`
+- `assistant_message`
+- `tool_call`
+- `tool_result`
+- `approval_request`
+- `run_status`
+- `context_checkpoint`
+- `compaction_boundary`
+
+thinking/token delta 仍以临时流式事件为主，不作为 transcript 真相源。
+
+#### 3.3.6 数据流示意
+
+```mermaid
+sequenceDiagram
+    participant API as API / CLI / UI
+    participant N as normalize.py
+    participant CR as runtime.py
+    participant SS as SessionService
+    participant CS as semantic_summary.py
+    participant R as Runner
+
+    API->>N: normalize_kop_messages / normalize_parts_content
+    N-->>CR: normalized messages + attachments
+    CR->>SS: ensure_conversation_session
+    CR->>SS: append user_message + attachment context
+    CR->>CR: preview_auto_compaction / _plan_compaction
+    CR->>CS: summarize_compaction (when needed)
+    CS-->>CR: semantic or extractive summary
+    CR->>SS: append compaction_boundary + context_checkpoint
+    CR->>R: build runner payload
+    R-->>CR: delta / tool / interrupt / final
+    CR->>SS: append assistant/tool/run_status events
+    CR-->>API: SSE or final payload
+```
+
+### 3.4 附件与文件处理
+
+关键文件：
+
+- `ksadk/conversations/attachments.py`
+- `ksadk/conversations/normalize.py`
+- `ksadk/sessions/local_service.py`
+
+`attachments.py` 是当前仓库里独立且复杂度很高的子系统，不只是“把文件附在消息上”。
+
+当前实现包含四层能力：
+
+#### 3.4.1 附件分类
+
+`classify_attachment_kind(...)` 会按 MIME 和扩展名将附件归类为：
+
+- `text`
+- `document`
+- `image`
+- `archive`
+- `binary`
+
+这一步决定后续抽取和提示词构造路径。
+
+#### 3.4.2 文本与文档抽取
+
+当前支持：
+
+- 纯文本类：直接解码
+- `PDF`：优先原生文本抽取，质量差时回退 OCR
+- `DOCX / PPTX / XLSX / HTML`：走各自原生抽取器
+
+关键函数包括：
+
+- `extract_pdf_text(...)`
+- `_extract_document_attachment(...)`
+- `_pdf_text_quality_is_poor(...)`
+
+#### 3.4.3 OCR 双引擎 fallback
+
+图片和扫描型 PDF 的 OCR 走双引擎策略：
+
+- `RapidOCR`
+- `pytesseract`
+
+对应函数：
+
+- `perform_ocr(...)`
+- `_perform_rapidocr(...)`
+- `_perform_tesseract_ocr(...)`
+
+优先使用 `RapidOCR`，失败后回退 `tesseract`。
+
+#### 3.4.4 ZIP 安全处理
+
+压缩包不会被无条件展开。当前实现会限制：
+
+- 最大处理字节数
+- 单文件大小
+- 总解压大小
+- 最大 entry 数量
+- 嵌套压缩包
+- 可执行文件扩展名
+
+因此它不是“任意上传 ZIP 后随意读”，而是一个有显式安全边界的结构化解析器。
+
+#### 3.4.5 会话中的附件上下文
+
+`normalize.py` 会把附件处理结果同时分成两层：
+
+- 给模型用的 `attachment_results` / prompt text
+- 给 UI 与 session 用的 `attachments` / display content
+
+runtime 再通过 `ATTACHMENT_CONTEXT_STATE_KEY` 将附件上下文写入会话状态，这样在多轮对话里，即使当前回合未再次上传附件，也能从 session 中恢复“最近一次有效附件上下文”。
+
+#### 3.4.6 当前边界
+
+当前附件能力的边界很明确：
+
+- 已支持本地 UI / 本地 session 的上传、落盘和多格式抽取
+- 尚未形成统一的“云上 pod 工作区文件上传/下载服务”
+
+换句话说，当前已经有“对话附件处理链路”，但还没有统一的 `workspace file service`。
+
+### 3.5 KB / LTM Ambient Context 与 ADK Native Path
+
+关键文件：
+
+- `ksadk/conversations/runtime.py`
+- `ksadk/runners/adk_runner.py`
+- `ksadk/knowledge_base/service.py`
+- `ksadk/memory/service.py`
+
+当前知识库和长期记忆分为两条路径：
 
 1. ADK native path
-2. 非 ADK 平台 ambient path
+2. 非 ADK ambient path
 
-对于 ADK：
+对 `ADK`：
 
-- 在 runner 初始化时自动注入 `search_knowledge_base`
-- 自动注入 `load_memory`
-- 自动注入 `save_memory`
-- 相关逻辑在 [ksadk/runners/adk_runner.py](../ksadk/runners/adk_runner.py)
+- runner 初始化时直接注入工具
+- 尽量保持原生 tool 调用语义
 
-对于 LangChain / LangGraph / DeepAgents：
+对 `LangChain / LangGraph / DeepAgents`：
 
-- 由 conversation runtime 在调用前决定是否构建 `kb_context` / `memory_context`
-- 默认策略是 `on_demand`
-- 仅非 ADK runner 走平台 ambient path
+- runtime 按策略决定是否构建 `kb_context` / `memory_context`
+- 最终作为 `platform_context` 的一部分注入 runner payload
 
-关键行为：
+当前的策略控制点包括：
 
-- KB ambient 通过问题意图和主题词判断是否加载
-- LTM ambient 会避开明显的短期上下文问题，只在“回忆历史/偏好/个人信息”类问题上触发
-- `KSADK_KB_AMBIENT_POLICY` / `KSADK_LTM_AMBIENT_POLICY` 支持 `on_demand` 与 `always`
+- `KSADK_KB_AMBIENT_POLICY`
+- `KSADK_LTM_AMBIENT_POLICY`
+- `on_demand`
+- `always`
+- `disabled`
 
-这使得当前实现保持了：
+这让平台级上下文能力可以在不改多数 agent 代码的前提下覆盖非 ADK 框架。
 
-- ADK 尽量复用原生工具语义
-- 其他框架无需改 agent 代码也能获得平台级上下文能力
+### 3.6 MCP Runtime 与 Runtime Image Add-ons
 
-### 3.4 MCP Runtime 与 Toolset Bind
+关键文件：
 
-主入口：
+- `ksadk/mcp_runtime/__init__.py`
+- `deploy/hermes/entrypoint.sh`
+- `deploy/openclaw/bootstrap.sh`
 
-- [ksadk/mcp_runtime/__init__.py](../ksadk/mcp_runtime/__init__.py)
-- [ksadk/runners/adk_runner.py](../ksadk/runners/adk_runner.py)
+这里需要明确区分两层概念：
 
-当前 MCP runtime 设计特点：
+#### 3.6.1 通用 MCP Runtime
 
-- 通过 `KSADK_MCP_SERVERS` 环境变量声明 MCP server 列表
-- 每个 MCP server 需要是合法的 `/mcp` HTTP(S) endpoint
-- 运行时会构造成 `McpToolset`
-- 通过去重 key 防止重复注入同一 toolset
+`mcp_runtime/__init__.py` 负责的是通用 MCP toolset 绑定：
 
-这套设计的定位是“运行时绑定远端 MCP 工具”，不是 MCP registry。也就是说：
+- 从 `KSADK_MCP_SERVERS` 读取配置
+- 校验 `/mcp` endpoint
+- 构造 `McpToolset`
+- 通过 dedupe key 避免重复注入
 
-- `ksadk-python` 负责消费 endpoint 并把它变成 runner 可用的工具集
-- 资源注册、治理和统一发现仍然是控制面职责
+这是一条数据面能力链路，用于把远端 MCP server 绑定到 runner。
 
-### 3.5 Sandbox / Approval / Tool Safety
+#### 3.6.2 Runtime Image Add-ons
 
-ADK runner 默认会尝试注入：
+`Hermes/OpenClaw` 运行时镜像中还存在一层“镜像内附加能力”，它不等同于通用 `mcp_runtime`：
 
-- 本地 sandbox 工具
-- 远端 MCP toolsets
+- `mcporter`
+- bundled skills
+- agent-browser
+- runtime bootstrap 脚本
 
-其中 sandbox 默认采用 `SandboxToolset(LocalCodeSandbox())`，可通过环境变量关闭。approval / tool safety 当前已有基线，但更完整的 hosted/local 一致 run control 仍在跨仓 canonical 方向中推进，仓库内保留的专项说明见 [Runner_Approval_Architecture.md](./Runner_Approval_Architecture.md)。
+以 Hermes 为例，`deploy/hermes/entrypoint.sh` 会在启动时设置：
 
-### 3.6 Web / Dashboard / Unified UI
+- `HERMES_STATE_DIR`
+- `HERMES_WORKDIR`
+- `MCPORTER_HOME`
+- `AGENT_BROWSER_*`
 
-本地 Web UI：
+并把镜像内置 skills 同步到 `~/.hermes/skills`。
+
+以 OpenClaw 为例，`deploy/openclaw/bootstrap.sh` 会在启动阶段：
+
+- 同步预置 skills / 插件
+- 应用兼容补丁
+- reconcile runtime config
+- 最后拉起 gateway
+
+因此 `mcporter` 在当前仓库中的正确定位是：
+
+- Hermes/OpenClaw runtime image 的工具和配置层
+- 不是 `ksadk` 通用 MCP runtime 的核心抽象
+
+### 3.7 UI、Transport 与 Hosted Surface
+
+关键文件：
+
+- `ksadk/cli/cmd_web.py`
+- `ksadk/cli/cmd_invoke.py`
+- `ksadk/server/app.py`
+- `ksadk/server/web-ui/*`
+- `ksadk/hermes_terminal.py`
+
+当前 UI 与交互面至少分成三层：
+
+#### 3.7.1 本地 UI
 
 - 入口：`agentengine web`
-- 实现：统一走 ksadk 内建 Web UI
-- ADK 项目默认切到持久化 STM，保证跨重启 session continuity
+- 宿主：`ksadk.server.app`
+- 默认会话目录：`.agentengine/ui/`
 
-云端 Dashboard：
+本地 UI 是统一的聊天与会话界面，不再按框架各自分裂。
 
-- 入口：`agentengine dashboard open`
-- 默认通过 `CreateDashboardAccessLink` 生成短链接
-- 支持 `--share`、`--no-open`、`--direct`
-- 支持从 `.agentengine.state` 自动解析 agent/openclaw 引用
-- Hermes `agentengine hermes open` 默认打开管理 UI `/`，`--chat` 打开统一 hosted chat `/chat`
+#### 3.7.2 通用远端调用面
 
-当前 UI 相关实现体现出两点：
+- 入口：`agentengine agent invoke`
+- 兼容 `chat` / `native` / `auto` transport
+- 单次调用与 TUI 都可以通过远端 endpoint 访问
 
-- `ksadk-python` 已经承担本地 UI 与 hosted UI runtime 消费侧的收口
-- hosted bootstrap / session façade / capability 协商依赖 `agentengine-server` 提供
+#### 3.7.3 Hermes 特有 surface
 
-对 Hermes 而言，云端 UI/终端面被拆成三类 contract：
+Hermes 当前同时暴露多类 surface：
 
 - `/`：Hermes 管理 UI
-- `/chat`：统一 hosted chat
-- `/_ksadk/terminal/ws`：原生远程 TUI 与受限 `hermes exec`
+- `/chat`：平台 hosted chat
+- `/v1/*`：OpenAI-compatible API
+- `/_ksadk/terminal/ws`：原生远端 TUI / exec / pairing
 
-其中 `/` 的 cookie-backed dashboard/share 会话还有两个 Hermes 特有约束：
+`cmd_invoke.py` 中已经按 runtime 类型做 transport 分流：
 
-- router 默认会剥离 runtime `Authorization`，但对 Hermes 管理 UI 的 `/api/*` 会保留 Hermes 自身注入的 session bearer token，避免把它误送去平台 API Key 鉴权链路
-- runtime entrypoint 会在首次加载时向 `localStorage["hermes-locale"]` 种入 `zh`，让托管管理 UI 默认以中文启动；如需覆盖，走 `HERMES_UI_LOCALE`
+- `Hermes` 默认进入 native remote TUI
+- 通用 chat TUI 对 Hermes 不再是默认路径
 
-Hermes hosted runtime 还显式把 gateway 视为“容器内受管进程”而不是桌面 daemon：
+这也是当前技术设计里最典型的“runtime 产品不等于普通代码框架”的体现。
 
-- 容器入口负责启动并监督 Hermes gateway
-- 本地重启耗尽后由主进程退出，让 Kubernetes 重建 Pod
-- 默认统一持久化到 `~/.hermes`
-- 默认补齐 `TERM=xterm-256color`，尽量保留 curses / 箭头键交互
+### 3.8 构建、部署与 Runtime Image 策略
 
-### 3.7 Build / Deploy / Launch 与 Artifact 路径
+关键文件：
 
-CLI 主线包括：
+- `ksadk/cli/cmd_build.py`
+- `ksadk/cli/cmd_deploy.py`
+- `ksadk/builders/code_builder.py`
+- `ksadk/builders/container_builder.py`
+- `ksadk/cli/cmd_hermes.py`
+- `ksadk/cli/cmd_openclaw.py`
 
-- `build`
-- `deploy`
-- `launch`
-- `hermes deploy/list/status/open/connect/exec/pairing/delete`
-- `openclaw deploy/gateway/channel/repair`
+当前仓库支持两类通用制品：
 
-当前实现支持：
+- `Code`
+- `Container`
 
-- `Code` 制品
-- `Container` 制品
-- `serverless` / `kcf` / `kce` 目标
-- `dry-run`
-- 机器可读 JSON 输出
+通用目标包括：
 
-Hermes 生命周期则走另一条主线：
+- `serverless`
+- `kcf`
+- `kce`
 
-- 默认共享镜像：`hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.4.16`
-- 不要求用户本地 build/push
-- deploy 时把模型 env 注入到共享 runtime
-- 若配置的是 `kspmas.ksyun.com` 公网模型地址，deploy 会自动改写成 `kspmas-internal.sdns.ksyun.com` 供云端 Pod 使用
-- 对 `glm-5.1`，runtime 在未显式配置时会补齐 `context_length=200000`，并默认把 fallback model 设为 `kimi-k2.5`
-- runtime 同时聚合 `/`、`/v1/*`、`/_ksadk/terminal/ws` 与 `/health`
+但这条通用 build/deploy 链路主要服务于代码框架。
 
-OpenClaw managed runtime 则继续沿另一条“启动期配置收口”路径演进：
+对 runtime 产品来说，当前主策略是：
 
-- bootstrap 会在每次启动时做 env -> runtime config reconcile，而不是只在首启时写入
-- `OPENCLAW_CHANNEL_BOOTSTRAP_JSON` 支持 Weixin / Feishu / Agentspace 的渠道预配置
-- `OPENCLAW_BROWSER_SSRF_POLICY_JSON` 用于显式覆盖浏览器访问策略
-- `agentengine openclaw deploy --env KEY=VALUE` 允许把业务自定义 env 原样透传到容器
-- `agentengine openclaw repair` / `gateway doctor --fix` 暴露控制面修复动作，而不是要求用户手动进入 pod 执行诊断
+#### Hermes
 
-与“平台生命周期治理”不同，仓库内实现聚焦于：
+- 以共享 runtime 镜像为主
+- 默认不要求用户本地 `build/push`
+- deploy 时把模型、UI metadata、运行时 env 注入共享镜像
 
-- 检测项目
-- 补齐运行所需依赖
-- 生成并上传制品
-- 调控制面 API 发起部署
-- 把状态回填到本地 `.agentengine.state`
+#### OpenClaw
 
-对 Hermes 来说，这里的“制品”不是用户本地 build 结果，而是平台共享 runtime 镜像引用和对应的环境变量 / UI metadata。
+- 以 managed runtime 镜像为主
+- 启动期通过 `bootstrap.sh` 收敛配置
+- 支持 channel bootstrap、browser policy、repair 等产品级 lifecycle 语义
 
-对 code mode 来说，近期构建链路还补了一层“先替换、再校验”的保护：
-
-- 在非目标平台或非目标 Python 版本下，优先尝试目标运行时 wheels
-- 必要时回退到宿主机构建并替换平台相关二进制
-- 打包前再扫描关键原生扩展的 Linux Runtime 兼容性，避免把明显不可运行的二进制发布到远端
-
-近期行为变化包括：
-
-- OpenClaw deploy 支持自定义 env 透传与渠道 bootstrap 配置
-- OpenClaw managed runtime 增加 control-plane repair 入口与 browser / trusted-proxy 兼容补丁收口
-- Hermes gateway 改为容器内托管与重启，并显式约束远程终端 contract
-- code mode 构建新增 Linux Runtime 兼容性 / ABI 校验
-- Hermes 对 `glm-5.1` 默认补齐上下文长度与 fallback model
+因此，仓库里虽然保留了 `deploy/hermes/*`、`deploy/openclaw*` 等镜像模板资产，但它们更接近“平台维护镜像链路”，而不是“每个用户都走本地 build 的常规开发路径”。
 
 ## 4. 关键调用链
 
-### 4.1 `agentengine run`
+这一节只写最常见的几个入口，并明确对应的关键函数。
 
-调用链概览：
+| 场景 | 主入口 | 关键函数 / 文件 | 说明 |
+| --- | --- | --- | --- |
+| 本地运行 | `agentengine run` | `ksadk/cli/cmd_run.py::run` -> `FrameworkDetector.detect` -> `UnifiedRunner.create` | 代码框架主路径 |
+| 本地 Web UI | `agentengine web` | `ksadk/cli/cmd_web.py::web` -> `FrameworkDetector.detect` -> `UnifiedRunner.create` | 统一本地 Invoke UI |
+| 非流式会话编排 | runtime/CLI invoke | `ksadk/conversations/runtime.py::build_run_input` -> `invoke_conversation_once` | 写用户事件、必要 compaction、runner.invoke、回写 transcript |
+| 流式会话编排 | `/v1/responses` / hosted UI | `ksadk/conversations/runtime.py::preview_auto_compaction` -> `stream_conversation_turn` | SSE、tool、approval、PTL 恢复共用一条 conversation path |
+| KOP / Web UI 入口 | `ksadk/server/app.py` | `normalize_parts_content` -> `build_run_input` / `stream_conversation_turn` | 本地 UI 与 KOP 请求共享会话语义 |
+| Hermes 部署 | `agentengine hermes deploy` | `ksadk/cli/cmd_hermes.py::deploy` -> `_deploy_hermes` | 平台共享镜像主路径 |
+| OpenClaw 部署 | `agentengine openclaw deploy` | `ksadk/cli/cmd_openclaw.py::deploy` -> `_deploy_openclaw` | managed runtime 产品主路径 |
 
-1. 检测项目框架
-2. 创建对应 runner
-3. 初始化模型与运行环境
-4. 进入本地交互式会话
-5. 由 conversation runtime 处理 session、上下文和 turn metadata
+## 5. `ksadk` 与 `agentengine-server` 的契约面
 
-### 4.2 `agentengine web`
+这一节不是重复 server 的设计，而是说明当前 `ksadk` 依赖了哪些跨仓契约。
 
-调用链概览：
+### 5.1 跨仓职责对照表
 
-1. 检测项目框架
-2. 设置 `KSADK_PROJECT_DIR` 与 `AGENTENGINE_UI_DIR`
-3. 对 ADK 默认启用持久化 STM
-4. 创建统一 runner
-5. 启动本地统一 Web UI
+| 关注点 | `ksadk-python` 负责什么 | `agentengine-server` 负责什么 | 当前契约 / 真相源 |
+| --- | --- | --- | --- |
+| 本地会话与 transcript 编排 | `LocalSessionService`、`conversation runtime`、本地 UI 消费 | hosted session façade、云端 session/event/state 存储 | 本地真相源在 `.agentengine/ui/`，云端真相源在 conversations 三张表或 façade 背后存储 |
+| 运行时调用 | 规范化输入、compaction、runner payload、SSE 编排 | 提供 hosted 入口、runtime 路由、bootstrap 信息 | `responses` / `RunAgent` 等协议需要 hosted/local 尽量同构 |
+| 构建与部署客户端 | `build` / `deploy` / `invoke` CLI、部署参数组装 | artifact 接收、runtime lifecycle、部署治理 | `ksadk` 是客户端与消费层，最终 runtime 生命周期由 server 托管 |
+| 托管访问入口 | 本地 `web`、runtime API 消费、Hermes/OpenClaw 产品命令 | dashboard access link、分享入口、hosted UI 宿主 | access link、share、visibility 的真相源在 server |
+| 资源发现与鉴权 | 读取本地配置、携带 endpoint / token / deployment state | `resolve / auth / visibility`、跨租户控制 | 统一 registry 不在 `ksadk` 内闭环 |
+| 文件与附件 | 本地附件上传、落盘、抽取、上下文注入 | 云上工作区路由、托管鉴权、下载/分享治理 | 当前已统一附件链路，但尚未统一云上 `workspace file service` |
 
-它的定位是“本地 Invoke UI”，不是 hosted Dashboard 的本地镜像。
+### 5.2 `agentengine-server` 提供的控制面能力
 
-### 4.3 `build / deploy / launch`
+从 `agentengine-server/docs/ksadk-platform-architecture-draft.md` 与 `unified-agent-ui-v1-technical-design.md` 的视角看，`ksadk` 当前依赖 server 至少提供：
 
-调用链概览：
-
-1. 读取项目配置与环境
-2. 识别框架与入口
-3. 生成 `Code` 或 `Container` 制品
-4. 上传制品 / 推送镜像
-5. 调控制面 API 创建或更新远端资源
-6. 回填 `.agentengine.state` 和 quick access 信息
-
-### 4.4 `dashboard open`
-
-调用链概览：
-
-1. 解析 Agent 引用
-2. 优先读取 `.agentengine.state`
-3. 根据 UI 配置推导目标路径
-4. 默认创建 Dashboard access link
-5. 打开浏览器或以 JSON 方式输出 URL
-
-### 4.5 KB / LTM 注入
-
-调用链概览：
-
-1. conversation runtime 根据 runner 类型决定是否使用 ambient path
-2. 非 ADK 场景按 `on_demand` / `always` 策略构建 `kb_context` / `memory_context`
-3. ADK 场景通过 runner 自动注入工具
-4. 统一把 `platform_context`、`kb_context`、`memory_context` 放入 runner payload
-
-## 5. 与 AgentEngine Server 的边界
-
-当前边界可以简化为一句话：
-
-`ksadk-python` 负责运行与消费，`agentengine-server` 负责注册与治理。
-
-具体到当前实现：
-
-`ksadk-python` 负责：
-
-- runner consume
-- local fallback
-- session / conversation runtime
-- runtime tool bind
-- 本地 UI
-- 面向开发者的构建、部署和资源访问 CLI
-
-`agentengine-server` 负责：
-
-- artifact / runtime lifecycle
-- hosted bootstrap
-- Dashboard access link
-- registry 元数据
+- runtime lifecycle
+- artifact 入口
 - hosted session façade
-- 统一 resolve / auth / visibility / hosted control
+- dashboard access / bootstrap
+- resolve / auth / visibility
 
-因此文档约束是：
+这也是为什么：
 
-- 本文只写 `ksadk-python` 当前真实实现与依赖面
-- 不重复 server 侧中长期架构草案
-- 跨仓 canonical 方向直接引用 server 仓库文档，不在本仓再造一份总蓝图
+- `ksadk` 可以负责本地 transcript、runner consume、build/deploy CLI
+- 但不会单独成为完整 control plane
 
-## 6. 当前实现备注
+### 5.3 hosted/local parity 的分工
 
-截至 2026-04-06，近期值得记录的实现状态包括：
+当前跨仓主线并不是“本地和云端各写一套聊天系统”，而是：
 
-- 本地 `web` 已统一为 ksadk 内建 Web UI，ADK 项目默认启用持久化 STM
-- Dashboard / hosted UI 路径继续向 hosted-first metadata 收口，并已有移动端聊天 UI 适配
-- 部署链路会回查 quick access，并在首次创建后做重试刷新
-- Code 构建链路继续优化 KS3 上传 fallback 与依赖缓存复用
-- README 曾长期承载大量使用说明，已不再适合作为唯一用户入口，因此本次文档重构将使用说明和技术说明拆成两份主文档
+- `ksadk-python` 负责本地 UI、runner、conversation runtime 的数据面实现
+- `agentengine-server` 负责 hosted 入口、bootstrap、分享链接和会话 façade
 
-## 7. 非目标与已知约束
+因此当前统一 UI 相关能力的正确理解是：
 
-当前阶段明确不做：
+- hosted/local 共享 conversation / control 语义
+- 宿主不同，但事件模型和会话真相源模型应尽量一致
 
-- 在 `ksadk-python` 内实现 registry server
-- 在 SDK 侧重复实现 hosted control plane
-- 把 SkillHub / Tool Registry / A2A Registry 提前落到数据面仓库
-- 为未来蓝图一次性引入大量没有消费方的重抽象
+### 5.4 为什么某些能力不在 `ksadk` 内闭环
 
-当前实现已知约束：
+以几个常见问题为例：
 
-- hosted/local 的 approval / stop / resume 一致 run control 仍依赖跨仓推进
-- server 侧 bootstrap、HostedRuntime、capability 协商仍以 `agentengine-server` 提供的契约为准
-- `ksadk-python` 中仍保留若干历史专题文档，主线信息请优先以本文件和 [ksadk_usage_guide.md](./ksadk_usage_guide.md) 为准
+- 为什么 `dashboard access link` 不在 `ksadk` 里实现  
+  因为它属于 hosted access control 和分享治理，真相源在 server。
+
+- 为什么 `resolve / auth / visibility` 不在 SDK 内做成统一 registry  
+  因为它属于跨租户、跨资源的控制面问题，不适合放在本地数据面。
+
+- 为什么 `workspace file service` 现在还没在 `ksadk` 内统一  
+  因为它最终依赖 pod 工作区、runtime 路由、鉴权和托管生命周期，更接近 runtime capability + control plane 交界面，而不是单仓 SDK 子系统。
+
+## 6. 当前缺口与未统一能力
+
+为了避免把未来能力误写成当前能力，这里显式记录几个尚未统一的点：
+
+1. 还没有统一的云上 `workspace file service`，当前只有本地会话附件处理和 runtime 自身的工作区目录。
+2. `Hermes` 在当前代码里仍保留部分历史兼容路径，抽象上尚未完全从“framework”口径切走。
+3. `mcporter` 已是 Hermes/OpenClaw runtime image 的重要组成部分，但还没有上升为统一 runtime capability 文档模型。
+4. hosted session façade 与本地 session service 已在语义上靠拢，但跨仓契约仍需要继续收敛。
+
+## 7. 总结
+
+当前 `ksadk-python` 最准确的描述不是“一个只负责框架适配的小 CLI”，也不是“完整的平台后端”，而是：
+
+- 代码框架与 runtime 产品的消费侧数据面
+- transcript / conversation runtime 的统一编排层
+- 本地 UI、runner、附件处理、MCP 绑定和部署客户端的收口点
+
+结合 `agentengine-server` 来看：
+
+- `ksadk-python` 负责运行、编排、绑定、消费
+- `agentengine-server` 负责托管、治理、发现、分享与控制
+
+理解这条边界，是理解当前仓库结构、命令分层和未来演进方向的前提。

@@ -1897,6 +1897,20 @@ const extractModelId = (provider, modelRef) => {
   }
   return modelParts.join('/');
 };
+const buildModelSelectionRef = (provider, modelRef, knownModelIds = new Set()) => {
+  const rawModelRef = String(modelRef || '').trim();
+  if (!rawModelRef) return '';
+  const normalizedProvider = String(provider || '').trim();
+  if (!normalizedProvider) return rawModelRef;
+  if (!rawModelRef.includes('/')) {
+    return `${normalizedProvider}/${rawModelRef}`;
+  }
+  const normalizedProviderPrefix = `${normalizedProvider}/`.toLowerCase();
+  if (rawModelRef.toLowerCase().startsWith(normalizedProviderPrefix)) {
+    return rawModelRef;
+  }
+  return knownModelIds.has(rawModelRef) ? `${normalizedProvider}/${rawModelRef}` : rawModelRef;
+};
 const normalizeModelInputList = (model) => {
   if (!model || typeof model !== 'object') return [];
   return uniqueStrings(
@@ -2238,29 +2252,37 @@ const explicitProviderConfigured = !!(
 const selectableModels = Array.isArray(cfg.models.providers?.[providerId]?.models)
   ? cfg.models.providers[providerId].models
   : [];
+const selectableModelIds = new Set(
+  selectableModels
+    .map((item) => String(item?.id || item?.name || '').trim())
+    .filter(Boolean)
+);
+const toSelectionModelRef = (modelRef) => (
+  buildModelSelectionRef(providerId, modelRef, selectableModelIds)
+);
 const selectableModelRefs = selectableModels
-  .map((item) => normalizeModelRef(providerId, String(item?.id || item?.name || '').trim()))
+  .map((item) => toSelectionModelRef(String(item?.id || item?.name || '').trim()))
   .filter(Boolean);
 const imageCapableModelRefs = selectableModels
   .filter((item) => modelSupportsInput(item, 'image'))
-  .map((item) => normalizeModelRef(providerId, String(item?.id || item?.name || '').trim()))
+  .map((item) => toSelectionModelRef(String(item?.id || item?.name || '').trim()))
   .filter(Boolean);
 const catalogModelCandidates = selectableModels
-  .map((item) => normalizeModelRef(providerId, String(item?.id || item?.name || '').trim()))
+  .map((item) => toSelectionModelRef(String(item?.id || item?.name || '').trim()))
   .filter(Boolean);
-const preferredGlmModel = normalizeModelRef(providerId, 'glm-5.1');
+const preferredGlmModel = toSelectionModelRef('glm-5.1');
 const catalogPrimaryModel = (
   (preferredGlmModel && catalogModelCandidates.includes(preferredGlmModel) ? preferredGlmModel : '') ||
   catalogModelCandidates[0] ||
   ''
 );
 const primaryModel = (
-  normalizeModelRef(providerId, preferredDefaultModel) ||
+  toSelectionModelRef(preferredDefaultModel) ||
   catalogPrimaryModel ||
   'ksyun/glm-5.1'
 ).trim();
 const primaryModelQualified = primaryModel.includes('/');
-const preferredKimiModel = normalizeModelRef(providerId, 'kimi-k2.5');
+const preferredKimiModel = toSelectionModelRef('kimi-k2.5');
 const defaultTextFallbacks = (() => {
   if (
     primaryModel &&
@@ -2277,13 +2299,86 @@ const defaultImagePrimaryModel = (() => {
     return preferredKimiModel;
   }
   const primaryCatalogModel = selectableModels.find((item) => (
-    normalizeModelRef(providerId, String(item?.id || item?.name || '').trim()) === primaryModel
+    toSelectionModelRef(String(item?.id || item?.name || '').trim()) === primaryModel
   ));
   if (primaryCatalogModel && modelSupportsInput(primaryCatalogModel, 'image')) {
     return primaryModel;
   }
   return imageCapableModelRefs[0] || '';
 })();
+const migrateAgentModelConfigRefs = (value) => {
+  if (!value) return { changed: false, value };
+  if (typeof value === 'string') {
+    const nextValue = toSelectionModelRef(value);
+    return {
+      changed: nextValue !== value,
+      value: nextValue || value,
+    };
+  }
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    return { changed: false, value };
+  }
+
+  const nextValue = { ...value };
+  let changed = false;
+
+  const primary = resolveAgentModelPrimaryValue(value);
+  const nextPrimary = toSelectionModelRef(primary);
+  if (nextPrimary && nextPrimary !== primary) {
+    nextValue.primary = nextPrimary;
+    changed = true;
+  }
+
+  const fallbackValues = resolveAgentModelFallbackValues(value);
+  const nextFallbackValues = uniqueStrings(
+    fallbackValues
+      .map((item) => toSelectionModelRef(item))
+      .filter(Boolean)
+  );
+  if (
+    fallbackValues.length > 0 &&
+    JSON.stringify(nextFallbackValues) !== JSON.stringify(fallbackValues)
+  ) {
+    nextValue.fallbacks = nextFallbackValues;
+    changed = true;
+  }
+  if ('fallback' in nextValue) {
+    delete nextValue.fallback;
+    changed = true;
+  }
+  return { changed, value: nextValue };
+};
+const migrateDefaultsModelRefs = () => {
+  let changed = false;
+
+  const migratedDefaultModel = migrateAgentModelConfigRefs(cfg.agents.defaults.model);
+  if (migratedDefaultModel.changed) {
+    cfg.agents.defaults.model = migratedDefaultModel.value;
+    changed = true;
+  }
+
+  const migratedImageModel = migrateAgentModelConfigRefs(cfg.agents.defaults.imageModel);
+  if (migratedImageModel.changed) {
+    cfg.agents.defaults.imageModel = migratedImageModel.value;
+    changed = true;
+  }
+
+  const defaultsModels = cfg.agents.defaults.models;
+  if (defaultsModels && typeof defaultsModels === 'object' && !Array.isArray(defaultsModels)) {
+    const nextDefaultsModels = {};
+    for (const [rawKey, entry] of Object.entries(defaultsModels)) {
+      const nextKey = toSelectionModelRef(rawKey) || rawKey;
+      if (!(nextKey in nextDefaultsModels)) {
+        nextDefaultsModels[nextKey] = entry;
+      }
+      changed ||= nextKey !== rawKey;
+    }
+    if (changed) {
+      cfg.agents.defaults.models = nextDefaultsModels;
+    }
+  }
+};
+migrateDefaultsModelRefs();
 const existingDefaultsModelPrimary = resolveAgentModelPrimaryValue(cfg.agents.defaults.model);
 const existingDefaultsModelFallbacks = resolveAgentModelFallbackValues(cfg.agents.defaults.model);
 const existingDefaultsImagePrimary = resolveAgentModelPrimaryValue(cfg.agents.defaults.imageModel);
@@ -2308,7 +2403,7 @@ if (primaryModel && (explicitProviderConfigured || primaryModelQualified)) {
   for (const item of selectableModels) {
     const modelId = String(item?.id || '').trim();
     if (!modelId) continue;
-    const modelRef = modelId.includes('/') ? modelId : `${providerId}/${modelId}`;
+    const modelRef = toSelectionModelRef(modelId);
     cfg.agents.defaults.models[modelRef] = cfg.agents.defaults.models[modelRef] || {};
   }
 }
