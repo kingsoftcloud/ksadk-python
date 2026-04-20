@@ -63,6 +63,9 @@ Options:
                                   Dashboard UI 类型
   --ui-path TEXT                  Dashboard UI 路径 (例如 /)
   --ui-url TEXT                   完整 Dashboard URL（自研前端）
+  --storage-size-gi INTEGER       PVC 容量（Gi）  [default: 20]
+  --storage-mount-path TEXT       PVC 挂载目录（默认按框架推导）
+  --no-storage                    禁用默认 PVC 挂载
   --observability / --no-observability
                                   是否启用可观测性 (默认开启)
   --push                          构建后推送镜像
@@ -111,6 +114,9 @@ Options:
                                   Dashboard UI 类型
   --ui-path TEXT                  Dashboard UI 路径 (例如 /)
   --ui-url TEXT                   完整 Dashboard URL（自研前端）
+  --storage-size-gi INTEGER       PVC 容量（Gi）  [default: 20]
+  --storage-mount-path TEXT       PVC 挂载目录（默认按框架推导）
+  --no-storage                    禁用默认 PVC 挂载
   --dry-run                       仅打印请求，不执行实际操作
   --artifact-type [Code|Container]
                                   部署模式 (serverless default: Code)

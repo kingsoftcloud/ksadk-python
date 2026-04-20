@@ -1,518 +1,331 @@
-# Agent 通用 Workspace 文件能力 v1 实施说明
-
-## 1. 文档目的
-
-这份文档只描述当前 `workspace-files-v1` 分支中已经实现并验证过的结果，方便继续 review、联调和后续补 KOP 注册。
-
-结论先行：
-
-- `ksadk-python` 与 `agentengine-server` 已完成 workspace files v1 主链路实现。
-- 今天不依赖 KOP 也可以验证两条链路：
-  - CLI / SDK 直连 runtime `/_ksadk/workspace/v1/*`
-  - Hosted UI / 浏览器同源访问 `agentengine-server` 的 `/agentengine/api/v1/*`
-- `OpenClaw` 当前仍保持 `WorkspaceFiles` capability 关闭，不对外宣称可用。
-- 上游 `/v1/models` 返回 richer metadata 后，server 侧已经补齐 canonical metadata 归一化，`auto_compact_threshold_percentage` 也已对齐到 ksadk local 口径。
-
-## 2. 当前实现边界
-
-### 2.1 已实现
-
-- 统一 runtime data plane：
-  - `GET /_ksadk/workspace/v1/entries`
-  - `GET /_ksadk/workspace/v1/files/{path}`
-  - `POST /_ksadk/workspace/v1/files/{path}`
-  - `DELETE /_ksadk/workspace/v1/files/{path}`
-  - `HEAD /_ksadk/workspace/v1/files/{path}`
-  - `GET /_ksadk/workspace/v1/healthz`
-- Hosted actions：
-  - `POST /agentengine/api/v1/ListWorkspaceFiles`
-  - `POST /agentengine/api/v1/AddWorkspaceFile`
-  - `POST /agentengine/api/v1/DeleteWorkspaceFile`
-- `GET /agentengine/api/v1/GetWorkspaceFileContent`
-- CLI：
-  - `agentengine files list`
-  - `agentengine files upload`
-  - `agentengine files download`
-  - `agentengine files delete`
-  - `agentengine files push`
-  - `agentengine files pull`
-- CLI 现在支持 workspace 专用默认解析：
-  - 支持位置参数 `agent_ref`
-  - 自动解析顺序：`.agentengine.state -> agentengine.yaml/ksadk.yaml`
-  - 当 `.agentengine.state` 与目标一致时，优先复用其中的 `endpoint` / `api_key` / `region`
-- CLI 新增 direct runtime 模式：
-  - `--endpoint`
-  - `--api-key`
-- CLI 输出口径已做一轮收敛：
-  - pretty 模式默认使用中文提示、完整 workspace 逻辑路径、自动文件大小单位
-  - `files list` 会同时展示逻辑路径和 runtime 返回的真实目录路径
-  - json 模式在保留原有核心字段的前提下，新增稳定 envelope，统一提供 `ok`、`action`、`workspace_root`、`workspace_display_path`、`workspace_real_root`、`workspace_real_path`、`entries[].display_path`、`entries[].real_path`、`summary`
-- SDK convenience methods：
-  - `list_workspace_files`
-  - `upload_workspace_file`
-  - `download_workspace_file`
-  - `delete_workspace_file`
-- CLI 新增目录级同步糖衣，但仍复用现有单文件 data plane：
-  - `push`：本地目录 -> workspace 子目录
-  - `pull`：workspace 子目录 -> 本地目录
-  - 默认只新增，不覆盖目标端已存在同名文件
-  - `--force` 时才覆盖目标端已存在同名文件
-- Hermes runtime wrapper 已接入统一 contract。
-- server 侧 bootstrap 已下发 `WorkspaceFiles` capability。
-- `GetAgentUiBootstrap` 已下发以下字段：
-  - `Capabilities.WorkspaceFiles`
-  - `WorkspaceFiles.Enabled`
-  - `WorkspaceFiles.MaxUploadBytes`
-  - `WorkspaceFiles.SupportsDelete`
-  - `WorkspaceFiles.RootLabel`
-  - `WorkspaceFiles.EntryAction`
-  - `WorkspaceFiles.UploadAction`
-  - `WorkspaceFiles.ContentPath`
-
-### 2.2 当前明确未开放
-
-- `OpenClaw` 对外 capability 仍关闭。
-  - 原因不是协议不确定，而是 gateway patch 的预发链路今天还没有完成升级验证。
-  - 这样做是为了避免 Hosted UI/CLI 在用户侧提前暴露半成品能力。
-- `OpenClaw` 当前预发 state 记录的镜像仍是 `hub-vpc-cn-beijing-6.kce.ksyun.com/agentengine-public/openclaw:2026.4.15`，不是这次 worktree 对应的新镜像。
-- Share link 不暴露 workspace 面板，也不开放 workspace files action。
-- 今天没有做 KOP 注册，因此不验证任何必须经过 `aicp*` 域名鉴权的外部入口。
-- Hosted UI 仍然只有“多文件上传到当前目录”，没有目录选择、`push/pull`、空目录同步。
-- `files upload` 仍然是单文件语义，`--remote-path` 表示精确目标路径，不做“这是目录还是文件名”的自动猜测。
-- `files push/pull` 首版不做以下能力：
-  - 远端多余文件删除
-  - 双向自动 merge
-  - 校验和比较 / 增量 diff
-  - 断点续传
-  - 空目录保真
-
-## 3. 数据面设计收敛
-
-```mermaid
-flowchart LR
-    A["CLI / SDK"] --> B["Runtime data plane<br/>/_ksadk/workspace/v1/*"]
-    C["Hosted UI"] --> D["AgentEngine Server<br/>/agentengine/api/v1/*"]
-    D --> B
-    B --> E["workspace 根目录<br/>AGENTENGINE_UI_DIR/workspace<br/>或 runtime 指定 workspace"]
-    E --> F["PVC / 云盘挂载目录"]
-```
-
-关键约束：
-
-- 对外暴露的是 workspace 根目录，不是整个 home，也不是整个 state root。
-- 文件能力与聊天附件链路分离：
-  - 旧附件：`UploadFile` / `AttachmentContent`
-- 新 workspace files：`AddWorkspaceFile` / `GetWorkspaceFileContent`
-- 浏览器下载统一走二进制 streaming，不走 JSON envelope。
-- `files push/pull` 不是新的 runtime/server 协议，只是 CLI 在现有 `list/upload/download` 之上的目录级组合语义。
-- 因此 `push/pull` 当前只在 CLI 提供，不扩散到 Hosted UI、Hosted action 或 SDK convenience method。
+# Agent 通用 Workspace Files + PVC 实施说明
 
-## 4. 两个仓库里的落点
+## 1. 文档口径
 
-### 4.1 ksadk-python
+本文只描述 `workspace-files-v1` 分支当前代码对应的真实实现状态，口径基于今天本地验证结果，不沿用昨天的阶段性结论。
 
-- runtime 路由实现：
-  - [`ksadk/server/workspace_files.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk/server/workspace_files.py)
-- 本地 server / Hosted action 对齐：
-  - [`ksadk/server/app.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk/server/app.py)
-- CLI：
-  - [`ksadk/cli/cmd_files.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk/cli/cmd_files.py)
-- SDK：
-  - [`ksadk/api/client.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk/api/client.py)
-- Hermes runtime wrapper：
-  - [`deploy/hermes/runtime/app.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/deploy/hermes/runtime/app.py)
-- 本地模型 metadata 归一化：
-  - [`ksadk/conversations/model_context.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk/conversations/model_context.py)
+范围只覆盖两个仓库：
 
-### 4.2 agentengine-server
+- `ksadk-python`
+- `agentengine-server`
 
-- bootstrap / capability：
-  - [`app/api/v1/actions/chat_actions.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/app/api/v1/actions/chat_actions.py)
-- Hosted actions：
-  - [`app/api/v1/actions/upload_actions.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/app/api/v1/actions/upload_actions.py)
-- router allowlist / content proxy：
-  - [`app/gateway/router_service.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/app/gateway/router_service.py)
-- server 侧模型 metadata 归一化：
-  - [`app/services/model_context.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/app/services/model_context.py)
+不覆盖：
 
-## 5. 这次顺手补齐的模型 metadata 兼容
+- `agentengine-sdk-python`
+- 线上环境现网行为
+- 未升级到当前 worktree 镜像的旧预发 runtime
 
-背景：
+## 2. 当前结论
 
-- 上游 `/v1/models` 现在不再只返回模型名，还带 `context_length`、`max_completion_tokens`、`architecture`、`pricing` 等字段。
-- 如果 server 侧仍然只回最小模型对象，Hosted UI 的上下文指示器就会退化成默认值，无法反映真实上下文预算。
+当前分支已经完成两条主线：
 
-本次已补齐：
+1. Agent 通用 workspace 文件能力主链路
+2. serverless PVC storage contract 与 ksadk 默认挂盘参数
 
-- 支持解析 `"200k"`、`"128k"` 这类后缀值。
-- 支持将 KSPMAS 风格 `"128"`、`"32"` 兜底视为 kilo-token。
-- `normalize_model_metadata()` 现在会稳定产出：
-  - `context_window_tokens`
-  - `max_output_tokens`
-  - `limits.*`
-  - `pricing`
-  - `auto_compact_threshold_tokens`
-  - `auto_compact_threshold_percentage`
-- `ListAgentModels` fallback 不再只回 `{id, display_name, source}`，而是返回 canonical metadata。
+已经成立的事实：
 
-对上下文管理的直接影响：
+- Hosted UI / Hosted action / CLI / SDK 的 workspace files contract 已经统一到同一套命名。
+- `GetAgentUiBootstrap` 已经下发 `Capabilities.WorkspaceFiles` 与完整 `WorkspaceFiles.*` 字段。
+- `agentengine-server` 已支持 `CreateAgent.Storage`、`UpdateAgent.Storage`、`GetAgent.Deployment.Storage`。
+- `ksadk-python` 已支持把 storage 透传到 server 侧，并为 serverless 默认注入 PVC 参数。
+- KOP 接口命名已统一为：
+  - `ListWorkspaceFiles`
+  - `AddWorkspaceFile`
+  - `DeleteWorkspaceFile`
+  - `GetWorkspaceFileContent`
+- `OpenClaw` 在控制面/Bootstrap 层已经被纳入 `WorkspaceFiles` capability 白名单。
 
-- Hosted UI 输入框右下角的上下文百分比不再只依赖默认 200k。
-- 自动压缩阈值的显示口径已与本地 ksadk 对齐。
-- 当上游模型目录暂时不可用时，fallback 仍然保留合理的上下文预算信息。
+当前仍需单独验证的点：
 
-## 6. 本地 e2e 验证结果
+- 旧预发 `OpenClaw` runtime 镜像是否已经包含当前 worktree 对应的 workspace helper / gateway patch。
+- `agentengine launch` 的预发 CLI 级 e2e 还没在这轮执行。
+- Share link 的浏览器人工回归还没补。
 
-验证时间：
+## 3. 目标与边界
 
-- 2026-04-19
+### 3.1 目标
 
-验证环境：
+为当前支持的 agent 形态提供统一的文件数据面能力：
 
-- runtime: 本地 `uvicorn ksadk.server.app:app`
-- workspace 根目录：`/tmp/ksadk-workspace-files-e2e.3VqzyN/.agentengine/ui/workspace`
-- CLI：当前分支下的 `python -m ksadk.cli`
+- 浏览 workspace
+- 上传文件到 workspace
+- 下载 agent 生成的文件
+- 删除 workspace 条目
+- 通过 PVC 在 pod 重建后保留 agent 工作目录
 
-### 6.1 runtime 直连健康检查
+### 3.2 关键边界
 
-命令：
+- 只依赖 PVC / 云盘挂载，不依赖 KS3 作为 runtime 文件面。
+- 对外暴露的是 `workspace` 子目录，不暴露整个 state root。
+- 聊天附件链路与 workspace files 链路保持分离，不复用 URI 语义。
+- Share link 默认不显示 workspace 面板。
+- Hosted UI 首版只支持当前目录上传/刷新/展开/下载/删除，不做目录级同步。
 
-```bash
-curl -s http://127.0.0.1:18081/_ksadk/workspace/v1/healthz
-```
+## 4. 统一 contract
 
-结果：
+### 4.1 Runtime data plane
 
-```json
-{"ok":true,"root":"workspace","workspace_path":"/private/tmp/ksadk-workspace-files-e2e.3VqzyN/.agentengine/ui/workspace"}
-```
+所有 runtime 对外统一为：
 
-### 6.2 CLI 直连 runtime
+- `GET /_ksadk/workspace/v1/entries`
+- `GET /_ksadk/workspace/v1/files/{path}`
+- `POST /_ksadk/workspace/v1/files/{path}`
+- `DELETE /_ksadk/workspace/v1/files/{path}`
+- `HEAD /_ksadk/workspace/v1/files/{path}`
+- `GET /_ksadk/workspace/v1/healthz`
 
-列目录：
+### 4.2 Hosted action
 
-```bash
-PYTHONPATH=/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python \
-python -m ksadk.cli --output json files list \
-  --endpoint http://127.0.0.1:18081 \
-  --path .
-```
-
-结果：
-
-```json
-{"root":"workspace","path":".","entries":[{"name":"existing","path":"existing","type":"directory","size_bytes":null,"mime_type":null,"modified_at":"2026-04-19T06:02:30.643936Z","display_path":"workspace:/existing","real_path":"/private/tmp/ksadk-workspace-files-e2e.3VqzyN/.agentengine/ui/workspace/existing","size_human":null}],"workspace_real_root":"/private/tmp/ksadk-workspace-files-e2e.3VqzyN/.agentengine/ui/workspace","ok":true,"action":"list","workspace_root":"workspace","workspace_display_path":"workspace:/","workspace_real_path":"/private/tmp/ksadk-workspace-files-e2e.3VqzyN/.agentengine/ui/workspace","entry_count":1,"directories":[{"name":"existing","path":"existing","type":"directory","size_bytes":null,"mime_type":null,"modified_at":"2026-04-19T06:02:30.643936Z","display_path":"workspace:/existing","real_path":"/private/tmp/ksadk-workspace-files-e2e.3VqzyN/.agentengine/ui/workspace/existing","size_human":null}],"files":[],"summary":{"entry_count":1,"directory_count":1,"file_count":0}}
-```
-
-上传：
-
-```bash
-PYTHONPATH=/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python \
-python -m ksadk.cli --output json files upload \
-  --endpoint http://127.0.0.1:18081 \
-  --local-path /tmp/ksadk-workspace-files-e2e.3VqzyN/upload-source.txt \
-  --remote-path reports/report.txt
-```
-
-结果：
-
-```json
-{"entry": {"name": "report.txt", "path": "reports/report.txt", "type": "file", "size_bytes": 22, "mime_type": "text/plain", "modified_at": "2026-04-19T06:04:50.086823Z"}}
-```
-
-下载：
-
-```bash
-PYTHONPATH=/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python \
-python -m ksadk.cli --output json files download \
-  --endpoint http://127.0.0.1:18081 \
-  --remote-path reports/report.txt \
-  --output-path /tmp/ksadk-workspace-files-e2e.3VqzyN/downloaded-report.txt
-```
-
-结果：
-
-```json
-{"remote_path": "reports/report.txt", "output_path": "/tmp/ksadk-workspace-files-e2e.3VqzyN/downloaded-report.txt", "size_bytes": 22}
-```
-
-删除：
-
-```bash
-PYTHONPATH=/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python \
-python -m ksadk.cli --output json files delete \
-  --endpoint http://127.0.0.1:18081 \
-  --remote-path reports/report.txt \
-  --yes
-```
-
-结果：
-
-```json
-{"deleted": true}
-```
-
-### 6.3 Hosted action 同源验证
-
-列目录：
-
-```bash
-curl -s -X POST http://127.0.0.1:18081/agentengine/api/v1/ListWorkspaceFiles \
-  -H 'Content-Type: application/json' \
-  -d '{"AgentId":"demo-agent","Path":"reports","Recursive":false}'
-```
-
-结果：
-
-```json
-{"Code":0,"Message":"Success","RequestId":"req-343f1e4cd4b6","Data":{"Root":"workspace","Path":"reports","Entries":[{"Name":"report.txt","Path":"reports/report.txt","Type":"file","SizeBytes":22,"MimeType":"text/plain","ModifiedAt":"2026-04-19T06:04:50.086823Z"}]},"Action":"ListWorkspaceFiles"}
-```
-
-下载内容：
-
-```bash
-curl -s 'http://127.0.0.1:18081/agentengine/api/v1/GetWorkspaceFileContent?AgentId=demo-agent&FilePath=reports/report.txt'
-```
-
-结果：
-
-```text
-direct upload payload
-```
-
-上传：
-
-```bash
-curl -s -X POST http://127.0.0.1:18081/agentengine/api/v1/AddWorkspaceFile \
-  -F AgentId=demo-agent \
-  -F Path=persist/pvc.txt \
-  -F file=@/tmp/ksadk-workspace-files-e2e.3VqzyN/persist-source.txt
-```
-
-结果：
-
-```json
-{"Code":0,"Message":"Success","RequestId":"req-17ff9736d129","Data":{"Entry":{"Name":"pvc.txt","Path":"persist/pvc.txt","Type":"file","SizeBytes":23,"MimeType":"text/plain","ModifiedAt":"2026-04-19T06:05:43.886169Z"}},"Action":"AddWorkspaceFile"}
-```
-
-删除：
-
-```bash
-curl -s -X POST http://127.0.0.1:18081/agentengine/api/v1/DeleteWorkspaceFile \
-  -H 'Content-Type: application/json' \
-  -d '{"AgentId":"demo-agent","Path":"existing/hello.txt"}'
-```
-
-结果：
-
-```json
-{"Code":0,"Message":"Success","RequestId":"req-431b448f1a24","Data":{"Deleted":true},"Action":"DeleteWorkspaceFile"}
-```
-
-### 6.4 进程重启后文件仍在
-
-这是对“稳定 workspace 目录不变”场景的本地近似验证，不等价于所有框架在预发都已经支持跨 pod 重建留存。
-
-步骤：
-
-1. 用 Hosted action 上传 `persist/pvc.txt`
-2. 停掉本地 `uvicorn`
-3. 用相同 `AGENTENGINE_UI_DIR` 重启 server
-4. 再次调用 `ListWorkspaceFiles`
-
-重启后结果：
-
-```json
-{"Code":0,"Message":"Success","RequestId":"req-3883f716460f","Data":{"Root":"workspace","Path":"persist","Entries":[{"Name":"pvc.txt","Path":"persist/pvc.txt","Type":"file","SizeBytes":23,"MimeType":"text/plain","ModifiedAt":"2026-04-19T06:05:43.886169Z"}]},"Action":"ListWorkspaceFiles"}
-```
-
-结论：
-
-- 文件确实落在稳定目录。
-- server 进程重启不会丢文件。
-- 这只能说明 workspace files contract 本身兼容持久目录。
-- 当前产品口径下，“跨 pod 重建后文件仍在”只以 `OpenClaw` 为准；`Hermes` 暂不把这项作为本次验收前提。
-
-## 7. Hermes 预发验证结果
-
-验证时间：
-
-- 2026-04-20
-
-预发对象：
-
-- Agent ID: `ar-20260416185959-8414dac9`
-- 新镜像：`hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.4.20-workspace-files-v1.1`
-- Digest: `sha256:a559e4da96dd246a816a5796246348e9b0a31c372f275a21cde3c4276ab03c42`
-
-### 7.1 首次预发失败与修复
-
-第一次把 `workspace-files-v1` 镜像推到预发后，Hermes runtime pod 启动失败。
-
-算力集群日志根因：
-
-```text
-ModuleNotFoundError: No module named 'ksadk'
-```
-
-原因：
-
-- [`deploy/hermes/runtime/app.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/deploy/hermes/runtime/app.py) 当时直接 import `ksadk.server.workspace_files`
-- 但 Hermes 镜像构建上下文是 `deploy/hermes/`，容器内并没有完整 `ksadk` 包
-
-修复：
-
-- 在 [`deploy/hermes/runtime/workspace_files.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/deploy/hermes/runtime/workspace_files.py) 内置 runtime-local workspace files 模块
-- Hermes runtime 改为从本地 runtime 目录 import
-- 新增隔离导入回归测试，防止“本地 repo 可 import、容器内不可 import”再次发生
-
-### 7.2 2026-04-20 复测结果
-
-公网域名复测：
-
-- 直接使用 `.agentengine.state` 中的公网 endpoint：
-  - `http://ar-20260416185959-8414dac9.agent-pre.kspmas.ksyun.com`
-- 执行：
-
-```bash
-PYTHONPATH=/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python \
-python -m ksadk.cli --output json files list --path .
-```
-
-- 当前返回：
-
-```json
-{"ok":false,"error":{"code":"remote_error","message":"服务端暂时不可用 (Code: 502)。","details":{"server_code":502}},"hints":["请稍后重试；若持续失败请联系平台侧排查。","运行 `agentengine --help` 查看参数说明。"]}
-```
-
-结论：
-
-- 当前 Hermes 预发公网入口不适合作为稳定 e2e 通道。
-- 这个现象不等于 runtime data plane 不可用。
-
-改用算力集群 service 直连复测：
-
-```bash
-kubectl --kubeconfig /Users/xiayu/.kube/config-2fc1210d-eb1f-4688-94a9-4cb38163f3f8 \
-  -n ar-20260416185959-8414dac9 \
-  port-forward service/ar-20260416185959-8414dac9-service 18081:80
-```
-
-健康检查：
-
-```bash
-curl -s http://127.0.0.1:18081/_ksadk/workspace/v1/healthz
-```
-
-结果：
-
-```json
-{"ok":true,"root":"workspace","workspace_path":"/home/node/.hermes/workspace"}
-```
-
-CLI 直连 runtime：
-
-- `files list --endpoint http://127.0.0.1:18081 --api-key <state_api_key> --path .` 返回空目录
-- `files upload --remote-path reports/hermes-workspace-e2e.txt` 成功
-- `files list --path reports` 返回 `reports/hermes-workspace-e2e.txt`
-- `files download --remote-path reports/hermes-workspace-e2e.txt` 成功，下载内容为 `workspace-files-v1 hermes e2e`
-- `files delete --remote-path reports/hermes-workspace-e2e.txt --yes` 成功
-- 删除后再次 `files list --path reports` 返回空目录
-
-结论：
-
-- 代码与本地真实链路已经可用。
-- Hermes 预发 runtime data plane 通过集群 service 直连验证可用。
-- 这次 Hermes 验证只覆盖文件接口主链路，不把跨 pod 重建留存作为阻塞项。
-
-## 8. OpenClaw 预发现状
-
-验证时间：
-
-- 2026-04-20
-
-预发对象：
-
-- Agent ID: `ar-20260407235034-e1017eee`
-- 当前 state 中的镜像：`hub-vpc-cn-beijing-6.kce.ksyun.com/agentengine-public/openclaw:2026.4.15`
-- PVC 挂载目录：`/home/node/.openclaw`
-
-已确认事实：
-
-- `OpenClaw` 的 PVC 持久化已经实测成立。
-  - 在旧 pod 内写入 `/home/node/.openclaw/workspace/ae-persist-check.txt`
-  - 删除 pod 后，新 pod 可读回同一文件
-- 直接使用 `.agentengine.state` 中的公网 endpoint 执行 `agentengine files list --path .`，当前返回的是鉴权失败。
-- 改用算力集群 service 直连：
-
-```bash
-kubectl --kubeconfig /Users/xiayu/.kube/config-2fc1210d-eb1f-4688-94a9-4cb38163f3f8 \
-  -n ar-20260407235034-e1017eee \
-  port-forward service/ar-20260407235034-e1017eee-service 18082:80
-```
-
-- 然后访问：
-
-```bash
-curl -i -s http://127.0.0.1:18082/_ksadk/workspace/v1/healthz
-```
-
-- 当前返回的是 OpenClaw Control HTML，而不是 workspace JSON。
-- 同样地，执行：
-
-```bash
-PYTHONPATH=/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python \
-python -m ksadk.cli --output json files list --endpoint http://127.0.0.1:18082 --path .
-```
-
-- 当前返回：
-
-```json
-{"ok":false,"error":{"code":"validation_error","message":"Expecting value: line 1 column 1 (char 0)","details":{}},"hints":[]}
-```
-
-结论：
-
-- 现在能确认的是 PVC 没问题。
-- 现在还不能确认的是 OpenClaw workspace helper / gateway patch 已经在预发 runtime 中生效。
-- 因此 `Capabilities.WorkspaceFiles` 对 OpenClaw 继续保持关闭是正确行为。
-- 下一步不是改 contract，而是把当前 worktree 对应的 OpenClaw 镜像构建、推送、升级到预发，再重新验证 `/_ksadk/workspace/v1/healthz` 是否返回 JSON。
-
-## 9. 待注册 KOP 接口
-
-明天补 KOP 时，需要注册的 Hosted action 接口是：
+`agentengine-server` 对 Hosted UI / 浏览器暴露：
 
 - `POST /agentengine/api/v1/ListWorkspaceFiles`
 - `POST /agentengine/api/v1/AddWorkspaceFile`
 - `POST /agentengine/api/v1/DeleteWorkspaceFile`
 - `GET /agentengine/api/v1/GetWorkspaceFileContent`
 
-命名说明：
+下载统一走二进制 streaming，不走 JSON action envelope。
 
-- 下载接口最终统一为 `GetWorkspaceFileContent`
-- 不再使用 `WorkspaceFileContent`
-- 这样能与现有 `Get*` 风格 action 命名保持一致
+### 4.3 Bootstrap capability
 
-## 10. 当前剩余事项
+`GetAgentUiBootstrap` 当前下发：
 
-- `OpenClaw` capability 仍保持关闭，尚未做预发升级验收。
-- Hosted UI 的 share link 不显示 workspace 面板，代码与测试已覆盖，但今天没有额外做浏览器侧人工回归。
-- KOP 注册还没做，因此今天没有验证任何必须经过 `aicp*` 域名鉴权的外部入口。
+- `Capabilities.WorkspaceFiles`
+- `WorkspaceFiles.Enabled`
+- `WorkspaceFiles.MaxUploadBytes`
+- `WorkspaceFiles.SupportsDelete`
+- `WorkspaceFiles.RootLabel`
+- `WorkspaceFiles.EntryAction`
+- `WorkspaceFiles.UploadAction`
+- `WorkspaceFiles.ContentPath`
 
-## 11. 明天补 KOP 后优先做什么
+### 4.4 Storage contract
 
-建议顺序：
+控制面 storage schema 统一为：
 
-1. 注册新的 Hosted action 接口。
-2. 补做 Hosted UI / share link 的浏览器侧人工回归。
-3. 部署并验证 `OpenClaw` gateway patch 是否稳定承接 `/_ksadk/workspace/v1/*`。
-4. 完成 `OpenClaw` 预发验收后，再打开 `WorkspaceFiles` capability。
+- `CreateAgent.Storage`
+- `UpdateAgent.Storage`
+- `GetAgent.Deployment.Storage`
 
-## 12. review 时最值得盯的点
+字段为：
 
-- `OpenClaw` capability 现在是有意关闭，不是漏实现。
-- `agentengine files --endpoint` 与 `.agentengine.state` 自动解析，是今天不依赖 KOP 做 e2e 的关键入口。
-- `ListAgentModels` fallback 现在已经带 canonical metadata，Hosted UI 的上下文指示器不再只靠默认值。
-- Hermes 预发当前是“公网入口不稳定，但集群 service 直连可用”，不要把这两层混为一谈。
-- OpenClaw 预发当前卡的是 runtime helper / gateway patch 生效，不是 PVC 持久化。
-- 这次补到的 Hermes 导入回归测试很关键：它覆盖的是“容器构建上下文”和“本地 repo import 能力”不一致这一类问题。
+- `MountPath`
+- `SizeGi`
+
+约束为：
+
+- 默认 `SizeGi = 20`
+- 最小 `20`
+- 最大 `500`
+
+### 4.5 CLI / SDK
+
+文件命令：
+
+- `agentengine files list`
+- `agentengine files upload`
+- `agentengine files download`
+- `agentengine files delete`
+- `agentengine files push`
+- `agentengine files pull`
+
+serverless PVC 相关参数：
+
+- `agentengine deploy --storage-size-gi --storage-mount-path --no-storage`
+- `agentengine launch --storage-size-gi --storage-mount-path --no-storage`
+- `agentengine hermes deploy --storage-size-gi --storage-mount-path --no-storage`
+- `agentengine openclaw deploy --storage-size-gi --storage-mount-path --no-storage`
+
+SDK convenience methods：
+
+- `list_workspace_files`
+- `upload_workspace_file`
+- `download_workspace_file`
+- `delete_workspace_file`
+
+## 5. 存储暴露模型
+
+```mermaid
+flowchart LR
+    A["CLI / SDK / Hosted UI"] --> B["AgentEngine Server 或 Runtime 直连"]
+    B --> C["/_ksadk/workspace/v1/*"]
+    C --> D["workspace 根目录"]
+    D --> E["framework state root"]
+    E --> F["PVC 挂载云盘"]
+```
+
+外部只看到 `workspace`，不会看到整个 state root。
+
+```mermaid
+flowchart TD
+    A["framework"] --> B["state root"]
+    B --> C["workspace 子目录"]
+
+    A1["adk / langchain / langgraph / deepagents"] --> B1["/home/node/.agentengine"]
+    B1 --> C1["/home/node/.agentengine/workspace"]
+
+    A2["hermes"] --> B2["/home/node/.hermes"]
+    B2 --> C2["/home/node/.hermes/workspace"]
+
+    A3["openclaw"] --> B3["/home/node/.openclaw"]
+    B3 --> C3["/home/node/.openclaw/workspace"]
+```
+
+## 6. 默认挂盘策略
+
+当前默认值如下：
+
+| Framework | 默认 `MountPath` | 对外文件根 |
+| --- | --- | --- |
+| `adk` | `/home/node/.agentengine` | `/home/node/.agentengine/workspace` |
+| `langchain` | `/home/node/.agentengine` | `/home/node/.agentengine/workspace` |
+| `langgraph` | `/home/node/.agentengine` | `/home/node/.agentengine/workspace` |
+| `deepagents` | `/home/node/.agentengine` | `/home/node/.agentengine/workspace` |
+| `hermes` | `/home/node/.hermes` | `/home/node/.hermes/workspace` |
+| `openclaw` | `/home/node/.openclaw` | `/home/node/.openclaw/workspace` |
+
+说明：
+
+- 默认只对 `serverless/kcf/kce` 自动注入 storage。
+- 用户可以显式用 `--storage-mount-path` 覆盖默认挂载根。
+- 用户可以用 `--no-storage` 关闭默认注入。
+- 即使挂载根可配，对外 workspace files 仍只暴露 `workspace` 子目录。
+
+## 7. 代码落点
+
+### 7.1 ksadk-python
+
+核心文件：
+
+- [`ksadk/server/workspace_files.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk/server/workspace_files.py)
+- [`ksadk/server/app.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk/server/app.py)
+- [`ksadk/api/client.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk/api/client.py)
+- [`ksadk/deployment/base.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk/deployment/base.py)
+- [`ksadk/deployment/providers/serverless.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk/deployment/providers/serverless.py)
+- [`ksadk/cli/cmd_files.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk/cli/cmd_files.py)
+- [`ksadk/cli/cmd_deploy.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk/cli/cmd_deploy.py)
+- [`ksadk/cli/cmd_launch.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk/cli/cmd_launch.py)
+- [`ksadk/cli/cmd_hermes.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk/cli/cmd_hermes.py)
+- [`ksadk/cli/cmd_openclaw.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk/cli/cmd_openclaw.py)
+- [`ksadk/cli/storage.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk/cli/storage.py)
+
+### 7.2 agentengine-server
+
+核心文件：
+
+- [`app/api/v1/actions/agent_actions.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/app/api/v1/actions/agent_actions.py)
+- [`app/api/v1/actions/chat_actions.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/app/api/v1/actions/chat_actions.py)
+- [`app/api/v1/models/agent_models.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/app/api/v1/models/agent_models.py)
+- [`app/models/agent.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/app/models/agent.py)
+- [`app/services/agent_service.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/app/services/agent_service.py)
+- [`app/services/serverless_api.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/app/services/serverless_api.py)
+
+## 8. 各 framework 当前状态
+
+### 8.1 ADK / LangChain / LangGraph / DeepAgents
+
+- 共享 code runtime，默认挂载根为 `/home/node/.agentengine`
+- workspace files 只暴露 `/home/node/.agentengine/workspace`
+- serverless 默认会注入 PVC storage
+
+### 8.2 Hermes
+
+- `hermes deploy` 已默认注入 `/home/node/.hermes`
+- runtime wrapper 使用 `/home/node/.hermes/workspace` 作为文件根
+- CLI / Hosted UI / direct runtime path 已在代码和测试层打通
+
+### 8.3 OpenClaw
+
+- `openclaw deploy` 已默认注入 `/home/node/.openclaw`
+- `GetAgentUiBootstrap` 已在控制面打开 `WorkspaceFiles`
+- 但旧预发 runtime 镜像是否真的已经具备 `/_ksadk/workspace/v1/*` helper / gateway patch，需要基于升级后的镜像重新验收
+
+这里要区分两件事：
+
+- 控制面 contract：已经打开
+- 旧预发 runtime 镜像：不一定已经升级到当前实现
+
+## 9. 验证结果
+
+今天已跑过的验证命令如下。
+
+### 9.1 agentengine-server
+
+```bash
+pytest /Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/tests/test_chat_actions.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/tests/test_workspace_storage_contract.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/tests/test_router_service_proxy.py -q
+```
+
+结果：
+
+- `77 passed`
+
+### 9.2 ksadk-python
+
+```bash
+pytest /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_client_framework_passthrough.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_deploy_integration.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_openclaw_workspace_files_gating.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_storage_defaults.py -q
+```
+
+结果：
+
+- `30 passed`
+
+```bash
+pytest /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_cmd_hermes.py -q
+```
+
+结果：
+
+- `34 passed`
+
+```bash
+pytest /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_cmd_deploy_no_cache.py -q
+```
+
+结果：
+
+- `4 passed`
+
+```bash
+pytest /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_json_contracts.py -q
+pytest /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_workflow_help_snapshots.py -q
+```
+
+结果：
+
+- `17 passed`
+- `1 passed`
+
+```bash
+pytest /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_cli_dry_run.py -k '(openclaw and deploy) or (hermes and deploy) or launch' -q
+```
+
+结果：
+
+- `3 passed`
+
+## 10. 当前已知剩余事项
+
+还没有完成的不是 contract，而是预发 runtime 级验收：
+
+1. `OpenClaw` 需要升级到当前 worktree 对应镜像后，再验证 `/_ksadk/workspace/v1/healthz`
+2. `agentengine launch` 需要补一轮预发 CLI 级 e2e
+3. Share link 需要补浏览器人工回归
+4. `agentengine-server/tests/test_workspace_storage_contract.py` 当前还是未跟踪文件，提交前要确认是否纳入版本库
+
+## 11. review 时最值得盯的点
+
+建议 review 时重点看这几件事：
+
+1. storage 只挂 state root，但对外只暴露 `workspace` 子目录，这个边界是否始终成立
+2. `CreateAgent / UpdateAgent / GetAgent` 的 `Storage` 字段命名是否与控制面最终契约一致
+3. `OpenClaw` 当前是“控制面已开，runtime 旧镜像未验”，不要把这两个状态混为一谈
+4. `deploy / launch / hermes deploy / openclaw deploy` 的默认挂盘口径是否一致
+5. `--no-storage` 是否足够作为默认注入的逃生口
+
+## 12. 一句话总结
+
+当前分支已经把 workspace files 主链和 serverless PVC contract 打通到了“代码 + 单测”层面；下一步的关键不是再改命名或 schema，而是把 `OpenClaw` 和 `launch` 的预发 e2e 跑实。

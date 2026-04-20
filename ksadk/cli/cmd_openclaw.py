@@ -39,6 +39,7 @@ from ksadk.api.client import DryRunExit
 from ksadk.cli.agent_ref import resolve_openclaw_ref
 from ksadk.cli.dry_run import dry_run_option, run_async_with_dry_run, effective_dry_run
 from ksadk.cli.error_utils import abort_with_cli_error, remote_error, resolution_error
+from ksadk.cli.storage import build_storage_config
 from ksadk.cli.resource_common import ResourceActionDescriptor
 from ksadk.cli.resource_common import (
     CONTEXT_SETTINGS,
@@ -2721,6 +2722,9 @@ def channel_doctor(agent_ref: Optional[str], region: Optional[str], channel: Opt
     multiple=True,
     help="额外透传自定义环境变量，格式 KEY=VALUE，可重复传入",
 )
+@click.option("--storage-size-gi", type=int, default=20, show_default=True, help="PVC 容量（Gi）")
+@click.option("--storage-mount-path", default=None, help="PVC 挂载目录（默认: /home/node/.openclaw）")
+@click.option("--no-storage", is_flag=True, help="禁用默认 PVC 挂载")
 @dry_run_option("仅显示请求，不实际部署")
 def deploy(
     name: Optional[str],
@@ -2731,6 +2735,9 @@ def deploy(
     model_api_key: Optional[str],
     default_model: Optional[str],
     extra_env: tuple[str, ...],
+    storage_size_gi: int,
+    storage_mount_path: Optional[str],
+    no_storage: bool,
     dry_run: bool,
 ):
     """部署 OpenClaw 到云端
@@ -2766,6 +2773,9 @@ def deploy(
                 model_api_key=model_api_key,
                 default_model=default_model,
                 extra_env=extra_env,
+                storage_size_gi=storage_size_gi,
+                storage_mount_path=storage_mount_path,
+                no_storage=no_storage,
                 dry_run=dry_run,
             ),
             dry_run=dry_run,
@@ -2784,6 +2794,9 @@ async def _deploy_openclaw(
     model_api_key: Optional[str],
     default_model: Optional[str],
     extra_env: tuple[str, ...] = (),
+    storage_size_gi: int = 20,
+    storage_mount_path: Optional[str] = None,
+    no_storage: bool = False,
     dry_run: bool,
 ):
     """异步部署 OpenClaw"""
@@ -2871,6 +2884,14 @@ async def _deploy_openclaw(
         "auth_type": "None",
         "inbound_identity_auth": "None",
     }
+    storage_config = build_storage_config(
+        "openclaw",
+        no_storage=no_storage,
+        mount_path=storage_mount_path,
+        size_gi=storage_size_gi,
+    )
+    if storage_config:
+        request_data["storage"] = storage_config
 
     # KCR 凭证：仅在显式提供用户名+密码时注入，避免公共镜像触发无效鉴权重试。
     image_credential = None
@@ -2901,6 +2922,8 @@ async def _deploy_openclaw(
                 }
                 if image_credential:
                     update_payload["image_credential"] = image_credential
+                if storage_config:
+                    update_payload["storage"] = storage_config
                 await client.update_agent(existing_agent_id, update_payload)
             else:
                 await client.create_agent(request_data)
@@ -2925,6 +2948,8 @@ async def _deploy_openclaw(
                     }
                     if image_credential:
                         update_payload["image_credential"] = image_credential
+                    if storage_config:
+                        update_payload["storage"] = storage_config
                     res = await client.update_agent(existing_agent_id, update_payload)
                     agent_id = existing_agent_id
                     endpoint = res.get("endpoint") or state.get("endpoint")

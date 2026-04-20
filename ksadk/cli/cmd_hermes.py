@@ -14,6 +14,7 @@ from ksadk.cli.agent_ref import merge_agent_inputs, resolve_agent_ref
 from ksadk.cli.cmd_dashboard import _open_dashboard
 from ksadk.cli.dry_run import dry_run_option, effective_dry_run, run_async_with_dry_run
 from ksadk.cli.error_utils import remote_error, resolution_error
+from ksadk.cli.storage import build_storage_config
 from ksadk.cli.resource_common import (
     CONTEXT_SETTINGS,
     ResourceActionSet,
@@ -446,6 +447,9 @@ def _render_hermes_dry_run(action: str, request: dict[str, Any], hints: tuple[st
 @click.option("--default-model", default=None, help="默认模型名 (默认 OPENAI_MODEL_NAME)")
 @click.option("--cpu", default="2", help="CPU 规格")
 @click.option("--memory", default="4Gi", help="内存规格")
+@click.option("--storage-size-gi", type=int, default=20, show_default=True, help="PVC 容量（Gi）")
+@click.option("--storage-mount-path", default=None, help="PVC 挂载目录（默认: /home/node/.hermes）")
+@click.option("--no-storage", is_flag=True, help="禁用默认 PVC 挂载")
 @dry_run_option()
 @cli_output_option()
 def deploy(
@@ -457,6 +461,9 @@ def deploy(
     default_model: Optional[str],
     cpu: str,
     memory: str,
+    storage_size_gi: int,
+    storage_mount_path: Optional[str],
+    no_storage: bool,
     dry_run: bool,
     output_mode: str | None,
 ):
@@ -473,6 +480,9 @@ def deploy(
             default_model=default_model,
             cpu=cpu,
             memory=memory,
+            storage_size_gi=storage_size_gi,
+            storage_mount_path=storage_mount_path,
+            no_storage=no_storage,
             dry_run=dry_run,
         ),
         dry_run=dry_run,
@@ -491,6 +501,9 @@ async def _deploy_hermes(
     default_model: str | None,
     cpu: str,
     memory: str,
+    storage_size_gi: int,
+    storage_mount_path: str | None,
+    no_storage: bool,
     dry_run: bool,
 ) -> None:
     project_dir = Path(".").resolve()
@@ -529,6 +542,14 @@ async def _deploy_hermes(
         "env_vars": env_vars,
         "ui_config": {"profile": "hermes", "path": "/", "url": None},
     }
+    storage_config = build_storage_config(
+        "hermes",
+        no_storage=no_storage,
+        mount_path=storage_mount_path,
+        size_gi=storage_size_gi,
+    )
+    if storage_config:
+        payload["storage"] = storage_config
 
     print_title("Hermes 云端部署", f"region: {region}")
     print_kv("名称", agent_name)
