@@ -1112,6 +1112,68 @@ async def test_build_run_input_auto_compacts_old_rounds_into_checkpoint(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_build_run_input_respects_explicit_model_metadata_for_auto_compaction(monkeypatch):
+    service = InMemorySessionService()
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-model-metadata")
+    for turn in range(6):
+        await service.append_event(
+            "sess-model-metadata",
+            SessionEvent(
+                id=f"u-{turn}",
+                author="user",
+                event_type="user_message",
+                content={"role": "user", "parts": [{"text": f"user-{turn} " + ("x" * 30_000)}]},
+                invocation_id=f"inv-{turn}",
+            ),
+        )
+        await service.append_event(
+            "sess-model-metadata",
+            SessionEvent(
+                id=f"a-{turn}",
+                author="demo-agent",
+                event_type="assistant_message",
+                content={"role": "model", "parts": [{"text": f"assistant-{turn} " + ("y" * 30_000)}]},
+                invocation_id=f"inv-{turn}",
+            ),
+        )
+
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    preview = await preview_auto_compaction(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-model-metadata",
+        messages=[{"role": "user", "content": "follow up"}],
+        model="glm-5.1",
+        model_metadata={
+            "id": "glm-5.1",
+            "context_length": "64k",
+            "max_completion_tokens": "8k",
+        },
+        session_service_provider=lambda: service,
+    )
+    prepared = await build_run_input(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-model-metadata",
+        messages=[{"role": "user", "content": "follow up"}],
+        model="glm-5.1",
+        model_metadata={
+            "id": "glm-5.1",
+            "context_length": "64k",
+            "max_completion_tokens": "8k",
+        },
+        session_service_provider=lambda: service,
+    )
+
+    assert preview.should_compact is True
+    assert preview.auto_compact_threshold_tokens == 43000
+    assert prepared.compaction_triggered is True
+    assert prepared.history[0]["role"] == "model"
+    assert "Earlier conversation summary:" in prepared.history[0]["content"]
+
+
+@pytest.mark.asyncio
 async def test_invoke_conversation_once_compacts_and_retries_on_prompt_too_long(monkeypatch):
     model_context_module = importlib.import_module("ksadk.conversations.model_context")
     service = InMemorySessionService()

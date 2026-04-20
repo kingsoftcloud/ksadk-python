@@ -11,6 +11,7 @@ AgentEngine CLI
   agentengine build      构建部署制品
   agentengine dashboard  打开云端 Agent Dashboard
   agentengine deploy     部署到云端
+  agentengine files      管理 workspace 文件
   agentengine hermes     Hermes Agent 资源管理
   agentengine init       创建新项目
   agentengine launch     一键构建+部署

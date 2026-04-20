@@ -305,6 +305,125 @@ async def test_attachment_content_route_serves_uploaded_binary(monkeypatch, tmp_
 
 
 @pytest.mark.asyncio
+async def test_workspace_files_runtime_routes_use_state_dir_workspace_root(monkeypatch, tmp_path):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    ui_dir = tmp_path / ".agentengine" / "ui"
+    workspace_dir = ui_dir / "workspace"
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    (workspace_dir / "existing").mkdir(parents=True, exist_ok=True)
+    (workspace_dir / "existing" / "hello.txt").write_text("hello workspace", encoding="utf-8")
+    monkeypatch.setenv("AGENTENGINE_UI_DIR", str(ui_dir))
+
+    service = InMemorySessionService()
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        list_response = await client.get("/_ksadk/workspace/v1/entries", params={"path": "."})
+        upload_response = await client.post(
+            "/_ksadk/workspace/v1/files/uploads/report.txt",
+            files={"file": ("report.txt", b"workspace upload", "text/plain")},
+        )
+        download_response = await client.get("/_ksadk/workspace/v1/files/uploads/report.txt")
+
+    assert list_response.status_code == 200
+    list_payload = list_response.json()
+    assert list_payload["Root"] == "workspace"
+    assert list_payload["Path"] == "."
+    assert {entry["Path"] for entry in list_payload["Entries"]} == {"existing"}
+    assert list_payload["Entries"][0]["Type"] == "directory"
+
+    assert upload_response.status_code == 200
+    assert upload_response.json()["Entry"]["Path"] == "uploads/report.txt"
+    assert (workspace_dir / "uploads" / "report.txt").read_text(encoding="utf-8") == "workspace upload"
+
+    assert download_response.status_code == 200
+    assert download_response.content == b"workspace upload"
+    assert download_response.headers["content-type"].startswith("text/plain")
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        delete_response = await client.delete("/_ksadk/workspace/v1/files/uploads/report.txt")
+
+    assert delete_response.status_code == 200
+    assert delete_response.json() == {"Deleted": True}
+    assert not (workspace_dir / "uploads" / "report.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_workspace_files_runtime_routes_reject_path_escape(monkeypatch, tmp_path):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    ui_dir = tmp_path / ".agentengine" / "ui"
+    monkeypatch.setenv("AGENTENGINE_UI_DIR", str(ui_dir))
+
+    service = InMemorySessionService()
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.get(
+            "/_ksadk/workspace/v1/entries",
+            params={"path": "../outside"},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "workspace path escapes the workspace root"
+
+
+@pytest.mark.asyncio
+async def test_workspace_files_action_routes_match_runtime_contract(monkeypatch, tmp_path):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    ui_dir = tmp_path / ".agentengine" / "ui"
+    workspace_dir = ui_dir / "workspace"
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    (workspace_dir / "existing").mkdir(parents=True, exist_ok=True)
+    (workspace_dir / "existing" / "hello.txt").write_text("hello workspace", encoding="utf-8")
+    monkeypatch.setenv("AGENTENGINE_UI_DIR", str(ui_dir))
+
+    service = InMemorySessionService()
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        list_response = await client.post(
+            "/agentengine/api/v1/ListWorkspaceFiles",
+            json={"AgentId": "demo-agent", "Path": "."},
+        )
+        upload_response = await client.post(
+            "/agentengine/api/v1/AddWorkspaceFile",
+            data={"AgentId": "demo-agent", "Path": "uploads/report.txt"},
+            files={"file": ("report.txt", b"workspace upload", "text/plain")},
+        )
+        download_response = await client.get(
+            "/agentengine/api/v1/GetWorkspaceFileContent",
+            params={"AgentId": "demo-agent", "FilePath": "uploads/report.txt"},
+        )
+
+    assert list_response.status_code == 200
+    list_payload = list_response.json()["Data"]
+    assert list_payload["Root"] == "workspace"
+    assert list_payload["Path"] == "."
+    assert {entry["Path"] for entry in list_payload["Entries"]} == {"existing"}
+
+    assert upload_response.status_code == 200
+    assert upload_response.json()["Data"]["Entry"]["Path"] == "uploads/report.txt"
+    assert (workspace_dir / "uploads" / "report.txt").read_text(encoding="utf-8") == "workspace upload"
+
+    assert download_response.status_code == 200
+    assert download_response.content == b"workspace upload"
+    assert download_response.headers["content-type"].startswith("text/plain")
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        delete_response = await client.post(
+            "/agentengine/api/v1/DeleteWorkspaceFile",
+            json={"AgentId": "demo-agent", "Path": "uploads/report.txt"},
+        )
+
+    assert delete_response.status_code == 200
+    assert delete_response.json()["Data"] == {"Deleted": True}
+    assert not (workspace_dir / "uploads" / "report.txt").exists()
+
+
+@pytest.mark.asyncio
 async def test_list_sessions_projects_heuristic_title_for_existing_fallback_session(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()
@@ -733,6 +852,63 @@ async def test_list_agent_models_action_preserves_upstream_fields_and_normalizes
     assert item["max_output_tokens"] == 4096
     assert item["limits"]["context_window_tokens"] == 131072
     assert item["limits"]["max_output_tokens"] == 4096
+
+
+@pytest.mark.asyncio
+async def test_list_agent_models_action_normalizes_kspmas_string_token_limits(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://kspmas.ksyun.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-5.1")
+    monkeypatch.setattr(
+        "httpx.AsyncClient",
+        lambda *args, **kwargs: _ExternalModelsAsyncClient(
+            *args,
+            payload={
+                "data": [
+                    {
+                        "id": "glm-5.1",
+                        "context_length": "200k",
+                        "max_completion_tokens": "128k",
+                        "architecture": {
+                            "input_modalities": ["文字"],
+                            "output_modalities": ["文字"],
+                        },
+                        "pricing": {
+                            "prompt": "6",
+                            "completion": "24",
+                        },
+                    },
+                    {
+                        "id": "deepseek-v3.2",
+                        "context_length": "128",
+                        "max_completion_tokens": "32",
+                    },
+                ]
+            },
+            **kwargs,
+        ),
+    )
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with real_async_client(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ListAgentModels",
+            json={"AgentId": "demo-agent"},
+        )
+
+    assert response.status_code == 200
+    items = {item["id"]: item for item in response.json()["Data"]["Models"]}
+    assert items["glm-5.1"]["context_window_tokens"] == 200000
+    assert items["glm-5.1"]["max_output_tokens"] == 128000
+    assert items["glm-5.1"]["limits"]["context_window_tokens"] == 200000
+    assert items["glm-5.1"]["limits"]["max_output_tokens"] == 128000
+    assert items["glm-5.1"]["auto_compact_threshold_tokens"] == 167000
+    assert items["glm-5.1"]["architecture"]["input_modalities"] == ["文字"]
+    assert items["glm-5.1"]["pricing"]["prompt"] == "6"
+    assert items["deepseek-v3.2"]["context_window_tokens"] == 128000
+    assert items["deepseek-v3.2"]["max_output_tokens"] == 32000
+    assert items["deepseek-v3.2"]["auto_compact_threshold_tokens"] == 95000
 
 
 @pytest.mark.asyncio

@@ -1,4 +1,4 @@
-import { MoreHorizontal, PanelLeft, PanelLeftClose } from 'lucide-react';
+import { FolderOpen, MoreHorizontal, PanelLeft, PanelLeftClose } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 
@@ -30,6 +30,8 @@ type ChatHeaderProps = ModelSelectorProps & {
   onToggleSidebar: () => void;
   mobileActionsOpen: boolean;
   onMobileActionsOpenChange: (open: boolean) => void;
+  workspaceEnabled: boolean;
+  onOpenWorkspace: () => void;
 };
 
 function ModelSelector({
@@ -96,6 +98,8 @@ export function ChatHeader({
   modelSource,
   mobileActionsOpen,
   onMobileActionsOpenChange,
+  workspaceEnabled,
+  onOpenWorkspace,
 }: ChatHeaderProps) {
   const sidebarToggleIcon =
     isMobile ? (
@@ -142,6 +146,16 @@ export function ChatHeader({
           </button>
         ) : (
           <div className="flex items-center gap-3">
+            {workspaceEnabled ? (
+              <button
+                type="button"
+                onClick={onOpenWorkspace}
+                className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 text-sm text-slate-700 transition hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+              >
+                <FolderOpen className="h-4 w-4" />
+                Workspace
+              </button>
+            ) : null}
             <ModelSelector
               availableModels={availableModels}
               selectedModel={selectedModel}
@@ -169,6 +183,19 @@ export function ChatHeader({
               <SheetTitle>会话设置</SheetTitle>
             </SheetHeader>
             <div className="mt-6 flex flex-col gap-4">
+              {workspaceEnabled ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onMobileActionsOpenChange(false);
+                    onOpenWorkspace();
+                  }}
+                  className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+                >
+                  <FolderOpen className="h-4 w-4" />
+                  工作区文件
+                </button>
+              ) : null}
               <div className="space-y-2">
                 <div className="text-xs font-medium uppercase tracking-[0.12em] text-slate-400 dark:text-slate-500">
                   模型
