@@ -253,68 +253,97 @@ flowchart TD
 ```bash
 pytest /Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/tests/test_chat_actions.py \
   /Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/tests/test_workspace_storage_contract.py \
-  /Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/tests/test_router_service_proxy.py -q
+  /Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/tests/test_router_service_proxy.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/tests/test_agent_actions_mem0.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/tests/test_mem0_actions.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/tests/test_mem0_client.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/tests/test_mem0_service.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/tests/test_agent_service.py -q
 ```
 
 结果：
 
-- `77 passed`
+- `117 passed`
 
 ### 9.2 ksadk-python
 
 ```bash
-pytest /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_client_framework_passthrough.py \
+pytest /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_cmd_deploy_no_cache.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_cmd_launch_no_cache.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_storage_defaults.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_cmd_hermes.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_client_framework_passthrough.py \
   /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_deploy_integration.py \
   /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_openclaw_workspace_files_gating.py \
-  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_storage_defaults.py -q
+  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_json_contracts.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_workflow_help_snapshots.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_cli_dry_run.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_cmd_files.py -q
 ```
 
 结果：
 
-- `30 passed`
+- `167 passed`
+
+补充回归：
 
 ```bash
-pytest /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_cmd_hermes.py -q
+pytest /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_cmd_deploy_no_cache.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_storage_defaults.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_cmd_hermes.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_client_framework_passthrough.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_deploy_integration.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_openclaw_workspace_files_gating.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_json_contracts.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_workflow_help_snapshots.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_cli_dry_run.py \
+  -k 'deploy or launch or hermes or openclaw or storage or cached' -q
 ```
 
 结果：
 
-- `34 passed`
+- `106 passed, 43 deselected`
+
+说明：
+
+- 这轮额外修复了一个测试夹具问题：`AGENTENGINE_GLOBAL_DRY_RUN` 之前没有在 `tests/conftest.py` 中复位，会导致 dry-run 用例污染后续普通命令用例。
+
+### 9.3 预发 CLI/e2e
+
+`Hermes` 预发目录 `/Users/xiayu/agentengine-test/hermes-pre` 已完成一轮真实命令验证：
 
 ```bash
-pytest /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_cmd_deploy_no_cache.py -q
+agentengine files upload --local-path <tmp>/single.txt --remote-path tmp/<run_id>/single.txt --output json
+agentengine files list --path tmp/<run_id>
+agentengine files download --remote-path tmp/<run_id>/single.txt --output-path <tmp>/downloaded.txt --output json
+agentengine files push --local-dir <tmp>/nested --remote-path tmp/<run_id>/sync --output json
+agentengine files list --path tmp/<run_id>/sync --recursive --output json
+agentengine files pull --remote-path tmp/<run_id>/sync --local-dir <tmp>/pulled --output json
+agentengine files delete --remote-path tmp/<run_id>/single.txt --yes --output json
+agentengine files delete --remote-path tmp/<run_id>/sync/a.txt --yes --output json
+agentengine files delete --remote-path tmp/<run_id>/sync/b.txt --yes --output json
 ```
 
 结果：
 
-- `4 passed`
+- `list / upload / download / delete / push / pull` 全部通过
+- pretty 输出与 JSON 输出都符合当前设计
+- `pull` 后本地文件内容校验通过，`download` 后单文件内容校验通过
 
-```bash
-pytest /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_json_contracts.py -q
-pytest /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_workflow_help_snapshots.py -q
-```
+`OpenClaw` 预发目录 `/Users/xiayu/agentengine-test/openclaw-pre` 当前验证结论：
 
-结果：
-
-- `17 passed`
-- `1 passed`
-
-```bash
-pytest /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_cli_dry_run.py -k '(openclaw and deploy) or (hermes and deploy) or launch' -q
-```
-
-结果：
-
-- `3 passed`
+- 控制面资源仍可正常 `agentengine openclaw status`
+- 但直接访问 runtime endpoint 会返回 `401 Unauthorized`
+- `agentengine files list` 因此无法在这个旧实例上完成直连验证
+- 这说明当前阻塞点仍然是“旧预发 runtime 镜像未升级到当前 workspace helper / gateway patch 版本”，不是 CLI contract 本身
 
 ## 10. 当前已知剩余事项
 
-还没有完成的不是 contract，而是预发 runtime 级验收：
+还没有完成的不是 contract，而是剩余的 runtime 级验收：
 
-1. `OpenClaw` 需要升级到当前 worktree 对应镜像后，再验证 `/_ksadk/workspace/v1/healthz`
+1. `OpenClaw` 需要升级到包含当前 workspace helper / gateway patch 的 runtime 镜像后，再验证 `/_ksadk/workspace/v1/healthz` 与 `agentengine files *`
 2. `agentengine launch` 需要补一轮预发 CLI 级 e2e
 3. Share link 需要补浏览器人工回归
-4. `agentengine-server/tests/test_workspace_storage_contract.py` 当前还是未跟踪文件，提交前要确认是否纳入版本库
 
 ## 11. review 时最值得盯的点
 
@@ -328,4 +357,4 @@ pytest /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_cli_dry_run.
 
 ## 12. 一句话总结
 
-当前分支已经把 workspace files 主链和 serverless PVC contract 打通到了“代码 + 单测”层面；下一步的关键不是再改命名或 schema，而是把 `OpenClaw` 和 `launch` 的预发 e2e 跑实。
+当前分支已经把 workspace files 主链和 serverless PVC contract 打通到了“代码 + 单测 + Hermes 预发 CLI/e2e”层面；剩下真正未闭环的是 `OpenClaw` 旧 runtime 镜像升级后的直连验收，以及 `launch` 路径的预发补测。
