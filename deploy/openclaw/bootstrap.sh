@@ -14,6 +14,8 @@ set -euo pipefail
 # - 启动可观测：关键阶段输出中文日志，方便排查卡点
 
 STATE_DIR="${OPENCLAW_STATE_DIR:-${HOME:-/root}/.openclaw}"
+export OPENCLAW_WORKSPACE_FILES_ENABLED="${OPENCLAW_WORKSPACE_FILES_ENABLED:-0}"
+# TODO(workspace-files-v1): enable OpenClaw workspace files after loopback gateway forwarding is verified end-to-end.
 CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-${STATE_DIR}/openclaw.json}"
 BOOTSTRAP_MARKER="${STATE_DIR}/.bootstrapped"
 PUBLIC_PORT="${OPENCLAW_PUBLIC_PORT:-19089}"

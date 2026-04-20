@@ -64,6 +64,7 @@ ROOT_HELP_COMMANDS = {
     "build",
     "dashboard",
     "deploy",
+    "files",
     "init",
     "hermes",
     "launch",
@@ -82,6 +83,7 @@ SHORT_HELP_MAP = {
     "build": "构建部署制品",
     "dashboard": "打开云端 Agent Dashboard",
     "deploy": "部署到云端",
+    "files": "管理 workspace 文件",
     "hermes": "Hermes Agent 资源管理",
     "init": "创建新项目",
     "launch": "一键构建+部署",
@@ -310,6 +312,13 @@ def _register_commands():
         from ksadk.cli.cmd_a2a import a2a
 
         _add_command_once(cli, a2a)
+    except ImportError:
+        pass
+
+    try:
+        from ksadk.cli.cmd_files import files
+
+        _add_command_once(cli, files)
     except ImportError:
         pass
 

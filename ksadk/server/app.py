@@ -4,6 +4,7 @@ FastAPI 应用 - 提供 HTTP API 接口 (ADK Web 兼容)
 """
 
 import base64
+import httpx
 import io
 import json
 import logging
@@ -13,10 +14,11 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException, Request, File, Query, UploadFile
+from fastapi import FastAPI, HTTPException, Request, File, Form, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -27,6 +29,11 @@ from ksadk.conversations.session_title import (
 )
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.server.api_models import AgentRunRequest
+from ksadk.server.workspace_files import (
+    build_workspace_files_bootstrap,
+    create_workspace_files_router,
+    workspace_files_enabled,
+)
 from ksadk.sessions import ConversationSessionCore, Session, SessionEvent, resolve_session_service
 from ksadk.sessions.local_service import resolve_local_session_dir
 from ksadk.tracing import get_memory_exporter
@@ -99,6 +106,17 @@ _MAX_INLINE_BASE64_CHARS = 4_000_000
 _MAX_INLINE_TEXT_CHARS = 20_000
 _MAX_REFERENCE_TEXT_BYTES = 3_000_000
 _UPLOAD_URI_SCHEME = "ksadk-upload://"
+
+
+def _workspace_root_dir() -> Path:
+    return resolve_local_session_dir() / "workspace"
+
+app.include_router(
+    create_workspace_files_router(
+        root_getter=_workspace_root_dir,
+        enabled_getter=lambda: workspace_files_enabled(default=True),
+    )
+)
 
 
 def set_runner(r: BaseRunner):
@@ -385,6 +403,34 @@ def _action_response(action: str, data: Any, *, request_id: Optional[str] = None
     return payload
 
 
+async def _workspace_runtime_request(
+    method: str,
+    runtime_path: str,
+    *,
+    params: Optional[Dict[str, Any]] = None,
+    files: Optional[Dict[str, Any]] = None,
+) -> httpx.Response:
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.request(
+            method,
+            runtime_path,
+            params=params,
+            files=files,
+        )
+
+    if response.status_code >= 400:
+        detail = response.text
+        try:
+            payload = response.json()
+        except Exception:
+            payload = None
+        if isinstance(payload, dict):
+            detail = str(payload.get("detail") or detail)
+        raise HTTPException(status_code=response.status_code, detail=detail or "Workspace request failed")
+    return response
+
+
 # ============================================================
 # Core ADK API Endpoints
 # ============================================================
@@ -434,13 +480,26 @@ class RunAgentActionRequest(BaseModel):
     ApiFormat: str = "responses"
     Stream: bool = False
     Model: Optional[str] = None
+    ModelMetadata: Optional[Dict[str, Any]] = None
 
 
 class ResponsesRequest(BaseModel):
     input: Any
     model: Optional[str] = None
+    model_metadata: Optional[Dict[str, Any]] = None
     stream: bool = False
     session_id: Optional[str] = None
+
+
+class WorkspaceListActionRequest(BaseModel):
+    AgentId: Optional[str] = None
+    Path: str = "."
+    Recursive: bool = False
+
+
+class WorkspaceDeleteActionRequest(BaseModel):
+    AgentId: Optional[str] = None
+    Path: str
 
 
 async def _session_to_action_payload(session: Session) -> dict[str, Any]:
@@ -501,6 +560,7 @@ def _event_to_action_payload(event: SessionEvent) -> dict[str, Any]:
 async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
     agent_id = request.AgentId or (runner.detection_result.name if runner else "default-agent")
     description = getattr(runner.detection_result, "description", "") if runner else ""
+    workspace_enabled = workspace_files_enabled(default=True)
     return _action_response(
         "GetAgentUiBootstrap",
         {
@@ -512,6 +572,7 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
             "Modules": ["Chat", "Build", "Deploy"],
             "Capabilities": {
                 "Attachments": True,
+                "WorkspaceFiles": workspace_enabled,
                 "Approval": True,
                 "Thinking": True,
                 "StopRun": False,
@@ -519,6 +580,7 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
                 "MCP": False,
                 "HostedRuntime": False,
             },
+            "WorkspaceFiles": build_workspace_files_bootstrap(enabled=workspace_enabled),
             "AccessMode": "Owner",
             "SharePermissions": {
                 "Interactive": True,
@@ -617,6 +679,78 @@ async def attachment_content_action(FileUri: str = Query(...)):
         content_disposition_type="inline",
     )
 
+
+@app.post("/agentengine/api/v1/ListWorkspaceFiles")
+async def list_workspace_files_action(request: WorkspaceListActionRequest):
+    response = await _workspace_runtime_request(
+        "GET",
+        "/_ksadk/workspace/v1/entries",
+        params={
+            "path": request.Path,
+            "recursive": "true" if request.Recursive else "false",
+        },
+    )
+    return _action_response("ListWorkspaceFiles", response.json())
+
+
+@app.post("/agentengine/api/v1/AddWorkspaceFile")
+async def upload_workspace_file_action(
+    file: UploadFile = File(...),
+    AgentId: Optional[str] = Form(None),
+    Path: str = Form(...),
+):
+    del AgentId
+    try:
+        payload = await file.read()
+    finally:
+        await file.close()
+
+    file_name = file.filename or Path.rsplit("/", 1)[-1]
+    response = await _workspace_runtime_request(
+        "POST",
+        f"/_ksadk/workspace/v1/files/{quote(Path, safe='/')}",
+        files={
+            "file": (
+                file_name,
+                payload,
+                file.content_type or "application/octet-stream",
+            )
+        },
+    )
+    return _action_response("AddWorkspaceFile", response.json())
+
+
+@app.post("/agentengine/api/v1/DeleteWorkspaceFile")
+async def delete_workspace_file_action(request: WorkspaceDeleteActionRequest):
+    response = await _workspace_runtime_request(
+        "DELETE",
+        f"/_ksadk/workspace/v1/files/{quote(request.Path, safe='/')}",
+    )
+    return _action_response("DeleteWorkspaceFile", response.json())
+
+
+@app.get("/agentengine/api/v1/GetWorkspaceFileContent", include_in_schema=False)
+async def get_workspace_file_content_action(
+    FilePath: str = Query(...),
+    AgentId: Optional[str] = Query(None),
+):
+    del AgentId
+    response = await _workspace_runtime_request(
+        "GET",
+        f"/_ksadk/workspace/v1/files/{quote(FilePath, safe='/')}",
+    )
+    headers = {}
+    for key in ("content-disposition", "last-modified"):
+        value = response.headers.get(key)
+        if value:
+            headers[key] = value
+    return Response(
+        content=response.content,
+        status_code=response.status_code,
+        headers=headers,
+        media_type=response.headers.get("content-type"),
+    )
+
 def _normalize_model_catalog_items(raw_models: list[Any]) -> list[dict[str, Any]]:
     """统一模型目录 shape，并按 id 去重。
 
@@ -706,6 +840,7 @@ async def run_agent_action(request: RunAgentActionRequest):
             completion_request = ChatCompletionRequest(
                 messages=messages,
                 model=request.Model,
+                model_metadata=request.ModelMetadata,
                 stream=True,
                 session_id=request.SessionId,
             )
@@ -718,6 +853,7 @@ async def run_agent_action(request: RunAgentActionRequest):
                 messages=messages,
                 session_id=request.SessionId,
                 model=request.Model,
+                model_metadata=request.ModelMetadata,
                 prepare_runner=_prepare_runner_for_model,
                 session_service_provider=resolve_session_service,
             ),
@@ -731,6 +867,7 @@ async def run_agent_action(request: RunAgentActionRequest):
         messages=messages,
         session_id=request.SessionId,
         model=request.Model,
+        model_metadata=request.ModelMetadata,
         prepare_runner=_prepare_runner_for_model,
         session_service_provider=resolve_session_service,
     )
@@ -1342,6 +1479,7 @@ async def get_event_graph(app_name: str, user_id: str, session_id: str, event_id
 class ChatCompletionRequest(BaseModel):
     messages: List[Dict[str, Any]]
     model: Optional[str] = None
+    model_metadata: Optional[Dict[str, Any]] = None
     stream: bool = False
     session_id: Optional[str] = None
     temperature: Optional[float] = 0.7
@@ -1365,6 +1503,7 @@ async def responses(request: ResponsesRequest):
                 messages=messages,
                 session_id=request.session_id,
                 model=request.model,
+                model_metadata=request.model_metadata,
                 prepare_runner=_prepare_runner_for_model,
                 session_service_provider=resolve_session_service,
             ),
@@ -1378,6 +1517,7 @@ async def responses(request: ResponsesRequest):
         messages=messages,
         session_id=request.session_id,
         model=request.model,
+        model_metadata=request.model_metadata,
         prepare_runner=_prepare_runner_for_model,
         session_service_provider=resolve_session_service,
     )
@@ -1404,6 +1544,7 @@ async def chat_completions(request: ChatCompletionRequest):
                 messages=messages,
                 session_id=request.session_id,
                 model=request.model,
+                model_metadata=request.model_metadata,
                 prepare_runner=_prepare_runner_for_model,
                 session_service_provider=resolve_session_service,
             ),
@@ -1417,6 +1558,7 @@ async def chat_completions(request: ChatCompletionRequest):
         messages=messages,
         session_id=request.session_id,
         model=request.model,
+        model_metadata=request.model_metadata,
         prepare_runner=_prepare_runner_for_model,
         session_service_provider=resolve_session_service,
     )

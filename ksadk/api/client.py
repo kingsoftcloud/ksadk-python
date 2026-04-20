@@ -10,8 +10,10 @@ import json
 import uuid
 import socket
 import logging
+import mimetypes
+from pathlib import Path
 from typing import Optional, Dict, Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import requests
 
@@ -583,6 +585,100 @@ class AgentEngineClient:
         normalized = (framework or "langgraph").strip().lower()
         return normalized or "langgraph"
 
+    @staticmethod
+    def _extract_runtime_access(detail: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(detail, dict):
+            return {}
+
+        basic = detail.get("basic") if isinstance(detail.get("basic"), dict) else {}
+        quick = detail.get("quick_access") if isinstance(detail.get("quick_access"), dict) else {}
+        deployment = detail.get("deployment") if isinstance(detail.get("deployment"), dict) else {}
+        framework = (
+            deployment.get("framework")
+            or basic.get("framework")
+            or detail.get("framework")
+        )
+        return {
+            "agent_id": basic.get("agent_id") or detail.get("agent_id"),
+            "name": basic.get("name") or detail.get("name"),
+            "endpoint": quick.get("public_endpoint")
+            or quick.get("private_endpoint")
+            or detail.get("endpoint"),
+            "api_key": quick.get("api_key") or detail.get("api_key"),
+            "framework": str(framework or "").strip().lower() or None,
+        }
+
+    @staticmethod
+    def _encode_workspace_runtime_path(remote_path: str) -> str:
+        raw = str(remote_path or "").strip().replace("\\", "/")
+        if not raw or raw in {".", "/"}:
+            raise ValueError("workspace file path must not be empty")
+        segments = [segment for segment in raw.split("/") if segment not in {"", "."}]
+        if not segments:
+            raise ValueError("workspace file path must not be empty")
+        return "/".join(quote(segment, safe="") for segment in segments)
+
+    def _workspace_runtime_error(self, response: requests.Response) -> AgentEngineAPIError:
+        message = (response.text or "").strip() or f"HTTP {response.status_code}"
+        try:
+            payload = response.json()
+        except Exception:
+            payload = None
+        if isinstance(payload, dict):
+            message = (
+                str(payload.get("detail") or payload.get("Message") or message).strip()
+                or message
+            )
+        return AgentEngineAPIError(response.status_code, message)
+
+    async def _resolve_workspace_runtime_access(
+        self,
+        *,
+        agent_id: str | None = None,
+        name: str | None = None,
+        endpoint: str | None = None,
+        api_key: str | None = None,
+    ) -> Dict[str, Any]:
+        endpoint_value = str(endpoint or "").strip()
+        if endpoint_value:
+            return {"endpoint": endpoint_value.rstrip("/"), "api_key": api_key}
+
+        detail = await self.get_agent(agent_id=agent_id, name=name, include_api_key=True)
+        access = self._extract_runtime_access(detail)
+        resolved_endpoint = str(access.get("endpoint") or "").strip()
+        if not resolved_endpoint:
+            raise AgentEngineAPIError(404, "Agent runtime endpoint is not ready")
+        return {
+            "endpoint": resolved_endpoint.rstrip("/"),
+            "api_key": api_key or access.get("api_key"),
+        }
+
+    def _workspace_runtime_request(
+        self,
+        *,
+        access: Dict[str, Any],
+        method: str,
+        path: str,
+        params: Dict[str, Any] | None = None,
+        files: Dict[str, Any] | None = None,
+    ) -> requests.Response:
+        url = f"{access['endpoint'].rstrip('/')}/_ksadk/workspace/v1/{path.lstrip('/')}"
+        headers: Dict[str, str] = {}
+        if access.get("api_key"):
+            headers["Authorization"] = f"Bearer {access['api_key']}"
+        response = self._get_session().request(
+            method=method,
+            url=url,
+            headers=headers or None,
+            params=params,
+            files=files,
+            stream=False,
+            timeout=self.timeout,
+        )
+        if response.status_code >= 400:
+            raise self._workspace_runtime_error(response)
+        return response
+
     def _action(self, action: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
         """通用 Action API 调用"""
         body = params or {}
@@ -1056,6 +1152,107 @@ class AgentEngineClient:
             return True
         except Exception:
             return False
+
+    async def list_workspace_files(
+        self,
+        *,
+        agent_id: str | None = None,
+        name: str | None = None,
+        path: str = ".",
+        recursive: bool = False,
+        endpoint: str | None = None,
+        api_key: str | None = None,
+    ) -> Dict[str, Any]:
+        access = await self._resolve_workspace_runtime_access(
+            agent_id=agent_id,
+            name=name,
+            endpoint=endpoint,
+            api_key=api_key,
+        )
+        response = self._workspace_runtime_request(
+            access=access,
+            method="GET",
+            path="entries",
+            params={"path": path, "recursive": str(bool(recursive)).lower()},
+        )
+        return self._to_snake_case(response.json())
+
+    async def upload_workspace_file(
+        self,
+        *,
+        agent_id: str | None = None,
+        name: str | None = None,
+        remote_path: str,
+        local_path: str | Path,
+        endpoint: str | None = None,
+        api_key: str | None = None,
+    ) -> Dict[str, Any]:
+        access = await self._resolve_workspace_runtime_access(
+            agent_id=agent_id,
+            name=name,
+            endpoint=endpoint,
+            api_key=api_key,
+        )
+        file_path = Path(local_path)
+        file_bytes = file_path.read_bytes()
+        guessed_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+        response = self._workspace_runtime_request(
+            access=access,
+            method="POST",
+            path=f"files/{self._encode_workspace_runtime_path(remote_path)}",
+            files={
+                "file": (
+                    file_path.name,
+                    file_bytes,
+                    guessed_type,
+                )
+            },
+        )
+        return self._to_snake_case(response.json())
+
+    async def download_workspace_file(
+        self,
+        *,
+        agent_id: str | None = None,
+        name: str | None = None,
+        remote_path: str,
+        endpoint: str | None = None,
+        api_key: str | None = None,
+    ) -> bytes:
+        access = await self._resolve_workspace_runtime_access(
+            agent_id=agent_id,
+            name=name,
+            endpoint=endpoint,
+            api_key=api_key,
+        )
+        response = self._workspace_runtime_request(
+            access=access,
+            method="GET",
+            path=f"files/{self._encode_workspace_runtime_path(remote_path)}",
+        )
+        return response.content
+
+    async def delete_workspace_file(
+        self,
+        *,
+        agent_id: str | None = None,
+        name: str | None = None,
+        remote_path: str,
+        endpoint: str | None = None,
+        api_key: str | None = None,
+    ) -> Dict[str, Any]:
+        access = await self._resolve_workspace_runtime_access(
+            agent_id=agent_id,
+            name=name,
+            endpoint=endpoint,
+            api_key=api_key,
+        )
+        response = self._workspace_runtime_request(
+            access=access,
+            method="DELETE",
+            path=f"files/{self._encode_workspace_runtime_path(remote_path)}",
+        )
+        return self._to_snake_case(response.json())
 
     # ===== MCP Actions =====
 

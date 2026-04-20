@@ -8,6 +8,7 @@ import pty
 import select
 import signal
 import termios
+from pathlib import Path
 from typing import Iterable
 
 import httpx
@@ -15,6 +16,8 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
 from starlette.websockets import WebSocketState
+
+from workspace_files import create_workspace_files_router, workspace_files_enabled
 
 
 TERMINAL_SUBPROTOCOL = "ks-terminal.v1"
@@ -49,6 +52,17 @@ NESTED_READONLY = {
 }
 
 app = FastAPI()
+
+app.include_router(
+    create_workspace_files_router(
+        root_getter=lambda: Path(
+            os.getenv("KSADK_WORKSPACE_ROOT")
+            or os.getenv("HERMES_WORKDIR")
+            or (Path(os.getenv("HERMES_HOME", "/home/node/.hermes")) / "workspace")
+        ),
+        enabled_getter=lambda: workspace_files_enabled(default=True),
+    )
+)
 
 os.environ.setdefault("HERMES_HOSTED_RUNTIME", "1")
 

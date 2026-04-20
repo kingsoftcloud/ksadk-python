@@ -8,18 +8,20 @@ import {
   writePersistedSessionId,
 } from './utils/session.js';
 import { useResponsiveViewport } from './hooks/useResponsiveViewport';
-import { cn } from './lib/utils';
+import { cn } from '@/lib/utils';
 import { AttachmentPreview } from './components/chat/AttachmentPreview';
 import { ChatComposer } from './components/chat/ChatComposer';
 import { ChatHeader } from './components/chat/ChatHeader';
 import { ChatMessageList } from './components/chat/ChatMessageList';
 import { ChatSidebar } from './components/chat/ChatSidebar';
+import { WorkspacePanel } from './components/workspace/WorkspacePanel';
 import type {
   Message,
   MessageAttachment,
   ModelCatalogItem,
   PreviewImageSize,
   Session,
+  WorkspaceFilesCapability,
 } from './components/chat/types';
 import { Sheet, SheetContent, SheetTitle } from './components/ui/sheet';
 
@@ -65,6 +67,8 @@ type CompactionStreamPayload = {
 type BootstrapModel = ModelCatalogItem & {
   source?: string;
 };
+
+type BootstrapWorkspaceFiles = WorkspaceFilesCapability;
 
 type RuntimeApiFormat = 'responses' | 'chat_completions';
 
@@ -421,6 +425,9 @@ export default function App() {
   const [modelSource, setModelSource] = useState('');
   const [modelCatalogLoaded, setModelCatalogLoaded] = useState(false);
   const [agentFramework, setAgentFramework] = useState('');
+  const [workspaceFiles, setWorkspaceFiles] = useState<BootstrapWorkspaceFiles | null>(null);
+  const [accessMode, setAccessMode] = useState('Owner');
+  const [workspacePanelOpen, setWorkspacePanelOpen] = useState(false);
   const [apiFormats, setApiFormats] = useState<RuntimeApiFormat[]>([
     'responses',
     'chat_completions',
@@ -606,6 +613,16 @@ export default function App() {
       }
       setAgentFramework(String(data?.Data?.Agent?.Framework || '').trim().toLowerCase());
       setApiFormats(normalizeApiFormats(data?.Data?.ApiFormats));
+      setAccessMode(String(data?.Data?.AccessMode || 'Owner'));
+
+      const bootstrapWorkspaceFiles =
+        data?.Data?.Capabilities?.WorkspaceFiles && data?.Data?.WorkspaceFiles?.Enabled
+          ? (data.Data.WorkspaceFiles as BootstrapWorkspaceFiles)
+          : null;
+      setWorkspaceFiles(bootstrapWorkspaceFiles);
+      if (!bootstrapWorkspaceFiles) {
+        setWorkspacePanelOpen(false);
+      }
 
       void fetchSessions(bootstrapAgentId, readPersistedSessionId(bootstrapAgentId));
 
@@ -820,6 +837,7 @@ export default function App() {
           Stream: true,
           ApiFormat: runAgentApiFormat,
           Model: selectedModel || undefined,
+          ModelMetadata: selectedModelMetadata || undefined,
           Messages: [
             {
               role: 'user',
@@ -1085,6 +1103,7 @@ export default function App() {
     draftInput: input,
     selectedModel: selectedModelMetadata,
   });
+  const workspaceEnabled = Boolean(workspaceFiles?.Enabled && accessMode === 'Owner');
 
   return (
     <div className="flex h-[var(--app-height)] min-h-[var(--app-height)] overflow-hidden bg-white font-sans text-slate-800 dark:bg-slate-900 dark:text-slate-200">
@@ -1154,6 +1173,8 @@ export default function App() {
           modelSource={modelSource}
           mobileActionsOpen={mobileActionsOpen}
           onMobileActionsOpenChange={setMobileActionsOpen}
+          workspaceEnabled={workspaceEnabled}
+          onOpenWorkspace={() => setWorkspacePanelOpen(true)}
         />
 
         <ChatMessageList
@@ -1192,6 +1213,21 @@ export default function App() {
         onClose={closeAttachmentPreview}
         onImageLoad={setPreviewImageSize}
       />
+
+      {workspaceEnabled && workspaceFiles ? (
+        <Sheet open={workspacePanelOpen} onOpenChange={setWorkspacePanelOpen}>
+          <SheetContent
+            side={isMobile ? 'bottom' : 'right'}
+            className={cn(
+              'border-slate-200 bg-white p-0 dark:border-slate-800 dark:bg-slate-950',
+              isMobile ? 'h-[70vh] rounded-t-[1.75rem]' : 'w-[28rem] max-w-[95vw]',
+            )}
+          >
+            <SheetTitle className="sr-only">Workspace 文件</SheetTitle>
+            <WorkspacePanel agentId={agentId} capability={workspaceFiles} open={workspacePanelOpen} />
+          </SheetContent>
+        </Sheet>
+      ) : null}
 
       <style
         dangerouslySetInnerHTML={{
