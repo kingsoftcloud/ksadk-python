@@ -1177,6 +1177,27 @@ class AgentEngineClient:
         )
         return self._to_snake_case(response.json())
 
+    async def get_workspace_health(
+        self,
+        *,
+        agent_id: str | None = None,
+        name: str | None = None,
+        endpoint: str | None = None,
+        api_key: str | None = None,
+    ) -> Dict[str, Any]:
+        access = await self._resolve_workspace_runtime_access(
+            agent_id=agent_id,
+            name=name,
+            endpoint=endpoint,
+            api_key=api_key,
+        )
+        response = self._workspace_runtime_request(
+            access=access,
+            method="GET",
+            path="healthz",
+        )
+        return self._to_snake_case(response.json())
+
     async def upload_workspace_file(
         self,
         *,

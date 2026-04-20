@@ -2,7 +2,7 @@
 
 ## 1. 文档目的
 
-这份文档只描述当前 `workspace-files-v1` worktree 中已经实现并验证过的结果，方便继续 review、联调和后续补 KOP 注册。
+这份文档只描述当前 `workspace-files-v1` 分支中已经实现并验证过的结果，方便继续 review、联调和后续补 KOP 注册。
 
 结论先行：
 
@@ -34,6 +34,8 @@
   - `agentengine files upload`
   - `agentengine files download`
   - `agentengine files delete`
+  - `agentengine files push`
+  - `agentengine files pull`
 - CLI 现在支持 workspace 专用默认解析：
   - 支持位置参数 `agent_ref`
   - 自动解析顺序：`.agentengine.state -> agentengine.yaml/ksadk.yaml`
@@ -41,11 +43,20 @@
 - CLI 新增 direct runtime 模式：
   - `--endpoint`
   - `--api-key`
+- CLI 输出口径已做一轮收敛：
+  - pretty 模式默认使用中文提示、完整 workspace 逻辑路径、自动文件大小单位
+  - `files list` 会同时展示逻辑路径和 runtime 返回的真实目录路径
+  - json 模式在保留原有核心字段的前提下，新增稳定 envelope，统一提供 `ok`、`action`、`workspace_root`、`workspace_display_path`、`workspace_real_root`、`workspace_real_path`、`entries[].display_path`、`entries[].real_path`、`summary`
 - SDK convenience methods：
   - `list_workspace_files`
   - `upload_workspace_file`
   - `download_workspace_file`
   - `delete_workspace_file`
+- CLI 新增目录级同步糖衣，但仍复用现有单文件 data plane：
+  - `push`：本地目录 -> workspace 子目录
+  - `pull`：workspace 子目录 -> 本地目录
+  - 默认只新增，不覆盖目标端已存在同名文件
+  - `--force` 时才覆盖目标端已存在同名文件
 - Hermes runtime wrapper 已接入统一 contract。
 - server 侧 bootstrap 已下发 `WorkspaceFiles` capability。
 - `GetAgentUiBootstrap` 已下发以下字段：
@@ -66,6 +77,14 @@
 - `OpenClaw` 当前预发 state 记录的镜像仍是 `hub-vpc-cn-beijing-6.kce.ksyun.com/agentengine-public/openclaw:2026.4.15`，不是这次 worktree 对应的新镜像。
 - Share link 不暴露 workspace 面板，也不开放 workspace files action。
 - 今天没有做 KOP 注册，因此不验证任何必须经过 `aicp*` 域名鉴权的外部入口。
+- Hosted UI 仍然只有“多文件上传到当前目录”，没有目录选择、`push/pull`、空目录同步。
+- `files upload` 仍然是单文件语义，`--remote-path` 表示精确目标路径，不做“这是目录还是文件名”的自动猜测。
+- `files push/pull` 首版不做以下能力：
+  - 远端多余文件删除
+  - 双向自动 merge
+  - 校验和比较 / 增量 diff
+  - 断点续传
+  - 空目录保真
 
 ## 3. 数据面设计收敛
 
@@ -85,34 +104,36 @@ flowchart LR
   - 旧附件：`UploadFile` / `AttachmentContent`
 - 新 workspace files：`AddWorkspaceFile` / `GetWorkspaceFileContent`
 - 浏览器下载统一走二进制 streaming，不走 JSON envelope。
+- `files push/pull` 不是新的 runtime/server 协议，只是 CLI 在现有 `list/upload/download` 之上的目录级组合语义。
+- 因此 `push/pull` 当前只在 CLI 提供，不扩散到 Hosted UI、Hosted action 或 SDK convenience method。
 
 ## 4. 两个仓库里的落点
 
 ### 4.1 ksadk-python
 
 - runtime 路由实现：
-  - [`ksadk/server/workspace_files.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/.worktrees/workspace-files-v1/ksadk/server/workspace_files.py)
+  - [`ksadk/server/workspace_files.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk/server/workspace_files.py)
 - 本地 server / Hosted action 对齐：
-  - [`ksadk/server/app.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/.worktrees/workspace-files-v1/ksadk/server/app.py)
+  - [`ksadk/server/app.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk/server/app.py)
 - CLI：
-  - [`ksadk/cli/cmd_files.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/.worktrees/workspace-files-v1/ksadk/cli/cmd_files.py)
+  - [`ksadk/cli/cmd_files.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk/cli/cmd_files.py)
 - SDK：
-  - [`ksadk/api/client.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/.worktrees/workspace-files-v1/ksadk/api/client.py)
+  - [`ksadk/api/client.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk/api/client.py)
 - Hermes runtime wrapper：
-  - [`deploy/hermes/runtime/app.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/.worktrees/workspace-files-v1/deploy/hermes/runtime/app.py)
+  - [`deploy/hermes/runtime/app.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/deploy/hermes/runtime/app.py)
 - 本地模型 metadata 归一化：
-  - [`ksadk/conversations/model_context.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/.worktrees/workspace-files-v1/ksadk/conversations/model_context.py)
+  - [`ksadk/conversations/model_context.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk/conversations/model_context.py)
 
 ### 4.2 agentengine-server
 
 - bootstrap / capability：
-  - [`app/api/v1/actions/chat_actions.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/.worktrees/workspace-files-v1/app/api/v1/actions/chat_actions.py)
+  - [`app/api/v1/actions/chat_actions.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/app/api/v1/actions/chat_actions.py)
 - Hosted actions：
-  - [`app/api/v1/actions/upload_actions.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/.worktrees/workspace-files-v1/app/api/v1/actions/upload_actions.py)
+  - [`app/api/v1/actions/upload_actions.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/app/api/v1/actions/upload_actions.py)
 - router allowlist / content proxy：
-  - [`app/gateway/router_service.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/.worktrees/workspace-files-v1/app/gateway/router_service.py)
+  - [`app/gateway/router_service.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/app/gateway/router_service.py)
 - server 侧模型 metadata 归一化：
-  - [`app/services/model_context.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/.worktrees/workspace-files-v1/app/services/model_context.py)
+  - [`app/services/model_context.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/app/services/model_context.py)
 
 ## 5. 这次顺手补齐的模型 metadata 兼容
 
@@ -150,7 +171,7 @@ flowchart LR
 
 - runtime: 本地 `uvicorn ksadk.server.app:app`
 - workspace 根目录：`/tmp/ksadk-workspace-files-e2e.3VqzyN/.agentengine/ui/workspace`
-- CLI：当前 worktree 下的 `python -m ksadk.cli`
+- CLI：当前分支下的 `python -m ksadk.cli`
 
 ### 6.1 runtime 直连健康检查
 
@@ -171,7 +192,7 @@ curl -s http://127.0.0.1:18081/_ksadk/workspace/v1/healthz
 列目录：
 
 ```bash
-PYTHONPATH=/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/.worktrees/workspace-files-v1 \
+PYTHONPATH=/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python \
 python -m ksadk.cli --output json files list \
   --endpoint http://127.0.0.1:18081 \
   --path .
@@ -180,13 +201,13 @@ python -m ksadk.cli --output json files list \
 结果：
 
 ```json
-{"root": "workspace", "path": ".", "entries": [{"name": "existing", "path": "existing", "type": "directory", "size_bytes": null, "mime_type": null, "modified_at": "2026-04-19T06:02:30.643936Z"}]}
+{"root":"workspace","path":".","entries":[{"name":"existing","path":"existing","type":"directory","size_bytes":null,"mime_type":null,"modified_at":"2026-04-19T06:02:30.643936Z","display_path":"workspace:/existing","real_path":"/private/tmp/ksadk-workspace-files-e2e.3VqzyN/.agentengine/ui/workspace/existing","size_human":null}],"workspace_real_root":"/private/tmp/ksadk-workspace-files-e2e.3VqzyN/.agentengine/ui/workspace","ok":true,"action":"list","workspace_root":"workspace","workspace_display_path":"workspace:/","workspace_real_path":"/private/tmp/ksadk-workspace-files-e2e.3VqzyN/.agentengine/ui/workspace","entry_count":1,"directories":[{"name":"existing","path":"existing","type":"directory","size_bytes":null,"mime_type":null,"modified_at":"2026-04-19T06:02:30.643936Z","display_path":"workspace:/existing","real_path":"/private/tmp/ksadk-workspace-files-e2e.3VqzyN/.agentengine/ui/workspace/existing","size_human":null}],"files":[],"summary":{"entry_count":1,"directory_count":1,"file_count":0}}
 ```
 
 上传：
 
 ```bash
-PYTHONPATH=/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/.worktrees/workspace-files-v1 \
+PYTHONPATH=/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python \
 python -m ksadk.cli --output json files upload \
   --endpoint http://127.0.0.1:18081 \
   --local-path /tmp/ksadk-workspace-files-e2e.3VqzyN/upload-source.txt \
@@ -202,7 +223,7 @@ python -m ksadk.cli --output json files upload \
 下载：
 
 ```bash
-PYTHONPATH=/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/.worktrees/workspace-files-v1 \
+PYTHONPATH=/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python \
 python -m ksadk.cli --output json files download \
   --endpoint http://127.0.0.1:18081 \
   --remote-path reports/report.txt \
@@ -218,7 +239,7 @@ python -m ksadk.cli --output json files download \
 删除：
 
 ```bash
-PYTHONPATH=/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/.worktrees/workspace-files-v1 \
+PYTHONPATH=/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python \
 python -m ksadk.cli --output json files delete \
   --endpoint http://127.0.0.1:18081 \
   --remote-path reports/report.txt \
@@ -336,12 +357,12 @@ ModuleNotFoundError: No module named 'ksadk'
 
 原因：
 
-- [`deploy/hermes/runtime/app.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/.worktrees/workspace-files-v1/deploy/hermes/runtime/app.py) 当时直接 import `ksadk.server.workspace_files`
+- [`deploy/hermes/runtime/app.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/deploy/hermes/runtime/app.py) 当时直接 import `ksadk.server.workspace_files`
 - 但 Hermes 镜像构建上下文是 `deploy/hermes/`，容器内并没有完整 `ksadk` 包
 
 修复：
 
-- 在 [`deploy/hermes/runtime/workspace_files.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/.worktrees/workspace-files-v1/deploy/hermes/runtime/workspace_files.py) 内置 runtime-local workspace files 模块
+- 在 [`deploy/hermes/runtime/workspace_files.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/deploy/hermes/runtime/workspace_files.py) 内置 runtime-local workspace files 模块
 - Hermes runtime 改为从本地 runtime 目录 import
 - 新增隔离导入回归测试，防止“本地 repo 可 import、容器内不可 import”再次发生
 
@@ -354,7 +375,7 @@ ModuleNotFoundError: No module named 'ksadk'
 - 执行：
 
 ```bash
-PYTHONPATH=/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/.worktrees/workspace-files-v1 \
+PYTHONPATH=/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python \
 python -m ksadk.cli --output json files list --path .
 ```
 
@@ -440,7 +461,7 @@ curl -i -s http://127.0.0.1:18082/_ksadk/workspace/v1/healthz
 - 同样地，执行：
 
 ```bash
-PYTHONPATH=/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/.worktrees/workspace-files-v1 \
+PYTHONPATH=/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python \
 python -m ksadk.cli --output json files list --endpoint http://127.0.0.1:18082 --path .
 ```
 

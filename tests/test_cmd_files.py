@@ -5,6 +5,7 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
+from ksadk.api import AgentEngineAPIError
 from ksadk.cli import _register_commands, cli
 
 
@@ -14,6 +15,12 @@ class _FakeFilesClient:
     upload_calls: list[dict] = []
     download_calls: list[dict] = []
     delete_calls: list[dict] = []
+    list_results: dict[str, object] = {}
+    download_payloads: dict[str, bytes] = {}
+    workspace_health: dict[str, object] = {
+        "root": "workspace",
+        "workspace_path": "/home/node/.hermes/workspace",
+    }
 
     def __init__(self, *args, **kwargs):
         self.kwargs = kwargs
@@ -27,6 +34,12 @@ class _FakeFilesClient:
 
     async def list_workspace_files(self, **kwargs):
         self.__class__.list_calls.append(kwargs)
+        path = kwargs["path"]
+        if path in self.__class__.list_results:
+            result = self.__class__.list_results[path]
+            if isinstance(result, Exception):
+                raise result
+            return result
         return {
             "root": "workspace",
             "path": kwargs["path"],
@@ -42,18 +55,37 @@ class _FakeFilesClient:
 
     async def download_workspace_file(self, **kwargs):
         self.__class__.download_calls.append(kwargs)
+        payload = self.__class__.download_payloads.get(kwargs["remote_path"])
+        if payload is not None:
+            return payload
         return b"payload"
 
     async def delete_workspace_file(self, **kwargs):
         self.__class__.delete_calls.append(kwargs)
         return {"deleted": True}
 
+    async def get_workspace_health(self, **kwargs):
+        return dict(self.__class__.workspace_health)
+
+
+def _reset_fake_files_client() -> None:
+    _FakeFilesClient.init_calls = []
+    _FakeFilesClient.list_calls = []
+    _FakeFilesClient.upload_calls = []
+    _FakeFilesClient.download_calls = []
+    _FakeFilesClient.delete_calls = []
+    _FakeFilesClient.list_results = {}
+    _FakeFilesClient.download_payloads = {}
+    _FakeFilesClient.workspace_health = {
+        "root": "workspace",
+        "workspace_path": "/home/node/.hermes/workspace",
+    }
+
 
 def test_files_list_command_supports_json_output(monkeypatch):
     from ksadk.cli import cmd_files
 
-    _FakeFilesClient.init_calls = []
-    _FakeFilesClient.list_calls = []
+    _reset_fake_files_client()
     _register_commands()
     monkeypatch.setattr(cmd_files, "AgentEngineClient", _FakeFilesClient)
 
@@ -76,8 +108,22 @@ def test_files_list_command_supports_json_output(monkeypatch):
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
+    assert payload["ok"] is True
+    assert payload["action"] == "list"
+    assert payload["workspace_root"] == "workspace"
     assert payload["path"] == "docs"
+    assert payload["workspace_display_path"] == "workspace:/docs"
+    assert payload["workspace_real_root"] == "/home/node/.hermes/workspace"
+    assert payload["workspace_real_path"] == "/home/node/.hermes/workspace/docs"
+    assert payload["summary"] == {
+        "entry_count": 2,
+        "directory_count": 1,
+        "file_count": 1,
+    }
     assert payload["entries"][0]["path"] == "inputs"
+    assert payload["entries"][0]["display_path"] == "workspace:/inputs"
+    assert payload["entries"][0]["real_path"] == "/home/node/.hermes/workspace/inputs"
+    assert payload["entries"][1]["size_human"] == "7 B"
     assert _FakeFilesClient.list_calls == [
         {"agent_id": "demo-agent", "path": "docs", "recursive": False}
     ]
@@ -87,8 +133,7 @@ def test_files_list_command_supports_json_output(monkeypatch):
 def test_files_list_command_supports_direct_runtime_access(monkeypatch):
     from ksadk.cli import cmd_files
 
-    _FakeFilesClient.init_calls = []
-    _FakeFilesClient.list_calls = []
+    _reset_fake_files_client()
     _register_commands()
     monkeypatch.setattr(cmd_files, "AgentEngineClient", _FakeFilesClient)
 
@@ -124,11 +169,41 @@ def test_files_list_command_supports_direct_runtime_access(monkeypatch):
     assert _FakeFilesClient.init_calls == [{"region": "cn-beijing-6"}]
 
 
+def test_files_list_command_accepts_workspace_style_absolute_path(monkeypatch):
+    from ksadk.cli import cmd_files
+
+    _reset_fake_files_client()
+    _register_commands()
+    monkeypatch.setattr(cmd_files, "AgentEngineClient", _FakeFilesClient)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--output",
+            "json",
+            "files",
+            "list",
+            "--agent",
+            "demo-agent",
+            "--path",
+            "/tmp",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["path"] == "tmp"
+    assert payload["workspace_display_path"] == "workspace:/tmp"
+    assert _FakeFilesClient.list_calls == [
+        {"agent_id": "demo-agent", "path": "tmp", "recursive": False}
+    ]
+
+
 def test_files_list_command_resolves_openclaw_state_and_prefers_state_runtime_access(monkeypatch, tmp_path: Path):
     from ksadk.cli import cmd_files
 
-    _FakeFilesClient.init_calls = []
-    _FakeFilesClient.list_calls = []
+    _reset_fake_files_client()
     _register_commands()
     monkeypatch.setattr(cmd_files, "AgentEngineClient", _FakeFilesClient)
     monkeypatch.chdir(tmp_path)
@@ -179,8 +254,7 @@ def test_files_list_command_resolves_openclaw_state_and_prefers_state_runtime_ac
 def test_files_list_command_falls_back_to_project_config(monkeypatch, tmp_path: Path):
     from ksadk.cli import cmd_files
 
-    _FakeFilesClient.init_calls = []
-    _FakeFilesClient.list_calls = []
+    _reset_fake_files_client()
     _register_commands()
     monkeypatch.setattr(cmd_files, "AgentEngineClient", _FakeFilesClient)
     monkeypatch.chdir(tmp_path)
@@ -215,10 +289,7 @@ def test_files_list_command_falls_back_to_project_config(monkeypatch, tmp_path: 
 def test_files_upload_download_and_delete_commands(monkeypatch, tmp_path: Path):
     from ksadk.cli import cmd_files
 
-    _FakeFilesClient.init_calls = []
-    _FakeFilesClient.upload_calls = []
-    _FakeFilesClient.download_calls = []
-    _FakeFilesClient.delete_calls = []
+    _reset_fake_files_client()
     _register_commands()
     monkeypatch.setattr(cmd_files, "AgentEngineClient", _FakeFilesClient)
 
@@ -296,13 +367,116 @@ def test_files_upload_download_and_delete_commands(monkeypatch, tmp_path: Path):
     ]
 
 
+def test_files_upload_pretty_output_shows_local_and_remote_paths(monkeypatch, tmp_path: Path):
+    from ksadk.cli import cmd_files
+
+    _reset_fake_files_client()
+    _register_commands()
+    monkeypatch.setattr(cmd_files, "AgentEngineClient", _FakeFilesClient)
+
+    local_file = tmp_path / "resume.pdf"
+    local_file.write_bytes(b"pdf-data")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "files",
+            "upload",
+            "--agent",
+            "demo-agent",
+            "--local-path",
+            str(local_file),
+            "--remote-path",
+            "pdf",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "上传完成" in result.output
+    assert f"本地文件：{local_file}" in result.output
+    assert "远端文件：workspace:/pdf" in result.output
+    assert "文件大小：7 B" in result.output
+
+
+def test_files_upload_json_output_includes_agent_friendly_fields(monkeypatch, tmp_path: Path):
+    from ksadk.cli import cmd_files
+
+    _reset_fake_files_client()
+    _register_commands()
+    monkeypatch.setattr(cmd_files, "AgentEngineClient", _FakeFilesClient)
+
+    local_file = tmp_path / "resume.pdf"
+    local_file.write_bytes(b"pdf-data")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--output",
+            "json",
+            "files",
+            "upload",
+            "--agent",
+            "demo-agent",
+            "--local-path",
+            str(local_file),
+            "--remote-path",
+            "pdf",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["ok"] is True
+    assert payload["action"] == "upload"
+    assert payload["workspace_root"] == "workspace"
+    assert payload["local_path"] == str(local_file)
+    assert payload["remote_path"] == "pdf"
+    assert payload["remote_display_path"] == "workspace:/pdf"
+    assert payload["summary"] == {
+        "uploaded": 1,
+        "size_bytes": 7,
+        "size_human": "7 B",
+    }
+    assert payload["entry"]["display_path"] == "workspace:/pdf"
+
+
+def test_files_list_pretty_output_uses_readable_entry_lines(monkeypatch):
+    from ksadk.cli import cmd_files
+
+    _reset_fake_files_client()
+    _register_commands()
+    monkeypatch.setattr(cmd_files, "AgentEngineClient", _FakeFilesClient)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "files",
+            "list",
+            "--agent",
+            "demo-agent",
+            "--path",
+            ".",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "工作空间：workspace" in result.output
+    assert "当前目录：workspace:/" in result.output
+    assert "实际目录：/home/node/.hermes/workspace" in result.output
+    assert "条目数量：2" in result.output
+    assert "目录（1）" in result.output
+    assert "  workspace:/inputs" in result.output
+    assert "文件（1）" in result.output
+    assert "  workspace:/report.txt  7 B" in result.output
+
+
 def test_files_commands_support_direct_runtime_access(monkeypatch, tmp_path: Path):
     from ksadk.cli import cmd_files
 
-    _FakeFilesClient.init_calls = []
-    _FakeFilesClient.upload_calls = []
-    _FakeFilesClient.download_calls = []
-    _FakeFilesClient.delete_calls = []
+    _reset_fake_files_client()
     _register_commands()
     monkeypatch.setattr(cmd_files, "AgentEngineClient", _FakeFilesClient)
 
@@ -395,8 +569,7 @@ def test_files_commands_support_direct_runtime_access(monkeypatch, tmp_path: Pat
 def test_files_upload_accepts_positional_agent(monkeypatch, tmp_path: Path):
     from ksadk.cli import cmd_files
 
-    _FakeFilesClient.init_calls = []
-    _FakeFilesClient.upload_calls = []
+    _reset_fake_files_client()
     _register_commands()
     monkeypatch.setattr(cmd_files, "AgentEngineClient", _FakeFilesClient)
 
@@ -424,4 +597,208 @@ def test_files_upload_accepts_positional_agent(monkeypatch, tmp_path: Path):
             "remote_path": "reports/report.txt",
             "local_path": local_file,
         }
+    ]
+
+
+def test_files_push_uploads_new_files_and_skips_existing_targets_by_default(monkeypatch, tmp_path: Path):
+    from ksadk.cli import cmd_files
+
+    _reset_fake_files_client()
+    _register_commands()
+    monkeypatch.setattr(cmd_files, "AgentEngineClient", _FakeFilesClient)
+
+    local_dir = tmp_path / "skills"
+    local_dir.mkdir()
+    (local_dir / "README.md").write_text("local readme", encoding="utf-8")
+    nested_dir = local_dir / "nested"
+    nested_dir.mkdir()
+    (nested_dir / "tool.py").write_text("print('ok')\n", encoding="utf-8")
+
+    _FakeFilesClient.list_results["bundle"] = {
+        "root": "workspace",
+        "path": "bundle",
+        "entries": [
+            {"name": "README.md", "path": "bundle/README.md", "type": "file", "size_bytes": 12},
+        ],
+    }
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--output",
+            "json",
+            "files",
+            "push",
+            "--agent",
+            "demo-agent",
+            "--local-dir",
+            str(local_dir),
+            "--remote-path",
+            "bundle",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["ok"] is True
+    assert payload["action"] == "push"
+    assert payload["direction"] == "push"
+    assert payload["remote_display_path"] == "workspace:/bundle"
+    assert payload["summary"] == {
+        "created_count": 1,
+        "overwritten_count": 0,
+        "skipped_count": 1,
+        "total_files": 2,
+    }
+    assert payload["created"] == ["bundle/nested/tool.py"]
+    assert payload["skipped"] == ["bundle/README.md"]
+    assert payload["overwritten"] == []
+    assert payload["results"]["created"][0]["display_path"] == "workspace:/bundle/nested/tool.py"
+    assert payload["results"]["skipped"][0]["display_path"] == "workspace:/bundle/README.md"
+    assert _FakeFilesClient.upload_calls == [
+        {
+            "agent_id": "demo-agent",
+            "remote_path": "bundle/nested/tool.py",
+            "local_path": nested_dir / "tool.py",
+        }
+    ]
+
+
+def test_files_push_pretty_output_is_readable_in_chinese(monkeypatch, tmp_path: Path):
+    from ksadk.cli import cmd_files
+
+    _reset_fake_files_client()
+    _register_commands()
+    monkeypatch.setattr(cmd_files, "AgentEngineClient", _FakeFilesClient)
+
+    local_dir = tmp_path / "bundle"
+    local_dir.mkdir()
+    (local_dir / "hello.txt").write_text("hello", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "files",
+            "push",
+            "--agent",
+            "demo-agent",
+            "--local-dir",
+            str(local_dir),
+            "--remote-path",
+            "bundle",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "推送完成" in result.output
+    assert f"本地目录：{local_dir}" in result.output
+    assert "远端目录：workspace:/bundle" in result.output
+    assert "统计：新增 1，覆盖 0，跳过 0，共 1" in result.output
+    assert "已新增：workspace:/bundle/hello.txt" in result.output
+
+
+def test_files_push_treats_missing_remote_directory_as_empty(monkeypatch, tmp_path: Path):
+    from ksadk.cli import cmd_files
+
+    _reset_fake_files_client()
+    _register_commands()
+    monkeypatch.setattr(cmd_files, "AgentEngineClient", _FakeFilesClient)
+
+    local_dir = tmp_path / "bundle"
+    local_dir.mkdir()
+    (local_dir / "hello.txt").write_text("hello", encoding="utf-8")
+    _FakeFilesClient.list_results["new-bundle"] = AgentEngineAPIError(404, "workspace path not found")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--output",
+            "json",
+            "files",
+            "push",
+            "--agent",
+            "demo-agent",
+            "--local-dir",
+            str(local_dir),
+            "--remote-path",
+            "new-bundle",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["created"] == ["new-bundle/hello.txt"]
+    assert payload["skipped"] == []
+    assert _FakeFilesClient.upload_calls == [
+        {
+            "agent_id": "demo-agent",
+            "remote_path": "new-bundle/hello.txt",
+            "local_path": local_dir / "hello.txt",
+        }
+    ]
+
+
+def test_files_pull_downloads_new_files_and_overwrites_with_force(monkeypatch, tmp_path: Path):
+    from ksadk.cli import cmd_files
+
+    _reset_fake_files_client()
+    _register_commands()
+    monkeypatch.setattr(cmd_files, "AgentEngineClient", _FakeFilesClient)
+
+    local_dir = tmp_path / "mirror"
+    local_dir.mkdir()
+    existing_file = local_dir / "README.md"
+    existing_file.write_text("old local", encoding="utf-8")
+
+    _FakeFilesClient.list_results["bundle"] = {
+        "root": "workspace",
+        "path": "bundle",
+        "entries": [
+            {"name": "README.md", "path": "bundle/README.md", "type": "file", "size_bytes": 12},
+            {"name": "tool.py", "path": "bundle/nested/tool.py", "type": "file", "size_bytes": 11},
+        ],
+    }
+    _FakeFilesClient.download_payloads = {
+        "bundle/README.md": b"new remote",
+        "bundle/nested/tool.py": b"print('ok')\n",
+    }
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--output",
+            "json",
+            "files",
+            "pull",
+            "--agent",
+            "demo-agent",
+            "--remote-path",
+            "bundle",
+            "--local-dir",
+            str(local_dir),
+            "--force",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["direction"] == "pull"
+    assert payload["created"] == ["nested/tool.py"]
+    assert payload["overwritten"] == ["README.md"]
+    assert payload["skipped"] == []
+    assert existing_file.read_text(encoding="utf-8") == "new remote"
+    assert (local_dir / "nested" / "tool.py").read_text(encoding="utf-8") == "print('ok')\n"
+    assert _FakeFilesClient.download_calls == [
+        {
+            "agent_id": "demo-agent",
+            "remote_path": "bundle/README.md",
+        },
+        {
+            "agent_id": "demo-agent",
+            "remote_path": "bundle/nested/tool.py",
+        },
     ]
