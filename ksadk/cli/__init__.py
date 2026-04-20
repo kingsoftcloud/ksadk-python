@@ -17,6 +17,7 @@ AgentEngine CLI - 命令行工具入口
 """
 
 import os
+import sys
 
 import click
 
@@ -488,6 +489,9 @@ def main():
         pass
 
     _register_commands()
+    if len(sys.argv) <= 1:
+        cli.main(args=["--help"], prog_name="agentengine", standalone_mode=False)
+        raise SystemExit(0)
     try:
         cli.main(prog_name="agentengine", standalone_mode=False)
     except click.exceptions.Exit as e:
