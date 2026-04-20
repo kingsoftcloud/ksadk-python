@@ -18,8 +18,10 @@ from ksadk.cli.ui import OUTPUT_MODE_PRETTY, configure_ui_runtime
 def reset_cli_ui_runtime():
     os.environ.pop("AGENTENGINE_OUTPUT_MODE", None)
     os.environ.pop("AGENTENGINE_NO_COLOR", None)
+    os.environ.pop("AGENTENGINE_GLOBAL_DRY_RUN", None)
     configure_ui_runtime(output_mode=OUTPUT_MODE_PRETTY, no_color=False)
     yield
     os.environ.pop("AGENTENGINE_OUTPUT_MODE", None)
     os.environ.pop("AGENTENGINE_NO_COLOR", None)
+    os.environ.pop("AGENTENGINE_GLOBAL_DRY_RUN", None)
     configure_ui_runtime(output_mode=OUTPUT_MODE_PRETTY, no_color=False)
