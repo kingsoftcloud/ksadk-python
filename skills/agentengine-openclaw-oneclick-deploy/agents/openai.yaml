@@ -1,0 +1,4 @@
+interface:
+  display_name: "AgentEngine OpenClaw"
+  short_description: "Deploy OpenClaw, links, and channel connect flows"
+  default_prompt: "Use $agentengine-openclaw-oneclick-deploy to deploy OpenClaw and manage dashboard or channel-connect workflows."
