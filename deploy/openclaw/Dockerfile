@@ -69,9 +69,10 @@ RUN --mount=type=cache,target=/root/.npm \
   # ====== 4. 清理缓存，最小化镜像体积 ====== \
   rm -rf /tmp/* /var/tmp/* /root/.cache 2>/dev/null || true
 
-COPY --chmod=755 bootstrap.sh /usr/local/bin/bootstrap.sh
-COPY --chmod=755 safe-bin/openclaw-safe-exec /opt/openclaw/safe-bin/openclaw-safe-exec
-COPY workspace-template /opt/openclaw/workspace-template
+COPY ksadk_runtime_common /opt/ksadk_runtime_common
+COPY --chmod=755 deploy/openclaw/bootstrap.sh /usr/local/bin/bootstrap.sh
+COPY --chmod=755 deploy/openclaw/safe-bin/openclaw-safe-exec /opt/openclaw/safe-bin/openclaw-safe-exec
+COPY deploy/openclaw/workspace-template /opt/openclaw/workspace-template
 RUN set -eux; \
   mkdir -p /opt/openclaw/safe-bin; \
   for cmd in pwd ls whoami id uname date ps df du stat find cat head tail wc git mcporter sh-safe bash-safe web-safe; do \
@@ -141,7 +142,13 @@ RUN --mount=type=cache,target=/root/.npm \
   chown -R node:node /opt/openclaw/default-extensions; \
   chmod -R a+rX /opt/openclaw/default-extensions
 
-COPY preset-skills /opt/openclaw/preset-skills
+COPY deploy/openclaw/preset-skills /opt/openclaw/preset-skills
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+  set -eux; \
+  PIP_BREAK_SYSTEM_PACKAGES=1 python3 -m pip install -i "${PYPI_INDEX_URL}" \
+    "pydantic>=2.0.0,<3.0.0" \
+    "jsonschema>=4.0.0,<5.0.0"
 
 RUN --mount=type=cache,target=/root/.cache/pip \
   set -eux; \
@@ -153,7 +160,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     cksum "${file_path}"; \
   done | cksum | awk '{print $1 ":" $2}' > /opt/openclaw/preset-skills/.content.sig
 
-COPY agentspace-assets.lock.json /opt/openclaw/agentspace-assets.lock.json
+COPY deploy/openclaw/agentspace-assets.lock.json /opt/openclaw/agentspace-assets.lock.json
 
 RUN --mount=type=cache,target=/root/.npm \
   set -eux; \
@@ -252,6 +259,7 @@ NODE
 
 ENV HOME=/home/node \
     OPENCLAW_STATE_DIR=/home/node/.openclaw \
+    PYTHONPATH=/opt \
     PATH=/home/node/.local/bin:${PATH}
 USER node
 

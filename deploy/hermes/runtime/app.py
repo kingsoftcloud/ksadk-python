@@ -17,7 +17,10 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
 from starlette.websockets import WebSocketState
 
-from workspace_files import create_workspace_files_router, workspace_files_enabled
+from ksadk_runtime_common.workspace_files import (
+    create_workspace_files_router,
+    workspace_files_enabled,
+)
 
 
 TERMINAL_SUBPROTOCOL = "ks-terminal.v1"

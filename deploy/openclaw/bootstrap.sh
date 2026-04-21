@@ -1123,6 +1123,16 @@ bootstrap_phase "生成并校正 Gateway 配置"
 #   env updates (e.g. OPENCLAW_ALLOWED_ORIGINS / OPENCLAW_DISABLE_DEVICE_AUTH)
 #   can take effect for existing instances.
 export STATE_DIR CONFIG_PATH PUBLIC_PORT BIND_MODE AUTH_MODE
+if [[ -n "${MEMORY_BACKEND_MANIFEST:-}" ]]; then
+  bootstrap_log "rendering memory backend config patch from manifest"
+  if ! MEMORY_BACKEND_PATCH_JSON="$(PYTHONPATH="/opt${PYTHONPATH:+:${PYTHONPATH}}" python3 -m ksadk_runtime_common.memory_backend.render)"; then
+    echo "[bootstrap] failed to render memory backend patch from MEMORY_BACKEND_MANIFEST" >&2
+    exit 1
+  fi
+  export MEMORY_BACKEND_PATCH_JSON
+else
+  unset MEMORY_BACKEND_PATCH_JSON || true
+fi
 CONFIG_RECONCILE_STARTED_AT="$(bootstrap_now_seconds)"
 node <<'NODE'
 const fs = require('fs');
@@ -1509,6 +1519,28 @@ const resolveBootstrapSecretValue = (preferredEnvKey) => {
   }
   return null;
 };
+const parseRenderedMemoryBackend = (raw) => {
+  const text = String(raw ?? '').trim();
+  if (!text) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`MEMORY_BACKEND_PATCH_JSON is not valid JSON: ${error.message}`);
+  }
+  if (!isPlainObject(parsed)) {
+    throw new Error('MEMORY_BACKEND_PATCH_JSON must be a JSON object');
+  }
+  const configPatch = parsed.config_patch;
+  if (configPatch === undefined) {
+    throw new Error('MEMORY_BACKEND_PATCH_JSON missing config_patch field');
+  }
+  if (!isPlainObject(configPatch)) {
+    throw new Error('MEMORY_BACKEND_PATCH_JSON.config_patch must be a JSON object');
+  }
+  return parsed;
+};
+const renderedMemoryBackend = parseRenderedMemoryBackend(process.env.MEMORY_BACKEND_PATCH_JSON);
 
 let cfg = {};
 try {
@@ -2313,6 +2345,10 @@ if (primaryModel && (explicitProviderConfigured || primaryModelQualified)) {
     const modelRef = modelId.includes('/') ? modelId : `${providerId}/${modelId}`;
     cfg.agents.defaults.models[modelRef] = cfg.agents.defaults.models[modelRef] || {};
   }
+}
+
+if (renderedMemoryBackend && Object.keys(renderedMemoryBackend.config_patch).length > 0) {
+  cfg = deepMergeObjects(cfg, renderedMemoryBackend.config_patch);
 }
 
 fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2));

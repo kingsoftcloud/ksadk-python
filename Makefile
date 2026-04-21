@@ -380,7 +380,7 @@ offline-current: build
 # ============================================================
 #
 # 基于 pinned 官方 ghcr.io/openclaw/openclaw，叠加 chromium + 预装 skills
-# 构建上下文: deploy/openclaw/ (Dockerfile + bootstrap.sh + preset-skills)
+# 构建上下文: 仓库根目录 (Dockerfile 通过 -f 指向 deploy/openclaw/)
 #
 # 用法:
 #   make openclaw-build    # 构建镜像
@@ -392,7 +392,7 @@ OPENCLAW_IMAGE := hub.kce.ksyun.com/agentengine-public/openclaw
 OPENCLAW_VPC_REGISTRY ?= hub-vpc-cn-beijing-6.kce.ksyun.com
 OPENCLAW_VPC_IMAGE ?= $(subst hub.kce.ksyun.com,$(OPENCLAW_VPC_REGISTRY),$(OPENCLAW_IMAGE))
 OPENCLAW_TAG ?= latest
-OPENCLAW_CONTEXT := deploy/openclaw
+OPENCLAW_CONTEXT := .
 OPENCLAW_BASE_IMAGE ?= ghcr.io/openclaw/openclaw:2026.4.15@sha256:0e6bebecf4623216420851f5edd133a748335f45c3508b635f7c5c4bfbc6da7d
 OPENCLAW_PYPI_INDEX_URL ?= https://mirrors.aliyun.com/pypi/simple
 OPENCLAW_NPM_REGISTRY ?= https://registry.npmmirror.com
@@ -412,13 +412,14 @@ openclaw-build: openclaw-refresh-agentspace-assets
 	@echo "   内网地址: $(OPENCLAW_VPC_IMAGE):$(OPENCLAW_TAG)"
 	@echo "   PyPI 源:  $(OPENCLAW_PYPI_INDEX_URL)"
 	@echo "   NPM 源:   $(OPENCLAW_NPM_REGISTRY)"
-	@echo "   构建上下文: $(OPENCLAW_CONTEXT)/"
+	@echo "   构建上下文: $(OPENCLAW_CONTEXT)"
 	@echo "============================================================"
-	@if [ ! -f "$(OPENCLAW_CONTEXT)/Dockerfile" ]; then \
-		echo "❌ 错误: $(OPENCLAW_CONTEXT)/Dockerfile 不存在"; \
+	@if [ ! -f "deploy/openclaw/Dockerfile" ]; then \
+		echo "❌ 错误: deploy/openclaw/Dockerfile 不存在"; \
 		exit 1; \
 	fi
 	@DOCKER_BUILDKIT=1 docker build --platform linux/amd64 \
+		-f deploy/openclaw/Dockerfile \
 		--build-arg OPENCLAW_BASE_IMAGE=$(OPENCLAW_BASE_IMAGE) \
 		--build-arg PYPI_INDEX_URL=$(OPENCLAW_PYPI_INDEX_URL) \
 		--build-arg NPM_REGISTRY=$(OPENCLAW_NPM_REGISTRY) \
@@ -456,7 +457,7 @@ HERMES_IMAGE := hub.kce.ksyun.com/agentengine-public/hermes-agent
 HERMES_VPC_REGISTRY ?= hub-vpc-cn-beijing-6.kce.ksyun.com
 HERMES_VPC_IMAGE ?= $(subst hub.kce.ksyun.com,$(HERMES_VPC_REGISTRY),$(HERMES_IMAGE))
 HERMES_TAG ?= 2026.4.16
-HERMES_CONTEXT := deploy/hermes
+HERMES_CONTEXT := .
 HERMES_PYPI_INDEX_URL ?= https://mirrors.aliyun.com/pypi/simple
 HERMES_AGENT_REF ?= v2026.4.16
 HERMES_APT_MIRROR ?= https://mirrors.aliyun.com/debian
@@ -471,13 +472,14 @@ hermes-build:
 	@echo "   PyPI 源:  $(HERMES_PYPI_INDEX_URL)"
 	@echo "   APT 源:   $(HERMES_APT_MIRROR)"
 	@echo "   NPM 源:   $(HERMES_NPM_REGISTRY)"
-	@echo "   构建上下文: $(HERMES_CONTEXT)/"
+	@echo "   构建上下文: $(HERMES_CONTEXT)"
 	@echo "============================================================"
-	@if [ ! -f "$(HERMES_CONTEXT)/Dockerfile" ]; then \
-		echo "❌ 错误: $(HERMES_CONTEXT)/Dockerfile 不存在"; \
+	@if [ ! -f "deploy/hermes/Dockerfile" ]; then \
+		echo "❌ 错误: deploy/hermes/Dockerfile 不存在"; \
 		exit 1; \
 	fi
 	@DOCKER_BUILDKIT=1 docker build --platform linux/amd64 \
+		-f deploy/hermes/Dockerfile \
 		--build-arg PYPI_INDEX_URL=$(HERMES_PYPI_INDEX_URL) \
 		--build-arg HERMES_AGENT_REF=$(HERMES_AGENT_REF) \
 		--build-arg APT_MIRROR=$(HERMES_APT_MIRROR) \

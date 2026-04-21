@@ -12,7 +12,7 @@ import socket
 import logging
 import mimetypes
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Sequence
 from urllib.parse import quote, urlparse
 
 import requests
@@ -586,6 +586,31 @@ class AgentEngineClient:
         return normalized or "langgraph"
 
     @staticmethod
+    def _normalize_framework_filters(framework: Optional[str | Sequence[str]]) -> str | None:
+        """规范化 ListAgents 的 framework 过滤，支持 CSV 和字符串序列。"""
+        if framework is None:
+            return None
+
+        raw_values: list[str]
+        if isinstance(framework, str):
+            raw_values = [framework]
+        else:
+            raw_values = [str(item) for item in framework if str(item).strip()]
+
+        normalized_values: list[str] = []
+        seen: set[str] = set()
+        for raw in raw_values:
+            for part in raw.split(","):
+                normalized = part.strip().lower()
+                if normalized and normalized not in seen:
+                    seen.add(normalized)
+                    normalized_values.append(normalized)
+
+        if not normalized_values:
+            return None
+        return ",".join(normalized_values)
+
+    @staticmethod
     def _extract_runtime_access(detail: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(detail, dict):
             return {}
@@ -987,7 +1012,7 @@ class AgentEngineClient:
     async def list_agents(
         self,
         region: Optional[str] = None,
-        framework: Optional[str] = None,
+        framework: Optional[str | Sequence[str]] = None,
         status: Optional[str] = None,
         name: Optional[str] = None,
         agent_id: Optional[str] = None,
@@ -1000,8 +1025,9 @@ class AgentEngineClient:
             "PageSize": int(page_size),
             "Region": self._normalize_payload_region(region),
         }
-        if framework:
-            params["Framework"] = framework
+        normalized_framework = self._normalize_framework_filters(framework)
+        if normalized_framework:
+            params["Framework"] = normalized_framework
         if status:
             params["Status"] = status
         if name:

@@ -212,6 +212,40 @@ async def test_update_agent_forwards_storage_disable_configuration(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_list_agents_normalizes_multi_framework_string(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    calls = []
+
+    def fake_action(action: str, params: dict):
+        calls.append((action, params.copy()))
+        return {"Agents": [], "Total": 0}
+
+    monkeypatch.setattr(client, "_action", fake_action)
+
+    await client.list_agents(framework=" langgraph, adk ")
+
+    assert calls[0][0] == "ListAgents"
+    assert calls[0][1]["Framework"] == "langgraph,adk"
+
+
+@pytest.mark.asyncio
+async def test_list_agents_accepts_framework_sequences(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    calls = []
+
+    def fake_action(action: str, params: dict):
+        calls.append((action, params.copy()))
+        return {"Agents": [], "Total": 0}
+
+    monkeypatch.setattr(client, "_action", fake_action)
+
+    await client.list_agents(framework=["langgraph", "adk"])
+
+    assert calls[0][0] == "ListAgents"
+    assert calls[0][1]["Framework"] == "langgraph,adk"
+
+
+@pytest.mark.asyncio
 async def test_run_openclaw_repair_forwards_control_plane_action(monkeypatch):
     client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
     calls = []

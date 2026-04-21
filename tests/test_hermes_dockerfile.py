@@ -61,3 +61,16 @@ def test_hermes_dockerfile_uses_local_source_install_and_cn_resilient_pip_defaul
     assert "PIP_DEFAULT_TIMEOUT=180" in dockerfile
     assert "PIP_RETRIES=8" in dockerfile
     assert "PYPI_EXTRA_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple" in dockerfile
+
+
+def test_hermes_dockerfile_bundles_runtime_common_from_repo_root():
+    dockerfile = (
+        Path(__file__).resolve().parents[1]
+        / "deploy"
+        / "hermes"
+        / "Dockerfile"
+    ).read_text(encoding="utf-8")
+
+    assert "agentengine-runtime-common" not in dockerfile
+    assert "COPY ksadk_runtime_common /opt/ksadk_runtime_common" in dockerfile
+    assert "PYTHONPATH=/opt" in dockerfile
