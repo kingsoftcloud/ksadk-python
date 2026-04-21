@@ -9,6 +9,7 @@ import asyncio
 import time
 from pathlib import Path
 from datetime import datetime
+from typing import Sequence
 from ksadk.api.client import DryRunExit
 from ksadk.cli.agent_ref import merge_agent_inputs, resolve_agent_ref
 from ksadk.cli.dry_run import dry_run_option, run_async_with_dry_run, effective_dry_run
@@ -85,6 +86,7 @@ def run_status_command(
     region: str,
     account_id: str | None,
     dry_run: bool,
+    framework: str | Sequence[str] | None = None,
     compatibility_alias: bool = False,
     page: int = 1,
     size: int = 20,
@@ -141,7 +143,7 @@ def run_status_command(
 
     if show_all:
         run_async_with_dry_run(
-            _list_all_agents(region, account_id, dry_run, page=page, size=size),
+            _list_all_agents(region, account_id, dry_run, page=page, size=size, framework=framework),
             dry_run=dry_run,
             dry_run_resource="agent",
             dry_run_action="list",
@@ -314,12 +316,15 @@ async def _list_all_agents(
     *,
     page: int = 1,
     size: int = 20,
+    framework: str | Sequence[str] | None = None,
 ):
-    """列出 Agent 列表（默认排除 OpenClaw，避免与专属命令重复）。"""
+    """列出 Agent 列表；未显式筛选 OpenClaw 时默认隐藏它。"""
     if not is_json_output():
         click.echo(f"查询 Agent 列表... (region: {region}, page: {page}, size: {size})")
 
     try:
+        normalized_frameworks = _normalize_framework_filters(framework)
+        hide_openclaw = "openclaw" not in normalized_frameworks
         server_page = 1
         server_page_size = max(size, 100)
         all_visible_results = []
@@ -331,15 +336,19 @@ async def _list_all_agents(
                 dry_run,
                 page=server_page,
                 page_size=server_page_size,
+                framework=",".join(normalized_frameworks) if normalized_frameworks else None,
             )
             raw_results = response.get("agents", [])
             if not raw_results:
                 break
 
-            filtered_results = [
-                r for r in raw_results if str(r.get("framework", "")).strip().lower() != "openclaw"
-            ]
-            hidden_openclaw += len(raw_results) - len(filtered_results)
+            if hide_openclaw:
+                filtered_results = [
+                    r for r in raw_results if str(r.get("framework", "")).strip().lower() != "openclaw"
+                ]
+                hidden_openclaw += len(raw_results) - len(filtered_results)
+            else:
+                filtered_results = raw_results
             all_visible_results.extend(filtered_results)
 
             if len(raw_results) < server_page_size:
@@ -493,6 +502,7 @@ async def _list_agent_runtimes(
     *,
     page: int = 1,
     page_size: int = 20,
+    framework: str | Sequence[str] | None = None,
 ) -> dict:
     """列出 Agent 运行时
 
@@ -506,7 +516,12 @@ async def _list_agent_runtimes(
             extra_headers["X-Ksc-Account-Id"] = account_id
 
         async with AgentEngineClient(region=region, dry_run=dry_run, extra_headers=extra_headers) as client:
-            response = await client.list_agents(region=region, page=page, page_size=page_size)
+            response = await client.list_agents(
+                region=region,
+                framework=framework,
+                page=page,
+                page_size=page_size,
+            )
             agents = response.get("agents", []) or []
             results = []
             for agent in agents:
@@ -532,3 +547,25 @@ async def _list_agent_runtimes(
         if not is_json_output():
             click.secho(f"查询失败: {str(e)}", fg="red")
         return {"agents": [], "total": 0}
+
+
+def _normalize_framework_filters(framework: str | Sequence[str] | None) -> list[str]:
+    """规范化 CLI framework 过滤，支持 CSV 和字符串序列。"""
+    if framework is None:
+        return []
+
+    raw_values: list[str]
+    if isinstance(framework, str):
+        raw_values = [framework]
+    else:
+        raw_values = [str(item) for item in framework if str(item).strip()]
+
+    normalized_values: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_values:
+        for part in str(raw).split(","):
+            normalized = part.strip().lower()
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                normalized_values.append(normalized)
+    return normalized_values

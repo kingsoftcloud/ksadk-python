@@ -13,6 +13,7 @@ LATEST_OPENCLAW_BASE_IMAGE = (
     "ghcr.io/openclaw/openclaw:2026.4.15@"
     "sha256:0e6bebecf4623216420851f5edd133a748335f45c3508b635f7c5c4bfbc6da7d"
 )
+VALID_MEM0_UUID = "e52b7fac-e641-4b34-b9f7-6b0b9f190cd4"
 
 
 def _write_weixin_plugin_package_json(
@@ -94,6 +95,23 @@ def _build_base_env(state_dir: str, config_path: str) -> dict:
     return env
 
 
+def _build_mem0_manifest_json() -> str:
+    return json.dumps(
+        {
+            "schema_version": "v1",
+            "backend_type": "mem0",
+            "config": {
+                "mem0_instance_id": VALID_MEM0_UUID,
+                "mem0_region": "cn-qingyangtest-1",
+            },
+            "secrets_env": {
+                "api_key": "MEM0_API_KEY",
+                "memory_id": "MEM0_MEMORY_ID",
+            },
+        }
+    )
+
+
 def _assert_model_token_defaults(models: list[dict], *, minimum_max_tokens: int = 20000) -> None:
     for model in models:
         if "contextWindow" not in model and "maxTokens" not in model:
@@ -111,6 +129,15 @@ def test_openclaw_dockerfile_tracks_latest_official_channel_plugins():
     )
     assert "ARG OPENCLAW_WEIXIN_PLUGIN_SPEC=@tencent-weixin/openclaw-weixin" in dockerfile
     assert "ARG OPENCLAW_LARK_PLUGIN_SPEC=@larksuite/openclaw-lark" in dockerfile
+
+
+def test_openclaw_runtime_bundles_runtime_common_and_manifest_renderer():
+    dockerfile = OPENCLAW_DOCKERFILE.read_text(encoding="utf-8")
+    bootstrap = BOOTSTRAP_SCRIPT.read_text(encoding="utf-8")
+
+    assert "COPY ksadk_runtime_common /opt/ksadk_runtime_common" in dockerfile
+    assert "PYTHONPATH=/opt" in dockerfile
+    assert "python3 -m ksadk_runtime_common.memory_backend.render" in bootstrap
 
 
 def test_bootstrap_writes_secretref_for_model_api_key():
@@ -2670,3 +2697,53 @@ def test_bootstrap_defaults_state_dir_under_home_for_non_root_runtime():
         cfg = json.loads(config_path.read_text())
         assert cfg["agents"]["defaults"]["workspace"] == str(state_dir / "workspace")
         assert cfg["secrets"]["providers"]["default"]["path"] == str(secrets_path)
+
+
+def test_bootstrap_applies_mem0_memory_backend_manifest():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["MEMORY_BACKEND_MANIFEST"] = _build_mem0_manifest_json()
+        env["MEM0_API_KEY"] = "mem0-secret"
+        env["MEM0_MEMORY_ID"] = VALID_MEM0_UUID
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert cfg["memory"] == {
+            "provider": "mem0",
+            "config": {
+                "memoryId": VALID_MEM0_UUID,
+                "region": "cn-qingyangtest-1",
+            },
+        }
+
+
+def test_bootstrap_fails_when_mem0_manifest_env_is_incomplete():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["MEMORY_BACKEND_MANIFEST"] = _build_mem0_manifest_json()
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode != 0
+        combined = f"{result.stdout}\n{result.stderr}"
+        assert "MEM0_API_KEY" in combined or "MEM0_MEMORY_ID" in combined

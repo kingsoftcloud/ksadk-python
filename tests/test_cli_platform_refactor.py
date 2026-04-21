@@ -120,7 +120,16 @@ def test_mcp_status_passes_region_to_name_lookup(monkeypatch):
 def test_agent_list_fills_visible_page_after_filtering_openclaw(monkeypatch):
     runner = CliRunner()
 
-    async def _fake_list_agent_runtimes(region, account_id, dry_run=False, *, page=1, page_size=20):
+    async def _fake_list_agent_runtimes(
+        region,
+        account_id,
+        dry_run=False,
+        *,
+        page=1,
+        page_size=20,
+        framework=None,
+    ):
+        assert framework is None
         if page == 1:
             return {
                 "agents": [
@@ -161,6 +170,56 @@ def test_agent_list_fills_visible_page_after_filtering_openclaw(monkeypatch):
     assert result.exit_code == 0, result.output
     assert "visible-agent" in result.output
     assert "Agent总数: 1  页码: 1  每页: 1" in result.output
+
+
+def test_agent_list_with_explicit_openclaw_framework_does_not_hide_results(monkeypatch):
+    runner = CliRunner()
+
+    async def _fake_list_agent_runtimes(
+        region,
+        account_id,
+        dry_run=False,
+        *,
+        page=1,
+        page_size=20,
+        framework=None,
+    ):
+        assert framework == "openclaw"
+        return {
+            "agents": [
+                {
+                    "agentRuntimeId": "ar-openclaw-1",
+                    "agentRuntimeName": "openclaw-visible",
+                    "status": "RUNNING",
+                    "replicas": 1,
+                    "readyReplicas": 1,
+                    "endpoint": "https://openclaw.example.com",
+                    "framework": "openclaw",
+                }
+            ],
+            "total": 1,
+        }
+
+    monkeypatch.setattr("ksadk.cli.cmd_status._list_agent_runtimes", _fake_list_agent_runtimes)
+
+    result = runner.invoke(
+        agent,
+        [
+            "list",
+            "--page",
+            "1",
+            "--size",
+            "20",
+            "--account-id",
+            "2000003485",
+            "--framework",
+            "openclaw",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "openclaw-visible" in result.output
+    assert "已隐藏" not in result.output
 
 
 def test_resource_groups_support_short_help():

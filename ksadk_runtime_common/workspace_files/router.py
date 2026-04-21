@@ -1,107 +1,43 @@
-"""Shared workspace file runtime routes for ksadk-backed runtimes."""
+"""Workspace files FastAPI router - preserves the current contract exactly."""
 
 from __future__ import annotations
 
 import mimetypes
-import os
-import posixpath
-from datetime import datetime, timezone
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable
+from typing import Annotated
 
 from fastapi import APIRouter, File, HTTPException, Query, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
+from ksadk_runtime_common.workspace_files.bootstrap import (
+    workspace_files_enabled,
+    workspace_files_max_upload_bytes,
+    workspace_files_root_label,
+)
+from ksadk_runtime_common.workspace_files.path_utils import (
+    _resolve_workspace_root,
+    _resolve_workspace_target,
+)
 
-DEFAULT_WORKSPACE_MAX_UPLOAD_BYTES = 100 * 1024 * 1024
-WORKSPACE_PATH_ESCAPE_DETAIL = "workspace path escapes the workspace root"
-WORKSPACE_ENTRY_ACTION = "ListWorkspaceFiles"
-WORKSPACE_UPLOAD_ACTION = "AddWorkspaceFile"
-WORKSPACE_CONTENT_PATH = "/agentengine/api/v1/GetWorkspaceFileContent"
-
-
-def _env_flag(name: str, default: bool) -> bool:
-    raw = str(os.getenv(name, "")).strip().lower()
-    if not raw:
-        return default
-    return raw in {"1", "true", "yes", "on"}
-
-
-def workspace_files_enabled(*, default: bool = True) -> bool:
-    return _env_flag("KSADK_WORKSPACE_FILES_ENABLED", default)
-
-
-def workspace_files_root_label() -> str:
-    return str(os.getenv("KSADK_WORKSPACE_ROOT_LABEL") or "workspace").strip() or "workspace"
-
-
-def workspace_files_max_upload_bytes() -> int:
-    raw = str(os.getenv("KSADK_WORKSPACE_MAX_UPLOAD_BYTES") or "").strip()
-    if not raw:
-        return DEFAULT_WORKSPACE_MAX_UPLOAD_BYTES
-    try:
-        return max(int(raw), 1)
-    except ValueError:
-        return DEFAULT_WORKSPACE_MAX_UPLOAD_BYTES
-
-
-def build_workspace_files_bootstrap(*, enabled: bool) -> dict | None:
-    if not enabled:
-        return None
-    return {
-        "Enabled": True,
-        "MaxUploadBytes": workspace_files_max_upload_bytes(),
-        "SupportsDelete": True,
-        "RootLabel": workspace_files_root_label(),
-        "EntryAction": WORKSPACE_ENTRY_ACTION,
-        "UploadAction": WORKSPACE_UPLOAD_ACTION,
-        "ContentPath": WORKSPACE_CONTENT_PATH,
-    }
-
-
-def _normalize_workspace_path(raw_path: str | None, *, allow_root: bool) -> str:
-    raw = str(raw_path or ".").strip().replace("\\", "/")
-    if raw in {"", "."}:
-        if allow_root:
-            return "."
-        raise HTTPException(status_code=400, detail="workspace file path must not be empty")
-    if raw.startswith("/"):
-        raise HTTPException(status_code=400, detail=WORKSPACE_PATH_ESCAPE_DETAIL)
-
-    normalized = posixpath.normpath(raw)
-    if normalized in {"", "."}:
-        if allow_root:
-            return "."
-        raise HTTPException(status_code=400, detail="workspace file path must not be empty")
-    if normalized == ".." or normalized.startswith("../"):
-        raise HTTPException(status_code=400, detail=WORKSPACE_PATH_ESCAPE_DETAIL)
-    return normalized
-
-
-def _resolve_workspace_root(root_getter: Callable[[], Path]) -> Path:
-    root = Path(root_getter()).expanduser().resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    return root
-
-
-def _resolve_workspace_target(root: Path, raw_path: str | None, *, allow_root: bool) -> tuple[str, Path]:
-    normalized = _normalize_workspace_path(raw_path, allow_root=allow_root)
-    target = root if normalized == "." else (root / Path(normalized))
-    resolved_target = target.resolve(strict=False)
-    if resolved_target != root and root not in resolved_target.parents:
-        raise HTTPException(status_code=400, detail=WORKSPACE_PATH_ESCAPE_DETAIL)
-    return normalized, resolved_target
+EntryPayload = dict[str, str | int | None]
+EntriesResponse = dict[str, str | list[EntryPayload]]
+HealthzResponse = dict[str, bool | str]
+UploadResponse = dict[str, EntryPayload]
 
 
 def _isoformat_timestamp(path: Path) -> str:
+    """Get an ISO 8601 timestamp for a file modification time."""
     return (
-        datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
         .isoformat()
         .replace("+00:00", "Z")
     )
 
 
-def _entry_payload(root: Path, path: Path) -> dict:
+def _entry_payload(root: Path, path: Path) -> EntryPayload:
+    """Build entry payload for file and directory listing."""
     entry_type = "directory" if path.is_dir() else "file"
     mime_type = None if entry_type == "directory" else mimetypes.guess_type(path.name)[0]
     size_bytes = None if entry_type == "directory" else path.stat().st_size
@@ -120,6 +56,7 @@ def create_workspace_files_router(
     root_getter: Callable[[], Path],
     enabled_getter: Callable[[], bool] | None = None,
 ) -> APIRouter:
+    """Create a workspace files router using the v1 contract."""
     router = APIRouter(prefix="/_ksadk/workspace/v1", tags=["workspace-files"])
     is_enabled = enabled_getter or (lambda: workspace_files_enabled(default=True))
 
@@ -128,7 +65,7 @@ def create_workspace_files_router(
             raise HTTPException(status_code=404, detail="workspace files are disabled")
 
     @router.get("/healthz")
-    async def workspace_healthz() -> dict:
+    async def workspace_healthz() -> HealthzResponse:
         _ensure_enabled()
         root = _resolve_workspace_root(root_getter)
         return {
@@ -141,7 +78,7 @@ def create_workspace_files_router(
     async def list_workspace_entries(
         path: str = Query(".", alias="path"),
         recursive: bool = Query(False, alias="recursive"),
-    ) -> dict:
+    ) -> EntriesResponse:
         _ensure_enabled()
         root = _resolve_workspace_root(root_getter)
         normalized, target = _resolve_workspace_target(root, path, allow_root=True)
@@ -179,7 +116,7 @@ def create_workspace_files_router(
         )
 
     @router.get("/files/{file_path:path}")
-    async def download_workspace_file(file_path: str):
+    async def download_workspace_file(file_path: str) -> FileResponse:
         _ensure_enabled()
         root = _resolve_workspace_root(root_getter)
         _, target = _resolve_workspace_target(root, file_path, allow_root=False)
@@ -193,7 +130,10 @@ def create_workspace_files_router(
         )
 
     @router.post("/files/{file_path:path}")
-    async def upload_workspace_file(file_path: str, file: UploadFile = File(...)) -> dict:
+    async def upload_workspace_file(
+        file_path: str,
+        file: Annotated[UploadFile, File(...)],
+    ) -> UploadResponse:
         _ensure_enabled()
         root = _resolve_workspace_root(root_getter)
         _, target = _resolve_workspace_target(root, file_path, allow_root=False)
@@ -209,7 +149,9 @@ def create_workspace_files_router(
                         break
                     size_bytes += len(chunk)
                     if size_bytes > max_upload_bytes:
-                        raise HTTPException(status_code=413, detail="workspace file exceeds upload limit")
+                        raise HTTPException(
+                            status_code=413, detail="workspace file exceeds upload limit"
+                        )
                     handle.write(chunk)
         except HTTPException:
             target.unlink(missing_ok=True)
@@ -223,7 +165,7 @@ def create_workspace_files_router(
         return {"Entry": entry}
 
     @router.delete("/files/{file_path:path}")
-    async def delete_workspace_file(file_path: str):
+    async def delete_workspace_file(file_path: str) -> JSONResponse:
         _ensure_enabled()
         root = _resolve_workspace_root(root_getter)
         _, target = _resolve_workspace_target(root, file_path, allow_root=False)

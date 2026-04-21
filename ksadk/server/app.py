@@ -29,7 +29,7 @@ from ksadk.conversations.session_title import (
 )
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.server.api_models import AgentRunRequest
-from ksadk.server.workspace_files import (
+from ksadk_runtime_common.workspace_files import (
     build_workspace_files_bootstrap,
     create_workspace_files_router,
     workspace_files_enabled,

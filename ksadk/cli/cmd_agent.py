@@ -22,9 +22,18 @@ def agent():
 @pagination_options(default_page=1, default_size=20)
 @click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
 @click.option("--account-id", envvar="KSYUN_ACCOUNT_ID", help="金山云账号 ID")
+@click.option("--framework", help="按框架过滤，支持逗号分隔多个值，如 langgraph,adk")
 @dry_run_option()
 @cli_output_option()
-def list_agents(page: int, size: int, region: str, account_id: str, dry_run: bool, output_mode: str | None):
+def list_agents(
+    page: int,
+    size: int,
+    region: str,
+    account_id: str,
+    framework: str | None,
+    dry_run: bool,
+    output_mode: str | None,
+):
     """列出已部署的 Agent。"""
     _ = output_mode
     run_status_command(
@@ -35,6 +44,7 @@ def list_agents(page: int, size: int, region: str, account_id: str, dry_run: boo
         interval=2,
         region=region,
         account_id=account_id,
+        framework=framework,
         dry_run=dry_run,
         compatibility_alias=False,
         page=page,
