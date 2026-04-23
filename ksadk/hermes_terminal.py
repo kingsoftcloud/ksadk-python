@@ -108,7 +108,14 @@ def build_terminal_ws_url(endpoint: str) -> str:
     return urlunsplit((ws_scheme, parsed.netloc, ws_path, "", ""))
 
 
-def build_start_frame(*, mode: str, argv: Sequence[str], cols: int, rows: int) -> str:
+def build_start_frame(
+    *,
+    mode: str,
+    argv: Sequence[str],
+    cols: int,
+    rows: int,
+    cwd: str | None = None,
+) -> str:
     normalized_mode = str(mode or "").strip().lower()
     if normalized_mode not in {"tui", "exec", "pairing", "connect"}:
         raise ValueError(f"unsupported terminal mode: {mode}")
@@ -119,6 +126,9 @@ def build_start_frame(*, mode: str, argv: Sequence[str], cols: int, rows: int) -
         "cols": int(cols),
         "rows": int(rows),
     }
+    normalized_cwd = str(cwd or "").strip()
+    if normalized_cwd:
+        payload["cwd"] = normalized_cwd
     return json.dumps(payload, ensure_ascii=False)
 
 
@@ -324,6 +334,7 @@ async def run_hermes_terminal_session(
     insecure: bool = False,
     mode: str = "tui",
     argv: Sequence[str] | None = None,
+    cwd: str | None = None,
     stdin: Any | None = None,
     stdout: Any | None = None,
 ) -> int:
@@ -369,6 +380,7 @@ async def run_hermes_terminal_session(
                 argv=normalized_argv,
                 cols=size.cols,
                 rows=size.rows,
+                cwd=cwd,
             )
         )
 

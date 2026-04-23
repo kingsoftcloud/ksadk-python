@@ -1,5 +1,6 @@
 import asyncio
 import json
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict
@@ -7,12 +8,13 @@ from typing import Any, Dict
 import yaml
 from click.testing import CliRunner
 
-from ksadk.api.client import AgentEngineClient, DryRunExit
+from ksadk.api.client import AgentEngineAPIError, AgentEngineClient, DryRunExit
 from ksadk.cli import _register_commands, cli, cmd_mcp
 from ksadk.cli.cmd_agent import agent
 from ksadk.cli.cmd_destroy import delete as destroy_delete
 from ksadk.cli.cmd_destroy import destroy as destroy_cmd
 from ksadk.cli.cmd_mcp import mcp
+from ksadk.cli import cmd_openclaw
 from ksadk.cli.cmd_openclaw import openclaw
 from ksadk.cli.cmd_version import version
 from ksadk.cli.dry_run import run_async_with_dry_run
@@ -380,11 +382,115 @@ class _FakeOpenClawCreateClient:
         return {
             "agent_id": "ar-created-1",
             "endpoint": "https://ar-created-1.agent.kspmas.ksyun.com",
+            "api_key": "ak-created-1",
         }
 
     async def get_agent(self, **_kwargs):
         self.__class__.get_agent_calls += 1
-        raise AssertionError("newly created OpenClaw should not query GetAgent immediately")
+        raise AssertionError("OpenClaw create response already contains complete quick access")
+
+    async def close(self):
+        return None
+
+
+class _FakeOpenClawImmediateAgentIdClient:
+    get_agent_calls = 0
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def create_agent(self, _data):
+        return {
+            "agent_id": "ar-created-2",
+            "endpoint": None,
+            "api_key": None,
+            "order_id": "ord-created-2",
+        }
+
+    async def get_agent(self, **kwargs):
+        self.__class__.get_agent_calls += 1
+        assert kwargs["agent_id"] == "ar-created-2"
+        assert kwargs["include_api_key"] is True
+        return {
+            "basic": {
+                "agent_id": "ar-created-2",
+                "name": "demo-openclaw",
+                "status": "RUNNING",
+                "framework": "openclaw",
+                "region": "cn-beijing-6",
+            },
+            "quick_access": {
+                "public_endpoint": "https://fresh-openclaw.example.com",
+                "api_key": "ak-fresh-openclaw",
+            },
+        }
+
+    async def close(self):
+        return None
+
+
+class _FakeOpenClawDelayedAccessClient:
+    get_agent_calls = 0
+    suppression_used = False
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    @contextmanager
+    def suppress_http_error_logging(self, predicate=None):
+        self.__class__.suppression_used = predicate is not None
+        yield
+
+    async def create_agent(self, _data):
+        return {
+            "agent_id": "ar-created-delayed",
+            "endpoint": "https://created-openclaw.example.com",
+            "api_key": None,
+            "order_id": "ord-created-delayed",
+        }
+
+    async def get_agent(self, **kwargs):
+        self.__class__.get_agent_calls += 1
+        if self.__class__.get_agent_calls < 4:
+            raise AgentEngineAPIError(
+                404,
+                "未找到对应的 Agent",
+                details={
+                    "http_status": 404,
+                    "remote_error_message": "未找到对应的 Agent",
+                },
+            )
+        assert kwargs["agent_id"] == "ar-created-delayed"
+        assert kwargs["include_api_key"] is True
+        return {
+            "basic": {
+                "agent_id": "ar-created-delayed",
+                "name": "demo-openclaw",
+                "status": "RUNNING",
+                "framework": "openclaw",
+                "region": "cn-beijing-6",
+            },
+            "quick_access": {
+                "public_endpoint": "https://ready-openclaw.example.com",
+                "api_key": "ak-ready-openclaw",
+            },
+            "deployment": {
+                "framework": "openclaw",
+                "region": "cn-beijing-6",
+            },
+        }
 
     async def close(self):
         return None
@@ -1303,7 +1409,58 @@ def test_openclaw_deploy_forwards_custom_env_pairs(monkeypatch):
     assert captured["extra_env"] == ("FOO=bar", "OPENCLAW_GATEWAY_PORT=9090")
 
 
-def test_openclaw_deploy_does_not_query_status_immediately_after_create(monkeypatch, tmp_path):
+def test_openclaw_deploy_forwards_explicit_memory_config(monkeypatch):
+    runner = CliRunner()
+    captured: Dict[str, Any] = {}
+
+    async def _fake_deploy_openclaw(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw._deploy_openclaw", _fake_deploy_openclaw)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_openclaw.run_async_with_dry_run",
+        lambda coro, dry_run: asyncio.run(coro),
+    )
+
+    result = runner.invoke(
+        openclaw,
+        [
+            "deploy",
+            "--memory-system",
+            "mem0",
+            "--mem0-instance-id",
+            "c17b20b1-faf7-4c98-91a7-38d1ee581ba1",
+            "--mem0-instance-name",
+            "mem-demo",
+            "--mem0-region",
+            "pre-online",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["memory_system"] == "mem0"
+    assert captured["mem0_instance_id"] == "c17b20b1-faf7-4c98-91a7-38d1ee581ba1"
+    assert captured["mem0_instance_name"] == "mem-demo"
+    assert captured["mem0_region"] == "pre-online"
+
+
+def test_openclaw_deploy_rejects_mem0_without_instance_id():
+    runner = CliRunner()
+
+    result = runner.invoke(
+        openclaw,
+        [
+            "deploy",
+            "--memory-system",
+            "mem0",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--mem0-instance-id" in result.output
+
+
+def test_openclaw_deploy_does_not_query_get_agent_when_quick_access_is_already_complete(monkeypatch, tmp_path):
     runner = CliRunner()
     monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawCreateClient)
     monkeypatch.setattr("ksadk.cli.cmd_openclaw._GLOBAL_ENV_CACHE", {})
@@ -1323,6 +1480,85 @@ def test_openclaw_deploy_does_not_query_status_immediately_after_create(monkeypa
 
     assert result.exit_code == 0, result.output
     assert _FakeOpenClawCreateClient.get_agent_calls == 0
+
+
+def test_openclaw_deploy_refreshes_quick_access_when_agent_id_is_immediate(monkeypatch, tmp_path):
+    runner = CliRunner()
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawImmediateAgentIdClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw._GLOBAL_ENV_CACHE", {})
+    monkeypatch.chdir(tmp_path)
+    _FakeOpenClawImmediateAgentIdClient.get_agent_calls = 0
+
+    result = runner.invoke(
+        openclaw,
+        [
+            "deploy",
+            "--name",
+            "demo-openclaw",
+            "--image",
+            "hub.kce.ksyun.com/agentengine-public/openclaw:test",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _FakeOpenClawImmediateAgentIdClient.get_agent_calls == 1
+    state = yaml.safe_load((tmp_path / ".agentengine.state").read_text())
+    assert state["agent_id"] == "ar-created-2"
+    assert state["endpoint"] == "https://fresh-openclaw.example.com"
+    assert state["api_key"] == "ak-fresh-openclaw"
+
+
+def test_openclaw_deploy_retries_transient_get_agent_not_found_until_api_key_is_ready(monkeypatch, tmp_path):
+    runner = CliRunner()
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawDelayedAccessClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw._GLOBAL_ENV_CACHE", {})
+    monkeypatch.chdir(tmp_path)
+    _FakeOpenClawDelayedAccessClient.get_agent_calls = 0
+    _FakeOpenClawDelayedAccessClient.suppression_used = False
+
+    result = runner.invoke(
+        openclaw,
+        [
+            "deploy",
+            "--name",
+            "demo-openclaw",
+            "--image",
+            "hub.kce.ksyun.com/agentengine-public/openclaw:test",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _FakeOpenClawDelayedAccessClient.suppression_used is True
+    assert _FakeOpenClawDelayedAccessClient.get_agent_calls == 4
+    state = yaml.safe_load((tmp_path / ".agentengine.state").read_text())
+    assert state["agent_id"] == "ar-created-delayed"
+    assert state["endpoint"] == "https://ready-openclaw.example.com"
+    assert state["api_key"] == "ak-ready-openclaw"
+
+
+def test_openclaw_flatten_agent_detail_reads_framework_and_region_from_deployment():
+    detail = cmd_openclaw._flatten_agent_detail(
+        {
+            "basic": {
+                "agent_id": "ar-openclaw-demo",
+                "name": "demo-openclaw",
+                "status": "running",
+            },
+            "quick_access": {
+                "public_endpoint": "https://demo-openclaw.example.com",
+                "api_key": "ak-demo-openclaw",
+            },
+            "deployment": {
+                "framework": "openclaw",
+                "region": "pre-online",
+                "artifact_path": "hub/openclaw:test",
+            },
+        }
+    )
+
+    assert detail["framework"] == "openclaw"
+    assert detail["region"] == "pre-online"
+    assert detail["api_key"] == "ak-demo-openclaw"
 
 
 def test_version_list_supports_dry_run(monkeypatch):

@@ -11,8 +11,9 @@ import uuid
 import socket
 import logging
 import mimetypes
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional, Dict, Any, Sequence
+from typing import Optional, Dict, Any, Sequence, Callable, Iterator
 from urllib.parse import quote, urlparse
 
 import requests
@@ -20,6 +21,9 @@ import requests
 from ksadk.common.auth import AWSV4Auth
 
 logger = logging.getLogger(__name__)
+
+
+HttpErrorLogSuppressor = Callable[..., bool]
 
 
 class DryRunExit(Exception):
@@ -112,6 +116,7 @@ class AgentEngineClient:
             logger.debug("AgentEngineClient: No credentials, signing disabled")
             
         self._session: Optional[requests.Session] = None
+        self._http_error_log_suppressors: list[HttpErrorLogSuppressor] = []
 
     @staticmethod
     def _is_global_dry_run_enabled() -> bool:
@@ -302,7 +307,34 @@ class AgentEngineClient:
         )
         return any(marker in remote_message for marker in markers)
 
+    @contextmanager
+    def suppress_http_error_logging(
+        self,
+        predicate: Optional[HttpErrorLogSuppressor] = None,
+    ) -> Iterator[None]:
+        suppressor = predicate or (
+            lambda *, method, full_url, status_code, resp_text, details: True
+        )
+        self._http_error_log_suppressors.append(suppressor)
+        try:
+            yield
+        finally:
+            if self._http_error_log_suppressors:
+                self._http_error_log_suppressors.pop()
+
     def _log_http_error(self, *, method: str, full_url: str, status_code: int, resp_text: str, details: Dict[str, Any]) -> None:
+        for suppressor in reversed(self._http_error_log_suppressors):
+            try:
+                if suppressor(
+                    method=method,
+                    full_url=full_url,
+                    status_code=status_code,
+                    resp_text=resp_text,
+                    details=details,
+                ):
+                    return
+            except Exception:
+                continue
         log_fn = logger.debug if self._is_auth_related_error_details(details) else logger.error
         log_fn(
             "Request failed: method=%s, url=%s, status=%s, body=%s",
@@ -656,7 +688,23 @@ class AgentEngineClient:
             )
         return AgentEngineAPIError(response.status_code, message)
 
-    async def _resolve_workspace_runtime_access(
+    @staticmethod
+    def _compact_params(params: Dict[str, Any] | None) -> Dict[str, Any]:
+        return {
+            key: value
+            for key, value in (params or {}).items()
+            if value is not None
+        }
+
+    @staticmethod
+    def _workspace_prefers_action_proxy(detail: Dict[str, Any] | None) -> bool:
+        if not isinstance(detail, dict):
+            return False
+        access = AgentEngineClient._extract_runtime_access(detail)
+        framework = str(access.get("framework") or "").strip().lower()
+        return framework == "openclaw"
+
+    async def _resolve_workspace_transport(
         self,
         *,
         agent_id: str | None = None,
@@ -665,18 +713,112 @@ class AgentEngineClient:
         api_key: str | None = None,
     ) -> Dict[str, Any]:
         endpoint_value = str(endpoint or "").strip()
+        api_key_value = str(api_key or "").strip() or None
         if endpoint_value:
-            return {"endpoint": endpoint_value.rstrip("/"), "api_key": api_key}
+            return {
+                "mode": "runtime",
+                "agent_id": agent_id,
+                "name": name,
+                "access": {
+                    "endpoint": endpoint_value.rstrip("/"),
+                    "api_key": api_key_value,
+                },
+            }
 
         detail = await self.get_agent(agent_id=agent_id, name=name, include_api_key=True)
         access = self._extract_runtime_access(detail)
+        resolved_agent_id = str(access.get("agent_id") or agent_id or "").strip() or None
+        resolved_name = str(access.get("name") or name or "").strip() or None
+        resolved_api_key = api_key_value or (
+            str(access.get("api_key") or "").strip() or None
+        )
+        if self._workspace_prefers_action_proxy(detail):
+            return {
+                "mode": "action",
+                "agent_id": resolved_agent_id,
+                "name": resolved_name,
+                "access": access,
+            }
+
         resolved_endpoint = str(access.get("endpoint") or "").strip()
         if not resolved_endpoint:
             raise AgentEngineAPIError(404, "Agent runtime endpoint is not ready")
         return {
-            "endpoint": resolved_endpoint.rstrip("/"),
-            "api_key": api_key or access.get("api_key"),
+            "mode": "runtime",
+            "agent_id": resolved_agent_id,
+            "name": resolved_name,
+            "access": {
+                "endpoint": resolved_endpoint.rstrip("/"),
+                "api_key": resolved_api_key,
+            },
         }
+
+    def _action_raw_request(
+        self,
+        method: str,
+        action: str,
+        *,
+        params: Dict[str, Any] | None = None,
+        data: Dict[str, Any] | None = None,
+        files: Dict[str, Any] | None = None,
+        accept: str = "application/json",
+    ) -> requests.Response:
+        kop_mode = self._is_kop_mode()
+        headers = self._build_headers(action=action, kop_mode=kop_mode)
+        headers["Accept"] = accept
+        if files is not None:
+            headers.pop("Content-Type", None)
+        full_url = (
+            f"{self.base_url.rstrip('/')}/?Action={action}&Version={os.getenv('AGENTENGINE_API_VERSION', '2024-06-12')}"
+            if kop_mode
+            else f"{self.base_url}/agentengine/api/v1/{action}"
+        )
+        session = self._get_session()
+        response = session.request(
+            method=method,
+            url=full_url,
+            params=self._compact_params(params),
+            data=self._compact_params(data) if data is not None else None,
+            files=files,
+            headers=headers,
+            auth=self._auth.get_auth(),
+            timeout=self.timeout,
+        )
+        if response.status_code >= 400:
+            resp_text = response.text or ""
+            details = self._extract_http_error_details(resp_text)
+            details.setdefault("http_status", response.status_code)
+            self._log_http_error(
+                method=method,
+                full_url=full_url,
+                status_code=response.status_code,
+                resp_text=resp_text,
+                details=details,
+            )
+            message = (
+                str(details.get("remote_error_message") or details.get("message") or "").strip()
+                or resp_text
+            )
+            raise AgentEngineAPIError(response.status_code, message, details=details or None)
+        return response
+
+    async def _resolve_workspace_runtime_access(
+        self,
+        *,
+        agent_id: str | None = None,
+        name: str | None = None,
+        endpoint: str | None = None,
+        api_key: str | None = None,
+    ) -> Dict[str, Any]:
+        transport = await self._resolve_workspace_transport(
+            agent_id=agent_id,
+            name=name,
+            endpoint=endpoint,
+            api_key=api_key,
+        )
+        if transport["mode"] != "runtime":
+            raise AgentEngineAPIError(400, "Workspace runtime direct access is unavailable for this agent")
+        return transport["access"]
 
     def _workspace_runtime_request(
         self,
@@ -700,9 +842,41 @@ class AgentEngineClient:
             stream=False,
             timeout=self.timeout,
         )
+        setattr(response, "_ksadk_workspace_url", url)
         if response.status_code >= 400:
             raise self._workspace_runtime_error(response)
         return response
+
+    def _workspace_runtime_json(self, response: requests.Response) -> Dict[str, Any]:
+        try:
+            payload = response.json()
+        except Exception as exc:
+            url = str(
+                getattr(response, "_ksadk_workspace_url", "")
+                or getattr(response, "url", "")
+            ).strip()
+            body = (response.text or "").strip()
+            body_preview = body[:200] if body else "<empty response body>"
+            raise AgentEngineAPIError(
+                502,
+                (
+                    "workspace runtime returned invalid JSON"
+                    + (f" from {url}" if url else "")
+                    + f": {body_preview}"
+                ),
+                details={
+                    "workspace_runtime_url": url or None,
+                    "workspace_runtime_status": getattr(response, "status_code", None),
+                    "workspace_runtime_body_preview": body_preview,
+                },
+            ) from exc
+        return self._to_snake_case(payload)
+
+    @staticmethod
+    def _annotate_workspace_payload(payload: Dict[str, Any], *, transport_mode: str) -> Dict[str, Any]:
+        annotated = dict(payload or {})
+        annotated["transport_mode"] = transport_mode
+        return annotated
 
     def _action(self, action: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
         """通用 Action API 调用"""
@@ -812,6 +986,42 @@ class AgentEngineClient:
             payload["SizeGi"] = int(size_gi)
         return payload
 
+    @staticmethod
+    def _normalize_memory_config_payload(memory_config: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not isinstance(memory_config, dict):
+            return None
+
+        memory_system = str(
+            memory_config.get("memory_system")
+            or memory_config.get("MemorySystem")
+            or ""
+        ).strip()
+        if not memory_system:
+            return None
+
+        payload: Dict[str, Any] = {
+            "MemorySystem": memory_system,
+        }
+        field_mapping = {
+            "Mem0InstanceId": (
+                memory_config.get("mem0_instance_id")
+                or memory_config.get("Mem0InstanceId")
+            ),
+            "Mem0InstanceName": (
+                memory_config.get("mem0_instance_name")
+                or memory_config.get("Mem0InstanceName")
+            ),
+            "Mem0Region": (
+                memory_config.get("mem0_region")
+                or memory_config.get("Mem0Region")
+            ),
+        }
+        for key, value in field_mapping.items():
+            text = str(value or "").strip()
+            if text:
+                payload[key] = text
+        return payload
+
     async def create_agent(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """创建 Agent (通过 CreateAgentProduct 走订单流程)"""
         framework = self._normalize_framework_name(data.get("framework"))
@@ -844,6 +1054,10 @@ class AgentEngineClient:
         storage_payload = self._normalize_storage_payload(data.get("storage"))
         if storage_payload is not None:
             params["Storage"] = storage_payload
+
+        memory_config_payload = self._normalize_memory_config_payload(data.get("memory_config"))
+        if memory_config_payload is not None:
+            params["MemoryConfig"] = memory_config_payload
 
         # 访问控制 (默认 ApiKey；OpenClaw 可显式传入 None 关闭平台层鉴权)
         auth_type = data.get("auth_type")
@@ -929,6 +1143,23 @@ class AgentEngineClient:
             return self._action("GetAgent", params)
 
         return self._action("GetAgent", {})
+
+    async def get_agent_ui_bootstrap(
+        self,
+        *,
+        agent_id: str | None = None,
+        name: str | None = None,
+        session_id: str | None = None,
+    ) -> Dict[str, Any]:
+        """获取 Agent UI bootstrap 元数据。"""
+        params: Dict[str, Any] = {}
+        if agent_id:
+            params["AgentId"] = agent_id
+        if name:
+            params["Name"] = name
+        if session_id:
+            params["SessionId"] = session_id
+        return self._action("GetAgentUiBootstrap", params)
 
     async def create_dashboard_access_link(
         self,
@@ -1162,6 +1393,10 @@ class AgentEngineClient:
         if storage_payload is not None:
             params["Storage"] = storage_payload
 
+        memory_config_payload = self._normalize_memory_config_payload(data.get("memory_config"))
+        if memory_config_payload is not None:
+            params["MemoryConfig"] = memory_config_payload
+
         # 访问控制 (可选)
         auth_type = data.get("auth_type")
         if auth_type:
@@ -1219,19 +1454,38 @@ class AgentEngineClient:
         endpoint: str | None = None,
         api_key: str | None = None,
     ) -> Dict[str, Any]:
-        access = await self._resolve_workspace_runtime_access(
+        transport = await self._resolve_workspace_transport(
             agent_id=agent_id,
             name=name,
             endpoint=endpoint,
             api_key=api_key,
         )
+        if transport["mode"] == "action":
+            return self._annotate_workspace_payload(
+                self._action(
+                    "ListWorkspaceFiles",
+                    self._compact_params(
+                        {
+                            "AgentId": transport.get("agent_id"),
+                            "Name": transport.get("name"),
+                            "Path": path,
+                            "Recursive": recursive,
+                        }
+                    ),
+                ),
+                transport_mode="action_proxy",
+            )
+        access = transport["access"]
         response = self._workspace_runtime_request(
             access=access,
             method="GET",
             path="entries",
             params={"path": path, "recursive": str(bool(recursive)).lower()},
         )
-        return self._to_snake_case(response.json())
+        return self._annotate_workspace_payload(
+            self._workspace_runtime_json(response),
+            transport_mode="runtime_direct",
+        )
 
     async def get_workspace_health(
         self,
@@ -1241,18 +1495,24 @@ class AgentEngineClient:
         endpoint: str | None = None,
         api_key: str | None = None,
     ) -> Dict[str, Any]:
-        access = await self._resolve_workspace_runtime_access(
+        transport = await self._resolve_workspace_transport(
             agent_id=agent_id,
             name=name,
             endpoint=endpoint,
             api_key=api_key,
         )
+        if transport["mode"] == "action":
+            return {}
+        access = transport["access"]
         response = self._workspace_runtime_request(
             access=access,
             method="GET",
             path="healthz",
         )
-        return self._to_snake_case(response.json())
+        return self._annotate_workspace_payload(
+            self._workspace_runtime_json(response),
+            transport_mode="runtime_direct",
+        )
 
     async def upload_workspace_file(
         self,
@@ -1264,7 +1524,7 @@ class AgentEngineClient:
         endpoint: str | None = None,
         api_key: str | None = None,
     ) -> Dict[str, Any]:
-        access = await self._resolve_workspace_runtime_access(
+        transport = await self._resolve_workspace_transport(
             agent_id=agent_id,
             name=name,
             endpoint=endpoint,
@@ -1273,6 +1533,28 @@ class AgentEngineClient:
         file_path = Path(local_path)
         file_bytes = file_path.read_bytes()
         guessed_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+        if transport["mode"] == "action":
+            response = self._action_raw_request(
+                "POST",
+                "AddWorkspaceFile",
+                data={
+                    "AgentId": transport.get("agent_id"),
+                    "Name": transport.get("name"),
+                    "Path": remote_path,
+                },
+                files={
+                    "file": (
+                        file_path.name,
+                        file_bytes,
+                        guessed_type,
+                    )
+                },
+            )
+            return self._annotate_workspace_payload(
+                self._workspace_runtime_json(response),
+                transport_mode="action_proxy",
+            )
+        access = transport["access"]
         response = self._workspace_runtime_request(
             access=access,
             method="POST",
@@ -1285,7 +1567,10 @@ class AgentEngineClient:
                 )
             },
         )
-        return self._to_snake_case(response.json())
+        return self._annotate_workspace_payload(
+            self._workspace_runtime_json(response),
+            transport_mode="runtime_direct",
+        )
 
     async def download_workspace_file(
         self,
@@ -1296,12 +1581,25 @@ class AgentEngineClient:
         endpoint: str | None = None,
         api_key: str | None = None,
     ) -> bytes:
-        access = await self._resolve_workspace_runtime_access(
+        transport = await self._resolve_workspace_transport(
             agent_id=agent_id,
             name=name,
             endpoint=endpoint,
             api_key=api_key,
         )
+        if transport["mode"] == "action":
+            response = self._action_raw_request(
+                "GET",
+                "GetWorkspaceFileContent",
+                params={
+                    "AgentId": transport.get("agent_id"),
+                    "Name": transport.get("name"),
+                    "FilePath": remote_path,
+                },
+                accept="application/octet-stream",
+            )
+            return response.content
+        access = transport["access"]
         response = self._workspace_runtime_request(
             access=access,
             method="GET",
@@ -1318,18 +1616,36 @@ class AgentEngineClient:
         endpoint: str | None = None,
         api_key: str | None = None,
     ) -> Dict[str, Any]:
-        access = await self._resolve_workspace_runtime_access(
+        transport = await self._resolve_workspace_transport(
             agent_id=agent_id,
             name=name,
             endpoint=endpoint,
             api_key=api_key,
         )
+        if transport["mode"] == "action":
+            return self._annotate_workspace_payload(
+                self._action(
+                    "DeleteWorkspaceFile",
+                    self._compact_params(
+                        {
+                            "AgentId": transport.get("agent_id"),
+                            "Name": transport.get("name"),
+                            "Path": remote_path,
+                        }
+                    ),
+                ),
+                transport_mode="action_proxy",
+            )
+        access = transport["access"]
         response = self._workspace_runtime_request(
             access=access,
             method="DELETE",
             path=f"files/{self._encode_workspace_runtime_path(remote_path)}",
         )
-        return self._to_snake_case(response.json())
+        return self._annotate_workspace_payload(
+            self._workspace_runtime_json(response),
+            transport_mode="runtime_direct",
+        )
 
     # ===== MCP Actions =====
 

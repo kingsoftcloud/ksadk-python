@@ -227,6 +227,11 @@ def _build_sync_results(payload: dict) -> dict:
 
 def _build_sync_payload(payload: dict) -> dict:
     root_label = _workspace_root_label(payload)
+    transport_mode = str(payload.get("transport_mode") or "").strip().lower()
+    transport_hint = {
+        "action_proxy": "通过平台 action 代理访问远端 workspace",
+        "runtime_direct": "通过 runtime endpoint 直连远端 workspace",
+    }.get(transport_mode)
     enriched = dict(payload)
     enriched.update(
         {
@@ -234,6 +239,8 @@ def _build_sync_payload(payload: dict) -> dict:
             "action": str(payload.get("direction", "sync")).strip().lower() or "sync",
             "workspace_root": root_label,
             "remote_display_path": _workspace_display_path(payload.get("remote_path", "."), root_label=root_label),
+            "transport_mode": transport_mode or None,
+            "transport_hint": transport_hint,
             "summary": {
                 "created_count": len(payload.get("created", [])),
                 "overwritten_count": len(payload.get("overwritten", [])),
@@ -303,6 +310,9 @@ def _emit_sync_payload(payload: dict, output_mode: str | None) -> None:
         _workspace_display_path(payload.get("remote_path", "."), root_label=root_label),
         fg="cyan",
     )
+    transport_hint = str(payload.get("transport_hint") or "").strip()
+    if transport_hint:
+        _echo_key_value("访问链路", transport_hint, fg="magenta")
     click.secho(
         "统计："
         f"新增 {len(payload.get('created', []))}，"
@@ -399,6 +409,14 @@ def _state_matches_target(state: dict, target_agent: str | None) -> bool:
     return target_agent == state.get("agent_id") or target_agent == state.get("name")
 
 
+def _state_prefers_action_proxy(state: dict) -> bool:
+    if not isinstance(state, dict):
+        return False
+    framework = str(state.get("framework") or "").strip().lower()
+    state_type = str(state.get("type") or "").strip().lower()
+    return framework == "openclaw" or state_type == "openclaw"
+
+
 def _resolve_workspace_region(region: str | None, state: dict) -> str:
     return _normalize(region) or _normalize(state.get("region")) or os.getenv("KSYUN_REGION") or DEFAULT_REGION
 
@@ -449,7 +467,13 @@ def _resolve_workspace_runtime_access(
         return endpoint_value, api_key_value
     if not _state_matches_target(state, target_agent):
         return None, api_key_value
-    return _normalize(state.get("endpoint")), api_key_value or _normalize(state.get("api_key"))
+    state_endpoint = _normalize(state.get("endpoint"))
+    state_api_key = api_key_value or _normalize(state.get("api_key"))
+    if _state_prefers_action_proxy(state):
+        if state_endpoint and state_api_key:
+            return state_endpoint, state_api_key
+        return None, api_key_value
+    return state_endpoint, state_api_key
 
 
 def _resolve_workspace_command_context(
@@ -599,6 +623,7 @@ async def _push_workspace_files(
     remote_dir = _normalize_workspace_dir(remote_path)
     local_files = _collect_local_files(local_dir)
     remote_existing: set[str] = set()
+    transport_mode = ""
     client_kwargs = _workspace_client_kwargs(
         agent_ref=agent_ref,
         endpoint=endpoint,
@@ -616,6 +641,7 @@ async def _push_workspace_files(
             if exc.code != 404:
                 raise
             payload = {"entries": []}
+        transport_mode = str(payload.get("transport_mode") or "").strip()
 
         for entry in payload.get("entries", []):
             if entry.get("type") == "file" and entry.get("path"):
@@ -634,6 +660,8 @@ async def _push_workspace_files(
                 local_path=absolute_path,
                 **client_kwargs,
             )
+            if not transport_mode:
+                transport_mode = str(response.get("transport_mode") or "").strip()
             resolved_path = response.get("entry", {}).get("path", destination_path)
             if destination_path in remote_existing:
                 overwritten.append(resolved_path)
@@ -645,6 +673,7 @@ async def _push_workspace_files(
         "local_dir": str(local_dir),
         "remote_path": remote_dir,
         "workspace_root": DEFAULT_WORKSPACE_ROOT_LABEL,
+        "transport_mode": transport_mode or None,
         "force": bool(force),
         "total_files": len(local_files),
         "created": created,
@@ -664,6 +693,7 @@ async def _pull_workspace_files(
     api_key: str | None,
 ) -> dict:
     remote_dir = _normalize_workspace_dir(remote_path)
+    transport_mode = ""
     client_kwargs = _workspace_client_kwargs(
         agent_ref=agent_ref,
         endpoint=endpoint,
@@ -676,6 +706,7 @@ async def _pull_workspace_files(
             recursive=True,
             **client_kwargs,
         )
+        transport_mode = str(payload.get("transport_mode") or "").strip()
         remote_files = sorted(
             [
                 entry
@@ -715,6 +746,7 @@ async def _pull_workspace_files(
         "local_dir": str(local_dir),
         "remote_path": remote_dir,
         "workspace_root": DEFAULT_WORKSPACE_ROOT_LABEL,
+        "transport_mode": transport_mode or None,
         "force": bool(force),
         "total_files": len(remote_files),
         "created": created,

@@ -30,6 +30,7 @@ def render_memory_backend_config(
                 backend_type="openclaw_default",
                 config_patch={},
                 required_env=[],
+                plugin_ids=[],
             )
         manifest = manifest_raw
 
@@ -39,6 +40,7 @@ def render_memory_backend_config(
             backend_type="openclaw_default",
             config_patch={},
             required_env=[],
+            plugin_ids=[],
         )
 
     if parsed.backend_type == "openclaw_default":

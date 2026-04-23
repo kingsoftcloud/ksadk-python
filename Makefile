@@ -393,9 +393,10 @@ OPENCLAW_VPC_REGISTRY ?= hub-vpc-cn-beijing-6.kce.ksyun.com
 OPENCLAW_VPC_IMAGE ?= $(subst hub.kce.ksyun.com,$(OPENCLAW_VPC_REGISTRY),$(OPENCLAW_IMAGE))
 OPENCLAW_TAG ?= latest
 OPENCLAW_CONTEXT := .
-OPENCLAW_BASE_IMAGE ?= ghcr.io/openclaw/openclaw:2026.4.15@sha256:0e6bebecf4623216420851f5edd133a748335f45c3508b635f7c5c4bfbc6da7d
+OPENCLAW_BASE_IMAGE ?= ghcr.io/openclaw/openclaw:2026.4.21@sha256:70e0ab07deb72f4b3ee7bb701c5437fdc27b85d6705cc67f104aa8042ba52e00
 OPENCLAW_PYPI_INDEX_URL ?= https://mirrors.aliyun.com/pypi/simple
 OPENCLAW_NPM_REGISTRY ?= https://registry.npmmirror.com
+DOCKER_BUILDKIT ?= 1
 
 ## 刷新 Agentspace 最新插件/技能资产并更新 lock manifest
 openclaw-refresh-agentspace-assets:
@@ -418,7 +419,7 @@ openclaw-build: openclaw-refresh-agentspace-assets
 		echo "❌ 错误: deploy/openclaw/Dockerfile 不存在"; \
 		exit 1; \
 	fi
-	@DOCKER_BUILDKIT=1 docker build --platform linux/amd64 \
+	@DOCKER_BUILDKIT=$(DOCKER_BUILDKIT) docker build --platform linux/amd64 \
 		-f deploy/openclaw/Dockerfile \
 		--build-arg OPENCLAW_BASE_IMAGE=$(OPENCLAW_BASE_IMAGE) \
 		--build-arg PYPI_INDEX_URL=$(OPENCLAW_PYPI_INDEX_URL) \
@@ -478,7 +479,7 @@ hermes-build:
 		echo "❌ 错误: deploy/hermes/Dockerfile 不存在"; \
 		exit 1; \
 	fi
-	@DOCKER_BUILDKIT=1 docker build --platform linux/amd64 \
+	@DOCKER_BUILDKIT=$(DOCKER_BUILDKIT) docker build --platform linux/amd64 \
 		-f deploy/hermes/Dockerfile \
 		--build-arg PYPI_INDEX_URL=$(HERMES_PYPI_INDEX_URL) \
 		--build-arg HERMES_AGENT_REF=$(HERMES_AGENT_REF) \

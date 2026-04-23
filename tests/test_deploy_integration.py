@@ -252,7 +252,7 @@ class TestDeployLogic:
 
         with patch.dict(os.environ, {"AGENTENGINE_SERVER_URL": "http://localhost:8080"}), \
              patch("ksadk.deployment.providers.serverless.AgentEngineClient", return_value=mock_client), \
-             patch("ksadk.deployment.providers.serverless.asyncio.sleep", new=AsyncMock()) as mock_sleep, \
+             patch("ksadk.deployment.agent_access.asyncio.sleep", new=AsyncMock()) as mock_sleep, \
              patch("ksadk.deployment.providers.serverless.logger.warning") as mock_warning, \
              patch("ksadk.common.auth.AWSV4Auth") as MockAuth:
 

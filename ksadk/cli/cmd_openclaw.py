@@ -71,6 +71,7 @@ from ksadk.cli.ui import (
     print_warn,
     status_rich_style,
 )
+from ksadk.deployment.agent_access import get_latest_agent_access
 from ksadk.openclaw_gateway import OpenClawGatewayClient, OpenClawGatewayError
 
 console = get_console()
@@ -687,6 +688,51 @@ def _parse_extra_openclaw_env_pairs(items: tuple[str, ...] | list[str] | None) -
     return parsed
 
 
+def _build_openclaw_memory_config(
+    *,
+    memory_system: str | None,
+    mem0_instance_id: str | None,
+    mem0_instance_name: str | None,
+    mem0_region: str | None,
+) -> dict[str, str] | None:
+    normalized_system = str(memory_system or "").strip().lower()
+    normalized_mem0_instance_id = str(mem0_instance_id or "").strip()
+    normalized_mem0_instance_name = str(mem0_instance_name or "").strip()
+    normalized_mem0_region = str(mem0_region or "").strip()
+
+    has_mem0_detail = any(
+        [
+            normalized_mem0_instance_id,
+            normalized_mem0_instance_name,
+            normalized_mem0_region,
+        ]
+    )
+    if not normalized_system and has_mem0_detail:
+        normalized_system = "mem0"
+    if not normalized_system:
+        return None
+
+    if normalized_system == "openclaw_default":
+        if has_mem0_detail:
+            raise click.UsageError("使用 --memory-system openclaw_default 时不能再传入 mem0 参数。")
+        return {"memory_system": "openclaw_default"}
+
+    if normalized_system == "mem0":
+        if not normalized_mem0_instance_id:
+            raise click.UsageError("使用 --memory-system mem0 时必须传入 --mem0-instance-id。")
+        payload = {
+            "memory_system": "mem0",
+            "mem0_instance_id": normalized_mem0_instance_id,
+        }
+        if normalized_mem0_instance_name:
+            payload["mem0_instance_name"] = normalized_mem0_instance_name
+        if normalized_mem0_region:
+            payload["mem0_region"] = normalized_mem0_region
+        return payload
+
+    raise click.UsageError(f"不支持的记忆后端: {normalized_system}")
+
+
 def _parse_image(image: Optional[str]) -> tuple[str, str, str]:
     """解析镜像地址为 (namespace, repo, version)
 
@@ -847,14 +893,31 @@ def _flatten_agent_detail(agent: dict) -> dict:
         "agent_id": basic.get("agent_id") or agent.get("agent_id") or "",
         "name": basic.get("name") or agent.get("name") or "",
         "status": (basic.get("status") or agent.get("status") or "UNKNOWN").upper(),
-        "framework": basic.get("framework") or agent.get("framework") or "",
-        "region": basic.get("region") or agent.get("region") or "",
+        "framework": basic.get("framework") or deploy.get("framework") or agent.get("framework") or "",
+        "region": basic.get("region") or deploy.get("region") or agent.get("region") or "",
         "endpoint": quick.get("public_endpoint") or quick.get("private_endpoint") or agent.get("endpoint") or "",
         "artifact_path": deploy.get("artifact_path") or agent.get("artifact_path") or "",
         "created_at": basic.get("created_at") or agent.get("created_at") or "",
         "updated_at": basic.get("updated_at") or agent.get("updated_at") or "",
         "api_key": quick.get("api_key") or agent.get("api_key"),
     }
+
+
+async def _get_openclaw_detail_with_client(
+    client,
+    agent_ref: str,
+    *,
+    include_api_key: bool = False,
+) -> dict[str, Any]:
+    if str(agent_ref).startswith("ar-"):
+        agent = await client.get_agent(agent_id=agent_ref, include_api_key=include_api_key)
+    else:
+        agent = await client.get_agent(name=agent_ref, include_api_key=include_api_key)
+    detail = _flatten_agent_detail(agent)
+    framework = str(detail.get("framework") or "").strip().lower()
+    if framework and framework != "openclaw":
+        raise resolution_error(f"目标 Agent 不是 OpenClaw: {agent_ref}", hints=["agentengine openclaw list"])
+    return detail
 
 
 def _format_cli_timestamp(value: Optional[str], *, never_text: str = "-") -> str:
@@ -904,14 +967,11 @@ async def _resolve_openclaw_detail_or_raise(
         )
 
     async with AgentEngineClient(region=resolved_region) as client:
-        if resolved.value.startswith("ar-"):
-            agent = await client.get_agent(agent_id=resolved.value)
-        else:
-            agent = await client.get_agent(name=resolved.value)
+        detail = await _get_openclaw_detail_with_client(client, resolved.value)
 
-    if not agent:
+    if not detail:
         raise resolution_error(f"未找到 OpenClaw: {resolved.value}", hints=["agentengine openclaw list"])
-    return resolved_region, _flatten_agent_detail(agent)
+    return resolved_region, detail
 
 
 def _build_gateway_client(region: str, detail: dict[str, Any]) -> OpenClawGatewayClient:
@@ -2717,6 +2777,15 @@ def channel_doctor(agent_ref: Optional[str], region: Optional[str], channel: Opt
 @click.option("--model-api-key", default=None, help="模型 API Key (可选；默认复用 OPENAI_API_KEY)")
 @click.option("--default-model", default=None, help="默认模型名 (默认复用 OPENAI_MODEL_NAME)")
 @click.option(
+    "--memory-system",
+    type=click.Choice(["openclaw_default", "mem0"], case_sensitive=False),
+    default=None,
+    help="记忆后端类型（默认不显式变更当前服务端配置）",
+)
+@click.option("--mem0-instance-id", default=None, help="mem0 实例 ID")
+@click.option("--mem0-instance-name", default=None, help="mem0 实例名称（可选）")
+@click.option("--mem0-region", default=None, help="mem0 实例区域（可选）")
+@click.option(
     "--env",
     "extra_env",
     multiple=True,
@@ -2734,6 +2803,10 @@ def deploy(
     model_base_url: Optional[str],
     model_api_key: Optional[str],
     default_model: Optional[str],
+    memory_system: Optional[str],
+    mem0_instance_id: Optional[str],
+    mem0_instance_name: Optional[str],
+    mem0_region: Optional[str],
     extra_env: tuple[str, ...],
     storage_size_gi: int,
     storage_mount_path: Optional[str],
@@ -2762,6 +2835,12 @@ def deploy(
         agentengine openclaw deploy --env APP_MODE=prod --env API_BASE=https://example.com
     """
     dry_run = effective_dry_run(dry_run)
+    _build_openclaw_memory_config(
+        memory_system=memory_system,
+        mem0_instance_id=mem0_instance_id,
+        mem0_instance_name=mem0_instance_name,
+        mem0_region=mem0_region,
+    )
     try:
         run_async_with_dry_run(
             _deploy_openclaw(
@@ -2772,6 +2851,10 @@ def deploy(
                 model_base_url=model_base_url,
                 model_api_key=model_api_key,
                 default_model=default_model,
+                memory_system=memory_system,
+                mem0_instance_id=mem0_instance_id,
+                mem0_instance_name=mem0_instance_name,
+                mem0_region=mem0_region,
                 extra_env=extra_env,
                 storage_size_gi=storage_size_gi,
                 storage_mount_path=storage_mount_path,
@@ -2793,6 +2876,10 @@ async def _deploy_openclaw(
     model_base_url: Optional[str],
     model_api_key: Optional[str],
     default_model: Optional[str],
+    memory_system: Optional[str],
+    mem0_instance_id: Optional[str],
+    mem0_instance_name: Optional[str],
+    mem0_region: Optional[str],
     extra_env: tuple[str, ...] = (),
     storage_size_gi: int = 20,
     storage_mount_path: Optional[str] = None,
@@ -2852,6 +2939,12 @@ async def _deploy_openclaw(
     custom_env_vars = _parse_extra_openclaw_env_pairs(extra_env)
     if custom_env_vars:
         env_vars.update(custom_env_vars)
+    memory_config = _build_openclaw_memory_config(
+        memory_system=memory_system,
+        mem0_instance_id=mem0_instance_id,
+        mem0_instance_name=mem0_instance_name,
+        mem0_region=mem0_region,
+    )
 
     print_title("OpenClaw 云端部署", f"region: {region}")
     print_kv("名称", openclaw_name)
@@ -2859,6 +2952,10 @@ async def _deploy_openclaw(
     print_kv("区域", region, value_style="#58a6ff")
     if security_profile:
         print_kv("安全预设", security_profile.lower())
+    if memory_config:
+        print_kv("记忆后端", str(memory_config.get("memory_system") or "").strip())
+        if memory_config.get("mem0_instance_id"):
+            print_kv("mem0 实例", str(memory_config["mem0_instance_id"]))
 
     # 构建环境变量列表
     env_list = [
@@ -2884,6 +2981,8 @@ async def _deploy_openclaw(
         "auth_type": "None",
         "inbound_identity_auth": "None",
     }
+    if memory_config:
+        request_data["memory_config"] = memory_config
     storage_config = build_storage_config(
         "openclaw",
         no_storage=no_storage,
@@ -2920,6 +3019,8 @@ async def _deploy_openclaw(
                     "auth_type": "None",
                     "inbound_identity_auth": "None",
                 }
+                if memory_config:
+                    update_payload["memory_config"] = memory_config
                 if image_credential:
                     update_payload["image_credential"] = image_credential
                 if storage_config:
@@ -2946,6 +3047,8 @@ async def _deploy_openclaw(
                         "auth_type": "None",
                         "inbound_identity_auth": "None",
                     }
+                    if memory_config:
+                        update_payload["memory_config"] = memory_config
                     if image_credential:
                         update_payload["image_credential"] = image_credential
                     if storage_config:
@@ -2982,25 +3085,49 @@ async def _deploy_openclaw(
 
                 if order_id and not agent_id:
                     print_info(f"订单已创建: {order_id}，等待实例创建...")
-                    import time
-                    for i in range(12):  # 最多等 60s
-                        time.sleep(5)
-                        try:
-                            detail = await client.get_agent(name=openclaw_name, include_api_key=True)
-                            qa = detail.get("quick_access", {})
-                            basic = detail.get("basic", {})
-                            agent_id = basic.get("agent_id")
-                            endpoint = qa.get("public_endpoint") or endpoint
-                            api_key = qa.get("api_key") or api_key
-                            if agent_id:
-                                print_success(f"实例已创建: {agent_id}")
-                                break
-                        except Exception:
-                            pass
-                        print_info(f"等待中... ({(i+1)*5}s)")
-
-                    if not agent_id:
+                    latest = await get_latest_agent_access(
+                        client,
+                        agent_name=openclaw_name,
+                        attempts=12,
+                        interval_seconds=5,
+                        include_api_key=True,
+                        detail_fetcher=lambda agent_ref, include_api_key: _get_openclaw_detail_with_client(
+                            client,
+                            agent_ref,
+                            include_api_key=include_api_key,
+                        ),
+                        suppress_transient_not_found_log=True,
+                    )
+                    if latest:
+                        agent_id = latest.get("agent_id") or agent_id
+                        endpoint = latest.get("endpoint") or endpoint
+                        api_key = latest.get("api_key") or api_key
+                        print_success(f"实例已创建: {agent_id}")
+                    else:
                         print_warn("实例创建中，稍后使用 'agentengine openclaw list' 查看")
+                elif agent_id and (
+                    not str(endpoint or "").strip()
+                    or not str(api_key or "").strip()
+                ):
+                    latest = await get_latest_agent_access(
+                        client,
+                        agent_id=str(agent_id).strip() or None,
+                        attempts=5,
+                        interval_seconds=1,
+                        initial_delay_seconds=2,
+                        require_complete_access=True,
+                        include_api_key=True,
+                        detail_fetcher=lambda agent_ref, include_api_key: _get_openclaw_detail_with_client(
+                            client,
+                            agent_ref,
+                            include_api_key=include_api_key,
+                        ),
+                        suppress_transient_not_found_log=True,
+                    )
+                    if latest:
+                        agent_id = latest.get("agent_id") or agent_id
+                        endpoint = latest.get("endpoint") or endpoint
+                        api_key = latest.get("api_key") or api_key
 
             # 保存状态
             saved_name = openclaw_name if not state.get("name") else state.get("name")
