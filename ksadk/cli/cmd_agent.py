@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import click
+from pathlib import Path
 
 from ksadk.cli.cmd_destroy import run_delete_command
 from ksadk.cli.cmd_invoke import run_invoke_command
@@ -22,9 +23,18 @@ def agent():
 @pagination_options(default_page=1, default_size=20)
 @click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
 @click.option("--account-id", envvar="KSYUN_ACCOUNT_ID", help="金山云账号 ID")
+@click.option("--framework", help="按框架过滤，支持逗号分隔多个值，如 langgraph,adk")
 @dry_run_option()
 @cli_output_option()
-def list_agents(page: int, size: int, region: str, account_id: str, dry_run: bool, output_mode: str | None):
+def list_agents(
+    page: int,
+    size: int,
+    region: str,
+    account_id: str,
+    framework: str | None,
+    dry_run: bool,
+    output_mode: str | None,
+):
     """列出已部署的 Agent。"""
     _ = output_mode
     run_status_command(
@@ -35,6 +45,7 @@ def list_agents(page: int, size: int, region: str, account_id: str, dry_run: boo
         interval=2,
         region=region,
         account_id=account_id,
+        framework=framework,
         dry_run=dry_run,
         compatibility_alias=False,
         page=page,
@@ -93,6 +104,15 @@ def status_agent(
     show_default=True,
     help="交互传输层: auto(自动), chat(HTTP /v1/chat/completions), native(Hermes 远端终端)",
 )
+@click.option(
+    "--local-workspace",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+    help="仅 Hermes 远程 native 模式: 先将本地目录同步到远端 workspace",
+)
+@click.option(
+    "--remote-workspace-path",
+    help="远端 workspace 子目录 (默认使用本地目录名)",
+)
 @click.option("--model", help="指定模型名称")
 @click.option("--show-thinking", is_flag=True, help="显示模型思考过程")
 @cli_output_option()
@@ -107,6 +127,8 @@ def invoke_agent(
     local: bool,
     insecure: bool,
     transport: str,
+    local_workspace: Path | None,
+    remote_workspace_path: str | None,
     model: str | None,
     show_thinking: bool,
     output_mode: str | None,
@@ -132,6 +154,8 @@ def invoke_agent(
         local=local,
         insecure=insecure,
         transport=transport,
+        local_workspace=local_workspace,
+        remote_workspace_path=remote_workspace_path,
         model=model,
         show_thinking=show_thinking,
         compatibility_alias=False,

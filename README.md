@@ -1,91 +1,79 @@
-# ksadk (AgentEngine CLI)
+# ksadk-python
 
-`ksadk` 是金山云 Agent 开发与部署工具链，统一提供本地调试、构建部署、远端资源管理，以及平台级 KB/LTM、MCP、OpenClaw、Hermes 接入能力。
+`ksadk-python` 是 `agentengine` / `ksadk` 的 Python 实现仓库，负责本地开发入口、Agent CLI、部分本地运行时能力，以及 Hermes / OpenClaw 共享运行时资产。
 
-当前版本：`0.5.1`
+当前代码主线版本：`0.5.1`。
 
-## 0.5.1 亮点
+## 仓库定位
 
-- code mode 构建新增 Linux Runtime 兼容性 / ABI 校验，关键原生扩展不兼容时会在构建阶段提前终止，而不是把问题拖到远端运行时。
-- Hermes 默认共享 runtime 镜像更新为 `hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.4.16`；对 `glm-5.1`，runtime 在未显式配置时会补齐 `context_length=200000`，并把 fallback model 默认收敛到 `kimi-k2.5`。
-- OpenClaw 默认基线切到官方 `ghcr.io/openclaw/openclaw:2026.4.15@sha256:0e6bebecf4623216420851f5edd133a748335f45c3508b635f7c5c4bfbc6da7d`，方便和最新 upstream 行为保持一致。
-- OpenClaw heartbeat 默认收口为隔离轻上下文：`every=30m`、`target=none`、`isolatedSession=true`，避免心跳占用当前聊天窗口。
-- OpenClaw 默认模型目录和自动补齐的 primary model 项不再把 `maxTokens` 写死为 `8192`，当前基线提升到 `20000`。
+- 本地开发：`init / config / run / web`
+- 构建部署：`build / deploy / launch`
+- 远端调用：`agent invoke`、`files`、`dashboard`
+- 运行时资产：`deploy/hermes`、`deploy/openclaw`
+- 共享源码：`ksadk_runtime_common`
 
-## 安装
+```mermaid
+flowchart LR
+  classDef client fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e3a8a;
+  classDef control fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#581c87;
+  classDef data fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#166534;
+  classDef storage fill:#ffedd5,stroke:#ea580c,stroke-width:2px,color:#9a3412;
+  classDef runtime fill:#e2e8f0,stroke:#475569,stroke-width:2px,color:#1e293b;
+
+  CLI["agentengine / ksadk"]:::client --> Repo["ksadk-python"]:::runtime
+  Repo --> Local["本地运行时与 Web UI"]:::data
+  Repo --> Common["ksadk_runtime_common"]:::runtime
+  Repo --> Hermes["Hermes Runtime"]:::data
+  Repo --> OpenClaw["OpenClaw Runtime"]:::data
+  Repo --> Control["agentengine-server"]:::control
+  Hermes --> PVC["PVC / workspace"]:::storage
+  OpenClaw --> PVC
+  Local --> Workspace[".agentengine/ui/workspace"]:::storage
+  Common --> Hermes
+  Common --> OpenClaw
+  Common --> Local
+```
+
+## 快速开始
 
 ```bash
 pip install -U ksadk
-```
 
-可选依赖：
-
-```bash
-pip install "ksadk[langgraph]"
-pip install "ksadk[langchain]"
-pip install "ksadk[deepagents]"
-pip install "ksadk[adk]"
-pip install "ksadk[kb]"
-```
-
-命令入口等价：
-
-```bash
-agentengine --help
-ksadk --help
-```
-
-## 最快路径
-
-### 1. 本地运行
-
-```bash
-agentengine init my_agent -f langgraph
-cd my_agent
+agentengine init my-agent -f langgraph
+cd my-agent
 agentengine config
 agentengine run -i
-# 或
-agentengine web --port 8080
 ```
 
-### 2. 一键部署代码框架
+云端部署最短路径：
 
 ```bash
-export KSYUN_ACCESS_KEY=your-ak
-export KSYUN_SECRET_KEY=your-sk
-export KSYUN_ACCOUNT_ID=your-account-id
-export KSYUN_REGION=cn-beijing-6
-
 agentengine launch . --target serverless
 ```
 
-### 3. Hermes 云端托管
+## 文档导航
 
-```bash
-export KSYUN_ACCESS_KEY=your-ak
-export KSYUN_SECRET_KEY=your-sk
-export KSYUN_ACCOUNT_ID=your-account-id
-export KSYUN_REGION=pre-online
-export OPENAI_API_KEY=your-model-key
-export OPENAI_BASE_URL=http://kspmas.ksyun.com/v1
-export OPENAI_MODEL_NAME=glm-5.1
+### 主文档
 
-agentengine init demo-hermes -f hermes
-cd demo-hermes
-agentengine hermes deploy --name demo-hermes
-agentengine invoke demo-hermes
-```
+- [ksadk使用文档](./docs/ksadk使用文档.md)
+- [ksadk技术设计](./docs/ksadk技术设计.md)
+- [工作区文件技术设计](./docs/工作区文件技术设计.md)
 
-说明：
+### 专题文档
 
-- `agentengine hermes deploy` 默认使用共享 Hermes runtime 镜像，不走本地 build/push。
-- 如果注入的是 `kspmas.ksyun.com` 公网模型地址，CLI 会在云端 runtime 配置里自动改写为 `kspmas-internal.sdns.ksyun.com`，避免预发 / 线上 Pod 访问公网网关超时。
-- `agentengine invoke <hermes-agent>` 默认进入 Hermes 原生远程 TUI；浏览器聊天页请用 `agentengine hermes open --chat`。
-- `agentengine hermes open <hermes-agent> --manage` 或 `agentengine dashboard open --path / --share` 打开的 Hermes 管理 UI，会保留 Hermes 自身 `/api/*` session bearer token，不再把它误当作平台 API Key。
-- Hermes 管理 UI 首次打开默认写入中文 locale；如需覆盖，可显式设置 `HERMES_UI_LOCALE=en`。
-- 对 `glm-5.1`，Hermes runtime 在未显式配置时会补齐 `context_length=200000`，并把 fallback model 默认设为 `kimi-k2.5`；如需覆盖可显式设置 `HERMES_CONTEXT_LENGTH` / `HERMES_FALLBACK_MODEL`。
+- [记忆使用指南](./docs/记忆使用指南.md)
+- [知识库与记忆示例](./docs/知识库与记忆示例.md)
+- [OpenClaw一键部署指南](./docs/openclaw一键部署指南.md)
+- [DeepAgents说明](./docs/DeepAgents说明.md)
+- [Hermes 运行时说明](./deploy/hermes/README.md)
+- [OpenClaw 用户镜像模板说明](./deploy/openclaw-user-template/README.md)
 
-### 4. 打开云端 UI
+### 内部与历史资料
+
+- `docs/archive/`：历史方案稿、阶段性实施说明、版本文档
+- `docs/internal/`：内部 runbook、分析稿、协作说明
+
+查看云端面板：
 
 ```bash
 agentengine dashboard open
@@ -93,25 +81,9 @@ agentengine dashboard open
 agentengine dashboard open --agent ar-xxxx
 ```
 
-## 主文档
-
-- [使用文档](./docs/ksadk_usage_guide.md)
-- [技术文档](./docs/ksadk_technical_design.md)
-
-## 专题参考
-
-- [DeepAgents 框架参考](./docs/deepagents.md)
-- [KB / LTM 示例参考](./docs/knowledge_base_and_memory_examples.md)
-- [ADK 记忆能力专项参考](./docs/memory_usage_guide.md)
-- [OpenClaw 一键部署与接入参考](./docs/openclaw_client_one_click_deploy.md)
-- [OpenClaw 用户自定义镜像模板参考](./deploy/openclaw-user-template/README.md)
-- [Hermes AgentEngine 实战手册（从初始化到 IM 连接）](./docs/hermes-agentengine-guide.md)
-- [Hermes Agent 本地安装、云端部署与远程 TUI 参考](./docs/hermes-agent-v2026.4.16_本地安装配置与ksadk接入流程.md)
-- [Hermes Runtime 共享镜像与运行时约定](./deploy/hermes/README.md)
-- [Runner Approval 架构草案](./docs/Runner_Approval_Architecture.md)
-
 ## 说明
 
-- `README` 现在只保留入口信息，不再承载完整命令说明。
-- 完整 CLI 路径、环境变量、KB/LTM、MCP、OpenClaw、Hermes、JSON 输出等说明统一收口到 [使用文档](./docs/ksadk_usage_guide.md)。
-- 当前实现设计、核心子系统、关键调用链和与 `agentengine-server` 的边界统一收口到 [技术文档](./docs/ksadk_technical_design.md)。
+- `README` 只保留仓库定位、入口和导航。
+- 命令说明、默认值、限制和示例统一收口到 [ksadk使用文档](./docs/ksadk使用文档.md)。
+- 设计分层、运行时链路、共享源码和 Docker 集成统一收口到 [ksadk技术设计](./docs/ksadk技术设计.md)。
+- Workspace Files 的协议、路径、安全模型和跨 runtime 数据面统一收口到 [工作区文件技术设计](./docs/工作区文件技术设计.md)。

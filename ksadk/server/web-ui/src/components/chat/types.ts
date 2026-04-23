@@ -63,7 +63,7 @@ export type ModelCatalogItem = {
     structured_output?: boolean;
     context_caching?: boolean;
   };
-  pricing?: Record<string, number>;
+  pricing?: Record<string, string | number>;
   [key: string]: unknown;
 };
 
@@ -71,3 +71,22 @@ export type ComposerContextIndicator = {
   label: string;
   phase?: 'default' | 'warning' | 'compressing';
 } | null;
+
+export type WorkspaceFilesCapability = {
+  Enabled: boolean;
+  MaxUploadBytes: number;
+  SupportsDelete: boolean;
+  RootLabel: string;
+  EntryAction?: string;
+  UploadAction?: string;
+  ContentPath?: string;
+};
+
+export type WorkspaceEntry = {
+  Name: string;
+  Path: string;
+  Type: 'file' | 'directory';
+  SizeBytes?: number | null;
+  MimeType?: string | null;
+  ModifiedAt?: string | null;
+};

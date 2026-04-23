@@ -14,6 +14,7 @@ set -euo pipefail
 # - 启动可观测：关键阶段输出中文日志，方便排查卡点
 
 STATE_DIR="${OPENCLAW_STATE_DIR:-${HOME:-/root}/.openclaw}"
+export OPENCLAW_WORKSPACE_FILES_ENABLED="${OPENCLAW_WORKSPACE_FILES_ENABLED:-1}"
 CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-${STATE_DIR}/openclaw.json}"
 BOOTSTRAP_MARKER="${STATE_DIR}/.bootstrapped"
 PUBLIC_PORT="${OPENCLAW_PUBLIC_PORT:-19089}"
@@ -21,9 +22,12 @@ BIND_MODE="${OPENCLAW_GATEWAY_BIND:-lan}"
 AUTH_MODE="trusted-proxy"
 BROWSER_EXECUTABLE_DEFAULT="/usr/bin/chromium"
 WORKSPACE_DIR="${OPENCLAW_WORKSPACE_DIR:-${STATE_DIR}/workspace}"
+WORKSPACE_FILES_PORT="${OPENCLAW_WORKSPACE_FILES_PORT:-8091}"
+WORKSPACE_FILES_PROXY_URL="${OPENCLAW_WORKSPACE_FILES_PROXY_URL:-http://127.0.0.1:${WORKSPACE_FILES_PORT}}"
 SAFE_BIN_DIR="${OPENCLAW_SAFE_BIN_DIR:-/opt/openclaw/safe-bin}"
 PRESET_SKILLS_DIR="${OPENCLAW_PRESET_SKILLS_DIR:-/opt/openclaw/preset-skills}"
 DEFAULT_EXTENSIONS_DIR="${OPENCLAW_DEFAULT_EXTENSIONS_DIR:-/opt/openclaw/default-extensions}"
+DEFERRED_DEFAULT_EXTENSIONS="${OPENCLAW_DEFERRED_DEFAULT_EXTENSIONS:-openclaw-mem0}"
 WORKSPACE_TEMPLATE_DIR="${OPENCLAW_WORKSPACE_TEMPLATE_DIR:-/opt/openclaw/workspace-template}"
 RUNTIME_DIST_DIR="${OPENCLAW_DIST_DIR:-/app/dist}"
 BOOTSTRAP_CACHE_DIR="${OPENCLAW_BOOTSTRAP_CACHE_DIR:-${STATE_DIR}/.bootstrap-cache}"
@@ -32,6 +36,10 @@ DIST_PATCH_MARKER="${OPENCLAW_DIST_PATCH_MARKER:-${RUNTIME_DIST_DIR}/.agentengin
 OPENCLAW_WEIXIN_REMOTE_LOGIN_PATCH_TARGET_PACKAGE_NAME="${OPENCLAW_WEIXIN_REMOTE_LOGIN_PATCH_TARGET_PACKAGE_NAME:-@tencent-weixin/openclaw-weixin}"
 OPENCLAW_WEIXIN_REMOTE_LOGIN_PATCH_MIN_VERSION="${OPENCLAW_WEIXIN_REMOTE_LOGIN_PATCH_MIN_VERSION:-${OPENCLAW_WEIXIN_REMOTE_LOGIN_PATCH_TARGET_VERSION:-2.1.7}}"
 export PATH="${HOME:-/root}/.local/bin:${PATH}"
+export KSADK_WORKSPACE_FILES_ENABLED="${KSADK_WORKSPACE_FILES_ENABLED:-${OPENCLAW_WORKSPACE_FILES_ENABLED}}"
+export KSADK_WORKSPACE_ROOT="${KSADK_WORKSPACE_ROOT:-${WORKSPACE_DIR}}"
+export KSADK_WORKSPACE_ROOT_LABEL="${KSADK_WORKSPACE_ROOT_LABEL:-workspace}"
+export OPENCLAW_WORKSPACE_FILES_PROXY_URL="${WORKSPACE_FILES_PROXY_URL}"
 
 # -----------------------------------------------------------------------------
 # 基础工具函数
@@ -46,6 +54,45 @@ is_truthy() {
   esac
 }
 
+trim_whitespace() {
+  local value="${1:-}"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "${value}"
+}
+
+list_contains_name() {
+  local needle
+  local item
+  needle="$(trim_whitespace "${1:-}")"
+  shift || true
+  [[ -n "${needle}" ]] || return 1
+  for item in "$@"; do
+    item="$(trim_whitespace "${item:-}")"
+    [[ -n "${item}" ]] || continue
+    if [[ "${item}" == "${needle}" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+csv_contains_name() {
+  local needle="$1"
+  local csv="${2:-}"
+  local item
+  local IFS=','
+  read -r -a items <<< "${csv}"
+  for item in "${items[@]}"; do
+    item="$(trim_whitespace "${item}")"
+    [[ -n "${item}" ]] || continue
+    if [[ "${item}" == "${needle}" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 bootstrap_now_seconds() {
   date +%s
 }
@@ -56,6 +103,47 @@ bootstrap_log() {
 
 bootstrap_phase() {
   bootstrap_log "=== $* ==="
+}
+
+gateway_listener_accepting() {
+  local host="${1:-127.0.0.1}"
+  local port="${2:-${GATEWAY_PORT:-8080}}"
+  (exec 3<>"/dev/tcp/${host}/${port}") >/dev/null 2>&1
+}
+
+workspace_files_listener_accepting() {
+  local host="${1:-127.0.0.1}"
+  local port="${2:-${WORKSPACE_FILES_PORT}}"
+  (exec 3<>"/dev/tcp/${host}/${port}") >/dev/null 2>&1
+}
+
+wait_for_gateway_handoff_listener() {
+  local grace_seconds="${OPENCLAW_GATEWAY_HANDOFF_GRACE_SECONDS:-5}"
+  local deadline="$(( $(bootstrap_now_seconds) + grace_seconds ))"
+
+  while true; do
+    if gateway_listener_accepting "127.0.0.1" "${GATEWAY_PORT}"; then
+      return 0
+    fi
+    if (( $(bootstrap_now_seconds) >= deadline )); then
+      return 1
+    fi
+    sleep 0.2
+  done
+}
+
+monitor_gateway_handoff_successor() {
+  bootstrap_log "gateway 以 exit 0 退出，检测到 successor 已接管 ${GATEWAY_PORT}，切换为 handoff 监控。"
+  while true; do
+    if [[ "${GATEWAY_SHUTDOWN_REQUESTED}" == "true" ]]; then
+      return 0
+    fi
+    if ! gateway_listener_accepting "127.0.0.1" "${GATEWAY_PORT}"; then
+      bootstrap_log "handoff successor 已停止监听，恢复容器内原地拉起。"
+      return 1
+    fi
+    sleep "${GATEWAY_LOCAL_RESTART_BACKOFF_SECONDS:-1}"
+  done
 }
 
 start_gateway_process() {
@@ -75,6 +163,67 @@ forward_gateway_shutdown() {
     kill -TERM "${GATEWAY_CHILD_PID}" 2>/dev/null || true
     wait "${GATEWAY_CHILD_PID}" 2>/dev/null || true
     GATEWAY_CHILD_PID=""
+  fi
+}
+
+start_workspace_files_sidecar() {
+  if ! is_truthy "${OPENCLAW_WORKSPACE_FILES_ENABLED:-1}"; then
+    bootstrap_log "workspace files sidecar 已禁用，跳过启动"
+    return 0
+  fi
+
+  if workspace_files_listener_accepting "127.0.0.1" "${WORKSPACE_FILES_PORT}"; then
+    bootstrap_log "workspace files sidecar 已监听 127.0.0.1:${WORKSPACE_FILES_PORT}"
+    return 0
+  fi
+
+  if ! command -v uvicorn >/dev/null 2>&1; then
+    bootstrap_log "workspace files sidecar 缺少 uvicorn，无法启动"
+    return 1
+  fi
+
+  local app_dir="/opt/openclaw"
+  local extra_pythonpath=""
+  if [[ ! -f "${app_dir}/workspace_files_app.py" ]]; then
+    app_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local repo_root
+    repo_root="$(cd "${app_dir}/../.." && pwd)"
+    if [[ -d "${repo_root}/ksadk_runtime_common" ]]; then
+      extra_pythonpath="${repo_root}"
+    fi
+  fi
+
+  PYTHONPATH="/opt${extra_pythonpath:+:${extra_pythonpath}}${PYTHONPATH:+:${PYTHONPATH}}" \
+    uvicorn workspace_files_app:app \
+      --app-dir "${app_dir}" \
+      --host 127.0.0.1 \
+      --port "${WORKSPACE_FILES_PORT}" \
+      --log-level warning &
+  WORKSPACE_FILES_PID=$!
+
+  local deadline="$(( $(bootstrap_now_seconds) + 15 ))"
+  while true; do
+    if workspace_files_listener_accepting "127.0.0.1" "${WORKSPACE_FILES_PORT}"; then
+      bootstrap_log "workspace files sidecar 已启动: http://127.0.0.1:${WORKSPACE_FILES_PORT}"
+      return 0
+    fi
+    if ! kill -0 "${WORKSPACE_FILES_PID}" 2>/dev/null; then
+      bootstrap_log "workspace files sidecar 启动失败"
+      return 1
+    fi
+    if (( $(bootstrap_now_seconds) >= deadline )); then
+      bootstrap_log "workspace files sidecar 启动超时"
+      return 1
+    fi
+    sleep 0.2
+  done
+}
+
+forward_workspace_files_shutdown() {
+  if [[ -n "${WORKSPACE_FILES_PID:-}" ]]; then
+    kill -TERM "${WORKSPACE_FILES_PID}" 2>/dev/null || true
+    wait "${WORKSPACE_FILES_PID}" 2>/dev/null || true
+    WORKSPACE_FILES_PID=""
   fi
 }
 
@@ -331,6 +480,7 @@ sync_default_extensions() {
   local src_dir="${DEFAULT_EXTENSIONS_DIR}"
   local dst_dir="${STATE_DIR}/extensions"
   local sig_dir="${BOOTSTRAP_CACHE_DIR}/extensions"
+  local requested_extensions=("$@")
   local item
   local extension_name
   local extension_dst
@@ -345,6 +495,13 @@ sync_default_extensions() {
   for item in "${src_dir}"/*; do
     [[ -d "${item}" ]] || continue
     extension_name="$(basename "${item}")"
+    if (( ${#requested_extensions[@]} > 0 )); then
+      if ! list_contains_name "${extension_name}" "${requested_extensions[@]}"; then
+        continue
+      fi
+    elif csv_contains_name "${extension_name}" "${DEFERRED_DEFAULT_EXTENSIONS}"; then
+      continue
+    fi
     extension_dst="${dst_dir}/${extension_name}"
     signature_file="${sig_dir}/${extension_name}.sig"
     src_signature="$(read_embedded_directory_signature "${item}" 2>/dev/null || true)"
@@ -643,6 +800,8 @@ const path = require('path');
 
 const distDir = process.env.OPENCLAW_DIST_DIR || '/app/dist';
 const markerFile = process.env.OPENCLAW_DIST_PATCH_MARKER || '';
+const workspaceFilesEnabledRaw = String(process.env.OPENCLAW_WORKSPACE_FILES_ENABLED || '1').trim().toLowerCase();
+const workspaceFilesEnabled = ['1', 'true', 'yes', 'on'].includes(workspaceFilesEnabledRaw);
 const requiredLabels = new Set([
   'gateway client loopback trusted-proxy identity',
   'gateway backend self-pairing trusted-proxy bypass',
@@ -652,6 +811,10 @@ const requiredLabels = new Set([
   //   - 'gateway loopback device-identity bypass'  → resolveDeviceIdentityForGatewayCall() + try/catch
   //   - 'gateway loopback device-identity null sentinel' → catch 返回 null 而非 void 0
 ]);
+if (workspaceFilesEnabled) {
+  requiredLabels.add('gateway workspace files proxy handler');
+  requiredLabels.add('gateway workspace files proxy stage');
+}
 const replacements = [
   {
     label: 'control-ui websocket reconnect gap handling',
@@ -846,6 +1009,95 @@ const replacements = [
 					if (!device && (!isControlUi || decision.kind !== "allow") && !keepUnboundScopes) clearUnboundScopes();`,
   },
 ];
+if (workspaceFilesEnabled) {
+  replacements.unshift(
+    {
+      label: 'gateway workspace files proxy handler',
+      marker: 'async function handleWorkspaceFilesProxyRequest(req, res) {',
+      needle: 'function createGatewayHttpServer(opts) {',
+      replacement: `async function handleWorkspaceFilesProxyRequest(req, res) {
+\tconst proxyBaseUrl = String(process.env.OPENCLAW_WORKSPACE_FILES_PROXY_URL || "").trim();
+\tif (!proxyBaseUrl) return false;
+\tconst requestUrl = new URL(req.url ?? "/", "http://localhost");
+\tif (!requestUrl.pathname.startsWith("/_ksadk/workspace/v1/")) return false;
+\tconst targetUrl = new URL(\`\${requestUrl.pathname}\${requestUrl.search}\`, proxyBaseUrl.endsWith("/") ? proxyBaseUrl : \`\${proxyBaseUrl}/\`);
+\tconst headers = { ...req.headers };
+\tdelete headers.host;
+\tdelete headers.connection;
+\tdelete headers["content-length"];
+\tdelete headers["transfer-encoding"];
+\theaders["x-forwarded-user"] = headers["x-forwarded-user"] ?? String(process.env.OPENCLAW_INTERNAL_TRUSTED_PROXY_USER || "openclaw-backend").trim();
+\tlet upstream;
+\ttry {
+\t\tupstream = await fetch(targetUrl, {
+\t\t\tmethod: req.method,
+\t\t\theaders,
+\t\t\tbody: req.method === "GET" || req.method === "HEAD" ? void 0 : req,
+\t\t\tduplex: req.method === "GET" || req.method === "HEAD" ? void 0 : "half",
+\t\t\tredirect: "manual"
+\t\t});
+\t} catch (err) {
+\t\tres.statusCode = 502;
+\t\tres.setHeader("Content-Type", "application/json; charset=utf-8");
+\t\tres.end(JSON.stringify({
+\t\t\tdetail: "workspace files proxy unavailable",
+\t\t\terror: String(err)
+\t\t}));
+\t\treturn true;
+\t}
+\tres.statusCode = upstream.status;
+\tupstream.headers.forEach((value, key) => {
+\t\tconst lowered = key.toLowerCase();
+\t\tif (lowered === "connection" || lowered === "transfer-encoding") return;
+\t\tres.setHeader(key, value);
+\t});
+\tif (req.method === "HEAD" || !upstream.body) {
+\t\tres.end();
+\t\treturn true;
+\t}
+\tconst reader = upstream.body.getReader();
+\ttry {
+\t\twhile (true) {
+\t\t\tconst { done, value } = await reader.read();
+\t\t\tif (done) break;
+\t\t\tif (value) res.write(Buffer.from(value));
+\t\t}
+\t} finally {
+\t\treader.releaseLock();
+\t}
+\tres.end();
+\treturn true;
+}
+function createGatewayHttpServer(opts) {`,
+    },
+    {
+      label: 'gateway workspace files proxy stage',
+      marker: 'name: "workspace-files-proxy"',
+      needle: `run: () => handleHooksRequest(req, res)
+\t\t\t}];
+\t\t\tif (openAiCompatEnabled && isOpenAiModelsPath(requestPath)) requestStages.push({`,
+      replacement: `run: () => handleHooksRequest(req, res)
+\t\t\t}, {
+\t\t\t\tname: "workspace-files-proxy",
+\t\t\t\trun: () => handleWorkspaceFilesProxyRequest(req, res)
+\t\t\t}];
+\t\t\tif (openAiCompatEnabled && isOpenAiModelsPath(requestPath)) requestStages.push({`,
+    },
+    {
+      label: 'gateway workspace files proxy stage',
+      marker: 'name: "workspace-files-proxy"',
+      needle: `run: () => handleHooksRequest(req, res)
+\t\t}];
+\t\tif (controlUiEnabled) {`,
+      replacement: `run: () => handleHooksRequest(req, res)
+\t\t}, {
+\t\t\tname: "workspace-files-proxy",
+\t\t\trun: () => handleWorkspaceFilesProxyRequest(req, res)
+\t\t}];
+\t\tif (controlUiEnabled) {`,
+    },
+  );
+}
 
 const jsFiles = [];
 const walk = (dir) => {
@@ -1121,6 +1373,41 @@ bootstrap_phase "生成并校正 Gateway 配置"
 #   env updates (e.g. OPENCLAW_ALLOWED_ORIGINS / OPENCLAW_DISABLE_DEVICE_AUTH)
 #   can take effect for existing instances.
 export STATE_DIR CONFIG_PATH PUBLIC_PORT BIND_MODE AUTH_MODE
+if [[ -n "${MEMORY_BACKEND_MANIFEST:-}" ]]; then
+  bootstrap_log "rendering memory backend config patch from manifest"
+  if ! MEMORY_BACKEND_PATCH_JSON="$(
+    PYTHONPATH="/opt${PYTHONPATH:+:${PYTHONPATH}}" python3 - <<'PY'
+from ksadk_runtime_common.memory_backend.render import render_to_json
+
+print(render_to_json())
+PY
+  )"; then
+    echo "[bootstrap] failed to render memory backend patch from MEMORY_BACKEND_MANIFEST" >&2
+    exit 1
+  fi
+  export MEMORY_BACKEND_PATCH_JSON
+  RENDERED_MEMORY_BACKEND_PLUGIN_IDS_RAW="$(
+    MEMORY_BACKEND_PATCH_JSON_PAYLOAD="${MEMORY_BACKEND_PATCH_JSON}" python3 - <<'PY'
+import json
+import os
+
+payload = json.loads(os.environ.get("MEMORY_BACKEND_PATCH_JSON_PAYLOAD", "") or "{}")
+for item in payload.get("plugin_ids") or []:
+    if isinstance(item, str) and item.strip():
+        print(item.strip())
+PY
+  )"
+  if [[ -n "${RENDERED_MEMORY_BACKEND_PLUGIN_IDS_RAW}" ]]; then
+    RENDERED_MEMORY_BACKEND_PLUGIN_IDS=()
+    while IFS= read -r rendered_plugin_id; do
+      [[ -n "${rendered_plugin_id}" ]] || continue
+      RENDERED_MEMORY_BACKEND_PLUGIN_IDS+=("${rendered_plugin_id}")
+    done <<< "${RENDERED_MEMORY_BACKEND_PLUGIN_IDS_RAW}"
+    sync_default_extensions "${RENDERED_MEMORY_BACKEND_PLUGIN_IDS[@]}"
+  fi
+else
+  unset MEMORY_BACKEND_PATCH_JSON || true
+fi
 CONFIG_RECONCILE_STARTED_AT="$(bootstrap_now_seconds)"
 node <<'NODE'
 const fs = require('fs');
@@ -1507,6 +1794,40 @@ const resolveBootstrapSecretValue = (preferredEnvKey) => {
   }
   return null;
 };
+const parseRenderedMemoryBackend = (raw) => {
+  const text = String(raw ?? '').trim();
+  if (!text) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`MEMORY_BACKEND_PATCH_JSON is not valid JSON: ${error.message}`);
+  }
+  if (!isPlainObject(parsed)) {
+    throw new Error('MEMORY_BACKEND_PATCH_JSON must be a JSON object');
+  }
+  const configPatch = parsed.config_patch;
+  if (configPatch === undefined) {
+    throw new Error('MEMORY_BACKEND_PATCH_JSON missing config_patch field');
+  }
+  if (!isPlainObject(configPatch)) {
+    throw new Error('MEMORY_BACKEND_PATCH_JSON.config_patch must be a JSON object');
+  }
+  const pluginIdsRaw = parsed.plugin_ids;
+  if (pluginIdsRaw !== undefined && !Array.isArray(pluginIdsRaw)) {
+    throw new Error('MEMORY_BACKEND_PATCH_JSON.plugin_ids must be an array when provided');
+  }
+  const pluginIds = uniqueStrings(
+    (Array.isArray(pluginIdsRaw) ? pluginIdsRaw : [])
+      .map((item) => String(item ?? '').trim())
+      .filter(Boolean),
+  );
+  return {
+    ...parsed,
+    plugin_ids: pluginIds,
+  };
+};
+const renderedMemoryBackend = parseRenderedMemoryBackend(process.env.MEMORY_BACKEND_PATCH_JSON);
 
 let cfg = {};
 try {
@@ -1563,6 +1884,16 @@ if (['1', 'true', 'yes', 'on'].includes(disableDeviceAuthRaw)) {
 
 cfg.gateway.auth = cfg.gateway.auth || {};
 cfg.gateway.auth.mode = authMode;
+const gatewayPasswordFromEnv = firstNonBlank(
+  process.env.OPENCLAW_GATEWAY_PASSWORD,
+);
+if (gatewayPasswordFromEnv) {
+  cfg.gateway.auth.password = gatewayPasswordFromEnv;
+} else if (typeof cfg.gateway.auth.password !== "string" || !cfg.gateway.auth.password.trim()) {
+  // Pre-seed a runtime-local gateway password so upstream does not mutate the
+  // config file during first boot and trigger a self-restart handoff.
+  cfg.gateway.auth.password = crypto.randomBytes(24).toString("hex");
+}
 const userHeader = (
   process.env.OPENCLAW_TRUSTED_PROXY_USER_HEADER ||
   process.env.OPENCLAW_GATEWAY_TRUSTED_PROXY_USER_HEADER ||
@@ -2408,6 +2739,13 @@ if (primaryModel && (explicitProviderConfigured || primaryModelQualified)) {
   }
 }
 
+if (renderedMemoryBackend && Object.keys(renderedMemoryBackend.config_patch).length > 0) {
+  for (const pluginId of renderedMemoryBackend.plugin_ids || []) {
+    enablePlugin(pluginId);
+  }
+  cfg = deepMergeObjects(cfg, renderedMemoryBackend.config_patch);
+}
+
 fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2));
 
 const approvalsPath = path.join(process.env.STATE_DIR, 'exec-approvals.json');
@@ -2547,12 +2885,17 @@ export OPENCLAW_EXEC_SAFE_WORKSPACE_ROOT="${OPENCLAW_EXEC_SAFE_WORKSPACE_ROOT:-$
 export OPENCLAW_EXEC_SAFE_STATE_DIR="${OPENCLAW_EXEC_SAFE_STATE_DIR:-${STATE_DIR}}"
 
 # Use OpenClaw's built-in cron scheduler only; do not start a system cron daemon.
+WORKSPACE_FILES_PID=""
+if ! start_workspace_files_sidecar; then
+  exit 1
+fi
 
 GATEWAY_PORT="${OPENCLAW_GATEWAY_PORT:-8080}"
 bootstrap_phase "启动 OpenClaw Gateway"
 bootstrap_log "监听端口: ${GATEWAY_PORT}"
 bootstrap_log "绑定模式: ${BIND_MODE}"
 bootstrap_log "认证模式: ${AUTH_MODE}"
+bootstrap_log "workspace files proxy: ${OPENCLAW_WORKSPACE_FILES_PROXY_URL}"
 
 GATEWAY_LOCAL_RESTART_MAX="${OPENCLAW_GATEWAY_LOCAL_RESTART_MAX:-3}"
 GATEWAY_LOCAL_RESTART_WINDOW_SECONDS="${OPENCLAW_GATEWAY_LOCAL_RESTART_WINDOW_SECONDS:-120}"
@@ -2562,7 +2905,7 @@ GATEWAY_CHILD_PID=""
 GATEWAY_FAILURE_COUNT=0
 GATEWAY_FAILURE_WINDOW_STARTED_AT="$(bootstrap_now_seconds)"
 
-trap 'forward_gateway_shutdown; exit 0' TERM INT
+trap 'forward_gateway_shutdown; forward_workspace_files_shutdown; exit 0' TERM INT
 
 while true; do
   GATEWAY_EXIT_CODE=0
@@ -2573,6 +2916,13 @@ while true; do
   fi
 
   if [[ "${GATEWAY_EXIT_CODE}" -eq 0 ]]; then
+    if wait_for_gateway_handoff_listener; then
+      GATEWAY_FAILURE_COUNT=0
+      if monitor_gateway_handoff_successor; then
+        exit 0
+      fi
+      continue
+    fi
     bootstrap_log "gateway 正常退出，准备在容器内原地拉起。"
     sleep "${GATEWAY_LOCAL_RESTART_BACKOFF_SECONDS}"
     continue

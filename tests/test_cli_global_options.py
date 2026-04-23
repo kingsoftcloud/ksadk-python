@@ -65,3 +65,30 @@ def test_group_level_dry_run_option_uses_canonical_cli_error_for_unsupported_com
 
     assert result.exit_code == 2, result.output
     assert "--dry-run" in result.output
+
+
+def test_agent_list_passes_framework_filter_to_status_command(monkeypatch):
+    _register_commands()
+    runner = CliRunner()
+
+    def fake_run_status_command(*, framework: str | None, **kwargs):  # noqa: ARG001
+        emit_json({"framework": framework})
+
+    monkeypatch.setattr("ksadk.cli.cmd_agent.run_status_command", fake_run_status_command)
+
+    result = runner.invoke(
+        cli,
+        [
+            "agent",
+            "list",
+            "--account-id",
+            "2000003485",
+            "--framework",
+            " langgraph, adk ",
+            "--output",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _parse_json(result.output) == {"framework": " langgraph, adk "}

@@ -17,6 +17,7 @@ AgentEngine CLI - 命令行工具入口
 """
 
 import os
+import sys
 
 import click
 
@@ -64,6 +65,7 @@ ROOT_HELP_COMMANDS = {
     "build",
     "dashboard",
     "deploy",
+    "files",
     "init",
     "hermes",
     "launch",
@@ -82,6 +84,7 @@ SHORT_HELP_MAP = {
     "build": "构建部署制品",
     "dashboard": "打开云端 Agent Dashboard",
     "deploy": "部署到云端",
+    "files": "管理 workspace 文件",
     "hermes": "Hermes Agent 资源管理",
     "init": "创建新项目",
     "launch": "一键构建+部署",
@@ -314,6 +317,13 @@ def _register_commands():
         pass
 
     try:
+        from ksadk.cli.cmd_files import files
+
+        _add_command_once(cli, files)
+    except ImportError:
+        pass
+
+    try:
         from ksadk.cli.cmd_config import config
 
         _add_command_once(cli, config)
@@ -479,6 +489,9 @@ def main():
         pass
 
     _register_commands()
+    if len(sys.argv) <= 1:
+        cli.main(args=["--help"], prog_name="agentengine", standalone_mode=False)
+        raise SystemExit(0)
     try:
         cli.main(prog_name="agentengine", standalone_mode=False)
     except click.exceptions.Exit as e:

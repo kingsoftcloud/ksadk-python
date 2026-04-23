@@ -6,7 +6,6 @@ Serverless Provider - 金山云 Serverless 计算引擎 (AgentEngine 托管)
 - Deploy 阶段: 客户端调用 AgentEngine Server API 发起部署
 """
 
-import asyncio
 import os
 import json
 import logging
@@ -17,6 +16,7 @@ import click
 
 from ksadk.builders.ks3_uploader import KS3Uploader
 from ksadk.builders.code_builder import CodeBuilder
+from ksadk.deployment.agent_access import get_latest_agent_access
 from ksadk.deployment.base import (
     BaseDeployProvider,
     DeployTarget,
@@ -141,63 +141,23 @@ class ServerlessProvider(BaseDeployProvider):
         return payload
 
     @staticmethod
-    def _extract_agent_access_fields(detail: Dict[str, Any]) -> Dict[str, Any]:
-        """从 GetAgent 响应中提取 quick access/state 相关字段。"""
-        if not isinstance(detail, dict):
-            return {}
+    def _serialize_storage_config(target: DeployTarget) -> Optional[Dict[str, Any]]:
+        storage = getattr(target, "storage", None)
+        if storage is None:
+            return None
 
-        basic = detail.get("basic") if isinstance(detail.get("basic"), dict) else {}
-        quick = detail.get("quick_access") if isinstance(detail.get("quick_access"), dict) else {}
+        mount_path = str(getattr(storage, "mount_path", "") or "").strip()
+        size_gi = getattr(storage, "size_gi", None)
+        if not mount_path and size_gi is None:
+            return None
 
-        return {
-            "agent_id": basic.get("agent_id") or detail.get("agent_id"),
-            "name": basic.get("name") or detail.get("name"),
-            "endpoint": quick.get("public_endpoint")
-            or quick.get("private_endpoint")
-            or detail.get("endpoint"),
-            "api_key": quick.get("api_key") or detail.get("api_key"),
-        }
+        payload: Dict[str, Any] = {}
+        if mount_path:
+            payload["mount_path"] = mount_path
+        if size_gi is not None:
+            payload["size_gi"] = int(size_gi)
+        return payload
 
-    @staticmethod
-    def _is_agent_not_visible_yet_error(exc: Exception) -> bool:
-        """CreateAgent 后短时间内 GetAgent 404，视为可重试的可见性延迟。"""
-        text = str(exc or "").lower()
-        if not text:
-            return False
-        return (
-            ("http 404" in text or "status=404" in text or "code: 404" in text)
-            and ("未找到对应的 agent" in text or "not found" in text)
-        )
-
-    async def _get_latest_agent_access(
-        self,
-        client: AgentEngineClient,
-        agent_id: str,
-        *,
-        retry_on_not_found: bool = False,
-    ) -> Dict[str, Any]:
-        """回查最新 Agent 详情，优先使用 quick access 字段修正本地状态。"""
-        if not agent_id:
-            return {}
-
-        retry_delays = (0.3, 0.7, 1.0) if retry_on_not_found else ()
-        attempts = 1 + len(retry_delays)
-        last_exc: Optional[Exception] = None
-
-        for idx in range(attempts):
-            try:
-                detail = await client.get_agent(agent_id=agent_id, include_api_key=True)
-                return self._extract_agent_access_fields(detail)
-            except Exception as exc:
-                last_exc = exc
-                if idx < len(retry_delays) and self._is_agent_not_visible_yet_error(exc):
-                    await asyncio.sleep(retry_delays[idx])
-                    continue
-                break
-
-        if last_exc is not None:
-            logger.warning(f"Failed to refresh quick access for {agent_id}: {last_exc}")
-        return {}
 
     async def validate_config(self, target: DeployTarget) -> tuple[bool, str]:
         """验证配置: 确保已配置 AgentEngine Server"""
@@ -576,6 +536,10 @@ class ServerlessProvider(BaseDeployProvider):
                         network_config = self._serialize_network_config(target)
                         if network_config:
                             update_data["network"] = network_config
+
+                        storage_config = self._serialize_storage_config(target)
+                        if storage_config:
+                            update_data["storage"] = storage_config
                         
                         # 注入更新时间戳，强制触发 Rolling Update (Pod 重启)
                         if "env_vars" not in update_data:
@@ -590,7 +554,16 @@ class ServerlessProvider(BaseDeployProvider):
                         res = await client.update_agent(existing_agent_id, update_data)
                         latest_access = {}
                         if not is_dry_run:
-                            latest_access = await self._get_latest_agent_access(client, existing_agent_id)
+                            latest_access = await get_latest_agent_access(
+                                client,
+                                agent_id=existing_agent_id,
+                                include_api_key=True,
+                                on_error=lambda exc: logger.warning(
+                                    "Failed to refresh quick access for %s: %s",
+                                    existing_agent_id,
+                                    exc,
+                                ),
+                            )
                         
                         # 如果是 Dry Run，手动构造假响应以避免崩溃
                         if is_dry_run and not res:
@@ -683,6 +656,10 @@ class ServerlessProvider(BaseDeployProvider):
                     if network_config:
                         request_data["network"] = network_config
 
+                    storage_config = self._serialize_storage_config(target)
+                    if storage_config:
+                        request_data["storage"] = storage_config
+
                     # 获取 Account ID (用于 Server 端的 user_id)
                     extra_headers = {}
                     ksyun_account_id = os.getenv("KSYUN_ACCOUNT_ID")
@@ -734,10 +711,16 @@ class ServerlessProvider(BaseDeployProvider):
 
                     latest_access = {}
                     if new_agent_id and not is_dry_run:
-                        latest_access = await self._get_latest_agent_access(
+                        latest_access = await get_latest_agent_access(
                             new_client,
-                            new_agent_id,
-                            retry_on_not_found=True,
+                            agent_id=new_agent_id,
+                            include_api_key=True,
+                            retry_delays=(0.3, 0.7, 1.0),
+                            on_error=lambda exc: logger.warning(
+                                "Failed to refresh quick access for %s: %s",
+                                new_agent_id,
+                                exc,
+                            ),
                         )
                         new_agent_id = latest_access.get("agent_id") or new_agent_id
                         agent_name = latest_access.get("name") or agent_name

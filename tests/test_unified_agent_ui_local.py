@@ -84,6 +84,7 @@ async def test_get_agent_ui_bootstrap_matches_local_shape_parity(monkeypatch):
         "Agent",
         "Modules",
         "Capabilities",
+        "WorkspaceFiles",
         "AccessMode",
         "SharePermissions",
         "ApiFormats",
@@ -96,12 +97,22 @@ async def test_get_agent_ui_bootstrap_matches_local_shape_parity(monkeypatch):
     assert payload["Data"]["Modules"] == ["Chat", "Build", "Deploy"]
     assert payload["Data"]["Capabilities"] == {
         "Attachments": True,
+        "WorkspaceFiles": True,
         "Thinking": True,
         "Approval": True,
         "StopRun": False,
         "ResumeRun": False,
         "MCP": False,
         "HostedRuntime": False,
+    }
+    assert payload["Data"]["WorkspaceFiles"] == {
+        "Enabled": True,
+        "MaxUploadBytes": 104857600,
+        "SupportsDelete": True,
+        "RootLabel": "workspace",
+        "EntryAction": "ListWorkspaceFiles",
+        "UploadAction": "AddWorkspaceFile",
+        "ContentPath": "/agentengine/api/v1/GetWorkspaceFileContent",
     }
     assert payload["Data"]["AccessMode"] == "Owner"
     assert payload["Data"]["SharePermissions"] == {
@@ -193,6 +204,44 @@ async def test_run_agent_action_returns_responses_payload_and_persists_session(m
     ]
     assert runner.invocations[-1]["history"] == [{"role": "user", "content": "hello"}]
     assert runner.load_agent_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_run_agent_action_forwards_model_metadata_to_conversation_runtime(monkeypatch):
+    server_app_module, _, _, transport = _build_transport(monkeypatch)
+    captured: dict[str, object] = {}
+
+    async def _fake_invoke_conversation_once(**kwargs):
+        captured.update(kwargs)
+        return "sess-model-metadata", {"output_text": "assistant says hi", "model": kwargs.get("model")}
+
+    monkeypatch.setattr(server_app_module.conversation, "invoke_conversation_once", _fake_invoke_conversation_once)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/RunAgent",
+            json={
+                "AgentId": "demo-agent",
+                "Messages": [{"role": "user", "content": "hello"}],
+                "ApiFormat": "responses",
+                "Stream": False,
+                "Model": "glm-5.1",
+                "ModelMetadata": {
+                    "id": "glm-5.1",
+                    "context_length": "64k",
+                    "max_completion_tokens": "8k",
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["Code"] == 0
+    assert captured["model"] == "glm-5.1"
+    assert captured["model_metadata"] == {
+        "id": "glm-5.1",
+        "context_length": "64k",
+        "max_completion_tokens": "8k",
+    }
 
 
 @pytest.mark.asyncio
@@ -832,6 +881,10 @@ async def test_static_routes_serve_unified_agent_ui_shell(monkeypatch):
     assert "/agentengine/api/v1/ListSessionEvents" in js_response.text
     assert "/agentengine/api/v1/ListAgentModels" in js_response.text
     assert "/agentengine/api/v1/RunAgent" in js_response.text
+    assert "/agentengine/api/v1/ListWorkspaceFiles" in js_response.text
+    assert "/agentengine/api/v1/AddWorkspaceFile" in js_response.text
+    assert "/agentengine/api/v1/DeleteWorkspaceFile" in js_response.text
+    assert "/agentengine/api/v1/GetWorkspaceFileContent" in js_response.text
     assert "/run_sse" not in js_response.text
     assert "/agentengine/api/v1/models" not in js_response.text
     assert "overflow" in css_response.text
@@ -858,7 +911,26 @@ def test_web_ui_source_uses_chat_completions_streaming_for_hermes():
     source = Path("ksadk/server/web-ui/src/App.tsx").read_text(encoding="utf-8")
     assert "setAgentFramework" in source
     assert "agentFramework === 'hermes'" in source
+
+
+def test_web_ui_source_supports_workspace_panel_for_owner_access():
+    source = Path("ksadk/server/web-ui/src/App.tsx").read_text(encoding="utf-8")
+    header_source = Path("ksadk/server/web-ui/src/components/chat/ChatHeader.tsx").read_text(
+        encoding="utf-8"
+    )
+    workspace_source = Path(
+        "ksadk/server/web-ui/src/components/workspace/WorkspacePanel.tsx"
+    ).read_text(encoding="utf-8")
+    assert "WorkspaceFiles" in source
+    assert "accessMode === 'Owner'" in source
+    assert "WorkspacePanel" in source
+    assert "capability.EntryAction" in workspace_source
+    assert "capability.UploadAction" in workspace_source
+    assert "capability.ContentPath" in workspace_source
+    assert "DeleteWorkspaceFile" in workspace_source
+    assert "workspaceEnabled" in header_source
     assert "ApiFormat: runAgentApiFormat" in source
+    assert "ModelMetadata: selectedModelMetadata || undefined" in source
     assert "chat_completions" in source
     assert "choices?.[0]?.delta" in source
     assert "delta.content" in source

@@ -1,6 +1,6 @@
 ## syntax=docker/dockerfile:1.7
 # https://github.com/openclaw/openclaw/pkgs/container/openclaw
-ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.4.15@sha256:0e6bebecf4623216420851f5edd133a748335f45c3508b635f7c5c4bfbc6da7d
+ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.4.21@sha256:70e0ab07deb72f4b3ee7bb701c5437fdc27b85d6705cc67f104aa8042ba52e00
 FROM ${OPENCLAW_BASE_IMAGE}
 
 # ── 可通过 --build-arg 覆盖的参数 ──────────────────────────────
@@ -13,6 +13,10 @@ ARG OPENCLAW_WEIXIN_PLUGIN_ID=openclaw-weixin
 ARG OPENCLAW_INSTALL_LARK_PLUGIN=true
 ARG OPENCLAW_LARK_PLUGIN_SPEC=@larksuite/openclaw-lark
 ARG OPENCLAW_LARK_PLUGIN_ID=openclaw-lark
+ARG OPENCLAW_INSTALL_MEM0_PLUGIN=true
+ARG OPENCLAW_MEM0_PLUGIN_ID=openclaw-mem0
+ARG OPENCLAW_MEM0_PLUGIN_URL=https://wangxu-test.ks3-cn-beijing.ksyuncs.com/ksc-openclaw-mem0-1.0.6.tgz
+ARG OPENCLAW_MEM0_PLUGIN_SHA256=
 ARG OPENCLAW_INSTALL_AGENTSPACE_PLUGIN=true
 ARG OPENCLAW_AGENTSPACE_PLUGIN_ID=agentspace
 ARG OPENCLAW_INSTALL_AGENT_BROWSER=true
@@ -69,9 +73,11 @@ RUN --mount=type=cache,target=/root/.npm \
   # ====== 4. 清理缓存，最小化镜像体积 ====== \
   rm -rf /tmp/* /var/tmp/* /root/.cache 2>/dev/null || true
 
-COPY --chmod=755 bootstrap.sh /usr/local/bin/bootstrap.sh
-COPY --chmod=755 safe-bin/openclaw-safe-exec /opt/openclaw/safe-bin/openclaw-safe-exec
-COPY workspace-template /opt/openclaw/workspace-template
+COPY ksadk_runtime_common /opt/ksadk_runtime_common
+COPY deploy/openclaw/workspace_files_app.py /opt/openclaw/workspace_files_app.py
+COPY --chmod=755 deploy/openclaw/bootstrap.sh /usr/local/bin/bootstrap.sh
+COPY --chmod=755 deploy/openclaw/safe-bin/openclaw-safe-exec /opt/openclaw/safe-bin/openclaw-safe-exec
+COPY deploy/openclaw/workspace-template /opt/openclaw/workspace-template
 RUN set -eux; \
   mkdir -p /opt/openclaw/safe-bin; \
   for cmd in pwd ls whoami id uname date ps df du stat find cat head tail wc git mcporter sh-safe bash-safe web-safe; do \
@@ -138,10 +144,22 @@ RUN --mount=type=cache,target=/root/.npm \
   if [ "${OPENCLAW_INSTALL_LARK_PLUGIN}" = "true" ]; then \
     install_default_plugin "${OPENCLAW_LARK_PLUGIN_SPEC}" "${OPENCLAW_LARK_PLUGIN_ID}"; \
   fi; \
+  if [ "${OPENCLAW_INSTALL_MEM0_PLUGIN}" = "true" ]; then \
+    install_default_plugin_archive "${OPENCLAW_MEM0_PLUGIN_URL}" "${OPENCLAW_MEM0_PLUGIN_SHA256}" "${OPENCLAW_MEM0_PLUGIN_ID}"; \
+  fi; \
   chown -R node:node /opt/openclaw/default-extensions; \
   chmod -R a+rX /opt/openclaw/default-extensions
 
-COPY preset-skills /opt/openclaw/preset-skills
+COPY deploy/openclaw/preset-skills /opt/openclaw/preset-skills
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+  set -eux; \
+  PIP_BREAK_SYSTEM_PACKAGES=1 python3 -m pip install -i "${PYPI_INDEX_URL}" \
+    "fastapi>=0.100.0,<0.124.0" \
+    "pydantic>=2.0.0,<3.0.0" \
+    "jsonschema>=4.0.0,<5.0.0" \
+    "uvicorn>=0.23.0,<1.0.0" \
+    "python-multipart>=0.0.9,<1.0.0"
 
 RUN --mount=type=cache,target=/root/.cache/pip \
   set -eux; \
@@ -153,7 +171,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     cksum "${file_path}"; \
   done | cksum | awk '{print $1 ":" $2}' > /opt/openclaw/preset-skills/.content.sig
 
-COPY agentspace-assets.lock.json /opt/openclaw/agentspace-assets.lock.json
+COPY deploy/openclaw/agentspace-assets.lock.json /opt/openclaw/agentspace-assets.lock.json
 
 RUN --mount=type=cache,target=/root/.npm \
   set -eux; \
@@ -252,6 +270,7 @@ NODE
 
 ENV HOME=/home/node \
     OPENCLAW_STATE_DIR=/home/node/.openclaw \
+    PYTHONPATH=/opt \
     PATH=/home/node/.local/bin:${PATH}
 USER node
 

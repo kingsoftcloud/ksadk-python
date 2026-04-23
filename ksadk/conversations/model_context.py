@@ -51,6 +51,42 @@ def _coerce_positive_int(value: Any) -> int | None:
     return parsed if parsed > 0 else None
 
 
+def _coerce_token_limit(value: Any, *, assume_k_for_plain_values: bool = False) -> int | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        parsed = int(value)
+        if assume_k_for_plain_values and 0 < parsed <= 1000:
+            return parsed * 1000
+        return parsed if parsed > 0 else None
+
+    text = str(value).strip().lower().replace("_", "")
+    if not text:
+        return None
+
+    multiplier = 1
+    if text.endswith("k"):
+        multiplier = 1000
+        text = text[:-1]
+    elif text.endswith("m"):
+        multiplier = 1000 * 1000
+        text = text[:-1]
+    elif text.endswith("b"):
+        multiplier = 1000 * 1000 * 1000
+        text = text[:-1]
+
+    try:
+        parsed = float(text)
+    except (TypeError, ValueError):
+        return None
+    if parsed <= 0:
+        return None
+    resolved = int(parsed * multiplier)
+    if multiplier == 1 and assume_k_for_plain_values and text.isdigit() and 0 < resolved <= 1000:
+        return resolved * 1000
+    return resolved
+
+
 def _lookup(raw: Mapping[str, Any], *paths: str) -> Any:
     """按多条路径取 metadata，兼容未来上游字段逐步演进。"""
 
@@ -146,52 +182,76 @@ def normalize_model_metadata(raw_model: Mapping[str, Any] | str | None) -> dict[
     display_name = str(base.get("display_name") or base.get("displayName") or model_id)
 
     context_window_tokens = (
-        _coerce_positive_int(
+        _coerce_token_limit(
             _lookup(
                 base,
                 "context_window_tokens",
                 "metadata.context_window_tokens",
-                "context_length",
-                "context_window",
                 "limits.context_window_tokens",
             )
+        )
+        or _coerce_token_limit(
+            _lookup(
+                base,
+                "context_length",
+                "context_window",
+            ),
+            assume_k_for_plain_values=True,
         )
         or DEFAULT_CONTEXT_WINDOW_TOKENS
     )
     max_output_tokens = (
-        _coerce_positive_int(
+        _coerce_token_limit(
             _lookup(
                 base,
                 "max_output_tokens",
                 "metadata.max_output_tokens",
-                "max_completion_tokens",
-                "max_tokens",
                 "limits.max_output_tokens",
             )
+        )
+        or _coerce_token_limit(
+            _lookup(
+                base,
+                "max_completion_tokens",
+                "max_tokens",
+            ),
+            assume_k_for_plain_values=True,
         )
         or DEFAULT_MAX_OUTPUT_TOKENS
     )
     max_input_tokens = (
-        _coerce_positive_int(
+        _coerce_token_limit(
             _lookup(
                 base,
                 "max_input_tokens",
                 "metadata.max_input_tokens",
-                "input_max_length",
                 "limits.max_input_tokens",
             )
+        )
+        or _coerce_token_limit(
+            _lookup(
+                base,
+                "input_max_length",
+            ),
+            assume_k_for_plain_values=True,
         )
         or DEFAULT_MAX_INPUT_TOKENS
     )
     max_reasoning_tokens = (
-        _coerce_positive_int(
+        _coerce_token_limit(
             _lookup(
                 base,
                 "max_reasoning_tokens",
                 "metadata.max_reasoning_tokens",
-                "deep_thinking_max_length",
                 "limits.max_reasoning_tokens",
             )
+        )
+        or _coerce_token_limit(
+            _lookup(
+                base,
+                "deep_thinking_max_length",
+            ),
+            assume_k_for_plain_values=True,
         )
         or DEFAULT_MAX_REASONING_TOKENS
     )

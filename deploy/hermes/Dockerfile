@@ -51,7 +51,8 @@ ENV PYTHONUNBUFFERED=1 \
     HERMES_DASHBOARD_PORT=9119 \
     AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium \
     AGENT_BROWSER_HOME=/usr/local/lib/node_modules/agent-browser \
-    KDOCS_OPEN_BROWSER=0
+    KDOCS_OPEN_BROWSER=0 \
+    PYTHONPATH=/opt
 
 WORKDIR /app
 
@@ -77,6 +78,7 @@ RUN mkdir -p /usr/local/lib/python3.12/site-packages/node_modules \
     && chown -R node:node /home/node /app
 
 COPY --from=hermes_src /src /tmp/hermes-src
+COPY ksadk_runtime_common /opt/ksadk_runtime_common
 
 RUN pip install --no-cache-dir \
     "fastapi>=0.100" \
@@ -95,9 +97,9 @@ RUN pip install --no-cache-dir \
 
 COPY --from=hermes_web /src/hermes_cli/web_dist /usr/local/lib/python3.12/site-packages/hermes_cli/web_dist
 
-COPY runtime ./runtime
-COPY skills ./skills
-COPY entrypoint.sh ./entrypoint.sh
+COPY deploy/hermes/runtime ./runtime
+COPY deploy/hermes/skills ./skills
+COPY deploy/hermes/entrypoint.sh ./entrypoint.sh
 RUN chmod +x /app/entrypoint.sh \
     && chown -R node:node /app /home/node
 

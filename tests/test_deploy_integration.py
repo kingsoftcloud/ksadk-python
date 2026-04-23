@@ -252,7 +252,7 @@ class TestDeployLogic:
 
         with patch.dict(os.environ, {"AGENTENGINE_SERVER_URL": "http://localhost:8080"}), \
              patch("ksadk.deployment.providers.serverless.AgentEngineClient", return_value=mock_client), \
-             patch("ksadk.deployment.providers.serverless.asyncio.sleep", new=AsyncMock()) as mock_sleep, \
+             patch("ksadk.deployment.agent_access.asyncio.sleep", new=AsyncMock()) as mock_sleep, \
              patch("ksadk.deployment.providers.serverless.logger.warning") as mock_warning, \
              patch("ksadk.common.auth.AWSV4Auth") as MockAuth:
 
@@ -608,6 +608,48 @@ class TestDeployLogic:
             "subnet_id": "subnet-demo",
             "security_group_id": "sg-demo",
             "availability_zone": "cn-beijing-6a",
+        }
+
+    @pytest.mark.asyncio
+    async def test_deploy_forwards_storage_configuration_to_create_agent(
+        self,
+        temp_project_dir,
+        sample_package_info,
+        sample_deploy_target,
+    ):
+        """测试 serverless deploy 会把存储配置透传给 CreateAgent。"""
+        provider = ServerlessProvider()
+        sample_deploy_target.storage.mount_path = "/home/node/.agentengine"
+        sample_deploy_target.storage.size_gi = 64
+
+        captured = {}
+        mock_client = AsyncMock()
+
+        async def _fake_create_agent(payload):
+            captured["payload"] = payload
+            return {
+                "agent_id": "ar-20260119-storage",
+                "name": "test-agent",
+                "endpoint": "https://test.kspmas.ksyun.com",
+                "api_key": "ak-test-key",
+            }
+
+        mock_client.create_agent = AsyncMock(side_effect=_fake_create_agent)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock()
+
+        with patch.dict(os.environ, {"AGENTENGINE_SERVER_URL": "http://localhost:8080"}), \
+             patch("ksadk.deployment.providers.serverless.AgentEngineClient", return_value=mock_client), \
+             patch("ksadk.common.auth.AWSV4Auth") as MockAuth:
+
+            MockAuth.return_value.access_key_id = "test-ak"
+            MockAuth.return_value.secret_access_key = "test-sk"
+
+            await provider.deploy(sample_package_info, sample_deploy_target)
+
+        assert captured["payload"]["storage"] == {
+            "mount_path": "/home/node/.agentengine",
+            "size_gi": 64,
         }
 
     @pytest.mark.asyncio

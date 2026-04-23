@@ -8,6 +8,7 @@ import pty
 import select
 import signal
 import termios
+from pathlib import Path, PurePosixPath
 from typing import Iterable
 
 import httpx
@@ -15,6 +16,11 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
 from starlette.websockets import WebSocketState
+
+from ksadk_runtime_common.workspace_files import (
+    create_workspace_files_router,
+    workspace_files_enabled,
+)
 
 
 TERMINAL_SUBPROTOCOL = "ks-terminal.v1"
@@ -49,6 +55,46 @@ NESTED_READONLY = {
 }
 
 app = FastAPI()
+
+
+def _workspace_root() -> Path:
+    return Path(
+        os.getenv("KSADK_WORKSPACE_ROOT")
+        or os.getenv("HERMES_WORKDIR")
+        or (Path(os.getenv("HERMES_HOME", "/home/node/.hermes")) / "workspace")
+    )
+
+
+def _resolve_terminal_cwd(cwd: str | None) -> Path | None:
+    raw = str(cwd or "").strip().replace("\\", "/")
+    if not raw:
+        return None
+
+    workspace_root = _workspace_root().resolve()
+    if raw in {".", "/"}:
+        resolved = workspace_root
+    else:
+        parts = [part for part in PurePosixPath(raw.lstrip("/")).parts if part not in {"", "."}]
+        if any(part == ".." for part in parts):
+            raise ValueError("workspace cwd escapes the workspace root")
+        resolved = workspace_root.joinpath(*parts).resolve()
+
+    try:
+        resolved.relative_to(workspace_root)
+    except ValueError as exc:
+        raise ValueError("workspace cwd escapes the workspace root") from exc
+    if not resolved.exists():
+        raise ValueError(f"workspace cwd does not exist: {raw}")
+    if not resolved.is_dir():
+        raise ValueError(f"workspace cwd is not a directory: {raw}")
+    return resolved
+
+app.include_router(
+    create_workspace_files_router(
+        root_getter=_workspace_root,
+        enabled_getter=lambda: workspace_files_enabled(default=True),
+    )
+)
 
 os.environ.setdefault("HERMES_HOSTED_RUNTIME", "1")
 
@@ -369,9 +415,12 @@ async def terminal_ws(ws: WebSocket) -> None:
         mode = payload.get("mode")
         argv = payload.get("argv") or []
         command = _resolve_terminal_command(mode, argv)
+        terminal_cwd = _resolve_terminal_cwd(payload.get("cwd"))
 
         pid, fd = pty.fork()
         if pid == 0:
+            if terminal_cwd is not None:
+                os.chdir(str(terminal_cwd))
             os.execvp(command[0], command)
 
         _set_winsize(fd, int(payload.get("rows") or 24), int(payload.get("cols") or 80))

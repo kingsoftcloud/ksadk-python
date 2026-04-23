@@ -16,7 +16,7 @@
 # - 如果你希望做复杂的 env -> config 映射，那已经超出这份极简模板的职责。
 # -----------------------------------------------------------------------------
 
-ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.4.15@sha256:0e6bebecf4623216420851f5edd133a748335f45c3508b635f7c5c4bfbc6da7d
+ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.4.21@sha256:70e0ab07deb72f4b3ee7bb701c5437fdc27b85d6705cc67f104aa8042ba52e00
 FROM ${OPENCLAW_BASE_IMAGE}
 
 USER root
