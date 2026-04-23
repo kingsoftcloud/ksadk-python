@@ -607,7 +607,7 @@ agentengine hermes delete my-hermes-demo -y
 
 - [`ksadk-python/ksadk/cli/cmd_hermes.py`](../ksadk/cli/cmd_hermes.py)
 - [`ksadk-python/ksadk/cli/cmd_invoke.py`](../ksadk/cli/cmd_invoke.py)
-- [`ksadk-python/docs/ksadk_usage_guide.md`](./ksadk_usage_guide.md)
+- [`ksadk-python/docs/ksadk使用文档.md`](./ksadk使用文档.md)
 - [`ksadk-python/deploy/hermes/README.md`](../deploy/hermes/README.md)
 - [`ksadk-python/deploy/hermes/README.md.template`](../deploy/hermes/README.md.template)
 
