@@ -10,9 +10,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 BOOTSTRAP_SCRIPT = REPO_ROOT / "deploy" / "openclaw" / "bootstrap.sh"
 OPENCLAW_DOCKERFILE = REPO_ROOT / "deploy" / "openclaw" / "Dockerfile"
 LATEST_OPENCLAW_BASE_IMAGE = (
-    "ghcr.io/openclaw/openclaw:2026.4.15@"
-    "sha256:0e6bebecf4623216420851f5edd133a748335f45c3508b635f7c5c4bfbc6da7d"
+    "ghcr.io/openclaw/openclaw:2026.4.21@"
+    "sha256:70e0ab07deb72f4b3ee7bb701c5437fdc27b85d6705cc67f104aa8042ba52e00"
 )
+VALID_MEM0_UUID = "e52b7fac-e641-4b34-b9f7-6b0b9f190cd4"
 
 
 def _write_weixin_plugin_package_json(
@@ -94,6 +95,24 @@ def _build_base_env(state_dir: str, config_path: str) -> dict:
     return env
 
 
+def _build_mem0_manifest_json() -> str:
+    return json.dumps(
+        {
+            "schema_version": "v1",
+            "backend_type": "mem0",
+            "config": {
+                "mem0_instance_id": VALID_MEM0_UUID,
+                "mem0_region": "cn-qingyangtest-1",
+            },
+            "secrets_env": {
+                "api_key": "MEM0_API_KEY",
+                "user_id": "MEM0_USER_ID",
+                "base_url": "MEM0_BASE_URL",
+            },
+        }
+    )
+
+
 def _assert_model_token_defaults(models: list[dict], *, minimum_max_tokens: int = 20000) -> None:
     for model in models:
         if "contextWindow" not in model and "maxTokens" not in model:
@@ -111,6 +130,23 @@ def test_openclaw_dockerfile_tracks_latest_official_channel_plugins():
     )
     assert "ARG OPENCLAW_WEIXIN_PLUGIN_SPEC=@tencent-weixin/openclaw-weixin" in dockerfile
     assert "ARG OPENCLAW_LARK_PLUGIN_SPEC=@larksuite/openclaw-lark" in dockerfile
+    assert "ARG OPENCLAW_MEM0_PLUGIN_ID=openclaw-mem0" in dockerfile
+    assert "ARG OPENCLAW_MEM0_PLUGIN_URL=https://wangxu-test.ks3-cn-beijing.ksyuncs.com/ksc-openclaw-mem0-1.0.6.tgz" in dockerfile
+
+
+def test_openclaw_runtime_bundles_runtime_common_and_manifest_renderer():
+    dockerfile = OPENCLAW_DOCKERFILE.read_text(encoding="utf-8")
+    bootstrap = BOOTSTRAP_SCRIPT.read_text(encoding="utf-8")
+
+    assert "COPY ksadk_runtime_common /opt/ksadk_runtime_common" in dockerfile
+    assert "COPY deploy/openclaw/workspace_files_app.py /opt/openclaw/workspace_files_app.py" in dockerfile
+    assert '"fastapi>=0.100.0,<0.124.0"' in dockerfile
+    assert '"uvicorn>=0.23.0,<1.0.0"' in dockerfile
+    assert '"python-multipart>=0.0.9,<1.0.0"' in dockerfile
+    assert "PYTHONPATH=/opt" in dockerfile
+    assert "from ksadk_runtime_common.memory_backend.render import render_to_json" in bootstrap
+    assert 'uvicorn workspace_files_app:app \\' in bootstrap
+    assert 'OPENCLAW_WORKSPACE_FILES_PROXY_URL' in bootstrap
 
 
 def test_bootstrap_writes_secretref_for_model_api_key():
@@ -247,6 +283,26 @@ def test_bootstrap_fails_without_secret_env_value():
         assert result.returncode != 0
         combined = f"{result.stdout}\n{result.stderr}"
         assert "missing bootstrap secret env for file-backed model api key" in combined
+
+
+def test_bootstrap_preseeds_gateway_password_for_managed_runtime_restart():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert cfg["gateway"]["auth"]["password"]
 
 
 def test_bootstrap_defaults_dual_ksyun_catalog_when_unspecified():
@@ -1450,6 +1506,7 @@ def test_bootstrap_keeps_model_api_key_in_gateway_process_env_for_deferred_auth_
         env = _build_base_env(tmpdir, str(config_path))
         env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
         env["BOOTSTRAP_CAPTURE_ENV_PATH"] = str(captured_env_path)
+        env["OPENCLAW_WORKSPACE_FILES_ENABLED"] = "0"
         env["PATH"] = f"{fake_bin_dir}:{env['PATH']}"
         env.pop("OPENCLAW_BOOTSTRAP_ONLY", None)
 
@@ -1486,6 +1543,88 @@ def test_bootstrap_keeps_model_api_key_in_gateway_process_env_for_deferred_auth_
         assert "UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple" in captured_env
         assert "PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright" in captured_env
         assert "PUPPETEER_DOWNLOAD_BASE_URL=https://npmmirror.com/mirrors/chrome-for-testing" in captured_env
+
+
+def test_bootstrap_does_not_relaunch_gateway_after_upstream_handoff_restart():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        gateway_count_path = Path(tmpdir) / "gateway-count.txt"
+        successor_pid_path = Path(tmpdir) / "gateway-successor.pid"
+        fake_bin_dir = Path(tmpdir) / "bin"
+        fake_node_path = fake_bin_dir / "node"
+        real_node_path = subprocess.run(
+            ["bash", "-lc", "command -v node"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        fake_bin_dir.mkdir()
+        fake_node_path.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1" = "openclaw.mjs" ] && [ "$2" = "gateway" ] && [ "$3" = "run" ]; then\n'
+            '  count=0\n'
+            '  if [ -f "${BOOTSTRAP_GATEWAY_COUNT_PATH}" ]; then\n'
+            '    count="$(cat "${BOOTSTRAP_GATEWAY_COUNT_PATH}")"\n'
+            "  fi\n"
+            '  count=$((count + 1))\n'
+            '  printf "%s\\n" "${count}" > "${BOOTSTRAP_GATEWAY_COUNT_PATH}"\n'
+            '  if [ "${count}" -eq 1 ]; then\n'
+            '    python3 -m http.server "${OPENCLAW_GATEWAY_PORT}" --bind 127.0.0.1 >/dev/null 2>&1 &\n'
+            '    printf "%s\\n" "$!" > "${BOOTSTRAP_SUCCESSOR_PID_PATH}"\n'
+            "    exit 0\n"
+            "  fi\n"
+            "  exit 97\n"
+            "fi\n"
+            f'exec "{real_node_path}" "$@"\n'
+        )
+        fake_node_path.chmod(0o755)
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["BOOTSTRAP_GATEWAY_COUNT_PATH"] = str(gateway_count_path)
+        env["BOOTSTRAP_SUCCESSOR_PID_PATH"] = str(successor_pid_path)
+        env["OPENCLAW_GATEWAY_PORT"] = "18080"
+        env["OPENCLAW_GATEWAY_LOCAL_RESTART_MAX"] = "0"
+        env["OPENCLAW_WORKSPACE_FILES_ENABLED"] = "0"
+        env["PATH"] = f"{fake_bin_dir}:{env['PATH']}"
+        env.pop("OPENCLAW_BOOTSTRAP_ONLY", None)
+
+        process = subprocess.Popen(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        try:
+            deadline = time.monotonic() + 5
+            while (
+                not gateway_count_path.exists() or not successor_pid_path.exists()
+            ) and time.monotonic() < deadline:
+                if process.poll() is not None:
+                    break
+                time.sleep(0.05)
+
+            assert gateway_count_path.exists(), process.stderr.read() or process.stdout.read()
+            assert successor_pid_path.exists(), process.stderr.read() or process.stdout.read()
+
+            time.sleep(1.0)
+            assert process.poll() is None, process.stderr.read() or process.stdout.read()
+            assert gateway_count_path.read_text().strip() == "1"
+        finally:
+            process.terminate()
+            process.communicate(timeout=5)
+            if successor_pid_path.exists():
+                successor_pid = successor_pid_path.read_text().strip()
+                if successor_pid:
+                    subprocess.run(
+                        ["kill", successor_pid],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
 
 
 def test_bootstrap_writes_domestic_runtime_defaults_to_env_file():
@@ -1598,6 +1737,32 @@ def test_bootstrap_seeds_and_auto_enables_bundled_weixin_plugin():
         cfg = json.loads(config_path.read_text())
         assert (Path(tmpdir) / "extensions" / "openclaw-weixin" / "manifest.json").exists()
         assert cfg["plugins"]["entries"]["openclaw-weixin"]["enabled"] is True
+
+
+def test_bootstrap_does_not_seed_deferred_mem0_plugin_by_default():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        default_extensions_dir = Path(tmpdir) / "default-extensions" / "openclaw-mem0"
+        default_extensions_dir.mkdir(parents=True, exist_ok=True)
+        (default_extensions_dir / "manifest.json").write_text('{"name":"openclaw-mem0"}\n')
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_DEFAULT_EXTENSIONS_DIR"] = str(Path(tmpdir) / "default-extensions")
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        assert not (Path(tmpdir) / "extensions" / "openclaw-mem0").exists()
+        cfg = json.loads(config_path.read_text())
+        assert "openclaw-mem0" not in (cfg.get("plugins", {}).get("entries", {}) or {})
 
 
 def test_bootstrap_preserves_user_managed_weixin_plugin_in_existing_extension_dir():
@@ -2492,6 +2657,7 @@ def test_bootstrap_patches_runtime_bundles_for_loopback_gateway_clients():
         control_ui_assets_dir.mkdir(parents=True, exist_ok=True)
         client_bundle = dist_dir / "reply-test.js"
         gateway_bundle = dist_dir / "gateway-cli-test.js"
+        server_bundle = dist_dir / "server.impl-test.js"
         control_ui_bundle = control_ui_assets_dir / "main-test.js"
 
         client_bundle.write_text('const wsOptions = { maxPayload: 25 * 1024 * 1024 };')
@@ -2517,11 +2683,37 @@ def test_bootstrap_patches_runtime_bundles_for_loopback_gateway_clients():
             '}\n'
             'if (!device && (!isControlUi || decision.kind !== "allow")) clearUnboundScopes();\n'
         )
+        server_bundle.write_text(
+            'function createGatewayHttpServer(opts) {\n'
+            '\tconst { canvasHost, clients, controlUiEnabled, controlUiBasePath, controlUiRoot, openAiChatCompletionsEnabled, openAiChatCompletionsConfig, openResponsesEnabled, openResponsesConfig, strictTransportSecurityHeader, handleHooksRequest, handlePluginRequest, shouldEnforcePluginGatewayAuth, resolvedAuth, rateLimiter, getReadiness } = opts;\n'
+            '\tconst getResolvedAuth = opts.getResolvedAuth ?? (() => resolvedAuth);\n'
+            '\tconst openAiCompatEnabled = openAiChatCompletionsEnabled || openResponsesEnabled;\n'
+            '\tasync function handleRequest(req, res) {\n'
+            '\t\tconst requestPath = new URL(req.url ?? "/", "http://localhost").pathname;\n'
+            '\t\tconst requestStages = [{\n'
+            '\t\t\tname: "hooks",\n'
+            '\t\t\trun: () => handleHooksRequest(req, res)\n'
+            '\t\t}];\n'
+            '\t\tif (controlUiEnabled) {\n'
+            '\t\t\trequestStages.push({\n'
+            '\t\t\t\tname: "control-ui-http",\n'
+            '\t\t\t\trun: async () => (await getControlUiModule()).handleControlUiHttpRequest(req, res, {\n'
+            '\t\t\t\t\tbasePath: controlUiBasePath,\n'
+            '\t\t\t\t\tconfig: configSnapshot,\n'
+            '\t\t\t\t\tagentId: resolveAssistantIdentity({ cfg: configSnapshot }).agentId,\n'
+            '\t\t\t\t\troot: controlUiRoot\n'
+            '\t\t\t\t})\n'
+            '\t\t\t});\n'
+            '\t\t}\n'
+            '\t}\n'
+            '}\n'
+        )
         control_ui_bundle.write_text('this.ws.addEventListener(`open`,()=>this.queueConnect())')
 
         env = _build_base_env(tmpdir, str(config_path))
         env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
         env["OPENCLAW_DIST_DIR"] = str(dist_dir)
+        env["OPENCLAW_WORKSPACE_FILES_ENABLED"] = "0"
 
         result = subprocess.run(
             ["bash", str(BOOTSTRAP_SCRIPT)],
@@ -2547,6 +2739,11 @@ def test_bootstrap_patches_runtime_bundles_for_loopback_gateway_clients():
         assert 'const parsed = new URL(params.urlOverride);' in gateway_source
         assert 'if (["127.0.0.1", "::1", "localhost"].includes(parsed.hostname)) return;' in gateway_source
         assert 'const keepUnboundScopes = !device && decision.kind === "allow" && authMethod === "trusted-proxy" && !hasBrowserOriginHeader;' in gateway_source
+        server_source = server_bundle.read_text()
+        assert 'async function handleWorkspaceFilesProxyRequest(req, res) {' not in server_source
+        assert 'name: "workspace-files-proxy"' not in server_source
+        assert 'requestUrl.pathname.startsWith("/_ksadk/workspace/v1/")' not in server_source
+        assert 'const targetUrl = new URL(`${requestUrl.pathname}${requestUrl.search}`' not in server_source
         assert 'this.ws.addEventListener(`open`,()=>{this.lastSeq=null,this.queueConnect()})' in control_ui_bundle.read_text()
 
 
@@ -2592,6 +2789,7 @@ def test_bootstrap_accepts_upstream_2026_3_28_loopback_gateway_runtime_logic():
         env = _build_base_env(tmpdir, str(config_path))
         env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
         env["OPENCLAW_DIST_DIR"] = str(dist_dir)
+        env["OPENCLAW_WORKSPACE_FILES_ENABLED"] = "0"
 
         result = subprocess.run(
             ["bash", str(BOOTSTRAP_SCRIPT)],
@@ -2680,6 +2878,7 @@ def test_bootstrap_disables_container_self_update_runtime_hooks():
         env = _build_base_env(tmpdir, str(config_path))
         env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
         env["OPENCLAW_DIST_DIR"] = str(dist_dir)
+        env["OPENCLAW_WORKSPACE_FILES_ENABLED"] = "0"
 
         result = subprocess.run(
             ["bash", str(BOOTSTRAP_SCRIPT)],
@@ -2762,3 +2961,66 @@ def test_bootstrap_defaults_state_dir_under_home_for_non_root_runtime():
         cfg = json.loads(config_path.read_text())
         assert cfg["agents"]["defaults"]["workspace"] == str(state_dir / "workspace")
         assert cfg["secrets"]["providers"]["default"]["path"] == str(secrets_path)
+
+
+def test_bootstrap_applies_mem0_memory_backend_manifest():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        default_extensions_dir = Path(tmpdir) / "default-extensions" / "openclaw-mem0"
+        default_extensions_dir.mkdir(parents=True, exist_ok=True)
+        (default_extensions_dir / "manifest.json").write_text('{"name":"openclaw-mem0"}\n')
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_DEFAULT_EXTENSIONS_DIR"] = str(Path(tmpdir) / "default-extensions")
+        env["MEMORY_BACKEND_MANIFEST"] = _build_mem0_manifest_json()
+        env["MEM0_API_KEY"] = f"2000104981.{VALID_MEM0_UUID}:mem0-secret"
+        env["MEM0_USER_ID"] = "2000104981"
+        env["MEM0_BASE_URL"] = "http://mem-service.sdns.ksyun.com"
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert (Path(tmpdir) / "extensions" / "openclaw-mem0" / "manifest.json").exists()
+        assert cfg["plugins"]["slots"]["memory"] == "openclaw-mem0"
+        assert "openclaw-mem0" in cfg["plugins"]["allow"]
+        assert cfg["plugins"]["entries"]["openclaw-mem0"] == {
+            "enabled": True,
+            "config": {
+                "mode": "platform",
+                "apiKey": f"2000104981.{VALID_MEM0_UUID}:mem0-secret",
+                "baseUrl": "http://mem-service.sdns.ksyun.com",
+                "userId": "2000104981",
+            },
+        }
+
+
+def test_bootstrap_fails_when_mem0_manifest_env_is_incomplete():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        env = _build_base_env(tmpdir, str(config_path))
+        env["MEMORY_BACKEND_MANIFEST"] = _build_mem0_manifest_json()
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode != 0
+        combined = f"{result.stdout}\n{result.stderr}"
+        assert (
+            "MEM0_API_KEY" in combined
+            or "MEM0_USER_ID" in combined
+            or "MEM0_BASE_URL" in combined
+        )

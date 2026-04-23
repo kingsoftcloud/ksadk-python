@@ -4,6 +4,8 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
+import sys
 import threading
 import time
 from types import SimpleNamespace
@@ -29,6 +31,9 @@ HOSTED_GATEWAY_MODULE_PATH = (
 
 
 def _load_runtime_module():
+    if str(MODULE_PATH.parent) not in sys.path:
+        sys.path.insert(0, str(MODULE_PATH.parent))
+    sys.modules.pop("workspace_files", None)
     spec = importlib.util.spec_from_file_location("ksadk_hermes_runtime_test", MODULE_PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -148,6 +153,62 @@ def test_proxy_api_routes_to_hermes_api_server(monkeypatch):
     assert stream is True
     assert headers is not None and headers["x-test"] == "api"
     assert b'"content":"hi"' in (content or b"")
+
+
+def test_runtime_exposes_workspace_files_from_hermes_workdir(monkeypatch, tmp_path):
+    monkeypatch.setenv("KSADK_WORKSPACE_ROOT", str(tmp_path / "workspace"))
+    monkeypatch.setenv("KSADK_WORKSPACE_FILES_ENABLED", "1")
+    module = _load_runtime_module()
+
+    with TestClient(module.app) as client:
+        upload_response = client.post(
+            "/_ksadk/workspace/v1/files/notes/todo.txt",
+            files={"file": ("todo.txt", b"remember me", "text/plain")},
+        )
+        list_response = client.get("/_ksadk/workspace/v1/entries", params={"path": "notes"})
+        download_response = client.get("/_ksadk/workspace/v1/files/notes/todo.txt")
+        delete_response = client.delete("/_ksadk/workspace/v1/files/notes/todo.txt")
+
+    assert upload_response.status_code == 200
+    assert upload_response.json()["Entry"]["Path"] == "notes/todo.txt"
+    assert list_response.status_code == 200
+    assert list_response.json()["Entries"] == [
+        {
+            "Name": "todo.txt",
+            "Path": "notes/todo.txt",
+            "Type": "file",
+            "SizeBytes": 11,
+            "MimeType": "text/plain",
+            "ModifiedAt": list_response.json()["Entries"][0]["ModifiedAt"],
+        }
+    ]
+    assert download_response.status_code == 200
+    assert download_response.content == b"remember me"
+    assert delete_response.status_code == 200
+    assert delete_response.json() == {"Deleted": True}
+
+
+def test_runtime_module_imports_without_repo_ksadk_package(monkeypatch, tmp_path):
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    shutil.copy2(MODULE_PATH, runtime_dir / "app.py")
+    runtime_common_src = MODULE_PATH.parents[3] / "ksadk_runtime_common"
+    opt_dir = tmp_path / "opt"
+    shutil.copytree(runtime_common_src, opt_dir / "ksadk_runtime_common")
+
+    monkeypatch.setitem(sys.modules, "ksadk", None)
+    for module_name in list(sys.modules):
+        if module_name == "ksadk_runtime_common" or module_name.startswith("ksadk_runtime_common."):
+            sys.modules.pop(module_name, None)
+    monkeypatch.syspath_prepend(str(runtime_dir))
+    monkeypatch.syspath_prepend(str(opt_dir))
+
+    spec = importlib.util.spec_from_file_location("isolated_ksadk_hermes_runtime", runtime_dir / "app.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert getattr(module, "app", None) is not None
 
 
 def test_proxy_dashboard_routes_root_to_hermes_dashboard(monkeypatch):
@@ -382,6 +443,8 @@ def test_entrypoint_writes_explicit_context_length_override():
     assert 'export HERMES_RUN_DIR="${HERMES_RUN_DIR:-${HERMES_HOME}/run}"' in entrypoint
     assert 'export HERMES_SESSION_DIR="${HERMES_SESSION_DIR:-${HERMES_HOME}/sessions}"' in entrypoint
     assert 'export HERMES_HOSTED_RUNTIME="${HERMES_HOSTED_RUNTIME:-1}"' in entrypoint
+    assert 'export KSADK_WORKSPACE_ROOT="${KSADK_WORKSPACE_ROOT:-${HERMES_WORKDIR}}"' in entrypoint
+    assert 'export KSADK_WORKSPACE_FILES_ENABLED="${KSADK_WORKSPACE_FILES_ENABLED:-1}"' in entrypoint
     assert 'if [[ -z "${TERM:-}" || "${TERM}" == "dumb" ]]; then' in entrypoint
     assert 'export TERM="xterm-256color"' in entrypoint
     assert 'export PYTHONPATH="/app/runtime${PYTHONPATH:+:${PYTHONPATH}}"' in entrypoint
@@ -446,12 +509,14 @@ def test_runtime_bundles_hosted_gateway_patches():
 
     sitecustomize = (runtime_root / "sitecustomize.py").read_text(encoding="utf-8")
     hosted_gateway = (runtime_root / "hosted_gateway.py").read_text(encoding="utf-8")
+    app_py = (runtime_root / "app.py").read_text(encoding="utf-8")
 
     assert "HERMES_HOSTED_RUNTIME" in sitecustomize
     assert "apply_hosted_patches" in sitecustomize
     assert "gateway_setup" in hosted_gateway
     assert "gateway.pid" in hosted_gateway
     assert "container-managed" in hosted_gateway
+    assert "from ksadk_runtime_common.workspace_files import" in app_py
 
 
 def test_hosted_gateway_command_falls_back_to_original_handler_without_recursing():
@@ -494,7 +559,8 @@ def test_runtime_dockerfile_installs_browser_runtime_and_skills_assets():
     assert "ripgrep" in dockerfile
     assert "agent-browser" in dockerfile
     assert "/usr/local/lib/python3.12/site-packages/node_modules/agent-browser" in dockerfile
-    assert "COPY skills ./skills" in dockerfile
+    assert "COPY deploy/hermes/skills ./skills" in dockerfile
+    assert "COPY ksadk_runtime_common /opt/ksadk_runtime_common" in dockerfile
     assert "/usr/local/bin/npm" in dockerfile
     assert "/usr/local/bin/npx" in dockerfile
     assert "/usr/local/bin/mcporter" in dockerfile
@@ -568,6 +634,25 @@ def test_runtime_terminal_command_supports_connect_mode():
     module = _load_runtime_module()
 
     assert module._resolve_terminal_command("connect", []) == ["hermes", "gateway", "setup"]
+
+
+def test_runtime_terminal_cwd_resolves_under_workspace(monkeypatch, tmp_path):
+    workspace_dir = tmp_path / "hermes-home" / "workspace" / "demo-workspace"
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    module = _load_runtime_module()
+
+    assert module._resolve_terminal_cwd("demo-workspace") == workspace_dir.resolve()
+
+
+def test_runtime_terminal_cwd_rejects_workspace_escape(monkeypatch, tmp_path):
+    workspace_root = tmp_path / "hermes-home" / "workspace"
+    workspace_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    module = _load_runtime_module()
+
+    with pytest.raises(ValueError):
+        module._resolve_terminal_cwd("../outside")
 
 
 def test_terminal_ws_keeps_streaming_after_stdin_eof(monkeypatch):

@@ -1,5 +1,7 @@
+import asyncio
 from pathlib import Path
 
+import click
 import pytest
 import yaml
 
@@ -337,3 +339,213 @@ def test_invoke_hermes_terminal_tui_exits_cleanly_on_keyboard_interrupt(monkeypa
         )
 
     assert exc_info.value.code == 130
+
+
+def test_run_invoke_command_syncs_local_workspace_before_hermes_native_tui(monkeypatch, tmp_path: Path):
+    workspace_dir = tmp_path / "demo-workspace"
+    workspace_dir.mkdir()
+    (workspace_dir / "notes.txt").write_text("hello workspace", encoding="utf-8")
+    (tmp_path / ".agentengine.state").write_text(
+        yaml.safe_dump(
+            {
+                "agent_id": "ar-hermes-1",
+                "type": "hermes",
+                "framework": "hermes",
+                "endpoint": "https://hermes.example.com",
+                "api_key": "ak-hermes",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    captured = {}
+
+    async def _fake_sync_local_workspace_for_hermes_invoke(**kwargs):
+        captured["sync_kwargs"] = kwargs
+        return {
+            "remote_path": "demo-workspace",
+            "local_dir": str(workspace_dir),
+            "created": ["demo-workspace/notes.txt"],
+            "overwritten": [],
+            "skipped": [],
+            "total_files": 1,
+            "direction": "push",
+        }
+
+    def _fake_emit_sync_payload(payload, _output_mode):
+        captured["sync_payload"] = payload
+
+    def _fake_native(endpoint, api_key=None, session_id=None, insecure=False, cwd=None):
+        captured["native"] = {
+            "endpoint": endpoint,
+            "api_key": api_key,
+            "session_id": session_id,
+            "cwd": cwd,
+        }
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_invoke._sync_local_workspace_for_hermes_invoke",
+        _fake_sync_local_workspace_for_hermes_invoke,
+    )
+    monkeypatch.setattr("ksadk.cli.cmd_invoke._emit_sync_payload", _fake_emit_sync_payload)
+    monkeypatch.setattr("ksadk.cli.cmd_invoke._build_sync_payload", lambda payload: payload)
+    monkeypatch.setattr("ksadk.cli.cmd_invoke._invoke_hermes_terminal_tui", _fake_native)
+    monkeypatch.setattr("ksadk.cli.cmd_invoke._invoke_tui", lambda *_args, **_kwargs: None)
+
+    run_invoke_command(
+        agent_ref=None,
+        agent_option=None,
+        endpoint="https://hermes.example.com",
+        api_key=None,
+        message=None,
+        session=None,
+        region="pre-online",
+        local=False,
+        insecure=False,
+        transport="auto",
+        model=None,
+        show_thinking=False,
+        local_workspace=str(workspace_dir),
+        remote_workspace_path=None,
+    )
+
+    assert captured["sync_kwargs"]["remote_path"] == "demo-workspace"
+    assert captured["native"]["cwd"] == "demo-workspace"
+
+
+def test_run_invoke_command_rejects_local_workspace_outside_hermes_native(monkeypatch, tmp_path: Path):
+    workspace_dir = tmp_path / "demo-workspace"
+    workspace_dir.mkdir()
+    (tmp_path / ".agentengine.state").write_text(
+        yaml.safe_dump(
+            {
+                "type": "hermes",
+                "framework": "hermes",
+                "endpoint": "https://hermes.example.com",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(SystemExit) as exc_info:
+        run_invoke_command(
+            agent_ref=None,
+            agent_option=None,
+            endpoint="https://hermes.example.com",
+            api_key=None,
+            message="hello",
+            session=None,
+            region="pre-online",
+            local=False,
+            insecure=False,
+            transport="auto",
+            model=None,
+            show_thinking=False,
+            local_workspace=str(workspace_dir),
+            remote_workspace_path=None,
+        )
+
+    assert exc_info.value.code == 1
+
+
+def test_run_invoke_command_rejects_remote_workspace_path_without_local_workspace(monkeypatch, tmp_path: Path):
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(SystemExit) as exc_info:
+        run_invoke_command(
+            agent_ref=None,
+            agent_option=None,
+            endpoint="https://hermes.example.com",
+            api_key="ak-hermes",
+            message=None,
+            session=None,
+            region="pre-online",
+            local=False,
+            insecure=False,
+            transport="native",
+            model=None,
+            show_thinking=False,
+            local_workspace=None,
+            remote_workspace_path="demo-workspace",
+        )
+
+    assert exc_info.value.code == 1
+
+
+def test_sync_local_workspace_for_hermes_invoke_rejects_single_file_over_limit(monkeypatch, tmp_path: Path):
+    from ksadk.cli.cmd_invoke import _sync_local_workspace_for_hermes_invoke
+
+    workspace_dir = tmp_path / "demo-workspace"
+    workspace_dir.mkdir()
+    oversized = workspace_dir / "large.bin"
+    oversized.write_bytes(b"0123456789")
+
+    async def _fake_lookup_workspace_upload_limit(**_kwargs):
+        return 5
+
+    async def _fake_push_workspace_files(**_kwargs):
+        raise AssertionError("should reject before uploading")
+
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_invoke._lookup_workspace_upload_limit",
+        _fake_lookup_workspace_upload_limit,
+    )
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_invoke._push_workspace_files",
+        _fake_push_workspace_files,
+    )
+
+    with pytest.raises(click.ClickException) as exc_info:
+        asyncio.run(
+            _sync_local_workspace_for_hermes_invoke(
+                agent_ref="ar-hermes-1",
+                local_workspace=workspace_dir,
+                remote_path="demo-workspace",
+                region="pre-online",
+                endpoint="https://hermes.example.com",
+                api_key="ak-hermes",
+            )
+        )
+
+    assert "超过" in str(exc_info.value)
+
+
+def test_sync_local_workspace_for_hermes_invoke_rejects_total_directory_size_over_limit(monkeypatch, tmp_path: Path):
+    from ksadk.cli.cmd_invoke import _sync_local_workspace_for_hermes_invoke
+
+    workspace_dir = tmp_path / "demo-workspace"
+    workspace_dir.mkdir()
+    (workspace_dir / "a.txt").write_bytes(b"1234")
+    (workspace_dir / "b.txt").write_bytes(b"5678")
+
+    async def _fake_lookup_workspace_upload_limit(**_kwargs):
+        return 7
+
+    async def _fake_push_workspace_files(**_kwargs):
+        raise AssertionError("should reject before uploading")
+
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_invoke._lookup_workspace_upload_limit",
+        _fake_lookup_workspace_upload_limit,
+    )
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_invoke._push_workspace_files",
+        _fake_push_workspace_files,
+    )
+
+    with pytest.raises(click.ClickException) as exc_info:
+        asyncio.run(
+            _sync_local_workspace_for_hermes_invoke(
+                agent_ref="ar-hermes-1",
+                local_workspace=workspace_dir,
+                remote_path="demo-workspace",
+                region="pre-online",
+                endpoint="https://hermes.example.com",
+                api_key="ak-hermes",
+            )
+        )
+
+    assert "目录总大小" in str(exc_info.value)

@@ -6,7 +6,7 @@ import os
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Callable, Dict, Optional, Sequence
+from typing import Any, AsyncIterator, Callable, Dict, Mapping, Optional, Sequence
 
 from fastapi import HTTPException
 
@@ -638,7 +638,11 @@ async def _update_session_metadata_after_assistant_turn(
     )
 
 
-def _resolve_model_metadata(model: Optional[str]) -> dict[str, Any]:
+def _resolve_model_metadata(
+    model: Optional[str],
+    *,
+    model_metadata: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """统一收口模型上下文配置。
 
     当前阶段还没把远端 /v1/models 的完整 metadata 缓存接进 runtime，
@@ -646,6 +650,11 @@ def _resolve_model_metadata(model: Optional[str]) -> dict[str, Any]:
     后，只需要把这层改成真正的 resolver，compaction 逻辑本身不用再动。
     """
 
+    if isinstance(model_metadata, Mapping):
+        resolved = dict(model_metadata)
+        if model and not str(resolved.get("id") or "").strip():
+            resolved["id"] = model
+        return normalize_model_metadata(resolved)
     return normalize_model_metadata({"id": model or "agent"})
 
 
@@ -794,6 +803,7 @@ def _plan_compaction(
     events: Sequence[SessionEvent],
     *,
     model: Optional[str] = None,
+    model_metadata: Mapping[str, Any] | None = None,
     pending_events: Sequence[SessionEvent] | None = None,
     force: bool = False,
     keep_tail_groups: int | None = None,
@@ -821,9 +831,9 @@ def _plan_compaction(
     tail_groups = keep_tail_groups if keep_tail_groups is not None else (
         PTL_RETRY_KEEP_TAIL_GROUPS if force else AUTOCOMPACT_KEEP_TAIL_GROUPS
     )
-    model_metadata = _resolve_model_metadata(model)
-    auto_compact_threshold_tokens = get_auto_compact_threshold_tokens(model_metadata)
-    auto_compact_threshold_percentage = get_auto_compact_threshold_percentage(model_metadata)
+    resolved_model_metadata = _resolve_model_metadata(model, model_metadata=model_metadata)
+    auto_compact_threshold_tokens = get_auto_compact_threshold_tokens(resolved_model_metadata)
+    auto_compact_threshold_percentage = get_auto_compact_threshold_percentage(resolved_model_metadata)
     total_chars = sum(len(extract_event_text(event)) for event in combined_events)
     total_estimated_tokens = sum(estimate_text_tokens(extract_event_text(event)) for event in combined_events)
     if not force and (
@@ -888,6 +898,7 @@ async def preview_auto_compaction(
     session_id: Optional[str],
     messages: Sequence[Dict[str, Any]],
     model: Optional[str] = None,
+    model_metadata: Mapping[str, Any] | None = None,
     session_service_provider: Callable[[], Any] | None = None,
 ) -> CompactionPlan:
     """在真正写入 turn 之前预估是否会触发自动压缩。
@@ -944,7 +955,12 @@ async def preview_auto_compaction(
         attachment_results=effective_attachment_results,
     )
     events = await service.get_events(session_id)
-    return _plan_compaction(events, model=model, pending_events=[pending_event])
+    return _plan_compaction(
+        events,
+        model=model,
+        model_metadata=model_metadata,
+        pending_events=[pending_event],
+    )
 
 
 async def ensure_conversation_session(
@@ -1081,6 +1097,7 @@ async def compact_conversation_history(
     author: str,
     invocation_id: Optional[str] = None,
     model: Optional[str] = None,
+    model_metadata: Mapping[str, Any] | None = None,
     force: bool = False,
     trigger: str = "auto",
     keep_tail_groups: Optional[int] = None,
@@ -1097,6 +1114,7 @@ async def compact_conversation_history(
     plan = _plan_compaction(
         events,
         model=model,
+        model_metadata=model_metadata,
         force=force,
         keep_tail_groups=keep_tail_groups,
     )
@@ -1116,12 +1134,12 @@ async def compact_conversation_history(
         previous_summary = extract_event_text(latest_checkpoint)
 
     compacted_until_seq_id_value = int(plan.compacted_until_seq_id or 0)
-    model_metadata = _resolve_model_metadata(model)
+    resolved_model_metadata = _resolve_model_metadata(model, model_metadata=model_metadata)
     summary_result = await summarize_compaction(
         groups_to_compact=plan.groups_to_compact,
         previous_summary=previous_summary,
         pinned_state=plan.pinned_state,
-        model_metadata=model_metadata,
+        model_metadata=resolved_model_metadata,
         model=model,
     )
     return await append_context_checkpoint_event(
@@ -1157,6 +1175,7 @@ async def build_run_input(
     session_id: Optional[str],
     messages: Sequence[Dict[str, Any]],
     model: Optional[str] = None,
+    model_metadata: Mapping[str, Any] | None = None,
     state_delta: Optional[dict[str, Any]] = None,
     invocation_id: Optional[str] = None,
     session_service_provider: Callable[[], Any] | None = None,
@@ -1223,6 +1242,7 @@ async def build_run_input(
         author=agent_id,
         invocation_id=resolved_invocation_id,
         model=model,
+        model_metadata=model_metadata,
         session_service_provider=provider,
     )
     history = build_history_from_events(await service.get_events(resolved_session_id))
@@ -1265,6 +1285,7 @@ async def invoke_conversation_once(
     messages: Sequence[Dict[str, Any]],
     model: Optional[str],
     prepare_runner: Callable[[Any, Optional[str]], None],
+    model_metadata: Mapping[str, Any] | None = None,
     state_delta: Optional[dict[str, Any]] = None,
     session_service_provider: Callable[[], Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
@@ -1281,6 +1302,7 @@ async def invoke_conversation_once(
         session_id=session_id,
         messages=messages,
         model=model,
+        model_metadata=model_metadata,
         state_delta=state_delta,
         session_service_provider=provider,
     )
@@ -1331,6 +1353,7 @@ async def invoke_conversation_once(
                     author=runner_name,
                     invocation_id=prepared.invocation_id,
                     model=model,
+                    model_metadata=model_metadata,
                     force=True,
                     trigger="prompt_too_long",
                     keep_tail_groups=PTL_RETRY_KEEP_TAIL_GROUPS,
@@ -1386,6 +1409,7 @@ async def stream_conversation_turn(
     messages: Sequence[Dict[str, Any]],
     model: Optional[str],
     prepare_runner: Callable[[Any, Optional[str]], None],
+    model_metadata: Mapping[str, Any] | None = None,
     state_delta: Optional[dict[str, Any]] = None,
     session_service_provider: Callable[[], Any] | None = None,
 ) -> AsyncIterator[str]:
@@ -1403,6 +1427,7 @@ async def stream_conversation_turn(
         session_id=session_id,
         messages=messages,
         model=model,
+        model_metadata=model_metadata,
         session_service_provider=provider,
     )
     if compaction_preview.should_compact:
@@ -1420,6 +1445,7 @@ async def stream_conversation_turn(
         session_id=session_id,
         messages=messages,
         model=model,
+        model_metadata=model_metadata,
         state_delta=state_delta,
         session_service_provider=provider,
     )
@@ -1566,6 +1592,7 @@ async def stream_conversation_turn(
                     author=runner_name,
                     invocation_id=prepared.invocation_id,
                     model=model,
+                    model_metadata=model_metadata,
                     force=True,
                     trigger="prompt_too_long",
                     keep_tail_groups=PTL_RETRY_KEEP_TAIL_GROUPS,

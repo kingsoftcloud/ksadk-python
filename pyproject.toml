@@ -33,6 +33,7 @@ dependencies = [
     "packaging>=23.0",
     "python-dotenv>=1.0.0",
     "pydantic>=2.0.0,<3.0.0",
+    "jsonschema>=4.0.0,<5.0.0",
     "questionary>=2.0.0",
     # TUI 交互界面 (Textual 包含 Rich，无需单独安装)
     "textual>=0.50.0",
@@ -132,10 +133,11 @@ Documentation = "https://ksadk.kingsoft.com/docs"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["ksadk*"]
+include = ["ksadk*", "ksadk_runtime_common*"]
 
 [tool.setuptools.package-data]
 ksadk = ["server/static/**/*", "server/web-ui/dist-hosted/**/*"]
+ksadk_runtime_common = ["schemas/*.json"]
 
 [tool.black]
 line-length = 100

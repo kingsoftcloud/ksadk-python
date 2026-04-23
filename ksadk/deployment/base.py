@@ -49,6 +49,13 @@ class NetworkConfig(BaseModel):
     availability_zone: str = ""
 
 
+class StorageSpec(BaseModel):
+    """持久化存储配置。"""
+
+    mount_path: str = ""
+    size_gi: Optional[int] = None
+
+
 class DeployTarget(BaseModel):
     """部署目标配置"""
     provider: str                      # serverless | faas | k8s | docker
@@ -59,7 +66,8 @@ class DeployTarget(BaseModel):
     resources: ResourceSpec = Field(default_factory=ResourceSpec)
     scaling: ScalingConfig = Field(default_factory=ScalingConfig)
     network: NetworkConfig = Field(default_factory=NetworkConfig)
-    
+    storage: StorageSpec = Field(default_factory=StorageSpec)
+
     # Provider 特定配置
     extra: Dict[str, Any] = Field(default_factory=dict)
 

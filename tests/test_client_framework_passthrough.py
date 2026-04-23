@@ -95,6 +95,60 @@ async def test_create_agent_forwards_ui_config(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_create_agent_forwards_storage_configuration(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    calls = []
+
+    def fake_action(action: str, params: dict):
+        calls.append((action, params.copy()))
+        return {"agent_id": "ar-storage"}
+
+    monkeypatch.setattr(client, "_action", fake_action)
+
+    payload = _build_create_payload()
+    payload["storage"] = {
+        "mount_path": "/home/node/.agentengine",
+        "size_gi": 20,
+    }
+
+    await client.create_agent(payload)
+
+    assert calls[0][1]["Storage"] == {
+        "MountPath": "/home/node/.agentengine",
+        "SizeGi": 20,
+    }
+
+
+@pytest.mark.asyncio
+async def test_create_agent_forwards_memory_configuration(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    calls = []
+
+    def fake_action(action: str, params: dict):
+        calls.append((action, params.copy()))
+        return {"agent_id": "ar-memory"}
+
+    monkeypatch.setattr(client, "_action", fake_action)
+
+    payload = _build_create_payload()
+    payload["memory_config"] = {
+        "memory_system": "mem0",
+        "mem0_instance_id": "c17b20b1-faf7-4c98-91a7-38d1ee581ba1",
+        "mem0_instance_name": "mem-demo",
+        "mem0_region": "pre-online",
+    }
+
+    await client.create_agent(payload)
+
+    assert calls[0][1]["MemoryConfig"] == {
+        "MemorySystem": "mem0",
+        "Mem0InstanceId": "c17b20b1-faf7-4c98-91a7-38d1ee581ba1",
+        "Mem0InstanceName": "mem-demo",
+        "Mem0Region": "pre-online",
+    }
+
+
+@pytest.mark.asyncio
 async def test_update_agent_forwards_network_configuration(monkeypatch):
     client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
     calls = []
@@ -156,6 +210,94 @@ async def test_update_agent_forwards_ui_config(monkeypatch):
         "Path": "/chat",
         "Url": "https://ui.example.com/custom-ui/",
     }
+
+
+@pytest.mark.asyncio
+async def test_update_agent_forwards_storage_disable_configuration(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    calls = []
+
+    def fake_action(action: str, params: dict):
+        calls.append((action, params.copy()))
+        return {"agent_id": "ar-storage"}
+
+    monkeypatch.setattr(client, "_action", fake_action)
+
+    await client.update_agent(
+        "ar-storage",
+        {
+            "storage": {
+                "mount_path": "/home/node/.agentengine",
+                "size_gi": 64,
+            }
+        },
+    )
+
+    assert calls[0][0] == "UpdateAgent"
+    assert calls[0][1]["Storage"] == {
+        "MountPath": "/home/node/.agentengine",
+        "SizeGi": 64,
+    }
+
+
+@pytest.mark.asyncio
+async def test_update_agent_forwards_memory_configuration(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    calls = []
+
+    def fake_action(action: str, params: dict):
+        calls.append((action, params.copy()))
+        return {"agent_id": "ar-memory"}
+
+    monkeypatch.setattr(client, "_action", fake_action)
+
+    await client.update_agent(
+        "ar-memory",
+        {
+            "memory_config": {
+                "memory_system": "openclaw_default",
+            }
+        },
+    )
+
+    assert calls[0][0] == "UpdateAgent"
+    assert calls[0][1]["MemoryConfig"] == {
+        "MemorySystem": "openclaw_default",
+    }
+
+
+@pytest.mark.asyncio
+async def test_list_agents_normalizes_multi_framework_string(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    calls = []
+
+    def fake_action(action: str, params: dict):
+        calls.append((action, params.copy()))
+        return {"Agents": [], "Total": 0}
+
+    monkeypatch.setattr(client, "_action", fake_action)
+
+    await client.list_agents(framework=" langgraph, adk ")
+
+    assert calls[0][0] == "ListAgents"
+    assert calls[0][1]["Framework"] == "langgraph,adk"
+
+
+@pytest.mark.asyncio
+async def test_list_agents_accepts_framework_sequences(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    calls = []
+
+    def fake_action(action: str, params: dict):
+        calls.append((action, params.copy()))
+        return {"Agents": [], "Total": 0}
+
+    monkeypatch.setattr(client, "_action", fake_action)
+
+    await client.list_agents(framework=["langgraph", "adk"])
+
+    assert calls[0][0] == "ListAgents"
+    assert calls[0][1]["Framework"] == "langgraph,adk"
 
 
 @pytest.mark.asyncio

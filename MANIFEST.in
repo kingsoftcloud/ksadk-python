@@ -1,2 +1,3 @@
 prune ksadk/server/web-ui/node_modules
 recursive-exclude ksadk/server/web-ui/node_modules *
+recursive-include ksadk_runtime_common/schemas *.json
