@@ -37,13 +37,15 @@ def test_render_openclaw_default_manifest_returns_empty_patch():
         "backend_type": "openclaw_default",
         "config_patch": {},
         "required_env": [],
+        "plugin_ids": [],
     }
 
 
 def test_render_mem0_manifest_requires_runtime_env(monkeypatch):
     memory_backend = _memory_backend_module()
     monkeypatch.delenv("MEM0_API_KEY", raising=False)
-    monkeypatch.delenv("MEM0_MEMORY_ID", raising=False)
+    monkeypatch.delenv("MEM0_USER_ID", raising=False)
+    monkeypatch.delenv("MEM0_BASE_URL", raising=False)
 
     with pytest.raises(ValueError, match="MEM0_API_KEY"):
         memory_backend.render_memory_backend_config(
@@ -59,8 +61,12 @@ def test_render_mem0_manifest_requires_runtime_env(monkeypatch):
 
 def test_render_mem0_manifest_to_openclaw_patch(monkeypatch):
     memory_backend = _memory_backend_module()
-    monkeypatch.setenv("MEM0_API_KEY", "mem0-secret")
-    monkeypatch.setenv("MEM0_MEMORY_ID", VALID_MEM0_UUID)
+    monkeypatch.setenv(
+        "MEM0_API_KEY",
+        f"2000104981.{VALID_MEM0_UUID}:mem0-secret",
+    )
+    monkeypatch.setenv("MEM0_USER_ID", "2000104981")
+    monkeypatch.setenv("MEM0_BASE_URL", "http://mem-service.sdns.ksyun.com")
 
     result = memory_backend.render_memory_backend_config(
         {
@@ -72,7 +78,8 @@ def test_render_mem0_manifest_to_openclaw_patch(monkeypatch):
             },
             "secrets_env": {
                 "api_key": "MEM0_API_KEY",
-                "memory_id": "MEM0_MEMORY_ID",
+                "user_id": "MEM0_USER_ID",
+                "base_url": "MEM0_BASE_URL",
             },
         }
     )
@@ -80,15 +87,25 @@ def test_render_mem0_manifest_to_openclaw_patch(monkeypatch):
     assert result.model_dump() == {
         "backend_type": "mem0",
         "config_patch": {
-            "memory": {
-                "provider": "mem0",
-                "config": {
-                    "memoryId": VALID_MEM0_UUID,
-                    "region": "cn-qingyangtest-1",
+            "plugins": {
+                "slots": {
+                    "memory": "openclaw-mem0",
+                },
+                "entries": {
+                    "openclaw-mem0": {
+                        "enabled": True,
+                        "config": {
+                            "mode": "platform",
+                            "apiKey": f"2000104981.{VALID_MEM0_UUID}:mem0-secret",
+                            "baseUrl": "http://mem-service.sdns.ksyun.com",
+                            "userId": "2000104981",
+                        },
+                    },
                 },
             }
         },
-        "required_env": ["MEM0_API_KEY", "MEM0_MEMORY_ID"],
+        "required_env": ["MEM0_API_KEY", "MEM0_USER_ID", "MEM0_BASE_URL"],
+        "plugin_ids": ["openclaw-mem0"],
     }
 
 

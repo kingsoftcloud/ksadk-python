@@ -15,6 +15,7 @@ class RenderResult(BaseModel):
     backend_type: str
     config_patch: dict[str, Any] = Field(default_factory=dict)
     required_env: list[str] = Field(default_factory=list)
+    plugin_ids: list[str] = Field(default_factory=list)
 
 
 class ProviderProtocol(Protocol):

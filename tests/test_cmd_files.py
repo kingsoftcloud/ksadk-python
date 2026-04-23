@@ -200,10 +200,17 @@ def test_files_list_command_accepts_workspace_style_absolute_path(monkeypatch):
     ]
 
 
-def test_files_list_command_resolves_openclaw_state_and_prefers_state_runtime_access(monkeypatch, tmp_path: Path):
+def test_files_list_command_prefers_openclaw_state_runtime_access_when_api_key_is_ready(
+    monkeypatch,
+    tmp_path: Path,
+):
     from ksadk.cli import cmd_files
 
     _reset_fake_files_client()
+    _FakeFilesClient.workspace_health = {
+        "root": "workspace",
+        "workspace_path": "/home/node/.openclaw/workspace",
+    }
     _register_commands()
     monkeypatch.setattr(cmd_files, "AgentEngineClient", _FakeFilesClient)
     monkeypatch.chdir(tmp_path)
@@ -239,6 +246,8 @@ def test_files_list_command_resolves_openclaw_state_and_prefers_state_runtime_ac
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["path"] == "docs"
+    assert payload["workspace_real_root"] == "/home/node/.openclaw/workspace"
+    assert payload["workspace_real_path"] == "/home/node/.openclaw/workspace/docs"
     assert _FakeFilesClient.init_calls == [{"region": "pre-online"}]
     assert _FakeFilesClient.list_calls == [
         {
@@ -699,6 +708,42 @@ def test_files_push_pretty_output_is_readable_in_chinese(monkeypatch, tmp_path: 
     assert "已新增：workspace:/bundle/hello.txt" in result.output
 
 
+def test_files_push_pretty_output_shows_action_proxy_transport_hint(monkeypatch, tmp_path: Path):
+    from ksadk.cli import cmd_files
+
+    _reset_fake_files_client()
+    _register_commands()
+    monkeypatch.setattr(cmd_files, "AgentEngineClient", _FakeFilesClient)
+
+    local_dir = tmp_path / "bundle"
+    local_dir.mkdir()
+    (local_dir / "hello.txt").write_text("hello", encoding="utf-8")
+    _FakeFilesClient.list_results["bundle"] = {
+        "root": "workspace",
+        "path": "bundle",
+        "entries": [],
+        "transport_mode": "action_proxy",
+    }
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "files",
+            "push",
+            "--agent",
+            "demo-agent",
+            "--local-dir",
+            str(local_dir),
+            "--remote-path",
+            "bundle",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "访问链路：通过平台 action 代理访问远端 workspace" in result.output
+
+
 def test_files_push_treats_missing_remote_directory_as_empty(monkeypatch, tmp_path: Path):
     from ksadk.cli import cmd_files
 
@@ -802,3 +847,47 @@ def test_files_pull_downloads_new_files_and_overwrites_with_force(monkeypatch, t
             "remote_path": "bundle/nested/tool.py",
         },
     ]
+
+
+def test_files_pull_json_output_includes_transport_metadata(monkeypatch, tmp_path: Path):
+    from ksadk.cli import cmd_files
+
+    _reset_fake_files_client()
+    _register_commands()
+    monkeypatch.setattr(cmd_files, "AgentEngineClient", _FakeFilesClient)
+
+    local_dir = tmp_path / "mirror"
+    local_dir.mkdir()
+    _FakeFilesClient.list_results["bundle"] = {
+        "root": "workspace",
+        "path": "bundle",
+        "transport_mode": "action_proxy",
+        "entries": [
+            {"name": "tool.py", "path": "bundle/nested/tool.py", "type": "file", "size_bytes": 11},
+        ],
+    }
+    _FakeFilesClient.download_payloads = {
+        "bundle/nested/tool.py": b"print('ok')\n",
+    }
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--output",
+            "json",
+            "files",
+            "pull",
+            "--agent",
+            "demo-agent",
+            "--remote-path",
+            "bundle",
+            "--local-dir",
+            str(local_dir),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["transport_mode"] == "action_proxy"
+    assert payload["transport_hint"] == "通过平台 action 代理访问远端 workspace"

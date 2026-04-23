@@ -54,6 +54,13 @@ def test_build_start_frame_supports_connect_mode():
     assert payload["argv"] == []
 
 
+def test_build_start_frame_supports_workspace_cwd():
+    payload = json.loads(build_start_frame(mode="tui", argv=[], cols=120, rows=40, cwd="demo-workspace"))
+
+    assert payload["mode"] == "tui"
+    assert payload["cwd"] == "demo-workspace"
+
+
 @pytest.mark.parametrize(
     "argv",
     [

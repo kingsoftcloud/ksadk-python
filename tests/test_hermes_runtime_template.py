@@ -636,6 +636,25 @@ def test_runtime_terminal_command_supports_connect_mode():
     assert module._resolve_terminal_command("connect", []) == ["hermes", "gateway", "setup"]
 
 
+def test_runtime_terminal_cwd_resolves_under_workspace(monkeypatch, tmp_path):
+    workspace_dir = tmp_path / "hermes-home" / "workspace" / "demo-workspace"
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    module = _load_runtime_module()
+
+    assert module._resolve_terminal_cwd("demo-workspace") == workspace_dir.resolve()
+
+
+def test_runtime_terminal_cwd_rejects_workspace_escape(monkeypatch, tmp_path):
+    workspace_root = tmp_path / "hermes-home" / "workspace"
+    workspace_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    module = _load_runtime_module()
+
+    with pytest.raises(ValueError):
+        module._resolve_terminal_cwd("../outside")
+
+
 def test_terminal_ws_keeps_streaming_after_stdin_eof(monkeypatch):
     module = _load_runtime_module()
     master_fd, slave_fd = os.openpty()

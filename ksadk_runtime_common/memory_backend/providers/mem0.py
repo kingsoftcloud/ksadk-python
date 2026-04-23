@@ -20,6 +20,12 @@ def _require_env(name: str) -> None:
         raise ValueError(f"mem0 backend requires environment variable '{name}'")
 
 
+def _require_env_value(name: str) -> str:
+    """Return a required env var value after validating it is non-empty."""
+    _require_env(name)
+    return str(os.getenv(name) or "").strip()
+
+
 class Mem0Provider:
     """Provider for the mem0 memory backend."""
 
@@ -33,26 +39,36 @@ class Mem0Provider:
             raise ValueError("mem0 backend requires 'mem0_instance_id' in config")
 
         api_key_env = _resolve_env_name(secrets_env, "api_key", "MEM0_API_KEY")
-        memory_id_env = _resolve_env_name(secrets_env, "memory_id", "MEM0_MEMORY_ID")
+        user_id_env = _resolve_env_name(secrets_env, "user_id", "MEM0_USER_ID")
+        base_url_env = _resolve_env_name(secrets_env, "base_url", "MEM0_BASE_URL")
 
-        required_env = [api_key_env, memory_id_env]
-        for env_name in required_env:
-            _require_env(env_name)
+        required_env = [api_key_env, user_id_env, base_url_env]
+        api_key = _require_env_value(api_key_env)
+        user_id = _require_env_value(user_id_env)
+        base_url = _require_env_value(base_url_env)
 
         config_patch: dict[str, Any] = {
-            "memory": {
-                "provider": "mem0",
-                "config": {
-                    "memoryId": mem0_instance_id,
+            "plugins": {
+                "slots": {
+                    "memory": "openclaw-mem0",
+                },
+                "entries": {
+                    "openclaw-mem0": {
+                        "enabled": True,
+                        "config": {
+                            "mode": "platform",
+                            "apiKey": api_key,
+                            "baseUrl": base_url,
+                            "userId": user_id,
+                        },
+                    },
                 },
             },
         }
-
-        if "mem0_region" in config:
-            config_patch["memory"]["config"]["region"] = config["mem0_region"]
 
         return RenderResult(
             backend_type="mem0",
             config_patch=config_patch,
             required_env=required_env,
+            plugin_ids=["openclaw-mem0"],
         )

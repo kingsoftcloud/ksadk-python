@@ -12,9 +12,18 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 import time
 import uuid
+from ksadk.api import AgentEngineClient
 from ksadk.cli.agent_ref import merge_agent_inputs, resolve_agent_ref
+from ksadk.cli.cmd_files import (
+    _build_sync_payload,
+    _emit_sync_payload,
+    _format_size,
+    _normalize_workspace_dir,
+    _push_workspace_files,
+)
 from ksadk.cli.resource_common import CONTEXT_SETTINGS, CompatibilityAliasCommand, print_compatibility_hint
 from ksadk.hermes_terminal import run_hermes_terminal_session
+from ksadk_runtime_common.workspace_files.constants import DEFAULT_WORKSPACE_MAX_UPLOAD_BYTES
 
 try:
     from rich.console import Console
@@ -49,6 +58,15 @@ except ImportError:
     show_default=True,
     help="交互传输层: auto(自动), chat(HTTP /v1/chat/completions), native(Hermes 远端终端)",
 )
+@click.option(
+    "--local-workspace",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+    help="仅 Hermes 远程 native 模式: 先将本地目录同步到远端 workspace",
+)
+@click.option(
+    "--remote-workspace-path",
+    help="远端 workspace 子目录 (默认使用本地目录名)",
+)
 @click.option("--model", help="指定模型名称")
 @click.option("--show-thinking", is_flag=True, help="显示模型思考过程")
 def invoke(
@@ -62,6 +80,8 @@ def invoke(
     local: bool,
     insecure: bool,
     transport: str,
+    local_workspace: Path | None,
+    remote_workspace_path: str | None,
     model: str,
     show_thinking: bool,
 ):
@@ -77,9 +97,123 @@ def invoke(
         local=local,
         insecure=insecure,
         transport=transport,
+        local_workspace=local_workspace,
+        remote_workspace_path=remote_workspace_path,
         model=model,
         show_thinking=show_thinking,
         compatibility_alias=True,
+    )
+
+
+def _resolve_remote_workspace_seed_path(
+    local_workspace: Path,
+    remote_workspace_path: str | None,
+) -> str:
+    if remote_workspace_path:
+        return _normalize_workspace_dir(remote_workspace_path)
+    default_name = local_workspace.resolve().name or local_workspace.name or "workspace"
+    return _normalize_workspace_dir(default_name)
+
+
+def _summarize_local_workspace_dir(local_dir: Path) -> dict[str, Any]:
+    if not local_dir.exists():
+        raise click.ClickException(f"本地目录不存在: {local_dir}")
+    if not local_dir.is_dir():
+        raise click.ClickException(f"本地路径不是目录: {local_dir}")
+
+    files: list[dict[str, Any]] = []
+    total_bytes = 0
+    for file_path in sorted(local_dir.rglob("*")):
+        if not file_path.is_file():
+            continue
+        size_bytes = int(file_path.stat().st_size)
+        total_bytes += size_bytes
+        files.append(
+            {
+                "path": file_path,
+                "relative_path": file_path.relative_to(local_dir).as_posix(),
+                "size_bytes": size_bytes,
+            }
+        )
+    return {
+        "local_dir": local_dir,
+        "files": files,
+        "total_files": len(files),
+        "total_bytes": total_bytes,
+    }
+
+
+def _extract_workspace_upload_limit(bootstrap: dict[str, Any] | None) -> int | None:
+    if not isinstance(bootstrap, dict):
+        return None
+    workspace = bootstrap.get("workspace_files") or bootstrap.get("WorkspaceFiles") or {}
+    if not isinstance(workspace, dict):
+        return None
+    raw_limit = workspace.get("max_upload_bytes") or workspace.get("MaxUploadBytes")
+    try:
+        limit = int(raw_limit)
+    except (TypeError, ValueError):
+        return None
+    return limit if limit > 0 else None
+
+
+async def _lookup_workspace_upload_limit(
+    *,
+    agent_ref: str | None,
+    region: str,
+) -> int:
+    if not agent_ref:
+        return DEFAULT_WORKSPACE_MAX_UPLOAD_BYTES
+
+    try:
+        async with AgentEngineClient(region=region) as client:
+            if str(agent_ref).startswith("ar-"):
+                payload = await client.get_agent_ui_bootstrap(agent_id=agent_ref)
+            else:
+                payload = await client.get_agent_ui_bootstrap(name=agent_ref)
+    except Exception:
+        return DEFAULT_WORKSPACE_MAX_UPLOAD_BYTES
+
+    return _extract_workspace_upload_limit(payload) or DEFAULT_WORKSPACE_MAX_UPLOAD_BYTES
+
+
+async def _sync_local_workspace_for_hermes_invoke(
+    *,
+    agent_ref: str | None,
+    local_workspace: str | Path,
+    remote_path: str,
+    region: str,
+    endpoint: str | None,
+    api_key: str | None,
+) -> dict[str, Any]:
+    local_dir = Path(local_workspace).expanduser().resolve()
+    summary = _summarize_local_workspace_dir(local_dir)
+    max_upload_bytes = await _lookup_workspace_upload_limit(agent_ref=agent_ref, region=region)
+
+    if summary["total_files"] == 0:
+        raise click.ClickException(f"本地目录为空，当前版本暂不支持同步纯空目录: {local_dir}")
+
+    for item in summary["files"]:
+        if item["size_bytes"] > max_upload_bytes:
+            raise click.ClickException(
+                "本地目录中存在超过远端 workspace 上传上限的文件："
+                f"{item['path']}（{_format_size(item['size_bytes'])} > {_format_size(max_upload_bytes)}）"
+            )
+
+    if summary["total_bytes"] > max_upload_bytes:
+        raise click.ClickException(
+            "本地目录总大小超过远端 workspace 单次同步上限："
+            f"{_format_size(summary['total_bytes'])} > {_format_size(max_upload_bytes)}"
+        )
+
+    return await _push_workspace_files(
+        agent_ref=agent_ref,
+        local_dir=local_dir,
+        remote_path=remote_path,
+        force=True,
+        region=region,
+        endpoint=endpoint,
+        api_key=api_key,
     )
 
 
@@ -95,6 +229,8 @@ def run_invoke_command(
     local: bool,
     insecure: bool,
     transport: str,
+    local_workspace: str | Path | None = None,
+    remote_workspace_path: str | None = None,
     model: str | None,
     show_thinking: bool,
     compatibility_alias: bool = False,
@@ -114,10 +250,18 @@ def run_invoke_command(
         click.secho(f"❌ {e}", fg="red")
         raise SystemExit(1)
 
+    if remote_workspace_path and not local_workspace:
+        click.secho("❌ --remote-workspace-path 需要与 --local-workspace 一起使用。", fg="red")
+        raise SystemExit(1)
+    if local_workspace and message:
+        click.secho("❌ --local-workspace 仅支持远程 Hermes native 交互模式。", fg="red")
+        raise SystemExit(1)
+
     # 加载本地状态
     state = _load_state()
     latest_access: dict[str, Any] = {}
     reuse_state_session = True
+    target_agent: str | None = None
     
     normalized_transport = (transport or "auto").strip().lower() or "auto"
 
@@ -188,10 +332,44 @@ def run_invoke_command(
         # 单次调用模式
         asyncio.run(_invoke_once(endpoint, message, api_key, session_id, True, insecure, model))
     else:
-        if normalized_transport == "chat" and _is_hermes_target(next_state, latest_access):
+        is_hermes_target = _is_hermes_target(next_state, latest_access)
+        if normalized_transport == "chat" and is_hermes_target:
             click.secho("❌ Hermes 不再支持 ksadk 通用 chat TUI。", fg="red")
             click.echo("   浏览器聊天页请改用: agentengine hermes open --chat")
             raise SystemExit(1)
+        if local_workspace:
+            if local or normalized_transport == "chat":
+                click.secho("❌ --local-workspace 仅支持远程 Hermes native 交互模式。", fg="red")
+                raise SystemExit(1)
+            if not (is_hermes_target or normalized_transport == "native"):
+                click.secho("❌ --local-workspace 仅支持 Hermes 远程 native 模式。", fg="red")
+                raise SystemExit(1)
+
+            local_workspace_dir = Path(local_workspace).expanduser().resolve()
+            normalized_remote_workspace_path = _resolve_remote_workspace_seed_path(
+                local_workspace_dir,
+                remote_workspace_path,
+            )
+            sync_agent_ref = (
+                latest_access.get("agent_id")
+                or next_state.get("agent_id")
+                or target_agent
+                or latest_access.get("name")
+                or next_state.get("name")
+            )
+            sync_payload = asyncio.run(
+                _sync_local_workspace_for_hermes_invoke(
+                    agent_ref=sync_agent_ref,
+                    local_workspace=local_workspace_dir,
+                    remote_path=normalized_remote_workspace_path,
+                    region=region,
+                    endpoint=endpoint,
+                    api_key=api_key,
+                )
+            )
+            _emit_sync_payload(_build_sync_payload(sync_payload), None)
+        else:
+            normalized_remote_workspace_path = None
         # 默认 TUI 模式
         if _should_use_hermes_native_tui(
             transport=normalized_transport,
@@ -199,11 +377,16 @@ def run_invoke_command(
             state=next_state,
             latest_access=latest_access,
         ):
+            native_kwargs: dict[str, Any] = {
+                "endpoint": endpoint,
+                "api_key": api_key,
+                "session_id": session_id,
+                "insecure": insecure,
+            }
+            if normalized_remote_workspace_path is not None:
+                native_kwargs["cwd"] = normalized_remote_workspace_path
             _invoke_hermes_terminal_tui(
-                endpoint=endpoint,
-                api_key=api_key,
-                session_id=session_id,
-                insecure=insecure,
+                **native_kwargs,
             )
         else:
             _invoke_tui(endpoint, api_key, session_id, insecure, model, show_thinking)
@@ -352,6 +535,7 @@ def _invoke_hermes_terminal_tui(
     api_key: str = None,
     session_id: str = None,
     insecure: bool = False,
+    cwd: str | None = None,
 ):
     click.secho("🖥️  Hermes Native Remote TUI", fg="blue", bold=True)
     click.echo("   退出: Ctrl-D 或 Ctrl-C")
@@ -364,6 +548,7 @@ def _invoke_hermes_terminal_tui(
                 insecure=insecure,
                 mode="tui",
                 argv=[],
+                cwd=cwd,
             )
         )
     except (KeyboardInterrupt, asyncio.CancelledError):

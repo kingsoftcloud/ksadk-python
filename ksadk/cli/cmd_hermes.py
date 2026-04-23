@@ -42,6 +42,10 @@ from ksadk.cli.ui import (
     print_warn,
     status_rich_style,
 )
+from ksadk.deployment.agent_access import (
+    get_latest_agent_access,
+    normalize_deployment_status,
+)
 from ksadk.deployment.state import clear_state, load_state, save_state
 from ksadk.hermes_terminal import (
     run_hermes_terminal_session,
@@ -358,25 +362,6 @@ async def _get_hermes_detail(region: str, agent_ref: str, *, include_api_key: bo
         return await _get_hermes_detail_with_client(client, agent_ref, include_api_key=include_api_key)
 
 
-async def _poll_hermes_order_access(
-    client: AgentEngineClient,
-    *,
-    agent_name: str,
-    attempts: int = 12,
-    interval_seconds: int = 5,
-) -> dict[str, Any]:
-    for attempt in range(max(1, attempts)):
-        if attempt > 0:
-            await asyncio.sleep(interval_seconds)
-        try:
-            detail = await _get_hermes_detail_with_client(client, agent_name, include_api_key=True)
-        except Exception:
-            continue
-        if detail.get("agent_id"):
-            return detail
-    return {}
-
-
 def _resolve_hermes_access(
     *,
     agent_ref: str | None,
@@ -565,26 +550,68 @@ async def _deploy_hermes(
             res.setdefault("api_key", state.get("api_key"))
         else:
             res = await client.create_agent(payload)
-            if isinstance(res, dict) and res.get("order_id") and not res.get("agent_id"):
-                print_info(f"订单已创建: {res.get('order_id')}，等待 Hermes 实例创建...")
-                latest = await _poll_hermes_order_access(client, agent_name=agent_name)
-                if latest:
-                    res = {
-                        **res,
-                        "agent_id": latest.get("agent_id"),
-                        "name": latest.get("name") or agent_name,
-                        "endpoint": latest.get("endpoint"),
-                        "api_key": latest.get("api_key"),
-                    }
-                else:
-                    print_warn("实例仍在创建中，稍后使用 `agentengine hermes status` 查看")
+            if isinstance(res, dict):
+                if res.get("order_id") and not res.get("agent_id"):
+                    print_info(f"订单已创建: {res.get('order_id')}，等待 Hermes 实例创建...")
+                    latest = await get_latest_agent_access(
+                        client,
+                        agent_name=agent_name,
+                        attempts=12,
+                        interval_seconds=5,
+                        include_api_key=True,
+                        detail_fetcher=lambda agent_ref, include_api_key: _get_hermes_detail_with_client(
+                            client,
+                            agent_ref,
+                            include_api_key=include_api_key,
+                        ),
+                        suppress_transient_not_found_log=True,
+                    )
+                    if latest:
+                        res = {
+                            **res,
+                            "agent_id": latest.get("agent_id"),
+                            "name": latest.get("name") or agent_name,
+                            "endpoint": latest.get("endpoint"),
+                            "api_key": latest.get("api_key"),
+                            "status": latest.get("status") or res.get("status"),
+                        }
+                    else:
+                        print_warn("实例仍在创建中，稍后使用 `agentengine hermes status` 查看")
+                elif res.get("agent_id") and (
+                    not str(res.get("endpoint") or "").strip()
+                    or not str(res.get("api_key") or "").strip()
+                ):
+                    latest = await get_latest_agent_access(
+                        client,
+                        agent_id=str(res.get("agent_id") or "").strip() or None,
+                        attempts=5,
+                        interval_seconds=1,
+                        initial_delay_seconds=2,
+                        require_complete_access=True,
+                        include_api_key=True,
+                        detail_fetcher=lambda agent_ref, include_api_key: _get_hermes_detail_with_client(
+                            client,
+                            agent_ref,
+                            include_api_key=include_api_key,
+                        ),
+                        suppress_transient_not_found_log=True,
+                    )
+                    if latest:
+                        res = {
+                            **res,
+                            "agent_id": latest.get("agent_id") or res.get("agent_id"),
+                            "name": latest.get("name") or res.get("name") or agent_name,
+                            "endpoint": latest.get("endpoint") or res.get("endpoint"),
+                            "api_key": latest.get("api_key") or res.get("api_key"),
+                            "status": latest.get("status") or res.get("status"),
+                        }
     if dry_run:
         return
 
     agent_id = res.get("agent_id")
     endpoint = res.get("endpoint")
     api_key = res.get("api_key")
-    deployment_status = str(res.get("status") or res.get("phase") or "SUBMITTED").upper()
+    deployment_status = normalize_deployment_status(res.get("status") or res.get("phase"))
     save_state(
         project_dir,
         {

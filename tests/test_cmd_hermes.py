@@ -1,10 +1,11 @@
 import asyncio
 import json
+from contextlib import contextmanager
 from pathlib import Path
 
 from click.testing import CliRunner
 
-from ksadk.api.client import DryRunExit
+from ksadk.api.client import AgentEngineAPIError, DryRunExit
 from ksadk.cli import cmd_hermes
 from ksadk.cli.ui import OUTPUT_MODE_PRETTY, configure_ui_runtime, status_rich_style
 
@@ -111,6 +112,81 @@ class _FakeHermesOrderClient(_FakeHermesClient):
         }
 
 
+class _FakeHermesImmediateAgentIdClient(_FakeHermesClient):
+    get_agent_calls = 0
+
+    async def create_agent(self, payload):
+        self.__class__.create_payload = payload
+        return {
+            "agent_id": "ar-hermes-immediate",
+            "name": payload["name"],
+            "endpoint": None,
+            "api_key": None,
+            "order_id": "order-hermes-2",
+        }
+
+    async def get_agent(self, agent_id=None, name=None, include_api_key=False):
+        self.__class__.get_agent_calls += 1
+        return {
+            "basic": {
+                "agent_id": agent_id or "ar-hermes-immediate",
+                "name": name or "demo-hermes",
+                "status": "RUNNING",
+                "framework": "hermes",
+                "region": "cn-beijing-6",
+            },
+            "quick_access": {
+                "public_endpoint": "https://fresh-hermes.example.com",
+                "api_key": "ak-fresh-hermes" if include_api_key else None,
+            },
+        }
+
+
+class _FakeHermesDelayedAccessClient(_FakeHermesClient):
+    get_agent_calls = 0
+    suppression_used = False
+
+    async def create_agent(self, payload):
+        self.__class__.create_payload = payload
+        return {
+            "agent_id": "ar-hermes-delayed",
+            "name": payload["name"],
+            "endpoint": "https://created-hermes.example.com",
+            "api_key": None,
+            "status": 200,
+        }
+
+    @contextmanager
+    def suppress_http_error_logging(self, predicate=None):
+        self.__class__.suppression_used = predicate is not None
+        yield
+
+    async def get_agent(self, agent_id=None, name=None, include_api_key=False):
+        self.__class__.get_agent_calls += 1
+        if self.__class__.get_agent_calls < 4:
+            raise AgentEngineAPIError(
+                404,
+                "未找到对应的 Agent",
+                details={
+                    "http_status": 404,
+                    "remote_error_message": "未找到对应的 Agent",
+                },
+            )
+        return {
+            "basic": {
+                "agent_id": agent_id or "ar-hermes-delayed",
+                "name": name or "demo-hermes",
+                "status": "RUNNING",
+                "framework": "hermes",
+                "region": "cn-beijing-6",
+            },
+            "quick_access": {
+                "public_endpoint": "https://ready-hermes.example.com",
+                "api_key": "ak-ready-hermes" if include_api_key else None,
+            },
+        }
+
+
 class _FakeNonHermesClient(_FakeHermesClient):
     async def get_agent(self, agent_id=None, name=None, include_api_key=False):
         return {
@@ -171,6 +247,75 @@ def test_hermes_build_defaults_track_v2026_4_16_release():
     assert 'HERMES_TAG ?= 2026.4.16' in makefile
     assert 'HERMES_AGENT_REF ?= v2026.4.16' in makefile
     assert cmd_hermes.DEFAULT_HERMES_IMAGE.endswith(':2026.4.16')
+
+
+def test_hermes_deploy_refreshes_quick_access_when_agent_id_is_immediate(monkeypatch, tmp_path: Path):
+    runner = CliRunner()
+    monkeypatch.setattr(cmd_hermes, "AgentEngineClient", _FakeHermesImmediateAgentIdClient)
+    monkeypatch.chdir(tmp_path)
+    _FakeHermesImmediateAgentIdClient.get_agent_calls = 0
+
+    result = runner.invoke(
+        cmd_hermes.hermes,
+        [
+            "deploy",
+            "--name",
+            "demo-hermes",
+            "--image",
+            "hub.kce.ksyun.com/agentengine-public/hermes-agent:test",
+            "--model-base-url",
+            "https://model.example.com/v1",
+            "--model-api-key",
+            "sk-demo",
+            "--default-model",
+            "glm-test",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _FakeHermesImmediateAgentIdClient.get_agent_calls == 1
+    state = (tmp_path / ".agentengine.state").read_text(encoding="utf-8")
+    assert "agent_id: ar-hermes-immediate" in state
+    assert "endpoint: https://fresh-hermes.example.com" in state
+    assert "api_key: ak-fresh-hermes" in state
+
+
+def test_hermes_deploy_retries_transient_get_agent_not_found_without_showing_numeric_status(
+    monkeypatch,
+    tmp_path: Path,
+):
+    runner = CliRunner()
+    monkeypatch.setattr(cmd_hermes, "AgentEngineClient", _FakeHermesDelayedAccessClient)
+    monkeypatch.chdir(tmp_path)
+    _FakeHermesDelayedAccessClient.get_agent_calls = 0
+    _FakeHermesDelayedAccessClient.suppression_used = False
+
+    result = runner.invoke(
+        cmd_hermes.hermes,
+        [
+            "deploy",
+            "--name",
+            "demo-hermes",
+            "--image",
+            "hub.kce.ksyun.com/agentengine-public/hermes-agent:test",
+            "--model-base-url",
+            "https://model.example.com/v1",
+            "--model-api-key",
+            "sk-demo",
+            "--default-model",
+            "glm-test",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _FakeHermesDelayedAccessClient.suppression_used is True
+    assert _FakeHermesDelayedAccessClient.get_agent_calls == 4
+    assert "当前状态: RUNNING" in result.output
+    assert "当前状态: 200" not in result.output
+    state = (tmp_path / ".agentengine.state").read_text(encoding="utf-8")
+    assert "agent_id: ar-hermes-delayed" in state
+    assert "endpoint: https://ready-hermes.example.com" in state
+    assert "api_key: ak-ready-hermes" in state
 
 
 def test_hermes_exec_accepts_readonly_subcommand_and_uses_remote_terminal(monkeypatch):
