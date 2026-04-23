@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
-> **历史计划说明：** 这份文档记录的是当时的实施路线，不再代表当前代码的最终真相。当前以 `docs/agentengine-runtime-common-设计方案.md` 与实际代码为准。特别是 OpenClaw 的 `WorkspaceFiles` 能力目前仍未在 runtime/gateway 主链路开启，不能把本文里的计划项当成已落地事实。
+> **历史计划说明：** 这份文档记录的是当时的实施路线，不再代表当前代码的最终真相。当前应以 `docs/archive/workspace/agentengine-runtime-common-设计方案.md` 与实际代码为准。本文中的计划项不应直接视作已全部落地。
 
 **Goal:** 在 `workspace-files-v1` 分支上定向移植 serverless PVC 存储能力，并与已完成的 workspace files v1 主链路集成，覆盖 `agentengine-server` 与 `ksadk-python` 两个仓库。
 

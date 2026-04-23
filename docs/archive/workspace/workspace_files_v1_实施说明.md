@@ -196,7 +196,7 @@ flowchart TD
 
 核心文件：
 
-- [`ksadk/server/workspace_files.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk/server/workspace_files.py)
+- [`ksadk_runtime_common/workspace_files/__init__.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk_runtime_common/workspace_files/__init__.py)
 - [`ksadk/server/app.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk/server/app.py)
 - [`ksadk/api/client.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk/api/client.py)
 - [`ksadk/deployment/base.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk/deployment/base.py)
