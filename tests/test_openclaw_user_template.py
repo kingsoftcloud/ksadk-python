@@ -9,8 +9,11 @@ BUNDLED_FEISHU_EXAMPLE_ROOT = (
 )
 EXAMPLE_ROOT = TEMPLATE_ROOT / "examples" / "minimal-skill-plugin-deps"
 LATEST_OPENCLAW_BASE_IMAGE = (
-    "ghcr.io/openclaw/openclaw:2026.4.15@"
-    "sha256:0e6bebecf4623216420851f5edd133a748335f45c3508b635f7c5c4bfbc6da7d"
+    "ghcr.io/openclaw/openclaw:2026.4.21@"
+    "sha256:70e0ab07deb72f4b3ee7bb701c5437fdc27b85d6705cc67f104aa8042ba52e00"
+)
+LATEST_OPENCLAW_KCR_IMAGE = (
+    "hub-vpc-cn-beijing-6.kce.ksyun.com/agentengine-public/openclaw:2026.4.21"
 )
 
 
@@ -135,10 +138,7 @@ def test_openclaw_user_template_bundled_feishu_example_reuses_official_bootstrap
     )
 
     assert "FROM ${OPENCLAW_BASE_IMAGE}" in dockerfile
-    assert (
-        "hub-vpc-cn-beijing-6.kce.ksyun.com/agentengine-public/openclaw:2026.3.28"
-        in dockerfile
-    )
+    assert LATEST_OPENCLAW_KCR_IMAGE in dockerfile
     assert "ENTRYPOINT" not in dockerfile
     assert 'CMD [' not in dockerfile
     assert 'CMD "' not in dockerfile

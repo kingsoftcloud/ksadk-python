@@ -62,6 +62,21 @@ done | cksum | awk '{print $1 ":" $2}'
 
 def _build_base_env(state_dir: str, config_path: str) -> dict:
     env = os.environ.copy()
+    for key in (
+        "OPENCLAW_DEFAULT_MODEL",
+        "OPENAI_MODEL_NAME",
+        "MODEL_NAME",
+        "LLM_MODEL",
+        "OPENCLAW_MODEL_CATALOG_JSON",
+        "OPENCLAW_MODEL_PROVIDER_ID",
+        "OPENCLAW_MODEL_BASE_URL",
+        "OPENCLAW_MODEL_API",
+        "OPENCLAW_MODEL_API_KEY",
+        "OPENAI_API_KEY",
+        "LLM_API_KEY",
+        "MODEL_API_KEY",
+    ):
+        env.pop(key, None)
     safe_bin_dir = Path(state_dir) / "safe-bin"
     raw_bin_dir = Path(state_dir) / "bin"
     workspace_template_dir = Path(state_dir) / "workspace-template"

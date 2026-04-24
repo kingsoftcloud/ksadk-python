@@ -3,6 +3,7 @@ import json
 from contextlib import contextmanager
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from ksadk.api.client import AgentEngineAPIError, DryRunExit
@@ -13,6 +14,27 @@ from ksadk.cli.ui import OUTPUT_MODE_PRETTY, configure_ui_runtime, status_rich_s
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HERMES_DOCKERFILE = REPO_ROOT / "deploy" / "hermes" / "Dockerfile"
 MAKEFILE = REPO_ROOT / "Makefile"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_hermes_model_env(monkeypatch):
+    for key in (
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "OPENAI_MODEL_NAME",
+        "HERMES_CONTEXT_LENGTH",
+        "OPENAI_CONTEXT_LENGTH",
+        "MODEL_CONTEXT_LENGTH",
+        "HERMES_FALLBACK_MODEL",
+        "OPENAI_FALLBACK_MODEL_NAME",
+        "HERMES_FALLBACK_BASE_URL",
+        "API_SERVER_KEY",
+        "HERMES_API_SERVER_KEY",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    cmd_hermes._HERMES_GLOBAL_ENV_CACHE = None
+    yield
+    cmd_hermes._HERMES_GLOBAL_ENV_CACHE = None
 
 
 class _FakeHermesClient:

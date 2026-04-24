@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from ksadk.api import AgentEngineAPIError
 from ksadk.cli import _register_commands, cli
+
+
+@pytest.fixture(autouse=True)
+def _isolate_region_env(monkeypatch):
+    monkeypatch.delenv("KSYUN_REGION", raising=False)
 
 
 class _FakeFilesClient:
@@ -670,6 +677,48 @@ def test_files_push_uploads_new_files_and_skips_existing_targets_by_default(monk
             "agent_id": "demo-agent",
             "remote_path": "bundle/nested/tool.py",
             "local_path": nested_dir / "tool.py",
+        }
+    ]
+
+
+def test_push_workspace_files_can_ignore_local_dev_artifacts(monkeypatch, tmp_path: Path):
+    from ksadk.cli import cmd_files
+
+    _reset_fake_files_client()
+    monkeypatch.setattr(cmd_files, "AgentEngineClient", _FakeFilesClient)
+
+    local_dir = tmp_path / "bundle"
+    local_dir.mkdir()
+    (local_dir / "app.py").write_text("print('ok')\n", encoding="utf-8")
+
+    git_object = local_dir / ".git" / "objects" / "ab"
+    git_object.mkdir(parents=True)
+    (git_object / "blob").write_bytes(b"x" * 2048)
+
+    agentengine_ui = local_dir / ".agentengine" / "ui"
+    agentengine_ui.mkdir(parents=True)
+    (agentengine_ui / "sessions.sqlite").write_bytes(b"sqlite-data")
+
+    payload = asyncio.run(
+        cmd_files._push_workspace_files(
+            agent_ref="demo-agent",
+            local_dir=local_dir,
+            remote_path="bundle",
+            force=True,
+            region="cn-beijing-6",
+            endpoint=None,
+            api_key=None,
+            ignore_dev_artifacts=True,
+        )
+    )
+
+    assert payload["created"] == ["bundle/app.py"]
+    assert payload["total_files"] == 1
+    assert _FakeFilesClient.upload_calls == [
+        {
+            "agent_id": "demo-agent",
+            "remote_path": "bundle/app.py",
+            "local_path": local_dir / "app.py",
         }
     ]
 

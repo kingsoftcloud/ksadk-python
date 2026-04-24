@@ -12,7 +12,7 @@ import logging
 from typing import List, Optional
 
 import httpx
-from pydantic import Field
+from pydantic import ConfigDict, Field
 
 from ksadk.memory.adk.backends.base_ltm_backend import BaseLongTermMemoryBackend
 
@@ -47,8 +47,7 @@ class HttpLTMBackend(BaseLongTermMemoryBackend):
 
     _client: Optional[httpx.Client] = None
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     def model_post_init(self, __context) -> None:
         if not self.base_url:

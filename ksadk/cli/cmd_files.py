@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 from pathlib import Path, PurePosixPath
+from typing import Callable
 
 import click
 
@@ -18,6 +19,35 @@ from ksadk.deployment.state import load_state
 
 DEFAULT_REGION = "cn-beijing-6"
 DEFAULT_WORKSPACE_ROOT_LABEL = "workspace"
+LOCAL_DEV_ARTIFACT_DIR_NAMES = frozenset(
+    {
+        ".agentengine",
+        ".claude",
+        ".codex",
+        ".git",
+        ".idea",
+        ".mypy_cache",
+        ".nox",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".svn",
+        ".tox",
+        ".venv",
+        ".vscode",
+        "__pycache__",
+        "node_modules",
+        "venv",
+    }
+)
+LOCAL_DEV_ARTIFACT_FILE_NAMES = frozenset(
+    {
+        ".DS_Store",
+        ".agentengine.state",
+        ".coverage",
+        "Thumbs.db",
+    }
+)
+LOCAL_DEV_ARTIFACT_FILE_SUFFIXES = (".pyc", ".pyo", ".swp", ".tmp")
 
 
 def _format_size(size_bytes: object | None) -> str:
@@ -379,14 +409,57 @@ def _join_remote_path(base_remote_path: str, relative_path: str) -> str:
     return f"{base_remote_path}/{relative}"
 
 
-def _collect_local_files(local_dir: Path) -> list[tuple[str, Path]]:
+def _ignored_local_dev_artifact_label_for_file(filename: str) -> str | None:
+    if filename in LOCAL_DEV_ARTIFACT_FILE_NAMES:
+        return filename
+    for suffix in LOCAL_DEV_ARTIFACT_FILE_SUFFIXES:
+        if filename.endswith(suffix):
+            return f"*{suffix}"
+    return None
+
+
+def _collect_local_files_report(local_dir: Path, *, ignore_dev_artifacts: bool = False) -> dict:
     files: list[tuple[str, Path]] = []
-    for file_path in sorted(local_dir.rglob("*")):
-        if not file_path.is_file():
-            continue
-        relative = file_path.relative_to(local_dir).as_posix()
-        files.append((relative, file_path))
-    return files
+    ignored_artifacts: set[str] = set()
+    total_bytes = 0
+
+    for root, dirnames, filenames in os.walk(local_dir, topdown=True):
+        root_path = Path(root)
+        if ignore_dev_artifacts:
+            kept_dirs: list[str] = []
+            for dirname in sorted(dirnames):
+                if dirname in LOCAL_DEV_ARTIFACT_DIR_NAMES:
+                    ignored_artifacts.add(dirname)
+                    continue
+                kept_dirs.append(dirname)
+            dirnames[:] = kept_dirs
+        else:
+            dirnames[:] = sorted(dirnames)
+
+        for filename in sorted(filenames):
+            if ignore_dev_artifacts:
+                ignored_label = _ignored_local_dev_artifact_label_for_file(filename)
+                if ignored_label:
+                    ignored_artifacts.add(ignored_label)
+                    continue
+            file_path = root_path / filename
+            relative = file_path.relative_to(local_dir).as_posix()
+            files.append((relative, file_path))
+            total_bytes += int(file_path.stat().st_size)
+
+    return {
+        "files": files,
+        "total_files": len(files),
+        "total_bytes": total_bytes,
+        "ignored_artifacts": sorted(ignored_artifacts),
+    }
+
+
+def _collect_local_files(local_dir: Path, *, ignore_dev_artifacts: bool = False) -> list[tuple[str, Path]]:
+    return _collect_local_files_report(
+        local_dir,
+        ignore_dev_artifacts=ignore_dev_artifacts,
+    )["files"]
 
 
 def _workspace_client_kwargs(
@@ -619,9 +692,16 @@ async def _push_workspace_files(
     region: str,
     endpoint: str | None,
     api_key: str | None,
+    progress_callback: Callable[[dict], None] | None = None,
+    ignore_dev_artifacts: bool = False,
 ) -> dict:
     remote_dir = _normalize_workspace_dir(remote_path)
-    local_files = _collect_local_files(local_dir)
+    local_report = _collect_local_files_report(
+        local_dir,
+        ignore_dev_artifacts=ignore_dev_artifacts,
+    )
+    local_files = local_report["files"]
+    total_bytes = int(local_report["total_bytes"])
     remote_existing: set[str] = set()
     transport_mode = ""
     client_kwargs = _workspace_client_kwargs(
@@ -631,6 +711,14 @@ async def _push_workspace_files(
     )
 
     async with AgentEngineClient(region=region) as client:
+        if progress_callback:
+            progress_callback(
+                {
+                    "phase": "list_start",
+                    "remote_path": remote_dir,
+                    "total": len(local_files),
+                }
+            )
         try:
             payload = await client.list_workspace_files(
                 path=remote_dir,
@@ -642,6 +730,15 @@ async def _push_workspace_files(
                 raise
             payload = {"entries": []}
         transport_mode = str(payload.get("transport_mode") or "").strip()
+        if progress_callback:
+            progress_callback(
+                {
+                    "phase": "list_done",
+                    "remote_path": remote_dir,
+                    "total": len(local_files),
+                    "remote_entry_count": len(payload.get("entries", [])),
+                }
+            )
 
         for entry in payload.get("entries", []):
             if entry.get("type") == "file" and entry.get("path"):
@@ -650,11 +747,36 @@ async def _push_workspace_files(
         created: list[str] = []
         overwritten: list[str] = []
         skipped: list[str] = []
-        for relative_path, absolute_path in local_files:
+        total_files = len(local_files)
+        for index, (relative_path, absolute_path) in enumerate(local_files, start=1):
             destination_path = _join_remote_path(remote_dir, relative_path)
             if destination_path in remote_existing and not force:
                 skipped.append(destination_path)
+                if progress_callback:
+                    progress_callback(
+                        {
+                            "phase": "upload_skipped",
+                            "current": index,
+                            "total": total_files,
+                            "remote_path": destination_path,
+                            "local_path": str(absolute_path),
+                            "size_bytes": int(absolute_path.stat().st_size),
+                            "total_bytes": total_bytes,
+                        }
+                    )
                 continue
+            if progress_callback:
+                progress_callback(
+                    {
+                        "phase": "upload_start",
+                        "current": index,
+                        "total": total_files,
+                        "remote_path": destination_path,
+                        "local_path": str(absolute_path),
+                        "size_bytes": int(absolute_path.stat().st_size),
+                        "total_bytes": total_bytes,
+                    }
+                )
             response = await client.upload_workspace_file(
                 remote_path=destination_path,
                 local_path=absolute_path,
@@ -667,6 +789,18 @@ async def _push_workspace_files(
                 overwritten.append(resolved_path)
             else:
                 created.append(resolved_path)
+            if progress_callback:
+                progress_callback(
+                    {
+                        "phase": "upload_done",
+                        "current": index,
+                        "total": total_files,
+                        "remote_path": resolved_path,
+                        "local_path": str(absolute_path),
+                        "size_bytes": int(absolute_path.stat().st_size),
+                        "total_bytes": total_bytes,
+                    }
+                )
 
     return {
         "direction": "push",

@@ -33,7 +33,7 @@ from google.adk.memory.base_memory_service import (
 from google.adk.memory.memory_entry import MemoryEntry
 from google.adk.sessions import Session
 from google.genai import types
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import Union, override
 
 from ksadk.memory.adk.backends.base_ltm_backend import BaseLongTermMemoryBackend
@@ -86,8 +86,7 @@ class LongTermMemory(BaseMemoryService, BaseModel):
     _backend: BaseLongTermMemoryBackend = None
     _service: LongTermMemoryService = None
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     def model_post_init(self, __context: Any) -> None:
         self._service = LongTermMemoryService(

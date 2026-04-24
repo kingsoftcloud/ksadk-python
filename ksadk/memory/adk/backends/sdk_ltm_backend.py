@@ -24,6 +24,8 @@ import time
 import uuid
 from typing import Any, List, Optional
 
+from pydantic import ConfigDict
+
 from ksadk.memory.adk.backends.base_ltm_backend import BaseLongTermMemoryBackend
 
 logger = logging.getLogger(__name__)
@@ -70,8 +72,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
 
     _aicp_client: Any = None
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     def model_post_init(self, __context) -> None:
         if not self.access_key or not self.secret_key:
