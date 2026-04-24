@@ -5,6 +5,7 @@
 ## 1. 设计目标
 
 - 用户不改构建逻辑，直接 `docker build` 就能产出镜像
+- 用户不修改任何文件，也可以用默认内容先 `docker run` 本地验证
 - 用户可以替换自己的插件、skills 和默认配置
 - 用户创建实例时传入的额外环境变量，容器内可直接读取
 - 兼容平台默认约束：只持久化 `/home/node/.openclaw`，默认端口 `8080`
@@ -83,6 +84,8 @@ flowchart LR
 - `PORT`
 - `OPENCLAW_GATEWAY_BIND`
 - `OPENCLAW_GATEWAY_AUTH_MODE`
+- `CLAWHUB_SITE=https://cn.clawhub-mirror.com`
+- `CLAWHUB_REGISTRY=https://cn.clawhub-mirror.com`
 
 额外兼容规则：
 
@@ -102,12 +105,14 @@ flowchart LR
 
 ```bash
 make build IMAGE=hub-vpc-cn-beijing-6.kce.ksyun.com/your-ns/openclaw-user-custom TAG=demo
+docker build -t openclaw-user-custom:demo .
 ```
 
 运行：
 
 ```bash
 make run IMAGE=hub-vpc-cn-beijing-6.kce.ksyun.com/your-ns/openclaw-user-custom TAG=demo
+docker run --rm -it -p 8080:8080 -e OPENCLAW_GATEWAY_AUTH_MODE=none openclaw-user-custom:demo
 ```
 
 推送：
@@ -146,6 +151,7 @@ custom/config/openclaw.json
 
 - 不带平台版复杂 bootstrap
 - 不做环境变量到 `openclaw.json` 的自动映射
+- 自定义环境变量不会自动写进 openclaw.json
 - 不代替用户业务代码读取自定义环境变量
 - 不做 mem0 这类平台增强的一键接入
 
@@ -153,5 +159,7 @@ custom/config/openclaw.json
 
 ## 11. 相关文档
 
+- examples/bundled-feishu-plugin-skills/：内置飞书 plugin 与 skills 的二次封装示例
+- examples/minimal-skill-plugin-deps/：自定义 plugin + skill + npm 依赖示例
 - [OpenClaw一键部署指南](../../docs/openclaw一键部署指南.md)
 - [ksadk技术设计](../../docs/ksadk技术设计.md)

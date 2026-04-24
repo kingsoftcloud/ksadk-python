@@ -17,6 +17,7 @@ from ksadk.sessions.base import SessionEvent
 SUMMARY_VERSION = "v1"
 DEFAULT_COMPACTION_SUMMARY_TIMEOUT_MS = 45_000
 DEFAULT_COMPACTION_SUMMARY_MAX_GROUPS = 12
+SUMMARY_PREFIX = "Earlier conversation summary:"
 
 
 @dataclass
@@ -103,6 +104,13 @@ class SummaryModelClient:
 
 def resolve_summary_model_client() -> SummaryModelClient:
     return SummaryModelClient()
+
+
+def _ensure_summary_prefix(summary_text: str) -> str:
+    text = str(summary_text or "").strip()
+    if not text or text.startswith(SUMMARY_PREFIX):
+        return text
+    return f"{SUMMARY_PREFIX}\n{text}"
 
 
 def _env_truthy(name: str) -> bool:
@@ -291,7 +299,7 @@ async def summarize_compaction(
         if not summary_text:
             raise RuntimeError("summary model returned empty <summary> block")
         return CompactionSummaryResult(
-            summary_text=summary_text,
+            summary_text=_ensure_summary_prefix(summary_text),
             summary_strategy="semantic",
             summary_model=summary_model,
             summary_usage=usage,

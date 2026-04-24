@@ -1,7 +1,7 @@
 # AgentEngine Makefile
 # 用于构建 Web UI 和管理项目
 
-.PHONY: help install build-webui sync-static clean clean-dist dev test publish publish-test openclaw-refresh-agentspace-assets openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size
+.PHONY: help install build-webui sync-static clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test openclaw-refresh-agentspace-assets openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size
 
 # 默认目标
 help:
@@ -54,7 +54,9 @@ help:
 	@echo "    make hermes-build HERMES_AGENT_REF=v2026.4.16  # 切换 Hermes 上游 release"
 	@echo ""
 	@echo "  \033[1;32m清理:\033[0m"
-	@echo "    make clean          清理构建产物"
+	@echo "    make clean          清理构建产物和本地测试缓存"
+	@echo "    make clean-cache    仅清理 Python/测试/类型检查缓存"
+	@echo "    make clean-dist     仅清理 Python 发布构建产物"
 	@echo ""
 
 # ============================================================
@@ -508,13 +510,19 @@ hermes-size:
 # ============================================================
 
 clean:
-	@echo "🧹 清理构建产物..."
-	rm -rf dist/ build/ *.egg-info/
+	@echo "🧹 清理构建产物和本地缓存..."
+	rm -rf dist/ build/ *.egg-info/ .eggs/
 	rm -rf webui/dist/
-	rm -rf .pytest_cache/
+	rm -rf .pytest_cache/ .mypy_cache/ .ruff_cache/ .coverage coverage.xml htmlcov/ .tox/ .nox/
 	rm -rf $(OFFLINE_DIR)/
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	@echo "✅ 清理完成"
+
+clean-cache:
+	@echo "🧹 清理本地测试/解释器缓存..."
+	rm -rf .pytest_cache/ .mypy_cache/ .ruff_cache/ .coverage coverage.xml htmlcov/ .tox/ .nox/
+	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+	@echo "✅ 缓存清理完成"
 
 clean-static:
 	@echo "🧹 清理静态文件..."

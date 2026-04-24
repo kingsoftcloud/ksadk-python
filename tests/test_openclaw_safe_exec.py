@@ -59,6 +59,16 @@ def _run_web_safe(
     extra_env: dict | None = None,
 ):
     env = os.environ.copy()
+    for key in (
+        "OPENCLAW_WEB_SAFE_SEARCH_API_KEY",
+        "OPENCLAW_MODEL_API_KEY",
+        "OPENAI_API_KEY",
+        "LLM_API_KEY",
+        "MODEL_API_KEY",
+        "OPENAI_MODEL_NAME",
+        "OPENCLAW_DEFAULT_MODEL",
+    ):
+        env.pop(key, None)
     env["OPENCLAW_SAFE_EXEC_COMMAND"] = "web-safe"
     env["OPENCLAW_EXEC_SAFE_WORKSPACE_ROOT"] = str(workspace)
     env["OPENCLAW_EXEC_SAFE_STATE_DIR"] = str(state_dir)

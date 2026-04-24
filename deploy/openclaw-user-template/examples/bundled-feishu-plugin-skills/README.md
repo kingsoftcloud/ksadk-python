@@ -12,7 +12,7 @@
 
 它实际上只做了两件事：
 
-- `Dockerfile` 直接 `FROM hub-vpc-cn-beijing-6.kce.ksyun.com/agentengine-public/openclaw:2026.3.28`
+- `Dockerfile` 直接 `FROM hub-vpc-cn-beijing-6.kce.ksyun.com/agentengine-public/openclaw:2026.4.21`
 - 不覆写 `ENTRYPOINT` / `CMD`，继续使用官方 `bootstrap.sh` 启动链路
 
 也就是说：

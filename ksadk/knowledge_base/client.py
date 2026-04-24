@@ -32,7 +32,7 @@ import logging
 import os
 from typing import Any, List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from ksadk.common.aicp_env import resolve_aicp_connection
 
@@ -82,8 +82,7 @@ class KnowledgeBaseClient(BaseModel):
 
     _aicp_client: Any = None
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     def model_post_init(self, __context: Any) -> None:
         if not self.dataset_id:

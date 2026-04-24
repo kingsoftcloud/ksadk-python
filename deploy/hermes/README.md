@@ -24,11 +24,16 @@ Hermes 镜像当前直接从仓根构建，并在构建期复制同仓共享源�
 
 ## 3. 默认目录约定
 
+Hermes runtime 默认把所有可变状态集中到 `~/.hermes` 这个 single persistent directory。
+
 ```text
 HOME=/home/node
 HERMES_HOME=/home/node/.hermes
 HERMES_WORKDIR=/home/node/.hermes/workspace
 KSADK_WORKSPACE_ROOT=/home/node/.hermes/workspace
+AGENT_BROWSER_HOME=/usr/local/lib/node_modules/agent-browser
+AGENT_BROWSER_STATE_DIR=/home/node/.hermes/browser
+AGENT_BROWSER_SOCKET_DIR=/home/node/.hermes/browser/run
 ```
 
 建议默认把持久化存储直接挂到：
@@ -80,6 +85,12 @@ Hermes runtime 直接挂载 `create_workspace_files_router(...)`，并把根目�
 都能复用同一份远端工作区数据面。
 
 ## 8. 典型构建命令
+
+默认不需要本地构建镜像，直接部署平台预置 Hermes runtime：
+
+```bash
+agentengine hermes deploy
+```
 
 在仓库根目录执行：
 

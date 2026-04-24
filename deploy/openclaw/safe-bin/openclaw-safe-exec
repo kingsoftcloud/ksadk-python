@@ -579,13 +579,14 @@ case "${CMD_NAME}" in
     mkdir -p "${safe_tmp_dir}"
     umask 077
     web_safe_search_api_key="${OPENCLAW_WEB_SAFE_SEARCH_API_KEY:-}"
-    if [[ -z "${web_safe_search_api_key}" ]]; then
+    web_safe_search_secret_source="$(printf '%s' "${OPENCLAW_WEB_SAFE_SEARCH_SECRET_SOURCE:-${OPENCLAW_MODEL_API_KEY_SECRET_SOURCE:-}}" | tr '[:upper:]' '[:lower:]')"
+    if [[ -z "${web_safe_search_api_key}" && "${web_safe_search_secret_source}" != "file" ]]; then
       web_safe_search_secret_env_name="${OPENCLAW_MODEL_API_KEY_SECRET_ID:-}"
       if [[ -n "${web_safe_search_secret_env_name}" && "${web_safe_search_secret_env_name}" != */* ]]; then
         web_safe_search_api_key="${!web_safe_search_secret_env_name:-}"
       fi
     fi
-    if [[ -z "${web_safe_search_api_key}" ]]; then
+    if [[ -z "${web_safe_search_api_key}" && "${web_safe_search_secret_source}" != "file" ]]; then
       for candidate_key in \
         "${OPENCLAW_MODEL_API_KEY:-}" \
         "${OPENAI_API_KEY:-}" \

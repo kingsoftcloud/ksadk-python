@@ -55,8 +55,9 @@ Hermes runtime 默认把所有可变状态集中到 `~/.hermes` 这个状态根�
 - `MCPORTER_HOME=/home/node/.hermes/mcporter`
 - `AGENT_BROWSER_HOME=/usr/local/lib/node_modules/agent-browser`
 - `AGENT_BROWSER_STATE_DIR=/home/node/.hermes/browser`
+- `AGENT_BROWSER_SOCKET_DIR=/home/node/.hermes/browser/run`
 
-如果你的 pod 只持久化一个目录，建议直接挂载到 `/home/node/.hermes`。这样 Hermes 配置、session、workspace、mcporter 配置、浏览器会话和运行 socket 都会落在同一棵目录下，重启后行为更稳定。
+如果你的 pod 只持久化一个目录，建议直接挂载到 `/home/node/.hermes`。这样 Hermes 配置、session、workspace、mcporter 配置、浏览器会话和运行 socket 都会落在同一棵 single persistent directory 下，重启后行为更稳定。
 另外建议保留默认 `TERM=xterm-256color`，这样远端 `hermes gateway setup` 菜单可以正常使用上下键。
 
 ## 自定义镜像

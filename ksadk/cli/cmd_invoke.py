@@ -9,13 +9,14 @@ import asyncio
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 import time
 import uuid
-from ksadk.api import AgentEngineClient
+from ksadk.api import AgentEngineAPIError, AgentEngineClient
 from ksadk.cli.agent_ref import merge_agent_inputs, resolve_agent_ref
 from ksadk.cli.cmd_files import (
     _build_sync_payload,
+    _collect_local_files_report,
     _emit_sync_payload,
     _format_size,
     _normalize_workspace_dir,
@@ -121,26 +122,105 @@ def _summarize_local_workspace_dir(local_dir: Path) -> dict[str, Any]:
     if not local_dir.is_dir():
         raise click.ClickException(f"本地路径不是目录: {local_dir}")
 
-    files: list[dict[str, Any]] = []
-    total_bytes = 0
-    for file_path in sorted(local_dir.rglob("*")):
-        if not file_path.is_file():
-            continue
-        size_bytes = int(file_path.stat().st_size)
-        total_bytes += size_bytes
-        files.append(
-            {
-                "path": file_path,
-                "relative_path": file_path.relative_to(local_dir).as_posix(),
-                "size_bytes": size_bytes,
-            }
-        )
+    report = _collect_local_files_report(local_dir, ignore_dev_artifacts=True)
+    files = [
+        {
+            "path": file_path,
+            "relative_path": relative_path,
+            "size_bytes": int(file_path.stat().st_size),
+        }
+        for relative_path, file_path in report["files"]
+    ]
     return {
         "local_dir": local_dir,
         "files": files,
         "total_files": len(files),
-        "total_bytes": total_bytes,
+        "total_bytes": int(report["total_bytes"]),
+        "ignored_artifacts": list(report["ignored_artifacts"]),
     }
+
+
+def _describe_workspace_sync_phase(event: dict[str, Any] | None) -> str:
+    phase = str((event or {}).get("phase") or "").strip()
+    remote_path = str((event or {}).get("remote_path") or "").strip()
+    if phase == "list_start":
+        return f"列出远端目录 {remote_path or '.'}"
+    if phase == "upload_start":
+        return f"上传 {remote_path or '文件'}"
+    if phase == "upload_done":
+        return f"确认上传 {remote_path or '文件'}"
+    if phase == "limit_done":
+        return "读取 workspace 上传限制"
+    if phase == "scan_done":
+        return "扫描本地目录"
+    return "同步 workspace"
+
+
+def _render_workspace_sync_progress_bar(current: object | None, total: object | None, *, width: int = 20) -> str:
+    try:
+        current_value = int(current or 0)
+        total_value = max(int(total or 0), 1)
+    except (TypeError, ValueError):
+        current_value = 0
+        total_value = 1
+    current_value = max(0, min(current_value, total_value))
+    filled = int(width * current_value / total_value)
+    return f"[{'#' * filled}{'-' * (width - filled)}]"
+
+
+def _format_workspace_sync_percent(current: object | None, total: object | None) -> str:
+    try:
+        current_value = float(current or 0)
+        total_value = max(float(total or 0), 1.0)
+    except (TypeError, ValueError):
+        current_value = 0.0
+        total_value = 1.0
+    percent = max(0.0, min(current_value * 100.0 / total_value, 100.0))
+    return f"{percent:.1f}".rstrip("0").rstrip(".") + "%"
+
+
+def _emit_workspace_sync_progress(event: dict[str, Any]) -> None:
+    phase = str(event.get("phase") or "").strip()
+    if phase == "scan_done":
+        click.secho(
+            "📂 准备同步 workspace: "
+            f"{event.get('total_files', 0)} 个文件，"
+            f"{_format_size(event.get('total_bytes', 0))} -> workspace:/{event.get('remote_path', '.')}",
+            fg="blue",
+        )
+        ignored_artifacts = list(event.get("ignored_artifacts") or [])
+        if ignored_artifacts:
+            click.echo(f"   默认忽略: {', '.join(ignored_artifacts)}")
+        return
+    if phase == "limit_done":
+        click.echo(f"   上传上限: {_format_size(event.get('max_upload_bytes'))}")
+        return
+    if phase == "list_start":
+        click.echo(f"   检查远端目录: workspace:/{event.get('remote_path', '.')}")
+        return
+    if phase == "list_done":
+        click.echo(f"   远端已有条目: {event.get('remote_entry_count', 0)}")
+        return
+    if phase == "upload_start":
+        total = max(int(event.get("total") or 0), 1)
+        current = max(0, min(int(event.get("current") or 0), total))
+        click.echo(
+            "   "
+            f"{_render_workspace_sync_progress_bar(current, total)} "
+            f"{_format_workspace_sync_percent(current, total)} ({current}/{total}) "
+            f"上传 {event.get('remote_path', '')} "
+            f"({_format_size(event.get('size_bytes'))})"
+        )
+        return
+    if phase == "upload_skipped":
+        total = max(int(event.get("total") or 0), 1)
+        current = max(0, min(int(event.get("current") or 0), total))
+        click.echo(
+            "   "
+            f"{_render_workspace_sync_progress_bar(current, total)} "
+            f"{_format_workspace_sync_percent(current, total)} ({current}/{total}) "
+            f"跳过已存在 {event.get('remote_path', '')}"
+        )
 
 
 def _extract_workspace_upload_limit(bootstrap: dict[str, Any] | None) -> int | None:
@@ -185,10 +265,30 @@ async def _sync_local_workspace_for_hermes_invoke(
     region: str,
     endpoint: str | None,
     api_key: str | None,
+    progress_callback: Callable[[dict], None] | None = None,
 ) -> dict[str, Any]:
     local_dir = Path(local_workspace).expanduser().resolve()
     summary = _summarize_local_workspace_dir(local_dir)
+    if progress_callback:
+        progress_callback(
+            {
+                "phase": "scan_done",
+                "local_dir": str(local_dir),
+                "remote_path": remote_path,
+                "total_files": summary["total_files"],
+                "total_bytes": summary["total_bytes"],
+                "ignored_artifacts": summary.get("ignored_artifacts", []),
+            }
+        )
     max_upload_bytes = await _lookup_workspace_upload_limit(agent_ref=agent_ref, region=region)
+    if progress_callback:
+        progress_callback(
+            {
+                "phase": "limit_done",
+                "remote_path": remote_path,
+                "max_upload_bytes": max_upload_bytes,
+            }
+        )
 
     if summary["total_files"] == 0:
         raise click.ClickException(f"本地目录为空，当前版本暂不支持同步纯空目录: {local_dir}")
@@ -206,15 +306,31 @@ async def _sync_local_workspace_for_hermes_invoke(
             f"{_format_size(summary['total_bytes'])} > {_format_size(max_upload_bytes)}"
         )
 
-    return await _push_workspace_files(
-        agent_ref=agent_ref,
-        local_dir=local_dir,
-        remote_path=remote_path,
-        force=True,
-        region=region,
-        endpoint=endpoint,
-        api_key=api_key,
-    )
+    last_progress: dict[str, Any] | None = None
+
+    def _record_progress(event: dict[str, Any]) -> None:
+        nonlocal last_progress
+        last_progress = dict(event)
+        if progress_callback:
+            progress_callback(event)
+
+    try:
+        return await _push_workspace_files(
+            agent_ref=agent_ref,
+            local_dir=local_dir,
+            remote_path=remote_path,
+            force=True,
+            region=region,
+            endpoint=endpoint,
+            api_key=api_key,
+            progress_callback=_record_progress,
+            ignore_dev_artifacts=True,
+        )
+    except AgentEngineAPIError as exc:
+        phase = _describe_workspace_sync_phase(last_progress)
+        raise click.ClickException(
+            f"同步远端 workspace 失败（{phase}）：{exc.message}"
+        ) from exc
 
 
 def run_invoke_command(
@@ -365,6 +481,7 @@ def run_invoke_command(
                     region=region,
                     endpoint=endpoint,
                     api_key=api_key,
+                    progress_callback=_emit_workspace_sync_progress,
                 )
             )
             _emit_sync_payload(_build_sync_payload(sync_payload), None)

@@ -5,6 +5,7 @@ import click
 import pytest
 import yaml
 
+from ksadk.api import AgentEngineAPIError
 from ksadk.cli.cmd_invoke import _extract_content, _invoke_hermes_terminal_tui, run_invoke_command
 
 
@@ -549,3 +550,201 @@ def test_sync_local_workspace_for_hermes_invoke_rejects_total_directory_size_ove
         )
 
     assert "目录总大小" in str(exc_info.value)
+
+
+def test_sync_local_workspace_for_hermes_invoke_reports_progress(monkeypatch, tmp_path: Path):
+    from ksadk.cli.cmd_invoke import _sync_local_workspace_for_hermes_invoke
+
+    workspace_dir = tmp_path / "demo-workspace"
+    workspace_dir.mkdir()
+    (workspace_dir / "a.txt").write_text("hello", encoding="utf-8")
+    events: list[dict] = []
+
+    async def _fake_lookup_workspace_upload_limit(**_kwargs):
+        return 100
+
+    async def _fake_push_workspace_files(**kwargs):
+        kwargs["progress_callback"](
+            {
+                "phase": "upload_start",
+                "current": 1,
+                "total": 1,
+                "remote_path": "demo-workspace/a.txt",
+                "local_path": str(workspace_dir / "a.txt"),
+                "size_bytes": 5,
+            }
+        )
+        kwargs["progress_callback"](
+            {
+                "phase": "upload_done",
+                "current": 1,
+                "total": 1,
+                "remote_path": "demo-workspace/a.txt",
+            }
+        )
+        return {
+            "remote_path": "demo-workspace",
+            "local_dir": str(workspace_dir),
+            "created": ["demo-workspace/a.txt"],
+            "overwritten": [],
+            "skipped": [],
+            "total_files": 1,
+            "direction": "push",
+        }
+
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_invoke._lookup_workspace_upload_limit",
+        _fake_lookup_workspace_upload_limit,
+    )
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_invoke._push_workspace_files",
+        _fake_push_workspace_files,
+    )
+
+    payload = asyncio.run(
+        _sync_local_workspace_for_hermes_invoke(
+            agent_ref="ar-hermes-1",
+            local_workspace=workspace_dir,
+            remote_path="demo-workspace",
+            region="pre-online",
+            endpoint="https://hermes.example.com",
+            api_key="ak-hermes",
+            progress_callback=events.append,
+        )
+    )
+
+    assert payload["total_files"] == 1
+    assert [event["phase"] for event in events] == [
+        "scan_done",
+        "limit_done",
+        "upload_start",
+        "upload_done",
+    ]
+    assert events[0]["total_files"] == 1
+    assert events[0]["total_bytes"] == 5
+
+
+def test_sync_local_workspace_for_hermes_invoke_ignores_local_dev_artifacts(monkeypatch, tmp_path: Path):
+    from ksadk.cli.cmd_invoke import _sync_local_workspace_for_hermes_invoke
+
+    workspace_dir = tmp_path / "demo-workspace"
+    workspace_dir.mkdir()
+    (workspace_dir / "app.py").write_text("print('ok')\n", encoding="utf-8")
+
+    git_object = workspace_dir / ".git" / "objects" / "aa"
+    git_object.mkdir(parents=True)
+    (git_object / "blob").write_bytes(b"x" * 4096)
+
+    events: list[dict] = []
+    captured: dict[str, object] = {}
+
+    async def _fake_lookup_workspace_upload_limit(**_kwargs):
+        return 1024
+
+    async def _fake_push_workspace_files(**kwargs):
+        captured["ignore_dev_artifacts"] = kwargs["ignore_dev_artifacts"]
+        return {
+            "remote_path": "demo-workspace",
+            "local_dir": str(workspace_dir),
+            "created": ["demo-workspace/app.py"],
+            "overwritten": [],
+            "skipped": [],
+            "total_files": 1,
+            "direction": "push",
+        }
+
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_invoke._lookup_workspace_upload_limit",
+        _fake_lookup_workspace_upload_limit,
+    )
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_invoke._push_workspace_files",
+        _fake_push_workspace_files,
+    )
+
+    payload = asyncio.run(
+        _sync_local_workspace_for_hermes_invoke(
+            agent_ref="ar-hermes-1",
+            local_workspace=workspace_dir,
+            remote_path="demo-workspace",
+            region="pre-online",
+            endpoint="https://hermes.example.com",
+            api_key="ak-hermes",
+            progress_callback=events.append,
+        )
+    )
+
+    assert payload["total_files"] == 1
+    assert events[0]["total_files"] == 1
+    assert events[0]["total_bytes"] == 12
+    assert captured["ignore_dev_artifacts"] is True
+
+
+def test_emit_workspace_sync_progress_shows_percentage_bar(capsys):
+    from ksadk.cli.cmd_invoke import _emit_workspace_sync_progress
+
+    _emit_workspace_sync_progress(
+        {
+            "phase": "upload_start",
+            "current": 2,
+            "total": 4,
+            "remote_path": "demo-workspace/app.py",
+            "size_bytes": 12,
+        }
+    )
+
+    output = capsys.readouterr().out
+    assert "50%" in output
+    assert "2/4" in output
+    assert "上传 demo-workspace/app.py" in output
+    assert "[" in output and "]" in output
+
+
+def test_sync_local_workspace_for_hermes_invoke_wraps_remote_errors(monkeypatch, tmp_path: Path):
+    from ksadk.cli.cmd_invoke import _sync_local_workspace_for_hermes_invoke
+
+    workspace_dir = tmp_path / "demo-workspace"
+    workspace_dir.mkdir()
+    (workspace_dir / "a.txt").write_text("hello", encoding="utf-8")
+    events: list[dict] = []
+
+    async def _fake_lookup_workspace_upload_limit(**_kwargs):
+        return 100
+
+    async def _fake_push_workspace_files(**kwargs):
+        kwargs["progress_callback"](
+            {
+                "phase": "upload_start",
+                "current": 1,
+                "total": 1,
+                "remote_path": "demo-workspace/a.txt",
+            }
+        )
+        raise AgentEngineAPIError(500, "runtime exploded")
+
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_invoke._lookup_workspace_upload_limit",
+        _fake_lookup_workspace_upload_limit,
+    )
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_invoke._push_workspace_files",
+        _fake_push_workspace_files,
+    )
+
+    with pytest.raises(click.ClickException) as exc_info:
+        asyncio.run(
+            _sync_local_workspace_for_hermes_invoke(
+                agent_ref="ar-hermes-1",
+                local_workspace=workspace_dir,
+                remote_path="demo-workspace",
+                region="pre-online",
+                endpoint="https://hermes.example.com",
+                api_key="ak-hermes",
+                progress_callback=events.append,
+            )
+        )
+
+    message = str(exc_info.value)
+    assert "同步远端 workspace 失败" in message
+    assert "上传 demo-workspace/a.txt" in message
+    assert "runtime exploded" in message
