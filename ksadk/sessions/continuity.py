@@ -262,9 +262,17 @@ class LangGraphSessionAdapter(RunnerSessionAdapter):
         has_checkpointer = bool(
             getattr(agent, "checkpointer", None) or getattr(agent, "_checkpointer", None)
         )
+        module = getattr(runner, "_module", None)
+        has_hook = callable(getattr(module, "ksadk_prepare_state", None))
+        if has_hook:
+            path = "standard_hook"
+        elif has_checkpointer:
+            path = "checkpoint"
+        else:
+            path = "replay"
         return SessionContinuityStatus(
             level=SessionContinuityLevel.RUNTIME if has_checkpointer else SessionContinuityLevel.SEMANTIC,
-            path="checkpoint" if has_checkpointer else "replay",
+            path=path,
             runner=self.runner_key(runner),
         )
 

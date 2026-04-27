@@ -78,7 +78,7 @@ console = get_console()
 # 默认 OpenClaw 镜像 (KCR 个人版)
 DEFAULT_OPENCLAW_NAMESPACE = "agentengine-public"
 DEFAULT_OPENCLAW_REPO = "openclaw"
-DEFAULT_OPENCLAW_VERSION = "latest"
+DEFAULT_OPENCLAW_VERSION = "2026.4.24"
 DEFAULT_OPENCLAW_REGISTRY = "hub.kce.ksyun.com"
 DEFAULT_OPENCLAW_NAME = "openclaw-gateway"
 DEFAULT_TRUSTED_PROXY_USER_HEADER = "x-forwarded-user"
@@ -464,7 +464,6 @@ def _build_openclaw_env_vars(
     )
     explicit_model_api = _resolve_env("OPENCLAW_MODEL_API")
     model_api = explicit_model_api or default_model_api
-    auth_mode = "trusted-proxy"
     trusted_proxy_user_header = (
         _resolve_env(
             "OPENCLAW_TRUSTED_PROXY_USER_HEADER",
@@ -534,9 +533,13 @@ def _build_openclaw_env_vars(
     )
     model_api_key_secret_source = _resolve_env("OPENCLAW_MODEL_API_KEY_SECRET_SOURCE") or "file"
     model_api_key_secret_file_path = _resolve_env("OPENCLAW_MODEL_API_KEY_SECRET_FILE_PATH")
+    gateway_auth_mode = _resolve_env("OPENCLAW_GATEWAY_AUTH_MODE")
+    gateway_token = _resolve_env("OPENCLAW_GATEWAY_TOKEN")
+    gateway_password = _resolve_env("OPENCLAW_GATEWAY_PASSWORD")
 
     env["OPENCLAW_GATEWAY_BIND"] = "lan"
-    env["OPENCLAW_GATEWAY_AUTH_MODE"] = auth_mode
+    if gateway_auth_mode:
+        env["OPENCLAW_GATEWAY_AUTH_MODE"] = gateway_auth_mode
     env["OPENCLAW_TRUSTED_PROXY_USER_HEADER"] = trusted_proxy_user_header or DEFAULT_TRUSTED_PROXY_USER_HEADER
     env["OPENCLAW_INTERNAL_TRUSTED_PROXY_USER"] = internal_trusted_proxy_user
     env["OPENCLAW_INTERNAL_TRUSTED_PROXY_USER_HEADER"] = (
@@ -607,6 +610,10 @@ def _build_openclaw_env_vars(
     env["OPENCLAW_ALLOW_INSECURE_AUTH"] = allow_insecure_auth if allow_insecure_auth else "true"
     disable_device_auth = _resolve_env("OPENCLAW_DISABLE_DEVICE_AUTH")
     env["OPENCLAW_DISABLE_DEVICE_AUTH"] = disable_device_auth if disable_device_auth else "true"
+    if gateway_token:
+        env["OPENCLAW_GATEWAY_TOKEN"] = gateway_token
+    if gateway_password:
+        env["OPENCLAW_GATEWAY_PASSWORD"] = gateway_password
     for passthrough_key in [
         "OPENCLAW_CHANNEL_BOOTSTRAP_JSON",
         "OPENCLAW_BROWSER_SSRF_POLICY_JSON",
@@ -623,7 +630,7 @@ def _build_openclaw_env_vars(
         if passthrough_value:
             env[passthrough_key] = passthrough_value
 
-    return env
+    return _normalize_openclaw_gateway_auth_env(env)
 
 
 def _normalize_allowed_origins(raw: str) -> str:
@@ -668,6 +675,41 @@ def _normalize_csv_list(raw: str, *, default_items: Optional[list[str]] = None) 
     return ",".join(list(dict.fromkeys(items)))
 
 
+def _normalize_openclaw_gateway_auth_env(env: dict[str, str]) -> dict[str, str]:
+    """标准化 OpenClaw gateway 鉴权模式与共享密钥配置。"""
+    normalized_env = dict(env or {})
+    raw_mode = str(normalized_env.get("OPENCLAW_GATEWAY_AUTH_MODE") or "").strip().lower()
+    raw_token = str(normalized_env.get("OPENCLAW_GATEWAY_TOKEN") or "").strip()
+    raw_password = str(normalized_env.get("OPENCLAW_GATEWAY_PASSWORD") or "").strip()
+
+    if raw_mode and raw_mode not in {"trusted-proxy", "token", "none"}:
+        raise ValueError("OPENCLAW_GATEWAY_AUTH_MODE 仅支持 trusted-proxy、token 或 none")
+
+    auth_mode = raw_mode or ("token" if raw_token or raw_password else "trusted-proxy")
+    if auth_mode == "token":
+        if raw_token and raw_password and raw_token != raw_password:
+            raise ValueError("OPENCLAW_GATEWAY_TOKEN 与 OPENCLAW_GATEWAY_PASSWORD 同时提供时必须一致")
+        shared_secret = raw_token or raw_password
+        if not shared_secret:
+            raise ValueError(
+                "OPENCLAW_GATEWAY_AUTH_MODE=token 时必须提供 OPENCLAW_GATEWAY_TOKEN 或 OPENCLAW_GATEWAY_PASSWORD"
+            )
+        normalized_env["OPENCLAW_GATEWAY_AUTH_MODE"] = "token"
+        normalized_env["OPENCLAW_GATEWAY_TOKEN"] = shared_secret
+        normalized_env["OPENCLAW_GATEWAY_PASSWORD"] = shared_secret
+        return normalized_env
+
+    if raw_token or raw_password:
+        raise ValueError(
+            "仅在 OPENCLAW_GATEWAY_AUTH_MODE=token 时支持 OPENCLAW_GATEWAY_TOKEN 或 OPENCLAW_GATEWAY_PASSWORD"
+        )
+
+    normalized_env["OPENCLAW_GATEWAY_AUTH_MODE"] = auth_mode
+    normalized_env.pop("OPENCLAW_GATEWAY_TOKEN", None)
+    normalized_env.pop("OPENCLAW_GATEWAY_PASSWORD", None)
+    return normalized_env
+
+
 def _parse_extra_openclaw_env_pairs(items: tuple[str, ...] | list[str] | None) -> dict[str, str]:
     """解析 deploy --env 传入的自定义环境变量。"""
     parsed: dict[str, str] = {}
@@ -681,8 +723,8 @@ def _parse_extra_openclaw_env_pairs(items: tuple[str, ...] | list[str] | None) -
             raise ValueError(f"自定义环境变量名不合法: {key!r}，请使用合法的环境变量名")
         if key == "OPENCLAW_GATEWAY_AUTH_MODE":
             normalized = value.strip().lower()
-            if normalized not in {"trusted-proxy", "none"}:
-                raise ValueError("OPENCLAW_GATEWAY_AUTH_MODE 仅支持 trusted-proxy 或 none，不能使用 token 模式")
+            if normalized not in {"trusted-proxy", "token", "none"}:
+                raise ValueError("OPENCLAW_GATEWAY_AUTH_MODE 仅支持 trusted-proxy、token 或 none")
             value = normalized
         parsed[key] = value
     return parsed
@@ -2939,6 +2981,7 @@ async def _deploy_openclaw(
     custom_env_vars = _parse_extra_openclaw_env_pairs(extra_env)
     if custom_env_vars:
         env_vars.update(custom_env_vars)
+    env_vars = _normalize_openclaw_gateway_auth_env(env_vars)
     memory_config = _build_openclaw_memory_config(
         memory_system=memory_system,
         mem0_instance_id=mem0_instance_id,

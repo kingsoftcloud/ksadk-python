@@ -41,6 +41,7 @@ from ksadk.conversations.runtime import (
     invoke_conversation_once,
     preview_auto_compaction,
     stream_conversation_turn,
+    stream_responses_conversation_turn,
 )
 
 __all__ = [
@@ -79,5 +80,6 @@ __all__ = [
     "resolve_attachment_storage_path",
     "resolve_uploads_dir",
     "stream_conversation_turn",
+    "stream_responses_conversation_turn",
     "summarize_event_groups",
 ]

@@ -689,6 +689,9 @@ class ADKRunner(BaseRunner):
         from google.genai import types
 
         user_input = input_data.get("input", "")
+        instructions = str(input_data.get("instructions") or "").strip()
+        if instructions:
+            user_input = f"{instructions}\n\nCurrent user input:\n{user_input or '[empty message]'}"
 
         # 1. 准备 Metadata (提前以此获取 Agent Name)
         _, _, _, agent_name = self._prepare_trace_metadata(None)
@@ -748,6 +751,9 @@ class ADKRunner(BaseRunner):
         from google.genai import types
 
         user_input = input_data.get("input", "")
+        instructions = str(input_data.get("instructions") or "").strip()
+        if instructions:
+            user_input = f"{instructions}\n\nCurrent user input:\n{user_input or '[empty message]'}"
 
         # 1. 准备 Metadata (提前以此获取 Agent Name)
         _, _, _, agent_name = self._prepare_trace_metadata(None)

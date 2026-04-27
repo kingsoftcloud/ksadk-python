@@ -487,6 +487,8 @@ class ResponsesRequest(BaseModel):
     input: Any
     model: Optional[str] = None
     model_metadata: Optional[Dict[str, Any]] = None
+    instructions: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
     stream: bool = False
     session_id: Optional[str] = None
 
@@ -846,7 +848,7 @@ async def run_agent_action(request: RunAgentActionRequest):
             )
             return await chat_completions(completion_request)
         return StreamingResponse(
-            conversation.stream_conversation_turn(
+            conversation.stream_responses_conversation_turn(
                 runner=_resolve_active_runner(),
                 agent_id=request.AgentId,
                 user_id="user",
@@ -1496,7 +1498,7 @@ async def responses(request: ResponsesRequest):
 
     if request.stream:
         return StreamingResponse(
-            conversation.stream_conversation_turn(
+            conversation.stream_responses_conversation_turn(
                 runner=active_runner,
                 agent_id=agent_id,
                 user_id="user",
@@ -1504,6 +1506,8 @@ async def responses(request: ResponsesRequest):
                 session_id=request.session_id,
                 model=request.model,
                 model_metadata=request.model_metadata,
+                instructions=request.instructions,
+                request_metadata=request.metadata,
                 prepare_runner=_prepare_runner_for_model,
                 session_service_provider=resolve_session_service,
             ),
@@ -1518,6 +1522,8 @@ async def responses(request: ResponsesRequest):
         session_id=request.session_id,
         model=request.model,
         model_metadata=request.model_metadata,
+        instructions=request.instructions,
+        request_metadata=request.metadata,
         prepare_runner=_prepare_runner_for_model,
         session_service_provider=resolve_session_service,
     )
@@ -1525,6 +1531,7 @@ async def responses(request: ResponsesRequest):
         output_text=result["output_text"],
         model=request.model,
         session_id=resolved_session_id,
+        metadata=result.get("metadata") if isinstance(result.get("metadata"), dict) else request.metadata,
     )
 
 

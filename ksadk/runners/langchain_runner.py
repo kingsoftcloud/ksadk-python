@@ -151,6 +151,7 @@ class LangChainRunner(BaseRunner):
             "input_parts": list(input_data.get("input_parts") or []),
             "attachments": list(input_data.get("attachments") or []),
             "attachment_results": list(input_data.get("attachment_results") or []),
+            "instructions": input_data.get("instructions"),
             "platform_context": input_data.get("platform_context"),
             "kb_context": input_data.get("kb_context"),
             "memory_context": input_data.get("memory_context"),
@@ -162,9 +163,17 @@ class LangChainRunner(BaseRunner):
         user_input = str(input_data.get("input", "") or "")
         history = list(input_data.get("history") or [])
         ambient_text = self._ambient_context_text(input_data)
-        if not history and not ambient_text:
+        instructions = str(input_data.get("instructions") or "").strip()
+        if not history and not ambient_text and not instructions:
             return {"input": user_input}
-        return {"input": self._format_replay_prompt(user_input, history, ambient_text=ambient_text)}
+        return {
+            "input": self._format_replay_prompt(
+                user_input,
+                history,
+                ambient_text=ambient_text,
+                instructions=instructions,
+            )
+        }
 
     @staticmethod
     def _ambient_context_text(input_data: Dict[str, Any]) -> str:
@@ -187,11 +196,16 @@ class LangChainRunner(BaseRunner):
 
     def _prepare_message_history_input(self, input_data: Dict[str, Any]) -> str:
         user_input = str(input_data.get("input", "") or "")
-        ambient_text = self._ambient_context_text(input_data)
-        if not ambient_text:
+        context_text = self._request_context_text(input_data)
+        if not context_text:
             return user_input
         current_input = user_input.strip() or "[empty message]"
-        return f"{ambient_text}\n\nCurrent user input:\n{current_input}"
+        return f"{context_text}\n\nCurrent user input:\n{current_input}"
+
+    def _request_context_text(self, input_data: Dict[str, Any]) -> str:
+        ambient_text = self._ambient_context_text(input_data)
+        instructions = str(input_data.get("instructions") or "").strip()
+        return "\n\n".join(section for section in (instructions, ambient_text) if section)
 
     def _format_replay_prompt(
         self,
@@ -199,8 +213,11 @@ class LangChainRunner(BaseRunner):
         history: list[dict[str, Any]],
         *,
         ambient_text: str = "",
+        instructions: str = "",
     ) -> str:
         lines: list[str] = []
+        if instructions:
+            lines.append(instructions)
         if ambient_text:
             lines.append(ambient_text)
         if history:
@@ -283,24 +300,20 @@ class LangChainRunner(BaseRunner):
         config: Optional[dict[str, Any]],
         context: Optional[dict[str, Any]],
     ) -> Any:
-        ambient_text = self._ambient_context_text(input_data)
-        payload = {
-            "input": input_data.get("input", "")
-            if not ambient_text
-            else self._prepare_message_history_input(input_data)
-        }
+        context_text = self._request_context_text(input_data)
+        payload = {"input": self._prepare_message_history_input(input_data)}
         session_config = self._with_session_config(config, session_id)
         wrapped_runnable = self._extract_wrapped_history_runnable()
         message_history = self._get_message_history_store(session_id)
 
-        if ambient_text and wrapped_runnable is not None and message_history is not None:
+        if context_text and wrapped_runnable is not None and message_history is not None:
             return await self._invoke_wrapped_history_with_ambient_context(
                 input_data=input_data,
                 wrapped_runnable=wrapped_runnable,
                 message_history=message_history,
                 session_config=session_config,
                 context=context,
-                ambient_text=ambient_text,
+                ambient_text=context_text,
             )
 
         try:
@@ -314,7 +327,7 @@ class LangChainRunner(BaseRunner):
                 message_history=message_history,
                 session_config=session_config,
                 context=context,
-                ambient_text=ambient_text,
+                ambient_text=context_text,
             )
 
     async def _invoke_wrapped_runnable(

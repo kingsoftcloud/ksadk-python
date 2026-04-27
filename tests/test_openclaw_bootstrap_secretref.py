@@ -10,8 +10,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 BOOTSTRAP_SCRIPT = REPO_ROOT / "deploy" / "openclaw" / "bootstrap.sh"
 OPENCLAW_DOCKERFILE = REPO_ROOT / "deploy" / "openclaw" / "Dockerfile"
 LATEST_OPENCLAW_BASE_IMAGE = (
-    "ghcr.io/openclaw/openclaw:2026.4.21@"
-    "sha256:70e0ab07deb72f4b3ee7bb701c5437fdc27b85d6705cc67f104aa8042ba52e00"
+    "ghcr.io/openclaw/openclaw:2026.4.24@"
+    "sha256:7c4370ff8777555d4c9fe5ab821aaaad7c87188d389a6cf761270725d96ec3e9"
 )
 VALID_MEM0_UUID = "e52b7fac-e641-4b34-b9f7-6b0b9f190cd4"
 
@@ -203,6 +203,65 @@ def test_bootstrap_writes_secretref_for_model_api_key():
         assert secrets_path.stat().st_mode & 0o777 == 0o600
 
 
+def test_bootstrap_maps_gateway_token_to_shared_secret_when_token_mode_enabled():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_GATEWAY_AUTH_MODE"] = "token"
+        env["OPENCLAW_GATEWAY_TOKEN"] = "gateway-token-demo"
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert cfg["gateway"]["auth"]["mode"] == "token"
+        assert cfg["gateway"]["auth"]["password"] == "gateway-token-demo"
+
+
+def test_bootstrap_clears_stale_gateway_shared_secret_when_mode_returns_to_trusted_proxy():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "gateway": {
+                        "auth": {
+                            "mode": "token",
+                            "password": "stale-secret",
+                        }
+                    }
+                }
+            )
+        )
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_GATEWAY_AUTH_MODE"] = "trusted-proxy"
+        env["OPENCLAW_GATEWAY_TOKEN"] = "stale-secret"
+        env["OPENCLAW_GATEWAY_PASSWORD"] = "stale-secret"
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert cfg["gateway"]["auth"]["mode"] == "trusted-proxy"
+        assert "password" not in (cfg.get("gateway", {}).get("auth", {}))
+
+
 def test_bootstrap_keeps_env_secretref_when_explicitly_requested():
     with TemporaryDirectory() as tmpdir:
         config_path = Path(tmpdir) / "openclaw.json"
@@ -300,7 +359,7 @@ def test_bootstrap_fails_without_secret_env_value():
         assert "missing bootstrap secret env for file-backed model api key" in combined
 
 
-def test_bootstrap_preseeds_gateway_password_for_managed_runtime_restart():
+def test_bootstrap_does_not_keep_gateway_password_when_not_in_token_mode():
     with TemporaryDirectory() as tmpdir:
         config_path = Path(tmpdir) / "openclaw.json"
         env = _build_base_env(tmpdir, str(config_path))
@@ -317,7 +376,8 @@ def test_bootstrap_preseeds_gateway_password_for_managed_runtime_restart():
 
         assert result.returncode == 0, result.stderr or result.stdout
         cfg = json.loads(config_path.read_text())
-        assert cfg["gateway"]["auth"]["password"]
+        assert cfg["gateway"]["auth"]["mode"] == "trusted-proxy"
+        assert "password" not in cfg["gateway"]["auth"]
 
 
 def test_bootstrap_defaults_dual_ksyun_catalog_when_unspecified():
@@ -340,16 +400,16 @@ def test_bootstrap_defaults_dual_ksyun_catalog_when_unspecified():
         assert result.returncode == 0, result.stderr or result.stdout
         cfg = json.loads(config_path.read_text())
         assert cfg["agents"]["defaults"]["model"]["primary"] == "ksyun/glm-5.1"
-        assert cfg["agents"]["defaults"]["model"]["fallbacks"] == ["ksyun/kimi-k2.5"]
-        assert cfg["agents"]["defaults"]["imageModel"]["primary"] == "ksyun/kimi-k2.5"
+        assert cfg["agents"]["defaults"]["model"]["fallbacks"] == ["ksyun/kimi-k2.6"]
+        assert cfg["agents"]["defaults"]["imageModel"]["primary"] == "ksyun/kimi-k2.6"
         models = cfg["models"]["providers"]["ksyun"]["models"]
-        assert [item["id"] for item in models] == ["glm-5.1", "kimi-k2.5"]
+        assert [item["id"] for item in models] == ["glm-5.1", "kimi-k2.6"]
         assert models[0]["input"] == ["text"]
         assert models[1]["input"] == ["text", "image"]
         _assert_model_token_defaults(models)
         selectable = cfg["agents"]["defaults"]["models"]
         assert "ksyun/glm-5.1" in selectable
-        assert "ksyun/kimi-k2.5" in selectable
+        assert "ksyun/kimi-k2.6" in selectable
 
 
 def test_bootstrap_global_model_preference_keeps_dual_ksyun_catalog():
@@ -373,10 +433,10 @@ def test_bootstrap_global_model_preference_keeps_dual_ksyun_catalog():
         assert result.returncode == 0, result.stderr or result.stdout
         cfg = json.loads(config_path.read_text())
         assert cfg["agents"]["defaults"]["model"]["primary"] == "ksyun/glm-5.1"
-        assert cfg["agents"]["defaults"]["model"]["fallbacks"] == ["ksyun/kimi-k2.5"]
-        assert cfg["agents"]["defaults"]["imageModel"]["primary"] == "ksyun/kimi-k2.5"
+        assert cfg["agents"]["defaults"]["model"]["fallbacks"] == ["ksyun/kimi-k2.6"]
+        assert cfg["agents"]["defaults"]["imageModel"]["primary"] == "ksyun/kimi-k2.6"
         models = cfg["models"]["providers"]["ksyun"]["models"]
-        assert [item["id"] for item in models] == ["glm-5.1", "kimi-k2.5"]
+        assert [item["id"] for item in models] == ["glm-5.1", "kimi-k2.6"]
         assert models[0]["input"] == ["text"]
         assert models[1]["input"] == ["text", "image"]
         _assert_model_token_defaults(models)
@@ -402,16 +462,16 @@ def test_bootstrap_openclaw_default_model_alias_keeps_dual_catalog():
         assert result.returncode == 0, result.stderr or result.stdout
         cfg = json.loads(config_path.read_text())
         assert cfg["agents"]["defaults"]["model"]["primary"] == "ksyun/glm-5.1"
-        assert cfg["agents"]["defaults"]["model"]["fallbacks"] == ["ksyun/kimi-k2.5"]
-        assert cfg["agents"]["defaults"]["imageModel"]["primary"] == "ksyun/kimi-k2.5"
+        assert cfg["agents"]["defaults"]["model"]["fallbacks"] == ["ksyun/kimi-k2.6"]
+        assert cfg["agents"]["defaults"]["imageModel"]["primary"] == "ksyun/kimi-k2.6"
         models = cfg["models"]["providers"]["ksyun"]["models"]
-        assert [item["id"] for item in models] == ["glm-5.1", "kimi-k2.5"]
+        assert [item["id"] for item in models] == ["glm-5.1", "kimi-k2.6"]
         assert models[0]["input"] == ["text"]
         assert models[1]["input"] == ["text", "image"]
         _assert_model_token_defaults(models)
         selectable = cfg["agents"]["defaults"]["models"]
         assert "ksyun/glm-5.1" in selectable
-        assert "ksyun/kimi-k2.5" in selectable
+        assert "ksyun/kimi-k2.6" in selectable
 
 
 def test_bootstrap_preserves_existing_defaults_model_fallbacks_and_image_model():
@@ -427,7 +487,7 @@ def test_bootstrap_preserves_existing_defaults_model_fallbacks_and_image_model()
                                 "fallbacks": ["ksyun/glm-5.1"],
                             },
                             "imageModel": {
-                                "primary": "ksyun/kimi-k2.5",
+                                "primary": "ksyun/kimi-k2.6",
                             },
                         }
                     }
@@ -452,7 +512,7 @@ def test_bootstrap_preserves_existing_defaults_model_fallbacks_and_image_model()
         cfg = json.loads(config_path.read_text())
         assert cfg["agents"]["defaults"]["model"]["primary"] == "ksyun/deepseek-v3"
         assert cfg["agents"]["defaults"]["model"]["fallbacks"] == ["ksyun/glm-5.1"]
-        assert cfg["agents"]["defaults"]["imageModel"]["primary"] == "ksyun/kimi-k2.5"
+        assert cfg["agents"]["defaults"]["imageModel"]["primary"] == "ksyun/kimi-k2.6"
 
 
 def test_bootstrap_prefers_glm51_as_default_primary_when_catalog_is_present():
@@ -463,7 +523,7 @@ def test_bootstrap_prefers_glm51_as_default_primary_when_catalog_is_present():
         env.pop("OPENCLAW_DEFAULT_MODEL", None)
         env.pop("OPENAI_MODEL_NAME", None)
         env["OPENCLAW_MODEL_CATALOG_JSON"] = (
-            '[{"id":"kimi-k2.5"},{"id":"glm-5.1"}]'
+            '[{"id":"kimi-k2.6"},{"id":"glm-5.1"}]'
         )
 
         result = subprocess.run(
@@ -479,7 +539,7 @@ def test_bootstrap_prefers_glm51_as_default_primary_when_catalog_is_present():
         cfg = json.loads(config_path.read_text())
         assert cfg["agents"]["defaults"]["model"]["primary"] == "ksyun/glm-5.1"
         models = cfg["models"]["providers"]["ksyun"]["models"]
-        assert [item["id"] for item in models] == ["kimi-k2.5", "glm-5.1"]
+        assert [item["id"] for item in models] == ["kimi-k2.6", "glm-5.1"]
 
 
 def test_bootstrap_appends_primary_model_when_default_catalog_does_not_include_it():
@@ -504,7 +564,7 @@ def test_bootstrap_appends_primary_model_when_default_catalog_does_not_include_i
         cfg = json.loads(config_path.read_text())
         assert cfg["agents"]["defaults"]["model"]["primary"] == "ksyun/deepseek-v3"
         models = cfg["models"]["providers"]["ksyun"]["models"]
-        assert [item["id"] for item in models] == ["glm-5.1", "kimi-k2.5", "deepseek-v3"]
+        assert [item["id"] for item in models] == ["glm-5.1", "kimi-k2.6", "deepseek-v3"]
         _assert_model_token_defaults(models)
 
 
@@ -526,8 +586,8 @@ def test_bootstrap_qualifies_namespaced_model_selection_refs_when_provider_diffe
                     "input": ["text"],
                 },
                 {
-                    "id": "Qzhou/kimi-k2.5",
-                    "name": "kimi-k2.5",
+                    "id": "Qzhou/kimi-k2.6",
+                    "name": "kimi-k2.6",
                     "api": "openai-completions",
                     "reasoning": False,
                     "input": ["text", "image"],
@@ -547,12 +607,12 @@ def test_bootstrap_qualifies_namespaced_model_selection_refs_when_provider_diffe
         assert result.returncode == 0, result.stderr or result.stdout
         cfg = json.loads(config_path.read_text())
         assert cfg["agents"]["defaults"]["model"]["primary"] == "hanhai/Qzhou/glm-5"
-        assert cfg["agents"]["defaults"]["model"]["fallbacks"] == ["hanhai/Qzhou/kimi-k2.5"]
-        assert cfg["agents"]["defaults"]["imageModel"]["primary"] == "hanhai/Qzhou/kimi-k2.5"
+        assert cfg["agents"]["defaults"]["model"]["fallbacks"] == ["hanhai/Qzhou/kimi-k2.6"]
+        assert cfg["agents"]["defaults"]["imageModel"]["primary"] == "hanhai/Qzhou/kimi-k2.6"
         models = cfg["models"]["providers"]["hanhai"]["models"]
-        assert [item["id"] for item in models] == ["Qzhou/glm-5", "Qzhou/kimi-k2.5"]
+        assert [item["id"] for item in models] == ["Qzhou/glm-5", "Qzhou/kimi-k2.6"]
         selectable = cfg["agents"]["defaults"]["models"]
-        assert sorted(selectable) == ["hanhai/Qzhou/glm-5", "hanhai/Qzhou/kimi-k2.5"]
+        assert sorted(selectable) == ["hanhai/Qzhou/glm-5", "hanhai/Qzhou/kimi-k2.6"]
 
 
 def test_bootstrap_qualifies_namespaced_model_selection_refs_without_catalog_when_provider_differs():
@@ -594,14 +654,14 @@ def test_bootstrap_migrates_legacy_namespaced_model_selection_refs_for_custom_pr
                         "defaults": {
                             "model": {
                                 "primary": "Qzhou/glm-5",
-                                "fallbacks": ["Qzhou/kimi-k2.5"],
+                                "fallbacks": ["Qzhou/kimi-k2.6"],
                             },
                             "imageModel": {
-                                "primary": "Qzhou/kimi-k2.5",
+                                "primary": "Qzhou/kimi-k2.6",
                             },
                             "models": {
                                 "Qzhou/glm-5": {},
-                                "Qzhou/kimi-k2.5": {},
+                                "Qzhou/kimi-k2.6": {},
                             },
                         }
                     },
@@ -617,8 +677,8 @@ def test_bootstrap_migrates_legacy_namespaced_model_selection_refs_for_custom_pr
                                         "input": ["text"],
                                     },
                                     {
-                                        "id": "Qzhou/kimi-k2.5",
-                                        "name": "kimi-k2.5",
+                                        "id": "Qzhou/kimi-k2.6",
+                                        "name": "kimi-k2.6",
                                         "api": "openai-completions",
                                         "reasoning": False,
                                         "input": ["text", "image"],
@@ -645,8 +705,8 @@ def test_bootstrap_migrates_legacy_namespaced_model_selection_refs_for_custom_pr
                     "input": ["text"],
                 },
                 {
-                    "id": "Qzhou/kimi-k2.5",
-                    "name": "kimi-k2.5",
+                    "id": "Qzhou/kimi-k2.6",
+                    "name": "kimi-k2.6",
                     "api": "openai-completions",
                     "reasoning": False,
                     "input": ["text", "image"],
@@ -666,14 +726,14 @@ def test_bootstrap_migrates_legacy_namespaced_model_selection_refs_for_custom_pr
         assert result.returncode == 0, result.stderr or result.stdout
         cfg = json.loads(config_path.read_text())
         assert cfg["agents"]["defaults"]["model"]["primary"] == "hanhai/Qzhou/glm-5"
-        assert cfg["agents"]["defaults"]["model"]["fallbacks"] == ["hanhai/Qzhou/kimi-k2.5"]
-        assert cfg["agents"]["defaults"]["imageModel"]["primary"] == "hanhai/Qzhou/kimi-k2.5"
+        assert cfg["agents"]["defaults"]["model"]["fallbacks"] == ["hanhai/Qzhou/kimi-k2.6"]
+        assert cfg["agents"]["defaults"]["imageModel"]["primary"] == "hanhai/Qzhou/kimi-k2.6"
         assert sorted(cfg["agents"]["defaults"]["models"]) == [
             "hanhai/Qzhou/glm-5",
-            "hanhai/Qzhou/kimi-k2.5",
+            "hanhai/Qzhou/kimi-k2.6",
         ]
         models = cfg["models"]["providers"]["hanhai"]["models"]
-        assert [item["id"] for item in models] == ["Qzhou/glm-5", "Qzhou/kimi-k2.5"]
+        assert [item["id"] for item in models] == ["Qzhou/glm-5", "Qzhou/kimi-k2.6"]
 
 
 def test_bootstrap_disables_builtin_web_search_by_default():

@@ -854,6 +854,8 @@ export default function App() {
 
       const assistantMessageId = String(Date.now() + 1);
       let assistantMessageCreated = false;
+      const responseToolNames = new Map<string, string>();
+      const responseToolArguments = new Map<string, string>();
       const ensureAssistantMessage = () => {
         if (assistantMessageCreated) return;
         assistantMessageCreated = true;
@@ -861,6 +863,45 @@ export default function App() {
           ...prev,
           { id: assistantMessageId, role: 'model', content: '', timestamp: Date.now(), reasoning: '' },
         ]);
+      };
+      const upsertToolRun = (name: string, args: string, status: 'running' | 'completed' | 'error' | 'paused') => {
+        ensureAssistantMessage();
+        setMessages((prev) =>
+          prev.map((message) => {
+            if (message.id !== assistantMessageId) return message;
+            return {
+              ...message,
+              tools: {
+                ...(message.tools || {}),
+                [name]: {
+                  ...(message.tools?.[name] || { name, args: '' }),
+                  name,
+                  args,
+                  status,
+                },
+              },
+            };
+          }),
+        );
+      };
+      const completeToolRun = (name: string, output: string) => {
+        ensureAssistantMessage();
+        setMessages((prev) =>
+          prev.map((message) => {
+            if (message.id !== assistantMessageId) return message;
+            return {
+              ...message,
+              tools: {
+                ...(message.tools || {}),
+                [name]: {
+                  ...(message.tools?.[name] || { name, args: '' }),
+                  output,
+                  status: 'completed',
+                },
+              },
+            };
+          }),
+        );
       };
 
       let buffer = '';
@@ -945,51 +986,61 @@ export default function App() {
             }
 
             if (currentEvent === 'response.tool_call') {
+              const name = String(data.name || 'tool');
+              const args =
+                typeof data.args === 'object'
+                  ? JSON.stringify(data.args, null, 2)
+                  : String(data.args || '');
+              upsertToolRun(name, args, 'running');
+            } else if (
+              currentEvent === 'response.tool_result' ||
+              currentEvent === 'response.ksadk.tool_result'
+            ) {
+              const name = String(data.name || 'tool');
+              const output =
+                typeof data.output === 'object'
+                  ? JSON.stringify(data.output, null, 2)
+                  : String(data.output || '');
+              completeToolRun(name, output);
+            } else if (currentEvent === 'response.output_item.added') {
+              const item = data.item || {};
+              if (item.type === 'function_call') {
+                const name = String(item.name || 'tool');
+                const itemId = String(item.id || '');
+                const args = String(item.arguments || '');
+                responseToolNames.set(itemId, name);
+                responseToolArguments.set(itemId, args);
+                upsertToolRun(name, args, 'running');
+              } else if (item.type === 'mcp_approval_request') {
+                const name = String(item.name || 'approval');
+                upsertToolRun(name, String(item.arguments || ''), 'paused');
+              }
+            } else if (currentEvent === 'response.function_call_arguments.delta') {
+              const itemId = String(data.item_id || '');
+              const name = responseToolNames.get(itemId) || 'tool';
+              const args = `${responseToolArguments.get(itemId) || ''}${String(data.delta || '')}`;
+              responseToolArguments.set(itemId, args);
+              upsertToolRun(name, args, 'running');
+            } else if (currentEvent === 'response.function_call_arguments.done') {
+              const itemId = String(data.item_id || '');
+              const name = responseToolNames.get(itemId) || 'tool';
+              const args = String(data.arguments || responseToolArguments.get(itemId) || '');
+              responseToolArguments.set(itemId, args);
+              upsertToolRun(name, args, 'running');
+            } else if (
+              currentEvent === 'response.approval_request' ||
+              currentEvent === 'response.ksadk.approval_request'
+            ) {
               ensureAssistantMessage();
-              setMessages((prev) =>
-                prev.map((message) => {
-                  if (message.id === assistantMessageId) {
-                    const name = String(data.name || 'tool');
-                    const args =
-                      typeof data.args === 'object'
-                        ? JSON.stringify(data.args, null, 2)
-                        : String(data.args || '');
-                    return {
-                      ...message,
-                      tools: {
-                        ...(message.tools || {}),
-                        [name]: { name, args, status: 'running' },
-                      },
-                    };
-                  }
-                  return message;
-                }),
-              );
-            } else if (currentEvent === 'response.tool_result') {
-              ensureAssistantMessage();
-              setMessages((prev) =>
-                prev.map((message) => {
-                  if (message.id === assistantMessageId) {
-                    const name = String(data.name || 'tool');
-                    const output =
-                      typeof data.output === 'object'
-                        ? JSON.stringify(data.output, null, 2)
-                        : String(data.output || '');
-                    return {
-                      ...message,
-                      tools: {
-                        ...(message.tools || {}),
-                        [name]: {
-                          ...(message.tools?.[name] || { name, args: '' }),
-                          output,
-                          status: 'completed',
-                        },
-                      },
-                    };
-                  }
-                  return message;
-                }),
-              );
+              setMessages((prev) => [
+                ...prev,
+                {
+                  id: String(Date.now() + Math.random()),
+                  role: 'system',
+                  content: '本次运行需要人工审批后才能继续。',
+                  timestamp: Date.now(),
+                },
+              ]);
             } else if (currentEvent === 'response.reasoning.delta') {
               const delta = data.delta || '';
               if (delta) {
@@ -1024,6 +1075,25 @@ export default function App() {
                   ),
                 );
               }
+            } else if (currentEvent === 'response.failed') {
+              const message = data.error?.message || 'Agent 运行失败';
+              ensureAssistantMessage();
+              setMessages((prev) =>
+                prev.map((item) =>
+                  item.id === assistantMessageId ? { ...item, content: `生成失败：${message}` } : item,
+                ),
+              );
+            } else if (currentEvent === 'response.incomplete') {
+              ensureAssistantMessage();
+              setMessages((prev) => [
+                ...prev,
+                {
+                  id: String(Date.now() + Math.random()),
+                  role: 'system',
+                  content: '本次运行已中断，需要人工确认后继续。',
+                  timestamp: Date.now(),
+                },
+              ]);
             } else if (data.content?.parts?.[0]?.text) {
               const delta = data.content.parts[0].text;
               if (!data.actions?.finishReason) {

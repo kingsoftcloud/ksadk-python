@@ -54,12 +54,12 @@ from ksadk.hermes_terminal import (
 )
 
 
-DEFAULT_HERMES_IMAGE = "hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.4.16"
+DEFAULT_HERMES_IMAGE = "hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.4.23"
 DEFAULT_HERMES_CONTEXT_LENGTHS = (
     ("glm-5.1", "200000"),
 )
 DEFAULT_HERMES_FALLBACK_MODELS = (
-    ("glm-5.1", "kimi-k2.5"),
+    ("glm-5.1", "kimi-k2.6"),
 )
 DEFAULT_HERMES_MODEL_NAME = "glm-5.1"
 DEFAULT_HERMES_PUBLIC_BASE_URL = "https://kspmas.ksyun.com/v1/"
@@ -231,7 +231,7 @@ def _default_fallback_model_for_model(model: str | None, base_url: str | None) -
         if model_fragment in normalized_model:
             return fallback_model
     if "kspmas" in normalized_base_url:
-        return "kimi-k2.5"
+        return "kimi-k2.6"
     return ""
 
 

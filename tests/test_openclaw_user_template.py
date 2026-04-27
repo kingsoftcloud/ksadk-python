@@ -9,11 +9,11 @@ BUNDLED_FEISHU_EXAMPLE_ROOT = (
 )
 EXAMPLE_ROOT = TEMPLATE_ROOT / "examples" / "minimal-skill-plugin-deps"
 LATEST_OPENCLAW_BASE_IMAGE = (
-    "ghcr.io/openclaw/openclaw:2026.4.21@"
-    "sha256:70e0ab07deb72f4b3ee7bb701c5437fdc27b85d6705cc67f104aa8042ba52e00"
+    "ghcr.io/openclaw/openclaw:2026.4.24@"
+    "sha256:7c4370ff8777555d4c9fe5ab821aaaad7c87188d389a6cf761270725d96ec3e9"
 )
 LATEST_OPENCLAW_KCR_IMAGE = (
-    "hub-vpc-cn-beijing-6.kce.ksyun.com/agentengine-public/openclaw:2026.4.21"
+    "hub-vpc-cn-beijing-6.kce.ksyun.com/agentengine-public/openclaw:2026.4.24"
 )
 
 
@@ -80,7 +80,7 @@ def test_openclaw_user_template_dockerfile_uses_official_startup_path():
     assert 'CLAWHUB_REGISTRY=https://cn.clawhub-mirror.com' in dockerfile
     assert 'CMD ["sh","-lc"' in dockerfile
     assert '/home/node/.openclaw' in dockerfile
-    assert 'trusted-proxy|none' in dockerfile
+    assert 'trusted-proxy|token|none' in dockerfile
     assert 'secrets.json' in dockerfile
 
 
@@ -95,6 +95,7 @@ def test_openclaw_user_template_readme_mentions_direct_build_and_run():
     assert "不会自动写进 openclaw.json" in readme
     assert "/home/node/.openclaw" in readme
     assert "trusted-proxy" in readme
+    assert "OPENCLAW_GATEWAY_TOKEN" in readme
     assert "none" in readme
     assert "CLAWHUB_SITE" in readme
     assert "CLAWHUB_REGISTRY" in readme
@@ -183,6 +184,13 @@ def test_openclaw_user_template_advanced_example_enables_custom_plugin():
 
     assert config["plugins"]["entries"]["demo-now"]["enabled"] is True
     assert config["gateway"]["auth"]["trustedProxy"]["userHeader"] == "x-forwarded-user"
+
+
+def test_openclaw_user_template_readme_mentions_optional_token_mode():
+    readme = (TEMPLATE_ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "token" in readme
+    assert "OPENCLAW_GATEWAY_PASSWORD" in readme
 
 
 def test_openclaw_user_template_advanced_example_pins_latest_official_base_image():

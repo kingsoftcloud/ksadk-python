@@ -56,6 +56,25 @@ class _BrokenLoadRunner(_UiRunner):
         raise RuntimeError("runner load failed")
 
 
+class _InterruptRunner(_UiRunner):
+    async def stream(self, input_data: dict):
+        self.invocations.append(input_data)
+        yield {"type": "text", "delta": "need "}
+        yield {
+            "type": "interrupt",
+            "interrupt_info": {"message": "确认执行?", "tool_name": "delete_file"},
+        }
+
+
+class _GenericInterruptRunner(_UiRunner):
+    async def stream(self, input_data: dict):
+        self.invocations.append(input_data)
+        yield {
+            "type": "interrupt",
+            "interrupt_info": {"message": "需要人工确认"},
+        }
+
+
 def _build_transport(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()
@@ -63,6 +82,15 @@ def _build_transport(monkeypatch):
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.delenv("OPENAI_API_BASE", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    return server_app_module, runner, service, transport
+
+
+def _build_transport_with_runner(monkeypatch, runner):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     server_app_module.set_runner(runner)
     transport = httpx.ASGITransport(app=server_app_module.app)
@@ -245,6 +273,49 @@ async def test_run_agent_action_forwards_model_metadata_to_conversation_runtime(
         "context_length": "64k",
         "max_completion_tokens": "8k",
     }
+
+
+@pytest.mark.asyncio
+async def test_run_agent_action_streaming_responses_uses_responses_lifecycle(monkeypatch):
+    _, runner, service, transport = _build_transport(monkeypatch)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/RunAgent",
+            json={
+                "AgentId": "demo-agent",
+                "SessionId": "sess-runagent-responses",
+                "Messages": [{"role": "user", "content": "hello"}],
+                "ApiFormat": "responses",
+                "Stream": True,
+                "Model": "glm-5.1",
+            },
+        )
+
+    assert response.status_code == 200
+    lines = [line for line in response.text.splitlines() if line.startswith("event: ")]
+    assert "event: response.created" in lines
+    assert "event: response.in_progress" in lines
+    assert "event: response.output_item.added" in lines
+    assert "event: response.function_call_arguments.delta" in lines
+    assert "event: response.ksadk.tool_result" in lines
+    assert "event: response.completed" in lines
+    assert "event: response.tool_call" not in lines
+    assert "event: response.tool_result" not in lines
+    assert runner.invocations[-1]["model"] == "glm-5.1"
+    assert runner.invocations[-1]["session_id"] == "sess-runagent-responses"
+    assert await service.get_session("sess-runagent-responses") is not None
+
+    current_event = ""
+    completed_payload = None
+    for line in response.text.splitlines():
+        if line.startswith("event: "):
+            current_event = line.removeprefix("event: ")
+        elif line.startswith("data: ") and current_event == "response.completed":
+            completed_payload = json.loads(line.removeprefix("data: "))
+    assert completed_payload is not None
+    assert completed_payload["model"] == "glm-5.1"
+    assert completed_payload["session_id"] == "sess-runagent-responses"
 
 
 @pytest.mark.asyncio
@@ -647,24 +718,130 @@ async def test_session_kop_actions_crud_and_event_listing(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_responses_endpoint_streams_thinking_and_text_events(monkeypatch):
-    _, _, _, transport = _build_transport(monkeypatch)
+    _, runner, service, transport = _build_transport(monkeypatch)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
         response = await client.post(
             "/v1/responses",
             json={
                 "input": [{"role": "user", "content": [{"type": "input_text", "text": "hello"}]}],
+                "model": "glm-5.1",
+                "session_id": "sess-responses-stream",
                 "stream": True,
             },
         )
 
     assert response.status_code == 200
     lines = [line for line in response.text.splitlines() if line.startswith("event: ")]
-    assert "event: response.tool_call" in lines
-    assert "event: response.tool_result" in lines
+    assert "event: response.created" in lines
+    assert "event: response.in_progress" in lines
+    assert "event: response.output_item.added" in lines
+    assert "event: response.function_call_arguments.delta" in lines
+    assert "event: response.function_call_arguments.done" in lines
+    assert "event: response.ksadk.tool_result" in lines
     assert "event: response.reasoning.delta" in lines
     assert "event: response.output_text.delta" in lines
+    assert "event: response.output_text.done" in lines
     assert "event: response.completed" in lines
+    added_indexes = []
+    current_event = ""
+    for line in response.text.splitlines():
+        if line.startswith("event: "):
+                current_event = line.removeprefix("event: ")
+        elif line.startswith("data: ") and current_event == "response.output_item.added":
+            added_indexes.append(json.loads(line.removeprefix("data: "))["output_index"])
+    assert added_indexes == [0, 1, 2]
+    assert runner.invocations[-1]["model"] == "glm-5.1"
+    assert runner.invocations[-1]["session_id"] == "sess-responses-stream"
+    assert await service.get_session("sess-responses-stream") is not None
+
+    completed_payloads = []
+    current_event = ""
+    for line in response.text.splitlines():
+        if line.startswith("event: "):
+            current_event = line.removeprefix("event: ")
+        elif line.startswith("data: ") and current_event == "response.completed":
+            completed_payloads.append(json.loads(line.removeprefix("data: ")))
+    assert completed_payloads[-1]["model"] == "glm-5.1"
+    assert completed_payloads[-1]["session_id"] == "sess-responses-stream"
+
+
+@pytest.mark.asyncio
+async def test_responses_endpoint_non_streaming_supports_instructions_and_metadata(monkeypatch):
+    _, runner, service, transport = _build_transport(monkeypatch)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/v1/responses",
+            json={
+                "input": "hello",
+                "instructions": "只用中文回答",
+                "metadata": {"trace_label": "demo"},
+                "stream": False,
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["object"] == "response"
+    assert payload["status"] == "completed"
+    assert payload["metadata"] == {"trace_label": "demo"}
+    assert payload["output_text"] == "assistant says hi"
+    assert payload["session_id"]
+    assert runner.invocations[-1]["instructions"] == "只用中文回答"
+
+    events = await service.get_events(payload["session_id"])
+    user_event = next(event for event in events if event.event_type == "user_message")
+    assert user_event.content["parts"][0]["text"] == "hello"
+    assert user_event.metadata["instructions"] == "只用中文回答"
+    assert user_event.metadata["request_metadata"] == {"trace_label": "demo"}
+
+
+@pytest.mark.asyncio
+async def test_responses_endpoint_streaming_interrupt_returns_incomplete(monkeypatch):
+    _, _, service, transport = _build_transport_with_runner(monkeypatch, _InterruptRunner())
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/v1/responses",
+            json={"input": "delete it", "stream": True},
+        )
+
+    assert response.status_code == 200
+    lines = [line for line in response.text.splitlines() if line.startswith("event: ")]
+    assert "event: response.output_item.added" in lines
+    assert "event: response.incomplete" in lines
+    assert "event: response.completed" not in lines
+
+    data_lines = [line.removeprefix("data: ") for line in response.text.splitlines() if line.startswith("data: ")]
+    assert any(
+        json.loads(line).get("item", {}).get("type") == "mcp_approval_request"
+        for line in data_lines
+    )
+    incomplete_payload = next(
+        json.loads(line)
+        for line in data_lines
+        if json.loads(line).get("status") == "incomplete"
+    )
+    assert incomplete_payload["incomplete_details"]["reason"] == "approval_required"
+    events = await service.get_events(incomplete_payload["session_id"])
+    assert any(event.event_type == "approval_request" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_responses_endpoint_streaming_generic_interrupt_uses_ksadk_extension(monkeypatch):
+    _, _, _, transport = _build_transport_with_runner(monkeypatch, _GenericInterruptRunner())
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/v1/responses",
+            json={"input": "review it", "stream": True},
+        )
+
+    assert response.status_code == 200
+    lines = [line for line in response.text.splitlines() if line.startswith("event: ")]
+    assert "event: response.ksadk.approval_request" in lines
+    assert "event: response.incomplete" in lines
 
 
 @pytest.mark.asyncio
@@ -937,6 +1114,10 @@ def test_web_ui_source_supports_workspace_panel_for_owner_access():
     assert "chat_completions" in source
     assert "choices?.[0]?.delta" in source
     assert "delta.content" in source
+    assert "response.output_item.added" in source
+    assert "response.function_call_arguments.delta" in source
+    assert "response.ksadk.tool_result" in source
+    assert "response.ksadk.approval_request" in source
 
 
 def test_web_ui_source_uses_adaptive_image_preview_sizing():

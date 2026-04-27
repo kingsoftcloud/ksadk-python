@@ -68,6 +68,11 @@ except ImportError:
     "--remote-workspace-path",
     help="远端 workspace 子目录 (默认使用本地目录名)",
 )
+@click.option(
+    "--verbose-workspace-sync",
+    is_flag=True,
+    help="显示逐文件 workspace 同步日志（默认使用单行进度刷新）",
+)
 @click.option("--model", help="指定模型名称")
 @click.option("--show-thinking", is_flag=True, help="显示模型思考过程")
 def invoke(
@@ -83,6 +88,7 @@ def invoke(
     transport: str,
     local_workspace: Path | None,
     remote_workspace_path: str | None,
+    verbose_workspace_sync: bool,
     model: str,
     show_thinking: bool,
 ):
@@ -100,6 +106,7 @@ def invoke(
         transport=transport,
         local_workspace=local_workspace,
         remote_workspace_path=remote_workspace_path,
+        verbose_workspace_sync=verbose_workspace_sync,
         model=model,
         show_thinking=show_thinking,
         compatibility_alias=True,
@@ -116,13 +123,21 @@ def _resolve_remote_workspace_seed_path(
     return _normalize_workspace_dir(default_name)
 
 
-def _summarize_local_workspace_dir(local_dir: Path) -> dict[str, Any]:
+def _summarize_local_workspace_dir(
+    local_dir: Path,
+    *,
+    ignore_git_artifacts: bool,
+) -> dict[str, Any]:
     if not local_dir.exists():
         raise click.ClickException(f"本地目录不存在: {local_dir}")
     if not local_dir.is_dir():
         raise click.ClickException(f"本地路径不是目录: {local_dir}")
 
-    report = _collect_local_files_report(local_dir, ignore_dev_artifacts=True)
+    report = _collect_local_files_report(
+        local_dir,
+        ignore_dev_artifacts=True,
+        ignore_git_artifacts=ignore_git_artifacts,
+    )
     files = [
         {
             "path": file_path,
@@ -179,48 +194,97 @@ def _format_workspace_sync_percent(current: object | None, total: object | None)
     return f"{percent:.1f}".rstrip("0").rstrip(".") + "%"
 
 
+def _build_workspace_sync_progress_emitter(*, verbose: bool) -> Callable[[dict[str, Any]], None]:
+    active_inline = False
+    last_inline_width = 0
+
+    def _finish_inline() -> None:
+        nonlocal active_inline, last_inline_width
+        if active_inline:
+            click.echo(f"\r{' ' * last_inline_width}\r", nl=False)
+            click.echo("")
+            active_inline = False
+            last_inline_width = 0
+
+    def _emit(event: dict[str, Any]) -> None:
+        nonlocal active_inline, last_inline_width
+
+        phase = str(event.get("phase") or "").strip()
+        if phase == "scan_done":
+            _finish_inline()
+            click.secho(
+                "📂 准备同步 workspace: "
+                f"{event.get('total_files', 0)} 个文件，"
+                f"{_format_size(event.get('total_bytes', 0))} -> workspace:/{event.get('remote_path', '.')}",
+                fg="blue",
+            )
+            ignored_artifacts = list(event.get("ignored_artifacts") or [])
+            if ignored_artifacts:
+                click.echo(f"   默认忽略: {', '.join(ignored_artifacts)}")
+            return
+        if phase == "limit_done":
+            _finish_inline()
+            click.echo(f"   上传上限: {_format_size(event.get('max_upload_bytes'))}")
+            return
+        if phase == "list_start":
+            _finish_inline()
+            click.echo(f"   检查远端目录: workspace:/{event.get('remote_path', '.')}")
+            return
+        if phase == "list_done":
+            _finish_inline()
+            click.echo(f"   远端已有条目: {event.get('remote_entry_count', 0)}")
+            return
+        if phase == "upload_start":
+            total = max(int(event.get("total") or 0), 1)
+            current = max(0, min(int(event.get("current") or 0), total))
+            message = (
+                "   "
+                f"{_render_workspace_sync_progress_bar(current, total)} "
+                f"{_format_workspace_sync_percent(current, total)} ({current}/{total}) "
+                f"上传 {event.get('remote_path', '')} "
+                f"({_format_size(event.get('size_bytes'))})"
+            )
+            if verbose:
+                click.echo(message)
+            else:
+                padded_message = message.ljust(last_inline_width)
+                click.echo(f"\r{padded_message}", nl=False)
+                active_inline = True
+                last_inline_width = max(last_inline_width, len(message))
+            return
+        if phase == "upload_skipped":
+            total = max(int(event.get("total") or 0), 1)
+            current = max(0, min(int(event.get("current") or 0), total))
+            message = (
+                "   "
+                f"{_render_workspace_sync_progress_bar(current, total)} "
+                f"{_format_workspace_sync_percent(current, total)} ({current}/{total}) "
+                f"跳过已存在 {event.get('remote_path', '')}"
+            )
+            if verbose:
+                click.echo(message)
+            else:
+                padded_message = message.ljust(last_inline_width)
+                click.echo(f"\r{padded_message}", nl=False)
+                active_inline = True
+                last_inline_width = max(last_inline_width, len(message))
+            return
+        if phase == "upload_done":
+            total = max(int(event.get("total") or 0), 1)
+            current = max(0, min(int(event.get("current") or 0), total))
+            if not verbose and current >= total:
+                _finish_inline()
+            return
+
+    return _emit
+
+
 def _emit_workspace_sync_progress(event: dict[str, Any]) -> None:
-    phase = str(event.get("phase") or "").strip()
-    if phase == "scan_done":
-        click.secho(
-            "📂 准备同步 workspace: "
-            f"{event.get('total_files', 0)} 个文件，"
-            f"{_format_size(event.get('total_bytes', 0))} -> workspace:/{event.get('remote_path', '.')}",
-            fg="blue",
+    if not hasattr(_emit_workspace_sync_progress, "_emitter"):
+        _emit_workspace_sync_progress._emitter = _build_workspace_sync_progress_emitter(  # type: ignore[attr-defined]
+            verbose=True
         )
-        ignored_artifacts = list(event.get("ignored_artifacts") or [])
-        if ignored_artifacts:
-            click.echo(f"   默认忽略: {', '.join(ignored_artifacts)}")
-        return
-    if phase == "limit_done":
-        click.echo(f"   上传上限: {_format_size(event.get('max_upload_bytes'))}")
-        return
-    if phase == "list_start":
-        click.echo(f"   检查远端目录: workspace:/{event.get('remote_path', '.')}")
-        return
-    if phase == "list_done":
-        click.echo(f"   远端已有条目: {event.get('remote_entry_count', 0)}")
-        return
-    if phase == "upload_start":
-        total = max(int(event.get("total") or 0), 1)
-        current = max(0, min(int(event.get("current") or 0), total))
-        click.echo(
-            "   "
-            f"{_render_workspace_sync_progress_bar(current, total)} "
-            f"{_format_workspace_sync_percent(current, total)} ({current}/{total}) "
-            f"上传 {event.get('remote_path', '')} "
-            f"({_format_size(event.get('size_bytes'))})"
-        )
-        return
-    if phase == "upload_skipped":
-        total = max(int(event.get("total") or 0), 1)
-        current = max(0, min(int(event.get("current") or 0), total))
-        click.echo(
-            "   "
-            f"{_render_workspace_sync_progress_bar(current, total)} "
-            f"{_format_workspace_sync_percent(current, total)} ({current}/{total}) "
-            f"跳过已存在 {event.get('remote_path', '')}"
-        )
+    _emit_workspace_sync_progress._emitter(event)  # type: ignore[attr-defined]
 
 
 def _extract_workspace_upload_limit(bootstrap: dict[str, Any] | None) -> int | None:
@@ -268,7 +332,20 @@ async def _sync_local_workspace_for_hermes_invoke(
     progress_callback: Callable[[dict], None] | None = None,
 ) -> dict[str, Any]:
     local_dir = Path(local_workspace).expanduser().resolve()
-    summary = _summarize_local_workspace_dir(local_dir)
+    max_upload_bytes = await _lookup_workspace_upload_limit(agent_ref=agent_ref, region=region)
+    if progress_callback:
+        progress_callback(
+            {
+                "phase": "limit_done",
+                "remote_path": remote_path,
+                "max_upload_bytes": max_upload_bytes,
+            }
+        )
+    summary = _summarize_local_workspace_dir(local_dir, ignore_git_artifacts=False)
+    if summary["total_bytes"] > max_upload_bytes:
+        summary_without_git = _summarize_local_workspace_dir(local_dir, ignore_git_artifacts=True)
+        if summary_without_git["total_bytes"] <= max_upload_bytes:
+            summary = summary_without_git
     if progress_callback:
         progress_callback(
             {
@@ -278,15 +355,6 @@ async def _sync_local_workspace_for_hermes_invoke(
                 "total_files": summary["total_files"],
                 "total_bytes": summary["total_bytes"],
                 "ignored_artifacts": summary.get("ignored_artifacts", []),
-            }
-        )
-    max_upload_bytes = await _lookup_workspace_upload_limit(agent_ref=agent_ref, region=region)
-    if progress_callback:
-        progress_callback(
-            {
-                "phase": "limit_done",
-                "remote_path": remote_path,
-                "max_upload_bytes": max_upload_bytes,
             }
         )
 
@@ -325,6 +393,7 @@ async def _sync_local_workspace_for_hermes_invoke(
             api_key=api_key,
             progress_callback=_record_progress,
             ignore_dev_artifacts=True,
+            ignore_git_artifacts=".git" in list(summary.get("ignored_artifacts") or []),
         )
     except AgentEngineAPIError as exc:
         phase = _describe_workspace_sync_phase(last_progress)
@@ -347,6 +416,7 @@ def run_invoke_command(
     transport: str,
     local_workspace: str | Path | None = None,
     remote_workspace_path: str | None = None,
+    verbose_workspace_sync: bool = False,
     model: str | None,
     show_thinking: bool,
     compatibility_alias: bool = False,
@@ -481,7 +551,9 @@ def run_invoke_command(
                     region=region,
                     endpoint=endpoint,
                     api_key=api_key,
-                    progress_callback=_emit_workspace_sync_progress,
+                    progress_callback=_build_workspace_sync_progress_emitter(
+                        verbose=verbose_workspace_sync
+                    ),
                 )
             )
             _emit_sync_payload(_build_sync_payload(sync_payload), None)

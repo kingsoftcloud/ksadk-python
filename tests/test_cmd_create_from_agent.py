@@ -66,6 +66,106 @@ def test_wrap_agent_directory_ignores_venv_and_exports_nested_entry(tmp_path: Pa
     assert "from .src.agentengine_adapter import root_agent as root_agent" in init_content
 
 
+def test_wrap_langgraph_messages_directory_does_not_generate_adapter(tmp_path: Path, monkeypatch):
+    source = tmp_path / "source"
+    entry = source / "agent.py"
+    source.mkdir()
+    entry.write_text(
+        "from langgraph.graph import MessagesState\n"
+        "def node(state):\n"
+        "    return {\"messages\": []}\n"
+        "root_agent = object()\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("ksadk.configs.global_config.global_config_exists", lambda: False)
+    monkeypatch.setattr("ksadk.configs.global_config.get_env_from_global_config", lambda: {})
+
+    project_path = tmp_path / "wrapped-messages"
+    cmd_create._wrap_agent_directory(source, str(project_path), "langgraph", entry, "root_agent")
+
+    package_dir = project_path / "wrapped_messages"
+    assert not (package_dir / "agentengine_adapter.py").exists()
+    config_text = (project_path / "agentengine.yaml").read_text(encoding="utf-8-sig")
+    assert "entry_point: wrapped_messages/agent.py" in config_text
+
+
+def test_wrap_langgraph_custom_state_directory_generates_adapter(tmp_path: Path, monkeypatch):
+    source = tmp_path / "source"
+    entry = source / "agent.py"
+    source.mkdir()
+    entry.write_text(
+        "from typing import TypedDict\n"
+        "class State(TypedDict):\n"
+        "    query: str\n"
+        "def node(state: State):\n"
+        "    return {\"answer\": state[\"query\"]}\n"
+        "workflow = 'StateGraph(State)'\n"
+        "root_agent = object()\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("ksadk.configs.global_config.global_config_exists", lambda: False)
+    monkeypatch.setattr("ksadk.configs.global_config.get_env_from_global_config", lambda: {})
+
+    project_path = tmp_path / "wrapped-custom"
+    cmd_create._wrap_agent_directory(source, str(project_path), "langgraph", entry, "root_agent")
+
+    package_dir = project_path / "wrapped_custom"
+    adapter_text = (package_dir / "agentengine_adapter.py").read_text(encoding="utf-8")
+    assert "from .agent import root_agent as root_agent" in adapter_text
+    assert '"query": payload.get("input", "")' in adapter_text
+    config_text = (project_path / "agentengine.yaml").read_text(encoding="utf-8-sig")
+    assert "entry_point: wrapped_custom/agentengine_adapter.py" in config_text
+    assert "agent_variable: root_agent" in config_text
+
+
+def test_wrap_langgraph_custom_state_directory_detects_state_outside_entry(tmp_path: Path, monkeypatch):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "agent.py").write_text("from .graph import root_agent\n", encoding="utf-8")
+    (source / "graph.py").write_text(
+        "from typing import TypedDict\n"
+        "from langgraph.graph import StateGraph\n"
+        "class State(TypedDict):\n"
+        "    question: str\n"
+        "def node(state: State):\n"
+        "    return {\"answer\": state[\"question\"]}\n"
+        "root_agent = object()\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("ksadk.configs.global_config.global_config_exists", lambda: False)
+    monkeypatch.setattr("ksadk.configs.global_config.get_env_from_global_config", lambda: {})
+
+    project_path = tmp_path / "wrapped-split-custom"
+    cmd_create._wrap_agent_directory(source, str(project_path), "langgraph", source / "agent.py", "root_agent")
+
+    package_dir = project_path / "wrapped_split_custom"
+    adapter_text = (package_dir / "agentengine_adapter.py").read_text(encoding="utf-8")
+    assert '"question": payload.get("input", "")' in adapter_text
+    config_text = (project_path / "agentengine.yaml").read_text(encoding="utf-8-sig")
+    assert "entry_point: wrapped_split_custom/agentengine_adapter.py" in config_text
+
+
+def test_wrap_langgraph_ambiguous_file_generates_review_adapter(tmp_path: Path, monkeypatch):
+    source = tmp_path / "agent.py"
+    source.write_text(
+        "from langgraph.graph import StateGraph\n"
+        "root_agent = object()\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("ksadk.configs.global_config.global_config_exists", lambda: False)
+    monkeypatch.setattr("ksadk.configs.global_config.get_env_from_global_config", lambda: {})
+
+    project_path = tmp_path / "wrapped-ambiguous"
+    cmd_create._wrap_agent_file(source, str(project_path), "langgraph", "root_agent")
+
+    package_dir = project_path / "wrapped_ambiguous"
+    adapter_text = (package_dir / "agentengine_adapter.py").read_text(encoding="utf-8")
+    assert "TODO: Map AgentEngine's chat payload" in adapter_text
+    assert "return dict(payload)" in adapter_text
+    config_text = (project_path / "agentengine.yaml").read_text(encoding="utf-8-sig")
+    assert "entry_point: wrapped_ambiguous/agentengine_adapter.py" in config_text
+
+
 def test_create_openclaw_only_generates_env_file(tmp_path: Path, monkeypatch):
     runner = CliRunner()
     monkeypatch.chdir(tmp_path)

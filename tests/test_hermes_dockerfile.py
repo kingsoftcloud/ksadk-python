@@ -57,7 +57,7 @@ def test_hermes_dockerfile_uses_local_source_install_and_cn_resilient_pip_defaul
     assert '"aiohttp>=3.13.3,<4"' in dockerfile
     assert '"websockets>=15.0.1,<16"' in dockerfile
     assert '"cryptography>=46.0.5,<47"' in dockerfile
-    assert '"qrcode>=8.2,<9"' in dockerfile
+    assert "qrcode>=" not in dockerfile
     assert "PIP_DEFAULT_TIMEOUT=180" in dockerfile
     assert "PIP_RETRIES=8" in dockerfile
     assert "PYPI_EXTRA_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple" in dockerfile

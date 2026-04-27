@@ -40,7 +40,7 @@ help:
 	@echo ""
 	@echo "  \033[1;32mOpenClaw 镜像:\033[0m"
 	@echo "    make openclaw-build         构建 OpenClaw 镜像 (默认国内源)"
-	@echo "    make openclaw-push          构建 + 推送到 KCR (默认 :latest)"
+	@echo "    make openclaw-push          构建 + 推送到 KCR (默认 :2026.4.24)"
 	@echo "    make openclaw-refresh-agentspace-assets  刷新 Agentspace 最新插件/技能并写 lock"
 	@echo "    make openclaw-push OPENCLAW_TAG=v2026.3.13-guardian1"
 	@echo "    make openclaw-build OPENCLAW_PYPI_INDEX_URL=https://pypi.org/simple  # 海外源"
@@ -50,8 +50,8 @@ help:
 	@echo "    make hermes-build           构建 Hermes runtime 镜像"
 	@echo "    make hermes-push            构建 + 推送 Hermes runtime 镜像"
 	@echo "    make hermes-size            查看 Hermes 镜像大小"
-	@echo "    make hermes-build HERMES_TAG=2026.4.16"
-	@echo "    make hermes-build HERMES_AGENT_REF=v2026.4.16  # 切换 Hermes 上游 release"
+	@echo "    make hermes-build HERMES_TAG=2026.4.23"
+	@echo "    make hermes-build HERMES_AGENT_REF=v2026.4.23  # 切换 Hermes 上游 release"
 	@echo ""
 	@echo "  \033[1;32m清理:\033[0m"
 	@echo "    make clean          清理构建产物和本地测试缓存"
@@ -393,9 +393,9 @@ offline-current: build
 OPENCLAW_IMAGE := hub.kce.ksyun.com/agentengine-public/openclaw
 OPENCLAW_VPC_REGISTRY ?= hub-vpc-cn-beijing-6.kce.ksyun.com
 OPENCLAW_VPC_IMAGE ?= $(subst hub.kce.ksyun.com,$(OPENCLAW_VPC_REGISTRY),$(OPENCLAW_IMAGE))
-OPENCLAW_TAG ?= latest
+OPENCLAW_TAG ?= 2026.4.24
 OPENCLAW_CONTEXT := .
-OPENCLAW_BASE_IMAGE ?= ghcr.io/openclaw/openclaw:2026.4.21@sha256:70e0ab07deb72f4b3ee7bb701c5437fdc27b85d6705cc67f104aa8042ba52e00
+OPENCLAW_BASE_IMAGE ?= ghcr.io/openclaw/openclaw:2026.4.24@sha256:7c4370ff8777555d4c9fe5ab821aaaad7c87188d389a6cf761270725d96ec3e9
 OPENCLAW_PYPI_INDEX_URL ?= https://mirrors.aliyun.com/pypi/simple
 OPENCLAW_NPM_REGISTRY ?= https://registry.npmmirror.com
 DOCKER_BUILDKIT ?= 1
@@ -453,16 +453,16 @@ openclaw-size:
 #
 # 用法:
 #   make hermes-build
-#   make hermes-push HERMES_TAG=2026.4.16
+#   make hermes-push HERMES_TAG=2026.4.23
 #
 
 HERMES_IMAGE := hub.kce.ksyun.com/agentengine-public/hermes-agent
 HERMES_VPC_REGISTRY ?= hub-vpc-cn-beijing-6.kce.ksyun.com
 HERMES_VPC_IMAGE ?= $(subst hub.kce.ksyun.com,$(HERMES_VPC_REGISTRY),$(HERMES_IMAGE))
-HERMES_TAG ?= 2026.4.16
+HERMES_TAG ?= 2026.4.23
 HERMES_CONTEXT := .
 HERMES_PYPI_INDEX_URL ?= https://mirrors.aliyun.com/pypi/simple
-HERMES_AGENT_REF ?= v2026.4.16
+HERMES_AGENT_REF ?= v2026.4.23
 HERMES_APT_MIRROR ?= https://mirrors.aliyun.com/debian
 HERMES_NPM_REGISTRY ?= https://registry.npmmirror.com
 

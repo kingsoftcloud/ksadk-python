@@ -23,10 +23,12 @@ class _DummyAgent:
             yield {}
 
 
-def _make_runner() -> LangGraphRunner:
+def _make_runner(module=None) -> LangGraphRunner:
     detection = SimpleNamespace(entry_point="src/agent.py", agent_variable="root_agent")
     runner = LangGraphRunner(detection, ".")
     runner._agent = _DummyAgent()
+    if module is not None:
+        runner._module = module
     return runner
 
 
@@ -137,8 +139,10 @@ async def test_invoke_simplified_input_prepends_ambient_kb_and_memory_context():
 
     state = runner._agent.last_ainvoke_state
     assert "messages" in state
-    assert "知识库: 当前支持标准型实例" in state["messages"][-1].content
-    assert "记忆: 用户关注机型价格" in state["messages"][-1].content
+    assert state["messages"][0].__class__.__name__ == "SystemMessage"
+    assert "知识库: 当前支持标准型实例" in state["messages"][0].content
+    assert "记忆: 用户关注机型价格" in state["messages"][0].content
+    assert state["messages"][-1].content == "继续回答"
     assert runner._agent.last_ainvoke_context == {
         "agent_id": "demo-agent",
         "user_id": "user-1",
@@ -164,3 +168,124 @@ async def test_invoke_messages_payload_injects_system_context_message():
     assert first.__class__.__name__ == "SystemMessage"
     assert "KB facts" in first.content
     assert "Memory facts" in first.content
+
+
+# ---- ksadk_prepare_state hook tests ----
+
+
+@pytest.mark.asyncio
+async def test_invoke_uses_ksadk_prepare_state_hook():
+    def ksadk_prepare_state(payload, session_context):
+        return {
+            "query": payload["input"],
+            "results": [],
+            "session_id": session_context["session_id"],
+        }
+
+    runner = _make_runner(module=SimpleNamespace(ksadk_prepare_state=ksadk_prepare_state))
+    await runner.invoke({"session_id": "s1", "input": "hello"})
+
+    state = runner._agent.last_ainvoke_state
+    assert state == {"query": "hello", "results": [], "session_id": "s1"}
+    assert "messages" not in state
+
+
+@pytest.mark.asyncio
+async def test_invoke_prepare_state_hook_receives_kb_and_memory_context():
+    captured = []
+
+    def ksadk_prepare_state(payload, session_context):
+        captured.append((payload, session_context))
+        return {"query": payload["input"]}
+
+    runner = _make_runner(module=SimpleNamespace(ksadk_prepare_state=ksadk_prepare_state))
+    await runner.invoke({
+        "session_id": "s1",
+        "input": "search",
+        "kb_context": {"formatted_text": "KB facts"},
+        "memory_context": {"formatted_text": "Memory facts"},
+        "platform_context": {"agent_id": "a1", "user_id": "u1"},
+    })
+
+    payload, session_context = captured[0]
+    assert payload == {"input": "search"}
+    assert session_context["kb_context"] == {"formatted_text": "KB facts"}
+    assert session_context["memory_context"] == {"formatted_text": "Memory facts"}
+    assert session_context["platform_context"] == {"agent_id": "a1", "user_id": "u1"}
+    assert session_context["is_resume"] is False
+    state = runner._agent.last_ainvoke_state
+    assert state == {"query": "search"}
+
+
+@pytest.mark.asyncio
+async def test_invoke_prepare_state_hook_receives_full_normalized_payload():
+    captured = []
+
+    def ksadk_prepare_state(payload, session_context):
+        captured.append((payload, session_context))
+        return {"query": payload["input"], "files": payload["files"]}
+
+    runner = _make_runner(module=SimpleNamespace(ksadk_prepare_state=ksadk_prepare_state))
+    await runner.invoke(
+        {
+            "session_id": "s1",
+            "input": "search",
+            "history": [{"role": "user", "content": "old"}],
+            "files": [{"name": "a.txt"}],
+            "attachments": [{"display_name": "a.txt"}],
+            "platform_context": {"agent_id": "a1"},
+        }
+    )
+
+    payload, session_context = captured[0]
+    assert payload["input"] == "search"
+    assert payload["files"] == [{"name": "a.txt"}]
+    assert payload["attachments"] == [{"display_name": "a.txt"}]
+    assert "session_id" not in payload
+    assert "history" not in payload
+    assert "platform_context" not in payload
+    assert session_context["history"] == [{"role": "user", "content": "old"}]
+    assert runner._agent.last_ainvoke_state == {"query": "search", "files": [{"name": "a.txt"}]}
+
+
+@pytest.mark.asyncio
+async def test_invoke_resume_with_prepare_state_hook():
+    captured = []
+
+    def ksadk_prepare_state(payload, session_context):
+        captured.append(session_context)
+        return {
+            "approved": payload["input"].get("approved", False),
+            "comment": payload["input"].get("comment", ""),
+        }
+
+    runner = _make_runner(module=SimpleNamespace(ksadk_prepare_state=ksadk_prepare_state))
+    await runner.invoke({
+        "session_id": "s1",
+        "resume": True,
+        "input": {"approved": True, "comment": "looks good"},
+    })
+
+    state = runner._agent.last_ainvoke_state
+    assert isinstance(state, Command)
+    assert state.resume == {"approved": True, "comment": "looks good"}
+    assert captured[0]["is_resume"] is True
+
+
+@pytest.mark.asyncio
+async def test_invoke_without_hook_uses_to_state():
+    runner = _make_runner()
+    await runner.invoke({"session_id": "s1", "input": "hello"})
+    state = runner._agent.last_ainvoke_state
+    assert "messages" in state
+    assert state["messages"][-1].content == "hello"
+
+
+@pytest.mark.asyncio
+async def test_invoke_hook_returns_non_dict_raises_type_error():
+    def ksadk_prepare_state(payload, session_context):
+        return "not a dict"
+
+    runner = _make_runner(module=SimpleNamespace(ksadk_prepare_state=ksadk_prepare_state))
+    with pytest.raises(TypeError, match="ksadk_prepare_state"):
+        await runner.invoke({"session_id": "s1", "input": "hello"})

@@ -5,6 +5,37 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [0.5.2] - 2026-04-27
+
+### 亮点
+
+- **工作区文件管理正式进入 CLI 主线**：新增 `agentengine files`，覆盖远端 workspace 的浏览、单文件上传/下载/删除、目录 `push/pull` 同步，并打通 `agentengine agent invoke --local-workspace` 的调用前同步能力。
+- **Responses API 兼容显著增强**：`/v1/responses` 从薄兼容壳升级为正式 serializer，支持更接近 OpenAI 的 response object、SSE 生命周期、思考流、工具调用、工具结果和人工审核 / interrupt 渲染。
+- **LangGraph custom-state 接入更稳**：`ksadk_prepare_state(payload, session_context)` 成为正式契约，`init --from-agent` 可为 custom-state / ambiguous LangGraph 项目自动生成 adapter 模板。
+- **默认运行时和模型目录升级**：默认 OpenClaw 镜像升级到 `v2026.4.24`，承接上游 DeepSeek V4 Flash / V4 Pro bundled catalog、V4 Flash onboarding default、Google Meet participant plugin、realtime voice loop、浏览器自动化和模型目录启动优化；默认 Hermes / OpenClaw 托管配置同步升级到 `glm-5.1` + `kimi-k2.6` 组合。
+
+### 变更
+
+- `/v1/responses` 从薄兼容层升级为更完整的 Responses serializer，新增 `instructions`、`metadata` 请求字段，补齐 richer response object、官方风格 SSE 生命周期，以及 `output_text` / `session_id` 兼容扩展。
+- Responses 流式输出新增 reasoning、function call、tool result 与人工审核 / interrupt 渲染，失败和中断场景分别使用 `response.failed`、`response.incomplete`。
+- `agentengine invoke` / RunAgent 优先适配 responses 协议事件，同时保留旧事件名兼容，支持通过参数传入 model 和 session id。
+- 新增 `agentengine files` workspace 文件管理子命令，支持 `list`、`upload`、`download`、`delete`、`push`、`pull`；输出包含逻辑路径、真实路径、文件大小、传输模式和 `created/overwritten/skipped` 同步结果，支持 `--output json`、路径逃逸保护、`100MB` 默认上传上限与 OpenClaw `action_proxy` / 常规 agent `runtime_direct` 双传输模式。
+- `agentengine agent invoke --local-workspace` 支持在 Hermes 远端 native 模式启动前同步本地目录到远端 workspace，自动读取 `GetAgentUiBootstrap` 的 `WorkspaceFiles.MaxUploadBytes`，并支持 `--remote-workspace-path` 与同步进度展示。
+- LangGraph / DeepAgents runner 正式化 `ksadk_prepare_state(payload, session_context)` custom-state 契约，hook 可收到完整 normalized payload 与固定 session context，返回非 `dict` 时 fail fast。
+- `init --from-agent` 增加 LangGraph 状态形态静态诊断，对 custom-state / ambiguous 图自动生成 `agentengine_adapter.py` 模板并改写入口，对 messages-based 图保持原入口。
+- 默认 OpenClaw / Hermes runtime 镜像更新到 `openclaw:2026.4.24` 与 `hermes-agent:2026.4.23`，同步刷新一键部署模板、Dockerfile、Makefile 和文档。
+- 默认模型和模型目录进一步升级：Hermes 默认模型保持 `glm-5.1`，自动补齐 `HERMES_CONTEXT_LENGTH=200000` 与 `HERMES_FALLBACK_MODEL=kimi-k2.6`；OpenClaw bootstrap 的 KSYUN 默认目录从 `kimi-k2.5` 升级到 `kimi-k2.6`，并继续使用 `glm-5.1` primary、`kimi-k2.6` fallback / image model。
+- 随 OpenClaw `v2026.4.24` 默认镜像，托管 OpenClaw 可使用上游新增的 DeepSeek V4 Flash / V4 Pro 模型目录；DeepSeek V4 Pro / Flash 上游模型卡标注支持 `1M` context，适合长上下文代码库分析和复杂 agentic 任务。
+- 中文使用文档新增 `/v1/responses` 使用章节，补齐非流式、流式、思考、工具执行、人工审核和 ksadk 扩展字段说明。
+
+### 修复
+
+- 修复 LangGraph custom-state 图在传入 `{"input": ...}` 时只能走 messages-first 约定、无法显式映射业务 state 的问题。
+- 修复 responses 流式中 interrupt 被误包装为 completed 的兼容风险，generic interrupt 继续通过 `response.ksadk.approval_request` 暴露。
+- 修复 LangChain / ADK / session continuity 在 `instructions` 注入和会话历史转换中的若干兼容边界，避免指令污染用户 transcript。
+- 修复 OpenClaw bootstrap 默认环境变量、secretRef、heartbeat、模型目录生成和 upstream `v2026.4.24` 配置兼容问题。
+- 修复 hosted UI / 本地 Web UI 对新 responses 生命周期事件的增量渲染、工具调用和 approval 展示兼容性。
+
 ## [0.5.1] - 2026-04-17
 
 ### 变更
@@ -16,15 +47,15 @@
 - OpenClaw 部署新增 `OPENCLAW_CHANNEL_BOOTSTRAP_JSON`、Agentspace bootstrap 配置与 `OPENCLAW_BROWSER_SSRF_POLICY_JSON` 透传，便于渠道预配置和内网访问策略收口。
 - 新增 `agentengine openclaw repair`，并支持 `agentengine openclaw gateway doctor --fix` 通过控制面直接触发 `doctor-fix` 修复动作。
 - code mode 构建新增 Linux Runtime 兼容性 / ABI 校验，关键原生扩展不兼容时会在打包阶段提前失败。
-- 默认 Hermes 共享 runtime 镜像更新为 `hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.4.16`，并把构建默认 `HERMES_AGENT_REF` 同步到上游 `v2026.4.16`。
-- 默认 OpenClaw 基础镜像 pin 到官方 `ghcr.io/openclaw/openclaw:2026.4.15@sha256:0e6bebecf4623216420851f5edd133a748335f45c3508b635f7c5c4bfbc6da7d`，同步刷新自定义镜像模板和一键部署文档。
+- 默认 Hermes 共享 runtime 镜像更新为 `hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.4.23`，并把构建默认 `HERMES_AGENT_REF` 同步到上游 `v2026.4.23`。
+- 默认 OpenClaw 基础镜像 pin 到官方 `ghcr.io/openclaw/openclaw:2026.4.24@sha256:7c4370ff8777555d4c9fe5ab821aaaad7c87188d389a6cf761270725d96ec3e9`，同步刷新自定义镜像模板和一键部署文档。
 
 ### 修复
 
 - 进一步完善 OpenClaw managed runtime 在当前 upstream bundle 下的 trusted-proxy loopback、backend self-pairing 与默认 browser 行为兼容性，降低诊断和修复成本。
 - 改进 hosted Hermes 运行时默认行为，网关进程改为容器内托管与重启，减少对宿主机 daemon 能力的依赖。
 - hosted Hermes 运行时默认补齐 `TERM=xterm-256color` 与统一状态目录布局，提升远端 setup / pairing 交互稳定性。
-- Hermes hosted 默认模型进一步收口：对 `glm-5.1` 在未显式配置时自动补齐 `context_length=200000`，并把 fallback model 默认设为 `kimi-k2.5`。
+- Hermes hosted 默认模型进一步收口：对 `glm-5.1` 在未显式配置时自动补齐 `context_length=200000`，并把 fallback model 默认设为 `kimi-k2.6`。
 - OpenClaw heartbeat 默认改为 `every=30m`、`target=none`、`isolatedSession=true`，并继续保留 `lightContext=true`，避免心跳占用当前聊天窗口和会话历史。
 - OpenClaw 默认模型目录和自动补齐的 primary model 项把 `maxTokens` 基线从 `8192` 提升到 `20000`。
 
