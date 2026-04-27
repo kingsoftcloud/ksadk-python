@@ -389,11 +389,17 @@ curl -H "Authorization: Bearer <api_key>" \
   - 图片附件会优先以 bytes 形式构造成底层 SDK `Part`
   - 若底层模型支持原生多模态，可直接消费图片
 - `LangGraph`
-  - 简化输入路径下，图片附件会自动转换为多模态 `HumanMessage.content` blocks
+  - 简化输入路径下，若模型支持图片输入，图片附件会自动转换为多模态 `HumanMessage.content` blocks
   - 非图片附件仍保留为普通附件上下文
 - `LangChain`
   - 当前没有对所有 agent 统一做“自动图片直通”
   - 如需原生多模态，建议在 `ksadk_prepare_input(payload, session_context)` 中自行消费 `input_parts / attachments`
+
+模型能力判断优先级：
+
+1. 请求里显式传入的 `model_metadata`
+2. runtime 通过 `OPENAI_BASE_URL` / `OPENAI_API_KEY` 查询上游 `/v1/models` 返回的 `architecture.input_modalities`
+3. 本地默认兜底（按文本模型处理）
 
 非流式响应字段：
 

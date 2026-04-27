@@ -251,10 +251,16 @@ curl -N http://127.0.0.1:8000/v1/responses \
   - 图片会优先按原生 bytes part 传给底层 SDK
   - 如果模型支持原生多模态，可直接吃图
 - `LangGraph`
-  - 默认消息构造会把图片附件转换成多模态 `HumanMessage.content` blocks
+  - 若模型支持图片输入，默认消息构造会把图片附件转换成多模态 `HumanMessage.content` blocks
 - `LangChain`
   - 当前不保证所有 agent 自动原生吃图
   - 如需原生多模态，建议在 `ksadk_prepare_input(payload, session_context)` 中自行消费 `input_parts / attachments`
+
+模型能力判断优先级：
+
+1. 请求里显式传入的 `model_metadata`
+2. runtime 通过 `OPENAI_BASE_URL` / `OPENAI_API_KEY` 查询上游 `/v1/models` 返回的 `architecture.input_modalities`
+3. 本地默认兜底（按文本模型处理）
 
 ### 5.4 当前不支持
 

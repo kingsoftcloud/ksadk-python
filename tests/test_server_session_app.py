@@ -790,6 +790,9 @@ async def test_list_agent_models_action_normalizes_default_metadata(monkeypatch)
                 "function_calling": True,
                 "structured_output": True,
                 "context_caching": True,
+                "multimodal_input_image": False,
+                "multimodal_input_video": False,
+                "multimodal_input_file": False,
             },
             "limits": {
                 "context_window_tokens": 200000,
@@ -905,6 +908,7 @@ async def test_list_agent_models_action_normalizes_kspmas_string_token_limits(mo
     assert items["glm-5.1"]["limits"]["max_output_tokens"] == 128000
     assert items["glm-5.1"]["auto_compact_threshold_tokens"] == 167000
     assert items["glm-5.1"]["architecture"]["input_modalities"] == ["文字"]
+    assert items["glm-5.1"]["capabilities"]["multimodal_input_image"] is False
     assert items["glm-5.1"]["pricing"]["prompt"] == "6"
     assert items["deepseek-v3.2"]["context_window_tokens"] == 128000
     assert items["deepseek-v3.2"]["max_output_tokens"] == 32000
@@ -944,3 +948,51 @@ async def test_legacy_models_routes_are_not_exposed(monkeypatch):
 
     assert get_response.status_code == 404
     assert post_response.status_code in {404, 405}
+
+
+@pytest.mark.asyncio
+async def test_responses_fetches_remote_model_metadata_and_passes_to_runner(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    real_async_client = httpx.AsyncClient
+    service = InMemorySessionService()
+    runner = _DummyRunner()
+
+    monkeypatch.setattr(server_app_module, "runner", runner)
+    monkeypatch.setattr(server_app_module, "_runner_loaded", True)
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://kspmas.ksyun.com/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "secret-key")
+    monkeypatch.setattr(
+        "httpx.AsyncClient",
+        lambda *args, **kwargs: _ExternalModelsAsyncClient(
+            *args,
+            payload={
+                "data": [
+                    {
+                        "id": "kimi-k2.6",
+                        "architecture": {
+                            "input_modalities": ["文字", "图片", "视频"],
+                            "output_modalities": ["文字"],
+                        },
+                    }
+                ]
+            },
+            **kwargs,
+        ),
+    )
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with real_async_client(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/v1/responses",
+            json={
+                "model": "kimi-k2.6",
+                "input": "请分析图片",
+                "stream": False,
+            },
+        )
+
+    assert response.status_code == 200
+    assert runner.calls[0]["model_metadata"]["id"] == "kimi-k2.6"
+    assert runner.calls[0]["model_metadata"]["architecture"]["input_modalities"] == ["文字", "图片", "视频"]
+    assert runner.calls[0]["model_metadata"]["capabilities"]["multimodal_input_image"] is True

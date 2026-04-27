@@ -20,6 +20,9 @@ DEFAULT_MODEL_CAPABILITIES = {
     "function_calling": True,
     "structured_output": True,
     "context_caching": True,
+    "multimodal_input_image": False,
+    "multimodal_input_video": False,
+    "multimodal_input_file": False,
 }
 
 DEFAULT_MODEL_LIMITS = {
@@ -101,6 +104,52 @@ def _lookup(raw: Mapping[str, Any], *paths: str) -> Any:
         if found and current is not None:
             return current
     return None
+
+
+def _normalize_modality_name(raw: Any) -> str:
+    text = str(raw or "").strip().lower()
+    if not text:
+        return ""
+
+    aliases = {
+        "文字": "text",
+        "文本": "text",
+        "text": "text",
+        "图片": "image",
+        "图像": "image",
+        "image": "image",
+        "视频": "video",
+        "video": "video",
+        "文件": "file",
+        "文档": "file",
+        "file": "file",
+    }
+    return aliases.get(text, text)
+
+
+def _extract_input_modalities(raw_model: Mapping[str, Any]) -> list[str]:
+    architecture = raw_model.get("architecture")
+    if not isinstance(architecture, Mapping):
+        return []
+    modalities = architecture.get("input_modalities")
+    if not isinstance(modalities, list):
+        return []
+
+    normalized: list[str] = []
+    for item in modalities:
+        value = _normalize_modality_name(item)
+        if value and value not in normalized:
+            normalized.append(value)
+    return normalized
+
+
+def supports_native_image_input(model_metadata: Mapping[str, Any] | None) -> bool:
+    if not isinstance(model_metadata, Mapping):
+        return False
+    capabilities = model_metadata.get("capabilities")
+    if isinstance(capabilities, Mapping) and capabilities.get("multimodal_input_image") is not None:
+        return bool(capabilities.get("multimodal_input_image"))
+    return "image" in _extract_input_modalities(model_metadata)
 
 
 def estimate_text_tokens(text: str) -> int:
@@ -264,10 +313,15 @@ def normalize_model_metadata(raw_model: Mapping[str, Any] | str | None) -> dict[
         or DEFAULT_TOKENS_PER_MINUTE
     )
 
+    input_modalities = _extract_input_modalities(base)
     capabilities = {
         **DEFAULT_MODEL_CAPABILITIES,
         **dict(base.get("capabilities") or {}),
     }
+    if input_modalities:
+        capabilities["multimodal_input_image"] = "image" in input_modalities
+        capabilities["multimodal_input_video"] = "video" in input_modalities
+        capabilities["multimodal_input_file"] = "file" in input_modalities
     limits = {
         **DEFAULT_MODEL_LIMITS,
         **dict(base.get("limits") or {}),

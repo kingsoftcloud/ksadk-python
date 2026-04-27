@@ -16,6 +16,7 @@ from ksadk.sessions.continuity import LangGraphSessionAdapter
 from ksadk.runners.utils import get_langfuse_callback, get_langfuse_metadata, load_agent_module
 from langgraph.types import Command
 from ksadk.conversations.attachments import classify_attachment_kind, read_attachment_bytes
+from ksadk.conversations.model_context import supports_native_image_input
 
 
 class LangGraphRunner(BaseRunner):
@@ -146,7 +147,12 @@ class LangGraphRunner(BaseRunner):
 
             user_input = normalized_payload["input"] or "[empty message]"
             attachments = list(normalized_payload.get("attachments") or [])
-            user_content = self._build_langgraph_human_content(user_input, attachments)
+            model_metadata = normalized_payload.get("model_metadata")
+            user_content = self._build_langgraph_human_content(
+                user_input,
+                attachments,
+                model_metadata=model_metadata if isinstance(model_metadata, dict) else None,
+            )
             messages.append(HumanMessage(content=user_content))
             state = {k: v for k, v in normalized_payload.items() if k != "input"}
             state["messages"] = messages
@@ -163,7 +169,15 @@ class LangGraphRunner(BaseRunner):
         return normalized_payload
 
     @staticmethod
-    def _build_langgraph_human_content(user_input: str, attachments: list[dict[str, Any]]) -> Any:
+    def _build_langgraph_human_content(
+        user_input: str,
+        attachments: list[dict[str, Any]],
+        *,
+        model_metadata: dict[str, Any] | None,
+    ) -> Any:
+        if not supports_native_image_input(model_metadata):
+            return user_input
+
         image_blocks: list[dict[str, Any]] = []
 
         for attachment in attachments or []:

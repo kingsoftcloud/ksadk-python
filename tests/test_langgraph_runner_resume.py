@@ -135,6 +135,10 @@ async def test_invoke_with_image_attachment_converts_to_multimodal_human_message
         {
             "session_id": "s1",
             "input": "请分析这张图片",
+            "model_metadata": {
+                "id": "kimi-k2.6",
+                "architecture": {"input_modalities": ["文字", "图片"]},
+            },
             "attachments": [
                 {
                     "display_name": "diagram.png",
@@ -165,6 +169,10 @@ async def test_invoke_with_inline_image_attachment_converts_to_multimodal_human_
         {
             "session_id": "s1",
             "input": "请看图",
+            "model_metadata": {
+                "id": "kimi-k2.6",
+                "architecture": {"input_modalities": ["文字", "图片"]},
+            },
             "attachments": [
                 {
                     "display_name": "photo.jpg",
@@ -183,6 +191,36 @@ async def test_invoke_with_inline_image_attachment_converts_to_multimodal_human_
         "type": "image_url",
         "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
     }
+
+
+@pytest.mark.asyncio
+async def test_invoke_with_image_attachment_without_image_capability_keeps_text_content(tmp_path):
+    runner = _make_runner()
+    image_path = tmp_path / "diagram.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\nfake-image")
+
+    await runner.invoke(
+        {
+            "session_id": "s1",
+            "input": "请分析这张图片",
+            "model_metadata": {
+                "id": "glm-5.1",
+                "architecture": {"input_modalities": ["文字"]},
+            },
+            "attachments": [
+                {
+                    "display_name": "diagram.png",
+                    "mime_type": "image/png",
+                    "transport": "reference",
+                    "file_uri": "ksadk-upload://img123",
+                    "storage_path": str(image_path),
+                }
+            ],
+        }
+    )
+
+    content = runner._agent.last_ainvoke_state["messages"][-1].content
+    assert content == "请分析这张图片"
 
 
 @pytest.mark.asyncio
