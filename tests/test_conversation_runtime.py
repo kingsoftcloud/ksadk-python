@@ -5,6 +5,7 @@ import json
 import time
 
 import pytest
+import httpx
 
 from ksadk.conversations.context import build_history_from_events
 from ksadk.conversations.model_context import estimate_text_tokens
@@ -70,6 +71,24 @@ class _ContextCapturingRunner(_StubRunner):
         self.calls.append(input_data)
         self.captured_runtime_context = get_current_invocation_context()
         return {"output": "captured"}
+
+
+class _ExternalModelsAsyncClient:
+    def __init__(self, *args, payload=None, error: Exception | None = None, **kwargs):
+        self._payload = payload
+        self._error = error
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+    async def get(self, url: str, headers: dict | None = None):
+        if self._error is not None:
+            raise self._error
+        request = httpx.Request("GET", url, headers=headers)
+        return httpx.Response(200, json=self._payload, request=request)
 
 
 @pytest.fixture(autouse=True)
@@ -1171,6 +1190,49 @@ async def test_build_run_input_respects_explicit_model_metadata_for_auto_compact
     assert prepared.compaction_triggered is True
     assert prepared.history[0]["role"] == "model"
     assert "Earlier conversation summary:" in prepared.history[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_invoke_conversation_once_fetches_model_metadata_from_remote_catalog(monkeypatch):
+    service = InMemorySessionService()
+    runner = _StubRunner()
+
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://kspmas.ksyun.com/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "secret-key")
+    monkeypatch.setattr(
+        "httpx.AsyncClient",
+        lambda *args, **kwargs: _ExternalModelsAsyncClient(
+            *args,
+            payload={
+                "data": [
+                    {
+                        "id": "kimi-k2.6",
+                        "architecture": {
+                            "input_modalities": ["文字", "图片", "视频"],
+                            "output_modalities": ["文字"],
+                        },
+                    }
+                ]
+            },
+            **kwargs,
+        ),
+    )
+
+    session_id, _ = await invoke_conversation_once(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id=None,
+        messages=[{"role": "user", "content": "请分析图片"}],
+        model="kimi-k2.6",
+        prepare_runner=lambda _runner, _model: None,
+        session_service_provider=lambda: service,
+    )
+
+    assert session_id
+    assert runner.calls[0]["model_metadata"]["id"] == "kimi-k2.6"
+    assert runner.calls[0]["model_metadata"]["architecture"]["input_modalities"] == ["文字", "图片", "视频"]
+    assert runner.calls[0]["model_metadata"]["capabilities"]["multimodal_input_image"] is True
 
 
 @pytest.mark.asyncio

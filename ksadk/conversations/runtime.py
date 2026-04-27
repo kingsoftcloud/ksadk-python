@@ -8,6 +8,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable, Dict, Mapping, Optional, Sequence
 
+import httpx
 from fastapi import HTTPException
 
 from ksadk.conversations.context import (
@@ -62,6 +63,8 @@ SESSION_SUMMARY_MAX_CHARS = 160
 ATTACHMENT_CONTEXT_STATE_KEY = "__ksadk_attachment_context__"
 
 logger = logging.getLogger(__name__)
+_MODEL_CATALOG_CACHE_TTL_SECONDS = 60.0
+_MODEL_CATALOG_CACHE: dict[tuple[str, str], tuple[float, list[dict[str, Any]]]] = {}
 
 
 @dataclass
@@ -80,6 +83,7 @@ class PreparedConversationTurn:
     user_parts: list[dict[str, Any]]
     attachments: list[dict[str, Any]]
     attachment_results: list[dict[str, Any]]
+    model_metadata: dict[str, Any] = field(default_factory=dict)
     instructions: str = ""
     request_metadata: dict[str, Any] = field(default_factory=dict)
     compaction_triggered: bool = False
@@ -580,6 +584,7 @@ def _build_runner_request_payload(
         "attachments": prepared.attachments,
         "attachment_results": prepared.attachment_results,
         "model": model,
+        "model_metadata": prepared.model_metadata,
         "platform_context": runtime_context.to_payload(),
         "kb_context": runtime_context.kb_context,
         "memory_context": runtime_context.memory_context,
@@ -686,6 +691,72 @@ def _resolve_model_metadata(
             resolved["id"] = model
         return normalize_model_metadata(resolved)
     return normalize_model_metadata({"id": model or "agent"})
+
+
+def _model_catalog_endpoint(api_base: str) -> str:
+    base_url = str(api_base or "").rstrip("/")
+    if not base_url:
+        return ""
+    if base_url.endswith("/v1"):
+        return f"{base_url}/models"
+    return f"{base_url}/v1/models"
+
+
+async def _fetch_remote_model_catalog(api_base: str, api_key: str) -> list[dict[str, Any]]:
+    url = _model_catalog_endpoint(api_base)
+    if not url:
+        return []
+
+    headers = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    async with httpx.AsyncClient(verify=False, timeout=10) as client:
+        response = await client.get(url, headers=headers)
+        response.raise_for_status()
+        payload = response.json()
+
+    raw_models = payload if isinstance(payload, list) else list(payload.get("data", []))
+    normalized: list[dict[str, Any]] = []
+    for item in raw_models:
+        if isinstance(item, Mapping) or isinstance(item, str):
+            normalized.append(normalize_model_metadata(item))
+    return normalized
+
+
+async def _resolve_runtime_model_metadata(
+    model: Optional[str],
+    *,
+    model_metadata: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    resolved = _resolve_model_metadata(model, model_metadata=model_metadata)
+    if isinstance(model_metadata, Mapping) or not model:
+        return resolved
+
+    api_base = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE") or ""
+    if not api_base:
+        return resolved
+
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    cache_key = (api_base.rstrip("/"), api_key)
+    now = time.monotonic()
+    cached = _MODEL_CATALOG_CACHE.get(cache_key)
+    models: list[dict[str, Any]]
+    if cached and (now - cached[0]) < _MODEL_CATALOG_CACHE_TTL_SECONDS:
+        models = cached[1]
+    else:
+        try:
+            models = await _fetch_remote_model_catalog(api_base, api_key)
+            _MODEL_CATALOG_CACHE[cache_key] = (now, models)
+        except Exception as exc:
+            logger.debug("Failed to fetch remote model metadata for %s: %s", model, exc)
+            return resolved
+
+    target = str(model).strip()
+    for item in models:
+        if str(item.get("id") or "").strip() == target:
+            return item
+    return resolved
 
 
 def _normalized_conversation_messages(messages: Sequence[Dict[str, Any]]) -> list[dict[str, Any]]:
@@ -971,6 +1042,10 @@ async def preview_auto_compaction(
         )
 
     normalized_messages = _normalized_conversation_messages(messages)
+    resolved_model_metadata = await _resolve_runtime_model_metadata(
+        model,
+        model_metadata=model_metadata,
+    )
     user_input, user_display_input, _, attachments, attachment_results = _latest_user_turn(normalized_messages)
     effective_attachments, effective_attachment_results = _resolve_effective_attachment_context(
         normalized_messages=normalized_messages,
@@ -988,7 +1063,7 @@ async def preview_auto_compaction(
     return _plan_compaction(
         events,
         model=model,
-        model_metadata=model_metadata,
+        model_metadata=resolved_model_metadata,
         pending_events=[pending_event],
     )
 
@@ -1229,6 +1304,10 @@ async def build_run_input(
     )
     resolved_session_id = session.id
     resolved_invocation_id = str(invocation_id or uuid.uuid4())
+    resolved_model_metadata = await _resolve_runtime_model_metadata(
+        model,
+        model_metadata=model_metadata,
+    )
 
     normalized_messages = _normalized_conversation_messages(messages)
     user_input, user_display_input, user_parts, attachments, attachment_results = _latest_user_turn(
@@ -1281,7 +1360,7 @@ async def build_run_input(
         author=agent_id,
         invocation_id=resolved_invocation_id,
         model=model,
-        model_metadata=model_metadata,
+        model_metadata=resolved_model_metadata,
         session_service_provider=provider,
     )
     history = build_history_from_events(await service.get_events(resolved_session_id))
@@ -1297,6 +1376,7 @@ async def build_run_input(
         user_parts=user_parts,
         attachments=effective_attachments,
         attachment_results=effective_attachment_results,
+        model_metadata=resolved_model_metadata,
         instructions=normalized_instructions,
         request_metadata=normalized_request_metadata,
         compaction_triggered=checkpoint is not None,
@@ -1398,7 +1478,7 @@ async def invoke_conversation_once(
                     author=runner_name,
                     invocation_id=prepared.invocation_id,
                     model=model,
-                    model_metadata=model_metadata,
+                    model_metadata=prepared.model_metadata,
                     force=True,
                     trigger="prompt_too_long",
                     keep_tail_groups=PTL_RETRY_KEEP_TAIL_GROUPS,
@@ -1659,7 +1739,7 @@ async def _iter_conversation_turn_events(
                     author=runner_name,
                     invocation_id=prepared.invocation_id,
                     model=model,
-                    model_metadata=model_metadata,
+                    model_metadata=prepared.model_metadata,
                     force=True,
                     trigger="prompt_too_long",
                     keep_tail_groups=PTL_RETRY_KEEP_TAIL_GROUPS,
