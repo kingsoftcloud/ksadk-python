@@ -72,11 +72,27 @@ flowchart LR
 
 ### 3.1 gateway 鉴权
 
-当前默认固定为：
+当前默认值仍然是：
 
 - `OPENCLAW_GATEWAY_AUTH_MODE=trusted-proxy`
 
-CLI 会拒绝在 `deploy --env` 中把它改成 `token`。
+但现在可以显式切到 token 模式：
+
+```bash
+agentengine openclaw deploy \
+  --env OPENCLAW_GATEWAY_AUTH_MODE=token \
+  --env OPENCLAW_GATEWAY_TOKEN=gateway-token-demo
+```
+
+兼容别名：
+
+- `OPENCLAW_GATEWAY_PASSWORD`
+
+行为说明：
+
+- 托管 Dashboard/短链刷新仍走 cookie session，不要求浏览器持有 token。
+- Router 会在服务端向 upstream runtime 注入 `Authorization: Bearer <OPENCLAW_GATEWAY_TOKEN>`。
+- 如果直接访问实例公网入口，则客户端需要自己带 Bearer token。
 
 ### 3.2 workspace files
 

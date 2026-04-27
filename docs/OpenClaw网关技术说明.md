@@ -1,6 +1,6 @@
 # OpenClaw 网关服务技术文档（Dashboard + HTTP/WS 代理）
 
-> 文档范围：`agentengine-server` 网关路由与短链接访问链路，聚焦 OpenClaw trusted-proxy 模式与能力层协同。  
+> 文档范围：`agentengine-server` 网关路由与短链接访问链路，聚焦 OpenClaw 默认 `trusted-proxy` 模式与可选 `token` 模式。
 > 读者：平台架构、后端、安全、解决方案与售前技术团队。
 
 ## 1. 技术目标
@@ -15,16 +15,16 @@
 
 1. 访问入口统一：短链接 `/s/{link_id}`。
 2. 会话统一：cookie session 承载 UI 上下文。
-3. 身份统一：`trusted-proxy` 头由网关注入，前端不伪造。
+3. 身份统一：默认由网关注入 `trusted-proxy` 头；在 token 模式下由网关/客户端提供 Bearer token。
 4. 协议统一：HTTP 与 WebSocket 共享同一认证上下文。
 5. 能力统一：网关路由与技能执行层协同，支撑安全/搜索/浏览器工具场景。
 
 ## 3. 核心组件
 
 - `dashboard_access_link_service.py`  
-  负责创建/解析短链接，并解析 OpenClaw trusted-proxy 用户头配置。
+  负责创建/解析短链接，并解析 OpenClaw gateway auth mode / trusted-proxy 用户头 / token 配置。
 - `router_service.py`  
-  负责短链接入口、HTTP 代理、WS 代理、session 校验、trusted-proxy 头注入。
+  负责短链接入口、HTTP 代理、WS 代理、session 校验，以及按模式选择 trusted-proxy 头注入或 Bearer token 透传。
 - `bootstrap_actions.py`  
   负责下发客户端启动配置（默认镜像、升级提示、公告）。
 
@@ -106,11 +106,11 @@ sequenceDiagram
     R-->>-B: 最终呈现 UI 页面与交互数据
 ```
 
-## 6. trusted-proxy 身份模型
+## 6. OpenClaw 身份模型
 
-### 6.1 注入头集合
+### 6.1 `trusted-proxy` 模式
 
-当 `framework=openclaw` 时，网关注入：
+当 `framework=openclaw` 且 `openclaw_gateway_auth_mode=trusted-proxy` 时，网关注入：
 
 - 自定义用户头（默认 `x-forwarded-user`）
 - `x-forwarded-user`
@@ -120,10 +120,22 @@ sequenceDiagram
 
 用户值优先取 `account_id`，缺失时回退 `anonymous`。
 
-### 6.2 安全收益
+### 6.2 `token` 模式
+
+当实例显式配置：
+
+- `OPENCLAW_GATEWAY_AUTH_MODE=token`
+- `OPENCLAW_GATEWAY_TOKEN=<shared-secret>`
+
+会有两条行为：
+
+- 直连请求：客户端带 `Authorization: Bearer <OPENCLAW_GATEWAY_TOKEN>` 访问数据面，外层网关先校验，再转发给 Router。
+- Dashboard/短链请求：浏览器仍只拿 cookie；Router 从短会话里读取 token，再向 upstream runtime 注入 Bearer header。
+
+### 6.3 安全收益
 
 - 前端仅持有短期 cookie，不持有后端长期身份凭证。
-- OpenClaw 只信任代理链路身份头，减少前端伪造风险。
+- OpenClaw 在默认模式下只信任代理链路身份头；在 token 模式下只信任 shared secret。
 - 分享链接可过期/可撤销，便于审计与风控。
 
 ## 7. Session 与生命周期策略
@@ -138,14 +150,14 @@ sequenceDiagram
 ### 8.1 HTTP
 
 - Agent 解析优先级：`X-Auth-Agent-Id` > `Authorization` 校验 > cookie session。
-- 代理前过滤冲突头，再注入 trusted-proxy 头。
+- 代理前过滤冲突头，再按模式注入 trusted-proxy 头或 Bearer token。
 - SSE/stream 走流式转发，降低缓冲带来的延迟。
 
 ### 8.2 WebSocket
 
 - 复用 cookie/authorization 的统一身份解析。
 - 透传 origin/subprotocol，提升前端兼容性。
-- trusted-proxy 头通过 `additional_headers`（或兼容 `extra_headers`）注入上游连接。
+- trusted-proxy 头或 Bearer token 通过 `additional_headers`（或兼容 `extra_headers`）注入上游连接。
 
 ## 9. 客户端联动与动态配置
 

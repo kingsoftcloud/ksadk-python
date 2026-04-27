@@ -116,9 +116,74 @@ agentengine openclaw deploy
 agentengine openclaw status
 ```
 
-## 5. Framework、挂盘与 workspace 约定
+## 5. `/v1/responses` OpenAI 兼容接口
 
-### 5.1 默认 PVC 规则
+本地 `agentengine run -i` 启动后，AgentEngine 暴露 `/v1/responses`。这一接口优先兼容 OpenAI Responses 的返回结构和 SSE 生命周期，同时保留少量 `ksadk` 扩展字段，方便会话和本地 CLI 继续工作。
+
+### 5.1 非流式调用
+
+```bash
+curl http://127.0.0.1:8000/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "glm-5.1",
+    "input": "请用一句话介绍 AgentEngine",
+    "instructions": "只用中文回答，语气简洁",
+    "metadata": {"source": "local-doc"}
+  }'
+```
+
+当前支持的常用请求字段：
+
+- `input`：字符串或 OpenAI message/input item 列表。
+- `model`：本轮请求使用的模型，会同步到运行时环境。
+- `instructions`：本轮系统/开发者指令，不写入用户消息正文；LangGraph 会转为 system message，字符串输入类 runner 会作为 prompt 前缀。
+- `metadata`：请求元数据，会回显到 response object，并记录到本轮事件 metadata；不参与模型生成。
+- `stream`：`true` 时返回 SSE。
+- `session_id`：复用已有会话；未传时自动创建。
+
+非流式响应包含官方风格字段：`id`、`object`、`created_at`、`status`、`model`、`output`、`metadata`、`usage`、`error`、`incomplete_details`。同时保留 `output_text` 和 `session_id` 作为 `ksadk` 扩展，兼容现有调用方。
+
+### 5.2 流式调用
+
+```bash
+curl -N http://127.0.0.1:8000/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "glm-5.1",
+    "session_id": "sess-demo-001",
+    "input": [{"role": "user", "content": [{"type": "input_text", "text": "分析这个任务"}]}],
+    "stream": true
+  }'
+```
+
+`model` 和 `session_id` 在流式与非流式调用中都可传；`session_id` 用来复用同一会话，未传时自动创建。
+
+流式事件按 Responses 生命周期输出：
+
+- `response.created` / `response.in_progress`：响应创建与开始运行。
+- `response.output_item.added` / `response.content_part.added`：开始输出 message、reasoning、function call 或 MCP approval request。
+- `response.output_text.delta` / `response.output_text.done`：正文增量与正文完成。
+- `response.reasoning.delta`：思考内容增量，前端可选择单独渲染。
+- `response.function_call_arguments.delta` / `response.function_call_arguments.done`：工具调用参数；底层一次性拿到参数时也会按一次 delta + done 输出。
+- `response.output_item.done` / `response.content_part.done`：输出项或内容块完成。
+- `response.completed`：本轮完成。
+- `response.failed`：运行失败。
+- `response.incomplete`：需要人工审核或中断恢复。
+
+工具结果和人工审核的兼容策略：
+
+- `response.ksadk.tool_result`：工具执行结果。
+- 能明确识别为工具审批的 interrupt 会渲染为官方风格 `mcp_approval_request` output item。
+- 其他通用 interrupt 使用 `response.ksadk.approval_request` 扩展事件；最终 response 会以 `status: "incomplete"` 返回，并在 `incomplete_details.ksadk_interrupt` 中包含中断信息。
+
+### 5.3 当前不支持
+
+本期不支持 `previous_response_id`、`store`、复杂 `reasoning/text` 控制、完整 tool schema 请求面，也不新增原生 LangGraph state endpoint。自定义 LangGraph State 请使用 `ksadk_prepare_state` 或 `agentengine init --from-agent` 自动生成的 adapter。
+
+## 6. Framework、挂盘与 workspace 约定
+
+### 6.1 默认 PVC 规则
 
 来自 `ksadk/cli/storage.py` 的统一约束：
 
@@ -126,7 +191,7 @@ agentengine openclaw status
 - 最小容量：`20Gi`
 - 最大容量：`500Gi`
 
-### 5.2 默认挂载目录
+### 6.2 默认挂载目录
 
 | Framework | 默认挂载目录 | workspace 逻辑根 | 当前代码里可直接确认的绝对路径 |
 | --- | --- | --- | --- |
@@ -159,7 +224,7 @@ flowchart TB
   OpenClawRoot --> Logical
 ```
 
-## 6. `build / deploy / launch` 参数
+## 7. `build / deploy / launch` 参数
 
 以下参数在 `deploy`、`launch` 以及对应 framework 命令中统一存在：
 
@@ -182,9 +247,9 @@ agentengine openclaw deploy --no-storage
 - 容量会在客户端侧先做 `20~500Gi` 校验。
 - `--no-storage` 会显式关闭默认 PVC 挂载。
 
-## 7. `agentengine files` 工作区文件管理
+## 8. `agentengine files` 工作区文件管理
 
-### 7.1 子命令清单
+### 8.1 子命令清单
 
 - `agentengine files list`
 - `agentengine files upload`
@@ -193,7 +258,7 @@ agentengine openclaw deploy --no-storage
 - `agentengine files push`
 - `agentengine files pull`
 
-### 7.2 路径语义
+### 8.2 路径语义
 
 - 远端路径统一是 workspace 相对路径。
 - `.`、空字符串和 `/` 会被解释为逻辑根 `workspace:/`。
@@ -201,7 +266,7 @@ agentengine openclaw deploy --no-storage
   - 逻辑路径：`workspace:/docs/readme.md`
   - 真实路径：当运行时返回真实根目录时，显示绝对路径
 
-### 7.3 常用示例
+### 8.3 常用示例
 
 列目录：
 
@@ -248,7 +313,7 @@ agentengine files pull \
   --local-dir ./synced
 ```
 
-### 7.4 `push / pull` 覆盖策略
+### 8.4 `push / pull` 覆盖策略
 
 - 默认不会强制覆盖已有文件。
 - 加 `--force` 时，已有同名文件会进入 `overwritten` 结果集。
@@ -257,7 +322,7 @@ agentengine files pull \
   - `overwritten`
   - `skipped`
 
-### 7.5 JSON 输出
+### 8.5 JSON 输出
 
 所有 `files` 子命令都可配合 `--output json` 使用。典型字段包括：
 
@@ -270,7 +335,7 @@ agentengine files pull \
 - `transport_mode`
 - `results.created / overwritten / skipped`
 
-### 7.6 大小限制
+### 8.6 大小限制
 
 当前统一上限来自 `ksadk_runtime_common.workspace_files.constants`：
 
@@ -281,7 +346,7 @@ agentengine files pull \
 - 本地目录中任一单文件不能超过上限
 - 本地目录总大小也不能超过同一个上限
 
-### 7.7 传输模式
+### 8.7 传输模式
 
 CLI 内部会在两种模式间切换：
 
@@ -295,11 +360,11 @@ CLI 内部会在两种模式间切换：
 
 更完整的协议与安全说明见 [工作区文件技术设计](./工作区文件技术设计.md)。
 
-## 8. `agentengine agent invoke`
+## 9. `agentengine agent invoke`
 
 `agentengine agent invoke` 是当前主线命令；`agentengine invoke` 仍保留为兼容别名。
 
-### 8.1 常见用法
+### 9.1 常见用法
 
 ```bash
 agentengine agent invoke my-agent
@@ -307,7 +372,7 @@ agentengine agent invoke my-agent --message "你好"
 agentengine agent invoke my-agent --transport chat
 ```
 
-### 8.2 Hermes 远端 native 模式
+### 9.2 Hermes 远端 native 模式
 
 `--local-workspace` 只支持 Hermes 的远端 native 模式：
 
@@ -333,13 +398,13 @@ agentengine agent invoke my-hermes \
 - 会先读取 `GetAgentUiBootstrap` 中的 `WorkspaceFiles.MaxUploadBytes`
 - 如 bootstrap 获取失败，则回退到默认 `100MB`
 
-### 8.3 约束
+### 9.3 约束
 
 - `--remote-workspace-path` 必须与 `--local-workspace` 一起使用
 - `--local-workspace` 不能和单次 `--message` 模式一起使用
 - 当前只支持 Hermes 远端 native 模式
 
-## 9. Hermes 命令主线
+## 10. Hermes 命令主线
 
 常用命令：
 
@@ -357,7 +422,7 @@ agentengine hermes exec -- status
 - 默认挂载目录：`/home/node/.hermes`
 - 默认 workspace 根目录：`/home/node/.hermes/workspace`
 
-## 10. OpenClaw 命令主线
+## 11. OpenClaw 命令主线
 
 常用命令：
 
@@ -369,7 +434,7 @@ agentengine openclaw gateway doctor
 agentengine openclaw channel status --probe
 ```
 
-### 10.1 当前支持的记忆参数
+### 11.1 当前支持的记忆参数
 
 ```bash
 agentengine openclaw deploy --memory-system openclaw_default
@@ -386,14 +451,14 @@ agentengine openclaw deploy \
 - `--memory-system openclaw_default` 时不能再传 mem0 细节参数
 - 不显式传 `--memory-system` 时，CLI 不会主动覆盖现有服务端配置
 
-### 10.2 当前 mem0 行为
+### 11.2 当前 mem0 行为
 
 - OpenClaw 镜像内置 mem0 插件资产
 - bootstrap 默认把 `openclaw-mem0` 视为延迟同步插件
 - 只有在存在 `MEMORY_BACKEND_MANIFEST` 且渲染结果要求该插件时，才会把插件真正同步到实例目录
 - 不使用 mem0 时，不会把该插件种到实例的持久化状态里
 
-### 10.3 OpenClaw 存储默认值
+### 11.3 OpenClaw 存储默认值
 
 - 默认 PVC 大小：`20Gi`
 - 默认挂载目录：`/home/node/.openclaw`
@@ -401,9 +466,9 @@ agentengine openclaw deploy \
 
 更多 OpenClaw 细节见 [OpenClaw一键部署指南](./openclaw一键部署指南.md)。
 
-## 11. 常见验证项
+## 12. 常见验证项
 
-### 11.1 验证工作区文件
+### 12.1 验证工作区文件
 
 ```bash
 agentengine files list --output json
@@ -411,7 +476,7 @@ agentengine files push --local-dir ./workspace --remote-path demo
 agentengine files pull --remote-path demo --local-dir ./downloaded --force
 ```
 
-### 11.2 验证 Hermes remote workspace
+### 12.2 验证 Hermes remote workspace
 
 ```bash
 agentengine agent invoke hermes-demo \
@@ -419,7 +484,7 @@ agentengine agent invoke hermes-demo \
   --local-workspace ./workspace
 ```
 
-### 11.3 验证 OpenClaw mem0 参数
+### 12.3 验证 OpenClaw mem0 参数
 
 ```bash
 agentengine openclaw deploy \
@@ -427,7 +492,7 @@ agentengine openclaw deploy \
   --mem0-instance-id e52b7fac-e641-4b34-b9f7-6b0b9f190cd4
 ```
 
-## 12. 相关文档
+## 13. 相关文档
 
 - [ksadk技术设计](./ksadk技术设计.md)
 - [工作区文件技术设计](./工作区文件技术设计.md)

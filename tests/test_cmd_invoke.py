@@ -615,13 +615,13 @@ def test_sync_local_workspace_for_hermes_invoke_reports_progress(monkeypatch, tm
 
     assert payload["total_files"] == 1
     assert [event["phase"] for event in events] == [
-        "scan_done",
         "limit_done",
+        "scan_done",
         "upload_start",
         "upload_done",
     ]
-    assert events[0]["total_files"] == 1
-    assert events[0]["total_bytes"] == 5
+    assert events[1]["total_files"] == 1
+    assert events[1]["total_bytes"] == 5
 
 
 def test_sync_local_workspace_for_hermes_invoke_ignores_local_dev_artifacts(monkeypatch, tmp_path: Path):
@@ -675,15 +675,16 @@ def test_sync_local_workspace_for_hermes_invoke_ignores_local_dev_artifacts(monk
     )
 
     assert payload["total_files"] == 1
-    assert events[0]["total_files"] == 1
-    assert events[0]["total_bytes"] == 12
+    assert events[1]["total_files"] == 1
+    assert events[1]["total_bytes"] == 12
     assert captured["ignore_dev_artifacts"] is True
 
 
 def test_emit_workspace_sync_progress_shows_percentage_bar(capsys):
-    from ksadk.cli.cmd_invoke import _emit_workspace_sync_progress
+    from ksadk.cli.cmd_invoke import _build_workspace_sync_progress_emitter
 
-    _emit_workspace_sync_progress(
+    emitter = _build_workspace_sync_progress_emitter(verbose=True)
+    emitter(
         {
             "phase": "upload_start",
             "current": 2,
@@ -698,6 +699,249 @@ def test_emit_workspace_sync_progress_shows_percentage_bar(capsys):
     assert "2/4" in output
     assert "上传 demo-workspace/app.py" in output
     assert "[" in output and "]" in output
+
+
+def test_workspace_sync_progress_emitter_uses_inline_updates_by_default(monkeypatch):
+    from ksadk.cli import cmd_invoke
+
+    echo_calls: list[dict] = []
+
+    def _fake_echo(message="", **kwargs):
+        echo_calls.append({"message": message, "kwargs": kwargs})
+
+    monkeypatch.setattr(cmd_invoke.click, "echo", _fake_echo)
+    monkeypatch.setattr(cmd_invoke.click, "secho", lambda *args, **kwargs: None)
+
+    emitter = cmd_invoke._build_workspace_sync_progress_emitter(verbose=False)
+    emitter(
+        {
+            "phase": "upload_start",
+            "current": 1,
+            "total": 3,
+            "remote_path": "demo-workspace/a-very-long-file-name.txt",
+            "size_bytes": 5,
+        }
+    )
+    emitter(
+        {
+            "phase": "upload_start",
+            "current": 2,
+            "total": 3,
+            "remote_path": "b.txt",
+            "size_bytes": 5,
+        }
+    )
+    emitter(
+        {
+            "phase": "upload_done",
+            "current": 3,
+            "total": 3,
+            "remote_path": "demo-workspace/c.txt",
+        }
+    )
+
+    upload_calls = [call for call in echo_calls if "上传 " in str(call["message"])]
+    assert len(upload_calls) == 2
+    assert all(call["kwargs"].get("nl") is False for call in upload_calls)
+    assert any(call["message"] == "" for call in echo_calls)
+    assert str(upload_calls[1]["message"]).endswith(" ")
+
+
+def test_workspace_sync_progress_emitter_supports_verbose_file_logs(monkeypatch):
+    from ksadk.cli import cmd_invoke
+
+    echo_calls: list[dict] = []
+
+    def _fake_echo(message="", **kwargs):
+        echo_calls.append({"message": message, "kwargs": kwargs})
+
+    monkeypatch.setattr(cmd_invoke.click, "echo", _fake_echo)
+    monkeypatch.setattr(cmd_invoke.click, "secho", lambda *args, **kwargs: None)
+
+    emitter = cmd_invoke._build_workspace_sync_progress_emitter(verbose=True)
+    emitter(
+        {
+            "phase": "upload_start",
+            "current": 2,
+            "total": 4,
+            "remote_path": "demo-workspace/app.py",
+            "size_bytes": 12,
+        }
+    )
+
+    assert echo_calls
+    assert "上传 demo-workspace/app.py" in str(echo_calls[0]["message"])
+    assert echo_calls[0]["kwargs"].get("nl", True) is True
+
+
+def test_run_invoke_command_builds_verbose_workspace_sync_emitter(monkeypatch, tmp_path: Path):
+    workspace_dir = tmp_path / "demo-workspace"
+    workspace_dir.mkdir()
+    (workspace_dir / "notes.txt").write_text("hello workspace", encoding="utf-8")
+    (tmp_path / ".agentengine.state").write_text(
+        yaml.safe_dump(
+            {
+                "agent_id": "ar-hermes-1",
+                "type": "hermes",
+                "framework": "hermes",
+                "endpoint": "https://hermes.example.com",
+                "api_key": "ak-hermes",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    captured: dict[str, object] = {}
+
+    async def _fake_sync_local_workspace_for_hermes_invoke(**kwargs):
+        captured["progress_callback"] = kwargs["progress_callback"]
+        return {
+            "remote_path": "demo-workspace",
+            "local_dir": str(workspace_dir),
+            "created": ["demo-workspace/notes.txt"],
+            "overwritten": [],
+            "skipped": [],
+            "total_files": 1,
+            "direction": "push",
+        }
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_invoke._sync_local_workspace_for_hermes_invoke",
+        _fake_sync_local_workspace_for_hermes_invoke,
+    )
+    monkeypatch.setattr("ksadk.cli.cmd_invoke._emit_sync_payload", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("ksadk.cli.cmd_invoke._build_sync_payload", lambda payload: payload)
+    monkeypatch.setattr("ksadk.cli.cmd_invoke._invoke_hermes_terminal_tui", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_invoke._build_workspace_sync_progress_emitter",
+        lambda verbose: captured.setdefault("verbose_workspace_sync", verbose) or (lambda _event: None),
+    )
+
+    run_invoke_command(
+        agent_ref=None,
+        agent_option=None,
+        endpoint="https://hermes.example.com",
+        api_key=None,
+        message=None,
+        session=None,
+        region="pre-online",
+        local=False,
+        insecure=False,
+        transport="auto",
+        model=None,
+        show_thinking=False,
+        local_workspace=str(workspace_dir),
+        remote_workspace_path=None,
+        verbose_workspace_sync=True,
+    )
+
+    assert captured["verbose_workspace_sync"] is True
+
+
+def test_sync_local_workspace_for_hermes_invoke_keeps_git_when_under_limit(monkeypatch, tmp_path: Path):
+    from ksadk.cli.cmd_invoke import _sync_local_workspace_for_hermes_invoke
+
+    workspace_dir = tmp_path / "demo-workspace"
+    workspace_dir.mkdir()
+    (workspace_dir / "app.py").write_text("print('ok')\n", encoding="utf-8")
+    git_dir = workspace_dir / ".git"
+    git_dir.mkdir()
+    (git_dir / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+
+    captured: dict[str, object] = {}
+
+    async def _fake_lookup_workspace_upload_limit(**_kwargs):
+        return 1024 * 1024
+
+    async def _fake_push_workspace_files(**kwargs):
+        captured["ignore_git_artifacts"] = kwargs["ignore_git_artifacts"]
+        return {
+            "remote_path": "demo-workspace",
+            "local_dir": str(workspace_dir),
+            "created": ["demo-workspace/app.py", "demo-workspace/.git/HEAD"],
+            "overwritten": [],
+            "skipped": [],
+            "total_files": 2,
+            "direction": "push",
+        }
+
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_invoke._lookup_workspace_upload_limit",
+        _fake_lookup_workspace_upload_limit,
+    )
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_invoke._push_workspace_files",
+        _fake_push_workspace_files,
+    )
+
+    payload = asyncio.run(
+        _sync_local_workspace_for_hermes_invoke(
+            agent_ref="ar-hermes-1",
+            local_workspace=workspace_dir,
+            remote_path="demo-workspace",
+            region="pre-online",
+            endpoint="https://hermes.example.com",
+            api_key="ak-hermes",
+        )
+    )
+
+    assert payload["total_files"] == 2
+    assert captured["ignore_git_artifacts"] is False
+
+
+def test_sync_local_workspace_for_hermes_invoke_drops_git_when_needed_for_limit(monkeypatch, tmp_path: Path):
+    from ksadk.cli.cmd_invoke import _sync_local_workspace_for_hermes_invoke
+
+    workspace_dir = tmp_path / "demo-workspace"
+    workspace_dir.mkdir()
+    (workspace_dir / "app.py").write_text("print('ok')\n", encoding="utf-8")
+    git_objects = workspace_dir / ".git" / "objects"
+    git_objects.mkdir(parents=True)
+    (git_objects / "blob").write_bytes(b"x" * 600)
+
+    events: list[dict] = []
+    captured: dict[str, object] = {}
+
+    async def _fake_lookup_workspace_upload_limit(**_kwargs):
+        return 512
+
+    async def _fake_push_workspace_files(**kwargs):
+        captured["ignore_git_artifacts"] = kwargs["ignore_git_artifacts"]
+        return {
+            "remote_path": "demo-workspace",
+            "local_dir": str(workspace_dir),
+            "created": ["demo-workspace/app.py"],
+            "overwritten": [],
+            "skipped": [],
+            "total_files": 1,
+            "direction": "push",
+        }
+
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_invoke._lookup_workspace_upload_limit",
+        _fake_lookup_workspace_upload_limit,
+    )
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_invoke._push_workspace_files",
+        _fake_push_workspace_files,
+    )
+
+    payload = asyncio.run(
+        _sync_local_workspace_for_hermes_invoke(
+            agent_ref="ar-hermes-1",
+            local_workspace=workspace_dir,
+            remote_path="demo-workspace",
+            region="pre-online",
+            endpoint="https://hermes.example.com",
+            api_key="ak-hermes",
+            progress_callback=events.append,
+        )
+    )
+
+    assert payload["total_files"] == 1
+    assert captured["ignore_git_artifacts"] is True
+    assert ".git" in events[1]["ignored_artifacts"]
 
 
 def test_sync_local_workspace_for_hermes_invoke_wraps_remote_errors(monkeypatch, tmp_path: Path):

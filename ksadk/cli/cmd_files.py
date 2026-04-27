@@ -418,17 +418,25 @@ def _ignored_local_dev_artifact_label_for_file(filename: str) -> str | None:
     return None
 
 
-def _collect_local_files_report(local_dir: Path, *, ignore_dev_artifacts: bool = False) -> dict:
+def _collect_local_files_report(
+    local_dir: Path,
+    *,
+    ignore_dev_artifacts: bool = False,
+    ignore_git_artifacts: bool = True,
+) -> dict:
     files: list[tuple[str, Path]] = []
     ignored_artifacts: set[str] = set()
     total_bytes = 0
+    ignored_dir_names = set(LOCAL_DEV_ARTIFACT_DIR_NAMES)
+    if not ignore_git_artifacts:
+        ignored_dir_names.discard(".git")
 
     for root, dirnames, filenames in os.walk(local_dir, topdown=True):
         root_path = Path(root)
         if ignore_dev_artifacts:
             kept_dirs: list[str] = []
             for dirname in sorted(dirnames):
-                if dirname in LOCAL_DEV_ARTIFACT_DIR_NAMES:
+                if dirname in ignored_dir_names:
                     ignored_artifacts.add(dirname)
                     continue
                 kept_dirs.append(dirname)
@@ -455,10 +463,16 @@ def _collect_local_files_report(local_dir: Path, *, ignore_dev_artifacts: bool =
     }
 
 
-def _collect_local_files(local_dir: Path, *, ignore_dev_artifacts: bool = False) -> list[tuple[str, Path]]:
+def _collect_local_files(
+    local_dir: Path,
+    *,
+    ignore_dev_artifacts: bool = False,
+    ignore_git_artifacts: bool = True,
+) -> list[tuple[str, Path]]:
     return _collect_local_files_report(
         local_dir,
         ignore_dev_artifacts=ignore_dev_artifacts,
+        ignore_git_artifacts=ignore_git_artifacts,
     )["files"]
 
 
@@ -694,11 +708,13 @@ async def _push_workspace_files(
     api_key: str | None,
     progress_callback: Callable[[dict], None] | None = None,
     ignore_dev_artifacts: bool = False,
+    ignore_git_artifacts: bool = True,
 ) -> dict:
     remote_dir = _normalize_workspace_dir(remote_path)
     local_report = _collect_local_files_report(
         local_dir,
         ignore_dev_artifacts=ignore_dev_artifacts,
+        ignore_git_artifacts=ignore_git_artifacts,
     )
     local_files = local_report["files"]
     total_bytes = int(local_report["total_bytes"])

@@ -88,15 +88,51 @@ class LangGraphRunner(BaseRunner):
             if key not in {"platform_context", "kb_context", "memory_context"}
         }
 
+    def _has_prepare_state_hook(self) -> bool:
+        module = getattr(self, "_module", None)
+        return callable(getattr(module, "ksadk_prepare_state", None))
+
+    def _prepare_state_with_hook(
+        self,
+        payload: Dict[str, Any],
+        session_id: str,
+        history: list,
+        *,
+        is_resume: bool = False,
+    ) -> Dict[str, Any]:
+        module = getattr(self, "_module", None)
+        prepare_state = getattr(module, "ksadk_prepare_state", None)
+        if not callable(prepare_state):
+            return self._to_state(payload, history)
+
+        normalized_payload = self._strip_platform_context_fields(payload)
+        session_context = {
+            "session_id": session_id,
+            "history": list(history),
+            "is_resume": bool(is_resume),
+            "platform_context": payload.get("platform_context"),
+            "kb_context": payload.get("kb_context"),
+            "memory_context": payload.get("memory_context"),
+        }
+        prepared = prepare_state(dict(normalized_payload), session_context)
+        if not isinstance(prepared, dict):
+            raise TypeError("ksadk_prepare_state(payload, session_context) must return a dict")
+        return prepared
+
     def _to_state(self, payload: Dict[str, Any], history: list) -> Dict[str, Any]:
         """将简化输入转换为 state，并保留除 input 外的附加字段。"""
         normalized_payload = self._strip_platform_context_fields(payload)
         ambient_text = self._ambient_context_text(payload)
+        instructions = str(normalized_payload.pop("instructions", "") or "").strip()
+        system_sections = [section for section in (instructions, ambient_text) if section]
+        system_text = "\n\n".join(system_sections)
 
         if "input" in normalized_payload and "messages" not in normalized_payload:
-            from langchain_core.messages import HumanMessage, AIMessage
+            from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
             messages = []
+            if system_text:
+                messages.append(SystemMessage(content=system_text))
             for msg in history:
                 role = msg.get("role")
                 content = msg.get("content", "")
@@ -106,8 +142,6 @@ class LangGraphRunner(BaseRunner):
                     messages.append(AIMessage(content=content))
 
             user_input = normalized_payload["input"] or "[empty message]"
-            if ambient_text:
-                user_input = f"{ambient_text}\n\nCurrent user input:\n{user_input}"
             messages.append(HumanMessage(content=user_input))
             state = {k: v for k, v in normalized_payload.items() if k != "input"}
             state["messages"] = messages
@@ -115,10 +149,10 @@ class LangGraphRunner(BaseRunner):
 
         if "messages" in normalized_payload:
             state = dict(normalized_payload)
-            if ambient_text and isinstance(state.get("messages"), list):
+            if system_text and isinstance(state.get("messages"), list):
                 from langchain_core.messages import SystemMessage
 
-                state["messages"] = [SystemMessage(content=ambient_text), *state["messages"]]
+                state["messages"] = [SystemMessage(content=system_text), *state["messages"]]
             return state
 
         return normalized_payload
@@ -161,10 +195,9 @@ class LangGraphRunner(BaseRunner):
         config = self._get_config(session_id)
         
         # 判断输入格式 / resume
-        if is_resume:
-            # resume 支持两种形态:
-            # 1) {"resume": true, "input": <resume_value>}
-            # 2) {"resume": true, ...任意 payload...}
+        if self._has_prepare_state_hook():
+            state = self._prepare_state_with_hook(payload, session_id, history, is_resume=is_resume)
+        elif is_resume:
             if "input" in normalized_payload and len(normalized_payload) == 1:
                 state = normalized_payload["input"]
             else:
@@ -241,7 +274,9 @@ class LangGraphRunner(BaseRunner):
         
         config = self._get_config(session_id)
 
-        if is_resume:
+        if self._has_prepare_state_hook():
+            state = self._prepare_state_with_hook(payload, session_id, history, is_resume=is_resume)
+        elif is_resume:
             if "input" in normalized_payload and len(normalized_payload) == 1:
                 state = normalized_payload["input"]
             else:

@@ -66,7 +66,7 @@ Hermes runtime 当前同时提供：
 
 - 如果 `OPENAI_BASE_URL` 指向公共 `kspmas.ksyun.com`，会在云端改写为可达的内部地址
 - `glm-5.1` 会自动补 `HERMES_CONTEXT_LENGTH=200000`
-- KSPMAS / `glm-5.1` 部署默认 fallback 到 `kimi-k2.5`
+- KSPMAS / `glm-5.1` 部署默认 fallback 到 `kimi-k2.6`
 
 ## 7. workspace files 集成
 
@@ -96,7 +96,7 @@ agentengine hermes deploy
 
 ```bash
 make hermes-build
-make hermes-push HERMES_TAG=2026.4.16
+make hermes-push HERMES_TAG=2026.4.23
 make hermes-size
 ```
 

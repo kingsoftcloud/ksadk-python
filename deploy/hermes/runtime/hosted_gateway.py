@@ -162,8 +162,6 @@ def hosted_gateway_setup() -> None:
 
 
 def hosted_gateway_command(args) -> None:
-    import hermes_cli.gateway as gateway
-
     global _ORIGINAL_GATEWAY_COMMAND
     subcmd = getattr(args, "gateway_command", None)
     if subcmd == "setup":

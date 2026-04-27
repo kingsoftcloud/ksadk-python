@@ -19,7 +19,7 @@ CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-${STATE_DIR}/openclaw.json}"
 BOOTSTRAP_MARKER="${STATE_DIR}/.bootstrapped"
 PUBLIC_PORT="${OPENCLAW_PUBLIC_PORT:-19089}"
 BIND_MODE="${OPENCLAW_GATEWAY_BIND:-lan}"
-AUTH_MODE="trusted-proxy"
+AUTH_MODE="$(printf '%s' "${OPENCLAW_GATEWAY_AUTH_MODE:-trusted-proxy}" | tr '[:upper:]' '[:lower:]')"
 BROWSER_EXECUTABLE_DEFAULT="/usr/bin/chromium"
 WORKSPACE_DIR="${OPENCLAW_WORKSPACE_DIR:-${STATE_DIR}/workspace}"
 WORKSPACE_FILES_PORT="${OPENCLAW_WORKSPACE_FILES_PORT:-8091}"
@@ -1417,7 +1417,6 @@ const crypto = require('crypto');
 const configPath = process.env.CONFIG_PATH;
 const publicPort = process.env.PUBLIC_PORT;
 const bind = process.env.BIND_MODE;
-const authMode = process.env.AUTH_MODE;
 const parseBool = (raw, fallback) => {
   const text = String(raw ?? '').trim().toLowerCase();
   if (!text) return fallback;
@@ -1434,6 +1433,7 @@ const parsePositiveInt = (raw, fallback) => {
   const parsed = Number.parseInt(String(raw ?? '').trim(), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
+const authMode = parseEnum(process.env.AUTH_MODE, ["trusted-proxy", "token", "none"], "trusted-proxy");
 const firstNonBlank = (...values) => {
   for (const value of values) {
     const text = String(value ?? '').trim();
@@ -1884,15 +1884,20 @@ if (['1', 'true', 'yes', 'on'].includes(disableDeviceAuthRaw)) {
 
 cfg.gateway.auth = cfg.gateway.auth || {};
 cfg.gateway.auth.mode = authMode;
-const gatewayPasswordFromEnv = firstNonBlank(
+const gatewaySharedSecretFromEnv = firstNonBlank(
+  process.env.OPENCLAW_GATEWAY_TOKEN,
   process.env.OPENCLAW_GATEWAY_PASSWORD,
 );
-if (gatewayPasswordFromEnv) {
-  cfg.gateway.auth.password = gatewayPasswordFromEnv;
-} else if (typeof cfg.gateway.auth.password !== "string" || !cfg.gateway.auth.password.trim()) {
-  // Pre-seed a runtime-local gateway password so upstream does not mutate the
-  // config file during first boot and trigger a self-restart handoff.
-  cfg.gateway.auth.password = crypto.randomBytes(24).toString("hex");
+if (authMode === "token") {
+  if (!gatewaySharedSecretFromEnv) {
+    throw new Error(
+      "OPENCLAW_GATEWAY_AUTH_MODE=token requires OPENCLAW_GATEWAY_TOKEN or OPENCLAW_GATEWAY_PASSWORD",
+    );
+  }
+  cfg.gateway.auth.password = gatewaySharedSecretFromEnv;
+} else {
+  delete cfg.gateway.auth.token;
+  delete cfg.gateway.auth.password;
 }
 const userHeader = (
   process.env.OPENCLAW_TRUSTED_PROXY_USER_HEADER ||
@@ -2437,8 +2442,8 @@ if (providerId && providerBaseUrl && providerApiKeySecretSource && providerApiKe
           maxTokens: defaultModelMaxTokens,
         },
         {
-          id: 'kimi-k2.5',
-          name: 'kimi-k2.5',
+          id: 'kimi-k2.6',
+          name: 'kimi-k2.6',
           api: providerApi,
           reasoning: true,
           input: ['text', 'image'],
@@ -2613,7 +2618,7 @@ const primaryModel = (
   'ksyun/glm-5.1'
 ).trim();
 const primaryModelQualified = primaryModel.includes('/');
-const preferredKimiModel = toSelectionModelRef('kimi-k2.5');
+const preferredKimiModel = toSelectionModelRef('kimi-k2.6');
 const defaultTextFallbacks = (() => {
   if (
     primaryModel &&

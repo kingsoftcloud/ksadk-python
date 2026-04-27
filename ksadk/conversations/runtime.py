@@ -80,6 +80,8 @@ class PreparedConversationTurn:
     user_parts: list[dict[str, Any]]
     attachments: list[dict[str, Any]]
     attachment_results: list[dict[str, Any]]
+    instructions: str = ""
+    request_metadata: dict[str, Any] = field(default_factory=dict)
     compaction_triggered: bool = False
     compaction_trigger: str | None = None
     compacted_until_seq_id: int | None = None
@@ -106,26 +108,51 @@ class CompactionPlan:
     pinned_state: dict[str, Any] = field(default_factory=dict)
 
 
-def build_responses_payload(*, output_text: str, model: Optional[str], session_id: str) -> dict[str, Any]:
-    response_id = f"resp_{uuid.uuid4().hex}"
-    created_at = int(time.time())
+def build_responses_payload(
+    *,
+    output_text: str,
+    model: Optional[str],
+    session_id: str,
+    response_id: str | None = None,
+    created_at: int | None = None,
+    status: str = "completed",
+    metadata: Mapping[str, Any] | None = None,
+    incomplete_details: Mapping[str, Any] | None = None,
+    error: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    response_id = response_id or f"resp_{uuid.uuid4().hex}"
+    created_at = created_at or int(time.time())
     message_id = f"msg_{uuid.uuid4().hex[:12]}"
+    output_item_status = "completed" if status == "completed" else status
     return {
         "id": response_id,
         "object": "response",
         "created_at": created_at,
-        "status": "completed",
+        "status": status,
+        "error": dict(error) if isinstance(error, Mapping) else None,
+        "incomplete_details": dict(incomplete_details) if isinstance(incomplete_details, Mapping) else None,
+        "instructions": None,
+        "metadata": dict(metadata or {}),
         "model": model or "agent",
+        "parallel_tool_calls": True,
+        "temperature": None,
+        "top_p": None,
+        "tools": [],
         "output": [
             {
                 "id": message_id,
                 "type": "message",
-                "status": "completed",
+                "status": output_item_status,
                 "role": "assistant",
                 "content": [{"type": "output_text", "text": output_text}],
             }
         ],
         "output_text": output_text,
+        "usage": {
+            "input_tokens": 0,
+            "output_tokens": len(output_text),
+            "total_tokens": len(output_text),
+        },
         "session_id": session_id,
     }
 
@@ -545,7 +572,7 @@ def _build_runner_request_payload(
     model: str | None,
     runtime_context: PlatformInvocationContext,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "session_id": prepared.session_id,
         "input": prepared.user_input,
         "history": prepared.history,
@@ -557,6 +584,9 @@ def _build_runner_request_payload(
         "kb_context": runtime_context.kb_context,
         "memory_context": runtime_context.memory_context,
     }
+    if prepared.instructions:
+        payload["instructions"] = prepared.instructions
+    return payload
 
 
 def _truncate_text(text: str | None, limit: int) -> str:
@@ -1177,6 +1207,8 @@ async def build_run_input(
     model: Optional[str] = None,
     model_metadata: Mapping[str, Any] | None = None,
     state_delta: Optional[dict[str, Any]] = None,
+    instructions: Optional[str] = None,
+    request_metadata: Mapping[str, Any] | None = None,
     invocation_id: Optional[str] = None,
     session_service_provider: Callable[[], Any] | None = None,
 ) -> PreparedConversationTurn:
@@ -1211,6 +1243,21 @@ async def build_run_input(
         attachments=attachments,
         attachment_results=attachment_results,
     )
+    normalized_instructions = str(instructions or "").strip()
+    normalized_request_metadata = dict(request_metadata or {})
+    event_metadata = {
+        "agent_input": user_input,
+        "attachments": [compact_attachment_for_session(item) for item in attachments if item],
+        "attachment_results": [
+            compact_attachment_result_for_session(item)
+            for item in attachment_results
+            if item
+        ],
+    }
+    if normalized_instructions:
+        event_metadata["instructions"] = normalized_instructions
+    if normalized_request_metadata:
+        event_metadata["request_metadata"] = normalized_request_metadata
 
     await append_conversation_event(
         session_id=resolved_session_id,
@@ -1221,15 +1268,7 @@ async def build_run_input(
         event_type="user_message",
         state_delta=effective_state_delta,
         session_service_provider=provider,
-        metadata={
-            "agent_input": user_input,
-            "attachments": [compact_attachment_for_session(item) for item in attachments if item],
-            "attachment_results": [
-                compact_attachment_result_for_session(item)
-                for item in attachment_results
-                if item
-            ],
-        },
+        metadata=event_metadata,
     )
     await _update_session_metadata_after_user_turn(
         service=service,
@@ -1258,6 +1297,8 @@ async def build_run_input(
         user_parts=user_parts,
         attachments=effective_attachments,
         attachment_results=effective_attachment_results,
+        instructions=normalized_instructions,
+        request_metadata=normalized_request_metadata,
         compaction_triggered=checkpoint is not None,
         compaction_trigger=str((checkpoint.metadata or {}).get("trigger") or "auto")
         if checkpoint
@@ -1287,6 +1328,8 @@ async def invoke_conversation_once(
     prepare_runner: Callable[[Any, Optional[str]], None],
     model_metadata: Mapping[str, Any] | None = None,
     state_delta: Optional[dict[str, Any]] = None,
+    instructions: Optional[str] = None,
+    request_metadata: Mapping[str, Any] | None = None,
     session_service_provider: Callable[[], Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """非流式 turn 编排入口。
@@ -1304,6 +1347,8 @@ async def invoke_conversation_once(
         model=model,
         model_metadata=model_metadata,
         state_delta=state_delta,
+        instructions=instructions,
+        request_metadata=request_metadata,
         session_service_provider=provider,
     )
     ambient_contexts = _build_runner_ambient_contexts(
@@ -1382,6 +1427,7 @@ async def invoke_conversation_once(
         text=output_text,
         invocation_id=prepared.invocation_id,
         event_type="assistant_message",
+        metadata={"request_metadata": prepared.request_metadata} if prepared.request_metadata else None,
         session_service_provider=provider,
     )
     await _update_session_metadata_after_assistant_turn(
@@ -1397,10 +1443,18 @@ async def invoke_conversation_once(
         invocation_id=prepared.invocation_id,
         session_service_provider=provider,
     )
-    return prepared.session_id, {"output_text": output_text, "model": model}
+    return prepared.session_id, {
+        "output_text": output_text,
+        "model": model,
+        "metadata": prepared.request_metadata,
+    }
 
 
-async def stream_conversation_turn(
+def _response_sse(event: str, data: Mapping[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(dict(data), ensure_ascii=False)}\n\n"
+
+
+async def _iter_conversation_turn_events(
     *,
     runner: Any,
     agent_id: str,
@@ -1411,14 +1465,11 @@ async def stream_conversation_turn(
     prepare_runner: Callable[[Any, Optional[str]], None],
     model_metadata: Mapping[str, Any] | None = None,
     state_delta: Optional[dict[str, Any]] = None,
+    instructions: Optional[str] = None,
+    request_metadata: Mapping[str, Any] | None = None,
     session_service_provider: Callable[[], Any] | None = None,
-) -> AsyncIterator[str]:
-    """流式 turn 编排入口。
-
-    这里既负责对外输出 SSE，也负责把 tool/approval/assistant 最终结果回写到
-    transcript，保证本地 `/v1/responses`、`/v1/chat/completions` 和 KOP
-    RunAgent 用的是同一条 conversation path。
-    """
+) -> AsyncIterator[dict[str, Any]]:
+    """Internal semantic event stream shared by protocol serializers."""
     provider = session_service_provider or resolve_session_service
     prepare_runner(runner, model)
     compaction_preview = await preview_auto_compaction(
@@ -1431,14 +1482,15 @@ async def stream_conversation_turn(
         session_service_provider=provider,
     )
     if compaction_preview.should_compact:
-        yield build_compaction_sse_event(
-            phase="start",
-            trigger="auto",
-            total_chars=compaction_preview.total_chars,
-            total_estimated_tokens=compaction_preview.total_estimated_tokens,
-            group_count=compaction_preview.group_count,
-            threshold_percentage=compaction_preview.auto_compact_threshold_percentage,
-        )
+        yield {
+            "type": "compaction",
+            "phase": "start",
+            "trigger": "auto",
+            "total_chars": compaction_preview.total_chars,
+            "total_estimated_tokens": compaction_preview.total_estimated_tokens,
+            "group_count": compaction_preview.group_count,
+            "threshold_percentage": compaction_preview.auto_compact_threshold_percentage,
+        }
     prepared = await build_run_input(
         agent_id=agent_id,
         user_id=user_id,
@@ -1447,6 +1499,8 @@ async def stream_conversation_turn(
         model=model,
         model_metadata=model_metadata,
         state_delta=state_delta,
+        instructions=instructions,
+        request_metadata=request_metadata,
         session_service_provider=provider,
     )
     ambient_contexts = _build_runner_ambient_contexts(
@@ -1468,19 +1522,20 @@ async def stream_conversation_turn(
         memory_context=ambient_contexts.get("memory_context"),
     )
     if prepared.compaction_triggered:
-        yield build_compaction_sse_event(
-            phase="done",
-            trigger=str(prepared.compaction_trigger or "auto"),
-            compacted_until_seq_id=prepared.compacted_until_seq_id,
-            total_chars=compaction_preview.total_chars if compaction_preview.should_compact else None,
-            total_estimated_tokens=compaction_preview.total_estimated_tokens
+        yield {
+            "type": "compaction",
+            "phase": "done",
+            "trigger": str(prepared.compaction_trigger or "auto"),
+            "compacted_until_seq_id": prepared.compacted_until_seq_id,
+            "total_chars": compaction_preview.total_chars if compaction_preview.should_compact else None,
+            "total_estimated_tokens": compaction_preview.total_estimated_tokens
             if compaction_preview.should_compact
             else None,
-            group_count=compaction_preview.group_count if compaction_preview.should_compact else None,
-            threshold_percentage=compaction_preview.auto_compact_threshold_percentage
+            "group_count": compaction_preview.group_count if compaction_preview.should_compact else None,
+            "threshold_percentage": compaction_preview.auto_compact_threshold_percentage
             if compaction_preview.should_compact
             else None,
-        )
+        }
     runner_name = _runner_name(runner)
     await append_run_status_event(
         session_id=prepared.session_id,
@@ -1508,14 +1563,14 @@ async def stream_conversation_turn(
                         delta = str(chunk.get("delta", ""))
                         if delta:
                             emitted_anything = True
-                            yield f"event: response.reasoning.delta\ndata: {json.dumps({'delta': delta}, ensure_ascii=False)}\n\n"
+                            yield {"type": "thinking", "delta": delta}
                         continue
                     if chunk_type == "text":
                         delta = str(chunk.get("delta", ""))
                         if delta:
                             accumulated_text += delta
                             emitted_anything = True
-                            yield f"event: response.output_text.delta\ndata: {json.dumps({'delta': delta}, ensure_ascii=False)}\n\n"
+                            yield {"type": "text", "delta": delta}
                         continue
                     if chunk_type == "tool_call":
                         await append_conversation_event(
@@ -1533,10 +1588,12 @@ async def stream_conversation_turn(
                             session_service_provider=provider,
                         )
                         emitted_anything = True
-                        yield (
-                            "event: response.tool_call\n"
-                            f"data: {json.dumps({'name': chunk.get('tool_name'), 'args': chunk.get('tool_args', {}), 'run_id': chunk.get('run_id')}, ensure_ascii=False)}\n\n"
-                        )
+                        yield {
+                            "type": "tool_call",
+                            "name": chunk.get("tool_name"),
+                            "args": chunk.get("tool_args", {}),
+                            "run_id": chunk.get("run_id"),
+                        }
                         continue
                     if chunk_type == "tool_result":
                         await append_conversation_event(
@@ -1554,12 +1611,15 @@ async def stream_conversation_turn(
                             session_service_provider=provider,
                         )
                         emitted_anything = True
-                        yield (
-                            "event: response.tool_result\n"
-                            f"data: {json.dumps({'name': chunk.get('tool_name'), 'output': chunk.get('tool_output', ''), 'run_id': chunk.get('run_id')}, ensure_ascii=False)}\n\n"
-                        )
+                        yield {
+                            "type": "tool_result",
+                            "name": chunk.get("tool_name"),
+                            "output": chunk.get("tool_output", ""),
+                            "run_id": chunk.get("run_id"),
+                        }
                         continue
                     if chunk_type == "interrupt":
+                        interrupt_info = chunk.get("interrupt_info")
                         await append_conversation_event(
                             session_id=prepared.session_id,
                             author=runner_name,
@@ -1567,15 +1627,25 @@ async def stream_conversation_turn(
                             text="approval requested",
                             invocation_id=prepared.invocation_id,
                             event_type="approval_request",
-                            metadata={"interrupt_info": chunk.get("interrupt_info")},
+                            metadata={"interrupt_info": interrupt_info},
+                            session_service_provider=provider,
+                        )
+                        await append_run_status_event(
+                            session_id=prepared.session_id,
+                            author=runner_name,
+                            status="interrupted",
+                            invocation_id=prepared.invocation_id,
+                            detail="approval_required",
                             session_service_provider=provider,
                         )
                         emitted_anything = True
-                        yield (
-                            "event: response.approval_request\n"
-                            f"data: {json.dumps({'interrupt_info': chunk.get('interrupt_info')}, ensure_ascii=False)}\n\n"
-                        )
-                        continue
+                        yield {
+                            "type": "interrupt",
+                            "interrupt_info": interrupt_info,
+                            "session_id": prepared.session_id,
+                            "metadata": prepared.request_metadata,
+                        }
+                        return
                     if chunk_type == "final":
                         final_text = str(chunk.get("output", ""))
                         if final_text:
@@ -1583,10 +1653,7 @@ async def stream_conversation_turn(
             break
         except Exception as exc:
             if attempt == 0 and not emitted_anything and _is_prompt_too_long_error(exc):
-                yield build_compaction_sse_event(
-                    phase="start",
-                    trigger="prompt_too_long",
-                )
+                yield {"type": "compaction", "phase": "start", "trigger": "prompt_too_long"}
                 checkpoint = await compact_conversation_history(
                     session_id=prepared.session_id,
                     author=runner_name,
@@ -1599,14 +1666,15 @@ async def stream_conversation_turn(
                     session_service_provider=provider,
                 )
                 if checkpoint:
-                    yield build_compaction_sse_event(
-                        phase="done",
-                        trigger="prompt_too_long",
-                        compacted_until_seq_id=int(
+                    yield {
+                        "type": "compaction",
+                        "phase": "done",
+                        "trigger": "prompt_too_long",
+                        "compacted_until_seq_id": int(
                             (checkpoint.metadata or {}).get("compacted_until_seq_id") or 0
                         )
                         or None,
-                    )
+                    }
                     prepared = await _refresh_history(prepared, session_service_provider=provider)
                     runtime_context.history = list(prepared.history)
                     continue
@@ -1618,10 +1686,7 @@ async def stream_conversation_turn(
                 detail=str(exc),
                 session_service_provider=provider,
             )
-            yield (
-                "event: response.error\n"
-                f"data: {json.dumps({'message': str(exc) or 'Agent 运行失败'}, ensure_ascii=False)}\n\n"
-            )
+            yield {"type": "error", "message": str(exc) or "Agent 运行失败"}
             return
 
     await append_conversation_event(
@@ -1631,6 +1696,7 @@ async def stream_conversation_turn(
         text=accumulated_text,
         invocation_id=prepared.invocation_id,
         event_type="assistant_message",
+        metadata={"request_metadata": prepared.request_metadata} if prepared.request_metadata else None,
         session_service_provider=provider,
     )
     await _update_session_metadata_after_assistant_turn(
@@ -1646,9 +1712,384 @@ async def stream_conversation_turn(
         invocation_id=prepared.invocation_id,
         session_service_provider=provider,
     )
-    final_payload = build_responses_payload(
-        output_text=accumulated_text,
+    yield {
+        "type": "completed",
+        "output_text": accumulated_text,
+        "model": model,
+        "session_id": prepared.session_id,
+        "metadata": prepared.request_metadata,
+    }
+
+
+async def stream_conversation_turn(
+    *,
+    runner: Any,
+    agent_id: str,
+    user_id: str,
+    session_id: Optional[str],
+    messages: Sequence[Dict[str, Any]],
+    model: Optional[str],
+    prepare_runner: Callable[[Any, Optional[str]], None],
+    model_metadata: Mapping[str, Any] | None = None,
+    state_delta: Optional[dict[str, Any]] = None,
+    instructions: Optional[str] = None,
+    request_metadata: Mapping[str, Any] | None = None,
+    session_service_provider: Callable[[], Any] | None = None,
+) -> AsyncIterator[str]:
+    """Legacy ksadk response SSE stream used by hosted chat and chat-completions."""
+    async for event in _iter_conversation_turn_events(
+        runner=runner,
+        agent_id=agent_id,
+        user_id=user_id,
+        session_id=session_id,
+        messages=messages,
         model=model,
-        session_id=prepared.session_id,
+        prepare_runner=prepare_runner,
+        model_metadata=model_metadata,
+        state_delta=state_delta,
+        instructions=instructions,
+        request_metadata=request_metadata,
+        session_service_provider=session_service_provider,
+    ):
+        event_type = event.get("type")
+        if event_type == "compaction":
+            yield build_compaction_sse_event(
+                phase=str(event.get("phase") or "start"),
+                trigger=str(event.get("trigger") or "auto"),
+                compacted_until_seq_id=event.get("compacted_until_seq_id"),
+                total_chars=event.get("total_chars"),
+                total_estimated_tokens=event.get("total_estimated_tokens"),
+                group_count=event.get("group_count"),
+                threshold_percentage=event.get("threshold_percentage"),
+            )
+        elif event_type == "thinking":
+            yield _response_sse("response.reasoning.delta", {"delta": event.get("delta", "")})
+        elif event_type == "text":
+            yield _response_sse("response.output_text.delta", {"delta": event.get("delta", "")})
+        elif event_type == "tool_call":
+            yield _response_sse(
+                "response.tool_call",
+                {"name": event.get("name"), "args": event.get("args", {}), "run_id": event.get("run_id")},
+            )
+        elif event_type == "tool_result":
+            yield _response_sse(
+                "response.tool_result",
+                {"name": event.get("name"), "output": event.get("output", ""), "run_id": event.get("run_id")},
+            )
+        elif event_type == "interrupt":
+            yield _response_sse("response.approval_request", {"interrupt_info": event.get("interrupt_info")})
+        elif event_type == "error":
+            yield _response_sse("response.error", {"message": event.get("message") or "Agent 运行失败"})
+        elif event_type == "completed":
+            final_payload = build_responses_payload(
+                output_text=str(event.get("output_text") or ""),
+                model=event.get("model") or model,
+                session_id=str(event.get("session_id") or session_id or ""),
+                metadata=event.get("metadata") if isinstance(event.get("metadata"), Mapping) else None,
+            )
+            yield _response_sse("response.completed", final_payload)
+
+
+async def stream_responses_conversation_turn(
+    *,
+    runner: Any,
+    agent_id: str,
+    user_id: str,
+    session_id: Optional[str],
+    messages: Sequence[Dict[str, Any]],
+    model: Optional[str],
+    prepare_runner: Callable[[Any, Optional[str]], None],
+    model_metadata: Mapping[str, Any] | None = None,
+    state_delta: Optional[dict[str, Any]] = None,
+    instructions: Optional[str] = None,
+    request_metadata: Mapping[str, Any] | None = None,
+    session_service_provider: Callable[[], Any] | None = None,
+) -> AsyncIterator[str]:
+    """OpenAI Responses-style SSE stream."""
+    response_id = f"resp_{uuid.uuid4().hex}"
+    created_at = int(time.time())
+    response_metadata = dict(request_metadata or {})
+    initial_payload = build_responses_payload(
+        output_text="",
+        model=model,
+        session_id=session_id or "",
+        response_id=response_id,
+        created_at=created_at,
+        status="in_progress",
+        metadata=response_metadata,
     )
-    yield f"event: response.completed\ndata: {json.dumps(final_payload, ensure_ascii=False)}\n\n"
+    yield _response_sse("response.created", initial_payload)
+    yield _response_sse("response.in_progress", initial_payload)
+
+    message_item_id = f"msg_{uuid.uuid4().hex[:12]}"
+    reasoning_item_id = f"rs_{uuid.uuid4().hex[:12]}"
+    next_output_index = 0
+    text_output_index: int | None = None
+    reasoning_output_index: int | None = None
+    message_started = False
+    content_started = False
+    reasoning_started = False
+    completed_text = ""
+
+    def _message_item(status: str, text: str = "") -> dict[str, Any]:
+        content = [{"type": "output_text", "text": text}] if text or status == "completed" else []
+        return {
+            "id": message_item_id,
+            "type": "message",
+            "status": status,
+            "role": "assistant",
+            "content": content,
+        }
+
+    def _reasoning_item(status: str) -> dict[str, Any]:
+        return {
+            "id": reasoning_item_id,
+            "type": "reasoning",
+            "status": status,
+            "summary": [],
+        }
+
+    def _next_output_index() -> int:
+        nonlocal next_output_index
+        output_index = next_output_index
+        next_output_index += 1
+        return output_index
+
+    async for event in _iter_conversation_turn_events(
+        runner=runner,
+        agent_id=agent_id,
+        user_id=user_id,
+        session_id=session_id,
+        messages=messages,
+        model=model,
+        prepare_runner=prepare_runner,
+        model_metadata=model_metadata,
+        state_delta=state_delta,
+        instructions=instructions,
+        request_metadata=request_metadata,
+        session_service_provider=session_service_provider,
+    ):
+        event_type = event.get("type")
+        if event_type == "compaction":
+            yield build_compaction_sse_event(
+                phase=str(event.get("phase") or "start"),
+                trigger=str(event.get("trigger") or "auto"),
+                compacted_until_seq_id=event.get("compacted_until_seq_id"),
+                total_chars=event.get("total_chars"),
+                total_estimated_tokens=event.get("total_estimated_tokens"),
+                group_count=event.get("group_count"),
+                threshold_percentage=event.get("threshold_percentage"),
+            )
+            continue
+
+        if event_type == "thinking":
+            if not reasoning_started:
+                reasoning_started = True
+                reasoning_output_index = _next_output_index()
+                yield _response_sse(
+                    "response.output_item.added",
+                    {
+                        "output_index": reasoning_output_index,
+                        "item": _reasoning_item("in_progress"),
+                    },
+                )
+            yield _response_sse(
+                "response.reasoning.delta",
+                {
+                    "item_id": reasoning_item_id,
+                    "output_index": reasoning_output_index,
+                    "delta": event.get("delta", ""),
+                },
+            )
+            continue
+
+        if event_type == "text":
+            if not message_started:
+                message_started = True
+                text_output_index = _next_output_index()
+                yield _response_sse(
+                    "response.output_item.added",
+                    {"output_index": text_output_index, "item": _message_item("in_progress")},
+                )
+            if not content_started:
+                content_started = True
+                yield _response_sse(
+                    "response.content_part.added",
+                    {
+                        "item_id": message_item_id,
+                        "output_index": text_output_index,
+                        "content_index": 0,
+                        "part": {"type": "output_text", "text": ""},
+                    },
+                )
+            delta = str(event.get("delta") or "")
+            completed_text += delta
+            yield _response_sse(
+                "response.output_text.delta",
+                {
+                    "item_id": message_item_id,
+                    "output_index": text_output_index,
+                    "content_index": 0,
+                    "delta": delta,
+                },
+            )
+            continue
+
+        if event_type == "tool_call":
+            args_json = json.dumps(event.get("args", {}) or {}, ensure_ascii=False)
+            call_id = str(event.get("run_id") or f"call_{uuid.uuid4().hex[:12]}")
+            item_id = f"fc_{uuid.uuid4().hex[:12]}"
+            call_output_index = _next_output_index()
+            item = {
+                "id": item_id,
+                "type": "function_call",
+                "status": "in_progress",
+                "call_id": call_id,
+                "name": event.get("name") or "unknown",
+                "arguments": "",
+            }
+            yield _response_sse("response.output_item.added", {"output_index": call_output_index, "item": item})
+            yield _response_sse(
+                "response.function_call_arguments.delta",
+                {"item_id": item_id, "output_index": call_output_index, "delta": args_json},
+            )
+            item["arguments"] = args_json
+            item["status"] = "completed"
+            yield _response_sse(
+                "response.function_call_arguments.done",
+                {"item_id": item_id, "output_index": call_output_index, "arguments": args_json},
+            )
+            yield _response_sse("response.output_item.done", {"output_index": call_output_index, "item": item})
+            continue
+
+        if event_type == "tool_result":
+            yield _response_sse(
+                "response.ksadk.tool_result",
+                {"name": event.get("name"), "output": event.get("output", ""), "run_id": event.get("run_id")},
+            )
+            continue
+
+        if event_type == "interrupt":
+            interrupt_info = event.get("interrupt_info")
+            if isinstance(interrupt_info, Mapping) and interrupt_info.get("tool_name"):
+                raw_arguments = (
+                    interrupt_info.get("arguments")
+                    or interrupt_info.get("tool_args")
+                    or interrupt_info.get("args")
+                    or {}
+                )
+                arguments = (
+                    raw_arguments
+                    if isinstance(raw_arguments, str)
+                    else json.dumps(raw_arguments, ensure_ascii=False)
+                )
+                approval_item = {
+                    "id": str(
+                        interrupt_info.get("approval_request_id")
+                        or interrupt_info.get("id")
+                        or f"appr_{uuid.uuid4().hex[:12]}"
+                    ),
+                    "type": "mcp_approval_request",
+                    "name": str(interrupt_info.get("tool_name")),
+                    "arguments": arguments,
+                    "server_label": str(interrupt_info.get("server_label") or "ksadk"),
+                }
+                approval_output_index = _next_output_index()
+                yield _response_sse(
+                    "response.output_item.added",
+                    {"output_index": approval_output_index, "item": approval_item},
+                )
+                yield _response_sse(
+                    "response.output_item.done",
+                    {"output_index": approval_output_index, "item": approval_item},
+                )
+            else:
+                yield _response_sse("response.ksadk.approval_request", {"interrupt_info": interrupt_info})
+            incomplete_payload = build_responses_payload(
+                output_text=completed_text,
+                model=model,
+                session_id=str(event.get("session_id") or session_id or ""),
+                response_id=response_id,
+                created_at=created_at,
+                status="incomplete",
+                metadata=response_metadata,
+                incomplete_details={
+                    "reason": "approval_required",
+                    "ksadk_interrupt": interrupt_info,
+                },
+            )
+            yield _response_sse("response.incomplete", incomplete_payload)
+            return
+
+        if event_type == "error":
+            failed_payload = build_responses_payload(
+                output_text=completed_text,
+                model=model,
+                session_id=session_id or "",
+                response_id=response_id,
+                created_at=created_at,
+                status="failed",
+                metadata=response_metadata,
+                error={"message": event.get("message") or "Agent 运行失败"},
+            )
+            yield _response_sse("response.failed", failed_payload)
+            return
+
+        if event_type == "completed":
+            completed_text = str(event.get("output_text") or completed_text)
+            if completed_text and not message_started:
+                message_started = True
+                text_output_index = _next_output_index()
+                yield _response_sse(
+                    "response.output_item.added",
+                    {"output_index": text_output_index, "item": _message_item("in_progress")},
+                )
+                content_started = True
+                yield _response_sse(
+                    "response.content_part.added",
+                    {
+                        "item_id": message_item_id,
+                        "output_index": text_output_index,
+                        "content_index": 0,
+                        "part": {"type": "output_text", "text": ""},
+                    },
+                )
+            if message_started:
+                yield _response_sse(
+                    "response.output_text.done",
+                    {
+                        "item_id": message_item_id,
+                        "output_index": text_output_index,
+                        "content_index": 0,
+                        "text": completed_text,
+                    },
+                )
+                yield _response_sse(
+                    "response.content_part.done",
+                    {
+                        "item_id": message_item_id,
+                        "output_index": text_output_index,
+                        "content_index": 0,
+                        "part": {"type": "output_text", "text": completed_text},
+                    },
+                )
+                yield _response_sse(
+                    "response.output_item.done",
+                    {"output_index": text_output_index, "item": _message_item("completed", completed_text)},
+                )
+            if reasoning_started:
+                yield _response_sse(
+                    "response.output_item.done",
+                    {"output_index": reasoning_output_index, "item": _reasoning_item("completed")},
+                )
+            final_payload = build_responses_payload(
+                output_text=completed_text,
+                model=event.get("model") or model,
+                session_id=str(event.get("session_id") or session_id or ""),
+                response_id=response_id,
+                created_at=created_at,
+                status="completed",
+                metadata=event.get("metadata") if isinstance(event.get("metadata"), Mapping) else response_metadata,
+            )
+            yield _response_sse("response.completed", final_payload)
+            return

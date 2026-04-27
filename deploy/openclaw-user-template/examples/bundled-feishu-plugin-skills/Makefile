@@ -1,4 +1,4 @@
-OPENCLAW_BASE_IMAGE ?= hub-vpc-cn-beijing-6.kce.ksyun.com/agentengine-public/openclaw:2026.4.21
+OPENCLAW_BASE_IMAGE ?= hub-vpc-cn-beijing-6.kce.ksyun.com/agentengine-public/openclaw:2026.4.24
 IMAGE ?= hub-vpc-cn-beijing-6.kce.ksyun.com/agentengine-public/openclaw-user-feishu-bundled
 TAG ?= demo
 PLATFORM ?= linux/amd64

@@ -78,7 +78,7 @@ if [[ -z "${HERMES_CONTEXT_LENGTH}" ]]; then
   case "${OPENAI_MODEL_NAME,,}" in
     *glm-5.1*)
       HERMES_CONTEXT_LENGTH="200000"
-      HERMES_FALLBACK_MODEL="${HERMES_FALLBACK_MODEL:-kimi-k2.5}"
+      HERMES_FALLBACK_MODEL="${HERMES_FALLBACK_MODEL:-kimi-k2.6}"
       ;;
   esac
 fi

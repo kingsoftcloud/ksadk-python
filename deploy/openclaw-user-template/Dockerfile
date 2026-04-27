@@ -7,7 +7,7 @@
 # 1. 不引入独立 bootstrap 脚本，只保留 Dockerfile 内最小启动链路。
 # 2. 兼容我们的运行时约束：只持久化 /home/node/.openclaw，默认网关端口 8080。
 # 3. 用户创建实例时额外传入的自定义环境变量，容器内可以直接读取。
-# 4. 只允许 trusted-proxy / none 两种网关鉴权模式，显式拒绝 token。
+# 4. 默认仍以 trusted-proxy 为主，但显式允许 token 模式。
 # 5. 预置中国大陆常用镜像源，方便用户后续在容器内按需安装依赖。
 #
 # 重要说明：
@@ -16,7 +16,7 @@
 # - 如果你希望做复杂的 env -> config 映射，那已经超出这份极简模板的职责。
 # -----------------------------------------------------------------------------
 
-ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.4.21@sha256:70e0ab07deb72f4b3ee7bb701c5437fdc27b85d6705cc67f104aa8042ba52e00
+ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.4.24@sha256:7c4370ff8777555d4c9fe5ab821aaaad7c87188d389a6cf761270725d96ec3e9
 FROM ${OPENCLAW_BASE_IMAGE}
 
 USER root
@@ -74,6 +74,6 @@ USER node
 # -----------------------------------------------------------------------------
 # 这里只做三件事：
 # 1. 首次启动时，把镜像内模板内容补到 /home/node/.openclaw
-# 2. 校验鉴权模式只能是 trusted-proxy|none
+# 2. 校验鉴权模式只能是 trusted-proxy|token|none，并在 token 模式下写入 shared secret
 # 3. 直接启动 OpenClaw Gateway
-CMD ["sh","-lc","set -eu; STATE_DIR=\"${OPENCLAW_STATE_DIR:-/home/node/.openclaw}\"; TEMPLATE_DIR=\"/opt/openclaw-template\"; mkdir -p \"$STATE_DIR\" \"$STATE_DIR/extensions\" \"$STATE_DIR/skills\"; chmod 700 \"$STATE_DIR\" 2>/dev/null || true; if [ -f \"$STATE_DIR/secrets.json\" ]; then chmod 600 \"$STATE_DIR/secrets.json\" 2>/dev/null || true; fi; if [ ! -f \"$STATE_DIR/openclaw.json\" ] && [ -f \"$TEMPLATE_DIR/config/openclaw.json\" ]; then cp \"$TEMPLATE_DIR/config/openclaw.json\" \"$STATE_DIR/openclaw.json\"; fi; if [ -d \"$TEMPLATE_DIR/extensions\" ]; then for src in \"$TEMPLATE_DIR\"/extensions/*; do [ -e \"$src\" ] || continue; name=\"$(basename \"$src\")\"; dst=\"$STATE_DIR/extensions/$name\"; [ -e \"$dst\" ] || cp -R \"$src\" \"$dst\"; done; fi; if [ -d \"$TEMPLATE_DIR/skills\" ]; then for src in \"$TEMPLATE_DIR\"/skills/*; do [ -e \"$src\" ] || continue; name=\"$(basename \"$src\")\"; dst=\"$STATE_DIR/skills/$name\"; [ -e \"$dst\" ] || cp -R \"$src\" \"$dst\"; done; fi; auth_mode=\"$(printf '%s' \"${OPENCLAW_GATEWAY_AUTH_MODE:-trusted-proxy}\" | tr '[:upper:]' '[:lower:]')\"; case \"$auth_mode\" in trusted-proxy|none) ;; *) echo >&2 'OPENCLAW_GATEWAY_AUTH_MODE 仅支持 trusted-proxy|none；token 模式会导致网关无法通过平台接入'; exit 1 ;; esac; bind_mode=\"${OPENCLAW_GATEWAY_BIND:-lan}\"; if [ \"$auth_mode\" = \"none\" ] && [ \"$bind_mode\" = \"lan\" ]; then bind_mode=\"loopback\"; fi; exec node openclaw.mjs gateway run --allow-unconfigured --bind \"$bind_mode\" --port \"${OPENCLAW_GATEWAY_PORT:-${PORT:-8080}}\" --auth \"$auth_mode\""]
+CMD ["sh","-lc","set -eu; STATE_DIR=\"${OPENCLAW_STATE_DIR:-/home/node/.openclaw}\"; TEMPLATE_DIR=\"/opt/openclaw-template\"; mkdir -p \"$STATE_DIR\" \"$STATE_DIR/extensions\" \"$STATE_DIR/skills\"; chmod 700 \"$STATE_DIR\" 2>/dev/null || true; if [ -f \"$STATE_DIR/secrets.json\" ]; then chmod 600 \"$STATE_DIR/secrets.json\" 2>/dev/null || true; fi; if [ ! -f \"$STATE_DIR/openclaw.json\" ] && [ -f \"$TEMPLATE_DIR/config/openclaw.json\" ]; then cp \"$TEMPLATE_DIR/config/openclaw.json\" \"$STATE_DIR/openclaw.json\"; fi; if [ -d \"$TEMPLATE_DIR/extensions\" ]; then for src in \"$TEMPLATE_DIR\"/extensions/*; do [ -e \"$src\" ] || continue; name=\"$(basename \"$src\")\"; dst=\"$STATE_DIR/extensions/$name\"; [ -e \"$dst\" ] || cp -R \"$src\" \"$dst\"; done; fi; if [ -d \"$TEMPLATE_DIR/skills\" ]; then for src in \"$TEMPLATE_DIR\"/skills/*; do [ -e \"$src\" ] || continue; name=\"$(basename \"$src\")\"; dst=\"$STATE_DIR/skills/$name\"; [ -e \"$dst\" ] || cp -R \"$src\" \"$dst\"; done; fi; auth_mode=\"$(printf '%s' \"${OPENCLAW_GATEWAY_AUTH_MODE:-trusted-proxy}\" | tr '[:upper:]' '[:lower:]')\"; case \"$auth_mode\" in trusted-proxy|token|none) ;; *) echo >&2 'OPENCLAW_GATEWAY_AUTH_MODE 仅支持 trusted-proxy|token|none'; exit 1 ;; esac; if [ \"$auth_mode\" = \"token\" ]; then gateway_token=\"${OPENCLAW_GATEWAY_TOKEN:-${OPENCLAW_GATEWAY_PASSWORD:-}}\"; if [ -z \"$gateway_token\" ]; then echo >&2 'OPENCLAW_GATEWAY_AUTH_MODE=token 时必须提供 OPENCLAW_GATEWAY_TOKEN 或 OPENCLAW_GATEWAY_PASSWORD'; exit 1; fi; node -e 'const fs=require(\"fs\"); const path=process.argv[1]; const shared=process.argv[2]; const cfg=JSON.parse(fs.readFileSync(path, \"utf8\")); cfg.gateway=cfg.gateway||{}; cfg.gateway.auth=cfg.gateway.auth||{}; cfg.gateway.auth.mode=\"token\"; cfg.gateway.auth.password=shared; fs.writeFileSync(path, `${JSON.stringify(cfg, null, 2)}\\n`);' \"$STATE_DIR/openclaw.json\" \"$gateway_token\"; fi; bind_mode=\"${OPENCLAW_GATEWAY_BIND:-lan}\"; if [ \"$auth_mode\" = \"none\" ] && [ \"$bind_mode\" = \"lan\" ]; then bind_mode=\"loopback\"; fi; exec node openclaw.mjs gateway run --allow-unconfigured --bind \"$bind_mode\" --port \"${OPENCLAW_GATEWAY_PORT:-${PORT:-8080}}\" --auth \"$auth_mode\""]

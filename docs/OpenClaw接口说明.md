@@ -141,7 +141,7 @@ curl -X POST "${BASE_URL}/?Action=CreateAgentProduct&Version=${VERSION}" \
       "NameSpace": "agentengine-public",
       "ImageRepo": "openclaw",
       "ImageVersion": "latest",
-      "ImageAddr": "hub.kce.ksyun.com/agentengine-public/openclaw:latest"
+      "ImageAddr": "hub.kce.ksyun.com/agentengine-public/openclaw:2026.4.24"
     },
     "Advanced": {
       "EnableObservability": true,
@@ -342,9 +342,15 @@ curl -X POST "${BASE_URL}/?Action=ListAgents&Version=${VERSION}" \
   }'
 ```
 
-## 3. Dashboard 免密访问
+## 3. Dashboard 与网关访问
 
-当前 OpenClaw 仅保留 `trusted-proxy + CreateDashboardAccessLink` 链路。
+当前 OpenClaw 支持两类入口：
+
+- 托管访问：`trusted-proxy + CreateDashboardAccessLink`
+- 直连访问：`token + Authorization: Bearer <OPENCLAW_GATEWAY_TOKEN>`
+
+默认仍推荐使用 Dashboard 短链接；当实例显式配置 `OPENCLAW_GATEWAY_AUTH_MODE=token` 且提供
+`OPENCLAW_GATEWAY_TOKEN` 时，可直接带 Bearer token 访问公网数据面入口。
 
 ## 3.1 创建短链接（CreateDashboardAccessLink）
 
@@ -391,6 +397,25 @@ curl -X POST "${BASE_URL}/?Action=CreateDashboardAccessLink&Version=${VERSION}" 
     "ExpiresSeconds": 3600
   }'
 ```
+
+## 3.3 token 模式直连（数据面）
+
+当 OpenClaw 实例创建时显式传入：
+
+- `OPENCLAW_GATEWAY_AUTH_MODE=token`
+- `OPENCLAW_GATEWAY_TOKEN=<shared-secret>`
+
+即可直接访问实例公网入口：
+
+```bash
+curl -H "Authorization: Bearer ${OPENCLAW_GATEWAY_TOKEN}" \
+  "https://ar-xxxxxxxx.agent-pre.kspmas.ksyun.com/"
+```
+
+说明：
+
+- 该 Bearer token 只用于 OpenClaw runtime gateway shared secret 校验。
+- Dashboard 短链模式下，浏览器仍只持有 cookie；Router 会在服务端代注入 Bearer token。
 
 ## 3.2 枚举短链接（ListDashboardAccessLinks）
 

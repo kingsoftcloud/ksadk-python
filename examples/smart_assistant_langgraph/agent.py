@@ -564,3 +564,32 @@ workflow.add_edge("tools", "agent")
 
 # 编译图
 graph = workflow.compile()
+
+
+# ============== 自定义 State 转换 Hook (可选) ==============
+#
+# 如果你的 LangGraph 图使用自定义 State (而非 messages), 可以定义
+# ksadk_prepare_state 函数来控制输入到 State 的转换。
+# 当此函数存在时, ksadk 会跳过默认的 messages 转换逻辑, 直接使用你的返回值。
+#
+# def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
+#     """自定义输入到 State 的转换
+#
+#     Args:
+#         payload: 简化输入, 格式为 {"input": "用户消息"}
+#         session_context: 会话上下文, 包含:
+#             - session_id: 会话 ID
+#             - history: 历史消息列表
+#             - kb_context: 知识库上下文
+#             - memory_context: 长期记忆上下文
+#             - platform_context: 平台上下文 (agent_id, user_id 等)
+#             - attachments: 附件列表
+#             - input_parts: 输入片段列表
+#
+#     Returns:
+#         符合你的 State TypedDict 的 dict
+#     """
+#     return {
+#         "query": payload["input"],
+#         "kb_context": session_context.get("kb_context", {}),
+#     }

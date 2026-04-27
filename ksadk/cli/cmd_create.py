@@ -580,6 +580,121 @@ def _generate_requirements_from_imports(directory: Path, framework: str) -> str:
     return '\n'.join(sorted_packages) + '\n'
 
 
+def _analyze_langgraph_state(content: str) -> dict:
+    """Best-effort LangGraph state shape detection for adapter scaffolding."""
+    import re
+
+    message_markers = (
+        "MessagesState",
+        "add_messages",
+        'state["messages"]',
+        "state['messages']",
+        '"messages":',
+        "'messages':",
+        "messages:",
+    )
+    if any(marker in content for marker in message_markers):
+        return {"kind": "messages", "input_field": None}
+
+    state_keys = set(re.findall(r"state\s*\[\s*[\"']([A-Za-z_][A-Za-z0-9_]*)[\"']\s*\]", content))
+    typed_fields = set(
+        re.findall(
+            r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?:str|Optional\[str\]|list|dict|Any)",
+            content,
+            flags=re.MULTILINE,
+        )
+    )
+    candidates = [key for key in [*state_keys, *typed_fields] if key != "messages"]
+    preferred = ("query", "question", "prompt", "user_input", "input")
+    input_field = next((field for field in preferred if field in candidates), None)
+
+    if candidates and ("TypedDict" in content or "StateGraph(" in content or "langgraph" in content):
+        return {"kind": "custom", "input_field": input_field}
+    if "StateGraph(" in content or "from langgraph" in content or "import langgraph" in content:
+        return {"kind": "ambiguous", "input_field": input_field}
+    return {"kind": "unknown", "input_field": None}
+
+
+def _langgraph_analysis_for_path(path: Path) -> dict:
+    if path.is_dir():
+        chunks: list[str] = []
+        skip_dirs = {".git", "__pycache__", ".venv", "venv", "env", ".mypy_cache", ".pytest_cache"}
+        for py_file in sorted(path.rglob("*.py")):
+            if any(part in skip_dirs for part in py_file.parts):
+                continue
+            try:
+                chunks.append(py_file.read_text(encoding="utf-8"))
+            except Exception:
+                return {"kind": "ambiguous", "input_field": None}
+        if chunks:
+            return _analyze_langgraph_state("\n\n".join(chunks))
+        return {"kind": "ambiguous", "input_field": None}
+
+    try:
+        content = path.read_text(encoding="utf-8")
+    except Exception:
+        return {"kind": "ambiguous", "input_field": None}
+    return _analyze_langgraph_state(content)
+
+
+def _generate_langgraph_adapter_content(
+    *,
+    import_module: str,
+    agent_var: str,
+    analysis: dict,
+) -> str:
+    input_field = analysis.get("input_field")
+    if input_field:
+        return_body = f'''    return {{
+        "{input_field}": payload.get("input", ""),
+    }}'''
+    else:
+        return_body = '''    # TODO: Map AgentEngine's chat payload to your LangGraph State.
+    # Common examples:
+    # return {"query": payload.get("input", "")}
+    # return {"question": payload.get("input", ""), "context": []}
+    return dict(payload)'''
+
+    return f'''"""
+AgentEngine adapter generated for a LangGraph project.
+
+Review ksadk_prepare_state if your graph uses a custom State TypedDict.
+"""
+
+from {import_module} import {agent_var} as root_agent
+
+
+def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
+    """Map AgentEngine chat input to the LangGraph State expected by root_agent."""
+    _ = session_context
+{return_body}
+'''
+
+
+def _write_langgraph_adapter(
+    *,
+    package_dir: Path,
+    original_entry_relative: Path,
+    agent_var: str,
+    analysis: dict,
+) -> Path | None:
+    if analysis.get("kind") not in {"custom", "ambiguous"}:
+        return None
+
+    adapter_name = "agentengine_adapter.py"
+    if original_entry_relative.as_posix() == adapter_name:
+        adapter_name = "ksadk_agentengine_adapter.py"
+    adapter_relative = Path(adapter_name)
+    original_module = "." + ".".join(original_entry_relative.with_suffix("").parts)
+    adapter_content = _generate_langgraph_adapter_content(
+        import_module=original_module,
+        agent_var=agent_var,
+        analysis=analysis,
+    )
+    (package_dir / adapter_relative).write_text(adapter_content, encoding="utf-8")
+    return adapter_relative
+
+
 def _wrap_agent_file(from_agent_path: Path, project_name: str, framework: str, agent_var: str):
     """包装单个 Agent 文件到新项目"""
     import re
@@ -635,22 +750,52 @@ def _wrap_agent_file(from_agent_path: Path, project_name: str, framework: str, a
     # 生成 .env
     (project_path / ".env").write_text(_generate_env_content(global_env), encoding="utf-8-sig")
     
+    # LangGraph custom-state 项目生成 adapter，避免直接猜业务 State 语义。
+    entry_relative = Path(source_filename)
+    export_agent_var = agent_var
+    if framework == "langgraph":
+        analysis = _analyze_langgraph_state(fixed_content)
+        if analysis["kind"] == "messages":
+            print_info("LangGraph state 检测: messages-compatible")
+        elif analysis["kind"] == "custom":
+            adapter_relative = _write_langgraph_adapter(
+                package_dir=project_path / package_name,
+                original_entry_relative=entry_relative,
+                agent_var=agent_var,
+                analysis=analysis,
+            )
+            if adapter_relative:
+                entry_relative = adapter_relative
+                export_agent_var = "root_agent"
+                print_info("LangGraph state 检测: custom-state adapter generated")
+        elif analysis["kind"] == "ambiguous":
+            adapter_relative = _write_langgraph_adapter(
+                package_dir=project_path / package_name,
+                original_entry_relative=entry_relative,
+                agent_var=agent_var,
+                analysis=analysis,
+            )
+            if adapter_relative:
+                entry_relative = adapter_relative
+                export_agent_var = "root_agent"
+                print_warn("LangGraph state 检测: ambiguous adapter generated, review required")
+
     # 生成 agentengine.yaml
-    entry_module = source_filename.replace('.py', '')
+    entry_module = entry_relative.with_suffix("").name
     (project_path / "agentengine.yaml").write_text(f"""# AgentEngine 项目配置 (Wrapped)
 name: {package_name}
 version: "1.0.0"
 
 framework: {framework}
-entry_point: {package_name}/{source_filename}
-agent_variable: {agent_var}
+entry_point: {package_name}/{entry_relative}
+agent_variable: {export_agent_var}
 """, encoding="utf-8-sig")
     
     # 生成 __init__.py
     (project_path / package_name / "__init__.py").write_text(f'''"""
 {project_name} - Wrapped Agent
 """
-from .{entry_module} import {agent_var} as root_agent
+from .{entry_module} import {export_agent_var} as root_agent
 __all__ = ["root_agent"]
 ''', encoding="utf-8-sig")
     
@@ -774,19 +919,47 @@ def _wrap_agent_directory(from_agent_dir: Path, project_name: str, framework: st
     # 生成 agentengine.yaml
     # entry_point 相对于项目根目录
     entry_relative = entry_file.relative_to(from_agent_dir)
+    export_agent_var = agent_var
+    if framework == "langgraph":
+        analysis = _langgraph_analysis_for_path(dest_package_path)
+        if analysis["kind"] == "messages":
+            print_info("LangGraph state 检测: messages-compatible")
+        elif analysis["kind"] == "custom":
+            adapter_relative = _write_langgraph_adapter(
+                package_dir=dest_package_path,
+                original_entry_relative=entry_relative,
+                agent_var=agent_var,
+                analysis=analysis,
+            )
+            if adapter_relative:
+                entry_relative = adapter_relative
+                export_agent_var = "root_agent"
+                print_info("LangGraph state 检测: custom-state adapter generated")
+        elif analysis["kind"] == "ambiguous":
+            adapter_relative = _write_langgraph_adapter(
+                package_dir=dest_package_path,
+                original_entry_relative=entry_relative,
+                agent_var=agent_var,
+                analysis=analysis,
+            )
+            if adapter_relative:
+                entry_relative = adapter_relative
+                export_agent_var = "root_agent"
+                print_warn("LangGraph state 检测: ambiguous adapter generated, review required")
+
     (project_path / "agentengine.yaml").write_text(f"""# AgentEngine 项目配置 (Wrapped Directory)
 name: {package_name}
 version: "1.0.0"
 
 framework: {framework}
 entry_point: {package_name}/{entry_relative}
-agent_variable: {agent_var}
+agent_variable: {export_agent_var}
 """, encoding="utf-8-sig")
     
     # 确保 __init__.py 正确导出 root_agent
     init_file = dest_package_path / "__init__.py"
     entry_module = ".".join(entry_relative.with_suffix("").parts)  # e.g. src.agentengine_adapter
-    expected_export_line = f"from .{entry_module} import {agent_var} as root_agent"
+    expected_export_line = f"from .{entry_module} import {export_agent_var} as root_agent"
     
     # 检查现有 __init__.py 是否已导出 root_agent
     init_has_export = False
@@ -1506,8 +1679,8 @@ HERMES_DASHBOARD_HOST=127.0.0.1
 HERMES_DASHBOARD_PORT=9119
 PORT=8080
 # HERMES_CONTEXT_LENGTH=200000
-# HERMES_FALLBACK_MODEL=kimi-k2.5
-# HERMES_IMAGE=hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.4.16
+# HERMES_FALLBACK_MODEL=kimi-k2.6
+# HERMES_IMAGE=hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.4.23
 """
     else:
         langfuse_public = global_env.get("LANGFUSE_PUBLIC_KEY", "")

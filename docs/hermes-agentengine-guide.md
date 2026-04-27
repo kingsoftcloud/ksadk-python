@@ -43,10 +43,10 @@ agentengine invoke
 
 结合当前代码和文档，和 Hermes 最相关的更新主要有这几项：
 
-- 默认 Hermes 共享 runtime 镜像已经更新到 `hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.4.16`
+- 默认 Hermes 共享 runtime 镜像已经更新到 `hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.4.23`
 - Hermes 默认模型切到 `glm-5.1`
 - 当默认模型是 `glm-5.1` 时，CLI 会自动补齐 `HERMES_CONTEXT_LENGTH=200000`
-- 当默认模型是 `glm-5.1` 时，fallback model 默认会补成 `kimi-k2.5`
+- 当默认模型是 `glm-5.1` 时，fallback model 默认会补成 `kimi-k2.6`
 - `agentengine hermes connect` 现在是托管场景的一等入口，用来在远端容器里完成微信 / 飞书等 IM 连接
 - `agentengine hermes exec` 是受限只读运维入口，不是远程 shell
 - `agentengine hermes pairing` 可以把 Hermes 原生 pairing 审批能力透传出来
@@ -137,9 +137,9 @@ PORT=8080
 
 # 可选覆盖项
 # HERMES_CONTEXT_LENGTH=200000
-# HERMES_FALLBACK_MODEL=kimi-k2.5
+# HERMES_FALLBACK_MODEL=kimi-k2.6
 # HERMES_UI_LOCALE=en
-# HERMES_IMAGE=hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.4.16
+# HERMES_IMAGE=hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.4.23
 ```
 
 ### 5.2 第一次使用也可以先走全局配置
@@ -224,7 +224,7 @@ agentengine hermes deploy --name my-hermes-demo
 如果你想覆盖默认镜像，可以这样：
 
 ```bash
-agentengine hermes deploy --image hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.4.16
+agentengine hermes deploy --image hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.4.23
 ```
 
 ### 7.1 这条命令背后做了什么
@@ -242,7 +242,7 @@ agentengine hermes deploy --image hub.kce.ksyun.com/agentengine-public/hermes-ag
 
 结合 `cmd_hermes.py`，当前常见默认值如下：
 
-- 默认镜像：`hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.4.16`
+- 默认镜像：`hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.4.23`
 - 默认模型：`glm-5.1`
 - 默认 CPU：`2`
 - 默认内存：`4Gi`
@@ -255,7 +255,7 @@ agentengine hermes deploy --image hub.kce.ksyun.com/agentengine-public/hermes-ag
 如果你的默认模型是 `glm-5.1`，CLI 会自动帮你补齐这些运行时行为：
 
 - `HERMES_CONTEXT_LENGTH=200000`
-- `HERMES_FALLBACK_MODEL=kimi-k2.5`
+- `HERMES_FALLBACK_MODEL=kimi-k2.6`
 - `HERMES_FALLBACK_PROVIDER=custom`
 
 这也是为什么你在 0.5.1 的 Hermes 文档里，应该明确告诉用户“默认模型已经切到 `glm-5.1`”。

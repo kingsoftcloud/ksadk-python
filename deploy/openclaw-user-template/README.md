@@ -59,16 +59,20 @@ flowchart LR
 
 ## 5. 鉴权模式限制
 
-模板当前只允许：
+模板当前支持：
 
 - `trusted-proxy`
+- `token`
 - `none`
 
-不允许：
+默认仍建议使用 `trusted-proxy`。如果你要本地或自管环境直接用 shared secret，也可以显式设置：
 
-- `token`
+- `OPENCLAW_GATEWAY_AUTH_MODE=token`
+- `OPENCLAW_GATEWAY_TOKEN=<your-shared-secret>`
 
-原因是平台默认网关接入链路要求用户侧实例使用 `trusted-proxy` 或 `none`。
+兼容别名：
+
+- `OPENCLAW_GATEWAY_PASSWORD=<your-shared-secret>`
 
 ## 6. 端口与默认环境
 
@@ -84,6 +88,8 @@ flowchart LR
 - `PORT`
 - `OPENCLAW_GATEWAY_BIND`
 - `OPENCLAW_GATEWAY_AUTH_MODE`
+- `OPENCLAW_GATEWAY_TOKEN`
+- `OPENCLAW_GATEWAY_PASSWORD`
 - `CLAWHUB_SITE=https://cn.clawhub-mirror.com`
 - `CLAWHUB_REGISTRY=https://cn.clawhub-mirror.com`
 
@@ -96,7 +102,7 @@ flowchart LR
 当前模板 Makefile 默认值：
 
 - 平台：`linux/amd64`
-- 基础镜像：`ghcr.io/openclaw/openclaw:2026.4.21@sha256:70e0ab07deb72f4b3ee7bb701c5437fdc27b85d6705cc67f104aa8042ba52e00`
+- 基础镜像：`ghcr.io/openclaw/openclaw:2026.4.24@sha256:7c4370ff8777555d4c9fe5ab821aaaad7c87188d389a6cf761270725d96ec3e9`
 - 默认运行端口：`8080`
 
 ## 8. 常用命令
@@ -113,6 +119,15 @@ docker build -t openclaw-user-custom:demo .
 ```bash
 make run IMAGE=hub-vpc-cn-beijing-6.kce.ksyun.com/your-ns/openclaw-user-custom TAG=demo
 docker run --rm -it -p 8080:8080 -e OPENCLAW_GATEWAY_AUTH_MODE=none openclaw-user-custom:demo
+```
+
+token 模式示例：
+
+```bash
+docker run --rm -it -p 8080:8080 \
+  -e OPENCLAW_GATEWAY_AUTH_MODE=token \
+  -e OPENCLAW_GATEWAY_TOKEN=gateway-token-demo \
+  openclaw-user-custom:demo
 ```
 
 推送：
@@ -150,7 +165,7 @@ custom/config/openclaw.json
 ## 10. 这份模板刻意不做的事
 
 - 不带平台版复杂 bootstrap
-- 不做环境变量到 `openclaw.json` 的自动映射
+- 除 `OPENCLAW_GATEWAY_TOKEN` / `OPENCLAW_GATEWAY_PASSWORD` 这类 gateway shared secret 外，不做环境变量到 `openclaw.json` 的自动映射
 - 自定义环境变量不会自动写进 openclaw.json
 - 不代替用户业务代码读取自定义环境变量
 - 不做 mem0 这类平台增强的一键接入

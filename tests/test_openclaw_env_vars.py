@@ -20,17 +20,56 @@ def test_build_openclaw_env_vars_defaults_to_trusted_proxy(monkeypatch):
     assert env["OPENCLAW_TRUSTED_PROXIES"] == "127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,35.0.0.0/8"
 
 
-def test_build_openclaw_env_vars_forces_trusted_proxy_when_token_configured(monkeypatch):
+def test_build_openclaw_env_vars_switches_to_token_mode_when_token_configured(monkeypatch):
     monkeypatch.setattr(cmd_openclaw, "_GLOBAL_ENV_CACHE", {})
-    monkeypatch.setenv("OPENCLAW_GATEWAY_AUTH_MODE", "token")
+    monkeypatch.setenv("OPENCLAW_GATEWAY_TOKEN", "gateway-token-demo")
 
     env = cmd_openclaw._build_openclaw_env_vars()
 
-    assert env["OPENCLAW_GATEWAY_AUTH_MODE"] == "trusted-proxy"
-    assert env["OPENCLAW_TRUSTED_PROXY_USER_HEADER"] == "x-forwarded-user"
-    assert env["OPENCLAW_INTERNAL_TRUSTED_PROXY_USER"] == "openclaw-backend"
-    assert env["OPENCLAW_INTERNAL_TRUSTED_PROXY_USER_HEADER"] == "x-forwarded-user"
-    assert env["OPENCLAW_TRUSTED_PROXIES"] == "127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,35.0.0.0/8"
+    assert env["OPENCLAW_GATEWAY_AUTH_MODE"] == "token"
+    assert env["OPENCLAW_GATEWAY_TOKEN"] == "gateway-token-demo"
+    assert env["OPENCLAW_GATEWAY_PASSWORD"] == "gateway-token-demo"
+
+
+def test_build_openclaw_env_vars_accepts_password_alias_for_token_mode(monkeypatch):
+    monkeypatch.setattr(cmd_openclaw, "_GLOBAL_ENV_CACHE", {})
+    monkeypatch.setenv("OPENCLAW_GATEWAY_AUTH_MODE", "token")
+    monkeypatch.setenv("OPENCLAW_GATEWAY_PASSWORD", "gateway-password-demo")
+
+    env = cmd_openclaw._build_openclaw_env_vars()
+
+    assert env["OPENCLAW_GATEWAY_AUTH_MODE"] == "token"
+    assert env["OPENCLAW_GATEWAY_TOKEN"] == "gateway-password-demo"
+    assert env["OPENCLAW_GATEWAY_PASSWORD"] == "gateway-password-demo"
+
+
+def test_build_openclaw_env_vars_rejects_mismatched_token_and_password(monkeypatch):
+    monkeypatch.setattr(cmd_openclaw, "_GLOBAL_ENV_CACHE", {})
+    monkeypatch.setenv("OPENCLAW_GATEWAY_AUTH_MODE", "token")
+    monkeypatch.setenv("OPENCLAW_GATEWAY_TOKEN", "gateway-token-demo")
+    monkeypatch.setenv("OPENCLAW_GATEWAY_PASSWORD", "gateway-password-other")
+
+    with pytest.raises(ValueError, match="OPENCLAW_GATEWAY_TOKEN.*OPENCLAW_GATEWAY_PASSWORD"):
+        cmd_openclaw._build_openclaw_env_vars()
+
+
+def test_build_openclaw_env_vars_rejects_token_secret_outside_token_mode(monkeypatch):
+    monkeypatch.setattr(cmd_openclaw, "_GLOBAL_ENV_CACHE", {})
+    monkeypatch.setenv("OPENCLAW_GATEWAY_AUTH_MODE", "trusted-proxy")
+    monkeypatch.setenv("OPENCLAW_GATEWAY_TOKEN", "gateway-token-demo")
+
+    with pytest.raises(ValueError, match="仅在 OPENCLAW_GATEWAY_AUTH_MODE=token 时支持"):
+        cmd_openclaw._build_openclaw_env_vars()
+
+
+def test_build_openclaw_env_vars_requires_secret_for_token_mode(monkeypatch):
+    monkeypatch.setattr(cmd_openclaw, "_GLOBAL_ENV_CACHE", {})
+    monkeypatch.setenv("OPENCLAW_GATEWAY_AUTH_MODE", "token")
+    monkeypatch.delenv("OPENCLAW_GATEWAY_TOKEN", raising=False)
+    monkeypatch.delenv("OPENCLAW_GATEWAY_PASSWORD", raising=False)
+
+    with pytest.raises(ValueError, match="OPENCLAW_GATEWAY_TOKEN"):
+        cmd_openclaw._build_openclaw_env_vars()
 
 
 def test_build_openclaw_env_vars_uses_custom_trusted_proxy_env(monkeypatch):
@@ -314,8 +353,14 @@ def test_parse_extra_openclaw_env_pairs_rejects_invalid_items():
     with pytest.raises(ValueError, match="合法的环境变量名"):
         cmd_openclaw._parse_extra_openclaw_env_pairs(("1BAD=value",))
 
-    with pytest.raises(ValueError, match="trusted-proxy 或 none"):
-        cmd_openclaw._parse_extra_openclaw_env_pairs(("OPENCLAW_GATEWAY_AUTH_MODE=token",))
+    with pytest.raises(ValueError, match="trusted-proxy、token 或 none"):
+        cmd_openclaw._parse_extra_openclaw_env_pairs(("OPENCLAW_GATEWAY_AUTH_MODE=password",))
+
+
+def test_parse_extra_openclaw_env_pairs_accepts_token_auth_mode():
+    parsed = cmd_openclaw._parse_extra_openclaw_env_pairs(("OPENCLAW_GATEWAY_AUTH_MODE=token",))
+
+    assert parsed == {"OPENCLAW_GATEWAY_AUTH_MODE": "token"}
 
 
 def test_generate_default_openclaw_name_is_high_entropy():

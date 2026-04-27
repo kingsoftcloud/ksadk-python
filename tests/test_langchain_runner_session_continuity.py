@@ -66,6 +66,7 @@ async def test_langchain_runner_uses_standard_prepare_input_hook():
                 "input_parts": [],
                 "attachments": [],
                 "attachment_results": [],
+                "instructions": None,
                 "platform_context": None,
                 "kb_context": None,
                 "memory_context": None,
@@ -151,6 +152,7 @@ async def test_langchain_runner_standard_hook_receives_platform_kb_and_memory_co
             "input_parts": [],
             "attachments": [],
             "attachment_results": [],
+            "instructions": None,
             "platform_context": {"agent_id": "demo-agent", "user_id": "user-1"},
             "kb_context": {"formatted_text": "KB facts"},
             "memory_context": {"formatted_text": "Memory facts"},
@@ -177,3 +179,51 @@ async def test_langchain_runner_replay_prompt_includes_ambient_kb_and_memory_con
     assert "知识库: 当前支持标准型和计算型" in payload["input"]
     assert "Long-term memory context:" in payload["input"]
     assert "记忆: 用户上次查过主机机型" in payload["input"]
+
+
+@pytest.mark.asyncio
+async def test_langchain_runner_replay_prompt_includes_instructions():
+    agent = _RecordingAgent()
+    runner = _make_runner(agent)
+
+    await runner.invoke(
+        {
+            "session_id": "sess-instructions",
+            "input": "hello",
+            "instructions": "只用中文回答",
+        }
+    )
+
+    payload, _config = agent.calls[0]
+    assert payload["input"].startswith("只用中文回答")
+    assert payload["input"].rstrip().endswith("user: hello")
+
+
+@pytest.mark.asyncio
+async def test_langchain_runner_message_history_includes_instructions_without_ambient_context():
+    store: dict[str, InMemoryChatMessageHistory] = {}
+    seen_messages = []
+
+    def get_history(session_id: str) -> InMemoryChatMessageHistory:
+        return store.setdefault(session_id, InMemoryChatMessageHistory())
+
+    def sync_chain(payload: dict) -> dict:
+        seen_messages.append(payload["input"])
+        return {"output": "ok"}
+
+    runnable = RunnableWithMessageHistory(RunnableLambda(sync_chain), get_history)
+    runner = _make_runner(runnable)
+
+    result = await runner.invoke(
+        {
+            "session_id": "sess-history-instructions",
+            "input": "hello",
+            "instructions": "只用中文回答",
+        }
+    )
+
+    assert result["output"] == "ok"
+    assert seen_messages
+    assert seen_messages[0][0].__class__.__name__ == "SystemMessage"
+    assert "只用中文回答" in seen_messages[0][0].content
+    assert seen_messages[0][1].content == "hello"

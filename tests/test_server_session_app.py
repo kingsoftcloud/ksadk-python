@@ -816,7 +816,7 @@ async def test_list_agent_models_action_preserves_upstream_fields_and_normalizes
     server_app_module = importlib.import_module("ksadk.server.app")
     real_async_client = httpx.AsyncClient
     monkeypatch.setenv("OPENAI_BASE_URL", "https://kspmas.ksyun.com/v1")
-    monkeypatch.setenv("OPENAI_MODEL_NAME", "kimi-k2.5")
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "kimi-k2.6")
     monkeypatch.setattr(
         "httpx.AsyncClient",
         lambda *args, **kwargs: _ExternalModelsAsyncClient(
@@ -824,7 +824,7 @@ async def test_list_agent_models_action_preserves_upstream_fields_and_normalizes
             payload={
                 "data": [
                     {
-                        "id": "kimi-k2.5",
+                        "id": "kimi-k2.6",
                         "owned_by": "ksyun",
                         "context_length": 131072,
                         "max_tokens": 4096,
@@ -844,7 +844,7 @@ async def test_list_agent_models_action_preserves_upstream_fields_and_normalizes
 
     assert response.status_code == 200
     item = response.json()["Data"]["Models"][0]
-    assert item["id"] == "kimi-k2.5"
+    assert item["id"] == "kimi-k2.6"
     assert item["owned_by"] == "ksyun"
     assert item["context_length"] == 131072
     assert item["max_tokens"] == 4096
