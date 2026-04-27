@@ -8,11 +8,14 @@ import os
 import uuid
 import re
 from typing import Any, AsyncIterator, Dict
+import base64
+from pathlib import Path
 
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.sessions.continuity import LangGraphSessionAdapter
 from ksadk.runners.utils import get_langfuse_callback, get_langfuse_metadata, load_agent_module
 from langgraph.types import Command
+from ksadk.conversations.attachments import classify_attachment_kind, read_attachment_bytes
 
 
 class LangGraphRunner(BaseRunner):
@@ -142,7 +145,9 @@ class LangGraphRunner(BaseRunner):
                     messages.append(AIMessage(content=content))
 
             user_input = normalized_payload["input"] or "[empty message]"
-            messages.append(HumanMessage(content=user_input))
+            attachments = list(normalized_payload.get("attachments") or [])
+            user_content = self._build_langgraph_human_content(user_input, attachments)
+            messages.append(HumanMessage(content=user_content))
             state = {k: v for k, v in normalized_payload.items() if k != "input"}
             state["messages"] = messages
             return state
@@ -156,6 +161,59 @@ class LangGraphRunner(BaseRunner):
             return state
 
         return normalized_payload
+
+    @staticmethod
+    def _build_langgraph_human_content(user_input: str, attachments: list[dict[str, Any]]) -> Any:
+        image_blocks: list[dict[str, Any]] = []
+
+        for attachment in attachments or []:
+            if not isinstance(attachment, dict):
+                continue
+
+            mime_type = str(attachment.get("mime_type") or "application/octet-stream")
+            display_name = str(attachment.get("display_name") or "")
+            if classify_attachment_kind(mime_type, display_name) != "image":
+                continue
+
+            data_b64 = str(attachment.get("data") or "").strip()
+            transport = str(attachment.get("transport") or "")
+
+            if transport == "inline" and data_b64:
+                image_blocks.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{mime_type};base64,{data_b64}",
+                        },
+                    }
+                )
+                continue
+
+            storage_path = attachment.get("storage_path")
+            if not storage_path:
+                continue
+
+            raw = read_attachment_bytes(Path(str(storage_path)))
+            if not raw:
+                continue
+
+            image_blocks.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{mime_type};base64,{base64.b64encode(raw).decode('ascii')}",
+                    },
+                }
+            )
+
+        if not image_blocks:
+            return user_input
+
+        content: list[dict[str, Any]] = []
+        if user_input:
+            content.append({"type": "text", "text": user_input})
+        content.extend(image_blocks)
+        return content
 
     async def _invoke_graph(
         self,

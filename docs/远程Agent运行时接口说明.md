@@ -1,0 +1,1377 @@
+# 远程Agent运行时接口说明
+
+本文档基于当前 `master` 分支的真实代码实现整理，目标是说明：
+
+- Agent 部署到远程 K8s / Serverless Pod 之后，最终通过 `PublicEndpoint` 对外暴露哪些接口
+- 不同运行时类型的接口差异：通用 Agent、Hermes、OpenClaw
+- 公共鉴权、公共 Header、流式行为、WebSocket 约束
+- 各接口的请求体 / 响应体 shape
+
+本文档只把当前代码里可以确认的 contract 写出来；对仓库中未完整定义、但依赖上游项目的 OpenClaw 原生接口，不做超出代码证据的推断。
+
+## 1. 事实来源
+
+本文档主要依据以下代码与文档：
+
+- `agentengine-server/app/api/v1/actions/agent_actions.py`
+- `agentengine-server/app/api/v1/actions/chat_actions.py`
+- `agentengine-server/app/gateway/api.py`
+- `agentengine-server/app/gateway/router_service.py`
+- `agentengine-server/docs/技术设计.md`
+- `agentengine-server/docs/网关鉴权说明.md`
+- `ksadk-python/ksadk/server/app.py`
+- `ksadk-python/ksadk/server/api_models.py`
+- `ksadk-python/ksadk/conversations/runtime.py`
+- `ksadk-python/ksadk_runtime_common/workspace_files/*.py`
+- `ksadk-python/deploy/hermes/runtime/app.py`
+- `ksadk-python/deploy/hermes/README.md`
+- `ksadk-python/deploy/openclaw/bootstrap.sh`
+- `ksadk-python/deploy/openclaw-user-template/Dockerfile`
+
+## 2. 入口模型
+
+### 2.1 公网入口
+
+远程 Agent 部署成功后，控制面 `GetAgent` 会返回：
+
+- `QuickAccess.PublicEndpoint`
+
+这个地址就是外部调用运行时接口时应使用的根地址。例如：
+
+```text
+https://agent-ar20250205120000abcdef.agentengine.ksyun.com
+```
+
+说明：
+
+- 对外看到的是 `PublicEndpoint`
+- 实际请求先进入 Ingress / Gateway，再由 `agentengine-server` 的 router 做鉴权和转发
+- 因此“部署后暴露的接口”应以公网入口经过网关后可访问的路径为准，而不是简单把 Pod 内部监听端口当成外部 contract
+
+### 2.2 内网入口
+
+`GetAgent` 也可能返回：
+
+- `QuickAccess.PrivateEndpoint`
+
+这类地址用于内网访问，不作为本文主线。本文默认描述通过 `PublicEndpoint` 暴露的接口。
+
+## 3. 鉴权与公共 Header
+
+## 3.1 外部访问鉴权
+
+当前数据面统一通过网关校验，外部调用主要有两种认证方式：
+
+1. `Authorization: Bearer <api_key>`
+2. `ae_ui_session` Cookie
+
+其中：
+
+- API/SDK/CLI 直连运行时接口时，使用 `Authorization: Bearer <api_key>`
+- 浏览器经 dashboard share link 或 hosted UI 访问时，通常使用 `ae_ui_session` Cookie
+
+代码证据：
+
+- `agentengine-server/docs/网关鉴权说明.md`
+- `agentengine-server/app/gateway/api.py`
+
+### 3.1.1 Bearer Token 的含义
+
+Bearer Token 有两种来源：
+
+1. AgentEngine 为该 Agent 签发的 API Key，通常是 `ak-...` 或 `sk-...`
+2. OpenClaw 在 `token` 模式下使用的 shared secret
+
+对绝大多数自动化调用，推荐理解为：
+
+```http
+Authorization: Bearer <GetAgent 返回的 api_key>
+```
+
+### 3.1.2 Cookie 会话的适用场景
+
+`ae_ui_session` 主要用于：
+
+- `https://<PublicEndpoint>/chat`
+- `https://<PublicEndpoint>/`
+- share link 跳转后的浏览器会话
+
+它不是给通用脚本调用运行时 API 设计的主接口。
+
+## 3.2 公共请求 Header
+
+### 3.2.1 通用 HTTP Header
+
+建议按以下方式构造：
+
+| Header | 是否必填 | 说明 |
+| --- | --- | --- |
+| `Authorization: Bearer <api_key>` | 外部 API 调用必填 | 由网关校验 |
+| `Content-Type: application/json` | JSON 请求推荐 | `POST /v1/*`、`POST /agentengine/api/v1/*` 常用 |
+| `Accept: application/json` | 非流式请求推荐 | 返回 JSON |
+| `Accept: text/event-stream` | 流式请求推荐 | `stream=true` 时推荐显式声明 |
+
+说明：
+
+- 对于 `multipart/form-data` 上传，如 `UploadFile` / `AddWorkspaceFile`，`Content-Type` 由客户端自动生成 boundary
+- 运行时应用本身没有在 `ksadk.server.app` 内显式校验 Bearer；鉴权发生在网关层
+
+### 3.2.2 WebSocket Header
+
+Hermes 终端 WebSocket 额外要求：
+
+| Header | 是否必填 | 说明 |
+| --- | --- | --- |
+| `Authorization: Bearer <api_key>` | 公网访问建议携带 | 网关鉴权 |
+| `Sec-WebSocket-Protocol: ks-terminal.v1` | 必填 | Hermes 终端子协议 |
+
+如果缺少 `ks-terminal.v1`，Hermes runtime 会直接拒绝连接。
+
+## 3.3 内部 Header 与外部调用边界
+
+以下 Header 会在网关和运行时之间使用，但**不应由外部调用方手工构造**：
+
+| Header | 用途 |
+| --- | --- |
+| `X-Auth-Agent-Id` | 网关鉴权后注入的 Agent ID |
+| `X-Auth-Account-Id` | 网关鉴权后注入的账号 ID |
+| `X-Auth-Framework` | 网关鉴权后注入的 framework |
+| `X-Auth-Openclaw-Gateway-Mode` | OpenClaw 模式透传 |
+| `X-Forwarded-Host` | 原始 Host 透传 |
+| `x-forwarded-user` | OpenClaw trusted-proxy / workspace 代理链路使用 |
+| `X-Hermes-Session-Token` | Hermes dashboard 内部 fetch shim 使用 |
+
+外部用户应只关心：
+
+- Bearer API Key
+- Cookie Session
+- WebSocket 子协议
+
+## 4. 运行时类型矩阵
+
+当前主线下，公网可见接口按运行时分为三类：
+
+| 运行时类型 | 典型 framework | 主入口实现 | 对外特征 |
+| --- | --- | --- | --- |
+| 通用 Agent 运行时 | `adk` / `langchain` / `langgraph` / `deepagents` | `ksadk.server.app` | `/v1/*` + `/chat` + Hosted UI action 接口 |
+| Hermes 托管运行时 | `hermes` | `deploy/hermes/runtime/app.py` 外层 wrapper | `/` dashboard、`/chat`、`/v1/*`、`/_ksadk/terminal/ws`、workspace files |
+| OpenClaw 托管运行时 | `openclaw` | OpenClaw gateway + ksadk 补丁 | 以 OpenClaw gateway 为主，平台额外挂出 workspace files |
+
+## 5. 公网暴露范围总览
+
+### 5.1 通用 Agent 运行时
+
+公网入口可确认的主路径：
+
+- `GET /health`
+- `POST /v1/responses`
+- `POST /v1/chat/completions`
+- `GET /chat`
+- `GET /build`
+- `GET /deploy`
+- `GET /agentengine/api/v1/AttachmentContent`
+- `GET /agentengine/api/v1/GetWorkspaceFileContent`
+- `POST /agentengine/api/v1/GetAgentUiBootstrap`
+- `POST /agentengine/api/v1/CreateSession`
+- `POST /agentengine/api/v1/GetSession`
+- `POST /agentengine/api/v1/ListSessions`
+- `POST /agentengine/api/v1/DeleteSession`
+- `POST /agentengine/api/v1/ListSessionEvents`
+- `POST /agentengine/api/v1/RunAgent`
+- `POST /agentengine/api/v1/UploadFile`
+- `POST /agentengine/api/v1/ListWorkspaceFiles`
+- `POST /agentengine/api/v1/AddWorkspaceFile`
+- `POST /agentengine/api/v1/DeleteWorkspaceFile`
+- `POST /agentengine/api/v1/ListAgentModels`
+- `POST /run_sse`
+- `GET/POST/DELETE /apps/{app_name}/users/{user_id}/sessions*`
+
+注意：
+
+- 并不是所有 `/agentengine/api/v1/*` 都会通过公网数据面暴露
+- 网关只放行 Hosted UI 所需的那一小组 action
+- 对 `PublicEndpoint` 而言，`POST /agentengine/api/v1/*` 这组 Hosted UI action 实际会被 router 代理回 `agentengine-server`，不是直接命中 runtime pod 的本地同名路由
+
+### 5.2 Hermes 运行时
+
+公网入口可确认的主路径：
+
+- `GET /`
+- `GET /health`
+- `GET/POST/PUT/PATCH/DELETE/OPTIONS /v1/{path}`
+- `GET/POST/PUT/PATCH/DELETE/OPTIONS /{path}`  
+  这部分本质是 Hermes dashboard 与其 API 的代理入口
+- `GET/HEAD/POST/DELETE /_ksadk/workspace/v1/*`
+- `WS /_ksadk/terminal/ws`
+- `GET /chat`
+
+### 5.3 OpenClaw 运行时
+
+当前代码中可以**准确确认**的平台追加 contract 只有：
+
+- `/_ksadk/workspace/v1/*`：通过 ksadk sidecar / proxy 增加的文件接口
+
+此外还可以确认：
+
+- OpenClaw gateway 默认跑在 `8080`
+- 鉴权模式支持 `trusted-proxy | token | none`
+- 健康检查使用的是上游 gateway 的 `/healthz`
+
+但 OpenClaw gateway 原生完整 API 面不是本仓当前代码独立定义的，因此本文不把其所有原生端点逐条列为平台 contract。
+
+## 6. 通用 Agent 运行时详细接口
+
+本节适用于原始 runtime 服务本身：
+
+- `adk`
+- `langchain`
+- `langgraph`
+- `deepagents`
+
+底层实现：`ksadk-python/ksadk/server/app.py`
+
+重要边界：
+
+- 本节里的 `/v1/*`、`/health`、`/run_sse`、`/apps/.../sessions*` 是 runtime pod 自身实现
+- 但对公网 `PublicEndpoint` 来说，`/agentengine/api/v1/*` Hosted UI action 以 `agentengine-server` facade 为准
+- 因此本文后续会把“runtime 原始接口”和“公网 Hosted facade”拆开写
+
+## 6.1 健康检查
+
+### `GET /health`
+
+用途：
+
+- 检查运行时是否启动
+- 返回当前 runner 识别出的 framework 和 agent 名
+
+请求示例：
+
+```bash
+curl -H "Authorization: Bearer <api_key>" \
+  "https://<PublicEndpoint>/health"
+```
+
+响应示例：
+
+```json
+{
+  "status": "ok",
+  "framework": "langgraph",
+  "agent": "demo-agent"
+}
+```
+
+## 6.2 OpenAI Responses 兼容接口
+
+### `POST /v1/responses`
+
+说明：
+
+- 非流式返回 OpenAI Responses 风格 JSON
+- 流式返回 `text/event-stream`
+
+请求体字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `input` | `string | array` | 是 | 用户输入；字符串或 KOP 风格消息数组 |
+| `model` | `string` | 否 | 本次调用显式模型 |
+| `model_metadata` | `object` | 否 | 模型元数据 |
+| `instructions` | `string` | 否 | 额外系统指令 |
+| `metadata` | `object` | 否 | 请求级 metadata |
+| `stream` | `boolean` | 否 | 是否流式 |
+| `session_id` | `string` | 否 | 指定会话 ID |
+
+最小请求示例：
+
+```json
+{
+  "input": "你好",
+  "stream": false
+}
+```
+
+带会话与模型示例：
+
+```json
+{
+  "input": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "text": "请总结一下这份设计"
+        }
+      ]
+    }
+  ],
+  "model": "glm-5.1",
+  "stream": true,
+  "session_id": "sess-123"
+}
+```
+
+图片与附件输入：
+
+- `input` 为数组时，`content` 支持 KOP 风格 part 数组
+- 每个 part 当前支持：
+  - `text`
+  - `inlineData`
+  - `fileData`
+- 其中：
+- `inlineData` 适合直接内联 base64 内容
+- `fileData` 适合先调用 `UploadFile`，再引用返回的 `ksadk-upload://...`
+
+图片示例（先上传，再引用）：
+
+```json
+{
+  "input": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "text": "请分析这张图片"
+        },
+        {
+          "fileData": {
+            "fileUri": "ksadk-upload://abc123.png",
+            "displayName": "diagram.png",
+            "mimeType": "image/png"
+          }
+        }
+      ]
+    }
+  ],
+  "model": "glm-5.1",
+  "stream": false
+}
+```
+
+图片示例（直接内联）：
+
+```json
+{
+  "input": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "text": "请分析这张图片"
+        },
+        {
+          "inlineData": {
+            "data": "<base64-encoded-image-bytes>",
+            "displayName": "diagram.png",
+            "mimeType": "image/png"
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+当前附件类型支持矩阵：
+
+| 类型 | 典型扩展名 / MIME | 传输支持 | 平台提取支持 | 原生多模态直通 |
+| --- | --- | --- | --- | --- |
+| 文本 | `.txt` `.md` `.json` `.yaml` `.yml` `.csv` `.tsv` `.log` | 支持 | 支持 | 不适用 |
+| 文档 | `.pdf` `.docx` `.pptx` `.xlsx` `.html` `.htm` | 支持 | 部分支持：文本提取 / OCR | 不适用 |
+| 图片 | `.png` `.jpg` `.jpeg` `.webp` / `image/*` | 支持 | 支持：OCR / 元信息提取 | 部分支持，见下方框架差异 |
+| 压缩包 | `.zip` | 支持 | 支持：目录/可读文件抽样提取 | 不适用 |
+| 其他二进制 | 其他后缀或 `application/octet-stream` | 支持 | 通常仅保留为附件引用 | 不支持 |
+
+框架差异：
+
+- `ADK`
+  - 图片附件会优先以 bytes 形式构造成底层 SDK `Part`
+  - 若底层模型支持原生多模态，可直接消费图片
+- `LangGraph`
+  - 简化输入路径下，图片附件会自动转换为多模态 `HumanMessage.content` blocks
+  - 非图片附件仍保留为普通附件上下文
+- `LangChain`
+  - 当前没有对所有 agent 统一做“自动图片直通”
+  - 如需原生多模态，建议在 `ksadk_prepare_input(payload, session_context)` 中自行消费 `input_parts / attachments`
+
+非流式响应字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | response ID |
+| `object` | 固定 `response` |
+| `created_at` | Unix 时间戳 |
+| `status` | 默认 `completed` |
+| `model` | 模型名 |
+| `output` | 输出条目数组 |
+| `output_text` | 文本聚合结果 |
+| `usage` | 简化 token 统计 |
+| `session_id` | 会话 ID |
+
+非流式响应示例：
+
+```json
+{
+  "id": "resp_123",
+  "object": "response",
+  "created_at": 1710000000,
+  "status": "completed",
+  "error": null,
+  "incomplete_details": null,
+  "instructions": null,
+  "metadata": {},
+  "model": "glm-5.1",
+  "parallel_tool_calls": true,
+  "temperature": null,
+  "top_p": null,
+  "tools": [],
+  "output": [
+    {
+      "id": "msg_abc",
+      "type": "message",
+      "status": "completed",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "你好，我可以帮你分析代码。"
+        }
+      ]
+    }
+  ],
+  "output_text": "你好，我可以帮你分析代码。",
+  "usage": {
+    "input_tokens": 0,
+    "output_tokens": 12,
+    "total_tokens": 12
+  },
+  "session_id": "sess-123"
+}
+```
+
+流式行为：
+
+- `Content-Type: text/event-stream`
+- 每个事件格式为：
+
+```text
+event: <event_name>
+data: <json>
+
+```
+
+当前可能出现的主要事件：
+
+- `response.created`
+- `response.in_progress`
+- `response.output_text.delta`
+- `response.reasoning.delta`
+- `response.tool_call`
+- `response.tool_result`
+- `response.approval_request`
+- `response.compaction.start`
+- `response.compaction.done`
+- `response.completed`
+
+## 6.3 OpenAI Chat Completions 兼容接口
+
+### `POST /v1/chat/completions`
+
+请求体字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `messages` | `array<object>` | 是 | OpenAI 风格消息数组 |
+| `model` | `string` | 否 | 模型名 |
+| `model_metadata` | `object` | 否 | 模型元数据 |
+| `stream` | `boolean` | 否 | 是否流式 |
+| `session_id` | `string` | 否 | 会话 ID |
+| `temperature` | `number` | 否 | 当前代码接受，但不保证下游一定使用 |
+| `max_tokens` | `integer` | 否 | 当前代码接受，但不保证下游一定使用 |
+
+`messages[].content` 支持两类形态：
+
+1. 字符串
+2. KOP 风格 part 数组，例如：
+
+```json
+[
+  {
+    "role": "user",
+    "content": [
+      {
+        "text": "请分析附件"
+      },
+      {
+        "fileData": {
+          "fileUri": "ksadk-upload://abc123.txt",
+          "displayName": "report.txt",
+          "mimeType": "text/plain"
+        }
+      }
+    ]
+  }
+]
+```
+
+非流式响应示例：
+
+```json
+{
+  "id": "chatcmpl-123",
+  "object": "chat.completion",
+  "created": 1710000000,
+  "model": "glm-5.1",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "这是分析结果。"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 0,
+    "completion_tokens": 6,
+    "total_tokens": 6
+  },
+  "session_id": "sess-123"
+}
+```
+
+对图片 / 附件的支持规则与 `/v1/responses` 相同：
+
+- `text`
+- `inlineData`
+- `fileData`
+
+图片示例：
+
+```json
+[
+  {
+    "role": "user",
+    "content": [
+      {
+        "text": "请分析这张图片"
+      },
+      {
+        "fileData": {
+          "fileUri": "ksadk-upload://abc123.png",
+          "displayName": "diagram.png",
+          "mimeType": "image/png"
+        }
+      }
+    ]
+  }
+]
+```
+
+流式说明：
+
+- 返回仍然是 SSE
+- 事件名沿用 ksadk 统一事件，不是 OpenAI 官方 `chat.completion.chunk`
+- 因此客户端若按 OpenAI 官方 chunk parser 逐字节兼容，需要先确认是否接受该事件形态
+
+## 6.4 公网 Hosted UI Facade 说明
+
+通过 `PublicEndpoint` 访问 `POST /agentengine/api/v1/*` 时，应以 `agentengine-server` 的 facade 为准，而不是以 runtime pod 本地 `ksadk.server.app` 的同名实现为准。
+
+当前网关公开放行的 Hosted UI action 白名单包括：
+
+- `GetAgentUiBootstrap`
+- `CreateSession`
+- `GetSession`
+- `ListSessions`
+- `DeleteSession`
+- `ListSessionEvents`
+- `RunAgent`
+- `UploadFile`
+- `ListWorkspaceFiles`
+- `AddWorkspaceFile`
+- `DeleteWorkspaceFile`
+- `ListAgentModels`
+
+另外两个 GET 下载路径也会通过 Hosted/UI 侧转发：
+
+- `GET /agentengine/api/v1/AttachmentContent`
+- `GET /agentengine/api/v1/GetWorkspaceFileContent`
+
+## 6.5 Hosted UI Bootstrap
+
+### `POST /agentengine/api/v1/GetAgentUiBootstrap`
+
+说明：
+
+- 这是 hosted chat / hosted workbench 初始化时的核心 bootstrap 接口
+- 对公网数据面，这个 action 会被网关显式放行
+
+请求体字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `AgentId` | `string` | 否 | 与 `Name` 二选一，优先使用 |
+| `Name` | `string` | 否 | Agent 名称 |
+| `SessionId` | `string` | 否 | 当前会话 ID |
+
+响应外层统一包裹：
+
+```json
+{
+  "Code": 0,
+  "Message": "Success",
+  "RequestId": "req-xxxxxxxxxxxx",
+  "Action": "GetAgentUiBootstrap",
+  "Data": { "...": "..." }
+}
+```
+
+`Data` 关键字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `Agent.AgentId` | Agent ID |
+| `Agent.Name` | Agent 名 |
+| `Agent.Framework` | framework 名 |
+| `Modules` | 当前固定 `["Chat","Build","Deploy"]` |
+| `Capabilities.Attachments` | 固定 `true` |
+| `Capabilities.WorkspaceFiles` | 是否开启 workspace |
+| `Capabilities.Approval` | 当前公网 Hosted facade 为 `false` |
+| `Capabilities.Thinking` | 固定 `true` |
+| `Capabilities.HostedRuntime` | 当前公网 Hosted facade 为 `true` |
+| `Capabilities.SlashCommands` | 当前固定 `["/new","/clear","/stop","/help","/attach"]` |
+| `WorkspaceFiles` | 工作区能力描述 |
+| `AccessMode` | `Owner / Private / Share` |
+| `SharePermissions.DefaultPath` | 默认 UI 路径；通常为 `/chat`，Hermes 管理页可为 `/` |
+| `SharePermissions.SharePath` | 分享默认路径 |
+| `ApiFormats` | `hermes` 为 `["chat_completions"]`，其余通常为 `["responses","chat_completions"]` |
+| `Stream` | 当前固定 `true` |
+| `SessionId` | 请求传入的会话 ID |
+| `HostedRuntime` | runtime 摘要对象，可能为 `null` |
+| `Model` | 当前模型摘要，可能为 `null` |
+
+`WorkspaceFiles` 字段在启用时结构为：
+
+```json
+{
+  "Enabled": true,
+  "MaxUploadBytes": 104857600,
+  "SupportsDelete": true,
+  "RootLabel": "workspace",
+  "EntryAction": "ListWorkspaceFiles",
+  "UploadAction": "AddWorkspaceFile",
+  "ContentPath": "/agentengine/api/v1/GetWorkspaceFileContent"
+}
+```
+
+重要限制：
+
+- share link 场景下，`WorkspaceFiles.Enabled` 会被关闭
+- 当前服务端只对 `adk / langchain / langgraph / deepagents / hermes` 开启 workspace files
+
+## 6.6 会话 Action 接口
+
+### `POST /agentengine/api/v1/CreateSession`
+
+请求体：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `AgentId` | `string` | 是 | Agent ID |
+| `UserId` | `string` | 否 | 可选用户 ID |
+| `SessionId` | `string` | 否 | 显式指定 session ID |
+| `ExpiresHours` | `integer` | 否 | 兼容旧字段，当前忽略 |
+
+### `POST /agentengine/api/v1/ListSessions`
+
+请求体：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `AgentId` | `string` | 是 | Agent ID |
+| `UserId` | `string` | 否 | 可选用户 ID |
+| `Page` | `integer` | 否 | 默认 `1` |
+| `PageSize` | `integer` | 否 | 默认 `20`，最大 `200` |
+
+### `POST /agentengine/api/v1/GetSession`
+
+请求体：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `SessionId` | `string` | 条件 | 与 `Id` 二选一 |
+| `Id` | `string` | 条件 | 兼容旧字段 |
+
+### `POST /agentengine/api/v1/DeleteSession`
+
+请求体：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `SessionId` | `string` | 条件 | 与 `Id` 二选一 |
+| `Id` | `string` | 条件 | 兼容旧字段 |
+
+### `POST /agentengine/api/v1/ListSessionEvents`
+
+请求体：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `SessionId` | `string` | 是 | Session ID |
+| `Offset` | `integer` | 否 | 起始偏移，`>= 0` |
+| `Limit` | `integer` | 否 | 返回条数，`>= 1` |
+
+会话响应中 `Session` 的主要字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `SessionId` | 会话 ID |
+| `AgentId` | Agent ID |
+| `UserId` | 用户 ID |
+| `Title` | 当前标题 |
+| `TitleSource` | 标题来源 |
+| `Summary` | 摘要 |
+| `FirstPrompt` | 第一条 prompt |
+| `LastPrompt` | 最近一条 prompt |
+| `State` | 会话状态字典 |
+| `CreatedAt` | 创建时间 |
+| `UpdatedAt` | 更新时间 |
+| `Version` | 版本号 |
+
+事件响应中 `Events[]` 的主要字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `EventId` | 事件 ID |
+| `SessionId` | 会话 ID |
+| `Author` | 作者 |
+| `EventType` | 事件类型 |
+| `Content` | 事件内容 |
+| `Timestamp` | 时间戳 |
+| `SeqId` | 序号 |
+| `Metadata` | 元数据 |
+| `InvocationId` | 可选，本轮运行 ID |
+
+分页返回补充：
+
+- `ListSessions` 的 `Data` 额外包含 `Total`
+- `ListSessionEvents` 的 `Data` 额外包含请求透传的 `Offset` 和 `Limit`
+
+## 6.7 文件上传与附件内容
+
+### `POST /agentengine/api/v1/UploadFile`
+
+请求：
+
+- `multipart/form-data`
+- 表单字段：`file`
+
+响应示例：
+
+```json
+{
+  "Code": 0,
+  "Message": "Success",
+  "RequestId": "req-xxxx",
+  "Action": "UploadFile",
+  "Data": {
+    "FileData": {
+      "fileUri": "ksadk-upload://abc123.txt",
+      "displayName": "report.txt",
+      "mimeType": "text/plain",
+      "sizeBytes": 1024
+    }
+  }
+}
+```
+
+### `GET /agentengine/api/v1/AttachmentContent?FileUri=<uri>`
+
+请求参数：
+
+| 参数 | 必填 | 说明 |
+| --- | --- | --- |
+| `FileUri` | 是 | `UploadFile` 返回的 `ksadk-upload://...` URI |
+
+返回：
+
+- 原始文件内容
+- `Content-Type` 依据文件类型推断
+- `Content-Disposition: inline`
+
+## 6.8 Workspace Files Action 接口
+
+这组接口是对 runtime 内部 `/_ksadk/workspace/v1/*` 的 action 包装。
+
+重要限制：
+
+- share link 场景下，这组接口会被拒绝，返回 `403`
+- 这些接口会先根据 `AgentId` 或 `Name` 解析目标 Agent，再由 `agentengine-server` 代理到对应 runtime
+
+### `POST /agentengine/api/v1/ListWorkspaceFiles`
+
+请求体：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `AgentId` | `string` | 否 | 与 `Name` 二选一，优先用于解析 Agent |
+| `Name` | `string` | 否 | 与 `AgentId` 二选一 |
+| `Path` | `string` | 否 | 默认 `"."` |
+| `Recursive` | `boolean` | 否 | 默认 `false` |
+
+响应 `Data` 示例：
+
+```json
+{
+  "Root": "workspace",
+  "Path": ".",
+  "Entries": [
+    {
+      "Name": "outputs",
+      "Path": "outputs",
+      "Type": "directory",
+      "SizeBytes": null,
+      "MimeType": null,
+      "ModifiedAt": "2026-04-27T10:00:00Z"
+    }
+  ]
+}
+```
+
+### `POST /agentengine/api/v1/AddWorkspaceFile`
+
+请求：
+
+- `multipart/form-data`
+- 表单字段：
+  - `file`
+  - `Path`
+  - `AgentId`（可选）
+  - `Name`（可选）
+
+成功响应 `Data` 示例：
+
+```json
+{
+  "Entry": {
+    "Name": "report.txt",
+    "Path": "uploads/report.txt",
+    "Type": "file",
+    "SizeBytes": 1024,
+    "MimeType": "text/plain",
+    "ModifiedAt": "2026-04-27T10:00:00Z"
+  }
+}
+```
+
+### `POST /agentengine/api/v1/DeleteWorkspaceFile`
+
+请求体：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `AgentId` | `string` | 否 | 与 `Name` 二选一 |
+| `Name` | `string` | 否 | 与 `AgentId` 二选一 |
+| `Path` | `string` | 是 | 待删除文件相对路径 |
+
+响应：
+
+```json
+{
+  "Deleted": true
+}
+```
+
+### `GET /agentengine/api/v1/GetWorkspaceFileContent?FilePath=<path>&AgentId=<id>`
+
+请求参数：
+
+| 参数 | 必填 | 说明 |
+| --- | --- | --- |
+| `FilePath` | 是 | 文件相对路径 |
+| `AgentId` | 否 | 与 `Name` 二选一 |
+| `Name` | 否 | 与 `AgentId` 二选一 |
+
+返回：
+
+- 原始文件内容
+- 透传上游 runtime 的响应 Header（会过滤掉 `content-encoding` / `transfer-encoding` / `connection` / `content-length`）
+- `Content-Type` 透传自 runtime
+
+## 6.9 模型目录
+
+### `POST /agentengine/api/v1/ListAgentModels`
+
+请求体：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `AgentId` | `string` | 否 | 与 `Name` 二选一 |
+| `Name` | `string` | 否 | 与 `AgentId` 二选一 |
+
+响应 `Data` 结构：
+
+```json
+{
+  "Models": [
+    {
+      "id": "glm-5.1",
+      "display_name": "glm-5.1"
+    }
+  ],
+  "Current": "glm-5.1",
+  "Source": "OPENAI_MODEL_NAME"
+}
+```
+
+说明：
+
+- 服务端会优先尝试请求 runtime 侧模型目录 `GET <api_base>/v1/models`
+- 若失败，则回退到当前 Agent 的模型配置推断结果
+
+## 6.10 Hosted 运行入口
+
+### `POST /agentengine/api/v1/RunAgent`
+
+说明：
+
+- 这是 hosted UI 直接调用的运行入口
+- 它内部会根据 `ApiFormat` 转到：
+  - `responses`
+  - `chat_completions`
+
+请求体字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `AgentId` | `string` | 是 | Agent ID |
+| `Messages` | `array<object>` | 是 | KOP 风格消息数组 |
+| `SessionId` | `string` | 否 | 会话 ID |
+| `ApiFormat` | `string` | 否 | 默认 `chat_completions`；可选 `responses` / `chat_completions` |
+| `Stream` | `boolean` | 否 | 是否流式 |
+| `Model` | `string` | 否 | 本次显式模型 |
+| `ModelMetadata` | `object` | 否 | 模型元数据 |
+
+请求示例：
+
+```json
+{
+  "AgentId": "ar-demo",
+  "SessionId": "sess-123",
+  "ApiFormat": "responses",
+  "Stream": true,
+  "Messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "帮我总结今天的变更"
+        }
+      ]
+    }
+  ]
+}
+```
+
+流式返回：
+
+- `ApiFormat=responses` 时：Responses 风格 SSE
+- `ApiFormat=chat_completions` 时：透传 runtime 的流式返回，实践中通常仍是 ksadk 统一 SSE 事件
+
+非流式返回：
+
+- 外层仍是 `ActionResponse`
+- `Data` 直接放 runtime 返回的 payload
+- 服务端会补齐 `session_id`
+
+## 6.11 Legacy ADK Web 兼容接口
+
+### `POST /run_sse`
+
+请求体模型来自 `ksadk/server/api_models.py`：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `appName` | `string` | 是 | app 名 |
+| `userId` | `string` | 是 | 用户 ID |
+| `sessionId` | `string` | 否 | 会话 ID |
+| `newMessage` | `object` | 是 | 新消息 |
+| `streaming` | `boolean` | 否 | 是否流式 |
+| `invocationId` | `string` | 否 | 调用 ID |
+| `stateDelta` | `object` | 否 | 状态增量 |
+| `functionCallEventId` | `string` | 否 | 函数调用事件 ID |
+| `model` | `string` | 否 | 模型 |
+
+`newMessage` 结构：
+
+```json
+{
+  "role": "user",
+  "parts": [
+    {
+      "text": "hello"
+    }
+  ]
+}
+```
+
+### `/apps/{app_name}/users/{user_id}/sessions*`
+
+这组接口是 legacy session 兼容层，主要面向 ADK Web。
+
+## 6.12 前端壳路径
+
+### `GET /chat`
+
+- 返回统一 Agent UI 的 `index.html`
+- 这是 hosted chat 的默认路径
+- 当通过公网 `PublicEndpoint` 访问时，通常会优先走 `agentengine-server` 的 hosted UI 路由，而不是直接依赖 runtime 本地静态文件
+
+### `GET /build`
+
+- 返回同一前端壳
+
+### `GET /deploy`
+
+- 返回同一前端壳
+
+### `GET /`
+
+- 当静态资源存在时，挂载整个静态目录
+
+说明：
+
+- 这些路径只有在 runtime 镜像内静态资源已构建并同步时才可用
+
+## 7. Hermes 运行时详细接口
+
+底层实现：`ksadk-python/deploy/hermes/runtime/app.py`
+
+Hermes 不是直接把 `ksadk.server.app` 暴露出去，而是在容器内再包一层 wrapper：
+
+- `/v1/*` 代理到内部 API server
+- `/` 代理到内部 dashboard
+- `/_ksadk/terminal/ws` 由 wrapper 自己实现
+- workspace files 由 wrapper 直接挂载
+
+## 7.1 路径总览
+
+| 路径 | 方法 | 说明 |
+| --- | --- | --- |
+| `/` | GET 等 | Hermes dashboard 管理 UI |
+| `/chat` | GET | AgentEngine hosted chat UI |
+| `/health` | GET | wrapper 健康检查 |
+| `/v1/{path}` | 全方法 | OpenAI-compatible API 透传 |
+| `/_ksadk/workspace/v1/*` | GET/HEAD/POST/DELETE | workspace files |
+| `/_ksadk/terminal/ws` | WebSocket | 终端 / connect / exec / pairing |
+
+## 7.2 健康检查
+
+### `GET /health`
+
+响应示例：
+
+```json
+{
+  "ok": true,
+  "checks": {
+    "api": {
+      "name": "api",
+      "ok": true,
+      "status_code": 200,
+      "url": "http://127.0.0.1:8642/health"
+    },
+    "dashboard": {
+      "name": "dashboard",
+      "ok": true,
+      "status_code": 200,
+      "url": "http://127.0.0.1:9119/"
+    }
+  }
+}
+```
+
+## 7.3 `/v1/*`
+
+Hermes 外层 wrapper 对外暴露整个 `/v1/{path}`，本质是透传到内部 `API_SERVER_PORT=8642`。
+
+文档上应理解为：
+
+- 至少提供 `/v1/chat/completions`
+- 其余 `/v1/*` 只要内部 API server 存在，也会通过 wrapper 暴露
+
+SSE 要点：
+
+- wrapper 明确要求对 `/v1/*` 保持真流式转发
+- 不应把上游流读取完后再一次性回包
+
+## 7.4 Workspace Files
+
+Hermes 直接复用通用的 `/_ksadk/workspace/v1/*` contract。
+
+可用路径与通用 runtime 完全一致：
+
+- `GET /_ksadk/workspace/v1/healthz`
+- `GET /_ksadk/workspace/v1/entries`
+- `HEAD /_ksadk/workspace/v1/files/{path}`
+- `GET /_ksadk/workspace/v1/files/{path}`
+- `POST /_ksadk/workspace/v1/files/{path}`
+- `DELETE /_ksadk/workspace/v1/files/{path}`
+
+## 7.5 终端 WebSocket
+
+### `WS /_ksadk/terminal/ws`
+
+连接要求：
+
+- 必须带 `Sec-WebSocket-Protocol: ks-terminal.v1`
+- 公网访问时应带 `Authorization: Bearer <api_key>`
+
+建立连接后，客户端首帧必须是 JSON 文本：
+
+```json
+{
+  "type": "start",
+  "mode": "tui",
+  "argv": [],
+  "cwd": ".",
+  "rows": 24,
+  "cols": 80
+}
+```
+
+`mode` 支持：
+
+- `tui`
+- `exec`
+- `pairing`
+- `connect`
+
+其中：
+
+- `tui` 会执行 `hermes chat`
+- `exec` 走只读命令白名单
+- `pairing` 走 `hermes pairing`
+- `connect` 走 `hermes gateway setup`
+
+服务端可能返回的文本消息：
+
+```json
+{"type":"ready"}
+```
+
+```json
+{"type":"exit","code":0}
+```
+
+```json
+{"type":"error","message":"..."}
+```
+
+控制帧示例：
+
+```json
+{"type":"resize","rows":40,"cols":120}
+```
+
+```json
+{"type":"signal","signal":"SIGINT"}
+```
+
+```json
+{"type":"stdin_eof"}
+```
+
+另外：
+
+- PTY 输出主要通过 WebSocket binary frame 回传
+- 如果首帧不是 `type=start`，服务端会报错
+
+## 8. OpenClaw 运行时可确认接口
+
+当前主线代码里，对 OpenClaw 可以准确写入文档的只有“平台补充 contract”，不要把上游 OpenClaw 原生全部接口误写成 ksadk/AgentEngine contract。
+
+## 8.1 运行模式
+
+OpenClaw gateway 主要有三种鉴权模式：
+
+- `trusted-proxy`
+- `token`
+- `none`
+
+默认建议模式：
+
+- `trusted-proxy`
+
+说明：
+
+- 公网经 AgentEngine 网关访问时，主路径仍是 trusted-proxy 设计
+- 自管或本地直连示例里，也支持 `token` 模式
+
+## 8.2 健康检查
+
+OpenClaw 运行镜像健康探针使用：
+
+- `GET /healthz`
+
+但这属于 OpenClaw gateway 原生健康接口，不是 ksadk 额外实现。
+
+## 8.3 Workspace Files 平台补充接口
+
+OpenClaw 会额外起一个本地 `workspace_files_app` sidecar，然后由 gateway 代理：
+
+- `/_ksadk/workspace/v1/*`
+
+可确认的外部 contract 与通用 runtime 一致：
+
+- `GET /_ksadk/workspace/v1/healthz`
+- `GET /_ksadk/workspace/v1/entries`
+- `HEAD /_ksadk/workspace/v1/files/{path}`
+- `GET /_ksadk/workspace/v1/files/{path}`
+- `POST /_ksadk/workspace/v1/files/{path}`
+- `DELETE /_ksadk/workspace/v1/files/{path}`
+
+说明：
+
+- sidecar 自身监听 `127.0.0.1:${WORKSPACE_FILES_PORT}`
+- 公网访问时看到的是经 OpenClaw gateway 代理后的同一路径
+
+## 9. 哪些接口能通过公网数据面直接访问
+
+这个点很容易误判，这里单独说明。
+
+### 9.1 一定可作为公网 contract 使用的接口
+
+- `/v1/responses`
+- `/v1/chat/completions`
+- `/chat`
+- `/_ksadk/workspace/v1/*`
+- Hermes 的 `/_ksadk/terminal/ws`
+- `GET /agentengine/api/v1/AttachmentContent`
+- `GET /agentengine/api/v1/GetWorkspaceFileContent`
+- Hosted UI action 白名单：
+  - `GetAgentUiBootstrap`
+  - `CreateSession`
+  - `GetSession`
+  - `ListSessions`
+  - `DeleteSession`
+  - `ListSessionEvents`
+  - `RunAgent`
+  - `UploadFile`
+  - `ListWorkspaceFiles`
+  - `AddWorkspaceFile`
+  - `DeleteWorkspaceFile`
+  - `ListAgentModels`
+
+### 9.2 不应假设公网可调用的接口
+
+不要假设下列内容一定是公网 contract：
+
+- 任意 `/agentengine/api/v1/*` 路径
+- 任意 Pod 内部监听端口
+- OpenClaw 上游项目的全部原生 API
+- Hermes dashboard 内部 `/api/*` 的所有未文档化子路径
+
+## 10. 调用示例
+
+## 10.1 通用 Agent：调用 `/v1/chat/completions`
+
+```bash
+curl -X POST "https://<PublicEndpoint>/v1/chat/completions" \
+  -H "Authorization: Bearer <api_key>" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json" \
+  -d '{
+    "messages": [
+      {
+        "role": "user",
+        "content": "你好"
+      }
+    ],
+    "stream": false
+  }'
+```
+
+## 10.2 Hosted UI：调用 `RunAgent`
+
+```bash
+curl -X POST "https://<PublicEndpoint>/agentengine/api/v1/RunAgent" \
+  -H "Authorization: Bearer <api_key>" \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  -d '{
+    "AgentId": "ar-demo",
+    "SessionId": "sess-123",
+    "ApiFormat": "responses",
+    "Stream": true,
+    "Messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "继续"
+          }
+        ]
+      }
+    ]
+  }'
+```
+
+## 10.3 Workspace：列目录
+
+```bash
+curl "https://<PublicEndpoint>/_ksadk/workspace/v1/entries?path=.&recursive=false" \
+  -H "Authorization: Bearer <api_key>"
+```
+
+## 10.4 Hermes：连接终端
+
+```bash
+wscat \
+  -H "Authorization: Bearer <api_key>" \
+  -s "ks-terminal.v1" \
+  -c "wss://<PublicEndpoint>/_ksadk/terminal/ws"
+```
+
+首帧：
+
+```json
+{"type":"start","mode":"tui","rows":24,"cols":80}
+```
+
+## 11. 结论
+
+当前 `master` 下可以稳定对外承诺的核心运行时 contract 是：
+
+### 通用 Agent
+
+- `/v1/responses`
+- `/v1/chat/completions`
+- `/chat`
+- `/_ksadk/workspace/v1/*`
+- Hosted UI action 白名单
+
+### Hermes
+
+- `/`
+- `/chat`
+- `/v1/*`
+- `/_ksadk/terminal/ws`
+- `/_ksadk/workspace/v1/*`
+- `/health`
+
+### OpenClaw
+
+- OpenClaw gateway 原生入口
+- 平台额外挂出的 `/_ksadk/workspace/v1/*`
+- 可配置的 `trusted-proxy | token | none` 鉴权模式
+
+如果后续要继续扩展文档，建议按两个方向增量补充：
+
+1. 基于真实镜像再验证 OpenClaw 原生 gateway 的稳定可见路由
+2. 为 Hosted UI action 补充逐接口完整示例响应

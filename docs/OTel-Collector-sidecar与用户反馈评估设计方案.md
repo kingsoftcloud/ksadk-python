@@ -502,7 +502,29 @@ sequenceDiagram
 
 因此服务端必须维护 `response_id -> trace` 的稳定映射。
 
-### 7.2 新增表：`response_trace_refs`
+但这里要分层理解：
+
+- 如果只做 `OTLP / Collector / Langfuse` 兼容
+  - 不需要新增任何表
+- 如果要做“用户在 UI 点赞点踩，并且反馈稳定回写到 trace”
+  - 需要至少有一层持久化关联
+
+首版有三档可选：
+
+1. `最小试点`
+   - 不新增专用映射表
+   - 复用 `conversation_events.metadata` 存 `response_id -> trace_id`
+   - feedback 走 best-effort writeback
+2. `折中正式版`
+   - 新增 `response_feedbacks`
+   - `response_id -> trace_id` 仍复用 `conversation_events.metadata`
+3. `完整正式版`
+   - 新增 `response_trace_refs`
+   - 新增 `response_feedbacks`
+
+本文后续默认按 `完整正式版` 展开，因为它的结构最清晰、最适合作为正式长期方案；但这不是 OTLP 兼容本身的硬前置条件。
+
+### 7.2 推荐表：`response_trace_refs`
 
 建议字段：
 
@@ -526,7 +548,7 @@ sequenceDiagram
 - 建议默认保留 `90` 天
 - 到期后由后台任务定期清理
 
-### 7.3 新增表：`response_feedbacks`
+### 7.3 推荐表：`response_feedbacks`
 
 建议字段：
 
@@ -760,8 +782,9 @@ sequenceDiagram
 - `agentengine-server/app/models/agent.py`
   - `observability_config` 扩展到 sidecar / feedback profile
 - `agentengine-server/app/models/conversation.py`
-  - 新增 `response_trace_refs`
-  - 新增 `response_feedbacks`
+  - 最小试点可先复用 `conversation_events.metadata`
+  - 正式版再新增 `response_trace_refs`
+  - 推荐新增 `response_feedbacks`
 - `agentengine-server/app/services/agent_service.py`
   - Create / UpdateAgent 时组装结构化 observability 配置
   - 把 sidecar spec 透传到 runtime API
@@ -996,7 +1019,8 @@ flowchart LR
 ### Phase 3：`/v1/responses` 反馈链路
 
 - 提前生成 `response_id`
-- 新增 `response_trace_refs`
+- 最小试点可先复用 `conversation_events.metadata`
+- 正式版新增 `response_trace_refs`
 - 新增 feedback API 与 `response_feedbacks`
 
 完成标志：

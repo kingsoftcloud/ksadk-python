@@ -177,7 +177,86 @@ curl -N http://127.0.0.1:8000/v1/responses \
 - 能明确识别为工具审批的 interrupt 会渲染为官方风格 `mcp_approval_request` output item。
 - 其他通用 interrupt 使用 `response.ksadk.approval_request` 扩展事件；最终 response 会以 `status: "incomplete"` 返回，并在 `incomplete_details.ksadk_interrupt` 中包含中断信息。
 
-### 5.3 当前不支持
+### 5.3 图片与附件输入
+
+`/v1/responses` 支持把用户输入写成 KOP 风格 part 数组。当前常用 part 类型：
+
+- `text`
+- `inlineData`
+- `fileData`
+
+推荐两种图片传法：
+
+1. 先调用 `UploadFile` 上传图片，再在 `/v1/responses` 中通过 `fileData.fileUri` 引用
+2. 直接把图片 base64 放进 `inlineData.data`
+
+先上传再引用的示例：
+
+```json
+{
+  "input": [
+    {
+      "role": "user",
+      "content": [
+        { "text": "请分析这张图片" },
+        {
+          "fileData": {
+            "fileUri": "ksadk-upload://abc123.png",
+            "displayName": "diagram.png",
+            "mimeType": "image/png"
+          }
+        }
+      ]
+    }
+  ],
+  "stream": false
+}
+```
+
+直接内联示例：
+
+```json
+{
+  "input": [
+    {
+      "role": "user",
+      "content": [
+        { "text": "请分析这张图片" },
+        {
+          "inlineData": {
+            "data": "<base64-encoded-image-bytes>",
+            "displayName": "diagram.png",
+            "mimeType": "image/png"
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+当前附件类型支持矩阵：
+
+| 类型 | 典型扩展名 / MIME | 传输支持 | 平台内容提取 | 原生多模态直通 |
+| --- | --- | --- | --- | --- |
+| 文本 | `.txt` `.md` `.json` `.yaml` `.yml` `.csv` `.tsv` `.log` | 支持 | 支持 | 不适用 |
+| 文档 | `.pdf` `.docx` `.pptx` `.xlsx` `.html` `.htm` | 支持 | 部分支持：文本提取 / OCR | 不适用 |
+| 图片 | `.png` `.jpg` `.jpeg` `.webp` / `image/*` | 支持 | 支持：OCR / 元信息提取 | 部分支持，见下方 |
+| 压缩包 | `.zip` | 支持 | 支持：目录/可读文件抽样提取 | 不适用 |
+| 其他二进制 | 其他后缀或 `application/octet-stream` | 支持 | 通常仅保留为附件引用 | 不支持 |
+
+框架差异：
+
+- `ADK`
+  - 图片会优先按原生 bytes part 传给底层 SDK
+  - 如果模型支持原生多模态，可直接吃图
+- `LangGraph`
+  - 默认消息构造会把图片附件转换成多模态 `HumanMessage.content` blocks
+- `LangChain`
+  - 当前不保证所有 agent 自动原生吃图
+  - 如需原生多模态，建议在 `ksadk_prepare_input(payload, session_context)` 中自行消费 `input_parts / attachments`
+
+### 5.4 当前不支持
 
 本期不支持 `previous_response_id`、`store`、复杂 `reasoning/text` 控制、完整 tool schema 请求面，也不新增原生 LangGraph state endpoint。自定义 LangGraph State 请使用 `ksadk_prepare_state` 或 `agentengine init --from-agent` 自动生成的 adapter。
 
