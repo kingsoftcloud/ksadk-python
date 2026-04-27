@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 from langgraph.types import Command
+import base64
 
 from ksadk.runners.langgraph_runner import LangGraphRunner
 
@@ -121,6 +122,67 @@ async def test_invoke_with_binary_attachment_does_not_convert_reference_to_image
         assert not any(item.get("type") == "image_url" for item in content if isinstance(item, dict))
     else:
         assert content == "分析压缩包"
+
+
+@pytest.mark.asyncio
+async def test_invoke_with_image_attachment_converts_to_multimodal_human_message(tmp_path):
+    runner = _make_runner()
+    image_path = tmp_path / "diagram.png"
+    image_bytes = b"\x89PNG\r\n\x1a\nfake-image"
+    image_path.write_bytes(image_bytes)
+
+    await runner.invoke(
+        {
+            "session_id": "s1",
+            "input": "请分析这张图片",
+            "attachments": [
+                {
+                    "display_name": "diagram.png",
+                    "mime_type": "image/png",
+                    "transport": "reference",
+                    "file_uri": "ksadk-upload://img123",
+                    "storage_path": str(image_path),
+                }
+            ],
+        }
+    )
+
+    content = runner._agent.last_ainvoke_state["messages"][-1].content
+    assert isinstance(content, list)
+    assert content[0] == {"type": "text", "text": "请分析这张图片"}
+    assert content[1]["type"] == "image_url"
+    assert content[1]["image_url"]["url"] == (
+        "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")
+    )
+
+
+@pytest.mark.asyncio
+async def test_invoke_with_inline_image_attachment_converts_to_multimodal_human_message():
+    runner = _make_runner()
+    image_b64 = base64.b64encode(b"fake-inline-image").decode("ascii")
+
+    await runner.invoke(
+        {
+            "session_id": "s1",
+            "input": "请看图",
+            "attachments": [
+                {
+                    "display_name": "photo.jpg",
+                    "mime_type": "image/jpeg",
+                    "transport": "inline",
+                    "data": image_b64,
+                }
+            ],
+        }
+    )
+
+    content = runner._agent.last_ainvoke_state["messages"][-1].content
+    assert isinstance(content, list)
+    assert content[0] == {"type": "text", "text": "请看图"}
+    assert content[1] == {
+        "type": "image_url",
+        "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
+    }
 
 
 @pytest.mark.asyncio
