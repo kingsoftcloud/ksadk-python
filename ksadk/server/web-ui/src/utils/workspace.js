@@ -151,3 +151,11 @@ export function resolveWorkspacePanelPresentation({ isMobile }) {
     side: 'right',
   };
 }
+
+export function canAccessWorkspaceFiles({ workspaceFiles, accessMode }) {
+  if (!workspaceFiles?.Enabled) {
+    return false;
+  }
+  const mode = String(accessMode || '').trim().toLowerCase();
+  return mode === 'owner' || mode === 'private';
+}
