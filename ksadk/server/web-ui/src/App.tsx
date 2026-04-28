@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 
 import { buildComposerContextIndicator } from './utils/context.js';
 import { resolveComposerMaxHeight, resolveSidebarVisibility } from './utils/mobile-layout.js';
+import { resolveWorkspacePanelPresentation } from './utils/workspace.js';
 import {
   readPersistedSessionId,
   resolveSessionToRestore,
@@ -23,7 +24,7 @@ import type {
   Session,
   WorkspaceFilesCapability,
 } from './components/chat/types';
-import { Sheet, SheetContent, SheetTitle } from './components/ui/sheet';
+import { Sheet, SheetContent, SheetDescription, SheetTitle } from './components/ui/sheet';
 
 type SessionEventRecord = {
   EventId?: string;
@@ -71,6 +72,12 @@ type BootstrapModel = ModelCatalogItem & {
 type BootstrapWorkspaceFiles = WorkspaceFilesCapability;
 
 type RuntimeApiFormat = 'responses' | 'chat_completions';
+
+const DEFAULT_WORKSPACE_PANEL_WIDTH = 820;
+const MIN_WORKSPACE_PANEL_WIDTH = 420;
+const MAX_WORKSPACE_PANEL_WIDTH = 1280;
+const MIN_CHAT_PANEL_WIDTH = 360;
+const DESKTOP_SIDEBAR_WIDTH = 280;
 
 type AgentInputPart =
   | {
@@ -122,6 +129,14 @@ function normalizeApiFormats(value: unknown): RuntimeApiFormat[] {
     (item): item is RuntimeApiFormat => item === 'responses' || item === 'chat_completions',
   );
   return formats.length > 0 ? formats : ['responses', 'chat_completions'];
+}
+
+function clampWorkspacePanelWidth(width: number, viewportWidth: number, sidebarWidth: number) {
+  const maxWidth = Math.min(
+    MAX_WORKSPACE_PANEL_WIDTH,
+    Math.max(MIN_WORKSPACE_PANEL_WIDTH, viewportWidth - sidebarWidth - MIN_CHAT_PANEL_WIDTH),
+  );
+  return Math.min(Math.max(width, MIN_WORKSPACE_PANEL_WIDTH), maxWidth);
 }
 
 function textFromUnknown(value: unknown): string {
@@ -428,6 +443,8 @@ export default function App() {
   const [workspaceFiles, setWorkspaceFiles] = useState<BootstrapWorkspaceFiles | null>(null);
   const [accessMode, setAccessMode] = useState('Owner');
   const [workspacePanelOpen, setWorkspacePanelOpen] = useState(false);
+  const [workspacePanelWidth, setWorkspacePanelWidth] = useState(DEFAULT_WORKSPACE_PANEL_WIDTH);
+  const [workspacePanelFullscreen, setWorkspacePanelFullscreen] = useState(false);
   const [apiFormats, setApiFormats] = useState<RuntimeApiFormat[]>([
     'responses',
     'chat_completions',
@@ -477,8 +494,16 @@ export default function App() {
     if (!isMobile) {
       setMobileSidebarOpen(false);
       setMobileActionsOpen(false);
+    } else {
+      setWorkspacePanelFullscreen(false);
     }
   }, [isMobile]);
+
+  useEffect(() => {
+    if (!workspacePanelOpen) {
+      setWorkspacePanelFullscreen(false);
+    }
+  }, [workspacePanelOpen]);
 
   const appendAttachments = (incoming: File[]) => {
     if (!incoming.length) {
@@ -1174,6 +1199,44 @@ export default function App() {
     selectedModel: selectedModelMetadata,
   });
   const workspaceEnabled = Boolean(workspaceFiles?.Enabled && accessMode === 'Owner');
+  const workspacePanelPresentation = resolveWorkspacePanelPresentation({ isMobile });
+  const workspacePanelInline = workspacePanelPresentation.renderMode === 'inline';
+  const workspacePanelSheet = workspacePanelPresentation.renderMode === 'sheet';
+  const closeWorkspacePanel = () => {
+    setWorkspacePanelFullscreen(false);
+    setWorkspacePanelOpen(false);
+  };
+  const handleWorkspacePanelResizeStart = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (workspacePanelFullscreen || isMobile) {
+      return;
+    }
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = workspacePanelWidth;
+    const sidebarWidth = desktopSidebarVisible ? DESKTOP_SIDEBAR_WIDTH : 0;
+    const initialCursor = document.body.style.cursor;
+    const initialUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      const nextWidth = startWidth + startX - moveEvent.clientX;
+      setWorkspacePanelWidth(
+        clampWorkspacePanelWidth(nextWidth, window.innerWidth, sidebarWidth),
+      );
+    };
+    const handlePointerEnd = () => {
+      document.body.style.cursor = initialCursor;
+      document.body.style.userSelect = initialUserSelect;
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerEnd);
+      window.removeEventListener('pointercancel', handlePointerEnd);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerEnd);
+    window.addEventListener('pointercancel', handlePointerEnd);
+  };
 
   return (
     <div className="flex h-[var(--app-height)] min-h-[var(--app-height)] overflow-hidden bg-white font-sans text-slate-800 dark:bg-slate-900 dark:text-slate-200">
@@ -1202,6 +1265,7 @@ export default function App() {
             className="w-[88vw] max-w-sm border-slate-200 bg-slate-50 p-0 dark:border-slate-800 dark:bg-slate-950"
           >
             <SheetTitle className="sr-only">历史记录</SheetTitle>
+            <SheetDescription className="sr-only">查看和切换历史对话。</SheetDescription>
             <ChatSidebar
               sessions={sessions}
               currentSessionId={currentSessionId}
@@ -1285,16 +1349,82 @@ export default function App() {
       />
 
       {workspaceEnabled && workspaceFiles ? (
-        <Sheet open={workspacePanelOpen} onOpenChange={setWorkspacePanelOpen}>
+        workspacePanelInline ? (
+          <>
+            {workspacePanelOpen && !workspacePanelFullscreen ? (
+              <div
+                role="separator"
+                aria-label="调整 Workspace 宽度"
+                aria-orientation="vertical"
+                onPointerDown={handleWorkspacePanelResizeStart}
+                className="hidden h-full w-1 cursor-col-resize bg-transparent transition-colors hover:bg-blue-200/60 dark:hover:bg-blue-900/50 md:block"
+              />
+            ) : null}
+            <aside
+              style={
+                workspacePanelOpen && !workspacePanelFullscreen
+                  ? { width: `${workspacePanelWidth}px` }
+                  : undefined
+              }
+              className={cn(
+                workspacePanelFullscreen
+                  ? 'fixed inset-0 z-40 flex h-[var(--app-height)] w-screen overflow-hidden bg-white dark:bg-slate-950'
+                  : 'hidden h-full flex-shrink-0 overflow-hidden bg-white transition-[width] duration-200 ease-out dark:bg-slate-950 md:flex',
+                workspacePanelOpen
+                  ? 'border-l border-slate-200/60 dark:border-slate-800/70'
+                  : 'w-0 border-l border-transparent',
+              )}
+            >
+              {workspacePanelOpen ? (
+                <WorkspacePanel
+                  agentId={agentId}
+                  capability={workspaceFiles}
+                  open={workspacePanelOpen}
+                  onClose={closeWorkspacePanel}
+                  isFullscreen={workspacePanelFullscreen}
+                  onToggleFullscreen={() => setWorkspacePanelFullscreen((prev) => !prev)}
+                />
+              ) : null}
+            </aside>
+          </>
+        ) : null
+      ) : null}
+
+      {workspaceEnabled && workspaceFiles && workspacePanelSheet ? (
+        <Sheet
+          open={workspacePanelOpen}
+          onOpenChange={(open) => {
+            if (!open) {
+              setWorkspacePanelFullscreen(false);
+            }
+            setWorkspacePanelOpen(open);
+          }}
+          modal={workspacePanelPresentation.modal}
+        >
           <SheetContent
-            side={isMobile ? 'bottom' : 'right'}
+            side={workspacePanelPresentation.side}
+            showOverlay={workspacePanelPresentation.showOverlay}
+            onInteractOutside={(event) => {
+              if (workspacePanelPresentation.preventOutsideClose) {
+                event.preventDefault();
+              }
+            }}
+            showCloseButton={false}
             className={cn(
               'border-slate-200 bg-white p-0 dark:border-slate-800 dark:bg-slate-950',
-              isMobile ? 'h-[70vh] rounded-t-[1.75rem]' : 'w-[28rem] max-w-[95vw]',
+              isMobile
+                ? 'h-[70vh] rounded-t-[1.75rem]'
+                : 'h-[calc(100vh-1.5rem)] w-[min(72rem,calc(100vw-1.5rem))] max-w-[calc(100vw-1.5rem)] rounded-l-[1.5rem] border-l shadow-2xl',
             )}
           >
             <SheetTitle className="sr-only">Workspace 文件</SheetTitle>
-            <WorkspacePanel agentId={agentId} capability={workspaceFiles} open={workspacePanelOpen} />
+            <SheetDescription className="sr-only">浏览、上传和预览 Workspace 文件。</SheetDescription>
+            <WorkspacePanel
+              agentId={agentId}
+              capability={workspaceFiles}
+              open={workspacePanelOpen}
+              onClose={closeWorkspacePanel}
+            />
           </SheetContent>
         </Sheet>
       ) : null}

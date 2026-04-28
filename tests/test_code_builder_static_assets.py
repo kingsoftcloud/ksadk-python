@@ -38,3 +38,29 @@ def test_code_builder_packages_web_static_assets(tmp_path):
     assert not any(n.startswith("ksadk/server/web-ui/") for n in names), (
         "runtime 产物不应包含前端源码/node_modules"
     )
+
+
+def test_code_builder_packages_runtime_common_sources(tmp_path):
+    (tmp_path / "agent.py").write_text("print('ok')\n", encoding="utf-8")
+
+    builder = CodeBuilder(tmp_path)
+    builder.build_dir.mkdir(parents=True, exist_ok=True)
+    builder.deps_dir.mkdir(parents=True, exist_ok=True)
+
+    detection_result = SimpleNamespace(
+        package_path=str(tmp_path),
+        type=_FakeType(),
+        name="demo_agent",
+        entry_point="agent.py",
+        agent_variable="root_agent",
+    )
+
+    zip_path = tmp_path / "demo.zip"
+    builder._package_zip(zip_path, detection_result)
+
+    with zipfile.ZipFile(zip_path) as zf:
+        names = zf.namelist()
+
+    assert any(n.startswith("ksadk_runtime_common/") for n in names), (
+        "应包含 ksadk_runtime_common 共享运行时代码"
+    )

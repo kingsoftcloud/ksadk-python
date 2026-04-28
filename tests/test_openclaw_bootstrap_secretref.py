@@ -2822,6 +2822,166 @@ def test_bootstrap_patches_runtime_bundles_for_loopback_gateway_clients():
         assert 'this.ws.addEventListener(`open`,()=>{this.lastSeq=null,this.queueConnect()})' in control_ui_bundle.read_text()
 
 
+def test_bootstrap_patches_workspace_proxy_stage_for_upstream_2026_4_26_shape():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        dist_dir = Path(tmpdir) / "dist"
+        control_ui_assets_dir = dist_dir / "control-ui" / "assets"
+        control_ui_assets_dir.mkdir(parents=True, exist_ok=True)
+        client_bundle = dist_dir / "reply-test.js"
+        gateway_bundle = dist_dir / "gateway-cli-test.js"
+        server_bundle = dist_dir / "server.impl-test.js"
+        control_ui_bundle = control_ui_assets_dir / "main-test.js"
+
+        client_bundle.write_text('const wsOptions = { maxPayload: 25 * 1024 * 1024 };')
+        gateway_bundle.write_text(
+            'function shouldSkipBackendSelfPairing(params) {\n'
+            '\tif (!(params.connectParams.client.id === GATEWAY_CLIENT_IDS.GATEWAY_CLIENT && params.connectParams.client.mode === GATEWAY_CLIENT_MODES.BACKEND)) return false;\n'
+            '\tconst usesSharedSecretAuth = params.authMethod === "token" || params.authMethod === "password";\n'
+            '\tconst usesDeviceTokenAuth = params.authMethod === "device-token";\n'
+            '\treturn params.isLocalClient && !params.hasBrowserOriginHeader && (params.sharedAuthOk && usesSharedSecretAuth || usesDeviceTokenAuth);\n'
+            '}\n'
+            'if (isLoopbackAddress(remoteAddr)) return { reason: "trusted_proxy_loopback_source" };\n'
+            'function shouldAttachDeviceIdentityForGatewayCall(params) {\n'
+            '\treturn true;\n'
+            '}\n'
+            'deviceIdentity: shouldAttachDeviceIdentityForGatewayCall({\n'
+            '\t\t\t\turl,\n'
+            '\t\t\t\ttoken,\n'
+            '\t\t\t\tpassword\n'
+            '\t\t\t}) ? loadOrCreateDeviceIdentity() : void 0,\n'
+            'function ensureExplicitGatewayAuth(params) {\n'
+            '\tif (!params.urlOverride) return;\n'
+            '\tconst explicitToken = params.explicitAuth?.token;\n'
+            '}\n'
+            'if (!device && (!isControlUi || decision.kind !== "allow")) clearUnboundScopes();\n'
+        )
+        server_bundle.write_text(
+            'function createGatewayHttpServer(opts) {\n'
+            '\tconst { canvasHost, clients, controlUiEnabled, controlUiBasePath, controlUiRoot, openAiChatCompletionsEnabled, openAiChatCompletionsConfig, openResponsesEnabled, openResponsesConfig, strictTransportSecurityHeader, handleHooksRequest, handlePluginRequest, shouldEnforcePluginGatewayAuth, resolvedAuth, trustedProxies, allowRealIpFallback, rateLimiter, getReadiness } = opts;\n'
+            '\tconst getResolvedAuth = opts.getResolvedAuth ?? (() => resolvedAuth);\n'
+            '\tconst openAiCompatEnabled = openAiChatCompletionsEnabled || openResponsesEnabled;\n'
+            '\tasync function handleRequest(req, res) {\n'
+            '\t\tconst scopedRequestPath = new URL(req.url ?? "/", "http://localhost").pathname;\n'
+            '\t\tconst requestStages = [{\n'
+            '\t\t\t\tname: "gateway-probes",\n'
+            '\t\t\t\trun: () => handleGatewayProbeRequest(req, res, scopedRequestPath, resolvedAuth, trustedProxies, allowRealIpFallback, getReadiness)\n'
+            '\t\t\t}, {\n'
+            '\t\t\t\tname: "hooks",\n'
+            '\t\t\t\trun: () => handleHooksRequest(req, res)\n'
+            '\t\t\t}];\n'
+            '\t\t\tif (openAiCompatEnabled && isOpenAiModelsPath(scopedRequestPath)) requestStages.push({\n'
+            '\t\t\tname: "models",\n'
+            '\t\t\trun: async () => (await getModelsHttpModule()).handleOpenAiModelsHttpRequest(req, res, {\n'
+            '\t\t\t\tauth: resolvedAuth,\n'
+            '\t\t\t\ttrustedProxies,\n'
+            '\t\t\t\tallowRealIpFallback,\n'
+            '\t\t\t\trateLimiter\n'
+            '\t\t\t})\n'
+            '\t\t});\n'
+            '\t}\n'
+            '}\n'
+        )
+        control_ui_bundle.write_text('this.ws.addEventListener(`open`,()=>this.queueConnect())')
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_DIST_DIR"] = str(dist_dir)
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        server_source = server_bundle.read_text()
+        assert 'async function handleWorkspaceFilesProxyRequest(req, res) {' in server_source
+        assert 'name: "workspace-files-proxy"' in server_source
+        assert 'run: () => handleWorkspaceFilesProxyRequest(req, res)' in server_source
+        assert 'if (openAiCompatEnabled && isOpenAiModelsPath(scopedRequestPath)) requestStages.push({' in server_source
+
+
+def test_bootstrap_patches_workspace_proxy_stage_for_upstream_2026_3_28_shape():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        dist_dir = Path(tmpdir) / "dist"
+        control_ui_assets_dir = dist_dir / "control-ui" / "assets"
+        control_ui_assets_dir.mkdir(parents=True, exist_ok=True)
+        client_bundle = dist_dir / "reply-test.js"
+        gateway_bundle = dist_dir / "gateway-cli-test.js"
+        server_bundle = dist_dir / "gateway-cli-old-test.js"
+        control_ui_bundle = control_ui_assets_dir / "main-test.js"
+
+        client_bundle.write_text('const wsOptions = { maxPayload: 25 * 1024 * 1024 };')
+        gateway_bundle.write_text(
+            'function shouldSkipBackendSelfPairing(params) {\n'
+            '\tif (!(params.connectParams.client.id === GATEWAY_CLIENT_IDS.GATEWAY_CLIENT && params.connectParams.client.mode === GATEWAY_CLIENT_MODES.BACKEND)) return false;\n'
+            '\tconst usesSharedSecretAuth = params.authMethod === "token" || params.authMethod === "password";\n'
+            '\tconst usesDeviceTokenAuth = params.authMethod === "device-token";\n'
+            '\treturn params.isLocalClient && !params.hasBrowserOriginHeader && (params.sharedAuthOk && usesSharedSecretAuth || usesDeviceTokenAuth);\n'
+            '}\n'
+            'if (isLoopbackAddress(remoteAddr)) return { reason: "trusted_proxy_loopback_source" };\n'
+            'function shouldAttachDeviceIdentityForGatewayCall(params) {\n'
+            '\treturn true;\n'
+            '}\n'
+            'deviceIdentity: shouldAttachDeviceIdentityForGatewayCall({\n'
+            '\t\t\t\turl,\n'
+            '\t\t\t\ttoken,\n'
+            '\t\t\t\tpassword\n'
+            '\t\t\t}) ? loadOrCreateDeviceIdentity() : void 0,\n'
+            'function ensureExplicitGatewayAuth(params) {\n'
+            '\tif (!params.urlOverride) return;\n'
+            '\tconst explicitToken = params.explicitAuth?.token;\n'
+            '}\n'
+        )
+        server_bundle.write_text(
+            'function createGatewayHttpServer(opts) {\n'
+            '\tasync function handleRequest(req, res) {\n'
+            '\t\tconst requestPath = new URL(req.url ?? "/", "http://localhost").pathname;\n'
+            '\t\tconst requestStages = [\n'
+            '\t\t\t\t{\n'
+            '\t\t\t\t\tname: "hooks",\n'
+            '\t\t\t\t\trun: () => handleHooksRequest(req, res)\n'
+            '\t\t\t\t},\n'
+            '\t\t\t\t{\n'
+            '\t\t\t\t\tname: "models",\n'
+            '\t\t\t\t\trun: () => openAiCompatEnabled ? handleOpenAiModelsHttpRequest(req, res, {\n'
+            '\t\t\t\t\t\tauth: resolvedAuth,\n'
+            '\t\t\t\t\t\ttrustedProxies,\n'
+            '\t\t\t\t\t\tallowRealIpFallback,\n'
+            '\t\t\t\t\t\trateLimiter\n'
+            '\t\t\t\t\t}) : false\n'
+            '\t\t\t\t},\n'
+            '\t\t];\n'
+            '\t}\n'
+            '}\n'
+        )
+        control_ui_bundle.write_text('this.ws.addEventListener(`open`,()=>this.queueConnect())')
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_DIST_DIR"] = str(dist_dir)
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        server_source = server_bundle.read_text()
+        assert 'name: "workspace-files-proxy"' in server_source
+        assert 'run: () => handleWorkspaceFilesProxyRequest(req, res)' in server_source
+        assert 'name: "models"' in server_source
+
+
 def test_bootstrap_accepts_upstream_2026_3_28_loopback_gateway_runtime_logic():
     with TemporaryDirectory() as tmpdir:
         config_path = Path(tmpdir) / "openclaw.json"

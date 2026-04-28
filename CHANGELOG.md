@@ -5,6 +5,27 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [0.5.3] - 2026-04-28
+
+### 亮点
+
+- **Web UI 工作区文件管理重构**：右侧文件区改为可调整宽度、可全屏的工作区面板，上传入口和路径展示收敛为更轻量的布局，并保持打开文件区时左侧对话区可继续正常使用。
+- **工作区文件预览能力增强**：支持在 Web UI 内预览文本、Markdown、代码、CSV/TSV、图片与 PDF 文件，便于直接查看上传文件或大模型生成的文件产物。
+- **hosted UI 同步链路可移植**：`agentengine-server` 可从完整 `ksadk-python` 源码构建并同步最新 hosted UI；本地缺少 ksadk 源码时会尝试从 ezone 拉取，避免硬编码个人路径。
+
+### 变更
+
+- Web UI 的工作区面板改为 workspace-relative 路径展示，移除冗余导航行，新增文件类型支持说明、紧凑文件列表、内容预览和 PDF iframe/blob 预览。
+- `agentengine-server` Makefile 新增 `KSADK_SOURCE_DIR`、`KSADK_REPO_URL` 与 `sync-ksadk-source`，`sync-hosted-ui` 在源码缺失时自动尝试补齐 ksadk 源码。
+- hosted UI 同步脚本在构建前自动执行 `npm ci` 或 `npm install`，降低新机器同步静态资源时的依赖缺失风险。
+- code mode 打包随运行时同时携带 `ksadk_runtime_common` 源码，并补齐 `python-multipart` 依赖，覆盖上传文件处理链路。
+- ADK runner 在模型不支持原生图片输入时跳过图片二进制直传，并追加明确的系统提示，避免把不支持的图片附件误传给模型。
+
+### 修复
+
+- 修复新版 OpenClaw gateway request stage 形态下 workspace files proxy patch 无法插入的问题，兼容 `2026.4.26` 与更早 `2026.3.28` 形态。
+- 修复 hosted UI / 本地静态资源构建产物未同步到 `ksadk/server/static` 与 `agentengine-server/app/static/hosted-ui` 的发布一致性问题。
+
 ## [0.5.2] - 2026-04-27
 
 ### 亮点

@@ -1070,10 +1070,69 @@ if (workspaceFilesEnabled) {
 }
 function createGatewayHttpServer(opts) {`,
     },
-    {
-      label: 'gateway workspace files proxy stage',
-      marker: 'name: "workspace-files-proxy"',
-      needle: `run: () => handleHooksRequest(req, res)
+	    {
+	      label: 'gateway workspace files proxy stage',
+	      marker: 'name: "workspace-files-proxy"',
+	      // OpenClaw 2026.3.28 still uses the old requestStages array literal in
+	      // gateway-cli-*.js: hooks/models/embeddings are declared inline instead
+	      // of being appended via push().
+	      //
+	      // Remove this compatibility branch only after we no longer need to build
+	      // against 2026.3.28-era base images, or after confirming their dist
+	      // already contains "workspace-files-proxy" natively.
+	      needle: `const requestStages = [
+				{
+					name: "hooks",
+					run: () => handleHooksRequest(req, res)
+				},
+				{
+					name: "models",`,
+	      replacement: `const requestStages = [
+				{
+					name: "hooks",
+					run: () => handleHooksRequest(req, res)
+				},
+				{
+					name: "workspace-files-proxy",
+					run: () => handleWorkspaceFilesProxyRequest(req, res)
+				},
+				{
+					name: "models",`,
+	    },
+	    {
+	      label: 'gateway workspace files proxy stage',
+	      marker: 'name: "workspace-files-proxy"',
+	      // OpenClaw 2026.4.26 moved request staging to scopedRequestPath and
+	      // injects gateway-probes before hooks. Keep this branch until all
+	      // supported base images either ship the proxy stage upstream or migrate
+	      // away from this intermediate shape.
+	      needle: `const requestStages = [{
+				name: "gateway-probes",
+				run: () => handleGatewayProbeRequest(req, res, scopedRequestPath, resolvedAuth, trustedProxies, allowRealIpFallback, getReadiness)
+			}, {
+				name: "hooks",
+				run: () => handleHooksRequest(req, res)
+			}];
+			if (openAiCompatEnabled && isOpenAiModelsPath(scopedRequestPath)) requestStages.push({`,
+	      replacement: `const requestStages = [{
+				name: "gateway-probes",
+				run: () => handleGatewayProbeRequest(req, res, scopedRequestPath, resolvedAuth, trustedProxies, allowRealIpFallback, getReadiness)
+			}, {
+				name: "hooks",
+				run: () => handleHooksRequest(req, res)
+			}, {
+				name: "workspace-files-proxy",
+				run: () => handleWorkspaceFilesProxyRequest(req, res)
+			}];
+			if (openAiCompatEnabled && isOpenAiModelsPath(scopedRequestPath)) requestStages.push({`,
+	    },
+	    {
+	      label: 'gateway workspace files proxy stage',
+	      marker: 'name: "workspace-files-proxy"',
+	      // Older requestPath-based push() shape used by some mid-era OpenClaw
+	      // builds. Safe to remove once no supported base image matches this
+	      // requestPath + push(models) layout.
+	      needle: `run: () => handleHooksRequest(req, res)
 \t\t\t}];
 \t\t\tif (openAiCompatEnabled && isOpenAiModelsPath(requestPath)) requestStages.push({`,
       replacement: `run: () => handleHooksRequest(req, res)
@@ -1083,9 +1142,13 @@ function createGatewayHttpServer(opts) {`,
 \t\t\t}];
 \t\t\tif (openAiCompatEnabled && isOpenAiModelsPath(requestPath)) requestStages.push({`,
     },
-    {
-      label: 'gateway workspace files proxy stage',
+	    {
+	      label: 'gateway workspace files proxy stage',
       marker: 'name: "workspace-files-proxy"',
+	      // Earliest requestPath-based shape where control-ui is appended right
+	      // after hooks. Safe to remove together with the other legacy
+	      // workspace-files-proxy stage branches when old base-image support is
+	      // retired.
       needle: `run: () => handleHooksRequest(req, res)
 \t\t}];
 \t\tif (controlUiEnabled) {`,

@@ -401,6 +401,139 @@ curl -H "Authorization: Bearer <api_key>" \
 2. runtime 通过 `OPENAI_BASE_URL` / `OPENAI_API_KEY` 查询上游 `/v1/models` 返回的 `architecture.input_modalities`
 3. 本地默认兜底（按文本模型处理）
 
+多轮会话历史：
+
+- `/v1/responses` 本身不要求客户端每轮重传完整历史
+- 只要持续传同一个 `session_id`，runtime 就会从服务端会话存储里恢复该会话的历史 transcript
+- 进入 runner 前，`ksadk` 会把历史、附件上下文、知识库上下文和长期记忆上下文统一重建成标准运行输入
+
+### Agent 开发者如何在业务代码中拿到上下文
+
+这部分不是调用方协议，而是给 agent 业务开发者的接入约定。
+
+#### LangGraph：默认 messages-based 图
+
+如果你的 LangGraph 图直接使用默认 messages state，而没有自定义 `ksadk_prepare_state`，`ksadk` 会自动把本轮输入和历史消息拼成一个 state，核心形态类似：
+
+```python
+{
+  "attachments": [...],
+  "attachment_results": [...],
+  "input_parts": [...],
+  "model_metadata": {...},
+  "messages": [
+    SystemMessage(...),   # 如果有 instructions / kb / memory 上下文
+    HumanMessage(...),    # 历史 user
+    AIMessage(...),       # 历史 assistant
+    HumanMessage(...),    # 当前输入
+  ],
+}
+```
+
+说明：
+
+- `messages` 是默认喂给 LangGraph 图的主上下文
+- `attachments` / `attachment_results` / `input_parts` 会保留在 state 顶层
+- 对支持原生图片输入的模型，最后一条 `HumanMessage.content` 可能是多模态 block 列表，而不是字符串
+- 对纯文本模型，最后一条 `HumanMessage.content` 会退化成文本 + 附件提示
+
+#### LangGraph：自定义 State 图
+
+如果你的图不是标准 `messages` state，而是自定义 `TypedDict`，推荐显式定义：
+
+```python
+def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
+    return {
+        "query": payload["input"],
+        "history": session_context["history"],
+        "attachments": session_context["attachments"],
+        "attachment_results": session_context["attachment_results"],
+        "platform_context": session_context["platform_context"],
+        "kb_context": session_context["kb_context"],
+        "memory_context": session_context["memory_context"],
+    }
+```
+
+其中 `session_context` 当前可稳定拿到：
+
+- `session_id`
+- `history`
+- `attachments`
+- `attachment_results`
+- `input_parts`
+- `platform_context`
+- `kb_context`
+- `memory_context`
+- `instructions`
+
+这也是最推荐的业务接入方式：你可以把平台上下文、图片上下文、知识库上下文投影到自己真正需要的 state 字段，而不是在图内部再猜 `messages[-1]`。
+
+#### LangChain
+
+如果是 LangChain，推荐定义：
+
+```python
+def ksadk_prepare_input(payload: dict, session_context: dict) -> dict:
+    return {
+        "question": payload["input"],
+        "attachments": session_context["attachments"],
+        "attachment_results": session_context["attachment_results"],
+        "history": session_context["history"],
+    }
+```
+
+当前 `session_context` 与 LangGraph 路径保持一致，字段名相同。
+
+#### 通用运行时上下文
+
+如果业务代码运行在 tool / helper 等平台作用域中，可以通过运行时上下文读取：
+
+```python
+from ksadk.runtime_context import get_current_invocation_context
+
+ctx = get_current_invocation_context()
+if ctx:
+    print(ctx.session_id)
+    print(ctx.model)
+    print(ctx.attachments)
+    print(ctx.attachment_results)
+    print(ctx.kb_context)
+    print(ctx.memory_context)
+```
+
+`PlatformInvocationContext` 当前包含：
+
+- `agent_id`
+- `user_id`
+- `session_id`
+- `history`
+- `input_parts`
+- `attachments`
+- `attachment_results`
+- `runner_type`
+- `model`
+- `kb_context`
+- `memory_context`
+
+### 历史压缩（compaction）是怎么做的
+
+长会话不会无限把所有历史原样塞进模型。
+
+当前策略是：
+
+1. transcript 按 API round / `invocation_id` 分组
+2. 保留最近若干轮原始消息
+3. 把更早历史压成一条 `context_checkpoint`
+4. 后续模型看到的是：
+   - 一条 `Earlier conversation summary: ...`
+   - 最近若干轮原始 user / assistant 消息
+
+重要特性：
+
+- 原始事件不会物理删除，compaction 是 append-only
+- 工具调用、审批请求、附件引用等关键信息不会简单丢弃，会以 summary 或占位文本形式保留
+- 压缩阈值会结合 `model_metadata` 的上下文窗口能力自动调整
+
 非流式响应字段：
 
 | 字段 | 说明 |

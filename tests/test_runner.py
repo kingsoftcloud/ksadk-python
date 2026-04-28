@@ -454,6 +454,38 @@ def test_adk_runner_build_adk_content_does_not_read_arbitrary_local_file_uri(tmp
     assert content.parts[0].text == "请分析附件"
 
 
+def test_adk_runner_build_adk_content_skips_images_for_text_only_models(tmp_path):
+    from ksadk.runners.adk_runner import ADKRunner
+
+    detection = SimpleNamespace(
+        entry_point="agent.py",
+        agent_variable="root_agent",
+        name="demo-agent",
+    )
+    runner = ADKRunner(detection, str(tmp_path))
+
+    content = runner._build_adk_content(
+        "请分析这张图",
+        [
+            {
+                "display_name": "diagram.png",
+                "mime_type": "image/png",
+                "transport": "inline",
+                "data": base64.b64encode(b"fake-png-bytes").decode("ascii"),
+            }
+        ],
+        model_metadata={
+            "capabilities": {
+                "multimodal_input_image": False,
+            }
+        },
+    )
+
+    assert len(content.parts) == 2
+    assert content.parts[0].text == "请分析这张图"
+    assert "当前模型不支持图片输入" in content.parts[1].text
+
+
 @pytest.mark.asyncio
 async def test_adk_runner_invoke_forwards_attachment_results_via_state_delta(tmp_path, monkeypatch):
     from google.genai import types

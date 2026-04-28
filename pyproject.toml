@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ksadk"
-version = "0.5.2"
+version = "0.5.3"
 description = "Kingsoft Cloud Agent Development Kit - 支持 LangChain/LangGraph/DeepAgents/ADK/OpenClaw/Hermes 的本地运行与云端部署"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -41,6 +41,7 @@ dependencies = [
     # fastapi 限制上限以兼容 google-adk (需要 <0.124.0)
     "fastapi>=0.100.0,<0.124.0",
     "uvicorn>=0.23.0",
+    "python-multipart>=0.0.9,<1.0.0",
     "httpx>=0.24.0",
     "a2a-sdk>=0.3.22",
     "httpx-sse>=0.4.0",
