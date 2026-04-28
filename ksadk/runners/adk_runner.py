@@ -14,6 +14,8 @@ from typing import Any, AsyncIterator, Dict, Optional
 
 from opentelemetry import trace
 
+from ksadk.conversations.attachments import classify_attachment_kind
+from ksadk.conversations.model_context import supports_native_image_input
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.sessions.continuity import ADKSessionAdapter
 
@@ -637,12 +639,26 @@ class ADKRunner(BaseRunner):
             logger.error(f"Error saving session to long-term memory: {e}")
             return False
 
-    def _build_adk_content(self, text: str, attachments: list[Dict[str, Any]]) -> "types.Content":
+    def _build_adk_content(
+        self,
+        text: str,
+        attachments: list[Dict[str, Any]],
+        *,
+        model_metadata: Dict[str, Any] | None = None,
+    ) -> "types.Content":
         from google.genai import types
         parts = []
         if text:
             parts.append(types.Part(text=text))
+        skipped_images: list[str] = []
+        image_input_supported = supports_native_image_input(model_metadata)
         for att in attachments:
+            mime_type = att.get("mime_type", "application/octet-stream")
+            display_name = att.get("display_name", "")
+            if classify_attachment_kind(str(mime_type), str(display_name)) == "image" and not image_input_supported:
+                skipped_images.append(str(display_name or "未命名图片"))
+                continue
+
             data: Optional[bytes] = None
 
             inline_data = att.get("data")
@@ -669,7 +685,19 @@ class ADKRunner(BaseRunner):
                     )
 
             if data is not None:
-                parts.append(types.Part.from_bytes(data=data, mime_type=att.get("mime_type", "application/octet-stream")))
+                parts.append(types.Part.from_bytes(data=data, mime_type=mime_type))
+
+        if skipped_images:
+            image_list = "、".join(skipped_images)
+            parts.append(
+                types.Part(
+                    text=(
+                        "系统提示：当前模型不支持图片输入，"
+                        f"无法直接分析图片附件（{image_list}）。"
+                        "请切换到支持视觉的模型后重试。"
+                    )
+                )
+            )
 
         # If no parts were found at all (e.g. empty message), fallback to prevent crash
         if not parts:
@@ -716,7 +744,11 @@ class ADKRunner(BaseRunner):
             if tags:
                 span.set_attribute("langfuse.tags", ",".join(tags))
 
-            new_message = self._build_adk_content(user_input, input_data.get("attachments", []))
+            new_message = self._build_adk_content(
+                user_input,
+                input_data.get("attachments", []),
+                model_metadata=input_data.get("model_metadata"),
+            )
             state_delta = self._build_state_delta(input_data)
 
             final_response = ""
@@ -777,7 +809,11 @@ class ADKRunner(BaseRunner):
             if tags:
                 span.set_attribute("langfuse.tags", ",".join(tags))
 
-            new_message = self._build_adk_content(user_input, input_data.get("attachments", []))
+            new_message = self._build_adk_content(
+                user_input,
+                input_data.get("attachments", []),
+                model_metadata=input_data.get("model_metadata"),
+            )
             state_delta = self._build_state_delta(input_data)
 
             accumulated_text = ""

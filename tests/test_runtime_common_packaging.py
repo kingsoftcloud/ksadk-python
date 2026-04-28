@@ -11,6 +11,12 @@ def test_pyproject_uses_in_repo_runtime_common_source_package():
     assert "ksadk_runtime_common*" in pyproject
 
 
+def test_pyproject_declares_python_multipart_for_local_web_ui_uploads():
+    pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert "python-multipart>=0.0.9,<1.0.0" in pyproject
+
+
 def test_repo_root_dockerignore_excludes_local_build_artifacts():
     dockerignore = (REPO_ROOT / ".dockerignore").read_text(encoding="utf-8")
 

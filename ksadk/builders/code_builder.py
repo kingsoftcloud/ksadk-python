@@ -107,6 +107,7 @@ class CodeBuilder(BaseBuilder):
         "a2a-sdk>=0.3.22",
         "httpx-sse>=0.4.0",
         "sse-starlette>=2.1.0",
+        "python-multipart>=0.0.9,<1.0.0",
         "requests>=2.28.0",
         "requests-aws4auth>=1.2.0",
         "kingsoftcloud-sdk-python>=1.5.8.78",
@@ -399,8 +400,8 @@ class CodeBuilder(BaseBuilder):
                     digest.update(chunk)
             digest.update(b"\0")
 
-        for relative, file_path in self._iter_ksadk_source_files():
-            fingerprint_name = f"ksadk/{relative}"
+        for package_name, relative, file_path in self._iter_bundled_source_files():
+            fingerprint_name = f"{package_name}/{relative}"
             files.append(fingerprint_name)
             digest.update(fingerprint_name.encode("utf-8"))
             digest.update(b"\0")
@@ -418,22 +419,29 @@ class CodeBuilder(BaseBuilder):
             "files": files,
         }
 
-    def _iter_ksadk_source_files(self):
+    def _iter_bundled_source_files(self):
         import ksadk
+        import ksadk_runtime_common
 
-        ksadk_src = Path(ksadk.__file__).resolve().parent
-        for file_path in sorted(ksadk_src.rglob('*')):
+        yield from self._iter_bundled_source_package("ksadk", Path(ksadk.__file__).resolve().parent)
+        yield from self._iter_bundled_source_package(
+            "ksadk_runtime_common",
+            Path(ksadk_runtime_common.__file__).resolve().parent,
+        )
+
+    def _iter_bundled_source_package(self, package_name: str, package_root: Path):
+        for file_path in sorted(package_root.rglob('*')):
             if not file_path.is_file():
                 continue
-            relative_path = file_path.relative_to(ksadk_src)
-            if self._should_skip_ksadk_relative_path(relative_path):
+            relative_path = file_path.relative_to(package_root)
+            if package_name == "ksadk" and self._should_skip_ksadk_relative_path(relative_path):
                 continue
             if '__pycache__' in file_path.parts:
                 continue
             suffix = file_path.suffix.lower()
             if suffix not in self.KSADK_ALLOWED_SUFFIXES:
                 continue
-            yield relative_path.as_posix(), file_path
+            yield package_name, relative_path.as_posix(), file_path
 
     def _should_skip_ksadk_relative_path(self, relative_path: Path) -> bool:
         parts = relative_path.parts
@@ -1220,14 +1228,14 @@ class CodeBuilder(BaseBuilder):
                     zf.write(file_path, arcname)
                     deps_count += 1
             
-            # 添加 ksadk 源码
-            ksadk_count = 0
-            for relative, file_path in self._iter_ksadk_source_files():
-                arcname = "ksadk/" + relative
+            # 添加随运行时下发的 ksadk 源码
+            bundled_source_count = 0
+            for package_name, relative, file_path in self._iter_bundled_source_files():
+                arcname = f"{package_name}/{relative}"
                 zf.write(file_path, arcname)
-                ksadk_count += 1
+                bundled_source_count += 1
             
-            click.echo(f"   ✓ 打包 ksadk 源码: {ksadk_count} 个文件")
+            click.echo(f"   ✓ 打包运行时源码: {bundled_source_count} 个文件")
             
             # 添加 entrypoint
             entrypoint_content = self._generate_entrypoint(detection_result)

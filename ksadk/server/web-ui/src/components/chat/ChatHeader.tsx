@@ -5,6 +5,7 @@ import { cn } from '@/lib/utils';
 import {
   Sheet,
   SheetContent,
+  SheetDescription,
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet';
@@ -181,6 +182,7 @@ export function ChatHeader({
           >
             <SheetHeader className="text-left">
               <SheetTitle>会话设置</SheetTitle>
+              <SheetDescription className="sr-only">调整当前会话的模型和 Workspace 操作。</SheetDescription>
             </SheetHeader>
             <div className="mt-6 flex flex-col gap-4">
               {workspaceEnabled ? (
