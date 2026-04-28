@@ -2,7 +2,10 @@ import React, { useEffect, useRef, useState } from 'react';
 
 import { buildComposerContextIndicator } from './utils/context.js';
 import { resolveComposerMaxHeight, resolveSidebarVisibility } from './utils/mobile-layout.js';
-import { resolveWorkspacePanelPresentation } from './utils/workspace.js';
+import {
+  canAccessWorkspaceFiles,
+  resolveWorkspacePanelPresentation,
+} from './utils/workspace.js';
 import {
   readPersistedSessionId,
   resolveSessionToRestore,
@@ -1198,7 +1201,7 @@ export default function App() {
     draftInput: input,
     selectedModel: selectedModelMetadata,
   });
-  const workspaceEnabled = Boolean(workspaceFiles?.Enabled && accessMode === 'Owner');
+  const workspaceEnabled = canAccessWorkspaceFiles({ workspaceFiles, accessMode });
   const workspacePanelPresentation = resolveWorkspacePanelPresentation({ isMobile });
   const workspacePanelInline = workspacePanelPresentation.renderMode === 'inline';
   const workspacePanelSheet = workspacePanelPresentation.renderMode === 'sheet';

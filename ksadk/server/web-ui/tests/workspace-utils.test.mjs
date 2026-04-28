@@ -85,3 +85,38 @@ test('workspace panel presentation keeps desktop chat interactive', async () => 
     },
   );
 });
+
+test('workspace access allows owner and private links but blocks share links', async () => {
+  const workspaceUtils = await loadWorkspaceUtils();
+
+  assert.ok(workspaceUtils, 'expected workspace helpers to exist');
+  const enabledCapability = { Enabled: true };
+  assert.equal(
+    workspaceUtils.canAccessWorkspaceFiles({
+      workspaceFiles: enabledCapability,
+      accessMode: 'Owner',
+    }),
+    true,
+  );
+  assert.equal(
+    workspaceUtils.canAccessWorkspaceFiles({
+      workspaceFiles: enabledCapability,
+      accessMode: 'Private',
+    }),
+    true,
+  );
+  assert.equal(
+    workspaceUtils.canAccessWorkspaceFiles({
+      workspaceFiles: enabledCapability,
+      accessMode: 'Share',
+    }),
+    false,
+  );
+  assert.equal(
+    workspaceUtils.canAccessWorkspaceFiles({
+      workspaceFiles: { Enabled: false },
+      accessMode: 'Private',
+    }),
+    false,
+  );
+});
