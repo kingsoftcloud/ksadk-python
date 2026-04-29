@@ -1,4 +1,7 @@
 import json
+import os
+import subprocess
+import tempfile
 from pathlib import Path
 
 
@@ -9,11 +12,11 @@ BUNDLED_FEISHU_EXAMPLE_ROOT = (
 )
 EXAMPLE_ROOT = TEMPLATE_ROOT / "examples" / "minimal-skill-plugin-deps"
 LATEST_OPENCLAW_BASE_IMAGE = (
-    "ghcr.io/openclaw/openclaw:2026.4.24@"
-    "sha256:7c4370ff8777555d4c9fe5ab821aaaad7c87188d389a6cf761270725d96ec3e9"
+    "ghcr.io/openclaw/openclaw:2026.4.26@"
+    "sha256:04e27383656941e59fba80a5a9c28b709f240ea980bd2cb375e4a7786d5a7a20"
 )
 LATEST_OPENCLAW_KCR_IMAGE = (
-    "hub-vpc-cn-beijing-6.kce.ksyun.com/agentengine-public/openclaw:2026.4.24"
+    "ghcr.io/openclaw/openclaw:2026.4.26@sha256:04e27383656941e59fba80a5a9c28b709f240ea980bd2cb375e4a7786d5a7a20"
 )
 
 
@@ -22,6 +25,7 @@ def test_openclaw_user_template_is_minimal_direct_start_bundle():
     assert (TEMPLATE_ROOT / "Dockerfile").is_file()
     assert (TEMPLATE_ROOT / "Makefile").is_file()
     assert (TEMPLATE_ROOT / "README.md").is_file()
+    assert (TEMPLATE_ROOT / "openclaw-user-bootstrap.sh").is_file()
     assert not (TEMPLATE_ROOT / "bootstrap-user.sh").exists()
     assert not (TEMPLATE_ROOT / "scripts").exists()
     assert not (TEMPLATE_ROOT / "safe-bin").exists()
@@ -58,6 +62,8 @@ def test_openclaw_user_template_default_config_seeds_trusted_proxy_runtime():
         "192.168.0.0/16",
         "35.0.0.0/8",
     ]
+    assert config["plugins"]["entries"] == {}
+    assert config["channels"] == {}
 
 
 def test_openclaw_user_template_dockerfile_uses_official_startup_path():
@@ -68,9 +74,10 @@ def test_openclaw_user_template_dockerfile_uses_official_startup_path():
     assert "COPY custom/extensions /opt/openclaw-template/extensions" in dockerfile
     assert "COPY custom/skills /opt/openclaw-template/skills" in dockerfile
     assert "COPY custom/config/openclaw.json /opt/openclaw-template/config/openclaw.json" in dockerfile
+    assert "COPY --chmod=755 openclaw-user-bootstrap.sh" in dockerfile
     assert "bootstrap-user.sh" not in dockerfile
     assert "safe-bin" not in dockerfile
-    assert "ENTRYPOINT" not in dockerfile
+    assert "ENTRYPOINT []" in dockerfile
     assert "EXPOSE 8080" in dockerfile
     assert 'OPENCLAW_GATEWAY_PORT=8080' in dockerfile
     assert 'OPENCLAW_GATEWAY_AUTH_MODE=trusted-proxy' in dockerfile
@@ -78,10 +85,109 @@ def test_openclaw_user_template_dockerfile_uses_official_startup_path():
     assert 'PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple' in dockerfile
     assert 'CLAWHUB_SITE=https://cn.clawhub-mirror.com' in dockerfile
     assert 'CLAWHUB_REGISTRY=https://cn.clawhub-mirror.com' in dockerfile
-    assert 'CMD ["sh","-lc"' in dockerfile
+    assert 'CMD ["/usr/local/bin/openclaw-user-bootstrap.sh"]' in dockerfile
     assert '/home/node/.openclaw' in dockerfile
     assert 'trusted-proxy|token|none' in dockerfile
-    assert 'secrets.json' in dockerfile
+    assert '${VAR}' in dockerfile
+
+
+def test_openclaw_user_template_light_bootstrap_renders_placeholders_and_patch():
+    script_path = TEMPLATE_ROOT / "openclaw-user-bootstrap.sh"
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        template_dir = tmp / "template"
+        state_dir = tmp / "state"
+        (template_dir / "config").mkdir(parents=True)
+        (template_dir / "extensions" / "demo-plugin").mkdir(parents=True)
+        (template_dir / "skills" / "demo-skill").mkdir(parents=True)
+        (template_dir / "config" / "openclaw.json").write_text(
+            json.dumps(
+                {
+                    "channels": {
+                        "demo": {
+                            "datasetId": "${DS_ID}",
+                            "literal": "$DS_ID",
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        env = {
+            **os.environ,
+            "OPENCLAW_TEMPLATE_DIR": str(template_dir),
+            "OPENCLAW_STATE_DIR": str(state_dir),
+            "OPENCLAW_BOOTSTRAP_ONLY": "1",
+            "OPENCLAW_GATEWAY_AUTH_MODE": "token",
+            "OPENCLAW_GATEWAY_TOKEN": "gateway-secret",
+            "OPENCLAW_CONFIG_PATCH_JSON": json.dumps(
+                {"plugins": {"entries": {"demo-plugin": {"enabled": True}}}}
+            ),
+            "DS_ID": 'dataset-"001"',
+        }
+        result = subprocess.run(
+            ["sh", str(script_path)],
+            check=False,
+            env=env,
+            text=True,
+            capture_output=True,
+        )
+
+        assert result.returncode == 0, result.stderr
+        config = json.loads((state_dir / "openclaw.json").read_text(encoding="utf-8"))
+        assert config["channels"]["demo"]["datasetId"] == 'dataset-"001"'
+        assert config["channels"]["demo"]["literal"] == "$DS_ID"
+        assert config["plugins"]["entries"]["demo-plugin"]["enabled"] is True
+        assert config["gateway"]["auth"]["mode"] == "token"
+        assert config["gateway"]["auth"]["password"] == "gateway-secret"
+        assert (state_dir / "extensions" / "demo-plugin").is_dir()
+        assert (state_dir / "skills" / "demo-skill").is_dir()
+
+        env["DS_ID"] = "dataset-002"
+        env.pop("OPENCLAW_CONFIG_PATCH_JSON")
+        result = subprocess.run(
+            ["sh", str(script_path)],
+            check=False,
+            env=env,
+            text=True,
+            capture_output=True,
+        )
+
+        assert result.returncode == 0, result.stderr
+        config = json.loads((state_dir / "openclaw.json").read_text(encoding="utf-8"))
+        assert config["channels"]["demo"]["datasetId"] == 'dataset-"001"'
+
+
+def test_openclaw_user_template_light_bootstrap_fails_on_missing_placeholder():
+    script_path = TEMPLATE_ROOT / "openclaw-user-bootstrap.sh"
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        template_dir = tmp / "template"
+        state_dir = tmp / "state"
+        (template_dir / "config").mkdir(parents=True)
+        (template_dir / "config" / "openclaw.json").write_text(
+            '{"channels":{"demo":{"datasetId":"${DS_ID}"}}}',
+            encoding="utf-8",
+        )
+
+        env = {
+            **os.environ,
+            "OPENCLAW_TEMPLATE_DIR": str(template_dir),
+            "OPENCLAW_STATE_DIR": str(state_dir),
+            "OPENCLAW_BOOTSTRAP_ONLY": "1",
+        }
+        env.pop("DS_ID", None)
+        result = subprocess.run(
+            ["sh", str(script_path)],
+            check=False,
+            env=env,
+            text=True,
+            capture_output=True,
+        )
+
+        assert result.returncode != 0
+        assert "unresolved template variables: DS_ID" in result.stderr
 
 
 def test_openclaw_user_template_readme_mentions_direct_build_and_run():
@@ -92,7 +198,9 @@ def test_openclaw_user_template_readme_mentions_direct_build_and_run():
     assert "不修改任何文件" in readme
     assert "8080" in readme
     assert "自定义环境变量" in readme
-    assert "不会自动写进 openclaw.json" in readme
+    assert "${DS_ID}" in readme
+    assert "OPENCLAW_CONFIG_PATCH_JSON" in readme
+    assert "OPENCLAW_BOOTSTRAP_ONLY" in readme
     assert "/home/node/.openclaw" in readme
     assert "trusted-proxy" in readme
     assert "OPENCLAW_GATEWAY_TOKEN" in readme
@@ -109,7 +217,10 @@ def test_openclaw_user_template_makefile_provides_basic_commands():
     assert f"OPENCLAW_BASE_IMAGE ?= {LATEST_OPENCLAW_BASE_IMAGE}" in makefile
     assert "build:" in makefile
     assert "run:" in makefile
+    assert "run-token:" in makefile
+    assert "run-debug:" in makefile
     assert "push:" in makefile
+    assert "基础镜像" in makefile
     assert "linux/amd64" in makefile
 
 

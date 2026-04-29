@@ -122,6 +122,7 @@ class OpenClawGatewayClient:
         path: str = "/",
         expires_seconds: Optional[int] = None,
         link_type: str = "private",
+        force_new: bool = False,
     ) -> DashboardAccessInfo:
         async with AgentEngineClient(region=self.region) as client:
             link = await client.create_dashboard_access_link(
@@ -130,6 +131,7 @@ class OpenClawGatewayClient:
                 link_type=link_type,
                 path=path,
                 expires_seconds=expires_seconds,
+                force_new=force_new,
             )
 
         access_url = str(link.get("access_url") or "").strip()

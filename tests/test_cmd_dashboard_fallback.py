@@ -127,12 +127,13 @@ def test_dashboard_open_resolves_openclaw_state_from_cwd(tmp_path: Path, monkeyp
         )
 
     class _FakeGateway:
-        async def build_access_info(self, *, path="/", expires_seconds=None, link_type="private"):
+        async def build_access_info(self, *, path="/", expires_seconds=None, link_type="private", force_new=False):
             captured.update(
                 {
                     "path": path,
                     "expires_seconds": expires_seconds,
                     "link_type": link_type,
+                    "force_new": force_new,
                 }
             )
             return type(
@@ -157,7 +158,7 @@ def test_dashboard_open_resolves_openclaw_state_from_cwd(tmp_path: Path, monkeyp
 
     assert result.exit_code == 0, result.output
     assert opened == {}
-    assert captured == {"path": "/", "expires_seconds": None, "link_type": "private"}
+    assert captured == {"path": "/chat", "expires_seconds": None, "link_type": "private", "force_new": False}
     assert "未显式指定 Agent，使用 .agentengine.state 的 agent_id: ar-openclaw-1" in result.output
     assert "http://demo.example.com/s/gateway-1" in result.output
 
@@ -267,12 +268,13 @@ def test_dashboard_open_routes_openclaw_to_gateway_short_link(tmp_path: Path, mo
         )
 
     class _FakeGateway:
-        async def build_access_info(self, *, path="/", expires_seconds=None, link_type="private"):
+        async def build_access_info(self, *, path="/", expires_seconds=None, link_type="private", force_new=False):
             captured.update(
                 {
                     "path": path,
                     "expires_seconds": expires_seconds,
                     "link_type": link_type,
+                    "force_new": force_new,
                 }
             )
             return type(
@@ -305,8 +307,141 @@ def test_dashboard_open_routes_openclaw_to_gateway_short_link(tmp_path: Path, mo
 
     assert result.exit_code == 0, result.output
     assert opened == {}
-    assert captured == {"path": "/", "expires_seconds": 0, "link_type": "share"}
+    assert captured == {"path": "/chat", "expires_seconds": 0, "link_type": "share", "force_new": False}
     assert "http://demo.example.com/s/gateway-1" in result.output
+
+
+def test_dashboard_open_passes_custom_path_to_openclaw_gateway_link(tmp_path: Path, monkeypatch):
+    runner = CliRunner()
+    captured = {}
+
+    (tmp_path / ".agentengine.state").write_text(
+        "agent_id: ar-openclaw-1\n"
+        "name: demo-openclaw\n"
+        "type: openclaw\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        cmd_dashboard,
+        "load_state",
+        lambda _cwd: {"agent_id": "ar-openclaw-1", "name": "demo-openclaw", "type": "openclaw"},
+    )
+
+    async def _fake_resolve(_region, primary_ref, fallback_ref):
+        return (
+            {
+                "agent_id": "ar-openclaw-1",
+                "name": "demo-openclaw",
+                "framework": "openclaw",
+                "endpoint": "http://demo.example.com",
+            },
+            primary_ref,
+            False,
+        )
+
+    class _FakeGateway:
+        async def build_access_info(self, *, path="/", expires_seconds=None, link_type="private", force_new=False):
+            captured.update(
+                {
+                    "path": path,
+                    "expires_seconds": expires_seconds,
+                    "link_type": link_type,
+                    "force_new": force_new,
+                }
+            )
+            return type(
+                "Info",
+                (),
+                {
+                    "access_url": "http://demo.example.com/s/gateway-chat",
+                    "ws_url": "ws://demo.example.com/",
+                    "link_id": "gateway-chat",
+                    "expires_at": None,
+                },
+            )()
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(cmd_dashboard, "_resolve_agent_detail", _fake_resolve)
+    monkeypatch.setattr(cmd_dashboard, "_build_openclaw_gateway_client", lambda _region, _detail: _FakeGateway())
+
+    result = runner.invoke(
+        cmd_dashboard.dashboard,
+        ["open", "--share", "--path", "/chat", "--expires-seconds", "0", "--no-open"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured == {"path": "/chat", "expires_seconds": 0, "link_type": "share", "force_new": False}
+
+
+def test_dashboard_open_passes_force_new_to_openclaw_gateway_link(tmp_path: Path, monkeypatch):
+    runner = CliRunner()
+    captured = {}
+
+    (tmp_path / ".agentengine.state").write_text(
+        "agent_id: ar-openclaw-1\n"
+        "name: demo-openclaw\n"
+        "type: openclaw\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        cmd_dashboard,
+        "load_state",
+        lambda _cwd: {"agent_id": "ar-openclaw-1", "name": "demo-openclaw", "type": "openclaw"},
+    )
+
+    async def _fake_resolve(_region, primary_ref, fallback_ref):
+        return (
+            {
+                "agent_id": "ar-openclaw-1",
+                "name": "demo-openclaw",
+                "framework": "openclaw",
+                "endpoint": "http://demo.example.com",
+            },
+            primary_ref,
+            False,
+        )
+
+    class _FakeGateway:
+        async def build_access_info(self, *, path="/", expires_seconds=None, link_type="private", force_new=False):
+            captured.update(
+                {
+                    "path": path,
+                    "expires_seconds": expires_seconds,
+                    "link_type": link_type,
+                    "force_new": force_new,
+                }
+            )
+            return type(
+                "Info",
+                (),
+                {
+                    "access_url": "http://demo.example.com/s/gateway-2",
+                    "ws_url": "ws://demo.example.com/",
+                    "link_id": "gateway-2",
+                    "expires_at": None,
+                },
+            )()
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(cmd_dashboard, "_resolve_agent_detail", _fake_resolve)
+    monkeypatch.setattr(cmd_dashboard, "_build_openclaw_gateway_client", lambda _region, _detail: _FakeGateway())
+
+    result = runner.invoke(
+        cmd_dashboard.dashboard,
+        ["open", "--share", "--expires-seconds", "0", "--force-new", "--no-open"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured == {"path": "/chat", "expires_seconds": 0, "link_type": "share", "force_new": True}
+    assert "http://demo.example.com/s/gateway-2" in result.output
 
 
 def test_dashboard_supports_share_subcommand(monkeypatch):

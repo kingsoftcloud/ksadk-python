@@ -1,0 +1,26 @@
+ARG DOCS_BASE_IMAGE=hub.kce.ksyun.com/bigdata-ai/agentengine-server-base:v0.4.1
+
+FROM ${DOCS_BASE_IMAGE}
+
+USER root
+
+WORKDIR /app
+
+ARG ZREAD_VERSION=0.2.12
+ARG ZREAD_SHA256=faf5ef7f2f8edc24d41b84fd838322882846f4bab10f1a9210de29cba2a53a10
+
+ADD --chmod=0755 https://github.com/ZreadAI/zread_cli/releases/download/v${ZREAD_VERSION}/zread-linux-x86_64 /usr/local/bin/zread
+
+RUN echo "${ZREAD_SHA256}  /usr/local/bin/zread" | sha256sum -c - \
+    && zread version
+
+COPY .zread/wiki/current .zread/wiki/current
+COPY .zread/wiki/versions .zread/wiki/versions
+COPY .zread/source/ ./
+COPY scripts/zread_subpath_proxy.py /usr/local/bin/zread-subpath-proxy
+
+ENV PORT=8080
+ENV DOCS_BASE_PATH=/ksadk-docs
+EXPOSE 8080
+
+CMD ["python", "/usr/local/bin/zread-subpath-proxy"]
