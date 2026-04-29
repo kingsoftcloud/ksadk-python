@@ -214,7 +214,7 @@ class _FakeGatewayClient:
             "channels": {
                 "weixin": {"connected": True, "probe": probe, "timeout_ms": timeout_ms},
                 "feishu": {"enabled": True},
-                "agentspace": {"accounts": {"default": {"enabled": True}}},
+                "wps-xiezuo": {"enabled": True},
             }
         }
 
@@ -256,6 +256,20 @@ class _FakeGatewayClient:
         return {"connected": True, "message": "connected"}
 
 
+class _FakeConfigApplyReloadGatewayClient(_FakeGatewayClient):
+    async def config_apply(self, *, config, base_hash, note=None, session_key=None, restart_delay_ms=None):
+        await super().config_apply(
+            config=config,
+            base_hash=base_hash,
+            note=note,
+            session_key=session_key,
+            restart_delay_ms=restart_delay_ms,
+        )
+        raise cmd_openclaw.OpenClawGatewayError(
+            "Gateway websocket receive failed: received 1011 (internal error) Bad Gateway"
+        )
+
+
 class _FakeDoctorGatewayClient(_FakeGatewayClient):
     async def config_get(self):
         return {
@@ -266,14 +280,14 @@ class _FakeDoctorGatewayClient(_FakeGatewayClient):
                     "entries": {
                         "openclaw-weixin": {"enabled": True},
                         "openclaw-lark": {"enabled": True},
-                        "agentspace": {"enabled": True},
+                        "wps-xiezuo": {"enabled": True},
                     }
                 },
                 "skills": {"allowBundled": ["wps365-skill"]},
                 "channels": {
                     "feishu": {"enabled": True},
                     "openclaw-weixin": {"accounts": {"default": {"enabled": True}}},
-                    "agentspace": {"accounts": {"default": {"enabled": True}}},
+                    "wps-xiezuo": {"enabled": True, "appId": "app-demo", "appSecret": "secret-demo"},
                 },
             },
         }
@@ -300,7 +314,7 @@ class _FakeDoctorFreshGatewayClient(_FakeGatewayClient):
                     "entries": {
                         "openclaw-weixin": {"enabled": True},
                         "openclaw-lark": {"enabled": True},
-                        "agentspace": {"enabled": True},
+                        "wps-xiezuo": {"enabled": True},
                     }
                 },
                 "skills": {"allowBundled": ["wps365-skill"]},
@@ -624,6 +638,20 @@ def test_openclaw_help_exposes_channel_and_gateway_commands():
     assert "gateway" in result.output
 
 
+def test_openclaw_channel_connect_help_separates_channel_specific_options():
+    runner = CliRunner()
+
+    result = runner.invoke(openclaw, ["channel", "connect", "--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "微信：扫码登录" in result.output
+    assert "飞书：启动官方 onboarding 流程" in result.output
+    assert "WPS 协作：写入开放平台 appId/appSecret" in result.output
+    assert "仅 WPS 协作：开放平台应用 ID" in result.output
+    assert "仅微信：在本地浏览器额外打开二维码链接" in result.output
+    assert "--dm-policy=open 表示允许所有用户私聊" in result.output
+
+
 def test_openclaw_gateway_ws_url_prints_dashboard_and_ws(monkeypatch):
     runner = CliRunner()
     monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawDetailClient)
@@ -862,20 +890,6 @@ def test_openclaw_channel_connect_feishu_applies_remote_config(monkeypatch):
     assert config["channels"]["feishu"]["groupAllowFrom"] == ["ou_demo"]
 
 
-def test_encrypt_agentspace_token_format():
-    from ksadk.cli.cmd_openclaw import _encrypt_agentspace_token
-
-    token = _encrypt_agentspace_token("wps-sid-demo", app_id="app-demo")
-    parts = token.split(":")
-    assert len(parts) == 4
-    assert len(parts[0]) == 32
-    assert len(parts[1]) == 24
-    assert len(parts[2]) == 32
-    assert len(parts[3]) > 0
-    for item in parts:
-        int(item, 16)
-
-
 def test_should_auto_open_browser_on_local_macos(monkeypatch):
     from ksadk.cli.cmd_openclaw import _should_auto_open_browser
 
@@ -895,100 +909,16 @@ def test_should_not_auto_open_browser_over_ssh(monkeypatch):
     assert _should_auto_open_browser() is False
 
 
-def test_openclaw_channel_connect_agentspace_applies_remote_config(monkeypatch):
+def test_openclaw_channel_connect_wps_xiezuo_applies_flat_remote_config(monkeypatch):
     runner = CliRunner()
     _FakeGatewayClient.applied_configs = []
 
     async def _fake_sleep(*_args, **_kwargs):
         return None
 
-    async def _fake_oauth(_selected_app_id, *, open_browser, timeout_seconds=300, poll_interval_seconds=5):
-        assert open_browser is False
-        assert timeout_seconds == 300
-        assert poll_interval_seconds == 5
-        assert _selected_app_id is None
-        return {
-            "wps_sid": "wps_sid_demo",
-            "current_user": "alice",
-            "app_id": "app-123",
-            "login_url": "https://agentspace.wps.cn/login/demo",
-        }
-
     monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawDetailClient)
     monkeypatch.setattr("ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeGatewayClient)
     monkeypatch.setattr("ksadk.cli.cmd_openclaw.asyncio.sleep", _fake_sleep)
-    monkeypatch.setattr("ksadk.cli.cmd_openclaw._should_auto_open_browser", lambda: False)
-    monkeypatch.setattr("ksadk.cli.cmd_openclaw._agentspace_cloud_server_oauth", _fake_oauth)
-
-    result = runner.invoke(openclaw, ["channel", "connect", "ar-demo-1", "--channel", "agentspace"])
-
-    assert result.exit_code == 0, result.output
-    assert _FakeGatewayClient.applied_configs
-    config = _FakeGatewayClient.applied_configs[-1]["config"]
-    assert config["plugins"]["entries"]["agentspace"]["enabled"] is True
-    assert config["channels"]["agentspace"]["accounts"]["default"]["enabled"] is True
-    assert config["channels"]["agentspace"]["accounts"]["default"]["currentUser"] == "alice"
-    assert config["channels"]["agentspace"]["accounts"]["default"]["app_id"] == "app-123"
-    token = config["channels"]["agentspace"]["accounts"]["default"]["token"]
-    assert len(token.split(":")) == 4
-
-
-def test_openclaw_channel_connect_agentspace_reuses_app_id_when_flag_enabled(monkeypatch):
-    runner = CliRunner()
-    _FakeGatewayClient.applied_configs = []
-    captured: Dict[str, Any] = {}
-
-    async def _fake_sleep(*_args, **_kwargs):
-        return None
-
-    async def _fake_oauth(_selected_app_id, *, open_browser, timeout_seconds=300, poll_interval_seconds=5):
-        captured["selected_app_id"] = _selected_app_id
-        return {
-            "wps_sid": "wps_sid_demo",
-            "current_user": "alice",
-            "app_id": "app-legacy",
-            "login_url": "https://agentspace.wps.cn/login/demo",
-        }
-
-    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawDetailClient)
-    monkeypatch.setattr("ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeGatewayClient)
-    monkeypatch.setattr("ksadk.cli.cmd_openclaw.asyncio.sleep", _fake_sleep)
-    monkeypatch.setattr("ksadk.cli.cmd_openclaw._should_auto_open_browser", lambda: False)
-    monkeypatch.setattr("ksadk.cli.cmd_openclaw._extract_agentspace_app_id", lambda _cfg: "app-legacy")
-    monkeypatch.setattr("ksadk.cli.cmd_openclaw._agentspace_cloud_server_oauth", _fake_oauth)
-
-    result = runner.invoke(
-        openclaw,
-        ["channel", "connect", "ar-demo-1", "--channel", "agentspace", "--reuse-app-id"],
-    )
-
-    assert result.exit_code == 0, result.output
-    assert captured["selected_app_id"] == "app-legacy"
-
-
-def test_openclaw_channel_connect_agentspace_accepts_explicit_app_id(monkeypatch):
-    runner = CliRunner()
-    _FakeGatewayClient.applied_configs = []
-    captured: Dict[str, Any] = {}
-
-    async def _fake_sleep(*_args, **_kwargs):
-        return None
-
-    async def _fake_oauth(_selected_app_id, *, open_browser, timeout_seconds=300, poll_interval_seconds=5):
-        captured["selected_app_id"] = _selected_app_id
-        return {
-            "wps_sid": "wps_sid_demo",
-            "current_user": "alice",
-            "app_id": "app-explicit",
-            "login_url": "https://agentspace.wps.cn/login/demo",
-        }
-
-    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawDetailClient)
-    monkeypatch.setattr("ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeGatewayClient)
-    monkeypatch.setattr("ksadk.cli.cmd_openclaw.asyncio.sleep", _fake_sleep)
-    monkeypatch.setattr("ksadk.cli.cmd_openclaw._should_auto_open_browser", lambda: False)
-    monkeypatch.setattr("ksadk.cli.cmd_openclaw._extract_agentspace_app_id", lambda _cfg: "app-legacy")
-    monkeypatch.setattr("ksadk.cli.cmd_openclaw._agentspace_cloud_server_oauth", _fake_oauth)
 
     result = runner.invoke(
         openclaw,
@@ -997,40 +927,51 @@ def test_openclaw_channel_connect_agentspace_accepts_explicit_app_id(monkeypatch
             "connect",
             "ar-demo-1",
             "--channel",
-            "agentspace",
-            "--reuse-app-id",
+            "wps-xiezuo",
             "--app-id",
-            "app-explicit",
+            "app-demo",
+            "--app-secret",
+            "secret-demo",
+            "--dm-policy",
+            "open",
         ],
     )
 
     assert result.exit_code == 0, result.output
-    assert captured["selected_app_id"] == "app-explicit"
+    assert _FakeGatewayClient.applied_configs
+    config = _FakeGatewayClient.applied_configs[-1]["config"]
+    assert config["plugins"]["entries"]["wps-xiezuo"]["enabled"] is True
+    assert "wps-xiezuo" in config["plugins"]["allow"]
+    channel = config["channels"]["wps-xiezuo"]
+    assert channel["enabled"] is True
+    assert channel["appId"] == "app-demo"
+    assert channel["appSecret"] == "secret-demo"
+    assert channel["baseUrl"] == "https://openapi.wps.cn"
+    assert channel["dmPolicy"] == "open"
+    assert channel["allowFrom"] == ["*"]
+    assert channel["groupPolicy"] == "open"
+    assert channel["sdk"] == {"enabled": True, "logLevel": "info"}
+    assert channel["instantAck"]["text"] == "内容处理中，请稍候..."
+    assert channel["mcp"]["enabled"] is True
+    assert channel["mcp"]["mode"] == "app"
+    assert "wps_im_message_send" in channel["mcp"]["toolAllowlist"]
+    assert "accounts" not in channel
+    assert "defaultAccountId" not in channel
+    assert config["bindings"] == [
+        {"type": "route", "agentId": "main", "match": {"channel": "wps-xiezuo"}}
+    ]
 
 
-def test_openclaw_channel_connect_agentspace_supports_manual_wps_sid(monkeypatch):
+def test_openclaw_channel_connect_wps_xiezuo_tolerates_reload_disconnect(monkeypatch):
     runner = CliRunner()
-    _FakeGatewayClient.applied_configs = []
+    _FakeConfigApplyReloadGatewayClient.applied_configs = []
 
     async def _fake_sleep(*_args, **_kwargs):
         return None
 
-    async def _fake_fetch_current_user_by_sid(sid):
-        assert sid == "wps_sid_manual"
-        return {
-            "wps_sid": sid,
-            "current_user": "alice",
-            "app_id": "",
-            "login_url": "",
-        }
-
     monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawDetailClient)
-    monkeypatch.setattr("ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeGatewayClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeConfigApplyReloadGatewayClient)
     monkeypatch.setattr("ksadk.cli.cmd_openclaw.asyncio.sleep", _fake_sleep)
-    monkeypatch.setattr(
-        "ksadk.cli.cmd_openclaw._agentspace_fetch_current_user_by_sid",
-        _fake_fetch_current_user_by_sid,
-    )
 
     result = runner.invoke(
         openclaw,
@@ -1039,214 +980,24 @@ def test_openclaw_channel_connect_agentspace_supports_manual_wps_sid(monkeypatch
             "connect",
             "ar-demo-1",
             "--channel",
-            "agentspace",
-            "--wps-sid",
-            "wps_sid_manual",
+            "wps-xiezuo",
+            "--app-id",
+            "app-demo",
+            "--app-secret",
+            "secret-demo",
+            "--dm-policy",
+            "open",
         ],
     )
 
     assert result.exit_code == 0, result.output
-    assert _FakeGatewayClient.applied_configs
-    config = _FakeGatewayClient.applied_configs[-1]["config"]
-    assert config["channels"]["agentspace"]["accounts"]["default"]["currentUser"] == "alice"
-    token = config["channels"]["agentspace"]["accounts"]["default"]["token"]
-    assert len(token.split(":")) == 4
+    assert "gateway reload 期间连接短暂中断" in result.output
+    assert _FakeConfigApplyReloadGatewayClient.applied_configs
+    config = _FakeConfigApplyReloadGatewayClient.applied_configs[-1]["config"]
+    assert config["channels"]["wps-xiezuo"]["appId"] == "app-demo"
 
 
-def test_agentspace_oauth_fails_fast_when_app_id_has_no_permission(monkeypatch):
-    from ksadk.cli import cmd_openclaw as module
-
-    responses = [
-        {
-            "ok": True,
-            "status_code": 200,
-            "payload": {
-                "code": 0,
-                "msg": "ok",
-                "data": {
-                    "code": "oauth-code-demo",
-                    "url": "https://account.wps.cn/?cb=demo",
-                    "app_id": "app-legacy",
-                },
-            },
-        },
-        {
-            "ok": True,
-            "status_code": 200,
-            "payload": {
-                "code": 400000001,
-                "msg": "invalid parameter",
-                "data": {
-                    "app_id": "user has no permission to access this app",
-                },
-            },
-        },
-    ]
-
-    async def _fake_http_request(**_kwargs):
-        assert responses
-        return responses.pop(0)
-
-    monkeypatch.setattr(module, "_agentspace_http_request", _fake_http_request)
-
-    try:
-        asyncio.run(
-            module._agentspace_cloud_server_oauth(
-                "app-legacy",
-                open_browser=False,
-                timeout_seconds=300,
-                poll_interval_seconds=1,
-            )
-        )
-    except module.OpenClawGatewayError as exc:
-        text = str(exc)
-        assert "Agentspace user_token失败" in text
-        assert "user has no permission to access this app" in text
-        assert "app_id=app-legacy" in text
-    else:
-        assert False, "expected OpenClawGatewayError"
-
-
-def test_agentspace_oauth_retries_pending_upstream_none_strip_until_token_ready(monkeypatch):
-    from ksadk.cli import cmd_openclaw as module
-
-    responses = [
-        {
-            "ok": True,
-            "status_code": 200,
-            "payload": {
-                "code": 0,
-                "msg": "ok",
-                "data": {
-                    "code": "oauth-code-demo",
-                    "url": "https://account.wps.cn/?cb=demo",
-                },
-            },
-        },
-        {
-            "ok": False,
-            "status_code": 500,
-            "payload": {
-                "message": "'NoneType' object has no attribute 'strip'",
-            },
-        },
-        {
-            "ok": True,
-            "status_code": 200,
-            "payload": {
-                "code": 0,
-                "msg": "ok",
-                "data": {
-                    "token": "wps_sid_demo",
-                },
-            },
-        },
-        {
-            "ok": True,
-            "status_code": 200,
-            "payload": {
-                "code": 0,
-                "msg": "ok",
-                "data": {
-                    "nickname": "alice",
-                },
-            },
-        },
-    ]
-    sleep_calls: list[int] = []
-
-    async def _fake_http_request(**_kwargs):
-        assert responses
-        return responses.pop(0)
-
-    async def _fake_sleep(seconds):
-        sleep_calls.append(seconds)
-        return None
-
-    monkeypatch.setattr(module, "_agentspace_http_request", _fake_http_request)
-    monkeypatch.setattr(module.asyncio, "sleep", _fake_sleep)
-
-    result = asyncio.run(
-        module._agentspace_cloud_server_oauth(
-            None,
-            open_browser=False,
-            timeout_seconds=300,
-            poll_interval_seconds=1,
-        )
-    )
-
-    assert result["wps_sid"] == "wps_sid_demo"
-    assert result["current_user"] == "alice"
-    assert sleep_calls == [1]
-
-
-def test_agentspace_oauth_does_not_send_app_id_to_user_token(monkeypatch):
-    from ksadk.cli import cmd_openclaw as module
-
-    request_bodies: list[dict[str, Any] | None] = []
-    responses = [
-        {
-            "ok": True,
-            "status_code": 200,
-            "payload": {
-                "code": 0,
-                "msg": "ok",
-                "data": {
-                    "code": "oauth-code-demo",
-                    "url": "https://account.wps.cn/?cb=demo",
-                },
-            },
-        },
-        {
-            "ok": True,
-            "status_code": 200,
-            "payload": {
-                "code": 0,
-                "msg": "ok",
-                "data": {
-                    "token": "wps_sid_demo",
-                },
-            },
-        },
-        {
-            "ok": True,
-            "status_code": 200,
-            "payload": {
-                "code": 0,
-                "msg": "ok",
-                "data": {
-                    "nickname": "alice",
-                },
-            },
-        },
-    ]
-
-    async def _fake_http_request(**kwargs):
-        request_bodies.append(kwargs.get("json_body"))
-        assert responses
-        return responses.pop(0)
-
-    monkeypatch.setattr(module, "_agentspace_http_request", _fake_http_request)
-
-    result = asyncio.run(
-        module._agentspace_cloud_server_oauth(
-            "AK20260325FTXXUZ",
-            open_browser=False,
-            timeout_seconds=300,
-            poll_interval_seconds=1,
-        )
-    )
-
-    assert result["wps_sid"] == "wps_sid_demo"
-    assert request_bodies[0] == {"state": request_bodies[0]["state"], "app_id": "AK20260325FTXXUZ"}
-    assert request_bodies[1] == {
-        "code": "oauth-code-demo",
-        "state": request_bodies[1]["state"],
-    }
-    assert "app_id" not in request_bodies[1]
-
-
-def test_openclaw_channel_disable_agentspace_updates_default_account(monkeypatch):
+def test_openclaw_channel_connect_wps_xiezuo_rejects_non_default_account(monkeypatch):
     runner = CliRunner()
     _FakeGatewayClient.applied_configs = []
 
@@ -1257,12 +1008,74 @@ def test_openclaw_channel_disable_agentspace_updates_default_account(monkeypatch
     monkeypatch.setattr("ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeGatewayClient)
     monkeypatch.setattr("ksadk.cli.cmd_openclaw.asyncio.sleep", _fake_sleep)
 
-    result = runner.invoke(openclaw, ["channel", "disable", "ar-demo-1", "--channel", "agentspace"])
+    result = runner.invoke(
+        openclaw,
+        [
+            "channel",
+            "connect",
+            "ar-demo-1",
+            "--channel",
+            "wps-xiezuo",
+            "--app-id",
+            "app-demo",
+            "--app-secret",
+            "secret-demo",
+            "--account-id",
+            "tenant-a",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "仅支持 default" in result.output
+
+
+def test_openclaw_channel_connect_wps_xiezuo_requires_app_secret_when_dm_disabled(monkeypatch):
+    runner = CliRunner()
+
+    async def _fake_sleep(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawDetailClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeGatewayClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw.asyncio.sleep", _fake_sleep)
+
+    result = runner.invoke(
+        openclaw,
+        [
+            "channel",
+            "connect",
+            "ar-demo-1",
+            "--channel",
+            "wps-xiezuo",
+            "--app-id",
+            "app-demo",
+            "--dm-policy",
+            "disabled",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "必须提供 --app-secret" in result.output
+
+
+def test_openclaw_channel_disable_wps_xiezuo_updates_flat_channel(monkeypatch):
+    runner = CliRunner()
+    _FakeGatewayClient.applied_configs = []
+
+    async def _fake_sleep(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawDetailClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeGatewayClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw.asyncio.sleep", _fake_sleep)
+
+    result = runner.invoke(openclaw, ["channel", "disable", "ar-demo-1", "--channel", "wps-xiezuo"])
 
     assert result.exit_code == 0, result.output
     assert _FakeGatewayClient.applied_configs
     config = _FakeGatewayClient.applied_configs[-1]["config"]
-    assert config["channels"]["agentspace"]["accounts"]["default"]["enabled"] is False
+    assert config["channels"]["wps-xiezuo"]["enabled"] is False
+    assert "accounts" not in config["channels"]["wps-xiezuo"]
 
 
 def test_openclaw_channel_doctor_checks_snapshot_and_local_node(monkeypatch):
@@ -1282,27 +1095,25 @@ def test_openclaw_channel_doctor_checks_snapshot_and_local_node(monkeypatch):
     assert "feishu_local_node" in result.output
 
 
-def test_openclaw_channel_doctor_checks_agentspace_plugin_skill_and_deps(monkeypatch):
+def test_openclaw_channel_doctor_checks_wps_xiezuo_plugin_and_deps(monkeypatch):
     runner = CliRunner()
     monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawDetailClient)
     monkeypatch.setattr("ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeDoctorGatewayClient)
     monkeypatch.setattr(
-        "ksadk.cli.cmd_openclaw._check_agentspace_local_deps",
+        "ksadk.cli.cmd_openclaw._check_wps_xiezuo_local_deps",
         lambda: {
             "ok": True,
-            "cryptography": "/venv/lib/cryptography/__init__.py",
-            "requests": "/venv/lib/requests/__init__.py",
-            "cryptography_error": None,
+            "node": "/usr/bin/node",
+            "npm": "/usr/bin/npm",
         },
     )
 
-    result = runner.invoke(openclaw, ["channel", "doctor", "ar-demo-1", "--channel", "agentspace"])
+    result = runner.invoke(openclaw, ["channel", "doctor", "ar-demo-1", "--channel", "wps-xiezuo"])
 
     assert result.exit_code == 0, result.output
-    assert "agentspace_plugin_visible" in result.output
-    assert "agentspace_status_snapshot" in result.output
-    assert "agentspace_skill_visible" in result.output
-    assert "agentspace_local_deps" in result.output
+    assert "wps_xiezuo_plugin_visible" in result.output
+    assert "wps_xiezuo_status_snapshot" in result.output
+    assert "wps_xiezuo_local_deps" in result.output
 
 
 def test_openclaw_channel_doctor_treats_unconfigured_channels_as_connect_required(monkeypatch):
@@ -1314,13 +1125,8 @@ def test_openclaw_channel_doctor_treats_unconfigured_channels_as_connect_require
         lambda cmd: f"/usr/bin/{cmd}" if cmd in {"node", "npx"} else None,
     )
     monkeypatch.setattr(
-        "ksadk.cli.cmd_openclaw._check_agentspace_local_deps",
-        lambda: {
-            "ok": True,
-            "cryptography": "/venv/lib/cryptography/__init__.py",
-            "requests": "/venv/lib/requests/__init__.py",
-            "cryptography_error": None,
-        },
+        "ksadk.cli.cmd_openclaw._check_wps_xiezuo_local_deps",
+        lambda: {"ok": True, "node": "/usr/bin/node", "npm": "/usr/bin/npm"},
     )
 
     result = runner.invoke(openclaw, ["channel", "doctor", "ar-demo-1", "--output", "json"])
@@ -1332,7 +1138,7 @@ def test_openclaw_channel_doctor_treats_unconfigured_channels_as_connect_require
     assert checks["weixin_qr_rpc"]["ok"] is False
     assert checks["weixin_qr_rpc"]["state"] == "connect_required"
     assert checks["feishu_status_snapshot"]["state"] == "connect_required"
-    assert checks["agentspace_status_snapshot"]["state"] == "connect_required"
+    assert checks["wps_xiezuo_status_snapshot"]["state"] == "connect_required"
 
 
 def test_openclaw_channel_doctor_keeps_configured_weixin_qr_rpc_as_hard_failure(monkeypatch):
@@ -1344,13 +1150,8 @@ def test_openclaw_channel_doctor_keeps_configured_weixin_qr_rpc_as_hard_failure(
         lambda cmd: f"/usr/bin/{cmd}" if cmd in {"node", "npx"} else None,
     )
     monkeypatch.setattr(
-        "ksadk.cli.cmd_openclaw._check_agentspace_local_deps",
-        lambda: {
-            "ok": True,
-            "cryptography": "/venv/lib/cryptography/__init__.py",
-            "requests": "/venv/lib/requests/__init__.py",
-            "cryptography_error": None,
-        },
+        "ksadk.cli.cmd_openclaw._check_wps_xiezuo_local_deps",
+        lambda: {"ok": True, "node": "/usr/bin/node", "npm": "/usr/bin/npm"},
     )
 
     result = runner.invoke(openclaw, ["channel", "doctor", "ar-demo-1", "--channel", "weixin", "--output", "json"])

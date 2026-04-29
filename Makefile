@@ -1,7 +1,7 @@
 # AgentEngine Makefile
 # 用于构建 Web UI 和管理项目
 
-.PHONY: help install build-webui sync-static clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test openclaw-refresh-agentspace-assets openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size
+.PHONY: help install build-webui sync-static clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size docs-check-wiki docs-prepare-source docs-docker-build docs-docker-push docs-helm-lint docs-helm-template docs-deploy docs-deploy-all docs-status docs-logs
 
 # 默认目标
 help:
@@ -40,8 +40,7 @@ help:
 	@echo ""
 	@echo "  \033[1;32mOpenClaw 镜像:\033[0m"
 	@echo "    make openclaw-build         构建 OpenClaw 镜像 (默认国内源)"
-	@echo "    make openclaw-push          构建 + 推送到 KCR (默认 :2026.4.24)"
-	@echo "    make openclaw-refresh-agentspace-assets  刷新 Agentspace 最新插件/技能并写 lock"
+	@echo "    make openclaw-push          构建 + 推送到 KCR (默认 :2026.4.26-kingsoft-xiezuo)"
 	@echo "    make openclaw-push OPENCLAW_TAG=v2026.3.13-guardian1"
 	@echo "    make openclaw-build OPENCLAW_PYPI_INDEX_URL=https://pypi.org/simple  # 海外源"
 	@echo "    make openclaw-size          查看镜像大小"
@@ -52,6 +51,11 @@ help:
 	@echo "    make hermes-size            查看 Hermes 镜像大小"
 	@echo "    make hermes-build HERMES_TAG=2026.4.23"
 	@echo "    make hermes-build HERMES_AGENT_REF=v2026.4.23  # 切换 Hermes 上游 release"
+	@echo ""
+	@echo "  \033[1;32mzread 文档站:\033[0m"
+	@echo "    make docs-deploy-all   构建原生 zread 文档镜像 + 推送 + 部署到预发"
+	@echo "    make docs-status       查看预发文档站状态"
+	@echo "    make docs-deploy-all ENV=online DOCS_VERSION=x  # 部署线上"
 	@echo ""
 	@echo "  \033[1;32m清理:\033[0m"
 	@echo "    make clean          清理构建产物和本地测试缓存"
@@ -393,21 +397,15 @@ offline-current: build
 OPENCLAW_IMAGE := hub.kce.ksyun.com/agentengine-public/openclaw
 OPENCLAW_VPC_REGISTRY ?= hub-vpc-cn-beijing-6.kce.ksyun.com
 OPENCLAW_VPC_IMAGE ?= $(subst hub.kce.ksyun.com,$(OPENCLAW_VPC_REGISTRY),$(OPENCLAW_IMAGE))
-OPENCLAW_TAG ?= 2026.4.24
+OPENCLAW_TAG ?= 2026.4.26-kingsoft-xiezuo
 OPENCLAW_CONTEXT := .
-OPENCLAW_BASE_IMAGE ?= ghcr.io/openclaw/openclaw:2026.4.24@sha256:7c4370ff8777555d4c9fe5ab821aaaad7c87188d389a6cf761270725d96ec3e9
+OPENCLAW_BASE_IMAGE ?= ghcr.io/openclaw/openclaw:2026.4.26@sha256:04e27383656941e59fba80a5a9c28b709f240ea980bd2cb375e4a7786d5a7a20
 OPENCLAW_PYPI_INDEX_URL ?= https://mirrors.aliyun.com/pypi/simple
 OPENCLAW_NPM_REGISTRY ?= https://registry.npmmirror.com
 DOCKER_BUILDKIT ?= 1
 
-## 刷新 Agentspace 最新插件/技能资产并更新 lock manifest
-openclaw-refresh-agentspace-assets:
-	@echo "🔄 刷新 Agentspace 最新资产..."
-	@python3 deploy/openclaw/scripts/refresh_agentspace_assets.py --repo-root .
-	@echo "✅ Agentspace 资产已刷新"
-
 ## 构建 OpenClaw 镜像 (chromium + preset-skills)
-openclaw-build: openclaw-refresh-agentspace-assets
+openclaw-build:
 	@echo "🐳 构建 OpenClaw 镜像..."
 	@echo "============================================================"
 	@echo "   基础镜像: $(OPENCLAW_BASE_IMAGE)"
@@ -502,6 +500,123 @@ hermes-push: hermes-build
 
 hermes-size:
 	@docker images $(HERMES_IMAGE):$(HERMES_TAG) --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}"
+
+
+# ============================================================
+# zread 文档站发布
+# ============================================================
+#
+# 依赖本地 .zread/wiki/current 指向的完整 wiki 版本。发布镜像会运行
+# zread browse 原生 UI，保留 zread 样式、前端交互和 Mermaid 渲染。
+#
+
+DOCS_PROJECT_NAME ?= ksadk-docs
+DOCS_DOCKER_REGISTRY ?= hub.kce.ksyun.com
+DOCS_DOCKER_NAMESPACE ?= bigdata-ai
+DOCS_WIKI_VERSION ?= $(shell test -f .zread/wiki/current && sed 's|^versions/||' .zread/wiki/current || echo missing-wiki)
+DOCS_VERSION ?= zread-$(DOCS_WIKI_VERSION)
+ENV ?= pre
+DOCS_FORCE_UPDATE ?= 0
+DOCS_FORCE_UPDATE_NONCE ?= $(shell date '+%Y%m%d%H%M%S')
+
+ifeq ($(ENV),online)
+	DOCS_KUBECONFIG_PATH := $(HOME)/.kube/agentengine-online
+	DOCS_VALUES_FILE := deploy/helm/ksadk-docs/values-online.yaml
+else
+	DOCS_KUBECONFIG_PATH := $(HOME)/.kube/agentengine-pre
+	DOCS_VALUES_FILE := deploy/helm/ksadk-docs/values-pre.yaml
+endif
+
+DOCS_IMAGE := $(DOCS_DOCKER_REGISTRY)/$(DOCS_DOCKER_NAMESPACE)/$(DOCS_PROJECT_NAME):$(DOCS_VERSION)
+DOCS_NAMESPACE ?= agentengine
+DOCS_HELM_RELEASE ?= ksadk-docs
+DOCS_HELM_CHART := deploy/helm/ksadk-docs
+DOCS_HELM_TIMEOUT ?= 600s
+DOCS_BASE_PATH ?= /ksadk-docs
+DOCS_BASE_IMAGE ?= hub.kce.ksyun.com/bigdata-ai/agentengine-server-base:v0.4.1
+DOCS_ZREAD_VERSION ?= 0.2.12
+DOCS_ZREAD_SHA256 ?= faf5ef7f2f8edc24d41b84fd838322882846f4bab10f1a9210de29cba2a53a10
+DOCS_HELM_SET_FLAGS := --set image.tag=$(DOCS_VERSION) --set docs.basePath=$(DOCS_BASE_PATH)
+
+ifeq ($(DOCS_FORCE_UPDATE),1)
+	DOCS_HELM_SET_FLAGS += --set-string podAnnotations.force-redeploy=$(DOCS_FORCE_UPDATE_NONCE)
+endif
+
+docs-check-wiki:
+	@if [ ! -f ".zread/wiki/current" ]; then \
+		echo "❌ 缺少 .zread/wiki/current，请先运行 zread generate -y --stdio"; \
+		exit 1; \
+	fi
+	@if [ ! -f ".zread/wiki/versions/$(DOCS_WIKI_VERSION)/wiki.json" ]; then \
+		echo "❌ 缺少 .zread/wiki/versions/$(DOCS_WIKI_VERSION)/wiki.json"; \
+		exit 1; \
+	fi
+	@python3 -c 'import json; from pathlib import Path; version = Path(".zread/wiki/current").read_text().strip().removeprefix("versions/"); root = Path(".zread/wiki/versions", version); wiki = json.loads((root / "wiki.json").read_text()); pages = wiki.get("pages") or []; assert pages, "wiki.json 中没有页面，拒绝发布"; missing = [p.get("file") for p in pages if not (root / p.get("file", "")).exists()]; print(f"✅ zread wiki: {version}, pages={len(pages)}, missing={len(missing)}"); [print(f"❌ 缺失页面文件: {name}") for name in missing]; raise SystemExit(1 if missing else 0)'
+	@if [ -f ".zread/wiki/drafts/wiki.json" ]; then \
+		echo "⚠️  检测到 .zread/wiki/drafts/wiki.json，本次仍发布 current 完整版本: $(DOCS_WIKI_VERSION)"; \
+	fi
+
+docs-prepare-source: docs-check-wiki
+	@python3 scripts/prepare_zread_source_snapshot.py
+
+docs-docker-build: docs-check-wiki docs-prepare-source
+	@echo "🐳 构建 KsADK 原生 zread 文档镜像: $(DOCS_IMAGE)"
+	@DOCKER_BUILDKIT=1 docker build --pull=false --platform linux/amd64 \
+		-f Dockerfile.docs \
+		--build-arg DOCS_BASE_IMAGE=$(DOCS_BASE_IMAGE) \
+		--build-arg ZREAD_VERSION=$(DOCS_ZREAD_VERSION) \
+		--build-arg ZREAD_SHA256=$(DOCS_ZREAD_SHA256) \
+		-t $(DOCS_IMAGE) \
+		.
+
+docs-docker-push: docs-docker-build
+	@echo "📤 推送 KsADK 文档镜像: $(DOCS_IMAGE)"
+	@docker push $(DOCS_IMAGE)
+
+docs-helm-lint:
+	@echo "==> helm lint $(DOCS_HELM_CHART)"
+	@helm lint $(DOCS_HELM_CHART)
+
+docs-helm-template:
+	@echo "==> helm template $(DOCS_HELM_RELEASE) ($(ENV))"
+	@helm template $(DOCS_HELM_RELEASE) $(DOCS_HELM_CHART) \
+		--namespace $(DOCS_NAMESPACE) \
+		--values $(DOCS_VALUES_FILE) \
+		$(DOCS_HELM_SET_FLAGS)
+
+docs-deploy: docs-helm-lint
+	@echo "==> helm upgrade --install $(DOCS_HELM_RELEASE) ($(ENV))"
+	@echo "    namespace=$(DOCS_NAMESPACE) image=$(DOCS_IMAGE) timeout=$(DOCS_HELM_TIMEOUT) force_update=$(DOCS_FORCE_UPDATE)"
+	@set -e; \
+	if helm upgrade --install $(DOCS_HELM_RELEASE) $(DOCS_HELM_CHART) \
+		--kubeconfig $(DOCS_KUBECONFIG_PATH) \
+		--namespace $(DOCS_NAMESPACE) \
+		--create-namespace \
+		--values $(DOCS_VALUES_FILE) \
+		$(DOCS_HELM_SET_FLAGS) \
+		--wait \
+		--timeout $(DOCS_HELM_TIMEOUT); then \
+		echo "==> deployment ready"; \
+		echo "==> url: http://$$(helm get values $(DOCS_HELM_RELEASE) --kubeconfig $(DOCS_KUBECONFIG_PATH) -n $(DOCS_NAMESPACE) -a -o json | python3 -c 'import json,sys; print(json.load(sys.stdin)["ingress"]["host"])')$(DOCS_BASE_PATH)/"; \
+	else \
+		status=$$?; \
+		echo "==> deployment failed, collecting diagnostics..."; \
+		kubectl --kubeconfig $(DOCS_KUBECONFIG_PATH) get deploy,pods,svc,ingress -n $(DOCS_NAMESPACE) -l app.kubernetes.io/name=$(DOCS_PROJECT_NAME) -o wide || true; \
+		latest_pod=$$(kubectl --kubeconfig $(DOCS_KUBECONFIG_PATH) get pods -n $(DOCS_NAMESPACE) -l app.kubernetes.io/name=$(DOCS_PROJECT_NAME) --sort-by=.metadata.creationTimestamp -o name 2>/dev/null | tail -n 1 | cut -d/ -f2); \
+		if [ -n "$$latest_pod" ]; then \
+			echo "==> latest pod: $$latest_pod"; \
+			kubectl --kubeconfig $(DOCS_KUBECONFIG_PATH) describe pod -n $(DOCS_NAMESPACE) "$$latest_pod" | sed -n '/Events:/,$$p' || true; \
+		fi; \
+		exit $$status; \
+	fi
+
+docs-deploy-all: docs-docker-push docs-deploy
+
+docs-status:
+	@kubectl --kubeconfig $(DOCS_KUBECONFIG_PATH) get pods,svc,ingress -n $(DOCS_NAMESPACE) -l app.kubernetes.io/name=$(DOCS_PROJECT_NAME)
+
+docs-logs:
+	@kubectl --kubeconfig $(DOCS_KUBECONFIG_PATH) logs -f -n $(DOCS_NAMESPACE) deployment/$(DOCS_HELM_RELEASE)
 
 
 

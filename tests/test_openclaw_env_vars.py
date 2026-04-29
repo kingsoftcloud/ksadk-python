@@ -319,13 +319,13 @@ def test_build_openclaw_env_vars_forwards_channel_bootstrap_json(monkeypatch):
     monkeypatch.setattr(cmd_openclaw, "_GLOBAL_ENV_CACHE", {})
     monkeypatch.setenv(
         "OPENCLAW_CHANNEL_BOOTSTRAP_JSON",
-        '{"agentspace":{"wps_sid":"wps-sid-demo"},"feishu":{"appId":"app-demo"}}',
+        '{"wps-xiezuo":{"appId":"app-demo","appSecret":"secret-demo"},"feishu":{"appId":"app-demo"}}',
     )
 
     env = cmd_openclaw._build_openclaw_env_vars()
 
     assert env["OPENCLAW_CHANNEL_BOOTSTRAP_JSON"] == (
-        '{"agentspace":{"wps_sid":"wps-sid-demo"},"feishu":{"appId":"app-demo"}}'
+        '{"wps-xiezuo":{"appId":"app-demo","appSecret":"secret-demo"},"feishu":{"appId":"app-demo"}}'
     )
 
 

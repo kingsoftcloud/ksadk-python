@@ -468,11 +468,13 @@ def _open_dashboard(
                 _create_openclaw_gateway_access_link(
                     region=region,
                     detail=detail,
+                    path=normalized_path,
                     link_type="share" if share else "private",
                     expires_seconds=_normalize_expires_seconds(
                         link_type="share" if share else "private",
                         expires_seconds=expires_seconds,
                     ),
+                    force_new=force_new,
                 )
             )
         except Exception as e:
@@ -690,15 +692,18 @@ async def _create_openclaw_gateway_access_link(
     *,
     region: str,
     detail: dict,
+    path: str = "/",
     link_type: str,
     expires_seconds: Optional[int],
+    force_new: bool = False,
 ) -> dict:
     gateway = _build_openclaw_gateway_client(region, detail)
     try:
         info = await gateway.build_access_info(
-            path="/",
+            path=path,
             expires_seconds=expires_seconds,
             link_type=link_type,
+            force_new=force_new,
         )
     finally:
         await gateway.close()

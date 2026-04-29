@@ -92,6 +92,12 @@ def status_agent(
 @click.option("--agent", "--agent-id", "agent_option", "-a", help="Agent 名称或 ID")
 @click.option("--endpoint", "-e", help="Agent Endpoint URL (覆盖自动获取)")
 @click.option("--api-key", help="AgentEngine API Key (覆盖本地配置)")
+@click.option(
+    "--gateway-token",
+    "openclaw_gateway_token",
+    envvar="OPENCLAW_GATEWAY_TOKEN",
+    help="OpenClaw Gateway token/password（用于 OpenClaw token/password 模式的 /v1/responses）",
+)
 @click.option("--message", "-m", help="发送的消息 (单次调用模式)")
 @click.option("--session", "-s", help="Session ID (可选)")
 @click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
@@ -121,6 +127,7 @@ def invoke_agent(
     agent_option: str | None,
     endpoint: str | None,
     api_key: str | None,
+    openclaw_gateway_token: str | None,
     message: str | None,
     session: str | None,
     region: str,
@@ -148,6 +155,7 @@ def invoke_agent(
         agent_option=agent_option,
         endpoint=endpoint,
         api_key=api_key,
+        openclaw_gateway_token=openclaw_gateway_token,
         message=message,
         session=session,
         region=region,

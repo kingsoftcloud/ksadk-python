@@ -10,8 +10,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 BOOTSTRAP_SCRIPT = REPO_ROOT / "deploy" / "openclaw" / "bootstrap.sh"
 OPENCLAW_DOCKERFILE = REPO_ROOT / "deploy" / "openclaw" / "Dockerfile"
 LATEST_OPENCLAW_BASE_IMAGE = (
-    "ghcr.io/openclaw/openclaw:2026.4.24@"
-    "sha256:7c4370ff8777555d4c9fe5ab821aaaad7c87188d389a6cf761270725d96ec3e9"
+    "ghcr.io/openclaw/openclaw:2026.4.26@"
+    "sha256:04e27383656941e59fba80a5a9c28b709f240ea980bd2cb375e4a7786d5a7a20"
 )
 VALID_MEM0_UUID = "e52b7fac-e641-4b34-b9f7-6b0b9f190cd4"
 
@@ -147,6 +147,17 @@ def test_openclaw_dockerfile_tracks_latest_official_channel_plugins():
     assert "ARG OPENCLAW_LARK_PLUGIN_SPEC=@larksuite/openclaw-lark" in dockerfile
     assert "ARG OPENCLAW_MEM0_PLUGIN_ID=openclaw-mem0" in dockerfile
     assert "ARG OPENCLAW_MEM0_PLUGIN_URL=https://wangxu-test.ks3-cn-beijing.ksyuncs.com/ksc-openclaw-mem0-1.0.6.tgz" in dockerfile
+    assert "ARG OPENCLAW_INSTALL_WPS_XIEZUO_PLUGIN=true" in dockerfile
+    assert "ARG OPENCLAW_WPS_XIEZUO_PLUGIN_ID=wps-xiezuo" in dockerfile
+    assert "COPY deploy/openclaw/wps-xiezuo-assets/openclaw-wps-xiezuo-1.6.0.tgz" in dockerfile
+
+
+def test_openclaw_dockerfile_installs_local_plugin_archives_without_force_flag_for_2026_3_28_compatibility():
+    dockerfile = OPENCLAW_DOCKERFILE.read_text(encoding="utf-8")
+
+    assert "compatible with upstream OpenClaw 2026.3.28" in dockerfile
+    assert 'openclaw plugins install "${archive_path}"; \\' in dockerfile
+    assert 'openclaw plugins install "${archive_path}" --force; \\' not in dockerfile
 
 
 def test_openclaw_runtime_bundles_runtime_common_and_manifest_renderer():
@@ -224,6 +235,62 @@ def test_bootstrap_maps_gateway_token_to_shared_secret_when_token_mode_enabled()
         cfg = json.loads(config_path.read_text())
         assert cfg["gateway"]["auth"]["mode"] == "token"
         assert cfg["gateway"]["auth"]["password"] == "gateway-token-demo"
+
+
+def test_bootstrap_enables_openresponses_http_endpoint_by_default():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert cfg["gateway"]["http"]["endpoints"]["responses"]["enabled"] is True
+
+
+def test_bootstrap_respects_explicit_openresponses_http_endpoint_disable():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "gateway": {
+                        "http": {
+                            "endpoints": {
+                                "responses": {
+                                    "enabled": False,
+                                }
+                            }
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert cfg["gateway"]["http"]["endpoints"]["responses"]["enabled"] is False
 
 
 def test_bootstrap_clears_stale_gateway_shared_secret_when_mode_returns_to_trusted_proxy():
@@ -2039,22 +2106,21 @@ def test_bootstrap_auto_enables_bundled_lark_plugin():
         assert cfg["plugins"]["entries"]["openclaw-lark"]["enabled"] is True
 
 
-def test_bootstrap_configures_agentspace_channel_from_channel_bootstrap_json():
+def test_bootstrap_configures_wps_xiezuo_channel_from_channel_bootstrap_json():
     with TemporaryDirectory() as tmpdir:
         config_path = Path(tmpdir) / "openclaw.json"
-        default_extensions_dir = Path(tmpdir) / "default-extensions" / "agentspace"
+        default_extensions_dir = Path(tmpdir) / "default-extensions" / "wps-xiezuo"
         default_extensions_dir.mkdir(parents=True, exist_ok=True)
-        (default_extensions_dir / "manifest.json").write_text('{"name":"agentspace"}\n')
+        (default_extensions_dir / "manifest.json").write_text('{"name":"wps-xiezuo"}\n')
 
         env = _build_base_env(tmpdir, str(config_path))
         env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
         env["OPENCLAW_DEFAULT_EXTENSIONS_DIR"] = str(Path(tmpdir) / "default-extensions")
         env["OPENCLAW_CHANNEL_BOOTSTRAP_JSON"] = json.dumps(
             {
-                "agentspace": {
-                    "wps_sid": "wps_sid_demo",
-                    "app_id": "app-demo",
-                    "current_user": "alice",
+                "wps-xiezuo": {
+                    "appId": "app-demo",
+                    "appSecret": "secret-demo",
                 }
             }
         )
@@ -2070,31 +2136,78 @@ def test_bootstrap_configures_agentspace_channel_from_channel_bootstrap_json():
 
         assert result.returncode == 0, result.stderr or result.stdout
         cfg = json.loads(config_path.read_text())
-        assert (Path(tmpdir) / "extensions" / "agentspace" / "manifest.json").exists()
-        assert cfg["plugins"]["entries"]["agentspace"]["enabled"] is True
-        account = cfg["channels"]["agentspace"]["accounts"]["default"]
-        assert account["enabled"] is True
-        assert account["app_id"] == "app-demo"
-        assert account["currentUser"] == "alice"
-        assert account["device_uuid"]
-        assert len(str(account["token"]).split(":")) == 4
-        assert account["token"] != "wps_sid_demo"
-        assert cfg["channels"]["agentspace"]["dmPolicy"] == "open"
-        assert cfg["channels"]["agentspace"]["allowFrom"] == ["*"]
+        assert (Path(tmpdir) / "extensions" / "wps-xiezuo" / "manifest.json").exists()
+        assert cfg["plugins"]["entries"]["wps-xiezuo"]["enabled"] is True
+        assert "wps-xiezuo" in cfg["plugins"]["allow"]
+        channel = cfg["channels"]["wps-xiezuo"]
+        assert channel["enabled"] is True
+        assert channel["appId"] == "app-demo"
+        assert channel["appSecret"] == "secret-demo"
+        assert channel["baseUrl"] == "https://openapi.wps.cn"
+        assert channel["sdk"] == {"enabled": True, "logLevel": "info"}
+        assert channel["dmPolicy"] == "open"
+        assert channel["allowFrom"] == ["*"]
+        assert channel["groupPolicy"] == "open"
+        assert channel["instantAck"]["text"] == "内容处理中，请稍候..."
+        assert channel["mcp"]["enabled"] is True
+        assert channel["mcp"]["mode"] == "app"
+        assert "wps_im_message_send" in channel["mcp"]["toolAllowlist"]
+        assert "accounts" not in channel
+        assert "defaultAccountId" not in channel
+        assert {"type": "route", "agentId": "main", "match": {"channel": "wps-xiezuo"}} in cfg["bindings"]
 
 
-def test_bootstrap_clears_stale_agentspace_app_id_when_only_wps_sid_is_in_channel_bootstrap_json():
+def test_bootstrap_allows_wps_xiezuo_channel_without_complete_credentials():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        default_extensions_dir = Path(tmpdir) / "default-extensions" / "wps-xiezuo"
+        default_extensions_dir.mkdir(parents=True, exist_ok=True)
+        (default_extensions_dir / "manifest.json").write_text('{"name":"wps-xiezuo"}\n')
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_DEFAULT_EXTENSIONS_DIR"] = str(Path(tmpdir) / "default-extensions")
+        env["OPENCLAW_CHANNEL_BOOTSTRAP_JSON"] = json.dumps(
+            {
+                "wps-xiezuo": {
+                    "appId": "app-demo",
+                }
+            }
+        )
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        channel = cfg["channels"]["wps-xiezuo"]
+        assert channel["enabled"] is True
+        assert channel["appId"] == "app-demo"
+        assert channel["appSecret"] == ""
+        assert channel["baseUrl"] == "https://openapi.wps.cn"
+        assert channel["dmPolicy"] == "open"
+        assert channel["allowFrom"] == ["*"]
+        assert cfg["plugins"]["entries"]["wps-xiezuo"]["enabled"] is True
+        assert "wps-xiezuo" in cfg["plugins"]["allow"]
+
+
+def test_bootstrap_rewrites_stale_wps_xiezuo_accounts_to_flat_channel_config():
     with TemporaryDirectory() as tmpdir:
         config_path = Path(tmpdir) / "openclaw.json"
         config_path.write_text(
             json.dumps(
                 {
                     "channels": {
-                        "agentspace": {
+                        "wps-xiezuo": {
                             "accounts": {
                                 "default": {
-                                    "app_id": "app-stale",
-                                    "device_uuid": "device-1",
+                                    "appId": "app-stale",
                                 }
                             }
                         }
@@ -2102,17 +2215,18 @@ def test_bootstrap_clears_stale_agentspace_app_id_when_only_wps_sid_is_in_channe
                 }
             )
         )
-        default_extensions_dir = Path(tmpdir) / "default-extensions" / "agentspace"
+        default_extensions_dir = Path(tmpdir) / "default-extensions" / "wps-xiezuo"
         default_extensions_dir.mkdir(parents=True, exist_ok=True)
-        (default_extensions_dir / "manifest.json").write_text('{"name":"agentspace"}\n')
+        (default_extensions_dir / "manifest.json").write_text('{"name":"wps-xiezuo"}\n')
 
         env = _build_base_env(tmpdir, str(config_path))
         env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
         env["OPENCLAW_DEFAULT_EXTENSIONS_DIR"] = str(Path(tmpdir) / "default-extensions")
         env["OPENCLAW_CHANNEL_BOOTSTRAP_JSON"] = json.dumps(
             {
-                "agentspace": {
-                    "wps_sid": "wps_sid_demo",
+                "wps-xiezuo": {
+                    "appId": "app-demo",
+                    "appSecret": "secret-demo",
                 }
             }
         )
@@ -2128,10 +2242,11 @@ def test_bootstrap_clears_stale_agentspace_app_id_when_only_wps_sid_is_in_channe
 
         assert result.returncode == 0, result.stderr or result.stdout
         cfg = json.loads(config_path.read_text())
-        account = cfg["channels"]["agentspace"]["accounts"]["default"]
-        assert account["app_id"] == ""
-        assert account["device_uuid"] == "device-1"
-        assert len(str(account["token"]).split(":")) == 4
+        channel = cfg["channels"]["wps-xiezuo"]
+        assert channel["appId"] == "app-demo"
+        assert channel["appSecret"] == "secret-demo"
+        assert "accounts" not in channel
+        assert "defaultAccountId" not in channel
 
 
 def test_bootstrap_configures_feishu_channel_from_channel_bootstrap_json():
@@ -2215,35 +2330,6 @@ def test_bootstrap_keeps_feishu_open_dm_policy_valid_when_existing_allow_from_is
         cfg = json.loads(config_path.read_text())
         assert cfg["channels"]["feishu"]["dmPolicy"] == "open"
         assert cfg["channels"]["feishu"]["allowFrom"] == ["ou_demo_1", "ou_demo_2", "*"]
-
-
-def test_bootstrap_does_not_configure_agentspace_channel_from_legacy_env():
-    with TemporaryDirectory() as tmpdir:
-        config_path = Path(tmpdir) / "openclaw.json"
-        default_extensions_dir = Path(tmpdir) / "default-extensions" / "agentspace"
-        default_extensions_dir.mkdir(parents=True, exist_ok=True)
-        (default_extensions_dir / "manifest.json").write_text('{"name":"agentspace"}\n')
-
-        env = _build_base_env(tmpdir, str(config_path))
-        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
-        env["OPENCLAW_DEFAULT_EXTENSIONS_DIR"] = str(Path(tmpdir) / "default-extensions")
-        env["OPENCLAW_AGENTSPACE_WPS_SID"] = "wps_sid_demo"
-        env["OPENCLAW_AGENTSPACE_APP_ID"] = "app-demo"
-        env["OPENCLAW_AGENTSPACE_CURRENT_USER"] = "alice"
-
-        result = subprocess.run(
-            ["bash", str(BOOTSTRAP_SCRIPT)],
-            cwd=str(REPO_ROOT),
-            env=env,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-
-        assert result.returncode == 0, result.stderr or result.stdout
-        cfg = json.loads(config_path.read_text())
-        assert cfg["plugins"]["entries"]["agentspace"]["enabled"] is True
-        assert cfg.get("channels", {}).get("agentspace") in (None, {})
 
 
 def test_bootstrap_patches_bundled_weixin_gateway_login_methods_before_sync():

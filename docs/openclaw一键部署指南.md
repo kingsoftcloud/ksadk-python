@@ -140,6 +140,45 @@ sequenceDiagram
 
 ## 5. 渠道与诊断
 
+当前平台版 OpenClaw runtime 镜像已内置 WPS 协作插件，插件 ID 固定为 `wps-xiezuo`。插件内置和 pod bootstrap 不依赖 WPS 凭证；只有当你希望 WPS 协作 channel 可连接可用时，才需要提供 WPS 开放平台应用的 `appId` 和 `appSecret`。其他字段都有 runtime 默认值：
+
+- `baseUrl`: `https://openapi.wps.cn`
+- `sdk.enabled`: `true`
+- `sdk.logLevel`: `info`
+- `dmPolicy`: `open`
+- `allowFrom`: `["*"]`
+- `groupPolicy`: `open`
+- `instantAck.text`: `内容处理中，请稍候...`
+- `mcp.mode`: `app`
+- `bindings`: 默认路由到 `agentId=main`
+
+创建 runtime 时可以直接通过环境变量一次性写入凭证配置：
+
+```bash
+agentengine openclaw deploy \
+  --env OPENCLAW_CHANNEL_BOOTSTRAP_JSON='{"wps-xiezuo":{"appId":"<appId>","appSecret":"<appSecret>"}}'
+```
+
+也兼容 snake_case：
+
+```bash
+agentengine openclaw deploy \
+  --env OPENCLAW_CHANNEL_BOOTSTRAP_JSON='{"wps-xiezuo":{"app_id":"<appId>","app_secret":"<appSecret>"}}'
+```
+
+如果实例已经创建，也可以后续用 CLI 修改运行中的 `openclaw.json`，补齐凭证并启用连接：
+
+```bash
+agentengine openclaw channel connect <agent_id_or_name> \
+  --channel wps-xiezuo \
+  --app-id <appId> \
+  --app-secret <appSecret>
+```
+
+不传 `OPENCLAW_CHANNEL_BOOTSTRAP_JSON` 或不传其中的 `appId/appSecret` 不会影响 pod 启动，只是 `wps-xiezuo` 还不能完成认证。`channel connect` 是“写入凭证并配置成可用”的入口；`channel enable` 只适合重新启用已经存在 `appId/appSecret` 的配置，不会替你补齐凭证。
+
+注意：`wps-xiezuo` 使用扁平配置，正确落点是 `channels["wps-xiezuo"].appId/appSecret`，不要写成老的 `accounts.default` 嵌套结构。bootstrap 会启用 `plugins.entries.wps-xiezuo.enabled=true`，并确保 `plugins.allow` 包含 `wps-xiezuo`。
+
 常用命令：
 
 ```bash
@@ -150,7 +189,7 @@ agentengine openclaw gateway logs
 agentengine openclaw channel status --probe
 agentengine openclaw channel connect --channel weixin
 agentengine openclaw channel connect --channel feishu
-agentengine openclaw channel connect --channel agentspace
+agentengine openclaw channel connect <agent_id_or_name> --channel wps-xiezuo --app-id <appId> --app-secret <appSecret>
 ```
 
 ## 6. 最小验证路径

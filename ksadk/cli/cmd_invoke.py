@@ -7,13 +7,14 @@ agentengine invoke - 与已部署的 Agent 进行交互
 import click
 import asyncio
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 import time
 import uuid
 from ksadk.api import AgentEngineAPIError, AgentEngineClient
-from ksadk.cli.agent_ref import merge_agent_inputs, resolve_agent_ref
+from ksadk.cli.agent_ref import merge_agent_inputs, resolve_agent_ref, resolve_openclaw_ref
 from ksadk.cli.cmd_files import (
     _build_sync_payload,
     _collect_local_files_report,
@@ -47,6 +48,12 @@ except ImportError:
 @click.option("--agent", "--agent-id", "agent_option", "-a", help="Agent 名称或 ID")
 @click.option("--endpoint", "-e", help="Agent Endpoint URL (覆盖自动获取)")
 @click.option("--api-key", help="AgentEngine API Key (覆盖本地配置)")
+@click.option(
+    "--gateway-token",
+    "openclaw_gateway_token",
+    envvar="OPENCLAW_GATEWAY_TOKEN",
+    help="OpenClaw Gateway token/password（用于 OpenClaw token/password 模式的 /v1/responses）",
+)
 @click.option("--message", "-m", help="发送的消息 (单次调用模式)")
 @click.option("--session", "-s", help="Session ID (可选)")
 @click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
@@ -80,6 +87,7 @@ def invoke(
     agent_option: str,
     endpoint: str,
     api_key: str,
+    openclaw_gateway_token: str,
     message: str,
     session: str,
     region: str,
@@ -98,6 +106,7 @@ def invoke(
         agent_option=agent_option,
         endpoint=endpoint,
         api_key=api_key,
+        openclaw_gateway_token=openclaw_gateway_token,
         message=message,
         session=session,
         region=region,
@@ -419,6 +428,7 @@ def run_invoke_command(
     verbose_workspace_sync: bool = False,
     model: str | None,
     show_thinking: bool,
+    openclaw_gateway_token: str | None = None,
     compatibility_alias: bool = False,
 ):
     """与 Agent 进行交互 (本地或远程)。"""
@@ -461,6 +471,12 @@ def run_invoke_command(
             include_state=True,
             include_project_config=True,
         )
+        if not resolved and not agent_input:
+            resolved = resolve_openclaw_ref(
+                None,
+                cwd=Path("."),
+                include_state=True,
+            )
         if not resolved:
             click.secho("❌ 请指定 Agent（--agent 或位置参数）、--local 或 --endpoint", fg="red")
             click.echo("   自动解析顺序: .agentengine.state -> agentengine.yaml/ksadk.yaml")
@@ -501,13 +517,28 @@ def run_invoke_command(
             next_state[key] = latest_access[key]
     if latest_access.get("framework") == "hermes":
         next_state["type"] = "hermes"
+    if latest_access.get("framework") == "openclaw":
+        next_state["type"] = "openclaw"
     next_state["session_id"] = session_id
     _save_state(next_state)
+    runtime_api_key = _select_runtime_api_key(
+        api_key=api_key,
+        openclaw_gateway_token=openclaw_gateway_token,
+        state=next_state,
+        latest_access=latest_access,
+    )
 
     click.secho(f"🤖 连接到 Agent", fg="blue", bold=True)
     click.echo(f"   Endpoint: {endpoint}")
-    if api_key:
-        click.echo(f"   Auth:     Bearer {api_key[:4]}****")
+    if _is_openclaw_target(next_state, latest_access):
+        if runtime_api_key:
+            click.echo(f"   Runtime Auth: OpenClaw Gateway token {_mask_secret(runtime_api_key)}")
+        else:
+            click.echo("   Runtime Auth: OpenClaw Gateway anonymous/trusted-proxy")
+        if api_key:
+            click.echo(f"   AgentEngine API: Bearer {_mask_secret(api_key)}")
+    elif api_key:
+        click.echo(f"   Auth:     Bearer {_mask_secret(api_key)}")
     else:
         click.secho("   ⚠️  未发现 API Key，尝试匿名调用", fg="yellow")
     
@@ -516,7 +547,17 @@ def run_invoke_command(
 
     if message:
         # 单次调用模式
-        asyncio.run(_invoke_once(endpoint, message, api_key, session_id, True, insecure, model))
+        api_format = asyncio.run(
+            _resolve_remote_api_format(
+                endpoint=endpoint,
+                api_key=api_key,
+                runtime_api_key=runtime_api_key,
+                insecure=insecure,
+                state=next_state,
+                latest_access=latest_access,
+            )
+        )
+        asyncio.run(_invoke_once(endpoint, message, runtime_api_key, session_id, True, insecure, model, api_format))
     else:
         is_hermes_target = _is_hermes_target(next_state, latest_access)
         if normalized_transport == "chat" and is_hermes_target:
@@ -578,7 +619,25 @@ def run_invoke_command(
                 **native_kwargs,
             )
         else:
-            _invoke_tui(endpoint, api_key, session_id, insecure, model, show_thinking)
+            api_format = asyncio.run(
+                _resolve_remote_api_format(
+                    endpoint=endpoint,
+                    api_key=api_key,
+                    runtime_api_key=runtime_api_key,
+                    insecure=insecure,
+                    state=next_state,
+                    latest_access=latest_access,
+                )
+            )
+            _invoke_tui(
+                endpoint,
+                runtime_api_key,
+                session_id,
+                insecure,
+                model,
+                show_thinking,
+                api_format=api_format,
+            )
 
 
 
@@ -590,6 +649,7 @@ def _invoke_tui(
     insecure: bool = False,
     model: str = None,
     show_thinking: bool = False,
+    api_format: str = "chat_completions",
 ):
     """使用 TUI 模式调用"""
     from ksadk.runners.remote_runner import RemoteRunner
@@ -601,6 +661,7 @@ def _invoke_tui(
         session_id=session_id,
         insecure=insecure,
         model=model,
+        api_format=api_format,
     )
 
     app = AgentTUI(
@@ -695,6 +756,8 @@ def _refresh_remote_access(
                 merged[key] = latest[key]
         if latest.get("framework") == "hermes":
             merged["type"] = "hermes"
+        if latest.get("framework") == "openclaw":
+            merged["type"] = "openclaw"
         _save_state(merged)
     return latest
 
@@ -707,6 +770,126 @@ def _is_hermes_target(state: dict, latest_access: dict) -> bool:
         or ""
     ).strip().lower()
     return framework == "hermes"
+
+
+def _is_openclaw_target(state: dict, latest_access: dict) -> bool:
+    framework = str(
+        latest_access.get("framework")
+        or state.get("framework")
+        or state.get("type")
+        or ""
+    ).strip().lower()
+    return framework == "openclaw"
+
+
+def _mask_secret(secret: str | None) -> str:
+    if not secret:
+        return ""
+    text = str(secret)
+    if len(text) <= 4:
+        return "****"
+    return f"{text[:4]}****"
+
+
+def _openclaw_auth_mode(state: dict, latest_access: dict) -> str:
+    return str(
+        latest_access.get("openclaw_auth_mode")
+        or latest_access.get("gateway_auth_mode")
+        or state.get("openclaw_auth_mode")
+        or state.get("gateway_auth_mode")
+        or ""
+    ).strip().lower()
+
+
+def _select_runtime_api_key(
+    *,
+    api_key: str | None,
+    openclaw_gateway_token: str | None,
+    state: dict,
+    latest_access: dict,
+) -> str | None:
+    if not _is_openclaw_target(state, latest_access):
+        return api_key
+
+    gateway_token = (
+        openclaw_gateway_token
+        or os.environ.get("OPENCLAW_GATEWAY_TOKEN")
+        or os.environ.get("OPENCLAW_GATEWAY_PASSWORD")
+    )
+    if gateway_token:
+        return gateway_token
+
+    auth_mode = _openclaw_auth_mode(state, latest_access)
+    if auth_mode in {"token", "password"}:
+        raise click.ClickException(
+            "当前 OpenClaw Gateway 为 token/password 模式，agentengine invoke 需要 OpenClaw Gateway token。\n"
+            "请使用: agentengine invoke --gateway-token <token>\n"
+            "或设置: OPENCLAW_GATEWAY_TOKEN=<token> agentengine invoke\n"
+            "注意：这里不是 AgentEngine API Key（ak-*），而是 OPENCLAW_GATEWAY_TOKEN/OPENCLAW_GATEWAY_PASSWORD。"
+        )
+
+    return api_key
+
+
+def _select_remote_api_format(state: dict, latest_access: dict) -> str:
+    framework = str(
+        latest_access.get("framework")
+        or state.get("framework")
+        or state.get("type")
+        or ""
+    ).strip().lower()
+    if framework in {"openclaw", "hermes"}:
+        return "responses"
+    return "chat_completions"
+
+
+async def _resolve_remote_api_format(
+    *,
+    endpoint: str,
+    api_key: str | None,
+    runtime_api_key: str | None = None,
+    insecure: bool,
+    state: dict,
+    latest_access: dict,
+) -> str:
+    api_format = _select_remote_api_format(state, latest_access)
+    if api_format != "responses" or not _is_openclaw_target(state, latest_access):
+        return api_format
+
+    probe_api_key = runtime_api_key if runtime_api_key is not None else api_key
+    if await _probe_openclaw_responses_route(endpoint=endpoint, api_key=probe_api_key, insecure=insecure):
+        return api_format
+
+    raise click.ClickException(
+        "当前 OpenClaw endpoint 未暴露 /v1/responses，不能使用 agentengine invoke 的 HTTP TUI。\n"
+        "可先使用: agentengine dashboard open\n"
+        "如果要命令行交互，请升级/修复 OpenClaw 镜像或 bootstrap，使 Gateway 暴露 OpenResponses API。"
+    )
+
+
+async def _probe_openclaw_responses_route(*, endpoint: str, api_key: str | None, insecure: bool) -> bool:
+    try:
+        import httpx
+    except ImportError:
+        return False
+
+    url = f"{endpoint.rstrip('/')}/v1/responses"
+    headers = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    client_kwargs: dict[str, Any] = {"timeout": 5, "trust_env": True}
+    if insecure:
+        client_kwargs["verify"] = False
+
+    try:
+        async with httpx.AsyncClient(**client_kwargs) as client:
+            response = await client.get(url, headers=headers)
+    except Exception:
+        return False
+
+    # POST-only API routes usually answer GET with 405/422/400. A 404 or HTML 200
+    # means the request fell through to the OpenClaw UI/router instead of the API.
+    return response.status_code in {400, 401, 405, 422}
 
 
 def _should_use_hermes_native_tui(*, transport: str, local: bool, state: dict, latest_access: dict) -> bool:
@@ -804,6 +987,7 @@ async def _invoke_once(
     stream: bool = True,
     insecure: bool = False,
     model: str = None,
+    api_format: str = "chat_completions",
 ):
     """单次调用"""
     click.echo(f"\n👤 你: {message}")
@@ -818,7 +1002,7 @@ async def _invoke_once(
                 with Live(Markdown("", justify="left"), console=console, auto_refresh=False, vertical_overflow="visible") as live:
                     last_refresh_time = 0
                     full_reasoning = ""
-                    async for chunk in _stream_chat(endpoint, message, api_key, session_id, True, insecure, model):
+                    async for chunk in _stream_chat(endpoint, message, api_key, session_id, True, insecure, model, api_format):
                         content, reasoning = _extract_content(chunk)
                         
                         updated = False
@@ -846,7 +1030,7 @@ async def _invoke_once(
                                 last_refresh_time = now
                     live.refresh() # 确保最后一次刷新
             else:
-               async for chunk in _stream_chat(endpoint, message, api_key, session_id, True, insecure, model):
+               async for chunk in _stream_chat(endpoint, message, api_key, session_id, True, insecure, model, api_format):
                     content, reasoning = _extract_content(chunk)
                     if reasoning:
                         click.secho(reasoning, fg="bright_black", nl=False)
@@ -854,7 +1038,7 @@ async def _invoke_once(
                         print(content, end="", flush=True)
             click.echo()  # 换行
         else:
-            response = await _chat(endpoint, message, api_key, session_id, insecure, model)
+            response = await _chat(endpoint, message, api_key, session_id, insecure, model, api_format)
             content = _extract_response_content(response)
             if console and Markdown:
                 console.print(Markdown(content))
@@ -872,6 +1056,7 @@ async def _chat(
     session_id: str = None,
     insecure: bool = False,
     model: str = None,
+    api_format: str = "chat_completions",
 ) -> dict:
     """非流式调用 (OpenAI 兼容格式)"""
     try:
@@ -880,9 +1065,13 @@ async def _chat(
         click.secho("❌ 请安装 httpx: pip install httpx", fg="red")
         raise SystemExit(1)
 
-    url = f"{endpoint.rstrip('/')}/v1/chat/completions"
-
-    payload = {"messages": [{"role": "user", "content": message}], "stream": False}
+    normalized_api_format = str(api_format or "chat_completions").strip().lower()
+    if normalized_api_format == "responses":
+        url = f"{endpoint.rstrip('/')}/v1/responses"
+        payload = {"input": [{"role": "user", "content": message}], "stream": False}
+    else:
+        url = f"{endpoint.rstrip('/')}/v1/chat/completions"
+        payload = {"messages": [{"role": "user", "content": message}], "stream": False}
 
     if session_id:
         payload["session_id"] = session_id
@@ -921,6 +1110,7 @@ async def _stream_chat(
     is_once: bool = False,
     insecure: bool = False,
     model: str = None,
+    api_format: str = "chat_completions",
 ):
     """流式调用 (SSE)"""
     try:
@@ -929,9 +1119,13 @@ async def _stream_chat(
         click.secho("❌ 请安装 httpx: pip install httpx", fg="red")
         raise SystemExit(1)
 
-    url = f"{endpoint.rstrip('/')}/v1/chat/completions"
-
-    payload = {"messages": [{"role": "user", "content": message}], "stream": True}
+    normalized_api_format = str(api_format or "chat_completions").strip().lower()
+    if normalized_api_format == "responses":
+        url = f"{endpoint.rstrip('/')}/v1/responses"
+        payload = {"input": [{"role": "user", "content": message}], "stream": True}
+    else:
+        url = f"{endpoint.rstrip('/')}/v1/chat/completions"
+        payload = {"messages": [{"role": "user", "content": message}], "stream": True}
 
     if session_id:
         payload["session_id"] = session_id
@@ -1020,6 +1214,17 @@ def _extract_content(chunk: dict) -> tuple[str, str]:
 
 def _extract_response_content(response: dict) -> str:
     """从 OpenAI 非流式响应中提取内容"""
+    output_text = response.get("output_text")
+    if output_text:
+        return str(output_text)
+    output = response.get("output") or []
+    for item in output:
+        if not isinstance(item, dict):
+            continue
+        for content in item.get("content") or []:
+            if isinstance(content, dict) and content.get("text"):
+                return str(content["text"])
+
     # OpenAI 格式: {"choices": [{"message": {"content": "xxx"}}]}
     try:
         choices = response.get("choices", [])

@@ -23,6 +23,7 @@ class RemoteRunner(BaseRunner):
         session_id: Optional[str] = None,
         insecure: bool = False,
         model: Optional[str] = None,
+        api_format: str = "chat_completions",
     ):
         # 不调用父类 __init__，因为不需要 detection_result
         self.endpoint = endpoint.rstrip("/")
@@ -30,7 +31,15 @@ class RemoteRunner(BaseRunner):
         self.session_id = session_id
         self.insecure = insecure
         self.model = model
+        self.api_format = self._normalize_api_format(api_format)
         self._agent = None  # 兼容 BaseRunner
+
+    @staticmethod
+    def _normalize_api_format(api_format: Optional[str]) -> str:
+        normalized = str(api_format or "chat_completions").strip().lower()
+        if normalized in {"responses", "response", "openresponses", "open_responses"}:
+            return "responses"
+        return "chat_completions"
 
     def load_agent(self) -> None:
         """远程 Runner 不需要加载 Agent"""
@@ -64,11 +73,18 @@ class RemoteRunner(BaseRunner):
         user_input = input_data.get("input", "")
         session_id = input_data.get("session_id") or self.session_id
 
-        url = f"{self.endpoint}/v1/chat/completions"
-        payload = {
-            "messages": [{"role": "user", "content": user_input}],
-            "stream": False,
-        }
+        if self.api_format == "responses":
+            url = f"{self.endpoint}/v1/responses"
+            payload = {
+                "input": [{"role": "user", "content": user_input}],
+                "stream": False,
+            }
+        else:
+            url = f"{self.endpoint}/v1/chat/completions"
+            payload = {
+                "messages": [{"role": "user", "content": user_input}],
+                "stream": False,
+            }
         if session_id:
             payload["session_id"] = session_id
         if self.model:
@@ -79,7 +95,10 @@ class RemoteRunner(BaseRunner):
             response.raise_for_status()
             data = response.json()
 
-        # 提取 OpenAI 格式响应
+        if self.api_format == "responses":
+            return {"output": self._extract_responses_output_text(data) or str(data)}
+
+        # 提取 OpenAI Chat Completions 格式响应
         try:
             content = data["choices"][0]["message"]["content"]
         except (KeyError, IndexError):
@@ -94,11 +113,18 @@ class RemoteRunner(BaseRunner):
         user_input = input_data.get("input", "")
         session_id = input_data.get("session_id") or self.session_id
 
-        url = f"{self.endpoint}/v1/chat/completions"
-        payload = {
-            "messages": [{"role": "user", "content": user_input}],
-            "stream": True,
-        }
+        if self.api_format == "responses":
+            url = f"{self.endpoint}/v1/responses"
+            payload = {
+                "input": [{"role": "user", "content": user_input}],
+                "stream": True,
+            }
+        else:
+            url = f"{self.endpoint}/v1/chat/completions"
+            payload = {
+                "messages": [{"role": "user", "content": user_input}],
+                "stream": True,
+            }
         if session_id:
             payload["session_id"] = session_id
         if self.model:
@@ -120,7 +146,12 @@ class RemoteRunner(BaseRunner):
                         try:
                             data = json.loads(data_str)
                             
-                            # 解析 OpenAI 流式格式
+                            if self.api_format == "responses":
+                                async for item in self._iter_responses_stream_events(data):
+                                    yield item
+                                continue
+
+                            # 解析 OpenAI Chat Completions 流式格式
                             choices = data.get("choices", [])
                             if choices:
                                 delta = choices[0].get("delta", {})
@@ -134,3 +165,37 @@ class RemoteRunner(BaseRunner):
 
                         except json.JSONDecodeError:
                             pass
+
+    @staticmethod
+    def _extract_responses_output_text(data: Dict[str, Any]) -> str:
+        output_text = data.get("output_text")
+        if output_text:
+            return str(output_text)
+        output = data.get("output") or []
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+            for content in item.get("content") or []:
+                if isinstance(content, dict) and content.get("text"):
+                    return str(content["text"])
+        return ""
+
+    @staticmethod
+    async def _iter_responses_stream_events(data: Dict[str, Any]) -> AsyncIterator[Dict[str, Any]]:
+        event_name = str(data.get("type") or data.get("_event") or "")
+        if event_name == "response.reasoning.delta":
+            delta = data.get("delta")
+            if delta:
+                yield {"delta": str(delta), "type": "thinking"}
+            return
+        if event_name == "response.output_text.delta":
+            delta = data.get("delta")
+            if delta:
+                yield {"delta": str(delta), "type": "text"}
+            return
+        if isinstance(data.get("delta"), str):
+            yield {"delta": str(data["delta"]), "type": "text"}
+            return
+        output_text = RemoteRunner._extract_responses_output_text(data)
+        if output_text and event_name != "response.completed":
+            yield {"delta": output_text, "type": "text"}

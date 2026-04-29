@@ -141,7 +141,7 @@ curl -X POST "${BASE_URL}/?Action=CreateAgentProduct&Version=${VERSION}" \
       "NameSpace": "agentengine-public",
       "ImageRepo": "openclaw",
       "ImageVersion": "latest",
-      "ImageAddr": "hub.kce.ksyun.com/agentengine-public/openclaw:2026.4.24"
+      "ImageAddr": "hub.kce.ksyun.com/agentengine-public/openclaw:2026.4.26-kingsoft-xiezuo"
     },
     "Advanced": {
       "EnableObservability": true,

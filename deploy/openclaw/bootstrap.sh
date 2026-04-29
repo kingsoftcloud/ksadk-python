@@ -1654,7 +1654,6 @@ const normalizeBrowserSsrfPolicy = (rawPolicy) => {
   }
   return policy;
 };
-const AGENTSPACE_DEFAULT_KEY_SOURCE = 'openclaw_agentspace';
 const OPENCLAW_CHANNEL_SPECS = {
   weixin: {
     pluginId: 'openclaw-weixin',
@@ -1665,58 +1664,24 @@ const OPENCLAW_CHANNEL_SPECS = {
     pluginId: 'openclaw-lark',
     channelKey: 'feishu',
   },
-  agentspace: {
-    pluginId: 'agentspace',
-    channelKey: 'agentspace',
+  'wps-xiezuo': {
+    pluginId: 'wps-xiezuo',
+    channelKey: 'wps-xiezuo',
     defaultAccountId: 'default',
   },
 };
-const encryptAgentspaceToken = (wpsSid, appId = '') => {
-  const token = String(wpsSid ?? '').trim();
-  if (!token) return '';
-  const keySource = String(appId ?? '').trim() || AGENTSPACE_DEFAULT_KEY_SOURCE;
-  const salt = crypto.randomBytes(16);
-  const iv = crypto.randomBytes(12);
-  const key = crypto.scryptSync(keySource, salt, 32, { N: 16384, r: 8, p: 1 });
-  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
-  const cipherBytes = Buffer.concat([cipher.update(token, 'utf8'), cipher.final()]);
-  const tagBytes = cipher.getAuthTag();
-  return `${salt.toString('hex')}:${iv.toString('hex')}:${tagBytes.toString('hex')}:${cipherBytes.toString('hex')}`;
-};
-const normalizeAgentspaceBootstrapPayload = (payload, existingChannelCfg) => {
-  const rawWpsSid = firstNonBlank(payload.wps_sid, payload.wpsSid);
-  if (!rawWpsSid) {
-    return cloneJsonValue(payload);
-  }
-
-  const appId = firstNonBlank(payload.app_id, payload.appId);
-  const currentUser = firstNonBlank(payload.current_user, payload.currentUser);
-  const deviceUuid =
-    firstNonBlank(
-      payload.device_uuid,
-      payload.deviceUuid,
-      existingChannelCfg?.accounts?.default?.device_uuid,
-      typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : '',
-    ) || crypto.randomBytes(16).toString('hex');
-  const extraPayload = cloneJsonValue(payload);
-  for (const key of ['wps_sid', 'wpsSid', 'app_id', 'appId', 'current_user', 'currentUser', 'device_uuid', 'deviceUuid']) {
-    delete extraPayload[key];
-  }
-
-  return deepMergeObjects(extraPayload, {
-    accounts: {
-      default: {
-        enabled: true,
-        token: encryptAgentspaceToken(rawWpsSid, appId),
-        currentUser,
-        app_id: appId,
-        device_uuid: deviceUuid,
-      },
-    },
-    dmPolicy: 'open',
-    allowFrom: ['*'],
-  });
-};
+const WPS_XIEZUO_MCP_TOOL_ALLOWLIST = [
+  'wps_im_message_send',
+  'wps_user_search',
+  'wps_user_get',
+  'wps_user_me',
+  'wps_im_chat_list',
+  'wps_im_chat_create',
+  'wps_im_message_recall',
+  'wps_calendar_event_create',
+  'wps_calendar_event_list',
+  'wps_calendar_free_busy_list',
+];
 const normalizeFeishuBootstrapPayload = (payload) => {
   const normalized = cloneJsonValue(payload);
   const appId = firstNonBlank(normalized.appId);
@@ -1737,28 +1702,81 @@ const normalizeFeishuBootstrapPayload = (payload) => {
   }
   return normalized;
 };
-const normalizeChannelBootstrapPayload = (channelName, payload, existingChannelCfg) => {
-  if (channelName === 'agentspace') {
-    return normalizeAgentspaceBootstrapPayload(payload, existingChannelCfg);
+const normalizeWpsXiezuoBootstrapPayload = (payload) => {
+  const normalized = cloneJsonValue(payload);
+  const appId = firstNonBlank(normalized.appId, normalized.app_id);
+  const appSecret = firstNonBlank(normalized.appSecret, normalized.app_secret);
+  const baseUrl = firstNonBlank(normalized.baseUrl, normalized.base_url, 'https://openapi.wps.cn');
+  const dmPolicy = firstNonBlank(normalized.dmPolicy, normalized.dm_policy, 'open');
+  const groupPolicy = firstNonBlank(normalized.groupPolicy, normalized.group_policy, 'open');
+  const agentId = firstNonBlank(normalized.agentId, normalized.agent_id, 'main');
+  const sdkPayload = isPlainObject(normalized.sdk) ? normalized.sdk : {};
+  const sdkEnabled = normalized.sdkEnabled ?? normalized.sdk_enabled ?? sdkPayload.enabled ?? true;
+  const sdkLogLevel = firstNonBlank(normalized.sdkLogLevel, normalized.sdk_log_level, sdkPayload.logLevel, 'info');
+  const allowFrom = Array.isArray(normalized.allowFrom)
+    ? normalized.allowFrom
+    : Array.isArray(normalized.allow_from)
+      ? normalized.allow_from
+      : [];
+  const channelCfg = {
+    enabled: normalized.enabled == null ? true : Boolean(normalized.enabled),
+    appId,
+    appSecret,
+    baseUrl,
+    sdk: {
+      enabled: Boolean(sdkEnabled),
+      logLevel: sdkLogLevel,
+      ...(firstNonBlank(normalized.sdkEndpoint, normalized.sdk_endpoint, sdkPayload.endpoint)
+        ? { endpoint: firstNonBlank(normalized.sdkEndpoint, normalized.sdk_endpoint, sdkPayload.endpoint) }
+        : {}),
+    },
+    dmPolicy,
+    allowFrom: dmPolicy === 'open' ? ['*'] : allowFrom,
+    groupPolicy,
+    instantAck: isPlainObject(normalized.instantAck)
+      ? normalized.instantAck
+      : { enabled: true, text: '内容处理中，请稍候...' },
+    mcp: isPlainObject(normalized.mcp)
+      ? normalized.mcp
+      : {
+        enabled: true,
+        mode: 'app',
+        toolAllowlist: WPS_XIEZUO_MCP_TOOL_ALLOWLIST,
+      },
+  };
+  if (dmPolicy === 'disabled') {
+    channelCfg.allowFrom = [];
   }
+  const bindings = Array.isArray(normalized.bindings)
+    ? normalized.bindings
+    : [{ type: 'route', agentId, match: { channel: 'wps-xiezuo' } }];
+  return {
+    ...channelCfg,
+    bindings,
+  };
+};
+const normalizeChannelBootstrapPayload = (channelName, payload, existingChannelCfg) => {
   if (channelName === 'feishu') {
     return normalizeFeishuBootstrapPayload(payload);
+  }
+  if (channelName === 'wps-xiezuo') {
+    return normalizeWpsXiezuoBootstrapPayload(payload);
   }
   return cloneJsonValue(payload);
 };
 const applyChannelBootstrapDefaults = (channelName, spec, channelCfg) => {
+  if (channelName === 'wps-xiezuo') {
+    delete channelCfg.accounts;
+    delete channelCfg.defaultAccountId;
+    if (channelCfg.dmPolicy === 'open' && Array.isArray(channelCfg.allowFrom) && !channelCfg.allowFrom.includes('*')) {
+      channelCfg.allowFrom.push('*');
+    }
+    return;
+  }
   const defaultAccountId = spec.defaultAccountId;
   if (defaultAccountId && isPlainObject(channelCfg.accounts?.[defaultAccountId])) {
     if (channelCfg.accounts[defaultAccountId].enabled == null) {
       channelCfg.accounts[defaultAccountId].enabled = true;
-    }
-  }
-  if (channelName === 'agentspace') {
-    if (!String(channelCfg.dmPolicy || '').trim()) {
-      channelCfg.dmPolicy = 'open';
-    }
-    if (!Array.isArray(channelCfg.allowFrom) || channelCfg.allowFrom.length === 0) {
-      channelCfg.allowFrom = ['*'];
     }
   }
 };
@@ -1774,6 +1792,22 @@ const normalizePersistedChannelConfig = (cfg) => {
       allowFrom.push('*');
     }
     feishuCfg.allowFrom = allowFrom;
+  }
+  const wpsXiezuoCfg = isPlainObject(cfg?.channels?.['wps-xiezuo']) ? cfg.channels['wps-xiezuo'] : null;
+  if (wpsXiezuoCfg) {
+    delete wpsXiezuoCfg.accounts;
+    delete wpsXiezuoCfg.defaultAccountId;
+    if (String(wpsXiezuoCfg.dmPolicy || '').trim() === 'open') {
+      const allowFrom = uniqueStrings(
+        (Array.isArray(wpsXiezuoCfg.allowFrom) ? wpsXiezuoCfg.allowFrom : [])
+          .map((item) => String(item || '').trim())
+          .filter(Boolean),
+      );
+      if (!allowFrom.includes('*')) {
+        allowFrom.push('*');
+      }
+      wpsXiezuoCfg.allowFrom = allowFrom;
+    }
   }
 };
 const applyChannelBootstrapFromEnv = () => {
@@ -1803,9 +1837,16 @@ const applyChannelBootstrapFromEnv = () => {
     const existingChannelCfg = isPlainObject(cfg.channels[spec.channelKey]) ? cfg.channels[spec.channelKey] : {};
     const normalizedPayload = normalizeChannelBootstrapPayload(channelName, rawPayload, existingChannelCfg);
     const mergedChannelCfg = deepMergeObjects(existingChannelCfg, normalizedPayload);
+    const channelBindings = Array.isArray(mergedChannelCfg.bindings) ? mergedChannelCfg.bindings : [];
+    delete mergedChannelCfg.bindings;
     applyChannelBootstrapDefaults(channelName, spec, mergedChannelCfg);
     enablePlugin(spec.pluginId);
     cfg.channels[spec.channelKey] = mergedChannelCfg;
+    if (channelBindings.length > 0) {
+      cfg.bindings = Array.isArray(cfg.bindings) ? cfg.bindings : [];
+      cfg.bindings = cfg.bindings.filter((binding) => binding?.match?.channel !== spec.channelKey);
+      cfg.bindings.push(...channelBindings);
+    }
   }
 };
 const ensureParentDir = (filePath) => {
@@ -1908,6 +1949,15 @@ try {
 cfg.gateway = cfg.gateway || {};
 cfg.gateway.mode = 'local';
 cfg.gateway.bind = bind;
+cfg.gateway.http = cfg.gateway.http || {};
+cfg.gateway.http.endpoints = cfg.gateway.http.endpoints || {};
+cfg.gateway.http.endpoints.responses = cfg.gateway.http.endpoints.responses || {};
+const responsesApiEnabledRaw = String(process.env.OPENCLAW_RESPONSES_API_ENABLED ?? '').trim();
+if (responsesApiEnabledRaw) {
+  cfg.gateway.http.endpoints.responses.enabled = parseBool(responsesApiEnabledRaw, true);
+} else if (cfg.gateway.http.endpoints.responses.enabled === undefined) {
+  cfg.gateway.http.endpoints.responses.enabled = true;
+}
 cfg.gateway.controlUi = cfg.gateway.controlUi || {};
 
 const envOrigins = (process.env.OPENCLAW_ALLOWED_ORIGINS || '').trim();
@@ -2221,7 +2271,7 @@ const bundledPlugins = [
     pluginId: 'openclaw-lark',
   },
   {
-    pluginId: 'agentspace',
+    pluginId: 'wps-xiezuo',
   },
 ];
 for (const bundledPlugin of bundledPlugins) {

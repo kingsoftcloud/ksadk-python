@@ -12,7 +12,7 @@
 
 它实际上只做了两件事：
 
-- `Dockerfile` 直接 `FROM hub-vpc-cn-beijing-6.kce.ksyun.com/agentengine-public/openclaw:2026.4.24`
+- `Dockerfile` 直接 `FROM ${OPENCLAW_BASE_IMAGE}`，默认基础镜像是 `ghcr.io/openclaw/openclaw:2026.4.26@sha256:04e27383656941e59fba80a5a9c28b709f240ea980bd2cb375e4a7786d5a7a20`
 - 不覆写 `ENTRYPOINT` / `CMD`，继续使用官方 `bootstrap.sh` 启动链路
 
 也就是说：
@@ -47,6 +47,8 @@
 - 如果你只是要内置飞书能力，基础镜像本身就已经带好了
 - 你只需要基于它继续打镜像，不需要重复造一份飞书 plugin / skills
 
+不要把这个示例的默认基础镜像随意改成上游 `ghcr.io/openclaw/openclaw:*`，除非你已经确认该镜像也内置了 `openclaw-lark` 和相关 skills；否则飞书 channel 配置会写进去，但运行时没有对应 plugin 可用。
+
 ## 直接构建
 
 ```bash
@@ -74,11 +76,14 @@ docker run --rm -it -p 8080:8080 \
 平台接入时仍然建议使用：
 
 - `trusted-proxy`
-- 或 `none`
+- 或显式 `token`
 
-不要改成：
+如果使用 token 模式，需要同时传：
 
-- `token`
+- `OPENCLAW_GATEWAY_AUTH_MODE=token`
+- `OPENCLAW_GATEWAY_TOKEN=<shared-secret>`
+
+平台短链/Dashboard 场景下，浏览器不直接持有 token；Router 会在服务端向 upstream runtime 注入 `Authorization: Bearer <OPENCLAW_GATEWAY_TOKEN>`。
 
 ## 如何通过 env 预配置飞书 channel
 
@@ -118,6 +123,16 @@ docker run --rm -it -p 8080:8080 \
 ```bash
 agentengine openclaw deploy \
   --image hub-vpc-cn-beijing-6.kce.ksyun.com/your-namespace/openclaw-feishu-bundled:demo \
+  --env OPENCLAW_CHANNEL_BOOTSTRAP_JSON='{"feishu":{"appId":"cli-app-id","appSecret":"cli-app-secret","domain":"lark"}}'
+```
+
+token 模式可以追加：
+
+```bash
+agentengine openclaw deploy \
+  --image hub-vpc-cn-beijing-6.kce.ksyun.com/your-namespace/openclaw-feishu-bundled:demo \
+  --env OPENCLAW_GATEWAY_AUTH_MODE=token \
+  --env OPENCLAW_GATEWAY_TOKEN=gateway-token-demo \
   --env OPENCLAW_CHANNEL_BOOTSTRAP_JSON='{"feishu":{"appId":"cli-app-id","appSecret":"cli-app-secret","domain":"lark"}}'
 ```
 

@@ -15,7 +15,6 @@ import io
 import os
 import asyncio
 import json
-import hashlib
 import re
 import secrets
 import shutil
@@ -24,14 +23,12 @@ import sys
 import tempfile
 import textwrap
 import time
-import uuid
 import webbrowser
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any
 
 import click
-import requests
 from rich.measure import Measurement
 from rich.table import Table as RichTable
 
@@ -72,13 +69,13 @@ from ksadk.cli.ui import (
     status_rich_style,
 )
 from ksadk.deployment.agent_access import get_latest_agent_access
-from ksadk.openclaw_gateway import OpenClawGatewayClient, OpenClawGatewayError
+from ksadk.openclaw_gateway import OpenClawGatewayClient, OpenClawGatewayError, OpenClawGatewayRequestError
 
 console = get_console()
 # 默认 OpenClaw 镜像 (KCR 个人版)
 DEFAULT_OPENCLAW_NAMESPACE = "agentengine-public"
 DEFAULT_OPENCLAW_REPO = "openclaw"
-DEFAULT_OPENCLAW_VERSION = "2026.4.24"
+DEFAULT_OPENCLAW_VERSION = "2026.4.26"
 DEFAULT_OPENCLAW_REGISTRY = "hub.kce.ksyun.com"
 DEFAULT_OPENCLAW_NAME = "openclaw-gateway"
 DEFAULT_TRUSTED_PROXY_USER_HEADER = "x-forwarded-user"
@@ -92,19 +89,26 @@ DEFAULT_TRUSTED_PROXY_CIDRS = [
 ]
 _GLOBAL_ENV_CACHE: Optional[Dict[str, str]] = None
 OPENCLAW_SECURITY_PROFILES = ("relaxed", "strict", "strictest")
-OPENCLAW_CHANNELS = ("weixin", "feishu", "agentspace")
+OPENCLAW_CHANNELS = ("weixin", "feishu", "wps-xiezuo")
 OPENCLAW_ENV_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 WEIXIN_PLUGIN_ID = "openclaw-weixin"
 FEISHU_PLUGIN_ID = "openclaw-lark"
 FEISHU_CHANNEL_KEY = "feishu"
-AGENTSPACE_PLUGIN_ID = "agentspace"
-AGENTSPACE_CHANNEL_KEY = "agentspace"
-AGENTSPACE_DEFAULT_ACCOUNT_ID = "default"
-AGENTSPACE_DEFAULT_KEY_SOURCE = "openclaw_agentspace"
-AGENTSPACE_LOGIN_URL_API = "https://agentspace.wps.cn/v7/devhub/users/login_url"
-AGENTSPACE_USER_TOKEN_API = "https://agentspace.wps.cn/v7/devhub/users/user_token"
-AGENTSPACE_CURRENT_USER_API = "https://agentspace.wps.cn/v7/devhub/users/current"
-AGENTSPACE_SKILL_NAME = "wps365-skill"
+WPS_XIEZUO_PLUGIN_ID = "wps-xiezuo"
+WPS_XIEZUO_CHANNEL_KEY = "wps-xiezuo"
+WPS_XIEZUO_DEFAULT_ACCOUNT_ID = "default"
+WPS_XIEZUO_MCP_TOOL_ALLOWLIST = [
+    "wps_im_message_send",
+    "wps_user_search",
+    "wps_user_get",
+    "wps_user_me",
+    "wps_im_chat_list",
+    "wps_im_chat_create",
+    "wps_im_message_recall",
+    "wps_calendar_event_create",
+    "wps_calendar_event_list",
+    "wps_calendar_free_busy_list",
+]
 OPENCLAW_CHANNEL_SPECS = {
     "weixin": {
         "plugin_id": WEIXIN_PLUGIN_ID,
@@ -116,12 +120,29 @@ OPENCLAW_CHANNEL_SPECS = {
         "channel_key": FEISHU_CHANNEL_KEY,
         "default_account_id": "default",
     },
-    "agentspace": {
-        "plugin_id": AGENTSPACE_PLUGIN_ID,
-        "channel_key": AGENTSPACE_CHANNEL_KEY,
-        "default_account_id": AGENTSPACE_DEFAULT_ACCOUNT_ID,
+    "wps-xiezuo": {
+        "plugin_id": WPS_XIEZUO_PLUGIN_ID,
+        "channel_key": WPS_XIEZUO_CHANNEL_KEY,
+        "default_account_id": WPS_XIEZUO_DEFAULT_ACCOUNT_ID,
     },
 }
+OPENCLAW_CHANNEL_CONNECT_HELP = """连接指定 channel。
+
+\b
+不同 channel 的接入方式不同：
+  微信：扫码登录。
+    agentengine openclaw channel connect <id> --channel weixin
+  飞书：启动官方 onboarding 流程。
+    agentengine openclaw channel connect <id> --channel feishu
+  WPS 协作：写入开放平台 appId/appSecret 并启动长连接。
+    agentengine openclaw channel connect <id> --channel wps-xiezuo --app-id <appId> --app-secret <appSecret>
+
+\b
+WPS 协作说明：
+  --app-id / --app-secret 是让 channel 可连接可用的必需凭证。
+  --dm-policy=open 表示允许所有用户私聊；pairing 表示未知用户需要配对审批。
+  --account-id 当前仅支持 default。
+"""
 OPENCLAW_GATEWAY_READY_STATUSES = {"RUNNING", "READY", "HEALTHY"}
 OPENCLAW_GATEWAY_BLOCKED_STATUSES = {
     "DELETED",
@@ -1105,6 +1126,36 @@ async def _wait_for_gateway_reload_after_config_apply(
     await _wait_for_gateway_ready(region, detail, timeout_seconds=ready_timeout_seconds)
 
 
+def _is_gateway_reload_disconnect_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return (
+        "websocket receive failed" in message
+        and ("1011" in message or "bad gateway" in message or "going away" in message)
+    )
+
+
+async def _config_apply_and_wait_for_reload(
+    gateway: OpenClawGatewayClient,
+    region: str,
+    detail: dict[str, Any],
+    *,
+    config: dict[str, Any],
+    base_hash: str,
+    note: str,
+) -> None:
+    try:
+        await gateway.config_apply(config=config, base_hash=base_hash, note=note)
+    except OpenClawGatewayRequestError:
+        raise
+    except OpenClawGatewayError as exc:
+        if not _is_gateway_reload_disconnect_error(exc):
+            raise
+        print_warn("配置已提交，gateway reload 期间连接短暂中断；等待恢复后继续验证")
+        await _wait_for_gateway_ready(region, detail, timeout_seconds=90.0)
+        return
+    await _wait_for_gateway_reload_after_config_apply(gateway, region, detail)
+
+
 async def _fetch_channel_snapshot_with_retry(
     region: str,
     detail: dict[str, Any],
@@ -1170,17 +1221,8 @@ def _is_channel_configured(
         return isinstance(accounts, dict) and any(str(key).strip() for key in accounts.keys())
     if channel == "feishu":
         return bool(str(channel_cfg.get("appId") or "").strip() and str(channel_cfg.get("appSecret") or "").strip())
-    if channel == "agentspace":
-        accounts = channel_cfg.get("accounts")
-        if not isinstance(accounts, dict):
-            return False
-        default_account = accounts.get(AGENTSPACE_DEFAULT_ACCOUNT_ID)
-        if not isinstance(default_account, dict):
-            return False
-        return bool(
-            str(default_account.get("token") or "").strip()
-            or str(default_account.get("app_id") or "").strip()
-        )
+    if channel == "wps-xiezuo":
+        return bool(str(channel_cfg.get("appId") or "").strip() and str(channel_cfg.get("appSecret") or "").strip())
     return bool(channel_cfg)
 
 
@@ -1537,22 +1579,6 @@ def _mutate_feishu_connect_config(config: dict[str, Any], onboarding: dict[str, 
     return changed
 
 
-def _extract_agentspace_app_id(config: dict[str, Any]) -> Optional[str]:
-    channels = config.get("channels") if isinstance(config.get("channels"), dict) else {}
-    agentspace_cfg = channels.get(AGENTSPACE_CHANNEL_KEY) if isinstance(channels, dict) else {}
-    if not isinstance(agentspace_cfg, dict):
-        return None
-    accounts = agentspace_cfg.get("accounts")
-    if isinstance(accounts, dict):
-        default_account = accounts.get(AGENTSPACE_DEFAULT_ACCOUNT_ID)
-        if isinstance(default_account, dict):
-            app_id = str(default_account.get("app_id") or "").strip()
-            if app_id:
-                return app_id
-    app_id = str(agentspace_cfg.get("app_id") or "").strip()
-    return app_id or None
-
-
 def _should_auto_open_browser() -> bool:
     if is_json_output():
         return False
@@ -1567,388 +1593,99 @@ def _should_auto_open_browser() -> bool:
     )
 
 
-def _encrypt_agentspace_token(wps_sid: str, *, app_id: Optional[str] = None) -> str:
-    token = str(wps_sid or "").strip()
-    if not token:
-        raise OpenClawGatewayError("Agentspace 登录凭证为空，无法生成加密 token")
-
-    key_source = str(app_id or "").strip() or AGENTSPACE_DEFAULT_KEY_SOURCE
-    salt = os.urandom(16)
-    iv = os.urandom(12)
-    key = hashlib.scrypt(key_source.encode("utf-8"), salt=salt, n=16384, r=8, p=1, dklen=32)
-    try:
-        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-    except Exception as exc:  # pragma: no cover - validated via doctor and dependency constraints
-        raise OpenClawGatewayError("缺少 cryptography 依赖，无法完成 Agentspace token 加密") from exc
-
-    encrypted = AESGCM(key).encrypt(iv, token.encode("utf-8"), None)
-    if len(encrypted) < 16:
-        raise OpenClawGatewayError("Agentspace token 加密结果异常")
-    cipher_bytes = encrypted[:-16]
-    tag_bytes = encrypted[-16:]
-    return f"{salt.hex()}:{iv.hex()}:{tag_bytes.hex()}:{cipher_bytes.hex()}"
-
-
-async def _agentspace_http_request(
+def _mutate_wps_xiezuo_connect_config(
+    config: dict[str, Any],
     *,
-    method: str,
-    url: str,
-    json_body: Optional[dict[str, Any]] = None,
-    headers: Optional[dict[str, str]] = None,
-    timeout: int = 20,
-    allow_error_status: bool = False,
-) -> dict[str, Any]:
-    request_headers = {"Content-Type": "application/json", **(headers or {})}
-
-    def _send():
-        return requests.request(
-            method=method.upper(),
-            url=url,
-            json=json_body if json_body is not None else None,
-            headers=request_headers,
-            timeout=timeout,
-        )
-
-    response = await asyncio.to_thread(_send)
-    status_code = int(response.status_code)
-    try:
-        payload = response.json()
-    except Exception:
-        payload = response.text.strip()
-
-    if status_code >= 400 and not allow_error_status:
-        message = str(payload) if isinstance(payload, (str, dict, list)) else "unknown"
-        raise OpenClawGatewayError(f"Agentspace API 请求失败: HTTP {status_code} {message}")
-    return {
-        "ok": 200 <= status_code < 300,
-        "status_code": status_code,
-        "payload": payload,
-    }
-
-
-def _agentspace_extract_error_detail(payload: Any) -> Optional[str]:
-    if payload is None:
-        return None
-    if isinstance(payload, str):
-        text = payload.strip()
-        return text or None
-    if not isinstance(payload, dict):
-        text = str(payload).strip()
-        return text or None
-
-    code = payload.get("code")
-    msg = str(payload.get("msg") or payload.get("message") or "").strip()
-    detail_parts: list[str] = []
-    data = payload.get("data")
-    if isinstance(data, dict):
-        for key, value in data.items():
-            value_text = str(value or "").strip()
-            if value_text:
-                detail_parts.append(f"{key}={value_text}")
-    elif data is not None:
-        value_text = str(data).strip()
-        if value_text:
-            detail_parts.append(value_text)
-
-    summary_parts: list[str] = []
-    if code not in (None, "", 0, "0"):
-        summary_parts.append(f"code={code}")
-    if msg:
-        summary_parts.append(f"msg={msg}")
-    if detail_parts:
-        summary_parts.append(f"data={'; '.join(detail_parts[:3])}")
-    if summary_parts:
-        return ", ".join(summary_parts)
-    return None
-
-
-def _agentspace_is_fatal_oauth_error(payload: Any, *, status_code: int) -> bool:
-    if status_code >= 400:
-        return True
-    if not isinstance(payload, dict):
-        return False
-
-    code = payload.get("code")
-    if code in (None, "", 0, "0"):
-        return False
-
-    combined = _agentspace_extract_error_detail(payload) or ""
-    normalized = combined.lower()
-    fatal_markers = (
-        "invalid parameter",
-        "permission",
-        "no permission",
-        "forbidden",
-        "denied",
-        "unauthorized",
-        "app_id",
-    )
-    return any(marker in normalized for marker in fatal_markers)
-
-
-def _agentspace_is_pending_user_token_response(payload: Any, *, status_code: int) -> bool:
-    if status_code < 500:
-        return False
-    detail = (_agentspace_extract_error_detail(payload) or "").lower()
-    return "nonetype" in detail and "strip" in detail
-
-
-def _build_agentspace_oauth_error(
-    stage: str,
-    *,
-    payload: Any,
-    status_code: int,
-    app_id: Optional[str],
-) -> OpenClawGatewayError:
-    detail = _agentspace_extract_error_detail(payload) or f"HTTP {status_code}"
-    message = f"Agentspace {stage}失败: {detail}"
-    if app_id:
-        message += (
-            f"。当前使用 app_id={app_id}；如果这是历史残留，可直接重试当前命令"
-            "（默认不复用旧 app_id），或显式传入有权限的 --app-id"
-        )
-    return OpenClawGatewayError(message)
-
-
-def _agentspace_response_error_detail(payload: Any, *, status_code: int) -> Optional[str]:
-    detail = _agentspace_extract_error_detail(payload)
-    if status_code >= 400:
-        return detail or f"HTTP {status_code}"
-    if not isinstance(payload, dict):
-        return None
-    code = payload.get("code")
-    if code in (None, "", 0, "0"):
-        return None
-    return detail or f"code={code}"
-
-
-async def _agentspace_fetch_current_user_by_sid(wps_sid: str) -> dict[str, str]:
-    sid = str(wps_sid or "").strip()
-    if not sid:
-        raise OpenClawGatewayError("Agentspace 登录凭证为空，无法直接配置 channel")
-
-    current_resp = await _agentspace_http_request(
-        method="GET",
-        url=AGENTSPACE_CURRENT_USER_API,
-        headers={
-            "Accept": "application/json, text/plain, */*",
-            "Cookie": f"wps_sid={sid}",
-            "Referer": "https://agentspace.wps.cn/agents",
-        },
-        timeout=20,
-        allow_error_status=True,
-    )
-    current_payload = current_resp.get("payload")
-    error_detail = _agentspace_response_error_detail(
-        current_payload,
-        status_code=int(current_resp.get("status_code") or 0),
-    )
-    if error_detail:
-        raise OpenClawGatewayError(f"提供的 wps_sid 无法通过 Agentspace 鉴权: {error_detail}")
-
-    current_data = current_payload.get("data") if isinstance(current_payload, dict) else {}
-    nickname = (
-        str(current_data.get("nickname") or "").strip()
-        if isinstance(current_data, dict)
-        else ""
-    )
-    return {
-        "wps_sid": sid,
-        "current_user": nickname,
-        "app_id": "",
-        "login_url": "",
-    }
-
-
-async def _agentspace_cloud_server_oauth(
-    app_id: Optional[str],
-    *,
-    open_browser: bool,
-    timeout_seconds: int = 300,
-    poll_interval_seconds: int = 5,
-) -> dict[str, str]:
-    state = uuid.uuid4().hex
-    login_body: dict[str, Any] = {"state": state}
-    if app_id:
-        login_body["app_id"] = str(app_id).strip()
-
-    login_resp = await _agentspace_http_request(
-        method="POST",
-        url=AGENTSPACE_LOGIN_URL_API,
-        json_body=login_body,
-        timeout=20,
-    )
-    login_payload = login_resp.get("payload")
-    login_data = login_payload.get("data") if isinstance(login_payload, dict) else {}
-    if not isinstance(login_data, dict):
-        detail = _agentspace_extract_error_detail(login_payload)
-        if detail:
-            raise _build_agentspace_oauth_error(
-                "login_url",
-                payload=login_payload,
-                status_code=int(login_resp.get("status_code") or 0),
-                app_id=app_id,
-            )
-        raise OpenClawGatewayError("Agentspace login_url 返回格式异常")
-    code = str(login_data.get("code") or "").strip()
-    login_url = str(login_data.get("url") or "").strip()
-    resolved_app_id = str(login_data.get("app_id") or app_id or "").strip()
-    if not code or not login_url:
-        detail = _agentspace_extract_error_detail(login_payload)
-        if detail:
-            raise _build_agentspace_oauth_error(
-                "login_url",
-                payload=login_payload,
-                status_code=int(login_resp.get("status_code") or 0),
-                app_id=resolved_app_id or app_id,
-            )
-        raise OpenClawGatewayError("Agentspace login_url 未返回有效 code/url")
-
-    print_success("请在浏览器完成 Agentspace 登录授权")
-    print_kv("登录链接", login_url, value_style="#58a6ff")
-    if open_browser:
-        webbrowser.open(login_url)
-
-    deadline = time.monotonic() + timeout_seconds
-    last_pending_detail: Optional[str] = None
-    while time.monotonic() < deadline:
-        token_body = {
-            "code": code,
-            "state": state,
-        }
-        token_resp = await _agentspace_http_request(
-            method="POST",
-            url=AGENTSPACE_USER_TOKEN_API,
-            json_body=token_body,
-            timeout=20,
-            allow_error_status=True,
-        )
-        token_payload = token_resp.get("payload")
-        token_status_code = int(token_resp.get("status_code") or 0)
-        if _agentspace_is_pending_user_token_response(
-            token_payload,
-            status_code=token_status_code,
-        ):
-            last_pending_detail = _agentspace_extract_error_detail(token_payload)
-            await asyncio.sleep(poll_interval_seconds)
-            continue
-        if _agentspace_is_fatal_oauth_error(
-            token_payload,
-            status_code=token_status_code,
-        ):
-            raise _build_agentspace_oauth_error(
-                "user_token",
-                payload=token_payload,
-                status_code=token_status_code,
-                app_id=resolved_app_id,
-            )
-        token_data = token_payload.get("data") if isinstance(token_payload, dict) else {}
-        user_token = str(token_data.get("token") or "").strip() if isinstance(token_data, dict) else ""
-        if user_token:
-            current_resp = await _agentspace_http_request(
-                method="GET",
-                url=AGENTSPACE_CURRENT_USER_API,
-                headers={
-                    "Accept": "application/json, text/plain, */*",
-                    "Cookie": f"wps_sid={user_token}",
-                    "Referer": "https://agentspace.wps.cn/agents",
-                },
-                timeout=20,
-                allow_error_status=True,
-            )
-            current_payload = current_resp.get("payload")
-            current_data = current_payload.get("data") if isinstance(current_payload, dict) else {}
-            nickname = (
-                str(current_data.get("nickname") or "").strip()
-                if isinstance(current_data, dict)
-                else ""
-            )
-            return {
-                "wps_sid": user_token,
-                "current_user": nickname,
-                "app_id": resolved_app_id,
-                "login_url": login_url,
-            }
-        await asyncio.sleep(poll_interval_seconds)
-
-    if last_pending_detail:
-        raise OpenClawGatewayError(
-            "等待 Agentspace 登录确认超时；上游在授权完成前返回了内部错误，"
-            "请确认浏览器回调是否成功。若页面提示 app_id 无权限，可改用 --wps-sid"
-            " 或显式传入有权限的 --app-id"
-        )
-    raise OpenClawGatewayError("等待 Agentspace 登录确认超时（5 分钟）")
-
-
-def _mutate_agentspace_connect_config(config: dict[str, Any], oauth_result: dict[str, str]) -> bool:
-    changed = _ensure_plugin_enabled(config, AGENTSPACE_PLUGIN_ID)
+    app_id: str,
+    app_secret: str,
+    account_id: str,
+    agent_id: str,
+    dm_policy: str,
+    group_policy: str,
+    base_url: str,
+) -> bool:
+    changed = _ensure_plugin_enabled(config, WPS_XIEZUO_PLUGIN_ID)
     channels = config.setdefault("channels", {})
-    agentspace_cfg = channels.setdefault(AGENTSPACE_CHANNEL_KEY, {})
-    accounts = agentspace_cfg.setdefault("accounts", {})
-    default_account = accounts.setdefault(AGENTSPACE_DEFAULT_ACCOUNT_ID, {})
-    device_uuid = str(default_account.get("device_uuid") or "").strip() or str(uuid.uuid4())
-
-    encrypted_token = _encrypt_agentspace_token(
-        str(oauth_result.get("wps_sid") or "").strip(),
-        app_id=str(oauth_result.get("app_id") or "").strip(),
-    )
-    desired_pairs = {
+    channel_cfg = channels.setdefault(WPS_XIEZUO_CHANNEL_KEY, {})
+    channel_cfg.pop("accounts", None)
+    channel_cfg.pop("defaultAccountId", None)
+    desired_channel = {
         "enabled": True,
-        "token": encrypted_token,
-        "currentUser": str(oauth_result.get("current_user") or "").strip(),
-        "app_id": str(oauth_result.get("app_id") or "").strip(),
-        "device_uuid": device_uuid,
+        "appId": app_id,
+        "appSecret": app_secret,
+        "baseUrl": base_url,
+        "sdk": {
+            "enabled": True,
+            "logLevel": "info",
+        },
+        "dmPolicy": dm_policy,
+        "allowFrom": ["*"] if dm_policy == "open" else [],
+        "groupPolicy": group_policy,
+        "instantAck": {
+            "enabled": True,
+            "text": "内容处理中，请稍候...",
+        },
+        "mcp": {
+            "enabled": True,
+            "mode": "app",
+            "toolAllowlist": WPS_XIEZUO_MCP_TOOL_ALLOWLIST,
+        },
     }
-    for key, value in desired_pairs.items():
-        if default_account.get(key) != value:
-            default_account[key] = value
+    for key, value in desired_channel.items():
+        if channel_cfg.get(key) != value:
+            channel_cfg[key] = value
             changed = True
-
-    if not str(agentspace_cfg.get("dmPolicy") or "").strip():
-        agentspace_cfg["dmPolicy"] = "open"
+    session_cfg = config.setdefault("session", {})
+    if session_cfg.get("dmScope") != "per-account-channel-peer":
+        session_cfg["dmScope"] = "per-account-channel-peer"
         changed = True
-    allow_from = agentspace_cfg.get("allowFrom")
-    if not isinstance(allow_from, list) or len(allow_from) == 0:
-        agentspace_cfg["allowFrom"] = ["*"]
-        changed = True
-
+    bindings = config.setdefault("bindings", [])
+    if isinstance(bindings, list):
+        next_bindings = [
+            item for item in bindings
+            if not (isinstance(item, dict) and item.get("match", {}).get("channel") == WPS_XIEZUO_CHANNEL_KEY)
+        ]
+        desired_binding = {
+            "type": "route",
+            "agentId": agent_id,
+            "match": {
+                "channel": WPS_XIEZUO_CHANNEL_KEY,
+            },
+        }
+        next_bindings.append(desired_binding)
+        if next_bindings != bindings:
+            config["bindings"] = next_bindings
+            changed = True
     return changed
 
 
-def _mutate_agentspace_enabled(
+def _mutate_wps_xiezuo_enabled(
     config: dict[str, Any],
     *,
     enabled: bool,
     account_id: Optional[str],
 ) -> bool:
-    normalized_account = str(account_id or AGENTSPACE_DEFAULT_ACCOUNT_ID).strip()
-    if normalized_account not in {"", AGENTSPACE_DEFAULT_ACCOUNT_ID}:
-        raise click.ClickException("V1 仅支持 agentspace 默认账号，`--account-id` 仅支持 default")
-    changed = _ensure_plugin_enabled(config, AGENTSPACE_PLUGIN_ID) if enabled else False
+    normalized_account = str(account_id or WPS_XIEZUO_DEFAULT_ACCOUNT_ID).strip()
+    if normalized_account and normalized_account != WPS_XIEZUO_DEFAULT_ACCOUNT_ID:
+        raise click.ClickException("WPS 协作插件使用扁平 channel 配置，`--account-id` 仅支持 default")
+    changed = _ensure_plugin_enabled(config, WPS_XIEZUO_PLUGIN_ID) if enabled else False
     channels = config.setdefault("channels", {})
-    agentspace_cfg = channels.setdefault(AGENTSPACE_CHANNEL_KEY, {})
-    accounts = agentspace_cfg.setdefault("accounts", {})
-    default_account = accounts.setdefault(AGENTSPACE_DEFAULT_ACCOUNT_ID, {})
-    if default_account.get("enabled") is not enabled:
-        default_account["enabled"] = enabled
+    channel_cfg = channels.setdefault(WPS_XIEZUO_CHANNEL_KEY, {})
+    channel_cfg.pop("accounts", None)
+    channel_cfg.pop("defaultAccountId", None)
+    if channel_cfg.get("enabled") is not enabled:
+        channel_cfg["enabled"] = enabled
         changed = True
     return changed
 
 
-def _check_agentspace_local_deps() -> dict[str, Any]:
-    crypto_path = None
-    crypto_error = None
-    try:
-        import cryptography as _cryptography  # type: ignore
-        crypto_path = str(getattr(_cryptography, "__file__", "") or "")
-    except Exception as exc:
-        crypto_error = str(exc)
-    requests_path = str(getattr(requests, "__file__", "") or "")
+def _check_wps_xiezuo_local_deps() -> dict[str, Any]:
+    node_path = shutil.which("node")
+    npm_path = shutil.which("npm")
     return {
-        "ok": bool(crypto_path and requests_path),
-        "cryptography": crypto_path or None,
-        "requests": requests_path or None,
-        "cryptography_error": crypto_error,
+        "ok": bool(node_path and npm_path),
+        "node": node_path,
+        "npm": npm_path,
     }
 
 
@@ -2307,24 +2044,31 @@ def channel_status(
         _abort_openclaw_error(e, context="获取 channel 状态失败", argv=["openclaw", "channel", "status"])
 
 
-@openclaw_channel.command("connect", context_settings=CONTEXT_SETTINGS)
+@openclaw_channel.command("connect", context_settings=CONTEXT_SETTINGS, help=OPENCLAW_CHANNEL_CONNECT_HELP)
 @click.argument("agent_ref", required=False)
 @region_option(default=None, envvar=None, help_text="区域 (默认优先读取 .agentengine.state)")
 @click.option("--channel", "channel_name", type=click.Choice(OPENCLAW_CHANNELS, case_sensitive=False), required=True, help="目标 channel")
-@click.option("--open-qr", is_flag=True, help="在本地浏览器额外打开二维码/登录链接")
-@click.option("--app-id", "agentspace_app_id", default=None, help="显式指定 Agentspace app_id（默认不复用历史值）")
-@click.option("--reuse-app-id", is_flag=True, help="复用远端已保存的 Agentspace app_id")
-@click.option("--wps-sid", "agentspace_wps_sid", default=None, help="跳过网页登录，直接使用现成的 wps_sid 配置 Agentspace")
+@click.option("--open-qr", is_flag=True, help="仅微信：在本地浏览器额外打开二维码链接")
+@click.option("--app-id", "wps_xiezuo_app_id", default=None, help="仅 WPS 协作：开放平台应用 ID")
+@click.option("--app-secret", "wps_xiezuo_app_secret", default=None, help="仅 WPS 协作：开放平台应用密钥")
+@click.option("--account-id", "wps_xiezuo_account_id", default="default", help="仅 WPS 协作：账号 ID；当前只支持 default")
+@click.option("--agent-id", "wps_xiezuo_agent_id", default="main", help="仅 WPS 协作：消息路由到的 OpenClaw agentId")
+@click.option("--dm-policy", "wps_xiezuo_dm_policy", type=click.Choice(("disabled", "open", "pairing", "allowlist")), default="pairing", help="仅 WPS 协作：私聊策略，默认 pairing")
+@click.option("--group-policy", "wps_xiezuo_group_policy", type=click.Choice(("open", "allowlist")), default="open", help="仅 WPS 协作：群聊策略，默认 open")
+@click.option("--base-url", "wps_xiezuo_base_url", default="https://openapi.wps.cn", help="仅 WPS 协作：WPS OpenAPI 基础地址")
 def channel_connect(
     agent_ref: Optional[str],
     region: Optional[str],
     channel_name: str,
     open_qr: bool,
-    agentspace_app_id: Optional[str],
-    reuse_app_id: bool,
-    agentspace_wps_sid: Optional[str],
+    wps_xiezuo_app_id: Optional[str],
+    wps_xiezuo_app_secret: Optional[str],
+    wps_xiezuo_account_id: str,
+    wps_xiezuo_agent_id: str,
+    wps_xiezuo_dm_policy: str,
+    wps_xiezuo_group_policy: str,
+    wps_xiezuo_base_url: str,
 ):
-    """连接微信、飞书或 Agentspace channel。"""
     normalized_channel = channel_name.lower()
 
     async def _run():
@@ -2344,15 +2088,13 @@ def channel_connect(
                     account_id="default",
                 )
                 if preflight_changed:
-                    await preflight_gateway.config_apply(
-                        config=config,
-                        base_hash=base_hash,
-                        note="ksadk seed weixin channel config",
-                    )
-                    await _wait_for_gateway_reload_after_config_apply(
+                    await _config_apply_and_wait_for_reload(
                         preflight_gateway,
                         resolved_region,
                         detail,
+                        config=config,
+                        base_hash=base_hash,
+                        note="ksadk seed weixin channel config",
                     )
             finally:
                 await preflight_gateway.close()
@@ -2398,54 +2140,40 @@ def channel_connect(
             _emit_data_payload("OpenClaw Channel Connect", payload, subtitle="weixin")
             return
 
-        if normalized_channel == "agentspace":
-            bootstrap_gateway = _build_gateway_client(resolved_region, detail)
-            try:
-                await bootstrap_gateway.connect()
-                cfg_snapshot = await bootstrap_gateway.config_get()
-            finally:
-                await bootstrap_gateway.close()
-            config, _ = _extract_config_state(cfg_snapshot)
-            existing_app_id = _extract_agentspace_app_id(config)
-            selected_app_id = str(agentspace_app_id or "").strip() or None
-            if not selected_app_id and reuse_app_id:
-                selected_app_id = existing_app_id
-                if selected_app_id:
-                    print_info(f"复用远端已保存的 Agentspace app_id: {selected_app_id}")
-            elif selected_app_id:
-                print_info(f"使用显式 Agentspace app_id: {selected_app_id}")
-            elif existing_app_id:
-                print_info("检测到已保存的 Agentspace app_id，当前默认忽略；如需复用请传 --reuse-app-id")
-
-            selected_wps_sid = str(agentspace_wps_sid or "").strip() or None
-            if selected_wps_sid:
-                print_info("检测到显式提供的 wps_sid，跳过 Agentspace 网页授权流程")
-                oauth_result = await _agentspace_fetch_current_user_by_sid(selected_wps_sid)
-                if selected_app_id:
-                    oauth_result["app_id"] = selected_app_id
-            else:
-                oauth_result = await _agentspace_cloud_server_oauth(
-                    selected_app_id,
-                    open_browser=open_qr or _should_auto_open_browser(),
-                )
-
+        if normalized_channel == "wps-xiezuo":
+            app_id = str(wps_xiezuo_app_id or "").strip()
+            app_secret = str(wps_xiezuo_app_secret or "").strip()
+            account_id = str(wps_xiezuo_account_id or WPS_XIEZUO_DEFAULT_ACCOUNT_ID).strip() or WPS_XIEZUO_DEFAULT_ACCOUNT_ID
+            if not app_id:
+                raise click.ClickException("连接 WPS 协作 channel 必须提供 --app-id")
+            if not app_secret:
+                raise click.ClickException("连接 WPS 协作 channel 必须提供 --app-secret")
+            if account_id != WPS_XIEZUO_DEFAULT_ACCOUNT_ID:
+                raise click.ClickException("WPS 协作插件使用扁平 channel 配置，`--account-id` 仅支持 default")
             apply_gateway = _build_gateway_client(resolved_region, detail)
             changed = False
             try:
                 await apply_gateway.connect()
                 fresh_cfg_snapshot = await apply_gateway.config_get()
                 fresh_config, fresh_base_hash = _extract_config_state(fresh_cfg_snapshot)
-                changed = _mutate_agentspace_connect_config(fresh_config, oauth_result)
+                changed = _mutate_wps_xiezuo_connect_config(
+                    fresh_config,
+                    app_id=app_id,
+                    app_secret=app_secret,
+                    account_id=account_id,
+                    agent_id=str(wps_xiezuo_agent_id or "main").strip() or "main",
+                    dm_policy=wps_xiezuo_dm_policy,
+                    group_policy=wps_xiezuo_group_policy,
+                    base_url=str(wps_xiezuo_base_url or "https://openapi.wps.cn").strip() or "https://openapi.wps.cn",
+                )
                 if changed:
-                    await apply_gateway.config_apply(
-                        config=fresh_config,
-                        base_hash=fresh_base_hash,
-                        note="ksadk configure agentspace channel",
-                    )
-                    await _wait_for_gateway_reload_after_config_apply(
+                    await _config_apply_and_wait_for_reload(
                         apply_gateway,
                         resolved_region,
                         detail,
+                        config=fresh_config,
+                        base_hash=fresh_base_hash,
+                        note="ksadk configure wps-xiezuo channel",
                     )
             finally:
                 await apply_gateway.close()
@@ -2463,12 +2191,11 @@ def channel_connect(
                 "channel": normalized_channel,
                 "configured": True,
                 "changed": changed,
-                "app_id": oauth_result.get("app_id"),
-                "current_user": oauth_result.get("current_user"),
-                "login_url": oauth_result.get("login_url"),
+                "app_id": app_id,
+                "account_id": account_id,
                 "status": _extract_channel_snapshot(snapshot, normalized_channel),
             }
-            _emit_data_payload("OpenClaw Channel Connect", payload, subtitle="agentspace")
+            _emit_data_payload("OpenClaw Channel Connect", payload, subtitle="wps-xiezuo")
             return
 
         bootstrap_gateway = _build_gateway_client(resolved_region, detail)
@@ -2490,15 +2217,13 @@ def channel_connect(
             apply_gateway = _build_gateway_client(resolved_region, detail)
             try:
                 await apply_gateway.connect()
-                await apply_gateway.config_apply(
-                    config=changed_config,
-                    base_hash=base_hash,
-                    note="ksadk configure feishu channel",
-                )
-                await _wait_for_gateway_reload_after_config_apply(
+                await _config_apply_and_wait_for_reload(
                     apply_gateway,
                     resolved_region,
                     detail,
+                    config=changed_config,
+                    base_hash=base_hash,
+                    note="ksadk configure feishu channel",
                 )
             finally:
                 await apply_gateway.close()
@@ -2553,8 +2278,8 @@ def _run_channel_toggle_command(
                     enabled=enabled,
                     account_id=account_id,
                 )
-            elif normalized_channel == "agentspace":
-                changed = _mutate_agentspace_enabled(
+            elif normalized_channel == "wps-xiezuo":
+                changed = _mutate_wps_xiezuo_enabled(
                     config,
                     enabled=enabled,
                     account_id=account_id,
@@ -2565,15 +2290,13 @@ def _run_channel_toggle_command(
                 resolved_account_id = _channel_default_account_id(normalized_channel)
 
             if changed:
-                await gateway.config_apply(
-                    config=config,
-                    base_hash=base_hash,
-                    note=f"ksadk {action} {normalized_channel} channel",
-                )
-                await _wait_for_gateway_reload_after_config_apply(
+                await _config_apply_and_wait_for_reload(
                     gateway,
                     resolved_region,
                     detail,
+                    config=config,
+                    base_hash=base_hash,
+                    note=f"ksadk {action} {normalized_channel} channel",
                 )
         finally:
             await gateway.close()
@@ -2739,40 +2462,26 @@ def channel_doctor(agent_ref: Optional[str], region: Optional[str], channel: Opt
                         "npx": npx_path,
                     }
                 )
-            elif item == "agentspace":
+            elif item == "wps-xiezuo":
                 checks.append(
                     {
-                        "name": "agentspace_plugin_visible",
+                        "name": "wps_xiezuo_plugin_visible",
                         "ok": plugin_id in plugin_entries or selected_snapshot is not None,
                         "plugin_id": plugin_id,
                     }
                 )
                 checks.append(
                     _build_channel_doctor_availability_check(
-                        name="agentspace_status_snapshot",
+                        name="wps_xiezuo_status_snapshot",
                         available=selected_snapshot is not None,
                         configured=configured,
-                        connect_required_message="Agentspace 尚未完成授权，首次 connect 前不会出现在 channel snapshot 中",
+                        connect_required_message="WPS 协作尚未完成配置，首次 connect 前不会出现在 channel snapshot 中",
                     )
                 )
-                skills_cfg = config.get("skills") if isinstance(config.get("skills"), dict) else {}
-                allow_bundled = skills_cfg.get("allowBundled") if isinstance(skills_cfg, dict) else []
-                allow_list = skills_cfg.get("allow") if isinstance(skills_cfg, dict) else []
-                visible_in_allow = AGENTSPACE_SKILL_NAME in allow_bundled if isinstance(allow_bundled, list) else False
-                visible_in_allow = visible_in_allow or (
-                    AGENTSPACE_SKILL_NAME in allow_list if isinstance(allow_list, list) else False
-                )
+                dep_check = _check_wps_xiezuo_local_deps()
                 checks.append(
                     {
-                        "name": "agentspace_skill_visible",
-                        "ok": visible_in_allow,
-                        "skill": AGENTSPACE_SKILL_NAME,
-                    }
-                )
-                dep_check = _check_agentspace_local_deps()
-                checks.append(
-                    {
-                        "name": "agentspace_local_deps",
+                        "name": "wps_xiezuo_local_deps",
                         **dep_check,
                     }
                 )

@@ -1,6 +1,6 @@
 ## syntax=docker/dockerfile:1.7
 # https://github.com/openclaw/openclaw/pkgs/container/openclaw
-ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.4.24@sha256:7c4370ff8777555d4c9fe5ab821aaaad7c87188d389a6cf761270725d96ec3e9
+ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.4.26@sha256:04e27383656941e59fba80a5a9c28b709f240ea980bd2cb375e4a7786d5a7a20
 FROM ${OPENCLAW_BASE_IMAGE}
 
 # ── 可通过 --build-arg 覆盖的参数 ──────────────────────────────
@@ -17,8 +17,8 @@ ARG OPENCLAW_INSTALL_MEM0_PLUGIN=true
 ARG OPENCLAW_MEM0_PLUGIN_ID=openclaw-mem0
 ARG OPENCLAW_MEM0_PLUGIN_URL=https://wangxu-test.ks3-cn-beijing.ksyuncs.com/ksc-openclaw-mem0-1.0.6.tgz
 ARG OPENCLAW_MEM0_PLUGIN_SHA256=
-ARG OPENCLAW_INSTALL_AGENTSPACE_PLUGIN=true
-ARG OPENCLAW_AGENTSPACE_PLUGIN_ID=agentspace
+ARG OPENCLAW_INSTALL_WPS_XIEZUO_PLUGIN=true
+ARG OPENCLAW_WPS_XIEZUO_PLUGIN_ID=wps-xiezuo
 ARG OPENCLAW_INSTALL_AGENT_BROWSER=true
 ARG OPENCLAW_AGENT_BROWSER_SPEC=agent-browser
 
@@ -75,9 +75,9 @@ RUN --mount=type=cache,target=/root/.npm \
 
 COPY ksadk_runtime_common /opt/ksadk_runtime_common
 COPY deploy/openclaw/workspace_files_app.py /opt/openclaw/workspace_files_app.py
-COPY --chmod=755 deploy/openclaw/bootstrap.sh /usr/local/bin/bootstrap.sh
 COPY --chmod=755 deploy/openclaw/safe-bin/openclaw-safe-exec /opt/openclaw/safe-bin/openclaw-safe-exec
 COPY deploy/openclaw/workspace-template /opt/openclaw/workspace-template
+COPY deploy/openclaw/wps-xiezuo-assets/openclaw-wps-xiezuo-1.6.0.tgz /opt/openclaw/wps-xiezuo-assets/openclaw-wps-xiezuo-1.6.0.tgz
 RUN set -eux; \
   mkdir -p /opt/openclaw/safe-bin; \
   for cmd in pwd ls whoami id uname date ps df du stat find cat head tail wc git mcporter sh-safe bash-safe web-safe; do \
@@ -93,10 +93,18 @@ RUN --mount=type=cache,target=/root/.npm \
     plugin_id="$2"; \
     work_root="$3"; \
     src_dir="$4"; \
+    extract_root="${work_root}/extract"; \
     mkdir -p "$(dirname "${src_dir}")"; \
-    tar -xzf "${archive_path}" -C "${work_root}"; \
-    test -d "${work_root}/package"; \
-    mv "${work_root}/package" "${src_dir}"; \
+    rm -rf "${extract_root}"; \
+    mkdir -p "${extract_root}"; \
+    tar -xzf "${archive_path}" -C "${extract_root}"; \
+    if [ -d "${extract_root}/package" ]; then \
+      mv "${extract_root}/package" "${src_dir}"; \
+    else \
+      archive_root="$(find "${extract_root}" -mindepth 1 -maxdepth 1 -type d | head -n 1)"; \
+      test -n "${archive_root}"; \
+      mv "${archive_root}" "${src_dir}"; \
+    fi; \
     if [ -f "${src_dir}/package.json" ]; then \
       (cd "${src_dir}" && npm install --omit=dev --no-audit --no-fund --registry "${NPM_REGISTRY}"); \
     fi; \
@@ -138,6 +146,33 @@ RUN --mount=type=cache,target=/root/.npm \
     cp -R "${src_dir}" "${dst_dir}"; \
     rm -rf "${work_root}"; \
   }; \
+  install_default_plugin_archive_file() { \
+    archive_path="$1"; \
+    plugin_id="$2"; \
+    work_root="$(mktemp -d)"; \
+    src_dir="${work_root}/state/extensions/${plugin_id}"; \
+    dst_dir="/opt/openclaw/default-extensions/${plugin_id}"; \
+    mkdir -p "${work_root}/home" "${work_root}/state" "/opt/openclaw/default-extensions"; \
+    test -f "${archive_path}"; \
+    # Keep this install path compatible with upstream OpenClaw 2026.3.28:
+    # that CLI accepts `openclaw plugins install <archive>` but does not
+    # support `--force`, which newer releases added later.
+    #
+    # We intentionally omit `--force` here because `work_root` is always a
+    # brand-new temporary state directory, so there is no pre-existing plugin
+    # to overwrite during image build.
+    #
+    # Safe removal rule for this compatibility note:
+    # remove or revisit it only after we drop 2026.3.28-based images, or if
+    # this helper stops installing into a fresh temp state dir and genuinely
+    # needs overwrite semantics again.
+    HOME="${work_root}/home" OPENCLAW_STATE_DIR="${work_root}/state" openclaw plugins install "${archive_path}"; \
+    HOME="${work_root}/home" OPENCLAW_STATE_DIR="${work_root}/state" openclaw plugins inspect "${plugin_id}" >/dev/null; \
+    test -d "${src_dir}"; \
+    rm -rf "${dst_dir}"; \
+    cp -R "${src_dir}" "${dst_dir}"; \
+    rm -rf "${work_root}"; \
+  }; \
   if [ "${OPENCLAW_INSTALL_WEIXIN_PLUGIN}" = "true" ]; then \
     install_default_plugin "${OPENCLAW_WEIXIN_PLUGIN_SPEC}" "${OPENCLAW_WEIXIN_PLUGIN_ID}"; \
   fi; \
@@ -147,10 +182,14 @@ RUN --mount=type=cache,target=/root/.npm \
   if [ "${OPENCLAW_INSTALL_MEM0_PLUGIN}" = "true" ]; then \
     install_default_plugin_archive "${OPENCLAW_MEM0_PLUGIN_URL}" "${OPENCLAW_MEM0_PLUGIN_SHA256}" "${OPENCLAW_MEM0_PLUGIN_ID}"; \
   fi; \
+  if [ "${OPENCLAW_INSTALL_WPS_XIEZUO_PLUGIN}" = "true" ]; then \
+    install_default_plugin_archive_file "/opt/openclaw/wps-xiezuo-assets/openclaw-wps-xiezuo-1.6.0.tgz" "${OPENCLAW_WPS_XIEZUO_PLUGIN_ID}"; \
+  fi; \
   chown -R node:node /opt/openclaw/default-extensions; \
   chmod -R a+rX /opt/openclaw/default-extensions
 
 COPY deploy/openclaw/preset-skills /opt/openclaw/preset-skills
+COPY --chmod=755 deploy/openclaw/bootstrap.sh /usr/local/bin/bootstrap.sh
 
 RUN --mount=type=cache,target=/root/.cache/pip \
   set -eux; \
@@ -170,56 +209,6 @@ RUN --mount=type=cache,target=/root/.cache/pip \
   find /opt/openclaw/preset-skills -type f ! -name '.content.sig' | LC_ALL=C sort | while IFS= read -r file_path; do \
     cksum "${file_path}"; \
   done | cksum | awk '{print $1 ":" $2}' > /opt/openclaw/preset-skills/.content.sig
-
-COPY deploy/openclaw/agentspace-assets.lock.json /opt/openclaw/agentspace-assets.lock.json
-
-RUN --mount=type=cache,target=/root/.npm \
-  set -eux; \
-  mkdir -p /opt/openclaw/default-extensions; \
-  unpack_plugin_archive() { \
-    archive_path="$1"; \
-    plugin_id="$2"; \
-    work_root="$3"; \
-    src_dir="$4"; \
-    mkdir -p "$(dirname "${src_dir}")"; \
-    tar -xzf "${archive_path}" -C "${work_root}"; \
-    test -d "${work_root}/package"; \
-    mv "${work_root}/package" "${src_dir}"; \
-    if [ -f "${src_dir}/package.json" ]; then \
-      (cd "${src_dir}" && npm install --omit=dev --no-audit --no-fund --registry "${NPM_REGISTRY}"); \
-    fi; \
-    HOME="${work_root}/home" OPENCLAW_STATE_DIR="${work_root}/state" openclaw plugins inspect "${plugin_id}" >/dev/null; \
-  }; \
-  install_default_plugin_archive() { \
-    archive_url="$1"; \
-    archive_sha256="$2"; \
-    plugin_id="$3"; \
-    work_root="$(mktemp -d)"; \
-    src_dir="${work_root}/state/extensions/${plugin_id}"; \
-    dst_dir="/opt/openclaw/default-extensions/${plugin_id}"; \
-    archive_path="${work_root}/${plugin_id}.tgz"; \
-    mkdir -p "${work_root}/home" "${work_root}/state" "/opt/openclaw/default-extensions"; \
-    curl -fsSL "${archive_url}" -o "${archive_path}"; \
-    if [ -n "${archive_sha256}" ]; then \
-      echo "${archive_sha256}  ${archive_path}" | sha256sum -c -; \
-    fi; \
-    unpack_plugin_archive "${archive_path}" "${plugin_id}" "${work_root}" "${src_dir}"; \
-    test -d "${src_dir}"; \
-    rm -rf "${dst_dir}"; \
-    cp -R "${src_dir}" "${dst_dir}"; \
-    rm -rf "${work_root}"; \
-  }; \
-  if [ "${OPENCLAW_INSTALL_AGENTSPACE_PLUGIN}" = "true" ]; then \
-    agentspace_url="$(jq -r '.assets.agentspace_plugin.url // empty' /opt/openclaw/agentspace-assets.lock.json)"; \
-    agentspace_sha256="$(jq -r '.assets.agentspace_plugin.sha256 // empty' /opt/openclaw/agentspace-assets.lock.json)"; \
-    if [ -z "${agentspace_url}" ]; then \
-      echo "ERROR: agentspace plugin url missing in /opt/openclaw/agentspace-assets.lock.json" >&2; \
-      exit 1; \
-    fi; \
-    install_default_plugin_archive "${agentspace_url}" "${agentspace_sha256}" "${OPENCLAW_AGENTSPACE_PLUGIN_ID}"; \
-  fi; \
-  chown -R node:node /opt/openclaw/default-extensions; \
-  chmod -R a+rX /opt/openclaw/default-extensions
 
 RUN --mount=type=cache,target=/root/.npm \
   set -eux; \

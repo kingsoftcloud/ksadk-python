@@ -16,7 +16,7 @@
 # - 只额外补平台常用默认值，方便直接运行和继续分发。
 # -----------------------------------------------------------------------------
 
-ARG OPENCLAW_BASE_IMAGE=hub-vpc-cn-beijing-6.kce.ksyun.com/agentengine-public/openclaw:2026.4.24
+ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.4.26@sha256:04e27383656941e59fba80a5a9c28b709f240ea980bd2cb375e4a7786d5a7a20
 FROM ${OPENCLAW_BASE_IMAGE}
 
 ENV OPENCLAW_GATEWAY_PORT=8080 \
