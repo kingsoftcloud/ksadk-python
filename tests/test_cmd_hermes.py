@@ -870,6 +870,37 @@ def test_hermes_deploy_sets_glm_51_context_length_by_default(tmp_path: Path, mon
     )
 
 
+def test_hermes_deploy_uses_provider_context_length_for_configured_model(tmp_path: Path, monkeypatch):
+    runner = CliRunner()
+    _FakeHermesClient.create_payload = None
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://kspmas.ksyun.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "deepseek-v4-pro")
+    monkeypatch.setattr(cmd_hermes, "AgentEngineClient", _FakeHermesClient)
+
+    async def _fake_fetch_provider_model_metadata(**_kwargs):
+        return {
+            "id": "deepseek-v4-pro",
+            "context_window_tokens": 1_000_000,
+            "max_output_tokens": 384_000,
+        }
+
+    monkeypatch.setattr(
+        cmd_hermes,
+        "fetch_provider_model_metadata",
+        _fake_fetch_provider_model_metadata,
+    )
+
+    result = runner.invoke(cmd_hermes.hermes, ["deploy", "--name", "demo-hermes"])
+
+    assert result.exit_code == 0, result.output
+    assert any(
+        item["Key"] == "HERMES_CONTEXT_LENGTH" and item["Value"] == "1000000"
+        for item in _FakeHermesClient.create_payload["env_vars"]
+    )
+
+
 def test_hermes_deploy_defaults_ui_locale_to_zh(tmp_path: Path, monkeypatch):
     runner = CliRunner()
     _FakeHermesClient.create_payload = None

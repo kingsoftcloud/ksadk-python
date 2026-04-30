@@ -179,6 +179,17 @@ agentengine openclaw channel connect <agent_id_or_name> \
 
 注意：`wps-xiezuo` 使用扁平配置，正确落点是 `channels["wps-xiezuo"].appId/appSecret`，不要写成老的 `accounts.default` 嵌套结构。bootstrap 会启用 `plugins.entries.wps-xiezuo.enabled=true`，并确保 `plugins.allow` 包含 `wps-xiezuo`。
 
+如果需要裁剪平台版镜像的内置 channel 插件，可以在构建镜像时传 `OPENCLAW_PRESET_PLUGINS_ALLOWLIST`。例如只内置 WPS 协作，不内置微信、飞书、mem0：
+
+```bash
+docker buildx build \
+  --build-arg OPENCLAW_PRESET_PLUGINS_ALLOWLIST=wps-xiezuo \
+  -t hub.kce.ksyun.com/agentengine-public/openclaw:2026.4.27 \
+  deploy/openclaw
+```
+
+该变量也会写入镜像运行时环境；bootstrap 会按同一白名单同步和自动启用插件。未设置时保持当前默认行为。
+
 常用命令：
 
 ```bash

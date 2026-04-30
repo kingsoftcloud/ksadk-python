@@ -237,6 +237,10 @@ def normalize_model_metadata(raw_model: Mapping[str, Any] | str | None) -> dict[
                 "context_window_tokens",
                 "metadata.context_window_tokens",
                 "limits.context_window_tokens",
+                "metadata.context_length",
+                "metadata.context_window",
+                "limits.context_length",
+                "limits.context_window",
             )
         )
         or _coerce_token_limit(
@@ -256,6 +260,10 @@ def normalize_model_metadata(raw_model: Mapping[str, Any] | str | None) -> dict[
                 "max_output_tokens",
                 "metadata.max_output_tokens",
                 "limits.max_output_tokens",
+                "metadata.max_completion_tokens",
+                "metadata.max_tokens",
+                "limits.max_completion_tokens",
+                "limits.max_tokens",
             )
         )
         or _coerce_token_limit(

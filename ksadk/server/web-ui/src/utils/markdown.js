@@ -48,6 +48,37 @@ function splitInlineTableBlob(line) {
     .filter((segment) => segment.trim().length > 0);
 }
 
+function normalizeTableLineArtifacts(line) {
+  if (!isTableRow(line)) {
+    return line;
+  }
+
+  // Streaming responses occasionally leave a dangling bold marker after a
+  // packed table row. Keep inline cell formatting intact, only remove markers
+  // that appear after the final pipe.
+  return line.replace(/\|\s*(?:\*{1,2}|_{1,2})\s*$/u, '|');
+}
+
+function tableColumnCount(line) {
+  const trimmed = line.trim();
+  if (!isTableRow(trimmed)) {
+    return 0;
+  }
+  return trimmed
+    .split('|')
+    .slice(1, -1)
+    .length;
+}
+
+function buildSeparatorRow(line) {
+  const indentation = line.match(/^(\s*)/)?.[1] || '';
+  const columns = tableColumnCount(line);
+  if (columns < 2) {
+    return '';
+  }
+  return `${indentation}| ${Array.from({ length: columns }, () => '---').join(' | ')} |`;
+}
+
 function normalizeTableGroups(block) {
   const normalizedLines = [];
 
@@ -57,13 +88,36 @@ function normalizeTableGroups(block) {
       normalizedLines.push(`${singlePipeProse[1]}${singlePipeProse[2].trim()}`);
       continue;
     }
-    normalizedLines.push(...splitInlineTableBlob(line));
+    normalizedLines.push(...splitInlineTableBlob(line).map(normalizeTableLineArtifacts));
   }
 
-  const withSpacing = [];
+  const repairedLines = [];
   for (let index = 0; index < normalizedLines.length; index += 1) {
     const line = normalizedLines[index];
     const nextLine = normalizedLines[index + 1] || '';
+    repairedLines.push(line);
+    if (
+      isTableRow(line) &&
+      isTableRow(nextLine) &&
+      !isSeparatorRow(nextLine) &&
+      tableColumnCount(line) === tableColumnCount(nextLine)
+    ) {
+      const previousLine = normalizedLines[index - 1] || '';
+      const previousIsTable = isTableRow(previousLine);
+      const lineIndentation = line.match(/^(\s*)/)?.[1] || '';
+      if (!previousIsTable && lineIndentation.length === 0) {
+        const separator = buildSeparatorRow(line);
+        if (separator) {
+          repairedLines.push(separator);
+        }
+      }
+    }
+  }
+
+  const withSpacing = [];
+  for (let index = 0; index < repairedLines.length; index += 1) {
+    const line = repairedLines[index];
+    const nextLine = repairedLines[index + 1] || '';
     const previousLine = withSpacing[withSpacing.length - 1] || '';
     const startsTableGroup = isTableRow(line) && (
       previousLine.trim().length === 0 || !isTableRow(previousLine)
@@ -121,7 +175,7 @@ function normalizeProseBlock(block) {
 
   // 列表经常被模型压成一行，这里只做轻量拆分。
   normalized = normalized.replace(/([。；;：:])\s*(\d+\.\s*)/g, '$1\n$2');
-  normalized = normalized.replace(/([^\n\s])(\d+\.\s*)/g, '$1\n$2');
+  normalized = normalized.replace(/([^\n\s])(\d+\.\s+)/g, '$1\n$2');
   normalized = normalized.replace(/([。；;：:\.])\s*-(?!-)\s*/g, '$1\n- ');
   normalized = normalized.replace(/([^\n\s-])-\s+/g, '$1\n- ');
   normalized = normalized.replace(/^-(?!-)(\S)/gm, '- $1');

@@ -25,6 +25,7 @@ from ksadk.cli.cmd_files import (
 )
 from ksadk.cli.resource_common import CONTEXT_SETTINGS, CompatibilityAliasCommand, print_compatibility_hint
 from ksadk.hermes_terminal import run_hermes_terminal_session
+from ksadk.terminal_client import run_terminal_session
 from ksadk_runtime_common.workspace_files.constants import DEFAULT_WORKSPACE_MAX_UPLOAD_BYTES
 
 try:
@@ -64,7 +65,7 @@ except ImportError:
     type=click.Choice(["auto", "chat", "native"], case_sensitive=False),
     default="auto",
     show_default=True,
-    help="交互传输层: auto(自动), chat(HTTP /v1/chat/completions), native(Hermes 远端终端)",
+    help="交互传输层: auto(自动), chat(HTTP OpenAI API), native(框架原生远端终端)",
 )
 @click.option(
     "--local-workspace",
@@ -560,6 +561,7 @@ def run_invoke_command(
         asyncio.run(_invoke_once(endpoint, message, runtime_api_key, session_id, True, insecure, model, api_format))
     else:
         is_hermes_target = _is_hermes_target(next_state, latest_access)
+        is_openclaw_target = _is_openclaw_target(next_state, latest_access)
         if normalized_transport == "chat" and is_hermes_target:
             click.secho("❌ Hermes 不再支持 ksadk 通用 chat TUI。", fg="red")
             click.echo("   浏览器聊天页请改用: agentengine hermes open --chat")
@@ -568,7 +570,7 @@ def run_invoke_command(
             if local or normalized_transport == "chat":
                 click.secho("❌ --local-workspace 仅支持远程 Hermes native 交互模式。", fg="red")
                 raise SystemExit(1)
-            if not (is_hermes_target or normalized_transport == "native"):
+            if not is_hermes_target:
                 click.secho("❌ --local-workspace 仅支持 Hermes 远程 native 模式。", fg="red")
                 raise SystemExit(1)
 
@@ -618,6 +620,18 @@ def run_invoke_command(
             _invoke_hermes_terminal_tui(
                 **native_kwargs,
             )
+        elif _should_use_openclaw_native_tui(
+            transport=normalized_transport,
+            local=local,
+            state=next_state,
+            latest_access=latest_access,
+        ):
+            _invoke_openclaw_terminal_tui(
+                endpoint=endpoint,
+                api_key=runtime_api_key,
+                session_id=session_id,
+                insecure=insecure,
+            )
         else:
             api_format = asyncio.run(
                 _resolve_remote_api_format(
@@ -637,6 +651,9 @@ def run_invoke_command(
                 model,
                 show_thinking,
                 api_format=api_format,
+                responses_session_header=(
+                    "x-openclaw-session-key" if _is_openclaw_target(next_state, latest_access) else None
+                ),
             )
 
 
@@ -650,6 +667,7 @@ def _invoke_tui(
     model: str = None,
     show_thinking: bool = False,
     api_format: str = "chat_completions",
+    responses_session_header: str | None = None,
 ):
     """使用 TUI 模式调用"""
     from ksadk.runners.remote_runner import RemoteRunner
@@ -662,6 +680,7 @@ def _invoke_tui(
         insecure=insecure,
         model=model,
         api_format=api_format,
+        responses_session_header=responses_session_header,
     )
 
     app = AgentTUI(
@@ -815,9 +834,13 @@ def _select_runtime_api_key(
         openclaw_gateway_token
         or os.environ.get("OPENCLAW_GATEWAY_TOKEN")
         or os.environ.get("OPENCLAW_GATEWAY_PASSWORD")
+        or latest_access.get("openclaw_gateway_token")
+        or latest_access.get("openclaw_gateway_password")
+        or state.get("openclaw_gateway_token")
+        or state.get("openclaw_gateway_password")
     )
     if gateway_token:
-        return gateway_token
+        return str(gateway_token).strip() or None
 
     auth_mode = _openclaw_auth_mode(state, latest_access)
     if auth_mode in {"token", "password"}:
@@ -825,6 +848,7 @@ def _select_runtime_api_key(
             "当前 OpenClaw Gateway 为 token/password 模式，agentengine invoke 需要 OpenClaw Gateway token。\n"
             "请使用: agentengine invoke --gateway-token <token>\n"
             "或设置: OPENCLAW_GATEWAY_TOKEN=<token> agentengine invoke\n"
+            "如果部署时传过 OPENCLAW_GATEWAY_TOKEN，请重新运行部署让本地 .agentengine.state 记录该 token。\n"
             "注意：这里不是 AgentEngine API Key（ak-*），而是 OPENCLAW_GATEWAY_TOKEN/OPENCLAW_GATEWAY_PASSWORD。"
         )
 
@@ -902,6 +926,16 @@ def _should_use_hermes_native_tui(*, transport: str, local: bool, state: dict, l
     return _is_hermes_target(state, latest_access)
 
 
+def _should_use_openclaw_native_tui(*, transport: str, local: bool, state: dict, latest_access: dict) -> bool:
+    if transport == "chat":
+        return False
+    if transport == "native":
+        return True
+    if local:
+        return False
+    return _is_openclaw_target(state, latest_access)
+
+
 def _invoke_hermes_terminal_tui(
     endpoint: str,
     api_key: str = None,
@@ -928,6 +962,35 @@ def _invoke_hermes_terminal_tui(
     except Exception as e:
         click.secho(f"\n❌ Hermes 终端连接失败: {e}", fg="red")
         click.echo("   浏览器聊天页请改用: agentengine hermes open --chat")
+        raise SystemExit(1)
+    if exit_code:
+        raise SystemExit(exit_code)
+
+
+def _invoke_openclaw_terminal_tui(
+    endpoint: str,
+    api_key: str = None,
+    session_id: str = None,
+    insecure: bool = False,
+):
+    click.secho("🖥️  OpenClaw Native Remote TUI", fg="blue", bold=True)
+    click.echo("   退出: Ctrl-D 或 Ctrl-C")
+    try:
+        exit_code = asyncio.run(
+            run_terminal_session(
+                endpoint=endpoint,
+                api_key=api_key,
+                session_id=session_id,
+                insecure=insecure,
+                mode="tui",
+                argv=[],
+            )
+        )
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        raise SystemExit(130)
+    except Exception as e:
+        click.secho(f"\n❌ OpenClaw 终端连接失败: {e}", fg="red")
+        click.echo("   浏览器聊天页请改用: agentengine dashboard open --path /chat")
         raise SystemExit(1)
     if exit_code:
         raise SystemExit(exit_code)

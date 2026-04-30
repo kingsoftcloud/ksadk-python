@@ -10,8 +10,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 BOOTSTRAP_SCRIPT = REPO_ROOT / "deploy" / "openclaw" / "bootstrap.sh"
 OPENCLAW_DOCKERFILE = REPO_ROOT / "deploy" / "openclaw" / "Dockerfile"
 LATEST_OPENCLAW_BASE_IMAGE = (
-    "ghcr.io/openclaw/openclaw:2026.4.26@"
-    "sha256:04e27383656941e59fba80a5a9c28b709f240ea980bd2cb375e4a7786d5a7a20"
+    "ghcr.io/openclaw/openclaw:2026.4.27@"
+    "sha256:3134a35220d503a67d3de12ee63bc6dfaf171425c0d7d75034636a09c81babd3"
 )
 VALID_MEM0_UUID = "e52b7fac-e641-4b34-b9f7-6b0b9f190cd4"
 
@@ -167,7 +167,9 @@ def test_openclaw_runtime_bundles_runtime_common_and_manifest_renderer():
     assert "COPY ksadk_runtime_common /opt/ksadk_runtime_common" in dockerfile
     assert "COPY deploy/openclaw/workspace_files_app.py /opt/openclaw/workspace_files_app.py" in dockerfile
     assert '"fastapi>=0.100.0,<0.124.0"' in dockerfile
+    assert '"httpx>=0.24.0,<1.0.0"' in dockerfile
     assert '"uvicorn>=0.23.0,<1.0.0"' in dockerfile
+    assert '"websockets>=11.0.0,<16.0.0"' in dockerfile
     assert '"python-multipart>=0.0.9,<1.0.0"' in dockerfile
     assert "PYTHONPATH=/opt" in dockerfile
     assert "from ksadk_runtime_common.memory_backend.render import render_to_json" in bootstrap
@@ -1769,6 +1771,18 @@ def test_bootstrap_does_not_relaunch_gateway_after_upstream_handoff_restart():
                     )
 
 
+def test_bootstrap_runtime_proxy_moves_gateway_to_internal_port():
+    bootstrap = BOOTSTRAP_SCRIPT.read_text(encoding="utf-8")
+
+    assert 'RUNTIME_PROXY_ENABLED="${OPENCLAW_RUNTIME_PROXY_ENABLED:-true}"' in bootstrap
+    assert 'GATEWAY_INTERNAL_PORT="${OPENCLAW_GATEWAY_INTERNAL_PORT:-18080}"' in bootstrap
+    assert 'GATEWAY_LISTENER_PORT="${GATEWAY_INTERNAL_PORT:-18080}"' in bootstrap
+    assert 'OPENCLAW_GATEWAY_PROXY_BASE_URL="http://127.0.0.1:${GATEWAY_LISTENER_PORT}"' in bootstrap
+    assert "uvicorn openclaw_runtime_proxy_app:app" in bootstrap
+    assert '--port "${GATEWAY_PORT}"' in bootstrap
+    assert 'node openclaw.mjs gateway run --allow-unconfigured --bind "${BIND_MODE}" --port "${GATEWAY_LISTENER_PORT}"' in bootstrap
+
+
 def test_bootstrap_writes_domestic_runtime_defaults_to_env_file():
     with TemporaryDirectory() as tmpdir:
         config_path = Path(tmpdir) / "openclaw.json"
@@ -3245,6 +3259,21 @@ def test_bootstrap_fails_when_required_runtime_patch_targets_are_missing():
             or "必需的 dist 补丁缺失:" in combined
         )
         assert not marker_file.exists()
+
+
+def test_bootstrap_dist_patch_registry_uses_capability_group_and_variant_metadata():
+    bootstrap = BOOTSTRAP_SCRIPT.read_text(encoding="utf-8")
+
+    assert "const requiredCapabilities = new Set([" in bootstrap
+    assert "capability:" in bootstrap
+    assert "group:" in bootstrap
+    assert "variant:" in bootstrap
+    assert "why:" in bootstrap
+    assert "since:" in bootstrap
+    assert "按能力验证必需补丁" in bootstrap
+    assert "缺失的必需能力" in bootstrap
+    assert "requiredLabels" not in bootstrap
+    assert "patchedLabels" not in bootstrap
 
 
 def test_bootstrap_defaults_state_dir_under_home_for_non_root_runtime():

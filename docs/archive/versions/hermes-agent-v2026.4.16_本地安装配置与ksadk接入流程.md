@@ -24,7 +24,6 @@
 Hermes runtime 通过 OpenAI-compatible 环境变量接线：
 
 ```bash
-export OPENAI_API_KEY=4fd210b0-eee5-4c64-a23c-dc7fb3f86717
 export OPENAI_BASE_URL=http://kspmas.ksyun.com/v1
 export OPENAI_MODEL_NAME=glm-5.1
 ```
@@ -32,7 +31,6 @@ export OPENAI_MODEL_NAME=glm-5.1
 也可以写进项目 `.env`：
 
 ```dotenv
-OPENAI_API_KEY=4fd210b0-eee5-4c64-a23c-dc7fb3f86717
 OPENAI_BASE_URL=http://kspmas.ksyun.com/v1
 OPENAI_MODEL_NAME=glm-5.1
 KSYUN_ACCESS_KEY=...

@@ -223,6 +223,9 @@ def test_build_openclaw_env_vars_omits_redundant_model_defaults(monkeypatch):
     monkeypatch.delenv("OPENAI_MODEL_NAME", raising=False)
     monkeypatch.delenv("MODEL_NAME", raising=False)
     monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.delenv("OPENCLAW_MODEL_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_BASE", raising=False)
     monkeypatch.delenv("OPENCLAW_MODEL_CATALOG_JSON", raising=False)
     monkeypatch.delenv("OPENCLAW_MODEL_PROVIDER_ID", raising=False)
     monkeypatch.delenv("OPENCLAW_MODEL_API", raising=False)
@@ -267,6 +270,37 @@ def test_build_openclaw_env_vars_preserves_explicit_model_catalog(monkeypatch):
     env = cmd_openclaw._build_openclaw_env_vars()
 
     assert env["OPENCLAW_MODEL_CATALOG_JSON"] == '[{"id":"glm-5.1"}]'
+
+
+def test_openclaw_provider_model_metadata_builds_catalog_for_creation(monkeypatch):
+    monkeypatch.setattr(cmd_openclaw, "_GLOBAL_ENV_CACHE", {})
+    monkeypatch.delenv("OPENCLAW_MODEL_CATALOG_JSON", raising=False)
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "deepseek-v4-pro")
+
+    env = cmd_openclaw._build_openclaw_env_vars()
+    changed = cmd_openclaw._apply_openclaw_provider_model_metadata(
+        env,
+        {
+            "id": "deepseek-v4-pro",
+            "context_window_tokens": 1_000_000,
+            "max_output_tokens": 384_000,
+        },
+    )
+
+    assert changed is True
+    catalog = json.loads(env["OPENCLAW_MODEL_CATALOG_JSON"])
+    assert catalog == [
+        {
+            "id": "deepseek-v4-pro",
+            "name": "deepseek-v4-pro",
+            "api": "openai-completions",
+            "reasoning": True,
+            "input": ["text", "image"],
+            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+            "contextWindow": 1_000_000,
+            "maxTokens": 384_000,
+        }
+    ]
 
 
 def test_build_openclaw_env_vars_forwards_explicit_web_tool_overrides(monkeypatch):

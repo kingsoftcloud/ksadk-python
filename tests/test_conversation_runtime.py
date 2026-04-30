@@ -15,8 +15,10 @@ from ksadk.conversations.runtime import (
     build_compaction_sse_event,
     build_run_input,
     compact_conversation_history,
+    extract_responses_resume_input,
     invoke_conversation_once,
     preview_auto_compaction,
+    stream_responses_conversation_turn,
     stream_conversation_turn,
 )
 from ksadk.runtime_context import get_current_invocation_context
@@ -60,6 +62,12 @@ class _StreamingRunner(_StubRunner):
         self.stream_calls.append(input_data)
         yield {"type": "text", "delta": "hello"}
         yield {"type": "final", "output": "hello"}
+
+
+class _ResumeStreamingRunner(_StreamingRunner):
+    async def stream(self, input_data: dict):
+        self.stream_calls.append(input_data)
+        yield {"type": "final", "output": "resumed"}
 
 
 class _ContextCapturingRunner(_StubRunner):
@@ -138,6 +146,46 @@ def test_build_compaction_sse_event_returns_str_with_millisecond_timestamp():
     assert payload["threshold_percentage"] == 80
     assert isinstance(payload["timestamp"], int)
     assert before_ms <= payload["timestamp"] <= after_ms
+
+
+def test_extract_responses_resume_input_accepts_openai_mcp_approval_response():
+    resume_input = extract_responses_resume_input(
+        [
+            {
+                "type": "mcp_approval_response",
+                "id": "mcprsp_123",
+                "approval_request_id": "appr_123",
+                "approve": True,
+                "reason": "looks safe",
+            }
+        ]
+    )
+
+    assert resume_input == {
+        "type": "mcp_approval_response",
+        "id": "mcprsp_123",
+        "approval_request_id": "appr_123",
+        "approve": True,
+        "reason": "looks safe",
+    }
+
+
+def test_extract_responses_resume_input_accepts_ksadk_resume_extension():
+    resume_input = extract_responses_resume_input(
+        [
+            {
+                "type": "ksadk_resume",
+                "interrupt_id": "intr_123",
+                "value": {"answer": "继续", "approved": True},
+            }
+        ]
+    )
+
+    assert resume_input == {
+        "type": "ksadk_resume",
+        "interrupt_id": "intr_123",
+        "value": {"answer": "继续", "approved": True},
+    }
 
 
 @pytest.mark.asyncio
@@ -390,6 +438,65 @@ async def test_invoke_conversation_once_passes_session_id_to_runner(monkeypatch)
     )
 
     assert runner.calls[-1]["session_id"] == session_id
+
+
+@pytest.mark.asyncio
+async def test_invoke_conversation_once_maps_mcp_approval_response_to_runner_resume(monkeypatch):
+    service = InMemorySessionService()
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-approval")
+    await service.append_event(
+        "sess-approval",
+        SessionEvent(
+            id="evt-approval",
+            author="demo-agent",
+            event_type="approval_request",
+            content={"role": "model", "parts": [{"text": "approval required"}]},
+            metadata={
+                "interrupt_info": {
+                    "approval_request_id": "appr_123",
+                    "tool_name": "deploy",
+                }
+            },
+            invocation_id="inv-approval",
+        ),
+    )
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _StubRunner()
+
+    session_id, result = await invoke_conversation_once(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-approval",
+        messages=[],
+        model="gpt-4o",
+        resume_input={
+            "type": "mcp_approval_response",
+            "approval_request_id": "appr_123",
+            "approve": True,
+            "reason": "looks safe",
+        },
+        prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+    )
+
+    assert session_id == "sess-approval"
+    assert result["output_text"] == "assistant says hi"
+    assert runner.calls[-1]["resume"] is True
+    assert runner.calls[-1]["input"] == {
+        "type": "mcp_approval_response",
+        "approval_request_id": "appr_123",
+        "approve": True,
+        "reason": "looks safe",
+    }
+    events = await service.get_events("sess-approval")
+    assert [event.event_type for event in events] == [
+        "approval_request",
+        "approval_response",
+        "run_status",
+        "assistant_message",
+        "run_status",
+    ]
+    assert events[1].metadata["resume_input"]["approval_request_id"] == "appr_123"
 
 
 @pytest.mark.asyncio
@@ -878,6 +985,54 @@ async def test_stream_conversation_turn_passes_session_id_to_runner(monkeypatch)
 
     assert events
     assert runner.stream_calls[-1]["session_id"] == session.id
+
+
+@pytest.mark.asyncio
+async def test_stream_responses_conversation_turn_maps_ksadk_resume_to_runner_resume(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _ResumeStreamingRunner()
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-resume-stream")
+    await service.append_event(
+        "sess-resume-stream",
+        SessionEvent(
+            id="evt-approval",
+            author="demo-agent",
+            event_type="approval_request",
+            content={"role": "model", "parts": [{"text": "need human input"}]},
+            metadata={"interrupt_info": {"id": "intr_123"}},
+            invocation_id="inv-approval",
+        ),
+    )
+
+    chunks = [
+        chunk
+        async for chunk in stream_responses_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-resume-stream",
+            messages=[],
+            model="gpt-4o",
+            resume_input={
+                "type": "ksadk_resume",
+                "interrupt_id": "intr_123",
+                "value": {"answer": "继续", "approved": True},
+            },
+            prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+            session_service_provider=lambda: service,
+        )
+    ]
+
+    assert runner.stream_calls[-1]["resume"] is True
+    assert runner.stream_calls[-1]["input"] == {
+        "type": "ksadk_resume",
+        "interrupt_id": "intr_123",
+        "value": {"answer": "继续", "approved": True},
+    }
+    assert any(chunk.startswith("event: response.completed\n") for chunk in chunks)
+    events = await service.get_events("sess-resume-stream")
+    assert "approval_response" in [event.event_type for event in events]
 
 
 @pytest.mark.asyncio

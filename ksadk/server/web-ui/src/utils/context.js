@@ -107,13 +107,13 @@ export function buildComposerContextIndicator({ messages, draftInput, selectedMo
   const warningThreshold = resolveAutoCompactThresholdPercent(selectedModel);
   if (percent >= warningThreshold) {
     return {
-      label: `上下文 ${percent}% · 即将压缩`,
+      label: `估算上下文 ${percent}% · 即将压缩`,
       phase: 'warning',
       percent,
     };
   }
   return {
-    label: `上下文 ${percent}%`,
+    label: `估算上下文 ${percent}%`,
     phase: 'normal',
     percent,
   };

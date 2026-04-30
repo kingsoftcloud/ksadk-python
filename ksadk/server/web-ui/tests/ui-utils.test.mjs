@@ -84,6 +84,40 @@ test('preprocessMarkdown preserves list indentation before tables', () => {
   assert.match(normalized, /\n\s+\| --- \| --- \|/);
 });
 
+test('preprocessMarkdown repairs header-only pipe tables from model output', () => {
+  const raw = [
+    '## 三地对比',
+    '| 市场 | 表现 | 日期 |',
+    '| A股 | 小幅下跌（沪指 - 0.09%） | 4月30日盘中 || 港股 | 跌幅较大（恒指 - 1.34%） | 4月30日盘中 || 美股 | 小幅收涨（纳指 + 0.27%） | 4月29日收盘 |',
+    '',
+    '今日亚太市场整体偏弱。',
+  ].join('\n');
+
+  const normalized = preprocessMarkdown(raw);
+
+  assert.match(normalized, /\| 市场 \| 表现 \| 日期 \|\n\| --- \| --- \| --- \|/);
+  assert.match(normalized, /\| A股 \| 小幅下跌（沪指 - 0\.09%） \| 4月30日盘中 \|/);
+  assert.match(normalized, /\| 港股 \| 跌幅较大（恒指 - 1\.34%） \| 4月30日盘中 \|/);
+  assert.match(normalized, /\| 美股 \| 小幅收涨（纳指 \+ 0\.27%） \| 4月29日收盘 \|/);
+});
+
+test('preprocessMarkdown repairs malformed packed market tables', () => {
+  const raw = [
+    '| 指数 | 当前 | 涨跌 | 涨幅 |',
+    '| 上证指数 | 4 111.02 | + 3.50 | + 0.09% || 深证成指 | 15 111.33 | - 9.60 | - 0.06% || 创业板指 | 3 353.40 | - 8.92 | - 0.27% | **',
+    '- 数据仅供参考',
+  ].join('\n');
+
+  const normalized = preprocessMarkdown(raw);
+
+  assert.match(normalized, /\| 指数 \| 当前 \| 涨跌 \| 涨幅 \|\n\| --- \| --- \| --- \| --- \|/);
+  assert.match(normalized, /\| 上证指数 \| 4 111\.02 \| \+ 3\.50 \| \+ 0\.09% \|/);
+  assert.match(normalized, /\| 深证成指 \| 15 111\.33 \| - 9\.60 \| - 0\.06% \|/);
+  assert.match(normalized, /\| 创业板指 \| 3 353\.40 \| - 8\.92 \| - 0\.27% \|/);
+  assert.doesNotMatch(normalized, /\|\s+\*\*/);
+  assert.match(normalized, /\n\n- 数据仅供参考/);
+});
+
 test('preprocessMarkdown keeps consecutive heading markers intact', () => {
   assert.equal(preprocessMarkdown('##⏭️ 下一步'), '## ⏭️ 下一步');
   assert.equal(preprocessMarkdown('###📌 标题'), '### 📌 标题');

@@ -1,6 +1,6 @@
 ## syntax=docker/dockerfile:1.7
 # https://github.com/openclaw/openclaw/pkgs/container/openclaw
-ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.4.26@sha256:04e27383656941e59fba80a5a9c28b709f240ea980bd2cb375e4a7786d5a7a20
+ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.4.27@sha256:3134a35220d503a67d3de12ee63bc6dfaf171425c0d7d75034636a09c81babd3
 FROM ${OPENCLAW_BASE_IMAGE}
 
 # ── 可通过 --build-arg 覆盖的参数 ──────────────────────────────
@@ -19,11 +19,13 @@ ARG OPENCLAW_MEM0_PLUGIN_URL=https://wangxu-test.ks3-cn-beijing.ksyuncs.com/ksc-
 ARG OPENCLAW_MEM0_PLUGIN_SHA256=
 ARG OPENCLAW_INSTALL_WPS_XIEZUO_PLUGIN=true
 ARG OPENCLAW_WPS_XIEZUO_PLUGIN_ID=wps-xiezuo
+ARG OPENCLAW_PRESET_PLUGINS_ALLOWLIST=
 ARG OPENCLAW_INSTALL_AGENT_BROWSER=true
 ARG OPENCLAW_AGENT_BROWSER_SPEC=agent-browser
 
 USER root
 ENV TZ=${TZ}
+ENV OPENCLAW_PRESET_PLUGINS_ALLOWLIST=${OPENCLAW_PRESET_PLUGINS_ALLOWLIST}
 
 # 说明：
 # - 在 Apple Silicon 上构建 linux/amd64 会走 QEMU，首轮必然偏慢。
@@ -75,6 +77,7 @@ RUN --mount=type=cache,target=/root/.npm \
 
 COPY ksadk_runtime_common /opt/ksadk_runtime_common
 COPY deploy/openclaw/workspace_files_app.py /opt/openclaw/workspace_files_app.py
+COPY deploy/openclaw/openclaw_runtime_proxy_app.py /opt/openclaw/openclaw_runtime_proxy_app.py
 COPY --chmod=755 deploy/openclaw/safe-bin/openclaw-safe-exec /opt/openclaw/safe-bin/openclaw-safe-exec
 COPY deploy/openclaw/workspace-template /opt/openclaw/workspace-template
 COPY deploy/openclaw/wps-xiezuo-assets/openclaw-wps-xiezuo-1.6.0.tgz /opt/openclaw/wps-xiezuo-assets/openclaw-wps-xiezuo-1.6.0.tgz
@@ -88,6 +91,21 @@ RUN set -eux; \
 RUN --mount=type=cache,target=/root/.npm \
   set -eux; \
   mkdir -p /opt/openclaw/default-extensions; \
+  preset_plugin_allowed() { \
+    plugin_id="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"; \
+    shift || true; \
+    allowlist="$(printf ',%s,' "${OPENCLAW_PRESET_PLUGINS_ALLOWLIST:-}" | tr '[:upper:]' '[:lower:]' | sed 's/[;[:space:]]\\+/,/g')"; \
+    if [ -z "${OPENCLAW_PRESET_PLUGINS_ALLOWLIST:-}" ]; then \
+      return 0; \
+    fi; \
+    case "${allowlist}" in *,"${plugin_id}",*) return 0 ;; esac; \
+    for alias in "$@"; do \
+      alias="$(printf '%s' "${alias:-}" | tr '[:upper:]' '[:lower:]')"; \
+      [ -n "${alias}" ] || continue; \
+      case "${allowlist}" in *,"${alias}",*) return 0 ;; esac; \
+    done; \
+    return 1; \
+  }; \
   unpack_plugin_archive() { \
     archive_path="$1"; \
     plugin_id="$2"; \
@@ -173,16 +191,16 @@ RUN --mount=type=cache,target=/root/.npm \
     cp -R "${src_dir}" "${dst_dir}"; \
     rm -rf "${work_root}"; \
   }; \
-  if [ "${OPENCLAW_INSTALL_WEIXIN_PLUGIN}" = "true" ]; then \
+  if [ "${OPENCLAW_INSTALL_WEIXIN_PLUGIN}" = "true" ] && preset_plugin_allowed "${OPENCLAW_WEIXIN_PLUGIN_ID}" "${OPENCLAW_WEIXIN_PLUGIN_SPEC}" weixin; then \
     install_default_plugin "${OPENCLAW_WEIXIN_PLUGIN_SPEC}" "${OPENCLAW_WEIXIN_PLUGIN_ID}"; \
   fi; \
-  if [ "${OPENCLAW_INSTALL_LARK_PLUGIN}" = "true" ]; then \
+  if [ "${OPENCLAW_INSTALL_LARK_PLUGIN}" = "true" ] && preset_plugin_allowed "${OPENCLAW_LARK_PLUGIN_ID}" "${OPENCLAW_LARK_PLUGIN_SPEC}" feishu lark; then \
     install_default_plugin "${OPENCLAW_LARK_PLUGIN_SPEC}" "${OPENCLAW_LARK_PLUGIN_ID}"; \
   fi; \
-  if [ "${OPENCLAW_INSTALL_MEM0_PLUGIN}" = "true" ]; then \
+  if [ "${OPENCLAW_INSTALL_MEM0_PLUGIN}" = "true" ] && preset_plugin_allowed "${OPENCLAW_MEM0_PLUGIN_ID}" mem0; then \
     install_default_plugin_archive "${OPENCLAW_MEM0_PLUGIN_URL}" "${OPENCLAW_MEM0_PLUGIN_SHA256}" "${OPENCLAW_MEM0_PLUGIN_ID}"; \
   fi; \
-  if [ "${OPENCLAW_INSTALL_WPS_XIEZUO_PLUGIN}" = "true" ]; then \
+  if [ "${OPENCLAW_INSTALL_WPS_XIEZUO_PLUGIN}" = "true" ] && preset_plugin_allowed "${OPENCLAW_WPS_XIEZUO_PLUGIN_ID}" wps wps-xiezuo; then \
     install_default_plugin_archive_file "/opt/openclaw/wps-xiezuo-assets/openclaw-wps-xiezuo-1.6.0.tgz" "${OPENCLAW_WPS_XIEZUO_PLUGIN_ID}"; \
   fi; \
   chown -R node:node /opt/openclaw/default-extensions; \
@@ -197,7 +215,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     "fastapi>=0.100.0,<0.124.0" \
     "pydantic>=2.0.0,<3.0.0" \
     "jsonschema>=4.0.0,<5.0.0" \
+    "httpx>=0.24.0,<1.0.0" \
     "uvicorn>=0.23.0,<1.0.0" \
+    "websockets>=11.0.0,<16.0.0" \
     "python-multipart>=0.0.9,<1.0.0"
 
 RUN --mount=type=cache,target=/root/.cache/pip \

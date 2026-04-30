@@ -719,12 +719,27 @@ def config_set(set_items: tuple, is_global: bool, output_mode: str | None):
 
 
 @config.command("model", context_settings=CONTEXT_SETTINGS)
-def config_model():
+@click.option("--multi", is_flag=True, help="交互式多选模型，并按当前框架写入模型 allowlist")
+@click.option(
+    "--env",
+    "env_models",
+    default=None,
+    help="按模型列表生成环境变量，逗号分隔；首个模型作为默认模型，不写入 .env",
+)
+@click.option(
+    "--framework",
+    type=click.Choice(["auto", "openclaw", "hermes", "generic"], case_sensitive=False),
+    default="auto",
+    show_default=True,
+    help="allowlist 变量选择策略；auto 会读取当前目录框架",
+)
+def config_model(multi: bool, env_models: str | None, framework: str):
     """切换默认模型。"""
-    ensure_json_output_supported(
-        "agentengine config model",
-        suggestion="请改用 `agentengine config show --output json` 查看当前配置。",
-    )
+    if not env_models:
+        ensure_json_output_supported(
+            "agentengine config model",
+            suggestion="请改用 `agentengine config show --output json` 查看当前配置。",
+        )
     from ksadk.cli.cmd_model import run_model_command
 
-    run_model_command()
+    run_model_command(multi=multi, env_models=env_models, framework=framework)

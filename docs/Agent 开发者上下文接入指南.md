@@ -23,6 +23,7 @@
 
 1. `LangGraph`
    - 自定义 `ksadk_prepare_state(payload, session_context)`
+   - 具体项目结构、interrupt / resume、Responses approval 写法见 [LangGraph开发最佳实践](./frameworks/LangGraph开发最佳实践.md)
 2. `LangChain`
    - 自定义 `ksadk_prepare_input(payload, session_context)`
 3. `ADK`
@@ -175,190 +176,26 @@ supports_image = bool(
 
 ## 6. LangGraph 怎么拿上下文
 
-### 6.0 `ksadk_prepare_state` 放在哪
+LangGraph 的完整开发写法已经内化到框架专属文档：
 
-`ksadk` 不会全项目扫描这个函数，它只会在 **`agentengine.yaml` 的 `entry_point` 对应模块** 上做一次 `getattr(module, "ksadk_prepare_state")`。
+- [LangGraph开发最佳实践](./frameworks/LangGraph开发最佳实践.md)
 
-这意味着：
+这里只保留平台上下文接入的核心边界：
 
-- 可以放在 `entry_point` 对应的 `agent.py` 里
-- 可以放在同一个模块文件的任意位置
-- 只要它最终是这个模块的**顶层可见符号**就行
+- 默认 messages-based 图可以不写 hook，运行时会自动构造 `messages` state
+- 自定义 state 图推荐显式暴露 `ksadk_prepare_state(payload, session_context)`
+- `ksadk_prepare_state` 必须在 `agentengine.yaml` 的 `entry_point` 对应模块顶层可见
+- 附件、OCR、原始输入片段优先从 `payload` 读取
+- 会话历史、平台身份、知识库、长期记忆优先从 `session_context` 读取
+- LangGraph `interrupt()` 的恢复由平台协议层判断，业务代码不需要自己猜下一轮是否要 `Command(resume=...)`
 
-正确示例：
-
-```python
-# agent.py
-
-def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
-    ...
-
-root_agent = graph.compile()
-```
-
-或者：
-
-```python
-# agent.py
-from .state_adapter import ksadk_prepare_state
-
-root_agent = graph.compile()
-```
-
-只要 `agent.py` 这个被加载的模块上，最终存在 `ksadk_prepare_state` 属性即可。
-
-不推荐 / 不生效的放法：
-
-- 放在别的文件里，但没有从 `entry_point` 模块 re-export
-- 写在类方法里
-- 写在函数内部
-- 运行时动态创建，但模块导入完成后外层属性上拿不到
-
-判断标准很简单：
-
-```python
-module.ksadk_prepare_state
-```
-
-如果这句在 `entry_point` 模块上拿不到，`ksadk` 就不会调用你的 hook。
-
-### 6.1 默认 messages-based 图
-
-如果你没有写 `ksadk_prepare_state()`，平台会自动把输入转成：
-
-```python
-{
-  "attachments": [...],
-  "attachment_results": [...],
-  "input_parts": [...],
-  "model_metadata": {...},
-  "messages": [
-    SystemMessage(...),
-    HumanMessage(...),
-    AIMessage(...),
-    HumanMessage(...),
-  ],
-}
-```
-
-其中最后一条 `HumanMessage`：
-
-- 对纯文本模型通常是字符串
-- 对支持图片输入的多模态模型，可能是多模态 content blocks 列表
-
-### 6.2 推荐：显式写 `ksadk_prepare_state`
-
-最推荐的写法是：
+最小推荐写法：
 
 ```python
 def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
-    return {
-        "query": payload["input"],
-        "history": session_context["history"],
-        "attachments": payload.get("attachments", []),
-        "attachment_results": payload.get("attachment_results", []),
-        "platform_context": session_context["platform_context"],
-        "kb_context": session_context["kb_context"],
-        "memory_context": session_context["memory_context"],
-        "model_metadata": payload.get("model_metadata"),
-    }
-```
+    if session_context.get("is_resume"):
+        return payload.get("input")
 
-然后你的节点里就可以非常直接地拿：
-
-```python
-def agent_node(state: dict):
-    query = state["query"]
-    attachments = state.get("attachments", [])
-    attachment_results = state.get("attachment_results", [])
-    model_metadata = state.get("model_metadata", {})
-    platform_context = state.get("platform_context", {})
-```
-
-### 6.3 `session_context` 当前有哪些字段
-
-`ksadk_prepare_state(payload, session_context)` 里，当前可稳定拿到：
-
-`payload` 包含：
-
-- `input`
-- `attachments`
-- `attachment_results`
-- `input_parts`
-- `model_metadata`
-- `instructions`
-
-`session_context` 包含：
-
-- `session_id`
-- `history`
-- `platform_context`
-- `kb_context`
-- `memory_context`
-- `is_resume`
-
-如果你想拿附件、图片 OCR 结果、原始输入片段，优先从 `payload` 读取；如果你想拿会话历史、平台身份、知识库和长期记忆上下文，从 `session_context` 读取。
-
-### 6.4 一个完整可跑的 LangGraph Demo
-
-下面这个例子演示一个最小但完整的 LangGraph agent：
-
-- 使用自定义 `TypedDict`
-- 使用 `ksadk_prepare_state()` 接平台上下文
-- 把历史、附件 OCR 结果、模型能力都投影进 state
-- 节点里根据是否支持图片输入走不同分支
-
-```python
-from __future__ import annotations
-
-from typing import TypedDict, Annotated, Any
-import operator
-
-from langgraph.graph import StateGraph, END
-
-
-class AgentState(TypedDict):
-    query: str
-    history: list[dict[str, Any]]
-    attachments: list[dict[str, Any]]
-    attachment_results: list[dict[str, Any]]
-    platform_context: dict[str, Any] | None
-    kb_context: dict[str, Any] | None
-    memory_context: dict[str, Any] | None
-    model_metadata: dict[str, Any]
-    messages: Annotated[list[dict[str, str]], operator.add]
-
-
-def analyze(state: AgentState) -> AgentState:
-    query = state["query"]
-    attachment_results = state.get("attachment_results", [])
-    model_metadata = state.get("model_metadata", {})
-    capabilities = model_metadata.get("capabilities") or {}
-    supports_image = bool(capabilities.get("multimodal_input_image"))
-
-    ocr_texts = [
-        item.get("text", "")
-        for item in attachment_results
-        if isinstance(item, dict) and item.get("text")
-    ]
-
-    summary_parts = [
-        f"query={query}",
-        f"supports_image={supports_image}",
-        f"ocr_texts={ocr_texts}",
-    ]
-
-    return {
-        "messages": [
-            {
-                "role": "assistant",
-                "content": " | ".join(summary_parts),
-            }
-        ]
-    }
-
-
-def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
     return {
         "query": payload["input"],
         "history": session_context["history"],
@@ -368,32 +205,10 @@ def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
         "kb_context": session_context.get("kb_context"),
         "memory_context": session_context.get("memory_context"),
         "model_metadata": payload.get("model_metadata", {}),
-        "messages": [],
     }
-
-
-workflow = StateGraph(AgentState)
-workflow.add_node("analyze", analyze)
-workflow.set_entry_point("analyze")
-workflow.add_edge("analyze", END)
-
-root_agent = workflow.compile()
 ```
 
-配套 `agentengine.yaml` 只需要保证：
-
-```yaml
-name: my-agent
-framework: langgraph
-entry_point: my_agent/agent.py
-agent_variable: root_agent
-```
-
-这个 demo 的意义是：
-
-- 你不必从 `messages[-1]` 猜图片上下文
-- 你可以稳定地从 `payload / session_context` 投影出自己真正想要的 state
-- 这样 graph 节点逻辑和平台输入 contract 是解耦的
+如果涉及 human-in-the-loop / MCP 工具审批 / `interrupt()` 断点恢复，请优先阅读 [LangGraph开发最佳实践](./frameworks/LangGraph开发最佳实践.md) 的 interrupt 与 Responses approval 章节。
 
 ## 7. LangChain 怎么拿上下文
 
@@ -603,6 +418,7 @@ def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
 
 ## 14. 相关文档
 
+- [LangGraph开发最佳实践](./frameworks/LangGraph开发最佳实践.md)
 - [远程Agent运行时接口说明](./远程Agent运行时接口说明.md)
 - [ksadk使用文档](./ksadk使用文档.md)
 - [ksadk技术设计](./ksadk技术设计.md)

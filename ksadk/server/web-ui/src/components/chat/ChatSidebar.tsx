@@ -31,7 +31,7 @@ export function ChatSidebar({
 }: ChatSidebarProps) {
   return (
     <div className={cn('flex h-full min-h-0 flex-col bg-slate-50 dark:bg-slate-950/80', className)}>
-      <div className="border-b border-slate-200/80 p-4 dark:border-slate-800">
+      <div className="flex h-14 flex-shrink-0 items-center border-b border-slate-200/80 px-4 dark:border-slate-800">
         <button
           type="button"
           onClick={onCreateNewSession}

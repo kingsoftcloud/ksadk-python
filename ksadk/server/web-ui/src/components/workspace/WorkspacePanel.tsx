@@ -481,7 +481,7 @@ export function WorkspacePanel({
 
   return (
     <div className="flex h-full min-h-[22rem] w-full min-w-0 flex-col bg-white text-slate-800 dark:bg-slate-950 dark:text-slate-200">
-      <div className="flex h-12 flex-shrink-0 items-center gap-3 border-b border-slate-200/60 px-4 dark:border-slate-800/70">
+      <div className="flex h-14 flex-shrink-0 items-center gap-3 border-b border-slate-200/60 px-4 dark:border-slate-800/70">
         <div className="flex min-w-0 flex-1 items-center gap-3">
           <div className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">
             {displayRootLabel}
@@ -545,7 +545,7 @@ export function WorkspacePanel({
 
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
         <div className="flex w-full flex-col border-b border-slate-200/60 dark:border-slate-800/70 md:w-[13.5rem] md:border-b-0 md:border-r">
-          <div className="border-b border-slate-200/60 px-3 py-2 dark:border-slate-800/70">
+          <div className="flex h-14 flex-shrink-0 items-center border-b border-slate-200/60 px-3 dark:border-slate-800/70">
             <div className="flex items-center justify-between gap-2">
               <div className="min-w-0">
                 <div className="text-xs font-medium text-slate-900 dark:text-slate-100">文件</div>
@@ -702,7 +702,7 @@ export function WorkspacePanel({
         </div>
 
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <div className="flex min-h-12 items-center border-b border-slate-200/60 px-4 py-2 dark:border-slate-800/70">
+          <div className="flex h-14 flex-shrink-0 items-center border-b border-slate-200/60 px-4 dark:border-slate-800/70">
             {selectedEntry ? (
               <div className="flex w-full items-start justify-between gap-3">
                 <div className="min-w-0">

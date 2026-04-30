@@ -12,7 +12,7 @@ import signal
 import ssl
 import sys
 from dataclasses import dataclass
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 from urllib.parse import urlsplit, urlunsplit
 
 
@@ -115,6 +115,7 @@ def build_start_frame(
     cols: int,
     rows: int,
     cwd: str | None = None,
+    options: Mapping[str, Any] | None = None,
 ) -> str:
     normalized_mode = str(mode or "").strip().lower()
     if normalized_mode not in {"tui", "exec", "pairing", "connect"}:
@@ -129,6 +130,8 @@ def build_start_frame(
     normalized_cwd = str(cwd or "").strip()
     if normalized_cwd:
         payload["cwd"] = normalized_cwd
+    if options:
+        payload["options"] = dict(options)
     return json.dumps(payload, ensure_ascii=False)
 
 
@@ -335,6 +338,7 @@ async def run_hermes_terminal_session(
     mode: str = "tui",
     argv: Sequence[str] | None = None,
     cwd: str | None = None,
+    options: Mapping[str, Any] | None = None,
     stdin: Any | None = None,
     stdout: Any | None = None,
 ) -> int:
@@ -381,6 +385,7 @@ async def run_hermes_terminal_session(
                 cols=size.cols,
                 rows=size.rows,
                 cwd=cwd,
+                options=options,
             )
         )
 

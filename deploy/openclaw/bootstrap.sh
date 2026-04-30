@@ -24,6 +24,11 @@ BROWSER_EXECUTABLE_DEFAULT="/usr/bin/chromium"
 WORKSPACE_DIR="${OPENCLAW_WORKSPACE_DIR:-${STATE_DIR}/workspace}"
 WORKSPACE_FILES_PORT="${OPENCLAW_WORKSPACE_FILES_PORT:-8091}"
 WORKSPACE_FILES_PROXY_URL="${OPENCLAW_WORKSPACE_FILES_PROXY_URL:-http://127.0.0.1:${WORKSPACE_FILES_PORT}}"
+RUNTIME_PROXY_ENABLED="${OPENCLAW_RUNTIME_PROXY_ENABLED:-true}"
+GATEWAY_INTERNAL_PORT="${OPENCLAW_GATEWAY_INTERNAL_PORT:-18080}"
+if [[ -n "${OPENCLAW_DIST_PATCH_ONLY:-}" || -n "${OPENCLAW_BOOTSTRAP_ONLY:-}" ]]; then
+  RUNTIME_PROXY_ENABLED="${OPENCLAW_RUNTIME_PROXY_ENABLED:-false}"
+fi
 SAFE_BIN_DIR="${OPENCLAW_SAFE_BIN_DIR:-/opt/openclaw/safe-bin}"
 PRESET_SKILLS_DIR="${OPENCLAW_PRESET_SKILLS_DIR:-/opt/openclaw/preset-skills}"
 DEFAULT_EXTENSIONS_DIR="${OPENCLAW_DEFAULT_EXTENSIONS_DIR:-/opt/openclaw/default-extensions}"
@@ -93,6 +98,57 @@ csv_contains_name() {
   return 1
 }
 
+normalize_name_list_csv() {
+  local raw="${1:-}"
+  printf '%s' "${raw}" | tr '[:upper:]' '[:lower:]' | sed 's/[;[:space:]]\+/,/g'
+}
+
+resolve_preset_plugins_allowlist() {
+  local allowlist_raw="${OPENCLAW_PRESET_PLUGINS_ALLOWLIST:-}"
+  [[ -n "${allowlist_raw}" ]] || return 0
+  normalize_name_list_csv "${allowlist_raw}"
+}
+
+extension_allowed_by_preset_plugins_allowlist() {
+  local extension_name
+  local allowlist_raw
+  local alias
+  extension_name="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+  allowlist_raw="${2:-}"
+  shift 2 || true
+
+  [[ -n "${allowlist_raw}" ]] || return 0
+  csv_contains_name "${extension_name}" "${allowlist_raw}" && return 0
+  for alias in "$@"; do
+    alias="$(printf '%s' "${alias:-}" | tr '[:upper:]' '[:lower:]')"
+    [[ -n "${alias}" ]] || continue
+    csv_contains_name "${alias}" "${allowlist_raw}" && return 0
+  done
+  return 1
+}
+
+default_extension_allowed_by_preset_plugins_allowlist() {
+  local extension_name="$1"
+  local allowlist_raw="$2"
+  case "${extension_name}" in
+    openclaw-weixin)
+      extension_allowed_by_preset_plugins_allowlist "${extension_name}" "${allowlist_raw}" weixin
+      ;;
+    openclaw-lark)
+      extension_allowed_by_preset_plugins_allowlist "${extension_name}" "${allowlist_raw}" feishu lark
+      ;;
+    openclaw-mem0)
+      extension_allowed_by_preset_plugins_allowlist "${extension_name}" "${allowlist_raw}" mem0
+      ;;
+    wps-xiezuo)
+      extension_allowed_by_preset_plugins_allowlist "${extension_name}" "${allowlist_raw}" wps
+      ;;
+    *)
+      extension_allowed_by_preset_plugins_allowlist "${extension_name}" "${allowlist_raw}"
+      ;;
+  esac
+}
+
 bootstrap_now_seconds() {
   date +%s
 }
@@ -107,6 +163,12 @@ bootstrap_phase() {
 
 gateway_listener_accepting() {
   local host="${1:-127.0.0.1}"
+  local port="${2:-${GATEWAY_LISTENER_PORT:-${GATEWAY_PORT:-8080}}}"
+  (exec 3<>"/dev/tcp/${host}/${port}") >/dev/null 2>&1
+}
+
+runtime_proxy_listener_accepting() {
+  local host="${1:-127.0.0.1}"
   local port="${2:-${GATEWAY_PORT:-8080}}"
   (exec 3<>"/dev/tcp/${host}/${port}") >/dev/null 2>&1
 }
@@ -120,9 +182,10 @@ workspace_files_listener_accepting() {
 wait_for_gateway_handoff_listener() {
   local grace_seconds="${OPENCLAW_GATEWAY_HANDOFF_GRACE_SECONDS:-5}"
   local deadline="$(( $(bootstrap_now_seconds) + grace_seconds ))"
+  local listener_port="${GATEWAY_LISTENER_PORT:-${GATEWAY_PORT:-8080}}"
 
   while true; do
-    if gateway_listener_accepting "127.0.0.1" "${GATEWAY_PORT}"; then
+    if gateway_listener_accepting "127.0.0.1" "${listener_port}"; then
       return 0
     fi
     if (( $(bootstrap_now_seconds) >= deadline )); then
@@ -133,12 +196,13 @@ wait_for_gateway_handoff_listener() {
 }
 
 monitor_gateway_handoff_successor() {
-  bootstrap_log "gateway 以 exit 0 退出，检测到 successor 已接管 ${GATEWAY_PORT}，切换为 handoff 监控。"
+  local listener_port="${GATEWAY_LISTENER_PORT:-${GATEWAY_PORT:-8080}}"
+  bootstrap_log "gateway 以 exit 0 退出，检测到 successor 已接管 ${listener_port}，切换为 handoff 监控。"
   while true; do
     if [[ "${GATEWAY_SHUTDOWN_REQUESTED}" == "true" ]]; then
       return 0
     fi
-    if ! gateway_listener_accepting "127.0.0.1" "${GATEWAY_PORT}"; then
+    if ! gateway_listener_accepting "127.0.0.1" "${listener_port}"; then
       bootstrap_log "handoff successor 已停止监听，恢复容器内原地拉起。"
       return 1
     fi
@@ -147,7 +211,7 @@ monitor_gateway_handoff_successor() {
 }
 
 start_gateway_process() {
-  node openclaw.mjs gateway run --allow-unconfigured --bind "${BIND_MODE}" --port "${GATEWAY_PORT}" --auth "${AUTH_MODE}" &
+  node openclaw.mjs gateway run --allow-unconfigured --bind "${BIND_MODE}" --port "${GATEWAY_LISTENER_PORT}" --auth "${AUTH_MODE}" &
   GATEWAY_CHILD_PID=$!
   set +e
   wait "${GATEWAY_CHILD_PID}"
@@ -224,6 +288,69 @@ forward_workspace_files_shutdown() {
     kill -TERM "${WORKSPACE_FILES_PID}" 2>/dev/null || true
     wait "${WORKSPACE_FILES_PID}" 2>/dev/null || true
     WORKSPACE_FILES_PID=""
+  fi
+}
+
+start_runtime_proxy_sidecar() {
+  if ! is_truthy "${RUNTIME_PROXY_ENABLED:-true}"; then
+    bootstrap_log "runtime proxy 已禁用，OpenClaw Gateway 将直接监听公网端口"
+    return 0
+  fi
+
+  if runtime_proxy_listener_accepting "127.0.0.1" "${GATEWAY_PORT}"; then
+    bootstrap_log "runtime proxy 已监听 127.0.0.1:${GATEWAY_PORT}"
+    return 0
+  fi
+
+  if ! command -v uvicorn >/dev/null 2>&1; then
+    bootstrap_log "runtime proxy 缺少 uvicorn，无法启动"
+    return 1
+  fi
+
+  local app_dir="/opt/openclaw"
+  local extra_pythonpath=""
+  if [[ ! -f "${app_dir}/openclaw_runtime_proxy_app.py" ]]; then
+    app_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local repo_root
+    repo_root="$(cd "${app_dir}/../.." && pwd)"
+    if [[ -d "${repo_root}/ksadk_runtime_common" ]]; then
+      extra_pythonpath="${repo_root}"
+    fi
+  fi
+
+  OPENCLAW_GATEWAY_INTERNAL_PORT="${GATEWAY_LISTENER_PORT}" \
+  OPENCLAW_GATEWAY_PROXY_BASE_URL="http://127.0.0.1:${GATEWAY_LISTENER_PORT}" \
+  PYTHONPATH="/opt${extra_pythonpath:+:${extra_pythonpath}}${PYTHONPATH:+:${PYTHONPATH}}" \
+    uvicorn openclaw_runtime_proxy_app:app \
+      --app-dir "${app_dir}" \
+      --host 0.0.0.0 \
+      --port "${GATEWAY_PORT}" \
+      --log-level warning &
+  RUNTIME_PROXY_PID=$!
+
+  local deadline="$(( $(bootstrap_now_seconds) + 15 ))"
+  while true; do
+    if runtime_proxy_listener_accepting "127.0.0.1" "${GATEWAY_PORT}"; then
+      bootstrap_log "runtime proxy 已启动: 0.0.0.0:${GATEWAY_PORT} -> http://127.0.0.1:${GATEWAY_LISTENER_PORT}"
+      return 0
+    fi
+    if ! kill -0 "${RUNTIME_PROXY_PID}" 2>/dev/null; then
+      bootstrap_log "runtime proxy 启动失败"
+      return 1
+    fi
+    if (( $(bootstrap_now_seconds) >= deadline )); then
+      bootstrap_log "runtime proxy 启动超时"
+      return 1
+    fi
+    sleep 0.2
+  done
+}
+
+forward_runtime_proxy_shutdown() {
+  if [[ -n "${RUNTIME_PROXY_PID:-}" ]]; then
+    kill -TERM "${RUNTIME_PROXY_PID}" 2>/dev/null || true
+    wait "${RUNTIME_PROXY_PID}" 2>/dev/null || true
+    RUNTIME_PROXY_PID=""
   fi
 }
 
@@ -488,15 +615,57 @@ sync_default_extensions() {
   local dst_signature
   local previous_signature
   local signature_file
+  local allowlist_raw
+  local existing
+  local legacy_src_signature
+
+  allowlist_raw="$(resolve_preset_plugins_allowlist)"
 
   [[ -d "${src_dir}" ]] || return 0
 
   mkdir -p "${dst_dir}" "${sig_dir}"
+
+  if [[ -n "${allowlist_raw}" && ${#requested_extensions[@]} -eq 0 ]]; then
+    for existing in "${dst_dir}"/*; do
+      [[ -d "${existing}" ]] || continue
+      extension_name="$(basename "${existing}")"
+      if default_extension_allowed_by_preset_plugins_allowlist "${extension_name}" "${allowlist_raw}"; then
+        continue
+      fi
+      signature_file="${sig_dir}/${extension_name}.sig"
+      previous_signature=""
+      legacy_src_signature=""
+      if [[ -f "${signature_file}" ]]; then
+        previous_signature="$(cat "${signature_file}" 2>/dev/null || true)"
+      fi
+      dst_signature="$(compute_directory_content_signature "${existing}" 2>/dev/null || true)"
+      if [[ -n "${previous_signature}" && -n "${dst_signature}" && "${dst_signature}" == "${previous_signature}" ]]; then
+        rm -rf "${existing}"
+        rm -f "${signature_file}"
+        bootstrap_log "removed deprecated bundled extension ${extension_name}"
+        continue
+      fi
+      if [[ -z "${previous_signature}" && -d "${src_dir}/${extension_name}" ]]; then
+        legacy_src_signature="$(compute_directory_content_signature "${src_dir}/${extension_name}" 2>/dev/null || true)"
+      fi
+      if [[ -n "${legacy_src_signature}" && -n "${dst_signature}" && "${dst_signature}" == "${legacy_src_signature}" ]]; then
+        rm -rf "${existing}"
+        bootstrap_log "removed deprecated bundled extension ${extension_name} (legacy source match)"
+        continue
+      fi
+      bootstrap_log "preserved user-managed extension ${extension_name}"
+    done
+  fi
+
   for item in "${src_dir}"/*; do
     [[ -d "${item}" ]] || continue
     extension_name="$(basename "${item}")"
     if (( ${#requested_extensions[@]} > 0 )); then
       if ! list_contains_name "${extension_name}" "${requested_extensions[@]}"; then
+        continue
+      fi
+    elif [[ -n "${allowlist_raw}" ]]; then
+      if ! default_extension_allowed_by_preset_plugins_allowlist "${extension_name}" "${allowlist_raw}"; then
         continue
       fi
     elif csv_contains_name "${extension_name}" "${DEFERRED_DEFAULT_EXTENSIONS}"; then
@@ -564,6 +733,9 @@ sync_default_extensions() {
 
     bootstrap_log "preserved user-managed extension ${extension_name}"
   done
+  if [[ -n "${allowlist_raw}" && ${#requested_extensions[@]} -eq 0 ]]; then
+    bootstrap_log "reconciled preset plugins allowlist: ${allowlist_raw}"
+  fi
 }
 
 # -----------------------------------------------------------------------------
@@ -785,7 +957,7 @@ enable_self_improvement_workspace() {
   done
 }
 
-patch_gateway_client_loopback_trusted_proxy_identity() {
+apply_openclaw_dist_patches() {
   local dist_dir="${RUNTIME_DIST_DIR}"
   local marker_file="${DIST_PATCH_MARKER}"
 
@@ -802,7 +974,7 @@ const distDir = process.env.OPENCLAW_DIST_DIR || '/app/dist';
 const markerFile = process.env.OPENCLAW_DIST_PATCH_MARKER || '';
 const workspaceFilesEnabledRaw = String(process.env.OPENCLAW_WORKSPACE_FILES_ENABLED || '1').trim().toLowerCase();
 const workspaceFilesEnabled = ['1', 'true', 'yes', 'on'].includes(workspaceFilesEnabledRaw);
-const requiredLabels = new Set([
+const requiredCapabilities = new Set([
   'gateway client loopback trusted-proxy identity',
   'gateway backend self-pairing trusted-proxy bypass',
   'gateway trusted-proxy loopback internal auth compatibility',
@@ -812,19 +984,103 @@ const requiredLabels = new Set([
   //   - 'gateway loopback device-identity null sentinel' → catch 返回 null 而非 void 0
 ]);
 if (workspaceFilesEnabled) {
-  requiredLabels.add('gateway workspace files proxy handler');
-  requiredLabels.add('gateway workspace files proxy stage');
+  requiredCapabilities.add('gateway workspace files proxy handler');
+  requiredCapabilities.add('gateway workspace files proxy stage');
 }
+
+const patchCapabilityCatalog = {
+  'control-ui websocket reconnect gap handling': {
+    group: 'control-ui-reconnect',
+    why: 'Control UI websocket 重连后必须清空 lastSeq，避免断线窗口内的事件缺口被误认为连续流。',
+    since: '2026.3.x',
+  },
+  'gateway container self-update availability disabled': {
+    group: 'container-self-update',
+    why: '容器镜像内 /app/dist 是不可变资产，隐藏上游自更新入口，避免运行时尝试改写镜像内容。',
+    since: '2026.3.x',
+  },
+  'gateway container self-update scheduler disabled': {
+    group: 'container-self-update',
+    why: '容器内禁用 Gateway 自更新定时器，升级应由镜像发布和平台滚动完成。',
+    since: '2026.3.x',
+  },
+  'gateway trusted-proxy loopback internal auth compatibility': {
+    group: 'trusted-proxy-loopback',
+    why: '只允许带内部身份头的 loopback trusted-proxy 请求通过，兼顾远端代理安全与容器内 Gateway 客户端自连。',
+    since: '2026.3.28',
+  },
+  'gateway client loopback trusted-proxy identity': {
+    group: 'gateway-client-loopback-auth',
+    why: '容器内 Gateway client 连接 127.0.0.1 时主动附加内部 trusted-proxy 用户头。',
+    since: '2026.3.x',
+  },
+  'gateway backend self-pairing trusted-proxy bypass': {
+    group: 'backend-self-pairing',
+    why: 'Gateway 后端自连不应触发 Control UI pairing；只对 direct local backend client 生效。',
+    since: '2026.3.x',
+  },
+  'gateway local override explicit-auth bypass': {
+    group: 'local-override-auth',
+    why: '显式 urlOverride 指向本机 Gateway 时允许走容器内身份，不强制用户重复配置 token/password。',
+    since: '2026.3.x',
+  },
+  'gateway loopback device-identity bypass': {
+    group: 'legacy-device-identity',
+    why: '旧版 OpenClaw 向 loopback Gateway 发起调用时不应附加浏览器设备身份。',
+    since: 'legacy-before-2026.4.5',
+  },
+  'gateway loopback device-identity null sentinel': {
+    group: 'legacy-device-identity',
+    why: '旧版 OpenClaw deviceIdentity 缺省值用 null，和新版上游的解析逻辑保持一致。',
+    since: 'legacy-before-2026.4.5',
+  },
+  'gateway local trusted-proxy scope retention': {
+    group: 'trusted-proxy-loopback',
+    why: 'trusted-proxy 本地后端连接需要保留 unbound scopes，避免内部 Gateway client 授权丢失。',
+    since: '2026.3.x',
+  },
+  'gateway workspace files proxy handler': {
+    group: 'workspace-files-proxy',
+    why: '把 /_ksadk/workspace/v1/* 转发到轻量 workspace files sidecar，支持 Hosted UI 文件管理。',
+    since: '2026.3.28',
+  },
+  'gateway workspace files proxy stage': {
+    group: 'workspace-files-proxy',
+    why: '把 workspace files proxy 插入 Gateway HTTP requestStages，兼容不同上游 bundle 结构。',
+    since: '2026.3.28',
+  },
+};
+
+function normalizePatchSpec(rawPatch) {
+  const capability = String(rawPatch.capability || '').trim();
+  if (!capability) throw new Error('dist patch variant missing capability');
+  const metadata = patchCapabilityCatalog[capability] || {};
+  const group = rawPatch.group || metadata.group;
+  if (!group) throw new Error(`dist patch variant missing group: ${capability}`);
+  const variant = String(rawPatch.variant || '').trim();
+  if (!variant) throw new Error(`dist patch variant missing variant: ${capability}`);
+  return {
+    ...rawPatch,
+    capability: capability,
+    group: group,
+    variant: variant || `${group}#${nextVariant}`,
+    why: rawPatch.why || metadata.why || '兼容 AgentEngine OpenClaw runtime 行为。',
+    since: rawPatch.since || metadata.since || 'unknown',
+  };
+}
+
 const replacements = [
   {
-    label: 'control-ui websocket reconnect gap handling',
+    capability: 'control-ui websocket reconnect gap handling',
+    variant: 'reset-last-seq-on-open',
     marker: 'this.ws.addEventListener(`open`,()=>{this.lastSeq=null,this.queueConnect()})',
     needle: 'this.ws.addEventListener(`open`,()=>this.queueConnect())',
     replacement: 'this.ws.addEventListener(`open`,()=>{this.lastSeq=null,this.queueConnect()})',
   },
   {
     // Container image code under /app/dist is immutable; hide upstream self-update affordance.
-    label: 'gateway container self-update availability disabled',
+    capability: 'gateway container self-update availability disabled',
+    variant: 'force-null-update-available',
     marker: 'function getUpdateAvailable() {\n\treturn null;\n}',
     needle: `function getUpdateAvailable() {
 \treturn updateAvailableCache;
@@ -834,7 +1090,8 @@ const replacements = [
 }`,
   },
   {
-    label: 'gateway container self-update scheduler disabled',
+    capability: 'gateway container self-update scheduler disabled',
+    variant: 'disable-update-scheduler',
     marker: 'function scheduleGatewayUpdateCheck(params) {\n\treturn () => {};\n}',
     needle: `function scheduleGatewayUpdateCheck(params) {
 \tlet stopped = false;
@@ -870,7 +1127,8 @@ const replacements = [
   {
     // openclaw 2026.3.28+: trusted-proxy loopback now rides on trustedProxies
     // and no longer emits the legacy trusted_proxy_loopback_source branch.
-    label: 'gateway trusted-proxy loopback internal auth compatibility',
+    capability: 'gateway trusted-proxy loopback internal auth compatibility',
+    variant: 'trusted-proxy-source-check-already-compatible-alias',
     marker: 'if (!remoteAddr || !isTrustedProxyAddress$1(remoteAddr, trustedProxies)) return { reason: "trusted_proxy_untrusted_source" };',
     needle: 'if (!remoteAddr || !isTrustedProxyAddress$1(remoteAddr, trustedProxies)) return { reason: "trusted_proxy_untrusted_source" };',
     replacement: 'if (!remoteAddr || !isTrustedProxyAddress$1(remoteAddr, trustedProxies)) return { reason: "trusted_proxy_untrusted_source" };',
@@ -878,13 +1136,31 @@ const replacements = [
   {
     // openclaw 2026.3.28 source-like bundles may keep the helper name
     // unaliased and expand the early return into a block.
-    label: 'gateway trusted-proxy loopback internal auth compatibility',
+    capability: 'gateway trusted-proxy loopback internal auth compatibility',
+    variant: 'trusted-proxy-source-check-already-compatible-helper',
     marker: 'if (!remoteAddr || !isTrustedProxyAddress(remoteAddr, trustedProxies)) {',
     needle: 'if (!remoteAddr || !isTrustedProxyAddress(remoteAddr, trustedProxies)) {',
     replacement: 'if (!remoteAddr || !isTrustedProxyAddress(remoteAddr, trustedProxies)) {',
   },
   {
-    label: 'gateway trusted-proxy loopback internal auth compatibility',
+    capability: 'gateway trusted-proxy loopback internal auth compatibility',
+    variant: '2026.4.27-allow-loopback-internal-user',
+    marker: 'const internalLoopbackUserHeader = String(process.env.OPENCLAW_INTERNAL_TRUSTED_PROXY_USER_HEADER || process.env.OPENCLAW_TRUSTED_PROXY_USER_HEADER || "x-forwarded-user").trim().toLowerCase();',
+    // OpenClaw 2026.4.27 added trustedProxy.allowLoopback. Keep the safer
+    // AgentEngine behavior: loopback trusted-proxy auth is accepted only for
+    // our internal gateway client identity unless upstream explicitly enabled
+    // allowLoopback in config.
+    needle: 'if (isLoopbackAddress(remoteAddr) && trustedProxyConfig.allowLoopback !== true) return { reason: "trusted_proxy_loopback_source" };',
+    replacement: `if (isLoopbackAddress(remoteAddr) && trustedProxyConfig.allowLoopback !== true) {
+\tconst internalLoopbackUserHeader = String(process.env.OPENCLAW_INTERNAL_TRUSTED_PROXY_USER_HEADER || process.env.OPENCLAW_TRUSTED_PROXY_USER_HEADER || "x-forwarded-user").trim().toLowerCase();
+\tconst internalLoopbackUser = String(process.env.OPENCLAW_INTERNAL_TRUSTED_PROXY_USER || "openclaw-backend").trim();
+\tconst loopbackUser = headerValue(req.headers[internalLoopbackUserHeader || "x-forwarded-user"]);
+\tif (!internalLoopbackUser || !loopbackUser || loopbackUser.trim() !== internalLoopbackUser) return { reason: "trusted_proxy_loopback_source" };
+}`,
+  },
+  {
+    capability: 'gateway trusted-proxy loopback internal auth compatibility',
+    variant: 'legacy-loopback-internal-user',
     marker: 'const internalLoopbackUserHeader = String(process.env.OPENCLAW_INTERNAL_TRUSTED_PROXY_USER_HEADER || process.env.OPENCLAW_TRUSTED_PROXY_USER_HEADER || "x-forwarded-user").trim().toLowerCase();',
     needle: 'if (isLoopbackAddress(remoteAddr)) return { reason: "trusted_proxy_loopback_source" };',
     replacement: `if (isLoopbackAddress(remoteAddr)) {
@@ -895,7 +1171,31 @@ const replacements = [
 }`,
   },
   {
-    label: 'gateway client loopback trusted-proxy identity',
+    capability: 'gateway client loopback trusted-proxy identity',
+    variant: '2026.4.27-ws-options-direct-agent',
+    marker: 'const internalTrustedProxyUser = String(process.env.OPENCLAW_INTERNAL_TRUSTED_PROXY_USER || "openclaw-backend").trim();',
+    // OpenClaw 2026.4.27 attaches a direct loopback agent in wsOptions.
+    needle: `const wsOptions = {
+\t\t\tmaxPayload: 25 * 1024 * 1024,
+\t\t\t...directAgent ? { agent: directAgent } : {}
+\t\t};`,
+    replacement: `const wsOptions = {
+\t\t\tmaxPayload: 25 * 1024 * 1024,
+\t\t\t...directAgent ? { agent: directAgent } : {}
+\t\t};
+\t\tconst internalTrustedProxyUser = String(process.env.OPENCLAW_INTERNAL_TRUSTED_PROXY_USER || "openclaw-backend").trim();
+\t\tconst internalTrustedProxyUserHeader = String(process.env.OPENCLAW_INTERNAL_TRUSTED_PROXY_USER_HEADER || process.env.OPENCLAW_TRUSTED_PROXY_USER_HEADER || "x-forwarded-user").trim().toLowerCase();
+\t\ttry {
+\t\t\tconst parsedGatewayUrl = new URL(url);
+\t\t\tif (internalTrustedProxyUser && ["127.0.0.1", "::1", "localhost"].includes(parsedGatewayUrl.hostname)) wsOptions.headers = {
+\t\t\t\t...wsOptions.headers,
+\t\t\t\t[internalTrustedProxyUserHeader || "x-forwarded-user"]: internalTrustedProxyUser
+\t\t\t};
+\t\t} catch {}`,
+  },
+  {
+    capability: 'gateway client loopback trusted-proxy identity',
+    variant: 'legacy-ws-options-basic',
     marker: 'const internalTrustedProxyUser = String(process.env.OPENCLAW_INTERNAL_TRUSTED_PROXY_USER || "openclaw-backend").trim();',
     needle: 'const wsOptions = { maxPayload: 25 * 1024 * 1024 };',
     replacement: `const wsOptions = { maxPayload: 25 * 1024 * 1024 };
@@ -912,14 +1212,16 @@ const replacements = [
   {
     // openclaw 2026.3.28+: pairing/device-identity bypass moved into
     // shouldSkipControlUiPairing(... trustedProxyAuthOk = false ...)
-    label: 'gateway backend self-pairing trusted-proxy bypass',
+    capability: 'gateway backend self-pairing trusted-proxy bypass',
+    variant: '2026.3.28-already-supports-trusted-proxy-param',
     marker: 'function shouldSkipControlUiPairing(policy, role, trustedProxyAuthOk = false, authMode) {',
     needle: 'function shouldSkipControlUiPairing(policy, role, trustedProxyAuthOk = false, authMode) {',
     replacement: 'function shouldSkipControlUiPairing(policy, role, trustedProxyAuthOk = false, authMode) {',
   },
   {
     // openclaw >= 2026.4.5: 函数重命名为 shouldSkipLocalBackendSelfPairing, isLocalClient → locality
-    label: 'gateway backend self-pairing trusted-proxy bypass',
+    capability: 'gateway backend self-pairing trusted-proxy bypass',
+    variant: '2026.4.5-local-backend-self-pairing',
     marker: 'const usesLoopbackTrustedProxyAuth = params.authMethod === "trusted-proxy";',
     needle: `function shouldSkipLocalBackendSelfPairing(params) {
 	if (!(params.connectParams.client.id === GATEWAY_CLIENT_IDS.GATEWAY_CLIENT && params.connectParams.client.mode === GATEWAY_CLIENT_MODES.BACKEND)) return false;
@@ -937,7 +1239,8 @@ const replacements = [
   },
   {
     // openclaw < 2026.4.5: 旧函数名 shouldSkipBackendSelfPairing, 旧参数 isLocalClient
-    label: 'gateway backend self-pairing trusted-proxy bypass',
+    capability: 'gateway backend self-pairing trusted-proxy bypass',
+    variant: 'legacy-backend-self-pairing',
     marker: 'const usesLoopbackTrustedProxyAuth = params.authMethod === "trusted-proxy";',
     needle: `function shouldSkipBackendSelfPairing(params) {
 \tif (!(params.connectParams.client.id === GATEWAY_CLIENT_IDS.GATEWAY_CLIENT && params.connectParams.client.mode === GATEWAY_CLIENT_MODES.BACKEND)) return false;
@@ -954,7 +1257,8 @@ const replacements = [
 }`,
   },
   {
-    label: 'gateway local override explicit-auth bypass',
+    capability: 'gateway local override explicit-auth bypass',
+    variant: 'local-url-override-bypass',
     marker: 'if (["127.0.0.1", "::1", "localhost"].includes(parsed.hostname)) return;',
     needle: `function ensureExplicitGatewayAuth(params) {
 	if (!params.urlOverride) return;
@@ -968,7 +1272,8 @@ const replacements = [
 `,
   },
   {
-    label: 'gateway loopback device-identity bypass',
+    capability: 'gateway loopback device-identity bypass',
+    variant: 'legacy-device-identity-loopback-bypass',
     marker: 'function shouldAttachDeviceIdentityForGatewayCall(params) {\n\ttry {\n\t\tconst parsed = new URL(params.url);\n\t\tif ([\n\t\t\t"127.0.0.1",\n\t\t\t"::1",\n\t\t\t"localhost"\n\t\t].includes(parsed.hostname)) return false;',
     needle: `function shouldAttachDeviceIdentityForGatewayCall(params) {
 	return true;
@@ -988,7 +1293,8 @@ const replacements = [
 }`,
   },
   {
-    label: 'gateway loopback device-identity null sentinel',
+    capability: 'gateway loopback device-identity null sentinel',
+    variant: 'legacy-device-identity-null-sentinel',
     marker: 'deviceIdentity: shouldAttachDeviceIdentityForGatewayCall({\n\t\t\t\turl,\n\t\t\t\ttoken,\n\t\t\t\tpassword\n\t\t\t}) ? loadOrCreateDeviceIdentity() : null,',
     needle: `deviceIdentity: shouldAttachDeviceIdentityForGatewayCall({
 				url,
@@ -1002,7 +1308,8 @@ const replacements = [
 			}) ? loadOrCreateDeviceIdentity() : null,`,
   },
   {
-    label: 'gateway local trusted-proxy scope retention',
+    capability: 'gateway local trusted-proxy scope retention',
+    variant: 'retain-unbound-scopes',
     marker: 'const keepUnboundScopes = !device && decision.kind === "allow" && authMethod === "trusted-proxy" && !hasBrowserOriginHeader;',
     needle: 'if (!device && (!isControlUi || decision.kind !== "allow")) clearUnboundScopes();',
     replacement: `const keepUnboundScopes = !device && decision.kind === "allow" && authMethod === "trusted-proxy" && !hasBrowserOriginHeader;
@@ -1012,7 +1319,8 @@ const replacements = [
 if (workspaceFilesEnabled) {
   replacements.unshift(
     {
-      label: 'gateway workspace files proxy handler',
+      capability: 'gateway workspace files proxy handler',
+      variant: 'inject-handler-before-create-server',
       marker: 'async function handleWorkspaceFilesProxyRequest(req, res) {',
       needle: 'function createGatewayHttpServer(opts) {',
       replacement: `async function handleWorkspaceFilesProxyRequest(req, res) {
@@ -1071,7 +1379,8 @@ if (workspaceFilesEnabled) {
 function createGatewayHttpServer(opts) {`,
     },
 	    {
-	      label: 'gateway workspace files proxy stage',
+	      capability: 'gateway workspace files proxy stage',
+	      variant: '2026.3.28-request-stages-array',
 	      marker: 'name: "workspace-files-proxy"',
 	      // OpenClaw 2026.3.28 still uses the old requestStages array literal in
 	      // gateway-cli-*.js: hooks/models/embeddings are declared inline instead
@@ -1100,7 +1409,8 @@ function createGatewayHttpServer(opts) {`,
 					name: "models",`,
 	    },
 	    {
-	      label: 'gateway workspace files proxy stage',
+	      capability: 'gateway workspace files proxy stage',
+	      variant: '2026.4.26-scoped-request-path',
 	      marker: 'name: "workspace-files-proxy"',
 	      // OpenClaw 2026.4.26 moved request staging to scopedRequestPath and
 	      // injects gateway-probes before hooks. Keep this branch until all
@@ -1127,7 +1437,8 @@ function createGatewayHttpServer(opts) {`,
 			if (openAiCompatEnabled && isOpenAiModelsPath(scopedRequestPath)) requestStages.push({`,
 	    },
 	    {
-	      label: 'gateway workspace files proxy stage',
+	      capability: 'gateway workspace files proxy stage',
+	      variant: 'mid-era-request-path-models-push',
 	      marker: 'name: "workspace-files-proxy"',
 	      // Older requestPath-based push() shape used by some mid-era OpenClaw
 	      // builds. Safe to remove once no supported base image matches this
@@ -1143,7 +1454,8 @@ function createGatewayHttpServer(opts) {`,
 \t\t\tif (openAiCompatEnabled && isOpenAiModelsPath(requestPath)) requestStages.push({`,
     },
 	    {
-	      label: 'gateway workspace files proxy stage',
+	      capability: 'gateway workspace files proxy stage',
+	      variant: 'legacy-control-ui-stage',
       marker: 'name: "workspace-files-proxy"',
 	      // Earliest requestPath-based shape where control-ui is appended right
 	      // after hooks. Safe to remove together with the other legacy
@@ -1178,51 +1490,82 @@ const walk = (dir) => {
 
 walk(distDir);
 
-const patchedLabels = new Set();
-const satisfiedLabels = new Set();
-const skippedLabels = new Set();
+const patchSpecs = replacements.map(normalizePatchSpec);
+const patchedCapabilities = new Set();
+const satisfiedCapabilities = new Set();
+const skippedVariantsByCapability = new Map();
+const outcomeByGroup = new Map();
+
+function recordOutcome(patch, outcome, filePath = '') {
+  const entry = outcomeByGroup.get(patch.group) || {
+    patched: [],
+    satisfied: [],
+    skipped: [],
+  };
+  const item = `${patch.capability} / ${patch.variant}${filePath ? ` (${path.relative(distDir, filePath)})` : ''}`;
+  entry[outcome].push(item);
+  outcomeByGroup.set(patch.group, entry);
+}
+
+function recordSkipped(patch) {
+  const variants = skippedVariantsByCapability.get(patch.capability) || new Set();
+  variants.add(`${patch.group}/${patch.variant}`);
+  skippedVariantsByCapability.set(patch.capability, variants);
+}
+
 console.error(`[bootstrap] 开始扫描 dist 目录: ${distDir} (共 ${jsFiles.length} 个 JS 文件)`);
-console.error(`[bootstrap] 需验证的必需补丁: ${[...requiredLabels].join(', ')}`);
-console.error(`[bootstrap] 共 ${replacements.length} 个候选补丁规则`);
+console.error(`[bootstrap] 按能力验证必需补丁: ${[...requiredCapabilities].join(', ')}`);
+console.error(`[bootstrap] 共 ${patchSpecs.length} 个候选补丁变体，分组: ${[...new Set(patchSpecs.map((patch) => patch.group))].join(', ')}`);
 for (const filePath of jsFiles) {
   let source = fs.readFileSync(filePath, 'utf8');
   let changed = false;
-  for (const patch of replacements) {
+  for (const patch of patchSpecs) {
     if (source.includes(patch.marker)) {
-      satisfiedLabels.add(patch.label);
+      satisfiedCapabilities.add(patch.capability);
+      recordOutcome(patch, 'satisfied', filePath);
       continue;
     }
     if (!source.includes(patch.needle)) {
-      skippedLabels.add(patch.label);
+      recordSkipped(patch);
       continue;
     }
     source = source.replaceAll(patch.needle, patch.replacement);
-    patchedLabels.add(patch.label);
-    satisfiedLabels.add(patch.label);
+    patchedCapabilities.add(patch.capability);
+    satisfiedCapabilities.add(patch.capability);
+    recordOutcome(patch, 'patched', filePath);
     changed = true;
   }
   if (!changed) continue;
   fs.writeFileSync(filePath, source);
 }
 
-if (patchedLabels.size > 0) {
-  console.error(`[bootstrap] 已应用补丁: ${[...patchedLabels].join(', ')}`);
-}
-const alreadySatisfied = [...satisfiedLabels].filter((l) => !patchedLabels.has(l));
-if (alreadySatisfied.length > 0) {
-  console.error(`[bootstrap] 已由上游原生满足（无需补丁）: ${alreadySatisfied.join(', ')}`);
-}
-
-const missingRequiredLabels = [...requiredLabels].filter((label) => !satisfiedLabels.has(label));
-if (missingRequiredLabels.length > 0) {
-  console.error(`[bootstrap] ❌ 缺失的必需补丁: ${missingRequiredLabels.join(', ')}`);
-  console.error(`[bootstrap] 已满足: ${[...satisfiedLabels].join(', ') || '无'}`);
-  console.error(`[bootstrap] 未匹配（needle 和 marker 均未命中）: ${[...skippedLabels].filter((l) => !satisfiedLabels.has(l)).join(', ') || '无'}`);
-  console.error('[bootstrap] 提示: 这通常是因为基础镜像版本更新导致上游代码结构变化，需要更新 bootstrap.sh 中的 patch 定义');
-  throw new Error(`必需的 dist 补丁缺失: ${missingRequiredLabels.join(', ')}`);
+for (const [group, entry] of outcomeByGroup.entries()) {
+  if (entry.patched.length > 0) {
+    console.error(`[bootstrap] 分组 ${group} 已应用: ${entry.patched.join('; ')}`);
+  }
+  const alreadySatisfied = entry.satisfied.filter((item) => !entry.patched.includes(item));
+  if (alreadySatisfied.length > 0) {
+    console.error(`[bootstrap] 分组 ${group} 已由上游原生满足或重复扫描命中: ${alreadySatisfied.join('; ')}`);
+  }
 }
 
-console.error(`[bootstrap] ✅ 所有必需补丁验证通过 (${satisfiedLabels.size}/${requiredLabels.size})`);
+const missingRequiredCapabilities = [...requiredCapabilities].filter((capability) => !satisfiedCapabilities.has(capability));
+if (missingRequiredCapabilities.length > 0) {
+  console.error(`[bootstrap] ❌ 缺失的必需能力: ${missingRequiredCapabilities.join(', ')}`);
+  console.error(`[bootstrap] 已满足能力: ${[...satisfiedCapabilities].join(', ') || '无'}`);
+  for (const capability of missingRequiredCapabilities) {
+    const variants = [...(skippedVariantsByCapability.get(capability) || [])];
+    const metadata = patchCapabilityCatalog[capability] || {};
+    console.error(`[bootstrap]   - ${capability}`);
+    if (metadata.group) console.error(`[bootstrap]     分组: ${metadata.group}`);
+    if (metadata.why) console.error(`[bootstrap]     意图: ${metadata.why}`);
+    console.error(`[bootstrap]     未命中的变体: ${variants.join(', ') || '无候选变体'}`);
+  }
+  console.error('[bootstrap] 提示: 通常是基础镜像版本更新导致上游 bundle 结构变化；请在 patchCapabilityCatalog 中保留能力意图，并新增对应 group/variant。');
+  throw new Error(`必需的 dist 补丁缺失: ${missingRequiredCapabilities.join(', ')}`);
+}
+
+console.error(`[bootstrap] ✅ 所有必需能力验证通过 (${satisfiedCapabilities.size}/${requiredCapabilities.size})`);
 
 if (markerFile) {
   fs.writeFileSync(markerFile, `version=${path.basename(markerFile)}\n`, 'utf8');
@@ -1371,7 +1714,7 @@ if [[ "${DIST_PATCH_ONLY_RAW}" == "1" || "${DIST_PATCH_ONLY_RAW}" == "true" || "
   bootstrap_phase "仅执行镜像内置资源补丁"
   echo "INFO: [dist-patch-only] 运行时目录: ${RUNTIME_DIST_DIR:-/app/dist}"
   echo "INFO: [dist-patch-only] 开始应用 gateway 运行时补丁..."
-  patch_gateway_client_loopback_trusted_proxy_identity
+  apply_openclaw_dist_patches
   echo "INFO: [dist-patch-only] gateway 补丁完成，开始处理渠道插件补丁..."
   OPENCLAW_PATCH_ROOTS="${DEFAULT_EXTENSIONS_DIR}" patch_bundled_channel_plugins
   echo "INFO: [dist-patch-only] ✅ 已完成 dist-patch-only 模式，所有镜像内置运行时资源补丁已就绪。"
@@ -1423,6 +1766,7 @@ if is_truthy "${OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED:-1}"; then
 fi
 
 export OPENCLAW_RESOLVED_PRESET_SKILLS_ALLOWLIST="$(resolve_preset_skills_allowlist)"
+export OPENCLAW_RESOLVED_PRESET_PLUGINS_ALLOWLIST="$(resolve_preset_plugins_allowlist)"
 
 if [[ ! -f "${CONFIG_PATH}" ]]; then
   echo '{}' > "${CONFIG_PATH}"
@@ -1657,18 +2001,34 @@ const normalizeBrowserSsrfPolicy = (rawPolicy) => {
 const OPENCLAW_CHANNEL_SPECS = {
   weixin: {
     pluginId: 'openclaw-weixin',
+    pluginAliases: ['weixin'],
     channelKey: 'openclaw-weixin',
     defaultAccountId: 'default',
   },
   feishu: {
     pluginId: 'openclaw-lark',
+    pluginAliases: ['feishu', 'lark'],
     channelKey: 'feishu',
   },
   'wps-xiezuo': {
     pluginId: 'wps-xiezuo',
+    pluginAliases: ['wps', 'wps-xiezuo'],
     channelKey: 'wps-xiezuo',
     defaultAccountId: 'default',
   },
+};
+const resolvedPresetPluginsAllowlist = uniqueStrings(
+  parseStringList(
+    process.env.OPENCLAW_RESOLVED_PRESET_PLUGINS_ALLOWLIST ||
+      process.env.OPENCLAW_PRESET_PLUGINS_ALLOWLIST,
+  ),
+).map((item) => item.toLowerCase());
+const pluginAllowedByPresetAllowlist = (pluginId, aliases = []) => {
+  if (resolvedPresetPluginsAllowlist.length === 0) {
+    return true;
+  }
+  const candidates = uniqueStrings([pluginId, ...aliases]).map((item) => item.toLowerCase());
+  return candidates.some((candidate) => resolvedPresetPluginsAllowlist.includes(candidate));
 };
 const WPS_XIEZUO_MCP_TOOL_ALLOWLIST = [
   'wps_im_message_send',
@@ -1829,6 +2189,12 @@ const applyChannelBootstrapFromEnv = () => {
     const spec = OPENCLAW_CHANNEL_SPECS[channelName];
     if (!spec) {
       throw new Error(`OPENCLAW_CHANNEL_BOOTSTRAP_JSON contains unsupported channel: ${channelName}`);
+    }
+    if (!pluginAllowedByPresetAllowlist(spec.pluginId, spec.pluginAliases)) {
+      throw new Error(
+        `OPENCLAW_CHANNEL_BOOTSTRAP_JSON channel ${channelName} requires ${spec.pluginId}; ` +
+          `include it in OPENCLAW_PRESET_PLUGINS_ALLOWLIST or unset the allowlist`,
+      );
     }
     if (!isPlainObject(rawPayload)) {
       throw new Error(`OPENCLAW_CHANNEL_BOOTSTRAP_JSON channel payload must be object: ${channelName}`);
@@ -2266,15 +2632,30 @@ const resolvedStateDir = firstNonBlank(
 const bundledPlugins = [
   {
     pluginId: 'openclaw-weixin',
+    aliases: ['weixin'],
   },
   {
     pluginId: 'openclaw-lark',
+    aliases: ['feishu', 'lark'],
   },
   {
     pluginId: 'wps-xiezuo',
+    aliases: ['wps', 'wps-xiezuo'],
   },
 ];
 for (const bundledPlugin of bundledPlugins) {
+  const allowedByPreset = pluginAllowedByPresetAllowlist(bundledPlugin.pluginId, bundledPlugin.aliases);
+  if (!allowedByPreset) {
+    if (Array.isArray(cfg.plugins?.allow)) {
+      cfg.plugins.allow = cfg.plugins.allow.filter((pluginId) => (
+        String(pluginId || '').trim().toLowerCase() !== bundledPlugin.pluginId.toLowerCase()
+      ));
+    }
+    if (cfg.plugins?.entries?.[bundledPlugin.pluginId]?.enabled === true) {
+      cfg.plugins.entries[bundledPlugin.pluginId].enabled = false;
+    }
+    continue;
+  }
   const pluginInstallPath = path.join(
     resolvedStateDir || '/root/.openclaw',
     'extensions',
@@ -2948,7 +3329,7 @@ RUNTIME_ASSET_SYNC_STARTED_AT="$(bootstrap_now_seconds)"
 bootstrap_phase "同步技能、工作区模板与运行时环境"
 if is_truthy "${EXEC_STRICT_MODE_RAW}"; then
   # 严格模式：按顺序执行（安全优先）
-  patch_gateway_client_loopback_trusted_proxy_identity
+  apply_openclaw_dist_patches
   sync_preset_skills
   register_kdocs_skill 2>/dev/null || true
   sync_workspace_security_templates
@@ -2957,7 +3338,7 @@ if is_truthy "${EXEC_STRICT_MODE_RAW}"; then
 else
   # 宽松模式：并行启动耗时步骤（节省 ~1-2s）
   bg_pids=()
-  patch_gateway_client_loopback_trusted_proxy_identity &
+  apply_openclaw_dist_patches &
   bg_pids+=($!)
   sync_preset_skills &
   bg_pids+=($!)
@@ -3004,13 +3385,27 @@ export OPENCLAW_EXEC_SAFE_STATE_DIR="${OPENCLAW_EXEC_SAFE_STATE_DIR:-${STATE_DIR
 
 # Use OpenClaw's built-in cron scheduler only; do not start a system cron daemon.
 WORKSPACE_FILES_PID=""
+RUNTIME_PROXY_PID=""
 if ! start_workspace_files_sidecar; then
   exit 1
 fi
 
 GATEWAY_PORT="${OPENCLAW_GATEWAY_PORT:-8080}"
+GATEWAY_LISTENER_PORT="${GATEWAY_PORT}"
+if is_truthy "${RUNTIME_PROXY_ENABLED:-true}"; then
+  GATEWAY_LISTENER_PORT="${GATEWAY_INTERNAL_PORT:-18080}"
+  if [[ "${GATEWAY_LISTENER_PORT}" == "${GATEWAY_PORT}" ]]; then
+    bootstrap_log "runtime proxy 已启用但内环端口与公网端口相同，自动回退为直接启动 Gateway"
+    RUNTIME_PROXY_ENABLED="false"
+  fi
+fi
+if ! start_runtime_proxy_sidecar; then
+  exit 1
+fi
+
 bootstrap_phase "启动 OpenClaw Gateway"
-bootstrap_log "监听端口: ${GATEWAY_PORT}"
+bootstrap_log "公网监听端口: ${GATEWAY_PORT}"
+bootstrap_log "Gateway 内环端口: ${GATEWAY_LISTENER_PORT}"
 bootstrap_log "绑定模式: ${BIND_MODE}"
 bootstrap_log "认证模式: ${AUTH_MODE}"
 bootstrap_log "workspace files proxy: ${OPENCLAW_WORKSPACE_FILES_PROXY_URL}"
@@ -3023,7 +3418,7 @@ GATEWAY_CHILD_PID=""
 GATEWAY_FAILURE_COUNT=0
 GATEWAY_FAILURE_WINDOW_STARTED_AT="$(bootstrap_now_seconds)"
 
-trap 'forward_gateway_shutdown; forward_workspace_files_shutdown; exit 0' TERM INT
+trap 'forward_gateway_shutdown; forward_runtime_proxy_shutdown; forward_workspace_files_shutdown; exit 0' TERM INT
 
 while true; do
   GATEWAY_EXIT_CODE=0

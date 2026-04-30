@@ -47,6 +47,7 @@ from ksadk.deployment.agent_access import (
     normalize_deployment_status,
 )
 from ksadk.deployment.state import clear_state, load_state, save_state
+from ksadk.cli.model_catalog import fetch_provider_model_metadata
 from ksadk.hermes_terminal import (
     run_hermes_terminal_session,
     validate_hermes_exec_argv,
@@ -240,6 +241,7 @@ def _build_hermes_env_vars(
     model_base_url: str | None = None,
     model_api_key: str | None = None,
     default_model: str | None = None,
+    model_metadata: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     raw_model_base_url = model_base_url or _env_value("OPENAI_BASE_URL")
     resolved_model_base_url = (
@@ -248,8 +250,12 @@ def _build_hermes_env_vars(
         else DEFAULT_HERMES_RUNTIME_BASE_URL
     )
     resolved_default_model = default_model or _env_value("OPENAI_MODEL_NAME") or DEFAULT_HERMES_MODEL_NAME
+    metadata_context_length = ""
+    if isinstance(model_metadata, dict):
+        metadata_context_length = str(model_metadata.get("context_window_tokens") or "").strip()
     context_length = (
         _env_value("HERMES_CONTEXT_LENGTH", "OPENAI_CONTEXT_LENGTH", "MODEL_CONTEXT_LENGTH")
+        or metadata_context_length
         or _default_context_length_for_model(resolved_default_model)
     )
     fallback_model = (
@@ -510,10 +516,17 @@ async def _deploy_hermes(
         model_api_key=model_api_key,
         default_model=default_model,
     )
+    resolved_default_model = default_model or _env_value("OPENAI_MODEL_NAME") or DEFAULT_HERMES_MODEL_NAME
+    model_metadata = await fetch_provider_model_metadata(
+        api_base=model_base_url or _env_value("OPENAI_BASE_URL"),
+        api_key=model_api_key or _env_value("OPENAI_API_KEY"),
+        model=resolved_default_model,
+    )
     env_vars = _build_hermes_env_vars(
         model_base_url=model_base_url,
         model_api_key=model_api_key,
         default_model=default_model,
+        model_metadata=model_metadata,
     )
     payload = {
         "name": agent_name,

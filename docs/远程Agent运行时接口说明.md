@@ -280,6 +280,7 @@ curl -H "Authorization: Bearer <api_key>" \
 | `model_metadata` | `object` | 否 | 模型元数据 |
 | `instructions` | `string` | 否 | 额外系统指令 |
 | `metadata` | `object` | 否 | 请求级 metadata |
+| `previous_response_id` | `string` | 否 | OpenAI Responses 风格上一轮 response id；当前会保留到 metadata，不能替代 `session_id` |
 | `stream` | `boolean` | 否 | 是否流式 |
 | `session_id` | `string` | 否 | 指定会话 ID |
 
@@ -406,114 +407,83 @@ curl -H "Authorization: Bearer <api_key>" \
 - `/v1/responses` 本身不要求客户端每轮重传完整历史
 - 只要持续传同一个 `session_id`，runtime 就会从服务端会话存储里恢复该会话的历史 transcript
 - 进入 runner 前，`ksadk` 会把历史、附件上下文、知识库上下文和长期记忆上下文统一重建成标准运行输入
+- `previous_response_id` 按 OpenAI Responses 语义接收并保留，但当前 runtime 定位会话和 LangGraph thread 仍以 `session_id` 为准
 
-### Agent 开发者如何在业务代码中拿到上下文
+### Responses approval / interrupt 恢复
 
-这部分不是调用方协议，而是给 agent 业务开发者的接入约定。
+如果流式执行遇到工具审批或人工确认，runtime 不会把本轮包装成 completed，而是返回 incomplete：
 
-#### LangGraph：默认 messages-based 图
+- `status`: `incomplete`
+- `incomplete_details.reason`: `approval_required`
+- MCP/tool approval 场景会输出 `mcp_approval_request`
+- 非 MCP 的通用 interrupt 会输出 `response.ksadk.approval_request`
 
-如果你的 LangGraph 图直接使用默认 messages state，而没有自定义 `ksadk_prepare_state`，`ksadk` 会自动把本轮输入和历史消息拼成一个 state，核心形态类似：
+#### MCP approval 恢复
 
-```python
+MCP/tool approval 场景按 OpenAI Responses 标准语义恢复。客户端应传同一个 `session_id`，并把 `input` 写成 `mcp_approval_response`：
+
+```json
 {
-  "attachments": [...],
-  "attachment_results": [...],
-  "input_parts": [...],
-  "model_metadata": {...},
-  "messages": [
-    SystemMessage(...),   # 如果有 instructions / kb / memory 上下文
-    HumanMessage(...),    # 历史 user
-    AIMessage(...),       # 历史 assistant
-    HumanMessage(...),    # 当前输入
+  "session_id": "sess-123",
+  "previous_response_id": "resp_previous",
+  "input": [
+    {
+      "type": "mcp_approval_response",
+      "id": "mcprsp_123",
+      "approval_request_id": "appr_123",
+      "approve": true,
+      "reason": "approved by user"
+    }
   ],
+  "stream": true
 }
 ```
 
-说明：
+运行时处理方式：
 
-- `messages` 是默认喂给 LangGraph 图的主上下文
-- `attachments` / `attachment_results` / `input_parts` 会保留在 state 顶层
-- 对支持原生图片输入的模型，最后一条 `HumanMessage.content` 可能是多模态 block 列表，而不是字符串
-- 对纯文本模型，最后一条 `HumanMessage.content` 会退化成文本 + 附件提示
+- 记录一条 `approval_response` 会话事件
+- 向 runner 传入 `resume=True`
+- `input` 原样保留为 `mcp_approval_response`
+- LangGraphRunner 在内部转换成 `Command(resume=...)`
 
-#### LangGraph：自定义 State 图
+调用方不需要、也不应该直接传 Python `Command`。
 
-如果你的图不是标准 `messages` state，而是自定义 `TypedDict`，推荐显式定义：
+#### 通用 interrupt 恢复
 
-```python
-def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
-    return {
-        "query": payload["input"],
-        "history": session_context["history"],
-        "attachments": session_context["attachments"],
-        "attachment_results": session_context["attachment_results"],
-        "platform_context": session_context["platform_context"],
-        "kb_context": session_context["kb_context"],
-        "memory_context": session_context["memory_context"],
+如果 interrupt 不是 MCP/tool approval，而是普通人工确认、补充信息或业务分支选择，客户端可以使用平台扩展 `ksadk_resume`：
+
+```json
+{
+  "session_id": "sess-123",
+  "input": [
+    {
+      "type": "ksadk_resume",
+      "interrupt_id": "intr_123",
+      "value": {
+        "approved": true,
+        "answer": "继续"
+      }
     }
+  ],
+  "stream": true
+}
 ```
 
-其中 `session_context` 当前可稳定拿到：
+这类事件属于 `ksadk` 扩展，不伪装成 OpenAI MCP approval。
 
-- `session_id`
-- `history`
-- `attachments`
-- `attachment_results`
-- `input_parts`
-- `platform_context`
-- `kb_context`
-- `memory_context`
-- `instructions`
+### Agent 开发者如何在业务代码中拿到上下文
 
-这也是最推荐的业务接入方式：你可以把平台上下文、图片上下文、知识库上下文投影到自己真正需要的 state 字段，而不是在图内部再猜 `messages[-1]`。
+这部分不属于远程 API 调用 contract。不同框架的业务代码接入方式已经内化到框架专属文档：
 
-#### LangChain
+- LangGraph: [LangGraph开发最佳实践](./frameworks/LangGraph开发最佳实践.md)
+- 平台公共上下文总览: [Agent 开发者上下文接入指南](./Agent 开发者上下文接入指南.md)
 
-如果是 LangChain，推荐定义：
+调用方只需要理解：
 
-```python
-def ksadk_prepare_input(payload: dict, session_context: dict) -> dict:
-    return {
-        "question": payload["input"],
-        "attachments": session_context["attachments"],
-        "attachment_results": session_context["attachment_results"],
-        "history": session_context["history"],
-    }
-```
-
-当前 `session_context` 与 LangGraph 路径保持一致，字段名相同。
-
-#### 通用运行时上下文
-
-如果业务代码运行在 tool / helper 等平台作用域中，可以通过运行时上下文读取：
-
-```python
-from ksadk.runtime_context import get_current_invocation_context
-
-ctx = get_current_invocation_context()
-if ctx:
-    print(ctx.session_id)
-    print(ctx.model)
-    print(ctx.attachments)
-    print(ctx.attachment_results)
-    print(ctx.kb_context)
-    print(ctx.memory_context)
-```
-
-`PlatformInvocationContext` 当前包含：
-
-- `agent_id`
-- `user_id`
-- `session_id`
-- `history`
-- `input_parts`
-- `attachments`
-- `attachment_results`
-- `runner_type`
-- `model`
-- `kb_context`
-- `memory_context`
+- `/v1/responses` 不要求每轮重传完整历史
+- 同一会话应持续传同一个 `session_id`
+- runtime 会在进入 runner 前重建历史、附件、知识库和长期记忆上下文
+- 框架业务代码如何消费这些上下文，由对应框架最佳实践文档说明
 
 ### 历史压缩（compaction）是怎么做的
 
@@ -608,9 +578,11 @@ data: <json>
 - `response.reasoning.delta`
 - `response.tool_call`
 - `response.tool_result`
-- `response.approval_request`
+- `response.output_item.added` / `response.output_item.done`：MCP approval request 等结构化 output item
+- `response.ksadk.approval_request`：非 MCP 的通用 interrupt 扩展事件
 - `response.compaction.start`
 - `response.compaction.done`
+- `response.incomplete`
 - `response.completed`
 
 ## 6.3 OpenAI Chat Completions 兼容接口
