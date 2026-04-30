@@ -6,8 +6,10 @@ import os
 import click
 import httpx
 import questionary
+import yaml
 from pathlib import Path
 from dotenv import set_key, find_dotenv, load_dotenv
+from ksadk.deployment.state import load_state
 from ksadk.cli.error_utils import abort_with_cli_error, print_exception, usage_error
 from ksadk.cli.resource_common import CONTEXT_SETTINGS, CompatibilityAliasCommand, print_compatibility_hint
 from ksadk.cli.ui import (
@@ -22,16 +24,122 @@ from ksadk.cli.ui import (
 )
 
 
-def run_model_command(*, compatibility_alias: bool = False):
+def _parse_model_selection(raw: str | None) -> list[str]:
+    items: list[str] = []
+    for part in str(raw or "").replace(";", ",").split(","):
+        item = part.strip()
+        if item and item not in items:
+            items.append(item)
+    return items
+
+
+def _detect_framework_from_cwd(cwd: Path | None = None) -> str:
+    root = cwd or Path.cwd()
+    state = load_state(root)
+    framework = str(state.get("framework") or state.get("type") or "").strip().lower()
+    if framework:
+        return framework
+    for file_name in ("agentengine.yaml", "ksadk.yaml"):
+        config_path = root / file_name
+        if not config_path.exists():
+            continue
+        try:
+            payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            continue
+        framework = str(payload.get("framework") or "").strip().lower()
+        if framework:
+            return framework
+    return ""
+
+
+def _model_allowlist_env_key(framework: str | None) -> str:
+    if str(framework or "").strip().lower() == "openclaw":
+        return "OPENCLAW_MODEL_ALLOWLIST"
+    return "AGENTENGINE_MODEL_ALLOWLIST"
+
+
+def _resolve_env_file() -> Path:
+    env_file = find_dotenv(usecwd=True)
+    if env_file:
+        return Path(env_file)
+    path = Path.cwd() / ".env"
+    print_warn("未找到 .env 文件，将在当前目录创建")
+    path.touch()
+    return path
+
+
+def _write_default_model(selected_model: str) -> Path:
+    if not selected_model:
+        raise click.ClickException("未选择模型")
+    env_file = _resolve_env_file()
+    success, _key, _value = set_key(env_file, "OPENAI_MODEL_NAME", selected_model, quote_mode="never")
+    if not success:
+        raise click.ClickException("更新 OPENAI_MODEL_NAME 失败")
+    return env_file
+
+
+def _write_model_allowlist(
+    *,
+    selected_models: list[str],
+    framework: str | None = None,
+) -> tuple[Path, str | None]:
+    env_file = _write_default_model(selected_models[0] if selected_models else "")
+    if len(selected_models) <= 1:
+        return env_file, None
+    resolved_framework = framework or _detect_framework_from_cwd()
+    allowlist_key = _model_allowlist_env_key(resolved_framework)
+    success, _key, _value = set_key(
+        env_file,
+        allowlist_key,
+        ",".join(selected_models),
+        quote_mode="never",
+    )
+    if not success:
+        raise click.ClickException(f"更新 {allowlist_key} 失败")
+    return env_file, allowlist_key
+
+
+def _build_model_env_pairs(
+    *,
+    selected_models: list[str],
+    framework: str | None = None,
+) -> list[tuple[str, str]]:
+    if not selected_models:
+        raise click.ClickException("未选择模型")
+    pairs = [("OPENAI_MODEL_NAME", selected_models[0])]
+    if len(selected_models) > 1:
+        resolved_framework = framework or _detect_framework_from_cwd()
+        pairs.append((_model_allowlist_env_key(resolved_framework), ",".join(selected_models)))
+    return pairs
+
+
+def run_model_command(
+    *,
+    compatibility_alias: bool = False,
+    multi: bool = False,
+    env_models: str | None = None,
+    framework: str | None = None,
+):
     """切换默认模型 (修改 .env)
 
     从 OPENAI_BASE_URL 获取可用模型列表，并更新 .env 中的 OPENAI_MODEL_NAME
     """
+    selected_for_env = _parse_model_selection(env_models)
+    if selected_for_env:
+        for key, value in _build_model_env_pairs(
+            selected_models=selected_for_env,
+            framework=None if framework == "auto" else framework,
+        ):
+            click.echo(f"{key}={value}")
+        return
+
     if compatibility_alias:
         print_compatibility_hint(
             legacy="agentengine model",
             canonical="agentengine config model",
         )
+
     if not is_stdout_tty():
         abort_with_cli_error(
             usage_error(
@@ -39,6 +147,7 @@ def run_model_command(*, compatibility_alias: bool = False):
                 hints=[
                     "查看当前模型配置请使用 `agentengine config show`。",
                     "非交互修改请使用 `agentengine config set OPENAI_MODEL_NAME=<model>`。",
+                    "为 Agent/deploy 生成环境变量请使用 `agentengine config model --env <model[,model...]>`。",
                 ],
             ),
             argv=["config", "model"],
@@ -110,47 +219,52 @@ def run_model_command(*, compatibility_alias: bool = False):
             else:
                 choices.append(m)
 
-        # 构建选项列表
-        # Questionary 默认支持按键搜索
-        selected = questionary.select(
-            "Select model:",
-            choices=choices,
-            default=default_choice,
-            style=(
-                None
-                if is_color_disabled()
-                else questionary.Style(
-                    [
-                        ("qmark", "fg:green bold"),
-                        ("question", "bold"),
-                        ("answer", "fg:green"),
-                        ("pointer", "fg:cyan bold"),
-                        ("highlighted", "fg:cyan bold"),
-                    ]
-                )
-            ),
-        ).ask()
+        style = (
+            None
+            if is_color_disabled()
+            else questionary.Style(
+                [
+                    ("qmark", "fg:green bold"),
+                    ("question", "bold"),
+                    ("answer", "fg:green"),
+                    ("pointer", "fg:cyan bold"),
+                    ("highlighted", "fg:cyan bold"),
+                ]
+            )
+        )
+        if multi:
+            selected = questionary.checkbox(
+                "Select models:",
+                choices=choices,
+                style=style,
+            ).ask()
+        else:
+            # 构建选项列表
+            # Questionary 默认支持按键搜索
+            selected = questionary.select(
+                "Select model:",
+                choices=choices,
+                default=default_choice,
+                style=style,
+            ).ask()
 
         if selected:
-            if selected == current_model:
+            selected_models = selected if isinstance(selected, list) else [selected]
+            if not multi and selected_models[0] == current_model:
                 print_success(f"模型未变更 ({selected})")
             else:
-                # Update .env
-                env_file = find_dotenv(usecwd=True)
-                if not env_file:
-                    env_file = Path.cwd() / ".env"
-                    # 如果不存在则创建? 或者是报错
-                    print_warn("未找到 .env 文件，将在当前目录创建")
-                    env_file = Path.cwd() / ".env"
-                    env_file.touch()
-
-                # set_key 会保留注释和格式
-                success, key, value = set_key(env_file, "OPENAI_MODEL_NAME", selected, quote_mode="never")
-                if success:
-                    print_success(f"已切换模型为: {selected}")
-                    print_info(f"已更新 {env_file}")
+                if multi:
+                    env_file, allowlist_key = _write_model_allowlist(
+                        selected_models=selected_models,
+                        framework=None if framework == "auto" else framework,
+                    )
                 else:
-                    print_error("更新 .env 失败")
+                    env_file = _write_default_model(selected_models[0])
+                    allowlist_key = None
+                print_success(f"已切换模型为: {selected_models[0]}")
+                if allowlist_key:
+                    print_success(f"已更新模型 allowlist: {allowlist_key}")
+                print_info(f"已更新 {env_file}")
 
     except Exception as e:
         print_exception("获取模型失败", e)
@@ -166,6 +280,25 @@ def run_model_command(*, compatibility_alias: bool = False):
     cls=CompatibilityAliasCommand,
     canonical_command="agentengine config model",
 )
-def model():
+@click.option("--multi", is_flag=True, help="交互式多选模型，并按当前框架写入模型 allowlist")
+@click.option(
+    "--env",
+    "env_models",
+    default=None,
+    help="按模型列表生成环境变量，逗号分隔；首个模型作为默认模型，不写入 .env",
+)
+@click.option(
+    "--framework",
+    type=click.Choice(["auto", "openclaw", "hermes", "generic"], case_sensitive=False),
+    default="auto",
+    show_default=True,
+    help="allowlist 变量选择策略；auto 会读取当前目录框架",
+)
+def model(multi: bool, env_models: str | None, framework: str):
     """切换默认模型 (兼容入口)。"""
-    run_model_command(compatibility_alias=True)
+    run_model_command(
+        compatibility_alias=True,
+        multi=multi,
+        env_models=env_models,
+        framework=framework,
+    )

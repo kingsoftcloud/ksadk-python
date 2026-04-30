@@ -61,6 +61,33 @@ def test_build_start_frame_supports_workspace_cwd():
     assert payload["cwd"] == "demo-workspace"
 
 
+def test_build_start_frame_supports_whitelisted_terminal_options():
+    payload = json.loads(
+        build_start_frame(
+            mode="tui",
+            argv=[],
+            cols=120,
+            rows=40,
+            options={
+                "message": "你好",
+                "thinking": "medium",
+                "history_limit": 50,
+                "timeout_ms": 30000,
+                "deliver": True,
+            },
+        )
+    )
+
+    assert payload["mode"] == "tui"
+    assert payload["options"] == {
+        "message": "你好",
+        "thinking": "medium",
+        "history_limit": 50,
+        "timeout_ms": 30000,
+        "deliver": True,
+    }
+
+
 @pytest.mark.parametrize(
     "argv",
     [

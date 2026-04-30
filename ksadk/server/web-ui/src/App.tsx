@@ -11,6 +11,11 @@ import {
   resolveSessionToRestore,
   writePersistedSessionId,
 } from './utils/session.js';
+import { resolveNativeManagementLink } from './utils/native-platform.js';
+import {
+  createResponsesStreamState,
+  normalizeResponsesStreamEvent,
+} from './utils/responses-stream.js';
 import { useResponsiveViewport } from './hooks/useResponsiveViewport';
 import { cn } from '@/lib/utils';
 import { AttachmentPreview } from './components/chat/AttachmentPreview';
@@ -32,6 +37,7 @@ import { Sheet, SheetContent, SheetDescription, SheetTitle } from './components/
 type SessionEventRecord = {
   EventId?: string;
   EventType?: string;
+  InvocationId?: string;
   Content?: {
     role?: string;
     status?: string;
@@ -39,6 +45,14 @@ type SessionEventRecord = {
     parts?: Array<{
       type?: string;
       text?: string;
+      functionCall?: {
+        name?: string;
+        args?: unknown;
+      };
+      functionResponse?: {
+        name?: string;
+        response?: unknown;
+      };
       inlineData?: {
         displayName?: string;
         mimeType?: string;
@@ -52,7 +66,10 @@ type SessionEventRecord = {
     }>;
   };
   Timestamp?: number;
-  Metadata?: Record<string, unknown>;
+  Metadata?: Record<string, unknown> & {
+    response_id?: string;
+    responses_output?: unknown;
+  };
   SeqId?: number;
 };
 
@@ -111,10 +128,7 @@ function resolveRunAgentApiFormat(options: {
   agentFramework: string;
   apiFormats: RuntimeApiFormat[];
 }): RuntimeApiFormat {
-  const { agentFramework, apiFormats } = options;
-  if (agentFramework === 'hermes' && apiFormats.includes('chat_completions')) {
-    return 'chat_completions';
-  }
+  const { apiFormats } = options;
   if (apiFormats.includes('responses')) {
     return 'responses';
   }
@@ -312,6 +326,60 @@ function parseMessageContent(event: SessionEventRecord): ParsedMessageContent {
   };
 }
 
+function buildResponsesOutputEnhancements(event: SessionEventRecord): Pick<Message, 'reasoning' | 'tools'> {
+  const responsesOutput = event.Metadata?.responses_output;
+  if (!Array.isArray(responsesOutput)) {
+    return {};
+  }
+
+  const state = createResponsesStreamState();
+  const actions = normalizeResponsesStreamEvent({
+    eventName: 'response.completed',
+    data: {
+      response: {
+        id: String(event.Metadata?.response_id || ''),
+        output: responsesOutput,
+      },
+    },
+    state,
+  });
+  let reasoning = '';
+  const tools: NonNullable<Message['tools']> = {};
+
+  for (const action of actions) {
+    if (action.type === 'reasoning_delta') {
+      reasoning += action.text;
+      continue;
+    }
+    if (action.type === 'tool_upsert') {
+      tools[action.name] = {
+        ...(tools[action.name] || { name: action.name, args: '' }),
+        name: action.name,
+        args: action.args,
+        status: action.status,
+        ...(action.approvalRequestId ? { approvalRequestId: action.approvalRequestId } : {}),
+        ...(action.previousResponseId ? { previousResponseId: action.previousResponseId } : {}),
+        ...(action.serverLabel ? { serverLabel: action.serverLabel } : {}),
+        ...(action.approvalRequestId ? { approvalStatus: 'pending' as const } : {}),
+      };
+      continue;
+    }
+    if (action.type === 'tool_result') {
+      tools[action.name] = {
+        ...(tools[action.name] || { name: action.name, args: '' }),
+        name: action.name,
+        output: action.output,
+        status: 'completed',
+      };
+    }
+  }
+
+  return {
+    ...(reasoning ? { reasoning } : {}),
+    ...(Object.keys(tools).length > 0 ? { tools } : {}),
+  };
+}
+
 function buildCompactionLabel(trigger?: string, status?: Message['status'], historical?: boolean) {
   if (status === 'running') {
     return trigger === 'prompt_too_long'
@@ -367,6 +435,16 @@ function buildMessageFromSessionEvent(event: SessionEventRecord): Message | null
         timestamp: event.Timestamp || Date.now(),
       };
     }
+    if (event.Content?.status === 'cancelled') {
+      return {
+        id: event.EventId || String(Date.now() + Math.random()),
+        role: 'system',
+        content: event.Content?.detail || '本轮输出已停止。',
+        eventType,
+        status: 'cancelled',
+        timestamp: event.Timestamp || Date.now(),
+      };
+    }
     return null;
   }
 
@@ -388,7 +466,14 @@ function buildMessageFromSessionEvent(event: SessionEventRecord): Message | null
   }
 
   const parsed = parseMessageContent(event);
-  if (!parsed.text && !parsed.attachments?.length) {
+  const responsesEnhancements =
+    eventType === 'assistant_message' ? buildResponsesOutputEnhancements(event) : {};
+  if (
+    !parsed.text
+    && !parsed.attachments?.length
+    && !responsesEnhancements.reasoning
+    && !responsesEnhancements.tools
+  ) {
     return null;
   }
 
@@ -399,7 +484,41 @@ function buildMessageFromSessionEvent(event: SessionEventRecord): Message | null
     timestamp: event.Timestamp || Date.now(),
     eventType,
     attachments: parsed.attachments,
+    ...responsesEnhancements,
   };
+}
+
+function buildMessagesFromSessionEvents(events: SessionEventRecord[]): Message[] {
+  const latestRunStatusByInvocation = new Map<string, string>();
+  for (const event of events) {
+    if (event.EventType !== 'run_status') {
+      continue;
+    }
+    const invocationId = String(event.InvocationId || '').trim();
+    if (!invocationId) {
+      continue;
+    }
+    latestRunStatusByInvocation.set(invocationId, String(event.Content?.status || '').trim());
+  }
+
+  return events
+    .map((event) => {
+      if (event.EventType === 'run_status' && event.Content?.status === 'in_progress') {
+        const invocationId = String(event.InvocationId || '').trim();
+        if (invocationId && latestRunStatusByInvocation.get(invocationId) === 'in_progress') {
+          return {
+            id: event.EventId || String(Date.now() + Math.random()),
+            role: 'system',
+            content: '上一轮消息仍在运行中，正在等待运行时继续返回结果。',
+            eventType: 'run_status',
+            status: 'running',
+            timestamp: event.Timestamp || Date.now(),
+          } satisfies Message;
+        }
+      }
+      return buildMessageFromSessionEvent(event);
+    })
+    .filter((message: Message | null): message is Message => Boolean(message));
 }
 
 function formatDate(ts?: string | number | null) {
@@ -448,6 +567,7 @@ export default function App() {
   const [workspacePanelOpen, setWorkspacePanelOpen] = useState(false);
   const [workspacePanelWidth, setWorkspacePanelWidth] = useState(DEFAULT_WORKSPACE_PANEL_WIDTH);
   const [workspacePanelFullscreen, setWorkspacePanelFullscreen] = useState(false);
+  const [queuedDrafts, setQueuedDrafts] = useState<Array<{ text: string; attachments: File[] }>>([]);
   const [apiFormats, setApiFormats] = useState<RuntimeApiFormat[]>([
     'responses',
     'chat_completions',
@@ -457,6 +577,8 @@ export default function App() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const stopRequestedRef = useRef(false);
+  const queuedDraftRef = useRef<Array<{ text: string; attachments: File[] }>>([]);
   const activeCompactionMessageIdRef = useRef<string | null>(null);
   const currentSessionIdRef = useRef<string | null>(null);
 
@@ -582,9 +704,7 @@ export default function App() {
       });
       const data = await response.json();
       if (data?.Data?.Events) {
-        const history = data.Data.Events
-          .map((event: SessionEventRecord) => buildMessageFromSessionEvent(event))
-          .filter((event: Message | null): event is Message => Boolean(event));
+        const history = buildMessagesFromSessionEvents(data.Data.Events as SessionEventRecord[]);
         setMessages(history);
       } else {
         setMessages([]);
@@ -699,9 +819,19 @@ export default function App() {
 
   const stopGeneration = () => {
     if (abortControllerRef.current) {
+      stopRequestedRef.current = true;
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
       setIsStreaming(false);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: String(Date.now() + Math.random()),
+          role: 'system',
+          content: '已停止接收本次输出；如果运行时不支持取消，后台执行可能仍会继续。',
+          timestamp: Date.now(),
+        },
+      ]);
     }
   };
 
@@ -738,10 +868,13 @@ export default function App() {
     }
   };
 
-  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if ((!input.trim() && attachments.length === 0) || isStreaming) return;
-
+  const submitDraft = async (
+    draftText: string,
+    draftAttachments: File[],
+    responsesInput?: unknown,
+    previousResponseId?: string,
+  ) => {
+    const isResponsesResume = responsesInput !== undefined;
     let sessionId = currentSessionId;
     if (!sessionId) {
       try {
@@ -767,33 +900,31 @@ export default function App() {
     currentSessionIdRef.current = sessionId;
     setCurrentSessionId(sessionId);
 
-    const userText = input.trim();
-    setInput('');
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto';
-    }
+    const userText = draftText.trim();
 
-    const messageAttachments = attachments.map((file) => ({
+    const messageAttachments = draftAttachments.map((file) => ({
       name: file.name,
       url: URL.createObjectURL(file),
       type: file.type || 'application/octet-stream',
     }));
 
-    const userMessage: Message = {
-      id: String(Date.now()),
-      role: 'user',
-      content: userText,
-      timestamp: Date.now(),
-      attachments: messageAttachments.length > 0 ? messageAttachments : undefined,
-    };
+    if (!isResponsesResume) {
+      const userMessage: Message = {
+        id: String(Date.now()),
+        role: 'user',
+        content: userText,
+        timestamp: Date.now(),
+        attachments: messageAttachments.length > 0 ? messageAttachments : undefined,
+      };
 
-    setMessages((prev) => [...prev, userMessage]);
+      setMessages((prev) => [...prev, userMessage]);
+    }
     setIsStreaming(true);
     setMobileActionsOpen(false);
 
     const parts: AgentInputPart[] = [{ type: 'input_text', text: userText }];
 
-    for (const file of attachments) {
+    for (const file of isResponsesResume ? [] : draftAttachments) {
       if (file.size > 100 * 1024 * 1024) {
         setMessages((prev) => [
           ...prev,
@@ -848,9 +979,11 @@ export default function App() {
       }
     }
 
-    setAttachments([]);
+    stopRequestedRef.current = false;
     abortControllerRef.current = new AbortController();
-    const runAgentApiFormat = resolveRunAgentApiFormat({ agentFramework, apiFormats });
+    const runAgentApiFormat = isResponsesResume
+      ? 'responses'
+      : resolveRunAgentApiFormat({ agentFramework, apiFormats });
 
     try {
       const response = await fetch('/agentengine/api/v1/RunAgent', {
@@ -866,12 +999,16 @@ export default function App() {
           ApiFormat: runAgentApiFormat,
           Model: selectedModel || undefined,
           ModelMetadata: selectedModelMetadata || undefined,
-          Messages: [
-            {
-              role: 'user',
-              content: parts,
-            },
-          ],
+          Messages: isResponsesResume
+            ? []
+            : [
+                {
+                  role: 'user',
+                  content: parts,
+                },
+              ],
+          ResponsesInput: isResponsesResume ? responsesInput : undefined,
+          PreviousResponseId: isResponsesResume ? previousResponseId : undefined,
         }),
         signal: abortControllerRef.current.signal,
       });
@@ -882,8 +1019,7 @@ export default function App() {
 
       const assistantMessageId = String(Date.now() + 1);
       let assistantMessageCreated = false;
-      const responseToolNames = new Map<string, string>();
-      const responseToolArguments = new Map<string, string>();
+      const responsesStreamState = createResponsesStreamState();
       const ensureAssistantMessage = () => {
         if (assistantMessageCreated) return;
         assistantMessageCreated = true;
@@ -892,7 +1028,16 @@ export default function App() {
           { id: assistantMessageId, role: 'model', content: '', timestamp: Date.now(), reasoning: '' },
         ]);
       };
-      const upsertToolRun = (name: string, args: string, status: 'running' | 'completed' | 'error' | 'paused') => {
+      const upsertToolRun = (
+        name: string,
+        args: string,
+        status: 'running' | 'completed' | 'error' | 'paused',
+        extra?: {
+          approvalRequestId?: string;
+          previousResponseId?: string;
+          serverLabel?: string;
+        },
+      ) => {
         ensureAssistantMessage();
         setMessages((prev) =>
           prev.map((message) => {
@@ -906,6 +1051,8 @@ export default function App() {
                   name,
                   args,
                   status,
+                  ...(extra || {}),
+                  ...(extra?.approvalRequestId ? { approvalStatus: 'pending' as const } : {}),
                 },
               },
             };
@@ -930,6 +1077,45 @@ export default function App() {
             };
           }),
         );
+      };
+      const appendReasoning = (delta: string) => {
+        ensureAssistantMessage();
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === assistantMessageId
+              ? { ...message, reasoning: (message.reasoning || '') + delta }
+              : message,
+          ),
+        );
+      };
+      const appendAssistantText = (delta: string) => {
+        ensureAssistantMessage();
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === assistantMessageId
+              ? { ...message, content: message.content + delta }
+              : message,
+          ),
+        );
+      };
+      const setAssistantText = (text: string) => {
+        ensureAssistantMessage();
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === assistantMessageId ? { ...message, content: text } : message,
+          ),
+        );
+      };
+      const appendSystemMessage = (content: string) => {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: String(Date.now() + Math.random()),
+            role: 'system',
+            content,
+            timestamp: Date.now(),
+          },
+        ]);
       };
 
       let buffer = '';
@@ -1013,127 +1199,38 @@ export default function App() {
               continue;
             }
 
-            if (currentEvent === 'response.tool_call') {
-              const name = String(data.name || 'tool');
-              const args =
-                typeof data.args === 'object'
-                  ? JSON.stringify(data.args, null, 2)
-                  : String(data.args || '');
-              upsertToolRun(name, args, 'running');
-            } else if (
-              currentEvent === 'response.tool_result' ||
-              currentEvent === 'response.ksadk.tool_result'
-            ) {
-              const name = String(data.name || 'tool');
-              const output =
-                typeof data.output === 'object'
-                  ? JSON.stringify(data.output, null, 2)
-                  : String(data.output || '');
-              completeToolRun(name, output);
-            } else if (currentEvent === 'response.output_item.added') {
-              const item = data.item || {};
-              if (item.type === 'function_call') {
-                const name = String(item.name || 'tool');
-                const itemId = String(item.id || '');
-                const args = String(item.arguments || '');
-                responseToolNames.set(itemId, name);
-                responseToolArguments.set(itemId, args);
-                upsertToolRun(name, args, 'running');
-              } else if (item.type === 'mcp_approval_request') {
-                const name = String(item.name || 'approval');
-                upsertToolRun(name, String(item.arguments || ''), 'paused');
+            const actions = normalizeResponsesStreamEvent({
+              eventName: currentEvent,
+              data,
+              state: responsesStreamState,
+            });
+            for (const action of actions) {
+              if (action.type === 'tool_upsert') {
+                upsertToolRun(action.name, action.args, action.status, {
+                  approvalRequestId: action.approvalRequestId,
+                  previousResponseId: action.previousResponseId,
+                  serverLabel: action.serverLabel,
+                });
+              } else if (action.type === 'tool_result') {
+                completeToolRun(action.name, action.output);
+              } else if (action.type === 'reasoning_delta') {
+                appendReasoning(action.text);
+              } else if (action.type === 'text_delta') {
+                appendAssistantText(action.text);
+              } else if (action.type === 'text_final') {
+                setAssistantText(action.text);
+              } else if (action.type === 'approval_request') {
+                appendSystemMessage('本次运行需要人工审批后才能继续。');
+              } else if (action.type === 'incomplete') {
+                appendSystemMessage('本次运行已中断，需要人工确认后继续。');
+              } else if (action.type === 'failed') {
+                setAssistantText(`生成失败：${action.message}`);
+              } else if (action.type === 'terminal') {
+                isDone = true;
               }
-            } else if (currentEvent === 'response.function_call_arguments.delta') {
-              const itemId = String(data.item_id || '');
-              const name = responseToolNames.get(itemId) || 'tool';
-              const args = `${responseToolArguments.get(itemId) || ''}${String(data.delta || '')}`;
-              responseToolArguments.set(itemId, args);
-              upsertToolRun(name, args, 'running');
-            } else if (currentEvent === 'response.function_call_arguments.done') {
-              const itemId = String(data.item_id || '');
-              const name = responseToolNames.get(itemId) || 'tool';
-              const args = String(data.arguments || responseToolArguments.get(itemId) || '');
-              responseToolArguments.set(itemId, args);
-              upsertToolRun(name, args, 'running');
-            } else if (
-              currentEvent === 'response.approval_request' ||
-              currentEvent === 'response.ksadk.approval_request'
-            ) {
-              ensureAssistantMessage();
-              setMessages((prev) => [
-                ...prev,
-                {
-                  id: String(Date.now() + Math.random()),
-                  role: 'system',
-                  content: '本次运行需要人工审批后才能继续。',
-                  timestamp: Date.now(),
-                },
-              ]);
-            } else if (currentEvent === 'response.reasoning.delta') {
-              const delta = data.delta || '';
-              if (delta) {
-                ensureAssistantMessage();
-                setMessages((prev) =>
-                  prev.map((message) =>
-                    message.id === assistantMessageId
-                      ? { ...message, reasoning: (message.reasoning || '') + delta }
-                      : message,
-                  ),
-                );
-              }
-            } else if (currentEvent === 'response.output_text.delta') {
-              const delta = data.delta || '';
-              if (delta) {
-                ensureAssistantMessage();
-                setMessages((prev) =>
-                  prev.map((message) =>
-                    message.id === assistantMessageId
-                      ? { ...message, content: message.content + delta }
-                      : message,
-                  ),
-                );
-              }
-            } else if (currentEvent === 'response.completed') {
-              const finalText = data.output_text || '';
-              if (finalText) {
-                ensureAssistantMessage();
-                setMessages((prev) =>
-                  prev.map((message) =>
-                    message.id === assistantMessageId ? { ...message, content: finalText } : message,
-                  ),
-                );
-              }
-            } else if (currentEvent === 'response.failed') {
-              const message = data.error?.message || 'Agent 运行失败';
-              ensureAssistantMessage();
-              setMessages((prev) =>
-                prev.map((item) =>
-                  item.id === assistantMessageId ? { ...item, content: `生成失败：${message}` } : item,
-                ),
-              );
-            } else if (currentEvent === 'response.incomplete') {
-              ensureAssistantMessage();
-              setMessages((prev) => [
-                ...prev,
-                {
-                  id: String(Date.now() + Math.random()),
-                  role: 'system',
-                  content: '本次运行已中断，需要人工确认后继续。',
-                  timestamp: Date.now(),
-                },
-              ]);
-            } else if (data.content?.parts?.[0]?.text) {
-              const delta = data.content.parts[0].text;
-              if (!data.actions?.finishReason) {
-                ensureAssistantMessage();
-                setMessages((prev) =>
-                  prev.map((message) =>
-                    message.id === assistantMessageId
-                      ? { ...message, content: message.content + delta }
-                      : message,
-                  ),
-                );
-              }
+            }
+            if (isDone) {
+              break;
             }
           } catch (error) {
             console.warn('Failed to parse SSE data', dataString, error);
@@ -1146,7 +1243,7 @@ export default function App() {
         if (activeCompactionMessageIdRef.current) {
           upsertCompactionMessage({ phase: 'failed' });
         }
-        console.log('Stream aborted');
+        console.log(stopRequestedRef.current ? 'Stream stopped by user' : 'Stream aborted');
       } else {
         if (activeCompactionMessageIdRef.current) {
           upsertCompactionMessage({ phase: 'failed' });
@@ -1164,10 +1261,88 @@ export default function App() {
       }
     } finally {
       setIsStreaming(false);
+      stopRequestedRef.current = false;
       abortControllerRef.current = null;
       activeCompactionMessageIdRef.current = null;
       void fetchSessions(agentId, sessionId);
+      const queuedDraft = queuedDraftRef.current.shift();
+      setQueuedDrafts((prev) => prev.slice(1));
+      if (queuedDraft && (queuedDraft.text.trim() || queuedDraft.attachments.length > 0)) {
+        window.setTimeout(() => {
+          void submitDraft(queuedDraft.text, queuedDraft.attachments);
+        }, 0);
+      }
     }
+  };
+
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!input.trim() && attachments.length === 0) return;
+
+    const draft = {
+      text: input,
+      attachments,
+    };
+    setInput('');
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+    }
+    setAttachments([]);
+
+    if (isStreaming) {
+      queuedDraftRef.current.push(draft);
+      setQueuedDrafts((prev) => [...prev, draft]);
+      return;
+    }
+
+    await submitDraft(draft.text, draft.attachments);
+  };
+
+  const respondToApproval = (options: {
+    approvalRequestId: string;
+    approve: boolean;
+    previousResponseId?: string;
+  }) => {
+    if (!options.approvalRequestId || isStreaming) return;
+    setMessages((prev) =>
+      prev.map((message) => ({
+        ...message,
+        tools: message.tools
+          ? Object.fromEntries(
+              Object.entries(message.tools).map(([name, tool]) => [
+                name,
+                tool.approvalRequestId === options.approvalRequestId
+                  ? {
+                      ...tool,
+                      approvalStatus: options.approve ? 'approved' : 'rejected',
+                    }
+                  : tool,
+              ]),
+            )
+          : message.tools,
+      })),
+    );
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: String(Date.now() + Math.random()),
+        role: 'system',
+        content: options.approve ? '已批准工具调用，正在继续运行。' : '已拒绝工具调用，正在通知运行时。',
+        timestamp: Date.now(),
+      },
+    ]);
+    void submitDraft(
+      '',
+      [],
+      [
+        {
+          type: 'mcp_approval_response',
+          approval_request_id: options.approvalRequestId,
+          approve: options.approve,
+        },
+      ],
+      options.previousResponseId,
+    );
   };
 
   const deleteSession = async (
@@ -1203,6 +1378,11 @@ export default function App() {
   });
   const workspaceEnabled = canAccessWorkspaceFiles({ workspaceFiles, accessMode });
   const workspacePanelPresentation = resolveWorkspacePanelPresentation({ isMobile });
+  const nativeManagementLink = resolveNativeManagementLink({
+    agentFramework,
+    accessMode,
+    origin: window.location.origin,
+  });
   const workspacePanelInline = workspacePanelPresentation.renderMode === 'inline';
   const workspacePanelSheet = workspacePanelPresentation.renderMode === 'sheet';
   const closeWorkspacePanel = () => {
@@ -1312,6 +1492,7 @@ export default function App() {
           onMobileActionsOpenChange={setMobileActionsOpen}
           workspaceEnabled={workspaceEnabled}
           onOpenWorkspace={() => setWorkspacePanelOpen(true)}
+          nativeManagementLink={nativeManagementLink}
         />
 
         <ChatMessageList
@@ -1320,6 +1501,7 @@ export default function App() {
           isStreaming={isStreaming}
           messages={messages}
           onOpenAttachmentPreview={openAttachmentPreview}
+          onRespondToApproval={respondToApproval}
           scrollRef={scrollRef}
         />
 
@@ -1331,6 +1513,7 @@ export default function App() {
           input={input}
           isMobile={isMobile}
           isStreaming={isStreaming}
+          queuedDrafts={queuedDrafts}
           onAppendAttachments={appendAttachments}
           onInputChange={handleInputChange}
           onPaste={handleComposerPaste}

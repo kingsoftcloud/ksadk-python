@@ -89,6 +89,7 @@ class PreparedConversationTurn:
     compaction_triggered: bool = False
     compaction_trigger: str | None = None
     compacted_until_seq_id: int | None = None
+    resume_input: dict[str, Any] | None = None
 
 
 @dataclass
@@ -159,6 +160,52 @@ def build_responses_payload(
         },
         "session_id": session_id,
     }
+
+
+def extract_responses_resume_input(input_payload: Any) -> dict[str, Any] | None:
+    """Extract OpenAI Responses approval resume input without exposing runner details."""
+    if isinstance(input_payload, Mapping):
+        candidates = [input_payload]
+    elif isinstance(input_payload, Sequence) and not isinstance(input_payload, (str, bytes, bytearray)):
+        candidates = [item for item in input_payload if isinstance(item, Mapping)]
+    else:
+        return None
+
+    for item in candidates:
+        item_type = str(item.get("type") or "").strip()
+        if item_type == "mcp_approval_response":
+            resume_input: dict[str, Any] = {"type": "mcp_approval_response"}
+            if item.get("id"):
+                resume_input["id"] = str(item.get("id"))
+            approval_request_id = item.get("approval_request_id")
+            if approval_request_id:
+                resume_input["approval_request_id"] = str(approval_request_id)
+            if "approve" in item:
+                resume_input["approve"] = item.get("approve")
+            elif "approved" in item:
+                resume_input["approve"] = item.get("approved")
+            if item.get("reason") is not None:
+                resume_input["reason"] = str(item.get("reason") or "")
+            return resume_input
+
+        if item_type in {"ksadk_resume", "ksadk.approval_response"}:
+            resume_input = {"type": "ksadk_resume"}
+            interrupt_id = item.get("interrupt_id") or item.get("approval_request_id") or item.get("id")
+            if interrupt_id:
+                resume_input["interrupt_id"] = str(interrupt_id)
+            if "value" in item:
+                resume_input["value"] = item.get("value")
+            elif "resume" in item:
+                resume_input["value"] = item.get("resume")
+            else:
+                resume_input["value"] = {
+                    key: value
+                    for key, value in item.items()
+                    if key not in {"type", "interrupt_id", "approval_request_id", "id"}
+                }
+            return resume_input
+
+    return None
 
 
 def build_chat_completions_payload(*, output_text: str, model: Optional[str], session_id: str) -> dict[str, Any]:
@@ -591,7 +638,41 @@ def _build_runner_request_payload(
     }
     if prepared.instructions:
         payload["instructions"] = prepared.instructions
+    if prepared.resume_input is not None:
+        payload["input"] = prepared.resume_input
+        payload["resume"] = True
     return payload
+
+
+def _has_pending_approval(events: Sequence[SessionEvent]) -> bool:
+    pending = 0
+    for event in events:
+        event_type = canonical_event_type(
+            event.event_type,
+            author=event.author,
+            role=str((event.content or {}).get("role") or ""),
+        )
+        if event_type == "approval_request":
+            pending += 1
+        elif event_type == "approval_response" and pending > 0:
+            pending -= 1
+    return pending > 0
+
+
+def _format_resume_response_text(resume_input: Mapping[str, Any]) -> str:
+    item_type = str(resume_input.get("type") or "resume")
+    if item_type == "mcp_approval_response":
+        approval_request_id = str(resume_input.get("approval_request_id") or "")
+        approve = resume_input.get("approve")
+        reason = str(resume_input.get("reason") or "").strip()
+        parts = [f"mcp_approval_response approval_request_id={approval_request_id}"]
+        if approve is not None:
+            parts.append(f"approve={bool(approve)}")
+        if reason:
+            parts.append(f"reason={reason}")
+        return " ".join(parts)
+
+    return f"{item_type} {json.dumps(dict(resume_input), ensure_ascii=False, sort_keys=True)}"
 
 
 def _truncate_text(text: str | None, limit: int) -> str:
@@ -1284,6 +1365,7 @@ async def build_run_input(
     state_delta: Optional[dict[str, Any]] = None,
     instructions: Optional[str] = None,
     request_metadata: Mapping[str, Any] | None = None,
+    resume_input: Mapping[str, Any] | None = None,
     invocation_id: Optional[str] = None,
     session_service_provider: Callable[[], Any] | None = None,
 ) -> PreparedConversationTurn:
@@ -1308,6 +1390,43 @@ async def build_run_input(
         model,
         model_metadata=model_metadata,
     )
+    normalized_request_metadata = dict(request_metadata or {})
+    normalized_instructions = str(instructions or "").strip()
+
+    if resume_input is not None:
+        if not session_id:
+            raise ValueError("Responses resume input requires session_id")
+        existing_events = await service.get_events(resolved_session_id)
+        if not _has_pending_approval(existing_events):
+            raise ValueError("Responses resume input requires a pending approval_request")
+
+        normalized_resume_input = dict(resume_input)
+        resume_text = _format_resume_response_text(normalized_resume_input)
+        await append_conversation_event(
+            session_id=resolved_session_id,
+            author="user",
+            role="user",
+            text=resume_text,
+            invocation_id=resolved_invocation_id,
+            event_type="approval_response",
+            session_service_provider=provider,
+            metadata={"resume_input": normalized_resume_input},
+        )
+        history = build_history_from_events(await service.get_events(resolved_session_id))
+        return PreparedConversationTurn(
+            session_id=resolved_session_id,
+            invocation_id=resolved_invocation_id,
+            user_input=resume_text,
+            user_display_input=resume_text,
+            history=history,
+            user_parts=[],
+            attachments=[],
+            attachment_results=[],
+            model_metadata=resolved_model_metadata,
+            instructions=normalized_instructions,
+            request_metadata=normalized_request_metadata,
+            resume_input=normalized_resume_input,
+        )
 
     normalized_messages = _normalized_conversation_messages(messages)
     user_input, user_display_input, user_parts, attachments, attachment_results = _latest_user_turn(
@@ -1322,8 +1441,6 @@ async def build_run_input(
         attachments=attachments,
         attachment_results=attachment_results,
     )
-    normalized_instructions = str(instructions or "").strip()
-    normalized_request_metadata = dict(request_metadata or {})
     event_metadata = {
         "agent_input": user_input,
         "attachments": [compact_attachment_for_session(item) for item in attachments if item],
@@ -1333,6 +1450,7 @@ async def build_run_input(
             if item
         ],
     }
+
     if normalized_instructions:
         event_metadata["instructions"] = normalized_instructions
     if normalized_request_metadata:
@@ -1410,6 +1528,7 @@ async def invoke_conversation_once(
     state_delta: Optional[dict[str, Any]] = None,
     instructions: Optional[str] = None,
     request_metadata: Mapping[str, Any] | None = None,
+    resume_input: Mapping[str, Any] | None = None,
     session_service_provider: Callable[[], Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """非流式 turn 编排入口。
@@ -1429,6 +1548,7 @@ async def invoke_conversation_once(
         state_delta=state_delta,
         instructions=instructions,
         request_metadata=request_metadata,
+        resume_input=resume_input,
         session_service_provider=provider,
     )
     ambient_contexts = _build_runner_ambient_contexts(
@@ -1547,20 +1667,31 @@ async def _iter_conversation_turn_events(
     state_delta: Optional[dict[str, Any]] = None,
     instructions: Optional[str] = None,
     request_metadata: Mapping[str, Any] | None = None,
+    resume_input: Mapping[str, Any] | None = None,
     session_service_provider: Callable[[], Any] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Internal semantic event stream shared by protocol serializers."""
     provider = session_service_provider or resolve_session_service
     prepare_runner(runner, model)
-    compaction_preview = await preview_auto_compaction(
-        agent_id=agent_id,
-        user_id=user_id,
-        session_id=session_id,
-        messages=messages,
-        model=model,
-        model_metadata=model_metadata,
-        session_service_provider=provider,
-    )
+    if resume_input is None:
+        compaction_preview = await preview_auto_compaction(
+            agent_id=agent_id,
+            user_id=user_id,
+            session_id=session_id,
+            messages=messages,
+            model=model,
+            model_metadata=model_metadata,
+            session_service_provider=provider,
+        )
+    else:
+        compaction_preview = CompactionPlan(
+            should_compact=False,
+            groups_to_compact=[],
+            total_chars=0,
+            total_estimated_tokens=0,
+            group_count=0,
+            tail_groups=0,
+        )
     if compaction_preview.should_compact:
         yield {
             "type": "compaction",
@@ -1581,6 +1712,7 @@ async def _iter_conversation_turn_events(
         state_delta=state_delta,
         instructions=instructions,
         request_metadata=request_metadata,
+        resume_input=resume_input,
         session_service_provider=provider,
     )
     ambient_contexts = _build_runner_ambient_contexts(
@@ -1627,6 +1759,8 @@ async def _iter_conversation_turn_events(
 
     accumulated_text = ""
     emitted_anything = False
+    responses_output: list[Any] = []
+    responses_response_id: str | None = None
     for attempt in range(2):
         try:
             runtime_context.history = list(prepared.history)
@@ -1639,6 +1773,12 @@ async def _iter_conversation_turn_events(
                     )
                 ):
                     chunk_type = chunk.get("type")
+                    if chunk_type == "responses_output":
+                        raw_output = chunk.get("output")
+                        responses_output = raw_output if isinstance(raw_output, list) else []
+                        raw_response_id = chunk.get("response_id")
+                        responses_response_id = str(raw_response_id) if raw_response_id else responses_response_id
+                        continue
                     if chunk_type == "thinking":
                         delta = str(chunk.get("delta", ""))
                         if delta:
@@ -1769,6 +1909,12 @@ async def _iter_conversation_turn_events(
             yield {"type": "error", "message": str(exc) or "Agent 运行失败"}
             return
 
+    assistant_metadata = dict(request_metadata or {})
+    if responses_output:
+        assistant_metadata["responses_output"] = responses_output
+    if responses_response_id:
+        assistant_metadata["response_id"] = responses_response_id
+
     await append_conversation_event(
         session_id=prepared.session_id,
         author=runner_name,
@@ -1776,7 +1922,7 @@ async def _iter_conversation_turn_events(
         text=accumulated_text,
         invocation_id=prepared.invocation_id,
         event_type="assistant_message",
-        metadata={"request_metadata": prepared.request_metadata} if prepared.request_metadata else None,
+        metadata=assistant_metadata or None,
         session_service_provider=provider,
     )
     await _update_session_metadata_after_assistant_turn(
@@ -1797,7 +1943,7 @@ async def _iter_conversation_turn_events(
         "output_text": accumulated_text,
         "model": model,
         "session_id": prepared.session_id,
-        "metadata": prepared.request_metadata,
+        "metadata": assistant_metadata,
     }
 
 
@@ -1814,6 +1960,7 @@ async def stream_conversation_turn(
     state_delta: Optional[dict[str, Any]] = None,
     instructions: Optional[str] = None,
     request_metadata: Mapping[str, Any] | None = None,
+    resume_input: Mapping[str, Any] | None = None,
     session_service_provider: Callable[[], Any] | None = None,
 ) -> AsyncIterator[str]:
     """Legacy ksadk response SSE stream used by hosted chat and chat-completions."""
@@ -1829,6 +1976,7 @@ async def stream_conversation_turn(
         state_delta=state_delta,
         instructions=instructions,
         request_metadata=request_metadata,
+        resume_input=resume_input,
         session_service_provider=session_service_provider,
     ):
         event_type = event.get("type")
@@ -1883,6 +2031,7 @@ async def stream_responses_conversation_turn(
     state_delta: Optional[dict[str, Any]] = None,
     instructions: Optional[str] = None,
     request_metadata: Mapping[str, Any] | None = None,
+    resume_input: Mapping[str, Any] | None = None,
     session_service_provider: Callable[[], Any] | None = None,
 ) -> AsyncIterator[str]:
     """OpenAI Responses-style SSE stream."""
@@ -1947,6 +2096,7 @@ async def stream_responses_conversation_turn(
         state_delta=state_delta,
         instructions=instructions,
         request_metadata=request_metadata,
+        resume_input=resume_input,
         session_service_provider=session_service_provider,
     ):
         event_type = event.get("type")

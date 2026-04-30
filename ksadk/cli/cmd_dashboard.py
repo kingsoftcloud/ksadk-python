@@ -39,6 +39,18 @@ from ksadk.deployment.state import load_state
 from ksadk.deployment.ui_config import resolve_ui_config
 from ksadk.openclaw_gateway import OpenClawGatewayClient
 
+_PATH_EMBEDDED_OPTION_HINTS = (
+    "--share",
+    "--expires-seconds",
+    "--force-new",
+    "--no-open",
+    "--direct",
+    "--output",
+    "--agent",
+    "--agent-id",
+    "--region",
+)
+
 DASHBOARD_RESOURCE = ResourceDescriptor(
     name="Dashboard",
     summary="Dashboard 资源管理。",
@@ -412,6 +424,12 @@ def _open_dashboard(
 ):
     no_open = bool(no_open or is_json_output() or not is_stdout_tty())
     try:
+        _validate_ui_path_option(ui_path)
+    except ValueError as e:
+        _abort_dashboard_error(usage_error(str(e)), argv=["dashboard", "open"])
+        return
+
+    try:
         explicit_ref = merge_agent_inputs(agent_option=agent_option, positional_agent=positional_agent)
     except ValueError as e:
         _abort_dashboard_error(usage_error(str(e)), argv=["dashboard", "open"])
@@ -539,6 +557,18 @@ def _render_dashboard_open_result(
         },
     )
     _emit_url("打开 Dashboard", open_url, no_open=no_open)
+
+
+def _validate_ui_path_option(ui_path: Optional[str]) -> None:
+    if not ui_path:
+        return
+    path_text = str(ui_path).strip()
+    for option_hint in _PATH_EMBEDDED_OPTION_HINTS:
+        if option_hint in path_text:
+            raise ValueError(
+                f"--path 的值疑似拼入了 `{option_hint}`。"
+                "请把路径和选项分开，例如：`agentengine dashboard open --path /chat --share`。"
+            )
 
 
 def _is_openclaw_target(*, state: Optional[dict], detail: dict) -> bool:

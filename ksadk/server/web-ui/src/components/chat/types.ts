@@ -16,7 +16,7 @@ export type Message = {
   content: string;
   timestamp: number;
   eventType?: string;
-  status?: 'running' | 'completed' | 'failed';
+  status?: 'running' | 'completed' | 'failed' | 'cancelled';
   summary?: string;
   trigger?: string;
   compactedUntilSeqId?: number;
@@ -28,6 +28,10 @@ export type Message = {
       args: string;
       output?: string;
       status: 'running' | 'completed' | 'error' | 'paused';
+      approvalRequestId?: string;
+      previousResponseId?: string;
+      serverLabel?: string;
+      approvalStatus?: 'pending' | 'approved' | 'rejected';
     };
   };
   attachments?: MessageAttachment[];

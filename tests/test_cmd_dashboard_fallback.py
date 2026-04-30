@@ -63,6 +63,24 @@ def test_dashboard_open_is_canonical_command(monkeypatch):
     assert "http://demo.example.com/s/lnk-1" in result.output
 
 
+def test_dashboard_open_rejects_path_with_embedded_option(monkeypatch):
+    runner = CliRunner()
+
+    async def _unexpected_resolve(*_args, **_kwargs):
+        raise AssertionError("dashboard open should reject malformed --path before remote lookup")
+
+    monkeypatch.setattr(cmd_dashboard, "_resolve_agent_detail", _unexpected_resolve)
+
+    result = runner.invoke(
+        cmd_dashboard.dashboard,
+        ["open", "ar-test", "--path", "/chat--share", "--expires-seconds", "3600", "--no-open"],
+    )
+
+    assert result.exit_code != 0
+    assert "--path 的值疑似拼入了 `--share`" in result.output
+    assert "agentengine dashboard open --path /chat --share" in result.output
+
+
 def test_dashboard_remote_open_uses_hosted_chat_path_even_with_custom_ui_state(monkeypatch):
     runner = CliRunner()
     captured = {}

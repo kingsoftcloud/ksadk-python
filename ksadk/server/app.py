@@ -481,6 +481,8 @@ class RunAgentActionRequest(BaseModel):
     Stream: bool = False
     Model: Optional[str] = None
     ModelMetadata: Optional[Dict[str, Any]] = None
+    ResponsesInput: Optional[Any] = None
+    PreviousResponseId: Optional[str] = None
 
 
 class ResponsesRequest(BaseModel):
@@ -489,6 +491,7 @@ class ResponsesRequest(BaseModel):
     model_metadata: Optional[Dict[str, Any]] = None
     instructions: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
+    previous_response_id: Optional[str] = None
     stream: bool = False
     session_id: Optional[str] = None
 
@@ -562,6 +565,10 @@ def _event_to_action_payload(event: SessionEvent) -> dict[str, Any]:
 async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
     agent_id = request.AgentId or (runner.detection_result.name if runner else "default-agent")
     description = getattr(runner.detection_result, "description", "") if runner else ""
+    framework = ""
+    if runner:
+        detection_type = getattr(getattr(runner, "detection_result", None), "type", None)
+        framework = str(getattr(detection_type, "value", detection_type) or "").strip().lower()
     workspace_enabled = workspace_files_enabled(default=True)
     return _action_response(
         "GetAgentUiBootstrap",
@@ -570,6 +577,7 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
                 "AgentId": agent_id,
                 "Name": runner.detection_result.name if runner else agent_id,
                 "Description": description or "",
+                "Framework": framework,
             },
             "Modules": ["Chat", "Build", "Deploy"],
             "Capabilities": {
@@ -834,8 +842,14 @@ async def list_agent_models_action(_request: ListAgentModelsRequest):
 
 @app.post("/agentengine/api/v1/RunAgent")
 async def run_agent_action(request: RunAgentActionRequest):
-    messages = conversation.normalize_kop_messages(request.Messages)
+    resume_input = (
+        conversation.extract_responses_resume_input(request.ResponsesInput)
+        if request.ResponsesInput is not None
+        else None
+    )
+    messages = [] if resume_input is not None else conversation.normalize_kop_messages(request.Messages)
     api_format = (request.ApiFormat or "responses").strip().lower()
+    request_metadata = {"previous_response_id": request.PreviousResponseId} if request.PreviousResponseId else None
 
     if request.Stream:
         if api_format == "chat_completions":
@@ -856,6 +870,8 @@ async def run_agent_action(request: RunAgentActionRequest):
                 session_id=request.SessionId,
                 model=request.Model,
                 model_metadata=request.ModelMetadata,
+                request_metadata=request_metadata,
+                resume_input=resume_input,
                 prepare_runner=_prepare_runner_for_model,
                 session_service_provider=resolve_session_service,
             ),
@@ -870,6 +886,8 @@ async def run_agent_action(request: RunAgentActionRequest):
         session_id=request.SessionId,
         model=request.Model,
         model_metadata=request.ModelMetadata,
+        request_metadata=request_metadata,
+        resume_input=resume_input,
         prepare_runner=_prepare_runner_for_model,
         session_service_provider=resolve_session_service,
     )
@@ -1184,6 +1202,8 @@ async def run_sse(request: AgentRunRequest):
 
                 client_visible_text = ""
                 authoritative_text = ""
+                responses_output: list[Any] = []
+                responses_response_id: str | None = None
                 async for chunk in active_runner.stream(
                     {
                         "session_id": session_id,
@@ -1196,6 +1216,12 @@ async def run_sse(request: AgentRunRequest):
                     }
                 ):
                     event_id = str(uuid.uuid4())
+                    if chunk.get("type") == "responses_output":
+                        raw_output = chunk.get("output")
+                        responses_output = raw_output if isinstance(raw_output, list) else []
+                        raw_response_id = chunk.get("response_id")
+                        responses_response_id = str(raw_response_id) if raw_response_id else responses_response_id
+                        continue
                     if chunk.get("type") == "thinking":
                         delta = str(chunk.get("delta", ""))
                         if delta:
@@ -1341,6 +1367,10 @@ async def run_sse(request: AgentRunRequest):
                         text=authoritative_text,
                         invocation_id=invocation_id,
                         event_type="assistant_message",
+                        metadata={
+                            **({"responses_output": responses_output} if responses_output else {}),
+                            **({"response_id": responses_response_id} if responses_response_id else {}),
+                        },
                         session_service_provider=resolve_session_service,
                     )
                     await conversation.append_run_status_event(
@@ -1493,8 +1523,12 @@ async def responses(request: ResponsesRequest):
     """OpenAI Responses 兼容接口。"""
     active_runner = _resolve_active_runner()
 
-    messages = conversation.normalize_responses_input(request.input)
+    resume_input = conversation.extract_responses_resume_input(request.input)
+    messages = [] if resume_input is not None else conversation.normalize_responses_input(request.input)
     agent_id = active_runner.detection_result.name
+    request_metadata = dict(request.metadata or {})
+    if request.previous_response_id:
+        request_metadata.setdefault("previous_response_id", request.previous_response_id)
 
     if request.stream:
         return StreamingResponse(
@@ -1507,7 +1541,8 @@ async def responses(request: ResponsesRequest):
                 model=request.model,
                 model_metadata=request.model_metadata,
                 instructions=request.instructions,
-                request_metadata=request.metadata,
+                request_metadata=request_metadata,
+                resume_input=resume_input,
                 prepare_runner=_prepare_runner_for_model,
                 session_service_provider=resolve_session_service,
             ),
@@ -1523,7 +1558,8 @@ async def responses(request: ResponsesRequest):
         model=request.model,
         model_metadata=request.model_metadata,
         instructions=request.instructions,
-        request_metadata=request.metadata,
+        request_metadata=request_metadata,
+        resume_input=resume_input,
         prepare_runner=_prepare_runner_for_model,
         session_service_provider=resolve_session_service,
     )
@@ -1531,7 +1567,7 @@ async def responses(request: ResponsesRequest):
         output_text=result["output_text"],
         model=request.model,
         session_id=resolved_session_id,
-        metadata=result.get("metadata") if isinstance(result.get("metadata"), dict) else request.metadata,
+        metadata=result.get("metadata") if isinstance(result.get("metadata"), dict) else request_metadata,
     )
 
 

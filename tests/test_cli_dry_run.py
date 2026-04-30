@@ -382,6 +382,7 @@ class _FakeBatchDeleteClient:
 
 class _FakeOpenClawCreateClient:
     get_agent_calls = 0
+    create_payload = None
 
     def __init__(self, *args, **kwargs):
         pass
@@ -393,6 +394,7 @@ class _FakeOpenClawCreateClient:
         return False
 
     async def create_agent(self, _data):
+        self.__class__.create_payload = _data
         return {
             "agent_id": "ar-created-1",
             "endpoint": "https://ar-created-1.agent.kspmas.ksyun.com",
@@ -636,6 +638,192 @@ def test_openclaw_help_exposes_channel_and_gateway_commands():
     assert result.exit_code == 0, result.output
     assert "channel" in result.output
     assert "gateway" in result.output
+    assert "tui" in result.output
+
+
+def test_openclaw_tui_help_states_no_local_openclaw_cli_required():
+    runner = CliRunner()
+
+    result = runner.invoke(openclaw, ["tui", "--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "不需要本机安装 OpenClaw CLI" in result.output
+
+
+def test_openclaw_tui_dry_run_does_not_resolve_or_connect(monkeypatch):
+    runner = CliRunner()
+
+    async def _forbidden_resolve(*_args, **_kwargs):
+        raise AssertionError("agent detail should not be resolved")
+
+    async def _forbidden_terminal(**_kwargs):
+        raise AssertionError("remote terminal should not be called")
+
+    monkeypatch.setattr(cmd_openclaw, "_resolve_openclaw_detail_or_raise", _forbidden_resolve)
+    monkeypatch.setattr(cmd_openclaw, "run_terminal_session", _forbidden_terminal, raising=False)
+
+    result = runner.invoke(
+        openclaw,
+        [
+            "tui",
+            "ar-demo-1",
+            "--gateway-token",
+            "gw-token",
+            "--message",
+            "你好",
+            "--thinking",
+            "medium",
+            "--history-limit",
+            "50",
+            "--timeout-ms",
+            "30000",
+            "--deliver",
+            "--dry-run",
+            "--output",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["kind"] == "dry_run"
+    assert payload["resource"] == "openclaw"
+    assert payload["action"] == "tui"
+    assert payload["request"]["agent_ref"] == "ar-demo-1"
+    assert payload["request"]["mode"] == "tui"
+    assert payload["request"]["gateway_token_provided"] is True
+    assert payload["request"]["options"] == {
+        "message": "你好",
+        "thinking": "medium",
+        "history_limit": 50,
+        "timeout_ms": 30000,
+        "deliver": True,
+    }
+    assert "gw-token" not in result.output
+
+
+def test_openclaw_tui_uses_gateway_token_for_native_terminal(monkeypatch):
+    runner = CliRunner()
+    captured: Dict[str, Any] = {}
+
+    async def _fake_resolve(agent_ref, *, region):
+        assert agent_ref == "ar-demo-1"
+        assert region == "pre-online"
+        return "pre-online", {
+            "agent_id": "ar-demo-1",
+            "name": "demo-openclaw",
+            "status": "RUNNING",
+            "framework": "openclaw",
+            "endpoint": "https://openclaw.example.com",
+            "api_key": "ak-agentengine",
+            "openclaw_auth_mode": "token",
+        }
+
+    async def _fake_terminal(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(cmd_openclaw, "_resolve_openclaw_detail_or_raise", _fake_resolve)
+    monkeypatch.setattr(cmd_openclaw, "run_terminal_session", _fake_terminal, raising=False)
+
+    result = runner.invoke(
+        openclaw,
+        [
+            "tui",
+            "ar-demo-1",
+            "--region",
+            "pre-online",
+            "--gateway-token",
+            "gw-token",
+            "--session",
+            "sess-1",
+            "--message",
+            "你好",
+            "--thinking",
+            "medium",
+            "--history-limit",
+            "50",
+            "--timeout-ms",
+            "30000",
+            "--deliver",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["endpoint"] == "https://openclaw.example.com"
+    assert captured["api_key"] == "gw-token"
+    assert captured["session_id"] == "sess-1"
+    assert captured["mode"] == "tui"
+    assert captured["argv"] == []
+    assert captured["options"] == {
+        "message": "你好",
+        "thinking": "medium",
+        "history_limit": 50,
+        "timeout_ms": 30000,
+        "deliver": True,
+    }
+
+
+def test_openclaw_tui_uses_state_gateway_token_for_native_terminal(monkeypatch, tmp_path: Path):
+    (tmp_path / ".agentengine.state").write_text(
+        yaml.safe_dump(
+            {
+                "agent_id": "ar-demo-1",
+                "type": "openclaw",
+                "framework": "openclaw",
+                "endpoint": "https://openclaw.example.com",
+                "api_key": "ak-agentengine",
+                "openclaw_auth_mode": "token",
+                "openclaw_gateway_token": "gw-token-from-state",
+            }
+        ),
+        encoding="utf-8",
+    )
+    runner = CliRunner()
+    captured: Dict[str, Any] = {}
+
+    async def _fake_terminal(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("OPENCLAW_GATEWAY_TOKEN", raising=False)
+    monkeypatch.delenv("OPENCLAW_GATEWAY_PASSWORD", raising=False)
+    monkeypatch.setattr(cmd_openclaw, "run_terminal_session", _fake_terminal, raising=False)
+
+    result = runner.invoke(openclaw, ["tui"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["endpoint"] == "https://openclaw.example.com"
+    assert captured["api_key"] == "gw-token-from-state"
+    assert "gw-token-from-state" not in result.output
+
+
+def test_openclaw_tui_requires_gateway_token_for_token_auth(monkeypatch):
+    runner = CliRunner()
+
+    async def _fake_resolve(_agent_ref, *, region):
+        return region or "pre-online", {
+            "agent_id": "ar-demo-1",
+            "status": "RUNNING",
+            "framework": "openclaw",
+            "endpoint": "https://openclaw.example.com",
+            "api_key": "ak-agentengine",
+            "openclaw_auth_mode": "token",
+        }
+
+    async def _forbidden_terminal(**_kwargs):
+        raise AssertionError("remote terminal should not be called")
+
+    monkeypatch.delenv("OPENCLAW_GATEWAY_TOKEN", raising=False)
+    monkeypatch.delenv("OPENCLAW_GATEWAY_PASSWORD", raising=False)
+    monkeypatch.setattr(cmd_openclaw, "_resolve_openclaw_detail_or_raise", _fake_resolve)
+    monkeypatch.setattr(cmd_openclaw, "run_terminal_session", _forbidden_terminal, raising=False)
+
+    result = runner.invoke(openclaw, ["tui", "ar-demo-1"])
+
+    assert result.exit_code != 0
+    assert "OPENCLAW_GATEWAY_TOKEN" in result.output
 
 
 def test_openclaw_channel_connect_help_separates_channel_specific_options():
@@ -1283,6 +1471,143 @@ def test_openclaw_deploy_does_not_query_get_agent_when_quick_access_is_already_c
     assert _FakeOpenClawCreateClient.get_agent_calls == 0
 
 
+def test_openclaw_deploy_persists_gateway_token_from_extra_env(monkeypatch, tmp_path):
+    runner = CliRunner()
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawCreateClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw._GLOBAL_ENV_CACHE", {})
+    monkeypatch.chdir(tmp_path)
+    _FakeOpenClawCreateClient.get_agent_calls = 0
+
+    result = runner.invoke(
+        openclaw,
+        [
+            "deploy",
+            "--name",
+            "demo-openclaw",
+            "--image",
+            "hub.kce.ksyun.com/agentengine-public/openclaw:test",
+            "--env",
+            "OPENCLAW_GATEWAY_AUTH_MODE=token",
+            "--env",
+            "OPENCLAW_GATEWAY_TOKEN=gw-token-from-deploy",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "gw-token-from-deploy" not in result.output
+    state = yaml.safe_load((tmp_path / ".agentengine.state").read_text())
+    assert state["openclaw_auth_mode"] == "token"
+    assert state["openclaw_gateway_token"] == "gw-token-from-deploy"
+
+
+def test_openclaw_deploy_writes_only_configured_model_from_provider_catalog(monkeypatch, tmp_path):
+    runner = CliRunner()
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawCreateClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw._GLOBAL_ENV_CACHE", {})
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "deepseek-v4-pro")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://kspmas.ksyun.com/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    _FakeOpenClawCreateClient.create_payload = None
+    _FakeOpenClawCreateClient.get_agent_calls = 0
+
+    async def _fake_fetch_provider_model_catalog(**_kwargs):
+        return [
+            {
+                "id": "glm-5.1",
+                "context_window_tokens": 128_000,
+                "max_output_tokens": 8_192,
+            },
+            {
+                "id": "deepseek-v4-pro",
+                "context_window_tokens": 1_000_000,
+                "max_output_tokens": 384_000,
+            },
+            {
+                "id": "kimi-k2.6",
+                "context_window_tokens": 256_000,
+                "max_output_tokens": 32_000,
+            },
+        ]
+
+    monkeypatch.setattr(cmd_openclaw, "fetch_provider_model_catalog", _fake_fetch_provider_model_catalog)
+
+    result = runner.invoke(
+        openclaw,
+        [
+            "deploy",
+            "--name",
+            "demo-openclaw",
+            "--image",
+            "hub.kce.ksyun.com/agentengine-public/openclaw:test",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    env_vars = {
+        item["Key"]: item["Value"]
+        for item in _FakeOpenClawCreateClient.create_payload["env_vars"]
+    }
+    catalog = json.loads(env_vars["OPENCLAW_MODEL_CATALOG_JSON"])
+    assert [item["id"] for item in catalog] == ["deepseek-v4-pro"]
+    assert catalog[0]["contextWindow"] == 1_000_000
+    assert catalog[0]["maxTokens"] == 384_000
+
+
+def test_openclaw_deploy_writes_allowlisted_models_from_provider_catalog(monkeypatch, tmp_path):
+    runner = CliRunner()
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawCreateClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw._GLOBAL_ENV_CACHE", {})
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "deepseek-v4-pro")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://kspmas.ksyun.com/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENCLAW_MODEL_ALLOWLIST", "deepseek-v4-pro,glm-5.1")
+    _FakeOpenClawCreateClient.create_payload = None
+    _FakeOpenClawCreateClient.get_agent_calls = 0
+
+    async def _fake_fetch_provider_model_catalog(**_kwargs):
+        return [
+            {
+                "id": "glm-5.1",
+                "context_window_tokens": 128_000,
+                "max_output_tokens": 8_192,
+            },
+            {
+                "id": "deepseek-v4-pro",
+                "context_window_tokens": 1_000_000,
+                "max_output_tokens": 384_000,
+            },
+            {
+                "id": "kimi-k2.6",
+                "context_window_tokens": 256_000,
+                "max_output_tokens": 32_000,
+            },
+        ]
+
+    monkeypatch.setattr(cmd_openclaw, "fetch_provider_model_catalog", _fake_fetch_provider_model_catalog)
+
+    result = runner.invoke(
+        openclaw,
+        [
+            "deploy",
+            "--name",
+            "demo-openclaw",
+            "--image",
+            "hub.kce.ksyun.com/agentengine-public/openclaw:test",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    env_vars = {
+        item["Key"]: item["Value"]
+        for item in _FakeOpenClawCreateClient.create_payload["env_vars"]
+    }
+    catalog = json.loads(env_vars["OPENCLAW_MODEL_CATALOG_JSON"])
+    assert [item["id"] for item in catalog] == ["deepseek-v4-pro", "glm-5.1"]
+    assert "kimi-k2.6" not in {item["id"] for item in catalog}
+
+
 def test_openclaw_deploy_refreshes_quick_access_when_agent_id_is_immediate(monkeypatch, tmp_path):
     runner = CliRunner()
     monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawImmediateAgentIdClient)
@@ -1486,7 +1811,7 @@ def test_root_invoke_alias_still_callable_with_hint(monkeypatch):
     invoked = {}
     monkeypatch.setattr(
         "ksadk.cli.cmd_invoke._invoke_tui",
-        lambda endpoint, api_key, session_id, insecure, model, show_thinking: invoked.setdefault("endpoint", endpoint),
+        lambda endpoint, api_key, session_id, insecure, model, show_thinking, api_format=None: invoked.setdefault("endpoint", endpoint),
     )
 
     result = runner.invoke(cli, ["invoke", "--endpoint", "http://demo.local"])

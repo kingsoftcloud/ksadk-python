@@ -11,6 +11,7 @@ from ksadk.cli.cmd_invoke import (
     _extract_content,
     _extract_response_content,
     _invoke_hermes_terminal_tui,
+    _invoke_openclaw_terminal_tui,
     _resolve_remote_api_format,
     _select_remote_api_format,
     run_invoke_command,
@@ -348,7 +349,72 @@ def test_run_invoke_command_defaults_to_hermes_native_tui_for_hermes_state(monke
     assert captured["api_key"] == "ak-hermes"
 
 
-def test_run_invoke_command_uses_responses_tui_for_openclaw_state(monkeypatch, tmp_path: Path):
+def test_run_invoke_command_defaults_to_openclaw_native_tui_for_openclaw_state(monkeypatch, tmp_path: Path):
+    (tmp_path / ".agentengine.state").write_text(
+        yaml.safe_dump(
+            {
+                "type": "openclaw",
+                "framework": "openclaw",
+                "endpoint": "https://openclaw.example.com",
+                "api_key": "ak-openclaw",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    captured = {"native": 0, "chat": 0}
+
+    def _fake_native(endpoint, api_key=None, session_id=None, insecure=False):
+        captured["native"] += 1
+        captured["endpoint"] = endpoint
+        captured["api_key"] = api_key
+
+    def _fake_chat(
+        endpoint,
+        api_key=None,
+        session_id=None,
+        insecure=False,
+        model=None,
+        show_thinking=False,
+        api_format=None,
+        responses_session_header=None,
+    ):
+        captured["chat"] += 1
+        captured["endpoint"] = endpoint
+        captured["api_key"] = api_key
+        captured["api_format"] = api_format
+        captured["responses_session_header"] = responses_session_header
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("ksadk.cli.cmd_invoke._invoke_openclaw_terminal_tui", _fake_native)
+    monkeypatch.setattr("ksadk.cli.cmd_invoke._invoke_tui", _fake_chat)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_invoke._resolve_remote_api_format",
+        lambda **_kwargs: pytest.fail("native OpenClaw TUI must not probe /v1/responses"),
+    )
+
+    run_invoke_command(
+        agent_ref=None,
+        agent_option=None,
+        endpoint="https://openclaw.example.com",
+        api_key=None,
+        message=None,
+        session=None,
+        region="cn-beijing-6",
+        local=False,
+        insecure=False,
+        model=None,
+        show_thinking=False,
+        transport="auto",
+    )
+
+    assert captured["native"] == 1
+    assert captured["chat"] == 0
+    assert captured["endpoint"] == "https://openclaw.example.com"
+    assert captured["api_key"] == "ak-openclaw"
+
+
+def test_run_invoke_command_transport_chat_uses_responses_tui_for_openclaw_state(monkeypatch, tmp_path: Path):
     (tmp_path / ".agentengine.state").write_text(
         yaml.safe_dump(
             {
@@ -366,14 +432,24 @@ def test_run_invoke_command_uses_responses_tui_for_openclaw_state(monkeypatch, t
     def _fake_native(*_args, **_kwargs):
         captured["native"] += 1
 
-    def _fake_chat(endpoint, api_key=None, session_id=None, insecure=False, model=None, show_thinking=False, api_format=None):
+    def _fake_chat(
+        endpoint,
+        api_key=None,
+        session_id=None,
+        insecure=False,
+        model=None,
+        show_thinking=False,
+        api_format=None,
+        responses_session_header=None,
+    ):
         captured["chat"] += 1
         captured["endpoint"] = endpoint
         captured["api_key"] = api_key
         captured["api_format"] = api_format
+        captured["responses_session_header"] = responses_session_header
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("ksadk.cli.cmd_invoke._invoke_hermes_terminal_tui", _fake_native)
+    monkeypatch.setattr("ksadk.cli.cmd_invoke._invoke_openclaw_terminal_tui", _fake_native)
     monkeypatch.setattr("ksadk.cli.cmd_invoke._invoke_tui", _fake_chat)
     monkeypatch.setattr(
         "ksadk.cli.cmd_invoke._resolve_remote_api_format",
@@ -392,7 +468,7 @@ def test_run_invoke_command_uses_responses_tui_for_openclaw_state(monkeypatch, t
         insecure=False,
         model=None,
         show_thinking=False,
-        transport="auto",
+        transport="chat",
     )
 
     assert captured["native"] == 0
@@ -400,6 +476,7 @@ def test_run_invoke_command_uses_responses_tui_for_openclaw_state(monkeypatch, t
     assert captured["endpoint"] == "https://openclaw.example.com"
     assert captured["api_key"] == "ak-openclaw"
     assert captured["api_format"] == "responses"
+    assert captured["responses_session_header"] == "x-openclaw-session-key"
 
 
 def test_run_invoke_command_uses_openclaw_gateway_token_env_for_runtime_calls(monkeypatch, tmp_path: Path):
@@ -418,10 +495,20 @@ def test_run_invoke_command_uses_openclaw_gateway_token_env_for_runtime_calls(mo
 
     captured = {}
 
-    def _fake_chat(endpoint, api_key=None, session_id=None, insecure=False, model=None, show_thinking=False, api_format=None):
+    def _fake_chat(
+        endpoint,
+        api_key=None,
+        session_id=None,
+        insecure=False,
+        model=None,
+        show_thinking=False,
+        api_format=None,
+        responses_session_header=None,
+    ):
         captured["endpoint"] = endpoint
         captured["runtime_api_key"] = api_key
         captured["api_format"] = api_format
+        captured["responses_session_header"] = responses_session_header
 
     async def _fake_resolve_remote_api_format(**kwargs):
         captured["probe_api_key"] = kwargs["runtime_api_key"]
@@ -444,13 +531,78 @@ def test_run_invoke_command_uses_openclaw_gateway_token_env_for_runtime_calls(mo
         insecure=False,
         model=None,
         show_thinking=False,
-        transport="auto",
+        transport="chat",
     )
 
     assert captured["endpoint"] == "https://openclaw.example.com"
     assert captured["probe_api_key"] == "gateway-token"
     assert captured["runtime_api_key"] == "gateway-token"
     assert captured["api_format"] == "responses"
+    assert captured["responses_session_header"] == "x-openclaw-session-key"
+
+
+def test_run_invoke_command_uses_openclaw_gateway_token_state_for_runtime_calls(monkeypatch, tmp_path: Path):
+    (tmp_path / ".agentengine.state").write_text(
+        yaml.safe_dump(
+            {
+                "type": "openclaw",
+                "framework": "openclaw",
+                "endpoint": "https://openclaw.example.com",
+                "api_key": "ak-openclaw",
+                "openclaw_auth_mode": "token",
+                "openclaw_gateway_token": "gateway-token-from-state",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    captured = {}
+
+    def _fake_chat(
+        endpoint,
+        api_key=None,
+        session_id=None,
+        insecure=False,
+        model=None,
+        show_thinking=False,
+        api_format=None,
+        responses_session_header=None,
+    ):
+        captured["endpoint"] = endpoint
+        captured["runtime_api_key"] = api_key
+        captured["api_format"] = api_format
+        captured["responses_session_header"] = responses_session_header
+
+    async def _fake_resolve_remote_api_format(**kwargs):
+        captured["probe_api_key"] = kwargs["runtime_api_key"]
+        return "responses"
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("OPENCLAW_GATEWAY_TOKEN", raising=False)
+    monkeypatch.delenv("OPENCLAW_GATEWAY_PASSWORD", raising=False)
+    monkeypatch.setattr("ksadk.cli.cmd_invoke._invoke_tui", _fake_chat)
+    monkeypatch.setattr("ksadk.cli.cmd_invoke._resolve_remote_api_format", _fake_resolve_remote_api_format)
+
+    run_invoke_command(
+        agent_ref=None,
+        agent_option=None,
+        endpoint="https://openclaw.example.com",
+        api_key=None,
+        message=None,
+        session=None,
+        region="cn-beijing-6",
+        local=False,
+        insecure=False,
+        model=None,
+        show_thinking=False,
+        transport="chat",
+    )
+
+    assert captured["endpoint"] == "https://openclaw.example.com"
+    assert captured["probe_api_key"] == "gateway-token-from-state"
+    assert captured["runtime_api_key"] == "gateway-token-from-state"
+    assert captured["api_format"] == "responses"
+    assert captured["responses_session_header"] == "x-openclaw-session-key"
 
 
 def test_run_invoke_command_rejects_openclaw_token_mode_without_gateway_token(monkeypatch, tmp_path: Path):
@@ -665,6 +817,32 @@ def test_invoke_hermes_terminal_tui_exits_cleanly_on_keyboard_interrupt(monkeypa
         )
 
     assert exc_info.value.code == 130
+
+
+def test_invoke_openclaw_terminal_tui_uses_common_terminal_client(monkeypatch):
+    captured = {}
+
+    def _fake_terminal_session(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    def _run_success(_awaitable):
+        return 0
+
+    monkeypatch.setattr("ksadk.cli.cmd_invoke.run_terminal_session", _fake_terminal_session)
+    monkeypatch.setattr("ksadk.cli.cmd_invoke.asyncio.run", _run_success)
+
+    _invoke_openclaw_terminal_tui(
+        endpoint="https://openclaw.example.com",
+        api_key="gateway-token",
+        session_id="sess-1",
+        insecure=True,
+    )
+
+    assert captured["endpoint"] == "https://openclaw.example.com"
+    assert captured["api_key"] == "gateway-token"
+    assert captured["session_id"] == "sess-1"
+    assert captured["mode"] == "tui"
 
 
 def test_run_invoke_command_syncs_local_workspace_before_hermes_native_tui(monkeypatch, tmp_path: Path):

@@ -44,6 +44,7 @@ from ksadk.cli.resource_common import (
     ResourceDescriptor,
     ResourceListSchema,
     ResourceStatusSchema,
+    build_dry_run_envelope,
     build_resource_group_help,
     confirm_destructive,
     confirm_options,
@@ -69,13 +70,16 @@ from ksadk.cli.ui import (
     status_rich_style,
 )
 from ksadk.deployment.agent_access import get_latest_agent_access
+from ksadk.cli.model_catalog import fetch_provider_model_catalog, find_model_in_catalog
+from ksadk.conversations.model_context import normalize_model_metadata
 from ksadk.openclaw_gateway import OpenClawGatewayClient, OpenClawGatewayError, OpenClawGatewayRequestError
+from ksadk.terminal_client import run_terminal_session
 
 console = get_console()
 # 默认 OpenClaw 镜像 (KCR 个人版)
 DEFAULT_OPENCLAW_NAMESPACE = "agentengine-public"
 DEFAULT_OPENCLAW_REPO = "openclaw"
-DEFAULT_OPENCLAW_VERSION = "2026.4.26"
+DEFAULT_OPENCLAW_VERSION = "2026.4.27"
 DEFAULT_OPENCLAW_REGISTRY = "hub.kce.ksyun.com"
 DEFAULT_OPENCLAW_NAME = "openclaw-gateway"
 DEFAULT_TRUSTED_PROXY_USER_HEADER = "x-forwarded-user"
@@ -185,6 +189,14 @@ OPENCLAW_RESOURCE = ResourceDescriptor(
             kind="interactive",
         ),
         ResourceActionDescriptor(
+            name="tui",
+            canonical_command="agentengine openclaw tui [openclaw_ref]",
+            help_text="连接远端 OpenClaw 原生 TUI",
+            kind="interactive",
+            supports_output=True,
+            supports_dry_run=True,
+        ),
+        ResourceActionDescriptor(
             name="repair",
             canonical_command="agentengine openclaw repair [openclaw_ref]",
             help_text="通过控制面执行 OpenClaw 修复动作",
@@ -221,12 +233,17 @@ OPENCLAW_RESOURCE = ResourceDescriptor(
     ),
     status_schema=ResourceStatusSchema(
         title="OpenClaw 状态",
-        next_steps=("agentengine openclaw list",),
+        next_steps=(
+            "agentengine invoke <id>",
+            "agentengine openclaw tui <id>",
+            "agentengine dashboard open <id> --path /chat",
+        ),
     ),
     examples=(
         "agentengine openclaw deploy",
         "agentengine openclaw list",
         "agentengine openclaw status <id>",
+        "agentengine openclaw tui <id>",
         "agentengine openclaw gateway open <id>",
         "agentengine openclaw repair <id>",
         "agentengine openclaw channel status <id> --probe",
@@ -436,6 +453,181 @@ def _resolve_exec_profile_overrides(security_profile: Optional[str]) -> Dict[str
     raise ValueError(f"unsupported OpenClaw security profile: {security_profile}")
 
 
+def _strip_provider_prefix(provider_id: str, model_id: str) -> str:
+    provider = str(provider_id or "").strip()
+    model = str(model_id or "").strip()
+    if provider and model.lower().startswith(f"{provider.lower()}/"):
+        return model.split("/", 1)[1].strip()
+    return model
+
+
+def _default_openclaw_model_inputs(provider_id: str, model_id: str) -> list[str]:
+    if str(provider_id or "").strip().lower() == "ksyun" and str(model_id or "").strip().lower() == "glm-5.1":
+        return ["text"]
+    return ["text", "image"]
+
+
+def _openclaw_catalog_inputs(
+    *,
+    provider_id: str,
+    model_id: str,
+    metadata: Dict[str, Any],
+) -> list[str]:
+    raw = metadata.get("_provider_raw_model")
+    if isinstance(raw, dict):
+        architecture = raw.get("architecture")
+        if isinstance(architecture, dict):
+            modalities = architecture.get("input_modalities")
+            if isinstance(modalities, list):
+                normalized = {
+                    str(item or "").strip().lower()
+                    for item in modalities
+                    if str(item or "").strip()
+                }
+                result = ["text"]
+                if normalized & {"image", "图片", "图像"}:
+                    result.append("image")
+                return result
+
+    raw_capabilities = raw.get("capabilities") if isinstance(raw, dict) else None
+    capabilities = raw_capabilities if isinstance(raw_capabilities, dict) else None
+    if not capabilities and isinstance(metadata.get("capabilities"), dict):
+        metadata_capabilities = metadata["capabilities"]
+        if metadata_capabilities.get("multimodal_input_image"):
+            capabilities = metadata_capabilities
+    if isinstance(capabilities, dict):
+        result = ["text"]
+        if capabilities.get("multimodal_input_image"):
+            result.append("image")
+        return result
+    return _default_openclaw_model_inputs(provider_id, model_id)
+
+
+def _openclaw_catalog_item_from_metadata(
+    raw_model: Dict[str, Any],
+    *,
+    provider_id: str,
+    provider_api: str,
+) -> Optional[Dict[str, Any]]:
+    metadata = normalize_model_metadata(raw_model)
+    model_id = _strip_provider_prefix(
+        provider_id,
+        str(metadata.get("id") or metadata.get("name") or "").strip(),
+    )
+    if not model_id:
+        return None
+
+    inputs = _openclaw_catalog_inputs(
+        provider_id=provider_id,
+        model_id=model_id,
+        metadata=metadata,
+    )
+    return {
+        "id": model_id,
+        "name": str(raw_model.get("name") or metadata.get("display_name") or model_id),
+        "api": str(raw_model.get("api") or provider_api or "openai-completions"),
+        "reasoning": bool(raw_model.get("reasoning", True)),
+        "input": inputs or _default_openclaw_model_inputs(provider_id, model_id),
+        "cost": raw_model.get("cost")
+        if isinstance(raw_model.get("cost"), dict)
+        else {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+        "contextWindow": int(metadata.get("context_window_tokens") or 200_000),
+        "maxTokens": int(metadata.get("max_output_tokens") or 20_000),
+    }
+
+
+def _apply_openclaw_provider_model_catalog(
+    env: Dict[str, str],
+    raw_models: list[Any],
+) -> bool:
+    if not raw_models or str(env.get("OPENCLAW_MODEL_CATALOG_JSON") or "").strip():
+        return False
+
+    provider_id = str(env.get("OPENCLAW_MODEL_PROVIDER_ID") or "ksyun").strip() or "ksyun"
+    provider_api = str(env.get("OPENCLAW_MODEL_API") or "openai-completions").strip() or "openai-completions"
+    catalog: list[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw_model in raw_models:
+        if not isinstance(raw_model, dict):
+            raw_model = {"id": str(raw_model or "").strip()}
+        item = _openclaw_catalog_item_from_metadata(
+            raw_model,
+            provider_id=provider_id,
+            provider_api=provider_api,
+        )
+        if not item:
+            continue
+        model_key = str(item["id"])
+        if model_key in seen:
+            continue
+        seen.add(model_key)
+        catalog.append(item)
+
+    if not catalog:
+        return False
+    env["OPENCLAW_MODEL_CATALOG_JSON"] = json.dumps(
+        catalog,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return True
+
+
+def _apply_openclaw_provider_model_metadata(
+    env: Dict[str, str],
+    raw_model: Dict[str, Any],
+) -> bool:
+    return _apply_openclaw_provider_model_catalog(env, [raw_model])
+
+
+def _openclaw_requested_model_ids(env: Dict[str, str]) -> list[str]:
+    raw_allowlist = str(
+        env.get("OPENCLAW_MODEL_ALLOWLIST")
+        or env.get("AGENTENGINE_MODEL_ALLOWLIST")
+        or ""
+    ).strip()
+    if raw_allowlist:
+        return [
+            item.strip()
+            for item in raw_allowlist.replace(";", ",").split(",")
+            if item.strip()
+        ]
+    primary_model = str(
+        env.get("OPENCLAW_DEFAULT_MODEL")
+        or env.get("OPENAI_MODEL_NAME")
+        or ""
+    ).strip()
+    return [primary_model] if primary_model else []
+
+
+def _filter_openclaw_provider_catalog(
+    env: Dict[str, str],
+    provider_catalog: list[Any],
+) -> list[Any]:
+    requested_models = _openclaw_requested_model_ids(env)
+    if not requested_models:
+        return []
+    raw_models = [
+        item.get("_provider_raw_model") or item
+        if isinstance(item, dict)
+        else item
+        for item in provider_catalog
+    ]
+    selected: list[Any] = []
+    seen: set[str] = set()
+    for model_id in requested_models:
+        match = find_model_in_catalog(raw_models, model_id)
+        if match is None:
+            continue
+        identities = sorted(str(value).strip().lower() for value in (model_id, str(match)) if str(value).strip())
+        dedupe_key = identities[0] if identities else str(model_id).lower()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        selected.append(match)
+    return selected
+
+
 def _build_openclaw_env_vars(
     *,
     model_base_url: Optional[str] = None,
@@ -621,6 +813,12 @@ def _build_openclaw_env_vars(
     catalog = _resolve_env("OPENCLAW_MODEL_CATALOG_JSON")
     if catalog:
         env["OPENCLAW_MODEL_CATALOG_JSON"] = catalog
+    openclaw_model_allowlist = _resolve_env("OPENCLAW_MODEL_ALLOWLIST")
+    agentengine_model_allowlist = _resolve_env("AGENTENGINE_MODEL_ALLOWLIST")
+    if openclaw_model_allowlist:
+        env["OPENCLAW_MODEL_ALLOWLIST"] = openclaw_model_allowlist
+    elif agentengine_model_allowlist:
+        env["AGENTENGINE_MODEL_ALLOWLIST"] = agentengine_model_allowlist
     origins = _resolve_env("OPENCLAW_ALLOWED_ORIGINS")
     if origins:
         env["OPENCLAW_ALLOWED_ORIGINS"] = _normalize_allowed_origins(origins)
@@ -1086,6 +1284,115 @@ def _emit_data_payload(title: str, payload: dict[str, Any], *, subtitle: Optiona
         return
     print_title(title, subtitle)
     console.print(json_dumps(payload), markup=False)
+
+
+def _render_openclaw_dry_run(action: str, request: dict[str, Any], hints: tuple[str, ...] = ()) -> None:
+    if is_json_output():
+        emit_json(
+            build_dry_run_envelope(
+                resource="openclaw",
+                action=action,
+                request=request,
+                hints=list(hints),
+            )
+        )
+        return
+    print_title("OpenClaw Dry Run", f"action: {action}")
+    for key, value in request.items():
+        if isinstance(value, (list, tuple)):
+            rendered = " ".join(str(item) for item in value) or "-"
+        elif isinstance(value, dict):
+            rendered = json_dumps(value)
+        else:
+            rendered = str(value if value is not None else "-")
+        print_kv(key, rendered)
+    for hint in hints:
+        print_info(hint)
+
+
+def _build_openclaw_tui_options(
+    *,
+    message: str | None = None,
+    thinking: str | None = None,
+    history_limit: int | None = None,
+    timeout_ms: int | None = None,
+    deliver: bool = False,
+) -> dict[str, Any]:
+    options: dict[str, Any] = {}
+    if message:
+        options["message"] = message
+    if thinking:
+        options["thinking"] = thinking
+    if history_limit is not None:
+        options["history_limit"] = int(history_limit)
+    if timeout_ms is not None:
+        options["timeout_ms"] = int(timeout_ms)
+    if deliver:
+        options["deliver"] = True
+    return options
+
+
+def _select_openclaw_gateway_secret(
+    *,
+    gateway_token: str | None = None,
+    gateway_password: str | None = None,
+    state: dict[str, Any] | None = None,
+    detail: dict[str, Any] | None = None,
+) -> tuple[str | None, str | None]:
+    state = state or {}
+    detail = detail or {}
+    token = str(
+        gateway_token
+        or os.getenv("OPENCLAW_GATEWAY_TOKEN")
+        or detail.get("openclaw_gateway_token")
+        or state.get("openclaw_gateway_token")
+        or ""
+    ).strip()
+    password = str(
+        gateway_password
+        or os.getenv("OPENCLAW_GATEWAY_PASSWORD")
+        or detail.get("openclaw_gateway_password")
+        or state.get("openclaw_gateway_password")
+        or ""
+    ).strip()
+    if token and password and token != password:
+        raise click.ClickException("OPENCLAW_GATEWAY_TOKEN 与 OPENCLAW_GATEWAY_PASSWORD 同时提供时必须一致")
+    if token:
+        return "token", token
+    if password:
+        return "password", password
+    return None, None
+
+
+def _mask_openclaw_secret(secret: str | None) -> str:
+    if not secret:
+        return ""
+    text = str(secret)
+    if len(text) <= 4:
+        return "****"
+    return f"{text[:4]}****"
+
+
+def _openclaw_auth_mode_from_sources(detail: dict[str, Any], state: dict[str, Any] | None = None) -> str:
+    return str(
+        detail.get("openclaw_auth_mode")
+        or detail.get("gateway_auth_mode")
+        or (state or {}).get("openclaw_auth_mode")
+        or (state or {}).get("gateway_auth_mode")
+        or ""
+    ).strip().lower()
+
+
+def _openclaw_state_gateway_token(env_vars: dict[str, str]) -> str | None:
+    """返回需要持久化到本地 state 的 OpenClaw Gateway token。"""
+    if str(env_vars.get("OPENCLAW_GATEWAY_AUTH_MODE") or "").strip().lower() != "token":
+        return None
+    token = str(
+        env_vars.get("OPENCLAW_GATEWAY_TOKEN")
+        or env_vars.get("OPENCLAW_GATEWAY_PASSWORD")
+        or ""
+    ).strip()
+    return token or None
 
 
 async def _wait_for_gateway_ready(
@@ -1726,6 +2033,147 @@ async def _run_openclaw_repair_action(
         "current_status": detail.get("status"),
         **repair_payload,
     }
+
+
+@openclaw.command("tui", context_settings=CONTEXT_SETTINGS)
+@click.argument("agent_ref", required=False)
+@region_option(default=None, envvar=None, help_text="区域 (默认优先读取 .agentengine.state)")
+@click.option("--endpoint", "-e", default=None, help="OpenClaw Endpoint URL (覆盖自动获取)")
+@click.option("--api-key", default=None, help="AgentEngine API Key (trusted-proxy/none 场景可用)")
+@click.option(
+    "--gateway-token",
+    envvar="OPENCLAW_GATEWAY_TOKEN",
+    default=None,
+    help="OpenClaw Gateway token（token 模式必需，不是 ak-*）",
+)
+@click.option(
+    "--gateway-password",
+    envvar="OPENCLAW_GATEWAY_PASSWORD",
+    default=None,
+    help="OpenClaw Gateway password（password 模式必需）",
+)
+@click.option("--session", "-s", default=None, help="OpenClaw Session key")
+@click.option("--message", "-m", default=None, help="连接后发送的初始消息")
+@click.option("--thinking", default=None, help="Thinking level override")
+@click.option("--history-limit", type=click.IntRange(1, 10000), default=None, help="历史条数 (默认使用 OpenClaw 默认值)")
+@click.option("--timeout-ms", type=click.IntRange(1, 86400000), default=None, help="Agent timeout ms")
+@click.option("--deliver", is_flag=True, help="Deliver assistant replies")
+@click.option("--insecure", "-k", is_flag=True, help="跳过 SSL 证书验证")
+@dry_run_option()
+@cli_output_option()
+def tui_openclaw(
+    agent_ref: Optional[str],
+    region: Optional[str],
+    endpoint: Optional[str],
+    api_key: Optional[str],
+    gateway_token: Optional[str],
+    gateway_password: Optional[str],
+    session: Optional[str],
+    message: Optional[str],
+    thinking: Optional[str],
+    history_limit: Optional[int],
+    timeout_ms: Optional[int],
+    deliver: bool,
+    insecure: bool,
+    dry_run: bool,
+    output_mode: str | None,
+):
+    """连接远端 OpenClaw 原生 TUI（不需要本机安装 OpenClaw CLI）。
+
+    该命令不依赖本机安装 OpenClaw CLI；AgentEngine 会连接远端 runtime proxy，
+    由容器内的 OpenClaw CLI 执行 `openclaw tui`。
+    """
+    _ = output_mode
+    dry_run = effective_dry_run(dry_run)
+    options = _build_openclaw_tui_options(
+        message=message,
+        thinking=thinking,
+        history_limit=history_limit,
+        timeout_ms=timeout_ms,
+        deliver=deliver,
+    )
+    if dry_run:
+        secret_kind, gateway_secret = _select_openclaw_gateway_secret(
+            gateway_token=gateway_token,
+            gateway_password=gateway_password,
+        )
+        _render_openclaw_dry_run(
+            "tui",
+            {
+                "agent_ref": agent_ref,
+                "endpoint": endpoint,
+                "mode": "tui",
+                "session": session,
+                "insecure": insecure,
+                "gateway_auth_kind": secret_kind,
+                "gateway_token_provided": bool(gateway_secret),
+                "options": options,
+            },
+            hints=("dry-run 未解析远端 OpenClaw，也未建立 websocket。",),
+        )
+        return
+
+    from ksadk.deployment.state import load_state
+
+    state = load_state(Path(".").resolve())
+    resolved_region = _resolve_region(region, state)
+    detail: dict[str, Any] = dict(state or {})
+    if endpoint:
+        resolved_endpoint = endpoint
+    elif not agent_ref and str(state.get("endpoint") or "").strip():
+        resolved_endpoint = str(state.get("endpoint") or "").strip()
+    else:
+        resolved_region, detail = asyncio.run(_resolve_openclaw_detail_or_raise(agent_ref, region=region))
+        resolved_endpoint = str(detail.get("endpoint") or "").strip()
+    if not resolved_endpoint:
+        raise click.ClickException("未解析到 OpenClaw Endpoint，请传入 --endpoint 或指定 OpenClaw ID/名称")
+
+    secret_kind, gateway_secret = _select_openclaw_gateway_secret(
+        gateway_token=gateway_token,
+        gateway_password=gateway_password,
+        state=state,
+        detail=detail,
+    )
+    auth_mode = _openclaw_auth_mode_from_sources(detail, state)
+    if auth_mode in {"token", "password"} and not gateway_secret:
+        raise click.ClickException(
+            "当前 OpenClaw Gateway 为 token/password 模式，agentengine openclaw tui 需要 OpenClaw Gateway token/password。\n"
+            "请使用: agentengine openclaw tui --gateway-token <token>\n"
+            "或设置: OPENCLAW_GATEWAY_TOKEN=<token> agentengine openclaw tui\n"
+            "如果部署时传过 OPENCLAW_GATEWAY_TOKEN，请重新运行部署让本地 .agentengine.state 记录该 token。\n"
+            "注意：这里不是 AgentEngine API Key（ak-*）。"
+        )
+
+    terminal_api_key = gateway_secret or api_key or str(detail.get("api_key") or state.get("api_key") or "").strip() or None
+    click.secho("🖥️  OpenClaw Native Remote TUI", fg="blue", bold=True)
+    click.echo(f"   Endpoint: {resolved_endpoint}")
+    if gateway_secret:
+        click.echo(f"   Runtime Auth: OpenClaw Gateway {secret_kind} {_mask_openclaw_secret(gateway_secret)}")
+    elif terminal_api_key:
+        click.echo(f"   Runtime Auth: Bearer {_mask_openclaw_secret(terminal_api_key)}")
+    else:
+        click.echo("   Runtime Auth: anonymous/trusted-proxy")
+    click.echo("   退出: Ctrl-D 或 Ctrl-C")
+    try:
+        exit_code = asyncio.run(
+            run_terminal_session(
+                endpoint=resolved_endpoint,
+                api_key=terminal_api_key,
+                session_id=session,
+                insecure=insecure,
+                mode="tui",
+                argv=[],
+                options=options,
+            )
+        )
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        raise SystemExit(130)
+    except Exception as exc:
+        click.secho(f"\n❌ OpenClaw 终端连接失败: {exc}", fg="red")
+        click.echo("   浏览器聊天页请改用: agentengine dashboard open --path /chat")
+        raise SystemExit(1)
+    if exit_code:
+        raise SystemExit(exit_code)
 
 
 @openclaw_gateway.command("open", context_settings=CONTEXT_SETTINGS)
@@ -2691,6 +3139,22 @@ async def _deploy_openclaw(
     if custom_env_vars:
         env_vars.update(custom_env_vars)
     env_vars = _normalize_openclaw_gateway_auth_env(env_vars)
+    if not str(env_vars.get("OPENCLAW_MODEL_CATALOG_JSON") or "").strip():
+        catalog_api_base = (
+            model_base_url
+            or _resolve_env("OPENCLAW_MODEL_BASE_URL", "OPENAI_BASE_URL", "OPENAI_API_BASE", "LLM_API_BASE", "MODEL_API_BASE")
+        )
+        catalog_api_key = (
+            model_api_key
+            or _resolve_env("OPENCLAW_MODEL_API_KEY", "OPENAI_API_KEY", "LLM_API_KEY", "MODEL_API_KEY")
+        )
+        provider_catalog = await fetch_provider_model_catalog(
+            api_base=catalog_api_base,
+            api_key=catalog_api_key,
+        )
+        selected_catalog = _filter_openclaw_provider_catalog(env_vars, provider_catalog)
+        if _apply_openclaw_provider_model_catalog(env_vars, selected_catalog):
+            print_info(f"已从模型服务 /v1/models 同步 OpenClaw 模型元数据: {len(selected_catalog)} 个")
     memory_config = _build_openclaw_memory_config(
         memory_system=memory_system,
         mem0_instance_id=mem0_instance_id,
@@ -2886,8 +3350,9 @@ async def _deploy_openclaw(
             if not existing_agent_id:
                 saved_name = openclaw_name
 
-            save_state(project_dir, {
+            state_payload = {
                 "type": "openclaw",
+                "framework": "openclaw",
                 "agent_id": agent_id,
                 "name": saved_name,
                 "region": region,
@@ -2895,7 +3360,11 @@ async def _deploy_openclaw(
                 "api_key": api_key,
                 "image": image_ref,
                 "openclaw_auth_mode": env_vars.get("OPENCLAW_GATEWAY_AUTH_MODE"),
-            })
+            }
+            state_gateway_token = _openclaw_state_gateway_token(env_vars)
+            if state_gateway_token:
+                state_payload["openclaw_gateway_token"] = state_gateway_token
+            save_state(project_dir, state_payload)
 
             # 仅在更新已有实例时回读一次状态；新建时底层可能尚未落库，立即按 ID 查询会产生误导性报错。
             if updated_existing_agent and agent_id:
@@ -3041,6 +3510,7 @@ def status(agent_ref: Optional[str], region: Optional[str], dry_run: bool, outpu
             status_val = detail.get("status", "UNKNOWN")
             created_at_display = _format_cli_timestamp(detail.get("created_at"))
             updated_at_display = _format_cli_timestamp(detail.get("updated_at"))
+            resolved_agent_id = str(detail.get("agent_id") or agent_ref)
             render_descriptor_status(
                 OPENCLAW_RESOURCE,
                 subtitle=str(detail.get("name") or agent_ref),
@@ -3065,6 +3535,12 @@ def status(agent_ref: Optional[str], region: Optional[str], dry_run: bool, outpu
                     "created_at": str(detail.get("created_at") or "-"),
                     "updated_at": str(detail.get("updated_at") or "-"),
                 },
+                next_steps=(
+                    f"agentengine invoke {resolved_agent_id}",
+                    f"agentengine openclaw tui {resolved_agent_id}",
+                    f"agentengine dashboard open {resolved_agent_id} --path /chat",
+                    "agentengine openclaw list",
+                ),
             )
 
     try:

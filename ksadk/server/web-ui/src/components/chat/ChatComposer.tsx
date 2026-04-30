@@ -21,6 +21,7 @@ type ChatComposerProps = {
   input: string;
   isMobile: boolean;
   isStreaming: boolean;
+  queuedDrafts: Array<{ text: string; attachments: File[] }>;
   onAppendAttachments: (files: File[]) => void;
   onInputChange: (event: ChangeEvent<HTMLTextAreaElement>) => void;
   onPaste: (event: ClipboardEvent<HTMLTextAreaElement>) => void;
@@ -38,6 +39,7 @@ export function ChatComposer({
   input,
   isMobile,
   isStreaming,
+  queuedDrafts,
   onAppendAttachments,
   onInputChange,
   onPaste,
@@ -75,8 +77,45 @@ export function ChatComposer({
               className="flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-1.5 text-sm shadow-sm transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700"
             >
               <StopCircle className="h-4 w-4 text-slate-500" />
-              <span>停止生成</span>
+              <span>停止接收</span>
             </button>
+          </div>
+        ) : null}
+
+        {queuedDrafts.length > 0 ? (
+          <div className="mb-2 rounded-2xl border border-amber-200/80 bg-amber-50/80 px-3 py-2 text-xs text-amber-900 shadow-sm dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-100">
+            <div className="mb-1.5 flex items-center justify-between gap-2">
+              <span className="font-semibold">发送队列 · {queuedDrafts.length}</span>
+              <span className="text-amber-700/75 dark:text-amber-200/75">当前回复完成后依次发送</span>
+            </div>
+            <div className="flex flex-col gap-1">
+              {queuedDrafts.slice(0, 3).map((draft, index) => {
+                const preview = draft.text.trim() || (draft.attachments.length > 0 ? '仅附件消息' : '空消息');
+                return (
+                  <div
+                    key={`${index}-${preview}-${draft.attachments.length}`}
+                    className="flex items-center gap-2 rounded-xl bg-white/70 px-2 py-1.5 dark:bg-slate-950/35"
+                  >
+                    <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full bg-amber-100 font-mono text-[10px] text-amber-700 dark:bg-amber-900/50 dark:text-amber-100">
+                      {index + 1}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-slate-700 dark:text-slate-200">
+                      {preview}
+                    </span>
+                    {draft.attachments.length > 0 ? (
+                      <span className="flex-shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] text-amber-700 dark:bg-amber-900/50 dark:text-amber-100">
+                        {draft.attachments.length} 附件
+                      </span>
+                    ) : null}
+                  </div>
+                );
+              })}
+              {queuedDrafts.length > 3 ? (
+                <div className="px-2 pt-0.5 text-[11px] text-amber-700/80 dark:text-amber-200/80">
+                  还有 {queuedDrafts.length - 3} 条等待发送
+                </div>
+              ) : null}
+            </div>
           </div>
         ) : null}
 
@@ -152,13 +191,14 @@ export function ChatComposer({
 
             <button
               type="submit"
-              disabled={(!input.trim() && attachments.length === 0) || isStreaming}
+              disabled={!input.trim() && attachments.length === 0}
               className={cn(
                 'mb-0.5 flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl transition-all',
-                (input.trim() || attachments.length > 0) && !isStreaming
+                input.trim() || attachments.length > 0
                   ? 'bg-slate-900 text-white hover:bg-slate-800 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white'
                   : 'bg-slate-100 text-slate-400 dark:bg-slate-800 dark:text-slate-600',
               )}
+              title={isStreaming ? '加入发送队列' : '发送消息'}
             >
               <Send className="ml-0.5 h-4 w-4" />
             </button>

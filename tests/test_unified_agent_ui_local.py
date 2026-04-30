@@ -13,6 +13,7 @@ import pytest
 from click.testing import CliRunner
 
 from ksadk.runners.base_runner import BaseRunner
+from ksadk.sessions.base import SessionEvent
 from ksadk.sessions.in_memory import InMemorySessionService
 
 
@@ -44,6 +45,18 @@ class _UiRunner(BaseRunner):
         yield {"type": "tool_result", "tool_name": "resume_lookup", "tool_output": '{"score": 91}'}
         yield {"type": "thinking", "delta": "plan"}
         yield {"type": "text", "delta": "hello"}
+        yield {
+            "type": "responses_output",
+            "response_id": "resp_demo",
+            "output": [
+                {
+                    "id": "fc_demo",
+                    "type": "function_call",
+                    "name": "resume_lookup",
+                    "arguments": '{"keyword":"jd"}',
+                }
+            ],
+        }
         yield {"type": "final", "output": "hello world"}
 
     def run_server(self, port: int = 8000) -> None:
@@ -125,6 +138,7 @@ async def test_get_agent_ui_bootstrap_matches_local_shape_parity(monkeypatch):
         "Model",
     }
     assert payload["Data"]["Agent"]["AgentId"] == "demo-agent"
+    assert payload["Data"]["Agent"]["Framework"] == "langgraph"
     assert payload["Data"]["Modules"] == ["Chat", "Build", "Deploy"]
     assert payload["Data"]["Capabilities"] == {
         "Attachments": True,
@@ -305,6 +319,10 @@ async def test_run_agent_action_streaming_responses_uses_responses_lifecycle(mon
     assert runner.invocations[-1]["model"] == "glm-5.1"
     assert runner.invocations[-1]["session_id"] == "sess-runagent-responses"
     assert await service.get_session("sess-runagent-responses") is not None
+    stored_events = await service.get_events("sess-runagent-responses")
+    assistant_events = [event for event in stored_events if event.event_type == "assistant_message"]
+    assert assistant_events[-1].metadata["response_id"] == "resp_demo"
+    assert assistant_events[-1].metadata["responses_output"][0]["type"] == "function_call"
 
     current_event = ""
     completed_payload = None
@@ -845,6 +863,55 @@ async def test_responses_endpoint_streaming_generic_interrupt_uses_ksadk_extensi
 
 
 @pytest.mark.asyncio
+async def test_responses_endpoint_accepts_mcp_approval_response_resume(monkeypatch):
+    _, runner, service, transport = _build_transport(monkeypatch)
+    await service.create_session(agent_id="demo-agent", user_id="user", session_id="sess-approval")
+    await service.append_event(
+        "sess-approval",
+        SessionEvent(
+            author="demo-agent",
+            event_type="approval_request",
+            content={"role": "model", "parts": [{"text": "confirm tool"}]},
+            metadata={"interrupt_info": {"approval_request_id": "appr_123", "tool_name": "delete_file"}},
+            invocation_id="inv-approval",
+        ),
+    )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/v1/responses",
+            json={
+                "session_id": "sess-approval",
+                "previous_response_id": "resp_previous",
+                "input": [
+                    {
+                        "type": "mcp_approval_response",
+                        "id": "mcprsp_123",
+                        "approval_request_id": "appr_123",
+                        "approve": True,
+                        "reason": "approved",
+                    }
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "completed"
+    assert payload["metadata"]["previous_response_id"] == "resp_previous"
+    assert runner.invocations[-1]["resume"] is True
+    assert runner.invocations[-1]["input"] == {
+        "type": "mcp_approval_response",
+        "id": "mcprsp_123",
+        "approval_request_id": "appr_123",
+        "approve": True,
+        "reason": "approved",
+    }
+    events = await service.get_events("sess-approval")
+    assert [event.event_type for event in events[:2]] == ["approval_request", "approval_response"]
+
+
+@pytest.mark.asyncio
 async def test_responses_endpoint_passes_attachment_results_to_runner(monkeypatch):
     _, runner, _, transport = _build_transport(monkeypatch)
     attachment_b64 = base64.b64encode("候选人简历内容".encode("utf-8")).decode("ascii")
@@ -1087,10 +1154,11 @@ def test_web_ui_source_supports_clipboard_file_paste():
     assert "getAsFile" in source
 
 
-def test_web_ui_source_uses_chat_completions_streaming_for_hermes():
+def test_web_ui_source_prefers_responses_when_runtime_supports_it():
     source = Path("ksadk/server/web-ui/src/App.tsx").read_text(encoding="utf-8")
     assert "setAgentFramework" in source
-    assert "agentFramework === 'hermes'" in source
+    assert "if (apiFormats.includes('responses'))" in source
+    assert "agentFramework === 'hermes'" not in source
 
 
 def test_web_ui_source_supports_workspace_panel_for_owner_access():
@@ -1101,9 +1169,17 @@ def test_web_ui_source_supports_workspace_panel_for_owner_access():
     workspace_source = Path(
         "ksadk/server/web-ui/src/components/workspace/WorkspacePanel.tsx"
     ).read_text(encoding="utf-8")
+    workspace_utils_source = Path("ksadk/server/web-ui/src/utils/workspace.js").read_text(
+        encoding="utf-8"
+    )
+    responses_stream_source = Path(
+        "ksadk/server/web-ui/src/utils/responses-stream.js"
+    ).read_text(encoding="utf-8")
     assert "WorkspaceFiles" in source
-    assert "accessMode === 'Owner'" in source
+    assert "canAccessWorkspaceFiles({ workspaceFiles, accessMode })" in source
+    assert "mode === 'owner' || mode === 'private'" in workspace_utils_source
     assert "WorkspacePanel" in source
+    assert "flex h-14 flex-shrink-0 items-center" in workspace_source
     assert "capability.EntryAction" in workspace_source
     assert "capability.UploadAction" in workspace_source
     assert "capability.ContentPath" in workspace_source
@@ -1114,10 +1190,30 @@ def test_web_ui_source_supports_workspace_panel_for_owner_access():
     assert "chat_completions" in source
     assert "choices?.[0]?.delta" in source
     assert "delta.content" in source
-    assert "response.output_item.added" in source
-    assert "response.function_call_arguments.delta" in source
-    assert "response.ksadk.tool_result" in source
-    assert "response.ksadk.approval_request" in source
+    assert "normalizeResponsesStreamEvent" in source
+    assert "response.output_item.added" in responses_stream_source
+    assert "response.function_call_arguments.delta" in responses_stream_source
+    assert "response.ksadk.tool_result" in responses_stream_source
+    assert "response.ksadk.approval_request" in responses_stream_source
+
+
+def test_web_ui_source_supports_streaming_queue_and_refresh_pending_status():
+    source = Path("ksadk/server/web-ui/src/App.tsx").read_text(encoding="utf-8")
+    composer_source = Path(
+        "ksadk/server/web-ui/src/components/chat/ChatComposer.tsx"
+    ).read_text(encoding="utf-8")
+    sidebar_source = Path("ksadk/server/web-ui/src/components/chat/ChatSidebar.tsx").read_text(
+        encoding="utf-8"
+    )
+    assert "queuedDraftRef" in source
+    assert "queuedDrafts={queuedDrafts}" in source
+    assert "上一轮消息仍在运行中" in source
+    assert "latestRunStatusByInvocation" in source
+    assert "disabled={!input.trim() && attachments.length === 0}" in composer_source
+    assert "发送队列 · {queuedDrafts.length}" in composer_source
+    assert "当前回复完成后依次发送" in composer_source
+    assert "加入发送队列" in composer_source
+    assert "flex h-14 flex-shrink-0 items-center" in sidebar_source
 
 
 def test_web_ui_source_uses_adaptive_image_preview_sizing():

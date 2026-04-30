@@ -40,8 +40,8 @@ help:
 	@echo ""
 	@echo "  \033[1;32mOpenClaw 镜像:\033[0m"
 	@echo "    make openclaw-build         构建 OpenClaw 镜像 (默认国内源)"
-	@echo "    make openclaw-push          构建 + 推送到 KCR (默认 :2026.4.26-kingsoft-xiezuo)"
-	@echo "    make openclaw-push OPENCLAW_TAG=v2026.3.13-guardian1"
+	@echo "    make openclaw-push          构建 + 推送到 KCR (默认 :2026.4.27)"
+	@echo "    make openclaw-push OPENCLAW_TAG=2026.4.27 OPENCLAW_PRESET_PLUGINS_ALLOWLIST=wps-xiezuo"
 	@echo "    make openclaw-build OPENCLAW_PYPI_INDEX_URL=https://pypi.org/simple  # 海外源"
 	@echo "    make openclaw-size          查看镜像大小"
 	@echo ""
@@ -397,9 +397,10 @@ offline-current: build
 OPENCLAW_IMAGE := hub.kce.ksyun.com/agentengine-public/openclaw
 OPENCLAW_VPC_REGISTRY ?= hub-vpc-cn-beijing-6.kce.ksyun.com
 OPENCLAW_VPC_IMAGE ?= $(subst hub.kce.ksyun.com,$(OPENCLAW_VPC_REGISTRY),$(OPENCLAW_IMAGE))
-OPENCLAW_TAG ?= 2026.4.26-kingsoft-xiezuo
+OPENCLAW_TAG ?= 2026.4.27
 OPENCLAW_CONTEXT := .
-OPENCLAW_BASE_IMAGE ?= ghcr.io/openclaw/openclaw:2026.4.26@sha256:04e27383656941e59fba80a5a9c28b709f240ea980bd2cb375e4a7786d5a7a20
+OPENCLAW_BASE_IMAGE ?= ghcr.io/openclaw/openclaw:2026.4.27@sha256:3134a35220d503a67d3de12ee63bc6dfaf171425c0d7d75034636a09c81babd3
+OPENCLAW_PRESET_PLUGINS_ALLOWLIST ?=
 OPENCLAW_PYPI_INDEX_URL ?= https://mirrors.aliyun.com/pypi/simple
 OPENCLAW_NPM_REGISTRY ?= https://registry.npmmirror.com
 DOCKER_BUILDKIT ?= 1
@@ -413,6 +414,7 @@ openclaw-build:
 	@echo "   内网地址: $(OPENCLAW_VPC_IMAGE):$(OPENCLAW_TAG)"
 	@echo "   PyPI 源:  $(OPENCLAW_PYPI_INDEX_URL)"
 	@echo "   NPM 源:   $(OPENCLAW_NPM_REGISTRY)"
+	@echo "   插件白名单: $(if $(OPENCLAW_PRESET_PLUGINS_ALLOWLIST),$(OPENCLAW_PRESET_PLUGINS_ALLOWLIST),<未设置，内置默认插件>)"
 	@echo "   构建上下文: $(OPENCLAW_CONTEXT)"
 	@echo "============================================================"
 	@if [ ! -f "deploy/openclaw/Dockerfile" ]; then \
@@ -422,6 +424,7 @@ openclaw-build:
 	@DOCKER_BUILDKIT=$(DOCKER_BUILDKIT) docker build --platform linux/amd64 \
 		-f deploy/openclaw/Dockerfile \
 		--build-arg OPENCLAW_BASE_IMAGE=$(OPENCLAW_BASE_IMAGE) \
+		--build-arg OPENCLAW_PRESET_PLUGINS_ALLOWLIST="$(OPENCLAW_PRESET_PLUGINS_ALLOWLIST)" \
 		--build-arg PYPI_INDEX_URL=$(OPENCLAW_PYPI_INDEX_URL) \
 		--build-arg NPM_REGISTRY=$(OPENCLAW_NPM_REGISTRY) \
 		-t $(OPENCLAW_IMAGE):$(OPENCLAW_TAG) \

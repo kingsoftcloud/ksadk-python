@@ -5,13 +5,16 @@ import {
   Check,
   Paperclip,
   RefreshCcw,
+  ShieldCheck,
   StopCircle,
   User,
+  XCircle,
 } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 
 import { MessageMarkdown } from '../MessageMarkdown';
+import { formatToolPayload } from '../../utils/tool-display.js';
 
 import type { Message, MessageAttachment } from './types';
 
@@ -21,6 +24,11 @@ type ChatMessageListProps = {
   isStreaming: boolean;
   messages: Message[];
   onOpenAttachmentPreview: (attachment: MessageAttachment) => void;
+  onRespondToApproval: (options: {
+    approvalRequestId: string;
+    approve: boolean;
+    previousResponseId?: string;
+  }) => void;
   scrollRef: RefObject<HTMLDivElement | null>;
 };
 
@@ -159,6 +167,7 @@ function ChatMessage({
   isLastMessage,
   message,
   onOpenAttachmentPreview,
+  onRespondToApproval,
 }: {
   agentName: string;
   isMobile: boolean;
@@ -166,6 +175,7 @@ function ChatMessage({
   isLastMessage: boolean;
   message: Message;
   onOpenAttachmentPreview: (attachment: MessageAttachment) => void;
+  onRespondToApproval: ChatMessageListProps['onRespondToApproval'];
 }) {
   return (
     <div className={cn('flex w-full gap-3 py-4 sm:gap-4 sm:px-4', isMobile ? 'px-0' : 'px-4')}>
@@ -216,24 +226,79 @@ function ChatMessage({
           ? Object.values(message.tools).map((tool, toolIndex) => (
               <details
                 key={`${tool.name}-${toolIndex}`}
-                className="group/details mb-4 rounded-xl border border-blue-200 bg-blue-50/30 px-4 py-3 text-sm text-blue-600 transition-all dark:border-blue-900/50 dark:bg-blue-950/20 dark:text-blue-400"
+                open={tool.status === 'paused' ? true : undefined}
+                className={cn(
+                  'group/details mb-4 rounded-xl border px-4 py-3 text-sm transition-all',
+                  tool.status === 'paused'
+                    ? 'border-amber-200 bg-amber-50/50 text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-200'
+                    : 'border-blue-200 bg-blue-50/30 text-blue-600 dark:border-blue-900/50 dark:bg-blue-950/20 dark:text-blue-400',
+                )}
               >
                 <summary className="flex cursor-pointer list-none items-center justify-between gap-2 font-medium">
                   <div className="flex items-center gap-2">
                     {tool.status === 'running' ? (
                       <RefreshCcw className="h-4 w-4 animate-spin text-blue-500" />
+                    ) : tool.status === 'paused' ? (
+                      <ShieldCheck className="h-4 w-4 text-amber-500" />
                     ) : (
                       <Check className="h-4 w-4 text-emerald-500" />
                     )}
-                    <span>工具调用：{tool.name}</span>
+                    <span>{tool.status === 'paused' ? '等待审批：' : '工具调用：'}{tool.name}</span>
                   </div>
                 </summary>
-                <div className="mx-1 mt-3 flex flex-col gap-3 border-l-2 border-blue-200 py-1 pl-4 font-mono text-[13px] leading-relaxed opacity-90 dark:border-blue-800">
+                <div
+                  className={cn(
+                    'mx-1 mt-3 flex flex-col gap-3 border-l-2 py-1 pl-4 font-mono text-[13px] leading-relaxed opacity-90',
+                    tool.status === 'paused' ? 'border-amber-200 dark:border-amber-800' : 'border-blue-200 dark:border-blue-800',
+                  )}
+                >
+                  {tool.status === 'paused' && tool.approvalRequestId ? (
+                    <div className="rounded-2xl border border-amber-200 bg-white/75 p-3 font-sans text-sm text-amber-900 shadow-sm dark:border-amber-900/70 dark:bg-slate-950/40 dark:text-amber-100">
+                      <div className="font-medium">该工具调用需要人工确认后继续。</div>
+                      {tool.serverLabel ? (
+                        <div className="mt-1 text-xs text-amber-700/80 dark:text-amber-200/80">
+                          MCP Server: {tool.serverLabel}
+                        </div>
+                      ) : null}
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          disabled={tool.approvalStatus === 'approved' || tool.approvalStatus === 'rejected'}
+                          onClick={() =>
+                            onRespondToApproval({
+                              approvalRequestId: tool.approvalRequestId || '',
+                              approve: true,
+                              previousResponseId: tool.previousResponseId,
+                            })
+                          }
+                          className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-55"
+                        >
+                          <Check className="h-3.5 w-3.5" />
+                          批准并继续
+                        </button>
+                        <button
+                          type="button"
+                          disabled={tool.approvalStatus === 'approved' || tool.approvalStatus === 'rejected'}
+                          onClick={() =>
+                            onRespondToApproval({
+                              approvalRequestId: tool.approvalRequestId || '',
+                              approve: false,
+                              previousResponseId: tool.previousResponseId,
+                            })
+                          }
+                          className="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-white px-3 py-1.5 text-xs font-semibold text-rose-600 shadow-sm transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-55 dark:border-rose-900/70 dark:bg-slate-950 dark:text-rose-300 dark:hover:bg-rose-950/30"
+                        >
+                          <XCircle className="h-3.5 w-3.5" />
+                          拒绝
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
                   {tool.args ? (
                     <div>
                       <div className="mb-1 text-xs font-semibold uppercase text-blue-500">入参 (Args)</div>
                       <div className="whitespace-pre-wrap break-words text-slate-600 dark:text-slate-300">
-                        {tool.args}
+                        {formatToolPayload(tool.args)}
                       </div>
                     </div>
                   ) : null}
@@ -243,7 +308,7 @@ function ChatMessage({
                         输出 (Output)
                       </div>
                       <div className="custom-scrollbar max-h-[220px] overflow-y-auto whitespace-pre-wrap break-words text-slate-600 dark:text-slate-300 sm:max-h-[300px]">
-                        {tool.output}
+                        {formatToolPayload(tool.output)}
                       </div>
                     </div>
                   ) : null}
@@ -270,6 +335,7 @@ export function ChatMessageList({
   isStreaming,
   messages,
   onOpenAttachmentPreview,
+  onRespondToApproval,
   scrollRef,
 }: ChatMessageListProps) {
   return (
@@ -296,6 +362,7 @@ export function ChatMessageList({
                 isLastMessage={index === messages.length - 1}
                 message={message}
                 onOpenAttachmentPreview={onOpenAttachmentPreview}
+                onRespondToApproval={onRespondToApproval}
               />
             ),
           )
