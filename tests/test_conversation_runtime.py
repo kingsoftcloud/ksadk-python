@@ -4,8 +4,8 @@ import importlib
 import json
 import time
 
-import pytest
 import httpx
+import pytest
 
 from ksadk.conversations.context import build_history_from_events
 from ksadk.conversations.model_context import estimate_text_tokens
@@ -18,8 +18,8 @@ from ksadk.conversations.runtime import (
     extract_responses_resume_input,
     invoke_conversation_once,
     preview_auto_compaction,
-    stream_responses_conversation_turn,
     stream_conversation_turn,
+    stream_responses_conversation_turn,
 )
 from ksadk.runtime_context import get_current_invocation_context
 from ksadk.sessions.base import SessionEvent
@@ -68,6 +68,32 @@ class _ResumeStreamingRunner(_StreamingRunner):
     async def stream(self, input_data: dict):
         self.stream_calls.append(input_data)
         yield {"type": "final", "output": "resumed"}
+
+
+class _CompletedOutputStreamingRunner(_StreamingRunner):
+    async def stream(self, input_data: dict):
+        self.stream_calls.append(input_data)
+        yield {"type": "text", "delta": "需要查询。"}
+        yield {
+            "type": "responses_output",
+            "response_id": "resp_native",
+            "output": [
+                {
+                    "id": "fc_123",
+                    "type": "function_call",
+                    "call_id": "call_123",
+                    "name": "search",
+                    "arguments": '{"q":"openclaw"}',
+                    "status": "completed",
+                },
+                {
+                    "id": "rs_123",
+                    "type": "reasoning",
+                    "summary": [{"type": "summary_text", "text": "先查资料"}],
+                },
+            ],
+        }
+        yield {"type": "final", "output": "需要查询。"}
 
 
 class _ContextCapturingRunner(_StubRunner):
@@ -185,6 +211,24 @@ def test_extract_responses_resume_input_accepts_ksadk_resume_extension():
         "type": "ksadk_resume",
         "interrupt_id": "intr_123",
         "value": {"answer": "继续", "approved": True},
+    }
+
+
+def test_extract_responses_resume_input_accepts_openai_function_call_output():
+    resume_input = extract_responses_resume_input(
+        [
+            {
+                "type": "function_call_output",
+                "call_id": "call_123",
+                "output": {"ok": True},
+            }
+        ]
+    )
+
+    assert resume_input == {
+        "type": "function_call_output",
+        "call_id": "call_123",
+        "output": {"ok": True},
     }
 
 
@@ -443,7 +487,9 @@ async def test_invoke_conversation_once_passes_session_id_to_runner(monkeypatch)
 @pytest.mark.asyncio
 async def test_invoke_conversation_once_maps_mcp_approval_response_to_runner_resume(monkeypatch):
     service = InMemorySessionService()
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-approval")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-approval"
+    )
     await service.append_event(
         "sess-approval",
         SessionEvent(
@@ -549,7 +595,9 @@ def test_build_runner_ambient_contexts_skips_memory_when_disabled(monkeypatch):
     )
     monkeypatch.setattr(
         "ksadk.conversations.runtime.LongTermMemoryService.from_env",
-        staticmethod(lambda: (_ for _ in ()).throw(AssertionError("memory ambient should be skipped"))),
+        staticmethod(
+            lambda: (_ for _ in ()).throw(AssertionError("memory ambient should be skipped"))
+        ),
     )
     monkeypatch.setattr(
         "ksadk.conversations.runtime.KnowledgeBaseService.is_configured",
@@ -602,11 +650,17 @@ def test_build_runner_ambient_contexts_default_on_demand_skips_chitchat(monkeypa
     )
     monkeypatch.setattr(
         "ksadk.conversations.runtime.KnowledgeBaseService.from_env",
-        staticmethod(lambda: (_ for _ in ()).throw(AssertionError("kb ambient should not run for chitchat"))),
+        staticmethod(
+            lambda: (_ for _ in ()).throw(AssertionError("kb ambient should not run for chitchat"))
+        ),
     )
     monkeypatch.setattr(
         "ksadk.conversations.runtime.LongTermMemoryService.from_env",
-        staticmethod(lambda: (_ for _ in ()).throw(AssertionError("memory ambient should not run for chitchat"))),
+        staticmethod(
+            lambda: (_ for _ in ()).throw(
+                AssertionError("memory ambient should not run for chitchat")
+            )
+        ),
     )
 
     contexts = _build_runner_ambient_contexts(
@@ -657,7 +711,9 @@ def test_build_runner_ambient_contexts_non_adk_runner_name_does_not_disable_ambi
     assert contexts["memory_context"] is None
 
 
-def test_build_runner_ambient_contexts_default_on_demand_loads_memory_for_explicit_recall(monkeypatch):
+def test_build_runner_ambient_contexts_default_on_demand_loads_memory_for_explicit_recall(
+    monkeypatch,
+):
     class _FakeMemoryService:
         def build_context(self, *, user_id: str, query: str):
             return {"formatted_text": f"memory:{user_id}:{query}"}
@@ -748,7 +804,9 @@ def test_build_runner_ambient_contexts_default_on_demand_skips_memory_for_mixed_
     assert contexts == {"kb_context": None, "memory_context": None}
 
 
-def test_build_runner_ambient_contexts_default_on_demand_loads_memory_for_profile_prompt(monkeypatch):
+def test_build_runner_ambient_contexts_default_on_demand_loads_memory_for_profile_prompt(
+    monkeypatch,
+):
     class _FakeMemoryService:
         def build_context(self, *, user_id: str, query: str):
             return {"formatted_text": f"memory:{user_id}:{query}"}
@@ -774,12 +832,12 @@ def test_build_runner_ambient_contexts_default_on_demand_loads_memory_for_profil
     )
 
     assert contexts["kb_context"] is None
-    assert contexts["memory_context"] == {
-        "formatted_text": "memory:user-1:按照我的风格来写"
-    }
+    assert contexts["memory_context"] == {"formatted_text": "memory:user-1:按照我的风格来写"}
 
 
-def test_build_runner_ambient_contexts_default_on_demand_loads_kb_for_information_query(monkeypatch):
+def test_build_runner_ambient_contexts_default_on_demand_loads_kb_for_information_query(
+    monkeypatch,
+):
     class _FakeKnowledgeBaseService:
         def build_context(self, query: str):
             return {"formatted_text": f"kb:{query}"}
@@ -808,7 +866,9 @@ def test_build_runner_ambient_contexts_default_on_demand_loads_kb_for_informatio
     assert contexts["memory_context"] is None
 
 
-def test_build_runner_ambient_contexts_default_on_demand_loads_kb_for_explanatory_query(monkeypatch):
+def test_build_runner_ambient_contexts_default_on_demand_loads_kb_for_explanatory_query(
+    monkeypatch,
+):
     class _FakeKnowledgeBaseService:
         def build_context(self, query: str):
             return {"formatted_text": f"kb:{query}"}
@@ -992,7 +1052,9 @@ async def test_stream_responses_conversation_turn_maps_ksadk_resume_to_runner_re
     service = InMemorySessionService()
     monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
     runner = _ResumeStreamingRunner()
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-resume-stream")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-resume-stream"
+    )
     await service.append_event(
         "sess-resume-stream",
         SessionEvent(
@@ -1033,6 +1095,92 @@ async def test_stream_responses_conversation_turn_maps_ksadk_resume_to_runner_re
     assert any(chunk.startswith("event: response.completed\n") for chunk in chunks)
     events = await service.get_events("sess-resume-stream")
     assert "approval_response" in [event.event_type for event in events]
+
+
+@pytest.mark.asyncio
+async def test_stream_responses_conversation_turn_replays_completed_output_items(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _CompletedOutputStreamingRunner()
+
+    chunks = [
+        chunk
+        async for chunk in stream_responses_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-native-output",
+            messages=[{"role": "user", "content": "查一下"}],
+            model="gpt-4o",
+            prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+            session_service_provider=lambda: service,
+        )
+    ]
+
+    event_names = [
+        line.removeprefix("event: ")
+        for chunk in chunks
+        for line in chunk.splitlines()
+        if line.startswith("event: ")
+    ]
+    assert "response.function_call_arguments.done" in event_names
+    assert "response.reasoning.delta" in event_names
+
+    completed_payload = None
+    current_event = ""
+    for chunk in chunks:
+        for line in chunk.splitlines():
+            if line.startswith("event: "):
+                current_event = line.removeprefix("event: ")
+            elif line.startswith("data: ") and current_event == "response.completed":
+                completed_payload = json.loads(line.removeprefix("data: "))
+    assert completed_payload is not None
+    assert completed_payload["id"] == "resp_native"
+    assert any(item.get("type") == "function_call" for item in completed_payload["output"])
+
+
+@pytest.mark.asyncio
+async def test_stream_responses_turn_maps_function_call_output_without_pending_approval(
+    monkeypatch,
+):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _ResumeStreamingRunner()
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-tool-output"
+    )
+
+    chunks = [
+        chunk
+        async for chunk in stream_responses_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-tool-output",
+            messages=[],
+            model="gpt-4o",
+            resume_input={
+                "type": "function_call_output",
+                "call_id": "call_123",
+                "output": {"ok": True},
+            },
+            prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+            request_metadata={"previous_response_id": "resp_123"},
+            session_service_provider=lambda: service,
+        )
+    ]
+
+    assert runner.stream_calls[-1]["resume"] is True
+    assert runner.stream_calls[-1]["input"] == {
+        "type": "function_call_output",
+        "call_id": "call_123",
+        "output": {"ok": True},
+    }
+    assert runner.stream_calls[-1]["previous_response_id"] == "resp_123"
+    assert any(chunk.startswith("event: response.completed\n") for chunk in chunks)
+    events = await service.get_events("sess-tool-output")
+    assert "tool_result" in [event.event_type for event in events]
+    assert "approval_response" not in [event.event_type for event in events]
 
 
 @pytest.mark.asyncio
@@ -1083,7 +1231,10 @@ async def test_invoke_conversation_once_uses_heuristic_title_for_agent_intro(mon
         async def invoke(self, input_data: dict) -> dict:
             self.calls.append(input_data)
             return {
-                "output": "你好！我是企业高端招聘全流程助手，可以协助你完成职位分析、候选人筛选和面试建议生成。"
+                "output": (
+                    "你好！我是企业高端招聘全流程助手，可以协助你完成职位分析、"
+                    "候选人筛选和面试建议生成。"
+                )
             }
 
     runner = _IntroRunner()
@@ -1104,7 +1255,9 @@ async def test_invoke_conversation_once_uses_heuristic_title_for_agent_intro(mon
 
 
 @pytest.mark.asyncio
-async def test_invoke_conversation_once_uses_heuristic_title_for_architecture_attachment(monkeypatch):
+async def test_invoke_conversation_once_uses_heuristic_title_for_architecture_attachment(
+    monkeypatch,
+):
     service = InMemorySessionService()
     monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
 
@@ -1112,7 +1265,10 @@ async def test_invoke_conversation_once_uses_heuristic_title_for_architecture_at
         async def invoke(self, input_data: dict) -> dict:
             self.calls.append(input_data)
             return {
-                "output": "这张图展示了典型的微服务分层架构，包含网关、业务服务、数据库和异步消息链路。"
+                "output": (
+                    "这张图展示了典型的微服务分层架构，"
+                    "包含网关、业务服务、数据库和异步消息链路。"
+                )
             }
 
     runner = _ArchitectureRunner()
@@ -1125,7 +1281,10 @@ async def test_invoke_conversation_once_uses_heuristic_title_for_architecture_at
             {
                 "role": "user",
                 "content": [
-                    {"type": "input_text", "text": "看看这个上传文件，直接开始分析吧，这里还有他画的架构图"},
+                    {
+                        "type": "input_text",
+                        "text": "看看这个上传文件，直接开始分析吧，这里还有他画的架构图",
+                    },
                     {
                         "type": "input_file",
                         "fileData": {
@@ -1203,7 +1362,10 @@ def test_build_history_from_events_prefers_latest_checkpoint_and_tail():
             id="evt-3",
             author="demo-agent",
             event_type="context_checkpoint",
-            content={"role": "model", "parts": [{"text": "Earlier conversation summary:\nuser: hello | assistant: hi"}]},
+            content={
+                "role": "model",
+                "parts": [{"text": "Earlier conversation summary:\nuser: hello | assistant: hi"}],
+            },
             seq_id=3,
             metadata={"compacted_until_seq_id": 2},
         ),
@@ -1224,7 +1386,6 @@ def test_build_history_from_events_prefers_latest_checkpoint_and_tail():
 
 @pytest.mark.asyncio
 async def test_build_run_input_auto_compacts_old_rounds_into_checkpoint(monkeypatch):
-    runtime_module = importlib.import_module("ksadk.conversations.runtime")
     model_context_module = importlib.import_module("ksadk.conversations.model_context")
     service = InMemorySessionService()
     await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-compact")
@@ -1235,7 +1396,7 @@ async def test_build_run_input_auto_compacts_old_rounds_into_checkpoint(monkeypa
                 id=f"u-{turn}",
                 author="user",
                 event_type="user_message",
-                content={"role": "user", "parts": [{"text": f"user-{turn} " + ('x' * 80)}]},
+                content={"role": "user", "parts": [{"text": f"user-{turn} " + ("x" * 80)}]},
                 invocation_id=f"inv-{turn}",
             ),
         )
@@ -1245,7 +1406,7 @@ async def test_build_run_input_auto_compacts_old_rounds_into_checkpoint(monkeypa
                 id=f"a-{turn}",
                 author="demo-agent",
                 event_type="assistant_message",
-                content={"role": "model", "parts": [{"text": f"assistant-{turn} " + ('y' * 80)}]},
+                content={"role": "model", "parts": [{"text": f"assistant-{turn} " + ("y" * 80)}]},
                 invocation_id=f"inv-{turn}",
             ),
         )
@@ -1288,7 +1449,9 @@ async def test_build_run_input_auto_compacts_old_rounds_into_checkpoint(monkeypa
 @pytest.mark.asyncio
 async def test_build_run_input_respects_explicit_model_metadata_for_auto_compaction(monkeypatch):
     service = InMemorySessionService()
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-model-metadata")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-model-metadata"
+    )
     for turn in range(6):
         await service.append_event(
             "sess-model-metadata",
@@ -1306,7 +1469,10 @@ async def test_build_run_input_respects_explicit_model_metadata_for_auto_compact
                 id=f"a-{turn}",
                 author="demo-agent",
                 event_type="assistant_message",
-                content={"role": "model", "parts": [{"text": f"assistant-{turn} " + ("y" * 30_000)}]},
+                content={
+                    "role": "model",
+                    "parts": [{"text": f"assistant-{turn} " + ("y" * 30_000)}],
+                },
                 invocation_id=f"inv-{turn}",
             ),
         )
@@ -1386,7 +1552,11 @@ async def test_invoke_conversation_once_fetches_model_metadata_from_remote_catal
 
     assert session_id
     assert runner.calls[0]["model_metadata"]["id"] == "kimi-k2.6"
-    assert runner.calls[0]["model_metadata"]["architecture"]["input_modalities"] == ["文字", "图片", "视频"]
+    assert runner.calls[0]["model_metadata"]["architecture"]["input_modalities"] == [
+        "文字",
+        "图片",
+        "视频",
+    ]
     assert runner.calls[0]["model_metadata"]["capabilities"]["multimodal_input_image"] is True
 
 
@@ -1402,7 +1572,7 @@ async def test_invoke_conversation_once_compacts_and_retries_on_prompt_too_long(
                 id=f"u-{turn}",
                 author="user",
                 event_type="user_message",
-                content={"role": "user", "parts": [{"text": f"user-{turn} " + ('x' * 80)}]},
+                content={"role": "user", "parts": [{"text": f"user-{turn} " + ("x" * 80)}]},
                 invocation_id=f"inv-{turn}",
             ),
         )
@@ -1412,7 +1582,7 @@ async def test_invoke_conversation_once_compacts_and_retries_on_prompt_too_long(
                 id=f"a-{turn}",
                 author="demo-agent",
                 event_type="assistant_message",
-                content={"role": "model", "parts": [{"text": f"assistant-{turn} " + ('y' * 80)}]},
+                content={"role": "model", "parts": [{"text": f"assistant-{turn} " + ("y" * 80)}]},
                 invocation_id=f"inv-{turn}",
             ),
         )
@@ -1447,9 +1617,13 @@ async def test_invoke_conversation_once_compacts_and_retries_on_prompt_too_long(
 
 
 @pytest.mark.asyncio
-async def test_compact_conversation_history_prefers_semantic_summary_and_records_metadata(monkeypatch):
+async def test_compact_conversation_history_prefers_semantic_summary_and_records_metadata(
+    monkeypatch,
+):
     service = InMemorySessionService()
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-semantic")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-semantic"
+    )
 
     for turn in range(3):
         await service.append_event(
@@ -1481,7 +1655,14 @@ async def test_compact_conversation_history_prefers_semantic_summary_and_records
             assert timeout_ms > 0
             assert any("当前用户目标" in item["content"] for item in messages)
             return (
-                "<analysis>draft</analysis><summary>当前用户目标\n- 修复语义压缩\n\n关键约束与偏好\n- 质量优先\n\n已完成进展\n- 已生成 checkpoint\n\n重要决策/代码上下文\n- 保持 append-only 事件契约\n\n未完成事项\n- 补更多回归测试\n\n下一步工作位置\n- ksadk.conversations.runtime.compact_conversation_history</summary>",
+                "<analysis>draft</analysis><summary>"
+                "当前用户目标\n- 修复语义压缩\n\n"
+                "关键约束与偏好\n- 质量优先\n\n"
+                "已完成进展\n- 已生成 checkpoint\n\n"
+                "重要决策/代码上下文\n- 保持 append-only 事件契约\n\n"
+                "未完成事项\n- 补更多回归测试\n\n"
+                "下一步工作位置\n- ksadk.conversations.runtime.compact_conversation_history"
+                "</summary>",
                 {"prompt_tokens": 120, "completion_tokens": 48, "total_tokens": 168},
             )
 
@@ -1512,9 +1693,13 @@ async def test_compact_conversation_history_prefers_semantic_summary_and_records
 
 
 @pytest.mark.asyncio
-async def test_compact_conversation_history_falls_back_to_extractive_when_semantic_summary_fails(monkeypatch):
+async def test_compact_conversation_history_falls_back_to_extractive_when_semantic_summary_fails(
+    monkeypatch,
+):
     service = InMemorySessionService()
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-fallback")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-fallback"
+    )
 
     for turn in range(3):
         await service.append_event(

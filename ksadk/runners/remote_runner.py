@@ -6,14 +6,14 @@ RemoteRunner - 远程 Agent 运行时
 
 import json
 import os
-from typing import Any, AsyncIterator, Dict, Optional
+from typing import Any, AsyncIterator, Dict, Mapping, Optional, Sequence
 
 from ksadk.runners.base_runner import BaseRunner
 
 
 class RemoteRunner(BaseRunner):
     """远程 Agent 运行时
-    
+
     通过 HTTP 调用远程部署的 Agent，兼容 OpenAI API 格式
     """
 
@@ -35,8 +35,9 @@ class RemoteRunner(BaseRunner):
         self.model = model
         self.api_format = self._normalize_api_format(api_format)
         self.responses_session_header = (
-            str(responses_session_header or os.environ.get("KSADK_RESPONSES_SESSION_HEADER") or "")
-            .strip()
+            str(
+                responses_session_header or os.environ.get("KSADK_RESPONSES_SESSION_HEADER") or ""
+            ).strip()
             or None
         )
         self._agent = None  # 兼容 BaseRunner
@@ -77,9 +78,54 @@ class RemoteRunner(BaseRunner):
         we only need the current user turn, so the string form is the safest common
         denominator and matches OpenClaw's documented examples.
         """
-        if isinstance(user_input, (list, dict)):
-            return user_input
+        if isinstance(user_input, Mapping):
+            if user_input.get("type"):
+                return [dict(user_input)]
+            if RemoteRunner._is_chat_style_message(user_input):
+                return RemoteRunner._responses_message_text(user_input)
+            return dict(user_input)
+        if isinstance(user_input, Sequence) and not isinstance(user_input, (str, bytes, bytearray)):
+            items = list(user_input)
+            if any(isinstance(item, Mapping) and item.get("type") for item in items):
+                return [dict(item) if isinstance(item, Mapping) else item for item in items]
+            chat_messages = [
+                item
+                for item in items
+                if isinstance(item, Mapping) and RemoteRunner._is_chat_style_message(item)
+            ]
+            if chat_messages:
+                latest_user = next(
+                    (
+                        item
+                        for item in reversed(chat_messages)
+                        if str(item.get("role") or "").strip().lower() == "user"
+                    ),
+                    chat_messages[-1],
+                )
+                return RemoteRunner._responses_message_text(latest_user)
+            return items
         return str(user_input or "")
+
+    @staticmethod
+    def _is_chat_style_message(value: Mapping[str, Any]) -> bool:
+        return not value.get("type") and ("role" in value or "content" in value)
+
+    @staticmethod
+    def _responses_message_text(message: Mapping[str, Any]) -> str:
+        content = message.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, Sequence) and not isinstance(content, (str, bytes, bytearray)):
+            parts: list[str] = []
+            for part in content:
+                if isinstance(part, str):
+                    parts.append(part)
+                elif isinstance(part, Mapping):
+                    text = part.get("text")
+                    if isinstance(text, str):
+                        parts.append(text)
+            return "".join(parts)
+        return str(content or "")
 
     def _get_headers(self, session_id: Optional[str] = None) -> dict:
         """获取请求头"""
@@ -111,6 +157,9 @@ class RemoteRunner(BaseRunner):
             }
         if session_id and not (self.api_format == "responses" and self.responses_session_header):
             payload["session_id"] = session_id
+        previous_response_id = input_data.get("previous_response_id")
+        if self.api_format == "responses" and previous_response_id:
+            payload["previous_response_id"] = str(previous_response_id)
         if self.model:
             payload["model"] = self.model
 
@@ -151,11 +200,16 @@ class RemoteRunner(BaseRunner):
             }
         if session_id and not (self.api_format == "responses" and self.responses_session_header):
             payload["session_id"] = session_id
+        previous_response_id = input_data.get("previous_response_id")
+        if self.api_format == "responses" and previous_response_id:
+            payload["previous_response_id"] = str(previous_response_id)
         if self.model:
             payload["model"] = self.model
 
         async with httpx.AsyncClient(**self._get_client_kwargs()) as client:
-            async with client.stream("POST", url, json=payload, headers=self._get_headers(session_id)) as response:
+            async with client.stream(
+                "POST", url, json=payload, headers=self._get_headers(session_id)
+            ) as response:
                 response.raise_for_status()
 
                 event_name = ""
@@ -175,9 +229,11 @@ class RemoteRunner(BaseRunner):
 
                         try:
                             data = json.loads(data_str)
-                            
+
                             if self.api_format == "responses":
-                                async for item in self._iter_responses_stream_events(data, event_name=event_name):
+                                async for item in self._iter_responses_stream_events(
+                                    data, event_name=event_name
+                                ):
                                     yield item
                                 continue
 
@@ -242,7 +298,9 @@ class RemoteRunner(BaseRunner):
             or ""
         )
 
-    def _remember_responses_tool(self, key: str, item: Dict[str, Any], name: str, args: str) -> None:
+    def _remember_responses_tool(
+        self, key: str, item: Dict[str, Any], name: str, args: str
+    ) -> None:
         if key:
             self._responses_tool_names[key] = name
             self._responses_tool_args[key] = args
@@ -295,7 +353,9 @@ class RemoteRunner(BaseRunner):
         if item_type == "function_call":
             name = self._responses_tool_name(key, item)
             args = self._stringify_responses_payload(
-                item.get("arguments") if "arguments" in item else item.get("args", item.get("input"))
+                item.get("arguments")
+                if "arguments" in item
+                else item.get("args", item.get("input"))
             )
             self._remember_responses_tool(key, item, name, args)
             yield {"type": "tool_call", "tool_name": name, "tool_args": args, "status": status}
@@ -389,7 +449,9 @@ class RemoteRunner(BaseRunner):
         if event_type == "response.function_call_arguments.done":
             key = str(data.get("item_id") or data.get("call_id") or "")
             name = self._responses_tool_name(key, data)
-            args = self._stringify_responses_payload(data.get("arguments") or self._responses_tool_args.get(key, ""))
+            args = self._stringify_responses_payload(
+                data.get("arguments") or self._responses_tool_args.get(key, "")
+            )
             if key:
                 self._responses_tool_args[key] = args
             yield {"type": "tool_call", "tool_name": name, "tool_args": args, "status": "running"}
@@ -398,7 +460,11 @@ class RemoteRunner(BaseRunner):
             response = data.get("response") if isinstance(data.get("response"), dict) else data
             output = response.get("output") if isinstance(response, dict) else None
             if isinstance(output, list):
-                yield {"type": "responses_output", "output": output, "response_id": response.get("id")}
+                yield {
+                    "type": "responses_output",
+                    "output": output,
+                    "response_id": response.get("id"),
+                }
             return
         if event_type == "response.failed":
             yield {"type": "error", "message": self._responses_error_message(data)}
