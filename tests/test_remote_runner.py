@@ -62,11 +62,15 @@ class _FakeAsyncClient:
         return False
 
     async def post(self, url, json=None, headers=None):
-        self.__class__.calls.append({"method": "POST", "url": url, "json": json, "headers": headers})
+        self.__class__.calls.append(
+            {"method": "POST", "url": url, "json": json, "headers": headers}
+        )
         return _FakeResponse(json_payload=self.post_payload)
 
     def stream(self, method, url, json=None, headers=None):
-        self.__class__.calls.append({"method": method, "url": url, "json": json, "headers": headers})
+        self.__class__.calls.append(
+            {"method": method, "url": url, "json": json, "headers": headers}
+        )
         return _FakeStream(_FakeResponse(lines=self.stream_lines))
 
 
@@ -76,7 +80,9 @@ async def test_remote_runner_responses_invoke_posts_to_responses(monkeypatch):
 
     _FakeAsyncClient.calls = []
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
-    runner = RemoteRunner(endpoint="https://agent.example.com", api_key="ak-demo", api_format="responses")
+    runner = RemoteRunner(
+        endpoint="https://agent.example.com", api_key="ak-demo", api_format="responses"
+    )
 
     payload = await runner.invoke({"input": "hi", "session_id": "sess-1"})
 
@@ -88,6 +94,57 @@ async def test_remote_runner_responses_invoke_posts_to_responses(monkeypatch):
         "session_id": "sess-1",
     }
     assert _FakeAsyncClient.calls[0]["headers"]["Authorization"] == "Bearer ak-demo"
+
+
+@pytest.mark.asyncio
+async def test_remote_runner_responses_normalizes_chat_style_input_for_openclaw(monkeypatch):
+    import httpx
+
+    _FakeAsyncClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+    runner = RemoteRunner(endpoint="https://agent.example.com", api_format="responses")
+
+    await runner.invoke(
+        {
+            "input": [
+                {"role": "system", "content": "You are concise."},
+                {"role": "user", "content": [{"type": "input_text", "text": "你好"}]},
+            ]
+        }
+    )
+
+    assert _FakeAsyncClient.calls[0]["json"]["input"] == "你好"
+
+
+@pytest.mark.asyncio
+async def test_remote_runner_responses_keeps_standard_item_array_and_previous_response_id(
+    monkeypatch,
+):
+    import httpx
+
+    _FakeAsyncClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+    runner = RemoteRunner(endpoint="https://agent.example.com", api_format="responses")
+
+    await runner.invoke(
+        {
+            "input": {
+                "type": "function_call_output",
+                "call_id": "call_123",
+                "output": "ok",
+            },
+            "previous_response_id": "resp_123",
+        }
+    )
+
+    assert _FakeAsyncClient.calls[0]["json"]["input"] == [
+        {
+            "type": "function_call_output",
+            "call_id": "call_123",
+            "output": "ok",
+        }
+    ]
+    assert _FakeAsyncClient.calls[0]["json"]["previous_response_id"] == "resp_123"
 
 
 @pytest.mark.asyncio
@@ -114,7 +171,10 @@ async def test_remote_runner_responses_stream_parses_native_tool_items(monkeypat
     class ToolStreamClient(_FakeAsyncClient):
         stream_lines = [
             "event: response.output_item.added",
-            'data: {"output_index":0,"item":{"id":"fc_1","type":"function_call","name":"search","arguments":""}}',
+            (
+                'data: {"output_index":0,"item":{"id":"fc_1","type":"function_call",'
+                '"name":"search","arguments":""}}'
+            ),
             "",
             "event: response.function_call_arguments.delta",
             'data: {"item_id":"fc_1","delta":"{\\"q\\":"}',
@@ -126,10 +186,18 @@ async def test_remote_runner_responses_stream_parses_native_tool_items(monkeypat
             'data: {"item_id":"fc_1","arguments":"{\\"q\\":\\"openclaw\\"}"}',
             "",
             "event: response.output_item.done",
-            'data: {"output_index":0,"item":{"id":"out_1","type":"function_call_output","call_id":"fc_1","output":{"ok":true}}}',
+            (
+                'data: {"output_index":0,"item":{"id":"out_1",'
+                '"type":"function_call_output","call_id":"fc_1","output":{"ok":true}}}'
+            ),
             "",
             "event: response.completed",
-            'data: {"response":{"id":"resp_1","output":[{"id":"fc_1","type":"function_call","name":"search","arguments":"{\\"q\\":\\"openclaw\\"}"},{"id":"out_1","type":"function_call_output","call_id":"fc_1","output":{"ok":true}}]}}',
+            (
+                'data: {"response":{"id":"resp_1","output":[{"id":"fc_1",'
+                '"type":"function_call","name":"search",'
+                '"arguments":"{\\"q\\":\\"openclaw\\"}"},{"id":"out_1",'
+                '"type":"function_call_output","call_id":"fc_1","output":{"ok":true}}]}}'
+            ),
             "",
             "data: [DONE]",
         ]
@@ -143,8 +211,18 @@ async def test_remote_runner_responses_stream_parses_native_tool_items(monkeypat
     assert chunks == [
         {"type": "tool_call", "tool_name": "search", "tool_args": "", "status": "running"},
         {"type": "tool_call", "tool_name": "search", "tool_args": '{"q":', "status": "running"},
-        {"type": "tool_call", "tool_name": "search", "tool_args": '{"q":"openclaw"}', "status": "running"},
-        {"type": "tool_call", "tool_name": "search", "tool_args": '{"q":"openclaw"}', "status": "running"},
+        {
+            "type": "tool_call",
+            "tool_name": "search",
+            "tool_args": '{"q":"openclaw"}',
+            "status": "running",
+        },
+        {
+            "type": "tool_call",
+            "tool_name": "search",
+            "tool_args": '{"q":"openclaw"}',
+            "status": "running",
+        },
         {"type": "tool_result", "tool_name": "search", "tool_output": '{\n  "ok": true\n}'},
         {
             "type": "responses_output",

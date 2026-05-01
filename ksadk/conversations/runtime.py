@@ -11,6 +11,7 @@ from typing import Any, AsyncIterator, Callable, Dict, Mapping, Optional, Sequen
 import httpx
 from fastapi import HTTPException
 
+from ksadk.conversations.attachments import compact_attachment_result_for_session
 from ksadk.conversations.context import (
     TRANSCRIPT_EVENT_TYPES,
     build_history_from_events,
@@ -19,7 +20,6 @@ from ksadk.conversations.context import (
     compacted_until_seq_id,
     extract_event_text,
     group_events_by_api_round,
-    summarize_event_groups,
 )
 from ksadk.conversations.model_context import (
     estimate_text_tokens,
@@ -27,7 +27,6 @@ from ksadk.conversations.model_context import (
     get_auto_compact_threshold_tokens,
     normalize_model_metadata,
 )
-from ksadk.conversations.attachments import compact_attachment_result_for_session
 from ksadk.conversations.normalize import compact_attachment_for_session, normalize_kop_messages
 from ksadk.conversations.semantic_summary import (
     extract_pinned_state,
@@ -75,6 +74,7 @@ class PreparedConversationTurn:
     和“附件/parts”等运行时所需信息收拢到一起，避免不同 endpoint
     各自重新拼装。
     """
+
     session_id: str
     invocation_id: str
     user_input: str
@@ -124,18 +124,37 @@ def build_responses_payload(
     metadata: Mapping[str, Any] | None = None,
     incomplete_details: Mapping[str, Any] | None = None,
     error: Mapping[str, Any] | None = None,
+    output_items: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     response_id = response_id or f"resp_{uuid.uuid4().hex}"
     created_at = created_at or int(time.time())
     message_id = f"msg_{uuid.uuid4().hex[:12]}"
     output_item_status = "completed" if status == "completed" else status
+    message_item = {
+        "id": message_id,
+        "type": "message",
+        "status": output_item_status,
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": output_text}],
+    }
+    normalized_output_items = [
+        dict(item) for item in list(output_items or []) if isinstance(item, Mapping)
+    ]
+    if normalized_output_items:
+        output = normalized_output_items
+        if not any(str(item.get("type") or "") == "message" for item in output):
+            output = [message_item, *output]
+    else:
+        output = [message_item]
     return {
         "id": response_id,
         "object": "response",
         "created_at": created_at,
         "status": status,
         "error": dict(error) if isinstance(error, Mapping) else None,
-        "incomplete_details": dict(incomplete_details) if isinstance(incomplete_details, Mapping) else None,
+        "incomplete_details": (
+            dict(incomplete_details) if isinstance(incomplete_details, Mapping) else None
+        ),
         "instructions": None,
         "metadata": dict(metadata or {}),
         "model": model or "agent",
@@ -143,15 +162,7 @@ def build_responses_payload(
         "temperature": None,
         "top_p": None,
         "tools": [],
-        "output": [
-            {
-                "id": message_id,
-                "type": "message",
-                "status": output_item_status,
-                "role": "assistant",
-                "content": [{"type": "output_text", "text": output_text}],
-            }
-        ],
+        "output": output,
         "output_text": output_text,
         "usage": {
             "input_tokens": 0,
@@ -166,7 +177,9 @@ def extract_responses_resume_input(input_payload: Any) -> dict[str, Any] | None:
     """Extract OpenAI Responses approval resume input without exposing runner details."""
     if isinstance(input_payload, Mapping):
         candidates = [input_payload]
-    elif isinstance(input_payload, Sequence) and not isinstance(input_payload, (str, bytes, bytearray)):
+    elif isinstance(input_payload, Sequence) and not isinstance(
+        input_payload, (str, bytes, bytearray)
+    ):
         candidates = [item for item in input_payload if isinstance(item, Mapping)]
     else:
         return None
@@ -188,9 +201,24 @@ def extract_responses_resume_input(input_payload: Any) -> dict[str, Any] | None:
                 resume_input["reason"] = str(item.get("reason") or "")
             return resume_input
 
+        if item_type == "function_call_output":
+            call_id = item.get("call_id")
+            if not call_id:
+                continue
+            resume_input = {
+                "type": "function_call_output",
+                "call_id": str(call_id),
+                "output": item.get("output", ""),
+            }
+            if item.get("id"):
+                resume_input["id"] = str(item.get("id"))
+            return resume_input
+
         if item_type in {"ksadk_resume", "ksadk.approval_response"}:
             resume_input = {"type": "ksadk_resume"}
-            interrupt_id = item.get("interrupt_id") or item.get("approval_request_id") or item.get("id")
+            interrupt_id = (
+                item.get("interrupt_id") or item.get("approval_request_id") or item.get("id")
+            )
             if interrupt_id:
                 resume_input["interrupt_id"] = str(interrupt_id)
             if "value" in item:
@@ -208,7 +236,9 @@ def extract_responses_resume_input(input_payload: Any) -> dict[str, Any] | None:
     return None
 
 
-def build_chat_completions_payload(*, output_text: str, model: Optional[str], session_id: str) -> dict[str, Any]:
+def build_chat_completions_payload(
+    *, output_text: str, model: Optional[str], session_id: str
+) -> dict[str, Any]:
     return {
         "id": f"chatcmpl-{uuid.uuid4()}",
         "object": "chat.completion",
@@ -257,7 +287,9 @@ def build_compaction_sse_event(
         payload["group_count"] = group_count
     if threshold_percentage is not None:
         payload["threshold_percentage"] = threshold_percentage
-    return f"event: response.compaction.{phase}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+    return (
+        f"event: response.compaction.{phase}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+    )
 
 
 def _is_prompt_too_long_error(exc: Exception) -> bool:
@@ -641,6 +673,9 @@ def _build_runner_request_payload(
     if prepared.resume_input is not None:
         payload["input"] = prepared.resume_input
         payload["resume"] = True
+    previous_response_id = prepared.request_metadata.get("previous_response_id")
+    if previous_response_id:
+        payload["previous_response_id"] = str(previous_response_id)
     return payload
 
 
@@ -659,6 +694,14 @@ def _has_pending_approval(events: Sequence[SessionEvent]) -> bool:
     return pending > 0
 
 
+def _is_approval_resume_input(resume_input: Mapping[str, Any]) -> bool:
+    return str(resume_input.get("type") or "").strip() in {
+        "mcp_approval_response",
+        "ksadk_resume",
+        "ksadk.approval_response",
+    }
+
+
 def _format_resume_response_text(resume_input: Mapping[str, Any]) -> str:
     item_type = str(resume_input.get("type") or "resume")
     if item_type == "mcp_approval_response":
@@ -672,7 +715,115 @@ def _format_resume_response_text(resume_input: Mapping[str, Any]) -> str:
             parts.append(f"reason={reason}")
         return " ".join(parts)
 
+    if item_type == "function_call_output":
+        output = resume_input.get("output", "")
+        if isinstance(output, (dict, list)):
+            output_text = json.dumps(output, ensure_ascii=False, sort_keys=True)
+        else:
+            output_text = str(output)
+        return (
+            f"function_call_output call_id={resume_input.get('call_id') or ''} output={output_text}"
+        )
+
     return f"{item_type} {json.dumps(dict(resume_input), ensure_ascii=False, sort_keys=True)}"
+
+
+def _stringify_responses_item_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, indent=2)
+    return str(value)
+
+
+def _responses_output_item_text(item: Mapping[str, Any]) -> str:
+    for text_field in ("output_text", "text", "summary_text", "delta"):
+        value = item.get(text_field)
+        if isinstance(value, str) and value:
+            return value
+    summary = item.get("summary")
+    if isinstance(summary, Sequence) and not isinstance(summary, (str, bytes, bytearray)):
+        parts: list[str] = []
+        for part in summary:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, Mapping):
+                text = part.get("text") or part.get("summary_text")
+                if isinstance(text, str):
+                    parts.append(text)
+        if parts:
+            return "".join(parts)
+    content = item.get("content")
+    if isinstance(content, Sequence) and not isinstance(content, (str, bytes, bytearray)):
+        parts = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, Mapping):
+                text = part.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts)
+    if isinstance(content, str):
+        return content
+    return ""
+
+
+def _semantic_events_from_responses_output(output: Sequence[Any]) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    tool_names: dict[str, str] = {}
+    for raw_item in output:
+        if not isinstance(raw_item, Mapping):
+            continue
+        item = dict(raw_item)
+        item_type = str(item.get("type") or "").strip()
+        item_id = str(item.get("id") or item.get("item_id") or "")
+        call_id = str(item.get("call_id") or "")
+        if item_type == "function_call":
+            name = str(item.get("name") or item.get("tool_name") or "tool")
+            args = _stringify_responses_item_value(
+                item.get("arguments")
+                if "arguments" in item
+                else item.get("args", item.get("input"))
+            )
+            if item_id:
+                tool_names[item_id] = name
+            if call_id:
+                tool_names[call_id] = name
+            events.append(
+                {
+                    "type": "tool_call",
+                    "name": name,
+                    "args": args,
+                    "run_id": call_id or item_id or None,
+                }
+            )
+            continue
+        if item_type == "function_call_output":
+            name = (
+                tool_names.get(call_id)
+                or tool_names.get(item_id)
+                or str(item.get("name") or "tool")
+            )
+            output_text = _stringify_responses_item_value(
+                item.get("output") if "output" in item else item.get("result", item.get("content"))
+            )
+            events.append(
+                {
+                    "type": "tool_result",
+                    "name": name,
+                    "output": output_text,
+                    "run_id": call_id or item_id or None,
+                }
+            )
+            continue
+        if item_type in {"reasoning", "reasoning_summary", "reasoning_summary_text"}:
+            text = _responses_output_item_text(item)
+            if text:
+                events.append({"type": "thinking", "delta": text})
+    return events
 
 
 def _truncate_text(text: str | None, limit: int) -> str:
@@ -846,7 +997,8 @@ def _normalized_conversation_messages(messages: Sequence[Dict[str, Any]]) -> lis
     normalized_messages: list[dict[str, Any]] = []
     for message in list(messages or []):
         if isinstance(message, dict) and any(
-            key in message for key in ("display_content", "attachments", "attachment_results", "parts")
+            key in message
+            for key in ("display_content", "attachments", "attachment_results", "parts")
         ):
             normalized_messages.append(
                 {
@@ -919,7 +1071,9 @@ def _build_attachment_context_state_delta(
     if attachments or attachment_results:
         merged[ATTACHMENT_CONTEXT_STATE_KEY] = {
             "attachments": [dict(item) for item in attachments if isinstance(item, dict)],
-            "attachment_results": [dict(item) for item in attachment_results if isinstance(item, dict)],
+            "attachment_results": [
+                dict(item) for item in attachment_results if isinstance(item, dict)
+            ],
         }
     return merged
 
@@ -968,7 +1122,9 @@ def _build_pending_user_event(
             "timestamp": int(time.time() * 1000),
             "metadata": {
                 "agent_input": user_input,
-                "attachments": [compact_attachment_for_session(item) for item in attachments if item],
+                "attachments": [
+                    compact_attachment_for_session(item) for item in attachments if item
+                ],
                 "attachment_results": [
                     compact_attachment_result_for_session(item)
                     for item in attachment_results
@@ -1010,14 +1166,20 @@ def _plan_compaction(
     groups = group_events_by_api_round(combined_events)
     pinned_group_indexes = sorted(find_pinned_group_indexes(groups))
     pinned_state = extract_pinned_state(groups)
-    tail_groups = keep_tail_groups if keep_tail_groups is not None else (
-        PTL_RETRY_KEEP_TAIL_GROUPS if force else AUTOCOMPACT_KEEP_TAIL_GROUPS
+    tail_groups = (
+        keep_tail_groups
+        if keep_tail_groups is not None
+        else (PTL_RETRY_KEEP_TAIL_GROUPS if force else AUTOCOMPACT_KEEP_TAIL_GROUPS)
     )
     resolved_model_metadata = _resolve_model_metadata(model, model_metadata=model_metadata)
     auto_compact_threshold_tokens = get_auto_compact_threshold_tokens(resolved_model_metadata)
-    auto_compact_threshold_percentage = get_auto_compact_threshold_percentage(resolved_model_metadata)
+    auto_compact_threshold_percentage = get_auto_compact_threshold_percentage(
+        resolved_model_metadata
+    )
     total_chars = sum(len(extract_event_text(event)) for event in combined_events)
-    total_estimated_tokens = sum(estimate_text_tokens(extract_event_text(event)) for event in combined_events)
+    total_estimated_tokens = sum(
+        estimate_text_tokens(extract_event_text(event)) for event in combined_events
+    )
     if not force and (
         len(groups) <= tail_groups or total_estimated_tokens <= auto_compact_threshold_tokens
     ):
@@ -1034,7 +1196,9 @@ def _plan_compaction(
             pinned_state=pinned_state,
         )
 
-    compactable_indexes = [index for index in range(len(groups)) if index not in pinned_group_indexes]
+    compactable_indexes = [
+        index for index in range(len(groups)) if index not in pinned_group_indexes
+    ]
     retained_tail_indexes = set(compactable_indexes[-tail_groups:]) if tail_groups > 0 else set()
     preserved_indexes = set(pinned_group_indexes) | retained_tail_indexes
     first_preserved_index = min(preserved_indexes) if preserved_indexes else len(groups)
@@ -1127,7 +1291,9 @@ async def preview_auto_compaction(
         model,
         model_metadata=model_metadata,
     )
-    user_input, user_display_input, _, attachments, attachment_results = _latest_user_turn(normalized_messages)
+    user_input, user_display_input, _, attachments, attachment_results = _latest_user_turn(
+        normalized_messages
+    )
     effective_attachments, effective_attachment_results = _resolve_effective_attachment_context(
         normalized_messages=normalized_messages,
         session=existing_session,
@@ -1397,10 +1563,11 @@ async def build_run_input(
         if not session_id:
             raise ValueError("Responses resume input requires session_id")
         existing_events = await service.get_events(resolved_session_id)
-        if not _has_pending_approval(existing_events):
+        normalized_resume_input = dict(resume_input)
+        is_approval_resume = _is_approval_resume_input(normalized_resume_input)
+        if is_approval_resume and not _has_pending_approval(existing_events):
             raise ValueError("Responses resume input requires a pending approval_request")
 
-        normalized_resume_input = dict(resume_input)
         resume_text = _format_resume_response_text(normalized_resume_input)
         await append_conversation_event(
             session_id=resolved_session_id,
@@ -1408,7 +1575,7 @@ async def build_run_input(
             role="user",
             text=resume_text,
             invocation_id=resolved_invocation_id,
-            event_type="approval_response",
+            event_type="approval_response" if is_approval_resume else "tool_result",
             session_service_provider=provider,
             metadata={"resume_input": normalized_resume_input},
         )
@@ -1445,9 +1612,7 @@ async def build_run_input(
         "agent_input": user_input,
         "attachments": [compact_attachment_for_session(item) for item in attachments if item],
         "attachment_results": [
-            compact_attachment_result_for_session(item)
-            for item in attachment_results
-            if item
+            compact_attachment_result_for_session(item) for item in attachment_results if item
         ],
     }
 
@@ -1498,16 +1663,20 @@ async def build_run_input(
         instructions=normalized_instructions,
         request_metadata=normalized_request_metadata,
         compaction_triggered=checkpoint is not None,
-        compaction_trigger=str((checkpoint.metadata or {}).get("trigger") or "auto")
-        if checkpoint
-        else None,
-        compacted_until_seq_id=int((checkpoint.metadata or {}).get("compacted_until_seq_id") or 0)
-        if checkpoint
-        else None,
+        compaction_trigger=(
+            str((checkpoint.metadata or {}).get("trigger") or "auto") if checkpoint else None
+        ),
+        compacted_until_seq_id=(
+            int((checkpoint.metadata or {}).get("compacted_until_seq_id") or 0)
+            if checkpoint
+            else None
+        ),
     )
 
 
-async def _refresh_history(prepared: PreparedConversationTurn, *, session_service_provider: Callable[[], Any] | None = None) -> PreparedConversationTurn:
+async def _refresh_history(
+    prepared: PreparedConversationTurn, *, session_service_provider: Callable[[], Any] | None = None
+) -> PreparedConversationTurn:
     """在 compaction 后刷新 prepared turn 的 history 视图。"""
     provider = session_service_provider or resolve_session_service
     service = provider()
@@ -1627,7 +1796,9 @@ async def invoke_conversation_once(
         text=output_text,
         invocation_id=prepared.invocation_id,
         event_type="assistant_message",
-        metadata={"request_metadata": prepared.request_metadata} if prepared.request_metadata else None,
+        metadata=(
+            {"request_metadata": prepared.request_metadata} if prepared.request_metadata else None
+        ),
         session_service_provider=provider,
     )
     await _update_session_metadata_after_assistant_turn(
@@ -1739,14 +1910,22 @@ async def _iter_conversation_turn_events(
             "phase": "done",
             "trigger": str(prepared.compaction_trigger or "auto"),
             "compacted_until_seq_id": prepared.compacted_until_seq_id,
-            "total_chars": compaction_preview.total_chars if compaction_preview.should_compact else None,
-            "total_estimated_tokens": compaction_preview.total_estimated_tokens
-            if compaction_preview.should_compact
-            else None,
-            "group_count": compaction_preview.group_count if compaction_preview.should_compact else None,
-            "threshold_percentage": compaction_preview.auto_compact_threshold_percentage
-            if compaction_preview.should_compact
-            else None,
+            "total_chars": (
+                compaction_preview.total_chars if compaction_preview.should_compact else None
+            ),
+            "total_estimated_tokens": (
+                compaction_preview.total_estimated_tokens
+                if compaction_preview.should_compact
+                else None
+            ),
+            "group_count": (
+                compaction_preview.group_count if compaction_preview.should_compact else None
+            ),
+            "threshold_percentage": (
+                compaction_preview.auto_compact_threshold_percentage
+                if compaction_preview.should_compact
+                else None
+            ),
         }
     runner_name = _runner_name(runner)
     await append_run_status_event(
@@ -1759,6 +1938,7 @@ async def _iter_conversation_turn_events(
 
     accumulated_text = ""
     emitted_anything = False
+    emitted_response_artifacts = False
     responses_output: list[Any] = []
     responses_response_id: str | None = None
     for attempt in range(2):
@@ -1777,12 +1957,21 @@ async def _iter_conversation_turn_events(
                         raw_output = chunk.get("output")
                         responses_output = raw_output if isinstance(raw_output, list) else []
                         raw_response_id = chunk.get("response_id")
-                        responses_response_id = str(raw_response_id) if raw_response_id else responses_response_id
+                        responses_response_id = (
+                            str(raw_response_id) if raw_response_id else responses_response_id
+                        )
+                        if responses_output and not emitted_response_artifacts:
+                            for semantic_event in _semantic_events_from_responses_output(
+                                responses_output
+                            ):
+                                emitted_anything = True
+                                yield semantic_event
                         continue
                     if chunk_type == "thinking":
                         delta = str(chunk.get("delta", ""))
                         if delta:
                             emitted_anything = True
+                            emitted_response_artifacts = True
                             yield {"type": "thinking", "delta": delta}
                         continue
                     if chunk_type == "text":
@@ -1793,6 +1982,7 @@ async def _iter_conversation_turn_events(
                             yield {"type": "text", "delta": delta}
                         continue
                     if chunk_type == "tool_call":
+                        emitted_response_artifacts = True
                         await append_conversation_event(
                             session_id=prepared.session_id,
                             author=runner_name,
@@ -1816,6 +2006,7 @@ async def _iter_conversation_turn_events(
                         }
                         continue
                     if chunk_type == "tool_result":
+                        emitted_response_artifacts = True
                         await append_conversation_event(
                             session_id=prepared.session_id,
                             author=runner_name,
@@ -1944,6 +2135,8 @@ async def _iter_conversation_turn_events(
         "model": model,
         "session_id": prepared.session_id,
         "metadata": assistant_metadata,
+        "responses_output": responses_output,
+        "response_id": responses_response_id,
     }
 
 
@@ -1997,23 +2190,37 @@ async def stream_conversation_turn(
         elif event_type == "tool_call":
             yield _response_sse(
                 "response.tool_call",
-                {"name": event.get("name"), "args": event.get("args", {}), "run_id": event.get("run_id")},
+                {
+                    "name": event.get("name"),
+                    "args": event.get("args", {}),
+                    "run_id": event.get("run_id"),
+                },
             )
         elif event_type == "tool_result":
             yield _response_sse(
                 "response.tool_result",
-                {"name": event.get("name"), "output": event.get("output", ""), "run_id": event.get("run_id")},
+                {
+                    "name": event.get("name"),
+                    "output": event.get("output", ""),
+                    "run_id": event.get("run_id"),
+                },
             )
         elif event_type == "interrupt":
-            yield _response_sse("response.approval_request", {"interrupt_info": event.get("interrupt_info")})
+            yield _response_sse(
+                "response.approval_request", {"interrupt_info": event.get("interrupt_info")}
+            )
         elif event_type == "error":
-            yield _response_sse("response.error", {"message": event.get("message") or "Agent 运行失败"})
+            yield _response_sse(
+                "response.error", {"message": event.get("message") or "Agent 运行失败"}
+            )
         elif event_type == "completed":
             final_payload = build_responses_payload(
                 output_text=str(event.get("output_text") or ""),
                 model=event.get("model") or model,
                 session_id=str(event.get("session_id") or session_id or ""),
-                metadata=event.get("metadata") if isinstance(event.get("metadata"), Mapping) else None,
+                metadata=(
+                    event.get("metadata") if isinstance(event.get("metadata"), Mapping) else None
+                ),
             )
             yield _response_sse("response.completed", final_payload)
 
@@ -2178,7 +2385,9 @@ async def stream_responses_conversation_turn(
                 "name": event.get("name") or "unknown",
                 "arguments": "",
             }
-            yield _response_sse("response.output_item.added", {"output_index": call_output_index, "item": item})
+            yield _response_sse(
+                "response.output_item.added", {"output_index": call_output_index, "item": item}
+            )
             yield _response_sse(
                 "response.function_call_arguments.delta",
                 {"item_id": item_id, "output_index": call_output_index, "delta": args_json},
@@ -2189,13 +2398,19 @@ async def stream_responses_conversation_turn(
                 "response.function_call_arguments.done",
                 {"item_id": item_id, "output_index": call_output_index, "arguments": args_json},
             )
-            yield _response_sse("response.output_item.done", {"output_index": call_output_index, "item": item})
+            yield _response_sse(
+                "response.output_item.done", {"output_index": call_output_index, "item": item}
+            )
             continue
 
         if event_type == "tool_result":
             yield _response_sse(
                 "response.ksadk.tool_result",
-                {"name": event.get("name"), "output": event.get("output", ""), "run_id": event.get("run_id")},
+                {
+                    "name": event.get("name"),
+                    "output": event.get("output", ""),
+                    "run_id": event.get("run_id"),
+                },
             )
             continue
 
@@ -2234,7 +2449,9 @@ async def stream_responses_conversation_turn(
                     {"output_index": approval_output_index, "item": approval_item},
                 )
             else:
-                yield _response_sse("response.ksadk.approval_request", {"interrupt_info": interrupt_info})
+                yield _response_sse(
+                    "response.ksadk.approval_request", {"interrupt_info": interrupt_info}
+                )
             incomplete_payload = build_responses_payload(
                 output_text=completed_text,
                 model=model,
@@ -2305,7 +2522,10 @@ async def stream_responses_conversation_turn(
                 )
                 yield _response_sse(
                     "response.output_item.done",
-                    {"output_index": text_output_index, "item": _message_item("completed", completed_text)},
+                    {
+                        "output_index": text_output_index,
+                        "item": _message_item("completed", completed_text),
+                    },
                 )
             if reasoning_started:
                 yield _response_sse(
@@ -2316,10 +2536,19 @@ async def stream_responses_conversation_turn(
                 output_text=completed_text,
                 model=event.get("model") or model,
                 session_id=str(event.get("session_id") or session_id or ""),
-                response_id=response_id,
+                response_id=str(event.get("response_id") or response_id),
                 created_at=created_at,
                 status="completed",
-                metadata=event.get("metadata") if isinstance(event.get("metadata"), Mapping) else response_metadata,
+                metadata=(
+                    event.get("metadata")
+                    if isinstance(event.get("metadata"), Mapping)
+                    else response_metadata
+                ),
+                output_items=(
+                    event.get("responses_output")
+                    if isinstance(event.get("responses_output"), Sequence)
+                    else None
+                ),
             )
             yield _response_sse("response.completed", final_payload)
             return
