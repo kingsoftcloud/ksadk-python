@@ -1,12 +1,15 @@
+import { useState } from 'react';
 import {
   ExternalLink,
   FolderOpen,
   MoreHorizontal,
   PanelLeft,
   PanelLeftClose,
+  TerminalSquare,
 } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
+import { NativeTerminalPanel } from '@/components/native/NativeTerminalPanel';
 
 import {
   Sheet,
@@ -44,6 +47,12 @@ type ChatHeaderProps = ModelSelectorProps & {
     href: string;
     label: string;
     title: string;
+  } | null;
+  nativeTerminal?: {
+    Enabled: boolean;
+    Mode?: string | null;
+    Protocol?: string | null;
+    Path?: string | null;
   } | null;
 };
 
@@ -114,8 +123,11 @@ export function ChatHeader({
   workspaceEnabled,
   onOpenWorkspace,
   nativeManagementLink,
+  nativeTerminal,
   nativeLauncherMode = false,
 }: ChatHeaderProps) {
+  const [terminalOpen, setTerminalOpen] = useState(false);
+  const terminalEnabled = Boolean(nativeTerminal?.Enabled);
   const sidebarToggleIcon =
     isMobile ? (
       mobileSidebarOpen ? <PanelLeftClose className="h-5 w-5" /> : <PanelLeft className="h-5 w-5" />
@@ -149,7 +161,7 @@ export function ChatHeader({
               {agentName}
             </div>
             <div className="text-[11px] text-slate-400 dark:text-slate-500">
-              {nativeLauncherMode ? 'OpenClaw 原生入口' : '智能体'}
+              {nativeLauncherMode ? '原生运行时入口' : '智能体'}
             </div>
           </div>
         </div>
@@ -164,27 +176,37 @@ export function ChatHeader({
             <MoreHorizontal className="h-5 w-5" />
           </button>
         ) : (
-          <div className="flex items-center gap-3">
+          <div className="flex min-w-0 items-center gap-2">
             {nativeManagementLink ? (
               <a
                 href={nativeManagementLink.href}
                 target="_blank"
                 rel="noreferrer"
                 title={nativeManagementLink.title}
-                className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 text-sm text-slate-700 transition hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+                className="inline-flex flex-shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium leading-none text-slate-700 transition hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
               >
                 <ExternalLink className="h-4 w-4" />
-                {nativeManagementLink.label}
+                <span>{nativeManagementLink.label}</span>
               </a>
             ) : null}
             {workspaceEnabled ? (
               <button
                 type="button"
                 onClick={onOpenWorkspace}
-                className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 text-sm text-slate-700 transition hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+                className="inline-flex flex-shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium leading-none text-slate-700 transition hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
               >
                 <FolderOpen className="h-4 w-4" />
-                Workspace
+                <span>Workspace</span>
+              </button>
+            ) : null}
+            {terminalEnabled ? (
+              <button
+                type="button"
+                onClick={() => setTerminalOpen(true)}
+                className="inline-flex flex-shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-medium leading-none text-emerald-800 transition hover:bg-emerald-100 dark:border-emerald-900/70 dark:bg-emerald-950/40 dark:text-emerald-200"
+              >
+                <TerminalSquare className="h-4 w-4" />
+                <span>TUI</span>
               </button>
             ) : null}
             {!nativeLauncherMode ? (
@@ -228,6 +250,19 @@ export function ChatHeader({
                 >
                   <FolderOpen className="h-4 w-4" />
                   工作区文件
+                </button>
+              ) : null}
+              {terminalEnabled ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onMobileActionsOpenChange(false);
+                    setTerminalOpen(true);
+                  }}
+                  className="inline-flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm font-medium text-emerald-800 transition hover:bg-emerald-100 dark:border-emerald-900/70 dark:bg-emerald-950/40 dark:text-emerald-200"
+                >
+                  <TerminalSquare className="h-4 w-4" />
+                  原生 TUI
                 </button>
               ) : null}
               {nativeManagementLink ? (
@@ -274,12 +309,19 @@ export function ChatHeader({
                 </>
               ) : (
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm leading-6 text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
-                  OpenClaw 对话在原生 Dashboard 中进行；这里保留管理入口和 Workspace 文件操作。
+                  当前运行时对话在原生管理台中进行；这里保留管理入口和 Workspace 文件操作。
                 </div>
               )}
             </div>
           </SheetContent>
         </Sheet>
+      ) : null}
+      {nativeTerminal ? (
+        <NativeTerminalPanel
+          capability={nativeTerminal}
+          open={terminalOpen}
+          onClose={() => setTerminalOpen(false)}
+        />
       ) : null}
     </>
   );

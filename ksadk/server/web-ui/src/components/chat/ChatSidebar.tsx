@@ -105,6 +105,9 @@ export function ChatSidebar({
         <div className="mt-1 bg-gradient-to-r from-blue-600 to-indigo-500 bg-clip-text text-xs font-bold text-transparent dark:from-blue-400 dark:to-indigo-300">
           Ksyun AgentEngine
         </div>
+        <div className="mx-auto mt-2 max-w-[13rem] text-[10px] leading-4 text-slate-400 dark:text-slate-500">
+          Agent 可能产生不准确的信息，请独立验证。
+        </div>
       </div>
     </div>
   );

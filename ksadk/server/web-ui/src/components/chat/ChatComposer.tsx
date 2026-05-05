@@ -7,7 +7,7 @@ import type {
   RefObject,
 } from 'react';
 
-import { Paperclip, Send, StopCircle } from 'lucide-react';
+import { Paperclip, Send, ShieldCheck, StopCircle } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 
@@ -67,7 +67,7 @@ export function ChatComposer({
   };
 
   return (
-    <div className="relative z-10 flex-shrink-0 border-t border-slate-200/70 bg-white/95 px-3 pb-[calc(var(--safe-area-bottom)+0.75rem)] pt-2 backdrop-blur dark:border-slate-800 dark:bg-slate-900/95 sm:px-4 sm:pb-4">
+    <div className="relative z-10 flex-shrink-0 bg-white/95 px-3 py-3 backdrop-blur dark:bg-slate-900/95 sm:px-4 sm:py-3">
       <div className="mx-auto w-full max-w-[64rem]">
         {isStreaming ? (
           <div className="mb-2 flex justify-center">
@@ -119,107 +119,105 @@ export function ChatComposer({
           </div>
         ) : null}
 
-        <form
-          onSubmit={onSubmit}
-          onDragOver={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-          }}
-          onDrop={handleDrop}
-          className="relative flex w-full flex-col rounded-[1.35rem] border border-slate-200 bg-white p-1.5 shadow-sm transition-all focus-within:border-slate-300 focus-within:ring-1 focus-within:ring-slate-300 dark:border-slate-700 dark:bg-slate-900 dark:focus-within:border-slate-600 dark:focus-within:ring-slate-600"
-        >
-          {attachments.length > 0 ? (
-            <div className="mb-1.5 flex flex-wrap gap-2 px-1.5 pt-1.5">
-              {attachments.map((file, index) => (
-                <div
-                  key={`${file.name}-${file.size}-${index}`}
-                  className={cn(
-                    'flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-100 px-3 py-1.5 text-xs text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300',
-                    isMobile ? 'max-w-full' : '',
-                  )}
-                >
-                  <span className="max-w-[10rem] truncate font-medium sm:max-w-[12rem]">
-                    {file.name}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => onRemoveAttachment(index)}
-                    className="text-slate-400 transition hover:text-red-500"
-                    aria-label={`移除附件 ${file.name}`}
+        <div className="flex items-center gap-3">
+          <form
+            onSubmit={onSubmit}
+            onDragOver={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+            }}
+            onDrop={handleDrop}
+            className="relative flex min-w-0 flex-1 flex-col rounded-[1.25rem] border border-slate-200 bg-white p-1.5 shadow-[0_8px_22px_rgba(15,23,42,0.07)] transition-all focus-within:border-slate-300 focus-within:ring-1 focus-within:ring-slate-300 dark:border-slate-700 dark:bg-slate-900 dark:focus-within:border-slate-600 dark:focus-within:ring-slate-600"
+          >
+            {attachments.length > 0 ? (
+              <div className="mb-1.5 flex flex-wrap gap-2 px-1.5 pt-1.5">
+                {attachments.map((file, index) => (
+                  <div
+                    key={`${file.name}-${file.size}-${index}`}
+                    className={cn(
+                      'flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-100 px-3 py-1.5 text-xs text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300',
+                      isMobile ? 'max-w-full' : '',
+                    )}
                   >
-                    ×
-                  </button>
-                </div>
-              ))}
-            </div>
-          ) : null}
+                    <span className="max-w-[10rem] truncate font-medium sm:max-w-[12rem]">
+                      {file.name}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => onRemoveAttachment(index)}
+                      className="text-slate-400 transition hover:text-red-500"
+                      aria-label={`移除附件 ${file.name}`}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
 
-          <div className={cn('flex w-full gap-1', isMobile ? 'items-end' : 'items-end')}>
-            <label
-              className="relative ml-0.5 flex h-10 w-10 flex-shrink-0 items-center justify-center overflow-hidden rounded-xl transition hover:bg-slate-100 dark:hover:bg-slate-800"
-              title="上传附件"
-            >
-              <input
-                ref={fileInputRef}
-                type="file"
-                multiple
-                className="hidden"
-                onChange={(event) => {
-                  if (event.target.files && event.target.files.length > 0) {
-                    onAppendAttachments(Array.from(event.target.files));
-                    event.target.value = '';
-                  }
-                }}
+            <div className="flex w-full items-end gap-2">
+              <label
+                className="relative flex h-9 w-9 flex-shrink-0 items-center justify-center overflow-hidden rounded-xl text-slate-400 transition hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800 dark:hover:text-slate-200"
+                title="上传附件"
+              >
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  className="hidden"
+                  onChange={(event) => {
+                    if (event.target.files && event.target.files.length > 0) {
+                      onAppendAttachments(Array.from(event.target.files));
+                      event.target.value = '';
+                    }
+                  }}
+                />
+                <Paperclip className="h-5 w-5" />
+              </label>
+
+              <textarea
+                ref={textareaRef}
+                rows={1}
+                value={input}
+                onChange={onInputChange}
+                onKeyDown={handleKeyDown}
+                onPaste={onPaste}
+                placeholder={placeholderText}
+                className={cn(
+                  'custom-scrollbar min-h-[38px] w-full resize-none border-0 bg-transparent px-2 py-1.5 text-[15px] leading-6 outline-none placeholder:text-slate-400 dark:text-slate-100 dark:placeholder:text-slate-500',
+                  isMobile ? 'text-[16px]' : 'text-[15px]',
+                )}
+                style={{ maxHeight: `${composerMaxHeight}px`, overflowY: 'auto' }}
               />
-              <Paperclip className="h-5 w-5 text-slate-400" />
-            </label>
 
-            <textarea
-              ref={textareaRef}
-              rows={1}
-              value={input}
-              onChange={onInputChange}
-              onKeyDown={handleKeyDown}
-              onPaste={onPaste}
-              placeholder={placeholderText}
-              className={cn(
-                'custom-scrollbar min-h-[42px] w-full resize-none border-0 bg-transparent px-2 py-2 text-[15px] leading-6 outline-none placeholder:text-slate-400 dark:text-slate-100 dark:placeholder:text-slate-500',
-                isMobile ? 'text-[16px]' : 'text-[15px]',
-              )}
-              style={{ maxHeight: `${composerMaxHeight}px`, overflowY: 'auto' }}
-            />
+              <button
+                type="submit"
+                disabled={!input.trim() && attachments.length === 0}
+                className={cn(
+                  'flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl transition-all',
+                  input.trim() || attachments.length > 0
+                    ? 'bg-slate-900 text-white hover:bg-slate-800 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white'
+                    : 'bg-slate-100 text-slate-400 dark:bg-slate-800 dark:text-slate-600',
+                )}
+                title={isStreaming ? '加入发送队列' : '发送消息'}
+              >
+                <Send className="ml-0.5 h-4 w-4" />
+              </button>
+            </div>
+          </form>
 
-            <button
-              type="submit"
-              disabled={!input.trim() && attachments.length === 0}
-              className={cn(
-                'mb-0.5 flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl transition-all',
-                input.trim() || attachments.length > 0
-                  ? 'bg-slate-900 text-white hover:bg-slate-800 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white'
-                  : 'bg-slate-100 text-slate-400 dark:bg-slate-800 dark:text-slate-600',
-              )}
-              title={isStreaming ? '加入发送队列' : '发送消息'}
-            >
-              <Send className="ml-0.5 h-4 w-4" />
-            </button>
-          </div>
-        </form>
-
-        <div className="mt-1.5 flex flex-wrap items-start justify-between gap-x-3 gap-y-1 px-1">
-          <div className="max-w-[24rem] text-[11px] text-slate-400 dark:text-slate-500">
-            Agent 可能产生不准确的信息，请独立验证。
-          </div>
           {composerContextIndicator ? (
             <div
               className={cn(
-                'ml-auto text-right text-[11px] leading-5 transition-colors',
+                'hidden flex-shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-right text-[11px] leading-5 transition-colors sm:inline-flex',
                 composerContextIndicator.phase === 'compressing'
-                  ? 'text-amber-500 dark:text-amber-300'
+                  ? 'bg-amber-50 text-amber-600 dark:bg-amber-950/30 dark:text-amber-300'
                   : composerContextIndicator.phase === 'warning'
-                    ? 'text-rose-500 dark:text-rose-300'
-                    : 'text-slate-400 dark:text-slate-500',
+                    ? 'bg-rose-50 text-rose-600 dark:bg-rose-950/30 dark:text-rose-300'
+                    : 'bg-slate-50 text-slate-400 dark:bg-slate-800/50 dark:text-slate-500',
               )}
             >
+              <ShieldCheck className="h-3 w-3" />
               {composerContextIndicator.label}
             </div>
           ) : null}
