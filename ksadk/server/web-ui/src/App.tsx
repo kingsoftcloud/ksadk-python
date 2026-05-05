@@ -20,6 +20,10 @@ import {
   createResponsesStreamState,
   normalizeResponsesStreamEvent,
 } from './utils/responses-stream.js';
+import {
+  buildSubscribeRunEventsUrl,
+  findActiveRunIds,
+} from './utils/run-state.js';
 import { useResponsiveViewport } from './hooks/useResponsiveViewport';
 import { cn } from '@/lib/utils';
 import { AttachmentPreview } from './components/chat/AttachmentPreview';
@@ -77,6 +81,15 @@ type SessionEventRecord = {
   };
   SeqId?: number;
 };
+
+const RUN_TERMINAL_STATUSES = new Set([
+  'completed',
+  'failed',
+  'error',
+  'cancelled',
+  'canceled',
+  'aborted',
+]);
 
 type ParsedMessageContent = {
   text: string;
@@ -550,6 +563,20 @@ function buildMessagesFromSessionEvents(events: SessionEventRecord[]): Message[]
     .filter((message: Message | null): message is Message => Boolean(message));
 }
 
+function maxSeqIdFromEvents(events: SessionEventRecord[]): number {
+  return events.reduce((maxSeqId, event) => {
+    const seqId = Number(event.SeqId || 0);
+    return Number.isFinite(seqId) ? Math.max(maxSeqId, seqId) : maxSeqId;
+  }, 0);
+}
+
+function eventHasTerminalRunStatus(event: SessionEventRecord): boolean {
+  if (event.EventType !== 'run_status') {
+    return false;
+  }
+  return RUN_TERMINAL_STATUSES.has(String(event.Content?.status || '').trim().toLowerCase());
+}
+
 function formatDate(ts?: string | number | null) {
   if (!ts) return '';
   if (typeof ts === 'string') {
@@ -619,6 +646,7 @@ export default function App() {
   const queuedDraftRef = useRef<Array<{ text: string; attachments: File[] }>>([]);
   const activeCompactionMessageIdRef = useRef<string | null>(null);
   const currentSessionIdRef = useRef<string | null>(null);
+  const runSubscriptionAbortRef = useRef<AbortController | null>(null);
 
   const { isMobile, viewportHeight } = useResponsiveViewport();
   const composerMaxHeight = resolveComposerMaxHeight({ isMobile, viewportHeight });
@@ -667,6 +695,13 @@ export default function App() {
       setWorkspacePanelFullscreen(false);
     }
   }, [workspacePanelOpen]);
+
+  useEffect(
+    () => () => {
+      runSubscriptionAbortRef.current?.abort();
+    },
+    [],
+  );
 
   const appendAttachments = (incoming: File[]) => {
     if (!incoming.length) {
@@ -726,10 +761,101 @@ export default function App() {
     }
   };
 
+  const subscribeRunEvents = async (options: {
+    sessionId: string;
+    invocationId: string;
+    afterSeqId: number;
+  }) => {
+    runSubscriptionAbortRef.current?.abort();
+    const controller = new AbortController();
+    runSubscriptionAbortRef.current = controller;
+    setIsStreaming(true);
+    let shouldReloadSession = false;
+
+    try {
+      const response = await fetch(
+        buildSubscribeRunEventsUrl({
+          sessionId: options.sessionId,
+          invocationId: options.invocationId,
+          afterSeqId: options.afterSeqId,
+        }),
+        {
+          headers: { Accept: 'text/event-stream' },
+          signal: controller.signal,
+        },
+      );
+      if (!response.body) {
+        throw new Error('No readable stream');
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let replayedEvents: SessionEventRecord[] = [];
+      let terminalStatusSeen = false;
+
+      while (!terminalStatusSeen) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const chunks = buffer.split('\n\n');
+        buffer = chunks.pop() || '';
+
+        for (const chunk of chunks) {
+          if (!chunk.trim()) continue;
+          const dataLines: string[] = [];
+          for (const line of chunk.split('\n')) {
+            if (line.startsWith('data:')) {
+              dataLines.push(line.substring(5).trim());
+            }
+          }
+          const dataString = dataLines.join('\n').trim();
+          if (!dataString || dataString === '[DONE]') {
+            terminalStatusSeen = dataString === '[DONE]';
+            shouldReloadSession = shouldReloadSession || terminalStatusSeen;
+            continue;
+          }
+          try {
+            const event = JSON.parse(dataString) as SessionEventRecord;
+            replayedEvents = [...replayedEvents, event];
+            terminalStatusSeen = terminalStatusSeen || eventHasTerminalRunStatus(event);
+            shouldReloadSession = shouldReloadSession || terminalStatusSeen;
+            setMessages((prev) => {
+              const current = buildMessagesFromSessionEvents([
+                ...replayedEvents.filter((item) => item.EventId && prev.every((message) => message.id !== item.EventId)),
+              ]);
+              if (!current.length) {
+                return prev;
+              }
+              return [...prev, ...current];
+            });
+          } catch (error) {
+            console.warn('Failed to parse run event data', dataString, error);
+          }
+        }
+      }
+    } catch (error) {
+      const isAbortError = error instanceof DOMException && error.name === 'AbortError';
+      if (!isAbortError) {
+        console.error('Failed to subscribe run events:', error);
+      }
+    } finally {
+      if (runSubscriptionAbortRef.current === controller) {
+        runSubscriptionAbortRef.current = null;
+      }
+      setIsStreaming(false);
+      if (shouldReloadSession && currentSessionIdRef.current === options.sessionId) {
+        void loadSession(options.sessionId);
+      }
+      void fetchSessions(agentId, options.sessionId);
+    }
+  };
+
   const loadSession = async (sessionId: string) => {
     currentSessionIdRef.current = sessionId;
     setCurrentSessionId(sessionId);
     activeCompactionMessageIdRef.current = null;
+    runSubscriptionAbortRef.current?.abort();
     if (isMobile) {
       setMobileSidebarOpen(false);
     }
@@ -742,8 +868,18 @@ export default function App() {
       });
       const data = await response.json();
       if (data?.Data?.Events) {
-        const history = buildMessagesFromSessionEvents(data.Data.Events as SessionEventRecord[]);
+        const events = data.Data.Events as SessionEventRecord[];
+        const history = buildMessagesFromSessionEvents(events);
         setMessages(history);
+        const activeRuns = findActiveRunIds(events);
+        const lastSeqId = maxSeqIdFromEvents(events);
+        if (uiCapabilities.RunLifecycle.Enabled && uiCapabilities.RunLifecycle.Resume && activeRuns[0]) {
+          void subscribeRunEvents({
+            sessionId,
+            invocationId: activeRuns[0],
+            afterSeqId: lastSeqId,
+          });
+        }
       } else {
         setMessages([]);
       }

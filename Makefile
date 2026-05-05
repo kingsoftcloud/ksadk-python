@@ -40,8 +40,8 @@ help:
 	@echo ""
 	@echo "  \033[1;32mOpenClaw 镜像:\033[0m"
 	@echo "    make openclaw-build         构建 OpenClaw 镜像 (默认国内源)"
-	@echo "    make openclaw-push          构建 + 推送到 KCR (默认 :2026.4.27)"
-	@echo "    make openclaw-push OPENCLAW_TAG=2026.4.27 OPENCLAW_PRESET_PLUGINS_ALLOWLIST=wps-xiezuo"
+	@echo "    make openclaw-push          构建 + 推送到 KCR (默认 :2026.5.4)"
+	@echo "    make openclaw-push OPENCLAW_TAG=2026.5.4 OPENCLAW_PRESET_PLUGINS_ALLOWLIST=wps-xiezuo"
 	@echo "    make openclaw-build OPENCLAW_PYPI_INDEX_URL=https://pypi.org/simple  # 海外源"
 	@echo "    make openclaw-size          查看镜像大小"
 	@echo ""
@@ -49,8 +49,8 @@ help:
 	@echo "    make hermes-build           构建 Hermes runtime 镜像"
 	@echo "    make hermes-push            构建 + 推送 Hermes runtime 镜像"
 	@echo "    make hermes-size            查看 Hermes 镜像大小"
-	@echo "    make hermes-build HERMES_TAG=2026.4.23"
-	@echo "    make hermes-build HERMES_AGENT_REF=v2026.4.23  # 切换 Hermes 上游 release"
+	@echo "    make hermes-build HERMES_TAG=2026.4.30"
+	@echo "    make hermes-build HERMES_AGENT_REF=v2026.4.30  # 切换 Hermes 上游 release"
 	@echo ""
 	@echo "  \033[1;32mzread 文档站:\033[0m"
 	@echo "    make docs-deploy-all   构建原生 zread 文档镜像 + 推送 + 部署到预发"
@@ -397,9 +397,9 @@ offline-current: build
 OPENCLAW_IMAGE := hub.kce.ksyun.com/agentengine-public/openclaw
 OPENCLAW_VPC_REGISTRY ?= hub-vpc-cn-beijing-6.kce.ksyun.com
 OPENCLAW_VPC_IMAGE ?= $(subst hub.kce.ksyun.com,$(OPENCLAW_VPC_REGISTRY),$(OPENCLAW_IMAGE))
-OPENCLAW_TAG ?= 2026.4.27
+OPENCLAW_TAG ?= 2026.5.4
 OPENCLAW_CONTEXT := .
-OPENCLAW_BASE_IMAGE ?= ghcr.io/openclaw/openclaw:2026.4.27@sha256:3134a35220d503a67d3de12ee63bc6dfaf171425c0d7d75034636a09c81babd3
+OPENCLAW_BASE_IMAGE ?= ghcr.io/openclaw/openclaw:2026.5.4@sha256:7f4dfd4ed0d5469a4f12eccaa5f46b0c70fca802806be625dce782e69203e689
 OPENCLAW_PRESET_PLUGINS_ALLOWLIST ?=
 OPENCLAW_PYPI_INDEX_URL ?= https://mirrors.aliyun.com/pypi/simple
 OPENCLAW_NPM_REGISTRY ?= https://registry.npmmirror.com
@@ -454,18 +454,20 @@ openclaw-size:
 #
 # 用法:
 #   make hermes-build
-#   make hermes-push HERMES_TAG=2026.4.23
+#   make hermes-push HERMES_TAG=2026.4.30
 #
 
 HERMES_IMAGE := hub.kce.ksyun.com/agentengine-public/hermes-agent
 HERMES_VPC_REGISTRY ?= hub-vpc-cn-beijing-6.kce.ksyun.com
 HERMES_VPC_IMAGE ?= $(subst hub.kce.ksyun.com,$(HERMES_VPC_REGISTRY),$(HERMES_IMAGE))
-HERMES_TAG ?= 2026.4.23
+HERMES_TAG ?= 2026.4.30
 HERMES_CONTEXT := .
 HERMES_PYPI_INDEX_URL ?= https://mirrors.aliyun.com/pypi/simple
-HERMES_AGENT_REF ?= v2026.4.23
+HERMES_AGENT_REF ?= v2026.4.30
 HERMES_APT_MIRROR ?= https://mirrors.aliyun.com/debian
 HERMES_NPM_REGISTRY ?= https://registry.npmmirror.com
+HERMES_NODE_BASE_IMAGE ?= hub.kce.ksyun.com/agentengine-public/hermes-base-node:20-bookworm-slim
+HERMES_PYTHON_BASE_IMAGE ?= hub.kce.ksyun.com/agentengine-public/hermes-base-python:3.12-bookworm
 
 hermes-build:
 	@echo "🐳 构建 Hermes runtime 镜像..."
@@ -476,6 +478,8 @@ hermes-build:
 	@echo "   PyPI 源:  $(HERMES_PYPI_INDEX_URL)"
 	@echo "   APT 源:   $(HERMES_APT_MIRROR)"
 	@echo "   NPM 源:   $(HERMES_NPM_REGISTRY)"
+	@echo "   Node 基础镜像:   $(HERMES_NODE_BASE_IMAGE)"
+	@echo "   Python 基础镜像: $(HERMES_PYTHON_BASE_IMAGE)"
 	@echo "   构建上下文: $(HERMES_CONTEXT)"
 	@echo "============================================================"
 	@if [ ! -f "deploy/hermes/Dockerfile" ]; then \
@@ -484,6 +488,8 @@ hermes-build:
 	fi
 	@DOCKER_BUILDKIT=$(DOCKER_BUILDKIT) docker build --platform linux/amd64 \
 		-f deploy/hermes/Dockerfile \
+		--build-arg HERMES_NODE_BASE_IMAGE=$(HERMES_NODE_BASE_IMAGE) \
+		--build-arg HERMES_PYTHON_BASE_IMAGE=$(HERMES_PYTHON_BASE_IMAGE) \
 		--build-arg PYPI_INDEX_URL=$(HERMES_PYPI_INDEX_URL) \
 		--build-arg HERMES_AGENT_REF=$(HERMES_AGENT_REF) \
 		--build-arg APT_MIRROR=$(HERMES_APT_MIRROR) \

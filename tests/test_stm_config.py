@@ -5,7 +5,8 @@ from types import SimpleNamespace
 import pytest
 
 from ksadk.runners.adk_runner import ADKRunner
-from ksadk.sessions import create_session_service
+from ksadk.sessions import create_session_service, describe_session_backend, register_session_backend
+from ksadk.sessions.in_memory import InMemorySessionService
 from ksadk.sessions.local_service import LocalSessionService
 
 
@@ -25,6 +26,84 @@ def test_platform_session_service_prefers_ksadk_stm_path(monkeypatch, tmp_path):
 
     assert isinstance(service, LocalSessionService)
     assert service.db_path == target.resolve()
+
+
+def test_platform_session_service_supports_memory_backend(monkeypatch):
+    monkeypatch.setenv("KSADK_SESSION_BACKEND", "memory")
+
+    service = create_session_service()
+
+    assert isinstance(service, InMemorySessionService)
+
+
+def test_platform_session_service_treats_local_as_sqlite(monkeypatch, tmp_path):
+    target = tmp_path / "sessions.sqlite"
+    monkeypatch.delenv("AGENTENGINE_SESSION_BACKEND", raising=False)
+    monkeypatch.setenv("KSADK_SESSION_BACKEND", "local")
+    monkeypatch.setenv("KSADK_SESSION_PATH", str(target))
+
+    service = create_session_service()
+
+    assert isinstance(service, LocalSessionService)
+    assert service.db_path == target.resolve()
+
+
+def test_platform_session_service_accepts_sqlite_alias(monkeypatch, tmp_path):
+    target = tmp_path / "sessions.sqlite"
+    monkeypatch.delenv("AGENTENGINE_SESSION_BACKEND", raising=False)
+    monkeypatch.setenv("KSADK_SESSION_BACKEND", "sqlite")
+    monkeypatch.setenv("KSADK_SESSION_PATH", str(target))
+
+    service = create_session_service()
+
+    assert isinstance(service, LocalSessionService)
+    assert service.db_path == target.resolve()
+
+
+def test_platform_session_service_requires_postgres_dsn(monkeypatch):
+    monkeypatch.setenv("KSADK_SESSION_BACKEND", "postgres")
+    monkeypatch.delenv("KSADK_SESSION_DSN", raising=False)
+    monkeypatch.delenv("KSADK_STM_URL", raising=False)
+    monkeypatch.delenv("KSADK_STM_DB_URL", raising=False)
+
+    with pytest.raises(ValueError, match="KSADK_SESSION_DSN"):
+        create_session_service()
+
+
+def test_describe_session_backend_marks_postgres_as_shared(monkeypatch):
+    dsn = "".join(
+        [
+            "postgresql://",
+            "user",
+            ":",
+            "pass",
+            "@",
+            "example.invalid:5432/example_db",
+        ]
+    )
+    monkeypatch.setenv("KSADK_SESSION_BACKEND", "postgres")
+    monkeypatch.setenv("KSADK_SESSION_DSN", dsn)
+
+    payload = describe_session_backend()
+
+    assert payload["Backend"] == "postgres"
+    assert payload["Shared"] is True
+    assert payload["ProductionSafe"] is True
+    assert payload["ContinuityDefault"] == "semantic/replay"
+    assert "Dsn" not in payload
+    assert "Namespace" not in payload
+
+
+def test_describe_session_backend_marks_local_as_not_shared(monkeypatch, tmp_path):
+    monkeypatch.setenv("KSADK_SESSION_BACKEND", "local")
+    monkeypatch.setenv("KSADK_SESSION_PATH", str(tmp_path / "sessions.sqlite"))
+
+    payload = describe_session_backend()
+
+    assert payload["Backend"] == "local"
+    assert payload["Shared"] is False
+    assert payload["ProductionSafe"] is False
+    assert payload["ContinuityDefault"] == "local_only"
 
 
 def test_platform_session_service_keeps_legacy_stm_db_path_alias(monkeypatch, tmp_path):
@@ -77,3 +156,17 @@ def test_adk_runner_short_term_memory_uses_framework_specific_override(monkeypat
 
     assert stm is not None
     assert stm.local_database_path == "/tmp/adk-private.sqlite"
+
+
+def test_platform_session_service_accepts_registered_backend(monkeypatch):
+    def factory(config, project_dir):
+        assert config.backend == "custom"
+        assert project_dir == "/tmp/custom-project"
+        return InMemorySessionService()
+
+    register_session_backend("custom", factory)
+    monkeypatch.setenv("KSADK_SESSION_BACKEND", "custom")
+
+    service = create_session_service(project_dir="/tmp/custom-project")
+
+    assert isinstance(service, InMemorySessionService)

@@ -261,6 +261,49 @@ def test_proxy_dashboard_translates_session_header_back_to_authorization(monkeyp
     assert "X-Hermes-Session-Token" not in headers
 
 
+def test_runtime_exposes_terminal_session_control_plane(monkeypatch):
+    module = _load_runtime_module()
+    monkeypatch.setattr(module, "_spawn_terminal_session", lambda session: None)
+
+    with TestClient(module.app) as client:
+        create_response = client.post(
+            "/_ksadk/terminal/sessions",
+            json={"mode": "tui", "cols": 96, "rows": 28, "cwd": "workspace-a"},
+        )
+        list_response = client.get("/_ksadk/terminal/sessions")
+
+    assert create_response.status_code == 200
+    created = create_response.json()["session"]
+    assert created["terminal_session_id"].startswith("term-")
+    assert created["mode"] == "tui"
+    assert created["status"] == "running"
+    assert created["cols"] == 96
+    assert created["rows"] == 28
+    assert created["cwd"] == "workspace-a"
+    assert list_response.status_code == 200
+    assert list_response.json()["sessions"][0]["terminal_session_id"] == created["terminal_session_id"]
+
+
+def test_runtime_closes_terminal_session(monkeypatch):
+    module = _load_runtime_module()
+    closed: list[str] = []
+    monkeypatch.setattr(module, "_spawn_terminal_session", lambda session: None)
+    monkeypatch.setattr(module, "_terminate_terminal_session", lambda session: closed.append(session.id))
+
+    with TestClient(module.app) as client:
+        terminal_session_id = client.post(
+            "/_ksadk/terminal/sessions",
+            json={"mode": "tui"},
+        ).json()["session"]["terminal_session_id"]
+        close_response = client.delete(f"/_ksadk/terminal/sessions/{terminal_session_id}")
+        list_response = client.get("/_ksadk/terminal/sessions")
+
+    assert close_response.status_code == 200
+    assert close_response.json() == {"closed": True, "terminal_session_id": terminal_session_id}
+    assert closed == [terminal_session_id]
+    assert list_response.json()["sessions"] == []
+
+
 def test_proxy_dashboard_injects_fetch_shim_into_html(monkeypatch):
     module = _load_runtime_module()
     _FakeAsyncClient.send_calls = []

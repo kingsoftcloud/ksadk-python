@@ -34,7 +34,13 @@ from ksadk_runtime_common.workspace_files import (
     create_workspace_files_router,
     workspace_files_enabled,
 )
-from ksadk.sessions import ConversationSessionCore, Session, SessionEvent, resolve_session_service
+from ksadk.sessions import (
+    ConversationSessionCore,
+    Session,
+    SessionEvent,
+    describe_session_backend,
+    resolve_session_service,
+)
 from ksadk.sessions.local_service import resolve_local_session_dir
 from ksadk.tracing import get_memory_exporter
 from ksadk.conversations.model_context import normalize_model_metadata
@@ -600,6 +606,7 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
             "ApiFormats": ["responses", "chat_completions"],
             "Stream": True,
             "SessionId": request.SessionId,
+            "SessionBackend": describe_session_backend(),
             "HostedRuntime": None,
             "Model": _build_bootstrap_model_payload(),
         },

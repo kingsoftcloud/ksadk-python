@@ -7,3 +7,7 @@ def test_bundled_runtime_requirements_include_kingsoftcloud_sdk():
 
 def test_bundled_runtime_requirements_include_python_multipart():
     assert "python-multipart>=0.0.9,<1.0.0" in CodeBuilder.BUNDLED_KSADK_RUNTIME_REQUIREMENTS
+
+
+def test_bundled_runtime_requirements_include_asyncpg_for_postgres_sessions():
+    assert "asyncpg>=0.30.0,<1.0.0" in CodeBuilder.BUNDLED_KSADK_RUNTIME_REQUIREMENTS

@@ -10,8 +10,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 BOOTSTRAP_SCRIPT = REPO_ROOT / "deploy" / "openclaw" / "bootstrap.sh"
 OPENCLAW_DOCKERFILE = REPO_ROOT / "deploy" / "openclaw" / "Dockerfile"
 LATEST_OPENCLAW_BASE_IMAGE = (
-    "ghcr.io/openclaw/openclaw:2026.4.27@"
-    "sha256:3134a35220d503a67d3de12ee63bc6dfaf171425c0d7d75034636a09c81babd3"
+    "ghcr.io/openclaw/openclaw:2026.5.4@"
+    "sha256:7f4dfd4ed0d5469a4f12eccaa5f46b0c70fca802806be625dce782e69203e689"
 )
 VALID_MEM0_UUID = "e52b7fac-e641-4b34-b9f7-6b0b9f190cd4"
 

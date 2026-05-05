@@ -1,8 +1,9 @@
-import type { RefObject } from 'react';
+import { useEffect, useState, type RefObject } from 'react';
 
 import {
   Bot,
   Check,
+  Copy,
   Paperclip,
   RefreshCcw,
   ShieldCheck,
@@ -15,6 +16,7 @@ import { cn } from '@/lib/utils';
 
 import { MessageMarkdown } from '../MessageMarkdown';
 import { formatToolPayload } from '../../utils/tool-display.js';
+import { copyTextToClipboard } from '../../utils/clipboard.js';
 
 import type { Message, MessageAttachment } from './types';
 
@@ -160,6 +162,58 @@ function SystemMessage({ message }: { message: Message }) {
   );
 }
 
+function ToolPayloadBlock({
+  label,
+  tone,
+  value,
+}: {
+  label: string;
+  tone: 'input' | 'output';
+  value: string;
+}) {
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
+  const formatted = formatToolPayload(value);
+
+  useEffect(() => {
+    if (copyState === 'idle') {
+      return undefined;
+    }
+    const timer = window.setTimeout(() => setCopyState('idle'), 1600);
+    return () => window.clearTimeout(timer);
+  }, [copyState]);
+
+  const handleCopy = async () => {
+    const ok = await copyTextToClipboard(formatted);
+    setCopyState(ok ? 'copied' : 'failed');
+  };
+
+  return (
+    <div>
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <div
+          className={cn(
+            'text-xs font-semibold uppercase',
+            tone === 'input' ? 'text-blue-500' : 'text-emerald-500',
+          )}
+        >
+          {label}
+        </div>
+        <button
+          type="button"
+          onClick={() => { void handleCopy(); }}
+          className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium text-slate-500 transition hover:bg-white hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-900 dark:hover:text-slate-100"
+        >
+          {copyState === 'copied' ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Copy className="h-3.5 w-3.5" />}
+          {copyState === 'copied' ? '已复制' : copyState === 'failed' ? '复制失败' : '复制'}
+        </button>
+      </div>
+      <div className="custom-scrollbar max-h-[220px] overflow-y-auto whitespace-pre-wrap break-words rounded-xl border border-slate-200/70 bg-white/70 p-3 text-slate-600 shadow-sm dark:border-slate-800 dark:bg-slate-950/40 dark:text-slate-300 sm:max-h-[300px]">
+        {formatted}
+      </div>
+    </div>
+  );
+}
+
 function ChatMessage({
   agentName,
   isMobile,
@@ -295,22 +349,10 @@ function ChatMessage({
                     </div>
                   ) : null}
                   {tool.args ? (
-                    <div>
-                      <div className="mb-1 text-xs font-semibold uppercase text-blue-500">入参 (Args)</div>
-                      <div className="whitespace-pre-wrap break-words text-slate-600 dark:text-slate-300">
-                        {formatToolPayload(tool.args)}
-                      </div>
-                    </div>
+                    <ToolPayloadBlock label="入参 (Args)" tone="input" value={tool.args} />
                   ) : null}
                   {tool.output ? (
-                    <div>
-                      <div className="mb-1 text-xs font-semibold uppercase text-emerald-500">
-                        输出 (Output)
-                      </div>
-                      <div className="custom-scrollbar max-h-[220px] overflow-y-auto whitespace-pre-wrap break-words text-slate-600 dark:text-slate-300 sm:max-h-[300px]">
-                        {formatToolPayload(tool.output)}
-                      </div>
-                    </div>
+                    <ToolPayloadBlock label="输出 (Output)" tone="output" value={tool.output} />
                   ) : null}
                 </div>
               </details>

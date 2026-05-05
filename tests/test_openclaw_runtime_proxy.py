@@ -218,3 +218,87 @@ def test_runtime_proxy_rejects_terminal_without_bearer_token_when_gateway_token_
 
     assert payload["type"] == "error"
     assert "OPENCLAW_GATEWAY_TOKEN" in payload["message"]
+
+
+def test_runtime_proxy_exposes_terminal_session_control_plane(monkeypatch):
+    module = _load_runtime_module()
+    monkeypatch.setattr(module, "_spawn_terminal_session", lambda session: None)
+
+    with TestClient(module.app) as client:
+        create_response = client.post(
+            "/_ksadk/terminal/sessions",
+            json={"mode": "tui", "cols": 100, "rows": 30, "session_id": "main"},
+        )
+        list_response = client.get("/_ksadk/terminal/sessions")
+
+    assert create_response.status_code == 200
+    created = create_response.json()["session"]
+    assert created["terminal_session_id"].startswith("term-")
+    assert created["mode"] == "tui"
+    assert created["status"] == "running"
+    assert created["cols"] == 100
+    assert created["rows"] == 30
+    assert created["session_id"] == "main"
+    assert list_response.status_code == 200
+    assert list_response.json()["sessions"][0]["terminal_session_id"] == created["terminal_session_id"]
+
+
+def test_runtime_proxy_uses_unique_openclaw_session_keys_by_default(monkeypatch):
+    module = _load_runtime_module()
+    monkeypatch.setattr(module, "_spawn_terminal_session", lambda session: None)
+
+    with TestClient(module.app) as client:
+        first = client.post("/_ksadk/terminal/sessions", json={"mode": "tui"}).json()["session"]
+        second = client.post("/_ksadk/terminal/sessions", json={"mode": "tui"}).json()["session"]
+
+    assert first["terminal_session_id"].startswith("term-")
+    assert second["terminal_session_id"].startswith("term-")
+    assert first["terminal_session_id"] != second["terminal_session_id"]
+    assert first["session_id"] == first["terminal_session_id"]
+    assert second["session_id"] == second["terminal_session_id"]
+
+
+def test_runtime_proxy_spawns_openclaw_tui_with_unique_session_keys(monkeypatch):
+    module = _load_runtime_module()
+    commands: list[list[str]] = []
+
+    def fake_spawn(session):
+        commands.append(
+            module._resolve_terminal_command(
+                session.mode,
+                session.argv,
+                session_id=session.session_id,
+                options=session.options,
+            )
+        )
+        session.status = "running"
+
+    monkeypatch.setattr(module, "_spawn_terminal_session", fake_spawn)
+
+    with TestClient(module.app) as client:
+        first = client.post("/_ksadk/terminal/sessions", json={"mode": "tui"}).json()["session"]
+        second = client.post("/_ksadk/terminal/sessions", json={"mode": "tui"}).json()["session"]
+
+    assert commands[0][commands[0].index("--session") + 1] == first["terminal_session_id"]
+    assert commands[1][commands[1].index("--session") + 1] == second["terminal_session_id"]
+    assert commands[0] != commands[1]
+
+
+def test_runtime_proxy_closes_terminal_session(monkeypatch):
+    module = _load_runtime_module()
+    closed: list[str] = []
+    monkeypatch.setattr(module, "_spawn_terminal_session", lambda session: None)
+    monkeypatch.setattr(module, "_terminate_terminal_session", lambda session: closed.append(session.id))
+
+    with TestClient(module.app) as client:
+        terminal_session_id = client.post(
+            "/_ksadk/terminal/sessions",
+            json={"mode": "tui"},
+        ).json()["session"]["terminal_session_id"]
+        close_response = client.delete(f"/_ksadk/terminal/sessions/{terminal_session_id}")
+        list_response = client.get("/_ksadk/terminal/sessions")
+
+    assert close_response.status_code == 200
+    assert close_response.json() == {"closed": True, "terminal_session_id": terminal_session_id}
+    assert closed == [terminal_session_id]
+    assert list_response.json()["sessions"] == []

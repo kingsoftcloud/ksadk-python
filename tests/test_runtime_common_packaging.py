@@ -23,6 +23,12 @@ def test_pyproject_declares_python_socks_for_openclaw_gateway_proxy_support():
     assert "python-socks>=2.7.1,<3.0.0" in pyproject
 
 
+def test_pyproject_declares_asyncpg_for_postgres_session_backend():
+    pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert "asyncpg>=0.30.0,<1.0.0" in pyproject
+
+
 def test_repo_root_dockerignore_excludes_local_build_artifacts():
     dockerignore = (REPO_ROOT / ".dockerignore").read_text(encoding="utf-8")
 

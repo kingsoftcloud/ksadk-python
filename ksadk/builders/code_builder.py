@@ -114,6 +114,7 @@ class CodeBuilder(BaseBuilder):
         "cryptography>=44.0.0",
         "websockets>=12.0,<16.0",
         "qrcode>=7.4.0",
+        "asyncpg>=0.30.0,<1.0.0",
     )
     BUNDLED_KSADK_ATTACHMENT_RUNTIME_REQUIREMENTS = (
         "pypdf>=6.0.0",
