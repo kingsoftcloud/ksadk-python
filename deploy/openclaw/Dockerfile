@@ -1,6 +1,6 @@
 ## syntax=docker/dockerfile:1.7
 # https://github.com/openclaw/openclaw/pkgs/container/openclaw
-ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.4.27@sha256:3134a35220d503a67d3de12ee63bc6dfaf171425c0d7d75034636a09c81babd3
+ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.5.4@sha256:7f4dfd4ed0d5469a4f12eccaa5f46b0c70fca802806be625dce782e69203e689
 FROM ${OPENCLAW_BASE_IMAGE}
 
 # ── 可通过 --build-arg 覆盖的参数 ──────────────────────────────

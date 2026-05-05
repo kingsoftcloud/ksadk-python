@@ -1,13 +1,14 @@
-from __future__ import annotations
-
 import asyncio
 import contextlib
+from dataclasses import dataclass, field
 import json
 import os
 import pty
 import select
 import signal
 import termios
+import time
+import uuid
 from typing import Any, Iterable, Mapping
 from urllib.parse import urlsplit, urlunsplit
 
@@ -22,6 +23,80 @@ TERMINAL_SUBPROTOCOL = "ks-terminal.v1"
 SHELL_METACHARS = set("|&;<>()$`\\\n\r")
 
 app = FastAPI()
+
+
+@dataclass
+class TerminalSession:
+    id: str
+    mode: str = "tui"
+    argv: list[str] = field(default_factory=list)
+    cols: int = 80
+    rows: int = 24
+    session_id: str = ""
+    options: dict[str, Any] = field(default_factory=dict)
+    status: str = "starting"
+    created_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)
+    pid: int | None = None
+    fd: int | None = None
+    exit_code: int | None = None
+    reader_task: asyncio.Task | None = None
+    wait_task: asyncio.Task | None = None
+    attachments: set[WebSocket] = field(default_factory=set)
+    replay_buffer: bytearray = field(default_factory=bytearray)
+
+
+TERMINAL_REPLAY_BUFFER_BYTES = 256 * 1024
+_TERMINAL_SESSIONS: dict[str, TerminalSession] = {}
+
+
+def _utc_timestamp(value: float) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(value))
+
+
+def _serialize_terminal_session(session: TerminalSession) -> dict:
+    return {
+        "terminal_session_id": session.id,
+        "mode": session.mode,
+        "status": session.status,
+        "cols": session.cols,
+        "rows": session.rows,
+        "session_id": session.session_id,
+        "created_at": _utc_timestamp(session.created_at),
+        "updated_at": _utc_timestamp(session.updated_at),
+        "exit_code": session.exit_code,
+    }
+
+
+def _append_terminal_replay(session: TerminalSession, data: bytes) -> None:
+    session.replay_buffer.extend(data)
+    overflow = len(session.replay_buffer) - TERMINAL_REPLAY_BUFFER_BYTES
+    if overflow > 0:
+        del session.replay_buffer[:overflow]
+
+
+async def _broadcast_terminal_bytes(session: TerminalSession, data: bytes) -> None:
+    _append_terminal_replay(session, data)
+    stale: list[WebSocket] = []
+    for attached in list(session.attachments):
+        try:
+            await attached.send_bytes(data)
+        except Exception:
+            stale.append(attached)
+    for attached in stale:
+        session.attachments.discard(attached)
+
+
+async def _broadcast_terminal_control(session: TerminalSession, payload: dict) -> None:
+    text = json.dumps(payload, ensure_ascii=False)
+    stale: list[WebSocket] = []
+    for attached in list(session.attachments):
+        try:
+            await attached.send_text(text)
+        except Exception:
+            stale.append(attached)
+    for attached in stale:
+        session.attachments.discard(attached)
 
 
 def _gateway_base() -> str:
@@ -344,6 +419,155 @@ async def _wait_process(pid: int) -> int:
     return status
 
 
+async def _terminal_session_reader(session: TerminalSession) -> None:
+    if session.fd is None:
+        return
+    loop = asyncio.get_running_loop()
+    while True:
+        await loop.run_in_executor(None, lambda: select.select([session.fd], [], [], None))
+        try:
+            data = os.read(session.fd, 4096)
+        except OSError:
+            return
+        if not data:
+            return
+        await _broadcast_terminal_bytes(session, data)
+
+
+async def _terminal_session_waiter(session: TerminalSession) -> None:
+    if session.pid is None:
+        return
+    code = await _wait_process(session.pid)
+    session.exit_code = code
+    session.status = "closed"
+    session.updated_at = time.time()
+    await _broadcast_terminal_control(session, {"type": "exit", "code": code})
+    if session.fd is not None:
+        with contextlib.suppress(OSError):
+            os.close(session.fd)
+        session.fd = None
+
+
+def _spawn_terminal_session(session: TerminalSession) -> None:
+    if session.pid is not None:
+        return
+    command = _resolve_terminal_command(
+        session.mode,
+        session.argv,
+        session_id=session.session_id,
+        options=session.options,
+    )
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.execvp(command[0], command)
+    session.pid = pid
+    session.fd = fd
+    session.status = "running"
+    session.updated_at = time.time()
+    _set_winsize(fd, session.rows, session.cols)
+    session.reader_task = asyncio.create_task(_terminal_session_reader(session))
+    session.wait_task = asyncio.create_task(_terminal_session_waiter(session))
+
+
+def _terminate_terminal_session(session: TerminalSession) -> None:
+    if session.pid is not None and session.status not in {"closed", "exited"}:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(session.pid, signal.SIGTERM)
+    for task in (session.reader_task,):
+        if task and not task.done():
+            task.cancel()
+    if session.fd is not None:
+        with contextlib.suppress(OSError):
+            os.close(session.fd)
+        session.fd = None
+
+
+def _create_terminal_session(payload: dict) -> TerminalSession:
+    mode = str(payload.get("mode") or "tui").strip().lower()
+    argv = [str(item) for item in (payload.get("argv") or [])]
+    options = payload.get("options") or {}
+    if not isinstance(options, dict):
+        raise ValueError("OpenClaw terminal options must be an object")
+    terminal_session_id = f"term-{uuid.uuid4().hex[:12]}"
+    session_id = str(payload.get("session_id") or terminal_session_id).strip()
+    _resolve_terminal_command(mode, argv, session_id=session_id, options=options)
+    session = TerminalSession(
+        id=terminal_session_id,
+        mode=mode,
+        argv=argv,
+        cols=int(payload.get("cols") or 80),
+        rows=int(payload.get("rows") or 24),
+        session_id=session_id,
+        options=options,
+    )
+    _TERMINAL_SESSIONS[session.id] = session
+    _spawn_terminal_session(session)
+    if session.status == "starting":
+        session.status = "running"
+        session.updated_at = time.time()
+    return session
+
+
+@app.post("/_ksadk/terminal/sessions")
+async def create_terminal_session(request: Request) -> JSONResponse:
+    payload = await request.json()
+    session = _create_terminal_session(payload if isinstance(payload, dict) else {})
+    return JSONResponse({"session": _serialize_terminal_session(session)})
+
+
+@app.get("/_ksadk/terminal/sessions")
+async def list_terminal_sessions() -> JSONResponse:
+    sessions = sorted(
+        _TERMINAL_SESSIONS.values(),
+        key=lambda item: (item.status == "running", item.updated_at),
+        reverse=True,
+    )
+    return JSONResponse({"sessions": [_serialize_terminal_session(session) for session in sessions]})
+
+
+@app.delete("/_ksadk/terminal/sessions/{terminal_session_id}")
+async def close_terminal_session(terminal_session_id: str) -> JSONResponse:
+    session = _TERMINAL_SESSIONS.pop(terminal_session_id, None)
+    if not session:
+        return JSONResponse({"closed": False, "terminal_session_id": terminal_session_id}, status_code=404)
+    _terminate_terminal_session(session)
+    session.status = "closed"
+    session.updated_at = time.time()
+    await _broadcast_terminal_control(session, {"type": "exit", "code": session.exit_code})
+    return JSONResponse({"closed": True, "terminal_session_id": terminal_session_id})
+
+
+async def _attach_terminal_session(ws: WebSocket, session: TerminalSession) -> None:
+    session.attachments.add(ws)
+    try:
+        await ws.send_text(json.dumps({"type": "ready", "terminal_session_id": session.id}))
+        if session.replay_buffer:
+            await ws.send_bytes(bytes(session.replay_buffer))
+        while True:
+            message = await ws.receive()
+            if message.get("bytes") is not None:
+                if session.fd is not None and session.status == "running":
+                    os.write(session.fd, message["bytes"])
+                continue
+            text = message.get("text")
+            if not text:
+                continue
+            control = json.loads(text)
+            if control.get("type") == "resize":
+                session.rows = int(control.get("rows") or session.rows or 24)
+                session.cols = int(control.get("cols") or session.cols or 80)
+                session.updated_at = time.time()
+                if session.fd is not None:
+                    _set_winsize(session.fd, session.rows, session.cols)
+            elif control.get("type") == "signal" and session.pid is not None:
+                sig = signal.SIGINT if control.get("signal") == "SIGINT" else signal.SIGTERM
+                os.kill(session.pid, sig)
+            elif control.get("type") == "stdin_eof":
+                continue
+    finally:
+        session.attachments.discard(ws)
+
+
 @app.websocket("/_ksadk/terminal/ws")
 async def terminal_ws(ws: WebSocket) -> None:
     if TERMINAL_SUBPROTOCOL not in (ws.headers.get("sec-websocket-protocol") or ""):
@@ -358,6 +582,17 @@ async def terminal_ws(ws: WebSocket) -> None:
     try:
         first = await ws.receive_text()
         payload = json.loads(first)
+        if payload.get("type") == "attach":
+            terminal_session_id = str(
+                payload.get("terminal_session_id")
+                or ws.query_params.get("terminal_session_id")
+                or ""
+            ).strip()
+            session = _TERMINAL_SESSIONS.get(terminal_session_id)
+            if not session:
+                raise ValueError("terminal session not found")
+            await _attach_terminal_session(ws, session)
+            return
         if payload.get("type") != "start":
             raise ValueError("first frame must be start")
         _require_terminal_auth(ws)

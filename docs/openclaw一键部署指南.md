@@ -184,7 +184,7 @@ agentengine openclaw channel connect <agent_id_or_name> \
 ```bash
 docker buildx build \
   --build-arg OPENCLAW_PRESET_PLUGINS_ALLOWLIST=wps-xiezuo \
-  -t hub.kce.ksyun.com/agentengine-public/openclaw:2026.4.27 \
+  -t hub.kce.ksyun.com/agentengine-public/openclaw:2026.5.4 \
   deploy/openclaw
 ```
 

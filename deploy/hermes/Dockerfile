@@ -1,6 +1,9 @@
-FROM node:20-bookworm-slim AS hermes_src
+ARG HERMES_NODE_BASE_IMAGE=node:20-bookworm-slim
+ARG HERMES_PYTHON_BASE_IMAGE=python:3.12-bookworm
 
-ARG HERMES_AGENT_REF=v2026.4.23
+FROM ${HERMES_NODE_BASE_IMAGE} AS hermes_src
+
+ARG HERMES_AGENT_REF=v2026.4.30
 
 WORKDIR /src
 
@@ -20,18 +23,18 @@ RUN npm config set registry "${NPM_REGISTRY}" \
     && if [ -f package-lock.json ]; then npm ci; else npm install; fi \
     && npm run build
 
-FROM node:20-bookworm-slim AS agent_browser
+FROM ${HERMES_NODE_BASE_IMAGE} AS agent_browser
 
 ARG NPM_REGISTRY=https://registry.npmmirror.com
 
 RUN npm config set registry "${NPM_REGISTRY}" \
     && npm install -g --no-audit --no-fund agent-browser@0.13.0 mcporter
 
-FROM python:3.12-bookworm
+FROM ${HERMES_PYTHON_BASE_IMAGE}
 
 ARG PYPI_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
 ARG PYPI_EXTRA_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
-ARG HERMES_AGENT_REF=v2026.4.23
+ARG HERMES_AGENT_REF=v2026.4.30
 ARG APT_MIRROR=https://mirrors.aliyun.com/debian
 
 ENV PYTHONUNBUFFERED=1 \

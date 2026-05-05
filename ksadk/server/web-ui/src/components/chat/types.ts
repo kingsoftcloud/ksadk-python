@@ -45,6 +45,19 @@ export type Session = {
   FirstPrompt?: string;
   LastPrompt?: string;
   UpdatedAt?: string | number | null;
+  ActiveRunStatus?: string;
+  ActiveInvocationId?: string;
+  Model?: {
+    id?: string;
+    display_name?: string;
+    [key: string]: unknown;
+  } | null;
+  ContextUsage?: {
+    used_tokens?: number;
+    context_window_tokens?: number;
+    percent?: number;
+    [key: string]: unknown;
+  } | null;
 };
 
 export type ModelCatalogItem = {

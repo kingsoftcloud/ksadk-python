@@ -1238,6 +1238,26 @@ const replacements = [
 }`,
   },
   {
+    // openclaw 2026.5.4: 上游把 shared-secret loopback 也纳入 local backend self-pairing，
+    // 这里保持同一安全边界，只额外允许容器内 trusted-proxy backend client 自连跳过 pairing。
+    capability: 'gateway backend self-pairing trusted-proxy bypass',
+    variant: '2026.5.4-local-backend-self-pairing-shared-secret-loopback',
+    marker: 'const usesLoopbackTrustedProxyAuth = params.authMethod === "trusted-proxy";',
+    needle: `function shouldSkipLocalBackendSelfPairing(params) {
+	if (!(params.connectParams.client.id === GATEWAY_CLIENT_IDS.GATEWAY_CLIENT && params.connectParams.client.mode === GATEWAY_CLIENT_MODES.BACKEND)) return false;
+	const usesSharedSecretAuth = params.authMethod === "token" || params.authMethod === "password";
+	const usesDeviceTokenAuth = params.authMethod === "device-token";
+	return (params.locality === "direct_local" || params.locality === "shared_secret_loopback_local") && !params.hasBrowserOriginHeader && (params.sharedAuthOk && usesSharedSecretAuth || usesDeviceTokenAuth);
+}`,
+    replacement: `function shouldSkipLocalBackendSelfPairing(params) {
+	if (!(params.connectParams.client.id === GATEWAY_CLIENT_IDS.GATEWAY_CLIENT && params.connectParams.client.mode === GATEWAY_CLIENT_MODES.BACKEND)) return false;
+	const usesSharedSecretAuth = params.authMethod === "token" || params.authMethod === "password";
+	const usesDeviceTokenAuth = params.authMethod === "device-token";
+	const usesLoopbackTrustedProxyAuth = params.authMethod === "trusted-proxy";
+	return (params.locality === "direct_local" || params.locality === "shared_secret_loopback_local") && !params.hasBrowserOriginHeader && (usesLoopbackTrustedProxyAuth || params.sharedAuthOk && usesSharedSecretAuth || usesDeviceTokenAuth);
+}`,
+  },
+  {
     // openclaw < 2026.4.5: 旧函数名 shouldSkipBackendSelfPairing, 旧参数 isLocalClient
     capability: 'gateway backend self-pairing trusted-proxy bypass',
     variant: 'legacy-backend-self-pairing',

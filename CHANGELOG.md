@@ -5,6 +5,36 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [0.5.4] - 2026-05-05
+
+### 亮点
+
+- **云上 K8s 多副本会话可恢复**：新增可插拔 session backend 与 PGSQL 共享后端，支持同一 agent 的多个 pod 读取同一份平台 session 列表、turn 事件和轻量状态，用于 Hosted UI 回显与 runtime transcript replay。
+- **Hosted UI 原生运行时体验升级**：Hosted UI 支持 capability-driven 原生运行时入口，OpenClaw / Hermes 可通过统一能力声明展示管理入口和安全终端入口。
+- **OpenClaw / Hermes 默认运行时刷新**：OpenClaw 默认运行时升级到 `2026.5.4`，Hermes 运行时模板同步 `2026.4.30` 默认镜像与上游 ref，并补齐终端会话控制面能力。
+
+### 变更
+
+- 新增 `KSADK_SESSION_BACKEND` 统一选择 session backend，内置 `memory`、`local/sqlite`、`postgres`；保留 `AGENTENGINE_SESSION_BACKEND`、`KSADK_STM_BACKEND` 作为兼容别名。
+- 新增 `KSADK_SESSION_DSN` 作为 PGSQL session backend 主连接串配置，兼容 `KSADK_STM_URL`、`KSADK_STM_DB_URL`；`postgres` 后端缺少 DSN 时会快速失败，不静默降级到本地存储。
+- 新增 `PostgresSessionService`，保存平台 session index、turn-level events、轻量 state 与 continuity metadata；表结构包含 `tenant_id`、`workspace_id`、`agent_id`、`user_id`、`session_id` 隔离维度。
+- `GetAgentUiBootstrap` 新增 `SessionBackend` 诊断信息，标记 backend 类型、是否 shared、是否 production safe 与 continuity 默认等级；诊断结果不向前端暴露 DSN。
+- 修正 `local` 语义：`local` / `sqlite` 均表示本地 SQLite，`memory` 才表示纯内存；K8s 多副本生产场景推荐使用 `postgres`。
+- code mode 运行时依赖补齐 `asyncpg>=0.30.0,<1.0.0`，确保部署包启用 PGSQL session backend 时具备数据库驱动。
+- Hosted UI 前端协议保持兼容，`CreateSession`、`ListSessions`、`GetSession`、`ListSessionEvents`、`DeleteSession`、`RunAgent` 继续走现有 action，只切换底层 session service。
+- LangGraph runner 继续把 `session_id` 映射到 `configurable.thread_id`，P0 只提供平台 transcript replay；完整 runtime checkpoint continuity 仍由业务 agent 配置共享 checkpointer / STM。
+- OpenClaw Hosted UI 改为基于 runtime capabilities 选择原生 launcher / chat 入口，新增终端 session 列表、创建、附着和关闭能力。
+- OpenClaw runtime proxy 与 bootstrap 同步 `2026.5.4` 默认配置，补齐终端 websocket、proxy auth、gateway token 与 password 处理。
+- Hermes runtime app / Dockerfile / 测试同步当前默认镜像，新增 `/_ksadk/terminal/sessions` 控制面，支持远端终端会话的创建、复用和关闭。
+- Web UI session 列表、run state 与 terminal session 工具函数补齐单测，覆盖会话恢复、终端状态和 responses 流式状态回收。
+
+### 修复
+
+- 修复 OpenClaw Responses API 与 remote runner 事件互操作问题，改善 responses 流式事件、终端状态事件和 session reload 的兼容性。
+- 修复 OpenClaw 原生终端在 gateway token、state token、password 场景下的认证透传问题。
+- 修复 Hosted UI 在 session 切换、运行中状态恢复、终端完成 / 失败事件回收时的状态残留问题。
+- 修复多模态能力解析对模型目录 capability 的识别边界，避免把不支持的模型误判为可原生处理图片输入。
+
 ## [0.5.3] - 2026-04-28
 
 ### 亮点

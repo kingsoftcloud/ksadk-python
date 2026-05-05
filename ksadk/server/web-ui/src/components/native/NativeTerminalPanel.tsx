@@ -1,16 +1,46 @@
-import { useEffect, useRef, useState } from 'react';
-import { Maximize2, Minimize2, PlugZap, TerminalSquare, X } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  CheckCircle2,
+  Maximize2,
+  Minimize2,
+  Plus,
+  PlugZap,
+  RefreshCw,
+  TerminalSquare,
+  Trash2,
+  X,
+} from 'lucide-react';
 import type { Terminal as XtermTerminal } from '@xterm/xterm';
 import type { FitAddon as XtermFitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 
 import { cn } from '@/lib/utils';
 
+import {
+  buildCreateTerminalSessionPayload,
+  buildTerminalAttachUrl,
+  normalizeTerminalSessions,
+  TERMINAL_SESSIONS_ENDPOINT,
+} from '@/utils/terminal-session';
+
 type NativeTerminalCapability = {
   Enabled: boolean;
   Mode?: string | null;
   Protocol?: string | null;
   Path?: string | null;
+};
+
+type TerminalSession = {
+  terminal_session_id: string;
+  mode: string;
+  status: string;
+  cols: number;
+  rows: number;
+  session_id: string;
+  cwd: string;
+  created_at: string;
+  updated_at: string;
+  exit_code: number | null;
 };
 
 type NativeTerminalPanelProps = {
@@ -20,12 +50,6 @@ type NativeTerminalPanelProps = {
 };
 
 type TerminalStatus = 'idle' | 'connecting' | 'connected' | 'closed' | 'error';
-
-function buildTerminalWsUrl(path: string) {
-  const url = new URL(path || '/_ksadk/terminal/ws', window.location.href);
-  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-  return url.toString();
-}
 
 function decodeBytes(data: ArrayBuffer | Blob | string) {
   if (typeof data === 'string') {
@@ -37,142 +61,216 @@ function decodeBytes(data: ArrayBuffer | Blob | string) {
   return Promise.resolve(new TextDecoder().decode(data));
 }
 
+async function readJson(response: Response) {
+  const text = await response.text();
+  if (!text) {
+    return {};
+  }
+  try {
+    return JSON.parse(text);
+  } catch (_error) {
+    return {};
+  }
+}
+
 export function NativeTerminalPanel({ capability, open, onClose }: NativeTerminalPanelProps) {
   const [status, setStatus] = useState<TerminalStatus>('idle');
   const [fullscreen, setFullscreen] = useState(false);
+  const [terminalSessions, setTerminalSessions] = useState<TerminalSession[]>([]);
+  const [activeTerminalSessionId, setActiveTerminalSessionId] = useState<string | null>(null);
+  const [loadingSessions, setLoadingSessions] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const terminalRef = useRef<XtermTerminal | null>(null);
   const fitAddonRef = useRef<XtermFitAddon | null>(null);
+  const activeSessionRef = useRef<TerminalSession | null>(null);
 
-  useEffect(() => {
-    if (!open || !capability.Enabled || !containerRef.current) {
-      return undefined;
+  const activeSession = useMemo(
+    () => terminalSessions.find((session) => session.terminal_session_id === activeTerminalSessionId) || null,
+    [activeTerminalSessionId, terminalSessions],
+  );
+
+  const refreshSessions = async () => {
+    setLoadingSessions(true);
+    try {
+      const response = await fetch(TERMINAL_SESSIONS_ENDPOINT);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const payload = await readJson(response);
+      const normalized = normalizeTerminalSessions(payload);
+      setTerminalSessions(normalized);
+      setActiveTerminalSessionId((current) => {
+        if (current && normalized.some((session) => session.terminal_session_id === current)) {
+          return current;
+        }
+        return normalized[0]?.terminal_session_id || null;
+      });
+    } catch (_error) {
+      setStatus('error');
+    } finally {
+      setLoadingSessions(false);
     }
+  };
 
+  const attachTerminalSession = async (session: TerminalSession) => {
+    if (!containerRef.current) {
+      return () => undefined;
+    }
+    activeSessionRef.current = session;
     setStatus('connecting');
+
     let disposed = false;
     let terminal: XtermTerminal | null = null;
     let fitAddon: XtermFitAddon | null = null;
     let inputDisposable: { dispose: () => void } | null = null;
     let ws: WebSocket | null = null;
-    const resizeController = { current: () => undefined as void };
+    let resizeHandler: (() => void) | null = null;
 
-    void Promise.all([import('@xterm/xterm'), import('@xterm/addon-fit')]).then(
-      ([xtermModule, fitModule]) => {
-        if (disposed || !containerRef.current) {
-          return;
+    socketRef.current?.close(1000, 'switch terminal session');
+    socketRef.current = null;
+    terminalRef.current?.dispose();
+    terminalRef.current = null;
+    fitAddonRef.current = null;
+    containerRef.current.innerHTML = '';
+
+    void Promise.all([import('@xterm/xterm'), import('@xterm/addon-fit')]).then(([xtermModule, fitModule]) => {
+      if (disposed || !containerRef.current) {
+        return;
+      }
+      const { Terminal } = xtermModule;
+      const { FitAddon } = fitModule;
+      terminal = new Terminal({
+        cursorBlink: true,
+        convertEol: true,
+        fontFamily:
+          'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
+        fontSize: 14,
+        lineHeight: 1.2,
+        scrollback: 6000,
+        allowProposedApi: true,
+        theme: {
+          background: '#020617',
+          foreground: '#e5edf5',
+          cursor: '#34d399',
+          cursorAccent: '#020617',
+          selectionBackground: '#1e40af66',
+          black: '#020617',
+          red: '#fb7185',
+          green: '#34d399',
+          yellow: '#fbbf24',
+          blue: '#60a5fa',
+          magenta: '#c084fc',
+          cyan: '#22d3ee',
+          white: '#e5edf5',
+          brightBlack: '#64748b',
+          brightRed: '#fda4af',
+          brightGreen: '#86efac',
+          brightYellow: '#fde68a',
+          brightBlue: '#93c5fd',
+          brightMagenta: '#d8b4fe',
+          brightCyan: '#67e8f9',
+          brightWhite: '#ffffff',
+        },
+      });
+      fitAddon = new FitAddon();
+      terminal.loadAddon(fitAddon);
+      terminal.open(containerRef.current);
+      terminalRef.current = terminal;
+      fitAddonRef.current = fitAddon;
+
+      const fit = () => {
+        try {
+          fitAddon?.fit();
+        } catch (_error) {
+          // Fit can fail briefly while the panel is animating into the DOM.
         }
-        const { Terminal } = xtermModule;
-        const { FitAddon } = fitModule;
-        terminal = new Terminal({
-          cursorBlink: true,
-          convertEol: true,
-          fontFamily:
-            'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
-          fontSize: 14,
-          lineHeight: 1.2,
-          scrollback: 6000,
-          allowProposedApi: true,
-          theme: {
-            background: '#020617',
-            foreground: '#e5edf5',
-            cursor: '#34d399',
-            cursorAccent: '#020617',
-            selectionBackground: '#1e40af66',
-            black: '#020617',
-            red: '#fb7185',
-            green: '#34d399',
-            yellow: '#fbbf24',
-            blue: '#60a5fa',
-            magenta: '#c084fc',
-            cyan: '#22d3ee',
-            white: '#e5edf5',
-            brightBlack: '#64748b',
-            brightRed: '#fda4af',
-            brightGreen: '#86efac',
-            brightYellow: '#fde68a',
-            brightBlue: '#93c5fd',
-            brightMagenta: '#d8b4fe',
-            brightCyan: '#67e8f9',
-            brightWhite: '#ffffff',
-          },
-        });
-        fitAddon = new FitAddon();
-        terminal.loadAddon(fitAddon);
-        terminal.open(containerRef.current);
-        terminalRef.current = terminal;
-        fitAddonRef.current = fitAddon;
+      };
+      window.setTimeout(fit, 0);
 
-        const fit = () => {
-          try {
-            fitAddon?.fit();
-          } catch (_error) {
-            // Fit can fail briefly while the panel is animating into the DOM.
-          }
-        };
-        window.setTimeout(fit, 0);
+      ws = new WebSocket(
+        buildTerminalAttachUrl(capability.Path || '/_ksadk/terminal/ws', session.terminal_session_id),
+        capability.Protocol || 'ks-terminal.v1',
+      );
+      socketRef.current = ws;
 
-        ws = new WebSocket(
-          buildTerminalWsUrl(capability.Path || '/_ksadk/terminal/ws'),
-          capability.Protocol || 'ks-terminal.v1',
+      ws.addEventListener('open', () => {
+        fit();
+        ws?.send(
+          JSON.stringify({
+            type: 'attach',
+            terminal_session_id: session.terminal_session_id,
+            cols: terminal?.cols || 80,
+            rows: terminal?.rows || 24,
+          }),
         );
-        socketRef.current = ws;
-
-        ws.addEventListener('open', () => {
-          fit();
-          ws?.send(
-            JSON.stringify({
-              type: 'start',
-              mode: capability.Mode || 'tui',
-              argv: [],
-              cols: terminal?.cols || 80,
-              rows: terminal?.rows || 24,
-            }),
-          );
-          setStatus('connected');
-          terminal?.focus();
-        });
-        ws.addEventListener('message', (event) => {
-          void decodeBytes(event.data).then((text) => {
-            if (!text) {
+        setStatus('connected');
+        terminal?.focus();
+      });
+      ws.addEventListener('message', (event) => {
+        if (typeof event.data === 'string') {
+          try {
+            const control = JSON.parse(event.data);
+            if (control?.type === 'ready') {
+              setStatus('connected');
               return;
             }
-            terminal?.write(text);
-          });
-        });
-        ws.addEventListener('close', () => {
-          setStatus((current) => (current === 'error' ? current : 'closed'));
-          socketRef.current = null;
-        });
-        ws.addEventListener('error', () => {
-          setStatus('error');
-        });
-
-        inputDisposable = terminal.onData((data) => {
-          if (ws?.readyState === WebSocket.OPEN) {
-            ws.send(new TextEncoder().encode(data));
+            if (control?.type === 'exit') {
+              setStatus('closed');
+              return;
+            }
+            if (control?.type === 'error') {
+              setStatus('error');
+              terminal?.writeln(`\r\n${control.message || 'Terminal error'}`);
+              return;
+            }
+          } catch (_error) {
+            // Non-control text is rendered as terminal output for compatibility.
           }
-        });
-
-        resizeController.current = () => {
-          if (ws?.readyState !== WebSocket.OPEN) {
+        }
+        void decodeBytes(event.data).then((text) => {
+          if (!text) {
             return;
           }
-          fit();
-          ws.send(
-            JSON.stringify({ type: 'resize', cols: terminal?.cols || 80, rows: terminal?.rows || 24 }),
-          );
-        };
-      },
-    );
-    const handleResize = () => resizeController.current();
-    window.addEventListener('resize', handleResize);
+          terminal?.write(text);
+        });
+      });
+      ws.addEventListener('close', () => {
+        setStatus((current) => (current === 'error' ? current : 'closed'));
+        socketRef.current = null;
+      });
+      ws.addEventListener('error', () => {
+        setStatus('error');
+      });
+
+      inputDisposable = terminal.onData((data) => {
+        if (ws?.readyState === WebSocket.OPEN) {
+          ws.send(new TextEncoder().encode(data));
+        }
+      });
+
+      resizeHandler = () => {
+        if (ws?.readyState !== WebSocket.OPEN) {
+          return;
+        }
+        fit();
+        ws.send(
+          JSON.stringify({
+            type: 'resize',
+            cols: terminal?.cols || session.cols || 80,
+            rows: terminal?.rows || session.rows || 24,
+          }),
+        );
+      };
+      window.addEventListener('resize', resizeHandler);
+    });
 
     return () => {
       disposed = true;
-      window.removeEventListener('resize', handleResize);
       inputDisposable?.dispose();
+      if (resizeHandler) {
+        window.removeEventListener('resize', resizeHandler);
+      }
       if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
         ws.close(1000, 'panel closed');
       }
@@ -183,7 +281,33 @@ export function NativeTerminalPanel({ capability, open, onClose }: NativeTermina
       terminalRef.current = null;
       fitAddonRef.current = null;
     };
-  }, [capability.Enabled, capability.Mode, capability.Path, capability.Protocol, open]);
+  };
+
+  useEffect(() => {
+    if (!open || !capability.Enabled) {
+      return;
+    }
+    void refreshSessions();
+  }, [capability.Enabled, open]);
+
+  useEffect(() => {
+    const session = activeSession;
+    if (!open || !session) {
+      return;
+    }
+    let cleanup = () => undefined;
+    let cancelled = false;
+    void attachTerminalSession(session).then((dispose) => {
+      cleanup = dispose;
+      if (cancelled) {
+        cleanup();
+      }
+    });
+    return () => {
+      cancelled = true;
+      cleanup();
+    };
+  }, [activeSession?.terminal_session_id, open]);
 
   useEffect(() => {
     if (!open || !terminalRef.current || !fitAddonRef.current) {
@@ -195,14 +319,67 @@ export function NativeTerminalPanel({ capability, open, onClose }: NativeTermina
         const socket = socketRef.current;
         const terminal = terminalRef.current;
         if (socket?.readyState === WebSocket.OPEN && terminal) {
-          socket.send(JSON.stringify({ type: 'resize', cols: terminal.cols || 80, rows: terminal.rows || 24 }));
+          socket.send(
+            JSON.stringify({
+              type: 'resize',
+              cols: terminal.cols || 80,
+              rows: terminal.rows || 24,
+            }),
+          );
         }
       } catch (_error) {
         // Ignore transient layout fit failures.
       }
     }, 60);
     return () => window.clearTimeout(timer);
-  }, [fullscreen, open]);
+  }, [fullscreen, open, activeTerminalSessionId]);
+
+  const createTerminalSession = async () => {
+    setStatus('connecting');
+    const response = await fetch(TERMINAL_SESSIONS_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(buildCreateTerminalSessionPayload({ mode: capability.Mode || 'tui' })),
+    });
+    if (!response.ok) {
+      setStatus('error');
+      return;
+    }
+    const payload = await readJson(response);
+    const session = payload?.session;
+    if (!session?.terminal_session_id) {
+      setStatus('error');
+      return;
+    }
+    await refreshSessions();
+    setActiveTerminalSessionId(session.terminal_session_id);
+  };
+
+  const closeTerminalSession = async (terminalSessionId: string) => {
+    const remainingSessions = terminalSessions.filter(
+      (session) => session.terminal_session_id !== terminalSessionId,
+    );
+    setTerminalSessions(remainingSessions);
+    if (activeTerminalSessionId === terminalSessionId) {
+      setActiveTerminalSessionId(remainingSessions[0]?.terminal_session_id || null);
+      if (remainingSessions.length === 0) {
+        setStatus('idle');
+      }
+      socketRef.current?.close(1000, 'terminal session deleted');
+      socketRef.current = null;
+      terminalRef.current?.dispose();
+      terminalRef.current = null;
+      fitAddonRef.current = null;
+      if (containerRef.current) {
+        containerRef.current.innerHTML = '';
+      }
+    }
+    const response = await fetch(`${TERMINAL_SESSIONS_ENDPOINT}/${terminalSessionId}`, { method: 'DELETE' });
+    if (!response.ok && response.status !== 404) {
+      setStatus('error');
+    }
+    await refreshSessions();
+  };
 
   if (!open) {
     return null;
@@ -214,7 +391,7 @@ export function NativeTerminalPanel({ capability, open, onClose }: NativeTermina
         'fixed z-50 overflow-hidden border border-slate-800 bg-slate-950 text-slate-100 shadow-2xl shadow-slate-950/40',
         fullscreen
           ? 'inset-3 rounded-3xl'
-          : 'bottom-4 right-4 h-[min(42rem,calc(100vh-2rem))] w-[min(72rem,calc(100vw-2rem))] rounded-3xl',
+          : 'bottom-4 right-4 h-[min(42rem,calc(100vh-2rem))] w-[min(78rem,calc(100vw-2rem))] rounded-3xl',
       )}
     >
       <div className="flex items-center justify-between border-b border-slate-800 bg-slate-900 px-4 py-3">
@@ -231,6 +408,22 @@ export function NativeTerminalPanel({ capability, open, onClose }: NativeTermina
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void refreshSessions()}
+            className="rounded-xl p-2 text-slate-400 transition hover:bg-slate-800 hover:text-slate-100"
+            aria-label="刷新会话列表"
+          >
+            <RefreshCw className={cn('h-4 w-4', loadingSessions && 'animate-spin')} />
+          </button>
+          <button
+            type="button"
+            onClick={() => void createTerminalSession()}
+            className="rounded-xl p-2 text-slate-400 transition hover:bg-slate-800 hover:text-slate-100"
+            aria-label="新建终端会话"
+          >
+            <Plus className="h-4 w-4" />
+          </button>
           <button
             type="button"
             onClick={() => setFullscreen((value) => !value)}
@@ -250,13 +443,102 @@ export function NativeTerminalPanel({ capability, open, onClose }: NativeTermina
         </div>
       </div>
 
-      <div className="h-[calc(100%-4rem)] bg-slate-950 p-2">
-        {status === 'connecting' ? (
-          <div className="absolute left-5 top-20 z-10 rounded-full bg-slate-900/90 px-3 py-1 text-xs text-slate-400">
-            正在连接原生 TUI...
+      <div className="grid h-[calc(100%-4rem)] min-h-0 grid-cols-[18rem_minmax(0,1fr)] bg-slate-950">
+        <aside className="flex min-h-0 flex-col border-r border-slate-800 bg-slate-950">
+          <div className="border-b border-slate-800 px-4 py-3 text-xs font-medium uppercase tracking-[0.12em] text-slate-500">
+            会话
           </div>
-        ) : null}
-        <div ref={containerRef} className="h-full w-full overflow-hidden rounded-2xl bg-slate-950" />
+          <div className="min-h-0 flex-1 overflow-y-auto p-2">
+            {terminalSessions.length === 0 ? (
+              <button
+                type="button"
+                onClick={() => void createTerminalSession()}
+                className="flex w-full items-center justify-center gap-2 rounded-2xl border border-dashed border-slate-700 px-3 py-5 text-sm text-slate-400 transition hover:bg-slate-900"
+              >
+                <Plus className="h-4 w-4" />
+                新建终端会话
+              </button>
+            ) : null}
+            {terminalSessions.map((session) => (
+              <div
+                key={session.terminal_session_id}
+                role="button"
+                tabIndex={0}
+                onClick={() => setActiveTerminalSessionId(session.terminal_session_id)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    setActiveTerminalSessionId(session.terminal_session_id);
+                  }
+                }}
+                className={cn(
+                  'group mb-2 rounded-2xl border px-3 py-3 text-left transition',
+                  activeTerminalSessionId === session.terminal_session_id
+                    ? 'border-emerald-400/50 bg-emerald-500/10'
+                    : 'border-slate-800 bg-slate-900/60 hover:bg-slate-900',
+                )}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-medium text-slate-100">
+                      {session.terminal_session_id}
+                    </div>
+                    <div className="mt-1 text-[11px] text-slate-400">
+                      {session.session_id || '未绑定会话'}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    {session.status === 'running' ? (
+                      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void closeTerminalSession(session.terminal_session_id);
+                      }}
+                      className="rounded-lg p-1.5 text-slate-500 opacity-0 transition hover:bg-slate-800 hover:text-rose-300 group-hover:opacity-100"
+                      title="关闭会话"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                </div>
+                <div className="mt-3 flex items-center gap-2 text-[11px] text-slate-500">
+                  <span className="rounded-full border border-slate-700 px-2 py-0.5">{session.mode}</span>
+                  <span className="rounded-full border border-slate-700 px-2 py-0.5">
+                    {session.cols}x{session.rows}
+                  </span>
+                  <span className="rounded-full border border-slate-700 px-2 py-0.5">{session.status}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </aside>
+
+        <section className="min-h-0 bg-slate-950 p-2">
+          <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-950">
+            <div className="flex items-center justify-between border-b border-slate-800 bg-slate-900/80 px-4 py-2 text-xs text-slate-400">
+              <div className="flex items-center gap-2">
+                <span className="rounded-full border border-slate-700 px-2 py-0.5">
+                  {activeSession?.terminal_session_id || 'no session'}
+                </span>
+                <span>{activeSession?.status || 'idle'}</span>
+              </div>
+              <div className="text-slate-500">
+                {activeSession?.cwd || activeSession?.session_id || 'attach to a terminal session'}
+              </div>
+            </div>
+            <div className="relative min-h-0 flex-1">
+              {status === 'connecting' ? (
+                <div className="absolute left-5 top-5 z-10 rounded-full bg-slate-900/90 px-3 py-1 text-xs text-slate-400">
+                  正在连接原生 TUI...
+                </div>
+              ) : null}
+              <div ref={containerRef} className="h-full w-full overflow-hidden bg-slate-950" />
+            </div>
+          </div>
+        </section>
       </div>
     </div>
   );

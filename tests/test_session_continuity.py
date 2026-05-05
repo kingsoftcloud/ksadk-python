@@ -144,3 +144,35 @@ async def test_get_session_action_exposes_continuity_metadata(monkeypatch, tmp_p
     assert continuity["Level"] == "semantic"
     assert continuity["Path"] == "replay"
     assert continuity["Runner"] == "langchain"
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_exposes_session_backend_diagnostics(monkeypatch):
+    server_app_module = __import__("ksadk.server.app", fromlist=["app"])
+    runner = _ContinuityRunner()
+    server_app_module.set_runner(runner)
+    monkeypatch.setattr(
+        server_app_module,
+        "describe_session_backend",
+        lambda: {
+            "Backend": "postgres",
+            "Shared": True,
+            "ProductionSafe": True,
+            "ContinuityDefault": "semantic/replay",
+        },
+    )
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/GetAgentUiBootstrap",
+            json={"AgentId": "demo-agent"},
+        )
+
+    assert response.status_code == 200
+    session_backend = response.json()["Data"]["SessionBackend"]
+    assert session_backend["Backend"] == "postgres"
+    assert session_backend["Shared"] is True
+    assert session_backend["ProductionSafe"] is True
+    assert session_backend["ContinuityDefault"] == "semantic/replay"
+    assert "Dsn" not in session_backend
