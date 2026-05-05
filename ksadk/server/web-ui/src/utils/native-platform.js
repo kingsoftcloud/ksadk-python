@@ -36,3 +36,25 @@ export function resolveNativeManagementLink({ agentFramework, accessMode, origin
     title: `打开 ${productName} 原生管理平台`,
   };
 }
+
+export function resolveNativeManagementLinkFromCapability({ capability, agentFramework, accessMode, origin }) {
+  const mode = normalizeAccessMode(accessMode);
+  if (mode !== 'owner' && mode !== 'private') {
+    return null;
+  }
+  if (!capability?.Enabled) {
+    return null;
+  }
+
+  const productName = NATIVE_MANAGEMENT_FRAMEWORKS.get(normalizeFramework(agentFramework)) || '运行时';
+  const href = typeof capability.Href === 'string' && capability.Href
+    ? new URL(capability.Href, rootUrlFromOrigin(origin)).toString()
+    : rootUrlFromOrigin(origin);
+  const label = typeof capability.Label === 'string' && capability.Label ? capability.Label : '管理平台';
+
+  return {
+    href,
+    label,
+    title: `打开 ${productName} 原生管理平台`,
+  };
+}

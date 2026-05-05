@@ -11,8 +11,11 @@ import {
   resolveSessionToRestore,
   writePersistedSessionId,
 } from './utils/session.js';
-import { resolveNativeManagementLink } from './utils/native-platform.js';
-import { shouldUseOpenClawNativeLauncher } from './utils/openclaw-hosted-mode.js';
+import { resolveNativeManagementLinkFromCapability } from './utils/native-platform.js';
+import {
+  isHostedChatEnabled,
+  normalizeCapabilities,
+} from './utils/capabilities.js';
 import {
   createResponsesStreamState,
   normalizeResponsesStreamEvent,
@@ -24,7 +27,7 @@ import { ChatComposer } from './components/chat/ChatComposer';
 import { ChatHeader } from './components/chat/ChatHeader';
 import { ChatMessageList } from './components/chat/ChatMessageList';
 import { ChatSidebar } from './components/chat/ChatSidebar';
-import { OpenClawNativeLauncher } from './components/openclaw/OpenClawNativeLauncher';
+import { NativeRuntimeLauncher } from './components/native/NativeRuntimeLauncher';
 import { WorkspacePanel } from './components/workspace/WorkspacePanel';
 import type {
   Message,
@@ -94,6 +97,30 @@ type BootstrapModel = ModelCatalogItem & {
 type BootstrapWorkspaceFiles = WorkspaceFilesCapability;
 
 type RuntimeApiFormat = 'responses' | 'chat_completions';
+
+type UiCapabilities = {
+  HostedChat: {
+    Enabled: boolean;
+    ApiFormats: RuntimeApiFormat[];
+  };
+  NativeDashboard: {
+    Enabled: boolean;
+    Href?: string | null;
+    Label?: string | null;
+  };
+  NativeTerminal: {
+    Enabled: boolean;
+    Mode?: string | null;
+    Protocol?: string | null;
+    Path?: string | null;
+  };
+  RunLifecycle: {
+    Enabled: boolean;
+    Resume: boolean;
+    Abort: boolean;
+  };
+  WorkspaceFiles?: boolean;
+};
 
 const DEFAULT_WORKSPACE_PANEL_WIDTH = 820;
 const MIN_WORKSPACE_PANEL_WIDTH = 420;
@@ -574,6 +601,15 @@ export default function App() {
     'responses',
     'chat_completions',
   ]);
+  const [uiCapabilities, setUiCapabilities] = useState<UiCapabilities>(() =>
+    normalizeCapabilities({
+      Data: {
+        Agent: { Framework: '' },
+        ApiFormats: ['responses', 'chat_completions'],
+        Capabilities: {},
+      },
+    }) as UiCapabilities,
+  );
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -761,12 +797,15 @@ export default function App() {
       if (data?.Data?.Agent?.Name) {
         setAgentName(data.Data.Agent.Name);
       }
-      setAgentFramework(String(data?.Data?.Agent?.Framework || '').trim().toLowerCase());
-      setApiFormats(normalizeApiFormats(data?.Data?.ApiFormats));
+      const normalizedFramework = String(data?.Data?.Agent?.Framework || '').trim().toLowerCase();
+      setAgentFramework(normalizedFramework);
+      const normalizedCapabilities = normalizeCapabilities(data) as UiCapabilities;
+      setUiCapabilities(normalizedCapabilities);
+      setApiFormats(normalizeApiFormats(normalizedCapabilities.HostedChat.ApiFormats));
       setAccessMode(String(data?.Data?.AccessMode || 'Owner'));
 
       const bootstrapWorkspaceFiles =
-        data?.Data?.Capabilities?.WorkspaceFiles && data?.Data?.WorkspaceFiles?.Enabled
+        normalizedCapabilities.WorkspaceFiles && data?.Data?.WorkspaceFiles?.Enabled
           ? (data.Data.WorkspaceFiles as BootstrapWorkspaceFiles)
           : null;
       setWorkspaceFiles(bootstrapWorkspaceFiles);
@@ -774,7 +813,14 @@ export default function App() {
         setWorkspacePanelOpen(false);
       }
 
-      void fetchSessions(bootstrapAgentId, readPersistedSessionId(bootstrapAgentId));
+      if (isHostedChatEnabled(normalizedCapabilities)) {
+        void fetchSessions(bootstrapAgentId, readPersistedSessionId(bootstrapAgentId));
+      } else {
+        setSessions([]);
+        currentSessionIdRef.current = null;
+        setCurrentSessionId(null);
+        setMessages([]);
+      }
 
       const bootstrapModel: BootstrapModel | undefined = data?.Data?.Model;
       if (bootstrapModel?.id) {
@@ -785,6 +831,15 @@ export default function App() {
       void fetchModels(bootstrapAgentId);
     } catch (error) {
       console.error('Failed to fetch bootstrap:', error);
+      setUiCapabilities(
+        normalizeCapabilities({
+          Data: {
+            Agent: { Framework: '' },
+            ApiFormats: ['responses', 'chat_completions'],
+            Capabilities: {},
+          },
+        }) as UiCapabilities,
+      );
       void fetchSessions('default-agent', readPersistedSessionId('default-agent'));
       void fetchModels('default-agent');
     }
@@ -1373,6 +1428,7 @@ export default function App() {
   const selectedModelMetadata =
     availableModels.find((model) => model.id === selectedModel) || null;
   const selectedModelLabel = selectedModelMetadata?.display_name || selectedModel || '';
+  const hostedChatEnabled = isHostedChatEnabled(uiCapabilities);
   const composerContextIndicator = buildComposerContextIndicator({
     messages,
     draftInput: input,
@@ -1380,12 +1436,19 @@ export default function App() {
   });
   const workspaceEnabled = canAccessWorkspaceFiles({ workspaceFiles, accessMode });
   const workspacePanelPresentation = resolveWorkspacePanelPresentation({ isMobile });
-  const nativeManagementLink = resolveNativeManagementLink({
+  const nativeManagementLink = resolveNativeManagementLinkFromCapability({
+    capability: uiCapabilities.NativeDashboard,
     agentFramework,
     accessMode,
     origin: window.location.origin,
   });
-  const openClawNativeLauncher = shouldUseOpenClawNativeLauncher(agentFramework);
+  const nativeLauncherMode = !hostedChatEnabled;
+  const nativeRuntimeLabel =
+    agentFramework === 'openclaw'
+      ? 'OpenClaw'
+      : agentFramework === 'hermes'
+        ? 'Hermes'
+        : '原生运行时';
   const workspacePanelInline = workspacePanelPresentation.renderMode === 'inline';
   const workspacePanelSheet = workspacePanelPresentation.renderMode === 'sheet';
   const closeWorkspacePanel = () => {
@@ -1400,7 +1463,7 @@ export default function App() {
     const startX = event.clientX;
     const startWidth = workspacePanelWidth;
     const sidebarWidth =
-      !openClawNativeLauncher && desktopSidebarVisible ? DESKTOP_SIDEBAR_WIDTH : 0;
+      hostedChatEnabled && desktopSidebarVisible ? DESKTOP_SIDEBAR_WIDTH : 0;
     const initialCursor = document.body.style.cursor;
     const initialUserSelect = document.body.style.userSelect;
     document.body.style.cursor = 'col-resize';
@@ -1427,7 +1490,7 @@ export default function App() {
 
   return (
     <div className="flex h-[var(--app-height)] min-h-[var(--app-height)] overflow-hidden bg-white font-sans text-slate-800 dark:bg-slate-900 dark:text-slate-200">
-      {!openClawNativeLauncher && !isMobile ? (
+      {hostedChatEnabled && !isMobile ? (
         <aside
           className={cn(
             'flex-shrink-0 overflow-hidden border-r border-slate-200 transition-[width] duration-300 ease-in-out dark:border-slate-800',
@@ -1445,7 +1508,7 @@ export default function App() {
             sessionTitle={sessionTitle}
           />
         </aside>
-      ) : !openClawNativeLauncher ? (
+      ) : hostedChatEnabled ? (
         <Sheet open={mobileSidebarOpen} onOpenChange={setMobileSidebarOpen}>
           <SheetContent
             side="left"
@@ -1471,7 +1534,7 @@ export default function App() {
         <ChatHeader
           agentName={agentName}
           currentSessionId={currentSessionId}
-          nativeLauncherMode={openClawNativeLauncher}
+          nativeLauncherMode={nativeLauncherMode}
           isMobile={isMobile}
           sidebarOpen={sidebarOpen}
           mobileSidebarOpen={mobileSidebarOpen}
@@ -1498,11 +1561,14 @@ export default function App() {
           workspaceEnabled={workspaceEnabled}
           onOpenWorkspace={() => setWorkspacePanelOpen(true)}
           nativeManagementLink={nativeManagementLink}
+          nativeTerminal={uiCapabilities.NativeTerminal}
         />
 
-        {openClawNativeLauncher ? (
-          <OpenClawNativeLauncher
+        {nativeLauncherMode ? (
+          <NativeRuntimeLauncher
+            productLabel={nativeRuntimeLabel}
             nativeManagementLink={nativeManagementLink}
+            nativeTerminal={uiCapabilities.NativeTerminal}
             workspaceEnabled={workspaceEnabled}
             onOpenWorkspace={() => setWorkspacePanelOpen(true)}
           />
