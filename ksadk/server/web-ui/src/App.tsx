@@ -12,6 +12,7 @@ import {
   writePersistedSessionId,
 } from './utils/session.js';
 import { resolveNativeManagementLink } from './utils/native-platform.js';
+import { shouldUseOpenClawNativeLauncher } from './utils/openclaw-hosted-mode.js';
 import {
   createResponsesStreamState,
   normalizeResponsesStreamEvent,
@@ -23,6 +24,7 @@ import { ChatComposer } from './components/chat/ChatComposer';
 import { ChatHeader } from './components/chat/ChatHeader';
 import { ChatMessageList } from './components/chat/ChatMessageList';
 import { ChatSidebar } from './components/chat/ChatSidebar';
+import { OpenClawNativeLauncher } from './components/openclaw/OpenClawNativeLauncher';
 import { WorkspacePanel } from './components/workspace/WorkspacePanel';
 import type {
   Message,
@@ -1383,6 +1385,7 @@ export default function App() {
     accessMode,
     origin: window.location.origin,
   });
+  const openClawNativeLauncher = shouldUseOpenClawNativeLauncher(agentFramework);
   const workspacePanelInline = workspacePanelPresentation.renderMode === 'inline';
   const workspacePanelSheet = workspacePanelPresentation.renderMode === 'sheet';
   const closeWorkspacePanel = () => {
@@ -1396,7 +1399,8 @@ export default function App() {
     event.preventDefault();
     const startX = event.clientX;
     const startWidth = workspacePanelWidth;
-    const sidebarWidth = desktopSidebarVisible ? DESKTOP_SIDEBAR_WIDTH : 0;
+    const sidebarWidth =
+      !openClawNativeLauncher && desktopSidebarVisible ? DESKTOP_SIDEBAR_WIDTH : 0;
     const initialCursor = document.body.style.cursor;
     const initialUserSelect = document.body.style.userSelect;
     document.body.style.cursor = 'col-resize';
@@ -1423,7 +1427,7 @@ export default function App() {
 
   return (
     <div className="flex h-[var(--app-height)] min-h-[var(--app-height)] overflow-hidden bg-white font-sans text-slate-800 dark:bg-slate-900 dark:text-slate-200">
-      {!isMobile ? (
+      {!openClawNativeLauncher && !isMobile ? (
         <aside
           className={cn(
             'flex-shrink-0 overflow-hidden border-r border-slate-200 transition-[width] duration-300 ease-in-out dark:border-slate-800',
@@ -1441,7 +1445,7 @@ export default function App() {
             sessionTitle={sessionTitle}
           />
         </aside>
-      ) : (
+      ) : !openClawNativeLauncher ? (
         <Sheet open={mobileSidebarOpen} onOpenChange={setMobileSidebarOpen}>
           <SheetContent
             side="left"
@@ -1461,12 +1465,13 @@ export default function App() {
             />
           </SheetContent>
         </Sheet>
-      )}
+      ) : null}
 
       <main className="relative flex min-w-0 flex-1 flex-col bg-white dark:bg-slate-900">
         <ChatHeader
           agentName={agentName}
           currentSessionId={currentSessionId}
+          nativeLauncherMode={openClawNativeLauncher}
           isMobile={isMobile}
           sidebarOpen={sidebarOpen}
           mobileSidebarOpen={mobileSidebarOpen}
@@ -1495,35 +1500,47 @@ export default function App() {
           nativeManagementLink={nativeManagementLink}
         />
 
-        <ChatMessageList
-          agentName={agentName}
-          isMobile={isMobile}
-          isStreaming={isStreaming}
-          messages={messages}
-          onOpenAttachmentPreview={openAttachmentPreview}
-          onRespondToApproval={respondToApproval}
-          scrollRef={scrollRef}
-        />
+        {openClawNativeLauncher ? (
+          <OpenClawNativeLauncher
+            nativeManagementLink={nativeManagementLink}
+            workspaceEnabled={workspaceEnabled}
+            onOpenWorkspace={() => setWorkspacePanelOpen(true)}
+          />
+        ) : (
+          <>
+            <ChatMessageList
+              agentName={agentName}
+              isMobile={isMobile}
+              isStreaming={isStreaming}
+              messages={messages}
+              onOpenAttachmentPreview={openAttachmentPreview}
+              onRespondToApproval={respondToApproval}
+              scrollRef={scrollRef}
+            />
 
-        <ChatComposer
-          attachments={attachments}
-          composerContextIndicator={composerContextIndicator}
-          composerMaxHeight={composerMaxHeight}
-          fileInputRef={fileInputRef}
-          input={input}
-          isMobile={isMobile}
-          isStreaming={isStreaming}
-          queuedDrafts={queuedDrafts}
-          onAppendAttachments={appendAttachments}
-          onInputChange={handleInputChange}
-          onPaste={handleComposerPaste}
-          onRemoveAttachment={(index) =>
-            setAttachments((prev) => prev.filter((_, attachmentIndex) => attachmentIndex !== index))
-          }
-          onStopGeneration={stopGeneration}
-          onSubmit={handleSubmit}
-          textareaRef={textareaRef}
-        />
+            <ChatComposer
+              attachments={attachments}
+              composerContextIndicator={composerContextIndicator}
+              composerMaxHeight={composerMaxHeight}
+              fileInputRef={fileInputRef}
+              input={input}
+              isMobile={isMobile}
+              isStreaming={isStreaming}
+              queuedDrafts={queuedDrafts}
+              onAppendAttachments={appendAttachments}
+              onInputChange={handleInputChange}
+              onPaste={handleComposerPaste}
+              onRemoveAttachment={(index) =>
+                setAttachments((prev) =>
+                  prev.filter((_, attachmentIndex) => attachmentIndex !== index),
+                )
+              }
+              onStopGeneration={stopGeneration}
+              onSubmit={handleSubmit}
+              textareaRef={textareaRef}
+            />
+          </>
+        )}
       </main>
 
       <AttachmentPreview

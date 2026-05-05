@@ -31,6 +31,7 @@ type ModelSelectorProps = {
 type ChatHeaderProps = ModelSelectorProps & {
   agentName: string;
   currentSessionId: string | null;
+  nativeLauncherMode?: boolean;
   isMobile: boolean;
   sidebarOpen: boolean;
   mobileSidebarOpen: boolean;
@@ -113,6 +114,7 @@ export function ChatHeader({
   workspaceEnabled,
   onOpenWorkspace,
   nativeManagementLink,
+  nativeLauncherMode = false,
 }: ChatHeaderProps) {
   const sidebarToggleIcon =
     isMobile ? (
@@ -132,19 +134,23 @@ export function ChatHeader({
         )}
       >
         <div className="flex min-w-0 items-center gap-2">
-          <button
-            type="button"
-            onClick={onToggleSidebar}
-            className="rounded-lg p-2 text-slate-500 transition-colors hover:bg-slate-100 dark:hover:bg-slate-800"
-            aria-label={isMobile ? '打开历史记录' : '切换侧边栏'}
-          >
-            {sidebarToggleIcon}
-          </button>
+          {!nativeLauncherMode ? (
+            <button
+              type="button"
+              onClick={onToggleSidebar}
+              className="rounded-lg p-2 text-slate-500 transition-colors hover:bg-slate-100 dark:hover:bg-slate-800"
+              aria-label={isMobile ? '打开历史记录' : '切换侧边栏'}
+            >
+              {sidebarToggleIcon}
+            </button>
+          ) : null}
           <div className="min-w-0">
             <div className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100 sm:text-base">
               {agentName}
             </div>
-            <div className="text-[11px] text-slate-400 dark:text-slate-500">智能体</div>
+            <div className="text-[11px] text-slate-400 dark:text-slate-500">
+              {nativeLauncherMode ? 'OpenClaw 原生入口' : '智能体'}
+            </div>
           </div>
         </div>
 
@@ -181,15 +187,17 @@ export function ChatHeader({
                 Workspace
               </button>
             ) : null}
-            <ModelSelector
-              availableModels={availableModels}
-              selectedModel={selectedModel}
-              onSelectModel={onSelectModel}
-              selectedModelLabel={selectedModelLabel}
-              modelCatalogLoaded={modelCatalogLoaded}
-              modelSource={modelSource}
-            />
-            {currentSessionId ? (
+            {!nativeLauncherMode ? (
+              <ModelSelector
+                availableModels={availableModels}
+                selectedModel={selectedModel}
+                onSelectModel={onSelectModel}
+                selectedModelLabel={selectedModelLabel}
+                modelCatalogLoaded={modelCatalogLoaded}
+                modelSource={modelSource}
+              />
+            ) : null}
+            {!nativeLauncherMode && currentSessionId ? (
               <span className="rounded bg-slate-50 px-2 py-1 text-xs font-mono text-slate-400 dark:bg-slate-800">
                 ID: {currentSessionId.slice(0, 8)}
               </span>
@@ -235,32 +243,40 @@ export function ChatHeader({
                   {nativeManagementLink.label}
                 </a>
               ) : null}
-              <div className="space-y-2">
-                <div className="text-xs font-medium uppercase tracking-[0.12em] text-slate-400 dark:text-slate-500">
-                  模型
+              {!nativeLauncherMode ? (
+                <>
+                  <div className="space-y-2">
+                    <div className="text-xs font-medium uppercase tracking-[0.12em] text-slate-400 dark:text-slate-500">
+                      模型
+                    </div>
+                    <ModelSelector
+                      availableModels={availableModels}
+                      selectedModel={selectedModel}
+                      onSelectModel={onSelectModel}
+                      selectedModelLabel={selectedModelLabel}
+                      modelCatalogLoaded={modelCatalogLoaded}
+                      modelSource={modelSource}
+                      compact
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <div className="text-xs font-medium uppercase tracking-[0.12em] text-slate-400 dark:text-slate-500">
+                      当前会话
+                    </div>
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
+                      {currentSessionId ? (
+                        <span className="break-all font-mono">{currentSessionId}</span>
+                      ) : (
+                        '新对话尚未创建会话 ID'
+                      )}
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm leading-6 text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
+                  OpenClaw 对话在原生 Dashboard 中进行；这里保留管理入口和 Workspace 文件操作。
                 </div>
-                <ModelSelector
-                  availableModels={availableModels}
-                  selectedModel={selectedModel}
-                  onSelectModel={onSelectModel}
-                  selectedModelLabel={selectedModelLabel}
-                  modelCatalogLoaded={modelCatalogLoaded}
-                  modelSource={modelSource}
-                  compact
-                />
-              </div>
-              <div className="space-y-2">
-                <div className="text-xs font-medium uppercase tracking-[0.12em] text-slate-400 dark:text-slate-500">
-                  当前会话
-                </div>
-                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
-                  {currentSessionId ? (
-                    <span className="break-all font-mono">{currentSessionId}</span>
-                  ) : (
-                    '新对话尚未创建会话 ID'
-                  )}
-                </div>
-              </div>
+              )}
             </div>
           </SheetContent>
         </Sheet>
