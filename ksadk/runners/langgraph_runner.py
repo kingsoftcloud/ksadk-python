@@ -153,7 +153,8 @@ class LangGraphRunner(BaseRunner):
                 attachments,
                 model_metadata=model_metadata if isinstance(model_metadata, dict) else None,
             )
-            messages.append(HumanMessage(content=user_content))
+            if not self._history_tail_matches_user_content(history, user_content):
+                messages.append(HumanMessage(content=user_content))
             state = {k: v for k, v in normalized_payload.items() if k != "input"}
             state["messages"] = messages
             return state
@@ -167,6 +168,30 @@ class LangGraphRunner(BaseRunner):
             return state
 
         return normalized_payload
+
+    @classmethod
+    def _history_tail_matches_user_content(cls, history: list, user_content: Any) -> bool:
+        if not history:
+            return False
+        tail = history[-1]
+        if not isinstance(tail, dict) or tail.get("role") != "user":
+            return False
+        tail_text = cls._normalizable_text_content(tail.get("content"))
+        user_text = cls._normalizable_text_content(user_content)
+        return tail_text is not None and tail_text == user_text
+
+    @staticmethod
+    def _normalizable_text_content(content: Any) -> str | None:
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            text_parts: list[str] = []
+            for item in content:
+                if not isinstance(item, dict) or item.get("type") != "text":
+                    return None
+                text_parts.append(str(item.get("text") or ""))
+            return "\n".join(text_parts).strip()
+        return None
 
     @staticmethod
     def _build_langgraph_human_content(
