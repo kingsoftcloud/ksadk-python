@@ -1698,6 +1698,7 @@ async def invoke_conversation_once(
     instructions: Optional[str] = None,
     request_metadata: Mapping[str, Any] | None = None,
     resume_input: Mapping[str, Any] | None = None,
+    response_id: str | None = None,
     session_service_provider: Callable[[], Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """非流式 turn 编排入口。
@@ -1789,6 +1790,11 @@ async def invoke_conversation_once(
 
     result = result or {}
     output_text = str(result.get("output", ""))
+    assistant_metadata: dict[str, Any] = {}
+    if prepared.request_metadata:
+        assistant_metadata["request_metadata"] = prepared.request_metadata
+    if response_id:
+        assistant_metadata["response_id"] = response_id
     await append_conversation_event(
         session_id=prepared.session_id,
         author=runner_name,
@@ -1796,9 +1802,7 @@ async def invoke_conversation_once(
         text=output_text,
         invocation_id=prepared.invocation_id,
         event_type="assistant_message",
-        metadata=(
-            {"request_metadata": prepared.request_metadata} if prepared.request_metadata else None
-        ),
+        metadata=assistant_metadata or None,
         session_service_provider=provider,
     )
     await _update_session_metadata_after_assistant_turn(
@@ -1814,11 +1818,14 @@ async def invoke_conversation_once(
         invocation_id=prepared.invocation_id,
         session_service_provider=provider,
     )
-    return prepared.session_id, {
+    result_payload = {
         "output_text": output_text,
         "model": model,
         "metadata": prepared.request_metadata,
     }
+    if response_id:
+        result_payload["response_id"] = response_id
+    return prepared.session_id, result_payload
 
 
 def _response_sse(event: str, data: Mapping[str, Any]) -> str:
@@ -1839,6 +1846,7 @@ async def _iter_conversation_turn_events(
     instructions: Optional[str] = None,
     request_metadata: Mapping[str, Any] | None = None,
     resume_input: Mapping[str, Any] | None = None,
+    response_id: str | None = None,
     session_service_provider: Callable[[], Any] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Internal semantic event stream shared by protocol serializers."""
@@ -1940,7 +1948,7 @@ async def _iter_conversation_turn_events(
     emitted_anything = False
     emitted_response_artifacts = False
     responses_output: list[Any] = []
-    responses_response_id: str | None = None
+    responses_response_id: str | None = response_id
     for attempt in range(2):
         try:
             runtime_context.history = list(prepared.history)
@@ -2304,6 +2312,7 @@ async def stream_responses_conversation_turn(
         instructions=instructions,
         request_metadata=request_metadata,
         resume_input=resume_input,
+        response_id=response_id,
         session_service_provider=session_service_provider,
     ):
         event_type = event.get("type")
