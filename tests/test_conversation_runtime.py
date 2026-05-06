@@ -125,6 +125,17 @@ class _ExternalModelsAsyncClient:
         return httpx.Response(200, json=self._payload, request=request)
 
 
+def _extract_sse_payload(chunks: list[str], event_name: str) -> dict:
+    current_event = ""
+    for chunk in chunks:
+        for line in chunk.splitlines():
+            if line.startswith("event: "):
+                current_event = line.removeprefix("event: ")
+            elif line.startswith("data: ") and current_event == event_name:
+                return json.loads(line.removeprefix("data: "))
+    raise AssertionError(f"SSE event {event_name!r} not found")
+
+
 @pytest.fixture(autouse=True)
 def _disable_session_title_ai(monkeypatch):
     class _UnavailableTitleClient:
@@ -463,6 +474,29 @@ async def test_invoke_conversation_once_persists_canonical_turn_events(monkeypat
     assert session.first_prompt == "hello"
     assert session.last_prompt == "hello"
     assert session.summary == "assistant says hi"
+
+
+@pytest.mark.asyncio
+async def test_invoke_conversation_once_persists_response_id_on_assistant_event(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _StubRunner()
+
+    session_id, result = await invoke_conversation_once(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id=None,
+        messages=[{"role": "user", "content": "hello"}],
+        model="gpt-4o",
+        response_id="resp_feedback_nonstream",
+        prepare_runner=lambda runner, model: runner.prepare_for_request(model),
+    )
+
+    events = await service.get_events(session_id)
+    assistant_event = next(event for event in events if event.event_type == "assistant_message")
+    assert result["response_id"] == "resp_feedback_nonstream"
+    assert assistant_event.metadata["response_id"] == "resp_feedback_nonstream"
 
 
 @pytest.mark.asyncio
@@ -1137,6 +1171,36 @@ async def test_stream_responses_conversation_turn_replays_completed_output_items
     assert completed_payload is not None
     assert completed_payload["id"] == "resp_native"
     assert any(item.get("type") == "function_call" for item in completed_payload["output"])
+
+
+@pytest.mark.asyncio
+async def test_stream_responses_conversation_turn_persists_outer_response_id_on_assistant_event(
+    monkeypatch,
+):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _StreamingRunner()
+
+    chunks = [
+        chunk
+        async for chunk in stream_responses_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-stream-feedback",
+            messages=[{"role": "user", "content": "hello"}],
+            model="gpt-4o",
+            prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+            session_service_provider=lambda: service,
+        )
+    ]
+
+    created_payload = _extract_sse_payload(chunks, "response.created")
+    completed_payload = _extract_sse_payload(chunks, "response.completed")
+    events = await service.get_events("sess-stream-feedback")
+    assistant_event = next(event for event in events if event.event_type == "assistant_message")
+    assert completed_payload["id"] == created_payload["id"]
+    assert assistant_event.metadata["response_id"] == created_payload["id"]
 
 
 @pytest.mark.asyncio
