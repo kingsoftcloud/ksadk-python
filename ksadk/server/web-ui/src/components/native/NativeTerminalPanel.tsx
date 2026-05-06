@@ -68,7 +68,7 @@ async function readJson(response: Response) {
   }
   try {
     return JSON.parse(text);
-  } catch (_error) {
+  } catch {
     return {};
   }
 }
@@ -106,7 +106,7 @@ export function NativeTerminalPanel({ capability, open, onClose }: NativeTermina
         }
         return normalized[0]?.terminal_session_id || null;
       });
-    } catch (_error) {
+    } catch {
       setStatus('error');
     } finally {
       setLoadingSessions(false);
@@ -182,7 +182,7 @@ export function NativeTerminalPanel({ capability, open, onClose }: NativeTermina
       const fit = () => {
         try {
           fitAddon?.fit();
-        } catch (_error) {
+        } catch {
           // Fit can fail briefly while the panel is animating into the DOM.
         }
       };
@@ -224,7 +224,7 @@ export function NativeTerminalPanel({ capability, open, onClose }: NativeTermina
               terminal?.writeln(`\r\n${control.message || 'Terminal error'}`);
               return;
             }
-          } catch (_error) {
+          } catch {
             // Non-control text is rendered as terminal output for compatibility.
           }
         }
@@ -327,7 +327,7 @@ export function NativeTerminalPanel({ capability, open, onClose }: NativeTermina
             }),
           );
         }
-      } catch (_error) {
+      } catch {
         // Ignore transient layout fit failures.
       }
     }, 60);
