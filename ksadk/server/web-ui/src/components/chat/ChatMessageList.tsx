@@ -8,6 +8,9 @@ import {
   RefreshCcw,
   ShieldCheck,
   StopCircle,
+  ThumbsDown,
+  ThumbsUp,
+  Trash2,
   User,
   XCircle,
 } from 'lucide-react';
@@ -15,6 +18,7 @@ import {
 import { cn } from '@/lib/utils';
 
 import { MessageMarkdown } from '../MessageMarkdown';
+import { shouldRenderFeedbackControls } from '../../utils/feedback.js';
 import { formatToolPayload } from '../../utils/tool-display.js';
 import { copyTextToClipboard } from '../../utils/clipboard.js';
 
@@ -31,6 +35,12 @@ type ChatMessageListProps = {
     approve: boolean;
     previousResponseId?: string;
   }) => void;
+  onSubmitFeedback: (options: {
+    message: Message;
+    rating: 'up' | 'down';
+    comment?: string;
+  }) => void;
+  onDeleteFeedback: (message: Message) => void;
   scrollRef: RefObject<HTMLDivElement | null>;
 };
 
@@ -214,22 +224,140 @@ function ToolPayloadBlock({
   );
 }
 
+function FeedbackControls({
+  isLastMessage,
+  isStreaming,
+  message,
+  onDeleteFeedback,
+  onSubmitFeedback,
+}: {
+  isLastMessage: boolean;
+  isStreaming: boolean;
+  message: Message;
+  onDeleteFeedback: (message: Message) => void;
+  onSubmitFeedback: ChatMessageListProps['onSubmitFeedback'];
+}) {
+  const [commentOpen, setCommentOpen] = useState(false);
+  const [comment, setComment] = useState(message.feedback?.comment || '');
+  const visible = shouldRenderFeedbackControls(message, isStreaming, isLastMessage);
+  const pending = Boolean(message.feedback?.pending);
+  const rating = message.feedback?.rating;
+
+  if (!visible) {
+    return null;
+  }
+
+  const submitDownFeedback = () => {
+    onSubmitFeedback({ message, rating: 'down', comment });
+    setCommentOpen(false);
+  };
+
+  return (
+    <div className="mt-3 flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+        <span className="font-medium">本次回复有帮助吗？</span>
+        <button
+          type="button"
+          disabled={pending}
+          onClick={() => onSubmitFeedback({ message, rating: 'up', comment: '' })}
+          className={cn(
+            'inline-flex items-center gap-1 rounded-full border px-2.5 py-1 font-medium transition disabled:cursor-not-allowed disabled:opacity-60',
+            rating === 'up'
+              ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/70 dark:bg-emerald-950/30 dark:text-emerald-200'
+              : 'border-slate-200 bg-white text-slate-600 hover:border-emerald-200 hover:text-emerald-700 dark:border-slate-800 dark:bg-slate-950/40 dark:text-slate-300 dark:hover:border-emerald-900/70 dark:hover:text-emerald-200',
+          )}
+        >
+          <ThumbsUp className="h-3.5 w-3.5" />
+          有帮助
+        </button>
+        <button
+          type="button"
+          disabled={pending}
+          onClick={() => {
+            setComment(message.feedback?.comment || '');
+            setCommentOpen((open) => !open);
+          }}
+          className={cn(
+            'inline-flex items-center gap-1 rounded-full border px-2.5 py-1 font-medium transition disabled:cursor-not-allowed disabled:opacity-60',
+            rating === 'down'
+              ? 'border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-900/70 dark:bg-rose-950/30 dark:text-rose-200'
+              : 'border-slate-200 bg-white text-slate-600 hover:border-rose-200 hover:text-rose-700 dark:border-slate-800 dark:bg-slate-950/40 dark:text-slate-300 dark:hover:border-rose-900/70 dark:hover:text-rose-200',
+          )}
+        >
+          <ThumbsDown className="h-3.5 w-3.5" />
+          需改进
+        </button>
+        {message.feedback ? (
+          <button
+            type="button"
+            disabled={pending}
+            onClick={() => onDeleteFeedback(message)}
+            className="inline-flex items-center gap-1 rounded-full border border-transparent px-2 py-1 font-medium text-slate-400 transition hover:border-slate-200 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-60 dark:hover:border-slate-800 dark:hover:text-slate-200"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            删除反馈
+          </button>
+        ) : null}
+        {pending ? <span className="text-slate-400">提交中…</span> : null}
+      </div>
+      {commentOpen ? (
+        <div className="max-w-xl rounded-2xl border border-rose-100 bg-rose-50/60 p-3 shadow-sm dark:border-rose-900/60 dark:bg-rose-950/20">
+          <textarea
+            value={comment}
+            onChange={(event) => setComment(event.target.value)}
+            placeholder="可以补充哪里不准确、缺失或不符合预期。"
+            className="min-h-[84px] w-full resize-y rounded-xl border border-rose-100 bg-white px-3 py-2 text-sm text-slate-700 outline-none transition placeholder:text-slate-400 focus:border-rose-300 focus:ring-2 focus:ring-rose-100 dark:border-rose-900/70 dark:bg-slate-950 dark:text-slate-100 dark:focus:border-rose-700 dark:focus:ring-rose-950"
+          />
+          <div className="mt-2 flex flex-wrap justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setCommentOpen(false)}
+              className="rounded-xl px-3 py-1.5 text-xs font-semibold text-slate-500 transition hover:bg-white hover:text-slate-800 dark:text-slate-400 dark:hover:bg-slate-950 dark:hover:text-slate-100"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              disabled={pending}
+              onClick={submitDownFeedback}
+              className="rounded-xl bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-rose-500 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              提交点踩
+            </button>
+          </div>
+        </div>
+      ) : rating === 'down' && message.feedback?.comment ? (
+        <div className="max-w-xl rounded-xl border border-rose-100 bg-rose-50/50 px-3 py-2 text-xs text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/20 dark:text-rose-200">
+          反馈：{message.feedback.comment}
+        </div>
+      ) : null}
+      {message.feedback?.error ? (
+        <div className="text-xs text-rose-600 dark:text-rose-300">{message.feedback.error}</div>
+      ) : null}
+    </div>
+  );
+}
+
 function ChatMessage({
   agentName,
   isMobile,
   isStreaming,
   isLastMessage,
   message,
+  onDeleteFeedback,
   onOpenAttachmentPreview,
   onRespondToApproval,
+  onSubmitFeedback,
 }: {
   agentName: string;
   isMobile: boolean;
   isStreaming: boolean;
   isLastMessage: boolean;
   message: Message;
+  onDeleteFeedback: (message: Message) => void;
   onOpenAttachmentPreview: (attachment: MessageAttachment) => void;
   onRespondToApproval: ChatMessageListProps['onRespondToApproval'];
+  onSubmitFeedback: ChatMessageListProps['onSubmitFeedback'];
 }) {
   return (
     <div className={cn('flex w-full gap-3 py-4 sm:gap-4 sm:px-4', isMobile ? 'px-0' : 'px-4')}>
@@ -366,6 +494,14 @@ function ChatMessage({
             <span className="ml-1 mt-2 inline-block h-4 w-2 animate-pulse rounded-sm bg-emerald-500 align-middle opacity-80 shadow-sm" />
           ) : null}
         </div>
+
+        <FeedbackControls
+          isLastMessage={isLastMessage}
+          isStreaming={isStreaming}
+          message={message}
+          onDeleteFeedback={onDeleteFeedback}
+          onSubmitFeedback={onSubmitFeedback}
+        />
       </div>
     </div>
   );
@@ -376,8 +512,10 @@ export function ChatMessageList({
   isMobile,
   isStreaming,
   messages,
+  onDeleteFeedback,
   onOpenAttachmentPreview,
   onRespondToApproval,
+  onSubmitFeedback,
   scrollRef,
 }: ChatMessageListProps) {
   return (
@@ -403,8 +541,10 @@ export function ChatMessageList({
                 isStreaming={isStreaming}
                 isLastMessage={index === messages.length - 1}
                 message={message}
+                onDeleteFeedback={onDeleteFeedback}
                 onOpenAttachmentPreview={onOpenAttachmentPreview}
                 onRespondToApproval={onRespondToApproval}
+                onSubmitFeedback={onSubmitFeedback}
               />
             ),
           )
