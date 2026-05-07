@@ -54,6 +54,27 @@ async def test_invoke_simplified_input_preserves_extra_state():
 
 
 @pytest.mark.asyncio
+async def test_invoke_simplified_input_does_not_duplicate_current_user_message_when_history_contains_it():
+    runner = _make_runner()
+
+    await runner.invoke(
+        {
+            "session_id": "s1",
+            "input": "hello",
+            "history": [{"role": "user", "content": "hello"}],
+        }
+    )
+
+    messages = runner._agent.last_ainvoke_state["messages"]
+    user_messages = [
+        message
+        for message in messages
+        if message.__class__.__name__ == "HumanMessage" and message.content == "hello"
+    ]
+    assert len(user_messages) == 1
+
+
+@pytest.mark.asyncio
 async def test_invoke_simplified_input_preserves_attachment_contract_fields():
     runner = _make_runner()
 
