@@ -4,6 +4,7 @@ from typing import Any, Mapping
 
 
 _VALID_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
+_CHAT_COMPLETIONS_REASONING_EFFORTS = {"low", "medium", "high"}
 
 
 def _normalized_effort(value: Any) -> str | None:
@@ -72,6 +73,7 @@ def normalize_model_options(model_options: Mapping[str, Any] | None) -> dict[str
                 normalized["thinking"] = {**dict(thinking), "type": "enabled"}
             else:
                 normalized["thinking"] = {"type": "enabled"}
+            canonical_effort = canonical_effort or "medium"
 
     if canonical_effort is not None:
         existing_reasoning = dict(reasoning) if isinstance(reasoning, Mapping) else {}
@@ -87,12 +89,10 @@ def model_options_for_chat_completions(model_options: Mapping[str, Any] | None) 
     reasoning = normalized.get("reasoning")
     if isinstance(reasoning, Mapping):
         effort = _normalized_effort(reasoning.get("effort"))
-        if effort:
+        if effort in _CHAT_COMPLETIONS_REASONING_EFFORTS:
             payload["reasoning_effort"] = effort
 
     extra_body = dict(normalized.get("extra_body") or {})
-    if "thinking" in normalized:
-        extra_body.setdefault("thinking", normalized["thinking"])
     if "max_reasoning_tokens" in normalized:
         extra_body.setdefault("max_reasoning_tokens", normalized["max_reasoning_tokens"])
     if extra_body:

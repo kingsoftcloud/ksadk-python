@@ -25,12 +25,27 @@ import {
   findActiveRunIds,
 } from './utils/run-state.js';
 import {
+  applyOptimisticFeedback,
+  buildGetFeedbackPayload,
+  buildUpsertFeedbackPayload,
+  clearFeedback,
+  markFeedbackSaved,
+  normalizeFeedback,
+  rollbackFeedback,
+  shouldRenderFeedbackControls,
+} from './utils/feedback.js';
+import {
   buildCompactionMessage,
   buildMessagesFromSessionEvents,
   eventHasTerminalRunStatus,
   maxSeqIdFromEvents,
   parseMessageContent,
 } from './utils/session-events.js';
+import {
+  buildModelOptionsFromThinkingMode,
+  normalizeThinkingMode,
+} from './utils/model-options.js';
+import { shouldStopReadingRunStream } from './utils/stream-control.js';
 import { useResponsiveViewport } from './hooks/useResponsiveViewport';
 import { cn } from '@/lib/utils';
 import { AttachmentPreview } from './components/chat/AttachmentPreview';
@@ -84,6 +99,12 @@ type SessionEventRecord = {
   Timestamp?: number;
   Metadata?: Record<string, unknown> & {
     response_id?: string;
+    ResponseId?: string;
+    trace_id?: string;
+    TraceId?: string;
+    root_span_id?: string;
+    rootSpanId?: string;
+    RootSpanId?: string;
     responses_output?: unknown;
   };
   SeqId?: number;
@@ -103,6 +124,7 @@ type BootstrapModel = ModelCatalogItem & {
 type BootstrapWorkspaceFiles = WorkspaceFilesCapability;
 
 type RuntimeApiFormat = 'responses' | 'chat_completions';
+type ThinkingMode = 'auto' | 'enabled' | 'disabled';
 
 type UiCapabilities = {
   HostedChat: {
@@ -209,17 +231,23 @@ function textFromUnknown(value: unknown): string {
   return '';
 }
 
-function extractChatCompletionsStreamDelta(data: any): {
+function objectRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+}
+
+function extractChatCompletionsStreamDelta(data: unknown): {
   content: string;
   reasoning: string;
   finalText: string;
 } {
-  const delta = data?.choices?.[0]?.delta;
-  const message = data?.choices?.[0]?.message;
+  const choices = objectRecord(data).choices;
+  const firstChoice = objectRecord(Array.isArray(choices) ? choices[0] : null);
+  const delta = objectRecord(firstChoice.delta);
+  const message = objectRecord(firstChoice.message);
   return {
-    content: delta ? textFromUnknown(delta.content) : '',
-    reasoning: delta ? textFromUnknown(delta.reasoning_content) : '',
-    finalText: message ? textFromUnknown(message.content) : '',
+    content: textFromUnknown(delta.content),
+    reasoning: textFromUnknown(delta.reasoning_content),
+    finalText: textFromUnknown(message.content),
   };
 }
 
@@ -336,6 +364,7 @@ export default function App() {
   const [availableModels, setAvailableModels] = useState<ModelCatalogItem[]>([]);
   const [modelSource, setModelSource] = useState('');
   const [modelCatalogLoaded, setModelCatalogLoaded] = useState(false);
+  const [thinkingMode, setThinkingMode] = useState<ThinkingMode>('auto');
   const [agentFramework, setAgentFramework] = useState('');
   const [workspaceFiles, setWorkspaceFiles] = useState<BootstrapWorkspaceFiles | null>(null);
   const [accessMode, setAccessMode] = useState('Owner');
@@ -364,6 +393,7 @@ export default function App() {
   const stopRequestedRef = useRef(false);
   const queuedDraftRef = useRef<Array<{ text: string; attachments: File[] }>>([]);
   const activeCompactionMessageIdRef = useRef<string | null>(null);
+  const agentIdRef = useRef(agentId);
   const currentSessionIdRef = useRef<string | null>(null);
   const runSubscriptionAbortRef = useRef<AbortController | null>(null);
 
@@ -396,6 +426,7 @@ export default function App() {
   }, [input, composerMaxHeight]);
 
   useEffect(() => {
+    agentIdRef.current = agentId;
     currentSessionIdRef.current = currentSessionId;
     writePersistedSessionId(agentId, currentSessionId);
   }, [agentId, currentSessionId]);
@@ -478,6 +509,67 @@ export default function App() {
     } finally {
       setModelCatalogLoaded(true);
     }
+  };
+
+  const loadFeedbackForMessages = async (
+    targetAgentId: string,
+    sessionId: string,
+    history: Message[],
+  ) => {
+    const targets = history.filter((message) =>
+      shouldRenderFeedbackControls(message, false, false),
+    );
+    if (!targets.length) {
+      return;
+    }
+
+    const entries = await Promise.all(
+      targets.map(async (message) => {
+        try {
+          const response = await fetch('/agentengine/api/v1/GetResponseFeedback', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(
+              buildGetFeedbackPayload({
+                agentId: targetAgentId,
+                sessionId,
+                message,
+              }),
+            ),
+          });
+          const data = await response.json();
+          if (data?.Code !== 0 || !data?.Data?.Feedback) {
+            return null;
+          }
+          const feedback = normalizeFeedback(data.Data.Feedback);
+          return feedback ? { messageId: message.id, feedback } : null;
+        } catch (error) {
+          console.error('Failed to load response feedback:', error);
+          return null;
+        }
+      }),
+    );
+
+    if (currentSessionIdRef.current !== sessionId) {
+      return;
+    }
+    const feedbackByMessageId = new Map(
+      entries
+        .filter((entry): entry is { messageId: string; feedback: NonNullable<Message['feedback']> } =>
+          Boolean(entry),
+        )
+        .map((entry) => [entry.messageId, entry.feedback]),
+    );
+    if (!feedbackByMessageId.size) {
+      return;
+    }
+    setMessages((prev) =>
+      prev.map((message) =>
+        feedbackByMessageId.has(message.id)
+          ? { ...message, feedback: feedbackByMessageId.get(message.id) }
+          : message,
+      ),
+    );
   };
 
   const subscribeRunEvents = async (options: {
@@ -590,6 +682,7 @@ export default function App() {
         const events = data.Data.Events as SessionEventRecord[];
         const history = buildMessagesFromSessionEvents(events);
         setMessages(history);
+        void loadFeedbackForMessages(agentIdRef.current, sessionId, history);
         const activeRuns = findActiveRunIds(events);
         const lastSeqId = maxSeqIdFromEvents(events);
         if (uiCapabilities.RunLifecycle.Enabled && uiCapabilities.RunLifecycle.Resume && activeRuns[0]) {
@@ -911,6 +1004,7 @@ export default function App() {
           ApiFormat: runAgentApiFormat,
           Model: selectedModel || undefined,
           ModelMetadata: selectedModelMetadata || undefined,
+          ModelOptions: buildModelOptionsFromThinkingMode(thinkingMode),
           Messages: isResponsesResume
             ? []
             : [
@@ -1137,11 +1231,10 @@ export default function App() {
                 appendSystemMessage('本次运行已中断，需要人工确认后继续。');
               } else if (action.type === 'failed') {
                 setAssistantText(`生成失败：${action.message}`);
-              } else if (action.type === 'terminal') {
-                isDone = true;
               }
             }
-            if (isDone) {
+            if (shouldStopReadingRunStream(actions)) {
+              isDone = true;
               break;
             }
           } catch (error) {
@@ -1177,6 +1270,9 @@ export default function App() {
       abortControllerRef.current = null;
       activeCompactionMessageIdRef.current = null;
       void fetchSessions(agentId, sessionId);
+      if (currentSessionIdRef.current === sessionId) {
+        void loadSession(sessionId);
+      }
       const queuedDraft = queuedDraftRef.current.shift();
       setQueuedDrafts((prev) => prev.slice(1));
       if (queuedDraft && (queuedDraft.text.trim() || queuedDraft.attachments.length > 0)) {
@@ -1208,6 +1304,96 @@ export default function App() {
     }
 
     await submitDraft(draft.text, draft.attachments);
+  };
+
+  const submitResponseFeedback = async (options: {
+    message: Message;
+    rating: 'up' | 'down';
+    comment?: string;
+  }) => {
+    if (!currentSessionId) {
+      return;
+    }
+
+    let previousFeedback: Message['feedback'] | null = null;
+    setMessages((prev) => {
+      const result = applyOptimisticFeedback(prev, {
+        messageId: options.message.id,
+        rating: options.rating,
+        comment: options.comment || '',
+      });
+      previousFeedback = result.previousFeedback;
+      return result.nextMessages;
+    });
+
+    try {
+      const response = await fetch('/agentengine/api/v1/UpsertResponseFeedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(
+          buildUpsertFeedbackPayload({
+            agentId,
+            sessionId: currentSessionId,
+            message: options.message,
+            rating: options.rating,
+            comment: options.comment || '',
+          }),
+        ),
+      });
+      const data = await response.json();
+      if (data?.Code !== 0) {
+        throw new Error(data?.Message || '反馈提交失败');
+      }
+      setMessages((prev) =>
+        markFeedbackSaved(prev, {
+          messageId: options.message.id,
+          feedback: data?.Data?.Feedback,
+        }),
+      );
+    } catch (error) {
+      console.error('Failed to submit response feedback:', error);
+      setMessages((prev) =>
+        rollbackFeedback(prev, {
+          messageId: options.message.id,
+          previousFeedback,
+        }),
+      );
+    }
+  };
+
+  const deleteResponseFeedback = async (message: Message) => {
+    if (!currentSessionId) {
+      return;
+    }
+
+    const previousFeedback = message.feedback ? { ...message.feedback } : null;
+    setMessages((prev) => clearFeedback(prev, { messageId: message.id }));
+
+    try {
+      const response = await fetch('/agentengine/api/v1/DeleteResponseFeedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(
+          buildGetFeedbackPayload({
+            agentId,
+            sessionId: currentSessionId,
+            message,
+          }),
+        ),
+      });
+      const data = await response.json();
+      if (data?.Code !== 0) {
+        throw new Error(data?.Message || '反馈删除失败');
+      }
+    } catch (error) {
+      console.error('Failed to delete response feedback:', error);
+      setMessages((prev) =>
+        rollbackFeedback(prev, {
+          messageId: message.id,
+          previousFeedback,
+        }),
+      );
+    }
   };
 
   const respondToApproval = (options: {
@@ -1284,6 +1470,7 @@ export default function App() {
     availableModels.find((model) => model.id === selectedModel) || null;
   const selectedModelLabel = selectedModelMetadata?.display_name || selectedModel || '';
   const hostedChatEnabled = isHostedChatEnabled(uiCapabilities);
+  const thinkingEnabled = Boolean(uiCapabilities.Thinking);
   const composerContextIndicator = buildComposerContextIndicator({
     messages,
     draftInput: input,
@@ -1359,7 +1546,6 @@ export default function App() {
             onCreateNewSession={createNewSession}
             onSelectSession={loadSession}
             onDeleteSession={deleteSession}
-            formatDate={formatDate}
             sessionTitle={sessionTitle}
           />
         </aside>
@@ -1378,7 +1564,6 @@ export default function App() {
               onCreateNewSession={createNewSession}
               onSelectSession={loadSession}
               onDeleteSession={deleteSession}
-              formatDate={formatDate}
               sessionTitle={sessionTitle}
             />
           </SheetContent>
@@ -1411,6 +1596,9 @@ export default function App() {
           selectedModelLabel={selectedModelLabel}
           modelCatalogLoaded={modelCatalogLoaded}
           modelSource={modelSource}
+          thinkingEnabled={thinkingEnabled}
+          thinkingMode={thinkingMode}
+          onSelectThinkingMode={(mode) => setThinkingMode(normalizeThinkingMode(mode))}
           mobileActionsOpen={mobileActionsOpen}
           onMobileActionsOpenChange={setMobileActionsOpen}
           workspaceEnabled={workspaceEnabled}
@@ -1434,8 +1622,10 @@ export default function App() {
               isMobile={isMobile}
               isStreaming={isStreaming}
               messages={messages}
+              onDeleteFeedback={deleteResponseFeedback}
               onOpenAttachmentPreview={openAttachmentPreview}
               onRespondToApproval={respondToApproval}
+              onSubmitFeedback={submitResponseFeedback}
               scrollRef={scrollRef}
             />
 

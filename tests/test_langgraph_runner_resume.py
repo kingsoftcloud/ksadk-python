@@ -24,12 +24,63 @@ class _DummyAgent:
             yield {}
 
 
+class _Chunk:
+    def __init__(self, content="", reasoning_content=None):
+        self.content = content
+        self.additional_kwargs = {}
+        if reasoning_content is not None:
+            self.additional_kwargs["reasoning_content"] = reasoning_content
+
+
+class _StreamingAgent(_DummyAgent):
+    async def astream_events(self, state, version="v2", config=None):
+        self.last_astream_state = state
+        yield {
+            "event": "on_chat_model_stream",
+            "data": {"chunk": _Chunk(reasoning_content="先分析需求。")},
+        }
+        yield {
+            "event": "on_chat_model_stream",
+            "data": {"chunk": _Chunk(content="这是最终回复。")},
+        }
+
+
+class _DuplicatedReasoningStreamingAgent(_DummyAgent):
+    async def astream_events(self, state, version="v2", config=None):
+        self.last_astream_state = state
+        yield {
+            "event": "on_chat_model_stream",
+            "data": {
+                "chunk": _Chunk(
+                    content="先分析需求。",
+                    reasoning_content="先分析需求。",
+                )
+            },
+        }
+        yield {
+            "event": "on_chat_model_stream",
+            "data": {"chunk": _Chunk(content="这是最终回复。")},
+        }
+
+
 def _make_runner(module=None) -> LangGraphRunner:
     detection = SimpleNamespace(entry_point="src/agent.py", agent_variable="root_agent")
     runner = LangGraphRunner(detection, ".")
     runner._agent = _DummyAgent()
     if module is not None:
         runner._module = module
+    return runner
+
+
+def _make_streaming_runner() -> LangGraphRunner:
+    runner = _make_runner()
+    runner._agent = _StreamingAgent()
+    return runner
+
+
+def _make_duplicated_reasoning_streaming_runner() -> LangGraphRunner:
+    runner = _make_runner()
+    runner._agent = _DuplicatedReasoningStreamingAgent()
     return runner
 
 
@@ -116,6 +167,47 @@ async def test_stream_resume_uses_command():
     assert isinstance(runner._agent.last_ainvoke_state, Command)
     assert runner._agent.last_ainvoke_state.resume == {"approved": True}
     assert chunks and chunks[-1]["type"] == "final"
+
+
+@pytest.mark.asyncio
+async def test_stream_does_not_mix_reasoning_into_final_text():
+    runner = _make_streaming_runner()
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "s1",
+                "input": "写一个python快排的示例",
+            }
+        )
+    ]
+
+    assert chunks == [
+        {"delta": "先分析需求。", "type": "thinking"},
+        {"delta": "这是最终回复。", "type": "text"},
+    ]
+    assert all("先分析需求。" not in chunk.get("delta", "") for chunk in chunks if chunk["type"] == "text")
+
+
+@pytest.mark.asyncio
+async def test_stream_ignores_content_when_chunk_duplicates_reasoning():
+    runner = _make_duplicated_reasoning_streaming_runner()
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "s1",
+                "input": "写一个python快排的示例",
+            }
+        )
+    ]
+
+    assert chunks == [
+        {"delta": "先分析需求。", "type": "thinking"},
+        {"delta": "这是最终回复。", "type": "text"},
+    ]
 
 
 @pytest.mark.asyncio

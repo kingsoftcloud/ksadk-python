@@ -16,6 +16,24 @@ function normalizeText(value) {
   return String(value || '').trim().toLowerCase();
 }
 
+function formatCompactUpdatedAt(ts) {
+  if (!ts) return '';
+  const date = typeof ts === 'number'
+    ? new Date(ts > 1e11 ? ts : ts * 1000)
+    : new Date(ts);
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+  return date.toLocaleString('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+}
+
 function sessionSearchText(session) {
   return [
     session?.Title,
@@ -71,4 +89,12 @@ export function formatSessionContextLabel(session) {
     return `上下文 ${Math.round((usedTokens / windowTokens) * 100)}%`;
   }
   return '';
+}
+
+export function resolveCompactSessionMeta(session) {
+  const running = isSessionRunning(session);
+  return {
+    running,
+    label: running ? '' : formatCompactUpdatedAt(session?.UpdatedAt ?? session?.updated_at),
+  };
 }

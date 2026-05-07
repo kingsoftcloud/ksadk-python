@@ -382,6 +382,7 @@ class LangGraphRunner(BaseRunner):
             state = self._to_state(payload, history)
 
         accumulated_text = ""
+        accumulated_reasoning = ""
 
         if not hasattr(self._agent, "astream_events"):
             result = await self.invoke(invoke_payload)
@@ -407,12 +408,17 @@ class LangGraphRunner(BaseRunner):
                         reasoning = chunk.additional_kwargs.get("reasoning_content")
                     
                     if reasoning:
-                        accumulated_text += reasoning
+                        accumulated_reasoning += reasoning
                         yield {"delta": reasoning, "type": "thinking"}
 
                     # 常规内容
                     if hasattr(chunk, "content") and chunk.content:
                         content = self._filter_tool_tags(chunk.content)
+                        if isinstance(content, str):
+                            if accumulated_reasoning and content.startswith(accumulated_reasoning):
+                                content = content[len(accumulated_reasoning):]
+                            elif reasoning and content.startswith(reasoning):
+                                content = content[len(reasoning):]
                         if content and content.strip():
                             accumulated_text += content
                             yield {"delta": content, "type": "text"}

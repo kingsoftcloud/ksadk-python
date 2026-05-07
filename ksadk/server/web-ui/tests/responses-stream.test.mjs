@@ -164,6 +164,41 @@ test('responses stream utils normalize reasoning summary and completed text vari
   );
 });
 
+test('responses stream utils do not use reasoning items as completed text', async () => {
+  const responsesStream = await loadResponsesStreamUtils();
+
+  assert.ok(responsesStream, 'expected Responses stream helpers to exist');
+  const state = responsesStream.createResponsesStreamState();
+
+  assert.deepEqual(
+    responsesStream.normalizeResponsesStreamEvent({
+      eventName: 'response.completed',
+      data: {
+        response: {
+          output: [
+            {
+              id: 'rs_1',
+              type: 'reasoning',
+              summary: [{ text: '先分析问题' }],
+            },
+            {
+              id: 'msg_1',
+              type: 'message',
+              content: [{ type: 'output_text', text: '最终答案' }],
+            },
+          ],
+        },
+      },
+      state,
+    }),
+    [
+      { type: 'reasoning_delta', text: '先分析问题' },
+      { type: 'text_final', text: '最终答案' },
+      { type: 'terminal', status: 'completed' },
+    ],
+  );
+});
+
 test('responses stream utils normalize tools and reasoning from completed response output', async () => {
   const responsesStream = await loadResponsesStreamUtils();
 

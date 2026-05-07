@@ -7,6 +7,7 @@ import os
 import logging
 import atexit
 import signal
+import base64
 from typing import Optional, List, Any
 
 from ksadk.tracing.exporters.inmemory_exporter import InMemoryExporter
@@ -17,6 +18,31 @@ _exporter_instance: Optional[InMemoryExporter] = None
 _langfuse_exporter: Optional[Any] = None
 _tracing_initialized: bool = False
 _adk_instrumented: bool = False
+
+
+def _build_langfuse_otlp_config(langfuse_config: dict = None) -> Optional[dict]:
+    """Build Langfuse OTLP direct exporter config from explicit config or env."""
+    if langfuse_config:
+        public_key = langfuse_config.get("public_key") or ""
+        secret_key = langfuse_config.get("secret_key") or ""
+        host = langfuse_config.get("host") or "http://localhost:3000"
+    else:
+        public_key = os.getenv("LANGFUSE_PUBLIC_KEY", "")
+        secret_key = os.getenv("LANGFUSE_SECRET_KEY", "")
+        host = os.getenv("LANGFUSE_BASE_URL") or os.getenv("LANGFUSE_HOST") or "http://localhost:3000"
+
+    if not public_key or not secret_key:
+        return None
+
+    auth = base64.b64encode(f"{public_key}:{secret_key}".encode("utf-8")).decode("ascii")
+    return {
+        "endpoint": f"{host.rstrip('/')}/api/public/otel/v1/traces",
+        "headers": {
+            "Authorization": f"Basic {auth}",
+            "x-langfuse-ingestion-version": "4",
+        },
+        "protocol": "http/protobuf",
+    }
 
 
 def setup_tracing(
@@ -77,13 +103,13 @@ def setup_tracing(
         provider.add_span_processor(SimpleSpanProcessor(exporter))
         logger.info("InMemory exporter enabled")
     
-    # 2. Langfuse Exporter (auto-detect or explicit config)
+    # 2. Langfuse OTLP direct exporter (auto-detect or explicit config)
     # 注意: 对于 LangGraph/LangChain 框架，推荐使用 CallbackHandler 而非 OTel Exporter
     # 同时使用两者会导致重复的 trace
     langfuse_enabled = enable_langfuse
     if langfuse_enabled is None:
         # Auto-detect from environment variables
-        langfuse_enabled = bool(os.getenv("LANGFUSE_PUBLIC_KEY"))
+        langfuse_enabled = bool(os.getenv("LANGFUSE_PUBLIC_KEY") or (langfuse_config or {}).get("public_key"))
     
     # 检查是否应该禁用 LangfuseExporter (当使用 LangChain/LangGraph 时)
     # 优先使用显式参数，否则读取环境变量
@@ -92,36 +118,27 @@ def setup_tracing(
     
     if langfuse_enabled and not use_callback_only:
         try:
-            from ksadk.tracing.exporters.langfuse_exporter import LangfuseExporter, LangfuseConfig
-            
-            # Get config from parameter or environment
-            if langfuse_config:
-                config = LangfuseConfig(
-                    public_key=langfuse_config.get("public_key"),
-                    secret_key=langfuse_config.get("secret_key"),
-                    host=langfuse_config.get("host", "http://localhost:3000")
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+
+            config = _build_langfuse_otlp_config(langfuse_config)
+            if config:
+                otlp_exporter = OTLPSpanExporter(
+                    endpoint=config["endpoint"],
+                    headers=config["headers"],
                 )
-            else:
-                # Read from environment variables
-                config = LangfuseConfig(
-                    public_key=os.getenv("LANGFUSE_PUBLIC_KEY", ""),
-                    secret_key=os.getenv("LANGFUSE_SECRET_KEY", ""),
-                    host=os.getenv("LANGFUSE_BASE_URL") or "http://localhost:3000"
+                provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
+                logger.info(
+                    "Langfuse OTLP exporter enabled: %s (%s)",
+                    config["endpoint"],
+                    config["protocol"],
                 )
-            
-            if config.public_key and config.secret_key:
-                langfuse_exp = LangfuseExporter(config)
-                _langfuse_exporter = langfuse_exp
-                if langfuse_exp.processor:
-                    provider.add_span_processor(langfuse_exp.processor)
-                    logger.info(f"Langfuse exporter enabled: {config.host}")
             else:
                 logger.warning("Langfuse credentials not found, skipping")
                 
         except ImportError as e:
-            logger.warning(f"Langfuse not available: {e}")
+            logger.warning(f"Langfuse OTLP exporter not available: {e}")
         except Exception as e:
-            logger.error(f"Failed to initialize Langfuse: {e}")
+            logger.error(f"Failed to initialize Langfuse OTLP exporter: {e}")
     elif langfuse_enabled:
         logger.info("Langfuse will use CallbackHandler (recommended for LangChain/LangGraph)")
     
@@ -197,4 +214,3 @@ def get_tracer(name: str = "ksadk"):
         return trace.get_tracer(name)
     except ImportError:
         return None
-

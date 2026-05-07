@@ -1331,6 +1331,12 @@ logger.info("=" * 60)
 from ksadk.configs import setup_environment
 setup_environment(Path(CODE_ROOT))
 
+try:
+    from ksadk.runners.patch_langchain import apply_patch as apply_langchain_patch
+    apply_langchain_patch()
+except ImportError:
+    pass
+
 from ksadk.runners import create_runner
 from ksadk.detection import DetectionResult, FrameworkType
 from ksadk.server import app, set_runner
@@ -1353,11 +1359,10 @@ if os.environ.get("LANGFUSE_PUBLIC_KEY"):
     try:
         from ksadk.tracing import setup_tracing
         
-        # 对于 LangChain 生态（LangGraph/DeepAgents），默认仅使用 Callback 以避免重复 Trace
-        is_langchain = "{detection_result.type.name}" in ("LANGCHAIN", "LANGGRAPH", "DEEPAGENTS")
-        
-        setup_tracing(use_callback_only=is_langchain)
-        logger.info(f"Tracing 已启用 (Langfuse, CallbackOnly={{is_langchain}})")
+        use_callback_only = os.environ.get("LANGFUSE_USE_CALLBACK", "").strip().lower() in ("1", "true", "yes", "on")
+
+        setup_tracing(use_callback_only=use_callback_only)
+        logger.info(f"Tracing 已启用 (Langfuse, CallbackOnly={{use_callback_only}})")
     except Exception as e:
         logger.warning(f"Tracing 初始化失败: {{e}}")
 
