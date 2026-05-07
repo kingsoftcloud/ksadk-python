@@ -471,6 +471,10 @@ def test_entrypoint_writes_explicit_context_length_override():
 
     assert "HERMES_CONTEXT_LENGTH" in entrypoint
     assert "context_length: ${HERMES_CONTEXT_LENGTH}" in entrypoint
+    assert "HERMES_COMPRESSION_CONTEXT_LENGTH" in entrypoint
+    assert "auxiliary:" in entrypoint
+    assert "compression:" in entrypoint
+    assert "context_length: ${HERMES_COMPRESSION_CONTEXT_LENGTH}" in entrypoint
     assert "glm-5.1" in entrypoint
     assert "fallback_model:" in entrypoint
     assert "model: \"${HERMES_FALLBACK_MODEL}\"" in entrypoint
