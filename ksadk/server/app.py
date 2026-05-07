@@ -1232,6 +1232,13 @@ async def run_sse(request: AgentRunRequest):
                     if chunk.get("type") == "thinking":
                         delta = str(chunk.get("delta", ""))
                         if delta:
+                            await conversation.append_reasoning_event(
+                                session_id=session_id,
+                                author=active_runner.detection_result.name,
+                                text=delta,
+                                invocation_id=invocation_id,
+                                session_service_provider=resolve_session_service,
+                            )
                             yield f"event: response.reasoning.delta\ndata: {json.dumps({'delta': delta}, ensure_ascii=False)}\n\n"
                         continue
                     if chunk.get("type") == "text":
@@ -1352,21 +1359,6 @@ async def run_sse(request: AgentRunRequest):
                             client_visible_text = final_text
 
                 if authoritative_text:
-                    final_event = {
-                        "id": str(uuid.uuid4()),
-                        "author": active_runner.detection_result.name,
-                        "sessionId": session_id,
-                        "invocationId": invocation_id,
-                        "content": {"role": "model", "parts": [{"text": authoritative_text}]},
-                        "actions": {"finishReason": "STOP"},
-                        "modelVersion": common_metadata["modelVersion"],
-                        "usageMetadata": {
-                            "promptTokenCount": len(user_input),
-                            "candidatesTokenCount": len(authoritative_text),
-                            "totalTokenCount": len(user_input) + len(authoritative_text),
-                        },
-                        "timestamp": int(time.time() * 1000),
-                    }
                     await conversation.append_conversation_event(
                         session_id=session_id,
                         author=active_runner.detection_result.name,
@@ -1380,13 +1372,13 @@ async def run_sse(request: AgentRunRequest):
                         },
                         session_service_provider=resolve_session_service,
                     )
-                    await conversation.append_run_status_event(
-                        session_id=session_id,
-                        author=active_runner.detection_result.name,
-                        status="completed",
-                        invocation_id=invocation_id,
-                        session_service_provider=resolve_session_service,
-                    )
+                await conversation.append_run_status_event(
+                    session_id=session_id,
+                    author=active_runner.detection_result.name,
+                    status="completed",
+                    invocation_id=invocation_id,
+                    session_service_provider=resolve_session_service,
+                )
 
             except Exception as e:
                 logger.error(f"Error in stream: {e}")
