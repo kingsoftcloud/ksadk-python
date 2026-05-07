@@ -17,6 +17,7 @@ class PlatformInvocationContext:
     attachment_results: list[dict[str, Any]]
     runner_type: str
     model: str | None = None
+    model_options: dict[str, Any] | None = None
     kb_context: dict[str, Any] | None = None
     memory_context: dict[str, Any] | None = None
 
@@ -31,6 +32,7 @@ class PlatformInvocationContext:
             "attachment_results": list(self.attachment_results or []),
             "runner_type": self.runner_type,
             "model": self.model,
+            "model_options": dict(self.model_options or {}),
         }
 
 
