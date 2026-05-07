@@ -679,6 +679,46 @@ async def test_chat_completions_forwards_model_to_runner(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_chat_completions_non_stream_preserves_response_feedback_metadata(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    runner = _ModelAwareRunner()
+
+    async def _fake_invoke_conversation_once(**kwargs):
+        return "sess-trace", {
+            "output_text": "assistant says hi",
+            "metadata": {
+                "trace_id": "08c19ddddce0b1ddd29407dc637e1c89",
+                "root_span_id": "74cc406c8e9ded4a",
+            },
+        }
+
+    monkeypatch.setattr(
+        server_app_module.conversation,
+        "invoke_conversation_once",
+        _fake_invoke_conversation_once,
+    )
+    server_app_module.set_runner(runner)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": False,
+                "model": "glm-5.1",
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["metadata"] == {
+        "trace_id": "08c19ddddce0b1ddd29407dc637e1c89",
+        "root_span_id": "74cc406c8e9ded4a",
+    }
+
+
+@pytest.mark.asyncio
 async def test_chat_completions_passes_attachment_results_to_runner(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()
@@ -980,16 +1020,21 @@ async def test_list_agent_models_action_without_api_base_returns_default_metadat
 
 
 @pytest.mark.asyncio
-async def test_legacy_models_routes_are_not_exposed(monkeypatch):
+async def test_openai_models_route_exposes_current_catalog(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_BASE", raising=False)
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-5.1")
     transport = httpx.ASGITransport(app=server_app_module.app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
-        get_response = await client.get("/agentengine/api/v1/models")
-        post_response = await client.post("/agentengine/api/v1/models", json={"model": "glm-5.1"})
+        response = await client.get("/v1/models")
 
-    assert get_response.status_code == 404
-    assert post_response.status_code in {404, 405}
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["object"] == "list"
+    assert payload["current"] == "glm-5.1"
+    assert [item["id"] for item in payload["data"]] == ["glm-5.1"]
 
 
 @pytest.mark.asyncio

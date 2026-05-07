@@ -849,6 +849,20 @@ async def list_agent_models_action(_request: ListAgentModelsRequest):
         },
     )
 
+
+@app.get("/v1/models")
+async def list_openai_models():
+    """Expose the current model catalog through the OpenAI-compatible path."""
+
+    payload = await _build_models_payload()
+    return {
+        "object": "list",
+        "data": payload.get("data", []),
+        "current": payload.get("current"),
+        "source": payload.get("source", ""),
+    }
+
+
 @app.post("/agentengine/api/v1/RunAgent")
 async def run_agent_action(request: RunAgentActionRequest):
     resume_input = (
@@ -889,6 +903,9 @@ async def run_agent_action(request: RunAgentActionRequest):
             media_type="text/event-stream",
         )
 
+    responses_response_id = (
+        f"resp_{uuid.uuid4().hex}" if api_format != "chat_completions" else None
+    )
     resolved_session_id, result = await conversation.invoke_conversation_once(
         runner=_resolve_active_runner(),
         agent_id=request.AgentId,
@@ -900,6 +917,7 @@ async def run_agent_action(request: RunAgentActionRequest):
         model_options=request.ModelOptions,
         request_metadata=request_metadata,
         resume_input=resume_input,
+        response_id=responses_response_id,
         prepare_runner=_prepare_runner_for_model,
         session_service_provider=resolve_session_service,
     )
@@ -909,12 +927,14 @@ async def run_agent_action(request: RunAgentActionRequest):
             output_text=output_text,
             model=request.Model,
             session_id=resolved_session_id,
+            metadata=result.get("metadata"),
         )
     else:
         payload = conversation.build_responses_payload(
             output_text=output_text,
             model=request.Model,
             session_id=resolved_session_id,
+            response_id=responses_response_id,
         )
     return _action_response("RunAgent", payload)
 
@@ -1555,6 +1575,7 @@ async def responses(request: ResponsesRequest):
             media_type="text/event-stream",
         )
 
+    response_id = f"resp_{uuid.uuid4().hex}"
     resolved_session_id, result = await conversation.invoke_conversation_once(
         runner=active_runner,
         agent_id=agent_id,
@@ -1567,6 +1588,7 @@ async def responses(request: ResponsesRequest):
         instructions=request.instructions,
         request_metadata=request_metadata,
         resume_input=resume_input,
+        response_id=response_id,
         prepare_runner=_prepare_runner_for_model,
         session_service_provider=resolve_session_service,
     )
@@ -1574,6 +1596,7 @@ async def responses(request: ResponsesRequest):
         output_text=result["output_text"],
         model=request.model,
         session_id=resolved_session_id,
+        response_id=response_id,
         metadata=result.get("metadata") if isinstance(result.get("metadata"), dict) else request_metadata,
     )
 
@@ -1618,6 +1641,7 @@ async def chat_completions(request: ChatCompletionRequest):
         output_text=result["output_text"],
         model=request.model,
         session_id=resolved_session_id,
+        metadata=result.get("metadata"),
     )
 
 

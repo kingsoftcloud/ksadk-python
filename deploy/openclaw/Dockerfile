@@ -19,6 +19,9 @@ ARG OPENCLAW_MEM0_PLUGIN_URL=https://wangxu-test.ks3-cn-beijing.ksyuncs.com/ksc-
 ARG OPENCLAW_MEM0_PLUGIN_SHA256=
 ARG OPENCLAW_INSTALL_WPS_XIEZUO_PLUGIN=true
 ARG OPENCLAW_WPS_XIEZUO_PLUGIN_ID=wps-xiezuo
+ARG OPENCLAW_INSTALL_DIAGNOSTICS_OTEL_PLUGIN=true
+ARG OPENCLAW_DIAGNOSTICS_OTEL_PLUGIN_SPEC=@openclaw/diagnostics-otel
+ARG OPENCLAW_DIAGNOSTICS_OTEL_PLUGIN_ID=diagnostics-otel
 ARG OPENCLAW_PRESET_PLUGINS_ALLOWLIST=
 ARG OPENCLAW_INSTALL_AGENT_BROWSER=true
 ARG OPENCLAW_AGENT_BROWSER_SPEC=agent-browser
@@ -202,6 +205,9 @@ RUN --mount=type=cache,target=/root/.npm \
   fi; \
   if [ "${OPENCLAW_INSTALL_WPS_XIEZUO_PLUGIN}" = "true" ] && preset_plugin_allowed "${OPENCLAW_WPS_XIEZUO_PLUGIN_ID}" wps wps-xiezuo; then \
     install_default_plugin_archive_file "/opt/openclaw/wps-xiezuo-assets/openclaw-wps-xiezuo-1.6.0.tgz" "${OPENCLAW_WPS_XIEZUO_PLUGIN_ID}"; \
+  fi; \
+  if [ "${OPENCLAW_INSTALL_DIAGNOSTICS_OTEL_PLUGIN}" = "true" ] && preset_plugin_allowed "${OPENCLAW_DIAGNOSTICS_OTEL_PLUGIN_ID}" diagnostics otel diagnostics-otel; then \
+    install_default_plugin "${OPENCLAW_DIAGNOSTICS_OTEL_PLUGIN_SPEC}" "${OPENCLAW_DIAGNOSTICS_OTEL_PLUGIN_ID}"; \
   fi; \
   chown -R node:node /opt/openclaw/default-extensions; \
   chmod -R a+rX /opt/openclaw/default-extensions

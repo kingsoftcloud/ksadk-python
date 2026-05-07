@@ -13,6 +13,10 @@ logger = logging.getLogger(__name__)
 _langfuse_callback = None
 
 
+def _env_flag_enabled(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def get_langfuse_callback():
     """获取 Langfuse CallbackHandler
     
@@ -20,6 +24,10 @@ def get_langfuse_callback():
         CallbackHandler 实例，未配置时返回 None
     """
     global _langfuse_callback
+
+    if not _env_flag_enabled("LANGFUSE_USE_CALLBACK"):
+        logger.debug("Langfuse CallbackHandler disabled; using OTLP direct exporter by default")
+        return None
     
     if _langfuse_callback is not None:
         return _langfuse_callback
