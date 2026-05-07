@@ -168,6 +168,24 @@ function buildCompactionLabel(trigger, status, historical) {
     : '已完成上下文压缩';
 }
 
+function assistantOutputDedupeKey(invocationId, message) {
+  return [
+    invocationId,
+    message.content || '',
+    message.reasoning || '',
+  ].join('\u0000');
+}
+
+function mergeReasoningText(first = '', second = '') {
+  const left = String(first || '');
+  const right = String(second || '');
+  if (!left) return right;
+  if (!right) return left;
+  if (left.endsWith(right)) return left;
+  if (right.startsWith(left)) return right;
+  return `${left}${right}`;
+}
+
 export function buildCompactionMessage(options) {
   return {
     id: options.id,
@@ -277,6 +295,7 @@ export function buildMessageFromSessionEvent(event) {
 export function buildMessagesFromSessionEvents(events = []) {
   const latestRunStatusByInvocation = new Map();
   const outputByInvocation = new Set();
+  const assistantOutputKeys = new Set();
   const normalizedEvents = Array.isArray(events) ? events : [];
   for (const event of normalizedEvents) {
     const invocationId = String(event.InvocationId || '').trim();
@@ -347,7 +366,34 @@ export function buildMessagesFromSessionEvents(events = []) {
       };
       continue;
     }
+    if (message.eventType === 'assistant_message' && pendingReasoning) {
+      const invocationId = String(event.InvocationId || '').trim();
+      const outputKey = assistantOutputDedupeKey(invocationId, message);
+      if (invocationId && assistantOutputKeys.has(outputKey)) {
+        pendingReasoning = null;
+        continue;
+      }
+      if (invocationId) {
+        assistantOutputKeys.add(outputKey);
+      }
+      messages.push({
+        ...message,
+        reasoning: mergeReasoningText(pendingReasoning.reasoning, message.reasoning),
+      });
+      pendingReasoning = null;
+      continue;
+    }
     flushPendingReasoning();
+    if (message.eventType === 'assistant_message') {
+      const invocationId = String(event.InvocationId || '').trim();
+      const outputKey = assistantOutputDedupeKey(invocationId, message);
+      if (invocationId && assistantOutputKeys.has(outputKey)) {
+        continue;
+      }
+      if (invocationId) {
+        assistantOutputKeys.add(outputKey);
+      }
+    }
     messages.push(message);
   }
 

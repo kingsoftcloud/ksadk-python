@@ -29,9 +29,34 @@ def test_chat_openai_patch_maps_request_model_options_for_chat_completions():
     with platform_invocation_scope(_context()):
         payload = llm._get_request_payload([HumanMessage(content="hello")])
 
-    assert payload["reasoning_effort"] == "none"
-    assert payload["extra_body"]["thinking"] == {"type": "disabled"}
+    assert "reasoning_effort" not in payload
     assert payload["extra_body"]["max_reasoning_tokens"] == 0
+    assert "thinking" not in payload["extra_body"]
+
+
+def test_chat_openai_patch_keeps_supported_reasoning_effort_for_chat_completions():
+    apply_patch()
+    llm = ChatOpenAI(model="gpt-4o", api_key="sk-test", use_responses_api=False)
+    context = _context()
+    context.model_options = {"reasoning": {"effort": "low"}}
+
+    with platform_invocation_scope(context):
+        payload = llm._get_request_payload([HumanMessage(content="hello")])
+
+    assert payload["reasoning_effort"] == "low"
+
+
+def test_chat_openai_patch_maps_enabled_thinking_to_reasoning_effort_for_chat_completions():
+    apply_patch()
+    llm = ChatOpenAI(model="gpt-4o", api_key="sk-test", use_responses_api=False)
+    context = _context()
+    context.model_options = {"thinking": {"type": "enabled"}}
+
+    with platform_invocation_scope(context):
+        payload = llm._get_request_payload([HumanMessage(content="hello")])
+
+    assert payload["reasoning_effort"] == "medium"
+    assert "extra_body" not in payload or "thinking" not in payload.get("extra_body", {})
 
 
 def test_chat_openai_patch_maps_request_model_options_for_responses_api():

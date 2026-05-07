@@ -6,6 +6,7 @@ import logging
 import os
 import time
 import uuid
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable, Dict, Mapping, Optional, Sequence
 
@@ -66,6 +67,88 @@ ATTACHMENT_CONTEXT_STATE_KEY = "__ksadk_attachment_context__"
 logger = logging.getLogger(__name__)
 _MODEL_CATALOG_CACHE_TTL_SECONDS = 60.0
 _MODEL_CATALOG_CACHE: dict[tuple[str, str], tuple[float, list[dict[str, Any]]]] = {}
+
+
+def _get_conversation_tracer() -> Any | None:
+    try:
+        from opentelemetry import trace
+
+        return trace.get_tracer("ksadk.conversations")
+    except Exception:
+        return None
+
+
+def _current_span_feedback_metadata() -> dict[str, str]:
+    try:
+        from opentelemetry import trace
+
+        span = trace.get_current_span()
+    except Exception:
+        return {}
+    return _span_feedback_metadata(span)
+
+
+def _span_feedback_metadata(span: Any | None) -> dict[str, str]:
+    if span is None:
+        return {}
+    try:
+        context = span.get_span_context()
+    except Exception:
+        return {}
+    if not getattr(context, "is_valid", False):
+        return {}
+    return {
+        "trace_id": format(context.trace_id, "032x"),
+        "root_span_id": format(context.span_id, "016x"),
+    }
+
+
+def _get_current_span() -> Any | None:
+    try:
+        from opentelemetry import trace
+
+        return trace.get_current_span()
+    except Exception:
+        return None
+
+
+def _span_current_context(span: Any | None):
+    if span is None:
+        return nullcontext()
+    try:
+        from opentelemetry.trace import use_span
+
+        return use_span(span, end_on_exit=False)
+    except Exception:
+        return nullcontext()
+
+
+def _set_conversation_span_attributes(
+    span: Any,
+    *,
+    agent_id: str,
+    user_id: str,
+    session_id: str,
+    invocation_id: str,
+    runner_name: str,
+    model: str | None,
+    response_id: str | None = None,
+) -> None:
+    if span is None:
+        return
+    try:
+        span.set_attribute("ksadk.agent_id", agent_id)
+        span.set_attribute("ksadk.user_id", user_id)
+        span.set_attribute("ksadk.session_id", session_id)
+        span.set_attribute("ksadk.invocation_id", invocation_id)
+        span.set_attribute("ksadk.runner", runner_name)
+        span.set_attribute("langfuse.session_id", session_id)
+        if model:
+            span.set_attribute("llm.model_name", model)
+        if response_id:
+            span.set_attribute("ksadk.response_id", response_id)
+    except Exception:
+        return
 
 
 @dataclass
@@ -240,9 +323,13 @@ def extract_responses_resume_input(input_payload: Any) -> dict[str, Any] | None:
 
 
 def build_chat_completions_payload(
-    *, output_text: str, model: Optional[str], session_id: str
+    *,
+    output_text: str,
+    model: Optional[str],
+    session_id: str,
+    metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "id": f"chatcmpl-{uuid.uuid4()}",
         "object": "chat.completion",
         "created": int(time.time()),
@@ -261,6 +348,9 @@ def build_chat_completions_payload(
         },
         "session_id": session_id,
     }
+    if isinstance(metadata, Mapping) and metadata:
+        payload["metadata"] = dict(metadata)
+    return payload
 
 
 def build_compaction_sse_event(
@@ -1804,92 +1894,106 @@ async def invoke_conversation_once(
         memory_context=ambient_contexts.get("memory_context"),
     )
     runner_name = _runner_name(runner)
-    await append_run_status_event(
-        session_id=prepared.session_id,
-        author=runner_name,
-        status="in_progress",
-        invocation_id=prepared.invocation_id,
-        session_service_provider=provider,
-    )
+    tracer = _get_conversation_tracer()
+    span_cm = tracer.start_as_current_span("ksadk.conversation_turn") if tracer else None
+    with span_cm if span_cm else nullcontext():
+        _set_conversation_span_attributes(
+            _get_current_span(),
+            agent_id=agent_id,
+            user_id=user_id,
+            session_id=prepared.session_id,
+            invocation_id=prepared.invocation_id,
+            runner_name=runner_name,
+            model=model,
+            response_id=response_id,
+        )
+        trace_metadata = _current_span_feedback_metadata()
+        await append_run_status_event(
+            session_id=prepared.session_id,
+            author=runner_name,
+            status="in_progress",
+            invocation_id=prepared.invocation_id,
+            session_service_provider=provider,
+        )
 
-    result: dict[str, Any] | None = None
-    for attempt in range(2):
-        try:
-            runtime_context.history = list(prepared.history)
-            with platform_invocation_scope(runtime_context):
-                result = await runner.invoke(
-                    _build_runner_request_payload(
-                        prepared=prepared,
-                        model=model,
-                        runtime_context=runtime_context,
+        result: dict[str, Any] | None = None
+        for attempt in range(2):
+            try:
+                runtime_context.history = list(prepared.history)
+                with platform_invocation_scope(runtime_context):
+                    result = await runner.invoke(
+                        _build_runner_request_payload(
+                            prepared=prepared,
+                            model=model,
+                            runtime_context=runtime_context,
+                        )
                     )
-                )
-            break
-        except Exception as exc:
-            if attempt == 0 and _is_prompt_too_long_error(exc):
-                checkpoint = await compact_conversation_history(
+                break
+            except Exception as exc:
+                if attempt == 0 and _is_prompt_too_long_error(exc):
+                    checkpoint = await compact_conversation_history(
+                        session_id=prepared.session_id,
+                        author=runner_name,
+                        invocation_id=prepared.invocation_id,
+                        model=model,
+                        model_metadata=prepared.model_metadata,
+                        force=True,
+                        trigger="prompt_too_long",
+                        keep_tail_groups=PTL_RETRY_KEEP_TAIL_GROUPS,
+                        session_service_provider=provider,
+                    )
+                    if checkpoint:
+                        prepared = await _refresh_history(prepared, session_service_provider=provider)
+                        runtime_context.history = list(prepared.history)
+                        continue
+                await append_run_status_event(
                     session_id=prepared.session_id,
                     author=runner_name,
+                    status="failed",
                     invocation_id=prepared.invocation_id,
-                    model=model,
-                    model_metadata=prepared.model_metadata,
-                    force=True,
-                    trigger="prompt_too_long",
-                    keep_tail_groups=PTL_RETRY_KEEP_TAIL_GROUPS,
+                    detail=str(exc),
                     session_service_provider=provider,
                 )
-                if checkpoint:
-                    prepared = await _refresh_history(prepared, session_service_provider=provider)
-                    runtime_context.history = list(prepared.history)
-                    continue
-            await append_run_status_event(
-                session_id=prepared.session_id,
-                author=runner_name,
-                status="failed",
-                invocation_id=prepared.invocation_id,
-                detail=str(exc),
-                session_service_provider=provider,
-            )
-            raise
+                raise
 
-    result = result or {}
-    output_text = str(result.get("output", ""))
-    assistant_metadata: dict[str, Any] = {}
-    if prepared.request_metadata:
-        assistant_metadata["request_metadata"] = prepared.request_metadata
-    if response_id:
-        assistant_metadata["response_id"] = response_id
-    await append_conversation_event(
-        session_id=prepared.session_id,
-        author=runner_name,
-        role="model",
-        text=output_text,
-        invocation_id=prepared.invocation_id,
-        event_type="assistant_message",
-        metadata=assistant_metadata or None,
-        session_service_provider=provider,
-    )
-    await _update_session_metadata_after_assistant_turn(
-        service=provider(),
-        session_id=prepared.session_id,
-        assistant_text=output_text,
-        model=model,
-    )
-    await append_run_status_event(
-        session_id=prepared.session_id,
-        author=runner_name,
-        status="completed",
-        invocation_id=prepared.invocation_id,
-        session_service_provider=provider,
-    )
-    result_payload = {
-        "output_text": output_text,
-        "model": model,
-        "metadata": prepared.request_metadata,
-    }
-    if response_id:
-        result_payload["response_id"] = response_id
-    return prepared.session_id, result_payload
+        result = result or {}
+        output_text = str(result.get("output", ""))
+        assistant_metadata: dict[str, Any] = dict(trace_metadata)
+        if prepared.request_metadata:
+            assistant_metadata["request_metadata"] = prepared.request_metadata
+        if response_id:
+            assistant_metadata["response_id"] = response_id
+        await append_conversation_event(
+            session_id=prepared.session_id,
+            author=runner_name,
+            role="model",
+            text=output_text,
+            invocation_id=prepared.invocation_id,
+            event_type="assistant_message",
+            metadata=assistant_metadata or None,
+            session_service_provider=provider,
+        )
+        await _update_session_metadata_after_assistant_turn(
+            service=provider(),
+            session_id=prepared.session_id,
+            assistant_text=output_text,
+            model=model,
+        )
+        await append_run_status_event(
+            session_id=prepared.session_id,
+            author=runner_name,
+            status="completed",
+            invocation_id=prepared.invocation_id,
+            session_service_provider=provider,
+        )
+        result_payload = {
+            "output_text": output_text,
+            "model": model,
+            "metadata": {**trace_metadata, **prepared.request_metadata},
+        }
+        if response_id:
+            result_payload["response_id"] = response_id
+        return prepared.session_id, result_payload
 
 
 def _response_sse(event: str, data: Mapping[str, Any]) -> str:
@@ -2003,231 +2107,266 @@ async def _iter_conversation_turn_events(
             ),
         }
     runner_name = _runner_name(runner)
-    await append_run_status_event(
-        session_id=prepared.session_id,
-        author=runner_name,
-        status="in_progress",
-        invocation_id=prepared.invocation_id,
-        session_service_provider=provider,
-    )
+    tracer = _get_conversation_tracer()
+    span = tracer.start_span("ksadk.conversation_turn") if tracer else None
+    span_ended = False
 
-    accumulated_text = ""
-    emitted_anything = False
-    emitted_response_artifacts = False
-    responses_output: list[Any] = []
-    responses_response_id: str | None = response_id
-    for attempt in range(2):
+    def _end_conversation_span() -> None:
+        nonlocal span_ended
+        if span is None or span_ended:
+            return
+        span_ended = True
         try:
-            runtime_context.history = list(prepared.history)
-            with platform_invocation_scope(runtime_context):
-                async for chunk in runner.stream(
-                    _build_runner_request_payload(
-                        prepared=prepared,
-                        model=model,
-                        runtime_context=runtime_context,
-                    )
-                ):
-                    chunk_type = chunk.get("type")
-                    if chunk_type == "responses_output":
-                        raw_output = chunk.get("output")
-                        responses_output = raw_output if isinstance(raw_output, list) else []
-                        raw_response_id = chunk.get("response_id")
-                        responses_response_id = (
-                            str(raw_response_id) if raw_response_id else responses_response_id
+            span.end()
+        except Exception:
+            pass
+
+    try:
+        _set_conversation_span_attributes(
+            span,
+            agent_id=agent_id,
+            user_id=user_id,
+            session_id=prepared.session_id,
+            invocation_id=prepared.invocation_id,
+            runner_name=runner_name,
+            model=model,
+            response_id=response_id,
+        )
+        trace_metadata = _span_feedback_metadata(span)
+        await append_run_status_event(
+            session_id=prepared.session_id,
+            author=runner_name,
+            status="in_progress",
+            invocation_id=prepared.invocation_id,
+            session_service_provider=provider,
+        )
+
+        accumulated_text = ""
+        emitted_anything = False
+        emitted_response_artifacts = False
+        responses_output: list[Any] = []
+        responses_response_id: str | None = response_id
+        for attempt in range(2):
+            try:
+                runtime_context.history = list(prepared.history)
+                with platform_invocation_scope(runtime_context):
+                    stream = runner.stream(
+                        _build_runner_request_payload(
+                            prepared=prepared,
+                            model=model,
+                            runtime_context=runtime_context,
                         )
-                        if responses_output and not emitted_response_artifacts:
-                            for semantic_event in _semantic_events_from_responses_output(
-                                responses_output
-                            ):
-                                if semantic_event.get("type") == "thinking":
-                                    await append_reasoning_event(
-                                        session_id=prepared.session_id,
-                                        author=runner_name,
-                                        text=str(semantic_event.get("delta") or ""),
-                                        invocation_id=prepared.invocation_id,
-                                        session_service_provider=provider,
-                                    )
+                    )
+                    while True:
+                        try:
+                            with _span_current_context(span):
+                                chunk = await anext(stream)
+                        except StopAsyncIteration:
+                            break
+                        chunk_type = chunk.get("type")
+                        if chunk_type == "responses_output":
+                            raw_output = chunk.get("output")
+                            responses_output = raw_output if isinstance(raw_output, list) else []
+                            raw_response_id = chunk.get("response_id")
+                            responses_response_id = (
+                                str(raw_response_id) if raw_response_id else responses_response_id
+                            )
+                            if responses_output and not emitted_response_artifacts:
+                                for semantic_event in _semantic_events_from_responses_output(
+                                    responses_output
+                                ):
+                                    if semantic_event.get("type") == "thinking":
+                                        await append_reasoning_event(
+                                            session_id=prepared.session_id,
+                                            author=runner_name,
+                                            text=str(semantic_event.get("delta") or ""),
+                                            invocation_id=prepared.invocation_id,
+                                            session_service_provider=provider,
+                                        )
+                                    emitted_anything = True
+                                    yield semantic_event
+                            continue
+                        if chunk_type == "thinking":
+                            delta = str(chunk.get("delta", ""))
+                            if delta:
+                                await append_reasoning_event(
+                                    session_id=prepared.session_id,
+                                    author=runner_name,
+                                    text=delta,
+                                    invocation_id=prepared.invocation_id,
+                                    session_service_provider=provider,
+                                )
                                 emitted_anything = True
-                                yield semantic_event
-                        continue
-                    if chunk_type == "thinking":
-                        delta = str(chunk.get("delta", ""))
-                        if delta:
-                            await append_reasoning_event(
+                                emitted_response_artifacts = True
+                                yield {"type": "thinking", "delta": delta}
+                            continue
+                        if chunk_type == "text":
+                            delta = str(chunk.get("delta", ""))
+                            if delta:
+                                accumulated_text += delta
+                                emitted_anything = True
+                                yield {"type": "text", "delta": delta}
+                            continue
+                        if chunk_type == "tool_call":
+                            emitted_response_artifacts = True
+                            await append_conversation_event(
                                 session_id=prepared.session_id,
                                 author=runner_name,
-                                text=delta,
+                                role="model",
+                                text=str(chunk.get("tool_name") or "tool"),
                                 invocation_id=prepared.invocation_id,
+                                event_type="tool_call",
+                                metadata={
+                                    "tool_name": chunk.get("tool_name"),
+                                    "tool_args": chunk.get("tool_args", {}),
+                                    "run_id": chunk.get("run_id"),
+                                },
                                 session_service_provider=provider,
                             )
                             emitted_anything = True
+                            yield {
+                                "type": "tool_call",
+                                "name": chunk.get("tool_name"),
+                                "args": chunk.get("tool_args", {}),
+                                "run_id": chunk.get("run_id"),
+                            }
+                            continue
+                        if chunk_type == "tool_result":
                             emitted_response_artifacts = True
-                            yield {"type": "thinking", "delta": delta}
-                        continue
-                    if chunk_type == "text":
-                        delta = str(chunk.get("delta", ""))
-                        if delta:
-                            accumulated_text += delta
+                            await append_conversation_event(
+                                session_id=prepared.session_id,
+                                author=runner_name,
+                                role="user",
+                                text=str(chunk.get("tool_output", "")),
+                                invocation_id=prepared.invocation_id,
+                                event_type="tool_result",
+                                metadata={
+                                    "tool_name": chunk.get("tool_name"),
+                                    "tool_output": chunk.get("tool_output", ""),
+                                    "run_id": chunk.get("run_id"),
+                                },
+                                session_service_provider=provider,
+                            )
                             emitted_anything = True
-                            yield {"type": "text", "delta": delta}
-                        continue
-                    if chunk_type == "tool_call":
-                        emitted_response_artifacts = True
-                        await append_conversation_event(
-                            session_id=prepared.session_id,
-                            author=runner_name,
-                            role="model",
-                            text=str(chunk.get("tool_name") or "tool"),
-                            invocation_id=prepared.invocation_id,
-                            event_type="tool_call",
-                            metadata={
-                                "tool_name": chunk.get("tool_name"),
-                                "tool_args": chunk.get("tool_args", {}),
+                            yield {
+                                "type": "tool_result",
+                                "name": chunk.get("tool_name"),
+                                "output": chunk.get("tool_output", ""),
                                 "run_id": chunk.get("run_id"),
-                            },
-                            session_service_provider=provider,
-                        )
-                        emitted_anything = True
+                            }
+                            continue
+                        if chunk_type == "interrupt":
+                            interrupt_info = chunk.get("interrupt_info")
+                            await append_conversation_event(
+                                session_id=prepared.session_id,
+                                author=runner_name,
+                                role="model",
+                                text="approval requested",
+                                invocation_id=prepared.invocation_id,
+                                event_type="approval_request",
+                                metadata={"interrupt_info": interrupt_info},
+                                session_service_provider=provider,
+                            )
+                            await append_run_status_event(
+                                session_id=prepared.session_id,
+                                author=runner_name,
+                                status="interrupted",
+                                invocation_id=prepared.invocation_id,
+                                detail="approval_required",
+                                session_service_provider=provider,
+                            )
+                            emitted_anything = True
+                            yield {
+                                "type": "interrupt",
+                                "interrupt_info": interrupt_info,
+                                "session_id": prepared.session_id,
+                                "metadata": {**trace_metadata, **prepared.request_metadata},
+                            }
+                            return
+                        if chunk_type == "final":
+                            final_text = str(chunk.get("output", ""))
+                            if final_text:
+                                accumulated_text = final_text
+                break
+            except Exception as exc:
+                if attempt == 0 and not emitted_anything and _is_prompt_too_long_error(exc):
+                    yield {"type": "compaction", "phase": "start", "trigger": "prompt_too_long"}
+                    checkpoint = await compact_conversation_history(
+                        session_id=prepared.session_id,
+                        author=runner_name,
+                        invocation_id=prepared.invocation_id,
+                        model=model,
+                        model_metadata=prepared.model_metadata,
+                        force=True,
+                        trigger="prompt_too_long",
+                        keep_tail_groups=PTL_RETRY_KEEP_TAIL_GROUPS,
+                        session_service_provider=provider,
+                    )
+                    if checkpoint:
                         yield {
-                            "type": "tool_call",
-                            "name": chunk.get("tool_name"),
-                            "args": chunk.get("tool_args", {}),
-                            "run_id": chunk.get("run_id"),
+                            "type": "compaction",
+                            "phase": "done",
+                            "trigger": "prompt_too_long",
+                            "compacted_until_seq_id": int(
+                                (checkpoint.metadata or {}).get("compacted_until_seq_id") or 0
+                            )
+                            or None,
                         }
+                        prepared = await _refresh_history(prepared, session_service_provider=provider)
+                        runtime_context.history = list(prepared.history)
                         continue
-                    if chunk_type == "tool_result":
-                        emitted_response_artifacts = True
-                        await append_conversation_event(
-                            session_id=prepared.session_id,
-                            author=runner_name,
-                            role="user",
-                            text=str(chunk.get("tool_output", "")),
-                            invocation_id=prepared.invocation_id,
-                            event_type="tool_result",
-                            metadata={
-                                "tool_name": chunk.get("tool_name"),
-                                "tool_output": chunk.get("tool_output", ""),
-                                "run_id": chunk.get("run_id"),
-                            },
-                            session_service_provider=provider,
-                        )
-                        emitted_anything = True
-                        yield {
-                            "type": "tool_result",
-                            "name": chunk.get("tool_name"),
-                            "output": chunk.get("tool_output", ""),
-                            "run_id": chunk.get("run_id"),
-                        }
-                        continue
-                    if chunk_type == "interrupt":
-                        interrupt_info = chunk.get("interrupt_info")
-                        await append_conversation_event(
-                            session_id=prepared.session_id,
-                            author=runner_name,
-                            role="model",
-                            text="approval requested",
-                            invocation_id=prepared.invocation_id,
-                            event_type="approval_request",
-                            metadata={"interrupt_info": interrupt_info},
-                            session_service_provider=provider,
-                        )
-                        await append_run_status_event(
-                            session_id=prepared.session_id,
-                            author=runner_name,
-                            status="interrupted",
-                            invocation_id=prepared.invocation_id,
-                            detail="approval_required",
-                            session_service_provider=provider,
-                        )
-                        emitted_anything = True
-                        yield {
-                            "type": "interrupt",
-                            "interrupt_info": interrupt_info,
-                            "session_id": prepared.session_id,
-                            "metadata": prepared.request_metadata,
-                        }
-                        return
-                    if chunk_type == "final":
-                        final_text = str(chunk.get("output", ""))
-                        if final_text:
-                            accumulated_text = final_text
-            break
-        except Exception as exc:
-            if attempt == 0 and not emitted_anything and _is_prompt_too_long_error(exc):
-                yield {"type": "compaction", "phase": "start", "trigger": "prompt_too_long"}
-                checkpoint = await compact_conversation_history(
+                await append_run_status_event(
                     session_id=prepared.session_id,
                     author=runner_name,
+                    status="failed",
                     invocation_id=prepared.invocation_id,
-                    model=model,
-                    model_metadata=prepared.model_metadata,
-                    force=True,
-                    trigger="prompt_too_long",
-                    keep_tail_groups=PTL_RETRY_KEEP_TAIL_GROUPS,
+                    detail=str(exc),
                     session_service_provider=provider,
                 )
-                if checkpoint:
-                    yield {
-                        "type": "compaction",
-                        "phase": "done",
-                        "trigger": "prompt_too_long",
-                        "compacted_until_seq_id": int(
-                            (checkpoint.metadata or {}).get("compacted_until_seq_id") or 0
-                        )
-                        or None,
-                    }
-                    prepared = await _refresh_history(prepared, session_service_provider=provider)
-                    runtime_context.history = list(prepared.history)
-                    continue
-            await append_run_status_event(
-                session_id=prepared.session_id,
-                author=runner_name,
-                status="failed",
-                invocation_id=prepared.invocation_id,
-                detail=str(exc),
-                session_service_provider=provider,
-            )
-            yield {"type": "error", "message": str(exc) or "Agent 运行失败"}
-            return
+                yield {"type": "error", "message": str(exc) or "Agent 运行失败"}
+                return
 
-    assistant_metadata = dict(request_metadata or {})
-    if responses_output:
-        assistant_metadata["responses_output"] = responses_output
-    if responses_response_id:
-        assistant_metadata["response_id"] = responses_response_id
+        assistant_metadata = {**trace_metadata, **dict(request_metadata or {})}
+        if responses_output:
+            assistant_metadata["responses_output"] = responses_output
+        if responses_response_id:
+            assistant_metadata["response_id"] = responses_response_id
 
-    await append_conversation_event(
-        session_id=prepared.session_id,
-        author=runner_name,
-        role="model",
-        text=accumulated_text,
-        invocation_id=prepared.invocation_id,
-        event_type="assistant_message",
-        metadata=assistant_metadata or None,
-        session_service_provider=provider,
-    )
-    await _update_session_metadata_after_assistant_turn(
-        service=provider(),
-        session_id=prepared.session_id,
-        assistant_text=accumulated_text,
-        model=model,
-    )
-    await append_run_status_event(
-        session_id=prepared.session_id,
-        author=runner_name,
-        status="completed",
-        invocation_id=prepared.invocation_id,
-        session_service_provider=provider,
-    )
-    yield {
-        "type": "completed",
-        "output_text": accumulated_text,
-        "model": model,
-        "session_id": prepared.session_id,
-        "metadata": assistant_metadata,
-        "responses_output": responses_output,
-        "response_id": responses_response_id,
-    }
+        await append_conversation_event(
+            session_id=prepared.session_id,
+            author=runner_name,
+            role="model",
+            text=accumulated_text,
+            invocation_id=prepared.invocation_id,
+            event_type="assistant_message",
+            metadata=assistant_metadata or None,
+            session_service_provider=provider,
+        )
+        await _update_session_metadata_after_assistant_turn(
+            service=provider(),
+            session_id=prepared.session_id,
+            assistant_text=accumulated_text,
+            model=model,
+        )
+        await append_run_status_event(
+            session_id=prepared.session_id,
+            author=runner_name,
+            status="completed",
+            invocation_id=prepared.invocation_id,
+            session_service_provider=provider,
+        )
+        _end_conversation_span()
+        yield {
+            "type": "completed",
+            "output_text": accumulated_text,
+            "model": model,
+            "session_id": prepared.session_id,
+            "metadata": assistant_metadata,
+            "responses_output": responses_output,
+            "response_id": responses_response_id,
+        }
+    finally:
+        _end_conversation_span()
 
 
 async def stream_conversation_turn(

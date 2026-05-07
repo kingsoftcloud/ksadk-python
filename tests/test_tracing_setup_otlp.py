@@ -119,7 +119,7 @@ def test_langfuse_env_uses_otlp_http_direct(monkeypatch):
 
     exporter = _FakeHttpOTLPSpanExporter.instances[0]
     expected_auth = base64.b64encode(b"pk-test:sk-test").decode("ascii")
-    assert exporter.endpoint == "https://langfuse.pre.example.com/api/public/otel"
+    assert exporter.endpoint == "https://langfuse.pre.example.com/api/public/otel/v1/traces"
     assert exporter.headers == {
         "Authorization": f"Basic {expected_auth}",
         "x-langfuse-ingestion-version": "4",

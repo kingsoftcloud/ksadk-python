@@ -61,17 +61,10 @@ test('session event utils restore persisted reasoning events', async () => {
         eventType: 'user_message',
       },
       {
-        id: 'evt-reasoning',
-        role: 'model',
-        content: '',
-        reasoning: '先分析问题',
-        eventType: 'reasoning',
-      },
-      {
         id: 'evt-assistant',
         role: 'model',
         content: '你好，很高兴见到你。',
-        reasoning: undefined,
+        reasoning: '先分析问题',
         eventType: 'assistant_message',
       },
     ],
@@ -229,17 +222,10 @@ test('session event utils restore completed run with persisted reasoning before 
         eventType: 'user_message',
       },
       {
-        id: 'evt-reasoning-1',
-        role: 'model',
-        content: '',
-        reasoning: '检查历史消息。确认当前用户输入只出现一次。',
-        eventType: 'reasoning',
-      },
-      {
         id: 'evt-assistant',
         role: 'model',
         content: '好的，我确认只收到了您这一次发送。',
-        reasoning: undefined,
+        reasoning: '检查历史消息。确认当前用户输入只出现一次。',
         eventType: 'assistant_message',
       },
     ],
@@ -302,9 +288,9 @@ test('session event utils coalesce reasoning deltas for the same invocation', as
     },
   ]);
 
-  const reasoningMessages = messages.filter((message) => message.eventType === 'reasoning');
+  const reasoningMessages = messages.filter((message) => message.reasoning);
   assert.equal(reasoningMessages.length, 1);
-  assert.equal(reasoningMessages[0].id, 'evt-reasoning-1');
+  assert.equal(reasoningMessages[0].id, 'evt-assistant');
   assert.equal(reasoningMessages[0].reasoning, '先分析。');
   assert.deepEqual(
     messages.map((message) => ({
@@ -322,15 +308,177 @@ test('session event utils coalesce reasoning deltas for the same invocation', as
       },
       {
         role: 'model',
-        content: '',
+        content: '完成。',
         reasoning: '先分析。',
-        eventType: 'reasoning',
+        eventType: 'assistant_message',
+      },
+    ],
+  );
+});
+
+test('session event utils do not duplicate persisted and response-output reasoning', async () => {
+  const sessionEvents = await loadSessionEventUtils();
+
+  assert.ok(sessionEvents, 'expected session event helpers to exist');
+  const messages = sessionEvents.buildMessagesFromSessionEvents([
+    {
+      EventId: 'evt-user',
+      EventType: 'user_message',
+      InvocationId: 'inv-reasoning-output',
+      Content: { role: 'user', parts: [{ text: '写一个python快排的示例' }] },
+      Timestamp: 1,
+    },
+    {
+      EventId: 'evt-reasoning',
+      EventType: 'reasoning',
+      InvocationId: 'inv-reasoning-output',
+      Content: { role: 'model', parts: [{ text: '先分析问题' }] },
+      Timestamp: 2,
+    },
+    {
+      EventId: 'evt-assistant',
+      EventType: 'assistant_message',
+      InvocationId: 'inv-reasoning-output',
+      Content: { role: 'model', parts: [{ text: '最终答案' }] },
+      Metadata: {
+        responses_output: [
+          {
+            id: 'rs_1',
+            type: 'reasoning',
+            summary: [{ text: '先分析问题' }],
+          },
+          {
+            id: 'msg_1',
+            type: 'message',
+            content: [{ type: 'output_text', text: '最终答案' }],
+          },
+        ],
+      },
+      Timestamp: 3,
+    },
+  ]);
+
+  assert.deepEqual(
+    messages.map((message) => ({
+      id: message.id,
+      role: message.role,
+      content: message.content,
+      reasoning: message.reasoning,
+      eventType: message.eventType,
+    })),
+    [
+      {
+        id: 'evt-user',
+        role: 'user',
+        content: '写一个python快排的示例',
+        reasoning: undefined,
+        eventType: 'user_message',
       },
       {
+        id: 'evt-assistant',
         role: 'model',
-        content: '完成。',
-        reasoning: undefined,
+        content: '最终答案',
+        reasoning: '先分析问题',
         eventType: 'assistant_message',
+      },
+    ],
+  );
+});
+
+test('session event utils dedupe duplicate assistant output for the same invocation', async () => {
+  const sessionEvents = await loadSessionEventUtils();
+
+  assert.ok(sessionEvents, 'expected session event helpers to exist');
+  const messages = sessionEvents.buildMessagesFromSessionEvents([
+    {
+      EventId: 'evt-user',
+      EventType: 'user_message',
+      InvocationId: 'inv-dup',
+      Content: { role: 'user', parts: [{ text: '你好' }] },
+      Timestamp: 1,
+    },
+    {
+      EventId: 'evt-assistant-1',
+      EventType: 'assistant_message',
+      InvocationId: 'inv-dup',
+      Content: { role: 'model', parts: [{ text: '你好，我在。' }] },
+      Metadata: { response_id: 'resp-dup' },
+      Timestamp: 2,
+    },
+    {
+      EventId: 'evt-assistant-2',
+      EventType: 'assistant_message',
+      InvocationId: 'inv-dup',
+      Content: { role: 'model', parts: [{ text: '你好，我在。' }] },
+      Metadata: { response_id: 'resp-dup' },
+      Timestamp: 3,
+    },
+    {
+      EventId: 'evt-completed',
+      EventType: 'run_status',
+      InvocationId: 'inv-dup',
+      Content: { status: 'completed' },
+      Timestamp: 4,
+    },
+  ]);
+
+  assert.deepEqual(
+    messages.map((message) => ({
+      id: message.id,
+      role: message.role,
+      content: message.content,
+    })),
+    [
+      { id: 'evt-user', role: 'user', content: '你好' },
+      { id: 'evt-assistant-1', role: 'model', content: '你好，我在。' },
+    ],
+  );
+});
+
+test('session event utils dedupe same assistant output even when response ids differ', async () => {
+  const sessionEvents = await loadSessionEventUtils();
+
+  assert.ok(sessionEvents, 'expected session event helpers to exist');
+  const messages = sessionEvents.buildMessagesFromSessionEvents([
+    {
+      EventId: 'evt-user',
+      EventType: 'user_message',
+      InvocationId: 'inv-resp-dup',
+      Content: { role: 'user', parts: [{ text: '你好' }] },
+      Timestamp: 1,
+    },
+    {
+      EventId: 'evt-assistant-1',
+      EventType: 'assistant_message',
+      InvocationId: 'inv-resp-dup',
+      Content: { role: 'model', parts: [{ text: '你好，我在。' }] },
+      Metadata: { response_id: 'resp-first' },
+      Timestamp: 2,
+    },
+    {
+      EventId: 'evt-assistant-2',
+      EventType: 'assistant_message',
+      InvocationId: 'inv-resp-dup',
+      Content: { role: 'model', parts: [{ text: '你好，我在。' }] },
+      Metadata: { response_id: 'resp-second' },
+      Timestamp: 3,
+    },
+  ]);
+
+  assert.deepEqual(
+    messages.map((message) => ({
+      id: message.id,
+      responseId: message.responseId,
+      role: message.role,
+      content: message.content,
+    })),
+    [
+      { id: 'evt-user', responseId: undefined, role: 'user', content: '你好' },
+      {
+        id: 'evt-assistant-1',
+        responseId: 'resp-first',
+        role: 'model',
+        content: '你好，我在。',
       },
     ],
   );

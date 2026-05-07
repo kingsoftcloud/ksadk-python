@@ -41,6 +41,11 @@ import {
   maxSeqIdFromEvents,
   parseMessageContent,
 } from './utils/session-events.js';
+import {
+  buildModelOptionsFromThinkingMode,
+  normalizeThinkingMode,
+} from './utils/model-options.js';
+import { shouldStopReadingRunStream } from './utils/stream-control.js';
 import { useResponsiveViewport } from './hooks/useResponsiveViewport';
 import { cn } from '@/lib/utils';
 import { AttachmentPreview } from './components/chat/AttachmentPreview';
@@ -119,6 +124,7 @@ type BootstrapModel = ModelCatalogItem & {
 type BootstrapWorkspaceFiles = WorkspaceFilesCapability;
 
 type RuntimeApiFormat = 'responses' | 'chat_completions';
+type ThinkingMode = 'auto' | 'enabled' | 'disabled';
 
 type UiCapabilities = {
   HostedChat: {
@@ -358,6 +364,7 @@ export default function App() {
   const [availableModels, setAvailableModels] = useState<ModelCatalogItem[]>([]);
   const [modelSource, setModelSource] = useState('');
   const [modelCatalogLoaded, setModelCatalogLoaded] = useState(false);
+  const [thinkingMode, setThinkingMode] = useState<ThinkingMode>('auto');
   const [agentFramework, setAgentFramework] = useState('');
   const [workspaceFiles, setWorkspaceFiles] = useState<BootstrapWorkspaceFiles | null>(null);
   const [accessMode, setAccessMode] = useState('Owner');
@@ -386,6 +393,7 @@ export default function App() {
   const stopRequestedRef = useRef(false);
   const queuedDraftRef = useRef<Array<{ text: string; attachments: File[] }>>([]);
   const activeCompactionMessageIdRef = useRef<string | null>(null);
+  const agentIdRef = useRef(agentId);
   const currentSessionIdRef = useRef<string | null>(null);
   const runSubscriptionAbortRef = useRef<AbortController | null>(null);
 
@@ -418,6 +426,7 @@ export default function App() {
   }, [input, composerMaxHeight]);
 
   useEffect(() => {
+    agentIdRef.current = agentId;
     currentSessionIdRef.current = currentSessionId;
     writePersistedSessionId(agentId, currentSessionId);
   }, [agentId, currentSessionId]);
@@ -502,7 +511,11 @@ export default function App() {
     }
   };
 
-  const loadFeedbackForMessages = async (sessionId: string, history: Message[]) => {
+  const loadFeedbackForMessages = async (
+    targetAgentId: string,
+    sessionId: string,
+    history: Message[],
+  ) => {
     const targets = history.filter((message) =>
       shouldRenderFeedbackControls(message, false, false),
     );
@@ -518,7 +531,7 @@ export default function App() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(
               buildGetFeedbackPayload({
-                agentId,
+                agentId: targetAgentId,
                 sessionId,
                 message,
               }),
@@ -669,7 +682,7 @@ export default function App() {
         const events = data.Data.Events as SessionEventRecord[];
         const history = buildMessagesFromSessionEvents(events);
         setMessages(history);
-        void loadFeedbackForMessages(sessionId, history);
+        void loadFeedbackForMessages(agentIdRef.current, sessionId, history);
         const activeRuns = findActiveRunIds(events);
         const lastSeqId = maxSeqIdFromEvents(events);
         if (uiCapabilities.RunLifecycle.Enabled && uiCapabilities.RunLifecycle.Resume && activeRuns[0]) {
@@ -991,6 +1004,7 @@ export default function App() {
           ApiFormat: runAgentApiFormat,
           Model: selectedModel || undefined,
           ModelMetadata: selectedModelMetadata || undefined,
+          ModelOptions: buildModelOptionsFromThinkingMode(thinkingMode),
           Messages: isResponsesResume
             ? []
             : [
@@ -1217,11 +1231,10 @@ export default function App() {
                 appendSystemMessage('本次运行已中断，需要人工确认后继续。');
               } else if (action.type === 'failed') {
                 setAssistantText(`生成失败：${action.message}`);
-              } else if (action.type === 'terminal') {
-                isDone = true;
               }
             }
-            if (isDone) {
+            if (shouldStopReadingRunStream(actions)) {
+              isDone = true;
               break;
             }
           } catch (error) {
@@ -1457,6 +1470,7 @@ export default function App() {
     availableModels.find((model) => model.id === selectedModel) || null;
   const selectedModelLabel = selectedModelMetadata?.display_name || selectedModel || '';
   const hostedChatEnabled = isHostedChatEnabled(uiCapabilities);
+  const thinkingEnabled = Boolean(uiCapabilities.Thinking);
   const composerContextIndicator = buildComposerContextIndicator({
     messages,
     draftInput: input,
@@ -1532,7 +1546,6 @@ export default function App() {
             onCreateNewSession={createNewSession}
             onSelectSession={loadSession}
             onDeleteSession={deleteSession}
-            formatDate={formatDate}
             sessionTitle={sessionTitle}
           />
         </aside>
@@ -1551,7 +1564,6 @@ export default function App() {
               onCreateNewSession={createNewSession}
               onSelectSession={loadSession}
               onDeleteSession={deleteSession}
-              formatDate={formatDate}
               sessionTitle={sessionTitle}
             />
           </SheetContent>
@@ -1584,6 +1596,9 @@ export default function App() {
           selectedModelLabel={selectedModelLabel}
           modelCatalogLoaded={modelCatalogLoaded}
           modelSource={modelSource}
+          thinkingEnabled={thinkingEnabled}
+          thinkingMode={thinkingMode}
+          onSelectThinkingMode={(mode) => setThinkingMode(normalizeThinkingMode(mode))}
           mobileActionsOpen={mobileActionsOpen}
           onMobileActionsOpenChange={setMobileActionsOpen}
           workspaceEnabled={workspaceEnabled}

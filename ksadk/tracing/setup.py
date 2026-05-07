@@ -36,7 +36,7 @@ def _build_langfuse_otlp_config(langfuse_config: dict = None) -> Optional[dict]:
 
     auth = base64.b64encode(f"{public_key}:{secret_key}".encode("utf-8")).decode("ascii")
     return {
-        "endpoint": f"{host.rstrip('/')}/api/public/otel",
+        "endpoint": f"{host.rstrip('/')}/api/public/otel/v1/traces",
         "headers": {
             "Authorization": f"Basic {auth}",
             "x-langfuse-ingestion-version": "4",

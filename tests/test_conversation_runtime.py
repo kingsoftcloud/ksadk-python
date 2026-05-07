@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-import importlib
 import asyncio
+import importlib
 import json
 import time
 
 import httpx
 import pytest
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 
 from ksadk.conversations.context import build_history_from_events
 from ksadk.conversations.model_options import normalize_model_options
@@ -26,6 +29,7 @@ from ksadk.conversations.runtime import (
 from ksadk.runtime_context import get_current_invocation_context
 from ksadk.sessions.base import SessionEvent
 from ksadk.sessions.in_memory import InMemorySessionService
+from ksadk.tracing.exporters.inmemory_exporter import InMemoryExporter
 
 
 class _StubRunner:
@@ -144,6 +148,19 @@ def _extract_sse_payload(chunks: list[str], event_name: str) -> dict:
             elif line.startswith("data: ") and current_event == event_name:
                 return json.loads(line.removeprefix("data: "))
     raise AssertionError(f"SSE event {event_name!r} not found")
+
+
+@pytest.fixture
+def in_memory_trace_exporter():
+    provider = TracerProvider()
+    exporter = InMemoryExporter()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    trace._TRACER_PROVIDER = None
+    trace._TRACER_PROVIDER_SET_ONCE._done = False
+    trace._set_tracer_provider(provider, log=False)
+    yield exporter
+    trace._TRACER_PROVIDER = None
+    trace._TRACER_PROVIDER_SET_ONCE._done = False
 
 
 @pytest.fixture(autouse=True)
@@ -510,6 +527,40 @@ async def test_invoke_conversation_once_persists_response_id_on_assistant_event(
 
 
 @pytest.mark.asyncio
+async def test_invoke_conversation_once_persists_trace_metadata_for_feedback(
+    monkeypatch,
+    in_memory_trace_exporter,
+):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _StubRunner()
+
+    session_id, result = await invoke_conversation_once(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id=None,
+        messages=[{"role": "user", "content": "hello"}],
+        model="gpt-4o",
+        response_id="resp_trace_nonstream",
+        prepare_runner=lambda runner, model: runner.prepare_for_request(model),
+    )
+
+    events = await service.get_events(session_id)
+    assistant_event = next(event for event in events if event.event_type == "assistant_message")
+    trace_id = assistant_event.metadata.get("trace_id")
+    root_span_id = assistant_event.metadata.get("root_span_id")
+
+    assert trace_id
+    assert root_span_id
+    assert result["metadata"]["trace_id"] == trace_id
+    assert result["metadata"]["root_span_id"] == root_span_id
+    exported_trace = in_memory_trace_exporter.get_trace(trace_id)
+    assert exported_trace is not None
+    assert any(span["span_id"] == root_span_id for span in exported_trace["spans"])
+
+
+@pytest.mark.asyncio
 async def test_invoke_conversation_once_passes_session_id_to_runner(monkeypatch):
     service = InMemorySessionService()
     monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
@@ -558,6 +609,14 @@ def test_normalize_model_options_maps_legacy_thinking_disabled_to_reasoning_none
     assert normalized["thinking"] == {"type": "disabled"}
     assert normalized["reasoning"] == {"effort": "none"}
     assert normalized["max_reasoning_tokens"] == 0
+
+
+def test_normalize_model_options_maps_enabled_thinking_to_default_reasoning_effort():
+    normalized = normalize_model_options({"thinking": {"type": "enabled"}})
+
+    assert normalized["thinking"] == {"type": "enabled"}
+    assert normalized["reasoning"] == {"effort": "medium"}
+    assert "max_reasoning_tokens" not in normalized
 
 
 @pytest.mark.asyncio
@@ -1243,6 +1302,44 @@ async def test_stream_responses_conversation_turn_persists_outer_response_id_on_
     assistant_event = next(event for event in events if event.event_type == "assistant_message")
     assert completed_payload["id"] == created_payload["id"]
     assert assistant_event.metadata["response_id"] == created_payload["id"]
+
+
+@pytest.mark.asyncio
+async def test_stream_responses_conversation_turn_persists_trace_metadata_for_feedback(
+    monkeypatch,
+    in_memory_trace_exporter,
+):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _StreamingRunner()
+
+    chunks = [
+        chunk
+        async for chunk in stream_responses_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-stream-trace-feedback",
+            messages=[{"role": "user", "content": "hello"}],
+            model="gpt-4o",
+            prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+            session_service_provider=lambda: service,
+        )
+    ]
+
+    completed_payload = _extract_sse_payload(chunks, "response.completed")
+    events = await service.get_events("sess-stream-trace-feedback")
+    assistant_event = next(event for event in events if event.event_type == "assistant_message")
+    trace_id = assistant_event.metadata.get("trace_id")
+    root_span_id = assistant_event.metadata.get("root_span_id")
+
+    assert trace_id
+    assert root_span_id
+    assert completed_payload["metadata"]["trace_id"] == trace_id
+    assert completed_payload["metadata"]["root_span_id"] == root_span_id
+    exported_trace = in_memory_trace_exporter.get_trace(trace_id)
+    assert exported_trace is not None
+    assert any(span["span_id"] == root_span_id for span in exported_trace["spans"])
 
 
 @pytest.mark.asyncio

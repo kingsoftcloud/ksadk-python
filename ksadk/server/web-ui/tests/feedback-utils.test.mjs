@@ -5,6 +5,10 @@ async function loadFeedbackUtils() {
   return import('../src/utils/feedback.js').catch(() => null);
 }
 
+async function loadModelOptionsUtils() {
+  return import('../src/utils/model-options.js').catch(() => null);
+}
+
 test('feedback utils expose assistant response feedback state', async () => {
   const feedback = await loadFeedbackUtils();
 
@@ -149,4 +153,18 @@ test('feedback utils support optimistic update and rollback', async () => {
     }),
     messages,
   );
+});
+
+test('model options utils map thinking mode to request payload', async () => {
+  const modelOptions = await loadModelOptionsUtils();
+
+  assert.ok(modelOptions, 'expected model options helpers to exist');
+  assert.equal(modelOptions.buildModelOptionsFromThinkingMode('auto'), undefined);
+  assert.deepEqual(modelOptions.buildModelOptionsFromThinkingMode('disabled'), {
+    thinking: { type: 'disabled' },
+  });
+  assert.deepEqual(modelOptions.buildModelOptionsFromThinkingMode('enabled'), {
+    thinking: { type: 'enabled' },
+  });
+  assert.equal(modelOptions.normalizeThinkingMode('unexpected'), 'auto');
 });
