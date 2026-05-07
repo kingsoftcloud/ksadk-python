@@ -285,28 +285,64 @@ export function buildMessagesFromSessionEvents(events = []) {
     latestRunStatusByInvocation.set(invocationId, String(event.Content?.status || '').trim());
   }
 
-  return normalizedEvents
-    .map((event) => {
-      if (event.EventType === 'run_status' && event.Content?.status === 'in_progress') {
+  const messages = [];
+  let pendingReasoning = null;
+
+  const flushPendingReasoning = () => {
+    if (pendingReasoning) {
+      messages.push(pendingReasoning);
+      pendingReasoning = null;
+    }
+  };
+
+  for (const event of normalizedEvents) {
+    if (event.EventType === 'run_status' && event.Content?.status === 'in_progress') {
         const invocationId = String(event.InvocationId || '').trim();
         if (
           invocationId &&
           latestRunStatusByInvocation.get(invocationId) === 'in_progress' &&
           !outputByInvocation.has(invocationId)
         ) {
-          return {
+          flushPendingReasoning();
+          messages.push({
             id: event.EventId || String(Date.now() + Math.random()),
             role: 'system',
             content: '上一轮消息仍在运行中，正在等待运行时继续返回结果。',
             eventType: 'run_status',
             status: 'running',
             timestamp: event.Timestamp || Date.now(),
-          };
+          });
         }
+        continue;
       }
-      return buildMessageFromSessionEvent(event);
-    })
-    .filter(Boolean);
+    const message = buildMessageFromSessionEvent(event);
+    if (!message) {
+      continue;
+    }
+    if (message.eventType === 'reasoning') {
+      const invocationId = String(event.InvocationId || '').trim();
+      if (
+        pendingReasoning &&
+        invocationId &&
+        pendingReasoning.invocationId === invocationId
+      ) {
+        pendingReasoning.reasoning = `${pendingReasoning.reasoning || ''}${message.reasoning || ''}`;
+        pendingReasoning.timestamp = message.timestamp;
+        continue;
+      }
+      flushPendingReasoning();
+      pendingReasoning = {
+        ...message,
+        ...(invocationId ? { invocationId } : {}),
+      };
+      continue;
+    }
+    flushPendingReasoning();
+    messages.push(message);
+  }
+
+  flushPendingReasoning();
+  return messages.map(({ invocationId: _invocationId, ...message }) => message);
 }
 
 export function maxSeqIdFromEvents(events = []) {
