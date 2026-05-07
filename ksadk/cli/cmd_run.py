@@ -163,15 +163,21 @@ def _run_custom(
             # Auto-detect Langfuse from environment
             has_langfuse = bool(os.getenv("LANGFUSE_PUBLIC_KEY"))
 
-            # 对于 LangChain 生态（LangGraph/DeepAgents），默认仅使用 Callback 以避免重复 Trace
-            is_langchain = result.type.value in ("langchain", "langgraph", "deepagents")
+            use_callback_only = os.getenv("LANGFUSE_USE_CALLBACK", "").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+                "on",
+            )
 
             setup_tracing(
-                enable_inmemory=True, enable_langfuse=has_langfuse, use_callback_only=is_langchain
+                enable_inmemory=True,
+                enable_langfuse=has_langfuse,
+                use_callback_only=use_callback_only,
             )
 
             if has_langfuse:
-                print_info(f"Tracing: Enabled (InMemory + Langfuse, CallbackOnly={is_langchain})")
+                print_info(f"Tracing: Enabled (InMemory + Langfuse, CallbackOnly={use_callback_only})")
             else:
                 print_info("Tracing: Enabled")
         except Exception as e:

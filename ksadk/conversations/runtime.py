@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -877,31 +878,60 @@ async def _update_session_metadata_after_assistant_turn(
         if next_title and next_title != (session.title or "").strip()
         else ""
     )
+    if next_title and next_title != (session.title or "").strip():
+        await service.update_session_metadata(
+            session_id,
+            title=next_title,
+            title_source=next_title_source,
+        )
+
     title_client = resolve_session_title_client()
     title_model = resolve_session_title_model(model)
     if title_client.is_available and title_model:
-        try:
-            title, _usage = await title_client.generate_title(
+        asyncio.create_task(
+            _refine_session_title_in_background(
+                service=service,
+                session_id=session_id,
+                first_prompt=first_prompt,
+                assistant_text=summary,
                 model=title_model,
-                messages=build_session_title_messages(
-                    first_prompt=first_prompt,
-                    assistant_text=summary,
-                ),
-                timeout_ms=DEFAULT_SESSION_TITLE_TIMEOUT_MS,
             )
-        except Exception:
-            title = ""
+        )
 
-        if title and not is_low_quality_title(title, first_prompt=first_prompt):
-            next_title = title
-            next_title_source = "ai"
 
-    if not next_title or next_title == (session.title or "").strip():
+async def _refine_session_title_in_background(
+    *,
+    service: Any,
+    session_id: str,
+    first_prompt: str,
+    assistant_text: str,
+    model: str,
+) -> None:
+    title_client = resolve_session_title_client()
+    try:
+        title, _usage = await title_client.generate_title(
+            model=model,
+            messages=build_session_title_messages(
+                first_prompt=first_prompt,
+                assistant_text=assistant_text,
+            ),
+            timeout_ms=DEFAULT_SESSION_TITLE_TIMEOUT_MS,
+        )
+    except Exception:
+        logger.debug("failed to refine session title", exc_info=True)
+        return
+
+    if not title or is_low_quality_title(title, first_prompt=first_prompt):
+        return
+    session = await service.get_session(session_id)
+    if not session:
+        return
+    if title == (session.title or "").strip():
         return
     await service.update_session_metadata(
         session_id,
-        title=next_title,
-        title_source=next_title_source,
+        title=title,
+        title_source="ai",
     )
 
 

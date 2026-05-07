@@ -203,6 +203,10 @@ class SessionTitleClient:
             "messages": list(messages),
             "stream": False,
             "temperature": 0,
+            "extra_body": {
+                "thinking": {"type": "disabled"},
+                "max_reasoning_tokens": 0,
+            },
         }
         timeout_seconds = max(1.0, float(timeout_ms) / 1000.0)
         async with httpx.AsyncClient(timeout=timeout_seconds) as client:

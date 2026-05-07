@@ -680,11 +680,14 @@ def setup_environment(agent_path: "Path"):
         os.environ["COZE_INTEGRATION_MODEL_BASE_URL"] = openai_base_url
 
     # 3. 注入 Intelligent Defaults
-    # API Base
-    if not os.getenv("OPENAI_API_BASE"):
+    # API Base. 兼容 OpenAI SDK/LangChain 常见的 OPENAI_BASE_URL 与历史 OPENAI_API_BASE。
+    if not os.getenv("OPENAI_BASE_URL") or not os.getenv("OPENAI_API_BASE"):
         api_base = settings.model.api_base
         if api_base:
-            os.environ["OPENAI_API_BASE"] = api_base
+            if not os.getenv("OPENAI_BASE_URL"):
+                os.environ["OPENAI_BASE_URL"] = api_base
+            if not os.getenv("OPENAI_API_BASE"):
+                os.environ["OPENAI_API_BASE"] = api_base
             click.echo(f"🔧 API Base: {click.style(api_base, fg='cyan')} (Auto-detected)")
             
     # Model Name
