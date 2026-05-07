@@ -37,7 +37,24 @@ def test_setup_environment_rewrites_public_openai_base_url_for_managed_runtime(
 
     setup_environment(tmp_path)
 
-    assert "OPENAI_BASE_URL" not in os.environ
+    assert os.environ["OPENAI_BASE_URL"] == "http://kspmas-internal.sdns.ksyun.com/v1"
+    assert os.environ["OPENAI_API_BASE"] == "http://kspmas-internal.sdns.ksyun.com/v1"
+
+
+def test_setup_environment_injects_openai_base_url_when_only_auto_detected_base_is_available(
+    monkeypatch,
+    tmp_path: Path,
+):
+    monkeypatch.setenv("AGENT_RUNTIME_ID", "ar-test")
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_BASE", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL_NAME", raising=False)
+    monkeypatch.delenv("MODEL_NAME", raising=False)
+    monkeypatch.setattr(settings_module, "check_endpoint_reachable", lambda *args, **kwargs: False)
+
+    setup_environment(tmp_path)
+
+    assert os.environ["OPENAI_BASE_URL"] == "http://kspmas-internal.sdns.ksyun.com/v1"
     assert os.environ["OPENAI_API_BASE"] == "http://kspmas-internal.sdns.ksyun.com/v1"
 
 

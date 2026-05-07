@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import asyncio
 import json
 import time
 
@@ -1322,6 +1323,66 @@ async def test_invoke_conversation_once_refines_session_title_after_first_turn(m
     session = await service.get_session(session_id)
     assert session is not None
     assert session.first_prompt == "你好，请介绍一下你自己"
+    for _ in range(20):
+        if session.title == "自我介绍":
+            break
+        await asyncio.sleep(0.01)
+        session = await service.get_session(session_id)
+        assert session is not None
+    assert session.title == "自我介绍"
+    assert session.title_source == "ai"
+
+
+@pytest.mark.asyncio
+async def test_invoke_conversation_once_does_not_wait_for_ai_session_title(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    title_started = asyncio.Event()
+    release_title = asyncio.Event()
+
+    class _BlockingTitleClient:
+        @property
+        def is_available(self):
+            return True
+
+        async def generate_title(self, *, model, messages, timeout_ms):
+            title_started.set()
+            await release_title.wait()
+            return "自我介绍", {"total_tokens": 12}
+
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.resolve_session_title_client",
+        lambda: _BlockingTitleClient(),
+    )
+
+    runner = _StubRunner()
+    invoke_task = asyncio.create_task(
+        invoke_conversation_once(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id=None,
+            messages=[{"role": "user", "content": "你好，请介绍一下你自己"}],
+            model="glm-5.1",
+            prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+        )
+    )
+    await asyncio.wait_for(title_started.wait(), timeout=1)
+
+    session_id, _ = await asyncio.wait_for(invoke_task, timeout=0.2)
+    session = await service.get_session(session_id)
+    assert session is not None
+    assert session.title == "Agent能力介绍"
+    assert session.title_source == "heuristic"
+
+    release_title.set()
+    for _ in range(20):
+        session = await service.get_session(session_id)
+        assert session is not None
+        if session.title == "自我介绍":
+            break
+        await asyncio.sleep(0.01)
     assert session.title == "自我介绍"
     assert session.title_source == "ai"
 
