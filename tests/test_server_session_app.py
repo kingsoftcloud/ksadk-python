@@ -57,6 +57,12 @@ class _OverrideStreamingRunner(BaseRunner):
         yield {"type": "final", "output": "goodbye"}
 
 
+class _ThinkingOnlyFinalRunner(_OverrideStreamingRunner):
+    async def stream(self, input_data: dict):
+        yield {"type": "thinking", "delta": "先想一下"}
+        yield {"type": "final", "output": "final answer"}
+
+
 class _ModelAwareRunner(_DummyRunner):
     def __init__(self):
         super().__init__()
@@ -581,6 +587,42 @@ async def test_run_sse_stream_emits_compaction_status_events(monkeypatch):
         "assistant_message",
         "run_status",
     ]
+
+
+@pytest.mark.asyncio
+async def test_run_sse_stream_completes_and_persists_reasoning_when_no_text_deltas(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _ThinkingOnlyFinalRunner()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/run_sse",
+            json=AgentRunRequest(
+                appName="demo-agent",
+                userId="user-1",
+                sessionId="sess-run-sse-thinking",
+                newMessage={"role": "user", "parts": [{"text": "hello"}]},
+                streaming=True,
+            ).model_dump(),
+        )
+
+    assert response.status_code == 200
+    events = await service.get_events("sess-run-sse-thinking")
+    assert [event.event_type for event in events] == [
+        "user_message",
+        "run_status",
+        "reasoning",
+        "assistant_message",
+        "run_status",
+    ]
+    assert events[2].content["parts"][0]["text"] == "先想一下"
+    assert events[-2].content["parts"][0]["text"] == "final answer"
+    assert events[-1].content["status"] == "completed"
 
 
 @pytest.mark.asyncio

@@ -7,10 +7,25 @@ function parseInvocationId(event) {
   return String(event?.InvocationId || event?.invocation_id || event?.invocationId || '').trim();
 }
 
+function eventType(event) {
+  return String(event?.EventType || event?.event_type || '').trim();
+}
+
+function hasAssistantOutputForInvocation(events, invocationId) {
+  return events.some((event) => {
+    if (parseInvocationId(event) !== invocationId) {
+      return false;
+    }
+    const type = eventType(event);
+    return type === 'assistant_message' || type === 'reasoning' || type === 'tool_call';
+  });
+}
+
 export function findActiveRunIds(events = []) {
   const latestStatusByInvocation = new Map();
-  for (const event of Array.isArray(events) ? events : []) {
-    if (String(event?.EventType || event?.event_type || '').trim() !== 'run_status') {
+  const normalizedEvents = Array.isArray(events) ? events : [];
+  for (const event of normalizedEvents) {
+    if (eventType(event) !== 'run_status') {
       continue;
     }
     const invocationId = parseInvocationId(event);
@@ -20,7 +35,9 @@ export function findActiveRunIds(events = []) {
     latestStatusByInvocation.set(invocationId, String(event?.Content?.status || event?.content?.status || '').trim());
   }
   return Array.from(latestStatusByInvocation.entries())
-    .filter(([, status]) => status === 'in_progress')
+    .filter(([invocationId, status]) => {
+      return status === 'in_progress' && !hasAssistantOutputForInvocation(normalizedEvents, invocationId);
+    })
     .map(([invocationId]) => invocationId);
 }
 
