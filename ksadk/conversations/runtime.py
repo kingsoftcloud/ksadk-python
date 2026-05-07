@@ -27,6 +27,7 @@ from ksadk.conversations.model_context import (
     get_auto_compact_threshold_tokens,
     normalize_model_metadata,
 )
+from ksadk.conversations.model_options import normalize_model_options
 from ksadk.conversations.normalize import compact_attachment_for_session, normalize_kop_messages
 from ksadk.conversations.semantic_summary import (
     extract_pinned_state,
@@ -84,6 +85,7 @@ class PreparedConversationTurn:
     attachments: list[dict[str, Any]]
     attachment_results: list[dict[str, Any]]
     model_metadata: dict[str, Any] = field(default_factory=dict)
+    model_options: dict[str, Any] = field(default_factory=dict)
     instructions: str = ""
     request_metadata: dict[str, Any] = field(default_factory=dict)
     compaction_triggered: bool = False
@@ -664,6 +666,7 @@ def _build_runner_request_payload(
         "attachment_results": prepared.attachment_results,
         "model": model,
         "model_metadata": prepared.model_metadata,
+        "model_options": prepared.model_options,
         "platform_context": runtime_context.to_payload(),
         "kb_context": runtime_context.kb_context,
         "memory_context": runtime_context.memory_context,
@@ -1552,6 +1555,7 @@ async def build_run_input(
     messages: Sequence[Dict[str, Any]],
     model: Optional[str] = None,
     model_metadata: Mapping[str, Any] | None = None,
+    model_options: Mapping[str, Any] | None = None,
     state_delta: Optional[dict[str, Any]] = None,
     instructions: Optional[str] = None,
     request_metadata: Mapping[str, Any] | None = None,
@@ -1581,6 +1585,7 @@ async def build_run_input(
         model_metadata=model_metadata,
     )
     normalized_request_metadata = dict(request_metadata or {})
+    normalized_model_options = normalize_model_options(model_options)
     normalized_instructions = str(instructions or "").strip()
 
     if resume_input is not None:
@@ -1614,6 +1619,7 @@ async def build_run_input(
             attachments=[],
             attachment_results=[],
             model_metadata=resolved_model_metadata,
+            model_options=normalized_model_options,
             instructions=normalized_instructions,
             request_metadata=normalized_request_metadata,
             resume_input=normalized_resume_input,
@@ -1684,6 +1690,7 @@ async def build_run_input(
         attachments=effective_attachments,
         attachment_results=effective_attachment_results,
         model_metadata=resolved_model_metadata,
+        model_options=normalized_model_options,
         instructions=normalized_instructions,
         request_metadata=normalized_request_metadata,
         compaction_triggered=checkpoint is not None,
@@ -1718,6 +1725,7 @@ async def invoke_conversation_once(
     model: Optional[str],
     prepare_runner: Callable[[Any, Optional[str]], None],
     model_metadata: Mapping[str, Any] | None = None,
+    model_options: Mapping[str, Any] | None = None,
     state_delta: Optional[dict[str, Any]] = None,
     instructions: Optional[str] = None,
     request_metadata: Mapping[str, Any] | None = None,
@@ -1738,6 +1746,7 @@ async def invoke_conversation_once(
         messages=messages,
         model=model,
         model_metadata=model_metadata,
+        model_options=model_options,
         state_delta=state_delta,
         instructions=instructions,
         request_metadata=request_metadata,
@@ -1759,6 +1768,7 @@ async def invoke_conversation_once(
         attachment_results=list(prepared.attachment_results),
         runner_type=_runner_type_name(runner),
         model=model,
+        model_options=prepared.model_options,
         kb_context=ambient_contexts.get("kb_context"),
         memory_context=ambient_contexts.get("memory_context"),
     )
@@ -1859,6 +1869,7 @@ async def _iter_conversation_turn_events(
     model: Optional[str],
     prepare_runner: Callable[[Any, Optional[str]], None],
     model_metadata: Mapping[str, Any] | None = None,
+    model_options: Mapping[str, Any] | None = None,
     state_delta: Optional[dict[str, Any]] = None,
     instructions: Optional[str] = None,
     request_metadata: Mapping[str, Any] | None = None,
@@ -1904,6 +1915,7 @@ async def _iter_conversation_turn_events(
         messages=messages,
         model=model,
         model_metadata=model_metadata,
+        model_options=model_options,
         state_delta=state_delta,
         instructions=instructions,
         request_metadata=request_metadata,
@@ -1925,6 +1937,7 @@ async def _iter_conversation_turn_events(
         attachment_results=list(prepared.attachment_results),
         runner_type=_runner_type_name(runner),
         model=model,
+        model_options=prepared.model_options,
         kb_context=ambient_contexts.get("kb_context"),
         memory_context=ambient_contexts.get("memory_context"),
     )
@@ -2189,6 +2202,7 @@ async def stream_conversation_turn(
     model: Optional[str],
     prepare_runner: Callable[[Any, Optional[str]], None],
     model_metadata: Mapping[str, Any] | None = None,
+    model_options: Mapping[str, Any] | None = None,
     state_delta: Optional[dict[str, Any]] = None,
     instructions: Optional[str] = None,
     request_metadata: Mapping[str, Any] | None = None,
@@ -2205,6 +2219,7 @@ async def stream_conversation_turn(
         model=model,
         prepare_runner=prepare_runner,
         model_metadata=model_metadata,
+        model_options=model_options,
         state_delta=state_delta,
         instructions=instructions,
         request_metadata=request_metadata,
@@ -2274,6 +2289,7 @@ async def stream_responses_conversation_turn(
     model: Optional[str],
     prepare_runner: Callable[[Any, Optional[str]], None],
     model_metadata: Mapping[str, Any] | None = None,
+    model_options: Mapping[str, Any] | None = None,
     state_delta: Optional[dict[str, Any]] = None,
     instructions: Optional[str] = None,
     request_metadata: Mapping[str, Any] | None = None,
@@ -2339,6 +2355,7 @@ async def stream_responses_conversation_turn(
         model=model,
         prepare_runner=prepare_runner,
         model_metadata=model_metadata,
+        model_options=model_options,
         state_delta=state_delta,
         instructions=instructions,
         request_metadata=request_metadata,

@@ -1038,3 +1038,33 @@ async def test_responses_fetches_remote_model_metadata_and_passes_to_runner(monk
     assert runner.calls[0]["model_metadata"]["id"] == "kimi-k2.6"
     assert runner.calls[0]["model_metadata"]["architecture"]["input_modalities"] == ["文字", "图片", "视频"]
     assert runner.calls[0]["model_metadata"]["capabilities"]["multimodal_input_image"] is True
+
+
+@pytest.mark.asyncio
+async def test_run_agent_action_passes_model_options_to_runner(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _DummyRunner()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/RunAgent",
+            json={
+                "AgentId": "demo-agent",
+                "Messages": [{"role": "user", "content": "hello"}],
+                "Stream": False,
+                "Model": "glm-5.1",
+                "ModelOptions": {"thinking": {"type": "disabled"}},
+            },
+        )
+
+    assert response.status_code == 200
+    assert runner.calls[-1]["model_options"] == {
+        "thinking": {"type": "disabled"},
+        "reasoning": {"effort": "none"},
+        "max_reasoning_tokens": 0,
+    }
