@@ -19,6 +19,24 @@ test('run state utils identify active invocations from replayed events', async (
   );
 });
 
+test('run state utils treat replied legacy invocations as no longer active', async () => {
+  const runStateUtils = await loadRunStateUtils();
+
+  assert.ok(runStateUtils, 'expected run state helpers to exist');
+  assert.deepEqual(
+    runStateUtils.findActiveRunIds([
+      { EventType: 'run_status', InvocationId: 'inv-replied', Content: { status: 'in_progress' } },
+      {
+        EventType: 'assistant_message',
+        InvocationId: 'inv-replied',
+        Content: { role: 'model', parts: [{ text: '已经回复' }] },
+      },
+      { EventType: 'run_status', InvocationId: 'inv-live', Content: { status: 'in_progress' } },
+    ]),
+    ['inv-live'],
+  );
+});
+
 test('run state utils build subscribe URLs with session and invocation id', async () => {
   const runStateUtils = await loadRunStateUtils();
 
