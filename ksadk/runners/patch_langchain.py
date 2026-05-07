@@ -5,6 +5,12 @@ Monkey patch for langchain-openai to support reasoning_content field (e.g. for D
 import logging
 from typing import Any, Mapping, cast
 
+from ksadk.conversations.model_options import (
+    model_options_for_chat_completions,
+    model_options_for_responses,
+)
+from ksadk.runtime_context import get_current_invocation_context
+
 from langchain_core.messages import (
     AIMessageChunk,
     BaseMessageChunk,
@@ -82,14 +88,16 @@ def _patched_convert_delta_to_message_chunk(
 
 
 _original_convert_message_to_dict = None
+_original_base_get_request_payload = None
+_original_chat_get_request_payload = None
 
 
-def _patched_convert_message_to_dict(message):
+def _patched_convert_message_to_dict(message, *args, **kwargs):
     """Patched version to include reasoning_content in outgoing requests."""
     from langchain_core.messages import AIMessage
     
     # Call original function first
-    result = _original_convert_message_to_dict(message)
+    result = _original_convert_message_to_dict(message, *args, **kwargs)
     
     # If this is an AIMessage with tool_calls and reasoning_content in additional_kwargs
     if isinstance(message, AIMessage):
@@ -106,9 +114,50 @@ def _patched_convert_message_to_dict(message):
     return result
 
 
+def _merge_payload_options(payload: dict[str, Any], options: Mapping[str, Any]) -> dict[str, Any]:
+    merged = dict(payload)
+    for key, value in options.items():
+        if key == "extra_body" and isinstance(value, Mapping):
+            extra_body = dict(merged.get("extra_body") or {})
+            for extra_key, extra_value in value.items():
+                extra_body.setdefault(extra_key, extra_value)
+            merged["extra_body"] = extra_body
+            continue
+        merged.setdefault(key, value)
+    return merged
+
+
+def _current_request_model_options() -> dict[str, Any]:
+    context = get_current_invocation_context()
+    if context is None:
+        return {}
+    return dict(context.model_options or {})
+
+
+def _patched_base_get_request_payload(self, input_, *, stop=None, **kwargs):
+    payload = _original_base_get_request_payload(self, input_, stop=stop, **kwargs)
+    model_options = _current_request_model_options()
+    if not model_options:
+        return payload
+    if self._use_responses_api(payload):
+        return _merge_payload_options(payload, model_options_for_responses(model_options))
+    return _merge_payload_options(payload, model_options_for_chat_completions(model_options))
+
+
+def _patched_chat_get_request_payload(self, input_, *, stop=None, **kwargs):
+    payload = _original_chat_get_request_payload(self, input_, stop=stop, **kwargs)
+    model_options = _current_request_model_options()
+    if not model_options:
+        return payload
+    if self._use_responses_api(payload):
+        return _merge_payload_options(payload, model_options_for_responses(model_options))
+    return _merge_payload_options(payload, model_options_for_chat_completions(model_options))
+
+
 def apply_patch():
     """Apply the monkey patch to langchain_openai."""
     global _original_convert_delta, _original_convert_message_to_dict
+    global _original_base_get_request_payload, _original_chat_get_request_payload
     try:
         import langchain_openai.chat_models.base as base_module
 
@@ -123,6 +172,11 @@ def apply_patch():
         # Patch 2: Fix sending requests (include reasoning_content for tool_call messages)
         _original_convert_message_to_dict = base_module._convert_message_to_dict
         base_module._convert_message_to_dict = _patched_convert_message_to_dict
+
+        _original_base_get_request_payload = base_module.BaseChatOpenAI._get_request_payload
+        base_module.BaseChatOpenAI._get_request_payload = _patched_base_get_request_payload
+        _original_chat_get_request_payload = base_module.ChatOpenAI._get_request_payload
+        base_module.ChatOpenAI._get_request_payload = _patched_chat_get_request_payload
         
         base_module._ksadk_patched = True
 

@@ -487,6 +487,7 @@ class RunAgentActionRequest(BaseModel):
     Stream: bool = False
     Model: Optional[str] = None
     ModelMetadata: Optional[Dict[str, Any]] = None
+    ModelOptions: Optional[Dict[str, Any]] = None
     ResponsesInput: Optional[Any] = None
     PreviousResponseId: Optional[str] = None
 
@@ -495,6 +496,7 @@ class ResponsesRequest(BaseModel):
     input: Any
     model: Optional[str] = None
     model_metadata: Optional[Dict[str, Any]] = None
+    model_options: Optional[Dict[str, Any]] = None
     instructions: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
     previous_response_id: Optional[str] = None
@@ -864,6 +866,7 @@ async def run_agent_action(request: RunAgentActionRequest):
                 messages=messages,
                 model=request.Model,
                 model_metadata=request.ModelMetadata,
+                model_options=request.ModelOptions,
                 stream=True,
                 session_id=request.SessionId,
             )
@@ -877,6 +880,7 @@ async def run_agent_action(request: RunAgentActionRequest):
                 session_id=request.SessionId,
                 model=request.Model,
                 model_metadata=request.ModelMetadata,
+                model_options=request.ModelOptions,
                 request_metadata=request_metadata,
                 resume_input=resume_input,
                 prepare_runner=_prepare_runner_for_model,
@@ -893,6 +897,7 @@ async def run_agent_action(request: RunAgentActionRequest):
         session_id=request.SessionId,
         model=request.Model,
         model_metadata=request.ModelMetadata,
+        model_options=request.ModelOptions,
         request_metadata=request_metadata,
         resume_input=resume_input,
         prepare_runner=_prepare_runner_for_model,
@@ -1511,6 +1516,7 @@ class ChatCompletionRequest(BaseModel):
     messages: List[Dict[str, Any]]
     model: Optional[str] = None
     model_metadata: Optional[Dict[str, Any]] = None
+    model_options: Optional[Dict[str, Any]] = None
     stream: bool = False
     session_id: Optional[str] = None
     temperature: Optional[float] = 0.7
@@ -1539,6 +1545,7 @@ async def responses(request: ResponsesRequest):
                 session_id=request.session_id,
                 model=request.model,
                 model_metadata=request.model_metadata,
+                model_options=request.model_options,
                 instructions=request.instructions,
                 request_metadata=request_metadata,
                 resume_input=resume_input,
@@ -1556,6 +1563,7 @@ async def responses(request: ResponsesRequest):
         session_id=request.session_id,
         model=request.model,
         model_metadata=request.model_metadata,
+        model_options=request.model_options,
         instructions=request.instructions,
         request_metadata=request_metadata,
         resume_input=resume_input,
@@ -1587,6 +1595,7 @@ async def chat_completions(request: ChatCompletionRequest):
                 session_id=request.session_id,
                 model=request.model,
                 model_metadata=request.model_metadata,
+                model_options=request.model_options,
                 prepare_runner=_prepare_runner_for_model,
                 session_service_provider=resolve_session_service,
             ),
@@ -1601,6 +1610,7 @@ async def chat_completions(request: ChatCompletionRequest):
         session_id=request.session_id,
         model=request.model,
         model_metadata=request.model_metadata,
+        model_options=request.model_options,
         prepare_runner=_prepare_runner_for_model,
         session_service_provider=resolve_session_service,
     )

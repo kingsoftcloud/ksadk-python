@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from ksadk.conversations.context import build_history_from_events
+from ksadk.conversations.model_options import normalize_model_options
 from ksadk.conversations.model_context import estimate_text_tokens
 from ksadk.conversations.runtime import (
     _build_runner_ambient_contexts,
@@ -490,6 +491,38 @@ async def test_invoke_conversation_once_passes_session_id_to_runner(monkeypatch)
     )
 
     assert runner.calls[-1]["session_id"] == session_id
+
+
+@pytest.mark.asyncio
+async def test_invoke_conversation_once_passes_model_options_to_runner(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _StubRunner()
+
+    await invoke_conversation_once(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id=None,
+        messages=[{"role": "user", "content": "hello"}],
+        model="gpt-4o",
+        model_options={"thinking": {"type": "disabled"}},
+        prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+    )
+
+    assert runner.calls[-1]["model_options"] == {
+        "thinking": {"type": "disabled"},
+        "reasoning": {"effort": "none"},
+        "max_reasoning_tokens": 0,
+    }
+
+
+def test_normalize_model_options_maps_legacy_thinking_disabled_to_reasoning_none():
+    normalized = normalize_model_options({"thinking": {"type": "disabled"}})
+
+    assert normalized["thinking"] == {"type": "disabled"}
+    assert normalized["reasoning"] == {"effort": "none"}
+    assert normalized["max_reasoning_tokens"] == 0
 
 
 @pytest.mark.asyncio
