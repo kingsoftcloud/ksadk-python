@@ -143,6 +143,9 @@ default_extension_allowed_by_preset_plugins_allowlist() {
     wps-xiezuo)
       extension_allowed_by_preset_plugins_allowlist "${extension_name}" "${allowlist_raw}" wps
       ;;
+    diagnostics-otel)
+      extension_allowed_by_preset_plugins_allowlist "${extension_name}" "${allowlist_raw}" diagnostics otel
+      ;;
     *)
       extension_allowed_by_preset_plugins_allowlist "${extension_name}" "${allowlist_raw}"
       ;;
@@ -3269,6 +3272,22 @@ if (renderedMemoryBackend && Object.keys(renderedMemoryBackend.config_patch).len
     enablePlugin(pluginId);
   }
   cfg = deepMergeObjects(cfg, renderedMemoryBackend.config_patch);
+}
+
+const openclawConfigPatchRaw = String(process.env.OPENCLAW_CONFIG_PATCH_JSON || '').trim();
+if (openclawConfigPatchRaw) {
+  let openclawConfigPatch;
+  try {
+    openclawConfigPatch = JSON.parse(openclawConfigPatchRaw);
+  } catch (error) {
+    console.error(`[bootstrap] OPENCLAW_CONFIG_PATCH_JSON is not valid JSON: ${error.message}`);
+    process.exit(1);
+  }
+  if (!isPlainObject(openclawConfigPatch)) {
+    console.error('[bootstrap] OPENCLAW_CONFIG_PATCH_JSON must be a JSON object');
+    process.exit(1);
+  }
+  cfg = deepMergeObjects(cfg, openclawConfigPatch);
 }
 
 fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2));
