@@ -78,3 +78,29 @@ test('session list utils format model and context labels', async () => {
   assert.equal(sessionList.isSessionRunning({ ActiveRunStatus: 'completed' }), false);
   assert.equal(sessionList.isSessionRunning({ ActiveRunStatus: 'in_progress' }), true);
 });
+
+test('session list utils expose compact sidebar status labels', async () => {
+  const sessionList = await loadSessionListUtils();
+
+  assert.ok(sessionList, 'expected session list helpers to exist');
+  assert.deepEqual(
+    sessionList.resolveCompactSessionMeta({
+      ActiveRunStatus: 'in_progress',
+      UpdatedAt: '2026-05-07T08:45:00Z',
+    }),
+    {
+      running: true,
+      label: '',
+    },
+  );
+  assert.deepEqual(
+    sessionList.resolveCompactSessionMeta({
+      ActiveRunStatus: 'completed',
+      UpdatedAt: '2026-05-07T08:45:00Z',
+    }),
+    {
+      running: false,
+      label: '5月7日 16:45',
+    },
+  );
+});

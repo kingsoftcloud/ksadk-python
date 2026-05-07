@@ -849,6 +849,20 @@ async def list_agent_models_action(_request: ListAgentModelsRequest):
         },
     )
 
+
+@app.get("/v1/models")
+async def list_openai_models():
+    """Expose the current model catalog through the OpenAI-compatible path."""
+
+    payload = await _build_models_payload()
+    return {
+        "object": "list",
+        "data": payload.get("data", []),
+        "current": payload.get("current"),
+        "source": payload.get("source", ""),
+    }
+
+
 @app.post("/agentengine/api/v1/RunAgent")
 async def run_agent_action(request: RunAgentActionRequest):
     resume_input = (
@@ -913,6 +927,7 @@ async def run_agent_action(request: RunAgentActionRequest):
             output_text=output_text,
             model=request.Model,
             session_id=resolved_session_id,
+            metadata=result.get("metadata"),
         )
     else:
         payload = conversation.build_responses_payload(
@@ -1626,6 +1641,7 @@ async def chat_completions(request: ChatCompletionRequest):
         output_text=result["output_text"],
         model=request.model,
         session_id=resolved_session_id,
+        metadata=result.get("metadata"),
     )
 
 

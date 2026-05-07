@@ -21,6 +21,8 @@ import {
 
 import type { ModelCatalogItem } from './types';
 
+type ThinkingMode = 'auto' | 'enabled' | 'disabled';
+
 type ModelSelectorProps = {
   availableModels: ModelCatalogItem[];
   selectedModel: string;
@@ -28,6 +30,9 @@ type ModelSelectorProps = {
   selectedModelLabel: string;
   modelCatalogLoaded: boolean;
   modelSource: string;
+  thinkingEnabled: boolean;
+  thinkingMode: ThinkingMode;
+  onSelectThinkingMode: (mode: ThinkingMode) => void;
   compact?: boolean;
 };
 
@@ -63,45 +68,57 @@ function ModelSelector({
   selectedModelLabel,
   modelCatalogLoaded,
   modelSource,
+  thinkingEnabled,
+  thinkingMode,
+  onSelectThinkingMode,
   compact = false,
 }: ModelSelectorProps) {
-  if (availableModels.length > 1) {
-    return (
-      <select
-        value={selectedModel}
-        onChange={(event) => onSelectModel(event.target.value)}
-        className={cn(
-          'rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 text-sm text-slate-700 outline-none transition-colors focus:ring-1 focus:ring-blue-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300',
-          compact ? 'w-full' : 'max-w-[12rem]',
-        )}
-      >
-        {availableModels.map((model) => (
-          <option key={model.id} value={model.id}>
-            {model.display_name || model.id}
-          </option>
-        ))}
-      </select>
-    );
-  }
-
-  if (selectedModelLabel) {
-    return (
-      <span
-        className={cn(
-          'inline-flex max-w-full items-center rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300',
-          compact ? 'w-full justify-start' : 'max-w-[12rem]',
-        )}
-        title={modelSource || selectedModelLabel}
-      >
-        <span className="truncate">{selectedModelLabel}</span>
-      </span>
-    );
-  }
-
-  return (
+  const controlClass = cn(
+    'rounded-full border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none transition-colors focus:ring-1 focus:ring-blue-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300',
+    compact ? 'w-full' : 'max-w-[13rem]',
+  );
+  const modelControl = availableModels.length > 1 ? (
+    <select
+      value={selectedModel}
+      onChange={(event) => onSelectModel(event.target.value)}
+      className={controlClass}
+    >
+      {availableModels.map((model) => (
+        <option key={model.id} value={model.id}>
+          {model.display_name || model.id}
+        </option>
+      ))}
+    </select>
+  ) : selectedModelLabel ? (
+    <span
+      className={cn(controlClass, 'inline-flex max-w-full items-center', compact ? 'justify-start' : '')}
+      title={modelSource || selectedModelLabel}
+    >
+      <span className="truncate">{selectedModelLabel}</span>
+    </span>
+  ) : (
     <span className="text-sm text-slate-400">
       {modelCatalogLoaded ? '未配置模型' : 'Loading models...'}
     </span>
+  );
+  const thinkingControl = thinkingEnabled ? (
+    <select
+      value={thinkingMode}
+      onChange={(event) => onSelectThinkingMode(event.target.value as ThinkingMode)}
+      className={cn(controlClass, compact ? '' : 'max-w-[9rem]')}
+      title="控制模型 thinking/reasoning 参数"
+    >
+      <option value="auto">思考自动</option>
+      <option value="enabled">开启思考</option>
+      <option value="disabled">关闭思考</option>
+    </select>
+  ) : null;
+
+  return (
+    <div className={cn('flex min-w-0 gap-2', compact ? 'w-full flex-col' : 'items-center')}>
+      {modelControl}
+      {thinkingControl}
+    </div>
   );
 }
 
@@ -118,6 +135,9 @@ export function ChatHeader({
   selectedModelLabel,
   modelCatalogLoaded,
   modelSource,
+  thinkingEnabled,
+  thinkingMode,
+  onSelectThinkingMode,
   mobileActionsOpen,
   onMobileActionsOpenChange,
   workspaceEnabled,
@@ -217,6 +237,9 @@ export function ChatHeader({
                 selectedModelLabel={selectedModelLabel}
                 modelCatalogLoaded={modelCatalogLoaded}
                 modelSource={modelSource}
+                thinkingEnabled={thinkingEnabled}
+                thinkingMode={thinkingMode}
+                onSelectThinkingMode={onSelectThinkingMode}
               />
             ) : null}
             {!nativeLauncherMode && currentSessionId ? (
@@ -291,6 +314,9 @@ export function ChatHeader({
                       selectedModelLabel={selectedModelLabel}
                       modelCatalogLoaded={modelCatalogLoaded}
                       modelSource={modelSource}
+                      thinkingEnabled={thinkingEnabled}
+                      thinkingMode={thinkingMode}
+                      onSelectThinkingMode={onSelectThinkingMode}
                       compact
                     />
                   </div>

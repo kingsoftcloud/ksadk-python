@@ -46,6 +46,6 @@ async def test_session_title_client_disables_thinking_for_fast_title_generation(
     assert usage == {"total_tokens": 8}
     assert captured_payload["stream"] is False
     assert captured_payload["temperature"] == 0
-    assert captured_payload["reasoning_effort"] == "none"
-    assert captured_payload["extra_body"]["thinking"] == {"type": "disabled"}
+    assert "reasoning_effort" not in captured_payload
     assert captured_payload["extra_body"]["max_reasoning_tokens"] == 0
+    assert "thinking" not in captured_payload["extra_body"]
