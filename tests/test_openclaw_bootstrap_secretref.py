@@ -148,6 +148,9 @@ def test_openclaw_dockerfile_tracks_latest_official_channel_plugins():
     assert "ARG OPENCLAW_MEM0_PLUGIN_URL=https://wangxu-test.ks3-cn-beijing.ksyuncs.com/ksc-openclaw-mem0-1.0.6.tgz" in dockerfile
     assert "ARG OPENCLAW_INSTALL_WPS_XIEZUO_PLUGIN=true" in dockerfile
     assert "ARG OPENCLAW_WPS_XIEZUO_PLUGIN_ID=wps-xiezuo" in dockerfile
+    assert "ARG OPENCLAW_INSTALL_DIAGNOSTICS_OTEL_PLUGIN=true" in dockerfile
+    assert "ARG OPENCLAW_DIAGNOSTICS_OTEL_PLUGIN_SPEC=@openclaw/diagnostics-otel" in dockerfile
+    assert "ARG OPENCLAW_DIAGNOSTICS_OTEL_PLUGIN_ID=diagnostics-otel" in dockerfile
     assert "COPY deploy/openclaw/wps-xiezuo-assets/openclaw-wps-xiezuo-1.6.0.tgz" in dockerfile
 
 
@@ -213,6 +216,72 @@ def test_bootstrap_writes_secretref_for_model_api_key():
             }
         }
         assert secrets_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_bootstrap_applies_openclaw_config_patch_json():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "plugins": {
+                        "allow": ["existing-plugin"],
+                        "entries": {"existing-plugin": {"enabled": True}},
+                    },
+                    "diagnostics": {"enabled": False},
+                }
+            )
+            + "\n"
+        )
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_CONFIG_PATCH_JSON"] = json.dumps(
+            {
+                "plugins": {
+                    "allow": ["diagnostics-otel"],
+                    "entries": {"diagnostics-otel": {"enabled": True}},
+                },
+                "diagnostics": {
+                    "enabled": True,
+                    "otel": {
+                        "enabled": True,
+                        "endpoint": "https://langfuse.pre.example.com/api/public/otel",
+                        "protocol": "http/protobuf",
+                        "serviceName": "agentengine-openclaw-demo",
+                        "traces": True,
+                        "metrics": False,
+                        "logs": False,
+                        "captureContent": False,
+                    },
+                },
+            }
+        )
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert cfg["plugins"]["entries"]["existing-plugin"]["enabled"] is True
+        assert cfg["plugins"]["entries"]["diagnostics-otel"]["enabled"] is True
+        assert "diagnostics-otel" in cfg["plugins"]["allow"]
+        assert cfg["diagnostics"]["enabled"] is True
+        assert cfg["diagnostics"]["otel"] == {
+            "enabled": True,
+            "endpoint": "https://langfuse.pre.example.com/api/public/otel",
+            "protocol": "http/protobuf",
+            "serviceName": "agentengine-openclaw-demo",
+            "traces": True,
+            "metrics": False,
+            "logs": False,
+            "captureContent": False,
+        }
 
 
 def test_bootstrap_maps_gateway_token_to_shared_secret_when_token_mode_enabled():
