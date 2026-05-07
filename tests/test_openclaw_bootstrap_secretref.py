@@ -10,8 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 BOOTSTRAP_SCRIPT = REPO_ROOT / "deploy" / "openclaw" / "bootstrap.sh"
 OPENCLAW_DOCKERFILE = REPO_ROOT / "deploy" / "openclaw" / "Dockerfile"
 LATEST_OPENCLAW_BASE_IMAGE = (
-    "ghcr.io/openclaw/openclaw:2026.5.4@"
-    "sha256:7f4dfd4ed0d5469a4f12eccaa5f46b0c70fca802806be625dce782e69203e689"
+    "ghcr.io/openclaw/openclaw:2026.5.4-slim-amd64"
 )
 VALID_MEM0_UUID = "e52b7fac-e641-4b34-b9f7-6b0b9f190cd4"
 
@@ -2907,7 +2906,10 @@ def test_bootstrap_patches_runtime_bundles_for_loopback_gateway_clients():
         assert 'usesLoopbackTrustedProxyAuth || params.sharedAuthOk && usesSharedSecretAuth || usesDeviceTokenAuth' in gateway_source
         assert 'const internalLoopbackUserHeader = String(process.env.OPENCLAW_INTERNAL_TRUSTED_PROXY_USER_HEADER || process.env.OPENCLAW_TRUSTED_PROXY_USER_HEADER || "x-forwarded-user").trim().toLowerCase();' in gateway_source
         assert 'const loopbackUser = headerValue(req.headers[internalLoopbackUserHeader || "x-forwarded-user"]);' in gateway_source
-        assert 'if (!internalLoopbackUser || !loopbackUser || loopbackUser.trim() !== internalLoopbackUser) return { reason: "trusted_proxy_loopback_source" };' in gateway_source
+        assert 'const forwardedLoopbackChain = String(headerValue(req.headers["x-forwarded-for"]) || "").split(",").map((value) => value.trim()).filter(Boolean);' in gateway_source
+        assert 'const trustedProxyAddressCheck = typeof isTrustedProxyAddress === "function" ? isTrustedProxyAddress : typeof isTrustedProxyAddress$1 === "function" ? isTrustedProxyAddress$1 : null;' in gateway_source
+        assert 'const forwardedLoopbackTrusted = !!trustedProxyAddressCheck && forwardedLoopbackChain.some((addr) => !isLoopbackAddress(addr) && trustedProxyAddressCheck(addr, trustedProxies));' in gateway_source
+        assert 'if (!forwardedLoopbackTrusted && (!internalLoopbackUser || !loopbackUser || loopbackUser.trim() !== internalLoopbackUser)) return { reason: "trusted_proxy_loopback_source" };' in gateway_source
         assert 'function shouldAttachDeviceIdentityForGatewayCall(params) {' in gateway_source
         assert '].includes(parsed.hostname)) return false;' in gateway_source
         assert '}) ? loadOrCreateDeviceIdentity() : null,' in gateway_source
@@ -2920,6 +2922,95 @@ def test_bootstrap_patches_runtime_bundles_for_loopback_gateway_clients():
         assert 'requestUrl.pathname.startsWith("/_ksadk/workspace/v1/")' not in server_source
         assert 'const targetUrl = new URL(`${requestUrl.pathname}${requestUrl.search}`' not in server_source
         assert 'this.ws.addEventListener(`open`,()=>{this.lastSeq=null,this.queueConnect()})' in control_ui_bundle.read_text()
+
+
+def test_bootstrap_patches_allow_loopback_runtime_for_forwarded_trusted_proxy_chain():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        dist_dir = Path(tmpdir) / "dist"
+        control_ui_assets_dir = dist_dir / "control-ui" / "assets"
+        control_ui_assets_dir.mkdir(parents=True, exist_ok=True)
+        client_bundle = dist_dir / "reply-test.js"
+        gateway_bundle = dist_dir / "gateway-cli-test.js"
+        server_bundle = dist_dir / "server.impl-test.js"
+        control_ui_bundle = control_ui_assets_dir / "main-test.js"
+
+        client_bundle.write_text('const wsOptions = { maxPayload: 25 * 1024 * 1024 };')
+        gateway_bundle.write_text(
+            'function shouldSkipBackendSelfPairing(params) {\n'
+            '\tif (!(params.connectParams.client.id === GATEWAY_CLIENT_IDS.GATEWAY_CLIENT && params.connectParams.client.mode === GATEWAY_CLIENT_MODES.BACKEND)) return false;\n'
+            '\tconst usesSharedSecretAuth = params.authMethod === "token" || params.authMethod === "password";\n'
+            '\tconst usesDeviceTokenAuth = params.authMethod === "device-token";\n'
+            '\treturn params.isLocalClient && !params.hasBrowserOriginHeader && (params.sharedAuthOk && usesSharedSecretAuth || usesDeviceTokenAuth);\n'
+            '}\n'
+            'function authorizeTrustedProxy(params) {\n'
+            '\tconst { req, trustedProxies, trustedProxyConfig } = params;\n'
+            '\tconst remoteAddr = req.socket?.remoteAddress;\n'
+            '\tif (isLoopbackAddress(remoteAddr) && trustedProxyConfig.allowLoopback !== true) return { reason: "trusted_proxy_loopback_source" };\n'
+            '\treturn { user: headerValue(req.headers[trustedProxyConfig.userHeader.toLowerCase()]).trim() };\n'
+            '}\n'
+            'function shouldAttachDeviceIdentityForGatewayCall(params) {\n'
+            '\treturn true;\n'
+            '}\n'
+            'deviceIdentity: shouldAttachDeviceIdentityForGatewayCall({\n'
+            '\t\t\t\turl,\n'
+            '\t\t\t\ttoken,\n'
+            '\t\t\t\tpassword\n'
+            '\t\t\t}) ? loadOrCreateDeviceIdentity() : void 0,\n'
+            'function ensureExplicitGatewayAuth(params) {\n'
+            '\tif (!params.urlOverride) return;\n'
+            '\tconst explicitToken = params.explicitAuth?.token;\n'
+            '}\n'
+            'if (!device && (!isControlUi || decision.kind !== "allow")) clearUnboundScopes();\n'
+        )
+        server_bundle.write_text(
+            'function createGatewayHttpServer(opts) {\n'
+            '\tconst { canvasHost, clients, controlUiEnabled, controlUiBasePath, controlUiRoot, openAiChatCompletionsEnabled, openAiChatCompletionsConfig, openResponsesEnabled, openResponsesConfig, strictTransportSecurityHeader, handleHooksRequest, handlePluginRequest, shouldEnforcePluginGatewayAuth, resolvedAuth, rateLimiter, getReadiness } = opts;\n'
+            '\tconst getResolvedAuth = opts.getResolvedAuth ?? (() => resolvedAuth);\n'
+            '\tconst openAiCompatEnabled = openAiChatCompletionsEnabled || openResponsesEnabled;\n'
+            '\tasync function handleRequest(req, res) {\n'
+            '\t\tconst requestPath = new URL(req.url ?? "/", "http://localhost").pathname;\n'
+            '\t\tconst requestStages = [{\n'
+            '\t\t\tname: "hooks",\n'
+            '\t\t\trun: () => handleHooksRequest(req, res)\n'
+            '\t\t}];\n'
+            '\t\tif (controlUiEnabled) {\n'
+            '\t\t\trequestStages.push({\n'
+            '\t\t\t\tname: "control-ui-http",\n'
+            '\t\t\t\trun: async () => (await getControlUiModule()).handleControlUiHttpRequest(req, res, {\n'
+            '\t\t\t\t\tbasePath: controlUiBasePath,\n'
+            '\t\t\t\t\tconfig: configSnapshot,\n'
+            '\t\t\t\t\tagentId: resolveAssistantIdentity({ cfg: configSnapshot }).agentId,\n'
+            '\t\t\t\t\troot: controlUiRoot\n'
+            '\t\t\t\t})\n'
+            '\t\t\t});\n'
+            '\t\t}\n'
+            '\t}\n'
+            '}\n'
+        )
+        control_ui_bundle.write_text('this.ws.addEventListener(`open`,()=>this.queueConnect())')
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_DIST_DIR"] = str(dist_dir)
+        env["OPENCLAW_WORKSPACE_FILES_ENABLED"] = "0"
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        gateway_source = gateway_bundle.read_text()
+        assert 'if (isLoopbackAddress(remoteAddr) && trustedProxyConfig.allowLoopback !== true) {' in gateway_source
+        assert 'const forwardedLoopbackChain = String(headerValue(req.headers["x-forwarded-for"]) || "").split(",").map((value) => value.trim()).filter(Boolean);' in gateway_source
+        assert 'const trustedProxyAddressCheck = typeof isTrustedProxyAddress === "function" ? isTrustedProxyAddress : typeof isTrustedProxyAddress$1 === "function" ? isTrustedProxyAddress$1 : null;' in gateway_source
+        assert 'const forwardedLoopbackTrusted = !!trustedProxyAddressCheck && forwardedLoopbackChain.some((addr) => !isLoopbackAddress(addr) && trustedProxyAddressCheck(addr, trustedProxies));' in gateway_source
+        assert 'if (!forwardedLoopbackTrusted && (!internalLoopbackUser || !loopbackUser || loopbackUser.trim() !== internalLoopbackUser)) return { reason: "trusted_proxy_loopback_source" };' in gateway_source
 
 
 def test_bootstrap_patches_workspace_proxy_stage_for_upstream_2026_4_26_shape():
