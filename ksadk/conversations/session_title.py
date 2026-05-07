@@ -7,6 +7,7 @@ from typing import Any, Sequence
 import httpx
 
 from ksadk.configs.settings import settings
+from ksadk.conversations.model_options import model_options_for_chat_completions
 
 DEFAULT_SESSION_TITLE_TIMEOUT_MS = 8_000
 SESSION_TITLE_MAX_CHARS = 24
@@ -203,10 +204,7 @@ class SessionTitleClient:
             "messages": list(messages),
             "stream": False,
             "temperature": 0,
-            "extra_body": {
-                "thinking": {"type": "disabled"},
-                "max_reasoning_tokens": 0,
-            },
+            **model_options_for_chat_completions({"thinking": {"type": "disabled"}}),
         }
         timeout_seconds = max(1.0, float(timeout_ms) / 1000.0)
         async with httpx.AsyncClient(timeout=timeout_seconds) as client:
