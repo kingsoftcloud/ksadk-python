@@ -267,6 +267,30 @@ async def test_update_agent_forwards_memory_configuration(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_update_agent_forwards_observability_configuration(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    calls = []
+
+    def fake_action(action: str, params: dict):
+        calls.append((action, params.copy()))
+        return {"agent_id": "ar-observable"}
+
+    monkeypatch.setattr(client, "_action", fake_action)
+
+    await client.update_agent(
+        "ar-observable",
+        {
+            "observability": {
+                "langfuse_enabled": True,
+            }
+        },
+    )
+
+    assert calls[0][0] == "UpdateAgent"
+    assert calls[0][1]["Advanced"]["EnableObservability"] is True
+
+
+@pytest.mark.asyncio
 async def test_list_agents_normalizes_multi_framework_string(monkeypatch):
     client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
     calls = []

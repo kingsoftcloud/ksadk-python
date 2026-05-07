@@ -1407,6 +1407,11 @@ class AgentEngineClient:
 
         # 高级配置 (可选)
         advanced = {}
+        observability = data.get("observability")
+        if isinstance(observability, dict) and "langfuse_enabled" in observability:
+            advanced["EnableObservability"] = bool(observability.get("langfuse_enabled"))
+        elif "enable_observability" in data:
+            advanced["EnableObservability"] = bool(data.get("enable_observability"))
         inbound_identity_auth = data.get("inbound_identity_auth")
         if inbound_identity_auth is not None:
             advanced["InboundIdentityAuth"] = inbound_identity_auth
