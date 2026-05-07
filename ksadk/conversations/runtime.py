@@ -1401,6 +1401,30 @@ async def append_run_status_event(
     )
 
 
+async def append_reasoning_event(
+    *,
+    session_id: str,
+    author: str,
+    text: str,
+    invocation_id: Optional[str] = None,
+    session_service_provider: Callable[[], Any] | None = None,
+) -> SessionEvent | None:
+    """Persist assistant reasoning so hosted UI refresh can replay thinking state."""
+    reasoning_text = str(text or "")
+    if not reasoning_text:
+        return None
+    return await append_conversation_event(
+        session_id=session_id,
+        author=author,
+        role="model",
+        text=reasoning_text,
+        invocation_id=invocation_id,
+        event_type="reasoning",
+        metadata={"reasoning": reasoning_text},
+        session_service_provider=session_service_provider,
+    )
+
+
 async def append_context_checkpoint_event(
     *,
     session_id: str,
@@ -1964,12 +1988,27 @@ async def _iter_conversation_turn_events(
                             for semantic_event in _semantic_events_from_responses_output(
                                 responses_output
                             ):
+                                if semantic_event.get("type") == "thinking":
+                                    await append_reasoning_event(
+                                        session_id=prepared.session_id,
+                                        author=runner_name,
+                                        text=str(semantic_event.get("delta") or ""),
+                                        invocation_id=prepared.invocation_id,
+                                        session_service_provider=provider,
+                                    )
                                 emitted_anything = True
                                 yield semantic_event
                         continue
                     if chunk_type == "thinking":
                         delta = str(chunk.get("delta", ""))
                         if delta:
+                            await append_reasoning_event(
+                                session_id=prepared.session_id,
+                                author=runner_name,
+                                text=delta,
+                                invocation_id=prepared.invocation_id,
+                                session_service_provider=provider,
+                            )
                             emitted_anything = True
                             emitted_response_artifacts = True
                             yield {"type": "thinking", "delta": delta}

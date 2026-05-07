@@ -12,6 +12,7 @@ CANONICAL_EVENT_TYPES = {
     "approval_request",
     "approval_response",
     "attachment_ref",
+    "reasoning",
     "run_status",
     "context_checkpoint",
     "compaction_boundary",

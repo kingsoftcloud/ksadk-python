@@ -96,6 +96,14 @@ class _CompletedOutputStreamingRunner(_StreamingRunner):
         yield {"type": "final", "output": "需要查询。"}
 
 
+class _ThinkingStreamingRunner(_StreamingRunner):
+    async def stream(self, input_data: dict):
+        self.stream_calls.append(input_data)
+        yield {"type": "thinking", "delta": "先分析问题"}
+        yield {"type": "text", "delta": "你好"}
+        yield {"type": "final", "output": "你好"}
+
+
 class _ContextCapturingRunner(_StubRunner):
     def __init__(self):
         super().__init__()
@@ -1137,6 +1145,38 @@ async def test_stream_responses_conversation_turn_replays_completed_output_items
     assert completed_payload is not None
     assert completed_payload["id"] == "resp_native"
     assert any(item.get("type") == "function_call" for item in completed_payload["output"])
+
+
+@pytest.mark.asyncio
+async def test_stream_responses_conversation_turn_persists_reasoning_events(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _ThinkingStreamingRunner()
+
+    chunks = [
+        chunk
+        async for chunk in stream_responses_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-reasoning",
+            messages=[{"role": "user", "content": "你好"}],
+            model="gpt-4o",
+            prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+            session_service_provider=lambda: service,
+        )
+    ]
+
+    assert any(chunk.startswith("event: response.reasoning.delta\n") for chunk in chunks)
+    events = await service.get_events("sess-reasoning")
+    assert [event.event_type for event in events] == [
+        "user_message",
+        "run_status",
+        "reasoning",
+        "assistant_message",
+        "run_status",
+    ]
+    assert events[2].content["parts"][0]["text"] == "先分析问题"
 
 
 @pytest.mark.asyncio
