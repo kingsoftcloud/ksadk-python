@@ -1240,8 +1240,9 @@ async def _stream_chat(
                             yield data
 
                             # Handle events/errors
-                            if "error" in data:
-                                click.secho(f"\nError: {data['error']}", fg="red")
+                            error = data.get("error")
+                            if error:
+                                click.secho(f"\nError: {error}", fg="red")
 
                         except json.JSONDecodeError:
                             pass
