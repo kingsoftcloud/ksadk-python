@@ -1,4 +1,5 @@
 import asyncio
+import sys
 from pathlib import Path
 
 import click
@@ -83,6 +84,50 @@ class _FakeOpenClawInvokeClient:
                 "api_key": "ak-openclaw",
             },
         }
+
+
+class _FakeStreamResponse:
+    def __init__(self, lines):
+        self._lines = lines
+
+    def raise_for_status(self):
+        return None
+
+    async def aiter_lines(self):
+        for line in self._lines:
+            yield line
+
+
+class _FakeStreamContext:
+    def __init__(self, response):
+        self._response = response
+
+    async def __aenter__(self):
+        return self._response
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _FakeStreamClient:
+    def __init__(self, *args, **kwargs):
+        self.kwargs = kwargs
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    def stream(self, *_args, **_kwargs):
+        return _FakeStreamContext(
+            _FakeStreamResponse(
+                [
+                    'data: {"choices":[{"delta":{"content":"ok"}}],"error":null}',
+                    "data: [DONE]",
+                ]
+            )
+        )
 
 
 def test_run_invoke_command_refreshes_stale_state_from_remote(monkeypatch, tmp_path: Path):
@@ -218,6 +263,28 @@ def test_extract_content_ignores_response_completed_payload():
 
     assert content == ""
     assert reasoning == ""
+
+
+async def test_stream_chat_ignores_null_error_field(monkeypatch, capsys):
+    monkeypatch.setitem(
+        sys.modules,
+        "httpx",
+        type("HttpxModule", (), {"AsyncClient": _FakeStreamClient}),
+    )
+
+    chunks = [
+        chunk
+        async for chunk in cmd_invoke._stream_chat(
+            "https://agent.example.com",
+            "hello",
+            api_key="ak-demo",
+        )
+    ]
+
+    assert chunks == [{"choices": [{"delta": {"content": "ok"}}], "error": None}]
+    captured = capsys.readouterr()
+    assert "Error: None" not in captured.out
+    assert "Error: None" not in captured.err
 
 
 def test_extract_response_content_supports_responses_payload():
