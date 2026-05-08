@@ -317,6 +317,103 @@ async def test_build_run_input_projects_history_from_append_only_events(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_build_run_input_preserves_responses_request_history_when_runtime_session_is_empty(
+    monkeypatch,
+):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    prepared = await build_run_input(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-responses-history",
+        messages=[
+            {"role": "user", "content": "写一个python快排的示例"},
+            {"role": "assistant", "content": "这是 Python 快速排序示例。"},
+            {"role": "user", "content": "用go"},
+        ],
+    )
+
+    assert prepared.user_input == "用go"
+    assert prepared.history == [
+        {"role": "user", "content": "写一个python快排的示例"},
+        {"role": "model", "content": "这是 Python 快速排序示例。"},
+        {"role": "user", "content": "用go"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_build_run_input_deduplicates_responses_request_history_against_session_events(
+    monkeypatch,
+):
+    service = InMemorySessionService()
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-dup")
+    await service.append_event(
+        "sess-dup",
+        SessionEvent(
+            id="evt-1",
+            author="user",
+            event_type="user_message",
+            content={"role": "user", "parts": [{"text": "写一个python快排的示例"}]},
+        ),
+    )
+    await service.append_event(
+        "sess-dup",
+        SessionEvent(
+            id="evt-2",
+            author="demo-agent",
+            event_type="assistant_message",
+            content={"role": "model", "parts": [{"text": "这是 Python 快速排序示例。"}]},
+        ),
+    )
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    prepared = await build_run_input(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-dup",
+        messages=[
+            {"role": "user", "content": "写一个python快排的示例"},
+            {"role": "assistant", "content": "这是 Python 快速排序示例。"},
+            {"role": "user", "content": "用go"},
+        ],
+    )
+
+    assert prepared.history == [
+        {"role": "user", "content": "写一个python快排的示例"},
+        {"role": "model", "content": "这是 Python 快速排序示例。"},
+        {"role": "user", "content": "用go"},
+    ]
+
+
+def test_set_conversation_span_attributes_sets_langfuse_and_standard_session_id():
+    from ksadk.conversations.runtime import _set_conversation_span_attributes
+
+    class _Span:
+        def __init__(self):
+            self.attributes = {}
+
+        def set_attribute(self, key, value):
+            self.attributes[key] = value
+
+    span = _Span()
+
+    _set_conversation_span_attributes(
+        span,
+        agent_id="agent-demo",
+        user_id="user-demo",
+        session_id="sess-demo",
+        invocation_id="inv-demo",
+        runner_name="demo-agent",
+        model="glm-5.1",
+        response_id="resp-demo",
+    )
+
+    assert span.attributes["langfuse.session.id"] == "sess-demo"
+    assert span.attributes["session.id"] == "sess-demo"
+
+
+@pytest.mark.asyncio
 async def test_build_run_input_persists_attachment_results_and_passes_them_to_runner(monkeypatch):
     service = InMemorySessionService()
     monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
