@@ -15,6 +15,7 @@
 
 - `agentengine-server/app/api/v1/actions/agent_actions.py`
 - `agentengine-server/app/api/v1/actions/chat_actions.py`
+- `agentengine-server/app/api/v1/actions/feedback_actions.py`
 - `agentengine-server/app/gateway/api.py`
 - `agentengine-server/app/gateway/router_service.py`
 - `agentengine-server/docs/技术设计.md`
@@ -699,6 +700,9 @@ data: <json>
 - `ListSessions`
 - `DeleteSession`
 - `ListSessionEvents`
+- `GetResponseFeedback`
+- `UpsertResponseFeedback`
+- `DeleteResponseFeedback`
 - `RunAgent`
 - `UploadFile`
 - `ListWorkspaceFiles`
@@ -1043,7 +1047,188 @@ data: <json>
 - 服务端会优先尝试请求 runtime 侧模型目录 `GET <api_base>/v1/models`
 - 若失败，则回退到当前 Agent 的模型配置推断结果
 
-## 6.10 Hosted 运行入口
+## 6.10 响应反馈 Action 接口
+
+这组接口用于 hosted UI 或自研 WebUI 对某条 assistant 输出做通用点赞 / 点踩反馈。
+
+重要边界：
+
+- 当前正式 contract 是 Hosted Action，不是 runtime 原生 `POST /v1/responses/{response_id}/feedback`
+- 调用地址为 `https://<PublicEndpoint>/agentengine/api/v1/<Action>`
+- 主反馈事实源是平台的 `response_feedback` 表
+- Langfuse score 是异步镜像链路，不能作为业务主存储或业务主键
+- 客户端不需要也不应该持有 Langfuse key
+
+### 如何绑定一次回复
+
+自研 WebUI 调用 Agent 后，需要保存同一轮回复的两个字段：
+
+| 字段 | 来源 | 说明 |
+| --- | --- | --- |
+| `SessionId` | 请求中传入的 `session_id` / `SessionId`，或响应中返回的 `session_id` | 会话 ID。连续对话和反馈查询都应使用同一个值 |
+| `ResponseId` | Responses payload 的 `id` | assistant 回复对应的 `resp_xxx` |
+
+不同入口的取值方式：
+
+- 直接调用 `/v1/responses`
+  - 非流式：使用响应 JSON 顶层 `id` 和 `session_id`
+  - 流式：从 `response.created` 或 `response.completed` 事件的 `data.id` 取 `ResponseId`；`SessionId` 使用请求里传入的 `session_id`
+- 调用 `RunAgent`
+  - 建议 `ApiFormat=responses`
+  - 非流式：外层是 `ActionResponse`，使用 `Data.id` / `Data.session_id`
+  - 流式：解析 Responses 风格 SSE，使用事件里的 `data.id`；`SessionId` 使用请求里传入的 `SessionId`
+
+只有已落库的 assistant message 才能反馈。服务端会校验：
+
+- `SessionId` 属于当前账号和 `AgentId`
+- `ResponseId` 能匹配该会话里的 assistant event metadata `response_id`
+- 如传入 `EventId`，还会校验该 event 与 `ResponseId` 一致
+
+### `POST /agentengine/api/v1/UpsertResponseFeedback`
+
+创建或更新当前 response 的反馈。
+
+请求体字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `AgentId` | `string` | 是 | Agent ID |
+| `SessionId` | `string` | 是 | 会话 ID |
+| `ResponseId` | `string` | 是 | `/v1/responses` 的 response ID，通常为 `resp_xxx` |
+| `Rating` | `string` | 是 | `up` 或 `down` |
+| `Comment` | `string` | 否 | 文字反馈，点踩时建议填写 |
+| `EventId` | `string` | 否 | 内部 assistant event ID；通常不用传 |
+| `TraceId` | `string` | 否 | 可选 trace 覆盖值；通常不用传 |
+| `RootSpanId` | `string` | 否 | 可选 root span 覆盖值；通常不用传 |
+
+请求示例：
+
+```bash
+curl -X POST "https://<PublicEndpoint>/agentengine/api/v1/UpsertResponseFeedback" \
+  -H "Authorization: Bearer <api_key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "AgentId": "ar-demo",
+    "SessionId": "sess-123",
+    "ResponseId": "resp_123",
+    "Rating": "down",
+    "Comment": "太啰嗦"
+  }'
+```
+
+成功响应：
+
+```json
+{
+  "Code": 0,
+  "Message": "Success",
+  "RequestId": "req-xxxx",
+  "Action": "UpsertResponseFeedback",
+  "Data": {
+    "Feedback": {
+      "AgentId": "ar-demo",
+      "SessionId": "sess-123",
+      "ResponseId": "resp_123",
+      "EventId": "evt-123",
+      "Rating": "down",
+      "Comment": "太啰嗦",
+      "TraceId": "79b770fc81ad583640721b288462f1bd",
+      "RootSpanId": "",
+      "CreatedAt": "2026-05-08T10:00:00Z",
+      "UpdatedAt": "2026-05-08T10:00:00Z"
+    }
+  }
+}
+```
+
+说明：
+
+- 再次提交同一个 `AgentId + SessionId + ResponseId` 会覆盖原反馈
+- 点赞可以不传 `Comment`
+- 点踩建议传 `Comment`
+- 如果该回复已有 trace metadata，服务端会 best-effort 写入 Langfuse `hosted_ui_feedback` score
+- 如果 trace 还不可用，反馈仍会先落平台表；服务端日志会记录 score 镜像跳过或失败原因
+
+### `POST /agentengine/api/v1/GetResponseFeedback`
+
+查询某条 response 当前反馈。
+
+请求体字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `AgentId` | `string` | 是 | Agent ID |
+| `SessionId` | `string` | 是 | 会话 ID |
+| `ResponseId` | `string` | 是 | response ID |
+
+请求示例：
+
+```bash
+curl -X POST "https://<PublicEndpoint>/agentengine/api/v1/GetResponseFeedback" \
+  -H "Authorization: Bearer <api_key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "AgentId": "ar-demo",
+    "SessionId": "sess-123",
+    "ResponseId": "resp_123"
+  }'
+```
+
+返回：
+
+- `Data.Feedback` 为反馈对象
+- 没有反馈时 `Data.Feedback` 为 `null`
+
+### `POST /agentengine/api/v1/DeleteResponseFeedback`
+
+删除某条 response 的反馈。
+
+请求体字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `AgentId` | `string` | 是 | Agent ID |
+| `SessionId` | `string` | 是 | 会话 ID |
+| `ResponseId` | `string` | 是 | response ID |
+
+请求示例：
+
+```bash
+curl -X POST "https://<PublicEndpoint>/agentengine/api/v1/DeleteResponseFeedback" \
+  -H "Authorization: Bearer <api_key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "AgentId": "ar-demo",
+    "SessionId": "sess-123",
+    "ResponseId": "resp_123"
+  }'
+```
+
+成功响应：
+
+```json
+{
+  "Code": 0,
+  "Message": "Success",
+  "RequestId": "req-xxxx",
+  "Action": "DeleteResponseFeedback",
+  "Data": {
+    "Deleted": true
+  }
+}
+```
+
+### 自研 WebUI 推荐调用顺序
+
+1. 创建或复用一个 `SessionId`
+2. 调用 `/v1/responses`，或调用 `RunAgent` 且设置 `ApiFormat=responses`
+3. 从本轮 assistant 回复拿到 `ResponseId`
+4. 渲染点赞 / 点踩按钮
+5. 页面刷新或历史回放时，对每条 assistant 回复调用 `GetResponseFeedback` 回显状态
+6. 用户点赞或点踩时调用 `UpsertResponseFeedback`
+7. 用户取消反馈时调用 `DeleteResponseFeedback`
+
+## 6.11 Hosted 运行入口
 
 ### `POST /agentengine/api/v1/RunAgent`
 
@@ -1099,7 +1284,7 @@ data: <json>
 - `Data` 直接放 runtime 返回的 payload
 - 服务端会补齐 `session_id`
 
-## 6.11 Legacy ADK Web 兼容接口
+## 6.12 Legacy ADK Web 兼容接口
 
 ### `POST /run_sse`
 
@@ -1134,7 +1319,7 @@ data: <json>
 
 这组接口是 legacy session 兼容层，主要面向 ADK Web。
 
-## 6.12 前端壳路径
+## 6.13 前端壳路径
 
 ### `GET /chat`
 
