@@ -561,6 +561,44 @@ async def test_invoke_conversation_once_persists_trace_metadata_for_feedback(
 
 
 @pytest.mark.asyncio
+async def test_invoke_conversation_once_sets_langfuse_trace_io_attributes(
+    monkeypatch,
+    in_memory_trace_exporter,
+):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _StubRunner()
+
+    session_id, result = await invoke_conversation_once(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id=None,
+        messages=[{"role": "user", "content": "hello"}],
+        model="gpt-4o",
+        response_id="resp_trace_nonstream",
+        prepare_runner=lambda runner, model: runner.prepare_for_request(model),
+    )
+
+    exported_trace = in_memory_trace_exporter.get_trace(result["metadata"]["trace_id"])
+    assert exported_trace is not None
+    root_span = next(
+        span for span in exported_trace["spans"] if span["span_id"] == result["metadata"]["root_span_id"]
+    )
+    assert root_span["name"] == "demo-agent"
+    assert root_span["status"]["code"] != "StatusCode.ERROR"
+    assert root_span["attributes"]["langfuse.trace.name"] == "demo-agent"
+    assert root_span["attributes"]["langfuse.user.id"] == "user-1"
+    assert root_span["attributes"]["langfuse.session.id"] == session_id
+    assert root_span["attributes"]["langfuse.trace.input"] == "hello"
+    assert root_span["attributes"]["langfuse.trace.output"] == "assistant says hi"
+    assert root_span["attributes"]["langfuse.observation.input"] == "hello"
+    assert root_span["attributes"]["langfuse.observation.output"] == "assistant says hi"
+    assert root_span["attributes"]["input.value"] == "hello"
+    assert root_span["attributes"]["output.value"] == "assistant says hi"
+
+
+@pytest.mark.asyncio
 async def test_invoke_conversation_once_passes_session_id_to_runner(monkeypatch):
     service = InMemorySessionService()
     monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
@@ -1340,6 +1378,50 @@ async def test_stream_responses_conversation_turn_persists_trace_metadata_for_fe
     exported_trace = in_memory_trace_exporter.get_trace(trace_id)
     assert exported_trace is not None
     assert any(span["span_id"] == root_span_id for span in exported_trace["spans"])
+
+
+@pytest.mark.asyncio
+async def test_stream_responses_conversation_turn_emits_trace_metadata_from_created_event(
+    monkeypatch,
+    in_memory_trace_exporter,
+):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _StreamingRunner()
+
+    chunks = [
+        chunk
+        async for chunk in stream_responses_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-stream-created-trace",
+            messages=[{"role": "user", "content": "hello"}],
+            model="gpt-4o",
+            prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+            session_service_provider=lambda: service,
+        )
+    ]
+
+    created_payload = _extract_sse_payload(chunks, "response.created")
+    completed_payload = _extract_sse_payload(chunks, "response.completed")
+    assert created_payload["metadata"]["trace_id"]
+    assert created_payload["metadata"]["root_span_id"]
+    assert created_payload["metadata"]["trace_id"] == completed_payload["metadata"]["trace_id"]
+    assert (
+        created_payload["metadata"]["root_span_id"]
+        == completed_payload["metadata"]["root_span_id"]
+    )
+
+    exported_trace = in_memory_trace_exporter.get_trace(created_payload["metadata"]["trace_id"])
+    root_span = next(
+        span
+        for span in exported_trace["spans"]
+        if span["span_id"] == created_payload["metadata"]["root_span_id"]
+    )
+    assert root_span["name"] == "demo-agent"
+    assert root_span["attributes"]["langfuse.trace.input"] == "hello"
+    assert root_span["attributes"]["langfuse.trace.output"] == "hello"
 
 
 @pytest.mark.asyncio
