@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from contextlib import nullcontext
 from typing import Any, Awaitable, Callable, Mapping, Sequence
 
@@ -123,10 +124,10 @@ async def get_latest_agent_access(
     retry_delays: Sequence[float] | None = None,
     require_complete_access: bool = False,
     detail_fetcher: AgentAccessDetailFetcher | None = None,
-    suppress_transient_not_found_log: bool = False,
+    suppress_transient_not_found_log: bool = True,
     on_error: AgentAccessErrorHandler | None = None,
 ) -> dict[str, Any]:
-    """回查最新 Agent 访问字段，可选静默处理创建后短暂 404。"""
+    """回查最新 Agent 访问字段，默认静默处理创建后短暂 GetAgent 404 日志。"""
     agent_ref = str(agent_id or agent_name or "").strip()
     if not agent_ref:
         return {}
@@ -147,12 +148,16 @@ async def get_latest_agent_access(
     )
     last_exc: Exception | None = None
 
+    suppress_ctx = nullcontext()
     suppress_logs = getattr(client, "suppress_http_error_logging", None)
-    suppress_ctx = (
-        suppress_logs(should_suppress_transient_get_agent_not_found_log)
-        if suppress_transient_not_found_log and callable(suppress_logs)
-        else nullcontext()
-    )
+    if suppress_transient_not_found_log and callable(suppress_logs):
+        candidate = suppress_logs(should_suppress_transient_get_agent_not_found_log)
+        if inspect.isawaitable(candidate):
+            close = getattr(candidate, "close", None)
+            if callable(close):
+                close()
+        elif hasattr(candidate, "__enter__") and hasattr(candidate, "__exit__"):
+            suppress_ctx = candidate
 
     with suppress_ctx:
         for attempt in range(attempts):

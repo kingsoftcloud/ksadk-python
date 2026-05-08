@@ -69,7 +69,6 @@ def test_get_latest_agent_access_retries_transient_get_agent_not_found_and_suppr
             attempts=3,
             interval_seconds=0,
             include_api_key=True,
-            suppress_transient_not_found_log=True,
         )
     )
 
