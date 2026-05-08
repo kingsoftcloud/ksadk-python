@@ -785,6 +785,34 @@ async def test_responses_endpoint_streams_thinking_and_text_events(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_responses_endpoint_passes_full_request_history_to_runner(monkeypatch):
+    _, runner, _, transport = _build_transport(monkeypatch)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/v1/responses",
+            json={
+                "input": [
+                    {"role": "user", "content": "写一个python快排的示例"},
+                    {"role": "assistant", "content": "这是 Python 快速排序示例。"},
+                    {"role": "user", "content": "用go"},
+                ],
+                "model": "glm-5.1",
+                "session_id": "sess-responses-history",
+                "stream": True,
+            },
+        )
+
+    assert response.status_code == 200
+    assert runner.invocations[-1]["input"] == "用go"
+    assert runner.invocations[-1]["history"] == [
+        {"role": "user", "content": "写一个python快排的示例"},
+        {"role": "model", "content": "这是 Python 快速排序示例。"},
+        {"role": "user", "content": "用go"},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_responses_endpoint_non_streaming_supports_instructions_and_metadata(monkeypatch):
     _, runner, service, transport = _build_transport(monkeypatch)
 

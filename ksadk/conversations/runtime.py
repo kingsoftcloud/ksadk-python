@@ -211,7 +211,9 @@ def _set_conversation_span_attributes(
         span.set_attribute("ksadk.runner", runner_name)
         span.set_attribute("langfuse.trace.name", runner_name)
         span.set_attribute("langfuse.session.id", session_id)
+        span.set_attribute("session.id", session_id)
         span.set_attribute("langfuse.user.id", user_id)
+        span.set_attribute("user.id", user_id)
         if model:
             span.set_attribute("llm.model_name", model)
             span.set_attribute("gen_ai.request.model", model)
@@ -841,6 +843,35 @@ def _build_runner_request_payload(
     if previous_response_id:
         payload["previous_response_id"] = str(previous_response_id)
     return payload
+
+
+def _merge_request_history_with_session_history(
+    request_history: Sequence[dict[str, str]],
+    session_history: Sequence[dict[str, str]],
+) -> list[dict[str, str]]:
+    if not request_history:
+        return list(session_history)
+    if not session_history:
+        return list(request_history)
+
+    normalized_request = [
+        {
+            "role": str(item.get("role") or ""),
+            "content": str(item.get("content") or "").strip(),
+        }
+        for item in request_history
+    ]
+    normalized_session = [
+        {
+            "role": str(item.get("role") or ""),
+            "content": str(item.get("content") or "").strip(),
+        }
+        for item in session_history
+    ]
+    prefix_len = min(len(normalized_request), len(normalized_session))
+    if normalized_request[:prefix_len] == normalized_session[:prefix_len]:
+        return [*list(request_history), *list(session_history)[prefix_len:]]
+    return [*list(request_history), *list(session_history)]
 
 
 def _has_pending_approval(events: Sequence[SessionEvent]) -> bool:
@@ -1867,8 +1898,12 @@ async def build_run_input(
         session_service_provider=provider,
     )
     history = build_history_from_events(await service.get_events(resolved_session_id))
-    if not history:
-        history = build_request_history(normalized_messages[:-1])
+    request_history = build_request_history(normalized_messages[:-1])
+    # Gateway / Responses callers may send full prompt context while the
+    # runtime-local session is empty or stale (for example after pod
+    # replacement). Preserve that request context, but do not duplicate it when
+    # local session events already contain the same prefix.
+    history = _merge_request_history_with_session_history(request_history, history)
 
     return PreparedConversationTurn(
         session_id=resolved_session_id,
