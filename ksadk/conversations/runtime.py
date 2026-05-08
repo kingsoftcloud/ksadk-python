@@ -6,7 +6,7 @@ import logging
 import os
 import time
 import uuid
-from contextlib import nullcontext
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable, Dict, Mapping, Optional, Sequence
 
@@ -118,9 +118,76 @@ def _span_current_context(span: Any | None):
     try:
         from opentelemetry.trace import use_span
 
-        return use_span(span, end_on_exit=False)
+        return use_span(span, end_on_exit=False, record_exception=False, set_status_on_exception=False)
     except Exception:
         return nullcontext()
+
+
+@asynccontextmanager
+async def _conversation_span_scope(name: str, *, manual_end: bool = False):
+    tracer = _get_conversation_tracer()
+    if tracer is None:
+        yield None
+        return
+    if manual_end:
+        span = tracer.start_span(name)
+        try:
+            yield span
+        finally:
+            try:
+                span.end()
+            except Exception:
+                pass
+        return
+    span = tracer.start_span(name)
+    try:
+        yield span
+    finally:
+        try:
+            span.end()
+        except Exception:
+            pass
+
+
+def _set_span_attribute(span: Any | None, key: str, value: Any) -> None:
+    if span is None:
+        return
+    if value is None:
+        return
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return
+    try:
+        span.set_attribute(key, value)
+    except Exception:
+        return
+
+
+def _set_conversation_input_attributes(span: Any | None, input_text: str | None) -> None:
+    text = " ".join(str(input_text or "").split())
+    if not text:
+        return
+    for key in (
+        "langfuse.trace.input",
+        "langfuse.observation.input",
+        "input.value",
+        "gen_ai.prompt",
+    ):
+        _set_span_attribute(span, key, text)
+
+
+def _set_conversation_output_attributes(span: Any | None, output_text: str | None) -> None:
+    text = " ".join(str(output_text or "").split())
+    if not text:
+        return
+    for key in (
+        "langfuse.trace.output",
+        "langfuse.observation.output",
+        "output.value",
+        "gen_ai.completion",
+    ):
+        _set_span_attribute(span, key, text)
 
 
 def _set_conversation_span_attributes(
@@ -142,9 +209,12 @@ def _set_conversation_span_attributes(
         span.set_attribute("ksadk.session_id", session_id)
         span.set_attribute("ksadk.invocation_id", invocation_id)
         span.set_attribute("ksadk.runner", runner_name)
-        span.set_attribute("langfuse.session_id", session_id)
+        span.set_attribute("langfuse.trace.name", runner_name)
+        span.set_attribute("langfuse.session.id", session_id)
+        span.set_attribute("langfuse.user.id", user_id)
         if model:
             span.set_attribute("llm.model_name", model)
+            span.set_attribute("gen_ai.request.model", model)
         if response_id:
             span.set_attribute("ksadk.response_id", response_id)
     except Exception:
@@ -1894,11 +1964,9 @@ async def invoke_conversation_once(
         memory_context=ambient_contexts.get("memory_context"),
     )
     runner_name = _runner_name(runner)
-    tracer = _get_conversation_tracer()
-    span_cm = tracer.start_as_current_span("ksadk.conversation_turn") if tracer else None
-    with span_cm if span_cm else nullcontext():
+    async with _conversation_span_scope(runner_name) as span:
         _set_conversation_span_attributes(
-            _get_current_span(),
+            span,
             agent_id=agent_id,
             user_id=user_id,
             session_id=prepared.session_id,
@@ -1907,7 +1975,8 @@ async def invoke_conversation_once(
             model=model,
             response_id=response_id,
         )
-        trace_metadata = _current_span_feedback_metadata()
+        _set_conversation_input_attributes(span, prepared.user_input or prepared.user_display_input)
+        trace_metadata = _span_feedback_metadata(span)
         await append_run_status_event(
             session_id=prepared.session_id,
             author=runner_name,
@@ -1958,6 +2027,7 @@ async def invoke_conversation_once(
 
         result = result or {}
         output_text = str(result.get("output", ""))
+        _set_conversation_output_attributes(span, output_text)
         assistant_metadata: dict[str, Any] = dict(trace_metadata)
         if prepared.request_metadata:
             assistant_metadata["request_metadata"] = prepared.request_metadata
@@ -2108,10 +2178,10 @@ async def _iter_conversation_turn_events(
         }
     runner_name = _runner_name(runner)
     tracer = _get_conversation_tracer()
-    span = tracer.start_span("ksadk.conversation_turn") if tracer else None
+    span = tracer.start_span(runner_name) if tracer else None
     span_ended = False
 
-    def _end_conversation_span() -> None:
+    def _finish_span() -> None:
         nonlocal span_ended
         if span is None or span_ended:
             return
@@ -2132,7 +2202,13 @@ async def _iter_conversation_turn_events(
             model=model,
             response_id=response_id,
         )
+        _set_conversation_input_attributes(span, prepared.user_input or prepared.user_display_input)
         trace_metadata = _span_feedback_metadata(span)
+        yield {
+            "type": "started",
+            "session_id": prepared.session_id,
+            "metadata": {**trace_metadata, **dict(request_metadata or {})},
+        }
         await append_run_status_event(
             session_id=prepared.session_id,
             author=runner_name,
@@ -2331,6 +2407,7 @@ async def _iter_conversation_turn_events(
             assistant_metadata["responses_output"] = responses_output
         if responses_response_id:
             assistant_metadata["response_id"] = responses_response_id
+        _set_conversation_output_attributes(span, accumulated_text)
 
         await append_conversation_event(
             session_id=prepared.session_id,
@@ -2355,7 +2432,7 @@ async def _iter_conversation_turn_events(
             invocation_id=prepared.invocation_id,
             session_service_provider=provider,
         )
-        _end_conversation_span()
+        _finish_span()
         yield {
             "type": "completed",
             "output_text": accumulated_text,
@@ -2366,7 +2443,7 @@ async def _iter_conversation_turn_events(
             "response_id": responses_response_id,
         }
     finally:
-        _end_conversation_span()
+        _finish_span()
 
 
 async def stream_conversation_turn(
@@ -2477,17 +2554,6 @@ async def stream_responses_conversation_turn(
     response_id = f"resp_{uuid.uuid4().hex}"
     created_at = int(time.time())
     response_metadata = dict(request_metadata or {})
-    initial_payload = build_responses_payload(
-        output_text="",
-        model=model,
-        session_id=session_id or "",
-        response_id=response_id,
-        created_at=created_at,
-        status="in_progress",
-        metadata=response_metadata,
-    )
-    yield _response_sse("response.created", initial_payload)
-    yield _response_sse("response.in_progress", initial_payload)
 
     message_item_id = f"msg_{uuid.uuid4().hex[:12]}"
     reasoning_item_id = f"rs_{uuid.uuid4().hex[:12]}"
@@ -2498,6 +2564,26 @@ async def stream_responses_conversation_turn(
     content_started = False
     reasoning_started = False
     completed_text = ""
+    lifecycle_started = False
+
+    def _start_response_lifecycle(current_session_id: str | None = None) -> list[str]:
+        nonlocal lifecycle_started, response_metadata
+        if lifecycle_started:
+            return []
+        lifecycle_started = True
+        initial_payload = build_responses_payload(
+            output_text="",
+            model=model,
+            session_id=current_session_id or session_id or "",
+            response_id=response_id,
+            created_at=created_at,
+            status="in_progress",
+            metadata=response_metadata,
+        )
+        return [
+            _response_sse("response.created", initial_payload),
+            _response_sse("response.in_progress", initial_payload),
+        ]
 
     def _message_item(status: str, text: str = "") -> dict[str, Any]:
         content = [{"type": "output_text", "text": text}] if text or status == "completed" else []
@@ -2540,6 +2626,12 @@ async def stream_responses_conversation_turn(
         response_id=response_id,
         session_service_provider=session_service_provider,
     ):
+        event_metadata = event.get("metadata")
+        if isinstance(event_metadata, Mapping):
+            response_metadata.update(dict(event_metadata))
+        if not lifecycle_started:
+            for lifecycle_chunk in _start_response_lifecycle(str(event.get("session_id") or "")):
+                yield lifecycle_chunk
         event_type = event.get("type")
         if event_type == "compaction":
             yield build_compaction_sse_event(
@@ -2786,3 +2878,7 @@ async def stream_responses_conversation_turn(
             )
             yield _response_sse("response.completed", final_payload)
             return
+
+    if not lifecycle_started:
+        for lifecycle_chunk in _start_response_lifecycle():
+            yield lifecycle_chunk
