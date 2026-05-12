@@ -8,7 +8,6 @@ import yaml
 from ksadk.detection import FrameworkDetector, FrameworkType, DetectionResult
 from ksadk.runners.factory import create_runner
 from ksadk.runners.utils.loader import load_agent_module
-from ksadk.runners.unified_runner import UnifiedRunner
 
 
 def _write_deepagents_project(project_dir: Path) -> None:
@@ -209,7 +208,7 @@ def test_factory_creates_deepagents_runner(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_unified_runner_invoke_deepagents_e2e(tmp_path: Path):
+async def test_create_runner_invoke_deepagents_e2e(tmp_path: Path):
     pytest.importorskip("deepagents")
 
     _write_deepagents_project(tmp_path)
@@ -217,7 +216,7 @@ async def test_unified_runner_invoke_deepagents_e2e(tmp_path: Path):
     result = detector.detect()
     assert result.type == FrameworkType.DEEPAGENTS
 
-    runner = UnifiedRunner.create(result, str(tmp_path))
+    runner = create_runner(result, str(tmp_path))
     runner.load_agent()
 
     response = await runner.invoke({"input": "hello deepagents"})

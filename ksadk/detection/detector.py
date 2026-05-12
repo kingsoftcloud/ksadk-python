@@ -105,19 +105,36 @@ class FrameworkDetector:
                 "hermes": FrameworkType.HERMES,
             }.get(framework, FrameworkType.UNKNOWN)
 
-            entry_point = config.get("entry_point", "agent.py")
+            artifact_type = str(config.get("artifact_type") or "").strip().lower()
+            is_hermes_container = (
+                framework_type == FrameworkType.HERMES
+                and artifact_type == "container"
+            )
+            default_entry_point = (
+                "runtime/app.py"
+                if is_hermes_container and (self.project_dir / "runtime" / "app.py").is_file()
+                else "agent.py"
+            )
+            entry_point = config.get("entry_point", default_entry_point)
             agent_variable = config.get("agent_variable", "root_agent")
             entry_path = self.project_dir / str(entry_point).replace("\\", "/")
             if not entry_path.exists() or not entry_path.is_file():
                 return None
-            if not self._entry_exposes_variable(entry_path, agent_variable):
+            if not is_hermes_container and not self._entry_exposes_variable(entry_path, agent_variable):
                 return None
+            package = str(config.get("package") or "").strip()
+            if package:
+                package_path = self.project_dir / package
+            elif is_hermes_container:
+                package_path = entry_path.parent
+            else:
+                package_path = self.project_dir / self.project_dir.name.replace("-", "_")
             
             return DetectionResult(
                 type=framework_type,
                 name=config.get("name", self.project_dir.name),
                 entry_point=entry_point,
-                package_path=str(self.project_dir / config.get("package", self.project_dir.name.replace('-', '_'))),
+                package_path=str(package_path),
                 agent_variable=agent_variable,
                 confidence=1.0
             )

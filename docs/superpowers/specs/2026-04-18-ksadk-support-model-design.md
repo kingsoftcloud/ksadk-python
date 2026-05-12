@@ -42,8 +42,8 @@
 当前仓库中的关键实现已经说明，这六类对象并不处在同一抽象层：
 
 - `FrameworkDetector` 当前主要服务于本地项目检测，核心检测链路围绕 `ADK`、`LangChain`、`LangGraph`、`DeepAgents` 展开；`Hermes` 被部分纳入，但 `OpenClaw` 不在同一条 runner 链路内。
-- `Runner Factory` / `UnifiedRunner` 只为代码型框架创建本地 runner。
-- `agentengine run` 与 `agentengine web` 本质依赖 `FrameworkDetector + UnifiedRunner`。
+- `create_runner()` 只为代码型框架创建本地 runner。
+- `agentengine run` 与 `agentengine web` 本质依赖 `FrameworkDetector + create_runner()`。
 - `agentengine hermes ...` 与 `agentengine openclaw ...` 已经是独立资源组，拥有自己的 `deploy/list/status/open/exec/connect/channel/repair` 等生命周期命令。
 - `agentengine invoke` 已对 `Hermes` 做了专门的 native TUI transport 分流，而不是简单复用通用 chat TUI。
 - `Hermes/OpenClaw` 的云端部署物是镜像，且镜像来源是平台维护的 runtime 镜像，通常基于 upstream 官方镜像叠加平台所需 overlay 构建，而不是普通用户代码包。

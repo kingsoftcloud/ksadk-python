@@ -12,7 +12,7 @@ from ksadk.a2a import AgentCardBuilder, KsA2AServer
 from ksadk.cli.local_runtime import reexec_with_project_venv_if_needed
 from ksadk.cli.resource_common import CONTEXT_SETTINGS
 from ksadk.detection import FrameworkDetector
-from ksadk.runners.unified_runner import UnifiedRunner
+from ksadk.runners.factory import create_runner
 
 
 @click.group("a2a", context_settings=CONTEXT_SETTINGS, help="A2A 协议服务与 Agent Card")
@@ -125,7 +125,7 @@ def _load_runner(agent_path: Path, *, no_trace: bool):
     detection_result = _detect_project(agent_path)
     if not no_trace:
         _setup_tracing(detection_result.type.value)
-    runner = UnifiedRunner.create(detection_result, str(agent_path))
+    runner = create_runner(detection_result, str(agent_path))
     runner.load_agent()
     return detection_result, runner
 

@@ -51,7 +51,9 @@ def test_hermes_dockerfile_uses_local_source_install_and_cn_resilient_pip_defaul
         / "Dockerfile"
     ).read_text(encoding="utf-8")
 
-    assert "FROM node:20-bookworm-slim AS hermes_src" in dockerfile
+    assert "ARG HERMES_NODE_BASE_IMAGE=node:20-bookworm-slim" in dockerfile
+    assert "FROM ${HERMES_NODE_BASE_IMAGE} AS node_with_git" in dockerfile
+    assert "FROM node_with_git AS hermes_src" in dockerfile
     assert "COPY --from=hermes_src /src /tmp/hermes-src" in dockerfile
     assert '"/tmp/hermes-src[web,feishu,pty,cron,mcp,cli]"' in dockerfile
     assert '"aiohttp>=3.13.3,<4"' in dockerfile

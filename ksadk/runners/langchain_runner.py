@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import logging
 import os
 import uuid
 from typing import Any, AsyncIterator, Dict, Optional
@@ -15,6 +16,8 @@ from ksadk.runners.utils import (
     prepare_trace_metadata,
 )
 from ksadk.sessions.continuity import LangChainSessionAdapter
+
+logger = logging.getLogger(__name__)
 
 
 class LangChainRunner(BaseRunner):
@@ -387,15 +390,42 @@ class LangChainRunner(BaseRunner):
         return result
 
     def _extract_wrapped_history_runnable(self) -> Any | None:
-        try:
-            runnable_lambda = self._agent.bound.bound.last.bound
-            func = getattr(runnable_lambda, "func", None)
-            if func is None:
-                return None
-            closure = inspect.getclosurevars(func).nonlocals
-            return closure.get("runnable_async") or closure.get("runnable_sync")
-        except Exception:
+        runnable_lambda = self._get_nested_attr(
+            self._agent,
+            ("bound", "bound", "last", "bound"),
+        )
+        if runnable_lambda is None:
+            logger.debug(
+                "Unable to inspect RunnableWithMessageHistory wrapper: "
+                "missing bound.bound.last.bound"
+            )
             return None
+
+        func = getattr(runnable_lambda, "func", None)
+        if func is None:
+            logger.debug(
+                "Unable to inspect RunnableWithMessageHistory wrapper: missing lambda func"
+            )
+            return None
+
+        try:
+            closure = inspect.getclosurevars(func).nonlocals
+        except Exception as exc:
+            logger.debug(
+                "Unable to inspect RunnableWithMessageHistory wrapper: %s",
+                exc,
+            )
+            return None
+        return closure.get("runnable_async") or closure.get("runnable_sync")
+
+    @staticmethod
+    def _get_nested_attr(obj: Any, path: tuple[str, ...]) -> Any | None:
+        current = obj
+        for name in path:
+            current = getattr(current, name, None)
+            if current is None:
+                return None
+        return current
 
     def _get_message_history_store(self, session_id: str) -> Any | None:
         get_session_history = getattr(self._agent, "get_session_history", None)

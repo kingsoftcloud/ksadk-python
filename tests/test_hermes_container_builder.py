@@ -17,6 +17,9 @@ def test_container_builder_preserves_hermes_template_dockerfile(tmp_path: Path):
     )
 
     detection = FrameworkDetector(str(project)).detect()
+    assert detection.type.value == "hermes"
+    assert detection.entry_point == "runtime/app.py"
+
     package = ContainerBuilder(project)._package(detection)
 
     build_dir = Path(package.build_dir)

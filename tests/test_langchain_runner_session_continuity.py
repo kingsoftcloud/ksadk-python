@@ -227,3 +227,27 @@ async def test_langchain_runner_message_history_includes_instructions_without_am
     assert seen_messages[0][0].__class__.__name__ == "SystemMessage"
     assert "只用中文回答" in seen_messages[0][0].content
     assert seen_messages[0][1].content == "hello"
+
+
+def test_langchain_runner_extracts_wrapped_history_runnable():
+    store: dict[str, InMemoryChatMessageHistory] = {}
+
+    def get_history(session_id: str) -> InMemoryChatMessageHistory:
+        return store.setdefault(session_id, InMemoryChatMessageHistory())
+
+    runnable = RunnableLambda(lambda payload: {"output": payload["input"]})
+    wrapped = RunnableWithMessageHistory(runnable, get_history)
+    runner = _make_runner(wrapped)
+
+    extracted = runner._extract_wrapped_history_runnable()
+
+    assert extracted is not None
+    assert hasattr(extracted, "invoke")
+
+
+def test_langchain_runner_logs_unknown_wrapped_history_shape(caplog):
+    caplog.set_level("DEBUG", logger="ksadk.runners.langchain_runner")
+    runner = _make_runner(SimpleNamespace(bound=object()))
+
+    assert runner._extract_wrapped_history_runnable() is None
+    assert "Unable to inspect RunnableWithMessageHistory wrapper" in caplog.text
