@@ -3290,6 +3290,46 @@ if (openclawConfigPatchRaw) {
   cfg = deepMergeObjects(cfg, openclawConfigPatch);
 }
 
+const normalizeDiagnosticsCaptureContent = () => {
+  if (!isPlainObject(cfg?.diagnostics)) return;
+  if (!Object.prototype.hasOwnProperty.call(cfg.diagnostics, 'captureContent')) return;
+  const legacyCaptureContent = cfg.diagnostics.captureContent;
+  cfg.diagnostics.otel = isPlainObject(cfg.diagnostics.otel) ? cfg.diagnostics.otel : {};
+  if (!Object.prototype.hasOwnProperty.call(cfg.diagnostics.otel, 'captureContent')) {
+    cfg.diagnostics.otel.captureContent = legacyCaptureContent;
+  }
+  delete cfg.diagnostics.captureContent;
+};
+normalizeDiagnosticsCaptureContent();
+
+const applyLangfuseOtelDefaults = () => {
+  const publicKey = String(process.env.LANGFUSE_PUBLIC_KEY || '').trim();
+  const secretKey = String(process.env.LANGFUSE_SECRET_KEY || '').trim();
+  if (!publicKey || !secretKey) return;
+
+  const host = String(
+    process.env.LANGFUSE_BASE_URL || process.env.LANGFUSE_HOST || 'https://cloud.langfuse.com',
+  ).trim().replace(/\/+$/, '');
+  const auth = Buffer.from(`${publicKey}:${secretKey}`, 'utf8').toString('base64');
+
+  enablePlugin('diagnostics-otel');
+  cfg.diagnostics = cfg.diagnostics || {};
+  cfg.diagnostics.enabled = true;
+  cfg.diagnostics.otel = cfg.diagnostics.otel || {};
+  cfg.diagnostics.otel.enabled = true;
+  cfg.diagnostics.otel.endpoint = cfg.diagnostics.otel.endpoint || `${host}/api/public/otel`;
+  cfg.diagnostics.otel.protocol = cfg.diagnostics.otel.protocol || 'http/protobuf';
+  cfg.diagnostics.otel.serviceName = cfg.diagnostics.otel.serviceName || process.env.OTEL_SERVICE_NAME || 'agentengine-openclaw';
+  cfg.diagnostics.otel.traces = cfg.diagnostics.otel.traces !== false;
+  cfg.diagnostics.otel.metrics = cfg.diagnostics.otel.metrics === true;
+  cfg.diagnostics.otel.logs = cfg.diagnostics.otel.logs === true;
+  cfg.diagnostics.otel.headers = cfg.diagnostics.otel.headers || {};
+  cfg.diagnostics.otel.headers.Authorization = cfg.diagnostics.otel.headers.Authorization || `Basic ${auth}`;
+  cfg.diagnostics.otel.headers['x-langfuse-ingestion-version'] =
+    cfg.diagnostics.otel.headers['x-langfuse-ingestion-version'] || '4';
+};
+applyLangfuseOtelDefaults();
+
 fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2));
 
 const approvalsPath = path.join(process.env.STATE_DIR, 'exec-approvals.json');

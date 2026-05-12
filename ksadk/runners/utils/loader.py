@@ -36,6 +36,9 @@ def load_agent_module(
     # 添加项目目录到 Python 路径
     if str(project_path) not in sys.path:
         sys.path.insert(0, str(project_path))
+    src_path = project_path / "src"
+    if src_path.is_dir() and str(src_path) not in sys.path:
+        sys.path.insert(0, str(src_path))
     
     # 确定模块名
     if entry_point.endswith(".py"):

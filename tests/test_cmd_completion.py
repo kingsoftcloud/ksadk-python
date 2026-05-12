@@ -9,6 +9,15 @@ from click.testing import CliRunner
 from ksadk.cli.cmd_completion import completion
 
 
+def test_completion_bash_script_strips_click_typed_prefix():
+    runner = CliRunner()
+    result = runner.invoke(completion, ["bash"])
+
+    assert result.exit_code == 0, result.output
+    assert 'line="${line#*,}"' in result.output
+    assert "_AGENTENGINE_COMPLETE=bash_complete" in result.output
+
+
 def test_completion_install_rewrites_zshrc_to_source_after_compinit(tmp_path: Path, monkeypatch):
     home = tmp_path
     monkeypatch.setenv("HOME", str(home))

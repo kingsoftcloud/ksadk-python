@@ -9,6 +9,7 @@ import uvicorn
 
 import ksadk.configs as configs
 from ksadk.a2a import AgentCardBuilder, KsA2AServer
+from ksadk.cli.local_runtime import reexec_with_project_venv_if_needed
 from ksadk.cli.resource_common import CONTEXT_SETTINGS
 from ksadk.detection import FrameworkDetector
 from ksadk.runners.unified_runner import UnifiedRunner
@@ -44,6 +45,27 @@ def serve(
 ):
     """启动 A2A 协议服务。"""
     agent_path = agent_dir.resolve()
+    command_args = [
+        "a2a",
+        "serve",
+        str(agent_path),
+        "--host",
+        host,
+        "--port",
+        str(port),
+    ]
+    if url:
+        command_args.extend(["--url", url])
+    if name:
+        command_args.extend(["--name", name])
+    if description:
+        command_args.extend(["--description", description])
+    for skill in skills:
+        command_args.extend(["--skill", skill])
+    if no_trace:
+        command_args.append("--no-trace")
+    reexec_with_project_venv_if_needed(agent_path, command_args)
+
     detection_result, runner = _load_runner(agent_path, no_trace=no_trace)
     app_name = name or detection_result.name
     public_url = url or f"http://127.0.0.1:{port}"

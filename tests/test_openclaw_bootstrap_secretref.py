@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import time
+import base64
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -154,6 +155,15 @@ def test_openclaw_dockerfile_tracks_latest_official_channel_plugins():
     assert "COPY deploy/openclaw/wps-xiezuo-assets/openclaw-wps-xiezuo-1.6.0.tgz" in dockerfile
 
 
+def test_openclaw_dockerfile_strips_workspace_dev_dependencies_before_plugin_install():
+    dockerfile = OPENCLAW_DOCKERFILE.read_text(encoding="utf-8")
+
+    assert 'spec.startsWith("workspace:")' in dockerfile
+    assert "delete deps[name]" in dockerfile
+    assert 'npm install --omit=dev --no-audit --no-fund --registry "${NPM_REGISTRY}"' in dockerfile
+    assert 'ln -s /app "${src_dir}/node_modules/openclaw"' in dockerfile
+
+
 def test_openclaw_dockerfile_installs_local_plugin_archives_without_force_flag_for_2026_3_28_compatibility():
     dockerfile = OPENCLAW_DOCKERFILE.read_text(encoding="utf-8")
 
@@ -177,6 +187,17 @@ def test_openclaw_runtime_bundles_runtime_common_and_manifest_renderer():
     assert "from ksadk_runtime_common.memory_backend.render import render_to_json" in bootstrap
     assert 'uvicorn workspace_files_app:app \\' in bootstrap
     assert 'OPENCLAW_WORKSPACE_FILES_PROXY_URL' in bootstrap
+
+
+def test_openclaw_dockerfile_clones_official_kdocs_skill_and_normalizes_runtime_layout():
+    dockerfile = OPENCLAW_DOCKERFILE.read_text(encoding="utf-8")
+
+    assert "ARG KDOCS_SKILL_REPO=https://github.com/kdocs-app/kdocs-skill.git" in dockerfile
+    assert 'git clone --depth 1 "${KDOCS_SKILL_REPO}" /tmp/kdocs-skill' in dockerfile
+    assert 'mkdir -p /opt/openclaw/preset-skills/kdocs/scripts' in dockerfile
+    assert 'cp -R /tmp/kdocs-skill/. /opt/openclaw/preset-skills/kdocs/' in dockerfile
+    assert 'printf \'%s\\n\' \\' in dockerfile
+    assert 'exec bash "${SCRIPT_DIR}/scripts/setup.sh" "$@"' in dockerfile
 
 
 def test_bootstrap_writes_secretref_for_model_api_key():
@@ -281,6 +302,81 @@ def test_bootstrap_applies_openclaw_config_patch_json():
             "metrics": False,
             "logs": False,
             "captureContent": False,
+        }
+
+
+def test_bootstrap_migrates_legacy_diagnostics_capture_content_to_otel():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_CONFIG_PATCH_JSON"] = json.dumps(
+            {
+                "diagnostics": {
+                    "enabled": True,
+                    "captureContent": False,
+                    "otel": {
+                        "enabled": True,
+                        "endpoint": "https://langfuse.pre.example.com/api/public/otel",
+                        "protocol": "http/protobuf",
+                    },
+                }
+            }
+        )
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert cfg["diagnostics"]["enabled"] is True
+        assert "captureContent" not in cfg["diagnostics"]
+        assert cfg["diagnostics"]["otel"]["captureContent"] is False
+
+
+def test_bootstrap_enables_diagnostics_otel_for_langfuse_env():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["LANGFUSE_PUBLIC_KEY"] = "pk-test"
+        env["LANGFUSE_SECRET_KEY"] = "sk-test"
+        env["LANGFUSE_BASE_URL"] = "https://langfuse.pre.example.com/"
+        env["OTEL_SERVICE_NAME"] = "openclaw-langfuse-e2e"
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        expected_auth = base64.b64encode(b"pk-test:sk-test").decode("ascii")
+        assert cfg["plugins"]["entries"]["diagnostics-otel"]["enabled"] is True
+        assert "diagnostics-otel" in cfg["plugins"]["allow"]
+        assert cfg["diagnostics"]["enabled"] is True
+        assert cfg["diagnostics"]["otel"] == {
+            "enabled": True,
+            "endpoint": "https://langfuse.pre.example.com/api/public/otel",
+            "protocol": "http/protobuf",
+            "serviceName": "openclaw-langfuse-e2e",
+            "traces": True,
+            "metrics": False,
+            "logs": False,
+            "headers": {
+                "Authorization": f"Basic {expected_auth}",
+                "x-langfuse-ingestion-version": "4",
+            },
         }
 
 

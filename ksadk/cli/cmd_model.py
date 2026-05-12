@@ -8,7 +8,7 @@ import httpx
 import questionary
 import yaml
 from pathlib import Path
-from dotenv import set_key, find_dotenv, load_dotenv
+from dotenv import set_key
 from ksadk.deployment.state import load_state
 from ksadk.cli.error_utils import abort_with_cli_error, print_exception, usage_error
 from ksadk.cli.resource_common import CONTEXT_SETTINGS, CompatibilityAliasCommand, print_compatibility_hint
@@ -60,12 +60,10 @@ def _model_allowlist_env_key(framework: str | None) -> str:
 
 
 def _resolve_env_file() -> Path:
-    env_file = find_dotenv(usecwd=True)
-    if env_file:
-        return Path(env_file)
     path = Path.cwd() / ".env"
-    print_warn("未找到 .env 文件，将在当前目录创建")
-    path.touch()
+    if not path.exists():
+        print_warn("未找到当前项目 .env 文件，将在当前目录创建")
+        path.touch()
     return path
 
 

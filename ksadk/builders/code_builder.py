@@ -1304,6 +1304,9 @@ if os.environ.get("LANGCHAIN_VERBOSE", "true").lower() not in ("false", "0"):
 # ========== 路径设置 ==========
 CODE_ROOT = os.environ.get("CODE_PATH", "/app/code")
 sys.path.insert(0, CODE_ROOT)
+CODE_SRC = os.path.join(CODE_ROOT, "src")
+if os.path.isdir(CODE_SRC):
+    sys.path.insert(0, CODE_SRC)
 os.chdir(CODE_ROOT)
 
 # 打印启动信息

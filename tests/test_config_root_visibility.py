@@ -5,7 +5,7 @@ from click.testing import CliRunner
 from ksadk.cli import _register_commands, cli
 
 
-def test_root_help_shows_config_but_not_completion_or_model():
+def test_root_help_shows_config_and_completion_but_not_model():
     _register_commands()
     runner = CliRunner()
 
@@ -13,7 +13,7 @@ def test_root_help_shows_config_but_not_completion_or_model():
 
     assert result.exit_code == 0, result.output
     assert "agentengine config" in result.output
-    assert "completion" not in result.output
+    assert "agentengine completion" in result.output
     assert " model " not in result.output
 
 

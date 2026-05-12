@@ -447,6 +447,15 @@ async def proxy_api(path: str, request: Request) -> Response:
     return await _proxy_http(request, _api_base(), f"v1/{path}")
 
 
+@app.post("/api/hermes/update")
+async def block_dashboard_self_update() -> Response:
+    return Response(
+        "Hermes 自更新在 AgentEngine 托管运行时中已禁用。请升级运行时镜像并重新部署 Hermes Agent。",
+        status_code=409,
+        media_type="text/plain",
+    )
+
+
 def _set_winsize(fd: int, rows: int, cols: int) -> None:
     termios.tcsetwinsize(fd, (int(rows or 24), int(cols or 80)))
 

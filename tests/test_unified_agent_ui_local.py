@@ -5,6 +5,7 @@ import importlib
 import json
 import os
 import re
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -134,6 +135,7 @@ async def test_get_agent_ui_bootstrap_matches_local_shape_parity(monkeypatch):
         "ApiFormats",
         "Stream",
         "SessionId",
+        "SessionBackend",
         "HostedRuntime",
         "Model",
     }
@@ -1045,6 +1047,96 @@ def test_cmd_web_launches_unified_local_server(monkeypatch, tmp_path):
     assert fake_runner.load_agent_calls == 0
 
 
+def test_cmd_web_reexecs_with_project_venv_python(monkeypatch, tmp_path):
+    runner = CliRunner()
+    project_dir = tmp_path / "demo-agent"
+    venv_bin = project_dir / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    venv_python = venv_bin / "python"
+    venv_python.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    import ksadk.cli.cmd_web as cmd_web_module
+
+    captured: dict[str, object] = {}
+
+    def _fake_execvpe(file: str, args: list[str], env: dict[str, str]) -> None:
+        captured["file"] = file
+        captured["args"] = args
+        captured["env"] = env
+        raise SystemExit(23)
+
+    import ksadk.cli.local_runtime as local_runtime
+
+    monkeypatch.delenv("AGENTENGINE_WEB_VENV_REEXEC", raising=False)
+    monkeypatch.delenv("AGENTENGINE_LOCAL_RUNTIME_VENV_REEXEC", raising=False)
+    monkeypatch.setattr(local_runtime.sys, "executable", sys.executable, raising=False)
+    monkeypatch.setattr(local_runtime.os, "execvpe", _fake_execvpe, raising=False)
+
+    result = runner.invoke(cmd_web_module.web, [str(project_dir), "--port", "8899"])
+
+    assert result.exit_code == 23
+    assert captured["file"] == str(venv_python)
+    args = captured["args"]
+    assert isinstance(args, list)
+    assert args[:2] == [str(venv_python), "-c"]
+    assert "from ksadk.cli import main; main()" in args[2]
+    assert args[3:] == [
+        "web",
+        str(project_dir.resolve()),
+        "--port",
+        "8899",
+    ]
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["AGENTENGINE_LOCAL_RUNTIME_VENV_REEXEC"] == "1"
+    assert str(Path(local_runtime.__file__).resolve().parents[2]) in args[2]
+
+
+def test_cmd_web_does_not_reexec_inside_project_venv(monkeypatch, tmp_path):
+    runner = CliRunner()
+    fake_runner = _UiRunner()
+    project_dir = tmp_path / "demo-agent"
+    venv_bin = project_dir / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    venv_python = venv_bin / "python"
+    venv_python.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    class _Detector:
+        def __init__(self, path: str):
+            self.path = path
+
+        def detect(self):
+            return SimpleNamespace(
+                type=SimpleNamespace(value="langgraph"),
+                name="demo-agent",
+                entry_point="agent.py",
+            )
+
+    import ksadk.cli.cmd_web as cmd_web_module
+    import ksadk.cli.local_runtime as local_runtime
+
+    monkeypatch.setattr(local_runtime.sys, "executable", str(venv_python), raising=False)
+    monkeypatch.setattr(
+        local_runtime.os,
+        "execvpe",
+        lambda *_args, **_kwargs: pytest.fail("should not re-exec inside project venv"),
+        raising=False,
+    )
+    monkeypatch.setattr(cmd_web_module, "FrameworkDetector", _Detector, raising=False)
+    monkeypatch.setattr(cmd_web_module, "setup_environment", lambda path: None, raising=False)
+    monkeypatch.setattr(
+        "ksadk.runners.unified_runner.UnifiedRunner.create",
+        lambda result, project_dir: fake_runner,
+        raising=False,
+    )
+    monkeypatch.chdir(project_dir)
+
+    result = runner.invoke(cmd_web_module.web, [str(project_dir), "--port", "8899"])
+
+    assert result.exit_code == 0, result.output
+    assert fake_runner.run_server_calls == [8899]
+
+
 def test_cmd_web_defaults_adk_stm_to_persistent_sqlite(monkeypatch, tmp_path):
     runner = CliRunner()
     fake_runner = _UiRunner()
@@ -1170,8 +1262,11 @@ def test_web_ui_source_uses_title_and_summary_in_sidebar():
     sidebar_source = Path("ksadk/server/web-ui/src/components/chat/ChatSidebar.tsx").read_text(
         encoding="utf-8"
     )
+    session_list_source = Path("ksadk/server/web-ui/src/utils/session-list.js").read_text(
+        encoding="utf-8"
+    )
     assert "session.Title" in app_source
-    assert "session.Summary" in sidebar_source
+    assert "session?.Summary" in session_list_source
     assert "session.SessionId.slice(0, 12)" not in sidebar_source
 
 
@@ -1186,7 +1281,8 @@ def test_web_ui_source_prefers_responses_when_runtime_supports_it():
     source = Path("ksadk/server/web-ui/src/App.tsx").read_text(encoding="utf-8")
     assert "setAgentFramework" in source
     assert "if (apiFormats.includes('responses'))" in source
-    assert "agentFramework === 'hermes'" not in source
+    assert "return 'responses'" in source
+    assert "resolveRunAgentApiFormat({ agentFramework, apiFormats })" in source
 
 
 def test_web_ui_source_supports_workspace_panel_for_owner_access():
@@ -1216,9 +1312,9 @@ def test_web_ui_source_supports_workspace_panel_for_owner_access():
     assert "ApiFormat: runAgentApiFormat" in source
     assert "ModelMetadata: selectedModelMetadata || undefined" in source
     assert "chat_completions" in source
-    assert "choices?.[0]?.delta" in source
-    assert "delta.content" in source
     assert "normalizeResponsesStreamEvent" in source
+    assert "extractCompletedText" in responses_stream_source
+    assert "item.delta" in responses_stream_source
     assert "response.output_item.added" in responses_stream_source
     assert "response.function_call_arguments.delta" in responses_stream_source
     assert "response.ksadk.tool_result" in responses_stream_source
@@ -1233,15 +1329,18 @@ def test_web_ui_source_supports_streaming_queue_and_refresh_pending_status():
     sidebar_source = Path("ksadk/server/web-ui/src/components/chat/ChatSidebar.tsx").read_text(
         encoding="utf-8"
     )
+    session_events_source = Path("ksadk/server/web-ui/src/utils/session-events.js").read_text(
+        encoding="utf-8"
+    )
     assert "queuedDraftRef" in source
     assert "queuedDrafts={queuedDrafts}" in source
-    assert "上一轮消息仍在运行中" in source
-    assert "latestRunStatusByInvocation" in source
+    assert "上一轮消息仍在运行中" in session_events_source
+    assert "latestRunStatusByInvocation" in session_events_source
     assert "disabled={!input.trim() && attachments.length === 0}" in composer_source
     assert "发送队列 · {queuedDrafts.length}" in composer_source
     assert "当前回复完成后依次发送" in composer_source
     assert "加入发送队列" in composer_source
-    assert "flex h-14 flex-shrink-0 items-center" in sidebar_source
+    assert "flex flex-shrink-0 flex-col gap-2" in sidebar_source
 
 
 def test_web_ui_source_uses_adaptive_image_preview_sizing():

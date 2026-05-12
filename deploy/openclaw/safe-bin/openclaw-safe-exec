@@ -164,8 +164,7 @@ is_allowlisted_state_shell_script() {
   local candidate
   candidate="$(canon_path "$1")"
   case "${candidate}" in
-    "${STATE_CANON}/skills/kdocs/setup.sh"|\
-    "${STATE_CANON}/skills/kdocs/get-token.sh")
+    "${STATE_CANON}/skills/kdocs/setup.sh")
       return 0
       ;;
     *)

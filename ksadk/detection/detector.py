@@ -3,6 +3,7 @@
 """
 
 import ast
+import json
 import os
 from dataclasses import dataclass
 from enum import Enum
@@ -50,6 +51,10 @@ class FrameworkDetector:
         config_result = self._check_config()
         if config_result:
             return config_result
+
+        graph_config_result = self._check_langgraph_json()
+        if graph_config_result:
+            return graph_config_result
         
         # 2. 查找 Python 包目录
         package_path = self._find_package_dir()
@@ -99,13 +104,21 @@ class FrameworkDetector:
                 "deepagents": FrameworkType.DEEPAGENTS,
                 "hermes": FrameworkType.HERMES,
             }.get(framework, FrameworkType.UNKNOWN)
+
+            entry_point = config.get("entry_point", "agent.py")
+            agent_variable = config.get("agent_variable", "root_agent")
+            entry_path = self.project_dir / str(entry_point).replace("\\", "/")
+            if not entry_path.exists() or not entry_path.is_file():
+                return None
+            if not self._entry_exposes_variable(entry_path, agent_variable):
+                return None
             
             return DetectionResult(
                 type=framework_type,
                 name=config.get("name", self.project_dir.name),
-                entry_point=config.get("entry_point", "agent.py"),
+                entry_point=entry_point,
                 package_path=str(self.project_dir / config.get("package", self.project_dir.name.replace('-', '_'))),
-                agent_variable=config.get("agent_variable", "root_agent"),
+                agent_variable=agent_variable,
                 confidence=1.0
             )
         except Exception:
@@ -142,6 +155,27 @@ class FrameworkDetector:
         # 兼容脚本式项目: 当前目录直接包含 agent.py/main.py/app.py
         if any((self.project_dir / entry_file).exists() for entry_file in self._ENTRY_FILES):
             return self.project_dir
+
+        src_dir = self.project_dir / "src"
+        if src_dir.is_dir():
+            expected_src_path = src_dir / expected_name
+            if expected_src_path.exists() and expected_src_path.is_dir():
+                if (expected_src_path / "__init__.py").exists() or any(
+                    (expected_src_path / entry_file).exists() for entry_file in self._ENTRY_FILES
+                ):
+                    return expected_src_path
+
+            for item in src_dir.iterdir():
+                if (
+                    item.is_dir()
+                    and not item.name.startswith(".")
+                    and item.name not in ("tests", "test", "__pycache__")
+                    and (
+                        (item / "__init__.py").exists()
+                        or any((item / entry_file).exists() for entry_file in self._ENTRY_FILES)
+                    )
+                ):
+                    return item
         
         return None
     
@@ -163,6 +197,97 @@ class FrameworkDetector:
             except Exception:
                 pass
         
+        return None
+
+    @staticmethod
+    def _detect_agent_variable(content: str) -> str | None:
+        import re
+
+        patterns = [
+            (r"^\s*(root_agent)\s*=", "root_agent"),
+            (r"^\s*(root_agent)\s*:\s*[^=]+\s*=", "root_agent"),
+            (r"^\s*(\w+)\s*=\s*\w*graph\w*\.compile\(", None),
+            (r"^\s*(\w+)\s*=\s*StateGraph", None),
+            (r"^\s*(\w+)\s*=\s*Agent\(", None),
+            (r"^\s*(\w+)\s*=\s*create_react_agent\(", None),
+            (r"^\s*(\w+)\s*=\s*create_deep_agent\(", None),
+            (r"^\s*(\w+)\s*=\s*create_agent\(", None),
+        ]
+        for pattern, fixed_name in patterns:
+            match = re.search(pattern, content, re.MULTILINE | re.IGNORECASE)
+            if match:
+                return fixed_name if fixed_name else match.group(1)
+        return None
+
+    @classmethod
+    def _has_agent_variable(cls, content: str, agent_var: str) -> bool:
+        import re
+
+        if not agent_var:
+            return False
+        escaped = re.escape(agent_var)
+        patterns = [
+            rf"^\s*{escaped}\s*=",
+            rf"^\s*{escaped}\s*:\s*[^=]+=",
+            rf"^\s*from\s+[\.\w]+\s+import\s+.*\b{escaped}\b",
+            rf"^\s*import\s+[\.\w]+\s+as\s+{escaped}\b",
+        ]
+        return any(re.search(pattern, content, re.MULTILINE) for pattern in patterns) or cls._detect_agent_variable(content) == agent_var
+
+    def _entry_exposes_variable(self, entry_path: Path, agent_var: str) -> bool:
+        try:
+            content = entry_path.read_text(encoding="utf-8-sig")
+        except Exception:
+            return False
+        return self._has_agent_variable(content, agent_var)
+
+    def _framework_from_entry(self, entry_path: Path, fallback: FrameworkType = FrameworkType.UNKNOWN) -> FrameworkType:
+        try:
+            content = entry_path.read_text(encoding="utf-8-sig")
+            tree = ast.parse(content)
+            imports = self._extract_imports(tree)
+        except Exception:
+            return fallback
+        if self._is_deepagents(imports, content):
+            return FrameworkType.DEEPAGENTS
+        if self._is_langgraph(imports, content):
+            return FrameworkType.LANGGRAPH
+        if self._is_adk(imports, content):
+            return FrameworkType.ADK
+        if self._is_langchain(imports, content):
+            return FrameworkType.LANGCHAIN
+        return fallback
+
+    def _check_langgraph_json(self) -> Optional[DetectionResult]:
+        config_path = self.project_dir / "langgraph.json"
+        if not config_path.exists():
+            return None
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            return None
+        graphs = config.get("graphs")
+        if not isinstance(graphs, dict):
+            return None
+        for target in graphs.values():
+            if not isinstance(target, str) or ":" not in target:
+                continue
+            path_part, agent_var = target.rsplit(":", 1)
+            path_part = path_part.strip().removeprefix("./")
+            agent_var = agent_var.strip() or "root_agent"
+            entry_path = self.project_dir / Path(path_part.replace("\\", "/"))
+            if not entry_path.exists() or not entry_path.is_file():
+                continue
+            if not self._entry_exposes_variable(entry_path, agent_var):
+                continue
+            return DetectionResult(
+                type=self._framework_from_entry(entry_path, FrameworkType.LANGGRAPH),
+                name=self.project_dir.name,
+                entry_point=str(entry_path.relative_to(self.project_dir)),
+                package_path=str(entry_path.parent),
+                agent_variable=agent_var,
+                confidence=0.95,
+            )
         return None
     
     def _analyze_code(self, agent_file: Path, package_path: Path) -> DetectionResult:

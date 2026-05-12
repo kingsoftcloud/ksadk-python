@@ -25,6 +25,7 @@ ARG OPENCLAW_DIAGNOSTICS_OTEL_PLUGIN_ID=diagnostics-otel
 ARG OPENCLAW_PRESET_PLUGINS_ALLOWLIST=
 ARG OPENCLAW_INSTALL_AGENT_BROWSER=true
 ARG OPENCLAW_AGENT_BROWSER_SPEC=agent-browser
+ARG KDOCS_SKILL_REPO=https://github.com/kdocs-app/kdocs-skill.git
 
 USER root
 ENV TZ=${TZ}
@@ -127,7 +128,12 @@ RUN --mount=type=cache,target=/root/.npm \
       mv "${archive_root}" "${src_dir}"; \
     fi; \
     if [ -f "${src_dir}/package.json" ]; then \
+      (cd "${src_dir}" && node -e 'const fs=require("fs"); const p="package.json"; const pkg=JSON.parse(fs.readFileSync(p,"utf8")); const deps=pkg.devDependencies || {}; let changed=false; for (const [name, spec] of Object.entries(deps)) { if (typeof spec === "string" && spec.startsWith("workspace:")) { delete deps[name]; changed=true; } } if (Object.keys(deps).length) pkg.devDependencies=deps; else delete pkg.devDependencies; if (changed) fs.writeFileSync(p, JSON.stringify(pkg, null, 2) + "\n");'); \
       (cd "${src_dir}" && npm install --omit=dev --no-audit --no-fund --registry "${NPM_REGISTRY}"); \
+      if [ -f /app/package.json ] && [ ! -e "${src_dir}/node_modules/openclaw" ]; then \
+        mkdir -p "${src_dir}/node_modules"; \
+        ln -s /app "${src_dir}/node_modules/openclaw"; \
+      fi; \
     fi; \
     HOME="${work_root}/home" OPENCLAW_STATE_DIR="${work_root}/state" openclaw plugins inspect "${plugin_id}" >/dev/null; \
   }; \
@@ -212,8 +218,28 @@ RUN --mount=type=cache,target=/root/.npm \
   chown -R node:node /opt/openclaw/default-extensions; \
   chmod -R a+rX /opt/openclaw/default-extensions
 
-COPY deploy/openclaw/preset-skills /opt/openclaw/preset-skills
+COPY deploy/openclaw/preset-skills/agent-browser-clawdbot /opt/openclaw/preset-skills/agent-browser-clawdbot
+COPY deploy/openclaw/preset-skills/clawhub-store /opt/openclaw/preset-skills/clawhub-store
+COPY deploy/openclaw/preset-skills/multi-search-engine /opt/openclaw/preset-skills/multi-search-engine
+COPY deploy/openclaw/preset-skills/self-improving-agent /opt/openclaw/preset-skills/self-improving-agent
+COPY deploy/openclaw/preset-skills/tuanziguardianclaw /opt/openclaw/preset-skills/tuanziguardianclaw
+COPY deploy/openclaw/preset-skills/wps365-skill /opt/openclaw/preset-skills/wps365-skill
 COPY --chmod=755 deploy/openclaw/bootstrap.sh /usr/local/bin/bootstrap.sh
+
+RUN set -eux; \
+  rm -rf /tmp/kdocs-skill /opt/openclaw/preset-skills/kdocs; \
+  git clone --depth 1 "${KDOCS_SKILL_REPO}" /tmp/kdocs-skill; \
+  mkdir -p /opt/openclaw/preset-skills/kdocs/scripts; \
+  cp -R /tmp/kdocs-skill/. /opt/openclaw/preset-skills/kdocs/; \
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"' \
+    'exec bash "${SCRIPT_DIR}/scripts/setup.sh" "$@"' \
+    > /opt/openclaw/preset-skills/kdocs/setup.sh; \
+  chmod 755 /opt/openclaw/preset-skills/kdocs/setup.sh; \
+  cp /tmp/kdocs-skill/scripts/setup.sh /opt/openclaw/preset-skills/kdocs/scripts/setup.sh; \
+  rm -rf /tmp/kdocs-skill
 
 RUN --mount=type=cache,target=/root/.cache/pip \
   set -eux; \

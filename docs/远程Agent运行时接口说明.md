@@ -40,7 +40,7 @@
 这个地址就是外部调用运行时接口时应使用的根地址。例如：
 
 ```text
-https://agent-ar20250205120000abcdef.agentengine.ksyun.com
+http://ar-20260506162108-d30283cd.agent-pre.kspmas.ksyun.com
 ```
 
 说明：

@@ -4,6 +4,7 @@ import click
 from pathlib import Path
 import os
 from ksadk.cli.error_utils import ensure_json_output_supported, print_exception
+from ksadk.cli.local_runtime import reexec_with_project_venv_if_needed
 from ksadk.cli.ui import (
     print_error,
     print_info,
@@ -37,6 +38,11 @@ def web(agent_dir: str, port: int, model: str):
     )
 
     agent_path = Path(agent_dir).resolve()
+    command_args = ["web", str(agent_path), "--port", str(port)]
+    if model:
+        command_args.extend(["--model", model])
+    reexec_with_project_venv_if_needed(agent_path, command_args)
+
     print_title("启动本地调试 Web UI")
     print_kv("项目目录", str(agent_path))
 

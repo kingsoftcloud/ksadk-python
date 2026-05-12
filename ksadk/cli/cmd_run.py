@@ -12,6 +12,7 @@ import sys
 import os
 from pathlib import Path
 from ksadk.cli.error_utils import ensure_json_output_supported, print_exception
+from ksadk.cli.local_runtime import reexec_with_project_venv_if_needed
 from ksadk.cli.ui import (
     print_error,
     print_info,
@@ -43,6 +44,19 @@ def run(agent_dir: str, port: int, interactive: bool, no_trace: bool, model: str
     from ksadk.detection import FrameworkDetector, FrameworkType
 
     agent_path = Path(agent_dir).resolve()
+    command_args = ["run", str(agent_path), "--port", str(port)]
+    if interactive:
+        command_args.append("--interactive")
+    if no_trace:
+        command_args.append("--no-trace")
+    if model:
+        command_args.extend(["--model", model])
+    if show_thinking:
+        command_args.append("--show-thinking")
+    if no_stream:
+        command_args.append("--no-stream")
+    reexec_with_project_venv_if_needed(agent_path, command_args)
+
     print_title("本地运行 Agent")
     print_kv("项目目录", str(agent_path))
 

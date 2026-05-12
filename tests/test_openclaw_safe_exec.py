@@ -294,6 +294,19 @@ def test_bash_safe_allows_allowlisted_state_kdocs_setup_script():
         assert "grep=ok" in result.stdout
 
 
+def test_openclaw_safe_exec_only_allowlists_kdocs_setup_shim():
+    safe_exec = (
+        Path(__file__).resolve().parents[1]
+        / "deploy"
+        / "openclaw"
+        / "safe-bin"
+        / "openclaw-safe-exec"
+    ).read_text(encoding="utf-8")
+
+    assert '"${STATE_CANON}/skills/kdocs/setup.sh"' in safe_exec
+    assert '"${STATE_CANON}/skills/kdocs/get-token.sh"' not in safe_exec
+
+
 def test_bash_safe_rejects_non_allowlisted_state_scripts():
     with TemporaryDirectory() as tmpdir:
         root = Path(tmpdir)
