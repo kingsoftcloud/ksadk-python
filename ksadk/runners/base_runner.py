@@ -69,6 +69,17 @@ class BaseRunner(ABC):
         """在请求进入实际 runner 前同步模型或做必要刷新。"""
         self.sync_process_model_env(model)
 
+    async def close(self) -> None:
+        """释放 runner 持有的运行期资源。"""
+        return None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await self.close()
+        return False
+
     def get_session_adapter(self) -> RunnerSessionAdapter:
         return TranscriptReplayAdapter()
 

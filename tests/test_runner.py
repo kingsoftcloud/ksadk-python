@@ -32,6 +32,39 @@ class _StubRunner(BaseRunner):
         yield {"output": input_data}
 
 
+class _AsyncClosableToolset:
+    def __init__(self):
+        self.closed = 0
+
+    async def close(self):
+        self.closed += 1
+
+
+class _SyncClosableToolset:
+    def __init__(self):
+        self.closed = 0
+
+    def close(self):
+        self.closed += 1
+
+
+class _AsyncAClosableToolset:
+    def __init__(self):
+        self.closed = 0
+
+    async def aclose(self):
+        self.closed += 1
+
+
+class _FailingClosableToolset:
+    def __init__(self):
+        self.closed = 0
+
+    async def close(self):
+        self.closed += 1
+        raise RuntimeError("close failed")
+
+
 def _install_runner_module(monkeypatch, module_path: str, class_name: str):
     fake_module = ModuleType(module_path)
 
@@ -122,6 +155,60 @@ def test_create_runner_rejects_unknown_framework():
 
     with pytest.raises(ValueError, match="不支持的框架类型"):
         create_runner(detection, "/workspace/demo")
+
+
+def test_runners_package_exports_only_create_runner():
+    import ksadk.runners as runners
+
+    assert hasattr(runners, "create_runner")
+    assert set(runners.__all__) == {"BaseRunner", "create_runner"}
+
+
+@pytest.mark.asyncio
+async def test_base_runner_close_and_async_context_are_noops():
+    detection = _write_detection(FrameworkType.LANGCHAIN)
+    runner = _StubRunner(detection, "/workspace/demo")
+
+    async with runner as active_runner:
+        assert active_runner is runner
+
+    assert await runner.close() is None
+
+
+@pytest.mark.asyncio
+async def test_adk_runner_close_releases_runtime_toolsets_once(tmp_path):
+    from ksadk.runners.adk_runner import ADKRunner
+
+    runner = ADKRunner(_write_detection(FrameworkType.ADK), str(tmp_path))
+    async_close = _AsyncClosableToolset()
+    sync_close = _SyncClosableToolset()
+    async_aclose = _AsyncAClosableToolset()
+    runner._runtime_toolsets = [async_close, sync_close, async_aclose]
+
+    await runner.close()
+    await runner.close()
+
+    assert async_close.closed == 1
+    assert sync_close.closed == 1
+    assert async_aclose.closed == 1
+    assert runner._runtime_toolsets == []
+
+
+@pytest.mark.asyncio
+async def test_adk_runner_close_continues_after_toolset_failure(tmp_path, caplog):
+    from ksadk.runners.adk_runner import ADKRunner
+
+    runner = ADKRunner(_write_detection(FrameworkType.ADK), str(tmp_path))
+    failing = _FailingClosableToolset()
+    ok = _AsyncClosableToolset()
+    runner._runtime_toolsets = [failing, ok]
+
+    await runner.close()
+
+    assert failing.closed == 1
+    assert ok.closed == 1
+    assert runner._runtime_toolsets == []
+    assert "Failed to close runtime toolset" in caplog.text
 
 
 def test_langchain_runner_prepare_for_request_reloads_agent_when_model_changes(

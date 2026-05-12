@@ -166,7 +166,7 @@ def _run_custom(
     no_stream: bool = False,
 ):
     """使用自定义实现 (LangChain/LangGraph/DeepAgents)"""
-    from ksadk.runners.unified_runner import UnifiedRunner
+    from ksadk.runners.factory import create_runner
 
     # 初始化 Tracing
     if not no_trace:
@@ -200,7 +200,7 @@ def _run_custom(
     # 创建 Runner
     try:
         print_info("初始化 Runner...")
-        runner = UnifiedRunner.create(result, str(agent_path))
+        runner = create_runner(result, str(agent_path))
         runner.load_agent()
         print_success("Agent 加载成功")
     except Exception as e:

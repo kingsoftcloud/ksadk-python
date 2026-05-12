@@ -12,6 +12,8 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from click.testing import CliRunner
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
 
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.sessions.base import SessionEvent
@@ -109,6 +111,17 @@ def _build_transport_with_runner(monkeypatch, runner):
     server_app_module.set_runner(runner)
     transport = httpx.ASGITransport(app=server_app_module.app)
     return server_app_module, runner, service, transport
+
+
+@pytest.fixture
+def active_trace_provider():
+    provider = TracerProvider()
+    trace._TRACER_PROVIDER = None
+    trace._TRACER_PROVIDER_SET_ONCE._done = False
+    trace._set_tracer_provider(provider, log=False)
+    yield
+    trace._TRACER_PROVIDER = None
+    trace._TRACER_PROVIDER_SET_ONCE._done = False
 
 
 @pytest.mark.asyncio
@@ -815,7 +828,10 @@ async def test_responses_endpoint_passes_full_request_history_to_runner(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_responses_endpoint_non_streaming_supports_instructions_and_metadata(monkeypatch):
+async def test_responses_endpoint_non_streaming_supports_instructions_and_metadata(
+    monkeypatch,
+    active_trace_provider,
+):
     _, runner, service, transport = _build_transport(monkeypatch)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
@@ -833,7 +849,9 @@ async def test_responses_endpoint_non_streaming_supports_instructions_and_metada
     payload = response.json()
     assert payload["object"] == "response"
     assert payload["status"] == "completed"
-    assert payload["metadata"] == {"trace_label": "demo"}
+    assert payload["metadata"]["trace_label"] == "demo"
+    assert payload["metadata"]["trace_id"]
+    assert payload["metadata"]["root_span_id"]
     assert payload["output_text"] == "assistant says hi"
     assert payload["session_id"]
     assert runner.invocations[-1]["instructions"] == "只用中文回答"
@@ -1034,7 +1052,7 @@ def test_cmd_web_launches_unified_local_server(monkeypatch, tmp_path):
     monkeypatch.setattr(cmd_web_module, "FrameworkDetector", _Detector, raising=False)
     monkeypatch.setattr(cmd_web_module, "setup_environment", lambda path: None, raising=False)
     monkeypatch.setattr(
-        "ksadk.runners.unified_runner.UnifiedRunner.create",
+        "ksadk.cli.cmd_web.create_runner",
         lambda result, project_dir: fake_runner,
         raising=False,
     )
@@ -1125,7 +1143,7 @@ def test_cmd_web_does_not_reexec_inside_project_venv(monkeypatch, tmp_path):
     monkeypatch.setattr(cmd_web_module, "FrameworkDetector", _Detector, raising=False)
     monkeypatch.setattr(cmd_web_module, "setup_environment", lambda path: None, raising=False)
     monkeypatch.setattr(
-        "ksadk.runners.unified_runner.UnifiedRunner.create",
+        "ksadk.cli.cmd_web.create_runner",
         lambda result, project_dir: fake_runner,
         raising=False,
     )
@@ -1164,7 +1182,7 @@ def test_cmd_web_defaults_adk_stm_to_persistent_sqlite(monkeypatch, tmp_path):
     monkeypatch.setattr(cmd_web_module, "FrameworkDetector", _Detector, raising=False)
     monkeypatch.setattr(cmd_web_module, "setup_environment", lambda path: None, raising=False)
     monkeypatch.setattr(
-        "ksadk.runners.unified_runner.UnifiedRunner.create",
+        "ksadk.cli.cmd_web.create_runner",
         lambda result, project_dir: fake_runner,
         raising=False,
     )
@@ -1206,7 +1224,7 @@ def test_cmd_web_preserves_explicit_adk_stm_configuration(monkeypatch, tmp_path)
     monkeypatch.setattr(cmd_web_module, "FrameworkDetector", _Detector, raising=False)
     monkeypatch.setattr(cmd_web_module, "setup_environment", lambda path: None, raising=False)
     monkeypatch.setattr(
-        "ksadk.runners.unified_runner.UnifiedRunner.create",
+        "ksadk.cli.cmd_web.create_runner",
         lambda result, project_dir: fake_runner,
         raising=False,
     )

@@ -1,10 +1,24 @@
 from pathlib import Path
 
+import pytest
 import yaml
 from click.testing import CliRunner
 
 from ksadk.cli import cmd_model
 from ksadk.cli.cmd_config import config
+
+
+@pytest.fixture(autouse=True)
+def _isolate_model_env(monkeypatch):
+    for key in (
+        "OPENAI_MODEL_NAME",
+        "MODEL_NAME",
+        "OPENAI_API_BASE",
+        "COZE_WORKLOAD_IDENTITY_API_KEY",
+        "COZE_INTEGRATION_BASE_URL",
+        "COZE_INTEGRATION_MODEL_BASE_URL",
+    ):
+        monkeypatch.delenv(key, raising=False)
 
 
 def test_config_model_env_prints_openclaw_allowlist_from_state(monkeypatch, tmp_path: Path):

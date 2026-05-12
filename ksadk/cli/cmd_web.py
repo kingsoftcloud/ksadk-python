@@ -14,7 +14,7 @@ from ksadk.cli.ui import (
 )
 from ksadk.configs import setup_environment
 from ksadk.detection import FrameworkDetector
-from ksadk.runners.unified_runner import UnifiedRunner
+from ksadk.runners.factory import create_runner
 
 
 @click.command(context_settings=dict(help_option_names=["-h", "--help"]))
@@ -85,7 +85,7 @@ def web(agent_dir: str, port: int, model: str):
 
     try:
         print_info("初始化 Runner...")
-        runner = UnifiedRunner.create(result, str(agent_path))
+        runner = create_runner(result, str(agent_path))
     except Exception as e:
         print_exception("Runner 初始化失败", e)
         raise SystemExit(1)

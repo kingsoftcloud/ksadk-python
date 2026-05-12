@@ -6,6 +6,7 @@ ADKRunner - Google ADK 框架运行时
 """
 
 import base64
+import inspect
 import logging
 import os
 import sys
@@ -42,6 +43,21 @@ class ADKRunner(BaseRunner):
         self._knowledge_base = None
         # Keep runtime toolsets alive for the lifetime of the runner.
         self._runtime_toolsets: list[Any] = []
+
+    async def close(self) -> None:
+        """Close runtime toolsets owned by this runner."""
+        toolsets = list(self._runtime_toolsets)
+        self._runtime_toolsets.clear()
+        for toolset in toolsets:
+            close = getattr(toolset, "aclose", None) or getattr(toolset, "close", None)
+            if not callable(close):
+                continue
+            try:
+                result = close()
+                if inspect.isawaitable(result):
+                    await result
+            except Exception as exc:
+                logger.warning("Failed to close runtime toolset %r: %s", toolset, exc)
 
     def _apply_json_patch(self):
         """Monkey patch google.adk.models.lite_llm to handle invalid JSON safely"""

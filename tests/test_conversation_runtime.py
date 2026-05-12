@@ -1886,10 +1886,13 @@ async def test_build_run_input_auto_compacts_old_rounds_into_checkpoint(monkeypa
         )
 
     monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
-    monkeypatch.setattr(model_context_module, "DEFAULT_CONTEXT_WINDOW_TOKENS", 120)
-    monkeypatch.setattr(model_context_module, "DEFAULT_MAX_OUTPUT_TOKENS", 0)
     monkeypatch.setattr(model_context_module, "AUTOCOMPACT_SUMMARY_RESERVE_TOKENS", 0)
     monkeypatch.setattr(model_context_module, "AUTOCOMPACT_BUFFER_TOKENS", 20)
+    compact_model_metadata = {
+        "id": "glm-5.1",
+        "context_window_tokens": 120,
+        "max_output_tokens": 1,
+    }
 
     preview = await preview_auto_compaction(
         agent_id="demo-agent",
@@ -1897,6 +1900,7 @@ async def test_build_run_input_auto_compacts_old_rounds_into_checkpoint(monkeypa
         session_id="sess-compact",
         messages=[{"role": "user", "content": "follow up"}],
         model="glm-5.1",
+        model_metadata=compact_model_metadata,
         session_service_provider=lambda: service,
     )
     prepared = await build_run_input(
@@ -1905,6 +1909,7 @@ async def test_build_run_input_auto_compacts_old_rounds_into_checkpoint(monkeypa
         session_id="sess-compact",
         messages=[{"role": "user", "content": "follow up"}],
         model="glm-5.1",
+        model_metadata=compact_model_metadata,
     )
 
     events = await service.get_events("sess-compact")

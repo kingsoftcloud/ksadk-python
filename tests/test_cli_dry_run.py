@@ -1809,9 +1809,22 @@ def test_root_invoke_alias_still_callable_with_hint(monkeypatch):
     runner = CliRunner()
     _register_commands()
     invoked = {}
+
+    def fake_invoke_tui(
+        endpoint,
+        api_key,
+        session_id,
+        insecure,
+        model,
+        show_thinking,
+        api_format=None,
+        responses_session_header=None,
+    ):
+        return invoked.setdefault("endpoint", endpoint)
+
     monkeypatch.setattr(
         "ksadk.cli.cmd_invoke._invoke_tui",
-        lambda endpoint, api_key, session_id, insecure, model, show_thinking, api_format=None: invoked.setdefault("endpoint", endpoint),
+        fake_invoke_tui,
     )
 
     result = runner.invoke(cli, ["invoke", "--endpoint", "http://demo.local"])

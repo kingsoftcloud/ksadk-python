@@ -198,6 +198,7 @@ Usage: cli openclaw [OPTIONS] COMMAND [ARGS]...
       list     列出已部署的 OpenClaw
       status   查看单个 OpenClaw 状态
       gateway  Gateway 入口、日志与诊断
+      tui      连接远端 OpenClaw 原生 TUI
       repair   通过控制面执行 OpenClaw 修复动作
       channel  Channel 统一入口
       delete   删除一个或多个 OpenClaw
@@ -206,6 +207,7 @@ Usage: cli openclaw [OPTIONS] COMMAND [ARGS]...
       agentengine openclaw deploy
       agentengine openclaw list
       agentengine openclaw status <id>
+      agentengine openclaw tui <id>
       agentengine openclaw gateway open <id>
       agentengine openclaw repair <id>
       agentengine openclaw channel status <id> --probe
@@ -223,6 +225,7 @@ Commands:
   list     列出已部署的 OpenClaw 实例
   repair   通过控制面执行 OpenClaw 修复动作。
   status   查看 OpenClaw 状态
+  tui      连接远端 OpenClaw 原生 TUI（不需要本机安装 OpenClaw CLI）。
 
 === version_help ===
 Usage: cli version [OPTIONS] COMMAND [ARGS]...
@@ -310,7 +313,12 @@ Usage: cli config model [OPTIONS]
   切换默认模型。
 
 Options:
-  -h, --help  Show this message and exit.
+  --multi                         交互式多选模型，并按当前框架写入模型 allowlist
+  --env TEXT                      按模型列表生成环境变量，逗号分隔；首个模型作为默认模型，不写入 .env
+  --framework [auto|openclaw|hermes|generic]
+                                  allowlist 变量选择策略；auto 会读取当前目录框架  [default:
+                                  auto]
+  -h, --help                      Show this message and exit.
 
 === completion_help ===
 Usage: cli completion [OPTIONS] COMMAND [ARGS]...

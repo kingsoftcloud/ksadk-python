@@ -42,6 +42,9 @@ OpenClaw 状态 demo-openclaw
   创建时间: 2026-03-20 20:00:00 CST (2026-03-20 12:00:00 UTC)
   更新时间: 2026-03-20 20:05:00 CST (2026-03-20 12:05:00 UTC)
 下一步建议
+  • `agentengine invoke ar-openclaw-1`
+  • `agentengine openclaw tui ar-openclaw-1`
+  • `agentengine dashboard open ar-openclaw-1 --path /chat`
   • `agentengine openclaw list`
 === version_list ===
 版本列表

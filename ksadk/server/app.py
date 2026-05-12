@@ -114,6 +114,18 @@ _MAX_REFERENCE_TEXT_BYTES = 3_000_000
 _UPLOAD_URI_SCHEME = "ksadk-upload://"
 
 
+async def _shutdown_runner_resources():
+    active_runner = runner
+    if active_runner is None:
+        return
+    close = getattr(active_runner, "close", None)
+    if callable(close):
+        await close()
+
+
+app.add_event_handler("shutdown", _shutdown_runner_resources)
+
+
 def _workspace_root_dir() -> Path:
     return resolve_local_session_dir() / "workspace"
 

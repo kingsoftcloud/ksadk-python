@@ -86,7 +86,7 @@ def test_a2a_serve_builds_server_and_exposes_agent_card(monkeypatch, tmp_path):
 
     monkeypatch.setattr("ksadk.configs.setup_environment", lambda _path: None)
     monkeypatch.setattr(
-        "ksadk.runners.unified_runner.UnifiedRunner.create",
+        "ksadk.cli.cmd_a2a.create_runner",
         lambda result, project_dir: fake_runner,
     )
 
