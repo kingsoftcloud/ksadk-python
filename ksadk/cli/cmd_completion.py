@@ -143,9 +143,24 @@ def completion_bash():
     script = '''
 _agentengine_completion() {
     local IFS=$'\\n'
-    COMPREPLY=( $( env COMP_WORDS="${COMP_WORDS[*]}" \\
-                   COMP_CWORD=$COMP_CWORD \\
-                   _AGENTENGINE_COMPLETE=bash_complete $1 ) )
+    local line
+    local out
+    COMPREPLY=()
+
+    out="$( env COMP_WORDS="${COMP_WORDS[*]}" \\
+              COMP_CWORD=$COMP_CWORD \\
+              _AGENTENGINE_COMPLETE=bash_complete $1 )"
+
+    for line in $out; do
+        # Click completion entries are typed tuples, e.g.:
+        #   plain,run
+        #   file,/path/to/file
+        # Keep only the value portion for shell candidates.
+        if [[ "$line" == *,* ]]; then
+            line="${line#*,}"
+        fi
+        COMPREPLY+=("$line")
+    done
     return 0
 }
 

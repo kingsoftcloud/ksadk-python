@@ -9,6 +9,7 @@ AgentEngine CLI
   agentengine a2a        暴露 A2A 服务与 Agent Card
   agentengine agent      Agent 资源管理
   agentengine build      构建部署制品
+  agentengine completion Shell 补全管理
   agentengine dashboard  打开云端 Agent Dashboard
   agentengine deploy     部署到云端
   agentengine files      管理 workspace 文件

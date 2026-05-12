@@ -261,6 +261,19 @@ def test_proxy_dashboard_translates_session_header_back_to_authorization(monkeyp
     assert "X-Hermes-Session-Token" not in headers
 
 
+def test_runtime_blocks_dashboard_self_update_for_hosted_pods(monkeypatch):
+    module = _load_runtime_module()
+    _FakeAsyncClient.send_calls = []
+    monkeypatch.setattr(module.httpx, "AsyncClient", _FakeAsyncClient)
+
+    with TestClient(module.app) as client:
+        response = client.post("/api/hermes/update")
+
+    assert response.status_code == 409
+    assert "重新部署" in response.text
+    assert _FakeAsyncClient.send_calls == []
+
+
 def test_runtime_exposes_terminal_session_control_plane(monkeypatch):
     module = _load_runtime_module()
     monkeypatch.setattr(module, "_spawn_terminal_session", lambda session: None)
@@ -606,7 +619,9 @@ def test_runtime_dockerfile_installs_browser_runtime_and_skills_assets():
     assert "ripgrep" in dockerfile
     assert "agent-browser" in dockerfile
     assert "/usr/local/lib/python3.12/site-packages/node_modules/agent-browser" in dockerfile
-    assert "COPY deploy/hermes/skills ./skills" in dockerfile
+    assert "ARG KDOCS_SKILL_REPO=https://github.com/kdocs-app/kdocs-skill.git" in dockerfile
+    assert 'git clone --depth 1 "${KDOCS_SKILL_REPO}" /tmp/kdocs-skill' in dockerfile
+    assert 'cp -R /tmp/kdocs-skill /app/skills/kdocs' in dockerfile
     assert "COPY ksadk_runtime_common /opt/ksadk_runtime_common" in dockerfile
     assert "/usr/local/bin/npm" in dockerfile
     assert "/usr/local/bin/npx" in dockerfile
@@ -614,16 +629,16 @@ def test_runtime_dockerfile_installs_browser_runtime_and_skills_assets():
 
 
 def test_runtime_bundles_cn_search_and_kdocs_skills():
-    skills_root = (
+    dockerfile = (
         Path(__file__).resolve().parents[1]
         / "deploy"
         / "hermes"
-        / "skills"
-    )
+        / "Dockerfile"
+    ).read_text(encoding="utf-8")
 
-    assert (skills_root / "multi-search-engine" / "SKILL.md").exists()
-    assert (skills_root / "agent-browser-clawdbot" / "SKILL.md").exists()
-    assert (skills_root / "kdocs" / "SKILL.md").exists()
+    assert "COPY deploy/hermes/skills/multi-search-engine ./skills/multi-search-engine" in dockerfile
+    assert "COPY deploy/hermes/skills/agent-browser-clawdbot ./skills/agent-browser-clawdbot" in dockerfile
+    assert "COPY --from=kdocs_skill /app/skills/kdocs ./skills/kdocs" in dockerfile
 
 
 def test_runtime_readme_documents_single_persistent_home_layout():

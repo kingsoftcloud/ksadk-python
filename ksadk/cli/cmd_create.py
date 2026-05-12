@@ -2,6 +2,7 @@
 ksadk create - 创建项目模板
 """
 
+import json
 import click
 from pathlib import Path
 import shutil
@@ -197,6 +198,7 @@ def _detect_agent_variable(content: str) -> str | None:
         (r'^\s*(\w+)\s*=\s*StateGraph', None),  # e.g., graph = StateGraph(...)
         (r'^\s*(\w+)\s*=\s*Agent\(', None),  # ADK: agent = Agent(...)
         (r'^\s*(\w+)\s*=\s*create_react_agent\(', None),  # create_react_agent
+        (r'^\s*(\w+)\s*=\s*create_deep_agent\(', None),  # deepagents create_deep_agent
         (r'^\s*(\w+)\s*=\s*create_agent\(', None),  # langchain create_agent
         (r'^\s*(\w+)\s*=\s*build_agent\(', None),  # adapter style build_agent
     ]
@@ -207,6 +209,34 @@ def _detect_agent_variable(content: str) -> str | None:
             return fixed_name if fixed_name else match.group(1)
     
     return None
+
+
+def _has_agent_variable(content: str, agent_var: str) -> bool:
+    """Best-effort static check that a module exposes the configured agent variable."""
+    import re
+
+    if not agent_var:
+        return False
+    escaped = re.escape(agent_var)
+    patterns = [
+        rf"^\s*{escaped}\s*=",
+        rf"^\s*{escaped}\s*:\s*[^=]+=",
+        rf"^\s*from\s+[\.\w]+\s+import\s+.*\b{escaped}\b",
+        rf"^\s*import\s+[\.\w]+\s+as\s+{escaped}\b",
+    ]
+    return any(re.search(pattern, content, re.MULTILINE) for pattern in patterns)
+
+
+def _read_text_sig(path: Path) -> str:
+    return path.read_text(encoding="utf-8-sig")
+
+
+def _entry_exposes_variable(entry_path: Path, agent_var: str) -> bool:
+    try:
+        content = _read_text_sig(entry_path)
+    except Exception:
+        return False
+    return _has_agent_variable(content, agent_var) or _detect_agent_variable(content) == agent_var
 
 
 def _load_entry_from_agentengine_yaml(directory: Path) -> tuple[Path, str] | None:
@@ -238,7 +268,37 @@ def _load_entry_from_agentengine_yaml(directory: Path) -> tuple[Path, str] | Non
     if not isinstance(agent_var, str) or not agent_var.strip():
         agent_var = "root_agent"
 
+    if not _entry_exposes_variable(entry_path, agent_var):
+        return None
+
     return entry_path, agent_var
+
+
+def _load_entry_from_langgraph_json(directory: Path) -> tuple[Path, str] | None:
+    """Read LangGraph's graph spec and return the first valid local graph target."""
+    config_path = directory / "langgraph.json"
+    if not config_path.exists():
+        return None
+
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return None
+
+    graphs = config.get("graphs")
+    if not isinstance(graphs, dict):
+        return None
+
+    for target in graphs.values():
+        if not isinstance(target, str) or ":" not in target:
+            continue
+        path_part, agent_var = target.rsplit(":", 1)
+        path_part = path_part.strip().removeprefix("./")
+        agent_var = agent_var.strip() or "root_agent"
+        entry_path = directory / Path(path_part.replace("\\", "/"))
+        if entry_path.exists() and entry_path.is_file() and _entry_exposes_variable(entry_path, agent_var):
+            return entry_path, agent_var
+    return None
 
 
 def _load_framework_from_agentengine_yaml(directory: Path) -> str | None:
@@ -300,7 +360,12 @@ def _find_entry_file(directory: Path) -> tuple[Path, str] | None:
         except Exception:
             return (entry_path, configured_var)
 
-    # 2) 按候选文件名递归查找（agent.py/main.py/app.py/...）
+    # 2) LangGraph/DeepAgents Studio projects often declare the true graph in langgraph.json.
+    graph_entry = _load_entry_from_langgraph_json(directory)
+    if graph_entry:
+        return graph_entry
+
+    # 3) 按候选文件名递归查找（agent.py/main.py/app.py/...）
     entry_candidates = ["agent.py", "main.py", "app.py", "agentengine_adapter.py", "__init__.py"]
     for candidate in entry_candidates:
         candidate_files = sorted(
@@ -316,7 +381,7 @@ def _find_entry_file(directory: Path) -> tuple[Path, str] | None:
             if agent_var:
                 return (entry_path, agent_var)
 
-    # 3) 全量扫描，按得分选择最可能入口
+    # 4) 全量扫描，按得分选择最可能入口
     best_match: tuple[int, Path, str] | None = None
     for py_file in _iter_python_files(directory):
         if py_file.name.startswith("_") and py_file.name != "__init__.py":
@@ -695,6 +760,238 @@ def _write_langgraph_adapter(
     return adapter_relative
 
 
+def _find_python_file_containing(directory: Path, needle: str) -> Path | None:
+    skip_dirs = {".git", "__pycache__", ".venv", "venv", "env", ".mypy_cache", ".pytest_cache"}
+    for py_file in sorted(directory.rglob("*.py")):
+        if any(part in skip_dirs for part in py_file.relative_to(directory).parts):
+            continue
+        try:
+            if needle in py_file.read_text(encoding="utf-8-sig"):
+                return py_file
+        except Exception:
+            continue
+    return None
+
+
+def _detect_deepagents_service_project(
+    *,
+    package_dir: Path,
+    entry_relative: Path,
+    agent_var: str,
+) -> dict | None:
+    """Detect service-style DeepAgents projects that initialize the graph in app lifespan."""
+    entry_path = package_dir / entry_relative
+    try:
+        entry_content = _read_text_sig(entry_path)
+    except Exception:
+        entry_content = ""
+
+    if _has_agent_variable(entry_content, agent_var):
+        return None
+
+    init_file = _find_python_file_containing(package_dir, "init_agent_resources")
+    if not init_file:
+        return None
+
+    try:
+        project_text = "\n".join(
+            py_file.read_text(encoding="utf-8-sig")
+            for py_file in sorted(package_dir.rglob("*.py"))
+            if ".venv" not in py_file.parts and "__pycache__" not in py_file.parts
+        )
+    except Exception:
+        project_text = entry_content
+
+    service_markers = ("FastAPI(", "lifespan=", "add_routes(", "DeepAgentRunnable")
+    if "deepagents" not in project_text and "create_deep_agent(" not in project_text:
+        return None
+    if not any(marker in project_text for marker in service_markers):
+        return None
+
+    runnable_file = _find_python_file_containing(package_dir, "class DeepAgentRunnable")
+    return {
+        "init_module": "." + ".".join(init_file.relative_to(package_dir).with_suffix("").parts),
+        "runnable_module": (
+            "." + ".".join(runnable_file.relative_to(package_dir).with_suffix("").parts)
+            if runnable_file
+            else None
+        ),
+    }
+
+
+def _generate_deepagents_service_adapter_content(analysis: dict) -> str:
+    init_module = analysis["init_module"]
+    runnable_module = analysis.get("runnable_module")
+    runnable_module_constant = f'RUNNABLE_MODULE = "{runnable_module}"' if runnable_module else "RUNNABLE_MODULE = None"
+    runnable_build = "        return None\n"
+    if runnable_module:
+        runnable_build = """        try:
+            runnable_module = importlib.import_module(RUNNABLE_MODULE, __package__)
+            deep_agent_runnable = getattr(runnable_module, "DeepAgentRunnable")
+            return deep_agent_runnable(agent, _NullLangfuseManager())
+        except Exception:
+            return None
+"""
+
+    return f'''"""
+AgentEngine adapter generated for a service-style DeepAgents project.
+
+It preserves the user's async resource initialization and exposes a root_agent
+object that ksadk can load through the DeepAgents/LangGraph runner.
+"""
+
+import asyncio
+import importlib
+from typing import Any
+
+try:
+    from langchain_core.callbacks import BaseCallbackHandler
+except Exception:  # pragma: no cover - dependency may be absent during static checks
+    BaseCallbackHandler = object
+
+INIT_MODULE = "{init_module}"
+{runnable_module_constant}
+
+class _NoopCallbackHandler(BaseCallbackHandler):
+    pass
+
+
+class _NullLangfuseManager:
+    callback_handler = _NoopCallbackHandler()
+
+
+class AgentEngineDeepAgentsServiceAdapter:
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self._initialized = False
+        self._agent = None
+        self._runnable = None
+        self._resources = ()
+
+    async def _ensure_initialized(self) -> None:
+        if self._initialized:
+            return
+        async with self._lock:
+            if self._initialized:
+                return
+            init_module = importlib.import_module(INIT_MODULE, __package__)
+            init_agent_resources = getattr(init_module, "init_agent_resources")
+            resources = await init_agent_resources()
+            if isinstance(resources, tuple):
+                self._agent = resources[0]
+                self._resources = resources[1:]
+            else:
+                self._agent = resources
+                self._resources = ()
+            self._runnable = self._build_runnable(self._agent)
+            self._initialized = True
+
+    def _build_runnable(self, agent: Any) -> Any:
+{runnable_build}
+
+    @staticmethod
+    def _message_from_payload(payload: Any) -> str:
+        if isinstance(payload, dict):
+            if payload.get("message") is not None:
+                return str(payload.get("message") or "")
+            if payload.get("input") is not None:
+                return str(payload.get("input") or "")
+            messages = payload.get("messages")
+            if isinstance(messages, list) and messages:
+                last = messages[-1]
+                content = getattr(last, "content", None)
+                if content is None and isinstance(last, dict):
+                    content = last.get("content")
+                return str(content or "")
+        return str(payload or "")
+
+    @staticmethod
+    def _session_id_from_payload(payload: Any, config: dict | None) -> str | None:
+        if isinstance(payload, dict):
+            value = payload.get("session_id") or payload.get("thread_id")
+            if value:
+                return str(value)
+        configurable = (config or {{}}).get("configurable", {{}})
+        value = configurable.get("thread_id") if isinstance(configurable, dict) else None
+        return str(value) if value else None
+
+    @staticmethod
+    def _normalize_result(result: Any) -> dict:
+        if isinstance(result, dict):
+            if "output" in result:
+                return result
+            if "response" in result:
+                return {{"output": result.get("response"), "raw": result}}
+            if "messages" in result and result["messages"]:
+                last = result["messages"][-1]
+                content = getattr(last, "content", None)
+                if content is None and isinstance(last, dict):
+                    content = last.get("content")
+                return {{"output": content, "raw": result}}
+        return {{"output": str(result) if result is not None else "", "raw": result}}
+
+    async def ainvoke(self, payload: Any, config: dict | None = None, **kwargs: Any) -> dict:
+        await self._ensure_initialized()
+        message = self._message_from_payload(payload)
+        session_id = self._session_id_from_payload(payload, config)
+        service_payload = {{"message": message}}
+        if session_id:
+            service_payload["thread_id"] = session_id
+
+        if self._runnable is not None and hasattr(self._runnable, "_ainvoke"):
+            result = await self._runnable._ainvoke(service_payload, config=config, **kwargs)
+            return self._normalize_result(result)
+
+        if hasattr(self._agent, "ainvoke"):
+            result = await self._agent.ainvoke({{"messages": payload.get("messages", [])}} if isinstance(payload, dict) and payload.get("messages") else payload, config=config, **kwargs)
+            return self._normalize_result(result)
+        result = self._agent.invoke(payload, config=config, **kwargs)
+        return self._normalize_result(result)
+
+    def invoke(self, payload: Any, config: dict | None = None, **kwargs: Any) -> dict:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.ainvoke(payload, config=config, **kwargs))
+        raise RuntimeError("Synchronous invoke cannot run while an event loop is already active; use ainvoke instead")
+
+
+def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
+    message = payload.get("input") or payload.get("message") or ""
+    return {{
+        "message": message,
+        "session_id": session_context.get("session_id"),
+        "history": session_context.get("history", []),
+    }}
+
+
+root_agent = AgentEngineDeepAgentsServiceAdapter()
+'''
+
+
+def _write_deepagents_service_adapter(
+    *,
+    package_dir: Path,
+    original_entry_relative: Path,
+    agent_var: str,
+) -> Path | None:
+    analysis = _detect_deepagents_service_project(
+        package_dir=package_dir,
+        entry_relative=original_entry_relative,
+        agent_var=agent_var,
+    )
+    if not analysis:
+        return None
+
+    adapter_name = "agentengine_adapter.py"
+    if original_entry_relative.as_posix() == adapter_name:
+        adapter_name = "ksadk_agentengine_adapter.py"
+    adapter_relative = Path(adapter_name)
+    adapter_content = _generate_deepagents_service_adapter_content(analysis)
+    (package_dir / adapter_relative).write_text(adapter_content, encoding="utf-8")
+    return adapter_relative
+
+
 def _wrap_agent_file(from_agent_path: Path, project_name: str, framework: str, agent_var: str):
     """包装单个 Agent 文件到新项目"""
     import re
@@ -920,6 +1217,17 @@ def _wrap_agent_directory(from_agent_dir: Path, project_name: str, framework: st
     # entry_point 相对于项目根目录
     entry_relative = entry_file.relative_to(from_agent_dir)
     export_agent_var = agent_var
+    if framework == "deepagents":
+        adapter_relative = _write_deepagents_service_adapter(
+            package_dir=dest_package_path,
+            original_entry_relative=entry_relative,
+            agent_var=agent_var,
+        )
+        if adapter_relative:
+            entry_relative = adapter_relative
+            export_agent_var = "root_agent"
+            print_info("DeepAgents service adapter generated")
+
     if framework == "langgraph":
         analysis = _langgraph_analysis_for_path(dest_package_path)
         if analysis["kind"] == "messages":

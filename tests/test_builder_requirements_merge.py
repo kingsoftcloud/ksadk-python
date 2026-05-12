@@ -197,6 +197,15 @@ def test_code_builder_entrypoint_patches_langchain_before_loading_user_agent(tmp
     assert patch_index < load_index
 
 
+def test_code_builder_entrypoint_adds_src_layout_to_pythonpath(tmp_path):
+    builder = CodeBuilder(tmp_path)
+
+    entrypoint = builder._generate_entrypoint(_full_detection_result(FrameworkType.DEEPAGENTS))
+
+    assert 'CODE_SRC = os.path.join(CODE_ROOT, "src")' in entrypoint
+    assert "sys.path.insert(0, CODE_SRC)" in entrypoint
+
+
 def test_container_builder_entrypoint_uses_otlp_direct_by_default_for_code_frameworks(tmp_path):
     builder = ContainerBuilder(tmp_path)
 

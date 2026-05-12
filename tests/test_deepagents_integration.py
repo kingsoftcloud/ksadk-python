@@ -7,6 +7,7 @@ import yaml
 
 from ksadk.detection import FrameworkDetector, FrameworkType, DetectionResult
 from ksadk.runners.factory import create_runner
+from ksadk.runners.utils.loader import load_agent_module
 from ksadk.runners.unified_runner import UnifiedRunner
 
 
@@ -100,6 +101,56 @@ def test_detector_supports_deepagents_from_config(tmp_path: Path):
     assert result.entry_point.endswith("deepagents_demo/agent.py")
 
 
+def test_detector_ignores_config_when_agent_variable_missing_and_finds_src_agent(tmp_path: Path):
+    package_dir = tmp_path / "src" / "demo_agent"
+    package_dir.mkdir(parents=True)
+    (package_dir / "main.py").write_text(
+        "from fastapi import FastAPI\n"
+        "app = FastAPI()\n",
+        encoding="utf-8",
+    )
+    (package_dir / "agent.py").write_text(
+        "from langchain_openai import ChatOpenAI\n"
+        "from langchain_core.output_parsers import StrOutputParser\n"
+        "root_agent = ChatOpenAI() | StrOutputParser()\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "agentengine.yaml").write_text(
+        "name: demo-agent\nframework: langchain\nentry_point: src/demo_agent/main.py\nagent_variable: root_agent\n",
+        encoding="utf-8",
+    )
+
+    result = FrameworkDetector(str(tmp_path)).detect()
+
+    assert result.type == FrameworkType.LANGCHAIN
+    assert result.entry_point == "src/demo_agent/agent.py"
+    assert Path(result.package_path) == package_dir
+
+
+def test_detector_reads_valid_langgraph_json_when_config_is_stale(tmp_path: Path):
+    package_dir = tmp_path / "src" / "demo_agent"
+    package_dir.mkdir(parents=True)
+    (package_dir / "graph.py").write_text(
+        "from langgraph.graph import StateGraph\n"
+        "graph = StateGraph(dict).compile()\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "agentengine.yaml").write_text(
+        "name: demo-agent\nframework: langgraph\nentry_point: src/demo_agent/main.py\nagent_variable: root_agent\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "langgraph.json").write_text(
+        '{"graphs": {"agent": "./src/demo_agent/graph.py:graph"}}\n',
+        encoding="utf-8",
+    )
+
+    result = FrameworkDetector(str(tmp_path)).detect()
+
+    assert result.type == FrameworkType.LANGGRAPH
+    assert result.entry_point == "src/demo_agent/graph.py"
+    assert result.agent_variable == "graph"
+
+
 @pytest.mark.parametrize("entry_file", ["agent.py", "main.py", "app.py"])
 def test_detector_supports_script_project_without_package_init(tmp_path: Path, entry_file: str):
     nested_project = tmp_path / "deep" / "deep"
@@ -126,6 +177,23 @@ def test_detector_supports_bom_encoded_agent_file(tmp_path: Path):
 
     assert result.type == FrameworkType.DEEPAGENTS
     assert result.entry_point == "agent.py"
+
+
+def test_loader_supports_src_layout_imports(tmp_path: Path):
+    package_dir = tmp_path / "src" / "src_demo"
+    package_dir.mkdir(parents=True)
+    (package_dir / "__init__.py").write_text("", encoding="utf-8")
+    (package_dir / "helper.py").write_text("VALUE = 'src import ok'\n", encoding="utf-8")
+    (package_dir / "agent.py").write_text(
+        "from src_demo.helper import VALUE\n"
+        "root_agent = VALUE\n",
+        encoding="utf-8",
+    )
+
+    agent, module = load_agent_module(str(tmp_path), "src/src_demo/agent.py", "root_agent")
+
+    assert agent == "src import ok"
+    assert module.__name__ == "src.src_demo.agent"
 
 
 def test_factory_creates_deepagents_runner(tmp_path: Path):
