@@ -18,6 +18,7 @@ from ksadk.hermes_terminal import (
     validate_hermes_exec_argv,
     validate_hermes_pairing_argv,
 )
+from ksadk.terminal_client import run_terminal_session
 
 
 def test_build_terminal_ws_url_uses_terminal_path_and_ws_scheme():
@@ -325,3 +326,30 @@ async def test_exec_session_does_not_read_default_non_tty_stdin(monkeypatch):
     assert exit_code == 0
     assert json.loads(fake_ws.sent[0])["mode"] == "exec"
     assert json.loads(fake_ws.sent[1]) == {"type": "stdin_eof"}
+
+
+@pytest.mark.asyncio
+async def test_generic_terminal_exec_allows_openclaw_cli_argv(monkeypatch):
+    fake_ws = _FakeTerminalWebSocket()
+
+    async def _fake_connect(*_args, **_kwargs):
+        return _FakeTerminalConnection(fake_ws)
+
+    monkeypatch.setattr("ksadk.hermes_terminal._connect_websocket", _fake_connect)
+    monkeypatch.setattr(sys, "stdin", _NonTtyDefaultStdin())
+
+    exit_code = await run_terminal_session(
+        endpoint="https://agent.example.com",
+        mode="exec",
+        argv=["openclaw", "channels", "login", "--channel", "openclaw-weixin"],
+        stdout=io.BytesIO(),
+    )
+
+    assert exit_code == 0
+    assert json.loads(fake_ws.sent[0]) == {
+        "type": "start",
+        "mode": "exec",
+        "argv": ["openclaw", "channels", "login", "--channel", "openclaw-weixin"],
+        "cols": 80,
+        "rows": 24,
+    }

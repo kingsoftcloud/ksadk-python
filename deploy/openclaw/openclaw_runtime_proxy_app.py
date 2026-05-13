@@ -21,6 +21,21 @@ from starlette.websockets import WebSocketState
 
 TERMINAL_SUBPROTOCOL = "ks-terminal.v1"
 SHELL_METACHARS = set("|&;<>()$`\\\n\r")
+FORBIDDEN_EXEC_LAUNCHERS = {
+    "bash",
+    "sh",
+    "zsh",
+    "fish",
+    "python",
+    "python3",
+    "node",
+    "npx",
+    "pnpm",
+    "npm",
+    "yarn",
+    "uv",
+    "uvx",
+}
 
 app = FastAPI()
 
@@ -186,6 +201,22 @@ def _validate_empty_argv(argv: Iterable[str]) -> None:
             raise ValueError(f"unsafe argv: {item}")
 
 
+def _validate_exec_argv(argv: Iterable[str]) -> list[str]:
+    normalized = [str(item).strip() for item in argv]
+    if not normalized:
+        raise ValueError("OpenClaw exec requires argv")
+    for index, item in enumerate(normalized):
+        if not item:
+            raise ValueError("OpenClaw exec argv contains an empty argument")
+        if any(char in SHELL_METACHARS for char in item):
+            raise ValueError(f"unsafe argv: {item}")
+        if index == 0 and item.startswith("-"):
+            raise ValueError(f"unsafe argv: {item}")
+        if index == 0 and item in FORBIDDEN_EXEC_LAUNCHERS:
+            raise ValueError(f"unsafe argv launcher: {item}")
+    return normalized
+
+
 def _append_text_option(command: list[str], flag: str, value: Any, *, max_length: int = 10000) -> None:
     if value is None:
         return
@@ -251,9 +282,11 @@ def _resolve_terminal_command(
     options: Mapping[str, Any] | None = None,
 ) -> list[str]:
     normalized_mode = str(mode or "").strip().lower()
-    _validate_empty_argv(argv)
+    if normalized_mode == "exec":
+        return _validate_exec_argv(argv)
     if normalized_mode != "tui":
-        raise ValueError("OpenClaw runtime proxy only supports tui mode")
+        raise ValueError("OpenClaw runtime proxy only supports tui/exec mode")
+    _validate_empty_argv(argv)
 
     command = ["openclaw", "tui", "--url", _gateway_ws_url()]
     secret = _shared_gateway_secret()

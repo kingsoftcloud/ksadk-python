@@ -339,6 +339,37 @@ class _FakeDoctorBrokenWeixinGatewayClient(_FakeDoctorFreshGatewayClient):
         return snapshot
 
 
+class _FakeWeixinGatewayWithoutWebLoginClient(_FakeGatewayClient):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.methods = ["channels.status", "config.get"]
+
+    async def web_login_start(self, *, force=False, timeout_ms=None):
+        raise AssertionError("web login RPC should not be called when method discovery is missing")
+
+    async def channels_status(self, *, probe=False, timeout_ms=None):
+        return {
+            "channels": {
+                "openclaw-weixin": {"configured": True, "connected": False, "probe": probe, "timeout_ms": timeout_ms},
+            }
+        }
+
+
+class _FakeWeixinGatewayProviderUnavailableClient(_FakeGatewayClient):
+    async def web_login_start(self, *, force=False, timeout_ms=None):
+        raise cmd_openclaw.OpenClawGatewayRequestError(
+            "web login provider is not available",
+            code="INVALID_REQUEST",
+        )
+
+    async def channels_status(self, *, probe=False, timeout_ms=None):
+        return {
+            "channels": {
+                "openclaw-weixin": {"configured": True, "connected": False, "probe": probe, "timeout_ms": timeout_ms},
+            }
+        }
+
+
 class _FakeRestartingWeixinGatewayClient(_FakeGatewayClient):
     async def web_login_start(self, *, force=False, timeout_ms=None):
         if not self.__class__.disconnect_waits:
@@ -1041,6 +1072,62 @@ def test_openclaw_channel_connect_weixin_maps_session_key_to_account_id(monkeypa
         "session_key": None,
         "timeout_ms": 120_000,
     }
+
+
+def test_openclaw_channel_connect_weixin_falls_back_to_remote_cli_without_web_login_rpc(monkeypatch):
+    runner = CliRunner()
+    _FakeWeixinGatewayWithoutWebLoginClient.applied_configs = []
+    _FakeWeixinGatewayWithoutWebLoginClient.disconnect_waits = []
+    captured: Dict[str, Any] = {}
+
+    async def _fake_sleep(*_args, **_kwargs):
+        return None
+
+    async def _fake_terminal(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawDetailClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeWeixinGatewayWithoutWebLoginClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw.asyncio.sleep", _fake_sleep)
+    monkeypatch.setattr(cmd_openclaw, "run_terminal_session", _fake_terminal, raising=False)
+
+    result = runner.invoke(openclaw, ["channel", "connect", "ar-demo-1", "--channel", "weixin"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["endpoint"] == "https://openclaw.example.com"
+    assert captured["api_key"] is None
+    assert captured["mode"] == "exec"
+    assert captured["argv"] == ["openclaw", "channels", "login", "--channel", "openclaw-weixin"]
+    assert _FakeWeixinGatewayWithoutWebLoginClient.applied_configs
+    config = _FakeWeixinGatewayWithoutWebLoginClient.applied_configs[-1]["config"]
+    assert config["plugins"]["entries"]["openclaw-weixin"]["enabled"] is True
+    assert config["channels"]["openclaw-weixin"]["accounts"]["default"]["enabled"] is True
+    assert '"mode": "remote_cli"' in result.output
+
+
+def test_openclaw_channel_connect_weixin_falls_back_to_remote_cli_when_provider_unavailable(monkeypatch):
+    runner = CliRunner()
+    captured: Dict[str, Any] = {}
+
+    async def _fake_sleep(*_args, **_kwargs):
+        return None
+
+    async def _fake_terminal(**kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawDetailClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw.OpenClawGatewayClient", _FakeWeixinGatewayProviderUnavailableClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw.asyncio.sleep", _fake_sleep)
+    monkeypatch.setattr(cmd_openclaw, "run_terminal_session", _fake_terminal, raising=False)
+
+    result = runner.invoke(openclaw, ["channel", "connect", "ar-demo-1", "--channel", "weixin"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["mode"] == "exec"
+    assert captured["argv"] == ["openclaw", "channels", "login", "--channel", "openclaw-weixin"]
+    assert "web login provider is not available" in result.output
 
 
 def test_openclaw_channel_connect_feishu_applies_remote_config(monkeypatch):
