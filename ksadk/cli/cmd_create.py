@@ -191,16 +191,19 @@ def _detect_agent_variable(content: str) -> str | None:
     import re
     
     # 优先级匹配: root_agent > compiled graph > StateGraph > Agent()
+    # Only module-level exports are valid entry variables. Service-style
+    # projects often build a local `graph` inside init_agent_resources(), which
+    # must not be treated as importable module state.
     patterns = [
-        (r'^\s*(root_agent)\s*=', 'root_agent'),
-        (r'^\s*(root_agent)\s*:\s*[^=]+\s*=', 'root_agent'),  # type annotated root_agent
-        (r'^\s*(\w+)\s*=\s*\w*graph\w*\.compile\(', None),  # e.g., agent = graph.compile()
-        (r'^\s*(\w+)\s*=\s*StateGraph', None),  # e.g., graph = StateGraph(...)
-        (r'^\s*(\w+)\s*=\s*Agent\(', None),  # ADK: agent = Agent(...)
-        (r'^\s*(\w+)\s*=\s*create_react_agent\(', None),  # create_react_agent
-        (r'^\s*(\w+)\s*=\s*create_deep_agent\(', None),  # deepagents create_deep_agent
-        (r'^\s*(\w+)\s*=\s*create_agent\(', None),  # langchain create_agent
-        (r'^\s*(\w+)\s*=\s*build_agent\(', None),  # adapter style build_agent
+        (r'^(root_agent)\s*=', 'root_agent'),
+        (r'^(root_agent)\s*:\s*[^=]+\s*=', 'root_agent'),  # type annotated root_agent
+        (r'^(\w+)\s*=\s*\w*graph\w*\.compile\(', None),  # e.g., agent = graph.compile()
+        (r'^(\w+)\s*=\s*StateGraph', None),  # e.g., graph = StateGraph(...)
+        (r'^(\w+)\s*=\s*Agent\(', None),  # ADK: agent = Agent(...)
+        (r'^(\w+)\s*=\s*create_react_agent\(', None),  # create_react_agent
+        (r'^(\w+)\s*=\s*create_deep_agent\(', None),  # deepagents create_deep_agent
+        (r'^(\w+)\s*=\s*create_agent\(', None),  # langchain create_agent
+        (r'^(\w+)\s*=\s*build_agent\(', None),  # adapter style build_agent
     ]
     
     for pattern, fixed_name in patterns:
@@ -219,10 +222,10 @@ def _has_agent_variable(content: str, agent_var: str) -> bool:
         return False
     escaped = re.escape(agent_var)
     patterns = [
-        rf"^\s*{escaped}\s*=",
-        rf"^\s*{escaped}\s*:\s*[^=]+=",
-        rf"^\s*from\s+[\.\w]+\s+import\s+.*\b{escaped}\b",
-        rf"^\s*import\s+[\.\w]+\s+as\s+{escaped}\b",
+        rf"^{escaped}\s*=",
+        rf"^{escaped}\s*:\s*[^=]+=",
+        rf"^from\s+[\.\w]+\s+import\s+.*\b{escaped}\b",
+        rf"^import\s+[\.\w]+\s+as\s+{escaped}\b",
     ]
     return any(re.search(pattern, content, re.MULTILINE) for pattern in patterns)
 
@@ -365,7 +368,15 @@ def _find_entry_file(directory: Path) -> tuple[Path, str] | None:
     if graph_entry:
         return graph_entry
 
-    # 3) 按候选文件名递归查找（agent.py/main.py/app.py/...）
+    # 3) Service-style DeepAgents projects may only expose their graph through
+    # async init_agent_resources() and FastAPI lifespan. Return the init module
+    # so the wrapper can generate an AgentEngine adapter instead of pointing at
+    # a non-existent top-level graph variable.
+    service_entry = _find_deepagents_service_entry(directory)
+    if service_entry:
+        return service_entry
+
+    # 4) 按候选文件名递归查找（agent.py/main.py/app.py/...）
     entry_candidates = ["agent.py", "main.py", "app.py", "agentengine_adapter.py", "__init__.py"]
     for candidate in entry_candidates:
         candidate_files = sorted(
@@ -381,7 +392,7 @@ def _find_entry_file(directory: Path) -> tuple[Path, str] | None:
             if agent_var:
                 return (entry_path, agent_var)
 
-    # 4) 全量扫描，按得分选择最可能入口
+    # 5) 全量扫描，按得分选择最可能入口
     best_match: tuple[int, Path, str] | None = None
     for py_file in _iter_python_files(directory):
         if py_file.name.startswith("_") and py_file.name != "__init__.py":
@@ -773,6 +784,31 @@ def _find_python_file_containing(directory: Path, needle: str) -> Path | None:
     return None
 
 
+def _collect_python_text(directory: Path) -> str:
+    try:
+        return "\n".join(
+            py_file.read_text(encoding="utf-8-sig")
+            for py_file in sorted(_iter_python_files(directory))
+        )
+    except Exception:
+        return ""
+
+
+def _find_deepagents_service_entry(directory: Path) -> tuple[Path, str] | None:
+    init_file = _find_python_file_containing(directory, "init_agent_resources")
+    if not init_file:
+        return None
+
+    project_text = _collect_python_text(directory)
+    service_markers = ("FastAPI(", "lifespan=", "add_routes(", "DeepAgentRunnable")
+    if "deepagents" not in project_text and "create_deep_agent(" not in project_text:
+        return None
+    if not any(marker in project_text for marker in service_markers):
+        return None
+
+    return init_file, "root_agent"
+
+
 def _detect_deepagents_service_project(
     *,
     package_dir: Path,
@@ -793,14 +829,7 @@ def _detect_deepagents_service_project(
     if not init_file:
         return None
 
-    try:
-        project_text = "\n".join(
-            py_file.read_text(encoding="utf-8-sig")
-            for py_file in sorted(package_dir.rglob("*.py"))
-            if ".venv" not in py_file.parts and "__pycache__" not in py_file.parts
-        )
-    except Exception:
-        project_text = entry_content
+    project_text = _collect_python_text(package_dir) or entry_content
 
     service_markers = ("FastAPI(", "lifespan=", "add_routes(", "DeepAgentRunnable")
     if "deepagents" not in project_text and "create_deep_agent(" not in project_text:
@@ -1988,7 +2017,7 @@ HERMES_DASHBOARD_PORT=9119
 PORT=8080
 # HERMES_CONTEXT_LENGTH=200000
 # HERMES_FALLBACK_MODEL=kimi-k2.6
-# HERMES_IMAGE=hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.4.30
+# HERMES_IMAGE=hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.5.7
 """
     else:
         langfuse_public = global_env.get("LANGFUSE_PUBLIC_KEY", "")

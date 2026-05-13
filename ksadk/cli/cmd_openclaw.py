@@ -79,7 +79,7 @@ console = get_console()
 # 默认 OpenClaw 镜像 (KCR 个人版)
 DEFAULT_OPENCLAW_NAMESPACE = "agentengine-public"
 DEFAULT_OPENCLAW_REPO = "openclaw"
-DEFAULT_OPENCLAW_VERSION = "2026.5.4"
+DEFAULT_OPENCLAW_VERSION = "2026.5.7"
 DEFAULT_OPENCLAW_REGISTRY = "hub.kce.ksyun.com"
 DEFAULT_OPENCLAW_NAME = "openclaw-gateway"
 DEFAULT_TRUSTED_PROXY_USER_HEADER = "x-forwarded-user"
@@ -101,6 +101,7 @@ FEISHU_CHANNEL_KEY = "feishu"
 WPS_XIEZUO_PLUGIN_ID = "wps-xiezuo"
 WPS_XIEZUO_CHANNEL_KEY = "wps-xiezuo"
 WPS_XIEZUO_DEFAULT_ACCOUNT_ID = "default"
+WEIXIN_REMOTE_LOGIN_ARGV = ["openclaw", "channels", "login", "--channel", WEIXIN_PLUGIN_ID]
 WPS_XIEZUO_MCP_TOOL_ALLOWLIST = [
     "wps_im_message_send",
     "wps_user_search",
@@ -1395,6 +1396,62 @@ def _openclaw_state_gateway_token(env_vars: dict[str, str]) -> str | None:
     return token or None
 
 
+def _openclaw_runtime_endpoint(detail: dict[str, Any]) -> str:
+    return str(detail.get("endpoint") or "").strip()
+
+
+def _openclaw_terminal_api_key(detail: dict[str, Any]) -> str | None:
+    return str(detail.get("api_key") or "").strip() or None
+
+
+def _is_weixin_web_login_unavailable(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return (
+        "web login provider is not available" in message
+        or "method not found" in message
+        or "unknown method" in message
+        or "unsupported method" in message
+    )
+
+
+async def _run_weixin_remote_cli_login(
+    region: str,
+    detail: dict[str, Any],
+    *,
+    reason: str,
+) -> dict[str, Any]:
+    endpoint = _openclaw_runtime_endpoint(detail)
+    if not endpoint:
+        raise OpenClawGatewayError("OpenClaw runtime endpoint 为空，无法通过远端 CLI 执行微信登录")
+
+    print_info(f"当前 OpenClaw 未暴露微信 web login RPC，改用远端 OpenClaw CLI 登录流程（{reason}）")
+    exit_code = await run_terminal_session(
+        endpoint=endpoint,
+        api_key=_openclaw_terminal_api_key(detail),
+        mode="exec",
+        argv=WEIXIN_REMOTE_LOGIN_ARGV,
+    )
+    if exit_code:
+        raise OpenClawGatewayError(f"微信远端登录流程执行失败，exit_code={exit_code}")
+
+    snapshot = await _fetch_channel_snapshot_with_retry(
+        region,
+        detail,
+        probe=True,
+    )
+    return {
+        "ok": True,
+        "agent_id": detail.get("agent_id"),
+        "name": detail.get("name"),
+        "region": region,
+        "channel": "weixin",
+        "mode": "remote_cli",
+        "reason": reason,
+        "argv": list(WEIXIN_REMOTE_LOGIN_ARGV),
+        "status": _extract_channel_snapshot(snapshot, "weixin"),
+    }
+
+
 async def _wait_for_gateway_ready(
     region: str,
     detail: dict[str, Any],
@@ -2548,26 +2605,58 @@ def channel_connect(
                 await preflight_gateway.close()
 
             gateway = _build_gateway_client(resolved_region, detail)
+            fallback_reason: str | None = None
+            qr_url = ""
+            wait_result: dict[str, Any] = {}
             try:
                 await gateway.connect()
-                start = await gateway.web_login_start(force=False, timeout_ms=30_000)
-                qr_url = str(start.get("qrDataUrl") or "").strip()
-                session_key = str(start.get("sessionKey") or "").strip()
-                if not qr_url:
-                    raise OpenClawGatewayError("微信扫码登录未返回二维码 URL")
+                methods = set(getattr(gateway, "methods", []) or [])
+                missing_methods = [
+                    method
+                    for method in ("web.login.start", "web.login.wait")
+                    if method not in methods
+                ]
+                if missing_methods:
+                    fallback_reason = f"missing gateway methods: {', '.join(missing_methods)}"
+                else:
+                    try:
+                        start = await gateway.web_login_start(force=False, timeout_ms=30_000)
+                    except OpenClawGatewayRequestError as exc:
+                        if not _is_weixin_web_login_unavailable(exc):
+                            raise
+                        fallback_reason = str(exc)
+                    else:
+                        qr_url = str(start.get("qrDataUrl") or "").strip()
+                        session_key = str(start.get("sessionKey") or "").strip()
+                        if not qr_url:
+                            raise OpenClawGatewayError("微信扫码登录未返回二维码 URL")
 
-                print_success("请使用微信扫码完成连接")
-                print_kv("二维码链接", qr_url, value_style="#58a6ff")
-                _render_terminal_qr(qr_url)
-                if open_qr:
-                    webbrowser.open(qr_url)
+                        print_success("请使用微信扫码完成连接")
+                        print_kv("二维码链接", qr_url, value_style="#58a6ff")
+                        _render_terminal_qr(qr_url)
+                        if open_qr:
+                            webbrowser.open(qr_url)
 
-                wait_result = await gateway.web_login_wait(
-                    account_id=session_key or None,
-                    timeout_ms=120_000,
-                )
+                        try:
+                            wait_result = await gateway.web_login_wait(
+                                account_id=session_key or None,
+                                timeout_ms=120_000,
+                            )
+                        except OpenClawGatewayRequestError as exc:
+                            if not _is_weixin_web_login_unavailable(exc):
+                                raise
+                            fallback_reason = str(exc)
             finally:
                 await gateway.close()
+
+            if fallback_reason:
+                payload = await _run_weixin_remote_cli_login(
+                    resolved_region,
+                    detail,
+                    reason=fallback_reason,
+                )
+                _emit_data_payload("OpenClaw Channel Connect", payload, subtitle="weixin")
+                return
 
             snapshot = await _fetch_channel_snapshot_with_retry(
                 resolved_region,
