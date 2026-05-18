@@ -1,89 +1,88 @@
-# ksadk-python
+# ksadk
 
-`ksadk-python` 是 `agentengine` / `ksadk` 的 Python 实现仓库，负责本地开发入口、Agent CLI、部分本地运行时能力，以及 Hermes / OpenClaw 共享运行时资产。
+Kingsoft Cloud Agent Development Kit. `ksadk` provides the Python SDK and CLI for building, running, packaging, and deploying AgentEngine agents across local development, serverless runtime, ADK, LangChain/LangGraph, DeepAgents, Hermes, OpenClaw, MCP, and Skill Runtime scenarios.
 
-当前代码主线版本：`0.5.6`。
+Current version: `0.5.6`.
 
-## 仓库定位
-
-- 本地开发：`init / config / run / web`
-- 构建部署：`build / deploy / launch`
-- 远端调用：`agent invoke`、`files`、`dashboard`
-- 运行时资产：`deploy/hermes`、`deploy/openclaw`
-- 共享源码：`ksadk_runtime_common`
-
-```mermaid
-flowchart LR
-  classDef client fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e3a8a;
-  classDef control fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#581c87;
-  classDef data fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#166534;
-  classDef storage fill:#ffedd5,stroke:#ea580c,stroke-width:2px,color:#9a3412;
-  classDef runtime fill:#e2e8f0,stroke:#475569,stroke-width:2px,color:#1e293b;
-
-  CLI["agentengine / ksadk"]:::client --> Repo["ksadk-python"]:::runtime
-  Repo --> Local["本地运行时与 Web UI"]:::data
-  Repo --> Common["ksadk_runtime_common"]:::runtime
-  Repo --> Hermes["Hermes Runtime"]:::data
-  Repo --> OpenClaw["OpenClaw Runtime"]:::data
-  Repo --> Control["agentengine-server"]:::control
-  Hermes --> PVC["PVC / workspace"]:::storage
-  OpenClaw --> PVC
-  Local --> Workspace[".agentengine/ui/workspace"]:::storage
-  Common --> Hermes
-  Common --> OpenClaw
-  Common --> Local
-```
-
-## 快速开始
+## Install
 
 ```bash
 pip install -U ksadk
+```
 
+Install optional runtime extras when needed:
+
+```bash
+pip install -U "ksadk[adk]"
+pip install -U "ksadk[langgraph]"
+pip install -U "ksadk[deepagents]"
+pip install -U "ksadk[skills]"
+pip install -U "ksadk[all]"
+```
+
+## Quick Start
+
+Create and run a local agent:
+
+```bash
 agentengine init my-agent -f langgraph
 cd my-agent
 agentengine config
 agentengine run -i
 ```
 
-云端部署最短路径：
+Deploy to AgentEngine serverless runtime:
 
 ```bash
 agentengine launch . --target serverless
 ```
 
-## 文档导航
-
-### 主文档
-
-- [ksadk使用文档](./docs/ksadk使用文档.md)
-- [ksadk技术设计](./docs/ksadk技术设计.md)
-- [工作区文件技术设计](./docs/工作区文件技术设计.md)
-
-### 专题文档
-
-- [记忆使用指南](./docs/记忆使用指南.md)
-- [知识库与记忆示例](./docs/知识库与记忆示例.md)
-- [OpenClaw一键部署指南](./docs/openclaw一键部署指南.md)
-- [DeepAgents说明](./docs/DeepAgents说明.md)
-- [Hermes 运行时说明](./deploy/hermes/README.md)
-- [OpenClaw 用户镜像模板说明](./deploy/openclaw-user-template/README.md)
-
-### 内部与历史资料
-
-- `docs/archive/`：历史方案稿、阶段性实施说明、版本文档
-- `docs/internal/`：内部 runbook、分析稿、协作说明
-
-查看云端面板：
+Open the hosted dashboard:
 
 ```bash
 agentengine dashboard open
-# 或显式指定 Agent
-agentengine dashboard open --agent ar-xxxx
 ```
 
-## 说明
+## What Is Included
 
-- `README` 只保留仓库定位、入口和导航。
-- 命令说明、默认值、限制和示例统一收口到 [ksadk使用文档](./docs/ksadk使用文档.md)。
-- 设计分层、运行时链路、共享源码和 Docker 集成统一收口到 [ksadk技术设计](./docs/ksadk技术设计.md)。
-- Workspace Files 的协议、路径、安全模型和跨 runtime 数据面统一收口到 [工作区文件技术设计](./docs/工作区文件技术设计.md)。
+- Local development commands: `init`, `config`, `run`, `web`
+- Build and deploy commands: `build`, `deploy`, `launch`
+- Remote operations: `agent invoke`, `files`, `dashboard`
+- Runtime integrations: ADK, LangChain, LangGraph, DeepAgents, MCP
+- Hosted runtime assets: Hermes and OpenClaw
+- Skill Runtime preview: Skill Center discovery, zip download, `sha256` verification, safe extraction, local execution, and sandbox execution through the `ksadk[skills]` extra
+- Sandbox Runtime preview: common sandbox abstraction with an E2B-compatible backend
+
+## 0.5.6 Highlights
+
+- Skill Runtime / Sandbox integration preview.
+- `ksadk[skills]` extra with E2B backend support.
+- Skill Center package loading with `sha256` validation and safe extraction.
+- `agentengine deploy`, `agentengine launch`, and `agentengine openclaw deploy` support VPC network parameters.
+- `deploy/skill-runtime/` provides the minimal sandbox image agent contract for `/home/ksadk/agent.py`.
+
+## Documentation
+
+PyPI does not serve repository-relative files such as `./docs/*.md`. The links below use absolute URLs so they render correctly on both PyPI and GitHub.
+
+- [Usage Guide](https://github.com/kingsoftcloud/ksadk-python/blob/master/docs/ksadk%E4%BD%BF%E7%94%A8%E6%96%87%E6%A1%A3.md)
+- [Technical Design](https://github.com/kingsoftcloud/ksadk-python/blob/master/docs/ksadk%E6%8A%80%E6%9C%AF%E8%AE%BE%E8%AE%A1.md)
+- [Workspace Files Design](https://github.com/kingsoftcloud/ksadk-python/blob/master/docs/%E5%B7%A5%E4%BD%9C%E5%8C%BA%E6%96%87%E4%BB%B6%E6%8A%80%E6%9C%AF%E8%AE%BE%E8%AE%A1.md)
+- [Memory Guide](https://github.com/kingsoftcloud/ksadk-python/blob/master/docs/%E8%AE%B0%E5%BF%86%E4%BD%BF%E7%94%A8%E6%8C%87%E5%8D%97.md)
+- [Knowledge Base and Memory Examples](https://github.com/kingsoftcloud/ksadk-python/blob/master/docs/%E7%9F%A5%E8%AF%86%E5%BA%93%E4%B8%8E%E8%AE%B0%E5%BF%86%E7%A4%BA%E4%BE%8B.md)
+- [DeepAgents Guide](https://github.com/kingsoftcloud/ksadk-python/blob/master/docs/DeepAgents%E8%AF%B4%E6%98%8E.md)
+- [Hermes Runtime Guide](https://github.com/kingsoftcloud/ksadk-python/blob/master/deploy/hermes/README.md)
+- [OpenClaw Deployment Guide](https://github.com/kingsoftcloud/ksadk-python/blob/master/docs/openclaw%E4%B8%80%E9%94%AE%E9%83%A8%E7%BD%B2%E6%8C%87%E5%8D%97.md)
+- [OpenClaw User Image Template](https://github.com/kingsoftcloud/ksadk-python/blob/master/deploy/openclaw-user-template/README.md)
+- [Skill Runtime Image Contract](https://github.com/kingsoftcloud/ksadk-python/blob/master/deploy/skill-runtime/README.md)
+
+## Project Links
+
+- Documentation: <https://ksadk.kingsoft.com/docs>
+- Repository: <https://github.com/kingsoftcloud/ksadk-python>
+
+## Notes
+
+- Skill registration, CRUD, and version governance belong to Skill Service. `ksadk` consumes Skill Center at runtime.
+- Sandbox template and instance lifecycle belong to Sandbox Service. `ksadk` uses the configured sandbox backend to execute runtime workflows.
+- E2B-compatible sandbox backend uses the native `E2B_API_URL` and `E2B_API_KEY` environment variables.
