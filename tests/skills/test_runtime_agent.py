@@ -1,0 +1,124 @@
+from __future__ import annotations
+
+import hashlib
+import io
+import subprocess
+import zipfile
+from pathlib import Path
+
+import httpx
+
+from ksadk.skills.loader import load_local_skill
+from ksadk.skills.runtime import agent as runtime_agent
+from ksadk.skills.runtime.agent import run_agent
+
+
+def _zip_bytes() -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as archive:
+        archive.writestr("demo-skill/SKILL.md", "---\nname: demo-skill\ndescription: Demo\n---\n# Demo\n")
+    return buf.getvalue()
+
+
+def test_runtime_agent_loads_active_skills_from_service(monkeypatch, tmp_path: Path, capsys):
+    archive = _zip_bytes()
+    digest = hashlib.sha256(archive).hexdigest()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/ListSkillsBySpaceId"):
+            return httpx.Response(
+                200,
+                json={
+                    "Data": {
+                        "SkillSpaceId": "ss-1",
+                        "Skills": [
+                            {
+                                "SkillId": "sk-demo",
+                                "VersionId": "sv-demo-v1",
+                                "Version": "v1",
+                                "Name": "demo-skill",
+                                "Status": "Active",
+                                "ContentHash": f"sha256:{digest}",
+                            }
+                        ],
+                    }
+                },
+            )
+        if request.url.path.endswith("/GetSkillDownloadUrl"):
+            return httpx.Response(200, json={"Data": {"DownloadUrl": "https://download.example/demo.zip"}})
+        if str(request.url) == "https://download.example/demo.zip":
+            return httpx.Response(200, content=archive)
+        return httpx.Response(404)
+
+    monkeypatch.setenv("KSADK_SKILL_SPACE_IDS", "ss-1")
+    monkeypatch.setenv("KSADK_SKILL_SERVICE_URL", "https://skill.example/api/v1")
+    monkeypatch.setenv("KSADK_SKILL_CACHE_DIR", str(tmp_path / "cache"))
+
+    code = run_agent(
+        ["build something"],
+        service_transport=httpx.MockTransport(handler),
+    )
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "workflow=build something" in out
+    assert "loaded_skills=demo-skill" in out
+    assert (tmp_path / "cache" / "sk-demo__sv-demo-v1" / "extracted" / "demo-skill" / "SKILL.md").exists()
+
+
+def test_runtime_agent_without_service_still_reports_workflow(monkeypatch, capsys):
+    monkeypatch.delenv("KSADK_SKILL_SERVICE_URL", raising=False)
+    monkeypatch.setenv("KSADK_SKILL_SPACE_IDS", "ss-1")
+
+    code = run_agent(["noop"])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "workflow=noop" in out
+    assert "loaded_skills=" in out
+
+
+def test_runtime_agent_reads_prompt_file(tmp_path: Path, monkeypatch, capsys):
+    prompt_file = tmp_path / "prompt.txt"
+    prompt_file.write_text("from file", encoding="utf-8")
+    monkeypatch.delenv("KSADK_SKILL_SERVICE_URL", raising=False)
+
+    code = run_agent(["--prompt-file", str(prompt_file)])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "workflow=from file" in out
+
+
+def test_runtime_agent_executes_web_artifacts_builder_without_real_npm(monkeypatch, tmp_path: Path):
+    skill_root = tmp_path / "skills" / "web-artifacts-builder"
+    scripts_dir = skill_root / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (skill_root / "SKILL.md").write_text(
+        "---\nname: web-artifacts-builder\ndescription: Build artifacts\n---\n# Demo\n",
+        encoding="utf-8",
+    )
+    (scripts_dir / "init-artifact.sh").write_text("#!/bin/bash\n", encoding="utf-8")
+    (scripts_dir / "bundle-artifact.sh").write_text("#!/bin/bash\n", encoding="utf-8")
+    workdir = tmp_path / "work"
+    monkeypatch.setenv("KSADK_SKILL_WORKDIR", str(workdir))
+    monkeypatch.setenv("KSADK_SKILL_ARTIFACT_PROJECT", "demo-artifact")
+
+    def fake_run(args, **kwargs):
+        if str(args[-1]).endswith("demo-artifact"):
+            (workdir / "demo-artifact").mkdir(parents=True)
+        elif str(args[1]).endswith("bundle-artifact.sh"):
+            (workdir / "demo-artifact" / "bundle.html").write_text("<html></html>", encoding="utf-8")
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr(runtime_agent.subprocess, "run", fake_run)
+
+    result = runtime_agent._execute_workflow(
+        "使用 web-artifacts-builder 初始化并打包一个最小 artifact",
+        [load_local_skill(skill_root)],
+    )
+
+    assert result.status == "ok"
+    assert result.executed_skill == "web-artifacts-builder"
+    assert result.output_files == [str(workdir / "demo-artifact" / "bundle.html")]
+    assert [command["exit_code"] for command in result.commands] == [0, 0]

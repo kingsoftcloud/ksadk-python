@@ -38,3 +38,52 @@ def test_env_registry_docs_cover_registered_names():
 
     for item in ENV_VAR_REGISTRY:
         assert item.name in doc_text
+
+
+def test_env_reference_documents_operational_metadata_and_common_runtime_vars():
+    doc_text = Path("docs/ksadk环境变量参考.md").read_text(encoding="utf-8")
+
+    for heading in ("是否必传", "别名/兼容", "配置方/来源", "是否业务自定义"):
+        assert heading in doc_text
+
+    for name in (
+        "E2B_API_URL",
+        "E2B_API_KEY",
+        "SKILL_SPACE_ID",
+        "AGENTENGINE_MODEL_ALLOWLIST",
+        "AGENTENGINE_UI_DIR",
+        "AGENT_BROWSER_EXECUTABLE_PATH",
+        "AGENT_BROWSER_HOME",
+        "FIRECRAWL_API_KEY",
+        "HERMES_DASHBOARD_HOST",
+        "HERMES_HOSTED_RUNTIME",
+        "KSADK_KB_AMBIENT_POLICY",
+        "KSADK_KB_SCHEME",
+        "KSADK_LTM_AMBIENT_POLICY",
+        "KSADK_MEMORY_BACKEND",
+        "KDOCS_OPEN_BROWSER",
+        "KS_ACCESS_KEY_ID",
+        "KSYUN_ACCESS_KEY",
+        "KSYUN_SECRET_KEY",
+        "KSYUN_ACCOUNT_ID",
+        "KSYUN_REGION",
+        "MEM0_API_KEY",
+        "OPENCLAW_ALLOWED_ORIGINS",
+        "OPENCLAW_BROWSER_ENABLED",
+        "OPENCLAW_DEFAULT_EXTENSIONS_DIR",
+        "OPENCLAW_GATEWAY_INTERNAL_PORT",
+        "OPENCLAW_GATEWAY_LOCAL_RESTART_MAX",
+        "OPENCLAW_MODEL_CATALOG_JSON",
+        "OPENCLAW_MODEL_API_KEY_SECRET_ID",
+        "OPENCLAW_PRESET_SKILLS_DIR",
+        "OPENCLAW_RUNTIME_PLAYWRIGHT_DOWNLOAD_HOST",
+        "OPENCLAW_WEB_SAFE_SEARCH_MODE",
+        "OPENCLAW_WEB_SEARCH_API_KEY_SECRET_ID",
+        "OPENCLAW_WEB_FETCH_ENABLED",
+        "COZE_WORKLOAD_IDENTITY_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "OPENAI_MODEL_NAME",
+        "PLAYWRIGHT_DOWNLOAD_HOST",
+    ):
+        assert name in doc_text

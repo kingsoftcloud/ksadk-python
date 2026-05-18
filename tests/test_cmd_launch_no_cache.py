@@ -1,6 +1,8 @@
 import asyncio
 from pathlib import Path
 
+from click.testing import CliRunner
+
 from ksadk.cli import cmd_launch
 from ksadk.deployment.base import DeployResult, DeployStatus, PackageInfo
 
@@ -128,6 +130,73 @@ def test_launch_no_cache_warns_when_explicit_ks3_path_is_supplied(tmp_path: Path
     out = capsys.readouterr().out
     assert "已显式指定 --ks3-path" in out
     assert provider.calls == ["validate", "package", "deploy"]
+
+
+def test_launch_cli_network_options_apply_to_deploy_target(tmp_path: Path, monkeypatch):
+    provider = _FakeProvider()
+    runner = CliRunner()
+
+    monkeypatch.setattr("ksadk.detection.FrameworkDetector", lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})())
+    monkeypatch.setattr("ksadk.cli.cmd_launch._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"})
+    monkeypatch.setattr("ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider)
+
+    result = runner.invoke(
+        cmd_launch.launch,
+        [
+            str(tmp_path),
+            "--ks3-path",
+            "ks3://bucket/agents/demo-agent/code_manual.zip",
+            "--disable-public-access",
+            "--enable-vpc-access",
+            "--vpc-id",
+            "vpc-cli",
+            "--subnet-id",
+            "subnet-cli",
+            "--security-group-id",
+            "sg-cli",
+            "--availability-zone",
+            "cn-beijing-6b",
+            "--no-version",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert provider.last_target is not None
+    assert provider.last_target.network.enable_public_access is False
+    assert provider.last_target.network.enable_vpc_access is True
+    assert provider.last_target.network.vpc_id == "vpc-cli"
+    assert provider.last_target.network.subnet_id == "subnet-cli"
+    assert provider.last_target.network.security_group_id == "sg-cli"
+    assert provider.last_target.network.availability_zone == "cn-beijing-6b"
+
+
+def test_launch_network_ids_imply_vpc_access(tmp_path: Path, monkeypatch):
+    provider = _FakeProvider()
+    runner = CliRunner()
+
+    monkeypatch.setattr("ksadk.detection.FrameworkDetector", lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})())
+    monkeypatch.setattr("ksadk.cli.cmd_launch._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"})
+    monkeypatch.setattr("ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider)
+
+    result = runner.invoke(
+        cmd_launch.launch,
+        [
+            str(tmp_path),
+            "--ks3-path",
+            "ks3://bucket/agents/demo-agent/code_manual.zip",
+            "--vpc-id",
+            "vpc-cli",
+            "--subnet-id",
+            "subnet-cli",
+            "--security-group-id",
+            "sg-cli",
+            "--no-version",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert provider.last_target is not None
+    assert provider.last_target.network.enable_vpc_access is True
 
 
 def test_launch_reads_ui_config_from_agentengine_yaml_when_cli_not_set(tmp_path: Path, monkeypatch):

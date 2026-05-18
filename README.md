@@ -2,7 +2,7 @@
 
 `ksadk-python` 是 `agentengine` / `ksadk` 的 Python 实现仓库，负责本地开发入口、Agent CLI、部分本地运行时能力，以及 Hermes / OpenClaw 共享运行时资产。
 
-当前代码主线版本：`0.5.4`。
+当前代码主线版本：`0.5.6`。
 
 ## 仓库定位
 

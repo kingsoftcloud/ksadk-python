@@ -5,6 +5,62 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [0.5.6] - 2026-05-18
+
+### 亮点
+
+- **Skill Runtime / Sandbox 集成预览**：新增面向 Skill Center 的运行时消费链路，支持从 Skill Space 发现技能、按需下载技能包、校验内容哈希并加载执行。
+- **通用 Sandbox 底座预览**：新增 `ksadk.sandbox` 通用抽象和 E2B backend，Skill Runtime 通过通用 sandbox session 运行，后续可扩展 Code / Browser / Private 等模板类型。
+- **CLI 支持 VPC 网络参数**：`agentengine deploy`、`agentengine launch`、`agentengine openclaw deploy` 在创建和更新 Agent 时可显式传入公网 / VPC 网络配置。
+
+### 变更
+
+- 新增 `ksadk[skills]` extra，首版包含 E2B backend 所需依赖；沙箱团队可基于该 extra 构建 Skill Runtime AIO 镜像。
+- 新增 `ksadk.skills` 与 `ksadk.skills.runtime`，包含 Skill Service client、技能包缓存、安全解压、`sha256` 校验、技能 loader、`execute_skills` 工具和镜像内最小 agent 入口。
+- 新增 `deploy/skill-runtime/` 镜像交付物，约定镜像内路径 `/home/ksadk/agent.py`，优先通过 E2B SDK 连接控制台创建的 AIO 模板。
+- ADK Runner 支持 Skill Runtime 自动发现：本地模式注入技能工具，sandbox 模式只注入 `execute_skills`，并识别通用 `KSADK_SANDBOX_*` 与兼容 `KSADK_SKILL_RUNTIME_*` 环境变量。
+- `agentengine deploy` 与 `agentengine launch` 新增 `--enable-public-access / --disable-public-access`、`--enable-vpc-access`、`--vpc-id`、`--subnet-id`、`--security-group-id`、`--availability-zone`。
+- `agentengine openclaw deploy` 新增同一组 network 参数，创建和更新 OpenClaw Agent 时都会传入 `network` payload。
+- 配置文件继续支持顶层 `network` 与 `deploy.network`，CLI 显式参数优先于配置文件。
+- 开启 VPC 访问或传入任一 VPC ID 字段时，CLI 会校验 `VpcId`、`SubnetId`、`SecurityGroupId` 必须同时存在；`AvailabilityZone` 为可选字段。
+
+### 说明
+
+- 这是 Skill Runtime / Sandbox 的集成预览版。当前保证本地 runtime pod 内 Skill Center 消费链路、sandbox backend 基础逻辑、镜像交付物和 CLI network 参数可联调；沙箱团队基于 `0.5.6` 构建 AIO template 后继续做完整业务 E2E，后续修复进入 `0.5.7`。
+- Skill Center `ContentHash` 校验保持 fail closed：服务端返回的 `sha256` 与实际 zip 不一致时，KsADK 会拒绝加载该技能包。
+- E2B backend 仅使用 SDK 原生 `E2B_API_URL` / `E2B_API_KEY` 环境变量，不把凭证写入代码、文档示例、测试 fixture 或日志。
+
+## [0.5.5] - 2026-05-13
+
+### 亮点
+
+- **`init --from-agent` 兼容性增强**：对已有 Agent 项目做更严格的入口校验，不再盲信失效的 `agentengine.yaml` / `langgraph.json`，降低从 LangGraph、DeepAgents、ADK 等现有项目迁移到 AgentEngine 的手工改造成本。
+- **DeepAgents 服务型项目自动适配**：支持 FastAPI / lifespan 中异步初始化 DeepAgents graph 的项目，自动生成 `agentengine_adapter.py` 暴露 `root_agent`，避免用户必须改业务代码或手写适配层。
+- **本地调试命令更贴近用户环境**：`agentengine web`、`agentengine run`、`agentengine a2a serve` 会优先进入项目 `.venv` 执行，减少“依赖已装但 CLI 解释器看不到”的问题。
+- **默认运行时刷新**：Hermes 默认 base 镜像和上游 ref 更新到 `v2026.5.7`，OpenClaw 默认 base 镜像更新到 `2026.5.7`。
+
+### 变更
+
+- `--from-agent` 会校验入口文件是否存在、入口变量是否为模块顶层可导出对象；函数体内的局部变量不再被误判为可导入 agent。
+- `--from-agent` 支持 `src/` layout 项目，生成和加载时自动补齐项目 `src` 导入路径，不要求用户手动设置 `PYTHONPATH`。
+- `--from-agent` 支持读取 `langgraph.json` 的 graph target，并在目标变量不可静态验证时自动降级到目录扫描和适配器生成。
+- DeepAgents service-style 检测覆盖 `init_agent_resources()`、`create_deep_agent(...)`、`FastAPI(lifespan=...)` 和 `DeepAgentRunnable` 等常见组合；生成的 adapter 会把 AgentEngine 输入映射为服务项目常见的 `message/thread_id` 结构，并归一化输出。
+- `agentengine model` / `agentengine config model` 写入当前项目 `.env`，避免误更新父目录或用户主目录下的环境文件。
+- code mode 构建会合并并补齐本地运行所需依赖，降低导入已有项目后缺少运行时依赖的概率。
+- OpenClaw 微信渠道连接在 web login RPC 不可用时可回退到远端 OpenClaw CLI 登录流程。
+- OpenClaw / Hermes 终端 exec 参数校验收口，拒绝空参数、shell 元字符和危险 launcher，减少远端终端命令注入风险。
+- OpenClaw runtime bootstrap 与 Hermes runtime 模板补齐若干本地运行和 secretRef 场景下的默认配置。
+- 本地构建模板、CLI fallback 默认值和测试断言同步到 Hermes `2026.5.7` / OpenClaw `2026.5.7`，与平台侧默认配置保持一致。
+
+### 修复
+
+- 修复 DeepAgents 项目中 `graph = create_deep_agent(...)` 位于 `init_agent_resources()` 函数体内时，被 `--from-agent` 误识别为模块顶层 `graph` 入口，导致生成的 `agentengine.yaml` 指向不存在变量的问题。
+- 修复 DeepAgents / LangGraph `src/` layout 项目在本地 loader、code-mode 入口和生成项目中导入路径不一致的问题。
+- 修复服务型 DeepAgents 项目导入阶段过早加载 Daytona、Postgres、MCP 等业务外部依赖，导致 runner 未真正执行前就失败的问题。
+- 修复项目 `.venv/bin/python` 为符号链接时，本地调试命令可能误判已经处于项目虚拟环境、从而跳过 re-exec 的问题。
+- 修复 `agentengine model` 兼容入口可能把模型配置写到非当前项目 `.env` 的问题。
+- 修复 OpenClaw runtime proxy 仅允许 TUI 模式导致远端 CLI fallback 无法复用安全终端通道的问题。
+
 ## [0.5.4] - 2026-05-05
 
 ### 亮点

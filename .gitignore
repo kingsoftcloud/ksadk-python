@@ -1,6 +1,7 @@
 # All dotfiles/dotdirs (e.g. .env, .agentengine, .xxx)
 .*
 !.git*
+!.dockerignore
 !.worktree
 
 

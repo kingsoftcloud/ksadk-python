@@ -1,23 +1,25 @@
+from ksadk.sandbox.backends.e2b import E2BSandboxBackend, E2BSandboxSession
 from ksadk.sandbox.base import (
-    BaseSandbox,
-    ExecutionConfig,
-    ExecutionResult,
-    ExecutionStatus,
-    Language,
+    SandboxBackend,
+    SandboxCommandResult,
+    SandboxError,
+    SandboxInputFile,
+    SandboxSession,
+    SandboxSpec,
+    SandboxType,
 )
-from ksadk.sandbox.local_sandbox import LocalCodeSandbox
-from ksadk.sandbox.remote_sandbox import RemoteCodeSandbox
-from ksadk.sandbox.security import SecurityPolicy
-from ksadk.sandbox.toolset import SandboxToolset
+from ksadk.sandbox.factory import create_sandbox_backend, sandbox_spec_from_env
 
 __all__ = [
-    "BaseSandbox",
-    "ExecutionConfig",
-    "ExecutionResult",
-    "ExecutionStatus",
-    "Language",
-    "LocalCodeSandbox",
-    "RemoteCodeSandbox",
-    "SecurityPolicy",
-    "SandboxToolset",
+    "E2BSandboxBackend",
+    "E2BSandboxSession",
+    "SandboxBackend",
+    "SandboxCommandResult",
+    "SandboxError",
+    "SandboxInputFile",
+    "SandboxSession",
+    "SandboxSpec",
+    "SandboxType",
+    "create_sandbox_backend",
+    "sandbox_spec_from_env",
 ]

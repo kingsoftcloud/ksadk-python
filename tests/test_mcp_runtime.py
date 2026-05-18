@@ -168,7 +168,7 @@ async def test_build_mcp_toolset_roundtrip_lists_and_calls_remote_tools(weather_
 
     assert [tool.name for tool in tools] == ["weather_forecast"]
     assert result["content"][0]["text"] == "forecast:beijing"
-    assert headers_seen[0] == {"Authorization": "Bearer secret-token"}
+    assert headers_seen[0]["Authorization"] == "Bearer secret-token"
 
     await toolset.close()
 
@@ -199,7 +199,6 @@ def test_adk_runner_load_agent_injects_mcp_toolsets_and_deduplicates(monkeypatch
         def __init__(self, key: str):
             self._ksadk_mcp_toolset_key = key
 
-    monkeypatch.setenv("KSADK_ENABLE_SANDBOX_TOOLS", "0")
     monkeypatch.delenv("KSADK_ENABLE_MCP_TOOLS", raising=False)
     monkeypatch.setattr(ADKRunner, "_apply_json_patch", lambda self: None)
     monkeypatch.setattr(ADKRunner, "_init_short_term_memory", lambda self: None)
@@ -251,7 +250,6 @@ def test_adk_runner_load_agent_skips_mcp_toolsets_when_disabled(monkeypatch, tmp
         def __init__(self, key: str):
             self._ksadk_mcp_toolset_key = key
 
-    monkeypatch.setenv("KSADK_ENABLE_SANDBOX_TOOLS", "0")
     monkeypatch.setenv("KSADK_ENABLE_MCP_TOOLS", "0")
     monkeypatch.setattr(ADKRunner, "_apply_json_patch", lambda self: None)
     monkeypatch.setattr(ADKRunner, "_init_short_term_memory", lambda self: None)
@@ -325,7 +323,6 @@ async def test_adk_runner_invoke_roundtrip_with_remote_mcp_tools(
                 )
             )
 
-    monkeypatch.setenv("KSADK_ENABLE_SANDBOX_TOOLS", "0")
     monkeypatch.delenv("KSADK_ENABLE_MCP_TOOLS", raising=False)
     monkeypatch.setenv(
         "KSADK_MCP_SERVERS",
