@@ -17,6 +17,7 @@ from ksadk.hermes_terminal import (
     build_terminal_ws_url,
     detect_terminal_size,
     run_hermes_terminal_session,
+    validate_terminal_exec_argv,
 )
 
 
@@ -46,6 +47,7 @@ async def run_terminal_session(
         options=options,
         stdin=stdin,
         stdout=stdout,
+        exec_argv_validator=validate_terminal_exec_argv,
     )
 
 

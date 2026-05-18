@@ -265,10 +265,10 @@ def test_hermes_build_defaults_track_v2026_4_30_release():
     dockerfile = HERMES_DOCKERFILE.read_text(encoding="utf-8")
     makefile = MAKEFILE.read_text(encoding="utf-8")
 
-    assert 'ARG HERMES_AGENT_REF=v2026.4.30' in dockerfile
-    assert 'HERMES_TAG ?= 2026.4.30' in makefile
-    assert 'HERMES_AGENT_REF ?= v2026.4.30' in makefile
-    assert cmd_hermes.DEFAULT_HERMES_IMAGE.endswith(':2026.4.30')
+    assert 'ARG HERMES_AGENT_REF=v2026.5.7' in dockerfile
+    assert 'HERMES_TAG ?= 2026.5.7' in makefile
+    assert 'HERMES_AGENT_REF ?= v2026.5.7' in makefile
+    assert cmd_hermes.DEFAULT_HERMES_IMAGE.endswith(':2026.5.7')
 
 
 def test_hermes_deploy_refreshes_quick_access_when_agent_id_is_immediate(monkeypatch, tmp_path: Path):
@@ -840,7 +840,7 @@ def test_hermes_deploy_rewrites_public_kspmas_url_for_runtime(tmp_path: Path, mo
     assert result.exit_code == 0, result.output
     assert (
         _FakeHermesClient.create_payload["artifact_path"]
-        == "hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.4.30"
+        == "hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.5.7"
     )
     assert any(
         item["Key"] == "OPENAI_BASE_URL" and item["Value"] == "http://kspmas-internal.sdns.ksyun.com/v1"

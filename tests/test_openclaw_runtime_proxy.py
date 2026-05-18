@@ -118,8 +118,18 @@ def test_runtime_proxy_maps_whitelisted_tui_options_to_openclaw_cli(monkeypatch)
     ]
 
 
-@pytest.mark.parametrize("mode,argv", [("exec", []), ("tui", ["status"]), ("connect", [])])
-def test_runtime_proxy_rejects_non_tui_terminal_modes(mode, argv):
+def test_runtime_proxy_resolves_exec_command_as_raw_argv():
+    module = _load_runtime_module()
+
+    assert module._resolve_terminal_command(
+        "exec",
+        ["openclaw", "channels", "login", "--channel", "openclaw-weixin"],
+        session_id=None,
+    ) == ["openclaw", "channels", "login", "--channel", "openclaw-weixin"]
+
+
+@pytest.mark.parametrize("mode,argv", [("exec", []), ("exec", ["sh", "-lc", "id"]), ("tui", ["status"]), ("connect", [])])
+def test_runtime_proxy_rejects_unsafe_terminal_modes_or_argv(mode, argv):
     module = _load_runtime_module()
 
     with pytest.raises(ValueError):
