@@ -20,6 +20,13 @@ from ksadk.common.constants import (
 )
 from ksadk.cli.dry_run import effective_dry_run, run_async_with_dry_run
 from ksadk.cli.error_utils import cli_error_from_exception, is_debug_mode_enabled, remote_error, usage_error, validation_error
+from ksadk.cli.network_options import (
+    apply_network_cli_overrides,
+    apply_network_config as _apply_network_config_shared,
+    network_cli_kwargs,
+    network_options,
+    validate_deploy_target_network,
+)
 from ksadk.cli.workflow_common import (
     build_workflow_local_plan,
     clear_build_metadata,
@@ -81,6 +88,7 @@ console = get_console()
 @click.option("--storage-size-gi", type=int, default=20, show_default=True, help="PVC 容量（Gi）")
 @click.option("--storage-mount-path", default=None, help="PVC 挂载目录（默认按框架推导）")
 @click.option("--no-storage", is_flag=True, help="禁用默认 PVC 挂载")
+@network_options
 @click.option(
     "--observability/--no-observability", default=True, help="是否启用可观测性 (默认开启)"
 )
@@ -110,6 +118,12 @@ def deploy(
     storage_size_gi: int,
     storage_mount_path: str | None,
     no_storage: bool,
+    enable_public_access: bool | None,
+    enable_vpc_access: bool,
+    vpc_id: str | None,
+    subnet_id: str | None,
+    security_group_id: str | None,
+    availability_zone: str | None,
     observability: bool,
     push: bool,
     no_cache: bool,
@@ -169,6 +183,14 @@ def deploy(
             storage_size_gi,
             storage_mount_path,
             no_storage,
+            **network_cli_kwargs(
+                enable_public_access=enable_public_access,
+                enable_vpc_access=enable_vpc_access,
+                vpc_id=vpc_id,
+                subnet_id=subnet_id,
+                security_group_id=security_group_id,
+                availability_zone=availability_zone,
+            ),
             dry_run_context=dry_run_context,
         ),
         dry_run=dry_run,
@@ -243,6 +265,12 @@ async def _deploy_async(
     storage_size_gi: int = 20,
     storage_mount_path: str | None = None,
     no_storage: bool = False,
+    enable_public_access: bool | None = None,
+    enable_vpc_access: bool = False,
+    vpc_id: str | None = None,
+    subnet_id: str | None = None,
+    security_group_id: str | None = None,
+    availability_zone: str | None = None,
     dry_run_context: dict[str, object] | None = None,
 ):
     """异步部署流程"""
@@ -339,6 +367,16 @@ async def _deploy_async(
         deploy_target.scaling.concurrency = config["scaling"].get("concurrency", 10)
 
     _apply_network_config(config, deploy_target)
+    apply_network_cli_overrides(
+        deploy_target,
+        enable_public_access=enable_public_access,
+        enable_vpc_access=enable_vpc_access,
+        vpc_id=vpc_id,
+        subnet_id=subnet_id,
+        security_group_id=security_group_id,
+        availability_zone=availability_zone,
+    )
+    validate_deploy_target_network(deploy_target)
     storage_config = build_storage_config(
         detection_result.type.value,
         target=target,
@@ -614,29 +652,4 @@ def _resolve_artifact_type_input(config: dict, cli_artifact_type: str | None) ->
 
 
 def _apply_network_config(config: dict, deploy_target: "DeployTarget") -> None:
-    raw_network = (config.get("network") or config.get("deploy", {}).get("network") or {})
-    if not isinstance(raw_network, dict):
-        return
-
-    def _pick(*keys: str, default=None):
-        for key in keys:
-            if key in raw_network and raw_network[key] is not None:
-                return raw_network[key]
-        return default
-
-    deploy_target.network.enable_public_access = bool(
-        _pick("enable_public_access", "enablePublicAccess", default=deploy_target.network.enable_public_access)
-    )
-    deploy_target.network.enable_vpc_access = bool(
-        _pick("enable_vpc_access", "enableVpcAccess", default=deploy_target.network.enable_vpc_access)
-    )
-    deploy_target.network.vpc_id = str(_pick("vpc_id", "vpcId", default=deploy_target.network.vpc_id) or "").strip()
-    deploy_target.network.subnet_id = str(
-        _pick("subnet_id", "subnetId", default=deploy_target.network.subnet_id) or ""
-    ).strip()
-    deploy_target.network.security_group_id = str(
-        _pick("security_group_id", "securityGroupId", default=deploy_target.network.security_group_id) or ""
-    ).strip()
-    deploy_target.network.availability_zone = str(
-        _pick("availability_zone", "availabilityZone", default=deploy_target.network.availability_zone) or ""
-    ).strip()
+    _apply_network_config_shared(config, deploy_target)

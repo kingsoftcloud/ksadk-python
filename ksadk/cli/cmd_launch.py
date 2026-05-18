@@ -9,6 +9,12 @@ from ksadk.api.client import DryRunExit
 from ksadk.cli.cmd_deploy import _apply_network_config, _resolve_artifact_type_input, _resolve_ui_config_inputs
 from ksadk.cli.dry_run import effective_dry_run, run_async_with_dry_run
 from ksadk.cli.error_utils import cli_error_from_exception, is_debug_mode_enabled, remote_error, usage_error, validation_error
+from ksadk.cli.network_options import (
+    apply_network_cli_overrides,
+    network_cli_kwargs,
+    network_options,
+    validate_deploy_target_network,
+)
 from ksadk.cli.storage import build_storage_config
 from ksadk.cli.workflow_common import (
     build_workflow_local_plan,
@@ -62,6 +68,7 @@ from ksadk.cli.ui import (
 @click.option("--storage-size-gi", type=int, default=20, show_default=True, help="PVC 容量（Gi）")
 @click.option("--storage-mount-path", default=None, help="PVC 挂载目录（默认按框架推导）")
 @click.option("--no-storage", is_flag=True, help="禁用默认 PVC 挂载")
+@network_options
 @click.option("--dry-run", is_flag=True, help="仅打印请求，不执行实际操作")
 @click.option(
     "--artifact-type",
@@ -91,6 +98,12 @@ def launch(
     storage_size_gi: int,
     storage_mount_path: str | None,
     no_storage: bool,
+    enable_public_access: bool | None,
+    enable_vpc_access: bool,
+    vpc_id: str | None,
+    subnet_id: str | None,
+    security_group_id: str | None,
+    availability_zone: str | None,
     dry_run: bool,
     artifact_type: str,
     no_version: bool,
@@ -142,6 +155,14 @@ def launch(
             storage_size_gi,
             storage_mount_path,
             no_storage,
+            **network_cli_kwargs(
+                enable_public_access=enable_public_access,
+                enable_vpc_access=enable_vpc_access,
+                vpc_id=vpc_id,
+                subnet_id=subnet_id,
+                security_group_id=security_group_id,
+                availability_zone=availability_zone,
+            ),
             dry_run_context=dry_run_context,
         ),
         dry_run=dry_run,
@@ -181,6 +202,12 @@ async def _launch_async(
     storage_size_gi: int = 20,
     storage_mount_path: str | None = None,
     no_storage: bool = False,
+    enable_public_access: bool | None = None,
+    enable_vpc_access: bool = False,
+    vpc_id: str | None = None,
+    subnet_id: str | None = None,
+    security_group_id: str | None = None,
+    availability_zone: str | None = None,
     dry_run_context: dict[str, object] | None = None,
 ):
     from ksadk.detection import FrameworkDetector
@@ -262,6 +289,16 @@ async def _launch_async(
         deploy_target.resources.memory = config["resources"].get("memory", "4Gi")
 
     _apply_network_config(config, deploy_target)
+    apply_network_cli_overrides(
+        deploy_target,
+        enable_public_access=enable_public_access,
+        enable_vpc_access=enable_vpc_access,
+        vpc_id=vpc_id,
+        subnet_id=subnet_id,
+        security_group_id=security_group_id,
+        availability_zone=availability_zone,
+    )
+    validate_deploy_target_network(deploy_target)
     storage_config = build_storage_config(
         detection_result.type.value,
         target=target,

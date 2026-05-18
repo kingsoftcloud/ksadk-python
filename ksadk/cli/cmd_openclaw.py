@@ -36,6 +36,7 @@ from ksadk.api.client import DryRunExit
 from ksadk.cli.agent_ref import resolve_openclaw_ref
 from ksadk.cli.dry_run import dry_run_option, run_async_with_dry_run, effective_dry_run
 from ksadk.cli.error_utils import abort_with_cli_error, remote_error, resolution_error
+from ksadk.cli.network_options import build_network_payload, network_cli_kwargs, network_options
 from ksadk.cli.storage import build_storage_config
 from ksadk.cli.resource_common import ResourceActionDescriptor
 from ksadk.cli.resource_common import (
@@ -2993,6 +2994,7 @@ def channel_doctor(agent_ref: Optional[str], region: Optional[str], channel: Opt
 @click.option("--storage-size-gi", type=int, default=20, show_default=True, help="PVC 容量（Gi）")
 @click.option("--storage-mount-path", default=None, help="PVC 挂载目录（默认: /home/node/.openclaw）")
 @click.option("--no-storage", is_flag=True, help="禁用默认 PVC 挂载")
+@network_options
 @dry_run_option("仅显示请求，不实际部署")
 def deploy(
     name: Optional[str],
@@ -3010,6 +3012,12 @@ def deploy(
     storage_size_gi: int,
     storage_mount_path: Optional[str],
     no_storage: bool,
+    enable_public_access: Optional[bool],
+    enable_vpc_access: bool,
+    vpc_id: Optional[str],
+    subnet_id: Optional[str],
+    security_group_id: Optional[str],
+    availability_zone: Optional[str],
     dry_run: bool,
 ):
     """部署 OpenClaw 到云端
@@ -3058,6 +3066,14 @@ def deploy(
                 storage_size_gi=storage_size_gi,
                 storage_mount_path=storage_mount_path,
                 no_storage=no_storage,
+                **network_cli_kwargs(
+                    enable_public_access=enable_public_access,
+                    enable_vpc_access=enable_vpc_access,
+                    vpc_id=vpc_id,
+                    subnet_id=subnet_id,
+                    security_group_id=security_group_id,
+                    availability_zone=availability_zone,
+                ),
                 dry_run=dry_run,
             ),
             dry_run=dry_run,
@@ -3083,6 +3099,12 @@ async def _deploy_openclaw(
     storage_size_gi: int = 20,
     storage_mount_path: Optional[str] = None,
     no_storage: bool = False,
+    enable_public_access: Optional[bool] = None,
+    enable_vpc_access: bool = False,
+    vpc_id: Optional[str] = None,
+    subnet_id: Optional[str] = None,
+    security_group_id: Optional[str] = None,
+    availability_zone: Optional[str] = None,
     dry_run: bool,
 ):
     """异步部署 OpenClaw"""
@@ -3207,6 +3229,16 @@ async def _deploy_openclaw(
     )
     if storage_config:
         request_data["storage"] = storage_config
+    network_payload = build_network_payload(
+        enable_public_access=enable_public_access,
+        enable_vpc_access=enable_vpc_access,
+        vpc_id=vpc_id,
+        subnet_id=subnet_id,
+        security_group_id=security_group_id,
+        availability_zone=availability_zone,
+    )
+    if network_payload:
+        request_data["network"] = network_payload
 
     # KCR 凭证：仅在显式提供用户名+密码时注入，避免公共镜像触发无效鉴权重试。
     image_credential = None
@@ -3241,6 +3273,8 @@ async def _deploy_openclaw(
                     update_payload["image_credential"] = image_credential
                 if storage_config:
                     update_payload["storage"] = storage_config
+                if network_payload:
+                    update_payload["network"] = network_payload
                 await client.update_agent(existing_agent_id, update_payload)
             else:
                 await client.create_agent(request_data)
@@ -3269,6 +3303,8 @@ async def _deploy_openclaw(
                         update_payload["image_credential"] = image_credential
                     if storage_config:
                         update_payload["storage"] = storage_config
+                    if network_payload:
+                        update_payload["network"] = network_payload
                     res = await client.update_agent(existing_agent_id, update_payload)
                     agent_id = existing_agent_id
                     endpoint = res.get("endpoint") or state.get("endpoint")

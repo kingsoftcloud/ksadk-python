@@ -27,6 +27,7 @@ pip install "ksadk[langchain]"
 pip install "ksadk[deepagents]"
 pip install "ksadk[adk]"
 pip install "ksadk[kb]"
+pip install "ksadk[skills]"
 ```
 
 命令入口等价：
@@ -317,6 +318,15 @@ flowchart TB
 - `--storage-mount-path`
 - `--no-storage`
 
+以下 network 参数在 `agentengine deploy`、`agentengine launch` 和 `agentengine openclaw deploy` 中统一存在：
+
+- `--enable-public-access / --disable-public-access`
+- `--enable-vpc-access`
+- `--vpc-id`
+- `--subnet-id`
+- `--security-group-id`
+- `--availability-zone`
+
 示例：
 
 ```bash
@@ -326,11 +336,58 @@ agentengine hermes deploy --storage-size-gi 20
 agentengine openclaw deploy --no-storage
 ```
 
+VPC 网络示例：
+
+```bash
+agentengine deploy . \
+  --target serverless \
+  --disable-public-access \
+  --enable-vpc-access \
+  --vpc-id vpc-xxx \
+  --subnet-id subnet-xxx \
+  --security-group-id sg-xxx \
+  --availability-zone cn-beijing-6a
+
+agentengine launch . \
+  --enable-vpc-access \
+  --vpc-id vpc-xxx \
+  --subnet-id subnet-xxx \
+  --security-group-id sg-xxx
+
+agentengine openclaw deploy \
+  --enable-vpc-access \
+  --vpc-id vpc-xxx \
+  --subnet-id subnet-xxx \
+  --security-group-id sg-xxx
+```
+
+配置文件也可写入 network。CLI 显式参数优先级高于配置文件：
+
+```yaml
+network:
+  enable_public_access: false
+  enable_vpc_access: true
+  vpc_id: vpc-xxx
+  subnet_id: subnet-xxx
+  security_group_id: sg-xxx
+  availability_zone: cn-beijing-6a
+
+deploy:
+  network:
+    enable_public_access: false
+    enable_vpc_access: true
+    vpc_id: vpc-xxx
+    subnet_id: subnet-xxx
+    security_group_id: sg-xxx
+```
+
 行为要点：
 
 - 不传时使用框架默认挂载目录。
 - 容量会在客户端侧先做 `20~500Gi` 校验。
 - `--no-storage` 会显式关闭默认 PVC 挂载。
+- 只要开启 VPC 访问，或传入 `--vpc-id` / `--subnet-id` / `--security-group-id` 中任意一个，就必须同时具备 `VpcId`、`SubnetId`、`SecurityGroupId`。
+- `--availability-zone` 是可选字段，不替代子网或安全组。
 
 ## 8. `agentengine files` 工作区文件管理
 

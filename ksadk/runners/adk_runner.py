@@ -259,30 +259,88 @@ class ADKRunner(BaseRunner):
         except Exception as e:
             logger.warning(f"Failed to inject save_memory tool: {e}")
 
-    def _inject_sandbox_tools(self):
-        """默认注入本地沙箱工具。"""
-        if not self._sandbox_tools_enabled():
-            logger.info("ADKRunner: sandbox tools disabled via KSADK_ENABLE_SANDBOX_TOOLS=0")
+    def _inject_skill_runtime_tools(self):
+        """Inject Skill Runtime tools when skills are configured for sandbox mode."""
+        mode = self._resolve_skills_mode()
+        if mode == "local":
+            self._inject_local_skill_tools()
+            return
+        if mode != "sandbox":
             return
 
         try:
-            from ksadk.sandbox import LocalCodeSandbox, SandboxToolset
+            from ksadk.skills.runtime import create_skill_runtime_backend
+            from ksadk.skills.tool_defs import build_execute_skills_tool, resolve_skill_space_ids
 
-            toolset = SandboxToolset(LocalCodeSandbox())
-            added = self._append_tools_by_name(toolset.get_tools())
-            if not added:
-                logger.debug("ADKRunner: sandbox tools already present")
-                return
-
-            self._runtime_toolsets.append(toolset)
-            logger.info(
-                "Injected sandbox tools into agent "
-                f"(added: {', '.join(added)})"
+            backend = create_skill_runtime_backend()
+            execute_skills = build_execute_skills_tool(
+                backend=backend,
+                skill_space_ids=resolve_skill_space_ids(),
+                session_id=getattr(self._agent, "name", None) or self.detection_result.name,
             )
-        except ImportError as exc:
-            logger.warning(f"Failed to import sandbox toolset: {exc}")
+            added = self._append_tools_by_name([execute_skills])
+            if added:
+                logger.info("Injected Skill Runtime tools into agent (added: %s)", ", ".join(added))
+            else:
+                logger.debug("Skill Runtime tools already present")
         except Exception as exc:
-            logger.warning(f"Failed to inject sandbox tools: {exc}")
+            logger.warning("Failed to inject Skill Runtime tools: %s", exc)
+
+    def _inject_local_skill_tools(self):
+        try:
+            from ksadk.skills.loader import load_local_skill
+            from ksadk.skills.tool_defs import build_skills_tool
+
+            skills_dir = Path(
+                os.environ.get("KSADK_LOCAL_SKILLS_DIR")
+                or os.environ.get("KSADK_SKILL_CACHE_DIR")
+                or Path(self.project_dir) / "skills"
+            )
+            if not skills_dir.exists():
+                logger.info("ADKRunner: local skills directory does not exist: %s", skills_dir)
+                return
+            skills = [
+                load_local_skill(path)
+                for path in sorted(skills_dir.iterdir())
+                if path.is_dir() and (path / "SKILL.md").exists()
+            ]
+            if not skills:
+                return
+            tool = build_skills_tool(skills)
+            added = self._append_tools_by_name([tool])
+            if added:
+                logger.info("Injected local Skill tools into agent (added: %s)", ", ".join(added))
+        except Exception as exc:
+            logger.warning("Failed to inject local Skill tools: %s", exc)
+
+    def _resolve_skills_mode(self) -> str:
+        mode = os.environ.get("KSADK_SKILLS_MODE", "auto").strip().lower()
+        if mode != "auto":
+            return mode
+        runtime_backend = os.environ.get("KSADK_SKILL_RUNTIME_BACKEND")
+        if runtime_backend is not None:
+            backend = runtime_backend.strip().lower()
+            return "sandbox" if backend and backend not in {"disabled", "none", "off"} else "auto"
+
+        backend = (os.environ.get("KSADK_SANDBOX_BACKEND") or "").strip().lower()
+        if backend and backend not in {"disabled", "none", "off"}:
+            return "sandbox"
+        if os.environ.get("KSADK_SANDBOX_TEMPLATE_ID") or os.environ.get("KSADK_SKILL_RUNTIME_TEMPLATE_ID"):
+            return "sandbox"
+        skills_dir = Path(
+            os.environ.get("KSADK_LOCAL_SKILLS_DIR")
+            or os.environ.get("KSADK_SKILL_CACHE_DIR")
+            or Path(self.project_dir) / "skills"
+        )
+        if self._has_local_skills(skills_dir):
+            return "local"
+        return "auto"
+
+    @staticmethod
+    def _has_local_skills(skills_dir: Path) -> bool:
+        if not skills_dir.exists():
+            return False
+        return any(path.is_dir() and (path / "SKILL.md").exists() for path in skills_dir.iterdir())
 
     def _inject_mcp_toolsets(self):
         """默认注入远端 MCP toolset。"""
@@ -371,11 +429,6 @@ class ADKRunner(BaseRunner):
                 added_keys.append(key)
         return added_keys
 
-    @staticmethod
-    def _sandbox_tools_enabled() -> bool:
-        value = os.environ.get("KSADK_ENABLE_SANDBOX_TOOLS", "1").strip().lower()
-        return value not in {"0", "false", "no", "off"}
-
     def load_agent(self) -> None:
         """加载 ADK Agent"""
         import warnings
@@ -447,7 +500,7 @@ class ADKRunner(BaseRunner):
             self._inject_load_memory_tool()
             self._inject_save_memory_tool()
 
-        self._inject_sandbox_tools()
+        self._inject_skill_runtime_tools()
         self._inject_mcp_toolsets()
 
         # 初始化 Runner (传入 memory_service)

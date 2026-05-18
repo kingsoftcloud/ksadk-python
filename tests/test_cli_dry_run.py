@@ -383,6 +383,7 @@ class _FakeBatchDeleteClient:
 class _FakeOpenClawCreateClient:
     get_agent_calls = 0
     create_payload = None
+    update_payload = None
 
     def __init__(self, *args, **kwargs):
         pass
@@ -399,6 +400,14 @@ class _FakeOpenClawCreateClient:
             "agent_id": "ar-created-1",
             "endpoint": "https://ar-created-1.agent.kspmas.ksyun.com",
             "api_key": "ak-created-1",
+        }
+
+    async def update_agent(self, _agent_id, _data):
+        self.__class__.update_payload = _data
+        return {
+            "agent_id": _agent_id,
+            "endpoint": "https://ar-existing-1.agent.kspmas.ksyun.com",
+            "api_key": "ak-existing-1",
         }
 
     async def get_agent(self, **_kwargs):
@@ -1433,6 +1442,45 @@ def test_openclaw_deploy_forwards_explicit_memory_config(monkeypatch):
     assert captured["mem0_region"] == "pre-online"
 
 
+def test_openclaw_deploy_forwards_network_cli_options(monkeypatch):
+    runner = CliRunner()
+    captured: Dict[str, Any] = {}
+
+    async def _fake_deploy_openclaw(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw._deploy_openclaw", _fake_deploy_openclaw)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_openclaw.run_async_with_dry_run",
+        lambda coro, dry_run: asyncio.run(coro),
+    )
+
+    result = runner.invoke(
+        openclaw,
+        [
+            "deploy",
+            "--disable-public-access",
+            "--enable-vpc-access",
+            "--vpc-id",
+            "vpc-cli",
+            "--subnet-id",
+            "subnet-cli",
+            "--security-group-id",
+            "sg-cli",
+            "--availability-zone",
+            "cn-beijing-6b",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["enable_public_access"] is False
+    assert captured["enable_vpc_access"] is True
+    assert captured["vpc_id"] == "vpc-cli"
+    assert captured["subnet_id"] == "subnet-cli"
+    assert captured["security_group_id"] == "sg-cli"
+    assert captured["availability_zone"] == "cn-beijing-6b"
+
+
 def test_openclaw_deploy_rejects_mem0_without_instance_id():
     runner = CliRunner()
 
@@ -1447,6 +1495,143 @@ def test_openclaw_deploy_rejects_mem0_without_instance_id():
 
     assert result.exit_code != 0
     assert "--mem0-instance-id" in result.output
+
+
+def test_openclaw_deploy_create_payload_includes_network(monkeypatch, tmp_path):
+    runner = CliRunner()
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawCreateClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw._GLOBAL_ENV_CACHE", {})
+    monkeypatch.chdir(tmp_path)
+    _FakeOpenClawCreateClient.create_payload = None
+    _FakeOpenClawCreateClient.update_payload = None
+    _FakeOpenClawCreateClient.get_agent_calls = 0
+
+    result = runner.invoke(
+        openclaw,
+        [
+            "deploy",
+            "--name",
+            "demo-openclaw",
+            "--image",
+            "hub.kce.ksyun.com/agentengine-public/openclaw:test",
+            "--disable-public-access",
+            "--enable-vpc-access",
+            "--vpc-id",
+            "vpc-cli",
+            "--subnet-id",
+            "subnet-cli",
+            "--security-group-id",
+            "sg-cli",
+            "--availability-zone",
+            "cn-beijing-6b",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _FakeOpenClawCreateClient.create_payload["network"] == {
+        "enable_public_access": False,
+        "enable_vpc_access": True,
+        "vpc_id": "vpc-cli",
+        "subnet_id": "subnet-cli",
+        "security_group_id": "sg-cli",
+        "availability_zone": "cn-beijing-6b",
+    }
+
+
+def test_openclaw_deploy_update_payload_includes_network(monkeypatch, tmp_path):
+    runner = CliRunner()
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawCreateClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw._GLOBAL_ENV_CACHE", {})
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".agentengine.state").write_text(
+        yaml.safe_dump(
+            {
+                "type": "openclaw",
+                "agent_id": "ar-existing-1",
+                "name": "demo-openclaw",
+                "endpoint": "https://existing.example.com",
+                "api_key": "ak-existing",
+            }
+        ),
+        encoding="utf-8",
+    )
+    _FakeOpenClawCreateClient.create_payload = None
+    _FakeOpenClawCreateClient.update_payload = None
+    _FakeOpenClawCreateClient.get_agent_calls = 0
+
+    result = runner.invoke(
+        openclaw,
+        [
+            "deploy",
+            "--name",
+            "demo-openclaw",
+            "--image",
+            "hub.kce.ksyun.com/agentengine-public/openclaw:test",
+            "--enable-vpc-access",
+            "--vpc-id",
+            "vpc-cli",
+            "--subnet-id",
+            "subnet-cli",
+            "--security-group-id",
+            "sg-cli",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _FakeOpenClawCreateClient.create_payload is None
+    assert _FakeOpenClawCreateClient.update_payload["network"] == {
+        "enable_vpc_access": True,
+        "vpc_id": "vpc-cli",
+        "subnet_id": "subnet-cli",
+        "security_group_id": "sg-cli",
+    }
+
+
+def test_openclaw_deploy_network_ids_imply_vpc_access(monkeypatch, tmp_path):
+    runner = CliRunner()
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawCreateClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw._GLOBAL_ENV_CACHE", {})
+    monkeypatch.chdir(tmp_path)
+    _FakeOpenClawCreateClient.create_payload = None
+    _FakeOpenClawCreateClient.update_payload = None
+    _FakeOpenClawCreateClient.get_agent_calls = 0
+
+    result = runner.invoke(
+        openclaw,
+        [
+            "deploy",
+            "--name",
+            "demo-openclaw",
+            "--image",
+            "hub.kce.ksyun.com/agentengine-public/openclaw:test",
+            "--vpc-id",
+            "vpc-cli",
+            "--subnet-id",
+            "subnet-cli",
+            "--security-group-id",
+            "sg-cli",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _FakeOpenClawCreateClient.create_payload["network"]["enable_vpc_access"] is True
+
+
+def test_openclaw_deploy_rejects_incomplete_vpc_network():
+    runner = CliRunner()
+
+    result = runner.invoke(
+        openclaw,
+        [
+            "deploy",
+            "--enable-vpc-access",
+            "--vpc-id",
+            "vpc-cli",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "VpcId、SubnetId、SecurityGroupId" in result.output
 
 
 def test_openclaw_deploy_does_not_query_get_agent_when_quick_access_is_already_complete(monkeypatch, tmp_path):

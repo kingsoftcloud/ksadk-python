@@ -2,6 +2,8 @@
 
 > 基于对 VeADK Skills Sandbox 的分析，提炼 ksadk-python 的 Skills 功能设计方案。
 
+> 注意：本文是早期 Skills 设计草案，里面的 `KSADK_SANDBOX_TOOL_ID`、`ksadk/sandbox/agent.py` 等命名已不再作为当前实现契约。当前 Sandbox 顶层设计以 `docs/internal/sandbox-runtime-design.md` 为准；Skill Runtime E2E 与镜像契约以 `docs/internal/skill-runtime-e2e.md` 和 `deploy/skill-runtime/README.md` 为准。新实现使用通用 `ksadk.sandbox`，优先通过 E2B SDK 连接控制台创建的 AIO / Code / Browser template，并以 `KSADK_SANDBOX_TEMPLATE_ID` 作为新部署的 template id 变量。
+
 ---
 
 ## 1. 背景与参考

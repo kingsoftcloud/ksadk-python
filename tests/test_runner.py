@@ -355,7 +355,9 @@ def test_base_runner_run_server_registers_runner(monkeypatch):
     assert recorded["port"] == 9000
 
 
-def test_adk_runner_load_agent_injects_default_sandbox_tools(monkeypatch, tmp_path):
+def test_adk_runner_load_agent_does_not_inject_legacy_sandbox_tools_by_default(
+    monkeypatch, tmp_path
+):
     import google.adk.runners as adk_runners
 
     from ksadk.runners.adk_runner import ADKRunner
@@ -380,7 +382,7 @@ def test_adk_runner_load_agent_injects_default_sandbox_tools(monkeypatch, tmp_pa
             self.kwargs = kwargs
             FakeRunner.instances.append(self)
 
-    monkeypatch.delenv("KSADK_ENABLE_SANDBOX_TOOLS", raising=False)
+    monkeypatch.delenv("KSADK_SKILLS_MODE", raising=False)
     monkeypatch.setattr(ADKRunner, "_apply_json_patch", lambda self: None)
     monkeypatch.setattr(ADKRunner, "_init_short_term_memory", lambda self: None)
     monkeypatch.setattr(ADKRunner, "_init_long_term_memory", lambda self: None)
@@ -389,14 +391,11 @@ def test_adk_runner_load_agent_injects_default_sandbox_tools(monkeypatch, tmp_pa
     runner = ADKRunner(detection, str(tmp_path))
     runner.load_agent()
 
-    tool_names = _tool_names(runner._agent.tools)
-    assert "execute_python" in tool_names
-    assert "execute_bash" in tool_names
-    assert "execute_javascript" in tool_names
+    assert _tool_names(runner._agent.tools) == []
     assert len(FakeRunner.instances) == 1
 
 
-def test_adk_runner_load_agent_deduplicates_existing_sandbox_tools(monkeypatch, tmp_path):
+def test_adk_runner_load_agent_deduplicates_existing_execute_skills(monkeypatch, tmp_path):
     import google.adk.runners as adk_runners
 
     from ksadk.runners.adk_runner import ADKRunner
@@ -404,8 +403,8 @@ def test_adk_runner_load_agent_deduplicates_existing_sandbox_tools(monkeypatch, 
     detection = _write_adk_project(
         tmp_path,
         """
-        def execute_python(code: str) -> str:
-            return code
+        def execute_skills(workflow_prompt: str) -> dict:
+            return {"stdout": workflow_prompt}
 
         def keep_tool(value: str) -> str:
             return value
@@ -413,7 +412,7 @@ def test_adk_runner_load_agent_deduplicates_existing_sandbox_tools(monkeypatch, 
         class DemoAgent:
             def __init__(self):
                 self.name = "demo-agent"
-                self.tools = [keep_tool, execute_python]
+                self.tools = [keep_tool, execute_skills]
                 self.instruction = "Be helpful."
 
         root_agent = DemoAgent()
@@ -424,7 +423,9 @@ def test_adk_runner_load_agent_deduplicates_existing_sandbox_tools(monkeypatch, 
         def __init__(self, **kwargs):
             self.kwargs = kwargs
 
-    monkeypatch.delenv("KSADK_ENABLE_SANDBOX_TOOLS", raising=False)
+    monkeypatch.setenv("KSADK_SKILLS_MODE", "sandbox")
+    monkeypatch.setenv("KSADK_SKILL_RUNTIME_BACKEND", "disabled")
+    monkeypatch.setenv("KSADK_SKILL_SPACE_IDS", "ss-1")
     monkeypatch.setattr(ADKRunner, "_apply_json_patch", lambda self: None)
     monkeypatch.setattr(ADKRunner, "_init_short_term_memory", lambda self: None)
     monkeypatch.setattr(ADKRunner, "_init_long_term_memory", lambda self: None)
@@ -435,13 +436,13 @@ def test_adk_runner_load_agent_deduplicates_existing_sandbox_tools(monkeypatch, 
     runner.load_agent()
 
     tool_names = _tool_names(runner._agent.tools)
-    assert tool_names.count("execute_python") == 1
+    assert tool_names.count("execute_skills") == 1
     assert "keep_tool" in tool_names
-    assert "execute_bash" in tool_names
-    assert "execute_javascript" in tool_names
 
 
-def test_adk_runner_load_agent_skips_sandbox_tools_when_disabled(monkeypatch, tmp_path):
+def test_adk_runner_load_agent_skips_skill_runtime_when_not_in_sandbox_mode(
+    monkeypatch, tmp_path
+):
     import google.adk.runners as adk_runners
 
     from ksadk.runners.adk_runner import ADKRunner
@@ -463,7 +464,7 @@ def test_adk_runner_load_agent_skips_sandbox_tools_when_disabled(monkeypatch, tm
         def __init__(self, **kwargs):
             self.kwargs = kwargs
 
-    monkeypatch.setenv("KSADK_ENABLE_SANDBOX_TOOLS", "0")
+    monkeypatch.setenv("KSADK_SKILLS_MODE", "local")
     monkeypatch.setattr(ADKRunner, "_apply_json_patch", lambda self: None)
     monkeypatch.setattr(ADKRunner, "_init_short_term_memory", lambda self: None)
     monkeypatch.setattr(ADKRunner, "_init_long_term_memory", lambda self: None)

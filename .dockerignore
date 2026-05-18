@@ -1,0 +1,14 @@
+.git
+.gitignore
+.venv
+.pytest_cache
+__pycache__
+*.py[cod]
+*.egg-info
+build
+dist
+htmlcov
+.mypy_cache
+.ruff_cache
+node_modules
+webui/node_modules

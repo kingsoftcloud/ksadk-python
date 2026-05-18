@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ksadk"
-version = "0.5.4"
+version = "0.5.6"
 description = "Kingsoft Cloud Agent Development Kit - 支持 LangChain/LangGraph/DeepAgents/ADK/OpenClaw/Hermes 的本地运行与云端部署"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -113,6 +113,10 @@ tracing = [
 kb = [
     "kingsoftcloud-sdk-python>=1.5.8.71",
 ]
+# Skill Runtime E2B backend
+skills = [
+    "e2b>=2.0.0",
+]
 # 开发依赖
 dev = [
     "pytest>=7.0.0",
@@ -123,7 +127,7 @@ dev = [
 ]
 # 全部依赖
 all = [
-    "ksadk[a2a,adk,langchain,langgraph,deepagents,kb,tracing,dev]",
+    "ksadk[a2a,adk,langchain,langgraph,deepagents,kb,skills,tracing,dev]",
 ]
 
 [project.scripts]

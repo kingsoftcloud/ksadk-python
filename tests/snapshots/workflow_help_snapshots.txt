@@ -28,7 +28,6 @@ Options:
   --ks3-bucket TEXT            KS3 bucket 名称 (code 模式, 默认: agentengine-{region})
   --output [pretty|json]       输出格式
   -h, --help                   Show this message and exit.
-
 === deploy_help ===
 Usage: deploy [OPTIONS] [AGENT_DIR]
 
@@ -66,6 +65,13 @@ Options:
   --storage-size-gi INTEGER       PVC 容量（Gi）  [default: 20]
   --storage-mount-path TEXT       PVC 挂载目录（默认按框架推导）
   --no-storage                    禁用默认 PVC 挂载
+  --enable-public-access / --disable-public-access
+                                  是否开启公网访问；未指定时使用配置文件或平台默认值
+  --enable-vpc-access             开启 VPC 私网访问
+  --vpc-id TEXT                   VPC ID（开启 VPC 访问时必填）
+  --subnet-id TEXT                子网 ID（开启 VPC 访问时必填）
+  --security-group-id TEXT        安全组 ID（开启 VPC 访问时必填）
+  --availability-zone TEXT        可用区（可选）
   --observability / --no-observability
                                   是否启用可观测性 (默认开启)
   --push                          构建后推送镜像
@@ -76,7 +82,6 @@ Options:
   --list-providers                列出可用的部署目标
   --output [pretty|json]          输出格式
   -h, --help                      Show this message and exit.
-
 === launch_help ===
 Usage: launch [OPTIONS] [AGENT_DIR]
 
@@ -117,6 +122,13 @@ Options:
   --storage-size-gi INTEGER       PVC 容量（Gi）  [default: 20]
   --storage-mount-path TEXT       PVC 挂载目录（默认按框架推导）
   --no-storage                    禁用默认 PVC 挂载
+  --enable-public-access / --disable-public-access
+                                  是否开启公网访问；未指定时使用配置文件或平台默认值
+  --enable-vpc-access             开启 VPC 私网访问
+  --vpc-id TEXT                   VPC ID（开启 VPC 访问时必填）
+  --subnet-id TEXT                子网 ID（开启 VPC 访问时必填）
+  --security-group-id TEXT        安全组 ID（开启 VPC 访问时必填）
+  --availability-zone TEXT        可用区（可选）
   --dry-run                       仅打印请求，不执行实际操作
   --artifact-type [Code|Container]
                                   部署模式 (serverless default: Code)

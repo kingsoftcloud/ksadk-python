@@ -1,7 +1,11 @@
 import asyncio
 from pathlib import Path
 
+import pytest
+from click.testing import CliRunner
+
 from ksadk.cli import cmd_deploy
+from ksadk.cli.error_utils import CLIError
 from ksadk.deployment.base import DeployResult, DeployStatus, PackageInfo
 
 
@@ -185,6 +189,153 @@ def test_deploy_reads_network_config_from_agentengine_yaml(tmp_path: Path, monke
     assert provider.last_target.network.subnet_id == "subnet-demo"
     assert provider.last_target.network.security_group_id == "sg-demo"
     assert provider.last_target.network.availability_zone == "cn-beijing-6a"
+
+
+def test_deploy_cli_network_options_override_config(tmp_path: Path, monkeypatch):
+    provider = _FakeProvider()
+    runner = CliRunner()
+
+    monkeypatch.setattr("ksadk.detection.FrameworkDetector", lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})())
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_deploy._load_config",
+        lambda *_args, **_kwargs: {
+            "name": "demo-agent",
+            "network": {
+                "enable_public_access": True,
+                "enable_vpc_access": True,
+                "vpc_id": "vpc-config",
+                "subnet_id": "subnet-config",
+                "security_group_id": "sg-config",
+                "availability_zone": "cn-beijing-6a",
+            },
+        },
+    )
+    monkeypatch.setattr("ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider)
+
+    result = runner.invoke(
+        cmd_deploy.deploy,
+        [
+            str(tmp_path),
+            "--ks3-path",
+            "ks3://bucket/agents/demo-agent/code_manual.zip",
+            "--disable-public-access",
+            "--enable-vpc-access",
+            "--vpc-id",
+            "vpc-cli",
+            "--subnet-id",
+            "subnet-cli",
+            "--security-group-id",
+            "sg-cli",
+            "--availability-zone",
+            "cn-beijing-6b",
+            "--no-version",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert provider.last_target is not None
+    assert provider.last_target.network.enable_public_access is False
+    assert provider.last_target.network.enable_vpc_access is True
+    assert provider.last_target.network.vpc_id == "vpc-cli"
+    assert provider.last_target.network.subnet_id == "subnet-cli"
+    assert provider.last_target.network.security_group_id == "sg-cli"
+    assert provider.last_target.network.availability_zone == "cn-beijing-6b"
+
+
+def test_deploy_rejects_incomplete_vpc_network_config(tmp_path: Path, monkeypatch):
+    provider = _FakeProvider()
+
+    monkeypatch.setattr("ksadk.detection.FrameworkDetector", lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})())
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_deploy._load_config",
+        lambda *_args, **_kwargs: {
+            "name": "demo-agent",
+            "network": {
+                "enable_vpc_access": True,
+                "vpc_id": "vpc-demo",
+            },
+        },
+    )
+    monkeypatch.setattr("ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider)
+
+    with pytest.raises(CLIError) as exc_info:
+        asyncio.run(
+            cmd_deploy._deploy_async(
+                agent_dir=str(tmp_path),
+                target="serverless",
+                name=None,
+                region="cn-beijing-6",
+                account_id="2000003485",
+                artifact_type="Code",
+                namespace="default",
+                port=8000,
+                registry=None,
+                ks3_path="ks3://bucket/agents/demo-agent/code_manual.zip",
+                ks3_bucket=None,
+                image=None,
+                ui_profile=None,
+                ui_path=None,
+                ui_url=None,
+                observability=True,
+                push=False,
+                no_cache=False,
+                no_version=True,
+                auto_rollback=False,
+                dry_run=False,
+            )
+        )
+
+    assert exc_info.value.code == "validation_error"
+    assert "VpcId、SubnetId、SecurityGroupId" in exc_info.value.message
+
+
+def test_deploy_network_ids_imply_vpc_access(tmp_path: Path, monkeypatch):
+    provider = _FakeProvider()
+
+    monkeypatch.setattr("ksadk.detection.FrameworkDetector", lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})())
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_deploy._load_config",
+        lambda *_args, **_kwargs: {
+            "name": "demo-agent",
+            "deploy": {
+                "network": {
+                    "vpc_id": "vpc-demo",
+                    "subnet_id": "subnet-demo",
+                    "security_group_id": "sg-demo",
+                },
+            },
+        },
+    )
+    monkeypatch.setattr("ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider)
+
+    asyncio.run(
+        cmd_deploy._deploy_async(
+            agent_dir=str(tmp_path),
+            target="serverless",
+            name=None,
+            region="cn-beijing-6",
+            account_id="2000003485",
+            artifact_type="Code",
+            namespace="default",
+            port=8000,
+            registry=None,
+            ks3_path="ks3://bucket/agents/demo-agent/code_manual.zip",
+            ks3_bucket=None,
+            image=None,
+            ui_profile=None,
+            ui_path=None,
+            ui_url=None,
+            observability=True,
+            push=False,
+            no_cache=False,
+            no_version=True,
+            auto_rollback=False,
+            dry_run=False,
+        )
+    )
+
+    assert provider.last_target is not None
+    assert provider.last_target.network.enable_vpc_access is True
 
 
 def test_deploy_reads_ui_config_from_agentengine_yaml_when_cli_not_set(tmp_path: Path, monkeypatch):
