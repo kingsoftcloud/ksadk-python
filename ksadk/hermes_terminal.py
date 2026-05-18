@@ -12,7 +12,7 @@ import signal
 import ssl
 import sys
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 from urllib.parse import urlsplit, urlunsplit
 
 
@@ -172,6 +172,22 @@ def validate_hermes_exec_argv(argv: Iterable[str]) -> list[str]:
     min_len, max_len = bounds
     if len(normalized) < min_len or len(normalized) > max_len:
         raise ValueError(f"Hermes exec subcommand is not allowed: {' '.join(normalized)}")
+    return normalized
+
+
+def validate_terminal_exec_argv(argv: Iterable[str]) -> list[str]:
+    normalized = [str(item).strip() for item in argv]
+    if not normalized:
+        raise ValueError("terminal exec requires argv")
+    for index, item in enumerate(normalized):
+        if not item:
+            raise ValueError("terminal exec argv contains an empty argument")
+        if any(char in _SHELL_METACHARS for char in item):
+            raise ValueError(f"terminal exec does not allow shell metacharacters: {item}")
+        if index == 0 and item.startswith("-"):
+            raise ValueError(f"terminal exec command is invalid: {item}")
+        if index == 0 and item in _FORBIDDEN_LAUNCHERS:
+            raise ValueError(f"terminal exec launcher is not allowed: {item}")
     return normalized
 
 
@@ -341,12 +357,14 @@ async def run_hermes_terminal_session(
     options: Mapping[str, Any] | None = None,
     stdin: Any | None = None,
     stdout: Any | None = None,
+    exec_argv_validator: Callable[[Iterable[str]], list[str]] | None = None,
 ) -> int:
     """Attach to a Hermes native terminal session over the platform websocket."""
     normalized_mode = str(mode or "tui").strip().lower()
     normalized_argv = list(argv or [])
     if normalized_mode == "exec":
-        normalized_argv = validate_hermes_exec_argv(normalized_argv)
+        validator = exec_argv_validator or validate_hermes_exec_argv
+        normalized_argv = validator(normalized_argv)
     elif normalized_mode == "pairing":
         normalized_argv = validate_hermes_pairing_argv(normalized_argv)
     elif normalized_mode == "connect":

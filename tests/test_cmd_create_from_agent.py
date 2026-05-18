@@ -80,6 +80,32 @@ def test_find_entry_file_prefers_valid_langgraph_json(tmp_path: Path):
     assert found_var == "graph"
 
 
+def test_find_entry_file_ignores_langgraph_json_local_variable(tmp_path: Path):
+    src = tmp_path / "src" / "demo"
+    src.mkdir(parents=True)
+    graph_file = src / "graph.py"
+    graph_file.write_text(
+        "from deepagents import create_deep_agent\n"
+        "async def init_agent_resources():\n"
+        "    graph = create_deep_agent(model=None)\n"
+        "    return graph\n",
+        encoding="utf-8",
+    )
+    adapter = src / "agentengine_adapter.py"
+    adapter.write_text("root_agent = object()\n", encoding="utf-8")
+    (tmp_path / "langgraph.json").write_text(
+        '{"graphs": {"agent": "./src/demo/graph.py:graph"}}\n',
+        encoding="utf-8",
+    )
+
+    found = cmd_create._find_entry_file(tmp_path)
+
+    assert found is not None
+    found_file, found_var = found
+    assert found_file == adapter
+    assert found_var == "root_agent"
+
+
 def test_find_entry_file_recursive_scan(tmp_path: Path):
     entry = tmp_path / "src" / "nested" / "custom_entry.py"
     entry.parent.mkdir(parents=True)
@@ -266,6 +292,61 @@ def test_wrap_deepagents_service_directory_generates_runtime_adapter(tmp_path: P
     config_text = (project_path / "agentengine.yaml").read_text(encoding="utf-8-sig")
     assert "entry_point: wrapped_service/agentengine_adapter.py" in config_text
     assert "agent_variable: root_agent" in config_text
+
+
+def test_wrap_deepagents_service_directory_ignores_langgraph_json_local_graph(tmp_path: Path, monkeypatch):
+    source = tmp_path / "source"
+    pkg = source / "src" / "bill_diagnosis"
+    pkg.mkdir(parents=True)
+    graph_file = pkg / "graph.py"
+    graph_file.write_text(
+        "from deepagents import create_deep_agent\n"
+        "async def init_agent_resources():\n"
+        "    graph = create_deep_agent(model=None)\n"
+        "    return graph, None, None, None\n",
+        encoding="utf-8",
+    )
+    (pkg / "main.py").write_text(
+        "from fastapi import FastAPI\n"
+        "from .lifespan import lifespan\n"
+        "app = FastAPI(lifespan=lifespan)\n",
+        encoding="utf-8",
+    )
+    (pkg / "lifespan.py").write_text(
+        "class DeepAgentRunnable:\n"
+        "    async def _ainvoke(self, input, config=None, **kwargs):\n"
+        "        return {\"response\": input.get(\"message\", \"\")}\n",
+        encoding="utf-8",
+    )
+    (source / "langgraph.json").write_text(
+        '{"graphs": {"agent": "./src/bill_diagnosis/graph.py:graph"}}\n',
+        encoding="utf-8",
+    )
+    (source / "agentengine.yaml").write_text(
+        "framework: deepagents\n"
+        "entry_point: src/bill_diagnosis/graph.py\n"
+        "agent_variable: graph\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("ksadk.configs.global_config.global_config_exists", lambda: False)
+    monkeypatch.setattr("ksadk.configs.global_config.get_env_from_global_config", lambda: {})
+
+    found = cmd_create._find_entry_file(source)
+    assert found is not None
+    found_file, found_var = found
+    assert found_file == graph_file
+    assert found_var == "root_agent"
+
+    project_path = tmp_path / "wrapped-service-local-graph"
+    cmd_create._wrap_agent_directory(source, str(project_path), "deepagents", found_file, found_var)
+
+    package_dir = project_path / "wrapped_service_local_graph"
+    config_text = (project_path / "agentengine.yaml").read_text(encoding="utf-8-sig")
+    assert "entry_point: wrapped_service_local_graph/agentengine_adapter.py" in config_text
+    assert "agent_variable: root_agent" in config_text
+    adapter_text = (package_dir / "agentengine_adapter.py").read_text(encoding="utf-8")
+    assert 'INIT_MODULE = ".src.bill_diagnosis.graph"' in adapter_text
+    assert not (package_dir / "ksadk_agentengine_adapter.py").exists()
 
 
 def test_generated_deepagents_service_adapter_invokes_fake_service(tmp_path: Path, monkeypatch):
