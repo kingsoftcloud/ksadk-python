@@ -56,6 +56,7 @@ def test_hermes_dockerfile_uses_local_source_install_and_cn_resilient_pip_defaul
     assert "FROM node_with_git AS hermes_src" in dockerfile
     assert "COPY --from=hermes_src /src /tmp/hermes-src" in dockerfile
     assert '"/tmp/hermes-src[web,feishu,pty,cron,mcp,cli]"' in dockerfile
+    assert "plugin.yaml" in dockerfile
     assert '"aiohttp>=3.13.3,<4"' in dockerfile
     assert '"websockets>=15.0.1,<16"' in dockerfile
     assert '"cryptography>=46.0.5,<47"' in dockerfile

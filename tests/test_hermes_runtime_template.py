@@ -520,8 +520,14 @@ def test_entrypoint_writes_explicit_context_length_override():
     assert 'export API_SERVER_ENABLED="${API_SERVER_ENABLED:-true}"' in entrypoint
     assert 'export KDOCS_OPEN_BROWSER="${KDOCS_OPEN_BROWSER:-0}"' in entrypoint
     assert 'export HERMES_UI_LOCALE="${HERMES_UI_LOCALE:-zh}"' in entrypoint
+    assert 'export HERMES_TUI_PREWARM="${HERMES_TUI_PREWARM:-true}"' in entrypoint
+    assert 'export HERMES_TUI_PREWARM_TIMEOUT="${HERMES_TUI_PREWARM_TIMEOUT:-75}"' in entrypoint
+    assert 'export TIRITH_ENABLED="${TIRITH_ENABLED:-false}"' in entrypoint
     assert 'GATEWAY_PID_FILE="${HERMES_RUN_DIR}/gateway.pid"' in entrypoint
     assert 'start_gateway_process() {' in entrypoint
+    assert "prewarm_hermes_tui() {" in entrypoint
+    assert "Hermes TUI prewarm starting" in entrypoint
+    assert 'timeout "${HERMES_TUI_PREWARM_TIMEOUT}" script -q -c "hermes chat" /dev/null' in entrypoint
     assert 'while true; do' in entrypoint
     assert 'GATEWAY_LOCAL_RESTART_MAX="${GATEWAY_LOCAL_RESTART_MAX:-5}"' in entrypoint
     assert 'GATEWAY_LOCAL_RESTART_BACKOFF_SECONDS="${GATEWAY_LOCAL_RESTART_BACKOFF_SECONDS:-2}"' in entrypoint
@@ -531,8 +537,14 @@ def test_entrypoint_writes_explicit_context_length_override():
     assert 'mkdir -p "${AGENT_BROWSER_STATE_DIR}" "${AGENT_BROWSER_RUN_DIR}" "${AGENT_BROWSER_SESSION_DIR}"' in entrypoint
     assert 'cd "${HERMES_WORKDIR}"' in entrypoint
     assert 'enabled: ${API_SERVER_ENABLED}' in entrypoint
+    assert 'security:' in entrypoint
+    assert 'tirith_enabled: ${TIRITH_ENABLED}' in entrypoint
+    assert 'tirith_path: "tirith"' in entrypoint
+    assert 'tirith_timeout: 5' in entrypoint
+    assert 'tirith_fail_open: true' in entrypoint
     assert 'export HERMES_UI_LOCALE="$(normalize_hermes_ui_locale "${HERMES_UI_LOCALE}")"' in entrypoint
     assert "HERMES_UI_LOCALE" in entrypoint
+    assert "TIRITH_ENABLED=${TIRITH_ENABLED}" in entrypoint
 
 
 def test_entrypoint_auto_enables_langfuse_plugin_when_credentials_exist():
@@ -552,6 +564,10 @@ def test_entrypoint_auto_enables_langfuse_plugin_when_credentials_exist():
     assert 'if [[ -n "${HERMES_LANGFUSE_PUBLIC_KEY}" && -n "${HERMES_LANGFUSE_SECRET_KEY}" ]]; then' in entrypoint
     assert "plugins:" in entrypoint
     assert "observability/langfuse" in entrypoint
+    assert "from hermes_cli.plugins_cmd import _get_enabled_set, _save_enabled_set" in entrypoint
+    assert 'enabled.add("observability/langfuse")' in entrypoint
+    assert "_save_enabled_set(enabled)" in entrypoint
+    assert "Langfuse plugin enabled: observability/langfuse" in entrypoint
     assert '0|false|no|off)' in entrypoint
 
 
