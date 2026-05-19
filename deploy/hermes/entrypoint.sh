@@ -43,6 +43,9 @@ export HERMES_LANGFUSE_BASE_URL="${HERMES_LANGFUSE_BASE_URL:-${LANGFUSE_BASE_URL
 export HERMES_LANGFUSE_ENV="${HERMES_LANGFUSE_ENV:-${LANGFUSE_ENV:-}}"
 export HERMES_LANGFUSE_RELEASE="${HERMES_LANGFUSE_RELEASE:-${LANGFUSE_RELEASE:-}}"
 export HERMES_LANGFUSE_AUTO_ENABLE="${HERMES_LANGFUSE_AUTO_ENABLE:-true}"
+export HERMES_TUI_PREWARM="${HERMES_TUI_PREWARM:-true}"
+export HERMES_TUI_PREWARM_TIMEOUT="${HERMES_TUI_PREWARM_TIMEOUT:-75}"
+export TIRITH_ENABLED="${TIRITH_ENABLED:-false}"
 export AGENT_BROWSER_EXECUTABLE_PATH="${AGENT_BROWSER_EXECUTABLE_PATH:-/usr/bin/chromium}"
 export KDOCS_OPEN_BROWSER="${KDOCS_OPEN_BROWSER:-0}"
 export HERMES_UI_LOCALE="${HERMES_UI_LOCALE:-zh}"
@@ -134,6 +137,7 @@ HERMES_LANGFUSE_RELEASE=${HERMES_LANGFUSE_RELEASE}
 HERMES_LANGFUSE_SAMPLE_RATE=${HERMES_LANGFUSE_SAMPLE_RATE:-}
 HERMES_LANGFUSE_MAX_CHARS=${HERMES_LANGFUSE_MAX_CHARS:-}
 HERMES_LANGFUSE_DEBUG=${HERMES_LANGFUSE_DEBUG:-}
+TIRITH_ENABLED=${TIRITH_ENABLED}
 AGENT_BROWSER_EXECUTABLE_PATH=${AGENT_BROWSER_EXECUTABLE_PATH}
 AGENT_BROWSER_HOME=${AGENT_BROWSER_HOME}
 AGENT_BROWSER_STATE_DIR=${AGENT_BROWSER_STATE_DIR}
@@ -200,10 +204,16 @@ api_server:
   enabled: ${API_SERVER_ENABLED}
   host: "${API_SERVER_HOST}"
   port: ${API_SERVER_PORT}
+security:
+  tirith_enabled: ${TIRITH_ENABLED}
+  tirith_path: "tirith"
+  tirith_timeout: 5
+  tirith_fail_open: true
 EOF
 
 case "${HERMES_LANGFUSE_AUTO_ENABLE,,}" in
   0|false|no|off)
+    entrypoint_log "Langfuse auto-enable disabled"
     ;;
   *)
     if [[ -n "${HERMES_LANGFUSE_PUBLIC_KEY}" && -n "${HERMES_LANGFUSE_SECRET_KEY}" ]]; then
@@ -212,9 +222,51 @@ plugins:
   enabled:
     - observability/langfuse
 EOF
+      python - <<'PY'
+from __future__ import annotations
+
+try:
+    from hermes_cli.plugins_cmd import _get_enabled_set, _save_enabled_set
+except Exception as exc:  # pragma: no cover - image-time compatibility guard
+    print(f"[hermes-entrypoint] Langfuse plugin enable failed: {exc}", flush=True)
+else:
+    enabled = _get_enabled_set()
+    if "observability/langfuse" not in enabled and "langfuse" not in enabled:
+        enabled.add("observability/langfuse")
+        _save_enabled_set(enabled)
+    print("[hermes-entrypoint] Langfuse plugin enabled: observability/langfuse", flush=True)
+PY
+    else
+      entrypoint_log "Langfuse credentials missing; tracing plugin not enabled"
     fi
     ;;
 esac
+
+prewarm_hermes_tui() {
+  case "${HERMES_TUI_PREWARM,,}" in
+    0|false|no|off)
+      entrypoint_log "Hermes TUI prewarm disabled"
+      return 0
+      ;;
+  esac
+
+  (
+    set +e
+    entrypoint_log "Hermes TUI prewarm starting"
+    hermes status >/dev/null 2>&1
+    if command -v timeout >/dev/null 2>&1 && command -v script >/dev/null 2>&1; then
+      timeout "${HERMES_TUI_PREWARM_TIMEOUT}" script -q -c "hermes chat" /dev/null >/dev/null 2>&1
+      prewarm_code=$?
+      if [[ "${prewarm_code}" -eq 0 || "${prewarm_code}" -eq 124 || "${prewarm_code}" -eq 130 || "${prewarm_code}" -eq 143 ]]; then
+        entrypoint_log "Hermes TUI prewarm completed code=${prewarm_code}"
+      else
+        entrypoint_log "Hermes TUI prewarm exited code=${prewarm_code}"
+      fi
+    else
+      entrypoint_log "Hermes TUI prewarm skipped; timeout/script unavailable"
+    fi
+  ) &
+}
 
 start_gateway_process() {
   hermes gateway run --replace &
@@ -274,6 +326,8 @@ HERMES_GATEWAY_SUPERVISOR_PID=$!
 
 hermes dashboard --host "${HERMES_DASHBOARD_HOST}" --port "${HERMES_DASHBOARD_PORT}" --no-open &
 HERMES_DASHBOARD_PID=$!
+
+prewarm_hermes_tui
 
 cleanup() {
   HERMES_GATEWAY_SHUTDOWN_REQUESTED=1

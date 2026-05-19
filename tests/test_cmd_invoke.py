@@ -866,12 +866,19 @@ def test_run_invoke_command_message_mode_keeps_http_chat_path(monkeypatch, tmp_p
 
 
 def test_invoke_hermes_terminal_tui_exits_cleanly_on_keyboard_interrupt(monkeypatch):
+    class _ImmediateAwaitable:
+        def __await__(self):
+            if False:
+                yield None
+            return 0
+
     def _fake_terminal_session(**_kwargs):
-        return object()
+        return _ImmediateAwaitable()
 
     def _raise_keyboard_interrupt(_awaitable):
         raise KeyboardInterrupt
 
+    monkeypatch.setattr("ksadk.cli.cmd_invoke._warmup_hermes_terminal", lambda **_kwargs: None)
     monkeypatch.setattr("ksadk.cli.cmd_invoke.run_hermes_terminal_session", _fake_terminal_session)
     monkeypatch.setattr("ksadk.cli.cmd_invoke.asyncio.run", _raise_keyboard_interrupt)
 

@@ -137,6 +137,9 @@ RUN pip install --no-cache-dir \
     "/tmp/hermes-src[web,feishu,pty,cron,mcp,cli]" \
     -i "${PYPI_INDEX_URL}" \
     --extra-index-url "${PYPI_EXTRA_INDEX_URL}" \
+    && find /tmp/hermes-src/plugins \
+      \( -name plugin.yaml -o -name plugin.yml \) \
+      -exec sh -c 'for src do dst="/usr/local/lib/python3.12/site-packages/plugins/${src#/tmp/hermes-src/plugins/}"; mkdir -p "$(dirname "$dst")"; cp "$src" "$dst"; done' sh {} + \
     && rm -rf /tmp/hermes-src
 
 COPY --from=hermes_web /src/hermes_cli/web_dist /usr/local/lib/python3.12/site-packages/hermes_cli/web_dist

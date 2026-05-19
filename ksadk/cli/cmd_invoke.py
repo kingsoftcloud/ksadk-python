@@ -946,6 +946,7 @@ def _invoke_hermes_terminal_tui(
 ):
     click.secho("🖥️  Hermes Native Remote TUI", fg="blue", bold=True)
     click.echo("   退出: Ctrl-D 或 Ctrl-C")
+    click.echo("   新 Pod 首次启动会加载 Hermes tools/skills，可能需要几十秒到 1 分钟；后续进入会更快。")
     try:
         _warmup_hermes_terminal(
             endpoint=endpoint,
@@ -994,7 +995,7 @@ def _warmup_hermes_terminal(
                     stdin=io.BytesIO(b""),
                     stdout=io.BytesIO(),
                 ),
-                timeout=8,
+                timeout=30,
             )
         )
     except Exception as exc:
