@@ -181,7 +181,7 @@ def test_dashboard_open_resolves_openclaw_state_from_cwd(tmp_path: Path, monkeyp
     assert "http://demo.example.com/s/gateway-1" in result.output
 
 
-def test_dashboard_open_defaults_hermes_to_root_generic_access_link(monkeypatch):
+def test_dashboard_open_defaults_hermes_to_chat_generic_access_link(monkeypatch):
     runner = CliRunner()
     captured = {}
 
@@ -214,7 +214,7 @@ def test_dashboard_open_defaults_hermes_to_root_generic_access_link(monkeypatch)
     result = runner.invoke(cmd_dashboard.dashboard, ["open", "ar-hermes-1"])
 
     assert result.exit_code == 0, result.output
-    assert captured["path"] == "/"
+    assert captured["path"] == "/chat"
 
 
 def test_dashboard_open_force_new_passes_through(monkeypatch):

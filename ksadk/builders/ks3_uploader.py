@@ -10,6 +10,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 import click
 
+from ks3.upload import UploadTask
+
 
 from ksadk.common.constants import get_ks3_endpoints
 
@@ -22,9 +24,9 @@ class KS3Uploader:
     ENDPOINT_PROBE_TIMEOUT_SECONDS = 1.5
     UPLOAD_CONNECT_PORT = 443
     UPLOAD_CONNECT_TIMEOUT_SECONDS = 60
-    UPLOAD_TIMEOUT_BASE_SECONDS = 120
-    UPLOAD_TIMEOUT_PER_MB_SECONDS = 1.2
-    UPLOAD_TIMEOUT_MAX_SECONDS = 900
+    UPLOAD_TIMEOUT_BASE_SECONDS = 300
+    UPLOAD_TIMEOUT_PER_MB_SECONDS = 4.0
+    UPLOAD_TIMEOUT_MAX_SECONDS = 3600
 
     def __init__(self, region: str = "cn-beijing-6", bucket: str = None):
         """初始化 KS3 上传器
@@ -154,10 +156,13 @@ class KS3Uploader:
             return candidates, "测速失败，按默认顺序尝试内外网端点"
 
         ordered = sorted(reachable, key=lambda item: timings[item["host"]] or float("inf"))
-        ordered.extend(unreachable)
         best = ordered[0]
         best_ms = round((timings[best["host"]] or 0.0) * 1000)
-        return ordered, f"测速优先 {best['label']} {best['host']} ({best_ms} ms)"
+        skipped = ""
+        if unreachable:
+            skipped_hosts = ", ".join(item["host"] for item in unreachable)
+            skipped = f"，跳过不可达端点 {skipped_hosts}"
+        return ordered, f"测速优先 {best['label']} {best['host']} ({best_ms} ms){skipped}"
 
     def _ensure_bucket(self, conn):
         bucket = conn.get_bucket(self.bucket_name)
@@ -196,6 +201,20 @@ class KS3Uploader:
 
         return bucket
 
+    @staticmethod
+    def _should_use_resumable_upload(file_path: Path) -> bool:
+        try:
+            return file_path.stat().st_size > 100 * 1024 * 1024
+        except OSError:
+            return False
+
+    @staticmethod
+    def _resumable_record_path(file_path: Path, object_key: str) -> Path:
+        safe_key = object_key.strip().replace("/", "_").replace("\\", "_")
+        record_dir = file_path.parent / ".agentengine" / "ks3_resume"
+        record_dir.mkdir(parents=True, exist_ok=True)
+        return record_dir / f"{safe_key}.ks3resume"
+
     def _upload_via_host(self, file_path: Path, object_key: str, host: str) -> bool:
         from ks3.connection import Connection
 
@@ -214,8 +233,25 @@ class KS3Uploader:
         bucket = self._ensure_bucket(conn)
 
         key = bucket.new_key(object_key)
-        result = key.set_contents_from_filename(str(file_path), policy="public-read")
-        return bool(result and result.status == 200)
+        if self._should_use_resumable_upload(file_path):
+            worker_count = max(2, min(8, (os.cpu_count() or 4)))
+            upload_task = UploadTask(
+                key,
+                bucket,
+                str(file_path),
+                executor=ThreadPoolExecutor(max_workers=worker_count),
+                resumable=True,
+                resumable_filename=str(self._resumable_record_path(file_path, object_key)),
+            )
+            result = upload_task.upload(headers={"x-kss-acl": "public-read"})
+        else:
+            result = key.set_contents_from_filename(str(file_path), policy="public-read")
+
+        status = getattr(result, "status", None)
+        if status is None:
+            response_metadata = getattr(result, "response_metadata", None)
+            status = getattr(response_metadata, "status", None)
+        return bool(status == 200)
 
     async def upload(self, file_path: Path, object_key: str) -> Optional[str]:
         """上传文件到 KS3

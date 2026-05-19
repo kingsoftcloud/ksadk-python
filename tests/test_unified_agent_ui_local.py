@@ -1035,6 +1035,7 @@ def test_cmd_web_launches_unified_local_server(monkeypatch, tmp_path):
     fake_runner = _UiRunner()
     project_dir = tmp_path / "demo-agent"
     project_dir.mkdir()
+    opened = {}
 
     class _Detector:
         def __init__(self, path: str):
@@ -1056,6 +1057,7 @@ def test_cmd_web_launches_unified_local_server(monkeypatch, tmp_path):
         lambda result, project_dir: fake_runner,
         raising=False,
     )
+    monkeypatch.setattr(cmd_web_module.webbrowser, "open", lambda url: opened.setdefault("url", url))
     monkeypatch.chdir(project_dir)
 
     result = runner.invoke(cmd_web_module.web, [str(project_dir), "--port", "8899"])
@@ -1063,6 +1065,44 @@ def test_cmd_web_launches_unified_local_server(monkeypatch, tmp_path):
     assert result.exit_code == 0, result.output
     assert fake_runner.run_server_calls == [8899]
     assert fake_runner.load_agent_calls == 0
+    assert opened["url"] == "http://localhost:8899"
+
+
+def test_cmd_web_can_skip_browser_open(monkeypatch, tmp_path):
+    runner = CliRunner()
+    fake_runner = _UiRunner()
+    project_dir = tmp_path / "demo-agent"
+    project_dir.mkdir()
+    opened = {}
+
+    class _Detector:
+        def __init__(self, path: str):
+            self.path = path
+
+        def detect(self):
+            return SimpleNamespace(
+                type=SimpleNamespace(value="langgraph"),
+                name="demo-agent",
+                entry_point="agent.py",
+            )
+
+    import ksadk.cli.cmd_web as cmd_web_module
+
+    monkeypatch.setattr(cmd_web_module, "FrameworkDetector", _Detector, raising=False)
+    monkeypatch.setattr(cmd_web_module, "setup_environment", lambda path: None, raising=False)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_web.create_runner",
+        lambda result, project_dir: fake_runner,
+        raising=False,
+    )
+    monkeypatch.setattr(cmd_web_module.webbrowser, "open", lambda url: opened.setdefault("url", url))
+    monkeypatch.chdir(project_dir)
+
+    result = runner.invoke(cmd_web_module.web, [str(project_dir), "--port", "8899", "--no-open"])
+
+    assert result.exit_code == 0, result.output
+    assert fake_runner.run_server_calls == [8899]
+    assert opened == {}
 
 
 def test_cmd_web_reexecs_with_project_venv_python(monkeypatch, tmp_path):

@@ -17,6 +17,7 @@ from typing import Optional, Dict, Any, Sequence, Callable, Iterator
 from urllib.parse import quote, urlparse
 
 import requests
+import urllib3
 
 from ksadk.common.auth import AWSV4Auth
 
@@ -117,6 +118,18 @@ class AgentEngineClient:
             
         self._session: Optional[requests.Session] = None
         self._http_error_log_suppressors: list[HttpErrorLogSuppressor] = []
+
+    @staticmethod
+    def _ssl_verify_enabled() -> bool:
+        insecure = (
+            os.getenv("AGENTENGINE_SSL_INSECURE")
+            or os.getenv("CURL_SSL_INSECURE")
+            or ""
+        ).strip().lower()
+        if insecure in {"1", "true", "yes", "on"}:
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            return False
+        return True
 
     @staticmethod
     def _is_global_dry_run_enabled() -> bool:
@@ -500,6 +513,7 @@ class AgentEngineClient:
             headers=headers,
             auth=self._auth.get_auth(),  # AWS V4 签名
             timeout=self.timeout,
+            verify=self._ssl_verify_enabled(),
         )
         
         logger.debug(f"Response: {response.status_code}")
@@ -783,6 +797,7 @@ class AgentEngineClient:
             headers=headers,
             auth=self._auth.get_auth(),
             timeout=self.timeout,
+            verify=self._ssl_verify_enabled(),
         )
         if response.status_code >= 400:
             resp_text = response.text or ""
@@ -841,6 +856,7 @@ class AgentEngineClient:
             files=files,
             stream=False,
             timeout=self.timeout,
+            verify=self._ssl_verify_enabled(),
         )
         setattr(response, "_ksadk_workspace_url", url)
         if response.status_code >= 400:

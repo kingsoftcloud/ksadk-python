@@ -238,6 +238,36 @@ def test_request_parses_kop_auth_error_payload(monkeypatch, caplog):
     assert not [record for record in caplog.records if record.levelno >= logging.WARNING]
 
 
+def test_request_honors_curl_ssl_insecure_for_control_plane(monkeypatch):
+    client = AgentEngineClient(
+        base_url="https://aicp.api.ksyun.com",
+        access_key="ak",
+        secret_key="sk",
+        region="cn-beijing-6",
+    )
+    captured = {}
+
+    class _FakeResponse:
+        status_code = 200
+        text = '{"Code":0,"Data":{"Ok":true}}'
+
+        def json(self):
+            return {"Code": 0, "Data": {"Ok": True}}
+
+    class _FakeSession:
+        def request(self, **kwargs):
+            captured.update(kwargs)
+            return _FakeResponse()
+
+    monkeypatch.setenv("CURL_SSL_INSECURE", "1")
+    monkeypatch.setattr(client, "_get_session", lambda: _FakeSession())
+
+    result = client._request("POST", "/agentengine/api/v1/GetAgent", {"AgentId": "ar-demo"})
+
+    assert result["Data"]["Ok"] is True
+    assert captured["verify"] is False
+
+
 def test_permission_probe_auth_failure_is_quiet(monkeypatch, caplog):
     client = _build_client()
     monkeypatch.setenv("KSYUN_ACCOUNT_ID", "2000003485")

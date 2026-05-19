@@ -556,6 +556,9 @@ def _render_dashboard_open_result(
             "agent_name": str(detail.get("name") or ""),
         },
     )
+    langfuse_url = str(detail.get("langfuse_url") or "").strip()
+    if langfuse_url:
+        print_kv("Langfuse", langfuse_url, value_style="#58a6ff")
     _emit_url("打开 Dashboard", open_url, no_open=no_open)
 
 
@@ -606,12 +609,7 @@ def _resolve_references(
     if explicit_ref:
         return ResolvedAgentRef(value=explicit_ref, source="cli"), None
 
-    state_ref = resolve_agent_ref(
-        None,
-        cwd=cwd,
-        include_state=True,
-        include_project_config=False,
-    )
+    hermes_state_ref = resolve_agent_ref(None, cwd=cwd, include_state=True, include_project_config=False)
     openclaw_state_ref = resolve_openclaw_ref(
         None,
         cwd=cwd,
@@ -623,11 +621,11 @@ def _resolve_references(
         include_state=False,
         include_project_config=True,
     )
-    if state_ref:
+    if hermes_state_ref:
         fallback = None
-        if config_ref and config_ref.value != state_ref.value:
+        if config_ref and config_ref.value != hermes_state_ref.value:
             fallback = config_ref
-        return state_ref, fallback
+        return hermes_state_ref, fallback
     if openclaw_state_ref:
         fallback = None
         if config_ref and config_ref.value != openclaw_state_ref.value:
@@ -780,11 +778,13 @@ def _flatten_agent_detail(agent: dict) -> dict:
     basic = agent.get("basic", {}) if isinstance(agent, dict) else {}
     quick = agent.get("quick_access", {}) if isinstance(agent, dict) else {}
     deploy = agent.get("deployment", {}) if isinstance(agent, dict) else {}
+    adv = agent.get("advanced", {}) if isinstance(agent, dict) else {}
     return {
         "agent_id": basic.get("agent_id") or agent.get("agent_id") or "",
         "name": basic.get("name") or agent.get("name") or "",
         "framework": deploy.get("framework") or basic.get("framework") or agent.get("framework") or "",
         "endpoint": quick.get("public_endpoint") or quick.get("private_endpoint") or agent.get("endpoint") or "",
+        "langfuse_url": adv.get("observability_url") or agent.get("langfuse_trace_url") or "",
     }
 
 

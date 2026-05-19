@@ -121,7 +121,7 @@ def test_code_builder_rebuilds_when_ksadk_source_changes(tmp_path: Path, monkeyp
     assert len(package_calls) == 2
 
 
-def test_code_builder_no_cache_reuses_dependencies_when_requirements_unchanged(
+def test_code_builder_no_cache_reinstalls_dependencies_when_requirements_unchanged(
     tmp_path: Path,
     monkeypatch,
 ):
@@ -154,7 +154,7 @@ def test_code_builder_no_cache_reuses_dependencies_when_requirements_unchanged(
     assert first.success is True
     assert second.success is True
     assert len(package_calls) == 2
-    assert len(install_calls) == 1
+    assert len(install_calls) == 2
 
 
 def test_code_builder_no_cache_reinstalls_dependencies_when_requirements_change(

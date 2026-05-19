@@ -301,6 +301,25 @@ async def _deploy_async(
 
     print_kv("框架", detection_result.name, value_style="#2da44e")
 
+    if detection_result.type.value == "hermes":
+        raise usage_error(
+            "Hermes 项目请使用 `agentengine hermes deploy`，不要使用通用 `agentengine deploy`。",
+            hints=[
+                "Hermes 部署会走专用模板和镜像构建流程。",
+                "可先执行 `agentengine hermes --help` 查看专用命令。",
+            ],
+            argv=["deploy"],
+        )
+    if detection_result.type.value == "openclaw":
+        raise usage_error(
+            "OpenClaw 项目请使用 `agentengine openclaw deploy`，不要使用通用 `agentengine deploy`。",
+            hints=[
+                "OpenClaw 部署会走专用网关与容器配置流程。",
+                "可先执行 `agentengine openclaw --help` 查看专用命令。",
+            ],
+            argv=["deploy"],
+        )
+
     # 2. 确定部署名称
     deploy_name = name or config.get("name") or agent_path.name.replace("-", "_").replace(".", "_")
     print_kv("部署名称", deploy_name)

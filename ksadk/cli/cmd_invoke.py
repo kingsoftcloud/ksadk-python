@@ -6,6 +6,7 @@ agentengine invoke - 与已部署的 Agent 进行交互
 
 import click
 import asyncio
+import io
 import json
 import os
 from datetime import datetime
@@ -946,6 +947,12 @@ def _invoke_hermes_terminal_tui(
     click.secho("🖥️  Hermes Native Remote TUI", fg="blue", bold=True)
     click.echo("   退出: Ctrl-D 或 Ctrl-C")
     try:
+        _warmup_hermes_terminal(
+            endpoint=endpoint,
+            api_key=api_key,
+            session_id=session_id,
+            insecure=insecure,
+        )
         exit_code = asyncio.run(
             run_hermes_terminal_session(
                 endpoint=endpoint,
@@ -965,6 +972,34 @@ def _invoke_hermes_terminal_tui(
         raise SystemExit(1)
     if exit_code:
         raise SystemExit(exit_code)
+
+
+def _warmup_hermes_terminal(
+    *,
+    endpoint: str,
+    api_key: str | None,
+    session_id: str | None,
+    insecure: bool,
+) -> None:
+    try:
+        asyncio.run(
+            asyncio.wait_for(
+                run_hermes_terminal_session(
+                    endpoint=endpoint,
+                    api_key=api_key,
+                    session_id=session_id,
+                    insecure=insecure,
+                    mode="exec",
+                    argv=["status"],
+                    stdin=io.BytesIO(b""),
+                    stdout=io.BytesIO(),
+                ),
+                timeout=8,
+            )
+        )
+    except Exception as exc:
+        if os.getenv("AGENTENGINE_HERMES_TUI_DEBUG"):
+            click.echo(f"   Hermes terminal warmup skipped: {exc}", err=True)
 
 
 def _invoke_openclaw_terminal_tui(

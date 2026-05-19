@@ -12,8 +12,9 @@ import mimetypes
 import os
 import time
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request, File, Form, Query, UploadFile
@@ -47,11 +48,35 @@ from ksadk.conversations.model_context import normalize_model_metadata
 
 logger = logging.getLogger(__name__)
 
+
+# Global Runner instance
+runner: BaseRunner = None
+_runner_loaded = False
+
+
+async def _shutdown_runner_resources():
+    active_runner = runner
+    if active_runner is None:
+        return
+    close = getattr(active_runner, "close", None)
+    if callable(close):
+        await close()
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    try:
+        yield
+    finally:
+        await _shutdown_runner_resources()
+
+
 # Create and configure the FastAPI application
 app = FastAPI(
     title="ADK Core API",
     description="Agent Development Kit HTTP API",
     version="1.0.0",
+    lifespan=_lifespan,
 )
 
 # Middleware for disabling cache on frontend entry points
@@ -73,10 +98,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Global Runner instance
-runner: BaseRunner = None
-_runner_loaded = False
 
 _TEXT_MIME_PREFIXES = ("text/",)
 _TEXT_MIME_TYPES = {
@@ -112,18 +133,6 @@ _MAX_INLINE_BASE64_CHARS = 4_000_000
 _MAX_INLINE_TEXT_CHARS = 20_000
 _MAX_REFERENCE_TEXT_BYTES = 3_000_000
 _UPLOAD_URI_SCHEME = "ksadk-upload://"
-
-
-async def _shutdown_runner_resources():
-    active_runner = runner
-    if active_runner is None:
-        return
-    close = getattr(active_runner, "close", None)
-    if callable(close):
-        await close()
-
-
-app.add_event_handler("shutdown", _shutdown_runner_resources)
 
 
 def _workspace_root_dir() -> Path:

@@ -11,7 +11,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 BOOTSTRAP_SCRIPT = REPO_ROOT / "deploy" / "openclaw" / "bootstrap.sh"
 OPENCLAW_DOCKERFILE = REPO_ROOT / "deploy" / "openclaw" / "Dockerfile"
 LATEST_OPENCLAW_BASE_IMAGE = (
-    "ghcr.io/openclaw/openclaw:2026.5.7-slim-amd64"
+    "ghcr.io/openclaw/openclaw:2026.5.18-slim@"
+    "sha256:5ea30d02a706c49795ed0a3c1526dec51ed90107a6859e93bf27a663105d1c28"
 )
 VALID_MEM0_UUID = "e52b7fac-e641-4b34-b9f7-6b0b9f190cd4"
 
@@ -148,11 +149,14 @@ def test_openclaw_dockerfile_tracks_latest_official_channel_plugins():
     assert "ARG OPENCLAW_MEM0_PLUGIN_ID=openclaw-mem0" in dockerfile
     assert "ARG OPENCLAW_MEM0_PLUGIN_URL=https://wangxu-test.ks3-cn-beijing.ksyuncs.com/ksc-openclaw-mem0-1.0.6.tgz" in dockerfile
     assert "ARG OPENCLAW_INSTALL_WPS_XIEZUO_PLUGIN=true" in dockerfile
+    assert "ARG OPENCLAW_WPS_XIEZUO_PLUGIN_SPEC=@wps365/openclaw-wpsxiezuo" in dockerfile
     assert "ARG OPENCLAW_WPS_XIEZUO_PLUGIN_ID=wps-xiezuo" in dockerfile
     assert "ARG OPENCLAW_INSTALL_DIAGNOSTICS_OTEL_PLUGIN=true" in dockerfile
     assert "ARG OPENCLAW_DIAGNOSTICS_OTEL_PLUGIN_SPEC=@openclaw/diagnostics-otel" in dockerfile
     assert "ARG OPENCLAW_DIAGNOSTICS_OTEL_PLUGIN_ID=diagnostics-otel" in dockerfile
-    assert "COPY deploy/openclaw/wps-xiezuo-assets/openclaw-wps-xiezuo-1.6.0.tgz" in dockerfile
+    assert "openclaw-wps-xiezuo-1.6.0.tgz" not in dockerfile
+    assert "deploy/openclaw/wps-xiezuo-assets" not in dockerfile
+    assert 'install_default_plugin "${OPENCLAW_WPS_XIEZUO_PLUGIN_SPEC}" "${OPENCLAW_WPS_XIEZUO_PLUGIN_ID}"' in dockerfile
 
 
 def test_openclaw_dockerfile_strips_workspace_dev_dependencies_before_plugin_install():
@@ -2329,7 +2333,7 @@ def test_bootstrap_configures_wps_xiezuo_channel_from_channel_bootstrap_json():
         assert channel["instantAck"]["text"] == "内容处理中，请稍候..."
         assert channel["mcp"]["enabled"] is True
         assert channel["mcp"]["mode"] == "app"
-        assert "wps_im_message_send" in channel["mcp"]["toolAllowlist"]
+        assert "toolAllowlist" not in channel["mcp"]
         assert "accounts" not in channel
         assert "defaultAccountId" not in channel
         assert {"type": "route", "agentId": "main", "match": {"channel": "wps-xiezuo"}} in cfg["bindings"]
@@ -2373,6 +2377,44 @@ def test_bootstrap_allows_wps_xiezuo_channel_without_complete_credentials():
         assert channel["allowFrom"] == ["*"]
         assert cfg["plugins"]["entries"]["wps-xiezuo"]["enabled"] is True
         assert "wps-xiezuo" in cfg["plugins"]["allow"]
+
+
+def test_bootstrap_preserves_explicit_wps_xiezuo_mcp_tool_allowlist():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        default_extensions_dir = Path(tmpdir) / "default-extensions" / "wps-xiezuo"
+        default_extensions_dir.mkdir(parents=True, exist_ok=True)
+        (default_extensions_dir / "manifest.json").write_text('{"name":"wps-xiezuo"}\n')
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_DEFAULT_EXTENSIONS_DIR"] = str(Path(tmpdir) / "default-extensions")
+        env["OPENCLAW_CHANNEL_BOOTSTRAP_JSON"] = json.dumps(
+            {
+                "wps-xiezuo": {
+                    "appId": "app-demo",
+                    "appSecret": "secret-demo",
+                    "mcp": {
+                        "enabled": True,
+                        "mode": "app",
+                        "toolAllowlist": ["wps_message_send"],
+                    },
+                }
+            }
+        )
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert cfg["channels"]["wps-xiezuo"]["mcp"]["toolAllowlist"] == ["wps_message_send"]
 
 
 def test_bootstrap_rewrites_stale_wps_xiezuo_accounts_to_flat_channel_config():
@@ -3176,6 +3218,74 @@ def test_bootstrap_patches_allow_loopback_runtime_for_forwarded_trusted_proxy_ch
         assert 'const trustedProxyAddressCheck = typeof isTrustedProxyAddress === "function" ? isTrustedProxyAddress : typeof isTrustedProxyAddress$1 === "function" ? isTrustedProxyAddress$1 : null;' in gateway_source
         assert 'const forwardedLoopbackTrusted = !!trustedProxyAddressCheck && forwardedLoopbackChain.some((addr) => !isLoopbackAddress(addr) && trustedProxyAddressCheck(addr, trustedProxies));' in gateway_source
         assert 'if (!forwardedLoopbackTrusted && (!internalLoopbackUser || !loopbackUser || loopbackUser.trim() !== internalLoopbackUser)) return { reason: "trusted_proxy_loopback_source" };' in gateway_source
+
+
+def test_bootstrap_patches_openclaw_2026_5_18_split_auth_and_message_handler_runtime():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        dist_dir = Path(tmpdir) / "dist"
+        control_ui_assets_dir = dist_dir / "control-ui" / "assets"
+        control_ui_assets_dir.mkdir(parents=True, exist_ok=True)
+        client_bundle = dist_dir / "reply-test.js"
+        auth_bundle = dist_dir / "auth-test.js"
+        message_handler_bundle = dist_dir / "message-handler-test.js"
+        gateway_call_bundle = dist_dir / "gateway-call-test.js"
+        control_ui_bundle = control_ui_assets_dir / "main-test.js"
+
+        client_bundle.write_text('const wsOptions = { maxPayload: 25 * 1024 * 1024 };')
+        auth_bundle.write_text(
+            'function authorizeTrustedProxy(params) {\n'
+            '\tconst { req, trustedProxies, trustedProxyConfig } = params;\n'
+            '\tif (!req) return { reason: "trusted_proxy_no_request" };\n'
+            '\tconst remoteAddr = req.socket?.remoteAddress;\n'
+            '\tif (!remoteAddr || !isTrustedProxyAddress(remoteAddr, trustedProxies)) return { reason: "trusted_proxy_untrusted_source" };\n'
+            '\tconst remoteIsLoopback = isLoopbackAddress(remoteAddr);\n'
+            '\tif (remoteIsLoopback && trustedProxyConfig.allowLoopback !== true) return { reason: "trusted_proxy_loopback_source" };\n'
+            '\treturn { user: headerValue(req.headers[trustedProxyConfig.userHeader.toLowerCase()]).trim() };\n'
+            '}\n'
+        )
+        message_handler_bundle.write_text(
+            'function shouldSkipLocalBackendSelfPairing(params) {\n'
+            '\tif (!(params.connectParams.client.id === GATEWAY_CLIENT_IDS.GATEWAY_CLIENT && params.connectParams.client.mode === GATEWAY_CLIENT_MODES.BACKEND)) return false;\n'
+            '\tif (!(params.locality === "direct_local" || params.locality === "shared_secret_loopback_local") || params.hasBrowserOriginHeader) return false;\n'
+            '\tif (params.authMethod === "none") return true;\n'
+            '\tconst usesSharedSecretAuth = params.authMethod === "token" || params.authMethod === "password";\n'
+            '\tconst usesDeviceTokenAuth = params.authMethod === "device-token";\n'
+            '\treturn params.sharedAuthOk && usesSharedSecretAuth || usesDeviceTokenAuth;\n'
+            '}\n'
+        )
+        gateway_call_bundle.write_text(
+            'function ensureExplicitGatewayAuth(params) {\n'
+            '\tif (!params.urlOverride) return;\n'
+            '\tconst explicitToken = params.explicitAuth?.token;\n'
+            '}\n'
+        )
+        control_ui_bundle.write_text('this.ws.addEventListener(`open`,()=>this.queueConnect())')
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_DIST_DIR"] = str(dist_dir)
+        env["OPENCLAW_WORKSPACE_FILES_ENABLED"] = "0"
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        auth_source = auth_bundle.read_text()
+        assert 'if (remoteIsLoopback && trustedProxyConfig.allowLoopback !== true) {' in auth_source
+        assert 'const forwardedLoopbackChain = String(headerValue(req.headers["x-forwarded-for"]) || "").split(",").map((value) => value.trim()).filter(Boolean);' in auth_source
+        assert 'const trustedProxyAddressCheck = typeof isTrustedProxyAddress === "function" ? isTrustedProxyAddress : typeof isTrustedProxyAddress$1 === "function" ? isTrustedProxyAddress$1 : null;' in auth_source
+        assert 'const forwardedLoopbackTrusted = !!trustedProxyAddressCheck && forwardedLoopbackChain.some((addr) => !isLoopbackAddress(addr) && trustedProxyAddressCheck(addr, trustedProxies));' in auth_source
+        assert 'if (!forwardedLoopbackTrusted && (!internalLoopbackUser || !loopbackUser || loopbackUser.trim() !== internalLoopbackUser)) return { reason: "trusted_proxy_loopback_source" };' in auth_source
+        message_handler_source = message_handler_bundle.read_text()
+        assert 'const usesLoopbackTrustedProxyAuth = params.authMethod === "trusted-proxy";' in message_handler_source
+        assert 'return usesLoopbackTrustedProxyAuth || params.sharedAuthOk && usesSharedSecretAuth || usesDeviceTokenAuth;' in message_handler_source
 
 
 def test_bootstrap_patches_workspace_proxy_stage_for_upstream_2026_4_26_shape():

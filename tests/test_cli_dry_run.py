@@ -135,6 +135,9 @@ class _FakeOpenClawDetailClient:
             "quick_access": {
                 "public_endpoint": "https://openclaw.example.com",
             },
+            "advanced": {
+                "observability_url": "https://trace.example.com/project/aropenclaw1/traces",
+            },
         }
 
     async def get_agent_logs(self, **kwargs):
@@ -1238,7 +1241,7 @@ def test_openclaw_channel_connect_wps_xiezuo_applies_flat_remote_config(monkeypa
     assert channel["instantAck"]["text"] == "内容处理中，请稍候..."
     assert channel["mcp"]["enabled"] is True
     assert channel["mcp"]["mode"] == "app"
-    assert "wps_im_message_send" in channel["mcp"]["toolAllowlist"]
+    assert "toolAllowlist" not in channel["mcp"]
     assert "accounts" not in channel
     assert "defaultAccountId" not in channel
     assert config["bindings"] == [
@@ -2187,6 +2190,17 @@ def test_openclaw_delete_passes_result_styles_to_descriptor(monkeypatch):
         "agentengine openclaw list",
         "agentengine openclaw deploy",
     )
+
+
+def test_openclaw_status_shows_langfuse_trace_url(monkeypatch):
+    runner = CliRunner()
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawDetailClient)
+
+    result = runner.invoke(openclaw, ["status", "ar-demo-1"])
+
+    assert result.exit_code == 0, result.output
+    assert "Langfuse" in result.output
+    assert "https://trace.example.com/project/aropenclaw1/traces" in result.output
 
 
 def test_mcp_destroy_supports_multiple_ids(monkeypatch):

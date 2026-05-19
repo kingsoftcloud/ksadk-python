@@ -163,7 +163,7 @@ def _state_candidates(state_data: dict, resource: str) -> list[tuple[str, str]]:
     state_type = _normalize(state_data.get("type"))
 
     if resource == "agent":
-        if state_type in {"mcp", "openclaw"}:
+        if state_type == "mcp":
             return []
         return _pick_fields(state_data, ("agent_id", "name"))
 

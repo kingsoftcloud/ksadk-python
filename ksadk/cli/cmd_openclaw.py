@@ -80,7 +80,7 @@ console = get_console()
 # 默认 OpenClaw 镜像 (KCR 个人版)
 DEFAULT_OPENCLAW_NAMESPACE = "agentengine-public"
 DEFAULT_OPENCLAW_REPO = "openclaw"
-DEFAULT_OPENCLAW_VERSION = "2026.5.7"
+DEFAULT_OPENCLAW_VERSION = "2026.5.18"
 DEFAULT_OPENCLAW_REGISTRY = "hub.kce.ksyun.com"
 DEFAULT_OPENCLAW_NAME = "openclaw-gateway"
 DEFAULT_TRUSTED_PROXY_USER_HEADER = "x-forwarded-user"
@@ -103,18 +103,6 @@ WPS_XIEZUO_PLUGIN_ID = "wps-xiezuo"
 WPS_XIEZUO_CHANNEL_KEY = "wps-xiezuo"
 WPS_XIEZUO_DEFAULT_ACCOUNT_ID = "default"
 WEIXIN_REMOTE_LOGIN_ARGV = ["openclaw", "channels", "login", "--channel", WEIXIN_PLUGIN_ID]
-WPS_XIEZUO_MCP_TOOL_ALLOWLIST = [
-    "wps_im_message_send",
-    "wps_user_search",
-    "wps_user_get",
-    "wps_user_me",
-    "wps_im_chat_list",
-    "wps_im_chat_create",
-    "wps_im_message_recall",
-    "wps_calendar_event_create",
-    "wps_calendar_event_list",
-    "wps_calendar_free_busy_list",
-]
 OPENCLAW_CHANNEL_SPECS = {
     "weixin": {
         "plugin_id": WEIXIN_PLUGIN_ID,
@@ -1163,6 +1151,7 @@ def _flatten_agent_detail(agent: dict) -> dict:
         "created_at": basic.get("created_at") or agent.get("created_at") or "",
         "updated_at": basic.get("updated_at") or agent.get("updated_at") or "",
         "api_key": quick.get("api_key") or agent.get("api_key"),
+        "langfuse_url": (agent.get("advanced") or {}).get("observability_url") or agent.get("langfuse_trace_url") or "",
     }
 
 
@@ -1993,7 +1982,6 @@ def _mutate_wps_xiezuo_connect_config(
         "mcp": {
             "enabled": True,
             "mode": "app",
-            "toolAllowlist": WPS_XIEZUO_MCP_TOOL_ALLOWLIST,
         },
     }
     for key, value in desired_channel.items():
@@ -3645,6 +3633,7 @@ def status(agent_ref: Optional[str], region: Optional[str], dry_run: bool, outpu
                     ("框架", str(detail.get("framework") or "-"), None),
                     ("区域", str(detail.get("region") or region), None),
                     ("Endpoint", str(detail.get("endpoint") or "N/A"), "#58a6ff"),
+                    ("Langfuse", str(detail.get("langfuse_url") or "-"), "#58a6ff" if detail.get("langfuse_url") else None),
                     ("镜像", str(detail.get("artifact_path") or "-"), None),
                     ("创建时间", created_at_display, None),
                     ("更新时间", updated_at_display, None),
@@ -3656,6 +3645,7 @@ def status(agent_ref: Optional[str], region: Optional[str], dry_run: bool, outpu
                     "framework": str(detail.get("framework") or "-"),
                     "region": str(detail.get("region") or region),
                     "endpoint": str(detail.get("endpoint") or "N/A"),
+                    "langfuse_url": str(detail.get("langfuse_url") or ""),
                     "image": str(detail.get("artifact_path") or "-"),
                     "created_at": str(detail.get("created_at") or "-"),
                     "updated_at": str(detail.get("updated_at") or "-"),
