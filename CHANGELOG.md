@@ -5,6 +5,31 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [0.5.7] - 2026-05-19
+
+### 亮点
+
+- **OpenClaw 默认运行时升级**：默认 OpenClaw 镜像升级到 `ghcr.io/openclaw/openclaw:2026.5.18-slim@sha256:5ea30d02a706c49795ed0a3c1526dec51ed90107a6859e93bf27a663105d1c28`，并适配新版 gateway dist 补丁能力扫描。
+- **Hermes 默认运行时升级**：默认 Hermes 上游 ref 与镜像版本升级到 `v2026.5.16` / `2026.5.16`，补齐 OTel / Langfuse 相关运行时依赖与环境变量透传。
+- **CLI 入口体验统一**：Hermes / OpenClaw 的状态、打开页面、TUI 入口和浏览器打开行为更一致，减少本地状态文件类型差异带来的误判。
+
+### 变更
+
+- OpenClaw 默认镜像构建改用新版 slim digest；WPS 协作插件改为通过 npm 包 `@wps365/openclaw-wpsxiezuo` 安装，不再携带本地 `openclaw-wps-xiezuo-1.6.0.tgz`。
+- OpenClaw 插件预置支持默认全量安装，也可继续通过 `OPENCLAW_PRESET_PLUGINS_ALLOWLIST` 收窄预置插件集合。
+- OpenClaw bootstrap 新增 2026.5.18 gateway bundle 结构对应的 `backend-self-pairing` 与 `trusted-proxy-loopback` dist patch 变体。
+- Hermes runtime 启动时会在检测到 Langfuse 地址与密钥后尝试开启 trace，未提供配置时保持无凭证启动。
+- `agentengine status` 可识别 `.agentengine.state` 中的 OpenClaw 类型并走对应状态查询；Hermes TUI 入口前增加状态预热，降低首次进入远端 TUI 卡住的概率。
+- Hermes / OpenClaw status 统一展示 Langfuse trace 地址；`agentengine dashboard open` 默认进入 `/chat`，管理 UI 仍可通过显式 `--path` 打开。
+- `agentengine web` 默认自动打开浏览器，新增并保留 `--no-open` 用于只打印 URL。
+- 构建链路抽出框架依赖窗口，统一 code builder、container builder 与 deploy manager 对 ADK / LangChain / LangGraph / DeepAgents 的默认依赖补齐逻辑。
+
+### 修复
+
+- 修复新版 OpenClaw 上游 bundle 结构变化导致必需 dist 补丁能力未命中、镜像构建失败的问题。
+- 修复 OpenClaw 工作目录下 `agentengine status` 不能自动从 `.agentengine.state` 解析 OpenClaw Agent 的问题。
+- 修复 dashboard / web / status 等 CLI 入口在 Hermes 与 OpenClaw 场景下默认页面、浏览器打开策略和下一步提示不一致的问题。
+
 ## [0.5.6] - 2026-05-18
 
 ### 亮点
