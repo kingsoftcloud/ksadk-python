@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from ksadk.builders.code_builder import CodeBuilder
 from ksadk.builders.container_builder import ContainerBuilder
 from ksadk.builders.mcp_builder import MCPCodeBuilder
+from ksadk.deployment.manager import K8sDeployer
 from ksadk.detection import DetectionResult, FrameworkType
 
 
@@ -128,6 +129,30 @@ def test_code_builder_bundles_attachment_runtime_requirements_without_optional_b
     assert "docx2python==3.5.0" not in deps
 
 
+def test_code_builder_uses_validated_langgraph_ecosystem_dependency_window(tmp_path):
+    builder = CodeBuilder(tmp_path)
+
+    deps = builder._build_requirements_list(_detection_result("deepagents"))
+
+    assert "fastapi>=0.100.0,<1.0.0" in deps
+    assert "langchain>=1.3.0,<2.0.0" in deps
+    assert "langchain-core>=1.4.0,<2.0.0" in deps
+    assert "langchain-openai>=1.2.0,<2.0.0" in deps
+    assert "langgraph>=1.2.0,<1.3.0" in deps
+    assert "deepagents>=0.6.2,<1.0.0" in deps
+    assert "langgraph>=0.1.0" not in deps
+
+
+def test_code_builder_uses_validated_adk_dependency_window(tmp_path):
+    builder = CodeBuilder(tmp_path)
+
+    deps = builder._build_requirements_list(_detection_result("adk"))
+
+    assert "fastapi>=0.100.0,<1.0.0" in deps
+    assert "google-adk>=1.34.0,<2.0.0" in deps
+    assert "google-adk>=1.0.0" not in deps
+
+
 def test_container_builder_bundles_attachment_runtime_requirements_without_optional_backends(tmp_path):
     builder = ContainerBuilder(tmp_path)
 
@@ -138,7 +163,35 @@ def test_container_builder_bundles_attachment_runtime_requirements_without_optio
 
     assert "pypdf>=6.0.0" in deps
     assert "beautifulsoup4>=4.12.0" in deps
-    assert "rapidocr-onnxruntime>=1.2.0" in deps
+
+
+def test_container_builder_uses_same_framework_dependency_windows(tmp_path):
+    builder = ContainerBuilder(tmp_path)
+
+    deps = builder._generate_requirements(
+        _detection_result("deepagents"),
+        tmp_path,
+    ).splitlines()
+
+    assert "fastapi>=0.100.0,<1.0.0" in deps
+    assert "langchain>=1.3.0,<2.0.0" in deps
+    assert "langchain-core>=1.4.0,<2.0.0" in deps
+    assert "langchain-openai>=1.2.0,<2.0.0" in deps
+    assert "langgraph>=1.2.0,<1.3.0" in deps
+    assert "deepagents>=0.6.2,<1.0.0" in deps
+
+
+def test_k8s_deployer_uses_same_framework_dependency_windows():
+    deployer = K8sDeployer()
+
+    deps = deployer._generate_requirements(_detection_result("deepagents")).splitlines()
+
+    assert "fastapi>=0.100.0,<1.0.0" in deps
+    assert "langchain>=1.3.0,<2.0.0" in deps
+    assert "langchain-core>=1.4.0,<2.0.0" in deps
+    assert "langchain-openai>=1.2.0,<2.0.0" in deps
+    assert "langgraph>=1.2.0,<1.3.0" in deps
+    assert "deepagents>=0.6.2,<1.0.0" in deps
     assert "boto3==1.40.61" not in deps
     assert "SQLAlchemy==2.0.44" not in deps
     assert "psycopg[binary]==3.3.0" not in deps

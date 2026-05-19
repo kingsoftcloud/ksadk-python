@@ -1,6 +1,7 @@
 """ksadk web - 启动统一本地 Web UI。"""
 
 import click
+import webbrowser
 from pathlib import Path
 import os
 from ksadk.cli.error_utils import ensure_json_output_supported, print_exception
@@ -21,7 +22,8 @@ from ksadk.runners.factory import create_runner
 @click.argument("agent_dir", default=".", type=click.Path(exists=True))
 @click.option("--port", "-p", default=8080, help="Web UI 端口")
 @click.option("--model", help="指定模型名称 (覆盖 .env 配置)")
-def web(agent_dir: str, port: int, model: str):
+@click.option("--no-open", is_flag=True, help="仅打印 URL，不自动打开浏览器")
+def web(agent_dir: str, port: int, model: str, no_open: bool):
     """启动本地统一 Web UI（Invoke UI）
 
     \b
@@ -94,6 +96,9 @@ def web(agent_dir: str, port: int, model: str):
     print_kv("Web UI", f"http://localhost:{port}", value_style="#58a6ff")
     print_kv("Agent", result.name)
     print_info("按 Ctrl+C 停止")
+
+    if not no_open:
+        webbrowser.open(f"http://localhost:{port}")
 
     try:
         runner.run_server(port=port)

@@ -17,7 +17,7 @@
 # - 如果你希望做复杂的平台增强配置，请使用平台版 OpenClaw runtime 镜像。
 # -----------------------------------------------------------------------------
 
-ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.4.26@sha256:04e27383656941e59fba80a5a9c28b709f240ea980bd2cb375e4a7786d5a7a20
+ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.5.18-slim@sha256:5ea30d02a706c49795ed0a3c1526dec51ed90107a6859e93bf27a663105d1c28
 FROM ${OPENCLAW_BASE_IMAGE}
 
 USER root

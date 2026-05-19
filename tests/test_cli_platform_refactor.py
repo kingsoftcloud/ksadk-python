@@ -68,6 +68,35 @@ class _FakeMCPClient:
         return None
 
 
+class _FakeAgentStatusClient:
+    def __init__(self, *args, **kwargs):
+        self.kwargs = kwargs
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def get_agent(self, agent_id=None, name=None):
+        return {
+            "basic": {
+                "agent_id": agent_id or "ar-openclaw-local",
+                "name": name or "openclaw-local",
+                "status": "RUNNING",
+                "framework": "openclaw",
+                "replicas": 1,
+                "ready_replicas": 1,
+            },
+            "quick_access": {
+                "public_endpoint": "https://openclaw.example.com",
+            },
+            "advanced": {
+                "observability_url": "https://trace.example.com/project/aropenclawlocal/traces",
+            },
+        }
+
+
 def test_mcp_status_falls_back_to_local_state(monkeypatch, tmp_path: Path):
     runner = CliRunner()
     monkeypatch.chdir(tmp_path)
@@ -83,6 +112,24 @@ def test_mcp_status_falls_back_to_local_state(monkeypatch, tmp_path: Path):
     assert result.exit_code == 0, result.output
     assert "mcp-local" in result.output
     assert "MCP 状态" in result.output
+
+
+def test_agent_status_falls_back_to_openclaw_local_state(monkeypatch, tmp_path: Path):
+    runner = CliRunner()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeAgentStatusClient)
+    state_path = tmp_path / ".agentengine.state"
+    state_path.write_text(
+        yaml.safe_dump({"type": "openclaw", "agent_id": "ar-openclaw-local", "region": "pre-online"}),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(agent, ["status", "--account-id", "2000003485"])
+
+    assert result.exit_code == 0, result.output
+    assert "ar-openclaw-local" in result.output
+    assert "Langfuse" in result.output
+    assert "https://trace.example.com/project/aropenclawlocal/traces" in result.output
 
 
 def test_mcp_list_supports_pagination(monkeypatch):

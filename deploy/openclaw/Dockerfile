@@ -1,6 +1,6 @@
 ## syntax=docker/dockerfile:1.7
 # https://github.com/openclaw/openclaw/pkgs/container/openclaw
-ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.5.7-slim-amd64
+ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.5.18-slim@sha256:5ea30d02a706c49795ed0a3c1526dec51ed90107a6859e93bf27a663105d1c28
 FROM ${OPENCLAW_BASE_IMAGE}
 
 # ── 可通过 --build-arg 覆盖的参数 ──────────────────────────────
@@ -19,6 +19,7 @@ ARG OPENCLAW_MEM0_PLUGIN_URL=https://wangxu-test.ks3-cn-beijing.ksyuncs.com/ksc-
 ARG OPENCLAW_MEM0_PLUGIN_SHA256=
 ARG OPENCLAW_INSTALL_WPS_XIEZUO_PLUGIN=true
 ARG OPENCLAW_WPS_XIEZUO_PLUGIN_ID=wps-xiezuo
+ARG OPENCLAW_WPS_XIEZUO_PLUGIN_SPEC=@wps365/openclaw-wpsxiezuo
 ARG OPENCLAW_INSTALL_DIAGNOSTICS_OTEL_PLUGIN=true
 ARG OPENCLAW_DIAGNOSTICS_OTEL_PLUGIN_SPEC=@openclaw/diagnostics-otel
 ARG OPENCLAW_DIAGNOSTICS_OTEL_PLUGIN_ID=diagnostics-otel
@@ -84,7 +85,6 @@ COPY deploy/openclaw/workspace_files_app.py /opt/openclaw/workspace_files_app.py
 COPY deploy/openclaw/openclaw_runtime_proxy_app.py /opt/openclaw/openclaw_runtime_proxy_app.py
 COPY --chmod=755 deploy/openclaw/safe-bin/openclaw-safe-exec /opt/openclaw/safe-bin/openclaw-safe-exec
 COPY deploy/openclaw/workspace-template /opt/openclaw/workspace-template
-COPY deploy/openclaw/wps-xiezuo-assets/openclaw-wps-xiezuo-1.6.0.tgz /opt/openclaw/wps-xiezuo-assets/openclaw-wps-xiezuo-1.6.0.tgz
 RUN set -eux; \
   mkdir -p /opt/openclaw/safe-bin; \
   for cmd in pwd ls whoami id uname date ps df du stat find cat head tail wc git mcporter sh-safe bash-safe web-safe; do \
@@ -210,7 +210,7 @@ RUN --mount=type=cache,target=/root/.npm \
     install_default_plugin_archive "${OPENCLAW_MEM0_PLUGIN_URL}" "${OPENCLAW_MEM0_PLUGIN_SHA256}" "${OPENCLAW_MEM0_PLUGIN_ID}"; \
   fi; \
   if [ "${OPENCLAW_INSTALL_WPS_XIEZUO_PLUGIN}" = "true" ] && preset_plugin_allowed "${OPENCLAW_WPS_XIEZUO_PLUGIN_ID}" wps wps-xiezuo; then \
-    install_default_plugin_archive_file "/opt/openclaw/wps-xiezuo-assets/openclaw-wps-xiezuo-1.6.0.tgz" "${OPENCLAW_WPS_XIEZUO_PLUGIN_ID}"; \
+    install_default_plugin "${OPENCLAW_WPS_XIEZUO_PLUGIN_SPEC}" "${OPENCLAW_WPS_XIEZUO_PLUGIN_ID}"; \
   fi; \
   if [ "${OPENCLAW_INSTALL_DIAGNOSTICS_OTEL_PLUGIN}" = "true" ] && preset_plugin_allowed "${OPENCLAW_DIAGNOSTICS_OTEL_PLUGIN_ID}" diagnostics otel diagnostics-otel; then \
     install_default_plugin "${OPENCLAW_DIAGNOSTICS_OTEL_PLUGIN_SPEC}" "${OPENCLAW_DIAGNOSTICS_OTEL_PLUGIN_ID}"; \

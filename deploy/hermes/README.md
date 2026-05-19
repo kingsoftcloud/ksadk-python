@@ -96,7 +96,7 @@ agentengine hermes deploy
 
 ```bash
 make hermes-build
-make hermes-push HERMES_TAG=2026.5.7
+make hermes-push HERMES_TAG=2026.5.16
 make hermes-size
 ```
 

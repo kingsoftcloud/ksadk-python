@@ -1180,6 +1180,23 @@ const replacements = [
 }`,
   },
   {
+    capability: 'gateway trusted-proxy loopback internal auth compatibility',
+    variant: '2026.5.18-remote-is-loopback-internal-user',
+    marker: 'const internalLoopbackUserHeader = String(process.env.OPENCLAW_INTERNAL_TRUSTED_PROXY_USER_HEADER || process.env.OPENCLAW_TRUSTED_PROXY_USER_HEADER || "x-forwarded-user").trim().toLowerCase();',
+    // OpenClaw 2026.5.18 moved trusted-proxy auth into auth-*.js and stores
+    // the loopback check in remoteIsLoopback before the allowLoopback guard.
+    needle: 'if (remoteIsLoopback && trustedProxyConfig.allowLoopback !== true) return { reason: "trusted_proxy_loopback_source" };',
+    replacement: `if (remoteIsLoopback && trustedProxyConfig.allowLoopback !== true) {
+\tconst internalLoopbackUserHeader = String(process.env.OPENCLAW_INTERNAL_TRUSTED_PROXY_USER_HEADER || process.env.OPENCLAW_TRUSTED_PROXY_USER_HEADER || "x-forwarded-user").trim().toLowerCase();
+\tconst internalLoopbackUser = String(process.env.OPENCLAW_INTERNAL_TRUSTED_PROXY_USER || "openclaw-backend").trim();
+\tconst loopbackUser = headerValue(req.headers[internalLoopbackUserHeader || "x-forwarded-user"]);
+\tconst forwardedLoopbackChain = String(headerValue(req.headers["x-forwarded-for"]) || "").split(",").map((value) => value.trim()).filter(Boolean);
+\tconst trustedProxyAddressCheck = typeof isTrustedProxyAddress === "function" ? isTrustedProxyAddress : typeof isTrustedProxyAddress$1 === "function" ? isTrustedProxyAddress$1 : null;
+\tconst forwardedLoopbackTrusted = !!trustedProxyAddressCheck && forwardedLoopbackChain.some((addr) => !isLoopbackAddress(addr) && trustedProxyAddressCheck(addr, trustedProxies));
+\tif (!forwardedLoopbackTrusted && (!internalLoopbackUser || !loopbackUser || loopbackUser.trim() !== internalLoopbackUser)) return { reason: "trusted_proxy_loopback_source" };
+}`,
+  },
+  {
     capability: 'gateway client loopback trusted-proxy identity',
     variant: '2026.4.27-ws-options-direct-agent',
     marker: 'const internalTrustedProxyUser = String(process.env.OPENCLAW_INTERNAL_TRUSTED_PROXY_USER || "openclaw-backend").trim();',
@@ -1264,6 +1281,30 @@ const replacements = [
 	const usesDeviceTokenAuth = params.authMethod === "device-token";
 	const usesLoopbackTrustedProxyAuth = params.authMethod === "trusted-proxy";
 	return (params.locality === "direct_local" || params.locality === "shared_secret_loopback_local") && !params.hasBrowserOriginHeader && (usesLoopbackTrustedProxyAuth || params.sharedAuthOk && usesSharedSecretAuth || usesDeviceTokenAuth);
+}`,
+  },
+  {
+    // openclaw 2026.5.18: pairing locality 前置校验独立成早退，并新增 authMethod=none。
+    // 保持原安全边界，只允许非浏览器来源的本地 backend client 在 trusted-proxy 下跳过 pairing。
+    capability: 'gateway backend self-pairing trusted-proxy bypass',
+    variant: '2026.5.18-local-backend-self-pairing-auth-none',
+    marker: 'const usesLoopbackTrustedProxyAuth = params.authMethod === "trusted-proxy";',
+    needle: `function shouldSkipLocalBackendSelfPairing(params) {
+	if (!(params.connectParams.client.id === GATEWAY_CLIENT_IDS.GATEWAY_CLIENT && params.connectParams.client.mode === GATEWAY_CLIENT_MODES.BACKEND)) return false;
+	if (!(params.locality === "direct_local" || params.locality === "shared_secret_loopback_local") || params.hasBrowserOriginHeader) return false;
+	if (params.authMethod === "none") return true;
+	const usesSharedSecretAuth = params.authMethod === "token" || params.authMethod === "password";
+	const usesDeviceTokenAuth = params.authMethod === "device-token";
+	return params.sharedAuthOk && usesSharedSecretAuth || usesDeviceTokenAuth;
+}`,
+    replacement: `function shouldSkipLocalBackendSelfPairing(params) {
+	if (!(params.connectParams.client.id === GATEWAY_CLIENT_IDS.GATEWAY_CLIENT && params.connectParams.client.mode === GATEWAY_CLIENT_MODES.BACKEND)) return false;
+	if (!(params.locality === "direct_local" || params.locality === "shared_secret_loopback_local") || params.hasBrowserOriginHeader) return false;
+	if (params.authMethod === "none") return true;
+	const usesSharedSecretAuth = params.authMethod === "token" || params.authMethod === "password";
+	const usesDeviceTokenAuth = params.authMethod === "device-token";
+	const usesLoopbackTrustedProxyAuth = params.authMethod === "trusted-proxy";
+	return usesLoopbackTrustedProxyAuth || params.sharedAuthOk && usesSharedSecretAuth || usesDeviceTokenAuth;
 }`,
   },
   {
@@ -2059,18 +2100,6 @@ const pluginAllowedByPresetAllowlist = (pluginId, aliases = []) => {
   const candidates = uniqueStrings([pluginId, ...aliases]).map((item) => item.toLowerCase());
   return candidates.some((candidate) => resolvedPresetPluginsAllowlist.includes(candidate));
 };
-const WPS_XIEZUO_MCP_TOOL_ALLOWLIST = [
-  'wps_im_message_send',
-  'wps_user_search',
-  'wps_user_get',
-  'wps_user_me',
-  'wps_im_chat_list',
-  'wps_im_chat_create',
-  'wps_im_message_recall',
-  'wps_calendar_event_create',
-  'wps_calendar_event_list',
-  'wps_calendar_free_busy_list',
-];
 const normalizeFeishuBootstrapPayload = (payload) => {
   const normalized = cloneJsonValue(payload);
   const appId = firstNonBlank(normalized.appId);
@@ -2130,7 +2159,6 @@ const normalizeWpsXiezuoBootstrapPayload = (payload) => {
       : {
         enabled: true,
         mode: 'app',
-        toolAllowlist: WPS_XIEZUO_MCP_TOOL_ALLOWLIST,
       },
   };
   if (dmPolicy === 'disabled') {

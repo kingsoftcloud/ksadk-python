@@ -8,6 +8,10 @@ from pathlib import Path
 import shutil
 import os
 
+from ksadk.builders.framework_requirements import (
+    FASTAPI_REQUIREMENT,
+    minimal_requirements_for_framework,
+)
 from ksadk.builders.requirements_utils import merge_requirement_lists
 
 
@@ -152,26 +156,14 @@ CMD ["python", "entrypoint.py"]
     
     def _generate_requirements(self, detection_result: Any) -> str:
         base_deps = [
-            "fastapi>=0.100.0",
+            FASTAPI_REQUIREMENT,
             "uvicorn>=0.23.0",
             "python-dotenv>=1.0.0",
             "pydantic>=2.0.0",
         ]
         
         framework = detection_result.type.value
-        if framework == "adk":
-            base_deps += ["google-adk>=1.0.0", "litellm>=1.0.0"]
-        elif framework == "langchain":
-            base_deps += ["langchain>=0.1.0", "langchain-openai>=0.1.0"]
-        elif framework == "langgraph":
-            base_deps += ["langgraph>=0.1.0", "langchain-openai>=0.1.0"]
-        elif framework == "deepagents":
-            base_deps += [
-                "langchain>=0.1.0",
-                "langchain-openai>=0.1.0",
-                "langgraph>=0.1.0",
-                "deepagents>=0.3.0",
-            ]
+        base_deps += minimal_requirements_for_framework(framework)
         
         return "\n".join(merge_requirement_lists(base_deps))
     

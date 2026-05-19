@@ -26,6 +26,10 @@ from urllib.request import Request, urlopen
 import click
 
 from ksadk.builders.base import BaseBuilder, BuildResult
+from ksadk.builders.framework_requirements import (
+    FASTAPI_REQUIREMENT,
+    requirements_for_framework,
+)
 from ksadk.builders.requirements_utils import (
     exclude_requirement_names,
     merge_requirement_lists,
@@ -199,7 +203,10 @@ class CodeBuilder(BaseBuilder):
         
         # Step 2: 安装依赖
         click.echo("\n📦 Step 2/3: 安装依赖...")
-        reuse_dependencies, reuse_reason = self._can_reuse_dependency_cache(requirements_path)
+        reuse_dependencies, reuse_reason = self._can_reuse_dependency_cache(
+            requirements_path,
+            no_cache=no_cache,
+        )
         if reuse_dependencies:
             stats = self._current_dependency_stats()
             click.secho(
@@ -352,7 +359,15 @@ class CodeBuilder(BaseBuilder):
             "size_mb": round(size_bytes / (1024 * 1024), 2),
         }
 
-    def _can_reuse_dependency_cache(self, requirements_path: Path) -> tuple[bool, str]:
+    def _can_reuse_dependency_cache(
+        self,
+        requirements_path: Path,
+        *,
+        no_cache: bool = False,
+    ) -> tuple[bool, str]:
+        if no_cache:
+            return False, "--no-cache 已开启，重新安装 Linux 依赖"
+
         if not self.deps_dir.exists():
             return False, "未发现现成 Linux 依赖缓存，重新安装"
 
@@ -531,7 +546,7 @@ class CodeBuilder(BaseBuilder):
         """获取基础依赖列表"""
         deps = [
             # Core
-            "fastapi>=0.100.0",
+            FASTAPI_REQUIREMENT,
             "uvicorn>=0.23.0",
             "python-dotenv>=1.0.0",
             "pydantic>=2.0.0",
@@ -546,23 +561,7 @@ class CodeBuilder(BaseBuilder):
         ]
         
         framework = detection_result.type.value
-        if framework == "adk":
-            deps += ["google-adk>=0.1.0", "litellm>=1.0.0"]
-        elif framework in ("langchain", "langgraph", "deepagents"):
-            # LangChain 生态统一依赖 (langchain 和 langgraph 经常混用)
-            deps += [
-                # LangChain 核心
-                "langchain>=0.1.0",
-                "langchain-openai>=0.1.0",
-                "langchain-core>=0.1.0",
-                # LangGraph (即使检测到 langchain，很多用户也会用 langgraph 构建工作流)
-                "langgraph>=0.1.0",
-                # MCP (Model Context Protocol) 支持
-                "mcp>=1.1.0",
-                "langchain-mcp-adapters>=0.0.1",
-            ]
-            if framework == "deepagents":
-                deps += ["deepagents>=0.3.0"]
+        deps += requirements_for_framework(framework)
         
         return deps
     
@@ -631,6 +630,17 @@ class CodeBuilder(BaseBuilder):
             self._install_progress_width = 0
         self._install_progress_last_line = line
 
+    def _adjust_install_progress_percent(self, percent: int, stage: str) -> int:
+        count = self._install_progress_event_counts.get(stage, 0)
+        if count <= 0:
+            return percent
+
+        if stage == "下载依赖":
+            base = 45 if percent >= 45 else percent
+            return min(57, max(percent, base + min(12, count // 5)))
+
+        return percent
+
     def _finish_install_progress(self) -> None:
         if self._install_progress_width and sys.stdout.isatty():
             click.echo()
@@ -696,7 +706,7 @@ class CodeBuilder(BaseBuilder):
                 payload = normalized
             target = self._extract_pip_artifact_name(payload)
             summary = f"已处理 {count} 个 wheel，最近: {target}"
-            if force_emit or count in self.INSTALL_PROGRESS_EVENT_MILESTONES or count % 25 == 0:
+            if force_emit or count in self.INSTALL_PROGRESS_EVENT_MILESTONES or count % 5 == 0:
                 return summary
             return None
 
@@ -1507,7 +1517,8 @@ if __name__ == "__main__":
                         percent, stage = progress
                         summary = self._summarize_pip_progress_line(percent, stage, raw_line)
                         if summary:
-                            self._emit_install_progress(percent, stage, summary)
+                            adjusted_percent = self._adjust_install_progress_percent(percent, stage)
+                            self._emit_install_progress(adjusted_percent, stage, summary)
             except ValueError:
                 return
 

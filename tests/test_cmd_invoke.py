@@ -886,6 +886,30 @@ def test_invoke_hermes_terminal_tui_exits_cleanly_on_keyboard_interrupt(monkeypa
     assert exc_info.value.code == 130
 
 
+def test_invoke_hermes_terminal_tui_warms_up_with_status_before_tui(monkeypatch):
+    calls = []
+
+    async def _fake_terminal_session(**kwargs):
+        calls.append(kwargs)
+        return 0
+
+    monkeypatch.setattr("ksadk.cli.cmd_invoke.run_hermes_terminal_session", _fake_terminal_session)
+
+    _invoke_hermes_terminal_tui(
+        endpoint="https://hermes.example.com",
+        api_key="ak-hermes",
+        session_id="sess-1",
+        insecure=False,
+    )
+
+    assert [call["mode"] for call in calls] == ["exec", "tui"]
+    assert calls[0]["argv"] == ["status"]
+    assert calls[0]["endpoint"] == "https://hermes.example.com"
+    assert calls[0]["api_key"] == "ak-hermes"
+    assert calls[0]["session_id"] == "sess-1"
+    assert calls[1]["argv"] == []
+
+
 def test_invoke_openclaw_terminal_tui_uses_common_terminal_client(monkeypatch):
     captured = {}
 

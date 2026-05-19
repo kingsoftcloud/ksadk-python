@@ -242,6 +242,58 @@ def test_deploy_cli_network_options_override_config(tmp_path: Path, monkeypatch)
     assert provider.last_target.network.availability_zone == "cn-beijing-6b"
 
 
+def test_deploy_rejects_hermes_and_openclaw_frameworks(tmp_path: Path, monkeypatch):
+    runner = CliRunner()
+
+    monkeypatch.setattr(
+        "ksadk.detection.FrameworkDetector",
+        lambda *_args, **_kwargs: type(
+            "D",
+            (),
+            {"detect": lambda self: type("R", (), {"type": type("T", (), {"value": "hermes"})(), "name": "hermes"})()},
+        )(),
+    )
+    monkeypatch.setattr("ksadk.cli.cmd_deploy._load_config", lambda *_args, **_kwargs: {"name": "demo-hermes"})
+
+    result = runner.invoke(
+        cmd_deploy.deploy,
+        [
+            str(tmp_path),
+            "--target",
+            "serverless",
+            "--ks3-path",
+            "ks3://bucket/agents/demo-hermes/code.zip",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Hermes 项目请使用" in str(result.exception)
+
+    monkeypatch.setattr(
+        "ksadk.detection.FrameworkDetector",
+        lambda *_args, **_kwargs: type(
+            "D",
+            (),
+            {"detect": lambda self: type("R", (), {"type": type("T", (), {"value": "openclaw"})(), "name": "openclaw"})()},
+        )(),
+    )
+    monkeypatch.setattr("ksadk.cli.cmd_deploy._load_config", lambda *_args, **_kwargs: {"name": "demo-openclaw"})
+
+    result = runner.invoke(
+        cmd_deploy.deploy,
+        [
+            str(tmp_path),
+            "--target",
+            "serverless",
+            "--ks3-path",
+            "ks3://bucket/agents/demo-openclaw/code.zip",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "OpenClaw 项目请使用" in str(result.exception)
+
+
 def test_deploy_rejects_incomplete_vpc_network_config(tmp_path: Path, monkeypatch):
     provider = _FakeProvider()
 

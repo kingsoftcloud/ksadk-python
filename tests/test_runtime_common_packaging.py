@@ -29,6 +29,25 @@ def test_pyproject_declares_asyncpg_for_postgres_session_backend():
     assert "asyncpg>=0.30.0,<1.0.0" in pyproject
 
 
+def test_pyproject_declares_greenlet_for_adk_database_session_backend():
+    pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert "greenlet>=1.0.0" in pyproject
+
+
+def test_pyproject_declares_validated_framework_dependency_windows():
+    pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert "fastapi>=0.100.0,<1.0.0" in pyproject
+    assert "google-adk>=1.34.0,<2.0.0" in pyproject
+    assert "langchain>=1.3.0,<2.0.0" in pyproject
+    assert "langchain-core>=1.4.0,<2.0.0" in pyproject
+    assert "langchain-openai>=1.2.0,<2.0.0" in pyproject
+    assert "langgraph>=1.2.0,<1.3.0" in pyproject
+    assert "deepagents>=0.6.2,<1.0.0" in pyproject
+    assert "fastapi>=0.100.0,<0.124.0" not in pyproject
+
+
 def test_repo_root_dockerignore_excludes_local_build_artifacts():
     dockerignore = (REPO_ROOT / ".dockerignore").read_text(encoding="utf-8")
 

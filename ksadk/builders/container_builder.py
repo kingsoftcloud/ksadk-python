@@ -15,6 +15,10 @@ import click
 
 from ksadk.builders.base import BaseBuilder, BuildResult
 from ksadk.builders.code_builder import CodeBuilder
+from ksadk.builders.framework_requirements import (
+    FASTAPI_REQUIREMENT,
+    requirements_for_framework,
+)
 from ksadk.builders.requirements_utils import (
     exclude_requirement_names,
     merge_requirement_lists,
@@ -253,7 +257,7 @@ CMD ["python", "entrypoint.py"]
         """生成 requirements.txt"""
         base_deps = [
             # Core
-            "fastapi>=0.100.0",
+            FASTAPI_REQUIREMENT,
             "uvicorn>=0.23.0",
             "python-dotenv>=1.0.0",
             "pydantic>=2.0.0",
@@ -268,19 +272,7 @@ CMD ["python", "entrypoint.py"]
         ]
         
         framework = detection_result.type.value
-        if framework == "adk":
-            base_deps += ["google-adk>=0.1.0", "litellm>=1.0.0"]
-        elif framework in ("langchain", "langgraph", "deepagents"):
-            base_deps += [
-                "langchain>=0.1.0",
-                "langchain-openai>=0.1.0",
-                "langchain-core>=0.1.0",
-                "langgraph>=0.1.0",
-                "mcp>=1.1.0",
-                "langchain-mcp-adapters>=0.0.1",
-            ]
-            if framework == "deepagents":
-                base_deps += ["deepagents>=0.3.0"]
+        base_deps += requirements_for_framework(framework)
 
         base_deps = merge_requirement_lists(
             base_deps,

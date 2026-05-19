@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ksadk"
-version = "0.5.6"
+version = "0.5.7"
 description = "Kingsoft Cloud Agent Development Kit - 支持 LangChain/LangGraph/DeepAgents/ADK/OpenClaw/Hermes 的本地运行与云端部署"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -38,8 +38,7 @@ dependencies = [
     # TUI 交互界面 (Textual 包含 Rich，无需单独安装)
     "textual>=0.50.0",
     # API 服务 (run/web 命令)
-    # fastapi 限制上限以兼容 google-adk (需要 <0.124.0)
-    "fastapi>=0.100.0,<0.124.0",
+    "fastapi>=0.100.0,<1.0.0",
     "uvicorn>=0.23.0",
     "python-multipart>=0.0.9,<1.0.0",
     "python-socks>=2.7.1,<3.0.0",
@@ -55,6 +54,8 @@ dependencies = [
     "qrcode>=7.4.0",
     # 生产多副本共享会话后端
     "asyncpg>=0.30.0,<1.0.0",
+    # ADK / SQLAlchemy async session backend 依赖
+    "greenlet>=1.0.0",
     # KS3 上传 (build --push)
     "ks3sdk>=1.15.0",
     # ========= 附件处理（默认安装，hosted/local 统一能力） =========
@@ -63,11 +64,11 @@ dependencies = [
     "rapidocr-onnxruntime>=1.2.0",
     # ========= 核心框架依赖 (默认安装) =========
     # LangChain
-    "langchain>=0.3.0,<2.0.0",
-    "langchain-openai>=0.2.0,<2.0.0",
-    "langchain-core>=0.3.0,<2.0.0",
+    "langchain>=1.3.0,<2.0.0",
+    "langchain-openai>=1.2.0,<2.0.0",
+    "langchain-core>=1.4.0,<2.0.0",
     # LangGraph - 使用兼容的版本范围
-    "langgraph>=0.2.0,<2.0.0",
+    "langgraph>=1.2.0,<1.3.0",
     # ========= 可观测性 (默认安装) =========
     "opentelemetry-api==1.37.0",
     "opentelemetry-sdk==1.37.0",
@@ -77,29 +78,29 @@ dependencies = [
 [project.optional-dependencies]
 # Google ADK 支持
 adk = [
-    "google-adk>=1.0.0",
+    "google-adk>=1.34.0,<2.0.0",
     "litellm>=1.0.0",
     "json_repair>=0.25.0",  # 用于修复大模型输出的非法 JSON
 ]
 # LangChain 支持
 langchain = [
-    "langchain>=0.3.0",
-    "langchain-openai>=0.2.0",
-    "langchain-core>=0.3.0",
+    "langchain>=1.3.0,<2.0.0",
+    "langchain-openai>=1.2.0,<2.0.0",
+    "langchain-core>=1.4.0,<2.0.0",
 ]
 # LangGraph 支持
 langgraph = [
-    "langgraph>=0.2.0",
-    "langchain>=0.3.0",
-    "langchain-openai>=0.2.0",
+    "langgraph>=1.2.0,<1.3.0",
+    "langchain>=1.3.0,<2.0.0",
+    "langchain-openai>=1.2.0,<2.0.0",
     "protobuf>=6.32.1",
 ]
 # DeepAgents 支持（基于 LangGraph）
 deepagents = [
-    "deepagents>=0.3.0; python_version >= '3.11'",
-    "langgraph>=0.2.0",
-    "langchain>=0.3.0",
-    "langchain-openai>=0.2.0",
+    "deepagents>=0.6.2,<1.0.0; python_version >= '3.11'",
+    "langgraph>=1.2.0,<1.3.0",
+    "langchain>=1.3.0,<2.0.0",
+    "langchain-openai>=1.2.0,<2.0.0",
 ]
 # A2A 协议集成
 a2a = [

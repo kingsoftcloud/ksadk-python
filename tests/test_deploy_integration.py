@@ -709,6 +709,56 @@ class TestDeployLogic:
         assert packaged_again.metadata["ks3_path"] == result.metadata["ks3_path"]
 
     @pytest.mark.asyncio
+    async def test_deploy_converts_ks3_path_to_internal_url_for_serverless_runtime_pull(
+        self,
+        temp_project_dir,
+        monkeypatch,
+    ):
+        provider = ServerlessProvider()
+        package_info = PackageInfo(
+            name="test-agent",
+            framework="langgraph",
+            build_dir=str(temp_project_dir / ".agentengine" / "build"),
+            project_dir=str(temp_project_dir),
+            metadata={"ks3_path": "ks3://test-bucket/agents/test-agent/code.zip"},
+        )
+        target = DeployTarget(
+            provider="serverless",
+            region="cn-beijing-6",
+            extra={"artifact_type": "Code"},
+        )
+        captured = {}
+
+        mock_client = AsyncMock()
+
+        async def _fake_create_agent(data):
+            captured.update(data)
+            return {
+                "agent_id": "ar-test",
+                "name": "test-agent",
+                "endpoint": "https://test.kspmas.ksyun.com",
+                "api_key": "ak-test-key",
+            }
+
+        mock_client.create_agent = AsyncMock(side_effect=_fake_create_agent)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock()
+        monkeypatch.setenv("KS3_ENDPOINT_MODE", "public")
+
+        with patch.dict(os.environ, {"AGENTENGINE_SERVER_URL": "http://localhost:8080"}), \
+             patch("ksadk.deployment.providers.serverless.AgentEngineClient", return_value=mock_client), \
+             patch("ksadk.common.auth.AWSV4Auth") as MockAuth:
+
+            MockAuth.return_value.access_key_id = "test-ak"
+            MockAuth.return_value.secret_access_key = "test-sk"
+
+            await provider.deploy(package_info, target)
+
+        assert captured["artifact_path"] == (
+            "http://test-bucket.ks3-cn-beijing-internal.ksyuncs.com/agents/test-agent/code.zip"
+        )
+
+    @pytest.mark.asyncio
     async def test_container_build_uses_cached_image_without_rebuild(
         self,
         temp_project_dir,

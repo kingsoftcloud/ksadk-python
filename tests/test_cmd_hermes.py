@@ -30,6 +30,20 @@ def _isolate_hermes_model_env(monkeypatch):
         "HERMES_FALLBACK_BASE_URL",
         "API_SERVER_KEY",
         "HERMES_API_SERVER_KEY",
+        "LANGFUSE_PUBLIC_KEY",
+        "LANGFUSE_SECRET_KEY",
+        "LANGFUSE_BASE_URL",
+        "LANGFUSE_HOST",
+        "LANGFUSE_ENV",
+        "LANGFUSE_RELEASE",
+        "HERMES_LANGFUSE_PUBLIC_KEY",
+        "HERMES_LANGFUSE_SECRET_KEY",
+        "HERMES_LANGFUSE_BASE_URL",
+        "HERMES_LANGFUSE_ENV",
+        "HERMES_LANGFUSE_RELEASE",
+        "HERMES_LANGFUSE_SAMPLE_RATE",
+        "HERMES_LANGFUSE_MAX_CHARS",
+        "HERMES_LANGFUSE_DEBUG",
     ):
         monkeypatch.delenv(key, raising=False)
     cmd_hermes._HERMES_GLOBAL_ENV_CACHE = None
@@ -102,6 +116,9 @@ class _FakeHermesClient:
             "quick_access": {
                 "public_endpoint": "https://hermes.example.com",
                 "api_key": "ak-hermes" if include_api_key else None,
+            },
+            "advanced": {
+                "observability_url": "https://trace.example.com/project/arhermes1/traces",
             },
         }
 
@@ -261,14 +278,15 @@ class _FakeHermesBootstrapImageClient(_FakeHermesClient):
         }
 
 
-def test_hermes_build_defaults_track_v2026_4_30_release():
+def test_hermes_build_defaults_track_v2026_5_16_release():
     dockerfile = HERMES_DOCKERFILE.read_text(encoding="utf-8")
     makefile = MAKEFILE.read_text(encoding="utf-8")
 
-    assert 'ARG HERMES_AGENT_REF=v2026.5.7' in dockerfile
-    assert 'HERMES_TAG ?= 2026.5.7' in makefile
-    assert 'HERMES_AGENT_REF ?= v2026.5.7' in makefile
-    assert cmd_hermes.DEFAULT_HERMES_IMAGE.endswith(':2026.5.7')
+    assert 'ARG HERMES_AGENT_REF=v2026.5.16' in dockerfile
+    assert 'HERMES_TAG ?= 2026.5.16' in makefile
+    assert 'HERMES_AGENT_REF ?= v2026.5.16' in makefile
+    assert cmd_hermes.DEFAULT_HERMES_IMAGE.endswith(':2026.5.16')
+    assert '"langfuse>=3.9.0,<4"' in dockerfile
 
 
 def test_hermes_deploy_refreshes_quick_access_when_agent_id_is_immediate(monkeypatch, tmp_path: Path):
@@ -840,7 +858,7 @@ def test_hermes_deploy_rewrites_public_kspmas_url_for_runtime(tmp_path: Path, mo
     assert result.exit_code == 0, result.output
     assert (
         _FakeHermesClient.create_payload["artifact_path"]
-        == "hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.5.7"
+        == "hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.5.16"
     )
     assert any(
         item["Key"] == "OPENAI_BASE_URL" and item["Value"] == "http://kspmas-internal.sdns.ksyun.com/v1"
@@ -899,6 +917,35 @@ def test_hermes_deploy_uses_provider_context_length_for_configured_model(tmp_pat
         item["Key"] == "HERMES_CONTEXT_LENGTH" and item["Value"] == "1000000"
         for item in _FakeHermesClient.create_payload["env_vars"]
     )
+
+
+def test_hermes_deploy_forwards_langfuse_env_when_configured(tmp_path: Path, monkeypatch):
+    runner = CliRunner()
+    _FakeHermesClient.create_payload = None
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://kspmas.ksyun.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-5.1")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-test")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-test")
+    monkeypatch.setenv("LANGFUSE_BASE_URL", "https://langfuse.pre.example.com")
+    monkeypatch.setenv("LANGFUSE_ENV", "pre")
+    monkeypatch.setenv("HERMES_LANGFUSE_SAMPLE_RATE", "0.5")
+    monkeypatch.setattr(cmd_hermes, "AgentEngineClient", _FakeHermesClient)
+
+    result = runner.invoke(cmd_hermes.hermes, ["deploy", "--name", "demo-hermes"])
+
+    assert result.exit_code == 0, result.output
+    env_vars = {
+        item["Key"]: item for item in _FakeHermesClient.create_payload["env_vars"]
+    }
+    assert env_vars["HERMES_LANGFUSE_PUBLIC_KEY"]["Value"] == "pk-lf-test"
+    assert env_vars["HERMES_LANGFUSE_PUBLIC_KEY"]["IsSensitive"] is True
+    assert env_vars["HERMES_LANGFUSE_SECRET_KEY"]["Value"] == "sk-lf-test"
+    assert env_vars["HERMES_LANGFUSE_SECRET_KEY"]["IsSensitive"] is True
+    assert env_vars["HERMES_LANGFUSE_BASE_URL"]["Value"] == "https://langfuse.pre.example.com"
+    assert env_vars["HERMES_LANGFUSE_ENV"]["Value"] == "pre"
+    assert env_vars["HERMES_LANGFUSE_SAMPLE_RATE"]["Value"] == "0.5"
 
 
 def test_hermes_deploy_defaults_ui_locale_to_zh(tmp_path: Path, monkeypatch):
@@ -1054,6 +1101,17 @@ def test_hermes_status_passes_status_style_to_descriptor(monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert captured["fields"][1] == ("状态", "RUNNING", status_rich_style("RUNNING"))
+
+
+def test_hermes_status_shows_langfuse_trace_url(monkeypatch):
+    runner = CliRunner()
+    monkeypatch.setattr(cmd_hermes, "AgentEngineClient", _FakeHermesClient)
+
+    result = runner.invoke(cmd_hermes.hermes, ["status", "ar-hermes-1"])
+
+    assert result.exit_code == 0, result.output
+    assert "Langfuse" in result.output
+    assert "https://trace.example.com/project/arhermes1/traces" in result.output
 
 
 def test_hermes_delete_uses_delete_specific_next_steps(monkeypatch):

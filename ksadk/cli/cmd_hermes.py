@@ -55,7 +55,7 @@ from ksadk.hermes_terminal import (
 )
 
 
-DEFAULT_HERMES_IMAGE = "hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.5.7"
+DEFAULT_HERMES_IMAGE = "hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.5.16"
 DEFAULT_HERMES_CONTEXT_LENGTHS = (
     ("glm-5.1", "200000"),
 )
@@ -284,6 +284,24 @@ def _build_hermes_env_vars(
     api_server_key = _env_value("API_SERVER_KEY", "HERMES_API_SERVER_KEY")
     if api_server_key:
         raw["API_SERVER_KEY"] = api_server_key
+    langfuse_public_key = _env_value("HERMES_LANGFUSE_PUBLIC_KEY", "LANGFUSE_PUBLIC_KEY")
+    langfuse_secret_key = _env_value("HERMES_LANGFUSE_SECRET_KEY", "LANGFUSE_SECRET_KEY")
+    if langfuse_public_key and langfuse_secret_key:
+        raw["HERMES_LANGFUSE_PUBLIC_KEY"] = langfuse_public_key
+        raw["HERMES_LANGFUSE_SECRET_KEY"] = langfuse_secret_key
+        langfuse_base_url = _env_value("HERMES_LANGFUSE_BASE_URL", "LANGFUSE_BASE_URL", "LANGFUSE_HOST")
+        if langfuse_base_url:
+            raw["HERMES_LANGFUSE_BASE_URL"] = langfuse_base_url
+        for target_key, source_keys in {
+            "HERMES_LANGFUSE_ENV": ("HERMES_LANGFUSE_ENV", "LANGFUSE_ENV"),
+            "HERMES_LANGFUSE_RELEASE": ("HERMES_LANGFUSE_RELEASE", "LANGFUSE_RELEASE"),
+            "HERMES_LANGFUSE_SAMPLE_RATE": ("HERMES_LANGFUSE_SAMPLE_RATE",),
+            "HERMES_LANGFUSE_MAX_CHARS": ("HERMES_LANGFUSE_MAX_CHARS",),
+            "HERMES_LANGFUSE_DEBUG": ("HERMES_LANGFUSE_DEBUG",),
+        }.items():
+            value = _env_value(*source_keys)
+            if value:
+                raw[target_key] = value
     return [
         {"Key": key, "Value": str(value), "IsSensitive": any(token in key for token in ("KEY", "TOKEN", "SECRET"))}
         for key, value in raw.items()
@@ -331,6 +349,7 @@ def _flatten_agent_detail(agent: dict[str, Any]) -> dict[str, Any]:
         "endpoint": quick.get("public_endpoint") or quick.get("private_endpoint") or agent.get("endpoint"),
         "api_key": quick.get("api_key") or agent.get("api_key"),
         "artifact_path": deployment.get("artifact_path") or agent.get("artifact_path"),
+        "langfuse_url": (agent.get("advanced") or {}).get("observability_url") or agent.get("langfuse_trace_url") or "",
     }
 
 
@@ -740,24 +759,26 @@ def status(agent_ref: Optional[str], region: str, dry_run: bool, output_mode: st
         render_descriptor_status(
             HERMES_RESOURCE,
             subtitle=str(detail.get("name") or resolved),
-            fields=[
-                ("ID", str(detail.get("agent_id") or "-"), "#58a6ff"),
-                ("状态", status_value, status_rich_style(status_value)),
-                ("框架", str(detail.get("framework") or "-"), None),
-                ("区域", str(detail.get("region") or region), None),
-                ("Endpoint", str(detail.get("endpoint") or "-"), "#58a6ff"),
-                ("镜像", str(detail.get("artifact_path") or "-"), None),
-            ],
-            item={
-                "id": str(detail.get("agent_id") or "-"),
-                "name": str(detail.get("name") or resolved),
+        fields=[
+            ("ID", str(detail.get("agent_id") or "-"), "#58a6ff"),
+            ("状态", status_value, status_rich_style(status_value)),
+            ("框架", str(detail.get("framework") or "-"), None),
+            ("区域", str(detail.get("region") or region), None),
+            ("Endpoint", str(detail.get("endpoint") or "-"), "#58a6ff"),
+            ("Langfuse", str(detail.get("langfuse_url") or "-"), "#58a6ff" if detail.get("langfuse_url") else None),
+            ("镜像", str(detail.get("artifact_path") or "-"), None),
+        ],
+        item={
+            "id": str(detail.get("agent_id") or "-"),
+            "name": str(detail.get("name") or resolved),
                 "status": status_value,
                 "framework": str(detail.get("framework") or "-"),
-                "region": str(detail.get("region") or region),
-                "endpoint": str(detail.get("endpoint") or "-"),
-                "image": str(detail.get("artifact_path") or "-"),
-            },
-        )
+            "region": str(detail.get("region") or region),
+            "endpoint": str(detail.get("endpoint") or "-"),
+            "langfuse_url": str(detail.get("langfuse_url") or ""),
+            "image": str(detail.get("artifact_path") or "-"),
+        },
+    )
 
     run_async_with_dry_run(_status(), dry_run=dry_run, dry_run_resource="hermes", dry_run_action="status")
 

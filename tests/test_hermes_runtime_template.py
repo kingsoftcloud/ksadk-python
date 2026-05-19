@@ -535,6 +535,26 @@ def test_entrypoint_writes_explicit_context_length_override():
     assert "HERMES_UI_LOCALE" in entrypoint
 
 
+def test_entrypoint_auto_enables_langfuse_plugin_when_credentials_exist():
+    entrypoint = (
+        Path(__file__).resolve().parents[1]
+        / "deploy"
+        / "hermes"
+        / "entrypoint.sh"
+    ).read_text(encoding="utf-8")
+
+    assert 'export HERMES_LANGFUSE_PUBLIC_KEY="${HERMES_LANGFUSE_PUBLIC_KEY:-${LANGFUSE_PUBLIC_KEY:-}}"' in entrypoint
+    assert 'export HERMES_LANGFUSE_SECRET_KEY="${HERMES_LANGFUSE_SECRET_KEY:-${LANGFUSE_SECRET_KEY:-}}"' in entrypoint
+    assert 'export HERMES_LANGFUSE_BASE_URL="${HERMES_LANGFUSE_BASE_URL:-${LANGFUSE_BASE_URL:-${LANGFUSE_HOST:-}}}"' in entrypoint
+    assert "HERMES_LANGFUSE_PUBLIC_KEY=${HERMES_LANGFUSE_PUBLIC_KEY}" in entrypoint
+    assert "HERMES_LANGFUSE_SECRET_KEY=${HERMES_LANGFUSE_SECRET_KEY}" in entrypoint
+    assert 'HERMES_LANGFUSE_AUTO_ENABLE="${HERMES_LANGFUSE_AUTO_ENABLE:-true}"' in entrypoint
+    assert 'if [[ -n "${HERMES_LANGFUSE_PUBLIC_KEY}" && -n "${HERMES_LANGFUSE_SECRET_KEY}" ]]; then' in entrypoint
+    assert "plugins:" in entrypoint
+    assert "observability/langfuse" in entrypoint
+    assert '0|false|no|off)' in entrypoint
+
+
 def test_entrypoint_runs_uvicorn_with_explicit_app_dir():
     entrypoint = (
         Path(__file__).resolve().parents[1]

@@ -37,7 +37,7 @@ _DEFAULT_PATH_BY_PROFILE = {
     UI_PROFILE_ADK: "/chat",
     UI_PROFILE_LANGCHAIN: "/chat",
     UI_PROFILE_OPENCLAW: "/chat",
-    UI_PROFILE_HERMES: "/",
+    UI_PROFILE_HERMES: "/chat",
     UI_PROFILE_CUSTOM: "/",
 }
 
@@ -130,7 +130,7 @@ def resolve_ui_config(
 
     # 兼容历史配置: 旧版本 runtime UI 默认路径曾经是 / 或 /langchain，
     # 现统一收口到 /chat，避免 dashboard/share 默认落到 runtime 根路径。
-    if profile in {UI_PROFILE_ADK, UI_PROFILE_LANGCHAIN, UI_PROFILE_OPENCLAW}:
+    if profile in {UI_PROFILE_ADK, UI_PROFILE_LANGCHAIN, UI_PROFILE_OPENCLAW, UI_PROFILE_HERMES}:
         normalized_legacy_path = (path or "").rstrip("/") or "/"
         legacy_paths = {"/langchain"}
         if cli_path is None:
