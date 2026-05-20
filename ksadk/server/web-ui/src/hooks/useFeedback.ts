@@ -26,13 +26,21 @@ type UseFeedbackContext = {
 };
 
 export function useFeedback(ctx: UseFeedbackContext) {
+  const {
+    agentId,
+    currentSessionId,
+    isStreaming,
+    api,
+    submitDraft,
+  } = ctx;
+
   const submitResponseFeedback = useCallback(
     async (options: {
       message: Message;
       rating: 'up' | 'down';
       comment?: string;
     }) => {
-      if (!ctx.currentSessionId) {
+      if (!currentSessionId) {
         return;
       }
 
@@ -48,10 +56,10 @@ export function useFeedback(ctx: UseFeedbackContext) {
       });
 
       try {
-        const data = await ctx.api.upsertResponseFeedback(
+        const data = await api.upsertResponseFeedback(
           buildUpsertFeedbackPayload({
-            agentId: ctx.agentId,
-            sessionId: ctx.currentSessionId!,
+            agentId,
+            sessionId: currentSessionId,
             message: options.message,
             rating: options.rating,
             comment: options.comment || '',
@@ -76,12 +84,12 @@ export function useFeedback(ctx: UseFeedbackContext) {
         );
       }
     },
-    [ctx.agentId, ctx.currentSessionId, ctx.api],
+    [agentId, currentSessionId, api],
   );
 
   const deleteResponseFeedback = useCallback(
     async (message: Message) => {
-      if (!ctx.currentSessionId) {
+      if (!currentSessionId) {
         return;
       }
 
@@ -89,10 +97,10 @@ export function useFeedback(ctx: UseFeedbackContext) {
       useMessageStore.getState().patchMessages((prev) => clearFeedback(prev, { messageId: message.id }));
 
       try {
-        await ctx.api.deleteResponseFeedback(
+        await api.deleteResponseFeedback(
           buildGetFeedbackPayload({
-            agentId: ctx.agentId,
-            sessionId: ctx.currentSessionId!,
+            agentId,
+            sessionId: currentSessionId,
             message,
           }),
         );
@@ -106,7 +114,7 @@ export function useFeedback(ctx: UseFeedbackContext) {
         );
       }
     },
-    [ctx.agentId, ctx.currentSessionId, ctx.api],
+    [agentId, currentSessionId, api],
   );
 
   const respondToApproval = useCallback(
@@ -115,7 +123,7 @@ export function useFeedback(ctx: UseFeedbackContext) {
       approve: boolean;
       previousResponseId?: string;
     }) => {
-      if (!options.approvalRequestId || ctx.isStreaming) return;
+      if (!options.approvalRequestId || isStreaming) return;
       useMessageStore.getState().patchMessages((prev) =>
         prev.map((message) => ({
           ...message,
@@ -143,7 +151,7 @@ export function useFeedback(ctx: UseFeedbackContext) {
           timestamp: Date.now(),
         },
       ]);
-      void ctx.submitDraft(
+      void submitDraft(
         '',
         [],
         [
@@ -156,7 +164,7 @@ export function useFeedback(ctx: UseFeedbackContext) {
         options.previousResponseId,
       );
     },
-    [ctx.isStreaming, ctx.submitDraft],
+    [isStreaming, submitDraft],
   );
 
   return { submitResponseFeedback, deleteResponseFeedback, respondToApproval };

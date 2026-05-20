@@ -203,43 +203,46 @@ export function WorkspacePanel({
     : 'Workspace';
   const currentDirectoryLabel = formatWorkspaceDirectoryPathLabel(currentPath);
 
-  const clearPreviewObjectUrl = () => {
+  const clearPreviewObjectUrl = useCallback(() => {
     if (previewObjectUrlRef.current) {
       URL.revokeObjectURL(previewObjectUrlRef.current);
       previewObjectUrlRef.current = null;
     }
-  };
+  }, []);
 
   useEffect(() => {
     return () => clearPreviewObjectUrl();
-  }, []);
+  }, [clearPreviewObjectUrl]);
 
-  const loadEntries = async (targetPath: string) => {
-    setLoading(true);
-    setError('');
-    try {
-      const data = await api.listWorkspaceFiles(agentId, targetPath, false);
-      const workspaceData = data as { Path?: string; Entries?: WorkspaceEntry[] };
-      const nextPath = normalizeWorkspacePath(String(workspaceData?.Path || targetPath || '.'));
-      const nextEntries = Array.isArray(workspaceData?.Entries) ? (workspaceData.Entries as WorkspaceEntry[]) : [];
-      setCurrentPath(nextPath);
-      setEntries(nextEntries);
-      setSelectedPath((previousSelectedPath) => {
-        if (previousSelectedPath) {
-          const stillExists = nextEntries.find((entry) => entry.Path === previousSelectedPath);
-          if (stillExists && stillExists.Type === 'file') {
-            return previousSelectedPath;
+  const loadEntries = useCallback(
+    async (targetPath: string) => {
+      setLoading(true);
+      setError('');
+      try {
+        const data = await api.listWorkspaceFiles(agentId, targetPath, false);
+        const workspaceData = data as { Path?: string; Entries?: WorkspaceEntry[] };
+        const nextPath = normalizeWorkspacePath(String(workspaceData?.Path || targetPath || '.'));
+        const nextEntries = Array.isArray(workspaceData?.Entries) ? (workspaceData.Entries as WorkspaceEntry[]) : [];
+        setCurrentPath(nextPath);
+        setEntries(nextEntries);
+        setSelectedPath((previousSelectedPath) => {
+          if (previousSelectedPath) {
+            const stillExists = nextEntries.find((entry) => entry.Path === previousSelectedPath);
+            if (stillExists && stillExists.Type === 'file') {
+              return previousSelectedPath;
+            }
           }
-        }
-        return nextEntries.find((entry) => entry.Type === 'file')?.Path ?? null;
-      });
-    } catch (loadError) {
-      console.error('Failed to load workspace entries:', loadError);
-      setError(loadError instanceof Error ? loadError.message : String(loadError));
-    } finally {
-      setLoading(false);
-    }
-  };
+          return nextEntries.find((entry) => entry.Type === 'file')?.Path ?? null;
+        });
+      } catch (loadError) {
+        console.error('Failed to load workspace entries:', loadError);
+        setError(loadError instanceof Error ? loadError.message : String(loadError));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [agentId, api],
+  );
 
   useEffect(() => {
     if (!open || initialized) {
@@ -247,91 +250,94 @@ export function WorkspacePanel({
     }
     setInitialized(true);
     void loadEntries('.');
-  }, [initialized, open]);
+  }, [initialized, loadEntries, open]);
 
-  const loadPreview = async (entry: WorkspaceEntry) => {
-    const initialKind = resolveWorkspacePreviewKind({
-      path: entry.Path,
-      mimeType: entry.MimeType,
-    }) as PreviewKind;
-    if (initialKind === 'unsupported') {
+  const loadPreview = useCallback(
+    async (entry: WorkspaceEntry) => {
+      const initialKind = resolveWorkspacePreviewKind({
+        path: entry.Path,
+        mimeType: entry.MimeType,
+      }) as PreviewKind;
+      if (initialKind === 'unsupported') {
+        clearPreviewObjectUrl();
+        setPreviewState({
+          path: entry.Path,
+          kind: initialKind,
+          status: 'ready',
+          mimeType: entry.MimeType ?? undefined,
+        });
+        return;
+      }
+
       clearPreviewObjectUrl();
       setPreviewState({
         path: entry.Path,
         kind: initialKind,
-        status: 'ready',
+        status: 'loading',
         mimeType: entry.MimeType ?? undefined,
       });
-      return;
-    }
 
-    clearPreviewObjectUrl();
-    setPreviewState({
-      path: entry.Path,
-      kind: initialKind,
-      status: 'loading',
-      mimeType: entry.MimeType ?? undefined,
-    });
+      try {
+        const result = await api.getWorkspaceFileContent(agentId, entry.Path, { asText: false });
+        if (result instanceof Blob) {
+          const resolvedMimeType = entry.MimeType || '';
+          const resolvedKind = resolveWorkspacePreviewKind({
+            path: entry.Path,
+            mimeType: resolvedMimeType,
+          }) as PreviewKind;
 
-    try {
-      const result = await api.getWorkspaceFileContent(agentId, entry.Path, { asText: false });
-      if (result instanceof Blob) {
-        const resolvedMimeType = entry.MimeType || '';
-        const resolvedKind = resolveWorkspacePreviewKind({
-          path: entry.Path,
-          mimeType: resolvedMimeType,
-        }) as PreviewKind;
+          if (resolvedKind === 'image' || resolvedKind === 'pdf') {
+            const objectUrl = URL.createObjectURL(result);
+            previewObjectUrlRef.current = objectUrl;
+            setPreviewState({
+              path: entry.Path,
+              kind: resolvedKind,
+              status: 'ready',
+              mimeType: resolvedMimeType,
+              objectUrl,
+            });
+            return;
+          }
 
-        if (resolvedKind === 'image' || resolvedKind === 'pdf') {
-          const objectUrl = URL.createObjectURL(result);
-          previewObjectUrlRef.current = objectUrl;
+          const text = await result.text();
+          const textKind = resolveWorkspacePreviewKind({
+            path: entry.Path,
+            mimeType: resolvedMimeType,
+          }) as PreviewKind;
+          setPreviewState({
+            path: entry.Path,
+            kind: textKind,
+            status: 'ready',
+            mimeType: resolvedMimeType,
+            content: text,
+          });
+        } else {
+          const resolvedMimeType = entry.MimeType || '';
+          const resolvedKind = resolveWorkspacePreviewKind({
+            path: entry.Path,
+            mimeType: resolvedMimeType,
+          }) as PreviewKind;
           setPreviewState({
             path: entry.Path,
             kind: resolvedKind,
             status: 'ready',
             mimeType: resolvedMimeType,
-            objectUrl,
+            content: result,
           });
-          return;
         }
-
-        const text = await result.text();
-        const textKind = resolveWorkspacePreviewKind({
-          path: entry.Path,
-          mimeType: resolvedMimeType,
-        }) as PreviewKind;
+      } catch (previewError) {
+        console.error('Failed to preview workspace file:', previewError);
         setPreviewState({
           path: entry.Path,
-          kind: textKind,
-          status: 'ready',
-          mimeType: resolvedMimeType,
-          content: text,
-        });
-      } else {
-        const resolvedMimeType = entry.MimeType || '';
-        const resolvedKind = resolveWorkspacePreviewKind({
-          path: entry.Path,
-          mimeType: resolvedMimeType,
-        }) as PreviewKind;
-        setPreviewState({
-          path: entry.Path,
-          kind: resolvedKind,
-          status: 'ready',
-          mimeType: resolvedMimeType,
-          content: result,
+          kind: initialKind,
+          status: 'error',
+          mimeType: entry.MimeType ?? undefined,
+          error: previewError instanceof Error ? previewError.message : String(previewError),
         });
       }
-    } catch (previewError) {
-      console.error('Failed to preview workspace file:', previewError);
-      setPreviewState({
-        path: entry.Path,
-        kind: initialKind,
-        status: 'error',
-        mimeType: entry.MimeType ?? undefined,
-        error: previewError instanceof Error ? previewError.message : String(previewError),
-      });
-    }
-  };
+    },
+    [agentId, api, clearPreviewObjectUrl],
+  );
 
   useEffect(() => {
     if (!selectedEntry || selectedEntry.Type !== 'file') {
@@ -341,7 +347,7 @@ export function WorkspacePanel({
       return;
     }
     void loadPreview(selectedEntry);
-  }, [selectedEntry, agentId, contentPath]);
+  }, [clearPreviewObjectUrl, loadPreview, selectedEntry]);
 
   const handleUpload = async (files: FileList | null) => {
     if (!files || files.length === 0) {

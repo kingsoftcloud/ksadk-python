@@ -9,7 +9,7 @@ export class ChatCompletionsProtocol implements StreamProtocol {
     return {};
   }
 
-  parse(event: TransportEvent, _state: Record<string, unknown>): StreamAction[] {
+  parse(event: TransportEvent): StreamAction[] {
     const data = event.data;
     if (typeof data !== 'object' || data === null) return [];
 

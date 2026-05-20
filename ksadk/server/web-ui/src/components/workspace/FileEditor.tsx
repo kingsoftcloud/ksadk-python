@@ -39,9 +39,11 @@ export function FileEditor({ content, path, readOnly = false, onSave, onDirtyCha
   const onDirtyChangeRef = useRef(onDirtyChange);
   const onContentChangeRef = useRef(onContentChange);
 
-  onSaveRef.current = onSave;
-  onDirtyChangeRef.current = onDirtyChange;
-  onContentChangeRef.current = onContentChange;
+  useEffect(() => {
+    onSaveRef.current = onSave;
+    onDirtyChangeRef.current = onDirtyChange;
+    onContentChangeRef.current = onContentChange;
+  }, [onSave, onDirtyChange, onContentChange]);
 
   const setDirty = useCallback((value: boolean) => {
     if (dirtyRef.current !== value) {

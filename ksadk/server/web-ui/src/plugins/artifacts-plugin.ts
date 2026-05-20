@@ -1,5 +1,4 @@
-import type { CapabilityPlugin, CapabilitySlot, CapabilityContext } from '../core/capability/types.js';
-import type { UiCapabilities } from '../types/capabilities.js';
+import type { CapabilityPlugin, CapabilitySlot } from '../core/capability/types.js';
 import React from 'react';
 import { ArtifactsPanel } from '../components/artifacts/ArtifactsPanel.js';
 
@@ -10,7 +9,7 @@ export const artifactsPlugin: CapabilityPlugin = {
     return true;
   },
 
-  getComponent(slot: CapabilitySlot, _context: CapabilityContext): React.ComponentType | null {
+  getComponent(slot: CapabilitySlot): React.ComponentType | null {
     if (slot === 'panel-right') {
       return ArtifactsPanel;
     }

@@ -4,6 +4,7 @@ FastAPI 应用 - 提供 HTTP API 接口 (ADK Web 兼容)
 """
 
 import base64
+import html as html_lib
 import httpx
 import io
 import json
@@ -15,7 +16,7 @@ import time
 import uuid
 import zipfile
 from contextlib import asynccontextmanager
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, AsyncIterator, Dict, List, Optional
 from urllib.parse import quote
 
@@ -139,6 +140,24 @@ _UPLOAD_URI_SCHEME = "ksadk-upload://"
 
 def _workspace_root_dir() -> Path:
     return resolve_local_session_dir() / "workspace"
+
+
+def _build_workspace_preview_csp(asset_source: str = "'self'") -> str:
+    return "; ".join(
+        [
+            "sandbox allow-scripts allow-downloads",
+            "default-src 'none'",
+            f"script-src 'unsafe-inline' 'unsafe-eval' 'self' {asset_source}",
+            f"style-src 'unsafe-inline' data: 'self' {asset_source}",
+            f"img-src data: blob: 'self' {asset_source}",
+            f"font-src data: 'self' {asset_source}",
+            f"media-src data: blob: 'self' {asset_source}",
+            "worker-src blob:",
+            "connect-src 'none'",
+            "form-action 'none'",
+            "base-uri 'self'",
+        ]
+    )
 
 app.include_router(
     create_workspace_files_router(
@@ -795,7 +814,7 @@ async def get_workspace_file_content_action(
 
 
 @app.get("/agentengine/api/v1/ws/{agent_id}/{file_path:path}", include_in_schema=False)
-async def workspace_file_path_route(agent_id: str, file_path: str):
+async def workspace_file_path_route(request: Request, agent_id: str, file_path: str):
     response = await _workspace_runtime_request(
         "GET",
         f"/_ksadk/workspace/v1/files/{quote(file_path, safe='/')}",
@@ -811,16 +830,24 @@ async def workspace_file_path_route(agent_id: str, file_path: str):
 
     if is_html and response.status_code == 200:
         dir_path = file_path.rsplit("/", 1)[0] + "/" if "/" in file_path else ""
-        base_href = f"/agentengine/api/v1/ws/{agent_id}/{dir_path}"
-        base_tag = f'<base href="{base_href}">'
-        html = response.content.decode("utf-8", errors="replace")
-        if re.search(r"<head[^>]*>", html, re.IGNORECASE):
-            html = re.sub(r"<head[^>]*>", lambda m: m.group() + base_tag, html, count=1, flags=re.IGNORECASE)
+        base_href = f"/agentengine/api/v1/ws/{quote(agent_id, safe='')}/{quote(dir_path, safe='/')}"
+        asset_source = f"{request.url.scheme}://{request.url.netloc}{base_href}"
+        base_tag = f'<base href="{html_lib.escape(base_href, quote=True)}">'
+        html_doc = response.content.decode("utf-8", errors="replace")
+        if re.search(r"<head[^>]*>", html_doc, re.IGNORECASE):
+            html_doc = re.sub(
+                r"<head[^>]*>",
+                lambda m: m.group() + base_tag,
+                html_doc,
+                count=1,
+                flags=re.IGNORECASE,
+            )
         else:
-            html = base_tag + html
+            html_doc = base_tag + html_doc
         headers.pop("content-disposition", None)
+        headers["Content-Security-Policy"] = _build_workspace_preview_csp(asset_source)
         return Response(
-            content=html.encode("utf-8"),
+            content=html_doc.encode("utf-8"),
             status_code=response.status_code,
             headers=headers,
             media_type="text/html; charset=utf-8",
@@ -849,6 +876,7 @@ async def export_workspace_zip(
     data = response.json() if response.status_code == 200 else {}
     entries = data.get("Entries", []) if isinstance(data, dict) else []
     root = _workspace_root_dir()
+    root_resolved = root.resolve()
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for entry in entries:
@@ -857,9 +885,20 @@ async def export_workspace_zip(
             rel = entry.get("Path", "")
             if not rel:
                 continue
-            target = root / rel
-            if target.is_file():
-                zf.writestr(rel, target.read_bytes())
+            rel_path = PurePosixPath(rel)
+            if rel_path.is_absolute() or ".." in rel_path.parts:
+                continue
+            target = root.joinpath(*rel_path.parts)
+            if target.is_symlink():
+                continue
+            try:
+                resolved_target = target.resolve(strict=True)
+            except OSError:
+                continue
+            if not resolved_target.is_relative_to(root_resolved):
+                continue
+            if resolved_target.is_file():
+                zf.writestr(rel_path.as_posix(), resolved_target.read_bytes())
     buf.seek(0)
     zip_name = f"workspace-{dir_path.replace('/', '-')}.zip" if dir_path != "." else "workspace.zip"
     return StreamingResponse(

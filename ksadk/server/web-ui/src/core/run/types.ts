@@ -19,7 +19,16 @@ export type RunEvent =
   | { type: 'terminal'; status: string }
   | { type: 'stream_event'; event: import('../../types/session-events.js').SessionEventRecord };
 
+export type RunEngineConfig = {
+  agentId: string;
+  apiFormats: string[];
+  agentFramework: string;
+  selectedModel: string;
+  thinkingMode: string;
+};
+
 export interface RunEngine {
+  updateConfig(config: RunEngineConfig): void;
   start(draft: {
     text: string;
     attachments: File[];
@@ -28,7 +37,8 @@ export interface RunEngine {
     sessionId?: string | null;
     onSessionCreated?: (sessionId: string) => void;
     onSessionUpsert?: (sessionId: string) => void;
-  }): void;
+    onSettled?: () => void;
+  }): boolean;
   stop(): void;
   resumeRun(params: {
     sessionId: string;

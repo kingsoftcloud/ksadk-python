@@ -10,7 +10,7 @@ type FilePreviewProps = {
   path?: string;
 };
 
-export function FilePreview({ content, objectUrl, kind, filename, mimeType, path }: FilePreviewProps) {
+export function FilePreview({ content, objectUrl, kind, filename, path }: FilePreviewProps) {
   if (kind === 'markdown') {
     return <MessageMarkdown content={content || ''} />;
   }
