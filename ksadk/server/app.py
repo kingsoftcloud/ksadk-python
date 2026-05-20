@@ -10,8 +10,10 @@ import json
 import logging
 import mimetypes
 import os
+import re
 import time
 import uuid
+import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional
@@ -790,6 +792,82 @@ async def get_workspace_file_content_action(
         headers=headers,
         media_type=response.headers.get("content-type"),
     )
+
+
+@app.get("/agentengine/api/v1/ws/{agent_id}/{file_path:path}", include_in_schema=False)
+async def workspace_file_path_route(agent_id: str, file_path: str):
+    response = await _workspace_runtime_request(
+        "GET",
+        f"/_ksadk/workspace/v1/files/{quote(file_path, safe='/')}",
+    )
+    headers = {}
+    for key in ("content-disposition", "last-modified"):
+        value = response.headers.get(key)
+        if value:
+            headers[key] = value
+
+    content_type = response.headers.get("content-type", "")
+    is_html = "text/html" in content_type or file_path.lower().endswith((".html", ".htm"))
+
+    if is_html and response.status_code == 200:
+        dir_path = file_path.rsplit("/", 1)[0] + "/" if "/" in file_path else ""
+        base_href = f"/agentengine/api/v1/ws/{agent_id}/{dir_path}"
+        base_tag = f'<base href="{base_href}">'
+        html = response.content.decode("utf-8", errors="replace")
+        if re.search(r"<head[^>]*>", html, re.IGNORECASE):
+            html = re.sub(r"<head[^>]*>", lambda m: m.group() + base_tag, html, count=1, flags=re.IGNORECASE)
+        else:
+            html = base_tag + html
+        headers.pop("content-disposition", None)
+        return Response(
+            content=html.encode("utf-8"),
+            status_code=response.status_code,
+            headers=headers,
+            media_type="text/html; charset=utf-8",
+        )
+
+    return Response(
+        content=response.content,
+        status_code=response.status_code,
+        headers=headers,
+        media_type=content_type,
+    )
+
+
+@app.get("/agentengine/api/v1/ExportWorkspaceZip", include_in_schema=False)
+async def export_workspace_zip(
+    AgentId: Optional[str] = Query(None),
+    Path: str = Query("."),
+):
+    del AgentId
+    dir_path = Path.strip() or "."
+    response = await _workspace_runtime_request(
+        "GET",
+        "/_ksadk/workspace/v1/entries",
+        params={"path": dir_path, "recursive": "true"},
+    )
+    data = response.json() if response.status_code == 200 else {}
+    entries = data.get("Entries", []) if isinstance(data, dict) else []
+    root = _workspace_root_dir()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for entry in entries:
+            if entry.get("Type") != "file":
+                continue
+            rel = entry.get("Path", "")
+            if not rel:
+                continue
+            target = root / rel
+            if target.is_file():
+                zf.writestr(rel, target.read_bytes())
+    buf.seek(0)
+    zip_name = f"workspace-{dir_path.replace('/', '-')}.zip" if dir_path != "." else "workspace.zip"
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{zip_name}"'},
+    )
+
 
 def _normalize_model_catalog_items(raw_models: list[Any]) -> list[dict[str, Any]]:
     """统一模型目录 shape，并按 id 去重。

@@ -161,7 +161,7 @@ export function ChatHeader({
     <>
       <header
         className={cn(
-          'flex flex-shrink-0 items-center justify-between border-b border-slate-200/70 bg-white/95 px-3 py-2 backdrop-blur dark:border-slate-800 dark:bg-slate-900/95 sm:px-4',
+          'flex flex-shrink-0 items-center justify-between border-b border-slate-200/30 bg-white/95 px-3 py-2 backdrop-blur dark:border-slate-800 dark:bg-slate-900/95 sm:px-4',
           isMobile ? 'pt-[calc(var(--safe-area-top)+0.5rem)]' : 'h-14',
         )}
       >
