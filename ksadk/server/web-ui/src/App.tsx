@@ -1,429 +1,122 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { Suspense, useEffect, useRef } from 'react';
+import { useUIStore } from './stores/ui.js';
+import { useBootstrapStore } from './stores/bootstrap.js';
+import { useModelStore } from './stores/model.js';
+import { useStreamingStore } from './stores/streaming.js';
+import { useSessionStore } from './stores/session.js';
+import { useArtifactStore } from './stores/artifact.js';
 
 import { buildComposerContextIndicator } from './utils/context.js';
-import { resolveComposerMaxHeight, resolveSidebarVisibility } from './utils/mobile-layout.js';
+import { resolveComposerMaxHeight } from './utils/mobile-layout.js';
 import {
   canAccessWorkspaceFiles,
   resolveWorkspacePanelPresentation,
 } from './utils/workspace.js';
-import {
-  readPersistedSessionId,
-  resolveSessionToRestore,
-  writePersistedSessionId,
-} from './utils/session.js';
+import { writePersistedSessionId } from './utils/session.js';
 import { resolveNativeManagementLinkFromCapability } from './utils/native-platform.js';
-import {
-  isHostedChatEnabled,
-  normalizeCapabilities,
-} from './utils/capabilities.js';
-import {
-  createResponsesStreamState,
-  normalizeResponsesStreamEvent,
-} from './utils/responses-stream.js';
-import {
-  buildSubscribeRunEventsUrl,
-  findActiveRunIds,
-} from './utils/run-state.js';
-import {
-  applyOptimisticFeedback,
-  buildGetFeedbackPayload,
-  buildUpsertFeedbackPayload,
-  clearFeedback,
-  markFeedbackSaved,
-  normalizeFeedback,
-  rollbackFeedback,
-  shouldRenderFeedbackControls,
-} from './utils/feedback.js';
-import {
-  buildCompactionMessage,
-  buildMessagesFromSessionEvents,
-  eventHasTerminalRunStatus,
-  maxSeqIdFromEvents,
-  parseMessageContent,
-} from './utils/session-events.js';
-import {
-  buildModelOptionsFromThinkingMode,
-  normalizeThinkingMode,
-} from './utils/model-options.js';
-import { shouldStopReadingRunStream } from './utils/stream-control.js';
+import { isHostedChatEnabled } from './utils/capabilities.js';
+import { normalizeThinkingMode } from './utils/model-options.js';
 import { useResponsiveViewport } from './hooks/useResponsiveViewport';
-import { cn } from '@/lib/utils';
-import { AttachmentPreview } from './components/chat/AttachmentPreview';
-import { ChatComposer } from './components/chat/ChatComposer';
+import { useBootstrap } from './hooks/useBootstrap';
+import { useRunAgent } from './hooks/useRunAgent';
+import { useFeedback } from './hooks/useFeedback';
+import { useSessionLifecycle } from './hooks/useSessionLifecycle';
+import { ConnectedSidebar } from './components/chat/ConnectedSidebar';
+import { ConnectedMessageList } from './components/chat/ConnectedMessageList';
+import { ConnectedComposer } from './components/chat/ConnectedComposer';
 import { ChatHeader } from './components/chat/ChatHeader';
-import { ChatMessageList } from './components/chat/ChatMessageList';
-import { ChatSidebar } from './components/chat/ChatSidebar';
 import { NativeRuntimeLauncher } from './components/native/NativeRuntimeLauncher';
-import { WorkspacePanel } from './components/workspace/WorkspacePanel';
-import type {
-  Message,
-  MessageAttachment,
-  ModelCatalogItem,
-  PreviewImageSize,
-  Session,
-  WorkspaceFilesCapability,
-} from './components/chat/types';
-import { Sheet, SheetContent, SheetDescription, SheetTitle } from './components/ui/sheet';
+import { WorkspacePanelContainer } from './components/workspace/WorkspacePanelContainer';
+import { ApiFacadeImpl } from './core/api/facade.js';
+import type { ApiFacade } from './core/api/types.js';
+import type { UiCapabilities } from './types/capabilities.js';
+import type { BootstrapWorkspaceFiles } from './types/bootstrap.js';
+import type { RuntimeApiFormat } from './types/api.js';
+import {
+  clampWorkspacePanelWidth,
+  DEFAULT_WORKSPACE_PANEL_WIDTH,
+  MIN_WORKSPACE_PANEL_WIDTH,
+  MAX_WORKSPACE_PANEL_WIDTH,
+  MIN_CHAT_PANEL_WIDTH,
+  DESKTOP_SIDEBAR_WIDTH,
+} from './utils/layout-constants.js';
 
-type SessionEventRecord = {
-  EventId?: string;
-  EventType?: string;
-  InvocationId?: string;
-  Content?: {
-    role?: string;
-    status?: string;
-    detail?: string;
-    parts?: Array<{
-      type?: string;
-      text?: string;
-      functionCall?: {
-        name?: string;
-        args?: unknown;
-      };
-      functionResponse?: {
-        name?: string;
-        response?: unknown;
-      };
-      inlineData?: {
-        displayName?: string;
-        mimeType?: string;
-        data?: string;
-      };
-      fileData?: {
-        fileUri?: string;
-        displayName?: string;
-        mimeType?: string;
-      };
-    }>;
-  };
-  Timestamp?: number;
-  Metadata?: Record<string, unknown> & {
-    response_id?: string;
-    ResponseId?: string;
-    trace_id?: string;
-    TraceId?: string;
-    root_span_id?: string;
-    rootSpanId?: string;
-    RootSpanId?: string;
-    responses_output?: unknown;
-  };
-  SeqId?: number;
-};
-
-type CompactionStreamPayload = {
-  phase?: 'start' | 'done' | 'failed';
-  trigger?: 'auto' | 'prompt_too_long';
-  compacted_until_seq_id?: number;
-  timestamp?: number;
-};
-
-type BootstrapModel = ModelCatalogItem & {
-  source?: string;
-};
-
-type BootstrapWorkspaceFiles = WorkspaceFilesCapability;
-
-type RuntimeApiFormat = 'responses' | 'chat_completions';
-type ThinkingMode = 'auto' | 'enabled' | 'disabled';
-
-type UiCapabilities = {
-  HostedChat: {
-    Enabled: boolean;
-    ApiFormats: RuntimeApiFormat[];
-  };
-  NativeDashboard: {
-    Enabled: boolean;
-    Href?: string | null;
-    Label?: string | null;
-  };
-  NativeTerminal: {
-    Enabled: boolean;
-    Mode?: string | null;
-    Protocol?: string | null;
-    Path?: string | null;
-  };
-  RunLifecycle: {
-    Enabled: boolean;
-    Resume: boolean;
-    Abort: boolean;
-  };
-  WorkspaceFiles?: boolean;
-};
-
-const DEFAULT_WORKSPACE_PANEL_WIDTH = 820;
-const MIN_WORKSPACE_PANEL_WIDTH = 420;
-const MAX_WORKSPACE_PANEL_WIDTH = 1280;
-const MIN_CHAT_PANEL_WIDTH = 360;
-const DESKTOP_SIDEBAR_WIDTH = 280;
-
-type AgentInputPart =
-  | {
-      type: 'input_text';
-      text: string;
-    }
-  | {
-      type: 'input_file';
-      fileData: {
-        fileUri: string;
-        displayName: string;
-        mimeType: string;
-      };
-    };
-
-function getErrorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  return String(error);
-}
-
-function fileFingerprint(file: File): string {
-  return [file.name, file.size, file.lastModified, file.type].join(':');
-}
-
-function resolveRunAgentApiFormat(options: {
-  agentFramework: string;
-  apiFormats: RuntimeApiFormat[];
-}): RuntimeApiFormat {
-  const { apiFormats } = options;
-  if (apiFormats.includes('responses')) {
-    return 'responses';
-  }
-  if (apiFormats.includes('chat_completions')) {
-    return 'chat_completions';
-  }
-  return 'responses';
-}
-
-function normalizeApiFormats(value: unknown): RuntimeApiFormat[] {
-  if (!Array.isArray(value)) {
-    return ['responses', 'chat_completions'];
-  }
-  const formats = value.filter(
-    (item): item is RuntimeApiFormat => item === 'responses' || item === 'chat_completions',
-  );
-  return formats.length > 0 ? formats : ['responses', 'chat_completions'];
-}
-
-function clampWorkspacePanelWidth(width: number, viewportWidth: number, sidebarWidth: number) {
-  const maxWidth = Math.min(
-    MAX_WORKSPACE_PANEL_WIDTH,
-    Math.max(MIN_WORKSPACE_PANEL_WIDTH, viewportWidth - sidebarWidth - MIN_CHAT_PANEL_WIDTH),
-  );
-  return Math.min(Math.max(width, MIN_WORKSPACE_PANEL_WIDTH), maxWidth);
-}
-
-function textFromUnknown(value: unknown): string {
-  if (typeof value === 'string') {
-    return value;
-  }
-  if (Array.isArray(value)) {
-    return value
-      .map((item) => {
-        if (typeof item === 'string') return item;
-        if (item && typeof item === 'object' && 'text' in item && typeof item.text === 'string') {
-          return item.text;
-        }
-        return '';
-      })
-      .join('');
-  }
-  return '';
-}
-
-function objectRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
-}
-
-function extractChatCompletionsStreamDelta(data: unknown): {
-  content: string;
-  reasoning: string;
-  finalText: string;
-} {
-  const choices = objectRecord(data).choices;
-  const firstChoice = objectRecord(Array.isArray(choices) ? choices[0] : null);
-  const delta = objectRecord(firstChoice.delta);
-  const message = objectRecord(firstChoice.message);
-  return {
-    content: textFromUnknown(delta.content),
-    reasoning: textFromUnknown(delta.reasoning_content),
-    finalText: textFromUnknown(message.content),
-  };
-}
-
-function mergeAttachmentFiles(current: File[], incoming: File[]): File[] {
-  const merged = new Map<string, File>();
-  for (const file of current) {
-    merged.set(fileFingerprint(file), file);
-  }
-  for (const file of incoming) {
-    merged.set(fileFingerprint(file), file);
-  }
-  return Array.from(merged.values());
-}
-
-function extractClipboardFiles(event: React.ClipboardEvent<HTMLTextAreaElement>): File[] {
-  return Array.from(event.clipboardData.items || [])
-    .filter((item) => item.kind === 'file')
-    .map((item) => item.getAsFile())
-    .filter((file): file is File => Boolean(file));
-}
-
-function upsertModelOptions(
-  current: ModelCatalogItem[],
-  incoming: ModelCatalogItem[],
-): ModelCatalogItem[] {
-  const merged = new Map<string, ModelCatalogItem>();
-  for (const item of current) {
-    if (!item?.id) continue;
-    merged.set(item.id, item);
-  }
-  for (const item of incoming) {
-    if (!item?.id) continue;
-    merged.set(item.id, { ...(merged.get(item.id) || {}), ...item });
-  }
-  return Array.from(merged.values()).sort((left, right) => left.id.localeCompare(right.id));
-}
-
-function sessionUpdatedAtValue(session: Session): number {
-  const raw = session.UpdatedAt;
-  if (typeof raw === 'string') {
-    const parsed = Date.parse(raw);
-    return Number.isNaN(parsed) ? 0 : parsed;
-  }
-  if (typeof raw === 'number') {
-    return raw;
-  }
-  return 0;
-}
-
-function upsertSessions(current: Session[], incoming: Session[]): Session[] {
-  const merged = new Map<string, Session>();
-  for (const session of current) {
-    if (!session?.SessionId) continue;
-    merged.set(session.SessionId, session);
-  }
-  for (const session of incoming) {
-    if (!session?.SessionId) continue;
-    merged.set(session.SessionId, { ...(merged.get(session.SessionId) || {}), ...session });
-  }
-  return Array.from(merged.values()).sort(
-    (left, right) => sessionUpdatedAtValue(right) - sessionUpdatedAtValue(left),
-  );
-}
-
-function sessionTitle(session: Session): string {
-  const title = String(session.Title || '').trim();
-  if (title) {
-    return title;
-  }
-  const firstPrompt = String(session.FirstPrompt || '').trim();
-  if (firstPrompt) {
-    return firstPrompt;
-  }
-  return '新对话';
-}
-
-function formatDate(ts?: string | number | null) {
-  if (!ts) return '';
-  if (typeof ts === 'string') {
-    const parsed = Date.parse(ts);
-    return Number.isNaN(parsed)
-      ? ''
-      : new Date(parsed).toLocaleString('zh-CN', {
-          month: 'short',
-          day: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit',
-        });
-  }
-  const date = new Date(ts > 1e11 ? ts : ts * 1000);
-  return date.toLocaleString('zh-CN', {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
+const LazyArtifactsPanel = React.lazy(() =>
+  import('./components/artifacts/ArtifactsPanel.js').then((m) => ({
+    default: m.ArtifactsPanel,
+  }))
+);
 
 export default function App() {
-  const [agentId, setAgentId] = useState('default-agent');
-  const [sessions, setSessions] = useState<Session[]>([]);
-  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput] = useState('');
-  const [attachments, setAttachments] = useState<File[]>([]);
-  const [previewAttachment, setPreviewAttachment] = useState<MessageAttachment | null>(null);
-  const [previewImageSize, setPreviewImageSize] = useState<PreviewImageSize | null>(null);
-  const [isStreaming, setIsStreaming] = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
-  const [agentName, setAgentName] = useState('AgentEngine');
-  const [selectedModel, setSelectedModel] = useState('');
-  const [availableModels, setAvailableModels] = useState<ModelCatalogItem[]>([]);
-  const [modelSource, setModelSource] = useState('');
-  const [modelCatalogLoaded, setModelCatalogLoaded] = useState(false);
-  const [thinkingMode, setThinkingMode] = useState<ThinkingMode>('auto');
-  const [agentFramework, setAgentFramework] = useState('');
-  const [workspaceFiles, setWorkspaceFiles] = useState<BootstrapWorkspaceFiles | null>(null);
-  const [accessMode, setAccessMode] = useState('Owner');
-  const [workspacePanelOpen, setWorkspacePanelOpen] = useState(false);
-  const [workspacePanelWidth, setWorkspacePanelWidth] = useState(DEFAULT_WORKSPACE_PANEL_WIDTH);
-  const [workspacePanelFullscreen, setWorkspacePanelFullscreen] = useState(false);
-  const [queuedDrafts, setQueuedDrafts] = useState<Array<{ text: string; attachments: File[] }>>([]);
-  const [apiFormats, setApiFormats] = useState<RuntimeApiFormat[]>([
-    'responses',
-    'chat_completions',
-  ]);
-  const [uiCapabilities, setUiCapabilities] = useState<UiCapabilities>(() =>
-    normalizeCapabilities({
-      Data: {
-        Agent: { Framework: '' },
-        ApiFormats: ['responses', 'chat_completions'],
-        Capabilities: {},
-      },
-    }) as UiCapabilities,
-  );
-
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const abortControllerRef = useRef<AbortController | null>(null);
-  const stopRequestedRef = useRef(false);
+  const api = useRef(new ApiFacadeImpl()).current;
+  const agentId = useBootstrapStore(s => s.agentId);
+  const currentSessionId = useSessionStore(s => s.currentSessionId);
+  const isStreaming = useStreamingStore(s => s.isStreaming);
+  const sidebarOpen = useUIStore(s => s.sidebarOpen);
+  const mobileSidebarOpen = useUIStore(s => s.mobileSidebarOpen);
+  const mobileActionsOpen = useUIStore(s => s.mobileActionsOpen);
+  const agentName = useBootstrapStore(s => s.agentName);
+  const selectedModel = useModelStore(s => s.selectedModel);
+  const availableModels = useModelStore(s => s.availableModels);
+  const modelSource = useModelStore(s => s.modelSource);
+  const modelCatalogLoaded = useModelStore(s => s.modelCatalogLoaded);
+  const thinkingMode = useModelStore(s => s.thinkingMode);
+  const agentFramework = useBootstrapStore(s => s.agentFramework);
+  const workspaceFiles = useBootstrapStore(s => s.workspaceFiles) as BootstrapWorkspaceFiles | null;
+  const accessMode = useBootstrapStore(s => s.accessMode);
+  const workspacePanelOpen = useUIStore(s => s.workspacePanelOpen);
+  const workspacePanelWidth = useUIStore(s => s.workspacePanelWidth);
+  const workspacePanelFullscreen = useUIStore(s => s.workspacePanelFullscreen);
+  const apiFormats = useBootstrapStore(s => s.apiFormats) as RuntimeApiFormat[];
+  const uiCapabilities = useBootstrapStore(s => s.capabilities) as UiCapabilities;
+  const artifactVisible = useArtifactStore(s => s.visible && Boolean(s.content));
   const queuedDraftRef = useRef<Array<{ text: string; attachments: File[] }>>([]);
-  const activeCompactionMessageIdRef = useRef<string | null>(null);
-  const agentIdRef = useRef(agentId);
-  const currentSessionIdRef = useRef<string | null>(null);
-  const runSubscriptionAbortRef = useRef<AbortController | null>(null);
 
   const { isMobile, viewportHeight } = useResponsiveViewport();
   const composerMaxHeight = resolveComposerMaxHeight({ isMobile, viewportHeight });
-  const { desktopSidebarVisible } = resolveSidebarVisibility({
+
+  const {
+    fetchSessions,
+    loadSession,
+    createNewSession,
+    deleteSession,
+    currentSessionIdRef,
+    agentIdRef,
+    runSubscriptionAbortRef,
+  } = useSessionLifecycle({
+    agentId,
+    currentSessionId,
+    isStreaming,
     isMobile,
-    desktopSidebarOpen: sidebarOpen,
-    mobileSidebarOpen,
+    uiCapabilities,
+    api,
+    resetCompaction: () => {},
   });
 
-  useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [messages, isStreaming]);
+  const { submitDraft, stopGeneration } = useRunAgent({
+    agentId,
+    currentSessionId,
+    agentFramework,
+    apiFormats,
+    selectedModel,
+    thinkingMode,
+    uiCapabilities,
+    isMobile,
+    api,
+    currentSessionIdRef,
+    agentIdRef,
+    queuedDraftRef,
+  });
 
-  useEffect(() => {
-    void fetchBootstrap();
-    // fetchBootstrap intentionally runs once on initial mount.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const { submitResponseFeedback, deleteResponseFeedback, respondToApproval } = useFeedback({
+    agentId,
+    currentSessionId,
+    isStreaming,
+    api,
+    submitDraft,
+  });
 
-  useEffect(() => {
-    if (!textareaRef.current) {
-      return;
-    }
-    textareaRef.current.style.height = 'auto';
-    textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, composerMaxHeight)}px`;
-  }, [input, composerMaxHeight]);
+  useBootstrap({ fetchSessions });
 
   useEffect(() => {
     agentIdRef.current = agentId;
@@ -433,16 +126,16 @@ export default function App() {
 
   useEffect(() => {
     if (!isMobile) {
-      setMobileSidebarOpen(false);
-      setMobileActionsOpen(false);
+      useUIStore.getState().setMobileSidebarOpen(false);
+      useUIStore.getState().setMobileActionsOpen(false);
     } else {
-      setWorkspacePanelFullscreen(false);
+      useUIStore.getState().setWorkspacePanelFullscreen(false);
     }
   }, [isMobile]);
 
   useEffect(() => {
     if (!workspacePanelOpen) {
-      setWorkspacePanelFullscreen(false);
+      useUIStore.getState().setWorkspacePanelFullscreen(false);
     }
   }, [workspacePanelOpen]);
 
@@ -453,1029 +146,8 @@ export default function App() {
     [],
   );
 
-  const appendAttachments = (incoming: File[]) => {
-    if (!incoming.length) {
-      return;
-    }
-    setAttachments((prev) => mergeAttachmentFiles(prev, incoming));
-  };
-
-  const handleInputChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setInput(event.target.value);
-    event.target.style.height = 'auto';
-    event.target.style.height = `${Math.min(event.target.scrollHeight, composerMaxHeight)}px`;
-  };
-
-  const openAttachmentPreview = (attachment: MessageAttachment) => {
-    setPreviewAttachment(attachment);
-    setPreviewImageSize(null);
-  };
-
-  const closeAttachmentPreview = () => {
-    setPreviewAttachment(null);
-    setPreviewImageSize(null);
-  };
-
-  const handleComposerPaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    const pastedFiles = extractClipboardFiles(event);
-    if (!pastedFiles.length) {
-      return;
-    }
-    event.preventDefault();
-    event.stopPropagation();
-    appendAttachments(pastedFiles);
-  };
-
-  const fetchModels = async (targetAgentId: string) => {
-    try {
-      const response = await fetch('/agentengine/api/v1/ListAgentModels', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ AgentId: targetAgentId }),
-      });
-      const data = await response.json();
-      const models = data?.Data?.Models;
-      if (Array.isArray(models)) {
-        setAvailableModels((current) => upsertModelOptions(current, models));
-      }
-      if (data?.Data?.Current) {
-        setSelectedModel(data.Data.Current);
-      }
-      if (data?.Data?.Source) {
-        setModelSource(String(data.Data.Source));
-      }
-    } catch (error) {
-      console.error('Failed to fetch models:', error);
-    } finally {
-      setModelCatalogLoaded(true);
-    }
-  };
-
-  const loadFeedbackForMessages = async (
-    targetAgentId: string,
-    sessionId: string,
-    history: Message[],
-  ) => {
-    const targets = history.filter((message) =>
-      shouldRenderFeedbackControls(message, false, false),
-    );
-    if (!targets.length) {
-      return;
-    }
-
-    const entries = await Promise.all(
-      targets.map(async (message) => {
-        try {
-          const response = await fetch('/agentengine/api/v1/GetResponseFeedback', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(
-              buildGetFeedbackPayload({
-                agentId: targetAgentId,
-                sessionId,
-                message,
-              }),
-            ),
-          });
-          const data = await response.json();
-          if (data?.Code !== 0 || !data?.Data?.Feedback) {
-            return null;
-          }
-          const feedback = normalizeFeedback(data.Data.Feedback);
-          return feedback ? { messageId: message.id, feedback } : null;
-        } catch (error) {
-          console.error('Failed to load response feedback:', error);
-          return null;
-        }
-      }),
-    );
-
-    if (currentSessionIdRef.current !== sessionId) {
-      return;
-    }
-    const feedbackByMessageId = new Map(
-      entries
-        .filter((entry): entry is { messageId: string; feedback: NonNullable<Message['feedback']> } =>
-          Boolean(entry),
-        )
-        .map((entry) => [entry.messageId, entry.feedback]),
-    );
-    if (!feedbackByMessageId.size) {
-      return;
-    }
-    setMessages((prev) =>
-      prev.map((message) =>
-        feedbackByMessageId.has(message.id)
-          ? { ...message, feedback: feedbackByMessageId.get(message.id) }
-          : message,
-      ),
-    );
-  };
-
-  const subscribeRunEvents = async (options: {
-    sessionId: string;
-    invocationId: string;
-    afterSeqId: number;
-  }) => {
-    runSubscriptionAbortRef.current?.abort();
-    const controller = new AbortController();
-    runSubscriptionAbortRef.current = controller;
-    setIsStreaming(true);
-    let shouldReloadSession = false;
-
-    try {
-      const response = await fetch(
-        buildSubscribeRunEventsUrl({
-          sessionId: options.sessionId,
-          invocationId: options.invocationId,
-          afterSeqId: options.afterSeqId,
-        }),
-        {
-          headers: { Accept: 'text/event-stream' },
-          signal: controller.signal,
-        },
-      );
-      if (!response.body) {
-        throw new Error('No readable stream');
-      }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let replayedEvents: SessionEventRecord[] = [];
-      let terminalStatusSeen = false;
-
-      while (!terminalStatusSeen) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const chunks = buffer.split('\n\n');
-        buffer = chunks.pop() || '';
-
-        for (const chunk of chunks) {
-          if (!chunk.trim()) continue;
-          const dataLines: string[] = [];
-          for (const line of chunk.split('\n')) {
-            if (line.startsWith('data:')) {
-              dataLines.push(line.substring(5).trim());
-            }
-          }
-          const dataString = dataLines.join('\n').trim();
-          if (!dataString || dataString === '[DONE]') {
-            terminalStatusSeen = dataString === '[DONE]';
-            shouldReloadSession = shouldReloadSession || terminalStatusSeen;
-            continue;
-          }
-          try {
-            const event = JSON.parse(dataString) as SessionEventRecord;
-            replayedEvents = [...replayedEvents, event];
-            terminalStatusSeen = terminalStatusSeen || eventHasTerminalRunStatus(event);
-            shouldReloadSession = shouldReloadSession || terminalStatusSeen;
-            setMessages((prev) => {
-              const current = buildMessagesFromSessionEvents([
-                ...replayedEvents.filter((item) => item.EventId && prev.every((message) => message.id !== item.EventId)),
-              ]);
-              if (!current.length) {
-                return prev;
-              }
-              return [...prev, ...current];
-            });
-          } catch (error) {
-            console.warn('Failed to parse run event data', dataString, error);
-          }
-        }
-      }
-    } catch (error) {
-      const isAbortError = error instanceof DOMException && error.name === 'AbortError';
-      if (!isAbortError) {
-        console.error('Failed to subscribe run events:', error);
-      }
-    } finally {
-      if (runSubscriptionAbortRef.current === controller) {
-        runSubscriptionAbortRef.current = null;
-      }
-      setIsStreaming(false);
-      if (shouldReloadSession && currentSessionIdRef.current === options.sessionId) {
-        void loadSession(options.sessionId);
-      }
-      void fetchSessions(agentId, options.sessionId);
-    }
-  };
-
-  const loadSession = async (sessionId: string) => {
-    currentSessionIdRef.current = sessionId;
-    setCurrentSessionId(sessionId);
-    activeCompactionMessageIdRef.current = null;
-    runSubscriptionAbortRef.current?.abort();
-    if (isMobile) {
-      setMobileSidebarOpen(false);
-    }
-
-    try {
-      const response = await fetch('/agentengine/api/v1/ListSessionEvents', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ SessionId: sessionId }),
-      });
-      const data = await response.json();
-      if (data?.Data?.Events) {
-        const events = data.Data.Events as SessionEventRecord[];
-        const history = buildMessagesFromSessionEvents(events);
-        setMessages(history);
-        void loadFeedbackForMessages(agentIdRef.current, sessionId, history);
-        const activeRuns = findActiveRunIds(events);
-        const lastSeqId = maxSeqIdFromEvents(events);
-        if (uiCapabilities.RunLifecycle.Enabled && uiCapabilities.RunLifecycle.Resume && activeRuns[0]) {
-          void subscribeRunEvents({
-            sessionId,
-            invocationId: activeRuns[0],
-            afterSeqId: lastSeqId,
-          });
-        }
-      } else {
-        setMessages([]);
-      }
-    } catch (error) {
-      console.error('Failed to load session events:', error);
-    }
-  };
-
-  const fetchSessions = async (
-    targetAgentId = 'default-agent',
-    preferredSessionId: string | null = null,
-  ) => {
-    try {
-      const response = await fetch('/agentengine/api/v1/ListSessions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ AgentId: targetAgentId }),
-      });
-      const data = await response.json();
-      if (data?.Data?.Sessions) {
-        const sorted = upsertSessions([], data.Data.Sessions as Session[]);
-        setSessions(sorted);
-        const activeSessionId = currentSessionIdRef.current;
-        const restoredSessionId = resolveSessionToRestore(
-          sorted,
-          activeSessionId || preferredSessionId || readPersistedSessionId(targetAgentId),
-        );
-        if (restoredSessionId && restoredSessionId !== activeSessionId) {
-          void loadSession(restoredSessionId);
-        } else if (!restoredSessionId && activeSessionId) {
-          currentSessionIdRef.current = null;
-          setCurrentSessionId(null);
-          setMessages([]);
-        }
-      }
-    } catch (error) {
-      console.error('Failed to fetch sessions:', error);
-    }
-  };
-
-  const fetchBootstrap = async () => {
-    try {
-      const response = await fetch('/agentengine/api/v1/GetAgentUiBootstrap', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      });
-      const data = await response.json();
-      const bootstrapAgentId = data?.Data?.Agent?.AgentId || 'default-agent';
-      setAgentId(bootstrapAgentId);
-      if (data?.Data?.Agent?.Name) {
-        setAgentName(data.Data.Agent.Name);
-      }
-      const normalizedFramework = String(data?.Data?.Agent?.Framework || '').trim().toLowerCase();
-      setAgentFramework(normalizedFramework);
-      const normalizedCapabilities = normalizeCapabilities(data) as UiCapabilities;
-      setUiCapabilities(normalizedCapabilities);
-      setApiFormats(normalizeApiFormats(normalizedCapabilities.HostedChat.ApiFormats));
-      setAccessMode(String(data?.Data?.AccessMode || 'Owner'));
-
-      const bootstrapWorkspaceFiles =
-        normalizedCapabilities.WorkspaceFiles && data?.Data?.WorkspaceFiles?.Enabled
-          ? (data.Data.WorkspaceFiles as BootstrapWorkspaceFiles)
-          : null;
-      setWorkspaceFiles(bootstrapWorkspaceFiles);
-      if (!bootstrapWorkspaceFiles) {
-        setWorkspacePanelOpen(false);
-      }
-
-      if (isHostedChatEnabled(normalizedCapabilities)) {
-        void fetchSessions(bootstrapAgentId, readPersistedSessionId(bootstrapAgentId));
-      } else {
-        setSessions([]);
-        currentSessionIdRef.current = null;
-        setCurrentSessionId(null);
-        setMessages([]);
-      }
-
-      const bootstrapModel: BootstrapModel | undefined = data?.Data?.Model;
-      if (bootstrapModel?.id) {
-        setSelectedModel(bootstrapModel.id);
-        setAvailableModels((current) => upsertModelOptions(current, [bootstrapModel]));
-        setModelSource(bootstrapModel.source || '');
-      }
-      void fetchModels(bootstrapAgentId);
-    } catch (error) {
-      console.error('Failed to fetch bootstrap:', error);
-      setUiCapabilities(
-        normalizeCapabilities({
-          Data: {
-            Agent: { Framework: '' },
-            ApiFormats: ['responses', 'chat_completions'],
-            Capabilities: {},
-          },
-        }) as UiCapabilities,
-      );
-      void fetchSessions('default-agent', readPersistedSessionId('default-agent'));
-      void fetchModels('default-agent');
-    }
-  };
-
-  const createNewSession = async () => {
-    if (isStreaming) return;
-
-    try {
-      const response = await fetch('/agentengine/api/v1/CreateSession', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ AgentId: agentId }),
-      });
-      const data = await response.json();
-      const newId = data?.Data?.Session?.SessionId;
-      if (newId) {
-        setSessions((prev) =>
-          upsertSessions(prev, [{ SessionId: newId, UpdatedAt: new Date().toISOString() }]),
-        );
-        currentSessionIdRef.current = newId;
-        setCurrentSessionId(newId);
-        setMessages([]);
-        if (isMobile) {
-          setMobileSidebarOpen(false);
-          setMobileActionsOpen(false);
-        }
-        void fetchSessions(agentId, newId);
-      }
-    } catch (error) {
-      console.error('Failed to create session:', error);
-    }
-  };
-
-  const stopGeneration = () => {
-    if (abortControllerRef.current) {
-      stopRequestedRef.current = true;
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
-      setIsStreaming(false);
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: String(Date.now() + Math.random()),
-          role: 'system',
-          content: '已停止接收本次输出；如果运行时不支持取消，后台执行可能仍会继续。',
-          timestamp: Date.now(),
-        },
-      ]);
-    }
-  };
-
-  const upsertCompactionMessage = (payload: CompactionStreamPayload) => {
-    const currentId = activeCompactionMessageIdRef.current || `compaction-${Date.now()}`;
-    if (!activeCompactionMessageIdRef.current) {
-      activeCompactionMessageIdRef.current = currentId;
-    }
-
-    const nextStatus: Message['status'] =
-      payload.phase === 'start'
-        ? 'running'
-        : payload.phase === 'failed'
-          ? 'failed'
-          : 'completed';
-    const nextMessage = buildCompactionMessage({
-      id: currentId,
-      timestamp: payload.timestamp || Date.now(),
-      status: nextStatus,
-      trigger: payload.trigger,
-      compactedUntilSeqId: payload.compacted_until_seq_id,
-    });
-
-    setMessages((prev) => {
-      const existingIndex = prev.findIndex((message) => message.id === currentId);
-      if (existingIndex < 0) {
-        return [...prev, nextMessage];
-      }
-      return prev.map((message) => (message.id === currentId ? { ...message, ...nextMessage } : message));
-    });
-
-    if (nextStatus !== 'running') {
-      activeCompactionMessageIdRef.current = null;
-    }
-  };
-
-  const submitDraft = async (
-    draftText: string,
-    draftAttachments: File[],
-    responsesInput?: unknown,
-    previousResponseId?: string,
-  ) => {
-    const isResponsesResume = responsesInput !== undefined;
-    let sessionId = currentSessionId;
-    if (!sessionId) {
-      try {
-        const sessionResponse = await fetch('/agentengine/api/v1/CreateSession', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ AgentId: agentId }),
-        });
-        const sessionPayload = await sessionResponse.json();
-        sessionId = sessionPayload?.Data?.Session?.SessionId || null;
-      } catch (error) {
-        console.error('Failed to create session before RunAgent:', error);
-      }
-    }
-
-    if (!sessionId) {
-      sessionId = `default-session-${Date.now()}`;
-    }
-
-    setSessions((prev) =>
-      upsertSessions(prev, [{ SessionId: sessionId, UpdatedAt: new Date().toISOString() }]),
-    );
-    currentSessionIdRef.current = sessionId;
-    setCurrentSessionId(sessionId);
-
-    const userText = draftText.trim();
-
-    const messageAttachments = draftAttachments.map((file) => ({
-      name: file.name,
-      url: URL.createObjectURL(file),
-      type: file.type || 'application/octet-stream',
-    }));
-
-    if (!isResponsesResume) {
-      const userMessage: Message = {
-        id: String(Date.now()),
-        role: 'user',
-        content: userText,
-        timestamp: Date.now(),
-        attachments: messageAttachments.length > 0 ? messageAttachments : undefined,
-      };
-
-      setMessages((prev) => [...prev, userMessage]);
-    }
-    setIsStreaming(true);
-    setMobileActionsOpen(false);
-
-    const parts: AgentInputPart[] = [{ type: 'input_text', text: userText }];
-
-    for (const file of isResponsesResume ? [] : draftAttachments) {
-      if (file.size > 100 * 1024 * 1024) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: String(Date.now()),
-            role: 'model',
-            content: `【系统提示】文件 ${file.name} 超过 100MB 限制，未发送。`,
-            timestamp: Date.now(),
-          },
-        ]);
-        continue;
-      }
-
-      const formData = new FormData();
-      formData.append('file', file);
-
-      try {
-        const uploadResponse = await fetch('/agentengine/api/v1/UploadFile', {
-          method: 'POST',
-          body: formData,
-        });
-        if (!uploadResponse.ok) {
-          const errorText = await uploadResponse.text();
-          throw new Error(`HTTP ${uploadResponse.status}: ${errorText}`);
-        }
-
-        const uploadData = await uploadResponse.json();
-        if (uploadData?.Data?.FileData) {
-          parts.push({
-            type: 'input_file',
-            fileData: {
-              fileUri: uploadData.Data.FileData.fileUri,
-              displayName: uploadData.Data.FileData.displayName || file.name,
-              mimeType:
-                uploadData.Data.FileData.mimeType || file.type || 'application/octet-stream',
-            },
-          });
-        } else if (uploadData?.Message !== 'Success') {
-          throw new Error(`服务端返回异常: ${uploadData?.Message || JSON.stringify(uploadData)}`);
-        }
-      } catch (error: unknown) {
-        console.error('Upload failed', error);
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: String(Date.now()),
-            role: 'model',
-            content: `【系统提示】文件 ${file.name} 上传失败，原因: ${getErrorMessage(error)}`,
-            timestamp: Date.now(),
-          },
-        ]);
-      }
-    }
-
-    stopRequestedRef.current = false;
-    abortControllerRef.current = new AbortController();
-    const runAgentApiFormat = isResponsesResume
-      ? 'responses'
-      : resolveRunAgentApiFormat({ agentFramework, apiFormats });
-
-    try {
-      const response = await fetch('/agentengine/api/v1/RunAgent', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'text/event-stream',
-        },
-        body: JSON.stringify({
-          AgentId: agentId,
-          SessionId: sessionId,
-          Stream: true,
-          ApiFormat: runAgentApiFormat,
-          Model: selectedModel || undefined,
-          ModelMetadata: selectedModelMetadata || undefined,
-          ModelOptions: buildModelOptionsFromThinkingMode(thinkingMode),
-          Messages: isResponsesResume
-            ? []
-            : [
-                {
-                  role: 'user',
-                  content: parts,
-                },
-              ],
-          ResponsesInput: isResponsesResume ? responsesInput : undefined,
-          PreviousResponseId: isResponsesResume ? previousResponseId : undefined,
-        }),
-        signal: abortControllerRef.current.signal,
-      });
-
-      if (!response.body) throw new Error('No readable stream');
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-
-      const assistantMessageId = String(Date.now() + 1);
-      let assistantMessageCreated = false;
-      const responsesStreamState = createResponsesStreamState();
-      const ensureAssistantMessage = () => {
-        if (assistantMessageCreated) return;
-        assistantMessageCreated = true;
-        setMessages((prev) => [
-          ...prev,
-          { id: assistantMessageId, role: 'model', content: '', timestamp: Date.now(), reasoning: '' },
-        ]);
-      };
-      const upsertToolRun = (
-        name: string,
-        args: string,
-        status: 'running' | 'completed' | 'error' | 'paused',
-        extra?: {
-          approvalRequestId?: string;
-          previousResponseId?: string;
-          serverLabel?: string;
-        },
-      ) => {
-        ensureAssistantMessage();
-        setMessages((prev) =>
-          prev.map((message) => {
-            if (message.id !== assistantMessageId) return message;
-            return {
-              ...message,
-              tools: {
-                ...(message.tools || {}),
-                [name]: {
-                  ...(message.tools?.[name] || { name, args: '' }),
-                  name,
-                  args,
-                  status,
-                  ...(extra || {}),
-                  ...(extra?.approvalRequestId ? { approvalStatus: 'pending' as const } : {}),
-                },
-              },
-            };
-          }),
-        );
-      };
-      const completeToolRun = (name: string, output: string) => {
-        ensureAssistantMessage();
-        setMessages((prev) =>
-          prev.map((message) => {
-            if (message.id !== assistantMessageId) return message;
-            return {
-              ...message,
-              tools: {
-                ...(message.tools || {}),
-                [name]: {
-                  ...(message.tools?.[name] || { name, args: '' }),
-                  output,
-                  status: 'completed',
-                },
-              },
-            };
-          }),
-        );
-      };
-      const appendReasoning = (delta: string) => {
-        ensureAssistantMessage();
-        setMessages((prev) =>
-          prev.map((message) =>
-            message.id === assistantMessageId
-              ? { ...message, reasoning: (message.reasoning || '') + delta }
-              : message,
-          ),
-        );
-      };
-      const appendAssistantText = (delta: string) => {
-        ensureAssistantMessage();
-        setMessages((prev) =>
-          prev.map((message) =>
-            message.id === assistantMessageId
-              ? { ...message, content: message.content + delta }
-              : message,
-          ),
-        );
-      };
-      const setAssistantText = (text: string) => {
-        ensureAssistantMessage();
-        setMessages((prev) =>
-          prev.map((message) =>
-            message.id === assistantMessageId ? { ...message, content: text } : message,
-          ),
-        );
-      };
-      const appendSystemMessage = (content: string) => {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: String(Date.now() + Math.random()),
-            role: 'system',
-            content,
-            timestamp: Date.now(),
-          },
-        ]);
-      };
-
-      let buffer = '';
-      let isDone = false;
-
-      while (!isDone) {
-        const { value, done } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const chunks = buffer.split('\n\n');
-        buffer = chunks.pop() || '';
-
-        for (const chunk of chunks) {
-          if (!chunk.trim()) continue;
-
-          let currentEvent = 'message';
-          const dataLines: string[] = [];
-          for (const line of chunk.split('\n')) {
-            if (line.startsWith('event:')) {
-              currentEvent = line.substring(6).trim() || 'message';
-            } else if (line.startsWith('data:')) {
-              dataLines.push(line.substring(5).trim());
-            }
-          }
-
-          const dataString = dataLines.join('\n').trim();
-          if (dataString === '[DONE]') {
-            isDone = true;
-            break;
-          }
-          if (!dataString) continue;
-
-          try {
-            const data = JSON.parse(dataString);
-            const chatDelta = extractChatCompletionsStreamDelta(data);
-            if (chatDelta.reasoning) {
-              ensureAssistantMessage();
-              setMessages((prev) =>
-                prev.map((message) =>
-                  message.id === assistantMessageId
-                    ? { ...message, reasoning: (message.reasoning || '') + chatDelta.reasoning }
-                    : message,
-                ),
-              );
-            }
-            if (chatDelta.content) {
-              ensureAssistantMessage();
-              setMessages((prev) =>
-                prev.map((message) =>
-                  message.id === assistantMessageId
-                    ? { ...message, content: message.content + chatDelta.content }
-                    : message,
-                ),
-              );
-            }
-            if (chatDelta.finalText) {
-              ensureAssistantMessage();
-              setMessages((prev) =>
-                prev.map((message) =>
-                  message.id === assistantMessageId
-                    ? { ...message, content: chatDelta.finalText }
-                    : message,
-                ),
-              );
-            }
-            if (chatDelta.reasoning || chatDelta.content || chatDelta.finalText) {
-              continue;
-            }
-
-            if (currentEvent === 'response.compaction.start') {
-              upsertCompactionMessage({ ...data, phase: 'start' });
-              continue;
-            }
-            if (currentEvent === 'response.compaction.done') {
-              upsertCompactionMessage({ ...data, phase: 'done' });
-              continue;
-            }
-            if (currentEvent === 'response.compaction.failed') {
-              upsertCompactionMessage({ ...data, phase: 'failed' });
-              continue;
-            }
-
-            const actions = normalizeResponsesStreamEvent({
-              eventName: currentEvent,
-              data,
-              state: responsesStreamState,
-            });
-            for (const action of actions) {
-              if (action.type === 'tool_upsert') {
-                upsertToolRun(action.name, action.args, action.status, {
-                  approvalRequestId: action.approvalRequestId,
-                  previousResponseId: action.previousResponseId,
-                  serverLabel: action.serverLabel,
-                });
-              } else if (action.type === 'tool_result') {
-                completeToolRun(action.name, action.output);
-              } else if (action.type === 'reasoning_delta') {
-                appendReasoning(action.text);
-              } else if (action.type === 'text_delta') {
-                appendAssistantText(action.text);
-              } else if (action.type === 'text_final') {
-                setAssistantText(action.text);
-              } else if (action.type === 'approval_request') {
-                appendSystemMessage('本次运行需要人工审批后才能继续。');
-              } else if (action.type === 'incomplete') {
-                appendSystemMessage('本次运行已中断，需要人工确认后继续。');
-              } else if (action.type === 'failed') {
-                setAssistantText(`生成失败：${action.message}`);
-              }
-            }
-            if (shouldStopReadingRunStream(actions)) {
-              isDone = true;
-              break;
-            }
-          } catch (error) {
-            console.warn('Failed to parse SSE data', dataString, error);
-          }
-        }
-      }
-    } catch (error: unknown) {
-      const isAbortError = error instanceof DOMException && error.name === 'AbortError';
-      if (isAbortError) {
-        if (activeCompactionMessageIdRef.current) {
-          upsertCompactionMessage({ phase: 'failed' });
-        }
-        console.log(stopRequestedRef.current ? 'Stream stopped by user' : 'Stream aborted');
-      } else {
-        if (activeCompactionMessageIdRef.current) {
-          upsertCompactionMessage({ phase: 'failed' });
-        }
-        console.error('SSE Error:', error);
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: String(Date.now()),
-            role: 'model',
-            content: isAbortError ? '连接已中断。' : '连接断开或生成出错。',
-            timestamp: Date.now(),
-          },
-        ]);
-      }
-    } finally {
-      setIsStreaming(false);
-      stopRequestedRef.current = false;
-      abortControllerRef.current = null;
-      activeCompactionMessageIdRef.current = null;
-      void fetchSessions(agentId, sessionId);
-      if (currentSessionIdRef.current === sessionId) {
-        void loadSession(sessionId);
-      }
-      const queuedDraft = queuedDraftRef.current.shift();
-      setQueuedDrafts((prev) => prev.slice(1));
-      if (queuedDraft && (queuedDraft.text.trim() || queuedDraft.attachments.length > 0)) {
-        window.setTimeout(() => {
-          void submitDraft(queuedDraft.text, queuedDraft.attachments);
-        }, 0);
-      }
-    }
-  };
-
-  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!input.trim() && attachments.length === 0) return;
-
-    const draft = {
-      text: input,
-      attachments,
-    };
-    setInput('');
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto';
-    }
-    setAttachments([]);
-
-    if (isStreaming) {
-      queuedDraftRef.current.push(draft);
-      setQueuedDrafts((prev) => [...prev, draft]);
-      return;
-    }
-
-    await submitDraft(draft.text, draft.attachments);
-  };
-
-  const submitResponseFeedback = async (options: {
-    message: Message;
-    rating: 'up' | 'down';
-    comment?: string;
-  }) => {
-    if (!currentSessionId) {
-      return;
-    }
-
-    let previousFeedback: Message['feedback'] | null = null;
-    setMessages((prev) => {
-      const result = applyOptimisticFeedback(prev, {
-        messageId: options.message.id,
-        rating: options.rating,
-        comment: options.comment || '',
-      });
-      previousFeedback = result.previousFeedback;
-      return result.nextMessages;
-    });
-
-    try {
-      const response = await fetch('/agentengine/api/v1/UpsertResponseFeedback', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(
-          buildUpsertFeedbackPayload({
-            agentId,
-            sessionId: currentSessionId,
-            message: options.message,
-            rating: options.rating,
-            comment: options.comment || '',
-          }),
-        ),
-      });
-      const data = await response.json();
-      if (data?.Code !== 0) {
-        throw new Error(data?.Message || '反馈提交失败');
-      }
-      setMessages((prev) =>
-        markFeedbackSaved(prev, {
-          messageId: options.message.id,
-          feedback: data?.Data?.Feedback,
-        }),
-      );
-    } catch (error) {
-      console.error('Failed to submit response feedback:', error);
-      setMessages((prev) =>
-        rollbackFeedback(prev, {
-          messageId: options.message.id,
-          previousFeedback,
-        }),
-      );
-    }
-  };
-
-  const deleteResponseFeedback = async (message: Message) => {
-    if (!currentSessionId) {
-      return;
-    }
-
-    const previousFeedback = message.feedback ? { ...message.feedback } : null;
-    setMessages((prev) => clearFeedback(prev, { messageId: message.id }));
-
-    try {
-      const response = await fetch('/agentengine/api/v1/DeleteResponseFeedback', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(
-          buildGetFeedbackPayload({
-            agentId,
-            sessionId: currentSessionId,
-            message,
-          }),
-        ),
-      });
-      const data = await response.json();
-      if (data?.Code !== 0) {
-        throw new Error(data?.Message || '反馈删除失败');
-      }
-    } catch (error) {
-      console.error('Failed to delete response feedback:', error);
-      setMessages((prev) =>
-        rollbackFeedback(prev, {
-          messageId: message.id,
-          previousFeedback,
-        }),
-      );
-    }
-  };
-
-  const respondToApproval = (options: {
-    approvalRequestId: string;
-    approve: boolean;
-    previousResponseId?: string;
-  }) => {
-    if (!options.approvalRequestId || isStreaming) return;
-    setMessages((prev) =>
-      prev.map((message) => ({
-        ...message,
-        tools: message.tools
-          ? Object.fromEntries(
-              Object.entries(message.tools).map(([name, tool]) => [
-                name,
-                tool.approvalRequestId === options.approvalRequestId
-                  ? {
-                      ...tool,
-                      approvalStatus: options.approve ? 'approved' : 'rejected',
-                    }
-                  : tool,
-              ]),
-            )
-          : message.tools,
-      })),
-    );
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: String(Date.now() + Math.random()),
-        role: 'system',
-        content: options.approve ? '已批准工具调用，正在继续运行。' : '已拒绝工具调用，正在通知运行时。',
-        timestamp: Date.now(),
-      },
-    ]);
-    void submitDraft(
-      '',
-      [],
-      [
-        {
-          type: 'mcp_approval_response',
-          approval_request_id: options.approvalRequestId,
-          approve: options.approve,
-        },
-      ],
-      options.previousResponseId,
-    );
-  };
-
-  const deleteSession = async (
-    sessionId: string,
-    event: React.MouseEvent<HTMLButtonElement>,
-  ) => {
-    event.stopPropagation();
-    try {
-      await fetch('/agentengine/api/v1/DeleteSession', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ SessionId: sessionId }),
-      });
-      setSessions((prev) => prev.filter((session) => session.SessionId !== sessionId));
-      if (currentSessionId === sessionId) {
-        currentSessionIdRef.current = null;
-        setMessages([]);
-        setCurrentSessionId(null);
-        void fetchSessions(agentId);
-      }
-    } catch (error) {
-      console.error('Failed to delete session', error);
-    }
-  };
-
-  const selectedModelMetadata =
-    availableModels.find((model) => model.id === selectedModel) || null;
-  const selectedModelLabel = selectedModelMetadata?.display_name || selectedModel || '';
   const hostedChatEnabled = isHostedChatEnabled(uiCapabilities);
   const thinkingEnabled = Boolean(uiCapabilities.Thinking);
-  const composerContextIndicator = buildComposerContextIndicator({
-    messages,
-    draftInput: input,
-    selectedModel: selectedModelMetadata,
-  });
   const workspaceEnabled = canAccessWorkspaceFiles({ workspaceFiles, accessMode });
   const workspacePanelPresentation = resolveWorkspacePanelPresentation({ isMobile });
   const nativeManagementLink = resolveNativeManagementLinkFromCapability({
@@ -1491,16 +163,23 @@ export default function App() {
       : agentFramework === 'hermes'
         ? 'Hermes'
         : '原生运行时';
-  const workspacePanelInline = workspacePanelPresentation.renderMode === 'inline';
-  const workspacePanelSheet = workspacePanelPresentation.renderMode === 'sheet';
+
+  const selectedModelMetadata =
+    availableModels.find((model) => model.id === selectedModel) || null;
+  const selectedModelLabel = selectedModelMetadata?.display_name || selectedModel || '';
+  const { desktopSidebarVisible } = (() => {
+    const mobileSidebarOpen = useUIStore.getState().mobileSidebarOpen;
+    return {
+      desktopSidebarVisible: !isMobile && sidebarOpen && hostedChatEnabled,
+    };
+  })();
+
   const closeWorkspacePanel = () => {
-    setWorkspacePanelFullscreen(false);
-    setWorkspacePanelOpen(false);
+    useUIStore.getState().setWorkspacePanelFullscreen(false);
+    useUIStore.getState().setWorkspacePanelOpen(false);
   };
   const handleWorkspacePanelResizeStart = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (workspacePanelFullscreen || isMobile) {
-      return;
-    }
+    if (workspacePanelFullscreen || isMobile) return;
     event.preventDefault();
     const startX = event.clientX;
     const startWidth = workspacePanelWidth;
@@ -1510,10 +189,9 @@ export default function App() {
     const initialUserSelect = document.body.style.userSelect;
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
-
     const handlePointerMove = (moveEvent: PointerEvent) => {
       const nextWidth = startWidth + startX - moveEvent.clientX;
-      setWorkspacePanelWidth(
+      useUIStore.getState().setWorkspacePanelWidth(
         clampWorkspacePanelWidth(nextWidth, window.innerWidth, sidebarWidth),
       );
     };
@@ -1524,7 +202,6 @@ export default function App() {
       window.removeEventListener('pointerup', handlePointerEnd);
       window.removeEventListener('pointercancel', handlePointerEnd);
     };
-
     window.addEventListener('pointermove', handlePointerMove);
     window.addEventListener('pointerup', handlePointerEnd);
     window.addEventListener('pointercancel', handlePointerEnd);
@@ -1532,43 +209,12 @@ export default function App() {
 
   return (
     <div className="flex h-[var(--app-height)] min-h-[var(--app-height)] overflow-hidden bg-white font-sans text-slate-800 dark:bg-slate-900 dark:text-slate-200">
-      {hostedChatEnabled && !isMobile ? (
-        <aside
-          className={cn(
-            'flex-shrink-0 overflow-hidden border-r border-slate-200 transition-[width] duration-300 ease-in-out dark:border-slate-800',
-            desktopSidebarVisible ? 'w-[280px]' : 'w-0 border-r-0',
-          )}
-        >
-          <ChatSidebar
-            sessions={sessions}
-            currentSessionId={currentSessionId}
-            isStreaming={isStreaming}
-            onCreateNewSession={createNewSession}
-            onSelectSession={loadSession}
-            onDeleteSession={deleteSession}
-            sessionTitle={sessionTitle}
-          />
-        </aside>
-      ) : hostedChatEnabled ? (
-        <Sheet open={mobileSidebarOpen} onOpenChange={setMobileSidebarOpen}>
-          <SheetContent
-            side="left"
-            className="w-[88vw] max-w-sm border-slate-200 bg-slate-50 p-0 dark:border-slate-800 dark:bg-slate-950"
-          >
-            <SheetTitle className="sr-only">历史记录</SheetTitle>
-            <SheetDescription className="sr-only">查看和切换历史对话。</SheetDescription>
-            <ChatSidebar
-              sessions={sessions}
-              currentSessionId={currentSessionId}
-              isStreaming={isStreaming}
-              onCreateNewSession={createNewSession}
-              onSelectSession={loadSession}
-              onDeleteSession={deleteSession}
-              sessionTitle={sessionTitle}
-            />
-          </SheetContent>
-        </Sheet>
-      ) : null}
+      <ConnectedSidebar
+        api={api}
+        uiCapabilities={uiCapabilities}
+        resetCompaction={() => {}}
+        runSubscriptionAbortRef={runSubscriptionAbortRef}
+      />
 
       <main className="relative flex min-w-0 flex-1 flex-col bg-white dark:bg-slate-900">
         <ChatHeader
@@ -1580,17 +226,17 @@ export default function App() {
           mobileSidebarOpen={mobileSidebarOpen}
           onToggleSidebar={() => {
             if (isMobile) {
-              setMobileSidebarOpen((prev) => !prev);
+              useUIStore.getState().toggleMobileSidebar();
             } else {
-              setSidebarOpen((prev) => !prev);
+              useUIStore.getState().toggleSidebar();
             }
           }}
           availableModels={availableModels}
           selectedModel={selectedModel}
           onSelectModel={(modelId) => {
-            setSelectedModel(modelId);
+            useModelStore.getState().setSelectedModel(modelId);
             if (isMobile) {
-              setMobileActionsOpen(false);
+              useUIStore.getState().setMobileActionsOpen(false);
             }
           }}
           selectedModelLabel={selectedModelLabel}
@@ -1598,11 +244,11 @@ export default function App() {
           modelSource={modelSource}
           thinkingEnabled={thinkingEnabled}
           thinkingMode={thinkingMode}
-          onSelectThinkingMode={(mode) => setThinkingMode(normalizeThinkingMode(mode))}
+          onSelectThinkingMode={(mode) => useModelStore.getState().setThinkingMode(normalizeThinkingMode(mode))}
           mobileActionsOpen={mobileActionsOpen}
-          onMobileActionsOpenChange={setMobileActionsOpen}
+          onMobileActionsOpenChange={(v) => useUIStore.getState().setMobileActionsOpen(v)}
           workspaceEnabled={workspaceEnabled}
-          onOpenWorkspace={() => setWorkspacePanelOpen(true)}
+          onOpenWorkspace={() => useUIStore.getState().setWorkspacePanelOpen(true)}
           nativeManagementLink={nativeManagementLink}
           nativeTerminal={uiCapabilities.NativeTerminal}
         />
@@ -1613,156 +259,53 @@ export default function App() {
             nativeManagementLink={nativeManagementLink}
             nativeTerminal={uiCapabilities.NativeTerminal}
             workspaceEnabled={workspaceEnabled}
-            onOpenWorkspace={() => setWorkspacePanelOpen(true)}
+            onOpenWorkspace={() => useUIStore.getState().setWorkspacePanelOpen(true)}
           />
         ) : (
           <>
-            <ChatMessageList
+            <ConnectedMessageList
               agentName={agentName}
               isMobile={isMobile}
-              isStreaming={isStreaming}
-              messages={messages}
               onDeleteFeedback={deleteResponseFeedback}
-              onOpenAttachmentPreview={openAttachmentPreview}
-              onRespondToApproval={respondToApproval}
               onSubmitFeedback={submitResponseFeedback}
-              scrollRef={scrollRef}
-            />
-
-            <ChatComposer
-              attachments={attachments}
-              composerContextIndicator={composerContextIndicator}
+              onRespondToApproval={respondToApproval}
+              submitDraft={submitDraft}
               composerMaxHeight={composerMaxHeight}
-              fileInputRef={fileInputRef}
-              input={input}
+            />
+            <ConnectedComposer
+              composerMaxHeight={composerMaxHeight}
+              submitDraft={submitDraft}
+              stopGeneration={stopGeneration}
               isMobile={isMobile}
-              isStreaming={isStreaming}
-              queuedDrafts={queuedDrafts}
-              onAppendAttachments={appendAttachments}
-              onInputChange={handleInputChange}
-              onPaste={handleComposerPaste}
-              onRemoveAttachment={(index) =>
-                setAttachments((prev) =>
-                  prev.filter((_, attachmentIndex) => attachmentIndex !== index),
-                )
-              }
-              onStopGeneration={stopGeneration}
-              onSubmit={handleSubmit}
-              textareaRef={textareaRef}
             />
           </>
         )}
       </main>
 
-      <AttachmentPreview
-        attachment={previewAttachment}
+      <WorkspacePanelContainer
+        agentId={agentId}
+        capability={workspaceFiles!}
+        workspacePanelOpen={workspacePanelOpen}
+        workspacePanelWidth={workspacePanelWidth}
+        workspacePanelFullscreen={workspacePanelFullscreen}
         isMobile={isMobile}
-        previewImageSize={previewImageSize}
-        onClose={closeAttachmentPreview}
-        onImageLoad={setPreviewImageSize}
+        workspaceEnabled={workspaceEnabled}
+        workspaceFiles={workspaceFiles}
+        workspacePanelPresentation={workspacePanelPresentation}
+        closeWorkspacePanel={closeWorkspacePanel}
+        handleWorkspacePanelResizeStart={handleWorkspacePanelResizeStart}
+        MIN_WORKSPACE_PANEL_WIDTH={MIN_WORKSPACE_PANEL_WIDTH}
+        MAX_WORKSPACE_PANEL_WIDTH={MAX_WORKSPACE_PANEL_WIDTH}
+        MIN_CHAT_PANEL_WIDTH={MIN_CHAT_PANEL_WIDTH}
+        clampWorkspacePanelWidth={clampWorkspacePanelWidth}
+        api={api}
       />
 
-      {workspaceEnabled && workspaceFiles ? (
-        workspacePanelInline ? (
-          <>
-            {workspacePanelOpen && !workspacePanelFullscreen ? (
-              <div
-                role="separator"
-                aria-label="调整 Workspace 宽度"
-                aria-orientation="vertical"
-                onPointerDown={handleWorkspacePanelResizeStart}
-                className="hidden h-full w-1 cursor-col-resize bg-transparent transition-colors hover:bg-blue-200/60 dark:hover:bg-blue-900/50 md:block"
-              />
-            ) : null}
-            <aside
-              style={
-                workspacePanelOpen && !workspacePanelFullscreen
-                  ? { width: `${workspacePanelWidth}px` }
-                  : undefined
-              }
-              className={cn(
-                workspacePanelFullscreen
-                  ? 'fixed inset-0 z-40 flex h-[var(--app-height)] w-screen overflow-hidden bg-white dark:bg-slate-950'
-                  : 'hidden h-full flex-shrink-0 overflow-hidden bg-white transition-[width] duration-200 ease-out dark:bg-slate-950 md:flex',
-                workspacePanelOpen
-                  ? 'border-l border-slate-200/60 dark:border-slate-800/70'
-                  : 'w-0 border-l border-transparent',
-              )}
-            >
-              {workspacePanelOpen ? (
-                <WorkspacePanel
-                  agentId={agentId}
-                  capability={workspaceFiles}
-                  open={workspacePanelOpen}
-                  onClose={closeWorkspacePanel}
-                  isFullscreen={workspacePanelFullscreen}
-                  onToggleFullscreen={() => setWorkspacePanelFullscreen((prev) => !prev)}
-                />
-              ) : null}
-            </aside>
-          </>
-        ) : null
-      ) : null}
-
-      {workspaceEnabled && workspaceFiles && workspacePanelSheet ? (
-        <Sheet
-          open={workspacePanelOpen}
-          onOpenChange={(open) => {
-            if (!open) {
-              setWorkspacePanelFullscreen(false);
-            }
-            setWorkspacePanelOpen(open);
-          }}
-          modal={workspacePanelPresentation.modal}
-        >
-          <SheetContent
-            side={workspacePanelPresentation.side}
-            showOverlay={workspacePanelPresentation.showOverlay}
-            onInteractOutside={(event) => {
-              if (workspacePanelPresentation.preventOutsideClose) {
-                event.preventDefault();
-              }
-            }}
-            showCloseButton={false}
-            className={cn(
-              'border-slate-200 bg-white p-0 dark:border-slate-800 dark:bg-slate-950',
-              isMobile
-                ? 'h-[70vh] rounded-t-[1.75rem]'
-                : 'h-[calc(100vh-1.5rem)] w-[min(72rem,calc(100vw-1.5rem))] max-w-[calc(100vw-1.5rem)] rounded-l-[1.5rem] border-l shadow-2xl',
-            )}
-          >
-            <SheetTitle className="sr-only">Workspace 文件</SheetTitle>
-            <SheetDescription className="sr-only">浏览、上传和预览 Workspace 文件。</SheetDescription>
-            <WorkspacePanel
-              agentId={agentId}
-              capability={workspaceFiles}
-              open={workspacePanelOpen}
-              onClose={closeWorkspacePanel}
-            />
-          </SheetContent>
-        </Sheet>
-      ) : null}
-
-      <style
-        dangerouslySetInnerHTML={{
-          __html: `
-            .custom-scrollbar::-webkit-scrollbar {
-              width: 6px;
-              height: 6px;
-            }
-            .custom-scrollbar::-webkit-scrollbar-track {
-              background: transparent;
-            }
-            .custom-scrollbar::-webkit-scrollbar-thumb {
-              background-color: rgba(156, 163, 175, 0.3);
-              border-radius: 20px;
-            }
-            .custom-scrollbar:hover::-webkit-scrollbar-thumb {
-              background-color: rgba(156, 163, 175, 0.5);
-            }
-          `,
-        }}
-      />
+      {artifactVisible && (
+        <Suspense fallback={null}>
+          <LazyArtifactsPanel />
+        </Suspense>
+      )}
     </div>
   );
 }

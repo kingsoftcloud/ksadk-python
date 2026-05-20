@@ -12,6 +12,10 @@ dist
 dist-ssr
 *.local
 
+# Bundle analysis
+dist/stats.html
+dist-hosted/stats.html
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

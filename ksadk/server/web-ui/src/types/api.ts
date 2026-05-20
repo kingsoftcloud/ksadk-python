@@ -1,0 +1,1 @@
+export type RuntimeApiFormat = 'responses' | 'chat_completions';

@@ -110,10 +110,15 @@ function normalizeMimeType(mimeType) {
     .toLowerCase();
 }
 
+const HTML_EXTENSIONS = new Set(['.html', '.htm']);
+
 export function resolveWorkspacePreviewKind({ path, mimeType }) {
   const ext = fileExtension(path);
   const normalizedMime = normalizeMimeType(mimeType);
 
+  if (normalizedMime === 'text/html' || HTML_EXTENSIONS.has(ext)) {
+    return 'html';
+  }
   if (normalizedMime === 'text/markdown' || MARKDOWN_EXTENSIONS.has(ext)) {
     return 'markdown';
   }
@@ -131,6 +136,46 @@ export function resolveWorkspacePreviewKind({ path, mimeType }) {
     return 'text';
   }
   return 'unsupported';
+}
+
+const PLAIN_TEXT_EXTENSIONS = new Set([
+  '.txt',
+  '.log',
+  '.csv',
+  '.tsv',
+  '.env',
+  '.ini',
+  '.conf',
+  '.lock',
+]);
+
+export function resolveWorkspaceEditKind({ path, mimeType }) {
+  const ext = fileExtension(path);
+  const normalizedMime = normalizeMimeType(mimeType);
+
+  if (HTML_EXTENSIONS.has(ext) || normalizedMime === 'text/html') {
+    return 'html';
+  }
+  if (normalizedMime === 'text/markdown' || MARKDOWN_EXTENSIONS.has(ext)) {
+    return 'markdown';
+  }
+  if (normalizedMime === 'application/pdf' || PDF_EXTENSIONS.has(ext)) {
+    return null;
+  }
+  if (normalizedMime.startsWith('image/') || IMAGE_EXTENSIONS.has(ext)) {
+    return null;
+  }
+  if (PLAIN_TEXT_EXTENSIONS.has(ext) || normalizedMime === 'text/plain') {
+    return 'text';
+  }
+  if (
+    normalizedMime.startsWith('text/')
+    || TEXT_MIME_TYPES.has(normalizedMime)
+    || TEXT_EXTENSIONS.has(ext)
+  ) {
+    return 'code';
+  }
+  return null;
 }
 
 export function resolveWorkspacePanelPresentation({ isMobile }) {
