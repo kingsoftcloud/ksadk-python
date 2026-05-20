@@ -1,6 +1,7 @@
 import io
 import json
 import subprocess
+import sys
 
 from ksadk.builders.code_builder import CodeBuilder
 
@@ -325,3 +326,53 @@ def test_install_dependencies_download_summary_uses_artifact_name(
     output = capsys.readouterr().out
     assert "demo-1.0-py3-none-any.whl.metadata" in output
     assert "最近: (117" not in output
+
+
+def test_install_dependencies_bootstraps_pip_when_missing(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    builder = CodeBuilder(tmp_path)
+    builder.deps_dir.mkdir(parents=True, exist_ok=True)
+    requirements_path = tmp_path / "requirements.txt"
+    requirements_path.write_text("demo==1.0\n", encoding="utf-8")
+
+    calls = []
+    popen_attempts = {"count": 0}
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    def fake_popen(cmd, **kwargs):
+        popen_attempts["count"] += 1
+        if popen_attempts["count"] == 1:
+            return _FakePopen(
+                cmd,
+                calls=[],
+                output_lines=[f"{sys.executable}: No module named pip\n"],
+                returncode=1,
+                **kwargs,
+            )
+        return _FakePopen(
+            cmd,
+            calls=[],
+            output_lines=[
+                "Collecting demo==1.0\n",
+                "Installing collected packages: demo\n",
+                "Successfully installed demo-1.0\n",
+            ],
+            **kwargs,
+        )
+
+    monkeypatch.setattr("ksadk.builders.code_builder.subprocess.run", fake_run)
+    monkeypatch.setattr("ksadk.builders.code_builder.subprocess.Popen", fake_popen)
+    monkeypatch.setattr(CodeBuilder, "_scan_incompatible_binaries_in_deps", lambda self: [])
+
+    assert builder._install_dependencies(requirements_path) is True
+
+    output = capsys.readouterr().out
+    assert "pip 工具链缺失" in output
+    assert calls
+    assert calls[0][:3] == [sys.executable, "-m", "ensurepip"]
