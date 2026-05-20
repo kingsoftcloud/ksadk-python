@@ -108,6 +108,21 @@ def _pad_to_terminal_cells(text: str, width: int) -> str:
     return text + " " * max(width - _terminal_cell_width(text), 0)
 
 
+COLORED_HELP_LABEL_WIDTH = 28
+
+
+def _write_colored_help_row(
+    formatter: click.HelpFormatter,
+    label: str,
+    description: str,
+    *,
+    end: str = "\n\n",
+) -> None:
+    label_cell = _pad_to_terminal_cells(label, COLORED_HELP_LABEL_WIDTH)
+    formatter.write(click.style(f"      {label_cell}", fg="cyan"))
+    formatter.write(click.style(f"{description}{end}", fg="white"))
+
+
 # ASCII 艺术字 Banner
 BANNER = r"""
     _                    _   _____            _
@@ -155,34 +170,23 @@ class ColoredHelpGroup(click.Group):
 
         # 本地开发
         formatter.write(click.style("  📦  本地开发:\n\n", fg="green", bold=True))
-        formatter.write(click.style("      agentengine init             ", fg="cyan"))
-        formatter.write(click.style("初始化项目\n\n", fg="white"))
-        formatter.write(click.style("      agentengine run              ", fg="cyan"))
-        formatter.write(click.style("运行 API Server\n\n", fg="white"))
-        formatter.write(click.style("      agentengine web              ", fg="cyan"))
-        formatter.write(click.style("本地调试 Agent Invoke UI\n\n", fg="white"))
+        _write_colored_help_row(formatter, "agentengine init", "初始化项目")
+        _write_colored_help_row(formatter, "agentengine run", "运行 API Server")
+        _write_colored_help_row(formatter, "agentengine web", "本地调试 Agent Invoke UI")
 
         # 云端部署
         formatter.write(click.style("  🚀  云端部署:\n\n", fg="blue", bold=True))
-        formatter.write(click.style("      agentengine build            ", fg="cyan"))
-        formatter.write(click.style("构建部署制品\n\n", fg="white"))
-        formatter.write(click.style("      agentengine deploy           ", fg="cyan"))
-        formatter.write(click.style("部署到云端\n\n", fg="white"))
-        formatter.write(click.style("      agentengine launch           ", fg="cyan"))
-        formatter.write(click.style("一键构建+部署\n\n", fg="white"))
-        formatter.write(click.style("      agentengine agent            ", fg="cyan"))
-        formatter.write(click.style("Agent 资源管理\n\n", fg="white"))
-        formatter.write(click.style("      agentengine dashboard        ", fg="cyan"))
-        formatter.write(click.style("打开云端 Agent Dashboard\n\n", fg="white"))
-        formatter.write(click.style("      agentengine hermes           ", fg="cyan"))
-        formatter.write(click.style("Hermes Agent 资源管理\n\n", fg="white"))
-        formatter.write(click.style("      agentengine openclaw         ", fg="cyan"))
-        formatter.write(click.style("OpenClaw 资源管理\n\n", fg="white"))
+        _write_colored_help_row(formatter, "agentengine build", "构建部署制品")
+        _write_colored_help_row(formatter, "agentengine deploy", "部署到云端")
+        _write_colored_help_row(formatter, "agentengine launch", "一键构建+部署")
+        _write_colored_help_row(formatter, "agentengine agent", "Agent 资源管理")
+        _write_colored_help_row(formatter, "agentengine dashboard", "打开云端 Agent Dashboard")
+        _write_colored_help_row(formatter, "agentengine hermes", "Hermes Agent 资源管理")
+        _write_colored_help_row(formatter, "agentengine openclaw", "OpenClaw 资源管理")
 
         # 配置与工具
         formatter.write(click.style("  🧰  配置:\n\n", fg="yellow", bold=True))
-        formatter.write(click.style("      agentengine config           ", fg="cyan"))
-        formatter.write(click.style("项目配置向导与模型配置\n\n", fg="white"))
+        _write_colored_help_row(formatter, "agentengine config", "项目配置向导与模型配置")
 
         # 自定义 Options 格式化
         self.format_options_colored(ctx, formatter)
@@ -193,14 +197,10 @@ class ColoredHelpGroup(click.Group):
     def format_options_colored(self, ctx, formatter):
         """自定义选项格式化"""
         formatter.write(click.style("  ⚙️  选项:\n\n", fg="yellow", bold=True))
-        formatter.write(click.style("      --output       ", fg="cyan"))
-        formatter.write(click.style("输出格式（pretty/json）\n\n", fg="white"))
-        formatter.write(click.style("      --no-color     ", fg="cyan"))
-        formatter.write(click.style("禁用颜色输出\n\n", fg="white"))
-        formatter.write(click.style("      --version      ", fg="cyan"))
-        formatter.write(click.style("显示版本号\n\n", fg="white"))
-        formatter.write(click.style("      -h, --help     ", fg="cyan"))
-        formatter.write(click.style("显示帮助信息\n", fg="white"))
+        _write_colored_help_row(formatter, "--output", "输出格式（pretty/json）")
+        _write_colored_help_row(formatter, "--no-color", "禁用颜色输出")
+        _write_colored_help_row(formatter, "--version", "显示版本号")
+        _write_colored_help_row(formatter, "-h, --help", "显示帮助信息", end="\n")
 
     def format_commands(self, ctx, formatter):
         """覆盖默认的 Commands 格式化，防止重复输出"""

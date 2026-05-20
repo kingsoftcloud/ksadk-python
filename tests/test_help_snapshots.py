@@ -11,6 +11,23 @@ import ksadk.cli as cli_module
 from ksadk.cli import ROOT_HELP_COMMANDS, SHORT_HELP_MAP, _register_commands, cli
 
 SNAPSHOT_FILE = Path(__file__).parent / "snapshots" / "help_snapshots.txt"
+COLORED_ROOT_HELP_ROWS = {
+    "agentengine init": "初始化项目",
+    "agentengine run": "运行 API Server",
+    "agentengine web": "本地调试 Agent Invoke UI",
+    "agentengine build": "构建部署制品",
+    "agentengine deploy": "部署到云端",
+    "agentengine launch": "一键构建+部署",
+    "agentengine agent": "Agent 资源管理",
+    "agentengine dashboard": "打开云端 Agent Dashboard",
+    "agentengine hermes": "Hermes Agent 资源管理",
+    "agentengine openclaw": "OpenClaw 资源管理",
+    "agentengine config": "项目配置向导与模型配置",
+    "--output": "输出格式（pretty/json）",
+    "--no-color": "禁用颜色输出",
+    "--version": "显示版本号",
+    "-h, --help": "显示帮助信息",
+}
 
 
 def load_section_snapshots(path: Path) -> dict[str, str]:
@@ -104,3 +121,24 @@ def test_colored_root_help_command_columns_align_with_unicode_icons(monkeypatch)
 
     assert command_offsets == {10}
     assert description_offsets == {34}
+
+
+def test_colored_root_help_overview_rows_share_description_column(monkeypatch):
+    _register_commands()
+    monkeypatch.setattr(cli_module, "should_render_banner", lambda: True)
+
+    result = CliRunner().invoke(cli, ["--help"], color=True)
+
+    assert result.exit_code == 0, result.output
+
+    lines = strip_ansi(result.output).splitlines()
+    description_offsets: dict[str, int] = {}
+    for label, description in COLORED_ROOT_HELP_ROWS.items():
+        line = next(
+            line
+            for line in lines
+            if line.startswith("      ") and label in line and description in line
+        )
+        description_offsets[label] = cell_len(line[: line.index(description)])
+
+    assert set(description_offsets.values()) == {34}
