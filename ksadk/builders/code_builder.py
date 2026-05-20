@@ -663,6 +663,59 @@ class CodeBuilder(BaseBuilder):
                 return self._truncate_progress_summary(normalized)
         return "unknown"
 
+    def _pip_missing_from_result(self, result: subprocess.CompletedProcess[str] | None) -> bool:
+        if result is None:
+            return False
+        combined = "\n".join(
+            part for part in (result.stderr or "", result.stdout or "") if part
+        )
+        return "No module named pip" in combined
+
+    def _bootstrap_pip_if_missing(self, result: subprocess.CompletedProcess[str] | None) -> bool:
+        if not self._pip_missing_from_result(result):
+            return False
+
+        self._emit_install_progress(
+            14,
+            "准备安装",
+            "pip 工具链缺失，正在自动初始化",
+        )
+        bootstrap_cmd = [
+            sys.executable,
+            "-m",
+            "ensurepip",
+            "--upgrade",
+        ]
+        try:
+            bootstrap_result = subprocess.run(
+                bootstrap_cmd,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        except Exception as exc:
+            self._emit_install_progress(
+                14,
+                "准备安装",
+                f"pip 自动初始化失败: {exc}",
+            )
+            return False
+
+        if bootstrap_result.returncode == 0:
+            self._emit_install_progress(
+                15,
+                "准备安装",
+                "pip 工具链已初始化，继续安装依赖",
+            )
+            return True
+
+        self._emit_install_progress(
+            14,
+            "准备安装",
+            f"pip 自动初始化失败: {self._result_error_summary(bootstrap_result)}",
+        )
+        return False
+
     def _extract_pip_artifact_name(self, value: str) -> str:
         token = value.strip().split()[0] if value.strip() else ""
         parsed = urlparse(token)
@@ -1481,6 +1534,8 @@ if __name__ == "__main__":
             if index_url:
                 install_cmd += ["-i", index_url]
             result = self._run_streamed_pip_install(install_cmd, timeout=1200)
+            if result.returncode != 0 and self._bootstrap_pip_if_missing(result):
+                result = self._run_streamed_pip_install(install_cmd, timeout=1200)
             if result.returncode == 0:
                 break
             self._emit_install_progress(
