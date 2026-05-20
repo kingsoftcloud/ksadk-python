@@ -96,11 +96,11 @@
 }
 
 #docs {
-  border-right: 1px solid var(--border);
+  border-right: 1px solid color-mix(in srgb, var(--border) 30%, transparent);
 
   @media (max-width: 1024px) {
     border-right: none;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid color-mix(in srgb, var(--border) 30%, transparent);
   }
 }
 

@@ -46,19 +46,16 @@ type ChatMessageListProps = {
 
 function EmptyState({ agentName, isMobile }: { agentName: string; isMobile: boolean }) {
   return (
-    <div className="flex min-h-[45vh] flex-col items-center justify-center px-2 text-center sm:min-h-[50vh] sm:px-4">
-      <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-full bg-slate-100 dark:bg-slate-800 sm:mb-6 sm:h-16 sm:w-16">
-        <Bot className="h-7 w-7 text-slate-600 dark:text-slate-300 sm:h-8 sm:w-8" />
+    <div className="flex flex-col items-center justify-center min-h-[50vh] px-4">
+      <div className="mb-6 h-16 w-16 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600
+        flex items-center justify-center shadow-lg shadow-blue-500/20">
+        <Bot className="h-8 w-8 text-white" />
       </div>
-      <h2 className={cn('font-semibold', isMobile ? 'text-xl' : 'text-2xl')}>
+      <h2 className="text-xl font-semibold text-slate-900 dark:text-slate-50">
         有什么我可以帮您的吗？
       </h2>
-      <p className="mx-auto mt-2 max-w-md text-sm text-slate-500 dark:text-slate-400">
-        我是 {agentName}，一个由{' '}
-        <span className="bg-gradient-to-r from-blue-600 to-indigo-500 bg-clip-text font-semibold text-transparent dark:from-blue-400 dark:to-indigo-300">
-          Ksyun AgentEngine
-        </span>{' '}
-        驱动的智能体。您可以在下方输入消息开始对话。
+      <p className="mt-2 text-sm text-slate-500">
+        我是 {agentName}，由 Ksyun AgentEngine 驱动
       </p>
     </div>
   );
@@ -217,7 +214,7 @@ function ToolPayloadBlock({
           {copyState === 'copied' ? '已复制' : copyState === 'failed' ? '复制失败' : '复制'}
         </button>
       </div>
-      <div className="custom-scrollbar max-h-[220px] overflow-y-auto whitespace-pre-wrap break-words rounded-xl border border-slate-200/70 bg-white/70 p-3 text-slate-600 shadow-sm dark:border-slate-800 dark:bg-slate-950/40 dark:text-slate-300 sm:max-h-[300px]">
+      <div className="custom-scrollbar max-h-[220px] overflow-y-auto whitespace-pre-wrap break-words rounded-xl border border-slate-200/30 bg-white/70 p-3 text-slate-600 shadow-sm dark:border-slate-800 dark:bg-slate-950/40 dark:text-slate-300 sm:max-h-[300px]">
         {formatted}
       </div>
     </div>
@@ -359,150 +356,154 @@ function ChatMessage({
   onRespondToApproval: ChatMessageListProps['onRespondToApproval'];
   onSubmitFeedback: ChatMessageListProps['onSubmitFeedback'];
 }) {
+  if (message.role === 'user') {
+    return (
+      <div className="flex justify-end mb-4">
+        <div className="max-w-[80%] rounded-2xl rounded-br-sm bg-blue-600 dark:bg-blue-500 text-white px-4 py-3 text-[15px] leading-relaxed">
+          {message.attachments?.length ? (
+            <MessageAttachments
+              attachments={message.attachments}
+              isMobile={isMobile}
+              onOpenAttachmentPreview={onOpenAttachmentPreview}
+            />
+          ) : null}
+          {message.content}
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className={cn('flex w-full gap-3 py-4 sm:gap-4 sm:px-4', isMobile ? 'px-0' : 'px-4')}>
-      <div className="mt-0.5 flex-shrink-0">
-        {message.role === 'user' ? (
-          <div className="flex h-6 w-6 items-center justify-center rounded-full bg-slate-800 text-white dark:bg-slate-200 dark:text-slate-900 sm:h-7 sm:w-7">
-            <User className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
-          </div>
-        ) : (
-          <div className="flex h-6 w-6 items-center justify-center rounded-full bg-emerald-600 p-1 text-white sm:h-7 sm:w-7">
-            <Bot className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
-          </div>
-        )}
+    <div className="mb-4 max-w-none">
+      <div className="flex items-center gap-2 mb-2 text-xs text-slate-400">
+        <Bot className="w-3.5 h-3.5" />
+        <span>{agentName}</span>
       </div>
 
-      <div className="min-w-0 flex-1 overflow-hidden">
-        <div className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">
-          {message.role === 'user' ? 'You' : agentName}
-        </div>
+      {message.attachments?.length ? (
+        <MessageAttachments
+          attachments={message.attachments}
+          isMobile={isMobile}
+          onOpenAttachmentPreview={onOpenAttachmentPreview}
+        />
+      ) : null}
 
-        {message.attachments?.length ? (
-          <MessageAttachments
-            attachments={message.attachments}
-            isMobile={isMobile}
-            onOpenAttachmentPreview={onOpenAttachmentPreview}
-          />
-        ) : null}
-
-        {message.reasoning ? (
-          <details className="group/details mb-4 rounded-xl border border-slate-200 bg-slate-50/60 px-4 py-3 text-sm text-slate-600 transition-all dark:border-slate-700/50 dark:bg-slate-800/20 dark:text-slate-400">
-            <summary className="flex cursor-pointer list-none items-center justify-between gap-2 font-medium">
-              <div className="flex items-center gap-2">
-                {isStreaming && isLastMessage && !message.content ? (
-                  <RefreshCcw className="h-4 w-4 animate-spin text-emerald-500" />
-                ) : (
-                  <Check className="h-4 w-4 text-emerald-500" />
-                )}
-                <span>思考过程</span>
-              </div>
-            </summary>
-            <div className="mx-1 mt-3 border-l-2 border-slate-200 py-1 pl-4 text-[14px] leading-relaxed opacity-90 dark:border-slate-700">
-              <MessageMarkdown content={message.reasoning} />
+      {message.reasoning ? (
+        <details className="group/details mb-4 rounded-xl border border-slate-200 bg-slate-50/60 px-4 py-3 text-sm text-slate-600 transition-all dark:border-slate-700/30 dark:bg-slate-800/20 dark:text-slate-400">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-2 font-medium">
+            <div className="flex items-center gap-2">
+              {isStreaming && isLastMessage && !message.content ? (
+                <RefreshCcw className="h-4 w-4 animate-spin text-emerald-500" />
+              ) : (
+                <Check className="h-4 w-4 text-emerald-500" />
+              )}
+              <span>思考过程</span>
             </div>
-          </details>
-        ) : null}
+          </summary>
+          <div className="mx-1 mt-3 border-l-2 border-slate-200 py-1 pl-4 text-[14px] leading-relaxed opacity-90 dark:border-slate-700">
+            <MessageMarkdown content={message.reasoning} />
+          </div>
+        </details>
+      ) : null}
 
-        {message.tools
-          ? Object.values(message.tools).map((tool, toolIndex) => (
-              <details
-                key={`${tool.name}-${toolIndex}`}
-                open={tool.status === 'paused' ? true : undefined}
+      {message.tools
+        ? Object.values(message.tools).map((tool, toolIndex) => (
+            <details
+              key={`${tool.name}-${toolIndex}`}
+              open={tool.status === 'paused' ? true : undefined}
+              className={cn(
+                'group/details mb-4 rounded-xl border px-4 py-3 text-sm transition-all',
+                tool.status === 'paused'
+                  ? 'border-amber-200 bg-amber-50/50 text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-200'
+                  : 'border-blue-200 bg-blue-50/30 text-blue-600 dark:border-blue-900/50 dark:bg-blue-950/20 dark:text-blue-400',
+              )}
+            >
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-2 font-medium">
+                <div className="flex items-center gap-2">
+                  {tool.status === 'running' ? (
+                    <RefreshCcw className="h-4 w-4 animate-spin text-blue-500" />
+                  ) : tool.status === 'paused' ? (
+                    <ShieldCheck className="h-4 w-4 text-amber-500" />
+                  ) : (
+                    <Check className="h-4 w-4 text-emerald-500" />
+                  )}
+                  <span>{tool.status === 'paused' ? '等待审批：' : '工具调用：'}{tool.name}</span>
+                </div>
+              </summary>
+              <div
                 className={cn(
-                  'group/details mb-4 rounded-xl border px-4 py-3 text-sm transition-all',
-                  tool.status === 'paused'
-                    ? 'border-amber-200 bg-amber-50/50 text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-200'
-                    : 'border-blue-200 bg-blue-50/30 text-blue-600 dark:border-blue-900/50 dark:bg-blue-950/20 dark:text-blue-400',
+                  'mx-1 mt-3 flex flex-col gap-3 border-l-2 py-1 pl-4 font-mono text-[13px] leading-relaxed opacity-90',
+                  tool.status === 'paused' ? 'border-amber-200 dark:border-amber-800' : 'border-blue-200 dark:border-blue-800',
                 )}
               >
-                <summary className="flex cursor-pointer list-none items-center justify-between gap-2 font-medium">
-                  <div className="flex items-center gap-2">
-                    {tool.status === 'running' ? (
-                      <RefreshCcw className="h-4 w-4 animate-spin text-blue-500" />
-                    ) : tool.status === 'paused' ? (
-                      <ShieldCheck className="h-4 w-4 text-amber-500" />
-                    ) : (
-                      <Check className="h-4 w-4 text-emerald-500" />
-                    )}
-                    <span>{tool.status === 'paused' ? '等待审批：' : '工具调用：'}{tool.name}</span>
-                  </div>
-                </summary>
-                <div
-                  className={cn(
-                    'mx-1 mt-3 flex flex-col gap-3 border-l-2 py-1 pl-4 font-mono text-[13px] leading-relaxed opacity-90',
-                    tool.status === 'paused' ? 'border-amber-200 dark:border-amber-800' : 'border-blue-200 dark:border-blue-800',
-                  )}
-                >
-                  {tool.status === 'paused' && tool.approvalRequestId ? (
-                    <div className="rounded-2xl border border-amber-200 bg-white/75 p-3 font-sans text-sm text-amber-900 shadow-sm dark:border-amber-900/70 dark:bg-slate-950/40 dark:text-amber-100">
-                      <div className="font-medium">该工具调用需要人工确认后继续。</div>
-                      {tool.serverLabel ? (
-                        <div className="mt-1 text-xs text-amber-700/80 dark:text-amber-200/80">
-                          MCP Server: {tool.serverLabel}
-                        </div>
-                      ) : null}
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        <button
-                          type="button"
-                          disabled={tool.approvalStatus === 'approved' || tool.approvalStatus === 'rejected'}
-                          onClick={() =>
-                            onRespondToApproval({
-                              approvalRequestId: tool.approvalRequestId || '',
-                              approve: true,
-                              previousResponseId: tool.previousResponseId,
-                            })
-                          }
-                          className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-55"
-                        >
-                          <Check className="h-3.5 w-3.5" />
-                          批准并继续
-                        </button>
-                        <button
-                          type="button"
-                          disabled={tool.approvalStatus === 'approved' || tool.approvalStatus === 'rejected'}
-                          onClick={() =>
-                            onRespondToApproval({
-                              approvalRequestId: tool.approvalRequestId || '',
-                              approve: false,
-                              previousResponseId: tool.previousResponseId,
-                            })
-                          }
-                          className="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-white px-3 py-1.5 text-xs font-semibold text-rose-600 shadow-sm transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-55 dark:border-rose-900/70 dark:bg-slate-950 dark:text-rose-300 dark:hover:bg-rose-950/30"
-                        >
-                          <XCircle className="h-3.5 w-3.5" />
-                          拒绝
-                        </button>
+                {tool.status === 'paused' && tool.approvalRequestId ? (
+                  <div className="rounded-2xl border border-amber-200 bg-white/75 p-3 font-sans text-sm text-amber-900 shadow-sm dark:border-amber-900/70 dark:bg-slate-950/40 dark:text-amber-100">
+                    <div className="font-medium">该工具调用需要人工确认后继续。</div>
+                    {tool.serverLabel ? (
+                      <div className="mt-1 text-xs text-amber-700/80 dark:text-amber-200/80">
+                        MCP Server: {tool.serverLabel}
                       </div>
+                    ) : null}
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        disabled={tool.approvalStatus === 'approved' || tool.approvalStatus === 'rejected'}
+                        onClick={() =>
+                          onRespondToApproval({
+                            approvalRequestId: tool.approvalRequestId || '',
+                            approve: true,
+                            previousResponseId: tool.previousResponseId,
+                          })
+                        }
+                        className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-55"
+                      >
+                        <Check className="h-3.5 w-3.5" />
+                        批准并继续
+                      </button>
+                      <button
+                        type="button"
+                        disabled={tool.approvalStatus === 'approved' || tool.approvalStatus === 'rejected'}
+                        onClick={() =>
+                          onRespondToApproval({
+                            approvalRequestId: tool.approvalRequestId || '',
+                            approve: false,
+                            previousResponseId: tool.previousResponseId,
+                          })
+                        }
+                        className="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-white px-3 py-1.5 text-xs font-semibold text-rose-600 shadow-sm transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-55 dark:border-rose-900/70 dark:bg-slate-950 dark:text-rose-300 dark:hover:bg-rose-950/30"
+                      >
+                        <XCircle className="h-3.5 w-3.5" />
+                        拒绝
+                      </button>
                     </div>
-                  ) : null}
-                  {tool.args ? (
-                    <ToolPayloadBlock label="入参 (Args)" tone="input" value={tool.args} />
-                  ) : null}
-                  {tool.output ? (
-                    <ToolPayloadBlock label="输出 (Output)" tone="output" value={tool.output} />
-                  ) : null}
-                </div>
-              </details>
-            ))
-          : null}
+                  </div>
+                ) : null}
+                {tool.args ? (
+                  <ToolPayloadBlock label="入参 (Args)" tone="input" value={tool.args} />
+                ) : null}
+                {tool.output ? (
+                  <ToolPayloadBlock label="输出 (Output)" tone="output" value={tool.output} />
+                ) : null}
+              </div>
+            </details>
+          ))
+        : null}
 
-        <div className="w-full break-words">
-          {message.content ? (
-            <MessageMarkdown content={message.content} />
-          ) : isStreaming && isLastMessage && !message.reasoning && !message.tools ? (
-            <span className="ml-1 mt-2 inline-block h-4 w-2 animate-pulse rounded-sm bg-emerald-500 align-middle opacity-80 shadow-sm" />
-          ) : null}
-        </div>
-
-        <FeedbackControls
-          isLastMessage={isLastMessage}
-          isStreaming={isStreaming}
-          message={message}
-          onDeleteFeedback={onDeleteFeedback}
-          onSubmitFeedback={onSubmitFeedback}
-        />
+      <div className="w-full break-words">
+        {message.content ? (
+          <MessageMarkdown content={message.content} />
+        ) : isStreaming && isLastMessage && !message.reasoning && !message.tools ? (
+          <span className="ml-1 mt-2 inline-block h-4 w-2 animate-pulse rounded-sm bg-emerald-500 align-middle opacity-80 shadow-sm" />
+        ) : null}
       </div>
+
+      <FeedbackControls
+        isLastMessage={isLastMessage}
+        isStreaming={isStreaming}
+        message={message}
+        onDeleteFeedback={onDeleteFeedback}
+        onSubmitFeedback={onSubmitFeedback}
+      />
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowUp,
   Download,
@@ -9,19 +9,26 @@ import {
   Loader2,
   Maximize2,
   Minimize2,
+  Package,
   RefreshCw,
+  Save,
   Trash2,
   Upload,
   X,
 } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
-import { MessageMarkdown } from '../MessageMarkdown';
-import type { WorkspaceEntry, WorkspaceFilesCapability } from '../chat/types';
+import { FileEditor } from './FileEditor.js';
+import { FilePreview } from './FilePreview.js';
+import { HtmlPreview } from './HtmlPreview.js';
+import { MarkdownPreview } from './MarkdownPreview.js';
+import type { WorkspaceEntry, WorkspaceFilesCapability } from '../chat/types.js';
+import type { ApiFacade } from '../../core/api/types.js';
 import {
   formatWorkspaceDirectoryPathLabel,
   isWorkspaceRootPath,
   normalizeWorkspacePath,
+  resolveWorkspaceEditKind,
   resolveWorkspacePreviewKind,
 } from '../../utils/workspace.js';
 
@@ -66,32 +73,6 @@ function formatSize(sizeBytes?: number | null): string {
   return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
-async function readWorkspacePayload<T>(response: globalThis.Response): Promise<T> {
-  const raw = await response.text();
-  let parsed: { Code?: number; Message?: string; Data?: T } | T | null = null;
-  if (raw) {
-    try {
-      parsed = JSON.parse(raw) as { Code?: number; Message?: string; Data?: T };
-    } catch {
-      parsed = null;
-    }
-  }
-  if (!response.ok) {
-    throw new Error(
-      parsed && typeof parsed === 'object' && 'Message' in parsed && parsed.Message
-        ? parsed.Message
-        : raw || `HTTP ${response.status}`,
-    );
-  }
-  if (parsed && typeof parsed === 'object' && 'Code' in parsed) {
-    if (parsed.Code !== 0) {
-      throw new Error(parsed.Message || 'Workspace request failed');
-    }
-    return (parsed.Data ?? ({} as T)) as T;
-  }
-  return (parsed ?? ({} as T)) as T;
-}
-
 type WorkspacePanelProps = {
   agentId: string;
   capability: WorkspaceFilesCapability;
@@ -99,9 +80,11 @@ type WorkspacePanelProps = {
   onClose?: () => void;
   isFullscreen?: boolean;
   onToggleFullscreen?: () => void;
+  isMobile?: boolean;
+  api: ApiFacade;
 };
 
-type PreviewKind = 'markdown' | 'text' | 'image' | 'pdf' | 'unsupported';
+type PreviewKind = 'markdown' | 'text' | 'code' | 'html' | 'image' | 'pdf' | 'unsupported';
 
 type PreviewState = {
   path: string;
@@ -123,14 +106,10 @@ const SUPPORTED_PREVIEW_GROUPS = [
 
 function buildDownloadHref(options: {
   agentId: string;
-  contentPath: string;
   entryPath: string;
 }) {
-  const params = new URLSearchParams({
-    AgentId: options.agentId,
-    FilePath: options.entryPath,
-  });
-  return `${options.contentPath}?${params.toString()}`;
+  const prefix = `/agentengine/api/v1/ws/${encodeURIComponent(options.agentId)}`;
+  return `${prefix}/${options.entryPath}`;
 }
 
 function PreviewEmptyState({
@@ -181,6 +160,8 @@ export function WorkspacePanel({
   onClose,
   isFullscreen = false,
   onToggleFullscreen,
+  isMobile = false,
+  api,
 }: WorkspacePanelProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const previewObjectUrlRef = useRef<string | null>(null);
@@ -192,14 +173,28 @@ export function WorkspacePanel({
   const [error, setError] = useState('');
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [previewState, setPreviewState] = useState<PreviewState | null>(null);
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const getContentRef = useRef<(() => string) | null>(null);
 
-  const listActionPath = capability.EntryAction
-    ? `/agentengine/api/v1/${capability.EntryAction}`
-    : '/agentengine/api/v1/ListWorkspaceFiles';
-  const uploadActionPath = capability.UploadAction
-    ? `/agentengine/api/v1/${capability.UploadAction}`
-    : '/agentengine/api/v1/AddWorkspaceFile';
-  const deleteActionPath = '/agentengine/api/v1/DeleteWorkspaceFile';
+  const selectedEntry = useMemo(
+    () => entries.find((entry) => entry.Path === selectedPath) ?? null,
+    [entries, selectedPath],
+  );
+
+  const editKind = useMemo(
+    () =>
+      selectedEntry
+        ? resolveWorkspaceEditKind({ path: selectedEntry.Path, mimeType: selectedEntry.MimeType })
+        : null,
+    [selectedEntry],
+  );
+
+  const confirmUnsaved = useCallback((): boolean => {
+    if (!dirty) return true;
+    return window.confirm('当前文件有未保存的更改，确定要离开吗？');
+  }, [dirty]);
+
   const contentPath = capability.ContentPath || DEFAULT_WORKSPACE_CONTENT_PATH;
 
   const rootLabel = capability.RootLabel || 'Workspace';
@@ -207,10 +202,6 @@ export function WorkspacePanel({
     ? `${rootLabel.charAt(0).toUpperCase()}${rootLabel.slice(1)}`
     : 'Workspace';
   const currentDirectoryLabel = formatWorkspaceDirectoryPathLabel(currentPath);
-  const selectedEntry = useMemo(
-    () => entries.find((entry) => entry.Path === selectedPath) ?? null,
-    [entries, selectedPath],
-  );
 
   const clearPreviewObjectUrl = () => {
     if (previewObjectUrlRef.current) {
@@ -227,23 +218,10 @@ export function WorkspacePanel({
     setLoading(true);
     setError('');
     try {
-      const response = await fetch(listActionPath, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          AgentId: agentId,
-          Path: targetPath,
-          Recursive: false,
-        }),
-      });
-      const data = await readWorkspacePayload<{
-        Path?: string;
-        Entries?: WorkspaceEntry[];
-      }>(response);
-      const nextPath = normalizeWorkspacePath(String(data?.Path || targetPath || '.'));
-      const nextEntries = Array.isArray(data?.Entries) ? (data.Entries as WorkspaceEntry[]) : [];
+      const data = await api.listWorkspaceFiles(agentId, targetPath, false);
+      const workspaceData = data as { Path?: string; Entries?: WorkspaceEntry[] };
+      const nextPath = normalizeWorkspacePath(String(workspaceData?.Path || targetPath || '.'));
+      const nextEntries = Array.isArray(workspaceData?.Entries) ? (workspaceData.Entries as WorkspaceEntry[]) : [];
       setCurrentPath(nextPath);
       setEntries(nextEntries);
       setSelectedPath((previousSelectedPath) => {
@@ -296,44 +274,53 @@ export function WorkspacePanel({
     });
 
     try {
-      const response = await fetch(
-        buildDownloadHref({
-          agentId,
-          contentPath,
-          entryPath: entry.Path,
-        }),
-      );
-      if (!response.ok) {
-        throw new Error(await response.text() || `HTTP ${response.status}`);
-      }
-      const resolvedMimeType = response.headers.get('content-type') || entry.MimeType || '';
-      const resolvedKind = resolveWorkspacePreviewKind({
-        path: entry.Path,
-        mimeType: resolvedMimeType,
-      }) as PreviewKind;
+      const result = await api.getWorkspaceFileContent(agentId, entry.Path, { asText: false });
+      if (result instanceof Blob) {
+        const resolvedMimeType = entry.MimeType || '';
+        const resolvedKind = resolveWorkspacePreviewKind({
+          path: entry.Path,
+          mimeType: resolvedMimeType,
+        }) as PreviewKind;
 
-      if (resolvedKind === 'image' || resolvedKind === 'pdf') {
-        const blob = await response.blob();
-        const objectUrl = URL.createObjectURL(blob);
-        previewObjectUrlRef.current = objectUrl;
+        if (resolvedKind === 'image' || resolvedKind === 'pdf') {
+          const objectUrl = URL.createObjectURL(result);
+          previewObjectUrlRef.current = objectUrl;
+          setPreviewState({
+            path: entry.Path,
+            kind: resolvedKind,
+            status: 'ready',
+            mimeType: resolvedMimeType,
+            objectUrl,
+          });
+          return;
+        }
+
+        const text = await result.text();
+        const textKind = resolveWorkspacePreviewKind({
+          path: entry.Path,
+          mimeType: resolvedMimeType,
+        }) as PreviewKind;
+        setPreviewState({
+          path: entry.Path,
+          kind: textKind,
+          status: 'ready',
+          mimeType: resolvedMimeType,
+          content: text,
+        });
+      } else {
+        const resolvedMimeType = entry.MimeType || '';
+        const resolvedKind = resolveWorkspacePreviewKind({
+          path: entry.Path,
+          mimeType: resolvedMimeType,
+        }) as PreviewKind;
         setPreviewState({
           path: entry.Path,
           kind: resolvedKind,
           status: 'ready',
           mimeType: resolvedMimeType,
-          objectUrl,
+          content: result,
         });
-        return;
       }
-
-      const content = await response.text();
-      setPreviewState({
-        path: entry.Path,
-        kind: resolvedKind,
-        status: 'ready',
-        mimeType: resolvedMimeType,
-        content,
-      });
     } catch (previewError) {
       console.error('Failed to preview workspace file:', previewError);
       setPreviewState({
@@ -350,6 +337,7 @@ export function WorkspacePanel({
     if (!selectedEntry || selectedEntry.Type !== 'file') {
       clearPreviewObjectUrl();
       setPreviewState(null);
+      setDirty(false);
       return;
     }
     void loadPreview(selectedEntry);
@@ -371,11 +359,7 @@ export function WorkspacePanel({
         formData.append('file', file);
         formData.append('AgentId', agentId);
         formData.append('Path', remotePath);
-        const response = await fetch(uploadActionPath, {
-          method: 'POST',
-          body: formData,
-        });
-        await readWorkspacePayload<{ Entry?: WorkspaceEntry }>(response);
+        await api.addWorkspaceFile(formData);
       }
       await loadEntries(currentPath);
     } catch (uploadError) {
@@ -398,19 +382,10 @@ export function WorkspacePanel({
     }
     setError('');
     try {
-      const response = await fetch(deleteActionPath, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          AgentId: agentId,
-          Path: entry.Path,
-        }),
-      });
-      await readWorkspacePayload<{ Deleted?: boolean }>(response);
+      await api.deleteWorkspaceFile(agentId, entry.Path);
       if (selectedPath === entry.Path) {
         setSelectedPath(null);
+        setDirty(false);
       }
       await loadEntries(currentPath);
     } catch (deleteError) {
@@ -439,39 +414,72 @@ export function WorkspacePanel({
       );
     }
     if (previewState.kind === 'markdown') {
-      return <MessageMarkdown content={previewState.content || ''} />;
+      return <MarkdownPreview content={previewState.content || ''} path={selectedEntry.Path} onSave={handleSave} onDirtyChange={setDirty} getContentRef={getContentRef} isMobile={isMobile} />;
     }
     if (previewState.kind === 'image' && previewState.objectUrl) {
-      return (
-        <div className="flex min-h-[16rem] items-center justify-center bg-white p-4 dark:bg-slate-950">
-          <img
-            src={previewState.objectUrl}
-            alt={selectedEntry.Name}
-            className="max-h-[calc(100vh-9rem)] max-w-full rounded-lg object-contain shadow-sm"
-          />
-        </div>
-      );
+      return <FilePreview content={null} objectUrl={previewState.objectUrl} kind="image" filename={selectedEntry.Name} mimeType={previewState.mimeType || ''} />;
     }
     if (previewState.kind === 'pdf' && previewState.objectUrl) {
+      return <FilePreview content={null} objectUrl={previewState.objectUrl} kind="pdf" filename={selectedEntry.Name} mimeType={previewState.mimeType || ''} />;
+    }
+    if (previewState.kind === 'html') {
       return (
-        <iframe
-          src={previewState.objectUrl}
-          title={selectedEntry.Name}
-          className="h-full min-h-0 w-full border-0 bg-white"
+        <HtmlPreview
+          content={previewState.content || ''}
+          path={selectedEntry.Path}
+          onSave={handleSave}
+          onDirtyChange={setDirty}
+          getContentRef={getContentRef}
+          isMobile={isMobile}
+          agentId={agentId}
+          contentPath={contentPath}
         />
       );
     }
-    if (previewState.kind === 'text') {
+    if (previewState.kind === 'text' || previewState.kind === 'code') {
       return (
-        <pre className="custom-scrollbar overflow-x-auto bg-white p-4 font-mono text-[13px] leading-6 text-slate-800 dark:bg-slate-950 dark:text-slate-100">
-          <code>{previewState.content || ''}</code>
-        </pre>
+        <FileEditor
+          content={previewState.content || ''}
+          path={selectedEntry.Path}
+          onSave={handleSave}
+          onDirtyChange={setDirty}
+          getContentRef={getContentRef}
+        />
       );
     }
-    return (
-      <PreviewEmptyState label="该文件类型暂不支持在线预览，请直接下载查看。" />
-    );
+    return <FilePreview content={null} kind="unsupported" filename={selectedEntry.Name} mimeType={previewState.mimeType || ''} />;
   };
+
+  const handleSave = async (content: string) => {
+    if (!selectedEntry) return;
+    setSaving(true);
+    setError('');
+    try {
+      const blob = new Blob([content], { type: selectedEntry.MimeType || 'text/plain' });
+      const formData = new FormData();
+      formData.append('file', blob, selectedEntry.Name);
+      formData.append('AgentId', agentId);
+      formData.append('Path', selectedEntry.Path);
+      await api.addWorkspaceFile(formData);
+      setDirty(false);
+      // Update previewState content so subsequent previews reflect saved content
+      setPreviewState((prev) =>
+        prev && prev.path === selectedEntry.Path ? { ...prev, content } : prev,
+      );
+      await loadEntries(currentPath);
+    } catch (saveError) {
+      console.error('Failed to save workspace file:', saveError);
+      setError(saveError instanceof Error ? saveError.message : String(saveError));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const previewPaneIsEditor =
+    selectedEntry?.Type === 'file'
+    && previewState?.path === selectedEntry.Path
+    && previewState.status === 'ready'
+    && (previewState.kind === 'text' || previewState.kind === 'code' || previewState.kind === 'html');
 
   const previewPaneIsPdf =
     selectedEntry?.Type === 'file'
@@ -481,7 +489,7 @@ export function WorkspacePanel({
 
   return (
     <div className="flex h-full min-h-[22rem] w-full min-w-0 flex-col bg-white text-slate-800 dark:bg-slate-950 dark:text-slate-200">
-      <div className="flex h-14 flex-shrink-0 items-center gap-3 border-b border-slate-200/60 px-4 dark:border-slate-800/70">
+      <div className="flex h-14 flex-shrink-0 items-center gap-3 border-b border-slate-200/30 px-4 dark:border-slate-800/40">
         <div className="flex min-w-0 flex-1 items-center gap-3">
           <div className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">
             {displayRootLabel}
@@ -518,6 +526,18 @@ export function WorkspacePanel({
             <Upload className="h-3.5 w-3.5" />
             {uploading ? '上传中' : '上传'}
           </button>
+          <button
+            type="button"
+            onClick={() => {
+              const qs = new URLSearchParams({ Path: currentPath }).toString();
+              window.open(`/agentengine/api/v1/ExportWorkspaceZip?${qs}`, '_blank', 'noopener,noreferrer');
+            }}
+            className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-900"
+            title={`导出当前目录为 ZIP`}
+          >
+            <Package className="h-3.5 w-3.5" />
+            导出
+          </button>
           {onToggleFullscreen ? (
             <button
               type="button"
@@ -532,7 +552,10 @@ export function WorkspacePanel({
           {onClose ? (
             <button
               type="button"
-              onClick={onClose}
+              onClick={() => {
+                if (!confirmUnsaved()) return;
+                onClose?.();
+              }}
               className="rounded-lg p-1.5 text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-900 dark:hover:text-slate-100"
               aria-label="关闭 Workspace"
               title="关闭"
@@ -544,8 +567,8 @@ export function WorkspacePanel({
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
-        <div className="flex w-full flex-col border-b border-slate-200/60 dark:border-slate-800/70 md:w-[13.5rem] md:border-b-0 md:border-r">
-          <div className="flex h-14 flex-shrink-0 items-center border-b border-slate-200/60 px-3 dark:border-slate-800/70">
+        <div className="flex w-full flex-col border-b border-slate-200/30 dark:border-slate-800/40 md:w-[13.5rem] md:border-b-0 md:border-r">
+          <div className="flex h-14 flex-shrink-0 items-center border-b border-slate-200/30 px-3 dark:border-slate-800/40">
             <div className="flex items-center justify-between gap-2">
               <div className="min-w-0">
                 <div className="text-xs font-medium text-slate-900 dark:text-slate-100">文件</div>
@@ -554,7 +577,10 @@ export function WorkspacePanel({
               <div className="flex items-center gap-1">
                 <button
                   type="button"
-                  onClick={() => void loadEntries(parentWorkspacePath(currentPath))}
+                  onClick={() => {
+                    if (!confirmUnsaved()) return;
+                    void loadEntries(parentWorkspacePath(currentPath));
+                  }}
                   disabled={loading || isWorkspaceRootPath(currentPath)}
                   className="rounded-md p-1.5 text-slate-500 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40 dark:text-slate-400 dark:hover:bg-slate-900"
                   title="返回上级目录"
@@ -599,7 +625,6 @@ export function WorkspacePanel({
                     entry.Type === 'file'
                       ? buildDownloadHref({
                           agentId,
-                          contentPath,
                           entryPath: entry.Path,
                         })
                       : '';
@@ -622,6 +647,9 @@ export function WorkspacePanel({
                             void loadEntries(entry.Path);
                             return;
                           }
+                          if (selectedPath !== entry.Path && !confirmUnsaved()) {
+                            return;
+                          }
                           setSelectedPath(entry.Path);
                         }}
                         className="flex min-w-0 flex-1 items-center gap-2 text-left"
@@ -638,7 +666,7 @@ export function WorkspacePanel({
                             <FolderOpen className="h-3.5 w-3.5" />
                           ) : previewKind === 'image' ? (
                             <ImageIcon className="h-3.5 w-3.5" />
-                          ) : previewKind === 'markdown' || previewKind === 'text' ? (
+                          ) : previewKind === 'markdown' || previewKind === 'text' || previewKind === 'html' ? (
                             <FileCode2 className="h-3.5 w-3.5" />
                           ) : (
                             <FileText className="h-3.5 w-3.5" />
@@ -702,7 +730,7 @@ export function WorkspacePanel({
         </div>
 
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <div className="flex h-14 flex-shrink-0 items-center border-b border-slate-200/60 px-4 dark:border-slate-800/70">
+          <div className="flex h-14 flex-shrink-0 items-center border-b border-slate-200/30 px-4 dark:border-slate-800/40">
             {selectedEntry ? (
               <div className="flex w-full items-start justify-between gap-3">
                 <div className="min-w-0">
@@ -718,18 +746,27 @@ export function WorkspacePanel({
                     {selectedEntry.ModifiedAt ? ` · ${formatModifiedAt(selectedEntry.ModifiedAt)}` : ''}
                   </div>
                 </div>
-                <a
-                  href={buildDownloadHref({
-                    agentId,
-                    contentPath,
-                    entryPath: selectedEntry.Path,
-                  })}
-                  download={selectedEntry.Name}
-                  className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-900"
-                >
-                  <Download className="h-3.5 w-3.5" />
-                  下载
-                </a>
+                {editKind === 'text' || editKind === 'code' || editKind === 'html' || editKind === 'markdown' ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const getContent = getContentRef.current;
+                      if (getContent) {
+                        void handleSave(getContent());
+                      }
+                    }}
+                    disabled={!dirty || saving}
+                    className={cn(
+                      'inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition',
+                      dirty && !saving
+                        ? 'bg-blue-600 text-white hover:bg-blue-700'
+                        : 'text-slate-400 dark:text-slate-500 cursor-not-allowed',
+                    )}
+                  >
+                    <Save className="h-3.5 w-3.5" />
+                    {saving ? '保存中' : dirty ? '保存' : '已保存'}
+                  </button>
+                ) : null}
               </div>
             ) : (
               <div className="w-full">
@@ -746,7 +783,7 @@ export function WorkspacePanel({
           <div
             className={cn(
               'custom-scrollbar min-h-0 flex-1',
-              previewPaneIsPdf ? 'overflow-hidden p-0' : 'overflow-y-auto px-4 py-4',
+              previewPaneIsPdf || previewPaneIsEditor ? 'overflow-hidden p-0' : 'overflow-y-auto px-4 py-4',
             )}
           >
             {renderPreview()}
