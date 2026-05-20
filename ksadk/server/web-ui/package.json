@@ -10,8 +10,8 @@
     "build:all": "npm run build && npm run build:hosted",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "test": "vitest run src",
+    "test:watch": "vitest src"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.2",

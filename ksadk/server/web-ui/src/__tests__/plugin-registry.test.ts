@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { PluginRegistry } from '../core/capability/registry.js';
 import type { CapabilityPlugin } from '../core/capability/types.js';
 import type { UiCapabilities } from '../types/capabilities.js';
+import type { ApiFacade } from '../core/api/types.js';
 
 const mockCapabilities: UiCapabilities = {
   HostedChat: { Enabled: true, ApiFormats: ['responses'] },
@@ -54,7 +55,7 @@ describe('PluginRegistry', () => {
     registry.register(terminalPlugin);
 
     const components = registry.getForSlot('overlay', mockCapabilities, {
-      api: {} as any,
+      api: {} as ApiFacade,
       agentId: 'test',
       isMobile: false,
       isStreaming: false,

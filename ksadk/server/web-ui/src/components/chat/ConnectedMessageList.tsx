@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useCallback } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { useUIStore } from '../../stores/ui.js';
 import { useStreamingStore } from '../../stores/streaming.js';
 import { useMessageStore } from '../../stores/message.js';
@@ -12,8 +12,6 @@ type ConnectedMessageListProps = {
   onDeleteFeedback: (message: Message) => void;
   onSubmitFeedback: (options: { message: Message; rating: 'up' | 'down'; comment?: string }) => void;
   onRespondToApproval: (options: { approvalRequestId: string; approve: boolean; previousResponseId?: string }) => void;
-  submitDraft: (text: string, attachments: File[], responsesInput?: unknown, previousResponseId?: string) => Promise<void>;
-  composerMaxHeight: number;
 };
 
 export function ConnectedMessageList({
@@ -22,8 +20,6 @@ export function ConnectedMessageList({
   onDeleteFeedback,
   onSubmitFeedback,
   onRespondToApproval,
-  submitDraft,
-  composerMaxHeight,
 }: ConnectedMessageListProps) {
   const messages = useMessageStore(s => s.messages);
   const isStreaming = useStreamingStore(s => s.isStreaming);

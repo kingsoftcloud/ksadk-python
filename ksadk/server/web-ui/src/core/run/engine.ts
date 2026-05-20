@@ -1,4 +1,4 @@
-import type { RunEngine, RunStage, RunEvent } from './types.js';
+import type { RunEngine, RunStage, RunEvent, RunEngineConfig } from './types.js';
 import type { ApiFacade } from '../api/types.js';
 import type { StreamAction } from '../stream/types.js';
 import { createProtocol } from '../stream/index.js';
@@ -16,17 +16,24 @@ export class RunEngineImpl implements RunEngine {
   private listeners = new Set<(event: RunEvent) => void>();
   private abortController: AbortController | null = null;
   private activeCompactionId: string | null = null;
+  private config: RunEngineConfig = {
+    agentId: 'default-agent',
+    apiFormats: ['responses'],
+    agentFramework: '',
+    selectedModel: '',
+    thinkingMode: 'auto',
+  };
 
-  constructor(
-    private api: ApiFacade,
-    private agentId: string,
-    private apiFormats: string[],
-    private agentFramework: string,
-    private selectedModel: string,
-    private thinkingMode: string,
-  ) {}
+  constructor(private api: ApiFacade) {}
 
   get stage() { return this._stage; }
+
+  updateConfig(config: RunEngineConfig): void {
+    this.config = {
+      ...config,
+      apiFormats: [...config.apiFormats],
+    };
+  }
 
   private emit(event: RunEvent) {
     for (const listener of this.listeners) {
@@ -52,8 +59,9 @@ export class RunEngineImpl implements RunEngine {
     sessionId?: string | null;
     onSessionCreated?: (sessionId: string) => void;
     onSessionUpsert?: (sessionId: string) => void;
-  }): void {
-    if (this._stage !== 'idle') return;
+    onSettled?: () => void;
+  }): boolean {
+    if (this._stage !== 'idle') return false;
 
     this.abortController = new AbortController();
     const isResponsesResume = draft.responsesInput !== undefined;
@@ -76,7 +84,7 @@ export class RunEngineImpl implements RunEngine {
         this.setStage('connecting');
         const apiFormat = isResponsesResume
           ? 'responses'
-          : resolveRunAgentApiFormat({ agentFramework: this.agentFramework, apiFormats: this.apiFormats });
+          : resolveRunAgentApiFormat({ agentFramework: this.config.agentFramework, apiFormats: this.config.apiFormats });
 
         const protocol = createProtocol(apiFormat);
         const protocolState = protocol.createState();
@@ -116,8 +124,10 @@ export class RunEngineImpl implements RunEngine {
         useStreamingStore.getState().setStreaming(false);
         this.setStage('idle');
         this.activeCompactionId = null;
+        draft.onSettled?.();
       }
     })();
+    return true;
   }
 
   stop(): void {
@@ -197,7 +207,7 @@ export class RunEngineImpl implements RunEngine {
   }): Promise<string | null> {
     this.setStage('creating-session');
     try {
-      const session = await this.api.createSession(this.agentId, { signal: this.abortController?.signal });
+      const session = await this.api.createSession(this.config.agentId, { signal: this.abortController?.signal });
       const sessionId = session.SessionId || null;
       if (sessionId) {
         draft.onSessionCreated?.(sessionId);
@@ -249,12 +259,12 @@ export class RunEngineImpl implements RunEngine {
     fileParts: Array<Record<string, unknown>>,
   ): Record<string, unknown> {
     const body: Record<string, unknown> = {
-      AgentId: this.agentId,
+      AgentId: this.config.agentId,
       SessionId: sessionId,
       Stream: true,
       ApiFormat: apiFormat,
-      Model: this.selectedModel || undefined,
-      ModelOptions: buildModelOptionsFromThinkingMode(normalizeThinkingMode(this.thinkingMode)),
+      Model: this.config.selectedModel || undefined,
+      ModelOptions: buildModelOptionsFromThinkingMode(normalizeThinkingMode(this.config.thinkingMode)),
     };
 
     if (!isResponsesResume) {

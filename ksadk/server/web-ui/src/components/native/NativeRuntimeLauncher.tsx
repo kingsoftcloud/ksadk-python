@@ -1,7 +1,5 @@
-import { useState } from 'react';
+import { lazy, Suspense, useState } from 'react';
 import { ExternalLink, FolderOpen, MessageSquareText, ShieldCheck, TerminalSquare } from 'lucide-react';
-
-import { NativeTerminalPanel } from './NativeTerminalPanel';
 
 type NativeManagementLink = {
   href: string;
@@ -22,6 +20,12 @@ type NativeRuntimeLauncherProps = {
   workspaceEnabled: boolean;
   onOpenWorkspace: () => void;
 };
+
+const LazyNativeTerminalPanel = lazy(() =>
+  import('./NativeTerminalPanel').then((module) => ({
+    default: module.NativeTerminalPanel,
+  })),
+);
 
 export function NativeRuntimeLauncher({
   productLabel = '原生运行时',
@@ -134,12 +138,14 @@ export function NativeRuntimeLauncher({
           </div>
         </div>
       </div>
-      {nativeTerminal ? (
-        <NativeTerminalPanel
-          capability={nativeTerminal}
-          open={terminalOpen}
-          onClose={() => setTerminalOpen(false)}
-        />
+      {nativeTerminal && terminalOpen ? (
+        <Suspense fallback={null}>
+          <LazyNativeTerminalPanel
+            capability={nativeTerminal}
+            open={terminalOpen}
+            onClose={() => setTerminalOpen(false)}
+          />
+        </Suspense>
       ) : null}
     </section>
   );

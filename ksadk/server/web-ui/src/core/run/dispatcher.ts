@@ -4,13 +4,11 @@ import { useStreamingStore } from '../../stores/streaming.js';
 import { buildCompactionMessage } from '../../utils/session-events.js';
 import type { Message } from '../../components/chat/types.js';
 
-let currentAssistantId: string | null = null;
 let assistantCreated = false;
 
 function ensureAssistantMessage(id: string) {
   if (assistantCreated) return;
   assistantCreated = true;
-  currentAssistantId = id;
   useMessageStore.getState().patchMessages((prev) => [
     ...prev,
     { id, role: 'model', content: '', timestamp: Date.now(), reasoning: '' },
@@ -148,14 +146,12 @@ export function dispatchRunEventToStores(event: RunEvent) {
       } else if (event.stage === 'completing' || event.stage === 'failed' || event.stage === 'cancelled') {
         useStreamingStore.getState().setStreaming(false);
         assistantCreated = false;
-        currentAssistantId = null;
       }
       break;
 
     case 'stream_ended':
       useStreamingStore.getState().setStreaming(false);
       assistantCreated = false;
-      currentAssistantId = null;
       break;
 
     case 'error':
@@ -170,7 +166,6 @@ export function dispatchRunEventToStores(event: RunEvent) {
         },
       ]);
       assistantCreated = false;
-      currentAssistantId = null;
       break;
 
     case 'terminal':
@@ -181,5 +176,4 @@ export function dispatchRunEventToStores(event: RunEvent) {
 
 export function resetDispatcherState() {
   assistantCreated = false;
-  currentAssistantId = null;
 }

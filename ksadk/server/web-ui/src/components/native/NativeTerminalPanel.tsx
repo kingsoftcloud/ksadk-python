@@ -1,8 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   CheckCircle2,
-  Maximize2,
-  Minimize2,
   Plus,
   PlugZap,
   RefreshCw,
@@ -75,7 +73,6 @@ async function readJson(response: Response) {
 
 export function NativeTerminalPanel({ capability, open, onClose }: NativeTerminalPanelProps) {
   const [status, setStatus] = useState<TerminalStatus>('idle');
-  const [fullscreen, setFullscreen] = useState(false);
   const [terminalSessions, setTerminalSessions] = useState<TerminalSession[]>([]);
   const [activeTerminalSessionId, setActiveTerminalSessionId] = useState<string | null>(null);
   const [loadingSessions, setLoadingSessions] = useState(false);
@@ -83,14 +80,14 @@ export function NativeTerminalPanel({ capability, open, onClose }: NativeTermina
   const socketRef = useRef<WebSocket | null>(null);
   const terminalRef = useRef<XtermTerminal | null>(null);
   const fitAddonRef = useRef<XtermFitAddon | null>(null);
-  const activeSessionRef = useRef<TerminalSession | null>(null);
+  const terminalSessionsRef = useRef<TerminalSession[]>([]);
 
   const activeSession = useMemo(
     () => terminalSessions.find((session) => session.terminal_session_id === activeTerminalSessionId) || null,
     [activeTerminalSessionId, terminalSessions],
   );
 
-  const refreshSessions = async () => {
+  const refreshSessions = useCallback(async () => {
     setLoadingSessions(true);
     try {
       const response = await fetch(TERMINAL_SESSIONS_ENDPOINT);
@@ -111,13 +108,16 @@ export function NativeTerminalPanel({ capability, open, onClose }: NativeTermina
     } finally {
       setLoadingSessions(false);
     }
-  };
+  }, []);
 
-  const attachTerminalSession = async (session: TerminalSession) => {
+  useEffect(() => {
+    terminalSessionsRef.current = terminalSessions;
+  }, [terminalSessions]);
+
+  const attachTerminalSession = useCallback(async (session: TerminalSession) => {
     if (!containerRef.current) {
       return () => undefined;
     }
-    activeSessionRef.current = session;
     setStatus('connecting');
 
     let disposed = false;
@@ -126,6 +126,7 @@ export function NativeTerminalPanel({ capability, open, onClose }: NativeTermina
     let inputDisposable: { dispose: () => void } | null = null;
     let ws: WebSocket | null = null;
     let resizeHandler: (() => void) | null = null;
+    let resizeObserver: ResizeObserver | null = null;
 
     socketRef.current?.close(1000, 'switch terminal session');
     socketRef.current = null;
@@ -186,7 +187,40 @@ export function NativeTerminalPanel({ capability, open, onClose }: NativeTermina
           // Fit can fail briefly while the panel is animating into the DOM.
         }
       };
-      window.setTimeout(fit, 0);
+
+      const sendTerminalSize = () => {
+        if (ws?.readyState !== WebSocket.OPEN || !terminal) {
+          return;
+        }
+        ws.send(
+          JSON.stringify({
+            type: 'resize',
+            cols: terminal.cols || session.cols || 80,
+            rows: terminal.rows || session.rows || 24,
+          }),
+        );
+      };
+
+      const fitAndNotify = () => {
+        fit();
+        sendTerminalSize();
+      };
+
+      const scheduleFitAndNotify = () => {
+        window.requestAnimationFrame(() => {
+          if (disposed) {
+            return;
+          }
+          fitAndNotify();
+          window.requestAnimationFrame(() => {
+            if (!disposed) {
+              fitAndNotify();
+            }
+          });
+        });
+      };
+
+      window.setTimeout(scheduleFitAndNotify, 0);
 
       ws = new WebSocket(
         buildTerminalAttachUrl(capability.Path || '/_ksadk/terminal/ws', session.terminal_session_id),
@@ -200,10 +234,11 @@ export function NativeTerminalPanel({ capability, open, onClose }: NativeTermina
           JSON.stringify({
             type: 'attach',
             terminal_session_id: session.terminal_session_id,
-            cols: terminal?.cols || 80,
-            rows: terminal?.rows || 24,
+            cols: terminal?.cols || session.cols || 80,
+            rows: terminal?.rows || session.rows || 24,
           }),
         );
+        scheduleFitAndNotify();
         setStatus('connected');
         terminal?.focus();
       });
@@ -250,19 +285,13 @@ export function NativeTerminalPanel({ capability, open, onClose }: NativeTermina
       });
 
       resizeHandler = () => {
-        if (ws?.readyState !== WebSocket.OPEN) {
-          return;
-        }
-        fit();
-        ws.send(
-          JSON.stringify({
-            type: 'resize',
-            cols: terminal?.cols || session.cols || 80,
-            rows: terminal?.rows || session.rows || 24,
-          }),
-        );
+        fitAndNotify();
       };
       window.addEventListener('resize', resizeHandler);
+      resizeObserver = new ResizeObserver(() => {
+        scheduleFitAndNotify();
+      });
+      resizeObserver.observe(containerRef.current);
     });
 
     return () => {
@@ -271,6 +300,7 @@ export function NativeTerminalPanel({ capability, open, onClose }: NativeTermina
       if (resizeHandler) {
         window.removeEventListener('resize', resizeHandler);
       }
+      resizeObserver?.disconnect();
       if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
         ws.close(1000, 'panel closed');
       }
@@ -281,17 +311,20 @@ export function NativeTerminalPanel({ capability, open, onClose }: NativeTermina
       terminalRef.current = null;
       fitAddonRef.current = null;
     };
-  };
+  }, [capability.Path, capability.Protocol]);
 
   useEffect(() => {
     if (!open || !capability.Enabled) {
       return;
     }
     void refreshSessions();
-  }, [capability.Enabled, open]);
+  }, [capability.Enabled, open, refreshSessions]);
 
   useEffect(() => {
-    const session = activeSession;
+    const session =
+      terminalSessionsRef.current.find(
+        (item) => item.terminal_session_id === activeTerminalSessionId,
+      ) || null;
     if (!open || !session) {
       return;
     }
@@ -307,32 +340,7 @@ export function NativeTerminalPanel({ capability, open, onClose }: NativeTermina
       cancelled = true;
       cleanup();
     };
-  }, [activeSession?.terminal_session_id, open]);
-
-  useEffect(() => {
-    if (!open || !terminalRef.current || !fitAddonRef.current) {
-      return;
-    }
-    const timer = window.setTimeout(() => {
-      try {
-        fitAddonRef.current?.fit();
-        const socket = socketRef.current;
-        const terminal = terminalRef.current;
-        if (socket?.readyState === WebSocket.OPEN && terminal) {
-          socket.send(
-            JSON.stringify({
-              type: 'resize',
-              cols: terminal.cols || 80,
-              rows: terminal.rows || 24,
-            }),
-          );
-        }
-      } catch {
-        // Ignore transient layout fit failures.
-      }
-    }, 60);
-    return () => window.clearTimeout(timer);
-  }, [fullscreen, open, activeTerminalSessionId]);
+  }, [activeTerminalSessionId, attachTerminalSession, open]);
 
   const createTerminalSession = async () => {
     setStatus('connecting');
@@ -387,12 +395,7 @@ export function NativeTerminalPanel({ capability, open, onClose }: NativeTermina
 
   return (
     <div
-      className={cn(
-        'fixed z-50 overflow-hidden border border-slate-800 bg-slate-950 text-slate-100 shadow-2xl shadow-slate-950/40',
-        fullscreen
-          ? 'inset-3 rounded-3xl'
-          : 'bottom-4 right-4 h-[min(42rem,calc(100vh-2rem))] w-[min(78rem,calc(100vw-2rem))] rounded-3xl',
-      )}
+      className="fixed inset-0 z-50 overflow-hidden border border-slate-800 bg-slate-950 text-slate-100 shadow-2xl shadow-slate-950/40 sm:inset-3 sm:rounded-3xl"
     >
       <div className="flex items-center justify-between border-b border-slate-800 bg-slate-900 px-4 py-3">
         <div className="flex min-w-0 items-center gap-3">
@@ -423,14 +426,6 @@ export function NativeTerminalPanel({ capability, open, onClose }: NativeTermina
             aria-label="新建终端会话"
           >
             <Plus className="h-4 w-4" />
-          </button>
-          <button
-            type="button"
-            onClick={() => setFullscreen((value) => !value)}
-            className="rounded-xl p-2 text-slate-400 transition hover:bg-slate-800 hover:text-slate-100"
-            aria-label={fullscreen ? '退出全屏' : '全屏'}
-          >
-            {fullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
           </button>
           <button
             type="button"

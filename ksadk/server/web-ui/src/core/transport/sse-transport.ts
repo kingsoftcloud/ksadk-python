@@ -1,4 +1,4 @@
-import type { RuntimeTransport, TransportCallbacks, TransportEvent } from './types.js';
+import type { RuntimeTransport, TransportCallbacks } from './types.js';
 import { streamAction, streamGetAction } from '../../api/client.js';
 import { parseSseChunk, splitSseBuffer } from './sse-parser.js';
 

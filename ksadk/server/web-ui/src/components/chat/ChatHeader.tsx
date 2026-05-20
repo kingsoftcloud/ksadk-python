@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { lazy, Suspense, useState } from 'react';
 import {
   ExternalLink,
   FolderOpen,
@@ -9,7 +9,6 @@ import {
 } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
-import { NativeTerminalPanel } from '@/components/native/NativeTerminalPanel';
 
 import {
   Sheet,
@@ -22,6 +21,12 @@ import {
 import type { ModelCatalogItem } from './types';
 
 type ThinkingMode = 'auto' | 'enabled' | 'disabled';
+
+const LazyNativeTerminalPanel = lazy(() =>
+  import('@/components/native/NativeTerminalPanel').then((module) => ({
+    default: module.NativeTerminalPanel,
+  })),
+);
 
 type ModelSelectorProps = {
   availableModels: ModelCatalogItem[];
@@ -342,12 +347,14 @@ export function ChatHeader({
           </SheetContent>
         </Sheet>
       ) : null}
-      {nativeTerminal ? (
-        <NativeTerminalPanel
-          capability={nativeTerminal}
-          open={terminalOpen}
-          onClose={() => setTerminalOpen(false)}
-        />
+      {nativeTerminal && terminalOpen ? (
+        <Suspense fallback={null}>
+          <LazyNativeTerminalPanel
+            capability={nativeTerminal}
+            open={terminalOpen}
+            onClose={() => setTerminalOpen(false)}
+          />
+        </Suspense>
       ) : null}
     </>
   );

@@ -1,10 +1,10 @@
-import { useRef, useCallback } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { useSessionStore } from '../stores/session.js';
 import { useMessageStore } from '../stores/message.js';
 import { useStreamingStore } from '../stores/streaming.js';
 import { useUIStore } from '../stores/ui.js';
 import { CancelledError } from '../api/client.js';
-import { buildSubscribeRunEventsUrl, findActiveRunIds } from '../utils/run-state.js';
+import { findActiveRunIds } from '../utils/run-state.js';
 import { buildMessagesFromSessionEvents, eventHasTerminalRunStatus, maxSeqIdFromEvents } from '../utils/session-events.js';
 import { shouldRenderFeedbackControls, normalizeFeedback } from '../utils/feedback.js';
 import { readPersistedSessionId, resolveSessionToRestore } from '../utils/session.js';
@@ -25,9 +25,24 @@ type SessionLifecycleContext = {
 };
 
 export function useSessionLifecycle(ctx: SessionLifecycleContext) {
+  const {
+    agentId,
+    api,
+    isMobile,
+    isStreaming,
+    resetCompaction,
+    uiCapabilities,
+  } = ctx;
   const currentSessionIdRef = useRef<string | null>(ctx.currentSessionId);
   const agentIdRef = useRef(ctx.agentId);
   const runSubscriptionAbortRef = useRef<AbortController | null>(null);
+  const loadSessionRef = useRef<((sessionId: string) => Promise<void>) | null>(null);
+  const fetchSessionsRef = useRef<
+    ((
+      targetAgentId?: string,
+      preferredSessionId?: string | null,
+    ) => Promise<void>) | null
+  >(null);
 
   const loadFeedbackForMessages = useCallback(
     async (targetAgentId: string, sessionId: string, history: Message[]) => {
@@ -41,7 +56,7 @@ export function useSessionLifecycle(ctx: SessionLifecycleContext) {
       const entries = await Promise.all(
         targets.map(async (message) => {
           try {
-            const data = await ctx.api.getResponseFeedback({
+            const data = await api.getResponseFeedback({
               AgentId: targetAgentId,
               SessionId: sessionId,
               ResponseId: message.responseId,
@@ -81,7 +96,7 @@ export function useSessionLifecycle(ctx: SessionLifecycleContext) {
         ),
       );
     },
-    [ctx.api],
+    [api],
   );
 
   const subscribeRunEvents = useCallback(
@@ -97,7 +112,7 @@ export function useSessionLifecycle(ctx: SessionLifecycleContext) {
       let shouldReloadSession = false;
 
       try {
-        const stream = await ctx.api.subscribeRunEvents(
+        const stream = await api.subscribeRunEvents(
           {
             sessionId: options.sessionId,
             invocationId: options.invocationId,
@@ -164,26 +179,26 @@ export function useSessionLifecycle(ctx: SessionLifecycleContext) {
         }
         useStreamingStore.getState().setStreaming(false);
         if (shouldReloadSession && currentSessionIdRef.current === options.sessionId) {
-          void loadSession(options.sessionId);
+          void loadSessionRef.current?.(options.sessionId);
         }
-        void fetchSessions(agentIdRef.current, options.sessionId);
+        void fetchSessionsRef.current?.(agentIdRef.current, options.sessionId);
       }
     },
-    [ctx.api, ctx.uiCapabilities, loadFeedbackForMessages],
+    [api],
   );
 
   const loadSession = useCallback(
     async (sessionId: string) => {
       currentSessionIdRef.current = sessionId;
       useSessionStore.getState().setCurrentSessionId(sessionId);
-      ctx.resetCompaction();
+      resetCompaction();
       runSubscriptionAbortRef.current?.abort();
-      if (ctx.isMobile) {
+      if (isMobile) {
         useUIStore.getState().setMobileSidebarOpen(false);
       }
 
       try {
-        const data = await ctx.api.listSessionEvents(sessionId);
+        const data = await api.listSessionEvents(sessionId);
         const eventsData = data as { Events?: SessionEventRecord[] };
         if (eventsData?.Events) {
           const events = eventsData.Events;
@@ -193,8 +208,8 @@ export function useSessionLifecycle(ctx: SessionLifecycleContext) {
           const activeRuns = findActiveRunIds(events);
           const lastSeqId = maxSeqIdFromEvents(events);
           if (
-            ctx.uiCapabilities.RunLifecycle.Enabled &&
-            ctx.uiCapabilities.RunLifecycle.Resume &&
+            uiCapabilities.RunLifecycle.Enabled &&
+            uiCapabilities.RunLifecycle.Resume &&
             activeRuns[0]
           ) {
             void subscribeRunEvents({
@@ -210,7 +225,15 @@ export function useSessionLifecycle(ctx: SessionLifecycleContext) {
         console.error('Failed to load session events:', error);
       }
     },
-    [ctx, loadFeedbackForMessages, subscribeRunEvents],
+    [
+      api,
+      isMobile,
+      loadFeedbackForMessages,
+      resetCompaction,
+      subscribeRunEvents,
+      uiCapabilities.RunLifecycle.Enabled,
+      uiCapabilities.RunLifecycle.Resume,
+    ],
   );
 
   const fetchSessions = useCallback(
@@ -219,7 +242,7 @@ export function useSessionLifecycle(ctx: SessionLifecycleContext) {
       preferredSessionId: string | null = null,
     ) => {
       try {
-        const sessions = await ctx.api.listSessions(targetAgentId);
+        const sessions = await api.listSessions(targetAgentId);
         const sorted = upsertSessions(useSessionStore.getState().sessions, sessions as Session[]);
         useSessionStore.getState().setSessions(sorted);
         const activeSessionId = currentSessionIdRef.current;
@@ -239,14 +262,22 @@ export function useSessionLifecycle(ctx: SessionLifecycleContext) {
         console.error('Failed to fetch sessions:', error);
       }
     },
-    [loadSession, ctx.api],
+    [api, loadSession],
   );
 
+  useEffect(() => {
+    loadSessionRef.current = loadSession;
+  }, [loadSession]);
+
+  useEffect(() => {
+    fetchSessionsRef.current = fetchSessions;
+  }, [fetchSessions]);
+
   const createNewSession = useCallback(async () => {
-    if (ctx.isStreaming) return;
+    if (isStreaming) return;
 
     try {
-      const session = await ctx.api.createSession(ctx.agentId);
+      const session = await api.createSession(agentId);
       const newId = session.SessionId;
       if (newId) {
         useSessionStore
@@ -255,35 +286,35 @@ export function useSessionLifecycle(ctx: SessionLifecycleContext) {
         currentSessionIdRef.current = newId;
         useSessionStore.getState().setCurrentSessionId(newId);
         useMessageStore.getState().setMessages([]);
-        if (ctx.isMobile) {
+        if (isMobile) {
           useUIStore.getState().setMobileSidebarOpen(false);
           useUIStore.getState().setMobileActionsOpen(false);
         }
-        void fetchSessions(ctx.agentId, newId);
+        void fetchSessions(agentId, newId);
       }
     } catch (error) {
       if (error instanceof CancelledError) return;
       console.error('Failed to create session:', error);
     }
-  }, [ctx, fetchSessions]);
+  }, [agentId, api, fetchSessions, isMobile, isStreaming]);
 
   const deleteSession = useCallback(
     async (sessionId: string) => {
       try {
-        await ctx.api.deleteSession(sessionId);
+        await api.deleteSession(sessionId);
         useSessionStore.getState().removeSession(sessionId);
         if (currentSessionIdRef.current === sessionId) {
           currentSessionIdRef.current = null;
           useMessageStore.getState().setMessages([]);
           useSessionStore.getState().setCurrentSessionId(null);
-          void fetchSessions(ctx.agentId);
+          void fetchSessions(agentId);
         }
       } catch (error) {
         if (error instanceof CancelledError) return;
         console.error('Failed to delete session', error);
       }
     },
-    [ctx, fetchSessions],
+    [agentId, api, fetchSessions],
   );
 
   return {

@@ -1,7 +1,6 @@
 import React, { useEffect, useRef, useCallback } from 'react';
 import { useUIStore } from '../../stores/ui.js';
 import { useStreamingStore } from '../../stores/streaming.js';
-import { useMessageStore } from '../../stores/message.js';
 import { ChatComposer } from './ChatComposer';
 import { mergeAttachmentFiles, extractClipboardFiles } from '../../utils/attachment.js';
 
@@ -55,12 +54,6 @@ export function ConnectedComposer({
     event.preventDefault();
     event.stopPropagation();
     appendAttachments(pastedFiles);
-  };
-
-  const buildComposerContextIndicator = () => {
-    const messages = useMessageStore.getState().messages;
-    // Simplified context indicator logic
-    return null;
   };
 
   return (

@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { FileEditor } from './FileEditor.js';
 import { MessageMarkdown } from '../MessageMarkdown.js';
 import { Eye, Code } from 'lucide-react';

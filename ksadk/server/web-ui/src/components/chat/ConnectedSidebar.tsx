@@ -1,4 +1,3 @@
-import React from 'react';
 import { useSessionStore } from '../../stores/session.js';
 import { useBootstrapStore } from '../../stores/bootstrap.js';
 import { useStreamingStore } from '../../stores/streaming.js';
@@ -18,10 +17,9 @@ type ConnectedSidebarProps = {
   api: ApiFacade;
   uiCapabilities: UiCapabilities;
   resetCompaction: () => void;
-  runSubscriptionAbortRef: React.MutableRefObject<AbortController | null>;
 };
 
-export function ConnectedSidebar({ api, uiCapabilities, resetCompaction, runSubscriptionAbortRef }: ConnectedSidebarProps) {
+export function ConnectedSidebar({ api, uiCapabilities, resetCompaction }: ConnectedSidebarProps) {
   const agentId = useBootstrapStore(s => s.agentId);
   const sessions = useSessionStore(s => s.sessions);
   const currentSessionId = useSessionStore(s => s.currentSessionId);
@@ -32,7 +30,6 @@ export function ConnectedSidebar({ api, uiCapabilities, resetCompaction, runSubs
   const { isMobile } = useResponsiveViewport();
 
   const {
-    fetchSessions,
     loadSession,
     createNewSession,
     deleteSession,

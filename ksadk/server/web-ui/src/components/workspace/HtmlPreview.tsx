@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useId } from 'react';
 import { buildSandboxedHtml, useIframeMessageHandler } from '../../utils/sandbox.js';
 import { FileEditor } from './FileEditor.js';
 import { Eye, Code, ExternalLink } from 'lucide-react';
@@ -23,9 +23,9 @@ export function HtmlPreview({
   getContentRef,
   isMobile,
   agentId,
-  contentPath,
 }: HtmlPreviewProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const channelId = useId();
   const [activeView, setActiveView] = useState<'editor' | 'preview'>('editor');
 
   // Path-based base URL for resolving sibling file references.
@@ -39,8 +39,8 @@ export function HtmlPreview({
   const fileUrl = `/agentengine/api/v1/ws/${encodeURIComponent(agentId)}/${path}`;
 
   const previewHtml = useCallback(() => {
-    return buildSandboxedHtml(content, { basePath });
-  }, [content, basePath]);
+    return buildSandboxedHtml(content, { basePath, channelId });
+  }, [content, basePath, channelId]);
 
   const [previewSrc, setPreviewSrc] = useState(previewHtml());
 
@@ -52,7 +52,7 @@ export function HtmlPreview({
     return () => clearTimeout(timer);
   }, [previewHtml]);
 
-  useIframeMessageHandler(iframeRef);
+  useIframeMessageHandler(iframeRef, channelId);
 
   if (isMobile) {
     return (
@@ -95,7 +95,7 @@ export function HtmlPreview({
           <iframe
             ref={iframeRef}
             srcDoc={previewSrc}
-            sandbox="allow-scripts allow-downloads allow-same-origin"
+            sandbox="allow-scripts allow-downloads"
             title="HTML 预览"
             className="h-full w-full border-0 bg-white"
           />
@@ -132,7 +132,7 @@ export function HtmlPreview({
       <iframe
         ref={iframeRef}
         srcDoc={previewSrc}
-        sandbox="allow-scripts allow-downloads allow-same-origin"
+        sandbox="allow-scripts allow-downloads"
         title="HTML 预览"
         className="h-full w-full border-0 bg-white"
       />

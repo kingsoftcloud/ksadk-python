@@ -11,7 +11,6 @@ import {
   ThumbsDown,
   ThumbsUp,
   Trash2,
-  User,
   XCircle,
 } from 'lucide-react';
 
@@ -44,7 +43,7 @@ type ChatMessageListProps = {
   scrollRef: RefObject<HTMLDivElement | null>;
 };
 
-function EmptyState({ agentName, isMobile }: { agentName: string; isMobile: boolean }) {
+function EmptyState({ agentName }: { agentName: string }) {
   return (
     <div className="flex flex-col items-center justify-center min-h-[50vh] px-4">
       <div className="mb-6 h-16 w-16 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600
@@ -529,7 +528,7 @@ export function ChatMessageList({
     >
       <div className="mx-auto flex w-full max-w-[64rem] flex-col pb-6 sm:pb-8">
         {messages.length === 0 ? (
-          <EmptyState agentName={agentName} isMobile={isMobile} />
+        <EmptyState agentName={agentName} />
         ) : (
           messages.map((message, index) =>
             message.role === 'system' ? (

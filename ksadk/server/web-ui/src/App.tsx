@@ -6,7 +6,6 @@ import { useStreamingStore } from './stores/streaming.js';
 import { useSessionStore } from './stores/session.js';
 import { useArtifactStore } from './stores/artifact.js';
 
-import { buildComposerContextIndicator } from './utils/context.js';
 import { resolveComposerMaxHeight } from './utils/mobile-layout.js';
 import {
   canAccessWorkspaceFiles,
@@ -28,18 +27,15 @@ import { ChatHeader } from './components/chat/ChatHeader';
 import { NativeRuntimeLauncher } from './components/native/NativeRuntimeLauncher';
 import { WorkspacePanelContainer } from './components/workspace/WorkspacePanelContainer';
 import { ApiFacadeImpl } from './core/api/facade.js';
-import type { ApiFacade } from './core/api/types.js';
 import type { UiCapabilities } from './types/capabilities.js';
 import type { BootstrapWorkspaceFiles } from './types/bootstrap.js';
 import type { RuntimeApiFormat } from './types/api.js';
 import {
   clampWorkspacePanelWidth,
-  DEFAULT_WORKSPACE_PANEL_WIDTH,
-  MIN_WORKSPACE_PANEL_WIDTH,
-  MAX_WORKSPACE_PANEL_WIDTH,
-  MIN_CHAT_PANEL_WIDTH,
   DESKTOP_SIDEBAR_WIDTH,
 } from './utils/layout-constants.js';
+
+const apiFacade = new ApiFacadeImpl();
 
 const LazyArtifactsPanel = React.lazy(() =>
   import('./components/artifacts/ArtifactsPanel.js').then((m) => ({
@@ -48,7 +44,7 @@ const LazyArtifactsPanel = React.lazy(() =>
 );
 
 export default function App() {
-  const api = useRef(new ApiFacadeImpl()).current;
+  const api = apiFacade;
   const agentId = useBootstrapStore(s => s.agentId);
   const currentSessionId = useSessionStore(s => s.currentSessionId);
   const isStreaming = useStreamingStore(s => s.isStreaming);
@@ -77,9 +73,6 @@ export default function App() {
 
   const {
     fetchSessions,
-    loadSession,
-    createNewSession,
-    deleteSession,
     currentSessionIdRef,
     agentIdRef,
     runSubscriptionAbortRef,
@@ -122,7 +115,7 @@ export default function App() {
     agentIdRef.current = agentId;
     currentSessionIdRef.current = currentSessionId;
     writePersistedSessionId(agentId, currentSessionId);
-  }, [agentId, currentSessionId]);
+  }, [agentId, currentSessionId, agentIdRef, currentSessionIdRef]);
 
   useEffect(() => {
     if (!isMobile) {
@@ -143,7 +136,7 @@ export default function App() {
     () => () => {
       runSubscriptionAbortRef.current?.abort();
     },
-    [],
+    [runSubscriptionAbortRef],
   );
 
   const hostedChatEnabled = isHostedChatEnabled(uiCapabilities);
@@ -167,12 +160,7 @@ export default function App() {
   const selectedModelMetadata =
     availableModels.find((model) => model.id === selectedModel) || null;
   const selectedModelLabel = selectedModelMetadata?.display_name || selectedModel || '';
-  const { desktopSidebarVisible } = (() => {
-    const mobileSidebarOpen = useUIStore.getState().mobileSidebarOpen;
-    return {
-      desktopSidebarVisible: !isMobile && sidebarOpen && hostedChatEnabled,
-    };
-  })();
+  const desktopSidebarVisible = !isMobile && sidebarOpen && hostedChatEnabled;
 
   const closeWorkspacePanel = () => {
     useUIStore.getState().setWorkspacePanelFullscreen(false);
@@ -213,7 +201,6 @@ export default function App() {
         api={api}
         uiCapabilities={uiCapabilities}
         resetCompaction={() => {}}
-        runSubscriptionAbortRef={runSubscriptionAbortRef}
       />
 
       <main className="relative flex min-w-0 flex-1 flex-col bg-white dark:bg-slate-900">
@@ -269,8 +256,6 @@ export default function App() {
               onDeleteFeedback={deleteResponseFeedback}
               onSubmitFeedback={submitResponseFeedback}
               onRespondToApproval={respondToApproval}
-              submitDraft={submitDraft}
-              composerMaxHeight={composerMaxHeight}
             />
             <ConnectedComposer
               composerMaxHeight={composerMaxHeight}
@@ -294,10 +279,6 @@ export default function App() {
         workspacePanelPresentation={workspacePanelPresentation}
         closeWorkspacePanel={closeWorkspacePanel}
         handleWorkspacePanelResizeStart={handleWorkspacePanelResizeStart}
-        MIN_WORKSPACE_PANEL_WIDTH={MIN_WORKSPACE_PANEL_WIDTH}
-        MAX_WORKSPACE_PANEL_WIDTH={MAX_WORKSPACE_PANEL_WIDTH}
-        MIN_CHAT_PANEL_WIDTH={MIN_CHAT_PANEL_WIDTH}
-        clampWorkspacePanelWidth={clampWorkspacePanelWidth}
         api={api}
       />
 

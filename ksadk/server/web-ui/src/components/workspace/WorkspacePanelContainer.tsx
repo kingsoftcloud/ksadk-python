@@ -4,7 +4,6 @@ import { cn } from '@/lib/utils';
 import { WorkspacePanel } from './WorkspacePanel';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '../ui/sheet';
 import type { WorkspaceFilesCapability } from '../chat/types';
-import type { UiCapabilities } from '../../types/capabilities.js';
 import type { ApiFacade } from '../../core/api/types.js';
 
 type WorkspacePanelContainerProps = {
@@ -25,10 +24,6 @@ type WorkspacePanelContainerProps = {
   };
   closeWorkspacePanel: () => void;
   handleWorkspacePanelResizeStart: (event: React.PointerEvent<HTMLDivElement>) => void;
-  MIN_WORKSPACE_PANEL_WIDTH: number;
-  MAX_WORKSPACE_PANEL_WIDTH: number;
-  MIN_CHAT_PANEL_WIDTH: number;
-  clampWorkspacePanelWidth: (width: number, viewportWidth: number, sidebarWidth: number) => number;
   api: ApiFacade;
 };
 
@@ -44,10 +39,6 @@ export function WorkspacePanelContainer({
   workspacePanelPresentation,
   closeWorkspacePanel,
   handleWorkspacePanelResizeStart,
-  MIN_WORKSPACE_PANEL_WIDTH,
-  MAX_WORKSPACE_PANEL_WIDTH,
-  MIN_CHAT_PANEL_WIDTH,
-  clampWorkspacePanelWidth,
   api,
 }: WorkspacePanelContainerProps) {
   const workspacePanelInline = workspacePanelPresentation.renderMode === 'inline';
