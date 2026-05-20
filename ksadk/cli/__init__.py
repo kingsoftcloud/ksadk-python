@@ -20,6 +20,7 @@ import os
 import sys
 
 import click
+from rich.cells import cell_len
 
 from ksadk.cli.dry_run import dry_run_option
 from ksadk.cli.error_utils import (
@@ -97,6 +98,15 @@ SHORT_HELP_MAP = {
     "web": "本地调试 Agent Invoke UI",
     "config": "项目配置与模型设置",
 }
+
+
+def _terminal_cell_width(text: str) -> int:
+    return cell_len(click.unstyle(text))
+
+
+def _pad_to_terminal_cells(text: str, width: int) -> str:
+    return text + " " * max(width - _terminal_cell_width(text), 0)
+
 
 # ASCII 艺术字 Banner
 BANNER = r"""
@@ -229,20 +239,21 @@ class ColoredHelpGroup(click.Group):
     def format_commands_colored(self, ctx, formatter):
         """自定义命令列表格式，更简洁美观"""
         icon_map = {
-            "a2a": "↔️ ",
-            "agent": "🤖 ",
-            "build": "🔨 ",
-            "completion": "⌨️ ",
-            "dashboard": "🖥️ ",
-            "deploy": "🚀 ",
-            "hermes": "⌁ ",
-            "init": "📁 ",
-            "launch": "✨ ",
-            "mcp": "🔌 ",
-            "openclaw": "🦞 ",
-            "run": "▶️ ",
-            "version": "🏷️ ",
-            "web": "🌐 ",
+            "a2a": "↔️",
+            "agent": "🤖",
+            "build": "🔨",
+            "completion": "⌨️",
+            "dashboard": "🖥️",
+            "deploy": "🚀",
+            "files": "📄",
+            "hermes": "⌁",
+            "init": "📁",
+            "launch": "✨",
+            "mcp": "🔌",
+            "openclaw": "🦞",
+            "run": "▶️",
+            "version": "🏷️",
+            "web": "🌐",
         }
 
         commands = []
@@ -261,9 +272,10 @@ class ColoredHelpGroup(click.Group):
 
         formatter.write(click.style("\n  📋  可用命令:\n\n", fg="magenta", bold=True))
 
-        # 仅按命令名对齐，避免 emoji 宽度在不同终端渲染不一致导致错位
-        # 并设置最小列宽，保持和「选项」区域类似的呼吸感
-        max_cmd_len = max(max(len(name) for name, _ in commands), 16)
+        # Emoji、变体选择符和 CJK 字符的 Python len 与终端 cell 宽度不同。
+        # 这里按 cell 宽度补齐，保证命令列和说明列在真实终端里同列。
+        icon_width = max(_terminal_cell_width(icon) for icon in icon_map.values())
+        max_cmd_width = max(max(_terminal_cell_width(name) for name, _ in commands), 16)
 
         for subcommand, cmd in commands:
             # 使用预定义的简短描述
@@ -274,8 +286,10 @@ class ColoredHelpGroup(click.Group):
 
             # 格式化输出
             icon = icon_map.get(subcommand, "•")
-            formatter.write(click.style(f"      {icon} ", fg="cyan"))
-            formatter.write(click.style(f"{subcommand:<{max_cmd_len}}        ", fg="cyan"))
+            icon_cell = _pad_to_terminal_cells(icon, icon_width)
+            name_cell = _pad_to_terminal_cells(subcommand, max_cmd_width)
+            formatter.write(click.style(f"      {icon_cell}  ", fg="cyan"))
+            formatter.write(click.style(f"{name_cell}        ", fg="cyan"))
             formatter.write(click.style(f"{help_text}\n\n", fg="white"))
 
 @click.group(cls=ColoredHelpGroup, context_settings=CONTEXT_SETTINGS)
