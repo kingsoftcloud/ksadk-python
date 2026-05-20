@@ -325,25 +325,9 @@ export function buildMessagesFromSessionEvents(events = []) {
   };
 
   for (const event of normalizedEvents) {
-    if (event.EventType === 'run_status' && event.Content?.status === 'in_progress') {
-        const invocationId = String(event.InvocationId || '').trim();
-        if (
-          invocationId &&
-          latestRunStatusByInvocation.get(invocationId) === 'in_progress' &&
-          !outputByInvocation.has(invocationId)
-        ) {
-          flushPendingReasoning();
-          messages.push({
-            id: event.EventId || String(Date.now() + Math.random()),
-            role: 'system',
-            content: '上一轮消息仍在运行中，正在等待运行时继续返回结果。',
-            eventType: 'run_status',
-            status: 'running',
-            timestamp: event.Timestamp || Date.now(),
-          });
-        }
-        continue;
-      }
+    if (event.EventType === 'run_status') {
+      continue;
+    }
     const message = buildMessageFromSessionEvent(event);
     if (!message) {
       continue;
@@ -398,6 +382,7 @@ export function buildMessagesFromSessionEvents(events = []) {
   }
 
   flushPendingReasoning();
+
   return messages.map(({ invocationId: _invocationId, ...message }) => message);
 }
 

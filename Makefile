@@ -1,7 +1,7 @@
 # AgentEngine Makefile
 # 用于构建 Web UI 和管理项目
 
-.PHONY: help install build-webui sync-static clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size docs-check-wiki docs-prepare-source docs-docker-build docs-docker-push docs-helm-lint docs-helm-template docs-deploy docs-deploy-all docs-status docs-logs
+.PHONY: help install build-webui sync-static clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size docs-check-wiki docs-prepare-source docs-docker-build docs-docker-push docs-helm-lint docs-helm-template docs-deploy docs-deploy-all docs-status docs-logs build-frontend build-wheel build-all clean-frontend
 
 # 默认目标
 help:
@@ -628,6 +628,27 @@ docs-logs:
 	@kubectl --kubeconfig $(DOCS_KUBECONFIG_PATH) logs -f -n $(DOCS_NAMESPACE) deployment/$(DOCS_HELM_RELEASE)
 
 
+
+# ============================================================
+# Hosted UI 构建自动化
+# ============================================================
+
+NODE_DIR := ksadk/server/web-ui
+STATIC_DIR := ksadk/server/static
+HOSTED_DIR := ksadk/server/web-ui/dist-hosted
+
+build-frontend:
+	cd $(NODE_DIR) && npm ci && npm run build:all
+
+build-wheel: build-frontend
+	uv build
+
+build-all: build-wheel
+	@echo "Build complete. Wheel is in dist/"
+
+clean-frontend:
+	rm -rf $(NODE_DIR)/dist $(NODE_DIR)/dist-hosted
+	rm -rf $(STATIC_DIR)/assets $(STATIC_DIR)/index.html $(STATIC_DIR)/favicon.svg $(STATIC_DIR)/icons.svg
 
 # ============================================================
 # 清理

@@ -27,7 +27,7 @@ type ChatComposerProps = {
   onPaste: (event: ClipboardEvent<HTMLTextAreaElement>) => void;
   onRemoveAttachment: (index: number) => void;
   onStopGeneration: () => void;
-  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onSubmit: (text: string, attachments: File[]) => void;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
 };
 
@@ -57,6 +57,13 @@ export function ChatComposer({
     if (event.dataTransfer.files && event.dataTransfer.files.length > 0) {
       onAppendAttachments(Array.from(event.dataTransfer.files));
     }
+  };
+
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const text = input.trim();
+    if (!text && attachments.length === 0) return;
+    onSubmit(text, attachments);
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -121,7 +128,7 @@ export function ChatComposer({
 
         <div className="flex items-center gap-3">
           <form
-            onSubmit={onSubmit}
+            onSubmit={handleSubmit}
             onDragOver={(event) => {
               event.preventDefault();
               event.stopPropagation();
