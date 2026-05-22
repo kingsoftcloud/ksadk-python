@@ -3,6 +3,7 @@ import { buildSandboxedHtml, useIframeMessageHandler } from '../../utils/sandbox
 import { FileEditor } from './FileEditor.js';
 import { Eye, Code, ExternalLink } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { buildWorkspaceFileBaseUrl, buildWorkspaceFileUrl } from '../../utils/workspace.js';
 
 type HtmlPreviewProps = {
   content: string;
@@ -22,21 +23,13 @@ export function HtmlPreview({
   onDirtyChange,
   getContentRef,
   isMobile,
-  agentId,
 }: HtmlPreviewProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const channelId = useId();
   const [activeView, setActiveView] = useState<'editor' | 'preview'>('editor');
 
-  // Path-based base URL for resolving sibling file references.
-  const basePath = (() => {
-    const prefix = `/agentengine/api/v1/ws/${encodeURIComponent(agentId)}`;
-    const dirPath = path.includes('/') ? path.substring(0, path.lastIndexOf('/') + 1) : '';
-    return `${prefix}/${dirPath}`;
-  })();
-
-  // Full URL to this file on the server — used for "open in new window"
-  const fileUrl = `/agentengine/api/v1/ws/${encodeURIComponent(agentId)}/${path}`;
+  const basePath = buildWorkspaceFileBaseUrl(path);
+  const fileUrl = buildWorkspaceFileUrl(path);
 
   const previewHtml = useCallback(() => {
     return buildSandboxedHtml(content, { basePath, channelId });
@@ -95,7 +88,7 @@ export function HtmlPreview({
           <iframe
             ref={iframeRef}
             srcDoc={previewSrc}
-            sandbox="allow-scripts allow-downloads"
+            sandbox="allow-scripts allow-downloads allow-same-origin"
             title="HTML 预览"
             className="h-full w-full border-0 bg-white"
           />
@@ -132,7 +125,7 @@ export function HtmlPreview({
       <iframe
         ref={iframeRef}
         srcDoc={previewSrc}
-        sandbox="allow-scripts allow-downloads"
+        sandbox="allow-scripts allow-downloads allow-same-origin"
         title="HTML 预览"
         className="h-full w-full border-0 bg-white"
       />

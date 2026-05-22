@@ -1,12 +1,13 @@
 import { create } from 'zustand';
 import { normalizeCapabilities } from '../utils/capabilities.js';
 import type { RuntimeApiFormat } from '../types/api.js';
+import type { UiCapabilities } from '../types/capabilities.js';
 
 type BootstrapState = {
   agentId: string;
   agentName: string;
   agentFramework: string;
-  capabilities: Record<string, unknown>;
+  capabilities: UiCapabilities;
   apiFormats: RuntimeApiFormat[];
   accessMode: string;
   workspaceFiles: Record<string, unknown> | null;
@@ -16,7 +17,7 @@ type BootstrapActions = {
   setAgentId: (id: string) => void;
   setAgentName: (name: string) => void;
   setAgentFramework: (framework: string) => void;
-  setCapabilities: (caps: Record<string, unknown>) => void;
+  setCapabilities: (caps: UiCapabilities) => void;
   setApiFormats: (formats: RuntimeApiFormat[]) => void;
   setAccessMode: (mode: string) => void;
   setWorkspaceFiles: (files: Record<string, unknown> | null) => void;
@@ -26,7 +27,7 @@ export const useBootstrapStore = create<BootstrapState & BootstrapActions>()((se
   agentId: 'default-agent',
   agentName: 'Agent',
   agentFramework: '',
-  capabilities: normalizeCapabilities({}) as Record<string, unknown>,
+  capabilities: normalizeCapabilities({}),
   apiFormats: ['responses', 'chat_completions'],
   accessMode: 'Owner',
   workspaceFiles: null,

@@ -46,7 +46,7 @@ export function useRunAgent(ctx: RunAgentContext) {
   useEffect(() => {
     engine.updateConfig({
       agentId,
-      apiFormats: apiFormats as string[],
+      apiFormats,
       agentFramework,
       selectedModel,
       thinkingMode,

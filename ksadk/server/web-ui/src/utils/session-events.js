@@ -3,6 +3,10 @@ import {
   normalizeResponsesStreamEvent,
 } from './responses-stream.js';
 
+/**
+ * @typedef {import('../components/chat/types.js').Message} Message
+ */
+
 const RUN_TERMINAL_STATUSES = new Set([
   'completed',
   'failed',
@@ -186,6 +190,18 @@ function mergeReasoningText(first = '', second = '') {
   return `${left}${right}`;
 }
 
+/**
+ * @param {{
+ *   id: string;
+ *   timestamp: number;
+ *   status?: Message['status'];
+ *   trigger?: string;
+ *   compactedUntilSeqId?: number;
+ *   summary?: string;
+ *   historical?: boolean;
+ * }} options
+ * @returns {Message}
+ */
 export function buildCompactionMessage(options) {
   return {
     id: options.id,
@@ -201,6 +217,10 @@ export function buildCompactionMessage(options) {
   };
 }
 
+/**
+ * @param {import('../types/session-events.js').SessionEventRecord} event
+ * @returns {Message | null}
+ */
 export function buildMessageFromSessionEvent(event) {
   const eventType = event?.EventType || '';
   if (eventType === 'run_status') {
@@ -292,6 +312,10 @@ export function buildMessageFromSessionEvent(event) {
   };
 }
 
+/**
+ * @param {import('../types/session-events.js').SessionEventRecord[]} [events]
+ * @returns {Message[]}
+ */
 export function buildMessagesFromSessionEvents(events = []) {
   const latestRunStatusByInvocation = new Map();
   const outputByInvocation = new Set();
@@ -314,7 +338,9 @@ export function buildMessagesFromSessionEvents(events = []) {
     latestRunStatusByInvocation.set(invocationId, String(event.Content?.status || '').trim());
   }
 
+  /** @type {Array<Message & { invocationId?: string }>} */
   const messages = [];
+  /** @type {(Message & { invocationId?: string }) | null} */
   let pendingReasoning = null;
 
   const flushPendingReasoning = () => {

@@ -19,6 +19,15 @@ export function dispatchRunEventToStores(event: RunEvent) {
   const ms = useMessageStore.getState();
 
   switch (event.type) {
+    case 'activity':
+      useStreamingStore.getState().updateActivity({
+        status: event.status,
+        phase: event.phase,
+        detail: event.detail,
+        countEvent: event.countEvent,
+      });
+      break;
+
     case 'user_message_added':
       ms.patchMessages((prev) => [
         ...prev,
@@ -134,7 +143,7 @@ export function dispatchRunEventToStores(event: RunEvent) {
       });
       ms.patchMessages((prev) => {
         const existingIndex = prev.findIndex((m) => m.id === compactionId);
-        if (existingIndex < 0) return [...prev, compactionMsg];
+        if (existingIndex < 0) return [...prev, compactionMsg as Message];
         return prev.map((m) => (m.id === compactionId ? { ...m, ...compactionMsg } : m));
       });
       break;
@@ -143,7 +152,7 @@ export function dispatchRunEventToStores(event: RunEvent) {
     case 'stage_changed':
       if (event.stage === 'streaming' || event.stage === 'connecting') {
         useStreamingStore.getState().setStreaming(true);
-      } else if (event.stage === 'completing' || event.stage === 'failed' || event.stage === 'cancelled') {
+      } else if (event.stage === 'completing' || event.stage === 'error' || event.stage === 'cancelled') {
         useStreamingStore.getState().setStreaming(false);
         assistantCreated = false;
       }
@@ -151,11 +160,22 @@ export function dispatchRunEventToStores(event: RunEvent) {
 
     case 'stream_ended':
       useStreamingStore.getState().setStreaming(false);
+      globalThis.setTimeout(() => {
+        const state = useStreamingStore.getState();
+        if (!state.isStreaming && state.activity?.status === 'completed') {
+          state.clearActivity();
+        }
+      }, 2400);
       assistantCreated = false;
       break;
 
     case 'error':
       useStreamingStore.getState().setStreaming(false);
+      useStreamingStore.getState().updateActivity({
+        status: 'failed',
+        phase: '连接断开或生成出错',
+        countEvent: false,
+      });
       ms.patchMessages((prev) => [
         ...prev,
         {

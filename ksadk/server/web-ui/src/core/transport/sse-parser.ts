@@ -5,10 +5,18 @@ export function parseSseChunk(chunk: string): TransportEvent[] {
   const trimmed = chunk.trim();
   if (!trimmed) return events;
 
+  // SSE comment frames (e.g. ": ping") — keepalive from server
+  const allLines = trimmed.split('\n');
+  if (allLines.every(l => l.startsWith(':'))) {
+    events.push({ eventName: '__ping__', data: null });
+    return events;
+  }
+
   let currentEvent = 'message';
   const dataLines: string[] = [];
 
-  for (const line of trimmed.split('\n')) {
+  for (const line of allLines) {
+    if (line.startsWith(':')) continue; // skip comment lines
     if (line.startsWith('event:')) {
       currentEvent = line.substring(6).trim() || 'message';
     } else if (line.startsWith('data:')) {

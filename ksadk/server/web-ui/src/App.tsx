@@ -1,4 +1,4 @@
-import React, { Suspense, useEffect, useRef } from 'react';
+import React, { Suspense, useCallback, useEffect, useRef } from 'react';
 import { useUIStore } from './stores/ui.js';
 import { useBootstrapStore } from './stores/bootstrap.js';
 import { useModelStore } from './stores/model.js';
@@ -30,6 +30,7 @@ import { ApiFacadeImpl } from './core/api/facade.js';
 import type { UiCapabilities } from './types/capabilities.js';
 import type { BootstrapWorkspaceFiles } from './types/bootstrap.js';
 import type { RuntimeApiFormat } from './types/api.js';
+import type { ThinkingMode } from './stores/model.js';
 import {
   clampWorkspacePanelWidth,
   DESKTOP_SIDEBAR_WIDTH,
@@ -100,6 +101,24 @@ export default function App() {
     agentIdRef,
     queuedDraftRef,
   });
+
+  const handleStopGeneration = useCallback(() => {
+    runSubscriptionAbortRef.current?.abort();
+    useStreamingStore.getState().stopActivity();
+    stopGeneration();
+  }, [runSubscriptionAbortRef, stopGeneration]);
+
+  const handleCancelRemote = useCallback(async () => {
+    const invocationId = useStreamingStore.getState().currentRunId;
+    if (invocationId) {
+      try {
+        await api.cancelRun(agentId, invocationId);
+      } catch (err) {
+        console.warn('[App] cancelRun failed:', err);
+      }
+    }
+    handleStopGeneration();
+  }, [api, agentId, handleStopGeneration]);
 
   const { submitResponseFeedback, deleteResponseFeedback, respondToApproval } = useFeedback({
     agentId,
@@ -231,7 +250,7 @@ export default function App() {
           modelSource={modelSource}
           thinkingEnabled={thinkingEnabled}
           thinkingMode={thinkingMode}
-          onSelectThinkingMode={(mode) => useModelStore.getState().setThinkingMode(normalizeThinkingMode(mode))}
+          onSelectThinkingMode={(mode) => useModelStore.getState().setThinkingMode(normalizeThinkingMode(mode) as ThinkingMode)}
           mobileActionsOpen={mobileActionsOpen}
           onMobileActionsOpenChange={(v) => useUIStore.getState().setMobileActionsOpen(v)}
           workspaceEnabled={workspaceEnabled}
@@ -256,13 +275,16 @@ export default function App() {
               onDeleteFeedback={deleteResponseFeedback}
               onSubmitFeedback={submitResponseFeedback}
               onRespondToApproval={respondToApproval}
+              onStopGeneration={handleStopGeneration}
+              onCancelRemote={uiCapabilities.StopRun ? handleCancelRemote : undefined}
             />
-            <ConnectedComposer
-              composerMaxHeight={composerMaxHeight}
-              submitDraft={submitDraft}
-              stopGeneration={stopGeneration}
-              isMobile={isMobile}
-            />
+        <ConnectedComposer
+          composerMaxHeight={composerMaxHeight}
+          submitDraft={submitDraft}
+          stopGeneration={handleStopGeneration}
+          cancelRemote={uiCapabilities.StopRun ? handleCancelRemote : undefined}
+          isMobile={isMobile}
+        />
           </>
         )}
       </main>

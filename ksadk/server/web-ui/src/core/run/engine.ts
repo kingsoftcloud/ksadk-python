@@ -10,12 +10,69 @@ import { buildModelOptionsFromThinkingMode, normalizeThinkingMode } from '../../
 import { resolveRunAgentApiFormat } from '../../utils/layout-constants.js';
 import { useStreamingStore } from '../../stores/streaming.js';
 import type { StreamProtocol } from '../stream/types.js';
+import type { RuntimeApiFormat } from '../../types/api.js';
+
+function activityForTransportEvent(eventName: string, data: unknown): { phase: string; status?: 'running' | 'waiting' | 'completed' | 'failed'; detail?: string } | null {
+  const eventType = String((data as Record<string, unknown> | null)?.type || eventName || '').trim();
+  if (eventType === 'response.created') {
+    return { phase: '运行已创建', status: 'running' };
+  }
+  if (eventType === 'response.in_progress') {
+    return { phase: '等待运行时输出', status: 'waiting' };
+  }
+  if (eventType === 'response.output_item.added') {
+    const item = (data as { item?: { type?: string; name?: string } } | null)?.item;
+    if (item?.type === 'function_call') {
+      return { phase: `调用工具 ${item.name || 'tool'}`, status: 'running' };
+    }
+    if (String(item?.type || '').includes('reasoning')) {
+      return { phase: '生成思考过程', status: 'running' };
+    }
+    return { phase: '生成回复内容', status: 'running' };
+  }
+  if (eventType.includes('reasoning')) {
+    return { phase: '生成思考过程', status: 'running' };
+  }
+  if (eventType.includes('function_call') || eventType === 'response.tool_call') {
+    return { phase: '调用工具', status: 'running' };
+  }
+  if (eventType.includes('tool_result')) {
+    return { phase: '收到工具结果', status: 'running' };
+  }
+  if (eventType.includes('output_text') || eventType.includes('content_part')) {
+    return { phase: '生成回复内容', status: 'running' };
+  }
+  if (eventType === 'response.completed') {
+    return { phase: '运行完成', status: 'completed' };
+  }
+  if (eventType === 'response.failed') {
+    return { phase: '运行失败', status: 'failed' };
+  }
+  if (eventType === 'response.incomplete') {
+    return { phase: '运行中断', status: 'failed' };
+  }
+  return null;
+}
+
+const VALID_TRANSITIONS: Record<RunStage, RunStage[]> = {
+  idle: ['creating-session', 'connecting', 'error'],
+  'creating-session': ['uploading-files', 'connecting', 'error', 'idle'],
+  'uploading-files': ['connecting', 'error', 'idle'],
+  connecting: ['streaming', 'error', 'idle'],
+  streaming: ['completing', 'stopping', 'recovering', 'error'],
+  stopping: ['cancelled', 'idle'],
+  completing: ['idle'],
+  recovering: ['streaming', 'error', 'idle'],
+  error: ['connecting', 'idle'],
+  cancelled: ['idle'],
+};
 
 export class RunEngineImpl implements RunEngine {
   private _stage: RunStage = 'idle';
   private listeners = new Set<(event: RunEvent) => void>();
   private abortController: AbortController | null = null;
   private activeCompactionId: string | null = null;
+  private api: ApiFacade;
   private config: RunEngineConfig = {
     agentId: 'default-agent',
     apiFormats: ['responses'],
@@ -24,7 +81,9 @@ export class RunEngineImpl implements RunEngine {
     thinkingMode: 'auto',
   };
 
-  constructor(private api: ApiFacade) {}
+  constructor(api: ApiFacade) {
+    this.api = api;
+  }
 
   get stage() { return this._stage; }
 
@@ -42,6 +101,10 @@ export class RunEngineImpl implements RunEngine {
   }
 
   private setStage(stage: RunStage) {
+    const allowed = VALID_TRANSITIONS[this._stage];
+    if (allowed && !allowed.includes(stage)) {
+      console.warn(`[RunEngine] Invalid transition: ${this._stage} → ${stage}`);
+    }
     this._stage = stage;
     this.emit({ type: 'stage_changed', stage });
   }
@@ -82,6 +145,7 @@ export class RunEngineImpl implements RunEngine {
         const fileParts = await this.uploadFiles(draft, isResponsesResume);
 
         this.setStage('connecting');
+        this.emit({ type: 'activity', phase: '连接运行时', status: 'connecting', countEvent: false });
         const apiFormat = isResponsesResume
           ? 'responses'
           : resolveRunAgentApiFormat({ agentFramework: this.config.agentFramework, apiFormats: this.config.apiFormats });
@@ -93,6 +157,7 @@ export class RunEngineImpl implements RunEngine {
 
         const stream = await this.api.runAgent(body, { signal: this.abortController?.signal });
         this.setStage('streaming');
+        this.emit({ type: 'activity', phase: '等待首个输出', status: 'waiting', countEvent: false });
 
         const assistantMessageId = `msg-${Date.now()}`;
 
@@ -104,21 +169,31 @@ export class RunEngineImpl implements RunEngine {
           if (sessionId) {
             body.SessionId = sessionId;
             this.setStage('connecting');
+            this.emit({ type: 'activity', phase: '重建会话后重新连接', status: 'connecting', countEvent: false });
             const retryStream = await this.api.runAgent(body, { signal: this.abortController?.signal });
             this.setStage('streaming');
+            this.emit({ type: 'activity', phase: '等待首个输出', status: 'waiting', countEvent: false });
             const retryMsgId = `msg-${Date.now()}`;
             await this.consumeStream(retryStream, protocol, protocolState, retryMsgId);
           }
         }
 
         this.setStage('completing');
+        this.emit({ type: 'activity', phase: '运行完成', status: 'completed', countEvent: false });
         this.emit({ type: 'stream_ended' });
       } catch (error) {
         this.failCompaction();
         const isAbort = error instanceof DOMException && error.name === 'AbortError';
         if (!isAbort) {
           console.error('[RunEngine] start() error:', error);
-          this.emit({ type: 'error', error: error instanceof Error ? error : new Error(String(error)) });
+          const isNetwork = error instanceof TypeError && error.message.includes('fetch');
+          if (isNetwork) {
+            this.setStage('recovering');
+            this.emit({ type: 'activity', phase: '网络异常，尝试重连', status: 'waiting', countEvent: false });
+          } else {
+            this.setStage('error');
+            this.emit({ type: 'error', error: error instanceof Error ? error : new Error(String(error)) });
+          }
         }
       } finally {
         useStreamingStore.getState().setStreaming(false);
@@ -134,12 +209,21 @@ export class RunEngineImpl implements RunEngine {
     if (this._stage === 'idle') return;
     this.setStage('stopping');
     this.abortController?.abort();
-    useStreamingStore.getState().setStreaming(false);
+    useStreamingStore.getState().stopActivity();
     this.setStage('cancelled');
     this.emit({
       type: 'system_message',
       content: '已停止接收本次输出；如果运行时不支持取消，后台执行可能仍会继续。',
     });
+  }
+
+  async cancelRemote(invocationId: string): Promise<void> {
+    try {
+      await this.api.cancelRun(this.config.agentId, invocationId);
+    } catch (err) {
+      console.warn('[RunEngine] cancelRemote failed:', err);
+    }
+    this.stop();
   }
 
   resumeRun(params: {
@@ -151,6 +235,7 @@ export class RunEngineImpl implements RunEngine {
     this.abortController?.abort();
     this.abortController = new AbortController();
     this.setStage('connecting');
+    this.emit({ type: 'activity', phase: '恢复运行事件订阅', status: 'connecting', countEvent: false });
 
     (async () => {
       try {
@@ -163,6 +248,7 @@ export class RunEngineImpl implements RunEngine {
           { signal: this.abortController?.signal },
         );
         this.setStage('streaming');
+        this.emit({ type: 'activity', phase: '等待恢复事件', status: 'waiting', countEvent: false });
 
         const reader = stream.getReader();
         const decoder = new TextDecoder();
@@ -181,12 +267,14 @@ export class RunEngineImpl implements RunEngine {
             const events = parseSseChunk(chunk);
             for (const event of events) {
               if (event.eventName === '__done__') continue;
+              this.emit({ type: 'activity', phase: '收到恢复事件', status: 'running' });
               this.emit({ type: 'stream_event', event: event.data as SessionEventRecord });
             }
           }
         }
 
         this.setStage('completing');
+        this.emit({ type: 'activity', phase: '恢复订阅结束', status: 'completed', countEvent: false });
         this.emit({ type: 'stream_ended' });
         params.onSessionReloadNeeded?.();
       } catch (error) {
@@ -253,7 +341,7 @@ export class RunEngineImpl implements RunEngine {
 
   private buildRequestBody(
     sessionId: string,
-    apiFormat: string,
+    apiFormat: RuntimeApiFormat,
     isResponsesResume: boolean,
     draft: { text: string; responsesInput?: unknown; previousResponseId?: string },
     fileParts: Array<Record<string, unknown>>,
@@ -327,6 +415,11 @@ export class RunEngineImpl implements RunEngine {
               continue;
             }
 
+            const activity = activityForTransportEvent(event.eventName, event.data);
+            if (activity) {
+              this.emit({ type: 'activity', ...activity });
+            }
+
             const actions = protocol.parse(event, protocolState);
             for (const action of actions) {
               this.dispatchAction(action, messageId);
@@ -392,7 +485,11 @@ export class RunEngineImpl implements RunEngine {
   }
 
   private upsertCompactionMessage(payload: Record<string, unknown>) {
-    const phase = String(payload.phase || payload.eventName?.split('.').pop() || 'start');
+    const eventPhase =
+      typeof payload.eventName === 'string'
+        ? payload.eventName.split('.').pop()
+        : undefined;
+    const phase = String(payload.phase || eventPhase || 'start');
     this.emit({
       type: 'compaction',
       phase,

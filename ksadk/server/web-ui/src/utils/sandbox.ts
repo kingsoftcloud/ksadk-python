@@ -25,16 +25,22 @@ function cspSourceForBasePath(basePath: string): string {
   }
 }
 
+function sourceList(...sources: Array<string | undefined>): string {
+  return Array.from(new Set(sources.filter((source): source is string => Boolean(source)))).join(' ');
+}
+
 function buildPreviewCsp(basePath?: string): string {
+  const assetSource = basePath ? cspSourceForBasePath(basePath) : undefined;
+  const scriptSources = sourceList("'unsafe-inline'", "'unsafe-eval'", "'self'", 'https:', assetSource);
+  const renderAssetSources = sourceList("'self'", 'https:', assetSource);
   if (basePath) {
-    const assetSource = cspSourceForBasePath(basePath);
     return [
       "default-src 'none'",
-      `script-src 'unsafe-inline' 'unsafe-eval' ${assetSource}`,
-      `style-src 'unsafe-inline' data: ${assetSource}`,
-      `img-src data: blob: ${assetSource}`,
-      `font-src data: ${assetSource}`,
-      `media-src data: blob: ${assetSource}`,
+      `script-src ${scriptSources}`,
+      `style-src 'unsafe-inline' data: ${renderAssetSources}`,
+      `img-src data: blob: ${renderAssetSources}`,
+      `font-src data: ${renderAssetSources}`,
+      `media-src data: blob: ${renderAssetSources}`,
       "worker-src blob:",
       "connect-src 'none'",
       "form-action 'none'",
@@ -44,14 +50,15 @@ function buildPreviewCsp(basePath?: string): string {
 
   return [
     "default-src 'none'",
-    "script-src 'unsafe-inline' 'unsafe-eval'",
-    "style-src 'unsafe-inline' data:",
-    "img-src data: blob:",
-    "font-src data:",
-    "media-src data: blob:",
+    `script-src ${scriptSources}`,
+    `style-src 'unsafe-inline' data: ${renderAssetSources}`,
+    `img-src data: blob: ${renderAssetSources}`,
+    `font-src data: ${renderAssetSources}`,
+    `media-src data: blob: ${renderAssetSources}`,
     "worker-src blob:",
     "connect-src 'none'",
     "form-action 'none'",
+    "base-uri 'self'",
   ].join('; ');
 }
 
@@ -77,10 +84,29 @@ export function buildSandboxedHtml(html: string, options: SandboxOptions | strin
   const csp = buildPreviewCsp(basePath);
 
   const interceptor = `<script>
-document.addEventListener('click', function(e) {
-  var target = e.target.closest('a');
-  if (target && target.href) {
-    e.preventDefault();
+function ksadkScrollToHash(rawHref) {
+  if (!rawHref || rawHref === '#') return;
+  var rawId = rawHref.slice(1);
+  var id = rawId;
+  try {
+    id = decodeURIComponent(rawId);
+  } catch (_) {}
+  var target = document.getElementById(id) || document.getElementsByName(id)[0];
+  if (target) {
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+}
+document.addEventListener('click', function(event) {
+  var target = event.target && event.target.closest ? event.target.closest('a') : null;
+  if (!target) return;
+  var rawHref = target.getAttribute('href') || '';
+  if (rawHref.charAt(0) === '#') {
+    event.preventDefault();
+    ksadkScrollToHash(rawHref);
+    return;
+  }
+  if (target.href) {
+    event.preventDefault();
     window.parent.postMessage({
       type: 'ksadk:linkClick',
       channelId: ${JSON.stringify(channelId || '')},

@@ -15,7 +15,7 @@ def test_langgraph_defaults_to_chat_ui_path():
     assert cfg.url is None
 
 
-def test_hermes_defaults_to_root_ui_path():
+def test_hermes_defaults_to_chat_ui_path():
     cfg = resolve_ui_config(
         framework="hermes",
         state={},
@@ -25,7 +25,7 @@ def test_hermes_defaults_to_root_ui_path():
     )
 
     assert cfg.profile == "hermes"
-    assert cfg.path == "/"
+    assert cfg.path == "/chat"
     assert cfg.url is None
 
 

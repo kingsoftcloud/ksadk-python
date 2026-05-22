@@ -69,6 +69,10 @@ class BaseRunner(ABC):
         """在请求进入实际 runner 前同步模型或做必要刷新。"""
         self.sync_process_model_env(model)
 
+    def request_cancel(self, invocation_id: str) -> None:
+        """请求取消指定调用。默认 no-op，子类可 override 实现真正的取消。"""
+        pass
+
     async def close(self) -> None:
         """释放 runner 持有的运行期资源。"""
         return None

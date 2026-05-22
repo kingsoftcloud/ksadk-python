@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import { useRef } from 'react';
 import { X, Download } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useArtifactStore } from '../../stores/artifact.js';

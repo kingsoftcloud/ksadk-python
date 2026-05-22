@@ -44,7 +44,7 @@ export function useFeedback(ctx: UseFeedbackContext) {
         return;
       }
 
-      let previousFeedback: Message['feedback'] | null = null;
+      let previousFeedback: NonNullable<Message['feedback']> | null = null;
       useMessageStore.getState().patchMessages((prev) => {
         const result = applyOptimisticFeedback(prev, {
           messageId: options.message.id,
@@ -93,7 +93,9 @@ export function useFeedback(ctx: UseFeedbackContext) {
         return;
       }
 
-      const previousFeedback = message.feedback ? { ...message.feedback } : null;
+      const previousFeedback: NonNullable<Message['feedback']> | null = message.feedback
+        ? { ...message.feedback }
+        : null;
       useMessageStore.getState().patchMessages((prev) => clearFeedback(prev, { messageId: message.id }));
 
       try {

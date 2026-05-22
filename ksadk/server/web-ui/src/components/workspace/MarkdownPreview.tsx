@@ -13,6 +13,12 @@ type MarkdownPreviewProps = {
   isMobile: boolean;
 };
 
+function clearTimer(timer: React.MutableRefObject<ReturnType<typeof setTimeout> | null>) {
+  if (timer.current) {
+    clearTimeout(timer.current);
+  }
+}
+
 export function MarkdownPreview({
   content,
   path,
@@ -25,11 +31,11 @@ export function MarkdownPreview({
   const [previewContent, setPreviewContent] = useState(content);
 
   // Debounce preview updates
-  const timerRef = useRef<ReturnType<typeof setTimeout>>();
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    clearTimeout(timerRef.current);
+    clearTimer(timerRef);
     timerRef.current = setTimeout(() => setPreviewContent(content), 300);
-    return () => clearTimeout(timerRef.current);
+    return () => clearTimer(timerRef);
   }, [content]);
 
   if (isMobile) {

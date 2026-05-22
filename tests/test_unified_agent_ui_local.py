@@ -91,6 +91,12 @@ class _GenericInterruptRunner(_UiRunner):
         }
 
 
+class _FrameworkUiRunner(_UiRunner):
+    def __init__(self, framework: str):
+        super().__init__()
+        self.detection_result.type = SimpleNamespace(value=framework)
+
+
 def _build_transport(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()
@@ -160,10 +166,16 @@ async def test_get_agent_ui_bootstrap_matches_local_shape_parity(monkeypatch):
         "WorkspaceFiles": True,
         "Thinking": True,
         "Approval": True,
-        "StopRun": False,
+        "StopRun": True,
         "ResumeRun": False,
         "MCP": False,
         "HostedRuntime": False,
+        "NativeTerminal": {
+            "Enabled": False,
+            "Mode": None,
+            "Protocol": "ks-terminal.v1",
+            "Path": None,
+        },
     }
     assert payload["Data"]["WorkspaceFiles"] == {
         "Enabled": True,
@@ -187,6 +199,53 @@ async def test_get_agent_ui_bootstrap_matches_local_shape_parity(monkeypatch):
     assert payload["Data"]["Model"]["id"] == "glm-5.1"
     assert payload["Data"]["Model"]["source"] == "OPENAI_MODEL_NAME"
     assert runner.load_agent_calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("framework", ["hermes", "openclaw"])
+async def test_get_agent_ui_bootstrap_enables_tui_only_for_native_tui_frameworks(
+    monkeypatch,
+    framework,
+):
+    _, _, _, transport = _build_transport_with_runner(
+        monkeypatch,
+        _FrameworkUiRunner(framework),
+    )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/GetAgentUiBootstrap",
+            json={"AgentId": f"{framework}-agent"},
+        )
+
+    assert response.status_code == 200
+    terminal = response.json()["Data"]["Capabilities"]["NativeTerminal"]
+    assert terminal == {
+        "Enabled": True,
+        "Mode": "tui",
+        "Protocol": "ks-terminal.v1",
+        "Path": "/_ksadk/terminal/ws",
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_agent_ui_bootstrap_disables_tui_for_generic_frameworks(monkeypatch):
+    _, _, _, transport = _build_transport_with_runner(
+        monkeypatch,
+        _FrameworkUiRunner("langgraph"),
+    )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/GetAgentUiBootstrap",
+            json={"AgentId": "langgraph-agent"},
+        )
+
+    assert response.status_code == 200
+    terminal = response.json()["Data"]["Capabilities"]["NativeTerminal"]
+    assert terminal["Enabled"] is False
+    assert terminal["Mode"] is None
+    assert terminal["Path"] is None
 
 
 @pytest.mark.asyncio
@@ -1301,46 +1360,65 @@ async def test_static_routes_serve_unified_agent_ui_shell(monkeypatch):
     assert root_response.text == chat_response.text
     assert 'type="module" crossorigin src="./assets/index-' in root_response.text
     assert 'rel="stylesheet" crossorigin href="./assets/index-' in root_response.text
-    assert "/agentengine/api/v1/AttachmentContent" in js_response.text
-    assert "/agentengine/api/v1/UploadFile" in js_response.text
-    assert "/agentengine/api/v1/ListSessionEvents" in js_response.text
-    assert "/agentengine/api/v1/ListAgentModels" in js_response.text
-    assert "/agentengine/api/v1/RunAgent" in js_response.text
-    assert "/agentengine/api/v1/ListWorkspaceFiles" in js_response.text
-    assert "/agentengine/api/v1/AddWorkspaceFile" in js_response.text
-    assert "/agentengine/api/v1/DeleteWorkspaceFile" in js_response.text
-    assert "/agentengine/api/v1/GetWorkspaceFileContent" in js_response.text
+    assert "/agentengine/api/v1" in js_response.text
+    for action_name in (
+        "AttachmentContent",
+        "UploadFile",
+        "ListSessionEvents",
+        "ListAgentModels",
+        "RunAgent",
+        "ListWorkspaceFiles",
+        "AddWorkspaceFile",
+        "DeleteWorkspaceFile",
+        "GetWorkspaceFileContent",
+    ):
+        assert action_name in js_response.text
     assert "/run_sse" not in js_response.text
     assert "/agentengine/api/v1/models" not in js_response.text
     assert "overflow" in css_response.text
 
 
 def test_web_ui_source_uses_title_and_summary_in_sidebar():
-    app_source = Path("ksadk/server/web-ui/src/App.tsx").read_text(encoding="utf-8")
     sidebar_source = Path("ksadk/server/web-ui/src/components/chat/ChatSidebar.tsx").read_text(
+        encoding="utf-8"
+    )
+    session_helpers_source = Path("ksadk/server/web-ui/src/utils/session-helpers.ts").read_text(
         encoding="utf-8"
     )
     session_list_source = Path("ksadk/server/web-ui/src/utils/session-list.js").read_text(
         encoding="utf-8"
     )
-    assert "session.Title" in app_source
+    assert "session.Title" in session_helpers_source
     assert "session?.Summary" in session_list_source
     assert "session.SessionId.slice(0, 12)" not in sidebar_source
 
 
 def test_web_ui_source_supports_clipboard_file_paste():
-    source = Path("ksadk/server/web-ui/src/App.tsx").read_text(encoding="utf-8")
-    assert "clipboardData.items" in source
-    assert "onPaste" in source
-    assert "getAsFile" in source
+    composer_source = Path(
+        "ksadk/server/web-ui/src/components/chat/ConnectedComposer.tsx"
+    ).read_text(encoding="utf-8")
+    attachment_source = Path("ksadk/server/web-ui/src/utils/attachment.ts").read_text(
+        encoding="utf-8"
+    )
+    assert "clipboardData.items" in attachment_source
+    assert "onPaste" in composer_source
+    assert "getAsFile" in attachment_source
 
 
 def test_web_ui_source_prefers_responses_when_runtime_supports_it():
-    source = Path("ksadk/server/web-ui/src/App.tsx").read_text(encoding="utf-8")
-    assert "setAgentFramework" in source
-    assert "if (apiFormats.includes('responses'))" in source
-    assert "return 'responses'" in source
-    assert "resolveRunAgentApiFormat({ agentFramework, apiFormats })" in source
+    bootstrap_source = Path("ksadk/server/web-ui/src/hooks/useBootstrap.ts").read_text(
+        encoding="utf-8"
+    )
+    layout_source = Path("ksadk/server/web-ui/src/utils/layout-constants.ts").read_text(
+        encoding="utf-8"
+    )
+    run_engine_source = Path("ksadk/server/web-ui/src/core/run/engine.ts").read_text(
+        encoding="utf-8"
+    )
+    assert "setAgentFramework" in bootstrap_source
+    assert "if (apiFormats.includes('responses'))" in layout_source
+    assert "return 'responses'" in layout_source
+    assert "resolveRunAgentApiFormat({ agentFramework: this.config.agentFramework, apiFormats: this.config.apiFormats })" in run_engine_source
 
 
 def test_web_ui_source_supports_workspace_panel_for_owner_access():
@@ -1348,10 +1426,28 @@ def test_web_ui_source_supports_workspace_panel_for_owner_access():
     header_source = Path("ksadk/server/web-ui/src/components/chat/ChatHeader.tsx").read_text(
         encoding="utf-8"
     )
+    api_facade_source = Path("ksadk/server/web-ui/src/core/api/facade.ts").read_text(
+        encoding="utf-8"
+    )
+    bootstrap_source = Path("ksadk/server/web-ui/src/hooks/useBootstrap.ts").read_text(
+        encoding="utf-8"
+    )
+    layout_source = Path("ksadk/server/web-ui/src/utils/layout-constants.ts").read_text(
+        encoding="utf-8"
+    )
+    run_engine_source = Path("ksadk/server/web-ui/src/core/run/engine.ts").read_text(
+        encoding="utf-8"
+    )
+    workspace_api_source = Path("ksadk/server/web-ui/src/api/workspace.ts").read_text(
+        encoding="utf-8"
+    )
     workspace_source = Path(
         "ksadk/server/web-ui/src/components/workspace/WorkspacePanel.tsx"
     ).read_text(encoding="utf-8")
     workspace_utils_source = Path("ksadk/server/web-ui/src/utils/workspace.js").read_text(
+        encoding="utf-8"
+    )
+    session_events_source = Path("ksadk/server/web-ui/src/utils/session-events.js").read_text(
         encoding="utf-8"
     )
     responses_stream_source = Path(
@@ -1362,15 +1458,16 @@ def test_web_ui_source_supports_workspace_panel_for_owner_access():
     assert "mode === 'owner' || mode === 'private'" in workspace_utils_source
     assert "WorkspacePanel" in source
     assert "flex h-14 flex-shrink-0 items-center" in workspace_source
-    assert "capability.EntryAction" in workspace_source
-    assert "capability.UploadAction" in workspace_source
+    assert "listWorkspaceFiles" in api_facade_source
+    assert "addWorkspaceFile" in api_facade_source
     assert "capability.ContentPath" in workspace_source
-    assert "DeleteWorkspaceFile" in workspace_source
+    assert "DeleteWorkspaceFile" in workspace_api_source
     assert "workspaceEnabled" in header_source
-    assert "ApiFormat: runAgentApiFormat" in source
-    assert "ModelMetadata: selectedModelMetadata || undefined" in source
-    assert "chat_completions" in source
-    assert "normalizeResponsesStreamEvent" in source
+    assert "ApiFormat: apiFormat" in run_engine_source
+    assert "Model: this.config.selectedModel || undefined" in run_engine_source
+    assert "chat_completions" in bootstrap_source
+    assert "chat_completions" in layout_source
+    assert "normalizeResponsesStreamEvent" in session_events_source
     assert "extractCompletedText" in responses_stream_source
     assert "item.delta" in responses_stream_source
     assert "response.output_item.added" in responses_stream_source
@@ -1381,6 +1478,9 @@ def test_web_ui_source_supports_workspace_panel_for_owner_access():
 
 def test_web_ui_source_supports_streaming_queue_and_refresh_pending_status():
     source = Path("ksadk/server/web-ui/src/App.tsx").read_text(encoding="utf-8")
+    connected_composer_source = Path(
+        "ksadk/server/web-ui/src/components/chat/ConnectedComposer.tsx"
+    ).read_text(encoding="utf-8")
     composer_source = Path(
         "ksadk/server/web-ui/src/components/chat/ChatComposer.tsx"
     ).read_text(encoding="utf-8")
@@ -1391,9 +1491,10 @@ def test_web_ui_source_supports_streaming_queue_and_refresh_pending_status():
         encoding="utf-8"
     )
     assert "queuedDraftRef" in source
-    assert "queuedDrafts={queuedDrafts}" in source
-    assert "上一轮消息仍在运行中" in session_events_source
+    assert "queuedDrafts={queuedDrafts}" in connected_composer_source
     assert "latestRunStatusByInvocation" in session_events_source
+    assert "event.EventType !== 'run_status'" in session_events_source
+    assert "meta.running" in sidebar_source
     assert "disabled={!input.trim() && attachments.length === 0}" in composer_source
     assert "发送队列 · {queuedDrafts.length}" in composer_source
     assert "当前回复完成后依次发送" in composer_source
@@ -1401,11 +1502,21 @@ def test_web_ui_source_supports_streaming_queue_and_refresh_pending_status():
     assert "flex flex-shrink-0 flex-col gap-2" in sidebar_source
 
 
+def test_web_ui_source_threads_generation_controls_into_message_list():
+    source = Path("ksadk/server/web-ui/src/components/chat/ChatMessageList.tsx").read_text(
+        encoding="utf-8"
+    )
+    assert "onStopGeneration," in source
+    assert "onCancelRemote," in source
+
+
 def test_web_ui_source_uses_adaptive_image_preview_sizing():
-    app_source = Path("ksadk/server/web-ui/src/App.tsx").read_text(encoding="utf-8")
+    connected_message_list_source = Path(
+        "ksadk/server/web-ui/src/components/chat/ConnectedMessageList.tsx"
+    ).read_text(encoding="utf-8")
     preview_source = Path(
         "ksadk/server/web-ui/src/components/chat/AttachmentPreview.tsx"
     ).read_text(encoding="utf-8")
     assert "naturalWidth" in preview_source
     assert "naturalHeight" in preview_source
-    assert "setPreviewImageSize" in app_source
+    assert "setPreviewImageSize" in connected_message_list_source

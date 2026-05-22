@@ -1,9 +1,28 @@
 # KsADK Skill Runtime 研发设计方案
 
 > 目标：评审并收敛“KsADK 是否要参考 VeADK/AgentKit 接入 Skill 中心”的方案，给出可落地的研发设计。
-> 核验时间：2026-05-12。
+> 首次核验时间：2026-05-12；实现状态复核：2026-05-21。
 > 核验来源：本地 `veadk-python`、`agentkit-samples`、`ksadk-python` 当前代码，以及 Skill Service OpenAPI
 > `http://agent-api-pre.kspmas-internal.ksyun.com/agentengine/skill/api/v1/openapi.json`。
+
+## 当前实现状态
+
+截至 2026-05-21，方案已经从“是否接入 Skill 中心”的评审稿推进到首版运行时链路：
+
+| 能力 | 当前状态 | 代码位置 / 说明 |
+|------|----------|-----------------|
+| 通用 Sandbox 抽象 | 已落地首版 | `ksadk/sandbox/base.py` 定义 `SandboxBackend`、`SandboxSession`、`SandboxSpec` 和 `aio/code/browser/private` 类型。 |
+| E2B Sandbox backend | 已落地首版 | `ksadk/sandbox/backends/e2b.py` 包装 `Sandbox.create`、`files.write/read`、`commands.run`、`get_host`、`kill`。 |
+| Skill Runtime backend 抽象 | 已落地首版 | `ksadk/skills/runtime/base.py` 定义 `SkillRuntimeBackend.run_workflow(...)` 和 `SkillRuntimeResult`。 |
+| Skill Runtime backend 选择 | 已落地首版 | `ksadk/skills/runtime/factory.py` 支持 `disabled`、`local_process`、`e2b`；配置了 `KSADK_SANDBOX_TEMPLATE_ID` 时可自动使用 E2B。 |
+| ADK Runner 自动注入 | 已落地首版 | `ADKRunner` 在 `KSADK_SKILLS_MODE=sandbox` 时注入单个 `execute_skills`，`local` 时注入 `skills_tool`。 |
+| Skill Service 拉取与缓存 | 已落地首版 | `SkillServiceClient`、`PackageStore` 已支持 `ListSkillsBySpaceId`、`GetSkillDownloadUrl`、sha256 校验和 zip slip 防护。 |
+| 镜像内最小 agent | 已落地最小版 | `ksadk/skills/runtime/agent.py` 和 `deploy/skill-runtime/agent.py` 提供 `/home/ksadk/agent.py` 入口契约。 |
+| 通用 skill workflow executor | 未完全落地 | 当前最小 agent 只对 `web-artifacts-builder` fixture 有明确执行逻辑，还不是任意 Skill 的通用编排器。 |
+| 多框架 helper | 未落地 | LangChain、LangGraph、DeepAgents 仍需要 helper/文档；不要假设 Runner 层能自动修改已编译 graph。 |
+| CLI/deploy skills 配置写入 | 未在本文复核到完整落地 | 本文仍按目标方案描述，实际发布前需核对 deploy/update payload 是否已写入 `KSADK_SKILL_SPACE_IDS`。 |
+
+因此，本文后续“建议路径/Phase”应理解为目标架构与剩余工作拆分；其中 Sandbox/E2B/ADK 注入/Skill 拉取缓存已经有代码实现，通用 executor、多框架适配和部署配置链路仍需继续收敛。
 
 ## 友商设计分析
 
@@ -14,9 +33,9 @@ KsADK 值得接入 Skill 中心，但不要照搬 VeADK 的全部形态。
 1. P0：Skill 发现、下载、缓存、加载为运行时工具。用户在 `agentengine.yaml` 或部署参数里声明 Skill Space，KsADK 在创建/更新 Agent 时把 Skill Space ID 写入环境变量，运行时 Runner 自动读取并注入工具。
 2. P1：Skill 注册、更新版本、发布到 Skill Space。当前版本暂不做 KsADK CLI 管理面，只保留为后续可选能力。
 
-不建议 P0 阶段强行做完整“沙箱执行 Agent”。VeADK 的 `execute_skills` 依赖火山 `InvokeTool/RunCode` 沙箱；KsADK 当前还缺少明确的金山云沙箱 SDK 契约。可以先把 local/runtime 模式打通，沙箱模式等执行服务契约确定后再接。
+首次设计时不建议 P0 阶段强行做完整“沙箱执行 Agent”，因为当时 KsADK 还缺少明确的金山云沙箱 SDK 契约。当前已经收敛为 E2B-compatible SDK 路径：KsADK 不自定义底层沙箱协议，而是在 `ksadk.sandbox` 中提供薄封装，再由 `ksadk.skills.runtime` 组合它执行 Skill workflow。
 
-但这不意味着沙箱相关产物都阻塞。**镜像内最小 skills agent 必须提前由 KsADK 产出**，作为沙箱团队构建默认镜像的输入；真正阻塞的是外层 `execute_skills` 如何调用远程 RunCode SDK、日志/超时/结果如何回传等集成细节。
+这仍不等价于“完整 Skill Runtime 已完成”。当前外层 `execute_skills` 到远程 E2B sandbox 的调用链路已经成型，镜像内 `/home/ksadk/agent.py` 入口契约也已经产出；剩余重点是把最小 agent 从 fixture 级执行器推进为通用 skill workflow executor，并补真实 template E2E。
 
 ## 关键修正
 
@@ -81,21 +100,22 @@ Runner/运行时适配层适合做：
 
 - 读取 `KSADK_SKILL_SPACE_IDS`；
 - 调 Skill Service 发现可用 skills；
-- 构造 `skills_tool` / `read_file` / `write_file` / `edit_file` / `bash` 等工具；
+- 在本地模式构造 `skills_tool` 等渐进式披露工具；
+- 在 sandbox 模式只给外层 Agent 注入 `execute_skills`，由沙箱内 agent 负责 Skill 拉取与执行；
 - 根据框架能力追加 tools 或提供显式 helper。
 
 不同运行目标的适配边界：
 
 | 运行目标 | 注入位置 | 说明 |
 |----------|----------|------|
-| ADK Runner | `ksadk.runners.adk_runner.ADKRunner` | 可在 `load_agent()` 后追加 ADK Tool / Toolset，最适合先做 |
+| ADK Runner | `ksadk.runners.adk_runner.ADKRunner` | 已支持 `local` / `sandbox` 两种注入；sandbox 模式只注入 `execute_skills` |
 | LangChain Runner | Runner 或用户显式 helper | 只有 agent 暴露可变 tools 时才能自动追加；否则提供 `create_langchain_skill_tools()` |
 | LangGraph / DeepAgents | 优先用户显式 helper | 多数 graph 已编译，Runner 运行时强行注入不可靠；提供 `create_langgraph_skill_tools()`，让用户在 compile 前加入 |
 | Generic runtime pod | KsADK Runner | 如果请求确实经过 KsADK Python runtime，可以在 Runner 层处理 |
 | OpenClaw | OpenClaw 镜像/启动脚本/plugin adapter | 不是 KsADK Python Runner 执行业务图，不能只靠通用 Runner 注入 |
 | Hermes | Hermes runtime adapter | 通过 Hermes 镜像/入口/terminal skill 体系适配，不走 ADK Toolset 自动注入 |
 
-因此 P0 的自动注入范围应定义为：先支持 ADK Runner 自动注入；LangChain 做 best-effort；LangGraph/DeepAgents 给 helper 和文档；OpenClaw/Hermes 单独走运行时模板适配。
+因此 P0 的自动注入范围已经收敛为：ADK Runner 自动注入先落地；LangChain 做 best-effort 或 helper；LangGraph/DeepAgents 给 compile 前 helper 和文档；OpenClaw/Hermes 单独走运行时模板适配。
 
 ### 3. Skill Service 接口已确认约束
 
@@ -285,34 +305,35 @@ KsADK Runner / runtime adapter
   inject supported tools
           |
           v
-Model calls skills_tool("pdf-processing")
+Model calls execute_skills("使用 pdf-processing 处理文档")
           |
           v
 download zip by SkillId + VersionId
 safe extract to session/cache dir
 read SKILL.md
-return instructions + base directory
+run workflow inside sandbox agent
           |
           v
-Model uses bash/read/write/edit tools to execute scripts
+return stdout/stderr/status/output_files to outer Agent
 ```
 
 ### 模块设计
 
-| 模块 | 建议路径 | Phase | 说明 |
-|------|----------|-------|------|
-| 配置解析 | `ksadk/skills/config.py` | P0 | 从 env / `agentengine.yaml` 解析 spaces、mode、cache dir |
-| 数据模型 | `ksadk/skills/models.py` | P0 | `SkillRef`, `SkillPackage`, `SkillRegistry` |
-| 本地加载 | `ksadk/skills/local_loader.py` | P0 | 扫描含 `SKILL.md` 的目录 |
-| 云端客户端 | `ksadk/skills/service_client.py` | P0 | Skill Service REST client |
-| 缓存与解压 | `ksadk/skills/package_store.py` | P0 | 下载 zip、校验 hash、安全解压 |
-| 工具定义 | `ksadk/skills/tool_defs.py` | P0 | 框架无关 `ToolDef` |
-| ADK 适配 | `ksadk/skills/adk_tools.py` | P0 | 生成 ADK tools/toolset |
-| LangChain 适配 | `ksadk/skills/langchain_tools.py` | P1 | 生成 LangChain `StructuredTool` |
-| LangGraph 适配 | `ksadk/skills/langgraph_tools.py` | P1 | compile 前 helper |
-| CLI 管理 | `ksadk/cli/cmd_skills.py` | P2 | 后续可选；当前版本暂不直接管控 Skill CRUD |
-| Skill Runtime 最小 Agent | `ksadk/skills/runtime/agent.py` 或镜像内 `/home/ksadk/agent.py` | P0/P1 | 提供给沙箱团队构建默认镜像 |
-| Skill Runtime 后端适配 | `ksadk/skills/runtime/backends/e2b.py` | P2 | 先接 E2B-compatible 沙箱，后续可扩展其他 runtime |
+| 模块 | 当前/建议路径 | 状态 | 说明 |
+|------|----------|------|------|
+| 配置解析 | `ADKRunner._resolve_skills_mode`、`ksadk/skills/runtime/factory.py` | 已部分落地 | 当前主要从 env 解析；`agentengine.yaml skills` 到 env 的部署链路仍需单独核对。 |
+| 数据模型 | `ksadk/skills/models.py`、`ksadk/skills/runtime/base.py` | 已落地首版 | `SkillRef`、`SkillListResponse`、`SkillRuntimeResult` 已有；还没有完整 `SkillRegistry`。 |
+| 本地加载 | `ksadk/skills/loader.py` | 已落地首版 | 扫描含 `SKILL.md` 的目录并解析 frontmatter。 |
+| 云端客户端 | `ksadk/skills/service_client.py` | 已落地首版 | 支持直连 REST 与 AICP KOP action。 |
+| 缓存与解压 | `ksadk/skills/package_store.py` | 已落地首版 | 下载 zip、校验 hash、安全解压。 |
+| 工具定义 | `ksadk/skills/tool_defs.py` | 已落地首版 | 当前提供 `execute_skills` 与本地 `skills_tool`。 |
+| ADK 适配 | `ksadk/runners/adk_runner.py` | 已落地首版 | 在 Runner 中直接注入工具，没有单独 `adk_tools.py`。 |
+| 通用 Sandbox | `ksadk/sandbox/*` | 已落地首版 | 当前仅支持 E2B backend。 |
+| LangChain 适配 | `ksadk/skills/langchain_tools.py` | 未落地 | 后续生成 LangChain `StructuredTool`。 |
+| LangGraph 适配 | `ksadk/skills/langgraph_tools.py` | 未落地 | 后续提供 compile 前 helper。 |
+| CLI 管理 | `ksadk/cli/cmd_skills.py` | 未落地 | 后续可选；当前版本暂不直接管控 Skill CRUD。 |
+| Skill Runtime 最小 Agent | `ksadk/skills/runtime/agent.py` 或镜像内 `/home/ksadk/agent.py` | 已落地最小版 | 提供给沙箱团队构建默认镜像；当前执行逻辑仍偏 fixture。 |
+| Skill Runtime 后端适配 | `ksadk/skills/runtime/backends/e2b.py`、`local.py`、`disabled.py` | 已落地首版 | E2B-compatible 沙箱是当前主路径，local/disabled 用于调试和开关。 |
 
 ### SkillRef 数据模型
 
@@ -333,7 +354,7 @@ class SkillRef:
     archive_uri: str | None = None
 ```
 
-云端 Skill 必须有 `skill_id` 和 `version_id`，否则不能调用 `GetSkillDownloadUrl`。
+云端 Skill 必须有 `skill_id` 和 `version_id`，否则不能调用 `GetSkillDownloadUrl`。当前代码中的 `SkillRef` 已按 `SkillId`、`VersionId`、`Version`、`Name`、`Description`、`Status`、`ContentHash`、`ArchiveUri` 实现，`ContentHash` 会解析为独立结构并在 `PackageStore` 中校验。
 
 ## 工具注入设计
 
@@ -366,14 +387,13 @@ P0 工具建议：
 
 ### ADK 自动注入
 
-`ADKRunner.load_agent()` 已经有自动注入 sandbox、MCP、KB、memory tools 的模式。Skills 可以沿用同一风格：
+`ADKRunner.load_agent()` 已经有自动注入 MCP、KB、memory tools 的模式。Skills 当前已沿用同一风格：
 
 ```text
 load_agent()
   -> import root_agent
   -> inject safety prompt
-  -> _inject_skill_tools()
-  -> _inject_sandbox_tools()
+  -> _inject_skill_runtime_tools()
   -> _inject_mcp_toolsets()
 ```
 
@@ -383,6 +403,8 @@ load_agent()
 - toolset 生命周期放入 `_runtime_toolsets`；
 - 注入失败应 warning，不应让无 skills 的普通 Agent 启动失败；
 - 只有配置了 skills 时才注入。
+
+当前实现中，sandbox 模式注入的是单个 `execute_skills(workflow_prompt)`，不是把所有 skill 展开成多个工具；本地模式注入 `skills_tool`，用于列出本地加载的 Skill 说明。
 
 ### LangChain / LangGraph
 
@@ -438,7 +460,16 @@ SkillRef(skill_id, version_id)
 - `ContentHash` 命中时复用缓存；
 - 记录 `skill.name`、`skill.id`、`skill.version_id`、`skill.space_id` 到 trace attributes。
 
-建议缓存路径：
+当前实现的缓存路径按 `skill_id/version_id` 生成：
+
+```text
+${KSADK_SKILL_CACHE_DIR:-/tmp/ksadk-skill-cache}/
+  <skill_id>__<version_id>/
+    archive.zip
+    extracted/<skill-root>/SKILL.md
+```
+
+下面是后续如需 session 级隔离和跨 session 去重时的增强建议：
 
 ```text
 ${KSADK_SKILL_CACHE_DIR:-/tmp/ksadk-skills}/
@@ -479,7 +510,7 @@ skills:
 - 清空 skills 时要显式删除或置空对应 env；
 - 本地 `.agentengine.state` 可以记录 skills 配置，便于 status/open/invoke 诊断。
 
-当前版本建议只做部署/更新绑定，不做 Skill CRUD CLI：
+当前版本建议只做部署/更新绑定，不做 Skill CRUD CLI。是否已经完成 deploy/update 参数落地需要以当前 CLI 和 control-plane payload 为准，本文不把它视为已验证事实：
 
 ```bash
 agentengine deploy . --skill-space ss-abc123
@@ -516,6 +547,12 @@ P1 可选增强：
 - 确认 Skill Service 鉴权；
 - 按已补齐字段后的 `ListSkillsBySpaceId` 实现运行时发现。
 
+当前状态：
+
+- Skill Service runtime client 和 `ListSkillsBySpaceId` 发现链路已落地；
+- `KSADK_SKILL_SPACE_IDS` / `SKILL_SPACE_ID` 运行时读取已落地；
+- deploy/update 是否已完整写入 skills env 仍需按 CLI/control-plane 当前代码复核。
+
 验收：
 
 - dry-run payload 能展示 skills env；
@@ -527,9 +564,16 @@ P1 可选增强：
 - 实现 `ksadk.skills` 基础模块；
 - 支持本地目录和 Skill Service 发现；
 - 实现安全下载、缓存、解压；
-- ADKRunner 自动注入 `skills_tool`、file tools、bash；
+- ADKRunner 自动注入 `skills_tool` 或 `execute_skills`；
 - 产出镜像内最小 skills agent，供沙箱团队构建默认镜像；
 - 增加单元测试。
+
+当前状态：
+
+- `ksadk.skills` 基础模块、本地加载、Skill Service 拉取、安全下载缓存、ADK 注入已落地首版；
+- 本地模式目前暴露 `skills_tool`，没有默认暴露 `read_file/write_file/edit_file/bash` 这组 local toolset；
+- sandbox 模式暴露 `execute_skills`，由远端最小 agent 负责实际执行；
+- 最小 agent 当前只对 `web-artifacts-builder` fixture 有完整执行逻辑。
 
 验收：
 
@@ -575,6 +619,12 @@ P1 可选增强：
 - KsADK 确认 SDK endpoint/API key/template id 等部署参数；
 - 沙箱镜像已经内置 KsADK 提供的 `agent.py` 和基础 skills。
 
+当前状态：
+
+- KsADK 已直接依赖 E2B SDK v2 路径并实现 `E2BSandboxBackend` / `E2BSkillRuntimeBackend`；
+- `deploy/skill-runtime/agent.py` 已提供镜像稳定入口；
+- 仍需要用真实 template id 做端到端 smoke/e2e，确认镜像内依赖、网络、Skill Service 凭据和产物回收都满足生产运行。
+
 职责边界：
 
 | 团队 | 负责内容 |
@@ -596,7 +646,7 @@ pip install "e2b>=2.0.0" "e2b-code-interpreter>=2.0.0"
 pip install e2b==2.15.3 e2b-code-interpreter==2.5.0 python-dotenv==1.2.1 httpx==0.28.1 playwright==1.58.0
 ```
 
-因此 KsADK 不再定义一套自有 Sandbox 协议。设计基线改为：**直接使用 E2B-compatible SDK，KsADK 只做薄适配层**，把平台环境变量、错误格式、日志截断、trace attributes 和 `execute_skills` tool contract 收敛在 `ksadk.skills.sandbox`。
+因此 KsADK 不再定义一套自有 Sandbox 协议。设计基线改为：**直接使用 E2B-compatible SDK，KsADK 只做薄适配层**，把平台环境变量、错误格式、日志截断、trace attributes 和 `execute_skills` tool contract 收敛在 `ksadk.sandbox` 与 `ksadk.skills.runtime`。
 
 首版 skills sandbox 不需要 `e2b-code-interpreter` 的 notebook/context 语义，优先使用 `e2b.Sandbox` 即可：
 
@@ -610,7 +660,7 @@ pip install e2b==2.15.3 e2b-code-interpreter==2.5.0 python-dotenv==1.2.1 httpx==
 
 #### 可插拔后端边界
 
-沙箱设计应从顶层重新抽象，不再以现有 `ksadk.sandbox.BaseSandbox` 为基础做兼容。当前 `ksadk.sandbox` 是早期“执行一段代码”的实验性模块，引用面主要是测试和 ADKRunner 的默认 sandbox tools 注入；既然当前没有稳定用户，就应在 Skills 沙箱方案中直接替换，而不是背兼容包袱。
+沙箱设计已经重新收敛为两层：`ksadk.sandbox` 是通用隔离执行底座，`ksadk.skills.runtime` 是面向 Skill workflow 的上层使用方。旧的“默认注入 execute_python/execute_bash/execute_javascript”思路不再作为当前推荐路径。
 
 新的对外抽象应以“执行一个 skills workflow”为中心，而不是以 E2B SDK 对象或通用 code execution 为中心。更准确的命名是 **Skill Runtime**：它描述 Skill 在哪里执行、用什么隔离级别执行、如何传入输入文件、如何回收产物和日志。Sandbox 只是 Skill Runtime 的一种 backend。E2B-compatible SDK 是首个生产 backend，不是 KsADK 对外抽象本身。`execute_skills` 不应直接把 `e2b.Sandbox`、`CodeSandbox`、`CommandHandle` 等 SDK 类型暴露给 Runner、Agent 或业务代码。
 
@@ -639,12 +689,12 @@ ksadk/skills/
       remote_http.py         # optional simple HTTP implementation
 ```
 
-旧 `ksadk/sandbox/` 处理建议：
+`ksadk/sandbox/` 当前处理建议：
 
-- 首版实现前标记为 internal/experimental，不继续扩展；
-- 新的 `ksadk.skills.runtime` 成型后，删除旧模块或迁移为新模块内部实现细节；
-- `ADKRunner._inject_sandbox_tools()` 改成新的 skills sandbox 注入逻辑；
-- 旧 `test_sandbox_system.py` 不作为兼容测试保留，改写为 `test_skill_sandbox_*`，覆盖 workflow backend、E2B mock、本地 agent 调用和错误分类。
+- 保持为通用 Sandbox backend 抽象，不放 Skill Service、Skill 包缓存或 workflow 语义；
+- 当前只扩展通用生命周期、命令、文件和 host lookup 能力；
+- Skill 专用逻辑继续放在 `ksadk.skills.runtime`；
+- 不再恢复旧的默认 sandbox code execution tools 注入。
 
 顶层 Skill Runtime backend 只表达 KsADK 需要的最小 workflow 能力：
 
@@ -675,7 +725,8 @@ result = backend.run_workflow(...)
 
 | 类型 | 变量 |
 |------|------|
-| 通用 | `KSADK_SKILL_RUNTIME_BACKEND`、`KSADK_SKILL_RUNTIME_TEMPLATE_ID`、`KSADK_SKILL_RUNTIME_TIMEOUT`、`KSADK_SKILL_RUNTIME_ALLOW_INTERNET_ACCESS` |
+| 通用 | `KSADK_SANDBOX_TEMPLATE_ID`、`KSADK_SANDBOX_TIMEOUT`、`KSADK_SANDBOX_ALLOW_INTERNET_ACCESS`、`KSADK_SKILL_RUNTIME_BACKEND`、`KSADK_SKILL_RUNTIME_TIMEOUT` |
+| 兼容 | `KSADK_SKILL_RUNTIME_TEMPLATE_ID`、`KSADK_SKILL_RUNTIME_ALLOW_INTERNET_ACCESS` |
 | E2B backend | `E2B_API_URL`、`E2B_API_KEY` |
 | 其他 backend | 只在对应 backend 内解释，例如 `FOO_SANDBOX_ENDPOINT`、`FOO_SANDBOX_TOKEN` |
 
@@ -723,12 +774,12 @@ Agent Pod
 | `E2B_API_URL` | E2B SDK 原生变量，例如 `https://mgr.cn-beijing-6.sandbox.ksyun.com` |
 | `E2B_API_KEY` | E2B SDK 原生鉴权变量，应由 Secret 注入 |
 | `KSADK_SKILL_RUNTIME_BACKEND` | `e2b` / `local_process` / `disabled`，默认 `disabled` 或由 `KSADK_SKILLS_MODE=sandbox` 推导 |
-| `KSADK_SKILL_RUNTIME_TEMPLATE_ID` | 内置 `/home/ksadk/agent.py` 的默认 skills 镜像/template id |
+| `KSADK_SANDBOX_TEMPLATE_ID` | 内置 `/home/ksadk/agent.py` 的默认 skills 镜像/template id，新部署优先使用 |
+| `KSADK_SKILL_RUNTIME_TEMPLATE_ID` | 兼容旧变量；新部署不优先使用 |
 | `KSADK_SKILL_RUNTIME_TIMEOUT` | 单次 workflow 超时，建议默认 900 秒 |
-| `KSADK_SKILL_RUNTIME_REGION` | 可选，runtime backend 需要 region 时再启用 |
-| `KSADK_SKILL_RUNTIME_ALLOW_INTERNET_ACCESS` | 是否给远程 runtime 开启外网访问，默认 `true`，用于拉 Skill 包、访问模型或外部资源 |
+| `KSADK_SANDBOX_ALLOW_INTERNET_ACCESS` | 是否给远程 runtime 开启外网访问，默认 `true`，用于拉 Skill 包、访问模型或外部资源 |
 
-`KSADK_SKILL_RUNTIME_ENDPOINT` / `KSADK_SKILL_RUNTIME_API_KEY` 可以作为 KsADK 别名配置，但 E2B backend 最终应映射到 E2B SDK 原生变量 `E2B_API_URL` / `E2B_API_KEY`，避免和官方 SDK 行为偏离。
+不再推荐新增 `KSADK_SKILL_RUNTIME_ENDPOINT` / `KSADK_SKILL_RUNTIME_API_KEY` 这类别名；E2B backend 使用 E2B SDK 原生变量 `E2B_API_URL` / `E2B_API_KEY`，避免和官方 SDK 行为偏离。
 
 需要向沙箱团队确认的不是“Pod 能不能出公网”这一项，而是：
 
@@ -740,7 +791,7 @@ Agent Pod
 - 文件上传/下载 API 是否兼容 E2B；
 - sandbox 容器自身是否能访问 Skill Service、对象存储下载地址、模型服务。
 
-如果 E2B 后端只能内网访问，则处理方式参考 AICP 内网 endpoint：把 `E2B_API_URL` 或 `KSADK_SKILL_RUNTIME_ENDPOINT` 配成内网地址，而不是让 Gateway 兜底转发。只有当运行时 Pod 不能直连、鉴权不允许下发到 Pod、或需要统一审计/限流时，才考虑 Gateway/控制面代理。
+如果 E2B 后端只能内网访问，则处理方式参考 AICP 内网 endpoint：把 `E2B_API_URL` 配成内网地址，而不是让 Gateway 兜底转发。只有当运行时 Pod 不能直连、鉴权不允许下发到 Pod、或需要统一审计/限流时，才考虑 Gateway/控制面代理。
 
 KsADK 首版只使用 E2B-compatible SDK 中的以下能力：
 
@@ -815,7 +866,7 @@ from e2b import Sandbox
 
 def run_workflow(prompt: str, *, skill_space_ids: list[str], session_id: str):
     sandbox = Sandbox.create(
-        template=os.environ["KSADK_SKILL_RUNTIME_TEMPLATE_ID"],
+        template=os.environ["KSADK_SANDBOX_TEMPLATE_ID"],
         timeout=int(os.environ.get("KSADK_SKILL_RUNTIME_TIMEOUT", "900")),
         metadata={
             "runtime": "ksadk",
@@ -840,7 +891,7 @@ def run_workflow(prompt: str, *, skill_space_ids: list[str], session_id: str):
         sandbox.kill()
 ```
 
-如果 workflow prompt 可能很长，正式实现可改为把 prompt 写入 `/tmp/ksadk-workflow-prompt.txt`，再执行 `python -u /home/ksadk/agent.py --prompt-file ...`，避免命令行长度限制和 quoting 风险。如果 SDK 的 `commands.run(..., timeout=...)` 参数名与当前兼容实现有差异，以沙箱团队实际 SDK 为准；KsADK 适配层要把这种差异封装掉，不暴露给业务代码。
+当前正式实现已经把 prompt 写入 `/tmp/ksadk-workflow-prompt.txt`，再执行 `python -u /home/ksadk/agent.py --prompt-file ...`，避免命令行长度限制和 quoting 风险。如果 SDK 的 `commands.run(..., timeout=...)` 参数名与当前兼容实现有差异，以沙箱团队实际 SDK 为准；KsADK 适配层要把这种差异封装掉，不暴露给业务代码。
 
 远程 runtime 镜像内最小 agent 由 KsADK 在 Phase 1 提供，形态对齐 AgentKit `skills_sandbox` 示例：
 
@@ -862,10 +913,12 @@ python /home/ksadk/agent.py "$workflow_prompt"
 
 - 读取 `SKILL_SPACE_ID` / `KSADK_SKILL_SPACE_IDS`；
 - 从 Skill Service 拉取 skill 索引；
-- 构造内层 local skills agent；
-- 暴露 `skills_tool`、`read_file`、`write_file`、`edit_file`、`bash`；
-- 按需下载被调用的 skill zip；
+- 下载、校验和缓存 skill zip；
+- 加载 `SKILL.md`；
+- 执行匹配 workflow；
 - 执行完成后把结果写到 stdout，由沙箱 SDK 回传给外层 Agent。
+
+当前最小 agent 已完成读取 Skill Space、拉取/缓存 Skill 包、加载 `SKILL.md`、输出 `workflow_result=...` 的基础链路；通用工具编排和任意 Skill 执行仍是下一步。
 
 验收：
 
@@ -878,22 +931,29 @@ python /home/ksadk/agent.py "$workflow_prompt"
 
 | 风险 | 影响 | 处理 |
 |------|------|------|
-| 鉴权方式未定 | client 无法实现 | 先做 client interface + mock，等契约确认 |
+| 鉴权方式差异 | client 在直连 REST、AICP KOP、Bearer 模式下行为不一致 | 当前 client 支持 bearer 与 AICP KOP 签名；生产配置仍需明确凭据注入边界 |
 | LangGraph 已编译 graph 难自动注入 | “全框架自动”不可达 | 明确 helper 接入边界 |
 | `bash` 能力扩大攻击面 | 安全风险 | 复用现有执行策略和 allowlist |
 | OpenClaw/Hermes 不经过 KsADK Runner | 通用注入无效 | 单独做 runtime/template adapter |
-| 沙箱服务未就绪 | `execute_skills` 远程调用链路阻塞 | 最小 skills agent 先交付给沙箱团队构建镜像，SDK 集成后补外层调用 |
+| 真实 template E2E 未完成 | `execute_skills` 远程调用链路可能在镜像依赖、网络或凭据上失败 | 用真实 template id 补 smoke/e2e，覆盖 Skill Service、对象下载、Node/pnpm 依赖和产物回收 |
+| 最小 agent 仍偏 fixture | 只能稳定执行少数示例 skill | 推进通用 skill workflow executor，明确 `SKILL.md` 执行协议 |
 
 ## 推荐优先级
 
 P0 必做：
 
-- deploy/update 下发 Skill Space env；
 - Skill Service runtime client；
 - `ListSkillsBySpaceId` 发现链路；
 - 安全下载和缓存；
 - ADK Runner 自动注入；
-- 镜像内最小 skills agent；
+- E2B Skill Runtime backend；
+- 镜像内最小 skills agent。
+
+P0 剩余：
+
+- deploy/update 下发 Skill Space env；
+- 真实 E2B template smoke/e2e；
+- 通用 skill workflow executor；
 - status/healthz 里展示 Skill Space 绑定诊断。
 
 P1 再做：
@@ -905,9 +965,8 @@ P1 再做：
 P2 暂缓：
 
 - Skill CRUD 管理 CLI；
-- 外层远程沙箱 `execute_skills` SDK 集成；
 - 全框架无感自动注入；
 - tags/marketplace/ranking；
 - 复杂 checklist 状态持久化。
 
-最终建议：先把 Skill Center 当作“平台管理的可复用工具包注册表 + KsADK Runner 的工具加载源”，不要一开始就做成“全框架自动沙箱执行系统”。这样能最小闭环、风险可控，也和当前 KsADK 的部署/运行时架构更匹配。
+最终建议：继续把 Skill Center 当作“平台管理的可复用工具包注册表 + KsADK Runner 的工具加载源”，不要扩张成“全框架无感自动沙箱执行系统”。当前最值得补齐的是真实 template E2E 和通用 skill workflow executor；这两项完成后，再整理对外用户文档。

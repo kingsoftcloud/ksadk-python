@@ -26,6 +26,7 @@ import type { WorkspaceEntry, WorkspaceFilesCapability } from '../chat/types.js'
 import type { ApiFacade } from '../../core/api/types.js';
 import {
   formatWorkspaceDirectoryPathLabel,
+  buildWorkspaceFileUrl,
   isWorkspaceRootPath,
   normalizeWorkspacePath,
   resolveWorkspaceEditKind,
@@ -35,10 +36,11 @@ import {
 const DEFAULT_WORKSPACE_CONTENT_PATH = '/agentengine/api/v1/GetWorkspaceFileContent';
 
 function parentWorkspacePath(path: string): string {
-  if (!path || path === '.') {
+  const normalized = normalizeWorkspacePath(path);
+  if (!normalized || normalized === '.') {
     return '.';
   }
-  const segments = path.split('/').filter(Boolean);
+  const segments = normalized.split('/').filter(Boolean);
   if (segments.length <= 1) {
     return '.';
   }
@@ -104,12 +106,8 @@ const SUPPORTED_PREVIEW_GROUPS = [
   { label: '表格文本', detail: 'CSV TSV' },
 ];
 
-function buildDownloadHref(options: {
-  agentId: string;
-  entryPath: string;
-}) {
-  const prefix = `/agentengine/api/v1/ws/${encodeURIComponent(options.agentId)}`;
-  return `${prefix}/${options.entryPath}`;
+function buildDownloadHref(entryPath: string) {
+  return buildWorkspaceFileUrl(entryPath);
 }
 
 function PreviewEmptyState({
@@ -383,17 +381,24 @@ export function WorkspacePanel({
     if (!capability.SupportsDelete) {
       return;
     }
-    if (!window.confirm(`删除 ${entry.Path} ?`)) {
+    const deletePath = normalizeWorkspacePath(entry.Path);
+    if (!window.confirm(`删除 ${deletePath} ?`)) {
       return;
     }
     setError('');
     try {
-      await api.deleteWorkspaceFile(agentId, entry.Path);
-      if (selectedPath === entry.Path) {
+      await api.deleteWorkspaceFile(agentId, deletePath);
+      if (selectedPath && normalizeWorkspacePath(selectedPath) === deletePath) {
         setSelectedPath(null);
         setDirty(false);
       }
-      await loadEntries(currentPath);
+      const nextPath =
+        entry.Type === 'directory'
+          && (normalizeWorkspacePath(currentPath) === deletePath
+            || normalizeWorkspacePath(currentPath).startsWith(`${deletePath}/`))
+          ? parentWorkspacePath(deletePath)
+          : currentPath;
+      await loadEntries(nextPath);
     } catch (deleteError) {
       console.error('Failed to delete workspace file:', deleteError);
       setError(deleteError instanceof Error ? deleteError.message : String(deleteError));
@@ -485,7 +490,7 @@ export function WorkspacePanel({
     selectedEntry?.Type === 'file'
     && previewState?.path === selectedEntry.Path
     && previewState.status === 'ready'
-    && (previewState.kind === 'text' || previewState.kind === 'code' || previewState.kind === 'html');
+    && (previewState.kind === 'text' || previewState.kind === 'code' || previewState.kind === 'html' || previewState.kind === 'markdown');
 
   const previewPaneIsPdf =
     selectedEntry?.Type === 'file'
@@ -629,10 +634,7 @@ export function WorkspacePanel({
                   const isSelected = selectedPath === entry.Path;
                   const downloadHref =
                     entry.Type === 'file'
-                      ? buildDownloadHref({
-                          agentId,
-                          entryPath: entry.Path,
-                        })
+                      ? buildDownloadHref(entry.Path)
                       : '';
 
                   return (

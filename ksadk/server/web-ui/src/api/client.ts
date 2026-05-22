@@ -1,22 +1,24 @@
 export class ApiError extends Error {
-  constructor(
-    public code: number,
-    public message: string,
-    public detail?: unknown,
-  ) {
+  code: number;
+  detail?: unknown;
+
+  constructor(code: number, message: string, detail?: unknown) {
     super(message);
     this.name = 'ApiError';
+    this.code = code;
+    this.detail = detail;
   }
 }
 
 export class StreamError extends Error {
-  constructor(
-    public event: string,
-    public raw?: string,
-    message?: string,
-  ) {
+  event: string;
+  raw?: string;
+
+  constructor(event: string, raw?: string, message?: string) {
     super(message || `SSE 流中断于 ${event}`);
     this.name = 'StreamError';
+    this.event = event;
+    this.raw = raw;
   }
 }
 

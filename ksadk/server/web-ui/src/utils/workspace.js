@@ -1,4 +1,5 @@
 export const WORKSPACE_ROOT_PATH = '.';
+export const WORKSPACE_FILES_BASE_PATH = '/_ksadk/workspace/v1/files';
 
 const MARKDOWN_EXTENSIONS = new Set(['.md', '.markdown', '.mdx']);
 const PDF_EXTENSIONS = new Set(['.pdf']);
@@ -57,8 +58,56 @@ const TEXT_MIME_TYPES = new Set([
 ]);
 
 export function normalizeWorkspacePath(path) {
-  const value = String(path || '').trim();
-  return value && value !== '/' ? value.replace(/^\/+|\/+$/g, '') || WORKSPACE_ROOT_PATH : WORKSPACE_ROOT_PATH;
+  const value = String(path || '').trim().replace(/\\/g, '/');
+  if (!value || value === '/') {
+    return WORKSPACE_ROOT_PATH;
+  }
+
+  const segments = [];
+  for (const rawSegment of value.split('/')) {
+    const segment = rawSegment.trim();
+    if (!segment || segment === '.') {
+      continue;
+    }
+    if (segment === '..') {
+      if (segments.length > 0) {
+        segments.pop();
+      }
+      continue;
+    }
+    segments.push(segment);
+  }
+
+  return segments.length > 0 ? segments.join('/') : WORKSPACE_ROOT_PATH;
+}
+
+function encodeWorkspacePath(path) {
+  const normalized = normalizeWorkspacePath(path);
+  if (normalized === WORKSPACE_ROOT_PATH) {
+    return '';
+  }
+  return normalized
+    .split('/')
+    .filter(Boolean)
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+}
+
+export function buildWorkspaceFileUrl(path) {
+  const encodedPath = encodeWorkspacePath(path);
+  return encodedPath ? `${WORKSPACE_FILES_BASE_PATH}/${encodedPath}` : WORKSPACE_FILES_BASE_PATH;
+}
+
+export function buildWorkspaceFileBaseUrl(path) {
+  const normalized = normalizeWorkspacePath(path);
+  if (normalized === WORKSPACE_ROOT_PATH || !normalized.includes('/')) {
+    return `${WORKSPACE_FILES_BASE_PATH}/`;
+  }
+  const dirPath = normalized.substring(0, normalized.lastIndexOf('/'));
+  const encodedDirPath = encodeWorkspacePath(dirPath);
+  return encodedDirPath
+    ? `${WORKSPACE_FILES_BASE_PATH}/${encodedDirPath}/`
+    : `${WORKSPACE_FILES_BASE_PATH}/`;
 }
 
 export function isWorkspaceRootPath(path) {
@@ -178,6 +227,16 @@ export function resolveWorkspaceEditKind({ path, mimeType }) {
   return null;
 }
 
+/**
+ * @param {{ isMobile: boolean }} options
+ * @returns {{
+ *   renderMode: 'sheet' | 'inline';
+ *   modal: boolean;
+ *   showOverlay: boolean;
+ *   preventOutsideClose: boolean;
+ *   side: 'top' | 'bottom' | 'left' | 'right';
+ * }}
+ */
 export function resolveWorkspacePanelPresentation({ isMobile }) {
   if (isMobile) {
     return {

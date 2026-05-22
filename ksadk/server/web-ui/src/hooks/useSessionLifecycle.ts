@@ -14,6 +14,9 @@ import type { SessionEventRecord } from '../types/session-events.js';
 import type { UiCapabilities } from '../types/capabilities.js';
 import type { ApiFacade } from '../core/api/types.js';
 
+const RESTORE_IDLE_NOTICE_MS = 12_000;
+const RESTORE_SUBSCRIPTION_TIMEOUT_MS = 90_000;
+
 type SessionLifecycleContext = {
   agentId: string;
   currentSessionId: string | null;
@@ -109,7 +112,45 @@ export function useSessionLifecycle(ctx: SessionLifecycleContext) {
       const controller = new AbortController();
       runSubscriptionAbortRef.current = controller;
       useStreamingStore.getState().setStreaming(true);
+      useStreamingStore.getState().beginActivity({
+        runId: options.invocationId,
+        source: 'restore',
+        status: 'connecting',
+        phase: '恢复运行事件订阅',
+        detail: '页面刷新后正在连接未完成的运行。',
+      });
       let shouldReloadSession = false;
+      let eventCount = 0;
+      let terminalStatusSeen = false;
+      let idleNoticeTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
+      const timeoutTimer = globalThis.setTimeout(() => {
+        if (runSubscriptionAbortRef.current !== controller || controller.signal.aborted) {
+          return;
+        }
+        useStreamingStore.getState().updateActivity({
+          status: 'stopped',
+          phase: '恢复订阅超时',
+          detail: '没有收到新的运行事件，已解除前端运行锁定；后台状态可刷新会话后再确认。',
+          countEvent: false,
+        });
+        controller.abort();
+      }, RESTORE_SUBSCRIPTION_TIMEOUT_MS);
+      const armIdleNotice = () => {
+        if (idleNoticeTimer) {
+          globalThis.clearTimeout(idleNoticeTimer);
+        }
+        idleNoticeTimer = globalThis.setTimeout(() => {
+          if (runSubscriptionAbortRef.current !== controller || controller.signal.aborted) {
+            return;
+          }
+          useStreamingStore.getState().updateActivity({
+            status: 'waiting',
+            phase: '仍在等待运行时输出',
+            detail: '运行尚未返回新的事件。Hermes 长任务建议打开 TUI 查看实时终端。',
+            countEvent: false,
+          });
+        }, RESTORE_IDLE_NOTICE_MS);
+      };
 
       try {
         const stream = await api.subscribeRunEvents(
@@ -124,11 +165,17 @@ export function useSessionLifecycle(ctx: SessionLifecycleContext) {
         const decoder = new TextDecoder();
         let buffer = '';
         let replayedEvents: SessionEventRecord[] = [];
-        let terminalStatusSeen = false;
+        useStreamingStore.getState().updateActivity({
+          status: 'waiting',
+          phase: '等待恢复事件',
+          countEvent: false,
+        });
+        armIdleNotice();
 
         while (!terminalStatusSeen) {
           const { value, done } = await reader.read();
           if (done) break;
+          armIdleNotice();
           buffer += decoder.decode(value, { stream: true });
           const chunks = buffer.split('\n\n');
           buffer = chunks.pop() || '';
@@ -149,6 +196,13 @@ export function useSessionLifecycle(ctx: SessionLifecycleContext) {
             }
             try {
               const event = JSON.parse(dataString) as SessionEventRecord;
+              eventCount += 1;
+              useStreamingStore.getState().updateActivity({
+                status: eventHasTerminalRunStatus(event) ? 'completed' : 'running',
+                phase: event.EventType === 'run_status'
+                  ? `运行状态：${String(event.Content?.status || '更新')}`
+                  : `收到事件：${event.EventType || 'conversation.event'}`,
+              });
               replayedEvents = [...replayedEvents, event];
               terminalStatusSeen = terminalStatusSeen || eventHasTerminalRunStatus(event);
               shouldReloadSession = shouldReloadSession || terminalStatusSeen;
@@ -172,12 +226,38 @@ export function useSessionLifecycle(ctx: SessionLifecycleContext) {
         const isAbortError = error instanceof DOMException && error.name === 'AbortError';
         if (!isAbortError) {
           console.error('Failed to subscribe run events:', error);
+          useStreamingStore.getState().updateActivity({
+            status: 'failed',
+            phase: '恢复订阅失败',
+            detail: error instanceof Error ? error.message : String(error),
+            countEvent: false,
+          });
+        } else if (useStreamingStore.getState().activity?.status !== 'stopped') {
+          useStreamingStore.getState().stopActivity('已停止接收恢复事件。后台运行可能仍在继续。');
         }
       } finally {
+        globalThis.clearTimeout(timeoutTimer);
+        if (idleNoticeTimer) {
+          globalThis.clearTimeout(idleNoticeTimer);
+        }
         if (runSubscriptionAbortRef.current === controller) {
           runSubscriptionAbortRef.current = null;
         }
         useStreamingStore.getState().setStreaming(false);
+        if (terminalStatusSeen) {
+          useStreamingStore.getState().updateActivity({
+            status: 'completed',
+            phase: '恢复订阅结束',
+            countEvent: false,
+          });
+        } else if (useStreamingStore.getState().activity?.status !== 'stopped') {
+          useStreamingStore.getState().updateActivity({
+            status: 'stopped',
+            phase: eventCount === 0 ? '没有收到新的运行事件' : '恢复订阅提前结束',
+            detail: '已解除前端运行锁定；如果后台仍在执行，可以刷新会话或打开 TUI 确认。',
+            countEvent: false,
+          });
+        }
         if (shouldReloadSession && currentSessionIdRef.current === options.sessionId) {
           void loadSessionRef.current?.(options.sessionId);
         }
@@ -193,6 +273,7 @@ export function useSessionLifecycle(ctx: SessionLifecycleContext) {
       useSessionStore.getState().setCurrentSessionId(sessionId);
       resetCompaction();
       runSubscriptionAbortRef.current?.abort();
+      useStreamingStore.getState().clearActivity();
       if (isMobile) {
         useUIStore.getState().setMobileSidebarOpen(false);
       }
@@ -205,7 +286,10 @@ export function useSessionLifecycle(ctx: SessionLifecycleContext) {
           const history = buildMessagesFromSessionEvents(events);
           useMessageStore.getState().setMessages(history);
           void loadFeedbackForMessages(agentIdRef.current, sessionId, history);
-          const activeRuns = findActiveRunIds(events);
+          const activeRuns = findActiveRunIds(events, {
+            now: Date.now(),
+            staleAfterMs: 30 * 60 * 1000,
+          });
           const lastSeqId = maxSeqIdFromEvents(events);
           if (
             uiCapabilities.RunLifecycle.Enabled &&
