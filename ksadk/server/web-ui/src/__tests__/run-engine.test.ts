@@ -1,6 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { RunEngineImpl } from '../core/run/engine.js';
 import type { ApiFacade } from '../core/api/types.js';
+import { useStreamingStore } from '../stores/streaming.js';
+import { dispatchRunEventToStores, resetDispatcherState } from '../core/run/dispatcher.js';
 
 function createApiFacade(calls: Record<string, unknown>[]): ApiFacade {
   return {
@@ -36,6 +38,11 @@ function createApiFacade(calls: Record<string, unknown>[]): ApiFacade {
 }
 
 describe('RunEngineImpl', () => {
+  afterEach(() => {
+    useStreamingStore.getState().resetRun();
+    resetDispatcherState();
+  });
+
   it('uses the latest runtime config when starting a run', async () => {
     const calls: Record<string, unknown>[] = [];
     const engine = new RunEngineImpl(createApiFacade(calls));
@@ -61,6 +68,23 @@ describe('RunEngineImpl', () => {
       SessionId: 'session-live',
       Model: 'model-live',
       ModelOptions: { thinking: { type: 'disabled' } },
+    });
+  });
+
+  it('updates run activity state when activity events are dispatched', () => {
+    dispatchRunEventToStores({
+      type: 'activity',
+      phase: '等待首个输出',
+      status: 'waiting',
+      detail: '正在接收流式事件',
+      countEvent: false,
+    });
+
+    const activity = useStreamingStore.getState().activity;
+    expect(activity).toMatchObject({
+      phase: '等待首个输出',
+      status: 'waiting',
+      detail: '正在接收流式事件',
     });
   });
 });

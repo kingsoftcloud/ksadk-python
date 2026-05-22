@@ -8,6 +8,16 @@ function normalizeFramework(value) {
   return String(value || '').trim().toLowerCase();
 }
 
+function firstFramework(...values) {
+  for (const value of values) {
+    const framework = normalizeFramework(value);
+    if (framework) {
+      return framework;
+    }
+  }
+  return '';
+}
+
 function asObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
@@ -27,7 +37,12 @@ function normalizeEnabled(value, fallback) {
 export function normalizeCapabilities(bootstrap) {
   const data = bootstrap?.Data || bootstrap || {};
   const rawCapabilities = asObject(data.Capabilities);
-  const framework = normalizeFramework(data.Agent?.Framework);
+  const hostedRuntime = asObject(data.HostedRuntime);
+  const framework = firstFramework(
+    data.Agent?.Framework,
+    hostedRuntime.Framework,
+    hostedRuntime.Type,
+  );
   const productName = NATIVE_DASHBOARD_FRAMEWORKS.get(framework) || '';
   const apiFormats = normalizeApiFormats(data.ApiFormats || rawCapabilities.HostedChat?.ApiFormats);
   const defaultHostedChat = framework !== 'openclaw';

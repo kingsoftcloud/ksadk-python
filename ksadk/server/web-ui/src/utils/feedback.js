@@ -1,3 +1,8 @@
+/**
+ * @typedef {import('../components/chat/types.js').Message} ChatMessage
+ * @typedef {NonNullable<ChatMessage['feedback']>} ChatMessageFeedback
+ */
+
 function textValue(value) {
   return String(value || '').trim();
 }
@@ -7,6 +12,10 @@ function normalizedRating(value) {
   return rating === 'up' || rating === 'down' ? rating : '';
 }
 
+/**
+ * @param {unknown} value
+ * @returns {ChatMessageFeedback | null}
+ */
 export function normalizeFeedback(value) {
   if (!value || typeof value !== 'object') {
     return null;
@@ -28,6 +37,11 @@ export function normalizeFeedback(value) {
   };
 }
 
+/**
+ * @param {ChatMessage | null | undefined} message
+ * @param {boolean} isStreaming
+ * @param {boolean} isLastMessage
+ */
 export function shouldRenderFeedbackControls(message, isStreaming, isLastMessage) {
   return Boolean(
     message?.role === 'model' &&
@@ -37,6 +51,9 @@ export function shouldRenderFeedbackControls(message, isStreaming, isLastMessage
   );
 }
 
+/**
+ * @param {{ agentId: string; sessionId: string; message: ChatMessage | null | undefined }} options
+ */
 export function buildGetFeedbackPayload({ agentId, sessionId, message }) {
   const responseId = textValue(message?.responseId);
   if (!responseId) {
@@ -49,6 +66,15 @@ export function buildGetFeedbackPayload({ agentId, sessionId, message }) {
   };
 }
 
+/**
+ * @param {{
+ *   agentId: string;
+ *   sessionId: string;
+ *   message: ChatMessage | null | undefined;
+ *   rating: string;
+ *   comment?: string;
+ * }} options
+ */
 export function buildUpsertFeedbackPayload({
   agentId,
   sessionId,
@@ -74,6 +100,11 @@ export function buildUpsertFeedbackPayload({
   return payload;
 }
 
+/**
+ * @param {ChatMessage[]} messages
+ * @param {{ messageId: string; rating: string; comment?: string }} options
+ * @returns {{ nextMessages: ChatMessage[]; previousFeedback: ChatMessageFeedback | null }}
+ */
 export function applyOptimisticFeedback(messages, { messageId, rating, comment = '' }) {
   const previousMessage = messages.find((message) => message.id === messageId);
   const previousFeedback = previousMessage?.feedback ? { ...previousMessage.feedback } : null;
@@ -97,6 +128,11 @@ export function applyOptimisticFeedback(messages, { messageId, rating, comment =
   return { nextMessages, previousFeedback };
 }
 
+/**
+ * @param {ChatMessage[]} messages
+ * @param {{ messageId: string; feedback: unknown }} options
+ * @returns {ChatMessage[]}
+ */
 export function markFeedbackSaved(messages, { messageId, feedback }) {
   const normalized = normalizeFeedback(feedback) || feedback;
   return messages.map((message) =>
@@ -115,6 +151,11 @@ export function markFeedbackSaved(messages, { messageId, feedback }) {
   );
 }
 
+/**
+ * @param {ChatMessage[]} messages
+ * @param {{ messageId: string; previousFeedback: ChatMessageFeedback | null }} options
+ * @returns {ChatMessage[]}
+ */
 export function rollbackFeedback(messages, { messageId, previousFeedback }) {
   return messages.map((message) => {
     if (message.id !== messageId) {
@@ -131,6 +172,11 @@ export function rollbackFeedback(messages, { messageId, previousFeedback }) {
   });
 }
 
+/**
+ * @param {ChatMessage[]} messages
+ * @param {{ messageId: string }} options
+ * @returns {ChatMessage[]}
+ */
 export function clearFeedback(messages, { messageId }) {
   return messages.map((message) => {
     if (message.id !== messageId) {

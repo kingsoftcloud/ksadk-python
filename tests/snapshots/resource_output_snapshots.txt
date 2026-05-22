@@ -38,6 +38,7 @@ OpenClaw 状态 demo-openclaw
   框架: openclaw
   区域: cn-beijing-6
   Endpoint: https://openclaw.example.com
+  Langfuse: -
   镜像: hub.kce.ksyun.com/openclaw:latest
   创建时间: 2026-03-20 20:00:00 CST (2026-03-20 12:00:00 UTC)
   更新时间: 2026-03-20 20:05:00 CST (2026-03-20 12:05:00 UTC)

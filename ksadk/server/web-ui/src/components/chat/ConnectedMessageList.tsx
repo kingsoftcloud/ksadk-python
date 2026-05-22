@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { useUIStore } from '../../stores/ui.js';
 import { useStreamingStore } from '../../stores/streaming.js';
 import { useMessageStore } from '../../stores/message.js';
@@ -12,6 +12,8 @@ type ConnectedMessageListProps = {
   onDeleteFeedback: (message: Message) => void;
   onSubmitFeedback: (options: { message: Message; rating: 'up' | 'down'; comment?: string }) => void;
   onRespondToApproval: (options: { approvalRequestId: string; approve: boolean; previousResponseId?: string }) => void;
+  onStopGeneration?: () => void;
+  onCancelRemote?: () => void;
 };
 
 export function ConnectedMessageList({
@@ -20,9 +22,12 @@ export function ConnectedMessageList({
   onDeleteFeedback,
   onSubmitFeedback,
   onRespondToApproval,
+  onStopGeneration,
+  onCancelRemote,
 }: ConnectedMessageListProps) {
   const messages = useMessageStore(s => s.messages);
   const isStreaming = useStreamingStore(s => s.isStreaming);
+  const activity = useStreamingStore(s => s.activity);
   const previewAttachment = useUIStore(s => s.previewAttachment);
   const previewImageSize = useUIStore(s => s.previewImageSize);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -49,11 +54,14 @@ export function ConnectedMessageList({
         agentName={agentName}
         isMobile={isMobile}
         isStreaming={isStreaming}
+        activity={activity}
         messages={messages}
         onDeleteFeedback={onDeleteFeedback}
         onOpenAttachmentPreview={openAttachmentPreview}
         onRespondToApproval={onRespondToApproval}
         onSubmitFeedback={onSubmitFeedback}
+        onStopGeneration={onStopGeneration}
+        onCancelRemote={onCancelRemote}
         scrollRef={scrollRef}
       />
       <AttachmentPreview

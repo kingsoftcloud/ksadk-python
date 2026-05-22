@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { ModelCatalogItem } from '../components/chat/types';
 
-type ThinkingMode = 'auto' | 'enabled' | 'disabled';
+export type ThinkingMode = 'auto' | 'enabled' | 'disabled';
 
 type ModelState = {
   availableModels: ModelCatalogItem[];

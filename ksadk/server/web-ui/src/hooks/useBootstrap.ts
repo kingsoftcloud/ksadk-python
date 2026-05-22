@@ -62,7 +62,7 @@ export function useBootstrap(sessionCallbacks: SessionCallbacks) {
         const normalizedFramework = String(agentRecord?.Framework || '').trim().toLowerCase();
         useBootstrapStore.getState().setAgentFramework(normalizedFramework);
         const normalizedCapabilities = normalizeCapabilities(data) as UiCapabilities;
-        useBootstrapStore.getState().setCapabilities(normalizedCapabilities as Record<string, unknown>);
+        useBootstrapStore.getState().setCapabilities(normalizedCapabilities);
         useBootstrapStore.getState().setApiFormats(normalizeApiFormats(normalizedCapabilities.HostedChat.ApiFormats));
         useBootstrapStore.getState().setAccessMode(String(dataRecord?.AccessMode || 'Owner'));
 
@@ -100,7 +100,7 @@ export function useBootstrap(sessionCallbacks: SessionCallbacks) {
               ApiFormats: ['responses', 'chat_completions'],
               Capabilities: {},
             },
-          }) as Record<string, unknown>,
+          }) as UiCapabilities,
         );
         void sessionCallbacks.fetchSessions('default-agent', readPersistedSessionId('default-agent'));
         void fetchModels('default-agent');

@@ -6,6 +6,8 @@ import { Sheet, SheetContent, SheetDescription, SheetTitle } from '../ui/sheet';
 import type { WorkspaceFilesCapability } from '../chat/types';
 import type { ApiFacade } from '../../core/api/types.js';
 
+type SheetSide = 'top' | 'bottom' | 'left' | 'right';
+
 type WorkspacePanelContainerProps = {
   agentId: string;
   capability: WorkspaceFilesCapability;
@@ -18,7 +20,7 @@ type WorkspacePanelContainerProps = {
   workspacePanelPresentation: {
     renderMode: string;
     modal?: boolean;
-    side?: string;
+    side?: SheetSide;
     showOverlay?: boolean;
     preventOutsideClose?: boolean;
   };

@@ -45,6 +45,10 @@ export class ApiFacadeImpl implements ApiFacade {
     return streamGetAction('SubscribeRunEvents', qs, opts);
   }
 
+  async cancelRun(agentId: string, invocationId: string, opts?: { signal?: AbortSignal }) {
+    return postJsonAction('CancelRun', { AgentId: agentId, InvocationId: invocationId }, opts);
+  }
+
   // Feedback
   async getResponseFeedback(payload: Record<string, unknown>, opts?: { signal?: AbortSignal }) {
     return postJsonAction('GetResponseFeedback', payload, opts);

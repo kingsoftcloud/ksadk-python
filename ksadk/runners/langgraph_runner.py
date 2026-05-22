@@ -332,15 +332,15 @@ class LangGraphRunner(BaseRunner):
     def _extract_output(self, result: Any) -> str:
         """从结果中提取输出文本"""
         if isinstance(result, dict):
+            # 自定义 output 字段是业务显式出参，优先于内部 messages state。
+            if "output" in result:
+                return result["output"]
             # 标准 messages 格式
             if "messages" in result:
                 messages = result["messages"]
                 if messages:
                     last = messages[-1]
                     return last.get("content", str(last)) if isinstance(last, dict) else getattr(last, "content", str(last))
-            # 自定义 output 字段
-            elif "output" in result:
-                return result["output"]
         return str(result) if result else ""
 
     def _get_interrupt_info(self, state) -> dict:

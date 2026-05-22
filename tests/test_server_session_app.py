@@ -356,6 +356,129 @@ async def test_workspace_files_runtime_routes_use_state_dir_workspace_root(monke
 
 
 @pytest.mark.asyncio
+async def test_workspace_files_runtime_routes_delete_empty_directory(monkeypatch, tmp_path):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    ui_dir = tmp_path / ".agentengine" / "ui"
+    workspace_dir = ui_dir / "workspace"
+    empty_dir = workspace_dir / "empty-folder"
+    empty_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("AGENTENGINE_UI_DIR", str(ui_dir))
+
+    service = InMemorySessionService()
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        runtime_response = await client.delete("/_ksadk/workspace/v1/files/empty-folder")
+
+    assert runtime_response.status_code == 200
+    assert runtime_response.json() == {"Deleted": True}
+    assert not empty_dir.exists()
+
+
+@pytest.mark.asyncio
+async def test_workspace_files_runtime_routes_delete_empty_directory_with_trailing_slash(
+    monkeypatch,
+    tmp_path,
+):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    ui_dir = tmp_path / ".agentengine" / "ui"
+    workspace_dir = ui_dir / "workspace"
+    empty_dir = workspace_dir / "empty-folder"
+    empty_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("AGENTENGINE_UI_DIR", str(ui_dir))
+
+    service = InMemorySessionService()
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        runtime_response = await client.delete("/_ksadk/workspace/v1/files/empty-folder/")
+
+    assert runtime_response.status_code == 200
+    assert runtime_response.json() == {"Deleted": True}
+    assert not empty_dir.exists()
+
+
+@pytest.mark.asyncio
+async def test_workspace_files_action_route_deletes_empty_directory(monkeypatch, tmp_path):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    ui_dir = tmp_path / ".agentengine" / "ui"
+    workspace_dir = ui_dir / "workspace"
+    empty_dir = workspace_dir / "empty-folder"
+    empty_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("AGENTENGINE_UI_DIR", str(ui_dir))
+
+    service = InMemorySessionService()
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        action_response = await client.post(
+            "/agentengine/api/v1/DeleteWorkspaceFile",
+            json={"AgentId": "demo-agent", "Path": "empty-folder"},
+        )
+
+    assert action_response.status_code == 200
+    assert action_response.json()["Data"] == {"Deleted": True}
+    assert not empty_dir.exists()
+
+
+@pytest.mark.asyncio
+async def test_workspace_files_runtime_routes_reject_non_empty_directory_delete(monkeypatch, tmp_path):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    ui_dir = tmp_path / ".agentengine" / "ui"
+    workspace_dir = ui_dir / "workspace"
+    non_empty_dir = workspace_dir / "docs"
+    non_empty_dir.mkdir(parents=True, exist_ok=True)
+    (non_empty_dir / "readme.txt").write_text("keep me", encoding="utf-8")
+    monkeypatch.setenv("AGENTENGINE_UI_DIR", str(ui_dir))
+
+    service = InMemorySessionService()
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.delete("/_ksadk/workspace/v1/files/docs")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "workspace directory is not empty"
+    assert (non_empty_dir / "readme.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_workspace_files_runtime_route_serves_html_preview_inline(monkeypatch, tmp_path):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    ui_dir = tmp_path / ".agentengine" / "ui"
+    workspace_dir = ui_dir / "workspace"
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    (workspace_dir / "showcase").mkdir(parents=True, exist_ok=True)
+    (workspace_dir / "showcase" / "index.html").write_text(
+        '<html><head></head><body><a href="#features">Features</a></body></html>',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AGENTENGINE_UI_DIR", str(ui_dir))
+
+    service = InMemorySessionService()
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.get("/_ksadk/workspace/v1/files/showcase/index.html")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert "content-disposition" not in response.headers
+    csp = response.headers.get("content-security-policy", "")
+    assert "sandbox allow-scripts allow-downloads" in csp
+    assert "style-src 'unsafe-inline' data: 'self' https:" in csp
+    assert "img-src data: blob: 'self' https:" in csp
+    assert "connect-src 'none'" in csp
+    assert '<base href="/_ksadk/workspace/v1/files/showcase/">' in response.text
+    assert "data-ksadk-preview-anchor-handler" in response.text
+
+
+@pytest.mark.asyncio
 async def test_workspace_files_runtime_routes_reject_path_escape(monkeypatch, tmp_path):
     server_app_module = importlib.import_module("ksadk.server.app")
     ui_dir = tmp_path / ".agentengine" / "ui"

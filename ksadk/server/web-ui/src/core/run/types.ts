@@ -1,10 +1,20 @@
+import type { RuntimeApiFormat } from '../../types/api.js';
+
 export type RunStage =
   | 'idle' | 'creating-session' | 'uploading-files'
   | 'connecting' | 'streaming' | 'stopping'
-  | 'completing' | 'failed' | 'cancelled';
+  | 'completing' | 'recovering' | 'error'
+  | 'cancelled';
 
 export type RunEvent =
   | { type: 'stage_changed'; stage: RunStage }
+  | {
+      type: 'activity';
+      phase: string;
+      status?: 'connecting' | 'running' | 'waiting' | 'stopped' | 'completed' | 'failed';
+      detail?: string;
+      countEvent?: boolean;
+    }
   | { type: 'user_message_added'; messageId: string }
   | { type: 'assistant_message_created'; messageId: string }
   | { type: 'text_delta'; messageId: string; delta: string }
@@ -21,7 +31,7 @@ export type RunEvent =
 
 export type RunEngineConfig = {
   agentId: string;
-  apiFormats: string[];
+  apiFormats: RuntimeApiFormat[];
   agentFramework: string;
   selectedModel: string;
   thinkingMode: string;
@@ -40,6 +50,7 @@ export interface RunEngine {
     onSettled?: () => void;
   }): boolean;
   stop(): void;
+  cancelRemote(invocationId: string): Promise<void>;
   resumeRun(params: {
     sessionId: string;
     invocationId: string;

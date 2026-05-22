@@ -20,6 +20,10 @@ from ksadk_runtime_common.workspace_files.path_utils import (
     _resolve_workspace_root,
     _resolve_workspace_target,
 )
+from ksadk_runtime_common.workspace_files.preview import (
+    build_workspace_preview_csp,
+    inject_workspace_html_preview,
+)
 
 EntryPayload = dict[str, str | int | None]
 EntriesResponse = dict[str, str | list[EntryPayload]]
@@ -116,13 +120,27 @@ def create_workspace_files_router(
         )
 
     @router.get("/files/{file_path:path}")
-    async def download_workspace_file(file_path: str) -> FileResponse:
+    async def download_workspace_file(file_path: str) -> Response:
         _ensure_enabled()
         root = _resolve_workspace_root(root_getter)
         _, target = _resolve_workspace_target(root, file_path, allow_root=False)
         if not target.exists() or not target.is_file():
             raise HTTPException(status_code=404, detail="workspace file not found")
         media_type, _ = mimetypes.guess_type(target.name)
+        is_html = (media_type or "").split(";")[0].lower() == "text/html" or target.suffix.lower() in {
+            ".html",
+            ".htm",
+        }
+        if is_html:
+            html_doc = target.read_bytes().decode("utf-8", errors="replace")
+            return Response(
+                content=inject_workspace_html_preview(html_doc, file_path).encode("utf-8"),
+                media_type="text/html; charset=utf-8",
+                headers={
+                    "Content-Security-Policy": build_workspace_preview_csp(),
+                    "Last-Modified": _isoformat_timestamp(target),
+                },
+            )
         return FileResponse(
             target,
             media_type=media_type or "application/octet-stream",
@@ -169,8 +187,19 @@ def create_workspace_files_router(
         _ensure_enabled()
         root = _resolve_workspace_root(root_getter)
         _, target = _resolve_workspace_target(root, file_path, allow_root=False)
-        if not target.exists() or not target.is_file():
+        if not target.exists():
             raise HTTPException(status_code=404, detail="workspace file not found")
+        if target.is_dir():
+            try:
+                target.rmdir()
+            except OSError as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail="workspace directory is not empty",
+                ) from exc
+            return JSONResponse({"Deleted": True})
+        if not target.is_file():
+            raise HTTPException(status_code=400, detail="workspace path is not a file or directory")
         target.unlink()
         return JSONResponse({"Deleted": True})
 

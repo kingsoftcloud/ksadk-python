@@ -336,6 +336,19 @@ async def test_invoke_with_image_attachment_without_image_capability_keeps_text_
     assert content == "请分析这张图片"
 
 
+def test_extract_output_prefers_explicit_output_over_messages_tail():
+    runner = _make_runner()
+
+    output = runner._extract_output(
+        {
+            "output": "业务最终回答",
+            "messages": [{"role": "system", "content": "系统提示词"}],
+        }
+    )
+
+    assert output == "业务最终回答"
+
+
 @pytest.mark.asyncio
 async def test_invoke_simplified_input_prepends_ambient_kb_and_memory_context():
     runner = _make_runner()

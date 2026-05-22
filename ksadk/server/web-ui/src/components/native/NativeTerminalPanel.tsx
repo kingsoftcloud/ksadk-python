@@ -95,7 +95,7 @@ export function NativeTerminalPanel({ capability, open, onClose }: NativeTermina
         throw new Error(`HTTP ${response.status}`);
       }
       const payload = await readJson(response);
-      const normalized = normalizeTerminalSessions(payload);
+      const normalized = normalizeTerminalSessions(payload) as TerminalSession[];
       setTerminalSessions(normalized);
       setActiveTerminalSessionId((current) => {
         if (current && normalized.some((session) => session.terminal_session_id === current)) {
@@ -116,7 +116,7 @@ export function NativeTerminalPanel({ capability, open, onClose }: NativeTermina
 
   const attachTerminalSession = useCallback(async (session: TerminalSession) => {
     if (!containerRef.current) {
-      return () => undefined;
+      return () => {};
     }
     setStatus('connecting');
 
@@ -328,7 +328,7 @@ export function NativeTerminalPanel({ capability, open, onClose }: NativeTermina
     if (!open || !session) {
       return;
     }
-    let cleanup = () => undefined;
+    let cleanup: () => void = () => {};
     let cancelled = false;
     void attachTerminalSession(session).then((dispose) => {
       cleanup = dispose;

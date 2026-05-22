@@ -28,7 +28,10 @@ def test_workspace_html_route_applies_sandbox_csp(monkeypatch, tmp_path: Path):
     csp = response.headers.get("content-security-policy", "")
     assert "sandbox allow-scripts allow-downloads" in csp
     assert "connect-src 'none'" in csp
-    assert "img-src data: blob: 'self'" in csp
+    assert "script-src 'unsafe-inline' 'unsafe-eval' 'self' https:" in csp
+    assert "img-src data: blob: 'self' https:" in csp
+    assert '<base href="/_ksadk/workspace/v1/files/">' in response.text
+    assert "data-ksadk-preview-anchor-handler" in response.text
 
 
 def test_export_workspace_zip_does_not_follow_symlink_escape(monkeypatch, tmp_path: Path):

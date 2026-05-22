@@ -8,6 +8,7 @@ type ConnectedComposerProps = {
   composerMaxHeight: number;
   submitDraft: (text: string, attachments: File[]) => Promise<void>;
   stopGeneration: () => void;
+  cancelRemote?: () => void;
   isMobile: boolean;
 };
 
@@ -15,6 +16,7 @@ export function ConnectedComposer({
   composerMaxHeight,
   submitDraft,
   stopGeneration,
+  cancelRemote,
   isMobile,
 }: ConnectedComposerProps) {
   const input = useUIStore(s => s.input);
@@ -75,6 +77,7 @@ export function ConnectedComposer({
         )
       }
       onStopGeneration={stopGeneration}
+      onCancelRemote={cancelRemote}
       onSubmit={handleSubmit}
       textareaRef={textareaRef}
     />

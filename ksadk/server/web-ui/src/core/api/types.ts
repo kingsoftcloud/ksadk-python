@@ -8,6 +8,7 @@ export interface ApiFacade {
   listSessionEvents(sessionId: string, opts?: { signal?: AbortSignal }): Promise<{ Events: unknown[] }>;
   runAgent(body: Record<string, unknown>, opts?: { signal?: AbortSignal }): Promise<ReadableStream<Uint8Array>>;
   subscribeRunEvents(params: { sessionId: string; invocationId: string; afterSeqId: number }, opts?: { signal?: AbortSignal }): Promise<ReadableStream<Uint8Array>>;
+  cancelRun(agentId: string, invocationId: string, opts?: { signal?: AbortSignal }): Promise<unknown>;
 
   // Feedback
   getResponseFeedback(payload: Record<string, unknown>, opts?: { signal?: AbortSignal }): Promise<unknown>;

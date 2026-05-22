@@ -1,6 +1,15 @@
 import type { RuntimeTransport, TransportCallbacks } from './types.js';
 import { streamAction, streamGetAction } from '../../api/client.js';
 import { parseSseChunk, splitSseBuffer } from './sse-parser.js';
+import { useStreamingStore } from '../../stores/streaming.js';
+
+function handleTransportEvent(event: import('./types.js').TransportEvent, callbacks: TransportCallbacks) {
+  if (event.eventName === '__ping__') {
+    useStreamingStore.getState().updateActivity({ countEvent: false });
+    return;
+  }
+  callbacks.onEvent(event);
+}
 
 export class SsePostTransport implements RuntimeTransport {
   readonly protocol = 'sse-post';
@@ -39,7 +48,7 @@ export class SsePostTransport implements RuntimeTransport {
                 callbacks.onComplete();
                 return;
               }
-              callbacks.onEvent(event);
+              handleTransportEvent(event, callbacks);
             }
           }
         }
@@ -97,7 +106,7 @@ export class SseGetTransport implements RuntimeTransport {
                 callbacks.onComplete();
                 return;
               }
-              callbacks.onEvent(event);
+              handleTransportEvent(event, callbacks);
             }
           }
         }

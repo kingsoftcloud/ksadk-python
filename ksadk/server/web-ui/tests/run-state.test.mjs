@@ -37,6 +37,33 @@ test('run state utils treat replied legacy invocations as no longer active', asy
   );
 });
 
+test('run state utils ignore stale in-progress invocations after refresh', async () => {
+  const runStateUtils = await loadRunStateUtils();
+
+  assert.ok(runStateUtils, 'expected run state helpers to exist');
+  const now = Date.now();
+  assert.deepEqual(
+    runStateUtils.findActiveRunIds(
+      [
+        {
+          EventType: 'run_status',
+          InvocationId: 'inv-stale',
+          Content: { status: 'in_progress' },
+          Timestamp: now - 31 * 60 * 1000,
+        },
+        {
+          EventType: 'run_status',
+          InvocationId: 'inv-live',
+          Content: { status: 'in_progress' },
+          Timestamp: now - 10 * 1000,
+        },
+      ],
+      { now, staleAfterMs: 30 * 60 * 1000 },
+    ),
+    ['inv-live'],
+  );
+});
+
 test('run state utils build subscribe URLs with session and invocation id', async () => {
   const runStateUtils = await loadRunStateUtils();
 

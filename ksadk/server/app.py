@@ -4,16 +4,15 @@ FastAPI 应用 - 提供 HTTP API 接口 (ADK Web 兼容)
 """
 
 import base64
-import html as html_lib
 import httpx
 import io
 import json
 import logging
 import mimetypes
 import os
-import re
 import time
 import uuid
+import asyncio
 import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
@@ -37,6 +36,11 @@ from ksadk_runtime_common.workspace_files import (
     build_workspace_files_bootstrap,
     create_workspace_files_router,
     workspace_files_enabled,
+)
+from ksadk_runtime_common.workspace_files.preview import (
+    build_workspace_file_base_href,
+    build_workspace_preview_csp,
+    inject_workspace_html_preview,
 )
 from ksadk.sessions import (
     ConversationSessionCore,
@@ -142,22 +146,18 @@ def _workspace_root_dir() -> Path:
     return resolve_local_session_dir() / "workspace"
 
 
-def _build_workspace_preview_csp(asset_source: str = "'self'") -> str:
-    return "; ".join(
-        [
-            "sandbox allow-scripts allow-downloads",
-            "default-src 'none'",
-            f"script-src 'unsafe-inline' 'unsafe-eval' 'self' {asset_source}",
-            f"style-src 'unsafe-inline' data: 'self' {asset_source}",
-            f"img-src data: blob: 'self' {asset_source}",
-            f"font-src data: 'self' {asset_source}",
-            f"media-src data: blob: 'self' {asset_source}",
-            "worker-src blob:",
-            "connect-src 'none'",
-            "form-action 'none'",
-            "base-uri 'self'",
-        ]
-    )
+_NATIVE_TUI_FRAMEWORKS = {"hermes", "openclaw"}
+
+
+def _build_native_terminal_capability(framework: str) -> dict[str, Any]:
+    enabled = str(framework or "").strip().lower() in _NATIVE_TUI_FRAMEWORKS
+    return {
+        "Enabled": enabled,
+        "Mode": "tui" if enabled else None,
+        "Protocol": "ks-terminal.v1",
+        "Path": "/_ksadk/terminal/ws" if enabled else None,
+    }
+
 
 app.include_router(
     create_workspace_files_router(
@@ -557,6 +557,11 @@ class WorkspaceDeleteActionRequest(BaseModel):
     Path: str
 
 
+class CancelRunActionRequest(BaseModel):
+    AgentId: Optional[str] = None
+    InvocationId: str
+
+
 async def _session_to_action_payload(session: Session) -> dict[str, Any]:
     title = session.title
     title_source = session.title_source
@@ -635,10 +640,11 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
                 "WorkspaceFiles": workspace_enabled,
                 "Approval": True,
                 "Thinking": True,
-                "StopRun": False,
+                "StopRun": True,
                 "ResumeRun": False,
                 "MCP": False,
                 "HostedRuntime": False,
+                "NativeTerminal": _build_native_terminal_capability(framework),
             },
             "WorkspaceFiles": build_workspace_files_bootstrap(enabled=workspace_enabled),
             "AccessMode": "Owner",
@@ -790,6 +796,17 @@ async def delete_workspace_file_action(request: WorkspaceDeleteActionRequest):
     return _action_response("DeleteWorkspaceFile", response.json())
 
 
+@app.post("/agentengine/api/v1/CancelRun")
+async def cancel_run_action(request: CancelRunActionRequest):
+    active_runner = _resolve_active_runner()
+    if active_runner is not None:
+        try:
+            active_runner.request_cancel(request.InvocationId)
+        except Exception as exc:
+            logger.warning("CancelRun failed: %s", exc)
+    return _action_response("CancelRun", {"Cancelled": True})
+
+
 @app.get("/agentengine/api/v1/GetWorkspaceFileContent", include_in_schema=False)
 async def get_workspace_file_content_action(
     FilePath: str = Query(...),
@@ -829,23 +846,13 @@ async def workspace_file_path_route(request: Request, agent_id: str, file_path: 
     is_html = "text/html" in content_type or file_path.lower().endswith((".html", ".htm"))
 
     if is_html and response.status_code == 200:
-        dir_path = file_path.rsplit("/", 1)[0] + "/" if "/" in file_path else ""
-        base_href = f"/agentengine/api/v1/ws/{quote(agent_id, safe='')}/{quote(dir_path, safe='/')}"
+        del agent_id
+        base_href = build_workspace_file_base_href(file_path)
         asset_source = f"{request.url.scheme}://{request.url.netloc}{base_href}"
-        base_tag = f'<base href="{html_lib.escape(base_href, quote=True)}">'
         html_doc = response.content.decode("utf-8", errors="replace")
-        if re.search(r"<head[^>]*>", html_doc, re.IGNORECASE):
-            html_doc = re.sub(
-                r"<head[^>]*>",
-                lambda m: m.group() + base_tag,
-                html_doc,
-                count=1,
-                flags=re.IGNORECASE,
-            )
-        else:
-            html_doc = base_tag + html_doc
+        html_doc = inject_workspace_html_preview(html_doc, file_path)
         headers.pop("content-disposition", None)
-        headers["Content-Security-Policy"] = _build_workspace_preview_csp(asset_source)
+        headers["Content-Security-Policy"] = build_workspace_preview_csp(asset_source)
         return Response(
             content=html_doc.encode("utf-8"),
             status_code=response.status_code,
@@ -1374,7 +1381,7 @@ async def run_sse(request: AgentRunRequest):
                 authoritative_text = ""
                 responses_output: list[Any] = []
                 responses_response_id: str | None = None
-                async for chunk in active_runner.stream(
+                stream_iter = active_runner.stream(
                     {
                         "session_id": session_id,
                         "input": user_input,
@@ -1384,7 +1391,15 @@ async def run_sse(request: AgentRunRequest):
                         "attachment_results": attachment_results,
                         "model": request.model,
                     }
-                ):
+                )
+                while True:
+                    try:
+                        chunk = await asyncio.wait_for(stream_iter.__anext__(), timeout=15)
+                    except StopAsyncIteration:
+                        break
+                    except asyncio.TimeoutError:
+                        yield ": ping\n\n"
+                        continue
                     event_id = str(uuid.uuid4())
                     if chunk.get("type") == "responses_output":
                         raw_output = chunk.get("output")

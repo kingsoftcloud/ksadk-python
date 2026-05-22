@@ -42,6 +42,23 @@ test('capabilities fallback keeps OpenClaw native and Hermes hybrid behavior', a
   assert.equal(capabilities.isNativeTerminalEnabled(hermes), true);
 });
 
+test('capabilities fallback can infer native terminal from hosted runtime metadata', async () => {
+  const capabilities = await loadCapabilityUtils();
+
+  assert.ok(capabilities, 'expected capability helpers to exist');
+  for (const framework of ['hermes', 'openclaw']) {
+    const normalized = capabilities.normalizeCapabilities({
+      Data: {
+        Agent: {},
+        HostedRuntime: { Framework: framework },
+        Capabilities: {},
+      },
+    });
+
+    assert.equal(capabilities.isNativeTerminalEnabled(normalized), true, framework);
+  }
+});
+
 test('explicit capability objects override framework fallback', async () => {
   const capabilities = await loadCapabilityUtils();
 

@@ -21,12 +21,14 @@ import { shouldRenderFeedbackControls } from '../../utils/feedback.js';
 import { formatToolPayload } from '../../utils/tool-display.js';
 import { copyTextToClipboard } from '../../utils/clipboard.js';
 
+import type { RunActivity } from '../../stores/streaming.js';
 import type { Message, MessageAttachment } from './types';
 
 type ChatMessageListProps = {
   agentName: string;
   isMobile: boolean;
   isStreaming: boolean;
+  activity: RunActivity | null;
   messages: Message[];
   onOpenAttachmentPreview: (attachment: MessageAttachment) => void;
   onRespondToApproval: (options: {
@@ -40,8 +42,103 @@ type ChatMessageListProps = {
     comment?: string;
   }) => void;
   onDeleteFeedback: (message: Message) => void;
+  onStopGeneration?: () => void;
+  onCancelRemote?: () => void;
   scrollRef: RefObject<HTMLDivElement | null>;
 };
+
+function formatElapsed(ms: number) {
+  const safe = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(safe / 60);
+  const seconds = safe % 60;
+  if (minutes <= 0) {
+    return `${seconds}s`;
+  }
+  return `${minutes}m ${String(seconds).padStart(2, '0')}s`;
+}
+
+function formatLag(ms: number) {
+  if (ms < 1000) return '刚刚';
+  if (ms < 60_000) return `${Math.floor(ms / 1000)} 秒前`;
+  return `${Math.floor(ms / 60_000)} 分钟前`;
+}
+
+function RunActivityBanner({ activity, onStopGeneration, onCancelRemote }: { activity: RunActivity; onStopGeneration?: () => void; onCancelRemote?: () => void }) {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const isActive = activity.status === 'connecting' || activity.status === 'running' || activity.status === 'waiting';
+  const alive = now - activity.lastEventAt < 20_000;
+
+  const icon =
+    activity.status === 'failed' ? (
+      <StopCircle className="h-4 w-4 text-rose-500" />
+    ) : activity.status === 'completed' ? (
+      <Check className="h-4 w-4 text-emerald-500" />
+    ) : activity.status === 'stopped' ? (
+      <ShieldCheck className="h-4 w-4 text-amber-500" />
+    ) : (
+      <RefreshCcw className="h-4 w-4 animate-spin text-blue-500" />
+    );
+
+  return (
+    <div className="mb-4 rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3 text-sm text-slate-700 shadow-sm dark:border-slate-700/50 dark:bg-slate-800/30 dark:text-slate-200">
+      <div className="flex flex-wrap items-center gap-2">
+        {icon}
+        <span className="font-medium">{activity.phase}</span>
+        <span className="text-xs text-slate-500 dark:text-slate-400">
+          {activity.source === 'restore' ? '恢复中' : '运行中'} · {formatElapsed(now - activity.startedAt)}
+        </span>
+        {isActive ? (
+          <span className={cn('inline-block h-2 w-2 rounded-full', alive ? 'bg-emerald-400' : 'bg-slate-300 dark:bg-slate-600')} title={alive ? '连接存活' : '连接超时'} />
+        ) : null}
+        {activity.status === 'stopped' ? (
+          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-100">
+            已停止接收
+          </span>
+        ) : null}
+        {isActive && (onStopGeneration || onCancelRemote) ? (
+          <div className="ml-auto flex gap-2">
+            {onStopGeneration ? (
+              <button
+                type="button"
+                onClick={onStopGeneration}
+                className="flex items-center gap-1 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-600 shadow-sm transition hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+              >
+                <StopCircle className="h-3 w-3" />
+                停止接收
+              </button>
+            ) : null}
+            {onCancelRemote ? (
+              <button
+                type="button"
+                onClick={onCancelRemote}
+                className="flex items-center gap-1 rounded-full border border-rose-200 bg-white px-3 py-1 text-xs text-rose-600 shadow-sm transition hover:bg-rose-50 dark:border-rose-800 dark:bg-slate-800 dark:text-rose-400 dark:hover:bg-slate-700"
+              >
+                <XCircle className="h-3 w-3" />
+                取消运行
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+      {activity.detail ? (
+        <div className="mt-1.5 text-xs leading-5 text-slate-500 dark:text-slate-400">
+          {activity.detail}
+        </div>
+      ) : null}
+      <div className="mt-2 flex flex-wrap gap-3 text-[11px] text-slate-500 dark:text-slate-400">
+        <span>事件 {activity.eventCount}</span>
+        <span>最近事件 {formatLag(now - activity.lastEventAt)}</span>
+        <span>来源 {activity.source === 'restore' ? '刷新恢复' : '实时运行'}</span>
+      </div>
+    </div>
+  );
+}
 
 function EmptyState({ agentName }: { agentName: string }) {
   return (
@@ -511,11 +608,14 @@ export function ChatMessageList({
   agentName,
   isMobile,
   isStreaming,
+  activity,
   messages,
   onDeleteFeedback,
   onOpenAttachmentPreview,
   onRespondToApproval,
   onSubmitFeedback,
+  onStopGeneration,
+  onCancelRemote,
   scrollRef,
 }: ChatMessageListProps) {
   return (
@@ -527,6 +627,7 @@ export function ChatMessageList({
       )}
     >
       <div className="mx-auto flex w-full max-w-[64rem] flex-col pb-6 sm:pb-8">
+        {activity ? <RunActivityBanner activity={activity} onStopGeneration={onStopGeneration} onCancelRemote={onCancelRemote} /> : null}
         {messages.length === 0 ? (
         <EmptyState agentName={agentName} />
         ) : (

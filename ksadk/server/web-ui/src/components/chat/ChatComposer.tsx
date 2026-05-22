@@ -7,7 +7,7 @@ import type {
   RefObject,
 } from 'react';
 
-import { Paperclip, Send, ShieldCheck, StopCircle } from 'lucide-react';
+import { Paperclip, Send, ShieldCheck, StopCircle, XCircle } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 
@@ -27,6 +27,7 @@ type ChatComposerProps = {
   onPaste: (event: ClipboardEvent<HTMLTextAreaElement>) => void;
   onRemoveAttachment: (index: number) => void;
   onStopGeneration: () => void;
+  onCancelRemote?: () => void;
   onSubmit: (text: string, attachments: File[]) => void;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
 };
@@ -45,6 +46,7 @@ export function ChatComposer({
   onPaste,
   onRemoveAttachment,
   onStopGeneration,
+  onCancelRemote,
   onSubmit,
   textareaRef,
 }: ChatComposerProps) {
@@ -77,7 +79,7 @@ export function ChatComposer({
     <div className="relative z-10 flex-shrink-0 bg-white/95 px-3 py-3 backdrop-blur dark:bg-slate-900/95 sm:px-4 sm:py-3">
       <div className="mx-auto w-full max-w-[64rem]">
         {isStreaming ? (
-          <div className="mb-2 flex justify-center">
+          <div className="mb-2 flex items-center justify-center gap-2">
             <button
               type="button"
               onClick={onStopGeneration}
@@ -86,6 +88,17 @@ export function ChatComposer({
               <StopCircle className="h-4 w-4 text-slate-500" />
               <span>停止接收</span>
             </button>
+            {onCancelRemote ? (
+              <button
+                type="button"
+                onClick={onCancelRemote}
+                className="flex items-center gap-1.5 rounded-full border border-rose-200 bg-white px-3 py-1.5 text-xs text-rose-600 shadow-sm transition hover:bg-rose-50 dark:border-rose-800 dark:bg-slate-800 dark:text-rose-400 dark:hover:bg-slate-700"
+              >
+                <XCircle className="h-3.5 w-3.5" />
+                <span>取消运行</span>
+                <span className="text-[10px] text-rose-400 dark:text-rose-500">终止后台</span>
+              </button>
+            ) : null}
           </div>
         ) : null}
 

@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import { useEffect } from 'react';
 import { useUIStore } from '../stores/ui.js';
 import { X } from 'lucide-react';
 
