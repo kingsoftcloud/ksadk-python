@@ -312,3 +312,22 @@ def test_runtime_proxy_closes_terminal_session(monkeypatch):
     assert close_response.json() == {"closed": True, "terminal_session_id": terminal_session_id}
     assert closed == [terminal_session_id]
     assert list_response.json()["sessions"] == []
+
+
+def test_runtime_proxy_terminal_session_attach_replies_to_ping(monkeypatch):
+    module = _load_runtime_module()
+    monkeypatch.setattr(module, "_spawn_terminal_session", lambda session: None)
+
+    with TestClient(module.app) as client:
+        terminal_session_id = client.post(
+            "/_ksadk/terminal/sessions",
+            json={"mode": "tui"},
+        ).json()["session"]["terminal_session_id"]
+        with client.websocket_connect(
+            f"/_ksadk/terminal/ws?terminal_session_id={terminal_session_id}",
+            subprotocols=[module.TERMINAL_SUBPROTOCOL],
+        ) as ws:
+            ws.send_json({"type": "attach", "terminal_session_id": terminal_session_id})
+            assert ws.receive_json()["type"] == "ready"
+            ws.send_json({"type": "ping"})
+            assert ws.receive_json() == {"type": "pong"}

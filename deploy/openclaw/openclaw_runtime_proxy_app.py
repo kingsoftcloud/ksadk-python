@@ -586,7 +586,9 @@ async def _attach_terminal_session(ws: WebSocket, session: TerminalSession) -> N
             if not text:
                 continue
             control = json.loads(text)
-            if control.get("type") == "resize":
+            if control.get("type") == "ping":
+                await ws.send_text(json.dumps({"type": "pong"}))
+            elif control.get("type") == "resize":
                 session.rows = int(control.get("rows") or session.rows or 24)
                 session.cols = int(control.get("cols") or session.cols or 80)
                 session.updated_at = time.time()
@@ -671,7 +673,9 @@ async def terminal_ws(ws: WebSocket) -> None:
             if not text:
                 continue
             control = json.loads(text)
-            if control.get("type") == "resize":
+            if control.get("type") == "ping":
+                await ws.send_text(json.dumps({"type": "pong"}))
+            elif control.get("type") == "resize":
                 _set_winsize(fd, int(control.get("rows") or 24), int(control.get("cols") or 80))
             elif control.get("type") == "signal":
                 sig = signal.SIGINT if control.get("signal") == "SIGINT" else signal.SIGTERM
