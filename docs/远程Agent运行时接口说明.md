@@ -154,8 +154,8 @@ Hermes 终端 WebSocket 额外要求：
 
 | 运行时类型 | 典型 framework | 主入口实现 | 对外特征 |
 | --- | --- | --- | --- |
-| 通用 Agent 运行时 | `adk` / `langchain` / `langgraph` / `deepagents` | `ksadk.server.app` | `/v1/*` + `/chat` + Hosted UI action 接口 |
-| Hermes 托管运行时 | `hermes` | `deploy/hermes/runtime/app.py` 外层 wrapper | `/` dashboard、`/chat`、`/v1/*`、`/_ksadk/terminal/ws`、workspace files |
+| 通用 Agent 运行时 | `adk` / `langchain` / `langgraph` / `deepagents` | `ksadk.server.app` | `/v1/*` + workspace files；公网 `/chat` 由独立 hosted UI 服务承载并调用 Hosted UI action 接口 |
+| Hermes 托管运行时 | `hermes` | `deploy/hermes/runtime/app.py` 外层 wrapper | `/` dashboard、`/v1/*`、`/_ksadk/terminal/ws`、workspace files；公网 `/chat` 同样由独立 hosted UI 服务承载 |
 | OpenClaw 托管运行时 | `openclaw` | OpenClaw gateway + ksadk 补丁 | 以 OpenClaw gateway 为主，平台额外挂出 workspace files |
 
 ## 5. 公网暴露范围总览
@@ -1319,21 +1319,21 @@ curl -X POST "https://<PublicEndpoint>/agentengine/api/v1/DeleteResponseFeedback
 
 这组接口是 legacy session 兼容层，主要面向 ADK Web。
 
-## 6.13 前端壳路径
+## 6.13 Runtime 本地前端壳路径
 
 ### `GET /chat`
 
-- 返回统一 Agent UI 的 `index.html`
-- 这是 hosted chat 的默认路径
-- 当通过公网 `PublicEndpoint` 访问时，通常会优先走 `agentengine-server` 的 hosted UI 路由，而不是直接依赖 runtime 本地静态文件
+- 在 SDK 本地 `agentengine web` 或 runtime 镜像内置静态文件场景下，返回统一 Agent UI 的 `index.html`
+- 生产公网 `PublicEndpoint` 的 `/chat` 不再由 `agentengine-server` 或 runtime 本地静态文件承载；Ingress 会优先路由到独立 `agentengine-hosted-ui` Service
+- 前端仍通过 `/agentengine/api/v1/*` 调用 `agentengine-server` 的 Hosted UI action 接口
 
 ### `GET /build`
 
-- 返回同一前端壳
+- SDK 本地前端壳路径，返回同一前端壳
 
 ### `GET /deploy`
 
-- 返回同一前端壳
+- SDK 本地前端壳路径，返回同一前端壳
 
 ### `GET /`
 
@@ -1342,6 +1342,7 @@ curl -X POST "https://<PublicEndpoint>/agentengine/api/v1/DeleteResponseFeedback
 说明：
 
 - 这些路径只有在 runtime 镜像内静态资源已构建并同步时才可用
+- 生产 hosted UI 的源码、镜像和发布节奏归属 `agentengine-hosted-ui` 独立仓库；`ksadk-python` 中的静态资源只作为 SDK 本地 UI 副本保留
 
 ## 7. Hermes 运行时详细接口
 
@@ -1648,14 +1649,14 @@ wscat \
 
 - `/v1/responses`
 - `/v1/chat/completions`
-- `/chat`
+- 公网 `/chat` 入口由 `agentengine-hosted-ui` 承载；runtime 本地 `/chat` 只用于 SDK 本地 UI 或内置静态资源场景
 - `/_ksadk/workspace/v1/*`
 - Hosted UI action 白名单
 
 ### Hermes
 
 - `/`
-- `/chat`
+- 公网 `/chat` 入口由 `agentengine-hosted-ui` 承载
 - `/v1/*`
 - `/_ksadk/terminal/ws`
 - `/_ksadk/workspace/v1/*`
