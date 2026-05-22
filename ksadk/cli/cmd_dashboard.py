@@ -51,6 +51,8 @@ _PATH_EMBEDDED_OPTION_HINTS = (
     "--region",
 )
 
+DEFAULT_PRIVATE_LINK_EXPIRES_SECONDS = 24 * 60 * 60
+
 DASHBOARD_RESOURCE = ResourceDescriptor(
     name="Dashboard",
     summary="Dashboard 资源管理。",
@@ -592,8 +594,10 @@ def _normalize_expires_seconds(*, link_type: str, expires_seconds: Optional[int]
         return None
     seconds = int(expires_seconds)
     if link_type == "private":
-        if seconds < 30 or seconds > 3600:
-            raise click.BadParameter("private 链接 expires-seconds 必须在 30~3600")
+        if seconds < 30 or seconds > DEFAULT_PRIVATE_LINK_EXPIRES_SECONDS:
+            raise click.BadParameter(
+                f"private 链接 expires-seconds 必须在 30~{DEFAULT_PRIVATE_LINK_EXPIRES_SECONDS}"
+            )
         return seconds
     if seconds == 0:
         return 0

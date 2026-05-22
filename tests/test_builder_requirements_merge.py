@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+from ksadk.builders import container_builder
 from ksadk.builders.code_builder import CodeBuilder
 from ksadk.builders.container_builder import ContainerBuilder
 from ksadk.builders.mcp_builder import MCPCodeBuilder
@@ -19,6 +20,21 @@ def _full_detection_result(framework_type: FrameworkType):
         package_path="/tmp/demo_agent",
         agent_variable="root_agent",
     )
+
+
+def test_ensure_docker_running_prints_windows_docker_desktop_hint(monkeypatch, capsys):
+    monkeypatch.setattr(container_builder.shutil, "which", lambda _name: "/usr/bin/docker")
+    monkeypatch.setattr(container_builder.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        container_builder.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=1),
+    )
+
+    assert container_builder.ensure_docker_running() is False
+    output = capsys.readouterr().out
+    assert "Docker Desktop" in output
+    assert "systemctl" not in output
 
 
 def test_code_builder_prefers_user_pins_over_base_requirements(tmp_path):

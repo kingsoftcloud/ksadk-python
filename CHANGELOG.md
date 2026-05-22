@@ -5,6 +5,41 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [0.5.8] - 2026-05-22
+
+### 亮点
+
+- **Hosted UI 架构重构**：重构 Web UI 的 API facade、RunEngine 状态机、SSE transport、stream protocol、capability plugin、hooks 与 Zustand stores，降低 `App.tsx` 复杂度，并为长对话、工具调用、工作区、Artifact 和原生 TUI 留出更清晰的扩展边界。
+- **工作区与 HTML 预览体验升级**：工作区文件支持路径化访问、同级资源预览、Markdown / HTML / 图片 / PDF 等内容预览、Artifact 面板、zip 导出和更紧凑的文件操作布局；本地 `agentengine web` 与生产 hosted UI 的访问路径语义进一步对齐。
+- **Hermes / OpenClaw 远程 TUI 稳定性增强**：托管 runtime 支持终端 WebSocket keepalive，Windows raw terminal mode 增加 ANSI OSC 过滤和 raw mode 保护，减少远程 TUI 空闲或长任务时断连、乱码和输入异常。
+- **默认运行时刷新**：Hermes 默认 runtime 更新到 `2026.5.16-ksadk-v1`，OpenClaw 默认 runtime 更新到 `2026.5.20`，并同步 CLI、Makefile、Dockerfile、用户自定义镜像模板和测试断言。
+
+### 变更
+
+- Hosted UI 前端抽出 `src/core/api`、`src/core/run`、`src/core/stream`、`src/core/transport`、`src/core/capability` 等核心层，组件侧统一通过连接组件、hooks 和 stores 消费状态，不再把 action URL 与流式解析散落在页面组件内。
+- MessageMarkdown 拆分出代码块、Mermaid、KaTeX 等 lazy chunk，新增前端契约测试、run engine 测试、SSE parser 测试、workspace 测试和 plugin registry 测试。
+- Hosted UI 运行状态新增更细的 `creating-session`、`uploading-files`、`connecting`、`streaming`、`completing`、`recovering`、`error` 阶段，并支持服务端 ping / tick 更新连接活跃时间。
+- `RunAgent` 增加停止接收与远端取消运行的边界区分；后端 runner 新增可选 `request_cancel()` contract，本地 server 增加取消运行 action 与 SSE heartbeat 注释帧。
+- HTML / Artifact 预览改用更明确的 sandbox 与 CSP 策略；链接导航和 iframe 事件通过 `postMessage` 通道处理，避免父页面直接读取跨源 iframe DOM。
+- 工作区文件服务新增预览类型识别、路径化文件读取和 sibling resource 解析，便于 agent 生成的 HTML 使用相对资源。
+- Dashboard private 链接服务端默认有效期调整为 24 小时；CLI 在未显式传入 `--expires-seconds` 时交给服务端默认处理，以兼容尚未升级的控制面，OpenClaw / Hermes 默认仍进入 `/chat`。
+- `agentengine create` 的快速开始提示按 Windows PowerShell / cmd.exe 与 POSIX shell 分别生成可复制命令，包含空格的项目目录会被正确 quoting。
+- Docker daemon 未运行时，Windows 环境提示用户启动 Docker Desktop，不再输出 Linux `systemctl` 提示。
+- Hermes 默认镜像更新为 `hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.5.16-ksadk-v1`，上游 Hermes ref 保持 `v2026.5.16`。
+- OpenClaw 默认镜像更新为 `hub.kce.ksyun.com/agentengine-public/openclaw:2026.5.20`，基础镜像 pin 到 `ghcr.io/openclaw/openclaw:2026.5.20-slim@sha256:db199be23add581ef18ca8c8a866af84db13586d5bfcd566c8ac73d8d106eebb`。
+- `deploy/openclaw-user-template` 及示例模板默认基础镜像同步升级到 OpenClaw `2026.5.20-slim`。
+- 文档补充 hosted UI 生产路由与独立部署说明；`ksadk-python` 继续保留本地 SDK UI 静态资源，生产 hosted UI 由独立服务发布。
+
+### 修复
+
+- 修复 Hosted UI 刷新后运行状态残留、停止接收无反馈、SSE 空闲期间误判超时、Hermes / OpenClaw 长响应缺少中间状态反馈等问题。
+- 修复工作区空目录删除、文件夹删除路径归一化、HTML 相对资源预览、新窗口打开 workspace 页面触发下载或访问错误的问题。
+- 修复 HTML 预览安全策略中过度放开图片外链或过度收紧导致 agent 生成页面交互不可用的边界问题。
+- 修复 CLI 彩色 help 行列对齐问题，避免客户端与终端 help 文本在中文宽度下错位。
+- 修复 code mode 依赖安装前环境缺少 `pip` 时不能自动 bootstrap 的问题。
+- 修复 Hermes 冷启动时 runtime 目录、安全默认值和 trace 依赖初始化不完整的问题。
+- 修复 Windows TUI 复制时误用 OSC52、远程 raw terminal 收到 OSC 背景色序列后残留乱码的问题。
+
 ## [0.5.7] - 2026-05-19
 
 ### 亮点

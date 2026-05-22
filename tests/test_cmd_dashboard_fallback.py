@@ -215,6 +215,7 @@ def test_dashboard_open_defaults_hermes_to_chat_generic_access_link(monkeypatch)
 
     assert result.exit_code == 0, result.output
     assert captured["path"] == "/chat"
+    assert captured["expires_seconds"] is None
 
 
 def test_dashboard_open_force_new_passes_through(monkeypatch):

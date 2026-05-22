@@ -35,6 +35,21 @@ def _shorten_preview(texts: list[str]) -> str:
     return dense_text
 
 
+def _clipboard_copy_methods(app: App):
+    copy_methods = []
+    if os.name != "nt":
+        copy_methods.append(_copy_osc52)
+
+    try:
+        import pyperclip
+        copy_methods.append(pyperclip.copy)
+    except ImportError:
+        pass
+
+    copy_methods.append(app.copy_to_clipboard)
+    return copy_methods
+
+
 def copy_selection_to_clipboard(app: App) -> None:
     """复制选中文本到剪贴板
     
@@ -65,17 +80,7 @@ def copy_selection_to_clipboard(app: App) -> None:
 
     combined_text = "\n".join(selected_texts)
 
-    # 尝试多种复制方式
-    copy_methods = [_copy_osc52, app.copy_to_clipboard]
-
-    # 尝试 pyperclip（如果可用）
-    try:
-        import pyperclip
-        copy_methods.insert(1, pyperclip.copy)
-    except ImportError:
-        pass
-
-    for copy_fn in copy_methods:
+    for copy_fn in _clipboard_copy_methods(app):
         try:
             copy_fn(combined_text)
             app.notify(

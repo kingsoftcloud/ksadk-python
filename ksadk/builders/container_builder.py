@@ -51,7 +51,8 @@ def ensure_docker_running() -> bool:
     
     click.secho("⚠️  Docker daemon 未运行", fg='yellow')
     
-    if platform.system() == "Darwin":
+    system_name = platform.system()
+    if system_name == "Darwin":
         click.echo("🚀 正在启动 Docker Desktop...")
         try:
             subprocess.run(['open', '-a', 'Docker'], check=True)
@@ -71,6 +72,9 @@ def ensure_docker_running() -> bool:
         except:
             click.secho("❌ 无法启动 Docker Desktop", fg='red')
             return False
+    elif system_name == "Windows":
+        click.echo("请启动 Docker Desktop，然后重试当前命令。")
+        return False
     else:
         click.echo("请启动 Docker daemon: sudo systemctl start docker")
         return False

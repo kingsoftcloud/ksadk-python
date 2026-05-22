@@ -3,6 +3,8 @@ ksadk create - 创建项目模板
 """
 
 import json
+import platform
+import shlex
 import click
 from pathlib import Path
 import shutil
@@ -17,6 +19,43 @@ from ksadk.cli.ui import (
     print_title,
     print_warn,
 )
+
+
+def _quote_powershell_literal(value: str) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _quote_cmd_path(value: str) -> str:
+    return '"' + str(value).replace('"', '""') + '"'
+
+
+def _quick_start_command_lines(
+    project_name: str,
+    commands: list[str],
+    *,
+    system: str | None = None,
+) -> list[str]:
+    system_name = system or platform.system()
+    normalized_commands = [str(command).strip() for command in commands if str(command).strip()]
+    if not normalized_commands:
+        return []
+
+    if system_name == "Windows":
+        cmd_chain = " && ".join(normalized_commands)
+        return [
+            "PowerShell:",
+            f"Set-Location -LiteralPath {_quote_powershell_literal(project_name)}",
+            *normalized_commands,
+            "cmd.exe:",
+            f"cd /d {_quote_cmd_path(project_name)} && {cmd_chain}",
+        ]
+
+    return [f"cd {shlex.quote(str(project_name))} && {' && '.join(normalized_commands)}"]
+
+
+def _print_quick_start_commands(project_name: str, commands: list[str]) -> None:
+    for line in _quick_start_command_lines(project_name, commands):
+        print_info(line)
 
 
 TEMPLATES = {
@@ -1152,7 +1191,7 @@ agentengine run -i .
     
     print_success("包装完成")
     print_rule("快速开始")
-    print_info(f"cd {project_name} && agentengine run -i .")
+    _print_quick_start_commands(project_name, ["agentengine run -i ."])
 
 
 def _wrap_agent_directory(from_agent_dir: Path, project_name: str, framework: str, 
@@ -1411,7 +1450,7 @@ except Exception as e:
     
     print_success("包装完成")
     print_rule("快速开始")
-    print_info(f"cd {project_name} && agentengine run -i .")
+    _print_quick_start_commands(project_name, ["agentengine run -i ."])
 
 
 def _write_hermes_project_template(project_path: Path, project_name: str, package_name: str) -> None:
@@ -2090,7 +2129,7 @@ OPENAI_API_KEY={api_key}
         print_success("项目创建成功")
         print_rule("快速开始")
         print_info("快速开始 (复制并执行):")
-        print_info(f"cd {project_name} && agentengine openclaw deploy")
+        _print_quick_start_commands(project_name, ["agentengine openclaw deploy"])
         print_info("部署前如需覆盖模型/网关参数，可先编辑 .env")
         return
     if framework == "hermes":
@@ -2098,7 +2137,7 @@ OPENAI_API_KEY={api_key}
         print_success("项目创建成功")
         print_rule("快速开始")
         print_info("快速开始 (复制并执行):")
-        print_info(f"cd {project_name} && agentengine hermes deploy")
+        _print_quick_start_commands(project_name, ["agentengine hermes deploy"])
         print_info("部署前如需覆盖模型/运行时参数，可先编辑 .env")
         return
     
@@ -2207,23 +2246,7 @@ agentengine deploy .    # 部署到云端
     print_success("项目创建成功")
     print_rule("快速开始")
     
-    # 检测操作系统，提供对应的组合命令
-    import platform
-    is_windows = platform.system() == "Windows"
-    
-    if framework == "openclaw":
-        combined_cmd = f"cd {project_name} && agentengine openclaw deploy"
-        run_cmd = f"cd {project_name} && agentengine dashboard --share"
-    elif is_windows:
-        # Windows: 使用 && 连接命令
-        combined_cmd = f"cd {project_name} && agentengine config"
-        run_cmd = f"cd {project_name} && agentengine run -i ."
-    else:
-        # Unix (macOS/Linux): 使用 && 连接命令
-        combined_cmd = f"cd {project_name} && agentengine config"
-        run_cmd = f"cd {project_name} && agentengine run -i ."
-    
     print_info("快速开始 (复制并执行):")
-    print_info(combined_cmd)
+    _print_quick_start_commands(project_name, ["agentengine config"])
     print_info("或直接运行 (环境变量中需包含模型 API Key):")
-    print_info(run_cmd)
+    _print_quick_start_commands(project_name, ["agentengine run -i ."])

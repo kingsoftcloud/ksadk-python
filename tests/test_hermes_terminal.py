@@ -391,6 +391,7 @@ async def test_hermes_terminal_session_uses_windows_raw_terminal_on_windows(monk
     monkeypatch.setattr("ksadk.hermes_terminal._connect_websocket", _fake_connect)
     monkeypatch.setattr(hermes_terminal.sys, "platform", "win32")
     monkeypatch.setattr(hermes_terminal, "_windows_raw_terminal", _fake_windows_raw_terminal)
+    monkeypatch.setattr(hermes_terminal, "_read_stdin_chunk", lambda _fd: asyncio.sleep(0, result=b""))
 
     exit_code = await run_hermes_terminal_session(
         endpoint="https://agent.example.com",
