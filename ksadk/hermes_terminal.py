@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ctypes
 import io
 import json
 import os
@@ -14,6 +15,7 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping, Sequence
 from urllib.parse import urlsplit, urlunsplit
+from ctypes import wintypes
 
 
 TERMINAL_SUBPROTOCOL = "ks-terminal.v1"
@@ -81,6 +83,15 @@ _NESTED_READONLY_COMMANDS: dict[str, dict[str, tuple[int, int]]] = {
     "gateway": {
         "status": (2, 2),
     },
+}
+
+_WINDOWS_INPUT_FLAGS = {
+    "ENABLE_PROCESSED_INPUT": 0x0001,
+    "ENABLE_LINE_INPUT": 0x0002,
+    "ENABLE_ECHO_INPUT": 0x0004,
+    "ENABLE_QUICK_EDIT_MODE": 0x0040,
+    "ENABLE_EXTENDED_FLAGS": 0x0080,
+    "ENABLE_VIRTUAL_TERMINAL_INPUT": 0x0200,
 }
 
 
@@ -229,6 +240,11 @@ def _raw_terminal(stdin: Any):
         yield
         return
 
+    if sys.platform == "win32":
+        with _windows_raw_terminal(stdin):
+            yield
+        return
+
     try:
         import termios
         import tty
@@ -243,6 +259,64 @@ def _raw_terminal(stdin: Any):
         yield
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
+
+
+@contextlib.contextmanager
+def _windows_raw_terminal(stdin: Any, *, kernel32: Any | None = None, msvcrt_module: Any | None = None):
+    if not hasattr(stdin, "fileno") or not hasattr(stdin, "isatty") or not stdin.isatty():
+        yield
+        return
+
+    try:
+        if kernel32 is None:
+            kernel32 = ctypes.windll.kernel32
+        if msvcrt_module is None:
+            import msvcrt as msvcrt_module  # type: ignore[no-redef]
+    except Exception:
+        yield
+        return
+
+    try:
+        fd = stdin.fileno()
+        handle = msvcrt_module.get_osfhandle(fd)
+    except Exception:
+        yield
+        return
+
+    original_mode = wintypes.DWORD()
+    try:
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(original_mode)):
+            yield
+            return
+    except Exception:
+        yield
+        return
+
+    raw_mode = int(original_mode.value)
+    raw_mode &= ~(
+        _WINDOWS_INPUT_FLAGS["ENABLE_PROCESSED_INPUT"]
+        | _WINDOWS_INPUT_FLAGS["ENABLE_LINE_INPUT"]
+        | _WINDOWS_INPUT_FLAGS["ENABLE_ECHO_INPUT"]
+        | _WINDOWS_INPUT_FLAGS["ENABLE_QUICK_EDIT_MODE"]
+    )
+    raw_mode |= (
+        _WINDOWS_INPUT_FLAGS["ENABLE_EXTENDED_FLAGS"]
+        | _WINDOWS_INPUT_FLAGS["ENABLE_VIRTUAL_TERMINAL_INPUT"]
+    )
+
+    try:
+        if not kernel32.SetConsoleMode(handle, raw_mode):
+            yield
+            return
+    except Exception:
+        yield
+        return
+
+    try:
+        yield
+    finally:
+        with contextlib.suppress(Exception):
+            kernel32.SetConsoleMode(handle, int(original_mode.value))
 
 
 async def _connect_websocket(ws_url: str, headers: dict[str, str], ssl_context: ssl.SSLContext | None):

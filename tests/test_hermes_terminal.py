@@ -1,3 +1,4 @@
+import contextlib
 import json
 import io
 import os
@@ -7,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import ksadk.hermes_terminal as hermes_terminal
 from ksadk.hermes_terminal import (
     TERMINAL_SUBPROTOCOL,
     _recv_loop,
@@ -236,6 +238,33 @@ class _NonTtyDefaultStdin:
         raise AssertionError("default non-tty stdin should not be read for exec/pairing")
 
 
+class _FakeKernel32:
+    def __init__(self, mode: int):
+        self.mode = mode
+        self.handles = []
+        self.set_modes = []
+
+    def GetConsoleMode(self, handle, mode_ptr):
+        self.handles.append(handle)
+        mode_ptr._obj.value = self.mode
+        return 1
+
+    def SetConsoleMode(self, handle, mode):
+        self.set_modes.append((handle, mode))
+        return 1
+
+
+class _FakeWindowsStdin:
+    def __init__(self, fd: int = 11):
+        self._fd = fd
+
+    def isatty(self):
+        return True
+
+    def fileno(self):
+        return self._fd
+
+
 @pytest.mark.asyncio
 async def test_recv_loop_writes_binary_output_and_returns_exit_code():
     ws = _FakeReceiveWebSocket([b"hello", json.dumps({"type": "ready"}), json.dumps({"type": "exit", "code": 7})])
@@ -326,6 +355,53 @@ async def test_exec_session_does_not_read_default_non_tty_stdin(monkeypatch):
     assert exit_code == 0
     assert json.loads(fake_ws.sent[0])["mode"] == "exec"
     assert json.loads(fake_ws.sent[1]) == {"type": "stdin_eof"}
+
+
+def test_windows_raw_terminal_enables_console_raw_mode_and_restores(monkeypatch):
+    stdin = _FakeWindowsStdin()
+    fake_kernel32 = _FakeKernel32(mode=0x00FF)
+    fake_msvcrt = SimpleNamespace(get_osfhandle=lambda fd: fd + 1000)
+
+    with hermes_terminal._windows_raw_terminal(
+        stdin,
+        kernel32=fake_kernel32,
+        msvcrt_module=fake_msvcrt,
+    ):
+        pass
+
+    assert fake_kernel32.handles == [1011]
+    assert fake_kernel32.set_modes[0] == (1011, 0x02B8)
+    assert fake_kernel32.set_modes[1] == (1011, 0x00FF)
+
+
+@pytest.mark.asyncio
+async def test_hermes_terminal_session_uses_windows_raw_terminal_on_windows(monkeypatch):
+    fake_ws = _FakeTerminalWebSocket()
+    fake_stdin = _FakeWindowsStdin()
+    entered = []
+
+    @contextlib.contextmanager
+    def _fake_windows_raw_terminal(stdin, **_kwargs):
+        entered.append(stdin)
+        yield
+
+    async def _fake_connect(*_args, **_kwargs):
+        return _FakeTerminalConnection(fake_ws)
+
+    monkeypatch.setattr("ksadk.hermes_terminal._connect_websocket", _fake_connect)
+    monkeypatch.setattr(hermes_terminal.sys, "platform", "win32")
+    monkeypatch.setattr(hermes_terminal, "_windows_raw_terminal", _fake_windows_raw_terminal)
+
+    exit_code = await run_hermes_terminal_session(
+        endpoint="https://agent.example.com",
+        mode="exec",
+        argv=["status"],
+        stdin=fake_stdin,
+        stdout=io.BytesIO(),
+    )
+
+    assert exit_code == 0
+    assert entered == [fake_stdin]
 
 
 @pytest.mark.asyncio
