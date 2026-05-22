@@ -10,6 +10,32 @@ from ksadk.cli import cmd_create
 from ksadk.cli.cmd_deploy import _resolve_artifact_type_input
 
 
+def test_quick_start_command_lines_quote_posix_project_paths():
+    lines = cmd_create._quick_start_command_lines(
+        "Demo Agent",
+        ["agentengine config"],
+        system="Linux",
+    )
+
+    assert lines == ["cd 'Demo Agent' && agentengine config"]
+
+
+def test_quick_start_command_lines_support_windows_powershell_and_cmd():
+    lines = cmd_create._quick_start_command_lines(
+        "Demo Agent",
+        ["agentengine config"],
+        system="Windows",
+    )
+
+    assert lines == [
+        "PowerShell:",
+        "Set-Location -LiteralPath 'Demo Agent'",
+        "agentengine config",
+        "cmd.exe:",
+        'cd /d "Demo Agent" && agentengine config',
+    ]
+
+
 def test_find_entry_file_from_agentengine_yaml(tmp_path: Path):
     src = tmp_path / "src"
     src.mkdir(parents=True)

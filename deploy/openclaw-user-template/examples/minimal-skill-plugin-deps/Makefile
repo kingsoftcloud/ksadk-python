@@ -2,7 +2,7 @@
 # 这个示例会在构建阶段安装 custom/extensions/*/package.json 里的 npm 依赖。
 
 # 基础镜像。需要和 Dockerfile 的 ARG 保持一致，或构建时显式传入。
-OPENCLAW_BASE_IMAGE ?= ghcr.io/openclaw/openclaw:2026.5.18-slim@sha256:5ea30d02a706c49795ed0a3c1526dec51ed90107a6859e93bf27a663105d1c28
+OPENCLAW_BASE_IMAGE ?= ghcr.io/openclaw/openclaw:2026.5.20-slim@sha256:db199be23add581ef18ca8c8a866af84db13586d5bfcd566c8ac73d8d106eebb
 
 # npm 依赖安装源。国内环境默认使用 npmmirror。
 OPENCLAW_NPM_REGISTRY ?= https://registry.npmmirror.com

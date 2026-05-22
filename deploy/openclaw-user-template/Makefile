@@ -8,7 +8,7 @@
 # 如果你改了 Dockerfile 里的基础镜像，也要同步改这里，或者构建时显式传 OPENCLAW_BASE_IMAGE=...
 
 # 基础镜像。默认固定 digest，避免用户构建时拿到漂移版本。
-OPENCLAW_BASE_IMAGE ?= ghcr.io/openclaw/openclaw:2026.5.18-slim@sha256:5ea30d02a706c49795ed0a3c1526dec51ed90107a6859e93bf27a663105d1c28
+OPENCLAW_BASE_IMAGE ?= ghcr.io/openclaw/openclaw:2026.5.20-slim@sha256:db199be23add581ef18ca8c8a866af84db13586d5bfcd566c8ac73d8d106eebb
 
 # 目标镜像地址和 tag。用户通常只需要覆盖 IMAGE/TAG。
 IMAGE ?= hub-vpc-cn-beijing-6.kce.ksyun.com/agentengine-public/openclaw-user-custom

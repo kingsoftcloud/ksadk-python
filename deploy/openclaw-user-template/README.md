@@ -166,7 +166,7 @@ docker run --rm -it -p 8080:8080 \
 当前模板 Makefile 默认值：
 
 - 平台：`linux/amd64`
-- 基础镜像：`ghcr.io/openclaw/openclaw:2026.5.18-slim@sha256:5ea30d02a706c49795ed0a3c1526dec51ed90107a6859e93bf27a663105d1c28`
+- 基础镜像：`ghcr.io/openclaw/openclaw:2026.5.20-slim@sha256:db199be23add581ef18ca8c8a866af84db13586d5bfcd566c8ac73d8d106eebb`
 - 默认运行端口：`8080`
 
 ## 9. 常用命令
@@ -182,7 +182,7 @@ docker build -t openclaw-user-custom:demo .
 
 ```bash
 make build \
-  OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.5.18-slim@sha256:5ea30d02a706c49795ed0a3c1526dec51ed90107a6859e93bf27a663105d1c28 \
+  OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.5.20-slim@sha256:db199be23add581ef18ca8c8a866af84db13586d5bfcd566c8ac73d8d106eebb \
   IMAGE=hub-vpc-cn-beijing-6.kce.ksyun.com/your-ns/openclaw-user-custom \
   TAG=demo
 ```

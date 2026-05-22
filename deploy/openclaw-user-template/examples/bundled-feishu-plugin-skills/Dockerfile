@@ -16,7 +16,7 @@
 # - 只额外补平台常用默认值，方便直接运行和继续分发。
 # -----------------------------------------------------------------------------
 
-ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.5.18-slim@sha256:5ea30d02a706c49795ed0a3c1526dec51ed90107a6859e93bf27a663105d1c28
+ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.5.20-slim@sha256:db199be23add581ef18ca8c8a866af84db13586d5bfcd566c8ac73d8d106eebb
 FROM ${OPENCLAW_BASE_IMAGE}
 
 ENV OPENCLAW_GATEWAY_PORT=8080 \
