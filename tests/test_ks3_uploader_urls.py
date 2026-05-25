@@ -153,14 +153,23 @@ def test_large_upload_uses_resumable_multipart_task(tmp_path, monkeypatch):
 
 
 def test_ks3_resumable_upload_skips_already_uploaded_parts(tmp_path, monkeypatch):
-    from ks3.upload import PartInfo, UploadRecord, UploadTask
-    from ks3.multipart import MultiPartUpload
+    import ks3.upload as ks3_upload
+    from ks3.multipart import MultiPartUpload, Part
+    from ks3.upload import UploadRecord, UploadTask
 
     artifact = tmp_path / "large.zip"
     artifact.write_bytes(b"x" * (2 * 1024 * 1024))
     object_key = "agents/demo/code.zip"
     resumable_file = tmp_path / ".agentengine" / "ks3_resume" / "agents_demo_code.zip.ks3resume"
     resumable_file.parent.mkdir(parents=True, exist_ok=True)
+    part_info_cls = getattr(ks3_upload, "PartInfo", None)
+    if part_info_cls is not None:
+        uploaded_part = part_info_cls(size=1024 * 1024, part_crc="crc1")
+    else:
+        uploaded_part = Part()
+        uploaded_part.size = 1024 * 1024
+        uploaded_part.part_crc = "crc1"
+
     record = UploadRecord(
         "upload-id",
         artifact.stat().st_size,
@@ -168,7 +177,7 @@ def test_ks3_resumable_upload_skips_already_uploaded_parts(tmp_path, monkeypatch
         "bucket",
         object_key,
         1024 * 1024,
-        {1: PartInfo(size=1024 * 1024, part_crc="crc1")},
+        {1: uploaded_part},
     )
     with resumable_file.open("wb") as fp:
         pickle.dump(record, fp)
