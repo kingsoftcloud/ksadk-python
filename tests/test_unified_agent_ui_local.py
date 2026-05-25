@@ -97,6 +97,13 @@ class _FrameworkUiRunner(_UiRunner):
         self.detection_result.type = SimpleNamespace(value=framework)
 
 
+@pytest.fixture(autouse=True)
+def _block_real_browser_open(monkeypatch):
+    import ksadk.cli.cmd_web as cmd_web_module
+
+    monkeypatch.setattr(cmd_web_module.webbrowser, "open", lambda _url: None)
+
+
 def _build_transport(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()

@@ -85,6 +85,9 @@
 | `KSADK_SKILL_SERVICE_REGION` | 否 | `KSYUN_REGION` | 否 | 平台 / 开发者 | 默认 `cn-beijing-6`。 |
 | `KSADK_SKILL_SERVICE_API_VERSION` | 否 | 无 | 否 | 平台 / 开发者 | 默认 `2024-06-12`；不要复用 Sandbox KOP 的 `2026-04-01`。 |
 | `KSADK_SKILL_SERVICE_SIGN_SERVICE` | 否 | 无 | 否 | 平台 / 开发者 | 默认 `aicp`。 |
+| `KSADK_SKILL_MANIFEST_LIMIT` | 否 | 无 | 否 | 平台 / 开发者 | 外层 Agent instruction 最多注入的远端 skill manifest 数量，默认 `30`。 |
+| `KSADK_SKILL_MANIFEST_TIMEOUT` | 否 | 无 | 否 | 平台 / 开发者 | 拉取远端 skill manifest 的超时秒数，默认 `5`。 |
+| `KSADK_SELECTED_SKILL_NAMES` | 否 | 无 | 否 | Runner / Runtime agent | `execute_skills` 选中的 skill 名称列表，Runtime agent 优先按它下载；通常由 SDK 自动注入。 |
 | `KSADK_SKILL_CACHE_DIR` | 否 | 无 | 否 | Runtime agent | Skill archive 下载和解压缓存目录。 |
 | `KSADK_SKILL_WORKDIR` | 否 | 无 | 否 | Runtime agent | workflow 工作目录。 |
 | `KSADK_SKILL_ARTIFACT_PROJECT` | 否 | 无 | 否 | Runtime agent | 最小 artifact workflow 默认项目名，默认 `ksadk-artifact`。 |
@@ -194,6 +197,7 @@
 | `KSADK_SKILL_RUNTIME_AGENT_PATH` | local_process backend | 条件必传 | SDK 内置 `ksadk/skills/runtime/agent.py` | 无 | 否 | 开发者 | 否 | 本地进程 backend 的 agent 路径。 |
 | `KSADK_SKILL_SERVICE_URL` | Runtime agent / Skill Service client | 条件必传 | 未设置 | 无 | 否 | Skill Service / 平台 | 否 | 配置后从 Skill Center 拉取技能。支持直连 REST 和 AICP KOP endpoint。 |
 | `KSADK_SKILL_SPACE_IDS` | Runner / Runtime agent | 条件必传 | 未设置 | `SKILL_SPACE_ID` | 否 | Agent 创建/更新 / 平台注入 | 否 | 逗号分隔 Skill Space id。 |
+| `KSADK_PUBLIC_SKILL_SPACE_IDS` | Runner / Runtime agent | 否 | 未设置 | 无 | 否 | 平台 / Skill Service | 否 | 逗号分隔官方公共 Skill Space id，会追加在用户 space 之后。 |
 | `SKILL_SPACE_ID` | Runtime agent / 兼容 | 条件必传 | 未设置 | `KSADK_SKILL_SPACE_IDS` | 否 | 旧部署 / 单 space 注入 | 否 | 单 space 兼容变量。 |
 | `KSADK_SKILL_SERVICE_ACCOUNT_ID` | Skill Service client | 条件必传 | 未设置 | `KSYUN_ACCOUNT_ID` | 否 | 平台租户上下文 | 否 | 租户隔离 account id。 |
 | `KSADK_SKILL_SERVICE_ACCESS_KEY` | Skill Service KOP signing | 条件必传 | 未设置 | `KSYUN_ACCESS_KEY`、`KS3_ACCESS_KEY` | 是 | Secret | 否 | AICP KOP endpoint 签名 AK。 |
@@ -202,6 +206,9 @@
 | `KSADK_SKILL_SERVICE_REGION` | Skill Service KOP signing | 否 | `cn-beijing-6` | `KSYUN_REGION` | 否 | 平台 / 开发者 | 否 | KOP 签名 region。 |
 | `KSADK_SKILL_SERVICE_API_VERSION` | Skill Service KOP action | 否 | `2024-06-12` | 无 | 否 | Skill Service / 平台 | 否 | Skill Center KOP API 版本。 |
 | `KSADK_SKILL_SERVICE_SIGN_SERVICE` | Skill Service KOP signing | 否 | `aicp` | 无 | 否 | Skill Service / 平台 | 否 | KOP signing service。 |
+| `KSADK_SKILL_MANIFEST_LIMIT` | ADK Runner | 否 | `30` | 无 | 否 | 平台 / 开发者 | 否 | 外层 Agent instruction 最多注入的远端 skill manifest 数量。 |
+| `KSADK_SKILL_MANIFEST_TIMEOUT` | Skill Service client | 否 | `5` | 无 | 否 | 平台 / 开发者 | 否 | 拉取远端 skill manifest 的超时秒数。 |
+| `KSADK_SELECTED_SKILL_NAMES` | Runtime agent | 否 | 未设置 | 无 | 否 | Runner / Runtime agent | 否 | `execute_skills` 选中的 skill 名称列表，Runtime agent 优先按它下载。 |
 | `KSADK_SKILL_CACHE_DIR` | Runtime agent / PackageStore | 否 | 系统临时目录下 `ksadk-skill-cache` | 无 | 否 | Runtime agent | 否 | Skill archive 下载与解压缓存。 |
 | `KSADK_SKILL_WORKDIR` | Runtime agent | 否 | 系统临时目录下 `ksadk-skill-workflow` | 无 | 否 | Runtime agent | 否 | workflow 工作目录。 |
 | `KSADK_SKILL_ARTIFACT_PROJECT` | Runtime agent | 否 | `ksadk-artifact` | 无 | 否 | Runtime agent | 否 | 最小 artifact workflow 项目目录名。 |

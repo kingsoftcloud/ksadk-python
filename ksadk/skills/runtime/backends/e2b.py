@@ -13,6 +13,7 @@ from ksadk.skills.runtime.base import (
     SandboxInputFile,
     SkillRuntimeError,
     SkillRuntimeResult,
+    format_skill_names_env,
     parse_output_files,
 )
 
@@ -97,6 +98,7 @@ class E2BSkillRuntimeBackend:
         *,
         skill_space_ids: list[str],
         session_id: str,
+        skill_names: list[str] | None = None,
         env: dict[str, str] | None = None,
         input_files: list[SandboxInputFile] | None = None,
         timeout: int = 900,
@@ -109,6 +111,9 @@ class E2BSkillRuntimeBackend:
                 "KSADK_SKILL_SPACE_IDS": ",".join(skill_space_ids),
                 "SKILL_SPACE_ID": skill_space_ids[0] if skill_space_ids else "",
             }
+            selected_skill_names = format_skill_names_env(skill_names)
+            if selected_skill_names:
+                sandbox_env["KSADK_SELECTED_SKILL_NAMES"] = selected_skill_names
             sandbox_env.update(env or {})
             session = self.sandbox_backend.create_session(
                 session_id=session_id,

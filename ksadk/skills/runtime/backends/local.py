@@ -7,7 +7,12 @@ import tempfile
 import time
 from pathlib import Path
 
-from ksadk.skills.runtime.base import SandboxInputFile, SkillRuntimeResult, parse_output_files
+from ksadk.skills.runtime.base import (
+    SandboxInputFile,
+    SkillRuntimeResult,
+    format_skill_names_env,
+    parse_output_files,
+)
 
 
 class LocalProcessSkillRuntimeBackend:
@@ -29,6 +34,7 @@ class LocalProcessSkillRuntimeBackend:
         *,
         skill_space_ids: list[str],
         session_id: str,
+        skill_names: list[str] | None = None,
         env: dict[str, str] | None = None,
         input_files: list[SandboxInputFile] | None = None,
         timeout: int = 900,
@@ -38,6 +44,11 @@ class LocalProcessSkillRuntimeBackend:
         runtime_env.update(env or {})
         runtime_env["KSADK_SKILL_SPACE_IDS"] = ",".join(skill_space_ids)
         runtime_env["SKILL_SPACE_ID"] = skill_space_ids[0] if skill_space_ids else ""
+        selected_skill_names = format_skill_names_env(skill_names)
+        if selected_skill_names:
+            runtime_env["KSADK_SELECTED_SKILL_NAMES"] = selected_skill_names
+        else:
+            runtime_env.pop("KSADK_SELECTED_SKILL_NAMES", None)
         try:
             with tempfile.TemporaryDirectory(prefix="ksadk-skill-runtime-") as tmp_dir:
                 prompt_path = Path(tmp_dir) / "workflow-prompt.txt"

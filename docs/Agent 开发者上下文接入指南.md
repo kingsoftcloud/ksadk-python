@@ -39,6 +39,9 @@
 - `input_parts`
 - `attachments`
 - `attachment_results`
+- `current_attachments`
+- `current_attachment_results`
+- `has_current_files`
 - `model`
 - `model_metadata`
 - `platform_context`
@@ -47,6 +50,7 @@
 - `instructions`
 
 这些字段不是每个 framework 都以同样方式消费，但它们是当前平台提供给 Agent 的标准上下文来源。
+这些字段是 KsADK runner payload 的扩展上下文，不属于 OpenAI Responses API 的官方请求或响应字段；对外协议仍通过 `input[].content[]` 中的 `text / inlineData / fileData` 表达多模态输入。
 
 ### 2.1 字段说明
 
@@ -55,8 +59,11 @@
 | `input` | `str` | 当前这一轮的标准文本输入 |
 | `history` | `list[dict]` | 当前多轮会话历史，已经过 transcript 投影 / compaction |
 | `input_parts` | `list[dict]` | 原始输入片段列表，保留 `text / inlineData / fileData` 等结构 |
-| `attachments` | `list[dict]` | 当前轮或当前会话有效附件列表 |
-| `attachment_results` | `list[dict]` | 平台对附件做过的抽取结果，例如 OCR / 文本提取 |
+| `attachments` | `list[dict]` | 当前会话最近有效附件上下文，兼容历史 fallback，不应用来判断本轮是否传文件 |
+| `attachment_results` | `list[dict]` | 最近有效附件理解结果，例如 OCR / 文本提取 |
+| `current_attachments` | `list[dict]` | 当前最新 user turn 解析出的附件列表，不包含历史 fallback |
+| `current_attachment_results` | `list[dict]` | 当前最新 user turn 的附件理解结果 |
+| `has_current_files` | `bool` | 当前最新 user turn 是否包含 `inlineData` 或 `fileData` |
 | `model` | `str` | 当前请求显式使用的模型名 |
 | `model_metadata` | `dict` | 模型元数据，可能来自请求显式传入，也可能来自上游 `/v1/models` 自动解析 |
 | `platform_context` | `dict` | 平台上下文，例如 `agent_id / user_id / session_id` |
@@ -84,13 +91,17 @@
 所以：
 
 - 如果你只需要“语义历史”，用 `history`
-- 如果你需要“精细结构化上下文”，看 `attachments / attachment_results / input_parts`
+- 如果你需要“精细结构化上下文”，看 `input_parts / current_attachments / attachments / attachment_results`
 
 ## 4. 图片 / 附件上下文怎么来的
 
 ### 4.1 `attachments`
 
-`attachments` 是平台解析输入 part 后得到的附件引用列表。典型字段：
+`attachments` 是当前会话最近有效附件上下文。它可能来自当前轮，也可能来自同一 session 中最近一次带附件的 user turn，主要用于“继续围绕上个附件追问”的兼容场景。
+
+如果业务需要判断“本次问答是否带文件”，不要看 `attachments`，直接看 `has_current_files`；如果要当前轮附件列表，看 `current_attachments`。
+
+典型字段：
 
 ```python
 {
@@ -98,6 +109,7 @@
     "mime_type": "image/png",
     "transport": "reference",   # 或 "inline"
     "file_uri": "ksadk-upload://...",
+    "data": "<base64-encoded-bytes>",  # 仅 transport="inline" 时存在
     "size_bytes": 1356,
     "storage_path": "/tmp/.../diagram.png",
     "is_text": False,
@@ -109,7 +121,26 @@
 - `transport="inline"`：调用方直接传了 `inlineData`
 - `transport="reference"`：调用方先 `UploadFile`，再传 `fileData.fileUri`
 
-### 4.2 `attachment_results`
+### 4.2 当前轮文件判断
+
+推荐判断方式：
+
+```python
+has_file = bool(payload.get("has_current_files"))
+current_files = payload.get("current_attachments", [])
+```
+
+如果需要兼容旧版本 KsADK，可以退回检查 `input_parts`：
+
+```python
+has_file = any(
+    isinstance(part, dict)
+    and (part.get("inlineData") is not None or part.get("fileData") is not None)
+    for part in payload.get("input_parts") or []
+)
+```
+
+### 4.3 `attachment_results`
 
 这是平台附件理解管线产出的结果，比 `attachments` 更适合业务逻辑消费。典型字段：
 
@@ -132,7 +163,8 @@
 
 推荐使用方式：
 
-- 想拿 OCR 文本：读 `attachment_results[*]["text"]`
+- 想拿当前轮 OCR 文本：读 `current_attachment_results[*]["text"]`
+- 想支持“围绕上次附件继续追问”：读 `attachment_results[*]["text"]`
 - 想区分图片 / 文档 / 压缩包：读 `kind`
 - 想看平台有没有降级或失败：读 `status / warnings / extraction_method`
 
@@ -201,6 +233,9 @@ def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
         "history": session_context["history"],
         "attachments": payload.get("attachments", []),
         "attachment_results": payload.get("attachment_results", []),
+        "current_attachments": payload.get("current_attachments", []),
+        "current_attachment_results": payload.get("current_attachment_results", []),
+        "has_current_files": payload.get("has_current_files", False),
         "platform_context": session_context.get("platform_context"),
         "kb_context": session_context.get("kb_context"),
         "memory_context": session_context.get("memory_context"),
@@ -221,6 +256,9 @@ def ksadk_prepare_input(payload: dict, session_context: dict) -> dict:
         "history": session_context["history"],
         "attachments": payload.get("attachments", []),
         "attachment_results": payload.get("attachment_results", []),
+        "current_attachments": payload.get("current_attachments", []),
+        "current_attachment_results": payload.get("current_attachment_results", []),
+        "has_current_files": payload.get("has_current_files", False),
         "model_metadata": payload.get("model_metadata"),
     }
 ```
@@ -266,6 +304,8 @@ if ctx:
     print(ctx.model)
     print(ctx.attachments)
     print(ctx.attachment_results)
+    print(ctx.current_attachments)
+    print(ctx.has_current_files)
     print(ctx.kb_context)
     print(ctx.memory_context)
 ```
@@ -279,6 +319,9 @@ if ctx:
 - `input_parts`
 - `attachments`
 - `attachment_results`
+- `current_attachments`
+- `current_attachment_results`
+- `has_current_files`
 - `runner_type`
 - `model`
 - `kb_context`
@@ -330,7 +373,7 @@ def parse_human_message_content(content):
 
 - 如果你只是想拿图片 OCR 文本、附件摘要、平台上下文
 - 不推荐优先拆 `HumanMessage`
-- 更推荐直接用 `attachments / attachment_results / session_context`
+- 更推荐直接用 `has_current_files / current_attachments / attachment_results / session_context`
 
 ## 11. 常见接入模式
 
@@ -349,9 +392,10 @@ def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
 
 ```python
 def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
+    results = payload.get("current_attachment_results") or payload.get("attachment_results") or []
     attachment_texts = [
         item.get("text", "")
-        for item in payload.get("attachment_results", [])
+        for item in results
         if isinstance(item, dict) and item.get("text")
     ]
     return {
@@ -373,6 +417,8 @@ def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
         "supports_image": bool(capabilities.get("multimodal_input_image")),
         "attachments": payload.get("attachments", []),
         "attachment_results": payload.get("attachment_results", []),
+        "current_attachments": payload.get("current_attachments", []),
+        "has_current_files": payload.get("has_current_files", False),
     }
 ```
 
@@ -382,16 +428,17 @@ def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
 
 这是最常见坑。多模态模型下，它可能是 `list[block]`。
 
-### 12.2 只看 `attachments`，不看 `attachment_results`
+### 12.2 用 `attachments` 判断当前轮是否传文件
 
-`attachments` 更像原始引用；真正适合业务消费的是 `attachment_results`。
+`attachments` 是最近有效附件上下文，可能来自历史 fallback。判断当前轮是否传文件用 `has_current_files`，当前轮附件列表用 `current_attachments`。
 
 ### 12.3 想拿业务上下文，却只盯着 `messages[-1]`
 
 更稳的做法是：
 
 - `history` 看多轮语义
-- `attachments / attachment_results` 看文件上下文
+- `has_current_files / current_attachments` 看当前轮文件
+- `attachments / attachment_results` 看最近有效文件上下文和理解结果
 - `platform_context` 看平台身份
 - `kb_context / memory_context` 看召回上下文
 

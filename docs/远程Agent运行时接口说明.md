@@ -420,7 +420,8 @@ curl -H "Authorization: Bearer <api_key>" \
   - 非图片附件仍保留为普通附件上下文
 - `LangChain`
   - 当前没有对所有 agent 统一做“自动图片直通”
-  - 如需原生多模态，建议在 `ksadk_prepare_input(payload, session_context)` 中自行消费 `input_parts / attachments`
+  - 如需原生多模态，建议在 `ksadk_prepare_input(payload, session_context)` 中自行消费 `input_parts / current_attachments / attachments`
+  - 判断当前轮是否传文件用 KsADK runner payload 扩展字段 `has_current_files`；该字段不是 OpenAI Responses API 官方字段
 
 模型能力判断优先级：
 

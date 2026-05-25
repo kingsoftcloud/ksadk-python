@@ -99,7 +99,12 @@ def test_e2b_backend_uses_native_env_and_always_kills(monkeypatch):
 
     backend = E2BSkillRuntimeBackend(sandbox_cls=FakeSandbox, template_id="tpl-1", timeout=123)
 
-    result = backend.run_workflow("build artifact", skill_space_ids=["ss-1"], session_id="sess-1")
+    result = backend.run_workflow(
+        "build artifact",
+        skill_space_ids=["ss-1"],
+        skill_names=["demo-skill"],
+        session_id="sess-1",
+    )
 
     assert result == SkillRuntimeResult(
         runtime_id="sbx-123",
@@ -120,7 +125,11 @@ def test_e2b_backend_uses_native_env_and_always_kills(monkeypatch):
                 "component": "skill-runtime",
                 "session_id": "sess-1",
             },
-            "envs": {"KSADK_SKILL_SPACE_IDS": "ss-1", "SKILL_SPACE_ID": "ss-1"},
+            "envs": {
+                "KSADK_SKILL_SPACE_IDS": "ss-1",
+                "SKILL_SPACE_ID": "ss-1",
+                "KSADK_SELECTED_SKILL_NAMES": "demo-skill",
+            },
             "allow_internet_access": True,
         },
     )

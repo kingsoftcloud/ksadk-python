@@ -611,6 +611,9 @@ async def test_adk_runner_invoke_forwards_attachment_results_via_state_delta(tmp
             "attachments": [],
             "input_parts": [{"text": "请分析附件"}],
             "attachment_results": [{"display_name": "resume.pdf", "kind": "document"}],
+            "current_attachments": [],
+            "current_attachment_results": [{"display_name": "resume.pdf", "kind": "document"}],
+            "has_current_files": True,
         }
     )
 
@@ -620,4 +623,7 @@ async def test_adk_runner_invoke_forwards_attachment_results_via_state_delta(tmp
         "input_parts": [{"text": "请分析附件"}],
         "attachments": [],
         "attachment_results": [{"display_name": "resume.pdf", "kind": "document"}],
+        "current_attachments": [],
+        "current_attachment_results": [{"display_name": "resume.pdf", "kind": "document"}],
+        "has_current_files": True,
     }

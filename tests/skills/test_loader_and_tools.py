@@ -58,6 +58,23 @@ def test_execute_skills_tool_delegates_to_runtime_without_leaking_secret(monkeyp
     assert "E2B_API_KEY" not in backend.calls[0][1]["env"]
 
 
+def test_execute_skills_tool_passes_explicit_skill_names_to_runtime():
+    class Backend:
+        def __init__(self):
+            self.calls = []
+
+        def run_workflow(self, workflow_prompt: str, **kwargs):
+            self.calls.append((workflow_prompt, kwargs))
+            return SkillRuntimeResult(exit_code=0)
+
+    backend = Backend()
+    tool = build_execute_skills_tool(backend=backend, skill_space_ids=["ss-1"], session_id="sess-1")
+
+    tool("build a page", skill_names=["demo-skill"])
+
+    assert backend.calls[0][1]["skill_names"] == ["demo-skill"]
+
+
 def test_execute_skills_tool_maps_non_secret_ksyun_fallbacks(monkeypatch):
     monkeypatch.delenv("KSADK_SKILL_SERVICE_ACCOUNT_ID", raising=False)
     monkeypatch.delenv("KSADK_SKILL_SERVICE_REGION", raising=False)

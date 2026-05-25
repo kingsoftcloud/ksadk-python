@@ -13,10 +13,10 @@ from ksadk.skills.runtime import agent as runtime_agent
 from ksadk.skills.runtime.agent import run_agent
 
 
-def _zip_bytes() -> bytes:
+def _zip_bytes(skill_name: str = "demo-skill") -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as archive:
-        archive.writestr("demo-skill/SKILL.md", "---\nname: demo-skill\ndescription: Demo\n---\n# Demo\n")
+        archive.writestr(f"{skill_name}/SKILL.md", f"---\nname: {skill_name}\ndescription: Demo\n---\n# Demo\n")
     return buf.getvalue()
 
 
@@ -55,15 +55,146 @@ def test_runtime_agent_loads_active_skills_from_service(monkeypatch, tmp_path: P
     monkeypatch.setenv("KSADK_SKILL_CACHE_DIR", str(tmp_path / "cache"))
 
     code = run_agent(
-        ["build something"],
+        ["使用 demo-skill build something"],
         service_transport=httpx.MockTransport(handler),
     )
 
     out = capsys.readouterr().out
     assert code == 0
-    assert "workflow=build something" in out
+    assert "workflow=使用 demo-skill build something" in out
     assert "loaded_skills=demo-skill" in out
     assert (tmp_path / "cache" / "sk-demo__sv-demo-v1" / "extracted" / "demo-skill" / "SKILL.md").exists()
+
+
+def test_runtime_agent_downloads_only_prompted_remote_skill(monkeypatch, tmp_path: Path, capsys):
+    demo_archive = _zip_bytes("demo-skill")
+    unused_archive = _zip_bytes("unused-skill")
+    demo_digest = hashlib.sha256(demo_archive).hexdigest()
+    unused_digest = hashlib.sha256(unused_archive).hexdigest()
+    download_urls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/ListSkillsBySpaceId"):
+            return httpx.Response(
+                200,
+                json={
+                    "Data": {
+                        "SkillSpaceId": "ss-1",
+                        "Skills": [
+                            {
+                                "SkillId": "sk-demo",
+                                "VersionId": "sv-demo-v1",
+                                "Version": "v1",
+                                "Name": "demo-skill",
+                                "Status": "Active",
+                                "ContentHash": f"sha256:{demo_digest}",
+                            },
+                            {
+                                "SkillId": "sk-unused",
+                                "VersionId": "sv-unused-v1",
+                                "Version": "v1",
+                                "Name": "unused-skill",
+                                "Status": "Active",
+                                "ContentHash": f"sha256:{unused_digest}",
+                            },
+                        ],
+                    }
+                },
+            )
+        if request.url.path.endswith("/GetSkillDownloadUrl"):
+            skill_id = request.url.params.get("SkillId")
+            return httpx.Response(200, json={"Data": {"DownloadUrl": f"https://download.example/{skill_id}.zip"}})
+        if str(request.url) == "https://download.example/sk-demo.zip":
+            download_urls.append(str(request.url))
+            return httpx.Response(200, content=demo_archive)
+        if str(request.url) == "https://download.example/sk-unused.zip":
+            download_urls.append(str(request.url))
+            return httpx.Response(200, content=unused_archive)
+        return httpx.Response(404)
+
+    monkeypatch.setenv("KSADK_SKILL_SPACE_IDS", "ss-1")
+    monkeypatch.setenv("KSADK_SKILL_SERVICE_URL", "https://skill.example/api/v1")
+    monkeypatch.setenv("KSADK_SKILL_CACHE_DIR", str(tmp_path / "cache"))
+
+    code = run_agent(
+        ["请使用 demo-skill 处理这个任务"],
+        service_transport=httpx.MockTransport(handler),
+    )
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "loaded_skills=demo-skill" in out
+    assert download_urls == ["https://download.example/sk-demo.zip"]
+    assert (tmp_path / "cache" / "sk-demo__sv-demo-v1" / "extracted" / "demo-skill" / "SKILL.md").exists()
+    assert not (tmp_path / "cache" / "sk-unused__sv-unused-v1").exists()
+
+
+def test_runtime_agent_downloads_explicit_remote_skill_even_when_prompt_omits_name(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+):
+    demo_archive = _zip_bytes("demo-skill")
+    unused_archive = _zip_bytes("unused-skill")
+    demo_digest = hashlib.sha256(demo_archive).hexdigest()
+    unused_digest = hashlib.sha256(unused_archive).hexdigest()
+    download_urls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/ListSkillsBySpaceId"):
+            return httpx.Response(
+                200,
+                json={
+                    "Data": {
+                        "SkillSpaceId": "ss-1",
+                        "Skills": [
+                            {
+                                "SkillId": "sk-demo",
+                                "VersionId": "sv-demo-v1",
+                                "Version": "v1",
+                                "Name": "demo-skill",
+                                "Status": "Active",
+                                "ContentHash": f"sha256:{demo_digest}",
+                            },
+                            {
+                                "SkillId": "sk-unused",
+                                "VersionId": "sv-unused-v1",
+                                "Version": "v1",
+                                "Name": "unused-skill",
+                                "Status": "Active",
+                                "ContentHash": f"sha256:{unused_digest}",
+                            },
+                        ],
+                    }
+                },
+            )
+        if request.url.path.endswith("/GetSkillDownloadUrl"):
+            skill_id = request.url.params.get("SkillId")
+            return httpx.Response(200, json={"Data": {"DownloadUrl": f"https://download.example/{skill_id}.zip"}})
+        if str(request.url) == "https://download.example/sk-demo.zip":
+            download_urls.append(str(request.url))
+            return httpx.Response(200, content=demo_archive)
+        if str(request.url) == "https://download.example/sk-unused.zip":
+            download_urls.append(str(request.url))
+            return httpx.Response(200, content=unused_archive)
+        return httpx.Response(404)
+
+    monkeypatch.setenv("KSADK_SKILL_SPACE_IDS", "ss-1")
+    monkeypatch.setenv("KSADK_SKILL_SERVICE_URL", "https://skill.example/api/v1")
+    monkeypatch.setenv("KSADK_SKILL_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("KSADK_SELECTED_SKILL_NAMES", "demo-skill")
+
+    code = run_agent(
+        ["请处理这个任务"],
+        service_transport=httpx.MockTransport(handler),
+    )
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "loaded_skills=demo-skill" in out
+    assert download_urls == ["https://download.example/sk-demo.zip"]
+    assert (tmp_path / "cache" / "sk-demo__sv-demo-v1" / "extracted" / "demo-skill" / "SKILL.md").exists()
+    assert not (tmp_path / "cache" / "sk-unused__sv-unused-v1").exists()
 
 
 def test_runtime_agent_without_service_still_reports_workflow(monkeypatch, capsys):

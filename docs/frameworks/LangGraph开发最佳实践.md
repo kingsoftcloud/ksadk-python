@@ -114,8 +114,11 @@ getattr(module, "ksadk_prepare_state", None)
 | `input` | `str` 或 `dict` | 当前输入；普通请求是文本，resume 请求是结构化恢复 payload |
 | `history` | `list[dict]` | 多轮历史，已经过 transcript 投影和必要的 compaction |
 | `input_parts` | `list[dict]` | 原始输入片段，保留 `text / inlineData / fileData` |
-| `attachments` | `list[dict]` | 当前轮或当前会话有效附件 |
-| `attachment_results` | `list[dict]` | OCR / 文本抽取 / 附件理解结果 |
+| `attachments` | `list[dict]` | 当前会话最近有效附件上下文，兼容历史 fallback |
+| `attachment_results` | `list[dict]` | 最近有效 OCR / 文本抽取 / 附件理解结果 |
+| `current_attachments` | `list[dict]` | 当前最新 user turn 的附件列表，不包含历史 fallback |
+| `current_attachment_results` | `list[dict]` | 当前最新 user turn 的附件理解结果 |
+| `has_current_files` | `bool` | 当前最新 user turn 是否包含 `inlineData` 或 `fileData` |
 | `model` | `str` | 本轮显式模型名 |
 | `model_metadata` | `dict` | 模型能力元数据 |
 | `platform_context` | `dict` | `agent_id / user_id / session_id` 等平台身份 |
@@ -123,6 +126,8 @@ getattr(module, "ksadk_prepare_state", None)
 | `memory_context` | `dict` | 长期记忆上下文 |
 | `instructions` | `str` | 请求级系统/开发者指令 |
 | `resume` | `bool` | 平台判断本轮是否为断点恢复 |
+
+这些字段是 KsADK 提供给 LangGraph runner 的运行时上下文扩展，不属于 OpenAI Responses API 官方字段；对外仍使用 `input[].content[]` 的 `text / inlineData / fileData` 表达文件输入。
 
 ## 6. 默认 messages-based 图
 
@@ -132,6 +137,9 @@ getattr(module, "ksadk_prepare_state", None)
 {
     "attachments": [...],
     "attachment_results": [...],
+    "current_attachments": [...],
+    "current_attachment_results": [...],
+    "has_current_files": True,
     "input_parts": [...],
     "model_metadata": {...},
     "messages": [
@@ -146,7 +154,7 @@ getattr(module, "ksadk_prepare_state", None)
 说明：
 
 - `messages` 是默认主上下文
-- `attachments / attachment_results / input_parts` 保留在 state 顶层
+- `attachments / attachment_results / current_attachments / current_attachment_results / has_current_files / input_parts` 保留在 state 顶层
 - 如果模型支持原生图片输入，最后一条 `HumanMessage.content` 可能是多模态 block 列表
 - 如果模型不支持原生图片输入，最后一条 `HumanMessage.content` 通常是字符串
 
@@ -166,6 +174,9 @@ def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
         "history": session_context["history"],
         "attachments": payload.get("attachments", []),
         "attachment_results": payload.get("attachment_results", []),
+        "current_attachments": payload.get("current_attachments", []),
+        "current_attachment_results": payload.get("current_attachment_results", []),
+        "has_current_files": payload.get("has_current_files", False),
         "input_parts": payload.get("input_parts", []),
         "platform_context": session_context.get("platform_context"),
         "kb_context": session_context.get("kb_context"),
@@ -180,8 +191,11 @@ def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
 | --- | --- |
 | 当前用户输入 | `payload["input"]` |
 | 当前输入原始结构 | `payload["input_parts"]` |
-| 附件引用 | `payload["attachments"]` |
-| OCR / 文档抽取结果 | `payload["attachment_results"]` |
+| 当前轮是否带文件 | `payload["has_current_files"]` |
+| 当前轮附件引用 | `payload["current_attachments"]` |
+| 当前轮 OCR / 文档抽取结果 | `payload["current_attachment_results"]` |
+| 最近有效附件上下文 | `payload["attachments"]` |
+| 最近有效 OCR / 文档抽取结果 | `payload["attachment_results"]` |
 | 会话历史 | `session_context["history"]` |
 | 平台身份 | `session_context["platform_context"]` |
 | 知识库上下文 | `session_context["kb_context"]` |
@@ -194,7 +208,9 @@ def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
 
 ## 8. 附件、OCR 和图片
 
-`attachments` 更接近原始引用，典型字段：
+`attachments` 更接近原始引用，但语义是最近有效附件上下文；如果只判断当前轮是否传了文件，请使用 `has_current_files` 或 `current_attachments`。
+
+典型字段：
 
 ```python
 {
@@ -202,6 +218,7 @@ def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
     "mime_type": "image/png",
     "transport": "reference",
     "file_uri": "ksadk-upload://abc123.png",
+    "data": "<base64-encoded-bytes>",  # 仅 transport="inline" 时存在
     "size_bytes": 1356,
     "storage_path": "/tmp/.../diagram.png",
     "is_text": False,
@@ -226,9 +243,10 @@ def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
 
 ```python
 def collect_attachment_texts(state: dict) -> list[str]:
+    results = state.get("current_attachment_results") or state.get("attachment_results") or []
     return [
         item.get("text", "")
-        for item in state.get("attachment_results", [])
+        for item in results
         if isinstance(item, dict) and item.get("text")
     ]
 ```
@@ -242,7 +260,7 @@ def supports_image_input(state: dict) -> bool:
     return bool(capabilities.get("multimodal_input_image"))
 ```
 
-如果只是需要图片 OCR 文本，不建议拆 `HumanMessage.content`，直接用 `attachment_results[*]["text"]` 更稳定。
+如果只是需要当前轮图片 OCR 文本，不建议拆 `HumanMessage.content`，直接用 `current_attachment_results[*]["text"]` 更稳定；需要支持“继续分析上次附件”时再 fallback 到 `attachment_results`。
 
 ## 9. 知识库和长期记忆
 
@@ -426,6 +444,9 @@ class AgentState(TypedDict):
     history: list[dict[str, Any]]
     attachments: list[dict[str, Any]]
     attachment_results: list[dict[str, Any]]
+    current_attachments: list[dict[str, Any]]
+    current_attachment_results: list[dict[str, Any]]
+    has_current_files: bool
     platform_context: dict[str, Any] | None
     kb_context: dict[str, Any] | None
     memory_context: dict[str, Any] | None
@@ -488,6 +509,9 @@ def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
         "history": session_context.get("history", []),
         "attachments": payload.get("attachments", []),
         "attachment_results": payload.get("attachment_results", []),
+        "current_attachments": payload.get("current_attachments", []),
+        "current_attachment_results": payload.get("current_attachment_results", []),
+        "has_current_files": payload.get("has_current_files", False),
         "platform_context": session_context.get("platform_context"),
         "kb_context": session_context.get("kb_context"),
         "memory_context": session_context.get("memory_context"),
@@ -522,9 +546,9 @@ root_agent = workflow.compile()
 
 多模态模型下它可能是 content block 列表。除非你明确在做 messages-native agent，否则优先使用 `payload / session_context`。
 
-### 14.5 只看 attachments，不看 attachment_results
+### 14.5 用 attachments 判断当前轮是否传文件
 
-`attachments` 是引用，`attachment_results` 才是平台理解后的结果。OCR、文档抽取、压缩包摘要优先看后者。
+`attachments` 是最近有效附件上下文，可能来自历史 fallback。当前轮是否传文件看 `has_current_files`，当前轮附件列表看 `current_attachments`；OCR、文档抽取、压缩包摘要仍优先看对应的 `current_attachment_results` 或 `attachment_results`。
 
 ## 15. 检查清单
 
@@ -535,7 +559,8 @@ root_agent = workflow.compile()
 - `root_agent` 是 compiled graph
 - `ksadk_prepare_state` 在 `entry_point` 模块顶层可见
 - 自定义 state 明确包含业务需要的上下文字段
-- 附件理解优先读取 `attachment_results`
+- 当前轮文件判断使用 `has_current_files / current_attachments`
+- 附件理解优先读取 `current_attachment_results / attachment_results`
 - 多模态分支读取 `model_metadata.capabilities`
 - interrupt 恢复只依赖 resume payload，不依赖平台内部事件结构
 - `/v1/responses` 恢复调用传同一个 `session_id`

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Sequence
 from urllib.parse import urlparse
 
+import httpx
 from google.adk.tools.mcp_tool.mcp_session_manager import (
     CheckableMcpHttpClientFactory,
     StreamableHTTPConnectionParams,
@@ -62,8 +63,7 @@ def build_connection_params(
     httpx_client_factory: CheckableMcpHttpClientFactory | None = None,
 ) -> StreamableHTTPConnectionParams:
     kwargs: dict[str, Any] = {"url": config.url, "headers": config.headers}
-    if httpx_client_factory is not None:
-        kwargs["httpx_client_factory"] = httpx_client_factory
+    kwargs["httpx_client_factory"] = httpx_client_factory or _default_httpx_client_factory(config.url)
     return StreamableHTTPConnectionParams(**kwargs)
 
 
@@ -86,6 +86,22 @@ def build_mcp_toolset(
 
 def load_mcp_toolsets_from_env() -> list[McpToolset]:
     return [build_mcp_toolset(config) for config in load_mcp_server_configs()]
+
+
+def _default_httpx_client_factory(url: str) -> CheckableMcpHttpClientFactory:
+    hostname = (urlparse(url).hostname or "").lower()
+    trust_env = hostname not in {"localhost", "127.0.0.1", "::1"}
+
+    def _factory(headers=None, timeout=None, auth=None):
+        return httpx.AsyncClient(
+            headers=headers,
+            timeout=timeout,
+            auth=auth,
+            follow_redirects=True,
+            trust_env=trust_env,
+        )
+
+    return _factory
 
 
 def _parse_server_config(item: Any, index: int) -> MCPServerConfig:

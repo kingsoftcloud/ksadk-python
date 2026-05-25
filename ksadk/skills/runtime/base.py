@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, Sequence
 
 
 class SkillRuntimeError(RuntimeError):
@@ -53,6 +53,7 @@ class SkillRuntimeBackend(Protocol):
         *,
         skill_space_ids: list[str],
         session_id: str,
+        skill_names: list[str] | None = None,
         env: dict[str, str] | None = None,
         input_files: list[SandboxInputFile] | None = None,
         timeout: int = 900,
@@ -73,3 +74,30 @@ def parse_output_files(stdout: str) -> list[str]:
         if isinstance(output_files, list):
             return [str(item) for item in output_files]
     return []
+
+
+def normalize_skill_names(skill_names: Sequence[str] | str | None) -> list[str]:
+    if skill_names is None:
+        return []
+
+    raw_values: list[str]
+    if isinstance(skill_names, str):
+        raw_values = [skill_names]
+    else:
+        raw_values = [str(item) for item in skill_names]
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_values:
+        for part in raw.split(","):
+            name = part.strip()
+            key = name.lower()
+            if not name or key in seen:
+                continue
+            seen.add(key)
+            normalized.append(name)
+    return normalized
+
+
+def format_skill_names_env(skill_names: Sequence[str] | str | None) -> str:
+    return ",".join(normalize_skill_names(skill_names))

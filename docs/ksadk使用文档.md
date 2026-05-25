@@ -255,7 +255,8 @@ curl -N http://127.0.0.1:8000/v1/responses \
   - 若模型支持图片输入，默认消息构造会把图片附件转换成多模态 `HumanMessage.content` blocks
 - `LangChain`
   - 当前不保证所有 agent 自动原生吃图
-  - 如需原生多模态，建议在 `ksadk_prepare_input(payload, session_context)` 中自行消费 `input_parts / attachments`
+  - 如需原生多模态，建议在 `ksadk_prepare_input(payload, session_context)` 中自行消费 `input_parts / current_attachments / attachments`
+  - 判断当前轮是否传文件用 KsADK runner payload 扩展字段 `has_current_files`；该字段不是 OpenAI Responses API 官方字段
 
 模型能力判断优先级：
 

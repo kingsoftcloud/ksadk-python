@@ -26,6 +26,9 @@ def _context() -> PlatformInvocationContext:
         input_parts=[],
         attachments=[],
         attachment_results=[],
+        current_attachments=[],
+        current_attachment_results=[],
+        has_current_files=False,
         runner_type="langgraph",
     )
 

@@ -266,6 +266,29 @@ def _generate_default_openclaw_name(prefix: str = DEFAULT_OPENCLAW_NAME) -> str:
     return f"{prefix}-{ts}-{suffix}"
 
 
+def _load_openclaw_project_name(project_dir: Path) -> Optional[str]:
+    """从 OpenClaw 项目配置读取 init 时指定的项目名。"""
+    for file_name in ("agentengine.yaml", "ksadk.yaml"):
+        config_path = project_dir / file_name
+        if not config_path.exists():
+            continue
+        try:
+            import yaml
+
+            data = yaml.safe_load(config_path.read_text(encoding="utf-8-sig")) or {}
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        framework = str(data.get("framework") or "").strip().lower()
+        if framework != "openclaw":
+            continue
+        project_name = str(data.get("name") or "").strip()
+        if project_name:
+            return project_name
+    return None
+
+
 def _get_global_env() -> Dict[str, str]:
     """读取全局配置并转换为环境变量字典（带进程级缓存）。"""
     global _GLOBAL_ENV_CACHE
@@ -3209,11 +3232,18 @@ async def _deploy_openclaw(
     # 读取本地状态 (判断创建 vs 更新)
     state = load_state(project_dir)
     existing_agent_id = None
-    if state.get("type") == "openclaw":
+    state_name = None
+    state_kind = str(state.get("type") or state.get("framework") or "").strip().lower()
+    if state_kind == "openclaw":
         existing_agent_id = state.get("agent_id")
+        state_name = str(state.get("name") or "").strip() or None
 
     if name:
         openclaw_name = name
+    elif state_name:
+        openclaw_name = state_name
+    elif project_name := _load_openclaw_project_name(project_dir):
+        openclaw_name = project_name
     else:
         openclaw_name = _generate_default_openclaw_name()
     resolved_image = image or _resolve_env("OPENCLAW_IMAGE", "OPENCLAW_DOCKER_IMAGE")
