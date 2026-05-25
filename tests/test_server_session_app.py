@@ -1209,6 +1209,205 @@ async def test_responses_fetches_remote_model_metadata_and_passes_to_runner(monk
 
 
 @pytest.mark.asyncio
+async def test_responses_uses_official_conversation_as_runtime_session(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _DummyRunner()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/v1/responses",
+            json={
+                "input": "hello",
+                "conversation": "conv-a",
+                "safety_identifier": "user-a",
+                "stream": False,
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["session_id"] == "conv-a"
+    session = await service.get_session("conv-a")
+    assert session is not None
+    assert session.user_id == "user-a"
+    assert runner.calls[-1]["session_id"] == "conv-a"
+    assert runner.calls[-1]["platform_context"]["user_id"] == "user-a"
+
+
+@pytest.mark.asyncio
+async def test_responses_accepts_official_conversation_object(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _DummyRunner()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/v1/responses",
+            json={
+                "input": "hello",
+                "conversation": {"id": "conv-object"},
+                "safety_identifier": "user-object",
+                "stream": False,
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["session_id"] == "conv-object"
+    session = await service.get_session("conv-object")
+    assert session is not None
+    assert session.user_id == "user-object"
+
+
+@pytest.mark.asyncio
+async def test_responses_uses_deprecated_user_when_safety_identifier_missing(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _DummyRunner()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/v1/responses",
+            json={
+                "input": "hello",
+                "conversation": "conv-user",
+                "user": "deprecated-user",
+                "stream": False,
+            },
+        )
+
+    assert response.status_code == 200
+    session = await service.get_session("conv-user")
+    assert session is not None
+    assert session.user_id == "deprecated-user"
+
+
+@pytest.mark.asyncio
+async def test_responses_rejects_conflicting_conversation_and_legacy_session_id(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _DummyRunner()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/v1/responses",
+            json={
+                "input": "hello",
+                "conversation": "conv-a",
+                "session_id": "legacy-b",
+                "stream": False,
+            },
+        )
+
+    assert response.status_code == 400
+    assert "conversation" in response.text
+    assert "session_id" in response.text
+
+
+@pytest.mark.asyncio
+async def test_responses_rejects_conversation_with_previous_response_id(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _DummyRunner()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/v1/responses",
+            json={
+                "input": "hello",
+                "conversation": "conv-a",
+                "previous_response_id": "resp_previous",
+                "stream": False,
+            },
+        )
+
+    assert response.status_code == 400
+    assert "conversation" in response.text
+    assert "previous_response_id" in response.text
+
+
+@pytest.mark.asyncio
+async def test_responses_legacy_session_id_still_works(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _DummyRunner()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/v1/responses",
+            json={
+                "input": "hello",
+                "session_id": "legacy-session",
+                "stream": False,
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["session_id"] == "legacy-session"
+    session = await service.get_session("legacy-session")
+    assert session is not None
+    assert session.user_id == "user"
+
+
+@pytest.mark.asyncio
+async def test_responses_events_are_visible_through_runtime_local_list_session_events(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _DummyRunner()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        run_response = await client.post(
+            "/v1/responses",
+            json={
+                "input": "hello",
+                "conversation": "conv-events",
+                "safety_identifier": "user-events",
+                "stream": False,
+            },
+        )
+        events_response = await client.post(
+            "/agentengine/api/v1/ListSessionEvents",
+            json={"SessionId": "conv-events"},
+        )
+
+    assert run_response.status_code == 200
+    assert events_response.status_code == 200
+    events = events_response.json()["Data"]["Events"]
+    message_events = [event for event in events if event["EventType"] in {"user_message", "assistant_message"}]
+    assert [event["Author"] for event in message_events] == ["user", "demo-agent"]
+    assert message_events[0]["Content"]["parts"][0]["text"] == "hello"
+    assert message_events[1]["Content"]["parts"][0]["text"] == "assistant says hi"
+
+
+@pytest.mark.asyncio
 async def test_run_agent_action_passes_model_options_to_runner(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()

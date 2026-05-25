@@ -2121,16 +2121,16 @@ wheels = [
 
 [[package]]
 name = "kingsoftcloud-sdk-python"
-version = "1.5.8.73"
+version = "1.5.8.90"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "requests" },
     { name = "requests-aws4auth" },
     { name = "six" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/62/33/fc83b8f1c5e4a40046122adc745e1edbd1f94fc5cbaac8e9cdc134a041e6/kingsoftcloud_sdk_python-1.5.8.73.tar.gz", hash = "sha256:64531978f8d0d0f70f7e94972ab50df86091bedcb1bbb5e89329c5e87ebfe167", size = 371656, upload-time = "2026-03-06T08:27:27.249Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f8/f1/157c2642a186c4ca34792796c412a7ce3331149b875f6e6978c24dca535d/kingsoftcloud_sdk_python-1.5.8.90.tar.gz", hash = "sha256:56b7d3e5830e3f9d4505cd34a6ad0bab7fae9ce51ce6580f4fe455c7aeb33d1e", size = 383143, upload-time = "2026-05-21T09:24:04.696Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/82/bc/941fd9d3710a5497bd4b8d41e05831402b1f16787e04e2d57bd2cb3f2607/kingsoftcloud_sdk_python-1.5.8.73-py2.py3-none-any.whl", hash = "sha256:4fddf90fcde9df1759c751627bc5a3c7577eaf45c5df3d9ad951bdc3c168d07e", size = 475267, upload-time = "2026-03-06T08:27:25.564Z" },
+    { url = "https://files.pythonhosted.org/packages/b2/a8/520b3286c7da6f12c05abc81a8c2e5af78ac4ebf7abb95ee23508235b13f/kingsoftcloud_sdk_python-1.5.8.90-py2.py3-none-any.whl", hash = "sha256:ad8da24b2e04bac3208767738a2d58137319898cad1e3e64fc5a7a62095d06cf", size = 487689, upload-time = "2026-05-21T09:24:03.191Z" },
 ]
 
 [[package]]
@@ -2272,7 +2272,7 @@ requires-dist = [
     { name = "httpx-sse", specifier = ">=0.4.0" },
     { name = "json-repair", marker = "extra == 'adk'", specifier = ">=0.25.0" },
     { name = "jsonschema", specifier = ">=4.0.0,<5.0.0" },
-    { name = "kingsoftcloud-sdk-python", marker = "extra == 'kb'", specifier = ">=1.5.8.71" },
+    { name = "kingsoftcloud-sdk-python", marker = "extra == 'kb'", specifier = ">=1.5.8.90" },
     { name = "ks3sdk", specifier = ">=1.15.0" },
     { name = "ksadk", extras = ["a2a", "adk", "langchain", "langgraph", "deepagents", "kb", "skills", "tracing", "dev"], marker = "extra == 'all'" },
     { name = "langchain", specifier = ">=1.3.0,<2.0.0" },

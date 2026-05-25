@@ -13,22 +13,24 @@
     KSADK_LTM_REGION: 区域 (默认 cn-beijing-6)
     KSADK_LTM_ENDPOINT: API 端点 (默认 aicp.api.ksyun.com)
     KSADK_LTM_SCHEME: http/https (默认 https)
-    KSADK_LTM_NAMESPACE: 记忆库命名空间
+    KSADK_LTM_NAMESPACE: 记忆库 ID (环境变量名保持兼容，对应新版 MemoryCollectionId)
     KSADK_LTM_AGENT_ID: Agent ID
-    KSADK_LTM_SCENE_ID: 场景 ID
+    KSADK_LTM_SCENE_ID: 场景 ID (默认 _sys_general)
 """
 
 import json
 import logging
 import time
 import uuid
-from typing import Any, List, Optional
+from typing import Any, List
 
 from pydantic import ConfigDict
 
 from ksadk.memory.adk.backends.base_ltm_backend import BaseLongTermMemoryBackend
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_SCENE_ID = "_sys_general"
 
 
 class SdkLTMBackend(BaseLongTermMemoryBackend):
@@ -43,7 +45,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
         region: API 区域
         endpoint: API 端点
         scheme: http 或 https
-        namespace: 记忆库命名空间 (用于隔离不同应用)
+        namespace: 记忆库 ID (环境变量名保持兼容，对应新版 MemoryCollectionId)
         agent_id: Agent ID
         scene_id: 场景 ID
 
@@ -66,8 +68,9 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
     endpoint: str = "aicp.api.ksyun.com"
     scheme: str = "https"
     namespace: str = ""
+    memory_collection_id: str = ""
     agent_id: str = ""
-    scene_id: str = ""
+    scene_id: str = DEFAULT_SCENE_ID
     last_error: str = ""
 
     _aicp_client: Any = None
@@ -84,7 +87,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
         logger.info(
             f"SdkLTMBackend initialized: "
             f"endpoint={self.endpoint}, region={self.region}, "
-            f"namespace={self.namespace or self.index}, "
+            f"memory_collection_id={self._effective_memory_collection_id()}, "
             f"agent_id={self.agent_id}"
         )
 
@@ -106,7 +109,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
         except ImportError:
             raise ImportError(
                 "kingsoftcloud-sdk-python is required for SDK memory backend. "
-                "Install it with: pip install 'kingsoftcloud-sdk-python>=1.5.8.71'"
+                "Install it with: pip install 'kingsoftcloud-sdk-python>=1.5.8.90'"
             )
 
         # 多版本 fallback
@@ -125,7 +128,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
         if aicp_module is None:
             raise ImportError(
                 "Cannot import ksyun.client.aicp client. "
-                "Ensure kingsoftcloud-sdk-python>=1.5.8.71 is installed."
+                "Ensure kingsoftcloud-sdk-python>=1.5.8.90 is installed."
             )
 
         cred = credential.Credential(self.access_key, self.secret_key)
@@ -184,6 +187,12 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
             })
         return conversation
 
+    def _effective_memory_collection_id(self) -> str:
+        return self.memory_collection_id or self.namespace or self.index
+
+    def _effective_scene_id(self) -> str:
+        return self.scene_id or DEFAULT_SCENE_ID
+
     def save_memory(
         self, user_id: str, event_strings: List[str], **kwargs
     ) -> bool:
@@ -201,7 +210,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
             return True
 
         client = self._get_client()
-        effective_namespace = self.namespace or self.index
+        memory_collection_id = self._effective_memory_collection_id()
 
         try:
             self.last_error = ""
@@ -210,20 +219,26 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
                 logger.info("No valid conversation items to save")
                 return True
 
+            metadata = kwargs.get("metadata") if isinstance(kwargs.get("metadata"), dict) else {}
+            agent_id = metadata.get("agent_id") or self.agent_id
+            session_id = metadata.get("session_id") or kwargs.get("session_id")
             params = {
-                "Namespace": effective_namespace,
-                "UserId": user_id,
+                "MemoryCollectionId": memory_collection_id,
+                "AgentUserId": user_id,
+                "SceneId": self._effective_scene_id(),
                 "Data": {"Conversation": conversation},
             }
+            if agent_id:
+                params["AgentId"] = agent_id
+            if session_id:
+                params["SessionId"] = session_id
 
             logger.info(
-                f"CreateMemorySdk: namespace={effective_namespace}, "
+                f"CreateMemorySdk: memory_collection_id={memory_collection_id}, "
                 f"user_id={user_id}, messages={len(conversation)}"
             )
 
-            response = client.call(
-                "CreateMemorySdk", params, options={"IsPostJson": True}
-            )
+            client.call("CreateMemorySdk", params, options={"IsPostJson": True})
 
             logger.info(
                 f"Saved {len(conversation)} messages to AICP memory service "
@@ -251,29 +266,32 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
             匹配的记忆字符串列表
         """
         client = self._get_client()
-        effective_namespace = self.namespace or self.index
+        memory_collection_id = self._effective_memory_collection_id()
 
         try:
             self.last_error = ""
             params = {
-                "Namespace": effective_namespace,
-                "UserId": user_id,
+                "MemoryCollectionId": memory_collection_id,
+                "AgentUserId": user_id,
                 "Query": query,
                 "Limit": top_k,
+                "SceneId": self._effective_scene_id(),
             }
 
             # 可选参数
-            if self.scene_id:
-                params["SceneId"] = self.scene_id
             if kwargs.get("occurred_after"):
                 params["OccurredAfter"] = kwargs["occurred_after"]
             if kwargs.get("occurred_before"):
                 params["OccurredBefore"] = kwargs["occurred_before"]
             if kwargs.get("mode"):
                 params["Mode"] = kwargs["mode"]
+            if kwargs.get("return_citations") is not None:
+                params["ReturnCitations"] = kwargs["return_citations"]
+            if kwargs.get("scene_ids"):
+                params["SceneIds"] = kwargs["scene_ids"]
 
             logger.info(
-                f"QueryMemorySdk: namespace={effective_namespace}, "
+                f"QueryMemorySdk: memory_collection_id={memory_collection_id}, "
                 f"user_id={user_id}, query='{query[:50]}'"
             )
 

@@ -411,6 +411,8 @@ def test_set_conversation_span_attributes_sets_langfuse_and_standard_session_id(
 
     assert span.attributes["langfuse.session.id"] == "sess-demo"
     assert span.attributes["session.id"] == "sess-demo"
+    assert span.attributes["langfuse.user.id"] == "user-demo"
+    assert span.attributes["user.id"] == "user-demo"
 
 
 @pytest.mark.asyncio
