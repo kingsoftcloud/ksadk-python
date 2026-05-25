@@ -192,3 +192,70 @@ def test_code_builder_no_cache_reinstalls_dependencies_when_requirements_change(
     assert first.success is True
     assert second.success is True
     assert len(install_calls) == 2
+
+
+def test_code_builder_repackage_reuses_dependencies_but_rebuilds_zip(
+    tmp_path: Path,
+    monkeypatch,
+):
+    (tmp_path / "agent.py").write_text("print('ok')\n", encoding="utf-8")
+    (tmp_path / "agentengine.yaml").write_text("name: demo-agent\nframework: langgraph\n", encoding="utf-8")
+    (tmp_path / "requirements.txt").write_text("httpx==0.28.1\n", encoding="utf-8")
+
+    install_calls = []
+    package_calls = []
+
+    def fake_install(self, _req):
+        install_calls.append("install")
+        self.deps_dir.mkdir(parents=True, exist_ok=True)
+        (self.deps_dir / "httpx.py").write_text("# dep\n", encoding="utf-8")
+        return True
+
+    monkeypatch.setattr("ksadk.detection.FrameworkDetector", _FakeFrameworkDetector)
+    monkeypatch.setattr(CodeBuilder, "_install_dependencies", fake_install)
+    monkeypatch.setattr(CodeBuilder, "_scan_incompatible_binaries_in_deps", lambda self: [])
+    monkeypatch.setattr(
+        CodeBuilder,
+        "_package_zip",
+        lambda self, zip_path, detection_result: (package_calls.append(zip_path), _fake_package_zip(zip_path, detection_result)),
+    )
+
+    initial = CodeBuilder(tmp_path).build()
+    assert initial.success is True
+
+    repackaged = CodeBuilder(tmp_path, config={"repackage": True}).build()
+
+    assert repackaged.success is True
+    assert len(install_calls) == 1
+    assert len(package_calls) == 2
+
+
+def test_code_builder_reports_rebuild_reason_for_runtime_source_changes(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+):
+    (tmp_path / "agent.py").write_text("print('ok')\n", encoding="utf-8")
+    (tmp_path / "agentengine.yaml").write_text("name: demo-agent\nframework: langgraph\n", encoding="utf-8")
+
+    fake_ksadk_root = tmp_path.parent / f"{tmp_path.name}_fake_ksadk_reason" / "ksadk"
+    (fake_ksadk_root / "configs").mkdir(parents=True, exist_ok=True)
+    (fake_ksadk_root / "__init__.py").write_text("__version__ = 'test'\n", encoding="utf-8")
+    settings_file = fake_ksadk_root / "configs" / "settings.py"
+    settings_file.write_text("VALUE = 'v1'\n", encoding="utf-8")
+
+    monkeypatch.setattr("ksadk.detection.FrameworkDetector", _FakeFrameworkDetector)
+    monkeypatch.setattr(CodeBuilder, "_install_dependencies", lambda self, _req: True)
+    monkeypatch.setattr(CodeBuilder, "_package_zip", lambda self, zip_path, detection_result: _fake_package_zip(zip_path, detection_result))
+    monkeypatch.setattr(ksadk, "__file__", str(fake_ksadk_root / "__init__.py"))
+
+    first = CodeBuilder(tmp_path).build()
+    assert first.success is True
+    capsys.readouterr()
+
+    settings_file.write_text("VALUE = 'v2'\n", encoding="utf-8")
+    second = CodeBuilder(tmp_path).build()
+    assert second.success is True
+
+    output = capsys.readouterr().out
+    assert "ksadk runtime 变更" in output

@@ -235,16 +235,23 @@ class KS3Uploader:
         key = bucket.new_key(object_key)
         if self._should_use_resumable_upload(file_path):
             worker_count = max(2, min(8, (os.cpu_count() or 4)))
+            resume_path = self._resumable_record_path(file_path, object_key)
+            click.echo(
+                f"   启用断点续传: {file_path.stat().st_size / (1024 * 1024):.2f} MB, "
+                f"workers={worker_count}"
+            )
+            click.echo(f"   续传记录: {resume_path}")
             upload_task = UploadTask(
                 key,
                 bucket,
                 str(file_path),
                 executor=ThreadPoolExecutor(max_workers=worker_count),
                 resumable=True,
-                resumable_filename=str(self._resumable_record_path(file_path, object_key)),
+                resumable_filename=str(resume_path),
             )
             result = upload_task.upload(headers={"x-kss-acl": "public-read"})
         else:
+            click.echo(f"   普通上传: {file_path.stat().st_size / (1024 * 1024):.2f} MB")
             result = key.set_contents_from_filename(str(file_path), policy="public-read")
 
         status = getattr(result, "status", None)
@@ -279,6 +286,7 @@ class KS3Uploader:
             return None
 
         click.echo(f"   KS3 Endpoint 策略: {selection_summary}")
+        click.echo(f"   上传文件: {file_path.name} ({file_path.stat().st_size / (1024 * 1024):.2f} MB)")
         click.echo(f"   上传超时: {self._upload_timeout_seconds(file_path)} 秒")
 
         # 临时禁用系统代理 (ClashX 等会导致 KS3 上传走代理而失败)

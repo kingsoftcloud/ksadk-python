@@ -49,6 +49,7 @@ def build_workflow_local_plan(
     build_dir: str | None,
     artifact_reference: str | None,
     no_cache: bool,
+    repackage: bool = False,
 ) -> dict[str, Any]:
     """Build a stable local execution plan for workflow dry-run output."""
     normalized_artifact_type = (artifact_type or "").strip().lower()
@@ -94,6 +95,7 @@ def build_workflow_local_plan(
         "deploy_name": str(deploy_name or ""),
         "artifact_type": normalized_artifact_type,
         "no_cache": bool(no_cache),
+        "repackage": bool(repackage),
         "artifact": {
             "should_build": bool(artifact_plan.should_build),
             "will_build": bool(will_build),
@@ -131,6 +133,7 @@ def plan_artifact_build(
     ks3_path: str | None,
     image: str | None,
     no_cache: bool,
+    repackage: bool = False,
 ) -> ArtifactBuildPlan:
     """Plan artifact build behavior and metadata cleanup under cache options."""
     should_build = should_build_artifact(
@@ -148,7 +151,7 @@ def plan_artifact_build(
             explicit_ref_option = "--image"
     return ArtifactBuildPlan(
         should_build=should_build,
-        should_clear_metadata=bool(no_cache and should_build),
+        should_clear_metadata=bool((no_cache or repackage) and should_build),
         explicit_ref_option=explicit_ref_option,
         will_build=should_build,
         should_publish=bool(target == "serverless" and should_build),

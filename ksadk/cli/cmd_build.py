@@ -8,6 +8,7 @@ agentengine build - 构建 Agent 应用
 
 import asyncio
 import click
+import time
 from datetime import datetime
 from pathlib import Path
 from ksadk.cli.error_utils import abort_with_cli_error, is_debug_mode_enabled, remote_error, validation_error
@@ -39,6 +40,7 @@ from ksadk.cli.ui import (
 @click.option("--registry", help="镜像仓库地址 (container 模式)")
 @click.option("--push", is_flag=True, help="构建后推送 (镜像到仓库 / zip到KS3)")
 @click.option("--no-cache", is_flag=True, help="强制重新构建，不使用缓存 (code: 忽略已有 zip；container: docker --no-cache)")
+@click.option("--repackage", is_flag=True, help="Code 模式复用依赖缓存，但强制重新打包当前代码/runtime")
 @click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="KS3 区域 (code 模式)")
 @click.option("--ks3-bucket", help="KS3 bucket 名称 (code 模式, 默认: agentengine-{region})")
 @cli_output_option()
@@ -49,6 +51,7 @@ def build(
     registry: str,
     push: bool,
     no_cache: bool,
+    repackage: bool,
     region: str,
     ks3_bucket: str,
     output_mode: str | None,
@@ -89,7 +92,7 @@ def build(
             if mode == "container":
                 result = _build_container(agent_path, tag, registry, push, no_cache)
             else:
-                result = asyncio.run(_build_code(agent_path, push, region, ks3_bucket, no_cache))
+                result = asyncio.run(_build_code(agent_path, push, region, ks3_bucket, no_cache, repackage))
     except Exception as e:
         if is_debug_mode_enabled():
             raise
@@ -140,11 +143,18 @@ def _build_container(agent_path: Path, tag: str, registry: str, push: bool, no_c
     }
 
 
-async def _build_code(agent_path: Path, push: bool, region: str, ks3_bucket: str = None, no_cache: bool = False):
+async def _build_code(
+    agent_path: Path,
+    push: bool,
+    region: str,
+    ks3_bucket: str = None,
+    no_cache: bool = False,
+    repackage: bool = False,
+):
     """Code 模式构建"""
     from ksadk.builders import CodeBuilder, KS3Uploader
 
-    builder = CodeBuilder(project_dir=agent_path, config={"no_cache": no_cache})
+    builder = CodeBuilder(project_dir=agent_path, config={"no_cache": no_cache, "repackage": repackage})
     result = builder.build()
 
     if not result.success:
@@ -158,6 +168,7 @@ async def _build_code(agent_path: Path, push: bool, region: str, ks3_bucket: str
 
     if push:
         print_rule("上传到 KS3")
+        upload_started_at = time.monotonic()
         
         # 预发特殊逻辑: region 为 pre-online 时，资源上传到 cn-beijing-6
         upload_region = "cn-beijing-6" if region == "pre-online" else region
@@ -174,6 +185,7 @@ async def _build_code(agent_path: Path, push: bool, region: str, ks3_bucket: str
 
         if ks3_path:
             print_success(f"上传成功: {ks3_path}")
+            print_kv("上传耗时", _format_elapsed(upload_started_at))
             # 更新 metadata 以便持久化
             result.metadata["ks3_path"] = ks3_path
             result.metadata["pushed"] = True
@@ -227,6 +239,15 @@ async def _build_code(agent_path: Path, push: bool, region: str, ks3_bucket: str
         "ks3_internal_url": str(ks3_internal_url or ""),
         "push": bool(push),
     }
+
+
+def _format_elapsed(started_at: float) -> str:
+    elapsed = max(0.0, time.monotonic() - started_at)
+    if elapsed < 60:
+        return f"{elapsed:.1f}s"
+    minutes = int(elapsed // 60)
+    seconds = int(elapsed % 60)
+    return f"{minutes}m{seconds:02d}s"
 
 
 def _print_summary(mode: str, result, show_next_step: bool = False):
