@@ -74,6 +74,69 @@ def test_adk_runner_injects_execute_skills_for_sandbox_mode(monkeypatch, tmp_pat
     assert len(FakeRunner.instances) == 1
 
 
+def test_adk_runner_injects_remote_skill_manifest_into_instruction(monkeypatch, tmp_path):
+    ADKRunner = _patch_runner(monkeypatch)
+    detection = _write_adk_project(
+        tmp_path,
+        """
+        class DemoAgent:
+            def __init__(self):
+                self.name = "demo-agent"
+                self.tools = []
+                self.instruction = "Be helpful."
+
+        root_agent = DemoAgent()
+        """,
+    )
+
+    def fake_load_remote_skill_manifests(skill_space_ids=None):
+        assert skill_space_ids == ["ss-user", "ss-public"]
+        return [
+            {
+                "name": "demo-skill",
+                "description": "Create spreadsheet reports",
+                "version": "v1",
+            }
+        ]
+
+    monkeypatch.setenv("KSADK_SKILLS_MODE", "sandbox")
+    monkeypatch.setenv("KSADK_SKILL_RUNTIME_BACKEND", "disabled")
+    monkeypatch.setenv("KSADK_SKILL_SPACE_IDS", "ss-user")
+    monkeypatch.setenv("KSADK_PUBLIC_SKILL_SPACE_IDS", "ss-public")
+    monkeypatch.setattr(
+        "ksadk.skills.tool_defs.load_remote_skill_manifests",
+        fake_load_remote_skill_manifests,
+        raising=False,
+    )
+
+    runner = ADKRunner(detection, str(tmp_path))
+    runner.load_agent()
+
+    assert "demo-skill" in runner._agent.instruction
+    assert "Create spreadsheet reports" in runner._agent.instruction
+    assert "skill_names" in runner._agent.instruction
+
+
+def test_execute_skills_merges_public_skill_spaces_after_user_spaces(monkeypatch):
+    from ksadk.skills.tool_defs import build_execute_skills_tool
+
+    calls = []
+
+    class FakeBackend:
+        def run_workflow(self, workflow_prompt, **kwargs):
+            calls.append((workflow_prompt, kwargs))
+            return SimpleNamespace(to_dict=lambda: {"status": "ok"})
+
+    monkeypatch.setenv("KSADK_SKILL_SPACE_IDS", "ss-user")
+    monkeypatch.setenv("KSADK_PUBLIC_SKILL_SPACE_IDS", "ss-public-a, ss-public-b")
+
+    tool = build_execute_skills_tool(backend=FakeBackend(), session_id="sess-1")
+    result = tool("use demo-skill")
+
+    assert result == {"status": "ok"}
+    assert calls[0][1]["skill_space_ids"] == ["ss-user", "ss-public-a", "ss-public-b"]
+
+
 def test_adk_runner_auto_mode_prefers_configured_runtime_backend_over_cache_dir(monkeypatch, tmp_path):
     ADKRunner = _patch_runner(monkeypatch)
     cache_dir = tmp_path / "cache"

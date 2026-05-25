@@ -92,3 +92,65 @@ def test_agent_list_passes_framework_filter_to_status_command(monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert _parse_json(result.output) == {"framework": " langgraph, adk "}
+
+
+def test_agent_list_hides_openclaw_and_hermes_by_default(monkeypatch):
+    _register_commands()
+    runner = CliRunner()
+
+    class FakeAgentClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def list_agents(self, **kwargs):
+            assert kwargs.get("framework") is None
+            return {
+                "agents": [
+                    {
+                        "agent_id": "ar-langgraph",
+                        "name": "regular-agent",
+                        "status": "RUNNING",
+                        "framework": "langgraph",
+                    },
+                    {
+                        "agent_id": "ar-openclaw",
+                        "name": "openclaw-agent",
+                        "status": "RUNNING",
+                        "framework": "openclaw",
+                    },
+                    {
+                        "agent_id": "ar-hermes",
+                        "name": "hermes-agent",
+                        "status": "RUNNING",
+                        "framework": "hermes",
+                    },
+                ],
+                "total": 3,
+            }
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", FakeAgentClient)
+
+    result = runner.invoke(
+        cli,
+        [
+            "agent",
+            "list",
+            "--account-id",
+            "2000003485",
+            "--output",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = _parse_json(result.output)
+    assert [item["framework"] for item in payload["items"]] == ["langgraph"]

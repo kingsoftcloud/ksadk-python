@@ -132,6 +132,23 @@ def test_build_connection_params_includes_bearer_auth_header():
     assert params.headers == {"Authorization": "Bearer ak-123"}
 
 
+def test_build_connection_params_disables_proxy_for_loopback_urls(monkeypatch):
+    from ksadk.mcp_runtime import MCPServerConfig, build_connection_params
+
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:7890")
+    descriptor = MCPServerConfig(name="local", url="http://127.0.0.1:8899/mcp")
+
+    params = build_connection_params(descriptor)
+    client = params.httpx_client_factory()
+
+    try:
+        assert client._trust_env is False
+    finally:
+        import anyio
+
+        anyio.run(client.aclose)
+
+
 @pytest.mark.asyncio
 async def test_build_mcp_toolset_roundtrip_lists_and_calls_remote_tools(weather_mcp_server):
     from ksadk.mcp_runtime import MCPServerConfig, build_mcp_toolset
@@ -145,6 +162,7 @@ async def test_build_mcp_toolset_roundtrip_lists_and_calls_remote_tools(weather_
             timeout=timeout,
             auth=auth,
             follow_redirects=True,
+            trust_env=False,
         )
 
     descriptor = MCPServerConfig(

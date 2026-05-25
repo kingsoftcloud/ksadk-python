@@ -76,6 +76,14 @@ def _build_base_env(state_dir: str, config_path: str) -> dict:
         "OPENAI_API_KEY",
         "LLM_API_KEY",
         "MODEL_API_KEY",
+        "LANGFUSE_PUBLIC_KEY",
+        "LANGFUSE_SECRET_KEY",
+        "LANGFUSE_BASE_URL",
+        "LANGFUSE_HOST",
+        "OTEL_SERVICE_NAME",
+        "OTEL_RESOURCE_ATTRIBUTES",
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
     ):
         env.pop(key, None)
     safe_bin_dir = Path(state_dir) / "safe-bin"

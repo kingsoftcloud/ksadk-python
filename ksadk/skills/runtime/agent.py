@@ -12,13 +12,25 @@ from pathlib import Path
 import httpx
 
 from ksadk.skills.loader import LocalSkill, load_local_skill
+from ksadk.skills.models import SkillRef
 from ksadk.skills.package_store import PackageStore
+from ksadk.skills.runtime.base import normalize_skill_names
 from ksadk.skills.service_client import SkillServiceClient
 
 
 def _skill_space_ids() -> list[str]:
-    raw = os.environ.get("KSADK_SKILL_SPACE_IDS") or os.environ.get("SKILL_SPACE_ID") or ""
-    return [part.strip() for part in raw.split(",") if part.strip()]
+    user_raw = os.environ.get("KSADK_SKILL_SPACE_IDS") or os.environ.get("SKILL_SPACE_ID") or ""
+    public_raw = os.environ.get("KSADK_PUBLIC_SKILL_SPACE_IDS") or ""
+    spaces: list[str] = []
+    seen: set[str] = set()
+    for raw in (user_raw, public_raw):
+        for part in raw.split(","):
+            space_id = part.strip()
+            if not space_id or space_id in seen:
+                continue
+            seen.add(space_id)
+            spaces.append(space_id)
+    return spaces
 
 
 @dataclass
@@ -29,7 +41,12 @@ class WorkflowExecution:
     commands: list[dict[str, object]] = field(default_factory=list)
 
 
-def _load_skills(*, service_transport: httpx.BaseTransport | None = None) -> list[LocalSkill]:
+def _load_skills(
+    *,
+    prompt: str = "",
+    skill_names: list[str] | None = None,
+    service_transport: httpx.BaseTransport | None = None,
+) -> list[LocalSkill]:
     skills: list[LocalSkill] = []
     skills.extend(_load_local_skills())
 
@@ -47,15 +64,53 @@ def _load_skills(*, service_transport: httpx.BaseTransport | None = None) -> lis
         transport=service_transport,
     )
     store = PackageStore(cache_dir=cache_dir)
+    selected_refs: list[SkillRef] = []
     for space_id in _skill_space_ids():
         listing = client.list_skills_by_space_id(space_id)
-        for skill in listing.active_skills():
-            package = store.get_cached(skill)
-            if package is None:
-                archive = client.download_skill_archive(skill)
-                package = store.store_archive(skill, archive)
-            skills.append(load_local_skill(package.root_dir))
+        selected_refs.extend(
+            _select_remote_skill_refs(
+                listing.active_skills(),
+                prompt,
+                skill_names=skill_names,
+            )
+        )
+
+    for skill in selected_refs:
+        package = store.get_cached(skill)
+        if package is None:
+            archive = client.download_skill_archive(skill)
+            package = store.store_archive(skill, archive)
+        skills.append(load_local_skill(package.root_dir))
     return skills
+
+
+def _select_remote_skill_refs(
+    skill_refs: list[SkillRef],
+    prompt: str,
+    *,
+    skill_names: list[str] | None = None,
+) -> list[SkillRef]:
+    requested_names = {name.lower() for name in normalize_skill_names(skill_names)}
+    if not prompt and not requested_names:
+        return []
+    normalized_prompt = prompt.lower()
+    selected: list[SkillRef] = []
+    seen: set[str] = set()
+    for skill in skill_refs:
+        if not skill.name:
+            continue
+        skill_name = skill.name.lower()
+        if requested_names:
+            if skill_name not in requested_names:
+                continue
+        elif skill_name not in normalized_prompt:
+            continue
+        key = skill.cache_key or skill.skill_id or skill.name
+        if key in seen:
+            continue
+        seen.add(key)
+        selected.append(skill)
+    return selected
 
 
 def _load_local_skills() -> list[LocalSkill]:
@@ -79,13 +134,22 @@ def run_agent(
 ) -> int:
     args = list(argv if argv is not None else sys.argv[1:])
     prompt = _resolve_prompt(args)
-    loaded_skills = _load_skills(service_transport=service_transport)
+    selected_skill_names = _selected_skill_names()
+    loaded_skills = _load_skills(
+        prompt=prompt,
+        skill_names=selected_skill_names,
+        service_transport=service_transport,
+    )
     execution = _execute_workflow(prompt, loaded_skills)
     print(f"workflow={prompt}")
     print(f"skill_spaces={','.join(_skill_space_ids())}")
     print(f"loaded_skills={','.join(skill.name for skill in loaded_skills)}")
     print(f"workflow_result={json.dumps(asdict(execution), sort_keys=True)}")
     return 0 if execution.status != "failed" else 1
+
+
+def _selected_skill_names() -> list[str]:
+    return normalize_skill_names(os.environ.get("KSADK_SELECTED_SKILL_NAMES", ""))
 
 
 def _execute_workflow(prompt: str, skills: list[LocalSkill]) -> WorkflowExecution:

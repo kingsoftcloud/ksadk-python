@@ -240,6 +240,9 @@ class PreparedConversationTurn:
     user_parts: list[dict[str, Any]]
     attachments: list[dict[str, Any]]
     attachment_results: list[dict[str, Any]]
+    current_attachments: list[dict[str, Any]]
+    current_attachment_results: list[dict[str, Any]]
+    has_current_files: bool
     model_metadata: dict[str, Any] = field(default_factory=dict)
     model_options: dict[str, Any] = field(default_factory=dict)
     instructions: str = ""
@@ -827,6 +830,9 @@ def _build_runner_request_payload(
         "input_parts": prepared.user_parts,
         "attachments": prepared.attachments,
         "attachment_results": prepared.attachment_results,
+        "current_attachments": prepared.current_attachments,
+        "current_attachment_results": prepared.current_attachment_results,
+        "has_current_files": prepared.has_current_files,
         "model": model,
         "model_metadata": prepared.model_metadata,
         "model_options": prepared.model_options,
@@ -1254,6 +1260,15 @@ def _latest_user_turn(
     attachments = list(latest_user_message.get("attachments") or [])
     attachment_results = list(latest_user_message.get("attachment_results") or [])
     return user_input, user_display_input, user_parts, attachments, attachment_results
+
+
+def _parts_include_file(parts: Sequence[dict[str, Any]]) -> bool:
+    for part in parts or []:
+        if not isinstance(part, dict):
+            continue
+        if part.get("inlineData") is not None or part.get("fileData") is not None:
+            return True
+    return False
 
 
 def _latest_attachment_context_from_messages(
@@ -1839,6 +1854,9 @@ async def build_run_input(
             user_parts=[],
             attachments=[],
             attachment_results=[],
+            current_attachments=[],
+            current_attachment_results=[],
+            has_current_files=False,
             model_metadata=resolved_model_metadata,
             model_options=normalized_model_options,
             instructions=normalized_instructions,
@@ -1914,6 +1932,9 @@ async def build_run_input(
         user_parts=user_parts,
         attachments=effective_attachments,
         attachment_results=effective_attachment_results,
+        current_attachments=attachments,
+        current_attachment_results=attachment_results,
+        has_current_files=bool(attachments or _parts_include_file(user_parts)),
         model_metadata=resolved_model_metadata,
         model_options=normalized_model_options,
         instructions=normalized_instructions,
@@ -1992,6 +2013,9 @@ async def invoke_conversation_once(
         input_parts=list(prepared.user_parts),
         attachments=list(prepared.attachments),
         attachment_results=list(prepared.attachment_results),
+        current_attachments=list(prepared.current_attachments),
+        current_attachment_results=list(prepared.current_attachment_results),
+        has_current_files=prepared.has_current_files,
         runner_type=_runner_type_name(runner),
         model=model,
         model_options=prepared.model_options,
@@ -2182,6 +2206,9 @@ async def _iter_conversation_turn_events(
         input_parts=list(prepared.user_parts),
         attachments=list(prepared.attachments),
         attachment_results=list(prepared.attachment_results),
+        current_attachments=list(prepared.current_attachments),
+        current_attachment_results=list(prepared.current_attachment_results),
+        has_current_files=prepared.has_current_files,
         runner_type=_runner_type_name(runner),
         model=model,
         model_options=prepared.model_options,

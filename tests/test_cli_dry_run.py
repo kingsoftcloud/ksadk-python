@@ -1628,6 +1628,38 @@ def test_openclaw_deploy_create_payload_includes_network(monkeypatch, tmp_path):
     }
 
 
+def test_openclaw_deploy_uses_init_project_name_when_name_is_omitted(monkeypatch, tmp_path):
+    runner = CliRunner()
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawCreateClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw._GLOBAL_ENV_CACHE", {})
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "agentengine.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "name": "custom-openclaw",
+                "framework": "openclaw",
+                "entry_point": "custom_openclaw/agent.py",
+            }
+        ),
+        encoding="utf-8",
+    )
+    _FakeOpenClawCreateClient.create_payload = None
+    _FakeOpenClawCreateClient.update_payload = None
+    _FakeOpenClawCreateClient.get_agent_calls = 0
+
+    result = runner.invoke(
+        openclaw,
+        [
+            "deploy",
+            "--image",
+            "hub.kce.ksyun.com/agentengine-public/openclaw:test",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _FakeOpenClawCreateClient.create_payload["name"] == "custom-openclaw"
+
+
 def test_openclaw_deploy_update_payload_includes_network(monkeypatch, tmp_path):
     runner = CliRunner()
     monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawCreateClient)

@@ -545,8 +545,14 @@ async def test_build_run_input_reuses_last_attachment_results_for_follow_up_turn
         messages=[{"role": "user", "content": "继续分析"}],
     )
 
+    assert first.current_attachments == message["attachments"]
+    assert first.current_attachment_results == message["attachment_results"]
+    assert first.has_current_files is True
     assert follow_up.attachments == message["attachments"]
     assert follow_up.attachment_results == message["attachment_results"]
+    assert follow_up.current_attachments == []
+    assert follow_up.current_attachment_results == []
+    assert follow_up.has_current_files is False
 
     runner = _StubRunner()
     session_id, result = await invoke_conversation_once(
@@ -563,6 +569,9 @@ async def test_build_run_input_reuses_last_attachment_results_for_follow_up_turn
     assert session_id == first.session_id
     assert result["output_text"] == "assistant says hi"
     assert runner.calls[-1]["attachment_results"] == message["attachment_results"]
+    assert runner.calls[-1]["current_attachments"] == []
+    assert runner.calls[-1]["current_attachment_results"] == []
+    assert runner.calls[-1]["has_current_files"] is False
 
 
 @pytest.mark.asyncio

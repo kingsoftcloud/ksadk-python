@@ -15,6 +15,9 @@ class PlatformInvocationContext:
     input_parts: list[dict[str, Any]]
     attachments: list[dict[str, Any]]
     attachment_results: list[dict[str, Any]]
+    current_attachments: list[dict[str, Any]]
+    current_attachment_results: list[dict[str, Any]]
+    has_current_files: bool
     runner_type: str
     model: str | None = None
     model_options: dict[str, Any] | None = None
@@ -30,6 +33,9 @@ class PlatformInvocationContext:
             "input_parts": list(self.input_parts or []),
             "attachments": list(self.attachments or []),
             "attachment_results": list(self.attachment_results or []),
+            "current_attachments": list(self.current_attachments or []),
+            "current_attachment_results": list(self.current_attachment_results or []),
+            "has_current_files": self.has_current_files,
             "runner_type": self.runner_type,
             "model": self.model,
             "model_options": dict(self.model_options or {}),

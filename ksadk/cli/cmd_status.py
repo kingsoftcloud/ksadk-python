@@ -36,6 +36,11 @@ from ksadk.cli.ui import (
 )
 
 console = get_console()
+AGENT_LIST_HIDDEN_FRAMEWORKS = ("openclaw", "hermes")
+AGENT_LIST_HIDDEN_FRAMEWORK_LABELS = {
+    "openclaw": "OpenClaw",
+    "hermes": "Hermes",
+}
 
 
 @click.command(
@@ -318,17 +323,19 @@ async def _list_all_agents(
     size: int = 20,
     framework: str | Sequence[str] | None = None,
 ):
-    """列出 Agent 列表；未显式筛选 OpenClaw 时默认隐藏它。"""
+    """列出 Agent 列表；未显式筛选专用框架时默认隐藏它们。"""
     if not is_json_output():
         click.echo(f"查询 Agent 列表... (region: {region}, page: {page}, size: {size})")
 
     try:
         normalized_frameworks = _normalize_framework_filters(framework)
-        hide_openclaw = "openclaw" not in normalized_frameworks
+        hidden_frameworks = {
+            item for item in AGENT_LIST_HIDDEN_FRAMEWORKS if item not in normalized_frameworks
+        }
         server_page = 1
         server_page_size = max(size, 100)
         all_visible_results = []
-        hidden_openclaw = 0
+        hidden_special_agents = 0
         while True:
             response = await _list_agent_runtimes(
                 region,
@@ -342,11 +349,13 @@ async def _list_all_agents(
             if not raw_results:
                 break
 
-            if hide_openclaw:
+            if hidden_frameworks:
                 filtered_results = [
-                    r for r in raw_results if str(r.get("framework", "")).strip().lower() != "openclaw"
+                    r
+                    for r in raw_results
+                    if str(r.get("framework", "")).strip().lower() not in hidden_frameworks
                 ]
-                hidden_openclaw += len(raw_results) - len(filtered_results)
+                hidden_special_agents += len(raw_results) - len(filtered_results)
             else:
                 filtered_results = raw_results
             all_visible_results.extend(filtered_results)
@@ -357,8 +366,12 @@ async def _list_all_agents(
     except DryRunExit:
         raise
 
-    if hidden_openclaw > 0:
-        print_info(f"已隐藏 {hidden_openclaw} 个 OpenClaw 实例（使用 `agentengine openclaw list` 查看）")
+    hidden_framework_label = _format_hidden_framework_labels(hidden_frameworks)
+    if hidden_special_agents > 0:
+        print_info(
+            f"已隐藏 {hidden_special_agents} 个 {hidden_framework_label} 实例"
+            "（使用对应的专用 list 命令查看）"
+        )
 
     start = max(page - 1, 0) * size
     end = start + size
@@ -423,8 +436,8 @@ async def _list_all_agents(
         summary_lines=[
             f"健康: {running}  待关注: {unhealthy}",
             *(
-                [f"已隐藏 {hidden_openclaw} 个 OpenClaw 实例（使用 `agentengine openclaw list` 查看）"]
-                if hidden_openclaw > 0
+                [f"已隐藏 {hidden_special_agents} 个 {hidden_framework_label} 实例"]
+                if hidden_special_agents > 0
                 else []
             ),
         ],
@@ -569,3 +582,12 @@ def _normalize_framework_filters(framework: str | Sequence[str] | None) -> list[
                 seen.add(normalized)
                 normalized_values.append(normalized)
     return normalized_values
+
+
+def _format_hidden_framework_labels(frameworks: set[str]) -> str:
+    labels = [
+        AGENT_LIST_HIDDEN_FRAMEWORK_LABELS.get(framework, framework)
+        for framework in AGENT_LIST_HIDDEN_FRAMEWORKS
+        if framework in frameworks
+    ]
+    return "/".join(labels) if labels else "专用框架"

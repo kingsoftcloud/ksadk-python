@@ -270,21 +270,43 @@ class ADKRunner(BaseRunner):
 
         try:
             from ksadk.skills.runtime import create_skill_runtime_backend
-            from ksadk.skills.tool_defs import build_execute_skills_tool, resolve_skill_space_ids
+            from ksadk.skills.tool_defs import (
+                build_execute_skills_tool,
+                build_skill_manifest_instruction,
+                load_remote_skill_manifests,
+                resolve_skill_space_ids,
+            )
 
+            skill_space_ids = resolve_skill_space_ids()
             backend = create_skill_runtime_backend()
             execute_skills = build_execute_skills_tool(
                 backend=backend,
-                skill_space_ids=resolve_skill_space_ids(),
+                skill_space_ids=skill_space_ids,
                 session_id=getattr(self._agent, "name", None) or self.detection_result.name,
             )
             added = self._append_tools_by_name([execute_skills])
+            try:
+                manifest_instruction = build_skill_manifest_instruction(
+                    load_remote_skill_manifests(skill_space_ids)
+                )
+                if manifest_instruction:
+                    self._append_agent_instruction(manifest_instruction)
+            except Exception as exc:
+                logger.warning("Failed to inject remote Skill manifest: %s", exc)
             if added:
                 logger.info("Injected Skill Runtime tools into agent (added: %s)", ", ".join(added))
             else:
                 logger.debug("Skill Runtime tools already present")
         except Exception as exc:
             logger.warning("Failed to inject Skill Runtime tools: %s", exc)
+
+    def _append_agent_instruction(self, extra_instruction: str) -> None:
+        if not extra_instruction or not hasattr(self._agent, "instruction"):
+            return
+        current = str(getattr(self._agent, "instruction") or "")
+        if extra_instruction in current:
+            return
+        self._agent.instruction = f"{current.rstrip()}\n{extra_instruction}".strip()
 
     def _inject_local_skill_tools(self):
         try:
@@ -776,7 +798,14 @@ class ADKRunner(BaseRunner):
 
     def _build_state_delta(self, input_data: Dict[str, Any]) -> dict[str, Any]:
         state_delta: dict[str, Any] = {}
-        for key in ("input_parts", "attachments", "attachment_results"):
+        for key in (
+            "input_parts",
+            "attachments",
+            "attachment_results",
+            "current_attachments",
+            "current_attachment_results",
+            "has_current_files",
+        ):
             if key in input_data:
                 state_delta[key] = input_data.get(key)
         return state_delta

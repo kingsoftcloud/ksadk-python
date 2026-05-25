@@ -5,6 +5,39 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [0.5.9] - 2026-05-25
+
+### 亮点
+
+- **Responses API 官方会话语义对齐**：`/v1/responses` 支持 OpenAI Responses API 的 `conversation`、`safety_identifier`、`prompt_cache_key`、`user`、`store` 字段，并按官方语义把 `conversation` 映射为内部 session，把 `safety_identifier` 映射为最终用户标识。
+- **Langfuse UserID / SessionID 修复**：直连 `/v1/responses` 时不再固定写入 `user`，Langfuse trace 会优先使用 `safety_identifier` 和 `conversation`，并兼容新旧 span attribute key。
+- **运行时依赖与记忆后端兼容增强**：code mode 默认依赖升级到新版 `kingsoftcloud-sdk-python`，补齐 `ksadk_runtime_common` 记忆后端渲染和注册能力，改善 ADK memory / SDK LTM 在运行时镜像中的可用性。
+- **文件上下文当前轮语义优化**：runner payload 增加 `has_current_files`、`current_attachments`、`current_attachment_results`，把“当前最新 user turn 是否带文件”和“历史有效附件 fallback”明确拆开，避免业务 agent 在追问轮次误判仍有新文件上传。
+- **Skill Runtime 渐进式披露优化**：ADK 注入 Skill Runtime 时先只把远端技能 manifest 写入 agent instruction，引导模型按需调用 `execute_skills(..., skill_names=[...])`；runtime agent 再按显式 `skill_names` 或 prompt 命中的技能名下载并加载对应技能，避免每轮对话暴露完整技能包或拉取同一空间下全部 active 技能。
+
+### 变更
+
+- `/v1/responses` 在同时传入 `conversation` 与 legacy `session_id` 且不一致时返回 `400`，避免双会话语义冲突。
+- `/v1/responses` 在同时传入 `conversation` 与 `previous_response_id` 时返回 `400`，与官方二选一语义保持一致。
+- Runtime 接口文档补充 `/v1/responses` 推荐字段、legacy `session_id` 边界，以及 Hosted UI Action 与 OpenAI-compatible endpoint 的会话语义差异。
+- Runner 输入、LangGraph state 和 `RuntimeContext` 透传当前轮附件字段：`has_current_files`、`current_attachments`、`current_attachment_results`；原 `attachments` / `attachment_results` 继续表示最近有效附件上下文，保持历史 fallback 兼容。
+- OpenClaw bootstrap 支持通过 memory backend patch 禁用指定插件并清理插件 slot，避免 memory 配置切换后遗留旧插件配置。
+- 新增 `KSADK_PUBLIC_SKILL_SPACE_IDS` 环境变量，公共 Skill Space 会追加在用户 `KSADK_SKILL_SPACE_IDS` / `SKILL_SPACE_ID` 之后，并保持去重顺序。
+- `execute_skills` 新增可选 `skill_names` 参数，本地进程和 E2B Skill Runtime 后端会通过 `KSADK_SELECTED_SKILL_NAMES` 传给 runtime agent，实现远端技能按需加载。
+- 开发测试依赖补充 `fastmcp`，`uv sync --extra all` 后可直接运行 MCP runtime e2e 测试。
+- `agentengine openclaw deploy` 未显式传 `--name` 时优先复用本地 state 或 init 配置中的 OpenClaw 项目名，避免重复部署时生成新的随机名称。
+- `agentengine agent list` 默认隐藏 OpenClaw / Hermes 专用框架实例，显式传入框架筛选时仍可查看。
+
+### 修复
+
+- 修复 `/v1/responses` 直连 runtime 时 Langfuse UserID 固定显示为 `user`，导致不同最终用户无法区分的问题。
+- 修复 Langfuse exporter 只读取旧版 `langfuse.user_id` / `langfuse.session_id` key，导致新版 span attribute 下用户和会话信息丢失的问题。
+- 修复 runtime memory backend 渲染缺少必要注册信息时，部署后可能出现 `ksadk_runtime_common` 记忆后端不可用的问题。
+- 修复多轮对话中 `attachments` 使用历史 fallback 时，业务代码无法直接判断当前轮是否真正上传文件的问题。
+- 修复本地 loopback MCP / FastMCP e2e 在开发机配置 `HTTP_PROXY` 时，请求被代理到本机代理端口而不是临时 MCP server 的问题；远程 MCP URL 仍保留系统代理行为。
+- 修复 OpenClaw secretRef / memory backend 组合下旧插件配置不能被显式关闭的边界问题。
+- 修复 OpenClaw bootstrap 测试从开发机环境继承 Langfuse / OTEL 变量后出现非确定性失败的问题。
+
 ## [0.5.8] - 2026-05-22
 
 ### 亮点

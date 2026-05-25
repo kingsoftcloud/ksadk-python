@@ -4,7 +4,9 @@ import os
 from uuid import uuid4
 
 from ksadk.skills.loader import LocalSkill
-from ksadk.skills.runtime.base import SkillRuntimeBackend
+from ksadk.skills.models import SkillRef
+from ksadk.skills.runtime.base import SkillRuntimeBackend, normalize_skill_names
+from ksadk.skills.service_client import SkillServiceClient
 
 RUNTIME_AGENT_ENV_NAMES = (
     "KSADK_SKILL_SERVICE_URL",
@@ -22,8 +24,18 @@ RUNTIME_AGENT_ENV_NAMES = (
 
 
 def resolve_skill_space_ids() -> list[str]:
-    raw = os.environ.get("KSADK_SKILL_SPACE_IDS") or os.environ.get("SKILL_SPACE_ID") or ""
-    return [part.strip() for part in raw.split(",") if part.strip()]
+    user_raw = os.environ.get("KSADK_SKILL_SPACE_IDS") or os.environ.get("SKILL_SPACE_ID") or ""
+    public_raw = os.environ.get("KSADK_PUBLIC_SKILL_SPACE_IDS") or ""
+    spaces: list[str] = []
+    seen: set[str] = set()
+    for raw in (user_raw, public_raw):
+        for part in raw.split(","):
+            space_id = part.strip()
+            if not space_id or space_id in seen:
+                continue
+            seen.add(space_id)
+            spaces.append(space_id)
+    return spaces
 
 
 def runtime_agent_env_from_process() -> dict[str, str]:
@@ -50,12 +62,13 @@ def build_execute_skills_tool(
     spaces = list(skill_space_ids or resolve_skill_space_ids())
     default_session_id = session_id or f"ksadk-{uuid4().hex}"
 
-    def execute_skills(workflow_prompt: str) -> dict:
+    def execute_skills(workflow_prompt: str, skill_names: list[str] | str | None = None) -> dict:
         """Execute a workflow with the configured Skill Runtime."""
 
         result = backend.run_workflow(
             workflow_prompt,
             skill_space_ids=spaces,
+            skill_names=normalize_skill_names(skill_names),
             session_id=default_session_id,
             env=runtime_agent_env_from_process(),
             timeout=int(os.environ.get("KSADK_SKILL_RUNTIME_TIMEOUT", "900")),
@@ -64,6 +77,78 @@ def build_execute_skills_tool(
 
     execute_skills.__name__ = "execute_skills"
     return execute_skills
+
+
+def load_remote_skill_manifests(skill_space_ids: list[str] | None = None) -> list[dict[str, str]]:
+    service_url = os.environ.get("KSADK_SKILL_SERVICE_URL", "").strip()
+    if not service_url:
+        return []
+
+    spaces = list(skill_space_ids or resolve_skill_space_ids())
+    if not spaces:
+        return []
+
+    client = SkillServiceClient(
+        base_url=service_url,
+        token=os.environ.get("KSADK_SKILL_SERVICE_TOKEN", ""),
+        timeout=float(os.environ.get("KSADK_SKILL_MANIFEST_TIMEOUT", "5")),
+    )
+    manifests: list[dict[str, str]] = []
+    seen: set[str] = set()
+    limit = _manifest_limit()
+    for space_id in spaces:
+        listing = client.list_skills_by_space_id(space_id)
+        for skill in listing.active_skills():
+            item = _skill_manifest_item(skill, space_id=space_id)
+            name_key = item["name"].lower()
+            if not item["name"] or name_key in seen:
+                continue
+            seen.add(name_key)
+            manifests.append(item)
+            if len(manifests) >= limit:
+                return manifests
+    return manifests
+
+
+def build_skill_manifest_instruction(manifests: list[dict[str, str]]) -> str:
+    if not manifests:
+        return ""
+
+    lines = [
+        "",
+        "Available remote skills are listed below. Use them only when they match the user's task.",
+        "When a skill is useful, call execute_skills with the original workflow_prompt and skill_names set to the exact skill name.",
+        "Do not assume full skill instructions are already loaded; execute_skills loads selected skills on demand.",
+        "",
+        "Remote skills:",
+    ]
+    for item in manifests:
+        description = item.get("description") or "No description"
+        version = item.get("version") or ""
+        suffix = f" ({version})" if version else ""
+        lines.append(f"- {item['name']}{suffix}: {description}")
+    return "\n".join(lines)
+
+
+def _skill_manifest_item(skill: SkillRef, *, space_id: str) -> dict[str, str]:
+    return {
+        "name": str(skill.name or "").strip(),
+        "description": _single_line(skill.description),
+        "version": str(skill.version or "").strip(),
+        "space_id": str(space_id or "").strip(),
+    }
+
+
+def _single_line(value: str, *, limit: int = 240) -> str:
+    text = " ".join(str(value or "").split())
+    return text[:limit].rstrip()
+
+
+def _manifest_limit() -> int:
+    try:
+        return max(1, int(os.environ.get("KSADK_SKILL_MANIFEST_LIMIT", "30")))
+    except ValueError:
+        return 30
 
 
 def build_skills_tool(skills: list[LocalSkill]):
