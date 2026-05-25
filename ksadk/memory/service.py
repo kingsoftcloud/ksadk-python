@@ -87,7 +87,7 @@ class LongTermMemoryService:
                 "scheme": connection["scheme"],
                 "namespace": os.environ.get("KSADK_LTM_NAMESPACE", ""),
                 "agent_id": os.environ.get("KSADK_LTM_AGENT_ID", ""),
-                "scene_id": os.environ.get("KSADK_LTM_SCENE_ID", ""),
+                "scene_id": os.environ.get("KSADK_LTM_SCENE_ID", "_sys_general"),
             }
 
         return cls(

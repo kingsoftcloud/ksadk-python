@@ -257,12 +257,24 @@ class TestSdkLTMBackend:
                 {"role": "user", "parts": [{"text": "hello"}]},
                 ensure_ascii=False,
             )
-            result = backend.save_memory("u1", [event])
+            result = backend.save_memory(
+                "u1",
+                [event],
+                metadata={"agent_id": "agent-1", "session_id": "sess-1"},
+            )
 
         assert result is True
         mock_client.call.assert_called_once()
         call_args = mock_client.call.call_args
         assert call_args[0][0] == "CreateMemorySdk"
+        params = call_args[0][1]
+        assert params["MemoryCollectionId"] == "test_ns"
+        assert params["AgentUserId"] == "u1"
+        assert params["AgentId"] == "agent-1"
+        assert params["SessionId"] == "sess-1"
+        assert params["SceneId"] == "_sys_general"
+        assert "Namespace" not in params
+        assert "UserId" not in params
 
     def test_save_data_conversation_format(self):
         """验证 Data 字段为 {"Conversation": [...]} 结构"""
@@ -357,10 +369,13 @@ class TestSdkLTMBackend:
         call_args = mock_client.call.call_args
         assert call_args[0][0] == "QueryMemorySdk"
         params = call_args[0][1]
-        assert params["Namespace"] == "test_ns"
-        assert params["UserId"] == "u1"
+        assert params["MemoryCollectionId"] == "test_ns"
+        assert params["AgentUserId"] == "u1"
+        assert params["SceneId"] == "_sys_general"
         assert params["Query"] == "query"
         assert params["Limit"] == 3
+        assert "Namespace" not in params
+        assert "UserId" not in params
 
     def test_search_exception_returns_empty(self):
         backend = self._make_backend()
@@ -379,7 +394,7 @@ class TestSdkLTMBackend:
             backend.search_memory("u1", "query")
 
         params = mock_client.call.call_args[0][1]
-        assert params["Namespace"] == "fallback_idx"
+        assert params["MemoryCollectionId"] == "fallback_idx"
 
     def test_optional_search_params(self):
         backend = self._make_backend(scene_id="scene_1")
@@ -532,6 +547,7 @@ class TestLongTermMemoryInit:
         assert ltm.backend_config["access_key"] == "ak_test"
         assert ltm.backend_config["secret_key"] == "sk_test"
         assert ltm.backend_config["namespace"] == "ns_test"
+        assert ltm.backend_config["scene_id"] == "_sys_general"
 
     def test_from_env_sdk_ak_fallback(self, monkeypatch):
         from ksadk.memory.adk.long_term_memory import LongTermMemory

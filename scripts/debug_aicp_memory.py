@@ -6,8 +6,10 @@ Examples:
   python ksadk-python/scripts/debug_aicp_memory.py list
   python ksadk-python/scripts/debug_aicp_memory.py get --memory-id mem-xxx
   python ksadk-python/scripts/debug_aicp_memory.py create --name demo --description "debug"
-  python ksadk-python/scripts/debug_aicp_memory.py write --namespace mem-xxx --user-id debug-user --text ping
-  python ksadk-python/scripts/debug_aicp_memory.py query --namespace mem-xxx --user-id debug-user --query ping
+  python ksadk-python/scripts/debug_aicp_memory.py write \
+    --memory-id mem-xxx --user-id debug-user --text ping
+  python ksadk-python/scripts/debug_aicp_memory.py query \
+    --memory-id mem-xxx --user-id debug-user --query ping
 """
 
 from __future__ import annotations
@@ -52,10 +54,10 @@ def load_simple_dotenv(env_file: str | None = None) -> None:
 
 
 def build_client():
+    from ksyun.client.aicp.v20251114 import client
     from ksyun.common import credential
     from ksyun.common.profile.client_profile import ClientProfile
     from ksyun.common.profile.http_profile import HttpProfile
-    from ksyun.client.aicp.v20251114 import client
 
     access_key = os.getenv("KSADK_LTM_ACCESS_KEY") or os.getenv("KSYUN_ACCESS_KEY")
     secret_key = os.getenv("KSADK_LTM_SECRET_KEY") or os.getenv("KSYUN_SECRET_KEY")
@@ -64,7 +66,10 @@ def build_client():
     scheme = os.getenv("KSADK_LTM_SCHEME", "https")
 
     if not access_key or not secret_key:
-        raise SystemExit("Missing AK/SK. Set KSADK_LTM_ACCESS_KEY/SECRET_KEY or KSYUN_ACCESS_KEY/SECRET_KEY.")
+        raise SystemExit(
+            "Missing AK/SK. Set KSADK_LTM_ACCESS_KEY/SECRET_KEY "
+            "or KSYUN_ACCESS_KEY/SECRET_KEY."
+        )
 
     cred = credential.Credential(access_key, secret_key)
     http = HttpProfile()
@@ -166,8 +171,9 @@ def raw_sdk_call(cli, action: str, params: dict[str, Any]) -> dict[str, Any]:
 
 def cmd_write(cli, args):
     params = {
-        "Namespace": args.namespace,
-        "UserId": args.user_id,
+        "MemoryCollectionId": args.memory_id,
+        "AgentUserId": args.user_id,
+        "SceneId": args.scene_id,
         "Data": {
             "Conversation": [
                 {
@@ -183,20 +189,17 @@ def cmd_write(cli, args):
         params["AgentId"] = args.agent_id
     if args.session_id:
         params["SessionId"] = args.session_id
-    if args.scene_id:
-        params["SceneId"] = args.scene_id
     return raw_sdk_call(cli, "CreateMemorySdk", params)
 
 
 def cmd_query(cli, args):
     params = {
-        "Namespace": args.namespace,
-        "UserId": args.user_id,
+        "MemoryCollectionId": args.memory_id,
+        "AgentUserId": args.user_id,
+        "SceneId": args.scene_id,
         "Query": args.query,
         "Limit": args.limit,
     }
-    if args.scene_id:
-        params["SceneId"] = args.scene_id
     if args.mode:
         params["Mode"] = args.mode
     return raw_sdk_call(cli, "QueryMemorySdk", params)
@@ -227,21 +230,21 @@ def build_parser() -> argparse.ArgumentParser:
     create_parser.add_argument("--name", required=True)
     create_parser.add_argument("--description", default="")
 
-    write_parser = subparsers.add_parser("write", help="Write memory into a namespace")
-    write_parser.add_argument("--namespace", required=True)
+    write_parser = subparsers.add_parser("write", help="Write memory into a memory collection")
+    write_parser.add_argument("--memory-id", "--namespace", dest="memory_id", required=True)
     write_parser.add_argument("--user-id", default="debug-user")
     write_parser.add_argument("--text", required=True)
     write_parser.add_argument("--role", default="user")
     write_parser.add_argument("--agent-id", default="")
     write_parser.add_argument("--session-id", default="")
-    write_parser.add_argument("--scene-id", default="")
+    write_parser.add_argument("--scene-id", default="_sys_general")
 
-    query_parser = subparsers.add_parser("query", help="Query memory from a namespace")
-    query_parser.add_argument("--namespace", required=True)
+    query_parser = subparsers.add_parser("query", help="Query memory from a memory collection")
+    query_parser.add_argument("--memory-id", "--namespace", dest="memory_id", required=True)
     query_parser.add_argument("--user-id", default="debug-user")
     query_parser.add_argument("--query", required=True)
     query_parser.add_argument("--limit", type=int, default=5)
-    query_parser.add_argument("--scene-id", default="")
+    query_parser.add_argument("--scene-id", default="_sys_general")
     query_parser.add_argument("--mode", default="")
 
     return parser

@@ -129,6 +129,15 @@ def _build_mem0_manifest_json() -> str:
     )
 
 
+def _build_openclaw_default_memory_manifest_json() -> str:
+    return json.dumps(
+        {
+            "schema_version": "v1",
+            "backend_type": "openclaw_default",
+        }
+    )
+
+
 def _assert_model_token_defaults(models: list[dict], *, minimum_max_tokens: int = 20000) -> None:
     for model in models:
         if "contextWindow" not in model and "maxTokens" not in model:
@@ -3716,6 +3725,55 @@ def test_bootstrap_applies_mem0_memory_backend_manifest():
                 "userId": "2000104981",
             },
         }
+
+
+def test_bootstrap_openclaw_default_manifest_clears_existing_mem0_memory_backend():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "plugins": {
+                        "slots": {"memory": "openclaw-mem0", "search": "perplexity"},
+                        "allow": ["openclaw-mem0", "perplexity"],
+                        "entries": {
+                            "openclaw-mem0": {
+                                "enabled": True,
+                                "config": {
+                                    "mode": "platform",
+                                    "apiKey": "old-key",
+                                    "baseUrl": "http://mem-service.sdns.ksyun.com",
+                                    "userId": "2000104981",
+                                },
+                            },
+                            "perplexity": {"enabled": True},
+                        },
+                    }
+                }
+            )
+        )
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["MEMORY_BACKEND_MANIFEST"] = _build_openclaw_default_memory_manifest_json()
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        cfg = json.loads(config_path.read_text())
+        assert cfg["plugins"]["slots"] == {"search": "perplexity"}
+        assert "openclaw-mem0" not in cfg["plugins"]["allow"]
+        assert cfg["plugins"]["entries"]["openclaw-mem0"] == {
+            "enabled": False,
+            "config": {},
+        }
+        assert cfg["plugins"]["entries"]["perplexity"] == {"enabled": True}
 
 
 def test_bootstrap_fails_when_mem0_manifest_env_is_incomplete():

@@ -244,9 +244,9 @@
 | `KSADK_LTM_ENDPOINT` | SDK LTM | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | SDK LTM endpoint。 |
 | `KSADK_LTM_SCHEME` | SDK LTM | 否 | `https` | 无 | 否 | 平台 / 开发者 | 否 | SDK LTM scheme。 |
 | `KSADK_LTM_INDEX` | LTM | 否 | 未设置 | 无 | 否 | 开发者 | 否 | LTM index。 |
-| `KSADK_LTM_NAMESPACE` | LTM | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | LTM namespace。 |
+| `KSADK_LTM_NAMESPACE` | LTM | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | LTM 记忆库 ID；环境变量名保持不变，请填写新版 SDK 的 `MemoryCollectionId`。 |
 | `KSADK_LTM_AGENT_ID` | LTM | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | LTM agent id。 |
-| `KSADK_LTM_SCENE_ID` | LTM | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | LTM scene id。 |
+| `KSADK_LTM_SCENE_ID` | LTM | 否 | `_sys_general` | 无 | 否 | 平台 / 开发者 | 否 | LTM scene id；新版记忆库保存必传，未设置时使用通用场景 `_sys_general`。 |
 | `KSADK_LTM_APP_NAME` | LTM | 否 | 未设置 | 无 | 否 | 开发者 | 否 | LTM application name 覆盖。 |
 | `KSADK_LTM_TOP_K` | LTM | 否 | `5` | 无 | 否 | 开发者 | 否 | LTM 返回条数。 |
 | `KSADK_LTM_AMBIENT_ENABLED` | Conversations runtime | 否 | `true` | 无 | 否 | 平台 / 开发者 | 否 | 是否允许 runtime 自动加载长期记忆上下文。 |

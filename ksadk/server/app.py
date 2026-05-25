@@ -16,7 +16,7 @@ import asyncio
 import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Mapping, Optional
 from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request, File, Form, Query, UploadFile
@@ -541,6 +541,11 @@ class ResponsesRequest(BaseModel):
     model_options: Optional[Dict[str, Any]] = None
     instructions: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
+    conversation: Optional[Any] = None
+    safety_identifier: Optional[str] = None
+    prompt_cache_key: Optional[str] = None
+    user: Optional[str] = None
+    store: Optional[bool] = None
     previous_response_id: Optional[str] = None
     stream: bool = False
     session_id: Optional[str] = None
@@ -550,6 +555,56 @@ class WorkspaceListActionRequest(BaseModel):
     AgentId: Optional[str] = None
     Path: str = "."
     Recursive: bool = False
+
+
+def _clean_optional_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _resolve_responses_conversation_id(conversation_value: Any) -> str | None:
+    if conversation_value is None:
+        return None
+    if isinstance(conversation_value, str):
+        return _clean_optional_string(conversation_value)
+    if isinstance(conversation_value, Mapping):
+        return _clean_optional_string(conversation_value.get("id"))
+    raise HTTPException(
+        status_code=400,
+        detail="Responses field 'conversation' must be a string or an object with an 'id'.",
+    )
+
+
+def _resolve_responses_session_and_user(request: ResponsesRequest) -> tuple[str | None, str]:
+    conversation_id = _resolve_responses_conversation_id(request.conversation)
+    legacy_session_id = _clean_optional_string(request.session_id)
+
+    if conversation_id and legacy_session_id and conversation_id != legacy_session_id:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Responses field 'conversation' conflicts with ksadk legacy field "
+                "'session_id'. Use 'conversation' for OpenAI-compatible calls."
+            ),
+        )
+    if conversation_id and request.previous_response_id:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Responses fields 'conversation' and 'previous_response_id' cannot be "
+                "used together."
+            ),
+        )
+
+    resolved_session_id = conversation_id or legacy_session_id
+    resolved_user_id = (
+        _clean_optional_string(request.safety_identifier)
+        or _clean_optional_string(request.user)
+        or "user"
+    )
+    return resolved_session_id, resolved_user_id
 
 
 class WorkspaceDeleteActionRequest(BaseModel):
@@ -1700,6 +1755,7 @@ class ChatCompletionRequest(BaseModel):
 async def responses(request: ResponsesRequest):
     """OpenAI Responses 兼容接口。"""
     active_runner = _resolve_active_runner()
+    resolved_session_id, resolved_user_id = _resolve_responses_session_and_user(request)
 
     resume_input = conversation.extract_responses_resume_input(request.input)
     messages = [] if resume_input is not None else conversation.normalize_responses_input(request.input)
@@ -1707,15 +1763,25 @@ async def responses(request: ResponsesRequest):
     request_metadata = dict(request.metadata or {})
     if request.previous_response_id:
         request_metadata.setdefault("previous_response_id", request.previous_response_id)
+    if request.prompt_cache_key:
+        request_metadata.setdefault("prompt_cache_key", request.prompt_cache_key)
+    if request.safety_identifier:
+        request_metadata.setdefault("safety_identifier", request.safety_identifier)
+    if request.user:
+        request_metadata.setdefault("user", request.user)
+    if request.conversation is not None:
+        request_metadata.setdefault("conversation", request.conversation)
+    if request.store is not None:
+        request_metadata.setdefault("store", request.store)
 
     if request.stream:
         return StreamingResponse(
             conversation.stream_responses_conversation_turn(
                 runner=active_runner,
                 agent_id=agent_id,
-                user_id="user",
+                user_id=resolved_user_id,
                 messages=messages,
-                session_id=request.session_id,
+                session_id=resolved_session_id,
                 model=request.model,
                 model_metadata=request.model_metadata,
                 model_options=request.model_options,
@@ -1732,9 +1798,9 @@ async def responses(request: ResponsesRequest):
     resolved_session_id, result = await conversation.invoke_conversation_once(
         runner=active_runner,
         agent_id=agent_id,
-        user_id="user",
+        user_id=resolved_user_id,
         messages=messages,
-        session_id=request.session_id,
+        session_id=resolved_session_id,
         model=request.model,
         model_metadata=request.model_metadata,
         model_options=request.model_options,

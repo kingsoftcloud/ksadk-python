@@ -38,6 +38,8 @@ def test_render_openclaw_default_manifest_returns_empty_patch():
         "config_patch": {},
         "required_env": [],
         "plugin_ids": [],
+        "disabled_plugin_ids": ["openclaw-mem0"],
+        "clear_plugin_slots": ["memory"],
     }
 
 
@@ -106,6 +108,8 @@ def test_render_mem0_manifest_to_openclaw_patch(monkeypatch):
         },
         "required_env": ["MEM0_API_KEY", "MEM0_USER_ID", "MEM0_BASE_URL"],
         "plugin_ids": ["openclaw-mem0"],
+        "disabled_plugin_ids": [],
+        "clear_plugin_slots": [],
     }
 
 

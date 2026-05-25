@@ -281,9 +281,14 @@ curl -H "Authorization: Bearer <api_key>" \
 | `model_metadata` | `object` | 否 | 模型元数据 |
 | `instructions` | `string` | 否 | 额外系统指令 |
 | `metadata` | `object` | 否 | 请求级 metadata |
-| `previous_response_id` | `string` | 否 | OpenAI Responses 风格上一轮 response id；当前会保留到 metadata，不能替代 `session_id` |
+| `conversation` | `string | object` | 否 | OpenAI Responses 会话绑定字段；可传 `"conv_xxx"` 或 `{ "id": "conv_xxx" }`，runtime 会映射为内部会话 ID |
+| `previous_response_id` | `string` | 否 | OpenAI Responses 上一轮 response id；不能和 `conversation` 同时使用 |
+| `safety_identifier` | `string` | 否 | OpenAI 推荐的最终用户稳定标识；runtime 会映射为内部 user id 和 Langfuse UserID，建议传 hash 后值 |
+| `prompt_cache_key` | `string` | 否 | OpenAI prompt cache 路由提示；runtime 当前保留到请求 metadata，不作为用户身份 |
+| `user` | `string` | 否 | OpenAI deprecated 用户字段；仅在未传 `safety_identifier` 时作为兼容兜底 |
+| `store` | `boolean` | 否 | OpenAI Responses 存储开关；runtime 当前保留到请求 metadata |
 | `stream` | `boolean` | 否 | 是否流式 |
-| `session_id` | `string` | 否 | 指定会话 ID |
+| `session_id` | `string` | 否 | ksadk legacy extension；兼容旧客户端。新接入应优先使用 `conversation` |
 
 最小请求示例：
 
@@ -310,7 +315,27 @@ curl -H "Authorization: Bearer <api_key>" \
   ],
   "model": "glm-5.1",
   "stream": true,
-  "session_id": "sess-123"
+  "conversation": "conv_customer_001",
+  "safety_identifier": "hash_user_001"
+}
+```
+
+会话字段边界：
+
+- 官方兼容路径：连续对话传 `conversation`；最终用户标识传 `safety_identifier`。
+- `previous_response_id` 只表达 Responses 链式上下文，不能和 `conversation` 同时使用。
+- `session_id` 是 ksadk 早期扩展字段，仅为旧客户端保留；不要在新代码中把它当作 OpenAI 官方字段。
+- 不要通过 `metadata.user_id`、`metadata.session_id` 或其他私有 metadata 约定传用户身份和会话身份。
+
+推荐请求示例：
+
+```json
+{
+  "model": "deepseek-v4-pro",
+  "input": "帮我分析这张账单",
+  "conversation": "conv_bill_20260525_001",
+  "safety_identifier": "user_hash_001",
+  "stream": false
 }
 ```
 
@@ -406,9 +431,11 @@ curl -H "Authorization: Bearer <api_key>" \
 多轮会话历史：
 
 - `/v1/responses` 本身不要求客户端每轮重传完整历史
-- 只要持续传同一个 `session_id`，runtime 就会从服务端会话存储里恢复该会话的历史 transcript
+- 新客户端应持续传同一个 `conversation`，runtime 会从服务端会话存储里恢复该会话的历史 transcript
+- 旧客户端只传 `session_id` 时仍可恢复同一会话，但这是 ksadk legacy extension
 - 进入 runner 前，`ksadk` 会把历史、附件上下文、知识库上下文和长期记忆上下文统一重建成标准运行输入
-- `previous_response_id` 按 OpenAI Responses 语义接收并保留，但当前 runtime 定位会话和 LangGraph thread 仍以 `session_id` 为准
+- `safety_identifier` 会作为内部 user id，并用于 Langfuse UserID；未传时 deprecated `user` 字段可作为兜底
+- `previous_response_id` 按 OpenAI Responses 语义接收并保留；当使用 `conversation` 时不要同时传 `previous_response_id`
 
 ### Responses approval / interrupt 恢复
 
@@ -421,12 +448,11 @@ curl -H "Authorization: Bearer <api_key>" \
 
 #### MCP approval 恢复
 
-MCP/tool approval 场景按 OpenAI Responses 标准语义恢复。客户端应传同一个 `session_id`，并把 `input` 写成 `mcp_approval_response`：
+MCP/tool approval 场景按 OpenAI Responses 标准语义恢复。客户端应传同一个 `conversation` 或 legacy `session_id`，并把 `input` 写成 `mcp_approval_response`：
 
 ```json
 {
-  "session_id": "sess-123",
-  "previous_response_id": "resp_previous",
+  "conversation": "conv_customer_001",
   "input": [
     {
       "type": "mcp_approval_response",
@@ -455,7 +481,7 @@ MCP/tool approval 场景按 OpenAI Responses 标准语义恢复。客户端应�
 
 ```json
 {
-  "session_id": "sess-123",
+  "conversation": "conv_customer_001",
   "input": [
     {
       "type": "ksadk_resume",
@@ -482,7 +508,7 @@ MCP/tool approval 场景按 OpenAI Responses 标准语义恢复。客户端应�
 调用方只需要理解：
 
 - `/v1/responses` 不要求每轮重传完整历史
-- 同一会话应持续传同一个 `session_id`
+- 同一会话应持续传同一个 `conversation`；旧客户端传 `session_id` 也能继续兼容
 - runtime 会在进入 runner 前重建历史、附件、知识库和长期记忆上下文
 - 框架业务代码如何消费这些上下文，由对应框架最佳实践文档说明
 
@@ -517,7 +543,7 @@ MCP/tool approval 场景按 OpenAI Responses 标准语义恢复。客户端应�
 | `output` | 输出条目数组 |
 | `output_text` | 文本聚合结果 |
 | `usage` | 简化 token 统计 |
-| `session_id` | 会话 ID |
+| `session_id` | ksadk 返回的内部会话 ID；当请求传了 `conversation` 时与其 id 一致 |
 
 非流式响应示例：
 
@@ -556,7 +582,7 @@ MCP/tool approval 场景按 OpenAI Responses 标准语义恢复。客户端应�
     "output_tokens": 12,
     "total_tokens": 12
   },
-  "session_id": "sess-123"
+  "session_id": "conv_customer_001"
 }
 ```
 
@@ -1065,14 +1091,14 @@ data: <json>
 
 | 字段 | 来源 | 说明 |
 | --- | --- | --- |
-| `SessionId` | 请求中传入的 `session_id` / `SessionId`，或响应中返回的 `session_id` | 会话 ID。连续对话和反馈查询都应使用同一个值 |
+| `SessionId` | `/v1/responses` 请求中传入的 `conversation` 或 legacy `session_id`，或响应中返回的 `session_id`；`RunAgent` 则使用 `SessionId` | 会话 ID。连续对话和反馈查询都应使用同一个值 |
 | `ResponseId` | Responses payload 的 `id` | assistant 回复对应的 `resp_xxx` |
 
 不同入口的取值方式：
 
 - 直接调用 `/v1/responses`
   - 非流式：使用响应 JSON 顶层 `id` 和 `session_id`
-  - 流式：从 `response.created` 或 `response.completed` 事件的 `data.id` 取 `ResponseId`；`SessionId` 使用请求里传入的 `session_id`
+  - 流式：从 `response.created` 或 `response.completed` 事件的 `data.id` 取 `ResponseId`；`SessionId` 使用请求里传入的 `conversation` 或 legacy `session_id`
 - 调用 `RunAgent`
   - 建议 `ApiFormat=responses`
   - 非流式：外层是 `ActionResponse`，使用 `Data.id` / `Data.session_id`

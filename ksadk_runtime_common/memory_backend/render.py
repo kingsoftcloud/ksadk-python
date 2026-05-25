@@ -17,6 +17,8 @@ from ksadk_runtime_common.memory_backend.registry import (
 )
 
 MANIFEST_ENV_VAR = "MEMORY_BACKEND_MANIFEST"
+MEMORY_BACKEND_PLUGIN_IDS = ["openclaw-mem0"]
+MEMORY_BACKEND_PLUGIN_SLOTS = ["memory"]
 
 
 def render_memory_backend_config(
@@ -48,6 +50,8 @@ def render_memory_backend_config(
             backend_type="openclaw_default",
             config_patch={},
             required_env=[],
+            disabled_plugin_ids=MEMORY_BACKEND_PLUGIN_IDS,
+            clear_plugin_slots=MEMORY_BACKEND_PLUGIN_SLOTS,
         )
 
     provider = get_provider(parsed.backend_type)

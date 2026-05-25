@@ -225,6 +225,7 @@ def test1_5_sdk_backend():
     endpoint = os.getenv("KSADK_LTM_ENDPOINT", "aicp.api.ksyun.com")
     scheme = os.getenv("KSADK_LTM_SCHEME", "https")
     namespace = os.getenv("KSADK_LTM_NAMESPACE", "ksadk_test")
+    scene_id = os.getenv("KSADK_LTM_SCENE_ID", "_sys_general")
 
     backend = SdkLTMBackend(
         index="test_sdk",
@@ -233,9 +234,13 @@ def test1_5_sdk_backend():
         endpoint=endpoint,
         scheme=scheme,
         namespace=namespace,
+        scene_id=scene_id,
     )
     print(f"  backend: SdkLTMBackend")
-    print(f"  endpoint: {endpoint}, namespace: {namespace}")
+    print(
+        f"  endpoint: {endpoint}, "
+        f"memory_collection_id: {namespace}, scene_id: {scene_id}"
+    )
 
     passed = 0
     total = 0

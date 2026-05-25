@@ -161,9 +161,17 @@ class _LangfuseSpanExporter:
         agent_output = attrs.get("agent.output", "")
         
         # Extract Langfuse-specific attributes from span
-        span_session_id = attrs.get("langfuse.session_id")
+        span_session_id = (
+            attrs.get("langfuse.session.id")
+            or attrs.get("langfuse.session_id")
+            or attrs.get("session.id")
+        )
         span_tags = attrs.get("langfuse.tags", "")
-        span_user_id = attrs.get("langfuse.user_id")
+        span_user_id = (
+            attrs.get("langfuse.user.id")
+            or attrs.get("langfuse.user_id")
+            or attrs.get("user.id")
+        )
         
         # Create trace using ingestion endpoint
         try:

@@ -2003,6 +2003,27 @@ const enablePlugin = (pluginId) => {
   ]);
   ensurePluginEntry(pluginId).enabled = true;
 };
+const disablePlugin = (pluginId) => {
+  const normalizedPluginId = String(pluginId ?? '').trim();
+  if (!normalizedPluginId) return;
+  cfg.plugins = cfg.plugins || {};
+  if (Array.isArray(cfg.plugins.allow)) {
+    const disabledKey = normalizedPluginId.toLowerCase();
+    cfg.plugins.allow = cfg.plugins.allow.filter(
+      (item) => String(item ?? '').trim().toLowerCase() !== disabledKey,
+    );
+  }
+  const entry = ensurePluginEntry(normalizedPluginId);
+  entry.enabled = false;
+  entry.config = {};
+};
+const clearPluginSlot = (slotName, pluginIds) => {
+  const normalizedSlotName = String(slotName ?? '').trim();
+  if (!normalizedSlotName || !isPlainObject(cfg.plugins?.slots)) return;
+  if (pluginIds.length === 0 || pluginIds.includes(String(cfg.plugins.slots[normalizedSlotName] ?? '').trim())) {
+    delete cfg.plugins.slots[normalizedSlotName];
+  }
+};
 const isPlainObject = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 const cloneJsonValue = (value) => {
   if (Array.isArray(value)) {
@@ -2349,9 +2370,29 @@ const parseRenderedMemoryBackend = (raw) => {
       .map((item) => String(item ?? '').trim())
       .filter(Boolean),
   );
+  const disabledPluginIdsRaw = parsed.disabled_plugin_ids;
+  if (disabledPluginIdsRaw !== undefined && !Array.isArray(disabledPluginIdsRaw)) {
+    throw new Error('MEMORY_BACKEND_PATCH_JSON.disabled_plugin_ids must be an array when provided');
+  }
+  const disabledPluginIds = uniqueStrings(
+    (Array.isArray(disabledPluginIdsRaw) ? disabledPluginIdsRaw : [])
+      .map((item) => String(item ?? '').trim())
+      .filter(Boolean),
+  );
+  const clearPluginSlotsRaw = parsed.clear_plugin_slots;
+  if (clearPluginSlotsRaw !== undefined && !Array.isArray(clearPluginSlotsRaw)) {
+    throw new Error('MEMORY_BACKEND_PATCH_JSON.clear_plugin_slots must be an array when provided');
+  }
+  const clearPluginSlots = uniqueStrings(
+    (Array.isArray(clearPluginSlotsRaw) ? clearPluginSlotsRaw : [])
+      .map((item) => String(item ?? '').trim())
+      .filter(Boolean),
+  );
   return {
     ...parsed,
     plugin_ids: pluginIds,
+    disabled_plugin_ids: disabledPluginIds,
+    clear_plugin_slots: clearPluginSlots,
   };
 };
 const renderedMemoryBackend = parseRenderedMemoryBackend(process.env.MEMORY_BACKEND_PATCH_JSON);
@@ -3300,6 +3341,15 @@ if (renderedMemoryBackend && Object.keys(renderedMemoryBackend.config_patch).len
     enablePlugin(pluginId);
   }
   cfg = deepMergeObjects(cfg, renderedMemoryBackend.config_patch);
+}
+if (renderedMemoryBackend) {
+  const disabledPluginIds = renderedMemoryBackend.disabled_plugin_ids || [];
+  for (const slotName of renderedMemoryBackend.clear_plugin_slots || []) {
+    clearPluginSlot(slotName, disabledPluginIds);
+  }
+  for (const pluginId of disabledPluginIds) {
+    disablePlugin(pluginId);
+  }
 }
 
 const openclawConfigPatchRaw = String(process.env.OPENCLAW_CONFIG_PATCH_JSON || '').trim();

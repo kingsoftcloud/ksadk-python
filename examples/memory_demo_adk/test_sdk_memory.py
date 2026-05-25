@@ -16,7 +16,8 @@
       KSYUN_SECRET_KEY=你的SK
       KSADK_LTM_ENDPOINT=aicp.inner.api.ksyun.com   (内网)
       KSADK_LTM_SCHEME=http
-      KSADK_LTM_NAMESPACE=你的记忆库Namespace
+      KSADK_LTM_NAMESPACE=你的记忆库 ID (对应新版 SDK 的 MemoryCollectionId)
+      KSADK_LTM_SCENE_ID=_sys_general
 
 运行:
     cd examples/memory_demo_adk
@@ -49,7 +50,8 @@ SK = os.getenv("KSADK_LTM_SECRET_KEY") or os.getenv("KSYUN_SECRET_KEY", "")
 ENDPOINT = os.getenv("KSADK_LTM_ENDPOINT", "aicp.inner.api.ksyun.com")
 SCHEME = os.getenv("KSADK_LTM_SCHEME", "http")
 REGION = os.getenv("KSADK_LTM_REGION", "cn-beijing-6")
-NAMESPACE = os.getenv("KSADK_LTM_NAMESPACE", "")
+MEMORY_COLLECTION_ID = os.getenv("KSADK_LTM_NAMESPACE", "")
+SCENE_ID = os.getenv("KSADK_LTM_SCENE_ID", "_sys_general")
 
 PASS = "\033[92m[PASS]\033[0m"
 FAIL = "\033[91m[FAIL]\033[0m"
@@ -110,7 +112,10 @@ def build_conversation(messages):
 def diagnose_error(err_msg: str):
     """根据错误信息输出诊断建议"""
     if "NotFound" in err_msg:
-        print(f"\n  >>> 诊断: Namespace '{NAMESPACE}' 不存在，请在 AICP 控制台确认正确的记忆库 ID")
+        print(
+            f"\n  >>> 诊断: 记忆库 '{MEMORY_COLLECTION_ID}' 不存在，"
+            "请在 AICP 控制台确认正确的记忆库 ID"
+        )
     elif "InnerAccountCanOnlyAccessThroughIntranet" in err_msg:
         print(f"\n  >>> 诊断: 内网账号不能走外网，请设置:")
         print(f"      KSADK_LTM_ENDPOINT=aicp.inner.api.ksyun.com")
@@ -146,7 +151,7 @@ def create_client():
 
     if aicp_module is None:
         print(f"  {FAIL} 无法导入 ksyun.client.aicp")
-        print(f"  请安装: pip install 'kingsoftcloud-sdk-python>=1.5.8.71'")
+        print(f"  请安装: pip install 'kingsoftcloud-sdk-python>=1.5.8.90'")
         sys.exit(1)
 
     cred = credential.Credential(AK, SK)
@@ -180,14 +185,16 @@ def test_create_memory_single(client):
     conversation = build_conversation(messages)
 
     params = {
-        "Namespace": NAMESPACE,
-        "UserId": "sdk_test_user",
+        "MemoryCollectionId": MEMORY_COLLECTION_ID,
+        "AgentUserId": "sdk_test_user",
+        "SceneId": SCENE_ID,
         "Data": {"Conversation": conversation},
     }
 
     print(f"  请求参数:")
-    print(f"    Namespace : {NAMESPACE}")
-    print(f"    UserId    : sdk_test_user")
+    print(f"    MemoryCollectionId : {MEMORY_COLLECTION_ID}")
+    print(f"    AgentUserId        : sdk_test_user")
+    print(f"    SceneId            : {SCENE_ID}")
     print(f"    Conversation ({len(conversation)} 条):")
     for item in conversation:
         text = item["Content"][0]["Text"]
@@ -223,14 +230,16 @@ def test_create_memory_batch(client):
     conversation = build_conversation(messages)
 
     params = {
-        "Namespace": NAMESPACE,
-        "UserId": "sdk_test_user",
+        "MemoryCollectionId": MEMORY_COLLECTION_ID,
+        "AgentUserId": "sdk_test_user",
+        "SceneId": SCENE_ID,
         "Data": {"Conversation": conversation},
     }
 
     print(f"  请求参数:")
-    print(f"    Namespace : {NAMESPACE}")
-    print(f"    UserId    : sdk_test_user")
+    print(f"    MemoryCollectionId : {MEMORY_COLLECTION_ID}")
+    print(f"    AgentUserId        : sdk_test_user")
+    print(f"    SceneId            : {SCENE_ID}")
     print(f"    Conversation ({len(conversation)} 条):")
     for item in conversation:
         text = item["Content"][0]["Text"]
@@ -259,15 +268,17 @@ def test_query_memory(client):
     section("Test 3: QueryMemorySdk (语义检索)")
 
     params = {
-        "Namespace": NAMESPACE,
-        "UserId": "sdk_test_user",
+        "MemoryCollectionId": MEMORY_COLLECTION_ID,
+        "AgentUserId": "sdk_test_user",
+        "SceneId": SCENE_ID,
         "Query": "Python 编程",
         "Limit": 5,
     }
 
     print(f"  请求参数:")
-    print(f"    Namespace : {NAMESPACE}")
-    print(f"    UserId    : sdk_test_user")
+    print(f"    MemoryCollectionId : {MEMORY_COLLECTION_ID}")
+    print(f"    AgentUserId        : sdk_test_user")
+    print(f"    SceneId            : {SCENE_ID}")
     print(f"    Query     : Python 编程")
     print(f"    Limit     : 5")
     print()
@@ -331,10 +342,14 @@ def test_sdk_backend_save():
         endpoint=ENDPOINT,
         scheme=SCHEME,
         region=REGION,
-        namespace=NAMESPACE,
+        namespace=MEMORY_COLLECTION_ID,
+        scene_id=SCENE_ID,
     )
     print(f"  Backend: SdkLTMBackend")
-    print(f"  endpoint={ENDPOINT}, namespace={NAMESPACE}")
+    print(
+        f"  endpoint={ENDPOINT}, "
+        f"memory_collection_id={MEMORY_COLLECTION_ID}, scene_id={SCENE_ID}"
+    )
 
     # 模拟 LongTermMemory 传入的 event_strings 格式 (JSON 序列化的 ADK event)
     event_strings = [
@@ -390,7 +405,8 @@ def test_sdk_backend_search():
         endpoint=ENDPOINT,
         scheme=SCHEME,
         region=REGION,
-        namespace=NAMESPACE,
+        namespace=MEMORY_COLLECTION_ID,
+        scene_id=SCENE_ID,
     )
 
     query = "旅行 摄影"
@@ -428,14 +444,15 @@ def main():
     print(f"  Endpoint  : {ENDPOINT}")
     print(f"  Scheme    : {SCHEME}")
     print(f"  Region    : {REGION}")
-    print(f"  Namespace : {NAMESPACE}")
+    print(f"  MemoryCollectionId : {MEMORY_COLLECTION_ID}")
+    print(f"  SceneId            : {SCENE_ID}")
     print(f"  NO_PROXY  : {os.getenv('NO_PROXY', '(未设置)')}")
 
     if not AK or not SK:
         print(f"\n  {FAIL} 请在 .env 中配置 KSYUN_ACCESS_KEY 和 KSYUN_SECRET_KEY")
         return
 
-    if not NAMESPACE:
+    if not MEMORY_COLLECTION_ID:
         print(f"\n  {FAIL} 请在 .env 中配置 KSADK_LTM_NAMESPACE (记忆库 ID)")
         return
 
