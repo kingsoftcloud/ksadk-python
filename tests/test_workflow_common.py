@@ -71,6 +71,21 @@ def test_plan_artifact_build_no_cache_behaviors():
     assert plan_external.explicit_ref_option == "--ks3-path"
 
 
+def test_plan_artifact_build_repackage_rebuilds_without_clearing_dependency_cache():
+    plan = plan_artifact_build(
+        target="serverless",
+        artifact_type="Code",
+        ks3_path=None,
+        image=None,
+        no_cache=False,
+        repackage=True,
+    )
+
+    assert plan.should_build is True
+    assert plan.should_clear_metadata is True
+    assert plan.explicit_ref_option is None
+
+
 def test_clear_build_metadata(tmp_path: Path):
     metadata_file = tmp_path / ".agentengine" / "build-metadata.json"
     metadata_file.parent.mkdir(parents=True, exist_ok=True)

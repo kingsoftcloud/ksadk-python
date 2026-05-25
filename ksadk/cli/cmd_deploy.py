@@ -94,6 +94,7 @@ console = get_console()
 )
 @click.option("--push", is_flag=True, help="构建后推送镜像")
 @click.option("--no-cache", is_flag=True, help="强制重新构建，不使用缓存")
+@click.option("--repackage", is_flag=True, help="Code 模式复用依赖缓存，但强制重新打包当前代码/runtime")
 @click.option("--no-version", is_flag=True, help="部署成功后不自动创建版本快照")
 @click.option("--auto-rollback", is_flag=True, help="部署失败时自动回滚到上一版本")
 @click.option("--dry-run", is_flag=True, help="只生成配置，打印 curl 请求，不执行部署")
@@ -127,6 +128,7 @@ def deploy(
     observability: bool,
     push: bool,
     no_cache: bool,
+    repackage: bool,
     no_version: bool,
     auto_rollback: bool,
     dry_run: bool,
@@ -191,6 +193,7 @@ def deploy(
                 security_group_id=security_group_id,
                 availability_zone=availability_zone,
             ),
+            repackage=repackage,
             dry_run_context=dry_run_context,
         ),
         dry_run=dry_run,
@@ -272,6 +275,8 @@ async def _deploy_async(
     security_group_id: str | None = None,
     availability_zone: str | None = None,
     dry_run_context: dict[str, object] | None = None,
+    *,
+    repackage: bool = False,
 ):
     """异步部署流程"""
     from ksadk.detection import FrameworkDetector
@@ -357,6 +362,7 @@ async def _deploy_async(
             "enable_observability": observability,
             "dry_run": dry_run,
             "no_cache": no_cache,
+            "repackage": repackage,
         },
     )
 
@@ -366,6 +372,7 @@ async def _deploy_async(
         ks3_path=ks3_path,
         image=image,
         no_cache=no_cache,
+        repackage=repackage,
     )
     if artifact_plan.should_clear_metadata:
         try:
@@ -499,6 +506,7 @@ async def _deploy_async(
         build_dir=str(package_info.build_dir),
         artifact_reference=str(artifact_reference),
         no_cache=no_cache,
+        repackage=repackage,
     )
     if dry_run_context is not None:
         dry_run_context["plan"] = local_plan

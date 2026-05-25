@@ -99,6 +99,49 @@ def test_deploy_no_cache_triggers_build_and_clears_metadata(tmp_path: Path, monk
     assert provider.calls == ["validate", "package", "build", "deploy"]
 
 
+def test_deploy_repackage_triggers_build_and_clears_cached_artifact_metadata(tmp_path: Path, monkeypatch):
+    provider = _FakeProvider()
+    metadata_dir = tmp_path / ".agentengine"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    (metadata_dir / "build-metadata.json").write_text('{"metadata":{"ks3_path":"ks3://old/path.zip"}}', encoding="utf-8")
+
+    monkeypatch.setattr("ksadk.detection.FrameworkDetector", lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})())
+    monkeypatch.setattr("ksadk.cli.cmd_deploy._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"})
+    monkeypatch.setattr("ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider)
+
+    asyncio.run(
+        cmd_deploy._deploy_async(
+            agent_dir=str(tmp_path),
+            target="serverless",
+            name=None,
+            region="cn-beijing-6",
+            account_id="2000003485",
+            artifact_type="Code",
+            namespace="default",
+            port=8000,
+            registry=None,
+            ks3_path=None,
+            ks3_bucket=None,
+            image=None,
+            ui_profile=None,
+            ui_path=None,
+            ui_url=None,
+            observability=True,
+            push=False,
+            no_cache=False,
+            repackage=True,
+            no_version=True,
+            auto_rollback=False,
+            dry_run=False,
+        )
+    )
+
+    assert provider.package_metadata_file_exists is False
+    assert provider.last_target.extra["repackage"] is True
+    assert provider.last_target.extra["no_cache"] is False
+    assert provider.calls == ["validate", "package", "build", "deploy"]
+
+
 def test_deploy_no_cache_warns_when_explicit_ks3_path_is_supplied(tmp_path: Path, monkeypatch, capsys):
     provider = _FakeProvider()
 

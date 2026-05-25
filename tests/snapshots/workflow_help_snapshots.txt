@@ -24,6 +24,7 @@ Options:
   --push                       构建后推送 (镜像到仓库 / zip到KS3)
   --no-cache                   强制重新构建，不使用缓存 (code: 忽略已有 zip；container: docker
                                --no-cache)
+  --repackage                  Code 模式复用依赖缓存，但强制重新打包当前代码/runtime
   -r, --region TEXT            KS3 区域 (code 模式)
   --ks3-bucket TEXT            KS3 bucket 名称 (code 模式, 默认: agentengine-{region})
   --output [pretty|json]       输出格式
@@ -76,6 +77,7 @@ Options:
                                   是否启用可观测性 (默认开启)
   --push                          构建后推送镜像
   --no-cache                      强制重新构建，不使用缓存
+  --repackage                     Code 模式复用依赖缓存，但强制重新打包当前代码/runtime
   --no-version                    部署成功后不自动创建版本快照
   --auto-rollback                 部署失败时自动回滚到上一版本
   --dry-run                       只生成配置，打印 curl 请求，不执行部署

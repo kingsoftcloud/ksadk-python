@@ -145,6 +145,7 @@ class CodeBuilder(BaseBuilder):
         self._install_progress_summary_text = ""
         self._install_progress_last_line = ""
         self._install_progress_event_counts: dict[str, int] = {}
+        self._install_progress_started_at = time.monotonic()
         self._pip_index_candidates_cache: Optional[list[Optional[str]]] = None
         self._pip_index_selection_summary = ""
     
@@ -176,17 +177,25 @@ class CodeBuilder(BaseBuilder):
         
         # 检查是否需要重新构建
         no_cache = self.config.get("no_cache", False) if self.config else False
-        if zip_path.exists() and not no_cache and not self._need_rebuild(zip_path, detection_result):
+        repackage = self.config.get("repackage", False) if self.config else False
+        rebuild_needed, rebuild_reason = self._rebuild_decision(
+            zip_path,
+            detection_result,
+            no_cache=no_cache,
+            repackage=repackage,
+        )
+        if zip_path.exists() and not rebuild_needed:
             incompatibles = self._scan_incompatible_binaries_in_zip(zip_path)
             if incompatibles:
                 click.secho("\n⚠️ 检测到缓存构建包含非 Linux 兼容关键二进制，自动重建...", fg='yellow')
                 for item in incompatibles[:5]:
                     click.echo(f"   - {item}")
+                rebuild_reason = "缓存 zip 存在 Linux 兼容性问题"
             else:
                 self._save_input_fingerprint(zip_path, detection_result)
                 zip_size = zip_path.stat().st_size / (1024 * 1024)
                 click.secho(f"\n✅ 使用已有构建: {zip_path.name} ({zip_size:.2f} MB)", fg='green')
-                click.echo("   (如需重新构建，请使用 --no-cache 或删除 .agentengine/code_build 目录)")
+                click.echo("   (如需只重新打包当前代码/runtime，请使用 --repackage；如需重装依赖，请使用 --no-cache)")
                 return BuildResult(
                     success=True,
                     artifact_path=zip_path,
@@ -196,6 +205,8 @@ class CodeBuilder(BaseBuilder):
                         "framework": detection_result.type.value
                     }
                 )
+        elif rebuild_reason:
+            click.echo(f"   重新打包原因: {rebuild_reason}")
         
         # Step 1: 准备依赖
         click.echo("\n📋 Step 1/3: 准备依赖清单...")
@@ -229,7 +240,9 @@ class CodeBuilder(BaseBuilder):
         
         # Step 3: 打包 zip
         click.echo("\n📦 Step 3/3: 打包 zip...")
+        package_started_at = time.monotonic()
         self._package_zip(zip_path, detection_result)
+        click.echo(f"   ✓ 打包耗时: {self._format_elapsed(package_started_at)}")
         self._save_input_fingerprint(zip_path, detection_result)
         
         zip_size = zip_path.stat().st_size
@@ -246,6 +259,48 @@ class CodeBuilder(BaseBuilder):
                 "deps_dir": str(self.deps_dir)
             }
         )
+
+    def _rebuild_decision(
+        self,
+        zip_path: Path,
+        detection_result,
+        *,
+        no_cache: bool,
+        repackage: bool,
+    ) -> tuple[bool, str]:
+        if no_cache:
+            return True, "--no-cache 已开启，强制重新打包"
+        if repackage:
+            return True, "--repackage 已开启，复用依赖并重新打包当前代码/runtime"
+        if not zip_path.exists():
+            return True, "首次构建"
+
+        previous = self._load_input_fingerprint(zip_path)
+        if not previous:
+            return self._need_rebuild_from_mtime(zip_path), "旧缓存缺少输入指纹，按文件时间判断"
+
+        current = self._build_input_fingerprint(detection_result)
+        if previous.get("fingerprint") == current["fingerprint"]:
+            return False, ""
+        return True, self._classify_rebuild_reason(previous, current)
+
+    def _classify_rebuild_reason(self, previous: dict, current: dict) -> str:
+        previous_files = set(previous.get("files") or [])
+        current_files = set(current.get("files") or [])
+        changed = previous_files.symmetric_difference(current_files)
+        if not changed and previous.get("fingerprint") != current.get("fingerprint"):
+            previous_digests = previous.get("file_digests") or {}
+            current_digests = current.get("file_digests") or {}
+            changed = {
+                name
+                for name in set(previous_digests) | set(current_digests)
+                if previous_digests.get(name) != current_digests.get(name)
+            }
+        if any(str(name).startswith(("ksadk/", "ksadk_runtime_common/")) for name in changed):
+            return "ksadk runtime 变更"
+        if changed:
+            return "业务代码或项目文件变更"
+        return "构建输入指纹变化"
     
     def _need_rebuild(self, zip_path: Path, detection_result) -> bool:
         """检查是否需要重新构建。优先使用输入内容指纹，缺失时回退到 mtime。"""
@@ -393,6 +448,7 @@ class CodeBuilder(BaseBuilder):
     def _build_input_fingerprint(self, detection_result) -> dict:
         digest = hashlib.sha256()
         files = []
+        file_digests = {}
 
         digest.update(f"fingerprint-version:{self.INPUT_FINGERPRINT_VERSION}\n".encode("utf-8"))
         digest.update(f"framework:{detection_result.type.value}\n".encode("utf-8"))
@@ -408,31 +464,38 @@ class CodeBuilder(BaseBuilder):
             files.append(relative)
             digest.update(relative.encode("utf-8"))
             digest.update(b"\0")
+            file_digest = hashlib.sha256()
             with open(file_path, "rb") as f:
                 while True:
                     chunk = f.read(1024 * 1024)
                     if not chunk:
                         break
                     digest.update(chunk)
+                    file_digest.update(chunk)
             digest.update(b"\0")
+            file_digests[relative] = file_digest.hexdigest()
 
         for package_name, relative, file_path in self._iter_bundled_source_files():
             fingerprint_name = f"{package_name}/{relative}"
             files.append(fingerprint_name)
             digest.update(fingerprint_name.encode("utf-8"))
             digest.update(b"\0")
+            file_digest = hashlib.sha256()
             with open(file_path, "rb") as f:
                 while True:
                     chunk = f.read(1024 * 1024)
                     if not chunk:
                         break
                     digest.update(chunk)
+                    file_digest.update(chunk)
             digest.update(b"\0")
+            file_digests[fingerprint_name] = file_digest.hexdigest()
 
         return {
             "version": self.INPUT_FINGERPRINT_VERSION,
             "fingerprint": digest.hexdigest(),
             "files": files,
+            "file_digests": file_digests,
         }
 
     def _iter_bundled_source_files(self):
@@ -595,6 +658,14 @@ class CodeBuilder(BaseBuilder):
             return normalized
         return normalized[: max_length - 3] + "..."
 
+    def _format_elapsed(self, started_at: float) -> str:
+        elapsed = max(0.0, time.monotonic() - started_at)
+        if elapsed < 60:
+            return f"{elapsed:.1f}s"
+        minutes = int(elapsed // 60)
+        seconds = int(elapsed % 60)
+        return f"{minutes}m{seconds:02d}s"
+
     def _render_install_progress(self, percent: int, stage: str, summary: str = "") -> str:
         clamped = max(0, min(percent, 100))
         filled = round((clamped / 100) * self.INSTALL_PROGRESS_BAR_WIDTH)
@@ -637,7 +708,7 @@ class CodeBuilder(BaseBuilder):
 
         if stage == "下载依赖":
             base = 45 if percent >= 45 else percent
-            return min(57, max(percent, base + min(12, count // 5)))
+            return min(68, max(percent, base + min(23, count)))
 
         return percent
 
@@ -650,6 +721,7 @@ class CodeBuilder(BaseBuilder):
         self._install_progress_summary_text = ""
         self._install_progress_last_line = ""
         self._install_progress_event_counts = {}
+        self._install_progress_started_at = time.monotonic()
 
     def _result_error_summary(self, result: subprocess.CompletedProcess[str] | None) -> str:
         if result is None:
@@ -758,7 +830,7 @@ class CodeBuilder(BaseBuilder):
             else:
                 payload = normalized
             target = self._extract_pip_artifact_name(payload)
-            summary = f"已处理 {count} 个 wheel，最近: {target}"
+            summary = f"已处理 {count} 个 wheel，耗时 {self._format_elapsed(self._install_progress_started_at)}，最近: {target}"
             if force_emit or count in self.INSTALL_PROGRESS_EVENT_MILESTONES or count % 5 == 0:
                 return summary
             return None
@@ -1275,29 +1347,38 @@ class CodeBuilder(BaseBuilder):
     
     def _package_zip(self, zip_path: Path, detection_result) -> None:
         """打包 zip 文件"""
-        file_count = 0
-        
+        project_files = list(self._iter_project_files())
+        dependency_files = [file_path for file_path in self.deps_dir.rglob("*") if file_path.is_file()]
+        bundled_source_files = list(self._iter_bundled_source_files())
+        dependency_size = sum(file_path.stat().st_size for file_path in dependency_files)
+        if dependency_files:
+            click.echo(
+                f"   打包输入: {len(project_files)} 个项目文件 + "
+                f"{len(dependency_files)} 个依赖文件 ({dependency_size / (1024 * 1024):.1f} MB) + "
+                f"{len(bundled_source_files)} 个 runtime 文件"
+            )
+
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
             # 添加项目文件
-            for file_path in self._iter_project_files():
+            for file_path in project_files:
                 arcname = file_path.relative_to(self.project_dir).as_posix()
                 zf.write(file_path, arcname)
-                file_count += 1
             
             # 添加依赖
             deps_count = 0
-            for file_path in self.deps_dir.rglob('*'):
-                if file_path.is_file():
-                    arcname = file_path.relative_to(self.deps_dir).as_posix()
-                    zf.write(file_path, arcname)
-                    deps_count += 1
+            for file_path in dependency_files:
+                arcname = file_path.relative_to(self.deps_dir).as_posix()
+                zf.write(file_path, arcname)
+                deps_count += 1
+                self._emit_package_progress("打包依赖", deps_count, len(dependency_files))
             
             # 添加随运行时下发的 ksadk 源码
             bundled_source_count = 0
-            for package_name, relative, file_path in self._iter_bundled_source_files():
+            for package_name, relative, file_path in bundled_source_files:
                 arcname = f"{package_name}/{relative}"
                 zf.write(file_path, arcname)
                 bundled_source_count += 1
+                self._emit_package_progress("打包 runtime", bundled_source_count, len(bundled_source_files))
             
             click.echo(f"   ✓ 打包运行时源码: {bundled_source_count} 个文件")
             
@@ -1305,7 +1386,13 @@ class CodeBuilder(BaseBuilder):
             entrypoint_content = self._generate_entrypoint(detection_result)
             zf.writestr("entrypoint.py", entrypoint_content)
         
-        click.echo(f"   ✓ 打包完成: {file_count} 个项目文件 + {deps_count} 个依赖文件")
+        click.echo(f"   ✓ 打包完成: {len(project_files)} 个项目文件 + {deps_count} 个依赖文件")
+
+    def _emit_package_progress(self, label: str, current: int, total: int) -> None:
+        if total < 500:
+            return
+        if current == total or current % 500 == 0:
+            click.echo(f"   {label} {current}/{total} files")
     
     def _generate_entrypoint(self, detection_result) -> str:
         """生成 entrypoint.py"""
@@ -1553,6 +1640,7 @@ if __name__ == "__main__":
     ) -> subprocess.CompletedProcess[str]:
         output_lines: list[str] = []
         self._install_progress_event_counts = {}
+        self._install_progress_started_at = time.monotonic()
         process = subprocess.Popen(
             install_cmd,
             stdout=subprocess.PIPE,

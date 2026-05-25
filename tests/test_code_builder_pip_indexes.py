@@ -234,9 +234,15 @@ def test_install_dependencies_advances_download_progress_with_wheel_activity(
     assert builder._install_dependencies(requirements_path) is True
 
     output = capsys.readouterr().out
-    assert "45% 下载依赖" in output
-    assert "50% 下载依赖" in output
+    assert "下载依赖" in output
+    assert "耗时" in output
     assert "已处理 25 个 wheel" in output
+    download_percents = [
+        int(line.split("%", 1)[0].rsplit(" ", 1)[-1])
+        for line in output.splitlines()
+        if "下载依赖" in line and "%" in line
+    ]
+    assert max(download_percents) >= 60
 
 
 def test_install_dependencies_prefers_fastest_cached_pip_index(tmp_path, monkeypatch):
@@ -376,3 +382,36 @@ def test_install_dependencies_bootstraps_pip_when_missing(
     assert "pip 工具链缺失" in output
     assert calls
     assert calls[0][:3] == [sys.executable, "-m", "ensurepip"]
+
+
+def test_package_zip_reports_milestone_progress_for_large_dependency_tree(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    builder = CodeBuilder(tmp_path)
+    builder.deps_dir.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "agent.py").write_text("print('ok')\n", encoding="utf-8")
+    (tmp_path / "agentengine.yaml").write_text("name: demo-agent\nframework: langgraph\n", encoding="utf-8")
+    for index in range(1, 1002):
+        (builder.deps_dir / f"dep_{index}.py").write_text("# dep\n", encoding="utf-8")
+
+    monkeypatch.setattr(CodeBuilder, "_iter_bundled_source_files", lambda self: iter(()))
+
+    detection_result = type(
+        "Detection",
+        (),
+        {
+            "package_path": str(tmp_path / "agent.py"),
+            "type": type("T", (), {"name": "LANGGRAPH"})(),
+            "name": "demo-agent",
+            "entry_point": "agent.py",
+            "agent_variable": "agent",
+        },
+    )()
+
+    builder._package_zip(builder.build_dir / "demo.zip", detection_result)
+
+    output = capsys.readouterr().out
+    assert "打包依赖" in output
+    assert "1000/1001 files" in output

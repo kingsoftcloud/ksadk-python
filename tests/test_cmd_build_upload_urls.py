@@ -18,9 +18,12 @@ class _FakeDatetime:
 
 
 class _FakeCodeBuilder:
+    last_config: dict | None = None
+
     def __init__(self, project_dir: Path, config: dict = None):
         self.project_dir = Path(project_dir)
         self.config = config or {}
+        self.__class__.last_config = self.config
 
     def build(self) -> BuildResult:
         return BuildResult(
@@ -63,6 +66,7 @@ def test_build_push_prints_object_key_urls_and_never_prints_code_zip(tmp_path: P
             region="cn-beijing-6",
             ks3_bucket="agentengine-test",
             no_cache=True,
+            repackage=False,
         )
     )
 
@@ -78,3 +82,22 @@ def test_build_push_prints_object_key_urls_and_never_prints_code_zip(tmp_path: P
     metadata_path = tmp_path / ".agentengine" / "build-metadata.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert metadata["metadata"]["ks3_path"].endswith(expected_key)
+
+
+def test_build_code_passes_repackage_to_code_builder(tmp_path: Path, monkeypatch):
+    import ksadk.builders as builders_module
+
+    monkeypatch.setattr(builders_module, "CodeBuilder", _FakeCodeBuilder)
+
+    asyncio.run(
+        cmd_build._build_code(
+            agent_path=tmp_path,
+            push=False,
+            region="cn-beijing-6",
+            ks3_bucket=None,
+            no_cache=False,
+            repackage=True,
+        )
+    )
+
+    assert _FakeCodeBuilder.last_config == {"no_cache": False, "repackage": True}

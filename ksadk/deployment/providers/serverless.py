@@ -10,6 +10,7 @@ import os
 import json
 import logging
 import shutil
+import time
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 import click
@@ -158,6 +159,15 @@ class ServerlessProvider(BaseDeployProvider):
             payload["size_gi"] = int(size_gi)
         return payload
 
+    @staticmethod
+    def _format_elapsed(started_at: float) -> str:
+        elapsed = max(0.0, time.monotonic() - started_at)
+        if elapsed < 60:
+            return f"{elapsed:.1f}s"
+        minutes = int(elapsed // 60)
+        seconds = int(elapsed % 60)
+        return f"{minutes}m{seconds:02d}s"
+
 
     async def validate_config(self, target: DeployTarget) -> tuple[bool, str]:
         """验证配置: 确保已配置 AgentEngine Server"""
@@ -232,6 +242,7 @@ class ServerlessProvider(BaseDeployProvider):
             cli_ks3_path = target.extra.get("ks3_path")
             cached_ks3_path = package_info.metadata.get("ks3_path")
             no_cache = target.extra.get("no_cache", False)
+            repackage = target.extra.get("repackage", False)
             
             # 如果显式传入了 ks3-path，直接使用
             if cli_ks3_path:
@@ -239,7 +250,7 @@ class ServerlessProvider(BaseDeployProvider):
                 return package_info
             
             # 如果没有 no_cache 且有缓存，才使用缓存
-            if not no_cache and cached_ks3_path:
+            if not no_cache and not repackage and cached_ks3_path:
                 logger.info(f"Using cached bundle: {cached_ks3_path}")
                 return package_info
 
@@ -248,6 +259,7 @@ class ServerlessProvider(BaseDeployProvider):
             # 传递配置，包括 no_cache
             builder_config = target.extra.copy()
             builder_config["no_cache"] = no_cache
+            builder_config["repackage"] = repackage
             
             # 实例化 Builder
             # 注意: CodeBuilder 目前设计为直接操作 project_dir，
@@ -266,6 +278,7 @@ class ServerlessProvider(BaseDeployProvider):
             # 3. 直接上传 KS3 (使用本地 AK/SK)
             # 3. 直接上传 KS3 (使用本地 AK/SK)
             click.echo("\n正在上传代码包到 KS3...")
+            upload_started_at = time.monotonic()
             
             ks3_bucket = target.extra.get("ks3_bucket")
             upload_region = "cn-beijing-6" if target.region == "pre-online" else target.region
@@ -283,6 +296,7 @@ class ServerlessProvider(BaseDeployProvider):
                 raise Exception("KS3 上传失败")
             
             logger.info(f"Upload success: {ks3_path}")
+            click.echo(f"   ✓ 上传耗时: {self._format_elapsed(upload_started_at)}")
             package_info.metadata["ks3_path"] = ks3_path
 
         elif artifact_type == "Container":
