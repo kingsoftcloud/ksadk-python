@@ -36,6 +36,8 @@
 
 - `input`
 - `history`
+- `input_content`
+- `input_messages`
 - `input_parts`
 - `attachments`
 - `attachment_results`
@@ -50,7 +52,9 @@
 - `instructions`
 
 这些字段不是每个 framework 都以同样方式消费，但它们是当前平台提供给 Agent 的标准上下文来源。
-这些字段是 KsADK runner payload 的扩展上下文，不属于 OpenAI Responses API 的官方请求或响应字段；对外协议仍通过 `input[].content[]` 中的 `text / inlineData / fileData` 表达多模态输入。
+`input_content` / `input_messages` 是 runner 默认 canonical 输入，使用 OpenAI Responses 风格 content blocks；`input_parts` 是 legacy/internal normalized parts，用于兼容已有 runner。`attachments`、`current_attachments`、`has_current_files` 等是 KsADK runner payload 扩展上下文，不属于 OpenAI 官方请求或响应字段。
+
+对外协议不混写：`/v1/responses` 接收 OpenAI Responses 风格 `input_text / input_image / input_file`；`/v1/chat/completions` 保持 Chat Completions 风格 `messages`，官方多模态块优先使用 `text / image_url`。进入 runner 前，两条入口都会投影到同一套 `input_content / input_messages`，并额外生成兼容用 `input_parts`。KsADK 兼容扩展 `inlineData / fileData` 仍可用于老客户端，但不把它们声明成 OpenAI Chat 官方字段。
 
 ### 2.1 字段说明
 
@@ -58,12 +62,14 @@
 | --- | --- | --- |
 | `input` | `str` | 当前这一轮的标准文本输入 |
 | `history` | `list[dict]` | 当前多轮会话历史，已经过 transcript 投影 / compaction |
-| `input_parts` | `list[dict]` | 原始输入片段列表，保留 `text / inlineData / fileData` 等结构 |
+| `input_content` | `list[dict]` | 当前 user turn 的 OpenAI Responses content blocks，例如 `input_text / input_image / input_file` |
+| `input_messages` | `list[dict]` | OpenAI Responses 风格 message/input items；需要完整 role/content 结构的 runner 优先读这里 |
+| `input_parts` | `list[dict]` | legacy/internal 归一化片段，保留 `text / inlineData / fileData`；用于兼容已有 runner，不作为 OpenAI 官方协议字段暴露 |
 | `attachments` | `list[dict]` | 当前会话最近有效附件上下文，兼容历史 fallback，不应用来判断本轮是否传文件 |
 | `attachment_results` | `list[dict]` | 最近有效附件理解结果，例如 OCR / 文本提取 |
 | `current_attachments` | `list[dict]` | 当前最新 user turn 解析出的附件列表，不包含历史 fallback |
 | `current_attachment_results` | `list[dict]` | 当前最新 user turn 的附件理解结果 |
-| `has_current_files` | `bool` | 当前最新 user turn 是否包含 `inlineData` 或 `fileData` |
+| `has_current_files` | `bool` | 当前最新 user turn 是否包含归一化后的 `inlineData` 或 `fileData`，包括 OpenAI `input_image / input_file` |
 | `model` | `str` | 当前请求显式使用的模型名 |
 | `model_metadata` | `dict` | 模型元数据，可能来自请求显式传入，也可能来自上游 `/v1/models` 自动解析 |
 | `platform_context` | `dict` | 平台上下文，例如 `agent_id / user_id / session_id` |
@@ -91,7 +97,9 @@
 所以：
 
 - 如果你只需要“语义历史”，用 `history`
-- 如果你需要“精细结构化上下文”，看 `input_parts / current_attachments / attachments / attachment_results`
+- 如果你需要 OpenAI Responses 风格当前输入结构，优先看 `input_content / input_messages`
+- 如果你需要兼容老 runner 的内部结构，再看 `input_parts`
+- 如果你需要附件理解结果，看 `current_attachments / current_attachment_results / attachments / attachment_results`
 
 ## 4. 图片 / 附件上下文怎么来的
 
@@ -259,6 +267,9 @@ def ksadk_prepare_input(payload: dict, session_context: dict) -> dict:
         "current_attachments": payload.get("current_attachments", []),
         "current_attachment_results": payload.get("current_attachment_results", []),
         "has_current_files": payload.get("has_current_files", False),
+        "input_content": payload.get("input_content", []),
+        "input_messages": payload.get("input_messages", []),
+        "input_parts": payload.get("input_parts", []),
         "model_metadata": payload.get("model_metadata"),
     }
 ```
@@ -267,7 +278,8 @@ def ksadk_prepare_input(payload: dict, session_context: dict) -> dict:
 
 - 要不要把 `history` 变成 prompt
 - 要不要优先消费 `attachment_results[*]["text"]`
-- 要不要在支持多模态的模型上直接消费 `input_parts`
+- 要不要在支持多模态的模型上直接消费 `input_content / input_messages`
+- 是否需要兼容旧 runner 的 `input_parts`
 
 说明：
 
@@ -302,6 +314,8 @@ if ctx:
     print(ctx.user_id)
     print(ctx.session_id)
     print(ctx.model)
+    print(ctx.input_content)
+    print(ctx.input_messages)
     print(ctx.attachments)
     print(ctx.attachment_results)
     print(ctx.current_attachments)
@@ -316,6 +330,8 @@ if ctx:
 - `user_id`
 - `session_id`
 - `history`
+- `input_content`
+- `input_messages`
 - `input_parts`
 - `attachments`
 - `attachment_results`

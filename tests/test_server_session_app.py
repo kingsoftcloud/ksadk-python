@@ -167,9 +167,16 @@ async def test_run_sse_uses_new_session_service(monkeypatch):
             "session_id": session_id,
             "input": "hello",
             "history": [{"role": "user", "content": "hello"}],
+            "input_content": [{"type": "input_text", "text": "hello"}],
+            "input_messages": [
+                {"role": "user", "content": [{"type": "input_text", "text": "hello"}]}
+            ],
             "input_parts": [{"text": "hello"}],
             "attachments": [],
             "attachment_results": [],
+            "current_attachments": [],
+            "current_attachment_results": [],
+            "has_current_files": False,
             "model": None,
         }
     ]
@@ -210,6 +217,32 @@ async def test_run_sse_passes_attachment_results_to_runner(monkeypatch):
         )
 
     assert response.status_code == 200
+    assert runner.calls[-1]["current_attachments"] == [
+        {
+            "display_name": "resume.txt",
+            "mime_type": "text/plain",
+            "transport": "inline",
+            "data": base64.b64encode("候选人简历内容".encode("utf-8")).decode("ascii"),
+            "is_text": True,
+            "size_bytes": len("候选人简历内容".encode("utf-8")),
+        }
+    ]
+    assert runner.calls[-1]["current_attachment_results"] == [
+        {
+            "display_name": "resume.txt",
+            "mime_type": "text/plain",
+            "transport": "inline",
+            "file_uri": "",
+            "size_bytes": len("候选人简历内容".encode("utf-8")),
+            "kind": "text",
+            "status": "ok",
+            "warnings": [],
+            "extraction_method": "text_decode",
+            "text_excerpt": "候选人简历内容",
+            "text": "候选人简历内容",
+        }
+    ]
+    assert runner.calls[-1]["has_current_files"] is True
     assert runner.calls[-1]["attachment_results"] == [
         {
             "display_name": "resume.txt",
@@ -799,6 +832,64 @@ async def test_chat_completions_forwards_model_to_runner(monkeypatch):
     assert response.status_code == 200
     assert runner.prepared_models == ["glm-5.1"]
     assert runner.calls[-1]["model"] == "glm-5.1"
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_converts_chat_content_blocks_to_runner_responses_input(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _DummyRunner()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    image_url = "data:image/png;base64,aW1hZ2U="
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "看图"},
+                            {"type": "image_url", "image_url": {"url": image_url}},
+                        ],
+                    }
+                ],
+                "stream": False,
+                "model": "gpt-4o",
+            },
+        )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["object"] == "chat.completion"
+    assert payload["choices"][0]["message"]["role"] == "assistant"
+    assert runner.calls[-1]["input_content"] == [
+        {"type": "input_text", "text": "看图"},
+        {"type": "input_image", "image_url": image_url},
+    ]
+    assert runner.calls[-1]["input_messages"] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "看图"},
+                {"type": "input_image", "image_url": image_url},
+            ],
+        }
+    ]
+    assert runner.calls[-1]["input_parts"] == [
+        {"text": "看图"},
+        {
+            "inlineData": {
+                "data": "aW1hZ2U=",
+                "mimeType": "image/png",
+                "displayName": "uploaded_image",
+            }
+        },
+    ]
 
 
 @pytest.mark.asyncio

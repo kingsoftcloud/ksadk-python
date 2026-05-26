@@ -42,6 +42,29 @@ function attachmentContentUrl(fileUri) {
   return `/agentengine/api/v1/AttachmentContent?FileUri=${encodeURIComponent(normalized)}`;
 }
 
+function mimeTypeFromDataUrl(dataUrl) {
+  const match = String(dataUrl || '').match(/^data:([^;,]+)/);
+  return match?.[1] || '';
+}
+
+function mimeTypesMatch(left, right) {
+  const normalizedLeft = String(left || '').trim();
+  const normalizedRight = String(right || '').trim();
+  if (!normalizedLeft || !normalizedRight) {
+    return true;
+  }
+  if (normalizedLeft === normalizedRight) {
+    return true;
+  }
+  if (normalizedLeft.endsWith('/*')) {
+    return normalizedRight.startsWith(normalizedLeft.slice(0, -1));
+  }
+  if (normalizedRight.endsWith('/*')) {
+    return normalizedLeft.startsWith(normalizedRight.slice(0, -1));
+  }
+  return false;
+}
+
 export function parseMessageContent(event) {
   const parts = event?.Content?.parts || [];
   const textSegments = [];
@@ -67,6 +90,37 @@ export function parseMessageContent(event) {
       });
       continue;
     }
+    if (part?.type === 'input_file' && typeof part.file_data === 'string' && part.file_data) {
+      pushAttachment({
+        name: part.filename || part.displayName || part.display_name || 'attachment',
+        url: `data:${part.mime_type || part.mimeType || 'application/octet-stream'};base64,${part.file_data}`,
+        type: part.mime_type || part.mimeType || 'application/octet-stream',
+      });
+      continue;
+    }
+    if (part?.type === 'input_file' && typeof part.file_url === 'string' && part.file_url.trim()) {
+      const fileUri = part.file_url.trim();
+      pushAttachment({
+        name: part.filename || part.displayName || part.display_name || 'attachment',
+        url: attachmentContentUrl(fileUri),
+        type: part.mime_type || part.mimeType || 'application/octet-stream',
+        fileUri,
+      });
+      continue;
+    }
+    if (part?.type === 'input_image' || part?.type === 'image_url') {
+      const imageUrl = typeof part.image_url === 'string'
+        ? part.image_url
+        : part.image_url?.url;
+      if (imageUrl) {
+        pushAttachment({
+          name: part.filename || part.displayName || part.display_name || 'uploaded_image',
+          url: imageUrl,
+          type: part.mime_type || part.mimeType || mimeTypeFromDataUrl(imageUrl) || 'image/*',
+        });
+      }
+      continue;
+    }
     if (part?.type === 'input_file' && part.fileData) {
       const fileUri = String(part.fileData.fileUri || '').trim();
       pushAttachment({
@@ -84,12 +138,22 @@ export function parseMessageContent(event) {
 
   for (const attachment of metadataAttachments) {
     const fileUri = String(attachment.file_uri || '').trim();
-    pushAttachment({
+    const metadataAttachment = {
       name: attachment.display_name || 'attachment',
       url: attachmentContentUrl(fileUri),
       type: attachment.mime_type || 'application/octet-stream',
       fileUri,
-    });
+    };
+    const isEmptyMetadataReference = !metadataAttachment.url && !metadataAttachment.fileUri;
+    const isAlreadyRepresentedByContent = isEmptyMetadataReference
+      && Array.from(attachmentsByKey.values()).some((existing) => (
+        existing.name === metadataAttachment.name
+        && mimeTypesMatch(existing.type, metadataAttachment.type)
+        && (existing.url || existing.fileUri)
+      ));
+    if (!isAlreadyRepresentedByContent) {
+      pushAttachment(metadataAttachment);
+    }
   }
 
   const attachments = Array.from(attachmentsByKey.values());

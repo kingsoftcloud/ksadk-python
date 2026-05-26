@@ -341,16 +341,48 @@ curl -H "Authorization: Bearer <api_key>" \
 
 图片与附件输入：
 
-- `input` 为数组时，`content` 支持 KOP 风格 part 数组
-- 每个 part 当前支持：
+- `input` 为数组时，`content` 推荐使用 OpenAI Responses 风格 `input_text` / `input_image` / `input_file`
+- 老客户端仍可使用 KsADK 兼容扩展 part 数组
+- 推荐 OpenAI Responses 输入块：
+  - `input_text`
+  - `input_image`
+  - `input_file`
+- 兼容扩展输入块：
   - `text`
   - `inlineData`
   - `fileData`
 - 其中：
+- `input_image.image_url` 支持远程图片 URL 或 `data:image/...;base64,...`，运行时会归一化为内部附件上下文
+- `input_file.file_data` 会归一化为内部 `inlineData`；`input_file.file_url` / `input_file.file_id` 会归一化为内部 `fileData` 引用
 - `inlineData` 适合直接内联 base64 内容
 - `fileData` 适合先调用 `UploadFile`，再引用返回的 `ksadk-upload://...`
+- 远程图片 URL 会作为引用保留，并可在支持原生图片输入的 LangGraph 路径下继续传给模型；KsADK 不会主动拉取远程图片或远程文件做 OCR / 文本提取。需要平台提取、OCR 或本地附件内容时，请使用 data URL、`file_data`、`inlineData` 或 `fileData`
 
-图片示例（先上传，再引用）：
+图片示例（OpenAI Responses 风格 data URL）：
+
+```json
+{
+  "input": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "请分析这张图片"
+        },
+        {
+          "type": "input_image",
+          "image_url": "data:image/png;base64,<base64-encoded-image-bytes>"
+        }
+      ]
+    }
+  ],
+  "model": "glm-5.1",
+  "stream": false
+}
+```
+
+旧客户端图片示例（先上传，再引用）：
 
 ```json
 {
@@ -376,7 +408,7 @@ curl -H "Authorization: Bearer <api_key>" \
 }
 ```
 
-图片示例（直接内联）：
+旧客户端图片示例（直接内联）：
 
 ```json
 {
@@ -420,7 +452,7 @@ curl -H "Authorization: Bearer <api_key>" \
   - 非图片附件仍保留为普通附件上下文
 - `LangChain`
   - 当前没有对所有 agent 统一做“自动图片直通”
-  - 如需原生多模态，建议在 `ksadk_prepare_input(payload, session_context)` 中自行消费 `input_parts / current_attachments / attachments`
+  - 如需原生多模态，建议在 `ksadk_prepare_input(payload, session_context)` 中优先消费 `input_content / input_messages`，必要时再兼容 `input_parts / current_attachments / attachments`
   - 判断当前轮是否传文件用 KsADK runner payload 扩展字段 `has_current_files`；该字段不是 OpenAI Responses API 官方字段
 
 模型能力判断优先级：
@@ -629,10 +661,35 @@ data: <json>
 | `temperature` | `number` | 否 | 当前代码接受，但不保证下游一定使用 |
 | `max_tokens` | `integer` | 否 | 当前代码接受，但不保证下游一定使用 |
 
-`messages[].content` 支持两类形态：
+`messages[].content` 支持：
 
 1. 字符串
-2. KOP 风格 part 数组，例如：
+2. OpenAI Chat content parts：`text` / `image_url`
+3. KsADK 兼容扩展 part 数组：`text` / `inlineData` / `fileData`
+
+OpenAI Chat 图片块示例：
+
+```json
+[
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "text",
+        "text": "请分析这张图片"
+      },
+      {
+        "type": "image_url",
+        "image_url": {
+          "url": "data:image/png;base64,<base64-encoded-image-bytes>"
+        }
+      }
+    ]
+  }
+]
+```
+
+KsADK 兼容扩展附件示例：
 
 ```json
 [
@@ -681,13 +738,14 @@ data: <json>
 }
 ```
 
-对图片 / 附件的支持规则与 `/v1/responses` 相同：
+内部转换规则：
 
-- `text`
-- `inlineData`
-- `fileData`
+- 字符串消息会转换为 runner `input_content: [{ "type": "input_text", ... }]`
+- Chat 官方 `text` / `image_url` 会转换为 runner `input_text` / `input_image`
+- `inlineData` / `fileData` 只作为 KsADK 兼容扩展处理，不声明为 OpenAI Chat 官方能力
+- 响应对象仍保持 Chat Completions 语义，非流式 `object` 为 `chat.completion`
 
-图片示例：
+KsADK 扩展图片引用示例：
 
 ```json
 [
@@ -1271,9 +1329,10 @@ curl -X POST "https://<PublicEndpoint>/agentengine/api/v1/DeleteResponseFeedback
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `AgentId` | `string` | 是 | Agent ID |
-| `Messages` | `array<object>` | 是 | KOP 风格消息数组 |
+| `Messages` | `array<object>` | 否 | 兼容旧 UI / 旧客户端的消息数组 |
+| `ResponsesInput` | `string \| array<object>` | 否 | `ApiFormat=responses` 时优先使用的 OpenAI Responses 风格输入；Hosted UI 默认使用它 |
 | `SessionId` | `string` | 否 | 会话 ID |
-| `ApiFormat` | `string` | 否 | 默认 `chat_completions`；可选 `responses` / `chat_completions` |
+| `ApiFormat` | `string` | 否 | 默认 `responses`；可选 `responses` / `chat_completions` |
 | `Stream` | `boolean` | 否 | 是否流式 |
 | `Model` | `string` | 否 | 本次显式模型 |
 | `ModelMetadata` | `object` | 否 | 模型元数据 |
@@ -1286,6 +1345,17 @@ curl -X POST "https://<PublicEndpoint>/agentengine/api/v1/DeleteResponseFeedback
   "SessionId": "sess-123",
   "ApiFormat": "responses",
   "Stream": true,
+  "ResponsesInput": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "帮我总结今天的变更"
+        }
+      ]
+    }
+  ],
   "Messages": [
     {
       "role": "user",

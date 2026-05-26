@@ -148,6 +148,158 @@ test('session event utils preserve assistant identifiers for feedback binding', 
   );
 });
 
+test('session event utils restore persisted Responses input_image attachments', async () => {
+  const sessionEvents = await loadSessionEventUtils();
+
+  assert.ok(sessionEvents, 'expected session event helpers to exist');
+  const messages = sessionEvents.buildMessagesFromSessionEvents([
+    {
+      EventId: 'evt-image',
+      EventType: 'user_message',
+      Content: {
+        role: 'user',
+        parts: [
+          { type: 'input_text', text: '看看这个' },
+          {
+            type: 'input_image',
+            image_url: 'data:image/png;base64,aW1hZ2U=',
+          },
+        ],
+      },
+      Timestamp: 1,
+    },
+  ]);
+
+  assert.deepEqual(messages, [
+    {
+      id: 'evt-image',
+      role: 'user',
+      content: '看看这个',
+      timestamp: 1,
+      eventType: 'user_message',
+      eventId: 'evt-image',
+      responseId: undefined,
+      traceId: undefined,
+      rootSpanId: undefined,
+      attachments: [
+        {
+          name: 'uploaded_image',
+          url: 'data:image/png;base64,aW1hZ2U=',
+          type: 'image/png',
+        },
+      ],
+    },
+  ]);
+});
+
+test('session event utils dedupe metadata attachments already represented by Responses input_image content', async () => {
+  const sessionEvents = await loadSessionEventUtils();
+
+  assert.ok(sessionEvents, 'expected session event helpers to exist');
+  const messages = sessionEvents.buildMessagesFromSessionEvents([
+    {
+      EventId: 'evt-image',
+      EventType: 'user_message',
+      Content: {
+        role: 'user',
+        parts: [
+          { type: 'input_text', text: '看看这个' },
+          {
+            type: 'input_image',
+            image_url: 'data:image/png;base64,aW1hZ2U=',
+          },
+        ],
+      },
+      Metadata: {
+        attachments: [
+          {
+            display_name: 'uploaded_image',
+            mime_type: 'image/png',
+            transport: 'inline',
+            file_uri: '',
+          },
+        ],
+      },
+      Timestamp: 1,
+    },
+  ]);
+
+  assert.deepEqual(messages[0].attachments, [
+    {
+      name: 'uploaded_image',
+      url: 'data:image/png;base64,aW1hZ2U=',
+      type: 'image/png',
+    },
+  ]);
+});
+
+test('session event utils restore persisted Responses input_file data attachments', async () => {
+  const sessionEvents = await loadSessionEventUtils();
+
+  assert.ok(sessionEvents, 'expected session event helpers to exist');
+  const messages = sessionEvents.buildMessagesFromSessionEvents([
+    {
+      EventId: 'evt-file',
+      EventType: 'user_message',
+      Content: {
+        role: 'user',
+        parts: [
+          { type: 'input_text', text: '请总结附件' },
+          {
+            type: 'input_file',
+            filename: 'resume.txt',
+            file_data: 'aGVsbG8=',
+            mime_type: 'text/plain',
+          },
+        ],
+      },
+      Timestamp: 1,
+    },
+  ]);
+
+  assert.deepEqual(messages[0].attachments, [
+    {
+      name: 'resume.txt',
+      url: 'data:text/plain;base64,aGVsbG8=',
+      type: 'text/plain',
+    },
+  ]);
+});
+
+test('session event utils restore persisted Responses input_file references', async () => {
+  const sessionEvents = await loadSessionEventUtils();
+
+  assert.ok(sessionEvents, 'expected session event helpers to exist');
+  const messages = sessionEvents.buildMessagesFromSessionEvents([
+    {
+      EventId: 'evt-file-ref',
+      EventType: 'user_message',
+      Content: {
+        role: 'user',
+        parts: [
+          { type: 'input_text', text: '请总结附件' },
+          {
+            type: 'input_file',
+            filename: 'resume.txt',
+            file_url: 'file-abc',
+            mime_type: 'text/plain',
+          },
+        ],
+      },
+      Timestamp: 1,
+    },
+  ]);
+
+  assert.deepEqual(messages[0].attachments, [
+    {
+      name: 'resume.txt',
+      url: '/agentengine/api/v1/AttachmentContent?FileUri=file-abc',
+      type: 'text/plain',
+      fileUri: 'file-abc',
+    },
+  ]);
+});
+
 test('session event utils restore completed run with persisted reasoning before assistant output', async () => {
   const sessionEvents = await loadSessionEventUtils();
 

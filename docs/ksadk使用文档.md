@@ -180,18 +180,71 @@ curl -N http://127.0.0.1:8000/v1/responses \
 
 ### 5.3 图片与附件输入
 
-`/v1/responses` 支持把用户输入写成 KOP 风格 part 数组。当前常用 part 类型：
+`/v1/responses` 是默认主维护协议，按 OpenAI Responses 语义接收 `input_text` / `input_image` / `input_file`。运行时会把这些输入块原样投影到 runner 的 `input_content` / `input_messages`，同时生成 legacy/internal 的 `input_parts` 兼容旧 runner。
+
+当前 `/v1/responses` 推荐输入块：
+
+- `input_text`
+- `input_image`
+- `input_file`
+
+旧客户端仍可传 KOP 风格 part 数组，运行时会兼容：
 
 - `text`
 - `inlineData`
 - `fileData`
 
-推荐两种图片传法：
+推荐图片传法：
 
-1. 先调用 `UploadFile` 上传图片，再在 `/v1/responses` 中通过 `fileData.fileUri` 引用
-2. 直接把图片 base64 放进 `inlineData.data`
+1. 按 OpenAI Responses 官方形态传 `input_image.image_url`，其中 `image_url` 可以是远程图片 URL，也可以是 `data:image/...;base64,...`
+2. 老客户端可先调用 `UploadFile` 上传图片，再通过兼容扩展 `fileData.fileUri` 引用
+3. 老客户端可直接把图片 base64 放进兼容扩展 `inlineData.data`
 
-先上传再引用的示例：
+OpenAI 风格 data URL 示例：
+
+```json
+{
+  "input": [
+    {
+      "role": "user",
+      "content": [
+        { "type": "input_text", "text": "请分析这张图片" },
+        {
+          "type": "input_image",
+          "image_url": "data:image/png;base64,<base64-encoded-image-bytes>"
+        }
+      ]
+    }
+  ],
+  "stream": false
+}
+```
+
+运行时会保留这个官方输入块到 `input_content`，并额外归一化为内部附件上下文，因此业务代码可以继续通过 `has_current_files` / `current_attachments` 判断本轮是否带图。远程图片 URL 会作为引用保留，并可在支持原生图片输入的 LangGraph 路径下继续传给模型；KsADK 不会主动拉取远程图片做 OCR。需要平台提取、OCR 或本地附件内容时，请使用 data URL、`inlineData` 或 `fileData`。
+
+OpenAI 风格文件示例：
+
+```json
+{
+  "input": [
+    {
+      "role": "user",
+      "content": [
+        { "type": "input_text", "text": "请总结这个文件" },
+        {
+          "type": "input_file",
+          "filename": "resume.txt",
+          "file_data": "<base64-encoded-file-bytes>"
+        }
+      ]
+    }
+  ]
+}
+```
+
+`input_file.file_data` 会保留在 `input_content`，并归一化为内部 `inlineData`；`input_file.file_url` / `input_file.file_id` 会保留为引用，并归一化为内部 `fileData`。KsADK 不会主动拉取远程 `file_url` 内容；需要平台提取或 OCR 时，请使用 `file_data`、`inlineData` 或先上传后用 `fileData.fileUri`。
+
+旧客户端先上传再引用的兼容示例：
 
 ```json
 {
@@ -214,7 +267,7 @@ curl -N http://127.0.0.1:8000/v1/responses \
 }
 ```
 
-直接内联示例：
+旧客户端直接内联的兼容示例：
 
 ```json
 {
@@ -255,7 +308,7 @@ curl -N http://127.0.0.1:8000/v1/responses \
   - 若模型支持图片输入，默认消息构造会把图片附件转换成多模态 `HumanMessage.content` blocks
 - `LangChain`
   - 当前不保证所有 agent 自动原生吃图
-  - 如需原生多模态，建议在 `ksadk_prepare_input(payload, session_context)` 中自行消费 `input_parts / current_attachments / attachments`
+  - 如需原生多模态，建议在 `ksadk_prepare_input(payload, session_context)` 中优先消费 `input_content / input_messages`，必要时再兼容 `input_parts / current_attachments / attachments`
   - 判断当前轮是否传文件用 KsADK runner payload 扩展字段 `has_current_files`；该字段不是 OpenAI Responses API 官方字段
 
 模型能力判断优先级：

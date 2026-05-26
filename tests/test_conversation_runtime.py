@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import importlib
 import json
 import time
@@ -575,6 +576,233 @@ async def test_build_run_input_reuses_last_attachment_results_for_follow_up_turn
 
 
 @pytest.mark.asyncio
+async def test_build_run_input_detects_current_openai_input_image(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    image_b64 = "iVBORw0KGgo="
+    prepared = await build_run_input(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id=None,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "请分析这张图"},
+                    {
+                        "type": "input_image",
+                        "image_url": f"data:image/png;base64,{image_b64}",
+                    },
+                ],
+            }
+        ],
+        model=None,
+    )
+
+    assert prepared.has_current_files is True
+    assert prepared.current_attachments == [
+        {
+            "display_name": "uploaded_image",
+            "mime_type": "image/png",
+            "transport": "inline",
+            "data": image_b64,
+            "is_text": False,
+            "size_bytes": 8,
+        }
+    ]
+    assert prepared.attachments == prepared.current_attachments
+    assert prepared.user_parts[1] == {
+        "inlineData": {
+            "data": image_b64,
+            "mimeType": "image/png",
+            "displayName": "uploaded_image",
+        }
+    }
+    assert prepared.input_content == [
+        {"type": "input_text", "text": "请分析这张图"},
+        {"type": "input_image", "image_url": f"data:image/png;base64,{image_b64}"},
+    ]
+    assert prepared.input_messages == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "请分析这张图"},
+                {"type": "input_image", "image_url": f"data:image/png;base64,{image_b64}"},
+            ],
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_build_run_input_detects_openai_input_image_object_url(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    image_b64 = "YWJj"
+    prepared = await build_run_input(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id=None,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_image",
+                        "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
+                    },
+                ],
+            }
+        ],
+    )
+
+    assert prepared.has_current_files is True
+    assert prepared.current_attachments[0]["display_name"] == "uploaded_image"
+    assert prepared.current_attachments[0]["mime_type"] == "image/jpeg"
+    assert prepared.current_attachments[0]["data"] == image_b64
+
+
+@pytest.mark.asyncio
+async def test_build_run_input_preserves_openai_input_image_remote_url(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    image_url = "https://example.com/diagram.png"
+    prepared = await build_run_input(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id=None,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_image",
+                        "image_url": image_url,
+                    },
+                ],
+            }
+        ],
+    )
+
+    assert prepared.has_current_files is True
+    assert prepared.current_attachments == [
+        {
+            "display_name": "uploaded_image",
+            "mime_type": "image/*",
+            "transport": "reference",
+            "file_uri": image_url,
+            "is_text": False,
+            "size_bytes": None,
+            "storage_path": None,
+        }
+    ]
+    assert prepared.attachment_results[0]["warnings"] == [
+        "附件内容无法读取，请重新上传或检查文件句柄是否仍可访问。"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_build_run_input_detects_openai_input_file_data(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    file_text = "候选人简历内容"
+    file_b64 = base64.b64encode(file_text.encode("utf-8")).decode("ascii")
+    prepared = await build_run_input(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id=None,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "请总结附件"},
+                    {
+                        "type": "input_file",
+                        "filename": "resume.txt",
+                        "file_data": file_b64,
+                    },
+                ],
+            }
+        ],
+    )
+
+    assert prepared.has_current_files is True
+    assert prepared.current_attachments == [
+        {
+            "display_name": "resume.txt",
+            "mime_type": "text/plain",
+            "transport": "inline",
+            "data": file_b64,
+            "is_text": True,
+            "size_bytes": len(file_text.encode("utf-8")),
+        }
+    ]
+    assert prepared.attachment_results[0]["text"] == file_text
+    assert prepared.input_content == [
+        {"type": "input_text", "text": "请总结附件"},
+        {
+            "type": "input_file",
+            "filename": "resume.txt",
+            "file_data": file_b64,
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_build_run_input_preserves_openai_input_file_references(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    prepared = await build_run_input(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id=None,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_file",
+                        "filename": "report.pdf",
+                        "file_url": "https://example.com/report.pdf",
+                    },
+                    {
+                        "type": "input_file",
+                        "filename": "uploaded.pdf",
+                        "file_id": "file-abc123",
+                    },
+                ],
+            }
+        ],
+    )
+
+    assert prepared.has_current_files is True
+    assert prepared.current_attachments == [
+        {
+            "display_name": "report.pdf",
+            "mime_type": "application/pdf",
+            "transport": "reference",
+            "file_uri": "https://example.com/report.pdf",
+            "is_text": False,
+            "size_bytes": None,
+            "storage_path": None,
+        },
+        {
+            "display_name": "uploaded.pdf",
+            "mime_type": "application/pdf",
+            "transport": "reference",
+            "file_uri": "file-abc123",
+            "is_text": False,
+            "size_bytes": None,
+            "storage_path": None,
+        },
+    ]
+
+
+@pytest.mark.asyncio
 async def test_invoke_conversation_once_persists_canonical_turn_events(monkeypatch):
     service = InMemorySessionService()
     monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
@@ -593,6 +821,11 @@ async def test_invoke_conversation_once_persists_canonical_turn_events(monkeypat
     assert result["output_text"] == "assistant says hi"
     assert runner.prepared_models == ["gpt-4o"]
     assert runner.calls[-1]["history"] == [{"role": "user", "content": "hello"}]
+    assert runner.calls[-1]["input_content"] == [{"type": "input_text", "text": "hello"}]
+    assert runner.calls[-1]["input_messages"] == [
+        {"role": "user", "content": [{"type": "input_text", "text": "hello"}]}
+    ]
+    assert runner.calls[-1]["input_parts"] == [{"text": "hello"}]
 
     events = await service.get_events(session_id)
     session = await service.get_session(session_id)
@@ -609,6 +842,42 @@ async def test_invoke_conversation_once_persists_canonical_turn_events(monkeypat
     assert session.first_prompt == "hello"
     assert session.last_prompt == "hello"
     assert session.summary == "assistant says hi"
+
+
+@pytest.mark.asyncio
+async def test_invoke_conversation_once_persists_responses_image_parts_for_replay(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _StubRunner()
+    image_url = "data:image/png;base64,aW1hZ2U="
+
+    session_id, _ = await invoke_conversation_once(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id=None,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "请分析这张图"},
+                    {"type": "input_image", "image_url": image_url},
+                ],
+            }
+        ],
+        model=None,
+        prepare_runner=lambda runner, model: None,
+    )
+
+    events = await service.get_events(session_id)
+    assert events[0].event_type == "user_message"
+    assert events[0].content == {
+        "role": "user",
+        "parts": [
+            {"type": "input_text", "text": "请分析这张图"},
+            {"type": "input_image", "image_url": image_url},
+        ],
+    }
 
 
 @pytest.mark.asyncio

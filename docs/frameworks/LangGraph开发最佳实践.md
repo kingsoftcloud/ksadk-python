@@ -113,12 +113,14 @@ getattr(module, "ksadk_prepare_state", None)
 | --- | --- | --- |
 | `input` | `str` 或 `dict` | 当前输入；普通请求是文本，resume 请求是结构化恢复 payload |
 | `history` | `list[dict]` | 多轮历史，已经过 transcript 投影和必要的 compaction |
-| `input_parts` | `list[dict]` | 原始输入片段，保留 `text / inlineData / fileData` |
+| `input_content` | `list[dict]` | 当前 user turn 的 OpenAI Responses content blocks，例如 `input_text / input_image / input_file` |
+| `input_messages` | `list[dict]` | OpenAI Responses 风格 message/input items；需要完整 role/content 结构时优先读这里 |
+| `input_parts` | `list[dict]` | legacy/internal 归一化片段，保留 `text / inlineData / fileData`；用于兼容已有 runner |
 | `attachments` | `list[dict]` | 当前会话最近有效附件上下文，兼容历史 fallback |
 | `attachment_results` | `list[dict]` | 最近有效 OCR / 文本抽取 / 附件理解结果 |
 | `current_attachments` | `list[dict]` | 当前最新 user turn 的附件列表，不包含历史 fallback |
 | `current_attachment_results` | `list[dict]` | 当前最新 user turn 的附件理解结果 |
-| `has_current_files` | `bool` | 当前最新 user turn 是否包含 `inlineData` 或 `fileData` |
+| `has_current_files` | `bool` | 当前最新 user turn 是否包含归一化后的 `inlineData` 或 `fileData`，包括 OpenAI `input_image / input_file` |
 | `model` | `str` | 本轮显式模型名 |
 | `model_metadata` | `dict` | 模型能力元数据 |
 | `platform_context` | `dict` | `agent_id / user_id / session_id` 等平台身份 |
@@ -127,7 +129,9 @@ getattr(module, "ksadk_prepare_state", None)
 | `instructions` | `str` | 请求级系统/开发者指令 |
 | `resume` | `bool` | 平台判断本轮是否为断点恢复 |
 
-这些字段是 KsADK 提供给 LangGraph runner 的运行时上下文扩展，不属于 OpenAI Responses API 官方字段；对外仍使用 `input[].content[]` 的 `text / inlineData / fileData` 表达文件输入。
+`input_content` / `input_messages` 是 runner 默认 canonical 输入，沿用 OpenAI Responses content block 形态；`input_parts` 是 legacy/internal normalized parts。`attachments / current_attachments / has_current_files` 等字段是 KsADK 提供给 LangGraph runner 的运行时上下文扩展，不属于 OpenAI 官方请求或响应字段。
+
+对外协议不混写：`/v1/responses` 按 Responses 语义接收 `input_text / input_image / input_file`；`/v1/chat/completions` 保持 Chat Completions 语义，官方图片块使用 `text / image_url`。进入 runner 前，两条入口都会转换为 `input_content / input_messages`，同时生成兼容用 `input_parts`。KsADK 仍兼容 `inlineData / fileData` 老输入，但不要把它们当成 OpenAI Chat 官方字段。
 
 ## 6. 默认 messages-based 图
 
@@ -140,6 +144,8 @@ getattr(module, "ksadk_prepare_state", None)
     "current_attachments": [...],
     "current_attachment_results": [...],
     "has_current_files": True,
+    "input_content": [...],
+    "input_messages": [...],
     "input_parts": [...],
     "model_metadata": {...},
     "messages": [
@@ -154,7 +160,7 @@ getattr(module, "ksadk_prepare_state", None)
 说明：
 
 - `messages` 是默认主上下文
-- `attachments / attachment_results / current_attachments / current_attachment_results / has_current_files / input_parts` 保留在 state 顶层
+- `input_content / input_messages / input_parts / attachments / attachment_results / current_attachments / current_attachment_results / has_current_files` 保留在 state 顶层
 - 如果模型支持原生图片输入，最后一条 `HumanMessage.content` 可能是多模态 block 列表
 - 如果模型不支持原生图片输入，最后一条 `HumanMessage.content` 通常是字符串
 
@@ -177,6 +183,8 @@ def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
         "current_attachments": payload.get("current_attachments", []),
         "current_attachment_results": payload.get("current_attachment_results", []),
         "has_current_files": payload.get("has_current_files", False),
+        "input_content": payload.get("input_content", []),
+        "input_messages": payload.get("input_messages", []),
         "input_parts": payload.get("input_parts", []),
         "platform_context": session_context.get("platform_context"),
         "kb_context": session_context.get("kb_context"),
@@ -190,7 +198,9 @@ def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
 | 你想拿什么 | 推荐来源 |
 | --- | --- |
 | 当前用户输入 | `payload["input"]` |
-| 当前输入原始结构 | `payload["input_parts"]` |
+| 当前输入 OpenAI canonical content | `payload["input_content"]` |
+| 当前输入 OpenAI canonical messages | `payload["input_messages"]` |
+| 当前输入 legacy/internal parts | `payload["input_parts"]` |
 | 当前轮是否带文件 | `payload["has_current_files"]` |
 | 当前轮附件引用 | `payload["current_attachments"]` |
 | 当前轮 OCR / 文档抽取结果 | `payload["current_attachment_results"]` |
@@ -447,6 +457,9 @@ class AgentState(TypedDict):
     current_attachments: list[dict[str, Any]]
     current_attachment_results: list[dict[str, Any]]
     has_current_files: bool
+    input_content: list[dict[str, Any]]
+    input_messages: list[dict[str, Any]]
+    input_parts: list[dict[str, Any]]
     platform_context: dict[str, Any] | None
     kb_context: dict[str, Any] | None
     memory_context: dict[str, Any] | None
@@ -512,6 +525,9 @@ def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
         "current_attachments": payload.get("current_attachments", []),
         "current_attachment_results": payload.get("current_attachment_results", []),
         "has_current_files": payload.get("has_current_files", False),
+        "input_content": payload.get("input_content", []),
+        "input_messages": payload.get("input_messages", []),
+        "input_parts": payload.get("input_parts", []),
         "platform_context": session_context.get("platform_context"),
         "kb_context": session_context.get("kb_context"),
         "memory_context": session_context.get("memory_context"),

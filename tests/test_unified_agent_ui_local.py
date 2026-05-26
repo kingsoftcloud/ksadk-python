@@ -483,8 +483,14 @@ async def test_run_agent_action_normalizes_structured_text_and_inline_attachment
 
     session_id = payload["Data"]["session_id"]
     events = await service.get_events(session_id)
-    assert events[0].content["parts"][0]["text"] == "请总结附件\n\n## 附件\n- resume.txt"
-    assert "候选人简历内容" not in events[0].content["parts"][0]["text"]
+    assert events[0].content["parts"] == [
+        {"type": "input_text", "text": "请总结附件"},
+        {
+            "type": "input_file",
+            "filename": "resume.txt",
+            "file_data": attachment_b64,
+        },
+    ]
     assert events[0].metadata["agent_input"] == normalized_input
     assert events[0].event_type == "user_message"
 
@@ -643,7 +649,14 @@ async def test_run_agent_action_normalizes_uploaded_file_handle_and_persists_com
 
     session_id = response.json()["Data"]["session_id"]
     events = await service.get_events(session_id)
-    assert events[0].content["parts"][0]["text"] == "请总结附件\n\n## 附件\n- resume.txt"
+    assert events[0].content["parts"] == [
+        {"type": "input_text", "text": "请总结附件"},
+        {
+            "type": "input_file",
+            "filename": "resume.txt",
+            "file_url": uploaded["fileUri"],
+        },
+    ]
     assert events[0].metadata["attachments"] == [
         {
             "display_name": "resume.txt",
@@ -656,6 +669,40 @@ async def test_run_agent_action_normalizes_uploaded_file_handle_and_persists_com
     ]
     assert "storage_path" not in events[0].metadata["attachments"][0]
     assert events[0].event_type == "user_message"
+
+
+@pytest.mark.asyncio
+async def test_run_agent_action_uses_responses_input_for_normal_responses_run(monkeypatch):
+    _, runner, _, transport = _build_transport(monkeypatch)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/RunAgent",
+            json={
+                "AgentId": "demo-agent",
+                "ApiFormat": "responses",
+                "Messages": [{"role": "user", "content": "SHOULD_NOT_USE"}],
+                "ResponsesInput": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "hello from responses input"}],
+                    }
+                ],
+                "Stream": False,
+            },
+        )
+
+    assert response.status_code == 200
+    assert runner.invocations[-1]["input"] == "hello from responses input"
+    assert runner.invocations[-1]["input_content"] == [
+        {"type": "input_text", "text": "hello from responses input"}
+    ]
+    assert runner.invocations[-1]["input_messages"] == [
+        {
+            "role": "user",
+            "content": [{"type": "input_text", "text": "hello from responses input"}],
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -1073,6 +1120,131 @@ async def test_responses_endpoint_passes_attachment_results_to_runner(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_responses_endpoint_maps_openai_input_image_to_current_attachments(monkeypatch):
+    _, runner, _, transport = _build_transport(monkeypatch)
+    image_b64 = base64.b64encode(b"\x89PNG\r\n").decode("ascii")
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/v1/responses",
+            json={
+                "input": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": "请分析这张图"},
+                            {
+                                "type": "input_image",
+                                "image_url": f"data:image/png;base64,{image_b64}",
+                            },
+                        ],
+                    }
+                ],
+                "stream": False,
+            },
+        )
+
+    assert response.status_code == 200
+    assert runner.invocations[-1]["has_current_files"] is True
+    assert runner.invocations[-1]["current_attachments"] == [
+        {
+            "display_name": "uploaded_image",
+            "mime_type": "image/png",
+            "transport": "inline",
+            "data": image_b64,
+            "is_text": False,
+            "size_bytes": len(b"\x89PNG\r\n"),
+        }
+    ]
+    assert runner.invocations[-1]["attachments"] == runner.invocations[-1]["current_attachments"]
+    assert runner.invocations[-1]["input_content"] == [
+        {"type": "input_text", "text": "请分析这张图"},
+        {"type": "input_image", "image_url": f"data:image/png;base64,{image_b64}"},
+    ]
+    assert runner.invocations[-1]["input_parts"][1] == {
+        "inlineData": {
+            "data": image_b64,
+            "mimeType": "image/png",
+            "displayName": "uploaded_image",
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_responses_endpoint_preserves_openai_input_image_remote_url(monkeypatch):
+    _, runner, _, transport = _build_transport(monkeypatch)
+    image_url = "https://example.com/diagram.png"
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/v1/responses",
+            json={
+                "input": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": "请分析这张图"},
+                            {
+                                "type": "input_image",
+                                "image_url": image_url,
+                            },
+                        ],
+                    }
+                ],
+                "stream": False,
+            },
+        )
+
+    assert response.status_code == 200
+    assert runner.invocations[-1]["has_current_files"] is True
+    assert runner.invocations[-1]["current_attachments"][0]["file_uri"] == image_url
+    assert runner.invocations[-1]["current_attachments"][0]["mime_type"] == "image/*"
+    assert runner.invocations[-1]["current_attachments"][0]["storage_path"] is None
+
+
+@pytest.mark.asyncio
+async def test_responses_endpoint_maps_openai_input_file_data_to_current_attachments(monkeypatch):
+    _, runner, _, transport = _build_transport(monkeypatch)
+    file_text = "候选人简历内容"
+    file_b64 = base64.b64encode(file_text.encode("utf-8")).decode("ascii")
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/v1/responses",
+            json={
+                "input": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": "请分析附件"},
+                            {
+                                "type": "input_file",
+                                "filename": "resume.txt",
+                                "file_data": file_b64,
+                            },
+                        ],
+                    }
+                ],
+                "stream": False,
+            },
+        )
+
+    assert response.status_code == 200
+    assert runner.invocations[-1]["has_current_files"] is True
+    assert runner.invocations[-1]["current_attachments"] == [
+        {
+            "display_name": "resume.txt",
+            "mime_type": "text/plain",
+            "transport": "inline",
+            "data": file_b64,
+            "is_text": True,
+            "size_bytes": len(file_text.encode("utf-8")),
+        }
+    ]
+    assert runner.invocations[-1]["attachment_results"][0]["text"] == file_text
+
+
+@pytest.mark.asyncio
 async def test_streaming_run_agent_fails_before_starting_sse_when_runner_load_fails(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()
@@ -1426,6 +1598,29 @@ def test_web_ui_source_prefers_responses_when_runtime_supports_it():
     assert "if (apiFormats.includes('responses'))" in layout_source
     assert "return 'responses'" in layout_source
     assert "resolveRunAgentApiFormat({ agentFramework: this.config.agentFramework, apiFormats: this.config.apiFormats })" in run_engine_source
+
+
+def test_static_workbench_uses_openai_responses_content_for_inline_attachments():
+    index_html = Path("ksadk/server/static/index.html").read_text(encoding="utf-8")
+    match = re.search(r'src="\.\/(assets\/index-[^"]+\.js)"', index_html)
+    assert match, "static index.html should reference the built Vite entry bundle"
+    source = Path("ksadk/server/static", match.group(1)).read_text(encoding="utf-8")
+
+    assert "type:`input_image`" in source
+    assert "image_url:await this.imageFileToDataUrl" in source
+    assert "type:`input_file`" in source
+    assert "filename:" in source
+    assert "file_url:" in source
+    assert "inlineData: {" not in source
+
+
+def test_web_ui_run_engine_uses_responses_input_for_responses_protocol():
+    run_engine_source = Path("ksadk/server/web-ui/src/core/run/engine.ts").read_text(
+        encoding="utf-8"
+    )
+
+    assert "body.ResponsesInput = [{ role: 'user', content: parts }]" in run_engine_source
+    assert "body.Messages = [{ role: 'user', content: parts }]" in run_engine_source
 
 
 def test_web_ui_source_supports_workspace_panel_for_owner_access():

@@ -8,8 +8,8 @@ const distDir = path.join(webUiRoot, 'dist');
 const staticDir = path.resolve(webUiRoot, '../static');
 const staticAssetsDir = path.join(staticDir, 'assets');
 
+await rm(staticDir, { recursive: true, force: true });
 await mkdir(staticDir, { recursive: true });
-await rm(staticAssetsDir, { recursive: true, force: true });
 await cp(path.join(distDir, 'assets'), staticAssetsDir, { recursive: true, force: true });
 
 for (const fileName of ['index.html', 'favicon.svg', 'icons.svg']) {

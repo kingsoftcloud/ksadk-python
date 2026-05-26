@@ -216,6 +216,7 @@ class LangGraphRunner(BaseRunner):
 
             data_b64 = str(attachment.get("data") or "").strip()
             transport = str(attachment.get("transport") or "")
+            file_uri = str(attachment.get("file_uri") or "").strip()
 
             if transport == "inline" and data_b64:
                 image_blocks.append(
@@ -223,6 +224,17 @@ class LangGraphRunner(BaseRunner):
                         "type": "image_url",
                         "image_url": {
                             "url": f"data:{mime_type};base64,{data_b64}",
+                        },
+                    }
+                )
+                continue
+
+            if file_uri.startswith(("http://", "https://")):
+                image_blocks.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": file_uri,
                         },
                     }
                 )
