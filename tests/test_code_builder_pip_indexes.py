@@ -245,6 +245,49 @@ def test_install_dependencies_advances_download_progress_with_wheel_activity(
     assert max(download_percents) >= 60
 
 
+def test_install_dependencies_does_not_pin_long_downloads_at_68_percent(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    builder = CodeBuilder(tmp_path)
+    builder.deps_dir.mkdir(parents=True, exist_ok=True)
+    requirements_path = tmp_path / "requirements.txt"
+    requirements_path.write_text("demo==1.0\n", encoding="utf-8")
+
+    calls = []
+    download_lines = [
+        f"Using cached https://mirror.example/simple/demo-{index}.whl\n"
+        for index in range(1, 71)
+    ]
+
+    def fake_popen(cmd, **kwargs):
+        return _FakePopen(
+            cmd,
+            calls=calls,
+            output_lines=[
+                "Collecting demo==1.0\n",
+                *download_lines,
+                "Installing collected packages: demo\n",
+                "Successfully installed demo-1.0\n",
+            ],
+            **kwargs,
+        )
+
+    monkeypatch.setattr("ksadk.builders.code_builder.subprocess.Popen", fake_popen)
+    monkeypatch.setattr(CodeBuilder, "_scan_incompatible_binaries_in_deps", lambda self: [])
+
+    assert builder._install_dependencies(requirements_path) is True
+
+    output = capsys.readouterr().out
+    download_percents = [
+        int(line.split("%", 1)[0].rsplit(" ", 1)[-1])
+        for line in output.splitlines()
+        if "下载依赖" in line and "%" in line
+    ]
+    assert max(download_percents) > 68
+
+
 def test_install_dependencies_prefers_fastest_cached_pip_index(tmp_path, monkeypatch):
     home = tmp_path / "home"
     cache_dir = home / ".agentengine"
@@ -414,4 +457,5 @@ def test_package_zip_reports_milestone_progress_for_large_dependency_tree(
 
     output = capsys.readouterr().out
     assert "打包依赖" in output
-    assert "1000/1001 files" in output
+    assert "100%" in output
+    assert "1000/1001 files" not in output

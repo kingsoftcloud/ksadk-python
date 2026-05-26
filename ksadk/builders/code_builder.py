@@ -131,6 +131,9 @@ class CodeBuilder(BaseBuilder):
     )
     INSTALL_PROGRESS_BAR_WIDTH = 24
     INSTALL_PROGRESS_EVENT_MILESTONES = frozenset({1, 5, 10})
+    INSTALL_DOWNLOAD_PROGRESS_MAX = 84
+    PACKAGE_PROGRESS_BAR_WIDTH = 24
+    PACKAGE_PROGRESS_LOG_MILESTONES = (25, 50, 75, 100)
     PIP_INDEX_CACHE_VERSION = 1
     PIP_INDEX_CACHE_TTL_SECONDS = 6 * 60 * 60
     PIP_INDEX_PROBE_TIMEOUT_SECONDS = 1.5
@@ -146,6 +149,10 @@ class CodeBuilder(BaseBuilder):
         self._install_progress_last_line = ""
         self._install_progress_event_counts: dict[str, int] = {}
         self._install_progress_started_at = time.monotonic()
+        self._package_progress_width = 0
+        self._package_progress_last_line = ""
+        self._package_progress_last_percent_by_label: dict[str, int] = {}
+        self._package_progress_logged_milestone_by_label: dict[str, int] = {}
         self._pip_index_candidates_cache: Optional[list[Optional[str]]] = None
         self._pip_index_selection_summary = ""
     
@@ -642,10 +649,10 @@ class CodeBuilder(BaseBuilder):
             ("Preparing metadata", (28, "准备元数据")),
             ("Using cached ", (40, "下载依赖")),
             ("Downloading ", (45, "下载依赖")),
-            ("Building wheel for ", (58, "构建 wheel")),
-            ("Installing collected packages:", (72, "安装依赖")),
-            ("Requirement already satisfied:", (74, "复用已安装依赖")),
-            ("Successfully installed ", (90, "安装完成")),
+            ("Building wheel for ", (76, "构建 wheel")),
+            ("Requirement already satisfied:", (82, "复用已安装依赖")),
+            ("Installing collected packages:", (86, "安装依赖")),
+            ("Successfully installed ", (92, "安装完成")),
         )
         for prefix, value in patterns:
             if normalized.startswith(prefix):
@@ -708,7 +715,13 @@ class CodeBuilder(BaseBuilder):
 
         if stage == "下载依赖":
             base = 45 if percent >= 45 else percent
-            return min(68, max(percent, base + min(23, count)))
+            return min(
+                self.INSTALL_DOWNLOAD_PROGRESS_MAX,
+                max(
+                    percent,
+                    base + min(self.INSTALL_DOWNLOAD_PROGRESS_MAX - base, int(count * 0.8)),
+                ),
+            )
 
         return percent
 
@@ -1371,6 +1384,7 @@ class CodeBuilder(BaseBuilder):
                 zf.write(file_path, arcname)
                 deps_count += 1
                 self._emit_package_progress("打包依赖", deps_count, len(dependency_files))
+            self._finish_package_progress()
             
             # 添加随运行时下发的 ksadk 源码
             bundled_source_count = 0
@@ -1378,7 +1392,12 @@ class CodeBuilder(BaseBuilder):
                 arcname = f"{package_name}/{relative}"
                 zf.write(file_path, arcname)
                 bundled_source_count += 1
-                self._emit_package_progress("打包 runtime", bundled_source_count, len(bundled_source_files))
+                self._emit_package_progress(
+                    "打包 runtime",
+                    bundled_source_count,
+                    len(bundled_source_files),
+                )
+            self._finish_package_progress()
             
             click.echo(f"   ✓ 打包运行时源码: {bundled_source_count} 个文件")
             
@@ -1391,8 +1410,62 @@ class CodeBuilder(BaseBuilder):
     def _emit_package_progress(self, label: str, current: int, total: int) -> None:
         if total < 500:
             return
-        if current == total or current % 500 == 0:
-            click.echo(f"   {label} {current}/{total} files")
+
+        percent = max(0, min(100, int((current / total) * 100)))
+        if not self._should_emit_package_progress(label, percent, current, total):
+            return
+
+        line = self._render_package_progress(label, percent, current, total)
+        if line == self._package_progress_last_line:
+            return
+
+        padding = " " * max(0, self._package_progress_width - len(line))
+        if sys.stdout.isatty():
+            click.echo(f"\r{line}{padding}", nl=False)
+            self._package_progress_width = len(line)
+        else:
+            click.echo(line)
+            self._package_progress_width = 0
+        self._package_progress_last_line = line
+
+    def _should_emit_package_progress(
+        self,
+        label: str,
+        percent: int,
+        current: int,
+        total: int,
+    ) -> bool:
+        if sys.stdout.isatty():
+            previous = self._package_progress_last_percent_by_label.get(label, -1)
+            if current == total or percent > previous:
+                self._package_progress_last_percent_by_label[label] = percent
+                return True
+            return False
+
+        previous_milestone = self._package_progress_logged_milestone_by_label.get(label, 0)
+        for milestone in self.PACKAGE_PROGRESS_LOG_MILESTONES:
+            if previous_milestone < milestone <= percent:
+                self._package_progress_logged_milestone_by_label[label] = milestone
+                return True
+        return False
+
+    def _render_package_progress(self, label: str, percent: int, current: int, total: int) -> str:
+        filled = round((percent / 100) * self.PACKAGE_PROGRESS_BAR_WIDTH)
+        if filled <= 0:
+            bar = "." * self.PACKAGE_PROGRESS_BAR_WIDTH
+        elif filled >= self.PACKAGE_PROGRESS_BAR_WIDTH:
+            bar = "=" * self.PACKAGE_PROGRESS_BAR_WIDTH
+        else:
+            bar = "=" * (filled - 1) + ">" + "." * (self.PACKAGE_PROGRESS_BAR_WIDTH - filled)
+        return f"   [{bar}] {percent:>3}% {label} | {current}/{total} files"
+
+    def _finish_package_progress(self) -> None:
+        if self._package_progress_width and sys.stdout.isatty():
+            click.echo()
+        self._package_progress_width = 0
+        self._package_progress_last_line = ""
+        self._package_progress_last_percent_by_label = {}
+        self._package_progress_logged_milestone_by_label = {}
     
     def _generate_entrypoint(self, detection_result) -> str:
         """生成 entrypoint.py"""

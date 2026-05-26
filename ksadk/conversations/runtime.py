@@ -30,7 +30,11 @@ from ksadk.conversations.model_context import (
     normalize_model_metadata,
 )
 from ksadk.conversations.model_options import normalize_model_options
-from ksadk.conversations.normalize import compact_attachment_for_session, normalize_kop_messages
+from ksadk.conversations.normalize import (
+    canonical_input_content_from_parts,
+    compact_attachment_for_session,
+    normalize_kop_messages,
+)
 from ksadk.conversations.semantic_summary import (
     extract_pinned_state,
     find_pinned_group_indexes,
@@ -237,6 +241,8 @@ class PreparedConversationTurn:
     user_input: str
     user_display_input: str
     history: list[dict[str, str]]
+    input_content: list[dict[str, Any]]
+    input_messages: list[dict[str, Any]]
     user_parts: list[dict[str, Any]]
     attachments: list[dict[str, Any]]
     attachment_results: list[dict[str, Any]]
@@ -827,6 +833,8 @@ def _build_runner_request_payload(
         "session_id": prepared.session_id,
         "input": prepared.user_input,
         "history": prepared.history,
+        "input_content": prepared.input_content,
+        "input_messages": prepared.input_messages,
         "input_parts": prepared.user_parts,
         "attachments": prepared.attachments,
         "attachment_results": prepared.attachment_results,
@@ -1238,6 +1246,10 @@ def _normalized_conversation_messages(messages: Sequence[Dict[str, Any]]) -> lis
                         message.get("display_content") or message.get("content") or ""
                     ),
                     "parts": list(message.get("parts") or []),
+                    "input_content": list(
+                        message.get("input_content")
+                        or canonical_input_content_from_parts(list(message.get("parts") or []))
+                    ),
                     "attachments": list(message.get("attachments") or []),
                     "attachment_results": list(message.get("attachment_results") or []),
                 }
@@ -1249,17 +1261,40 @@ def _normalized_conversation_messages(messages: Sequence[Dict[str, Any]]) -> lis
 
 def _latest_user_turn(
     normalized_messages: Sequence[Dict[str, Any]],
-) -> tuple[str, str, list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[
+    str,
+    str,
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
     latest_user_message = next(
         (message for message in reversed(normalized_messages) if message.get("role") == "user"),
         {},
     )
     user_input = str(latest_user_message.get("content") or "")
     user_display_input = str(latest_user_message.get("display_content") or user_input)
+    input_content = list(latest_user_message.get("input_content") or [])
     user_parts = list(latest_user_message.get("parts") or [])
     attachments = list(latest_user_message.get("attachments") or [])
     attachment_results = list(latest_user_message.get("attachment_results") or [])
-    return user_input, user_display_input, user_parts, attachments, attachment_results
+    return user_input, user_display_input, input_content, user_parts, attachments, attachment_results
+
+
+def _canonical_input_messages(
+    normalized_messages: Sequence[Dict[str, Any]],
+) -> list[dict[str, Any]]:
+    input_messages: list[dict[str, Any]] = []
+    for message in normalized_messages or []:
+        role = str(message.get("role") or "user")
+        content = list(message.get("input_content") or [])
+        if not content:
+            text = str(message.get("content") or "")
+            if text:
+                content = [{"type": "input_text", "text": text}]
+        input_messages.append({"role": role, "content": content})
+    return input_messages
 
 
 def _parts_include_file(parts: Sequence[dict[str, Any]]) -> bool:
@@ -1374,6 +1409,22 @@ def _build_pending_user_event(
         },
         session_id=session_id,
     )
+
+
+def _user_event_content(
+    *,
+    user_input: str,
+    user_display_input: str,
+    input_content: Sequence[dict[str, Any]],
+    user_parts: Sequence[dict[str, Any]],
+) -> dict[str, Any]:
+    parts = list(input_content or [])
+    if not parts:
+        parts = canonical_input_content_from_parts(list(user_parts or []))
+    if not parts:
+        text = user_display_input or user_input
+        parts = [{"text": text}] if text else []
+    return {"role": "user", "parts": parts}
 
 
 def _plan_compaction(
@@ -1530,7 +1581,7 @@ async def preview_auto_compaction(
         model,
         model_metadata=model_metadata,
     )
-    user_input, user_display_input, _, attachments, attachment_results = _latest_user_turn(
+    user_input, user_display_input, _, _, attachments, attachment_results = _latest_user_turn(
         normalized_messages
     )
     effective_attachments, effective_attachment_results = _resolve_effective_attachment_context(
@@ -1851,6 +1902,8 @@ async def build_run_input(
             user_input=resume_text,
             user_display_input=resume_text,
             history=history,
+            input_content=[],
+            input_messages=[],
             user_parts=[],
             attachments=[],
             attachment_results=[],
@@ -1865,9 +1918,15 @@ async def build_run_input(
         )
 
     normalized_messages = _normalized_conversation_messages(messages)
-    user_input, user_display_input, user_parts, attachments, attachment_results = _latest_user_turn(
-        normalized_messages
-    )
+    (
+        user_input,
+        user_display_input,
+        input_content,
+        user_parts,
+        attachments,
+        attachment_results,
+    ) = _latest_user_turn(normalized_messages)
+    input_messages = _canonical_input_messages(normalized_messages)
     effective_attachments, effective_attachment_results = _resolve_effective_attachment_context(
         normalized_messages=normalized_messages,
         session=session,
@@ -1898,6 +1957,12 @@ async def build_run_input(
         invocation_id=resolved_invocation_id,
         event_type="user_message",
         state_delta=effective_state_delta,
+        content=_user_event_content(
+            user_input=user_input,
+            user_display_input=user_display_input,
+            input_content=input_content,
+            user_parts=user_parts,
+        ),
         session_service_provider=provider,
         metadata=event_metadata,
     )
@@ -1929,6 +1994,8 @@ async def build_run_input(
         user_input=user_input,
         user_display_input=user_display_input or user_input,
         history=history,
+        input_content=input_content,
+        input_messages=input_messages,
         user_parts=user_parts,
         attachments=effective_attachments,
         attachment_results=effective_attachment_results,
@@ -2010,6 +2077,8 @@ async def invoke_conversation_once(
         user_id=user_id,
         session_id=prepared.session_id,
         history=list(prepared.history),
+        input_content=list(prepared.input_content),
+        input_messages=list(prepared.input_messages),
         input_parts=list(prepared.user_parts),
         attachments=list(prepared.attachments),
         attachment_results=list(prepared.attachment_results),
@@ -2203,6 +2272,8 @@ async def _iter_conversation_turn_events(
         user_id=user_id,
         session_id=prepared.session_id,
         history=list(prepared.history),
+        input_content=list(prepared.input_content),
+        input_messages=list(prepared.input_messages),
         input_parts=list(prepared.user_parts),
         attachments=list(prepared.attachments),
         attachment_results=list(prepared.attachment_results),

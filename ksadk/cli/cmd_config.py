@@ -398,10 +398,13 @@ def run_config_wizard(config_file: str | None, set_items: tuple, is_global: bool
     ))
     
     frameworks = ['langgraph', 'langchain', 'deepagents', 'adk', 'openclaw']
+    default_framework = existing_config.get('framework', 'langgraph')
+    if default_framework and default_framework not in frameworks:
+        frameworks.append(default_framework)
     new_config['framework'] = _ask_or_exit(questionary.select(
         "选择开发框架:",
         choices=frameworks,
-        default=existing_config.get('framework', 'langgraph'),
+        default=default_framework,
         style=_questionary_style()
     ))
     

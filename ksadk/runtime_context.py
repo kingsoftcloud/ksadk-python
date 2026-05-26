@@ -12,6 +12,8 @@ class PlatformInvocationContext:
     user_id: str
     session_id: str
     history: list[dict[str, Any]]
+    input_content: list[dict[str, Any]]
+    input_messages: list[dict[str, Any]]
     input_parts: list[dict[str, Any]]
     attachments: list[dict[str, Any]]
     attachment_results: list[dict[str, Any]]
@@ -30,6 +32,8 @@ class PlatformInvocationContext:
             "user_id": self.user_id,
             "session_id": self.session_id,
             "history": list(self.history or []),
+            "input_content": list(self.input_content or []),
+            "input_messages": list(self.input_messages or []),
             "input_parts": list(self.input_parts or []),
             "attachments": list(self.attachments or []),
             "attachment_results": list(self.attachment_results or []),

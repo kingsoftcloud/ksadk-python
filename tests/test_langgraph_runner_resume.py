@@ -307,6 +307,39 @@ async def test_invoke_with_inline_image_attachment_converts_to_multimodal_human_
 
 
 @pytest.mark.asyncio
+async def test_invoke_with_remote_image_attachment_preserves_image_url_for_multimodal_model():
+    runner = _make_runner()
+    image_url = "https://example.com/photo.png"
+
+    await runner.invoke(
+        {
+            "session_id": "s1",
+            "input": "请看图",
+            "model_metadata": {
+                "id": "kimi-k2.6",
+                "architecture": {"input_modalities": ["文字", "图片"]},
+            },
+            "attachments": [
+                {
+                    "display_name": "photo.png",
+                    "mime_type": "image/*",
+                    "transport": "reference",
+                    "file_uri": image_url,
+                }
+            ],
+        }
+    )
+
+    content = runner._agent.last_ainvoke_state["messages"][-1].content
+    assert isinstance(content, list)
+    assert content[0] == {"type": "text", "text": "请看图"}
+    assert content[1] == {
+        "type": "image_url",
+        "image_url": {"url": image_url},
+    }
+
+
+@pytest.mark.asyncio
 async def test_invoke_with_image_attachment_without_image_capability_keeps_text_content(tmp_path):
     runner = _make_runner()
     image_path = tmp_path / "diagram.png"

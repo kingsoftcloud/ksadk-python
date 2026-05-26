@@ -320,6 +320,17 @@ export class RunEngineImpl implements RunEngine {
         this.emit({ type: 'system_message', content: `【系统提示】文件 ${file.name} 超过 100MB 限制，未发送。` });
         continue;
       }
+      if (file.type.startsWith('image/')) {
+        try {
+          fileParts.push({
+            type: 'input_image',
+            image_url: await this.imageFileToDataUrl(file),
+          });
+        } catch (error) {
+          this.emit({ type: 'system_message', content: `【系统提示】图片 ${file.name} 读取失败，原因: ${getErrorMessage(error)}` });
+        }
+        continue;
+      }
       const formData = new FormData();
       formData.append('file', file);
       try {
@@ -327,9 +338,8 @@ export class RunEngineImpl implements RunEngine {
         if (uploadData?.FileData?.fileUri) {
           fileParts.push({
             type: 'input_file',
-            fileUri: uploadData.FileData.fileUri,
-            displayName: uploadData.FileData.displayName || file.name,
-            mimeType: uploadData.FileData.mimeType || file.type,
+            filename: uploadData.FileData.displayName || file.name,
+            file_url: uploadData.FileData.fileUri,
           });
         }
       } catch (error) {
@@ -337,6 +347,16 @@ export class RunEngineImpl implements RunEngine {
       }
     }
     return fileParts;
+  }
+
+  private async imageFileToDataUrl(file: File): Promise<string> {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let binary = '';
+    const chunkSize = 0x8000;
+    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+      binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+    }
+    return `data:${file.type || 'application/octet-stream'};base64,${btoa(binary)}`;
   }
 
   private buildRequestBody(
@@ -358,6 +378,9 @@ export class RunEngineImpl implements RunEngine {
     if (!isResponsesResume) {
       const parts: Array<Record<string, unknown>> = [{ type: 'input_text', text: draft.text.trim() }];
       parts.push(...fileParts);
+      if (apiFormat === 'responses') {
+        body.ResponsesInput = [{ role: 'user', content: parts }];
+      }
       body.Messages = [{ role: 'user', content: parts }];
     } else {
       body.ResponsesInput = draft.responsesInput;

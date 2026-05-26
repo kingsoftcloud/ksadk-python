@@ -23,7 +23,7 @@ from fastapi import FastAPI, HTTPException, Request, File, Form, Query, UploadFi
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import ksadk.conversations as conversation
 from ksadk.conversations.session_title import (
@@ -523,7 +523,8 @@ class SessionIdRequest(BaseModel):
 
 class RunAgentActionRequest(BaseModel):
     AgentId: str
-    Messages: List[Dict[str, Any]]
+    Messages: List[Dict[str, Any]] = Field(default_factory=list)
+    UserId: Optional[str] = "user"
     SessionId: Optional[str] = None
     ApiFormat: str = "responses"
     Stream: bool = False
@@ -1065,13 +1066,19 @@ async def list_openai_models():
 
 @app.post("/agentengine/api/v1/RunAgent")
 async def run_agent_action(request: RunAgentActionRequest):
+    api_format = (request.ApiFormat or "responses").strip().lower()
+    run_user_id = _clean_optional_string(request.UserId) or "user"
     resume_input = (
         conversation.extract_responses_resume_input(request.ResponsesInput)
         if request.ResponsesInput is not None
         else None
     )
-    messages = [] if resume_input is not None else conversation.normalize_kop_messages(request.Messages)
-    api_format = (request.ApiFormat or "responses").strip().lower()
+    if resume_input is not None:
+        messages = []
+    elif request.ResponsesInput is not None and api_format == "responses":
+        messages = conversation.normalize_responses_input(request.ResponsesInput)
+    else:
+        messages = conversation.normalize_kop_messages(request.Messages)
     request_metadata = {"previous_response_id": request.PreviousResponseId} if request.PreviousResponseId else None
 
     if request.Stream:
@@ -1083,13 +1090,14 @@ async def run_agent_action(request: RunAgentActionRequest):
                 model_options=request.ModelOptions,
                 stream=True,
                 session_id=request.SessionId,
+                user=run_user_id,
             )
             return await chat_completions(completion_request)
         return StreamingResponse(
             conversation.stream_responses_conversation_turn(
                 runner=_resolve_active_runner(),
                 agent_id=request.AgentId,
-                user_id="user",
+                user_id=run_user_id,
                 messages=messages,
                 session_id=request.SessionId,
                 model=request.Model,
@@ -1109,7 +1117,7 @@ async def run_agent_action(request: RunAgentActionRequest):
     resolved_session_id, result = await conversation.invoke_conversation_once(
         runner=_resolve_active_runner(),
         agent_id=request.AgentId,
-        user_id="user",
+        user_id=run_user_id,
         messages=messages,
         session_id=request.SessionId,
         model=request.Model,
@@ -1299,6 +1307,10 @@ async def run_sse(request: AgentRunRequest):
                 user_input = prepared_non_stream.user_input
                 attachments = prepared_non_stream.attachments
                 attachment_results = prepared_non_stream.attachment_results
+                current_attachments = prepared_non_stream.current_attachments
+                current_attachment_results = prepared_non_stream.current_attachment_results
+                input_content = prepared_non_stream.input_content
+                input_messages = prepared_non_stream.input_messages
                 user_parts = prepared_non_stream.user_parts
                 history = prepared_non_stream.history
                 invocation_id = prepared_non_stream.invocation_id
@@ -1314,9 +1326,14 @@ async def run_sse(request: AgentRunRequest):
                     "session_id": session_id,
                     "input": user_input,
                     "history": history,
+                    "input_content": list(input_content),
+                    "input_messages": list(input_messages),
                     "input_parts": list(user_parts),
                     "attachments": attachments,
                     "attachment_results": attachment_results,
+                    "current_attachments": current_attachments,
+                    "current_attachment_results": current_attachment_results,
+                    "has_current_files": prepared_non_stream.has_current_files,
                     "model": request.model,
                 }
                 result = await active_runner.invoke(input_data)
@@ -1413,6 +1430,10 @@ async def run_sse(request: AgentRunRequest):
                 user_input = prepared.user_input
                 attachments = prepared.attachments
                 attachment_results = prepared.attachment_results
+                current_attachments = prepared.current_attachments
+                current_attachment_results = prepared.current_attachment_results
+                input_content = prepared.input_content
+                input_messages = prepared.input_messages
                 user_parts = prepared.user_parts
                 history = prepared.history
                 invocation_id = prepared.invocation_id
@@ -1441,9 +1462,14 @@ async def run_sse(request: AgentRunRequest):
                         "session_id": session_id,
                         "input": user_input,
                         "history": history,
+                        "input_content": list(input_content),
+                        "input_messages": list(input_messages),
                         "input_parts": list(user_parts),
                         "attachments": attachments,
                         "attachment_results": attachment_results,
+                        "current_attachments": current_attachments,
+                        "current_attachment_results": current_attachment_results,
+                        "has_current_files": prepared.has_current_files,
                         "model": request.model,
                     }
                 )
@@ -1747,6 +1773,7 @@ class ChatCompletionRequest(BaseModel):
     model_options: Optional[Dict[str, Any]] = None
     stream: bool = False
     session_id: Optional[str] = None
+    user: Optional[str] = None
     temperature: Optional[float] = 0.7
     max_tokens: Optional[int] = None
 
@@ -1826,13 +1853,14 @@ async def chat_completions(request: ChatCompletionRequest):
     active_runner = _resolve_active_runner()
     messages = conversation.normalize_kop_messages(request.messages)
     agent_id = active_runner.detection_result.name
+    resolved_user_id = _clean_optional_string(request.user) or "user"
 
     if request.stream:
         return StreamingResponse(
             conversation.stream_conversation_turn(
                 runner=active_runner,
                 agent_id=agent_id,
-                user_id="user",
+                user_id=resolved_user_id,
                 messages=messages,
                 session_id=request.session_id,
                 model=request.model,
@@ -1847,7 +1875,7 @@ async def chat_completions(request: ChatCompletionRequest):
     resolved_session_id, result = await conversation.invoke_conversation_once(
         runner=active_runner,
         agent_id=agent_id,
-        user_id="user",
+        user_id=resolved_user_id,
         messages=messages,
         session_id=request.session_id,
         model=request.model,

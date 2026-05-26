@@ -13,6 +13,8 @@ def _context() -> PlatformInvocationContext:
         user_id="user",
         session_id="sess-1",
         history=[],
+        input_content=[],
+        input_messages=[],
         input_parts=[],
         attachments=[],
         attachment_results=[],
