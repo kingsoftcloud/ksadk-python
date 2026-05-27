@@ -12,11 +12,11 @@ BUNDLED_FEISHU_EXAMPLE_ROOT = (
 )
 EXAMPLE_ROOT = TEMPLATE_ROOT / "examples" / "minimal-skill-plugin-deps"
 LATEST_OPENCLAW_BASE_IMAGE = (
-    "ghcr.io/openclaw/openclaw:2026.5.20-slim@"
-    "sha256:db199be23add581ef18ca8c8a866af84db13586d5bfcd566c8ac73d8d106eebb"
+    "ghcr.io/openclaw/openclaw:2026.5.22-slim@"
+    "sha256:d35b8b681c223a85027502c7a82999aa772d6a09e1b28903951cac7fc27efed5"
 )
 LATEST_OPENCLAW_KCR_IMAGE = (
-    "ghcr.io/openclaw/openclaw:2026.5.20-slim@sha256:db199be23add581ef18ca8c8a866af84db13586d5bfcd566c8ac73d8d106eebb"
+    "ghcr.io/openclaw/openclaw:2026.5.22-slim@sha256:d35b8b681c223a85027502c7a82999aa772d6a09e1b28903951cac7fc27efed5"
 )
 
 

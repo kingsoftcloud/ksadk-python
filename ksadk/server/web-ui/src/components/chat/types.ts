@@ -96,6 +96,9 @@ export type ModelCatalogItem = {
     function_calling?: boolean;
     structured_output?: boolean;
     context_caching?: boolean;
+    multimodal_input_image?: boolean;
+    multimodal_input_video?: boolean;
+    multimodal_input_file?: boolean;
   };
   pricing?: Record<string, string | number>;
   [key: string]: unknown;
@@ -103,7 +106,10 @@ export type ModelCatalogItem = {
 
 export type ComposerContextIndicator = {
   label: string;
-  phase?: 'default' | 'warning' | 'compressing';
+  phase?: 'default' | 'normal' | 'warning' | 'compressing';
+  percent?: number;
+  usedTokens?: number;
+  contextWindowTokens?: number;
 } | null;
 
 export type WorkspaceFilesCapability = {

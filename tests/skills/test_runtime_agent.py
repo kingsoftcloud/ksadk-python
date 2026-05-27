@@ -197,6 +197,68 @@ def test_runtime_agent_downloads_explicit_remote_skill_even_when_prompt_omits_na
     assert not (tmp_path / "cache" / "sk-unused__sv-unused-v1").exists()
 
 
+def test_runtime_agent_can_load_legacy_remote_skill_when_hash_mismatch_is_allowed(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+):
+    archive = _zip_bytes("legacy-skill")
+    download_urls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/ListSkillsBySpaceId"):
+            return httpx.Response(
+                200,
+                json={
+                    "Data": {
+                        "SkillSpaceId": "ss-1",
+                        "Skills": [
+                            {
+                                "SkillId": "sk-legacy",
+                                "VersionId": "sv-legacy-v1",
+                                "Version": "v1",
+                                "Name": "legacy-skill",
+                                "Status": "Active",
+                                "ContentHash": f"sha256:{'0' * 64}",
+                            }
+                        ],
+                    }
+                },
+            )
+        if request.url.path.endswith("/GetSkillDownloadUrl"):
+            return httpx.Response(200, json={"Data": {"DownloadUrl": "https://download.example/legacy.zip"}})
+        if str(request.url) == "https://download.example/legacy.zip":
+            download_urls.append(str(request.url))
+            return httpx.Response(200, content=archive)
+        return httpx.Response(404)
+
+    monkeypatch.setenv("KSADK_SKILL_SPACE_IDS", "ss-1")
+    monkeypatch.setenv("KSADK_SKILL_SERVICE_URL", "https://skill.example/api/v1")
+    monkeypatch.setenv("KSADK_SKILL_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("KSADK_SELECTED_SKILL_NAMES", "legacy-skill")
+    monkeypatch.setenv("KSADK_SKILL_ALLOW_HASH_MISMATCH", "true")
+
+    code = run_agent(
+        ["请处理这个任务"],
+        service_transport=httpx.MockTransport(handler),
+    )
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "loaded_skills=legacy-skill" in out
+    assert "skill_warnings=" in out
+    assert "ContentHash mismatch for legacy-skill" in out
+    assert download_urls == ["https://download.example/legacy.zip"]
+    assert (
+        tmp_path
+        / "cache"
+        / "unverified-sk-legacy__sv-legacy-v1"
+        / "extracted"
+        / "legacy-skill"
+        / "SKILL.md"
+    ).exists()
+
+
 def test_runtime_agent_without_service_still_reports_workflow(monkeypatch, capsys):
     monkeypatch.delenv("KSADK_SKILL_SERVICE_URL", raising=False)
     monkeypatch.setenv("KSADK_SKILL_SPACE_IDS", "ss-1")

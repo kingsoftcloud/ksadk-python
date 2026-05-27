@@ -244,6 +244,127 @@ function assistantOutputDedupeKey(invocationId, message) {
   ].join('\u0000');
 }
 
+function normalizedMessageContent(message) {
+  return [
+    String(message?.role || ''),
+    String(message?.content || '').replace(/\s+/g, ' ').trim(),
+    String(message?.reasoning || '').replace(/\s+/g, ' ').trim(),
+  ].join('\u0000');
+}
+
+function messageContentDedupeKey(message) {
+  const normalized = normalizedMessageContent(message);
+  const attachmentKey = (message?.attachments || [])
+    .map((attachment) => `${attachment.name || ''}|${attachment.type || ''}|${attachment.fileUri || attachment.url || ''}`)
+    .join('\u0001');
+  return `${normalized}\u0000${attachmentKey}`;
+}
+
+function stringifyToolPayload(value) {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (value === undefined || value === null) {
+    return '';
+  }
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function toolMessageFromSessionEvent(event) {
+  const eventType = String(event?.EventType || '');
+  if (eventType !== 'tool_call' && eventType !== 'tool_result') {
+    return null;
+  }
+  const name = String(
+    event.Metadata?.tool_name
+      || event.Metadata?.name
+      || event.Metadata?.function_name
+      || textFromUnknown(event.Content?.parts)
+      || 'tool',
+  ).trim() || 'tool';
+  const existing = {
+    name,
+    args: '',
+    status: eventType === 'tool_result' ? 'completed' : 'running',
+  };
+  const tool =
+    eventType === 'tool_result'
+      ? {
+          ...existing,
+          output: stringifyToolPayload(
+            event.Metadata?.tool_output
+              ?? event.Metadata?.output
+              ?? event.Metadata?.result
+              ?? textFromUnknown(event.Content?.parts),
+          ),
+          status: 'completed',
+        }
+      : {
+          ...existing,
+          args: stringifyToolPayload(
+            event.Metadata?.tool_args
+              ?? event.Metadata?.arguments
+              ?? event.Metadata?.args
+              ?? {},
+          ),
+        };
+  return {
+    id: event.EventId || String(Date.now() + Math.random()),
+    role: 'model',
+    content: '',
+    timestamp: event.Timestamp || Date.now(),
+    eventType,
+    tools: {
+      [name]: tool,
+    },
+  };
+}
+
+function mergeToolMaps(first = {}, second = {}) {
+  const merged = { ...(first || {}) };
+  for (const [name, tool] of Object.entries(second || {})) {
+    merged[name] = {
+      ...(merged[name] || {}),
+      ...(tool || {}),
+      name,
+      args: tool?.args || merged[name]?.args || '',
+    };
+  }
+  return merged;
+}
+
+function messageVisibleContentDedupeKey(message) {
+  const attachmentKey = (message?.attachments || [])
+    .map((attachment) => `${attachment.name || ''}|${attachment.type || ''}|${attachment.fileUri || attachment.url || ''}`)
+    .join('\u0001');
+  return [
+    String(message?.role || ''),
+    String(message?.content || '').replace(/\s+/g, ' ').trim(),
+    attachmentKey,
+  ].join('\u0000');
+}
+
+function mergeMessageMetadata(existing, incoming) {
+  return {
+    ...existing,
+    reasoning: mergeReasoningText(existing.reasoning, incoming.reasoning),
+    tools: {
+      ...(existing.tools || {}),
+      ...(incoming.tools || {}),
+    },
+    eventId: incoming.eventId || existing.eventId,
+    responseId: incoming.responseId || existing.responseId,
+    traceId: incoming.traceId || existing.traceId,
+    rootSpanId: incoming.rootSpanId || existing.rootSpanId,
+    timestamp: Math.max(Number(existing.timestamp || 0), Number(incoming.timestamp || 0)) || incoming.timestamp || existing.timestamp,
+    id: incoming.responseId || incoming.reasoning || incoming.tools ? incoming.id : existing.id,
+  };
+}
+
 function mergeReasoningText(first = '', second = '') {
   const left = String(first || '');
   const right = String(second || '');
@@ -339,6 +460,10 @@ export function buildMessageFromSessionEvent(event) {
       : null;
   }
 
+  if (eventType === 'tool_call' || eventType === 'tool_result') {
+    return toolMessageFromSessionEvent(event);
+  }
+
   if (eventType !== 'user_message' && eventType !== 'assistant_message') {
     return null;
   }
@@ -384,8 +509,21 @@ export function buildMessagesFromSessionEvents(events = []) {
   const latestRunStatusByInvocation = new Map();
   const outputByInvocation = new Set();
   const assistantOutputKeys = new Set();
+  const seenEventIds = new Set();
   const normalizedEvents = Array.isArray(events) ? events : [];
+  const uniqueEvents = [];
   for (const event of normalizedEvents) {
+    const eventId = String(event?.EventId || '').trim();
+    if (eventId) {
+      if (seenEventIds.has(eventId)) {
+        continue;
+      }
+      seenEventIds.add(eventId);
+    }
+    uniqueEvents.push(event);
+  }
+
+  for (const event of uniqueEvents) {
     const invocationId = String(event.InvocationId || '').trim();
     if (
       invocationId &&
@@ -404,22 +542,88 @@ export function buildMessagesFromSessionEvents(events = []) {
 
   /** @type {Array<Message & { invocationId?: string }>} */
   const messages = [];
+  const messageContentKeys = new Set();
+  const messageVisibleKeyToIndex = new Map();
   /** @type {(Message & { invocationId?: string }) | null} */
   let pendingReasoning = null;
+  /** @type {Map<string, Message & { invocationId?: string }>} */
+  const pendingToolsByInvocation = new Map();
+
+  const pushMessage = (message) => {
+    const key = messageContentDedupeKey(message);
+    if (key && messageContentKeys.has(key)) {
+      return;
+    }
+    const visibleKey = messageVisibleContentDedupeKey(message);
+    const existingIndex = messageVisibleKeyToIndex.get(visibleKey);
+    if (existingIndex !== undefined) {
+      messages[existingIndex] = mergeMessageMetadata(messages[existingIndex], message);
+      if (key) {
+        messageContentKeys.add(key);
+      }
+      return;
+    }
+    if (key) {
+      messageContentKeys.add(key);
+    }
+    if (visibleKey) {
+      messageVisibleKeyToIndex.set(visibleKey, messages.length);
+    }
+    messages.push(message);
+  };
 
   const flushPendingReasoning = () => {
     if (pendingReasoning) {
-      messages.push(pendingReasoning);
+      pushMessage(pendingReasoning);
       pendingReasoning = null;
     }
   };
 
-  for (const event of normalizedEvents) {
+  const takePendingTools = (invocationId) => {
+    const normalizedInvocationId = String(invocationId || '').trim();
+    if (!normalizedInvocationId) {
+      return {};
+    }
+    const pendingTools = pendingToolsByInvocation.get(normalizedInvocationId);
+    if (!pendingTools) {
+      return {};
+    }
+    pendingToolsByInvocation.delete(normalizedInvocationId);
+    return {
+      tools: pendingTools.tools,
+    };
+  };
+
+  for (const event of uniqueEvents) {
     if (event.EventType === 'run_status') {
       continue;
     }
     const message = buildMessageFromSessionEvent(event);
     if (!message) {
+      continue;
+    }
+    if (message.eventType === 'tool_call' || message.eventType === 'tool_result') {
+      const invocationId = String(event.InvocationId || '').trim();
+      if (!invocationId) {
+        flushPendingReasoning();
+        pushMessage(message);
+        continue;
+      }
+      const existing = pendingToolsByInvocation.get(invocationId);
+      pendingToolsByInvocation.set(invocationId, {
+        ...(existing || {
+          id: message.id,
+          role: 'model',
+          content: '',
+          timestamp: message.timestamp,
+          invocationId,
+        }),
+        timestamp: Math.max(
+          Number(existing?.timestamp || 0),
+          Number(message.timestamp || 0),
+        ),
+        tools: mergeToolMaps(existing?.tools, message.tools),
+      });
       continue;
     }
     if (message.eventType === 'reasoning') {
@@ -450,8 +654,9 @@ export function buildMessagesFromSessionEvents(events = []) {
       if (invocationId) {
         assistantOutputKeys.add(outputKey);
       }
-      messages.push({
+      pushMessage({
         ...message,
+        ...takePendingTools(invocationId),
         reasoning: mergeReasoningText(pendingReasoning.reasoning, message.reasoning),
       });
       pendingReasoning = null;
@@ -467,13 +672,44 @@ export function buildMessagesFromSessionEvents(events = []) {
       if (invocationId) {
         assistantOutputKeys.add(outputKey);
       }
+      pushMessage({
+        ...message,
+        ...takePendingTools(invocationId),
+      });
+      continue;
     }
-    messages.push(message);
+    pushMessage(message);
   }
 
   flushPendingReasoning();
+  for (const pendingTools of pendingToolsByInvocation.values()) {
+    pushMessage(pendingTools);
+  }
 
   return messages.map(({ invocationId: _invocationId, ...message }) => message);
+}
+
+export function mergeSessionEventRecords(baseEvents = [], incomingEvents = []) {
+  const merged = [];
+  const seenEventIds = new Set();
+  for (const event of [...(Array.isArray(baseEvents) ? baseEvents : []), ...(Array.isArray(incomingEvents) ? incomingEvents : [])]) {
+    const eventId = String(event?.EventId || '').trim();
+    if (eventId) {
+      if (seenEventIds.has(eventId)) {
+        continue;
+      }
+      seenEventIds.add(eventId);
+    }
+    merged.push(event);
+  }
+  return merged.sort((left, right) => {
+    const leftSeqId = Number(left?.SeqId || 0);
+    const rightSeqId = Number(right?.SeqId || 0);
+    if (Number.isFinite(leftSeqId) && Number.isFinite(rightSeqId) && leftSeqId !== rightSeqId) {
+      return leftSeqId - rightSeqId;
+    }
+    return Number(left?.Timestamp || 0) - Number(right?.Timestamp || 0);
+  });
 }
 
 export function maxSeqIdFromEvents(events = []) {

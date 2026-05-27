@@ -7,7 +7,7 @@ import type {
   RefObject,
 } from 'react';
 
-import { Paperclip, Send, ShieldCheck, StopCircle, XCircle } from 'lucide-react';
+import { Paperclip, Send, ShieldCheck, StopCircle } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 
@@ -63,6 +63,14 @@ export function ChatComposer({
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (isStreaming) {
+      if (onCancelRemote) {
+        onCancelRemote();
+      } else {
+        onStopGeneration();
+      }
+      return;
+    }
     const text = input.trim();
     if (!text && attachments.length === 0) return;
     onSubmit(text, attachments);
@@ -78,30 +86,6 @@ export function ChatComposer({
   return (
     <div className="relative z-10 flex-shrink-0 bg-white/95 px-3 py-3 backdrop-blur dark:bg-slate-900/95 sm:px-4 sm:py-3">
       <div className="mx-auto w-full max-w-[64rem]">
-        {isStreaming ? (
-          <div className="mb-2 flex items-center justify-center gap-2">
-            <button
-              type="button"
-              onClick={onStopGeneration}
-              className="flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-1.5 text-sm shadow-sm transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700"
-            >
-              <StopCircle className="h-4 w-4 text-slate-500" />
-              <span>停止接收</span>
-            </button>
-            {onCancelRemote ? (
-              <button
-                type="button"
-                onClick={onCancelRemote}
-                className="flex items-center gap-1.5 rounded-full border border-rose-200 bg-white px-3 py-1.5 text-xs text-rose-600 shadow-sm transition hover:bg-rose-50 dark:border-rose-800 dark:bg-slate-800 dark:text-rose-400 dark:hover:bg-slate-700"
-              >
-                <XCircle className="h-3.5 w-3.5" />
-                <span>取消运行</span>
-                <span className="text-[10px] text-rose-400 dark:text-rose-500">终止后台</span>
-              </button>
-            ) : null}
-          </div>
-        ) : null}
-
         {queuedDrafts.length > 0 ? (
           <div className="mb-2 rounded-2xl border border-amber-200/80 bg-amber-50/80 px-3 py-2 text-xs text-amber-900 shadow-sm dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-100">
             <div className="mb-1.5 flex items-center justify-between gap-2">
@@ -212,16 +196,18 @@ export function ChatComposer({
 
               <button
                 type="submit"
-                disabled={!input.trim() && attachments.length === 0}
+                disabled={!isStreaming && !input.trim() && attachments.length === 0}
                 className={cn(
                   'flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl transition-all',
-                  input.trim() || attachments.length > 0
+                  isStreaming
+                    ? 'bg-slate-900 text-white hover:bg-slate-800 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white'
+                    : input.trim() || attachments.length > 0
                     ? 'bg-slate-900 text-white hover:bg-slate-800 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-white'
                     : 'bg-slate-100 text-slate-400 dark:bg-slate-800 dark:text-slate-600',
                 )}
-                title={isStreaming ? '加入发送队列' : '发送消息'}
+                title={isStreaming ? '停止生成' : '发送消息'}
               >
-                <Send className="ml-0.5 h-4 w-4" />
+                {isStreaming ? <StopCircle className="h-4 w-4" /> : <Send className="ml-0.5 h-4 w-4" />}
               </button>
             </div>
           </form>

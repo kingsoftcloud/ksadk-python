@@ -26,7 +26,7 @@ export function HtmlPreview({
 }: HtmlPreviewProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const channelId = useId();
-  const [activeView, setActiveView] = useState<'editor' | 'preview'>('editor');
+  const [activeView, setActiveView] = useState<'editor' | 'preview'>('preview');
 
   const basePath = buildWorkspaceFileBaseUrl(path);
   const fileUrl = buildWorkspaceFileUrl(path);
@@ -46,6 +46,16 @@ export function HtmlPreview({
   }, [previewHtml]);
 
   useIframeMessageHandler(iframeRef, channelId);
+
+  const openPreviewWindow = useCallback(() => {
+    const blob = new Blob([previewSrc], { type: 'text/html;charset=utf-8' });
+    const blobUrl = URL.createObjectURL(blob);
+    const opened = window.open(blobUrl, '_blank', 'noopener,noreferrer');
+    window.setTimeout(() => URL.revokeObjectURL(blobUrl), 30_000);
+    if (!opened) {
+      window.open(fileUrl, '_blank', 'noopener,noreferrer');
+    }
+  }, [fileUrl, previewSrc]);
 
   if (isMobile) {
     return (
@@ -131,9 +141,9 @@ export function HtmlPreview({
       />
       <div className="absolute right-3 top-3 z-10 flex gap-1.5">
         <button
-          onClick={() => window.open(fileUrl, '_blank', 'noopener,noreferrer')}
+          onClick={openPreviewWindow}
           className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white/90 px-2.5 py-1.5 text-xs font-medium text-slate-600 shadow-sm backdrop-blur-sm transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800/90 dark:text-slate-300 dark:hover:bg-slate-700"
-          title="在新窗口中打开"
+          title="在新窗口中打开当前预览"
         >
           <ExternalLink className="h-3.5 w-3.5" />
           新窗口

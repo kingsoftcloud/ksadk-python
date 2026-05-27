@@ -71,6 +71,73 @@ test('session event utils restore persisted reasoning events', async () => {
   );
 });
 
+test('session event utils merge replayed subscription events before rebuilding active runs', async () => {
+  const sessionEvents = await loadSessionEventUtils();
+
+  assert.ok(sessionEvents, 'expected session event helpers to exist');
+  const initialEvents = [
+    {
+      EventId: 'evt-user',
+      EventType: 'user_message',
+      InvocationId: 'inv-active',
+      SeqId: 1,
+      Content: { role: 'user', parts: [{ text: '分析这张图' }] },
+      Timestamp: 1,
+    },
+    {
+      EventId: 'evt-reasoning-1',
+      EventType: 'reasoning',
+      InvocationId: 'inv-active',
+      SeqId: 2,
+      Content: { role: 'model', parts: [{ text: '先看图片。' }] },
+      Timestamp: 2,
+    },
+  ];
+  const mergedEvents = sessionEvents.mergeSessionEventRecords(initialEvents, [
+    {
+      EventId: 'evt-reasoning-2',
+      EventType: 'reasoning',
+      InvocationId: 'inv-active',
+      SeqId: 3,
+      Content: { role: 'model', parts: [{ text: '再总结需求。' }] },
+      Timestamp: 3,
+    },
+    {
+      EventId: 'evt-assistant',
+      EventType: 'assistant_message',
+      InvocationId: 'inv-active',
+      SeqId: 4,
+      Content: { role: 'model', parts: [{ text: '图片是在讨论 AgentEngine Demo。' }] },
+      Timestamp: 4,
+    },
+  ]);
+
+  const messages = sessionEvents.buildMessagesFromSessionEvents(mergedEvents);
+
+  assert.deepEqual(
+    messages.map((message) => ({
+      role: message.role,
+      content: message.content,
+      reasoning: message.reasoning,
+      eventType: message.eventType,
+    })),
+    [
+      {
+        role: 'user',
+        content: '分析这张图',
+        reasoning: undefined,
+        eventType: 'user_message',
+      },
+      {
+        role: 'model',
+        content: '图片是在讨论 AgentEngine Demo。',
+        reasoning: '先看图片。再总结需求。',
+        eventType: 'assistant_message',
+      },
+    ],
+  );
+});
+
 test('session event utils suppress stale running banners after assistant output exists', async () => {
   const sessionEvents = await loadSessionEventUtils();
 
@@ -631,6 +698,263 @@ test('session event utils dedupe same assistant output even when response ids di
         responseId: 'resp-first',
         role: 'model',
         content: '你好，我在。',
+      },
+    ],
+  );
+});
+
+test('session event utils ignore duplicate persisted events with the same event id', async () => {
+  const sessionEvents = await loadSessionEventUtils();
+
+  assert.ok(sessionEvents, 'expected session event helpers to exist');
+  const duplicateUser = {
+    EventId: 'evt-user-dup',
+    EventType: 'user_message',
+    Content: { role: 'user', parts: [{ text: '同一条持久化用户消息' }] },
+    Timestamp: 1,
+  };
+  const duplicateAssistant = {
+    EventId: 'evt-assistant-dup',
+    EventType: 'assistant_message',
+    Content: { role: 'model', parts: [{ text: '同一条持久化助手回复' }] },
+    Timestamp: 2,
+  };
+
+  const messages = sessionEvents.buildMessagesFromSessionEvents([
+    duplicateUser,
+    duplicateUser,
+    duplicateAssistant,
+    duplicateAssistant,
+  ]);
+
+  assert.deepEqual(
+    messages.map((message) => ({
+      id: message.id,
+      role: message.role,
+      content: message.content,
+    })),
+    [
+      { id: 'evt-user-dup', role: 'user', content: '同一条持久化用户消息' },
+      { id: 'evt-assistant-dup', role: 'model', content: '同一条持久化助手回复' },
+    ],
+  );
+});
+
+test('session event utils dedupe duplicate messages with different event ids', async () => {
+  const sessionEvents = await loadSessionEventUtils();
+
+  assert.ok(sessionEvents, 'expected session event helpers to exist');
+  const messages = sessionEvents.buildMessagesFromSessionEvents([
+    {
+      EventId: 'evt-user-1',
+      EventType: 'user_message',
+      Content: { role: 'user', parts: [{ text: '同一个问题' }] },
+      Timestamp: 1,
+    },
+    {
+      EventId: 'evt-user-2',
+      EventType: 'user_message',
+      Content: { role: 'user', parts: [{ text: '同一个问题' }] },
+      Timestamp: 2,
+    },
+    {
+      EventId: 'evt-assistant-1',
+      EventType: 'assistant_message',
+      Content: { role: 'model', parts: [{ text: '同一个回答' }] },
+      Metadata: { response_id: 'resp-1' },
+      Timestamp: 3,
+    },
+    {
+      EventId: 'evt-assistant-2',
+      EventType: 'assistant_message',
+      Content: { role: 'model', parts: [{ text: '同一个回答' }] },
+      Metadata: { response_id: 'resp-2' },
+      Timestamp: 4,
+    },
+  ]);
+
+  assert.deepEqual(
+    messages.map((message) => ({
+      id: message.id,
+      role: message.role,
+      content: message.content,
+    })),
+    [
+      { id: 'evt-user-1', role: 'user', content: '同一个问题' },
+      { id: 'evt-assistant-1', role: 'model', content: '同一个回答' },
+    ],
+  );
+});
+
+test('session event utils merge responses mirror assistant with canonical assistant output', async () => {
+  const sessionEvents = await loadSessionEventUtils();
+
+  assert.ok(sessionEvents, 'expected session event helpers to exist');
+  const messages = sessionEvents.buildMessagesFromSessionEvents([
+    {
+      EventId: 'evt-user',
+      EventType: 'user_message',
+      InvocationId: 'inv-mirror',
+      Content: { role: 'user', parts: [{ text: '检查组件状态' }] },
+      Timestamp: 1,
+    },
+    {
+      EventId: 'evt-mirror',
+      EventType: 'assistant_message',
+      Content: { role: 'assistant', parts: [{ text: '组件状态正常。' }] },
+      Metadata: {
+        responses_mirror: true,
+        response_id: 'resp-123',
+        responses_output: [
+          {
+            id: 'msg-mirror',
+            type: 'message',
+            status: 'completed',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: '组件状态正常。' }],
+          },
+        ],
+      },
+      Timestamp: 2,
+    },
+    {
+      EventId: 'evt-reasoning',
+      EventType: 'reasoning',
+      InvocationId: 'inv-mirror',
+      Content: { role: 'assistant', parts: [{ text: '先检查绑定。' }] },
+      Timestamp: 3,
+    },
+    {
+      EventId: 'evt-canonical',
+      EventType: 'assistant_message',
+      InvocationId: 'inv-mirror',
+      Content: { role: 'assistant', parts: [{ text: '组件状态正常。' }] },
+      Metadata: {
+        response_id: 'resp-123',
+        responses_output: [
+          {
+            id: 'fc-1',
+            type: 'function_call',
+            status: 'completed',
+            call_id: 'call-1',
+            name: 'component_status',
+            arguments: '{}',
+          },
+          {
+            id: 'msg-1',
+            type: 'message',
+            status: 'completed',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: '组件状态正常。' }],
+          },
+        ],
+      },
+      Timestamp: 4,
+    },
+  ]);
+
+  assert.deepEqual(
+    messages.map((message) => ({
+      id: message.id,
+      eventId: message.eventId,
+      responseId: message.responseId,
+      role: message.role,
+      content: message.content,
+      reasoning: message.reasoning,
+      toolNames: message.tools ? Object.keys(message.tools) : [],
+    })),
+    [
+      {
+        id: 'evt-user',
+        eventId: 'evt-user',
+        responseId: undefined,
+        role: 'user',
+        content: '检查组件状态',
+        reasoning: undefined,
+        toolNames: [],
+      },
+      {
+        id: 'evt-canonical',
+        eventId: 'evt-canonical',
+        responseId: 'resp-123',
+        role: 'model',
+        content: '组件状态正常。',
+        reasoning: '先检查绑定。',
+        toolNames: ['component_status'],
+      },
+    ],
+  );
+});
+
+test('session event utils restore persisted tool calls and results around assistant output', async () => {
+  const sessionEvents = await loadSessionEventUtils();
+
+  assert.ok(sessionEvents, 'expected session event helpers to exist');
+  const messages = sessionEvents.buildMessagesFromSessionEvents([
+    {
+      EventId: 'evt-user',
+      EventType: 'user_message',
+      InvocationId: 'inv-tools',
+      Content: { role: 'user', parts: [{ text: '生成 html 到 workspace' }] },
+      Timestamp: 1,
+    },
+    {
+      EventId: 'evt-tool-call',
+      EventType: 'tool_call',
+      InvocationId: 'inv-tools',
+      Content: { role: 'model', parts: [{ text: 'create_workspace_ppt' }] },
+      Metadata: {
+        tool_name: 'create_workspace_ppt',
+        tool_args: { filename: 'e2e-demo-workspace.html' },
+      },
+      Timestamp: 2,
+    },
+    {
+      EventId: 'evt-tool-result',
+      EventType: 'tool_result',
+      InvocationId: 'inv-tools',
+      Content: { role: 'tool', parts: [{ text: '{"ok":true}' }] },
+      Metadata: {
+        tool_name: 'create_workspace_ppt',
+        tool_output: '{"ok":true,"workspace_path":"e2e-demo-workspace.html"}',
+      },
+      Timestamp: 3,
+    },
+    {
+      EventId: 'evt-assistant',
+      EventType: 'assistant_message',
+      InvocationId: 'inv-tools',
+      Content: { role: 'model', parts: [{ text: '已生成。' }] },
+      Timestamp: 4,
+    },
+  ]);
+
+  assert.deepEqual(
+    messages.map((message) => ({
+      id: message.id,
+      role: message.role,
+      content: message.content,
+      tools: message.tools,
+    })),
+    [
+      {
+        id: 'evt-user',
+        role: 'user',
+        content: '生成 html 到 workspace',
+        tools: undefined,
+      },
+      {
+        id: 'evt-assistant',
+        role: 'model',
+        content: '已生成。',
+        tools: {
+          create_workspace_ppt: {
+            name: 'create_workspace_ppt',
+            args: JSON.stringify({ filename: 'e2e-demo-workspace.html' }, null, 2),
+            output: '{"ok":true,"workspace_path":"e2e-demo-workspace.html"}',
+            status: 'completed',
+          },
+        },
       },
     ],
   );

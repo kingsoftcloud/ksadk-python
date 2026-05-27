@@ -13,7 +13,7 @@ import httpx
 
 from ksadk.skills.loader import LocalSkill, load_local_skill
 from ksadk.skills.models import SkillRef
-from ksadk.skills.package_store import PackageStore
+from ksadk.skills.package_store import PackageStore, SkillPackageError
 from ksadk.skills.runtime.base import normalize_skill_names
 from ksadk.skills.service_client import SkillServiceClient
 
@@ -39,6 +39,9 @@ class WorkflowExecution:
     executed_skill: str = ""
     output_files: list[str] = field(default_factory=list)
     commands: list[dict[str, object]] = field(default_factory=list)
+
+
+_SKILL_LOAD_WARNINGS: list[str] = []
 
 
 def _load_skills(
@@ -79,9 +82,43 @@ def _load_skills(
         package = store.get_cached(skill)
         if package is None:
             archive = client.download_skill_archive(skill)
-            package = store.store_archive(skill, archive)
+            try:
+                package = store.store_archive(skill, archive)
+            except SkillPackageError as exc:
+                if not _allow_hash_mismatch():
+                    raise
+                package = _store_unverified_archive(store, skill, archive)
+                _SKILL_LOAD_WARNINGS.append(str(exc))
         skills.append(load_local_skill(package.root_dir))
     return skills
+
+
+def _allow_hash_mismatch() -> bool:
+    return os.environ.get("KSADK_SKILL_ALLOW_HASH_MISMATCH", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _store_unverified_archive(store: PackageStore, skill: SkillRef, archive: bytes):
+    skill_dir = store.cache_dir / f"unverified-{skill.cache_key or skill.name or 'skill'}"
+    if skill_dir.exists():
+        shutil.rmtree(skill_dir)
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    archive_path = skill_dir / "archive.zip"
+    extract_dir = skill_dir / "extracted"
+    archive_path.write_bytes(archive)
+    extract_dir.mkdir(parents=True, exist_ok=True)
+    store._safe_extract(archive_path, extract_dir)
+    return type("UnverifiedSkillPackage", (), {
+        "ref": skill,
+        "archive_path": archive_path,
+        "extract_dir": extract_dir,
+        "root_dir": store._find_skill_root(extract_dir),
+        "cache_hit": False,
+    })()
 
 
 def _select_remote_skill_refs(
@@ -132,6 +169,7 @@ def run_agent(
     *,
     service_transport: httpx.BaseTransport | None = None,
 ) -> int:
+    _SKILL_LOAD_WARNINGS.clear()
     args = list(argv if argv is not None else sys.argv[1:])
     prompt = _resolve_prompt(args)
     selected_skill_names = _selected_skill_names()
@@ -144,6 +182,8 @@ def run_agent(
     print(f"workflow={prompt}")
     print(f"skill_spaces={','.join(_skill_space_ids())}")
     print(f"loaded_skills={','.join(skill.name for skill in loaded_skills)}")
+    if _SKILL_LOAD_WARNINGS:
+        print(f"skill_warnings={json.dumps(_SKILL_LOAD_WARNINGS, ensure_ascii=False, sort_keys=True)}")
     print(f"workflow_result={json.dumps(asdict(execution), sort_keys=True)}")
     return 0 if execution.status != "failed" else 1
 

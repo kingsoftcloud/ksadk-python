@@ -34,6 +34,11 @@ import {
 } from '../../utils/workspace.js';
 
 const DEFAULT_WORKSPACE_CONTENT_PATH = '/agentengine/api/v1/GetWorkspaceFileContent';
+const WORKSPACE_AUTO_REFRESH_MS = 4000;
+
+type LoadEntriesOptions = {
+  background?: boolean;
+};
 
 function parentWorkspacePath(path: string): string {
   const normalized = normalizeWorkspacePath(path);
@@ -167,6 +172,7 @@ export function WorkspacePanel({
   const [currentPath, setCurrentPath] = useState('.');
   const [entries, setEntries] = useState<WorkspaceEntry[]>([]);
   const [loading, setLoading] = useState(false);
+  const [backgroundRefreshing, setBackgroundRefreshing] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
@@ -174,6 +180,8 @@ export function WorkspacePanel({
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const getContentRef = useRef<(() => string) | null>(null);
+  const lastLoadedPreviewPathRef = useRef<string | null>(null);
+  const previewLoadReasonRef = useRef<'selection' | 'background-refresh'>('selection');
 
   const selectedEntry = useMemo(
     () => entries.find((entry) => entry.Path === selectedPath) ?? null,
@@ -213,9 +221,16 @@ export function WorkspacePanel({
   }, [clearPreviewObjectUrl]);
 
   const loadEntries = useCallback(
-    async (targetPath: string) => {
-      setLoading(true);
-      setError('');
+    async (targetPath: string, options: LoadEntriesOptions = {}) => {
+      const background = Boolean(options.background);
+      if (background) {
+        setBackgroundRefreshing(true);
+      } else {
+        setLoading(true);
+      }
+      if (!background) {
+        setError('');
+      }
       try {
         const data = await api.listWorkspaceFiles(agentId, targetPath, false);
         const workspaceData = data as { Path?: string; Entries?: WorkspaceEntry[] };
@@ -223,6 +238,7 @@ export function WorkspacePanel({
         const nextEntries = Array.isArray(workspaceData?.Entries) ? (workspaceData.Entries as WorkspaceEntry[]) : [];
         setCurrentPath(nextPath);
         setEntries(nextEntries);
+        previewLoadReasonRef.current = background ? 'background-refresh' : 'selection';
         setSelectedPath((previousSelectedPath) => {
           if (previousSelectedPath) {
             const stillExists = nextEntries.find((entry) => entry.Path === previousSelectedPath);
@@ -234,9 +250,15 @@ export function WorkspacePanel({
         });
       } catch (loadError) {
         console.error('Failed to load workspace entries:', loadError);
-        setError(loadError instanceof Error ? loadError.message : String(loadError));
+        if (!background) {
+          setError(loadError instanceof Error ? loadError.message : String(loadError));
+        }
       } finally {
-        setLoading(false);
+        if (background) {
+          setBackgroundRefreshing(false);
+        } else {
+          setLoading(false);
+        }
       }
     },
     [agentId, api],
@@ -250,12 +272,23 @@ export function WorkspacePanel({
     void loadEntries('.');
   }, [initialized, loadEntries, open]);
 
+  useEffect(() => {
+    if (!open || dirty || !initialized) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      void loadEntries(currentPath, { background: true });
+    }, WORKSPACE_AUTO_REFRESH_MS);
+    return () => window.clearInterval(timer);
+  }, [currentPath, dirty, initialized, loadEntries, open]);
+
   const loadPreview = useCallback(
     async (entry: WorkspaceEntry) => {
       const initialKind = resolveWorkspacePreviewKind({
         path: entry.Path,
         mimeType: entry.MimeType,
       }) as PreviewKind;
+      lastLoadedPreviewPathRef.current = entry.Path;
       if (initialKind === 'unsupported') {
         clearPreviewObjectUrl();
         setPreviewState({
@@ -342,8 +375,17 @@ export function WorkspacePanel({
       clearPreviewObjectUrl();
       setPreviewState(null);
       setDirty(false);
+      lastLoadedPreviewPathRef.current = null;
       return;
     }
+    if (
+      previewLoadReasonRef.current === 'background-refresh'
+      && lastLoadedPreviewPathRef.current === selectedEntry.Path
+    ) {
+      previewLoadReasonRef.current = 'selection';
+      return;
+    }
+    previewLoadReasonRef.current = 'selection';
     void loadPreview(selectedEntry);
   }, [clearPreviewObjectUrl, loadPreview, selectedEntry]);
 
@@ -583,7 +625,12 @@ export function WorkspacePanel({
             <div className="flex items-center justify-between gap-2">
               <div className="min-w-0">
                 <div className="text-xs font-medium text-slate-900 dark:text-slate-100">文件</div>
-                <div className="text-[11px] text-slate-400">{entries.length} 项</div>
+                <div className="flex items-center gap-1 text-[11px] text-slate-400">
+                  <span>{entries.length} 项</span>
+                  {backgroundRefreshing ? (
+                    <RefreshCw className="h-3 w-3 animate-spin" aria-label="正在同步 Workspace 目录" />
+                  ) : null}
+                </div>
               </div>
               <div className="flex items-center gap-1">
                 <button

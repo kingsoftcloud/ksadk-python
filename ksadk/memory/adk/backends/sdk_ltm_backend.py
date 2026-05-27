@@ -13,7 +13,7 @@
     KSADK_LTM_REGION: 区域 (默认 cn-beijing-6)
     KSADK_LTM_ENDPOINT: API 端点 (默认 aicp.api.ksyun.com)
     KSADK_LTM_SCHEME: http/https (默认 https)
-    KSADK_LTM_NAMESPACE: 记忆库 ID (环境变量名保持兼容，对应新版 MemoryCollectionId)
+    KSADK_LTM_NAMESPACE: 记忆库数据面 Namespace
     KSADK_LTM_AGENT_ID: Agent ID
     KSADK_LTM_SCENE_ID: 场景 ID (默认 _sys_general)
 """
@@ -45,7 +45,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
         region: API 区域
         endpoint: API 端点
         scheme: http 或 https
-        namespace: 记忆库 ID (环境变量名保持兼容，对应新版 MemoryCollectionId)
+        namespace: 记忆库数据面 Namespace
         agent_id: Agent ID
         scene_id: 场景 ID
 
@@ -223,9 +223,10 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
             agent_id = metadata.get("agent_id") or self.agent_id
             session_id = metadata.get("session_id") or kwargs.get("session_id")
             params = {
-                "MemoryCollectionId": memory_collection_id,
-                "AgentUserId": user_id,
+                "Namespace": memory_collection_id,
+                "UserId": user_id,
                 "SceneId": self._effective_scene_id(),
+                "DataType": "conversation",
                 "Data": {"Conversation": conversation},
             }
             if agent_id:
@@ -271,8 +272,8 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
         try:
             self.last_error = ""
             params = {
-                "MemoryCollectionId": memory_collection_id,
-                "AgentUserId": user_id,
+                "Namespace": memory_collection_id,
+                "UserId": user_id,
                 "Query": query,
                 "Limit": top_k,
                 "SceneId": self._effective_scene_id(),

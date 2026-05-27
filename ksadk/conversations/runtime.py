@@ -495,6 +495,15 @@ def _env_flag(name: str, default: bool = True) -> bool:
     return normalized not in {"0", "false", "no", "off"}
 
 
+def _ltm_auto_save_enabled() -> bool:
+    backend = str(os.getenv("KSADK_LTM_BACKEND") or "").strip().lower()
+    namespace = str(os.getenv("KSADK_LTM_NAMESPACE") or "").strip()
+    if not backend and not namespace:
+        return False
+    default = backend == "sdk" and bool(namespace)
+    return _env_flag("KSADK_LTM_AUTO_SAVE", default)
+
+
 def _ambient_policy(prefix: str, default: str = "on_demand") -> str:
     if not _env_flag(f"{prefix}_AMBIENT_ENABLED", True):
         return "disabled"
@@ -857,6 +866,141 @@ def _build_runner_request_payload(
     if previous_response_id:
         payload["previous_response_id"] = str(previous_response_id)
     return payload
+
+
+def _attachment_summary_for_memory(
+    attachments: Sequence[Mapping[str, Any]],
+    attachment_results: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    summaries: list[dict[str, Any]] = []
+    for item in attachment_results:
+        if not isinstance(item, Mapping):
+            continue
+        summary = {
+            "kind": str(item.get("kind") or "file"),
+            "display_name": str(item.get("display_name") or item.get("filename") or "uploaded_file"),
+            "mime_type": str(item.get("mime_type") or "application/octet-stream"),
+        }
+        summaries.append(summary)
+
+    if summaries:
+        return summaries
+
+    for item in attachments:
+        if not isinstance(item, Mapping):
+            continue
+        mime_type = str(item.get("mime_type") or "application/octet-stream")
+        display_name = str(item.get("display_name") or item.get("filename") or "uploaded_file")
+        kind = "image" if mime_type.startswith("image/") else "file"
+        summaries.append(
+            {
+                "kind": kind,
+                "display_name": display_name,
+                "mime_type": mime_type,
+            }
+        )
+    return summaries
+
+
+def _memory_turn_event_strings(
+    *,
+    prepared: PreparedConversationTurn,
+    output_text: str,
+    metadata: Mapping[str, Any],
+) -> list[str]:
+    event_strings: list[str] = []
+    user_text = _input_text_for_memory(prepared)
+    if user_text:
+        user_metadata = dict(metadata)
+        attachment_summary = _attachment_summary_for_memory(
+            prepared.current_attachments,
+            prepared.current_attachment_results,
+        )
+        if attachment_summary:
+            user_metadata["attachments"] = attachment_summary
+        event_strings.append(
+            json.dumps(
+                {
+                    "role": "user",
+                    "parts": [{"text": user_text}],
+                    "metadata": user_metadata,
+                },
+                ensure_ascii=False,
+            )
+        )
+
+    assistant_text = str(output_text or "").strip()
+    if assistant_text:
+        event_strings.append(
+            json.dumps(
+                {
+                    "role": "assistant",
+                    "parts": [{"text": assistant_text}],
+                    "metadata": dict(metadata),
+                },
+                ensure_ascii=False,
+            )
+        )
+    return event_strings
+
+
+def _input_text_for_memory(prepared: PreparedConversationTurn) -> str:
+    text_parts: list[str] = []
+    for item in prepared.input_content:
+        if isinstance(item, Mapping) and item.get("type") == "input_text":
+            text = str(item.get("text") or "").strip()
+            if text:
+                text_parts.append(text)
+    if text_parts:
+        return "\n".join(text_parts).strip()
+    return str(prepared.user_input or prepared.user_display_input or "").strip()
+
+
+async def _auto_save_ltm_turn(
+    *,
+    agent_id: str,
+    user_id: str,
+    prepared: PreparedConversationTurn,
+    output_text: str,
+    runner_type: str,
+    model: str | None,
+) -> None:
+    if prepared.resume_input is not None or not _ltm_auto_save_enabled():
+        return
+
+    metadata: dict[str, Any] = {
+        "agent_id": str(agent_id or ""),
+        "session_id": prepared.session_id,
+        "invocation_id": prepared.invocation_id,
+        "runner_type": runner_type,
+    }
+    if model:
+        metadata["model"] = model
+
+    platform_context = prepared.request_metadata.get("platform_context")
+    if isinstance(platform_context, Mapping):
+        metadata["agent_id"] = str(platform_context.get("agent_id") or metadata["agent_id"])
+
+    if not metadata["agent_id"]:
+        metadata["agent_id"] = str(os.getenv("KSADK_LTM_AGENT_ID") or "")
+
+    event_strings = _memory_turn_event_strings(
+        prepared=prepared,
+        output_text=output_text,
+        metadata=metadata,
+    )
+    if not event_strings:
+        return
+
+    try:
+        service = LongTermMemoryService.from_env()
+        service.save_event_strings(
+            user_id=user_id,
+            event_strings=event_strings,
+            metadata=metadata,
+        )
+    except Exception as exc:
+        logger.warning("Failed to auto-save conversation turn to long-term memory: %s", exc)
 
 
 def _merge_request_history_with_session_history(
@@ -1330,8 +1474,16 @@ def _attachment_context_from_session(
     if not isinstance(payload, dict):
         return [], []
     return (
-        list(payload.get("attachments") or []),
-        list(payload.get("attachment_results") or []),
+        [
+            compact_attachment_for_session(item)
+            for item in payload.get("attachments") or []
+            if isinstance(item, dict)
+        ],
+        [
+            compact_attachment_result_for_session(item)
+            for item in payload.get("attachment_results") or []
+            if isinstance(item, dict)
+        ],
     )
 
 
@@ -1344,9 +1496,15 @@ def _build_attachment_context_state_delta(
     merged = dict(base_state_delta or {})
     if attachments or attachment_results:
         merged[ATTACHMENT_CONTEXT_STATE_KEY] = {
-            "attachments": [dict(item) for item in attachments if isinstance(item, dict)],
+            "attachments": [
+                compact_attachment_for_session(item)
+                for item in attachments
+                if isinstance(item, dict)
+            ],
             "attachment_results": [
-                dict(item) for item in attachment_results if isinstance(item, dict)
+                compact_attachment_result_for_session(item)
+                for item in attachment_results
+                if isinstance(item, dict)
             ],
         }
     return merged
@@ -2177,6 +2335,14 @@ async def invoke_conversation_once(
             assistant_text=output_text,
             model=model,
         )
+        await _auto_save_ltm_turn(
+            agent_id=agent_id,
+            user_id=user_id,
+            prepared=prepared,
+            output_text=output_text,
+            runner_type=runtime_context.runner_type,
+            model=model,
+        )
         await append_run_status_event(
             session_id=prepared.session_id,
             author=runner_name,
@@ -2556,6 +2722,14 @@ async def _iter_conversation_turn_events(
             service=provider(),
             session_id=prepared.session_id,
             assistant_text=accumulated_text,
+            model=model,
+        )
+        await _auto_save_ltm_turn(
+            agent_id=agent_id,
+            user_id=user_id,
+            prepared=prepared,
+            output_text=accumulated_text,
+            runner_type=runtime_context.runner_type,
             model=model,
         )
         await append_run_status_event(

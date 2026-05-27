@@ -5,6 +5,53 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [0.6.0] - 2026-05-27
+
+### 亮点
+
+- **OpenAI 输入语义对齐**：`/v1/responses` 和 `/v1/chat/completions` 对外继续保持各自协议语义，内部 runner 统一消费 Responses-style canonical 输入，并保留 legacy 输入兼容。
+- **多模态会话体验修复**：Hosted UI、本地 `agentengine web` 和 `RunAgent` 对图片/文件上传统一使用 Responses content，刷新后可以正确回显附件并继续多轮追问。
+- **流式会话恢复**：本地 UI 运行改为后台 detached run，刷新页面或 SSE 断开后可按同一 session / invocation 重新订阅后续事件。
+- **本地 Web UI 体验收敛**：默认 sqlite session、低干扰运行状态胶囊、Workspace 预览刷新保护和会话切换行为一起收敛到更稳定的本地调试体验。
+
+### 变更
+
+- `/v1/responses` 对外按 OpenAI Responses 语义接收 `input_text`、`input_image`、`input_file`，内部生成 `input_content`、`input_messages` 和 legacy `input_parts`。
+- `/v1/chat/completions` 保持 Chat Completions 对外语义，内部转换到 runner canonical 输入；Chat 图片块 `text` / `image_url` 会转换为 `input_text` / `input_image`。
+- 非官方 Chat 文件形态只作为兼容扩展处理，不在文档中伪装成 OpenAI Chat Completions 官方能力。
+- `RunAgent` 普通运行支持 `ResponsesInput`，不再只在 resume / approval 场景消费 Responses-style input item。
+- LangGraph runner 与 `RuntimeContext` 透传 `input_content`、`input_messages`、`input_parts`、`current_attachments`、`current_attachment_results`、`has_current_files`，并保持旧字段兼容。
+- Conversation runtime 在 `KSADK_LTM_BACKEND=sdk` 且 `KSADK_LTM_NAMESPACE` 存在时默认开启 `KSADK_LTM_AUTO_SAVE`，每轮完成后 best-effort 写入 user/assistant 文本及 `agent_id/session_id/invocation_id/model/runner_type` metadata；图片和文件只写附件摘要。
+- 本地 UI 新增 `SubscribeRunEvents` action，用于按 session / invocation 从持久化事件流中恢复订阅；该能力不改变 `/v1/responses` 和 `/v1/chat/completions` 的 OpenAI-compatible 对外协议。
+- `agentengine web` 在用户未显式配置 STM 时，默认给 LangGraph、LangChain、DeepAgents、ADK 启用项目级 sqlite session，路径为 `.agentengine/ui/sessions.sqlite`。
+- 本地 Web UI static 同步逻辑改为先清空 `ksadk/server/static` 再复制当前构建产物，避免旧 chunk 残留造成 UI 行为漂移。
+- `ksadk/server/web-ui` 和 `ksadk/server/static` 同步自 `agentengine-hosted-ui`，并新增同步契约测试，明确 Hosted UI 是当前 UI 真源。
+- OpenClaw 默认 runtime 更新到 `2026.5.22`，同步 CLI、Makefile、Dockerfile、用户自定义镜像模板、控制面 bootstrap 默认值和测试断言。
+- 文档补充 OpenAI 双协议边界、runner canonical 输入字段、KsADK 扩展字段，以及如何判断当前轮是否包含文件。
+- 新增 ksadk 开源准备计划文档，梳理未来拆出中性 UI core、Hosted UI 真源和本地 static 派生产物的演进方向。
+
+### 修复
+
+- 修复 `inlineData` 图片上传后 `current_attachments` 为空，且 `attachments` 也没有值的问题。
+- 修复 Responses `input_image.image_url` data URL 未稳定进入 runner payload 和会话事件回放的问题。
+- 修复 Responses `input_file.file_data` / `file_url` 在会话回放中无法还原为附件展示的问题。
+- 修复 conversation runtime 落库时只保存 display 文本和附件提示，导致刷新后图片变成纯文本占位的问题。
+- 修复 Hosted UI 回放事件时未识别 Responses `input_file.file_data` / `input_file.file_url` 的问题。
+- 修复 server responses session mirror 在 `account_id` 为空或 PostgreSQL duplicate session 错误文本变化时可能失败，导致预发 Hosted UI 上传图片后报“连接断开或生成出错”的问题。
+- 修复刷新正在流式输出的会话时，订阅增量事件被单独构建成多条空“思考过程”消息的问题；恢复路径现在先合并完整 session events，再重建消息列表。
+- 修复会话列表重复项、活动 invocation 判定过早失效、运行中会话锁住其他 session 切换等 UI 状态问题。
+- 修复 Workspace 文件列表自动刷新时把当前 Markdown/HTML/文本预览强制切回编辑态的问题。
+- 修复本地 web Ctrl+C 退出时暴露 Python threading shutdown 栈的问题。
+- 修复 lazy chunk hash 变化后旧页面请求历史 `CodeBlock-*.js` 404 时不能自动恢复的问题。
+- 修复本地 static 构建产物残留导致 `ksadk/server/static` 与 `ksadk/server/web-ui/dist` 不一致的问题。
+
+### 兼容性说明
+
+- OpenAI 官方字段语义保持不混写：`/v1/responses` 与 `/v1/chat/completions` 对外仍分别遵循各自协议；`attachments`、`current_attachments`、`has_current_files` 等字段仍是 KsADK runner 扩展，不属于 OpenAI 官方字段。
+- `input_parts`、legacy `Messages + inlineData/fileData`、历史附件 fallback 均继续保留，避免现有业务 runner 和老客户端直接断裂。
+- 非图片文件在 Hosted UI 中优先走上传引用并生成 `input_file.file_url`；Responses API 仍支持 `input_file.file_data` 作为内联文件内容。
+- `KSADK_LTM_AUTO_SAVE` 是 KsADK 平台增强能力，不改变 OpenAI Responses / Chat Completions 对外协议语义；自动保存失败只记录 warning，不影响主回复。
+
 ## [0.5.9] - 2026-05-25
 
 ### 亮点

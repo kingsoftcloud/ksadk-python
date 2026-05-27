@@ -1,8 +1,12 @@
-import React, { useEffect, useRef, useCallback } from 'react';
+import React, { useEffect, useMemo, useRef, useCallback } from 'react';
 import { useUIStore } from '../../stores/ui.js';
 import { useStreamingStore } from '../../stores/streaming.js';
+import { useMessageStore } from '../../stores/message.js';
+import { useModelStore } from '../../stores/model.js';
+import { useSessionStore } from '../../stores/session.js';
 import { ChatComposer } from './ChatComposer';
 import { mergeAttachmentFiles, extractClipboardFiles } from '../../utils/attachment.js';
+import { buildComposerContextIndicator } from '../../utils/context.js';
 
 type ConnectedComposerProps = {
   composerMaxHeight: number;
@@ -21,10 +25,27 @@ export function ConnectedComposer({
 }: ConnectedComposerProps) {
   const input = useUIStore(s => s.input);
   const attachments = useUIStore(s => s.attachments);
-  const isStreaming = useStreamingStore(s => s.isStreaming);
+  const currentSessionId = useSessionStore(s => s.currentSessionId);
+  const isStreaming = useStreamingStore(s => Boolean(s.getSessionActivity(currentSessionId) && s.isSessionStreaming(currentSessionId)));
   const queuedDrafts = useUIStore(s => s.queuedDrafts);
+  const messages = useMessageStore(s => s.messages);
+  const availableModels = useModelStore(s => s.availableModels);
+  const selectedModel = useModelStore(s => s.selectedModel);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const selectedModelMetadata = useMemo(
+    () => availableModels.find((model) => model.id === selectedModel) || null,
+    [availableModels, selectedModel],
+  );
+  const composerContextIndicator = useMemo(
+    () =>
+      buildComposerContextIndicator({
+        messages,
+        draftInput: input,
+        selectedModel: selectedModelMetadata,
+      }),
+    [input, messages, selectedModelMetadata],
+  );
 
   const handleSubmit = useCallback((draftText: string, draftAttachments: File[]) => {
     if (!draftText && draftAttachments.length === 0) return;
@@ -61,7 +82,7 @@ export function ConnectedComposer({
   return (
     <ChatComposer
       attachments={attachments}
-      composerContextIndicator={null}
+      composerContextIndicator={composerContextIndicator}
       composerMaxHeight={composerMaxHeight}
       fileInputRef={fileInputRef}
       input={input}

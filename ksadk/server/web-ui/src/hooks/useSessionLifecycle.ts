@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { useSessionStore } from '../stores/session.js';
 import { useMessageStore } from '../stores/message.js';
-import { useStreamingStore } from '../stores/streaming.js';
 import { useUIStore } from '../stores/ui.js';
 import { CancelledError } from '../api/client.js';
 import { findActiveRunIds } from '../utils/run-state.js';
-import { buildMessagesFromSessionEvents, eventHasTerminalRunStatus, maxSeqIdFromEvents } from '../utils/session-events.js';
+import {
+  buildMessagesFromSessionEvents,
+  eventHasTerminalRunStatus,
+  maxSeqIdFromEvents,
+  mergeSessionEventRecords,
+} from '../utils/session-events.js';
 import { shouldRenderFeedbackControls, normalizeFeedback } from '../utils/feedback.js';
 import { readPersistedSessionId, resolveSessionToRestore } from '../utils/session.js';
 import { upsertSessions } from '../utils/session-helpers.js';
@@ -14,17 +18,17 @@ import type { SessionEventRecord } from '../types/session-events.js';
 import type { UiCapabilities } from '../types/capabilities.js';
 import type { ApiFacade } from '../core/api/types.js';
 
-const RESTORE_IDLE_NOTICE_MS = 12_000;
+const RESTORE_EMPTY_SUBSCRIPTION_TIMEOUT_MS = 8_000;
 const RESTORE_SUBSCRIPTION_TIMEOUT_MS = 90_000;
 
 type SessionLifecycleContext = {
   agentId: string;
   currentSessionId: string | null;
-  isStreaming: boolean;
   isMobile: boolean;
   uiCapabilities: UiCapabilities;
   api: ApiFacade;
   resetCompaction: () => void;
+  disconnectRun?: () => void;
 };
 
 export function useSessionLifecycle(ctx: SessionLifecycleContext) {
@@ -32,9 +36,9 @@ export function useSessionLifecycle(ctx: SessionLifecycleContext) {
     agentId,
     api,
     isMobile,
-    isStreaming,
     resetCompaction,
     uiCapabilities,
+    disconnectRun,
   } = ctx;
   const currentSessionIdRef = useRef<string | null>(ctx.currentSessionId);
   const agentIdRef = useRef(ctx.agentId);
@@ -107,50 +111,24 @@ export function useSessionLifecycle(ctx: SessionLifecycleContext) {
       sessionId: string;
       invocationId: string;
       afterSeqId: number;
+      initialEvents?: SessionEventRecord[];
     }) => {
       runSubscriptionAbortRef.current?.abort();
       const controller = new AbortController();
       runSubscriptionAbortRef.current = controller;
-      useStreamingStore.getState().setStreaming(true);
-      useStreamingStore.getState().beginActivity({
-        runId: options.invocationId,
-        source: 'restore',
-        status: 'connecting',
-        phase: '恢复运行事件订阅',
-        detail: '页面刷新后正在连接未完成的运行。',
-      });
       let shouldReloadSession = false;
       let eventCount = 0;
       let terminalStatusSeen = false;
-      let idleNoticeTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
-      const timeoutTimer = globalThis.setTimeout(() => {
+      let emptySubscriptionTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
+      const stopRestoreSubscription = () => {
         if (runSubscriptionAbortRef.current !== controller || controller.signal.aborted) {
           return;
         }
-        useStreamingStore.getState().updateActivity({
-          status: 'stopped',
-          phase: '恢复订阅超时',
-          detail: '没有收到新的运行事件，已解除前端运行锁定；后台状态可刷新会话后再确认。',
-          countEvent: false,
-        });
         controller.abort();
-      }, RESTORE_SUBSCRIPTION_TIMEOUT_MS);
-      const armIdleNotice = () => {
-        if (idleNoticeTimer) {
-          globalThis.clearTimeout(idleNoticeTimer);
-        }
-        idleNoticeTimer = globalThis.setTimeout(() => {
-          if (runSubscriptionAbortRef.current !== controller || controller.signal.aborted) {
-            return;
-          }
-          useStreamingStore.getState().updateActivity({
-            status: 'waiting',
-            phase: '仍在等待运行时输出',
-            detail: '运行尚未返回新的事件。Hermes 长任务建议打开 TUI 查看实时终端。',
-            countEvent: false,
-          });
-        }, RESTORE_IDLE_NOTICE_MS);
       };
+      const timeoutTimer = globalThis.setTimeout(() => {
+        stopRestoreSubscription();
+      }, RESTORE_SUBSCRIPTION_TIMEOUT_MS);
 
       try {
         const stream = await api.subscribeRunEvents(
@@ -165,17 +143,19 @@ export function useSessionLifecycle(ctx: SessionLifecycleContext) {
         const decoder = new TextDecoder();
         let buffer = '';
         let replayedEvents: SessionEventRecord[] = [];
-        useStreamingStore.getState().updateActivity({
-          status: 'waiting',
-          phase: '等待恢复事件',
-          countEvent: false,
-        });
-        armIdleNotice();
+        let mergedEvents: SessionEventRecord[] = Array.isArray(options.initialEvents)
+          ? options.initialEvents
+          : [];
+        emptySubscriptionTimer = globalThis.setTimeout(() => {
+          if (eventCount > 0) {
+            return;
+          }
+          stopRestoreSubscription();
+        }, RESTORE_EMPTY_SUBSCRIPTION_TIMEOUT_MS);
 
         while (!terminalStatusSeen) {
           const { value, done } = await reader.read();
           if (done) break;
-          armIdleNotice();
           buffer += decoder.decode(value, { stream: true });
           const chunks = buffer.split('\n\n');
           buffer = chunks.pop() || '';
@@ -197,26 +177,16 @@ export function useSessionLifecycle(ctx: SessionLifecycleContext) {
             try {
               const event = JSON.parse(dataString) as SessionEventRecord;
               eventCount += 1;
-              useStreamingStore.getState().updateActivity({
-                status: eventHasTerminalRunStatus(event) ? 'completed' : 'running',
-                phase: event.EventType === 'run_status'
-                  ? `运行状态：${String(event.Content?.status || '更新')}`
-                  : `收到事件：${event.EventType || 'conversation.event'}`,
-              });
+              if (emptySubscriptionTimer) {
+                globalThis.clearTimeout(emptySubscriptionTimer);
+                emptySubscriptionTimer = null;
+              }
               replayedEvents = [...replayedEvents, event];
+              mergedEvents = mergeSessionEventRecords(mergedEvents, [event]) as SessionEventRecord[];
               terminalStatusSeen = terminalStatusSeen || eventHasTerminalRunStatus(event);
               shouldReloadSession = shouldReloadSession || terminalStatusSeen;
-              useMessageStore.getState().patchMessages((prev) => {
-                const current = buildMessagesFromSessionEvents([
-                  ...replayedEvents.filter(
-                    (item) => item.EventId && prev.every((message) => message.id !== item.EventId),
-                  ),
-                ]);
-                if (!current.length) {
-                  return prev;
-                }
-                return [...prev, ...current];
-              });
+              const history = buildMessagesFromSessionEvents(mergedEvents);
+              useMessageStore.getState().setMessages(history);
             } catch (error) {
               console.warn('Failed to parse run event data', dataString, error);
             }
@@ -226,37 +196,14 @@ export function useSessionLifecycle(ctx: SessionLifecycleContext) {
         const isAbortError = error instanceof DOMException && error.name === 'AbortError';
         if (!isAbortError) {
           console.error('Failed to subscribe run events:', error);
-          useStreamingStore.getState().updateActivity({
-            status: 'failed',
-            phase: '恢复订阅失败',
-            detail: error instanceof Error ? error.message : String(error),
-            countEvent: false,
-          });
-        } else if (useStreamingStore.getState().activity?.status !== 'stopped') {
-          useStreamingStore.getState().stopActivity('已停止接收恢复事件。后台运行可能仍在继续。');
         }
       } finally {
         globalThis.clearTimeout(timeoutTimer);
-        if (idleNoticeTimer) {
-          globalThis.clearTimeout(idleNoticeTimer);
+        if (emptySubscriptionTimer) {
+          globalThis.clearTimeout(emptySubscriptionTimer);
         }
         if (runSubscriptionAbortRef.current === controller) {
           runSubscriptionAbortRef.current = null;
-        }
-        useStreamingStore.getState().setStreaming(false);
-        if (terminalStatusSeen) {
-          useStreamingStore.getState().updateActivity({
-            status: 'completed',
-            phase: '恢复订阅结束',
-            countEvent: false,
-          });
-        } else if (useStreamingStore.getState().activity?.status !== 'stopped') {
-          useStreamingStore.getState().updateActivity({
-            status: 'stopped',
-            phase: eventCount === 0 ? '没有收到新的运行事件' : '恢复订阅提前结束',
-            detail: '已解除前端运行锁定；如果后台仍在执行，可以刷新会话或打开 TUI 确认。',
-            countEvent: false,
-          });
         }
         if (shouldReloadSession && currentSessionIdRef.current === options.sessionId) {
           void loadSessionRef.current?.(options.sessionId);
@@ -273,7 +220,6 @@ export function useSessionLifecycle(ctx: SessionLifecycleContext) {
       useSessionStore.getState().setCurrentSessionId(sessionId);
       resetCompaction();
       runSubscriptionAbortRef.current?.abort();
-      useStreamingStore.getState().clearActivity();
       if (isMobile) {
         useUIStore.getState().setMobileSidebarOpen(false);
       }
@@ -300,6 +246,7 @@ export function useSessionLifecycle(ctx: SessionLifecycleContext) {
               sessionId,
               invocationId: activeRuns[0],
               afterSeqId: lastSeqId,
+              initialEvents: events,
             });
           }
         } else {
@@ -358,9 +305,8 @@ export function useSessionLifecycle(ctx: SessionLifecycleContext) {
   }, [fetchSessions]);
 
   const createNewSession = useCallback(async () => {
-    if (isStreaming) return;
-
     try {
+      disconnectRun?.();
       const session = await api.createSession(agentId);
       const newId = session.SessionId;
       if (newId) {
@@ -380,7 +326,7 @@ export function useSessionLifecycle(ctx: SessionLifecycleContext) {
       if (error instanceof CancelledError) return;
       console.error('Failed to create session:', error);
     }
-  }, [agentId, api, fetchSessions, isMobile, isStreaming]);
+  }, [agentId, api, disconnectRun, fetchSessions, isMobile]);
 
   const deleteSession = useCallback(
     async (sessionId: string) => {

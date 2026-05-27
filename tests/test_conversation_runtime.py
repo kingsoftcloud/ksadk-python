@@ -122,6 +122,27 @@ class _ContextCapturingRunner(_StubRunner):
         return {"output": "captured"}
 
 
+class _FakeLongTermMemoryService:
+    instances: list["_FakeLongTermMemoryService"] = []
+
+    def __init__(self):
+        self.saved: list[dict] = []
+        self.__class__.instances.append(self)
+
+    def build_context(self, *, user_id: str, query: str, top_k=None) -> dict | None:
+        return None
+
+    def save_event_strings(self, *, user_id: str, event_strings: list[str], metadata=None) -> bool:
+        self.saved.append(
+            {
+                "user_id": user_id,
+                "event_strings": event_strings,
+                "metadata": dict(metadata or {}),
+            }
+        )
+        return True
+
+
 class _ExternalModelsAsyncClient:
     def __init__(self, *args, payload=None, error: Exception | None = None, **kwargs):
         self._payload = payload
@@ -550,7 +571,20 @@ async def test_build_run_input_reuses_last_attachment_results_for_follow_up_turn
     assert first.current_attachment_results == message["attachment_results"]
     assert first.has_current_files is True
     assert follow_up.attachments == message["attachments"]
-    assert follow_up.attachment_results == message["attachment_results"]
+    assert follow_up.attachment_results == [
+        {
+            "display_name": "resume.txt",
+            "mime_type": "text/plain",
+            "transport": "reference",
+            "file_uri": "ksadk-upload://resume",
+            "size_bytes": 64,
+            "kind": "text",
+            "status": "ok",
+            "warnings": [],
+            "extraction_method": "text_decode",
+            "text_excerpt": "张三 8年经验",
+        }
+    ]
     assert follow_up.current_attachments == []
     assert follow_up.current_attachment_results == []
     assert follow_up.has_current_files is False
@@ -569,10 +603,126 @@ async def test_build_run_input_reuses_last_attachment_results_for_follow_up_turn
 
     assert session_id == first.session_id
     assert result["output_text"] == "assistant says hi"
-    assert runner.calls[-1]["attachment_results"] == message["attachment_results"]
+    assert runner.calls[-1]["attachment_results"] == follow_up.attachment_results
     assert runner.calls[-1]["current_attachments"] == []
     assert runner.calls[-1]["current_attachment_results"] == []
     assert runner.calls[-1]["has_current_files"] is False
+
+
+@pytest.mark.asyncio
+async def test_build_run_input_stores_recent_attachment_context_without_inline_data(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    image_b64 = base64.b64encode(b"fake image bytes").decode("ascii")
+    first = await build_run_input(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id=None,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "看图"},
+                    {
+                        "type": "input_image",
+                        "image_url": f"data:image/png;base64,{image_b64}",
+                    },
+                ],
+            }
+        ],
+    )
+
+    session = await service.get_session(first.session_id)
+    attachment_context = session.state["__ksadk_attachment_context__"]
+    assert attachment_context["attachments"] == [
+        {
+            "display_name": "uploaded_image",
+            "mime_type": "image/png",
+            "transport": "inline",
+            "size_bytes": len(b"fake image bytes"),
+            "is_text": False,
+        }
+    ]
+    assert "data" not in attachment_context["attachments"][0]
+
+    follow_up = await build_run_input(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id=first.session_id,
+        messages=[{"role": "user", "content": "继续"}],
+    )
+
+    assert follow_up.attachments == attachment_context["attachments"]
+    assert follow_up.current_attachments == []
+    assert follow_up.has_current_files is False
+
+
+@pytest.mark.asyncio
+async def test_build_run_input_sanitizes_legacy_recent_attachment_context(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    session = await service.create_session(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-legacy-inline-context",
+    )
+    await service.update_state(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id=session.id,
+        scope="session",
+        state_delta={
+            "__ksadk_attachment_context__": {
+                "attachments": [
+                    {
+                        "display_name": "legacy.png",
+                        "mime_type": "image/png",
+                        "transport": "inline",
+                        "data": base64.b64encode(b"legacy image").decode("ascii"),
+                        "size_bytes": 12,
+                    }
+                ],
+                "attachment_results": [
+                    {
+                        "display_name": "legacy.png",
+                        "mime_type": "image/png",
+                        "transport": "inline",
+                        "text": "图片摘要",
+                        "text_excerpt": "图片摘要",
+                    }
+                ],
+            }
+        },
+    )
+
+    follow_up = await build_run_input(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id=session.id,
+        messages=[{"role": "user", "content": "继续"}],
+    )
+
+    assert follow_up.attachments == [
+        {
+            "display_name": "legacy.png",
+            "mime_type": "image/png",
+            "transport": "inline",
+            "size_bytes": 12,
+        }
+    ]
+    assert "data" not in json.dumps(follow_up.attachments, ensure_ascii=False)
+    assert follow_up.attachment_results == [
+        {
+            "display_name": "legacy.png",
+            "mime_type": "image/png",
+            "transport": "inline",
+            "text_excerpt": "图片摘要",
+        }
+    ]
+    assert "text" not in follow_up.attachment_results[0]
+    assert follow_up.current_attachments == []
+    assert follow_up.has_current_files is False
 
 
 @pytest.mark.asyncio
@@ -1016,6 +1166,121 @@ async def test_invoke_conversation_once_passes_model_options_to_runner(monkeypat
         "reasoning": {"effort": "none"},
         "max_reasoning_tokens": 0,
     }
+
+
+@pytest.mark.asyncio
+async def test_invoke_conversation_once_auto_saves_turn_to_sdk_memory_by_default(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    monkeypatch.setenv("KSADK_LTM_BACKEND", "sdk")
+    monkeypatch.setenv("KSADK_LTM_NAMESPACE", "mem-demo")
+    monkeypatch.delenv("KSADK_LTM_AUTO_SAVE", raising=False)
+    _FakeLongTermMemoryService.instances.clear()
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.LongTermMemoryService.from_env",
+        lambda: _FakeLongTermMemoryService(),
+    )
+    runner = _StubRunner()
+
+    session_id, _ = await invoke_conversation_once(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id=None,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "请记住我偏好简洁回答"},
+                    {"type": "input_image", "image_url": "data:image/png;base64,aW1hZ2U="},
+                ],
+            }
+        ],
+        model="qwen3-vl-plus",
+        prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+    )
+
+    memory_service = _FakeLongTermMemoryService.instances[-1]
+    assert len(memory_service.saved) == 1
+    saved = memory_service.saved[0]
+    assert saved["user_id"] == "user-1"
+    assert saved["metadata"]["agent_id"] == "demo-agent"
+    assert saved["metadata"]["session_id"] == session_id
+    assert saved["metadata"]["model"] == "qwen3-vl-plus"
+    assert saved["metadata"]["runner_type"]
+    assert saved["metadata"]["invocation_id"]
+
+    persisted_events = [json.loads(item) for item in saved["event_strings"]]
+    assert [event["role"] for event in persisted_events] == ["user", "assistant"]
+    assert persisted_events[0]["parts"] == [{"text": "请记住我偏好简洁回答"}]
+    assert persisted_events[0]["metadata"]["attachments"] == [
+        {"kind": "image", "display_name": "uploaded_image", "mime_type": "image/png"}
+    ]
+    assert persisted_events[1]["parts"] == [{"text": "assistant says hi"}]
+    assert "base64" not in json.dumps(persisted_events, ensure_ascii=False)
+
+
+@pytest.mark.asyncio
+async def test_invoke_conversation_once_respects_ltm_auto_save_false(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    monkeypatch.setenv("KSADK_LTM_BACKEND", "sdk")
+    monkeypatch.setenv("KSADK_LTM_NAMESPACE", "mem-demo")
+    monkeypatch.setenv("KSADK_LTM_AUTO_SAVE", "false")
+    _FakeLongTermMemoryService.instances.clear()
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.LongTermMemoryService.from_env",
+        lambda: _FakeLongTermMemoryService(),
+    )
+
+    await invoke_conversation_once(
+        runner=_StubRunner(),
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id=None,
+        messages=[{"role": "user", "content": "不要保存"}],
+        model="qwen3-vl-plus",
+        prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+    )
+
+    assert _FakeLongTermMemoryService.instances == []
+
+
+@pytest.mark.asyncio
+async def test_stream_conversation_turn_auto_saves_completed_turn(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    monkeypatch.setenv("KSADK_LTM_BACKEND", "sdk")
+    monkeypatch.setenv("KSADK_LTM_NAMESPACE", "mem-demo")
+    monkeypatch.delenv("KSADK_LTM_AUTO_SAVE", raising=False)
+    _FakeLongTermMemoryService.instances.clear()
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.LongTermMemoryService.from_env",
+        lambda: _FakeLongTermMemoryService(),
+    )
+    runner = _StreamingRunner()
+
+    events = [
+        event
+        async for event in stream_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id=None,
+            messages=[{"role": "user", "content": "流式保存测试"}],
+            model="qwen3-vl-plus",
+            prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+            session_service_provider=lambda: service,
+        )
+    ]
+
+    assert any("response.completed" in chunk for chunk in events)
+    memory_service = _FakeLongTermMemoryService.instances[-1]
+    persisted_events = [json.loads(item) for item in memory_service.saved[0]["event_strings"]]
+    assert [event["parts"][0]["text"] for event in persisted_events] == [
+        "流式保存测试",
+        "hello",
+    ]
 
 
 def test_normalize_model_options_maps_legacy_thinking_disabled_to_reasoning_none():
@@ -2203,6 +2468,61 @@ async def test_build_run_input_auto_compacts_old_rounds_into_checkpoint(monkeypa
     assert prepared.history[0]["role"] == "model"
     assert "Earlier conversation summary:" in prepared.history[0]["content"]
     assert prepared.history[-1] == {"role": "user", "content": "follow up"}
+
+
+@pytest.mark.asyncio
+async def test_auto_compaction_ignores_inline_image_base64_for_context_estimation(monkeypatch):
+    model_context_module = importlib.import_module("ksadk.conversations.model_context")
+    service = InMemorySessionService()
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-image-compact")
+    large_image_data = "A" * 260_000
+
+    for turn in range(3):
+        await service.append_event(
+            "sess-image-compact",
+            SessionEvent(
+                id=f"img-{turn}",
+                author="user",
+                event_type="user_message",
+                content={"role": "user", "parts": [{"text": "分析这张图片"}]},
+                metadata={
+                    "agent_input": json.dumps(
+                        [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "input_text", "text": "分析这张图片"},
+                                    {
+                                        "type": "input_image",
+                                        "image_url": f"data:image/png;base64,{large_image_data}",
+                                    },
+                                ],
+                            }
+                        ]
+                    )
+                },
+                invocation_id=f"img-inv-{turn}",
+            ),
+        )
+
+    monkeypatch.setattr(model_context_module, "AUTOCOMPACT_SUMMARY_RESERVE_TOKENS", 0)
+    monkeypatch.setattr(model_context_module, "AUTOCOMPACT_BUFFER_TOKENS", 20)
+    preview = await preview_auto_compaction(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-image-compact",
+        messages=[{"role": "user", "content": "继续分析"}],
+        model="qwen3-vl-plus",
+        model_metadata={
+            "id": "qwen3-vl-plus",
+            "context_window_tokens": 200_000,
+            "max_output_tokens": 32_000,
+        },
+        session_service_provider=lambda: service,
+    )
+
+    assert preview.should_compact is False
+    assert preview.total_estimated_tokens < 1_000
 
 
 @pytest.mark.asyncio

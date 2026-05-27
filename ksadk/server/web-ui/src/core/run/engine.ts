@@ -12,6 +12,11 @@ import { useStreamingStore } from '../../stores/streaming.js';
 import type { StreamProtocol } from '../stream/types.js';
 import type { RuntimeApiFormat } from '../../types/api.js';
 
+type StreamConsumeResult = {
+  receivedData: boolean;
+  terminalStatus?: string;
+};
+
 function activityForTransportEvent(eventName: string, data: unknown): { phase: string; status?: 'running' | 'waiting' | 'completed' | 'failed'; detail?: string } | null {
   const eventType = String((data as Record<string, unknown> | null)?.type || eventName || '').trim();
   if (eventType === 'response.created') {
@@ -55,7 +60,7 @@ function activityForTransportEvent(eventName: string, data: unknown): { phase: s
 }
 
 const VALID_TRANSITIONS: Record<RunStage, RunStage[]> = {
-  idle: ['creating-session', 'connecting', 'error'],
+  idle: ['creating-session', 'uploading-files', 'connecting', 'error'],
   'creating-session': ['uploading-files', 'connecting', 'error', 'idle'],
   'uploading-files': ['connecting', 'error', 'idle'],
   connecting: ['streaming', 'error', 'idle'],
@@ -72,6 +77,7 @@ export class RunEngineImpl implements RunEngine {
   private listeners = new Set<(event: RunEvent) => void>();
   private abortController: AbortController | null = null;
   private activeCompactionId: string | null = null;
+  private activeSessionId: string | null = null;
   private api: ApiFacade;
   private config: RunEngineConfig = {
     agentId: 'default-agent',
@@ -95,8 +101,11 @@ export class RunEngineImpl implements RunEngine {
   }
 
   private emit(event: RunEvent) {
+    const scopedEvent = 'sessionId' in event
+      ? event
+      : { ...event, sessionId: this.activeSessionId };
     for (const listener of this.listeners) {
-      listener(event);
+      listener(scopedEvent as RunEvent);
     }
   }
 
@@ -122,7 +131,7 @@ export class RunEngineImpl implements RunEngine {
     sessionId?: string | null;
     onSessionCreated?: (sessionId: string) => void;
     onSessionUpsert?: (sessionId: string) => void;
-    onSettled?: () => void;
+    onSettled?: (sessionId: string | null) => void;
   }): boolean {
     if (this._stage !== 'idle') return false;
 
@@ -130,8 +139,8 @@ export class RunEngineImpl implements RunEngine {
     const isResponsesResume = draft.responsesInput !== undefined;
 
     (async () => {
+      let sessionId: string | null = draft.sessionId || null;
       try {
-        let sessionId = draft.sessionId || null;
         let retriedWithNewSession = false;
 
         if (!sessionId) {
@@ -141,6 +150,7 @@ export class RunEngineImpl implements RunEngine {
         if (!sessionId) {
           sessionId = `default-session-${Date.now()}`;
         }
+        this.activeSessionId = sessionId;
 
         const fileParts = await this.uploadFiles(draft, isResponsesResume);
 
@@ -161,12 +171,13 @@ export class RunEngineImpl implements RunEngine {
 
         const assistantMessageId = `msg-${Date.now()}`;
 
-        const receivedData = await this.consumeStream(stream, protocol, protocolState, assistantMessageId);
+        const streamResult = await this.consumeStream(stream, protocol, protocolState, assistantMessageId);
 
-        if (!receivedData && !retriedWithNewSession) {
+        if (!streamResult.receivedData && !retriedWithNewSession) {
           retriedWithNewSession = true;
           sessionId = await this.createSession(draft);
           if (sessionId) {
+            this.activeSessionId = sessionId;
             body.SessionId = sessionId;
             this.setStage('connecting');
             this.emit({ type: 'activity', phase: '重建会话后重新连接', status: 'connecting', countEvent: false });
@@ -174,8 +185,20 @@ export class RunEngineImpl implements RunEngine {
             this.setStage('streaming');
             this.emit({ type: 'activity', phase: '等待首个输出', status: 'waiting', countEvent: false });
             const retryMsgId = `msg-${Date.now()}`;
-            await this.consumeStream(retryStream, protocol, protocolState, retryMsgId);
+            const retryResult = await this.consumeStream(retryStream, protocol, protocolState, retryMsgId);
+            streamResult.terminalStatus = retryResult.terminalStatus;
           }
+        }
+
+        if (streamResult.terminalStatus && streamResult.terminalStatus !== 'completed') {
+          this.setStage('error');
+          this.emit({
+            type: 'activity',
+            phase: streamResult.terminalStatus === 'incomplete' ? '运行中断' : '运行失败',
+            status: 'failed',
+            countEvent: false,
+          });
+          return;
         }
 
         this.setStage('completing');
@@ -199,7 +222,8 @@ export class RunEngineImpl implements RunEngine {
         useStreamingStore.getState().setStreaming(false);
         this.setStage('idle');
         this.activeCompactionId = null;
-        draft.onSettled?.();
+        this.activeSessionId = null;
+        draft.onSettled?.(sessionId);
       }
     })();
     return true;
@@ -215,6 +239,16 @@ export class RunEngineImpl implements RunEngine {
       type: 'system_message',
       content: '已停止接收本次输出；如果运行时不支持取消，后台执行可能仍会继续。',
     });
+  }
+
+  disconnect(): void {
+    if (this._stage === 'idle') return;
+    this.abortController?.abort();
+    useStreamingStore.getState().setStreaming(false);
+    useStreamingStore.getState().clearActivity();
+    this._stage = 'idle';
+    this.activeCompactionId = null;
+    this.activeSessionId = null;
   }
 
   async cancelRemote(invocationId: string): Promise<void> {
@@ -234,6 +268,7 @@ export class RunEngineImpl implements RunEngine {
   }): void {
     this.abortController?.abort();
     this.abortController = new AbortController();
+    this.activeSessionId = params.sessionId;
     this.setStage('connecting');
     this.emit({ type: 'activity', phase: '恢复运行事件订阅', status: 'connecting', countEvent: false });
 
@@ -285,6 +320,7 @@ export class RunEngineImpl implements RunEngine {
       } finally {
         useStreamingStore.getState().setStreaming(false);
         this.setStage('idle');
+        this.activeSessionId = null;
       }
     })();
   }
@@ -394,7 +430,7 @@ export class RunEngineImpl implements RunEngine {
     protocol: StreamProtocol,
     protocolState: Record<string, unknown>,
     messageId: string,
-  ): Promise<boolean> {
+  ): Promise<StreamConsumeResult> {
     const reader = stream.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
@@ -431,6 +467,7 @@ export class RunEngineImpl implements RunEngine {
 
           const events = parseSseChunk(chunk);
           let shouldStop = false;
+          let terminalStatus: string | undefined;
 
           for (const event of events) {
             if (event.eventName === '__done__') {
@@ -450,12 +487,16 @@ export class RunEngineImpl implements RunEngine {
 
             if (shouldStopReadingRunStream(actions as Array<{ type: string; status?: string }>)) {
               shouldStop = true;
+              const terminalAction = actions.find((action) => action.type === 'terminal');
+              terminalStatus = terminalAction && 'status' in terminalAction
+                ? String(terminalAction.status || '')
+                : undefined;
             }
           }
 
           if (shouldStop) {
             reader.cancel().catch(() => {});
-            return receivedData;
+            return { receivedData, terminalStatus };
           }
         }
       }
@@ -465,7 +506,7 @@ export class RunEngineImpl implements RunEngine {
       }
     }
 
-    return receivedData;
+    return { receivedData };
   }
 
   private isCompactionChunk(chunk: string): boolean {

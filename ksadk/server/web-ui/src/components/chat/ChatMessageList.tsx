@@ -22,13 +22,14 @@ import { formatToolPayload } from '../../utils/tool-display.js';
 import { copyTextToClipboard } from '../../utils/clipboard.js';
 
 import type { RunActivity } from '../../stores/streaming.js';
-import type { Message, MessageAttachment } from './types';
+import type { ComposerContextIndicator, Message, MessageAttachment } from './types';
 
 type ChatMessageListProps = {
   agentName: string;
   isMobile: boolean;
   isStreaming: boolean;
   activity: RunActivity | null;
+  contextIndicator: ComposerContextIndicator;
   messages: Message[];
   onOpenAttachmentPreview: (attachment: MessageAttachment) => void;
   onRespondToApproval: (options: {
@@ -63,7 +64,59 @@ function formatLag(ms: number) {
   return `${Math.floor(ms / 60_000)} 分钟前`;
 }
 
-function RunActivityBanner({ activity, onStopGeneration, onCancelRemote }: { activity: RunActivity; onStopGeneration?: () => void; onCancelRemote?: () => void }) {
+function formatCompactTokenCount(value?: number | null) {
+  const safe = Number(value);
+  if (!Number.isFinite(safe) || safe <= 0) {
+    return '0';
+  }
+  if (safe < 1000) {
+    return String(Math.round(safe));
+  }
+  if (safe < 1_000_000) {
+    return `${Math.round(safe / 100) / 10}k`;
+  }
+  return `${Math.round(safe / 100_000) / 10}m`;
+}
+
+function AnimatedTokenCount({ contextIndicator }: { contextIndicator: ComposerContextIndicator }) {
+  const usedTokens = contextIndicator?.usedTokens;
+  const contextWindowTokens = contextIndicator?.contextWindowTokens;
+  const [pulseKey, setPulseKey] = useState(0);
+
+  useEffect(() => {
+    if (!usedTokens) {
+      return undefined;
+    }
+    setPulseKey((key) => key + 1);
+    return undefined;
+  }, [usedTokens]);
+
+  if (!usedTokens || !contextWindowTokens) {
+    return null;
+  }
+
+  return (
+    <span
+      key={pulseKey}
+      className="token-count-pulse hidden font-mono text-slate-400 dark:text-slate-500 sm:inline"
+      title={`估算 token：${Math.round(usedTokens)} / ${Math.round(contextWindowTokens)}`}
+    >
+      估算 token {formatCompactTokenCount(usedTokens)} / {formatCompactTokenCount(contextWindowTokens)}
+    </span>
+  );
+}
+
+function RunActivityBanner({
+  activity,
+  contextIndicator,
+  onStopGeneration,
+  onCancelRemote,
+}: {
+  activity: RunActivity;
+  contextIndicator: ComposerContextIndicator;
+  onStopGeneration?: () => void;
+  onCancelRemote?: () => void;
+}) {
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -76,66 +129,58 @@ function RunActivityBanner({ activity, onStopGeneration, onCancelRemote }: { act
 
   const icon =
     activity.status === 'failed' ? (
-      <StopCircle className="h-4 w-4 text-rose-500" />
+      <StopCircle className="h-3 w-3 text-rose-500" />
     ) : activity.status === 'completed' ? (
-      <Check className="h-4 w-4 text-emerald-500" />
+      <Check className="h-3 w-3 text-emerald-500" />
     ) : activity.status === 'stopped' ? (
-      <ShieldCheck className="h-4 w-4 text-amber-500" />
+      <ShieldCheck className="h-3 w-3 text-amber-500" />
     ) : (
-      <RefreshCcw className="h-4 w-4 animate-spin text-blue-500" />
+      <RefreshCcw className="h-3 w-3 animate-spin text-slate-400" />
     );
 
   return (
-    <div className="mb-4 rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3 text-sm text-slate-700 shadow-sm dark:border-slate-700/50 dark:bg-slate-800/30 dark:text-slate-200">
-      <div className="flex flex-wrap items-center gap-2">
+    <div className="inline-flex max-w-full items-center gap-2 rounded-full border border-slate-200/70 bg-white/90 px-2.5 py-1 text-[11px] leading-4 text-slate-500 shadow-sm shadow-slate-900/5 backdrop-blur dark:border-slate-700/60 dark:bg-slate-900/90 dark:text-slate-400">
         {icon}
-        <span className="font-medium">{activity.phase}</span>
-        <span className="text-xs text-slate-500 dark:text-slate-400">
-          {activity.source === 'restore' ? '恢复中' : '运行中'} · {formatElapsed(now - activity.startedAt)}
+        <span className="max-w-[16rem] truncate text-slate-600 dark:text-slate-300" title={activity.detail || activity.phase}>
+          {activity.phase}
+        </span>
+        <span>
+          {activity.source === 'restore' ? '恢复' : '运行'} {formatElapsed(now - activity.startedAt)}
         </span>
         {isActive ? (
-          <span className={cn('inline-block h-2 w-2 rounded-full', alive ? 'bg-emerald-400' : 'bg-slate-300 dark:bg-slate-600')} title={alive ? '连接存活' : '连接超时'} />
+          <span className={cn('inline-block h-1.5 w-1.5 flex-shrink-0 rounded-full', alive ? 'bg-emerald-400' : 'bg-slate-300 dark:bg-slate-600')} title={alive ? '连接存活' : '连接超时'} />
         ) : null}
-        {activity.status === 'stopped' ? (
-          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-100">
-            已停止接收
-          </span>
-        ) : null}
+        <span className="text-slate-400 dark:text-slate-500">
+          {activity.eventCount} ev
+        </span>
+        <AnimatedTokenCount contextIndicator={contextIndicator} />
+        <span className="hidden text-slate-400 dark:text-slate-500 sm:inline">
+          {formatLag(now - activity.lastEventAt)}
+        </span>
         {isActive && (onStopGeneration || onCancelRemote) ? (
-          <div className="ml-auto flex gap-2">
+          <div className="flex flex-shrink-0 gap-1">
             {onStopGeneration ? (
               <button
                 type="button"
                 onClick={onStopGeneration}
-                className="flex items-center gap-1 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-600 shadow-sm transition hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+                className="flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 dark:text-slate-500 dark:hover:bg-slate-800 dark:hover:text-slate-200"
               >
                 <StopCircle className="h-3 w-3" />
-                停止接收
+                停止
               </button>
             ) : null}
             {onCancelRemote ? (
               <button
                 type="button"
                 onClick={onCancelRemote}
-                className="flex items-center gap-1 rounded-full border border-rose-200 bg-white px-3 py-1 text-xs text-rose-600 shadow-sm transition hover:bg-rose-50 dark:border-rose-800 dark:bg-slate-800 dark:text-rose-400 dark:hover:bg-slate-700"
+                className="flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px] text-slate-400 transition hover:bg-rose-50 hover:text-rose-600 dark:text-slate-500 dark:hover:bg-rose-950/30 dark:hover:text-rose-300"
               >
                 <XCircle className="h-3 w-3" />
-                取消运行
+                取消
               </button>
             ) : null}
           </div>
         ) : null}
-      </div>
-      {activity.detail ? (
-        <div className="mt-1.5 text-xs leading-5 text-slate-500 dark:text-slate-400">
-          {activity.detail}
-        </div>
-      ) : null}
-      <div className="mt-2 flex flex-wrap gap-3 text-[11px] text-slate-500 dark:text-slate-400">
-        <span>事件 {activity.eventCount}</span>
-        <span>最近事件 {formatLag(now - activity.lastEventAt)}</span>
-        <span>来源 {activity.source === 'restore' ? '刷新恢复' : '实时运行'}</span>
-      </div>
     </div>
   );
 }
@@ -454,8 +499,8 @@ function ChatMessage({
 }) {
   if (message.role === 'user') {
     return (
-      <div className="flex justify-end mb-4">
-        <div className="max-w-[80%] rounded-2xl rounded-br-sm bg-blue-600 dark:bg-blue-500 text-white px-4 py-3 text-[15px] leading-relaxed">
+      <div className="mb-3 flex justify-end">
+        <div className="max-w-[80%] rounded-2xl rounded-br-sm bg-blue-600 px-3.5 py-2.5 text-[14px] leading-relaxed text-white dark:bg-blue-500">
           {message.attachments?.length ? (
             <MessageAttachments
               attachments={message.attachments}
@@ -470,8 +515,8 @@ function ChatMessage({
   }
 
   return (
-    <div className="mb-4 max-w-none">
-      <div className="flex items-center gap-2 mb-2 text-xs text-slate-400">
+    <div className="mb-3 max-w-none">
+      <div className="mb-1.5 flex items-center gap-2 text-xs text-slate-400">
         <Bot className="w-3.5 h-3.5" />
         <span>{agentName}</span>
       </div>
@@ -485,7 +530,7 @@ function ChatMessage({
       ) : null}
 
       {message.reasoning ? (
-        <details className="group/details mb-4 rounded-xl border border-slate-200 bg-slate-50/60 px-4 py-3 text-sm text-slate-600 transition-all dark:border-slate-700/30 dark:bg-slate-800/20 dark:text-slate-400">
+        <details className="group/details mb-3 rounded-xl border border-slate-200 bg-slate-50/60 px-3 py-2.5 text-sm text-slate-600 transition-all dark:border-slate-700/30 dark:bg-slate-800/20 dark:text-slate-400">
           <summary className="flex cursor-pointer list-none items-center justify-between gap-2 font-medium">
             <div className="flex items-center gap-2">
               {isStreaming && isLastMessage && !message.content ? (
@@ -508,7 +553,7 @@ function ChatMessage({
               key={`${tool.name}-${toolIndex}`}
               open={tool.status === 'paused' ? true : undefined}
               className={cn(
-                'group/details mb-4 rounded-xl border px-4 py-3 text-sm transition-all',
+                'group/details mb-3 rounded-xl border px-3 py-2.5 text-sm transition-all',
                 tool.status === 'paused'
                   ? 'border-amber-200 bg-amber-50/50 text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-200'
                   : 'border-blue-200 bg-blue-50/30 text-blue-600 dark:border-blue-900/50 dark:bg-blue-950/20 dark:text-blue-400',
@@ -609,6 +654,7 @@ export function ChatMessageList({
   isMobile,
   isStreaming,
   activity,
+  contextIndicator,
   messages,
   onDeleteFeedback,
   onOpenAttachmentPreview,
@@ -622,12 +668,11 @@ export function ChatMessageList({
     <div
       ref={scrollRef}
       className={cn(
-        'min-h-0 flex-1 overflow-y-auto scroll-smooth',
+        'relative min-h-0 flex-1 overflow-y-auto scroll-smooth',
         isMobile ? 'px-3 py-3' : 'px-4 py-5',
       )}
     >
-      <div className="mx-auto flex w-full max-w-[64rem] flex-col pb-6 sm:pb-8">
-        {activity ? <RunActivityBanner activity={activity} onStopGeneration={onStopGeneration} onCancelRemote={onCancelRemote} /> : null}
+      <div className={cn('mx-auto flex w-full max-w-[64rem] flex-col', activity ? 'pb-10 sm:pb-10' : 'pb-6 sm:pb-8')}>
         {messages.length === 0 ? (
         <EmptyState agentName={agentName} />
         ) : (
@@ -651,6 +696,16 @@ export function ChatMessageList({
           )
         )}
       </div>
+      {activity ? (
+        <div className="sticky bottom-1 z-20 mx-auto flex w-full max-w-[64rem] justify-end">
+          <RunActivityBanner
+            activity={activity}
+            contextIndicator={contextIndicator}
+            onStopGeneration={onStopGeneration}
+            onCancelRemote={onCancelRemote}
+          />
+        </div>
+      ) : null}
     </div>
   );
 }

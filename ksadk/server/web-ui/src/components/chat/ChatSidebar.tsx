@@ -13,7 +13,6 @@ import type { Session } from './types';
 type ChatSidebarProps = {
   sessions: Session[];
   currentSessionId: string | null;
-  isStreaming: boolean;
   onCreateNewSession: () => void;
   onSelectSession: (sessionId: string) => void;
   onDeleteSession: (sessionId: string, event: MouseEvent<HTMLButtonElement>) => void;
@@ -24,7 +23,6 @@ type ChatSidebarProps = {
 export function ChatSidebar({
   sessions,
   currentSessionId,
-  isStreaming,
   onCreateNewSession,
   onSelectSession,
   onDeleteSession,
@@ -43,8 +41,7 @@ export function ChatSidebar({
         <button
           type="button"
           onClick={onCreateNewSession}
-          disabled={isStreaming}
-          className="flex w-full items-center justify-between rounded-2xl px-3 py-2 text-sm font-medium transition-colors hover:bg-slate-200/60 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-slate-800"
+          className="flex w-full items-center justify-between rounded-2xl px-3 py-2 text-sm font-medium transition-colors hover:bg-slate-200/60 dark:hover:bg-slate-800"
         >
           <span className="flex items-center gap-2">
             <Plus className="h-4 w-4" />
@@ -78,13 +75,11 @@ export function ChatSidebar({
                   key={session.SessionId}
                   role="button"
                   tabIndex={0}
-                  onClick={() => !isStreaming && onSelectSession(session.SessionId)}
+                  onClick={() => onSelectSession(session.SessionId)}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter' || event.key === ' ') {
                       event.preventDefault();
-                      if (!isStreaming) {
-                        onSelectSession(session.SessionId);
-                      }
+                      onSelectSession(session.SessionId);
                     }
                   }}
                   className={cn(

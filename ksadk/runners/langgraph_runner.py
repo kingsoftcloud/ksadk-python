@@ -16,7 +16,6 @@ from ksadk.sessions.continuity import LangGraphSessionAdapter
 from ksadk.runners.utils import get_langfuse_callback, get_langfuse_metadata, load_agent_module
 from langgraph.types import Command
 from ksadk.conversations.attachments import classify_attachment_kind, read_attachment_bytes
-from ksadk.conversations.model_context import supports_native_image_input
 
 
 class LangGraphRunner(BaseRunner):
@@ -200,9 +199,7 @@ class LangGraphRunner(BaseRunner):
         *,
         model_metadata: dict[str, Any] | None,
     ) -> Any:
-        if not supports_native_image_input(model_metadata):
-            return user_input
-
+        del model_metadata
         image_blocks: list[dict[str, Any]] = []
 
         for attachment in attachments or []:

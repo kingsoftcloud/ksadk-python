@@ -9,6 +9,13 @@ type ErrorBoundaryState = {
   error: Error | null;
 };
 
+const CHUNK_RELOAD_STORAGE_KEY = 'agentengine-ui:chunk-reload-attempted';
+
+export function isChunkLoadError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error || '');
+  return /loading chunk|chunkloaderror|failed to fetch dynamically imported module|error loading dynamically imported module|importing a module script failed/i.test(message);
+}
+
 export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {
   constructor(props: ErrorBoundaryProps) {
     super(props);
@@ -21,9 +28,26 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
     console.error('UI 渲染错误:', error, info);
+    if (!isChunkLoadError(error)) {
+      return;
+    }
+    try {
+      const attempted = window.sessionStorage.getItem(CHUNK_RELOAD_STORAGE_KEY);
+      if (!attempted) {
+        window.sessionStorage.setItem(CHUNK_RELOAD_STORAGE_KEY, String(Date.now()));
+        window.location.reload();
+      }
+    } catch {
+      window.location.reload();
+    }
   }
 
   handleReload = () => {
+    try {
+      window.sessionStorage.removeItem(CHUNK_RELOAD_STORAGE_KEY);
+    } catch {
+      // ignore storage failures; the explicit reload is still useful
+    }
     this.setState({ hasError: false, error: null });
     window.location.reload();
   };

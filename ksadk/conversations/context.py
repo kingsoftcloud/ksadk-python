@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, Iterable, List
 
 from ksadk.sessions.base import SessionEvent
@@ -29,6 +30,36 @@ TRANSCRIPT_EVENT_TYPES = {
     "context_checkpoint",
 }
 
+DATA_URL_RE = re.compile(
+    r"data:(?P<mime>[A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+);base64,[A-Za-z0-9+/=_-]+"
+)
+BASE64_FIELD_RE = re.compile(
+    r"(?P<prefix>['\"](?P<field>file_data|data|bytes|base64)['\"]\s*:\s*['\"])(?P<value>[A-Za-z0-9+/=_-]{512,})(?P<suffix>['\"])",
+    re.IGNORECASE,
+)
+
+
+def sanitize_event_text_for_context(text: Any) -> str:
+    """Return a compact text view for history/compaction without inline binaries."""
+    value = str(text or "")
+    if not value:
+        return ""
+
+    def _replace_data_url(match: re.Match[str]) -> str:
+        mime = match.group("mime")
+        media_type = "image" if mime.startswith("image/") else "file"
+        return f"[{media_type}: {mime} data-url omitted]"
+
+    value = DATA_URL_RE.sub(_replace_data_url, value)
+    value = BASE64_FIELD_RE.sub(
+        lambda match: (
+            f"{match.group('prefix')}[base64 {match.group('field')} omitted]"
+            f"{match.group('suffix')}"
+        ),
+        value,
+    )
+    return value
+
 
 def extract_event_text(event: SessionEvent) -> str:
     """从结构化事件里提取最适合喂给模型的文本视图。
@@ -38,14 +69,14 @@ def extract_event_text(event: SessionEvent) -> str:
     """
     metadata = event.metadata or {}
     if metadata.get("agent_input"):
-        return str(metadata["agent_input"])
+        return sanitize_event_text_for_context(metadata["agent_input"])
 
     content = event.content or {}
     text = content.get("text")
     if text:
-        return str(text)
+        return sanitize_event_text_for_context(text)
 
-    return extract_text_from_event_parts(content.get("parts") or [])
+    return sanitize_event_text_for_context(extract_text_from_event_parts(content.get("parts") or []))
 
 
 def canonical_event_type(

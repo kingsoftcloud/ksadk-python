@@ -68,26 +68,51 @@ export default function App() {
   const uiCapabilities = useBootstrapStore(s => s.capabilities) as UiCapabilities;
   const artifactVisible = useArtifactStore(s => s.visible && Boolean(s.content));
   const queuedDraftRef = useRef<Array<{ text: string; attachments: File[] }>>([]);
+  const disconnectRunRef = useRef<(() => void) | null>(null);
 
   const { isMobile, viewportHeight } = useResponsiveViewport();
   const composerMaxHeight = resolveComposerMaxHeight({ isMobile, viewportHeight });
 
   const {
     fetchSessions,
+    loadSession,
+    createNewSession,
+    deleteSession,
     currentSessionIdRef,
     agentIdRef,
     runSubscriptionAbortRef,
   } = useSessionLifecycle({
     agentId,
     currentSessionId,
-    isStreaming,
     isMobile,
     uiCapabilities,
     api,
     resetCompaction: () => {},
+    disconnectRun: () => disconnectRunRef.current?.(),
   });
 
-  const { submitDraft, stopGeneration } = useRunAgent({
+  const refreshSettledRun = useCallback(
+    (sessionId: string | null) => {
+      if (!sessionId) {
+        return;
+      }
+      const refresh = () => {
+        void fetchSessions(agentIdRef.current, sessionId);
+        if (
+          currentSessionIdRef.current === sessionId &&
+          !useStreamingStore.getState().isStreaming
+        ) {
+          void loadSession(sessionId);
+        }
+      };
+      queueMicrotask(refresh);
+      window.setTimeout(refresh, 1800);
+      window.setTimeout(refresh, 5000);
+    },
+    [agentIdRef, currentSessionIdRef, fetchSessions, loadSession],
+  );
+
+  const { submitDraft, stopGeneration, disconnectRun } = useRunAgent({
     agentId,
     currentSessionId,
     agentFramework,
@@ -100,7 +125,12 @@ export default function App() {
     currentSessionIdRef,
     agentIdRef,
     queuedDraftRef,
+    onRunSettled: refreshSettledRun,
   });
+
+  useEffect(() => {
+    disconnectRunRef.current = disconnectRun;
+  }, [disconnectRun]);
 
   const handleStopGeneration = useCallback(() => {
     runSubscriptionAbortRef.current?.abort();
@@ -217,9 +247,10 @@ export default function App() {
   return (
     <div className="flex h-[var(--app-height)] min-h-[var(--app-height)] overflow-hidden bg-white font-sans text-slate-800 dark:bg-slate-900 dark:text-slate-200">
       <ConnectedSidebar
-        api={api}
         uiCapabilities={uiCapabilities}
-        resetCompaction={() => {}}
+        createNewSession={createNewSession}
+        deleteSession={deleteSession}
+        loadSession={loadSession}
       />
 
       <main className="relative flex min-w-0 flex-1 flex-col bg-white dark:bg-slate-900">

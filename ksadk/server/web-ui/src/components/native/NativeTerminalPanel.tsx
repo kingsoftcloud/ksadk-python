@@ -18,6 +18,7 @@ import {
   buildCreateTerminalSessionPayload,
   buildTerminalAttachUrl,
   normalizeTerminalSessions,
+  sanitizeTerminalInputForPty,
   TERMINAL_SESSIONS_ENDPOINT,
 } from '@/utils/terminal-session';
 
@@ -48,6 +49,8 @@ type NativeTerminalPanelProps = {
 };
 
 type TerminalStatus = 'idle' | 'connecting' | 'connected' | 'closed' | 'error';
+
+const TERMINAL_KEEPALIVE_INTERVAL_MS = 20_000;
 
 function decodeBytes(data: ArrayBuffer | Blob | string) {
   if (typeof data === 'string') {
@@ -127,6 +130,7 @@ export function NativeTerminalPanel({ capability, open, onClose }: NativeTermina
     let ws: WebSocket | null = null;
     let resizeHandler: (() => void) | null = null;
     let resizeObserver: ResizeObserver | null = null;
+    let keepaliveTimer: number | null = null;
 
     socketRef.current?.close(1000, 'switch terminal session');
     socketRef.current = null;
@@ -250,6 +254,9 @@ export function NativeTerminalPanel({ capability, open, onClose }: NativeTermina
               setStatus('connected');
               return;
             }
+            if (control?.type === 'pong') {
+              return;
+            }
             if (control?.type === 'exit') {
               setStatus('closed');
               return;
@@ -279,10 +286,17 @@ export function NativeTerminalPanel({ capability, open, onClose }: NativeTermina
       });
 
       inputDisposable = terminal.onData((data) => {
-        if (ws?.readyState === WebSocket.OPEN) {
-          ws.send(new TextEncoder().encode(data));
+        const sanitized = sanitizeTerminalInputForPty(data);
+        if (sanitized && ws?.readyState === WebSocket.OPEN) {
+          ws.send(new TextEncoder().encode(sanitized));
         }
       });
+
+      keepaliveTimer = window.setInterval(() => {
+        if (ws?.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'ping' }));
+        }
+      }, TERMINAL_KEEPALIVE_INTERVAL_MS);
 
       resizeHandler = () => {
         fitAndNotify();
@@ -299,6 +313,9 @@ export function NativeTerminalPanel({ capability, open, onClose }: NativeTermina
       inputDisposable?.dispose();
       if (resizeHandler) {
         window.removeEventListener('resize', resizeHandler);
+      }
+      if (keepaliveTimer !== null) {
+        window.clearInterval(keepaliveTimer);
       }
       resizeObserver?.disconnect();
       if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {

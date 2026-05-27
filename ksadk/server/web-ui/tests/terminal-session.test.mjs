@@ -40,3 +40,21 @@ test('terminal session utils serialize create payloads safely', async () => {
     { mode: 'tui', cols: 120, rows: 40, session_id: 'main' },
   );
 });
+
+test('terminal session utils strip xterm OSC color responses before sending input to PTY', async () => {
+  const terminalUtils = await loadTerminalUtils();
+
+  assert.ok(terminalUtils, 'expected terminal session helpers to exist');
+  assert.equal(
+    terminalUtils.sanitizeTerminalInputForPty('\x1b]11;rgb:0202/0606/1717\x1b\\'),
+    '',
+  );
+  assert.equal(
+    terminalUtils.sanitizeTerminalInputForPty('echo ok\r\x1b]10;rgb:eeee/eeee/eeee\x07'),
+    'echo ok\r',
+  );
+  assert.equal(
+    terminalUtils.sanitizeTerminalInputForPty(']11;rgb:0202/0606/1717]12;rgb:eeee/eeee/eeee'),
+    '',
+  );
+});

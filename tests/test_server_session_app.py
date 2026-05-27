@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 import importlib
 import json
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ import pytest
 
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.server.api_models import AgentRunRequest, InlineData, Part
+from ksadk.sessions.base import SessionEvent
 from ksadk.sessions.in_memory import InMemorySessionService
 
 
@@ -61,6 +63,14 @@ class _ThinkingOnlyFinalRunner(_OverrideStreamingRunner):
     async def stream(self, input_data: dict):
         yield {"type": "thinking", "delta": "先想一下"}
         yield {"type": "final", "output": "final answer"}
+
+
+class _SlowStreamingRunner(_OverrideStreamingRunner):
+    async def stream(self, input_data: dict):
+        yield {"type": "text", "delta": "hel"}
+        await asyncio.sleep(0.05)
+        yield {"type": "text", "delta": "lo"}
+        yield {"type": "final", "output": "hello"}
 
 
 class _ModelAwareRunner(_DummyRunner):
@@ -615,6 +625,161 @@ async def test_list_sessions_projects_heuristic_title_for_existing_fallback_sess
     session = response.json()["Data"]["Sessions"][0]
     assert session["Title"] == "招聘助手能力"
     assert session["TitleSource"] == "heuristic"
+
+
+@pytest.mark.asyncio
+async def test_session_actions_do_not_return_inline_attachment_data_in_state(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    session = await service.create_session(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-inline-state",
+    )
+    await service.update_state(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id=session.id,
+        scope="session",
+        state_delta={
+            "__ksadk_attachment_context__": {
+                "attachments": [
+                    {
+                        "display_name": "photo.png",
+                        "mime_type": "image/png",
+                        "transport": "inline",
+                        "data": base64.b64encode(b"image bytes").decode("ascii"),
+                        "size_bytes": 11,
+                    }
+                ],
+                "attachment_results": [
+                    {
+                        "display_name": "photo.png",
+                        "mime_type": "image/png",
+                        "transport": "inline",
+                        "text": "识别出的文字",
+                        "text_excerpt": "识别出的文字",
+                    }
+                ],
+            }
+        },
+    )
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        listed = await client.post(
+            "/agentengine/api/v1/ListSessions",
+            json={"AgentId": "demo-agent", "UserId": "user-1"},
+        )
+        fetched = await client.post(
+            "/agentengine/api/v1/GetSession",
+            json={"SessionId": session.id},
+        )
+
+    assert listed.status_code == 200
+    assert fetched.status_code == 200
+    for payload in (
+        listed.json()["Data"]["Sessions"][0],
+        fetched.json()["Data"]["Session"],
+    ):
+        state_context = payload["State"]["__ksadk_attachment_context__"]
+        attachment = state_context["attachments"][0]
+        assert attachment == {
+            "display_name": "photo.png",
+            "mime_type": "image/png",
+            "transport": "inline",
+            "size_bytes": 11,
+        }
+        assert "data" not in json.dumps(state_context, ensure_ascii=False)
+        assert state_context["attachment_results"][0]["text_excerpt"] == "识别出的文字"
+        assert "text" not in state_context["attachment_results"][0]
+
+
+@pytest.mark.asyncio
+async def test_local_feedback_actions_upsert_get_and_delete(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    session = await service.create_session(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-local-feedback",
+    )
+    assistant_event = await service.append_event(
+        session.id,
+        SessionEvent.from_dict(
+            {
+                "author": "demo-agent",
+                "event_type": "assistant_message",
+                "content": {"role": "model", "parts": [{"text": "assistant says hi"}]},
+                "metadata": {
+                    "response_id": "resp_local_feedback",
+                    "trace_id": "trace-local",
+                    "root_span_id": "span-local",
+                },
+            },
+            session_id=session.id,
+        ),
+    )
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        created = await client.post(
+            "/agentengine/api/v1/UpsertResponseFeedback",
+            json={
+                "AgentId": "demo-agent",
+                "SessionId": session.id,
+                "ResponseId": "resp_local_feedback",
+                "EventId": assistant_event.id,
+                "Rating": "down",
+                "Comment": "不够具体",
+            },
+        )
+        fetched = await client.post(
+            "/agentengine/api/v1/GetResponseFeedback",
+            json={
+                "AgentId": "demo-agent",
+                "SessionId": session.id,
+                "ResponseId": "resp_local_feedback",
+            },
+        )
+        deleted = await client.post(
+            "/agentengine/api/v1/DeleteResponseFeedback",
+            json={
+                "AgentId": "demo-agent",
+                "SessionId": session.id,
+                "ResponseId": "resp_local_feedback",
+            },
+        )
+        fetched_after_delete = await client.post(
+            "/agentengine/api/v1/GetResponseFeedback",
+            json={
+                "AgentId": "demo-agent",
+                "SessionId": session.id,
+                "ResponseId": "resp_local_feedback",
+            },
+        )
+
+    assert created.status_code == 200
+    feedback = created.json()["Data"]["Feedback"]
+    assert feedback["AgentId"] == "demo-agent"
+    assert feedback["SessionId"] == session.id
+    assert feedback["ResponseId"] == "resp_local_feedback"
+    assert feedback["EventId"] == assistant_event.id
+    assert feedback["Rating"] == "down"
+    assert feedback["Comment"] == "不够具体"
+    assert feedback["TraceId"] == "trace-local"
+    assert feedback["RootSpanId"] == "span-local"
+
+    assert fetched.status_code == 200
+    assert fetched.json()["Data"]["Feedback"]["Rating"] == "down"
+    assert deleted.status_code == 200
+    assert deleted.json()["Data"] == {"Deleted": True}
+    assert fetched_after_delete.status_code == 200
+    assert fetched_after_delete.json()["Data"]["Feedback"] is None
 
 
 @pytest.mark.asyncio
@@ -1526,3 +1691,127 @@ async def test_run_agent_action_passes_model_options_to_runner(monkeypatch):
         "reasoning": {"effort": "none"},
         "max_reasoning_tokens": 0,
     }
+
+
+@pytest.mark.asyncio
+async def test_subscribe_run_events_streams_events_appended_after_subscription(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(_DummyRunner())
+
+    session = await service.create_session(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-subscribe",
+    )
+    in_progress = await service.append_event(
+        session.id,
+        SessionEvent.from_dict(
+            {
+                "author": "demo-agent",
+                "eventType": "run_status",
+                "invocationId": "inv-live",
+                "content": {"status": "in_progress"},
+            },
+            session_id=session.id,
+        ),
+    )
+
+    async def append_later():
+        await asyncio.sleep(0.02)
+        await service.append_event(
+            session.id,
+            SessionEvent.from_dict(
+                {
+                    "author": "demo-agent",
+                    "eventType": "assistant_message",
+                    "invocationId": "inv-live",
+                    "content": {"role": "model", "parts": [{"text": "hello"}]},
+                },
+                session_id=session.id,
+            ),
+        )
+        await service.append_event(
+            session.id,
+            SessionEvent.from_dict(
+                {
+                    "author": "demo-agent",
+                    "eventType": "run_status",
+                    "invocationId": "inv-live",
+                    "content": {"status": "completed"},
+                },
+                session_id=session.id,
+            ),
+        )
+
+    task = asyncio.create_task(append_later())
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.get(
+            "/agentengine/api/v1/SubscribeRunEvents",
+            params={
+                "SessionId": session.id,
+                "InvocationId": "inv-live",
+                "AfterSeqId": str(in_progress.seq_id),
+            },
+        )
+    await task
+
+    assert response.status_code == 200
+    payloads = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: ") and line.strip() != "data: [DONE]"
+    ]
+    assert [payload["EventType"] for payload in payloads] == [
+        "assistant_message",
+        "run_status",
+    ]
+    assert payloads[0]["Content"]["parts"][0]["text"] == "hello"
+    assert payloads[-1]["Content"]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_run_agent_stream_continues_after_client_disconnect(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _SlowStreamingRunner()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        async with client.stream(
+            "POST",
+            "/agentengine/api/v1/RunAgent",
+            json={
+                "AgentId": "demo-agent",
+                "SessionId": "sess-detached-run",
+                "Messages": [{"role": "user", "content": "hello"}],
+                "Stream": True,
+                "ApiFormat": "responses",
+            },
+        ) as response:
+            assert response.status_code == 200
+            async for line in response.aiter_lines():
+                if line.startswith("data: ") and "response.created" in line:
+                    break
+
+    for _ in range(20):
+        events = await service.get_events("sess-detached-run")
+        if events and events[-1].event_type == "run_status" and events[-1].content.get("status") == "completed":
+            break
+        await asyncio.sleep(0.02)
+
+    events = await service.get_events("sess-detached-run")
+    assert [event.event_type for event in events] == [
+        "user_message",
+        "run_status",
+        "assistant_message",
+        "run_status",
+    ]
+    assert events[-2].content["parts"][0]["text"] == "hello"
+    assert events[-1].content["status"] == "completed"
