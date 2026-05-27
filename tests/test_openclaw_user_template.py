@@ -190,6 +190,94 @@ def test_openclaw_user_template_light_bootstrap_fails_on_missing_placeholder():
         assert "unresolved template variables: DS_ID" in result.stderr
 
 
+def test_openclaw_user_template_migrates_legacy_diagnostics_capture_content():
+    script_path = TEMPLATE_ROOT / "openclaw-user-bootstrap.sh"
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        template_dir = tmp / "template"
+        state_dir = tmp / "state"
+        (template_dir / "config").mkdir(parents=True)
+        (template_dir / "extensions").mkdir(parents=True)
+        (template_dir / "skills").mkdir(parents=True)
+        (template_dir / "config" / "openclaw.json").write_text(
+            json.dumps({"diagnostics": {"captureContent": True}}),
+            encoding="utf-8",
+        )
+
+        env = {
+            **os.environ,
+            "OPENCLAW_TEMPLATE_DIR": str(template_dir),
+            "OPENCLAW_STATE_DIR": str(state_dir),
+            "OPENCLAW_BOOTSTRAP_ONLY": "1",
+            "OPENCLAW_CONFIG_PATCH_JSON": json.dumps(
+                {
+                    "diagnostics": {
+                        "captureContent": False,
+                        "enabled": True,
+                        "otel": {
+                            "enabled": True,
+                            "endpoint": "https://trace-pre.example.com/api/public/otel",
+                            "protocol": "http/protobuf",
+                        },
+                    }
+                }
+            ),
+        }
+        result = subprocess.run(
+            ["sh", str(script_path)],
+            check=False,
+            env=env,
+            text=True,
+            capture_output=True,
+        )
+
+        assert result.returncode == 0, result.stderr
+        config = json.loads((state_dir / "openclaw.json").read_text(encoding="utf-8"))
+        assert "captureContent" not in config["diagnostics"]
+        assert config["diagnostics"]["enabled"] is True
+        assert config["diagnostics"]["otel"]["captureContent"] is False
+
+
+def test_openclaw_user_template_expands_wildcard_origins_for_agentengine_runtime():
+    script_path = TEMPLATE_ROOT / "openclaw-user-bootstrap.sh"
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        template_dir = tmp / "template"
+        state_dir = tmp / "state"
+        (template_dir / "config").mkdir(parents=True)
+        (template_dir / "extensions").mkdir(parents=True)
+        (template_dir / "skills").mkdir(parents=True)
+        (template_dir / "config" / "openclaw.json").write_text(
+            json.dumps({"gateway": {"auth": {"mode": "trusted-proxy"}}}),
+            encoding="utf-8",
+        )
+
+        env = {
+            **os.environ,
+            "OPENCLAW_TEMPLATE_DIR": str(template_dir),
+            "OPENCLAW_STATE_DIR": str(state_dir),
+            "OPENCLAW_BOOTSTRAP_ONLY": "1",
+            "OPENCLAW_ALLOWED_ORIGINS": json.dumps(["*"]),
+            "AGENT_RUNTIME_ID": "ar-20260528071513-fb236300",
+        }
+        result = subprocess.run(
+            ["sh", str(script_path)],
+            check=False,
+            env=env,
+            text=True,
+            capture_output=True,
+        )
+
+        assert result.returncode == 0, result.stderr
+        config = json.loads((state_dir / "openclaw.json").read_text(encoding="utf-8"))
+        assert config["gateway"]["controlUi"]["allowedOrigins"] == [
+            "http://ar-20260528071513-fb236300.agent-pre.kspmas.ksyun.com",
+            "https://ar-20260528071513-fb236300.agent-pre.kspmas.ksyun.com",
+            "http://ar-20260528071513-fb236300.agent.kspmas.ksyun.com",
+            "https://ar-20260528071513-fb236300.agent.kspmas.ksyun.com",
+        ]
+
+
 def test_openclaw_user_template_readme_mentions_direct_build_and_run():
     readme = (TEMPLATE_ROOT / "README.md").read_text(encoding="utf-8")
 
