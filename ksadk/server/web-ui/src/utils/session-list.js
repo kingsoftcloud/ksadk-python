@@ -1,4 +1,5 @@
 const ACTIVE_RUN_STATUSES = new Set(['in_progress', 'running', 'queued', 'pending']);
+const DEFAULT_ACTIVE_STALE_AFTER_MS = 5 * 60 * 1000;
 
 function sessionUpdatedAtValue(session) {
   const raw = session?.UpdatedAt ?? session?.updated_at;
@@ -47,18 +48,33 @@ function sessionSearchText(session) {
 }
 
 export function isSessionRunning(session) {
-  return ACTIVE_RUN_STATUSES.has(normalizeText(session?.ActiveRunStatus));
+  return isSessionRunningWithOptions(session);
 }
 
-export function normalizeSidebarSessions(sessions = [], query = '') {
+function isSessionRunningWithOptions(session, options = {}) {
+  if (!ACTIVE_RUN_STATUSES.has(normalizeText(session?.ActiveRunStatus))) {
+    return false;
+  }
+  const updatedAt = sessionUpdatedAtValue(session);
+  if (!updatedAt) {
+    return true;
+  }
+  const now = Number.isFinite(Number(options.now)) ? Number(options.now) : Date.now();
+  const activeStaleAfterMs = Number.isFinite(Number(options.activeStaleAfterMs))
+    ? Number(options.activeStaleAfterMs)
+    : DEFAULT_ACTIVE_STALE_AFTER_MS;
+  return now - updatedAt <= activeStaleAfterMs;
+}
+
+export function normalizeSidebarSessions(sessions = [], query = '', options = {}) {
   const needle = normalizeText(query);
   return (Array.isArray(sessions) ? sessions : [])
     .filter((session) => session?.SessionId)
     .filter((session) => !needle || sessionSearchText(session).includes(needle))
     .slice()
     .sort((left, right) => {
-      const leftActive = isSessionRunning(left) ? 1 : 0;
-      const rightActive = isSessionRunning(right) ? 1 : 0;
+      const leftActive = isSessionRunningWithOptions(left, options) ? 1 : 0;
+      const rightActive = isSessionRunningWithOptions(right, options) ? 1 : 0;
       if (leftActive !== rightActive) {
         return rightActive - leftActive;
       }
@@ -91,8 +107,8 @@ export function formatSessionContextLabel(session) {
   return '';
 }
 
-export function resolveCompactSessionMeta(session) {
-  const running = isSessionRunning(session);
+export function resolveCompactSessionMeta(session, options = {}) {
+  const running = isSessionRunningWithOptions(session, options);
   return {
     running,
     label: running ? '' : formatCompactUpdatedAt(session?.UpdatedAt ?? session?.updated_at),

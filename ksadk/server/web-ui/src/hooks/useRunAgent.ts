@@ -1,4 +1,4 @@
-import { useRef, useCallback, useEffect, useState } from 'react';
+import { useRef, useCallback, useEffect } from 'react';
 import { useStreamingStore } from '../stores/streaming.js';
 import { useUIStore } from '../stores/ui.js';
 import { useSessionStore } from '../stores/session.js';
@@ -27,10 +27,11 @@ type RunAgentContext = {
   currentSessionIdRef: React.MutableRefObject<string | null>;
   agentIdRef: React.MutableRefObject<string>;
   queuedDraftRef: React.MutableRefObject<Array<{ text: string; attachments: File[] }>>;
+  onRunSettled?: (sessionId: string | null) => void;
 };
 
 export function useRunAgent(ctx: RunAgentContext) {
-  const [engine] = useState(() => new RunEngineImpl(ctx.api));
+  const enginesRef = useRef(new Map<string, RunEngineImpl>());
   const drainQueueRef = useRef<() => void>(() => {});
 
   const {
@@ -41,9 +42,10 @@ export function useRunAgent(ctx: RunAgentContext) {
     thinkingMode,
     currentSessionIdRef,
     queuedDraftRef,
+    onRunSettled,
   } = ctx;
 
-  useEffect(() => {
+  const configureEngine = useCallback((engine: RunEngineImpl) => {
     engine.updateConfig({
       agentId,
       apiFormats,
@@ -51,12 +53,27 @@ export function useRunAgent(ctx: RunAgentContext) {
       selectedModel,
       thinkingMode,
     });
-  }, [engine, agentId, apiFormats, agentFramework, selectedModel, thinkingMode]);
+  }, [agentId, apiFormats, agentFramework, selectedModel, thinkingMode]);
+
+  const getEngine = useCallback((sessionId: string | null | undefined) => {
+    const key = String(sessionId || 'new-session');
+    let engine = enginesRef.current.get(key);
+    if (!engine) {
+      engine = new RunEngineImpl(ctx.api);
+      configureEngine(engine);
+      engine.subscribe(dispatchRunEventToStores);
+      enginesRef.current.set(key, engine);
+    } else {
+      configureEngine(engine);
+    }
+    return engine;
+  }, [ctx.api, configureEngine]);
 
   useEffect(() => {
-    const unsub = engine.subscribe(dispatchRunEventToStores);
-    return unsub;
-  }, [engine]);
+    for (const engine of enginesRef.current.values()) {
+      configureEngine(engine);
+    }
+  }, [configureEngine]);
 
   const enqueueDraft = useCallback((draft: QueuedDraft) => {
     queuedDraftRef.current.push(draft);
@@ -65,13 +82,15 @@ export function useRunAgent(ctx: RunAgentContext) {
 
   const startDraft = useCallback(
     (draft: QueuedDraft & { responsesInput?: unknown; previousResponseId?: string }) => {
+      const targetSessionId = currentSessionIdRef.current;
+      const engine = getEngine(targetSessionId);
       if (engine.stage !== 'idle') {
         return false;
       }
 
       resetDispatcherState();
       useUIStore.getState().setMobileActionsOpen(false);
-      useStreamingStore.getState().setStreaming(true);
+      useStreamingStore.getState().setSessionStreaming(targetSessionId, true);
 
       const trimmedText = draft.text.trim();
       const userMessageId = String(Date.now());
@@ -99,21 +118,27 @@ export function useRunAgent(ctx: RunAgentContext) {
         attachments: draft.attachments,
         responsesInput: draft.responsesInput,
         previousResponseId: draft.previousResponseId,
-        sessionId: currentSessionIdRef.current,
+        sessionId: targetSessionId,
         onSessionCreated: (sessionId: string) => {
           useSessionStore.getState().upsertSessions([{ SessionId: sessionId, UpdatedAt: new Date().toISOString() } as unknown as Session]);
           currentSessionIdRef.current = sessionId;
           useSessionStore.getState().setCurrentSessionId(sessionId);
+          if (targetSessionId !== sessionId) {
+            enginesRef.current.set(sessionId, engine);
+          }
         },
         onSessionUpsert: () => {},
-        onSettled: () => drainQueueRef.current(),
+        onSettled: (sessionId) => {
+          onRunSettled?.(sessionId);
+          drainQueueRef.current();
+        },
       });
       if (!accepted) {
-        useStreamingStore.getState().setStreaming(false);
+        useStreamingStore.getState().setSessionStreaming(targetSessionId, false);
       }
       return accepted;
     },
-    [engine, currentSessionIdRef],
+    [currentSessionIdRef, getEngine, onRunSettled],
   );
 
   useEffect(() => {
@@ -148,7 +173,8 @@ export function useRunAgent(ctx: RunAgentContext) {
         previousResponseId,
       };
 
-      if (engine.stage !== 'idle' || useStreamingStore.getState().isStreaming) {
+      const engine = getEngine(currentSessionIdRef.current);
+      if (engine.stage !== 'idle' && useStreamingStore.getState().isSessionStreaming(currentSessionIdRef.current)) {
         if (responsesInput === undefined) {
           enqueueDraft({ text: draftText, attachments: draftAttachments });
         }
@@ -159,16 +185,22 @@ export function useRunAgent(ctx: RunAgentContext) {
         enqueueDraft({ text: draftText, attachments: draftAttachments });
       }
     },
-    [engine, enqueueDraft, startDraft],
+    [currentSessionIdRef, enqueueDraft, getEngine, startDraft],
   );
 
   const stopGeneration = useCallback(() => {
+    const engine = getEngine(currentSessionIdRef.current);
     engine.stop();
-  }, [engine]);
+  }, [currentSessionIdRef, getEngine]);
+
+  const disconnectRun = useCallback(() => {
+    const engine = getEngine(currentSessionIdRef.current);
+    engine.disconnect();
+  }, [currentSessionIdRef, getEngine]);
 
   const resetCompaction = useCallback(() => {
     resetDispatcherState();
   }, []);
 
-  return { submitDraft, stopGeneration, resetCompaction };
+  return { submitDraft, stopGeneration, disconnectRun, resetCompaction };
 }

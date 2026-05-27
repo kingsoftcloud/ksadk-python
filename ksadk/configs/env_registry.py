@@ -46,6 +46,12 @@ ENV_VAR_REGISTRY: tuple[EnvVarSpec, ...] = (
     EnvVarSpec("KSADK_LTM_ACCESS_KEY", "memory", "Long-term-memory API access key.", sensitive=True),
     EnvVarSpec("KSADK_LTM_AGENT_ID", "memory", "Long-term-memory agent id."),
     EnvVarSpec("KSADK_LTM_APP_NAME", "memory", "Long-term-memory application name override."),
+    EnvVarSpec(
+        "KSADK_LTM_AUTO_SAVE",
+        "memory",
+        "Auto-save completed conversation turns to SDK long-term memory.",
+        "true when KSADK_LTM_BACKEND=sdk and KSADK_LTM_NAMESPACE is set",
+    ),
     EnvVarSpec("KSADK_LTM_BACKEND", "memory", "Long-term-memory backend selector.", "local"),
     EnvVarSpec("KSADK_LTM_ENDPOINT", "memory", "Long-term-memory API endpoint."),
     EnvVarSpec("KSADK_LTM_HTTP_TOKEN", "memory", "HTTP long-term-memory bearer token.", sensitive=True),

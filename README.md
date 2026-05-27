@@ -2,7 +2,7 @@
 
 Kingsoft Cloud Agent Development Kit. `ksadk` provides the Python SDK and CLI for building, running, packaging, and deploying AgentEngine agents across local development, serverless runtime, ADK, LangChain/LangGraph, DeepAgents, Hermes, OpenClaw, MCP, and Skill Runtime scenarios.
 
-Current version: `0.5.8`.
+Current version: `0.6.0`.
 
 ## Install
 
@@ -53,12 +53,14 @@ agentengine dashboard open
 - Skill Runtime preview: Skill Center discovery, zip download, `sha256` verification, safe extraction, local execution, and sandbox execution through the `ksadk[skills]` extra
 - Sandbox Runtime preview: common sandbox abstraction with an E2B-compatible backend
 
-## 0.5.8 Highlights
+## 0.6.0 Highlights
 
-- Hosted UI architecture refactor with API facade, run engine, stream protocol, capability plugins, hooks, and stores.
-- Workspace preview improvements for generated files, HTML relative resources, artifacts, and zip export.
-- Hermes / OpenClaw hosted terminal stability improvements, including WebSocket keepalive and Windows raw terminal handling.
-- Default runtimes updated to Hermes `2026.5.16-ksadk-v1` and OpenClaw `2026.5.20`.
+- OpenAI-compatible `/v1/responses` and `/v1/chat/completions` stay separate externally, while runners receive unified Responses-style canonical input.
+- Hosted UI and local `agentengine web` send image/file uploads as Responses `input_image` / `input_file`, with legacy `inlineData` / `fileData` still supported.
+- Streaming runs continue in the background after browser refresh or SSE disconnect, and the UI can resubscribe to the same invocation.
+- Local web sessions default to project sqlite storage for LangGraph, LangChain, DeepAgents, and ADK when no STM config is set.
+- Workspace preview auto-refresh preserves the current preview/edit mode instead of stealing focus.
+- Default runtimes use Hermes `2026.5.16-ksadk-v1` and OpenClaw `2026.5.22`.
 
 ## Documentation
 

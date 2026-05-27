@@ -7,6 +7,7 @@ class _FakeMemoryService:
     def __init__(self):
         self.search_calls: list[tuple[str, str, int | None]] = []
         self.save_calls: list[tuple[str, str, dict]] = []
+        self._backend = None
 
     def search_text(self, *, user_id: str, query: str, top_k: int | None = None) -> str:
         self.search_calls.append((user_id, query, top_k))
@@ -15,6 +16,16 @@ class _FakeMemoryService:
     def save_text(self, *, user_id: str, content: str, metadata: dict) -> bool:
         self.save_calls.append((user_id, content, metadata))
         return True
+
+
+class _FailingMemoryService(_FakeMemoryService):
+    def __init__(self):
+        super().__init__()
+        self._backend = type("Backend", (), {"last_error": "NotFound: missing memory"})()
+
+    def save_text(self, *, user_id: str, content: str, metadata: dict) -> bool:
+        self.save_calls.append((user_id, content, metadata))
+        return False
 
 
 def _context() -> PlatformInvocationContext:
@@ -81,3 +92,16 @@ def test_save_memory_without_runtime_context_returns_diagnostic(monkeypatch):
 
     assert "缺少运行时上下文" in result
     assert service.save_calls == []
+
+
+def test_save_memory_failure_includes_backend_error(monkeypatch):
+    from ksadk.memory.tool import save_memory
+
+    service = _FailingMemoryService()
+    monkeypatch.setattr("ksadk.memory.tool._get_or_create_service", lambda: service)
+
+    with platform_invocation_scope(_context()):
+        result = save_memory("用户喜欢云主机")
+
+    assert "记忆保存失败" in result
+    assert "NotFound: missing memory" in result

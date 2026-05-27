@@ -90,9 +90,13 @@ export function buildComposerContextIndicator({ messages, draftInput, selectedMo
     && message?.status === 'running'
   ));
   if (activeCompaction) {
+    const usedTokens = estimateMessageContextTokens(activeCompaction);
     return {
       label: '正在压缩上下文…',
       phase: 'compressing',
+      usedTokens,
+      contextWindowTokens,
+      percent: Math.min(100, Math.max(0, Math.round((usedTokens / contextWindowTokens) * 100))),
     };
   }
 
@@ -110,11 +114,15 @@ export function buildComposerContextIndicator({ messages, draftInput, selectedMo
       label: `估算上下文 ${percent}% · 即将压缩`,
       phase: 'warning',
       percent,
+      usedTokens: totalTokens,
+      contextWindowTokens,
     };
   }
   return {
     label: `估算上下文 ${percent}%`,
     phase: 'normal',
     percent,
+    usedTokens: totalTokens,
+    contextWindowTokens,
   };
 }

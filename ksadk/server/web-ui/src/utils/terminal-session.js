@@ -1,5 +1,8 @@
 export const TERMINAL_SESSIONS_ENDPOINT = '/_ksadk/terminal/sessions';
 
+const OSC_COLOR_RESPONSE_PATTERN = /\x1b\](?:10|11|12);(?:rgb:)?[0-9a-fA-F]{1,4}\/[0-9a-fA-F]{1,4}\/[0-9a-fA-F]{1,4}(?:\x07|\x1b\\)/g;
+const VISIBLE_OSC_COLOR_RESPONSE_PATTERN = /\]1[012];(?:rgb:)?[0-9a-fA-F]{1,4}\/[0-9a-fA-F]{1,4}\/[0-9a-fA-F]{1,4}/g;
+
 function toNumber(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;
@@ -74,4 +77,10 @@ export function buildTerminalAttachUrl(path = '/_ksadk/terminal/ws', terminalSes
     url.searchParams.set('terminal_session_id', normalizedId);
   }
   return url.toString();
+}
+
+export function sanitizeTerminalInputForPty(data) {
+  return String(data || '')
+    .replace(OSC_COLOR_RESPONSE_PATTERN, '')
+    .replace(VISIBLE_OSC_COLOR_RESPONSE_PATTERN, '');
 }

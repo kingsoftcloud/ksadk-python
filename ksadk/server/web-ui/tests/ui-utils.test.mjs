@@ -29,6 +29,9 @@ test('buildComposerContextIndicator shows warning near threshold and compressing
   });
   assert.equal(warningIndicator?.phase, 'warning');
   assert.match(warningIndicator?.label || '', /即将压缩/);
+  assert.equal(warningIndicator?.usedTokens, 160);
+  assert.equal(warningIndicator?.contextWindowTokens, 200);
+  assert.equal(warningIndicator?.percent, 80);
 
   const compressingIndicator = buildComposerContextIndicator({
     messages: [
@@ -48,7 +51,31 @@ test('buildComposerContextIndicator shows warning near threshold and compressing
   assert.deepEqual(compressingIndicator, {
     label: '正在压缩上下文…',
     phase: 'compressing',
+    usedTokens: 7,
+    contextWindowTokens: 200000,
+    percent: 0,
   });
+});
+
+test('buildComposerContextIndicator exposes token counts for compact run status', () => {
+  const indicator = buildComposerContextIndicator({
+    messages: [
+      { role: 'user', content: '你好世界' },
+      { role: 'model', content: 'hello world' },
+    ],
+    draftInput: 'abcde',
+    selectedModel: {
+      id: 'qwen3.6-plus',
+      limits: {
+        context_window_tokens: 200000,
+      },
+    },
+  });
+
+  assert.equal(indicator?.phase, 'normal');
+  assert.equal(indicator?.usedTokens, 9);
+  assert.equal(indicator?.contextWindowTokens, 200000);
+  assert.match(indicator?.label || '', /估算上下文/);
 });
 
 test('preprocessMarkdown keeps GFM table rows on separate lines for inline table blobs', () => {

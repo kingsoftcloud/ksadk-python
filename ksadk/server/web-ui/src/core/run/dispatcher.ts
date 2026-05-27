@@ -1,6 +1,7 @@
 import type { RunEvent } from './types.js';
 import { useMessageStore } from '../../stores/message.js';
 import { useStreamingStore } from '../../stores/streaming.js';
+import { useSessionStore } from '../../stores/session.js';
 import { buildCompactionMessage } from '../../utils/session-events.js';
 import type { Message } from '../../components/chat/types.js';
 
@@ -16,11 +17,19 @@ function ensureAssistantMessage(id: string) {
 }
 
 export function dispatchRunEventToStores(event: RunEvent) {
+  if (event.sessionId && useSessionStore.getState().currentSessionId !== event.sessionId) {
+    if (event.type === 'stage_changed' && (event.stage === 'completing' || event.stage === 'error' || event.stage === 'cancelled')) {
+      assistantCreated = false;
+    }
+    return;
+  }
+
   const ms = useMessageStore.getState();
 
   switch (event.type) {
     case 'activity':
       useStreamingStore.getState().updateActivity({
+        sessionId: event.sessionId,
         status: event.status,
         phase: event.phase,
         detail: event.detail,
@@ -151,27 +160,29 @@ export function dispatchRunEventToStores(event: RunEvent) {
 
     case 'stage_changed':
       if (event.stage === 'streaming' || event.stage === 'connecting') {
-        useStreamingStore.getState().setStreaming(true);
+        useStreamingStore.getState().setSessionStreaming(event.sessionId, true);
       } else if (event.stage === 'completing' || event.stage === 'error' || event.stage === 'cancelled') {
-        useStreamingStore.getState().setStreaming(false);
+        useStreamingStore.getState().setSessionStreaming(event.sessionId, false);
         assistantCreated = false;
       }
       break;
 
     case 'stream_ended':
-      useStreamingStore.getState().setStreaming(false);
+      useStreamingStore.getState().setSessionStreaming(event.sessionId, false);
       globalThis.setTimeout(() => {
         const state = useStreamingStore.getState();
-        if (!state.isStreaming && state.activity?.status === 'completed') {
-          state.clearActivity();
+        const activity = state.getSessionActivity(event.sessionId);
+        if (activity?.status === 'completed') {
+          state.clearSessionActivity(event.sessionId);
         }
       }, 2400);
       assistantCreated = false;
       break;
 
     case 'error':
-      useStreamingStore.getState().setStreaming(false);
+      useStreamingStore.getState().setSessionStreaming(event.sessionId, false);
       useStreamingStore.getState().updateActivity({
+        sessionId: event.sessionId,
         status: 'failed',
         phase: '连接断开或生成出错',
         countEvent: false,

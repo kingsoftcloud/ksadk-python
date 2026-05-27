@@ -18,6 +18,26 @@ from ksadk.detection import FrameworkDetector
 from ksadk.runners.factory import create_runner
 
 
+_PERSISTENT_STM_FRAMEWORKS = {"adk", "langgraph", "langchain", "deepagents"}
+_STM_ENV_NAMES = (
+    "KSADK_STM_BACKEND",
+    "KSADK_STM_PATH",
+    "KSADK_STM_URL",
+    "KSADK_STM_DB_PATH",
+    "KSADK_STM_DB_URL",
+)
+
+
+def _default_project_stm_if_unset(framework: str, agent_path: Path) -> None:
+    if framework not in _PERSISTENT_STM_FRAMEWORKS:
+        return
+    if any(name in os.environ for name in _STM_ENV_NAMES):
+        return
+
+    os.environ["KSADK_STM_BACKEND"] = "sqlite"
+    os.environ["KSADK_STM_PATH"] = str(agent_path / ".agentengine" / "ui" / "sessions.sqlite")
+
+
 @click.command(context_settings=dict(help_option_names=["-h", "--help"]))
 @click.argument("agent_dir", default=".", type=click.Path(exists=True))
 @click.option("--port", "-p", default=8080, help="Web UI 端口")
@@ -77,13 +97,7 @@ def web(agent_dir: str, port: int, model: str, no_open: bool):
     # 本地 UI 的持久化目录与项目根绑定
     os.environ["KSADK_PROJECT_DIR"] = str(agent_path)
     os.environ.setdefault("AGENTENGINE_UI_DIR", str(agent_path / ".agentengine" / "ui"))
-    ui_dir = Path(os.environ["AGENTENGINE_UI_DIR"])
-
-    # `agentengine web` 应该默认提供跨重启续聊能力。ADK 的内部 session
-    # 需要显式切到持久化 STM；显式用户配置仍然优先。
-    if result.type.value == "adk":
-        os.environ.setdefault("KSADK_STM_BACKEND", "sqlite")
-        os.environ.setdefault("KSADK_STM_PATH", str(ui_dir / "sessions.sqlite"))
+    _default_project_stm_if_unset(result.type.value, agent_path)
 
     try:
         print_info("初始化 Runner...")
@@ -102,6 +116,8 @@ def web(agent_dir: str, port: int, model: str, no_open: bool):
 
     try:
         runner.run_server(port=port)
+    except KeyboardInterrupt:
+        raise SystemExit(0)
     except Exception as e:
         print_exception("统一 Web UI 启动失败", e)
         raise SystemExit(1)

@@ -256,6 +256,7 @@
 | `KSADK_LTM_SCENE_ID` | LTM | 否 | `_sys_general` | 无 | 否 | 平台 / 开发者 | 否 | LTM scene id；新版记忆库保存必传，未设置时使用通用场景 `_sys_general`。 |
 | `KSADK_LTM_APP_NAME` | LTM | 否 | 未设置 | 无 | 否 | 开发者 | 否 | LTM application name 覆盖。 |
 | `KSADK_LTM_TOP_K` | LTM | 否 | `5` | 无 | 否 | 开发者 | 否 | LTM 返回条数。 |
+| `KSADK_LTM_AUTO_SAVE` | Conversations runtime | 否 | SDK LTM 已绑定时为 `true` | 无 | 否 | 平台 / 开发者 | 否 | 是否在每轮完成后 best-effort 镜像 user/assistant 文本到记忆库。只接受布尔语义：`true/false`、`1/0`、`on/off`。 |
 | `KSADK_LTM_AMBIENT_ENABLED` | Conversations runtime | 否 | `true` | 无 | 否 | 平台 / 开发者 | 否 | 是否允许 runtime 自动加载长期记忆上下文。 |
 | `KSADK_LTM_AMBIENT_POLICY` | Conversations runtime | 否 | `on_demand` | 无 | 否 | 平台 / 开发者 | 否 | 长期记忆 ambient context 策略：`on_demand/always/disabled`。 |
 | `MEM0_API_KEY` | OpenClaw memory backend | 条件必传 | 未设置 | 无 | 是 | 平台 Secret | 否 | 选择 `mem0` memory backend manifest 时需要。 |

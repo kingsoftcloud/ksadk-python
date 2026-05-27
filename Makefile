@@ -1,7 +1,7 @@
 # AgentEngine Makefile
 # 用于构建 Web UI 和管理项目
 
-.PHONY: help install build-webui sync-static clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size docs-check-wiki docs-prepare-source docs-docker-build docs-docker-push docs-helm-lint docs-helm-template docs-deploy docs-deploy-all docs-status docs-logs build-frontend build-wheel build-all clean-frontend
+.PHONY: help install build-webui sync-static clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size docs-check-wiki docs-prepare-source docs-docker-build docs-docker-push docs-helm-lint docs-helm-template docs-deploy docs-deploy-all docs-status docs-logs sync-hosted-ui build-frontend build-wheel build-all clean-frontend
 
 # 默认目标
 help:
@@ -40,8 +40,8 @@ help:
 	@echo ""
 	@echo "  \033[1;32mOpenClaw 镜像:\033[0m"
 	@echo "    make openclaw-build         构建 OpenClaw 镜像 (默认国内源)"
-	@echo "    make openclaw-push          构建 + 推送到 KCR (默认 :2026.5.20)"
-	@echo "    make openclaw-push OPENCLAW_TAG=2026.5.20 OPENCLAW_PRESET_PLUGINS_ALLOWLIST=wps-xiezuo"
+	@echo "    make openclaw-push          构建 + 推送到 KCR (默认 :2026.5.22)"
+	@echo "    make openclaw-push OPENCLAW_TAG=2026.5.22 OPENCLAW_PRESET_PLUGINS_ALLOWLIST=wps-xiezuo"
 	@echo "    make openclaw-build OPENCLAW_PYPI_INDEX_URL=https://pypi.org/simple  # 海外源"
 	@echo "    make openclaw-size          查看镜像大小"
 	@echo ""
@@ -397,9 +397,9 @@ offline-current: build
 OPENCLAW_IMAGE := hub.kce.ksyun.com/agentengine-public/openclaw
 OPENCLAW_VPC_REGISTRY ?= hub-vpc-cn-beijing-6.kce.ksyun.com
 OPENCLAW_VPC_IMAGE ?= $(subst hub.kce.ksyun.com,$(OPENCLAW_VPC_REGISTRY),$(OPENCLAW_IMAGE))
-OPENCLAW_TAG ?= 2026.5.20
+OPENCLAW_TAG ?= 2026.5.22
 OPENCLAW_CONTEXT := .
-OPENCLAW_BASE_IMAGE ?= ghcr.io/openclaw/openclaw:2026.5.20-slim@sha256:db199be23add581ef18ca8c8a866af84db13586d5bfcd566c8ac73d8d106eebb
+OPENCLAW_BASE_IMAGE ?= ghcr.io/openclaw/openclaw:2026.5.22-slim@sha256:d35b8b681c223a85027502c7a82999aa772d6a09e1b28903951cac7fc27efed5
 OPENCLAW_PRESET_PLUGINS_ALLOWLIST ?=
 OPENCLAW_PYPI_INDEX_URL ?= https://mirrors.aliyun.com/pypi/simple
 OPENCLAW_NPM_REGISTRY ?= https://registry.npmmirror.com
@@ -636,8 +636,26 @@ docs-logs:
 NODE_DIR := ksadk/server/web-ui
 STATIC_DIR := ksadk/server/static
 HOSTED_DIR := ksadk/server/web-ui/dist-hosted
+HOSTED_UI_SOURCE_DIR ?= ../agentengine-hosted-ui
 
-build-frontend:
+sync-hosted-ui:
+	@if [ ! -d "$(HOSTED_UI_SOURCE_DIR)" ]; then \
+		echo "ERROR: HOSTED_UI_SOURCE_DIR not found: $(HOSTED_UI_SOURCE_DIR)"; \
+		exit 1; \
+	fi
+	@echo "Sync Hosted UI source into embedded KsADK web-ui"
+	rsync -a --delete $(HOSTED_UI_SOURCE_DIR)/src/ $(NODE_DIR)/src/
+	rsync -a --delete \
+		--exclude='makefile-contract.test.mjs' \
+		--exclude='helm-contract.test.mjs' \
+		--exclude='sync-static.test.mjs' \
+		--exclude='hosted-ui-sync.test.mjs' \
+		$(HOSTED_UI_SOURCE_DIR)/tests/ $(NODE_DIR)/tests/
+	rsync -a --delete $(HOSTED_UI_SOURCE_DIR)/public/ $(NODE_DIR)/public/
+	rsync -a $(HOSTED_UI_SOURCE_DIR)/package.json $(HOSTED_UI_SOURCE_DIR)/package-lock.json $(NODE_DIR)/
+	rsync -a $(HOSTED_UI_SOURCE_DIR)/index.html $(HOSTED_UI_SOURCE_DIR)/vite.config.ts $(HOSTED_UI_SOURCE_DIR)/tsconfig*.json $(HOSTED_UI_SOURCE_DIR)/tailwind.config.ts $(HOSTED_UI_SOURCE_DIR)/postcss.config.js $(HOSTED_UI_SOURCE_DIR)/components.json $(HOSTED_UI_SOURCE_DIR)/eslint.config.js $(NODE_DIR)/
+
+build-frontend: sync-hosted-ui
 	cd $(NODE_DIR) && npm ci && npm run build:all
 
 build-wheel: build-frontend

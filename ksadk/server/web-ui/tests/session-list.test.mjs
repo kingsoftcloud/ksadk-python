@@ -52,11 +52,46 @@ test('session list utils search sessions and pin active runs first', async () =>
       },
     ],
     '',
+    { now: Date.parse('2026-05-05T09:01:00Z') },
   );
 
   assert.deepEqual(
     sorted.map((session) => session.SessionId),
     ['sess-old-running', 'sess-new-idle'],
+  );
+});
+
+test('session list utils do not pin stale in-progress sessions', async () => {
+  const sessionList = await loadSessionListUtils();
+
+  assert.ok(sessionList, 'expected session list helpers to exist');
+  const now = Date.parse('2026-05-27T00:20:00Z');
+  const sorted = sessionList.normalizeSidebarSessions(
+    [
+      {
+        SessionId: 'sess-stale-running',
+        Title: '旧运行',
+        ActiveRunStatus: 'in_progress',
+        UpdatedAt: '2026-05-27T00:10:00Z',
+      },
+      {
+        SessionId: 'sess-recent-idle',
+        Title: '新会话',
+        ActiveRunStatus: 'completed',
+        UpdatedAt: '2026-05-27T00:19:00Z',
+      },
+    ],
+    '',
+    { now, activeStaleAfterMs: 5 * 60 * 1000 },
+  );
+
+  assert.deepEqual(
+    sorted.map((session) => session.SessionId),
+    ['sess-recent-idle', 'sess-stale-running'],
+  );
+  assert.equal(
+    sessionList.resolveCompactSessionMeta(sorted[1], { now, activeStaleAfterMs: 5 * 60 * 1000 }).running,
+    false,
   );
 });
 
@@ -83,11 +118,12 @@ test('session list utils expose compact sidebar status labels', async () => {
   const sessionList = await loadSessionListUtils();
 
   assert.ok(sessionList, 'expected session list helpers to exist');
+  const now = Date.parse('2026-05-07T08:46:00Z');
   assert.deepEqual(
     sessionList.resolveCompactSessionMeta({
       ActiveRunStatus: 'in_progress',
       UpdatedAt: '2026-05-07T08:45:00Z',
-    }),
+    }, { now }),
     {
       running: true,
       label: '',

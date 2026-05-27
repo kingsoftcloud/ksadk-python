@@ -1,9 +1,12 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { useUIStore } from '../../stores/ui.js';
 import { useStreamingStore } from '../../stores/streaming.js';
 import { useMessageStore } from '../../stores/message.js';
+import { useSessionStore } from '../../stores/session.js';
+import { useModelStore } from '../../stores/model.js';
 import { ChatMessageList } from './ChatMessageList';
 import { AttachmentPreview } from './AttachmentPreview';
+import { buildComposerContextIndicator } from '../../utils/context.js';
 import type { Message, MessageAttachment } from './types';
 
 type ConnectedMessageListProps = {
@@ -26,11 +29,28 @@ export function ConnectedMessageList({
   onCancelRemote,
 }: ConnectedMessageListProps) {
   const messages = useMessageStore(s => s.messages);
-  const isStreaming = useStreamingStore(s => s.isStreaming);
-  const activity = useStreamingStore(s => s.activity);
+  const currentSessionId = useSessionStore(s => s.currentSessionId);
+  const isStreaming = useStreamingStore(s => Boolean(s.getSessionActivity(currentSessionId) && s.isSessionStreaming(currentSessionId)));
+  const activity = useStreamingStore(s => s.getSessionActivity(currentSessionId));
+  const input = useUIStore(s => s.input);
+  const availableModels = useModelStore(s => s.availableModels);
+  const selectedModel = useModelStore(s => s.selectedModel);
   const previewAttachment = useUIStore(s => s.previewAttachment);
   const previewImageSize = useUIStore(s => s.previewImageSize);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const selectedModelMetadata = useMemo(
+    () => availableModels.find((model) => model.id === selectedModel) || null,
+    [availableModels, selectedModel],
+  );
+  const contextIndicator = useMemo(
+    () =>
+      buildComposerContextIndicator({
+        messages,
+        draftInput: input,
+        selectedModel: selectedModelMetadata,
+      }),
+    [input, messages, selectedModelMetadata],
+  );
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -55,6 +75,7 @@ export function ConnectedMessageList({
         isMobile={isMobile}
         isStreaming={isStreaming}
         activity={activity}
+        contextIndicator={contextIndicator}
         messages={messages}
         onDeleteFeedback={onDeleteFeedback}
         onOpenAttachmentPreview={openAttachmentPreview}

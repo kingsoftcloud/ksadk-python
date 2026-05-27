@@ -23,16 +23,6 @@ function eventType(event) {
   return String(event?.EventType || event?.event_type || '').trim();
 }
 
-function hasAssistantOutputForInvocation(events, invocationId) {
-  return events.some((event) => {
-    if (parseInvocationId(event) !== invocationId) {
-      return false;
-    }
-    const type = eventType(event);
-    return type === 'assistant_message' || type === 'reasoning' || type === 'tool_call';
-  });
-}
-
 export function findActiveRunIds(events = [], options = {}) {
   const latestStatusByInvocation = new Map();
   const latestTimestampByInvocation = new Map();
@@ -62,7 +52,7 @@ export function findActiveRunIds(events = [], options = {}) {
     .filter(([invocationId, status]) => {
       const latestTimestamp = latestTimestampByInvocation.get(invocationId) || 0;
       const stale = latestTimestamp > 0 && now - latestTimestamp > staleAfterMs;
-      return status === 'in_progress' && !stale && !hasAssistantOutputForInvocation(normalizedEvents, invocationId);
+      return status === 'in_progress' && !stale;
     })
     .map(([invocationId]) => invocationId);
 }

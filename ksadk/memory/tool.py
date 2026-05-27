@@ -48,7 +48,12 @@ def save_memory(content: str) -> str:
                 "runner_type": context.runner_type,
             },
         )
-        return "记忆已保存。" if ok else "记忆保存失败。"
+        if ok:
+            return "记忆已保存。"
+
+        backend = getattr(service, "_backend", None)
+        last_error = str(getattr(backend, "last_error", "") or "").strip()
+        return f"记忆保存失败: {last_error}" if last_error else "记忆保存失败。"
     except Exception as exc:
         logger.error("save_memory failed: %s", exc)
         return f"记忆保存失败: {exc}"

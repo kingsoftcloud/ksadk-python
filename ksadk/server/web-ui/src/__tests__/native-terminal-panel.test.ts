@@ -28,4 +28,12 @@ describe('Native terminal panel bundle boundaries', () => {
     expect(terminalPanel).not.toContain('setFullscreen');
     expect(terminalPanel).not.toContain('aria-label={fullscreen');
   });
+
+  it('keeps remote TUI sessions alive and filters terminal color responses', () => {
+    const terminalPanel = readSource('components/native/NativeTerminalPanel.tsx');
+
+    expect(terminalPanel).toContain('sanitizeTerminalInputForPty');
+    expect(terminalPanel).toContain("type: 'ping'");
+    expect(terminalPanel).toContain('TERMINAL_KEEPALIVE_INTERVAL_MS');
+  });
 });

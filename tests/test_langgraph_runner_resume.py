@@ -340,10 +340,11 @@ async def test_invoke_with_remote_image_attachment_preserves_image_url_for_multi
 
 
 @pytest.mark.asyncio
-async def test_invoke_with_image_attachment_without_image_capability_keeps_text_content(tmp_path):
+async def test_invoke_with_image_attachment_keeps_image_block_even_when_catalog_is_stale(tmp_path):
     runner = _make_runner()
     image_path = tmp_path / "diagram.png"
-    image_path.write_bytes(b"\x89PNG\r\n\x1a\nfake-image")
+    image_bytes = b"\x89PNG\r\n\x1a\nfake-image"
+    image_path.write_bytes(image_bytes)
 
     await runner.invoke(
         {
@@ -366,7 +367,12 @@ async def test_invoke_with_image_attachment_without_image_capability_keeps_text_
     )
 
     content = runner._agent.last_ainvoke_state["messages"][-1].content
-    assert content == "请分析这张图片"
+    assert isinstance(content, list)
+    assert content[0] == {"type": "text", "text": "请分析这张图片"}
+    assert content[1]["type"] == "image_url"
+    assert content[1]["image_url"]["url"] == (
+        "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")
+    )
 
 
 def test_extract_output_prefers_explicit_output_over_messages_tail():

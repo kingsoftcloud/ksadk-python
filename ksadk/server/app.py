@@ -26,6 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import ksadk.conversations as conversation
+from ksadk.conversations.attachments import compact_attachment_result_for_session
 from ksadk.conversations.session_title import (
     HEURISTIC_SESSION_TITLE_SOURCE,
     build_heuristic_title,
@@ -59,9 +60,93 @@ logger = logging.getLogger(__name__)
 # Global Runner instance
 runner: BaseRunner = None
 _runner_loaded = False
+_DETACHED_STREAMS: set[asyncio.Task[Any]] = set()
+_RUN_TERMINAL_STATUSES = {
+    "completed",
+    "failed",
+    "error",
+    "cancelled",
+    "canceled",
+    "aborted",
+    "interrupted",
+}
+
+
+class _DetachedSSEStream:
+    _MAX_BACKLOG_CHUNKS = 256
+
+    def __init__(self, source: AsyncIterator[str]):
+        self._source = source
+        self._subscribers: set[asyncio.Queue[str | None]] = set()
+        self._backlog: list[str] = []
+        self._done = False
+        self._task = asyncio.create_task(self._consume())
+        _DETACHED_STREAMS.add(self._task)
+        self._task.add_done_callback(_DETACHED_STREAMS.discard)
+
+    async def _consume(self) -> None:
+        try:
+            async for chunk in self._source:
+                self._backlog.append(chunk)
+                if len(self._backlog) > self._MAX_BACKLOG_CHUNKS:
+                    self._backlog = self._backlog[-self._MAX_BACKLOG_CHUNKS :]
+                subscribers = list(self._subscribers)
+                if not subscribers:
+                    continue
+                await asyncio.gather(
+                    *(subscriber.put(chunk) for subscriber in subscribers),
+                    return_exceptions=True,
+                )
+        except Exception:
+            logger.exception("Detached SSE stream failed")
+            raise
+        finally:
+            self._done = True
+            subscribers = list(self._subscribers)
+            if subscribers:
+                await asyncio.gather(
+                    *(subscriber.put(None) for subscriber in subscribers),
+                    return_exceptions=True,
+                )
+
+    def subscribe(self) -> asyncio.Queue[str | None]:
+        queue: asyncio.Queue[str | None] = asyncio.Queue()
+        for chunk in self._backlog:
+            queue.put_nowait(chunk)
+        if self._done:
+            queue.put_nowait(None)
+        else:
+            self._subscribers.add(queue)
+        return queue
+
+    def unsubscribe(self, queue: asyncio.Queue[str | None]) -> None:
+        self._subscribers.discard(queue)
+
+    async def iter_for_client(self) -> AsyncIterator[str]:
+        queue = self.subscribe()
+        try:
+            while True:
+                chunk = await queue.get()
+                if chunk is None:
+                    break
+                yield chunk
+        finally:
+            self.unsubscribe(queue)
+
+
+def _detached_streaming_response(source: AsyncIterator[str]) -> StreamingResponse:
+    detached = _DetachedSSEStream(source)
+    return StreamingResponse(detached.iter_for_client(), media_type="text/event-stream")
 
 
 async def _shutdown_runner_resources():
+    pending_streams = list(_DETACHED_STREAMS)
+    for task in pending_streams:
+        task.cancel()
+    if pending_streams:
+        await asyncio.gather(*pending_streams, return_exceptions=True)
+    _DETACHED_STREAMS.clear()
+
     active_runner = runner
     if active_runner is None:
         return
@@ -435,6 +520,29 @@ async def _ensure_session(agent_id: str, user_id: str, session_id: Optional[str]
     return await _hydrate_session(created) or created
 
 
+def _sanitize_session_state_for_action(state: Mapping[str, Any] | None) -> dict[str, Any]:
+    sanitized = dict(state or {})
+    attachment_context = sanitized.get(conversation.runtime.ATTACHMENT_CONTEXT_STATE_KEY)
+    if not isinstance(attachment_context, Mapping):
+        return sanitized
+
+    attachments = [
+        conversation.compact_attachment_for_session(item)
+        for item in attachment_context.get("attachments") or []
+        if isinstance(item, dict)
+    ]
+    attachment_results = [
+        compact_attachment_result_for_session(item)
+        for item in attachment_context.get("attachment_results") or []
+        if isinstance(item, dict)
+    ]
+    sanitized[conversation.runtime.ATTACHMENT_CONTEXT_STATE_KEY] = {
+        "attachments": attachments,
+        "attachment_results": attachment_results,
+    }
+    return sanitized
+
+
 def _request_id() -> str:
     return f"req-{uuid.uuid4().hex[:12]}"
 
@@ -533,6 +641,20 @@ class RunAgentActionRequest(BaseModel):
     ModelOptions: Optional[Dict[str, Any]] = None
     ResponsesInput: Optional[Any] = None
     PreviousResponseId: Optional[str] = None
+
+
+class ResponseFeedbackRefActionRequest(BaseModel):
+    AgentId: str
+    SessionId: str
+    ResponseId: str
+
+
+class UpsertResponseFeedbackActionRequest(ResponseFeedbackRefActionRequest):
+    Rating: str
+    Comment: Optional[str] = ""
+    EventId: Optional[str] = None
+    TraceId: Optional[str] = None
+    RootSpanId: Optional[str] = None
 
 
 class ResponsesRequest(BaseModel):
@@ -638,7 +760,7 @@ async def _session_to_action_payload(session: Session) -> dict[str, Any]:
         "Summary": session.summary,
         "FirstPrompt": session.first_prompt,
         "LastPrompt": session.last_prompt,
-        "State": session.state,
+        "State": _sanitize_session_state_for_action(session.state),
         "CreatedAt": session.created_at,
         "UpdatedAt": session.updated_at,
         "Version": session.version,
@@ -672,6 +794,134 @@ def _event_to_action_payload(event: SessionEvent) -> dict[str, Any]:
     return payload
 
 
+def _feedback_state_key(response_id: str) -> str:
+    return str(response_id or "").strip()
+
+
+def _feedback_payload_from_state(item: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(item, Mapping):
+        return None
+    rating = str(item.get("Rating") or item.get("rating") or "").strip().lower()
+    if rating not in {"up", "down"}:
+        return None
+    return {
+        "AgentId": str(item.get("AgentId") or item.get("agent_id") or ""),
+        "SessionId": str(item.get("SessionId") or item.get("session_id") or ""),
+        "ResponseId": str(item.get("ResponseId") or item.get("response_id") or ""),
+        "EventId": str(item.get("EventId") or item.get("event_id") or ""),
+        "Rating": rating,
+        "Comment": str(item.get("Comment") or item.get("comment") or ""),
+        "TraceId": str(item.get("TraceId") or item.get("trace_id") or ""),
+        "RootSpanId": str(item.get("RootSpanId") or item.get("root_span_id") or ""),
+        "CreatedAt": str(item.get("CreatedAt") or item.get("created_at") or ""),
+        "UpdatedAt": str(item.get("UpdatedAt") or item.get("updated_at") or ""),
+    }
+
+
+async def _find_feedback_assistant_event(
+    *,
+    session_id: str,
+    response_id: str,
+    event_id: str | None = None,
+) -> SessionEvent | None:
+    events = await resolve_session_service().get_events(session_id)
+    normalized_event_id = str(event_id or "").strip()
+    normalized_response_id = str(response_id or "").strip()
+    for event in reversed(events):
+        if normalized_event_id and event.id != normalized_event_id:
+            continue
+        metadata = event.metadata or {}
+        if normalized_response_id and str(metadata.get("response_id") or "") != normalized_response_id:
+            continue
+        event_type = conversation.canonical_event_type(
+            event.event_type,
+            author=event.author,
+            role=str((event.content or {}).get("role") or ""),
+        )
+        if event_type == "assistant_message":
+            return event
+    return None
+
+
+@app.post("/agentengine/api/v1/GetResponseFeedback")
+async def get_response_feedback_action(request: ResponseFeedbackRefActionRequest):
+    session = await resolve_session_service().get_session(request.SessionId)
+    if not session or session.agent_id != request.AgentId:
+        return _action_response("GetResponseFeedback", {"Feedback": None})
+    feedbacks = session.state.get("__ksadk_response_feedback__")
+    feedback = None
+    if isinstance(feedbacks, Mapping):
+        feedback = _feedback_payload_from_state(feedbacks.get(_feedback_state_key(request.ResponseId)))
+    return _action_response("GetResponseFeedback", {"Feedback": feedback})
+
+
+@app.post("/agentengine/api/v1/UpsertResponseFeedback")
+async def upsert_response_feedback_action(request: UpsertResponseFeedbackActionRequest):
+    rating = str(request.Rating or "").strip().lower()
+    if rating not in {"up", "down"}:
+        raise HTTPException(status_code=400, detail="Feedback rating must be up or down")
+
+    service = resolve_session_service()
+    session = await service.get_session(request.SessionId)
+    if not session or session.agent_id != request.AgentId:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    assistant_event = await _find_feedback_assistant_event(
+        session_id=request.SessionId,
+        response_id=request.ResponseId,
+        event_id=request.EventId,
+    )
+    if assistant_event is None:
+        raise HTTPException(status_code=404, detail="Assistant response not found")
+
+    now = str(time.time())
+    existing_feedbacks = session.state.get("__ksadk_response_feedback__")
+    feedbacks = dict(existing_feedbacks) if isinstance(existing_feedbacks, Mapping) else {}
+    existing = _feedback_payload_from_state(feedbacks.get(_feedback_state_key(request.ResponseId))) or {}
+    metadata = assistant_event.metadata or {}
+    feedback = {
+        "AgentId": request.AgentId,
+        "SessionId": request.SessionId,
+        "ResponseId": request.ResponseId,
+        "EventId": request.EventId or assistant_event.id,
+        "Rating": rating,
+        "Comment": request.Comment or "",
+        "TraceId": request.TraceId or str(metadata.get("trace_id") or ""),
+        "RootSpanId": request.RootSpanId or str(metadata.get("root_span_id") or ""),
+        "CreatedAt": existing.get("CreatedAt") or now,
+        "UpdatedAt": now,
+    }
+    feedbacks[_feedback_state_key(request.ResponseId)] = feedback
+    await service.update_state(
+        agent_id=session.agent_id,
+        user_id=session.user_id,
+        session_id=session.id,
+        scope="session",
+        state_delta={"__ksadk_response_feedback__": feedbacks},
+    )
+    return _action_response("UpsertResponseFeedback", {"Feedback": feedback})
+
+
+@app.post("/agentengine/api/v1/DeleteResponseFeedback")
+async def delete_response_feedback_action(request: ResponseFeedbackRefActionRequest):
+    service = resolve_session_service()
+    session = await service.get_session(request.SessionId)
+    if not session or session.agent_id != request.AgentId:
+        return _action_response("DeleteResponseFeedback", {"Deleted": False})
+    existing_feedbacks = session.state.get("__ksadk_response_feedback__")
+    feedbacks = dict(existing_feedbacks) if isinstance(existing_feedbacks, Mapping) else {}
+    deleted = feedbacks.pop(_feedback_state_key(request.ResponseId), None) is not None
+    if deleted:
+        await service.update_state(
+            agent_id=session.agent_id,
+            user_id=session.user_id,
+            session_id=session.id,
+            scope="session",
+            state_delta={"__ksadk_response_feedback__": feedbacks},
+        )
+    return _action_response("DeleteResponseFeedback", {"Deleted": deleted})
+
+
 @app.post("/agentengine/api/v1/GetAgentUiBootstrap")
 async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
     agent_id = request.AgentId or (runner.detection_result.name if runner else "default-agent")
@@ -697,7 +947,12 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
                 "Approval": True,
                 "Thinking": True,
                 "StopRun": True,
-                "ResumeRun": False,
+                "ResumeRun": True,
+                "RunLifecycle": {
+                    "Enabled": True,
+                    "Resume": True,
+                    "Abort": True,
+                },
                 "MCP": False,
                 "HostedRuntime": False,
                 "NativeTerminal": _build_native_terminal_capability(framework),
@@ -762,6 +1017,55 @@ async def list_session_events_action(request: SessionIdRequest):
         "ListSessionEvents",
         {"Events": [_event_to_action_payload(event) for event in events]},
     )
+
+
+@app.get("/agentengine/api/v1/SubscribeRunEvents", include_in_schema=False)
+async def subscribe_run_events_action(
+    SessionId: str = Query(...),
+    InvocationId: str = Query(...),
+    AfterSeqId: int = Query(0),
+):
+    session_id = str(SessionId or "").strip()
+    invocation_id = str(InvocationId or "").strip()
+    if not session_id or not invocation_id:
+        raise HTTPException(status_code=400, detail="SessionId and InvocationId are required")
+
+    async def event_generator() -> AsyncIterator[str]:
+        service = resolve_session_service()
+        last_seq_id = int(AfterSeqId or 0)
+        deadline = time.monotonic() + 5 * 60
+        while True:
+            events = await service.get_events(session_id)
+            matched_events = [
+                event
+                for event in events
+                if event.seq_id > last_seq_id and event.invocation_id == invocation_id
+            ]
+            for event in matched_events:
+                last_seq_id = max(last_seq_id, event.seq_id)
+                payload = _event_to_action_payload(event)
+                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                if (
+                    event.event_type == "run_status"
+                    and str((event.content or {}).get("status") or "").strip().lower()
+                    in _RUN_TERMINAL_STATUSES
+                ):
+                    yield "data: [DONE]\n\n"
+                    return
+
+            latest_status = None
+            for event in events:
+                if event.invocation_id != invocation_id or event.event_type != "run_status":
+                    continue
+                latest_status = str((event.content or {}).get("status") or "").strip().lower()
+            if latest_status in _RUN_TERMINAL_STATUSES:
+                yield "data: [DONE]\n\n"
+                return
+            if time.monotonic() > deadline:
+                return
+            await asyncio.sleep(0.25)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 @app.post("/agentengine/api/v1/UploadFile")
 async def upload_file_action(file: UploadFile = File(...)):
     uploads_dir = _resolve_uploads_dir()
@@ -1093,7 +1397,7 @@ async def run_agent_action(request: RunAgentActionRequest):
                 user=run_user_id,
             )
             return await chat_completions(completion_request)
-        return StreamingResponse(
+        return _detached_streaming_response(
             conversation.stream_responses_conversation_turn(
                 runner=_resolve_active_runner(),
                 agent_id=request.AgentId,
@@ -1107,8 +1411,7 @@ async def run_agent_action(request: RunAgentActionRequest):
                 resume_input=resume_input,
                 prepare_runner=_prepare_runner_for_model,
                 session_service_provider=resolve_session_service,
-            ),
-            media_type="text/event-stream",
+            )
         )
 
     responses_response_id = (

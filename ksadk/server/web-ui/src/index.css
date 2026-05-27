@@ -96,6 +96,25 @@
   background-color: rgba(156, 163, 175, 0.5);
 }
 
+.token-count-pulse {
+  animation: token-count-pulse 260ms ease-out;
+}
+
+@keyframes token-count-pulse {
+  0% {
+    opacity: 0.45;
+    transform: translateY(1px);
+  }
+  55% {
+    opacity: 0.95;
+    transform: translateY(-0.5px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .prose {
   font-size: 15px;
   line-height: 1.8;

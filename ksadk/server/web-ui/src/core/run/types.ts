@@ -7,27 +7,28 @@ export type RunStage =
   | 'cancelled';
 
 export type RunEvent =
-  | { type: 'stage_changed'; stage: RunStage }
+  | { type: 'stage_changed'; stage: RunStage; sessionId?: string | null }
   | {
       type: 'activity';
+      sessionId?: string | null;
       phase: string;
       status?: 'connecting' | 'running' | 'waiting' | 'stopped' | 'completed' | 'failed';
       detail?: string;
       countEvent?: boolean;
     }
-  | { type: 'user_message_added'; messageId: string }
-  | { type: 'assistant_message_created'; messageId: string }
-  | { type: 'text_delta'; messageId: string; delta: string }
-  | { type: 'text_final'; messageId: string; text: string }
-  | { type: 'reasoning_delta'; messageId: string; delta: string }
-  | { type: 'tool_upsert'; messageId: string; name: string; args: string; status: string; extra?: Record<string, unknown> }
-  | { type: 'tool_result'; messageId: string; name: string; output: string }
-  | { type: 'compaction'; phase: string; trigger?: string; compactedUntilSeqId?: number }
-  | { type: 'system_message'; content: string }
-  | { type: 'stream_ended' }
-  | { type: 'error'; error: Error }
-  | { type: 'terminal'; status: string }
-  | { type: 'stream_event'; event: import('../../types/session-events.js').SessionEventRecord };
+  | { type: 'user_message_added'; messageId: string; sessionId?: string | null }
+  | { type: 'assistant_message_created'; messageId: string; sessionId?: string | null }
+  | { type: 'text_delta'; messageId: string; delta: string; sessionId?: string | null }
+  | { type: 'text_final'; messageId: string; text: string; sessionId?: string | null }
+  | { type: 'reasoning_delta'; messageId: string; delta: string; sessionId?: string | null }
+  | { type: 'tool_upsert'; messageId: string; name: string; args: string; status: string; extra?: Record<string, unknown>; sessionId?: string | null }
+  | { type: 'tool_result'; messageId: string; name: string; output: string; sessionId?: string | null }
+  | { type: 'compaction'; phase: string; trigger?: string; compactedUntilSeqId?: number; sessionId?: string | null }
+  | { type: 'system_message'; content: string; sessionId?: string | null }
+  | { type: 'stream_ended'; sessionId?: string | null }
+  | { type: 'error'; error: Error; sessionId?: string | null }
+  | { type: 'terminal'; status: string; sessionId?: string | null }
+  | { type: 'stream_event'; event: import('../../types/session-events.js').SessionEventRecord; sessionId?: string | null };
 
 export type RunEngineConfig = {
   agentId: string;
@@ -47,8 +48,9 @@ export interface RunEngine {
     sessionId?: string | null;
     onSessionCreated?: (sessionId: string) => void;
     onSessionUpsert?: (sessionId: string) => void;
-    onSettled?: () => void;
+    onSettled?: (sessionId: string | null) => void;
   }): boolean;
+  disconnect(): void;
   stop(): void;
   cancelRemote(invocationId: string): Promise<void>;
   resumeRun(params: {

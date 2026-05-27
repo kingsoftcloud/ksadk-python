@@ -268,13 +268,14 @@ class TestSdkLTMBackend:
         call_args = mock_client.call.call_args
         assert call_args[0][0] == "CreateMemorySdk"
         params = call_args[0][1]
-        assert params["MemoryCollectionId"] == "test_ns"
-        assert params["AgentUserId"] == "u1"
+        assert params["Namespace"] == "test_ns"
+        assert params["UserId"] == "u1"
         assert params["AgentId"] == "agent-1"
         assert params["SessionId"] == "sess-1"
         assert params["SceneId"] == "_sys_general"
-        assert "Namespace" not in params
-        assert "UserId" not in params
+        assert params["DataType"] == "conversation"
+        assert "MemoryCollectionId" not in params
+        assert "AgentUserId" not in params
 
     def test_save_data_conversation_format(self):
         """验证 Data 字段为 {"Conversation": [...]} 结构"""
@@ -369,13 +370,13 @@ class TestSdkLTMBackend:
         call_args = mock_client.call.call_args
         assert call_args[0][0] == "QueryMemorySdk"
         params = call_args[0][1]
-        assert params["MemoryCollectionId"] == "test_ns"
-        assert params["AgentUserId"] == "u1"
+        assert params["Namespace"] == "test_ns"
+        assert params["UserId"] == "u1"
         assert params["SceneId"] == "_sys_general"
         assert params["Query"] == "query"
         assert params["Limit"] == 3
-        assert "Namespace" not in params
-        assert "UserId" not in params
+        assert "MemoryCollectionId" not in params
+        assert "AgentUserId" not in params
 
     def test_search_exception_returns_empty(self):
         backend = self._make_backend()
@@ -394,7 +395,7 @@ class TestSdkLTMBackend:
             backend.search_memory("u1", "query")
 
         params = mock_client.call.call_args[0][1]
-        assert params["MemoryCollectionId"] == "fallback_idx"
+        assert params["Namespace"] == "fallback_idx"
 
     def test_optional_search_params(self):
         backend = self._make_backend(scene_id="scene_1")
