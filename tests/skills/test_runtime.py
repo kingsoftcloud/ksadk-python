@@ -137,6 +137,48 @@ def test_e2b_backend_uses_native_env_and_always_kills(monkeypatch):
     assert calls[-1] == ("kill", "sbx-123")
 
 
+def test_e2b_backend_preserves_public_skill_space_env(monkeypatch):
+    monkeypatch.setenv("KSADK_PUBLIC_SKILL_SPACE_IDS", "ss-public")
+    calls: list[tuple[str, object]] = []
+
+    class FakeResult:
+        stdout = "ok\n"
+        stderr = ""
+        exit_code = 0
+
+    class FakeCommands:
+        def run(self, command: str, **kwargs):
+            return FakeResult()
+
+    class FakeFiles:
+        def write(self, path, data):
+            pass
+
+    class FakeSandbox:
+        sandbox_id = "sbx-123"
+
+        def __init__(self):
+            self.files = FakeFiles()
+            self.commands = FakeCommands()
+
+        @classmethod
+        def create(cls, **kwargs):
+            calls.append(("create", kwargs))
+            return cls()
+
+        def kill(self):
+            pass
+
+    backend = E2BSkillRuntimeBackend(sandbox_cls=FakeSandbox, template_id="tpl-1")
+
+    backend.run_workflow("build artifact", skill_space_ids=["ss-user"], session_id="sess-1")
+
+    envs = calls[0][1]["envs"]
+    assert envs["KSADK_SKILL_SPACE_IDS"] == "ss-user"
+    assert envs["SKILL_SPACE_ID"] == "ss-user"
+    assert envs["KSADK_PUBLIC_SKILL_SPACE_IDS"] == "ss-public"
+
+
 def test_e2b_backend_redacts_secret_from_errors(monkeypatch):
     monkeypatch.setenv("E2B_API_KEY", "super-secret-token")
     monkeypatch.setenv("KSADK_SKILL_SERVICE_TOKEN", "skill-service-token")

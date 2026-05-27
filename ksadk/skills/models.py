@@ -49,11 +49,11 @@ class SkillRef:
 
     @property
     def cache_key(self) -> str:
-        return "__".join(
-            part.replace("/", "_").replace(":", "_")
-            for part in (self.skill_id or self.name, self.version_id or self.version or "default")
-            if part
-        )
+        identity = self.skill_id or self.name
+        version_key = self.version_id or self.version
+        if not version_key and self.content_hash:
+            version_key = self.content_hash.value
+        return "__".join(part.replace("/", "_").replace(":", "_") for part in (identity, version_key) if part)
 
     @property
     def is_active(self) -> bool:

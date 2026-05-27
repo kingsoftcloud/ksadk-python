@@ -197,6 +197,7 @@
 | `KSADK_SKILL_RUNTIME_AGENT_PATH` | local_process backend | 条件必传 | SDK 内置 `ksadk/skills/runtime/agent.py` | 无 | 否 | 开发者 | 否 | 本地进程 backend 的 agent 路径。 |
 | `KSADK_SKILL_SERVICE_URL` | Runtime agent / Skill Service client | 条件必传 | 未设置 | 无 | 否 | Skill Service / 平台 | 否 | 配置后从 Skill Center 拉取技能。支持直连 REST 和 AICP KOP endpoint。 |
 | `KSADK_SKILL_SPACE_IDS` | Runner / Runtime agent | 条件必传 | 未设置 | `SKILL_SPACE_ID` | 否 | Agent 创建/更新 / 平台注入 | 否 | 逗号分隔 Skill Space id。 |
+| `KSADK_PUBLIC_SKILL_ALLOWLIST` | Runtime agent | 否 | 未设置 | 无 | 否 | 平台 / Skill Service | 否 | 逗号分隔 public skill 名称白名单；未设置时加载 public space 下全部 active skills。 |
 | `KSADK_PUBLIC_SKILL_SPACE_IDS` | Runner / Runtime agent | 否 | 未设置 | 无 | 否 | 平台 / Skill Service | 否 | 逗号分隔官方公共 Skill Space id，会追加在用户 space 之后。 |
 | `SKILL_SPACE_ID` | Runtime agent / 兼容 | 条件必传 | 未设置 | `KSADK_SKILL_SPACE_IDS` | 否 | 旧部署 / 单 space 注入 | 否 | 单 space 兼容变量。 |
 | `KSADK_SKILL_SERVICE_ACCOUNT_ID` | Skill Service client | 条件必传 | 未设置 | `KSYUN_ACCOUNT_ID` | 否 | 平台租户上下文 | 否 | 租户隔离 account id。 |
@@ -209,6 +210,7 @@
 | `KSADK_SKILL_MANIFEST_LIMIT` | ADK Runner | 否 | `30` | 无 | 否 | 平台 / 开发者 | 否 | 外层 Agent instruction 最多注入的远端 skill manifest 数量。 |
 | `KSADK_SKILL_MANIFEST_TIMEOUT` | Skill Service client | 否 | `5` | 无 | 否 | 平台 / 开发者 | 否 | 拉取远端 skill manifest 的超时秒数。 |
 | `KSADK_SELECTED_SKILL_NAMES` | Runtime agent | 否 | 未设置 | 无 | 否 | Runner / Runtime agent | 否 | `execute_skills` 选中的 skill 名称列表，Runtime agent 优先按它下载。 |
+| `KSADK_SKILL_ALLOW_HASH_MISMATCH` | Runtime agent / PackageStore | 否 | `false` | 无 | 否 | 调试 / 兼容旧包 | 否 | 允许 ContentHash 校验失败后以 unverified cache 加载旧 skill 包；生产不建议开启。 |
 | `KSADK_SKILL_CACHE_DIR` | Runtime agent / PackageStore | 否 | 系统临时目录下 `ksadk-skill-cache` | 无 | 否 | Runtime agent | 否 | Skill archive 下载与解压缓存。 |
 | `KSADK_SKILL_WORKDIR` | Runtime agent | 否 | 系统临时目录下 `ksadk-skill-workflow` | 无 | 否 | Runtime agent | 否 | workflow 工作目录。 |
 | `KSADK_SKILL_ARTIFACT_PROJECT` | Runtime agent | 否 | `ksadk-artifact` | 无 | 否 | Runtime agent | 否 | 最小 artifact workflow 项目目录名。 |
@@ -309,6 +311,8 @@
 | `CODE_PATH` | Runtime image | 否 | `/app/code` | 无 | 否 | Runtime 镜像 | 否 | 代码包解压/挂载目录。 |
 | `PIP_INDEX_URL` | 构建 / Runtime image | 否 | pip 默认 | `UV_INDEX_URL` | 否 | 开发者 / 平台 | 否 | Python 依赖安装源。 |
 | `UV_INDEX_URL` | 构建 / Runtime image | 否 | uv 默认 | `PIP_INDEX_URL` | 否 | 开发者 / 平台 | 否 | uv 依赖安装源。 |
+| `KSADK_BUILD_PIP_INSTALL_TIMEOUT_SECONDS` | Code Builder | 否 | `2700` | 无 | 否 | 构建环境 / 开发者 | 否 | 源码构建时 `pip install` 总超时秒数。 |
+| `KSADK_BUILD_ENABLE_ATTACHMENT_OCR` | Code Builder / Container Builder | 否 | `false` | 无 | 否 | 构建环境 / 开发者 | 否 | 是否把平台本地 OCR 依赖打进代码包。不开启不影响多模态模型直接消费 `input_image`。 |
 | `KSADK_RUNTIME_PORT` | Runtime image / CLI | 否 | `8080` | 无 | 否 | 平台 | 否 | 模板运行时 HTTP 端口。 |
 | `KSADK_PROJECT_DIR` | Sessions / Web | 否 | 当前工作目录 | 无 | 否 | 本地运行时 | 否 | 本地 session/workspace 状态 project root。 |
 | `KSADK_RESPONSES_SESSION_HEADER` | RemoteRunner | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 远端 Responses session 透传 header 名称。 |
@@ -503,6 +507,9 @@ Hermes / OpenClaw 有大量镜像启动和安全策略变量，本文只列常�
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `KSADK_ALLOWED_SUFFIXES` | builders | 否 | 代码常量 | 无 | 否 | SDK 内部 | 否 | 代码打包允许后缀集合。 |
 | `KSADK_ATTACHMENT_RUNTIME_REQUIREMENTS` | builders | 否 | 代码常量 | 无 | 否 | SDK 内部 | 否 | 附件运行时内置依赖集合。 |
+| `KSADK_ATTACHMENT_OCR_RUNTIME_REQUIREMENTS` | builders | 否 | 代码常量 | 无 | 否 | SDK 内部 | 否 | 附件 OCR 运行时内置依赖集合。 |
+| `KSADK_BUILD_ENABLE_ATTACHMENT_OCR` | builders | 否 | `false` | 无 | 否 | 构建环境 / 开发者 | 否 | 是否把平台本地 OCR 依赖打进代码包。 |
+| `KSADK_BUILD_PIP_INSTALL_TIMEOUT_SECONDS` | builders | 否 | `2700` | 无 | 否 | 构建环境 / 开发者 | 否 | 源码构建时 pip install 的超时秒数。 |
 | `KSADK_CORE_RUNTIME_REQUIREMENTS` | builders | 否 | 代码常量 | 无 | 否 | SDK 内部 | 否 | 核心运行时内置依赖集合。 |
 | `KSADK_RUNTIME_REQUIREMENTS` | builders | 否 | 代码常量 | 无 | 否 | SDK 内部 | 否 | 完整运行时内置依赖集合。 |
 | `KSADK_EVENTS_TABLE` | sessions | 否 | `ksadk_events` | 无 | 否 | SDK 内部 | 否 | 本地 SQLite events 表名。 |

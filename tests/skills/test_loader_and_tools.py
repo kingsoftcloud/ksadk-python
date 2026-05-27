@@ -105,6 +105,25 @@ def test_execute_skills_tool_maps_non_secret_ksyun_fallbacks(monkeypatch):
     assert "KSADK_SKILL_SERVICE_SECRET_KEY" not in env
 
 
+def test_execute_skills_tool_passes_public_skill_allowlist_to_runtime(monkeypatch):
+    monkeypatch.setenv("KSADK_PUBLIC_SKILL_ALLOWLIST", "pdf,weather")
+
+    class Backend:
+        def __init__(self):
+            self.calls = []
+
+        def run_workflow(self, workflow_prompt: str, **kwargs):
+            self.calls.append((workflow_prompt, kwargs))
+            return SkillRuntimeResult(exit_code=0)
+
+    backend = Backend()
+    tool = build_execute_skills_tool(backend=backend, skill_space_ids=["ss-1"], session_id="sess-1")
+
+    tool("build a page")
+
+    assert backend.calls[0][1]["env"]["KSADK_PUBLIC_SKILL_ALLOWLIST"] == "pdf,weather"
+
+
 def test_skills_tool_reports_loaded_local_skills(tmp_path: Path):
     root = tmp_path / "demo-skill"
     root.mkdir()

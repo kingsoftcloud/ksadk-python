@@ -119,6 +119,8 @@ WORKDIR /home/ksadk
 - `KSADK_SANDBOX_ALLOW_INTERNET_ACCESS`：是否允许 sandbox 会话出网。
 - `KSADK_SKILL_SPACE_IDS`：逗号分隔的 Skill Space id。
 - `SKILL_SPACE_ID`：单 space 兼容变量。
+- `KSADK_PUBLIC_SKILL_SPACE_IDS`：逗号分隔的 public / premade Skill Space id。
+- `KSADK_PUBLIC_SKILL_ALLOWLIST`：可选 public skill 名称白名单；未设置时加载 public space 下全部 active skills。
 - `KSADK_SKILL_SERVICE_URL`：Skill Service base URL。
 - `KSADK_SKILL_SERVICE_ACCOUNT_ID`：租户账号 ID，用作 `X-Ksc-Account-Id`。
 - `KSADK_SKILL_SERVICE_TOKEN`：可选 bearer token。

@@ -197,6 +197,222 @@ def test_runtime_agent_downloads_explicit_remote_skill_even_when_prompt_omits_na
     assert not (tmp_path / "cache" / "sk-unused__sv-unused-v1").exists()
 
 
+def test_runtime_agent_loads_all_public_skills_without_allowlist(monkeypatch, tmp_path: Path, capsys):
+    pdf_archive = _zip_bytes("pdf")
+    weather_archive = _zip_bytes("weather")
+    pdf_digest = hashlib.sha256(pdf_archive).hexdigest()
+    weather_digest = hashlib.sha256(weather_archive).hexdigest()
+    download_urls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/ListSkillsBySpaceId"):
+            return httpx.Response(
+                200,
+                json={
+                    "Data": {
+                        "SkillSpaceId": "ss-public",
+                        "Skills": [
+                            {
+                                "SkillId": "premade-pdf",
+                                "VersionId": "",
+                                "Version": "",
+                                "Name": "pdf",
+                                "Status": "AVAILABLE",
+                                "ContentHash": pdf_digest,
+                            },
+                            {
+                                "SkillId": "premade-weather",
+                                "VersionId": "",
+                                "Version": "",
+                                "Name": "weather",
+                                "Status": "AVAILABLE",
+                                "ContentHash": weather_digest,
+                            },
+                        ],
+                    }
+                },
+            )
+        if request.url.path.endswith("/GetPremadeSkillDownloadUrl"):
+            skill_id = request.url.params.get("SkillId")
+            return httpx.Response(200, json={"Data": {"DownloadUrl": f"https://download.example/{skill_id}.zip"}})
+        if str(request.url) == "https://download.example/premade-pdf.zip":
+            download_urls.append(str(request.url))
+            return httpx.Response(200, content=pdf_archive)
+        if str(request.url) == "https://download.example/premade-weather.zip":
+            download_urls.append(str(request.url))
+            return httpx.Response(200, content=weather_archive)
+        return httpx.Response(404)
+
+    monkeypatch.setenv("KSADK_PUBLIC_SKILL_SPACE_IDS", "ss-public")
+    monkeypatch.setenv("KSADK_SKILL_SERVICE_URL", "https://skill.example/api/v1")
+    monkeypatch.setenv("KSADK_SKILL_CACHE_DIR", str(tmp_path / "cache"))
+
+    code = run_agent(["请处理这个任务"], service_transport=httpx.MockTransport(handler))
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "loaded_skills=pdf,weather" in out
+    assert download_urls == [
+        "https://download.example/premade-pdf.zip",
+        "https://download.example/premade-weather.zip",
+    ]
+    assert (tmp_path / "cache" / f"premade-pdf__{pdf_digest}" / "extracted" / "pdf" / "SKILL.md").exists()
+    assert (
+        tmp_path
+        / "cache"
+        / f"premade-weather__{weather_digest}"
+        / "extracted"
+        / "weather"
+        / "SKILL.md"
+    ).exists()
+
+
+def test_runtime_agent_filters_public_skills_with_allowlist(monkeypatch, tmp_path: Path, capsys):
+    pdf_archive = _zip_bytes("pdf")
+    weather_archive = _zip_bytes("weather")
+    pdf_digest = hashlib.sha256(pdf_archive).hexdigest()
+    weather_digest = hashlib.sha256(weather_archive).hexdigest()
+    download_urls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/ListSkillsBySpaceId"):
+            return httpx.Response(
+                200,
+                json={
+                    "Data": {
+                        "SkillSpaceId": "ss-public",
+                        "Skills": [
+                            {
+                                "SkillId": "premade-pdf",
+                                "VersionId": "",
+                                "Version": "",
+                                "Name": "pdf",
+                                "Status": "AVAILABLE",
+                                "ContentHash": pdf_digest,
+                            },
+                            {
+                                "SkillId": "premade-weather",
+                                "VersionId": "",
+                                "Version": "",
+                                "Name": "weather",
+                                "Status": "AVAILABLE",
+                                "ContentHash": weather_digest,
+                            },
+                        ],
+                    }
+                },
+            )
+        if request.url.path.endswith("/GetPremadeSkillDownloadUrl"):
+            skill_id = request.url.params.get("SkillId")
+            return httpx.Response(200, json={"Data": {"DownloadUrl": f"https://download.example/{skill_id}.zip"}})
+        if str(request.url) == "https://download.example/premade-pdf.zip":
+            download_urls.append(str(request.url))
+            return httpx.Response(200, content=pdf_archive)
+        if str(request.url) == "https://download.example/premade-weather.zip":
+            download_urls.append(str(request.url))
+            return httpx.Response(200, content=weather_archive)
+        return httpx.Response(404)
+
+    monkeypatch.setenv("KSADK_PUBLIC_SKILL_SPACE_IDS", "ss-public")
+    monkeypatch.setenv("KSADK_PUBLIC_SKILL_ALLOWLIST", "weather")
+    monkeypatch.setenv("KSADK_SKILL_SERVICE_URL", "https://skill.example/api/v1")
+    monkeypatch.setenv("KSADK_SKILL_CACHE_DIR", str(tmp_path / "cache"))
+
+    code = run_agent(["请处理这个任务"], service_transport=httpx.MockTransport(handler))
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "loaded_skills=weather" in out
+    assert download_urls == ["https://download.example/premade-weather.zip"]
+    assert not (tmp_path / "cache" / f"premade-pdf__{pdf_digest}").exists()
+    assert (
+        tmp_path
+        / "cache"
+        / f"premade-weather__{weather_digest}"
+        / "extracted"
+        / "weather"
+        / "SKILL.md"
+    ).exists()
+
+
+def test_runtime_agent_prefers_user_skill_over_same_name_public_skill(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+):
+    user_archive = _zip_bytes("demo-skill")
+    public_archive = _zip_bytes("demo-skill") + b"public"
+    user_digest = hashlib.sha256(user_archive).hexdigest()
+    public_digest = hashlib.sha256(public_archive).hexdigest()
+    download_urls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/ListSkillsBySpaceId"):
+            space_id = request.url.params.get("SpaceId")
+            if space_id == "ss-user":
+                return httpx.Response(
+                    200,
+                    json={
+                        "Data": {
+                            "SkillSpaceId": "ss-user",
+                            "Skills": [
+                                {
+                                    "SkillId": "sk-user-demo",
+                                    "VersionId": "sv-user-v1",
+                                    "Version": "v1",
+                                    "Name": "demo-skill",
+                                    "Status": "Active",
+                                    "ContentHash": f"sha256:{user_digest}",
+                                }
+                            ],
+                        }
+                    },
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "Data": {
+                        "SkillSpaceId": "ss-public",
+                        "Skills": [
+                            {
+                                "SkillId": "premade-demo",
+                                "VersionId": "",
+                                "Version": "",
+                                "Name": "demo-skill",
+                                "Status": "AVAILABLE",
+                                "ContentHash": f"sha256:{public_digest}",
+                            }
+                        ],
+                    }
+                },
+            )
+        if request.url.path.endswith("/GetSkillDownloadUrl"):
+            return httpx.Response(200, json={"Data": {"DownloadUrl": "https://download.example/user.zip"}})
+        if request.url.path.endswith("/GetPremadeSkillDownloadUrl"):
+            return httpx.Response(200, json={"Data": {"DownloadUrl": "https://download.example/public.zip"}})
+        if str(request.url) == "https://download.example/user.zip":
+            download_urls.append(str(request.url))
+            return httpx.Response(200, content=user_archive)
+        if str(request.url) == "https://download.example/public.zip":
+            download_urls.append(str(request.url))
+            return httpx.Response(200, content=public_archive)
+        return httpx.Response(404)
+
+    monkeypatch.setenv("KSADK_SKILL_SPACE_IDS", "ss-user")
+    monkeypatch.setenv("KSADK_PUBLIC_SKILL_SPACE_IDS", "ss-public")
+    monkeypatch.setenv("KSADK_SKILL_SERVICE_URL", "https://skill.example/api/v1")
+    monkeypatch.setenv("KSADK_SKILL_CACHE_DIR", str(tmp_path / "cache"))
+
+    code = run_agent(["请使用 demo-skill 处理任务"], service_transport=httpx.MockTransport(handler))
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "loaded_skills=demo-skill" in out
+    assert download_urls == ["https://download.example/user.zip"]
+    assert (tmp_path / "cache" / "sk-user-demo__sv-user-v1" / "extracted" / "demo-skill" / "SKILL.md").exists()
+    assert not (tmp_path / "cache" / f"premade-demo__{public_digest}").exists()
+
+
 def test_runtime_agent_can_load_legacy_remote_skill_when_hash_mismatch_is_allowed(
     monkeypatch,
     tmp_path: Path,

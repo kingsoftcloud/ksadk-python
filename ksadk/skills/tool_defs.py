@@ -20,15 +20,27 @@ RUNTIME_AGENT_ENV_NAMES = (
     "KSADK_SKILL_CACHE_DIR",
     "KSADK_SKILL_WORKDIR",
     "KSADK_SKILL_ARTIFACT_PROJECT",
+    "KSADK_PUBLIC_SKILL_SPACE_IDS",
+    "KSADK_PUBLIC_SKILL_ALLOWLIST",
 )
 
 
 def resolve_skill_space_ids() -> list[str]:
     user_raw = os.environ.get("KSADK_SKILL_SPACE_IDS") or os.environ.get("SKILL_SPACE_ID") or ""
     public_raw = os.environ.get("KSADK_PUBLIC_SKILL_SPACE_IDS") or ""
+    return _parse_skill_space_ids(user_raw, public_raw)
+
+
+def resolve_user_skill_space_ids() -> list[str]:
+    return _parse_skill_space_ids(
+        os.environ.get("KSADK_SKILL_SPACE_IDS") or os.environ.get("SKILL_SPACE_ID") or ""
+    )
+
+
+def _parse_skill_space_ids(*raw_values: str) -> list[str]:
     spaces: list[str] = []
     seen: set[str] = set()
-    for raw in (user_raw, public_raw):
+    for raw in raw_values:
         for part in raw.split(","):
             space_id = part.strip()
             if not space_id or space_id in seen:
@@ -59,7 +71,7 @@ def build_execute_skills_tool(
     skill_space_ids: list[str] | None = None,
     session_id: str | None = None,
 ):
-    spaces = list(skill_space_ids or resolve_skill_space_ids())
+    spaces = list(skill_space_ids or resolve_user_skill_space_ids())
     default_session_id = session_id or f"ksadk-{uuid4().hex}"
 
     def execute_skills(workflow_prompt: str, skill_names: list[str] | str | None = None) -> dict:
@@ -96,9 +108,15 @@ def load_remote_skill_manifests(skill_space_ids: list[str] | None = None) -> lis
     manifests: list[dict[str, str]] = []
     seen: set[str] = set()
     limit = _manifest_limit()
+    public_spaces = set(_parse_skill_space_ids(os.environ.get("KSADK_PUBLIC_SKILL_SPACE_IDS") or ""))
+    public_allowlist = {
+        name.lower() for name in normalize_skill_names(os.environ.get("KSADK_PUBLIC_SKILL_ALLOWLIST", ""))
+    }
     for space_id in spaces:
         listing = client.list_skills_by_space_id(space_id)
         for skill in listing.active_skills():
+            if space_id in public_spaces and public_allowlist and skill.name.lower() not in public_allowlist:
+                continue
             item = _skill_manifest_item(skill, space_id=space_id)
             name_key = item["name"].lower()
             if not item["name"] or name_key in seen:

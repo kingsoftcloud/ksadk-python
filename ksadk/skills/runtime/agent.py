@@ -21,9 +21,21 @@ from ksadk.skills.service_client import SkillServiceClient
 def _skill_space_ids() -> list[str]:
     user_raw = os.environ.get("KSADK_SKILL_SPACE_IDS") or os.environ.get("SKILL_SPACE_ID") or ""
     public_raw = os.environ.get("KSADK_PUBLIC_SKILL_SPACE_IDS") or ""
+    return _parse_space_ids(user_raw, public_raw)
+
+
+def _user_skill_space_ids() -> list[str]:
+    return _parse_space_ids(os.environ.get("KSADK_SKILL_SPACE_IDS") or os.environ.get("SKILL_SPACE_ID") or "")
+
+
+def _public_skill_space_ids() -> list[str]:
+    return _parse_space_ids(os.environ.get("KSADK_PUBLIC_SKILL_SPACE_IDS") or "")
+
+
+def _parse_space_ids(*raw_values: str) -> list[str]:
     spaces: list[str] = []
     seen: set[str] = set()
-    for raw in (user_raw, public_raw):
+    for raw in raw_values:
         for part in raw.split(","):
             space_id = part.strip()
             if not space_id or space_id in seen:
@@ -68,15 +80,24 @@ def _load_skills(
     )
     store = PackageStore(cache_dir=cache_dir)
     selected_refs: list[SkillRef] = []
-    for space_id in _skill_space_ids():
+    seen_names: set[str] = {skill.name.lower() for skill in skills if skill.name}
+    for space_id in _user_skill_space_ids():
         listing = client.list_skills_by_space_id(space_id)
-        selected_refs.extend(
+        selected_refs.extend(_dedupe_skill_refs(
             _select_remote_skill_refs(
                 listing.active_skills(),
                 prompt,
                 skill_names=skill_names,
-            )
-        )
+            ),
+            seen_names=seen_names,
+        ))
+
+    for space_id in _public_skill_space_ids():
+        listing = client.list_skills_by_space_id(space_id)
+        selected_refs.extend(_dedupe_skill_refs(
+            _select_public_skill_refs(listing.active_skills()),
+            seen_names=seen_names,
+        ))
 
     for skill in selected_refs:
         package = store.get_cached(skill)
@@ -91,6 +112,31 @@ def _load_skills(
                 _SKILL_LOAD_WARNINGS.append(str(exc))
         skills.append(load_local_skill(package.root_dir))
     return skills
+
+
+def _dedupe_skill_refs(skill_refs: list[SkillRef], *, seen_names: set[str]) -> list[SkillRef]:
+    selected: list[SkillRef] = []
+    seen_keys: set[str] = set()
+    for skill in skill_refs:
+        name_key = skill.name.lower() if skill.name else ""
+        key = skill.cache_key or skill.skill_id or skill.name
+        if not name_key or name_key in seen_names or key in seen_keys:
+            continue
+        seen_names.add(name_key)
+        seen_keys.add(key)
+        selected.append(skill)
+    return selected
+
+
+def _select_public_skill_refs(skill_refs: list[SkillRef]) -> list[SkillRef]:
+    allowlist = {name.lower() for name in normalize_skill_names(os.environ.get("KSADK_PUBLIC_SKILL_ALLOWLIST", ""))}
+    if not allowlist:
+        return [skill for skill in skill_refs if skill.name]
+    return [
+        skill
+        for skill in skill_refs
+        if skill.name and skill.name.lower() in allowlist
+    ]
 
 
 def _allow_hash_mismatch() -> bool:

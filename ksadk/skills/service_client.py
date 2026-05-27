@@ -73,8 +73,9 @@ class SkillServiceClient:
         return SkillListResponse.from_payload(payload, space_id=space_id)
 
     def get_skill_download_url(self, skill: SkillRef) -> str:
+        action = "GetSkillDownloadUrl" if skill.version_id else "GetPremadeSkillDownloadUrl"
         payload = self._get_json(
-            "GetSkillDownloadUrl",
+            action,
             {
                 "SkillId": skill.skill_id,
                 "VersionId": skill.version_id,
