@@ -275,13 +275,14 @@ class ADKRunner(BaseRunner):
                 build_skill_manifest_instruction,
                 load_remote_skill_manifests,
                 resolve_skill_space_ids,
+                resolve_user_skill_space_ids,
             )
 
             skill_space_ids = resolve_skill_space_ids()
             backend = create_skill_runtime_backend()
             execute_skills = build_execute_skills_tool(
                 backend=backend,
-                skill_space_ids=skill_space_ids,
+                skill_space_ids=resolve_user_skill_space_ids(),
                 session_id=getattr(self._agent, "name", None) or self.detection_result.name,
             )
             added = self._append_tools_by_name([execute_skills])

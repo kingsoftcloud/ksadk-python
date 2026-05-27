@@ -44,6 +44,8 @@ class LocalProcessSkillRuntimeBackend:
         runtime_env.update(env or {})
         runtime_env["KSADK_SKILL_SPACE_IDS"] = ",".join(skill_space_ids)
         runtime_env["SKILL_SPACE_ID"] = skill_space_ids[0] if skill_space_ids else ""
+        if public_spaces := os.environ.get("KSADK_PUBLIC_SKILL_SPACE_IDS"):
+            runtime_env["KSADK_PUBLIC_SKILL_SPACE_IDS"] = public_spaces
         selected_skill_names = format_skill_names_env(skill_names)
         if selected_skill_names:
             runtime_env["KSADK_SELECTED_SKILL_NAMES"] = selected_skill_names

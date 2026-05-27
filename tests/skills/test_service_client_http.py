@@ -55,6 +55,54 @@ def test_service_client_lists_skills_and_downloads_archive_with_mock_transport()
     assert requests[-1] == ("GET", "https://download.example/skill.zip", None)
 
 
+def test_service_client_downloads_no_version_skill_from_premade_endpoint():
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, str(request.url)))
+        if request.url.path.endswith("/ListSkillsBySpaceId"):
+            return httpx.Response(
+                200,
+                json={
+                    "Code": 200,
+                    "RequestId": "req-list",
+                    "Data": {
+                        "Skills": [
+                            {
+                                "SkillId": "premade-pdf",
+                                "VersionId": "",
+                                "Version": "",
+                                "Name": "pdf",
+                                "Status": "AVAILABLE",
+                            }
+                        ],
+                    },
+                },
+            )
+        if request.url.path.endswith("/GetPremadeSkillDownloadUrl"):
+            return httpx.Response(
+                200,
+                json={"Code": 200, "Data": {"DownloadUrl": "https://download.example/pdf.zip"}},
+            )
+        if str(request.url) == "https://download.example/pdf.zip":
+            return httpx.Response(200, content=b"premade-zip-bytes")
+        return httpx.Response(404)
+
+    client = SkillServiceClient(
+        base_url="https://skill.example/api/v1",
+        transport=httpx.MockTransport(handler),
+    )
+
+    listing = client.list_skills_by_space_id("ss-public")
+    archive = client.download_skill_archive(listing.skills[0])
+
+    assert archive == b"premade-zip-bytes"
+    assert requests[1] == (
+        "GET",
+        "https://skill.example/api/v1/GetPremadeSkillDownloadUrl?SkillId=premade-pdf&VersionId=",
+    )
+
+
 def test_service_client_sends_account_header_for_direct_rest_service():
     seen_headers = {}
 

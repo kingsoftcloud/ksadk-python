@@ -117,7 +117,68 @@ def test_adk_runner_injects_remote_skill_manifest_into_instruction(monkeypatch, 
     assert "skill_names" in runner._agent.instruction
 
 
-def test_execute_skills_merges_public_skill_spaces_after_user_spaces(monkeypatch):
+def test_remote_skill_manifest_filters_public_skills_with_allowlist(monkeypatch):
+    from ksadk.skills.tool_defs import load_remote_skill_manifests
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def list_skills_by_space_id(self, space_id):
+            if space_id == "ss-user":
+                payload = {
+                    "Data": {
+                        "Skills": [
+                            {
+                                "SkillId": "sk-demo",
+                                "VersionId": "sv-demo-v1",
+                                "Version": "v1",
+                                "Name": "demo-skill",
+                                "Status": "Active",
+                            }
+                        ]
+                    }
+                }
+            else:
+                payload = {
+                    "Data": {
+                        "Skills": [
+                            {
+                                "SkillId": "premade-pdf",
+                                "VersionId": "",
+                                "Version": "",
+                                "Name": "pdf",
+                                "Status": "AVAILABLE",
+                            },
+                            {
+                                "SkillId": "premade-weather",
+                                "VersionId": "",
+                                "Version": "",
+                                "Name": "weather",
+                                "Status": "AVAILABLE",
+                            },
+                        ]
+                    }
+                }
+            from ksadk.skills.models import SkillListResponse
+
+            return SkillListResponse.from_payload(payload, space_id=space_id)
+
+    monkeypatch.setenv("KSADK_SKILL_SERVICE_URL", "https://skill.example/api/v1")
+    monkeypatch.setenv("KSADK_SKILL_SPACE_IDS", "ss-user")
+    monkeypatch.setenv("KSADK_PUBLIC_SKILL_SPACE_IDS", "ss-public")
+    monkeypatch.setenv("KSADK_PUBLIC_SKILL_ALLOWLIST", "weather")
+    monkeypatch.setattr(
+        "ksadk.skills.tool_defs.SkillServiceClient",
+        FakeClient,
+    )
+
+    manifests = load_remote_skill_manifests()
+
+    assert [item["name"] for item in manifests] == ["demo-skill", "weather"]
+
+
+def test_execute_skills_passes_public_skill_spaces_through_env(monkeypatch):
     from ksadk.skills.tool_defs import build_execute_skills_tool
 
     calls = []
@@ -134,7 +195,8 @@ def test_execute_skills_merges_public_skill_spaces_after_user_spaces(monkeypatch
     result = tool("use demo-skill")
 
     assert result == {"status": "ok"}
-    assert calls[0][1]["skill_space_ids"] == ["ss-user", "ss-public-a", "ss-public-b"]
+    assert calls[0][1]["skill_space_ids"] == ["ss-user"]
+    assert calls[0][1]["env"]["KSADK_PUBLIC_SKILL_SPACE_IDS"] == "ss-public-a, ss-public-b"
 
 
 def test_adk_runner_auto_mode_prefers_configured_runtime_backend_over_cache_dir(monkeypatch, tmp_path):

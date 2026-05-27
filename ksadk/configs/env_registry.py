@@ -18,9 +18,26 @@ ENV_VAR_REGISTRY: tuple[EnvVarSpec, ...] = (
     EnvVarSpec("KSADK_ADK_SESSION_URL", "sessions", "ADK-native database session URL.", sensitive=True),
     EnvVarSpec("KSADK_ALLOWED_SUFFIXES", "builders", "Internal code package allowed suffix constant."),
     EnvVarSpec(
+        "KSADK_ATTACHMENT_OCR_RUNTIME_REQUIREMENTS",
+        "builders",
+        "Internal bundled attachment OCR requirement constant.",
+    ),
+    EnvVarSpec(
         "KSADK_ATTACHMENT_RUNTIME_REQUIREMENTS",
         "builders",
         "Internal bundled attachment requirement constant.",
+    ),
+    EnvVarSpec(
+        "KSADK_BUILD_ENABLE_ATTACHMENT_OCR",
+        "builders",
+        "Include local attachment OCR dependencies in source builds.",
+        "false",
+    ),
+    EnvVarSpec(
+        "KSADK_BUILD_PIP_INSTALL_TIMEOUT_SECONDS",
+        "builders",
+        "pip install timeout seconds for source builds.",
+        "2700",
     ),
     EnvVarSpec(
         "KSADK_CORE_RUNTIME_REQUIREMENTS",
@@ -72,6 +89,7 @@ ENV_VAR_REGISTRY: tuple[EnvVarSpec, ...] = (
     EnvVarSpec("KSADK_PG_SESSIONS_TABLE", "sessions", "Internal PostgreSQL sessions table constant."),
     EnvVarSpec("KSADK_PG_STATES_TABLE", "sessions", "Internal PostgreSQL states table constant."),
     EnvVarSpec("KSADK_PROJECT_DIR", "sessions", "Project root used for local session/workspace state."),
+    EnvVarSpec("KSADK_PUBLIC_SKILL_ALLOWLIST", "skills", "Comma-separated public Skill names to load; empty loads all public skills."),
     EnvVarSpec("KSADK_PUBLIC_SKILL_SPACE_IDS", "skills", "Comma-separated public Skill Space ids appended after user spaces."),
     EnvVarSpec("KSADK_RESPONSES_SESSION_HEADER", "runners", "Header name for remote Responses session propagation."),
     EnvVarSpec("KSADK_RUNTIME_PORT", "cli", "Runtime HTTP port exported to template runtimes.", "8080"),
@@ -88,6 +106,12 @@ ENV_VAR_REGISTRY: tuple[EnvVarSpec, ...] = (
     EnvVarSpec("KSADK_SESSION_NAMESPACE", "sessions", "Conversation session namespace."),
     EnvVarSpec("KSADK_SESSION_PATH", "sessions", "Conversation local SQLite database path."),
     EnvVarSpec("KSADK_SKILLS_MODE", "skills", "Skill loading mode: auto, local, or sandbox.", "auto"),
+    EnvVarSpec(
+        "KSADK_SKILL_ALLOW_HASH_MISMATCH",
+        "skills",
+        "Allow loading legacy Skill archives when ContentHash verification fails.",
+        "false",
+    ),
     EnvVarSpec("KSADK_SKILL_ARTIFACT_PROJECT", "skills", "Default artifact project name for the minimal Skill Runtime agent.", "ksadk-artifact"),
     EnvVarSpec("KSADK_SKILL_CACHE_DIR", "skills", "Skill package download and extraction cache directory."),
     EnvVarSpec("KSADK_SKILL_MANIFEST_LIMIT", "skills", "Maximum remote Skill manifests injected into agent instructions.", "30"),
