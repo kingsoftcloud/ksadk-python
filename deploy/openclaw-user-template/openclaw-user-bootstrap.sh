@@ -101,6 +101,18 @@ const merge = (base, overlay) => {
   }
   return result;
 };
+const normalizePatch = (value) => {
+  const patch = isPlainObject(value) ? clone(value) : {};
+  const diagnostics = patch.diagnostics;
+  if (isPlainObject(diagnostics) && Object.prototype.hasOwnProperty.call(diagnostics, "captureContent")) {
+    diagnostics.otel = isPlainObject(diagnostics.otel) ? diagnostics.otel : {};
+    if (!Object.prototype.hasOwnProperty.call(diagnostics.otel, "captureContent")) {
+      diagnostics.otel.captureContent = diagnostics.captureContent;
+    }
+    delete diagnostics.captureContent;
+  }
+  return patch;
+};
 let cfg = {};
 try {
   cfg = JSON.parse(fs.readFileSync(configPath, "utf8"));
@@ -118,7 +130,7 @@ if (!isPlainObject(patch)) {
   console.error("[openclaw-user-bootstrap] OPENCLAW_CONFIG_PATCH_JSON must be a JSON object");
   process.exit(1);
 }
-fs.writeFileSync(configPath, `${JSON.stringify(merge(cfg, patch), null, 2)}\n`);
+fs.writeFileSync(configPath, `${JSON.stringify(merge(normalizePatch(cfg), normalizePatch(patch)), null, 2)}\n`);
 ' "${CONFIG_PATH}" "${OPENCLAW_CONFIG_PATCH_JSON}"
   log "applied OPENCLAW_CONFIG_PATCH_JSON"
 fi
@@ -137,10 +149,11 @@ fi
 
 trusted_proxy_user_header="${OPENCLAW_TRUSTED_PROXY_USER_HEADER:-${OPENCLAW_GATEWAY_TRUSTED_PROXY_USER_HEADER:-x-forwarded-user}}"
 trusted_proxies="${OPENCLAW_TRUSTED_PROXIES:-127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,35.0.0.0/8}"
+allowed_origins="${OPENCLAW_ALLOWED_ORIGINS:-}"
 
 node -e '
 const fs = require("fs");
-const [configPath, authMode, gatewayToken, userHeader, trustedProxiesRaw] = process.argv.slice(1);
+const [configPath, authMode, gatewayToken, userHeader, trustedProxiesRaw, allowedOriginsRaw] = process.argv.slice(1);
 const parseStringList = (raw) => {
   const text = String(raw || "").trim();
   if (!text) return [];
@@ -153,6 +166,30 @@ const parseStringList = (raw) => {
     // Fallback to separated text.
   }
   return text.split(/[,\s;]+/).map((item) => item.trim()).filter(Boolean);
+};
+const unique = (items) => [...new Set(items.map((item) => String(item).trim()).filter(Boolean))];
+const agentengineOrigins = () => {
+  const runtimeId = String(process.env.AGENT_RUNTIME_ID || "").trim();
+  if (!runtimeId) return [];
+  const origins = [];
+  for (const domain of ["agent-pre.kspmas.ksyun.com", "agent.kspmas.ksyun.com"]) {
+    origins.push(`http://${runtimeId}.${domain}`);
+    origins.push(`https://${runtimeId}.${domain}`);
+  }
+  return origins;
+};
+const normalizeAllowedOrigins = (raw) => {
+  const origins = parseStringList(raw);
+  if (origins.length === 0) return [];
+  const expanded = [];
+  for (const origin of origins) {
+    if (origin === "*") {
+      expanded.push(...agentengineOrigins());
+    } else {
+      expanded.push(origin);
+    }
+  }
+  return unique(expanded.length > 0 ? expanded : origins);
 };
 let cfg = {};
 try {
@@ -175,8 +212,13 @@ const trustedProxies = parseStringList(trustedProxiesRaw);
 if (trustedProxies.length > 0) {
   cfg.gateway.trustedProxies = trustedProxies;
 }
+const allowedOrigins = normalizeAllowedOrigins(allowedOriginsRaw);
+if (allowedOrigins.length > 0) {
+  cfg.gateway.controlUi = cfg.gateway.controlUi || {};
+  cfg.gateway.controlUi.allowedOrigins = allowedOrigins;
+}
 fs.writeFileSync(configPath, `${JSON.stringify(cfg, null, 2)}\n`);
-' "${CONFIG_PATH}" "${auth_mode}" "${gateway_token}" "${trusted_proxy_user_header}" "${trusted_proxies}"
+' "${CONFIG_PATH}" "${auth_mode}" "${gateway_token}" "${trusted_proxy_user_header}" "${trusted_proxies}" "${allowed_origins}"
 log "gateway auth reconciled: ${auth_mode}"
 
 if is_truthy "${OPENCLAW_BOOTSTRAP_PRINT_CONFIG:-}"; then
