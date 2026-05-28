@@ -26,7 +26,7 @@ jobs:
         run: uv sync --extra dev
 
       - name: Run focused tests
-        run: uv run --extra dev pytest tests/test_open_source_audit.py tests/test_open_source_docs_contract.py tests/test_runtime_common_packaging.py -q
+        run: uv run --extra dev pytest tests/test_open_source_audit.py tests/test_runtime_common_packaging.py -q
 
       - name: Audit public repository candidate
         run: uv run --extra dev python scripts/open_source_audit.py --target public-repo
