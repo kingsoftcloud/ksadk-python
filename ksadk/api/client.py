@@ -1682,6 +1682,7 @@ class AgentEngineClient:
                 "Scaling",
                 "Access",
                 "Advanced",
+                "Network",
             )
         )
 
@@ -1807,6 +1808,9 @@ class AgentEngineClient:
             params["ContainerConfig"] = self._build_mcp_container_config(data)
         else:
             params["CodeConfig"] = self._build_mcp_code_config(data)
+        network_payload = self._normalize_network_payload(data.get("network"))
+        if network_payload:
+            params["Network"] = network_payload
         return self._action("CreateMCP", params)
     
     async def get_mcp(self, mcp_id: str) -> Dict[str, Any]:
@@ -1878,6 +1882,9 @@ class AgentEngineClient:
                 "Tools": metadata.get("tools"),
             }
 
+        network_payload = self._normalize_network_payload(data.get("network"))
+        if network_payload:
+            params["Network"] = network_payload
         if data.get("region") is not None:
             params["Region"] = self._normalize_payload_region(data.get("region"))
         return self._action("UpdateMCP", params)

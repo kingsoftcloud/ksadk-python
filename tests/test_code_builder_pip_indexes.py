@@ -86,6 +86,73 @@ def test_install_dependencies_prefers_target_runtime_wheels(tmp_path, monkeypatc
     assert "--only-binary=:all:" in calls[0]
 
 
+def test_install_dependencies_uses_persistent_project_pip_cache(tmp_path, monkeypatch):
+    builder = CodeBuilder(tmp_path)
+    builder.deps_dir.mkdir(parents=True, exist_ok=True)
+    requirements_path = tmp_path / "requirements.txt"
+    requirements_path.write_text("demo==1.0\n", encoding="utf-8")
+
+    calls = []
+
+    def fake_popen(cmd, **kwargs):
+        return _FakePopen(
+            cmd,
+            calls=calls,
+            output_lines=[
+                "Collecting demo==1.0\n",
+                "Downloading demo-1.0-py3-none-any.whl\n",
+                "Installing collected packages: demo\n",
+                "Successfully installed demo-1.0\n",
+            ],
+            **kwargs,
+        )
+
+    monkeypatch.setattr("ksadk.builders.code_builder.subprocess.Popen", fake_popen)
+    monkeypatch.setattr(CodeBuilder, "_scan_incompatible_binaries_in_deps", lambda self: [])
+
+    assert builder._install_dependencies(requirements_path) is True
+
+    assert "--cache-dir" in calls[0]
+    cache_pos = calls[0].index("--cache-dir")
+    assert calls[0][cache_pos + 1] == str(builder.build_dir / "pip_cache")
+
+
+def test_install_dependencies_timeout_is_configurable(tmp_path, monkeypatch):
+    builder = CodeBuilder(tmp_path)
+    builder.deps_dir.mkdir(parents=True, exist_ok=True)
+    requirements_path = tmp_path / "requirements.txt"
+    requirements_path.write_text("demo==1.0\n", encoding="utf-8")
+
+    calls = []
+
+    def fake_popen(cmd, **kwargs):
+        return _FakePopen(
+            cmd,
+            calls=calls,
+            output_lines=[
+                "Collecting demo==1.0\n",
+                "Installing collected packages: demo\n",
+                "Successfully installed demo-1.0\n",
+            ],
+            **kwargs,
+        )
+
+    observed_timeouts = []
+
+    def fake_run_streamed(self, install_cmd, *, timeout):
+        observed_timeouts.append(timeout)
+        return subprocess.CompletedProcess(install_cmd, 0, "", "")
+
+    monkeypatch.setenv("KSADK_BUILD_PIP_INSTALL_TIMEOUT_SECONDS", "2700")
+    monkeypatch.setattr("ksadk.builders.code_builder.subprocess.Popen", fake_popen)
+    monkeypatch.setattr(CodeBuilder, "_run_streamed_pip_install", fake_run_streamed)
+    monkeypatch.setattr(CodeBuilder, "_scan_incompatible_binaries_in_deps", lambda self: [])
+
+    assert builder._install_dependencies(requirements_path) is True
+
+    assert observed_timeouts == [2700]
+
+
 def test_replace_platform_binaries_respects_explicit_pip_index(tmp_path, monkeypatch):
     builder = CodeBuilder(tmp_path)
     builder.build_dir.mkdir(parents=True, exist_ok=True)

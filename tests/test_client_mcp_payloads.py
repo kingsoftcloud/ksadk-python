@@ -100,6 +100,51 @@ async def test_create_mcp_container_uses_nested_container_config(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_create_mcp_includes_network_only_when_explicit(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    calls: list[tuple[str, dict]] = []
+
+    def fake_action(action: str, params: dict):
+        calls.append((action, params.copy()))
+        return {"mcp_id": "mcp-created"}
+
+    monkeypatch.setattr(client, "_action", fake_action)
+
+    await client.create_mcp(
+        {
+            "name": "demo-mcp",
+            "artifact_type": "Code",
+            "artifact_path": "ks3://demo-bucket/mcps/demo-mcp/code.zip",
+        }
+    )
+    await client.create_mcp(
+        {
+            "name": "demo-mcp",
+            "artifact_type": "Code",
+            "artifact_path": "ks3://demo-bucket/mcps/demo-mcp/code.zip",
+            "network": {
+                "enable_public_access": False,
+                "enable_vpc_access": True,
+                "vpc_id": "vpc-cli",
+                "subnet_id": "subnet-cli",
+                "security_group_id": "sg-cli",
+                "availability_zone": "cn-beijing-6b",
+            },
+        }
+    )
+
+    assert "Network" not in calls[0][1]
+    assert calls[1][1]["Network"] == {
+        "EnablePublicAccess": False,
+        "EnableVpcAccess": True,
+        "VpcId": "vpc-cli",
+        "SubnetId": "subnet-cli",
+        "SecurityGroupId": "sg-cli",
+        "AvailabilityZone": "cn-beijing-6b",
+    }
+
+
+@pytest.mark.asyncio
 async def test_update_mcp_uses_nested_partial_sections(monkeypatch):
     client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
     calls: list[tuple[str, dict]] = []
@@ -136,3 +181,41 @@ async def test_update_mcp_uses_nested_partial_sections(monkeypatch):
         "Access": {"AuthType": "ApiKey"},
         "Advanced": {"McpVariable": "svc", "Tools": ["ping", "health"]},
     }
+
+
+@pytest.mark.asyncio
+async def test_update_mcp_can_send_network_without_artifact(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    calls: list[tuple[str, dict]] = []
+
+    def fake_action(action: str, params: dict):
+        calls.append((action, params.copy()))
+        return {"mcp_id": "mcp-updated"}
+
+    monkeypatch.setattr(client, "_action", fake_action)
+
+    await client.update_mcp(
+        "mcp-123",
+        {
+            "network": {
+                "enable_public_access": False,
+                "vpc_id": "vpc-cli",
+                "subnet_id": "subnet-cli",
+                "security_group_id": "sg-cli",
+            },
+        },
+    )
+
+    assert calls[0] == (
+        "UpdateMCP",
+        {
+            "Id": "mcp-123",
+            "Network": {
+                "EnablePublicAccess": False,
+                "EnableVpcAccess": False,
+                "VpcId": "vpc-cli",
+                "SubnetId": "subnet-cli",
+                "SecurityGroupId": "sg-cli",
+            },
+        },
+    )

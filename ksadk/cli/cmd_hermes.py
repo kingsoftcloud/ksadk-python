@@ -14,6 +14,7 @@ from ksadk.cli.agent_ref import merge_agent_inputs, resolve_agent_ref
 from ksadk.cli.cmd_dashboard import _open_dashboard
 from ksadk.cli.dry_run import dry_run_option, effective_dry_run, run_async_with_dry_run
 from ksadk.cli.error_utils import remote_error, resolution_error
+from ksadk.cli.network_options import build_network_payload, network_cli_kwargs, network_options
 from ksadk.cli.storage import build_storage_config
 from ksadk.cli.resource_common import (
     CONTEXT_SETTINGS,
@@ -460,6 +461,7 @@ def _render_hermes_dry_run(action: str, request: dict[str, Any], hints: tuple[st
 @click.option("--storage-size-gi", type=int, default=20, show_default=True, help="PVC 容量（Gi）")
 @click.option("--storage-mount-path", default=None, help="PVC 挂载目录（默认: /home/node/.hermes）")
 @click.option("--no-storage", is_flag=True, help="禁用默认 PVC 挂载")
+@network_options
 @dry_run_option()
 @cli_output_option()
 def deploy(
@@ -474,6 +476,12 @@ def deploy(
     storage_size_gi: int,
     storage_mount_path: Optional[str],
     no_storage: bool,
+    enable_public_access: Optional[bool],
+    enable_vpc_access: bool,
+    vpc_id: Optional[str],
+    subnet_id: Optional[str],
+    security_group_id: Optional[str],
+    availability_zone: Optional[str],
     dry_run: bool,
     output_mode: str | None,
 ):
@@ -493,6 +501,14 @@ def deploy(
             storage_size_gi=storage_size_gi,
             storage_mount_path=storage_mount_path,
             no_storage=no_storage,
+            **network_cli_kwargs(
+                enable_public_access=enable_public_access,
+                enable_vpc_access=enable_vpc_access,
+                vpc_id=vpc_id,
+                subnet_id=subnet_id,
+                security_group_id=security_group_id,
+                availability_zone=availability_zone,
+            ),
             dry_run=dry_run,
         ),
         dry_run=dry_run,
@@ -514,6 +530,12 @@ async def _deploy_hermes(
     storage_size_gi: int,
     storage_mount_path: str | None,
     no_storage: bool,
+    enable_public_access: bool | None,
+    enable_vpc_access: bool,
+    vpc_id: str | None,
+    subnet_id: str | None,
+    security_group_id: str | None,
+    availability_zone: str | None,
     dry_run: bool,
 ) -> None:
     project_dir = Path(".").resolve()
@@ -567,6 +589,16 @@ async def _deploy_hermes(
     )
     if storage_config:
         payload["storage"] = storage_config
+    network_payload = build_network_payload(
+        enable_public_access=enable_public_access,
+        enable_vpc_access=enable_vpc_access,
+        vpc_id=vpc_id,
+        subnet_id=subnet_id,
+        security_group_id=security_group_id,
+        availability_zone=availability_zone,
+    )
+    if network_payload:
+        payload["network"] = network_payload
 
     print_title("Hermes 云端部署", f"region: {region}")
     print_kv("名称", agent_name)

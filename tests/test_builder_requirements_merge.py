@@ -133,7 +133,10 @@ def test_code_builder_bundles_attachment_runtime_requirements_without_optional_b
 
     assert "pypdf>=6.0.0" in deps
     assert "beautifulsoup4>=4.12.0" in deps
-    assert "rapidocr-onnxruntime>=1.2.0" in deps
+    assert "rapidocr-onnxruntime>=1.2.0" not in deps
+    assert "mcp>=1.1.0" not in deps
+    assert "langchain-mcp-adapters>=0.0.1" not in deps
+    assert "asyncpg>=0.30.0,<1.0.0" not in deps
     assert "boto3==1.40.61" not in deps
     assert "SQLAlchemy==2.0.44" not in deps
     assert "psycopg[binary]==3.3.0" not in deps
@@ -143,6 +146,123 @@ def test_code_builder_bundles_attachment_runtime_requirements_without_optional_b
     assert "xlrd==2.0.2" not in deps
     assert "python-pptx==1.0.2" not in deps
     assert "docx2python==3.5.0" not in deps
+
+
+def test_code_builder_includes_mcp_runtime_when_project_uses_langchain_mcp_adapter(tmp_path):
+    (tmp_path / "agent.py").write_text(
+        "from langchain_mcp_adapters.client import MultiServerMCPClient\n",
+        encoding="utf-8",
+    )
+    builder = CodeBuilder(tmp_path)
+
+    deps = builder._build_requirements_list(_detection_result("langgraph"))
+
+    assert "mcp>=1.1.0" in deps
+    assert "langchain-mcp-adapters>=0.0.1" in deps
+
+
+def test_code_builder_includes_mcp_runtime_when_env_declares_mcp_servers(tmp_path):
+    (tmp_path / ".env").write_text('KSADK_MCP_SERVERS=[{"name":"demo","url":"http://mcp"}]\n', encoding="utf-8")
+    builder = CodeBuilder(tmp_path)
+
+    deps = builder._build_requirements_list(_detection_result("langgraph"))
+
+    assert "mcp>=1.1.0" in deps
+    assert "langchain-mcp-adapters>=0.0.1" in deps
+
+
+def test_code_builder_does_not_include_mcp_runtime_for_empty_mcp_servers(tmp_path):
+    (tmp_path / ".env").write_text("KSADK_MCP_SERVERS=[]\n", encoding="utf-8")
+    builder = CodeBuilder(tmp_path)
+
+    deps = builder._build_requirements_list(_detection_result("langgraph"))
+
+    assert "mcp>=1.1.0" not in deps
+    assert "langchain-mcp-adapters>=0.0.1" not in deps
+
+
+def test_code_builder_ignores_cached_build_files_when_detecting_optional_imports(tmp_path):
+    cached_dir = tmp_path / ".agentengine" / "code_build" / "old"
+    cached_dir.mkdir(parents=True)
+    (cached_dir / "agent.py").write_text(
+        "from langchain_mcp_adapters.client import MultiServerMCPClient\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "agent.py").write_text("root_agent = object()\n", encoding="utf-8")
+    builder = CodeBuilder(tmp_path)
+
+    deps = builder._build_requirements_list(_detection_result("langgraph"))
+
+    assert "mcp>=1.1.0" not in deps
+    assert "langchain-mcp-adapters>=0.0.1" not in deps
+
+
+def test_code_builder_includes_mcp_runtime_when_build_flag_enabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("KSADK_BUILD_ENABLE_MCP", "true")
+    builder = CodeBuilder(tmp_path)
+
+    deps = builder._build_requirements_list(_detection_result("langgraph"))
+
+    assert "mcp>=1.1.0" in deps
+    assert "langchain-mcp-adapters>=0.0.1" in deps
+
+
+def test_code_builder_includes_asyncpg_when_postgres_session_declared(tmp_path):
+    (tmp_path / ".env").write_text("KSADK_SESSION_BACKEND=postgres\n", encoding="utf-8")
+    builder = CodeBuilder(tmp_path)
+
+    deps = builder._build_requirements_list(_detection_result("langgraph"))
+
+    assert "asyncpg>=0.30.0,<1.0.0" in deps
+
+
+def test_code_builder_includes_asyncpg_when_postgres_dsn_declared(tmp_path):
+    (tmp_path / ".env").write_text(
+        "KSADK_SESSION_DSN=postgresql://user:pass@example.com/db\n",
+        encoding="utf-8",
+    )
+    builder = CodeBuilder(tmp_path)
+
+    deps = builder._build_requirements_list(_detection_result("langgraph"))
+
+    assert "asyncpg>=0.30.0,<1.0.0" in deps
+
+
+def test_code_builder_includes_asyncpg_when_build_flag_enabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("KSADK_BUILD_ENABLE_POSTGRES_SESSION", "true")
+    builder = CodeBuilder(tmp_path)
+
+    deps = builder._build_requirements_list(_detection_result("langgraph"))
+
+    assert "asyncpg>=0.30.0,<1.0.0" in deps
+
+
+def test_code_builder_includes_attachment_ocr_runtime_when_enabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("KSADK_BUILD_ENABLE_ATTACHMENT_OCR", "true")
+    builder = CodeBuilder(tmp_path)
+
+    deps = builder._build_requirements_list(_detection_result("langgraph"))
+
+    assert "pypdf>=6.0.0" in deps
+    assert "beautifulsoup4>=4.12.0" in deps
+    assert "rapidocr-onnxruntime>=1.2.0" in deps
+
+
+def test_container_builder_uses_same_optional_runtime_detection(tmp_path):
+    (tmp_path / ".env").write_text(
+        'KSADK_MCP_SERVERS=[{"name":"demo","url":"http://mcp"}]\nKSADK_SESSION_BACKEND=postgres\n',
+        encoding="utf-8",
+    )
+    builder = ContainerBuilder(tmp_path)
+
+    deps = builder._generate_requirements(
+        _detection_result("langgraph"),
+        tmp_path,
+    ).splitlines()
+
+    assert "mcp>=1.1.0" in deps
+    assert "langchain-mcp-adapters>=0.0.1" in deps
+    assert "asyncpg>=0.30.0,<1.0.0" in deps
 
 
 def test_code_builder_uses_validated_langgraph_ecosystem_dependency_window(tmp_path):
@@ -179,6 +299,22 @@ def test_container_builder_bundles_attachment_runtime_requirements_without_optio
 
     assert "pypdf>=6.0.0" in deps
     assert "beautifulsoup4>=4.12.0" in deps
+    assert "rapidocr-onnxruntime>=1.2.0" not in deps
+
+
+def test_container_builder_includes_attachment_ocr_runtime_when_enabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("KSADK_BUILD_ENABLE_ATTACHMENT_OCR", "true")
+    builder = ContainerBuilder(tmp_path)
+
+    deps = builder._generate_requirements(
+        _detection_result("langgraph"),
+        tmp_path,
+    ).splitlines()
+
+    assert "pypdf>=6.0.0" in deps
+    assert "beautifulsoup4>=4.12.0" in deps
+    assert "rapidocr-onnxruntime>=1.2.0" in deps
+
 
 
 def test_container_builder_uses_same_framework_dependency_windows(tmp_path):

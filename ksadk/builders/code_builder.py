@@ -17,6 +17,7 @@ import zipfile
 import re
 import json
 import hashlib
+import ast
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Optional, Set
@@ -118,11 +119,19 @@ class CodeBuilder(BaseBuilder):
         "cryptography>=44.0.0",
         "websockets>=12.0,<16.0",
         "qrcode>=7.4.0",
+    )
+    BUNDLED_KSADK_MCP_RUNTIME_REQUIREMENTS = (
+        "mcp>=1.1.0",
+        "langchain-mcp-adapters>=0.0.1",
+    )
+    BUNDLED_KSADK_POSTGRES_SESSION_REQUIREMENTS = (
         "asyncpg>=0.30.0,<1.0.0",
     )
     BUNDLED_KSADK_ATTACHMENT_RUNTIME_REQUIREMENTS = (
         "pypdf>=6.0.0",
         "beautifulsoup4>=4.12.0",
+    )
+    BUNDLED_KSADK_ATTACHMENT_OCR_RUNTIME_REQUIREMENTS = (
         "rapidocr-onnxruntime>=1.2.0",
     )
     BUNDLED_KSADK_RUNTIME_REQUIREMENTS = (
@@ -137,11 +146,15 @@ class CodeBuilder(BaseBuilder):
     PIP_INDEX_CACHE_VERSION = 1
     PIP_INDEX_CACHE_TTL_SECONDS = 6 * 60 * 60
     PIP_INDEX_PROBE_TIMEOUT_SECONDS = 1.5
+    PIP_INSTALL_TIMEOUT_SECONDS = 45 * 60
+    CONTAINER_SUGGESTION_RAW_THRESHOLD_BYTES = 500 * 1024 * 1024
+    CONTAINER_SUGGESTION_ZIP_THRESHOLD_BYTES = 300 * 1024 * 1024
     
     def __init__(self, project_dir: Path, config: dict = None):
         super().__init__(project_dir, config)
         self.build_dir = self.project_dir / ".agentengine" / "code_build"
         self.deps_dir = self.build_dir / "linux_deps"
+        self.pip_cache_dir = self.build_dir / "pip_cache"
         self._install_progress_width = 0
         self._install_progress_percent = 0
         self._install_progress_stage_name = ""
@@ -386,6 +399,118 @@ class CodeBuilder(BaseBuilder):
         if manifest_path.exists():
             manifest_path.unlink()
 
+    def _pip_install_timeout_seconds(self) -> int:
+        configured = os.getenv("KSADK_BUILD_PIP_INSTALL_TIMEOUT_SECONDS")
+        if configured:
+            try:
+                value = int(configured)
+                if value > 0:
+                    return value
+            except ValueError:
+                pass
+        return self.PIP_INSTALL_TIMEOUT_SECONDS
+
+    def _attachment_ocr_runtime_enabled(self) -> bool:
+        value = os.getenv("KSADK_BUILD_ENABLE_ATTACHMENT_OCR", "")
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+
+    def _bundled_runtime_requirements(self) -> tuple[str, ...]:
+        requirements = list(self.BUNDLED_KSADK_RUNTIME_REQUIREMENTS)
+        if self._attachment_ocr_runtime_enabled():
+            requirements.extend(self.BUNDLED_KSADK_ATTACHMENT_OCR_RUNTIME_REQUIREMENTS)
+        if self._mcp_runtime_enabled():
+            requirements.extend(self.BUNDLED_KSADK_MCP_RUNTIME_REQUIREMENTS)
+        if self._postgres_session_runtime_enabled():
+            requirements.extend(self.BUNDLED_KSADK_POSTGRES_SESSION_REQUIREMENTS)
+        return tuple(requirements)
+
+    def _mcp_runtime_enabled(self) -> bool:
+        if self._env_flag_enabled("KSADK_BUILD_ENABLE_MCP"):
+            return True
+        if self._project_env_has_configured_value("KSADK_MCP_SERVERS"):
+            return True
+        if self._project_env_value("KSADK_ENABLE_MCP_TOOLS").strip().lower() in {"1", "true", "yes", "on"}:
+            return True
+        return self._project_imports_any({"mcp", "langchain_mcp_adapters"})
+
+    def _postgres_session_runtime_enabled(self) -> bool:
+        if self._env_flag_enabled("KSADK_BUILD_ENABLE_POSTGRES_SESSION"):
+            return True
+        backend = (
+            self._project_env_value("KSADK_SESSION_BACKEND")
+            or self._project_env_value("AGENTENGINE_SESSION_BACKEND")
+            or self._project_env_value("KSADK_STM_BACKEND")
+        )
+        if backend.strip().lower() == "postgres":
+            return True
+        dsn = (
+            self._project_env_value("KSADK_SESSION_DSN")
+            or self._project_env_value("KSADK_STM_URL")
+            or self._project_env_value("KSADK_STM_DB_URL")
+        )
+        return self._looks_like_postgres_dsn(dsn)
+
+    def _env_flag_enabled(self, name: str) -> bool:
+        return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+    def _project_env_has_configured_value(self, name: str) -> bool:
+        value = (os.getenv(name) or self._project_env_value(name)).strip()
+        if not value:
+            return False
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return value.strip("'\"").lower() not in {"", "[]", "{}", "null", "none"}
+        return bool(parsed)
+
+    def _project_env_value(self, name: str) -> str:
+        value = os.getenv(name)
+        if value:
+            return value
+        for env_file in (self.project_dir / ".env", self.project_dir / "agentengine.env"):
+            if not env_file.is_file():
+                continue
+            try:
+                for raw_line in env_file.read_text(encoding="utf-8").splitlines():
+                    stripped = raw_line.strip()
+                    if not stripped or stripped.startswith("#") or "=" not in stripped:
+                        continue
+                    key, raw_value = stripped.split("=", 1)
+                    if key.strip() == name:
+                        return raw_value.strip().strip("'\"")
+            except OSError:
+                continue
+        return ""
+
+    def _looks_like_postgres_dsn(self, value: str) -> bool:
+        normalized = (value or "").strip().lower()
+        return normalized.startswith(("postgres://", "postgresql://", "postgresql+asyncpg://"))
+
+    def _project_imports_any(self, module_names: set[str]) -> bool:
+        for py_file in self._iter_project_py_files():
+            if self._should_skip_project_file(py_file):
+                continue
+            try:
+                tree = ast.parse(py_file.read_text(encoding="utf-8"))
+            except (OSError, SyntaxError, UnicodeDecodeError):
+                continue
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        root = alias.name.split(".", 1)[0]
+                        if root in module_names:
+                            return True
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    root = node.module.split(".", 1)[0]
+                    if root in module_names:
+                        return True
+        return False
+
+    def _iter_project_py_files(self):
+        for path in self._iter_project_files():
+            if path.suffix == ".py":
+                yield path
+
     def _build_dependency_fingerprint(self, requirements_path: Path) -> dict:
         digest = hashlib.sha256()
         requirements_text = requirements_path.read_text(encoding="utf-8")
@@ -598,7 +723,7 @@ class CodeBuilder(BaseBuilder):
     def _build_requirements_list(self, detection_result) -> List[str]:
         final_deps = merge_requirement_lists(
             self._get_base_requirements(detection_result),
-            self.BUNDLED_KSADK_RUNTIME_REQUIREMENTS,
+            self._bundled_runtime_requirements(),
         )
 
         user_requirements = self.project_dir / "requirements.txt"
@@ -1085,7 +1210,8 @@ class CodeBuilder(BaseBuilder):
             
         except subprocess.TimeoutExpired:
             self._finish_install_progress()
-            click.secho("   ✗ 安装超时 (20分钟)", fg='red')
+            timeout_minutes = max(1, round(self._pip_install_timeout_seconds() / 60))
+            click.secho(f"   ✗ 安装超时 ({timeout_minutes}分钟)", fg='red')
             return False
         except Exception as e:
             self._finish_install_progress()
@@ -1214,6 +1340,7 @@ class CodeBuilder(BaseBuilder):
                         "--disable-pip-version-check",
                         "--retries", "2",
                         "--timeout", "30",
+                        "--cache-dir", str(self.pip_cache_dir),
                     ]
                     if index_url:
                         download_cmd += ["-i", index_url]
@@ -1406,6 +1533,62 @@ class CodeBuilder(BaseBuilder):
             zf.writestr("entrypoint.py", entrypoint_content)
         
         click.echo(f"   ✓ 打包完成: {len(project_files)} 个项目文件 + {deps_count} 个依赖文件")
+        self._emit_package_size_report(zip_path)
+
+    def _emit_package_size_report(self, zip_path: Path, *, limit: int = 8) -> None:
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                infos = zf.infolist()
+        except Exception:
+            return
+
+        if not infos:
+            return
+
+        by_top_level: dict[str, int] = {}
+        for item in infos:
+            name = item.filename.strip("/")
+            if not name:
+                continue
+            top_level = name.split("/", 1)[0]
+            by_top_level[top_level] = by_top_level.get(top_level, 0) + item.file_size
+
+        self._emit_package_size_report_from_entries(
+            raw_total=sum(item.file_size for item in infos),
+            compressed_total=sum(item.compress_size for item in infos),
+            by_top_level=by_top_level,
+            limit=limit,
+        )
+
+    def _emit_package_size_report_from_entries(
+        self,
+        *,
+        raw_total: int,
+        compressed_total: int,
+        by_top_level: dict[str, int],
+        limit: int = 8,
+    ) -> None:
+        click.echo(
+            "   包体积: "
+            f"zip {compressed_total / (1024 * 1024):.1f} MB / "
+            f"解压 {raw_total / (1024 * 1024):.1f} MB"
+        )
+        if by_top_level:
+            top_items = sorted(by_top_level.items(), key=lambda item: item[1], reverse=True)[:limit]
+            summary = ", ".join(
+                f"{name} {size / (1024 * 1024):.1f} MB"
+                for name, size in top_items
+            )
+            click.echo(f"   体积 Top{len(top_items)}: {summary}")
+        if (
+            raw_total > self.CONTAINER_SUGGESTION_RAW_THRESHOLD_BYTES
+            or compressed_total > self.CONTAINER_SUGGESTION_ZIP_THRESHOLD_BYTES
+        ):
+            click.secho(
+                "   ⚠ 包体积较大，建议使用 container 模式构建并复用镜像层: "
+                "agentengine build . --mode container --push --registry <registry>",
+                fg="yellow",
+            )
 
     def _emit_package_progress(self, label: str, current: int, total: int) -> None:
         if total < 500:
@@ -1680,6 +1863,8 @@ if __name__ == "__main__":
                 "3",
                 "--timeout",
                 "60",
+                "--cache-dir",
+                str(self.pip_cache_dir),
             ]
             if target_runtime_wheels:
                 for platform in self.TARGET_INSTALL_PLATFORMS:
@@ -1693,9 +1878,15 @@ if __name__ == "__main__":
                 ]
             if index_url:
                 install_cmd += ["-i", index_url]
-            result = self._run_streamed_pip_install(install_cmd, timeout=1200)
+            result = self._run_streamed_pip_install(
+                install_cmd,
+                timeout=self._pip_install_timeout_seconds(),
+            )
             if result.returncode != 0 and self._bootstrap_pip_if_missing(result):
-                result = self._run_streamed_pip_install(install_cmd, timeout=1200)
+                result = self._run_streamed_pip_install(
+                    install_cmd,
+                    timeout=self._pip_install_timeout_seconds(),
+                )
             if result.returncode == 0:
                 break
             self._emit_install_progress(
