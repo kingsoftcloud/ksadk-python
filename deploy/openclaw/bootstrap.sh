@@ -1042,6 +1042,16 @@ const patchCapabilityCatalog = {
     why: 'trusted-proxy 本地后端连接需要保留 unbound scopes，避免内部 Gateway client 授权丢失。',
     since: '2026.3.x',
   },
+  'gateway control-ui trusted-proxy scope retention': {
+    group: 'trusted-proxy-loopback',
+    why: 'trusted-proxy Control UI operator 已由平台认证，不应因为缺少浏览器 device identity 清空 operator scopes。',
+    since: '2026.5.26',
+  },
+  'gateway compact config.schema response': {
+    group: 'config-schema-response-budget',
+    why: 'AgentEngine 公网 WebSocket 链路对完整 config.schema 大响应敏感，full response 只保留顶层结构，字段细节继续由 config.schema.lookup 提供。',
+    since: '2026.5.26',
+  },
   'gateway workspace files proxy handler': {
     group: 'workspace-files-proxy',
     why: '把 /_ksadk/workspace/v1/* 转发到轻量 workspace files sidecar，支持 Hosted UI 文件管理。',
@@ -1385,6 +1395,75 @@ const replacements = [
     replacement: `const keepUnboundScopes = !device && decision.kind === "allow" && authMethod === "trusted-proxy" && !hasBrowserOriginHeader;
 					if (!device && (!isControlUi || decision.kind !== "allow") && !keepUnboundScopes) clearUnboundScopes();`,
   },
+  {
+    capability: 'gateway control-ui trusted-proxy scope retention',
+    variant: 'legacy-control-ui-already-preserves-scopes',
+    marker: 'if (!device && (!isControlUi || decision.kind !== "allow") && !keepUnboundScopes) clearUnboundScopes();',
+    needle: 'if (!device && (!isControlUi || decision.kind !== "allow") && !keepUnboundScopes) clearUnboundScopes();',
+    replacement: 'if (!device && (!isControlUi || decision.kind !== "allow") && !keepUnboundScopes) clearUnboundScopes();',
+  },
+  {
+    capability: 'gateway control-ui trusted-proxy scope retention',
+    variant: '2026.5.26-should-clear-unbound-scopes-minified',
+    marker: '!params.trustedProxyAuthOk && (params.authMethod === "token" || params.authMethod === "password" || params.authMethod === "trusted-proxy")',
+    needle: 'return params.decision.kind !== "allow" || !params.controlUiAuthPolicy.allowBypass && !params.preserveInsecureLocalControlUiScopes && (params.authMethod === "token" || params.authMethod === "password" || params.authMethod === "trusted-proxy");',
+    replacement: 'return params.decision.kind !== "allow" || !params.controlUiAuthPolicy.allowBypass && !params.preserveInsecureLocalControlUiScopes && !params.trustedProxyAuthOk && (params.authMethod === "token" || params.authMethod === "password" || params.authMethod === "trusted-proxy");',
+  },
+  {
+    capability: 'gateway control-ui trusted-proxy scope retention',
+    variant: '2026.5.26-should-clear-unbound-scopes-source',
+    marker: '!params.trustedProxyAuthOk &&\n      (params.authMethod === "token"',
+    needle: `return (
+    params.decision.kind !== "allow" ||
+    (!params.controlUiAuthPolicy.allowBypass &&
+      !params.preserveInsecureLocalControlUiScopes &&
+      (params.authMethod === "token" ||
+        params.authMethod === "password" ||
+        params.authMethod === "trusted-proxy"))
+  );`,
+    replacement: `return (
+    params.decision.kind !== "allow" ||
+    (!params.controlUiAuthPolicy.allowBypass &&
+      !params.preserveInsecureLocalControlUiScopes &&
+      !params.trustedProxyAuthOk &&
+      (params.authMethod === "token" ||
+        params.authMethod === "password" ||
+        params.authMethod === "trusted-proxy"))
+  );`,
+  },
+  {
+    capability: 'gateway compact config.schema response',
+    variant: '2026.5.26-config-schema-handler-minified-helper',
+    marker: 'function compactConfigSchemaResponseForAgentEngineGateway(response) {',
+    needle: 'const configHandlers = {\n\t"config.get": async ({ params, respond }) => {',
+    replacement: `function compactConfigSchemaResponseForAgentEngineGateway(response) {
+\ttry {
+\t\tconst compact = JSON.parse(JSON.stringify(response));
+\t\tconst pluginEntries = compact?.schema?.properties?.plugins?.properties?.entries;
+\t\tif (pluginEntries && typeof pluginEntries === "object") pluginEntries.properties = {};
+\t\tconst channels = compact?.schema?.properties?.channels;
+\t\tif (channels && typeof channels === "object") channels.properties = {};
+\t\tconst hints = compact?.uiHints;
+\t\tif (hints && typeof hints === "object") {
+\t\t\tfor (const key of Object.keys(hints)) {
+\t\t\t\tif (/^plugins\\.entries\\.[^.]+(\\.|$)/.test(key) || /^channels\\.[^.]+(\\.|$)/.test(key)) delete hints[key];
+\t\t\t}
+\t\t}
+\t\treturn compact;
+\t} catch {
+\t\treturn response;
+\t}
+}
+const configHandlers = {
+\t"config.get": async ({ params, respond }) => {`,
+  },
+  {
+    capability: 'gateway compact config.schema response',
+    variant: '2026.5.26-config-schema-handler-minified-response',
+    marker: 'respond(true, compactConfigSchemaResponseForAgentEngineGateway(loadSchemaWithPlugins()), void 0);',
+    needle: 'respond(true, loadSchemaWithPlugins(), void 0);',
+    replacement: 'respond(true, compactConfigSchemaResponseForAgentEngineGateway(loadSchemaWithPlugins()), void 0);',
+  },
 ];
 if (workspaceFilesEnabled) {
   replacements.unshift(
@@ -1559,6 +1638,22 @@ const walk = (dir) => {
 };
 
 walk(distDir);
+
+const hasGatewayScopeClearingCode = jsFiles.some((filePath) => {
+  const source = fs.readFileSync(filePath, 'utf8');
+  return source.includes('shouldClearUnboundScopesForMissingDeviceIdentity') || source.includes('clearUnboundScopes');
+});
+if (hasGatewayScopeClearingCode) {
+  requiredCapabilities.add('gateway control-ui trusted-proxy scope retention');
+}
+
+const hasFullConfigSchemaHandler = jsFiles.some((filePath) => {
+  const source = fs.readFileSync(filePath, 'utf8');
+  return source.includes('"config.schema"') && source.includes('respond(true, loadSchemaWithPlugins(), void 0);');
+});
+if (hasFullConfigSchemaHandler) {
+  requiredCapabilities.add('gateway compact config.schema response');
+}
 
 const patchSpecs = replacements.map(normalizePatchSpec);
 const patchedCapabilities = new Set();

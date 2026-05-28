@@ -6,6 +6,8 @@ FROM ${OPENCLAW_BASE_IMAGE}
 # ── 可通过 --build-arg 覆盖的参数 ──────────────────────────────
 ARG NPM_REGISTRY=https://registry.npmmirror.com
 ARG PYPI_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
+ARG APT_MIRROR=http://mirrors.aliyun.com/debian
+ARG APT_SECURITY_MIRROR=http://mirrors.aliyun.com/debian-security
 ARG TZ=Asia/Shanghai
 ARG OPENCLAW_INSTALL_WEIXIN_PLUGIN=true
 ARG OPENCLAW_WEIXIN_PLUGIN_SPEC=@tencent-weixin/openclaw-weixin
@@ -15,7 +17,7 @@ ARG OPENCLAW_LARK_PLUGIN_SPEC=@larksuite/openclaw-lark
 ARG OPENCLAW_LARK_PLUGIN_ID=openclaw-lark
 ARG OPENCLAW_INSTALL_MEM0_PLUGIN=true
 ARG OPENCLAW_MEM0_PLUGIN_ID=openclaw-mem0
-ARG OPENCLAW_MEM0_PLUGIN_URL=https://wangxu-test.ks3-cn-beijing.ksyuncs.com/ksc-openclaw-mem0-1.0.6.tgz
+ARG OPENCLAW_MEM0_PLUGIN_URL=https://memory-engine.ks3-cn-beijing.ksyuncs.com/ksc-openclaw-mem0-1.0.11.tgz
 ARG OPENCLAW_MEM0_PLUGIN_SHA256=
 ARG OPENCLAW_INSTALL_WPS_XIEZUO_PLUGIN=true
 ARG OPENCLAW_WPS_XIEZUO_PLUGIN_ID=wps-xiezuo
@@ -52,16 +54,22 @@ RUN --mount=type=cache,target=/root/.npm \
   elif command -v apt-get >/dev/null 2>&1; then \
   # Debian bookworm+: 使用 DEB822 格式 (.sources) \
   if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
-  sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources; \
+  sed -i "s|http://deb.debian.org/debian|${APT_MIRROR}|g; s|http://deb.debian.org/debian-security|${APT_SECURITY_MIRROR}|g; s|http://security.debian.org/debian-security|${APT_SECURITY_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
   elif [ -f /etc/apt/sources.list ]; then \
-  sed -i 's|deb.debian.org|mirrors.aliyun.com|g; s|security.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list; \
+  sed -i "s|http://deb.debian.org/debian|${APT_MIRROR}|g; s|http://deb.debian.org/debian-security|${APT_SECURITY_MIRROR}|g; s|http://security.debian.org/debian-security|${APT_SECURITY_MIRROR}|g" /etc/apt/sources.list; \
   fi; \
   # 跨架构 QEMU 构建时 GPG 校验可能失败，临时放宽 \
   apt-get -o Acquire::AllowInsecureRepositories=true \
   -o Acquire::AllowDowngradeToInsecureRepositories=true \
+  -o Acquire::Retries=5 \
+  -o Acquire::http::Timeout=30 \
+  -o Acquire::https::Timeout=30 \
   update; \
   DEBIAN_FRONTEND=noninteractive apt-get \
   -o APT::Get::AllowUnauthenticated=true \
+  -o Acquire::Retries=5 \
+  -o Acquire::http::Timeout=30 \
+  -o Acquire::https::Timeout=30 \
   install -y --no-install-recommends \
   tzdata chromium ca-certificates curl jq python3 python3-pip tini; \
   rm -rf /var/lib/apt/lists/*; \
