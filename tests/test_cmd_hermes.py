@@ -751,6 +751,63 @@ def test_hermes_deploy_creates_container_framework_and_persists_state(tmp_path: 
     assert "agent_id: ar-hermes-1" in (tmp_path / ".agentengine.state").read_text(encoding="utf-8")
 
 
+def test_hermes_deploy_create_payload_includes_explicit_network(tmp_path: Path, monkeypatch):
+    runner = CliRunner()
+    _FakeHermesClient.create_payload = None
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://model.example.com/v1")
+    monkeypatch.setattr(cmd_hermes, "AgentEngineClient", _FakeHermesClient)
+
+    result = runner.invoke(
+        cmd_hermes.hermes,
+        [
+            "deploy",
+            "--name",
+            "demo-hermes",
+            "--image",
+            "registry/hermes:test",
+            "--disable-public-access",
+            "--enable-vpc-access",
+            "--vpc-id",
+            "vpc-cli",
+            "--subnet-id",
+            "subnet-cli",
+            "--security-group-id",
+            "sg-cli",
+            "--availability-zone",
+            "cn-beijing-6b",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _FakeHermesClient.create_payload["network"] == {
+        "enable_public_access": False,
+        "enable_vpc_access": True,
+        "vpc_id": "vpc-cli",
+        "subnet_id": "subnet-cli",
+        "security_group_id": "sg-cli",
+        "availability_zone": "cn-beijing-6b",
+    }
+
+
+def test_hermes_deploy_omits_network_when_not_configured(tmp_path: Path, monkeypatch):
+    runner = CliRunner()
+    _FakeHermesClient.create_payload = None
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://model.example.com/v1")
+    monkeypatch.setattr(cmd_hermes, "AgentEngineClient", _FakeHermesClient)
+
+    result = runner.invoke(
+        cmd_hermes.hermes,
+        ["deploy", "--name", "demo-hermes", "--image", "registry/hermes:test"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "network" not in _FakeHermesClient.create_payload
+
+
 def test_hermes_deploy_defaults_model_base_url_and_omits_api_key(tmp_path: Path, monkeypatch):
     runner = CliRunner()
     _FakeHermesClient.create_payload = None

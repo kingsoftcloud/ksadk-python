@@ -644,6 +644,54 @@ def test_mcp_deploy_dry_run_json_plan(monkeypatch, tmp_path: Path):
     assert payload["request"]["body"]["artifact_type"] == "Code"
     assert payload["plan"]["artifact"]["reference"].startswith("ks3://agentengine-test/")
 
+
+def test_mcp_deploy_dry_run_includes_explicit_network(monkeypatch, tmp_path: Path):
+    runner = CliRunner()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("ksadk.detection.mcp_detector.MCPDetector", _FakeMCPDetector)
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeDryRunClient)
+
+    def _should_not_build(*_args, **_kwargs):
+        raise AssertionError("Dry run should not build artifacts")
+
+    monkeypatch.setattr(cmd_mcp, "_build_code_artifact", _should_not_build)
+
+    result = runner.invoke(
+        mcp,
+        [
+            "deploy",
+            ".",
+            "--dry-run",
+            "--output",
+            "json",
+            "--ks3-bucket",
+            "agentengine-test",
+            "--disable-public-access",
+            "--enable-vpc-access",
+            "--vpc-id",
+            "vpc-cli",
+            "--subnet-id",
+            "subnet-cli",
+            "--security-group-id",
+            "sg-cli",
+            "--availability-zone",
+            "cn-beijing-6b",
+        ],
+        env={"AGENTENGINE_SERVER_URL": "http://example.com"},
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["request"]["body"]["network"] == {
+        "enable_public_access": False,
+        "enable_vpc_access": True,
+        "vpc_id": "vpc-cli",
+        "subnet_id": "subnet-cli",
+        "security_group_id": "sg-cli",
+        "availability_zone": "cn-beijing-6b",
+    }
+
+
 def test_openclaw_list_supports_dry_run(monkeypatch):
     runner = CliRunner()
     monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeDryRunClient)

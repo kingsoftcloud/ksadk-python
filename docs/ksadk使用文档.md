@@ -222,6 +222,8 @@ OpenAI 风格 data URL 示例：
 
 运行时会保留这个官方输入块到 `input_content`，并额外归一化为内部附件上下文，因此业务代码可以继续通过 `has_current_files` / `current_attachments` 判断本轮是否带图。远程图片 URL 会作为引用保留，并可在支持原生图片输入的 LangGraph 路径下继续传给模型；KsADK 不会主动拉取远程图片做 OCR。需要平台提取、OCR 或本地附件内容时，请使用 data URL、`inlineData` 或 `fileData`。
 
+多模态模型“看图”和平台 OCR 是两条不同链路：推荐让支持图片的模型直接消费 `input_image` / `input_content`，这样不需要在代码包里安装本地 OCR 依赖。平台本地 OCR 只用于需要把图片预先转成 `current_attachment_results[*].text` 的场景；源码构建默认不打包 OCR 二进制栈，如需启用请在构建环境设置 `KSADK_BUILD_ENABLE_ATTACHMENT_OCR=true`，或在项目 `requirements.txt` 中显式加入 OCR 相关依赖。
+
 OpenAI 风格文件示例：
 
 ```json
@@ -295,7 +297,7 @@ OpenAI 风格文件示例：
 | --- | --- | --- | --- | --- |
 | 文本 | `.txt` `.md` `.json` `.yaml` `.yml` `.csv` `.tsv` `.log` | 支持 | 支持 | 不适用 |
 | 文档 | `.pdf` `.docx` `.pptx` `.xlsx` `.html` `.htm` | 支持 | 部分支持：文本提取 / OCR | 不适用 |
-| 图片 | `.png` `.jpg` `.jpeg` `.webp` / `image/*` | 支持 | 支持：OCR / 元信息提取 | 部分支持，见下方 |
+| 图片 | `.png` `.jpg` `.jpeg` `.webp` / `image/*` | 支持 | 元信息提取默认支持；OCR 需构建时显式启用 | 部分支持，见下方 |
 | 压缩包 | `.zip` | 支持 | 支持：目录/可读文件抽样提取 | 不适用 |
 | 其他二进制 | 其他后缀或 `application/octet-stream` | 支持 | 通常仅保留为附件引用 | 不支持 |
 
@@ -365,6 +367,28 @@ flowchart TB
 ```
 
 ## 7. `build / deploy / launch` 参数
+
+### 7.1 构建体积与依赖策略
+
+`agentengine build` 默认优先保持源码包轻量，不会把所有平台增强能力的重依赖都打进包：
+
+- 默认包含：KsADK runtime 必需依赖、附件基础解析依赖、`kingsoftcloud-sdk-python`、`requests-aws4auth`。
+- 推荐多模态图片写法：让支持图片的模型直接消费 OpenAI Responses `input_image` / runner `input_content`，不要为了“看图”默认启用本地 OCR。
+- 兼容 OCR 写法：如果业务明确需要平台先把图片转成 `current_attachment_results[*].text`，再设置 `KSADK_BUILD_ENABLE_ATTACHMENT_OCR=true`，或在项目 `requirements.txt` 显式写入 OCR 依赖。
+- MCP adapter：默认不打包；当项目 import `mcp` / `langchain_mcp_adapters`，或 `.env` 配置了非空 `KSADK_MCP_SERVERS` 时自动加入。自动发现不到时可设置 `KSADK_BUILD_ENABLE_MCP=true`。
+- PostgreSQL session：默认不打包 `asyncpg`；当 `.env` 设置 `KSADK_SESSION_BACKEND=postgres` 或 PostgreSQL DSN 时自动加入。自动发现不到时可设置 `KSADK_BUILD_ENABLE_POSTGRES_SESSION=true`。
+
+构建会复用 `.agentengine/code_build/pip_cache`，依赖清单未变化时也会复用 `.agentengine/code_build/linux_deps`，避免第二次构建从头下载。`pip install` 默认超时为 45 分钟，可用 `KSADK_BUILD_PIP_INSTALL_TIMEOUT_SECONDS` 调整。
+
+构建完成会打印 zip 体积、解压体积和 Top 体积来源。只有当解压体积超过 500 MB 或 zip 超过 300 MB 时，才会提示切换 container 模式：
+
+```bash
+agentengine build . --mode container --push --registry <registry>
+```
+
+源码包里依赖本身很多时，优先建议业务拆分不必要依赖、使用环境变量显式关闭未用能力、或切到已有的 container 模式；本轮不建议把 `ksadk` 内置进固定 base 镜像，因为 SDK 更新频繁，固定 base 镜像会降低版本灵活性。
+
+### 7.2 部署、存储与网络参数
 
 以下参数在 `deploy`、`launch` 以及对应 framework 命令中统一存在：
 

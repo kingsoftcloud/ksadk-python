@@ -230,6 +230,58 @@ def test_code_builder_repackage_reuses_dependencies_but_rebuilds_zip(
     assert len(package_calls) == 2
 
 
+def test_code_builder_package_zip_reports_top_size_contributors(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+):
+    (tmp_path / "agent.py").write_text("print('ok')\n", encoding="utf-8")
+
+    builder = CodeBuilder(tmp_path)
+    builder.deps_dir.mkdir(parents=True, exist_ok=True)
+    (builder.deps_dir / "large_dep").mkdir()
+    (builder.deps_dir / "large_dep" / "payload.bin").write_bytes(b"x" * 2048)
+    (builder.deps_dir / "small_dep.py").write_text("# dep\n", encoding="utf-8")
+
+    monkeypatch.setattr(CodeBuilder, "_iter_bundled_source_files", lambda self: [])
+
+    zip_path = builder.build_dir / "demo.zip"
+    builder._package_zip(zip_path, _FakeFrameworkDetector().detect())
+
+    output = capsys.readouterr().out
+    assert "包体积:" in output
+    assert "体积 Top" in output
+    assert "large_dep" in output
+
+
+def test_code_builder_package_zip_suggests_container_only_for_large_artifacts(
+    tmp_path: Path,
+    capsys,
+):
+    builder = CodeBuilder(tmp_path)
+
+    builder._emit_package_size_report_from_entries(
+        raw_total=499 * 1024 * 1024,
+        compressed_total=299 * 1024 * 1024,
+        by_top_level={"deps": 499 * 1024 * 1024},
+    )
+    assert "建议使用 container 模式" not in capsys.readouterr().out
+
+    builder._emit_package_size_report_from_entries(
+        raw_total=501 * 1024 * 1024,
+        compressed_total=299 * 1024 * 1024,
+        by_top_level={"deps": 501 * 1024 * 1024},
+    )
+    assert "建议使用 container 模式" in capsys.readouterr().out
+
+    builder._emit_package_size_report_from_entries(
+        raw_total=100 * 1024 * 1024,
+        compressed_total=301 * 1024 * 1024,
+        by_top_level={"deps": 100 * 1024 * 1024},
+    )
+    assert "建议使用 container 模式" in capsys.readouterr().out
+
+
 def test_code_builder_reports_rebuild_reason_for_runtime_source_changes(
     tmp_path: Path,
     monkeypatch,

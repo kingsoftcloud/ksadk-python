@@ -11,6 +11,7 @@ from ksadk.api.client import DryRunExit
 from ksadk.cli.agent_ref import resolve_mcp_ref
 from ksadk.cli.dry_run import dry_run_option, run_async_with_dry_run, effective_dry_run
 from ksadk.cli.error_utils import abort_with_cli_error, remote_error, resolution_error, usage_error, validation_error
+from ksadk.cli.network_options import build_network_payload, network_cli_kwargs, network_options
 from ksadk.cli.resource_common import (
     CONTEXT_SETTINGS,
     ResourceActionSet,
@@ -207,6 +208,7 @@ def build(
     default=False,
     help="强制重新构建，不使用缓存 (Code/Container 模式均适用)",
 )
+@network_options
 @cli_output_option()
 def deploy(
     mcp_dir: str,
@@ -217,6 +219,12 @@ def deploy(
     dry_run: bool,
     artifact_type: str,
     no_cache: bool,
+    enable_public_access: bool | None,
+    enable_vpc_access: bool,
+    vpc_id: str | None,
+    subnet_id: str | None,
+    security_group_id: str | None,
+    availability_zone: str | None,
     output_mode: str | None,
 ):
     """部署 MCP Server 到云端
@@ -254,6 +262,14 @@ def deploy(
                 dry_run=dry_run,
                 artifact_type=artifact_type,
                 no_cache=no_cache,
+                **network_cli_kwargs(
+                    enable_public_access=enable_public_access,
+                    enable_vpc_access=enable_vpc_access,
+                    vpc_id=vpc_id,
+                    subnet_id=subnet_id,
+                    security_group_id=security_group_id,
+                    availability_zone=availability_zone,
+                ),
                 dry_run_context=dry_run_context,
             ),
             dry_run=dry_run,
@@ -669,6 +685,12 @@ async def _deploy_mcp_async(
     dry_run: bool,
     artifact_type: str,
     no_cache: bool = False,
+    enable_public_access: bool | None = None,
+    enable_vpc_access: bool = False,
+    vpc_id: str | None = None,
+    subnet_id: str | None = None,
+    security_group_id: str | None = None,
+    availability_zone: str | None = None,
     dry_run_context: dict[str, object] | None = None,
 ):
     """异步 MCP 部署流程。"""
@@ -818,6 +840,16 @@ async def _deploy_mcp_async(
         enable_auth=enable_auth,
         detection_result=detection_result,
     )
+    network_payload = build_network_payload(
+        enable_public_access=enable_public_access,
+        enable_vpc_access=enable_vpc_access,
+        vpc_id=vpc_id,
+        subnet_id=subnet_id,
+        security_group_id=security_group_id,
+        availability_zone=availability_zone,
+    )
+    if network_payload:
+        request_data["network"] = network_payload
 
     async with AgentEngineClient(region=region, dry_run=dry_run) as client:
         if existing_mcp_id:

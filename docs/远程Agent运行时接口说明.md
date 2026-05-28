@@ -178,12 +178,15 @@ Hermes 终端 WebSocket 额外要求：
 - `POST /agentengine/api/v1/ListSessions`
 - `POST /agentengine/api/v1/DeleteSession`
 - `POST /agentengine/api/v1/ListSessionEvents`
+- `GET /agentengine/api/v1/SubscribeRunEvents`
 - `POST /agentengine/api/v1/RunAgent`
 - `POST /agentengine/api/v1/UploadFile`
 - `POST /agentengine/api/v1/ListWorkspaceFiles`
 - `POST /agentengine/api/v1/AddWorkspaceFile`
 - `POST /agentengine/api/v1/DeleteWorkspaceFile`
+- `POST /agentengine/api/v1/CancelRun`
 - `POST /agentengine/api/v1/ListAgentModels`
+- `GET /agentengine/api/v1/ExportWorkspaceZip`
 - `POST /run_sse`
 - `GET/POST/DELETE /apps/{app_name}/users/{user_id}/sessions*`
 
@@ -341,21 +344,26 @@ curl -H "Authorization: Bearer <api_key>" \
 
 图片与附件输入：
 
-- `input` 为数组时，`content` 推荐使用 OpenAI Responses 风格 `input_text` / `input_image` / `input_file`
-- 老客户端仍可使用 KsADK 兼容扩展 part 数组
-- 推荐 OpenAI Responses 输入块：
-  - `input_text`
-  - `input_image`
-  - `input_file`
-- 兼容扩展输入块：
-  - `text`
-  - `inlineData`
-  - `fileData`
-- 其中：
+推荐写法：
+
+- `/v1/responses` 推荐使用 OpenAI Responses content blocks：`input_text` / `input_image` / `input_file`
+- runner 业务代码推荐读取 `payload["input_content"]` / `payload["input_messages"]`，这是 KsADK 默认 canonical 输入
+- 判断当前轮是否传了图片或文件，推荐使用 `payload["has_current_files"]` 和 `payload["current_attachments"]`
+- 读取当前轮 OCR、文档抽取、压缩包摘要，推荐使用 `payload["current_attachment_results"]`
+
+兼容写法：
+
+- 老客户端仍可使用 KsADK 兼容扩展 part 数组：`text` / `inlineData` / `fileData`
+- runner 里仍保留 `payload["input_parts"]`，用于兼容已有 `text / inlineData / fileData` 业务代码
+- `payload["attachments"]` / `payload["attachment_results"]` 仍保留，但语义是最近有效附件上下文，可能来自历史 fallback；不要用它判断当前最新 user turn 是否上传了文件
+- `/v1/chat/completions` 对外仍保持 Chat Completions 语义，官方图片块使用 `text` / `image_url`；`inlineData` / `fileData` 在 Chat 入口只属于 KsADK 兼容扩展，不是 OpenAI Chat 官方能力
+
+字段细节：
+
 - `input_image.image_url` 支持远程图片 URL 或 `data:image/...;base64,...`，运行时会归一化为内部附件上下文
 - `input_file.file_data` 会归一化为内部 `inlineData`；`input_file.file_url` / `input_file.file_id` 会归一化为内部 `fileData` 引用
-- `inlineData` 适合直接内联 base64 内容
-- `fileData` 适合先调用 `UploadFile`，再引用返回的 `ksadk-upload://...`
+- `inlineData` 适合旧客户端直接内联 base64 内容
+- `fileData` 适合旧客户端先调用 `UploadFile`，再引用返回的 `ksadk-upload://...`
 - 远程图片 URL 会作为引用保留，并可在支持原生图片输入的 LangGraph 路径下继续传给模型；KsADK 不会主动拉取远程图片或远程文件做 OCR / 文本提取。需要平台提取、OCR 或本地附件内容时，请使用 data URL、`file_data`、`inlineData` 或 `fileData`
 
 图片示例（OpenAI Responses 风格 data URL）：
@@ -380,6 +388,62 @@ curl -H "Authorization: Bearer <api_key>" \
   "model": "glm-5.1",
   "stream": false
 }
+```
+
+业务代码获取图片信息：
+
+```python
+def ksadk_prepare_input(payload, session_context):
+    # 当前轮是否真的上传了图片/文件。不要用 attachments 判断当前轮，
+    # attachments 可能是历史最近一次有效附件上下文。
+    has_current_files = payload.get("has_current_files", False)
+    current_attachments = payload.get("current_attachments", [])
+
+    images = [
+        item
+        for item in current_attachments
+        if str(item.get("mime_type", "")).startswith("image/")
+    ]
+
+    # OpenAI Responses canonical content，适合直接转给支持原生多模态的模型。
+    input_content = payload.get("input_content", [])
+    image_blocks = [
+        block
+        for block in input_content
+        if block.get("type") == "input_image"
+    ]
+
+    return {
+        "input": payload.get("input", ""),
+        "images": images,
+        "image_blocks": image_blocks,
+    }
+```
+
+如果业务 agent 使用 LangGraph / LangChain 并且模型支持原生多模态，优先从 `input_content` 或 `input_messages` 读取 `input_image`，按底层模型 SDK 需要的消息格式继续传递；如果需要读取平台归一化后的附件元信息、OCR / 文档抽取结果，则读取 `current_attachments` 和 `current_attachment_results`。`input_parts`、`inlineData`、`fileData` 是 legacy/internal 兼容输入，仍可作为老客户端兜底。
+
+多模态模型“看图”和平台 OCR 是两条不同链路：推荐让支持图片的模型直接消费 `input_image` / `input_content`，这样不需要在代码包里安装本地 OCR 依赖。平台本地 OCR 只用于需要把图片预先转成 `current_attachment_results[*].text` 的场景；源码构建默认不打包 OCR 二进制栈，如需启用请在构建环境设置 `KSADK_BUILD_ENABLE_ATTACHMENT_OCR=true`，或在项目 `requirements.txt` 中显式加入 OCR 相关依赖。
+
+图片 data URL 或 `inlineData.data` 本身就是 base64 字符串，payload 可能很大，这是内联传图时的正常现象。业务日志不要直接打印完整 `payload`、`input_content`、`input_parts` 或 `current_attachments`；建议只记录字段摘要，例如文件名、MIME、大小、transport、data URL 前缀和长度：
+
+```python
+def summarize_attachment(item):
+    data = item.get("data") or ""
+    return {
+        "display_name": item.get("display_name"),
+        "mime_type": item.get("mime_type"),
+        "transport": item.get("transport"),
+        "file_uri": item.get("file_uri"),
+        "size_bytes": item.get("size_bytes"),
+        "has_inline_data": bool(data),
+        "inline_data_length": len(data),
+    }
+
+logger.info(
+    "ksadk_prepare_state attachments=%s has_current_files=%s",
+    [summarize_attachment(item) for item in payload.get("current_attachments", [])],
+    payload.get("has_current_files", False),
+)
 ```
 
 旧客户端图片示例（先上传，再引用）：
@@ -438,7 +502,7 @@ curl -H "Authorization: Bearer <api_key>" \
 | --- | --- | --- | --- | --- |
 | 文本 | `.txt` `.md` `.json` `.yaml` `.yml` `.csv` `.tsv` `.log` | 支持 | 支持 | 不适用 |
 | 文档 | `.pdf` `.docx` `.pptx` `.xlsx` `.html` `.htm` | 支持 | 部分支持：文本提取 / OCR | 不适用 |
-| 图片 | `.png` `.jpg` `.jpeg` `.webp` / `image/*` | 支持 | 支持：OCR / 元信息提取 | 部分支持，见下方框架差异 |
+| 图片 | `.png` `.jpg` `.jpeg` `.webp` / `image/*` | 支持 | 元信息提取默认支持；OCR 需构建时显式启用 | 部分支持，见下方框架差异 |
 | 压缩包 | `.zip` | 支持 | 支持：目录/可读文件抽样提取 | 不适用 |
 | 其他二进制 | 其他后缀或 `application/octet-stream` | 支持 | 通常仅保留为附件引用 | 不支持 |
 
@@ -785,6 +849,7 @@ KsADK 扩展图片引用示例：
 - `ListSessions`
 - `DeleteSession`
 - `ListSessionEvents`
+- `SubscribeRunEvents`
 - `GetResponseFeedback`
 - `UpsertResponseFeedback`
 - `DeleteResponseFeedback`
@@ -799,6 +864,8 @@ KsADK 扩展图片引用示例：
 
 - `GET /agentengine/api/v1/AttachmentContent`
 - `GET /agentengine/api/v1/GetWorkspaceFileContent`
+
+本地 runtime 还提供 `CancelRun`、`ExportWorkspaceZip`、`/agentengine/api/v1/ws/{agent_id}/{file_path}` 等 UI 辅助接口。公网 `PublicEndpoint` 是否放行这些接口，以 `agentengine-gateway` 的 Hosted UI 白名单和独立 facade 实现为准；不要把任意 runtime 本地路由都当成公网稳定 contract。
 
 ## 6.5 Hosted UI Bootstrap
 
@@ -960,6 +1027,40 @@ KsADK 扩展图片引用示例：
 - `ListSessions` 的 `Data` 额外包含 `Total`
 - `ListSessionEvents` 的 `Data` 额外包含请求透传的 `Offset` 和 `Limit`
 
+### `GET /agentengine/api/v1/SubscribeRunEvents`
+
+说明：
+
+- 这是 AgentEngine Hosted UI / 本地 Web UI 的运行生命周期扩展接口，用于刷新页面、SSE 断开或切换会话后，按同一个 `SessionId + InvocationId` 继续订阅已经持久化的运行事件
+- 它不是 OpenAI Responses API 或 Chat Completions 官方接口，不改变 `/v1/responses`、`/v1/chat/completions` 的对外协议语义
+- 订阅返回的是 SSE，事件内容与 `ListSessionEvents.Events[]` 的事件 payload 形态一致
+- 当前本地 runtime 订阅窗口为 5 分钟；如果订阅期间看到 terminal `run_status`，服务端会发送 `data: [DONE]` 并结束流
+
+查询参数：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `SessionId` | `string` | 是 | 会话 ID |
+| `InvocationId` | `string` | 是 | 本轮运行 ID，通常来自已回放事件的 `InvocationId` |
+| `AfterSeqId` | `integer` | 否 | 只推送 `SeqId > AfterSeqId` 且 `InvocationId` 匹配的事件，默认 `0` |
+
+请求示例：
+
+```http
+GET /agentengine/api/v1/SubscribeRunEvents?SessionId=sess-123&InvocationId=inv-abc&AfterSeqId=12
+Accept: text/event-stream
+```
+
+SSE 数据示例：
+
+```text
+data: {"EventId":"evt-13","SessionId":"sess-123","EventType":"assistant_delta","SeqId":13,"InvocationId":"inv-abc","Content":{"text":"继续输出"}}
+
+data: {"EventId":"evt-14","SessionId":"sess-123","EventType":"run_status","SeqId":14,"InvocationId":"inv-abc","Content":{"status":"completed"}}
+
+data: [DONE]
+```
+
 ## 6.7 文件上传与附件内容
 
 ### `POST /agentengine/api/v1/UploadFile`
@@ -1085,6 +1186,27 @@ KsADK 扩展图片引用示例：
 }
 ```
 
+### `GET /agentengine/api/v1/ExportWorkspaceZip?Path=<path>&AgentId=<id>`
+
+说明：
+
+- 这是本地 Web UI / Workspace 面板使用的目录导出辅助接口
+- 它会读取指定 workspace 目录及其子文件，并返回 zip 文件
+- share link 场景和公网数据面是否可用，以 Hosted UI facade / gateway 白名单为准
+
+请求参数：
+
+| 参数 | 必填 | 说明 |
+| --- | --- | --- |
+| `Path` | 否 | 待导出的 workspace 相对目录，默认 `"."` |
+| `AgentId` | 否 | 与 `Name` 二选一 |
+| `Name` | 否 | 与 `AgentId` 二选一 |
+
+返回：
+
+- `application/zip`
+- 文件名通常为 `workspace.zip`
+
 ### `GET /agentengine/api/v1/GetWorkspaceFileContent?FilePath=<path>&AgentId=<id>`
 
 请求参数：
@@ -1100,6 +1222,14 @@ KsADK 扩展图片引用示例：
 - 原始文件内容
 - 透传上游 runtime 的响应 Header（会过滤掉 `content-encoding` / `transfer-encoding` / `connection` / `content-length`）
 - `Content-Type` 透传自 runtime
+
+### `GET /agentengine/api/v1/ws/{agent_id}/{file_path}`
+
+说明：
+
+- 这是 Workspace HTML 预览和相对资源解析使用的本地辅助路径，不是 WebSocket
+- HTML 文件会注入预览运行所需的 base href / CSP，便于页面内相对 CSS、JS、图片资源继续从 workspace 读取
+- 它不建议作为业务 API 直接依赖；公网可用性以 Hosted UI facade / gateway 白名单为准
 
 ## 6.9 模型目录
 
@@ -1374,6 +1504,36 @@ curl -X POST "https://<PublicEndpoint>/agentengine/api/v1/DeleteResponseFeedback
 
 - `ApiFormat=responses` 时：Responses 风格 SSE
 - `ApiFormat=chat_completions` 时：透传 runtime 的流式返回，实践中通常仍是 ksadk 统一 SSE 事件
+
+### `POST /agentengine/api/v1/CancelRun`
+
+说明：
+
+- 这是本地 Web UI 的运行取消辅助接口
+- 请求会尝试调用当前 active runner 的 `request_cancel(InvocationId)`
+- 如果 runner 不支持真正取消，接口仍可能返回 `Cancelled=true`，语义是“已请求取消”；前端仍应以后续 `run_status` 或事件流终态为准
+- 公网 `PublicEndpoint` 是否放行该 action，以 Hosted UI facade / gateway 白名单为准
+
+请求体：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `AgentId` | `string` | 否 | Agent ID |
+| `InvocationId` | `string` | 是 | 需要取消的运行 ID |
+
+响应示例：
+
+```json
+{
+  "Code": 0,
+  "Message": "Success",
+  "RequestId": "req-xxxx",
+  "Action": "CancelRun",
+  "Data": {
+    "Cancelled": true
+  }
+}
+```
 
 非流式返回：
 
@@ -1654,7 +1814,11 @@ OpenClaw 会额外起一个本地 `workspace_files_app` sidecar，然后由 gate
   - `ListSessions`
   - `DeleteSession`
   - `ListSessionEvents`
+  - `SubscribeRunEvents`
   - `RunAgent`
+  - `GetResponseFeedback`
+  - `UpsertResponseFeedback`
+  - `DeleteResponseFeedback`
   - `UploadFile`
   - `ListWorkspaceFiles`
   - `AddWorkspaceFile`
@@ -1666,6 +1830,8 @@ OpenClaw 会额外起一个本地 `workspace_files_app` sidecar，然后由 gate
 不要假设下列内容一定是公网 contract：
 
 - 任意 `/agentengine/api/v1/*` 路径
+- runtime 本地存在但未进入 Hosted UI action 白名单的 UI 辅助路径，例如 `CancelRun`、`ExportWorkspaceZip`、Workspace HTML 预览路径
+- `/debug/*`、`/builder/*`、`/traces`、`eval_sets`、`eval_results` 等开发 / 调试 / 内部辅助入口
 - 任意 Pod 内部监听端口
 - OpenClaw 上游项目的全部原生 API
 - Hermes dashboard 内部 `/api/*` 的所有未文档化子路径

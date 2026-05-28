@@ -17,8 +17,6 @@ LANGCHAIN_ECOSYSTEM_REQUIREMENTS = (
     "langchain-openai>=1.2.0,<2.0.0",
     "langchain-core>=1.4.0,<2.0.0",
     "langgraph>=1.2.0,<1.3.0",
-    "mcp>=1.1.0",
-    "langchain-mcp-adapters>=0.0.1",
 )
 
 DEEPAGENTS_REQUIREMENTS = (

@@ -280,7 +280,7 @@ CMD ["python", "entrypoint.py"]
 
         base_deps = merge_requirement_lists(
             base_deps,
-            CodeBuilder.BUNDLED_KSADK_RUNTIME_REQUIREMENTS,
+            CodeBuilder(project_path or self.project_dir)._bundled_runtime_requirements(),
         )
         
         # 合并用户 requirements.txt (如果存在)

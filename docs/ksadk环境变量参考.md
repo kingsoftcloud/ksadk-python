@@ -313,6 +313,8 @@
 | `UV_INDEX_URL` | 构建 / Runtime image | 否 | uv 默认 | `PIP_INDEX_URL` | 否 | 开发者 / 平台 | 否 | uv 依赖安装源。 |
 | `KSADK_BUILD_PIP_INSTALL_TIMEOUT_SECONDS` | Code Builder | 否 | `2700` | 无 | 否 | 构建环境 / 开发者 | 否 | 源码构建时 `pip install` 总超时秒数。 |
 | `KSADK_BUILD_ENABLE_ATTACHMENT_OCR` | Code Builder / Container Builder | 否 | `false` | 无 | 否 | 构建环境 / 开发者 | 否 | 是否把平台本地 OCR 依赖打进代码包。不开启不影响多模态模型直接消费 `input_image`。 |
+| `KSADK_BUILD_ENABLE_MCP` | Code Builder / Container Builder | 否 | `false` | 无 | 否 | 构建环境 / 开发者 | 否 | 强制把 `mcp` / `langchain-mcp-adapters` 打进包。通常会根据项目 import 或非空 `KSADK_MCP_SERVERS` 自动启用；`[]` 不会启用。 |
+| `KSADK_BUILD_ENABLE_POSTGRES_SESSION` | Code Builder / Container Builder | 否 | `false` | 无 | 否 | 构建环境 / 开发者 | 否 | 强制把 `asyncpg` 打进包。通常会根据 `KSADK_SESSION_BACKEND=postgres` 或 PostgreSQL DSN 自动启用。 |
 | `KSADK_RUNTIME_PORT` | Runtime image / CLI | 否 | `8080` | 无 | 否 | 平台 | 否 | 模板运行时 HTTP 端口。 |
 | `KSADK_PROJECT_DIR` | Sessions / Web | 否 | 当前工作目录 | 无 | 否 | 本地运行时 | 否 | 本地 session/workspace 状态 project root。 |
 | `KSADK_RESPONSES_SESSION_HEADER` | RemoteRunner | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 远端 Responses session 透传 header 名称。 |
@@ -509,8 +511,12 @@ Hermes / OpenClaw 有大量镜像启动和安全策略变量，本文只列常�
 | `KSADK_ATTACHMENT_RUNTIME_REQUIREMENTS` | builders | 否 | 代码常量 | 无 | 否 | SDK 内部 | 否 | 附件运行时内置依赖集合。 |
 | `KSADK_ATTACHMENT_OCR_RUNTIME_REQUIREMENTS` | builders | 否 | 代码常量 | 无 | 否 | SDK 内部 | 否 | 附件 OCR 运行时内置依赖集合。 |
 | `KSADK_BUILD_ENABLE_ATTACHMENT_OCR` | builders | 否 | `false` | 无 | 否 | 构建环境 / 开发者 | 否 | 是否把平台本地 OCR 依赖打进代码包。 |
+| `KSADK_BUILD_ENABLE_MCP` | builders | 否 | `false` | 无 | 否 | 构建环境 / 开发者 | 否 | 强制加入 MCP adapter 构建依赖。 |
 | `KSADK_BUILD_PIP_INSTALL_TIMEOUT_SECONDS` | builders | 否 | `2700` | 无 | 否 | 构建环境 / 开发者 | 否 | 源码构建时 pip install 的超时秒数。 |
+| `KSADK_BUILD_ENABLE_POSTGRES_SESSION` | builders | 否 | `false` | 无 | 否 | 构建环境 / 开发者 | 否 | 强制加入 PostgreSQL session 构建依赖。 |
 | `KSADK_CORE_RUNTIME_REQUIREMENTS` | builders | 否 | 代码常量 | 无 | 否 | SDK 内部 | 否 | 核心运行时内置依赖集合。 |
+| `KSADK_MCP_RUNTIME_REQUIREMENTS` | builders | 否 | 代码常量 | 无 | 否 | SDK 内部 | 否 | MCP adapter 可选运行时内置依赖集合。 |
+| `KSADK_POSTGRES_SESSION_REQUIREMENTS` | builders | 否 | 代码常量 | 无 | 否 | SDK 内部 | 否 | PostgreSQL session 可选运行时内置依赖集合。 |
 | `KSADK_RUNTIME_REQUIREMENTS` | builders | 否 | 代码常量 | 无 | 否 | SDK 内部 | 否 | 完整运行时内置依赖集合。 |
 | `KSADK_EVENTS_TABLE` | sessions | 否 | `ksadk_events` | 无 | 否 | SDK 内部 | 否 | 本地 SQLite events 表名。 |
 | `KSADK_SESSIONS_TABLE` | sessions | 否 | `ksadk_sessions` | 无 | 否 | SDK 内部 | 否 | 本地 SQLite sessions 表名。 |

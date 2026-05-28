@@ -34,10 +34,22 @@ ENV_VAR_REGISTRY: tuple[EnvVarSpec, ...] = (
         "false",
     ),
     EnvVarSpec(
+        "KSADK_BUILD_ENABLE_MCP",
+        "builders",
+        "Include LangChain MCP adapter dependencies in source/container builds.",
+        "false",
+    ),
+    EnvVarSpec(
         "KSADK_BUILD_PIP_INSTALL_TIMEOUT_SECONDS",
         "builders",
         "pip install timeout seconds for source builds.",
         "2700",
+    ),
+    EnvVarSpec(
+        "KSADK_BUILD_ENABLE_POSTGRES_SESSION",
+        "builders",
+        "Include asyncpg dependency for PostgreSQL session backend in source/container builds.",
+        "false",
     ),
     EnvVarSpec(
         "KSADK_CORE_RUNTIME_REQUIREMENTS",
