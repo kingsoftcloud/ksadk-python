@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kingsoftcloud.github.io/ksadk-python/schemas/agentengine/memory_backend_manifest/v1",
+  "title": "MemoryBackendManifest",
+  "description": "Memory backend manifest for OpenClaw runtime configuration.",
+  "type": "object",
+  "required": ["schema_version", "backend_type"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "v1",
+      "description": "Schema version identifier. Must be 'v1'."
+    },
+    "backend_type": {
+      "type": "string",
+      "enum": ["openclaw_default", "mem0"],
+      "description": "Memory backend type. v1 only supports 'openclaw_default' and 'mem0'."
+    },
+    "config": {
+      "type": "object",
+      "description": "Backend-specific configuration.",
+      "additionalProperties": true,
+      "properties": {
+        "mem0_instance_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Mem0 instance UUID (required when backend_type is 'mem0')."
+        },
+        "mem0_instance_name": {
+          "type": "string",
+          "description": "Mem0 instance display name."
+        },
+        "mem0_region": {
+          "type": "string",
+          "description": "Mem0 instance region."
+        }
+      }
+    },
+    "secrets_env": {
+      "type": "object",
+      "description": "Environment variable names for secrets. Values are env var names, not actual secrets.",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "properties": {
+        "api_key": {
+          "type": "string",
+          "description": "Environment variable name for API key (e.g., 'MEM0_API_KEY')."
+        },
+        "memory_id": {
+          "type": "string",
+          "description": "Environment variable name for memory ID (e.g., 'MEM0_MEMORY_ID')."
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "backend_type": { "const": "mem0" }
+        }
+      },
+      "then": {
+        "required": ["config"],
+        "properties": {
+          "config": {
+            "required": ["mem0_instance_id"]
+          }
+        }
+      }
+    }
+  ]
+}

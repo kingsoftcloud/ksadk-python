@@ -1,0 +1,83 @@
+# All dotfiles/dotdirs (e.g. .env, .agentengine, .xxx)
+.*
+!.git*
+!.dockerignore
+!.worktree
+!.github/
+
+# Local publish credentials. Never commit PyPI/TestPyPI tokens.
+.pypirc
+pypirc
+
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+build/
+dist/
+site/
+downloads/
+eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+*.egg
+MANIFEST
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+cover/
+
+# Translations
+*.mo
+*.pot
+
+# Database
+db.sqlite3
+db.sqlite3-journal
+
+# Environments (non-dot paths)
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Lock files
+Pipfile.lock
+poetry.lock
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# Project specific
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+*~
+dmypy.json
+cython_debug/
+local_settings.py
+instance/
+/webui/node_modules/
+webui

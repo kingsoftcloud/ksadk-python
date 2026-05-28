@@ -1,0 +1,17 @@
+prune tests
+prune ksadk/server/web-ui
+prune ksadk/server/web-ui/dist-hosted
+prune ksadk/server/web-ui/node_modules
+prune .pytest_cache
+prune .ruff_cache
+prune .venv
+prune build
+prune dist
+prune site
+prune node_modules
+global-exclude *.py[cod]
+global-exclude __pycache__
+recursive-exclude ksadk/server/web-ui *
+recursive-exclude ksadk/server/web-ui/dist-hosted *
+recursive-exclude ksadk/server/web-ui/node_modules *
+recursive-include ksadk_runtime_common/schemas *.json

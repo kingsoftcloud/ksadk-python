@@ -1,0 +1,152 @@
+site_name: KsADK
+site_description: Kingsoft Cloud Agent Development Kit
+site_url: https://kingsoftcloud.github.io/ksadk-python/
+repo_url: https://github.com/kingsoftcloud/ksadk-python
+repo_name: kingsoftcloud/ksadk-python
+edit_uri: edit/main/public-docs/
+docs_dir: public-docs
+site_dir: site
+strict: true
+
+theme:
+  name: material
+  language: en
+  features:
+    - content.action.edit
+    - content.action.view
+    - content.code.copy
+    - content.code.select
+    - navigation.footer
+    - navigation.path
+    - navigation.sections
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - search.highlight
+    - search.share
+
+nav:
+  - Overview: index.md
+  - Getting Started:
+      - Concepts: getting-started/concepts.md
+      - Quickstart: getting-started/quickstart.md
+      - Configuration: getting-started/configuration.md
+      - Project Structure: getting-started/project-structure.md
+  - Tutorials:
+      - Build A LangGraph Agent: tutorials/langgraph-agent.md
+      - Bring An Existing Agent: tutorials/existing-agent.md
+  - Guides:
+      - Local Web UI: guides/local-web-ui.md
+      - Web UI Repository: guides/web-ui-source.md
+      - Runtime Architecture: guides/runtime-architecture.md
+      - Runtime Products: guides/runtime-products.md
+      - Agent Context: guides/agent-context.md
+      - Agent Best Practices: guides/agent-best-practices.md
+      - Frameworks: guides/frameworks.md
+      - Tools And Skill Runtime: guides/tools-and-skill-runtime.md
+      - Memory And Knowledge: guides/memory-knowledge.md
+      - Attachments And Multimodal Input: guides/attachments-multimodal.md
+      - Workspace Files: guides/workspace-files.md
+      - Observability And Tracing: guides/observability-tracing.md
+      - Build And Package: guides/build-and-package.md
+  - Reference:
+      - CLI: reference/cli.md
+      - OpenAI-Compatible API: reference/openai-compatible-api.md
+      - Project Configuration: reference/project-config.md
+      - Remote Runtime API: reference/remote-runtime-api.md
+      - Environment Variables: reference/environment-variables.md
+      - Runtime Sessions And Files: reference/runtime-sessions-files.md
+      - Security Boundaries: reference/security-boundaries.md
+      - Troubleshooting: reference/troubleshooting.md
+  - Contributing:
+      - Contributing Guide: contributing/index.md
+      - Testing Strategy: contributing/testing.md
+      - Release Process: contributing/release.md
+
+exclude_docs: |
+  internal/
+  .zread/
+
+not_in_nav: |
+  *.zh.md
+
+plugins:
+  - search
+  - i18n:
+      docs_structure: suffix
+      fallback_to_default: true
+      languages:
+        - locale: en
+          name: English
+          build: true
+          default: true
+        - locale: zh
+          name: 简体中文
+          build: true
+          site_name: KsADK
+          site_description: 金山云智能体开发套件
+          theme:
+            language: zh
+          nav_translations:
+            Overview: 欢迎
+            Getting Started: 快速开始
+            Concepts: 初识 KsADK
+            Quickstart: 快速开始
+            Configuration: 配置项
+            Project Structure: 项目结构
+            Tutorials: 教程
+            Build A LangGraph Agent: 构建 LangGraph 智能体
+            Bring An Existing Agent: 接入已有智能体
+            Guides: 指南
+            Local Web UI: 本地 Web UI
+            Web UI Repository: Web UI 仓库
+            Runtime Architecture: 运行时架构
+            Runtime Products: 运行时产品
+            Agent Context: 智能体上下文
+            Agent Best Practices: Agent 最佳实践
+            Frameworks: 框架接入
+            Tools And Skill Runtime: 工具与 Skill Runtime
+            Memory And Knowledge: 记忆与知识库
+            Attachments And Multimodal Input: 附件与多模态输入
+            Workspace Files: 工作区文件
+            Observability And Tracing: 可观测与链路追踪
+            Build And Package: 构建与打包
+            Reference: 参考
+            CLI: 命令行
+            OpenAI-Compatible API: OpenAI 兼容 API
+            Project Configuration: 项目配置
+            Remote Runtime API: 远程运行时 API
+            Environment Variables: 环境变量
+            Runtime Sessions And Files: 会话与文件
+            Security Boundaries: 安全边界
+            Troubleshooting: 故障排查
+            Contributing: 贡献
+            Contributing Guide: 贡献指南
+            Testing Strategy: 测试策略
+            Release Process: 发布流程
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            docstring_style: google
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - md_in_html
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - toc:
+      permalink: true
