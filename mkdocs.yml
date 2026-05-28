@@ -1,5 +1,5 @@
 site_name: KsADK
-site_description: Kingsoft Cloud Agent Development Kit
+site_description: 金山云智能体开发套件
 site_url: https://kingsoftcloud.github.io/ksadk-python/
 repo_url: https://github.com/kingsoftcloud/ksadk-python
 repo_name: kingsoftcloud/ksadk-python
@@ -10,7 +10,7 @@ strict: true
 
 theme:
   name: material
-  language: en
+  language: zh
   features:
     - content.action.edit
     - content.action.view
@@ -25,49 +25,50 @@ theme:
     - search.share
 
 nav:
-  - Overview: index.md
-  - Getting Started:
-      - Concepts: getting-started/concepts.md
-      - Quickstart: getting-started/quickstart.md
-      - Configuration: getting-started/configuration.md
-      - Project Structure: getting-started/project-structure.md
-  - Tutorials:
-      - Build A LangGraph Agent: tutorials/langgraph-agent.md
-      - Bring An Existing Agent: tutorials/existing-agent.md
-  - Guides:
-      - Local Web UI: guides/local-web-ui.md
-      - Web UI Repository: guides/web-ui-source.md
-      - Runtime Architecture: guides/runtime-architecture.md
-      - Runtime Products: guides/runtime-products.md
-      - Agent Context: guides/agent-context.md
-      - Agent Best Practices: guides/agent-best-practices.md
-      - Frameworks: guides/frameworks.md
-      - Tools And Skill Runtime: guides/tools-and-skill-runtime.md
-      - Memory And Knowledge: guides/memory-knowledge.md
-      - Attachments And Multimodal Input: guides/attachments-multimodal.md
-      - Workspace Files: guides/workspace-files.md
-      - Observability And Tracing: guides/observability-tracing.md
-      - Build And Package: guides/build-and-package.md
-  - Reference:
-      - CLI: reference/cli.md
-      - OpenAI-Compatible API: reference/openai-compatible-api.md
-      - Project Configuration: reference/project-config.md
-      - Remote Runtime API: reference/remote-runtime-api.md
-      - Environment Variables: reference/environment-variables.md
-      - Runtime Sessions And Files: reference/runtime-sessions-files.md
-      - Security Boundaries: reference/security-boundaries.md
-      - Troubleshooting: reference/troubleshooting.md
-  - Contributing:
-      - Contributing Guide: contributing/index.md
-      - Testing Strategy: contributing/testing.md
-      - Release Process: contributing/release.md
+  - 欢迎: index.md
+  - 快速开始:
+      - 初识 KsADK: getting-started/concepts.md
+      - 快速开始: getting-started/quickstart.md
+      - 配置项: getting-started/configuration.md
+      - 项目结构: getting-started/project-structure.md
+  - 教程:
+      - 构建 LangGraph 智能体: tutorials/langgraph-agent.md
+      - 构建 ADK 智能体: tutorials/adk-agent.md
+      - 接入已有智能体: tutorials/existing-agent.md
+  - 指南:
+      - 本地 Web UI: guides/local-web-ui.md
+      - Web UI 仓库: guides/web-ui-source.md
+      - 运行时架构: guides/runtime-architecture.md
+      - 运行时产品: guides/runtime-products.md
+      - 智能体上下文: guides/agent-context.md
+      - Agent 最佳实践: guides/agent-best-practices.md
+      - 框架接入: guides/frameworks.md
+      - 工具与 Skill Runtime: guides/tools-and-skill-runtime.md
+      - 记忆与知识库: guides/memory-knowledge.md
+      - 附件与多模态输入: guides/attachments-multimodal.md
+      - 工作区文件: guides/workspace-files.md
+      - 可观测与链路追踪: guides/observability-tracing.md
+      - 构建与打包: guides/build-and-package.md
+  - 参考:
+      - 命令行: reference/cli.md
+      - OpenAI 兼容 API: reference/openai-compatible-api.md
+      - 项目配置: reference/project-config.md
+      - 远程运行时 API: reference/remote-runtime-api.md
+      - 环境变量: reference/environment-variables.md
+      - 会话与文件: reference/runtime-sessions-files.md
+      - 安全边界: reference/security-boundaries.md
+      - 故障排查: reference/troubleshooting.md
+  - 贡献:
+      - 贡献指南: contributing/index.md
+      - 测试策略: contributing/testing.md
+      - 发布流程: contributing/release.md
 
 exclude_docs: |
   internal/
   .zread/
 
 not_in_nav: |
-  *.zh.md
+  *.en.md
 
 plugins:
   - search
@@ -75,54 +76,58 @@ plugins:
       docs_structure: suffix
       fallback_to_default: true
       languages:
-        - locale: en
-          name: English
-          build: true
-          default: true
         - locale: zh
           name: 简体中文
           build: true
+          default: true
           site_name: KsADK
           site_description: 金山云智能体开发套件
           theme:
             language: zh
+        - locale: en
+          name: English
+          build: true
+          site_name: KsADK
+          site_description: Kingsoft Cloud Agent Development Kit
+          theme:
+            language: en
           nav_translations:
-            Overview: 欢迎
-            Getting Started: 快速开始
-            Concepts: 初识 KsADK
-            Quickstart: 快速开始
-            Configuration: 配置项
-            Project Structure: 项目结构
-            Tutorials: 教程
-            Build A LangGraph Agent: 构建 LangGraph 智能体
-            Bring An Existing Agent: 接入已有智能体
-            Guides: 指南
-            Local Web UI: 本地 Web UI
-            Web UI Repository: Web UI 仓库
-            Runtime Architecture: 运行时架构
-            Runtime Products: 运行时产品
-            Agent Context: 智能体上下文
-            Agent Best Practices: Agent 最佳实践
-            Frameworks: 框架接入
-            Tools And Skill Runtime: 工具与 Skill Runtime
-            Memory And Knowledge: 记忆与知识库
-            Attachments And Multimodal Input: 附件与多模态输入
-            Workspace Files: 工作区文件
-            Observability And Tracing: 可观测与链路追踪
-            Build And Package: 构建与打包
-            Reference: 参考
-            CLI: 命令行
-            OpenAI-Compatible API: OpenAI 兼容 API
-            Project Configuration: 项目配置
-            Remote Runtime API: 远程运行时 API
-            Environment Variables: 环境变量
-            Runtime Sessions And Files: 会话与文件
-            Security Boundaries: 安全边界
-            Troubleshooting: 故障排查
-            Contributing: 贡献
-            Contributing Guide: 贡献指南
-            Testing Strategy: 测试策略
-            Release Process: 发布流程
+            欢迎: Overview
+            快速开始: Getting Started
+            初识 KsADK: Concepts
+            配置项: Configuration
+            项目结构: Project Structure
+            教程: Tutorials
+            构建 LangGraph 智能体: Build A LangGraph Agent
+            构建 ADK 智能体: Build An ADK Agent
+            接入已有智能体: Bring An Existing Agent
+            指南: Guides
+            本地 Web UI: Local Web UI
+            Web UI 仓库: Web UI Repository
+            运行时架构: Runtime Architecture
+            运行时产品: Runtime Products
+            智能体上下文: Agent Context
+            Agent 最佳实践: Agent Best Practices
+            框架接入: Frameworks
+            工具与 Skill Runtime: Tools And Skill Runtime
+            记忆与知识库: Memory And Knowledge
+            附件与多模态输入: Attachments And Multimodal Input
+            工作区文件: Workspace Files
+            可观测与链路追踪: Observability And Tracing
+            构建与打包: Build And Package
+            参考: Reference
+            命令行: CLI
+            OpenAI 兼容 API: OpenAI-Compatible API
+            项目配置: Project Configuration
+            远程运行时 API: Remote Runtime API
+            环境变量: Environment Variables
+            会话与文件: Runtime Sessions And Files
+            安全边界: Security Boundaries
+            故障排查: Troubleshooting
+            贡献: Contributing
+            贡献指南: Contributing Guide
+            测试策略: Testing Strategy
+            发布流程: Release Process
   - mkdocstrings:
       handlers:
         python:

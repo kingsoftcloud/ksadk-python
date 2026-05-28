@@ -1,16 +1,15 @@
-# Remote Runtime API
+# 远程运行时 API
 
-This reference describes the public-safe runtime API shape after an agent or
-runtime product is deployed. The externally visible base URL is the hosted
-`PublicEndpoint` returned by the control plane.
+这页说明 Agent 或运行时产品部署后的公开安全 API 形态。外部可见 base URL 是控制面
+返回的 hosted `PublicEndpoint`。
 
-Use placeholders in public examples:
+公开示例使用占位值：
 
 ```text
 https://<public-endpoint>
 ```
 
-## Entry Model
+## 入口模型
 
 ```mermaid
 flowchart LR
@@ -20,56 +19,55 @@ flowchart LR
   Runtime --> Agent["agent or runtime product"]
 ```
 
-The runtime pod may implement local routes, but public callers should treat the
-gateway-facing `PublicEndpoint` routes as the contract.
+runtime pod 可能实现本地路由，但外部调用方应以 gateway 暴露的
+`PublicEndpoint` 路由作为 contract。
 
-## Authentication
+## 鉴权
 
-| Client | Recommended authentication |
+| 客户端 | 推荐鉴权 |
 | --- | --- |
-| SDK, CLI, automation | `Authorization: Bearer <api_key>` |
-| Hosted browser session | `ae_ui_session` cookie created by the hosted link flow |
-| Hermes terminal WebSocket | bearer auth plus `Sec-WebSocket-Protocol: ks-terminal.v1` |
+| SDK、CLI、自动化 | `Authorization: Bearer <api_key>` |
+| Hosted 浏览器会话 | hosted link flow 创建的 `ae_ui_session` cookie |
+| Hermes 终端 WebSocket | bearer auth 加 `Sec-WebSocket-Protocol: ks-terminal.v1` |
 
-External callers should not manufacture internal gateway headers such as
-`X-Auth-Agent-Id`, `X-Auth-Account-Id`, or runtime-specific forwarded headers.
+外部调用方不要手工构造 `X-Auth-Agent-Id`、`X-Auth-Account-Id` 或运行时专用
+forwarded header。
 
-## Common Headers
+## 常见 Header
 
-| Header | Use |
+| Header | 用途 |
 | --- | --- |
-| `Authorization: Bearer <api_key>` | API calls through the public endpoint |
-| `Content-Type: application/json` | JSON requests |
-| `Accept: application/json` | non-streaming responses |
-| `Accept: text/event-stream` | streaming responses |
+| `Authorization: Bearer <api_key>` | 通过 public endpoint 调用 API |
+| `Content-Type: application/json` | JSON 请求 |
+| `Accept: application/json` | 非流式响应 |
+| `Accept: text/event-stream` | 流式响应 |
 
-For multipart upload routes, let the HTTP client generate the
-`multipart/form-data` boundary.
+multipart 上传路由的 `multipart/form-data` boundary 应由 HTTP client 自动生成。
 
-## Runtime Types
+## 运行时类型
 
-| Runtime | Main public surface |
+| 运行时 | 主要公开 surface |
 | --- | --- |
-| Code-framework agent | `/v1/responses`, `/v1/chat/completions`, workspace files, hosted UI actions |
-| Hermes | dashboard, `/v1/*` proxy, terminal WebSocket, workspace files |
-| OpenClaw | OpenClaw gateway plus KsADK workspace files |
+| 代码框架 Agent | `/v1/responses`、`/v1/chat/completions`、workspace files、hosted UI actions |
+| Hermes | dashboard、`/v1/*` proxy、终端 WebSocket、workspace files |
+| OpenClaw | OpenClaw gateway 加 KsADK workspace files |
 
-## OpenAI-Compatible Routes
+## OpenAI 兼容路由
 
 ### `POST /v1/responses`
 
-Use this for Responses-compatible clients.
+Responses 兼容客户端使用这个入口。
 
-| Field | Meaning |
+| 字段 | 含义 |
 | --- | --- |
-| `input` | user input string or message/content array |
-| `model` | optional model override |
-| `instructions` | request-level system/developer instruction |
-| `conversation` | stable conversation id or `{ "id": "..." }` |
-| `previous_response_id` | continuation handle for compatible clients |
-| `safety_identifier` | stable end-user id, preferably hashed |
-| `stream` | `true` for SSE |
-| `metadata` | request metadata retained by the runtime |
+| `input` | 用户输入字符串或 message/content 数组 |
+| `model` | 可选模型覆盖 |
+| `instructions` | 请求级系统/开发者指令 |
+| `conversation` | 稳定 conversation id 或 `{ "id": "..." }` |
+| `previous_response_id` | 兼容客户端续聊 handle |
+| `safety_identifier` | 稳定最终用户 id，建议 hash 后传入 |
+| `stream` | `true` 时返回 SSE |
+| `metadata` | runtime 保留的请求 metadata |
 
 ```bash
 curl -sS https://<public-endpoint>/v1/responses \
@@ -80,7 +78,7 @@ curl -sS https://<public-endpoint>/v1/responses \
 
 ### `POST /v1/chat/completions`
 
-Use this for Chat Completions-compatible clients.
+Chat Completions 兼容客户端使用这个入口。
 
 ```bash
 curl -sS https://<public-endpoint>/v1/chat/completions \
@@ -89,86 +87,80 @@ curl -sS https://<public-endpoint>/v1/chat/completions \
   -d '{"model":"my-model","messages":[{"role":"user","content":"hello"}]}'
 ```
 
-Responses and Chat Completions keep their protocol semantics at the public
-boundary. KsADK normalizes both into runner input before calling framework code.
+Responses 和 Chat Completions 在公开边界保持各自协议语义。KsADK 会在调用框架
+代码前把两类入口归一化为 runner input。
 
 ## Hosted UI Actions
 
-The hosted UI uses action-style routes for sessions, events, uploads, workspace
-files, cancellation, and model listing. Public API clients should prefer the
-OpenAI-compatible `/v1/*` routes unless they are specifically integrating the
-hosted UI surface.
+Hosted UI 使用 action 风格路由管理 session、event、upload、workspace file、
+cancel 和 model listing。公开 API 客户端优先使用 OpenAI 兼容的 `/v1/*` 路由；
+只有明确集成 hosted UI surface 时才直接对接 action 路由。
 
-| Category | Purpose |
+| 类别 | 用途 |
 | --- | --- |
-| session | create, get, list, delete sessions |
-| events | list or subscribe to run events |
-| run | invoke or cancel an agent run |
-| files | upload files and manage workspace files |
-| bootstrap | fetch UI bootstrap metadata |
+| session | 创建、获取、列出、删除会话 |
+| events | 列出或订阅 run events |
+| run | 调用或取消 Agent run |
+| files | 上传文件和管理 workspace 文件 |
+| bootstrap | 获取 UI bootstrap metadata |
 
 ## Workspace Files
 
-Workspace routes are available to code-framework runtimes and runtime products
-that enable the KsADK workspace surface.
+代码框架运行时，以及启用 KsADK workspace surface 的运行时产品，都可以使用
+workspace routes。
 
-- list files.
-- get file content or metadata.
-- add or update a file.
-- delete a file when allowed.
-- export a workspace archive when supported.
+- 列出文件。
+- 获取文件内容或 metadata。
+- 新增或更新文件。
+- 允许时删除文件。
+- 支持时导出 workspace archive。
 
-Keep all paths relative to the workspace root. Do not expose host filesystem
-paths in public examples.
+所有路径都应是 workspace root 下的相对路径。公开示例不要暴露宿主机绝对路径。
 
-## Hermes Specifics
+## Hermes 特有边界
 
-Hermes wraps its own dashboard and API server. Publicly documented Hermes
-surfaces are:
+Hermes 包装了自己的 dashboard 和 API server。公开文档只描述这些 surface：
 
-| Surface | Purpose |
+| Surface | 用途 |
 | --- | --- |
 | `/` | Hermes dashboard |
 | `/v1/*` | Hermes API proxy surface |
 | `/_ksadk/workspace/v1/*` | KsADK workspace files |
 | `/_ksadk/terminal/ws` | terminal WebSocket |
 
-Terminal clients must use:
+终端客户端必须使用：
 
 ```text
 Sec-WebSocket-Protocol: ks-terminal.v1
 ```
 
-## OpenClaw Specifics
+## OpenClaw 特有边界
 
-OpenClaw's upstream gateway owns its native routes. KsADK publicly documents
-only the platform-added contract:
+OpenClaw 上游 gateway 拥有其原生路由。KsADK 公开文档只承诺平台补充 contract：
 
-| Surface | Purpose |
+| Surface | 用途 |
 | --- | --- |
-| OpenClaw gateway root | OpenClaw-native UI and API |
+| OpenClaw gateway root | OpenClaw 原生 UI 和 API |
 | `/_ksadk/workspace/v1/*` | KsADK workspace files |
-| health route | gateway liveness, as exposed by the runtime product |
+| health route | 运行时产品暴露的 gateway liveness |
 
-Do not describe every upstream OpenClaw native endpoint as a KsADK contract
-unless it is implemented or stabilized by KsADK.
+不要把每个上游 OpenClaw 原生 endpoint 都写成 KsADK contract，除非它由 KsADK
+实现或稳定化。
 
-## Streaming
+## 流式输出
 
-For streaming calls, use SSE:
+流式调用使用 SSE：
 
 ```text
 Accept: text/event-stream
 ```
 
-Clients should handle text deltas, tool events, errors, and completion events.
-LangGraph and ADK may emit different internal events, but the public client
-should consume the normalized runtime stream.
+客户端应处理文本 delta、工具事件、错误和完成事件。LangGraph 与 ADK 内部事件
+可能不同，但公开客户端应消费 runtime 归一化后的 stream。
 
-## Public Documentation Rules
+## 公开文档规则
 
-Public examples must not include private endpoint hostnames, real API keys,
-gateway tokens, cookies, kdocs tokens, internal forwarded headers, kubeconfig
-paths, cluster names, private image registries, customer data, session ids, or
-workspace paths.
+公开示例不得包含私有 endpoint hostname、真实 API key、gateway token、cookie、
+kdocs token、内部 forwarded header、kubeconfig 路径、集群名称、私有镜像
+registry、客户数据、session id 或 workspace 路径。
 

@@ -109,8 +109,6 @@ PUBLIC_REPO_RULES = COMMON_RULES + (
     DenyRule(
         name="internal-agent-ops-material",
         prefixes=(
-            "AGENTS.md",
-            "CLAUDE.md",
             "skills/agentengine-",
         ),
         description="internal agent/operator playbooks can expose private operations, kubeconfig paths, or support procedures",

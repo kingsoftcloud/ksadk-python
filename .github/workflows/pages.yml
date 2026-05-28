@@ -40,6 +40,13 @@ jobs:
       - name: Build docs
         run: uv run --extra dev python -m mkdocs build --strict
 
+      - name: Preserve legacy Chinese docs path
+        run: |
+          mkdir -p /tmp/ksadk-docs-zh-alias
+          rsync -a --delete --exclude en/ --exclude zh/ site/ /tmp/ksadk-docs-zh-alias/
+          rm -rf site/zh
+          mv /tmp/ksadk-docs-zh-alias site/zh
+
       - name: Audit docs artifact
         run: find site -type f | sed 's#^site/##' | uv run --extra dev python scripts/open_source_audit.py --target github-pages --file-list -
 

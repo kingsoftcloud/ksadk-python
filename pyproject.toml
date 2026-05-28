@@ -146,6 +146,7 @@ ksadk = "ksadk.cli:main"
 Homepage = "https://github.com/kingsoftcloud/ksadk-python"
 Repository = "https://github.com/kingsoftcloud/ksadk-python"
 Documentation = "https://kingsoftcloud.github.io/ksadk-python/"
+PyPI = "https://pypi.org/project/ksadk/"
 Source = "https://github.com/kingsoftcloud/ksadk-python"
 Issues = "https://github.com/kingsoftcloud/ksadk-python/issues"
 

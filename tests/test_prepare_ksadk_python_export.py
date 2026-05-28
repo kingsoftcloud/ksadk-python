@@ -30,6 +30,8 @@ def _write(path: Path, text: str = "ok\n") -> None:
 def _make_git_repo(root: Path) -> None:
     files = {
         "README.md": "# KSADK\n",
+        "README.en.md": "# KSADK\n",
+        "README.zh-CN.md": "# KSADK\n",
         "LICENSE": "Apache License\n",
         "mkdocs.yml": "site_name: KSADK\n",
         "pyproject.toml": "[project]\nname = \"ksadk\"\n",
@@ -56,8 +58,8 @@ def _make_git_repo(root: Path) -> None:
         "skills/agentengine-cluster-debug/SKILL.md": "kubeconfig\n",
         "Makefile.openclaw": "DOCKER_REGISTRY ?= ghcr.io\n",
         "Makefile.promo.Dockerfile": "FROM internal\n",
-        "CLAUDE.md": "internal agent notes\n",
-        "AGENTS.md": "internal agent notes\n",
+        "CLAUDE.md": "public assistant notes\n",
+        "AGENTS.md": "public contributor notes\n",
         ".env.example": "OPENAI_API_BASE=https://kspmas.ksyun.com/v1\n",
         ".zread/wiki/current.md": "generated\n",
         "site/index.html": "generated\n",
@@ -100,6 +102,10 @@ def test_export_plan_selects_public_candidate_files_and_excludes_local_artifacts
 
     assert plan.ok is True
     assert "README.md" in plan.export_paths
+    assert "README.en.md" in plan.export_paths
+    assert "README.zh-CN.md" in plan.export_paths
+    assert "CLAUDE.md" in plan.export_paths
+    assert "AGENTS.md" in plan.export_paths
     assert "ksadk/__init__.py" in plan.export_paths
     assert "ksadk/server/static/index.html" in plan.export_paths
     assert "ksadk/server/web-ui/src/App.tsx" not in plan.export_paths
@@ -125,8 +131,6 @@ def test_export_plan_selects_public_candidate_files_and_excludes_local_artifacts
     assert "skills/agentengine-cluster-debug/SKILL.md" not in plan.export_paths
     assert "Makefile.openclaw" not in plan.export_paths
     assert "Makefile.promo.Dockerfile" not in plan.export_paths
-    assert "CLAUDE.md" not in plan.export_paths
-    assert "AGENTS.md" not in plan.export_paths
     assert ".env.example" not in plan.export_paths
     assert ".zread/wiki/current.md" not in plan.export_paths
     assert "site/index.html" not in plan.export_paths
@@ -171,6 +175,10 @@ def test_cli_writes_clean_export_candidate_and_manifest(tmp_path):
     assert payload["ok"] is True
     assert payload["outputDir"] == str(output_dir.resolve())
     assert (output_dir / "README.md").is_file()
+    assert (output_dir / "README.en.md").is_file()
+    assert (output_dir / "README.zh-CN.md").is_file()
+    assert (output_dir / "CLAUDE.md").is_file()
+    assert (output_dir / "AGENTS.md").is_file()
     assert (output_dir / "ksadk" / "__init__.py").is_file()
     assert (output_dir / "ksadk" / "server" / "static" / "index.html").is_file()
     assert not (output_dir / "ksadk" / "server" / "web-ui").exists()
@@ -188,8 +196,6 @@ def test_cli_writes_clean_export_candidate_and_manifest(tmp_path):
     assert not (output_dir / "skills").exists()
     assert not (output_dir / "Makefile.openclaw").exists()
     assert not (output_dir / "Makefile.promo.Dockerfile").exists()
-    assert not (output_dir / "CLAUDE.md").exists()
-    assert not (output_dir / "AGENTS.md").exists()
     assert not (output_dir / ".env.example").exists()
     assert not (output_dir / "deploy" / "helm" / "ksadk-docs").exists()
 

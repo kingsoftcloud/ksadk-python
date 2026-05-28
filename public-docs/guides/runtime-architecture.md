@@ -1,74 +1,88 @@
-# Runtime Architecture
+# 运行时架构
 
-KsADK local runtime has one central job: load a user agent project, adapt the
-selected framework to a common runner interface, and expose predictable local
-protocols for terminal, browser, and API clients.
+KsADK 本地运行时的核心职责是：加载用户 Agent 项目，把所选框架适配到统一 Runner
+接口，并为终端、浏览器和 API 客户端暴露可预测的本地协议。
 
-## Layer Model
+## 分层模型
 
 ```mermaid
 flowchart LR
-  CLI["agentengine run / web"] --> Env["environment setup"]
-  Env --> Detect["framework detection"]
-  Detect --> Factory["runner factory"]
-  Factory --> Runner["BaseRunner implementation"]
+  CLI["agentengine run / web"] --> Env["环境准备"]
+  Env --> Detect["框架检测"]
+  Detect --> Factory["Runner Factory"]
+  Factory --> Runner["BaseRunner 实现"]
   Runner --> Server["FastAPI app"]
   Server --> Protocol["/v1/responses<br/>/v1/chat/completions<br/>/run_sse<br/>/agentengine/api/v1/RunAgent"]
-  Protocol --> Conversation["conversation runtime"]
-  Conversation --> Sessions["session service"]
+  Protocol --> Conversation["对话运行时"]
+  Conversation --> Sessions["Session Service"]
   Conversation --> Context["PlatformInvocationContext"]
   Conversation --> RunnerCall["runner.invoke / runner.stream"]
 ```
 
-The important boundary is that the HTTP server and conversation runtime do not
-need to know whether the user project is ADK, LangGraph, LangChain, or
-DeepAgents. They call `BaseRunner.invoke()` or `BaseRunner.stream()`.
+关键边界是：HTTP server 和对话运行时不需要知道用户项目是 ADK、LangGraph、
+LangChain 还是 DeepAgents。它们调用 `BaseRunner.invoke()` 或
+`BaseRunner.stream()`。
 
-## Core Packages
+## 核心包
 
-| Package | Responsibility |
+| Package | 职责 |
 | --- | --- |
-| `ksadk.cli` | command entry points, local process setup, user-facing errors |
-| `ksadk.detection` | project config, entry file, framework, and agent variable detection |
-| `ksadk.runners` | common runner contract and framework adapters |
-| `ksadk.server` | FastAPI app, local Web UI APIs, OpenAI-compatible endpoints |
-| `ksadk.conversations` | message normalization, session turn orchestration, protocol payloads |
-| `ksadk.sessions` | local and pluggable session storage |
-| `ksadk_runtime_common.workspace_files` | reusable workspace file routes and preview security |
+| `ksadk.cli` | 命令入口、本地进程准备、用户可读错误 |
+| `ksadk.detection` | 项目配置、入口文件、框架和 Agent 变量检测 |
+| `ksadk.runners` | 统一 Runner 契约和框架适配器 |
+| `ksadk.server` | FastAPI app、本地 Web UI API、OpenAI 兼容 endpoint |
+| `ksadk.conversations` | 消息规范化、session turn 编排、协议 payload |
+| `ksadk.sessions` | 本地和可插拔 session 存储 |
+| `ksadk_runtime_common.workspace_files` | 可复用工作区文件路由和预览安全 |
 
-## Startup Lifecycle
+## 启动生命周期
 
-`agentengine run` and `agentengine web` follow the same broad path:
+`agentengine run` 和 `agentengine web` 大体路径一致：
 
-1. resolve the project directory.
-2. re-execute inside the project virtual environment when needed.
-3. load environment and project settings.
-4. detect the framework and entry point.
-5. create the matching runner.
-6. load the user agent.
-7. run terminal mode or start the local HTTP server.
+1. 解析项目目录。
+2. 必要时重新进入项目虚拟环境执行。
+3. 加载环境变量和项目设置。
+4. 检测框架和入口点。
+5. 创建匹配的 Runner。
+6. 加载用户 Agent。
+7. 进入终端模式或启动本地 HTTP server。
 
-If framework detection returns `unknown`, the CLI stops before importing the
-user project as a runner.
+如果框架检测结果是 `unknown`，CLI 会在导入用户代码作为 Runner 之前停止。
 
-## Startup Boundaries
+```mermaid
+flowchart TD
+  A["agentengine run / web"] --> B["resolve project dir"]
+  B --> C["load .env and YAML"]
+  C --> D{"detect framework"}
+  D -->|"adk"| E["ADKRunner"]
+  D -->|"langgraph"| F["LangGraphRunner"]
+  D -->|"langchain"| G["LangChainRunner"]
+  D -->|"deepagents"| H["DeepAgentsRunner"]
+  D -->|"unknown"| X["stop with project error"]
+  E --> I["load_agent"]
+  F --> I
+  G --> I
+  H --> I
+  I --> J{"mode"}
+  J -->|"interactive"| K["terminal loop"]
+  J -->|"server / web"| L["FastAPI + local UI"]
+```
 
-The local runtime has a strict startup boundary:
+## 启动边界
 
-1. CLI code resolves paths, configuration, environment variables, and the
-   project virtual environment.
-2. detection code decides which framework adapter should be used.
-3. the runner factory creates a framework-specific runner.
-4. the runner loads user code.
-5. the server layer exposes HTTP protocols and delegates execution to the
-   runner.
+本地运行时有严格启动边界：
 
-Detection happens before user code is imported. That distinction is important
-for safety and debuggability: a broken module import should be reported as an
-agent loading problem, while a missing `agentengine.yaml`, invalid entry point,
-or unsupported framework should be reported as a project detection problem.
+1. CLI 代码解析路径、配置、环境变量和项目虚拟环境。
+2. detection 代码决定使用哪个框架适配器。
+3. runner factory 创建框架特定 Runner。
+4. runner 加载用户代码。
+5. server 层暴露 HTTP 协议并委托给 runner。
 
-For public examples, keep project setup explicit:
+检测发生在导入用户代码之前。这个区别对安全和调试很重要：模块导入失败应报告为
+Agent 加载问题；缺少 `agentengine.yaml`、入口点无效或框架不受支持，应报告为项目
+检测问题。
+
+公开示例应保持项目配置明确：
 
 ```yaml
 name: support-agent
@@ -77,76 +91,64 @@ entry_point: agent.py
 agent_variable: root_agent
 ```
 
-Explicit configuration reduces ambiguity in CI and makes the same project work
-the same way under `agentengine run`, `agentengine web`, local API tests, and
-packaging checks.
+## 框架检测
 
-## Framework Detection
-
-Detection uses explicit configuration first, then convention:
+检测优先使用显式配置，再使用约定：
 
 ```mermaid
 flowchart TD
-  A["project directory"] --> B{"agentengine.yaml / ksadk.yaml?"}
-  B -->|yes| C["validate framework, entry_point, agent_variable"]
+  A["项目目录"] --> B{"agentengine.yaml / ksadk.yaml?"}
+  B -->|yes| C["校验 framework, entry_point, agent_variable"]
   B -->|no| D{"langgraph.json?"}
-  D -->|yes| E["parse graph target"]
-  D -->|no| F["scan package and entry files"]
+  D -->|yes| E["解析 graph target"]
+  D -->|no| F["扫描包和入口文件"]
   C --> G["DetectionResult"]
   E --> G
   F --> G
   G --> H["create_runner"]
 ```
 
-Public samples should include `agentengine.yaml` because explicit config is
-easier to review and less dependent on source-code heuristics.
+公开 sample 推荐包含 `agentengine.yaml`，因为显式配置更容易审核，也较少依赖源码
+启发式。
 
-The convention-based fallback is still useful for quick experiments. It checks
-common project layouts such as:
+约定检测仍适合快速实验。它会检查：
 
-- a root `agent.py`, `main.py`, or `app.py`.
-- a package directory with `agent.py`, `main.py`, `app.py`, or `__init__.py`.
-- a `src/<package>` layout.
-- `langgraph.json` graph targets.
+- 根目录 `agent.py`、`main.py` 或 `app.py`。
+- 包目录中的 `agent.py`、`main.py`、`app.py` 或 `__init__.py`。
+- `src/<package>` 布局。
+- `langgraph.json` graph target。
 
-When convention detection is used, the runtime still needs two concrete facts:
-which file should be imported and which variable inside that file is the agent
-object. If either value is ambiguous, add `agentengine.yaml` instead of relying
-on heuristics.
+当使用约定检测时，运行时仍然需要两个事实：导入哪个文件，以及该文件里的哪个变量是
+Agent 对象。如果任一值不明确，就添加 `agentengine.yaml`。
 
-## Runner Contract
+## Runner 契约
 
-Every runner implements the same conceptual contract:
+每个 Runner 都实现同一组概念契约：
 
-| Method | Meaning |
+| 方法 | 含义 |
 | --- | --- |
-| `load_agent()` | import and prepare the user agent object |
-| `invoke(input_data)` | execute one non-streaming turn |
-| `stream(input_data)` | execute one streaming turn |
-| `prepare_for_request(model)` | apply per-request model override where supported |
-| `close()` | release resources when the server shuts down |
+| `load_agent()` | 导入并准备用户 Agent 对象 |
+| `invoke(input_data)` | 执行一次非流式 turn |
+| `stream(input_data)` | 执行一次流式 turn |
+| `prepare_for_request(model)` | 在支持时应用单请求模型覆盖 |
+| `close()` | server shutdown 时释放资源 |
 
-This contract is intentionally narrow. Framework-specific behavior belongs in
-the adapter, not in the FastAPI endpoint.
+这个契约刻意保持窄。框架特定行为留在 adapter 中，而不是塞进 FastAPI endpoint。
 
-The narrow contract also defines where custom behavior should live:
-
-| Need | Preferred location |
+| 需求 | 推荐位置 |
 | --- | --- |
-| custom state mapping for LangGraph | `ksadk_prepare_state` in the user module |
-| custom input mapping for LangChain | `ksadk_prepare_input` in the user module |
-| model override handling | runner `prepare_for_request()` |
-| framework-native session continuity | runner session adapter |
-| protocol-specific JSON/SSE formatting | server and conversation runtime |
+| LangGraph 自定义 state mapping | 用户模块中的 `ksadk_prepare_state` |
+| LangChain 自定义 input mapping | 用户模块中的 `ksadk_prepare_input` |
+| 模型覆盖处理 | Runner 的 `prepare_for_request()` |
+| 框架原生 session continuity | Runner session adapter |
+| 协议 JSON/SSE 格式化 | server 和对话运行时 |
 
-If you are adding a new framework adapter, start with `BaseRunner` and implement
-`load_agent()`, `invoke()`, and `stream()` first. Add session continuity,
-dynamic model overrides, or protocol-specific event mapping only after the
-basic invoke and stream paths are stable.
+新增框架 adapter 时，先从 `BaseRunner` 开始实现 `load_agent()`、`invoke()` 和
+`stream()`。session continuity、动态模型覆盖或协议事件映射应在基础路径稳定后再加。
 
-## Request Lifecycle
+## 请求生命周期
 
-A normal non-streaming `/v1/responses` request follows this path:
+普通非流式 `/v1/responses` 请求路径：
 
 ```mermaid
 sequenceDiagram
@@ -170,64 +172,55 @@ sequenceDiagram
   API-->>Client: response object
 ```
 
-Streaming uses the same preparation path, then serializes internal semantic
-events into server-sent events. Text deltas, reasoning, tool calls, tool results,
-approval interrupts, final output, and errors are represented as runtime events
-before they become protocol-specific SSE payloads.
+Streaming 使用同样的准备路径，再把内部语义事件序列化为 server-sent events。文本
+delta、reasoning、tool call、tool result、approval interrupt、final output 和
+error 会先成为运行时事件，再成为协议特定 SSE payload。
 
-## Streaming Event Model
+## Streaming 事件模型
 
-Streaming output is normalized before it is serialized. Framework adapters may
-emit very different native events, but the conversation runtime expects a small
-set of semantic chunk types:
+框架 adapter 可能发出很不同的原生事件，但对话运行时期待一小组语义 chunk：
 
-| Chunk type | Meaning | Typical source |
+| Chunk type | 含义 | 常见来源 |
 | --- | --- | --- |
-| `text` | assistant text delta | model token stream |
-| `thinking` | reasoning or thought delta when available | provider or ADK event |
-| `tool_call` | tool call started or arguments updated | LangGraph, ADK, MCP, or custom tool event |
-| `tool_result` | tool output became available | framework tool result event |
-| `interrupt` | run paused for approval or external input | graph interrupt or approval flow |
-| `final` | final authoritative output | framework final state |
-| `error` | execution failed | runner or protocol exception |
+| `text` | assistant 文本 delta | 模型 token stream |
+| `thinking` | provider 或 ADK 可用时的 reasoning delta | provider 或 ADK event |
+| `tool_call` | tool call 开始或参数更新 | LangGraph、ADK、MCP 或自定义 tool event |
+| `tool_result` | tool 输出可用 | 框架 tool result event |
+| `interrupt` | 运行暂停，等待审批或外部输入 | graph interrupt 或 approval flow |
+| `final` | 最终权威输出 | 框架最终状态 |
+| `error` | 执行失败 | Runner 或协议异常 |
 
-The protocol layer then maps those semantic events to `/v1/responses`,
-`/v1/chat/completions`, `/run_sse`, or the local Web UI action format. This is
-why application code should not depend on a specific SSE event name unless it is
-writing a client for that exact public protocol.
+协议层随后把这些语义事件映射到 `/v1/responses`、`/v1/chat/completions`、
+`/run_sse` 或本地 Web UI action 格式。
 
-## Session And Context Boundary
+## Session 与上下文边界
 
-Every turn builds a `PlatformInvocationContext` before calling the runner. It
-contains the stable identifiers and runtime facts a framework adapter may need:
+每个 turn 在调用 Runner 前都会构造 `PlatformInvocationContext`。它包含框架 adapter
+可能需要的稳定标识和运行时事实：
 
-- `agent_id`, `user_id`, `session_id`, and invocation metadata.
-- normalized input content and message history.
-- effective attachments and current-turn attachments.
-- model, model metadata, and model options.
-- knowledge and memory context when those integrations are enabled.
+- `agent_id`、`user_id`、`session_id` 和 invocation metadata。
+- 规范化输入内容和消息历史。
+- 当前 turn 附件和最近有效附件。
+- model、model metadata 和 model options。
+- 启用时的知识库和记忆上下文。
 
-The runner receives this context as part of the prepared input. Business logic
-should prefer the documented runner payload fields and framework hooks over
-reading private server globals. That keeps local terminal runs, Web UI runs, and
-OpenAI-compatible API calls aligned.
+Runner 会把这个 context 作为准备后输入的一部分收到。业务逻辑应优先读取公开文档中的
+runner payload 字段和框架 hook，而不是读取私有 server globals。
 
-## Local Protocol Entrypoints
+## 本地协议入口
 
-| Endpoint | Purpose |
+| Endpoint | 目的 |
 | --- | --- |
-| `POST /v1/responses` | preferred OpenAI-compatible local protocol |
-| `POST /v1/chat/completions` | compatibility with Chat Completions clients |
-| `POST /agentengine/api/v1/RunAgent` | local Web UI action-style protocol |
-| `POST /run_sse` | ADK Web compatible local execution path |
-| `POST /agentengine/api/v1/UploadFile` | local file upload for UI flows |
-| `/_ksadk/workspace/v1/*` | workspace file list/read/write/delete routes |
+| `POST /v1/responses` | 首选 OpenAI 兼容本地协议 |
+| `POST /v1/chat/completions` | 兼容 Chat Completions 客户端 |
+| `POST /agentengine/api/v1/RunAgent` | 本地 Web UI action 风格协议 |
+| `POST /run_sse` | ADK Web 兼容本地执行路径 |
+| `POST /agentengine/api/v1/UploadFile` | UI 流程的本地文件上传 |
+| `/_ksadk/workspace/v1/*` | 工作区文件 list/read/write/delete 路由 |
 
-External clients should prefer `/v1/responses` unless they are integrating with
-the local Web UI itself.
+外部客户端应优先使用 `/v1/responses`，除非它正在集成本地 Web UI 本身。
 
-## Public Documentation Boundary
+## 公开文档边界
 
-This page describes the public local runtime architecture. It intentionally does
-not publish private gateway behavior, internal cluster deployment details,
-internal kubeconfig paths, private registry names, or customer-specific runbooks.
+本页描述公开本地运行时架构。它不会发布私有网关行为、内部集群部署细节、内部
+kubeconfig 路径、私有 registry 名称或客户特定 runbook。

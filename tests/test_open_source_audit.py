@@ -95,10 +95,26 @@ def test_public_repo_audit_blocks_internal_deploy_and_agent_ops_materials():
         "non-curated-examples",
         "internal-deploy-material",
         "internal-deploy-material",
-        "internal-agent-ops-material",
-        "internal-agent-ops-material",
         "env-example",
     ]
+
+
+def test_public_repo_audit_allows_curated_root_ai_guidance_files():
+    audit = _load_audit_module()
+
+    result = audit.audit_paths(
+        "public-repo",
+        [
+            "README.md",
+            "README.en.md",
+            "README.zh-CN.md",
+            "AGENTS.md",
+            "CLAUDE.md",
+        ],
+    )
+
+    assert result.ok is True
+    assert result.violations == []
 
 
 def test_wheel_audit_blocks_hosted_ui_bundle_and_zread_snapshot():

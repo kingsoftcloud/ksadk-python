@@ -214,6 +214,8 @@ jobs:
       - run: npm run build:ksadk
 
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist-ksadk

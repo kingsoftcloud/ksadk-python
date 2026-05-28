@@ -1,97 +1,31 @@
-# Project Structure
+# 项目结构
 
-`agentengine init` creates a small project that can be run locally and later
-packaged for deployment.
-
-## Typical Layout
+一个显式配置的 KsADK 项目通常包含：
 
 ```text
 my-agent/
-  agent.py
-  agentengine.yaml
-  .env
+├── agentengine.yaml
+├── .env
+├── requirements.txt
+└── my_agent/
+    ├── __init__.py
+    └── agent.py
 ```
 
-Some projects use a package layout:
+## 文件说明
 
-```text
-my-agent/
-  my_agent/
-    __init__.py
-    agent.py
-  agentengine.yaml
-  .env
-```
+| 文件 | 用途 |
+| --- | --- |
+| `agentengine.yaml` | 框架、入口文件和导出变量 |
+| `.env` | 本地模型和可选平台配置，不提交真实值 |
+| `requirements.txt` | 业务依赖 |
+| `agent.py` | 导出 `root_agent` 或配置中的变量名 |
 
-KsADK also supports `ksadk.yaml` and `ksadk.yml` for compatibility.
+## 不应提交
 
-## `agent.py`
+- 真实 `.env`。
+- `.agentengine/ui/sessions.sqlite`。
+- 构建产物、缓存和日志。
+- token、kubeconfig、私有 registry 凭证。
 
-The agent entry module should export the object configured as `agent_variable`.
-The default variable is `root_agent`.
-
-```python
-root_agent = graph.compile()
-```
-
-For ADK projects this is usually a `google.adk.agents.Agent`. For LangGraph it
-is commonly a compiled graph. For LangChain it may be a runnable chain. For
-DeepAgents it is the object returned by `create_deep_agent`.
-
-## `agentengine.yaml`
-
-The project YAML makes framework detection explicit.
-
-```yaml
-name: my-agent
-framework: langgraph
-entry_point: agent.py
-agent_variable: root_agent
-```
-
-Supported public framework values include:
-
-- `adk`
-- `langchain`
-- `langgraph`
-- `deepagents`
-
-## `.env`
-
-The `.env` file is for local secrets and provider settings. Keep it out of Git.
-
-```bash
-OPENAI_API_KEY=sk-test
-OPENAI_BASE_URL=https://api.example.com/v1
-OPENAI_MODEL_NAME=my-model
-```
-
-For public docs and examples, use placeholders only. Do not publish real tokens,
-internal endpoints, private registry names, cookies, kubeconfig paths, or
-customer data.
-
-## Generated Files
-
-Local runs may create caches, virtual environments, build output, or runtime
-state. These are not source files:
-
-- `.venv/`
-- `__pycache__/`
-- `.pytest_cache/`
-- `dist/`
-- `build/`
-- `site/`
-- `.agentengine/`
-- `.agentengine.state`
-
-## Importing An Existing Agent
-
-Use `--from-agent` when you already have a Python file or directory:
-
-```bash
-agentengine init my-agent --from-agent ./existing_agent.py
-agentengine init my-agent --from-agent ./existing_agent_dir
-```
-
-After import, inspect `agentengine.yaml` and confirm the detected framework,
-entry point, and exported variable before running the project.
+公开示例可以提供 `.env.example`，但只能包含占位值。

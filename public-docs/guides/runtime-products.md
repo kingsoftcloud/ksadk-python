@@ -1,16 +1,14 @@
-# Runtime Products: Hermes And OpenClaw
+# 运行时产品：Hermes 与 OpenClaw
 
-KsADK supports two image-based runtime products in addition to code-framework
-agents:
+除了代码框架型 Agent，KsADK 还支持两类镜像型运行时产品：
 
-- **Hermes**: a hosted coding-agent runtime with dashboard, API proxy, terminal
-  WebSocket, and workspace files.
-- **OpenClaw**: a hosted OpenClaw gateway runtime where KsADK adds deployment,
-  workspace files, memory backend wiring, and CLI lifecycle management.
+- **Hermes**：托管 coding-agent runtime，包含 dashboard、API proxy、终端
+  WebSocket 和 workspace files。
+- **OpenClaw**：托管 OpenClaw gateway runtime，KsADK 负责部署、workspace
+  files、memory backend wiring 和 CLI 生命周期管理。
 
-These are runtime products, not ordinary local framework projects. A LangGraph
-or ADK project packages user code. Hermes and OpenClaw deploy a maintained
-runtime image plus public configuration.
+它们是运行时产品，不是普通本地框架项目。LangGraph 或 ADK 项目打包的是用户
+代码；Hermes 和 OpenClaw 部署的是平台维护的 runtime image 加公开配置。
 
 ```mermaid
 flowchart LR
@@ -22,21 +20,21 @@ flowchart LR
   OpenClaw --> Workspace
 ```
 
-## When To Use Which Runtime
+## 什么时候用哪种运行时
 
-| Need | Recommended path |
+| 需求 | 推荐路径 |
 | --- | --- |
-| Python agent code with LangGraph, ADK, LangChain, or DeepAgents | normal code framework project |
-| Hosted coding assistant with terminal and workspace | Hermes |
-| OpenClaw gateway, channels, or OpenClaw-native UI | OpenClaw |
-| Public quickstart that must run without cloud credentials | normal local framework project |
+| LangGraph、ADK、LangChain、DeepAgents Python 代码 | 普通代码框架项目 |
+| 带终端和 workspace 的 hosted coding assistant | Hermes |
+| OpenClaw gateway、channels 或 OpenClaw 原生 UI | OpenClaw |
+| 必须无云凭证运行的公开 quickstart | 普通本地框架项目 |
 
-Do not present Hermes or OpenClaw as just another `StateGraph` or `Agent`
-wrapper. They have separate lifecycle commands and deployment contracts.
+不要把 Hermes 或 OpenClaw 写成另一个 `StateGraph` 或 `Agent` wrapper。它们有
+独立生命周期命令和部署 contract。
 
-## Hermes Lifecycle
+## Hermes 生命周期
 
-Use the Hermes command group for hosted Hermes resources:
+Hermes 资源使用专用命令组：
 
 ```bash
 agentengine hermes --help
@@ -46,15 +44,15 @@ agentengine hermes open --help
 agentengine hermes connect --help
 ```
 
-Typical flow:
+典型流程：
 
-1. configure model placeholders in local `.env` or shell.
-2. review the dry run where supported.
-3. deploy the Hermes runtime.
-4. open the dashboard or connect the terminal.
-5. use workspace files for generated artifacts.
+1. 在本地 `.env` 或 shell 中配置模型占位值。
+2. 支持时先审查 dry run。
+3. 部署 Hermes runtime。
+4. 打开 dashboard 或连接终端。
+5. 用 workspace files 管理生成产物。
 
-Public examples should use placeholder model values:
+公开示例只使用占位模型配置：
 
 ```bash
 OPENAI_API_KEY=sk-test
@@ -62,18 +60,17 @@ OPENAI_BASE_URL=https://api.example.com/v1
 OPENAI_MODEL_NAME=my-model
 ```
 
-Hermes terminal access uses a WebSocket subprotocol:
+Hermes 终端访问使用 WebSocket 子协议：
 
 ```text
 Sec-WebSocket-Protocol: ks-terminal.v1
 ```
 
-The CLI handles this for normal users. API clients should treat it as part of
-the remote runtime contract.
+普通用户由 CLI 处理；API 客户端需要把它视为远程运行时 contract 的一部分。
 
-## OpenClaw Lifecycle
+## OpenClaw 生命周期
 
-Use the OpenClaw command group for hosted OpenClaw resources:
+OpenClaw 资源使用专用命令组：
 
 ```bash
 agentengine openclaw --help
@@ -86,15 +83,15 @@ agentengine openclaw channel --help
 agentengine openclaw repair --help
 ```
 
-Typical flow:
+典型流程：
 
-1. create or enter an OpenClaw project.
-2. configure model placeholders and optional runtime policy.
-3. deploy through `agentengine openclaw deploy`.
-4. use `status`, `tui`, `gateway open`, or channel commands for operations.
-5. keep workspace artifacts inside the runtime workspace.
+1. 创建或进入 OpenClaw 项目。
+2. 配置模型占位值和可选运行时策略。
+3. 通过 `agentengine openclaw deploy` 部署。
+4. 使用 `status`、`tui`、`gateway open` 或 channel 命令运维。
+5. 生成产物保持在运行时 workspace 内。
 
-For public examples, document policy knobs without internal values:
+公开示例只展示参数形态，不写内部值：
 
 ```bash
 agentengine openclaw deploy \
@@ -103,45 +100,42 @@ agentengine openclaw deploy \
   --default-model my-model
 ```
 
-## Workspace And Files
+## Workspace 与文件
 
-Hermes and OpenClaw both expose KsADK workspace files through the
-`/_ksadk/workspace/v1/*` family. Generated files should stay inside the runtime
-workspace so the hosted UI and CLI file commands see the same artifacts.
+Hermes 和 OpenClaw 都通过 `/_ksadk/workspace/v1/*` 暴露 KsADK workspace files。
+生成文件应留在运行时 workspace 内，让 hosted UI 和 CLI 文件命令看到同一批产物。
 
-Do not document arbitrary host-path access. The public model is:
+公开文档不要描述任意宿主机路径访问。公开模型是：
 
-- list workspace files.
-- read or download a workspace file.
-- add or update a workspace file.
-- delete a workspace file when permitted.
-- export a workspace archive when the hosted surface supports it.
+- 列出 workspace 文件。
+- 读取或下载 workspace 文件。
+- 新增或更新 workspace 文件。
+- 在允许时删除 workspace 文件。
+- hosted surface 支持时导出 workspace 压缩包。
 
-## Memory And Tooling Boundaries
+## 记忆与工具边界
 
-Hermes and OpenClaw may read model, memory, channel, or tool configuration from
-environment variables. Public docs should keep these variables as names and
-placeholders, not real values.
+Hermes 和 OpenClaw 可能从环境变量读取模型、记忆、channel 或工具配置。公开文档
+只保留变量名和占位值，不保留真实值。
 
-| Category | Public-safe examples |
+| 类别 | 公开安全示例 |
 | --- | --- |
-| model | `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL_NAME` |
-| memory | `KSADK_LTM_BACKEND`, `KSADK_LTM_NAMESPACE`, `KSADK_LTM_SCENE_ID` |
-| workspace | `KSADK_WORKSPACE_FILES_ENABLED`, runtime workspace path labels |
-| OpenClaw policy | strict mode, workspace-only filesystem policy, approval mode |
-| secrets | variable names only; never commit literal tokens |
+| 模型 | `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_MODEL_NAME` |
+| 记忆 | `KSADK_LTM_BACKEND`、`KSADK_LTM_NAMESPACE`、`KSADK_LTM_SCENE_ID` |
+| workspace | `KSADK_WORKSPACE_FILES_ENABLED`、运行时 workspace 路径标签 |
+| OpenClaw 策略 | strict mode、workspace-only 文件策略、approval mode |
+| secrets | 只写变量名，不提交 token 明文 |
 
-## What Stays Internal
+## 仍然留在内部文档的内容
 
-Do not publish:
+不要发布：
 
-- private runtime image names or registries.
-- internal pre-release endpoints.
-- kubeconfig files or cluster names.
-- real channel tokens, model keys, or kdocs tokens.
-- customer workspace paths or object storage buckets.
-- incident runbooks tied to internal platforms.
+- 私有 runtime 镜像名或 registry。
+- 内部预发 endpoint。
+- kubeconfig 文件或集群名称。
+- 真实 channel token、模型 key 或 kdocs token。
+- 客户 workspace 路径或对象存储 bucket。
+- 绑定内部平台的事故 runbook。
 
-The public docs should explain the contract and lifecycle. Operational details
-for a specific private environment belong in internal documentation.
+公开文档解释 contract 和生命周期。具体私有环境的运维细节留在内部文档。
 

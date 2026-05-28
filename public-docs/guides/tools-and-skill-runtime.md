@@ -1,191 +1,246 @@
-# Tools And Skill Runtime
+# 工具与 Skill Runtime
 
-KsADK can expose tools to an agent through framework-native tools, MCP/A2A
-integrations, and the optional Skill Runtime. The public rule is simple: tools
-should be declared explicitly, validated at runtime, and isolated from secrets
-or local files the agent does not need.
+KsADK 可以通过框架原生工具、MCP/A2A 集成和可选的 Skill Runtime 向 Agent
+暴露工具。公开规则是：工具必须显式声明，在运行时可验证，并且和 Agent 不
+需要的密钥或本地文件隔离。
 
-## Tool Layers
+## 工具层次
 
 ```mermaid
 flowchart LR
-  Agent["User agent"] --> Framework["Framework adapter"]
-  Framework --> Builtin["Framework-native tools"]
-  Framework --> MCP["MCP / A2A tools"]
-  Framework --> Skill["Skill Runtime tools"]
-  Skill --> Backend["local or sandbox backend"]
-  Backend --> Result["structured result"]
+  Agent["用户 Agent"] --> Framework["框架适配器"]
+  Framework --> Builtin["框架原生工具"]
+  Framework --> MCP["MCP / A2A 工具"]
+  Framework --> Skill["Skill Runtime 工具"]
+  Skill --> Backend["local_process 或 sandbox backend"]
+  Backend --> Result["结构化结果"]
   Result --> Agent
 ```
 
-The framework adapter normalizes tool definitions before an agent run. The
-agent should receive a stable tool description, a narrow input schema, and a
-structured result that can be rendered in the local Web UI or projected back
-into session history.
+框架适配器会在 Agent 执行前归一化工具定义。Agent 应拿到稳定的工具描述、
+收窄的输入 schema，以及可以在本地 Web UI 渲染或写回会话历史的结构化
+结果。
 
-## When To Use Each Tool Path
+## 什么时候使用哪条路径
 
-| Need | Recommended path |
+| 需求 | 推荐路径 |
 | --- | --- |
-| Simple Python helper inside the agent project | framework-native function tool |
-| External tool server with its own lifecycle | MCP toolset |
-| Agent-to-agent protocol integration | A2A client or adapter |
-| Reusable executable skill with optional sandboxing | Skill Runtime |
-| Local development only | local backend with explicit paths and test data |
-| Untrusted or expensive execution | reviewed sandbox backend and limits |
+| Agent 项目内的简单 Python helper | 框架原生 function tool |
+| 自带生命周期的外部工具服务 | MCP toolset |
+| Agent-to-Agent 协议集成 | A2A client 或 adapter |
+| 可复用、可沙箱执行的技能 | Skill Runtime |
+| 仅本地开发 | local backend，使用显式路径和测试数据 |
+| 不可信或成本较高的执行 | 受审查的 sandbox backend 和限制 |
 
-Use the simplest path that gives the agent enough capability. Do not route a
-plain deterministic helper through a remote runtime just to make it look like a
-tool.
+优先使用能满足需求的最简单路径。不要把一个确定性的本地 helper 包成远端
+runtime，只为了让它看起来像工具。
 
-## Public Skill Runtime Contract
+## ADK 装载期注入顺序
 
-A public Skill Runtime integration should document:
+在 ADK 项目中，知识库、记忆工具、Skill Runtime 和 MCP toolset 都在 Agent
+加载期注入，而不是在每次请求执行时动态挂载。这让工具集合更容易审计，
+也避免一次会话中途能力突然变化。
 
-- the skill name and purpose.
-- input schema and required fields.
-- output schema and error shape.
-- required optional dependencies or extras.
-- whether the skill runs locally or through a sandbox backend.
-- which environment variables are needed.
-- file, network, and execution limits.
+```mermaid
+sequenceDiagram
+  participant Load as ADKRunner.load_agent
+  participant Memory as Memory / Knowledge
+  participant Skill as Skill Runtime Injector
+  participant MCP as MCP Injector
+  participant Agent as ADK Agent.tools
+  participant Runner as google.adk.runners.Runner
 
-The tool description should be precise enough for an LLM to decide when not to
-call it. Avoid descriptions that imply broad filesystem, shell, network, or
-credential access.
-
-## Environment Configuration
-
-Keep secrets out of source control. Store local development values in `.env` or
-your shell environment, and publish only placeholder names in examples.
-
-Common public examples:
-
-```bash
-export KSADK_SKILL_RUNTIME_BACKEND=local
-export KSADK_SKILL_RUNTIME_TIMEOUT_SECONDS=30
+  Load->>Memory: 初始化 memory / knowledge
+  Memory->>Agent: 注入 load_memory / save_memory / search_knowledge
+  Load->>Skill: _inject_skill_runtime_tools()
+  Skill->>Agent: 按工具名追加 execute_skills
+  Skill->>Agent: 追加远程 skill manifest instruction
+  Load->>MCP: _inject_mcp_toolsets()
+  MCP->>Agent: 按 dedupe key 追加 McpToolset
+  Load->>Runner: Runner(agent=agent, session_service=...)
 ```
 
-If a backend requires credentials, document the variable names and setup steps
-without publishing actual values:
+这个顺序也说明了边界：Skill Runtime 与 MCP 是 ADK Agent 装载期扩展；A2A
+是 runner 外层协议适配。通过 A2A 暴露的 runner 可以间接使用已注入的工具，
+但 A2A Server 自身不负责解析 MCP，也不负责执行沙箱。
+
+## 公开 Skill Runtime 契约
+
+一个公开的 Skill Runtime 集成应记录：
+
+- skill 名称和用途。
+- 输入 schema 和必填字段。
+- 输出 schema 和错误形态。
+- 必需的 optional dependencies 或 extras。
+- skill 在本地执行还是在 sandbox backend 中执行。
+- 需要的环境变量名称。
+- 文件、网络和执行时间限制。
+
+工具描述应足够精确，让 LLM 知道什么时候不该调用它。避免暗示工具拥有宽泛
+的文件系统、shell、网络或凭证访问能力。
+
+## Skills Mode 判定
+
+ADK runner 会先解析 skills mode。显式设置 `KSADK_SKILLS_MODE` 时直接生效；
+`auto` 模式下按环境与本地目录推断。
+
+```mermaid
+flowchart TD
+  Start["解析 skills mode"] --> Explicit{"KSADK_SKILLS_MODE<br/>不是 auto?"}
+  Explicit -->|是| Mode["使用显式 mode"]
+  Explicit -->|否| RuntimeBackend{"KSADK_SKILL_RUNTIME_BACKEND<br/>有效且非 disabled?"}
+  RuntimeBackend -->|是| Sandbox["sandbox mode"]
+  RuntimeBackend -->|否| SandboxBackend{"KSADK_SANDBOX_BACKEND<br/>有效且非 disabled?"}
+  SandboxBackend -->|是| Sandbox
+  SandboxBackend -->|否| Template{"配置 sandbox/template id?"}
+  Template -->|是| Sandbox
+  Template -->|否| LocalSkills{"本地 skills 目录包含 SKILL.md?"}
+  LocalSkills -->|是| Local["local mode"]
+  LocalSkills -->|否| Auto["auto，不注入 Skill Runtime"]
+```
+
+## Skill Runtime Backend
+
+Skill Runtime Backend 是一个协议接口。核心方法 `run_workflow()` 接收
+workflow prompt、技能空间、session id、可选技能名、环境变量、输入文件和
+timeout，返回 `SkillRuntimeResult`。
+
+| 字段 | 含义 |
+| --- | --- |
+| `runtime_id` | 后端运行实例标识 |
+| `exit_code` | 子进程或 sandbox 命令退出码 |
+| `stdout` / `stderr` | 公开安全的输出摘要 |
+| `duration_ms` | 执行耗时 |
+| `timed_out` | 是否超时 |
+| `error_type` / `error_message` | 稳定错误分类和摘要 |
+| `output_files` | 工具生成的输出文件引用 |
+
+`ok` 只在 `exit_code == 0`、没有 `error_type` 且未超时时为真。业务代码应读
+结构化字段，不要解析本地 UI 文本。
+
+## Backend 选择
+
+| Backend | 选择条件 | 执行位置 | Prompt 传递方式 |
+| --- | --- | --- | --- |
+| `disabled` | 默认无 sandbox 配置或显式 disabled | 不执行 | 调用即抛出 setup 错误 |
+| `local_process` | `KSADK_SKILL_RUNTIME_BACKEND=local_process` | 本地 Python 子进程 | 写入临时 prompt 文件 |
+| `e2b` | 显式 e2b、sandbox backend 或 template id | E2B 沙箱 | 写入 sandbox 内 prompt 文件 |
+
+公开文档可以描述这些 backend 的契约，但不应发布私有镜像、私有 registry、
+内部控制面地址或团队运行手册。
+
+## 远程技能 manifest
+
+当配置了 `KSADK_SKILL_SERVICE_URL` 且存在 skill space id 时，KsADK 会加载
+远程技能 manifest。只保留 active skills，并按技能名去重；如果某个公共技能
+空间配置了 allowlist，则只暴露 allowlist 内的技能。
+
+manifest instruction 会提醒模型：
+
+- 只有任务匹配时才调用 `execute_skills`。
+- 调用时使用原始 `workflow_prompt`。
+- `skill_names` 必须使用精确技能名。
+- 不要假设完整技能说明已经加载；`execute_skills` 会按需加载。
+
+## MCP 配置边界
+
+MCP Runtime 以 `KSADK_MCP_SERVERS` 为入口，默认启用。只有
+`KSADK_ENABLE_MCP_TOOLS` 为 `0`、`false`、`no` 或 `off` 时禁用。
+
+| 配置项 | 作用 | 校验或默认行为 |
+| --- | --- | --- |
+| `KSADK_ENABLE_MCP_TOOLS` | MCP 工具注入开关 | 默认启用 |
+| `KSADK_MCP_SERVERS` | JSON 数组形式的 MCP Server 配置 | 必须是 JSON array |
+| `name` | MCP Server 名称 | 必须是非空字符串 |
+| `url` | Streamable HTTP MCP Endpoint | 必须是绝对 `http(s)` URL 且 path 以 `/mcp` 结尾 |
+| `api_key` | Bearer Token | 可选字符串，生成 Authorization header |
+| `tool_filter` | 限制暴露工具名 | 可选非空字符串列表 |
+| `tool_name_prefix` | 工具名前缀与去重键组成部分 | 可选字符串 |
+
+示例可以展示变量名，但不能包含真实 token、私有 endpoint 或内部服务地址。
+
+## 环境配置
+
+密钥不要进源码。把本地开发值放在 `.env` 或 shell 环境中，公开文档只展示
+占位变量名。
+
+```bash
+export KSADK_SKILL_RUNTIME_BACKEND=local_process
+export KSADK_SKILL_RUNTIME_TIMEOUT=30
+```
+
+如果后端需要凭证，文档只写变量名和配置步骤：
 
 ```bash
 export EXAMPLE_SANDBOX_API_KEY=...
 ```
 
-Do not commit `.env`, `.pypirc`, PyPI tokens, kubeconfig files, private registry
-credentials, cloud access keys, or generated runtime state.
+不要提交 `.env`、`.pypirc`、PyPI token、kubeconfig、私有 registry 凭证、
+云访问密钥或生成的运行状态文件。
 
-## Local Backend
+## 本地 Backend
 
-The local backend is useful for development, tests, and examples that operate on
-known input. It should be treated as trusted local execution:
+local backend 适合开发、测试和只操作已知输入的示例。应按可信本地执行处理：
 
-- use temporary directories in tests.
-- pass explicit input files instead of scanning the whole repository.
-- keep timeouts short.
-- return structured failures rather than raw tracebacks when possible.
-- avoid examples that execute arbitrary user-provided shell.
+- 测试里使用临时目录。
+- 传入显式输入文件，不扫描整个仓库。
+- 使用较短 timeout。
+- 尽量返回结构化失败，而不是原始 traceback。
+- 避免执行任意用户提供 shell 的示例。
 
-Local backend examples are acceptable in public docs when they are deterministic
-and do not require internal infrastructure.
+公开文档中的 local backend 示例应可复现，不依赖内部基础设施。
 
 ## Sandbox Backend
 
-A sandbox backend is appropriate when the skill needs stronger isolation,
-network policy, or dependency control. Public docs should describe the contract,
-not private provider wiring:
+sandbox backend 适合需要更强隔离、网络策略或依赖控制的场景。公开文档应描述
+契约，而不是私有 provider wiring：
 
-| Topic | Public documentation should say |
+| 主题 | 公开文档应说明 |
 | --- | --- |
-| authentication | required variable names, not token values |
-| limits | timeout, memory, file size, and network policy |
-| files | allowed upload/download paths and retention behavior |
-| errors | stable error codes or categories |
-| cleanup | whether the sandbox is disposable per run |
+| authentication | 需要的变量名，不写 token 值 |
+| limits | timeout、内存、文件大小和网络策略 |
+| files | 允许上传/下载路径和保留行为 |
+| errors | 稳定错误码或错误类别 |
+| cleanup | sandbox 是否每次调用后销毁 |
 
-Internal account IDs, private images, registry hosts, hosted control-plane URLs,
-and provider-specific support runbooks should stay out of the public repository.
+内部账号 ID、私有镜像、registry host、托管控制面 URL 和支持 runbook 都应留在
+内部文档中。
 
-## Runner Payload
+## 测试工具集成
 
-Framework adapters should pass tool and skill results as structured data. A
-typical result includes:
+公开测试应覆盖边界，而不是私有服务账号：
 
-| Field | Meaning |
-| --- | --- |
-| `name` | tool or skill name |
-| `status` | `ok`, `failed`, `timeout`, or `cancelled` |
-| `content` | user-visible result text or content blocks |
-| `metadata` | execution metadata safe for logs and UI |
-| `artifacts` | file references created by the tool, when supported |
-| `error` | stable error summary for failed runs |
+- 工具 schema 转换。
+- 使用确定性输入的本地成功执行。
+- timeout 和失败处理。
+- runner payload 字段。
+- Web UI 展示工具结果时的请求形态。
+- audit 检查 fixture 中没有凭证或私有 endpoint。
 
-Business code should read structured fields instead of parsing local UI text.
+优先使用 fake client、临时文件和本地 HTTP server。provider-backed 测试必须放在
+显式环境变量开关之后。
 
-## ADK Integration
+## 发布前安全检查
 
-For Google ADK projects, Skill Runtime tools can be injected during runner
-loading when optional dependencies and configuration are available. Keep a
-minimal ADK example free of optional runtime variables first, then add tools in
-a separate example:
+发布工具或 skill 示例前，至少检查：
 
-```python
-from google.adk.agents import Agent
-
-root_agent = Agent(
-    name="tool_ready_agent",
-    instruction="Use tools only when they are relevant to the user request.",
-)
-```
-
-Then document the runtime setup beside the example:
-
-```bash
-pip install -U "ksadk[adk,skills]"
-agentengine web . --no-open
-```
-
-If the tool is not available, the agent project should still fail with a clear
-setup error instead of silently running with a different capability set.
-
-## Testing Tool Integrations
-
-Public tests should cover the boundary, not a private service account:
-
-- tool schema conversion.
-- successful local execution with deterministic input.
-- timeout and failure handling.
-- runner payload fields.
-- Web UI request shape when the tool result is displayed.
-- audit checks that no credentials or private endpoints appear in fixtures.
-
-Prefer fake clients, temporary files, and local HTTP servers for public tests.
-Only run provider-backed tests behind explicit environment gates.
-
-## Security Checklist
-
-Before publishing a tool or skill example:
-
-- verify the example runs without internal accounts.
-- remove private endpoints and customer data.
-- check that generated files are ignored.
-- document required optional extras.
-- cap execution time and file sizes.
-- avoid broad shell, network, or filesystem access.
-- run the open-source audit before committing.
+- 示例不依赖内部账号。
+- 私有 endpoint 和客户数据已移除。
+- 生成文件已加入 ignore 或不在仓库内。
+- 必需 optional extras 已记录。
+- 执行时间和文件大小有限制。
+- 没有宽泛 shell、网络或文件系统访问。
+- 已运行开源审计。
 
 ```bash
 make open-source-audit
 ```
 
-## Relationship To Other Guides
+## 相关指南
 
-Read this page with:
+建议结合这些页面阅读：
 
-- [Frameworks](frameworks.md) for runner loading behavior.
-- [Agent Context](agent-context.md) for the structured invocation context.
-- [Attachments And Multimodal Input](attachments-multimodal.md) for file input
-  normalization.
-- [Runtime Sessions And Files](../reference/runtime-sessions-files.md) for how
-  tool events and file references are stored in local sessions.
+- [框架接入](frameworks.md)：runner 加载和多框架适配。
+- [智能体上下文](agent-context.md)：结构化调用上下文。
+- [附件与多模态输入](attachments-multimodal.md)：文件输入归一化。
+- [会话与文件](../reference/runtime-sessions-files.md)：工具事件和文件引用如何进入本地会话。

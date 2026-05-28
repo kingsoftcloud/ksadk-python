@@ -1,9 +1,8 @@
 # KsADK
 
-Kingsoft Cloud Agent Development Kit for building, running, debugging, and
-packaging Python agent applications. KsADK gives developers one local CLI,
-runtime surface, OpenAI-compatible protocol layer, and browser UI across Google
-ADK, LangGraph, LangChain, and DeepAgents projects.
+金山云智能体开发套件，用于创建、运行、调试和打包 Python Agent 应用。
+KsADK 在 Google ADK、LangGraph、LangChain 和 DeepAgents 项目之上提供
+统一的本地 CLI、运行时、OpenAI 兼容协议层和浏览器调试界面。
 
 === "Python"
 
@@ -12,7 +11,7 @@ ADK, LangGraph, LangChain, and DeepAgents projects.
     pip install -U "ksadk[langgraph]"
     ```
 
-=== "Create"
+=== "创建项目"
 
     ```bash
     agentengine init my-agent -f langgraph
@@ -20,102 +19,94 @@ ADK, LangGraph, LangChain, and DeepAgents projects.
     agentengine config set OPENAI_API_KEY=sk-test OPENAI_BASE_URL=https://api.example.com/v1 OPENAI_MODEL_NAME=my-model
     ```
 
-=== "Run"
+=== "本地运行"
 
     ```bash
     agentengine run . -i
     agentengine web . --no-open
     ```
 
-This site is the curated public documentation for the open-source SDK. It is
-separate from generated `.zread/` code-reading output, internal deployment
-notes, and private AgentEngine operating procedures.
+本站是开源 SDK 的人工整理公开文档。它不发布 `.zread/` 代码阅读结果、
+内部部署说明或私有 AgentEngine 运维流程。
 
-## System At A Glance
+## 架构一览
 
 ```mermaid
 flowchart LR
-  Dev["Developer"] --> CLI["agentengine CLI"]
-  CLI --> Detect["project detection<br/>agentengine.yaml / ksadk.yaml / conventions"]
-  Detect --> Runner["framework runner<br/>ADK / LangGraph / LangChain / DeepAgents"]
-  Runner --> Runtime["local runtime"]
-  Runtime --> API["OpenAI-compatible APIs<br/>/v1/responses<br/>/v1/chat/completions"]
-  Runtime --> UI["local Web UI<br/>agentengine web"]
-  Runtime --> Sessions["sessions, attachments,<br/>workspace files, tracing"]
-  CLI --> Package["build / launch<br/>reviewed cloud path"]
-  UI -. "editable source" .-> Web["kingsoftcloud/ksadk-web"]
+  Dev["开发者"] --> CLI["agentengine CLI"]
+  CLI --> Detect["项目检测<br/>agentengine.yaml / ksadk.yaml / 约定"]
+  Detect --> Runner["框架 Runner<br/>ADK / LangGraph / LangChain / DeepAgents"]
+  Runner --> Runtime["本地运行时"]
+  Runtime --> API["OpenAI 兼容 API<br/>/v1/responses<br/>/v1/chat/completions"]
+  Runtime --> UI["本地 Web UI<br/>agentengine web"]
+  Runtime --> Sessions["会话、附件、<br/>工作区文件、Tracing"]
+  CLI --> Package["build / launch<br/>审核后的云端路径"]
+  UI -. "可编辑源代码" .-> Web["kingsoftcloud/ksadk-web"]
 ```
 
-The important design choice is that the SDK does not replace the framework
-where the agent is written. It detects and loads the project, adapts it through
-a runner, then exposes the same local development experience to terminal users,
-browser users, and API clients.
+这个设计的核心是：KsADK 不替换你写 Agent 时使用的框架。它负责发现项目、
+加载入口、适配 Runner，并把同一套本地开发体验提供给终端、浏览器和 API
+客户端。
 
-## Documentation Style
+## 文档定位
 
-KsADK follows the public-docs pattern used by mature agent SDK projects:
+KsADK 参考成熟 Agent SDK 项目的公开文档组织方式：
 
-- a short overview for positioning.
-- a quickstart that reaches a running local agent.
-- tutorials with complete files.
-- guides for common tasks and operational decisions.
-- references for command, config, and API contracts.
-- contribution, release, security, and publication gates.
+- 概览页说明定位和主要入口。
+- 快速开始把用户带到一个可以运行的本地 Agent。
+- 教程给出完整文件。
+- 指南解释常见任务和取舍。
+- 参考页定义命令、配置和 API 契约。
+- 贡献、发布、安全和公开审计规则作为治理文档。
 
-Generated code-reading output can help maintainers understand the repository,
-but it is not the public documentation source. Public docs must be reviewed,
-stable, linkable, and safe to publish on GitHub Pages.
+zread 生成的代码阅读结果可以帮助维护者理解仓库，但不是公开文档源。公开文档
+必须经过人工整理、可链接、可审核，并且可以安全发布到 GitHub Pages。
 
-## Developer Journey
+## 开发路径
 
 ```mermaid
 flowchart TD
-  A["Install ksadk"] --> B["Create or import an agent project"]
-  B --> C["Set model/provider configuration"]
-  C --> D["Run in terminal"]
-  D --> E["Debug in local Web UI"]
-  E --> F["Call local OpenAI-compatible APIs"]
-  F --> G["Add tools, files, memory, tracing"]
-  G --> H["Build and review release artifacts"]
-  H --> I["Publish only after maintainer approval"]
+  A["安装 ksadk"] --> B["创建或导入 Agent 项目"]
+  B --> C["配置模型与 provider"]
+  C --> D["终端交互运行"]
+  D --> E["本地 Web UI 调试"]
+  E --> F["调用本地 OpenAI 兼容 API"]
+  F --> G["添加工具、文件、记忆和追踪"]
+  G --> H["构建并审核发布制品"]
+  H --> I["维护者批准后再公开发布"]
 ```
 
-## What KsADK Provides
+## KsADK 提供什么
 
-| Area | What you get |
+| 能力区域 | 你会得到什么 |
 | --- | --- |
-| Project bootstrap | `agentengine init` templates for supported framework families. |
-| Local runtime | `agentengine run` starts a local API server for an agent project. |
-| Local Web UI | `agentengine web` opens a browser-based invoke/debug interface. |
-| Configuration | `agentengine config` manages project `.env` and YAML settings. |
-| Packaging | `agentengine build` prepares deployment artifacts when cloud credentials are configured. |
-| Protocols | Local OpenAI-compatible `/v1/responses` and `/v1/chat/completions` endpoints. |
-| Extensibility | Framework adapters, memory hooks, MCP/A2A integration points, and release tooling. |
+| 项目脚手架 | 面向不同框架族的 `agentengine init` 模板。 |
+| 本地运行时 | `agentengine run` 为 Agent 项目启动本地 API 服务。 |
+| 本地 Web UI | `agentengine web` 打开浏览器调用和调试界面。 |
+| 配置管理 | `agentengine config` 管理项目 `.env` 与 YAML 设置。 |
+| 打包 | 在配置云凭证后，`agentengine build` 准备部署制品。 |
+| 协议 | 本地 OpenAI 兼容 `/v1/responses` 与 `/v1/chat/completions`。 |
+| 扩展能力 | 框架适配、记忆 hook、MCP/A2A 接入点和发布工具链。 |
 
-## Typical Use Cases
+## 典型场景
 
-Use KsADK when you need to:
+适合使用 KsADK 的情况：
 
-- run the same local command against ADK, LangGraph, LangChain, or DeepAgents
-  projects.
-- expose a local OpenAI-compatible endpoint for an agent project.
-- debug an agent in a browser without setting up hosted infrastructure.
-- prepare an agent package for a reviewed cloud deployment path.
-- keep Python SDK docs, Web UI docs, and release checks aligned before a public
-  GitHub import.
+- 希望用同一组本地命令运行 ADK、LangGraph、LangChain 或 DeepAgents 项目。
+- 希望为 Agent 项目暴露本地 OpenAI 兼容 endpoint。
+- 希望不搭建 hosted 基础设施就能在浏览器里调试 Agent。
+- 希望为经过审核的云端部署路径准备 Agent 包。
+- 希望 Python SDK 文档、Web UI 文档和发布检查在公开 GitHub 导入前保持一致。
 
-## Open-Source Boundary
+## 开源边界
 
-The public repository contains the SDK, CLI, runtime adapters, local development
-experience, curated documentation, and release checks.
+公开仓库包含 SDK、CLI、运行时适配、本地开发体验、人工整理文档和发布检查。
 
-It does not publish the full AgentEngine control plane, internal Kubernetes
-deployment automation, internal kubeconfig material, private registries, customer
-data, or private support runbooks. Cloud deployment commands are documented as
-SDK entry points, but public examples must be runnable locally without internal
-accounts.
+公开仓库不发布完整 AgentEngine 控制面、内部 Kubernetes 部署自动化、内部
+kubeconfig、私有 registry、客户数据或内部支持 runbook。云端部署命令会作为 SDK
+入口记录，但公开示例必须能在没有内部账号的情况下本地运行。
 
-## First Workflow
+## 第一个工作流
 
 ```bash
 python -m venv .venv
@@ -128,13 +119,13 @@ agentengine config set OPENAI_API_KEY=sk-test OPENAI_BASE_URL=https://api.exampl
 agentengine run -i
 ```
 
-Then open the local Web UI:
+然后启动本地 Web UI：
 
 ```bash
 agentengine web . --no-open
 ```
 
-If you already have an agent file, use:
+如果已经有一个 Agent 文件，可以导入：
 
 ```bash
 agentengine init my-agent --from-agent ./agent.py
@@ -142,39 +133,39 @@ cd my-agent
 agentengine run . -i
 ```
 
-## Documentation Map
+## 文档地图
 
-- [Concepts](getting-started/concepts.md): how the SDK, project config, runtime, and Web UI fit together.
-- [Quickstart](getting-started/quickstart.md): create, configure, run, and debug a local agent.
-- [Configuration](getting-started/configuration.md): environment variables and project YAML.
-- [Project Structure](getting-started/project-structure.md): files created by templates and files to avoid committing.
-- [Build A LangGraph Agent](tutorials/langgraph-agent.md): complete local project with source code.
-- [Bring An Existing Agent](tutorials/existing-agent.md): wrap an existing file or package.
-- [Local Web UI](guides/local-web-ui.md): local browser debugging and the independent `ksadk-web` repository plan.
-- [Web UI Repository](guides/web-ui-source.md): how `ksadk-web`, hosted UI, and the Python wheel relate.
-- [Runtime Products](guides/runtime-products.md): Hermes and OpenClaw lifecycle, runtime surfaces, and public-safe boundaries.
-- [Frameworks](guides/frameworks.md): ADK, LangGraph, LangChain, and DeepAgents conventions.
-- [Agent Best Practices](guides/agent-best-practices.md): LangGraph/ADK patterns with knowledge, memory, sessions, Skill Runtime, MCP, and workspace files.
-- [Tools And Skill Runtime](guides/tools-and-skill-runtime.md): framework-native tools, MCP/A2A, and optional Skill Runtime boundaries.
-- [Observability And Tracing](guides/observability-tracing.md): local spans, Langfuse, OTLP, and trace metadata rules.
-- [Build And Package](guides/build-and-package.md): local builds, review gates, and public artifact rules.
-- [CLI Reference](reference/cli.md): public command surface and common options.
-- [OpenAI-Compatible API](reference/openai-compatible-api.md): local protocol shape and KsADK extensions.
-- [Project Configuration](reference/project-config.md): YAML and environment field reference.
-- [Remote Runtime API](reference/remote-runtime-api.md): PublicEndpoint, authentication, OpenAI-compatible routes, workspace files, Hermes, and OpenClaw.
-- [Environment Variables](reference/environment-variables.md): model, session, memory, knowledge, Skill Runtime, MCP, build, and tracing variables.
-- [Runtime Sessions And Files](reference/runtime-sessions-files.md): session IDs, uploads, workspace previews, and local state.
-- [Security Boundaries](reference/security-boundaries.md): public repository, workspace, preview, package, and history boundaries.
-- [Troubleshooting](reference/troubleshooting.md): common setup, runtime, and packaging failures.
+- [初识 KsADK](getting-started/concepts.md)：SDK、项目配置、运行时和 Web UI 如何协作。
+- [快速开始](getting-started/quickstart.md)：创建、配置、运行和调试本地 Agent。
+- [配置项](getting-started/configuration.md)：环境变量和项目 YAML。
+- [项目结构](getting-started/project-structure.md)：模板创建的文件以及不应提交的文件。
+- [构建 LangGraph 智能体](tutorials/langgraph-agent.md)：包含完整源码的本地项目。
+- [接入已有智能体](tutorials/existing-agent.md)：包装已有文件或包。
+- [本地 Web UI](guides/local-web-ui.md)：本地浏览器调试和独立 `ksadk-web` 仓库计划。
+- [Web UI 仓库](guides/web-ui-source.md)：`ksadk-web`、hosted UI 和 Python wheel 的关系。
+- [运行时产品](guides/runtime-products.md)：Hermes 和 OpenClaw 的生命周期、runtime surface 和公开安全边界。
+- [框架接入](guides/frameworks.md)：ADK、LangGraph、LangChain 和 DeepAgents 约定。
+- [Agent 最佳实践](guides/agent-best-practices.md)：LangGraph/ADK 模式，以及知识库、记忆库、会话、Skill Runtime、MCP 和 workspace 文件。
+- [工具与 Skill Runtime](guides/tools-and-skill-runtime.md)：框架原生工具、MCP/A2A 和可选 Skill Runtime 边界。
+- [可观测与链路追踪](guides/observability-tracing.md)：本地 spans、Langfuse、OTLP 和 trace metadata 规则。
+- [构建与打包](guides/build-and-package.md)：本地构建、审核 gate 和公开 artifact 规则。
+- [命令行参考](reference/cli.md)：公开命令面和常见选项。
+- [OpenAI 兼容 API](reference/openai-compatible-api.md)：本地协议形态和 KsADK 扩展。
+- [项目配置](reference/project-config.md)：YAML 和环境字段参考。
+- [远程运行时 API](reference/remote-runtime-api.md)：PublicEndpoint、鉴权、OpenAI 兼容路由、workspace files、Hermes 和 OpenClaw。
+- [环境变量](reference/environment-variables.md)：模型、会话、记忆、知识库、Skill Runtime、MCP、构建和 tracing 变量。
+- [会话与文件](reference/runtime-sessions-files.md)：session id、上传、工作区预览和本地状态。
+- [安全边界](reference/security-boundaries.md)：公开仓库、工作区、预览、包和历史记录边界。
+- [故障排查](reference/troubleshooting.md)：常见安装、运行时和打包问题。
 
-## Publication State
+## 发布状态
 
-The planned public locations are:
+计划公开位置：
 
-- Python SDK repository: `https://github.com/kingsoftcloud/ksadk-python`
-- Python SDK docs: `https://kingsoftcloud.github.io/ksadk-python/`
-- Web UI repository: `https://github.com/kingsoftcloud/ksadk-web`
-- Web UI docs or demo: `https://kingsoftcloud.github.io/ksadk-web/`
+- Python SDK 仓库：`https://github.com/kingsoftcloud/ksadk-python`
+- Python SDK 文档：`https://kingsoftcloud.github.io/ksadk-python/`
+- Web UI 仓库：`https://github.com/kingsoftcloud/ksadk-web`
+- Web UI 文档或演示：`https://kingsoftcloud.github.io/ksadk-web/`
 
-The first real source import must be reviewed internally before GitHub source,
-GitHub Pages, GitHub releases, or PyPI publication are enabled.
+第一次真实源码导入必须先完成内部审核，然后才能启用 GitHub source、
+GitHub Pages、GitHub Releases 或 PyPI 发布。

@@ -1,67 +1,65 @@
-# Local Web UI
+# 本地 Web UI
 
-`agentengine web` starts a local browser UI for invoking and debugging an agent
-project. It is the local development UI, not the hosted AgentEngine dashboard.
+`agentengine web` 会为 Agent 项目启动本地浏览器 UI，用于调用和调试。它是本地
+开发 UI，不是 hosted AgentEngine dashboard。
 
-## Start The UI
+## 启动 UI
 
-From a project directory:
+在项目目录中运行：
 
 ```bash
 agentengine web .
 ```
 
-Run without opening a browser automatically:
+不自动打开浏览器：
 
 ```bash
 agentengine web . --no-open
 ```
 
-Use a specific port:
+指定端口：
 
 ```bash
 agentengine web . --port 7860
 ```
 
-Override the configured model for one debugging session:
+为一次调试覆盖模型：
 
 ```bash
 agentengine web . --model my-model
 ```
 
-## What The UI Is For
+## UI 用来做什么
 
-Use the local Web UI to:
+本地 Web UI 适合：
 
-- send messages to the selected agent.
-- test streaming and non-streaming behavior.
-- inspect file and image input flows when supported by the runner.
-- keep a browser-based debug loop while editing the project.
-- verify how the local runtime serializes requests into OpenAI-compatible shapes.
-- inspect sessions, run events, feedback state, and workspace file previews when
-  those local runtime features are enabled.
+- 给当前 Agent 发送消息。
+- 测试 streaming 和 non-streaming 行为。
+- 在 Runner 支持时检查文件和图片输入流程。
+- 编辑项目时保持浏览器调试循环。
+- 验证本地运行时如何把请求序列化为 OpenAI 兼容形态。
+- 在启用相关本地能力时检查 sessions、run events、feedback 状态和工作区文件预览。
 
-## Runtime Relationship
+## 与运行时的关系
 
-The UI talks to the local KsADK runtime. For normal SDK users, the static UI
-assets are already bundled in the wheel. Node.js is only needed when developing
-the UI source itself.
+UI 调用本地 KsADK 运行时。普通 SDK 用户安装 wheel 后已经拿到静态 UI 资源。
+只有开发 UI 源码时才需要 Node.js。
 
 ```mermaid
 flowchart LR
-  Browser["Browser UI"] --> Runtime["KsADK local runtime"]
-  Runtime --> Runner["Framework runner"]
-  Runner --> Agent["User agent project"]
-  Runtime --> Sessions["Local session store"]
-  Runtime --> Files["Workspace file APIs"]
+  Browser["Browser UI"] --> Runtime["KsADK 本地运行时"]
+  Runtime --> Runner["Framework Runner"]
+  Runner --> Agent["用户 Agent 项目"]
+  Runtime --> Sessions["本地 session store"]
+  Runtime --> Files["工作区文件 API"]
+  Runtime --> Responses["/v1/responses"]
 ```
 
-The UI should not call a model provider directly. It calls the local runtime,
-and the runtime invokes the configured framework runner.
+UI 不直接调用模型 provider。它调用本地运行时，再由运行时调用配置好的框架 Runner。
 
-## Local State
+## 本地状态
 
-The local UI may create state under the project directory:
+本地 UI 可能在项目目录下创建状态：
 
 ```text
 .agentengine/
@@ -69,31 +67,27 @@ The local UI may create state under the project directory:
     sessions.sqlite
 ```
 
-This state is useful for development and should not be committed. Delete
-`.agentengine/` if you want to reset local UI sessions.
+这些状态对开发有用，但不是源代码。想重置本地 UI sessions 时删除 `.agentengine/`。
 
-## Independent UI Repository
+## 独立 UI 仓库
 
-The editable Web UI source is planned as a separate repository:
+可编辑 Web UI 源码计划放在独立仓库：
 
 - `kingsoftcloud/ksadk-web`
 
-This repository is the shared Web UI repository for both:
+这个仓库同时服务：
 
-- the local static UI consumed by `ksadk-python`.
-- the hosted UI build consumed by internal hosted deployments.
+- `ksadk-python` 消费的本地静态 UI。
+- 内部 hosted deployment 消费的 hosted UI build。
 
-The Python SDK should embed generated static assets and record the source
-version it consumed. Hosted-only deployment files, private routing, Helm values,
-and generated hosted bundles must not be published as part of the SDK wheel.
+Python SDK 应内置生成后的静态资源，并记录消费的 source version。Hosted-only
+部署文件、私有路由、Helm values 和生成后的 hosted bundle 不应进入 SDK wheel。
 
-See [Web UI Repository](web-ui-source.md) for the repository split and
-release contract.
+见 [Web UI 仓库](web-ui-source.md) 了解仓库拆分和发布契约。
 
-## Development Mode
+## 开发模式
 
-End users do not need Node.js, but UI contributors do. The source repository
-should provide:
+终端用户不需要 Node.js，但 UI contributor 需要。源码仓库应提供：
 
 ```bash
 npm ci
@@ -102,15 +96,15 @@ npm run build:ksadk
 npm run build:hosted
 ```
 
-`build:ksadk` creates the relative-path static bundle consumed by the Python
-SDK. `build:hosted` creates the hosted bundle with hosted routing assumptions.
+`build:ksadk` 生成 Python SDK 消费的相对路径静态 bundle。`build:hosted` 生成带
+hosted 路由假设的 bundle。
 
-## Common Failures
+## 常见失败
 
-| Symptom | Check |
+| 现象 | 检查项 |
 | --- | --- |
-| Browser does not open | run with `--no-open` and open the printed URL manually. |
-| Port already in use | pass `--port <free-port>`. |
-| Agent cannot load | run `agentengine run . -i` first to isolate project detection and model config. |
-| Model calls fail | verify `.env`, `OPENAI_BASE_URL`, `OPENAI_MODEL_NAME`, and provider compatibility. |
-| old session data appears | remove `.agentengine/ui/` for a clean local state. |
+| 浏览器没有打开 | 用 `--no-open` 运行，并手动打开打印的 URL。 |
+| 端口占用 | 传入 `--port <free-port>`。 |
+| Agent 加载失败 | 先运行 `agentengine run . -i`，隔离项目检测和模型配置问题。 |
+| 模型调用失败 | 检查 `.env`、`OPENAI_BASE_URL`、`OPENAI_MODEL_NAME` 和 provider 兼容性。 |
+| 出现旧 session 数据 | 删除 `.agentengine/ui/`，获得干净本地状态。 |

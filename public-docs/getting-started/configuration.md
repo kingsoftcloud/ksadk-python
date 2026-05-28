@@ -1,34 +1,32 @@
-# Configuration
+# 配置项
 
-KsADK reads configuration from command-line options, project YAML, project
-`.env`, and optional global configuration. Values closer to the command usually
-take precedence for that run.
+KsADK 从命令行参数、项目 YAML、项目 `.env` 和可选全局配置读取设置。越靠近
+本次命令的值，通常优先级越高。
 
-## Precedence
+## 优先级
 
-For a single local run, think about configuration in this order:
+单次本地运行可以按这个顺序理解配置：
 
-1. command-line flags such as `--model` and `--port`.
-2. environment variables exported in the shell.
-3. values loaded from the project `.env`.
-4. project YAML such as `agentengine.yaml`.
-5. global developer defaults.
+1. 命令行参数，例如 `--model` 和 `--port`。
+2. 当前 shell 导出的环境变量。
+3. 项目 `.env` 加载的值。
+4. 项目 YAML，例如 `agentengine.yaml`。
+5. 全局开发者默认值。
 
-Use command-line flags for temporary experiments and project files for settings
-that should travel with the sample application.
+临时实验用命令行参数；应该随示例项目一起走的设置写进项目文件。
 
-## Configuration Sources
+## 配置来源
 
-| Source | Typical file or command | Purpose |
+| 来源 | 常见文件或命令 | 目的 |
 | --- | --- | --- |
-| CLI option | `agentengine run --model glm-5.1` | one-off override |
-| Project YAML | `agentengine.yaml` | framework, entry point, region, packaging hints |
-| Project env | `.env` | local model credentials and provider URLs |
-| Global config | managed by `agentengine config --global` style flows where supported | developer defaults across projects |
+| CLI option | `agentengine run --model glm-5.1` | 单次覆盖 |
+| 项目 YAML | `agentengine.yaml` | 框架、入口、region、打包提示 |
+| 项目 env | `.env` | 本地模型凭证和 provider URL |
+| 全局配置 | 由 `agentengine config --global` 类流程管理 | 跨项目开发默认值 |
 
-## Model Settings
+## 模型设置
 
-The local runtime uses OpenAI-compatible settings for many examples:
+本地运行时示例使用 OpenAI 兼容配置：
 
 ```bash
 OPENAI_API_KEY=sk-test
@@ -36,25 +34,21 @@ OPENAI_BASE_URL=https://api.example.com/v1
 OPENAI_MODEL_NAME=my-model
 ```
 
-Use placeholder values in docs and tests. Use real values only in local `.env`
-files or CI secrets.
+文档和测试只能使用占位值。真实值只放在本地 `.env` 或 CI secrets。
 
-Common model-related variables:
-
-| Variable | Purpose |
+| 变量 | 作用 |
 | --- | --- |
-| `OPENAI_API_KEY` | API key for an OpenAI-compatible provider |
-| `OPENAI_BASE_URL` | provider base URL, usually ending in `/v1` |
-| `OPENAI_MODEL_NAME` | default model for local runs |
-| `MODEL_NAME` | compatibility alias used by some projects |
+| `OPENAI_API_KEY` | OpenAI 兼容 provider 的 API Key |
+| `OPENAI_BASE_URL` | provider base URL，通常以 `/v1` 结尾 |
+| `OPENAI_MODEL_NAME` | 本地运行默认模型 |
+| `MODEL_NAME` | 一些项目使用的兼容别名 |
 
-When a request explicitly passes `model`, the local runtime may use it as a
-per-request override for supported runners.
+当请求显式传入 `model` 时，支持的 Runner 可以把它作为单次请求的模型覆盖。
 
-## Project Configuration
+## 项目配置
 
-Project-level settings are stored in `agentengine.yaml`. `ksadk.yaml` and
-`ksadk.yml` are also detected for compatibility.
+项目级设置保存在 `agentengine.yaml`。兼容模式也会检测 `ksadk.yaml` 和
+`ksadk.yml`。
 
 ```yaml
 name: my-agent
@@ -63,100 +57,93 @@ entry_point: agent.py
 agent_variable: root_agent
 ```
 
-Common fields:
-
-| Field | Meaning | Example |
+| 字段 | 含义 | 示例 |
 | --- | --- | --- |
-| `name` | display name and default runtime name | `my-agent` |
-| `framework` | framework adapter | `adk`, `langchain`, `langgraph`, `deepagents` |
-| `entry_point` | Python file loaded by the local runtime | `agent.py` |
-| `agent_variable` | exported object name | `root_agent` |
-| `region` | optional cloud region for deployment-shaped commands | `cn-example-1` |
+| `name` | 显示名称和默认运行时名称 | `my-agent` |
+| `framework` | 框架适配器 | `adk`、`langchain`、`langgraph`、`deepagents` |
+| `entry_point` | 本地运行时加载的 Python 文件 | `agent.py` |
+| `agent_variable` | 导出的对象名 | `root_agent` |
+| `region` | 部署形态命令使用的可选云 region | `cn-example-1` |
 
-Prefer explicit project YAML in public samples. It is easier for contributors to
-review than relying on framework auto-detection.
+公开示例优先写显式项目 YAML。它比依赖自动检测更容易审核。
 
-## Framework-Specific Notes
+## 框架说明
 
-| Framework | Recommended public config |
+| 框架 | 推荐公开配置 |
 | --- | --- |
-| ADK | set `framework: adk`, point `entry_point` to the module exporting the ADK agent |
-| LangGraph | set `framework: langgraph`, export a compiled graph or provide the configured variable |
-| LangChain | set `framework: langchain`, export the chain/runnable object |
-| DeepAgents | set `framework: deepagents`, keep service-only startup code out of import side effects |
+| ADK | 设置 `framework: adk`，`entry_point` 指向导出 ADK agent 的模块 |
+| LangGraph | 设置 `framework: langgraph`，导出编译后的 graph 或配置的变量 |
+| LangChain | 设置 `framework: langchain`，导出 chain/runnable 对象 |
+| DeepAgents | 设置 `framework: deepagents`，避免 import 阶段启动服务 |
 
-If the project uses custom state or input preparation, keep those hooks in the
-configured entry module so the runner can import them consistently.
+如果项目使用自定义 state 或 input 准备逻辑，把 hook 放在配置的入口模块里，Runner
+才能稳定导入。
 
-## Config Commands
+## 配置命令
 
-Interactive wizard:
+交互式向导：
 
 ```bash
 agentengine config
 ```
 
-Show effective settings:
+显示当前设置：
 
 ```bash
 agentengine config show
 ```
 
-Set values non-interactively:
+非交互设置：
 
 ```bash
 agentengine config set region=cn-beijing-6 OPENAI_MODEL_NAME=my-model
 ```
 
-Switch the default model:
+切换默认模型：
 
 ```bash
 agentengine config model
 ```
 
-## Precedence And Local Overrides
+## 本地覆盖
 
-Use CLI options for temporary overrides:
+比较模型时使用 CLI option，而不是频繁编辑 `.env`：
 
 ```bash
 agentengine run . --model another-model
 agentengine web . --model another-model
 ```
 
-This is useful when comparing models without editing `.env`.
+## 运行时功能开关
 
-## Runtime Feature Flags
+有些能力是可选能力。公开示例应明确它们不是第一条 quickstart 的必需项：
 
-Some capabilities are optional. Public examples should make these variables
-clearly optional:
-
-| Variable | Purpose |
+| 变量 | 作用 |
 | --- | --- |
-| `KSADK_WORKSPACE_FILES_ENABLED` | enable workspace file routes |
-| `KSADK_WORKSPACE_MAX_UPLOAD_BYTES` | set the upload limit for workspace files |
-| `KSADK_LTM_BACKEND` | enable long-term memory backend integration |
-| `KSADK_LTM_INDEX` | isolate long-term memory data |
-| `KSADK_KB_DATASET_ID` | enable a knowledge-base integration |
-| `KSADK_KB_TOP_K` | set knowledge retrieval count |
-| `KSADK_BUILD_ENABLE_ATTACHMENT_OCR` | include OCR-related dependencies in build flows when intentionally needed |
+| `KSADK_WORKSPACE_FILES_ENABLED` | 启用工作区文件路由 |
+| `KSADK_WORKSPACE_MAX_UPLOAD_BYTES` | 设置工作区文件上传上限 |
+| `KSADK_LTM_BACKEND` | 启用长期记忆后端集成 |
+| `KSADK_LTM_INDEX` | 隔离长期记忆数据 |
+| `KSADK_KB_DATASET_ID` | 启用知识库集成 |
+| `KSADK_KB_TOP_K` | 设置知识检索数量 |
+| `KSADK_BUILD_ENABLE_ATTACHMENT_OCR` | 在明确需要时把 OCR 相关依赖纳入构建 |
 
-Leave these unset in the first quickstart unless the page is specifically about
-that capability.
+除非页面专门讲某个能力，否则第一条 quickstart 不应设置这些变量。
 
-## Secrets And Files
+## Secrets 与文件
 
-Recommended local layout:
+推荐本地结构：
 
 ```text
 my-agent/
   agentengine.yaml
   agent.py
   requirements.txt
-  .env              # local only
+  .env              # 仅本地使用
   .gitignore
 ```
 
-Recommended `.gitignore` entries:
+推荐 `.gitignore`：
 
 ```gitignore
 .env
@@ -166,17 +153,17 @@ build/
 *.egg-info/
 ```
 
-Never commit `.pypirc`, API keys, cookies, kubeconfig files, private registry
-credentials, customer data, local session databases, or uploaded files.
+不要提交 `.pypirc`、API Key、cookies、kubeconfig、私有 registry 凭证、客户数据、
+本地 session 数据库或上传文件。
 
-## Public Documentation Rule
+## 公开文档规则
 
-Do not publish real internal endpoints, access keys, cookies, kubeconfig paths,
-registry names, customer data, or private support URLs in examples.
+公开文档不能发布真实内部 endpoint、access key、cookies、kubeconfig 路径、
+registry 名称、客户数据或私有支持 URL。
 
-For public docs:
+公开文档应当：
 
-- use `https://api.example.com/v1` for placeholder provider URLs.
-- use `sk-test` or `<YOUR_API_KEY>` for placeholder tokens.
-- mark cloud settings as optional.
-- prefer local runtime examples over hosted infrastructure examples.
+- 使用 `https://api.example.com/v1` 作为 provider URL 占位符。
+- 使用 `sk-test` 或 `<YOUR_API_KEY>` 作为 token 占位符。
+- 把云端设置标记为可选。
+- 优先使用本地运行时示例，而不是 hosted 基础设施示例。

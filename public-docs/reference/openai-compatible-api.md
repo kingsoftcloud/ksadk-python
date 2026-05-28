@@ -1,32 +1,31 @@
-# OpenAI-Compatible API
+# OpenAI 兼容 API
 
-The local KsADK runtime exposes OpenAI-compatible endpoints for development and
-debugging. Use the term OpenAI-compatible only for public protocol shapes. Mark
-SDK-specific fields as KsADK extensions.
+KsADK 本地运行时为开发和调试暴露 OpenAI 兼容 endpoint。公开文档中只有协议形态
+可以称为 OpenAI 兼容；SDK 特定字段要标记为 KsADK 扩展。
 
-Start a local server before calling these endpoints:
+调用前先启动本地 server：
 
 ```bash
 agentengine run . --port 8080
 ```
 
-## Endpoint Summary
+## Endpoint 摘要
 
-| Endpoint | Status | Primary use |
+| Endpoint | 状态 | 主要用途 |
 | --- | --- | --- |
-| `POST /v1/responses` | preferred | Responses-style local agent calls |
-| `POST /v1/chat/completions` | compatibility | Chat Completions clients |
-| `POST /agentengine/api/v1/RunAgent` | UI/runtime action | local Web UI and AgentEngine-style callers |
-| `POST /run_sse` | ADK Web compatibility | ADK-style local UI flows |
+| `POST /v1/responses` | 首选 | Responses 风格本地 Agent 调用 |
+| `POST /v1/chat/completions` | 兼容 | Chat Completions 客户端 |
+| `POST /agentengine/api/v1/RunAgent` | UI/runtime action | 本地 Web UI 和 AgentEngine 风格调用方 |
+| `POST /run_sse` | ADK Web 兼容 | ADK 风格本地 UI 流程 |
 
-The first two endpoints are the public protocol surface for local development.
-Action-style endpoints exist so the bundled UI can call the local runtime.
+前两个 endpoint 是本地开发的公开协议 surface。Action 风格 endpoint 是给内置 UI
+调用本地运行时使用的。
 
 ## Responses API
 
-`POST /v1/responses` is the preferred local runtime protocol.
+`POST /v1/responses` 是推荐的本地运行时协议。
 
-Minimal request:
+最小请求：
 
 ```json
 {
@@ -36,7 +35,7 @@ Minimal request:
 }
 ```
 
-Typical response shape:
+典型响应形态：
 
 ```json
 {
@@ -58,7 +57,7 @@ Typical response shape:
 }
 ```
 
-Use streaming when the client supports server-sent events:
+客户端支持 server-sent events 时可以启用 streaming：
 
 ```json
 {
@@ -68,27 +67,27 @@ Use streaming when the client supports server-sent events:
 }
 ```
 
-### Request Fields
+### 请求字段
 
-| Field | Status | Meaning |
+| 字段 | 状态 | 含义 |
 | --- | --- | --- |
-| `model` | compatible | model or agent name override for this request |
-| `input` | compatible | string, message object, or list of input items |
-| `instructions` | compatible | additional system-level instruction text |
-| `metadata` | compatible | caller metadata preserved by the runtime |
-| `conversation` | compatible | conversation identifier or object with `id` |
-| `previous_response_id` | compatible | previous response reference when not using `conversation` |
-| `stream` | compatible | return server-sent events |
-| `model_metadata` | KsADK extension | model capability hints for local runtime/UI behavior |
-| `model_options` | KsADK extension | provider-specific options passed through supported runners |
-| `session_id` | legacy KsADK extension | older local session identifier; prefer `conversation` |
+| `model` | compatible | 本次请求的模型或 Agent 名称覆盖 |
+| `input` | compatible | 字符串、message object 或 input item list |
+| `instructions` | compatible | 附加系统级 instruction |
+| `metadata` | compatible | 调用方 metadata，运行时会保留 |
+| `conversation` | compatible | conversation id 或带 `id` 的对象 |
+| `previous_response_id` | compatible | 不使用 `conversation` 时的上一响应引用 |
+| `stream` | compatible | 返回 server-sent events |
+| `model_metadata` | KsADK 扩展 | 本地运行时/UI 的模型能力提示 |
+| `model_options` | KsADK 扩展 | 传给支持 Runner 的 provider 特定选项 |
+| `session_id` | legacy KsADK 扩展 | 旧本地 session id；优先使用 `conversation` |
 
-`conversation` and `session_id` must not disagree. `conversation` and
-`previous_response_id` are mutually exclusive in the local runtime.
+`conversation` 和 `session_id` 不能冲突。`conversation` 和
+`previous_response_id` 在本地运行时中互斥。
 
-### Conversation IDs
+### Conversation ID
 
-Prefer the Responses-style `conversation` field:
+优先使用 Responses 风格的 `conversation` 字段：
 
 ```json
 {
@@ -99,7 +98,7 @@ Prefer the Responses-style `conversation` field:
 }
 ```
 
-Older local clients can still send `session_id`:
+旧本地客户端仍可发送 `session_id`：
 
 ```json
 {
@@ -109,13 +108,12 @@ Older local clients can still send `session_id`:
 }
 ```
 
-Use one style consistently. If both are sent and refer to different sessions,
-the local runtime rejects the request.
+同一客户端应始终使用一种风格。如果两者同时出现且指向不同 session，本地运行时会拒绝。
 
 ### Input Items
 
-Responses input can be a string, a message object, or an array of input items.
-Use OpenAI-compatible content block names in public examples:
+Responses input 可以是字符串、message object 或 input item 数组。公开示例应使用
+OpenAI 兼容 content block 名称：
 
 ```json
 {
@@ -132,7 +130,7 @@ Use OpenAI-compatible content block names in public examples:
 }
 ```
 
-For files:
+文件示例：
 
 ```json
 {
@@ -153,14 +151,12 @@ For files:
 }
 ```
 
-Remote `file_url` values are preserved as references. KsADK does not document a
-public guarantee that the local runtime will fetch arbitrary remote files for
-extraction. Use `file_data` or a local upload reference when you need local
-attachment processing.
+远程 `file_url` 会保留为引用。KsADK 不在公开文档中承诺本地运行时会为附件处理任意
+抓取远程文件。需要本地附件处理时使用 `file_data` 或本地 upload reference。
 
-### Resume And Approval Inputs
+### Resume 和审批输入
 
-The runtime recognizes common resume payloads in `input`, including:
+运行时识别 `input` 中常见 resume payload，包括：
 
 ```json
 {
@@ -170,7 +166,7 @@ The runtime recognizes common resume payloads in `input`, including:
 }
 ```
 
-and:
+以及：
 
 ```json
 {
@@ -181,34 +177,30 @@ and:
 }
 ```
 
-These payloads are passed to framework adapters as resume input. Application
-code should still own business-specific approval semantics.
+这些 payload 会作为 resume input 传给框架 adapter。业务特定审批语义仍由应用代码负责。
 
-### Non-Streaming Response
+### 非流式响应
 
-The runtime returns a response object with OpenAI-compatible top-level fields
-plus a small number of local extensions:
+运行时返回 OpenAI 兼容顶层字段，加少量本地扩展：
 
-| Field | Status | Meaning |
+| 字段 | 状态 | 含义 |
 | --- | --- | --- |
-| `id` | compatible | response identifier generated by the runtime |
+| `id` | compatible | 运行时生成的 response id |
 | `object` | compatible | `response` |
-| `created_at` | compatible | creation timestamp |
-| `status` | compatible | `completed`, `failed`, or `incomplete` |
-| `model` | compatible | model or agent used for the request |
-| `output` | compatible | output items, usually an assistant message |
-| `metadata` | compatible | caller metadata |
-| `usage` | compatible-shaped | usage information when available |
-| `output_text` | KsADK extension | convenient concatenated text |
-| `session_id` | KsADK extension | local session identifier |
+| `created_at` | compatible | 创建时间 |
+| `status` | compatible | `completed`、`failed` 或 `incomplete` |
+| `model` | compatible | 本次请求使用的模型或 Agent |
+| `output` | compatible | 输出 item，通常是 assistant message |
+| `metadata` | compatible | 调用方 metadata |
+| `usage` | compatible-shaped | 可用时的 usage 信息 |
+| `output_text` | KsADK 扩展 | 拼接后的便捷文本 |
+| `session_id` | KsADK 扩展 | 本地 session id |
 
-Consumers that aim for broad compatibility should read `output` first and treat
-`output_text` as a convenience field.
+追求广泛兼容的消费者应优先读取 `output`，把 `output_text` 视为便捷字段。
 
 ## Chat Completions API
 
-`POST /v1/chat/completions` is the compatibility protocol for clients that use
-Chat Completions.
+`POST /v1/chat/completions` 兼容使用 Chat Completions 的客户端。
 
 ```json
 {
@@ -223,10 +215,9 @@ Chat Completions.
 }
 ```
 
-The runtime converts supported Chat Completions requests into the canonical
-runner input used by KsADK.
+运行时会把支持的 Chat Completions 请求转换为 KsADK canonical runner input。
 
-Multimodal Chat Completions examples should use Chat-style content blocks:
+多模态 Chat Completions 示例使用 Chat 风格 content block：
 
 ```json
 {
@@ -243,48 +234,33 @@ Multimodal Chat Completions examples should use Chat-style content blocks:
 }
 ```
 
-### Request Fields
+## KsADK 扩展
 
-| Field | Status | Meaning |
-| --- | --- | --- |
-| `model` | compatible | model or agent name override |
-| `messages` | compatible | chat message list |
-| `stream` | compatible | return server-sent events |
-| `user` | compatible | caller/user identifier |
-| `temperature` | compatible | provider option when supported |
-| `max_tokens` | compatible | provider option when supported |
-| `session_id` | KsADK extension | local session identifier |
-| `model_metadata` | KsADK extension | model capability hints |
-| `model_options` | KsADK extension | provider-specific runtime options |
+`attachments`、`current_attachments`、`has_current_files` 等字段是 KsADK runner
+扩展，不应描述成 OpenAI 官方字段。
 
-## KsADK Extensions
+旧的 `inlineData` 和 `fileData` 形态仍可能在某些本地 UI 流程中被兼容，但新的公开
+文档应优先使用 Responses 风格 input item。
 
-Fields such as `attachments`, `current_attachments`, and `has_current_files` are
-KsADK runner extensions. Do not describe them as official OpenAI fields.
+Runner 内部可能收到这些字段：
 
-Legacy `inlineData` and `fileData` shapes may still be accepted for compatibility
-in some local UI flows, but new public docs should prefer Responses-style input
-items.
-
-Internally, framework runners may receive fields such as:
-
-| Field | Meaning |
+| 字段 | 含义 |
 | --- | --- |
-| `input_content` | canonical current-turn content blocks |
+| `input_content` | 当前 turn 的 canonical content block |
 | `input_messages` | canonical message/input item list |
-| `input_parts` | legacy normalized parts |
-| `current_attachments` | files/images from the current user turn |
-| `current_attachment_results` | extraction results from the current user turn |
-| `attachments` | current or recent effective attachment context |
-| `attachment_results` | current or recent effective extraction context |
-| `kb_context` | optional knowledge retrieval context |
-| `memory_context` | optional long-term memory context |
+| `input_parts` | 旧规范化 parts |
+| `current_attachments` | 当前用户 turn 的文件/图片 |
+| `current_attachment_results` | 当前用户 turn 的抽取结果 |
+| `attachments` | 当前或最近有效附件上下文 |
+| `attachment_results` | 当前或最近有效抽取上下文 |
+| `kb_context` | 可选知识检索上下文 |
+| `memory_context` | 可选长期记忆上下文 |
 
-These fields are runner payload fields, not wire-protocol fields.
+这些是 runner payload 字段，不是 wire protocol 字段。
 
 ## Streaming
 
-Streaming responses use `text/event-stream`.
+Streaming response 使用 `text/event-stream`：
 
 ```bash
 curl http://127.0.0.1:8080/v1/responses \
@@ -292,83 +268,48 @@ curl http://127.0.0.1:8080/v1/responses \
   -d '{"model":"my-agent","input":"count to three","stream":true}'
 ```
 
-Clients should handle:
+客户端应处理：
 
-- incremental text events.
-- output item events.
-- final completion events.
-- error events.
-- reconnect or cancellation behavior owned by the client.
+- 增量文本事件。
+- output item 事件。
+- 最终完成事件。
+- error 事件。
+- 客户端自己负责的重连或取消行为。
 
-Common Responses streaming event names include:
+常见 Responses streaming event：
 
-| Event | Meaning |
+| Event | 含义 |
 | --- | --- |
-| `response.created` | response object allocated |
-| `response.in_progress` | model or agent execution started |
-| `response.output_item.added` | output item started |
-| `response.content_part.added` | message content part started |
-| `response.output_text.delta` | text delta |
-| `response.output_text.done` | text content completed |
-| `response.reasoning.delta` | reasoning delta when provided by the runner |
-| `response.function_call_arguments.delta` | function-call arguments delta |
-| `response.function_call_arguments.done` | function-call arguments completed |
-| `response.ksadk.tool_result` | KsADK extension for tool results |
-| `response.incomplete` | interrupted or waiting for approval/resume |
-| `response.completed` | final successful response |
-| `response.failed` | terminal error |
+| `response.created` | response object 已分配 |
+| `response.in_progress` | 模型或 Agent 执行开始 |
+| `response.output_item.added` | output item 开始 |
+| `response.content_part.added` | message content part 开始 |
+| `response.output_text.delta` | 文本 delta |
+| `response.output_text.done` | 文本内容完成 |
+| `response.reasoning.delta` | Runner 提供时的 reasoning delta |
+| `response.function_call_arguments.delta` | function-call 参数 delta |
+| `response.function_call_arguments.done` | function-call 参数完成 |
+| `response.ksadk.tool_result` | KsADK tool result 扩展 |
+| `response.incomplete` | 中断或等待审批/resume |
+| `response.completed` | 最终成功响应 |
+| `response.failed` | 终态错误 |
 
-Clients should ignore unknown events they do not support. This keeps them
-forward-compatible with new runner event types.
+客户端应忽略自己不支持的未知事件，以便兼容未来 Runner 事件类型。
 
-## Local Endpoint Examples
+## 实现边界
 
-Responses:
-
-```bash
-curl http://127.0.0.1:8080/v1/responses \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"my-agent","input":"hello","stream":false}'
-```
-
-Chat Completions:
-
-```bash
-curl http://127.0.0.1:8080/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "my-agent",
-    "messages": [{"role": "user", "content": "hello"}],
-    "stream": false
-  }'
-```
-
-## Compatibility Notes
-
-- Provider-specific model names belong in local configuration.
-- The local runtime may support SDK-specific fields for debugging.
-- Public docs should separate OpenAI-compatible protocol fields from KsADK
-  extensions.
-- Hosted runtime behavior should be documented only after public infrastructure
-  and credentials are approved.
-- For framework-specific tool, memory, or file behavior, document the framework
-  adapter and runtime extension explicitly instead of implying a hidden OpenAI
-  standard field.
-
-## Implementation Boundary
-
-At runtime, protocol handlers normalize incoming requests into a common runner
-payload, then call the active framework runner through a narrow interface:
+运行时会把协议处理器收到的请求规范化为统一 runner payload，再通过窄接口调用当前
+框架 Runner：
 
 ```mermaid
 flowchart LR
-  Client["client"] --> API["/v1/responses or /v1/chat/completions"]
-  API --> Normalize["message and attachment normalization"]
-  Normalize --> Session["session and history preparation"]
+  Client["client"] --> API["/v1/responses 或 /v1/chat/completions"]
+  API --> Normalize["消息和附件规范化"]
+  Normalize --> Session["session 与历史准备"]
   Session --> Runner["framework runner"]
-  Runner --> Serialize["Responses or Chat response serialization"]
+  Runner --> Serialize["Responses 或 Chat response 序列化"]
   Serialize --> Client
 ```
 
-The public contract is the endpoint behavior. Internal event names, session
-storage details, and runner payload extensions may evolve across releases.
+公开契约是 endpoint 行为。内部事件名、session 存储细节和 runner payload 扩展可能在
+不同 release 中演进。

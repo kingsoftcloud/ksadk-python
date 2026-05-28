@@ -1,32 +1,29 @@
-# Quickstart
+# 快速开始
 
-This quickstart creates a local LangGraph agent, configures an
-OpenAI-compatible model provider, runs the agent in the terminal, and opens the
-local Web UI.
+本页会创建一个本地 LangGraph Agent，配置 OpenAI 兼容模型 provider，在终端运行它，
+并打开本地 Web UI。
 
-The flow is local-first. It does not require internal Kingsoft Cloud accounts,
-private gateways, internal object storage, or private Kubernetes clusters.
+整个流程以本地开发为中心，不需要内部 Kingsoft Cloud 账号、私有网关、内部对象存储
+或私有 Kubernetes 集群。
 
-## Requirements
+## 准备条件
 
-- Python 3.10 or newer.
-- A shell with `python` and `pip`.
-- An OpenAI-compatible chat model endpoint and API key that you control.
+- Python 3.10 或更新版本。
+- 可使用 `python` 和 `pip` 的 shell。
+- 一个你自己控制的 OpenAI 兼容聊天模型 endpoint 和 API Key。
 
-Optional framework extras can be installed as needed. The default quickstart uses
-LangGraph.
+可选框架依赖按需安装。本快速开始使用 LangGraph。
 
-## Create A Clean Workspace
+## 创建干净工作区
 
 ```bash
 mkdir ksadk-quickstart
 cd ksadk-quickstart
 ```
 
-Keep the virtual environment inside the workspace while learning. For production
-projects, use your team's normal Python environment manager.
+学习阶段建议把虚拟环境放在工作区内。生产项目可以使用团队已有的 Python 环境管理方式。
 
-## Install
+## 安装
 
 ```bash
 python -m venv .venv
@@ -34,30 +31,30 @@ source .venv/bin/activate
 pip install ksadk
 ```
 
-Install a framework extra when your project needs it:
+安装 LangGraph extra：
 
 ```bash
 pip install "ksadk[langgraph]"
 ```
 
-Check that the CLI is installed:
+确认 CLI 可用：
 
 ```bash
 agentengine --help
 agentengine --version
 ```
 
-## Create A Project
+## 创建项目
 
 ```bash
 agentengine init my-agent -f langgraph
 cd my-agent
 ```
 
-The generated project contains an agent entry file and a project configuration
-file. See [Project Structure](project-structure.md) for details.
+生成项目会包含 Agent 入口文件和项目配置文件。更多细节见
+[项目结构](project-structure.md)。
 
-Expected files:
+预期文件：
 
 ```text
 my-agent/
@@ -65,9 +62,9 @@ my-agent/
   agentengine.yaml
 ```
 
-## Configure A Model
+## 配置模型
 
-Use the non-interactive config command for reproducible setup:
+使用非交互命令可以让设置可复现：
 
 ```bash
 agentengine config set \
@@ -76,30 +73,29 @@ agentengine config set \
   OPENAI_MODEL_NAME=my-model
 ```
 
-Use real provider values only in your local `.env`. Do not commit `.env`.
+真实 provider 值只放在本地 `.env`。不要提交 `.env`。
 
-Check the effective configuration:
+检查生效配置：
 
 ```bash
 agentengine config show
 ```
 
-You can also run the interactive wizard:
+也可以使用交互式向导：
 
 ```bash
 agentengine config
 ```
 
-## Inspect The Agent
+## 检查 Agent
 
-Open `agent.py` and confirm that the configured agent variable exists. The
-default generated LangGraph project should expose:
+打开 `agent.py`，确认配置的 Agent 变量存在。默认 LangGraph 项目应导出：
 
 ```python
 root_agent = graph.compile()
 ```
 
-Open `agentengine.yaml` and confirm:
+打开 `agentengine.yaml`，确认：
 
 ```yaml
 framework: langgraph
@@ -107,48 +103,57 @@ entry_point: agent.py
 agent_variable: root_agent
 ```
 
-## Run In The Terminal
+## 终端运行
 
 ```bash
 agentengine run . -i
 ```
 
-Useful flags:
+常用参数：
 
-- `--model <name>` overrides the configured model for one run.
-- `--show-thinking` displays model reasoning output when the provider returns it.
-- `--no-stream` waits for a complete response before rendering.
-- `--no-trace` disables tracing.
+| 参数 | 作用 |
+| --- | --- |
+| `--model <name>` | 为本次运行覆盖配置模型 |
+| `--show-thinking` | provider 返回 reasoning 时展示推理输出 |
+| `--no-stream` | 等完整响应后再渲染 |
+| `--no-trace` | 禁用 tracing |
 
-Send a basic prompt:
+发送一个基础 prompt：
 
 ```text
 What can this agent do?
 ```
 
-If the model provider is reachable, the CLI should stream or print a response.
-If it fails, check [Troubleshooting](../reference/troubleshooting.md#model-calls-fail).
+如果模型 provider 可访问，CLI 会流式输出或打印响应。失败时看
+[故障排查](../reference/troubleshooting.md)。
 
-## Start The Local Web UI
+## 启动本地 Web UI
 
 ```bash
 agentengine web . --no-open
 ```
 
-The command prints a local URL. Open it in a browser and send a test message to
-the agent. `agentengine web` uses static assets bundled in the Python package, so
-end users do not need Node.js.
+命令会打印一个本地 URL。用浏览器打开后发送测试消息。`agentengine web` 使用
+Python 包内置的静态资源，终端用户不需要 Node.js。
 
-The local UI stores browser debugging state under `.agentengine/` by default.
-Do not commit that directory.
+本地 UI 默认把调试状态写入 `.agentengine/`。不要提交这个目录。
 
-## Start A Local API Server
+```mermaid
+flowchart LR
+  Browser["浏览器"] --> Web["本地 Web UI"]
+  Web --> Runtime["KsADK 本地运行时"]
+  Runtime --> Runner["LangGraphRunner"]
+  Runner --> Agent["root_agent"]
+  Runtime --> Store[".agentengine/ui/sessions.sqlite"]
+```
+
+## 启动本地 API Server
 
 ```bash
 agentengine run . --port 8080
 ```
 
-Then call the local OpenAI-compatible endpoint:
+调用 Chat Completions endpoint：
 
 ```bash
 curl http://127.0.0.1:8080/v1/chat/completions \
@@ -162,7 +167,7 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 }'
 ```
 
-Call the Responses endpoint:
+调用 Responses endpoint：
 
 ```bash
 curl http://127.0.0.1:8080/v1/responses \
@@ -174,28 +179,19 @@ curl http://127.0.0.1:8080/v1/responses \
   }'
 ```
 
-Use `stream: true` only when your client can consume server-sent events.
+只有当客户端能消费 server-sent events 时，才使用 `stream: true`。
 
-## Stop Local Processes
+## 停止本地进程
 
-Press `Ctrl+C` in each terminal running `agentengine run` or `agentengine web`.
+终端交互或本地 server 可以用 `Ctrl-C` 停止。重置本地 UI 状态时删除：
 
-## What You Have Built
+```bash
+rm -rf .agentengine/
+```
 
-You now have:
+## 下一步
 
-- a local Python agent project.
-- explicit KsADK project configuration.
-- local model settings in `.env`.
-- a terminal loop for quick tests.
-- a browser UI for debugging sessions.
-- an OpenAI-compatible local HTTP server for client integration.
-
-## Next Steps
-
-- Build a complete example in [Build A LangGraph Agent](../tutorials/langgraph-agent.md).
-- Wrap an existing project in [Bring An Existing Agent](../tutorials/existing-agent.md).
-- Configure more settings in [Configuration](configuration.md).
-- Learn framework conventions in [Frameworks](../guides/frameworks.md).
-- Debug with the [Local Web UI](../guides/local-web-ui.md).
-- Check commands in the [CLI Reference](../reference/cli.md).
+- 阅读 [配置项](configuration.md)，理解 `.env`、YAML 和 CLI 覆盖顺序。
+- 阅读 [运行时架构](../guides/runtime-architecture.md)，理解请求如何进入 Runner。
+- 阅读 [OpenAI 兼容 API](../reference/openai-compatible-api.md)，把本地 Agent 接到客户端。
+- 阅读 [本地 Web UI](../guides/local-web-ui.md)，了解会话、上传和工作区预览。

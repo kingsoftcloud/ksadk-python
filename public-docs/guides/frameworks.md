@@ -1,29 +1,27 @@
-# Frameworks
+# 框架接入
 
-KsADK supports common Python agent framework families through runtime adapters.
-The public contract is simple: expose an agent object, declare the framework, and
-run the project through `agentengine`.
+KsADK 通过运行时适配器接入常见 Python Agent 框架。公开契约很简单：
+暴露一个 Agent 对象，声明框架类型，然后用 `agentengine` 运行项目。
 
-## Supported Families
+## 支持的框架族
 
-| Framework | Install extra | Typical export |
+| 框架 | 安装 extra | 常见导出对象 |
 | --- | --- | --- |
 | Google ADK | `ksadk[adk]` | `root_agent = Agent(...)` |
 | LangGraph | `ksadk[langgraph]` | `root_agent = graph.compile()` |
-| LangChain | `ksadk[langchain]` or framework dependencies | `root_agent = prompt | llm | parser` |
+| LangChain | `ksadk[langchain]` 或框架依赖 | `root_agent = prompt | llm | parser` |
 | DeepAgents | `ksadk[deepagents]` | `root_agent = create_deep_agent(...)` |
 
-## Framework Runtime Architecture
+## 框架运行时架构
 
-KsADK treats every framework adapter as a small boundary around the user's
-native agent object. The local server, Web UI, session store, and
-OpenAI-compatible endpoints do not call framework-specific APIs directly. They
-call the runner contract, and the runner owns the framework details.
+KsADK 把每个框架适配器当作围绕用户原生 Agent 对象的一层边界。本地
+Server、Web UI、会话存储和 OpenAI 兼容接口不会直接调用框架私有 API，
+而是统一调用 runner 契约；具体框架行为由 runner 负责。
 
 ```mermaid
 flowchart LR
-  Project["Agent project"] --> Config["agentengine.yaml<br/>framework + entry_point"]
-  Project --> Shape["project shape<br/>agent.py / main.py / app.py"]
+  Project["Agent 项目"] --> Config["agentengine.yaml<br/>framework + entry_point"]
+  Project --> Shape["项目形态<br/>agent.py / main.py / app.py"]
   Config --> Detect["FrameworkDetector"]
   Shape --> Detect
   Detect --> Result["DetectionResult<br/>type / entry_point / agent_variable"]
@@ -36,32 +34,29 @@ flowchart LR
   LG --> Contract
   LC --> Contract
   DA --> Contract
-  Contract --> Server["FastAPI server"]
+  Contract --> Server["FastAPI Server"]
   Server --> Protocols["/run_sse<br/>/v1/responses<br/>/v1/chat/completions"]
-  Server --> Web["Local Web UI"]
+  Server --> Web["本地 Web UI"]
 ```
 
-The important design point is that framework detection is static while runner
-loading is executable. Detection reads config files and source text; loading
-imports the configured module and validates the exported object. That keeps
-diagnostics clear: a project that cannot be detected has a packaging/config
-problem, while a project that detects correctly but fails to load has an import,
-dependency, or exported-object problem.
+关键点是：框架检测是静态步骤，runner 加载是可执行步骤。检测阶段读取
+配置文件和源码文本；加载阶段才导入配置模块并验证导出对象。这样排错
+边界更清晰：不能检测通常是配置或项目结构问题；检测成功但加载失败，
+通常是依赖、导入路径或 `agent_variable` 问题。
 
-| Layer | Stable responsibility | Typical failure to check |
+| 层级 | 稳定职责 | 常见排查点 |
 | --- | --- | --- |
-| detection | find framework, entry point, package path, and exported variable | missing or inconsistent `agentengine.yaml` |
-| factory | map `DetectionResult.type` to a concrete runner | unsupported framework value |
-| runner loading | import the module and validate the exported agent object | dependency import error or wrong `agent_variable` |
-| conversation runtime | normalize input, history, attachments, and platform context | malformed payload or session conflict |
-| protocol surface | serialize the result as Web UI, SSE, Responses, or Chat Completions | API format mismatch |
+| detection | 找到框架、入口文件、包路径和导出变量 | `agentengine.yaml` 缺失或不一致 |
+| factory | 将 `DetectionResult.type` 映射成具体 runner | framework 值不受支持 |
+| runner loading | 导入模块并验证导出的 Agent 对象 | 依赖导入错误或 `agent_variable` 不匹配 |
+| conversation runtime | 归一化输入、历史、附件和平台上下文 | payload 形态错误或会话冲突 |
+| protocol surface | 序列化为 Web UI、SSE、Responses 或 Chat Completions | API 格式不匹配 |
 
 ## Google ADK
 
-KsADK keeps the ADK programming model intact. The application still exports a
-Google ADK `Agent`; KsADK detects the project, imports the configured object,
-wraps it in the local runner, and exposes the same local CLI, Web UI, and HTTP
-protocols used by other framework families.
+KsADK 保留 ADK 的编程模型。应用仍然导出 Google ADK `Agent`；KsADK 检测
+项目、导入配置对象、用本地 runner 包装它，并暴露与其他框架一致的 CLI、
+Web UI 和 HTTP 协议。
 
 ```python
 from google.adk.agents import Agent
@@ -77,7 +72,7 @@ root_agent = Agent(
 )
 ```
 
-Project config:
+项目配置：
 
 ```yaml
 name: hello-agent
@@ -86,7 +81,7 @@ entry_point: agent.py
 agent_variable: root_agent
 ```
 
-Recommended setup:
+本地运行：
 
 ```bash
 python -m venv .venv
@@ -96,20 +91,9 @@ agentengine run . -i
 agentengine web . --no-open
 ```
 
-For ADK projects, optional KsADK integrations such as knowledge search,
-long-term memory tools, MCP toolsets, and Skill Runtime tools are injected
-during ADK runner loading when their environment variables are configured. A
-minimal ADK tutorial should leave those variables unset so the first run only
-depends on the ADK agent object and model configuration.
-
-Common ADK loading failures:
-
-| Error pattern | Check |
-| --- | --- |
-| project detected as `unknown` | `agentengine.yaml` exists and sets `framework: adk` |
-| configured object is missing | `agent_variable` matches the exported Python variable |
-| model calls fail | provider env vars are visible inside the project virtualenv |
-| optional tools are missing | the matching KsADK feature flags and dependencies are installed |
+对于 ADK 项目，知识库、长期记忆、MCP toolset 和 Skill Runtime 工具都在
+ADK runner 加载阶段按环境变量注入。最小示例应先不启用这些可选变量，
+确保第一轮运行只依赖 Agent 对象和模型配置。
 
 ## LangGraph
 
@@ -135,8 +119,6 @@ graph.add_edge("chat", END)
 root_agent = graph.compile()
 ```
 
-Project config:
-
 ```yaml
 name: langgraph-agent
 framework: langgraph
@@ -160,8 +142,6 @@ prompt = ChatPromptTemplate.from_messages([
 root_agent = prompt | llm | StrOutputParser()
 ```
 
-Project config:
-
 ```yaml
 name: langchain-agent
 framework: langchain
@@ -179,8 +159,6 @@ llm = ChatOpenAI(model="my-model", base_url="https://api.example.com/v1", api_ke
 root_agent = create_deep_agent(model=llm)
 ```
 
-Project config:
-
 ```yaml
 name: deep-agent
 framework: deepagents
@@ -188,105 +166,68 @@ entry_point: agent.py
 agent_variable: root_agent
 ```
 
-## Detection Order
+## 检测顺序
 
-KsADK first checks explicit project configuration. If no config file exists, it
-tries common project shapes:
+KsADK 优先读取显式项目配置。如果没有配置文件，再尝试常见项目形态：
 
 - `langgraph.json`
-- a package with `agent.py`, `main.py`, or `app.py`
-- a package `__init__.py` that exports common agent variables
-- a script-style project with `agent.py`, `main.py`, or `app.py`
+- 包目录内的 `agent.py`、`main.py` 或 `app.py`
+- 包目录 `__init__.py` 导出的常见 Agent 变量
+- 当前目录直接包含 `agent.py`、`main.py` 或 `app.py` 的脚本式项目
 
-Explicit YAML is recommended for public examples because it is easier to review
-and less dependent on heuristics.
-
-## Detection Details
-
-Detection is a static step. It reads configuration files and source text, but it
-does not execute the user agent module. That keeps framework detection separate
-from framework loading.
-
-The detection result carries these values into the runner factory:
-
-| Field | Why it matters |
-| --- | --- |
-| `type` | selects the runner adapter |
-| `name` | used for display and runtime metadata |
-| `entry_point` | Python file to import during runner loading |
-| `package_path` | package or directory that contains the entry point |
-| `agent_variable` | exported object to load from the entry point |
-| `confidence` | diagnostic signal for convention-based detection |
-
-If a configured entry file exists but does not export the configured variable,
-fix the export or the `agent_variable` setting. Do not work around this by
-adding import side effects that create global state indirectly.
-
-## Detection To Runner Pipeline
-
-Explicit configuration is the recommended path for public examples, but the
-detector also supports convention-based projects. The pipeline below is useful
-when reviewing examples or debugging why a project was loaded as the wrong
-framework.
+公开示例建议使用显式 YAML，因为它更容易审查，也不依赖启发式规则。
 
 ```mermaid
 flowchart TD
-  Start["Start detection"] --> Explicit{"agentengine.yaml<br/>or ksadk.yaml?"}
-  Explicit -->|yes| Validate["Validate entry_point<br/>and agent_variable"]
-  Validate -->|valid| ConfigResult["Return configured DetectionResult"]
-  Validate -->|invalid| LangGraphJson{"langgraph.json?"}
-  Explicit -->|no| LangGraphJson
-  LangGraphJson -->|yes| LangGraphResult["Return LangGraph DetectionResult"]
-  LangGraphJson -->|no| Package["Find package or script-style project"]
-  Package --> AgentFile{"agent.py / main.py / app.py<br/>or __init__.py export?"}
-  AgentFile -->|no| Unknown["Return unknown"]
-  AgentFile -->|yes| StaticScan["AST and source-text scan"]
+  Start["开始检测"] --> Explicit{"agentengine.yaml<br/>或 ksadk.yaml?"}
+  Explicit -->|是| Validate["校验 entry_point<br/>和 agent_variable"]
+  Validate -->|有效| ConfigResult["返回配置 DetectionResult"]
+  Validate -->|无效| LangGraphJson{"langgraph.json?"}
+  Explicit -->|否| LangGraphJson
+  LangGraphJson -->|是| LangGraphResult["返回 LangGraph DetectionResult"]
+  LangGraphJson -->|否| Package["查找包目录或脚本式项目"]
+  Package --> AgentFile{"agent.py / main.py / app.py<br/>或 __init__.py 导出?"}
+  AgentFile -->|否| Unknown["返回 unknown"]
+  AgentFile -->|是| StaticScan["AST 与源码文本扫描"]
   StaticScan --> Kind{"ADK / LangGraph<br/>LangChain / DeepAgents?"}
-  Kind -->|matched| Result["DetectionResult"]
-  Kind -->|not matched| Unknown
+  Kind -->|匹配| Result["DetectionResult"]
+  Kind -->|未匹配| Unknown
   Result --> Factory["create_runner(result, project_dir)"]
 ```
 
-The runner factory applies a small LangChain compatibility patch, then creates
-one of the concrete runners. This is intentionally a narrow switch instead of a
-plugin registry: the public contract is easier to audit, and new framework
-families can be reviewed as explicit additions.
+## Runner 加载行为
 
-## Runner Loading Behavior
+每个 runner 都保留框架的原生执行模型：
 
-Each runner keeps the framework's native execution model:
-
-| Runner | Loading path | Native execution |
+| Runner | 加载路径 | 原生执行 |
 | --- | --- | --- |
-| ADK | imports the configured ADK `Agent` and wraps it in a Google ADK runner | ADK `Runner.run_async()` |
-| LangGraph | imports the configured graph object | graph `invoke` / `ainvoke` / event stream |
-| LangChain | imports the configured runnable, chain, or callable | runnable/callable invoke and stream |
-| DeepAgents | reuses the LangGraph runner path | compiled graph execution |
+| ADK | 导入配置的 ADK `Agent` 并用 Google ADK runner 包装 | ADK `Runner.run_async()` |
+| LangGraph | 导入配置的 graph 对象 | graph `invoke` / `ainvoke` / 事件流 |
+| LangChain | 导入配置的 runnable、chain 或 callable | runnable/callable invoke 与 stream |
+| DeepAgents | 复用 LangGraph runner 路径 | 编译 graph 执行 |
 
-The adapters normalize the result into `{"output": ...}` for non-streaming calls
-and semantic chunks for streaming calls. They do not rewrite the user's agent
-into a different framework.
+适配器会把非流式结果归一成 `{"output": ...}`，把流式结果归一成语义
+chunk。它们不会把用户 Agent 改写成另一种框架。
 
-## Runner Responsibilities
+## Runner 责任边界
 
-All framework adapters implement the same public responsibilities:
+所有框架适配器都实现同一组公开责任：
 
-| Responsibility | Meaning |
+| 职责 | 含义 |
 | --- | --- |
-| load | import the configured module and validate the exported object |
-| prepare | apply per-request model overrides where supported |
-| invoke | run one non-streaming turn |
-| stream | run one streaming turn |
-| close | release framework or runtime resources on shutdown |
+| load | 导入配置模块并校验导出对象 |
+| prepare | 在支持的框架里应用请求级模型覆盖 |
+| invoke | 执行一轮非流式调用 |
+| stream | 执行一轮流式调用 |
+| close | 关闭 runner 持有的运行时资源 |
 
-This keeps the HTTP server and Web UI independent from framework-specific
-objects. Framework-specific behavior belongs in the adapter or in the
-application's own hook functions.
+HTTP Server 和 Web UI 因此不依赖具体框架对象。框架相关行为应放在 adapter
+或应用自己的 hook 函数中。
 
-## Custom Input Hooks
+## 自定义输入 Hook
 
-LangGraph and LangChain applications often use custom state shapes. Add a hook
-in the configured entry module when the default mapping is not enough:
+LangGraph 和 LangChain 应用常见自定义 state。默认映射不够时，可以在入口
+模块里增加 hook：
 
 ```python
 def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
@@ -307,49 +248,46 @@ def ksadk_prepare_input(payload: dict, session_context: dict) -> dict:
     }
 ```
 
-Hooks make examples easier to test because business code receives a stable,
-explicit dictionary instead of reading local UI events or session internals.
+hook 能让业务代码拿到稳定、显式的字典，而不是读取本地 UI 事件或会话内部
+结构。
 
-## Model Overrides
+## 模型覆盖
 
-Requests can provide a model override through the CLI or HTTP payload. KsADK
-normalizes the requested model and calls the runner before execution. The effect
-depends on the framework:
+请求可以通过 CLI 或 HTTP payload 提供模型覆盖。KsADK 会先归一化请求模型，
+再通知 runner 准备执行。不同框架的效果不同：
 
-| Framework family | Typical behavior |
+| 框架族 | 常见行为 |
 | --- | --- |
-| ADK | applies the requested model to the loaded agent tree when possible |
-| LangGraph | synchronizes model environment variables and reloads the module when needed |
-| LangChain | synchronizes model environment variables and reloads the module when needed |
-| Remote runner | forwards the model in the outgoing OpenAI-compatible payload |
+| ADK | 在可能时把请求模型应用到已加载的 agent tree |
+| LangGraph | 同步模型环境变量，必要时重载模块 |
+| LangChain | 同步模型环境变量，必要时重载模块 |
+| Remote runner | 在 OpenAI 兼容 payload 中转发模型 |
 
-For deterministic examples, set a default model in `.env` or your provider
-configuration, then use request-level overrides only when you need to test model
-selection.
+可复现示例建议在 `.env` 或 provider 配置中设置默认模型；请求级覆盖只用于
+测试模型选择。
 
-## Session Continuity
+## 会话连续性
 
-Frameworks differ in how much native session state they expose. KsADK describes
-that capability through runner session adapters:
+不同框架暴露的原生会话能力不同。KsADK 用 runner session adapter 描述这种
+能力：
 
-| Continuity path | Meaning |
+| 连续性路径 | 含义 |
 | --- | --- |
-| transcript replay | KsADK projects prior session events back into model history |
-| standard hook | user hook receives structured history and session context |
-| framework checkpoint | framework runtime keeps recoverable state |
-| native session | framework has its own session service or equivalent state |
+| transcript replay | KsADK 把之前的会话事件投影回模型历史 |
+| standard hook | 用户 hook 接收结构化历史和会话上下文 |
+| framework checkpoint | 框架运行时保留可恢复状态 |
+| native session | 框架拥有自己的 session service 或等价状态 |
 
-Transcript replay is the portable baseline. Native checkpoint or session paths
-are useful when the framework supports them, but examples should still behave
-reasonably when only transcript replay is available.
+transcript replay 是可移植基线。框架 checkpoint 或 native session 在框架
+支持时很有用，但示例仍应在只有 transcript replay 时正常工作。
 
-## Local Invocation
+## 本地调用
 
-All framework examples should support the same local commands:
+所有框架示例都应支持同一组本地命令：
 
 ```bash
 agentengine run . -i
 agentengine web . --no-open
 ```
 
-Hosted deployment examples are optional and must provide a local fallback.
+托管部署示例可以作为进阶内容，但必须提供本地 fallback。

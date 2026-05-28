@@ -1,45 +1,41 @@
-# Agent Best Practices
+# Agent 最佳实践
 
-This guide shows a production-oriented agent shape for KsADK projects. It is
-based on common LangGraph demo patterns, and all values and identifiers below
-are public-safe placeholders.
+这页给出 KsADK 项目的生产型 Agent 写法。模式参考常见 LangGraph demo 结构，
+下面所有值都是可公开的占位示例。
 
-## Recommended Shape
+## 推荐结构
 
-Use a small outer graph for routing and a focused tool-using specialist for
-business work. This keeps planning, tool execution, and final answer formatting
-separate.
+用一个外层图负责路由和策略，再把业务工作交给一个可调用工具的 specialist。
+这样规划、工具执行和最终回答收口互不混在一起。
 
 ```mermaid
 flowchart LR
-  User["User message / files"] --> Plan["plan_turn<br/>route and policy"]
-  Plan --> Specialist["ReAct specialist<br/>framework tools"]
-  Specialist --> Final["finalize_answer<br/>stable output"]
-  Specialist --> KB["knowledge base"]
-  Specialist --> Mem["memory"]
+  User["用户消息 / 文件"] --> Plan["plan_turn<br/>路由与策略"]
+  Plan --> Specialist["ReAct specialist<br/>框架工具"]
+  Specialist --> Final["finalize_answer<br/>稳定输出"]
+  Specialist --> KB["知识库"]
+  Specialist --> Mem["记忆库"]
   Specialist --> Skills["Skill Runtime"]
-  Specialist --> MCP["MCP / A2A tools"]
-  Specialist --> Workspace["workspace files"]
+  Specialist --> MCP["MCP / A2A 工具"]
+  Specialist --> Workspace["workspace 文件"]
 ```
 
-This pattern works well for LangGraph because the outer `StateGraph` owns state
-transitions, while the specialist can stay close to the framework-native
-`create_react_agent()` API.
+LangGraph 很适合这个结构：外层 `StateGraph` 管状态流转，内层
+`create_react_agent()` 保持框架原生工具调用体验。
 
-The local demo uses the same pattern for a "product launch war room" agent:
+本地 demo 也是这个模式，场景是“产品发布作战室”：
 
-| Layer | Responsibility | Typical tools |
+| 层次 | 职责 | 常见工具 |
 | --- | --- | --- |
-| `plan_turn` | deterministic routing and policy hints | no external calls |
-| `run_specialist` | framework-native ReAct execution | knowledge, memory, Skill Runtime, workspace |
-| `finalize_answer` | final text and UI-safe streaming | no new side effects |
-| status tools | explain which platform components are bound | `component_status`, `graph_status` |
+| `plan_turn` | 确定性路由和策略提示 | 不调用外部服务 |
+| `run_specialist` | 框架原生 ReAct 执行 | 知识库、记忆库、Skill Runtime、workspace |
+| `finalize_answer` | 最终回答和 UI 友好流式输出 | 不产生新副作用 |
+| 状态工具 | 解释平台组件绑定情况 | `component_status`、`graph_status` |
 
-Keep the planner deterministic. It should decide whether the turn is about
-knowledge, memory, skills, workspace files, MCP, or general chat; it should not
-call private services or mutate state.
+planner 要保持确定性。它只判断本轮是知识库、记忆库、Skill、workspace 文件、
+MCP 还是普通问答；不调用私有服务，也不修改状态。
 
-## LangGraph Skeleton
+## LangGraph 骨架
 
 ```python
 import os
@@ -71,7 +67,7 @@ llm = ChatOpenAI(
 specialist = create_react_agent(
     llm,
     [*PLATFORM_TOOLS, *SKILL_TOOLS, *WORKSPACE_TOOLS],
-    prompt="Use tools only when they improve the answer. State boundaries clearly.",
+    prompt="只在能提升答案质量时调用工具，并明确说明能力边界。",
     version="v2",
 )
 
@@ -81,7 +77,7 @@ def plan_turn(state: AgentState) -> dict[str, Any]:
         (m.content for m in reversed(state["messages"]) if isinstance(m, HumanMessage)),
         "",
     )
-    route = "knowledge" if "docs" in str(user_text).lower() else "general"
+    route = "knowledge" if "文档" in str(user_text) else "general"
     return {"plan": {"route": route}}
 
 
@@ -119,7 +115,7 @@ workflow.add_edge("finalize_answer", END)
 root_agent = workflow.compile(name="production_agent")
 ```
 
-`agentengine.yaml` stays explicit:
+`agentengine.yaml` 建议显式声明：
 
 ```yaml
 name: production-agent
@@ -128,11 +124,10 @@ entry_point: my_agent/agent.py
 agent_variable: root_agent
 ```
 
-## LangGraph Tool Registry
+## LangGraph 工具注册
 
-Define platform tools in small modules instead of putting all tool code inside
-`agent.py`. This keeps the graph readable and makes optional integrations easy
-to test.
+平台工具建议拆到独立模块，不要全部塞进 `agent.py`。这样 graph 更清楚，
+可选集成也更容易测试。
 
 ```python
 from langchain_core.tools import tool
@@ -140,7 +135,7 @@ from langchain_core.tools import tool
 
 @tool
 def search_knowledge_base(query: str) -> str:
-    """Search the configured KsADK knowledge base."""
+    """搜索已配置的 KsADK 知识库。"""
     from ksadk.knowledge_base.tool import search_knowledge
 
     return search_knowledge(query)
@@ -148,7 +143,7 @@ def search_knowledge_base(query: str) -> str:
 
 @tool
 def load_user_memory(query: str) -> str:
-    """Load current-user long-term memory."""
+    """读取当前用户长期记忆。"""
     from ksadk.memory.tool import load_memory
 
     return load_memory(query)
@@ -156,7 +151,7 @@ def load_user_memory(query: str) -> str:
 
 @tool
 def save_user_memory(content: str) -> str:
-    """Save a short current-user memory."""
+    """保存一条短记忆。"""
     from ksadk.memory.tool import save_memory
 
     return save_memory(content)
@@ -165,13 +160,12 @@ def save_user_memory(content: str) -> str:
 PLATFORM_TOOLS = [search_knowledge_base, load_user_memory, save_user_memory]
 ```
 
-The memory tools require an invocation context, so they should be called from a
-KsADK runner request. When used outside the runner, return the diagnostic to the
-user instead of pretending that memory was saved.
+记忆工具依赖 KsADK runner 的 invocation context。脱离 runner 调用时，应把诊断
+返回给用户，不要假装记忆已经保存成功。
 
-## Planner Policy
+## Planner 策略
 
-A deterministic planner gives the specialist a narrow operating mode:
+确定性 planner 给 specialist 一个收窄后的工作模式：
 
 ```python
 def plan_turn(state: AgentState) -> dict[str, Any]:
@@ -181,13 +175,13 @@ def plan_turn(state: AgentState) -> dict[str, Any]:
             text = str(message.content or "")
             break
 
-    if any(word in text for word in ("docs", "manual", "knowledge")):
+    if any(word in text for word in ("文档", "资料", "知识库")):
         route = "knowledge"
         suggested_tools = ["search_knowledge_base"]
-    elif any(word in text for word in ("remember", "preference", "memory")):
+    elif any(word in text for word in ("记住", "偏好", "记忆")):
         route = "memory"
         suggested_tools = ["load_user_memory", "save_user_memory"]
-    elif any(word in text for word in ("skill", "workflow")):
+    elif any(word in text for word in ("Skill", "skill", "技能", "workflow")):
         route = "skills"
         suggested_tools = ["list_skills", "load_skill"]
     else:
@@ -198,18 +192,17 @@ def plan_turn(state: AgentState) -> dict[str, Any]:
         "plan": {
             "route": route,
             "suggested_tools": suggested_tools,
-            "response_guidance": "Use optional tools only when they improve the answer.",
+            "response_guidance": "只在能提升答案质量时调用可选工具。",
         }
     }
 ```
 
-This is intentionally simple. The planner should guide the specialist; the
-specialist still decides whether a tool call is useful for the concrete turn.
+这个 planner 故意保持简单。planner 负责提示 specialist；具体是否调用工具，
+仍由 specialist 根据当前用户问题决定。
 
-## ADK Agent Pattern
+## ADK Agent 写法
 
-For ADK, keep the public shape native to Google ADK and let KsADK inject
-optional platform tools when configured.
+ADK 项目保持 Google ADK 原生模型；KsADK 负责在配置存在时注入可选平台能力。
 
 ```python
 from google.adk.agents import Agent
@@ -224,20 +217,21 @@ def release_checklist(topic: str) -> dict:
 root_agent = Agent(
     name="release_assistant",
     instruction=(
-        "Answer directly. Use search_knowledge for stable docs, "
-        "load_memory/save_memory for user preferences, and release_checklist "
-        "for release planning."
+        "回答要直接。稳定文档先用 search_knowledge，"
+        "用户偏好用 load_memory/save_memory，发布规划用 release_checklist。"
     ),
     tools=[search_knowledge, load_memory, save_memory, release_checklist],
 )
 ```
 
-Keep the minimum ADK sample runnable without hosted services. Add knowledge,
-memory, Skill Runtime, or MCP only after the base model call works.
+最小 ADK 示例应先保证无需 hosted 服务也能跑通；知识库、记忆库、
+Skill Runtime、MCP 都是后续可选能力。
 
-For an ADK application that wants explicit tools, keep the first version small:
+如果 ADK 应用需要显式平台状态工具，第一版也建议保持很小：
 
 ```python
+import os
+
 from google.adk.agents import Agent
 
 
@@ -253,22 +247,19 @@ def component_status() -> dict:
 root_agent = Agent(
     name="platform_ready_agent",
     instruction=(
-        "Answer directly. Use component_status when the user asks what platform "
-        "capabilities are configured. Do not claim optional integrations are "
-        "available when the status tool says they are missing."
+        "回答要直接。用户问平台能力配置时调用 component_status。"
+        "状态工具显示缺失的可选能力，不要宣称已经可用。"
     ),
     tools=[component_status],
 )
 ```
 
-After this runs locally, add optional KsADK tools or MCP toolsets. ADK projects
-should keep tool injection auditable at agent load time, not change the tool set
-mid-turn.
+本地跑通后，再加入可选 KsADK 工具或 MCP toolset。ADK 项目应在 agent 加载期
+完成可审计的工具注入，不要在单轮请求中途改变工具集合。
 
-## Knowledge Base
+## 知识库
 
-Use knowledge search for stable product docs, policies, or manuals. Do not use
-it for real-time internet search.
+知识库适合查稳定产品文档、说明书和政策，不替代实时互联网搜索。
 
 ```python
 from langchain_core.tools import tool
@@ -276,24 +267,21 @@ from langchain_core.tools import tool
 
 @tool
 def search_knowledge_base(query: str) -> str:
-    """Search the configured KsADK knowledge dataset."""
+    """搜索已配置的 KsADK 知识库。"""
     from ksadk.knowledge_base.tool import search_knowledge
 
     return search_knowledge(query)
 ```
 
-Recommended behavior:
-
-| Situation | Behavior |
+| 场景 | 建议行为 |
 | --- | --- |
-| User asks for docs, product facts, or internal manuals | call knowledge search first |
-| Knowledge is unconfigured | say it is not configured and continue with available context |
-| Result is weak | state uncertainty instead of fabricating a source |
+| 用户问文档、产品事实、稳定资料 | 先调用知识库检索 |
+| 未配置知识库 | 明确说明未配置，然后用已有上下文继续 |
+| 结果不充分 | 说明不确定性，不伪造来源 |
 
-## Memory
+## 记忆库
 
-Use memory for user facts and preferences, not for large files or raw
-attachments.
+记忆库保存用户事实和偏好，不保存大文件、二进制附件或敏感凭证。
 
 ```python
 from langchain_core.tools import tool
@@ -313,66 +301,52 @@ def save_user_memory(content: str) -> str:
     return save_memory(content)
 ```
 
-Good memory values are short and explicit:
+适合保存的记忆：
 
-- "Release notes should start with conclusion, then risk, then validation."
-- "Use Simplified Chinese for product-review drafts."
+- “发布说明先给结论，再给风险和验证方式。”
+- “产品评审草稿默认使用简体中文。”
 
-Do not store credentials, complete customer data, or binary attachments.
+不要保存 API Key、完整客户数据或附件原文。
 
-## Session Management
+## 会话管理
 
-Treat session state as a runtime boundary:
+把 session 当成运行时边界：
 
-| Concern | Best practice |
+| 关注点 | 最佳实践 |
 | --- | --- |
-| `session_id` | pass it through APIs or UI routes; do not invent a new one per turn |
-| local development | use SQLite under `.agentengine/ui/sessions.sqlite` |
-| server or shared backend | use `KSADK_SESSION_BACKEND=postgres` with `KSADK_SESSION_DSN` |
-| LangGraph state | keep business state in graph state; keep protocol history in KsADK sessions |
-| files | write generated artifacts to workspace, not arbitrary host paths |
+| `session_id` | API 和 UI 复用同一个 id，不要每轮新建 |
+| 本地开发 | 默认 SQLite：`.agentengine/ui/sessions.sqlite` |
+| 共享后端 | 使用 `KSADK_SESSION_BACKEND=postgres` 和 `KSADK_SESSION_DSN` |
+| LangGraph 状态 | 业务状态放 graph state；协议历史交给 KsADK session |
+| 文件 | 生成产物写入 workspace，不写任意宿主机路径 |
 
-For OpenAI-compatible clients, prefer `previous_response_id` or the returned
-conversation/session handle when continuing a conversation.
+OpenAI 兼容客户端续聊时，优先使用返回的 conversation/session handle 或
+`previous_response_id`。
 
 ## Skill Runtime
 
-Separate instruction-first skills from isolated execution:
+区分 instruction-first skill 和隔离执行：
 
-```python
-@tool
-def list_skills() -> dict:
-    from ksadk.skills.service_client import SkillServiceClient
+1. 先列出可用 skill。
+2. 读取 `SKILL.md`，instruction-first skill 可以由外层 agent 直接按说明完成。
+3. 只有用户明确要求 workflow/script 执行，并且 `KSADK_SKILL_RUNTIME_BACKEND`
+   已配置时，才调用隔离执行。
+4. sandbox/runtime 未启用时返回诊断，不要伪造执行结果。
 
-    client = SkillServiceClient.from_env()
-    return {"skills": [skill.name for skill in client.list_skills_by_space_id("space-id").active_skills()]}
-```
+公开文档里的 Skill Runtime 要区分三种状态：
 
-Recommended policy:
-
-1. list available skills.
-2. load `SKILL.md` and follow the instructions in the outer agent when the
-   skill is instruction-first.
-3. call isolated `execute_skills` only when the user requests workflow/script
-   execution and `KSADK_SKILL_RUNTIME_BACKEND` is configured.
-4. surface disabled sandbox/runtime as a diagnostic, not as a silent success.
-
-The public shape for Skill Runtime should distinguish three states:
-
-| State | Meaning | Agent behavior |
+| 状态 | 含义 | Agent 行为 |
 | --- | --- | --- |
-| Skill Space unconfigured | no remote skill discovery | answer without skills and say what is missing |
-| instruction-first skill loaded | `SKILL.md` is available | follow instructions in the outer agent |
-| isolated execution enabled | `local_process` or sandbox backend exists | call `execute_skills` for workflow/script tasks |
+| 未配置 Skill Space | 不能发现远程技能 | 不使用技能，并说明缺少配置 |
+| 已加载 instruction-first skill | 已拿到 `SKILL.md` | 外层 Agent 按说明完成任务 |
+| 已启用隔离执行 | 存在 `local_process` 或 sandbox backend | workflow/script 类任务调用 `execute_skills` |
 
-For local examples, use `KSADK_SKILL_RUNTIME_BACKEND=local_process`. For
-sandbox examples, document only variable names and limits; keep provider
-tokens, private images, and internal endpoints out of the repository.
+本地示例优先用 `KSADK_SKILL_RUNTIME_BACKEND=local_process`。sandbox 示例只写
+变量名和限制；provider token、私有镜像和内部 endpoint 不进入公开仓库。
 
-## MCP And A2A
+## MCP 与 A2A
 
-Use MCP for tool servers that have their own lifecycle or protocol boundary.
-Use ordinary framework tools for simple local functions.
+MCP 适合有独立生命周期或协议边界的工具服务；普通本地函数优先用框架原生 tool。
 
 ```bash
 export KSADK_ENABLE_MCP_TOOLS=1
@@ -381,17 +355,16 @@ export KSADK_MCP_SERVERS='[
 ]'
 ```
 
-Keep MCP config public-safe:
+公开配置要保持干净：
 
-- no private URLs in committed examples.
-- no bearer tokens in `agentengine.yaml`.
-- use placeholders and CI secrets for credentials.
-- define tool filters when exposing broad MCP servers.
+- 不提交私有 URL。
+- 不把 bearer token 写入 `agentengine.yaml`。
+- 凭证使用本地 `.env` 或 CI secrets。
+- 暴露能力较宽的 MCP server 要配置 tool filter。
 
-ADK projects can consume MCP through KsADK's ADK loader when
-`KSADK_MCP_SERVERS` is set. LangGraph projects should usually expose MCP tools
-through the LangChain/LangGraph MCP adapter they already use, while keeping the
-same public configuration shape:
+ADK 项目可以在配置 `KSADK_MCP_SERVERS` 后由 KsADK ADK loader 注入 MCP。
+LangGraph 项目通常通过已有的 LangChain/LangGraph MCP adapter 暴露工具，但
+保持同一套公开配置形态：
 
 ```json
 [
@@ -404,14 +377,13 @@ same public configuration shape:
 ]
 ```
 
-The URL must be an absolute `http(s)` endpoint whose path ends with `/mcp`.
-If a token is required, pass it through `api_key` from a local secret source and
-do not commit the literal value.
+URL 必须是绝对 `http(s)` 地址，path 以 `/mcp` 结尾。需要 token 时，从本地
+secret source 写入 `api_key`，不要提交真实值。
 
-## Workspace Artifacts
+## Workspace 产物
 
-Generated HTML, Markdown, JSON, CSV, or code should go through workspace tools
-so local and hosted UI can preview or download the same logical files.
+HTML、Markdown、JSON、CSV 或代码文件应写入 workspace，让本地和 hosted UI
+用同一个逻辑目录预览和下载。
 
 ```python
 @tool
@@ -427,12 +399,12 @@ def write_report(path: str, content: str) -> dict:
     return {"path": target.relative_to(root).as_posix()}
 ```
 
-## Checklist
+## 检查清单
 
-- Keep `agentengine.yaml` explicit.
-- Make the first run work without knowledge, memory, Skill Runtime, or MCP.
-- Add optional platform tools one at a time.
-- Fail clearly when an optional integration is not configured.
-- Store generated files in workspace.
-- Keep secrets in `.env` or CI secrets, never in Git.
-- Pin `ksadk-web` by tag or commit when building static UI artifacts.
+- `agentengine.yaml` 使用显式配置。
+- 首次运行不依赖知识库、记忆库、Skill Runtime 或 MCP。
+- 平台工具按需逐个加入。
+- 可选集成未配置时给出明确诊断。
+- 生成文件写入 workspace。
+- secret 只放 `.env` 或 CI secrets。
+- 构建静态 UI 时固定 `ksadk-web` tag 或 commit。

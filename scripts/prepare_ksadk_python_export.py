@@ -44,10 +44,14 @@ ROOT_EXPORT_FILES = {
     ".gitignore",
     "CHANGELOG.md",
     "CONTRIBUTING.md",
+    "AGENTS.md",
+    "CLAUDE.md",
     "LICENSE",
     "MANIFEST.in",
     "Makefile",
     "README.md",
+    "README.en.md",
+    "README.zh-CN.md",
     "SECURITY.md",
     "mkdocs.yml",
     "pyproject.toml",
@@ -223,7 +227,16 @@ def build_export_plan(repo_root: Path) -> ExportPlan:
     export_paths = sorted(path for path in discovered if not is_excluded(path))
     excluded_paths = sorted(path for path in discovered if is_excluded(path))
 
-    required_paths = {"README.md", "LICENSE", "pyproject.toml", "mkdocs.yml"}
+    required_paths = {
+        "AGENTS.md",
+        "CLAUDE.md",
+        "LICENSE",
+        "README.md",
+        "README.en.md",
+        "README.zh-CN.md",
+        "pyproject.toml",
+        "mkdocs.yml",
+    }
     for required_path in sorted(required_paths):
         if required_path not in export_paths:
             violations.append(f"missing required public file: {required_path}")
