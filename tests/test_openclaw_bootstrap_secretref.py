@@ -164,7 +164,7 @@ def test_openclaw_dockerfile_tracks_latest_official_channel_plugins():
     assert "ARG OPENCLAW_WEIXIN_PLUGIN_SPEC=@tencent-weixin/openclaw-weixin" in dockerfile
     assert "ARG OPENCLAW_LARK_PLUGIN_SPEC=@larksuite/openclaw-lark" in dockerfile
     assert "ARG OPENCLAW_MEM0_PLUGIN_ID=openclaw-mem0" in dockerfile
-    assert "ARG OPENCLAW_MEM0_PLUGIN_URL=https://wangxu-test.ks3-cn-beijing.ksyuncs.com/ksc-openclaw-mem0-1.0.6.tgz" in dockerfile
+    assert "ARG OPENCLAW_MEM0_PLUGIN_URL=https://memory-engine.ks3-cn-beijing.ksyuncs.com/ksc-openclaw-mem0-1.0.11.tgz" in dockerfile
     assert "ARG OPENCLAW_INSTALL_WPS_XIEZUO_PLUGIN=true" in dockerfile
     assert "ARG OPENCLAW_WPS_XIEZUO_PLUGIN_SPEC=@wps365/openclaw-wpsxiezuo" in dockerfile
     assert "ARG OPENCLAW_WPS_XIEZUO_PLUGIN_ID=wps-xiezuo" in dockerfile
@@ -3303,6 +3303,163 @@ def test_bootstrap_patches_openclaw_2026_5_18_split_auth_and_message_handler_run
         message_handler_source = message_handler_bundle.read_text()
         assert 'const usesLoopbackTrustedProxyAuth = params.authMethod === "trusted-proxy";' in message_handler_source
         assert 'return usesLoopbackTrustedProxyAuth || params.sharedAuthOk && usesSharedSecretAuth || usesDeviceTokenAuth;' in message_handler_source
+
+
+def test_bootstrap_patches_openclaw_2026_5_26_control_ui_trusted_proxy_scopes():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        dist_dir = Path(tmpdir) / "dist"
+        control_ui_assets_dir = dist_dir / "control-ui" / "assets"
+        control_ui_assets_dir.mkdir(parents=True, exist_ok=True)
+        client_bundle = dist_dir / "reply-test.js"
+        auth_bundle = dist_dir / "auth-test.js"
+        message_handler_bundle = dist_dir / "message-handler-test.js"
+        gateway_call_bundle = dist_dir / "gateway-call-test.js"
+        control_ui_bundle = control_ui_assets_dir / "main-test.js"
+
+        client_bundle.write_text('const wsOptions = { maxPayload: 25 * 1024 * 1024 };')
+        auth_bundle.write_text(
+            'function authorizeTrustedProxy(params) {\n'
+            '\tconst { req, trustedProxies, trustedProxyConfig } = params;\n'
+            '\tif (!req) return { reason: "trusted_proxy_no_request" };\n'
+            '\tconst remoteAddr = req.socket?.remoteAddress;\n'
+            '\tif (!remoteAddr || !isTrustedProxyAddress(remoteAddr, trustedProxies)) return { reason: "trusted_proxy_untrusted_source" };\n'
+            '\tconst remoteIsLoopback = isLoopbackAddress(remoteAddr);\n'
+            '\tif (remoteIsLoopback && trustedProxyConfig.allowLoopback !== true) return { reason: "trusted_proxy_loopback_source" };\n'
+            '\treturn { user: headerValue(req.headers[trustedProxyConfig.userHeader.toLowerCase()]).trim() };\n'
+            '}\n'
+        )
+        message_handler_bundle.write_text(
+            'function shouldSkipLocalBackendSelfPairing(params) {\n'
+            '\tif (!(params.connectParams.client.id === GATEWAY_CLIENT_IDS.GATEWAY_CLIENT && params.connectParams.client.mode === GATEWAY_CLIENT_MODES.BACKEND)) return false;\n'
+            '\tif (!(params.locality === "direct_local" || params.locality === "shared_secret_loopback_local") || params.hasBrowserOriginHeader) return false;\n'
+            '\tif (params.authMethod === "none") return true;\n'
+            '\tconst usesSharedSecretAuth = params.authMethod === "token" || params.authMethod === "password";\n'
+            '\tconst usesDeviceTokenAuth = params.authMethod === "device-token";\n'
+            '\treturn params.sharedAuthOk && usesSharedSecretAuth || usesDeviceTokenAuth;\n'
+            '}\n'
+            'function shouldClearUnboundScopesForMissingDeviceIdentity(params) {\n'
+            '\treturn params.decision.kind !== "allow" || !params.controlUiAuthPolicy.allowBypass && !params.preserveInsecureLocalControlUiScopes && (params.authMethod === "token" || params.authMethod === "password" || params.authMethod === "trusted-proxy");\n'
+            '}\n'
+        )
+        gateway_call_bundle.write_text(
+            'function ensureExplicitGatewayAuth(params) {\n'
+            '\tif (!params.urlOverride) return;\n'
+            '\tconst explicitToken = params.explicitAuth?.token;\n'
+            '}\n'
+        )
+        control_ui_bundle.write_text('this.ws.addEventListener(`open`,()=>this.queueConnect())')
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_DIST_DIR"] = str(dist_dir)
+        env["OPENCLAW_WORKSPACE_FILES_ENABLED"] = "0"
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        message_handler_source = message_handler_bundle.read_text()
+        assert 'const usesLoopbackTrustedProxyAuth = params.authMethod === "trusted-proxy";' in message_handler_source
+        assert 'return usesLoopbackTrustedProxyAuth || params.sharedAuthOk && usesSharedSecretAuth || usesDeviceTokenAuth;' in message_handler_source
+        assert '!params.trustedProxyAuthOk' in message_handler_source
+
+
+def test_bootstrap_patches_openclaw_2026_5_26_config_schema_full_response_budget():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        dist_dir = Path(tmpdir) / "dist"
+        control_ui_assets_dir = dist_dir / "control-ui" / "assets"
+        control_ui_assets_dir.mkdir(parents=True, exist_ok=True)
+        client_bundle = dist_dir / "reply-test.js"
+        auth_bundle = dist_dir / "auth-test.js"
+        message_handler_bundle = dist_dir / "message-handler-test.js"
+        gateway_call_bundle = dist_dir / "gateway-call-test.js"
+        config_bundle = dist_dir / "config-test.js"
+        control_ui_bundle = control_ui_assets_dir / "main-test.js"
+
+        client_bundle.write_text('const wsOptions = { maxPayload: 25 * 1024 * 1024 };')
+        auth_bundle.write_text(
+            'function authorizeTrustedProxy(params) {\n'
+            '\tconst { req, trustedProxies, trustedProxyConfig } = params;\n'
+            '\tif (!req) return { reason: "trusted_proxy_no_request" };\n'
+            '\tconst remoteAddr = req.socket?.remoteAddress;\n'
+            '\tif (!remoteAddr || !isTrustedProxyAddress(remoteAddr, trustedProxies)) return { reason: "trusted_proxy_untrusted_source" };\n'
+            '\tconst remoteIsLoopback = isLoopbackAddress(remoteAddr);\n'
+            '\tif (remoteIsLoopback && trustedProxyConfig.allowLoopback !== true) return { reason: "trusted_proxy_loopback_source" };\n'
+            '\treturn { user: headerValue(req.headers[trustedProxyConfig.userHeader.toLowerCase()]).trim() };\n'
+            '}\n'
+        )
+        message_handler_bundle.write_text(
+            'function shouldSkipLocalBackendSelfPairing(params) {\n'
+            '\tif (!(params.connectParams.client.id === GATEWAY_CLIENT_IDS.GATEWAY_CLIENT && params.connectParams.client.mode === GATEWAY_CLIENT_MODES.BACKEND)) return false;\n'
+            '\tif (!(params.locality === "direct_local" || params.locality === "shared_secret_loopback_local") || params.hasBrowserOriginHeader) return false;\n'
+            '\tif (params.authMethod === "none") return true;\n'
+            '\tconst usesSharedSecretAuth = params.authMethod === "token" || params.authMethod === "password";\n'
+            '\tconst usesDeviceTokenAuth = params.authMethod === "device-token";\n'
+            '\treturn params.sharedAuthOk && usesSharedSecretAuth || usesDeviceTokenAuth;\n'
+            '}\n'
+            'function shouldClearUnboundScopesForMissingDeviceIdentity(params) {\n'
+            '\treturn params.decision.kind !== "allow" || !params.controlUiAuthPolicy.allowBypass && !params.preserveInsecureLocalControlUiScopes && (params.authMethod === "token" || params.authMethod === "password" || params.authMethod === "trusted-proxy");\n'
+            '}\n'
+        )
+        gateway_call_bundle.write_text(
+            'function ensureExplicitGatewayAuth(params) {\n'
+            '\tif (!params.urlOverride) return;\n'
+            '\tconst explicitToken = params.explicitAuth?.token;\n'
+            '}\n'
+        )
+        config_bundle.write_text(
+            'function loadSchemaWithPlugins() {\n'
+            '\treturn loadGatewayRuntimeConfigSchema();\n'
+            '}\n'
+            'const configHandlers = {\n'
+            '\t"config.get": async ({ params, respond }) => {\n'
+            '\t\trespond(true, redactConfigSnapshot(await readConfigFileSnapshot(), loadSchemaWithPlugins().uiHints), void 0);\n'
+            '\t},\n'
+            '\t"config.schema": ({ params, respond }) => {\n'
+            '\t\tif (!assertValidParams(params, validateConfigSchemaParams, "config.schema", respond)) return;\n'
+            '\t\trespond(true, loadSchemaWithPlugins(), void 0);\n'
+            '\t},\n'
+            '\t"config.schema.lookup": ({ params, respond, context }) => {\n'
+            '\t\tconst result = lookupConfigSchema(loadSchemaWithPlugins(), params.path, resolveConfigReloadMetadata);\n'
+            '\t\trespond(true, result, void 0);\n'
+            '\t}\n'
+            '};\n'
+        )
+        control_ui_bundle.write_text('this.ws.addEventListener(`open`,()=>this.queueConnect())')
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_DIST_DIR"] = str(dist_dir)
+        env["OPENCLAW_WORKSPACE_FILES_ENABLED"] = "0"
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        config_source = config_bundle.read_text()
+        assert "compactConfigSchemaResponseForAgentEngineGateway" in config_source
+        assert (
+            "respond(true, compactConfigSchemaResponseForAgentEngineGateway(loadSchemaWithPlugins()), void 0);"
+            in config_source
+        )
+        assert (
+            "lookupConfigSchema(loadSchemaWithPlugins(), params.path, resolveConfigReloadMetadata)"
+            in config_source
+        )
 
 
 def test_bootstrap_patches_workspace_proxy_stage_for_upstream_2026_4_26_shape():

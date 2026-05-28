@@ -401,8 +401,12 @@ OPENCLAW_TAG ?= 2026.5.22
 OPENCLAW_CONTEXT := .
 OPENCLAW_BASE_IMAGE ?= ghcr.io/openclaw/openclaw:2026.5.22-slim@sha256:d35b8b681c223a85027502c7a82999aa772d6a09e1b28903951cac7fc27efed5
 OPENCLAW_PRESET_PLUGINS_ALLOWLIST ?=
+OPENCLAW_APT_MIRROR ?= http://mirrors.aliyun.com/debian
+OPENCLAW_APT_SECURITY_MIRROR ?= http://mirrors.aliyun.com/debian-security
 OPENCLAW_PYPI_INDEX_URL ?= https://mirrors.aliyun.com/pypi/simple
 OPENCLAW_NPM_REGISTRY ?= https://registry.npmmirror.com
+OPENCLAW_MEM0_PLUGIN_URL ?= https://memory-engine.ks3-cn-beijing.ksyuncs.com/ksc-openclaw-mem0-1.0.11.tgz
+OPENCLAW_MEM0_PLUGIN_SHA256 ?=
 DOCKER_BUILDKIT ?= 1
 
 ## 构建 OpenClaw 镜像 (chromium + preset-skills)
@@ -412,8 +416,10 @@ openclaw-build:
 	@echo "   基础镜像: $(OPENCLAW_BASE_IMAGE)"
 	@echo "   目标镜像: $(OPENCLAW_IMAGE):$(OPENCLAW_TAG)"
 	@echo "   内网地址: $(OPENCLAW_VPC_IMAGE):$(OPENCLAW_TAG)"
+	@echo "   APT 源:   $(OPENCLAW_APT_MIRROR)"
 	@echo "   PyPI 源:  $(OPENCLAW_PYPI_INDEX_URL)"
 	@echo "   NPM 源:   $(OPENCLAW_NPM_REGISTRY)"
+	@echo "   Mem0 包:  $(OPENCLAW_MEM0_PLUGIN_URL)"
 	@echo "   插件白名单: $(if $(OPENCLAW_PRESET_PLUGINS_ALLOWLIST),$(OPENCLAW_PRESET_PLUGINS_ALLOWLIST),<未设置，内置默认插件>)"
 	@echo "   构建上下文: $(OPENCLAW_CONTEXT)"
 	@echo "============================================================"
@@ -425,8 +431,12 @@ openclaw-build:
 		-f deploy/openclaw/Dockerfile \
 		--build-arg OPENCLAW_BASE_IMAGE=$(OPENCLAW_BASE_IMAGE) \
 		--build-arg OPENCLAW_PRESET_PLUGINS_ALLOWLIST="$(OPENCLAW_PRESET_PLUGINS_ALLOWLIST)" \
+		--build-arg APT_MIRROR=$(OPENCLAW_APT_MIRROR) \
+		--build-arg APT_SECURITY_MIRROR=$(OPENCLAW_APT_SECURITY_MIRROR) \
 		--build-arg PYPI_INDEX_URL=$(OPENCLAW_PYPI_INDEX_URL) \
 		--build-arg NPM_REGISTRY=$(OPENCLAW_NPM_REGISTRY) \
+		--build-arg OPENCLAW_MEM0_PLUGIN_URL=$(OPENCLAW_MEM0_PLUGIN_URL) \
+		--build-arg OPENCLAW_MEM0_PLUGIN_SHA256=$(OPENCLAW_MEM0_PLUGIN_SHA256) \
 		-t $(OPENCLAW_IMAGE):$(OPENCLAW_TAG) \
 		-t $(OPENCLAW_VPC_IMAGE):$(OPENCLAW_TAG) \
 		$(OPENCLAW_CONTEXT)
