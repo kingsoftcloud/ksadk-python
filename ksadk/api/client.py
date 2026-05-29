@@ -71,6 +71,8 @@ class AgentEngineClient:
     """
 
     _DEFAULT_PERMISSION_ROLE = "KsyunAgentEngineDefaultRole"
+    _PUBLIC_AICP_BASE_URL = "https://aicp.api.ksyun.com"
+    _INNER_AICP_BASE_URL = "http://aicp.inner.api.ksyun.com"
     _PERMISSION_PROBE_ACTIONS = {"CreateAgentProduct", "CreateAgent", "ListAgents", "GetAgent"}
     _permission_probe_cache: dict[tuple[str, str, str], bool] = {}
 
@@ -157,8 +159,8 @@ class AgentEngineClient:
 
     def _detect_default_base_url(self) -> str:
         """默认地址自动探测: inner 优先，失败回落公网。"""
-        inner_url = "http://aicp.inner.api.ksyun.com"
-        public_url = "https://aicp.api.ksyun.com"
+        inner_url = self._INNER_AICP_BASE_URL
+        public_url = self._PUBLIC_AICP_BASE_URL
 
         if self._is_connectable(inner_url):
             logger.info(f"AgentEngineClient endpoint selected (inner): {inner_url}")
@@ -320,6 +322,52 @@ class AgentEngineClient:
         )
         return any(marker in remote_message for marker in markers)
 
+    @staticmethod
+    def _is_inner_account_intranet_error(details: Dict[str, Any]) -> bool:
+        remote_code = str(details.get("remote_error_code") or "").strip().lower()
+        remote_message = str(details.get("remote_error_message") or details.get("message") or "").strip().lower()
+        return (
+            remote_code == "inneraccountcanonlyaccessthroughintranet"
+            or "inner account can only access through intranet" in remote_message
+            or "只能通过内网" in remote_message
+        )
+
+    def _can_retry_with_inner_aicp_endpoint(self, details: Dict[str, Any]) -> bool:
+        if not self._is_inner_account_intranet_error(details):
+            return False
+        parsed = urlparse(self.base_url or "")
+        return parsed.scheme == "https" and parsed.netloc.lower() == "aicp.api.ksyun.com"
+
+    def _switch_to_inner_aicp_endpoint(self) -> None:
+        logger.warning(
+            "AgentEngineClient switching to intranet endpoint after inner-account access error: %s",
+            self._INNER_AICP_BASE_URL,
+        )
+        self.base_url = self._INNER_AICP_BASE_URL
+
+    def _build_action_request_target(self, path: str, action: str) -> tuple[bool, Dict[str, str], str]:
+        kop_mode = self._is_kop_mode()
+        headers = self._build_headers(action=action, kop_mode=kop_mode)
+        if kop_mode:
+            version = os.getenv("AGENTENGINE_API_VERSION", "2024-06-12")
+            full_url = f"{self.base_url.rstrip('/')}/?Action={action}&Version={version}"
+        else:
+            full_url = f"{self.base_url}{path}"
+        return kop_mode, headers, full_url
+
+    def _build_raw_action_request_target(self, action: str, accept: str, has_files: bool) -> tuple[bool, Dict[str, str], str]:
+        kop_mode = self._is_kop_mode()
+        headers = self._build_headers(action=action, kop_mode=kop_mode)
+        headers["Accept"] = accept
+        if has_files:
+            headers.pop("Content-Type", None)
+        full_url = (
+            f"{self.base_url.rstrip('/')}/?Action={action}&Version={os.getenv('AGENTENGINE_API_VERSION', '2024-06-12')}"
+            if kop_mode
+            else f"{self.base_url}/agentengine/api/v1/{action}"
+        )
+        return kop_mode, headers, full_url
+
     @contextmanager
     def suppress_http_error_logging(
         self,
@@ -462,13 +510,7 @@ class AgentEngineClient:
     ) -> Dict[str, Any]:
         """同步 HTTP 请求"""
         action = path.rstrip("/").split("/")[-1] if path else ""
-        kop_mode = self._is_kop_mode()
-        headers = self._build_headers(action=action, kop_mode=kop_mode)
-        if kop_mode:
-            version = os.getenv("AGENTENGINE_API_VERSION", "2024-06-12")
-            full_url = f"{self.base_url.rstrip('/')}/?Action={action}&Version={version}"
-        else:
-            full_url = f"{self.base_url}{path}"
+        _kop_mode, headers, full_url = self._build_action_request_target(path, action)
         body_str = json.dumps(body, ensure_ascii=False) if body else ""
         
         # DryRun 模式
@@ -502,26 +544,35 @@ class AgentEngineClient:
                 },
             )
             
-        logger.debug(f"Request: {method} {full_url}")
-        
         session = self._get_session()
-        
-        response = session.request(
-            method=method,
-            url=full_url,
-            data=body_str.encode("utf-8") if body_str else None,
-            headers=headers,
-            auth=self._auth.get_auth(),  # AWS V4 签名
-            timeout=self.timeout,
-            verify=self._ssl_verify_enabled(),
-        )
-        
-        logger.debug(f"Response: {response.status_code}")
 
-        if response.status_code >= 400:
+        retried_inner_endpoint = False
+        while True:
+            logger.debug(f"Request: {method} {full_url}")
+            response = session.request(
+                method=method,
+                url=full_url,
+                data=body_str.encode("utf-8") if body_str else None,
+                headers=headers,
+                auth=self._auth.get_auth(),  # AWS V4 签名
+                timeout=self.timeout,
+                verify=self._ssl_verify_enabled(),
+            )
+
+            logger.debug(f"Response: {response.status_code}")
+
+            if response.status_code < 400:
+                break
+
             resp_text = response.text or ""
             details = self._extract_http_error_details(resp_text)
             details.setdefault("http_status", response.status_code)
+            if not retried_inner_endpoint and self._can_retry_with_inner_aicp_endpoint(details):
+                retried_inner_endpoint = True
+                self._switch_to_inner_aicp_endpoint()
+                _kop_mode, headers, full_url = self._build_action_request_target(path, action)
+                continue
+
             self._log_http_error(
                 method=method,
                 full_url=full_url,
@@ -777,32 +828,42 @@ class AgentEngineClient:
         files: Dict[str, Any] | None = None,
         accept: str = "application/json",
     ) -> requests.Response:
-        kop_mode = self._is_kop_mode()
-        headers = self._build_headers(action=action, kop_mode=kop_mode)
-        headers["Accept"] = accept
-        if files is not None:
-            headers.pop("Content-Type", None)
-        full_url = (
-            f"{self.base_url.rstrip('/')}/?Action={action}&Version={os.getenv('AGENTENGINE_API_VERSION', '2024-06-12')}"
-            if kop_mode
-            else f"{self.base_url}/agentengine/api/v1/{action}"
+        _kop_mode, headers, full_url = self._build_raw_action_request_target(
+            action,
+            accept,
+            files is not None,
         )
         session = self._get_session()
-        response = session.request(
-            method=method,
-            url=full_url,
-            params=self._compact_params(params),
-            data=self._compact_params(data) if data is not None else None,
-            files=files,
-            headers=headers,
-            auth=self._auth.get_auth(),
-            timeout=self.timeout,
-            verify=self._ssl_verify_enabled(),
-        )
-        if response.status_code >= 400:
+
+        retried_inner_endpoint = False
+        while True:
+            response = session.request(
+                method=method,
+                url=full_url,
+                params=self._compact_params(params),
+                data=self._compact_params(data) if data is not None else None,
+                files=files,
+                headers=headers,
+                auth=self._auth.get_auth(),
+                timeout=self.timeout,
+                verify=self._ssl_verify_enabled(),
+            )
+            if response.status_code < 400:
+                return response
+
             resp_text = response.text or ""
             details = self._extract_http_error_details(resp_text)
             details.setdefault("http_status", response.status_code)
+            if not retried_inner_endpoint and self._can_retry_with_inner_aicp_endpoint(details):
+                retried_inner_endpoint = True
+                self._switch_to_inner_aicp_endpoint()
+                _kop_mode, headers, full_url = self._build_raw_action_request_target(
+                    action,
+                    accept,
+                    files is not None,
+                )
+                continue
+
             self._log_http_error(
                 method=method,
                 full_url=full_url,
@@ -815,7 +876,6 @@ class AgentEngineClient:
                 or resp_text
             )
             raise AgentEngineAPIError(response.status_code, message, details=details or None)
-        return response
 
     async def _resolve_workspace_runtime_access(
         self,

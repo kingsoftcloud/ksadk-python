@@ -37,7 +37,7 @@
 | `KSYUN_SECRET_KEY` | 是 | `KS3_SECRET_KEY` | 是 | 开发者 / CI Secret | 金山云 API / KS3 / KOP 签名 SK。 |
 | `KSYUN_ACCOUNT_ID` | 条件必传 | 无 | 否 | 开发者 / 平台账号 | 创建/查询/删除资源、KCR 用户名默认值、权限预检查等场景需要。 |
 | `KSYUN_REGION` | 否 | 无 | 否 | 开发者 / 平台 | 默认 `cn-beijing-6`。 |
-| `AGENTENGINE_SERVER_URL` | 否 | 无 | 否 | 平台 / 开发者 | 覆盖 AgentEngine Server 地址，通常本地调试或预发联调用。 |
+| `AGENTENGINE_SERVER_URL` | 否 | 无 | 否 | 平台 / 开发者 | 覆盖 AgentEngine Server 地址。内部账号/内网环境建议 `http://aicp.inner.api.ksyun.com`；公网账号通常不设置或使用 `https://aicp.api.ksyun.com`。 |
 | `AGENTENGINE_API_VERSION` | 否 | 无 | 否 | 平台 / 开发者 | 覆盖 KOP API version。 |
 | `AGENTENGINE_SIGN_SERVICE` | 否 | 无 | 否 | 平台 / 开发者 | 覆盖 KOP signing service。 |
 
@@ -288,7 +288,7 @@
 
 | 变量 | 作用层级 | 是否必传 | 默认值 | 别名/兼容 | 敏感 | 配置方/来源 | 是否业务自定义 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `AGENTENGINE_SERVER_URL` | CLI / API client | 否 | 内置生产/预发地址 | 无 | 否 | 平台 / 开发者 | 否 | 覆盖 AgentEngine Server 地址。 |
+| `AGENTENGINE_SERVER_URL` | CLI / API client | 否 | 自动探测：优先 `http://aicp.inner.api.ksyun.com`，不可达时回落 `https://aicp.api.ksyun.com` | 无 | 否 | 平台 / 开发者 | 否 | 覆盖 AgentEngine Server 地址。内部账号/内网环境建议显式设为 `http://aicp.inner.api.ksyun.com`；公网账号通常不设置或使用 `https://aicp.api.ksyun.com`。如果公网 AICP 返回 `InnerAccountCanOnlyAccessThroughIntranet`，客户端会自动切内网重试一次。 |
 | `AGENTENGINE_API_VERSION` | CLI / API client | 否 | 内置版本 | 无 | 否 | 平台 / 开发者 | 否 | 覆盖 AgentEngine API version。 |
 | `AGENTENGINE_PRE_CONTROL_REGION` | CLI / API client | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 预发控制面 region 覆盖。 |
 | `AGENTENGINE_PRE_CUSTOM_SOURCE` | CLI / API client | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 预发 custom source 覆盖。 |

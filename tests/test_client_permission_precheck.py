@@ -268,6 +268,137 @@ def test_request_honors_curl_ssl_insecure_for_control_plane(monkeypatch):
     assert captured["verify"] is False
 
 
+def test_request_retries_inner_endpoint_for_inner_account(monkeypatch):
+    client = AgentEngineClient(
+        base_url="https://aicp.api.ksyun.com",
+        access_key="ak",
+        secret_key="sk",
+        region="cn-beijing-6",
+    )
+    urls: list[str] = []
+
+    class _FakeResponse:
+        def __init__(self, status_code: int, text: str):
+            self.status_code = status_code
+            self.text = text
+
+        def json(self):
+            return {"Code": 0, "Data": {"AgentId": "ar-inner"}}
+
+    class _FakeSession:
+        def request(self, **kwargs):
+            urls.append(kwargs["url"])
+            if len(urls) == 1:
+                return _FakeResponse(
+                    403,
+                    (
+                        '{"RequestId":"req-inner","Error":{'
+                        '"Code":"InnerAccountCanOnlyAccessThroughIntranet",'
+                        '"Message":"The inner account can only access through intranet",'
+                        '"Type":"Sender"}}'
+                    ),
+                )
+            return _FakeResponse(200, '{"Code":0,"Data":{"AgentId":"ar-inner"}}')
+
+    monkeypatch.setattr(client, "_get_session", lambda: _FakeSession())
+
+    result = client._request("POST", "/agentengine/api/v1/CreateAgentProduct", {"Name": "demo"})
+
+    assert result["Data"]["AgentId"] == "ar-inner"
+    assert urls == [
+        "https://aicp.api.ksyun.com/?Action=CreateAgentProduct&Version=2024-06-12",
+        "http://aicp.inner.api.ksyun.com/?Action=CreateAgentProduct&Version=2024-06-12",
+    ]
+    assert client.base_url == "http://aicp.inner.api.ksyun.com"
+
+
+def test_auto_detected_public_endpoint_retries_inner_for_inner_account(monkeypatch):
+    monkeypatch.delenv("AGENTENGINE_SERVER_URL", raising=False)
+    monkeypatch.setattr(AgentEngineClient, "_is_connectable", staticmethod(lambda *_args, **_kwargs: False))
+    client = AgentEngineClient(
+        access_key="ak",
+        secret_key="sk",
+        region="cn-beijing-6",
+    )
+    urls: list[str] = []
+
+    class _FakeResponse:
+        def __init__(self, status_code: int, text: str):
+            self.status_code = status_code
+            self.text = text
+
+        def json(self):
+            return {"Code": 0, "Data": {"AgentId": "ar-inner"}}
+
+    class _FakeSession:
+        def request(self, **kwargs):
+            urls.append(kwargs["url"])
+            if len(urls) == 1:
+                return _FakeResponse(
+                    403,
+                    (
+                        '{"RequestId":"req-inner","Error":{'
+                        '"Code":"InnerAccountCanOnlyAccessThroughIntranet",'
+                        '"Message":"The inner account can only access through intranet",'
+                        '"Type":"Sender"}}'
+                    ),
+                )
+            return _FakeResponse(200, '{"Code":0,"Data":{"AgentId":"ar-inner"}}')
+
+    assert client.base_url == "https://aicp.api.ksyun.com"
+    monkeypatch.setattr(client, "_get_session", lambda: _FakeSession())
+
+    result = client._request("POST", "/agentengine/api/v1/CreateAgentProduct", {"Name": "demo"})
+
+    assert result["Data"]["AgentId"] == "ar-inner"
+    assert urls == [
+        "https://aicp.api.ksyun.com/?Action=CreateAgentProduct&Version=2024-06-12",
+        "http://aicp.inner.api.ksyun.com/?Action=CreateAgentProduct&Version=2024-06-12",
+    ]
+    assert client.base_url == "http://aicp.inner.api.ksyun.com"
+
+
+def test_action_raw_request_retries_inner_endpoint_for_inner_account(monkeypatch):
+    client = AgentEngineClient(
+        base_url="https://aicp.api.ksyun.com",
+        access_key="ak",
+        secret_key="sk",
+        region="cn-beijing-6",
+    )
+    urls: list[str] = []
+
+    class _FakeResponse:
+        def __init__(self, status_code: int, text: str):
+            self.status_code = status_code
+            self.text = text
+
+    class _FakeSession:
+        def request(self, **kwargs):
+            urls.append(kwargs["url"])
+            if len(urls) == 1:
+                return _FakeResponse(
+                    403,
+                    (
+                        '{"RequestId":"req-inner","Error":{'
+                        '"Code":"InnerAccountCanOnlyAccessThroughIntranet",'
+                        '"Message":"The inner account can only access through intranet",'
+                        '"Type":"Sender"}}'
+                    ),
+                )
+            return _FakeResponse(200, '{"Code":0}')
+
+    monkeypatch.setattr(client, "_get_session", lambda: _FakeSession())
+
+    response = client._action_raw_request("GET", "ExportWorkspaceZip")
+
+    assert response.status_code == 200
+    assert urls == [
+        "https://aicp.api.ksyun.com/?Action=ExportWorkspaceZip&Version=2024-06-12",
+        "http://aicp.inner.api.ksyun.com/?Action=ExportWorkspaceZip&Version=2024-06-12",
+    ]
+    assert client.base_url == "http://aicp.inner.api.ksyun.com"
+
+
 def test_permission_probe_auth_failure_is_quiet(monkeypatch, caplog):
     client = _build_client()
     monkeypatch.setenv("KSYUN_ACCOUNT_ID", "2000003485")
