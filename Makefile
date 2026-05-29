@@ -1,7 +1,7 @@
 # AgentEngine Makefile
 # 用于构建 Web UI 和管理项目
 
-.PHONY: help install build-webui sync-static clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size docs-check-wiki docs-prepare-source docs-docker-build docs-docker-push docs-helm-lint docs-helm-template docs-deploy docs-deploy-all docs-status docs-logs sync-hosted-ui build-frontend build-wheel build-all clean-frontend
+.PHONY: help install build-webui sync-static clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-docs-build public-test public-build-check public-preflight public-publish-check public-release-tag public-review openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size docs-check-wiki docs-prepare-source docs-docker-build docs-docker-push docs-helm-lint docs-helm-template docs-deploy docs-deploy-all docs-status docs-logs sync-hosted-ui build-frontend build-wheel build-all clean-frontend
 
 # 默认目标
 help:
@@ -29,6 +29,14 @@ help:
 	@echo "    make build           构建 Python 包"
 	@echo "    make release V=x.x.x 指定版本构建"
 	@echo "    make publish         发布到 PyPI"
+	@echo ""
+	@echo "  \033[1;32m公开发布门禁:\033[0m"
+	@echo "    make public-status        查看公开发布相关状态"
+	@echo "    make public-init-worktree 初始化/校验 .worktrees/public-main"
+	@echo "    make public-preflight     GitHub/PyPI/Release 前必须通过的本地门禁"
+	@echo "    make public-release-tag V=x.y.z  创建公开 release 留痕 tag"
+	@echo "    make public-review        公开候选审核入口"
+	@echo "    make public-publish-check 发布状态核对"
 	@echo ""
 	@echo "  \033[1;32m离线打包:\033[0m"
 	@echo "    make offline-current     当前平台离线包"
@@ -244,8 +252,8 @@ endif
 	@$(MAKE) build
 	@echo "🎉 v$(V) 发布包已准备就绪"
 
-# 发布配置文件 (优先使用项目本地的 .pypirc)
-PYPIRC := $(shell [ -f .pypirc ] && echo ".pypirc" || echo "~/.pypirc")
+# 发布配置文件只允许使用用户目录凭证。仓库根目录不得存放 .pypirc。
+PYPIRC := $(HOME)/.pypirc
 DIST_DIR := dist
 
 clean-dist:
@@ -254,12 +262,14 @@ clean-dist:
 
 publish: clean-dist build-only
 	@echo "🚀 发布 v$(VERSION) 到 PyPI..."
-	@if [ ! -f ".pypirc" ] && [ ! -f ~/.pypirc ]; then \
-		echo "❌ 错误: 找不到 .pypirc 配置文件"; \
-		echo "   请在项目根目录创建 .pypirc 文件:"; \
-		echo "   [pypi]"; \
-		echo "   username = __token__"; \
-		echo "   password = pypi-你的token"; \
+	@if [ -f ".pypirc" ]; then \
+		echo "❌ 错误: 仓库根目录存在 .pypirc，拒绝发布"; \
+		echo "   请删除仓库内 .pypirc，只使用 $(PYPIRC) 或 CI Secret。"; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(PYPIRC)" ]; then \
+		echo "❌ 错误: 找不到 $(PYPIRC)"; \
+		echo "   PyPI 凭证只能放在用户目录或 CI Secret，不能放进仓库。"; \
 		exit 1; \
 	fi
 	@FILES=$$(ls $(DIST_DIR)/ksadk-$(VERSION)-*.whl 2>/dev/null || true); \
@@ -275,8 +285,13 @@ publish: clean-dist build-only
 
 publish-test: clean-dist build-only
 	@echo "🧪 发布 v$(VERSION) 到 TestPyPI..."
-	@if [ ! -f ".pypirc" ] && [ ! -f ~/.pypirc ]; then \
-		echo "❌ 错误: 找不到 .pypirc 配置文件"; \
+	@if [ -f ".pypirc" ]; then \
+		echo "❌ 错误: 仓库根目录存在 .pypirc，拒绝发布"; \
+		echo "   请删除仓库内 .pypirc，只使用 $(PYPIRC) 或 CI Secret。"; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(PYPIRC)" ]; then \
+		echo "❌ 错误: 找不到 $(PYPIRC)"; \
 		exit 1; \
 	fi
 	@FILES=$$(ls $(DIST_DIR)/ksadk-$(VERSION)-*.whl 2>/dev/null || true); \
@@ -289,6 +304,143 @@ publish-test: clean-dist build-only
 	echo "📦 将上传文件:"; \
 	echo "$$FILES"; \
 	python -m twine upload --config-file $(PYPIRC) --repository testpypi $$FILES
+
+# ============================================================
+# 公开发布门禁
+# ============================================================
+
+PUBLIC_WORKTREE ?= .worktrees/public-main
+PUBLIC_BRANCH ?= main
+PUBLIC_REPO ?= https://github.com/kingsoftcloud/ksadk-python
+PUBLIC_DOCS_URL ?= https://kingsoftcloud.github.io/ksadk-python/
+PUBLIC_PYPI_PROJECT ?= ksadk
+PUBLIC_ALIAS_PYPI_PROJECT ?= agentengine-sdk-python
+PUBLIC_RELEASE_TAG ?= v$(V)
+
+public-status:
+	@echo "==> internal worktree"
+	@git status --short --branch
+	@echo ""
+	@echo "==> remotes"
+	@git remote -v
+	@echo ""
+	@echo "==> configured public targets"
+	@echo "PUBLIC_WORKTREE=$(PUBLIC_WORKTREE)"
+	@echo "PUBLIC_BRANCH=$(PUBLIC_BRANCH)"
+	@echo "PUBLIC_REPO=$(PUBLIC_REPO)"
+	@echo "PUBLIC_DOCS_URL=$(PUBLIC_DOCS_URL)"
+	@echo "PUBLIC_PYPI_PROJECT=$(PUBLIC_PYPI_PROJECT)"
+	@echo "PUBLIC_ALIAS_PYPI_PROJECT=$(PUBLIC_ALIAS_PYPI_PROJECT)"
+	@echo ""
+	@echo "==> worktrees"
+	@git worktree list
+
+public-init-worktree:
+	@if ! git remote get-url github >/dev/null 2>&1; then \
+		echo "==> adding github remote: $(PUBLIC_REPO)"; \
+		git remote add github $(PUBLIC_REPO); \
+	fi
+	@git fetch github $(PUBLIC_BRANCH)
+	@if [ -d "$(PUBLIC_WORKTREE)" ]; then \
+		echo "==> public worktree exists: $(PUBLIC_WORKTREE)"; \
+		git -C "$(PUBLIC_WORKTREE)" status --short --branch; \
+	else \
+		echo "==> creating public worktree: $(PUBLIC_WORKTREE)"; \
+		if git show-ref --verify --quiet "refs/heads/$(PUBLIC_BRANCH)"; then \
+			git worktree add "$(PUBLIC_WORKTREE)" "$(PUBLIC_BRANCH)"; \
+		else \
+			git worktree add -b "$(PUBLIC_BRANCH)" "$(PUBLIC_WORKTREE)" github/$(PUBLIC_BRANCH); \
+		fi; \
+	fi
+
+public-worktree-status:
+	@if [ ! -d "$(PUBLIC_WORKTREE)/.git" ] && [ ! -f "$(PUBLIC_WORKTREE)/.git" ]; then \
+		echo "❌ 公开工作树不存在: $(PUBLIC_WORKTREE)"; \
+		echo "   建议创建: git worktree add $(PUBLIC_WORKTREE) $(PUBLIC_BRANCH)"; \
+		exit 1; \
+	fi
+	@git -C "$(PUBLIC_WORKTREE)" status --short --branch
+
+public-sync-check:
+	@echo "==> public sync policy"
+	@branch=$$(git branch --show-current); \
+	if [ "$$branch" != "master" ]; then \
+		echo "❌ 当前分支不是 master: $$branch"; \
+		echo "   公开候选应从内部 master 的已审核变更生成。"; \
+		exit 1; \
+	fi
+	@if [ -f ".pypirc" ]; then \
+		echo "❌ 仓库根目录存在 .pypirc，必须删除后再进入公开流程"; \
+		exit 1; \
+	fi
+	@echo "✅ sync policy passed"
+
+public-secret-audit:
+	@echo "==> secret and sensitive-file audit"
+	@if git ls-files | grep -E '(^|/)(\.pypirc|kubeconfig|.*\.kubeconfig|id_rsa|id_ed25519)$$'; then \
+		echo "❌ 发现禁止跟踪的敏感文件"; \
+		exit 1; \
+	fi
+	@if rg -n --hidden -S --glob '!.git/**' --glob '!node_modules/**' --glob '!dist/**' --glob '!build/**' --glob '!*.egg-info/**' 'pypi-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE KEY|SecretAccessKey\s*[:=]\s*[^<\s]+' .; then \
+		echo "❌ secret pattern audit failed"; \
+		exit 1; \
+	fi
+	@echo "✅ secret audit passed"
+
+public-audit: public-secret-audit
+	@echo "==> public source audit"
+	@blocked=$$(git ls-files | grep -E '^(\.pypirc|docs/internal/|\.zread/(wiki|site)/)' || true); \
+	if [ -n "$$blocked" ]; then \
+		echo "❌ blocked tracked paths:"; \
+		echo "$$blocked"; \
+		exit 1; \
+	fi
+	@echo "✅ public path audit passed"
+
+public-docs-build:
+	@echo "==> docs build"
+	@if [ -f "mkdocs.yml" ]; then \
+		uv run mkdocs build --strict; \
+	else \
+		echo "⚠️  mkdocs.yml 不存在，跳过 docs build"; \
+	fi
+
+public-test:
+	@echo "==> test"
+	@uv run pytest
+
+public-build-check: clean-dist
+	@echo "==> build and twine check"
+	@uv build
+	@uv run python -m twine check dist/*
+
+public-preflight: public-audit public-test public-docs-build public-build-check
+	@echo "✅ public preflight passed"
+
+public-publish-check:
+	@echo "==> publication state check"
+	@if [ -f "scripts/check_publication_state.py" ]; then \
+		uv run python scripts/check_publication_state.py --phase pre-publish; \
+	else \
+		echo "⚠️  scripts/check_publication_state.py 不存在，执行基础 HTTP 检查"; \
+		python3 -c 'import json, urllib.request; targets={"repo":"$(PUBLIC_REPO)","docs":"$(PUBLIC_DOCS_URL)","pypi":"https://pypi.org/pypi/$(PUBLIC_PYPI_PROJECT)/json","alias_pypi":"https://pypi.org/pypi/$(PUBLIC_ALIAS_PYPI_PROJECT)/json"}; [print((lambda resp, name: f"{name}: HTTP {resp.status}" + (f"\n  version={json.load(resp)[\"info\"].get(\"version\")}" if name.endswith("pypi") else ""))(urllib.request.urlopen(url, timeout=20), name)) for name, url in targets.items()]'; \
+	fi
+
+public-release-tag:
+ifndef V
+	$(error ❌ 请指定版本号，例如: make public-release-tag V=0.6.2)
+endif
+	@echo "==> creating public release tag: $(PUBLIC_RELEASE_TAG)"
+	@if git rev-parse "$(PUBLIC_RELEASE_TAG)" >/dev/null 2>&1; then \
+		echo "❌ tag already exists: $(PUBLIC_RELEASE_TAG)"; \
+		exit 1; \
+	fi
+	@git tag -a "$(PUBLIC_RELEASE_TAG)" -m "Public release $(PUBLIC_RELEASE_TAG)"
+	@echo "✅ tag created: $(PUBLIC_RELEASE_TAG)"
+	@echo "   push after approval: git push github $(PUBLIC_RELEASE_TAG)"
+
+public-review: public-status public-preflight
+	@echo "✅ public review gate passed"
 
 # ============================================================
 # 离线打包 (多平台支持)
