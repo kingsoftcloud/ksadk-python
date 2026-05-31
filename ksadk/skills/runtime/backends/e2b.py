@@ -129,7 +129,7 @@ class E2BSkillRuntimeBackend:
             prompt_path = "/tmp/ksadk-workflow-prompt.txt"
             session.write_file(prompt_path, workflow_prompt.encode("utf-8"))
             command = f"python -u /home/ksadk/agent.py --prompt-file {prompt_path}"
-            result = session.run_command(command, timeout=effective_timeout)
+            result = session.run_command(command, timeout=effective_timeout, env=sandbox_env)
             stdout = result.stdout
             return SkillRuntimeResult(
                 runtime_id=session.sandbox_id,

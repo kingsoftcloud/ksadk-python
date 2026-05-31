@@ -73,7 +73,13 @@ class SandboxSession(Protocol):
     def read_file(self, path: str) -> str:
         ...
 
-    def run_command(self, command: str, *, timeout: int | None = None) -> SandboxCommandResult:
+    def run_command(
+        self,
+        command: str,
+        *,
+        timeout: int | None = None,
+        env: dict[str, str] | None = None,
+    ) -> SandboxCommandResult:
         ...
 
     def get_host(self, port: int) -> str:
