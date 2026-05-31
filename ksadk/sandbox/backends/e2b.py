@@ -25,10 +25,18 @@ class E2BSandboxSession:
     def read_file(self, path: str) -> str:
         return str(self._sandbox.files.read(path))
 
-    def run_command(self, command: str, *, timeout: int | None = None) -> SandboxCommandResult:
+    def run_command(
+        self,
+        command: str,
+        *,
+        timeout: int | None = None,
+        env: dict[str, str] | None = None,
+    ) -> SandboxCommandResult:
         kwargs = {}
         if timeout is not None:
             kwargs["timeout"] = timeout
+        if env is not None:
+            kwargs["envs"] = env
         result = self._sandbox.commands.run(command, **kwargs)
         return SandboxCommandResult(
             stdout=str(getattr(result, "stdout", "") or ""),

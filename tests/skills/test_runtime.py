@@ -133,6 +133,17 @@ def test_e2b_backend_uses_native_env_and_always_kills(monkeypatch):
             "allow_internet_access": True,
         },
     )
+    assert (
+        "run_kwargs",
+        {
+            "timeout": 900,
+            "envs": {
+                "KSADK_SKILL_SPACE_IDS": "ss-1",
+                "SKILL_SPACE_ID": "ss-1",
+                "KSADK_SELECTED_SKILL_NAMES": "demo-skill",
+            },
+        },
+    ) in calls
     assert ("file_write", ("/tmp/ksadk-workflow-prompt.txt", b"build artifact")) in calls
     assert calls[-1] == ("kill", "sbx-123")
 

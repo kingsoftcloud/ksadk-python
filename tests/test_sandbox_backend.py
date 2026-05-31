@@ -88,7 +88,7 @@ def test_e2b_sandbox_backend_create_write_run_and_kill(tmp_path: Path):
         env={"REQUEST_ENV": "2"},
         input_files=[SandboxInputFile(source=source, target_path="/tmp/input.txt")],
     )
-    result = session.run_command("python -V", timeout=30)
+    result = session.run_command("python -V", timeout=30, env={"REQUEST_ENV": "command"})
     session.kill()
 
     assert result == SandboxCommandResult(stdout="ok\n", stderr="", exit_code=0)
@@ -104,7 +104,7 @@ def test_e2b_sandbox_backend_create_write_run_and_kill(tmp_path: Path):
     )
     assert ("file_write", ("/tmp/input.txt", b"hello")) in calls
     assert ("run", "python -V") in calls
-    assert ("run_kwargs", {"timeout": 30}) in calls
+    assert ("run_kwargs", {"timeout": 30, "envs": {"REQUEST_ENV": "command"}}) in calls
     assert calls[-1] == ("kill", "sbx-123")
 
 
