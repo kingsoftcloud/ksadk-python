@@ -125,44 +125,48 @@ def test_remote_skill_manifest_filters_public_skills_with_allowlist(monkeypatch)
             pass
 
         def list_skills_by_space_id(self, space_id):
-            if space_id == "ss-user":
-                payload = {
-                    "Data": {
-                        "Skills": [
-                            {
-                                "SkillId": "sk-demo",
-                                "VersionId": "sv-demo-v1",
-                                "Version": "v1",
-                                "Name": "demo-skill",
-                                "Status": "Active",
-                            }
-                        ]
-                    }
-                }
-            else:
-                payload = {
-                    "Data": {
-                        "Skills": [
-                            {
-                                "SkillId": "premade-pdf",
-                                "VersionId": "",
-                                "Version": "",
-                                "Name": "pdf",
-                                "Status": "AVAILABLE",
-                            },
-                            {
-                                "SkillId": "premade-weather",
-                                "VersionId": "",
-                                "Version": "",
-                                "Name": "weather",
-                                "Status": "AVAILABLE",
-                            },
-                        ]
-                    }
-                }
             from ksadk.skills.models import SkillListResponse
 
+            assert space_id == "ss-user"
+            payload = {
+                "Data": {
+                    "Skills": [
+                        {
+                            "SkillId": "sk-demo",
+                            "VersionId": "sv-demo-v1",
+                            "Version": "v1",
+                            "Name": "demo-skill",
+                            "Status": "Active",
+                        }
+                    ]
+                }
+            }
             return SkillListResponse.from_payload(payload, space_id=space_id)
+
+        def list_available_premade_skills(self):
+            from ksadk.skills.models import SkillListResponse
+
+            payload = {
+                "Data": {
+                    "Skills": [
+                        {
+                            "SkillId": "premade-pdf",
+                            "VersionId": "",
+                            "Version": "",
+                            "Name": "pdf",
+                            "Status": "AVAILABLE",
+                        },
+                        {
+                            "SkillId": "premade-weather",
+                            "VersionId": "",
+                            "Version": "",
+                            "Name": "weather",
+                            "Status": "AVAILABLE",
+                        },
+                    ]
+                }
+            }
+            return SkillListResponse.from_payload(payload, space_id="public")
 
     monkeypatch.setenv("KSADK_SKILL_SERVICE_URL", "https://skill.example/api/v1")
     monkeypatch.setenv("KSADK_SKILL_SPACE_IDS", "ss-user")

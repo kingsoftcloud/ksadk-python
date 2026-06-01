@@ -103,6 +103,57 @@ def test_service_client_downloads_no_version_skill_from_premade_endpoint():
     )
 
 
+def test_service_client_lists_available_premade_skills_from_dedicated_endpoint():
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, str(request.url)))
+        if request.url.path.endswith("/ListAvailablePremadeSkills"):
+            return httpx.Response(
+                200,
+                json={
+                    "Code": 200,
+                    "RequestId": "req-premade-list",
+                    "Data": {
+                        "Skills": [
+                            {
+                                "SkillId": "premade-pdf",
+                                "VersionId": "",
+                                "Version": "",
+                                "Name": "pdf",
+                                "Status": "AVAILABLE",
+                                "ContentHash": "abc123",
+                            },
+                            {
+                                "SkillId": "premade-xlsx",
+                                "VersionId": "",
+                                "Version": "",
+                                "Name": "xlsx",
+                                "Status": "AVAILABLE",
+                                "ContentHash": "def456",
+                            },
+                        ],
+                    },
+                },
+            )
+        return httpx.Response(404)
+
+    client = SkillServiceClient(
+        base_url="https://skill.example/api/v1",
+        transport=httpx.MockTransport(handler),
+    )
+
+    listing = client.list_available_premade_skills()
+
+    assert listing.request_id == "req-premade-list"
+    assert listing.space_id == "public"
+    assert [skill.name for skill in listing.active_skills()] == ["pdf", "xlsx"]
+    assert [skill.version_id for skill in listing.active_skills()] == ["", ""]
+    assert requests == [
+        ("GET", "https://skill.example/api/v1/ListAvailablePremadeSkills"),
+    ]
+
+
 def test_service_client_sends_account_header_for_direct_rest_service():
     seen_headers = {}
 
@@ -209,6 +260,53 @@ def test_service_client_uses_registered_kop_action_for_aicp_skill_space_listing(
         "&SpaceId=ss-1&PageNumber=1&PageSize=100"
     )
     assert headers["x-action"] == "ListSkillsBySpaceId"
+    assert headers["x-version"] == "2024-06-12"
+    assert headers["x-ksc-account-id"] == "2000003485"
+
+
+def test_service_client_uses_registered_kop_action_for_available_premade_skills():
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, str(request.url), dict(request.headers)))
+        if request.url.params.get("Action") == "ListAvailablePremadeSkills":
+            return httpx.Response(
+                200,
+                json={
+                    "Code": 200,
+                    "RequestId": "req-kop-premade",
+                    "Data": {
+                        "Skills": [
+                            {
+                                "SkillId": "premade-pdf",
+                                "VersionId": "",
+                                "Version": "",
+                                "Name": "pdf",
+                                "Status": "AVAILABLE",
+                            }
+                        ],
+                    },
+                },
+            )
+        return httpx.Response(404)
+
+    client = SkillServiceClient(
+        base_url="http://maicp.inner.api.ksyun.com",
+        account_id="2000003485",
+        transport=httpx.MockTransport(handler),
+    )
+
+    listing = client.list_available_premade_skills()
+
+    assert listing.space_id == "public"
+    assert listing.active_skills()[0].skill_id == "premade-pdf"
+    method, url, headers = requests[0]
+    assert method == "GET"
+    assert url == (
+        "http://maicp.inner.api.ksyun.com/"
+        "?Action=ListAvailablePremadeSkills&Version=2024-06-12"
+    )
+    assert headers["x-action"] == "ListAvailablePremadeSkills"
     assert headers["x-version"] == "2024-06-12"
     assert headers["x-ksc-account-id"] == "2000003485"
 

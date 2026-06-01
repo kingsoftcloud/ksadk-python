@@ -72,6 +72,10 @@ class SkillServiceClient:
             payload = self._get_json("ListSkillsBySpaceId", {"SpaceId": space_id})
         return SkillListResponse.from_payload(payload, space_id=space_id)
 
+    def list_available_premade_skills(self) -> SkillListResponse:
+        payload = self._get_json("ListAvailablePremadeSkills", {})
+        return SkillListResponse.from_payload(payload, space_id="public", space_name="Public Skills")
+
     def get_skill_download_url(self, skill: SkillRef) -> str:
         action = "GetSkillDownloadUrl" if skill.version_id else "GetPremadeSkillDownloadUrl"
         payload = self._get_json(
