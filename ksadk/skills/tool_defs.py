@@ -97,7 +97,9 @@ def load_remote_skill_manifests(skill_space_ids: list[str] | None = None) -> lis
         return []
 
     spaces = list(skill_space_ids or resolve_skill_space_ids())
-    if not spaces:
+    public_spaces = set(_parse_skill_space_ids(os.environ.get("KSADK_PUBLIC_SKILL_SPACE_IDS") or ""))
+    user_spaces = [space_id for space_id in spaces if space_id not in public_spaces]
+    if not user_spaces and not public_spaces:
         return []
 
     client = SkillServiceClient(
@@ -108,16 +110,26 @@ def load_remote_skill_manifests(skill_space_ids: list[str] | None = None) -> lis
     manifests: list[dict[str, str]] = []
     seen: set[str] = set()
     limit = _manifest_limit()
-    public_spaces = set(_parse_skill_space_ids(os.environ.get("KSADK_PUBLIC_SKILL_SPACE_IDS") or ""))
     public_allowlist = {
         name.lower() for name in normalize_skill_names(os.environ.get("KSADK_PUBLIC_SKILL_ALLOWLIST", ""))
     }
-    for space_id in spaces:
+    for space_id in user_spaces:
         listing = client.list_skills_by_space_id(space_id)
         for skill in listing.active_skills():
-            if space_id in public_spaces and public_allowlist and skill.name.lower() not in public_allowlist:
-                continue
             item = _skill_manifest_item(skill, space_id=space_id)
+            name_key = item["name"].lower()
+            if not item["name"] or name_key in seen:
+                continue
+            seen.add(name_key)
+            manifests.append(item)
+            if len(manifests) >= limit:
+                return manifests
+    if public_spaces:
+        listing = client.list_available_premade_skills()
+        for skill in listing.active_skills():
+            if public_allowlist and skill.name.lower() not in public_allowlist:
+                continue
+            item = _skill_manifest_item(skill, space_id=listing.space_id or "public")
             name_key = item["name"].lower()
             if not item["name"] or name_key in seen:
                 continue

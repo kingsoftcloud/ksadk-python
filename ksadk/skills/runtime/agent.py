@@ -92,8 +92,8 @@ def _load_skills(
             seen_names=seen_names,
         ))
 
-    for space_id in _public_skill_space_ids():
-        listing = client.list_skills_by_space_id(space_id)
+    if _public_skill_space_ids():
+        listing = client.list_available_premade_skills()
         selected_refs.extend(_dedupe_skill_refs(
             _select_public_skill_refs(listing.active_skills()),
             seen_names=seen_names,

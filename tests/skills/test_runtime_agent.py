@@ -205,7 +205,7 @@ def test_runtime_agent_loads_all_public_skills_without_allowlist(monkeypatch, tm
     download_urls: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path.endswith("/ListSkillsBySpaceId"):
+        if request.url.path.endswith("/ListAvailablePremadeSkills"):
             return httpx.Response(
                 200,
                 json={
@@ -275,7 +275,7 @@ def test_runtime_agent_filters_public_skills_with_allowlist(monkeypatch, tmp_pat
     download_urls: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path.endswith("/ListSkillsBySpaceId"):
+        if request.url.path.endswith("/ListAvailablePremadeSkills"):
             return httpx.Response(
                 200,
                 json={
@@ -368,6 +368,8 @@ def test_runtime_agent_prefers_user_skill_over_same_name_public_skill(
                         }
                     },
                 )
+            return httpx.Response(404)
+        if request.url.path.endswith("/ListAvailablePremadeSkills"):
             return httpx.Response(
                 200,
                 json={
