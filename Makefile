@@ -243,10 +243,10 @@ public-sync-check:
 	@echo "==> public candidate branch policy"
 	@branch=$$(git branch --show-current); \
 	case "$$branch" in \
-		$(PUBLIC_BRANCH)|release/public-*|review/public-*) ;; \
+		$(PUBLIC_BRANCH)|release/public-*|review/public-*|open-source/*) ;; \
 		*) \
 			echo "❌ 当前分支不是公开 main 或公开候选分支: $$branch"; \
-			echo "   公开候选应在 release/public-x.y.z 或等价审核分支运行门禁。"; \
+			echo "   公开候选应在 release/public-x.y.z、open-source/* 或等价审核分支运行门禁。"; \
 			exit 1; \
 			;; \
 	esac
