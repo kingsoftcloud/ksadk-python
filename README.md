@@ -2,7 +2,7 @@
 
 Kingsoft Cloud Agent Development Kit. `ksadk` provides the Python SDK and CLI for building, running, packaging, and deploying AgentEngine agents across local development, serverless runtime, ADK, LangChain/LangGraph, DeepAgents, Hermes, OpenClaw, MCP, and Skill Runtime scenarios.
 
-Current version: `0.6.0`.
+Current version: `0.6.2`.
 
 ## Install
 
@@ -52,6 +52,13 @@ agentengine dashboard open
 - Hosted runtime assets: Hermes and OpenClaw
 - Skill Runtime preview: Skill Center discovery, zip download, `sha256` verification, safe extraction, local execution, and sandbox execution through the `ksadk[skills]` extra
 - Sandbox Runtime preview: common sandbox abstraction with an E2B-compatible backend
+
+## 0.6.2 Highlights
+
+- `setup_tracing()` now recognizes standard `OTEL_EXPORTER_OTLP_*` HTTP traces settings, so agent code can emit OpenTelemetry spans/events/attributes while the backend routes to Langfuse or another OTLP Collector.
+- Langfuse environment variables remain compatible; when generic OTLP is configured, auto mode avoids enabling an extra Langfuse direct exporter and duplicating traces.
+- Runtime templates initialize tracing when only OTLP environment variables are present, not only when `LANGFUSE_PUBLIC_KEY` is set.
+- Environment variable registry and docs now cover OTLP traces settings, AICP endpoint mode, and Skill Service endpoint/scheme overrides.
 
 ## 0.6.0 Highlights
 
