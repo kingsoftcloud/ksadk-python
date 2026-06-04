@@ -62,3 +62,12 @@ def test_makefile_builds_runtime_images_from_repo_root_context():
     assert "HERMES_CONTEXT := ." in makefile
     assert "-f deploy/openclaw/Dockerfile" in makefile
     assert "-f deploy/hermes/Dockerfile" in makefile
+
+
+def test_runtime_templates_initialize_tracing_for_generic_otlp_env():
+    for rel_path in ["ksadk/builders/code_builder.py", "ksadk/builders/container_builder.py"]:
+        source = (REPO_ROOT / rel_path).read_text(encoding="utf-8")
+
+        assert "OTEL_EXPORTER_OTLP_ENDPOINT" in source
+        assert "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" in source
+        assert 'os.environ.get("LANGFUSE_PUBLIC_KEY") or has_otlp' in source

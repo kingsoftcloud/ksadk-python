@@ -136,7 +136,6 @@ def _setup_tracing(framework_type: str) -> None:
 
         from ksadk.tracing import setup_tracing
 
-        has_langfuse = bool(os.getenv("LANGFUSE_PUBLIC_KEY"))
         use_callback_only = os.getenv("LANGFUSE_USE_CALLBACK", "").strip().lower() in (
             "1",
             "true",
@@ -145,7 +144,7 @@ def _setup_tracing(framework_type: str) -> None:
         )
         setup_tracing(
             enable_inmemory=True,
-            enable_langfuse=has_langfuse,
+            enable_langfuse=None,
             use_callback_only=use_callback_only,
         )
     except Exception:

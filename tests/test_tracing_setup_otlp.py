@@ -128,6 +128,87 @@ def test_langfuse_env_uses_otlp_http_direct(monkeypatch):
     assert len(trace_api.provider.processors) == 1
 
 
+def test_generic_otlp_env_takes_precedence_over_langfuse_auto_env(monkeypatch):
+    trace_api = _install_fake_otel(monkeypatch)
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
+    monkeypatch.setenv("LANGFUSE_BASE_URL", "https://langfuse.pre.example.com")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://collector.example.com/otel")
+    monkeypatch.setenv(
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+        "https://collector.example.com/otel/v1/traces",
+    )
+    monkeypatch.setenv(
+        "OTEL_EXPORTER_OTLP_HEADERS",
+        "Authorization=Bearer%20demo,x-custom=value%2Fwith%2Fslashes",
+    )
+
+    setup = _reload_setup(monkeypatch)
+
+    setup.setup_tracing(
+        enable_inmemory=False,
+        enable_langfuse=None,
+        enable_adk_instrumentation=False,
+    )
+
+    exporter = _FakeHttpOTLPSpanExporter.instances[0]
+    assert exporter.endpoint == "https://collector.example.com/otel/v1/traces"
+    assert exporter.headers == {
+        "Authorization": "Bearer demo",
+        "x-custom": "value/with/slashes",
+    }
+    assert len(_FakeHttpOTLPSpanExporter.instances) == 1
+    assert len(trace_api.provider.processors) == 1
+
+
+def test_generic_otlp_endpoint_derives_traces_path(monkeypatch):
+    trace_api = _install_fake_otel(monkeypatch)
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://collector.example.com/otel")
+
+    setup = _reload_setup(monkeypatch)
+
+    setup.setup_tracing(
+        enable_inmemory=False,
+        enable_langfuse=None,
+        enable_adk_instrumentation=False,
+    )
+
+    exporter = _FakeHttpOTLPSpanExporter.instances[0]
+    assert exporter.endpoint == "https://collector.example.com/otel/v1/traces"
+    assert exporter.headers == {}
+    assert len(trace_api.provider.processors) == 1
+
+
+def test_generic_otlp_traces_env_overrides_global_protocol_and_headers(monkeypatch):
+    trace_api = _install_fake_otel(monkeypatch)
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "http/protobuf")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://collector.example.com/otel")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_HEADERS", "x-global=ignored")
+    monkeypatch.setenv(
+        "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+        "Authorization=Bearer%20trace-token,x-trace=value",
+    )
+
+    setup = _reload_setup(monkeypatch)
+
+    setup.setup_tracing(
+        enable_inmemory=False,
+        enable_langfuse=None,
+        enable_adk_instrumentation=False,
+    )
+
+    exporter = _FakeHttpOTLPSpanExporter.instances[0]
+    assert exporter.endpoint == "https://collector.example.com/otel/v1/traces"
+    assert exporter.headers == {
+        "Authorization": "Bearer trace-token",
+        "x-trace": "value",
+    }
+    assert len(trace_api.provider.processors) == 1
+
+
 def test_langfuse_callback_only_skips_otlp_direct(monkeypatch):
     trace_api = _install_fake_otel(monkeypatch)
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
