@@ -40,6 +40,7 @@
 | `AGENTENGINE_SERVER_URL` | 否 | 无 | 否 | 平台 / 开发者 | 覆盖 AgentEngine Server 地址。内部账号/内网环境建议 `http://aicp.inner.api.ksyun.com`；公网账号通常不设置或使用 `https://aicp.api.ksyun.com`。 |
 | `AGENTENGINE_API_VERSION` | 否 | 无 | 否 | 平台 / 开发者 | 覆盖 KOP API version。 |
 | `AGENTENGINE_SIGN_SERVICE` | 否 | 无 | 否 | 平台 / 开发者 | 覆盖 KOP signing service。 |
+| `KSADK_AICP_ENDPOINT_MODE` | 否 | 无 | 否 | 平台 / 开发者 | AICP endpoint 选择策略，支持 `auto/detect/internal/inner/public`。内网环境可显式设为 `inner`，跳过自动探测。 |
 
 ### 2.3 ADK Runner 注入远端 MCP tools
 
@@ -76,6 +77,8 @@
 | 变量 | 是否必传 | 别名/兼容 | 敏感 | 配置方/来源 | 说明 |
 | --- | --- | --- | --- | --- | --- |
 | `KSADK_SKILL_SERVICE_URL` | 条件必传 | 无 | 否 | 平台 / Skill Service | 配置后 Runtime agent 才会从 Skill Center 拉取 skill。直连 REST 可用 `/agentengine/skill/api/v1`，AICP KOP 可用 `http://maicp.inner.api.ksyun.com`。 |
+| `KSADK_SKILL_SERVICE_ENDPOINT` | 否 | 无 | 否 | 平台 / Skill Service | 未设置 `KSADK_SKILL_SERVICE_URL` 时的 AICP endpoint 覆盖，只写 host/path，不含 scheme。 |
+| `KSADK_SKILL_SERVICE_SCHEME` | 否 | 无 | 否 | 平台 / Skill Service | 未设置 `KSADK_SKILL_SERVICE_URL` 时的 AICP URL scheme 覆盖；内网 endpoint 默认会使用 `http`。 |
 | `KSADK_SKILL_SPACE_IDS` | 条件必传 | `SKILL_SPACE_ID` | 否 | Agent 创建/更新时注入 / Runner 环境 | 逗号分隔 space id；单 space 兼容变量为 `SKILL_SPACE_ID`。 |
 | `SKILL_SPACE_ID` | 条件必传 | `KSADK_SKILL_SPACE_IDS` | 否 | 兼容旧/单 space 注入 | 单个 Skill Space id。新部署优先 `KSADK_SKILL_SPACE_IDS`。 |
 | `KSADK_SKILL_SERVICE_ACCOUNT_ID` | 条件必传 | `KSYUN_ACCOUNT_ID` | 否 | 平台 / 租户上下文 | Skill Service 租户隔离 header。KOP 或直连 REST 租户视图通常需要。 |
@@ -124,8 +127,12 @@
 | `LANGFUSE_SECRET_KEY` | 条件必传 | 无 | 是 | 平台 Secret / 开发者 | 启用 Langfuse 时需要。 |
 | `LANGFUSE_BASE_URL` | 否 | `LANGFUSE_HOST` | 否 | 平台 / 开发者 | Langfuse endpoint。 |
 | `LANGFUSE_USE_CALLBACK` | 否 | 无 | 否 | 开发者 | 控制是否启用 callback 集成。 |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | 条件必传 | 无 | 否 | 平台 / 开发者 | OTel Collector endpoint。 |
-| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | 否 | 无 | 否 | 平台 / 开发者 | traces 专用 endpoint。 |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | 条件必传 | 无 | 否 | 平台 / 开发者 | OTel Collector endpoint；未设置 traces 专用 endpoint 时，KsADK 会派生 `/v1/traces`。 |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | 否 | 无 | 否 | 平台 / 开发者 | 通用 OTLP 协议；KsADK 自动 HTTP exporter 当前支持 `http/protobuf`。 |
+| `OTEL_EXPORTER_OTLP_HEADERS` | 否 | 无 | 是 | 平台 / 开发者 | 通用 OTLP headers，逗号分隔，值按 URL encoding；可能包含 `Authorization`。 |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | 否 | 无 | 否 | 平台 / 开发者 | traces 专用 endpoint；设置后优先于通用 endpoint。 |
+| `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` | 否 | 无 | 否 | 平台 / 开发者 | traces 专用 OTLP 协议；设置后优先于通用 protocol。 |
+| `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | 否 | 无 | 是 | 平台 / 开发者 | traces 专用 OTLP headers；设置后优先于通用 headers。 |
 | `OTEL_SERVICE_NAME` | 否 | 无 | 否 | 平台 / 开发者 | OTel service name。 |
 | `OTEL_RESOURCE_ATTRIBUTES` | 否 | 无 | 否 | 平台 / 开发者 | OTel resource attributes。 |
 
@@ -196,6 +203,8 @@
 | `KSADK_SKILL_RUNTIME_ALLOW_INTERNET_ACCESS` | Skill Runtime E2B backend | 否 | `true` | `KSADK_SANDBOX_ALLOW_INTERNET_ACCESS` 优先 | 否 | 旧部署 / 兼容 | 否 | 兼容变量。 |
 | `KSADK_SKILL_RUNTIME_AGENT_PATH` | local_process backend | 条件必传 | SDK 内置 `ksadk/skills/runtime/agent.py` | 无 | 否 | 开发者 | 否 | 本地进程 backend 的 agent 路径。 |
 | `KSADK_SKILL_SERVICE_URL` | Runtime agent / Skill Service client | 条件必传 | 未设置 | 无 | 否 | Skill Service / 平台 | 否 | 配置后从 Skill Center 拉取技能。支持直连 REST 和 AICP KOP endpoint。 |
+| `KSADK_SKILL_SERVICE_ENDPOINT` | Runtime agent / AICP resolver | 否 | 按 `KSADK_AICP_ENDPOINT_MODE` 自动选择 | 无 | 否 | Skill Service / 平台 | 否 | 未设置 `KSADK_SKILL_SERVICE_URL` 时覆盖 Skill Service AICP endpoint。 |
+| `KSADK_SKILL_SERVICE_SCHEME` | Runtime agent / AICP resolver | 否 | 内网 endpoint 为 `http`，公网默认 `https` | 无 | 否 | Skill Service / 平台 | 否 | 未设置 `KSADK_SKILL_SERVICE_URL` 时覆盖 Skill Service AICP URL scheme。 |
 | `KSADK_SKILL_SPACE_IDS` | Runner / Runtime agent | 条件必传 | 未设置 | `SKILL_SPACE_ID` | 否 | Agent 创建/更新 / 平台注入 | 否 | 逗号分隔 Skill Space id。 |
 | `KSADK_PUBLIC_SKILL_ALLOWLIST` | Runtime agent | 否 | 未设置 | 无 | 否 | 平台 / Skill Service | 否 | 逗号分隔 public skill 名称白名单；未设置时加载 public space 下全部 active skills。 |
 | `KSADK_PUBLIC_SKILL_SPACE_IDS` | Runner / Runtime agent | 否 | 未设置 | 无 | 否 | 平台 / Skill Service | 否 | 逗号分隔官方公共 Skill Space id，会追加在用户 space 之后。 |
@@ -292,6 +301,7 @@
 | `AGENTENGINE_API_VERSION` | CLI / API client | 否 | 内置版本 | 无 | 否 | 平台 / 开发者 | 否 | 覆盖 AgentEngine API version。 |
 | `AGENTENGINE_PRE_CONTROL_REGION` | CLI / API client | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 预发控制面 region 覆盖。 |
 | `AGENTENGINE_PRE_CUSTOM_SOURCE` | CLI / API client | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 预发 custom source 覆盖。 |
+| `KSADK_AICP_ENDPOINT_MODE` | AICP resolver | 否 | `auto` | 无 | 否 | 平台 / 开发者 | 否 | AICP endpoint 选择策略，支持 `auto/detect/internal/inner/public`。内网环境可显式设为 `inner`，跳过自动探测。 |
 | `AGENTENGINE_MODEL_ALLOWLIST` | CLI model / OpenClaw | 否 | 未设置 | `OPENCLAW_MODEL_ALLOWLIST` | 否 | 平台 / 开发者 | 否 | 模型列表过滤。OpenClaw 场景优先使用 `OPENCLAW_MODEL_ALLOWLIST`。 |
 | `AGENTENGINE_UI_DIR` | 本地 Web UI / Sessions | 否 | 未设置 | 无 | 否 | 本地开发者 | 否 | 本地 UI 静态目录覆盖，主要用于 Web/文件上传本地调试。 |
 | `AGENTENGINE_LOCAL_RUNTIME_VENV_REEXEC` | 本地 runtime CLI | 否 | 自动判断 | 无 | 否 | 本地开发者 / 测试 | 否 | 控制本地 runtime 是否在虚拟环境中 re-exec。普通用户通常无需设置。 |
@@ -335,8 +345,12 @@
 | `LANGFUSE_USE_CALLBACK` | Tracing | 否 | 未设置 | 无 | 否 | 开发者 | 否 | 是否启用 Langfuse callback。 |
 | `LANGCHAIN_TRACING_V2` | LangChain tracing | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | LangChain v2 tracing 开关。 |
 | `LANGCHAIN_VERBOSE` | Runtime image | 否 | `true` | 无 | 否 | 开发者 / 平台 | 否 | 模板运行时 LangChain verbose 开关。 |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTel | 条件必传 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | OTel Collector endpoint。 |
-| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | OTel | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | traces 专用 endpoint。 |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTel | 条件必传 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | OTel Collector endpoint；未设置 traces 专用 endpoint 时，KsADK 会派生 `/v1/traces`。 |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | OTel | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 通用 OTLP 协议；KsADK 自动 HTTP exporter 当前支持 `http/protobuf`。 |
+| `OTEL_EXPORTER_OTLP_HEADERS` | OTel | 否 | 未设置 | 无 | 是 | 平台 / 开发者 | 否 | 通用 OTLP headers，逗号分隔，值按 URL encoding；可能包含 `Authorization`。 |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | OTel | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | traces 专用 endpoint；设置后优先于通用 endpoint。 |
+| `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` | OTel | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | traces 专用 OTLP 协议；设置后优先于通用 protocol。 |
+| `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | OTel | 否 | 未设置 | 无 | 是 | 平台 / 开发者 | 否 | traces 专用 OTLP headers；设置后优先于通用 headers。 |
 | `OTEL_SERVICE_NAME` | OTel | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | service name。 |
 | `OTEL_RESOURCE_ATTRIBUTES` | OTel | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | resource attributes。 |
 
@@ -518,6 +532,7 @@ Hermes / OpenClaw 有大量镜像启动和安全策略变量，本文只列常�
 | `KSADK_MCP_RUNTIME_REQUIREMENTS` | builders | 否 | 代码常量 | 无 | 否 | SDK 内部 | 否 | MCP adapter 可选运行时内置依赖集合。 |
 | `KSADK_POSTGRES_SESSION_REQUIREMENTS` | builders | 否 | 代码常量 | 无 | 否 | SDK 内部 | 否 | PostgreSQL session 可选运行时内置依赖集合。 |
 | `KSADK_RUNTIME_REQUIREMENTS` | builders | 否 | 代码常量 | 无 | 否 | SDK 内部 | 否 | 完整运行时内置依赖集合。 |
+| `KSADK_SKILL_SERVICE` | skills | 否 | 代码调用前缀 | 无 | 否 | SDK 内部 | 否 | Skill Service AICP 连接配置前缀，用于解析 `KSADK_SKILL_SERVICE_ENDPOINT` / `KSADK_SKILL_SERVICE_SCHEME` / `KSADK_SKILL_SERVICE_REGION`；一般不需要用户单独设置。 |
 | `KSADK_EVENTS_TABLE` | sessions | 否 | `ksadk_events` | 无 | 否 | SDK 内部 | 否 | 本地 SQLite events 表名。 |
 | `KSADK_SESSIONS_TABLE` | sessions | 否 | `ksadk_sessions` | 无 | 否 | SDK 内部 | 否 | 本地 SQLite sessions 表名。 |
 | `KSADK_STATES_TABLE` | sessions | 否 | `ksadk_states` | 无 | 否 | SDK 内部 | 否 | 本地 SQLite states 表名。 |

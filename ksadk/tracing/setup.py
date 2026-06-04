@@ -8,6 +8,7 @@ import logging
 import atexit
 import signal
 import base64
+from urllib.parse import unquote
 from typing import Optional, List, Any
 
 from ksadk.tracing.exporters.inmemory_exporter import InMemoryExporter
@@ -41,6 +42,59 @@ def _build_langfuse_otlp_config(langfuse_config: dict = None) -> Optional[dict]:
             "Authorization": f"Basic {auth}",
             "x-langfuse-ingestion-version": "4",
         },
+        "protocol": "http/protobuf",
+    }
+
+
+def _parse_otlp_headers(raw: str) -> dict[str, str]:
+    """Parse OTEL_EXPORTER_OTLP_HEADERS into an HTTP headers dict."""
+    headers: dict[str, str] = {}
+    for part in (raw or "").split(","):
+        item = part.strip()
+        if not item or "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        headers[key] = unquote(value.strip())
+    return headers
+
+
+def _derive_otlp_traces_endpoint(endpoint: str) -> str:
+    """Derive the HTTP trace endpoint from a generic OTLP endpoint."""
+    endpoint = endpoint.strip().rstrip("/")
+    if endpoint.endswith("/v1/traces"):
+        return endpoint
+    return f"{endpoint}/v1/traces"
+
+
+def _build_generic_otlp_http_config() -> Optional[dict]:
+    """Build generic OTLP HTTP traces exporter config from standard OTEL env."""
+    traces_endpoint = os.getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "").strip()
+    base_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip()
+    endpoint = traces_endpoint or (_derive_otlp_traces_endpoint(base_endpoint) if base_endpoint else "")
+    if not endpoint:
+        return None
+
+    protocol = (
+        os.getenv("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "").strip().lower()
+        or os.getenv("OTEL_EXPORTER_OTLP_PROTOCOL", "").strip().lower()
+    )
+    if protocol and protocol != "http/protobuf":
+        logger.warning(
+            "Unsupported OTEL_EXPORTER_OTLP protocol for KsADK auto HTTP exporter: %s",
+            protocol,
+        )
+        return None
+
+    raw_headers = (
+        os.getenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "").strip()
+        or os.getenv("OTEL_EXPORTER_OTLP_HEADERS", "")
+    )
+    return {
+        "endpoint": endpoint,
+        "headers": _parse_otlp_headers(raw_headers),
         "protocol": "http/protobuf",
     }
 
@@ -103,13 +157,38 @@ def setup_tracing(
         provider.add_span_processor(SimpleSpanProcessor(exporter))
         logger.info("InMemory exporter enabled")
     
-    # 2. Langfuse OTLP direct exporter (auto-detect or explicit config)
+    # 2. Generic OTLP HTTP exporter from standard environment variables.
+    # This keeps user code backend-agnostic; Langfuse is only one possible OTLP backend.
+    generic_otlp_config = _build_generic_otlp_http_config()
+    if generic_otlp_config:
+        try:
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+
+            otlp_exporter = OTLPSpanExporter(
+                endpoint=generic_otlp_config["endpoint"],
+                headers=generic_otlp_config["headers"],
+            )
+            provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
+            logger.info(
+                "Generic OTLP HTTP exporter enabled: %s (%s)",
+                generic_otlp_config["endpoint"],
+                generic_otlp_config["protocol"],
+            )
+        except ImportError as e:
+            logger.warning(f"Generic OTLP HTTP exporter not available: {e}")
+        except Exception as e:
+            logger.error(f"Failed to initialize generic OTLP HTTP exporter: {e}")
+
+    # 3. Langfuse OTLP direct exporter (auto-detect or explicit config)
     # 注意: 对于 LangGraph/LangChain 框架，推荐使用 CallbackHandler 而非 OTel Exporter
     # 同时使用两者会导致重复的 trace
     langfuse_enabled = enable_langfuse
     if langfuse_enabled is None:
         # Auto-detect from environment variables
-        langfuse_enabled = bool(os.getenv("LANGFUSE_PUBLIC_KEY") or (langfuse_config or {}).get("public_key"))
+        langfuse_enabled = (
+            not generic_otlp_config
+            and bool(os.getenv("LANGFUSE_PUBLIC_KEY") or (langfuse_config or {}).get("public_key"))
+        )
     
     # 检查是否应该禁用 LangfuseExporter (当使用 LangChain/LangGraph 时)
     # 优先使用显式参数，否则读取环境变量
@@ -142,7 +221,7 @@ def setup_tracing(
     elif langfuse_enabled:
         logger.info("Langfuse will use CallbackHandler (recommended for LangChain/LangGraph)")
     
-    # 3. OTLP Exporter (optional)
+    # 4. OTLP Exporter (optional)
     if enable_otlp:
         try:
             from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
@@ -152,7 +231,7 @@ def setup_tracing(
         except ImportError:
             logger.warning("OTLP exporter not installed")
     
-    # 4. ADK Auto-Instrumentation (for Google ADK projects)
+    # 5. ADK Auto-Instrumentation (for Google ADK projects)
     if enable_adk_instrumentation and not _adk_instrumented:
         try:
             from openinference.instrumentation.google_adk import GoogleADKInstrumentor
@@ -164,7 +243,7 @@ def setup_tracing(
         except Exception as e:
             logger.debug(f"ADK instrumentation failed: {e}")
             
-    # 5. LangChain Auto-Instrumentation
+    # 6. LangChain Auto-Instrumentation
     if enable_adk_instrumentation:
         try:
             from openinference.instrumentation.langchain import LangChainInstrumentor
