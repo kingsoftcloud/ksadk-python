@@ -1,48 +1,57 @@
 # Observability And Tracing
 
-KsADK includes a local-first tracing layer for debugging agent runs, inspecting
-runtime behavior, and exporting spans to external observability systems. The
-public SDK treats tracing as an optional diagnostic layer around the runner and
-server lifecycle. It does not replace framework-specific logging, hosted control
-plane telemetry, or application-level metrics.
+KsADK includes local spans, a Langfuse-compatible path, and a standard OTLP HTTP
+traces exporter. Tracing is optional diagnostics and should not be required for
+the quickstart path.
 
-## What Is Traced
+Starting in `0.6.2`, the recommended model is **OTel-first**: application code
+creates OpenTelemetry spans, span events, and attributes, while
+`OTEL_EXPORTER_OTLP_*` environment variables route data to Langfuse, an OTel
+Collector, or another compatible backend.
 
-Tracing is centered on OpenTelemetry. When tracing is enabled, KsADK creates or
-uses an OpenTelemetry `TracerProvider` and attaches span processors for the
-enabled exporters.
+## Export Paths
 
-| Export path | Default | Purpose |
+| Path | Default behavior | Purpose |
 | --- | --- | --- |
-| In-memory spans | enabled for local runner paths | drive local debug APIs and Web UI trace views |
-| Langfuse OTLP HTTP | enabled when Langfuse credentials are present | export spans to a Langfuse deployment |
-| Generic OTLP gRPC | explicit opt-in | send spans to an external OTLP collector |
-| OpenInference instrumentation | best effort | add framework-level spans for supported ADK or LangChain paths |
+| In-memory spans | enabled for local runner paths | local debug APIs and Web UI trace views |
+| Generic OTLP HTTP | enabled when `OTEL_EXPORTER_OTLP_*` is set | send spans to Langfuse or any OTLP HTTP Collector |
+| Langfuse OTLP HTTP | enabled when no generic OTLP exists and Langfuse keys are set | compatibility with older Langfuse env vars |
+| OTLP gRPC | explicit `enable_otlp=True` | compatibility with older code paths |
+| OpenInference instrumentation | best effort | framework spans for ADK, LangChain, and similar runtimes |
 
-The local in-memory exporter is the safest public default because it works
-without an external service. Remote exporters are configured through environment
-variables and should be treated as optional integrations.
+The local in-memory exporter is the safest public default. Remote exporters
+should be enabled through environment variables. Local runs should continue if
+an external exporter is missing or fails to initialize.
 
-## Local Trace Flow
+## Generic OTLP HTTP
 
-```mermaid
-flowchart LR
-  Runner["Agent runner"] --> OTel["OpenTelemetry provider"]
-  OTel --> Memory["In-memory exporter"]
-  OTel --> Langfuse["Langfuse OTLP HTTP"]
-  OTel --> Collector["OTLP collector"]
-  Memory --> API["Local debug APIs"]
-  API --> UI["agentengine web"]
+When only the generic endpoint is set, KsADK derives `/v1/traces`:
+
+```bash
+export OTEL_SERVICE_NAME="customer-agent-runtime"
+export OTEL_EXPORTER_OTLP_PROTOCOL="http/protobuf"
+export OTEL_EXPORTER_OTLP_ENDPOINT="https://otel-collector.example.com/otel"
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20demo-token"
+
+agentengine run .
 ```
 
-The local flow is intentionally short: a runner produces spans, OpenTelemetry
-exports them to memory, and the local API/UI reads recent spans for debugging.
-External exporters are parallel sinks. If an external exporter fails or is not
-configured, local runs should still be able to proceed.
+You can also configure traces-specific endpoint, protocol, and headers.
+`TRACES_*` values take precedence over generic values:
 
-## Langfuse Direct OTLP
+```bash
+export OTEL_EXPORTER_OTLP_TRACES_PROTOCOL="http/protobuf"
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="https://otel-collector.example.com/otel/v1/traces"
+export OTEL_EXPORTER_OTLP_TRACES_HEADERS="Authorization=Bearer%20trace-token"
+```
 
-Set Langfuse credentials in the environment before starting the local runtime:
+Headers follow the OTLP comma-separated format. URL-encode header values; KsADK
+decodes `Bearer%20trace-token` to `Bearer trace-token`.
+
+## Langfuse Compatibility
+
+If a project still uses Langfuse environment variables, the existing setup
+continues to work:
 
 ```bash
 export LANGFUSE_PUBLIC_KEY="pk-example"
@@ -52,15 +61,28 @@ export LANGFUSE_BASE_URL="https://langfuse.example.com"
 agentengine run .
 ```
 
-When both keys are available, KsADK can build a Langfuse OTLP HTTP exporter and
-send spans to the Langfuse ingestion endpoint under the configured base URL.
-Use a user-owned Langfuse instance in public examples. Do not publish real
-project credentials, private endpoints, or screenshots that expose trace data.
+When generic OTLP and Langfuse variables are both present,
+`setup_tracing(enable_langfuse=None)` prefers generic OTLP and does not enable a
+second Langfuse direct exporter. This avoids duplicate traces in Langfuse.
+Explicit `setup_tracing(enable_langfuse=True)` can still force the Langfuse
+compatibility path.
 
-## Callback-Only Mode
+To use Langfuse as an OTLP backend, configure standard OTLP variables:
 
-Some LangChain or LangGraph projects may prefer the Langfuse callback handler
-instead of direct OTLP export. Enable callback-only mode explicitly:
+```bash
+export OTEL_SERVICE_NAME="customer-agent-runtime"
+export OTEL_EXPORTER_OTLP_TRACES_PROTOCOL="http/protobuf"
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="https://langfuse.example.com/api/public/otel/v1/traces"
+export OTEL_EXPORTER_OTLP_TRACES_HEADERS="Authorization=Basic%20<base64-public-secret>,x-langfuse-ingestion-version=4"
+```
+
+Public examples must use placeholder keys and user-owned endpoints. Do not
+publish real trace screenshots, tenant ids, or private URLs.
+
+## Callback-only Mode
+
+LangChain or LangGraph projects may prefer the Langfuse callback handler instead
+of direct OTLP. Enable callback-only mode explicitly:
 
 ```bash
 export LANGFUSE_PUBLIC_KEY="pk-example"
@@ -71,54 +93,73 @@ export LANGFUSE_USE_CALLBACK="true"
 agentengine run .
 ```
 
-Callback-only mode is useful when the framework's native callback path already
-creates the desired trace shape. Avoid enabling both direct OTLP and callback
-export for the same run unless you have verified that duplicate traces are
-acceptable.
+Choose either callback or direct OTLP for a run unless duplicate traces have
+been reviewed and accepted.
 
-## Generic OTLP
+## Span Events And Child Spans
 
-Generic OTLP export is intended for teams that already operate an OTLP collector.
-It should be enabled by code or configuration that names the collector endpoint.
-Keep the collector URL outside committed files when it identifies a private
-network.
+Span events are timestamped records attached to a span. They work well for:
 
-For public docs and samples, prefer showing the local in-memory path or a
-placeholder endpoint. Operational collector details belong in private deployment
-runbooks, not in the public SDK repository.
+- `checkpoint.saved`
+- `agent.run.started`
+- `analysis.milestone`
+- error hints and resume hints
 
-## Metadata
+Child spans are independent steps in the trace tree. They work well for:
 
-Trace metadata may include:
+- tool calls.
+- checkpoint persistence.
+- external I/O.
+- report generation.
+- score calculation.
 
-- agent name and runtime name.
-- user and session identifiers.
-- environment, version, and tags.
-- framework information.
-- model information when available.
+In Langfuse and similar backends, child spans are usually easier to see in the
+trace tree or observation list and are better for duration, status, tool name,
+and error aggregation. Span events usually appear inside the parent span details
+and may not become independent tree nodes.
 
-Use stable, non-sensitive identifiers. Do not put raw prompts, credentials,
-private URLs, customer names, or uploaded file contents into tags or metadata.
-If a trace backend stores payload content, treat it as application data and
-apply the same retention and access-control policy you use for logs.
+## Metadata And Scores
+
+Long-running, multi-user, multi-instance systems should attach stable,
+non-sensitive attributes to important spans:
+
+- `ksadk.agent_id`
+- `ksadk.session_id`
+- `ksadk.user_id`
+- `ksadk.invocation_id`
+- `ksadk.runtime.service`
+- `ksadk.runtime.instance_id`
+
+Represent evaluation scores with backend-neutral attributes first:
+
+```python
+span.set_attribute("score.name", "answer_quality")
+span.set_attribute("score.value", 0.88)
+span.set_attribute("score.source", "auto_evaluator")
+span.set_attribute("score.comment", "Report covers evidence and next steps.")
+```
+
+If the backend is Langfuse, a platform service or OTel Collector can map
+`score.*` attributes to native Langfuse scores. Application code does not need
+to import the Langfuse SDK, which keeps backend replacement cheaper.
+
+Do not put raw prompts, credentials, private URLs, customer names, or uploaded
+file contents into span attributes.
 
 ## Troubleshooting
 
 | Symptom | Likely cause | Check |
 | --- | --- | --- |
-| Local trace view is empty | no run has produced spans, or tracing was disabled | run one request and confirm the local server is using tracing |
-| Langfuse receives no spans | missing key, wrong base URL, or callback-only mode | check Langfuse environment variables and `LANGFUSE_USE_CALLBACK` |
-| Duplicate Langfuse traces | direct OTLP and callback export both enabled | choose one export path for the project |
-| Framework spans are sparse | optional instrumentation is not installed or not active | install tracing extras and check framework-specific instrumentation |
-| OTLP collector rejects data | endpoint, TLS, auth, or collector policy mismatch | verify collector configuration outside the public repo |
+| Local trace view is empty | no run has produced spans, or tracing was disabled | run one request and confirm local tracing is enabled |
+| Generic OTLP receives no data | endpoint, TLS, auth, or Collector policy mismatch | check `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` and headers |
+| Langfuse receives no spans | missing key, wrong base URL, callback-only mode, or generic OTLP precedence | check Langfuse vars, `LANGFUSE_USE_CALLBACK`, and `OTEL_EXPORTER_OTLP_*` |
+| Duplicate Langfuse traces | callback and direct OTLP are both enabled | choose one export path for the project |
+| Score is not shown as a native score | the backend does not map `score.*` attributes | add conversion in the Collector or platform service |
+| Framework spans are sparse | optional instrumentation is missing or inactive | install tracing extras and check framework instrumentation |
 
 ## Public Documentation Rules
 
-Tracing examples in this site must be safe to copy:
-
 - use placeholder keys and user-owned endpoints.
-- never include real trace IDs from private deployments.
 - never commit `.env` files containing tracing credentials.
-- keep private collector URLs and tenant identifiers out of examples.
-- document optional integrations separately from the local quickstart.
-
+- never publish private trace ids, tenant ids, customer names, or real screenshots.
+- keep private Collector URLs and tenant routing in internal runbooks, not in the public SDK repository.

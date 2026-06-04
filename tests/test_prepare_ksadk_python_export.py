@@ -43,6 +43,7 @@ def _make_git_repo(root: Path) -> None:
         "ksadk_runtime_common/__init__.py": "\n",
         "ksadk_runtime_common/schemas/event.json": "{}\n",
         "tests/test_open_source_audit.py": "def test_public():\n    assert True\n",
+        "tests/test_tracing_setup_otlp.py": "def test_tracing_public():\n    assert True\n",
         "tests/test_deploy_integration.py": "def test_internal():\n    assert True\n",
         "tests/snapshots/help_snapshots.txt": "internal snapshot\n",
         "public-docs/index.md": "# Public docs\n",
@@ -114,6 +115,7 @@ def test_export_plan_selects_public_candidate_files_and_excludes_local_artifacts
     assert "ksadk_runtime_common/__init__.py" in plan.export_paths
     assert "ksadk_runtime_common/schemas/event.json" in plan.export_paths
     assert "tests/test_open_source_audit.py" in plan.export_paths
+    assert "tests/test_tracing_setup_otlp.py" in plan.export_paths
     assert "public-docs/index.md" in plan.export_paths
     assert "docs/release-checklist.md" not in plan.export_paths
     assert "docs/ksadk开源准备计划.md" not in plan.export_paths

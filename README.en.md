@@ -4,7 +4,7 @@
 
 Kingsoft Cloud Agent Development Kit. `ksadk` provides the Python SDK and CLI for building, running, packaging, and deploying AgentEngine agents across local development, serverless runtime, ADK, LangChain/LangGraph, DeepAgents, Hermes, OpenClaw, MCP, and Skill Runtime scenarios.
 
-Current version: `0.6.1`.
+Current version: `0.6.2`.
 
 ## Install
 
@@ -55,14 +55,13 @@ agentengine dashboard open
 - Skill Runtime preview: Skill Center discovery, zip download, `sha256` verification, safe extraction, local execution, and sandbox execution through the `ksadk[skills]` extra
 - Sandbox Runtime preview: common sandbox abstraction with an E2B-compatible backend
 
-## 0.6.1 Highlights
+## 0.6.2 Highlights
 
-- OpenAI-compatible `/v1/responses` and `/v1/chat/completions` stay separate externally, while runners receive unified Responses-style canonical input.
-- Hosted UI and local `agentengine web` send image/file uploads as Responses `input_image` / `input_file`, with legacy `inlineData` / `fileData` still supported.
-- Streaming runs continue in the background after browser refresh or SSE disconnect, and the UI can resubscribe to the same invocation.
-- Local web sessions default to project sqlite storage for LangGraph, LangChain, DeepAgents, and ADK when no STM config is set.
-- Workspace preview auto-refresh preserves the current preview/edit mode instead of stealing focus.
-- Default runtimes use Hermes `2026.5.16-ksadk-v1` and OpenClaw `2026.5.22`.
+- `setup_tracing()` now prefers standard `OTEL_EXPORTER_OTLP_*` HTTP traces configuration, so spans can be routed to Langfuse or any OTLP Collector.
+- Langfuse environment variables remain compatible; automatic mode avoids enabling the Langfuse direct exporter again when generic OTLP is already configured.
+- Tracing docs now explain span event versus child span visibility in backends and recommend `score.*` attributes for evaluation scores.
+- Skill Runtime keeps public Skill Space, allowlist, E2B, and Sandbox backend support in the public SDK surface.
+- 0.6.1 behavior remains available, including Responses input semantics, streaming session recovery, local sqlite sessions, and workspace preview refinements.
 
 ## Documentation
 

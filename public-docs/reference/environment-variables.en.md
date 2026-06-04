@@ -177,7 +177,15 @@ KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
 
 | Variable | Purpose |
 | --- | --- |
-| `LANGFUSE_PUBLIC_KEY` | enable Langfuse tracing |
+| `OTEL_SERVICE_NAME` | OpenTelemetry service name; also used as an agent name fallback |
+| `OTEL_RESOURCE_ATTRIBUTES` | OpenTelemetry resource attributes as comma-separated `key=value` pairs |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | generic OTLP HTTP endpoint; KsADK derives `/v1/traces` when no traces endpoint is set |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | generic OTLP protocol; KsADK auto HTTP exporter supports `http/protobuf` |
+| `OTEL_EXPORTER_OTLP_HEADERS` | generic OTLP HTTP headers, comma-separated with URL-encoded values; may contain auth data |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | traces-specific OTLP HTTP endpoint; takes precedence over the generic endpoint |
+| `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` | traces-specific OTLP protocol; takes precedence over the generic protocol |
+| `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | traces-specific OTLP HTTP headers; takes precedence over generic headers and may contain auth data |
+| `LANGFUSE_PUBLIC_KEY` | compatibility path for older Langfuse tracing auto-configuration |
 | `LANGFUSE_SECRET_KEY` | Langfuse secret |
 | `LANGFUSE_BASE_URL` | Langfuse base URL |
 | `LANGFUSE_HOST` | compatibility alias for Langfuse host |

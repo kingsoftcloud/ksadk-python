@@ -7,7 +7,7 @@
 本地开发、Serverless 运行时、Google ADK、LangChain/LangGraph、
 DeepAgents、Hermes、OpenClaw、MCP 和 Skill Runtime 等场景。
 
-当前版本：`0.6.1`。
+当前版本：`0.6.2`。
 
 ## 安装
 
@@ -58,14 +58,13 @@ agentengine launch . --target serverless
 - Skill Runtime 预览：Skill Center 发现、zip 下载、`sha256` 校验、安全解压、本地执行和通过 `ksadk[skills]` 启用的沙箱执行
 - Sandbox Runtime 预览：通用沙箱抽象与 E2B 兼容后端
 
-## 0.6.1 重点
+## 0.6.2 重点
 
-- `/v1/responses` 和 `/v1/chat/completions` 在外部保持独立协议，Runner 内部接收统一的 Responses 风格输入。
-- Hosted UI 与本地 `agentengine web` 使用 Responses `input_image` / `input_file` 发送图片和文件，同时兼容旧的 `inlineData` / `fileData`。
-- 浏览器刷新或 SSE 断开后，流式运行可以在后台继续，UI 可以重新订阅同一个 invocation。
-- 未配置 STM 时，LangGraph、LangChain、DeepAgents 和 ADK 的本地 Web 会话默认使用项目内 sqlite 存储。
-- 工作区预览自动刷新时保留当前预览/编辑模式。
-- 默认运行时使用 Hermes `2026.5.16-ksadk-v1` 和 OpenClaw `2026.5.22`。
+- `setup_tracing()` 优先识别标准 `OTEL_EXPORTER_OTLP_*` HTTP traces 配置，便于把链路发送到 Langfuse 或任意 OTLP Collector。
+- Langfuse 环境变量仍保持兼容；当通用 OTLP 已配置时，自动模式不会重复启用 Langfuse 直连 exporter。
+- tracing 文档补充 span event 与子 span 的后端可见性差异，以及用 `score.*` attributes 表达评估分数的推荐方式。
+- Skill Runtime 保持公共 Skill Space、allowlist、E2B/Sandbox backend 等公开运行时能力。
+- 继续保留 0.6.1 中的 Responses 输入语义、流式会话恢复、本地 sqlite session 和 workspace 预览体验优化。
 
 ## 文档
 

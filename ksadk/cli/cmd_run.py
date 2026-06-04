@@ -174,8 +174,11 @@ def _run_custom(
             from ksadk.tracing import setup_tracing
             import os
 
-            # Auto-detect Langfuse from environment
             has_langfuse = bool(os.getenv("LANGFUSE_PUBLIC_KEY"))
+            has_otlp = bool(
+                os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+                or os.getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+            )
 
             use_callback_only = os.getenv("LANGFUSE_USE_CALLBACK", "").strip().lower() in (
                 "1",
@@ -186,11 +189,13 @@ def _run_custom(
 
             setup_tracing(
                 enable_inmemory=True,
-                enable_langfuse=has_langfuse,
+                enable_langfuse=None,
                 use_callback_only=use_callback_only,
             )
 
-            if has_langfuse:
+            if has_otlp:
+                print_info("Tracing: Enabled (InMemory + OTLP HTTP)")
+            elif has_langfuse:
                 print_info(f"Tracing: Enabled (InMemory + Langfuse, CallbackOnly={use_callback_only})")
             else:
                 print_info("Tracing: Enabled")

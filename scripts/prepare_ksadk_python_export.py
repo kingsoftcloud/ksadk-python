@@ -77,6 +77,7 @@ PUBLIC_TEST_FILES = {
     "tests/test_prepare_ksadk_python_export.py",
     "tests/test_prepare_ksadk_web_export.py",
     "tests/test_runtime_common_packaging.py",
+    "tests/test_tracing_setup_otlp.py",
 }
 
 EXCLUDED_PREFIXES = (

@@ -153,6 +153,14 @@ ENV_VAR_REGISTRY: tuple[EnvVarSpec, ...] = (
     EnvVarSpec("KSADK_UPDATED_AT", "configs", "Internal config update timestamp field."),
     EnvVarSpec("KSADK_VERSION", "configs", "Internal config version field."),
     EnvVarSpec("KSADK_WORKSPACE_ID", "sessions", "Workspace id used for session namespace scoping."),
+    EnvVarSpec("OTEL_EXPORTER_OTLP_ENDPOINT", "tracing", "Generic OTLP HTTP endpoint used to derive the traces endpoint."),
+    EnvVarSpec("OTEL_EXPORTER_OTLP_HEADERS", "tracing", "Generic OTLP HTTP headers, comma-separated and URL-encoded.", sensitive=True),
+    EnvVarSpec("OTEL_EXPORTER_OTLP_PROTOCOL", "tracing", "Generic OTLP protocol; KsADK auto HTTP exporter supports http/protobuf."),
+    EnvVarSpec("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "tracing", "OTLP HTTP traces endpoint; takes precedence over the generic endpoint."),
+    EnvVarSpec("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "tracing", "OTLP HTTP traces headers; takes precedence over generic headers.", sensitive=True),
+    EnvVarSpec("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "tracing", "OTLP traces protocol; takes precedence over the generic protocol."),
+    EnvVarSpec("OTEL_RESOURCE_ATTRIBUTES", "tracing", "OpenTelemetry resource attributes in key=value comma-separated form."),
+    EnvVarSpec("OTEL_SERVICE_NAME", "tracing", "OpenTelemetry service name."),
 )
 
 

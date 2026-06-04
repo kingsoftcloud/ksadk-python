@@ -81,7 +81,7 @@ install-webui:
 
 STATIC_DIR = ksadk/server/static
 OPEN_SOURCE_SMOKE_VENV ?= /tmp/ksadk-open-source-smoke
-OPEN_SOURCE_SMOKE_WHEEL := dist/ksadk-0.6.1-py3-none-any.whl
+OPEN_SOURCE_SMOKE_WHEEL := dist/ksadk-0.6.2-py3-none-any.whl
 
 build-webui:
 	@echo "ℹ️  ksadk-python 不包含可编辑 Web UI 源码。"

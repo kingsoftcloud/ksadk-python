@@ -56,9 +56,9 @@ before importing source into GitHub.
 The release tag, GitHub release, package version, and documentation version should refer to the same release candidate.
 The Python release notes must mention the `ksadk-web` tag used to generate the
 embedded static UI, and the release assets should include both
-`ksadk-0.6.1.tar.gz` and `ksadk-0.6.1-py3-none-any.whl`.
+`ksadk-0.6.2.tar.gz` and `ksadk-0.6.2-py3-none-any.whl`.
 After package publication, the publication-state check verifies that PyPI
-reports package version `0.6.1`, exposes both sdist and wheel files for that
+reports package version `0.6.2`, exposes both sdist and wheel files for that
 version, and links metadata to the public GitHub repository and GitHub Pages
 documentation.
 

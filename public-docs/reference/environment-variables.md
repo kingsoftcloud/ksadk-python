@@ -176,7 +176,15 @@ KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
 
 | 变量 | 用途 |
 | --- | --- |
-| `LANGFUSE_PUBLIC_KEY` | 启用 Langfuse tracing |
+| `OTEL_SERVICE_NAME` | OpenTelemetry service name，也可作为 agent name fallback |
+| `OTEL_RESOURCE_ATTRIBUTES` | OpenTelemetry resource attributes，逗号分隔的 `key=value` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | 通用 OTLP HTTP endpoint；未设置 traces endpoint 时会派生 `/v1/traces` |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | 通用 OTLP protocol；KsADK 自动 HTTP exporter 支持 `http/protobuf` |
+| `OTEL_EXPORTER_OTLP_HEADERS` | 通用 OTLP HTTP headers，逗号分隔且 value URL encoded，可能包含鉴权信息 |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | traces 专用 OTLP HTTP endpoint，优先于通用 endpoint |
+| `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` | traces 专用 OTLP protocol，优先于通用 protocol |
+| `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | traces 专用 OTLP HTTP headers，优先于通用 headers，可能包含鉴权信息 |
+| `LANGFUSE_PUBLIC_KEY` | 兼容旧 Langfuse tracing 自动配置 |
 | `LANGFUSE_SECRET_KEY` | Langfuse secret |
 | `LANGFUSE_BASE_URL` | Langfuse base URL |
 | `LANGFUSE_HOST` | Langfuse host 兼容别名 |

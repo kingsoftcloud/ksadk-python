@@ -5,6 +5,28 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [0.6.2] - 2026-06-04
+
+### 亮点
+
+- **OTel-first 可观测配置**：`setup_tracing()` 优先识别标准 `OTEL_EXPORTER_OTLP_*` HTTP traces 环境变量，业务代码可以只写 OpenTelemetry spans、events 和 attributes，再由后端路由到 Langfuse 或其他 OTLP Collector。
+- **Langfuse 兼容保留**：旧的 `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL` 自动配置仍然可用；当通用 OTLP 已配置时，自动模式不会再额外启用 Langfuse 直连 exporter，避免重复 traces。
+- **观测文档补强**：公开文档补充 span event 与子 span 在 Langfuse 等后端中的可见性差异，并建议用 `score.*` attributes 表达评估分数，由平台或 Collector 映射到后端原生 score。
+
+### 变更
+
+- 新增 `OTEL_EXPORTER_OTLP_ENDPOINT`、`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`、`OTEL_EXPORTER_OTLP_PROTOCOL`、`OTEL_EXPORTER_OTLP_TRACES_PROTOCOL`、`OTEL_EXPORTER_OTLP_HEADERS` 和 `OTEL_EXPORTER_OTLP_TRACES_HEADERS` 的自动 HTTP traces exporter 支持。
+- 当只设置 `OTEL_EXPORTER_OTLP_ENDPOINT` 时，KsADK 会派生 `/v1/traces` 作为 traces endpoint；显式 `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` 优先。
+- HTTP headers 支持标准 OTLP 逗号分隔格式，并对 header value 做 URL decode，例如 `Authorization=Bearer%20token`。
+- `OTEL_EXPORTER_OTLP_TRACES_*` 配置优先于通用 `OTEL_EXPORTER_OTLP_*` 配置。
+- README、环境变量参考和可观测文档同步到 `0.6.2` 候选版本。
+
+### 兼容性说明
+
+- 显式传入 `setup_tracing(enable_langfuse=True)` 仍可强制启用 Langfuse 兼容路径。
+- `LANGFUSE_USE_CALLBACK=true` 仍用于 LangChain / LangGraph callback-only 模式，避免 callback 与 direct OTLP 双写。
+- OTel attributes 中的 `score.*` 字段只是后端无关的推荐表达，不直接依赖 Langfuse SDK，也不承诺所有后端都会自动显示为 native score。
+
 ## [0.6.1] - 2026-05-28
 
 ### 变更

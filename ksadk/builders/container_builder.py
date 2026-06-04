@@ -335,13 +335,14 @@ detection_result = DetectionResult(
 logger.info(f"框架: {{detection_result.name}}")
 logger.info(f"入口: {{detection_result.entry_point}}")
 
-# 初始化 Tracing (如果配置了 Langfuse)
-if os.environ.get("LANGFUSE_PUBLIC_KEY"):
+# 初始化 Tracing (如果配置了 Langfuse 或标准 OTLP HTTP)
+has_otlp = bool(os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT") or os.environ.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"))
+if os.environ.get("LANGFUSE_PUBLIC_KEY") or has_otlp:
     try:
         from ksadk.tracing import setup_tracing
         use_callback_only = os.environ.get("LANGFUSE_USE_CALLBACK", "").strip().lower() in ("1", "true", "yes", "on")
         setup_tracing(use_callback_only=use_callback_only)
-        logger.info(f"Tracing 已启用 (Langfuse, CallbackOnly={{use_callback_only}})")
+        logger.info(f"Tracing 已启用 (OTLP={{has_otlp}}, CallbackOnly={{use_callback_only}})")
     except Exception as e:
         logger.warning(f"Tracing 初始化失败: {{e}}")
 
