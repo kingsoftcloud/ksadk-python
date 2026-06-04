@@ -549,7 +549,7 @@ offline-current: build
 OPENCLAW_IMAGE := hub.kce.ksyun.com/agentengine-public/openclaw
 OPENCLAW_VPC_REGISTRY ?= hub-vpc-cn-beijing-6.kce.ksyun.com
 OPENCLAW_VPC_IMAGE ?= $(subst hub.kce.ksyun.com,$(OPENCLAW_VPC_REGISTRY),$(OPENCLAW_IMAGE))
-OPENCLAW_TAG ?= 2026.5.22
+OPENCLAW_TAG ?= 2026.6.4
 OPENCLAW_CONTEXT := .
 OPENCLAW_BASE_IMAGE ?= ghcr.io/openclaw/openclaw:2026.5.22-slim@sha256:d35b8b681c223a85027502c7a82999aa772d6a09e1b28903951cac7fc27efed5
 OPENCLAW_PRESET_PLUGINS_ALLOWLIST ?=
@@ -559,6 +559,7 @@ OPENCLAW_PYPI_INDEX_URL ?= https://mirrors.aliyun.com/pypi/simple
 OPENCLAW_NPM_REGISTRY ?= https://registry.npmmirror.com
 OPENCLAW_MEM0_PLUGIN_URL ?= https://memory-engine.ks3-cn-beijing.ksyuncs.com/ksc-openclaw-mem0-1.0.11.tgz
 OPENCLAW_MEM0_PLUGIN_SHA256 ?=
+OPENCLAW_LANCEDB_PLUGIN_SPEC ?= @openclaw/memory-lancedb
 DOCKER_BUILDKIT ?= 1
 
 ## 构建 OpenClaw 镜像 (chromium + preset-skills)
@@ -589,6 +590,7 @@ openclaw-build:
 		--build-arg NPM_REGISTRY=$(OPENCLAW_NPM_REGISTRY) \
 		--build-arg OPENCLAW_MEM0_PLUGIN_URL=$(OPENCLAW_MEM0_PLUGIN_URL) \
 		--build-arg OPENCLAW_MEM0_PLUGIN_SHA256=$(OPENCLAW_MEM0_PLUGIN_SHA256) \
+		--build-arg OPENCLAW_LANCEDB_PLUGIN_SPEC=$(OPENCLAW_LANCEDB_PLUGIN_SPEC) \
 		-t $(OPENCLAW_IMAGE):$(OPENCLAW_TAG) \
 		-t $(OPENCLAW_VPC_IMAGE):$(OPENCLAW_TAG) \
 		$(OPENCLAW_CONTEXT)

@@ -25,6 +25,9 @@ ARG OPENCLAW_WPS_XIEZUO_PLUGIN_SPEC=@wps365/openclaw-wpsxiezuo
 ARG OPENCLAW_INSTALL_DIAGNOSTICS_OTEL_PLUGIN=true
 ARG OPENCLAW_DIAGNOSTICS_OTEL_PLUGIN_SPEC=@openclaw/diagnostics-otel
 ARG OPENCLAW_DIAGNOSTICS_OTEL_PLUGIN_ID=diagnostics-otel
+ARG OPENCLAW_INSTALL_LANCEDB_PLUGIN=true
+ARG OPENCLAW_LANCEDB_PLUGIN_SPEC=@openclaw/memory-lancedb
+ARG OPENCLAW_LANCEDB_PLUGIN_ID=memory-lancedb
 ARG OPENCLAW_PRESET_PLUGINS_ALLOWLIST=
 ARG OPENCLAW_INSTALL_AGENT_BROWSER=true
 ARG OPENCLAW_AGENT_BROWSER_SPEC=agent-browser
@@ -50,7 +53,7 @@ RUN --mount=type=cache,target=/root/.npm \
   > /etc/apk/repositories; \
   fi; \
   apk update; \
-  apk add --no-cache tzdata chromium curl jq python3 py3-pip ca-certificates tini; \
+  apk add --no-cache tzdata chromium curl jq python3 py3-pip ca-certificates tini bash; \
   elif command -v apt-get >/dev/null 2>&1; then \
   # Debian bookworm+: 使用 DEB822 格式 (.sources) \
   if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
@@ -71,7 +74,7 @@ RUN --mount=type=cache,target=/root/.npm \
   -o Acquire::http::Timeout=30 \
   -o Acquire::https::Timeout=30 \
   install -y --no-install-recommends \
-  tzdata chromium ca-certificates curl jq python3 python3-pip tini; \
+  tzdata chromium ca-certificates curl jq python3 python3-pip tini bash; \
   rm -rf /var/lib/apt/lists/*; \
   fi; \
   if command -v tini >/dev/null 2>&1; then \
@@ -222,6 +225,9 @@ RUN --mount=type=cache,target=/root/.npm \
   fi; \
   if [ "${OPENCLAW_INSTALL_DIAGNOSTICS_OTEL_PLUGIN}" = "true" ] && preset_plugin_allowed "${OPENCLAW_DIAGNOSTICS_OTEL_PLUGIN_ID}" diagnostics otel diagnostics-otel; then \
     install_default_plugin "${OPENCLAW_DIAGNOSTICS_OTEL_PLUGIN_SPEC}" "${OPENCLAW_DIAGNOSTICS_OTEL_PLUGIN_ID}"; \
+  fi; \
+  if [ "${OPENCLAW_INSTALL_LANCEDB_PLUGIN}" = "true" ] && preset_plugin_allowed "${OPENCLAW_LANCEDB_PLUGIN_ID}" memory-lancedb openclaw-lancedb lancedb; then \
+    install_default_plugin "${OPENCLAW_LANCEDB_PLUGIN_SPEC}" "${OPENCLAW_LANCEDB_PLUGIN_ID}"; \
   fi; \
   chown -R node:node /opt/openclaw/default-extensions; \
   chmod -R a+rX /opt/openclaw/default-extensions
