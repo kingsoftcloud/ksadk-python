@@ -7,13 +7,17 @@ The first public release should be prepared from an independent branch and revie
 1. Prepare the candidate on an independent branch.
 2. Run local tests, packaging checks, artifact audits, and docs build.
 3. Push to the internal ezone repository for company review.
-4. After approval, import the reviewed source into GitHub.
+4. After approval, import the reviewed source into GitHub `main`.
 5. Enable GitHub Pages only after public docs CI passes.
-6. Create GitHub release and TestPyPI/PyPI uploads only after public CI passes.
+6. Create release tags, GitHub release assets, and TestPyPI/PyPI uploads only
+   from the reviewed GitHub `main` commit after public CI passes.
 7. Verify published releases and tags with
    `python3 scripts/check_publication_state.py --phase published --check-release --check-pages`.
 
-GitHub source import must not happen before the internal review gate.
+GitHub source import must not happen before the internal review gate. The
+candidate branch is for review and local gates only; public release assets must
+not be created directly from an internal `master` branch or an unsynced
+`release/public-*` candidate branch.
 The published-state check also verifies that the imported GitHub repositories
 contain the expected public source, CI workflow, and Pages workflow marker
 files after the placeholder file is removed.
@@ -53,7 +57,8 @@ before importing source into GitHub.
 
 ## Version Alignment
 
-The release tag, GitHub release, package version, and documentation version should refer to the same release candidate.
+The release tag, GitHub release, package version, and documentation version
+should refer to the same reviewed GitHub `main` commit.
 The Python release notes must mention the `ksadk-web` tag used to generate the
 embedded static UI, and the release assets should include both
 `ksadk-0.6.2.tar.gz` and `ksadk-0.6.2-py3-none-any.whl`.
