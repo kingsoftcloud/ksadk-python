@@ -122,7 +122,27 @@ def test_default_hosted_root_points_to_workspace_sibling_repo():
     exporter = _load_export_module()
 
     assert exporter.DEFAULT_HOSTED_ROOT.name == "agentengine-hosted-ui"
-    assert exporter.DEFAULT_HOSTED_ROOT.parent.name == "agent-sdk"
+    assert exporter.DEFAULT_HOSTED_ROOT.parent.name in {"agentengine", "agent-sdk"}
+
+
+def test_resolve_default_hosted_root_supports_nested_workspace(tmp_path):
+    exporter = _load_export_module()
+    hosted_root = tmp_path / "agentengine" / "agentengine-hosted-ui"
+    repo_root = tmp_path / "agentengine" / "ksadk-python"
+    hosted_root.mkdir(parents=True)
+    repo_root.mkdir(parents=True)
+
+    assert exporter.resolve_default_hosted_root(repo_root) == hosted_root
+
+
+def test_resolve_default_hosted_root_supports_flat_workspace(tmp_path):
+    exporter = _load_export_module()
+    hosted_root = tmp_path / "agentengine-hosted-ui"
+    repo_root = tmp_path / "ksadk-python"
+    hosted_root.mkdir(parents=True)
+    repo_root.mkdir(parents=True)
+
+    assert exporter.resolve_default_hosted_root(repo_root) == hosted_root
 
 
 def test_export_plan_selects_shared_files_and_excludes_consumer_shells(tmp_path):

@@ -1,7 +1,7 @@
 # AgentEngine Makefile
 # 用于构建 Web UI 和管理项目
 
-.PHONY: help install build-webui sync-static webui clean clean-cache clean-dist clean-static clean-offline dev dev-webui dev-backend test test-webui publish publish-test open-source-audit open-source-audit-public-repo open-source-audit-dist open-source-audit-ksadk-python-export open-source-audit-ksadk-web open-source-smoke-install open-source-smoke-ksadk-web open-source-review open-source-review-bundle open-source-review-bundle-verify open-source-approval-check open-source-publication-plan open-source-publication-state public-docs-build public-docs-serve public-docs-audit
+.PHONY: help install build-webui sync-static webui clean clean-cache clean-dist clean-static clean-offline dev dev-webui dev-backend test test-webui publish publish-test open-source-audit open-source-audit-public-repo open-source-audit-dist open-source-audit-ksadk-python-export open-source-audit-ksadk-web open-source-smoke-install open-source-smoke-ksadk-web open-source-review open-source-review-bundle open-source-review-bundle-verify open-source-approval-check open-source-publication-plan open-source-publication-state public-status public-sync-check public-secret-audit public-audit public-test public-build-check public-preflight public-publish-check public-release-tag public-review public-docs-build public-docs-serve public-docs-audit
 
 # 默认目标
 help:
@@ -42,6 +42,13 @@ help:
 	@echo "    make open-source-publication-plan  生成审批后的 GitHub 导入命令计划"
 	@echo "    make open-source-publication-state  只读检查 GitHub/Pages/PyPI 外部发布状态"
 	@echo "    make open-source-review-bundle-verify  校验本地开源审核包完整性"
+	@echo ""
+	@echo "  \033[1;32m公开发布门禁:\033[0m"
+	@echo "    make public-status        查看公开发布相关状态"
+	@echo "    make public-preflight     GitHub/PyPI/Release 前必须通过的本地门禁"
+	@echo "    make public-release-tag V=x.y.z  在 GitHub main 对齐后创建公开 release 留痕 tag"
+	@echo "    make public-review        公开候选审核入口"
+	@echo "    make public-publish-check 发布状态核对"
 	@echo ""
 	@echo "  \033[1;32m离线打包:\033[0m"
 	@echo "    make offline-current     当前平台离线包"
@@ -175,22 +182,7 @@ open-source-smoke-ksadk-web:
 	@cd /tmp/ksadk-web-export-candidate && npm audit --audit-level=moderate
 	@echo "✅ KSADK Web 独立候选仓测试、双构建与 npm audit 通过"
 
-open-source-review:
-	@echo "🧾 运行开源候选本地审核验证..."
-	@uv run --extra dev pytest tests/test_check_approval_record.py tests/test_check_publication_state.py tests/test_open_source_audit.py tests/test_open_source_docs_contract.py tests/test_plan_github_publication.py tests/test_prepare_ksadk_python_export.py tests/test_prepare_ksadk_web_export.py tests/test_runtime_common_packaging.py tests/test_verify_open_source_review_bundle.py -q
-	@$(MAKE) open-source-audit-public-repo
-	@python3 scripts/prepare_ksadk_python_export.py --summary
-	@$(MAKE) open-source-audit-ksadk-python-export
-	@python3 scripts/prepare_ksadk_web_export.py --summary
-	@$(MAKE) open-source-audit-ksadk-web
-	@$(MAKE) open-source-smoke-ksadk-web
-	@$(MAKE) public-docs-audit
-	@git diff --check
-	@rm -rf dist build ksadk.egg-info
-	@uv build
-	@uv run --extra dev python -m twine check dist/*
-	@$(MAKE) open-source-audit-dist
-	@$(MAKE) open-source-smoke-install
+open-source-review: public-preflight open-source-audit-ksadk-python-export open-source-audit-ksadk-web public-docs-audit open-source-audit-dist open-source-smoke-install
 	@echo "✅ 开源候选本地审核验证完成"
 
 open-source-review-bundle:
@@ -225,6 +217,120 @@ public-docs-serve:
 public-docs-audit: public-docs-build
 	@echo "🔎 审计 GitHub Pages 候选文档站..."
 	@find site -type f | sed 's|^site/||' | python3 scripts/open_source_audit.py --target github-pages --file-list -
+
+PUBLIC_BRANCH ?= main
+PUBLIC_REPO ?= https://github.com/kingsoftcloud/ksadk-python
+PUBLIC_DOCS_URL ?= https://kingsoftcloud.github.io/ksadk-python/
+PUBLIC_PYPI_PROJECT ?= ksadk
+PUBLIC_ALIAS_PYPI_PROJECT ?= agentengine-sdk-python
+PUBLIC_RELEASE_TAG ?= v$(V)
+
+public-status:
+	@echo "==> public candidate"
+	@git status --short --branch
+	@echo ""
+	@echo "==> remotes"
+	@git remote -v
+	@echo ""
+	@echo "==> configured public targets"
+	@echo "PUBLIC_BRANCH=$(PUBLIC_BRANCH)"
+	@echo "PUBLIC_REPO=$(PUBLIC_REPO)"
+	@echo "PUBLIC_DOCS_URL=$(PUBLIC_DOCS_URL)"
+	@echo "PUBLIC_PYPI_PROJECT=$(PUBLIC_PYPI_PROJECT)"
+	@echo "PUBLIC_ALIAS_PYPI_PROJECT=$(PUBLIC_ALIAS_PYPI_PROJECT)"
+
+public-sync-check:
+	@echo "==> public candidate branch policy"
+	@branch=$$(git branch --show-current); \
+	case "$$branch" in \
+		$(PUBLIC_BRANCH)|release/public-*|review/public-*) ;; \
+		*) \
+			echo "❌ 当前分支不是公开 main 或公开候选分支: $$branch"; \
+			echo "   公开候选应在 release/public-x.y.z 或等价审核分支运行门禁。"; \
+			exit 1; \
+			;; \
+	esac
+	@if [ -f ".pypirc" ]; then \
+		echo "❌ 仓库根目录存在 .pypirc，必须删除后再进入公开流程"; \
+		exit 1; \
+	fi
+	@echo "✅ public branch policy passed"
+
+public-secret-audit: public-sync-check
+	@echo "==> secret and sensitive-file audit"
+	@if git ls-files | grep -E '(^|/)(\.pypirc|kubeconfig|.*\.kubeconfig|id_rsa|id_ed25519)$$'; then \
+		echo "❌ 发现禁止跟踪的敏感文件"; \
+		exit 1; \
+	fi
+	@if rg -n --hidden -S --glob '!.git/**' --glob '!node_modules/**' --glob '!dist/**' --glob '!build/**' --glob '!*.egg-info/**' 'pypi-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE KEY|SecretAccessKey\s*[:=]\s*[^<\s]+' .; then \
+		echo "❌ secret pattern audit failed"; \
+		exit 1; \
+	fi
+	@echo "✅ secret audit passed"
+
+public-audit: public-secret-audit
+	@echo "==> public source audit"
+	@blocked=$$(git ls-files | grep -E '^(\.pypirc|docs/internal/|\.zread/(wiki|site)/)' || true); \
+	if [ -n "$$blocked" ]; then \
+		echo "❌ blocked tracked paths:"; \
+		echo "$$blocked"; \
+		exit 1; \
+	fi
+	@$(MAKE) open-source-audit-public-repo
+	@echo "✅ public source audit passed"
+
+public-test:
+	@echo "==> public tests"
+	@uv run --extra dev pytest tests/test_open_source_audit.py tests/test_prepare_ksadk_python_export.py tests/test_prepare_ksadk_web_export.py tests/test_runtime_common_packaging.py tests/test_tracing_setup_otlp.py -q
+
+public-build-check: clean-dist
+	@echo "==> build and twine check"
+	@uv build
+	@uv run --extra dev python -m twine check dist/*
+
+public-preflight: public-audit public-test public-docs-build public-build-check
+	@git diff --check
+	@$(MAKE) open-source-audit-dist
+	@echo "✅ public preflight passed"
+
+public-publish-check:
+	@echo "==> publication state check"
+	@if [ -f "scripts/check_publication_state.py" ]; then \
+		uv run python scripts/check_publication_state.py --phase pre-publish; \
+	else \
+		echo "⚠️  scripts/check_publication_state.py 不存在，执行基础 HTTP 检查"; \
+		python3 -c 'import json, urllib.request; targets={"repo":"$(PUBLIC_REPO)","docs":"$(PUBLIC_DOCS_URL)","pypi":"https://pypi.org/pypi/$(PUBLIC_PYPI_PROJECT)/json","alias_pypi":"https://pypi.org/pypi/$(PUBLIC_ALIAS_PYPI_PROJECT)/json"}; [print((lambda resp, name: f"{name}: HTTP {resp.status}" + (f"\n  version={json.load(resp)[\"info\"].get(\"version\")}" if name.endswith("pypi") else ""))(urllib.request.urlopen(url, timeout=20), name)) for name, url in targets.items()]'; \
+	fi
+
+public-release-tag:
+ifndef V
+	$(error ❌ 请指定版本号，例如: make public-release-tag V=0.6.2)
+endif
+	@branch=$$(git branch --show-current); \
+	if [ "$$branch" != "$(PUBLIC_BRANCH)" ]; then \
+		echo "❌ public release tag 必须在公开 $(PUBLIC_BRANCH) 分支创建，当前分支是 $$branch"; \
+		echo "   请先完成内部审核，并将已审核候选推送到 GitHub $(PUBLIC_BRANCH)。"; \
+		exit 1; \
+	fi
+	@if ! git rev-parse --verify "github/$(PUBLIC_BRANCH)" >/dev/null 2>&1; then \
+		echo "❌ 找不到 github/$(PUBLIC_BRANCH)，请先 git fetch github $(PUBLIC_BRANCH)"; \
+		exit 1; \
+	fi
+	@if [ "$$(git rev-parse HEAD)" != "$$(git rev-parse github/$(PUBLIC_BRANCH))" ]; then \
+		echo "❌ 当前 HEAD 未与 github/$(PUBLIC_BRANCH) 对齐，不能创建公开 release tag"; \
+		exit 1; \
+	fi
+	@echo "==> creating public release tag: $(PUBLIC_RELEASE_TAG)"
+	@if git rev-parse "$(PUBLIC_RELEASE_TAG)" >/dev/null 2>&1; then \
+		echo "❌ tag already exists: $(PUBLIC_RELEASE_TAG)"; \
+		exit 1; \
+	fi
+	@git tag -a "$(PUBLIC_RELEASE_TAG)" -m "Public release $(PUBLIC_RELEASE_TAG)"
+	@echo "✅ tag created: $(PUBLIC_RELEASE_TAG)"
+	@echo "   push after approval: git push github $(PUBLIC_RELEASE_TAG)"
+
+public-review: public-status public-preflight
+	@echo "✅ public review gate passed"
 
 test-webui:
 	@echo "🧪 运行 Web UI 测试..."

@@ -19,7 +19,18 @@ from typing import Iterable
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_HOSTED_ROOT = REPO_ROOT.parents[2] / "agentengine-hosted-ui"
+
+
+def resolve_default_hosted_root(repo_root: Path) -> Path:
+    """Find the hosted UI repo in both historical and current workspace layouts."""
+    for parent in repo_root.parents:
+        candidate = parent / "agentengine-hosted-ui"
+        if candidate.exists():
+            return candidate
+    return repo_root.parents[2] / "agentengine-hosted-ui"
+
+
+DEFAULT_HOSTED_ROOT = resolve_default_hosted_root(REPO_ROOT)
 DEFAULT_KSADK_WEB_UI = REPO_ROOT / "ksadk" / "server" / "web-ui"
 
 ROOT_EXPORT_FILES = (
