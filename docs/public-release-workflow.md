@@ -17,11 +17,11 @@
 
 1. 不直接 `merge master -> main`。
 2. 公开变更从 `master` 通过 cherry-pick、patch 或 clean export 进入 `release/public-x.y.z`。
-3. 公开候选先推内部 ezone 审核，再推 GitHub。
-4. GitHub Release、PyPI、别名包、Pages 发布前必须通过 `make public-preflight`。
+3. 公开候选先推内部 ezone 审核，再推 GitHub `main`。
+4. 公开 release tag、GitHub Release 资产、PyPI、别名包、Pages 必须基于 GitHub `main` 上已审核同步后的公开提交。
 5. 发布动作必须有用户明确批准。
 6. `.pypirc` 不得放在仓库根目录。PyPI 凭证只允许来自 `~/.pypirc`、环境变量或 CI Secret。
-7. 每次公开 GitHub Release 对应的公开提交都必须打 tag 留痕。
+7. 每次公开 GitHub Release 对应的 `main` 提交都必须打 tag 留痕。
 
 ## 推荐目录
 
@@ -142,9 +142,12 @@ make public-publish-check
 
 ## 公开 release tag
 
-每次推送 GitHub release 前，在公开候选分支的最终提交上创建 tag：
+公开候选分支只用于门禁和内部审核。内部审核通过并推送到 GitHub `main` 后，先确认本地 `main` 与 `github/main` 指向同一个已审核公开提交，再创建 tag：
 
 ```bash
+git fetch github main
+git checkout main
+git pull --ff-only github main
 make public-release-tag V=0.6.2
 ```
 
@@ -154,13 +157,13 @@ make public-release-tag V=0.6.2
 make public-release-tag V=0.6.2 PUBLIC_RELEASE_TAG=public-release-v0.6.2
 ```
 
-内部审核通过且确认 tag 指向公开候选最终 commit 后，再推送 tag：
+确认 tag 指向 GitHub `main` 上的公开提交后，再推送 tag：
 
 ```bash
 git push github v0.6.2
 ```
 
-GitHub Release、PyPI 版本、别名包版本和文档站应能通过该 tag 追溯到同一个公开提交。
+GitHub Release 资产、PyPI 版本、别名包版本和文档站应能通过该 tag 追溯到同一个 GitHub `main` 公开提交。不要从内部 `master` 或未同步的 `release/public-x.y.z` 候选分支直接创建公开 release 资产。
 
 ## PyPI 与 GitHub Release
 
