@@ -27,6 +27,8 @@ from ksadk.toolsets.workspace import get_workspace_tools
 from ksadk.toolsets.workspace import (
     _WORKSPACE_TOOL_POLICIES,
     delete_workspace_file,
+    edit_workspace_file,
+    lint_workspace_file,
     list_workspace_files,
     read_workspace_file,
     search_workspace_files,
@@ -35,6 +37,21 @@ from ksadk.toolsets.workspace import (
     write_workspace_files,
 )
 from ksadk.tools.gateway import ToolPolicy, tool_policy_requires_approval
+from ksadk.toolsets._langchain import as_tool
+
+_DEFAULT_GROUPS = ("skill", "workspace", "platform", "sandbox")
+_DISPATCHER_TOOL_NAME = "agentengine_tool_dispatcher"
+_FOCUSED_TOOL_NAMES = (
+    "list_skills",
+    "search_skills",
+    "load_skill",
+    "workspace_status",
+    "search_workspace_files",
+    "edit_workspace_file",
+    "lint_workspace_file",
+    "component_status",
+    "sandbox_status",
+)
 
 _TOOLSET_FACTORIES = {
     "skill": get_skill_tools,
@@ -65,6 +82,8 @@ _TOOLSET_DESCRIPTORS = {
         (read_workspace_file, _WORKSPACE_TOOL_POLICIES["read_workspace_file"], {"boundary": "workspace_root"}),
         (write_workspace_file, _WORKSPACE_TOOL_POLICIES["write_workspace_file"], {"boundary": "workspace_root"}),
         (write_workspace_files, _WORKSPACE_TOOL_POLICIES["write_workspace_files"], {"boundary": "workspace_root"}),
+        (edit_workspace_file, _WORKSPACE_TOOL_POLICIES["edit_workspace_file"], {"boundary": "workspace_root"}),
+        (lint_workspace_file, _WORKSPACE_TOOL_POLICIES["lint_workspace_file"], {"boundary": "workspace_root"}),
         (search_workspace_files, _WORKSPACE_TOOL_POLICIES["search_workspace_files"], {"boundary": "workspace_root"}),
         (delete_workspace_file, _WORKSPACE_TOOL_POLICIES["delete_workspace_file"], {"boundary": "workspace_root"}),
     ),
@@ -104,46 +123,157 @@ _TOOLSET_DESCRIPTORS = {
 
 
 def get_agentengine_tools(include: Iterable[str] | None = None) -> list:
-    requested = list(include or ("skill", "workspace", "platform", "sandbox"))
-    tools = []
-    seen_names: set[str] = set()
-    for name in requested:
-        factory = _TOOLSET_FACTORIES.get(str(name).strip().lower())
-        if factory is None:
-            raise ValueError(f"Unknown AgentEngine toolset: {name}")
-        for tool in factory():
-            tool_name = getattr(tool, "name", None) or getattr(tool, "__name__", "")
-            if tool_name in seen_names:
-                continue
-            seen_names.add(tool_name)
-            tools.append(tool)
+    tools, _ = _select_agentengine_tools(include=include)
     return tools
 
 
 def describe_agentengine_tools(include: Iterable[str] | None = None) -> list[dict[str, Any]]:
-    requested = list(include or ("skill", "workspace", "platform", "sandbox"))
+    _, specs = _select_agentengine_tools(include=include)
+    return specs
+
+
+def agentengine_tool_dispatcher(
+    action: str,
+    tool_name: str | None = None,
+    arguments: dict[str, Any] | None = None,
+    include: Iterable[str] | str | None = None,
+) -> dict[str, Any]:
+    """List, describe, or call less frequently bound AgentEngine built-in tools."""
+
+    normalized_action = str(action or "").strip().lower()
+    requested_include = _normalize_include(include)
+
+    if normalized_action == "list":
+        _, specs = _select_agentengine_tools(include=requested_include or _DEFAULT_GROUPS, include_dispatcher=False)
+        return {"ok": True, "tools": specs, "tool_count": len(specs)}
+
+    if normalized_action == "describe":
+        target_name = _normalize_tool_name(tool_name)
+        if not target_name:
+            return {"ok": False, "error_type": "missing_tool_name", "error_message": "tool_name is required"}
+        if target_name == _DISPATCHER_TOOL_NAME:
+            return _dispatcher_self_call_error()
+        try:
+            _, specs = _select_agentengine_tools(include=[target_name], include_dispatcher=False)
+        except ValueError:
+            return _unknown_tool_error(target_name)
+        return {"ok": True, "tool": specs[0]}
+
+    if normalized_action == "call":
+        target_name = _normalize_tool_name(tool_name)
+        if not target_name:
+            return {"ok": False, "error_type": "missing_tool_name", "error_message": "tool_name is required"}
+        if target_name == _DISPATCHER_TOOL_NAME:
+            return _dispatcher_self_call_error()
+        try:
+            tools, _ = _select_agentengine_tools(include=[target_name], include_dispatcher=False)
+        except ValueError:
+            return _unknown_tool_error(target_name)
+        result = _invoke_tool(tools[0], dict(arguments or {}))
+        if isinstance(result, dict) and result.get("type") == "approval_required":
+            return {**result, "dispatched_tool_name": target_name}
+        return {"ok": True, "tool_name": target_name, "result": result}
+
+    return {
+        "ok": False,
+        "error_type": "unknown_action",
+        "error_message": "action must be one of: list, describe, call",
+        "action": action,
+    }
+
+
+def _select_agentengine_tools(
+    *,
+    include: Iterable[str] | None = None,
+    include_dispatcher: bool = True,
+) -> tuple[list, list[dict[str, Any]]]:
+    requested = _normalize_include(include) or list(_DEFAULT_GROUPS)
+    tool_registry = _build_tool_registry(include_dispatcher=include_dispatcher)
+    descriptor_registry = _build_descriptor_registry(include_dispatcher=include_dispatcher)
+    selected_names = _expand_requested_names(requested, tool_registry)
+    tools = []
     specs: list[dict[str, Any]] = []
     seen_names: set[str] = set()
-    for group_name in requested:
-        canonical_group = _canonical_toolset_group(group_name)
-        descriptors = _TOOLSET_DESCRIPTORS.get(canonical_group)
-        if descriptors is None:
-            raise ValueError(f"Unknown AgentEngine toolset: {group_name}")
-        for func, policy, extras in descriptors:
+    for tool_name in selected_names:
+        if tool_name in seen_names:
+            continue
+        tool = tool_registry.get(tool_name)
+        spec = descriptor_registry.get(tool_name)
+        if tool is None or spec is None:
+            raise ValueError(f"Unknown AgentEngine toolset or tool: {tool_name}")
+        seen_names.add(tool_name)
+        tools.append(tool)
+        specs.append(spec)
+    return tools, specs
+
+
+def _expand_requested_names(requested: list[str], tool_registry: Mapping[str, Any]) -> list[str]:
+    names: list[str] = []
+    for name in requested:
+        canonical_name = _canonical_toolset_group(name)
+        if canonical_name in {"focused", "core"}:
+            names.extend(_FOCUSED_TOOL_NAMES)
+            continue
+        if canonical_name in _TOOLSET_FACTORIES:
+            for tool in _TOOLSET_FACTORIES[canonical_name]():
+                names.append(_tool_name(tool))
+            continue
+        if canonical_name in tool_registry:
+            names.append(canonical_name)
+            continue
+        raise ValueError(f"Unknown AgentEngine toolset or tool: {name}")
+    return names
+
+
+def _build_tool_registry(*, include_dispatcher: bool) -> dict[str, Any]:
+    registry: dict[str, Any] = {}
+    for group_name in _DEFAULT_GROUPS:
+        for tool in _TOOLSET_FACTORIES[group_name]():
+            name = _tool_name(tool)
+            if name and name not in registry:
+                registry[name] = tool
+    if include_dispatcher:
+        registry[_DISPATCHER_TOOL_NAME] = as_tool(agentengine_tool_dispatcher)
+    return registry
+
+
+def _build_descriptor_registry(*, include_dispatcher: bool) -> dict[str, dict[str, Any]]:
+    registry: dict[str, dict[str, Any]] = {}
+    for group_name in _DEFAULT_GROUPS:
+        for func, policy, extras in _TOOLSET_DESCRIPTORS[group_name]:
             name = getattr(func, "__name__", "")
-            if name in seen_names:
-                continue
-            seen_names.add(name)
-            specs.append(
-                _tool_spec(
-                    group=canonical_group,
+            if name and name not in registry:
+                registry[name] = _tool_spec(
+                    group=group_name,
                     name=name,
                     description=(getattr(func, "__doc__", "") or "").strip(),
                     policy=policy,
                     extras=extras,
                 )
-            )
-    return specs
+    for platform_tool in get_platform_tools():
+        name = _tool_name(platform_tool)
+        if name and name not in registry:
+            registry[name] = {
+                "name": name,
+                "group": "platform",
+                "description": str(getattr(platform_tool, "description", "") or ""),
+                "risk_level": "low",
+                "requires_approval": False,
+                "side_effects": [],
+                "enabled": True,
+            }
+    if include_dispatcher:
+        registry[_DISPATCHER_TOOL_NAME] = _tool_spec(
+            group="dispatcher",
+            name=_DISPATCHER_TOOL_NAME,
+            description=(agentengine_tool_dispatcher.__doc__ or "").strip(),
+            policy=ToolPolicy(risk_level="low"),
+            extras={
+                "boundary": "local_ksadk_builtin_tools",
+                "actions": ["list", "describe", "call"],
+            },
+        )
+    return registry
 
 
 def _canonical_toolset_group(name: object) -> str:
@@ -151,6 +281,46 @@ def _canonical_toolset_group(name: object) -> str:
     if value == "skills":
         return "skill"
     return value
+
+
+def _normalize_include(include: Iterable[str] | str | None) -> list[str]:
+    if include is None:
+        return []
+    if isinstance(include, str):
+        return [include]
+    return [str(item) for item in include]
+
+
+def _normalize_tool_name(tool_name: str | None) -> str:
+    return str(tool_name or "").strip()
+
+
+def _tool_name(tool: Any) -> str:
+    return str(getattr(tool, "name", None) or getattr(tool, "__name__", "") or "")
+
+
+def _invoke_tool(tool: Any, arguments: dict[str, Any]) -> Any:
+    if hasattr(tool, "invoke"):
+        return tool.invoke(arguments)
+    return tool(**arguments)
+
+
+def _dispatcher_self_call_error() -> dict[str, Any]:
+    return {
+        "ok": False,
+        "error_type": "dispatcher_self_call",
+        "error_message": "agentengine_tool_dispatcher cannot call itself",
+        "tool_name": _DISPATCHER_TOOL_NAME,
+    }
+
+
+def _unknown_tool_error(tool_name: str) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "error_type": "unknown_tool",
+        "error_message": f"Unknown AgentEngine tool: {tool_name}",
+        "tool_name": tool_name,
+    }
 
 
 def _enabled_backend(backend: str) -> bool:
@@ -180,6 +350,7 @@ def _tool_spec(
 
 
 __all__ = [
+    "agentengine_tool_dispatcher",
     "describe_agentengine_tools",
     "get_agentengine_tools",
     "get_platform_tools",

@@ -155,7 +155,7 @@ agentengine run . -i
 - [Runtime Products](guides/runtime-products.en.md): Hermes and OpenClaw lifecycle, runtime surfaces, and public-safe boundaries.
 - [Frameworks](guides/frameworks.en.md): ADK, LangGraph, LangChain, and DeepAgents conventions.
 - [Agent Best Practices](guides/agent-best-practices.en.md): LangGraph/ADK patterns with knowledge, memory, sessions, Skill Runtime, MCP, and workspace files.
-- [Tools And Skill Runtime](guides/tools-and-skill-runtime.en.md): framework-native tools, MCP/A2A, and optional Skill Runtime boundaries.
+- [Tools And Skill Runtime](guides/tools-and-skill-runtime.en.md): built-in toolsets, focused/dispatcher progressive disclosure, Tool Gateway, MCP/A2A, and Skill Runtime boundaries.
 - [Observability And Tracing](guides/observability-tracing.en.md): local spans, Langfuse, OTLP, and trace metadata rules.
 - [Build And Package](guides/build-and-package.en.md): local builds, review gates, and public artifact rules.
 - [CLI Reference](reference/cli.en.md): public command surface and common options.

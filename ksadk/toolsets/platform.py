@@ -65,10 +65,13 @@ def component_status() -> dict:
                 "read_workspace_file",
                 "write_workspace_file",
                 "write_workspace_files",
+                "edit_workspace_file",
+                "lint_workspace_file",
                 "search_workspace_files",
                 "delete_workspace_file",
             ],
             "boundary": "Workspace tools are confined to the AgentEngine UI workspace directory.",
+            "editing_model": "write tools support whole-file writes; edit_workspace_file supports exact snippet replacement; lint_workspace_file provides lightweight built-in checks.",
         },
     }
 

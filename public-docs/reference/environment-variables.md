@@ -149,6 +149,12 @@ KSADK_STM_PATH=.agentengine/ui/sessions.sqlite
 | `KSADK_SKILL_WORKDIR` | 暴露给 skill 执行的工作目录 |
 | `KSADK_SKILL_ARTIFACT_PROJECT` | 产物项目名称 |
 
+## Tool Gateway
+
+| 变量 | 用途 |
+| --- | --- |
+| `KSADK_TOOL_APPROVAL_MODE` | 工具审批模式；设置为 `strict` 时 medium / high / critical 风险工具先返回 `approval_required` |
+
 ## MCP
 
 | 变量 | 用途 |

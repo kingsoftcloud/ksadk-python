@@ -146,7 +146,7 @@ agentengine run . -i
 - [运行时产品](guides/runtime-products.md)：Hermes 和 OpenClaw 的生命周期、runtime surface 和公开安全边界。
 - [框架接入](guides/frameworks.md)：ADK、LangGraph、LangChain 和 DeepAgents 约定。
 - [Agent 最佳实践](guides/agent-best-practices.md)：LangGraph/ADK 模式，以及知识库、记忆库、会话、Skill Runtime、MCP 和 workspace 文件。
-- [工具与 Skill Runtime](guides/tools-and-skill-runtime.md)：框架原生工具、MCP/A2A 和可选 Skill Runtime 边界。
+- [工具与 Skill Runtime](guides/tools-and-skill-runtime.md)：内置 toolsets、focused/dispatcher 渐进式披露、Tool Gateway、MCP/A2A 和 Skill Runtime 边界。
 - [可观测与链路追踪](guides/observability-tracing.md)：本地 spans、Langfuse、OTLP 和 trace metadata 规则。
 - [构建与打包](guides/build-and-package.md)：本地构建、审核 gate 和公开 artifact 规则。
 - [命令行参考](reference/cli.md)：公开命令面和常见选项。

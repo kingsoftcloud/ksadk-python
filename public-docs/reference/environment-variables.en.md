@@ -150,6 +150,12 @@ KSADK_STM_PATH=.agentengine/ui/sessions.sqlite
 | `KSADK_SKILL_WORKDIR` | workspace directory exposed to skill execution |
 | `KSADK_SKILL_ARTIFACT_PROJECT` | artifact project name for generated outputs |
 
+## Tool Gateway
+
+| Variable | Purpose |
+| --- | --- |
+| `KSADK_TOOL_APPROVAL_MODE` | tool approval mode; set to `strict` to make medium / high / critical risk tools return `approval_required` before execution |
+
 ## MCP
 
 | Variable | Purpose |

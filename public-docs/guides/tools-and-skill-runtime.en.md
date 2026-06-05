@@ -33,10 +33,89 @@ into session history.
 | Reusable executable skill with optional sandboxing | Skill Runtime |
 | Local development only | local backend with explicit paths and test data |
 | Untrusted or expensive execution | reviewed sandbox backend and limits |
+| Common AgentEngine built-ins | the `ksadk.toolsets` focused profile |
+| Infrequent or higher-risk built-ins | `agentengine_tool_dispatcher` list/describe/call |
 
 Use the simplest path that gives the agent enough capability. Do not route a
 plain deterministic helper through a remote runtime just to make it look like a
 tool.
+
+## AgentEngine Built-In Tools
+
+`ksadk.toolsets` provides SDK built-in tool entry points. Calling
+`get_agentengine_tools()` with no arguments still returns the full built-in
+tool list for compatibility. New projects should choose an explicit set:
+
+```python
+from ksadk.toolsets import describe_agentengine_tools, get_agentengine_tools
+
+tools = get_agentengine_tools(include=["focused", "agentengine_tool_dispatcher"])
+tool_descriptions = describe_agentengine_tools(include=["focused", "agentengine_tool_dispatcher"])
+```
+
+`include` can mix groups, profiles, and concrete tool names:
+
+| include | Meaning |
+| --- | --- |
+| `skill` / `workspace` / `platform` / `sandbox` | bind a built-in tool group |
+| `focused` / `core` | bind the common low-risk tool set |
+| concrete names such as `run_code` | explicitly add one tool |
+
+`focused/core` directly exposes:
+
+- `list_skills`, `search_skills`, `load_skill`
+- `workspace_status`, `search_workspace_files`
+- `edit_workspace_file`, `lint_workspace_file`
+- `component_status`, `sandbox_status`
+
+`execute_skills`, `run_command`, `run_code`, `delete_workspace_file`, and
+whole-file write tools are not part of the focused profile by default. Bind
+them explicitly or call them through the dispatcher when needed.
+
+## Dispatcher And Progressive Disclosure
+
+`agentengine_tool_dispatcher(action, tool_name=None, arguments=None, include=None)`
+is a low-risk index tool that keeps the model context smaller.
+
+| action | Behavior |
+| --- | --- |
+| `list` | list dispatchable tools, excluding the dispatcher itself |
+| `describe` | return one tool description, risk level, approval requirement, and boundary |
+| `call` | call a KsADK local built-in tool by name |
+
+The dispatcher only schedules KsADK local built-in tools. It does not connect to
+a console Tool Space database or perform remote dynamic tool binding. It calls
+the real tool object, so it does not bypass Tool Gateway approval policies. For
+example, in strict mode `run_command`, `run_code`, `execute_skills`, and
+workspace write/delete calls still return an `approval_required` envelope.
+
+## Tool Gateway And Human Approval
+
+Tool Gateway owns tool risk, approval, and execution boundaries. It does not
+perform context compression. Enable strict approval with:
+
+```bash
+export KSADK_TOOL_APPROVAL_MODE=strict
+```
+
+In strict mode, medium / high / critical risk tools return a structured
+`approval_required` result before execution. A UI or outer runtime can show the
+approval request, then pass the approval result back into the tool call after
+the user confirms.
+
+| Tool type | Default risk | Behavior |
+| --- | --- | --- |
+| workspace read/search/status | low | execute directly |
+| `edit_workspace_file` / write file | medium | approval required in strict mode |
+| `delete_workspace_file` | high | approval required in strict mode |
+| `execute_skills` | high | approval required in strict mode |
+| `run_command` / `run_code` | high | approval required in strict mode, sandbox backend only |
+
+`edit_workspace_file` performs exact snippet replacement. It returns
+`snippet_not_found` when `old_text` is absent, and `ambiguous_edit` when the
+match count does not equal `expected_replacements`. `lint_workspace_file` is a
+lightweight built-in check for Python AST parsing, JSON parsing, and generic
+text issues; it is not a project formatter or a full lint pipeline.
 
 ## Public Skill Runtime Contract
 

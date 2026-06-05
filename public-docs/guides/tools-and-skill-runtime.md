@@ -31,9 +31,84 @@ flowchart LR
 | 可复用、可沙箱执行的技能 | Skill Runtime |
 | 仅本地开发 | local backend，使用显式路径和测试数据 |
 | 不可信或成本较高的执行 | 受审查的 sandbox backend 和限制 |
+| AgentEngine 常用内置能力 | `ksadk.toolsets` 的 focused profile |
+| 低频或高风险内置能力 | `agentengine_tool_dispatcher` 按需列出、描述和调用 |
 
 优先使用能满足需求的最简单路径。不要把一个确定性的本地 helper 包成远端
 runtime，只为了让它看起来像工具。
+
+## AgentEngine 内置工具
+
+`ksadk.toolsets` 提供 SDK 内置工具入口。`get_agentengine_tools()` 无参时仍返回
+全量内置工具，保持历史兼容；新项目推荐显式选择工具集合：
+
+```python
+from ksadk.toolsets import describe_agentengine_tools, get_agentengine_tools
+
+tools = get_agentengine_tools(include=["focused", "agentengine_tool_dispatcher"])
+tool_descriptions = describe_agentengine_tools(include=["focused", "agentengine_tool_dispatcher"])
+```
+
+`include` 可以混用工具组、profile 和具体工具名：
+
+| include | 含义 |
+| --- | --- |
+| `skill` / `workspace` / `platform` / `sandbox` | 绑定对应内置工具组 |
+| `focused` / `core` | 绑定常用低风险工具集合 |
+| `run_code` 等具体工具名 | 显式扩展单个工具 |
+
+`focused/core` 默认直接暴露：
+
+- `list_skills`、`search_skills`、`load_skill`
+- `workspace_status`、`search_workspace_files`
+- `edit_workspace_file`、`lint_workspace_file`
+- `component_status`、`sandbox_status`
+
+`execute_skills`、`run_command`、`run_code`、`delete_workspace_file` 和整文件写入类
+工具不会默认进入 focused profile。需要这些能力时，可以显式绑定工具名，或通过
+dispatcher 渐进式披露。
+
+## Dispatcher 与渐进式披露
+
+`agentengine_tool_dispatcher(action, tool_name=None, arguments=None, include=None)`
+是一个低风险索引工具，用于减少模型上下文里的工具数量。
+
+| action | 行为 |
+| --- | --- |
+| `list` | 列出可调度工具，不包含 dispatcher 自身 |
+| `describe` | 返回单个工具的描述、风险等级、审批需求和边界 |
+| `call` | 按名称调用 KsADK 本地内置工具 |
+
+dispatcher 只调度 KsADK 本地内置工具，不连接控制台 Tool Space 数据库，也不做
+远端动态工具绑定。它调用真实工具对象，因此不会绕过 Tool Gateway 审批策略；
+例如 strict 模式下调用 `run_command`、`run_code`、`execute_skills` 或 workspace
+写入/删除工具时，仍会返回 `approval_required` envelope。
+
+## Tool Gateway 与人工确认
+
+Tool Gateway 负责工具风险、审批和执行边界，不负责上下文压缩。公开 SDK 支持
+用环境变量启用严格审批：
+
+```bash
+export KSADK_TOOL_APPROVAL_MODE=strict
+```
+
+strict 模式下，medium / high / critical 风险工具会先返回结构化
+`approval_required`，而不是直接执行。UI 或外层 runtime 可以展示审批请求，并在
+用户确认后把 approval 结果传回工具调用。
+
+| 工具类型 | 默认风险 | 行为 |
+| --- | --- | --- |
+| workspace read/search/status | low | 直接执行 |
+| `edit_workspace_file` / 写文件 | medium | strict 模式需要审批 |
+| `delete_workspace_file` | high | strict 模式需要审批 |
+| `execute_skills` | high | strict 模式需要审批 |
+| `run_command` / `run_code` | high | strict 模式需要审批，且只进 sandbox backend |
+
+`edit_workspace_file` 是 exact snippet replacement：`old_text` 未命中时返回
+`snippet_not_found`，匹配次数与 `expected_replacements` 不一致时返回
+`ambiguous_edit`。`lint_workspace_file` 是 SDK 内置轻量检查，支持 Python AST、
+JSON parse 和通用文本检查；它不是项目级 formatter 或完整 lint 工具链。
 
 ## ADK 装载期注入顺序
 

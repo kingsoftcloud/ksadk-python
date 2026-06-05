@@ -299,7 +299,7 @@ public-publish-check:
 		uv run python scripts/check_publication_state.py --phase pre-publish; \
 	else \
 		echo "⚠️  scripts/check_publication_state.py 不存在，执行基础 HTTP 检查"; \
-		python3 -c 'import json, urllib.request; targets={"repo":"$(PUBLIC_REPO)","docs":"$(PUBLIC_DOCS_URL)","pypi":"https://pypi.org/pypi/$(PUBLIC_PYPI_PROJECT)/json","alias_pypi":"https://pypi.org/pypi/$(PUBLIC_ALIAS_PYPI_PROJECT)/json"}; [print((lambda resp, name: f"{name}: HTTP {resp.status}" + (f"\n  version={json.load(resp)[\"info\"].get(\"version\")}" if name.endswith("pypi") else ""))(urllib.request.urlopen(url, timeout=20), name)) for name, url in targets.items()]'; \
+		python3 -c 'import json, urllib.request; targets={"repo":"$(PUBLIC_REPO)","docs":"$(PUBLIC_DOCS_URL)","pypi":"https://pypi.org/pypi/$(PUBLIC_PYPI_PROJECT)/json","alias_pypi":"https://pypi.org/pypi/$(PUBLIC_ALIAS_PYPI_PROJECT)/json"}; [print("%s: HTTP %s%s" % (name, resp.status, ("\n  version=%s" % json.load(resp)["info"].get("version")) if name.endswith("pypi") else "")) for name, url in targets.items() for resp in [urllib.request.urlopen(url, timeout=20)]]'; \
 	fi
 
 public-release-tag:
