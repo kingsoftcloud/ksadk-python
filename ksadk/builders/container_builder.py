@@ -191,6 +191,17 @@ class ContainerBuilder(BaseBuilder):
             ksadk_dest, 
             ignore=_ignore_ksadk_source,
         )
+
+        import ksadk_runtime_common
+        runtime_common_src = Path(ksadk_runtime_common.__file__).parent
+        runtime_common_dest = output_dir / "ksadk_runtime_common"
+        if runtime_common_dest.exists():
+            shutil.rmtree(runtime_common_dest)
+        shutil.copytree(
+            runtime_common_src,
+            runtime_common_dest,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+        )
         
         dockerfile_path = output_dir / "Dockerfile"
         if not is_container_first_template:
