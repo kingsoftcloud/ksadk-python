@@ -33,6 +33,11 @@ class SkillRef:
     status: str = ""
     content_hash: ContentHash | None = None
     archive_uri: str = ""
+    aliases: tuple[str, ...] = ()
+    tags: tuple[str, ...] = ()
+    examples: tuple[str, ...] = ()
+    input_schema: dict[str, Any] | None = None
+    runtime_requirements: dict[str, Any] | None = None
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> "SkillRef":
@@ -45,6 +50,13 @@ class SkillRef:
             status=str(payload.get("Status") or payload.get("status") or ""),
             content_hash=ContentHash.parse(payload.get("ContentHash") or payload.get("content_hash")),
             archive_uri=str(payload.get("ArchiveUri") or payload.get("archive_uri") or ""),
+            aliases=_string_tuple(payload.get("Aliases") or payload.get("aliases")),
+            tags=_string_tuple(payload.get("Tags") or payload.get("tags")),
+            examples=_string_tuple(payload.get("Examples") or payload.get("examples")),
+            input_schema=_dict_or_none(payload.get("InputSchema") or payload.get("input_schema")),
+            runtime_requirements=_dict_or_none(
+                payload.get("RuntimeRequirements") or payload.get("runtime_requirements")
+            ),
         )
 
     @property
@@ -90,3 +102,19 @@ class SkillListResponse:
 
     def active_skills(self) -> list[SkillRef]:
         return [skill for skill in self.skills if skill.is_active]
+
+
+def _string_tuple(raw: Any) -> tuple[str, ...]:
+    if raw is None:
+        return ()
+    if isinstance(raw, str):
+        values = raw.split(",")
+    elif isinstance(raw, (list, tuple, set)):
+        values = raw
+    else:
+        return ()
+    return tuple(value for value in (str(item).strip() for item in values) if value)
+
+
+def _dict_or_none(raw: Any) -> dict[str, Any] | None:
+    return dict(raw) if isinstance(raw, dict) else None

@@ -53,6 +53,7 @@ from ksadk.sessions import (
 from ksadk.sessions.local_service import resolve_local_session_dir
 from ksadk.tracing import get_memory_exporter
 from ksadk.conversations.model_context import normalize_model_metadata
+from ksadk.toolsets import describe_agentengine_tools
 
 logger = logging.getLogger(__name__)
 
@@ -956,6 +957,7 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
                 "MCP": False,
                 "HostedRuntime": False,
                 "NativeTerminal": _build_native_terminal_capability(framework),
+                "BuiltinTools": describe_agentengine_tools(),
             },
             "WorkspaceFiles": build_workspace_files_bootstrap(enabled=workspace_enabled),
             "AccessMode": "Owner",

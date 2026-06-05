@@ -54,6 +54,7 @@ from ksadk.knowledge_base.service import KnowledgeBaseService
 from ksadk.memory.service import LongTermMemoryService
 from ksadk.runtime_context import PlatformInvocationContext, platform_invocation_scope
 from ksadk.sessions import Session, SessionEvent, resolve_session_service
+from ksadk.tools.gateway import approval_interrupt_info_from_result
 
 AUTOCOMPACT_KEEP_TAIL_GROUPS = 4
 PTL_RETRY_KEEP_TAIL_GROUPS = 2
@@ -1045,6 +1046,213 @@ def _has_pending_approval(events: Sequence[SessionEvent]) -> bool:
         elif event_type == "approval_response" and pending > 0:
             pending -= 1
     return pending > 0
+
+
+def _approval_request_id_from_event(event: SessionEvent) -> str:
+    metadata = event.metadata or {}
+    interrupt_info = metadata.get("interrupt_info")
+    if isinstance(interrupt_info, Mapping):
+        value = interrupt_info.get("approval_request_id") or interrupt_info.get("id")
+        if value:
+            return str(value)
+    return str(event.id or "")
+
+
+def _pending_approval_events(events: Sequence[SessionEvent]) -> list[SessionEvent]:
+    pending: list[SessionEvent] = []
+    for event in events:
+        event_type = canonical_event_type(
+            event.event_type,
+            author=event.author,
+            role=str((event.content or {}).get("role") or ""),
+        )
+        if event_type == "approval_request":
+            pending.append(event)
+            continue
+        if event_type != "approval_response" or not pending:
+            continue
+        resume_input = (event.metadata or {}).get("resume_input")
+        response_id = ""
+        if isinstance(resume_input, Mapping):
+            response_id = str(
+                resume_input.get("approval_request_id")
+                or resume_input.get("interrupt_id")
+                or resume_input.get("id")
+                or ""
+            )
+        if response_id:
+            pending = [
+                item for item in pending if _approval_request_id_from_event(item) != response_id
+            ]
+        else:
+            pending.pop()
+    return pending
+
+
+def _parse_approval_arguments(value: Any) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        return dict(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return dict(parsed) if isinstance(parsed, Mapping) else {}
+    return {}
+
+
+def _approval_decision_from_resume(resume_input: Mapping[str, Any]) -> dict[str, Any]:
+    if "approve" in resume_input:
+        approved = bool(resume_input.get("approve"))
+    elif "approved" in resume_input:
+        approved = bool(resume_input.get("approved"))
+    else:
+        approved = bool(
+            resume_input.get("value", {}).get("approved")
+            if isinstance(resume_input.get("value"), Mapping)
+            else True
+        )
+    decision = {
+        "approved": approved,
+        "approval_request_id": str(
+            resume_input.get("approval_request_id")
+            or resume_input.get("interrupt_id")
+            or resume_input.get("id")
+            or ""
+        ),
+    }
+    if resume_input.get("reason") is not None:
+        decision["reason"] = str(resume_input.get("reason") or "")
+    return decision
+
+
+def _normalize_approval_resume_input(
+    resume_input: Mapping[str, Any],
+    events: Sequence[SessionEvent],
+) -> dict[str, Any]:
+    normalized = dict(resume_input)
+    if not _is_approval_resume_input(normalized):
+        return normalized
+
+    approval_request_id = str(
+        normalized.get("approval_request_id")
+        or normalized.get("interrupt_id")
+        or ""
+    )
+    pending_events = _pending_approval_events(events)
+    matched_event = None
+    for event in reversed(pending_events):
+        if not approval_request_id or _approval_request_id_from_event(event) == approval_request_id:
+            matched_event = event
+            break
+    if matched_event is None:
+        return normalized
+
+    interrupt_info = (matched_event.metadata or {}).get("interrupt_info")
+    if not isinstance(interrupt_info, Mapping):
+        return normalized
+    if not (interrupt_info.get("tool_name") or normalized.get("tool_name")):
+        return normalized
+
+    decision = _approval_decision_from_resume(normalized)
+    tool_args = _parse_approval_arguments(
+        interrupt_info.get("arguments")
+        or interrupt_info.get("tool_args")
+        or interrupt_info.get("args")
+        or {}
+    )
+    tool_args["approval"] = decision
+
+    if not normalized.get("approval_request_id"):
+        request_id = _approval_request_id_from_event(matched_event)
+        if request_id:
+            normalized["approval_request_id"] = request_id
+            decision["approval_request_id"] = request_id
+    if interrupt_info.get("tool_name") and not normalized.get("tool_name"):
+        normalized["tool_name"] = str(interrupt_info.get("tool_name"))
+    if interrupt_info.get("run_id") and not normalized.get("run_id"):
+        normalized["run_id"] = str(interrupt_info.get("run_id"))
+    normalized["approval"] = decision
+    normalized["tool_args"] = tool_args
+    return normalized
+
+
+def _builtin_tool_callable(tool_name: str):
+    name = str(tool_name or "").strip()
+    if not name:
+        return None
+    if name in {
+        "write_workspace_file",
+        "write_workspace_files",
+        "delete_workspace_file",
+    }:
+        from ksadk.toolsets import workspace
+
+        return getattr(workspace, name, None)
+    if name == "execute_skills":
+        from ksadk.toolsets.skills import execute_skills
+
+        return execute_skills
+    if name in {"run_command", "run_code"}:
+        from ksadk.toolsets import sandbox
+
+        return getattr(sandbox, name, None)
+    return None
+
+
+async def _execute_approved_builtin_tool_resume(
+    *,
+    session_id: str,
+    invocation_id: str,
+    resume_input: Mapping[str, Any],
+    session_service_provider: Callable[[], Any],
+) -> dict[str, Any] | None:
+    approval = resume_input.get("approval")
+    if not isinstance(approval, Mapping) or not bool(approval.get("approved")):
+        return None
+    tool_name = str(resume_input.get("tool_name") or "").strip()
+    tool_func = _builtin_tool_callable(tool_name)
+    if tool_func is None:
+        return None
+
+    tool_args = resume_input.get("tool_args")
+    if not isinstance(tool_args, Mapping):
+        return None
+    call_args = dict(tool_args)
+    try:
+        output = tool_func(**call_args)
+    except Exception as exc:
+        output = {"ok": False, "error_type": type(exc).__name__, "error_message": str(exc)}
+
+    run_id = str(
+        resume_input.get("run_id")
+        or resume_input.get("call_id")
+        or resume_input.get("approval_request_id")
+        or resume_input.get("interrupt_id")
+        or ""
+    )
+    await append_conversation_event(
+        session_id=session_id,
+        author="tool",
+        role="user",
+        text=str(output),
+        invocation_id=invocation_id,
+        event_type="tool_result",
+        session_service_provider=session_service_provider,
+        metadata={
+            "tool_name": tool_name,
+            "tool_args": call_args,
+            "tool_output": output,
+            "run_id": run_id,
+            "approval_request_id": resume_input.get("approval_request_id")
+            or resume_input.get("interrupt_id"),
+        },
+    )
+    return {
+        "type": "function_call_output",
+        "call_id": run_id,
+        "output": output,
+    }
 
 
 def _is_approval_resume_input(resume_input: Mapping[str, Any]) -> bool:
@@ -2041,6 +2249,11 @@ async def build_run_input(
         is_approval_resume = _is_approval_resume_input(normalized_resume_input)
         if is_approval_resume and not _has_pending_approval(existing_events):
             raise ValueError("Responses resume input requires a pending approval_request")
+        if is_approval_resume:
+            normalized_resume_input = _normalize_approval_resume_input(
+                normalized_resume_input,
+                existing_events,
+            )
 
         resume_text = _format_resume_response_text(normalized_resume_input)
         await append_conversation_event(
@@ -2053,6 +2266,15 @@ async def build_run_input(
             session_service_provider=provider,
             metadata={"resume_input": normalized_resume_input},
         )
+        tool_resume_input = None
+        if is_approval_resume:
+            tool_resume_input = await _execute_approved_builtin_tool_resume(
+                session_id=resolved_session_id,
+                invocation_id=resolved_invocation_id,
+                resume_input=normalized_resume_input,
+                session_service_provider=provider,
+            )
+        effective_resume_input = tool_resume_input or normalized_resume_input
         history = build_history_from_events(await service.get_events(resolved_session_id))
         return PreparedConversationTurn(
             session_id=resolved_session_id,
@@ -2072,7 +2294,7 @@ async def build_run_input(
             model_options=normalized_model_options,
             instructions=normalized_instructions,
             request_metadata=normalized_request_metadata,
-            resume_input=normalized_resume_input,
+            resume_input=effective_resume_input,
         )
 
     normalized_messages = _normalized_conversation_messages(messages)
@@ -2608,6 +2830,39 @@ async def _iter_conversation_turn_events(
                             continue
                         if chunk_type == "tool_result":
                             emitted_response_artifacts = True
+                            approval_interrupt_info = approval_interrupt_info_from_result(
+                                chunk.get("tool_output", ""),
+                                fallback_tool_name=str(chunk.get("tool_name") or "tool"),
+                                tool_args=chunk.get("tool_args", {}),
+                                run_id=chunk.get("run_id"),
+                            )
+                            if approval_interrupt_info:
+                                await append_conversation_event(
+                                    session_id=prepared.session_id,
+                                    author=runner_name,
+                                    role="model",
+                                    text="approval requested",
+                                    invocation_id=prepared.invocation_id,
+                                    event_type="approval_request",
+                                    metadata={"interrupt_info": approval_interrupt_info},
+                                    session_service_provider=provider,
+                                )
+                                await append_run_status_event(
+                                    session_id=prepared.session_id,
+                                    author=runner_name,
+                                    status="interrupted",
+                                    invocation_id=prepared.invocation_id,
+                                    detail="approval_required",
+                                    session_service_provider=provider,
+                                )
+                                emitted_anything = True
+                                yield {
+                                    "type": "interrupt",
+                                    "interrupt_info": approval_interrupt_info,
+                                    "session_id": prepared.session_id,
+                                    "metadata": {**trace_metadata, **prepared.request_metadata},
+                                }
+                                return
                             await append_conversation_event(
                                 session_id=prepared.session_id,
                                 author=runner_name,

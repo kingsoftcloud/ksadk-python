@@ -72,6 +72,10 @@ class SkillServiceClient:
             payload = self._get_json("ListSkillsBySpaceId", {"SpaceId": space_id})
         return SkillListResponse.from_payload(payload, space_id=space_id)
 
+    def list_available_premade_skills(self) -> SkillListResponse:
+        payload = self._get_json("ListAvailablePremadeSkills", {})
+        return SkillListResponse.from_payload(payload, space_id="public", space_name="Public Skills")
+
     def get_skill_download_url(self, skill: SkillRef) -> str:
         action = "GetSkillDownloadUrl" if skill.version_id else "GetPremadeSkillDownloadUrl"
         payload = self._get_json(
@@ -189,7 +193,11 @@ class SkillServiceClient:
 
     def _is_kop_mode(self) -> bool:
         host = urlsplit(self.base_url).netloc.lower()
-        return host.endswith("aicp.api.ksyun.com") or bool(os.getenv("KSADK_SKILL_SERVICE_KOP_MODE"))
+        return (
+            host.endswith("aicp.inner.api.ksyun.com")
+            or host.endswith("aicp.internal.api.ksyun.com")
+            or host.endswith("aicp.api.ksyun.com")
+        )
 
     def _kop_base_url(self) -> str:
         parsed = urlsplit(self.base_url)

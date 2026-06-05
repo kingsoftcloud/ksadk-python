@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import time
 from typing import Any
@@ -14,6 +15,7 @@ from ksadk.skills.runtime.base import (
     SkillRuntimeError,
     SkillRuntimeResult,
     format_skill_names_env,
+    normalize_skill_names,
     parse_output_files,
 )
 
@@ -126,10 +128,19 @@ class E2BSkillRuntimeBackend:
                 ],
             )
 
-            prompt_path = "/tmp/ksadk-workflow-prompt.txt"
-            session.write_file(prompt_path, workflow_prompt.encode("utf-8"))
-            command = f"python -u /home/ksadk/agent.py --prompt-file {prompt_path}"
-            result = session.run_command(command, timeout=effective_timeout)
+            request_path = "/tmp/ksadk-workflow-request.json"
+            session.write_file(
+                request_path,
+                json.dumps(
+                    {
+                        "workflow_prompt": workflow_prompt,
+                        "skill_names": normalize_skill_names(skill_names),
+                    },
+                    ensure_ascii=False,
+                ).encode("utf-8"),
+            )
+            command = f"python -u /home/ksadk/agent.py --request-file {request_path}"
+            result = session.run_command(command, timeout=effective_timeout, env=sandbox_env)
             stdout = result.stdout
             return SkillRuntimeResult(
                 runtime_id=session.sandbox_id,

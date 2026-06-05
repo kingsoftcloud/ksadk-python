@@ -305,6 +305,32 @@ def test_content_audit_blocks_private_doc_domains_and_secret_shapes(tmp_path):
     ]
 
 
+def test_content_audit_allows_aicp_internal_endpoints_but_blocks_other_internal_services(tmp_path):
+    audit = _load_audit_module()
+    (tmp_path / "aicp.py").write_text(
+        "\n".join(
+            [
+                'AICP_INTERNAL = "aicp.internal.api.ksyun.com"',
+                'AICP_INNER = "aicp.inner.api.ksyun.com"',
+                'MAICP_INNER = "maicp.inner.api.ksyun.com"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    blocked_endpoint = "example." + "inner." + "api.ksyun.com"
+    (tmp_path / "other.py").write_text(
+        f'INTERNAL_ENDPOINT = "{blocked_endpoint}"\n',
+        encoding="utf-8",
+    )
+
+    result = audit.audit_file_contents(tmp_path, ["aicp.py", "other.py"])
+
+    assert result.ok is False
+    assert [(violation.path, violation.rule) for violation in result.violations] == [
+        ("other.py", "internal-service-endpoint")
+    ]
+
+
 def test_release_artifact_root_audits_include_content_scan(tmp_path):
     audit = _load_audit_module()
     openai_key = "sk-" + "C" * 48
