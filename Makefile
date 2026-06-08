@@ -1,7 +1,7 @@
 # AgentEngine Makefile
 # 用于构建 Web UI 和管理项目
 
-.PHONY: help install build-webui sync-static clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-docs-build public-test public-build-check public-preflight public-publish-check public-release-tag public-review openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size docs-check-wiki docs-prepare-source docs-docker-build docs-docker-push docs-helm-lint docs-helm-template docs-deploy docs-deploy-all docs-status docs-logs sync-hosted-ui build-frontend build-wheel build-all clean-frontend
+.PHONY: help install build-webui sync-static clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-docs-build public-test public-build-check public-preflight public-publish-check public-release-tag public-review openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size docs-check-wiki docs-prepare-source docs-docker-build docs-docker-push docs-helm-lint docs-helm-template docs-deploy docs-deploy-all docs-status docs-logs sync-ksadk-web-static sync-hosted-ui build-frontend build-wheel build-all clean-frontend
 
 # 默认目标
 help:
@@ -14,9 +14,9 @@ help:
 	@echo "    make test           运行测试"
 	@echo ""
 	@echo "  \033[1;32mWeb UI 构建:\033[0m"
-	@echo "    make build-webui    构建 Web UI (Angular)"
-	@echo "    make sync-static    同步构建产物到 ksadk/server/static"
-	@echo "    make webui          构建 + 同步 (一键完成)"
+	@echo "    make sync-ksadk-web-static KSADK_WEB_VERSION=v0.2.0"
+	@echo "                         从 kingsoftcloud/ksadk-web Release 同步 static"
+	@echo "    make build-frontend 同步 ksadk-web static（release tarball）"
 	@echo ""
 	@echo "  \033[1;32m版本管理:\033[0m"
 	@echo "    make version         显示当前版本"
@@ -48,8 +48,8 @@ help:
 	@echo ""
 	@echo "  \033[1;32mOpenClaw 镜像:\033[0m"
 	@echo "    make openclaw-build         构建 OpenClaw 镜像 (默认国内源)"
-	@echo "    make openclaw-push          构建 + 推送到 KCR (默认 :2026.5.22)"
-	@echo "    make openclaw-push OPENCLAW_TAG=2026.5.22 OPENCLAW_PRESET_PLUGINS_ALLOWLIST=wps-xiezuo"
+	@echo "    make openclaw-push          构建 + 推送到 KCR (默认 :2026.6.1)"
+	@echo "    make openclaw-push OPENCLAW_TAG=2026.6.1 OPENCLAW_PRESET_PLUGINS_ALLOWLIST=wps-xiezuo"
 	@echo "    make openclaw-build OPENCLAW_PYPI_INDEX_URL=https://pypi.org/simple  # 海外源"
 	@echo "    make openclaw-size          查看镜像大小"
 	@echo ""
@@ -57,8 +57,8 @@ help:
 	@echo "    make hermes-build           构建 Hermes runtime 镜像"
 	@echo "    make hermes-push            构建 + 推送 Hermes runtime 镜像"
 	@echo "    make hermes-size            查看 Hermes 镜像大小"
-	@echo "    make hermes-build HERMES_TAG=2026.5.16-ksadk-v1"
-	@echo "    make hermes-build HERMES_AGENT_REF=v2026.5.16  # 切换 Hermes 上游 release"
+	@echo "    make hermes-build HERMES_TAG=2026.5.29.2-ksadk-v3"
+	@echo "    make hermes-build HERMES_AGENT_REF=v2026.5.29.2  # 切换 Hermes 上游 release"
 	@echo ""
 	@echo "  \033[1;32mzread 文档站:\033[0m"
 	@echo "    make docs-deploy-all   构建原生 zread 文档镜像 + 推送 + 部署到预发"
@@ -549,15 +549,15 @@ offline-current: build
 OPENCLAW_IMAGE := hub.kce.ksyun.com/agentengine-public/openclaw
 OPENCLAW_VPC_REGISTRY ?= hub-vpc-cn-beijing-6.kce.ksyun.com
 OPENCLAW_VPC_IMAGE ?= $(subst hub.kce.ksyun.com,$(OPENCLAW_VPC_REGISTRY),$(OPENCLAW_IMAGE))
-OPENCLAW_TAG ?= 2026.5.22
+OPENCLAW_TAG ?= 2026.6.1
 OPENCLAW_CONTEXT := .
-OPENCLAW_BASE_IMAGE ?= ghcr.io/openclaw/openclaw:2026.5.22-slim@sha256:d35b8b681c223a85027502c7a82999aa772d6a09e1b28903951cac7fc27efed5
+OPENCLAW_BASE_IMAGE ?= ghcr.io/openclaw/openclaw:2026.6.1-slim@sha256:a83ee8716ab191534952299fe989374d75593aa9c7632c4e756e9d64b0ce8061
 OPENCLAW_PRESET_PLUGINS_ALLOWLIST ?=
 OPENCLAW_APT_MIRROR ?= http://mirrors.aliyun.com/debian
 OPENCLAW_APT_SECURITY_MIRROR ?= http://mirrors.aliyun.com/debian-security
 OPENCLAW_PYPI_INDEX_URL ?= https://mirrors.aliyun.com/pypi/simple
 OPENCLAW_NPM_REGISTRY ?= https://registry.npmmirror.com
-OPENCLAW_MEM0_PLUGIN_URL ?= https://memory-engine.ks3-cn-beijing.ksyuncs.com/ksc-openclaw-mem0-1.0.11.tgz
+OPENCLAW_MEM0_PLUGIN_URL ?= https://memory-engine.ks3-cn-beijing.ksyuncs.com/ksc-openclaw-mem0-1.0.6.tgz
 OPENCLAW_MEM0_PLUGIN_SHA256 ?=
 DOCKER_BUILDKIT ?= 1
 
@@ -616,16 +616,16 @@ openclaw-size:
 #
 # 用法:
 #   make hermes-build
-#   make hermes-push HERMES_TAG=2026.5.16-ksadk-v1
+#   make hermes-push HERMES_TAG=2026.5.29.2-ksadk-v3
 #
 
 HERMES_IMAGE := hub.kce.ksyun.com/agentengine-public/hermes-agent
 HERMES_VPC_REGISTRY ?= hub-vpc-cn-beijing-6.kce.ksyun.com
 HERMES_VPC_IMAGE ?= $(subst hub.kce.ksyun.com,$(HERMES_VPC_REGISTRY),$(HERMES_IMAGE))
-HERMES_TAG ?= 2026.5.16-ksadk-v1
+HERMES_TAG ?= 2026.5.29.2-ksadk-v3
 HERMES_CONTEXT := .
 HERMES_PYPI_INDEX_URL ?= https://mirrors.aliyun.com/pypi/simple
-HERMES_AGENT_REF ?= v2026.5.16
+HERMES_AGENT_REF ?= v2026.5.29.2
 HERMES_APT_MIRROR ?= https://mirrors.aliyun.com/debian
 HERMES_NPM_REGISTRY ?= https://registry.npmmirror.com
 HERMES_NODE_BASE_IMAGE ?= hub.kce.ksyun.com/agentengine-public/hermes-base-node:20-bookworm-slim
@@ -799,26 +799,28 @@ NODE_DIR := ksadk/server/web-ui
 STATIC_DIR := ksadk/server/static
 HOSTED_DIR := ksadk/server/web-ui/dist-hosted
 HOSTED_UI_SOURCE_DIR ?= ../agentengine-hosted-ui
+KSADK_WEB_VERSION ?= v0.2.0
+KSADK_WEB_TARBALL_NAME := kingsoftcloud-ksadk-web-$(patsubst v%,%,$(KSADK_WEB_VERSION)).tgz
+KSADK_WEB_RELEASE_URL ?= https://github.com/kingsoftcloud/ksadk-web/releases/download/$(KSADK_WEB_VERSION)/$(KSADK_WEB_TARBALL_NAME)
+KSADK_WEB_CACHE_DIR ?= .cache/ksadk-web
 
-sync-hosted-ui:
-	@if [ ! -d "$(HOSTED_UI_SOURCE_DIR)" ]; then \
-		echo "ERROR: HOSTED_UI_SOURCE_DIR not found: $(HOSTED_UI_SOURCE_DIR)"; \
-		exit 1; \
-	fi
-	@echo "Sync Hosted UI source into embedded KsADK web-ui"
-	rsync -a --delete $(HOSTED_UI_SOURCE_DIR)/src/ $(NODE_DIR)/src/
-	rsync -a --delete \
-		--exclude='makefile-contract.test.mjs' \
-		--exclude='helm-contract.test.mjs' \
-		--exclude='sync-static.test.mjs' \
-		--exclude='hosted-ui-sync.test.mjs' \
-		$(HOSTED_UI_SOURCE_DIR)/tests/ $(NODE_DIR)/tests/
-	rsync -a --delete $(HOSTED_UI_SOURCE_DIR)/public/ $(NODE_DIR)/public/
-	rsync -a $(HOSTED_UI_SOURCE_DIR)/package.json $(HOSTED_UI_SOURCE_DIR)/package-lock.json $(NODE_DIR)/
-	rsync -a $(HOSTED_UI_SOURCE_DIR)/index.html $(HOSTED_UI_SOURCE_DIR)/vite.config.ts $(HOSTED_UI_SOURCE_DIR)/tsconfig*.json $(HOSTED_UI_SOURCE_DIR)/tailwind.config.ts $(HOSTED_UI_SOURCE_DIR)/postcss.config.js $(HOSTED_UI_SOURCE_DIR)/components.json $(HOSTED_UI_SOURCE_DIR)/eslint.config.js $(NODE_DIR)/
+sync-ksadk-web-static:
+	@echo "Sync KsADK Web static assets from $(KSADK_WEB_RELEASE_URL)"
+	@rm -rf "$(KSADK_WEB_CACHE_DIR)/package"
+	@mkdir -p "$(KSADK_WEB_CACHE_DIR)" "$(STATIC_DIR)"
+	curl -fL --retry 3 --retry-delay 2 --retry-all-errors "$(KSADK_WEB_RELEASE_URL)" -o "$(KSADK_WEB_CACHE_DIR)/$(KSADK_WEB_TARBALL_NAME)"
+	tar -xzf "$(KSADK_WEB_CACHE_DIR)/$(KSADK_WEB_TARBALL_NAME)" -C "$(KSADK_WEB_CACHE_DIR)"
+	@test -d "$(KSADK_WEB_CACHE_DIR)/package/dist-ksadk" || (echo "ERROR: dist-ksadk missing in $(KSADK_WEB_TARBALL_NAME)" && exit 1)
+	@rm -rf "$(STATIC_DIR)"
+	@mkdir -p "$(STATIC_DIR)"
+	cp -R "$(KSADK_WEB_CACHE_DIR)/package/dist-ksadk/." "$(STATIC_DIR)/"
+	@echo "Synced KsADK Web $(KSADK_WEB_VERSION) static assets into $(STATIC_DIR)"
 
-build-frontend: sync-hosted-ui
-	cd $(NODE_DIR) && npm ci && npm run build:all
+sync-hosted-ui: sync-ksadk-web-static
+	@echo "sync-hosted-ui is deprecated; static assets now come from kingsoftcloud/ksadk-web GitHub Release."
+
+build-frontend: sync-ksadk-web-static
+	@echo "Frontend static assets synced from $(KSADK_WEB_VERSION)"
 
 build-wheel: build-frontend
 	uv build
