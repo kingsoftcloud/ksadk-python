@@ -44,7 +44,7 @@ def test_dashboard_uses_access_link_by_default(monkeypatch):
     result = runner.invoke(cmd_dashboard.dashboard, ["ar-test"])
     assert result.exit_code == 0, result.output
     assert opened == {}
-    assert captured["path"] == "/chat"
+    assert captured["path"] is None
     assert "http://demo.example.com/s/lnk-1" in result.output
 
 
@@ -106,7 +106,7 @@ def test_dashboard_remote_open_uses_hosted_chat_path_even_with_custom_ui_state(m
     result = runner.invoke(cmd_dashboard.dashboard, ["open", "ar-test"])
 
     assert result.exit_code == 0, result.output
-    assert captured["path"] == "/custom-chat"
+    assert captured["path"] is None
 
 
 def test_dashboard_open_resolves_openclaw_state_from_cwd(tmp_path: Path, monkeypatch):
@@ -176,12 +176,12 @@ def test_dashboard_open_resolves_openclaw_state_from_cwd(tmp_path: Path, monkeyp
 
     assert result.exit_code == 0, result.output
     assert opened == {}
-    assert captured == {"path": "/chat", "expires_seconds": None, "link_type": "private", "force_new": False}
+    assert captured == {"path": None, "expires_seconds": None, "link_type": "private", "force_new": False}
     assert "未显式指定 Agent，使用 .agentengine.state 的 agent_id: ar-openclaw-1" in result.output
     assert "http://demo.example.com/s/gateway-1" in result.output
 
 
-def test_dashboard_open_defaults_hermes_to_chat_generic_access_link(monkeypatch):
+def test_dashboard_open_omits_path_for_hermes_generic_access_link(monkeypatch):
     runner = CliRunner()
     captured = {}
 
@@ -214,7 +214,7 @@ def test_dashboard_open_defaults_hermes_to_chat_generic_access_link(monkeypatch)
     result = runner.invoke(cmd_dashboard.dashboard, ["open", "ar-hermes-1"])
 
     assert result.exit_code == 0, result.output
-    assert captured["path"] == "/chat"
+    assert captured["path"] is None
     assert captured["expires_seconds"] is None
 
 
@@ -326,7 +326,7 @@ def test_dashboard_open_routes_openclaw_to_gateway_short_link(tmp_path: Path, mo
 
     assert result.exit_code == 0, result.output
     assert opened == {}
-    assert captured == {"path": "/chat", "expires_seconds": 0, "link_type": "share", "force_new": False}
+    assert captured == {"path": None, "expires_seconds": 0, "link_type": "share", "force_new": False}
     assert "http://demo.example.com/s/gateway-1" in result.output
 
 
@@ -459,7 +459,7 @@ def test_dashboard_open_passes_force_new_to_openclaw_gateway_link(tmp_path: Path
     )
 
     assert result.exit_code == 0, result.output
-    assert captured == {"path": "/chat", "expires_seconds": 0, "link_type": "share", "force_new": True}
+    assert captured == {"path": None, "expires_seconds": 0, "link_type": "share", "force_new": True}
     assert "http://demo.example.com/s/gateway-2" in result.output
 
 
