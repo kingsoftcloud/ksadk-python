@@ -3966,7 +3966,7 @@ def test_bootstrap_applies_mem0_memory_backend_manifest():
         env["MEMORY_BACKEND_MANIFEST"] = _build_mem0_manifest_json()
         env["MEM0_API_KEY"] = f"2000104981.{VALID_MEM0_UUID}:mem0-secret"
         env["MEM0_USER_ID"] = "2000104981"
-        env["MEM0_BASE_URL"] = "http://mem-service.sdns.ksyun.com"
+        env["MEM0_BASE_URL"] = "http://mem-service.example.test"
 
         result = subprocess.run(
             ["bash", str(BOOTSTRAP_SCRIPT)],
@@ -3987,7 +3987,7 @@ def test_bootstrap_applies_mem0_memory_backend_manifest():
             "config": {
                 "mode": "platform",
                 "apiKey": f"2000104981.{VALID_MEM0_UUID}:mem0-secret",
-                "baseUrl": "http://mem-service.sdns.ksyun.com",
+                "baseUrl": "http://mem-service.example.test",
                 "userId": "2000104981",
             },
         }
@@ -4008,7 +4008,7 @@ def test_bootstrap_openclaw_default_manifest_clears_existing_mem0_memory_backend
                                 "config": {
                                     "mode": "platform",
                                     "apiKey": "old-key",
-                                    "baseUrl": "http://mem-service.sdns.ksyun.com",
+                                    "baseUrl": "http://mem-service.example.test",
                                     "userId": "2000104981",
                                 },
                             },
