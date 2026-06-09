@@ -146,6 +146,11 @@ def active_trace_provider():
 @pytest.mark.asyncio
 async def test_get_agent_ui_bootstrap_matches_local_shape_parity(monkeypatch):
     monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-5.1")
+    monkeypatch.delenv("KSADK_TOOL_APPROVAL_MODE", raising=False)
+    monkeypatch.delenv("KSADK_SANDBOX_BACKEND", raising=False)
+    monkeypatch.delenv("KSADK_SANDBOX_TEMPLATE_ID", raising=False)
+    monkeypatch.delenv("KSADK_SKILL_RUNTIME_BACKEND", raising=False)
+    monkeypatch.delenv("KSADK_SKILL_RUNTIME_TEMPLATE_ID", raising=False)
     _, runner, _, transport = _build_transport(monkeypatch)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
@@ -180,7 +185,7 @@ async def test_get_agent_ui_bootstrap_matches_local_shape_parity(monkeypatch):
         "Thinking": True,
         "Approval": True,
         "StopRun": True,
-        "ResumeRun": False,
+        "ResumeRun": True,
         "MCP": False,
         "HostedRuntime": False,
         "NativeTerminal": {
@@ -188,6 +193,163 @@ async def test_get_agent_ui_bootstrap_matches_local_shape_parity(monkeypatch):
             "Mode": None,
             "Protocol": "ks-terminal.v1",
             "Path": None,
+        },
+        "BuiltinTools": [
+            {
+                "name": "list_skills",
+                "group": "skill",
+                "description": "List skills discoverable from configured Skill Spaces.",
+                "risk_level": "low",
+                "requires_approval": False,
+                "side_effects": [],
+                "enabled": True,
+            },
+            {
+                "name": "search_skills",
+                "group": "skill",
+                "description": "Search skills by name, aliases, tags, description, and examples.",
+                "risk_level": "low",
+                "requires_approval": False,
+                "side_effects": [],
+                "enabled": True,
+            },
+            {
+                "name": "load_skill",
+                "group": "skill",
+                "description": "Download and load a skill's SKILL.md instructions from configured Skill Spaces.",
+                "risk_level": "low",
+                "requires_approval": False,
+                "side_effects": ["skill_cache_write"],
+                "enabled": True,
+            },
+            {
+                "name": "execute_skills",
+                "group": "skill",
+                "description": "Execute a workflow through the configured Skill Runtime.",
+                "risk_level": "high",
+                "requires_approval": False,
+                "side_effects": ["isolated_runtime_execution"],
+                "enabled": False,
+                "backend": "disabled",
+                "boundary": "isolated_skill_runtime",
+            },
+            {
+                "name": "workspace_status",
+                "group": "workspace",
+                "description": "Return current AgentEngine workspace status.",
+                "risk_level": "low",
+                "requires_approval": False,
+                "side_effects": [],
+                "enabled": True,
+                "boundary": "workspace_root",
+            },
+            {
+                "name": "list_workspace_files",
+                "group": "workspace",
+                "description": "List files under the AgentEngine workspace.",
+                "risk_level": "low",
+                "requires_approval": False,
+                "side_effects": [],
+                "enabled": True,
+                "boundary": "workspace_root",
+            },
+            {
+                "name": "read_workspace_file",
+                "group": "workspace",
+                "description": "Read a UTF-8 text file from the AgentEngine workspace.",
+                "risk_level": "low",
+                "requires_approval": False,
+                "side_effects": [],
+                "enabled": True,
+                "boundary": "workspace_root",
+            },
+            {
+                "name": "write_workspace_file",
+                "group": "workspace",
+                "description": "Write a UTF-8 text file inside the AgentEngine workspace.",
+                "risk_level": "medium",
+                "requires_approval": False,
+                "side_effects": ["workspace_write"],
+                "enabled": True,
+                "boundary": "workspace_root",
+            },
+            {
+                "name": "write_workspace_files",
+                "group": "workspace",
+                "description": "Write multiple UTF-8 text files inside the AgentEngine workspace.",
+                "risk_level": "medium",
+                "requires_approval": False,
+                "side_effects": ["workspace_write"],
+                "enabled": True,
+                "boundary": "workspace_root",
+            },
+            {
+                "name": "search_workspace_files",
+                "group": "workspace",
+                "description": "Search UTF-8 text files in the AgentEngine workspace.",
+                "risk_level": "low",
+                "requires_approval": False,
+                "side_effects": [],
+                "enabled": True,
+                "boundary": "workspace_root",
+            },
+            {
+                "name": "delete_workspace_file",
+                "group": "workspace",
+                "description": "Delete a file or empty directory inside the AgentEngine workspace.",
+                "risk_level": "high",
+                "requires_approval": False,
+                "side_effects": ["workspace_delete"],
+                "enabled": True,
+                "boundary": "workspace_root",
+            },
+            {
+                "name": "component_status",
+                "group": "platform",
+                "description": "Report AgentEngine built-in toolset and runtime binding status.",
+                "risk_level": "low",
+                "requires_approval": False,
+                "side_effects": [],
+                "enabled": True,
+            },
+            {
+                "name": "sandbox_status",
+                "group": "sandbox",
+                "description": "Report configured AgentEngine sandbox status and boundaries.",
+                "risk_level": "low",
+                "requires_approval": False,
+                "side_effects": [],
+                "enabled": False,
+                "backend": "none",
+                "boundary": "isolated_sandbox",
+            },
+            {
+                "name": "run_command",
+                "group": "sandbox",
+                "description": "Run a shell command inside the configured isolated sandbox.",
+                "risk_level": "high",
+                "requires_approval": False,
+                "side_effects": ["sandbox_command_execution"],
+                "enabled": False,
+                "backend": "none",
+                "boundary": "isolated_sandbox",
+            },
+            {
+                "name": "run_code",
+                "group": "sandbox",
+                "description": "Write code to the sandbox and execute it through the configured sandbox backend.",
+                "risk_level": "high",
+                "requires_approval": False,
+                "side_effects": ["sandbox_code_execution"],
+                "enabled": False,
+                "backend": "none",
+                "boundary": "isolated_sandbox",
+            },
+        ],
+        "RunLifecycle": {
+            "Enabled": True,
+            "Resume": True,
+            "Abort": True,
         },
     }
     assert payload["Data"]["WorkspaceFiles"] == {
@@ -405,6 +567,7 @@ async def test_run_agent_action_streaming_responses_uses_responses_lifecycle(mon
     assert "event: response.tool_result" not in lines
     assert runner.invocations[-1]["model"] == "glm-5.1"
     assert runner.invocations[-1]["session_id"] == "sess-runagent-responses"
+    assert runner.invocations[-1]["responses_conversation"] is True
     assert await service.get_session("sess-runagent-responses") is not None
     stored_events = await service.get_events("sess-runagent-responses")
     assistant_events = [event for event in stored_events if event.event_type == "assistant_message"]
@@ -939,6 +1102,7 @@ async def test_responses_endpoint_passes_full_request_history_to_runner(monkeypa
 
     assert response.status_code == 200
     assert runner.invocations[-1]["input"] == "用go"
+    assert "responses_conversation" not in runner.invocations[-1]
     assert runner.invocations[-1]["history"] == [
         {"role": "user", "content": "写一个python快排的示例"},
         {"role": "model", "content": "这是 Python 快速排序示例。"},
@@ -974,6 +1138,7 @@ async def test_responses_endpoint_non_streaming_supports_instructions_and_metada
     assert payload["output_text"] == "assistant says hi"
     assert payload["session_id"]
     assert runner.invocations[-1]["instructions"] == "只用中文回答"
+    assert "responses_conversation" not in runner.invocations[-1]
 
     events = await service.get_events(payload["session_id"])
     user_event = next(event for event in events if event.event_type == "user_message")
@@ -1039,7 +1204,13 @@ async def test_responses_endpoint_accepts_mcp_approval_response_resume(monkeypat
             author="demo-agent",
             event_type="approval_request",
             content={"role": "model", "parts": [{"text": "confirm tool"}]},
-            metadata={"interrupt_info": {"approval_request_id": "appr_123", "tool_name": "delete_file"}},
+            metadata={
+                "interrupt_info": {
+                    "approval_request_id": "appr_123",
+                    "tool_name": "delete_file",
+                    "arguments": {"path": "notes.txt"},
+                }
+            },
             invocation_id="inv-approval",
         ),
     )
@@ -1073,9 +1244,82 @@ async def test_responses_endpoint_accepts_mcp_approval_response_resume(monkeypat
         "approval_request_id": "appr_123",
         "approve": True,
         "reason": "approved",
+        "tool_name": "delete_file",
+        "tool_args": {
+            "path": "notes.txt",
+            "approval": {
+                "approved": True,
+                "approval_request_id": "appr_123",
+                "reason": "approved",
+            },
+        },
+        "approval": {
+            "approved": True,
+            "approval_request_id": "appr_123",
+            "reason": "approved",
+        },
     }
     events = await service.get_events("sess-approval")
     assert [event.event_type for event in events[:2]] == ["approval_request", "approval_response"]
+
+
+@pytest.mark.asyncio
+async def test_responses_endpoint_streams_mcp_approval_response_resume(monkeypatch):
+    _, runner, service, transport = _build_transport(monkeypatch)
+    await service.create_session(
+        agent_id="demo-agent", user_id="user", session_id="sess-approval-stream"
+    )
+    await service.append_event(
+        "sess-approval-stream",
+        SessionEvent(
+            author="demo-agent",
+            event_type="approval_request",
+            content={"role": "model", "parts": [{"text": "confirm tool"}]},
+            metadata={
+                "interrupt_info": {
+                    "approval_request_id": "appr_stream",
+                    "tool_name": "write_workspace_file",
+                    "arguments": {"path": "notes.txt", "content": "hello"},
+                    "run_id": "run_stream",
+                }
+            },
+            invocation_id="inv-approval",
+        ),
+    )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/v1/responses",
+            json={
+                "session_id": "sess-approval-stream",
+                "previous_response_id": "resp_previous",
+                "input": [
+                    {
+                        "type": "mcp_approval_response",
+                        "approval_request_id": "appr_stream",
+                        "approve": True,
+                    }
+                ],
+                "stream": True,
+            },
+        )
+
+    assert response.status_code == 200
+    assert "event: response.completed" in response.text
+    assert runner.invocations[-1]["resume"] is True
+    assert runner.invocations[-1]["input"] == {
+        "type": "function_call_output",
+        "call_id": "run_stream",
+        "output": {
+            "ok": True,
+            "path": "notes.txt",
+            "absolute_path": runner.invocations[-1]["input"]["output"]["absolute_path"],
+            "size": 5,
+        },
+    }
+    assert Path(runner.invocations[-1]["input"]["output"]["absolute_path"]).read_text(
+        encoding="utf-8"
+    ) == "hello"
 
 
 @pytest.mark.asyncio
@@ -1786,10 +2030,10 @@ def test_web_ui_source_supports_streaming_queue_and_refresh_pending_status():
     assert "latestRunStatusByInvocation" in session_events_source
     assert "event.EventType !== 'run_status'" in session_events_source
     assert "meta.running" in sidebar_source
-    assert "disabled={!input.trim() && attachments.length === 0}" in composer_source
+    assert "disabled={!isStreaming && !input.trim() && attachments.length === 0}" in composer_source
     assert "发送队列 · {queuedDrafts.length}" in composer_source
     assert "当前回复完成后依次发送" in composer_source
-    assert "加入发送队列" in composer_source
+    assert "title={isStreaming ? '停止生成' : '发送消息'}" in composer_source
     assert "flex flex-shrink-0 flex-col gap-2" in sidebar_source
 
 

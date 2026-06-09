@@ -5,6 +5,7 @@ import base64
 import importlib
 import json
 import time
+from pathlib import Path
 
 import httpx
 import pytest
@@ -69,6 +70,34 @@ class _StreamingRunner(_StubRunner):
         self.stream_calls.append(input_data)
         yield {"type": "text", "delta": "hello"}
         yield {"type": "final", "output": "hello"}
+
+
+class _ApprovalToolResultStreamingRunner(_StreamingRunner):
+    async def stream(self, input_data: dict):
+        self.stream_calls.append(input_data)
+        yield {
+            "type": "tool_call",
+            "tool_name": "write_workspace_file",
+            "tool_args": {"path": "notes.txt"},
+            "run_id": "run-approval",
+        }
+        yield {
+            "type": "tool_result",
+            "tool_name": "write_workspace_file",
+            "tool_args": {"path": "notes.txt"},
+            "tool_output": {
+                "ok": False,
+                "type": "approval_required",
+                "approval_request": {
+                    "id": "appr_write",
+                    "tool_name": "write_workspace_file",
+                    "risk_level": "medium",
+                    "side_effects": ["workspace_write"],
+                },
+            },
+            "run_id": "run-approval",
+        }
+        yield {"type": "final", "output": "should not complete"}
 
 
 class _ResumeStreamingRunner(_StreamingRunner):
@@ -1316,6 +1345,8 @@ async def test_invoke_conversation_once_maps_mcp_approval_response_to_runner_res
                 "interrupt_info": {
                     "approval_request_id": "appr_123",
                     "tool_name": "deploy",
+                    "arguments": {"target": "preprod"},
+                    "run_id": "run_123",
                 }
             },
             invocation_id="inv-approval",
@@ -1348,6 +1379,21 @@ async def test_invoke_conversation_once_maps_mcp_approval_response_to_runner_res
         "approval_request_id": "appr_123",
         "approve": True,
         "reason": "looks safe",
+        "tool_name": "deploy",
+        "tool_args": {
+            "target": "preprod",
+            "approval": {
+                "approved": True,
+                "approval_request_id": "appr_123",
+                "reason": "looks safe",
+            },
+        },
+        "approval": {
+            "approved": True,
+            "approval_request_id": "appr_123",
+            "reason": "looks safe",
+        },
+        "run_id": "run_123",
     }
     events = await service.get_events("sess-approval")
     assert [event.event_type for event in events] == [
@@ -1358,6 +1404,66 @@ async def test_invoke_conversation_once_maps_mcp_approval_response_to_runner_res
         "run_status",
     ]
     assert events[1].metadata["resume_input"]["approval_request_id"] == "appr_123"
+
+
+@pytest.mark.asyncio
+async def test_invoke_conversation_once_executes_approved_builtin_tool_resume(
+    monkeypatch,
+    tmp_path: Path,
+):
+    service = InMemorySessionService()
+    workspace_ui = tmp_path / "ui"
+    monkeypatch.setenv("AGENTENGINE_UI_DIR", str(workspace_ui))
+    monkeypatch.setenv("KSADK_TOOL_APPROVAL_MODE", "strict")
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-tool-approval"
+    )
+    await service.append_event(
+        "sess-tool-approval",
+        SessionEvent(
+            id="evt-approval",
+            author="demo-agent",
+            event_type="approval_request",
+            content={"role": "model", "parts": [{"text": "approval required"}]},
+            metadata={
+                "interrupt_info": {
+                    "approval_request_id": "appr_write",
+                    "tool_name": "write_workspace_file",
+                    "arguments": {"path": "notes.txt", "content": "hello"},
+                    "run_id": "call_write",
+                    "server_label": "ksadk",
+                }
+            },
+            invocation_id="inv-approval",
+        ),
+    )
+    runner = _StubRunner()
+
+    await invoke_conversation_once(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-tool-approval",
+        messages=[],
+        model="gpt-4o",
+        resume_input={
+            "type": "mcp_approval_response",
+            "approval_request_id": "appr_write",
+            "approve": True,
+        },
+        prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+    )
+
+    assert (workspace_ui / "workspace" / "notes.txt").read_text(encoding="utf-8") == "hello"
+    assert runner.calls[-1]["resume"] is True
+    assert runner.calls[-1]["input"]["type"] == "function_call_output"
+    assert runner.calls[-1]["input"]["call_id"] == "call_write"
+    assert runner.calls[-1]["input"]["output"]["ok"] is True
+    events = await service.get_events("sess-tool-approval")
+    tool_result = next(event for event in events if event.event_type == "tool_result")
+    assert tool_result.metadata["tool_name"] == "write_workspace_file"
+    assert tool_result.metadata["tool_output"]["ok"] is True
 
 
 @pytest.mark.asyncio
@@ -1910,6 +2016,52 @@ async def test_stream_responses_conversation_turn_maps_ksadk_resume_to_runner_re
     assert any(chunk.startswith("event: response.completed\n") for chunk in chunks)
     events = await service.get_events("sess-resume-stream")
     assert "approval_response" in [event.event_type for event in events]
+
+
+@pytest.mark.asyncio
+async def test_stream_responses_conversation_turn_promotes_gateway_approval_result_to_interrupt(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _ApprovalToolResultStreamingRunner()
+
+    chunks = [
+        chunk
+        async for chunk in stream_responses_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-gateway-approval",
+            messages=[{"role": "user", "content": "写文件"}],
+            model="gpt-4o",
+            prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+            session_service_provider=lambda: service,
+        )
+    ]
+
+    event_names = [
+        line.removeprefix("event: ")
+        for chunk in chunks
+        for line in chunk.splitlines()
+        if line.startswith("event: ")
+    ]
+    assert "response.output_item.done" in event_names
+    assert "response.incomplete" in event_names
+    assert "response.completed" not in event_names
+
+    incomplete = _extract_sse_payload(chunks, "response.incomplete")
+    interrupt = incomplete["incomplete_details"]["ksadk_interrupt"]
+    assert interrupt["approval_request_id"] == "appr_write"
+    assert interrupt["tool_name"] == "write_workspace_file"
+    assert interrupt["arguments"] == {"path": "notes.txt"}
+
+    events = await service.get_events("sess-gateway-approval")
+    assert [event.event_type for event in events] == [
+        "user_message",
+        "run_status",
+        "tool_call",
+        "approval_request",
+        "run_status",
+    ]
 
 
 @pytest.mark.asyncio

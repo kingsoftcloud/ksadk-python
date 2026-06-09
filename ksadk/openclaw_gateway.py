@@ -19,6 +19,7 @@ from ksadk.version import VERSION as KSADK_VERSION
 DEFAULT_CLIENT_NAME = "openclaw-control-ui"
 DEFAULT_CLIENT_MODE = "webchat"
 DEFAULT_SCOPES = ("operator.admin",)
+GATEWAY_PROTOCOL_VERSION = 4
 
 
 class OpenClawGatewayError(RuntimeError):
@@ -119,7 +120,7 @@ class OpenClawGatewayClient:
     async def build_access_info(
         self,
         *,
-        path: str = "/",
+        path: Optional[str] = None,
         expires_seconds: Optional[int] = None,
         link_type: str = "private",
         force_new: bool = False,
@@ -141,10 +142,10 @@ class OpenClawGatewayClient:
         response = await asyncio.to_thread(
             self.session.get,
             access_url,
-            allow_redirects=True,
+            allow_redirects=False,
             timeout=30,
         )
-        if response.status_code >= 400:
+        if response.status_code >= 400 or response.status_code < 300:
             raise OpenClawGatewayError(
                 f"Dashboard short-link bootstrap failed: HTTP {response.status_code}"
             )
@@ -169,7 +170,7 @@ class OpenClawGatewayClient:
     async def connect(
         self,
         *,
-        path: str = "/",
+        path: Optional[str] = None,
         expires_seconds: Optional[int] = None,
         link_type: str = "private",
     ) -> dict[str, Any]:
@@ -189,8 +190,8 @@ class OpenClawGatewayClient:
         self.hello = await self.request(
             "connect",
             {
-                "minProtocol": 3,
-                "maxProtocol": 3,
+                "minProtocol": GATEWAY_PROTOCOL_VERSION,
+                "maxProtocol": GATEWAY_PROTOCOL_VERSION,
                 "client": {
                     "id": self.client_name,
                     "displayName": "ksadk openclaw channel",

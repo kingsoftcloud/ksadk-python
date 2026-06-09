@@ -1635,6 +1635,12 @@ def test_openclaw_deploy_rejects_mem0_without_instance_id():
     assert "--mem0-instance-id" in result.output
 
 
+def test_openclaw_default_image_ref_tracks_current_runtime_tag():
+    from ksadk.cli.cmd_openclaw import _resolve_image_ref
+
+    assert _resolve_image_ref(None) == "hub.kce.ksyun.com/agentengine-public/openclaw:2026.6.1"
+
+
 def test_openclaw_deploy_create_payload_includes_network(monkeypatch, tmp_path):
     runner = CliRunner()
     monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawCreateClient)

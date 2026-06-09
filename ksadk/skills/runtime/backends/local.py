@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -11,6 +12,7 @@ from ksadk.skills.runtime.base import (
     SandboxInputFile,
     SkillRuntimeResult,
     format_skill_names_env,
+    normalize_skill_names,
     parse_output_files,
 )
 
@@ -53,10 +55,19 @@ class LocalProcessSkillRuntimeBackend:
             runtime_env.pop("KSADK_SELECTED_SKILL_NAMES", None)
         try:
             with tempfile.TemporaryDirectory(prefix="ksadk-skill-runtime-") as tmp_dir:
-                prompt_path = Path(tmp_dir) / "workflow-prompt.txt"
-                prompt_path.write_text(workflow_prompt, encoding="utf-8")
+                request_path = Path(tmp_dir) / "workflow-request.json"
+                request_path.write_text(
+                    json.dumps(
+                        {
+                            "workflow_prompt": workflow_prompt,
+                            "skill_names": normalize_skill_names(skill_names),
+                        },
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
                 completed = subprocess.run(
-                    [sys.executable, "-u", str(self.agent_path), "--prompt-file", str(prompt_path)],
+                    [sys.executable, "-u", str(self.agent_path), "--request-file", str(request_path)],
                     text=True,
                     capture_output=True,
                     timeout=timeout or self.timeout,

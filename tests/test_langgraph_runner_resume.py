@@ -63,6 +63,26 @@ class _DuplicatedReasoningStreamingAgent(_DummyAgent):
         }
 
 
+class _ToolDictOutputStreamingAgent(_DummyAgent):
+    async def astream_events(self, state, version="v2", config=None):
+        self.last_astream_state = state
+        yield {
+            "event": "on_tool_end",
+            "name": "write_workspace_file",
+            "run_id": "run-approval",
+            "data": {
+                "output": {
+                    "ok": False,
+                    "type": "approval_required",
+                    "approval_request": {
+                        "id": "appr_write",
+                        "tool_name": "write_workspace_file",
+                    },
+                }
+            },
+        }
+
+
 def _make_runner(module=None) -> LangGraphRunner:
     detection = SimpleNamespace(entry_point="src/agent.py", agent_variable="root_agent")
     runner = LangGraphRunner(detection, ".")
@@ -81,6 +101,12 @@ def _make_streaming_runner() -> LangGraphRunner:
 def _make_duplicated_reasoning_streaming_runner() -> LangGraphRunner:
     runner = _make_runner()
     runner._agent = _DuplicatedReasoningStreamingAgent()
+    return runner
+
+
+def _make_tool_dict_output_streaming_runner() -> LangGraphRunner:
+    runner = _make_runner()
+    runner._agent = _ToolDictOutputStreamingAgent()
     return runner
 
 
@@ -207,6 +233,38 @@ async def test_stream_ignores_content_when_chunk_duplicates_reasoning():
     assert chunks == [
         {"delta": "先分析需求。", "type": "thinking"},
         {"delta": "这是最终回复。", "type": "text"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_stream_preserves_dict_tool_output_for_gateway_approval_bridge():
+    runner = _make_tool_dict_output_streaming_runner()
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "s1",
+                "input": "写文件",
+            }
+        )
+    ]
+
+    assert chunks == [
+        {
+            "type": "tool_result",
+            "tool_name": "write_workspace_file",
+            "tool_args": {},
+            "tool_output": {
+                "ok": False,
+                "type": "approval_required",
+                "approval_request": {
+                    "id": "appr_write",
+                    "tool_name": "write_workspace_file",
+                },
+            },
+            "run_id": "run-approval",
+        }
     ]
 
 

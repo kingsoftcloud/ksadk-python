@@ -55,10 +55,13 @@ agentengine dashboard open
 
 ## 0.6.2 Highlights
 
-- `setup_tracing()` now recognizes standard `OTEL_EXPORTER_OTLP_*` HTTP traces settings, so agent code can emit OpenTelemetry spans/events/attributes while the backend routes to Langfuse or another OTLP Collector.
-- Langfuse environment variables remain compatible; when generic OTLP is configured, auto mode avoids enabling an extra Langfuse direct exporter and duplicating traces.
-- Runtime templates initialize tracing when only OTLP environment variables are present, not only when `LANGFUSE_PUBLIC_KEY` is set.
-- Environment variable registry and docs now cover OTLP traces settings, AICP endpoint mode, and Skill Service endpoint/scheme overrides.
+- Skill Runtime can discover Skill Space entries, download and verify skill packages, load `SKILL.md`, and execute workflow-style skills through `local_process` or E2B sandbox backends.
+- Built-in AgentEngine tools are available through `ksadk.toolsets`, including skill discovery/loading, workspace file tools, component status, sandbox status, and sandbox direct `run_command` / `run_code`.
+- `get_agentengine_tools(include=["focused", "agentengine_tool_dispatcher"])` is the recommended binding pattern for LangGraph/LangChain-style agents that need progressive disclosure instead of binding every built-in tool into the model context.
+- Tool Gateway provides a shared approval envelope for medium/high-risk operations such as workspace writes/deletes, Skill Runtime execution, and sandbox command/code execution.
+- Workspace tools now include exact snippet editing and lightweight lint checks in addition to list/read/write/search/delete operations.
+- `setup_tracing()` now recognizes standard `OTEL_EXPORTER_OTLP_*` HTTP traces settings, while existing Langfuse environment variables remain compatible.
+- Environment variable registry and docs now cover OTLP traces settings, AICP endpoint mode, Skill Service endpoint/scheme overrides, Sandbox Runtime, and Skill Runtime settings.
 
 ## 0.6.0 Highlights
 

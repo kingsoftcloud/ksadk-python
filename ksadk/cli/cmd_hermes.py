@@ -56,7 +56,7 @@ from ksadk.hermes_terminal import (
 )
 
 
-DEFAULT_HERMES_IMAGE = "hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.5.16-ksadk-v1"
+DEFAULT_HERMES_IMAGE = "hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.5.29.2-ksadk-v1"
 DEFAULT_HERMES_CONTEXT_LENGTHS = (
     ("glm-5.1", "200000"),
 )
@@ -116,6 +116,7 @@ HERMES_RESOURCE = ResourceDescriptor(
         "agentengine hermes open ar-xxxx --chat",
         "agentengine hermes exec ar-xxxx -- status",
         "agentengine hermes pairing ar-xxxx -- list",
+        "agentengine hermes pairing ar-xxxx -- approve wpsxiezuo <code>",
         "agentengine hermes delete ar-xxxx",
     ),
     missing_ref_message="未找到 Hermes Agent，请指定 Agent（--agent 或位置参数）",
@@ -303,6 +304,19 @@ def _build_hermes_env_vars(
             value = _env_value(*source_keys)
             if value:
                 raw[target_key] = value
+    for key in (
+        "WPSXIEZUO_APP_ID",
+        "WPSXIEZUO_APP_KEY",
+        "WPSXIEZUO_API_BASE",
+        "WPSXIEZUO_WS_ENDPOINT",
+        "WPSXIEZUO_GROUP_AT_ONLY",
+        "WPSXIEZUO_ALLOWED_USERS",
+        "WPSXIEZUO_ALLOW_ALL_USERS",
+        "WPSXIEZUO_HOME_CHANNEL",
+    ):
+        value = _env_value(key)
+        if value:
+            raw[key] = value
     return [
         {"Key": key, "Value": str(value), "IsSensitive": any(token in key for token in ("KEY", "TOKEN", "SECRET"))}
         for key, value in raw.items()
@@ -596,6 +610,8 @@ async def _deploy_hermes(
         subnet_id=subnet_id,
         security_group_id=security_group_id,
         availability_zone=availability_zone,
+        region=region,
+        dry_run=dry_run,
     )
     if network_payload:
         payload["network"] = network_payload
@@ -965,7 +981,11 @@ def pairing_hermes(
     dry_run: bool,
     output_mode: str | None,
 ):
-    """透传 Hermes pairing 审批子命令。"""
+    """透传 Hermes pairing 审批子命令。
+
+    WPS 协作配对码来自未授权用户私聊机器人时 Hermes 返回的 pairing code，
+    审批示例：agentengine hermes pairing <agent> -- approve wpsxiezuo <code>
+    """
     _ = output_mode
     try:
         agent_ref, validated_argv = _split_terminal_agent_ref_and_argv(

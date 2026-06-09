@@ -193,7 +193,11 @@ class SkillServiceClient:
 
     def _is_kop_mode(self) -> bool:
         host = urlsplit(self.base_url).netloc.lower()
-        return host.endswith("aicp.inner.api.ksyun.com") or host.endswith("aicp.api.ksyun.com")
+        return (
+            host.endswith("aicp.inner.api.ksyun.com")
+            or host.endswith("aicp.internal.api.ksyun.com")
+            or host.endswith("aicp.api.ksyun.com")
+        )
 
     def _kop_base_url(self) -> str:
         parsed = urlsplit(self.base_url)

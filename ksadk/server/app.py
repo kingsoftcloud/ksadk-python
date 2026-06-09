@@ -53,6 +53,7 @@ from ksadk.sessions import (
 from ksadk.sessions.local_service import resolve_local_session_dir
 from ksadk.tracing import get_memory_exporter
 from ksadk.conversations.model_context import normalize_model_metadata
+from ksadk.toolsets import describe_agentengine_tools
 
 logger = logging.getLogger(__name__)
 
@@ -956,6 +957,7 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
                 "MCP": False,
                 "HostedRuntime": False,
                 "NativeTerminal": _build_native_terminal_capability(framework),
+                "BuiltinTools": describe_agentengine_tools(),
             },
             "WorkspaceFiles": build_workspace_files_bootstrap(enabled=workspace_enabled),
             "AccessMode": "Owner",
@@ -1383,7 +1385,13 @@ async def run_agent_action(request: RunAgentActionRequest):
         messages = conversation.normalize_responses_input(request.ResponsesInput)
     else:
         messages = conversation.normalize_kop_messages(request.Messages)
-    request_metadata = {"previous_response_id": request.PreviousResponseId} if request.PreviousResponseId else None
+    request_metadata = (
+        {"previous_response_id": request.PreviousResponseId}
+        if request.PreviousResponseId
+        else {}
+    )
+    if api_format == "responses":
+        request_metadata["responses_conversation"] = True
 
     if request.Stream:
         if api_format == "chat_completions":
@@ -1407,7 +1415,7 @@ async def run_agent_action(request: RunAgentActionRequest):
                 model=request.Model,
                 model_metadata=request.ModelMetadata,
                 model_options=request.ModelOptions,
-                request_metadata=request_metadata,
+                request_metadata=request_metadata or None,
                 resume_input=resume_input,
                 prepare_runner=_prepare_runner_for_model,
                 session_service_provider=resolve_session_service,
@@ -1426,7 +1434,7 @@ async def run_agent_action(request: RunAgentActionRequest):
         model=request.Model,
         model_metadata=request.ModelMetadata,
         model_options=request.ModelOptions,
-        request_metadata=request_metadata,
+        request_metadata=request_metadata or None,
         resume_input=resume_input,
         response_id=responses_response_id,
         prepare_runner=_prepare_runner_for_model,
