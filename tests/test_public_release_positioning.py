@@ -31,6 +31,8 @@ def test_public_readme_positions_ksadk_as_runtime_platform():
 
     assert "Agent Development Kit" not in readme
     assert "KSADK_SKILL_SERVICE_REGION=pre-online" not in readme
+    assert "当前版本：" not in readme
+    assert "候选版本：`0.6.4`" in readme
 
 
 def test_public_metadata_uses_runtime_platform_positioning():
