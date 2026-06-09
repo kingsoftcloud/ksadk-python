@@ -88,7 +88,7 @@ install-webui:
 
 STATIC_DIR = ksadk/server/static
 OPEN_SOURCE_SMOKE_VENV ?= /tmp/ksadk-open-source-smoke
-OPEN_SOURCE_SMOKE_WHEEL := dist/ksadk-0.6.2-py3-none-any.whl
+OPEN_SOURCE_SMOKE_WHEEL ?= dist/ksadk-$(VERSION)-py3-none-any.whl
 
 build-webui:
 	@echo "ℹ️  ksadk-python 不包含可编辑 Web UI 源码。"
@@ -224,6 +224,7 @@ PUBLIC_DOCS_URL ?= https://kingsoftcloud.github.io/ksadk-python/
 PUBLIC_PYPI_PROJECT ?= ksadk
 PUBLIC_ALIAS_PYPI_PROJECT ?= agentengine-sdk-python
 PUBLIC_RELEASE_TAG ?= v$(V)
+PUBLIC_PUBLISH_PHASE ?= pre-publish
 
 public-status:
 	@echo "==> public candidate"
@@ -296,7 +297,7 @@ public-preflight: public-audit public-test public-docs-build public-build-check
 public-publish-check:
 	@echo "==> publication state check"
 	@if [ -f "scripts/check_publication_state.py" ]; then \
-		uv run python scripts/check_publication_state.py --phase pre-publish; \
+		uv run python scripts/check_publication_state.py --phase "$(PUBLIC_PUBLISH_PHASE)" --version "$(VERSION)"; \
 	else \
 		echo "⚠️  scripts/check_publication_state.py 不存在，执行基础 HTTP 检查"; \
 		python3 -c 'import json, urllib.request; targets={"repo":"$(PUBLIC_REPO)","docs":"$(PUBLIC_DOCS_URL)","pypi":"https://pypi.org/pypi/$(PUBLIC_PYPI_PROJECT)/json","alias_pypi":"https://pypi.org/pypi/$(PUBLIC_ALIAS_PYPI_PROJECT)/json"}; [print("%s: HTTP %s%s" % (name, resp.status, ("\n  version=%s" % json.load(resp)["info"].get("version")) if name.endswith("pypi") else "")) for name, url in targets.items() for resp in [urllib.request.urlopen(url, timeout=20)]]'; \
@@ -304,7 +305,7 @@ public-publish-check:
 
 public-release-tag:
 ifndef V
-	$(error ❌ 请指定版本号，例如: make public-release-tag V=0.6.2)
+	$(error ❌ 请指定版本号，例如: make public-release-tag V=$(VERSION))
 endif
 	@branch=$$(git branch --show-current); \
 	if [ "$$branch" != "$(PUBLIC_BRANCH)" ]; then \

@@ -10,7 +10,7 @@
 本地开发、Serverless 运行时、Google ADK、LangChain/LangGraph、
 DeepAgents、Hermes、OpenClaw、MCP 和 Skill Runtime 等场景。
 
-当前版本：`0.6.2`。
+当前版本：`0.6.3`。
 
 ## 安装
 
@@ -64,6 +64,14 @@ agentengine launch . --target serverless
 - AgentEngine 内置工具：skill 发现/加载、workspace 文件操作、component status、sandbox status 和 sandbox direct code/command execution
 - Sandbox Runtime：通用沙箱抽象与 E2B 兼容后端
 
+## 0.6.3 重点
+
+- Hosted UI 与最新 gateway / server 对齐 `/hosted-ui/chat/`、share link、SSE 订阅和 native terminal 代理契约；`agentengine dashboard open` 继续优先打开托管入口，本地 `agentengine web` 保持调试用途。
+- LangGraph runner 在工具调用后即使没有文本流式 chunk，也会输出最终 answer，避免本地 Web UI 出现空 assistant message。
+- Skill Service 支持 `KSADK_SKILL_SERVICE_REGION=pre-online` 的 KOP 路由，自动设置预发所需 header。
+- OpenClaw / Hermes 更新已有实例时默认保留服务端已有 env、storage、network、memory 配置，只在显式传入对应 CLI 参数时覆盖。
+- `ksadk.toolsets`、Tool Gateway、Skill Runtime 与 Skill Service 相关文件纳入发布包，主推 LangGraph demo 可以在干净安装后直接绑定 AgentEngine 内置工具。
+
 ## 0.6.2 重点
 
 - Skill Runtime 支持 Skill Space 远端发现、按需下载、`sha256` 校验、安全解压、`SKILL.md` instruction 加载，以及 `local_process` / E2B sandbox backend workflow 执行。
@@ -90,6 +98,7 @@ agentengine launch . --target serverless
 
 - 文档：<https://kingsoftcloud.github.io/ksadk-python/>
 - 仓库：<https://github.com/kingsoftcloud/ksadk-python>
+- wiki：<https://zread.ai/kingsoftcloud/ksadk-python>
 - 示例仓库：<https://github.com/kingsoftcloud/ksadk-samples>
 - Web UI 仓库：<https://github.com/kingsoftcloud/ksadk-web>
 - PyPI：<https://pypi.org/project/ksadk/>
