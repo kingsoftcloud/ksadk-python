@@ -11,7 +11,7 @@
 
 - **公开定位重构**：将项目首页、README、后续 PyPI metadata 和公开发布说明从普通 SDK 口径调整为 Agent Runtime Platform，突出统一运行、调试、部署和可观测价值。
 - **发布材料脱敏**：清理 README、CHANGELOG 和后续公开元数据中的环境特定表述，避免公开页面出现内部环境名、内部 header 或私有 endpoint 示例。
-- **默认线上地域说明**：公开 README 使用 `KSYUN_REGION=cn-beijing-6` 作为线上默认 region 示例，避免用户把预发或内网配置照搬到公开 demo。
+- **默认线上地域说明**：公开 README 使用 `KSYUN_REGION=cn-beijing-6` 作为线上默认 region 示例，避免用户把非公开或内网配置照搬到公开 demo。
 - **Samples 场景入口对齐**：`ksadk-samples` 根 README 改为场景优先，真实映射 Knowledge Assistant、Workflow Agent、Tool-Using Agent 和 Memory-aware Agent；尚未实现的场景只进入 Roadmap。
 - **公开门禁增强**：将公开定位、敏感词扫描、PyPI metadata 和 README 场景入口要求纳入本地门禁，降低后续发布材料回退风险。
 
@@ -137,7 +137,7 @@
 - 修复 Responses `input_file.file_data` / `file_url` 在会话回放中无法还原为附件展示的问题。
 - 修复 conversation runtime 落库时只保存 display 文本和附件提示，导致刷新后图片变成纯文本占位的问题。
 - 修复 Hosted UI 回放事件时未识别 Responses `input_file.file_data` / `input_file.file_url` 的问题。
-- 修复 server responses session mirror 在 `account_id` 为空或 PostgreSQL duplicate session 错误文本变化时可能失败，导致预发 Hosted UI 上传图片后报“连接断开或生成出错”的问题。
+- 修复 server responses session mirror 在 `account_id` 为空或 PostgreSQL duplicate session 错误文本变化时可能失败，导致 Hosted UI 上传图片后报“连接断开或生成出错”的问题。
 - 修复刷新正在流式输出的会话时，订阅增量事件被单独构建成多条空“思考过程”消息的问题；恢复路径现在先合并完整 session events，再重建消息列表。
 - 修复会话列表重复项、活动 invocation 判定过早失效、运行中会话锁住其他 session 切换等 UI 状态问题。
 - 修复 Workspace 文件列表自动刷新时把当前 Markdown/HTML/文本预览强制切回编辑态的问题。
@@ -517,7 +517,7 @@
 - 修复 Windows 离线安装时核心依赖缺失的问题。
 - 修复 Windows BOM 文件兼容性，统一按 `utf-8-sig` 读取配置。
 - 修复 Web UI 构建阶段 Google Fonts 资源导致的失败问题。
-- 修复预发与生产 serverless 客户端的环境路由问题。
+- 修复多环境 serverless 客户端的路由选择问题。
 - 为 `fastapi` 与 `pydantic` 增加兼容性版本上限约束。
 
 ## [0.1.0] - 2026-01-15

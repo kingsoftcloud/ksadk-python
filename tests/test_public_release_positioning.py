@@ -59,6 +59,7 @@ def test_changelog_marks_0_6_4_unreleased_until_user_review():
 def test_public_release_materials_do_not_include_internal_environment_details():
     forbidden = (
         "KSADK_SKILL_SERVICE_REGION=pre-online",
+        "预发",
         "agent-api-pre",
         "kspmas-internal",
         "X-Ksc-Region",
