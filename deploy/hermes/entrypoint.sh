@@ -26,7 +26,8 @@ export API_SERVER_HOST="${API_SERVER_HOST:-127.0.0.1}"
 export API_SERVER_PORT="${API_SERVER_PORT:-8642}"
 export HERMES_DASHBOARD_HOST="${HERMES_DASHBOARD_HOST:-127.0.0.1}"
 export HERMES_DASHBOARD_PORT="${HERMES_DASHBOARD_PORT:-9119}"
-export API_SERVER_ENABLED="${API_SERVER_ENABLED:-true}"
+export API_SERVER_ENABLED="${API_SERVER_ENABLED:-}"
+export HERMES_DASHBOARD_READY_TIMEOUT="${HERMES_DASHBOARD_READY_TIMEOUT:-120}"
 export HERMES_MODEL_PROVIDER="${HERMES_MODEL_PROVIDER:-custom}"
 export HERMES_CONTEXT_LENGTH="${HERMES_CONTEXT_LENGTH:-${OPENAI_CONTEXT_LENGTH:-${MODEL_CONTEXT_LENGTH:-}}}"
 export HERMES_COMPRESSION_PROVIDER="${HERMES_COMPRESSION_PROVIDER:-${HERMES_MODEL_PROVIDER}}"
@@ -34,6 +35,10 @@ export HERMES_COMPRESSION_MODEL="${HERMES_COMPRESSION_MODEL:-${OPENAI_MODEL_NAME
 export HERMES_COMPRESSION_BASE_URL="${HERMES_COMPRESSION_BASE_URL:-${OPENAI_BASE_URL:-}}"
 export HERMES_COMPRESSION_CONTEXT_LENGTH="${HERMES_COMPRESSION_CONTEXT_LENGTH:-${HERMES_CONTEXT_LENGTH}}"
 export HERMES_COMPRESSION_TIMEOUT="${HERMES_COMPRESSION_TIMEOUT:-120}"
+export HERMES_TITLE_GENERATION_PROVIDER="${HERMES_TITLE_GENERATION_PROVIDER:-${HERMES_MODEL_PROVIDER}}"
+export HERMES_TITLE_GENERATION_MODEL="${HERMES_TITLE_GENERATION_MODEL:-${OPENAI_MODEL_NAME:-}}"
+export HERMES_TITLE_GENERATION_BASE_URL="${HERMES_TITLE_GENERATION_BASE_URL:-${OPENAI_BASE_URL:-}}"
+export HERMES_TITLE_GENERATION_TIMEOUT="${HERMES_TITLE_GENERATION_TIMEOUT:-30}"
 export HERMES_FALLBACK_PROVIDER="${HERMES_FALLBACK_PROVIDER:-custom}"
 export HERMES_FALLBACK_MODEL="${HERMES_FALLBACK_MODEL:-${OPENAI_FALLBACK_MODEL_NAME:-}}"
 export HERMES_FALLBACK_BASE_URL="${HERMES_FALLBACK_BASE_URL:-${OPENAI_BASE_URL:-}}"
@@ -43,6 +48,8 @@ export HERMES_LANGFUSE_BASE_URL="${HERMES_LANGFUSE_BASE_URL:-${LANGFUSE_BASE_URL
 export HERMES_LANGFUSE_ENV="${HERMES_LANGFUSE_ENV:-${LANGFUSE_ENV:-}}"
 export HERMES_LANGFUSE_RELEASE="${HERMES_LANGFUSE_RELEASE:-${LANGFUSE_RELEASE:-}}"
 export HERMES_LANGFUSE_AUTO_ENABLE="${HERMES_LANGFUSE_AUTO_ENABLE:-true}"
+export HERMES_WPSXIEZUO_AUTO_ENABLE="${HERMES_WPSXIEZUO_AUTO_ENABLE:-true}"
+export HERMES_ALLOW_LAZY_INSTALLS="${HERMES_ALLOW_LAZY_INSTALLS:-false}"
 export HERMES_TUI_PREWARM="${HERMES_TUI_PREWARM:-true}"
 export HERMES_TUI_PREWARM_TIMEOUT="${HERMES_TUI_PREWARM_TIMEOUT:-75}"
 export TIRITH_ENABLED="${TIRITH_ENABLED:-false}"
@@ -66,6 +73,48 @@ entrypoint_log() {
   printf '[hermes-entrypoint] %s\n' "$*" >&2
 }
 
+normalize_bool() {
+  local raw="${1:-}"
+  case "${raw,,}" in
+    1|true|yes|on)
+      printf 'true\n'
+      ;;
+    *)
+      printf 'false\n'
+      ;;
+  esac
+}
+
+resolve_api_server_enabled() {
+  local requested="${API_SERVER_ENABLED:-}"
+  local has_key="false"
+  if [[ -n "${API_SERVER_KEY:-}" ]]; then
+    has_key="true"
+  fi
+
+  if [[ -z "${requested}" ]]; then
+    if [[ "${has_key}" == "true" ]]; then
+      printf 'true\n'
+    else
+      printf 'false\n'
+    fi
+    return 0
+  fi
+
+  if [[ "$(normalize_bool "${requested}")" != "true" ]]; then
+    printf 'false\n'
+    return 0
+  fi
+
+  if [[ "${has_key}" != "true" ]]; then
+    entrypoint_log "API server requested but API_SERVER_KEY missing; disabling api_server platform"
+    printf 'false\n'
+    return 0
+  fi
+
+  printf 'true\n'
+}
+
 normalize_hermes_ui_locale() {
   local raw="${1:-}"
   local normalized="${raw%%.*}"
@@ -87,6 +136,7 @@ normalize_hermes_ui_locale() {
   esac
 }
 export HERMES_UI_LOCALE="$(normalize_hermes_ui_locale "${HERMES_UI_LOCALE}")"
+export API_SERVER_ENABLED="$(resolve_api_server_enabled)"
 
 if [[ -z "${HERMES_CONTEXT_LENGTH}" ]]; then
   case "${OPENAI_MODEL_NAME,,}" in
@@ -137,6 +187,14 @@ HERMES_LANGFUSE_RELEASE=${HERMES_LANGFUSE_RELEASE}
 HERMES_LANGFUSE_SAMPLE_RATE=${HERMES_LANGFUSE_SAMPLE_RATE:-}
 HERMES_LANGFUSE_MAX_CHARS=${HERMES_LANGFUSE_MAX_CHARS:-}
 HERMES_LANGFUSE_DEBUG=${HERMES_LANGFUSE_DEBUG:-}
+WPSXIEZUO_APP_ID=${WPSXIEZUO_APP_ID:-}
+WPSXIEZUO_APP_KEY=${WPSXIEZUO_APP_KEY:-}
+WPSXIEZUO_API_BASE=${WPSXIEZUO_API_BASE:-}
+WPSXIEZUO_WS_ENDPOINT=${WPSXIEZUO_WS_ENDPOINT:-}
+WPSXIEZUO_GROUP_AT_ONLY=${WPSXIEZUO_GROUP_AT_ONLY:-}
+WPSXIEZUO_ALLOWED_USERS=${WPSXIEZUO_ALLOWED_USERS:-}
+WPSXIEZUO_ALLOW_ALL_USERS=${WPSXIEZUO_ALLOW_ALL_USERS:-}
+WPSXIEZUO_HOME_CHANNEL=${WPSXIEZUO_HOME_CHANNEL:-}
 TIRITH_ENABLED=${TIRITH_ENABLED}
 AGENT_BROWSER_EXECUTABLE_PATH=${AGENT_BROWSER_EXECUTABLE_PATH}
 AGENT_BROWSER_HOME=${AGENT_BROWSER_HOME}
@@ -155,11 +213,37 @@ for bundled_skill in /app/skills/*; do
   cp -R "${bundled_skill}" "${HERMES_HOME}/skills/${skill_name}"
 done
 
+python - <<'PY'
+from __future__ import annotations
+
+import os
+import shutil
+from pathlib import Path
+
+try:
+    import hermes_wpsxiezuo
+except Exception as exc:  # pragma: no cover - image-time compatibility guard
+    print(f"[hermes-entrypoint] WPSXiezuo plugin install failed: {exc}", flush=True)
+else:
+    hermes_home = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
+    src = Path(hermes_wpsxiezuo.__file__).resolve().parent
+    dst = hermes_home / "plugins" / "platforms" / "wpsxiezuo"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists() or dst.is_symlink():
+        if dst.is_symlink() or dst.is_file():
+            dst.unlink()
+        else:
+            shutil.rmtree(dst)
+    shutil.copytree(src, dst)
+    print("[hermes-entrypoint] WPSXiezuo plugin installed: platforms/wpsxiezuo", flush=True)
+PY
+
 cat > "${HERMES_HOME}/config.yaml" <<EOF
 model:
   provider: "${HERMES_MODEL_PROVIDER}"
   default: "${OPENAI_MODEL_NAME:-}"
   base_url: "${OPENAI_BASE_URL:-}"
+  api_key: "${OPENAI_API_KEY:-}"
 EOF
 
 if [[ -n "${HERMES_CONTEXT_LENGTH}" ]]; then
@@ -168,6 +252,11 @@ if [[ -n "${HERMES_CONTEXT_LENGTH}" ]]; then
 EOF
 fi
 
+cat >> "${HERMES_HOME}/config.yaml" <<EOF
+display:
+  interface: tui
+EOF
+
 if [[ -n "${HERMES_COMPRESSION_MODEL}" ]]; then
   cat >> "${HERMES_HOME}/config.yaml" <<EOF
 auxiliary:
@@ -175,6 +264,7 @@ auxiliary:
     provider: "${HERMES_COMPRESSION_PROVIDER}"
     model: "${HERMES_COMPRESSION_MODEL}"
     base_url: "${HERMES_COMPRESSION_BASE_URL}"
+    api_key: "${OPENAI_API_KEY:-}"
 EOF
   if [[ -n "${HERMES_COMPRESSION_CONTEXT_LENGTH}" ]]; then
     cat >> "${HERMES_HOME}/config.yaml" <<EOF
@@ -186,11 +276,28 @@ EOF
 EOF
 fi
 
+if [[ -n "${HERMES_TITLE_GENERATION_MODEL}" ]]; then
+  if ! grep -q '^auxiliary:' "${HERMES_HOME}/config.yaml"; then
+    cat >> "${HERMES_HOME}/config.yaml" <<EOF
+auxiliary:
+EOF
+  fi
+  cat >> "${HERMES_HOME}/config.yaml" <<EOF
+  title_generation:
+    provider: "${HERMES_TITLE_GENERATION_PROVIDER}"
+    model: "${HERMES_TITLE_GENERATION_MODEL}"
+    base_url: "${HERMES_TITLE_GENERATION_BASE_URL}"
+    api_key: "${OPENAI_API_KEY:-}"
+    timeout: ${HERMES_TITLE_GENERATION_TIMEOUT}
+EOF
+fi
+
 if [[ -n "${HERMES_FALLBACK_MODEL}" && -n "${HERMES_FALLBACK_PROVIDER}" ]]; then
   cat >> "${HERMES_HOME}/config.yaml" <<EOF
 fallback_model:
   provider: "${HERMES_FALLBACK_PROVIDER}"
   model: "${HERMES_FALLBACK_MODEL}"
+  api_key: "${OPENAI_API_KEY:-}"
 EOF
   if [[ -n "${HERMES_FALLBACK_BASE_URL}" ]]; then
     cat >> "${HERMES_HOME}/config.yaml" <<EOF
@@ -205,6 +312,7 @@ api_server:
   host: "${API_SERVER_HOST}"
   port: ${API_SERVER_PORT}
 security:
+  allow_lazy_installs: ${HERMES_ALLOW_LAZY_INSTALLS}
   tirith_enabled: ${TIRITH_ENABLED}
   tirith_path: "tirith"
   tirith_timeout: 5
@@ -242,6 +350,32 @@ PY
     ;;
 esac
 
+case "${HERMES_WPSXIEZUO_AUTO_ENABLE,,}" in
+  0|false|no|off)
+    entrypoint_log "WPSXiezuo auto-enable disabled"
+    ;;
+  *)
+    if [[ -n "${WPSXIEZUO_APP_ID:-}" && -n "${WPSXIEZUO_APP_KEY:-}" ]]; then
+      python - <<'PY'
+from __future__ import annotations
+
+try:
+    from hermes_cli.plugins_cmd import _get_enabled_set, _save_enabled_set
+except Exception as exc:  # pragma: no cover - image-time compatibility guard
+    print(f"[hermes-entrypoint] WPSXiezuo plugin enable failed: {exc}", flush=True)
+else:
+    enabled = _get_enabled_set()
+    if "platforms/wpsxiezuo" not in enabled:
+        enabled.add("platforms/wpsxiezuo")
+        _save_enabled_set(enabled)
+    print("[hermes-entrypoint] WPSXiezuo plugin enabled: platforms/wpsxiezuo", flush=True)
+PY
+    else
+      entrypoint_log "WPSXiezuo credentials missing; platform plugin installed but not enabled"
+    fi
+    ;;
+esac
+
 prewarm_hermes_tui() {
   case "${HERMES_TUI_PREWARM,,}" in
     0|false|no|off)
@@ -266,6 +400,29 @@ prewarm_hermes_tui() {
       entrypoint_log "Hermes TUI prewarm skipped; timeout/script unavailable"
     fi
   ) &
+}
+
+wait_for_dashboard_ready() {
+  local status_url="http://${HERMES_DASHBOARD_HOST}:${HERMES_DASHBOARD_PORT}/api/status"
+  local timeout_seconds="${HERMES_DASHBOARD_READY_TIMEOUT}"
+  local waited=0
+
+  entrypoint_log "Waiting for Hermes dashboard readiness: ${status_url}"
+  while (( waited < timeout_seconds )); do
+    if curl -fsS "${status_url}" >/dev/null 2>&1; then
+      entrypoint_log "Hermes dashboard ready after ${waited}s"
+      return 0
+    fi
+    if ! kill -0 "${HERMES_DASHBOARD_PID}" 2>/dev/null; then
+      entrypoint_log "Hermes dashboard exited before readiness"
+      return 1
+    fi
+    sleep 1
+    waited="$((waited + 1))"
+  done
+
+  entrypoint_log "Hermes dashboard readiness timed out after ${timeout_seconds}s"
+  return 1
 }
 
 start_gateway_process() {
@@ -327,6 +484,7 @@ HERMES_GATEWAY_SUPERVISOR_PID=$!
 hermes dashboard --host "${HERMES_DASHBOARD_HOST}" --port "${HERMES_DASHBOARD_PORT}" --no-open &
 HERMES_DASHBOARD_PID=$!
 
+wait_for_dashboard_ready
 prewarm_hermes_tui
 
 cleanup() {

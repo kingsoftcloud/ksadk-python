@@ -1,6 +1,6 @@
 ## syntax=docker/dockerfile:1.7
 # https://github.com/openclaw/openclaw/pkgs/container/openclaw
-ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.5.22-slim@sha256:d35b8b681c223a85027502c7a82999aa772d6a09e1b28903951cac7fc27efed5
+ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.6.1-slim@sha256:a83ee8716ab191534952299fe989374d75593aa9c7632c4e756e9d64b0ce8061
 FROM ${OPENCLAW_BASE_IMAGE}
 
 # ── 可通过 --build-arg 覆盖的参数 ──────────────────────────────
@@ -17,7 +17,7 @@ ARG OPENCLAW_LARK_PLUGIN_SPEC=@larksuite/openclaw-lark
 ARG OPENCLAW_LARK_PLUGIN_ID=openclaw-lark
 ARG OPENCLAW_INSTALL_MEM0_PLUGIN=true
 ARG OPENCLAW_MEM0_PLUGIN_ID=openclaw-mem0
-ARG OPENCLAW_MEM0_PLUGIN_URL=https://memory-engine.ks3-cn-beijing.ksyuncs.com/ksc-openclaw-mem0-1.0.11.tgz
+ARG OPENCLAW_MEM0_PLUGIN_URL=https://memory-engine.ks3-cn-beijing.ksyuncs.com/ksc-openclaw-mem0-1.0.6.tgz
 ARG OPENCLAW_MEM0_PLUGIN_SHA256=
 ARG OPENCLAW_INSTALL_WPS_XIEZUO_PLUGIN=true
 ARG OPENCLAW_WPS_XIEZUO_PLUGIN_ID=wps-xiezuo
@@ -58,21 +58,24 @@ RUN --mount=type=cache,target=/root/.npm \
   elif [ -f /etc/apt/sources.list ]; then \
   sed -i "s|http://deb.debian.org/debian|${APT_MIRROR}|g; s|http://deb.debian.org/debian-security|${APT_SECURITY_MIRROR}|g; s|http://security.debian.org/debian-security|${APT_SECURITY_MIRROR}|g" /etc/apt/sources.list; \
   fi; \
+  mkdir -p /tmp/apt-cache; \
   # 跨架构 QEMU 构建时 GPG 校验可能失败，临时放宽 \
-  apt-get -o Acquire::AllowInsecureRepositories=true \
+  apt-get -o Dir::Cache::archives=/tmp/apt-cache \
+  -o Acquire::AllowInsecureRepositories=true \
   -o Acquire::AllowDowngradeToInsecureRepositories=true \
   -o Acquire::Retries=5 \
   -o Acquire::http::Timeout=30 \
   -o Acquire::https::Timeout=30 \
   update; \
   DEBIAN_FRONTEND=noninteractive apt-get \
+  -o Dir::Cache::archives=/tmp/apt-cache \
   -o APT::Get::AllowUnauthenticated=true \
   -o Acquire::Retries=5 \
   -o Acquire::http::Timeout=30 \
   -o Acquire::https::Timeout=30 \
   install -y --no-install-recommends \
   tzdata chromium ca-certificates curl jq python3 python3-pip tini; \
-  rm -rf /var/lib/apt/lists/*; \
+  rm -rf /var/lib/apt/lists/* /tmp/apt-cache; \
   fi; \
   if command -v tini >/dev/null 2>&1; then \
   ln -sf "$(command -v tini)" /usr/local/bin/tini; \

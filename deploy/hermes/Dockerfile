@@ -25,7 +25,7 @@ RUN if [ -n "${APT_MIRROR}" ]; then \
 
 FROM node_with_git AS hermes_src
 
-ARG HERMES_AGENT_REF=v2026.5.16
+ARG HERMES_AGENT_REF=v2026.5.29.2
 
 WORKDIR /src
 
@@ -35,11 +35,21 @@ FROM hermes_src AS hermes_web
 
 ARG NPM_REGISTRY=https://registry.npmmirror.com
 
-WORKDIR /src/web
+WORKDIR /src
 
 RUN npm config set registry "${NPM_REGISTRY}" \
-    && if [ -f package-lock.json ]; then npm ci; else npm install; fi \
-    && npm run build
+    && if [ -f package-lock.json ]; then npm ci --workspace web; else npm install --workspace web; fi \
+    && npm --workspace web run build
+
+FROM hermes_src AS hermes_tui
+
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+
+WORKDIR /src
+
+RUN npm config set registry "${NPM_REGISTRY}" \
+    && if [ -f package-lock.json ]; then npm ci --workspace ui-tui; else npm install --workspace ui-tui; fi \
+    && npm --workspace ui-tui run build
 
 FROM node_with_git AS kdocs_skill
 
@@ -67,7 +77,6 @@ FROM ${HERMES_PYTHON_BASE_IMAGE}
 
 ARG PYPI_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
 ARG PYPI_EXTRA_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
-ARG HERMES_AGENT_REF=v2026.5.16
 ARG APT_MIRROR=https://mirrors.aliyun.com/debian
 
 ENV PYTHONUNBUFFERED=1 \
@@ -104,7 +113,7 @@ RUN if [ -n "${APT_MIRROR}" ]; then \
     && DEBIAN_FRONTEND=noninteractive apt-get \
       -o Dir::Cache::archives=/tmp/apt-cache \
       -o APT::Get::AllowUnauthenticated=true \
-      install -y --no-install-recommends bash curl git tini chromium ripgrep \
+      install -y --no-install-recommends bash curl git tini chromium ripgrep ffmpeg \
     && if ! getent group node >/dev/null; then groupadd --gid 1000 node || groupadd node; fi \
     && if ! id -u node >/dev/null 2>&1; then useradd --uid 1000 --gid node --create-home --home-dir /home/node --shell /bin/bash node || useradd --gid node --create-home --home-dir /home/node --shell /bin/bash node; fi \
     && rm -rf /var/lib/apt/lists/* /tmp/apt-cache /etc/apt/apt.conf.d/99cache-dir
@@ -125,24 +134,42 @@ COPY --from=hermes_src /src /tmp/hermes-src
 COPY ksadk_runtime_common /opt/ksadk_runtime_common
 
 RUN pip install --no-cache-dir \
-    "fastapi>=0.100" \
-    "uvicorn[standard]>=0.23" \
-    "httpx>=0.24" \
-    "pyyaml>=6.0" \
-    "python-dotenv>=1.0" \
-    "aiohttp>=3.13.3,<4" \
-    "websockets>=15.0.1,<16" \
-    "cryptography>=46.0.5,<47" \
-    "langfuse>=3.9.0,<4" \
     "/tmp/hermes-src[web,feishu,pty,cron,mcp,cli]" \
+    "langfuse>=3.9.0,<4" \
+    "discord.py[voice]==2.7.1" \
+    "brotlicffi==1.2.0.1" \
+    "hermes-wpsxiezuo" \
     -i "${PYPI_INDEX_URL}" \
     --extra-index-url "${PYPI_EXTRA_INDEX_URL}" \
-    && find /tmp/hermes-src/plugins \
-      \( -name plugin.yaml -o -name plugin.yml \) \
-      -exec sh -c 'for src do dst="/usr/local/lib/python3.12/site-packages/plugins/${src#/tmp/hermes-src/plugins/}"; mkdir -p "$(dirname "$dst")"; cp "$src" "$dst"; done' sh {} + \
+    && python -c 'from pathlib import Path; import json, shutil, site; exec("""roots = [Path(p) / \"plugins\" for p in site.getsitepackages()]\nroots.extend(Path(p) / \"plugins\" for p in site.getusersitepackages().splitlines())\nfor plugins_root in roots:\n    if not plugins_root.exists():\n        continue\n    for manifest_file in plugins_root.glob(\"**/dashboard/manifest.json\"):\n        dashboard_dir = manifest_file.parent\n        plugin_root = dashboard_dir.parent\n        try:\n            manifest = json.loads(manifest_file.read_text(encoding=\"utf-8\"))\n        except Exception:\n            continue\n        entry = str(manifest.get(\"entry\") or \"\").strip()\n        if not entry:\n            continue\n        entry_path = dashboard_dir / entry\n        if entry_path.is_file():\n            continue\n        shutil.rmtree(plugin_root)\n        print(f\"Removed incomplete bundled dashboard plugin: {plugin_root}\")""")' \
     && rm -rf /tmp/hermes-src
 
+COPY --from=hermes_src /src/hermes_cli/dashboard_auth /usr/local/lib/python3.12/site-packages/hermes_cli/dashboard_auth
 COPY --from=hermes_web /src/hermes_cli/web_dist /usr/local/lib/python3.12/site-packages/hermes_cli/web_dist
+COPY --from=hermes_tui /src/ui-tui/dist/entry.js /usr/local/lib/python3.12/site-packages/hermes_cli/tui_dist/entry.js
+
+RUN python -c 'from pathlib import Path; import hermes_cli, plugins, tools; from tools import lazy_deps; missing = lazy_deps.feature_missing("platform.discord"); missing and (_ for _ in ()).throw(SystemExit(f"Hermes dashboard dependency missing: {missing}")); hermes_cli_dir = Path(hermes_cli.__file__).resolve().parent; web_dist = hermes_cli_dir / "web_dist" / "index.html"; web_dist.is_file() or (_ for _ in ()).throw(SystemExit(f"Hermes web_dist missing: {web_dist}")); tui_dist = hermes_cli_dir / "tui_dist" / "entry.js"; tui_dist.is_file() or (_ for _ in ()).throw(SystemExit(f"Hermes tui_dist missing: {tui_dist}")); plugin_root = Path(plugins.__file__).resolve().parent; required = [plugin_root / "kanban/dashboard/dist/index.js", plugin_root / "hermes-achievements/dashboard/dist/index.js"]; missing_assets = [str(p) for p in required if not p.is_file()]; missing_assets and (_ for _ in ()).throw(SystemExit(f"Hermes dashboard plugin assets missing: {missing_assets}")); import hermes_cli.dashboard_auth.routes; import hermes_cli.main as m; argv, cwd = m._make_tui_argv(Path("/missing-ui-tui"), False); str(tui_dist) in argv or (_ for _ in ()).throw(SystemExit(f"Hermes bundled TUI not selected: argv={argv} cwd={cwd}")); import hermes_cli.web_server; print("Hermes dashboard smoke import passed")'
+
+RUN python - <<'PY'
+from pathlib import Path
+
+path = Path("/usr/local/lib/python3.12/site-packages/hermes_cli/web_server.py")
+text = path.read_text(encoding="utf-8")
+old = '''    if gateway_ws_url := _build_gateway_ws_url():
+        env["HERMES_TUI_GATEWAY_URL"] = gateway_ws_url
+'''
+new = '''    # AgentEngine runtime keeps the dashboard Chat tab enabled, but Hermes
+    # v2026.6.5's in-process gateway attach path currently trips a React TUI
+    # render loop in the embedded PTY. Let the TUI use its normal subprocess
+    # gateway path until upstream fixes the attach transport.
+    if os.environ.get("KSADK_HERMES_DASHBOARD_GATEWAY_ATTACH") == "1":
+        if gateway_ws_url := _build_gateway_ws_url():
+            env["HERMES_TUI_GATEWAY_URL"] = gateway_ws_url
+'''
+if old not in text:
+    raise SystemExit("Hermes dashboard gateway attach patch target missing")
+path.write_text(text.replace(old, new), encoding="utf-8")
+PY
 
 COPY deploy/hermes/runtime ./runtime
 COPY deploy/hermes/skills/agent-browser-clawdbot ./skills/agent-browser-clawdbot
@@ -156,5 +183,5 @@ EXPOSE 8080
 
 USER node
 
-ENTRYPOINT ["tini", "--"]
-CMD ["/app/entrypoint.sh"]
+ENTRYPOINT ["tini", "--", "/app/entrypoint.sh"]
+CMD []

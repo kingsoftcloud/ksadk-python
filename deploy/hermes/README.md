@@ -96,11 +96,30 @@ agentengine hermes deploy
 
 ```bash
 make hermes-build
-make hermes-push HERMES_TAG=2026.5.16
+make hermes-push HERMES_TAG=2026.5.29.2-ksadk-v3
 make hermes-size
 ```
 
-## 9. 相关文档
+## 9. WPS 协作插件与配对
+
+镜像内置 `platforms/wpsxiezuo` 插件。创建或更新 Hermes Agent 时，如果环境中存在：
+
+```bash
+WPSXIEZUO_APP_ID=...
+WPSXIEZUO_APP_KEY=...
+```
+
+`agentengine hermes deploy` 会把这些变量透传到 runtime，容器启动时会自动启用 `platforms/wpsxiezuo`。
+
+配对审批码不是 CLI 生成的。未授权用户在 WPS 协作中私聊机器人后，Hermes 会在聊天消息里返回一段 pairing code；管理员复制这段 code 后执行：
+
+```bash
+agentengine hermes pairing <agent> -- approve wpsxiezuo <code>
+```
+
+`agentengine hermes pairing <agent> -- list` 可以查看待审批请求，但 pending code 在 Hermes 内部按 hash 保存，不能从 list 输出反查明文 code。
+
+## 10. 相关文档
 
 - [ksadk使用文档](../../docs/ksadk使用文档.md)
 - [ksadk技术设计](../../docs/ksadk技术设计.md)

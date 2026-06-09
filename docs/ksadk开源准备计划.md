@@ -129,7 +129,7 @@ ksadk-python               # Python SDK，可开源
 建议命令：
 
 ```bash
-cd /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python
+cd /Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python
 rg -n "AKIA|SECRET|TOKEN|COOKIE|kubeconfig|ksyun|kce|kcr|internal|corp|password|AccessKey|SecretKey" .
 git grep -n "http://" -- .
 git grep -n "https://" -- .
@@ -200,7 +200,7 @@ agentengine-hosted-ui Docker image
 验收命令：
 
 ```bash
-cd /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python
+cd /Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python
 uv build
 python -m twine check dist/*
 python -m venv /tmp/ksadk-open-source-smoke
@@ -266,12 +266,12 @@ agentengine web --help
 本地关键命令：
 
 ```bash
-cd /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python
+cd /Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python
 uv run pytest -q
 uv run pytest tests/test_openai_protocol_e2e.py -q
 uv build
 
-cd /Users/xiayu/kingsoft/code/agent-sdk/agentengine-ui-core
+cd /Users/xiayu/kingsoft/code/agent-sdk/agentengine/agentengine-ui-core
 npm ci
 npm test
 npm run build:ksadk

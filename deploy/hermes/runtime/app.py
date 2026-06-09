@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 import json
 import os
 import pty
+import re
 import select
 import signal
 import termios
@@ -11,8 +12,10 @@ import time
 import uuid
 from pathlib import Path, PurePosixPath
 from typing import Iterable
+from urllib.parse import parse_qs
 
 import httpx
+import websockets
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
@@ -44,6 +47,7 @@ PAIRING_PLATFORMS = {
     "webhook",
     "weixin",
     "whatsapp",
+    "wpsxiezuo",
 }
 SINGLE_READONLY = {"status", "doctor", "version", "insights"}
 NESTED_READONLY = {
@@ -55,7 +59,11 @@ NESTED_READONLY = {
     "gateway": {"status": (2, 2)},
 }
 
-app = FastAPI()
+app = FastAPI(
+    docs_url="/_ksadk/docs",
+    openapi_url="/_ksadk/openapi.json",
+    redoc_url="/_ksadk/redoc",
+)
 
 
 @dataclass
@@ -81,6 +89,18 @@ class TerminalSession:
 
 TERMINAL_REPLAY_BUFFER_BYTES = 256 * 1024
 _TERMINAL_SESSIONS: dict[str, TerminalSession] = {}
+_DASHBOARD_PTY_PATHS = {"api/pty"}
+_TERMINAL_REPORT_RE = re.compile(
+    rb"^\x1b(?:"
+    rb"\[\?(?:[0-9;]+)c|"  # primary device attributes: CSI ? ... c
+    rb"\[>(?:[0-9;]+)c|"  # secondary device attributes: CSI > ... c
+    rb"\[(?:[0-9;]+)R|"  # cursor position report: CSI row ; col R
+    rb"\[(?:[0-9;]+)n|"  # device status report: CSI ... n
+    rb"\[\?(?:[0-9;]+)n|"  # DEC device status report: CSI ? ... n
+    rb"P.*(?:\x1b\\|\x9c)"  # DCS report terminated by ST
+    rb")$",
+    re.DOTALL,
+)
 
 
 def _utc_timestamp(value: float) -> str:
@@ -259,7 +279,17 @@ def _is_dashboard_api_path(path: str) -> bool:
     return normalized == "api" or normalized.startswith("api/")
 
 
-def _rewrite_dashboard_request_headers(headers: dict[str, str], path: str) -> dict[str, str]:
+def _session_token_from_query(query_string: str) -> str:
+    values = parse_qs(query_string or "", keep_blank_values=False).get("token") or []
+    return values[0] if values else ""
+
+
+def _rewrite_dashboard_request_headers(
+    headers: dict[str, str],
+    path: str,
+    *,
+    session_token: str = "",
+) -> dict[str, str]:
     if not _is_dashboard_api_path(path):
         return headers
 
@@ -268,6 +298,9 @@ def _rewrite_dashboard_request_headers(headers: dict[str, str], path: str) -> di
         if key.lower() == HERMES_SESSION_PROXY_HEADER.lower():
             token = headers.pop(key)
             break
+
+    if not token:
+        token = session_token
 
     if token and not any(key.lower() == "authorization" for key in headers):
         headers["Authorization"] = f"Bearer {token}"
@@ -367,7 +400,11 @@ async def _proxy_http(request: Request, base_url: str, path: str) -> Response:
         if key.lower() not in {"host", "content-length"}
     }
     if base_url == _dashboard_base():
-        headers = _rewrite_dashboard_request_headers(headers, path)
+        headers = _rewrite_dashboard_request_headers(
+            headers,
+            path,
+            session_token=_session_token_from_query(request.url.query),
+        )
     client = httpx.AsyncClient(timeout=None)
     upstream = await client.send(
         client.build_request(
@@ -381,7 +418,14 @@ async def _proxy_http(request: Request, base_url: str, path: str) -> Response:
     response_headers = {
         key: value
         for key, value in upstream.headers.items()
-        if key.lower() not in {"content-encoding", "transfer-encoding", "connection", "content-length"}
+        if key.lower() not in {
+            "content-encoding",
+            "transfer-encoding",
+            "connection",
+            "content-length",
+            "date",
+            "server",
+        }
     }
 
     async def _close_proxy_stream() -> None:
@@ -404,6 +448,97 @@ async def _proxy_http(request: Request, base_url: str, path: str) -> Response:
     if base_url == _dashboard_base():
         body = _inject_dashboard_fetch_shim(body, upstream.headers.get("content-type", ""))
     return Response(body, status_code=upstream.status_code, headers=response_headers)
+
+
+def _dashboard_ws_url(path: str, query_string: str = "") -> str:
+    target = f"ws://127.0.0.1:{os.getenv('HERMES_DASHBOARD_PORT', '9119')}/{path.lstrip('/')}"
+    if query_string:
+        target = f"{target}?{query_string}"
+    return target
+
+
+def _is_dashboard_pty_path(path: str) -> bool:
+    return path.strip("/") in _DASHBOARD_PTY_PATHS
+
+
+def _should_drop_dashboard_pty_client_payload(path: str, payload: bytes | str) -> bool:
+    if not _is_dashboard_pty_path(path):
+        return False
+    raw = payload.encode("utf-8", errors="ignore") if isinstance(payload, str) else payload
+    return bool(_TERMINAL_REPORT_RE.fullmatch(raw))
+
+
+async def _proxy_dashboard_websocket(ws: WebSocket, path: str) -> None:
+    query_string = ws.url.query
+    target = _dashboard_ws_url(path, query_string)
+    headers = {
+        key: value
+        for key, value in ws.headers.items()
+        if key.lower()
+        not in {
+            "host",
+            "upgrade",
+            "connection",
+            "sec-websocket-key",
+            "sec-websocket-version",
+            "sec-websocket-extensions",
+            "sec-websocket-protocol",
+            "origin",
+        }
+    }
+    headers = _rewrite_dashboard_request_headers(
+        headers,
+        path,
+        session_token=_session_token_from_query(query_string),
+    )
+
+    await ws.accept()
+    upstream = None
+    upstream_task = None
+    client_task = None
+    try:
+        upstream = await websockets.connect(target, additional_headers=headers)
+        upstream_task = asyncio.create_task(upstream.recv())
+        client_task = asyncio.create_task(ws.receive())
+        while True:
+            done, _pending = await asyncio.wait(
+                {upstream_task, client_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if upstream_task in done:
+                payload = upstream_task.result()
+                if isinstance(payload, bytes):
+                    await ws.send_bytes(payload)
+                else:
+                    await ws.send_text(str(payload))
+                upstream_task = asyncio.create_task(upstream.recv())
+            if client_task in done:
+                message = client_task.result()
+                if message.get("bytes") is not None:
+                    if _should_drop_dashboard_pty_client_payload(path, message["bytes"]):
+                        client_task = asyncio.create_task(ws.receive())
+                        continue
+                    await upstream.send(message["bytes"])
+                elif message.get("text") is not None:
+                    if _should_drop_dashboard_pty_client_payload(path, message["text"]):
+                        client_task = asyncio.create_task(ws.receive())
+                        continue
+                    await upstream.send(message["text"])
+                elif message.get("type") == "websocket.disconnect":
+                    return
+                client_task = asyncio.create_task(ws.receive())
+    except WebSocketDisconnect:
+        return
+    except Exception as exc:
+        if ws.client_state == WebSocketState.CONNECTED:
+            await ws.close(code=1011, reason=str(exc)[:120])
+    finally:
+        for task in (upstream_task, client_task):
+            if task and not task.done():
+                task.cancel()
+        if upstream is not None:
+            with contextlib.suppress(Exception):
+                await upstream.close()
 
 
 async def _health_check(name: str, url: str) -> dict:
@@ -719,6 +854,11 @@ async def terminal_ws(ws: WebSocket) -> None:
         if fd is not None:
             with contextlib.suppress(OSError):
                 os.close(fd)
+
+
+@app.websocket("/{path:path}")
+async def proxy_dashboard_ws(path: str, ws: WebSocket) -> None:
+    await _proxy_dashboard_websocket(ws, path)
 
 
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])

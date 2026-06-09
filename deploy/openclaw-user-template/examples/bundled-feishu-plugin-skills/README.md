@@ -12,7 +12,7 @@
 
 它实际上只做了两件事：
 
-- `Dockerfile` 直接 `FROM ${OPENCLAW_BASE_IMAGE}`，默认基础镜像是 `ghcr.io/openclaw/openclaw:2026.5.22-slim@sha256:d35b8b681c223a85027502c7a82999aa772d6a09e1b28903951cac7fc27efed5`
+- `Dockerfile` 直接 `FROM ${OPENCLAW_BASE_IMAGE}`，默认基础镜像是 `ghcr.io/openclaw/openclaw:2026.6.1-slim@sha256:a83ee8716ab191534952299fe989374d75593aa9c7632c4e756e9d64b0ce8061`
 - 不覆写 `ENTRYPOINT` / `CMD`，继续使用官方 `bootstrap.sh` 启动链路
 
 也就是说：

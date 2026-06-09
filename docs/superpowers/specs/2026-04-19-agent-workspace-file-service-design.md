@@ -620,18 +620,18 @@ v1 默认：
 
 ### 14.1 `ksadk-python`
 
-- `/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/deploy/shared/workspace_file_server.py`
-- `/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk/cli/cmd_agent_files.py`
-- `/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk/cli/cmd_agent.py`
-- `/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/deploy/hermes/entrypoint.sh`
-- `/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/deploy/hermes/runtime/app.py`
-- `/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/deploy/openclaw/bootstrap.sh`
+- `/Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python/deploy/shared/workspace_file_server.py`
+- `/Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python/ksadk/cli/cmd_agent_files.py`
+- `/Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python/ksadk/cli/cmd_agent.py`
+- `/Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python/deploy/hermes/entrypoint.sh`
+- `/Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python/deploy/hermes/runtime/app.py`
+- `/Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python/deploy/openclaw/bootstrap.sh`
 
 ### 14.2 `agentengine-server`
 
-- `/Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/app/api/v1/actions/workspace_file_actions.py`
-- `/Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/app/api/v1/actions/__init__.py`
-- `/Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/app/api/v1/actions/chat_actions.py`
+- `/Users/xiayu/kingsoft/code/agent-sdk/agentengine/agentengine-server/app/api/v1/actions/workspace_file_actions.py`
+- `/Users/xiayu/kingsoft/code/agent-sdk/agentengine/agentengine-server/app/api/v1/actions/__init__.py`
+- `/Users/xiayu/kingsoft/code/agent-sdk/agentengine/agentengine-server/app/api/v1/actions/chat_actions.py`
 
 ## 15. 分阶段推进
 

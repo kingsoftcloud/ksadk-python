@@ -54,6 +54,7 @@ _PAIRING_PLATFORMS = {
     "webhook",
     "weixin",
     "whatsapp",
+    "wpsxiezuo",
 }
 _SINGLE_READONLY_COMMANDS = {"status", "doctor", "version", "insights"}
 _NESTED_READONLY_COMMANDS: dict[str, dict[str, tuple[int, int]]] = {

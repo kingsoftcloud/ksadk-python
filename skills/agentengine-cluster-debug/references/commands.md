@@ -17,7 +17,7 @@ export KUBECONFIG=~/.kube/agentengine-online
 常用管理侧入口：
 
 ```bash
-cd /Users/xiayu/kingsoft/code/agent-sdk/agentengine-server
+cd /Users/xiayu/kingsoft/code/agent-sdk/agentengine/agentengine-server
 make status ENV=pre
 make logs-tail ENV=pre
 make debug ENV=pre
@@ -45,15 +45,15 @@ make shell ENV=pre
 
 相关代码入口：
 
-- `/Users/xiayu/kingsoft/code/agent-sdk/agent-runtime-service/api/service/agents/create_agent_runtime.go`
-- `/Users/xiayu/kingsoft/code/agent-sdk/agent-runtime-service/controller/agentctl/agent_runtime.go`
+- `/Users/xiayu/kingsoft/code/agent-sdk/agentengine/agent-runtime-service/api/service/agents/create_agent_runtime.go`
+- `/Users/xiayu/kingsoft/code/agent-sdk/agentengine/agent-runtime-service/controller/agentctl/agent_runtime.go`
 
 ## 3. 获取算力 kubeconfig
 
 仅在目标是 `kce1.0`，或你已经处在能访问目标集群的环境里时使用：
 
 ```bash
-cd /Users/xiayu/kingsoft/code/agent-sdk/get-kubeconfig
+cd /Users/xiayu/kingsoft/code/agent-sdk/agentengine/get-kubeconfig
 go run . \
   --cluster-id <compute-cluster-id> \
   --region cn-beijing-6 \

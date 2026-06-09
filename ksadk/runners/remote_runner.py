@@ -107,6 +107,100 @@ class RemoteRunner(BaseRunner):
         return str(user_input or "")
 
     @staticmethod
+    def _build_responses_conversation_history(history: Any, current_input: Any) -> list[dict[str, Any]]:
+        if not isinstance(history, Sequence) or isinstance(
+            history, (str, bytes, bytearray)
+        ):
+            return []
+
+        messages: list[dict[str, Any]] = []
+        current_text = RemoteRunner._responses_message_text(
+            {"role": "user", "content": current_input}
+        ).strip()
+        for item in history:
+            if not isinstance(item, Mapping):
+                continue
+            role = str(item.get("role") or "").strip().lower()
+            if role == "model":
+                role = "assistant"
+            if role not in {"user", "assistant"}:
+                continue
+            text = RemoteRunner._responses_message_text(item).strip()
+            if not text:
+                continue
+            if role == "user" and current_text and text == current_text:
+                continue
+            messages.append(
+                {
+                    "role": role,
+                    "content": [{"type": "input_text", "text": text}],
+                }
+            )
+        return messages
+
+    @staticmethod
+    def _responses_conversation_name(input_data: Mapping[str, Any], session_id: Optional[str]) -> str:
+        if not session_id:
+            return ""
+        platform_context = input_data.get("platform_context")
+        agent_id = ""
+        if isinstance(platform_context, Mapping):
+            agent_id = str(platform_context.get("agent_id") or "").strip()
+        if agent_id:
+            return f"agentengine:{agent_id}:{session_id}"
+        return f"agentengine:{session_id}"
+
+    @staticmethod
+    def _responses_conversation_value(value: Any) -> str:
+        if isinstance(value, Mapping):
+            return str(value.get("id") or "").strip()
+        return str(value or "").strip()
+
+    def _build_responses_payload(
+        self,
+        input_data: Mapping[str, Any],
+        *,
+        stream: bool,
+    ) -> dict[str, Any]:
+        user_input = input_data.get("input", "")
+        session_id = input_data.get("session_id") or self.session_id
+        previous_response_id = input_data.get("previous_response_id")
+
+        if self.responses_session_header:
+            payload = {
+                "input": self._build_responses_input(user_input),
+                "stream": stream,
+            }
+        else:
+            payload = {
+                "input": self._build_responses_input(user_input),
+                "stream": stream,
+            }
+            history_enabled = bool(input_data.get("responses_conversation")) and not previous_response_id
+            if history_enabled:
+                history = self._build_responses_conversation_history(
+                    input_data.get("history"),
+                    user_input,
+                )
+                if history:
+                    payload["conversation_history"] = history
+            conversation = self._responses_conversation_value(input_data.get("conversation"))
+            if conversation and not previous_response_id:
+                payload["conversation"] = conversation
+            elif (
+                input_data.get("responses_conversation")
+                and session_id
+                and not previous_response_id
+            ):
+                conversation = self._responses_conversation_name(input_data, str(session_id))
+                if conversation:
+                    payload["conversation"] = conversation
+
+        if previous_response_id:
+            payload["previous_response_id"] = str(previous_response_id)
+        return payload
+
+    @staticmethod
     def _is_chat_style_message(value: Mapping[str, Any]) -> bool:
         return not value.get("type") and ("role" in value or "content" in value)
 
@@ -145,21 +239,15 @@ class RemoteRunner(BaseRunner):
 
         if self.api_format == "responses":
             url = f"{self.endpoint}/v1/responses"
-            payload = {
-                "input": self._build_responses_input(user_input),
-                "stream": False,
-            }
+            payload = self._build_responses_payload(input_data, stream=False)
         else:
             url = f"{self.endpoint}/v1/chat/completions"
             payload = {
                 "messages": [{"role": "user", "content": user_input}],
                 "stream": False,
             }
-        if session_id and not (self.api_format == "responses" and self.responses_session_header):
+        if session_id and self.api_format != "responses":
             payload["session_id"] = session_id
-        previous_response_id = input_data.get("previous_response_id")
-        if self.api_format == "responses" and previous_response_id:
-            payload["previous_response_id"] = str(previous_response_id)
         if self.model:
             payload["model"] = self.model
 
@@ -188,21 +276,15 @@ class RemoteRunner(BaseRunner):
 
         if self.api_format == "responses":
             url = f"{self.endpoint}/v1/responses"
-            payload = {
-                "input": self._build_responses_input(user_input),
-                "stream": True,
-            }
+            payload = self._build_responses_payload(input_data, stream=True)
         else:
             url = f"{self.endpoint}/v1/chat/completions"
             payload = {
                 "messages": [{"role": "user", "content": user_input}],
                 "stream": True,
             }
-        if session_id and not (self.api_format == "responses" and self.responses_session_header):
+        if session_id and self.api_format != "responses":
             payload["session_id"] = session_id
-        previous_response_id = input_data.get("previous_response_id")
-        if self.api_format == "responses" and previous_response_id:
-            payload["previous_response_id"] = str(previous_response_id)
         if self.model:
             payload["model"] = self.model
 

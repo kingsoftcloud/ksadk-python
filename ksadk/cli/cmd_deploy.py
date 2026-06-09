@@ -25,6 +25,7 @@ from ksadk.cli.network_options import (
     apply_network_config as _apply_network_config_shared,
     network_cli_kwargs,
     network_options,
+    resolve_deploy_target_network,
     validate_deploy_target_network,
 )
 from ksadk.cli.workflow_common import (
@@ -403,6 +404,7 @@ async def _deploy_async(
         availability_zone=availability_zone,
     )
     validate_deploy_target_network(deploy_target)
+    resolve_deploy_target_network(deploy_target, region=region, dry_run=dry_run)
     storage_config = build_storage_config(
         detection_result.type.value,
         target=target,

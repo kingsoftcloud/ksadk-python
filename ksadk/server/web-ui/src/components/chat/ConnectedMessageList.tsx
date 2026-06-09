@@ -38,6 +38,7 @@ export function ConnectedMessageList({
   const previewAttachment = useUIStore(s => s.previewAttachment);
   const previewImageSize = useUIStore(s => s.previewImageSize);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const shouldAutoScrollRef = useRef(true);
   const selectedModelMetadata = useMemo(
     () => availableModels.find((model) => model.id === selectedModel) || null,
     [availableModels, selectedModel],
@@ -53,8 +54,31 @@ export function ConnectedMessageList({
   );
 
   useEffect(() => {
+    const element = scrollRef.current;
+    if (!element) {
+      return undefined;
+    }
+    const updateAutoScroll = () => {
+      const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
+      shouldAutoScrollRef.current = distanceFromBottom < 160;
+    };
+    element.addEventListener('scroll', updateAutoScroll, { passive: true });
+    updateAutoScroll();
+    return () => element.removeEventListener('scroll', updateAutoScroll);
+  }, []);
+
+  useEffect(() => {
+    if (messages.length <= 1) {
+      shouldAutoScrollRef.current = true;
+    }
+  }, [messages.length]);
+
+  useEffect(() => {
     if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      const distanceFromBottom = scrollRef.current.scrollHeight - scrollRef.current.scrollTop - scrollRef.current.clientHeight;
+      if (shouldAutoScrollRef.current || distanceFromBottom < 160) {
+        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      }
     }
   }, [messages, isStreaming]);
 

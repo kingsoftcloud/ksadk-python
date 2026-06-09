@@ -392,6 +392,7 @@ class LangGraphRunner(BaseRunner):
 
         accumulated_text = ""
         accumulated_reasoning = ""
+        emitted_non_text_event = False
 
         if not hasattr(self._agent, "astream_events"):
             result = await self.invoke(invoke_payload)
@@ -433,6 +434,7 @@ class LangGraphRunner(BaseRunner):
                             yield {"delta": content, "type": "text"}
 
                 elif event_kind == "on_tool_start":
+                    emitted_non_text_event = True
                     yield {
                         "type": "tool_call",
                         "tool_name": event.get("name", "unknown"),
@@ -441,17 +443,20 @@ class LangGraphRunner(BaseRunner):
                     }
                 
                 elif event_kind == "on_tool_end":
+                    emitted_non_text_event = True
                     tool_output = event.get("data", {}).get("output", "")
                     yield {
                         "type": "tool_result",
                         "tool_name": event.get("name", "unknown"),
-                        "tool_output": str(tool_output) if tool_output else "",
+                        "tool_args": event.get("data", {}).get("input", {}),
+                        "tool_output": tool_output if isinstance(tool_output, dict) else (str(tool_output) if tool_output else ""),
                         "run_id": event.get("run_id"),
                     }
                     
                 elif event_kind == "on_chain_end":
                     output = event.get("data", {}).get("output", {})
                     if isinstance(output, dict) and "__interrupt__" in output:
+                        emitted_non_text_event = True
                         yield {"type": "interrupt", "interrupt_info": output["__interrupt__"], "session_id": session_id}
                         return
 
@@ -461,7 +466,7 @@ class LangGraphRunner(BaseRunner):
                 return
             raise
 
-        if not accumulated_text:
+        if not accumulated_text and not emitted_non_text_event:
             result = await self.invoke(invoke_payload)
             yield {"output": result.get("output", ""), "type": "final"}
 

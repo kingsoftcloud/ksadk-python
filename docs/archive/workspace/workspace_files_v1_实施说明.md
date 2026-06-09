@@ -196,28 +196,28 @@ flowchart TD
 
 核心文件：
 
-- [`ksadk_runtime_common/workspace_files/__init__.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk_runtime_common/workspace_files/__init__.py)
-- [`ksadk/server/app.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk/server/app.py)
-- [`ksadk/api/client.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk/api/client.py)
-- [`ksadk/deployment/base.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk/deployment/base.py)
-- [`ksadk/deployment/providers/serverless.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk/deployment/providers/serverless.py)
-- [`ksadk/cli/cmd_files.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk/cli/cmd_files.py)
-- [`ksadk/cli/cmd_deploy.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk/cli/cmd_deploy.py)
-- [`ksadk/cli/cmd_launch.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk/cli/cmd_launch.py)
-- [`ksadk/cli/cmd_hermes.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk/cli/cmd_hermes.py)
-- [`ksadk/cli/cmd_openclaw.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk/cli/cmd_openclaw.py)
-- [`ksadk/cli/storage.py`](/Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/ksadk/cli/storage.py)
+- [`ksadk_runtime_common/workspace_files/__init__.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python/ksadk_runtime_common/workspace_files/__init__.py)
+- [`ksadk/server/app.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python/ksadk/server/app.py)
+- [`ksadk/api/client.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python/ksadk/api/client.py)
+- [`ksadk/deployment/base.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python/ksadk/deployment/base.py)
+- [`ksadk/deployment/providers/serverless.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python/ksadk/deployment/providers/serverless.py)
+- [`ksadk/cli/cmd_files.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python/ksadk/cli/cmd_files.py)
+- [`ksadk/cli/cmd_deploy.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python/ksadk/cli/cmd_deploy.py)
+- [`ksadk/cli/cmd_launch.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python/ksadk/cli/cmd_launch.py)
+- [`ksadk/cli/cmd_hermes.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python/ksadk/cli/cmd_hermes.py)
+- [`ksadk/cli/cmd_openclaw.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python/ksadk/cli/cmd_openclaw.py)
+- [`ksadk/cli/storage.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python/ksadk/cli/storage.py)
 
 ### 7.2 agentengine-server
 
 核心文件：
 
-- [`app/api/v1/actions/agent_actions.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/app/api/v1/actions/agent_actions.py)
-- [`app/api/v1/actions/chat_actions.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/app/api/v1/actions/chat_actions.py)
-- [`app/api/v1/models/agent_models.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/app/api/v1/models/agent_models.py)
-- [`app/models/agent.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/app/models/agent.py)
-- [`app/services/agent_service.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/app/services/agent_service.py)
-- [`app/services/serverless_api.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/app/services/serverless_api.py)
+- [`app/api/v1/actions/agent_actions.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine/agentengine-server/app/api/v1/actions/agent_actions.py)
+- [`app/api/v1/actions/chat_actions.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine/agentengine-server/app/api/v1/actions/chat_actions.py)
+- [`app/api/v1/models/agent_models.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine/agentengine-server/app/api/v1/models/agent_models.py)
+- [`app/models/agent.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine/agentengine-server/app/models/agent.py)
+- [`app/services/agent_service.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine/agentengine-server/app/services/agent_service.py)
+- [`app/services/serverless_api.py`](/Users/xiayu/kingsoft/code/agent-sdk/agentengine/agentengine-server/app/services/serverless_api.py)
 
 ## 8. 各 framework 当前状态
 
@@ -251,14 +251,14 @@ flowchart TD
 ### 9.1 agentengine-server
 
 ```bash
-pytest /Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/tests/test_chat_actions.py \
-  /Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/tests/test_workspace_storage_contract.py \
-  /Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/tests/test_router_service_proxy.py \
-  /Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/tests/test_agent_actions_mem0.py \
-  /Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/tests/test_mem0_actions.py \
-  /Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/tests/test_mem0_client.py \
-  /Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/tests/test_mem0_service.py \
-  /Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/tests/test_agent_service.py -q
+pytest /Users/xiayu/kingsoft/code/agent-sdk/agentengine/agentengine-server/tests/test_chat_actions.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/agentengine/agentengine-server/tests/test_workspace_storage_contract.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/agentengine/agentengine-server/tests/test_router_service_proxy.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/agentengine/agentengine-server/tests/test_agent_actions_mem0.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/agentengine/agentengine-server/tests/test_mem0_actions.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/agentengine/agentengine-server/tests/test_mem0_client.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/agentengine/agentengine-server/tests/test_mem0_service.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/agentengine/agentengine-server/tests/test_agent_service.py -q
 ```
 
 结果：
@@ -268,17 +268,17 @@ pytest /Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/tests/test_chat_a
 ### 9.2 ksadk-python
 
 ```bash
-pytest /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_cmd_deploy_no_cache.py \
-  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_cmd_launch_no_cache.py \
-  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_storage_defaults.py \
-  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_cmd_hermes.py \
-  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_client_framework_passthrough.py \
-  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_deploy_integration.py \
-  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_openclaw_workspace_files_gating.py \
-  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_json_contracts.py \
-  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_workflow_help_snapshots.py \
-  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_cli_dry_run.py \
-  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_cmd_files.py -q
+pytest /Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python/tests/test_cmd_deploy_no_cache.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python/tests/test_cmd_launch_no_cache.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python/tests/test_storage_defaults.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python/tests/test_cmd_hermes.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python/tests/test_client_framework_passthrough.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python/tests/test_deploy_integration.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python/tests/test_openclaw_workspace_files_gating.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python/tests/test_json_contracts.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python/tests/test_workflow_help_snapshots.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python/tests/test_cli_dry_run.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python/tests/test_cmd_files.py -q
 ```
 
 结果：
@@ -288,15 +288,15 @@ pytest /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_cmd_deploy_n
 补充回归：
 
 ```bash
-pytest /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_cmd_deploy_no_cache.py \
-  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_storage_defaults.py \
-  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_cmd_hermes.py \
-  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_client_framework_passthrough.py \
-  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_deploy_integration.py \
-  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_openclaw_workspace_files_gating.py \
-  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_json_contracts.py \
-  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_workflow_help_snapshots.py \
-  /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python/tests/test_cli_dry_run.py \
+pytest /Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python/tests/test_cmd_deploy_no_cache.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python/tests/test_storage_defaults.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python/tests/test_cmd_hermes.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python/tests/test_client_framework_passthrough.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python/tests/test_deploy_integration.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python/tests/test_openclaw_workspace_files_gating.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python/tests/test_json_contracts.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python/tests/test_workflow_help_snapshots.py \
+  /Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python/tests/test_cli_dry_run.py \
   -k 'deploy or launch or hermes or openclaw or storage or cached' -q
 ```
 

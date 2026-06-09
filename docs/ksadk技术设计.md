@@ -12,6 +12,8 @@
    提供本地 Web UI、会话存储、本地 workspace 数据面以及开发态调用能力。
 3. 托管运行时资产
    提供 Hermes / OpenClaw 共享镜像、bootstrap 脚本、共享 workspace_files 与 memory_backend 源码。
+4. Skill Runtime 与内置工具消费
+   提供 Skill Space 运行时消费、Skill 包校验与加载、sandbox backend 编排、内置 toolset 绑定、Tool Gateway 审批 envelope。
 
 不在本仓承担最终事实源的能力：
 
@@ -20,8 +22,10 @@
 - Hosted UI bootstrap
 - Workspace Files Hosted Action
 - OpenClaw `MEMORY_BACKEND_MANIFEST` 生成
+- Skill 注册、CRUD、版本治理和 marketplace
+- Sandbox template、instance、token 与网络生命周期
 
-这些由 `agentengine-server` 负责。
+这些分别由 `agentengine-server`、Skill Service、Sandbox Service 或平台控制面负责。
 
 ## 2. 总体架构
 
@@ -43,6 +47,9 @@ flowchart LR
     Dispatch["命令分发与框架识别"]:::runtime
     Local["ksadk.server.app"]:::runtime
     Common["ksadk_runtime_common"]:::runtime
+    Toolsets["ksadk.toolsets + Tool Gateway"]:::runtime
+    SkillRT["ksadk.skills.runtime"]:::runtime
+    Sandbox["ksadk.sandbox"]:::runtime
     Assets["deploy/hermes + deploy/openclaw"]:::runtime
   end
 
@@ -66,6 +73,9 @@ flowchart LR
   Invoke --> Server
   Dispatch --> Local
   Dispatch --> Server
+  Dispatch --> Toolsets
+  Toolsets --> SkillRT
+  Toolsets --> Sandbox
   Common --> Local
   Common --> Assets
   Assets --> Hermes
@@ -126,6 +136,46 @@ CLI 层负责：
 - Hermes 的 `entrypoint.sh`
 - OpenClaw 的 `bootstrap.sh`
 - 共享 workspace sidecar 与 memory backend 渲染入口
+
+### 3.4 Skill Runtime、Sandbox 与 Toolsets
+
+`0.6.2` 起，SDK 侧新增三层运行时消费抽象：
+
+- `ksadk.skills.runtime`：负责 workflow 请求解析、Skill 选择、远端 Skill 包下载、`sha256` 校验、安全解压、runtime agent 执行和 artifacts 汇总。
+- `ksadk.sandbox`：通用 Sandbox Runtime 底座，当前首个 backend 是 E2B-compatible sandbox；Skill Runtime 和 sandbox direct tools 共用这层，不把 sandbox 语义写死为 Skill 专用。
+- `ksadk.toolsets`：给 LangGraph、LangChain、DeepAgents、ADK 或自定义 runner 暴露内置工具，包括 Skill、Workspace、Platform、Sandbox 四组工具，以及聚合入口 `get_agentengine_tools()`。
+
+推荐绑定方式是显式渐进式披露：
+
+```python
+from ksadk.toolsets import get_agentengine_tools
+
+tools = get_agentengine_tools(include=["focused", "agentengine_tool_dispatcher"])
+```
+
+`get_agentengine_tools()` 无参保持全量工具兼容。`focused/core` profile 只直接暴露 Skill 发现/加载、Workspace 状态/搜索/片段编辑/lint、组件状态和 sandbox 状态；`execute_skills`、`run_command`、`run_code`、Workspace 写入/删除等低频或高风险工具通过 `agentengine_tool_dispatcher` 按需 `list` / `describe` / `call`。
+
+Tool Gateway 位于实际工具执行前，负责风险策略和人工确认 envelope。strict 模式下，中高风险工具返回 `approval_required`，由 Hosted/local UI 或调用方回传批准后继续；dispatcher 调用真实工具对象，不绕过 Tool Gateway。
+
+```mermaid
+flowchart LR
+  classDef agent fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e3a8a;
+  classDef tool fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#166534;
+  classDef runtime fill:#e2e8f0,stroke:#475569,stroke-width:2px,color:#1e293b;
+  classDef service fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#581c87;
+
+  Agent["LangGraph / LangChain / ADK Agent"]:::agent --> Focused["focused tools"]:::tool
+  Agent --> Dispatcher["agentengine_tool_dispatcher"]:::tool
+  Focused --> Gateway["Tool Gateway"]:::runtime
+  Dispatcher --> Gateway
+  Gateway --> Skill["Skill tools / execute_skills"]:::tool
+  Gateway --> Workspace["Workspace tools"]:::tool
+  Gateway --> SandboxTools["Sandbox direct tools"]:::tool
+  Skill --> SkillService["Skill Service"]:::service
+  Skill --> SkillRuntime["Skill Runtime backend"]:::runtime
+  SkillRuntime --> Sandbox["E2B / Sandbox backend"]:::runtime
+  SandboxTools --> Sandbox
+```
 
 ## 4. `ksadk_runtime_common` 同仓共享源码
 
