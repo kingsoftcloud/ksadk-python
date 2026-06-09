@@ -1038,7 +1038,7 @@ def test_hermes_deploy_forwards_explicit_fallback_model(tmp_path: Path, monkeypa
     env_vars = {item["Key"]: item["Value"] for item in _FakeHermesClient.create_payload["env_vars"]}
     assert env_vars["HERMES_FALLBACK_MODEL"] == "explicit-fallback"
     assert env_vars["HERMES_FALLBACK_PROVIDER"] == "custom"
-    assert env_vars["HERMES_FALLBACK_BASE_URL"] == "https://kspmas.ksyun.com/v1/"
+    assert env_vars["HERMES_FALLBACK_BASE_URL"] == "http://kspmas.ksyun.com/v1"
 
 
 def test_hermes_deploy_uses_provider_context_length_for_configured_model(tmp_path: Path, monkeypatch):
