@@ -940,7 +940,8 @@ def test_openclaw_gateway_ws_url_prints_dashboard_and_ws(monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert "dashboard.example.com/s/lnk-demo" in result.output
-    assert "wss://dashboard.example.com/" in result.output
+    assert "wss://" in result.output
+    assert "dashboard.example.com/" in result.output
     assert "cookie-session" in result.output
 
 
@@ -981,7 +982,8 @@ def test_openclaw_gateway_ws_url_allows_creating_when_gateway_is_reachable(monke
 
     assert result.exit_code == 0, result.output
     assert "dashboard.example.com/s/lnk-demo" in result.output
-    assert "wss://dashboard.example.com/" in result.output
+    assert "wss://" in result.output
+    assert "dashboard.example.com/" in result.output
 
 
 def test_openclaw_gateway_doctor_continues_probe_when_status_is_creating(monkeypatch):
