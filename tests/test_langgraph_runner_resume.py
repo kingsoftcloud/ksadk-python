@@ -83,6 +83,33 @@ class _ToolDictOutputStreamingAgent(_DummyAgent):
         }
 
 
+class _ToolThenAnswerStreamingAgent(_DummyAgent):
+    async def astream_events(self, state, version="v2", config=None):
+        self.last_astream_state = state
+        yield {
+            "event": "on_tool_start",
+            "name": "list_skills",
+            "run_id": "run-list-skills",
+            "data": {"input": {}},
+        }
+        yield {
+            "event": "on_tool_end",
+            "name": "list_skills",
+            "run_id": "run-list-skills",
+            "data": {"output": {"ok": True, "skills": [{"name": "ppt-translator"}]}},
+        }
+        yield {
+            "event": "on_chain_end",
+            "name": "LangGraph",
+            "data": {
+                "output": {
+                    "answer": "已真实调用 `list_skills`。\n当前返回的 Skill：\n- ppt-translator",
+                    "messages": [{"content": ""}],
+                }
+            },
+        }
+
+
 def _make_runner(module=None) -> LangGraphRunner:
     detection = SimpleNamespace(entry_point="src/agent.py", agent_variable="root_agent")
     runner = LangGraphRunner(detection, ".")
@@ -107,6 +134,12 @@ def _make_duplicated_reasoning_streaming_runner() -> LangGraphRunner:
 def _make_tool_dict_output_streaming_runner() -> LangGraphRunner:
     runner = _make_runner()
     runner._agent = _ToolDictOutputStreamingAgent()
+    return runner
+
+
+def _make_tool_then_answer_streaming_runner() -> LangGraphRunner:
+    runner = _make_runner()
+    runner._agent = _ToolThenAnswerStreamingAgent()
     return runner
 
 
@@ -266,6 +299,27 @@ async def test_stream_preserves_dict_tool_output_for_gateway_approval_bridge():
             "run_id": "run-approval",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_stream_emits_final_answer_after_tool_events_without_text_stream():
+    runner = _make_tool_then_answer_streaming_runner()
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "s1",
+                "input": "你有哪些 skill",
+            }
+        )
+    ]
+
+    assert chunks[-1] == {
+        "type": "final",
+        "output": "已真实调用 `list_skills`。\n当前返回的 Skill：\n- ppt-translator",
+    }
+    assert [chunk["type"] for chunk in chunks] == ["tool_call", "tool_result", "final"]
 
 
 @pytest.mark.asyncio
@@ -440,6 +494,19 @@ def test_extract_output_prefers_explicit_output_over_messages_tail():
         {
             "output": "业务最终回答",
             "messages": [{"role": "system", "content": "系统提示词"}],
+        }
+    )
+
+    assert output == "业务最终回答"
+
+
+def test_extract_output_uses_langgraph_answer_field():
+    runner = _make_runner()
+
+    output = runner._extract_output(
+        {
+            "answer": "业务最终回答",
+            "messages": [{"role": "assistant", "content": ""}],
         }
     )
 

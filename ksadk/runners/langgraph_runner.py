@@ -344,6 +344,9 @@ class LangGraphRunner(BaseRunner):
             # 自定义 output 字段是业务显式出参，优先于内部 messages state。
             if "output" in result:
                 return result["output"]
+            # LangGraph 示例常用 answer 作为最终业务回答字段。
+            if "answer" in result:
+                return result["answer"]
             # 标准 messages 格式
             if "messages" in result:
                 messages = result["messages"]
@@ -393,6 +396,7 @@ class LangGraphRunner(BaseRunner):
         accumulated_text = ""
         accumulated_reasoning = ""
         emitted_non_text_event = False
+        final_output_text = ""
 
         if not hasattr(self._agent, "astream_events"):
             result = await self.invoke(invoke_payload)
@@ -459,6 +463,9 @@ class LangGraphRunner(BaseRunner):
                         emitted_non_text_event = True
                         yield {"type": "interrupt", "interrupt_info": output["__interrupt__"], "session_id": session_id}
                         return
+                    extracted_output = self._extract_output(output)
+                    if extracted_output:
+                        final_output_text = str(extracted_output)
 
         except Exception as e:
             if "Interrupt" in type(e).__name__:
@@ -466,9 +473,12 @@ class LangGraphRunner(BaseRunner):
                 return
             raise
 
-        if not accumulated_text and not emitted_non_text_event:
-            result = await self.invoke(invoke_payload)
-            yield {"output": result.get("output", ""), "type": "final"}
+        if not accumulated_text:
+            if final_output_text:
+                yield {"output": final_output_text, "type": "final"}
+            elif not emitted_non_text_event:
+                result = await self.invoke(invoke_payload)
+                yield {"output": result.get("output", ""), "type": "final"}
 
     def _filter_tool_tags(self, content: str) -> str:
         """过滤 <tool_call> 标签"""
