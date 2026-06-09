@@ -2029,8 +2029,8 @@ def test_agent_browser_skill_prefers_domestic_examples():
     assert "agent-browser open https://cn.bing.com/search?q=AI+agents&ensearch=0" in content
     assert "https://www.bing.com/news/search?q=AI&mkt=zh-CN" in content
     assert "This image already bundles `agent-browser`" in content
-    assert "registry." in content
-    assert "npmmirror.com" in content
+    assert "NPM_CONFIG_REGISTRY" in content
+    assert "PLAYWRIGHT_DOWNLOAD_HOST" in content
     assert "Built-in `browser` is enabled by default in this image." in content
     assert "Use `web-safe search` / `web-safe read` only when a cheap read-only fallback is enough" in content
     assert "The task is small enough that a one-off interactive browser session is simpler" not in content
