@@ -60,6 +60,12 @@ If your model provider is not the default OpenAI endpoint, also set:
 agentengine config set OPENAI_BASE_URL=https://api.example.com/v1
 ```
 
+If you need Kingsoft Cloud AgentEngine, Skill Service, knowledge base, or long-term memory services, set the default public cloud region explicitly:
+
+```bash
+agentengine config set KSYUN_REGION=cn-beijing-6
+```
+
 ## Architecture
 
 ```mermaid

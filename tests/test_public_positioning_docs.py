@@ -50,6 +50,7 @@ def test_readmes_position_ksadk_as_runtime_platform():
         "Observability",
         "Deployment",
         "Community",
+        "KSYUN_REGION=cn-beijing-6",
     )
     for relative_path in ("README.md", "README.zh-CN.md"):
         text = _read(relative_path)
@@ -71,6 +72,7 @@ def test_english_readme_positions_ksadk_as_runtime_platform():
         "Observability",
         "Deployment",
         "Community",
+        "KSYUN_REGION=cn-beijing-6",
     )
     for expected in expected_sections:
         assert expected in text
@@ -90,6 +92,7 @@ def test_docs_homepage_uses_runtime_platform_information_architecture():
             "OpenTelemetry",
             "Hermes",
             "OpenClaw",
+            "KSYUN_REGION=cn-beijing-6",
         ):
             assert expected in text
         assert "Agent Development Kit" not in text

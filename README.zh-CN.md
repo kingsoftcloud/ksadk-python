@@ -60,6 +60,12 @@ agentengine web . --no-open
 agentengine config set OPENAI_BASE_URL=https://api.example.com/v1
 ```
 
+如果需要调用金山云 AgentEngine、Skill Service、知识库或长期记忆等线上能力，建议显式设置线上默认地域：
+
+```bash
+agentengine config set KSYUN_REGION=cn-beijing-6
+```
+
 ## Architecture
 
 ```mermaid
