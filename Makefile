@@ -412,7 +412,7 @@ public-test:
 public-build-check: clean-dist
 	@echo "==> build and twine check"
 	@uv build
-	@uv run python -m twine check dist/*
+	@uv run --extra dev python -m twine check dist/*
 
 public-preflight: public-audit public-test public-docs-build public-build-check
 	@echo "✅ public preflight passed"

@@ -1,9 +1,24 @@
 # 更新日志
 
-本文件记录 **Kingsoft AgentEngine SDK (ksadk)** 的重要变更。
+本文件记录 **KsADK Agent Runtime Platform** 的重要变更。
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
+
+## [0.6.4] - Unreleased
+
+### 亮点
+
+- **公开定位重构**：将项目首页、README、后续 PyPI metadata 和公开发布说明从普通 SDK 口径调整为 Agent Runtime Platform，突出统一运行、调试、部署和可观测价值。
+- **发布材料脱敏**：清理 README、CHANGELOG 和后续公开元数据中的环境特定表述，避免公开页面出现内部环境名、内部 header 或私有 endpoint 示例。
+- **默认线上地域说明**：公开 README 使用 `KSYUN_REGION=cn-beijing-6` 作为线上默认 region 示例，避免用户把预发或内网配置照搬到公开 demo。
+- **Samples 场景入口对齐**：`ksadk-samples` 根 README 改为场景优先，真实映射 Knowledge Assistant、Workflow Agent、Tool-Using Agent 和 Memory-aware Agent；尚未实现的场景只进入 Roadmap。
+- **公开门禁增强**：将公开定位、敏感词扫描、PyPI metadata 和 README 场景入口要求纳入本地门禁，降低后续发布材料回退风险。
+
+### 发布说明
+
+- 这是修复 0.6.3 公开页面和 PyPI 元数据口径的补丁版本草案；已发布到 PyPI 的 0.6.3 元数据不可覆盖，因此后续需要通过新版本修复。
+- 0.6.4 在用户 review 通过前不创建 tag、不发布 GitHub Release，也不上传 PyPI。
 
 ## [0.6.3] - 2026-06-09
 
@@ -17,7 +32,7 @@
 ### 修复
 
 - 修复 LangGraph runner 在工具调用后没有文本流式 chunk 时不会输出最终 answer，导致本地 Web UI 存储空 assistant message 的问题。
-- 修复 Skill Service KOP client 在 `KSADK_SKILL_SERVICE_REGION=pre-online` 下没有按 AgentEngine client 规则设置 `X-Ksc-Region: cn-beijing-6` 和 `X-KSC-CUSTOM-SOURCE: pre` 的问题。
+- 修复 Skill Service KOP/AICP client 在环境化路由下没有按 AgentEngine client 规则映射 region 与必要请求头的问题。
 - 修复内置工具 dispatcher 遇到未知 include/tool name 时可能抛异常的问题，现在返回结构化 `unknown_tool` 错误，便于 Agent 继续解释。
 - 修复 OpenClaw / Hermes deploy update payload 默认携带 `env_vars`、`storage`、`network` 等配置组的问题，降低客户更新公共镜像时误改生产配置的风险。
 
