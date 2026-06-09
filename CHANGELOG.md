@@ -1,9 +1,28 @@
 # 更新日志
 
-本文件记录 **Kingsoft AgentEngine SDK (ksadk)** 的重要变更。
+本文件记录 **KsADK Agent Runtime Platform** 的重要变更。
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
+
+## [0.6.4] - Unreleased
+
+### 亮点
+
+- **公开定位重构**：将项目首页、README 和文档首页从普通 SDK 口径调整为 Agent Runtime Platform，补齐 Why KsADK、30 秒体验、架构图、对比表、Deployment、Observability 和 Community。
+- **文档信息架构调整**：MkDocs 导航改为 Getting Started / Build / Run / Deploy / Observe / Extend / Reference，更贴近开发者完成任务的路径。
+- **Samples 场景入口对齐**：`ksadk-samples` 根 README 改为场景优先，真实映射 Knowledge Assistant、Workflow Agent、Tool-Using Agent 和 Memory-aware Agent；尚未实现的场景只进入 Roadmap。
+- **公开元数据修复**：更新 PyPI summary 和包内简介为 Agent Runtime Platform 定位，为后续补丁发布准备干净的 long description。
+
+### 修复
+
+- 清理 README、CHANGELOG、文档首页和 runtime product 文档中的环境特定表述，避免公开页面出现内部环境名、内部 header 或私有 endpoint 示例。
+- 将公开定位、敏感词扫描和 README 场景入口要求纳入本地门禁，降低后续发布材料回退风险。
+
+### 发布说明
+
+- 这是修复 0.6.3 公开页面和 PyPI 元数据口径的补丁版本草案；已发布到 PyPI 的 0.6.3 元数据不可覆盖，因此后续需要通过新版本修复。
+- 0.6.4 在用户 review 通过前不创建 tag、不发布 GitHub Release，也不上传 PyPI。
 
 ## [0.6.3] - 2026-06-09
 
@@ -17,7 +36,7 @@
 ### 修复
 
 - 修复 LangGraph runner 在工具调用后没有文本流式 chunk 时不会输出最终 answer，导致本地 Web UI 存储空 assistant message 的问题。
-- 修复 Skill Service KOP client 在 `KSADK_SKILL_SERVICE_REGION=pre-online` 下没有按 AgentEngine client 规则设置 `X-Ksc-Region: cn-beijing-6` 和 `X-KSC-CUSTOM-SOURCE: pre` 的问题。
+- 修复 Skill Service KOP/AICP client 在环境化路由下没有按 AgentEngine client 规则映射 region 与必要请求头的问题。
 - 修复内置工具 dispatcher 遇到未知 include/tool name 时可能抛异常的问题，现在返回结构化 `unknown_tool` 错误，便于 Agent 继续解释。
 - 修复 OpenClaw / Hermes deploy update payload 默认携带 `env_vars`、`storage`、`network` 等配置组的问题，降低客户更新公共镜像时误改生产配置的风险。
 
@@ -122,7 +141,7 @@
 - 修复 Responses `input_file.file_data` / `file_url` 在会话回放中无法还原为附件展示的问题。
 - 修复 conversation runtime 落库时只保存 display 文本和附件提示，导致刷新后图片变成纯文本占位的问题。
 - 修复 Hosted UI 回放事件时未识别 Responses `input_file.file_data` / `input_file.file_url` 的问题。
-- 修复 server responses session mirror 在 `account_id` 为空或 PostgreSQL duplicate session 错误文本变化时可能失败，导致预发 Hosted UI 上传图片后报“连接断开或生成出错”的问题。
+- 修复 server responses session mirror 在 `account_id` 为空或 PostgreSQL duplicate session 错误文本变化时可能失败，导致 Hosted UI 上传图片后报“连接断开或生成出错”的问题。
 - 修复刷新正在流式输出的会话时，订阅增量事件被单独构建成多条空“思考过程”消息的问题；恢复路径现在先合并完整 session events，再重建消息列表。
 - 修复会话列表重复项、活动 invocation 判定过早失效、运行中会话锁住其他 session 切换等 UI 状态问题。
 - 修复 Workspace 文件列表自动刷新时把当前 Markdown/HTML/文本预览强制切回编辑态的问题。
@@ -502,7 +521,7 @@
 - 修复 Windows 离线安装时核心依赖缺失的问题。
 - 修复 Windows BOM 文件兼容性，统一按 `utf-8-sig` 读取配置。
 - 修复 Web UI 构建阶段 Google Fonts 资源导致的失败问题。
-- 修复预发与生产 serverless 客户端的环境路由问题。
+- 修复多环境 serverless 客户端的路由选择问题。
 - 为 `fastapi` 与 `pydantic` 增加兼容性版本上限约束。
 
 ## [0.1.0] - 2026-01-15

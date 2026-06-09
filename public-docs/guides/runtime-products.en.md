@@ -136,7 +136,7 @@ placeholders, not real values.
 Do not publish:
 
 - private runtime image names or registries.
-- internal pre-release endpoints.
+- private-environment endpoints.
 - kubeconfig files or cluster names.
 - real channel tokens, model keys, or kdocs tokens.
 - customer workspace paths or object storage buckets.
@@ -144,4 +144,3 @@ Do not publish:
 
 The public docs should explain the contract and lifecycle. Operational details
 for a specific private environment belong in internal documentation.
-
