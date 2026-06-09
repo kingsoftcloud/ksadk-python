@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 import click
+from click.core import ParameterSource
 
 from ksadk.api import AgentEngineClient
 from ksadk.cli.agent_ref import merge_agent_inputs, resolve_agent_ref
@@ -56,7 +57,7 @@ from ksadk.hermes_terminal import (
 )
 
 
-DEFAULT_HERMES_IMAGE = "ghcr.io/kingsoftcloud/hermes-agent:2026.5.16-ksadk-v1"
+DEFAULT_HERMES_IMAGE = "ghcr.io/kingsoftcloud/hermes-agent:2026.5.29.2-ksadk-v1"
 DEFAULT_HERMES_CONTEXT_LENGTHS = (
     ("glm-5.1", "200000"),
 )
@@ -65,11 +66,12 @@ DEFAULT_HERMES_FALLBACK_MODELS = (
 )
 DEFAULT_HERMES_MODEL_NAME = "glm-5.1"
 DEFAULT_HERMES_PUBLIC_BASE_URL = "https://kspmas.ksyun.com/v1/"
-DEFAULT_HERMES_RUNTIME_BASE_URL = "https://kspmas.ksyun.com/v1/"
+DEFAULT_HERMES_RUNTIME_BASE_URL = DEFAULT_HERMES_PUBLIC_BASE_URL
 KSPMAS_PUBLIC_BASES = (
     "http://kspmas.ksyun.com",
     "https://kspmas.ksyun.com",
 )
+KSPMAS_INTERNAL_BASE = DEFAULT_HERMES_PUBLIC_BASE_URL.rstrip("/")
 _HERMES_GLOBAL_ENV_CACHE: dict[str, str] | None = None
 
 HERMES_RESOURCE = ResourceDescriptor(
@@ -115,11 +117,50 @@ HERMES_RESOURCE = ResourceDescriptor(
         "agentengine hermes open ar-xxxx --chat",
         "agentengine hermes exec ar-xxxx -- status",
         "agentengine hermes pairing ar-xxxx -- list",
+        "agentengine hermes pairing ar-xxxx -- approve wpsxiezuo <code>",
         "agentengine hermes delete ar-xxxx",
     ),
     missing_ref_message="未找到 Hermes Agent，请指定 Agent（--agent 或位置参数）",
     resolution_commands=("agentengine hermes list",),
 )
+
+
+def _option_was_explicit(ctx: click.Context | None, name: str) -> bool:
+    if ctx is None:
+        return False
+    try:
+        return ctx.get_parameter_source(name) != ParameterSource.DEFAULT
+    except Exception:
+        return False
+
+
+def _build_hermes_update_payload(
+    *,
+    payload: dict[str, Any],
+    storage_config: dict[str, Any] | None,
+    network_payload: dict[str, Any] | None,
+    include_env: bool,
+    include_storage: bool,
+) -> dict[str, Any]:
+    """构建已有 Hermes 的最小更新请求，避免镜像更新覆盖用户配置。"""
+    update_payload: dict[str, Any] = {
+        "name": payload["name"],
+        "description": payload["description"],
+        "framework": payload["framework"],
+        "artifact_type": payload["artifact_type"],
+        "artifact_path": payload["artifact_path"],
+        "region": payload["region"],
+        "resources": payload["resources"],
+        "scaling": payload["scaling"],
+        "ui_config": payload["ui_config"],
+    }
+    if include_env:
+        update_payload["env_vars"] = payload["env_vars"]
+    if include_storage and storage_config:
+        update_payload["storage"] = storage_config
+    if network_payload:
+        update_payload["network"] = network_payload
+    return update_payload
 
 
 @click.group("hermes", context_settings=CONTEXT_SETTINGS)
@@ -302,6 +343,19 @@ def _build_hermes_env_vars(
             value = _env_value(*source_keys)
             if value:
                 raw[target_key] = value
+    for key in (
+        "WPSXIEZUO_APP_ID",
+        "WPSXIEZUO_APP_KEY",
+        "WPSXIEZUO_API_BASE",
+        "WPSXIEZUO_WS_ENDPOINT",
+        "WPSXIEZUO_GROUP_AT_ONLY",
+        "WPSXIEZUO_ALLOWED_USERS",
+        "WPSXIEZUO_ALLOW_ALL_USERS",
+        "WPSXIEZUO_HOME_CHANNEL",
+    ):
+        value = _env_value(key)
+        if value:
+            raw[key] = value
     return [
         {"Key": key, "Value": str(value), "IsSensitive": any(token in key for token in ("KEY", "TOKEN", "SECRET"))}
         for key, value in raw.items()
@@ -327,7 +381,8 @@ def _validate_hermes_model_config(
 
 
 def _normalize_hermes_runtime_base_url(base_url: str | None) -> str:
-    return str(base_url or "").strip()
+    normalized = str(base_url or "").strip()
+    return normalized
 
 
 def _flatten_agent_detail(agent: dict[str, Any]) -> dict[str, Any]:
@@ -481,6 +536,21 @@ def deploy(
     """部署 Hermes runtime 到云端。"""
     _ = output_mode
     dry_run = effective_dry_run(dry_run)
+    ctx = click.get_current_context(silent=True)
+    include_env_on_update = any(
+        (
+            _option_was_explicit(ctx, "model_base_url"),
+            _option_was_explicit(ctx, "model_api_key"),
+            _option_was_explicit(ctx, "default_model"),
+        )
+    )
+    include_storage_on_update = any(
+        (
+            _option_was_explicit(ctx, "storage_size_gi"),
+            _option_was_explicit(ctx, "storage_mount_path"),
+            _option_was_explicit(ctx, "no_storage"),
+        )
+    )
     run_async_with_dry_run(
         _deploy_hermes(
             name=name,
@@ -494,6 +564,8 @@ def deploy(
             storage_size_gi=storage_size_gi,
             storage_mount_path=storage_mount_path,
             no_storage=no_storage,
+            include_env_on_update=include_env_on_update,
+            include_storage_on_update=include_storage_on_update,
             **network_cli_kwargs(
                 enable_public_access=enable_public_access,
                 enable_vpc_access=enable_vpc_access,
@@ -523,6 +595,8 @@ async def _deploy_hermes(
     storage_size_gi: int,
     storage_mount_path: str | None,
     no_storage: bool,
+    include_env_on_update: bool,
+    include_storage_on_update: bool,
     enable_public_access: bool | None,
     enable_vpc_access: bool,
     vpc_id: str | None,
@@ -582,6 +656,8 @@ async def _deploy_hermes(
     )
     if storage_config:
         payload["storage"] = storage_config
+    if existing_agent_id and include_storage_on_update and no_storage:
+        print_warn("更新已有 Hermes 时 `--no-storage` 不会删除服务端既有挂盘配置；默认保留已有配置。")
     network_payload = build_network_payload(
         enable_public_access=enable_public_access,
         enable_vpc_access=enable_vpc_access,
@@ -589,6 +665,8 @@ async def _deploy_hermes(
         subnet_id=subnet_id,
         security_group_id=security_group_id,
         availability_zone=availability_zone,
+        region=region,
+        dry_run=dry_run,
     )
     if network_payload:
         payload["network"] = network_payload
@@ -599,7 +677,14 @@ async def _deploy_hermes(
 
     async with AgentEngineClient(region=region, dry_run=dry_run) as client:
         if existing_agent_id:
-            res = await client.update_agent(existing_agent_id, payload)
+            update_payload = _build_hermes_update_payload(
+                payload=payload,
+                storage_config=storage_config,
+                network_payload=network_payload,
+                include_env=include_env_on_update,
+                include_storage=include_storage_on_update,
+            )
+            res = await client.update_agent(existing_agent_id, update_payload)
             if res is None:
                 res = {}
             res.setdefault("agent_id", existing_agent_id)
@@ -958,7 +1043,11 @@ def pairing_hermes(
     dry_run: bool,
     output_mode: str | None,
 ):
-    """透传 Hermes pairing 审批子命令。"""
+    """透传 Hermes pairing 审批子命令。
+
+    WPS 协作配对码来自未授权用户私聊机器人时 Hermes 返回的 pairing code，
+    审批示例：agentengine hermes pairing <agent> -- approve wpsxiezuo <code>
+    """
     _ = output_mode
     try:
         agent_ref, validated_argv = _split_terminal_agent_ref_and_argv(

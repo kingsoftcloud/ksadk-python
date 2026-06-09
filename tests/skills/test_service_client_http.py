@@ -299,6 +299,44 @@ def test_service_client_uses_kop_mode_for_internal_aicp_endpoint():
     assert headers["x-ksc-account-id"] == "2000003485"
 
 
+def test_service_client_routes_pre_online_kop_requests_with_custom_source(monkeypatch):
+    monkeypatch.setenv("KSADK_SKILL_SERVICE_REGION", "pre-online")
+    monkeypatch.setenv("AGENTENGINE_PRE_CONTROL_REGION", "cn-beijing-6")
+    monkeypatch.setenv("AGENTENGINE_PRE_CUSTOM_SOURCE", "pre")
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, str(request.url), dict(request.headers)))
+        return httpx.Response(
+            200,
+            json={
+                "Code": 200,
+                "RequestId": "req-pre-kop",
+                "Data": {"Skills": []},
+            },
+        )
+
+    client = SkillServiceClient(
+        base_url="http://aicp.inner.api.ksyun.com",
+        account_id="73398439",
+        transport=httpx.MockTransport(handler),
+    )
+
+    listing = client.list_skills_by_space_id("ss-pre")
+
+    assert listing.space_id == "ss-pre"
+    method, url, headers = requests[0]
+    assert method == "GET"
+    assert url == (
+        "http://aicp.inner.api.ksyun.com/"
+        "?Action=ListSkillsBySpaceId&Version=2024-06-12"
+        "&SpaceId=ss-pre&PageNumber=1&PageSize=100"
+    )
+    assert headers["x-ksc-region"] == "cn-beijing-6"
+    assert headers["x-ksc-custom-source"] == "pre"
+    assert headers["x-ksc-account-id"] == "73398439"
+
+
 def test_service_client_uses_registered_kop_action_for_available_premade_skills():
     requests = []
 

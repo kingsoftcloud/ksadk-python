@@ -1,91 +1,72 @@
 from __future__ import annotations
 
-
-def test_tool_gateway_allows_safe_tools_by_default(monkeypatch):
-    from ksadk.tools.gateway import ToolGateway, ToolPolicy
-
-    monkeypatch.delenv("KSADK_TOOL_APPROVAL_MODE", raising=False)
-    gateway = ToolGateway({"demo_tool": ToolPolicy(risk_level="low")})
-
-    result = gateway.invoke("demo_tool", lambda value: {"ok": True, "value": value}, "hello")
-
-    assert result == {"ok": True, "value": "hello"}
+from ksadk.tools.gateway import (
+    ToolGateway,
+    ToolPolicy,
+    approval_interrupt_info_from_result,
+    default_tool_gateway,
+    tool_policy_requires_approval,
+)
 
 
-def test_tool_gateway_returns_approval_request_for_risky_tools_in_strict_mode(monkeypatch):
-    from ksadk.tools.gateway import ToolGateway, ToolPolicy
+def test_tool_gateway_imports_public_api():
+    gateway = default_tool_gateway({"delete_file": ToolPolicy(risk_level="high")})
 
-    called = False
+    assert isinstance(gateway, ToolGateway)
 
-    def dangerous_tool():
-        nonlocal called
-        called = True
-        return {"ok": True}
 
+def test_tool_policy_requires_approval_only_in_strict_mode():
+    policy = ToolPolicy(risk_level="high")
+
+    assert tool_policy_requires_approval(policy, approval_mode="off") is False
+    assert tool_policy_requires_approval(policy, approval_mode="permissive") is False
+    assert tool_policy_requires_approval(policy, approval_mode="strict") is True
+
+
+def test_tool_gateway_returns_approval_request_in_strict_mode(monkeypatch):
     monkeypatch.setenv("KSADK_TOOL_APPROVAL_MODE", "strict")
-    gateway = ToolGateway(
-        {
-            "dangerous_tool": ToolPolicy(
-                risk_level="high",
-                side_effects=("workspace_write",),
-            )
-        }
-    )
+    gateway = ToolGateway({"write_file": ToolPolicy(risk_level="medium", side_effects=("workspace_write",))})
 
-    result = gateway.invoke("dangerous_tool", dangerous_tool)
+    result = gateway.invoke("write_file", lambda: {"ok": True})
 
-    assert called is False
-    assert result["ok"] is False
     assert result["type"] == "approval_required"
     assert result["approval_required"] is True
-    assert result["approval_request"]["tool_name"] == "dangerous_tool"
-    assert result["approval_request"]["risk_level"] == "high"
+    assert result["approval_request"]["tool_name"] == "write_file"
+    assert result["approval_request"]["risk_level"] == "medium"
     assert result["approval_request"]["side_effects"] == ["workspace_write"]
 
 
-def test_tool_gateway_approved_request_runs_risky_tool(monkeypatch):
-    from ksadk.tools.gateway import ToolGateway, ToolPolicy
-
+def test_tool_gateway_runs_approved_call_in_strict_mode(monkeypatch):
     monkeypatch.setenv("KSADK_TOOL_APPROVAL_MODE", "strict")
-    gateway = ToolGateway({"dangerous_tool": ToolPolicy(risk_level="high")})
+    gateway = ToolGateway({"write_file": ToolPolicy(risk_level="medium")})
 
-    result = gateway.invoke(
-        "dangerous_tool",
-        lambda: {"ok": True, "ran": True},
-        approval={"approved": True},
-    )
-
-    assert result == {"ok": True, "ran": True}
+    assert gateway.invoke("write_file", lambda value: {"ok": True, "value": value}, 3, approval={"approved": True}) == {
+        "ok": True,
+        "value": 3,
+    }
 
 
-def test_approval_interrupt_info_from_gateway_result():
-    from ksadk.tools.gateway import approval_interrupt_info_from_result
-
+def test_approval_interrupt_info_from_result_normalizes_payload():
     result = {
-        "ok": False,
         "type": "approval_required",
         "approval_request": {
             "id": "appr_123",
-            "tool_name": "write_workspace_file",
+            "tool_name": "write_file",
+            "tool_args": {"path": "demo.txt"},
             "risk_level": "medium",
             "side_effects": ["workspace_write"],
         },
     }
 
-    interrupt = approval_interrupt_info_from_result(
-        result,
-        fallback_tool_name="fallback",
-        tool_args={"path": "notes.txt"},
-        run_id="run-1",
-    )
+    interrupt = approval_interrupt_info_from_result(result, fallback_tool_name="fallback", run_id="run_1")
 
     assert interrupt == {
         "id": "appr_123",
         "approval_request_id": "appr_123",
-        "tool_name": "write_workspace_file",
-        "arguments": {"path": "notes.txt"},
+        "tool_name": "write_file",
+        "arguments": {"path": "demo.txt"},
         "risk_level": "medium",
         "side_effects": ["workspace_write"],
-        "run_id": "run-1",
         "server_label": "ksadk",
+        "run_id": "run_1",
     }

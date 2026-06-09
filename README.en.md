@@ -6,7 +6,7 @@
 
 Kingsoft Cloud Agent Development Kit. `ksadk` provides the Python SDK and command line tools for building, running, packaging, and deploying AgentEngine agents. After installation, both `agentengine` and the equivalent `ksadk` command are available. KsADK covers local development, serverless runtime, ADK, LangChain/LangGraph, DeepAgents, Hermes, OpenClaw, MCP, and Skill Runtime scenarios.
 
-Current version: `0.6.2`.
+Current version: `0.6.3`.
 
 ## Install
 
@@ -59,6 +59,14 @@ agentengine dashboard open
 - Skill Runtime: Skill Space discovery, zip download, `sha256` verification, safe extraction, instruction loading, and workflow execution through `local_process` or E2B sandbox backends
 - Built-in AgentEngine tools: skill discovery/loading, workspace file operations, component status, sandbox status, and sandbox direct code/command execution
 - Sandbox Runtime: common sandbox abstraction with an E2B-compatible backend
+
+## 0.6.3 Highlights
+
+- Hosted UI links align with the latest gateway / server `/hosted-ui/chat/`, share link, SSE subscription, and native terminal proxy contracts; `agentengine dashboard open` keeps using hosted entrypoints while `agentengine web` stays focused on local debugging.
+- LangGraph runner now emits the final answer after tool calls even when the model does not stream text chunks, avoiding empty assistant messages in the local Web UI.
+- Skill Service supports `KSADK_SKILL_SERVICE_REGION=pre-online` KOP routing with the expected pre-online headers.
+- OpenClaw and Hermes updates preserve existing server-side env, storage, network, and memory configuration by default, and only overwrite those groups when matching CLI options are supplied explicitly.
+- `ksadk.toolsets`, Tool Gateway, Skill Runtime, and Skill Service files are included in the package so the recommended LangGraph demo works after a clean install.
 
 ## 0.6.2 Highlights
 
