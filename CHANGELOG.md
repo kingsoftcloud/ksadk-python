@@ -5,6 +5,28 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [0.6.3] - 2026-06-09
+
+### 亮点
+
+- **Hosted UI 联动收敛**：与最新 gateway / server 对齐 hosted `/hosted-ui/chat/`、share link、SSE 订阅和 native terminal 代理契约；`agentengine dashboard open` 继续优先打开托管入口，本地 `agentengine web` 保持调试用途。
+- **Skill Space demo 可用性修复**：补齐 `ksadk.toolsets`、Tool Gateway、Skill Runtime 和 Skill Service 相关 package 文件，安装后的 LangGraph 样例可以直接绑定 AgentEngine 内置工具。
+- **更新镜像不覆盖用户配置**：OpenClaw / Hermes 更新已有实例时默认只更新镜像和必要运行时字段，不再把本地 shell 或默认值生成的 env/storage/network/memory 配置覆盖到服务端。
+- **开源样例门禁增强**：`ksadk-samples` 主推 LangGraph demo 增加 Skill Space、Skill Runtime、Workspace、Sandbox、知识库和长期记忆配置说明，并加入敏感信息扫描与结构校验。
+
+### 修复
+
+- 修复 LangGraph runner 在工具调用后没有文本流式 chunk 时不会输出最终 answer，导致本地 Web UI 存储空 assistant message 的问题。
+- 修复 Skill Service KOP client 在 `KSADK_SKILL_SERVICE_REGION=pre-online` 下没有按 AgentEngine client 规则设置 `X-Ksc-Region: cn-beijing-6` 和 `X-KSC-CUSTOM-SOURCE: pre` 的问题。
+- 修复内置工具 dispatcher 遇到未知 include/tool name 时可能抛异常的问题，现在返回结构化 `unknown_tool` 错误，便于 Agent 继续解释。
+- 修复 OpenClaw / Hermes deploy update payload 默认携带 `env_vars`、`storage`、`network` 等配置组的问题，降低客户更新公共镜像时误改生产配置的风险。
+
+### 兼容性说明
+
+- 新建 OpenClaw / Hermes 实例仍会发送完整 env/storage/network/UI 配置；只有更新已有实例时默认改为最小 payload。
+- 更新已有 OpenClaw / Hermes 时，如需覆盖模型或环境变量，请显式传入 `--model-base-url`、`--model-api-key`、`--default-model` 或 OpenClaw 的 `--env`；如需覆盖挂盘或网络，请显式传入对应 `--storage-*` / `--enable-vpc-access` 等参数。
+- `--no-storage` 在已有实例更新场景下不会删除服务端既有挂盘配置；删除挂盘属于后续需要服务端明确 API 支持的危险操作。
+
 ## [0.6.2] - 2026-06-04
 
 ### 亮点

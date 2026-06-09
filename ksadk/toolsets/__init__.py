@@ -144,7 +144,10 @@ def agentengine_tool_dispatcher(
     requested_include = _normalize_include(include)
 
     if normalized_action == "list":
-        _, specs = _select_agentengine_tools(include=requested_include or _DEFAULT_GROUPS, include_dispatcher=False)
+        try:
+            _, specs = _select_agentengine_tools(include=requested_include or _DEFAULT_GROUPS, include_dispatcher=False)
+        except ValueError:
+            return _unknown_tool_error(", ".join(requested_include) if requested_include else str(include or ""))
         return {"ok": True, "tools": specs, "tool_count": len(specs)}
 
     if normalized_action == "describe":

@@ -284,6 +284,26 @@ async def test_get_agent_ui_bootstrap_matches_local_shape_parity(monkeypatch):
                 "boundary": "workspace_root",
             },
             {
+                "name": "edit_workspace_file",
+                "group": "workspace",
+                "description": "Replace an exact text snippet inside a UTF-8 workspace file.",
+                "risk_level": "medium",
+                "requires_approval": False,
+                "side_effects": ["workspace_edit"],
+                "enabled": True,
+                "boundary": "workspace_root",
+            },
+            {
+                "name": "lint_workspace_file",
+                "group": "workspace",
+                "description": "Run lightweight built-in lint checks for a UTF-8 workspace text file.",
+                "risk_level": "low",
+                "requires_approval": False,
+                "side_effects": [],
+                "enabled": True,
+                "boundary": "workspace_root",
+            },
+            {
                 "name": "search_workspace_files",
                 "group": "workspace",
                 "description": "Search UTF-8 text files in the AgentEngine workspace.",
@@ -307,6 +327,39 @@ async def test_get_agent_ui_bootstrap_matches_local_shape_parity(monkeypatch):
                 "name": "component_status",
                 "group": "platform",
                 "description": "Report AgentEngine built-in toolset and runtime binding status.",
+                "risk_level": "low",
+                "requires_approval": False,
+                "side_effects": [],
+                "enabled": True,
+            },
+            {
+                "name": "search_knowledge_base",
+                "group": "platform",
+                "description": (
+                    "搜索知识库获取相关信息。\n\n"
+                    "当需要查找专业知识、文档内容或特定领域信息时使用此工具。\n"
+                    "会自动从已配置的金山云知识库中检索最相关的内容。\n\n"
+                    "Args:\n"
+                    "    query: 检索关键词或问题"
+                ),
+                "risk_level": "low",
+                "requires_approval": False,
+                "side_effects": [],
+                "enabled": True,
+            },
+            {
+                "name": "load_memory",
+                "group": "platform",
+                "description": "检索当前用户的长期记忆。",
+                "risk_level": "low",
+                "requires_approval": False,
+                "side_effects": [],
+                "enabled": True,
+            },
+            {
+                "name": "save_memory",
+                "group": "platform",
+                "description": "保存一条长期记忆。",
                 "risk_level": "low",
                 "requires_approval": False,
                 "side_effects": [],
@@ -567,6 +620,7 @@ async def test_run_agent_action_streaming_responses_uses_responses_lifecycle(mon
     assert "event: response.tool_result" not in lines
     assert runner.invocations[-1]["model"] == "glm-5.1"
     assert runner.invocations[-1]["session_id"] == "sess-runagent-responses"
+    assert runner.invocations[-1]["responses_conversation"] is True
     assert await service.get_session("sess-runagent-responses") is not None
     stored_events = await service.get_events("sess-runagent-responses")
     assistant_events = [event for event in stored_events if event.event_type == "assistant_message"]
@@ -1101,6 +1155,7 @@ async def test_responses_endpoint_passes_full_request_history_to_runner(monkeypa
 
     assert response.status_code == 200
     assert runner.invocations[-1]["input"] == "用go"
+    assert "responses_conversation" not in runner.invocations[-1]
     assert runner.invocations[-1]["history"] == [
         {"role": "user", "content": "写一个python快排的示例"},
         {"role": "model", "content": "这是 Python 快速排序示例。"},
@@ -1136,6 +1191,7 @@ async def test_responses_endpoint_non_streaming_supports_instructions_and_metada
     assert payload["output_text"] == "assistant says hi"
     assert payload["session_id"]
     assert runner.invocations[-1]["instructions"] == "只用中文回答"
+    assert "responses_conversation" not in runner.invocations[-1]
 
     events = await service.get_events(payload["session_id"])
     user_event = next(event for event in events if event.event_type == "user_message")
@@ -1887,22 +1943,15 @@ async def test_static_routes_serve_unified_agent_ui_shell(monkeypatch):
     assert "overflow" in css_response.text
 
 
-def _read_web_ui_source_or_skip(path: str) -> str:
-    source_path = Path(path)
-    if not source_path.exists():
-        pytest.skip("ksadk-web is the canonical UI source; embedded web-ui source is optional")
-    return source_path.read_text(encoding="utf-8")
-
-
 def test_web_ui_source_uses_title_and_summary_in_sidebar():
-    sidebar_source = _read_web_ui_source_or_skip(
-        "ksadk/server/web-ui/src/components/chat/ChatSidebar.tsx"
+    sidebar_source = Path("ksadk/server/web-ui/src/components/chat/ChatSidebar.tsx").read_text(
+        encoding="utf-8"
     )
-    session_helpers_source = _read_web_ui_source_or_skip(
-        "ksadk/server/web-ui/src/utils/session-helpers.ts"
+    session_helpers_source = Path("ksadk/server/web-ui/src/utils/session-helpers.ts").read_text(
+        encoding="utf-8"
     )
-    session_list_source = _read_web_ui_source_or_skip(
-        "ksadk/server/web-ui/src/utils/session-list.js"
+    session_list_source = Path("ksadk/server/web-ui/src/utils/session-list.js").read_text(
+        encoding="utf-8"
     )
     assert "session.Title" in session_helpers_source
     assert "session?.Summary" in session_list_source
@@ -1910,19 +1959,27 @@ def test_web_ui_source_uses_title_and_summary_in_sidebar():
 
 
 def test_web_ui_source_supports_clipboard_file_paste():
-    composer_source = _read_web_ui_source_or_skip(
+    composer_source = Path(
         "ksadk/server/web-ui/src/components/chat/ConnectedComposer.tsx"
+    ).read_text(encoding="utf-8")
+    attachment_source = Path("ksadk/server/web-ui/src/utils/attachment.ts").read_text(
+        encoding="utf-8"
     )
-    attachment_source = _read_web_ui_source_or_skip("ksadk/server/web-ui/src/utils/attachment.ts")
     assert "clipboardData.items" in attachment_source
     assert "onPaste" in composer_source
     assert "getAsFile" in attachment_source
 
 
 def test_web_ui_source_prefers_responses_when_runtime_supports_it():
-    bootstrap_source = _read_web_ui_source_or_skip("ksadk/server/web-ui/src/hooks/useBootstrap.ts")
-    layout_source = _read_web_ui_source_or_skip("ksadk/server/web-ui/src/utils/layout-constants.ts")
-    run_engine_source = _read_web_ui_source_or_skip("ksadk/server/web-ui/src/core/run/engine.ts")
+    bootstrap_source = Path("ksadk/server/web-ui/src/hooks/useBootstrap.ts").read_text(
+        encoding="utf-8"
+    )
+    layout_source = Path("ksadk/server/web-ui/src/utils/layout-constants.ts").read_text(
+        encoding="utf-8"
+    )
+    run_engine_source = Path("ksadk/server/web-ui/src/core/run/engine.ts").read_text(
+        encoding="utf-8"
+    )
     assert "setAgentFramework" in bootstrap_source
     assert "if (apiFormats.includes('responses'))" in layout_source
     assert "return 'responses'" in layout_source
@@ -1944,32 +2001,46 @@ def test_static_workbench_uses_openai_responses_content_for_inline_attachments()
 
 
 def test_web_ui_run_engine_uses_responses_input_for_responses_protocol():
-    run_engine_source = _read_web_ui_source_or_skip("ksadk/server/web-ui/src/core/run/engine.ts")
+    run_engine_source = Path("ksadk/server/web-ui/src/core/run/engine.ts").read_text(
+        encoding="utf-8"
+    )
 
     assert "body.ResponsesInput = [{ role: 'user', content: parts }]" in run_engine_source
     assert "body.Messages = [{ role: 'user', content: parts }]" in run_engine_source
 
 
 def test_web_ui_source_supports_workspace_panel_for_owner_access():
-    source = _read_web_ui_source_or_skip("ksadk/server/web-ui/src/App.tsx")
-    header_source = _read_web_ui_source_or_skip(
-        "ksadk/server/web-ui/src/components/chat/ChatHeader.tsx"
+    source = Path("ksadk/server/web-ui/src/App.tsx").read_text(encoding="utf-8")
+    header_source = Path("ksadk/server/web-ui/src/components/chat/ChatHeader.tsx").read_text(
+        encoding="utf-8"
     )
-    api_facade_source = _read_web_ui_source_or_skip("ksadk/server/web-ui/src/core/api/facade.ts")
-    bootstrap_source = _read_web_ui_source_or_skip("ksadk/server/web-ui/src/hooks/useBootstrap.ts")
-    layout_source = _read_web_ui_source_or_skip("ksadk/server/web-ui/src/utils/layout-constants.ts")
-    run_engine_source = _read_web_ui_source_or_skip("ksadk/server/web-ui/src/core/run/engine.ts")
-    workspace_api_source = _read_web_ui_source_or_skip("ksadk/server/web-ui/src/api/workspace.ts")
-    workspace_source = _read_web_ui_source_or_skip(
+    api_facade_source = Path("ksadk/server/web-ui/src/core/api/facade.ts").read_text(
+        encoding="utf-8"
+    )
+    bootstrap_source = Path("ksadk/server/web-ui/src/hooks/useBootstrap.ts").read_text(
+        encoding="utf-8"
+    )
+    layout_source = Path("ksadk/server/web-ui/src/utils/layout-constants.ts").read_text(
+        encoding="utf-8"
+    )
+    run_engine_source = Path("ksadk/server/web-ui/src/core/run/engine.ts").read_text(
+        encoding="utf-8"
+    )
+    workspace_api_source = Path("ksadk/server/web-ui/src/api/workspace.ts").read_text(
+        encoding="utf-8"
+    )
+    workspace_source = Path(
         "ksadk/server/web-ui/src/components/workspace/WorkspacePanel.tsx"
+    ).read_text(encoding="utf-8")
+    workspace_utils_source = Path("ksadk/server/web-ui/src/utils/workspace.js").read_text(
+        encoding="utf-8"
     )
-    workspace_utils_source = _read_web_ui_source_or_skip("ksadk/server/web-ui/src/utils/workspace.js")
-    session_events_source = _read_web_ui_source_or_skip(
-        "ksadk/server/web-ui/src/utils/session-events.js"
+    session_events_source = Path("ksadk/server/web-ui/src/utils/session-events.js").read_text(
+        encoding="utf-8"
     )
-    responses_stream_source = _read_web_ui_source_or_skip(
+    responses_stream_source = Path(
         "ksadk/server/web-ui/src/utils/responses-stream.js"
-    )
+    ).read_text(encoding="utf-8")
     assert "WorkspaceFiles" in source
     assert "canAccessWorkspaceFiles({ workspaceFiles, accessMode })" in source
     assert "mode === 'owner' || mode === 'private'" in workspace_utils_source
@@ -1994,18 +2065,18 @@ def test_web_ui_source_supports_workspace_panel_for_owner_access():
 
 
 def test_web_ui_source_supports_streaming_queue_and_refresh_pending_status():
-    source = _read_web_ui_source_or_skip("ksadk/server/web-ui/src/App.tsx")
-    connected_composer_source = _read_web_ui_source_or_skip(
+    source = Path("ksadk/server/web-ui/src/App.tsx").read_text(encoding="utf-8")
+    connected_composer_source = Path(
         "ksadk/server/web-ui/src/components/chat/ConnectedComposer.tsx"
-    )
-    composer_source = _read_web_ui_source_or_skip(
+    ).read_text(encoding="utf-8")
+    composer_source = Path(
         "ksadk/server/web-ui/src/components/chat/ChatComposer.tsx"
+    ).read_text(encoding="utf-8")
+    sidebar_source = Path("ksadk/server/web-ui/src/components/chat/ChatSidebar.tsx").read_text(
+        encoding="utf-8"
     )
-    sidebar_source = _read_web_ui_source_or_skip(
-        "ksadk/server/web-ui/src/components/chat/ChatSidebar.tsx"
-    )
-    session_events_source = _read_web_ui_source_or_skip(
-        "ksadk/server/web-ui/src/utils/session-events.js"
+    session_events_source = Path("ksadk/server/web-ui/src/utils/session-events.js").read_text(
+        encoding="utf-8"
     )
     assert "queuedDraftRef" in source
     assert "queuedDrafts={queuedDrafts}" in connected_composer_source
@@ -2020,20 +2091,20 @@ def test_web_ui_source_supports_streaming_queue_and_refresh_pending_status():
 
 
 def test_web_ui_source_threads_generation_controls_into_message_list():
-    source = _read_web_ui_source_or_skip(
-        "ksadk/server/web-ui/src/components/chat/ChatMessageList.tsx"
+    source = Path("ksadk/server/web-ui/src/components/chat/ChatMessageList.tsx").read_text(
+        encoding="utf-8"
     )
     assert "onStopGeneration," in source
     assert "onCancelRemote," in source
 
 
 def test_web_ui_source_uses_adaptive_image_preview_sizing():
-    connected_message_list_source = _read_web_ui_source_or_skip(
+    connected_message_list_source = Path(
         "ksadk/server/web-ui/src/components/chat/ConnectedMessageList.tsx"
-    )
-    preview_source = _read_web_ui_source_or_skip(
+    ).read_text(encoding="utf-8")
+    preview_source = Path(
         "ksadk/server/web-ui/src/components/chat/AttachmentPreview.tsx"
-    )
+    ).read_text(encoding="utf-8")
     assert "naturalWidth" in preview_source
     assert "naturalHeight" in preview_source
     assert "setPreviewImageSize" in connected_message_list_source
