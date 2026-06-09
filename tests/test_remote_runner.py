@@ -75,7 +75,9 @@ class _FakeAsyncClient:
 
 
 @pytest.mark.asyncio
-async def test_remote_runner_responses_invoke_posts_to_responses(monkeypatch):
+async def test_remote_runner_responses_invoke_keeps_external_responses_stateless_by_default(
+    monkeypatch,
+):
     import httpx
 
     _FakeAsyncClient.calls = []
@@ -84,16 +86,61 @@ async def test_remote_runner_responses_invoke_posts_to_responses(monkeypatch):
         endpoint="https://agent.example.com", api_key="ak-demo", api_format="responses"
     )
 
-    payload = await runner.invoke({"input": "hi", "session_id": "sess-1"})
+    payload = await runner.invoke(
+        {
+            "input": "hi",
+            "session_id": "sess-1",
+            "platform_context": {"agent_id": "demo-agent"},
+        }
+    )
 
     assert payload == {"output": "hello responses"}
     assert _FakeAsyncClient.calls[0]["url"] == "https://agent.example.com/v1/responses"
     assert _FakeAsyncClient.calls[0]["json"] == {
         "input": "hi",
         "stream": False,
-        "session_id": "sess-1",
     }
     assert _FakeAsyncClient.calls[0]["headers"]["Authorization"] == "Bearer ak-demo"
+
+
+@pytest.mark.asyncio
+async def test_remote_runner_responses_invoke_forwards_explicit_conversation(monkeypatch):
+    import httpx
+
+    _FakeAsyncClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+    runner = RemoteRunner(endpoint="https://agent.example.com", api_format="responses")
+
+    await runner.invoke(
+        {
+            "input": "hi",
+            "conversation": "customer-thread-1",
+        }
+    )
+
+    assert _FakeAsyncClient.calls[0]["json"]["conversation"] == "customer-thread-1"
+
+
+@pytest.mark.asyncio
+async def test_remote_runner_responses_explicit_conversation_does_not_send_ksadk_history(
+    monkeypatch,
+):
+    import httpx
+
+    _FakeAsyncClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+    runner = RemoteRunner(endpoint="https://agent.example.com", api_format="responses")
+
+    await runner.invoke(
+        {
+            "input": "hi",
+            "conversation": {"id": "customer-thread-1"},
+            "history": [{"role": "user", "content": "old"}],
+        }
+    )
+
+    assert _FakeAsyncClient.calls[0]["json"]["conversation"] == "customer-thread-1"
+    assert "conversation_history" not in _FakeAsyncClient.calls[0]["json"]
 
 
 @pytest.mark.asyncio
@@ -145,6 +192,7 @@ async def test_remote_runner_responses_keeps_standard_item_array_and_previous_re
         }
     ]
     assert _FakeAsyncClient.calls[0]["json"]["previous_response_id"] == "resp_123"
+    assert "conversation" not in _FakeAsyncClient.calls[0]["json"]
 
 
 @pytest.mark.asyncio
@@ -162,6 +210,76 @@ async def test_remote_runner_responses_stream_parses_text_and_reasoning(monkeypa
         {"delta": "hello", "type": "text"},
         {"delta": "thinking", "type": "thinking"},
     ]
+
+
+@pytest.mark.asyncio
+async def test_remote_runner_responses_stream_sends_hermes_conversation_and_history(
+    monkeypatch,
+):
+    import httpx
+
+    _FakeAsyncClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+    runner = RemoteRunner(endpoint="https://agent.example.com", api_format="responses")
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "input": "s6-overlay是什么",
+                "session_id": "sess-1",
+                "responses_conversation": True,
+                "platform_context": {"agent_id": "demo-agent"},
+                "history": [
+                    {"role": "user", "content": "tini 是什么"},
+                    {"role": "model", "content": "tini 是容器 init 进程。"},
+                    {"role": "user", "content": "s6-overlay是什么"},
+                ],
+            }
+        )
+    ]
+
+    assert chunks
+    assert _FakeAsyncClient.calls[0]["json"]["input"] == "s6-overlay是什么"
+    assert _FakeAsyncClient.calls[0]["json"]["conversation"] == "agentengine:demo-agent:sess-1"
+    assert "session_id" not in _FakeAsyncClient.calls[0]["json"]
+    assert _FakeAsyncClient.calls[0]["json"]["conversation_history"] == [
+        {"role": "user", "content": [{"type": "input_text", "text": "tini 是什么"}]},
+        {
+            "role": "assistant",
+            "content": [{"type": "input_text", "text": "tini 是容器 init 进程。"}],
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_remote_runner_responses_stream_does_not_mix_conversation_with_previous_response_id(
+    monkeypatch,
+):
+    import httpx
+
+    _FakeAsyncClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+    runner = RemoteRunner(endpoint="https://agent.example.com", api_format="responses")
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "input": "继续",
+                "session_id": "sess-1",
+                "responses_conversation": True,
+                "previous_response_id": "resp_123",
+                "history": [{"role": "user", "content": "旧消息"}],
+                "platform_context": {"agent_id": "demo-agent"},
+            }
+        )
+    ]
+
+    assert chunks
+    assert _FakeAsyncClient.calls[0]["json"]["previous_response_id"] == "resp_123"
+    assert "conversation" not in _FakeAsyncClient.calls[0]["json"]
+    assert "conversation_history" not in _FakeAsyncClient.calls[0]["json"]
 
 
 @pytest.mark.asyncio
@@ -263,6 +381,7 @@ async def test_remote_runner_responses_can_send_openclaw_session_header(monkeypa
     assert _FakeAsyncClient.calls[0]["headers"]["Authorization"] == "Bearer gateway-token"
     assert _FakeAsyncClient.calls[0]["headers"]["x-openclaw-session-key"] == "sess-1"
     assert "session_id" not in _FakeAsyncClient.calls[0]["json"]
+    assert "conversation" not in _FakeAsyncClient.calls[0]["json"]
 
 
 @pytest.mark.asyncio

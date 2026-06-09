@@ -847,6 +847,8 @@ async def _deploy_mcp_async(
         subnet_id=subnet_id,
         security_group_id=security_group_id,
         availability_zone=availability_zone,
+        region=region,
+        dry_run=dry_run,
     )
     if network_payload:
         request_data["network"] = network_payload

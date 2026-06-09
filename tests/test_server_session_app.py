@@ -1201,14 +1201,12 @@ async def test_chat_completions_reuses_prior_attachment_results_on_follow_up_tur
             "display_name": "resume.txt",
             "mime_type": "text/plain",
             "transport": "inline",
-            "file_uri": "",
             "size_bytes": len("候选人简历内容".encode("utf-8")),
             "kind": "text",
             "status": "ok",
             "warnings": [],
             "extraction_method": "text_decode",
             "text_excerpt": "候选人简历内容",
-            "text": "候选人简历内容",
         }
     ]
 

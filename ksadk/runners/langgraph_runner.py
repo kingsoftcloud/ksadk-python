@@ -344,6 +344,9 @@ class LangGraphRunner(BaseRunner):
             # 自定义 output 字段是业务显式出参，优先于内部 messages state。
             if "output" in result:
                 return result["output"]
+            # LangGraph 示例常用 answer 作为最终业务回答字段。
+            if "answer" in result:
+                return result["answer"]
             # 标准 messages 格式
             if "messages" in result:
                 messages = result["messages"]
@@ -392,6 +395,8 @@ class LangGraphRunner(BaseRunner):
 
         accumulated_text = ""
         accumulated_reasoning = ""
+        emitted_non_text_event = False
+        final_output_text = ""
 
         if not hasattr(self._agent, "astream_events"):
             result = await self.invoke(invoke_payload)
@@ -433,6 +438,7 @@ class LangGraphRunner(BaseRunner):
                             yield {"delta": content, "type": "text"}
 
                 elif event_kind == "on_tool_start":
+                    emitted_non_text_event = True
                     yield {
                         "type": "tool_call",
                         "tool_name": event.get("name", "unknown"),
@@ -441,19 +447,25 @@ class LangGraphRunner(BaseRunner):
                     }
                 
                 elif event_kind == "on_tool_end":
+                    emitted_non_text_event = True
                     tool_output = event.get("data", {}).get("output", "")
                     yield {
                         "type": "tool_result",
                         "tool_name": event.get("name", "unknown"),
-                        "tool_output": str(tool_output) if tool_output else "",
+                        "tool_args": event.get("data", {}).get("input", {}),
+                        "tool_output": tool_output if isinstance(tool_output, dict) else (str(tool_output) if tool_output else ""),
                         "run_id": event.get("run_id"),
                     }
                     
                 elif event_kind == "on_chain_end":
                     output = event.get("data", {}).get("output", {})
                     if isinstance(output, dict) and "__interrupt__" in output:
+                        emitted_non_text_event = True
                         yield {"type": "interrupt", "interrupt_info": output["__interrupt__"], "session_id": session_id}
                         return
+                    extracted_output = self._extract_output(output)
+                    if extracted_output:
+                        final_output_text = str(extracted_output)
 
         except Exception as e:
             if "Interrupt" in type(e).__name__:
@@ -462,8 +474,11 @@ class LangGraphRunner(BaseRunner):
             raise
 
         if not accumulated_text:
-            result = await self.invoke(invoke_payload)
-            yield {"output": result.get("output", ""), "type": "final"}
+            if final_output_text:
+                yield {"output": final_output_text, "type": "final"}
+            elif not emitted_non_text_event:
+                result = await self.invoke(invoke_payload)
+                yield {"output": result.get("output", ""), "type": "final"}
 
     def _filter_tool_tags(self, content: str) -> str:
         """过滤 <tool_call> 标签"""

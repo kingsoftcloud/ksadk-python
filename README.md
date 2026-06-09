@@ -1,8 +1,8 @@
-# ksadk
+# KsADK
 
 Kingsoft Cloud Agent Development Kit. `ksadk` provides the Python SDK and CLI for building, running, packaging, and deploying AgentEngine agents across local development, serverless runtime, ADK, LangChain/LangGraph, DeepAgents, Hermes, OpenClaw, MCP, and Skill Runtime scenarios.
 
-Current version: `0.6.2`.
+Current version: `0.6.3`.
 
 ## Install
 
@@ -53,12 +53,24 @@ agentengine dashboard open
 - Skill Runtime preview: Skill Center discovery, zip download, `sha256` verification, safe extraction, local execution, and sandbox execution through the `ksadk[skills]` extra
 - Sandbox Runtime preview: common sandbox abstraction with an E2B-compatible backend
 
+## 0.6.3 Highlights
+
+- `agentengine dashboard open` and hosted access links align around hosted UI routes, while local `agentengine web` keeps the same debugging workflow for projects.
+- LangGraph streaming now emits the final assistant answer after tool calls even when the model does not stream text chunks, so local Web UI sessions no longer end with an empty assistant message.
+- Skill Service pre-online KOP routing is compatible with `KSADK_SKILL_SERVICE_REGION=pre-online`, including the expected region header and pre-online custom source header.
+- OpenClaw and Hermes image updates preserve existing server-side environment, storage, network, and memory configuration by default; explicitly supplied CLI options still update the corresponding group.
+- AgentEngine built-in toolsets, Skill Runtime files, and Tool Gateway modules are included in the package so samples using `ksadk.toolsets` work after a clean install.
+- OpenClaw defaults track the current `2026.6.1` runtime; Hermes image bootstrap can be updated by the AgentEngine server-side bootstrap configuration.
+
 ## 0.6.2 Highlights
 
-- `setup_tracing()` now recognizes standard `OTEL_EXPORTER_OTLP_*` HTTP traces settings, so agent code can emit OpenTelemetry spans/events/attributes while the backend routes to Langfuse or another OTLP Collector.
-- Langfuse environment variables remain compatible; when generic OTLP is configured, auto mode avoids enabling an extra Langfuse direct exporter and duplicating traces.
-- Runtime templates initialize tracing when only OTLP environment variables are present, not only when `LANGFUSE_PUBLIC_KEY` is set.
-- Environment variable registry and docs now cover OTLP traces settings, AICP endpoint mode, and Skill Service endpoint/scheme overrides.
+- Skill Runtime can discover Skill Space entries, download and verify skill packages, load `SKILL.md`, and execute workflow-style skills through `local_process` or E2B sandbox backends.
+- Built-in AgentEngine tools are available through `ksadk.toolsets`, including skill discovery/loading, workspace file tools, component status, sandbox status, and sandbox direct `run_command` / `run_code`.
+- `get_agentengine_tools(include=["focused", "agentengine_tool_dispatcher"])` is the recommended binding pattern for LangGraph/LangChain-style agents that need progressive disclosure instead of binding every built-in tool into the model context.
+- Tool Gateway provides a shared approval envelope for medium/high-risk operations such as workspace writes/deletes, Skill Runtime execution, and sandbox command/code execution.
+- Workspace tools now include exact snippet editing and lightweight lint checks in addition to list/read/write/search/delete operations.
+- `setup_tracing()` now recognizes standard `OTEL_EXPORTER_OTLP_*` HTTP traces settings, while existing Langfuse environment variables remain compatible.
+- Environment variable registry and docs now cover OTLP traces settings, AICP endpoint mode, Skill Service endpoint/scheme overrides, Sandbox Runtime, and Skill Runtime settings.
 
 ## 0.6.0 Highlights
 
@@ -86,8 +98,13 @@ PyPI does not serve repository-relative files such as `./docs/*.md`. The links b
 
 ## Project Links
 
-- Documentation: <https://ksadk.kingsoft.com/docs>
+- Documentation: <https://kingsoftcloud.github.io/ksadk-python/>
 - Repository: <https://github.com/kingsoftcloud/ksadk-python>
+- Ask Zread: <https://zread.ai/kingsoftcloud/ksadk-python>
+- Web UI repository: <https://github.com/kingsoftcloud/ksadk-web>
+- Samples repository: <https://github.com/kingsoftcloud/ksadk-samples>
+- PyPI: <https://pypi.org/project/ksadk/>
+- License: Apache-2.0
 
 ## Notes
 

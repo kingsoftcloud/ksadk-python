@@ -148,7 +148,9 @@ def test_validate_hermes_exec_argv_rejects_mutating_or_shell_like_commands(argv)
         ["list"],
         ["approve", "feishu", "ABC123"],
         ["approve", "weixin", "XYZ789"],
+        ["approve", "wpsxiezuo", "WPS123"],
         ["revoke", "feishu", "user-1"],
+        ["revoke", "wpsxiezuo", "user-1"],
         ["clear-pending"],
     ],
 )
