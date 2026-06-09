@@ -49,6 +49,10 @@ export HERMES_LANGFUSE_ENV="${HERMES_LANGFUSE_ENV:-${LANGFUSE_ENV:-}}"
 export HERMES_LANGFUSE_RELEASE="${HERMES_LANGFUSE_RELEASE:-${LANGFUSE_RELEASE:-}}"
 export HERMES_LANGFUSE_AUTO_ENABLE="${HERMES_LANGFUSE_AUTO_ENABLE:-true}"
 export HERMES_WPSXIEZUO_AUTO_ENABLE="${HERMES_WPSXIEZUO_AUTO_ENABLE:-true}"
+export HERMES_BOOTSTRAP_POLICY="${HERMES_BOOTSTRAP_POLICY:-preserve-user}"
+export HERMES_BOOTSTRAP_FORCE_SYNC="${HERMES_BOOTSTRAP_FORCE_SYNC:-false}"
+export HERMES_BOOTSTRAP_CACHE_DIR="${HERMES_BOOTSTRAP_CACHE_DIR:-${HERMES_HOME}/.bootstrap-cache}"
+export HERMES_BUNDLED_SKILLS_DIR="${HERMES_BUNDLED_SKILLS_DIR:-/app/skills}"
 export HERMES_ALLOW_LAZY_INSTALLS="${HERMES_ALLOW_LAZY_INSTALLS:-false}"
 export HERMES_TUI_PREWARM="${HERMES_TUI_PREWARM:-true}"
 export HERMES_TUI_PREWARM_TIMEOUT="${HERMES_TUI_PREWARM_TIMEOUT:-75}"
@@ -59,6 +63,14 @@ export HERMES_UI_LOCALE="${HERMES_UI_LOCALE:-zh}"
 if [[ -z "${TERM:-}" || "${TERM}" == "dumb" ]]; then
   export TERM="xterm-256color"
 fi
+case "${HERMES_BOOTSTRAP_POLICY}" in
+  preserve-user)
+    ;;
+  *)
+    printf '[hermes-entrypoint] unsupported HERMES_BOOTSTRAP_POLICY=%s; falling back to preserve-user\n' "${HERMES_BOOTSTRAP_POLICY}" >&2
+    export HERMES_BOOTSTRAP_POLICY="preserve-user"
+    ;;
+esac
 export PYTHONPATH="/app/runtime${PYTHONPATH:+:${PYTHONPATH}}"
 export PATH="/usr/local/bin:${HOME}/.local/bin:${PATH}"
 
@@ -83,6 +95,94 @@ normalize_bool() {
       printf 'false\n'
       ;;
   esac
+}
+
+sync_managed_directory() {
+  local src="$1"
+  local dst="$2"
+  local sig_file="$3"
+  local label="$4"
+  local mode="${5:-strict}"
+
+  python - "${src}" "${dst}" "${sig_file}" "${label}" "${mode}" "${HERMES_BOOTSTRAP_FORCE_SYNC}" <<'PY'
+from __future__ import annotations
+
+import hashlib
+import shutil
+import sys
+from pathlib import Path
+
+src = Path(sys.argv[1])
+dst = Path(sys.argv[2])
+sig_file = Path(sys.argv[3])
+label = sys.argv[4]
+mode = sys.argv[5]
+force = str(sys.argv[6]).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def log(message: str) -> None:
+    print(f"[hermes-entrypoint] {message}", file=sys.stderr, flush=True)
+
+
+def directory_signature(path: Path) -> str:
+    digest = hashlib.sha256()
+    if not path.exists():
+        return ""
+    for child in sorted(path.rglob("*")):
+        if child.is_dir():
+            continue
+        digest.update(child.relative_to(path).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(child.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def remove_path(path: Path) -> None:
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.exists():
+        shutil.rmtree(path)
+
+
+def copy_clean() -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    remove_path(dst)
+    shutil.copytree(src, dst)
+
+
+def copy_overlay() -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists() and not dst.is_dir():
+        remove_path(dst)
+    shutil.copytree(src, dst, dirs_exist_ok=True)
+
+
+if not src.is_dir():
+    log(f"managed source missing for {label}: {src}")
+    sys.exit(0)
+
+source_sig = directory_signature(src)
+previous_sig = sig_file.read_text(encoding="utf-8").strip() if sig_file.is_file() else ""
+current_sig = directory_signature(dst) if dst.exists() and dst.is_dir() else ""
+is_managed = bool(previous_sig and current_sig == previous_sig)
+sig_file.parent.mkdir(parents=True, exist_ok=True)
+
+if not dst.exists():
+    copy_clean()
+    sig_file.write_text(source_sig + "\n", encoding="utf-8")
+    log(f"synced managed {label}")
+elif force or is_managed:
+    copy_clean()
+    sig_file.write_text(source_sig + "\n", encoding="utf-8")
+    log(f"updated managed {label}")
+elif mode == "overlay-preserve":
+    copy_overlay()
+    sig_file.write_text(source_sig + "\n", encoding="utf-8")
+    log(f"updated managed {label} while preserving user files")
+else:
+    log(f"preserved user-managed {label}")
+PY
 }
 
 resolve_api_server_enabled() {
@@ -158,7 +258,7 @@ mkdir -p "${AGENT_BROWSER_ARTIFACTS_DIR}" "${AGENT_BROWSER_LOG_DIR}"
 find "${AGENT_BROWSER_RUN_DIR}" -mindepth 1 -maxdepth 1 -type s -delete 2>/dev/null || true
 cd "${HERMES_WORKDIR}"
 
-cat > "${HERMES_HOME}/.env" <<EOF
+cat > "${HERMES_HOME}/.env.managed" <<EOF
 OPENAI_API_KEY=${OPENAI_API_KEY:-}
 OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
 OPENAI_MODEL_NAME=${OPENAI_MODEL_NAME:-}
@@ -206,39 +306,51 @@ AGENT_BROWSER_LOG_DIR=${AGENT_BROWSER_LOG_DIR}
 KDOCS_OPEN_BROWSER=${KDOCS_OPEN_BROWSER}
 EOF
 
-for bundled_skill in /app/skills/*; do
+if [[ ! -e "${HERMES_HOME}/.env" ]]; then
+  cp "${HERMES_HOME}/.env.managed" "${HERMES_HOME}/.env"
+  entrypoint_log "initialized default .env"
+else
+  entrypoint_log "preserved user-managed .env"
+fi
+
+for bundled_skill in "${HERMES_BUNDLED_SKILLS_DIR}"/*; do
   [[ -d "${bundled_skill}" ]] || continue
   skill_name="$(basename "${bundled_skill}")"
-  rm -rf "${HERMES_HOME}/skills/${skill_name}"
-  cp -R "${bundled_skill}" "${HERMES_HOME}/skills/${skill_name}"
+  sync_managed_directory \
+    "${bundled_skill}" \
+    "${HERMES_HOME}/skills/${skill_name}" \
+    "${HERMES_BOOTSTRAP_CACHE_DIR}/skills/${skill_name}.sig" \
+    "skill ${skill_name}" \
+    "strict"
 done
 
-python - <<'PY'
+WPSXIEZUO_PLUGIN_SOURCE="$(python - <<'PY'
 from __future__ import annotations
 
 import os
-import shutil
+import sys
 from pathlib import Path
 
 try:
     import hermes_wpsxiezuo
 except Exception as exc:  # pragma: no cover - image-time compatibility guard
-    print(f"[hermes-entrypoint] WPSXiezuo plugin install failed: {exc}", flush=True)
+    print(f"[hermes-entrypoint] WPSXiezuo plugin install failed: {exc}", file=sys.stderr, flush=True)
 else:
     hermes_home = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
     src = Path(hermes_wpsxiezuo.__file__).resolve().parent
-    dst = hermes_home / "plugins" / "platforms" / "wpsxiezuo"
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    if dst.exists() or dst.is_symlink():
-        if dst.is_symlink() or dst.is_file():
-            dst.unlink()
-        else:
-            shutil.rmtree(dst)
-    shutil.copytree(src, dst)
-    print("[hermes-entrypoint] WPSXiezuo plugin installed: platforms/wpsxiezuo", flush=True)
+    print(str(src), flush=True)
 PY
+)"
+if [[ -n "${WPSXIEZUO_PLUGIN_SOURCE}" ]]; then
+  sync_managed_directory \
+    "${WPSXIEZUO_PLUGIN_SOURCE}" \
+    "${HERMES_HOME}/plugins/platforms/wpsxiezuo" \
+    "${HERMES_BOOTSTRAP_CACHE_DIR}/plugins/platforms/wpsxiezuo.sig" \
+    "plugin platforms/wpsxiezuo" \
+    "overlay-preserve"
+fi
 
-cat > "${HERMES_HOME}/config.yaml" <<EOF
+cat > "${HERMES_HOME}/config.generated.yaml" <<EOF
 model:
   provider: "${HERMES_MODEL_PROVIDER}"
   default: "${OPENAI_MODEL_NAME:-}"
@@ -247,18 +359,18 @@ model:
 EOF
 
 if [[ -n "${HERMES_CONTEXT_LENGTH}" ]]; then
-  cat >> "${HERMES_HOME}/config.yaml" <<EOF
+  cat >> "${HERMES_HOME}/config.generated.yaml" <<EOF
   context_length: ${HERMES_CONTEXT_LENGTH}
 EOF
 fi
 
-cat >> "${HERMES_HOME}/config.yaml" <<EOF
+cat >> "${HERMES_HOME}/config.generated.yaml" <<EOF
 display:
   interface: tui
 EOF
 
 if [[ -n "${HERMES_COMPRESSION_MODEL}" ]]; then
-  cat >> "${HERMES_HOME}/config.yaml" <<EOF
+  cat >> "${HERMES_HOME}/config.generated.yaml" <<EOF
 auxiliary:
   compression:
     provider: "${HERMES_COMPRESSION_PROVIDER}"
@@ -267,22 +379,22 @@ auxiliary:
     api_key: "${OPENAI_API_KEY:-}"
 EOF
   if [[ -n "${HERMES_COMPRESSION_CONTEXT_LENGTH}" ]]; then
-    cat >> "${HERMES_HOME}/config.yaml" <<EOF
+    cat >> "${HERMES_HOME}/config.generated.yaml" <<EOF
     context_length: ${HERMES_COMPRESSION_CONTEXT_LENGTH}
 EOF
   fi
-  cat >> "${HERMES_HOME}/config.yaml" <<EOF
+  cat >> "${HERMES_HOME}/config.generated.yaml" <<EOF
     timeout: ${HERMES_COMPRESSION_TIMEOUT}
 EOF
 fi
 
 if [[ -n "${HERMES_TITLE_GENERATION_MODEL}" ]]; then
-  if ! grep -q '^auxiliary:' "${HERMES_HOME}/config.yaml"; then
-    cat >> "${HERMES_HOME}/config.yaml" <<EOF
+  if ! grep -q '^auxiliary:' "${HERMES_HOME}/config.generated.yaml"; then
+    cat >> "${HERMES_HOME}/config.generated.yaml" <<EOF
 auxiliary:
 EOF
   fi
-  cat >> "${HERMES_HOME}/config.yaml" <<EOF
+  cat >> "${HERMES_HOME}/config.generated.yaml" <<EOF
   title_generation:
     provider: "${HERMES_TITLE_GENERATION_PROVIDER}"
     model: "${HERMES_TITLE_GENERATION_MODEL}"
@@ -293,20 +405,20 @@ EOF
 fi
 
 if [[ -n "${HERMES_FALLBACK_MODEL}" && -n "${HERMES_FALLBACK_PROVIDER}" ]]; then
-  cat >> "${HERMES_HOME}/config.yaml" <<EOF
+  cat >> "${HERMES_HOME}/config.generated.yaml" <<EOF
 fallback_model:
   provider: "${HERMES_FALLBACK_PROVIDER}"
   model: "${HERMES_FALLBACK_MODEL}"
   api_key: "${OPENAI_API_KEY:-}"
 EOF
   if [[ -n "${HERMES_FALLBACK_BASE_URL}" ]]; then
-    cat >> "${HERMES_HOME}/config.yaml" <<EOF
+    cat >> "${HERMES_HOME}/config.generated.yaml" <<EOF
   base_url: "${HERMES_FALLBACK_BASE_URL}"
 EOF
   fi
 fi
 
-cat >> "${HERMES_HOME}/config.yaml" <<EOF
+cat >> "${HERMES_HOME}/config.generated.yaml" <<EOF
 api_server:
   enabled: ${API_SERVER_ENABLED}
   host: "${API_SERVER_HOST}"
@@ -319,17 +431,19 @@ security:
   tirith_fail_open: true
 EOF
 
+if [[ ! -e "${HERMES_HOME}/config.yaml" ]]; then
+  cp "${HERMES_HOME}/config.generated.yaml" "${HERMES_HOME}/config.yaml"
+  entrypoint_log "initialized default config.yaml"
+else
+  entrypoint_log "preserved user-managed config.yaml"
+fi
+
 case "${HERMES_LANGFUSE_AUTO_ENABLE,,}" in
   0|false|no|off)
     entrypoint_log "Langfuse auto-enable disabled"
     ;;
   *)
     if [[ -n "${HERMES_LANGFUSE_PUBLIC_KEY}" && -n "${HERMES_LANGFUSE_SECRET_KEY}" ]]; then
-      cat >> "${HERMES_HOME}/config.yaml" <<EOF
-plugins:
-  enabled:
-    - observability/langfuse
-EOF
       python - <<'PY'
 from __future__ import annotations
 
