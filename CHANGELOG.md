@@ -13,6 +13,7 @@
 - **文档信息架构调整**：MkDocs 导航改为 Getting Started / Build / Run / Deploy / Observe / Extend / Reference，更贴近开发者完成任务的路径。
 - **Samples 场景入口对齐**：`ksadk-samples` 根 README 改为场景优先，真实映射 Knowledge Assistant、Workflow Agent、Tool-Using Agent 和 Memory-aware Agent；尚未实现的场景只进入 Roadmap。
 - **公开元数据修复**：更新 PyPI summary 和包内简介为 Agent Runtime Platform 定位，为后续补丁发布准备干净的 long description。
+- **默认线上地域说明**：公开 README 和文档首页使用 `KSYUN_REGION=cn-beijing-6` 作为线上默认 region 示例，避免用户把非公开或内网配置照搬到公开 demo。
 
 ### 修复
 

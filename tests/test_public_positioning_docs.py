@@ -137,6 +137,7 @@ def test_english_navigation_translates_all_chinese_labels():
 def test_public_materials_do_not_publish_environment_specific_release_words():
     forbidden = (
         "pre-online",
+        "预发",
         "内部预发 endpoint",
         "internal pre-release endpoints",
         "X-Ksc-Region",
