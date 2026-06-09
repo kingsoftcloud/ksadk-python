@@ -284,6 +284,26 @@ async def test_get_agent_ui_bootstrap_matches_local_shape_parity(monkeypatch):
                 "boundary": "workspace_root",
             },
             {
+                "name": "edit_workspace_file",
+                "group": "workspace",
+                "description": "Replace an exact text snippet inside a UTF-8 workspace file.",
+                "risk_level": "medium",
+                "requires_approval": False,
+                "side_effects": ["workspace_edit"],
+                "enabled": True,
+                "boundary": "workspace_root",
+            },
+            {
+                "name": "lint_workspace_file",
+                "group": "workspace",
+                "description": "Run lightweight built-in lint checks for a UTF-8 workspace text file.",
+                "risk_level": "low",
+                "requires_approval": False,
+                "side_effects": [],
+                "enabled": True,
+                "boundary": "workspace_root",
+            },
+            {
                 "name": "search_workspace_files",
                 "group": "workspace",
                 "description": "Search UTF-8 text files in the AgentEngine workspace.",
@@ -307,6 +327,39 @@ async def test_get_agent_ui_bootstrap_matches_local_shape_parity(monkeypatch):
                 "name": "component_status",
                 "group": "platform",
                 "description": "Report AgentEngine built-in toolset and runtime binding status.",
+                "risk_level": "low",
+                "requires_approval": False,
+                "side_effects": [],
+                "enabled": True,
+            },
+            {
+                "name": "search_knowledge_base",
+                "group": "platform",
+                "description": (
+                    "搜索知识库获取相关信息。\n\n"
+                    "当需要查找专业知识、文档内容或特定领域信息时使用此工具。\n"
+                    "会自动从已配置的金山云知识库中检索最相关的内容。\n\n"
+                    "Args:\n"
+                    "    query: 检索关键词或问题"
+                ),
+                "risk_level": "low",
+                "requires_approval": False,
+                "side_effects": [],
+                "enabled": True,
+            },
+            {
+                "name": "load_memory",
+                "group": "platform",
+                "description": "检索当前用户的长期记忆。",
+                "risk_level": "low",
+                "requires_approval": False,
+                "side_effects": [],
+                "enabled": True,
+            },
+            {
+                "name": "save_memory",
+                "group": "platform",
+                "description": "保存一条长期记忆。",
                 "risk_level": "low",
                 "requires_approval": False,
                 "side_effects": [],

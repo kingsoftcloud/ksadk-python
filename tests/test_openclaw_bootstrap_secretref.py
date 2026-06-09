@@ -96,7 +96,7 @@ def _build_base_env(state_dir: str, config_path: str) -> dict:
         wrapper_path = safe_bin_dir / cmd
         wrapper_path.write_text("#!/bin/sh\nexit 0\n")
         wrapper_path.chmod(0o755)
-    for cmd in ["curl", "jq", "yt-dlp", "openclaw", "gh", "xreach"]:
+    for cmd in ["curl", "jq", "yt-dlp", "openclaw", "agent-browser", "gh", "xreach"]:
         raw_bin_path = raw_bin_dir / cmd
         raw_bin_path.write_text("#!/bin/sh\nexit 0\n")
         raw_bin_path.chmod(0o755)
@@ -1846,6 +1846,7 @@ def test_bootstrap_keeps_model_api_key_in_gateway_process_env_for_deferred_auth_
         env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
         env["BOOTSTRAP_CAPTURE_ENV_PATH"] = str(captured_env_path)
         env["OPENCLAW_WORKSPACE_FILES_ENABLED"] = "0"
+        env["OPENCLAW_RUNTIME_PROXY_ENABLED"] = "0"
         env["PATH"] = f"{fake_bin_dir}:{env['PATH']}"
         env.pop("OPENCLAW_BOOTSTRAP_ONLY", None)
 
@@ -1953,8 +1954,6 @@ def test_bootstrap_does_not_relaunch_gateway_after_upstream_handoff_restart():
             assert process.poll() is None, process.stderr.read() or process.stdout.read()
             assert gateway_count_path.read_text().strip() == "1"
         finally:
-            process.terminate()
-            process.communicate(timeout=5)
             if successor_pid_path.exists():
                 successor_pid = successor_pid_path.read_text().strip()
                 if successor_pid:
@@ -1964,6 +1963,12 @@ def test_bootstrap_does_not_relaunch_gateway_after_upstream_handoff_restart():
                         capture_output=True,
                         text=True,
                     )
+            process.terminate()
+            try:
+                process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate(timeout=5)
 
 
 def test_bootstrap_runtime_proxy_moves_gateway_to_internal_port():

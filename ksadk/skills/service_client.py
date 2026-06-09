@@ -34,7 +34,9 @@ class SkillServiceClient:
         self.access_key = access_key or _env("KSADK_SKILL_SERVICE_ACCESS_KEY", "KSYUN_ACCESS_KEY", "KS3_ACCESS_KEY")
         self.secret_key = secret_key or _env("KSADK_SKILL_SERVICE_SECRET_KEY", "KSYUN_SECRET_KEY", "KS3_SECRET_KEY")
         self.account_id = account_id or _env("KSADK_SKILL_SERVICE_ACCOUNT_ID", "KSYUN_ACCOUNT_ID")
-        self.region = region or _env("KSADK_SKILL_SERVICE_REGION", "KSYUN_REGION") or "cn-beijing-6"
+        self.logical_region = region or _env("KSADK_SKILL_SERVICE_REGION", "KSYUN_REGION") or "cn-beijing-6"
+        self.region = _normalize_control_region(self.logical_region)
+        self.custom_source = _resolve_custom_source(self.logical_region)
         self.api_version = api_version or os.environ.get("KSADK_SKILL_SERVICE_API_VERSION", "2024-06-12")
         self.sign_service = sign_service or os.environ.get("KSADK_SKILL_SERVICE_SIGN_SERVICE", "aicp")
         self.extra_headers = dict(extra_headers or {})
@@ -145,6 +147,8 @@ class SkillServiceClient:
                     "X-Ksc-Source": "ksadk-skill-runtime",
                 }
             )
+            if self.custom_source:
+                headers["X-KSC-CUSTOM-SOURCE"] = self.custom_source
             if action:
                 headers["X-Action"] = action
                 headers["X-Version"] = self.api_version
@@ -209,6 +213,19 @@ def _env(*names: str) -> str:
         value = os.environ.get(name, "").strip()
         if value:
             return value
+    return ""
+
+
+def _normalize_control_region(region: str) -> str:
+    region = (region or "cn-beijing-6").strip()
+    if region.lower() == "pre-online":
+        return os.environ.get("AGENTENGINE_PRE_CONTROL_REGION", "cn-beijing-6")
+    return region
+
+
+def _resolve_custom_source(region: str) -> str:
+    if (region or "").strip().lower() == "pre-online":
+        return os.environ.get("AGENTENGINE_PRE_CUSTOM_SOURCE", "pre")
     return ""
 
 

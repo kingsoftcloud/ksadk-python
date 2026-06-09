@@ -1,8 +1,8 @@
-# ksadk
+# KsADK
 
 Kingsoft Cloud Agent Development Kit. `ksadk` provides the Python SDK and CLI for building, running, packaging, and deploying AgentEngine agents across local development, serverless runtime, ADK, LangChain/LangGraph, DeepAgents, Hermes, OpenClaw, MCP, and Skill Runtime scenarios.
 
-Current version: `0.6.2`.
+Current version: `0.6.3`.
 
 ## Install
 
@@ -53,6 +53,15 @@ agentengine dashboard open
 - Skill Runtime preview: Skill Center discovery, zip download, `sha256` verification, safe extraction, local execution, and sandbox execution through the `ksadk[skills]` extra
 - Sandbox Runtime preview: common sandbox abstraction with an E2B-compatible backend
 
+## 0.6.3 Highlights
+
+- `agentengine dashboard open` and hosted access links align around hosted UI routes, while local `agentengine web` keeps the same debugging workflow for projects.
+- LangGraph streaming now emits the final assistant answer after tool calls even when the model does not stream text chunks, so local Web UI sessions no longer end with an empty assistant message.
+- Skill Service pre-online KOP routing is compatible with `KSADK_SKILL_SERVICE_REGION=pre-online`, including the expected region header and pre-online custom source header.
+- OpenClaw and Hermes image updates preserve existing server-side environment, storage, network, and memory configuration by default; explicitly supplied CLI options still update the corresponding group.
+- AgentEngine built-in toolsets, Skill Runtime files, and Tool Gateway modules are included in the package so samples using `ksadk.toolsets` work after a clean install.
+- OpenClaw defaults track the current `2026.6.1` runtime; Hermes image bootstrap can be updated by the AgentEngine server-side bootstrap configuration.
+
 ## 0.6.2 Highlights
 
 - Skill Runtime can discover Skill Space entries, download and verify skill packages, load `SKILL.md`, and execute workflow-style skills through `local_process` or E2B sandbox backends.
@@ -89,8 +98,13 @@ PyPI does not serve repository-relative files such as `./docs/*.md`. The links b
 
 ## Project Links
 
-- Documentation: <https://ksadk.kingsoft.com/docs>
+- Documentation: <https://kingsoftcloud.github.io/ksadk-python/>
 - Repository: <https://github.com/kingsoftcloud/ksadk-python>
+- Ask Zread: <https://zread.ai/kingsoftcloud/ksadk-python>
+- Web UI repository: <https://github.com/kingsoftcloud/ksadk-web>
+- Samples repository: <https://github.com/kingsoftcloud/ksadk-samples>
+- PyPI: <https://pypi.org/project/ksadk/>
+- License: Apache-2.0
 
 ## Notes
 
