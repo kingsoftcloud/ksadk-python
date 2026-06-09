@@ -58,6 +58,8 @@ def test_readmes_position_ksadk_as_runtime_platform():
             assert expected in text, f"{relative_path} missing {expected}"
         assert "Agent Development Kit" not in text
         assert "KSADK_SKILL_SERVICE_REGION=pre-online" not in text
+        assert "当前版本：" not in text
+        assert "候选版本：`0.6.4`" in text
 
 
 def test_english_readme_positions_ksadk_as_runtime_platform():
@@ -78,6 +80,8 @@ def test_english_readme_positions_ksadk_as_runtime_platform():
         assert expected in text
     assert "Agent Development Kit" not in text
     assert "KSADK_SKILL_SERVICE_REGION=pre-online" not in text
+    assert "Current version:" not in text
+    assert "Candidate version: `0.6.4`" in text
 
 
 def test_docs_homepage_uses_runtime_platform_information_architecture():
