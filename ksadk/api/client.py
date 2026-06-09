@@ -1243,16 +1243,17 @@ class AgentEngineClient:
         agent_id: Optional[str] = None,
         name: Optional[str] = None,
         link_type: str = "private",
-        path: str = "/",
+        path: Optional[str] = None,
         expires_seconds: Optional[int] = None,
         force_new: bool = False,
     ) -> Dict[str, Any]:
         """创建 Dashboard 短链接。"""
         params: Dict[str, Any] = {
             "LinkType": link_type,
-            "Path": path,
             "ForceNew": bool(force_new),
         }
+        if path is not None:
+            params["Path"] = path
         if expires_seconds is not None:
             params["ExpiresSeconds"] = int(expires_seconds)
         if agent_id:

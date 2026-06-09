@@ -2056,7 +2056,7 @@ HERMES_DASHBOARD_PORT=9119
 PORT=8080
 # HERMES_CONTEXT_LENGTH=200000
 # HERMES_FALLBACK_MODEL=kimi-k2.6
-# HERMES_IMAGE=hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.5.16
+# HERMES_IMAGE=hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.5.29.2-ksadk-v1
 """
     else:
         langfuse_public = global_env.get("LANGFUSE_PUBLIC_KEY", "")

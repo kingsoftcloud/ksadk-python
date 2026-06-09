@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -21,6 +23,7 @@ MODULE_PATH = (
     / "runtime"
     / "app.py"
 )
+ENTRYPOINT_PATH = Path(__file__).resolve().parents[1] / "deploy" / "hermes" / "entrypoint.sh"
 HOSTED_GATEWAY_MODULE_PATH = (
     Path(__file__).resolve().parents[1]
     / "deploy"
@@ -47,6 +50,63 @@ def _load_hosted_gateway_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _entrypoint_text() -> str:
+    return ENTRYPOINT_PATH.read_text(encoding="utf-8")
+
+
+def _directory_signature(path: Path) -> str:
+    digest = hashlib.sha256()
+    for child in sorted(path.rglob("*")):
+        if child.is_dir():
+            continue
+        digest.update(child.relative_to(path).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(child.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _write_entrypoint_setup_runner(tmp_path: Path) -> Path:
+    entrypoint = _entrypoint_text()
+    setup_prefix = entrypoint.split("\nprewarm_hermes_tui() {", 1)[0]
+    runner = tmp_path / "entrypoint-setup.sh"
+    runner.write_text(setup_prefix + "\nexit 0\n", encoding="utf-8")
+    runner.chmod(0o755)
+    return runner
+
+
+def _write_fake_wpsxiezuo_module(root: Path, marker: str) -> None:
+    module_dir = root / "hermes_wpsxiezuo"
+    module_dir.mkdir(parents=True)
+    (module_dir / "__init__.py").write_text(f'PLUGIN_MARKER = "{marker}"\n', encoding="utf-8")
+    (module_dir / "plugin_code.py").write_text(f'VERSION = "{marker}"\n', encoding="utf-8")
+
+
+def _run_entrypoint_setup(tmp_path: Path, *, hermes_home: Path, bundled_skills: Path, fake_pythonpath: Path):
+    runner = _write_entrypoint_setup_runner(tmp_path)
+    env = os.environ.copy()
+    env.update(
+        {
+            "HOME": str(tmp_path / "home"),
+            "HERMES_HOME": str(hermes_home),
+            "HERMES_WORKDIR": str(hermes_home / "workspace"),
+            "HERMES_BUNDLED_SKILLS_DIR": str(bundled_skills),
+            "PYTHONPATH": str(fake_pythonpath),
+            "OPENAI_MODEL_NAME": "",
+            "HERMES_LANGFUSE_AUTO_ENABLE": "false",
+            "HERMES_WPSXIEZUO_AUTO_ENABLE": "false",
+        }
+    )
+    return subprocess.run(
+        ["bash", str(runner)],
+        cwd=str(tmp_path),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
 
 class _FakeResponse:
@@ -234,6 +294,62 @@ def test_proxy_dashboard_routes_root_to_hermes_dashboard(monkeypatch):
     assert stream is True
 
 
+def test_proxy_dashboard_routes_docs_to_hermes_dashboard(monkeypatch):
+    module = _load_runtime_module()
+    _FakeAsyncClient.send_calls = []
+    _FakeAsyncClient.routes = {
+        (
+            "GET",
+            "http://127.0.0.1:9119/docs",
+        ): _FakeResponse(status_code=200, content=b"<html>hermes docs</html>", headers={"content-type": "text/html"}),
+    }
+    monkeypatch.setattr(module.httpx, "AsyncClient", _FakeAsyncClient)
+
+    with TestClient(module.app) as client:
+        response = client.get("/docs")
+        wrapper_docs_response = client.get("/_ksadk/docs")
+
+    assert response.status_code == 200
+    assert "hermes docs" in response.text
+    assert "swagger-ui" not in response.text.lower()
+    assert wrapper_docs_response.status_code == 200
+    assert "swagger-ui" in wrapper_docs_response.text.lower()
+    method, url, _headers, _content, stream = _FakeAsyncClient.send_calls[0]
+    assert method == "GET"
+    assert url == "http://127.0.0.1:9119/docs"
+    assert stream is True
+
+
+def test_proxy_dashboard_drops_upstream_hop_and_generated_headers(monkeypatch):
+    module = _load_runtime_module()
+    _FakeAsyncClient.send_calls = []
+    _FakeAsyncClient.routes = {
+        (
+            "GET",
+            "http://127.0.0.1:9119/api/status",
+        ): _FakeResponse(
+            status_code=200,
+            content=b'{"ok":true}',
+            headers={
+                "content-type": "application/json",
+                "date": "Thu, 04 Jun 2026 11:00:00 GMT",
+                "server": "uvicorn",
+                "content-length": "11",
+                "x-upstream": "dashboard",
+            },
+        ),
+    }
+    monkeypatch.setattr(module.httpx, "AsyncClient", _FakeAsyncClient)
+
+    with TestClient(module.app) as client:
+        response = client.get("/api/status")
+
+    assert response.status_code == 200
+    assert response.headers["x-upstream"] == "dashboard"
+    assert response.headers.get("server") != "uvicorn"
+    assert response.headers.get("date") != "Thu, 04 Jun 2026 11:00:00 GMT"
+
+
 def test_proxy_dashboard_translates_session_header_back_to_authorization(monkeypatch):
     module = _load_runtime_module()
     _FakeAsyncClient.send_calls = []
@@ -259,6 +375,118 @@ def test_proxy_dashboard_translates_session_header_back_to_authorization(monkeyp
     assert headers is not None
     assert headers["Authorization"] == "Bearer demo-token"
     assert "X-Hermes-Session-Token" not in headers
+
+
+def test_proxy_dashboard_websocket_forwards_to_hermes_dashboard(monkeypatch):
+    module = _load_runtime_module()
+    sent_to_upstream: list[object] = []
+    connect_calls: list[tuple[str, dict]] = []
+
+    class _FakeUpstreamWebSocket:
+        async def send(self, payload):
+            sent_to_upstream.append(payload)
+
+        async def recv(self):
+            await module.asyncio.sleep(0.01)
+            return json.dumps({"type": "pong"})
+
+        async def close(self):
+            return None
+
+    async def _fake_connect(uri, **kwargs):
+        connect_calls.append((uri, kwargs))
+        return _FakeUpstreamWebSocket()
+
+    monkeypatch.setattr(module.websockets, "connect", _fake_connect)
+
+    with TestClient(module.app) as client:
+        with client.websocket_connect(
+            "/api/pty?token=demo-token&channel=demo-channel",
+            headers={"X-Hermes-Session-Token": "demo-token"},
+        ) as websocket:
+            websocket.send_text("hello")
+            assert json.loads(websocket.receive_text()) == {"type": "pong"}
+
+    assert connect_calls
+    uri, kwargs = connect_calls[0]
+    assert uri == "ws://127.0.0.1:9119/api/pty?token=demo-token&channel=demo-channel"
+    assert kwargs["additional_headers"]["Authorization"] == "Bearer demo-token"
+    assert "X-Hermes-Session-Token" not in kwargs["additional_headers"]
+    assert sent_to_upstream == ["hello"]
+
+
+def test_proxy_dashboard_websocket_uses_query_token_for_browser_clients(monkeypatch):
+    module = _load_runtime_module()
+    connect_calls: list[tuple[str, dict]] = []
+
+    class _FakeUpstreamWebSocket:
+        async def send(self, payload):
+            return None
+
+        async def recv(self):
+            await module.asyncio.sleep(0.01)
+            return json.dumps({"type": "ready"})
+
+        async def close(self):
+            return None
+
+    async def _fake_connect(uri, **kwargs):
+        connect_calls.append((uri, kwargs))
+        return _FakeUpstreamWebSocket()
+
+    monkeypatch.setattr(module.websockets, "connect", _fake_connect)
+
+    with TestClient(module.app) as client:
+        with client.websocket_connect(
+            "/api/events?token=browser-token&channel=demo-channel",
+            headers={"Origin": "https://ar-demo.agent.kspmas.ksyun.com"},
+        ) as websocket:
+            assert json.loads(websocket.receive_text()) == {"type": "ready"}
+
+    assert connect_calls
+    uri, kwargs = connect_calls[0]
+    assert uri == "ws://127.0.0.1:9119/api/events?token=browser-token&channel=demo-channel"
+    assert kwargs["additional_headers"]["Authorization"] == "Bearer browser-token"
+    assert "origin" not in {key.lower() for key in kwargs["additional_headers"]}
+    assert "X-Hermes-Session-Token" not in kwargs["additional_headers"]
+
+
+def test_proxy_dashboard_websocket_drops_terminal_reports_from_chat_pty(monkeypatch):
+    module = _load_runtime_module()
+    sent_to_upstream: list[object] = []
+    recv_count = 0
+
+    class _FakeUpstreamWebSocket:
+        async def send(self, payload):
+            sent_to_upstream.append(payload)
+
+        async def recv(self):
+            nonlocal recv_count
+            recv_count += 1
+            await module.asyncio.sleep(0.01)
+            if recv_count == 1:
+                return json.dumps({"type": "ready"})
+            await module.asyncio.sleep(1)
+            return json.dumps({"type": "late"})
+
+        async def close(self):
+            return None
+
+    async def _fake_connect(uri, **kwargs):
+        return _FakeUpstreamWebSocket()
+
+    monkeypatch.setattr(module.websockets, "connect", _fake_connect)
+
+    with TestClient(module.app) as client:
+        with client.websocket_connect(
+            "/api/pty?token=demo-token&channel=demo-channel",
+            headers={"X-Hermes-Session-Token": "demo-token"},
+        ) as websocket:
+            websocket.send_text("\x1b[?1;2c")
+            websocket.send_text("hello")
+            assert json.loads(websocket.receive_text()) == {"type": "ready"}
+
+    assert sent_to_upstream == ["hello"]
 
 
 def test_runtime_blocks_dashboard_self_update_for_hosted_pods(monkeypatch):
@@ -494,25 +722,25 @@ def test_runtime_promotes_dumb_term_to_xterm_256color(monkeypatch):
 
 
 def test_entrypoint_writes_explicit_context_length_override():
-    entrypoint = (
-        Path(__file__).resolve().parents[1]
-        / "deploy"
-        / "hermes"
-        / "entrypoint.sh"
-    ).read_text(encoding="utf-8")
+    entrypoint = _entrypoint_text()
 
     assert "HERMES_CONTEXT_LENGTH" in entrypoint
     assert "context_length: ${HERMES_CONTEXT_LENGTH}" in entrypoint
     assert "HERMES_COMPRESSION_CONTEXT_LENGTH" in entrypoint
     assert "auxiliary:" in entrypoint
     assert "compression:" in entrypoint
+    assert "title_generation:" in entrypoint
+    assert "provider: \"${HERMES_TITLE_GENERATION_PROVIDER}\"" in entrypoint
+    assert "model: \"${HERMES_TITLE_GENERATION_MODEL}\"" in entrypoint
+    assert "base_url: \"${HERMES_TITLE_GENERATION_BASE_URL}\"" in entrypoint
+    assert 'api_key: "${OPENAI_API_KEY:-}"' in entrypoint
     assert "context_length: ${HERMES_COMPRESSION_CONTEXT_LENGTH}" in entrypoint
     assert "glm-5.1" in entrypoint
     assert "fallback_model:" in entrypoint
     assert "model: \"${HERMES_FALLBACK_MODEL}\"" in entrypoint
     assert '${HERMES_HOME}/skills' in entrypoint
-    assert "for bundled_skill in /app/skills/*" in entrypoint
-    assert 'cp -R "${bundled_skill}"' in entrypoint
+    assert 'for bundled_skill in "${HERMES_BUNDLED_SKILLS_DIR}"/*' in entrypoint
+    assert "sync_managed_directory" in entrypoint
     assert "TAVILY_API_KEY" in entrypoint
     assert "EXA_API_KEY" in entrypoint
     assert 'export HOME="${HOME:-/home/node}"' in entrypoint
@@ -536,15 +764,25 @@ def test_entrypoint_writes_explicit_context_length_override():
     assert 'export AGENT_BROWSER_RUN_DIR="${AGENT_BROWSER_RUN_DIR:-${AGENT_BROWSER_STATE_DIR}/run}"' in entrypoint
     assert 'export AGENT_BROWSER_SESSION_DIR="${AGENT_BROWSER_SESSION_DIR:-${AGENT_BROWSER_STATE_DIR}/sessions}"' in entrypoint
     assert 'export AGENT_BROWSER_SOCKET_DIR="${AGENT_BROWSER_SOCKET_DIR:-${AGENT_BROWSER_RUN_DIR}}"' in entrypoint
-    assert 'export API_SERVER_ENABLED="${API_SERVER_ENABLED:-true}"' in entrypoint
+    assert 'export API_SERVER_ENABLED="${API_SERVER_ENABLED:-}"' in entrypoint
+    assert 'export HERMES_DASHBOARD_READY_TIMEOUT="${HERMES_DASHBOARD_READY_TIMEOUT:-120}"' in entrypoint
     assert 'export KDOCS_OPEN_BROWSER="${KDOCS_OPEN_BROWSER:-0}"' in entrypoint
     assert 'export HERMES_UI_LOCALE="${HERMES_UI_LOCALE:-zh}"' in entrypoint
+    assert 'export HERMES_ALLOW_LAZY_INSTALLS="${HERMES_ALLOW_LAZY_INSTALLS:-false}"' in entrypoint
     assert 'export HERMES_TUI_PREWARM="${HERMES_TUI_PREWARM:-true}"' in entrypoint
     assert 'export HERMES_TUI_PREWARM_TIMEOUT="${HERMES_TUI_PREWARM_TIMEOUT:-75}"' in entrypoint
     assert 'export TIRITH_ENABLED="${TIRITH_ENABLED:-false}"' in entrypoint
     assert 'GATEWAY_PID_FILE="${HERMES_RUN_DIR}/gateway.pid"' in entrypoint
+    assert "normalize_bool() {" in entrypoint
+    assert "resolve_api_server_enabled() {" in entrypoint
+    assert 'API server requested but API_SERVER_KEY missing; disabling api_server platform' in entrypoint
+    assert 'export API_SERVER_ENABLED="$(resolve_api_server_enabled)"' in entrypoint
     assert 'start_gateway_process() {' in entrypoint
     assert "prewarm_hermes_tui() {" in entrypoint
+    assert "wait_for_dashboard_ready() {" in entrypoint
+    assert 'Waiting for Hermes dashboard readiness:' in entrypoint
+    assert 'Hermes dashboard ready after ${waited}s' in entrypoint
+    assert 'Hermes dashboard readiness timed out after ${timeout_seconds}s' in entrypoint
     assert "Hermes TUI prewarm starting" in entrypoint
     assert 'timeout "${HERMES_TUI_PREWARM_TIMEOUT}" script -q -c "hermes chat" /dev/null' in entrypoint
     assert 'while true; do' in entrypoint
@@ -556,7 +794,11 @@ def test_entrypoint_writes_explicit_context_length_override():
     assert 'mkdir -p "${AGENT_BROWSER_STATE_DIR}" "${AGENT_BROWSER_RUN_DIR}" "${AGENT_BROWSER_SESSION_DIR}"' in entrypoint
     assert 'cd "${HERMES_WORKDIR}"' in entrypoint
     assert 'enabled: ${API_SERVER_ENABLED}' in entrypoint
+    assert "display:" in entrypoint
+    assert "  interface: tui" in entrypoint
+    assert 'wait_for_dashboard_ready' in entrypoint
     assert 'security:' in entrypoint
+    assert 'allow_lazy_installs: ${HERMES_ALLOW_LAZY_INSTALLS}' in entrypoint
     assert 'tirith_enabled: ${TIRITH_ENABLED}' in entrypoint
     assert 'tirith_path: "tirith"' in entrypoint
     assert 'tirith_timeout: 5' in entrypoint
@@ -566,13 +808,97 @@ def test_entrypoint_writes_explicit_context_length_override():
     assert "TIRITH_ENABLED=${TIRITH_ENABLED}" in entrypoint
 
 
+def test_entrypoint_bootstrap_uses_managed_files_and_signed_sync():
+    entrypoint = _entrypoint_text()
+
+    assert 'export HERMES_BOOTSTRAP_POLICY="${HERMES_BOOTSTRAP_POLICY:-preserve-user}"' in entrypoint
+    assert 'export HERMES_BOOTSTRAP_FORCE_SYNC="${HERMES_BOOTSTRAP_FORCE_SYNC:-false}"' in entrypoint
+    assert 'cat > "${HERMES_HOME}/.env"' not in entrypoint
+    assert 'cat > "${HERMES_HOME}/.env.managed"' in entrypoint
+    assert 'cat > "${HERMES_HOME}/config.yaml"' not in entrypoint
+    assert 'cat > "${HERMES_HOME}/config.generated.yaml"' in entrypoint
+    assert 'rm -rf "${HERMES_HOME}/skills/${skill_name}"' not in entrypoint
+    assert 'log(f"preserved user-managed {label}")' in entrypoint
+    assert 'HERMES_BUNDLED_SKILLS_DIR="${HERMES_BUNDLED_SKILLS_DIR:-/app/skills}"' in entrypoint
+    assert "sync_managed_directory" in entrypoint
+
+
+def test_entrypoint_setup_preserves_user_env_config_mcporter_and_plugin_state(tmp_path):
+    hermes_home = tmp_path / "hermes-home"
+    bundled_skills = tmp_path / "app-skills"
+    fake_pythonpath = tmp_path / "fake-pythonpath"
+    hermes_home.mkdir()
+    bundled_skills.mkdir()
+    _write_fake_wpsxiezuo_module(fake_pythonpath, "new-plugin-code")
+
+    (hermes_home / ".env").write_text("USER_DEFINED=value\nOPENAI_API_KEY=user-secret\n", encoding="utf-8")
+    (hermes_home / "config.yaml").write_text(
+        "plugins:\n  enabled:\n    - custom/plugin\n",
+        encoding="utf-8",
+    )
+    mcporter_config = hermes_home / "mcporter" / "kdocs.json"
+    mcporter_config.parent.mkdir(parents=True)
+    mcporter_config.write_text('{"Authorization":"Bearer user"}\n', encoding="utf-8")
+    wps_plugin_dir = hermes_home / "plugins" / "platforms" / "wpsxiezuo"
+    wps_plugin_dir.mkdir(parents=True)
+    (wps_plugin_dir / "user-state.json").write_text('{"pairing":"kept"}\n', encoding="utf-8")
+
+    result = _run_entrypoint_setup(
+        tmp_path,
+        hermes_home=hermes_home,
+        bundled_skills=bundled_skills,
+        fake_pythonpath=fake_pythonpath,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert (hermes_home / ".env").read_text(encoding="utf-8") == "USER_DEFINED=value\nOPENAI_API_KEY=user-secret\n"
+    assert "OPENAI_API_KEY=" in (hermes_home / ".env.managed").read_text(encoding="utf-8")
+    assert (hermes_home / "config.yaml").read_text(encoding="utf-8") == "plugins:\n  enabled:\n    - custom/plugin\n"
+    assert "model:" in (hermes_home / "config.generated.yaml").read_text(encoding="utf-8")
+    assert mcporter_config.read_text(encoding="utf-8") == '{"Authorization":"Bearer user"}\n'
+    assert (wps_plugin_dir / "user-state.json").read_text(encoding="utf-8") == '{"pairing":"kept"}\n'
+    assert (wps_plugin_dir / "plugin_code.py").read_text(encoding="utf-8") == 'VERSION = "new-plugin-code"\n'
+
+
+def test_entrypoint_setup_upgrades_managed_skill_but_preserves_user_modified_skill(tmp_path):
+    hermes_home = tmp_path / "hermes-home"
+    bundled_skills = tmp_path / "app-skills"
+    fake_pythonpath = tmp_path / "fake-pythonpath"
+    bundled_skills.mkdir()
+    _write_fake_wpsxiezuo_module(fake_pythonpath, "plugin-code")
+
+    managed_skill = hermes_home / "skills" / "kdocs"
+    managed_skill.mkdir(parents=True)
+    (managed_skill / "SKILL.md").write_text("old managed skill\n", encoding="utf-8")
+    sig_dir = hermes_home / ".bootstrap-cache" / "skills"
+    sig_dir.mkdir(parents=True)
+    (sig_dir / "kdocs.sig").write_text(_directory_signature(managed_skill) + "\n", encoding="utf-8")
+    new_managed_skill = bundled_skills / "kdocs"
+    new_managed_skill.mkdir(parents=True)
+    (new_managed_skill / "SKILL.md").write_text("new managed skill\n", encoding="utf-8")
+
+    user_skill = hermes_home / "skills" / "multi-search-engine"
+    user_skill.mkdir(parents=True)
+    (user_skill / "SKILL.md").write_text("custom user skill\n", encoding="utf-8")
+    new_user_named_skill = bundled_skills / "multi-search-engine"
+    new_user_named_skill.mkdir(parents=True)
+    (new_user_named_skill / "SKILL.md").write_text("bundled replacement\n", encoding="utf-8")
+
+    result = _run_entrypoint_setup(
+        tmp_path,
+        hermes_home=hermes_home,
+        bundled_skills=bundled_skills,
+        fake_pythonpath=fake_pythonpath,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert (managed_skill / "SKILL.md").read_text(encoding="utf-8") == "new managed skill\n"
+    assert (user_skill / "SKILL.md").read_text(encoding="utf-8") == "custom user skill\n"
+    assert "preserved user-managed skill multi-search-engine" in result.stderr
+
+
 def test_entrypoint_auto_enables_langfuse_plugin_when_credentials_exist():
-    entrypoint = (
-        Path(__file__).resolve().parents[1]
-        / "deploy"
-        / "hermes"
-        / "entrypoint.sh"
-    ).read_text(encoding="utf-8")
+    entrypoint = _entrypoint_text()
 
     assert 'export HERMES_LANGFUSE_PUBLIC_KEY="${HERMES_LANGFUSE_PUBLIC_KEY:-${LANGFUSE_PUBLIC_KEY:-}}"' in entrypoint
     assert 'export HERMES_LANGFUSE_SECRET_KEY="${HERMES_LANGFUSE_SECRET_KEY:-${LANGFUSE_SECRET_KEY:-}}"' in entrypoint
@@ -581,13 +907,41 @@ def test_entrypoint_auto_enables_langfuse_plugin_when_credentials_exist():
     assert "HERMES_LANGFUSE_SECRET_KEY=${HERMES_LANGFUSE_SECRET_KEY}" in entrypoint
     assert 'HERMES_LANGFUSE_AUTO_ENABLE="${HERMES_LANGFUSE_AUTO_ENABLE:-true}"' in entrypoint
     assert 'if [[ -n "${HERMES_LANGFUSE_PUBLIC_KEY}" && -n "${HERMES_LANGFUSE_SECRET_KEY}" ]]; then' in entrypoint
-    assert "plugins:" in entrypoint
     assert "observability/langfuse" in entrypoint
     assert "from hermes_cli.plugins_cmd import _get_enabled_set, _save_enabled_set" in entrypoint
     assert 'enabled.add("observability/langfuse")' in entrypoint
     assert "_save_enabled_set(enabled)" in entrypoint
     assert "Langfuse plugin enabled: observability/langfuse" in entrypoint
     assert '0|false|no|off)' in entrypoint
+
+
+def test_entrypoint_installs_wpsxiezuo_plugin_and_auto_enables_when_credentials_exist():
+    entrypoint = _entrypoint_text()
+
+    assert 'export HERMES_WPSXIEZUO_AUTO_ENABLE="${HERMES_WPSXIEZUO_AUTO_ENABLE:-true}"' in entrypoint
+    assert 'WPSXIEZUO_APP_ID=${WPSXIEZUO_APP_ID:-}' in entrypoint
+    assert 'WPSXIEZUO_APP_KEY=${WPSXIEZUO_APP_KEY:-}' in entrypoint
+    assert 'WPSXIEZUO_APP_SECRET' not in entrypoint
+    assert '"${HERMES_HOME}/plugins/platforms/wpsxiezuo"' in entrypoint
+    assert '"${HERMES_BOOTSTRAP_CACHE_DIR}/plugins/platforms/wpsxiezuo.sig"' in entrypoint
+    assert '"overlay-preserve"' in entrypoint
+    assert 'import hermes_wpsxiezuo' in entrypoint
+    assert 'enabled.add("platforms/wpsxiezuo")' in entrypoint
+    assert 'if [[ -n "${WPSXIEZUO_APP_ID:-}" && -n "${WPSXIEZUO_APP_KEY:-}" ]]; then' in entrypoint
+    assert "WPSXiezuo plugin enabled: platforms/wpsxiezuo" in entrypoint
+    assert "WPSXiezuo credentials missing; platform plugin installed but not enabled" in entrypoint
+
+
+def test_runtime_pairing_proxy_allows_wpsxiezuo_platform():
+    runtime_app = (
+        Path(__file__).resolve().parents[1]
+        / "deploy"
+        / "hermes"
+        / "runtime"
+        / "app.py"
+    ).read_text(encoding="utf-8")
+
+    assert '"wpsxiezuo"' in runtime_app
 
 
 def test_entrypoint_runs_uvicorn_with_explicit_app_dir():
@@ -730,7 +1084,9 @@ def test_runtime_pairing_allowlist_accepts_upstream_safe_commands():
     assert module._validate_pairing_argv(["list"]) == ["list"]
     assert module._validate_pairing_argv(["approve", "feishu", "ABC123"]) == ["approve", "feishu", "ABC123"]
     assert module._validate_pairing_argv(["approve", "weixin", "ABC123"]) == ["approve", "weixin", "ABC123"]
+    assert module._validate_pairing_argv(["approve", "wpsxiezuo", "WPS123"]) == ["approve", "wpsxiezuo", "WPS123"]
     assert module._validate_pairing_argv(["revoke", "telegram", "user-1"]) == ["revoke", "telegram", "user-1"]
+    assert module._validate_pairing_argv(["revoke", "wpsxiezuo", "user-1"]) == ["revoke", "wpsxiezuo", "user-1"]
     assert module._validate_pairing_argv(["clear-pending"]) == ["clear-pending"]
 
 

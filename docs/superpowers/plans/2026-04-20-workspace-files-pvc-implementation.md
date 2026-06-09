@@ -44,7 +44,7 @@ async def test_get_agent_returns_storage_config(client, db_session, seeded_agent
 
 - [ ] **Step 2: 运行单测，确认当前失败**
 
-Run: `cd /Users/xiayu/kingsoft/code/agent-sdk/agentengine-server && pytest tests/test_chat_actions.py -k storage -q`
+Run: `cd /Users/xiayu/kingsoft/code/agent-sdk/agentengine/agentengine-server && pytest tests/test_chat_actions.py -k storage -q`
 
 Expected: FAIL，`Deployment.Storage` 缺失或 `storage_config` 字段不存在。
 
@@ -92,7 +92,7 @@ def _storage_cfg_to_dict(storage_cfg: Any) -> Dict[str, Any]:
 
 - [ ] **Step 6: 再跑同一组测试，确认变绿**
 
-Run: `cd /Users/xiayu/kingsoft/code/agent-sdk/agentengine-server && pytest tests/test_chat_actions.py -k storage -q`
+Run: `cd /Users/xiayu/kingsoft/code/agent-sdk/agentengine/agentengine-server && pytest tests/test_chat_actions.py -k storage -q`
 
 Expected: PASS。
 
@@ -130,7 +130,7 @@ def test_create_agent_schema_accepts_storage():
 
 - [ ] **Step 2: 运行测试，确认当前失败**
 
-Run: `cd /Users/xiayu/kingsoft/code/agent-sdk/agentengine-server && pytest tests/test_chat_actions.py -k 'workspace or storage' -q`
+Run: `cd /Users/xiayu/kingsoft/code/agent-sdk/agentengine/agentengine-server && pytest tests/test_chat_actions.py -k 'workspace or storage' -q`
 
 Expected: FAIL，`openclaw` 不在 capability 白名单，schema 不接受 `Storage`。
 
@@ -157,7 +157,7 @@ _WORKSPACE_SUPPORTED_FRAMEWORKS = {
 
 - [ ] **Step 5: 重跑测试，确认 schema 与 capability 同时生效**
 
-Run: `cd /Users/xiayu/kingsoft/code/agent-sdk/agentengine-server && pytest tests/test_chat_actions.py -k 'workspace or storage' -q`
+Run: `cd /Users/xiayu/kingsoft/code/agent-sdk/agentengine/agentengine-server && pytest tests/test_chat_actions.py -k 'workspace or storage' -q`
 
 Expected: PASS。
 
@@ -193,7 +193,7 @@ def test_create_agent_includes_storage_payload(fake_client):
 
 - [ ] **Step 2: 运行测试，确认当前失败**
 
-Run: `cd /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python && pytest tests/test_client_storage_config.py -q`
+Run: `cd /Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python && pytest tests/test_client_storage_config.py -q`
 
 Expected: FAIL，`Storage` 未被下发。
 
@@ -236,7 +236,7 @@ def _normalize_storage_payload(storage: Optional[Dict[str, Any]]) -> Optional[Di
 
 - [ ] **Step 5: 重跑 storage client/provider 测试**
 
-Run: `cd /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python && pytest tests/test_client_storage_config.py -q`
+Run: `cd /Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python && pytest tests/test_client_storage_config.py -q`
 
 Expected: PASS。
 
@@ -273,7 +273,7 @@ def test_storage_size_gi_must_be_between_20_and_500():
 
 - [ ] **Step 2: 运行测试，确认当前失败**
 
-Run: `cd /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python && pytest tests/test_storage_defaults.py -q`
+Run: `cd /Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python && pytest tests/test_storage_defaults.py -q`
 
 Expected: FAIL。
 
@@ -322,7 +322,7 @@ def validate_storage_mount_path(value: str) -> str:
 
 - [ ] **Step 6: 重跑 CLI 测试**
 
-Run: `cd /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python && pytest tests/test_storage_defaults.py tests/test_cmd_hermes.py tests/test_cmd_openclaw.py -q`
+Run: `cd /Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python && pytest tests/test_storage_defaults.py tests/test_cmd_hermes.py tests/test_cmd_openclaw.py -q`
 
 Expected: PASS。
 
@@ -345,7 +345,7 @@ async def test_workspace_files_runtime_uses_custom_agentengine_state_root(monkey
 
 - [ ] **Step 2: 运行测试，确认当前失败或缺少推导逻辑**
 
-Run: `cd /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python && pytest tests/test_server_session_app.py -k workspace_files_runtime -q`
+Run: `cd /Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python && pytest tests/test_server_session_app.py -k workspace_files_runtime -q`
 
 Expected: FAIL 或行为未覆盖。
 
@@ -363,7 +363,7 @@ AGENTENGINE_UI_DIR=/home/node/.agentengine/ui
 
 - [ ] **Step 4: 重跑 runtime 相关测试**
 
-Run: `cd /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python && pytest tests/test_server_session_app.py -k workspace_files_runtime -q`
+Run: `cd /Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python && pytest tests/test_server_session_app.py -k workspace_files_runtime -q`
 
 Expected: PASS。
 
@@ -393,7 +393,7 @@ def test_bootstrap_workspace_fields_present_for_owner():
 
 - [ ] **Step 2: 运行相关测试，确认当前失败**
 
-Run: `cd /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python && pytest tests/test_openclaw_workspace_files_gating.py tests/test_unified_agent_ui_local.py -k workspace -q`
+Run: `cd /Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python && pytest tests/test_openclaw_workspace_files_gating.py tests/test_unified_agent_ui_local.py -k workspace -q`
 
 Expected: FAIL。
 
@@ -412,16 +412,16 @@ Expected: FAIL。
 
 - [ ] **Step 4: 跑两仓最小回归集**
 
-Run: `cd /Users/xiayu/kingsoft/code/agent-sdk/agentengine-server && pytest tests/test_chat_actions.py tests/test_router_service_proxy.py -q`
+Run: `cd /Users/xiayu/kingsoft/code/agent-sdk/agentengine/agentengine-server && pytest tests/test_chat_actions.py tests/test_router_service_proxy.py -q`
 
-Run: `cd /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python && pytest tests/test_client_storage_config.py tests/test_storage_defaults.py tests/test_server_session_app.py tests/test_openclaw_workspace_files_gating.py tests/test_unified_agent_ui_local.py -q`
+Run: `cd /Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python && pytest tests/test_client_storage_config.py tests/test_storage_defaults.py tests/test_server_session_app.py tests/test_openclaw_workspace_files_gating.py tests/test_unified_agent_ui_local.py -q`
 
 Expected: 两边都 PASS。
 
 - [ ] **Step 5: 跑更完整的验证命令**
 
-Run: `cd /Users/xiayu/kingsoft/code/agent-sdk/agentengine-server && make test`
+Run: `cd /Users/xiayu/kingsoft/code/agent-sdk/agentengine/agentengine-server && make test`
 
-Run: `cd /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python && make test`
+Run: `cd /Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python && make test`
 
 Expected: 全量测试通过；如果失败，记录失败范围并在当前分支修复后重跑。

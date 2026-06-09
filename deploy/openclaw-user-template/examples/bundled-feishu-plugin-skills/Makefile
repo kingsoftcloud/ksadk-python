@@ -2,7 +2,7 @@
 # 这个示例不覆写基础镜像启动入口，只在基础镜像上补默认运行环境。
 
 # 基础镜像。这个示例依赖已内置 openclaw-lark 的 AgentEngine 公共镜像。
-OPENCLAW_BASE_IMAGE ?= ghcr.io/openclaw/openclaw:2026.5.22-slim@sha256:d35b8b681c223a85027502c7a82999aa772d6a09e1b28903951cac7fc27efed5
+OPENCLAW_BASE_IMAGE ?= ghcr.io/openclaw/openclaw:2026.6.1-slim@sha256:a83ee8716ab191534952299fe989374d75593aa9c7632c4e756e9d64b0ce8061
 
 # 目标镜像地址和 tag。
 IMAGE ?= hub-vpc-cn-beijing-6.kce.ksyun.com/agentengine-public/openclaw-user-feishu-bundled

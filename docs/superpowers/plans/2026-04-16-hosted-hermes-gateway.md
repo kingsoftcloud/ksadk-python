@@ -204,8 +204,8 @@ Run:
 
 ```bash
 cd /Users/xiayu/agentengine-test/hermes-pre
-uv run --project /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python agentengine hermes exec ar-20260414181827-c53a0231 -- status
-uv run --project /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python agentengine hermes connect ar-20260414181827-c53a0231
+uv run --project /Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python agentengine hermes exec ar-20260414181827-c53a0231 -- status
+uv run --project /Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python agentengine hermes connect ar-20260414181827-c53a0231
 ```
 
 Expected:

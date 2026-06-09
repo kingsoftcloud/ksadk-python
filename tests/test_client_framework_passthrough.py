@@ -95,6 +95,37 @@ async def test_create_agent_forwards_ui_config(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_create_dashboard_access_link_can_omit_path(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    calls = []
+
+    def fake_action(action: str, params: dict):
+        calls.append((action, params.copy()))
+        return {"link_id": "dash-link"}
+
+    monkeypatch.setattr(client, "_action", fake_action)
+
+    await client.create_dashboard_access_link(
+        agent_id="ar-openclaw",
+        link_type="private",
+        path=None,
+        expires_seconds=3600,
+    )
+
+    assert calls == [
+        (
+            "CreateDashboardAccessLink",
+            {
+                "AgentId": "ar-openclaw",
+                "LinkType": "private",
+                "ForceNew": False,
+                "ExpiresSeconds": 3600,
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_create_agent_forwards_storage_configuration(monkeypatch):
     client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
     calls = []

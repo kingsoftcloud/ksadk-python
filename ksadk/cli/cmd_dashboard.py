@@ -476,6 +476,7 @@ def _open_dashboard(
         cli_url=None,
     )
     normalized_path = _normalize_ui_path(resolved_ui.path or "/")
+    link_path = normalized_path if ui_path is not None else None
     base_url = _build_base_ui_url(endpoint, normalized_path)
 
     if direct:
@@ -483,12 +484,17 @@ def _open_dashboard(
         return
 
     if _is_openclaw_target(state=state, detail=detail):
+        openclaw_link_path = _resolve_openclaw_link_path(
+            state=state,
+            cli_path=ui_path,
+            normalized_path=normalized_path,
+        )
         try:
             link_data = asyncio.run(
                 _create_openclaw_gateway_access_link(
                     region=region,
                     detail=detail,
-                    path=normalized_path,
+                    path=openclaw_link_path,
                     link_type="share" if share else "private",
                     expires_seconds=_normalize_expires_seconds(
                         link_type="share" if share else "private",
@@ -512,7 +518,7 @@ def _open_dashboard(
                     agent_id=(detail.get("agent_id") or "").strip() or None,
                     agent_name=(detail.get("name") or "").strip() or None,
                     link_type=link_type,
-                    path=normalized_path,
+                    path=link_path,
                     expires_seconds=validated_expires,
                     force_new=force_new,
                 )
@@ -580,6 +586,29 @@ def _is_openclaw_target(*, state: Optional[dict], detail: dict) -> bool:
     state_type = str((state or {}).get("type") or "").strip().lower()
     framework = str(detail.get("framework") or "").strip().lower()
     return state_type == "openclaw" or framework == "openclaw"
+
+
+def _resolve_openclaw_link_path(
+    *,
+    state: Optional[dict],
+    cli_path: Optional[str],
+    normalized_path: str,
+) -> Optional[str]:
+    if cli_path is not None:
+        return normalized_path
+
+    state_data = state if isinstance(state, dict) else {}
+    nested = state_data.get("ui") if isinstance(state_data.get("ui"), dict) else {}
+    state_path = state_data.get("ui_path") or nested.get("path")
+    if state_path is None:
+        return None
+
+    # OpenClaw 的历史默认路径曾经落在 / 或 /chat。这里不把 legacy 默认
+    # 当作显式 Path 传给 server，让 server 端按当前运行时规则推导。
+    state_normalized = _normalize_ui_path(str(state_path))
+    if state_normalized in {"/", "/chat"}:
+        return None
+    return normalized_path
 
 
 def _emit_url(title: str, url: str, *, no_open: bool):
@@ -692,7 +721,7 @@ async def _create_dashboard_access_link(
     agent_id: Optional[str],
     agent_name: Optional[str],
     link_type: str,
-    path: str,
+    path: Optional[str],
     expires_seconds: Optional[int],
     force_new: bool,
 ) -> dict:
@@ -724,7 +753,7 @@ async def _create_openclaw_gateway_access_link(
     *,
     region: str,
     detail: dict,
-    path: str = "/",
+    path: Optional[str] = None,
     link_type: str,
     expires_seconds: Optional[int],
     force_new: bool = False,

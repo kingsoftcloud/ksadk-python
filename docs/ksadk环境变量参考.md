@@ -222,7 +222,10 @@
 | `KSADK_SKILL_ALLOW_HASH_MISMATCH` | Runtime agent / PackageStore | 否 | `false` | 无 | 否 | 调试 / 兼容旧包 | 否 | 允许 ContentHash 校验失败后以 unverified cache 加载旧 skill 包；生产不建议开启。 |
 | `KSADK_SKILL_CACHE_DIR` | Runtime agent / PackageStore | 否 | 系统临时目录下 `ksadk-skill-cache` | 无 | 否 | Runtime agent | 否 | Skill archive 下载与解压缓存。 |
 | `KSADK_SKILL_WORKDIR` | Runtime agent | 否 | 系统临时目录下 `ksadk-skill-workflow` | 无 | 否 | Runtime agent | 否 | workflow 工作目录。 |
+| `KSADK_SKILL_OUTPUT_DIR` | Runtime agent workflow | 否 | `KSADK_SKILL_WORKDIR/artifacts` | 无 | 否 | Runtime agent | 否 | 传给本地 skill workflow 脚本的产物输出目录。 |
+| `KSADK_SKILL_ROOT_DIR` | Runtime agent workflow | 否 | 当前执行 skill 根目录 | 无 | 否 | Runtime agent | 否 | 传给本地 skill workflow 脚本的 skill 根目录。 |
 | `KSADK_SKILL_ARTIFACT_PROJECT` | Runtime agent | 否 | `ksadk-artifact` | 无 | 否 | Runtime agent | 否 | 最小 artifact workflow 项目目录名。 |
+| `KSADK_WORKFLOW_PROMPT` | Runtime agent workflow | 否 | 当前 workflow prompt | 无 | 否 | Runtime agent | 否 | 传给本地 skill workflow 脚本的用户请求文本。 |
 
 ## 7. MCP Runtime
 
@@ -304,6 +307,10 @@
 | `KSADK_AICP_ENDPOINT_MODE` | AICP resolver | 否 | `auto` | 无 | 否 | 平台 / 开发者 | 否 | AICP endpoint 选择策略，支持 `auto/detect/internal/inner/public`。内网环境可显式设为 `inner`，跳过自动探测。 |
 | `AGENTENGINE_MODEL_ALLOWLIST` | CLI model / OpenClaw | 否 | 未设置 | `OPENCLAW_MODEL_ALLOWLIST` | 否 | 平台 / 开发者 | 否 | 模型列表过滤。OpenClaw 场景优先使用 `OPENCLAW_MODEL_ALLOWLIST`。 |
 | `AGENTENGINE_UI_DIR` | 本地 Web UI / Sessions | 否 | 未设置 | 无 | 否 | 本地开发者 | 否 | 本地 UI 静态目录覆盖，主要用于 Web/文件上传本地调试。 |
+| `KSADK_WEB_VERSION` | Hosted Web UI static sync | 否 | `v0.2.0` | 无 | 否 | 构建环境 / 开发者 | 否 | `make sync-ksadk-web-static` 使用的 Hosted UI release 版本。 |
+| `KSADK_WEB_TARBALL_NAME` | Hosted Web UI static sync | 否 | 根据 `KSADK_WEB_VERSION` 派生 | 无 | 否 | 构建环境 | 否 | Hosted UI release tarball 文件名。 |
+| `KSADK_WEB_RELEASE_URL` | Hosted Web UI static sync | 否 | 根据 `KSADK_WEB_VERSION` 派生 | 无 | 否 | 构建环境 / 开发者 | 否 | Hosted UI release tarball 下载地址。 |
+| `KSADK_WEB_CACHE_DIR` | Hosted Web UI static sync | 否 | `.cache/ksadk-web` | 无 | 否 | 构建环境 / 开发者 | 否 | Hosted UI release tarball 解压缓存目录。 |
 | `AGENTENGINE_LOCAL_RUNTIME_VENV_REEXEC` | 本地 runtime CLI | 否 | 自动判断 | 无 | 否 | 本地开发者 / 测试 | 否 | 控制本地 runtime 是否在虚拟环境中 re-exec。普通用户通常无需设置。 |
 | `AGENTENGINE_WEB_VENV_REEXEC` | 本地 Web CLI | 否 | 自动判断 | 无 | 否 | 本地开发者 / 测试 | 否 | 控制本地 Web 命令是否在虚拟环境中 re-exec。普通用户通常无需设置。 |
 | `AGENTENGINE_DEBUG` | CLI | 否 | 未设置 | 无 | 否 | 开发者 | 否 | 开启更详细错误输出。 |
@@ -328,6 +335,7 @@
 | `KSADK_RUNTIME_PORT` | Runtime image / CLI | 否 | `8080` | 无 | 否 | 平台 | 否 | 模板运行时 HTTP 端口。 |
 | `KSADK_PROJECT_DIR` | Sessions / Web | 否 | 当前工作目录 | 无 | 否 | 本地运行时 | 否 | 本地 session/workspace 状态 project root。 |
 | `KSADK_RESPONSES_SESSION_HEADER` | RemoteRunner | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 远端 Responses session 透传 header 名称。 |
+| `KSADK_TOOL_APPROVAL_MODE` | Built-in tools / Conversations runtime | 否 | `off` | 无 | 否 | 平台 / 开发者 | 否 | 内置工具审批模式；`strict` 时中高风险工具需要审批。 |
 | `KSADK_FEISHU_APP_ID` | OpenClaw diagnostics | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | 飞书辅助 app id。 |
 | `KSADK_FEISHU_RESULT_PATH` | OpenClaw diagnostics | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | 飞书辅助结果路径。 |
 | `KSADK_WORKSPACE_FILES_ENABLED` | Hermes/OpenClaw workspace files | 否 | 镜像内通常默认 `1` | `OPENCLAW_WORKSPACE_FILES_ENABLED` | 否 | Runtime 镜像 / 平台 | 否 | 工作区文件服务开关。 |

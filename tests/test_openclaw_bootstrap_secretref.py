@@ -11,8 +11,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 BOOTSTRAP_SCRIPT = REPO_ROOT / "deploy" / "openclaw" / "bootstrap.sh"
 OPENCLAW_DOCKERFILE = REPO_ROOT / "deploy" / "openclaw" / "Dockerfile"
 LATEST_OPENCLAW_BASE_IMAGE = (
-    "ghcr.io/openclaw/openclaw:2026.5.22-slim@"
-    "sha256:d35b8b681c223a85027502c7a82999aa772d6a09e1b28903951cac7fc27efed5"
+    "ghcr.io/openclaw/openclaw:2026.6.1-slim@"
+    "sha256:a83ee8716ab191534952299fe989374d75593aa9c7632c4e756e9d64b0ce8061"
 )
 VALID_MEM0_UUID = "e52b7fac-e641-4b34-b9f7-6b0b9f190cd4"
 
@@ -96,7 +96,7 @@ def _build_base_env(state_dir: str, config_path: str) -> dict:
         wrapper_path = safe_bin_dir / cmd
         wrapper_path.write_text("#!/bin/sh\nexit 0\n")
         wrapper_path.chmod(0o755)
-    for cmd in ["curl", "jq", "yt-dlp", "openclaw", "gh", "xreach"]:
+    for cmd in ["curl", "jq", "yt-dlp", "openclaw", "agent-browser", "gh", "xreach"]:
         raw_bin_path = raw_bin_dir / cmd
         raw_bin_path.write_text("#!/bin/sh\nexit 0\n")
         raw_bin_path.chmod(0o755)
@@ -107,6 +107,7 @@ def _build_base_env(state_dir: str, config_path: str) -> dict:
     (workspace_template_dir / "TOOLS.md").write_text("tool notes\n")
     env.pop("OPENCLAW_MODEL_API_KEY", None)
     env.pop("OPENAI_API_KEY", None)
+    env["HOME"] = state_dir
     env["OPENCLAW_STATE_DIR"] = state_dir
     env["OPENCLAW_CONFIG_PATH"] = config_path
     env["OPENCLAW_BOOTSTRAP_ONLY"] = "1"
@@ -164,7 +165,8 @@ def test_openclaw_dockerfile_tracks_latest_official_channel_plugins():
     assert "ARG OPENCLAW_WEIXIN_PLUGIN_SPEC=@tencent-weixin/openclaw-weixin" in dockerfile
     assert "ARG OPENCLAW_LARK_PLUGIN_SPEC=@larksuite/openclaw-lark" in dockerfile
     assert "ARG OPENCLAW_MEM0_PLUGIN_ID=openclaw-mem0" in dockerfile
-    assert "ARG OPENCLAW_MEM0_PLUGIN_URL=https://memory-engine.ks3-cn-beijing.ksyuncs.com/ksc-openclaw-mem0-1.0.11.tgz" in dockerfile
+    assert "ARG OPENCLAW_MEM0_PLUGIN_URL=https://memory-engine.ks3-cn-beijing.ksyuncs.com/ksc-openclaw-mem0-1.0.6.tgz" in dockerfile
+    assert "ksc-openclaw-mem0-1.1." not in dockerfile
     assert "ARG OPENCLAW_INSTALL_WPS_XIEZUO_PLUGIN=true" in dockerfile
     assert "ARG OPENCLAW_WPS_XIEZUO_PLUGIN_SPEC=@wps365/openclaw-wpsxiezuo" in dockerfile
     assert "ARG OPENCLAW_WPS_XIEZUO_PLUGIN_ID=wps-xiezuo" in dockerfile
@@ -174,6 +176,14 @@ def test_openclaw_dockerfile_tracks_latest_official_channel_plugins():
     assert "openclaw-wps-xiezuo-1.6.0.tgz" not in dockerfile
     assert "deploy/openclaw/wps-xiezuo-assets" not in dockerfile
     assert 'install_default_plugin "${OPENCLAW_WPS_XIEZUO_PLUGIN_SPEC}" "${OPENCLAW_WPS_XIEZUO_PLUGIN_ID}"' in dockerfile
+
+
+def test_openclaw_dockerfile_moves_apt_archives_out_of_var_cache():
+    dockerfile = OPENCLAW_DOCKERFILE.read_text(encoding="utf-8")
+
+    assert "mkdir -p /tmp/apt-cache" in dockerfile
+    assert "Dir::Cache::archives=/tmp/apt-cache" in dockerfile
+    assert "rm -rf /var/lib/apt/lists/* /tmp/apt-cache" in dockerfile
 
 
 def test_openclaw_dockerfile_strips_workspace_dev_dependencies_before_plugin_install():
@@ -1836,6 +1846,7 @@ def test_bootstrap_keeps_model_api_key_in_gateway_process_env_for_deferred_auth_
         env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
         env["BOOTSTRAP_CAPTURE_ENV_PATH"] = str(captured_env_path)
         env["OPENCLAW_WORKSPACE_FILES_ENABLED"] = "0"
+        env["OPENCLAW_RUNTIME_PROXY_ENABLED"] = "0"
         env["PATH"] = f"{fake_bin_dir}:{env['PATH']}"
         env.pop("OPENCLAW_BOOTSTRAP_ONLY", None)
 
@@ -1943,8 +1954,6 @@ def test_bootstrap_does_not_relaunch_gateway_after_upstream_handoff_restart():
             assert process.poll() is None, process.stderr.read() or process.stdout.read()
             assert gateway_count_path.read_text().strip() == "1"
         finally:
-            process.terminate()
-            process.communicate(timeout=5)
             if successor_pid_path.exists():
                 successor_pid = successor_pid_path.read_text().strip()
                 if successor_pid:
@@ -1954,6 +1963,12 @@ def test_bootstrap_does_not_relaunch_gateway_after_upstream_handoff_restart():
                         capture_output=True,
                         text=True,
                     )
+            process.terminate()
+            try:
+                process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate(timeout=5)
 
 
 def test_bootstrap_runtime_proxy_moves_gateway_to_internal_port():
@@ -3543,6 +3558,92 @@ def test_bootstrap_patches_workspace_proxy_stage_for_upstream_2026_4_26_shape():
         assert 'name: "workspace-files-proxy"' in server_source
         assert 'run: () => handleWorkspaceFilesProxyRequest(req, res)' in server_source
         assert 'if (openAiCompatEnabled && isOpenAiModelsPath(scopedRequestPath)) requestStages.push({' in server_source
+
+
+def test_bootstrap_patches_workspace_proxy_stage_for_upstream_2026_6_1_shape():
+    with TemporaryDirectory() as tmpdir:
+        config_path = Path(tmpdir) / "openclaw.json"
+        dist_dir = Path(tmpdir) / "dist"
+        control_ui_assets_dir = dist_dir / "control-ui" / "assets"
+        control_ui_assets_dir.mkdir(parents=True, exist_ok=True)
+        client_bundle = dist_dir / "reply-test.js"
+        gateway_bundle = dist_dir / "gateway-cli-test.js"
+        server_bundle = dist_dir / "server.impl-test.js"
+        control_ui_bundle = control_ui_assets_dir / "main-test.js"
+
+        client_bundle.write_text('const wsOptions = { maxPayload: 25 * 1024 * 1024 };')
+        gateway_bundle.write_text(
+            'function shouldSkipBackendSelfPairing(params) {\n'
+            '\tif (!(params.connectParams.client.id === GATEWAY_CLIENT_IDS.GATEWAY_CLIENT && params.connectParams.client.mode === GATEWAY_CLIENT_MODES.BACKEND)) return false;\n'
+            '\tconst usesSharedSecretAuth = params.authMethod === "token" || params.authMethod === "password";\n'
+            '\tconst usesDeviceTokenAuth = params.authMethod === "device-token";\n'
+            '\treturn params.isLocalClient && !params.hasBrowserOriginHeader && (params.sharedAuthOk && usesSharedSecretAuth || usesDeviceTokenAuth);\n'
+            '}\n'
+            'if (isLoopbackAddress(remoteAddr)) return { reason: "trusted_proxy_loopback_source" };\n'
+            'function shouldAttachDeviceIdentityForGatewayCall(params) {\n'
+            '\treturn true;\n'
+            '}\n'
+            'deviceIdentity: shouldAttachDeviceIdentityForGatewayCall({\n'
+            '\t\t\t\turl,\n'
+            '\t\t\t\ttoken,\n'
+            '\t\t\t\tpassword\n'
+            '\t\t\t}) ? loadOrCreateDeviceIdentity() : void 0,\n'
+            'function ensureExplicitGatewayAuth(params) {\n'
+            '\tif (!params.urlOverride) return;\n'
+            '\tconst explicitToken = params.explicitAuth?.token;\n'
+            '}\n'
+            'if (!device && (!isControlUi || decision.kind !== "allow")) clearUnboundScopes();\n'
+        )
+        server_bundle.write_text(
+            'function createGatewayHttpServer(opts) {\n'
+            '\tconst { canvasHost, clients, controlUiEnabled, controlUiBasePath, controlUiRoot, openAiChatCompletionsEnabled, openAiChatCompletionsConfig, openResponsesEnabled, openResponsesConfig, strictTransportSecurityHeader, handleHooksRequest, handlePluginRequest, shouldEnforcePluginGatewayAuth, resolvedAuth, rateLimiter, getReadiness } = opts;\n'
+            '\tconst getResolvedAuth = opts.getResolvedAuth ?? (() => resolvedAuth);\n'
+            '\tconst openAiCompatEnabled = openAiChatCompletionsEnabled || openResponsesEnabled;\n'
+            '\tasync function handleRequest(req, res) {\n'
+            '\t\tconst scopedNodeCapability = normalizePluginNodeCapabilityScopedUrl(req.url ?? "/");\n'
+            '\t\tif (scopedNodeCapability.rewrittenUrl) req.url = scopedNodeCapability.rewrittenUrl;\n'
+            '\t\tconst scopedRequestPath = scopedNodeCapability.pathname;\n'
+            '\t\tconst resolvedAuthValue = getResolvedAuth();\n'
+            '\t\tconst requestStages = [{\n'
+            '\t\t\t\tname: "gateway-probes",\n'
+            '\t\t\t\trun: () => handleGatewayProbeRequest(req, res, scopedRequestPath, resolvedAuthValue, trustedProxies, allowRealIpFallback, getReadiness)\n'
+            '\t\t\t}, {\n'
+            '\t\t\t\tname: "hooks",\n'
+            '\t\t\t\trun: () => handleHooksRequest(req, res)\n'
+            '\t\t\t}];\n'
+            '\t\t\tif (openAiCompatEnabled && isOpenAiModelsPath(scopedRequestPath)) requestStages.push({\n'
+            '\t\t\tname: "models",\n'
+            '\t\t\trun: async () => (await getModelsHttpModule()).handleOpenAiModelsHttpRequest(req, res, {\n'
+            '\t\t\t\tauth: resolvedAuthValue,\n'
+            '\t\t\t\ttrustedProxies,\n'
+            '\t\t\t\tallowRealIpFallback,\n'
+            '\t\t\t\trateLimiter\n'
+            '\t\t\t})\n'
+            '\t\t});\n'
+            '\t}\n'
+            '}\n'
+        )
+        control_ui_bundle.write_text('this.ws.addEventListener(`open`,()=>this.queueConnect())')
+
+        env = _build_base_env(tmpdir, str(config_path))
+        env["OPENCLAW_MODEL_API_KEY"] = "dummy-secret-value"
+        env["OPENCLAW_DIST_DIR"] = str(dist_dir)
+
+        result = subprocess.run(
+            ["bash", str(BOOTSTRAP_SCRIPT)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr or result.stdout
+        server_source = server_bundle.read_text()
+        assert 'async function handleWorkspaceFilesProxyRequest(req, res) {' in server_source
+        assert 'name: "workspace-files-proxy"' in server_source
+        assert 'run: () => handleWorkspaceFilesProxyRequest(req, res)' in server_source
+        assert 'auth: resolvedAuthValue' in server_source
 
 
 def test_bootstrap_patches_workspace_proxy_stage_for_upstream_2026_3_28_shape():

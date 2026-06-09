@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import re
 import click
 from dotenv import dotenv_values
 import questionary
@@ -137,6 +138,13 @@ def _stringify_value(value) -> str:
     return str(value)
 
 
+_ENV_VAR_KEY_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+
+
+def _is_env_assignment_key(key: str) -> bool:
+    return bool(_ENV_VAR_KEY_PATTERN.fullmatch(key))
+
+
 def _parse_set_items(set_items: tuple) -> tuple[dict, dict, list[str]]:
     """Parse KEY=VALUE assignments into project/env updates."""
     updates_yaml = {}
@@ -152,7 +160,7 @@ def _parse_set_items(set_items: tuple) -> tuple[dict, dict, list[str]]:
         key = key.strip()
         value = value.strip()
 
-        if key.startswith("OPENAI_") or key.startswith("KSYUN_"):
+        if _is_env_assignment_key(key):
             updates_env[key] = value
             if key == "KSYUN_REGION":
                 updates_yaml["region"] = value

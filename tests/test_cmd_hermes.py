@@ -44,6 +44,14 @@ def _isolate_hermes_model_env(monkeypatch):
         "HERMES_LANGFUSE_SAMPLE_RATE",
         "HERMES_LANGFUSE_MAX_CHARS",
         "HERMES_LANGFUSE_DEBUG",
+        "WPSXIEZUO_APP_ID",
+        "WPSXIEZUO_APP_KEY",
+        "WPSXIEZUO_API_BASE",
+        "WPSXIEZUO_WS_ENDPOINT",
+        "WPSXIEZUO_GROUP_AT_ONLY",
+        "WPSXIEZUO_ALLOWED_USERS",
+        "WPSXIEZUO_ALLOW_ALL_USERS",
+        "WPSXIEZUO_HOME_CHANNEL",
     ):
         monkeypatch.delenv(key, raising=False)
     cmd_hermes._HERMES_GLOBAL_ENV_CACHE = None
@@ -278,14 +286,14 @@ class _FakeHermesBootstrapImageClient(_FakeHermesClient):
         }
 
 
-def test_hermes_build_defaults_track_v2026_5_16_release():
+def test_hermes_build_defaults_track_v2026_5_29_2_release():
     dockerfile = HERMES_DOCKERFILE.read_text(encoding="utf-8")
     makefile = MAKEFILE.read_text(encoding="utf-8")
 
-    assert 'ARG HERMES_AGENT_REF=v2026.5.16' in dockerfile
-    assert 'HERMES_TAG ?= 2026.5.16-ksadk-v1' in makefile
-    assert 'HERMES_AGENT_REF ?= v2026.5.16' in makefile
-    assert cmd_hermes.DEFAULT_HERMES_IMAGE.endswith(':2026.5.16-ksadk-v1')
+    assert 'ARG HERMES_AGENT_REF=v2026.5.29.2' in dockerfile
+    assert 'HERMES_TAG ?= 2026.5.29.2-ksadk-v3' in makefile
+    assert 'HERMES_AGENT_REF ?= v2026.5.29.2' in makefile
+    assert cmd_hermes.DEFAULT_HERMES_IMAGE.endswith(':2026.5.29.2-ksadk-v1')
     assert '"langfuse>=3.9.0,<4"' in dockerfile
 
 
@@ -302,7 +310,7 @@ def test_hermes_deploy_refreshes_quick_access_when_agent_id_is_immediate(monkeyp
             "--name",
             "demo-hermes",
             "--image",
-            "hub.kce.ksyun.com/agentengine-public/hermes-agent:test",
+            "ghcr.io/kingsoftcloud/hermes-agent:test",
             "--model-base-url",
             "https://model.example.com/v1",
             "--model-api-key",
@@ -337,7 +345,7 @@ def test_hermes_deploy_retries_transient_get_agent_not_found_without_showing_num
             "--name",
             "demo-hermes",
             "--image",
-            "hub.kce.ksyun.com/agentengine-public/hermes-agent:test",
+            "ghcr.io/kingsoftcloud/hermes-agent:test",
             "--model-base-url",
             "https://model.example.com/v1",
             "--model-api-key",
@@ -621,6 +629,29 @@ def test_hermes_pairing_dry_run_does_not_resolve_or_connect(monkeypatch):
     assert payload["request"]["argv"] == ["approve", "feishu", "ABC123"]
 
 
+def test_hermes_pairing_dry_run_accepts_wpsxiezuo_platform(monkeypatch):
+    runner = CliRunner()
+
+    async def _forbidden_pairing(**_kwargs):
+        raise AssertionError("remote terminal should not be called")
+
+    monkeypatch.setattr(cmd_hermes, "run_hermes_terminal_session", _forbidden_pairing)
+    monkeypatch.setattr(
+        cmd_hermes,
+        "_resolve_hermes_access",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("agent access should not be resolved")),
+    )
+
+    result = runner.invoke(
+        cmd_hermes.hermes,
+        ["pairing", "ar-hermes-1", "--dry-run", "--output", "json", "--", "approve", "wpsxiezuo", "WPS123"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["request"]["argv"] == ["approve", "wpsxiezuo", "WPS123"]
+
+
 def test_hermes_open_defaults_to_manage_and_supports_chat_override(monkeypatch):
     runner = CliRunner()
     opened = []
@@ -791,6 +822,52 @@ def test_hermes_deploy_create_payload_includes_explicit_network(tmp_path: Path, 
     }
 
 
+def test_hermes_deploy_infers_availability_zone_from_subnet(tmp_path: Path, monkeypatch):
+    runner = CliRunner()
+    _FakeHermesClient.create_payload = None
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://model.example.com/v1")
+    monkeypatch.setattr(cmd_hermes, "AgentEngineClient", _FakeHermesClient)
+    monkeypatch.setattr(
+        "ksadk.cli.network_options._resolve_subnet_availability_zone",
+        lambda *, subnet_id, region: (
+            "cn-beijing-6e"
+            if subnet_id == "subnet-cli" and region == "cn-beijing-6"
+            else None
+        ),
+    )
+
+    result = runner.invoke(
+        cmd_hermes.hermes,
+        [
+            "deploy",
+            "--name",
+            "demo-hermes",
+            "--region",
+            "cn-beijing-6",
+            "--image",
+            "registry/hermes:test",
+            "--enable-vpc-access",
+            "--vpc-id",
+            "vpc-cli",
+            "--subnet-id",
+            "subnet-cli",
+            "--security-group-id",
+            "sg-cli",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _FakeHermesClient.create_payload["network"] == {
+        "enable_vpc_access": True,
+        "vpc_id": "vpc-cli",
+        "subnet_id": "subnet-cli",
+        "security_group_id": "sg-cli",
+        "availability_zone": "cn-beijing-6e",
+    }
+
+
 def test_hermes_deploy_omits_network_when_not_configured(tmp_path: Path, monkeypatch):
     runner = CliRunner()
     _FakeHermesClient.create_payload = None
@@ -824,7 +901,7 @@ def test_hermes_deploy_defaults_model_base_url_and_omits_api_key(tmp_path: Path,
     assert "https://kspmas.ksyun.com/v1/" in result.output
     assert "glm-5.1" in result.output
     assert any(
-        item["Key"] == "OPENAI_BASE_URL" and item["Value"] == "http://kspmas-internal.sdns.ksyun.com/v1"
+        item["Key"] == "OPENAI_BASE_URL" and item["Value"] == "https://kspmas.ksyun.com/v1/"
         for item in _FakeHermesClient.create_payload["env_vars"]
     )
     assert any(
@@ -871,7 +948,7 @@ def test_hermes_deploy_defaults_kspmas_base_url_when_missing(tmp_path: Path, mon
     assert result.exit_code == 0, result.output
     assert "https://kspmas.ksyun.com/v1/" in result.output
     assert any(
-        item["Key"] == "OPENAI_BASE_URL" and item["Value"] == "http://kspmas-internal.sdns.ksyun.com/v1"
+        item["Key"] == "OPENAI_BASE_URL" and item["Value"] == "https://kspmas.ksyun.com/v1/"
         for item in _FakeHermesClient.create_payload["env_vars"]
     )
 
@@ -901,7 +978,7 @@ def test_hermes_deploy_output_json_emits_result_envelope(tmp_path: Path, monkeyp
     assert payload["result"]["endpoint"] == "https://hermes.example.com"
 
 
-def test_hermes_deploy_rewrites_public_kspmas_url_for_runtime(tmp_path: Path, monkeypatch):
+def test_hermes_deploy_preserves_configured_public_kspmas_url(tmp_path: Path, monkeypatch):
     runner = CliRunner()
     _FakeHermesClient.create_payload = None
     monkeypatch.chdir(tmp_path)
@@ -915,15 +992,15 @@ def test_hermes_deploy_rewrites_public_kspmas_url_for_runtime(tmp_path: Path, mo
     assert result.exit_code == 0, result.output
     assert (
         _FakeHermesClient.create_payload["artifact_path"]
-        == "hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.5.16-ksadk-v1"
+        == "ghcr.io/kingsoftcloud/hermes-agent:2026.5.29.2-ksadk-v1"
     )
     assert any(
-        item["Key"] == "OPENAI_BASE_URL" and item["Value"] == "http://kspmas-internal.sdns.ksyun.com/v1"
+        item["Key"] == "OPENAI_BASE_URL" and item["Value"] == "http://kspmas.ksyun.com/v1"
         for item in _FakeHermesClient.create_payload["env_vars"]
     )
 
 
-def test_hermes_deploy_sets_glm_51_context_length_by_default(tmp_path: Path, monkeypatch):
+def test_hermes_deploy_sets_glm_51_context_length_and_default_fallback(tmp_path: Path, monkeypatch):
     runner = CliRunner()
     _FakeHermesClient.create_payload = None
     monkeypatch.chdir(tmp_path)
@@ -943,6 +1020,25 @@ def test_hermes_deploy_sets_glm_51_context_length_by_default(tmp_path: Path, mon
         item["Key"] == "HERMES_FALLBACK_MODEL" and item["Value"] == "kimi-k2.6"
         for item in _FakeHermesClient.create_payload["env_vars"]
     )
+
+
+def test_hermes_deploy_forwards_explicit_fallback_model(tmp_path: Path, monkeypatch):
+    runner = CliRunner()
+    _FakeHermesClient.create_payload = None
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://kspmas.ksyun.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-5.1")
+    monkeypatch.setenv("HERMES_FALLBACK_MODEL", "explicit-fallback")
+    monkeypatch.setattr(cmd_hermes, "AgentEngineClient", _FakeHermesClient)
+
+    result = runner.invoke(cmd_hermes.hermes, ["deploy", "--name", "demo-hermes"])
+
+    assert result.exit_code == 0, result.output
+    env_vars = {item["Key"]: item["Value"] for item in _FakeHermesClient.create_payload["env_vars"]}
+    assert env_vars["HERMES_FALLBACK_MODEL"] == "explicit-fallback"
+    assert env_vars["HERMES_FALLBACK_PROVIDER"] == "custom"
+    assert env_vars["HERMES_FALLBACK_BASE_URL"] == "http://kspmas.ksyun.com/v1"
 
 
 def test_hermes_deploy_uses_provider_context_length_for_configured_model(tmp_path: Path, monkeypatch):
@@ -1003,6 +1099,33 @@ def test_hermes_deploy_forwards_langfuse_env_when_configured(tmp_path: Path, mon
     assert env_vars["HERMES_LANGFUSE_BASE_URL"]["Value"] == "https://langfuse.pre.example.com"
     assert env_vars["HERMES_LANGFUSE_ENV"]["Value"] == "pre"
     assert env_vars["HERMES_LANGFUSE_SAMPLE_RATE"]["Value"] == "0.5"
+
+
+def test_hermes_deploy_forwards_wpsxiezuo_env_when_configured(tmp_path: Path, monkeypatch):
+    runner = CliRunner()
+    _FakeHermesClient.create_payload = None
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://kspmas.ksyun.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-5.1")
+    monkeypatch.setenv("WPSXIEZUO_APP_ID", "AK-wps-test")
+    monkeypatch.setenv("WPSXIEZUO_APP_KEY", "wps-app-key")
+    monkeypatch.setenv("WPSXIEZUO_API_BASE", "https://openapi.wps.cn")
+    monkeypatch.setenv("WPSXIEZUO_GROUP_AT_ONLY", "true")
+    monkeypatch.setenv("WPSXIEZUO_ALLOWED_USERS", "u1,u2")
+    monkeypatch.setattr(cmd_hermes, "AgentEngineClient", _FakeHermesClient)
+
+    result = runner.invoke(cmd_hermes.hermes, ["deploy", "--name", "demo-hermes"])
+
+    assert result.exit_code == 0, result.output
+    env_vars = {item["Key"]: item for item in _FakeHermesClient.create_payload["env_vars"]}
+    assert env_vars["WPSXIEZUO_APP_ID"]["Value"] == "AK-wps-test"
+    assert env_vars["WPSXIEZUO_APP_ID"]["IsSensitive"] is False
+    assert env_vars["WPSXIEZUO_APP_KEY"]["Value"] == "wps-app-key"
+    assert env_vars["WPSXIEZUO_APP_KEY"]["IsSensitive"] is True
+    assert env_vars["WPSXIEZUO_API_BASE"]["Value"] == "https://openapi.wps.cn"
+    assert env_vars["WPSXIEZUO_GROUP_AT_ONLY"]["Value"] == "true"
+    assert env_vars["WPSXIEZUO_ALLOWED_USERS"]["Value"] == "u1,u2"
 
 
 def test_hermes_deploy_defaults_ui_locale_to_zh(tmp_path: Path, monkeypatch):
@@ -1083,6 +1206,77 @@ def test_hermes_deploy_updates_existing_hermes_state(tmp_path: Path, monkeypatch
     assert _FakeHermesClient.update_payload["framework"] == "hermes"
     assert _FakeHermesClient.update_payload["artifact_type"] == "Container"
     assert _FakeHermesClient.update_payload["artifact_path"] == "registry/hermes:new"
+
+
+def test_hermes_deploy_update_payload_preserves_existing_config_by_default(tmp_path: Path, monkeypatch):
+    runner = CliRunner()
+    _FakeHermesClient.create_payload = None
+    _FakeHermesClient.update_payload = None
+    _FakeHermesClient.updated_agent_id = None
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".agentengine.state").write_text(
+        "type: hermes\nframework: hermes\nagent_id: ar-hermes-existing\nname: demo-hermes\nendpoint: https://old.example.com\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-local-shell")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://local-shell.example.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "local-shell-model")
+    monkeypatch.setattr(cmd_hermes, "AgentEngineClient", _FakeHermesClient)
+
+    result = runner.invoke(cmd_hermes.hermes, ["deploy", "--image", "registry/hermes:new"])
+
+    assert result.exit_code == 0, result.output
+    payload = _FakeHermesClient.update_payload
+    assert payload["artifact_path"] == "registry/hermes:new"
+    assert "env_vars" not in payload
+    assert "storage" not in payload
+    assert "network" not in payload
+
+
+def test_hermes_deploy_update_payload_includes_explicit_config(tmp_path: Path, monkeypatch):
+    runner = CliRunner()
+    _FakeHermesClient.create_payload = None
+    _FakeHermesClient.update_payload = None
+    _FakeHermesClient.updated_agent_id = None
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".agentengine.state").write_text(
+        "type: hermes\nframework: hermes\nagent_id: ar-hermes-existing\nname: demo-hermes\nendpoint: https://old.example.com\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cmd_hermes, "AgentEngineClient", _FakeHermesClient)
+
+    result = runner.invoke(
+        cmd_hermes.hermes,
+        [
+            "deploy",
+            "--image",
+            "registry/hermes:new",
+            "--model-base-url",
+            "https://model.example.com/v1",
+            "--default-model",
+            "glm-test",
+            "--storage-size-gi",
+            "50",
+            "--enable-vpc-access",
+            "--vpc-id",
+            "vpc-cli",
+            "--subnet-id",
+            "subnet-cli",
+            "--security-group-id",
+            "sg-cli",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = _FakeHermesClient.update_payload
+    assert any(item["Key"] == "OPENAI_MODEL_NAME" and item["Value"] == "glm-test" for item in payload["env_vars"])
+    assert payload["storage"]["size_gi"] == 50
+    assert payload["network"] == {
+        "enable_vpc_access": True,
+        "vpc_id": "vpc-cli",
+        "subnet_id": "subnet-cli",
+        "security_group_id": "sg-cli",
+    }
 
 
 def test_hermes_deploy_dry_run_redacts_sensitive_values(monkeypatch, tmp_path: Path):

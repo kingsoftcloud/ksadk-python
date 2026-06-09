@@ -13,7 +13,7 @@
 # - 你还希望同时带一个配套 skill，直接调用该 plugin 提供的 tool
 # -----------------------------------------------------------------------------
 
-ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.5.22-slim@sha256:d35b8b681c223a85027502c7a82999aa772d6a09e1b28903951cac7fc27efed5
+ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.6.1-slim@sha256:a83ee8716ab191534952299fe989374d75593aa9c7632c4e756e9d64b0ce8061
 ARG OPENCLAW_NPM_REGISTRY=https://registry.npmmirror.com
 
 FROM ${OPENCLAW_BASE_IMAGE}

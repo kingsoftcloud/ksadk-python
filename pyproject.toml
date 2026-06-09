@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ksadk"
-version = "0.6.2.post1"
+version = "0.6.3"
 description = "Kingsoft Cloud Agent Development Kit - 支持 LangChain/LangGraph/DeepAgents/ADK/OpenClaw/Hermes 的本地运行与云端部署"
 readme = "README.md"
 requires-python = ">=3.10"
-license = "MIT"
+license = "Apache-2.0"
 authors = [
     {name = "KsADK Team", email = "xiayu@kingsoft.com"}
 ]
@@ -139,7 +139,7 @@ ksadk = "ksadk.cli:main"
 [project.urls]
 Homepage = "https://github.com/kingsoftcloud/ksadk-python"
 Repository = "https://github.com/kingsoftcloud/ksadk-python"
-Documentation = "https://ksadk.kingsoft.com/docs"
+Documentation = "https://kingsoftcloud.github.io/ksadk-python/"
 
 [tool.setuptools.packages.find]
 where = ["."]

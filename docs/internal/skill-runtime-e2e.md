@@ -57,7 +57,7 @@ https://agent-api-pre.kspmas-internal.ksyun.com/agentengine/skill/api/v1
 内部 AICP 网关需要 KOP 签名：
 
 ```text
-KSADK_SKILL_SERVICE_URL=http://maicp.inner.api.ksyun.com
+KSADK_SKILL_SERVICE_URL=http://aicp.inner.api.ksyun.com
 KSADK_SKILL_SERVICE_API_VERSION=2024-06-12
 ```
 

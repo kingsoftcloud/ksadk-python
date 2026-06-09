@@ -5,27 +5,80 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [0.6.3] - 2026-06-09
+
+### 亮点
+
+- **Hosted UI 联动收敛**：与最新 gateway / server 对齐 hosted `/hosted-ui/chat/`、share link、SSE 订阅和 native terminal 代理契约；`agentengine dashboard open` 继续优先打开托管入口，本地 `agentengine web` 保持调试用途。
+- **Skill Space demo 可用性修复**：补齐 `ksadk.toolsets`、Tool Gateway、Skill Runtime 和 Skill Service 相关 package 文件，安装后的 LangGraph 样例可以直接绑定 AgentEngine 内置工具。
+- **更新镜像不覆盖用户配置**：OpenClaw / Hermes 更新已有实例时默认只更新镜像和必要运行时字段，不再把本地 shell 或默认值生成的 env/storage/network/memory 配置覆盖到服务端。
+- **开源样例门禁增强**：`ksadk-samples` 主推 LangGraph demo 增加 Skill Space、Skill Runtime、Workspace、Sandbox、知识库和长期记忆配置说明，并加入敏感信息扫描与结构校验。
+
+### 修复
+
+- 修复 LangGraph runner 在工具调用后没有文本流式 chunk 时不会输出最终 answer，导致本地 Web UI 存储空 assistant message 的问题。
+- 修复 Skill Service KOP client 在 `KSADK_SKILL_SERVICE_REGION=pre-online` 下没有按 AgentEngine client 规则设置 `X-Ksc-Region: cn-beijing-6` 和 `X-KSC-CUSTOM-SOURCE: pre` 的问题。
+- 修复内置工具 dispatcher 遇到未知 include/tool name 时可能抛异常的问题，现在返回结构化 `unknown_tool` 错误，便于 Agent 继续解释。
+- 修复 OpenClaw / Hermes deploy update payload 默认携带 `env_vars`、`storage`、`network` 等配置组的问题，降低客户更新公共镜像时误改生产配置的风险。
+
+### 兼容性说明
+
+- 新建 OpenClaw / Hermes 实例仍会发送完整 env/storage/network/UI 配置；只有更新已有实例时默认改为最小 payload。
+- 更新已有 OpenClaw / Hermes 时，如需覆盖模型或环境变量，请显式传入 `--model-base-url`、`--model-api-key`、`--default-model` 或 OpenClaw 的 `--env`；如需覆盖挂盘或网络，请显式传入对应 `--storage-*` / `--enable-vpc-access` 等参数。
+- `--no-storage` 在已有实例更新场景下不会删除服务端既有挂盘配置；删除挂盘属于后续需要服务端明确 API 支持的危险操作。
+
 ## [0.6.2] - 2026-06-04
 
 ### 亮点
 
+- **Skill Runtime 重构**：补齐 Skill Space 远端发现、按需下载、`sha256` 校验、安全解压、instruction-first 加载和 workflow 型隔离执行链路，支持 `local_process` 与 E2B backend。
+- **内置 Toolset 渐进式披露**：新增 `get_agentengine_tools(include=[...])` / `describe_agentengine_tools(include=[...])` 的 profile 与工具名选择能力，推荐示例默认使用 `focused + agentengine_tool_dispatcher`，避免每轮上下文暴露所有低频或高风险工具。
+- **Tool Gateway 与人工确认语义**：新增统一 Tool Gateway，Workspace 写入/删除、Skill Runtime 执行、sandbox 命令/代码执行等中高风险工具可在 strict 模式返回 `approval_required`，便于 Hosted/local UI 接入人工确认。
+- **Workspace 与 Sandbox 内置工具增强**：新增 Workspace 精确片段编辑、轻量 lint、sandbox direct `run_command` / `run_code`，并统一限制在 AgentEngine workspace 或 isolated sandbox backend 边界内。
 - **OTel-first 可观测配置**：`setup_tracing()` 优先识别标准 `OTEL_EXPORTER_OTLP_*` HTTP traces 环境变量，业务代码可以只写 OpenTelemetry spans、events 和 attributes，再由后端路由到 Langfuse 或其他 OTLP Collector。
-- **Langfuse 兼容保留**：旧的 `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL` 自动配置仍然可用；当通用 OTLP 已配置时，自动模式不会再额外启用 Langfuse 直连 exporter，避免重复 traces。
-- **观测方案补强**：可观测方案和客户 demo 补充 span event 与子 span 在 Langfuse 等后端中的可见性差异，并建议用 `score.*` attributes 表达评估分数，由平台或 Collector 映射到后端原生 score。
 
 ### 变更
 
+- 新增 `ksadk.toolsets` 内置工具入口：`get_skill_tools()`、`get_workspace_tools()`、`get_platform_tools()`、`get_sandbox_tools()` 和聚合入口 `get_agentengine_tools()`。
+- `get_agentengine_tools()` 无参保持全量工具兼容；新增 `include=["skill"|"workspace"|"platform"|"sandbox"]`、`include=["focused"]` / `include=["core"]`、以及 `include=["focused", "run_code"]` 这类按具体工具名扩展的选择方式。
+- `focused/core` profile 默认只直接暴露 `list_skills`、`search_skills`、`load_skill`、`workspace_status`、`search_workspace_files`、`edit_workspace_file`、`lint_workspace_file`、`component_status`、`sandbox_status`。
+- 新增 `agentengine_tool_dispatcher(action, tool_name=None, arguments=None, include=None)`，支持 `list` / `describe` / `call` KsADK 本地内置工具；dispatcher 不接远端 Tool Space 数据库，也不会递归调用自身。
+- 新增 `describe_agentengine_tools()`，返回工具分组、描述、风险等级、审批需求、side effects、backend/boundary 等元信息，供 Agent Studio、demo、UI 或调试诊断展示。
+- 新增 `list_skills`、`search_skills`、`load_skill`、`execute_skills`，支持按 Skill Space 查询、按 name/alias/tag/description/examples 匹配、下载并读取 `SKILL.md`，以及通过 Skill Runtime 执行 workflow。
+- Skill Runtime 请求协议新增 `--request-file` JSON envelope，携带 `workflow_prompt` 和 `skill_names`；保留 `--prompt-file` 兼容，但二者不能同时使用。
+- Runtime agent 改为按显式 `skill_names` 或 prompt 命中的技能元数据下载所需 Skill，不再默认拉取同一空间下全部 active Skill。
+- 新增公共 Skill Space 追加机制：`KSADK_PUBLIC_SKILL_SPACE_IDS` 会追加在用户 `KSADK_SKILL_SPACE_IDS` / `SKILL_SPACE_ID` 之后，`KSADK_PUBLIC_SKILL_ALLOWLIST` 可限制公共/预置 Skill。
+- Skill Service 地址解析支持 `KSADK_SKILL_SERVICE_URL`，也支持按 `KSADK_AICP_ENDPOINT_MODE`、`KSADK_SKILL_SERVICE_ENDPOINT`、`KSADK_SKILL_SERVICE_SCHEME` 自动选择内外网 AICP endpoint。
+- 新增通用 sandbox 抽象与 E2B backend，优先读取 `KSADK_SANDBOX_TEMPLATE_ID`、`KSADK_SANDBOX_TIMEOUT`、`KSADK_SANDBOX_ALLOW_INTERNET_ACCESS`，兼容旧的 `KSADK_SKILL_RUNTIME_*` 变量。
+- 新增 sandbox direct tools：`sandbox_status`、`run_command`、`run_code`；命令和代码只通过 configured isolated sandbox backend 执行，不退化为宿主机 shell。
+- Workspace toolset 新增 `workspace_status`、`list_workspace_files`、`read_workspace_file`、`write_workspace_file`、`write_workspace_files`、`edit_workspace_file`、`lint_workspace_file`、`search_workspace_files`、`delete_workspace_file`。
+- `edit_workspace_file` 支持 exact snippet replacement，并在未命中或匹配次数不符合预期时返回 `snippet_not_found` / `ambiguous_edit`；`lint_workspace_file` 支持 Python AST、JSON parse 和通用文本轻量检查。
+- ADK Runner、LangGraph Runner 和 DeepAgents Runner 示例/测试接入 Skill Runtime 或 toolset 注入路径；LangGraph demo 默认改为 `focused + agentengine_tool_dispatcher` 绑定方式，并保留业务自定义 tool 与 graph node 示例。
+- `component_status` 展示模型、知识库、长期记忆、Skill Space、Skill Runtime、sandbox 和 Workspace 绑定状态，帮助区分“已绑定”“可发现”“隔离执行已启用”等边界。
 - 新增 `OTEL_EXPORTER_OTLP_ENDPOINT`、`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`、`OTEL_EXPORTER_OTLP_PROTOCOL`、`OTEL_EXPORTER_OTLP_TRACES_PROTOCOL`、`OTEL_EXPORTER_OTLP_HEADERS` 和 `OTEL_EXPORTER_OTLP_TRACES_HEADERS` 的自动 HTTP traces exporter 支持。
 - 当只设置 `OTEL_EXPORTER_OTLP_ENDPOINT` 时，KsADK 会派生 `/v1/traces` 作为 traces endpoint；显式 `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` 优先。
 - HTTP headers 支持标准 OTLP 逗号分隔格式，并对 header value 做 URL decode，例如 `Authorization=Bearer%20token`。
-- `OTEL_EXPORTER_OTLP_TRACES_*` 配置优先于通用 `OTEL_EXPORTER_OTLP_*` 配置。
-- CLI / runtime template 在只配置 OTLP 环境变量时也会初始化 tracing。
-- 环境变量 registry 补齐 AICP endpoint mode、Skill Service endpoint/scheme 和内部 runtime requirement 常量登记。
+- `OTEL_EXPORTER_OTLP_TRACES_*` 配置优先于通用 `OTEL_EXPORTER_OTLP_*` 配置；CLI / runtime template 在只配置 OTLP 环境变量时也会初始化 tracing。
+- 环境变量 registry 补齐 AICP endpoint mode、Skill Service endpoint/scheme、Sandbox、Skill Runtime、Artifact 和 OTel 相关变量登记。
+
+### 修复
+
+- 修复 Skill Runtime 长 prompt 通过 shell quoting 传递时不稳定的问题，改为写入 `/tmp/ksadk-workflow-request.json` 后由 runtime agent 读取。
+- 修复 E2B Skill Runtime 错误信息可能泄漏 `E2B_API_KEY`、Skill Service token 或 secret 的问题，异常回传会做敏感值 redaction。
+- 修复 E2B session 未稳定清理的问题，workflow 执行结束或异常后都会尝试 kill sandbox。
+- 修复 public Skill Space 与用户 Skill Space 混用时的去重和 allowlist 边界，避免重复下载或加载非预期公共 Skill。
+- 修复 workspace 编辑能力只能整文件覆盖的问题，新增片段级替换和轻量 lint 以降低常见代码/文本改动风险。
+- 修复高风险工具直接执行缺少统一审批 envelope 的问题，Tool Gateway strict 模式下会阻止执行并返回 `approval_required`。
+- 修复内置工具全量绑定导致 LangGraph demo 上下文过大的问题，默认改为 focused 工具加 dispatcher 渐进式披露。
 
 ### 兼容性说明
 
-- 显式传入 `setup_tracing(enable_langfuse=True)` 仍可强制启用 Langfuse 兼容路径。
-- `LANGFUSE_USE_CALLBACK=true` 仍用于 LangChain / LangGraph callback-only 模式，避免 callback 与 direct OTLP 双写。
+- `get_agentengine_tools()` 无参仍返回全量内置工具，避免破坏已有 LangGraph/LangChain/DeepAgents 项目；新示例推荐显式使用 `include=["focused", "agentengine_tool_dispatcher"]`。
+- `execute_skills`、`run_command`、`run_code`、Workspace 写入/删除等能力仍可显式绑定或通过 dispatcher 调用；dispatcher 调用真实工具对象，不绕过 Tool Gateway 审批策略。
+- 当前 dispatcher v1 只调度 KsADK 本地内置工具，不连接控制台 Tool Space、数据库动态工具绑定或远端 Tool Gateway 目录；这些属于后续控制面能力。
+- Sandbox 新部署优先使用 `KSADK_SANDBOX_*` 通用变量；`KSADK_SKILL_RUNTIME_TEMPLATE_ID`、`KSADK_SKILL_RUNTIME_TIMEOUT`、`KSADK_SKILL_RUNTIME_ALLOW_INTERNET_ACCESS` 继续作为兼容变量保留。
+- Skill Runtime 默认 backend 仍为 disabled；未显式设置 `KSADK_SKILL_RUNTIME_BACKEND` 但存在 `KSADK_SANDBOX_TEMPLATE_ID` 时会自动走 E2B。
+- 显式传入 `setup_tracing(enable_langfuse=True)` 仍可强制启用 Langfuse 兼容路径；`LANGFUSE_USE_CALLBACK=true` 仍用于 LangChain / LangGraph callback-only 模式，避免 callback 与 direct OTLP 双写。
 - OTel attributes 中的 `score.*` 字段只是后端无关的推荐表达，不直接依赖 Langfuse SDK，也不承诺所有后端都会自动显示为 native score。
 
 ## [0.6.1] - 2026-05-28

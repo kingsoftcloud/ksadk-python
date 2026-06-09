@@ -1559,6 +1559,34 @@ function createGatewayHttpServer(opts) {`,
 	    },
 	    {
 	      capability: 'gateway workspace files proxy stage',
+	      variant: '2026.6.1-scoped-node-capability-request-path',
+	      marker: 'name: "workspace-files-proxy"',
+	      // OpenClaw 2026.6.1 rewrites scoped plugin node capability URLs before
+	      // request staging and captures getResolvedAuth() in resolvedAuthValue.
+	      // Keep this branch while the AgentEngine workspace sidecar proxy is
+	      // injected by the runtime image instead of being native upstream.
+	      needle: `const requestStages = [{
+				name: "gateway-probes",
+				run: () => handleGatewayProbeRequest(req, res, scopedRequestPath, resolvedAuthValue, trustedProxies, allowRealIpFallback, getReadiness)
+			}, {
+				name: "hooks",
+				run: () => handleHooksRequest(req, res)
+			}];
+			if (openAiCompatEnabled && isOpenAiModelsPath(scopedRequestPath)) requestStages.push({`,
+	      replacement: `const requestStages = [{
+				name: "gateway-probes",
+				run: () => handleGatewayProbeRequest(req, res, scopedRequestPath, resolvedAuthValue, trustedProxies, allowRealIpFallback, getReadiness)
+			}, {
+				name: "hooks",
+				run: () => handleHooksRequest(req, res)
+			}, {
+				name: "workspace-files-proxy",
+				run: () => handleWorkspaceFilesProxyRequest(req, res)
+			}];
+			if (openAiCompatEnabled && isOpenAiModelsPath(scopedRequestPath)) requestStages.push({`,
+	    },
+	    {
+	      capability: 'gateway workspace files proxy stage',
 	      variant: '2026.4.26-scoped-request-path',
 	      marker: 'name: "workspace-files-proxy"',
 	      // OpenClaw 2026.4.26 moved request staging to scopedRequestPath and
