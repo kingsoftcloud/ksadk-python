@@ -133,3 +133,33 @@ def test_github_api_request_uses_available_token(monkeypatch):
     assert body == b"[]"
     assert captured["headers"]["Authorization"] == "Bearer gh-test-token"
     assert captured["timeout"] == 20
+
+
+def test_github_token_is_not_sent_to_url_containing_github_api_as_query(monkeypatch):
+    module = _load_module()
+    captured = {}
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return None
+
+        def read(self):
+            return b"ok"
+
+    def fake_urlopen(request, timeout):
+        captured["headers"] = dict(request.header_items())
+        return FakeResponse()
+
+    monkeypatch.setenv("GH_TOKEN", "gh-test-token")
+    monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
+
+    status, body = module._open("https://example.com/status?next=api.github.com")
+
+    assert status == 200
+    assert body == b"ok"
+    assert "Authorization" not in captured["headers"]

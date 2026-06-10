@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -30,7 +31,7 @@ def _current_version() -> str:
 
 def _open(url: str) -> tuple[int, bytes]:
     headers = {"User-Agent": "ksadk-publication-check"}
-    if "api.github.com" in url:
+    if urllib.parse.urlparse(url).hostname == "api.github.com":
         token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
         if token:
             headers["Authorization"] = f"Bearer {token}"
