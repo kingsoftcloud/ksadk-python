@@ -76,7 +76,7 @@
 
 | 变量 | 是否必传 | 别名/兼容 | 敏感 | 配置方/来源 | 说明 |
 | --- | --- | --- | --- | --- | --- |
-| `KSADK_SKILL_SERVICE_URL` | 条件必传 | 无 | 否 | 平台 / Skill Service | 配置后 Runtime agent 才会从 Skill Center 拉取 skill。直连 REST 可用 `/agentengine/skill/api/v1`，AICP KOP 可用 `http://maicp.inner.api.ksyun.com`。 |
+| `KSADK_SKILL_SERVICE_URL` | 条件必传 | 无 | 否 | 平台 / Skill Service | 配置后 Runtime agent 才会从 Skill Center 拉取 skill。直连 REST 可用 `/agentengine/skill/api/v1`，AICP KOP 可用 `http://aicp.inner.api.ksyun.com`。 |
 | `KSADK_SKILL_SERVICE_ENDPOINT` | 否 | 无 | 否 | 平台 / Skill Service | 未设置 `KSADK_SKILL_SERVICE_URL` 时的 AICP endpoint 覆盖，只写 host/path，不含 scheme。 |
 | `KSADK_SKILL_SERVICE_SCHEME` | 否 | 无 | 否 | 平台 / Skill Service | 未设置 `KSADK_SKILL_SERVICE_URL` 时的 AICP URL scheme 覆盖；内网 endpoint 默认会使用 `http`。 |
 | `KSADK_SKILL_SPACE_IDS` | 条件必传 | `SKILL_SPACE_ID` | 否 | Agent 创建/更新时注入 / Runner 环境 | 逗号分隔 space id；单 space 兼容变量为 `SKILL_SPACE_ID`。 |

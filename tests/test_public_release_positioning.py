@@ -69,7 +69,7 @@ def test_public_release_materials_do_not_include_internal_environment_details():
         "X-Ksc-Region",
         "X-KSC-CUSTOM-SOURCE",
         "aicp.inner.api",
-        "maicp.inner",
+        "m" + "aicp.",
         "Kingsoft Cloud Agent Development Kit",
     )
     for relative_path in (
