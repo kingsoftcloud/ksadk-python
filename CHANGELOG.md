@@ -11,13 +11,15 @@
 
 - **项目定位重构**：将 README、文档首页和包元数据统一为 Agent Runtime Platform 口径，突出统一运行、浏览器调试、OpenAI-Compatible API、Sandbox、部署和可观测价值。
 - **中文优先首页**：默认 README 与中文文档首页使用中文主叙述，英文 README 作为补充入口保留，避免公开首页变成英文优先材料。
+- **README 简洁化**：README 聚焦项目定位、30 秒上手、真实截图/GIF、核心能力和贡献入口；版本变更迁回 CHANGELOG 与 GitHub Releases，避免首页承担发布公告职责。
 - **真实视觉资产**：首页首屏使用真实浅色 CLI 截图，30 秒体验后展示真实本地 Web UI 截图和 GIF；演示由本地 deterministic LangGraph Runner 生成，不依赖外部模型或云环境。
-- **文档信息架构调整**：MkDocs 导航改为 Getting Started / Build / Run / Deploy / Observe / Extend / Reference，更贴近开发者完成任务的路径。
+- **文档信息架构调整**：MkDocs 导航改为 Getting Started / Build / Run / Deploy / Observe / Extend / Reference，并新增 Why KsADK、Architecture、Comparison 三个认知入口页。
 - **Samples 场景入口对齐**：`ksadk-samples` 根 README 改为场景优先，真实映射 Knowledge Assistant、Workflow Agent、Tool-Using Agent 和 Memory-aware Agent；尚未实现的场景只进入 Roadmap。
 - **默认线上地域说明**：公开 README 和文档首页使用 `KSYUN_REGION=cn-beijing-6` 作为线上默认 region 示例，避免用户把非公开或内网配置照搬到公开 demo。
 
 ### 修复
 
+- 新增 `ksadk.markdown.repair_markdown(text, enabled=True)` 可选业务侧 Markdown 形态修复工具，覆盖未闭合 fenced code block、列表/表格/代码块周边空行和换行归一化；默认关闭，运行时不自动改写 raw LLM output。
 - 清理 README、CHANGELOG、文档首页和 runtime product 文档中的环境特定表述，避免公开页面出现内部环境名、内部 header 或私有 endpoint 示例。
 - 将公开定位、视觉资产存在性、中文优先标题、敏感词扫描和 README 场景入口要求纳入本地门禁，降低后续发布材料回退风险。
 - 将 `agentengine-sdk-python` 别名包版本占用检查纳入 `public-publish-check`，避免主包与别名包发布状态不一致。

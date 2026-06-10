@@ -80,11 +80,9 @@ def test_readmes_position_ksadk_as_runtime_platform():
         "public-docs/assets/ksadk-runtime-architecture.png",
         "架构",
         "生态定位对比",
-        "VEADK",
-        "AgentRun",
         "可观测",
-        "部署",
-        "社区",
+        "文档与社区",
+        "参与贡献",
         "KSYUN_REGION=cn-beijing-6",
     )
     for relative_path in ("README.md", "README.zh-CN.md"):
@@ -92,11 +90,14 @@ def test_readmes_position_ksadk_as_runtime_platform():
         for expected in expected_sections:
             assert expected in text, f"{relative_path} missing {expected}"
         assert "```mermaid" not in text
-        assert "```text" in text
         assert "Agent Development Kit" not in text
         _assert_no_public_sensitive_patterns(relative_path, text)
         assert "当前版本：" not in text
-        assert "候选版本：`0.6.4`" in text
+        assert "候选版本：" not in text
+        assert "## 0.6.4 重点" not in text
+        assert "## 0.6.3 重点" not in text
+        assert "[CHANGELOG.md](CHANGELOG.md)" in text
+        assert "https://github.com/kingsoftcloud/ksadk-python/releases" in text
 
 
 def test_english_readme_positions_ksadk_as_runtime_platform():
@@ -114,21 +115,22 @@ def test_english_readme_positions_ksadk_as_runtime_platform():
         "public-docs/assets/ksadk-runtime-architecture.png",
         "Architecture",
         "Ecosystem Positioning",
-        "VEADK",
-        "AgentRun",
         "Observability",
-        "Deployment",
-        "Community",
+        "Documentation And Community",
+        "Contributing",
         "KSYUN_REGION=cn-beijing-6",
     )
     for expected in expected_sections:
         assert expected in text
     assert "```mermaid" not in text
-    assert "```text" in text
     assert "Agent Development Kit" not in text
     _assert_no_public_sensitive_patterns("README.en.md", text)
     assert "Current version:" not in text
-    assert "Candidate version: `0.6.4`" in text
+    assert "Candidate version:" not in text
+    assert "## 0.6.4 Highlights" not in text
+    assert "## 0.6.3 Highlights" not in text
+    assert "[CHANGELOG.md](CHANGELOG.md)" in text
+    assert "https://github.com/kingsoftcloud/ksadk-python/releases" in text
 
 
 def test_docs_homepage_uses_runtime_platform_information_architecture():
@@ -180,6 +182,64 @@ def test_docs_homepage_uses_runtime_platform_information_architecture():
         assert "成熟 Agent SDK" not in text
 
 
+def test_docs_include_phase_one_positioning_pages():
+    zh_pages = {
+        "public-docs/getting-started/why-ksadk.md": (
+            "为什么需要 KsADK",
+            "一次构建 Agent，到处运行。",
+            "ADK 解决 Agent 开发",
+            "LangGraph",
+            "OpenAI Agents SDK",
+            "Agent Runtime Platform",
+        ),
+        "public-docs/getting-started/architecture.md": (
+            "架构",
+            "KsADK Agent Runtime Platform 架构",
+            "Skill Runtime",
+            "Workspace",
+            "Sandbox",
+            "Hermes / OpenClaw Runtime",
+        ),
+        "public-docs/getting-started/comparison.md": (
+            "生态定位对比",
+            "这页不是能力打分榜",
+            "VEADK",
+            "AgentRun",
+            "repair_markdown(text, enabled=True)",
+        ),
+    }
+    en_pages = {
+        "public-docs/getting-started/why-ksadk.en.md": (
+            "Why KsADK",
+            "Build agents once. Run them anywhere.",
+            "How do I run, debug, expose, deploy, and observe agents consistently?",
+            "OpenAI Agents SDK",
+            "Agent Runtime Platform",
+        ),
+        "public-docs/getting-started/architecture.en.md": (
+            "Architecture",
+            "KsADK Agent Runtime Platform architecture",
+            "Skill Runtime",
+            "Workspace",
+            "Sandbox",
+            "Hermes / OpenClaw Runtime",
+        ),
+        "public-docs/getting-started/comparison.en.md": (
+            "Ecosystem Positioning",
+            "not a feature scorecard",
+            "VEADK",
+            "AgentRun",
+            "repair_markdown(text, enabled=True)",
+        ),
+    }
+
+    for relative_path, expected_terms in {**zh_pages, **en_pages}.items():
+        text = _read(relative_path)
+        for expected in expected_terms:
+            assert expected in text, f"{relative_path} missing {expected}"
+        _assert_no_public_sensitive_patterns(relative_path, text)
+
+
 def test_public_positioning_does_not_use_misleading_feature_scorecards():
     scorecard_headers = (
         "| 能力 | ADK | LangGraph | OpenAI Agents SDK | KsADK |",
@@ -190,23 +250,51 @@ def test_public_positioning_does_not_use_misleading_feature_scorecards():
         "| OpenAI Compatible API | No | No | Partial | Yes |",
     )
 
-    for relative_path in ("README.md", "README.zh-CN.md", "README.en.md", "public-docs/index.md", "public-docs/index.en.md"):
+    for relative_path in (
+        "README.md",
+        "README.zh-CN.md",
+        "README.en.md",
+        "public-docs/index.md",
+        "public-docs/index.en.md",
+        "public-docs/getting-started/comparison.md",
+        "public-docs/getting-started/comparison.en.md",
+    ):
         text = _read(relative_path)
         for header in scorecard_headers:
             assert header not in text, f"{relative_path} still uses old scorecard header"
         for cell in misleading_cells:
             assert cell not in text, f"{relative_path} still uses misleading OpenAI comparison"
+
+    for relative_path in (
+        "public-docs/index.md",
+        "public-docs/index.en.md",
+        "public-docs/getting-started/comparison.md",
+        "public-docs/getting-started/comparison.en.md",
+    ):
+        text = _read(relative_path)
         assert "VEADK" in text
         assert "AgentRun" in text
 
 
+def test_readmes_stay_concise_and_do_not_duplicate_changelog():
+    version_heading_pattern = re.compile(r"^##\s+0\.\d+\.\d+", re.MULTILINE)
+
+    for relative_path in ("README.md", "README.zh-CN.md", "README.en.md"):
+        text = _read(relative_path)
+        assert not version_heading_pattern.search(text), (
+            f"{relative_path} should link to CHANGELOG/Releases instead of listing version highlights"
+        )
+        assert "GitHub Releases" in text
+        assert "[CHANGELOG.md](CHANGELOG.md)" in text
+        assert len(text.splitlines()) < 140, f"{relative_path} should stay concise"
+
+
 def test_public_positioning_uses_factual_ecosystem_focus_terms():
     expected_terms_by_path = {
-        "README.md": ("A2UI/Frontend", "VeFaaS", "AgentRuntime 生命周期", "Serverless Devs"),
-        "README.zh-CN.md": ("A2UI/Frontend", "VeFaaS", "AgentRuntime 生命周期", "Serverless Devs"),
-        "README.en.md": ("A2UI/Frontend", "VeFaaS", "AgentRuntime lifecycle", "Serverless Devs"),
         "public-docs/index.md": ("A2UI/Frontend", "VeFaaS", "AgentRuntime 生命周期", "Serverless Devs"),
         "public-docs/index.en.md": ("A2UI/Frontend", "VeFaaS", "AgentRuntime lifecycle", "Serverless Devs"),
+        "public-docs/getting-started/comparison.md": ("A2UI/Frontend", "VeFaaS", "AgentRuntime 生命周期", "Serverless Devs"),
+        "public-docs/getting-started/comparison.en.md": ("A2UI/Frontend", "VeFaaS", "AgentRuntime lifecycle", "Serverless Devs"),
     }
 
     for relative_path, expected_terms in expected_terms_by_path.items():
@@ -253,9 +341,43 @@ def test_public_navigation_is_task_oriented():
     mkdocs = _read("mkdocs.yml")
     for expected in ("Getting Started", "Build", "Run", "Deploy", "Observe", "Extend", "Reference"):
         assert expected in mkdocs
+    for expected in (
+        "为什么需要 KsADK: getting-started/why-ksadk.md",
+        "架构: getting-started/architecture.md",
+        "生态定位对比: getting-started/comparison.md",
+        "为什么需要 KsADK: Why KsADK",
+        "架构: Architecture",
+        "生态定位对比: Ecosystem Positioning",
+    ):
+        assert expected in mkdocs
     assert "快速开始: Quick Start" in mkdocs
     assert "Kingsoft Cloud Agent Development Kit" not in mkdocs
     assert "金山云智能体开发套件" not in mkdocs
+
+
+def test_markdown_repair_is_documented_as_opt_in():
+    expected_by_path = {
+        "README.md": ("repair_markdown", "按需修复", "runtime 默认不改写模型原文"),
+        "README.zh-CN.md": ("repair_markdown", "按需修复", "runtime 默认不改写模型原文"),
+        "README.en.md": ("repair_markdown", "optional app-side repair", "runtime does not rewrite raw model output"),
+        "public-docs/guides/agent-best-practices.md": (
+            "Markdown 输出修复",
+            "显式开启",
+            "repair_markdown(text, enabled=True)",
+            "默认不会改写模型原文",
+        ),
+        "public-docs/guides/agent-best-practices.en.md": (
+            "Markdown Output Repair",
+            "enable the lightweight repair helper",
+            "repair_markdown(text, enabled=True)",
+            "does not rewrite raw model output by default",
+        ),
+    }
+
+    for relative_path, expected_terms in expected_by_path.items():
+        text = _read(relative_path)
+        for expected in expected_terms:
+            assert expected in text, f"{relative_path} missing {expected}"
 
 
 def test_english_navigation_translates_all_chinese_labels():

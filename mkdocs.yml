@@ -27,6 +27,9 @@ theme:
 nav:
   - Getting Started 入门:
       - 首页: index.md
+      - 为什么需要 KsADK: getting-started/why-ksadk.md
+      - 架构: getting-started/architecture.md
+      - 生态定位对比: getting-started/comparison.md
       - 初识 KsADK: getting-started/concepts.md
       - 快速开始: getting-started/quickstart.md
       - 配置项: getting-started/configuration.md
@@ -96,6 +99,9 @@ plugins:
           nav_translations:
             Getting Started 入门: Getting Started
             首页: Overview
+            为什么需要 KsADK: Why KsADK
+            架构: Architecture
+            生态定位对比: Ecosystem Positioning
             初识 KsADK: Concepts
             快速开始: Quick Start
             配置项: Configuration
