@@ -20,6 +20,7 @@
 
 - 清理 README、CHANGELOG、文档首页和 runtime product 文档中的环境特定表述，避免公开页面出现内部环境名、内部 header 或私有 endpoint 示例。
 - 将公开定位、视觉资产存在性、中文优先标题、敏感词扫描和 README 场景入口要求纳入本地门禁，降低后续发布材料回退风险。
+- 将 `agentengine-sdk-python` 别名包版本占用检查纳入 `public-publish-check`，避免主包与别名包发布状态不一致。
 
 ### 发布说明
 

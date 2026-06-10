@@ -282,7 +282,7 @@ public-audit: public-secret-audit
 
 public-test:
 	@echo "==> public tests"
-	@uv run --extra dev pytest tests/test_open_source_audit.py tests/test_public_positioning_docs.py tests/test_prepare_ksadk_python_export.py tests/test_prepare_ksadk_web_export.py tests/test_runtime_common_packaging.py tests/test_tracing_setup_otlp.py -q
+	@uv run --extra dev pytest tests/test_open_source_audit.py tests/test_public_positioning_docs.py tests/test_prepare_ksadk_python_export.py tests/test_prepare_ksadk_web_export.py tests/test_runtime_common_packaging.py tests/test_tracing_setup_otlp.py tests/test_check_publication_state.py -q
 
 public-build-check: clean-dist
 	@echo "==> build and twine check"

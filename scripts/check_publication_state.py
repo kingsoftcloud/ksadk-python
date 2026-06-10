@@ -2,6 +2,7 @@
 
 发布前使用 `--phase pre-publish`，确保 GitHub Pages 可访问且 PyPI 上还没有
 当前版本；发布后使用 `--phase post-publish`，确保 PyPI 已能查询到当前版本。
+主包和兼容别名包都按同一版本检查，避免只发布其中一个包。
 """
 
 from __future__ import annotations
@@ -85,10 +86,17 @@ def main() -> int:
     alias_latest = _pypi_project_version(args.alias_project)
     print(f"pypi:{args.alias_project}: latest={alias_latest}")
 
+    alias_exists = _pypi_version_exists(args.alias_project, args.version)
+    print(f"pypi:{args.alias_project}=={args.version}: exists={alias_exists}")
+
     if args.phase == "pre-publish" and exists:
         raise RuntimeError(f"发布前检查失败：PyPI 已存在 {args.project}=={args.version}")
+    if args.phase == "pre-publish" and alias_exists:
+        raise RuntimeError(f"发布前检查失败：PyPI 已存在 {args.alias_project}=={args.version}")
     if args.phase == "post-publish" and not exists:
         raise RuntimeError(f"发布后检查失败：PyPI 尚未存在 {args.project}=={args.version}")
+    if args.phase == "post-publish" and not alias_exists:
+        raise RuntimeError(f"发布后检查失败：PyPI 尚未存在 {args.alias_project}=={args.version}")
 
     print(f"✅ publication {args.phase} check passed for {args.project}=={args.version}")
     return 0
