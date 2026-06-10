@@ -65,15 +65,19 @@ def _assert_no_public_sensitive_patterns(relative_path: str, text: str) -> None:
 
 def test_readmes_position_ksadk_as_runtime_platform():
     expected_sections = (
-        "Build agents once. Run them anywhere.",
+        "简体中文（默认）",
+        "一次构建 Agent，到处运行。",
         "Agent Runtime Platform",
-        "Why KsADK",
+        "默认 README 使用简体中文",
+        "https://kingsoftcloud.github.io/ksadk-python/assets/ksadk-local-debugging-demo.gif",
+        "为什么需要 KsADK",
         "30 秒快速体验",
-        "Architecture",
-        "Comparison",
-        "Observability",
-        "Deployment",
-        "Community",
+        "https://kingsoftcloud.github.io/ksadk-python/assets/ksadk-runtime-architecture.png",
+        "架构",
+        "能力对比",
+        "可观测",
+        "部署",
+        "社区",
         "KSYUN_REGION=cn-beijing-6",
     )
     for relative_path in ("README.md", "README.zh-CN.md"):
@@ -93,8 +97,10 @@ def test_english_readme_positions_ksadk_as_runtime_platform():
     expected_sections = (
         "Build agents once. Run them anywhere.",
         "Agent Runtime Platform",
+        "https://kingsoftcloud.github.io/ksadk-python/assets/ksadk-local-debugging-demo.gif",
         "Why KsADK",
         "30 Seconds Quick Start",
+        "https://kingsoftcloud.github.io/ksadk-python/assets/ksadk-runtime-architecture.png",
         "Architecture",
         "Comparison",
         "Observability",
@@ -115,20 +121,50 @@ def test_english_readme_positions_ksadk_as_runtime_platform():
 def test_docs_homepage_uses_runtime_platform_information_architecture():
     zh = _read("public-docs/index.md")
     en = _read("public-docs/index.en.md")
+
+    for expected in (
+        "一次构建 Agent，到处运行。",
+        "Agent Runtime Platform",
+        "assets/ksadk-local-debugging-demo.gif",
+        "为什么需要 KsADK",
+        "assets/ksadk-runtime-architecture.png",
+        "能力对比",
+        "OpenTelemetry",
+        "Hermes",
+        "OpenClaw",
+        "KSYUN_REGION=cn-beijing-6",
+    ):
+        assert expected in zh
+
+    for expected in (
+        "Build agents once. Run them anywhere.",
+        "Agent Runtime Platform",
+        "assets/ksadk-local-debugging-demo.gif",
+        "Why KsADK",
+        "assets/ksadk-runtime-architecture.png",
+        "Comparison",
+        "OpenTelemetry",
+        "Hermes",
+        "OpenClaw",
+        "KSYUN_REGION=cn-beijing-6",
+    ):
+        assert expected in en
+
     for text in (zh, en):
-        for expected in (
-            "Build agents once. Run them anywhere.",
-            "Agent Runtime Platform",
-            "Why KsADK",
-            "Comparison",
-            "OpenTelemetry",
-            "Hermes",
-            "OpenClaw",
-            "KSYUN_REGION=cn-beijing-6",
-        ):
-            assert expected in text
         assert "Agent Development Kit" not in text
         assert "成熟 Agent SDK" not in text
+
+
+def test_public_visual_assets_are_present_and_nonempty():
+    expected_assets = (
+        "public-docs/assets/ksadk-runtime-architecture.svg",
+        "public-docs/assets/ksadk-runtime-architecture.png",
+        "public-docs/assets/ksadk-local-debugging-demo.gif",
+    )
+    for relative_path in expected_assets:
+        path = ROOT / relative_path
+        assert path.is_file(), f"{relative_path} missing"
+        assert path.stat().st_size > 4096, f"{relative_path} is unexpectedly small"
 
 
 def test_public_navigation_is_task_oriented():

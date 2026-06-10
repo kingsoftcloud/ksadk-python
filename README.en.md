@@ -18,6 +18,8 @@ Candidate version: `0.6.4` (Unreleased, pending user review; use PyPI and GitHub
 - Serverless Deployment
 - Hermes & OpenClaw Runtime
 
+![KsADK local debugging demo](https://kingsoftcloud.github.io/ksadk-python/assets/ksadk-local-debugging-demo.gif)
+
 ## Why KsADK
 
 Most agent frameworks solve agent development.
@@ -68,6 +70,13 @@ agentengine config set KSYUN_REGION=cn-beijing-6
 
 ## Architecture
 
+![KsADK Agent Runtime Platform architecture](https://kingsoftcloud.github.io/ksadk-python/assets/ksadk-runtime-architecture.png)
+
+This diagram shows the public runtime boundary: keep building business agents with ADK, LangGraph, LangChain, or DeepAgents, then use KsADK for one CLI, browser Web UI, OpenAI-Compatible APIs, Skill Runtime, Workspace, Sandbox, memory, knowledge, and deployment backends.
+
+<details>
+<summary>Text architecture</summary>
+
 ```text
 Agent Code
   ADK / LangGraph / LangChain / DeepAgents
@@ -89,6 +98,8 @@ Unified Runtime
 AgentEngine
   Serverless / Hermes / OpenClaw Runtime
 ```
+
+</details>
 
 ## Supported Frameworks
 

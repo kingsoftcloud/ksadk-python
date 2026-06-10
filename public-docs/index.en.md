@@ -6,6 +6,8 @@ KsADK is the Agent Runtime Platform for AI agents.
 
 Build with Google ADK, LangGraph, LangChain, or DeepAgents. Run, debug, expose, observe, and deploy those agents through one unified runtime experience.
 
+![KsADK local debugging demo](assets/ksadk-local-debugging-demo.gif)
+
 === "Install"
 
     ```bash
@@ -75,18 +77,9 @@ agentengine config set KSYUN_REGION=cn-beijing-6
 
 ## Architecture
 
-```mermaid
-flowchart TD
-  Code["Agent Code<br/>ADK / LangGraph / LangChain / DeepAgents"] --> SDK["KsADK SDK<br/>runner adapters + config"]
-  SDK --> Runtime["Unified Runtime<br/>CLI + Web UI + OpenAI-Compatible API"]
-  Runtime --> Sandbox["Sandbox<br/>isolated command/code execution"]
-  Runtime --> Skills["Skills<br/>Skill Space + Skill Runtime"]
-  Runtime --> Memory["Memory & Knowledge<br/>sessions + LTM + RAG"]
-  Sandbox --> Engine["AgentEngine"]
-  Skills --> Engine
-  Memory --> Engine
-  Engine --> Backends["Serverless / Hermes / OpenClaw Runtime"]
-```
+![KsADK Agent Runtime Platform architecture](assets/ksadk-runtime-architecture.png)
+
+This diagram shows the public runtime boundary: keep building business agents with ADK, LangGraph, LangChain, or DeepAgents, then use KsADK for one CLI, browser Web UI, OpenAI-Compatible APIs, Skill Runtime, Workspace, Sandbox, memory, knowledge, and deployment backends.
 
 ## Supported Frameworks
 

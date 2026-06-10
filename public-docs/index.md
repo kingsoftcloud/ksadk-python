@@ -1,10 +1,12 @@
 # KsADK
 
-Build agents once. Run them anywhere.
+一次构建 Agent，到处运行。
 
-KsADK is the Agent Runtime Platform for AI agents.
+KsADK 是面向 AI Agent 的运行时平台（Agent Runtime Platform）。
 
 你可以继续使用 Google ADK、LangGraph、LangChain 或 DeepAgents 编写业务 Agent，再用 KsADK 获得统一的本地运行、浏览器调试、OpenAI-Compatible API、沙箱执行、部署和可观测体验。
+
+![KsADK 本地调试演示](assets/ksadk-local-debugging-demo.gif)
 
 === "安装"
 
@@ -27,20 +29,20 @@ KsADK is the Agent Runtime Platform for AI agents.
     agentengine web . --no-open
     ```
 
-## Why KsADK
+## 为什么需要 KsADK
 
-Most agent frameworks solve agent development.
+大多数 Agent 框架主要解决“如何开发 Agent”。
 
-KsADK solves agent runtime.
+KsADK 解决“如何运行、调试、部署和观测 Agent”。
 
 KsADK 不替换你已经选择的 Agent 框架。它在框架之上提供统一平台层，把开发、调试、运行、沙箱、部署和可观测连接起来：
 
-- Development：统一项目创建、配置和本地运行。
-- Debugging：浏览器调试 UI、会话、附件、workspace 文件和 streaming。
-- Runtime：统一 Runner、OpenAI-Compatible API 和多框架入口。
+- 开发：统一项目创建、配置和本地运行。
+- 调试：浏览器调试 UI、会话、附件、workspace 文件和 streaming。
+- 运行：统一 Runner、OpenAI-Compatible API 和多框架入口。
 - Sandbox：Skill Runtime、Workspace 和 sandbox backend 的隔离执行边界。
-- Deployment：Serverless、Hermes、OpenClaw 和远端 AgentEngine 入口。
-- Observability：OpenTelemetry-first tracing，可接入多种观测后端。
+- 部署：Serverless、Hermes、OpenClaw 和远端 AgentEngine 入口。
+- 可观测：OpenTelemetry-first tracing，可接入多种观测后端。
 
 ## 30 秒快速体验
 
@@ -73,45 +75,36 @@ agentengine config set OPENAI_BASE_URL=https://api.example.com/v1
 agentengine config set KSYUN_REGION=cn-beijing-6
 ```
 
-## Architecture
+## 架构
 
-```mermaid
-flowchart TD
-  Code["Agent Code<br/>ADK / LangGraph / LangChain / DeepAgents"] --> SDK["KsADK SDK<br/>runner adapters + config"]
-  SDK --> Runtime["Unified Runtime<br/>CLI + Web UI + OpenAI-Compatible API"]
-  Runtime --> Sandbox["Sandbox<br/>isolated command/code execution"]
-  Runtime --> Skills["Skills<br/>Skill Space + Skill Runtime"]
-  Runtime --> Memory["Memory & Knowledge<br/>sessions + LTM + RAG"]
-  Sandbox --> Engine["AgentEngine"]
-  Skills --> Engine
-  Memory --> Engine
-  Engine --> Backends["Serverless / Hermes / OpenClaw Runtime"]
-```
+![KsADK Agent Runtime Platform 架构](assets/ksadk-runtime-architecture.png)
 
-## Supported Frameworks
+这张图展示的是公开运行时边界：业务 Agent 仍然由 ADK、LangGraph、LangChain 或 DeepAgents 编写；KsADK 在上层补齐统一 CLI、Web UI、OpenAI-Compatible API、Skill Runtime、Workspace、Sandbox、记忆、知识库和部署后端。
 
-| Framework | KsADK 负责什么 |
+## 支持的框架
+
+| 框架 | KsADK 负责什么 |
 | --- | --- |
 | Google ADK | 项目模板、Runner 适配、本地运行、Web UI 调试和部署入口。 |
 | LangGraph | 图状态入口、工具调用、streaming、Skill Runtime 和 workspace toolsets。 |
 | LangChain | Runnable/chain 适配、本地 OpenAI-Compatible API 和 tracing。 |
 | DeepAgents | 项目入口、运行时包装、浏览器调试和部署制品。 |
 
-## Comparison
+## 能力对比
 
-| Capability | ADK | LangGraph | OpenAI Agents SDK | KsADK |
+| 能力 | ADK | LangGraph | OpenAI Agents SDK | KsADK |
 | --- | --- | --- | --- | --- |
-| Agent Development | Yes | Yes | Yes | Yes |
-| Browser Debugging UI | No | No | No | Yes |
-| Unified CLI | No | No | No | Yes |
-| OpenAI Compatible API | No | No | Partial | Yes |
-| Sandbox Runtime | No | No | No | Yes |
-| Deployment Workflow | No | No | No | Yes |
-| Multi Runtime Backend | No | No | No | Yes |
+| Agent 开发 | 支持 | 支持 | 支持 | 支持 |
+| 浏览器调试 UI | 不内置 | 不内置 | 不内置 | 支持 |
+| 统一 CLI | 不内置 | 不内置 | 不内置 | 支持 |
+| OpenAI 兼容 API | 不内置 | 不内置 | 部分支持 | 支持 |
+| 沙箱运行时 | 不内置 | 不内置 | 不内置 | 支持 |
+| 部署工作流 | 不内置 | 不内置 | 不内置 | 支持 |
+| 多运行时后端 | 不内置 | 不内置 | 不内置 | 支持 |
 
 这张表只比较项目自带的统一运行时平台能力。KsADK 的设计目标不是替代这些框架，而是把它们放进同一套运行、调试、部署和观测体验里。
 
-## Core Capabilities
+## 核心能力
 
 | 能力 | 最常用入口 |
 | --- | --- |
@@ -123,17 +116,17 @@ flowchart TD
 | Serverless Deployment | `agentengine build`、`agentengine launch` |
 | Hermes & OpenClaw Runtime | `agentengine hermes ...`、`agentengine openclaw ...` |
 
-## Examples
+## 样例
 
 公开样例仓库按场景组织，而不是只按技术框架分类：
 
 - [KSADK Samples](https://github.com/kingsoftcloud/ksadk-samples)
-- Knowledge Assistant：知识库问答和 RAG。
-- Workflow Agent：LangGraph + AgentEngine toolsets。
-- Tool-Using Agent：自定义工具调用。
-- Memory-aware Agent：短期记忆和长期记忆接入。
+- 知识助手（Knowledge Assistant）：知识库问答和 RAG。
+- 工作流 Agent（Workflow Agent）：LangGraph + AgentEngine toolsets。
+- 工具调用 Agent（Tool-Using Agent）：自定义工具调用。
+- 记忆增强 Agent（Memory-aware Agent）：短期记忆和长期记忆接入。
 
-## Deployment
+## 部署
 
 KsADK 支持本地优先开发，也提供经过审核后可使用的部署入口：
 
@@ -145,16 +138,16 @@ agentengine dashboard open
 
 Hermes 和 OpenClaw 更新已有实例时默认保留服务端已有 env、storage、network、memory 配置，只在显式传入对应 CLI 参数时覆盖，避免升级镜像时误改用户配置。
 
-## Observability
+## 可观测
 
-KsADK is OpenTelemetry-native.
+KsADK 原生面向 OpenTelemetry 设计。
 
 ```bash
 OTEL_EXPORTER_OTLP_ENDPOINT=https://otel.example.com
 OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20token
 ```
 
-Compatible with:
+可对接：
 
 - Langfuse
 - Arize
@@ -162,9 +155,9 @@ Compatible with:
 - Grafana
 - Phoenix
 
-Export once. Observe anywhere.
+配置一次，到处观测。
 
-## Documentation
+## 文档
 
 - [Getting Started 入门](getting-started/quickstart.md)
 - [Build 构建](tutorials/langgraph-agent.md)
@@ -174,7 +167,7 @@ Export once. Observe anywhere.
 - [Extend 扩展](guides/tools-and-skill-runtime.md)
 - [Reference 参考](reference/cli.md)
 
-## Community
+## 社区
 
 - 仓库：<https://github.com/kingsoftcloud/ksadk-python>
 - Wiki：<https://zread.ai/kingsoftcloud/ksadk-python>

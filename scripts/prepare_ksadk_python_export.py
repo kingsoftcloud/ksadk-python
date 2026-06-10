@@ -66,6 +66,7 @@ EXPORT_PREFIXES = (
 
 SCRIPT_EXPORT_FILES = {
     "scripts/audit_release_artifacts.py",
+    "scripts/generate_public_assets.py",
     "scripts/open_source_audit.py",
     "scripts/prepare_ksadk_python_export.py",
     "scripts/prepare_ksadk_web_export.py",
