@@ -96,19 +96,18 @@ This diagram shows the public runtime boundary: keep building business agents wi
 | LangChain | Runnable/chain adaptation, local OpenAI-Compatible APIs, and tracing. |
 | DeepAgents | Project entrypoint, runtime wrapping, browser debugging, and deployment artifacts. |
 
-## Comparison
+## Ecosystem Positioning
 
-| Capability | ADK | LangGraph | OpenAI Agents SDK | KsADK |
-| --- | --- | --- | --- | --- |
-| Agent Development | Yes | Yes | Yes | Yes |
-| Browser Debugging UI | No | No | No | Yes |
-| Unified CLI | No | No | No | Yes |
-| OpenAI Compatible API | No | No | Partial | Yes |
-| Sandbox Runtime | No | No | No | Yes |
-| Deployment Workflow | No | No | No | Yes |
-| Multi Runtime Backend | No | No | No | Yes |
+This is not a feature scorecard. ADK, VEADK, LangGraph, and the OpenAI Agents SDK each have mature capabilities. KsADK focuses on bringing multiple frameworks and Kingsoft Cloud AgentEngine capabilities into one runtime, debugging, tool, sandbox, deployment, and observability path.
 
-This table compares unified runtime-platform capabilities provided by the project itself. KsADK complements agent frameworks instead of replacing them.
+| Project | Existing strengths | KsADK's complementary layer |
+| --- | --- | --- |
+| Google ADK | Agent modeling, tools, multi-agent collaboration, Session/Memory, local runs, and Web debugging. | Run ADK agents alongside LangGraph, LangChain, and DeepAgents through one `agentengine` CLI, Web UI, local OpenAI-Compatible API, and deployment entrypoint. |
+| LangGraph | Graph-state orchestration, streaming, checkpointing, human-in-the-loop workflows, and the LangChain ecosystem. | Add KsADK Skill Runtime, Workspace, Sandbox, Kingsoft Cloud AgentEngine, and deployment workflows around LangGraph projects. |
+| OpenAI Agents SDK | OpenAI Responses API-native orchestration, tool calling, handoffs, guardrails, and tracing. | Expose non-OpenAI framework agents through local OpenAI-Compatible APIs, KsADK Web UI, and deployment workflows across multiple runtime backends. |
+| VEADK | Agent development, deployment, observability, evaluation, and cloud integrations for the Volcengine ecosystem. | Integrate Kingsoft Cloud AgentEngine, Skill, Workspace, Sandbox, Hermes/OpenClaw, and the open-source ksadk-web debugging experience. |
+
+KsADK complements these frameworks instead of replacing them.
 
 ## Core Capabilities
 

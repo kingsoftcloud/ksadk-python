@@ -96,19 +96,18 @@ agentengine config set KSYUN_REGION=cn-beijing-6
 | LangChain | Runnable/chain 适配、本地 OpenAI-Compatible API 和 tracing。 |
 | DeepAgents | 项目入口、运行时包装、浏览器调试和部署制品。 |
 
-## 能力对比
+## 生态定位对比
 
-| 能力 | ADK | LangGraph | OpenAI Agents SDK | KsADK |
-| --- | --- | --- | --- | --- |
-| Agent 开发 | 支持 | 支持 | 支持 | 支持 |
-| 浏览器调试 UI | 不内置 | 不内置 | 不内置 | 支持 |
-| 统一 CLI | 不内置 | 不内置 | 不内置 | 支持 |
-| OpenAI 兼容 API | 不内置 | 不内置 | 部分支持 | 支持 |
-| 沙箱运行时 | 不内置 | 不内置 | 不内置 | 支持 |
-| 部署工作流 | 不内置 | 不内置 | 不内置 | 支持 |
-| 多运行时后端 | 不内置 | 不内置 | 不内置 | 支持 |
+这不是能力打分榜。ADK、VEADK、LangGraph 和 OpenAI Agents SDK 都有各自成熟能力；KsADK 的重点是把不同框架和金山云 AgentEngine 能力放进同一套运行、调试、工具、沙箱、部署和观测链路。
 
-这张表只比较项目自带的统一运行时平台能力。KsADK 的设计目标不是替代这些框架，而是把它们放进同一套运行、调试、部署和观测体验里。
+| 项目 | 已有强项 | KsADK 更关注的互补层 |
+| --- | --- | --- |
+| Google ADK | Agent 建模、工具、多 Agent 协作、Session/Memory、本地运行与 Web 调试。 | 让 ADK Agent 和 LangGraph、LangChain、DeepAgents 共用同一套 `agentengine` CLI、Web UI、OpenAI-Compatible 本地 API 与部署入口。 |
+| LangGraph | 图状态编排、streaming、checkpoint、人机协作和 LangChain 生态。 | 为 LangGraph 项目补齐 KsADK 的 Skill Runtime、Workspace、Sandbox、金山云 AgentEngine 和部署链路。 |
+| OpenAI Agents SDK | 面向 OpenAI Responses API 的 Agent 编排、工具调用、handoff、guardrails 和 tracing。 | 面向多框架和多运行后端，把非 OpenAI 框架 Agent 也暴露为本地 OpenAI-Compatible API，并接入 KsADK Web UI 与部署工作流。 |
+| VEADK | 面向火山引擎生态的 Agent 构建、部署、观测、评测和云服务集成。 | 面向金山云生态整合 AgentEngine、Skill、Workspace、Sandbox、Hermes/OpenClaw 和 ksadk-web 开源调试体验。 |
+
+KsADK 的设计目标不是替代这些框架，而是把它们放进同一套运行时平台体验里。
 
 ## 核心能力
 

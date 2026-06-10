@@ -70,16 +70,17 @@ def test_readmes_position_ksadk_as_runtime_platform():
         "一次构建 Agent，到处运行。",
         "Agent Runtime Platform",
         "默认 README 使用简体中文",
-        "https://kingsoftcloud.github.io/ksadk-python/assets/ksadk-runtime-platform-hero.png",
+        "public-docs/assets/ksadk-runtime-platform-hero.png",
         "真实 CLI 截图",
         "为什么需要 KsADK",
         "30 秒快速体验",
         "真实本地 Web UI 演示",
-        "https://kingsoftcloud.github.io/ksadk-python/assets/ksadk-web-ui-screenshot.png",
-        "https://kingsoftcloud.github.io/ksadk-python/assets/ksadk-local-debugging-demo.gif",
-        "https://kingsoftcloud.github.io/ksadk-python/assets/ksadk-runtime-architecture.png",
+        "public-docs/assets/ksadk-web-ui-screenshot.png",
+        "public-docs/assets/ksadk-local-debugging-demo.gif",
+        "public-docs/assets/ksadk-runtime-architecture.png",
         "架构",
-        "能力对比",
+        "生态定位对比",
+        "VEADK",
         "可观测",
         "部署",
         "社区",
@@ -102,16 +103,17 @@ def test_english_readme_positions_ksadk_as_runtime_platform():
     expected_sections = (
         "Build agents once. Run them anywhere.",
         "Agent Runtime Platform",
-        "https://kingsoftcloud.github.io/ksadk-python/assets/ksadk-runtime-platform-hero.png",
+        "public-docs/assets/ksadk-runtime-platform-hero.png",
         "Real KsADK CLI screenshot",
         "Why KsADK",
         "30 Seconds Quick Start",
         "real local Web UI",
-        "https://kingsoftcloud.github.io/ksadk-python/assets/ksadk-web-ui-screenshot.png",
-        "https://kingsoftcloud.github.io/ksadk-python/assets/ksadk-local-debugging-demo.gif",
-        "https://kingsoftcloud.github.io/ksadk-python/assets/ksadk-runtime-architecture.png",
+        "public-docs/assets/ksadk-web-ui-screenshot.png",
+        "public-docs/assets/ksadk-local-debugging-demo.gif",
+        "public-docs/assets/ksadk-runtime-architecture.png",
         "Architecture",
-        "Comparison",
+        "Ecosystem Positioning",
+        "VEADK",
         "Observability",
         "Deployment",
         "Community",
@@ -141,7 +143,8 @@ def test_docs_homepage_uses_runtime_platform_information_architecture():
         "assets/ksadk-web-ui-screenshot.png",
         "assets/ksadk-local-debugging-demo.gif",
         "assets/ksadk-runtime-architecture.png",
-        "能力对比",
+        "生态定位对比",
+        "VEADK",
         "OpenTelemetry",
         "Hermes",
         "OpenClaw",
@@ -159,7 +162,8 @@ def test_docs_homepage_uses_runtime_platform_information_architecture():
         "assets/ksadk-web-ui-screenshot.png",
         "assets/ksadk-local-debugging-demo.gif",
         "assets/ksadk-runtime-architecture.png",
-        "Comparison",
+        "Ecosystem Positioning",
+        "VEADK",
         "OpenTelemetry",
         "Hermes",
         "OpenClaw",
@@ -170,6 +174,25 @@ def test_docs_homepage_uses_runtime_platform_information_architecture():
     for text in (zh, en):
         assert "Agent Development Kit" not in text
         assert "成熟 Agent SDK" not in text
+
+
+def test_public_positioning_does_not_use_misleading_feature_scorecards():
+    scorecard_headers = (
+        "| 能力 | ADK | LangGraph | OpenAI Agents SDK | KsADK |",
+        "| Capability | ADK | LangGraph | OpenAI Agents SDK | KsADK |",
+    )
+    misleading_cells = (
+        "| OpenAI 兼容 API | 不内置 | 不内置 | 部分支持 | 支持 |",
+        "| OpenAI Compatible API | No | No | Partial | Yes |",
+    )
+
+    for relative_path in ("README.md", "README.zh-CN.md", "README.en.md", "public-docs/index.md", "public-docs/index.en.md"):
+        text = _read(relative_path)
+        for header in scorecard_headers:
+            assert header not in text, f"{relative_path} still uses old scorecard header"
+        for cell in misleading_cells:
+            assert cell not in text, f"{relative_path} still uses misleading OpenAI comparison"
+        assert "VEADK" in text
 
 
 def test_public_visual_assets_are_present_and_nonempty():
@@ -184,6 +207,26 @@ def test_public_visual_assets_are_present_and_nonempty():
         path = ROOT / relative_path
         assert path.is_file(), f"{relative_path} missing"
         assert path.stat().st_size > 4096, f"{relative_path} is unexpectedly small"
+
+
+def test_readme_image_links_resolve_inside_repository():
+    markdown_image = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
+
+    for relative_markdown_path in ("README.md", "README.zh-CN.md", "README.en.md"):
+        text = _read(relative_markdown_path)
+        for image_target in markdown_image.findall(text):
+            if "://" in image_target:
+                continue
+            image_path = (ROOT / image_target).resolve()
+            assert image_path.is_relative_to(ROOT), (
+                f"{relative_markdown_path} image escapes repository: {image_target}"
+            )
+            assert image_path.is_file(), (
+                f"{relative_markdown_path} image target missing: {image_target}"
+            )
+            assert image_path.stat().st_size > 4096, (
+                f"{relative_markdown_path} image target unexpectedly small: {image_target}"
+            )
 
 
 def test_public_navigation_is_task_oriented():

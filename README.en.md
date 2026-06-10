@@ -18,7 +18,7 @@ Candidate version: `0.6.4` (Unreleased, pending user review; use PyPI and GitHub
 - Serverless Deployment
 - Hermes & OpenClaw Runtime
 
-![Real KsADK CLI screenshot: agentengine -h](https://kingsoftcloud.github.io/ksadk-python/assets/ksadk-runtime-platform-hero.png)
+![Real KsADK CLI screenshot: agentengine -h](public-docs/assets/ksadk-runtime-platform-hero.png)
 
 ## Why KsADK
 
@@ -58,9 +58,9 @@ agentengine web . --no-open
 
 The demo below is generated from the real local Web UI. It uses a deterministic LangGraph Runner and does not call an external model or cloud service, while still exercising local FastAPI, Responses streaming, tool calls, thinking output, and session status.
 
-![Real KsADK Web UI debugging screenshot](https://kingsoftcloud.github.io/ksadk-python/assets/ksadk-web-ui-screenshot.png)
+![Real KsADK Web UI debugging screenshot](public-docs/assets/ksadk-web-ui-screenshot.png)
 
-![Real KsADK Web UI debugging GIF](https://kingsoftcloud.github.io/ksadk-python/assets/ksadk-local-debugging-demo.gif)
+![Real KsADK Web UI debugging GIF](public-docs/assets/ksadk-local-debugging-demo.gif)
 
 If your model provider is not the default OpenAI endpoint, also set:
 
@@ -76,7 +76,7 @@ agentengine config set KSYUN_REGION=cn-beijing-6
 
 ## Architecture
 
-![KsADK Agent Runtime Platform architecture](https://kingsoftcloud.github.io/ksadk-python/assets/ksadk-runtime-architecture.png)
+![KsADK Agent Runtime Platform architecture](public-docs/assets/ksadk-runtime-architecture.png)
 
 This diagram shows the public runtime boundary: keep building business agents with ADK, LangGraph, LangChain, or DeepAgents, then use KsADK for one CLI, browser Web UI, OpenAI-Compatible APIs, Skill Runtime, Workspace, Sandbox, memory, knowledge, and deployment backends.
 
@@ -116,19 +116,18 @@ AgentEngine
 | LangChain | Runnable/chain adaptation, local OpenAI-Compatible APIs, and tracing. |
 | DeepAgents | Project entrypoint, runtime wrapping, browser debugging, and deployment artifacts. |
 
-## Comparison
+## Ecosystem Positioning
 
-| Capability | ADK | LangGraph | OpenAI Agents SDK | KsADK |
-| --- | --- | --- | --- | --- |
-| Agent Development | Yes | Yes | Yes | Yes |
-| Browser Debugging UI | No | No | No | Yes |
-| Unified CLI | No | No | No | Yes |
-| OpenAI Compatible API | No | No | Partial | Yes |
-| Sandbox Runtime | No | No | No | Yes |
-| Deployment Workflow | No | No | No | Yes |
-| Multi Runtime Backend | No | No | No | Yes |
+This is not a feature scorecard. ADK, VEADK, LangGraph, and the OpenAI Agents SDK each have mature capabilities. KsADK focuses on bringing multiple frameworks and Kingsoft Cloud AgentEngine capabilities into one runtime, debugging, tool, sandbox, deployment, and observability path.
 
-This table compares unified runtime-platform capabilities provided by the project itself. KsADK is designed to complement agent frameworks, not replace them.
+| Project | Existing strengths | KsADK's complementary layer |
+| --- | --- | --- |
+| Google ADK | Agent modeling, tools, multi-agent collaboration, Session/Memory, local runs, and Web debugging. | Run ADK agents alongside LangGraph, LangChain, and DeepAgents through one `agentengine` CLI, Web UI, local OpenAI-Compatible API, and deployment entrypoint. |
+| LangGraph | Graph-state orchestration, streaming, checkpointing, human-in-the-loop workflows, and the LangChain ecosystem. | Add KsADK Skill Runtime, Workspace, Sandbox, Kingsoft Cloud AgentEngine, and deployment workflows around LangGraph projects. |
+| OpenAI Agents SDK | OpenAI Responses API-native orchestration, tool calling, handoffs, guardrails, and tracing. | Expose non-OpenAI framework agents through local OpenAI-Compatible APIs, KsADK Web UI, and deployment workflows across multiple runtime backends. |
+| VEADK | Agent development, deployment, observability, evaluation, and cloud integrations for the Volcengine ecosystem. | Integrate Kingsoft Cloud AgentEngine, Skill, Workspace, Sandbox, Hermes/OpenClaw, and the open-source ksadk-web debugging experience. |
+
+KsADK complements these frameworks instead of replacing them.
 
 ## Core Capabilities
 
