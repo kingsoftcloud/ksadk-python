@@ -46,19 +46,9 @@ help:
 	@echo "    make offline-windows     Windows x64 离线包"
 	@echo "    make offline-all         打包所有平台"
 	@echo ""
-	@echo "  \033[1;32mOpenClaw 镜像:\033[0m"
-	@echo "    make openclaw-build         构建 OpenClaw 镜像 (默认国内源)"
-	@echo "    make openclaw-push          构建 + 推送到 KCR (默认 :2026.6.1)"
-	@echo "    make openclaw-push OPENCLAW_TAG=2026.6.1 OPENCLAW_PRESET_PLUGINS_ALLOWLIST=wps-xiezuo"
-	@echo "    make openclaw-build OPENCLAW_PYPI_INDEX_URL=https://pypi.org/simple  # 海外源"
-	@echo "    make openclaw-size          查看镜像大小"
-	@echo ""
-	@echo "  \033[1;32mHermes 镜像:\033[0m"
-	@echo "    make hermes-build           构建 Hermes runtime 镜像"
-	@echo "    make hermes-push            构建 + 推送 Hermes runtime 镜像"
-	@echo "    make hermes-size            查看 Hermes 镜像大小"
-	@echo "    make hermes-build HERMES_TAG=2026.5.29.2-ksadk-v3"
-	@echo "    make hermes-build HERMES_AGENT_REF=v2026.5.29.2  # 切换 Hermes 上游 release"
+	@echo "  \033[1;32mAgentEngine 镜像:\033[0m"
+	@echo "    Hermes / OpenClaw / Skill Runtime 镜像已迁移到内部 agentengine-images 仓库"
+	@echo "    可设置 AGENTENGINE_IMAGES_DIR=../agentengine-images 后继续使用兼容入口"
 	@echo ""
 	@echo "  \033[1;32mzread 文档站:\033[0m"
 	@echo "    make docs-deploy-all   构建原生 zread 文档镜像 + 推送 + 部署到预发"
@@ -534,143 +524,18 @@ offline-current: build
 	@echo "   pip install --no-index --find-links=$(OFFLINE_DIR)/current ksadk"
 
 # ============================================================
-# OpenClaw 镜像构建
+# AgentEngine 镜像构建兼容入口
 # ============================================================
-#
-# 基于 pinned 官方 ghcr.io/openclaw/openclaw，叠加 chromium + 预装 skills
-# 构建上下文: 仓库根目录 (Dockerfile 通过 -f 指向 deploy/openclaw/)
-#
-# 用法:
-#   make openclaw-build    # 构建镜像
-#   make openclaw-push     # 构建 + 推送到 KCR
-#
 
-# OpenClaw 配置
-OPENCLAW_IMAGE := hub.kce.ksyun.com/agentengine-public/openclaw
-OPENCLAW_VPC_REGISTRY ?= hub-vpc-cn-beijing-6.kce.ksyun.com
-OPENCLAW_VPC_IMAGE ?= $(subst hub.kce.ksyun.com,$(OPENCLAW_VPC_REGISTRY),$(OPENCLAW_IMAGE))
-OPENCLAW_TAG ?= 2026.6.1
-OPENCLAW_CONTEXT := .
-OPENCLAW_BASE_IMAGE ?= ghcr.io/openclaw/openclaw:2026.6.1-slim@sha256:a83ee8716ab191534952299fe989374d75593aa9c7632c4e756e9d64b0ce8061
-OPENCLAW_PRESET_PLUGINS_ALLOWLIST ?=
-OPENCLAW_APT_MIRROR ?= http://mirrors.aliyun.com/debian
-OPENCLAW_APT_SECURITY_MIRROR ?= http://mirrors.aliyun.com/debian-security
-OPENCLAW_PYPI_INDEX_URL ?= https://mirrors.aliyun.com/pypi/simple
-OPENCLAW_NPM_REGISTRY ?= https://registry.npmmirror.com
-OPENCLAW_MEM0_PLUGIN_URL ?= https://memory-engine.ks3-cn-beijing.ksyuncs.com/ksc-openclaw-mem0-1.0.6.tgz
-OPENCLAW_MEM0_PLUGIN_SHA256 ?=
-DOCKER_BUILDKIT ?= 1
+AGENTENGINE_IMAGES_DIR ?= ../agentengine-images
 
-## 构建 OpenClaw 镜像 (chromium + preset-skills)
-openclaw-build:
-	@echo "🐳 构建 OpenClaw 镜像..."
-	@echo "============================================================"
-	@echo "   基础镜像: $(OPENCLAW_BASE_IMAGE)"
-	@echo "   目标镜像: $(OPENCLAW_IMAGE):$(OPENCLAW_TAG)"
-	@echo "   内网地址: $(OPENCLAW_VPC_IMAGE):$(OPENCLAW_TAG)"
-	@echo "   APT 源:   $(OPENCLAW_APT_MIRROR)"
-	@echo "   PyPI 源:  $(OPENCLAW_PYPI_INDEX_URL)"
-	@echo "   NPM 源:   $(OPENCLAW_NPM_REGISTRY)"
-	@echo "   Mem0 包:  $(OPENCLAW_MEM0_PLUGIN_URL)"
-	@echo "   插件白名单: $(if $(OPENCLAW_PRESET_PLUGINS_ALLOWLIST),$(OPENCLAW_PRESET_PLUGINS_ALLOWLIST),<未设置，内置默认插件>)"
-	@echo "   构建上下文: $(OPENCLAW_CONTEXT)"
-	@echo "============================================================"
-	@if [ ! -f "deploy/openclaw/Dockerfile" ]; then \
-		echo "❌ 错误: deploy/openclaw/Dockerfile 不存在"; \
+openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size:
+	@if [ ! -d "$(AGENTENGINE_IMAGES_DIR)" ]; then \
+		echo "❌ AgentEngine 镜像资产已迁移到内部仓库 agentengine-images。"; \
+		echo "   请先克隆仓库，或设置 AGENTENGINE_IMAGES_DIR=/path/to/agentengine-images"; \
 		exit 1; \
 	fi
-	@DOCKER_BUILDKIT=$(DOCKER_BUILDKIT) docker build --platform linux/amd64 \
-		-f deploy/openclaw/Dockerfile \
-		--build-arg OPENCLAW_BASE_IMAGE=$(OPENCLAW_BASE_IMAGE) \
-		--build-arg OPENCLAW_PRESET_PLUGINS_ALLOWLIST="$(OPENCLAW_PRESET_PLUGINS_ALLOWLIST)" \
-		--build-arg APT_MIRROR=$(OPENCLAW_APT_MIRROR) \
-		--build-arg APT_SECURITY_MIRROR=$(OPENCLAW_APT_SECURITY_MIRROR) \
-		--build-arg PYPI_INDEX_URL=$(OPENCLAW_PYPI_INDEX_URL) \
-		--build-arg NPM_REGISTRY=$(OPENCLAW_NPM_REGISTRY) \
-		--build-arg OPENCLAW_MEM0_PLUGIN_URL=$(OPENCLAW_MEM0_PLUGIN_URL) \
-		--build-arg OPENCLAW_MEM0_PLUGIN_SHA256=$(OPENCLAW_MEM0_PLUGIN_SHA256) \
-		-t $(OPENCLAW_IMAGE):$(OPENCLAW_TAG) \
-		-t $(OPENCLAW_VPC_IMAGE):$(OPENCLAW_TAG) \
-		$(OPENCLAW_CONTEXT)
-	@echo "✅ 构建完成: $(OPENCLAW_IMAGE):$(OPENCLAW_TAG)"
-	@echo "🔗 对应内网地址: $(OPENCLAW_VPC_IMAGE):$(OPENCLAW_TAG)"
-
-## 推送 OpenClaw 镜像到 KCR (构建 + 推送)
-openclaw-push: openclaw-build
-	@echo "📤 推送 OpenClaw 镜像: $(OPENCLAW_IMAGE):$(OPENCLAW_TAG)"
-	@echo "🔗 对应内网地址: $(OPENCLAW_VPC_IMAGE):$(OPENCLAW_TAG)"
-	@docker push $(OPENCLAW_IMAGE):$(OPENCLAW_TAG)
-	@docker push $(OPENCLAW_VPC_IMAGE):$(OPENCLAW_TAG)
-	@echo "✅ 推送完成"
-
-## 查看 OpenClaw 镜像大小
-openclaw-size:
-	@docker images $(OPENCLAW_IMAGE):$(OPENCLAW_TAG) --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}"
-
-
-# ============================================================
-# Hermes 镜像构建
-# ============================================================
-#
-# 基于 deploy/hermes/ 里的 Dockerfile + wrapper runtime 构建 Hermes runtime
-#
-# 用法:
-#   make hermes-build
-#   make hermes-push HERMES_TAG=2026.5.29.2-ksadk-v3
-#
-
-HERMES_IMAGE := hub.kce.ksyun.com/agentengine-public/hermes-agent
-HERMES_VPC_REGISTRY ?= hub-vpc-cn-beijing-6.kce.ksyun.com
-HERMES_VPC_IMAGE ?= $(subst hub.kce.ksyun.com,$(HERMES_VPC_REGISTRY),$(HERMES_IMAGE))
-HERMES_TAG ?= 2026.5.29.2-ksadk-v3
-HERMES_CONTEXT := .
-HERMES_PYPI_INDEX_URL ?= https://mirrors.aliyun.com/pypi/simple
-HERMES_AGENT_REF ?= v2026.5.29.2
-HERMES_APT_MIRROR ?= https://mirrors.aliyun.com/debian
-HERMES_NPM_REGISTRY ?= https://registry.npmmirror.com
-HERMES_NODE_BASE_IMAGE ?= hub.kce.ksyun.com/agentengine-public/hermes-base-node:20-bookworm-slim
-HERMES_PYTHON_BASE_IMAGE ?= hub.kce.ksyun.com/agentengine-public/hermes-base-python:3.12-bookworm
-
-hermes-build:
-	@echo "🐳 构建 Hermes runtime 镜像..."
-	@echo "============================================================"
-	@echo "   目标镜像: $(HERMES_IMAGE):$(HERMES_TAG)"
-	@echo "   内网地址: $(HERMES_VPC_IMAGE):$(HERMES_TAG)"
-	@echo "   Hermes Git ref: $(HERMES_AGENT_REF)"
-	@echo "   PyPI 源:  $(HERMES_PYPI_INDEX_URL)"
-	@echo "   APT 源:   $(HERMES_APT_MIRROR)"
-	@echo "   NPM 源:   $(HERMES_NPM_REGISTRY)"
-	@echo "   Node 基础镜像:   $(HERMES_NODE_BASE_IMAGE)"
-	@echo "   Python 基础镜像: $(HERMES_PYTHON_BASE_IMAGE)"
-	@echo "   构建上下文: $(HERMES_CONTEXT)"
-	@echo "============================================================"
-	@if [ ! -f "deploy/hermes/Dockerfile" ]; then \
-		echo "❌ 错误: deploy/hermes/Dockerfile 不存在"; \
-		exit 1; \
-	fi
-	@DOCKER_BUILDKIT=$(DOCKER_BUILDKIT) docker build --platform linux/amd64 \
-		-f deploy/hermes/Dockerfile \
-		--build-arg HERMES_NODE_BASE_IMAGE=$(HERMES_NODE_BASE_IMAGE) \
-		--build-arg HERMES_PYTHON_BASE_IMAGE=$(HERMES_PYTHON_BASE_IMAGE) \
-		--build-arg PYPI_INDEX_URL=$(HERMES_PYPI_INDEX_URL) \
-		--build-arg HERMES_AGENT_REF=$(HERMES_AGENT_REF) \
-		--build-arg APT_MIRROR=$(HERMES_APT_MIRROR) \
-		--build-arg NPM_REGISTRY=$(HERMES_NPM_REGISTRY) \
-		-t $(HERMES_IMAGE):$(HERMES_TAG) \
-		-t $(HERMES_VPC_IMAGE):$(HERMES_TAG) \
-		$(HERMES_CONTEXT)
-	@echo "✅ 构建完成: $(HERMES_IMAGE):$(HERMES_TAG)"
-	@echo "🔗 对应内网地址: $(HERMES_VPC_IMAGE):$(HERMES_TAG)"
-
-hermes-push: hermes-build
-	@echo "📤 推送 Hermes 镜像: $(HERMES_IMAGE):$(HERMES_TAG)"
-	@echo "🔗 对应内网地址: $(HERMES_VPC_IMAGE):$(HERMES_TAG)"
-	@docker push $(HERMES_IMAGE):$(HERMES_TAG)
-	@docker push $(HERMES_VPC_IMAGE):$(HERMES_TAG)
-	@echo "✅ 推送完成"
-
-hermes-size:
-	@docker images $(HERMES_IMAGE):$(HERMES_TAG) --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}"
+	@$(MAKE) -C "$(AGENTENGINE_IMAGES_DIR)" $@
 
 
 # ============================================================

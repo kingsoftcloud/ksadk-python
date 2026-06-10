@@ -55,13 +55,13 @@ def test_repo_root_dockerignore_excludes_local_build_artifacts():
         assert entry in dockerignore
 
 
-def test_makefile_builds_runtime_images_from_repo_root_context():
+def test_makefile_delegates_runtime_image_builds_to_agentengine_images_repo():
     makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
 
-    assert "OPENCLAW_CONTEXT := ." in makefile
-    assert "HERMES_CONTEXT := ." in makefile
-    assert "-f deploy/openclaw/Dockerfile" in makefile
-    assert "-f deploy/hermes/Dockerfile" in makefile
+    assert "AGENTENGINE_IMAGES_DIR ?= ../agentengine-images" in makefile
+    assert "$(MAKE) -C \"$(AGENTENGINE_IMAGES_DIR)\" $@" in makefile
+    assert "-f deploy/openclaw/Dockerfile" not in makefile
+    assert "-f deploy/hermes/Dockerfile" not in makefile
 
 
 def test_runtime_templates_initialize_tracing_for_generic_otlp_env():
