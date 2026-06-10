@@ -11,6 +11,14 @@ def test_repair_markdown_closes_unclosed_fenced_code_block():
     assert repaired == "下面是示例：\n\n```python\nprint('hello')\n```\n"
 
 
+def test_repair_markdown_closes_long_fenced_code_block_with_matching_marker():
+    raw = "下面是示例：\n````python\nprint('``` still code')"
+
+    repaired = repair_markdown(raw, enabled=True)
+
+    assert repaired == "下面是示例：\n\n````python\nprint('``` still code')\n````\n"
+
+
 def test_repair_markdown_preserves_already_closed_fenced_code_block():
     raw = "说明\n\n```python\nprint('hello')\n```\n"
 

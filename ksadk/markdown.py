@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 
-_FENCE_MARKERS = ("```", "~~~")
+_FENCE_MARKER_CHARS = ("`", "~")
 _LIST_PREFIXES = ("- ", "* ", "+ ")
 
 
@@ -59,7 +59,7 @@ def _normalize_block_spacing(lines: list[str]) -> list[str]:
                 _append_blank_before_block(result, previous_block)
                 in_fence = True
                 fence_marker = marker
-            elif marker == fence_marker:
+            elif _is_closing_fence(marker, fence_marker):
                 in_fence = False
                 fence_marker = ""
         elif not in_fence:
@@ -112,7 +112,7 @@ def _close_unclosed_fence(lines: list[str]) -> list[str]:
             continue
         if not open_marker:
             open_marker = marker
-        elif marker == open_marker:
+        elif _is_closing_fence(marker, open_marker):
             open_marker = ""
     if open_marker:
         return [*lines, open_marker]
@@ -135,10 +135,25 @@ def _line_block_type(line: str, in_fence: bool) -> str:
 
 
 def _fence_marker(stripped_line: str) -> str | None:
-    for marker in _FENCE_MARKERS:
-        if stripped_line.startswith(marker):
-            return marker
+    for char in _FENCE_MARKER_CHARS:
+        if not stripped_line.startswith(char * 3):
+            continue
+        length = 0
+        for value in stripped_line:
+            if value != char:
+                break
+            length += 1
+        return char * length
     return None
+
+
+def _is_closing_fence(candidate: str, open_marker: str) -> bool:
+    return (
+        bool(candidate)
+        and bool(open_marker)
+        and candidate[0] == open_marker[0]
+        and len(candidate) >= len(open_marker)
+    )
 
 
 def _is_table_line(stripped_line: str) -> bool:

@@ -204,7 +204,7 @@ open-source-publication-plan:
 
 open-source-publication-state:
 	@echo "🔎 只读检查公开发布外部状态..."
-	@python3 scripts/check_publication_state.py --phase placeholder
+	@python3 scripts/check_publication_state.py --phase "$(PUBLIC_PUBLISH_PHASE)" --version "$(VERSION)"
 
 public-docs-build:
 	@echo "📚 构建 GitHub Pages 候选文档站..."
@@ -282,7 +282,7 @@ public-audit: public-secret-audit
 
 public-test:
 	@echo "==> public tests"
-	@uv run --extra dev pytest tests/test_open_source_audit.py tests/test_public_positioning_docs.py tests/test_prepare_ksadk_python_export.py tests/test_prepare_ksadk_web_export.py tests/test_runtime_common_packaging.py tests/test_tracing_setup_otlp.py tests/test_check_publication_state.py -q
+	@uv run --extra dev pytest tests/test_open_source_audit.py tests/test_public_positioning_docs.py tests/test_prepare_ksadk_python_export.py tests/test_prepare_ksadk_web_export.py tests/test_runtime_common_packaging.py tests/test_tracing_setup_otlp.py tests/test_check_publication_state.py tests/test_check_approval_record.py tests/test_public_release_gates.py tests/test_markdown_repair.py tests/test_conversation_runtime.py tests/test_server_session_app.py -q
 
 public-build-check: clean-dist
 	@echo "==> build and twine check"
@@ -303,14 +303,14 @@ public-publish-check:
 		python3 -c 'import json, urllib.request; targets={"repo":"$(PUBLIC_REPO)","docs":"$(PUBLIC_DOCS_URL)","pypi":"https://pypi.org/pypi/$(PUBLIC_PYPI_PROJECT)/json","alias_pypi":"https://pypi.org/pypi/$(PUBLIC_ALIAS_PYPI_PROJECT)/json"}; [print("%s: HTTP %s%s" % (name, resp.status, ("\n  version=%s" % json.load(resp)["info"].get("version")) if name.endswith("pypi") else "")) for name, url in targets.items() for resp in [urllib.request.urlopen(url, timeout=20)]]'; \
 	fi
 
-public-release-tag:
+public-release-tag: open-source-approval-check public-preflight public-publish-check
 ifndef V
 	$(error ❌ 请指定版本号，例如: make public-release-tag V=$(VERSION))
 endif
 	@branch=$$(git branch --show-current); \
 	if [ "$$branch" != "$(PUBLIC_BRANCH)" ]; then \
 		echo "❌ public release tag 必须在公开 $(PUBLIC_BRANCH) 分支创建，当前分支是 $$branch"; \
-		echo "   请先完成内部审核，并将已审核候选推送到 GitHub $(PUBLIC_BRANCH)。"; \
+		echo "   请先完成维护者 review，并将已审核候选推送到 GitHub $(PUBLIC_BRANCH)。"; \
 		exit 1; \
 	fi
 	@if ! git rev-parse --verify "github/$(PUBLIC_BRANCH)" >/dev/null 2>&1; then \
@@ -446,7 +446,7 @@ clean-dist:
 	@echo "🧹 清理 dist/build 临时产物..."
 	@rm -rf $(DIST_DIR)/* build/ *.egg-info/
 
-publish: clean-dist build-only
+publish: open-source-approval-check public-preflight public-publish-check clean-dist build-only
 	@echo "🚀 发布 v$(VERSION) 到 PyPI..."
 	@if [ -f ".pypirc" ]; then \
 		echo "❌ 错误: 项目根目录不允许存在 .pypirc，避免 PyPI token 进入仓库"; \
@@ -476,7 +476,7 @@ publish: clean-dist build-only
 		python -m twine upload --config-file $(PYPIRC) $$FILES; \
 	fi
 
-publish-test: clean-dist build-only
+publish-test: open-source-approval-check public-preflight public-publish-check clean-dist build-only
 	@echo "🧪 发布 v$(VERSION) 到 TestPyPI..."
 	@if [ -f ".pypirc" ]; then \
 		echo "❌ 错误: 项目根目录不允许存在 .pypirc，避免 TestPyPI token 进入仓库"; \

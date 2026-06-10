@@ -69,7 +69,7 @@ def test_readmes_position_ksadk_as_runtime_platform():
         "简体中文（默认）",
         "一次构建 Agent，到处运行。",
         "Agent Runtime Platform",
-        "public-docs/assets/ksadk-runtime-platform-hero.png",
+        "public-docs/assets/ksadk-runtime-platform-hero-wide.png",
         "真实 CLI 截图",
         "为什么需要 KsADK",
         "30 秒快速体验",
@@ -105,7 +105,7 @@ def test_english_readme_positions_ksadk_as_runtime_platform():
     expected_sections = (
         "Build agents once. Run them anywhere.",
         "Agent Runtime Platform",
-        "public-docs/assets/ksadk-runtime-platform-hero.png",
+        "public-docs/assets/ksadk-runtime-platform-hero-wide.png",
         "Real KsADK CLI screenshot",
         "Why KsADK",
         "30 Seconds Quick Start",
@@ -290,6 +290,10 @@ def test_readmes_stay_concise_and_do_not_duplicate_changelog():
         assert "repair_markdown" not in text
         assert "最新" not in text
         assert len(text.splitlines()) < 95, f"{relative_path} should stay concise"
+        assert '<h1 align="center">KsADK</h1>' in text
+        assert '<p align="center">' in text
+        assert 'width="860"' in text
+        assert "ksadk-runtime-platform-hero-wide.png" in text
 
 
 def test_public_positioning_uses_factual_ecosystem_focus_terms():
@@ -309,6 +313,7 @@ def test_public_positioning_uses_factual_ecosystem_focus_terms():
 def test_public_visual_assets_are_present_and_nonempty():
     expected_assets = (
         "public-docs/assets/ksadk-runtime-platform-hero.png",
+        "public-docs/assets/ksadk-runtime-platform-hero-wide.png",
         "public-docs/assets/ksadk-web-ui-screenshot.png",
         "public-docs/assets/ksadk-runtime-architecture.svg",
         "public-docs/assets/ksadk-runtime-architecture.png",
@@ -322,10 +327,13 @@ def test_public_visual_assets_are_present_and_nonempty():
 
 def test_readme_image_links_resolve_inside_repository():
     markdown_image = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
+    html_image = re.compile(r'<img\b[^>]*\bsrc="([^"]+)"', re.IGNORECASE)
 
     for relative_markdown_path in ("README.md", "README.zh-CN.md", "README.en.md"):
         text = _read(relative_markdown_path)
-        for image_target in markdown_image.findall(text):
+        image_targets = markdown_image.findall(text) + html_image.findall(text)
+        assert image_targets, f"{relative_markdown_path} should contain rendered images"
+        for image_target in image_targets:
             if "://" in image_target:
                 continue
             image_path = (ROOT / image_target).resolve()
