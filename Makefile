@@ -196,7 +196,7 @@ open-source-review-bundle-verify:
 
 open-source-approval-check:
 	@echo "🔐 校验公开发布审批记录..."
-	@python3 scripts/check_approval_record.py
+	@python3 scripts/check_approval_record.py $(if $(APPROVAL_RECORD),--approval-record "$(APPROVAL_RECORD)",)
 
 open-source-publication-plan:
 	@echo "🧭 生成审批后的 GitHub 导入命令计划..."

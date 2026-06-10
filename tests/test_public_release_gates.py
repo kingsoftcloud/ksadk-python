@@ -38,6 +38,21 @@ def test_public_release_tag_requires_approval_check():
     assert "内部审核" not in makefile
 
 
+def test_approval_check_can_use_local_release_evidence_file():
+    makefile = _makefile()
+
+    match = re.search(
+        r"^open-source-approval-check:\n(?P<body>(?:\t.*\n)+)",
+        makefile,
+        re.MULTILINE,
+    )
+    assert match
+
+    body = match.group("body")
+    assert "APPROVAL_RECORD" in body
+    assert "--approval-record" in body
+
+
 def test_publication_state_make_target_uses_valid_phase():
     makefile = _makefile()
 
