@@ -20,6 +20,11 @@
 - 这是修复 0.6.3 公开页面和 PyPI 元数据口径的补丁版本草案；已发布到 PyPI 的 0.6.3 元数据不可覆盖，因此后续需要通过新版本修复。
 - 0.6.4 在用户 review 通过前不创建 tag、不发布 GitHub Release，也不上传 PyPI。
 
+### 运行时修复
+
+- `/v1/responses`、`/v1/chat/completions` 和 `RunAgentAction` 支持透传 `account_id` / `AccountId`，并写入 `PlatformInvocationContext`，便于 Skill、Workspace、Sandbox、Memory 等运行时能力按账号边界读取当前调用上下文。
+- 新增 `get_current_invocation_context_or_default()`、`get_current_user_id()` 和 `get_current_account_id()`，工具或业务代码可在当前 turn 内安全读取用户和账号上下文；无调用上下文时返回显式默认值。
+
 ## [0.6.3] - 2026-06-09
 
 ### 亮点

@@ -21,6 +21,7 @@ class PlatformInvocationContext:
     current_attachment_results: list[dict[str, Any]]
     has_current_files: bool
     runner_type: str
+    account_id: str = ""
     model: str | None = None
     model_options: dict[str, Any] | None = None
     kb_context: dict[str, Any] | None = None
@@ -30,6 +31,7 @@ class PlatformInvocationContext:
         return {
             "agent_id": self.agent_id,
             "user_id": self.user_id,
+            "account_id": self.account_id,
             "session_id": self.session_id,
             "history": list(self.history or []),
             "input_content": list(self.input_content or []),
@@ -54,6 +56,42 @@ _CURRENT_PLATFORM_INVOCATION_CONTEXT: ContextVar[PlatformInvocationContext | Non
 
 def get_current_invocation_context() -> PlatformInvocationContext | None:
     return _CURRENT_PLATFORM_INVOCATION_CONTEXT.get()
+
+
+def get_current_invocation_context_or_default() -> PlatformInvocationContext:
+    context = get_current_invocation_context()
+    if context is not None:
+        return context
+    return PlatformInvocationContext(
+        agent_id="",
+        user_id="",
+        account_id="",
+        session_id="",
+        history=[],
+        input_content=[],
+        input_messages=[],
+        input_parts=[],
+        attachments=[],
+        attachment_results=[],
+        current_attachments=[],
+        current_attachment_results=[],
+        has_current_files=False,
+        runner_type="",
+    )
+
+
+def get_current_user_id(default: str = "") -> str:
+    context = get_current_invocation_context()
+    if context is None:
+        return default
+    return str(context.user_id or default)
+
+
+def get_current_account_id(default: str = "") -> str:
+    context = get_current_invocation_context()
+    if context is None:
+        return default
+    return str(context.account_id or default)
 
 
 def set_current_invocation_context(
