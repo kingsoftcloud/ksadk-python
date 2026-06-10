@@ -29,6 +29,11 @@
 - GitHub Release 页面必须保留历史版本 `v0.6.1`、`v0.6.2` 和 `v0.6.3`；0.6.4 只能新增 release，不能清理历史条目。
 - 公开 CHANGELOG 不记录非公开环境名、内网 endpoint、真实账号、真实 Skill Space ID 或临时凭证；这些只允许出现在内部联调记录里。
 
+### 运行时修复
+
+- `/v1/responses`、`/v1/chat/completions` 和 `RunAgentAction` 支持透传 `account_id` / `AccountId`，并写入 `PlatformInvocationContext`，便于 Skill、Workspace、Sandbox、Memory 等运行时能力按账号边界读取当前调用上下文。
+- 新增 `get_current_invocation_context_or_default()`、`get_current_user_id()` 和 `get_current_account_id()`，工具或业务代码可在当前 turn 内安全读取用户和账号上下文；无调用上下文时返回显式默认值。
+
 ## [0.6.3] - 2026-06-09
 
 ### 亮点

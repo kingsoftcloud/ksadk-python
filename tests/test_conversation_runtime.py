@@ -28,7 +28,14 @@ from ksadk.conversations.runtime import (
     stream_conversation_turn,
     stream_responses_conversation_turn,
 )
-from ksadk.runtime_context import get_current_invocation_context
+from ksadk.runtime_context import (
+    PlatformInvocationContext,
+    get_current_invocation_context_or_default,
+    get_current_account_id,
+    get_current_invocation_context,
+    get_current_user_id,
+    platform_invocation_scope,
+)
 from ksadk.sessions.base import SessionEvent
 from ksadk.sessions.in_memory import InMemorySessionService
 from ksadk.tracing.exporters.inmemory_exporter import InMemoryExporter
@@ -199,6 +206,43 @@ def _extract_sse_payload(chunks: list[str], event_name: str) -> dict:
             elif line.startswith("data: ") and current_event == event_name:
                 return json.loads(line.removeprefix("data: "))
     raise AssertionError(f"SSE event {event_name!r} not found")
+
+
+def test_runtime_context_helpers_return_defaults_outside_invocation_scope():
+    assert get_current_invocation_context() is None
+    context = get_current_invocation_context_or_default()
+    assert context.user_id == ""
+    assert context.account_id == ""
+    assert context.session_id == ""
+    assert context.history == []
+    assert context.attachments == []
+    assert get_current_user_id() == ""
+    assert get_current_account_id() == ""
+    assert get_current_user_id(default="anonymous") == "anonymous"
+    assert get_current_account_id(default="tenantless") == "tenantless"
+
+
+def test_runtime_context_helpers_read_current_invocation_scope():
+    context = PlatformInvocationContext(
+        agent_id="demo-agent",
+        user_id="user-1",
+        account_id="acct-1",
+        session_id="sess-1",
+        history=[],
+        input_content=[],
+        input_messages=[],
+        input_parts=[],
+        attachments=[],
+        attachment_results=[],
+        current_attachments=[],
+        current_attachment_results=[],
+        has_current_files=False,
+        runner_type="mock",
+    )
+
+    with platform_invocation_scope(context):
+        assert get_current_user_id() == "user-1"
+        assert get_current_account_id() == "acct-1"
 
 
 @pytest.fixture
@@ -1488,6 +1532,7 @@ async def test_invoke_conversation_once_binds_platform_invocation_context_and_am
         session_id=None,
         messages=[{"role": "user", "content": "继续"}],
         model="gpt-4o",
+        account_id="acct-1",
         prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
         session_service_provider=lambda: service,
     )
@@ -1498,10 +1543,12 @@ async def test_invoke_conversation_once_binds_platform_invocation_context_and_am
     assert runner.calls[-1]["memory_context"] == {"formatted_text": "Memory facts"}
     assert runner.calls[-1]["platform_context"]["agent_id"] == "demo-agent"
     assert runner.calls[-1]["platform_context"]["user_id"] == "user-1"
+    assert runner.calls[-1]["platform_context"]["account_id"] == "acct-1"
     assert runner.calls[-1]["platform_context"]["session_id"] == session_id
     assert runner.captured_runtime_context is not None
     assert runner.captured_runtime_context.agent_id == "demo-agent"
     assert runner.captured_runtime_context.user_id == "user-1"
+    assert runner.captured_runtime_context.account_id == "acct-1"
     assert runner.captured_runtime_context.session_id == session_id
     assert runner.captured_runtime_context.kb_context == {"formatted_text": "KB facts"}
     assert runner.captured_runtime_context.memory_context == {"formatted_text": "Memory facts"}
