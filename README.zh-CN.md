@@ -20,7 +20,7 @@ KsADK 是面向 AI Agent 的运行时平台（Agent Runtime Platform）。你可
 - Serverless 部署（Serverless Deployment）
 - Hermes 与 OpenClaw 运行时
 
-![KsADK 本地调试演示](https://kingsoftcloud.github.io/ksadk-python/assets/ksadk-local-debugging-demo.gif)
+![KsADK 真实 CLI 截图：agentengine -h](https://kingsoftcloud.github.io/ksadk-python/assets/ksadk-runtime-platform-hero.png)
 
 ## 为什么需要 KsADK
 
@@ -57,6 +57,12 @@ agentengine run -i
 ```bash
 agentengine web . --no-open
 ```
+
+下面是脚本生成的真实本地 Web UI 演示：使用 deterministic LangGraph Runner，不连接外部模型或云环境，但完整走本地 FastAPI、Responses streaming、工具调用、思考过程和会话状态链路。
+
+![KsADK 真实 Web UI 调试截图](https://kingsoftcloud.github.io/ksadk-python/assets/ksadk-web-ui-screenshot.png)
+
+![KsADK 真实 Web UI 调试 GIF](https://kingsoftcloud.github.io/ksadk-python/assets/ksadk-local-debugging-demo.gif)
 
 如果你的模型服务不是默认 OpenAI endpoint，再额外配置：
 

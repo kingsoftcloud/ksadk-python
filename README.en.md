@@ -18,7 +18,7 @@ Candidate version: `0.6.4` (Unreleased, pending user review; use PyPI and GitHub
 - Serverless Deployment
 - Hermes & OpenClaw Runtime
 
-![KsADK local debugging demo](https://kingsoftcloud.github.io/ksadk-python/assets/ksadk-local-debugging-demo.gif)
+![Real KsADK CLI screenshot: agentengine -h](https://kingsoftcloud.github.io/ksadk-python/assets/ksadk-runtime-platform-hero.png)
 
 ## Why KsADK
 
@@ -55,6 +55,12 @@ Open the local browser debugging UI:
 ```bash
 agentengine web . --no-open
 ```
+
+The demo below is generated from the real local Web UI. It uses a deterministic LangGraph Runner and does not call an external model or cloud service, while still exercising local FastAPI, Responses streaming, tool calls, thinking output, and session status.
+
+![Real KsADK Web UI debugging screenshot](https://kingsoftcloud.github.io/ksadk-python/assets/ksadk-web-ui-screenshot.png)
+
+![Real KsADK Web UI debugging GIF](https://kingsoftcloud.github.io/ksadk-python/assets/ksadk-local-debugging-demo.gif)
 
 If your model provider is not the default OpenAI endpoint, also set:
 

@@ -6,7 +6,7 @@ KsADK is the Agent Runtime Platform for AI agents.
 
 Build with Google ADK, LangGraph, LangChain, or DeepAgents. Run, debug, expose, observe, and deploy those agents through one unified runtime experience.
 
-![KsADK local debugging demo](assets/ksadk-local-debugging-demo.gif)
+![Real KsADK CLI screenshot: agentengine -h](assets/ksadk-runtime-platform-hero.png)
 
 === "Install"
 
@@ -62,6 +62,12 @@ Open the local Web UI:
 ```bash
 agentengine web . --no-open
 ```
+
+The demo below is generated from the real local Web UI. It uses a deterministic LangGraph Runner and does not call an external model or cloud service, while still exercising local FastAPI, Responses streaming, tool calls, thinking output, and session status.
+
+![Real KsADK Web UI debugging screenshot](assets/ksadk-web-ui-screenshot.png)
+
+![Real KsADK Web UI debugging GIF](assets/ksadk-local-debugging-demo.gif)
 
 If your model provider is not the default OpenAI endpoint, also set:
 

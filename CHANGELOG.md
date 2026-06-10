@@ -7,13 +7,13 @@
 
 ## [0.6.4] - Unreleased
 
-### 亮点
+### 重点
 
-- **公开定位重构**：将项目首页、README 和文档首页从传统 SDK 口径调整为 Agent Runtime Platform，补齐 Why KsADK、30 秒体验、架构图、对比表、Deployment、Observability 和 Community。
-- **中文优先与视觉化首页**：默认 README 和中文文档首页改为中文主叙述，新增可维护的架构图 PNG/SVG 与本地调试演示 GIF，让首次访问者先看到运行时平台边界和 Web UI 最终效果。
+- **项目定位重构**：将 README、文档首页和包元数据统一为 Agent Runtime Platform 口径，突出统一运行、浏览器调试、OpenAI-Compatible API、Sandbox、部署和可观测价值。
+- **中文优先首页**：默认 README 与中文文档首页使用中文主叙述，英文 README 作为补充入口保留，避免公开首页变成英文优先材料。
+- **真实视觉资产**：首页首屏使用真实浅色 CLI 截图，30 秒体验后展示真实本地 Web UI 截图和 GIF；演示由本地 deterministic LangGraph Runner 生成，不依赖外部模型或云环境。
 - **文档信息架构调整**：MkDocs 导航改为 Getting Started / Build / Run / Deploy / Observe / Extend / Reference，更贴近开发者完成任务的路径。
 - **Samples 场景入口对齐**：`ksadk-samples` 根 README 改为场景优先，真实映射 Knowledge Assistant、Workflow Agent、Tool-Using Agent 和 Memory-aware Agent；尚未实现的场景只进入 Roadmap。
-- **公开元数据修复**：更新 PyPI summary 和包内简介为 Agent Runtime Platform 定位，为后续补丁发布准备干净的 long description。
 - **默认线上地域说明**：公开 README 和文档首页使用 `KSYUN_REGION=cn-beijing-6` 作为线上默认 region 示例，避免用户把非公开或内网配置照搬到公开 demo。
 
 ### 修复
@@ -22,10 +22,12 @@
 - 将公开定位、视觉资产存在性、中文优先标题、敏感词扫描和 README 场景入口要求纳入本地门禁，降低后续发布材料回退风险。
 - 将 `agentengine-sdk-python` 别名包版本占用检查纳入 `public-publish-check`，避免主包与别名包发布状态不一致。
 
-### 发布说明
+### 发布治理
 
 - 这是修复 0.6.3 公开页面和 PyPI 元数据口径的补丁版本草案；已发布到 PyPI 的 0.6.3 元数据不可覆盖，因此后续需要通过新版本修复。
 - 0.6.4 在用户 review 通过前不创建 tag、不发布 GitHub Release，也不上传 PyPI。
+- GitHub Release 页面必须保留历史版本 `v0.6.1`、`v0.6.2` 和 `v0.6.3`；0.6.4 只能新增 release，不能清理历史条目。
+- 公开 CHANGELOG 不记录非公开环境名、内网 endpoint、真实账号、真实 Skill Space ID 或临时凭证；这些只允许出现在内部联调记录里。
 
 ## [0.6.3] - 2026-06-09
 
