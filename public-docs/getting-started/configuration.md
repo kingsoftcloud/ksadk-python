@@ -63,7 +63,7 @@ agent_variable: root_agent
 | `framework` | 框架适配器 | `adk`、`langchain`、`langgraph`、`deepagents` |
 | `entry_point` | 本地运行时加载的 Python 文件 | `agent.py` |
 | `agent_variable` | 导出的对象名 | `root_agent` |
-| `region` | 部署形态命令使用的可选云 region | `cn-example-1` |
+| `region` | 部署形态命令使用的可选云 region | `cn-beijing-6` |
 
 公开示例优先写显式项目 YAML。它比依赖自动检测更容易审核。
 

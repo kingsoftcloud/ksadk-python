@@ -6,24 +6,20 @@ The first public release should be prepared from an independent branch and revie
 
 1. Prepare the candidate on an independent branch.
 2. Run local tests, packaging checks, artifact audits, and docs build.
-3. Push to the internal ezone repository for company review.
-4. After approval, import the reviewed source into GitHub `main`.
+3. Push the candidate pull request for maintainer review.
+4. After approval, merge the reviewed source into GitHub `main`.
 5. Enable GitHub Pages only after public docs CI passes.
 6. Create release tags, GitHub release assets, and TestPyPI/PyPI uploads only
    from the reviewed GitHub `main` commit after public CI passes.
-7. Verify published releases and tags with
-   `python3 scripts/check_publication_state.py --phase published --check-release --check-pages`.
+7. Before publication, verify the external state with
+   `make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.6.4`.
+8. After publication, verify the external state with
+   `make public-publish-check PUBLIC_PUBLISH_PHASE=post-publish V=0.6.4`.
 
-GitHub source import must not happen before the internal review gate. The
-candidate branch is for review and local gates only; public release assets must
-not be created directly from an internal `master` branch or an unsynced
-`release/public-*` candidate branch.
-The published-state check also verifies that the imported GitHub repositories
-contain the expected public source, CI workflow, and Pages workflow marker
-files after the placeholder file is removed.
-Release-state checks also verify that the Python GitHub release includes the
-reviewed sdist and wheel assets and that release notes record the pinned
-`ksadk-web` release.
+Public release assets must not be created directly from an unsynced candidate
+branch. `make publish`, `make publish-test`, and `make public-release-tag`
+require `docs/maintainer-approval-record.md` to name the reviewed commit,
+publication strategy, and maintainer sign-offs.
 
 ## Required Evidence
 
@@ -59,13 +55,10 @@ before importing source into GitHub.
 
 The release tag, GitHub release, package version, and documentation version
 should refer to the same reviewed GitHub `main` commit.
-The Python release notes must mention the `ksadk-web` tag used to generate the
-embedded static UI, and the release assets should include both
-`ksadk-0.6.2.tar.gz` and `ksadk-0.6.2-py3-none-any.whl`.
-After package publication, the publication-state check verifies that PyPI
-reports package version `0.6.2`, exposes both sdist and wheel files for that
-version, and links metadata to the public GitHub repository and GitHub Pages
-documentation.
+The Python release notes should mention the `ksadk-web` commit or tag used to
+generate the embedded static UI. After package publication, the publication
+state check verifies that PyPI reports the reviewed version for both public
+package names.
 
 ## Credential Boundary
 
@@ -84,7 +77,7 @@ Never commit:
 
 Before importing real source into GitHub, the approval record must name:
 
-- the exact internal branch or commit reviewed.
+- the exact private branch or commit reviewed.
 - whether publication uses clean export, rewritten history, or full history.
 - the export manifests or history scan evidence.
 - the reviewer who approved the sensitive-data boundary.

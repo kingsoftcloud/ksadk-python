@@ -119,6 +119,42 @@ workflow.add_edge("finalize_answer", END)
 root_agent = workflow.compile(name="production_agent")
 ```
 
+## Markdown Output Repair
+
+KsADK preserves raw model output by default. The runtime does not normalize
+Markdown on the backend, so streaming, tracing, session replay, and audit logs
+all see the same raw LLM output.
+
+If your application exports answers as reports, message cards, knowledge-base
+documents, or workspace Markdown files, enable the lightweight repair helper in
+your own business code:
+
+```python
+from ksadk.markdown import repair_markdown
+
+
+def finalize_answer(state: AgentState) -> dict[str, Any]:
+    text = ""
+    for message in reversed(state.get("specialist_messages") or []):
+        if isinstance(message, AIMessage) and message.content:
+            text = str(message.content)
+            break
+
+    # App-side opt-in. KsADK runtime does not rewrite raw model output by default.
+    text = repair_markdown(text, enabled=True)
+    return {"final_text": text, "messages": [AIMessage(content=text)]}
+```
+
+`repair_markdown()` only performs conservative shape repairs:
+
+- closes unclosed fenced code blocks.
+- inserts missing blank lines around code blocks, lists, and tables.
+- normalizes newlines and remains idempotent.
+
+It does not rewrite semantics, validate facts, or guarantee strict CommonMark.
+For strict output contracts, use JSON schema, Pydantic validation, retries, or
+application-level linting before export.
+
 `agentengine.yaml` stays explicit:
 
 ```yaml

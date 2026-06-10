@@ -310,9 +310,9 @@ def test_content_audit_allows_aicp_internal_endpoints_but_blocks_other_internal_
     (tmp_path / "aicp.py").write_text(
         "\n".join(
             [
+                'AICP_PUBLIC = "aicp.api.ksyun.com"',
                 'AICP_INTERNAL = "aicp.internal.api.ksyun.com"',
                 'AICP_INNER = "aicp.inner.api.ksyun.com"',
-                'MAICP_INNER = "maicp.inner.api.ksyun.com"',
             ]
         ),
         encoding="utf-8",

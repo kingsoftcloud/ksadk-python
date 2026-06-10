@@ -1,171 +1,180 @@
 # KsADK
 
-金山云智能体开发套件，用于创建、运行、调试和打包 Python Agent 应用。
-KsADK 在 Google ADK、LangGraph、LangChain 和 DeepAgents 项目之上提供
-统一的本地 CLI、运行时、OpenAI 兼容协议层和浏览器调试界面。
+一次构建 Agent，到处运行。
 
-=== "Python"
+KsADK 是面向 AI Agent 的运行时平台（Agent Runtime Platform）。
+
+你可以继续使用 Google ADK、LangGraph、LangChain 或 DeepAgents 编写业务 Agent，再用 KsADK 获得统一的本地运行、浏览器调试、OpenAI-Compatible API、沙箱执行、部署和可观测体验。
+
+![KsADK 真实 CLI 截图：agentengine -h](assets/ksadk-runtime-platform-hero-wide.png){ width="920" }
+
+=== "安装"
 
     ```bash
-    pip install -U ksadk
-    pip install -U "ksadk[langgraph]"
+    pip install -U "ksadk[all]"
     ```
 
-=== "创建项目"
+=== "创建"
 
     ```bash
-    agentengine init my-agent -f langgraph
-    cd my-agent
-    agentengine config set OPENAI_API_KEY=sk-test OPENAI_BASE_URL=https://api.example.com/v1 OPENAI_MODEL_NAME=my-model
+    agentengine init demo-agent -f langgraph
+    cd demo-agent
+    agentengine config set OPENAI_API_KEY=your-api-key OPENAI_MODEL_NAME=gpt-4o-mini
     ```
 
-=== "本地运行"
+=== "运行"
 
     ```bash
-    agentengine run . -i
+    agentengine run -i
     agentengine web . --no-open
     ```
 
-本站是开源 SDK 的人工整理公开文档。它不发布 `.zread/` 代码阅读结果、
-内部部署说明或私有 AgentEngine 运维流程。
+## 为什么需要 KsADK
 
-## 架构一览
+大多数 Agent 框架主要解决“如何开发 Agent”。
 
-```mermaid
-flowchart LR
-  Dev["开发者"] --> CLI["agentengine CLI"]
-  CLI --> Detect["项目检测<br/>agentengine.yaml / ksadk.yaml / 约定"]
-  Detect --> Runner["框架 Runner<br/>ADK / LangGraph / LangChain / DeepAgents"]
-  Runner --> Runtime["本地运行时"]
-  Runtime --> API["OpenAI 兼容 API<br/>/v1/responses<br/>/v1/chat/completions"]
-  Runtime --> UI["本地 Web UI<br/>agentengine web"]
-  Runtime --> Sessions["会话、附件、<br/>工作区文件、Tracing"]
-  CLI --> Package["build / launch<br/>审核后的云端路径"]
-  UI -. "可编辑源代码" .-> Web["kingsoftcloud/ksadk-web"]
-```
+KsADK 解决“如何运行、调试、部署和观测 Agent”。
 
-这个设计的核心是：KsADK 不替换你写 Agent 时使用的框架。它负责发现项目、
-加载入口、适配 Runner，并把同一套本地开发体验提供给终端、浏览器和 API
-客户端。
+KsADK 不替换你已经选择的 Agent 框架。它在框架之上提供统一平台层，把开发、调试、运行、沙箱、部署和可观测连接起来：
 
-## 文档定位
+- 开发：统一项目创建、配置和本地运行。
+- 调试：浏览器调试 UI、会话、附件、workspace 文件和 streaming。
+- 运行：统一 Runner、OpenAI-Compatible API 和多框架入口。
+- Sandbox：Skill Runtime、Workspace 和 sandbox backend 的隔离执行边界。
+- 部署：Serverless、Hermes、OpenClaw 和远端 AgentEngine 入口。
+- 可观测：OpenTelemetry-first tracing，可接入多种观测后端。
 
-KsADK 参考成熟 Agent SDK 项目的公开文档组织方式：
-
-- 概览页说明定位和主要入口。
-- 快速开始把用户带到一个可以运行的本地 Agent。
-- 教程给出完整文件。
-- 指南解释常见任务和取舍。
-- 参考页定义命令、配置和 API 契约。
-- 贡献、发布、安全和公开审计规则作为治理文档。
-
-zread 生成的代码阅读结果可以帮助维护者理解仓库，但不是公开文档源。公开文档
-必须经过人工整理、可链接、可审核，并且可以安全发布到 GitHub Pages。
-
-## 开发路径
-
-```mermaid
-flowchart TD
-  A["安装 ksadk"] --> B["创建或导入 Agent 项目"]
-  B --> C["配置模型与 provider"]
-  C --> D["终端交互运行"]
-  D --> E["本地 Web UI 调试"]
-  E --> F["调用本地 OpenAI 兼容 API"]
-  F --> G["添加工具、文件、记忆和追踪"]
-  G --> H["构建并审核发布制品"]
-  H --> I["维护者批准后再公开发布"]
-```
-
-## KsADK 提供什么
-
-| 能力区域 | 你会得到什么 |
-| --- | --- |
-| 项目脚手架 | 面向不同框架族的 `agentengine init` 模板。 |
-| 本地运行时 | `agentengine run` 为 Agent 项目启动本地 API 服务。 |
-| 本地 Web UI | `agentengine web` 打开浏览器调用和调试界面。 |
-| 配置管理 | `agentengine config` 管理项目 `.env` 与 YAML 设置。 |
-| 打包 | 在配置云凭证后，`agentengine build` 准备部署制品。 |
-| 协议 | 本地 OpenAI 兼容 `/v1/responses` 与 `/v1/chat/completions`。 |
-| 扩展能力 | 框架适配、记忆 hook、MCP/A2A 接入点和发布工具链。 |
-
-## 典型场景
-
-适合使用 KsADK 的情况：
-
-- 希望用同一组本地命令运行 ADK、LangGraph、LangChain 或 DeepAgents 项目。
-- 希望为 Agent 项目暴露本地 OpenAI 兼容 endpoint。
-- 希望不搭建 hosted 基础设施就能在浏览器里调试 Agent。
-- 希望为经过审核的云端部署路径准备 Agent 包。
-- 希望 Python SDK 文档、Web UI 文档和发布检查在公开 GitHub 导入前保持一致。
-
-## 开源边界
-
-公开仓库包含 SDK、CLI、运行时适配、本地开发体验、人工整理文档和发布检查。
-
-公开仓库不发布完整 AgentEngine 控制面、内部 Kubernetes 部署自动化、内部
-kubeconfig、私有 registry、客户数据或内部支持 runbook。云端部署命令会作为 SDK
-入口记录，但公开示例必须能在没有内部账号的情况下本地运行。
-
-## 第一个工作流
+## 30 秒快速体验
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -U ksadk
+pip install -U "ksadk[all]"
 
-agentengine init my-agent -f langgraph
-cd my-agent
-agentengine config set OPENAI_API_KEY=sk-test OPENAI_BASE_URL=https://api.example.com/v1 OPENAI_MODEL_NAME=my-model
+agentengine init demo-agent -f langgraph
+cd demo-agent
+agentengine config set OPENAI_API_KEY=your-api-key OPENAI_MODEL_NAME=gpt-4o-mini
 agentengine run -i
 ```
 
-然后启动本地 Web UI：
+启动本地 Web UI：
 
 ```bash
 agentengine web . --no-open
 ```
 
-如果已经有一个 Agent 文件，可以导入：
+下面是脚本生成的真实本地 Web UI 演示：使用 deterministic LangGraph Runner，不连接外部模型或云环境，但完整走本地 FastAPI、Responses streaming、工具调用、思考过程和会话状态链路。
+
+![KsADK 真实 Web UI 调试截图](assets/ksadk-web-ui-screenshot.png){ width="920" }
+
+![KsADK 真实 Web UI 调试 GIF](assets/ksadk-local-debugging-demo.gif){ width="920" }
+
+如果使用非默认 OpenAI endpoint，再额外设置：
 
 ```bash
-agentengine init my-agent --from-agent ./agent.py
-cd my-agent
-agentengine run . -i
+agentengine config set OPENAI_BASE_URL=https://api.example.com/v1
 ```
 
-## 文档地图
+如果需要调用金山云 AgentEngine、Skill Service、知识库或长期记忆等线上能力，建议显式设置线上默认地域：
 
-- [初识 KsADK](getting-started/concepts.md)：SDK、项目配置、运行时和 Web UI 如何协作。
-- [快速开始](getting-started/quickstart.md)：创建、配置、运行和调试本地 Agent。
-- [配置项](getting-started/configuration.md)：环境变量和项目 YAML。
-- [项目结构](getting-started/project-structure.md)：模板创建的文件以及不应提交的文件。
-- [构建 LangGraph 智能体](tutorials/langgraph-agent.md)：包含完整源码的本地项目。
-- [接入已有智能体](tutorials/existing-agent.md)：包装已有文件或包。
-- [本地 Web UI](guides/local-web-ui.md)：本地浏览器调试和独立 `ksadk-web` 仓库计划。
-- [Web UI 仓库](guides/web-ui-source.md)：`ksadk-web`、hosted UI 和 Python wheel 的关系。
-- [运行时产品](guides/runtime-products.md)：Hermes 和 OpenClaw 的生命周期、runtime surface 和公开安全边界。
-- [框架接入](guides/frameworks.md)：ADK、LangGraph、LangChain 和 DeepAgents 约定。
-- [Agent 最佳实践](guides/agent-best-practices.md)：LangGraph/ADK 模式，以及知识库、记忆库、会话、Skill Runtime、MCP 和 workspace 文件。
-- [工具与 Skill Runtime](guides/tools-and-skill-runtime.md)：内置 toolsets、focused/dispatcher 渐进式披露、Tool Gateway、MCP/A2A 和 Skill Runtime 边界。
-- [可观测与链路追踪](guides/observability-tracing.md)：本地 spans、Langfuse、OTLP 和 trace metadata 规则。
-- [构建与打包](guides/build-and-package.md)：本地构建、审核 gate 和公开 artifact 规则。
-- [命令行参考](reference/cli.md)：公开命令面和常见选项。
-- [OpenAI 兼容 API](reference/openai-compatible-api.md)：本地协议形态和 KsADK 扩展。
-- [项目配置](reference/project-config.md)：YAML 和环境字段参考。
-- [远程运行时 API](reference/remote-runtime-api.md)：PublicEndpoint、鉴权、OpenAI 兼容路由、workspace files、Hermes 和 OpenClaw。
-- [环境变量](reference/environment-variables.md)：模型、会话、记忆、知识库、Skill Runtime、MCP、构建和 tracing 变量。
-- [会话与文件](reference/runtime-sessions-files.md)：session id、上传、工作区预览和本地状态。
-- [安全边界](reference/security-boundaries.md)：公开仓库、工作区、预览、包和历史记录边界。
-- [故障排查](reference/troubleshooting.md)：常见安装、运行时和打包问题。
+```bash
+agentengine config set KSYUN_REGION=cn-beijing-6
+```
 
-## 发布状态
+## 架构
 
-计划公开位置：
+![KsADK Agent Runtime Platform 架构](assets/ksadk-runtime-architecture.png){ width="920" }
 
-- Python SDK 仓库：`https://github.com/kingsoftcloud/ksadk-python`
-- Python SDK 文档：`https://kingsoftcloud.github.io/ksadk-python/`
-- Web UI 仓库：`https://github.com/kingsoftcloud/ksadk-web`
-- Web UI 文档或演示：`https://kingsoftcloud.github.io/ksadk-web/`
+这张图展示的是公开运行时边界：业务 Agent 仍然由 ADK、LangGraph、LangChain 或 DeepAgents 编写；KsADK 在上层补齐统一 CLI、Web UI、OpenAI-Compatible API、Skill Runtime、Workspace、Sandbox、记忆、知识库和部署后端。
 
-第一次真实源码导入必须先完成内部审核，然后才能启用 GitHub source、
-GitHub Pages、GitHub Releases 或 PyPI 发布。
+## 支持的框架
+
+| 框架 | KsADK 负责什么 |
+| --- | --- |
+| Google ADK | 项目模板、Runner 适配、本地运行、Web UI 调试和部署入口。 |
+| LangGraph | 图状态入口、工具调用、streaming、Skill Runtime 和 workspace toolsets。 |
+| LangChain | Runnable/chain 适配、本地 OpenAI-Compatible API 和 tracing。 |
+| DeepAgents | 项目入口、运行时包装、浏览器调试和部署制品。 |
+
+## 生态定位
+
+KsADK 不和 ADK、LangGraph、OpenAI Agents SDK、VEADK 或 AgentRun 做简单功能打分。
+这些项目各有成熟能力，KsADK 更关注互补的运行时平台层：
+
+- 已有 Agent 框架继续负责业务编排、状态和模型交互。
+- KsADK 负责统一 CLI、Web UI、本地 OpenAI-Compatible API、工具、沙箱、部署和可观测。
+- 金山云 AgentEngine、Skill、Workspace、Sandbox、Hermes/OpenClaw 通过同一套入口接入。
+
+完整说明见 [生态定位对比](getting-started/comparison.md)。
+
+## 核心能力
+
+| 能力 | 最常用入口 |
+| --- | --- |
+| Local Development | `agentengine init`、`agentengine config`、`agentengine run` |
+| Browser Debugging UI | `agentengine web` |
+| OpenAI-Compatible API | `/v1/responses`、`/v1/chat/completions` |
+| Unified Runtime | ADK / LangGraph / LangChain / DeepAgents Runner |
+| Sandbox Execution | Skill Runtime、Workspace tools、Sandbox tools |
+| Serverless Deployment | `agentengine build`、`agentengine launch` |
+| Hermes & OpenClaw Runtime | `agentengine hermes ...`、`agentengine openclaw ...` |
+
+## 样例
+
+公开样例仓库按场景组织，而不是只按技术框架分类：
+
+- [KSADK Samples](https://github.com/kingsoftcloud/ksadk-samples)
+- 知识助手（Knowledge Assistant）：知识库问答和 RAG。
+- 工作流 Agent（Workflow Agent）：LangGraph + AgentEngine toolsets。
+- 工具调用 Agent（Tool-Using Agent）：自定义工具调用。
+- 记忆增强 Agent（Memory-aware Agent）：短期记忆和长期记忆接入。
+
+## 部署
+
+KsADK 支持本地优先开发，也提供经过审核后可使用的部署入口：
+
+```bash
+agentengine build .
+agentengine launch . --target serverless
+agentengine dashboard open
+```
+
+Hermes 和 OpenClaw 更新已有实例时默认保留服务端已有 env、storage、network、memory 配置，只在显式传入对应 CLI 参数时覆盖，避免升级镜像时误改用户配置。
+
+## 可观测
+
+KsADK 原生面向 OpenTelemetry 设计。
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=https://otel.example.com
+OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20token
+```
+
+可对接：
+
+- Langfuse
+- Arize
+- Datadog
+- Grafana
+- Phoenix
+
+配置一次，到处观测。
+
+## 文档
+
+- [Getting Started 入门](getting-started/quickstart.md)
+- [Build 构建](tutorials/langgraph-agent.md)
+- [Run 运行](guides/local-web-ui.md)
+- [Deploy 部署](guides/build-and-package.md)
+- [Observe 观测](guides/observability-tracing.md)
+- [Extend 扩展](guides/tools-and-skill-runtime.md)
+- [Reference 参考](reference/cli.md)
+
+## 社区
+
+- 仓库：<https://github.com/kingsoftcloud/ksadk-python>
+- Wiki：<https://zread.ai/kingsoftcloud/ksadk-python>
+- 示例仓库：<https://github.com/kingsoftcloud/ksadk-samples>
+- Web UI 仓库：<https://github.com/kingsoftcloud/ksadk-web>
+- PyPI：<https://pypi.org/project/ksadk/>
+- 开源协议：Apache-2.0

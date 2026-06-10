@@ -1,180 +1,184 @@
 # KsADK
 
-Kingsoft Cloud Agent Development Kit for building, running, debugging, and
-packaging Python agent applications. KsADK gives developers one local CLI,
-runtime surface, OpenAI-compatible protocol layer, and browser UI across Google
-ADK, LangGraph, LangChain, and DeepAgents projects.
+Build agents once. Run them anywhere.
 
-=== "Python"
+KsADK is the Agent Runtime Platform for AI agents.
+
+Build with Google ADK, LangGraph, LangChain, or DeepAgents. Run, debug, expose, observe, and deploy those agents through one unified runtime experience.
+
+![Real KsADK CLI screenshot: agentengine -h](assets/ksadk-runtime-platform-hero-wide.png){ width="920" }
+
+=== "Install"
 
     ```bash
-    pip install -U ksadk
-    pip install -U "ksadk[langgraph]"
+    pip install -U "ksadk[all]"
     ```
 
 === "Create"
 
     ```bash
-    agentengine init my-agent -f langgraph
-    cd my-agent
-    agentengine config set OPENAI_API_KEY=sk-test OPENAI_BASE_URL=https://api.example.com/v1 OPENAI_MODEL_NAME=my-model
+    agentengine init demo-agent -f langgraph
+    cd demo-agent
+    agentengine config set OPENAI_API_KEY=your-api-key OPENAI_MODEL_NAME=gpt-4o-mini
     ```
 
 === "Run"
 
     ```bash
-    agentengine run . -i
+    agentengine run -i
     agentengine web . --no-open
     ```
 
-This site is the curated public documentation for the open-source SDK. It is
-separate from generated `.zread/` code-reading output, internal deployment
-notes, and private AgentEngine operating procedures.
+## Why KsADK
 
-## System At A Glance
+Most agent frameworks solve agent development.
 
-```mermaid
-flowchart LR
-  Dev["Developer"] --> CLI["agentengine CLI"]
-  CLI --> Detect["project detection<br/>agentengine.yaml / ksadk.yaml / conventions"]
-  Detect --> Runner["framework runner<br/>ADK / LangGraph / LangChain / DeepAgents"]
-  Runner --> Runtime["local runtime"]
-  Runtime --> API["OpenAI-compatible APIs<br/>/v1/responses<br/>/v1/chat/completions"]
-  Runtime --> UI["local Web UI<br/>agentengine web"]
-  Runtime --> Sessions["sessions, attachments,<br/>workspace files, tracing"]
-  CLI --> Package["build / launch<br/>reviewed cloud path"]
-  UI -. "editable source" .-> Web["kingsoftcloud/ksadk-web"]
-```
+KsADK solves agent runtime.
 
-The important design choice is that the SDK does not replace the framework
-where the agent is written. It detects and loads the project, adapts it through
-a runner, then exposes the same local development experience to terminal users,
-browser users, and API clients.
+KsADK does not replace your agent framework. It provides a unified platform layer for development, debugging, runtime, sandbox, deployment, and observability:
 
-## Documentation Style
+- Development: one CLI for project creation, configuration, and local runs.
+- Debugging: browser UI, sessions, attachments, workspace files, and streaming.
+- Runtime: framework runners, OpenAI-Compatible APIs, and consistent invocation.
+- Sandbox: Skill Runtime, Workspace, and isolated sandbox backend boundaries.
+- Deployment: Serverless, Hermes, OpenClaw, and remote AgentEngine entrypoints.
+- Observability: OpenTelemetry-first tracing for multiple backends.
 
-KsADK follows the public-docs pattern used by mature agent SDK projects:
-
-- a short overview for positioning.
-- a quickstart that reaches a running local agent.
-- tutorials with complete files.
-- guides for common tasks and operational decisions.
-- references for command, config, and API contracts.
-- contribution, release, security, and publication gates.
-
-Generated code-reading output can help maintainers understand the repository,
-but it is not the public documentation source. Public docs must be reviewed,
-stable, linkable, and safe to publish on GitHub Pages.
-
-## Developer Journey
-
-```mermaid
-flowchart TD
-  A["Install ksadk"] --> B["Create or import an agent project"]
-  B --> C["Set model/provider configuration"]
-  C --> D["Run in terminal"]
-  D --> E["Debug in local Web UI"]
-  E --> F["Call local OpenAI-compatible APIs"]
-  F --> G["Add tools, files, memory, tracing"]
-  G --> H["Build and review release artifacts"]
-  H --> I["Publish only after maintainer approval"]
-```
-
-## What KsADK Provides
-
-| Area | What you get |
-| --- | --- |
-| Project bootstrap | `agentengine init` templates for supported framework families. |
-| Local runtime | `agentengine run` starts a local API server for an agent project. |
-| Local Web UI | `agentengine web` opens a browser-based invoke/debug interface. |
-| Configuration | `agentengine config` manages project `.env` and YAML settings. |
-| Packaging | `agentengine build` prepares deployment artifacts when cloud credentials are configured. |
-| Protocols | Local OpenAI-compatible `/v1/responses` and `/v1/chat/completions` endpoints. |
-| Extensibility | Framework adapters, memory hooks, MCP/A2A integration points, and release tooling. |
-
-## Typical Use Cases
-
-Use KsADK when you need to:
-
-- run the same local command against ADK, LangGraph, LangChain, or DeepAgents
-  projects.
-- expose a local OpenAI-compatible endpoint for an agent project.
-- debug an agent in a browser without setting up hosted infrastructure.
-- prepare an agent package for a reviewed cloud deployment path.
-- keep Python SDK docs, Web UI docs, and release checks aligned before a public
-  GitHub import.
-
-## Open-Source Boundary
-
-The public repository contains the SDK, CLI, runtime adapters, local development
-experience, curated documentation, and release checks.
-
-It does not publish the full AgentEngine control plane, internal Kubernetes
-deployment automation, internal kubeconfig material, private registries, customer
-data, or private support runbooks. Cloud deployment commands are documented as
-SDK entry points, but public examples must be runnable locally without internal
-accounts.
-
-## First Workflow
+## 30 Seconds Quick Start
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -U ksadk
+pip install -U "ksadk[all]"
 
-agentengine init my-agent -f langgraph
-cd my-agent
-agentengine config set OPENAI_API_KEY=sk-test OPENAI_BASE_URL=https://api.example.com/v1 OPENAI_MODEL_NAME=my-model
+agentengine init demo-agent -f langgraph
+cd demo-agent
+agentengine config set OPENAI_API_KEY=your-api-key OPENAI_MODEL_NAME=gpt-4o-mini
 agentengine run -i
 ```
 
-Then open the local Web UI:
+Open the local Web UI:
 
 ```bash
 agentengine web . --no-open
 ```
 
-If you already have an agent file, use:
+The demo below is generated from the real local Web UI. It uses a deterministic LangGraph Runner and does not call an external model or cloud service, while still exercising local FastAPI, Responses streaming, tool calls, thinking output, and session status.
+
+![Real KsADK Web UI debugging screenshot](assets/ksadk-web-ui-screenshot.png){ width="920" }
+
+![Real KsADK Web UI debugging GIF](assets/ksadk-local-debugging-demo.gif){ width="920" }
+
+If your model provider is not the default OpenAI endpoint, also set:
 
 ```bash
-agentengine init my-agent --from-agent ./agent.py
-cd my-agent
-agentengine run . -i
+agentengine config set OPENAI_BASE_URL=https://api.example.com/v1
 ```
 
-## Documentation Map
+If you need Kingsoft Cloud AgentEngine, Skill Service, knowledge base, or long-term memory services, set the default public cloud region explicitly:
 
-- [Concepts](getting-started/concepts.en.md): how the SDK, project config, runtime, and Web UI fit together.
-- [Quickstart](getting-started/quickstart.en.md): create, configure, run, and debug a local agent.
-- [Configuration](getting-started/configuration.en.md): environment variables and project YAML.
-- [Project Structure](getting-started/project-structure.en.md): files created by templates and files to avoid committing.
-- [Build A LangGraph Agent](tutorials/langgraph-agent.en.md): complete local project with source code.
-- [Bring An Existing Agent](tutorials/existing-agent.en.md): wrap an existing file or package.
-- [Local Web UI](guides/local-web-ui.en.md): local browser debugging and the independent `ksadk-web` repository plan.
-- [Web UI Repository](guides/web-ui-source.en.md): how `ksadk-web`, hosted UI, and the Python wheel relate.
-- [Runtime Products](guides/runtime-products.en.md): Hermes and OpenClaw lifecycle, runtime surfaces, and public-safe boundaries.
-- [Frameworks](guides/frameworks.en.md): ADK, LangGraph, LangChain, and DeepAgents conventions.
-- [Agent Best Practices](guides/agent-best-practices.en.md): LangGraph/ADK patterns with knowledge, memory, sessions, Skill Runtime, MCP, and workspace files.
-- [Tools And Skill Runtime](guides/tools-and-skill-runtime.en.md): built-in toolsets, focused/dispatcher progressive disclosure, Tool Gateway, MCP/A2A, and Skill Runtime boundaries.
-- [Observability And Tracing](guides/observability-tracing.en.md): local spans, Langfuse, OTLP, and trace metadata rules.
-- [Build And Package](guides/build-and-package.en.md): local builds, review gates, and public artifact rules.
-- [CLI Reference](reference/cli.en.md): public command surface and common options.
-- [OpenAI-Compatible API](reference/openai-compatible-api.en.md): local protocol shape and KsADK extensions.
-- [Project Configuration](reference/project-config.en.md): YAML and environment field reference.
-- [Remote Runtime API](reference/remote-runtime-api.en.md): PublicEndpoint, authentication, OpenAI-compatible routes, workspace files, Hermes, and OpenClaw.
-- [Environment Variables](reference/environment-variables.en.md): model, session, memory, knowledge, Skill Runtime, MCP, build, and tracing variables.
-- [Runtime Sessions And Files](reference/runtime-sessions-files.en.md): session IDs, uploads, workspace previews, and local state.
-- [Security Boundaries](reference/security-boundaries.en.md): public repository, workspace, preview, package, and history boundaries.
-- [Troubleshooting](reference/troubleshooting.en.md): common setup, runtime, and packaging failures.
+```bash
+agentengine config set KSYUN_REGION=cn-beijing-6
+```
 
-## Publication State
+## Architecture
 
-The planned public locations are:
+![KsADK Agent Runtime Platform architecture](assets/ksadk-runtime-architecture.png){ width="920" }
 
-- Python SDK repository: `https://github.com/kingsoftcloud/ksadk-python`
-- Python SDK docs: `https://kingsoftcloud.github.io/ksadk-python/`
-- Web UI repository: `https://github.com/kingsoftcloud/ksadk-web`
-- Web UI docs or demo: `https://kingsoftcloud.github.io/ksadk-web/`
+This diagram shows the public runtime boundary: keep building business agents with ADK, LangGraph, LangChain, or DeepAgents, then use KsADK for one CLI, browser Web UI, OpenAI-Compatible APIs, Skill Runtime, Workspace, Sandbox, memory, knowledge, and deployment backends.
 
-The first real source import must be reviewed internally before GitHub source,
-GitHub Pages, GitHub releases, or PyPI publication are enabled.
+## Supported Frameworks
+
+| Framework | What KsADK adds |
+| --- | --- |
+| Google ADK | Templates, runner adapter, local runtime, Web UI debugging, and deployment entrypoints. |
+| LangGraph | Graph-state entrypoint, tool calling, streaming, Skill Runtime, and workspace toolsets. |
+| LangChain | Runnable/chain adaptation, local OpenAI-Compatible APIs, and tracing. |
+| DeepAgents | Project entrypoint, runtime wrapping, browser debugging, and deployment artifacts. |
+
+## Ecosystem Positioning
+
+KsADK does not use a simplistic feature scorecard against ADK, LangGraph, the
+OpenAI Agents SDK, VEADK, or AgentRun. Those projects each have mature
+capability boundaries. KsADK focuses on the complementary runtime platform
+layer:
+
+- Agent frameworks keep owning business orchestration, state, and model interaction.
+- KsADK unifies the CLI, Web UI, local OpenAI-Compatible APIs, tools, sandbox,
+  deployment, and observability.
+- Kingsoft Cloud AgentEngine, Skill, Workspace, Sandbox, Hermes, and OpenClaw
+  are exposed through one developer entrypoint.
+
+For details, see [Ecosystem Positioning](getting-started/comparison.en.md).
+
+## Core Capabilities
+
+| Capability | Common entrypoints |
+| --- | --- |
+| Local Development | `agentengine init`, `agentengine config`, `agentengine run` |
+| Browser Debugging UI | `agentengine web` |
+| OpenAI-Compatible API | `/v1/responses`, `/v1/chat/completions` |
+| Unified Runtime | ADK / LangGraph / LangChain / DeepAgents runners |
+| Sandbox Execution | Skill Runtime, Workspace tools, Sandbox tools |
+| Serverless Deployment | `agentengine build`, `agentengine launch` |
+| Hermes & OpenClaw Runtime | `agentengine hermes ...`, `agentengine openclaw ...` |
+
+## Examples
+
+The public samples repository is organized by scenario, not only by framework:
+
+- [KSADK Samples](https://github.com/kingsoftcloud/ksadk-samples)
+- Knowledge Assistant: RAG and knowledge-base QA.
+- Workflow Agent: LangGraph plus AgentEngine toolsets.
+- Tool-Using Agent: custom business tools.
+- Memory-aware Agent: short-term and long-term memory patterns.
+
+## Deployment
+
+KsADK is local-first, with reviewed deployment entrypoints when you are ready:
+
+```bash
+agentengine build .
+agentengine launch . --target serverless
+agentengine dashboard open
+```
+
+When updating existing Hermes or OpenClaw instances, KsADK preserves server-side env, storage, network, and memory configuration by default. Those groups are overwritten only when matching CLI options are provided explicitly.
+
+## Observability
+
+KsADK is OpenTelemetry-native.
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=https://otel.example.com
+OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20token
+```
+
+Compatible with:
+
+- Langfuse
+- Arize
+- Datadog
+- Grafana
+- Phoenix
+
+Export once. Observe anywhere.
+
+## Documentation
+
+- [Getting Started](getting-started/quickstart.en.md)
+- [Build](tutorials/langgraph-agent.en.md)
+- [Run](guides/local-web-ui.en.md)
+- [Deploy](guides/build-and-package.en.md)
+- [Observe](guides/observability-tracing.en.md)
+- [Extend](guides/tools-and-skill-runtime.en.md)
+- [Reference](reference/cli.en.md)
+
+## Community
+
+- Repository: <https://github.com/kingsoftcloud/ksadk-python>
+- Wiki: <https://zread.ai/kingsoftcloud/ksadk-python>
+- Samples repository: <https://github.com/kingsoftcloud/ksadk-samples>
+- Web UI repository: <https://github.com/kingsoftcloud/ksadk-web>
+- PyPI: <https://pypi.org/project/ksadk/>
+- License: Apache-2.0

@@ -27,7 +27,7 @@ DOCUMENTATION_URL = "https://kingsoftcloud.github.io/ksadk-python/"
 
 DEFAULT_OUTPUT_DIR = Path("/tmp/ksadk-python-export-candidate")
 
-CURATED_DOCS: set[str] = set()
+CURATED_DOCS: set[str] = {"docs/maintainer-approval-record.md"}
 
 ROOT_EXPORT_FILES = {
     ".dockerignore",
@@ -66,6 +66,9 @@ EXPORT_PREFIXES = (
 
 SCRIPT_EXPORT_FILES = {
     "scripts/audit_release_artifacts.py",
+    "scripts/check_approval_record.py",
+    "scripts/check_publication_state.py",
+    "scripts/generate_public_assets.py",
     "scripts/open_source_audit.py",
     "scripts/prepare_ksadk_python_export.py",
     "scripts/prepare_ksadk_web_export.py",
@@ -73,7 +76,12 @@ SCRIPT_EXPORT_FILES = {
 
 PUBLIC_TEST_FILES = {
     "tests/conftest.py",
+    "tests/test_check_approval_record.py",
+    "tests/test_check_publication_state.py",
+    "tests/test_markdown_repair.py",
     "tests/test_open_source_audit.py",
+    "tests/test_public_positioning_docs.py",
+    "tests/test_public_release_gates.py",
     "tests/test_prepare_ksadk_python_export.py",
     "tests/test_prepare_ksadk_web_export.py",
     "tests/test_runtime_common_packaging.py",

@@ -115,6 +115,39 @@ workflow.add_edge("finalize_answer", END)
 root_agent = workflow.compile(name="production_agent")
 ```
 
+## Markdown 输出修复
+
+KsADK runtime 默认保留模型原文，不会在后端自动规范化 Markdown。这样可以保证
+streaming、trace、会话回放和业务审计看到的是同一份 raw LLM output。
+
+如果你的业务要把回答导出为报告、消息卡片、知识库文档或 workspace Markdown
+文件，可以在业务代码里显式开启轻量修复：
+
+```python
+from ksadk.markdown import repair_markdown
+
+
+def finalize_answer(state: AgentState) -> dict[str, Any]:
+    text = ""
+    for message in reversed(state.get("specialist_messages") or []):
+        if isinstance(message, AIMessage) and message.content:
+            text = str(message.content)
+            break
+
+    # 业务侧按需开启。KsADK runtime 默认不会改写模型原文。
+    text = repair_markdown(text, enabled=True)
+    return {"final_text": text, "messages": [AIMessage(content=text)]}
+```
+
+`repair_markdown()` 只做保守形态修复：
+
+- 补齐未闭合 fenced code block。
+- 给代码块、列表和表格补必要空行。
+- 统一换行并保持幂等。
+
+它不会重写语义、不会替你校验事实，也不会保证严格 CommonMark。强格式场景仍建议
+使用 JSON schema、Pydantic 校验、retry 或业务侧导出前 lint。
+
 `agentengine.yaml` 建议显式声明：
 
 ```yaml

@@ -71,7 +71,7 @@ Common fields:
 | `framework` | framework adapter | `adk`, `langchain`, `langgraph`, `deepagents` |
 | `entry_point` | Python file loaded by the local runtime | `agent.py` |
 | `agent_variable` | exported object name | `root_agent` |
-| `region` | optional cloud region for deployment-shaped commands | `cn-example-1` |
+| `region` | optional cloud region for deployment-shaped commands | `cn-beijing-6` |
 
 Prefer explicit project YAML in public samples. It is easier for contributors to
 review than relying on framework auto-detection.

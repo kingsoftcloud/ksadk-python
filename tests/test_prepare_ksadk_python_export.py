@@ -43,12 +43,21 @@ def _make_git_repo(root: Path) -> None:
         "ksadk_runtime_common/__init__.py": "\n",
         "ksadk_runtime_common/schemas/event.json": "{}\n",
         "tests/test_open_source_audit.py": "def test_public():\n    assert True\n",
+        "tests/test_public_positioning_docs.py": "def test_public_docs():\n    assert True\n",
+        "tests/test_check_publication_state.py": "def test_publication_state():\n    assert True\n",
         "tests/test_tracing_setup_otlp.py": "def test_tracing_public():\n    assert True\n",
         "tests/test_deploy_integration.py": "def test_internal():\n    assert True\n",
         "tests/snapshots/help_snapshots.txt": "internal snapshot\n",
         "public-docs/index.md": "# Public docs\n",
+        "public-docs/assets/ksadk-runtime-platform-hero.png": "hero\n",
+        "public-docs/assets/ksadk-web-ui-screenshot.png": "screenshot\n",
+        "public-docs/assets/ksadk-runtime-architecture.svg": "<svg></svg>\n",
+        "public-docs/assets/ksadk-runtime-architecture.png": "png\n",
+        "public-docs/assets/ksadk-local-debugging-demo.gif": "gif\n",
         "scripts/open_source_audit.py": "print('audit')\n",
         "scripts/audit_release_artifacts.py": "print('dist audit')\n",
+        "scripts/check_publication_state.py": "print('publication')\n",
+        "scripts/generate_public_assets.py": "print('assets')\n",
         "scripts/prepare_ksadk_python_export.py": "print('export')\n",
         "scripts/prepare_ksadk_web_export.py": "print('web export')\n",
         "docs/internal/release-secret.md": "internal\n",
@@ -115,12 +124,21 @@ def test_export_plan_selects_public_candidate_files_and_excludes_local_artifacts
     assert "ksadk_runtime_common/__init__.py" in plan.export_paths
     assert "ksadk_runtime_common/schemas/event.json" in plan.export_paths
     assert "tests/test_open_source_audit.py" in plan.export_paths
+    assert "tests/test_public_positioning_docs.py" in plan.export_paths
+    assert "tests/test_check_publication_state.py" in plan.export_paths
     assert "tests/test_tracing_setup_otlp.py" in plan.export_paths
     assert "public-docs/index.md" in plan.export_paths
+    assert "public-docs/assets/ksadk-runtime-platform-hero.png" in plan.export_paths
+    assert "public-docs/assets/ksadk-web-ui-screenshot.png" in plan.export_paths
+    assert "public-docs/assets/ksadk-runtime-architecture.svg" in plan.export_paths
+    assert "public-docs/assets/ksadk-runtime-architecture.png" in plan.export_paths
+    assert "public-docs/assets/ksadk-local-debugging-demo.gif" in plan.export_paths
     assert "docs/release-checklist.md" not in plan.export_paths
     assert "docs/ksadk开源准备计划.md" not in plan.export_paths
     assert "scripts/open_source_audit.py" in plan.export_paths
     assert "scripts/audit_release_artifacts.py" in plan.export_paths
+    assert "scripts/check_publication_state.py" in plan.export_paths
+    assert "scripts/generate_public_assets.py" in plan.export_paths
     assert "scripts/prepare_ksadk_python_export.py" in plan.export_paths
     assert "scripts/prepare_ksadk_web_export.py" in plan.export_paths
     assert "tests/test_deploy_integration.py" not in plan.export_paths
@@ -186,6 +204,11 @@ def test_cli_writes_clean_export_candidate_and_manifest(tmp_path):
     assert not (output_dir / "ksadk" / "server" / "web-ui").exists()
     assert (output_dir / "ksadk_runtime_common" / "__init__.py").is_file()
     assert (output_dir / "public-docs" / "index.md").is_file()
+    assert (output_dir / "public-docs" / "assets" / "ksadk-runtime-platform-hero.png").is_file()
+    assert (output_dir / "public-docs" / "assets" / "ksadk-web-ui-screenshot.png").is_file()
+    assert (output_dir / "public-docs" / "assets" / "ksadk-runtime-architecture.svg").is_file()
+    assert (output_dir / "public-docs" / "assets" / "ksadk-runtime-architecture.png").is_file()
+    assert (output_dir / "public-docs" / "assets" / "ksadk-local-debugging-demo.gif").is_file()
     assert (output_dir / "export-manifest.json").is_file()
     assert not (output_dir / ".pypirc").exists()
     assert not (output_dir / "docs" / "internal").exists()

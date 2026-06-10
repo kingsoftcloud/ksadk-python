@@ -78,19 +78,19 @@ Release artifacts must not contain:
 The Python package may include static UI assets needed by `agentengine web`.
 Editable UI source belongs to `ksadk-web`.
 
-## Internal Review Before Public Push
+## Maintainer Review Before Public Push
 
 The intended publication sequence is:
 
-1. push the review branch to internal ezone.
-2. complete internal maintainer review.
+1. push the review branch to the private maintainer review channel.
+2. complete maintainer review.
 3. import reviewed source into `kingsoftcloud/ksadk-python`.
 4. import reviewed UI source into `kingsoftcloud/ksadk-web`.
 5. enable GitHub Pages.
 6. create GitHub releases.
 7. publish PyPI or TestPyPI packages.
 
-Do not skip the internal review step. PyPI credentials, TestPyPI credentials,
+Do not skip the maintainer review step. PyPI credentials, TestPyPI credentials,
 and release tokens must stay outside GitHub source.
 
 ## Clean Export Versus Full History

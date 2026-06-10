@@ -98,6 +98,12 @@ COMMON_RULES = (
 
 PUBLIC_REPO_RULES = COMMON_RULES + (
     DenyRule(
+        name="non-curated-docs",
+        prefixes=("docs/",),
+        allowed_paths=("docs/maintainer-approval-record.md",),
+        description="internal planning and technical design docs stay out of the public repository; user docs live in public-docs/",
+    ),
+    DenyRule(
         name="internal-deploy-material",
         prefixes=(
             "deploy/",
@@ -123,11 +129,6 @@ PUBLIC_REPO_RULES = COMMON_RULES + (
         prefixes=(".env.example",),
         contains=("/.env.example",),
         description="environment examples must be curated before publication to avoid private endpoints or credential names",
-    ),
-    DenyRule(
-        name="non-curated-docs",
-        prefixes=("docs/",),
-        description="internal planning and technical design docs stay out of the public repository; user docs live in public-docs/",
     ),
 )
 
@@ -210,7 +211,7 @@ CONTENT_RULES = (
         name="internal-service-endpoint",
         pattern=re.compile(
             r"(?<![A-Za-z0-9.-])"
-            r"(?!(?:aicp|maicp)\.(?:inner|internal)\.api\.ksyun\.com\b)"
+            r"(?!(?:aicp)\.(?:inner|internal)\.api\.ksyun\.com\b)"
             r"(?:[A-Za-z0-9-]+\.)*(?:inner\.api|internal\.api|sdns)\.ksyun\.com\b"
         ),
         description="internal service endpoints must not be published unless explicitly supported by the public SDK",
@@ -269,6 +270,7 @@ TEXT_SUFFIXES = {
     ".md",
     ".py",
     ".sh",
+    ".svg",
     ".toml",
     ".ts",
     ".tsx",

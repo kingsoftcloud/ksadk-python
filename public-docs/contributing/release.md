@@ -1,19 +1,19 @@
 # 发布流程
 
-公开发布分为内部审核、GitHub 导入、Pages、release 和 PyPI/TestPyPI。
+公开发布分为维护者审核、GitHub 导入、Pages、release 和 PyPI/TestPyPI。
 
 ## 发布前
 
 ```bash
 make open-source-review
 make open-source-review-bundle
-python3 scripts/check_publication_state.py --phase placeholder
+make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.6.4
 ```
 
 ## GitHub
 
-审批通过后，使用审核过的 clean export 替换 placeholder。不要把完整历史直接公开，
-除非历史改写和 secret scan 已单独批准。
+维护者 review 通过后，从已审核的 GitHub `main` commit 创建 tag 和 release。
+不要从未同步的候选分支直接创建公开 release。
 
 ## PyPI
 
@@ -23,3 +23,7 @@ PyPI metadata 指向：
 - Documentation: `https://kingsoftcloud.github.io/ksadk-python/`
 
 上传凭证只放本地或发布系统 secrets，不进入 GitHub。
+
+真正执行 `make publish` 或 `make publish-test` 前，必须填好
+`docs/maintainer-approval-record.md`。该记录需要包含已审核 commit SHA、
+发布策略和维护者签署。

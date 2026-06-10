@@ -1,111 +1,83 @@
-# ksadk
+<h1 align="center">KsADK</h1>
 
-[简体中文](README.md) | [English](README.en.md)
+<p align="center"><strong>一次构建 Agent，到处运行。</strong></p>
 
-[![zread](https://img.shields.io/badge/Ask_Zread-_.svg?style=flat&color=00b0aa&labelColor=000000&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB3aWR0aD0iMTYiIGhlaWdodD0iMTYiIHZpZXdCb3g9IjAgMCAxNiAxNiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTQuOTYxNTYgMS42MDAxSDIuMjQxNTZDMS44ODgxIDEuNjAwMSAxLjYwMTU2IDEuODg2NjQgMS42MDE1NiAyLjI0MDFWNC45NjAxQzEuNjAxNTYgNS4zMTM1NiAxLjg4ODEgNS42MDAxIDIuMjQxNTYgNS42MDAxSDQuOTYxNTZDNS4zMTUwMiA1LjYwMDEgNS42MDE1NiA1LjMxMzU2IDUuNjAxNTYgNC45NjAxVjIuMjQwMUM1LjYwMTU2IDEuODg2NjQgNS4zMTUwMiAxLjYwMDEgNC45NjE1NiAxLjYwMDFaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik00Ljk2MTU2IDEwLjM5OTlIMi4yNDE1NkMxLjg4ODEgMTAuMzk5OSAxLjYwMTU2IDEwLjY4NjQgMS42MDE1NiAxMS4wMzk5VjEzLjc1OTlDMS42MDE1NiAxNC4xMTM0IDEuODg4MSAxNC4zOTk5IDIuMjQxNTYgMTQuMzk5OUg0Ljk2MTU2QzUuMzE1MDIgMTQuMzk5OSA1LjYwMTU2IDE0LjExMzQgNS42MDE1NiAxMy43NTk5VjExLjAzOTlDNS42MDE1NiAxMC42ODY0IDUuMzE1MDIgMTAuMzk5OSA0Ljk2MTU2IDEwLjM5OTlaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik0xMy43NTg0IDEuNjAwMUgxMS4wMzg0QzEwLjY4NSAxLjYwMDEgMTAuMzk4NCAxLjg4NjY0IDEwLjM5ODQgMi4yNDAxVjQuOTYwMUMxMC4zOTg0IDUuMzEzNTYgMTAuNjg1IDUuNjAwMSAxMS4wMzg0IDUuNjAwMUgxMy43NTg0QzE0LjExMTkgNS42MDAxIDE0LjM5ODQgNS4zMTM1NiAxNC4zOTg0IDQuOTYwMVYyLjI0MDFDMTQuMzk4NCAxLjg4NjY0IDE0LjExMTkgMS42MDAxIDEzLjc1ODQgMS42MDAxWiIgZmlsbD0iI2ZmZiIvPgo8cGF0aCBkPSJNNCAxMkwxMiA0TDQgMTJaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik00IDEyTDEyIDQiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSIxLjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgo8L3N2Zz4K&logoColor=ffffff)](https://zread.ai/kingsoftcloud/ksadk-python)
+<p align="center">
+  KsADK 是面向 AI Agent 的运行时平台（Agent Runtime Platform）。
+  继续使用 Google ADK、LangGraph、LangChain 或 DeepAgents 编写业务 Agent，再用统一 CLI、Web UI、OpenAI-Compatible API、工具运行时、沙箱、部署和可观测链路把它跑起来。
+</p>
 
-金山云 Agent Development Kit。`ksadk` 提供 Python SDK 和命令行，
-安装后可使用 `agentengine` 或等价的 `ksadk` 命令创建、运行、调试、
-打包和部署 AgentEngine 智能体项目。它面向
-本地开发、Serverless 运行时、Google ADK、LangChain/LangGraph、
-DeepAgents、Hermes、OpenClaw、MCP 和 Skill Runtime 等场景。
+<p align="center"><a href="README.md">简体中文（默认）</a> · <a href="README.en.md">English</a></p>
 
-当前版本：`0.6.3`。
+<p align="center">
+  <a href="https://kingsoftcloud.github.io/ksadk-python/"><img alt="Docs" src="https://img.shields.io/badge/Docs-ksadk--python-2f6fdf?style=flat" /></a>
+  <a href="https://pypi.org/project/ksadk/"><img alt="PyPI" src="https://img.shields.io/pypi/v/ksadk?style=flat&color=2f6fdf" /></a>
+  <a href="https://zread.ai/kingsoftcloud/ksadk-python"><img alt="Ask Zread" src="https://img.shields.io/badge/Ask_Zread-_.svg?style=flat&color=00b0aa&labelColor=000000&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB3aWR0aD0iMTYiIGhlaWdodD0iMTYiIHZpZXdCb3g9IjAgMCAxNiAxNiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTQuOTYxNTYgMS42MDAxSDIuMjQxNTZDMS44ODgxIDEuNjAwMSAxLjYwMTU2IDEuODg2NjQgMS42MDE1NiAyLjI0MDFWNC45NjAxQzEuNjAxNTYgNS4zMTM1NiAxLjg4ODEgNS42MDAxIDIuMjQxNTYgNS42MDAxSDQuOTYxNTZDNS4zMTUwMiA1LjYwMDEgNS42MDE1NiA1LjMxMzU2IDUuNjAxNTYgNC45NjAxVjIuMjQwMUM1LjYwMTU2IDEuODg2NjQgNS4zMTUwMiAxLjYwMDEgNC45NjE1NiAxLjYwMDFaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik00Ljk2MTU2IDEwLjM5OTlIMi4yNDE1NkMxLjg4ODEgMTAuMzk5OSAxLjYwMTU2IDEwLjY4NjQgMS42MDE1NiAxMS4wMzk5VjEzLjc1OTlDMS42MDE1NiAxNC4xMTM0IDEuODg4MSAxNC4zOTk5IDIuMjQxNTYgMTQuMzk5OUg0Ljk2MTU2QzUuMzE1MDIgMTQuMzk5OSA1LjYwMTU2IDE0LjExMzQgNS42MDE1NiAxMy43NTk5VjExLjAzOTlDNS42MDE1NiAxMC42ODY0IDUuMzE1MDIgMTAuMzk5OSA0Ljk2MTU2IDEwLjM5OTlaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik0xMy43NTg0IDEuNjAwMUgxMS4wMzg0QzEwLjY4NSAxLjYwMDEgMTAuMzk4NCAxLjg4NjY0IDEwLjM5ODQgMi4yNDAxVjQuOTYwMUMxMC4zOTg0IDUuMzEzNTYgMTAuNjg1IDUuNjAwMSAxMS4wMzg0IDUuNjAwMUgxMy43NTg0QzE0LjExMTkgNS42MDAxIDE0LjM5ODQgNS4zMTM1NiAxNC4zOTg0IDQuOTYwMVYyLjI0MDFDMTQuMzk4NCAxLjg4NjY0IDE0LjExMTkgMS42MDAxIDEzLjc1ODQgMS42MDAxWiIgZmlsbD0iI2ZmZiIvPgo8cGF0aCBkPSJNNCAxMkwxMiA0TDQgMTJaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik00IDEyTDEyIDQiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSIxLjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgo8L3N2Zz4K&logoColor=ffffff" /></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-Apache--2.0-blue?style=flat" /></a>
+</p>
 
-## 安装
+<p align="center"><a href="public-docs/assets/ksadk-runtime-platform-hero.png"><img alt="KsADK 真实 CLI 截图：agentengine -h" src="public-docs/assets/ksadk-runtime-platform-hero-wide.png" width="860" /></a></p>
+
+## 30 秒快速体验
 
 ```bash
-pip install -U ksadk
-```
-
-按需安装可选运行时依赖：
-
-```bash
-pip install -U "ksadk[adk]"
-pip install -U "ksadk[langgraph]"
-pip install -U "ksadk[deepagents]"
-pip install -U "ksadk[skills]"
+python -m venv .venv
+source .venv/bin/activate
 pip install -U "ksadk[all]"
-```
 
-## 快速开始
-
-以下示例使用 `agentengine`；所有命令也可以把 `agentengine` 替换为 `ksadk`。
-
-创建并运行一个本地 Agent：
-
-```bash
-agentengine init my-agent -f langgraph
-cd my-agent
-agentengine config
+agentengine init demo-agent -f langgraph
+cd demo-agent
+agentengine config set OPENAI_API_KEY=your-api-key OPENAI_MODEL_NAME=gpt-4o-mini
 agentengine run -i
 ```
 
-打开本地 Web UI：
+启动本地调试 Web UI：
 
 ```bash
 agentengine web . --no-open
 ```
 
-如需走部署形态，先使用 dry-run 或内部审核流程确认配置：
+<p align="center"><img alt="KsADK 真实 Web UI 调试截图" src="public-docs/assets/ksadk-web-ui-screenshot.png" width="860" /></p>
 
-```bash
-agentengine launch . --target serverless
-```
+<p align="center"><img alt="KsADK 真实本地 Web UI 演示" src="public-docs/assets/ksadk-local-debugging-demo.gif" width="860" /></p>
 
-## 包含能力
+## 为什么需要 KsADK
 
-- 本地开发命令：`init`、`config`、`run`、`web`
-- 构建与部署命令：`build`、`deploy`、`launch`
-- 远程操作：`agent invoke`、`files`、`dashboard`
-- 运行时集成：ADK、LangChain、LangGraph、DeepAgents、MCP
-- 托管运行时资产：Hermes 和 OpenClaw
-- Skill Runtime：Skill Space 发现、zip 下载、`sha256` 校验、安全解压、instruction 加载，以及 `local_process` 或 E2B sandbox workflow 执行
-- AgentEngine 内置工具：skill 发现/加载、workspace 文件操作、component status、sandbox status 和 sandbox direct code/command execution
-- Sandbox Runtime：通用沙箱抽象与 E2B 兼容后端
+大多数 Agent 框架解决“如何开发 Agent”。KsADK 解决“如何运行、调试、部署和观测 Agent”。
 
-## 0.6.3 重点
+- 本地开发：`agentengine init`、`agentengine run`、`agentengine web`。
+- 统一调试：浏览器 Web UI、streaming、附件、workspace 文件、工具调用和会话。
+- 统一协议：本地 `/v1/responses` 与 `/v1/chat/completions`。
+- 工具边界：Skill Runtime、Workspace、Sandbox、Memory、Knowledge。
+- 工程链路：打包、部署、OpenTelemetry 可观测。
 
-- Hosted UI 与最新 gateway / server 对齐 `/hosted-ui/chat/`、share link、SSE 订阅和 native terminal 代理契约；`agentengine dashboard open` 继续优先打开托管入口，本地 `agentengine web` 保持调试用途。
-- LangGraph runner 在工具调用后即使没有文本流式 chunk，也会输出最终 answer，避免本地 Web UI 出现空 assistant message。
-- Skill Service 支持 `KSADK_SKILL_SERVICE_REGION=pre-online` 的 KOP 路由，自动设置预发所需 header。
-- OpenClaw / Hermes 更新已有实例时默认保留服务端已有 env、storage、network、memory 配置，只在显式传入对应 CLI 参数时覆盖。
-- `ksadk.toolsets`、Tool Gateway、Skill Runtime 与 Skill Service 相关文件纳入发布包，主推 LangGraph demo 可以在干净安装后直接绑定 AgentEngine 内置工具。
+## 架构
 
-## 0.6.2 重点
+<p align="center"><img alt="KsADK Agent Runtime Platform 架构" src="public-docs/assets/ksadk-runtime-architecture.png" width="860" /></p>
 
-- Skill Runtime 支持 Skill Space 远端发现、按需下载、`sha256` 校验、安全解压、`SKILL.md` instruction 加载，以及 `local_process` / E2B sandbox backend workflow 执行。
-- `ksadk.toolsets` 提供 Skill、Workspace、Platform、Sandbox 内置工具；推荐绑定 `get_agentengine_tools(include=["focused", "agentengine_tool_dispatcher"])`，把低频或高风险工具放进 dispatcher 按需 `list` / `describe` / `call`。
-- Tool Gateway 为 workspace 写入/删除、Skill Runtime 执行、sandbox command/code 等中高风险操作提供统一 `approval_required` envelope。
-- Workspace tools 新增 exact snippet edit 与 lightweight lint；Sandbox tools 新增 direct `run_command` / `run_code`，且只通过 configured isolated sandbox backend 执行。
-- `setup_tracing()` 优先识别标准 `OTEL_EXPORTER_OTLP_*` HTTP traces 配置，Langfuse 环境变量仍保持兼容。
-- 环境变量 registry 和公开文档覆盖 OTLP traces、AICP endpoint mode、Skill Service endpoint/scheme、Sandbox Runtime、Skill Runtime 和 Tool Gateway settings。
-
-## 文档
-
-公开文档托管在 GitHub Pages，并使用 MkDocs Material 与双语 i18n 方案：
-
-- [中文文档](https://kingsoftcloud.github.io/ksadk-python/zh/)
-- [English documentation](https://kingsoftcloud.github.io/ksadk-python/en/)
-- [快速开始](https://kingsoftcloud.github.io/ksadk-python/getting-started/quickstart/)
-- [配置项](https://kingsoftcloud.github.io/ksadk-python/getting-started/configuration/)
-- [命令行参考](https://kingsoftcloud.github.io/ksadk-python/reference/cli/)
-- [OpenAI 兼容 API](https://kingsoftcloud.github.io/ksadk-python/reference/openai-compatible-api/)
-- [贡献指南](https://github.com/kingsoftcloud/ksadk-python/blob/main/CONTRIBUTING.md)
-- [安全策略](https://github.com/kingsoftcloud/ksadk-python/blob/main/SECURITY.md)
-
-## 项目链接
+## 文档与样例
 
 - 文档：<https://kingsoftcloud.github.io/ksadk-python/>
-- 仓库：<https://github.com/kingsoftcloud/ksadk-python>
-- wiki：<https://zread.ai/kingsoftcloud/ksadk-python>
-- 示例仓库：<https://github.com/kingsoftcloud/ksadk-samples>
+- 快速开始：<https://kingsoftcloud.github.io/ksadk-python/getting-started/quickstart/>
+- 为什么需要 KsADK：<https://kingsoftcloud.github.io/ksadk-python/getting-started/why-ksadk/>
+- 架构：<https://kingsoftcloud.github.io/ksadk-python/getting-started/architecture/>
+- 生态定位对比：<https://kingsoftcloud.github.io/ksadk-python/getting-started/comparison/>
+- 可观测：<https://kingsoftcloud.github.io/ksadk-python/guides/observability-tracing/>
+- 样例仓库：<https://github.com/kingsoftcloud/ksadk-samples>
+
+## 相关项目
+
+- KsADK 仓库：<https://github.com/kingsoftcloud/ksadk-python>
 - Web UI 仓库：<https://github.com/kingsoftcloud/ksadk-web>
+- Wiki：<https://zread.ai/kingsoftcloud/ksadk-python>
 - PyPI：<https://pypi.org/project/ksadk/>
-- 开源协议：Apache-2.0
 
-## 说明
+## 参与贡献
 
-- Skill 注册、CRUD 和版本治理属于 Skill Service；`ksadk` 在运行时消费 Skill Center。
-- Sandbox 模板和实例生命周期属于 Sandbox Service；`ksadk` 使用配置的沙箱后端执行运行时工作流。
-- E2B 兼容沙箱后端使用原生 `E2B_API_URL` 和 `E2B_API_KEY` 环境变量。
+欢迎通过 issue、PR、样例和文档改进参与贡献。提交前建议运行：
+
+```bash
+make public-preflight
+```
+
+开源协议：Apache-2.0。

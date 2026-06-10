@@ -42,7 +42,7 @@ agentengine web . --model my-model
 
 ## 与运行时的关系
 
-UI 调用本地 KsADK 运行时。普通 SDK 用户安装 wheel 后已经拿到静态 UI 资源。
+UI 调用本地 KsADK 运行时。通过 pip 安装 KsADK wheel 后已经拿到静态 UI 资源。
 只有开发 UI 源码时才需要 Node.js。
 
 ```mermaid

@@ -1,9 +1,39 @@
 # 更新日志
 
-本文件记录 **Kingsoft AgentEngine SDK (ksadk)** 的重要变更。
+本文件记录 **KsADK Agent Runtime Platform** 的重要变更。
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
+
+## [0.6.4] - 2026-06-10
+
+### 重点
+
+- **项目定位重构**：将 README、文档首页和包元数据统一为 Agent Runtime Platform 口径，突出统一运行、浏览器调试、OpenAI-Compatible API、Sandbox、部署和可观测价值。
+- **中文优先首页**：默认 README 与中文文档首页使用中文主叙述，英文 README 作为补充入口保留，避免公开首页变成英文优先材料。
+- **README 简洁化**：README 聚焦项目定位、30 秒上手、真实截图/GIF、核心能力和贡献入口；版本变更迁回 CHANGELOG 与 GitHub Releases，避免首页承担发布公告职责。
+- **真实视觉资产**：首页首屏使用真实浅色 CLI 截图，30 秒体验后展示真实本地 Web UI 截图和 GIF；演示由本地 deterministic LangGraph Runner 生成，不依赖外部模型或云环境。
+- **文档信息架构调整**：MkDocs 导航改为 Getting Started / Build / Run / Deploy / Observe / Extend / Reference，并新增 Why KsADK、Architecture、Comparison 三个认知入口页。
+- **Samples 场景入口对齐**：`ksadk-samples` 根 README 改为场景优先，真实映射 Knowledge Assistant、Workflow Agent、Tool-Using Agent 和 Memory-aware Agent；尚未实现的场景只进入 Roadmap。
+- **默认线上地域说明**：公开 README 和文档首页使用 `KSYUN_REGION=cn-beijing-6` 作为线上默认 region 示例，避免用户把非公开或内网配置照搬到公开 demo。
+
+### 修复
+
+- 新增 `ksadk.markdown.repair_markdown(text, enabled=True)` 可选业务侧 Markdown 形态修复工具，覆盖未闭合 fenced code block、列表/表格/代码块周边空行和换行归一化；默认关闭，运行时不自动改写 raw LLM output。用法见文档 [Agent 最佳实践 / Markdown 输出修复](public-docs/guides/agent-best-practices.md#markdown-输出修复)。
+- 清理 README、CHANGELOG、文档首页和 runtime product 文档中的环境特定表述，避免公开页面出现内部环境名、内部 header 或私有 endpoint 示例。
+- 将公开定位、视觉资产存在性、中文优先标题、敏感词扫描和 README 场景入口要求纳入本地门禁，降低后续发布材料回退风险。
+- 将 `agentengine-sdk-python` 别名包版本占用检查纳入 `public-publish-check`，避免主包与别名包发布状态不一致。
+
+### 发布治理
+
+- 这是修复 0.6.3 公开页面和 PyPI 元数据口径的补丁版本；已发布到 PyPI 的 0.6.3 元数据不可覆盖，因此通过新版本修复。
+- GitHub Release 页面必须保留历史版本 `v0.6.1`、`v0.6.2` 和 `v0.6.3`；0.6.4 只能新增 release，不能清理历史条目。
+- 公开 CHANGELOG 不记录非公开环境名、内网 endpoint、真实账号、真实 Skill Space ID 或临时凭证；这些只允许出现在内部联调记录里。
+
+### 运行时修复
+
+- `/v1/responses`、`/v1/chat/completions` 和 `RunAgentAction` 支持透传 `account_id` / `AccountId`，并写入 `PlatformInvocationContext`，便于 Skill、Workspace、Sandbox、Memory 等运行时能力按账号边界读取当前调用上下文。
+- 新增 `get_current_invocation_context_or_default()`、`get_current_user_id()` 和 `get_current_account_id()`，工具或业务代码可在当前 turn 内安全读取用户和账号上下文；无调用上下文时返回显式默认值。
 
 ## [0.6.3] - 2026-06-09
 
@@ -17,7 +47,7 @@
 ### 修复
 
 - 修复 LangGraph runner 在工具调用后没有文本流式 chunk 时不会输出最终 answer，导致本地 Web UI 存储空 assistant message 的问题。
-- 修复 Skill Service KOP client 在 `KSADK_SKILL_SERVICE_REGION=pre-online` 下没有按 AgentEngine client 规则设置 `X-Ksc-Region: cn-beijing-6` 和 `X-KSC-CUSTOM-SOURCE: pre` 的问题。
+- 修复 Skill Service KOP/AICP client 在环境化路由下没有按 AgentEngine client 规则映射 region 与必要请求头的问题。
 - 修复内置工具 dispatcher 遇到未知 include/tool name 时可能抛异常的问题，现在返回结构化 `unknown_tool` 错误，便于 Agent 继续解释。
 - 修复 OpenClaw / Hermes deploy update payload 默认携带 `env_vars`、`storage`、`network` 等配置组的问题，降低客户更新公共镜像时误改生产配置的风险。
 
@@ -122,7 +152,7 @@
 - 修复 Responses `input_file.file_data` / `file_url` 在会话回放中无法还原为附件展示的问题。
 - 修复 conversation runtime 落库时只保存 display 文本和附件提示，导致刷新后图片变成纯文本占位的问题。
 - 修复 Hosted UI 回放事件时未识别 Responses `input_file.file_data` / `input_file.file_url` 的问题。
-- 修复 server responses session mirror 在 `account_id` 为空或 PostgreSQL duplicate session 错误文本变化时可能失败，导致预发 Hosted UI 上传图片后报“连接断开或生成出错”的问题。
+- 修复 server responses session mirror 在 `account_id` 为空或 PostgreSQL duplicate session 错误文本变化时可能失败，导致 Hosted UI 上传图片后报“连接断开或生成出错”的问题。
 - 修复刷新正在流式输出的会话时，订阅增量事件被单独构建成多条空“思考过程”消息的问题；恢复路径现在先合并完整 session events，再重建消息列表。
 - 修复会话列表重复项、活动 invocation 判定过早失效、运行中会话锁住其他 session 切换等 UI 状态问题。
 - 修复 Workspace 文件列表自动刷新时把当前 Markdown/HTML/文本预览强制切回编辑态的问题。
@@ -502,7 +532,7 @@
 - 修复 Windows 离线安装时核心依赖缺失的问题。
 - 修复 Windows BOM 文件兼容性，统一按 `utf-8-sig` 读取配置。
 - 修复 Web UI 构建阶段 Google Fonts 资源导致的失败问题。
-- 修复预发与生产 serverless 客户端的环境路由问题。
+- 修复多环境 serverless 客户端的路由选择问题。
 - 为 `fastapi` 与 `pydantic` 增加兼容性版本上限约束。
 
 ## [0.1.0] - 2026-01-15
