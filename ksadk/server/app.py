@@ -634,6 +634,7 @@ class RunAgentActionRequest(BaseModel):
     AgentId: str
     Messages: List[Dict[str, Any]] = Field(default_factory=list)
     UserId: Optional[str] = "user"
+    AccountId: Optional[str] = None
     SessionId: Optional[str] = None
     ApiFormat: str = "responses"
     Stream: bool = False
@@ -669,6 +670,7 @@ class ResponsesRequest(BaseModel):
     safety_identifier: Optional[str] = None
     prompt_cache_key: Optional[str] = None
     user: Optional[str] = None
+    account_id: Optional[str] = None
     store: Optional[bool] = None
     previous_response_id: Optional[str] = None
     stream: bool = False
@@ -1374,6 +1376,7 @@ async def list_openai_models():
 async def run_agent_action(request: RunAgentActionRequest):
     api_format = (request.ApiFormat or "responses").strip().lower()
     run_user_id = _clean_optional_string(request.UserId) or "user"
+    account_id = _clean_optional_string(request.AccountId)
     resume_input = (
         conversation.extract_responses_resume_input(request.ResponsesInput)
         if request.ResponsesInput is not None
@@ -1403,6 +1406,7 @@ async def run_agent_action(request: RunAgentActionRequest):
                 stream=True,
                 session_id=request.SessionId,
                 user=run_user_id,
+                account_id=account_id,
             )
             return await chat_completions(completion_request)
         return _detached_streaming_response(
@@ -1417,6 +1421,7 @@ async def run_agent_action(request: RunAgentActionRequest):
                 model_options=request.ModelOptions,
                 request_metadata=request_metadata or None,
                 resume_input=resume_input,
+                account_id=account_id,
                 prepare_runner=_prepare_runner_for_model,
                 session_service_provider=resolve_session_service,
             )
@@ -1437,6 +1442,7 @@ async def run_agent_action(request: RunAgentActionRequest):
         request_metadata=request_metadata or None,
         resume_input=resume_input,
         response_id=responses_response_id,
+        account_id=account_id,
         prepare_runner=_prepare_runner_for_model,
         session_service_provider=resolve_session_service,
     )
@@ -2085,6 +2091,7 @@ class ChatCompletionRequest(BaseModel):
     stream: bool = False
     session_id: Optional[str] = None
     user: Optional[str] = None
+    account_id: Optional[str] = None
     temperature: Optional[float] = 0.7
     max_tokens: Optional[int] = None
 
@@ -2111,6 +2118,7 @@ async def responses(request: ResponsesRequest):
         request_metadata.setdefault("conversation", request.conversation)
     if request.store is not None:
         request_metadata.setdefault("store", request.store)
+    account_id = _clean_optional_string(request.account_id)
 
     if request.stream:
         return StreamingResponse(
@@ -2126,6 +2134,7 @@ async def responses(request: ResponsesRequest):
                 instructions=request.instructions,
                 request_metadata=request_metadata,
                 resume_input=resume_input,
+                account_id=account_id,
                 prepare_runner=_prepare_runner_for_model,
                 session_service_provider=resolve_session_service,
             ),
@@ -2146,6 +2155,7 @@ async def responses(request: ResponsesRequest):
         request_metadata=request_metadata,
         resume_input=resume_input,
         response_id=response_id,
+        account_id=account_id,
         prepare_runner=_prepare_runner_for_model,
         session_service_provider=resolve_session_service,
     )
@@ -2165,6 +2175,7 @@ async def chat_completions(request: ChatCompletionRequest):
     messages = conversation.normalize_kop_messages(request.messages)
     agent_id = active_runner.detection_result.name
     resolved_user_id = _clean_optional_string(request.user) or "user"
+    account_id = _clean_optional_string(request.account_id)
 
     if request.stream:
         return StreamingResponse(
@@ -2177,6 +2188,7 @@ async def chat_completions(request: ChatCompletionRequest):
                 model=request.model,
                 model_metadata=request.model_metadata,
                 model_options=request.model_options,
+                account_id=account_id,
                 prepare_runner=_prepare_runner_for_model,
                 session_service_provider=resolve_session_service,
             ),
@@ -2192,6 +2204,7 @@ async def chat_completions(request: ChatCompletionRequest):
         model=request.model,
         model_metadata=request.model_metadata,
         model_options=request.model_options,
+        account_id=account_id,
         prepare_runner=_prepare_runner_for_model,
         session_service_provider=resolve_session_service,
     )

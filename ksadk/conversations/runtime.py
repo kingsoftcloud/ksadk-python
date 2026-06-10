@@ -2429,6 +2429,7 @@ async def invoke_conversation_once(
     request_metadata: Mapping[str, Any] | None = None,
     resume_input: Mapping[str, Any] | None = None,
     response_id: str | None = None,
+    account_id: str | None = None,
     session_service_provider: Callable[[], Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """非流式 turn 编排入口。
@@ -2460,6 +2461,7 @@ async def invoke_conversation_once(
     runtime_context = PlatformInvocationContext(
         agent_id=agent_id,
         user_id=user_id,
+        account_id=str(account_id or ""),
         session_id=prepared.session_id,
         history=list(prepared.history),
         input_content=list(prepared.input_content),
@@ -2607,6 +2609,7 @@ async def _iter_conversation_turn_events(
     request_metadata: Mapping[str, Any] | None = None,
     resume_input: Mapping[str, Any] | None = None,
     response_id: str | None = None,
+    account_id: str | None = None,
     session_service_provider: Callable[[], Any] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Internal semantic event stream shared by protocol serializers."""
@@ -2663,6 +2666,7 @@ async def _iter_conversation_turn_events(
     runtime_context = PlatformInvocationContext(
         agent_id=agent_id,
         user_id=user_id,
+        account_id=str(account_id or ""),
         session_id=prepared.session_id,
         history=list(prepared.history),
         input_content=list(prepared.input_content),
@@ -3028,6 +3032,7 @@ async def stream_conversation_turn(
     instructions: Optional[str] = None,
     request_metadata: Mapping[str, Any] | None = None,
     resume_input: Mapping[str, Any] | None = None,
+    account_id: str | None = None,
     session_service_provider: Callable[[], Any] | None = None,
 ) -> AsyncIterator[str]:
     """Legacy ksadk response SSE stream used by hosted chat and chat-completions."""
@@ -3045,6 +3050,7 @@ async def stream_conversation_turn(
         instructions=instructions,
         request_metadata=request_metadata,
         resume_input=resume_input,
+        account_id=account_id,
         session_service_provider=session_service_provider,
     ):
         event_type = event.get("type")
@@ -3115,6 +3121,7 @@ async def stream_responses_conversation_turn(
     instructions: Optional[str] = None,
     request_metadata: Mapping[str, Any] | None = None,
     resume_input: Mapping[str, Any] | None = None,
+    account_id: str | None = None,
     session_service_provider: Callable[[], Any] | None = None,
 ) -> AsyncIterator[str]:
     """OpenAI Responses-style SSE stream."""
@@ -3191,6 +3198,7 @@ async def stream_responses_conversation_turn(
         request_metadata=request_metadata,
         resume_input=resume_input,
         response_id=response_id,
+        account_id=account_id,
         session_service_provider=session_service_provider,
     ):
         event_metadata = event.get("metadata")

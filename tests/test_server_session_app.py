@@ -991,12 +991,14 @@ async def test_chat_completions_forwards_model_to_runner(monkeypatch):
                 "messages": [{"role": "user", "content": "hello"}],
                 "stream": False,
                 "model": "glm-5.1",
+                "account_id": "acct-chat",
             },
         )
 
     assert response.status_code == 200
     assert runner.prepared_models == ["glm-5.1"]
     assert runner.calls[-1]["model"] == "glm-5.1"
+    assert runner.calls[-1]["platform_context"]["account_id"] == "acct-chat"
 
 
 @pytest.mark.asyncio
@@ -1479,6 +1481,7 @@ async def test_responses_uses_official_conversation_as_runtime_session(monkeypat
                 "input": "hello",
                 "conversation": "conv-a",
                 "safety_identifier": "user-a",
+                "account_id": "acct-a",
                 "stream": False,
             },
         )
@@ -1491,6 +1494,7 @@ async def test_responses_uses_official_conversation_as_runtime_session(monkeypat
     assert session.user_id == "user-a"
     assert runner.calls[-1]["session_id"] == "conv-a"
     assert runner.calls[-1]["platform_context"]["user_id"] == "user-a"
+    assert runner.calls[-1]["platform_context"]["account_id"] == "acct-a"
 
 
 @pytest.mark.asyncio
