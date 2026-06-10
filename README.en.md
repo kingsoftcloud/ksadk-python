@@ -6,12 +6,7 @@
 
 Build agents once. Run them anywhere.
 
-KsADK is the Agent Runtime Platform for AI agents. Build with Google ADK,
-LangGraph, LangChain, or DeepAgents, then run, debug, expose, observe, and
-deploy those agents through one runtime experience.
-
-The default README is Chinese-first. This English README is maintained as a
-companion entrypoint.
+KsADK is the Agent Runtime Platform for AI agents. Keep building with Google ADK, LangGraph, LangChain, or DeepAgents, then run, debug, expose, sandbox, deploy, and observe those agents through one runtime experience.
 
 ![Real KsADK CLI screenshot: agentengine -h](public-docs/assets/ksadk-runtime-platform-hero.png)
 
@@ -28,7 +23,7 @@ agentengine config set OPENAI_API_KEY=your-api-key OPENAI_MODEL_NAME=gpt-4o-mini
 agentengine run -i
 ```
 
-Start the real local Web UI:
+Start the local debugging Web UI:
 
 ```bash
 agentengine web . --no-open
@@ -36,76 +31,44 @@ agentengine web . --no-open
 
 ![Real KsADK Web UI debugging screenshot](public-docs/assets/ksadk-web-ui-screenshot.png)
 
-![Real local Web UI demo GIF](public-docs/assets/ksadk-local-debugging-demo.gif)
-
-Common configuration:
-
-```bash
-# Only set this for non-default OpenAI-compatible endpoints.
-agentengine config set OPENAI_BASE_URL=https://api.example.com/v1
-
-# Set this when using Kingsoft Cloud AgentEngine, Skill Service, knowledge base, or long-term memory.
-agentengine config set KSYUN_REGION=cn-beijing-6
-```
+![Real local Web UI demo](public-docs/assets/ksadk-local-debugging-demo.gif)
 
 ## Why KsADK
 
-Most agent frameworks solve how to build agents. KsADK solves how to run, debug,
-deploy, and observe them.
+Most agent frameworks solve how to build agents. KsADK solves how to run, debug, deploy, and observe them.
 
-- Unified CLI: `agentengine init`, `agentengine run`, `agentengine web`.
-- Unified debugging: browser Web UI, streaming, attachments, workspace files,
-  tool calls, and sessions.
+- Local development: `agentengine init`, `agentengine run`, `agentengine web`.
+- Unified debugging: browser Web UI, streaming, attachments, workspace files, tool calls, and sessions.
 - Unified protocol: local `/v1/responses` and `/v1/chat/completions`.
-- Unified tool boundary: Skill Runtime, Workspace, Sandbox, Memory, Knowledge.
-- Unified engineering path: packaging, deployment, OpenTelemetry observability.
+- Tool boundaries: Skill Runtime, Workspace, Sandbox, Memory, Knowledge.
+- Engineering workflow: packaging, deployment, OpenTelemetry observability.
 
 ## Architecture
 
 ![KsADK Agent Runtime Platform architecture](public-docs/assets/ksadk-runtime-architecture.png)
 
-For details, read [Why KsADK](https://kingsoftcloud.github.io/ksadk-python/en/getting-started/why-ksadk/),
-[Architecture](https://kingsoftcloud.github.io/ksadk-python/en/getting-started/architecture/), and
-[Ecosystem Positioning](https://kingsoftcloud.github.io/ksadk-python/en/getting-started/comparison/).
-
-The positioning page compares KsADK with Google ADK, LangGraph, OpenAI Agents
-SDK, VEADK, and AgentRun factually, without misleading feature scorecards.
-
-## Core Capabilities
-
-| Capability | Entry points |
-| --- | --- |
-| Local Development | `agentengine init`, `agentengine config`, `agentengine run` |
-| Browser Debugging UI | `agentengine web` |
-| OpenAI-Compatible API | `/v1/responses`, `/v1/chat/completions` |
-| Multi-framework runtime | ADK / LangGraph / LangChain / DeepAgents runners |
-| Tools and isolated execution | `ksadk.toolsets`, Skill Runtime, Workspace, Sandbox |
-| Optional Markdown repair | `ksadk.markdown.repair_markdown` optional app-side repair; runtime does not rewrite raw model output by default |
-| Deployment and Observability | Serverless / Hermes / OpenClaw, OpenTelemetry |
-
-## Examples
-
-- [KSADK Samples](https://github.com/kingsoftcloud/ksadk-samples)
-- Knowledge Assistant: RAG and knowledge-base QA.
-- Workflow Agent: LangGraph plus AgentEngine toolsets.
-- Tool-Using Agent: custom tool calls.
-- Memory-aware Agent: short-term and long-term memory patterns.
-
-## Documentation And Community
+## Docs And Examples
 
 - Documentation: <https://kingsoftcloud.github.io/ksadk-python/>
-- CLI reference: <https://kingsoftcloud.github.io/ksadk-python/en/reference/cli/>
-- Environment variables: <https://kingsoftcloud.github.io/ksadk-python/en/reference/environment-variables/>
+- Quick Start: <https://kingsoftcloud.github.io/ksadk-python/en/getting-started/quickstart/>
+- Why KsADK: <https://kingsoftcloud.github.io/ksadk-python/en/getting-started/why-ksadk/>
+- Architecture: <https://kingsoftcloud.github.io/ksadk-python/en/getting-started/architecture/>
+- Ecosystem Positioning: <https://kingsoftcloud.github.io/ksadk-python/en/getting-started/comparison/>
+- Observability: <https://kingsoftcloud.github.io/ksadk-python/en/guides/observability-tracing/>
+- Samples: <https://github.com/kingsoftcloud/ksadk-samples>
+
+## Related Projects
+
+- KsADK repository: <https://github.com/kingsoftcloud/ksadk-python>
+- Web UI repository: <https://github.com/kingsoftcloud/ksadk-web>
+- Wiki: <https://zread.ai/kingsoftcloud/ksadk-python>
+- PyPI: <https://pypi.org/project/ksadk/>
 - Changelog: [CHANGELOG.md](CHANGELOG.md)
 - GitHub Releases: <https://github.com/kingsoftcloud/ksadk-python/releases>
-- Wiki: <https://zread.ai/kingsoftcloud/ksadk-python>
-- Web UI repository: <https://github.com/kingsoftcloud/ksadk-web>
-- PyPI: <https://pypi.org/project/ksadk/>
 
 ## Contributing
 
-Issues, pull requests, samples, and documentation improvements are welcome. Run
-the public gate before submitting:
+Issues, pull requests, samples, and documentation improvements are welcome. Before submitting, run:
 
 ```bash
 make public-preflight

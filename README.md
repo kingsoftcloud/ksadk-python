@@ -6,9 +6,7 @@
 
 一次构建 Agent，到处运行。
 
-KsADK 是面向 AI Agent 的运行时平台（Agent Runtime Platform）。你可以继续使用 Google ADK、LangGraph、LangChain 或 DeepAgents 编写业务 Agent，再用 KsADK 获得统一的本地运行、浏览器调试、OpenAI-Compatible API、Skill Runtime、Workspace、Sandbox、部署和可观测体验。
-
-本仓库默认 README 使用简体中文；英文内容维护在 [README.en.md](README.en.md)。
+KsADK 是面向 AI Agent 的运行时平台（Agent Runtime Platform）。继续使用 Google ADK、LangGraph、LangChain 或 DeepAgents 编写业务 Agent，再用同一套 CLI、Web UI、OpenAI-Compatible API、工具运行时、沙箱、部署和可观测链路把它跑起来。
 
 ![KsADK 真实 CLI 截图：agentengine -h](public-docs/assets/ksadk-runtime-platform-hero.png)
 
@@ -25,7 +23,7 @@ agentengine config set OPENAI_API_KEY=your-api-key OPENAI_MODEL_NAME=gpt-4o-mini
 agentengine run -i
 ```
 
-启动真实本地 Web UI 演示：
+启动本地调试 Web UI：
 
 ```bash
 agentengine web . --no-open
@@ -33,70 +31,44 @@ agentengine web . --no-open
 
 ![KsADK 真实 Web UI 调试截图](public-docs/assets/ksadk-web-ui-screenshot.png)
 
-![KsADK 真实本地 Web UI 演示 GIF](public-docs/assets/ksadk-local-debugging-demo.gif)
-
-常用配置：
-
-```bash
-# 非默认 OpenAI endpoint 时再配置
-agentengine config set OPENAI_BASE_URL=https://api.example.com/v1
-
-# 调用金山云 AgentEngine、Skill Service、知识库或长期记忆等线上能力时建议显式配置
-agentengine config set KSYUN_REGION=cn-beijing-6
-```
+![KsADK 真实本地 Web UI 演示](public-docs/assets/ksadk-local-debugging-demo.gif)
 
 ## 为什么需要 KsADK
 
 大多数 Agent 框架解决“如何开发 Agent”。KsADK 解决“如何运行、调试、部署和观测 Agent”。
 
-- 统一 CLI：`agentengine init`、`agentengine run`、`agentengine web`。
+- 本地开发：`agentengine init`、`agentengine run`、`agentengine web`。
 - 统一调试：浏览器 Web UI、streaming、附件、workspace 文件、工具调用和会话。
 - 统一协议：本地 `/v1/responses` 与 `/v1/chat/completions`。
-- 统一工具边界：Skill Runtime、Workspace、Sandbox、Memory、Knowledge。
-- 统一工程链路：打包、部署、OpenTelemetry 可观测。
+- 工具边界：Skill Runtime、Workspace、Sandbox、Memory、Knowledge。
+- 工程链路：打包、部署、OpenTelemetry 可观测。
 
-## 架构一览
+## 架构
 
 ![KsADK Agent Runtime Platform 架构](public-docs/assets/ksadk-runtime-architecture.png)
 
-详细说明见 [为什么需要 KsADK](https://kingsoftcloud.github.io/ksadk-python/getting-started/why-ksadk/)、[架构](https://kingsoftcloud.github.io/ksadk-python/getting-started/architecture/) 和 [生态定位对比](https://kingsoftcloud.github.io/ksadk-python/getting-started/comparison/)。
-
-生态定位页会按事实说明 KsADK 与 Google ADK、LangGraph、OpenAI Agents SDK、VEADK、AgentRun 的互补关系，不使用误导性的能力打分榜。
-
-## 核心能力
-
-| 能力 | 入口 |
-| --- | --- |
-| 本地开发 | `agentengine init`、`agentengine config`、`agentengine run` |
-| 浏览器调试界面 | `agentengine web` |
-| OpenAI-Compatible API | `/v1/responses`、`/v1/chat/completions` |
-| 多框架运行 | ADK / LangGraph / LangChain / DeepAgents Runner |
-| 工具与隔离执行 | `ksadk.toolsets`、Skill Runtime、Workspace、Sandbox |
-| 可选 Markdown 修复 | `ksadk.markdown.repair_markdown` 按需修复；runtime 默认不改写模型原文 |
-| 部署与可观测 | Serverless / Hermes / OpenClaw、OpenTelemetry |
-
-## 样例
-
-- [KSADK Samples](https://github.com/kingsoftcloud/ksadk-samples)
-- Knowledge Assistant：知识库问答和 RAG。
-- Workflow Agent：LangGraph + AgentEngine toolsets。
-- Tool-Using Agent：自定义工具调用。
-- Memory-aware Agent：短期记忆和长期记忆接入。
-
-## 文档与社区
+## 文档与样例
 
 - 文档：<https://kingsoftcloud.github.io/ksadk-python/>
-- 命令行参考：<https://kingsoftcloud.github.io/ksadk-python/reference/cli/>
-- 环境变量：<https://kingsoftcloud.github.io/ksadk-python/reference/environment-variables/>
+- 快速开始：<https://kingsoftcloud.github.io/ksadk-python/getting-started/quickstart/>
+- 为什么需要 KsADK：<https://kingsoftcloud.github.io/ksadk-python/getting-started/why-ksadk/>
+- 架构：<https://kingsoftcloud.github.io/ksadk-python/getting-started/architecture/>
+- 生态定位对比：<https://kingsoftcloud.github.io/ksadk-python/getting-started/comparison/>
+- 可观测：<https://kingsoftcloud.github.io/ksadk-python/guides/observability-tracing/>
+- 样例仓库：<https://github.com/kingsoftcloud/ksadk-samples>
+
+## 相关项目
+
+- KsADK 仓库：<https://github.com/kingsoftcloud/ksadk-python>
+- Web UI 仓库：<https://github.com/kingsoftcloud/ksadk-web>
+- Wiki：<https://zread.ai/kingsoftcloud/ksadk-python>
+- PyPI：<https://pypi.org/project/ksadk/>
 - 更新日志：[CHANGELOG.md](CHANGELOG.md)
 - GitHub Releases：<https://github.com/kingsoftcloud/ksadk-python/releases>
-- Wiki：<https://zread.ai/kingsoftcloud/ksadk-python>
-- Web UI 仓库：<https://github.com/kingsoftcloud/ksadk-web>
-- PyPI：<https://pypi.org/project/ksadk/>
 
 ## 参与贡献
 
-欢迎通过 issue、PR、样例和文档改进参与贡献。提交前建议先运行：
+欢迎通过 issue、PR、样例和文档改进参与贡献。提交前建议运行：
 
 ```bash
 make public-preflight

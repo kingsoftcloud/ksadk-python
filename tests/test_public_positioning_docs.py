@@ -69,7 +69,6 @@ def test_readmes_position_ksadk_as_runtime_platform():
         "简体中文（默认）",
         "一次构建 Agent，到处运行。",
         "Agent Runtime Platform",
-        "默认 README 使用简体中文",
         "public-docs/assets/ksadk-runtime-platform-hero.png",
         "真实 CLI 截图",
         "为什么需要 KsADK",
@@ -81,9 +80,9 @@ def test_readmes_position_ksadk_as_runtime_platform():
         "架构",
         "生态定位对比",
         "可观测",
-        "文档与社区",
+        "文档与样例",
+        "相关项目",
         "参与贡献",
-        "KSYUN_REGION=cn-beijing-6",
     )
     for relative_path in ("README.md", "README.zh-CN.md"):
         text = _read(relative_path)
@@ -96,6 +95,7 @@ def test_readmes_position_ksadk_as_runtime_platform():
         assert "候选版本：" not in text
         assert "## 0.6.4 重点" not in text
         assert "## 0.6.3 重点" not in text
+        assert "repair_markdown" not in text
         assert "[CHANGELOG.md](CHANGELOG.md)" in text
         assert "https://github.com/kingsoftcloud/ksadk-python/releases" in text
 
@@ -109,16 +109,16 @@ def test_english_readme_positions_ksadk_as_runtime_platform():
         "Real KsADK CLI screenshot",
         "Why KsADK",
         "30 Seconds Quick Start",
-        "real local Web UI",
+        "local debugging Web UI",
         "public-docs/assets/ksadk-web-ui-screenshot.png",
         "public-docs/assets/ksadk-local-debugging-demo.gif",
         "public-docs/assets/ksadk-runtime-architecture.png",
         "Architecture",
         "Ecosystem Positioning",
         "Observability",
-        "Documentation And Community",
+        "Docs And Examples",
+        "Related Projects",
         "Contributing",
-        "KSYUN_REGION=cn-beijing-6",
     )
     for expected in expected_sections:
         assert expected in text
@@ -129,6 +129,7 @@ def test_english_readme_positions_ksadk_as_runtime_platform():
     assert "Candidate version:" not in text
     assert "## 0.6.4 Highlights" not in text
     assert "## 0.6.3 Highlights" not in text
+    assert "repair_markdown" not in text
     assert "[CHANGELOG.md](CHANGELOG.md)" in text
     assert "https://github.com/kingsoftcloud/ksadk-python/releases" in text
 
@@ -286,7 +287,9 @@ def test_readmes_stay_concise_and_do_not_duplicate_changelog():
         )
         assert "GitHub Releases" in text
         assert "[CHANGELOG.md](CHANGELOG.md)" in text
-        assert len(text.splitlines()) < 140, f"{relative_path} should stay concise"
+        assert "repair_markdown" not in text
+        assert "最新" not in text
+        assert len(text.splitlines()) < 95, f"{relative_path} should stay concise"
 
 
 def test_public_positioning_uses_factual_ecosystem_focus_terms():
@@ -357,9 +360,6 @@ def test_public_navigation_is_task_oriented():
 
 def test_markdown_repair_is_documented_as_opt_in():
     expected_by_path = {
-        "README.md": ("repair_markdown", "按需修复", "runtime 默认不改写模型原文"),
-        "README.zh-CN.md": ("repair_markdown", "按需修复", "runtime 默认不改写模型原文"),
-        "README.en.md": ("repair_markdown", "optional app-side repair", "runtime does not rewrite raw model output"),
         "public-docs/guides/agent-best-practices.md": (
             "Markdown 输出修复",
             "显式开启",
