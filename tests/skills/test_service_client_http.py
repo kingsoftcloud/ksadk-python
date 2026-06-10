@@ -243,7 +243,7 @@ def test_service_client_uses_registered_kop_action_for_aicp_skill_space_listing(
         return httpx.Response(404)
 
     client = SkillServiceClient(
-        base_url="http://maicp.inner.api.ksyun.com",
+        base_url="http://aicp.inner.api.ksyun.com",
         account_id="2000003485",
         transport=httpx.MockTransport(handler),
     )
@@ -255,7 +255,7 @@ def test_service_client_uses_registered_kop_action_for_aicp_skill_space_listing(
     method, url, headers = requests[0]
     assert method == "GET"
     assert url == (
-        "http://maicp.inner.api.ksyun.com/"
+        "http://aicp.inner.api.ksyun.com/"
         "?Action=ListSkillsBySpaceId&Version=2024-06-12"
         "&SpaceId=ss-1&PageNumber=1&PageSize=100"
     )
@@ -364,7 +364,7 @@ def test_service_client_uses_registered_kop_action_for_available_premade_skills(
         return httpx.Response(404)
 
     client = SkillServiceClient(
-        base_url="http://maicp.inner.api.ksyun.com",
+        base_url="http://aicp.inner.api.ksyun.com",
         account_id="2000003485",
         transport=httpx.MockTransport(handler),
     )
@@ -376,7 +376,7 @@ def test_service_client_uses_registered_kop_action_for_available_premade_skills(
     method, url, headers = requests[0]
     assert method == "GET"
     assert url == (
-        "http://maicp.inner.api.ksyun.com/"
+        "http://aicp.inner.api.ksyun.com/"
         "?Action=ListAvailablePremadeSkills&Version=2024-06-12"
     )
     assert headers["x-action"] == "ListAvailablePremadeSkills"
