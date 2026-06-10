@@ -68,17 +68,26 @@ agentengine config set KSYUN_REGION=cn-beijing-6
 
 ## Architecture
 
-```mermaid
-flowchart TD
-  Code["Agent Code<br/>ADK / LangGraph / LangChain / DeepAgents"] --> SDK["KsADK SDK<br/>runner adapters + config"]
-  SDK --> Runtime["Unified Runtime<br/>CLI + Web UI + OpenAI-Compatible API"]
-  Runtime --> Sandbox["Sandbox<br/>isolated command/code execution"]
-  Runtime --> Skills["Skills<br/>Skill Space + Skill Runtime"]
-  Runtime --> Memory["Memory & Knowledge<br/>sessions + LTM + RAG"]
-  Sandbox --> Engine["AgentEngine"]
-  Skills --> Engine
-  Memory --> Engine
-  Engine --> Backends["Serverless / Hermes / OpenClaw Runtime"]
+```text
+Agent Code
+  ADK / LangGraph / LangChain / DeepAgents
+        |
+        v
+KsADK SDK
+  runner adapters / config / toolsets
+        |
+        v
+Unified Runtime
+  CLI / Web UI / OpenAI-Compatible API
+        |
+        +-- Skill Runtime
+        +-- Workspace Tools
+        +-- Sandbox Runtime
+        +-- Memory & Knowledge
+        |
+        v
+AgentEngine
+  Serverless / Hermes / OpenClaw Runtime
 ```
 
 ## Supported Frameworks

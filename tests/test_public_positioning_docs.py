@@ -56,6 +56,8 @@ def test_readmes_position_ksadk_as_runtime_platform():
         text = _read(relative_path)
         for expected in expected_sections:
             assert expected in text, f"{relative_path} missing {expected}"
+        assert "```mermaid" not in text
+        assert "```text" in text
         assert "Agent Development Kit" not in text
         assert "KSADK_SKILL_SERVICE_REGION=pre-online" not in text
         assert "当前版本：" not in text
@@ -78,6 +80,8 @@ def test_english_readme_positions_ksadk_as_runtime_platform():
     )
     for expected in expected_sections:
         assert expected in text
+    assert "```mermaid" not in text
+    assert "```text" in text
     assert "Agent Development Kit" not in text
     assert "KSADK_SKILL_SERVICE_REGION=pre-online" not in text
     assert "Current version:" not in text
