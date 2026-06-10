@@ -439,10 +439,11 @@ def test_package_metadata_is_runtime_platform_positioned_for_patch_candidate():
     assert "Agent Development Kit" not in init_text
 
 
-def test_patch_version_changelog_is_unreleased_until_user_review():
+def test_patch_version_changelog_is_ready_for_authorized_release():
     changelog = _read("CHANGELOG.md")
-    assert "## [0.6.4] - Unreleased" in changelog
-    assert "用户 review 通过前" in changelog
-    assert "不创建 tag" in changelog
-    assert "不发布 GitHub Release" in changelog
-    assert "不上传 PyPI" in changelog
+    assert "## [0.6.4] - 2026-06-10" in changelog
+    assert "## [0.6.4] - Unreleased" not in changelog
+    assert "用户 review 通过前" not in changelog
+    assert "不创建 tag" not in changelog
+    assert "不发布 GitHub Release" not in changelog
+    assert "不上传 PyPI" not in changelog

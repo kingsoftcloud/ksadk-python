@@ -5,7 +5,7 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
-## [0.6.4] - Unreleased
+## [0.6.4] - 2026-06-10
 
 ### 重点
 
@@ -19,15 +19,14 @@
 
 ### 修复
 
-- 新增 `ksadk.markdown.repair_markdown(text, enabled=True)` 可选业务侧 Markdown 形态修复工具，覆盖未闭合 fenced code block、列表/表格/代码块周边空行和换行归一化；默认关闭，运行时不自动改写 raw LLM output。
+- 新增 `ksadk.markdown.repair_markdown(text, enabled=True)` 可选业务侧 Markdown 形态修复工具，覆盖未闭合 fenced code block、列表/表格/代码块周边空行和换行归一化；默认关闭，运行时不自动改写 raw LLM output。用法见文档 [Agent 最佳实践 / Markdown 输出修复](public-docs/guides/agent-best-practices.md#markdown-输出修复)。
 - 清理 README、CHANGELOG、文档首页和 runtime product 文档中的环境特定表述，避免公开页面出现内部环境名、内部 header 或私有 endpoint 示例。
 - 将公开定位、视觉资产存在性、中文优先标题、敏感词扫描和 README 场景入口要求纳入本地门禁，降低后续发布材料回退风险。
 - 将 `agentengine-sdk-python` 别名包版本占用检查纳入 `public-publish-check`，避免主包与别名包发布状态不一致。
 
 ### 发布治理
 
-- 这是修复 0.6.3 公开页面和 PyPI 元数据口径的补丁版本草案；已发布到 PyPI 的 0.6.3 元数据不可覆盖，因此后续需要通过新版本修复。
-- 0.6.4 在用户 review 通过前不创建 tag、不发布 GitHub Release，也不上传 PyPI。
+- 这是修复 0.6.3 公开页面和 PyPI 元数据口径的补丁版本；已发布到 PyPI 的 0.6.3 元数据不可覆盖，因此通过新版本修复。
 - GitHub Release 页面必须保留历史版本 `v0.6.1`、`v0.6.2` 和 `v0.6.3`；0.6.4 只能新增 release，不能清理历史条目。
 - 公开 CHANGELOG 不记录非公开环境名、内网 endpoint、真实账号、真实 Skill Space ID 或临时凭证；这些只允许出现在内部联调记录里。
 
