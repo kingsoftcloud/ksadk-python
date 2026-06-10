@@ -172,7 +172,7 @@ Export once. Observe anywhere.
 
 ## 0.6.4 重点
 
-- 将公开定位从普通 SDK 调整为 Agent Runtime Platform，首页补齐 Why KsADK、30 秒体验、架构图、对比表、Deployment、Observability 和 Community。
+- 将公开定位从传统 Agent SDK 调整为 Agent Runtime Platform，首页补齐 Why KsADK、30 秒体验、架构图、对比表、Deployment、Observability 和 Community。
 - 重构文档首页和 MkDocs 导航为 Getting Started / Build / Run / Deploy / Observe / Extend / Reference。
 - 清理 README、CHANGELOG、文档和后续 PyPI 元数据中的环境特定表述，避免公开页面出现内部环境名或内部 header。
 - 将公开定位和敏感词扫描纳入 `public-preflight`，防止后续回退。

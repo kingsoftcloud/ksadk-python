@@ -9,7 +9,7 @@
 
 ### 亮点
 
-- **公开定位重构**：将项目首页、README 和文档首页从普通 SDK 口径调整为 Agent Runtime Platform，补齐 Why KsADK、30 秒体验、架构图、对比表、Deployment、Observability 和 Community。
+- **公开定位重构**：将项目首页、README 和文档首页从传统 SDK 口径调整为 Agent Runtime Platform，补齐 Why KsADK、30 秒体验、架构图、对比表、Deployment、Observability 和 Community。
 - **文档信息架构调整**：MkDocs 导航改为 Getting Started / Build / Run / Deploy / Observe / Extend / Reference，更贴近开发者完成任务的路径。
 - **Samples 场景入口对齐**：`ksadk-samples` 根 README 改为场景优先，真实映射 Knowledge Assistant、Workflow Agent、Tool-Using Agent 和 Memory-aware Agent；尚未实现的场景只进入 Roadmap。
 - **公开元数据修复**：更新 PyPI summary 和包内简介为 Agent Runtime Platform 定位，为后续补丁发布准备干净的 long description。

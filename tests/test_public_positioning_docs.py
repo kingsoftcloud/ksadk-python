@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import tomllib
 import yaml
 
@@ -39,6 +40,29 @@ def _public_markdown_and_config_files() -> list[Path]:
     return files
 
 
+PUBLIC_FORBIDDEN_PATTERNS = (
+    ("pre_release_region", re.compile(r"\bpre[\W_]*online\b", re.IGNORECASE)),
+    ("private_icp_endpoint", re.compile(r"\b\w*icp[.-]inner[.-]api[.-][\w.-]+\b", re.IGNORECASE)),
+    ("private_agent_api_endpoint", re.compile(r"\bagent[.-]api[.-]pre\b", re.IGNORECASE)),
+    ("private_kspmas_endpoint", re.compile(r"\bkspmas[.-]internal\b", re.IGNORECASE)),
+    ("private_region_header", re.compile(r"\bX[-_]K(?:sc|SC)[-_]Region\b")),
+    ("private_custom_source_header", re.compile(r"\bX[-_]KSC[-_]CUSTOM[-_]SOURCE\b")),
+    (
+        "private_review_process",
+        re.compile(
+            r"\b(?:internal\s+(?:ezone|review\s+gate|maintainer\s+review)|company\s+review)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    ("private_review_process_zh", re.compile(r"\u5185\u90e8\s*(?:ezone|review|\u5ba1\u6838)")),
+)
+
+
+def _assert_no_public_sensitive_patterns(relative_path: str, text: str) -> None:
+    for label, pattern in PUBLIC_FORBIDDEN_PATTERNS:
+        assert not pattern.search(text), f"{relative_path} matches {label}: {pattern.pattern}"
+
+
 def test_readmes_position_ksadk_as_runtime_platform():
     expected_sections = (
         "Build agents once. Run them anywhere.",
@@ -59,7 +83,7 @@ def test_readmes_position_ksadk_as_runtime_platform():
         assert "```mermaid" not in text
         assert "```text" in text
         assert "Agent Development Kit" not in text
-        assert "KSADK_SKILL_SERVICE_REGION=pre-online" not in text
+        _assert_no_public_sensitive_patterns(relative_path, text)
         assert "当前版本：" not in text
         assert "候选版本：`0.6.4`" in text
 
@@ -83,7 +107,7 @@ def test_english_readme_positions_ksadk_as_runtime_platform():
     assert "```mermaid" not in text
     assert "```text" in text
     assert "Agent Development Kit" not in text
-    assert "KSADK_SKILL_SERVICE_REGION=pre-online" not in text
+    _assert_no_public_sensitive_patterns("README.en.md", text)
     assert "Current version:" not in text
     assert "Candidate version: `0.6.4`" in text
 
@@ -143,30 +167,10 @@ def test_english_navigation_translates_all_chinese_labels():
 
 
 def test_public_materials_do_not_publish_environment_specific_release_words():
-    forbidden = (
-        "pre-online",
-        "预发",
-        "内部预发 endpoint",
-        "internal pre-release endpoints",
-        "X-Ksc-Region",
-        "X-KSC-CUSTOM-SOURCE",
-        "agent-api-pre",
-        "kspmas-internal",
-        "aicp.inner.api",
-        "maicp.inner",
-        "internal ezone",
-        "internal review gate",
-        "internal maintainer review",
-        "company review",
-        "内部 ezone",
-        "内部审核",
-        "内部 review",
-    )
     for path in _public_markdown_and_config_files():
         text = path.read_text(encoding="utf-8")
         relative_path = path.relative_to(ROOT)
-        for fragment in forbidden:
-            assert fragment not in text, f"{relative_path} contains {fragment}"
+        _assert_no_public_sensitive_patterns(str(relative_path), text)
 
 
 def test_package_metadata_is_runtime_platform_positioned_for_patch_candidate():
