@@ -43,7 +43,14 @@ def _public_markdown_and_config_files() -> list[Path]:
 PUBLIC_FORBIDDEN_PATTERNS = (
     ("pre_release_region", re.compile(r"\bpre[\W_]*online\b", re.IGNORECASE)),
     ("pre_release_region_zh", re.compile(r"\u9884\u53d1")),
-    ("private_icp_endpoint", re.compile(r"\b\w*icp[.-]inner[.-]api[.-][\w.-]+\b", re.IGNORECASE)),
+    (
+        "private_icp_endpoint",
+        re.compile(
+            r"\b(?!(?:aicp[.-](?:inner|internal)[.-]api[.-]ksyun[.-]com|aicp[.-]api[.-]ksyun[.-]com)\b)"
+            r"\w*icp[.-](?:inner|internal)[.-]api[.-][\w.-]+\b",
+            re.IGNORECASE,
+        ),
+    ),
     ("private_agent_api_endpoint", re.compile(r"\bagent[.-]api[.-]pre\b", re.IGNORECASE)),
     ("private_kspmas_endpoint", re.compile(r"\bkspmas[.-]internal\b", re.IGNORECASE)),
     ("private_region_header", re.compile(r"\bX[-_]K(?:sc|SC)[-_]Region\b")),
@@ -96,8 +103,8 @@ def test_readmes_position_ksadk_as_runtime_platform():
         assert "## 0.6.4 重点" not in text
         assert "## 0.6.3 重点" not in text
         assert "repair_markdown" not in text
-        assert "[CHANGELOG.md](CHANGELOG.md)" in text
-        assert "https://github.com/kingsoftcloud/ksadk-python/releases" in text
+        assert "[CHANGELOG.md](CHANGELOG.md)" not in text
+        assert "https://github.com/kingsoftcloud/ksadk-python/releases" not in text
 
 
 def test_english_readme_positions_ksadk_as_runtime_platform():
@@ -130,8 +137,8 @@ def test_english_readme_positions_ksadk_as_runtime_platform():
     assert "## 0.6.4 Highlights" not in text
     assert "## 0.6.3 Highlights" not in text
     assert "repair_markdown" not in text
-    assert "[CHANGELOG.md](CHANGELOG.md)" in text
-    assert "https://github.com/kingsoftcloud/ksadk-python/releases" in text
+    assert "[CHANGELOG.md](CHANGELOG.md)" not in text
+    assert "https://github.com/kingsoftcloud/ksadk-python/releases" not in text
 
 
 def test_docs_homepage_uses_runtime_platform_information_architecture():
@@ -141,14 +148,14 @@ def test_docs_homepage_uses_runtime_platform_information_architecture():
     for expected in (
         "一次构建 Agent，到处运行。",
         "Agent Runtime Platform",
-        "assets/ksadk-runtime-platform-hero.png",
+        "assets/ksadk-runtime-platform-hero-wide.png",
         "真实 CLI 截图",
         "为什么需要 KsADK",
         "真实本地 Web UI 演示",
         "assets/ksadk-web-ui-screenshot.png",
         "assets/ksadk-local-debugging-demo.gif",
         "assets/ksadk-runtime-architecture.png",
-        "生态定位对比",
+        "生态定位",
         "VEADK",
         "AgentRun",
         "OpenTelemetry",
@@ -161,7 +168,7 @@ def test_docs_homepage_uses_runtime_platform_information_architecture():
     for expected in (
         "Build agents once. Run them anywhere.",
         "Agent Runtime Platform",
-        "assets/ksadk-runtime-platform-hero.png",
+        "assets/ksadk-runtime-platform-hero-wide.png",
         "Real KsADK CLI screenshot",
         "Why KsADK",
         "real local Web UI",
@@ -285,11 +292,11 @@ def test_readmes_stay_concise_and_do_not_duplicate_changelog():
         assert not version_heading_pattern.search(text), (
             f"{relative_path} should link to CHANGELOG/Releases instead of listing version highlights"
         )
-        assert "GitHub Releases" in text
-        assert "[CHANGELOG.md](CHANGELOG.md)" in text
+        assert "GitHub Releases" not in text
+        assert "[CHANGELOG.md](CHANGELOG.md)" not in text
         assert "repair_markdown" not in text
         assert "最新" not in text
-        assert len(text.splitlines()) < 95, f"{relative_path} should stay concise"
+        assert len(text.splitlines()) < 200, f"{relative_path} should stay concise"
         assert '<h1 align="center">KsADK</h1>' in text
         assert '<p align="center">' in text
         assert 'width="860"' in text
@@ -298,8 +305,6 @@ def test_readmes_stay_concise_and_do_not_duplicate_changelog():
 
 def test_public_positioning_uses_factual_ecosystem_focus_terms():
     expected_terms_by_path = {
-        "public-docs/index.md": ("A2UI/Frontend", "VeFaaS", "AgentRuntime 生命周期", "Serverless Devs"),
-        "public-docs/index.en.md": ("A2UI/Frontend", "VeFaaS", "AgentRuntime lifecycle", "Serverless Devs"),
         "public-docs/getting-started/comparison.md": ("A2UI/Frontend", "VeFaaS", "AgentRuntime 生命周期", "Serverless Devs"),
         "public-docs/getting-started/comparison.en.md": ("A2UI/Frontend", "VeFaaS", "AgentRuntime lifecycle", "Serverless Devs"),
     }

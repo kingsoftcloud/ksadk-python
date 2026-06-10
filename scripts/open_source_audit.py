@@ -211,7 +211,7 @@ CONTENT_RULES = (
         name="internal-service-endpoint",
         pattern=re.compile(
             r"(?<![A-Za-z0-9.-])"
-            r"(?!(?:aicp|maicp)\.(?:inner|internal)\.api\.ksyun\.com\b)"
+            r"(?!(?:aicp)\.(?:inner|internal)\.api\.ksyun\.com\b)"
             r"(?:[A-Za-z0-9-]+\.)*(?:inner\.api|internal\.api|sdns)\.ksyun\.com\b"
         ),
         description="internal service endpoints must not be published unless explicitly supported by the public SDK",

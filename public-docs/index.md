@@ -6,7 +6,7 @@ KsADK 是面向 AI Agent 的运行时平台（Agent Runtime Platform）。
 
 你可以继续使用 Google ADK、LangGraph、LangChain 或 DeepAgents 编写业务 Agent，再用 KsADK 获得统一的本地运行、浏览器调试、OpenAI-Compatible API、沙箱执行、部署和可观测体验。
 
-![KsADK 真实 CLI 截图：agentengine -h](assets/ksadk-runtime-platform-hero.png)
+![KsADK 真实 CLI 截图：agentengine -h](assets/ksadk-runtime-platform-hero-wide.png){ width="920" }
 
 === "安装"
 
@@ -65,9 +65,9 @@ agentengine web . --no-open
 
 下面是脚本生成的真实本地 Web UI 演示：使用 deterministic LangGraph Runner，不连接外部模型或云环境，但完整走本地 FastAPI、Responses streaming、工具调用、思考过程和会话状态链路。
 
-![KsADK 真实 Web UI 调试截图](assets/ksadk-web-ui-screenshot.png)
+![KsADK 真实 Web UI 调试截图](assets/ksadk-web-ui-screenshot.png){ width="920" }
 
-![KsADK 真实 Web UI 调试 GIF](assets/ksadk-local-debugging-demo.gif)
+![KsADK 真实 Web UI 调试 GIF](assets/ksadk-local-debugging-demo.gif){ width="920" }
 
 如果使用非默认 OpenAI endpoint，再额外设置：
 
@@ -83,7 +83,7 @@ agentengine config set KSYUN_REGION=cn-beijing-6
 
 ## 架构
 
-![KsADK Agent Runtime Platform 架构](assets/ksadk-runtime-architecture.png)
+![KsADK Agent Runtime Platform 架构](assets/ksadk-runtime-architecture.png){ width="920" }
 
 这张图展示的是公开运行时边界：业务 Agent 仍然由 ADK、LangGraph、LangChain 或 DeepAgents 编写；KsADK 在上层补齐统一 CLI、Web UI、OpenAI-Compatible API、Skill Runtime、Workspace、Sandbox、记忆、知识库和部署后端。
 
@@ -96,19 +96,16 @@ agentengine config set KSYUN_REGION=cn-beijing-6
 | LangChain | Runnable/chain 适配、本地 OpenAI-Compatible API 和 tracing。 |
 | DeepAgents | 项目入口、运行时包装、浏览器调试和部署制品。 |
 
-## 生态定位对比
+## 生态定位
 
-这不是能力打分榜。ADK、VEADK、AgentRun、LangGraph 和 OpenAI Agents SDK 都有各自成熟能力；KsADK 的重点是把不同框架和金山云 AgentEngine 能力放进同一套运行、调试、工具、沙箱、部署和观测链路。
+KsADK 不和 ADK、LangGraph、OpenAI Agents SDK、VEADK 或 AgentRun 做简单功能打分。
+这些项目各有成熟能力，KsADK 更关注互补的运行时平台层：
 
-| 项目 | 公开项目侧重点 | KsADK 更关注的互补层 |
-| --- | --- | --- |
-| Google ADK | Agent 建模、工具、多 Agent 协作、Session/Memory、本地运行与 Web 调试。 | 让 ADK Agent 和 LangGraph、LangChain、DeepAgents 共用同一套 `agentengine` CLI、Web UI、OpenAI-Compatible 本地 API 与部署入口。 |
-| LangGraph | 图状态编排、streaming、checkpoint、人机协作和 LangChain 生态。 | 为 LangGraph 项目补齐 KsADK 的 Skill Runtime、Workspace、Sandbox、金山云 AgentEngine 和部署链路。 |
-| OpenAI Agents SDK | 面向 OpenAI Responses API 的 Agent 编排、工具调用、handoff、guardrails 和 tracing。 | 面向多框架和多运行后端，把非 OpenAI 框架 Agent 也暴露为本地 OpenAI-Compatible API，并接入 KsADK Web UI 与部署工作流。 |
-| VEADK | 面向火山引擎生态的 Agent 构建、A2UI/Frontend、AgentKit、VeFaaS、记忆、知识库、内置工具和 tracing。 | 面向金山云生态整合 AgentEngine、Skill、Workspace、Sandbox、Hermes/OpenClaw 和 ksadk-web 开源调试体验。 |
-| AgentRun | 面向阿里云 AgentRun Runtime 的 Serverless Devs 脚手架与部署、AgentRuntime 生命周期、OpenAI-compatible 调用、MCP/FunctionCall 工具、Sandbox、知识库和记忆集合。 | 让本地多框架 Agent 先通过统一 CLI、Web UI、工具与沙箱链路跑通，再接入金山云 AgentEngine、Hermes/OpenClaw 和 Skill Runtime。 |
+- 已有 Agent 框架继续负责业务编排、状态和模型交互。
+- KsADK 负责统一 CLI、Web UI、本地 OpenAI-Compatible API、工具、沙箱、部署和可观测。
+- 金山云 AgentEngine、Skill、Workspace、Sandbox、Hermes/OpenClaw 通过同一套入口接入。
 
-KsADK 的设计目标不是替代这些框架，而是把它们放进同一套运行时平台体验里。
+完整说明见 [生态定位对比](getting-started/comparison.md)。
 
 ## 核心能力
 
