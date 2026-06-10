@@ -81,6 +81,7 @@ def test_readmes_position_ksadk_as_runtime_platform():
         "架构",
         "生态定位对比",
         "VEADK",
+        "AgentRun",
         "可观测",
         "部署",
         "社区",
@@ -114,6 +115,7 @@ def test_english_readme_positions_ksadk_as_runtime_platform():
         "Architecture",
         "Ecosystem Positioning",
         "VEADK",
+        "AgentRun",
         "Observability",
         "Deployment",
         "Community",
@@ -145,6 +147,7 @@ def test_docs_homepage_uses_runtime_platform_information_architecture():
         "assets/ksadk-runtime-architecture.png",
         "生态定位对比",
         "VEADK",
+        "AgentRun",
         "OpenTelemetry",
         "Hermes",
         "OpenClaw",
@@ -164,6 +167,7 @@ def test_docs_homepage_uses_runtime_platform_information_architecture():
         "assets/ksadk-runtime-architecture.png",
         "Ecosystem Positioning",
         "VEADK",
+        "AgentRun",
         "OpenTelemetry",
         "Hermes",
         "OpenClaw",
@@ -193,6 +197,22 @@ def test_public_positioning_does_not_use_misleading_feature_scorecards():
         for cell in misleading_cells:
             assert cell not in text, f"{relative_path} still uses misleading OpenAI comparison"
         assert "VEADK" in text
+        assert "AgentRun" in text
+
+
+def test_public_positioning_uses_factual_ecosystem_focus_terms():
+    expected_terms_by_path = {
+        "README.md": ("A2UI/Frontend", "VeFaaS", "AgentRuntime 生命周期", "Serverless Devs"),
+        "README.zh-CN.md": ("A2UI/Frontend", "VeFaaS", "AgentRuntime 生命周期", "Serverless Devs"),
+        "README.en.md": ("A2UI/Frontend", "VeFaaS", "AgentRuntime lifecycle", "Serverless Devs"),
+        "public-docs/index.md": ("A2UI/Frontend", "VeFaaS", "AgentRuntime 生命周期", "Serverless Devs"),
+        "public-docs/index.en.md": ("A2UI/Frontend", "VeFaaS", "AgentRuntime lifecycle", "Serverless Devs"),
+    }
+
+    for relative_path, expected_terms in expected_terms_by_path.items():
+        text = _read(relative_path)
+        for expected in expected_terms:
+            assert expected in text, f"{relative_path} missing ecosystem evidence term: {expected}"
 
 
 def test_public_visual_assets_are_present_and_nonempty():
