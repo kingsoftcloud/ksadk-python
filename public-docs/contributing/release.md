@@ -1,6 +1,6 @@
 # 发布流程
 
-公开发布分为内部审核、GitHub 导入、Pages、release 和 PyPI/TestPyPI。
+公开发布分为维护者审核、GitHub 导入、Pages、release 和 PyPI/TestPyPI。
 
 ## 发布前
 

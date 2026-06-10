@@ -154,6 +154,13 @@ def test_public_materials_do_not_publish_environment_specific_release_words():
         "kspmas-internal",
         "aicp.inner.api",
         "maicp.inner",
+        "internal ezone",
+        "internal review gate",
+        "internal maintainer review",
+        "company review",
+        "内部 ezone",
+        "内部审核",
+        "内部 review",
     )
     for path in _public_markdown_and_config_files():
         text = path.read_text(encoding="utf-8")

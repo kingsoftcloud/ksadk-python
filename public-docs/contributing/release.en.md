@@ -6,7 +6,7 @@ The first public release should be prepared from an independent branch and revie
 
 1. Prepare the candidate on an independent branch.
 2. Run local tests, packaging checks, artifact audits, and docs build.
-3. Push to the internal ezone repository for company review.
+3. Push the candidate to the private maintainer review channel.
 4. After approval, import the reviewed source into GitHub `main`.
 5. Enable GitHub Pages only after public docs CI passes.
 6. Create release tags, GitHub release assets, and TestPyPI/PyPI uploads only
@@ -14,9 +14,9 @@ The first public release should be prepared from an independent branch and revie
 7. Verify published releases and tags with
    `python3 scripts/check_publication_state.py --phase published --check-release --check-pages`.
 
-GitHub source import must not happen before the internal review gate. The
+GitHub source import must not happen before the maintainer review gate. The
 candidate branch is for review and local gates only; public release assets must
-not be created directly from an internal `master` branch or an unsynced
+not be created directly from the private development branch or an unsynced
 `release/public-*` candidate branch.
 The published-state check also verifies that the imported GitHub repositories
 contain the expected public source, CI workflow, and Pages workflow marker
@@ -84,7 +84,7 @@ Never commit:
 
 Before importing real source into GitHub, the approval record must name:
 
-- the exact internal branch or commit reviewed.
+- the exact private branch or commit reviewed.
 - whether publication uses clean export, rewritten history, or full history.
 - the export manifests or history scan evidence.
 - the reviewer who approved the sensitive-data boundary.
