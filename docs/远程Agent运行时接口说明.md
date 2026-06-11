@@ -1526,6 +1526,17 @@ curl -X POST "https://<PublicEndpoint>/agentengine/api/v1/DeleteResponseFeedback
 
 这组接口用于 Hosted UI / 本地 Web UI 展示 checkpoint、预览恢复、恢复运行和取消运行。公网 `PublicEndpoint` 调用时，请求先经过 `agentengine-gateway` Hosted UI action 白名单，再由 `agentengine-server` 按 `AgentId` 解析目标 runtime 并代理到 runtime/router。前端是否展示入口必须依赖 bootstrap capability，不要仅凭 action 是否在白名单内判断可用性。
 
+公网链路验收应使用 `scripts/validate_hosted_long_task_e2e.py`，而不是只跑本地 runtime / ASGI 脚本。该脚本不需要 PG DSN，只访问 `PublicEndpoint`：
+
+```bash
+python scripts/validate_hosted_long_task_e2e.py \
+  --endpoint "https://<PublicEndpoint>" \
+  --agent-id "<AgentId>" \
+  --api-key "$AGENTENGINE_RUNTIME_API_KEY"
+```
+
+如果通过 private/share 短链接打开 Hosted UI，也可以传入 `--cookie "ae_ui_session=<sid>"`。脚本默认覆盖 bootstrap capability、`RunAgent`、`ListSessionCheckpoints`、`ResumeRun(Stream=true)` 和 `ListSessionEvents`；运行时取消可用 `--mode cancel-active --session-id <SessionId> --invocation-id <InvocationId>` 对仍活跃的流式 run 验证 `CancelRun`。
+
 ### `POST /agentengine/api/v1/ListSessionCheckpoints`
 
 请求体：
