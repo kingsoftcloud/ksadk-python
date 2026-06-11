@@ -1,4 +1,5 @@
 from pathlib import Path
+import tomllib
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +22,12 @@ def test_pyproject_declares_python_socks_for_openclaw_gateway_proxy_support():
     pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
     assert "python-socks>=2.7.1,<3.0.0" in pyproject
+
+
+def test_pyproject_declares_kingsoftcloud_sdk_as_default_dependency():
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+    assert "kingsoftcloud-sdk-python>=1.5.8.90" in pyproject["project"]["dependencies"]
 
 
 def test_pyproject_declares_asyncpg_for_postgres_session_backend():

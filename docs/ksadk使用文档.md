@@ -26,9 +26,10 @@ pip install "ksadk[langgraph]"
 pip install "ksadk[langchain]"
 pip install "ksadk[deepagents]"
 pip install "ksadk[adk]"
-pip install "ksadk[kb]"
 pip install "ksadk[skills]"
 ```
+
+知识库和长期记忆使用的 `kingsoftcloud-sdk-python` 已包含在默认依赖中，不需要额外安装 `ksadk[kb]`。
 
 命令入口等价：
 
