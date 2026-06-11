@@ -22,6 +22,7 @@ if str(ROOT) not in sys.path:
 
 from scripts.validate_checkpoint_resume_e2e import (
     run_cancel_validation,
+    run_cancel_then_resume_validation,
     run_validation,
 )
 
@@ -55,6 +56,19 @@ def _runtime_cancel_passed(result: dict[str, Any] | None) -> bool:
     )
 
 
+def _cancel_then_resume_passed(result: dict[str, Any] | None) -> bool:
+    if not result:
+        return False
+    return (
+        result.get("cancel_found") is True
+        and str(result.get("cancel_status") or "") in {"cancelling", "cancelled"}
+        and int(result.get("cancelled_event_count") or 0) >= 1
+        and int(result.get("post_cancel_extra_event_count") or 0) == 0
+        and result.get("output_text_after_resume") == "a,b,c"
+        and result.get("resume_after_cancel_did_not_rerun_prior_nodes") is True
+    )
+
+
 async def _build_single_pilot_report(
     *,
     dsn: str,
@@ -79,10 +93,15 @@ async def _build_single_pilot_report(
                     "status": "skipped",
                     "reason": "checkpoint_resume failed before cancel validation",
                 },
+                "cancel_then_resume": {
+                    "status": "skipped",
+                    "reason": "checkpoint_resume failed before cancel-then-resume validation",
+                },
             },
             "metrics": {
                 "checkpoint_resume_success_rate": 0.0,
                 "runtime_cancel_success_rate": None,
+                "cancel_then_resume_success_rate": None,
                 "checkpoint_event_count": None,
                 "resume_event_count": None,
                 "post_cancel_extra_event_count": None,
@@ -93,6 +112,8 @@ async def _build_single_pilot_report(
                 "resume_does_not_restart": "fail",
                 "runtime_cancel_terminal": "skipped",
                 "no_events_after_cancel": "skipped",
+                "cancel_then_resume_after_cancelled": "skipped",
+                "resume_after_cancel_does_not_restart": "skipped",
             },
             "notes": [
                 "DSN is intentionally omitted from this report.",
@@ -101,6 +122,7 @@ async def _build_single_pilot_report(
         }
 
     cancel_result = None
+    cancel_then_resume_result = None
     if include_cancel:
         try:
             cancel_result = await run_cancel_validation(dsn=dsn, keep_session=keep_session)
@@ -109,10 +131,23 @@ async def _build_single_pilot_report(
                 "error_type": type(exc).__name__,
                 "error": str(exc),
             }
+        try:
+            cancel_then_resume_result = await run_cancel_then_resume_validation(
+                dsn=dsn,
+                keep_session=keep_session,
+            )
+        except Exception as exc:
+            cancel_then_resume_result = {
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            }
 
     checkpoint_ok = _checkpoint_resume_passed(checkpoint_result)
     cancel_ok = _runtime_cancel_passed(cancel_result) if include_cancel else None
-    overall_ok = checkpoint_ok and (cancel_ok is not False)
+    cancel_then_resume_ok = (
+        _cancel_then_resume_passed(cancel_then_resume_result) if include_cancel else None
+    )
+    overall_ok = checkpoint_ok and (cancel_ok is not False) and (cancel_then_resume_ok is not False)
 
     cases: dict[str, Any] = {
         "checkpoint_resume": {
@@ -143,8 +178,65 @@ async def _build_single_pilot_report(
                 cancel_result.get("post_cancel_extra_event_count") if cancel_result else None
             ),
         }
+        cases["cancel_then_resume"] = {
+            "status": _pass_fail(bool(cancel_then_resume_ok)),
+            "error_type": (
+                cancel_then_resume_result.get("error_type") if cancel_then_resume_result else None
+            ),
+            "error": cancel_then_resume_result.get("error") if cancel_then_resume_result else None,
+            "session_id": (
+                cancel_then_resume_result.get("session_id") if cancel_then_resume_result else None
+            ),
+            "run_id": cancel_then_resume_result.get("run_id") if cancel_then_resume_result else None,
+            "invocation_id": (
+                cancel_then_resume_result.get("invocation_id") if cancel_then_resume_result else None
+            ),
+            "checkpoint_id": (
+                cancel_then_resume_result.get("checkpoint_id") if cancel_then_resume_result else None
+            ),
+            "cancel_found": (
+                cancel_then_resume_result.get("cancel_found") if cancel_then_resume_result else None
+            ),
+            "cancel_status": (
+                cancel_then_resume_result.get("cancel_status") if cancel_then_resume_result else None
+            ),
+            "cancelled_event_count": (
+                cancel_then_resume_result.get("cancelled_event_count")
+                if cancel_then_resume_result
+                else None
+            ),
+            "post_cancel_extra_event_count": (
+                cancel_then_resume_result.get("post_cancel_extra_event_count")
+                if cancel_then_resume_result
+                else None
+            ),
+            "output_text_after_resume": (
+                cancel_then_resume_result.get("output_text_after_resume")
+                if cancel_then_resume_result
+                else None
+            ),
+            "checkpoint_log_before_cancel": (
+                cancel_then_resume_result.get("checkpoint_log_before_cancel")
+                if cancel_then_resume_result
+                else None
+            ),
+            "node_counts_after_resume": (
+                cancel_then_resume_result.get("node_counts_after_resume")
+                if cancel_then_resume_result
+                else None
+            ),
+            "resume_after_cancel_did_not_rerun_prior_nodes": (
+                cancel_then_resume_result.get("resume_after_cancel_did_not_rerun_prior_nodes")
+                if cancel_then_resume_result
+                else None
+            ),
+        }
     else:
         cases["runtime_cancel"] = {
+            "status": "skipped",
+            "reason": "cancel validation disabled by --skip-cancel",
+        }
+        cases["cancel_then_resume"] = {
             "status": "skipped",
             "reason": "cancel validation disabled by --skip-cancel",
         }
@@ -152,6 +244,7 @@ async def _build_single_pilot_report(
     no_events_after_cancel = (
         cancel_result is not None and int(cancel_result.get("post_cancel_extra_event_count") or 0) == 0
     )
+    cancel_then_resume_after_cancel = bool(cancel_then_resume_ok)
     return {
         "report_type": "long_task_pilot_validation",
         "generated_at": generated_at,
@@ -160,6 +253,9 @@ async def _build_single_pilot_report(
         "metrics": {
             "checkpoint_resume_success_rate": _rate(checkpoint_ok),
             "runtime_cancel_success_rate": _rate(bool(cancel_ok)) if include_cancel else None,
+            "cancel_then_resume_success_rate": (
+                _rate(bool(cancel_then_resume_ok)) if include_cancel else None
+            ),
             "checkpoint_event_count": checkpoint_result.get("run_checkpoint_event_count"),
             "resume_event_count": checkpoint_result.get("run_resume_event_count"),
             "node_counts_after_resume": checkpoint_result.get("node_counts_after_resume"),
@@ -178,6 +274,18 @@ async def _build_single_pilot_report(
             ),
             "no_events_after_cancel": (
                 _pass_fail(no_events_after_cancel) if include_cancel else "skipped"
+            ),
+            "cancel_then_resume_after_cancelled": (
+                _pass_fail(cancel_then_resume_after_cancel) if include_cancel else "skipped"
+            ),
+            "resume_after_cancel_does_not_restart": (
+                _pass_fail(
+                    cancel_then_resume_result is not None
+                    and cancel_then_resume_result.get("resume_after_cancel_did_not_rerun_prior_nodes")
+                    is True
+                )
+                if include_cancel
+                else "skipped"
             ),
         },
         "notes": [
@@ -248,8 +356,18 @@ async def build_pilot_report(
         if include_cancel
         else None
     )
+    cancel_then_resume_passed = (
+        sum(1 for report in iteration_reports if _case_passed(report, "cancel_then_resume"))
+        if include_cancel
+        else None
+    )
     checkpoint_ok = checkpoint_passed == total_iterations
     cancel_ok = (cancel_passed == total_iterations) if include_cancel else True
+    cancel_then_resume_ok = (
+        cancel_then_resume_passed == total_iterations
+        if include_cancel
+        else True
+    )
 
     checkpoint_case = _first_nonpassing_case(iteration_reports, "checkpoint_resume")
     checkpoint_case["status"] = _pass_fail(checkpoint_ok)
@@ -263,11 +381,22 @@ async def build_pilot_report(
             "status": "skipped",
             "reason": "cancel validation disabled by --skip-cancel",
         }
+        cases["cancel_then_resume"] = {
+            "status": "skipped",
+            "reason": "cancel validation disabled by --skip-cancel",
+        }
+    if include_cancel:
+        cancel_then_resume_case = _first_nonpassing_case(
+            iteration_reports,
+            "cancel_then_resume",
+        )
+        cancel_then_resume_case["status"] = _pass_fail(cancel_then_resume_ok)
+        cases["cancel_then_resume"] = cancel_then_resume_case
 
     return {
         "report_type": "long_task_pilot_validation",
         "generated_at": generated_at,
-        "overall_status": _pass_fail(checkpoint_ok and cancel_ok),
+        "overall_status": _pass_fail(checkpoint_ok and cancel_ok and cancel_then_resume_ok),
         "cases": cases,
         "iterations": iteration_reports,
         "metrics": {
@@ -278,9 +407,22 @@ async def build_pilot_report(
             "runtime_cancel_failed": (
                 total_iterations - int(cancel_passed or 0) if include_cancel else None
             ),
+            "cancel_then_resume_passed": (
+                cancel_then_resume_passed if include_cancel else None
+            ),
+            "cancel_then_resume_failed": (
+                total_iterations - int(cancel_then_resume_passed or 0)
+                if include_cancel
+                else None
+            ),
             "checkpoint_resume_success_rate": checkpoint_passed / total_iterations,
             "runtime_cancel_success_rate": (
                 int(cancel_passed or 0) / total_iterations if include_cancel else None
+            ),
+            "cancel_then_resume_success_rate": (
+                int(cancel_then_resume_passed or 0) / total_iterations
+                if include_cancel
+                else None
             ),
             "max_post_cancel_extra_event_count": _max_metric(
                 iteration_reports,
@@ -293,6 +435,12 @@ async def build_pilot_report(
             "resume_does_not_restart": _pass_fail(checkpoint_ok),
             "runtime_cancel_terminal": _pass_fail(cancel_ok) if include_cancel else "skipped",
             "no_events_after_cancel": _pass_fail(cancel_ok) if include_cancel else "skipped",
+            "cancel_then_resume_after_cancelled": (
+                _pass_fail(cancel_then_resume_ok) if include_cancel else "skipped"
+            ),
+            "resume_after_cancel_does_not_restart": (
+                _pass_fail(cancel_then_resume_ok) if include_cancel else "skipped"
+            ),
         },
         "notes": [
             "DSN is intentionally omitted from this report.",
