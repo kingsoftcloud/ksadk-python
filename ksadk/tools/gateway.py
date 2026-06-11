@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -102,6 +104,36 @@ def tool_policy_requires_approval(
     if mode != "strict":
         return False
     return policy.risk_level.lower() in {"medium", "high", "critical"}
+
+
+def _canonical_tool_args(tool_args: Any) -> str:
+    try:
+        return json.dumps(tool_args or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    except TypeError:
+        return json.dumps(str(tool_args), ensure_ascii=False, separators=(",", ":"))
+
+
+def build_tool_receipt_idempotency_key(
+    *,
+    session_id: str,
+    run_id: str,
+    checkpoint_id: str | None = None,
+    tool_call_id: str | None = None,
+    tool_name: str,
+    tool_args: Any = None,
+) -> str:
+    payload = {
+        "session_id": str(session_id or ""),
+        "run_id": str(run_id or ""),
+        "checkpoint_id": str(checkpoint_id or ""),
+        "tool_call_id": str(tool_call_id or ""),
+        "tool_name": str(tool_name or ""),
+        "tool_args": _canonical_tool_args(tool_args),
+    }
+    digest = hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return f"tool_receipt:{digest}"
 
 
 def approval_interrupt_info_from_result(

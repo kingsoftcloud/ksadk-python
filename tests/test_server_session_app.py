@@ -8,7 +8,9 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from fastapi.responses import Response
 
+import ksadk.conversations as conversation
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.server.api_models import AgentRunRequest, InlineData, Part
 from ksadk.sessions.base import SessionEvent
@@ -35,6 +37,21 @@ class _DummyRunner(BaseRunner):
 
     async def stream(self, input_data: dict):
         yield {"type": "final", "output": "assistant says hi"}
+
+
+class _CheckpointResumeRunner(_DummyRunner):
+    async def invoke(self, input_data: dict) -> dict:
+        self.calls.append(input_data)
+        return {
+            "output": "resumed from checkpoint",
+            "metadata": {
+                "agentengine": {
+                    "run_id": str(input_data.get("run_id") or ""),
+                    "framework": "langgraph",
+                    "framework_ref": input_data.get("framework_ref") or {},
+                }
+            },
+        }
 
 
 class _OverrideStreamingRunner(BaseRunner):
@@ -71,6 +88,20 @@ class _SlowStreamingRunner(_OverrideStreamingRunner):
         await asyncio.sleep(0.05)
         yield {"type": "text", "delta": "lo"}
         yield {"type": "final", "output": "hello"}
+
+
+class _CancellableStreamingRunner(_OverrideStreamingRunner):
+    def __init__(self):
+        super().__init__()
+        self.cancel_requests: list[str] = []
+
+    async def stream(self, input_data: dict):
+        yield {"type": "text", "delta": "hel"}
+        await asyncio.Event().wait()
+
+    def request_cancel(self, invocation_id: str) -> str:
+        self.cancel_requests.append(invocation_id)
+        return "accepted"
 
 
 class _ModelAwareRunner(_DummyRunner):
@@ -126,6 +157,32 @@ def _sse_events(response_text: str) -> list[tuple[str, dict]]:
         events.append((current_event, json.loads(payload)))
         current_event = "message"
     return events
+
+
+@pytest.mark.asyncio
+async def test_ui_bootstrap_advertises_checkpoint_resume_capabilities(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _DummyRunner()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/GetAgentUiBootstrap",
+            json={"AgentId": "demo-agent"},
+        )
+
+    assert response.status_code == 200
+    run_lifecycle = response.json()["Data"]["Capabilities"]["RunLifecycle"]
+    assert run_lifecycle["Enabled"] is True
+    assert run_lifecycle["Resume"] is True
+    assert run_lifecycle["Abort"] is True
+    assert run_lifecycle["Checkpoints"] is True
+    assert run_lifecycle["CheckpointResume"] is True
+    assert run_lifecycle["CheckpointResumePreview"] is True
 
 
 @pytest.mark.asyncio
@@ -1498,6 +1555,181 @@ async def test_responses_uses_official_conversation_as_runtime_session(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_responses_accepts_agentengine_checkpoint_resume_input(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
+    service = InMemorySessionService()
+    runner = _CheckpointResumeRunner()
+
+    await service.create_session(agent_id="demo-agent", user_id="user-a", session_id="conv-resume")
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+    await conversation_runtime.append_run_checkpoint_event(
+        session_id="conv-resume",
+        author="demo-agent",
+        run_id="run-1",
+        checkpoint_id="ckpt-1",
+        framework="langgraph",
+        framework_ref={
+            "langgraph": {
+                "thread_id": "tenant:agent:conv-resume",
+                "checkpoint_id": "ckpt-1",
+            }
+        },
+        invocation_id="inv-checkpoint",
+        session_service_provider=lambda: service,
+    )
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/v1/responses",
+            json={
+                "input": [
+                    {
+                        "type": "agentengine.resume_checkpoint",
+                        "run_id": "run-1",
+                        "checkpoint_id": "ckpt-1",
+                        "resume_attempt_id": "resume-1",
+                        "framework": "langgraph",
+                        "framework_ref": {
+                            "langgraph": {
+                                "thread_id": "forged-client-thread",
+                                "checkpoint_id": "forged-client-checkpoint",
+                            }
+                        },
+                    }
+                ],
+                "conversation": "conv-resume",
+                "safety_identifier": "user-a",
+                "stream": False,
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["metadata"]["agentengine"]["run_id"] == "run-1"
+    assert payload["metadata"]["agentengine"]["framework_ref"]["langgraph"]["checkpoint_id"] == "ckpt-1"
+    assert runner.calls[-1]["checkpoint_resume"] is True
+    assert runner.calls[-1]["run_id"] == "run-1"
+    assert runner.calls[-1]["framework_ref"]["langgraph"]["thread_id"] == "tenant:agent:conv-resume"
+    assert runner.calls[-1]["framework_ref"]["langgraph"]["checkpoint_id"] == "ckpt-1"
+    events = await service.get_events("conv-resume")
+    assert [event.event_type for event in events] == [
+        "run_checkpoint",
+        "run_resume",
+        "run_status",
+        "run_checkpoint",
+        "assistant_message",
+        "run_status",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_responses_rejects_agentengine_checkpoint_resume_without_server_checkpoint(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _CheckpointResumeRunner()
+
+    await service.create_session(agent_id="demo-agent", user_id="user-a", session_id="conv-resume-missing")
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/v1/responses",
+            json={
+                "input": [
+                    {
+                        "type": "agentengine.resume_checkpoint",
+                        "run_id": "run-1",
+                        "checkpoint_id": "ckpt-1",
+                        "framework": "langgraph",
+                        "framework_ref": {
+                            "langgraph": {
+                                "thread_id": "client-only-thread",
+                                "checkpoint_id": "ckpt-1",
+                            }
+                        },
+                    }
+                ],
+                "conversation": "conv-resume-missing",
+                "safety_identifier": "user-a",
+                "stream": False,
+            },
+        )
+
+    assert response.status_code == 404
+    assert runner.calls == []
+    assert await service.get_events("conv-resume-missing") == []
+
+
+@pytest.mark.asyncio
+async def test_run_agent_responses_checkpoint_resume_resolves_framework_ref_from_server(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
+    service = InMemorySessionService()
+    runner = _CheckpointResumeRunner()
+
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-runagent-resume")
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+    await conversation_runtime.append_run_checkpoint_event(
+        session_id="sess-runagent-resume",
+        author="demo-agent",
+        run_id="run-1",
+        checkpoint_id="ckpt-1",
+        framework="langgraph",
+        framework_ref={
+            "langgraph": {
+                "thread_id": "tenant:agent:sess-runagent-resume",
+                "checkpoint_id": "ckpt-1",
+            }
+        },
+        invocation_id="inv-checkpoint",
+        session_service_provider=lambda: service,
+    )
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/RunAgent",
+            json={
+                "AgentId": "demo-agent",
+                "SessionId": "sess-runagent-resume",
+                "UserId": "user-1",
+                "ApiFormat": "responses",
+                "Stream": False,
+                "ResponsesInput": [
+                    {
+                        "type": "agentengine.resume_checkpoint",
+                        "run_id": "run-1",
+                        "checkpoint_id": "ckpt-1",
+                        "resume_attempt_id": "resume-1",
+                        "framework": "langgraph",
+                        "framework_ref": {
+                            "langgraph": {
+                                "thread_id": "forged-client-thread",
+                                "checkpoint_id": "forged-client-checkpoint",
+                            }
+                        },
+                    }
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()["Data"]
+    assert payload["metadata"]["agentengine"]["run_id"] == "run-1"
+    assert (
+        payload["metadata"]["agentengine"]["framework_ref"]["langgraph"]["thread_id"]
+        == "tenant:agent:sess-runagent-resume"
+    )
+    assert runner.calls[-1]["framework_ref"]["langgraph"]["thread_id"] == "tenant:agent:sess-runagent-resume"
+
+
+@pytest.mark.asyncio
 async def test_responses_accepts_official_conversation_object(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()
@@ -1666,6 +1898,446 @@ async def test_responses_events_are_visible_through_runtime_local_list_session_e
 
 
 @pytest.mark.asyncio
+async def test_list_session_checkpoints_filters_by_agent_session_and_run(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
+    service = InMemorySessionService()
+    runner = _DummyRunner()
+
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-checkpoints")
+    await service.create_session(agent_id="other-agent", user_id="user-1", session_id="sess-other")
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    await conversation_runtime.append_run_checkpoint_event(
+        session_id="sess-checkpoints",
+        author="demo-agent",
+        run_id="run-1",
+        checkpoint_id="ckpt-1",
+        framework="langgraph",
+        framework_ref={"langgraph": {"thread_id": "tenant:agent:sess-checkpoints", "checkpoint_id": "ckpt-1"}},
+        phase="tool_result",
+        invocation_id="inv-1",
+        session_service_provider=lambda: service,
+    )
+    await conversation_runtime.append_run_checkpoint_event(
+        session_id="sess-checkpoints",
+        author="demo-agent",
+        run_id="run-2",
+        checkpoint_id="ckpt-2",
+        framework="langgraph",
+        framework_ref={"langgraph": {"thread_id": "tenant:agent:sess-checkpoints", "checkpoint_id": "ckpt-2"}},
+        phase="completed",
+        invocation_id="inv-2",
+        session_service_provider=lambda: service,
+    )
+    await conversation_runtime.append_run_checkpoint_event(
+        session_id="sess-other",
+        author="other-agent",
+        run_id="run-1",
+        checkpoint_id="ckpt-other",
+        framework="langgraph",
+        framework_ref={"langgraph": {"thread_id": "tenant:other:sess-other", "checkpoint_id": "ckpt-other"}},
+        invocation_id="inv-other",
+        session_service_provider=lambda: service,
+    )
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ListSessionCheckpoints",
+            json={"AgentId": "demo-agent", "SessionId": "sess-checkpoints", "RunId": "run-1"},
+        )
+        wrong_agent = await client.post(
+            "/agentengine/api/v1/ListSessionCheckpoints",
+            json={"AgentId": "other-agent", "SessionId": "sess-checkpoints"},
+        )
+
+    assert response.status_code == 200
+    checkpoints = response.json()["Data"]["Checkpoints"]
+    assert [item["CheckpointId"] for item in checkpoints] == ["ckpt-1"]
+    assert checkpoints[0]["RunId"] == "run-1"
+    assert checkpoints[0]["Framework"] == "langgraph"
+    assert checkpoints[0]["FrameworkRef"]["langgraph"]["thread_id"] == "tenant:agent:sess-checkpoints"
+    assert wrong_agent.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_resume_run_action_reuses_checkpoint_and_records_resume(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
+    service = InMemorySessionService()
+    runner = _CheckpointResumeRunner()
+
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-resume-action")
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+    await conversation_runtime.append_run_checkpoint_event(
+        session_id="sess-resume-action",
+        author="demo-agent",
+        run_id="run-1",
+        checkpoint_id="ckpt-1",
+        framework="langgraph",
+        framework_ref={"langgraph": {"thread_id": "tenant:agent:sess-resume-action", "checkpoint_id": "ckpt-1"}},
+        invocation_id="inv-1",
+        session_service_provider=lambda: service,
+    )
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ResumeRun",
+            json={
+                "AgentId": "demo-agent",
+                "SessionId": "sess-resume-action",
+                "RunId": "run-1",
+                "CheckpointId": "ckpt-1",
+                "ResumeAttemptId": "resume-1",
+                "Stream": False,
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()["Data"]
+    assert payload["session_id"] == "sess-resume-action"
+    assert payload["metadata"]["agentengine"]["run_id"] == "run-1"
+    assert runner.calls[-1]["checkpoint_resume"] is True
+    assert runner.calls[-1]["framework_ref"]["langgraph"]["checkpoint_id"] == "ckpt-1"
+    events = await service.get_events("sess-resume-action")
+    resume_events = [event for event in events if event.event_type == "run_resume"]
+    assert len(resume_events) == 1
+    assert resume_events[0].metadata["resume_attempt_id"] == "resume-1"
+
+
+@pytest.mark.asyncio
+async def test_resume_run_action_stream_uses_invocation_id_for_detached_cancel(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
+    service = InMemorySessionService()
+    runner = _CheckpointResumeRunner()
+
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-resume-stream")
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+    await conversation_runtime.append_run_checkpoint_event(
+        session_id="sess-resume-stream",
+        author="demo-agent",
+        run_id="run-1",
+        checkpoint_id="ckpt-1",
+        framework="langgraph",
+        framework_ref={"langgraph": {"thread_id": "tenant:agent:sess-resume-stream", "checkpoint_id": "ckpt-1"}},
+        invocation_id="inv-checkpoint",
+        session_service_provider=lambda: service,
+    )
+
+    captured_invocations: list[str | None] = []
+
+    def fake_detached_streaming_response(source, *, invocation_id=None):
+        captured_invocations.append(invocation_id)
+        return Response(status_code=202)
+
+    monkeypatch.setattr(server_app_module, "_detached_streaming_response", fake_detached_streaming_response)
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ResumeRun",
+            json={
+                "AgentId": "demo-agent",
+                "SessionId": "sess-resume-stream",
+                "RunId": "run-1",
+                "CheckpointId": "ckpt-1",
+                "ResumeAttemptId": "resume-1",
+                "InvocationId": "run-ui-resume-1",
+                "Stream": True,
+            },
+        )
+
+    assert response.status_code == 202
+    assert captured_invocations == ["run-ui-resume-1"]
+
+
+@pytest.mark.asyncio
+async def test_resume_run_action_stream_registers_detached_cancel(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
+    service = InMemorySessionService()
+    runner = _CancellableStreamingRunner()
+
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-resume-cancel")
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+    await conversation_runtime.append_run_checkpoint_event(
+        session_id="sess-resume-cancel",
+        author="demo-agent",
+        run_id="run-1",
+        checkpoint_id="ckpt-1",
+        framework="langgraph",
+        framework_ref={
+            "langgraph": {
+                "thread_id": "tenant:agent:sess-resume-cancel",
+                "checkpoint_id": "ckpt-1",
+            }
+        },
+        invocation_id="inv-checkpoint",
+        session_service_provider=lambda: service,
+    )
+
+    invocation_id = "run-ui-resume-cancel"
+    original_detached_streaming_response = server_app_module._detached_streaming_response
+
+    def start_detached_stream_and_return_accepted(source, *, invocation_id=None):
+        original_detached_streaming_response(source, invocation_id=invocation_id)
+        return Response(status_code=202)
+
+    monkeypatch.setattr(
+        server_app_module,
+        "_detached_streaming_response",
+        start_detached_stream_and_return_accepted,
+    )
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        resume_response = await client.post(
+            "/agentengine/api/v1/ResumeRun",
+            json={
+                "AgentId": "demo-agent",
+                "SessionId": "sess-resume-cancel",
+                "RunId": "run-1",
+                "CheckpointId": "ckpt-1",
+                "ResumeAttemptId": "resume-1",
+                "InvocationId": invocation_id,
+                "Stream": True,
+            },
+        )
+
+        for _ in range(20):
+            events = await service.get_events("sess-resume-cancel")
+            statuses = [
+                event.content.get("status")
+                for event in events
+                if event.event_type == "run_status"
+            ]
+            if statuses == ["in_progress"]:
+                break
+            await asyncio.sleep(0.02)
+
+        cancel_response = await client.post(
+            "/agentengine/api/v1/CancelRun",
+            json={"AgentId": "demo-agent", "InvocationId": invocation_id},
+        )
+
+    assert resume_response.status_code == 202
+    assert cancel_response.status_code == 200
+    cancel_data = cancel_response.json()["Data"]
+    assert cancel_data["Found"] is True
+    assert cancel_data["Cancelled"] is True
+    assert cancel_data["RunnerCancelStatus"] == "accepted"
+
+    for _ in range(20):
+        events = await service.get_events("sess-resume-cancel")
+        statuses = [
+            event.content.get("status")
+            for event in events
+            if event.event_type == "run_status"
+        ]
+        if statuses == ["in_progress", "cancelled"]:
+            break
+        await asyncio.sleep(0.02)
+
+    events = await service.get_events("sess-resume-cancel")
+    statuses = [
+        event.content.get("status")
+        for event in events
+        if event.event_type == "run_status"
+    ]
+    assert statuses == ["in_progress", "cancelled"]
+    assert runner.cancel_requests == [invocation_id]
+
+
+@pytest.mark.asyncio
+async def test_resume_run_action_rejects_unknown_checkpoint(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _CheckpointResumeRunner()
+
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-resume-missing")
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ResumeRun",
+            json={
+                "AgentId": "demo-agent",
+                "SessionId": "sess-resume-missing",
+                "RunId": "run-unknown",
+                "CheckpointId": "ckpt-unknown",
+                "Stream": False,
+            },
+        )
+
+    assert response.status_code == 404
+    assert runner.calls == []
+    events = await service.get_events("sess-resume-missing")
+    assert events == []
+
+
+@pytest.mark.asyncio
+async def test_preview_checkpoint_resume_summarizes_checkpoint_and_tool_receipts(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
+    service = InMemorySessionService()
+    runner = _CheckpointResumeRunner()
+
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-preview")
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+    await service.append_event(
+        "sess-preview",
+        SessionEvent(
+            id="evt-tool",
+            author="tool",
+            event_type="tool_result",
+            content={"role": "user", "parts": [{"text": "{'ok': True}"}]},
+            metadata={
+                "tool_name": "write_workspace_file",
+                "tool_args": {"path": "notes.txt", "content": "hello"},
+                "tool_output": {"ok": True, "path": "notes.txt"},
+                "run_id": "run-1",
+                "tool_receipt": {
+                    "receipt_id": "tr_1",
+                    "idempotency_key": "tool_receipt:abc",
+                    "tool_name": "write_workspace_file",
+                    "tool_call_id": "call_write",
+                    "run_id": "run-1",
+                    "checkpoint_id": "",
+                    "status": "completed",
+                    "created_at": 10.0,
+                },
+            },
+            invocation_id="inv-tool",
+        ),
+    )
+    await conversation_runtime.append_run_checkpoint_event(
+        session_id="sess-preview",
+        author="demo-agent",
+        run_id="run-1",
+        checkpoint_id="ckpt-1",
+        framework="langgraph",
+        framework_ref={"langgraph": {"thread_id": "tenant:agent:sess-preview", "checkpoint_id": "ckpt-1"}},
+        phase="tool_result",
+        invocation_id="inv-1",
+        session_service_provider=lambda: service,
+    )
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/PreviewCheckpointResume",
+            json={
+                "AgentId": "demo-agent",
+                "SessionId": "sess-preview",
+                "RunId": "run-1",
+                "CheckpointId": "ckpt-1",
+            },
+        )
+
+    assert response.status_code == 200
+    preview = response.json()["Data"]["Preview"]
+    assert preview["Checkpoint"]["CheckpointId"] == "ckpt-1"
+    assert preview["Capabilities"]["CheckpointResume"] is True
+    assert preview["Risk"]["Level"] == "medium"
+    assert preview["Risk"]["DuplicateSideEffectRisk"] is True
+    assert preview["ToolReceipts"][0]["ToolName"] == "write_workspace_file"
+    assert preview["ToolReceipts"][0]["Status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_list_tool_receipts_filters_by_agent_session_run_and_checkpoint(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _DummyRunner()
+
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-receipts")
+    await service.create_session(agent_id="other-agent", user_id="user-1", session_id="sess-other-receipts")
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    await service.append_event(
+        "sess-receipts",
+        SessionEvent(
+            id="evt-receipt-1",
+            author="tool",
+            event_type="tool_result",
+            content={"role": "user", "parts": [{"text": "{'ok': True}"}]},
+            metadata={
+                "tool_name": "write_workspace_file",
+                "run_id": "run-1",
+                "tool_receipt": {
+                    "receipt_id": "tr_1",
+                    "idempotency_key": "tool_receipt:1",
+                    "tool_name": "write_workspace_file",
+                    "tool_call_id": "call-1",
+                    "run_id": "run-1",
+                    "checkpoint_id": "ckpt-1",
+                    "status": "completed",
+                    "replayed": False,
+                },
+            },
+            invocation_id="inv-1",
+        ),
+    )
+    await service.append_event(
+        "sess-receipts",
+        SessionEvent(
+            id="evt-receipt-2",
+            author="tool",
+            event_type="tool_result",
+            content={"role": "user", "parts": [{"text": "{'ok': True}"}]},
+            metadata={
+                "tool_name": "send_notification",
+                "run_id": "run-2",
+                "tool_receipt": {
+                    "receipt_id": "tr_2",
+                    "idempotency_key": "tool_receipt:2",
+                    "tool_name": "send_notification",
+                    "tool_call_id": "call-2",
+                    "run_id": "run-2",
+                    "checkpoint_id": "ckpt-2",
+                    "status": "completed",
+                },
+            },
+            invocation_id="inv-2",
+        ),
+    )
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ListToolReceipts",
+            json={
+                "AgentId": "demo-agent",
+                "SessionId": "sess-receipts",
+                "RunId": "run-1",
+                "CheckpointId": "ckpt-1",
+            },
+        )
+        wrong_agent = await client.post(
+            "/agentengine/api/v1/ListToolReceipts",
+            json={"AgentId": "other-agent", "SessionId": "sess-receipts"},
+        )
+
+    assert response.status_code == 200
+    receipts = response.json()["Data"]["ToolReceipts"]
+    assert [receipt["ReceiptId"] for receipt in receipts] == ["tr_1"]
+    assert receipts[0]["ToolName"] == "write_workspace_file"
+    assert receipts[0]["RunId"] == "run-1"
+    assert receipts[0]["CheckpointId"] == "ckpt-1"
+    assert wrong_agent.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_run_agent_action_passes_model_options_to_runner(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()
@@ -1817,3 +2489,94 @@ async def test_run_agent_stream_continues_after_client_disconnect(monkeypatch):
     ]
     assert events[-2].content["parts"][0]["text"] == "hello"
     assert events[-1].content["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_cancel_run_cancels_detached_stream_and_writes_cancelled_status(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _CancellableStreamingRunner()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    invocation_id = "inv-cancel-detached"
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        server_app_module._detached_streaming_response(
+            conversation.stream_responses_conversation_turn(
+                runner=runner,
+                agent_id="demo-agent",
+                user_id="user",
+                messages=[{"role": "user", "content": "hello"}],
+                session_id="sess-cancel-run",
+                model=None,
+                prepare_runner=lambda _runner, _model: None,
+                invocation_id=invocation_id,
+                session_service_provider=lambda: service,
+            ),
+            invocation_id=invocation_id,
+        )
+
+        for _ in range(20):
+            events = await service.get_events("sess-cancel-run")
+            statuses = [
+                event.content.get("status")
+                for event in events
+                if event.event_type == "run_status"
+            ]
+            if statuses == ["in_progress"]:
+                break
+            await asyncio.sleep(0.02)
+
+        cancel_response = await client.post(
+            "/agentengine/api/v1/CancelRun",
+            json={"AgentId": "demo-agent", "InvocationId": invocation_id},
+        )
+
+    assert cancel_response.status_code == 200
+    cancel_data = cancel_response.json()["Data"]
+    assert cancel_data["Found"] is True
+    assert cancel_data["Cancelled"] is True
+    assert cancel_data["Status"] == "cancelling"
+
+    for _ in range(20):
+        events = await service.get_events("sess-cancel-run")
+        if events and events[-1].event_type == "run_status" and events[-1].content.get("status") == "cancelled":
+            break
+        await asyncio.sleep(0.02)
+
+    events = await service.get_events("sess-cancel-run")
+    event_types = [event.event_type for event in events]
+    statuses = [
+        event.content.get("status")
+        for event in events
+        if event.event_type == "run_status"
+    ]
+    assert statuses == ["in_progress", "cancelled"]
+    assert "assistant_message" not in event_types
+    assert runner.cancel_requests == [invocation_id]
+
+
+@pytest.mark.asyncio
+async def test_cancel_run_reports_unsupported_when_runner_has_no_cancel_hook(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _OverrideStreamingRunner()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/CancelRun",
+            json={"AgentId": "demo-agent", "InvocationId": "inv-unsupported"},
+        )
+
+    assert response.status_code == 200
+    cancel_data = response.json()["Data"]
+    assert cancel_data["Found"] is False
+    assert cancel_data["Cancelled"] is False
+    assert cancel_data["Status"] == "unsupported"
+    assert cancel_data["RunnerCancelStatus"] == "unsupported"
