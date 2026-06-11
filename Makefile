@@ -14,7 +14,7 @@ help:
 	@echo "    make test           运行测试"
 	@echo ""
 	@echo "  \033[1;32mWeb UI 构建:\033[0m"
-	@echo "    make sync-ksadk-web-static KSADK_WEB_VERSION=v0.2.0"
+	@echo "    make sync-ksadk-web-static KSADK_WEB_VERSION=v0.2.2"
 	@echo "                         从 kingsoftcloud/ksadk-web Release 同步 static"
 	@echo "    make build-frontend 同步 ksadk-web static（release tarball）"
 	@echo ""
@@ -664,7 +664,7 @@ NODE_DIR := ksadk/server/web-ui
 STATIC_DIR := ksadk/server/static
 HOSTED_DIR := ksadk/server/web-ui/dist-hosted
 HOSTED_UI_SOURCE_DIR ?= ../agentengine-hosted-ui
-KSADK_WEB_VERSION ?= v0.2.0
+KSADK_WEB_VERSION ?= v0.2.2
 KSADK_WEB_TARBALL_NAME := kingsoftcloud-ksadk-web-$(patsubst v%,%,$(KSADK_WEB_VERSION)).tgz
 KSADK_WEB_RELEASE_URL ?= https://github.com/kingsoftcloud/ksadk-web/releases/download/$(KSADK_WEB_VERSION)/$(KSADK_WEB_TARBALL_NAME)
 KSADK_WEB_CACHE_DIR ?= .cache/ksadk-web
