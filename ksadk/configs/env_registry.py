@@ -172,7 +172,7 @@ ENV_VAR_REGISTRY: tuple[EnvVarSpec, ...] = (
     EnvVarSpec("KSADK_WEB_CACHE_DIR", "web", "Directory used by hosted Web UI static asset sync cache."),
     EnvVarSpec("KSADK_WEB_RELEASE_URL", "web", "Hosted Web UI release tarball URL."),
     EnvVarSpec("KSADK_WEB_TARBALL_NAME", "web", "Hosted Web UI release tarball file name."),
-    EnvVarSpec("KSADK_WEB_VERSION", "web", "Hosted Web UI release version tag.", "v0.2.2"),
+    EnvVarSpec("KSADK_WEB_VERSION", "web", "Hosted Web UI release version tag.", "v0.2.3"),
     EnvVarSpec("KSADK_WORKFLOW_PROMPT", "skills", "Prompt text exposed to local Skill workflow scripts."),
     EnvVarSpec("KSADK_WORKSPACE_ID", "sessions", "Workspace id used for session namespace scoping."),
     EnvVarSpec("OTEL_EXPORTER_OTLP_ENDPOINT", "tracing", "Generic OTLP HTTP endpoint used to derive the traces endpoint."),

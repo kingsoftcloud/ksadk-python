@@ -307,7 +307,7 @@
 | `KSADK_AICP_ENDPOINT_MODE` | AICP resolver | 否 | `auto` | 无 | 否 | 平台 / 开发者 | 否 | AICP endpoint 选择策略，支持 `auto/detect/internal/inner/public`。内网环境可显式设为 `inner`，跳过自动探测。 |
 | `AGENTENGINE_MODEL_ALLOWLIST` | CLI model / OpenClaw | 否 | 未设置 | `OPENCLAW_MODEL_ALLOWLIST` | 否 | 平台 / 开发者 | 否 | 模型列表过滤。OpenClaw 场景优先使用 `OPENCLAW_MODEL_ALLOWLIST`。 |
 | `AGENTENGINE_UI_DIR` | 本地 Web UI / Sessions | 否 | 未设置 | 无 | 否 | 本地开发者 | 否 | 本地 UI 静态目录覆盖，主要用于 Web/文件上传本地调试。 |
-| `KSADK_WEB_VERSION` | Hosted Web UI static sync | 否 | `v0.2.2` | 无 | 否 | 构建环境 / 开发者 | 否 | `make sync-ksadk-web-static` 使用的 Hosted UI release 版本。 |
+| `KSADK_WEB_VERSION` | Hosted Web UI static sync | 否 | `v0.2.3` | 无 | 否 | 构建环境 / 开发者 | 否 | `make sync-ksadk-web-static` 使用的 Hosted UI release 版本。 |
 | `KSADK_WEB_TARBALL_NAME` | Hosted Web UI static sync | 否 | 根据 `KSADK_WEB_VERSION` 派生 | 无 | 否 | 构建环境 | 否 | Hosted UI release tarball 文件名。 |
 | `KSADK_WEB_RELEASE_URL` | Hosted Web UI static sync | 否 | 根据 `KSADK_WEB_VERSION` 派生 | 无 | 否 | 构建环境 / 开发者 | 否 | Hosted UI release tarball 下载地址。 |
 | `KSADK_WEB_CACHE_DIR` | Hosted Web UI static sync | 否 | `.cache/ksadk-web` | 无 | 否 | 构建环境 / 开发者 | 否 | Hosted UI release tarball 解压缓存目录。 |
