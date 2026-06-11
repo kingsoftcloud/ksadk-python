@@ -1814,6 +1814,63 @@ async def test_responses_accepts_official_conversation_object(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_responses_uses_agentengine_metadata_invocation_id(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _DummyRunner()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/v1/responses",
+            json={
+                "input": "hello",
+                "conversation": "conv-invocation",
+                "metadata": {"agentengine": {"invocation_id": "run-known-invocation"}},
+                "stream": False,
+            },
+        )
+
+    assert response.status_code == 200
+    events = await service.get_events("conv-invocation")
+    assert events[0].invocation_id == "run-known-invocation"
+
+
+@pytest.mark.asyncio
+async def test_stream_responses_uses_agentengine_metadata_invocation_id(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _DummyRunner()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        async with client.stream(
+            "POST",
+            "/v1/responses",
+            json={
+                "input": "hello",
+                "conversation": "conv-stream-invocation",
+                "metadata": {"agentengine": {"invocation_id": "run-known-stream"}},
+                "stream": True,
+            },
+        ) as response:
+            chunks = []
+            assert response.status_code == 200
+            async for _line in response.aiter_lines():
+                chunks.append(_line)
+
+    events = await service.get_events("conv-stream-invocation")
+    assert events, chunks
+    assert events[0].invocation_id == "run-known-stream"
+
+
+@pytest.mark.asyncio
 async def test_responses_uses_deprecated_user_when_safety_identifier_missing(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()

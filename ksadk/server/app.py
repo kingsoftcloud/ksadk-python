@@ -790,6 +790,15 @@ def _runtime_agent_id(active_runner: BaseRunner) -> str:
     return str(getattr(active_runner.detection_result, "name", "") or "agent")
 
 
+def _metadata_invocation_id(metadata: Mapping[str, Any] | None) -> str | None:
+    if not isinstance(metadata, Mapping):
+        return None
+    agentengine_metadata = metadata.get("agentengine")
+    if not isinstance(agentengine_metadata, Mapping):
+        return None
+    return _clean_optional_string(agentengine_metadata.get("invocation_id"))
+
+
 class WorkspaceDeleteActionRequest(BaseModel):
     AgentId: Optional[str] = None
     Path: str
@@ -2565,6 +2574,7 @@ async def responses(request: ResponsesRequest):
                 request_metadata=request_metadata,
                 resume_input=resume_input,
                 account_id=account_id,
+                invocation_id=_metadata_invocation_id(request_metadata),
                 prepare_runner=_prepare_runner_for_model,
                 session_service_provider=resolve_session_service,
             ),
@@ -2586,6 +2596,7 @@ async def responses(request: ResponsesRequest):
         resume_input=resume_input,
         response_id=response_id,
         account_id=account_id,
+        invocation_id=_metadata_invocation_id(request_metadata),
         prepare_runner=_prepare_runner_for_model,
         session_service_provider=resolve_session_service,
     )
