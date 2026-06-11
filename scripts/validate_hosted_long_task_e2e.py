@@ -210,6 +210,16 @@ def _list_checkpoints(client: HostedClient, *, session_id: str, run_id: str = ""
     return checkpoints
 
 
+def _is_retryable_checkpoint_not_found(exc: HostedE2EError) -> bool:
+    text = str(exc)
+    return "ListSessionCheckpoints" in text and (
+        "Code=404" in text
+        or "HTTP 404" in text
+        or "not found" in text.lower()
+        or "资源不存在" in text
+    )
+
+
 def _list_events(client: HostedClient, *, session_id: str) -> list[dict[str, Any]]:
     response = client.action(
         "ListSessionEvents",
@@ -239,7 +249,12 @@ def _wait_for_checkpoint(
 ) -> dict[str, Any]:
     last_checkpoints: list[dict[str, Any]] = []
     for _ in range(attempts):
-        last_checkpoints = _list_checkpoints(client, session_id=session_id, run_id=run_id)
+        try:
+            last_checkpoints = _list_checkpoints(client, session_id=session_id, run_id=run_id)
+        except HostedE2EError as exc:
+            if not _is_retryable_checkpoint_not_found(exc):
+                raise
+            last_checkpoints = []
         if last_checkpoints:
             return last_checkpoints[0]
         time.sleep(interval)
