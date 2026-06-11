@@ -16,6 +16,7 @@ from ksadk.sessions.continuity import LangGraphSessionAdapter
 from ksadk.runners.utils import get_langfuse_callback, get_langfuse_metadata, load_agent_module
 from langgraph.types import Command
 from ksadk.conversations.attachments import classify_attachment_kind, read_attachment_bytes
+from ksadk.conversations.reasoning_markup import ReasoningMarkupParser, strip_reasoning_markup
 
 
 class LangGraphRunner(BaseRunner):
@@ -502,6 +503,7 @@ class LangGraphRunner(BaseRunner):
 
         accumulated_text = ""
         accumulated_reasoning = ""
+        inline_reasoning_parser = ReasoningMarkupParser()
         emitted_non_text_event = False
         final_output_text = ""
 
@@ -540,9 +542,16 @@ class LangGraphRunner(BaseRunner):
                                 content = content[len(accumulated_reasoning):]
                             elif reasoning and content.startswith(reasoning):
                                 content = content[len(reasoning):]
-                        if content and content.strip():
-                            accumulated_text += content
-                            yield {"delta": content, "type": "text"}
+                        if content:
+                            for part in inline_reasoning_parser.feed(content):
+                                if not part.text or not part.text.strip():
+                                    continue
+                                if part.kind == "thinking":
+                                    accumulated_reasoning += part.text
+                                    yield {"delta": part.text, "type": "thinking"}
+                                else:
+                                    accumulated_text += part.text
+                                    yield {"delta": part.text, "type": "text"}
 
                 elif event_kind == "on_tool_start":
                     emitted_non_text_event = True
@@ -572,13 +581,23 @@ class LangGraphRunner(BaseRunner):
                         return
                     extracted_output = self._extract_output(output)
                     if extracted_output:
-                        final_output_text = str(extracted_output)
+                        final_output_text = strip_reasoning_markup(str(extracted_output))
 
         except Exception as e:
             if "Interrupt" in type(e).__name__:
                 yield {"type": "interrupt", "interrupt_info": self._get_interrupt_info(self._agent.get_state(config)), "session_id": session_id}
                 return
             raise
+
+        for part in inline_reasoning_parser.flush():
+            if not part.text or not part.text.strip():
+                continue
+            if part.kind == "thinking":
+                accumulated_reasoning += part.text
+                yield {"delta": part.text, "type": "thinking"}
+            else:
+                accumulated_text += part.text
+                yield {"delta": part.text, "type": "text"}
 
         if not accumulated_text:
             if final_output_text:

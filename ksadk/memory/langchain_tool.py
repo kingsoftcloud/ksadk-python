@@ -21,7 +21,7 @@ def create_langchain_tools():
             return _load_memory(query)
 
         @tool
-        def save_memory_tool(content: str) -> str:
+        def save_memory_tool(content: str) -> dict:
             """保存一条长期记忆。"""
 
             return _save_memory(content)

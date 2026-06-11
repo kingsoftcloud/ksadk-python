@@ -8,6 +8,7 @@ import httpx
 
 from ksadk.configs.settings import settings
 from ksadk.conversations.model_options import model_options_for_chat_completions
+from ksadk.conversations.reasoning_markup import strip_reasoning_markup
 
 DEFAULT_SESSION_TITLE_TIMEOUT_MS = 8_000
 SESSION_TITLE_MAX_CHARS = 24
@@ -43,7 +44,7 @@ _FILE_MARKUP_RE = re.compile(
 
 
 def _normalize_source_text(text: str) -> str:
-    value = str(text or "").strip()
+    value = strip_reasoning_markup(str(text or "")).strip()
     if not value:
         return ""
     value = _FILE_MARKUP_RE.sub(" 附件 ", value)
@@ -52,7 +53,7 @@ def _normalize_source_text(text: str) -> str:
 
 
 def _sanitize_title(text: str) -> str:
-    value = str(text or "").strip()
+    value = strip_reasoning_markup(str(text or "")).strip()
     if not value:
         return ""
     value = value.splitlines()[0].strip()
@@ -73,7 +74,7 @@ def _normalize_compare_text(text: str) -> str:
 
 
 def _truncate_title(text: str) -> str:
-    value = str(text or "").strip()
+    value = strip_reasoning_markup(str(text or "")).strip()
     if len(value) <= SESSION_TITLE_MAX_CHARS:
         return value
     return value[:SESSION_TITLE_MAX_CHARS].rstrip()
@@ -149,7 +150,7 @@ def resolve_session_title_model(current_model: str | None) -> str:
 
 
 def build_session_title_messages(*, first_prompt: str, assistant_text: str) -> list[dict[str, str]]:
-    assistant_excerpt = str(assistant_text or "").strip()
+    assistant_excerpt = strip_reasoning_markup(str(assistant_text or "")).strip()
     if len(assistant_excerpt) > 240:
         assistant_excerpt = assistant_excerpt[:240].rstrip() + "…"
     return [

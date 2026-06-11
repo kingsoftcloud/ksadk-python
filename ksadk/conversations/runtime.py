@@ -35,6 +35,7 @@ from ksadk.conversations.normalize import (
     compact_attachment_for_session,
     normalize_kop_messages,
 )
+from ksadk.conversations.reasoning_markup import strip_reasoning_markup
 from ksadk.conversations.semantic_summary import (
     extract_pinned_state,
     find_pinned_group_indexes,
@@ -958,7 +959,7 @@ def _memory_turn_event_strings(
             )
         )
 
-    assistant_text = str(output_text or "").strip()
+    assistant_text = strip_reasoning_markup(str(output_text or "")).strip()
     if assistant_text:
         event_strings.append(
             json.dumps(
@@ -1737,7 +1738,7 @@ async def _update_session_metadata_after_assistant_turn(
     assistant_text: str,
     model: str | None,
 ) -> None:
-    summary = _truncate_text(assistant_text, SESSION_SUMMARY_MAX_CHARS)
+    summary = _truncate_text(strip_reasoning_markup(assistant_text), SESSION_SUMMARY_MAX_CHARS)
     if summary:
         await service.update_session_metadata(session_id, summary=summary)
 
@@ -3011,7 +3012,7 @@ async def invoke_conversation_once(
         if last_invoke_error is not None:
             raise last_invoke_error
         result = result or {}
-        output_text = str(result.get("output", ""))
+        output_text = strip_reasoning_markup(str(result.get("output", "")))
         _set_conversation_output_attributes(span, output_text)
         result_agentengine_metadata = _extract_agentengine_metadata(result)
         assistant_metadata: dict[str, Any] = {

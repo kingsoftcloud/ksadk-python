@@ -6,10 +6,21 @@ from ksadk.runtime_context import PlatformInvocationContext, platform_invocation
 class _FakeMemoryService:
     def __init__(self):
         self.save_calls = []
+        self._backend = None
 
     def save_text(self, *, user_id: str, content: str, metadata: dict) -> bool:
         self.save_calls.append((user_id, content, metadata))
         return True
+
+
+class _FailingMemoryService(_FakeMemoryService):
+    def __init__(self):
+        super().__init__()
+        self._backend = type("Backend", (), {"last_error": "write not persisted"})()
+
+    def save_text(self, *, user_id: str, content: str, metadata: dict) -> bool:
+        self.save_calls.append((user_id, content, metadata))
+        return False
 
 
 def _context() -> PlatformInvocationContext:
@@ -95,7 +106,11 @@ def test_dispatcher_save_memory_accepts_key_value_arguments(monkeypatch):
             arguments={"key": "user_name", "value": "张三"},
         )
 
-    assert result == {"ok": True, "tool_name": "save_memory", "result": "记忆已保存。"}
+    assert result == {
+        "ok": True,
+        "tool_name": "save_memory",
+        "result": {"ok": True, "status": "persisted", "message": "记忆已保存。"},
+    }
     assert service.save_calls == [
         (
             "user-1",
@@ -107,3 +122,20 @@ def test_dispatcher_save_memory_accepts_key_value_arguments(monkeypatch):
             },
         )
     ]
+
+
+def test_dispatcher_propagates_save_memory_failure(monkeypatch):
+    service = _FailingMemoryService()
+    monkeypatch.setattr("ksadk.memory.tool._get_or_create_service", lambda: service)
+
+    with platform_invocation_scope(_context()):
+        result = agentengine_tool_dispatcher(
+            action="call",
+            tool_name="save_memory",
+            arguments={"content": "用户喜欢云主机"},
+        )
+
+    assert result["ok"] is False
+    assert result["tool_name"] == "save_memory"
+    assert result["result"]["ok"] is False
+    assert "记忆保存失败" in result["result"]["message"]

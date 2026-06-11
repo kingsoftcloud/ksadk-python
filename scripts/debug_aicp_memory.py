@@ -10,6 +10,11 @@ Examples:
     --memory-id mem-xxx --user-id debug-user --text ping
   python ksadk-python/scripts/debug_aicp_memory.py query \
     --memory-id mem-xxx --user-id debug-user --query ping
+  python ksadk-python/scripts/debug_aicp_memory.py list-sessions \
+    --memory-id mem-xxx --user-id debug-user
+  python ksadk-python/scripts/debug_aicp_memory.py session-memories \
+    --memory-id mem-xxx --session-id sess-xxx
+  python ksadk-python/scripts/debug_aicp_memory.py metrics --memory-id mem-xxx
 """
 
 from __future__ import annotations
@@ -205,6 +210,41 @@ def cmd_query(cli, args):
     return raw_sdk_call(cli, "QueryMemorySdk", params)
 
 
+def cmd_list_sessions(cli, args):
+    params = {
+        "MemoryCollectionId": args.memory_id,
+        "AgentUserId": args.user_id,
+        "Page": args.page,
+        "PageSize": args.page_size,
+    }
+    if args.query:
+        params["Query"] = args.query
+    if args.created_after:
+        params["CreatedAfter"] = args.created_after
+    if args.created_before:
+        params["CreatedBefore"] = args.created_before
+    return raw_sdk_call(cli, "ListSessions", params)
+
+
+def cmd_session_memories(cli, args):
+    params = {
+        "MemoryCollectionId": args.memory_id,
+        "SessionId": args.session_id,
+    }
+    return raw_sdk_call(cli, "QuerySessionMemories", params)
+
+
+def cmd_metrics(cli, args):
+    end_time = args.end_time or int(time.time())
+    start_time = args.start_time or end_time - args.last_seconds
+    params = {
+        "MemoryCollectionId": args.memory_id,
+        "StartTime": start_time,
+        "EndTime": end_time,
+    }
+    return raw_sdk_call(cli, "QueryMemoryCollectionMetrics", params)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -247,6 +287,31 @@ def build_parser() -> argparse.ArgumentParser:
     query_parser.add_argument("--scene-id", default="_sys_general")
     query_parser.add_argument("--mode", default="")
 
+    sessions_parser = subparsers.add_parser(
+        "list-sessions", help="List raw memory sessions for a user"
+    )
+    sessions_parser.add_argument("--memory-id", "--namespace", dest="memory_id", required=True)
+    sessions_parser.add_argument("--user-id", default="debug-user")
+    sessions_parser.add_argument("--query", default="")
+    sessions_parser.add_argument("--page", type=int, default=1)
+    sessions_parser.add_argument("--page-size", type=int, default=20)
+    sessions_parser.add_argument("--created-after", type=int, default=0)
+    sessions_parser.add_argument("--created-before", type=int, default=0)
+
+    session_memories_parser = subparsers.add_parser(
+        "session-memories", help="Query extracted memories for one raw session"
+    )
+    session_memories_parser.add_argument("--memory-id", "--namespace", dest="memory_id", required=True)
+    session_memories_parser.add_argument("--session-id", required=True)
+
+    metrics_parser = subparsers.add_parser(
+        "metrics", help="Query memory collection action metrics"
+    )
+    metrics_parser.add_argument("--memory-id", "--namespace", dest="memory_id", required=True)
+    metrics_parser.add_argument("--start-time", type=int, default=0)
+    metrics_parser.add_argument("--end-time", type=int, default=0)
+    metrics_parser.add_argument("--last-seconds", type=int, default=3600)
+
     return parser
 
 
@@ -270,6 +335,12 @@ def main() -> int:
         result = cmd_write(cli, args)
     elif args.command == "query":
         result = cmd_query(cli, args)
+    elif args.command == "list-sessions":
+        result = cmd_list_sessions(cli, args)
+    elif args.command == "session-memories":
+        result = cmd_session_memories(cli, args)
+    elif args.command == "metrics":
+        result = cmd_metrics(cli, args)
     else:
         parser.error(f"Unsupported command: {args.command}")
         return 2

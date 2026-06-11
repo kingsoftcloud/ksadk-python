@@ -180,6 +180,8 @@ def agentengine_tool_dispatcher(
         result = _invoke_tool(tools[0], tool_arguments)
         if isinstance(result, dict) and result.get("type") == "approval_required":
             return {**result, "dispatched_tool_name": target_name}
+        if isinstance(result, dict) and result.get("ok") is False:
+            return {"ok": False, "tool_name": target_name, "result": result}
         return {"ok": True, "tool_name": target_name, "result": result}
 
     return {
