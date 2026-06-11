@@ -12,16 +12,33 @@ class _DummyAgent:
         self.last_ainvoke_state = None
         self.last_astream_state = None
         self.last_ainvoke_context = None
+        self.last_ainvoke_config = None
+        self.last_astream_config = None
+        self.state_config = None
 
     async def ainvoke(self, state, config=None, context=None):
         self.last_ainvoke_state = state
         self.last_ainvoke_context = context
+        self.last_ainvoke_config = config
         return {"messages": [{"content": "ok"}]}
+
+    def get_state(self, config):
+        del config
+        return SimpleNamespace(config=self.state_config)
 
     async def astream_events(self, state, version="v2", config=None):
         self.last_astream_state = state
+        self.last_astream_config = config
         if False:
             yield {}
+
+
+class _AsyncStateAgent(_DummyAgent):
+    async def aget_state(self, config):
+        del config
+        return SimpleNamespace(config=self.state_config)
+
+    get_state = None
 
 
 class _Chunk:
@@ -226,6 +243,141 @@ async def test_stream_resume_uses_command():
     assert isinstance(runner._agent.last_ainvoke_state, Command)
     assert runner._agent.last_ainvoke_state.resume == {"approved": True}
     assert chunks and chunks[-1]["type"] == "final"
+
+
+@pytest.mark.asyncio
+async def test_invoke_checkpoint_resume_uses_checkpoint_id_and_none_input():
+    runner = _make_runner()
+
+    result = await runner.invoke(
+        {
+            "session_id": "sess-1",
+            "checkpoint_resume": True,
+            "framework_ref": {
+                "langgraph": {
+                    "thread_id": "tenant-a:agent-b:sess-1",
+                    "checkpoint_id": "ckpt-123",
+                }
+            },
+        }
+    )
+
+    assert result["output"] == "ok"
+    assert runner._agent.last_ainvoke_state is None
+    assert runner._agent.last_ainvoke_config["configurable"] == {
+        "thread_id": "tenant-a:agent-b:sess-1",
+        "checkpoint_id": "ckpt-123",
+    }
+
+
+@pytest.mark.asyncio
+async def test_invoke_reports_latest_langgraph_checkpoint_ref_from_state_config():
+    runner = _make_runner()
+    runner._agent.state_config = {
+        "configurable": {
+            "thread_id": "tenant-a:agent-b:sess-1",
+            "checkpoint_id": "ckpt-after",
+        }
+    }
+
+    result = await runner.invoke({"session_id": "tenant-a:agent-b:sess-1", "input": "hello"})
+
+    assert result["metadata"]["agentengine"] == {
+        "framework": "langgraph",
+        "framework_ref": {
+            "langgraph": {
+                "thread_id": "tenant-a:agent-b:sess-1",
+                "checkpoint_id": "ckpt-after",
+            }
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_invoke_reports_latest_langgraph_checkpoint_ref_from_async_state_config():
+    runner = _make_runner()
+    runner._agent = _AsyncStateAgent()
+    runner._agent.state_config = {
+        "configurable": {
+            "thread_id": "tenant-a:agent-b:sess-async",
+            "checkpoint_id": "ckpt-async",
+        }
+    }
+
+    result = await runner.invoke({"session_id": "tenant-a:agent-b:sess-async", "input": "hello"})
+
+    assert result["metadata"]["agentengine"] == {
+        "framework": "langgraph",
+        "framework_ref": {
+            "langgraph": {
+                "thread_id": "tenant-a:agent-b:sess-async",
+                "checkpoint_id": "ckpt-async",
+            }
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_stream_checkpoint_resume_uses_checkpoint_id_and_none_input():
+    runner = _make_runner()
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "sess-1",
+                "checkpoint_resume": True,
+                "framework_ref": {
+                    "langgraph": {
+                        "checkpoint_id": "ckpt-456",
+                    }
+                },
+            }
+        )
+    ]
+
+    assert chunks and chunks[-1]["type"] == "final"
+    assert runner._agent.last_astream_state is None
+    assert runner._agent.last_astream_config["configurable"] == {
+        "thread_id": "sess-1",
+        "checkpoint_id": "ckpt-456",
+    }
+
+
+@pytest.mark.asyncio
+async def test_stream_reports_latest_langgraph_checkpoint_ref_from_state_config():
+    runner = _make_streaming_runner()
+    runner._agent.state_config = {
+        "configurable": {
+            "thread_id": "tenant-a:agent-b:sess-1",
+            "checkpoint_id": "ckpt-stream",
+        }
+    }
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "tenant-a:agent-b:sess-1",
+                "input": "hello",
+            }
+        )
+    ]
+
+    assert chunks[-1] == {
+        "type": "checkpoint",
+        "metadata": {
+            "agentengine": {
+                "framework": "langgraph",
+                "framework_ref": {
+                    "langgraph": {
+                        "thread_id": "tenant-a:agent-b:sess-1",
+                        "checkpoint_id": "ckpt-stream",
+                    }
+                },
+            }
+        },
+    }
 
 
 @pytest.mark.asyncio

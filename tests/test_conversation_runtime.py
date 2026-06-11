@@ -14,11 +14,14 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 
 from ksadk.conversations.context import build_history_from_events
+from ksadk.conversations.context import canonical_event_type
 from ksadk.conversations.model_options import normalize_model_options
 from ksadk.conversations.model_context import estimate_text_tokens
 from ksadk.conversations.runtime import (
     _build_runner_ambient_contexts,
     append_context_checkpoint_event,
+    append_run_checkpoint_event,
+    append_run_resume_event,
     build_compaction_sse_event,
     build_run_input,
     compact_conversation_history,
@@ -55,6 +58,46 @@ class _StubRunner:
         return {"output": "assistant says hi"}
 
 
+class _CheckpointMetadataRunner(_StubRunner):
+    async def invoke(self, input_data: dict) -> dict:
+        self.calls.append(input_data)
+        return {
+            "output": "checkpointed",
+            "metadata": {
+                "agentengine": {
+                    "run_id": "run-1",
+                    "framework": "langgraph",
+                    "framework_ref": {
+                        "langgraph": {
+                            "thread_id": "tenant:agent:sess-1",
+                            "checkpoint_id": "ckpt-1",
+                        }
+                    },
+                }
+            },
+        }
+
+
+class _CheckpointResumeAdvancedRunner(_StubRunner):
+    async def invoke(self, input_data: dict) -> dict:
+        self.calls.append(input_data)
+        return {
+            "output": "resumed",
+            "metadata": {
+                "agentengine": {
+                    "run_id": "run-1",
+                    "framework": "langgraph",
+                    "framework_ref": {
+                        "langgraph": {
+                            "thread_id": "tenant:agent:sess-1",
+                            "checkpoint_id": "ckpt-after-resume",
+                        }
+                    },
+                }
+            },
+        }
+
+
 class _PromptTooLongRunner(_StubRunner):
     def __init__(self):
         super().__init__()
@@ -68,6 +111,12 @@ class _PromptTooLongRunner(_StubRunner):
         return {"output": "compacted answer"}
 
 
+class _FailingRunner(_StubRunner):
+    async def invoke(self, input_data: dict) -> dict:
+        self.calls.append(input_data)
+        raise RuntimeError("boom")
+
+
 class _StreamingRunner(_StubRunner):
     def __init__(self):
         super().__init__()
@@ -77,6 +126,53 @@ class _StreamingRunner(_StubRunner):
         self.stream_calls.append(input_data)
         yield {"type": "text", "delta": "hello"}
         yield {"type": "final", "output": "hello"}
+
+
+class _CheckpointMetadataStreamingRunner(_StreamingRunner):
+    async def stream(self, input_data: dict):
+        self.stream_calls.append(input_data)
+        yield {"type": "text", "delta": "hello"}
+        yield {
+            "type": "checkpoint",
+            "metadata": {
+                "agentengine": {
+                    "run_id": "run-1",
+                    "framework": "langgraph",
+                    "framework_ref": {
+                        "langgraph": {
+                            "thread_id": "tenant:agent:sess-1",
+                            "checkpoint_id": "ckpt-stream",
+                        }
+                    },
+                }
+            },
+        }
+
+
+class _CheckpointMetadataWithoutRunIdStreamingRunner(_StreamingRunner):
+    async def stream(self, input_data: dict):
+        self.stream_calls.append(input_data)
+        yield {
+            "type": "checkpoint",
+            "metadata": {
+                "agentengine": {
+                    "framework": "langgraph",
+                    "framework_ref": {
+                        "langgraph": {
+                            "thread_id": "tenant:agent:sess-1",
+                            "checkpoint_id": "ckpt-stream-after-resume",
+                        }
+                    },
+                }
+            },
+        }
+
+
+class _BlockingStreamingRunner(_StreamingRunner):
+    async def stream(self, input_data: dict):
+        self.stream_calls.append(input_data)
+        yield {"type": "text", "delta": "hello"}
+        await asyncio.Event().wait()
 
 
 class _ApprovalToolResultStreamingRunner(_StreamingRunner):
@@ -105,6 +201,25 @@ class _ApprovalToolResultStreamingRunner(_StreamingRunner):
             "run_id": "run-approval",
         }
         yield {"type": "final", "output": "should not complete"}
+
+
+class _SuccessfulToolResultStreamingRunner(_StreamingRunner):
+    async def stream(self, input_data: dict):
+        self.stream_calls.append(input_data)
+        yield {
+            "type": "tool_call",
+            "tool_name": "list_skills",
+            "tool_args": {"include": ["focused"]},
+            "run_id": "run-list-skills",
+        }
+        yield {
+            "type": "tool_result",
+            "tool_name": "list_skills",
+            "tool_args": {"include": ["focused"]},
+            "tool_output": {"ok": True, "skills": [{"name": "ppt-translator"}]},
+            "run_id": "run-list-skills",
+        }
+        yield {"type": "final", "output": "done"}
 
 
 class _ResumeStreamingRunner(_StreamingRunner):
@@ -1463,6 +1578,21 @@ async def test_invoke_conversation_once_executes_approved_builtin_tool_resume(
     await service.create_session(
         agent_id="demo-agent", user_id="user-1", session_id="sess-tool-approval"
     )
+    await append_run_checkpoint_event(
+        session_id="sess-tool-approval",
+        author="demo-agent",
+        run_id="call_write",
+        checkpoint_id="ckpt-before-tool",
+        framework="langgraph",
+        framework_ref={
+            "langgraph": {
+                "thread_id": "tenant:agent:sess-tool-approval",
+                "checkpoint_id": "ckpt-before-tool",
+            }
+        },
+        invocation_id="inv-checkpoint",
+        session_service_provider=lambda: service,
+    )
     await service.append_event(
         "sess-tool-approval",
         SessionEvent(
@@ -1508,6 +1638,91 @@ async def test_invoke_conversation_once_executes_approved_builtin_tool_resume(
     tool_result = next(event for event in events if event.event_type == "tool_result")
     assert tool_result.metadata["tool_name"] == "write_workspace_file"
     assert tool_result.metadata["tool_output"]["ok"] is True
+    receipt = tool_result.metadata["tool_receipt"]
+    assert receipt["tool_name"] == "write_workspace_file"
+    assert receipt["tool_call_id"] == "call_write"
+    assert receipt["run_id"] == "call_write"
+    assert receipt["checkpoint_id"] == "ckpt-before-tool"
+    assert receipt["framework"] == "langgraph"
+    assert receipt["framework_ref"]["langgraph"]["thread_id"] == "tenant:agent:sess-tool-approval"
+    assert receipt["status"] == "completed"
+    assert receipt["idempotency_key"].startswith("tool_receipt:")
+
+
+@pytest.mark.asyncio
+async def test_invoke_conversation_once_replays_existing_tool_receipt_without_side_effect(
+    monkeypatch,
+    tmp_path: Path,
+):
+    service = InMemorySessionService()
+    workspace_ui = tmp_path / "ui"
+    monkeypatch.setenv("AGENTENGINE_UI_DIR", str(workspace_ui))
+    monkeypatch.setenv("KSADK_TOOL_APPROVAL_MODE", "strict")
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-tool-replay"
+    )
+    await service.append_event(
+        "sess-tool-replay",
+        SessionEvent(
+            id="evt-approval",
+            author="demo-agent",
+            event_type="approval_request",
+            content={"role": "model", "parts": [{"text": "approval required"}]},
+            metadata={
+                "interrupt_info": {
+                    "approval_request_id": "appr_write",
+                    "tool_name": "write_workspace_file",
+                    "arguments": {"path": "notes.txt", "content": "hello"},
+                    "run_id": "call_write",
+                    "server_label": "ksadk",
+                }
+            },
+            invocation_id="inv-approval",
+        ),
+    )
+    runner = _StubRunner()
+    resume_input = {
+        "type": "mcp_approval_response",
+        "approval_request_id": "appr_write",
+        "approve": True,
+    }
+
+    await invoke_conversation_once(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-tool-replay",
+        messages=[],
+        model="gpt-4o",
+        resume_input=resume_input,
+        prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+    )
+    (workspace_ui / "workspace" / "notes.txt").write_text("changed-by-user", encoding="utf-8")
+
+    await invoke_conversation_once(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-tool-replay",
+        messages=[],
+        model="gpt-4o",
+        resume_input=resume_input,
+        prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+    )
+
+    assert (workspace_ui / "workspace" / "notes.txt").read_text(encoding="utf-8") == "changed-by-user"
+    assert runner.calls[-1]["input"]["type"] == "function_call_output"
+    assert runner.calls[-1]["input"]["output"]["ok"] is True
+    assert runner.calls[-1]["input"]["output"]["replayed"] is True
+    events = await service.get_events("sess-tool-replay")
+    tool_results = [event for event in events if event.event_type == "tool_result"]
+    assert len(tool_results) == 2
+    assert tool_results[-1].metadata["tool_receipt"]["replayed"] is True
+    assert (
+        tool_results[-1].metadata["tool_receipt"]["idempotency_key"]
+        == tool_results[0].metadata["tool_receipt"]["idempotency_key"]
+    )
 
 
 @pytest.mark.asyncio
@@ -2066,6 +2281,45 @@ async def test_stream_responses_conversation_turn_maps_ksadk_resume_to_runner_re
 
 
 @pytest.mark.asyncio
+async def test_stream_responses_conversation_turn_emits_cancelled_terminal(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _BlockingStreamingRunner()
+    chunks: list[str] = []
+
+    async def consume():
+        async for chunk in stream_responses_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-cancel-stream",
+            messages=[{"role": "user", "content": "cancel me"}],
+            model="gpt-4o",
+            invocation_id="inv-cancel-stream",
+            prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+            session_service_provider=lambda: service,
+        ):
+            chunks.append(chunk)
+
+    task = asyncio.create_task(consume())
+    for _ in range(20):
+        if any("response.output_text.delta" in chunk for chunk in chunks):
+            break
+        await asyncio.sleep(0.01)
+    task.cancel()
+    await task
+
+    events = await service.get_events("sess-cancel-stream")
+    statuses = [
+        event.content.get("status")
+        for event in events
+        if event.event_type == "run_status"
+    ]
+    assert statuses == ["in_progress", "cancelled"]
+    assert any(chunk.startswith("event: response.cancelled\n") for chunk in chunks)
+
+
+@pytest.mark.asyncio
 async def test_stream_responses_conversation_turn_promotes_gateway_approval_result_to_interrupt(monkeypatch):
     service = InMemorySessionService()
     monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
@@ -2109,6 +2363,57 @@ async def test_stream_responses_conversation_turn_promotes_gateway_approval_resu
         "approval_request",
         "run_status",
     ]
+
+
+@pytest.mark.asyncio
+async def test_stream_responses_conversation_turn_adds_tool_receipt_to_tool_result(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _SuccessfulToolResultStreamingRunner()
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-tool-receipt"
+    )
+    await append_run_checkpoint_event(
+        session_id="sess-tool-receipt",
+        author="demo-agent",
+        run_id="run-list-skills",
+        checkpoint_id="ckpt-list-skills",
+        framework="langgraph",
+        framework_ref={
+            "langgraph": {
+                "thread_id": "tenant:agent:sess-tool-receipt",
+                "checkpoint_id": "ckpt-list-skills",
+            }
+        },
+        invocation_id="inv-checkpoint",
+        session_service_provider=lambda: service,
+    )
+
+    chunks = [
+        chunk
+        async for chunk in stream_responses_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-tool-receipt",
+            messages=[{"role": "user", "content": "列出 skills"}],
+            model="gpt-4o",
+            prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+            session_service_provider=lambda: service,
+        )
+    ]
+
+    assert any(chunk.startswith("event: response.completed\n") for chunk in chunks)
+    events = await service.get_events("sess-tool-receipt")
+    tool_result = next(event for event in events if event.event_type == "tool_result")
+    receipt = tool_result.metadata["tool_receipt"]
+    assert receipt["tool_name"] == "list_skills"
+    assert receipt["tool_call_id"] == "run-list-skills"
+    assert receipt["run_id"] == "run-list-skills"
+    assert receipt["checkpoint_id"] == "ckpt-list-skills"
+    assert receipt["framework"] == "langgraph"
+    assert receipt["status"] == "completed"
+    assert receipt["idempotency_key"].startswith("tool_receipt:")
 
 
 @pytest.mark.asyncio
@@ -2558,6 +2863,327 @@ def test_session_event_infers_canonical_message_types():
 
     assert user_event.event_type == "user_message"
     assert assistant_event.event_type == "assistant_message"
+
+
+def test_runtime_checkpoint_events_are_canonical_but_not_projected_to_history():
+    events = [
+        SessionEvent(
+            id="evt-1",
+            author="demo-agent",
+            event_type="run_checkpoint",
+            content={"text": "checkpoint saved"},
+            metadata={"run_id": "run-1", "checkpoint_id": "ckpt-1"},
+            seq_id=1,
+        ),
+        SessionEvent(
+            id="evt-2",
+            author="demo-agent",
+            event_type="run_resume",
+            content={"text": "resume requested"},
+            metadata={"run_id": "run-1", "resume_attempt_id": "resume-1"},
+            seq_id=2,
+        ),
+        SessionEvent(
+            id="evt-3",
+            author="user",
+            event_type="user_message",
+            content={"role": "user", "parts": [{"text": "继续"}]},
+            seq_id=3,
+        ),
+    ]
+
+    assert canonical_event_type("run_checkpoint") == "run_checkpoint"
+    assert canonical_event_type("run_resume") == "run_resume"
+    assert build_history_from_events(events) == [{"role": "user", "content": "继续"}]
+
+
+@pytest.mark.asyncio
+async def test_append_run_checkpoint_and_resume_events(monkeypatch):
+    service = InMemorySessionService()
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-1")
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    checkpoint = await append_run_checkpoint_event(
+        session_id="sess-1",
+        author="demo-agent",
+        run_id="run-1",
+        checkpoint_id="ckpt-1",
+        framework="langgraph",
+        framework_ref={
+            "langgraph": {
+                "thread_id": "tenant:agent:sess-1",
+                "checkpoint_id": "ckpt-1",
+            }
+        },
+        phase="tool_result",
+        invocation_id="inv-1",
+    )
+    resume = await append_run_resume_event(
+        session_id="sess-1",
+        author="demo-agent",
+        run_id="run-1",
+        checkpoint_id="ckpt-1",
+        resume_attempt_id="resume-1",
+        framework="langgraph",
+        framework_ref={
+            "langgraph": {
+                "thread_id": "tenant:agent:sess-1",
+                "checkpoint_id": "ckpt-1",
+            }
+        },
+        invocation_id="inv-2",
+    )
+
+    assert checkpoint.event_type == "run_checkpoint"
+    assert checkpoint.metadata["run_id"] == "run-1"
+    assert checkpoint.metadata["checkpoint_id"] == "ckpt-1"
+    assert checkpoint.metadata["framework_ref"]["langgraph"]["thread_id"] == "tenant:agent:sess-1"
+    assert resume.event_type == "run_resume"
+    assert resume.metadata["resume_attempt_id"] == "resume-1"
+
+
+def test_extract_responses_resume_input_accepts_checkpoint_resume_action():
+    resume_input = extract_responses_resume_input(
+        [
+            {
+                "type": "agentengine.resume_checkpoint",
+                "run_id": "run-1",
+                "checkpoint_id": "ckpt-1",
+                "resume_attempt_id": "resume-1",
+                "framework": "langgraph",
+                "framework_ref": {
+                    "langgraph": {
+                        "thread_id": "tenant:agent:sess-1",
+                        "checkpoint_id": "ckpt-1",
+                    }
+                },
+            }
+        ]
+    )
+
+    assert resume_input == {
+        "type": "agentengine.resume_checkpoint",
+        "run_id": "run-1",
+        "checkpoint_id": "ckpt-1",
+        "resume_attempt_id": "resume-1",
+        "framework": "langgraph",
+        "framework_ref": {
+            "langgraph": {
+                "thread_id": "tenant:agent:sess-1",
+                "checkpoint_id": "ckpt-1",
+            }
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_invoke_conversation_once_checkpoint_resume_writes_runtime_event(monkeypatch):
+    service = InMemorySessionService()
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-1")
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    runner = _StubRunner()
+    session_id, result = await invoke_conversation_once(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-1",
+        messages=[],
+        model="demo-model",
+        prepare_runner=lambda active_runner, model: active_runner.prepare_for_request(model),
+        resume_input={
+            "type": "agentengine.resume_checkpoint",
+            "run_id": "run-1",
+            "checkpoint_id": "ckpt-1",
+            "resume_attempt_id": "resume-1",
+            "framework": "langgraph",
+            "framework_ref": {
+                "langgraph": {
+                    "thread_id": "tenant:agent:sess-1",
+                    "checkpoint_id": "ckpt-1",
+                }
+            },
+        },
+    )
+
+    events = await service.get_events(session_id)
+    resume_events = [event for event in events if event.event_type == "run_resume"]
+    assert len(resume_events) == 1
+    assert resume_events[0].metadata["run_id"] == "run-1"
+    assert resume_events[0].metadata["checkpoint_id"] == "ckpt-1"
+    assert resume_events[0].metadata["resume_attempt_id"] == "resume-1"
+    assert build_history_from_events(events) == [{"role": "model", "content": "assistant says hi"}]
+    assert runner.calls[0]["checkpoint_resume"] is True
+    assert runner.calls[0]["run_id"] == "run-1"
+    assert runner.calls[0]["framework_ref"]["langgraph"]["checkpoint_id"] == "ckpt-1"
+    assert result["metadata"]["agentengine"]["run_id"] == "run-1"
+    assert result["metadata"]["agentengine"]["resume_attempt_id"] == "resume-1"
+
+
+@pytest.mark.asyncio
+async def test_invoke_conversation_once_failure_does_not_write_completed_or_assistant(monkeypatch):
+    service = InMemorySessionService()
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-fail")
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    runner = _FailingRunner()
+    with pytest.raises(RuntimeError, match="boom"):
+        await invoke_conversation_once(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-fail",
+            messages=[{"role": "user", "content": "hello"}],
+            model="demo-model",
+            prepare_runner=lambda active_runner, model: active_runner.prepare_for_request(model),
+        )
+
+    events = await service.get_events("sess-fail")
+    assert [event.event_type for event in events] == ["user_message", "run_status", "run_status"]
+    assert [event.content.get("status") for event in events if event.event_type == "run_status"] == [
+        "in_progress",
+        "failed",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_resume_response_metadata_prefers_new_checkpoint(monkeypatch):
+    service = InMemorySessionService()
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-1")
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    runner = _CheckpointResumeAdvancedRunner()
+    _, result = await invoke_conversation_once(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-1",
+        messages=[],
+        model="demo-model",
+        prepare_runner=lambda active_runner, model: active_runner.prepare_for_request(model),
+        resume_input={
+            "type": "agentengine.resume_checkpoint",
+            "run_id": "run-1",
+            "checkpoint_id": "ckpt-before-resume",
+            "resume_attempt_id": "resume-1",
+            "framework": "langgraph",
+            "framework_ref": {
+                "langgraph": {
+                    "thread_id": "tenant:agent:sess-1",
+                    "checkpoint_id": "ckpt-before-resume",
+                }
+            },
+        },
+    )
+
+    assert (
+        result["metadata"]["agentengine"]["framework_ref"]["langgraph"]["checkpoint_id"]
+        == "ckpt-after-resume"
+    )
+    events = await service.get_events("sess-1")
+    assert [event.event_type for event in events if event.event_type.startswith("run_")] == [
+        "run_resume",
+        "run_status",
+        "run_checkpoint",
+        "run_status",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_invoke_conversation_once_records_runner_checkpoint_metadata(monkeypatch):
+    service = InMemorySessionService()
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-1")
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    runner = _CheckpointMetadataRunner()
+    session_id, result = await invoke_conversation_once(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-1",
+        messages=[{"role": "user", "content": "hello"}],
+        model="demo-model",
+        prepare_runner=lambda active_runner, model: active_runner.prepare_for_request(model),
+    )
+
+    events = await service.get_events(session_id)
+    checkpoint_events = [event for event in events if event.event_type == "run_checkpoint"]
+    assert len(checkpoint_events) == 1
+    assert checkpoint_events[0].metadata["run_id"] == "run-1"
+    assert checkpoint_events[0].metadata["checkpoint_id"] == "ckpt-1"
+    assert checkpoint_events[0].metadata["framework_ref"]["langgraph"]["thread_id"] == "tenant:agent:sess-1"
+    assert result["metadata"]["agentengine"]["framework_ref"]["langgraph"]["checkpoint_id"] == "ckpt-1"
+
+
+@pytest.mark.asyncio
+async def test_stream_conversation_turn_records_checkpoint_chunk(monkeypatch):
+    service = InMemorySessionService()
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-1")
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    runner = _CheckpointMetadataStreamingRunner()
+    chunks = [
+        chunk
+        async for chunk in stream_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-1",
+            messages=[{"role": "user", "content": "hello"}],
+            model="demo-model",
+            prepare_runner=lambda active_runner, model: active_runner.prepare_for_request(model),
+        )
+    ]
+
+    events = await service.get_events("sess-1")
+    checkpoint_events = [event for event in events if event.event_type == "run_checkpoint"]
+    assert len(checkpoint_events) == 1
+    assert checkpoint_events[0].metadata["run_id"] == "run-1"
+    assert checkpoint_events[0].metadata["checkpoint_id"] == "ckpt-stream"
+    completed = [chunk for chunk in chunks if "response.completed" in chunk][0]
+    assert "ckpt-stream" in completed
+
+
+@pytest.mark.asyncio
+async def test_stream_checkpoint_resume_falls_back_to_original_run_id(monkeypatch):
+    service = InMemorySessionService()
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-1")
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    runner = _CheckpointMetadataWithoutRunIdStreamingRunner()
+    chunks = [
+        chunk
+        async for chunk in stream_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-1",
+            messages=[],
+            model="demo-model",
+            prepare_runner=lambda active_runner, model: active_runner.prepare_for_request(model),
+            invocation_id="resume-attempt-1",
+            resume_input={
+                "type": "agentengine.resume_checkpoint",
+                "run_id": "run-original",
+                "checkpoint_id": "ckpt-before",
+                "resume_attempt_id": "resume-attempt-1",
+                "framework": "langgraph",
+                "framework_ref": {
+                    "langgraph": {
+                        "thread_id": "tenant:agent:sess-1",
+                        "checkpoint_id": "ckpt-before",
+                    }
+                },
+            },
+        )
+    ]
+
+    events = await service.get_events("sess-1")
+    checkpoint_events = [event for event in events if event.event_type == "run_checkpoint"]
+    assert len(checkpoint_events) == 1
+    assert checkpoint_events[0].metadata["run_id"] == "run-original"
+    assert checkpoint_events[0].metadata["checkpoint_id"] == "ckpt-stream-after-resume"
+    assert any("response.completed" in chunk for chunk in chunks)
 
 
 def test_build_history_from_events_prefers_latest_checkpoint_and_tail():

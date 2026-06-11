@@ -65,6 +65,81 @@ class LangGraphRunner(BaseRunner):
         return config
 
     @staticmethod
+    def _extract_langgraph_checkpoint_ref(payload: Dict[str, Any]) -> dict[str, Any]:
+        framework_ref = payload.get("framework_ref") or {}
+        if not isinstance(framework_ref, dict):
+            return {}
+        langgraph_ref = framework_ref.get("langgraph") or {}
+        if not isinstance(langgraph_ref, dict):
+            return {}
+        return dict(langgraph_ref)
+
+    @classmethod
+    def _apply_checkpoint_resume_config(
+        cls,
+        config: dict[str, Any],
+        *,
+        session_id: str,
+        checkpoint_ref: dict[str, Any],
+    ) -> dict[str, Any]:
+        checkpoint_id = str(checkpoint_ref.get("checkpoint_id") or "").strip()
+        if not checkpoint_id:
+            raise ValueError("checkpoint_resume requires framework_ref.langgraph.checkpoint_id")
+
+        thread_id = str(checkpoint_ref.get("thread_id") or session_id or "").strip()
+        if not thread_id:
+            raise ValueError("checkpoint_resume requires session_id or framework_ref.langgraph.thread_id")
+
+        next_config = dict(config)
+        configurable = dict(next_config.get("configurable") or {})
+        configurable["thread_id"] = thread_id
+        configurable["checkpoint_id"] = checkpoint_id
+        next_config["configurable"] = configurable
+        return next_config
+
+    @staticmethod
+    def _checkpoint_ref_from_state(state: Any) -> dict[str, Any]:
+        state_config = None
+        if isinstance(state, dict):
+            state_config = state.get("config")
+        else:
+            state_config = getattr(state, "config", None)
+        if not isinstance(state_config, dict):
+            return {}
+        configurable = state_config.get("configurable") or {}
+        if not isinstance(configurable, dict):
+            return {}
+        thread_id = str(configurable.get("thread_id") or "").strip()
+        checkpoint_id = str(configurable.get("checkpoint_id") or "").strip()
+        if not thread_id or not checkpoint_id:
+            return {}
+        return {
+            "langgraph": {
+                "thread_id": thread_id,
+                "checkpoint_id": checkpoint_id,
+            }
+        }
+
+    async def _latest_checkpoint_metadata(self, config: dict[str, Any]) -> dict[str, Any]:
+        state = None
+        try:
+            if callable(getattr(self._agent, "aget_state", None)):
+                state = await self._agent.aget_state(config)
+            elif callable(getattr(self._agent, "get_state", None)):
+                state = self._agent.get_state(config)
+        except Exception:
+            return {}
+        framework_ref = self._checkpoint_ref_from_state(state)
+        if not framework_ref:
+            return {}
+        return {
+            "agentengine": {
+                "framework": "langgraph",
+                "framework_ref": framework_ref,
+            }
+        }
+
+    @staticmethod
     def _ambient_context_text(payload: Dict[str, Any]) -> str:
         sections: list[str] = []
         kb_context = payload.get("kb_context") or {}
@@ -294,14 +369,24 @@ class LangGraphRunner(BaseRunner):
         payload = dict(input_data)
         session_id = payload.pop("session_id", None) or str(uuid.uuid4())[:8]
         is_resume = payload.pop("resume", False)
+        is_checkpoint_resume = bool(payload.pop("checkpoint_resume", False))
+        checkpoint_ref = self._extract_langgraph_checkpoint_ref(payload)
         history = payload.pop("history", [])
         native_context = self.build_native_context(payload.get("platform_context"))
         normalized_payload = self._strip_platform_context_fields(payload)
         
         config = self._get_config(session_id)
+        if is_checkpoint_resume:
+            config = self._apply_checkpoint_resume_config(
+                config,
+                session_id=session_id,
+                checkpoint_ref=checkpoint_ref,
+            )
         
         # 判断输入格式 / resume
-        if self._has_prepare_state_hook():
+        if is_checkpoint_resume:
+            state = None
+        elif self._has_prepare_state_hook():
             state = self._prepare_state_with_hook(payload, session_id, history, is_resume=is_resume)
         elif is_resume:
             if "input" in normalized_payload and len(normalized_payload) == 1:
@@ -312,7 +397,13 @@ class LangGraphRunner(BaseRunner):
             state = self._to_state(payload, history)
 
         try:
-            if is_resume:
+            if is_checkpoint_resume:
+                result = await self._invoke_graph(
+                    None,
+                    config=config,
+                    context=native_context,
+                )
+            elif is_resume:
                 result = await self._invoke_graph(
                     Command(resume=state),
                     config=config,
@@ -325,7 +416,11 @@ class LangGraphRunner(BaseRunner):
                     context=native_context,
                 )
 
-            return {"output": self._extract_output(result), "raw": result}
+            output = {"output": self._extract_output(result), "raw": result}
+            metadata = await self._latest_checkpoint_metadata(config)
+            if metadata:
+                output["metadata"] = metadata
+            return output
             
         except Exception as e:
             if "Interrupt" in type(e).__name__:
@@ -371,6 +466,8 @@ class LangGraphRunner(BaseRunner):
         session_id = payload.pop("session_id", None) or str(uuid.uuid4())[:8]
         history = payload.pop("history", [])
         is_resume = payload.pop("resume", False)
+        is_checkpoint_resume = bool(payload.pop("checkpoint_resume", False))
+        checkpoint_ref = self._extract_langgraph_checkpoint_ref(payload)
         native_context = self.build_native_context(payload.get("platform_context"))
         normalized_payload = self._strip_platform_context_fields(payload)
 
@@ -380,10 +477,20 @@ class LangGraphRunner(BaseRunner):
             invoke_payload["history"] = history
         if is_resume:
             invoke_payload["resume"] = True
+        if is_checkpoint_resume:
+            invoke_payload["checkpoint_resume"] = True
         
         config = self._get_config(session_id)
+        if is_checkpoint_resume:
+            config = self._apply_checkpoint_resume_config(
+                config,
+                session_id=session_id,
+                checkpoint_ref=checkpoint_ref,
+            )
 
-        if self._has_prepare_state_hook():
+        if is_checkpoint_resume:
+            state = None
+        elif self._has_prepare_state_hook():
             state = self._prepare_state_with_hook(payload, session_id, history, is_resume=is_resume)
         elif is_resume:
             if "input" in normalized_payload and len(normalized_payload) == 1:
@@ -404,7 +511,7 @@ class LangGraphRunner(BaseRunner):
             return
 
         try:
-            stream_input = Command(resume=state) if is_resume else state
+            stream_input = None if is_checkpoint_resume else (Command(resume=state) if is_resume else state)
             stream_kwargs = {"version": "v2", "config": config}
             if native_context and self._callable_accepts_keyword(self._agent.astream_events, "context"):
                 stream_kwargs["context"] = native_context
@@ -479,6 +586,14 @@ class LangGraphRunner(BaseRunner):
             elif not emitted_non_text_event:
                 result = await self.invoke(invoke_payload)
                 yield {"output": result.get("output", ""), "type": "final"}
+                metadata = result.get("metadata") if isinstance(result, dict) else None
+                if isinstance(metadata, dict) and metadata.get("agentengine"):
+                    yield {"type": "checkpoint", "metadata": metadata}
+                    return
+
+        metadata = await self._latest_checkpoint_metadata(config)
+        if metadata:
+            yield {"type": "checkpoint", "metadata": metadata}
 
     def _filter_tool_tags(self, content: str) -> str:
         """过滤 <tool_call> 标签"""
