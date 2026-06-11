@@ -2558,9 +2558,10 @@ async def responses(request: ResponsesRequest):
     if request.store is not None:
         request_metadata.setdefault("store", request.store)
     account_id = _clean_optional_string(request.account_id)
+    invocation_id = _metadata_invocation_id(request_metadata)
 
     if request.stream:
-        return StreamingResponse(
+        return _detached_streaming_response(
             conversation.stream_responses_conversation_turn(
                 runner=active_runner,
                 agent_id=agent_id,
@@ -2574,11 +2575,11 @@ async def responses(request: ResponsesRequest):
                 request_metadata=request_metadata,
                 resume_input=resume_input,
                 account_id=account_id,
-                invocation_id=_metadata_invocation_id(request_metadata),
+                invocation_id=invocation_id,
                 prepare_runner=_prepare_runner_for_model,
                 session_service_provider=resolve_session_service,
             ),
-            media_type="text/event-stream",
+            invocation_id=invocation_id,
         )
 
     response_id = f"resp_{uuid.uuid4().hex}"
@@ -2596,7 +2597,7 @@ async def responses(request: ResponsesRequest):
         resume_input=resume_input,
         response_id=response_id,
         account_id=account_id,
-        invocation_id=_metadata_invocation_id(request_metadata),
+        invocation_id=invocation_id,
         prepare_runner=_prepare_runner_for_model,
         session_service_provider=resolve_session_service,
     )

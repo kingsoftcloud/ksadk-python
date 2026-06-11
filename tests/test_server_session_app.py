@@ -1871,6 +1871,35 @@ async def test_stream_responses_uses_agentengine_metadata_invocation_id(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_stream_responses_registers_invocation_for_cancel_run(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _CancellableStreamingRunner()
+    invocation_id = "run-responses-cancel"
+    captured_invocations: list[str | None] = []
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    def fake_detached_streaming_response(source, *, invocation_id=None):
+        captured_invocations.append(invocation_id)
+        return Response(status_code=202)
+
+    monkeypatch.setattr(server_app_module, "_detached_streaming_response", fake_detached_streaming_response)
+    response = await server_app_module.responses(
+        server_app_module.ResponsesRequest(
+            input="hello",
+            conversation="conv-stream-cancel",
+            metadata={"agentengine": {"invocation_id": invocation_id}},
+            stream=True,
+        )
+    )
+
+    assert response.status_code == 202
+    assert captured_invocations == [invocation_id]
+
+
+@pytest.mark.asyncio
 async def test_responses_uses_deprecated_user_when_safety_identifier_missing(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()
