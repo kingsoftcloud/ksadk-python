@@ -25,6 +25,7 @@ import uuid
 from typing import Any, List
 
 from pydantic import ConfigDict
+from pydantic import Field
 
 from ksadk.memory.adk.backends.base_ltm_backend import BaseLongTermMemoryBackend
 
@@ -72,6 +73,8 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
     agent_id: str = ""
     scene_id: str = DEFAULT_SCENE_ID
     last_error: str = ""
+    last_create_response: dict[str, Any] = Field(default_factory=dict)
+    last_session_status: dict[str, Any] = Field(default_factory=dict)
 
     _aicp_client: Any = None
 
@@ -223,8 +226,8 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
             agent_id = metadata.get("agent_id") or self.agent_id
             session_id = metadata.get("session_id") or kwargs.get("session_id")
             params = {
-                "Namespace": memory_collection_id,
-                "UserId": user_id,
+                "MemoryCollectionId": memory_collection_id,
+                "AgentUserId": user_id,
                 "SceneId": self._effective_scene_id(),
                 "DataType": "conversation",
                 "Data": {"Conversation": conversation},
@@ -239,7 +242,15 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
                 f"user_id={user_id}, messages={len(conversation)}"
             )
 
-            client.call("CreateMemorySdk", params, options={"IsPostJson": True})
+            response = client.call(
+                "CreateMemorySdk", params, options={"IsPostJson": True}
+            )
+            self.last_create_response = self._parse_json_response(response) or {}
+            self.last_session_status = {
+                "SessionId": session_id,
+                "AgentUserId": user_id,
+                "MemoryCollectionId": memory_collection_id,
+            }
 
             logger.info(
                 f"Saved {len(conversation)} messages to AICP memory service "
@@ -272,8 +283,8 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
         try:
             self.last_error = ""
             params = {
-                "Namespace": memory_collection_id,
-                "UserId": user_id,
+                "MemoryCollectionId": memory_collection_id,
+                "AgentUserId": user_id,
                 "Query": query,
                 "Limit": top_k,
                 "SceneId": self._effective_scene_id(),
@@ -314,6 +325,45 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
             logger.error(f"QueryMemorySdk failed: {e}")
             return []
 
+    def get_session_status(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        page_size: int = 20,
+    ) -> dict[str, Any] | None:
+        """Return raw AICP session status for a recently submitted memory session."""
+        if not session_id:
+            return None
+
+        client = self._get_client()
+        memory_collection_id = self._effective_memory_collection_id()
+        params = {
+            "MemoryCollectionId": memory_collection_id,
+            "AgentUserId": user_id,
+            "Page": 1,
+            "PageSize": page_size,
+        }
+
+        try:
+            response = client.call("ListSessions", params, options={"IsPostJson": True})
+            data = self._parse_json_response(response)
+        except Exception as e:
+            self.last_error = str(e)
+            logger.warning(f"ListSessions failed while checking memory status: {e}")
+            return None
+
+        payload = data.get("Data") if isinstance(data, dict) else None
+        items = payload.get("Items") if isinstance(payload, dict) else None
+        if not isinstance(items, list):
+            return None
+
+        for item in items:
+            if isinstance(item, dict) and item.get("SessionId") == session_id:
+                self.last_session_status = item
+                return item
+        return None
+
     def _parse_query_response(self, response: str) -> List[str]:
         """解析 QueryMemorySdk 响应
 
@@ -321,8 +371,11 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
         当前按通用格式解析，兼容多种可能的返回结构。
         """
         try:
-            data = json.loads(response) if isinstance(response, str) else response
+            data = self._parse_json_response(response)
         except (json.JSONDecodeError, TypeError):
+            logger.error(f"Failed to parse QueryMemorySdk response: {str(response)[:200]}")
+            return []
+        if not isinstance(data, dict):
             logger.error(f"Failed to parse QueryMemorySdk response: {str(response)[:200]}")
             return []
 
@@ -348,15 +401,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
         # 格式 2: {"Data": [...]}
         elif "Data" in data and isinstance(data["Data"], list):
             for item in data["Data"]:
-                if isinstance(item, str):
-                    memories.append(item)
-                elif isinstance(item, dict):
-                    text = (
-                        item.get("Content")
-                        or item.get("Text")
-                        or json.dumps(item, ensure_ascii=False)
-                    )
-                    memories.append(text)
+                memories.extend(self._parse_memory_item(item))
 
         # 格式 3: {"Results": [...]}
         elif "Results" in data:
@@ -379,3 +424,31 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
             )
 
         return memories
+
+    def _parse_json_response(self, response: Any) -> Any:
+        if isinstance(response, str):
+            return json.loads(response)
+        return response
+
+    def _parse_memory_item(self, item: Any) -> List[str]:
+        if isinstance(item, str):
+            return [item]
+        if not isinstance(item, dict):
+            return []
+
+        if isinstance(item.get("Memories"), list):
+            parsed: list[str] = []
+            for memory in item["Memories"]:
+                parsed.extend(self._parse_memory_item(memory))
+            return parsed
+
+        text = (
+            item.get("Content")
+            or item.get("Text")
+            or item.get("Data")
+        )
+        if text is None:
+            return []
+        if isinstance(text, (dict, list)):
+            return [json.dumps(text, ensure_ascii=False)]
+        return [str(text)]

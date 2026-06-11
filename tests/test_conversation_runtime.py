@@ -2231,6 +2231,34 @@ async def test_stream_conversation_turn_passes_session_id_to_runner(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_stream_conversation_turn_emits_final_text_after_tool_events(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _SuccessfulToolResultStreamingRunner()
+
+    chunks = [
+        chunk
+        async for chunk in stream_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id=None,
+            messages=[{"role": "user", "content": "记住这个"}],
+            model="gpt-4o",
+            prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+            session_service_provider=lambda: service,
+        )
+    ]
+
+    assert any("response.completed" in chunk and '"output_text": "done"' in chunk for chunk in chunks)
+    completed_payload = _extract_sse_payload(chunks, "response.completed")
+    session_id = completed_payload["session_id"]
+    events = await service.get_events(session_id)
+    assistant_messages = [event for event in events if event.event_type == "assistant_message"]
+    assert assistant_messages[-1].content["parts"][0]["text"] == "done"
+
+
+@pytest.mark.asyncio
 async def test_stream_responses_conversation_turn_maps_ksadk_resume_to_runner_resume(monkeypatch):
     service = InMemorySessionService()
     monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
@@ -2775,6 +2803,38 @@ async def test_invoke_conversation_once_uses_heuristic_title_for_agent_intro(mon
     assert session is not None
     assert session.title == "招聘助手能力"
     assert session.title_source == "heuristic"
+
+
+@pytest.mark.asyncio
+async def test_invoke_conversation_once_strips_inline_think_markup_from_output(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    class _ThinkingTagRunner(_StubRunner):
+        async def invoke(self, input_data: dict) -> dict:
+            self.calls.append(input_data)
+            return {"output": "<think>先判断问题。</think>我是招聘助手。"}
+
+    runner = _ThinkingTagRunner()
+    session_id, result = await invoke_conversation_once(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id=None,
+        messages=[{"role": "user", "content": "你好，请介绍一下你自己"}],
+        model="glm-5.1",
+        prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+    )
+
+    events = await service.get_events(session_id)
+    assistant_event = next(event for event in events if event.event_type == "assistant_message")
+    session = await service.get_session(session_id)
+
+    assert result["output_text"] == "我是招聘助手。"
+    assert assistant_event.content["parts"][0]["text"] == "我是招聘助手。"
+    assert session is not None
+    assert session.summary == "我是招聘助手。"
+    assert session.title == "招聘助手能力"
 
 
 @pytest.mark.asyncio

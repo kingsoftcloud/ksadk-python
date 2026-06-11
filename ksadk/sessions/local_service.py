@@ -7,7 +7,9 @@ import json
 import os
 import sqlite3
 import time
+from contextlib import closing, contextmanager
 from pathlib import Path
+from collections.abc import Iterator
 from typing import Optional
 
 from ksadk.sessions.base import (
@@ -164,6 +166,12 @@ class LocalSessionService(BaseSessionService):
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
 
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        with closing(self._connect()) as connection:
+            with connection:
+                yield connection
+
     @staticmethod
     def _table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
         row = connection.execute(
@@ -226,7 +234,7 @@ class LocalSessionService(BaseSessionService):
             )
 
     def _ensure_schema(self) -> None:
-        with self._connect() as connection:
+        with self._connection() as connection:
             self._migrate_legacy_schema(connection)
             connection.executescript(
                 f"""
@@ -312,7 +320,7 @@ class LocalSessionService(BaseSessionService):
         user_id: str,
         session_id: Optional[str],
     ) -> Session:
-        with self._connect() as connection:
+        with self._connection() as connection:
             if session_id:
                 existing = self._get_session_sync(session_id, connection=connection)
                 if existing is not None:
@@ -406,7 +414,7 @@ class LocalSessionService(BaseSessionService):
         agent_id: str,
         user_id: Optional[str],
     ) -> list[Session]:
-        with self._connect() as connection:
+        with self._connection() as connection:
             query = f"""
                 SELECT
                     id, agent_id, user_id, title, title_source, summary, first_prompt, last_prompt,
@@ -440,7 +448,7 @@ class LocalSessionService(BaseSessionService):
             ]
 
     def _delete_session_sync(self, session_id: str) -> bool:
-        with self._connect() as connection:
+        with self._connection() as connection:
             row = connection.execute(
                 f"SELECT 1 FROM {KSADK_SESSIONS_TABLE} WHERE id = ?",
                 (session_id,),
@@ -455,7 +463,7 @@ class LocalSessionService(BaseSessionService):
             return True
 
     def _append_event_sync(self, session_id: str, event: SessionEvent) -> SessionEvent:
-        with self._connect() as connection:
+        with self._connection() as connection:
             session_row = connection.execute(
                 f"""
                 SELECT agent_id, user_id, state_json, version
@@ -554,7 +562,7 @@ class LocalSessionService(BaseSessionService):
         first_prompt: Optional[str],
         last_prompt: Optional[str],
     ) -> Session:
-        with self._connect() as connection:
+        with self._connection() as connection:
             row = connection.execute(
                 f"""
                 SELECT
@@ -665,7 +673,7 @@ class LocalSessionService(BaseSessionService):
         session_id: Optional[str],
         scope: str,
     ) -> Optional[SessionState]:
-        with self._connect() as connection:
+        with self._connection() as connection:
             if scope == "session" and session_id:
                 session = self._get_session_sync(session_id, connection=connection)
                 if session is None:
@@ -709,7 +717,7 @@ class LocalSessionService(BaseSessionService):
         scope: str,
         state_delta: dict,
     ) -> SessionState:
-        with self._connect() as connection:
+        with self._connection() as connection:
             updated_at = time.time()
 
             if scope == "session":
