@@ -157,6 +157,47 @@ def test_create_runner_rejects_unknown_framework():
         create_runner(detection, "/workspace/demo")
 
 
+def test_create_runner_uses_custom_runner_class(monkeypatch, tmp_path):
+    runner_class = _install_runner_module(monkeypatch, "demo_agent.runner", "CustomRunner")
+    detection = DetectionResult(
+        type=FrameworkType.LANGGRAPH,
+        name="demo-agent",
+        entry_point="agent.py",
+        package_path=str(tmp_path),
+        agent_variable="root_agent",
+        runner_class="demo_agent.runner.CustomRunner",
+        confidence=1.0,
+    )
+
+    runner = create_runner(detection, str(tmp_path))
+
+    assert isinstance(runner, runner_class)
+    assert runner.detection_result is detection
+    assert runner.project_dir == str(tmp_path)
+
+
+def test_create_runner_rejects_custom_runner_that_is_not_base_runner(monkeypatch, tmp_path):
+    fake_module = ModuleType("demo_agent.bad_runner")
+
+    class BadRunner:
+        pass
+
+    fake_module.BadRunner = BadRunner
+    monkeypatch.setitem(__import__("sys").modules, "demo_agent.bad_runner", fake_module)
+    detection = DetectionResult(
+        type=FrameworkType.LANGGRAPH,
+        name="demo-agent",
+        entry_point="agent.py",
+        package_path=str(tmp_path),
+        agent_variable="root_agent",
+        runner_class="demo_agent.bad_runner.BadRunner",
+        confidence=1.0,
+    )
+
+    with pytest.raises(TypeError, match="自定义 Runner 必须继承 BaseRunner"):
+        create_runner(detection, str(tmp_path))
+
+
 def test_runners_package_exports_only_create_runner():
     import ksadk.runners as runners
 

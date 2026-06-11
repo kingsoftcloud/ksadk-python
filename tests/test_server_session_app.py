@@ -54,6 +54,27 @@ class _CheckpointResumeRunner(_DummyRunner):
         }
 
 
+class _CheckpointMetadataRunner(_DummyRunner):
+    async def invoke(self, input_data: dict) -> dict:
+        self.calls.append(input_data)
+        session_id = str(input_data.get("session_id") or "")
+        return {
+            "output": "checkpoint ready",
+            "metadata": {
+                "agentengine": {
+                    "run_id": "run-hosted",
+                    "framework": "langgraph",
+                    "framework_ref": {
+                        "langgraph": {
+                            "thread_id": session_id,
+                            "checkpoint_id": "ckpt-hosted",
+                        }
+                    },
+                }
+            },
+        }
+
+
 class _OverrideStreamingRunner(BaseRunner):
     def __init__(self):
         super().__init__(
@@ -1552,6 +1573,41 @@ async def test_responses_uses_official_conversation_as_runtime_session(monkeypat
     assert runner.calls[-1]["session_id"] == "conv-a"
     assert runner.calls[-1]["platform_context"]["user_id"] == "user-a"
     assert runner.calls[-1]["platform_context"]["account_id"] == "acct-a"
+
+
+@pytest.mark.asyncio
+async def test_responses_uses_runtime_agent_id_for_hosted_session_lifecycle(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _CheckpointMetadataRunner()
+
+    monkeypatch.setenv("AGENT_RUNTIME_ID", "ar-hosted-runtime")
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/v1/responses",
+            json={
+                "input": "hello",
+                "conversation": "conv-hosted",
+                "stream": False,
+            },
+        )
+        checkpoints_response = await client.post(
+            "/agentengine/api/v1/ListSessionCheckpoints",
+            json={"AgentId": "ar-hosted-runtime", "SessionId": "conv-hosted"},
+        )
+
+    assert response.status_code == 200
+    session = await service.get_session("conv-hosted")
+    assert session is not None
+    assert session.agent_id == "ar-hosted-runtime"
+    assert checkpoints_response.status_code == 200
+    checkpoints = checkpoints_response.json()["Data"]["Checkpoints"]
+    assert checkpoints[0]["RunId"] == "run-hosted"
+    assert checkpoints[0]["CheckpointId"] == "ckpt-hosted"
 
 
 @pytest.mark.asyncio

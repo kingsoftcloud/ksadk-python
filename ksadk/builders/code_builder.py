@@ -1757,7 +1757,8 @@ detection_result = DetectionResult(
     name="{detection_result.name}",
     entry_point="{detection_result.entry_point}",
     package_path=os.path.join(CODE_ROOT, "{package_name}"),
-    agent_variable="{detection_result.agent_variable}"
+    agent_variable="{detection_result.agent_variable}",
+    runner_class="{getattr(detection_result, 'runner_class', '')}"
 )
 
 logger.info(f"框架: {{detection_result.name}}")

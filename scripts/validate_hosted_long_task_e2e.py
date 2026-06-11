@@ -177,7 +177,10 @@ def _list_checkpoints(client: HostedClient, *, session_id: str, run_id: str = ""
 
 
 def _list_events(client: HostedClient, *, session_id: str) -> list[dict[str, Any]]:
-    response = client.action("ListSessionEvents", {"SessionId": session_id})
+    response = client.action(
+        "ListSessionEvents",
+        {"AgentId": client.agent_id, "SessionId": session_id},
+    )
     events = _data(response, "ListSessionEvents").get("Events")
     if not isinstance(events, list):
         raise HostedE2EError(f"ListSessionEvents missing Events list: {response}")

@@ -783,6 +783,13 @@ def _resolve_responses_session_and_user(request: ResponsesRequest) -> tuple[str 
     return resolved_session_id, resolved_user_id
 
 
+def _runtime_agent_id(active_runner: BaseRunner) -> str:
+    runtime_id = _clean_optional_string(os.getenv("AGENT_RUNTIME_ID"))
+    if runtime_id:
+        return runtime_id
+    return str(getattr(active_runner.detection_result, "name", "") or "agent")
+
+
 class WorkspaceDeleteActionRequest(BaseModel):
     AgentId: Optional[str] = None
     Path: str
@@ -2518,16 +2525,16 @@ async def responses(request: ResponsesRequest):
     """OpenAI Responses 兼容接口。"""
     active_runner = _resolve_active_runner()
     resolved_session_id, resolved_user_id = _resolve_responses_session_and_user(request)
+    agent_id = _runtime_agent_id(active_runner)
 
     resume_input = conversation.extract_responses_resume_input(request.input)
     resume_input = await _resolve_checkpoint_resume_input_from_session(
         service=resolve_session_service(),
-        agent_id=active_runner.detection_result.name,
+        agent_id=agent_id,
         session_id=resolved_session_id,
         resume_input=resume_input,
     )
     messages = [] if resume_input is not None else conversation.normalize_responses_input(request.input)
-    agent_id = active_runner.detection_result.name
     request_metadata = dict(request.metadata or {})
     if request.previous_response_id:
         request_metadata.setdefault("previous_response_id", request.previous_response_id)
@@ -2596,7 +2603,7 @@ async def chat_completions(request: ChatCompletionRequest):
     """OpenAI 兼容的聊天补全接口 (支持流式和非流式)"""
     active_runner = _resolve_active_runner()
     messages = conversation.normalize_kop_messages(request.messages)
-    agent_id = active_runner.detection_result.name
+    agent_id = _runtime_agent_id(active_runner)
     resolved_user_id = _clean_optional_string(request.user) or "user"
     account_id = _clean_optional_string(request.account_id)
 
