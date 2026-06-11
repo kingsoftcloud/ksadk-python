@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -162,6 +163,39 @@ def _run_agent(client: HostedClient, *, session_id: str, prompt: str) -> dict[st
     )
 
 
+def _stream_run_agent_background(
+    client: HostedClient,
+    *,
+    session_id: str,
+    prompt: str,
+    invocation_id: str,
+    max_seconds: float,
+) -> tuple[threading.Thread, dict[str, Any]]:
+    result: dict[str, Any] = {"sse": "", "error": None}
+
+    def _run() -> None:
+        try:
+            result["sse"] = client.stream_action(
+                "RunAgent",
+                {
+                    "AgentId": client.agent_id,
+                    "UserId": client.user_id,
+                    "SessionId": session_id,
+                    "InvocationId": invocation_id,
+                    "ApiFormat": "responses",
+                    "Stream": True,
+                    "ResponsesInput": _make_responses_input(prompt),
+                },
+                max_seconds=max_seconds,
+            )
+        except Exception as exc:  # pragma: no cover - surfaced by caller in integration mode.
+            result["error"] = exc
+
+    thread = threading.Thread(target=_run, name=f"hosted-e2e-stream-{invocation_id}", daemon=True)
+    thread.start()
+    return thread, result
+
+
 def _list_checkpoints(client: HostedClient, *, session_id: str, run_id: str = "") -> list[dict[str, Any]]:
     payload: dict[str, Any] = {
         "AgentId": client.agent_id,
@@ -199,12 +233,13 @@ def _wait_for_checkpoint(
     client: HostedClient,
     *,
     session_id: str,
+    run_id: str = "",
     attempts: int,
     interval: float,
 ) -> dict[str, Any]:
     last_checkpoints: list[dict[str, Any]] = []
     for _ in range(attempts):
-        last_checkpoints = _list_checkpoints(client, session_id=session_id)
+        last_checkpoints = _list_checkpoints(client, session_id=session_id, run_id=run_id)
         if last_checkpoints:
             return last_checkpoints[0]
         time.sleep(interval)
@@ -415,6 +450,135 @@ def validate_cancel_active(
     )
 
 
+def validate_cancel_then_resume(
+    client: HostedClient,
+    *,
+    session_id: str,
+    prompt: str,
+    wait_attempts: int,
+    wait_interval: float,
+    stream_timeout: float,
+) -> dict[str, Any]:
+    bootstrap = client.action(
+        "GetAgentUiBootstrap",
+        {"AgentId": client.agent_id, "SessionId": session_id},
+    )
+    capabilities = _extract_capabilities(bootstrap)
+    _assert_checkpoint_capability(capabilities)
+
+    invocation_id = f"run_{uuid.uuid4().hex}"
+    stream_thread, stream_result = _stream_run_agent_background(
+        client,
+        session_id=session_id,
+        prompt=prompt,
+        invocation_id=invocation_id,
+        max_seconds=stream_timeout,
+    )
+
+    try:
+        checkpoint = _wait_for_checkpoint(
+            client,
+            session_id=session_id,
+            run_id=invocation_id,
+            attempts=wait_attempts,
+            interval=wait_interval,
+        )
+        run_id = str(checkpoint.get("RunId") or "").strip()
+        checkpoint_id = str(checkpoint.get("CheckpointId") or "").strip()
+        if run_id != invocation_id:
+            raise HostedE2EError(
+                f"Checkpoint RunId should match active invocation_id: {run_id!r} != {invocation_id!r}"
+            )
+        if not checkpoint_id:
+            raise HostedE2EError(f"Checkpoint missing CheckpointId: {checkpoint}")
+
+        cancel_payload = _cancel_run(client, invocation_id=invocation_id)
+        cancel_data = _data(cancel_payload, "CancelRun")
+        if cancel_data.get("Cancelled") is not True:
+            raise HostedE2EError(f"CancelRun did not accept active stream: {cancel_data}")
+
+        cancelled_statuses: list[str] = []
+        event_count_at_cancel = 0
+        for _ in range(wait_attempts):
+            events = _list_events(client, session_id=session_id)
+            cancelled_statuses = _event_statuses(events, invocation_id=invocation_id)
+            if cancelled_statuses and cancelled_statuses[-1] == "cancelled":
+                event_count_at_cancel = len(events)
+                break
+            time.sleep(wait_interval)
+        else:
+            raise HostedE2EError(
+                f"CancelRun did not create cancelled status for {invocation_id}: {cancel_data}"
+            )
+
+        stream_thread.join(timeout=min(stream_timeout, 10.0))
+        if stream_thread.is_alive():
+            raise HostedE2EError("RunAgent stream did not close after CancelRun")
+        if stream_result.get("error") is not None:
+            raise HostedE2EError(f"RunAgent stream failed during cancel validation: {stream_result['error']}")
+
+        post_cancel_events = _list_events(client, session_id=session_id)
+        unexpected_post_cancel = [
+            event
+            for event in post_cancel_events[event_count_at_cancel:]
+            if event.get("EventType") in {"assistant_message", "run_checkpoint"}
+            or (
+                event.get("EventType") == "run_status"
+                and isinstance(event.get("Content"), dict)
+                and event["Content"].get("status") == "completed"
+            )
+        ]
+        if unexpected_post_cancel:
+            raise HostedE2EError(
+                "Unexpected assistant/checkpoint/completed events appeared after cancel: "
+                f"{_event_type_counts(unexpected_post_cancel)}"
+            )
+
+        resume_invocation_id = f"run_{uuid.uuid4().hex}"
+        resume_sse = _resume_stream(
+            client,
+            session_id=session_id,
+            run_id=run_id,
+            checkpoint_id=checkpoint_id,
+            invocation_id=resume_invocation_id,
+            max_seconds=stream_timeout,
+        )
+
+        final_events = _list_events(client, session_id=session_id)
+        final_counts = _event_type_counts(final_events)
+        resume_statuses = _event_statuses(final_events, invocation_id=resume_invocation_id)
+        if final_counts.get("run_resume", 0) < 1:
+            raise HostedE2EError(f"ResumeRun after cancel did not create run_resume event: {final_counts}")
+        if final_counts.get("run_checkpoint", 0) < 2:
+            raise HostedE2EError(
+                f"ResumeRun after cancel should leave at least two checkpoint events: {final_counts}"
+            )
+        if resume_statuses and resume_statuses[-1] not in TERMINAL_STATUSES:
+            raise HostedE2EError(f"ResumeRun after cancel did not reach terminal status: {resume_statuses}")
+
+        return {
+            "status": "pass",
+            "session_id": session_id,
+            "run_id": run_id,
+            "checkpoint_id": checkpoint_id,
+            "cancel_invocation_id": invocation_id,
+            "resume_invocation_id": resume_invocation_id,
+            "bootstrap_run_lifecycle": capabilities.get("RunLifecycle"),
+            "cancel_data": cancel_data,
+            "cancel_statuses": cancelled_statuses,
+            "event_counts": final_counts,
+            "resume_statuses": resume_statuses,
+            "stream_closed_after_cancel": not stream_thread.is_alive(),
+            "run_sse_line_count": len(
+                [line for line in str(stream_result.get("sse") or "").splitlines() if line.strip()]
+            ),
+            "resume_sse_line_count": len([line for line in resume_sse.splitlines() if line.strip()]),
+        }
+    finally:
+        if stream_thread.is_alive():
+            stream_thread.join(timeout=1.0)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -440,7 +604,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wait-interval", type=float, default=1.0)
     parser.add_argument(
         "--mode",
-        choices=["checkpoint-resume", "cancel-active"],
+        choices=["checkpoint-resume", "cancel-active", "cancel-then-resume"],
         default="checkpoint-resume",
     )
     parser.add_argument(
@@ -475,15 +639,25 @@ def main() -> int:
                 stream_timeout=args.stream_timeout,
             )
         else:
-            if not args.invocation_id:
+            if args.mode == "cancel-then-resume":
+                result = validate_cancel_then_resume(
+                    client,
+                    session_id=session_id,
+                    prompt=args.prompt,
+                    wait_attempts=args.wait_attempts,
+                    wait_interval=args.wait_interval,
+                    stream_timeout=args.stream_timeout,
+                )
+            elif not args.invocation_id:
                 raise HostedE2EError("--invocation-id is required for --mode cancel-active")
-            result = validate_cancel_active(
-                client,
-                session_id=session_id,
-                invocation_id=args.invocation_id,
-                wait_attempts=args.wait_attempts,
-                wait_interval=args.wait_interval,
-            )
+            else:
+                result = validate_cancel_active(
+                    client,
+                    session_id=session_id,
+                    invocation_id=args.invocation_id,
+                    wait_attempts=args.wait_attempts,
+                    wait_interval=args.wait_interval,
+                )
         print(json.dumps({"hosted_long_task_e2e": result}, ensure_ascii=False, indent=2))
         return 0
     except Exception as exc:
