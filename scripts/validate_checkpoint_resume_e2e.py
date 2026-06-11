@@ -31,6 +31,8 @@ AGENT_ID = "lt-w1-e2e-agent"
 USER_ID = "lt-w1-e2e-user"
 CANCEL_AGENT_ID = "lt-w25-cancel-agent"
 CANCEL_USER_ID = "lt-w25-cancel-user"
+CANCEL_RESUME_AGENT_ID = "lt-w25-cancel-resume-agent"
+CANCEL_RESUME_USER_ID = "lt-w25-cancel-resume-user"
 E2E_NODE_COUNTS: dict[str, int] = {}
 
 
@@ -59,6 +61,33 @@ class CancellableStreamingRunner(BaseRunner):
     async def stream(self, input_data: dict[str, Any]):
         yield {"type": "text", "delta": "started"}
         await asyncio.Event().wait()
+
+    def request_cancel(self, invocation_id: str) -> str:
+        self.cancel_requests.append(str(invocation_id))
+        return "accepted"
+
+
+class CancelThenResumeLangGraphRunner(E2ELangGraphRunner):
+    def __init__(self, *args: Any, hold_after_checkpoint: bool = True, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.hold_after_checkpoint = hold_after_checkpoint
+        self.cancel_requests: list[str] = []
+
+    async def stream(self, input_data: dict[str, Any]):
+        payload = dict(input_data)
+        is_checkpoint_resume = bool(payload.get("checkpoint_resume"))
+        if is_checkpoint_resume:
+            async for chunk in super().stream(payload):
+                yield chunk
+            return
+
+        result = await self.invoke(payload)
+        metadata = result.get("metadata") if isinstance(result, dict) else None
+        if isinstance(metadata, dict) and metadata.get("agentengine"):
+            yield {"type": "checkpoint", "metadata": metadata}
+        yield {"type": "text", "delta": "checkpoint persisted"}
+        if self.hold_after_checkpoint:
+            await asyncio.Event().wait()
 
     def request_cancel(self, invocation_id: str) -> str:
         self.cancel_requests.append(str(invocation_id))
@@ -111,6 +140,21 @@ async def _build_runner(*, dsn: str) -> LangGraphRunner:
     runner = E2ELangGraphRunner(
         detection_result=SimpleNamespace(
             name=AGENT_ID,
+            type=SimpleNamespace(value="langgraph"),
+            entry_point="agent.py",
+            agent_variable="app",
+        ),
+        project_dir=".",
+    )
+    runner._agent = await _build_graph(dsn=dsn)
+    runner._module = SimpleNamespace()
+    return runner
+
+
+async def _build_cancel_then_resume_runner(*, dsn: str) -> CancelThenResumeLangGraphRunner:
+    runner = CancelThenResumeLangGraphRunner(
+        detection_result=SimpleNamespace(
+            name=CANCEL_RESUME_AGENT_ID,
             type=SimpleNamespace(value="langgraph"),
             entry_point="agent.py",
             agent_variable="app",
@@ -439,6 +483,222 @@ async def run_cancel_validation(*, dsn: str, keep_session: bool) -> dict[str, An
         }
 
 
+async def _wait_for_status(
+    client: httpx.AsyncClient,
+    *,
+    session_id: str,
+    status: str,
+    attempts: int = 50,
+) -> list[dict[str, Any]]:
+    for _ in range(attempts):
+        events = await _list_events(client, session_id)
+        statuses = [
+            event.get("Content", {}).get("status")
+            for event in events
+            if event.get("EventType") == "run_status"
+        ]
+        if statuses and statuses[-1] == status:
+            return events
+        await asyncio.sleep(0.1)
+    raise AssertionError(f"Did not observe run_status={status!r}")
+
+
+async def _wait_for_checkpoint(
+    client: httpx.AsyncClient,
+    *,
+    agent_id: str,
+    session_id: str,
+    attempts: int = 50,
+) -> dict[str, Any]:
+    for _ in range(attempts):
+        response = await client.post(
+            "/agentengine/api/v1/ListSessionCheckpoints",
+            json={"AgentId": agent_id, "SessionId": session_id},
+        )
+        response.raise_for_status()
+        checkpoints = _action_data(response.json())["Checkpoints"]
+        if checkpoints:
+            return checkpoints[0]
+        await asyncio.sleep(0.1)
+    events = await _list_events(client, session_id)
+    raise AssertionError(
+        "Did not observe checkpoint before cancel\n"
+        f"Events: {json.dumps(_summarize_events(events), ensure_ascii=False)}"
+    )
+
+
+async def run_cancel_then_resume_validation(*, dsn: str, keep_session: bool) -> dict[str, Any]:
+    namespace = f"lt_w25_cancel_resume_{uuid.uuid4().hex[:10]}"
+    session_id = f"sess_{uuid.uuid4().hex}"
+    invocation_id = f"run_{uuid.uuid4().hex}"
+    os.environ["KSADK_SESSION_BACKEND"] = "postgres"
+    os.environ["KSADK_SESSION_DSN"] = dsn
+    os.environ["KSADK_SESSION_NAMESPACE"] = namespace
+    os.environ["KSADK_SESSION_TENANT_ID"] = "lt_w25_cancel_resume_tenant"
+    os.environ["KSADK_SESSION_WORKSPACE_ID"] = "lt_w25_cancel_resume_workspace"
+    os.environ["KSADK_E2E_LANGGRAPH_DSN"] = dsn
+    E2E_NODE_COUNTS.clear()
+
+    runner = await _build_cancel_then_resume_runner(dsn=dsn)
+    try:
+        from ksadk.sessions import reset_session_service
+        import ksadk.conversations as conversation
+
+        server_app_module = importlib.import_module("ksadk.server.app")
+        await reset_session_service()
+        server_app_module.set_runner(runner)
+        transport = httpx.ASGITransport(app=server_app_module.app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://ksadk.local",
+            timeout=60,
+        ) as client:
+            server_app_module._detached_streaming_response(
+                conversation.stream_responses_conversation_turn(
+                    runner=runner,
+                    agent_id=CANCEL_RESUME_AGENT_ID,
+                    user_id=CANCEL_RESUME_USER_ID,
+                    messages=[{"role": "user", "content": "start, checkpoint, then wait"}],
+                    session_id=session_id,
+                    model=None,
+                    prepare_runner=lambda _runner, _model: None,
+                    invocation_id=invocation_id,
+                    session_service_provider=server_app_module.resolve_session_service,
+                ),
+                invocation_id=invocation_id,
+            )
+
+            await _wait_for_status(client, session_id=session_id, status="in_progress")
+            checkpoint = await _wait_for_checkpoint(
+                client,
+                agent_id=CANCEL_RESUME_AGENT_ID,
+                session_id=session_id,
+            )
+            run_id = checkpoint["RunId"]
+            checkpoint_id = checkpoint["CheckpointId"]
+            if run_id != invocation_id:
+                raise AssertionError(
+                    f"Checkpoint run_id should match cancelled invocation_id; {run_id!r} != {invocation_id!r}"
+                )
+            checkpoint_state = await _checkpoint_state_values(runner, checkpoint)
+            checkpoint_log = list(checkpoint_state.get("log") or [])
+            if checkpoint_log != ["a", "b"]:
+                raise AssertionError(
+                    "Checkpoint state before cancel should contain exactly a,b; "
+                    f"got {checkpoint_log!r}"
+                )
+
+            cancel_response = await client.post(
+                "/agentengine/api/v1/CancelRun",
+                json={"AgentId": CANCEL_RESUME_AGENT_ID, "InvocationId": invocation_id},
+            )
+            cancel_response.raise_for_status()
+            cancel_data = _action_data(cancel_response.json())
+            if cancel_data.get("Found") is not True or cancel_data.get("Cancelled") is not True:
+                raise AssertionError(f"CancelRun did not hit checkpointed active run: {cancel_data}")
+
+            cancelled_events = await _wait_for_status(
+                client,
+                session_id=session_id,
+                status="cancelled",
+            )
+            event_count_at_cancel = len(cancelled_events)
+            await asyncio.sleep(1)
+            post_cancel_events = await _list_events(client, session_id)
+            unexpected_post_cancel = [
+                event
+                for event in post_cancel_events[event_count_at_cancel:]
+                if event.get("EventType") in {"assistant_message", "run_checkpoint"}
+                or (
+                    event.get("EventType") == "run_status"
+                    and event.get("Content", {}).get("status") == "completed"
+                )
+            ]
+            if unexpected_post_cancel:
+                raise AssertionError(
+                    "Cancel then resume validation observed unexpected events after cancelled: "
+                    f"{json.dumps(_summarize_events(unexpected_post_cancel), ensure_ascii=False)}"
+                )
+
+            node_counts_before_resume = dict(E2E_NODE_COUNTS)
+            resume_response = await client.post(
+                "/agentengine/api/v1/ResumeRun",
+                json={
+                    "AgentId": CANCEL_RESUME_AGENT_ID,
+                    "SessionId": session_id,
+                    "RunId": run_id,
+                    "CheckpointId": checkpoint_id,
+                    "Stream": False,
+                },
+            )
+            resume_response.raise_for_status()
+            resume_payload = resume_response.json()
+            resume_data = _action_data(resume_payload)
+            output_text = str(resume_data.get("output_text") or "")
+            if output_text != "a,b,c":
+                raise AssertionError(
+                    f"ResumeRun after cancel should output 'a,b,c', got {output_text!r}"
+                )
+            node_counts_after_resume = dict(E2E_NODE_COUNTS)
+            if node_counts_after_resume != {"a": 1, "b": 1, "c": 1}:
+                raise AssertionError(
+                    "ResumeRun after cancel should not rerun completed nodes; "
+                    f"before={node_counts_before_resume}, after={node_counts_after_resume}"
+                )
+
+            final_events = await _list_events(client, session_id)
+            run_checkpoint_count = sum(
+                1 for event in final_events if event.get("EventType") == "run_checkpoint"
+            )
+            run_resume_count = sum(
+                1 for event in final_events if event.get("EventType") == "run_resume"
+            )
+            cancelled_event_count = sum(
+                1
+                for event in final_events
+                if event.get("EventType") == "run_status"
+                and event.get("Content", {}).get("status") == "cancelled"
+            )
+            if run_checkpoint_count < 2:
+                raise AssertionError(
+                    f"Expected at least two run_checkpoint events after resume, got {run_checkpoint_count}"
+                )
+            if run_resume_count < 1:
+                raise AssertionError("Expected a run_resume event after cancel")
+
+            if not keep_session:
+                delete_response = await client.post(
+                    "/agentengine/api/v1/DeleteSession",
+                    json={"SessionId": session_id},
+                )
+                delete_response.raise_for_status()
+
+            return {
+                "namespace": namespace,
+                "session_id": session_id,
+                "run_id": run_id,
+                "invocation_id": invocation_id,
+                "checkpoint_id": checkpoint_id,
+                "cancel_action": cancel_response.json().get("Code"),
+                "cancel_found": cancel_data.get("Found"),
+                "cancel_status": cancel_data.get("Status"),
+                "cancelled_event_count": cancelled_event_count,
+                "post_cancel_extra_event_count": len(post_cancel_events) - event_count_at_cancel,
+                "runner_cancel_requests": list(runner.cancel_requests),
+                "output_text_after_resume": output_text,
+                "run_checkpoint_event_count": run_checkpoint_count,
+                "run_resume_event_count": run_resume_count,
+                "checkpoint_log_before_cancel": checkpoint_log,
+                "node_counts_before_resume": node_counts_before_resume,
+                "node_counts_after_resume": node_counts_after_resume,
+                "resume_after_cancel_did_not_rerun_prior_nodes": True,
+                "kept_session": keep_session,
+                "resume_action": resume_payload.get("Code"),
+            }
+    finally:
+        await _close_runner(runner)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -469,6 +729,10 @@ def main() -> int:
         }
         if args.include_cancel:
             result["runtime_cancel"] = await run_cancel_validation(
+                dsn=dsn,
+                keep_session=args.keep_session,
+            )
+            result["cancel_then_resume"] = await run_cancel_then_resume_validation(
                 dsn=dsn,
                 keep_session=args.keep_session,
             )
