@@ -309,6 +309,31 @@ async def test_invoke_checkpoint_resume_uses_checkpoint_id_and_none_input():
 
 
 @pytest.mark.asyncio
+async def test_invoke_checkpoint_resume_preserves_checkpoint_namespace_when_present():
+    runner = _make_runner()
+
+    await runner.invoke(
+        {
+            "session_id": "sess-1",
+            "checkpoint_resume": True,
+            "framework_ref": {
+                "langgraph": {
+                    "thread_id": "tenant-a:agent-b:sess-1",
+                    "checkpoint_ns": "subgraph-ns",
+                    "checkpoint_id": "ckpt-123",
+                }
+            },
+        }
+    )
+
+    assert runner._agent.last_ainvoke_config["configurable"] == {
+        "thread_id": "tenant-a:agent-b:sess-1",
+        "checkpoint_ns": "subgraph-ns",
+        "checkpoint_id": "ckpt-123",
+    }
+
+
+@pytest.mark.asyncio
 async def test_invoke_reports_latest_langgraph_checkpoint_ref_from_state_config():
     runner = _make_runner()
     runner._agent.state_config = {
@@ -328,6 +353,26 @@ async def test_invoke_reports_latest_langgraph_checkpoint_ref_from_state_config(
                 "checkpoint_id": "ckpt-after",
             }
         },
+    }
+
+
+@pytest.mark.asyncio
+async def test_invoke_reports_checkpoint_namespace_from_state_config_when_present():
+    runner = _make_runner()
+    runner._agent.state_config = {
+        "configurable": {
+            "thread_id": "tenant-a:agent-b:sess-1",
+            "checkpoint_ns": "subgraph-ns",
+            "checkpoint_id": "ckpt-after",
+        }
+    }
+
+    result = await runner.invoke({"session_id": "tenant-a:agent-b:sess-1", "input": "hello"})
+
+    assert result["metadata"]["agentengine"]["framework_ref"]["langgraph"] == {
+        "thread_id": "tenant-a:agent-b:sess-1",
+        "checkpoint_ns": "subgraph-ns",
+        "checkpoint_id": "ckpt-after",
     }
 
 

@@ -35,7 +35,7 @@
 | --- | --- | --- | --- | --- | --- |
 | `KSYUN_ACCESS_KEY` | 是 | `KS3_ACCESS_KEY` | 是 | 开发者 / CI Secret | 金山云 API / KS3 / KOP 签名 AK。 |
 | `KSYUN_SECRET_KEY` | 是 | `KS3_SECRET_KEY` | 是 | 开发者 / CI Secret | 金山云 API / KS3 / KOP 签名 SK。 |
-| `KSYUN_ACCOUNT_ID` | 条件必传 | 无 | 否 | 开发者 / 平台账号 | 创建/查询/删除资源、KCR 用户名默认值、权限预检查等场景需要。 |
+| `KSYUN_ACCOUNT_ID` | 条件必传 | 无 | 否 | 开发者 / 平台账号 | 创建/查询/删除资源、权限预检查、个人版 KCR 用户名兜底等场景需要。 |
 | `KSYUN_REGION` | 否 | 无 | 否 | 开发者 / 平台 | 默认 `cn-beijing-6`。 |
 | `AGENTENGINE_SERVER_URL` | 否 | 无 | 否 | 平台 / 开发者 | 覆盖 AgentEngine Server 地址。内部账号/内网环境建议 `http://aicp.inner.api.ksyun.com`；公网账号通常不设置或使用 `https://aicp.api.ksyun.com`。 |
 | `AGENTENGINE_API_VERSION` | 否 | 无 | 否 | 平台 / 开发者 | 覆盖 KOP API version。 |
@@ -163,7 +163,7 @@
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `KSYUN_ACCESS_KEY` | CLI / KOP / KS3 / Skill Service fallback | 条件必传 | 未设置 | `KS3_ACCESS_KEY` | 是 | 开发者 / CI Secret / K8S Secret | 否 | 金山云 AK。启用云端资源操作、KS3、KOP 签名时需要。 |
 | `KSYUN_SECRET_KEY` | CLI / KOP / KS3 / Skill Service fallback | 条件必传 | 未设置 | `KS3_SECRET_KEY` | 是 | 开发者 / CI Secret / K8S Secret | 否 | 金山云 SK。 |
-| `KSYUN_ACCOUNT_ID` | CLI / KOP / 权限预检查 / Skill Service fallback | 条件必传 | 未设置 | 无 | 否 | 平台账号 / 开发者 | 否 | 账号 ID。资源管理、租户隔离、KCR 用户名默认值等场景需要。 |
+| `KSYUN_ACCOUNT_ID` | CLI / KOP / 权限预检查 / Skill Service fallback | 条件必传 | 未设置 | 无 | 否 | 平台账号 / 开发者 | 否 | 账号 ID。资源管理、租户隔离、个人版 KCR 用户名兜底等场景需要。 |
 | `KSYUN_REGION` | CLI / KOP / KS3 / Skill Service fallback | 否 | `cn-beijing-6` | 无 | 否 | 开发者 / 平台 | 否 | 区域。跨环境、预发、生产联调建议显式设置。 |
 | `KS_ACCESS_KEY_ID` | 旧 KingsoftCloudConfig | 条件必传 | 未设置 | 建议迁移到 `KSYUN_ACCESS_KEY` | 是 | 兼容旧配置 | 否 | 早期 SDK settings 读取的 AK；不与 `KSYUN_ACCESS_KEY` 自动互通。 |
 | `KS_SECRET_ACCESS_KEY` | 旧 KingsoftCloudConfig | 条件必传 | 未设置 | 建议迁移到 `KSYUN_SECRET_KEY` | 是 | 兼容旧配置 | 否 | 早期 SDK settings 读取的 SK；不与 `KSYUN_SECRET_KEY` 自动互通。 |
@@ -174,10 +174,10 @@
 | `KS3_ENDPOINT_MODE` | KS3 上传 | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | KS3 endpoint 选择策略。 |
 | `KS3_ENDPOINT_PROBE_TIMEOUT_SECONDS` | KS3 上传 | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | KS3 endpoint 探测超时。 |
 | `KS3_UPLOAD_TIMEOUT_SECONDS` | KS3 上传 | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | KS3 上传超时。 |
-| `KCR_REGISTRY` | 镜像构建 / MCP / Serverless | 条件必传 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | KCR registry 地址。 |
+| `KCR_REGISTRY` | 镜像构建 / MCP / Serverless | 条件必传 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | 镜像仓库地址，通常为 `<registry>/<namespace>`，例如 `agenthzzqy-vpc.ksyunkcr.com/testagent-pub` 或第三方 registry/namespace。 |
 | `KCR_ENDPOINT` | 镜像构建 / MCP / Serverless | 否 | `hub.kce.ksyun.com` | 无 | 否 | 开发者 / 平台 | 否 | KCR endpoint。 |
-| `KCR_USERNAME` | 镜像构建 / MCP / Serverless | 条件必传 | `KSYUN_ACCOUNT_ID` | 无 | 否 | 开发者 / 平台 | 否 | KCR 用户名。 |
-| `KCR_PASSWORD` | 镜像构建 / MCP / Serverless | 条件必传 | 未设置 | 无 | 是 | 开发者 / Secret | 否 | KCR 密码或 token。 |
+| `KCR_USERNAME` | 镜像构建 / MCP / Serverless | 条件必传 | 未设置 | 个人版 KCR 可回退 `KSYUN_ACCOUNT_ID` | 否 | 开发者 / 平台 | 否 | 镜像仓库访问凭证用户名。企业版 KCR 和第三方镜像仓库必须显式设置；个人版 KCR 可留空并使用 `KSYUN_ACCOUNT_ID` 作为用户名兜底。 |
+| `KCR_PASSWORD` | 镜像构建 / MCP / Serverless | 条件必传 | 未设置 | 无 | 是 | 开发者 / Secret | 否 | 镜像仓库访问凭证密码或 token。 |
 
 ## 5. 通用 Sandbox Runtime
 
@@ -188,6 +188,8 @@
 | `KSADK_SANDBOX_TEMPLATE_ID` | Sandbox spec / Skill Runtime E2B backend | 条件必传 | 未设置 | `KSADK_SKILL_RUNTIME_TEMPLATE_ID` | 否 | 沙箱控制台 / 沙箱团队 | 否 | 远程 sandbox 执行时必传。新部署优先使用。 |
 | `KSADK_SANDBOX_TIMEOUT` | Sandbox spec | 否 | `900` | `KSADK_SKILL_RUNTIME_TIMEOUT` | 否 | 平台 / 开发者 | 否 | Sandbox 会话超时秒数。 |
 | `KSADK_SANDBOX_ALLOW_INTERNET_ACCESS` | Sandbox spec | 否 | `true` | `KSADK_SKILL_RUNTIME_ALLOW_INTERNET_ACCESS` | 否 | 平台 / 开发者 | 否 | 是否允许 sandbox 出网。 |
+| `KSADK_SANDBOX_STARTUP_RETRY_ATTEMPTS` | E2B Sandbox backend | 否 | `6` | 无 | 否 | 平台 / 开发者 | 否 | 沙箱创建后 readiness 探测最大重试次数，用于兜底短暂 `NotFoundException` / `FileNotFoundException`。 |
+| `KSADK_SANDBOX_STARTUP_RETRY_DELAY` | E2B Sandbox backend | 否 | `0.2` | 无 | 否 | 平台 / 开发者 | 否 | 沙箱 readiness 首次重试间隔秒数，后续指数退避，单次 sleep 上限 1 秒。 |
 | `E2B_API_URL` | E2B SDK | 条件必传 | 未设置 | 无 | 否 | 沙箱团队 / Secret 配置 | 否 | E2B 兼容 manager endpoint。使用 E2B backend 时必传。 |
 | `E2B_API_KEY` | E2B SDK | 条件必传 | 未设置 | 无 | 是 | 沙箱团队 / Secret 配置 | 否 | E2B API key。严禁写入代码、文档明文、测试 fixture、日志。 |
 
@@ -307,10 +309,12 @@
 | `KSADK_AICP_ENDPOINT_MODE` | AICP resolver | 否 | `auto` | 无 | 否 | 平台 / 开发者 | 否 | AICP endpoint 选择策略，支持 `auto/detect/internal/inner/public`。内网环境可显式设为 `inner`，跳过自动探测。 |
 | `AGENTENGINE_MODEL_ALLOWLIST` | CLI model / OpenClaw | 否 | 未设置 | `OPENCLAW_MODEL_ALLOWLIST` | 否 | 平台 / 开发者 | 否 | 模型列表过滤。OpenClaw 场景优先使用 `OPENCLAW_MODEL_ALLOWLIST`。 |
 | `AGENTENGINE_UI_DIR` | 本地 Web UI / Sessions | 否 | 未设置 | 无 | 否 | 本地开发者 | 否 | 本地 UI 静态目录覆盖，主要用于 Web/文件上传本地调试。 |
-| `KSADK_WEB_VERSION` | Hosted Web UI static sync | 否 | `v0.2.3` | 无 | 否 | 构建环境 / 开发者 | 否 | `make sync-ksadk-web-static` 使用的 Hosted UI release 版本。 |
-| `KSADK_WEB_TARBALL_NAME` | Hosted Web UI static sync | 否 | 根据 `KSADK_WEB_VERSION` 派生 | 无 | 否 | 构建环境 | 否 | Hosted UI release tarball 文件名。 |
-| `KSADK_WEB_RELEASE_URL` | Hosted Web UI static sync | 否 | 根据 `KSADK_WEB_VERSION` 派生 | 无 | 否 | 构建环境 / 开发者 | 否 | Hosted UI release tarball 下载地址。 |
-| `KSADK_WEB_CACHE_DIR` | Hosted Web UI static sync | 否 | `.cache/ksadk-web` | 无 | 否 | 构建环境 / 开发者 | 否 | Hosted UI release tarball 解压缓存目录。 |
+| `KSADK_WEB_VERSION` | Hosted Web UI static sync | 否 | `latest` | 可显式设置 `0.2.7` / `v0.2.7` | 否 | 构建环境 / 开发者 | 否 | `make sync-ksadk-web-static` 使用的 `@kingsoftcloud/ksadk-web` npm dist-tag 或版本，默认消费最新 release。 |
+| `KSADK_WEB_PACKAGE` | Hosted Web UI static sync | 否 | `@kingsoftcloud/ksadk-web` | 无 | 否 | 构建环境 / 开发者 | 否 | 本地 UI static 同步使用的 npm 包名。 |
+| `KSADK_WEB_TARBALL_NAME` | Hosted Web UI static sync | 否 | 根据 `KSADK_WEB_VERSION` 派生 | 无 | 否 | 构建环境 | 否 | 仅在设置 `KSADK_WEB_RELEASE_URL` 时作为下载保存文件名；npm pack 模式会使用 npm 返回的真实 tarball 文件名。 |
+| `KSADK_WEB_RELEASE_URL` | Hosted Web UI static sync | 否 | 未设置 | 无 | 否 | 构建环境 / 开发者 | 否 | 可选兼容兜底。设置后跳过 npm pack，改从该 tarball URL 下载。 |
+| `KSADK_WEB_CACHE_DIR` | Hosted Web UI static sync | 否 | `.cache/ksadk-web` | 无 | 否 | 构建环境 / 开发者 | 否 | KsADK Web 包解压缓存目录。 |
+| `KSADK_GLOBAL_CONFIG_ENV_KEYS` | CLI | 否 | 未设置 | 无 | 否 | CLI 内部 | 否 | CLI 启动时记录哪些环境变量由 `~/.agentengine/settings.json` 补入，用于区分用户显式环境变量和全局配置默认值。 |
 | `AGENTENGINE_LOCAL_RUNTIME_VENV_REEXEC` | 本地 runtime CLI | 否 | 自动判断 | 无 | 否 | 本地开发者 / 测试 | 否 | 控制本地 runtime 是否在虚拟环境中 re-exec。普通用户通常无需设置。 |
 | `AGENTENGINE_WEB_VENV_REEXEC` | 本地 Web CLI | 否 | 自动判断 | 无 | 否 | 本地开发者 / 测试 | 否 | 控制本地 Web 命令是否在虚拟环境中 re-exec。普通用户通常无需设置。 |
 | `AGENTENGINE_DEBUG` | CLI | 否 | 未设置 | 无 | 否 | 开发者 | 否 | 开启更详细错误输出。 |

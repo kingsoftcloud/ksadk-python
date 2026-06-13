@@ -22,10 +22,9 @@ import json
 import logging
 import time
 import uuid
-from typing import Any, List
+from typing import Any
 
-from pydantic import ConfigDict
-from pydantic import Field
+from pydantic import ConfigDict, Field
 
 from ksadk.memory.adk.backends.base_ltm_backend import BaseLongTermMemoryBackend
 
@@ -158,7 +157,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
         )
         return self._aicp_client
 
-    def _build_conversation(self, event_strings: List[str]) -> list:
+    def _build_conversation(self, event_strings: list[str]) -> list:
         """将事件字符串列表转换为 Conversation 格式
 
         每个 event_string 是 JSON: {"role":"user","parts":[{"text":"..."}]}
@@ -197,7 +196,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
         return self.scene_id or DEFAULT_SCENE_ID
 
     def save_memory(
-        self, user_id: str, event_strings: List[str], **kwargs
+        self, user_id: str, event_strings: list[str], **kwargs
     ) -> bool:
         """调用 CreateMemorySdk 写入记忆
 
@@ -265,7 +264,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
 
     def search_memory(
         self, user_id: str, query: str, top_k: int = 5, **kwargs
-    ) -> List[str]:
+    ) -> list[str]:
         """调用 QueryMemorySdk 检索记忆
 
         Args:
@@ -364,7 +363,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
                 return item
         return None
 
-    def _parse_query_response(self, response: str) -> List[str]:
+    def _parse_query_response(self, response: str) -> list[str]:
         """解析 QueryMemorySdk 响应
 
         响应格式待 API 文档确认后完善。
@@ -393,6 +392,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
                     text = (
                         item.get("Content")
                         or item.get("Text")
+                        or item.get("Memory")
                         or item.get("Data")
                         or json.dumps(item, ensure_ascii=False)
                     )
@@ -412,6 +412,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
                     text = (
                         item.get("Content")
                         or item.get("Text")
+                        or item.get("Memory")
                         or json.dumps(item, ensure_ascii=False)
                     )
                     memories.append(text)
@@ -430,7 +431,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
             return json.loads(response)
         return response
 
-    def _parse_memory_item(self, item: Any) -> List[str]:
+    def _parse_memory_item(self, item: Any) -> list[str]:
         if isinstance(item, str):
             return [item]
         if not isinstance(item, dict):
@@ -445,6 +446,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
         text = (
             item.get("Content")
             or item.get("Text")
+            or item.get("Memory")
             or item.get("Data")
         )
         if text is None:

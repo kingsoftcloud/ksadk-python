@@ -5,25 +5,41 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
-## [0.6.4] - Unreleased
+## [0.6.5] - Unreleased
 
 ### 亮点
 
-- **公开定位重构**：将项目首页、README、后续 PyPI metadata 和公开发布说明从普通 SDK 口径调整为 Agent Runtime Platform，突出统一运行、调试、部署和可观测价值。
-- **发布材料脱敏**：清理 README、CHANGELOG 和后续公开元数据中的环境特定表述，避免公开页面出现内部环境名、内部 header 或私有 endpoint 示例。
-- **默认线上地域说明**：公开 README 使用 `KSYUN_REGION=cn-beijing-6` 作为线上默认 region 示例，避免用户把非公开或内网配置照搬到公开 demo。
-- **Samples 场景入口对齐**：`ksadk-samples` 根 README 改为场景优先，真实映射 Knowledge Assistant、Workflow Agent、Tool-Using Agent 和 Memory-aware Agent；尚未实现的场景只进入 Roadmap。
-- **公开门禁增强**：将公开定位、敏感词扫描、PyPI metadata 和 README 场景入口要求纳入本地门禁，降低后续发布材料回退风险。
+- **公开定位与发布候选收敛**：将项目首页、README、PyPI metadata 和公开发布说明统一为 Agent Runtime Platform 口径，并将候选版本推进到 `0.6.5`。
+- **Hosted/local UI 真源收敛**：本地 `agentengine web` 静态资源同步到 `@kingsoftcloud/ksadk-web` 最新候选产物，`ksadk-python` 默认静态资源同步策略改为消费 npm `@kingsoftcloud/ksadk-web@latest`，显式 tarball 仅作为未发布或离线构建兜底。
+- **部署环境变量边界修复**：`agentengine deploy` 和 `agentengine launch` 新增 `--env` / `--env-file`，显式传入的运行时环境变量进入部署 payload；真实 `.env` / `.env.local` 不再打入 Code、Container 或 MCP 构建上下文，`.env.example` 继续保留。
+- **Sandbox 稳定性兜底**：E2B sandbox 创建后增加命令与文件系统 readiness 探测，默认对短暂 `NotFoundException` / `FileNotFoundException` 做指数退避重试，降低 Pod 内首次调用 `run_code` / `run_command` 的偶发失败。
+- **会话连续性与长任务恢复增强**：runner payload 增加 `invocation_id`，LangGraph checkpoint resume 保留 `checkpoint_ns`，checkpoint event 透传业务阶段、摘要、下一步动作和状态，便于 Hosted/local UI 恢复长任务语义。
+- **长期记忆查询兼容修复**：SDK LTM 查询解析兼容上游返回的 `Memory` 字段，避免记忆已写入但 `load_memory` 查询为空。
+- **镜像仓库凭证语义修复**：个人版 KCR 继续允许 `KSYUN_ACCOUNT_ID` 兜底用户名；企业版 KCR 和第三方 registry 必须显式设置 `KCR_USERNAME` / `KCR_PASSWORD`，避免错误把云账号 ID 当企业镜像用户名。
+- **公开门禁增强**：发布构建新增 wheel 内容检查，禁止 `ksadk/server/web-ui/node_modules/` 残留进入 PyPI wheel，并继续执行公开定位、敏感词扫描、PyPI metadata、README 和测试门禁。
 
 ### 发布说明
 
 - 这是修复 0.6.3 公开页面和 PyPI 元数据口径的补丁版本草案；已发布到 PyPI 的 0.6.3 元数据不可覆盖，因此后续需要通过新版本修复。
-- 0.6.4 在用户 review 通过前不创建 tag、不发布 GitHub Release，也不上传 PyPI。
+- 0.6.5 在用户 review 通过前不创建 tag、不发布 GitHub Release，也不上传 PyPI。
+- `@kingsoftcloud/ksadk-web` npm 包发布成功前，`agentengine-hosted-ui` 仍使用已校验的 `0.2.7` tarball 过渡；npm 发布后应切换到 `@kingsoftcloud/ksadk-web@latest` 并重新锁定 `package-lock.json`。
 
 ### 运行时修复
 
 - `/v1/responses`、`/v1/chat/completions` 和 `RunAgentAction` 支持透传 `account_id` / `AccountId`，并写入 `PlatformInvocationContext`，便于 Skill、Workspace、Sandbox、Memory 等运行时能力按账号边界读取当前调用上下文。
 - 新增 `get_current_invocation_context_or_default()`、`get_current_user_id()` 和 `get_current_account_id()`，工具或业务代码可在当前 turn 内安全读取用户和账号上下文；无调用上下文时返回显式默认值。
+- 修复 dashboard/open/share 在全局配置注入 `KSYUN_REGION` 时可能覆盖当前 `.agentengine.state` region 的问题；命令行显式 region 仍优先。
+- 修复 LangGraph checkpoint resume 丢失 namespace、checkpoint 列表缺少业务阶段字段的问题。
+- 修复 LTM SDK 查询解析不能识别 `Memory` 字段的问题。
+- 修复 E2B sandbox 创建后立即执行命令或写文件时可能遇到短暂 NotFound 的问题。
+- 修复 Python 3.10 环境中 workspace router 误用 Python 3.11 `datetime.UTC` 的兼容性问题。
+
+### 构建与发布修复
+
+- `make sync-ksadk-web-static` 默认改为 `npm pack @kingsoftcloud/ksadk-web@latest`，并保留 `KSADK_WEB_RELEASE_URL` 显式 tarball 兜底。
+- `public-build-check` 在 `uv build` 和 `twine check` 之间增加 wheel 内容检查，确保 `node_modules` 下的 Python 文件不会混入发布包。
+- Code、Container、MCP 构建统一排除真实 `.env*`，只保留 `.env.example` / `.env.sample` / `.env.template` 这类模板文件。
+- Container、MCP、OpenClaw、Serverless 镜像凭证解析统一企业版/个人版/第三方 registry 边界，避免生成错误鉴权 payload。
 
 ## [0.6.3] - 2026-06-09
 

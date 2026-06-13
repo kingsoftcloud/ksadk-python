@@ -2424,7 +2424,7 @@ wheels = [
 
 [[package]]
 name = "ksadk"
-version = "0.6.4"
+version = "0.6.5"
 source = { editable = "." }
 dependencies = [
     { name = "a2a-sdk" },
@@ -2437,6 +2437,7 @@ dependencies = [
     { name = "httpx" },
     { name = "httpx-sse" },
     { name = "jsonschema" },
+    { name = "kingsoftcloud-sdk-python" },
     { name = "ks3sdk" },
     { name = "langchain" },
     { name = "langchain-core" },
@@ -2481,7 +2482,6 @@ all = [
     { name = "fastmcp" },
     { name = "google-adk" },
     { name = "json-repair" },
-    { name = "kingsoftcloud-sdk-python" },
     { name = "langchain" },
     { name = "langchain-core" },
     { name = "langchain-openai" },
@@ -2510,9 +2510,6 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "ruff" },
     { name = "twine" },
-]
-kb = [
-    { name = "kingsoftcloud-sdk-python" },
 ]
 langchain = [
     { name = "langchain" },
@@ -2552,7 +2549,7 @@ requires-dist = [
     { name = "httpx-sse", specifier = ">=0.4.0" },
     { name = "json-repair", marker = "extra == 'adk'", specifier = ">=0.25.0" },
     { name = "jsonschema", specifier = ">=4.0.0,<5.0.0" },
-    { name = "kingsoftcloud-sdk-python", marker = "extra == 'kb'", specifier = ">=1.5.8.90" },
+    { name = "kingsoftcloud-sdk-python", specifier = ">=1.5.8.90" },
     { name = "ks3sdk", specifier = ">=1.15.0" },
     { name = "ksadk", extras = ["a2a", "adk", "langchain", "langgraph", "deepagents", "kb", "skills", "tracing", "dev"], marker = "extra == 'all'" },
     { name = "langchain", specifier = ">=1.3.0,<2.0.0" },

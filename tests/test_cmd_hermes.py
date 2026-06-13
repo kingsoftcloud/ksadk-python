@@ -12,7 +12,6 @@ from ksadk.cli.ui import OUTPUT_MODE_PRETTY, configure_ui_runtime, status_rich_s
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-HERMES_DOCKERFILE = REPO_ROOT / "deploy" / "hermes" / "Dockerfile"
 MAKEFILE = REPO_ROOT / "Makefile"
 
 
@@ -286,15 +285,14 @@ class _FakeHermesBootstrapImageClient(_FakeHermesClient):
         }
 
 
-def test_hermes_build_defaults_track_v2026_5_29_2_release():
-    dockerfile = HERMES_DOCKERFILE.read_text(encoding="utf-8")
+def test_hermes_build_defaults_are_externalized_to_agentengine_images_repo():
     makefile = MAKEFILE.read_text(encoding="utf-8")
 
-    assert 'ARG HERMES_AGENT_REF=v2026.5.29.2' in dockerfile
-    assert 'HERMES_TAG ?= 2026.5.29.2-ksadk-v3' in makefile
-    assert 'HERMES_AGENT_REF ?= v2026.5.29.2' in makefile
+    assert not (REPO_ROOT / "deploy" / "hermes" / "Dockerfile").exists()
+    assert "AGENTENGINE_IMAGES_DIR ?= ../agentengine-images" in makefile
+    assert '$(MAKE) -C "$(AGENTENGINE_IMAGES_DIR)" $@' in makefile
+    assert "-f deploy/hermes/Dockerfile" not in makefile
     assert cmd_hermes.DEFAULT_HERMES_IMAGE.endswith(':2026.5.29.2-ksadk-v1')
-    assert '"langfuse>=3.9.0,<4"' in dockerfile
 
 
 def test_hermes_deploy_refreshes_quick_access_when_agent_id_is_immediate(monkeypatch, tmp_path: Path):

@@ -3,7 +3,7 @@
 > 目标：评审并收敛“KsADK 是否要参考 VeADK/AgentKit 接入 Skill 中心”的方案，给出可落地的研发设计。
 > 首次核验时间：2026-05-12；实现状态复核：2026-05-21。
 > 核验来源：本地 `veadk-python`、`agentkit-samples`、`ksadk-python` 当前代码，以及 Skill Service OpenAPI
-> `http://agent-api-pre.kspmas-internal.ksyun.com/agentengine/skill/api/v1/openapi.json`。
+> `https://<skill-service-host>/agentengine/skill/api/v1/openapi.json`。
 
 ## 当前实现状态
 

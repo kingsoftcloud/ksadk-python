@@ -6,7 +6,7 @@ Build agents once. Run them anywhere.
 
 KsADK 是面向 AI Agent 的 Agent Runtime Platform。你可以继续使用 Google ADK、LangGraph、LangChain 或 DeepAgents 编写业务 Agent，再用 KsADK 获得统一的本地运行、浏览器调试、OpenAI-Compatible API、沙箱执行、部署和可观测体验。
 
-候选版本：`0.6.4`（Unreleased，待用户 review；正式发布版本以 PyPI 和 GitHub Release 为准）。
+候选版本：`0.6.5`（Unreleased，待用户 review；正式发布版本以 PyPI 和 GitHub Release 为准）。
 
 ## Why KsADK
 
@@ -158,7 +158,7 @@ Compatible with:
 
 Export once. Observe anywhere.
 
-## 0.6.4 重点
+## 0.6.5 重点
 
 - 将公开定位从普通 SDK 调整为 Agent Runtime Platform，首页补齐 Why KsADK、30 秒体验、架构说明、Deployment、Observability 和 Community。
 - 清理 README、CHANGELOG 和后续 PyPI 元数据中的环境特定表述，避免公开页面出现内部环境名、内部 header 或私有 endpoint 示例。

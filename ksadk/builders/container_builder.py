@@ -26,6 +26,78 @@ from ksadk.builders.requirements_utils import (
 )
 
 
+def _registry_host(registry: str | None) -> str:
+    value = str(registry or "").strip()
+    for prefix in ("http://", "https://"):
+        if value.startswith(prefix):
+            value = value[len(prefix):]
+            break
+    return value.split("/", 1)[0].strip()
+
+
+def _registry_kind(registry: str | None) -> str:
+    host = _registry_host(registry)
+    if host.endswith(".ksyunkcr.com"):
+        return "enterprise_kcr"
+    if host.endswith(".kce.ksyun.com"):
+        return "personal_kcr"
+    return "third_party"
+
+
+def registry_kind_label(kind: str) -> str:
+    if kind == "personal_kcr":
+        return "个人版 KCR"
+    if kind == "enterprise_kcr":
+        return "企业版 KCR"
+    return "第三方镜像仓库"
+
+
+def resolve_registry_credentials(
+    registry: str | None,
+    *,
+    environ: Optional[dict[str, str]] = None,
+) -> tuple[str, str, str]:
+    """Resolve registry credentials.
+
+    Returns (username, password, kind). Personal KCR keeps the historical
+    KSYUN_ACCOUNT_ID fallback; enterprise KCR and third-party registries require
+    explicit registry credentials.
+    """
+    env = environ if environ is not None else os.environ
+    kind = _registry_kind(registry)
+    password = str(env.get("KCR_PASSWORD") or "")
+    username = str(env.get("KCR_USERNAME") or "")
+    if kind == "personal_kcr" and not username:
+        username = str(env.get("KSYUN_ACCOUNT_ID") or "")
+    return username, password, kind
+
+
+def print_registry_credentials_help(registry: str | None, *, kind: str | None = None) -> None:
+    kind = kind or _registry_kind(registry)
+    click.echo("")
+    if kind == "personal_kcr":
+        click.secho("❌ 缺少个人版 KCR 镜像仓库凭证。", fg="red")
+        click.echo("个人版 KCR 可使用 KSYUN_ACCOUNT_ID 作为用户名兜底，并配置 KCR_PASSWORD。")
+        click.echo("")
+        click.echo("请设置:")
+        click.echo("   KSYUN_ACCOUNT_ID=<金山云账号ID>")
+        click.echo("   KCR_PASSWORD=<个人版 KCR 访问凭证密码或 Token>")
+    else:
+        click.secho("❌ 缺少企业版或第三方镜像仓库凭证。", fg="red")
+        click.echo("企业版或第三方镜像仓库必须配置 KCR_USERNAME 和 KCR_PASSWORD。")
+        click.echo("KSYUN_ACCOUNT_ID 只会作为个人版 KCR 的用户名兜底。")
+        click.echo("")
+        click.echo("请设置:")
+        click.echo("   KCR_USERNAME=<镜像仓库访问凭证用户名>")
+        click.echo("   KCR_PASSWORD=<镜像仓库访问凭证密码或 Token>")
+    click.echo("")
+    click.echo("可选设置默认构建仓库:")
+    click.echo("   KCR_REGISTRY=<registry>/<namespace>")
+    if registry:
+        click.echo("")
+        click.echo(f"当前目标 registry: {_registry_host(registry)}")
+
+
 def ensure_docker_running() -> bool:
     """确保 Docker 正在运行"""
     if not shutil.which('docker'):
@@ -150,10 +222,14 @@ class ContainerBuilder(BaseBuilder):
             and (project_path / "entrypoint.sh").exists()
         )
         
-        # 复制项目文件
+        # 复制项目文件。真实 .env 只通过 deploy payload 注入，不进入镜像上下文。
         for item in project_path.iterdir():
-            # 排除隐藏文件(但保留 .env*) 和特定忽略目录
-            if (item.name.startswith('.') and not item.name.startswith('.env')) or item.name in ('__pycache__', '.git', 'node_modules'):
+            if CodeBuilder._is_real_dotenv_file(item.name):
+                continue
+            if (
+                (item.name.startswith('.') and item.name != '.env.example')
+                or item.name in ('__pycache__', '.git', 'node_modules')
+            ):
                 continue
             dest = output_dir / item.name
             if item.is_dir():
@@ -192,16 +268,36 @@ class ContainerBuilder(BaseBuilder):
             ignore=_ignore_ksadk_source,
         )
 
-        import ksadk_runtime_common
-        runtime_common_src = Path(ksadk_runtime_common.__file__).parent
-        runtime_common_dest = output_dir / "ksadk_runtime_common"
-        if runtime_common_dest.exists():
-            shutil.rmtree(runtime_common_dest)
-        shutil.copytree(
-            runtime_common_src,
-            runtime_common_dest,
-            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
-        )
+        # 复制 ksadk_runtime_common (如果存在)
+        try:
+            import ksadk_runtime_common
+            runtime_common_src = Path(ksadk_runtime_common.__file__).parent
+            runtime_common_dest = output_dir / "ksadk_runtime_common"
+            if runtime_common_dest.exists():
+                shutil.rmtree(runtime_common_dest)
+            shutil.copytree(
+                runtime_common_src,
+                runtime_common_dest,
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+            )
+        except ImportError:
+            # 旧版本 ksadk 没有 ksadk_runtime_common，从源码目录复制
+            # 这个分支处理从 master 迁移到 main 后，环境中安装的是旧版本的情况
+            source_runtime_common = Path(ksadk_src).parent / "ksadk_runtime_common"
+            if source_runtime_common.exists():
+                runtime_common_dest = output_dir / "ksadk_runtime_common"
+                if runtime_common_dest.exists():
+                    shutil.rmtree(runtime_common_dest)
+                shutil.copytree(
+                    source_runtime_common,
+                    runtime_common_dest,
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+                )
+            else:
+                click.echo(click.style(
+                    "⚠️  警告: 未找到 ksadk_runtime_common，镜像可能无法正常运行",
+                    fg="yellow"
+                ))
         
         dockerfile_path = output_dir / "Dockerfile"
         if not is_container_first_template:
@@ -551,20 +647,19 @@ if __name__ == "__main__":
         # 加载 .env
         load_dotenv()
         
-        # KCR_REGISTRY 默认使用企业版 KCR
+        # KCR_REGISTRY is a generic registry/namespace target used for KCR and third-party registries.
         kcr_registry = os.getenv('KCR_REGISTRY', '')
         if not kcr_registry:
             kcr_registry = "hub.kce.ksyun.com/agentengine"
         
-        # KCR_USERNAME 默认使用 KSYUN_ACCOUNT_ID
-        kcr_username = os.getenv('KCR_USERNAME', '') or os.getenv('KSYUN_ACCOUNT_ID', '')
-        kcr_password = os.getenv('KCR_PASSWORD', '')
+        kcr_username, kcr_password, registry_kind = resolve_registry_credentials(registry)
         
         # 检查是否匹配当前 registry (支持部分匹配)
         if registry not in kcr_registry and kcr_registry not in registry:
             return False
         
         if not kcr_username or not kcr_password:
+            print_registry_credentials_help(registry, kind=registry_kind)
             return False
         
         click.echo(f"🔐 使用 .env 中的凭证登录 {registry}...")
@@ -586,7 +681,7 @@ if __name__ == "__main__":
             click.secho(f"⚠️  自动登录异常: {e}", fg='yellow')
             return False
     
-    def get_registry_credentials(self) -> dict:
+    def get_registry_credentials(self, registry: str | None = None) -> dict:
         """获取镜像仓库凭证 (用于传给 Serverless)
         
         返回扁平化结构: {"username": "...", "password": "..."}
@@ -596,9 +691,8 @@ if __name__ == "__main__":
         
         load_dotenv()
         
-        # KCR_USERNAME 默认使用 KSYUN_ACCOUNT_ID
-        username = os.getenv('KCR_USERNAME', '') or os.getenv('KSYUN_ACCOUNT_ID', '')
-        password = os.getenv('KCR_PASSWORD', '')
+        registry = registry or os.getenv("KCR_REGISTRY", "")
+        username, password, _ = resolve_registry_credentials(registry)
         
         if username and password:
             return {
@@ -641,32 +735,6 @@ if __name__ == "__main__":
     
     def _print_auth_help(self, registry: str):
         """打印认证帮助信息"""
-        click.echo("")
-        click.echo("🔐 请先登录镜像仓库:")
-        click.echo("")
-        
-        if 'kce.ksyun.com' in registry or 'hub-' in registry:
-            # 金山云 KCR
-            click.echo(f"   # 金山云容器镜像服务 (KCR)")
-            click.echo(f"   docker login {registry}")
-            click.echo("")
-            click.echo("   用户名: 您的金山云账号 ID")
-            click.echo("   密码: 在 KCR 控制台获取临时密码")
-            click.echo("")
-            click.echo("   获取密码: https://kcr.console.ksyun.com/ → 访问凭证")
-        elif 'docker.io' in registry or registry == '':
-            # Docker Hub
-            click.echo("   # Docker Hub")
-            click.echo("   docker login")
-            click.echo("")
-            click.echo("   提示: 需要先在 https://hub.docker.com 注册账号")
-        else:
-            # 其他仓库
-            click.echo(f"   docker login {registry}")
-        
-        click.echo("")
-        click.echo("💡 配置 CLI 默认仓库:")
-        click.echo(f"   agentengine config set defaults.registry {registry}")
-        click.echo("")
-        click.echo("   配置后构建将自动使用该仓库:")  
-        click.echo(f"   agentengine build --mode container --push")
+        print_registry_credentials_help(registry)
+        click.echo("也可以先手动登录:")
+        click.echo(f"   docker login {registry or 'docker.io'}")

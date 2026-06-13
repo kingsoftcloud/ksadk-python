@@ -886,6 +886,18 @@ def _checkpoint_event_to_action_payload(event: SessionEvent) -> dict[str, Any] |
         "Phase": str(metadata.get("phase") or ""),
         "Metadata": metadata,
     }
+    stage = str(metadata.get("stage") or metadata.get("title") or "").strip()
+    summary = str(metadata.get("summary") or metadata.get("description") or "").strip()
+    next_action = str(metadata.get("next_action") or metadata.get("nextAction") or "").strip()
+    status = str(metadata.get("status") or "").strip()
+    if stage:
+        payload["Stage"] = stage
+    if summary:
+        payload["Summary"] = summary
+    if next_action:
+        payload["NextAction"] = next_action
+    if status:
+        payload["Status"] = status
     return payload
 
 

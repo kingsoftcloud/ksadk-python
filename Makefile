@@ -14,9 +14,9 @@ help:
 	@echo "    make test           运行测试"
 	@echo ""
 	@echo "  \033[1;32mWeb UI 构建:\033[0m"
-	@echo "    make sync-ksadk-web-static KSADK_WEB_VERSION=v0.2.3"
-	@echo "                         从 kingsoftcloud/ksadk-web Release 同步 static"
-	@echo "    make build-frontend 同步 ksadk-web static（release tarball）"
+	@echo "    make sync-ksadk-web-static KSADK_WEB_VERSION=latest"
+	@echo "                         从 @kingsoftcloud/ksadk-web npm 包同步 static"
+	@echo "    make build-frontend 同步 ksadk-web static"
 	@echo ""
 	@echo "  \033[1;32m版本管理:\033[0m"
 	@echo "    make version         显示当前版本"
@@ -379,7 +379,7 @@ public-secret-audit:
 
 public-audit: public-secret-audit
 	@echo "==> public source audit"
-	@blocked=$$(git ls-files | grep -E '^(\.pypirc|docs/internal/|\.zread/(wiki|site)/)' || true); \
+	@blocked=$$(git ls-files | grep -E '^(\.pypirc$$|\.zread/(wiki|site)/)' || true); \
 	if [ -n "$$blocked" ]; then \
 		echo "❌ blocked tracked paths:"; \
 		echo "$$blocked"; \
@@ -402,6 +402,7 @@ public-test:
 public-build-check: clean-dist
 	@echo "==> build and twine check"
 	@uv build
+	@uv run pytest tests/test_runtime_common_packaging.py::test_built_wheel_excludes_web_ui_node_modules -q
 	@uv run --extra dev python -m twine check dist/*
 
 public-preflight: public-audit public-test public-docs-build public-build-check
@@ -664,25 +665,32 @@ NODE_DIR := ksadk/server/web-ui
 STATIC_DIR := ksadk/server/static
 HOSTED_DIR := ksadk/server/web-ui/dist-hosted
 HOSTED_UI_SOURCE_DIR ?= ../agentengine-hosted-ui
-KSADK_WEB_VERSION ?= v0.2.3
+KSADK_WEB_VERSION ?= latest
+KSADK_WEB_PACKAGE ?= @kingsoftcloud/ksadk-web
 KSADK_WEB_TARBALL_NAME := kingsoftcloud-ksadk-web-$(patsubst v%,%,$(KSADK_WEB_VERSION)).tgz
-KSADK_WEB_RELEASE_URL ?= https://github.com/kingsoftcloud/ksadk-web/releases/download/$(KSADK_WEB_VERSION)/$(KSADK_WEB_TARBALL_NAME)
+KSADK_WEB_RELEASE_URL ?=
 KSADK_WEB_CACHE_DIR ?= .cache/ksadk-web
 
 sync-ksadk-web-static:
-	@echo "Sync KsADK Web static assets from $(KSADK_WEB_RELEASE_URL)"
+	@echo "Sync KsADK Web static assets from $(KSADK_WEB_PACKAGE)@$(KSADK_WEB_VERSION)"
 	@rm -rf "$(KSADK_WEB_CACHE_DIR)/package"
 	@mkdir -p "$(KSADK_WEB_CACHE_DIR)" "$(STATIC_DIR)"
-	curl -fL --retry 3 --retry-delay 2 --retry-all-errors "$(KSADK_WEB_RELEASE_URL)" -o "$(KSADK_WEB_CACHE_DIR)/$(KSADK_WEB_TARBALL_NAME)"
-	tar -xzf "$(KSADK_WEB_CACHE_DIR)/$(KSADK_WEB_TARBALL_NAME)" -C "$(KSADK_WEB_CACHE_DIR)"
-	@test -d "$(KSADK_WEB_CACHE_DIR)/package/dist-ksadk" || (echo "ERROR: dist-ksadk missing in $(KSADK_WEB_TARBALL_NAME)" && exit 1)
+	@if [ -n "$(KSADK_WEB_RELEASE_URL)" ]; then \
+		echo "Using explicit KSADK_WEB_RELEASE_URL=$(KSADK_WEB_RELEASE_URL)"; \
+		curl -fL --retry 3 --retry-delay 2 --retry-all-errors "$(KSADK_WEB_RELEASE_URL)" -o "$(KSADK_WEB_CACHE_DIR)/$(KSADK_WEB_TARBALL_NAME)"; \
+		echo "$(KSADK_WEB_TARBALL_NAME)" > "$(KSADK_WEB_CACHE_DIR)/.tarball-name"; \
+	else \
+		npm pack "$(KSADK_WEB_PACKAGE)@$(patsubst v%,%,$(KSADK_WEB_VERSION))" --pack-destination "$(KSADK_WEB_CACHE_DIR)" > "$(KSADK_WEB_CACHE_DIR)/.tarball-name"; \
+	fi
+	tar -xzf "$(KSADK_WEB_CACHE_DIR)/$$(cat "$(KSADK_WEB_CACHE_DIR)/.tarball-name")" -C "$(KSADK_WEB_CACHE_DIR)"
+	@test -d "$(KSADK_WEB_CACHE_DIR)/package/dist-ksadk" || (echo "ERROR: dist-ksadk missing in $$(cat "$(KSADK_WEB_CACHE_DIR)/.tarball-name")" && exit 1)
 	@rm -rf "$(STATIC_DIR)"
 	@mkdir -p "$(STATIC_DIR)"
 	cp -R "$(KSADK_WEB_CACHE_DIR)/package/dist-ksadk/." "$(STATIC_DIR)/"
 	@echo "Synced KsADK Web $(KSADK_WEB_VERSION) static assets into $(STATIC_DIR)"
 
 sync-hosted-ui: sync-ksadk-web-static
-	@echo "sync-hosted-ui is deprecated; static assets now come from kingsoftcloud/ksadk-web GitHub Release."
+	@echo "sync-hosted-ui is deprecated; static assets now come from $(KSADK_WEB_PACKAGE)."
 
 build-frontend: sync-ksadk-web-static
 	@echo "Frontend static assets synced from $(KSADK_WEB_VERSION)"

@@ -63,6 +63,132 @@ def test_dashboard_open_is_canonical_command(monkeypatch):
     assert "http://demo.example.com/s/lnk-1" in result.output
 
 
+def test_dashboard_open_uses_state_region_when_region_is_not_explicit(tmp_path: Path, monkeypatch):
+    runner = CliRunner()
+    captured = {}
+
+    (tmp_path / ".agentengine.state").write_text(
+        "agent_id: ar-test\n"
+        "region: pre-online\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("KSYUN_REGION", raising=False)
+    monkeypatch.setattr(
+        cmd_dashboard,
+        "load_state",
+        lambda _cwd: {"agent_id": "ar-test", "region": "pre-online"},
+    )
+
+    async def _fake_resolve(region, primary_ref, fallback_ref):
+        captured["region"] = region
+        return await _fake_resolve_agent_detail(region, primary_ref, fallback_ref)
+
+    monkeypatch.setattr(cmd_dashboard, "_resolve_agent_detail", _fake_resolve)
+    monkeypatch.setattr(cmd_dashboard, "_create_dashboard_access_link", _fake_create_access_link)
+    monkeypatch.setattr(cmd_dashboard.webbrowser, "open", lambda _url: None)
+
+    result = runner.invoke(cmd_dashboard.dashboard, ["open"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["region"] == "pre-online"
+
+
+def test_dashboard_open_explicit_region_overrides_state_region(tmp_path: Path, monkeypatch):
+    runner = CliRunner()
+    captured = {}
+
+    (tmp_path / ".agentengine.state").write_text(
+        "agent_id: ar-test\n"
+        "region: pre-online\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("KSYUN_REGION", raising=False)
+    monkeypatch.setattr(
+        cmd_dashboard,
+        "load_state",
+        lambda _cwd: {"agent_id": "ar-test", "region": "pre-online"},
+    )
+
+    async def _fake_resolve(region, primary_ref, fallback_ref):
+        captured["region"] = region
+        return await _fake_resolve_agent_detail(region, primary_ref, fallback_ref)
+
+    monkeypatch.setattr(cmd_dashboard, "_resolve_agent_detail", _fake_resolve)
+    monkeypatch.setattr(cmd_dashboard, "_create_dashboard_access_link", _fake_create_access_link)
+    monkeypatch.setattr(cmd_dashboard.webbrowser, "open", lambda _url: None)
+
+    result = runner.invoke(cmd_dashboard.dashboard, ["open", "--region", "cn-beijing-6"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["region"] == "cn-beijing-6"
+
+
+def test_dashboard_open_prefers_state_region_over_global_config_injected_region(tmp_path: Path, monkeypatch):
+    runner = CliRunner()
+    captured = {}
+
+    (tmp_path / ".agentengine.state").write_text(
+        "agent_id: ar-test\n"
+        "region: pre-online\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("KSYUN_REGION", "cn-beijing-6")
+    monkeypatch.setenv("KSADK_GLOBAL_CONFIG_ENV_KEYS", "KSYUN_REGION")
+    monkeypatch.setattr(
+        cmd_dashboard,
+        "load_state",
+        lambda _cwd: {"agent_id": "ar-test", "region": "pre-online"},
+    )
+
+    async def _fake_resolve(region, primary_ref, fallback_ref):
+        captured["region"] = region
+        return await _fake_resolve_agent_detail(region, primary_ref, fallback_ref)
+
+    monkeypatch.setattr(cmd_dashboard, "_resolve_agent_detail", _fake_resolve)
+    monkeypatch.setattr(cmd_dashboard, "_create_dashboard_access_link", _fake_create_access_link)
+    monkeypatch.setattr(cmd_dashboard.webbrowser, "open", lambda _url: None)
+
+    result = runner.invoke(cmd_dashboard.dashboard, ["open"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["region"] == "pre-online"
+
+
+def test_dashboard_open_env_region_overrides_state_region(tmp_path: Path, monkeypatch):
+    runner = CliRunner()
+    captured = {}
+
+    (tmp_path / ".agentengine.state").write_text(
+        "agent_id: ar-test\n"
+        "region: pre-online\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("KSYUN_REGION", "cn-shanghai-3")
+    monkeypatch.delenv("KSADK_GLOBAL_CONFIG_ENV_KEYS", raising=False)
+    monkeypatch.setattr(
+        cmd_dashboard,
+        "load_state",
+        lambda _cwd: {"agent_id": "ar-test", "region": "pre-online"},
+    )
+
+    async def _fake_resolve(region, primary_ref, fallback_ref):
+        captured["region"] = region
+        return await _fake_resolve_agent_detail(region, primary_ref, fallback_ref)
+
+    monkeypatch.setattr(cmd_dashboard, "_resolve_agent_detail", _fake_resolve)
+    monkeypatch.setattr(cmd_dashboard, "_create_dashboard_access_link", _fake_create_access_link)
+    monkeypatch.setattr(cmd_dashboard.webbrowser, "open", lambda _url: None)
+
+    result = runner.invoke(cmd_dashboard.dashboard, ["open"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["region"] == "cn-shanghai-3"
+
+
 def test_dashboard_open_rejects_path_with_embedded_option(monkeypatch):
     runner = CliRunner()
 

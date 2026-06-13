@@ -2058,6 +2058,29 @@ PORT=8080
 # HERMES_FALLBACK_MODEL=kimi-k2.6
 # HERMES_IMAGE=hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.5.29.2-ksadk-v1
 """
+        env_example_content = """# ======================
+# Hermes 标准部署最小配置示例
+# ======================
+KSYUN_ACCESS_KEY=your-access-key
+KSYUN_SECRET_KEY=your-secret-key
+KSYUN_REGION=cn-beijing-6
+# KSYUN_ACCOUNT_ID=your-account-id
+
+OPENAI_API_KEY=your-model-api-key
+OPENAI_BASE_URL=https://kspmas.ksyun.com/v1/
+OPENAI_MODEL_NAME=glm-5.1
+
+# Hermes runtime
+API_SERVER_ENABLED=true
+API_SERVER_HOST=127.0.0.1
+API_SERVER_PORT=8642
+HERMES_DASHBOARD_HOST=127.0.0.1
+HERMES_DASHBOARD_PORT=9119
+PORT=8080
+# HERMES_CONTEXT_LENGTH=200000
+# HERMES_FALLBACK_MODEL=kimi-k2.6
+# HERMES_IMAGE=hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.5.29.2-ksadk-v1
+"""
     else:
         langfuse_public = global_env.get("LANGFUSE_PUBLIC_KEY", "")
         langfuse_secret = global_env.get("LANGFUSE_SECRET_KEY", "")
@@ -2124,6 +2147,8 @@ OPENAI_API_KEY={api_key}
     
     # 使用 utf-8-sig 编码 (带 BOM)，确保 Windows 程序正确识别为 UTF-8
     (project_path / ".env").write_text(env_content, encoding="utf-8-sig")
+    if framework == "hermes":
+        (project_path / ".env.example").write_text(env_example_content, encoding="utf-8-sig")
 
     if framework == "openclaw":
         print_success("项目创建成功")

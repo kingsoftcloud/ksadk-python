@@ -370,7 +370,12 @@ class MCPContainerBuilder(ContainerBuilder):
         output_dir.mkdir(parents=True, exist_ok=True)
 
         for item in project_path.iterdir():
-            if (item.name.startswith('.') and not item.name.startswith('.env')) or item.name in ('__pycache__', '.git', 'node_modules'):
+            if CodeBuilder._is_real_dotenv_file(item.name):
+                continue
+            if (
+                (item.name.startswith('.') and item.name != '.env.example')
+                or item.name in ('__pycache__', '.git', 'node_modules')
+            ):
                 continue
             dest = output_dir / item.name
             if item.is_dir():

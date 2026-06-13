@@ -199,6 +199,45 @@ def test_launch_network_ids_imply_vpc_access(tmp_path: Path, monkeypatch):
     assert provider.last_target.network.enable_vpc_access is True
 
 
+def test_launch_cli_forwards_explicit_env_and_env_file(tmp_path: Path, monkeypatch):
+    provider = _FakeProvider()
+    runner = CliRunner()
+    env_file = tmp_path / "runtime.env"
+    env_file.write_text(
+        "APP_MODE=file\nFILE_ONLY=1\nOVERRIDE_ME=from-file\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("ksadk.detection.FrameworkDetector", lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})())
+    monkeypatch.setattr("ksadk.cli.cmd_launch._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"})
+    monkeypatch.setattr("ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider)
+
+    result = runner.invoke(
+        cmd_launch.launch,
+        [
+            str(tmp_path),
+            "--ks3-path",
+            "ks3://bucket/agents/demo-agent/code_manual.zip",
+            "--env-file",
+            str(env_file),
+            "--env",
+            "OVERRIDE_ME=from-cli",
+            "--env",
+            "CLI_ONLY=yes",
+            "--no-version",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert provider.last_target is not None
+    assert provider.last_target.extra["env_vars"] == {
+        "APP_MODE": "file",
+        "FILE_ONLY": "1",
+        "OVERRIDE_ME": "from-cli",
+        "CLI_ONLY": "yes",
+    }
+
+
 def test_launch_reads_ui_config_from_agentengine_yaml_when_cli_not_set(tmp_path: Path, monkeypatch):
     provider = _FakeProvider()
 

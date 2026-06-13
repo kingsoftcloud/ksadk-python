@@ -94,6 +94,9 @@ class LangGraphRunner(BaseRunner):
         next_config = dict(config)
         configurable = dict(next_config.get("configurable") or {})
         configurable["thread_id"] = thread_id
+        checkpoint_ns = str(checkpoint_ref.get("checkpoint_ns") or "").strip()
+        if checkpoint_ns:
+            configurable["checkpoint_ns"] = checkpoint_ns
         configurable["checkpoint_id"] = checkpoint_id
         next_config["configurable"] = configurable
         return next_config
@@ -117,6 +120,11 @@ class LangGraphRunner(BaseRunner):
         return {
             "langgraph": {
                 "thread_id": thread_id,
+                **(
+                    {"checkpoint_ns": str(configurable.get("checkpoint_ns")).strip()}
+                    if str(configurable.get("checkpoint_ns") or "").strip()
+                    else {}
+                ),
                 "checkpoint_id": checkpoint_id,
             }
         }

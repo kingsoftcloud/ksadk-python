@@ -677,6 +677,60 @@ class AgentEngineClient:
         return namespace or "default", repo, tag
 
     @staticmethod
+    def _enterprise_instance_from_image_ref(image_ref: str) -> str | None:
+        """Infer enterprise KCR instance name from a full image reference."""
+        image = (image_ref or "").strip()
+        for prefix in ("http://", "https://"):
+            if image.startswith(prefix):
+                image = image[len(prefix):]
+                break
+        host = image.split("/", 1)[0].strip()
+        if host.endswith("-vpc.ksyunkcr.com"):
+            return host[: -len("-vpc.ksyunkcr.com")] or None
+        if host.endswith(".ksyunkcr.com") and not host.endswith("-vpc.ksyunkcr.com"):
+            return host.split(".", 1)[0] or None
+        return None
+
+    @classmethod
+    def _build_container_config_payload(
+        cls,
+        *,
+        artifact: str,
+        image_credential: Optional[Dict[str, Any]] = None,
+        container: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        container = container or {}
+        artifact = str(artifact or container.get("image_addr") or "").strip()
+        img_ns, img_repo, img_ver = cls._parse_container_image_ref(artifact)
+
+        inferred_enterprise_instance = cls._enterprise_instance_from_image_ref(artifact)
+        image_type = (
+            container.get("image_type")
+            or ("Enterprise" if inferred_enterprise_instance else "Personal")
+        )
+        params: Dict[str, Any] = {
+            "ImageType": image_type,
+            "NameSpace": container.get("name_space") or img_ns,
+            "ImageRepo": container.get("image_repo") or img_repo,
+            "ImageVersion": container.get("image_version") or img_ver,
+            "ImageAddr": container.get("image_addr") or artifact,
+        }
+
+        enterprise_instance = container.get("enterprise_instance") or inferred_enterprise_instance
+        if enterprise_instance:
+            params["EnterpriseInstance"] = enterprise_instance
+        if container.get("enterprise_instance_id"):
+            params["EnterpriseInstanceId"] = container.get("enterprise_instance_id")
+
+        ic = image_credential or {}
+        username = (container.get("username") or ic.get("username") or "").strip()
+        password = (container.get("password") or ic.get("password") or "").strip()
+        if username and password:
+            params["UserName"] = username
+            params["Password"] = password
+        return params
+
+    @staticmethod
     def _normalize_framework_name(framework: Optional[str]) -> str:
         """规范化 framework 名称，默认 langgraph。"""
         normalized = (framework or "langgraph").strip().lower()
@@ -1154,23 +1208,11 @@ class AgentEngineClient:
             }
         else:
             ic = data.get("image_credential", {}) or {}
-            image_username = (ic.get("username") or "").strip()
-            image_password = (ic.get("password") or "").strip()
             artifact = (data.get("artifact_path", "") or "").strip()
-            img_ns, img_repo, img_ver = self._parse_container_image_ref(artifact)
-
-            container_config = {
-                "ImageType": "Personal",
-                "NameSpace": img_ns,
-                "ImageRepo": img_repo,
-                "ImageVersion": img_ver,
-                "ImageAddr": artifact,
-            }
-            # 仅在用户名和密码同时存在时才传鉴权，避免对公共镜像误触发失败鉴权重试。
-            if image_username and image_password:
-                container_config["UserName"] = image_username
-                container_config["Password"] = image_password
-            params["ContainerConfig"] = container_config
+            params["ContainerConfig"] = self._build_container_config_payload(
+                artifact=artifact,
+                image_credential=ic,
+            )
 
         env_vars = []
         envs = data.get("env_vars") or data.get("environment_variables")
@@ -1411,20 +1453,10 @@ class AgentEngineClient:
             artifact = (data.get("artifact_path", "") or "").strip()
             if (data.get("artifact_type") or "").lower() == "container":
                 ic = data.get("image_credential", {}) or {}
-                image_username = (ic.get("username") or "").strip()
-                image_password = (ic.get("password") or "").strip()
-                img_ns, img_repo, img_ver = self._parse_container_image_ref(artifact)
-                container_config = {
-                    "ImageType": "Personal",
-                    "NameSpace": img_ns,
-                    "ImageRepo": img_repo,
-                    "ImageVersion": img_ver,
-                    "ImageAddr": artifact,
-                }
-                if image_username and image_password:
-                    container_config["UserName"] = image_username
-                    container_config["Password"] = image_password
-                params["ContainerConfig"] = container_config
+                params["ContainerConfig"] = self._build_container_config_payload(
+                    artifact=artifact,
+                    image_credential=ic,
+                )
             else:
                 ks3 = data.get("ks3", {})
                 params["CodeConfig"] = {
@@ -1799,27 +1831,11 @@ class AgentEngineClient:
         container = data.get("container_config") or {}
         artifact = str(data.get("artifact_path") or container.get("image_addr") or "").strip()
         ic = data.get("image_credential", {}) or {}
-        img_ns, img_repo, img_ver = self._parse_container_image_ref(artifact)
-
-        image_type = container.get("image_type") or "Personal"
-        params: Dict[str, Any] = {
-            "ImageType": image_type,
-            "NameSpace": container.get("name_space") or img_ns,
-            "ImageRepo": container.get("image_repo") or img_repo,
-            "ImageVersion": container.get("image_version") or img_ver,
-            "ImageAddr": container.get("image_addr") or artifact,
-        }
-        if container.get("enterprise_instance"):
-            params["EnterpriseInstance"] = container.get("enterprise_instance")
-        if container.get("enterprise_instance_id"):
-            params["EnterpriseInstanceId"] = container.get("enterprise_instance_id")
-
-        username = (container.get("username") or ic.get("username") or "").strip()
-        password = (container.get("password") or ic.get("password") or "").strip()
-        if username and password:
-            params["UserName"] = username
-            params["Password"] = password
-        return params
+        return self._build_container_config_payload(
+            artifact=artifact,
+            image_credential=ic,
+            container=container,
+        )
 
     def _build_mcp_resource(self, data: Dict[str, Any]) -> Dict[str, Any]:
         resources = data.get("resources", {}) or {}

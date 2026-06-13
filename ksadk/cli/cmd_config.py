@@ -535,30 +535,32 @@ def run_config_wizard(config_file: str | None, set_items: tuple, is_global: bool
     ))
 
     if should_config_registry:
-        # 密码 (必填)
+        new_env['KCR_USERNAME'] = _ask_or_exit(questionary.text(
+            "KCR 用户名 (企业版请填写访问凭证用户名):",
+            default=existing_env.get('KCR_USERNAME', ''),
+            style=_questionary_style()
+        ))
+
         new_env['KCR_PASSWORD'] = _ask_or_exit(questionary.password(
-            "KCR 临时密码:",
+            "KCR 密码或 Token:",
             default=existing_env.get('KCR_PASSWORD', ''),
             style=_questionary_style()
         ))
-        
-        # 仓库地址 (选填，默认使用企业版 KCR)
+
         default_registry = existing_env.get('KCR_REGISTRY', '')
-        auto_registry = "hub.kce.ksyun.com/agentengine"
-        
         custom_registry = _ask_or_exit(questionary.text(
-            f"镜像仓库地址 [选填,默认: {auto_registry}]:",
+            "镜像仓库地址 [选填,如: agenthzzqy-vpc.ksyunkcr.com/testagent-pub]:",
             default=default_registry,
             style=_questionary_style()
         ))
         
         if custom_registry:
             new_env['KCR_REGISTRY'] = custom_registry
-        # 不填则不写入，运行时自动根据 KSYUN_REGION 生成
-        
+
         print_info("提示:")
-        print_info("用户名自动使用 KSYUN_ACCOUNT_ID (无需配置)")
-        print_info("KCR 临时密码获取: https://kcr.console.ksyun.com/ → 访问凭证")
+        print_info("个人版 KCR 可留空 KCR_USERNAME，运行时使用 KSYUN_ACCOUNT_ID 作为用户名兜底")
+        print_info("企业版 KCR 和第三方镜像仓库必须配置 KCR_USERNAME + KCR_PASSWORD")
+        print_info("KCR 访问凭证获取: https://kcr.console.ksyun.com/ → 访问凭证")
 
     print_rule()
     
