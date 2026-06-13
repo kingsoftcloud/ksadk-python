@@ -2105,6 +2105,50 @@ async def test_list_session_checkpoints_filters_by_agent_session_and_run(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_list_session_checkpoints_returns_business_resume_fields(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
+    service = InMemorySessionService()
+
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-business-checkpoints")
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    await conversation_runtime.append_run_checkpoint_event(
+        session_id="sess-business-checkpoints",
+        author="demo-agent",
+        run_id="run-business",
+        checkpoint_id="ckpt-metrics",
+        framework="langgraph",
+        framework_ref={"langgraph": {"thread_id": "tenant:agent:sess-business-checkpoints", "checkpoint_id": "ckpt-metrics"}},
+        phase="指标聚合已完成，等待生成报告",
+        invocation_id="inv-business",
+        metadata={
+            "stage": "清洗聚合指标",
+            "summary": "GMV、转化率和退款率已经聚合完成",
+            "next_action": "继续生成复盘报告",
+            "status": "completed",
+        },
+        session_service_provider=lambda: service,
+    )
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ListSessionCheckpoints",
+            json={"AgentId": "demo-agent", "SessionId": "sess-business-checkpoints"},
+        )
+
+    assert response.status_code == 200
+    checkpoint = response.json()["Data"]["Checkpoints"][0]
+    assert checkpoint["RunId"] == "run-business"
+    assert checkpoint["CheckpointId"] == "ckpt-metrics"
+    assert checkpoint["Phase"] == "指标聚合已完成，等待生成报告"
+    assert checkpoint["Stage"] == "清洗聚合指标"
+    assert checkpoint["Summary"] == "GMV、转化率和退款率已经聚合完成"
+    assert checkpoint["NextAction"] == "继续生成复盘报告"
+    assert checkpoint["Status"] == "completed"
+
+
+@pytest.mark.asyncio
 async def test_resume_run_action_reuses_checkpoint_and_records_resume(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     conversation_runtime = importlib.import_module("ksadk.conversations.runtime")

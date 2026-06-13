@@ -74,6 +74,10 @@ from ksadk.cli.ui import (
 from ksadk.deployment.agent_access import get_latest_agent_access
 from ksadk.cli.model_catalog import fetch_provider_model_catalog, find_model_in_catalog
 from ksadk.conversations.model_context import normalize_model_metadata
+from ksadk.builders.container_builder import (
+    registry_kind_label,
+    resolve_registry_credentials,
+)
 from ksadk.openclaw_gateway import OpenClawGatewayClient, OpenClawGatewayError, OpenClawGatewayRequestError
 from ksadk.terminal_client import run_terminal_session
 
@@ -364,6 +368,12 @@ def _resolve_env(*keys: str, default: Optional[str] = None) -> Optional[str]:
         if val is not None and str(val).strip() != "":
             return str(val).strip()
     return default
+
+
+def _openclaw_registry_env() -> dict[str, str]:
+    env = {str(k): str(v) for k, v in os.environ.items()}
+    env.update(_get_global_env())
+    return env
 
 
 def _resolve_model_base_url(cli_value: Optional[str]) -> Optional[str]:
@@ -3416,21 +3426,31 @@ async def _deploy_openclaw(
     if network_payload:
         request_data["network"] = network_payload
 
-    # KCR 凭证：仅在显式提供用户名+密码时注入，避免公共镜像触发无效鉴权重试。
+    # 镜像凭证：按目标镜像地址判断仓库类型，避免企业版/第三方误用 KSYUN_ACCOUNT_ID。
     image_credential = None
-    kcr_username = _resolve_env("KCR_USERNAME", "KSYUN_ACCOUNT_ID")
-    kcr_password = _resolve_env("KCR_PASSWORD")
+    kcr_username, kcr_password, registry_kind = resolve_registry_credentials(
+        image_ref,
+        environ=_openclaw_registry_env(),
+    )
     if kcr_username and kcr_password:
         image_credential = {
             "username": kcr_username,
             "password": kcr_password,
         }
         request_data["image_credential"] = image_credential
-    elif kcr_password and not kcr_username:
-        print_warn("检测到 KCR_PASSWORD 但缺少 KCR_USERNAME，已忽略镜像凭证")
+    elif kcr_password and not kcr_username and registry_kind != "personal_kcr":
+        print_warn(
+            f"检测到 KCR_PASSWORD 但缺少 KCR_USERNAME，已忽略{registry_kind_label(registry_kind)}镜像凭证；"
+            "企业版 KCR 和第三方镜像仓库必须配置 KCR_USERNAME + KCR_PASSWORD"
+        )
     elif "/agentengine-public/" not in image_ref:
-        print_warn("未配置 KCR_PASSWORD，私有镜像可能无法拉取 (公共镜像可忽略)")
-        print_info("获取方式: https://kcr.console.ksyun.com/ → 访问凭证")
+        if registry_kind == "personal_kcr":
+            print_warn("未配置个人版 KCR 镜像凭证 (KSYUN_ACCOUNT_ID/KCR_PASSWORD)，私有镜像可能无法拉取")
+        else:
+            print_warn(
+                f"未配置{registry_kind_label(registry_kind)}镜像凭证 "
+                "(KCR_USERNAME/KCR_PASSWORD)，私有镜像可能无法拉取"
+            )
 
     if dry_run:
         async with AgentEngineClient(region=region, dry_run=True) as client:

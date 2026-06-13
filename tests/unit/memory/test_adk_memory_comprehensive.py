@@ -466,6 +466,28 @@ class TestSdkLTMBackend:
         })
         assert result == []
 
+    def test_parse_response_data_nested_aicp_memory_field(self):
+        backend = self._make_backend()
+        result = backend._parse_query_response({
+            "Code": 200,
+            "Message": "success",
+            "Data": [{
+                "Memories": [
+                    {
+                        "MemoryId": "mem-1",
+                        "Memory": "用户张三喜欢喝桃汁。",
+                        "Score": 0.99,
+                    },
+                    {
+                        "MemoryId": "mem-2",
+                        "Memory": "用户张三不喜欢喝咖啡。",
+                        "Score": 0.98,
+                    },
+                ],
+            }],
+        })
+        assert result == ["用户张三喜欢喝桃汁。", "用户张三不喜欢喝咖啡。"]
+
     def test_parse_response_results_format(self):
         backend = self._make_backend()
         result = backend._parse_query_response({

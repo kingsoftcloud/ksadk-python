@@ -874,6 +874,7 @@ def _build_runner_request_payload(
         "platform_context": runtime_context.to_payload(),
         "kb_context": runtime_context.kb_context,
         "memory_context": runtime_context.memory_context,
+        "invocation_id": prepared.invocation_id,
     }
     if prepared.instructions:
         payload["instructions"] = prepared.instructions
@@ -1551,11 +1552,26 @@ def _checkpoint_event_args_from_agentengine_metadata(
     run_id = str(agentengine_metadata.get("run_id") or fallback_run_id or "").strip()
     if not run_id:
         return None
+    phase = str(agentengine_metadata.get("phase") or "").strip()
+    display_metadata = {
+        key: value
+        for key, value in agentengine_metadata.items()
+        if key
+        not in {
+            "run_id",
+            "checkpoint_id",
+            "framework",
+            "framework_ref",
+            "phase",
+        }
+    }
     return {
         "run_id": run_id,
         "checkpoint_id": checkpoint_id,
         "framework": framework,
         "framework_ref": framework_ref,
+        "phase": phase,
+        "metadata": display_metadata,
     }
 
 
@@ -3041,8 +3057,9 @@ async def invoke_conversation_once(
                 checkpoint_id=checkpoint_args["checkpoint_id"],
                 framework=checkpoint_args["framework"],
                 framework_ref=checkpoint_args["framework_ref"],
-                phase="completed",
+                phase=checkpoint_args.get("phase") or "completed",
                 invocation_id=prepared.invocation_id,
+                metadata=checkpoint_args.get("metadata"),
                 session_service_provider=provider,
             )
         await append_conversation_event(
@@ -3297,8 +3314,9 @@ async def _iter_conversation_turn_events(
                                         checkpoint_id=checkpoint_args["checkpoint_id"],
                                         framework=checkpoint_args["framework"],
                                         framework_ref=checkpoint_args["framework_ref"],
-                                        phase="stream",
+                                        phase=checkpoint_args.get("phase") or "stream",
                                         invocation_id=prepared.invocation_id,
+                                        metadata=checkpoint_args.get("metadata"),
                                         session_service_provider=provider,
                                     )
                             continue

@@ -18,6 +18,8 @@ from ksadk.conversations.context import canonical_event_type
 from ksadk.conversations.model_options import normalize_model_options
 from ksadk.conversations.model_context import estimate_text_tokens
 from ksadk.conversations.runtime import (
+    PreparedConversationTurn,
+    _build_runner_request_payload,
     _build_runner_ambient_contexts,
     append_context_checkpoint_event,
     append_run_checkpoint_event,
@@ -142,6 +144,30 @@ class _CheckpointMetadataStreamingRunner(_StreamingRunner):
                         "langgraph": {
                             "thread_id": "tenant:agent:sess-1",
                             "checkpoint_id": "ckpt-stream",
+                        }
+                    },
+                }
+            },
+        }
+
+
+class _CheckpointMetadataPhaseStreamingRunner(_StreamingRunner):
+    async def stream(self, input_data: dict):
+        self.stream_calls.append(input_data)
+        yield {
+            "type": "checkpoint",
+            "metadata": {
+                "agentengine": {
+                    "run_id": "run-1",
+                    "phase": "数据清洗完成，等待生成报告",
+                    "stage": "清洗聚合指标",
+                    "summary": "GMV、转化率和退款率已经聚合完成",
+                    "next_action": "恢复后继续生成复盘报告",
+                    "framework": "langgraph",
+                    "framework_ref": {
+                        "langgraph": {
+                            "thread_id": "tenant:agent:sess-1",
+                            "checkpoint_id": "ckpt-business-stage",
                         }
                     },
                 }
@@ -3036,6 +3062,47 @@ def test_extract_responses_resume_input_accepts_checkpoint_resume_action():
     }
 
 
+def test_build_runner_request_payload_exposes_invocation_id():
+    prepared = PreparedConversationTurn(
+        session_id="sess-1",
+        invocation_id="inv-runtime-cancel",
+        user_input="hello",
+        user_display_input="hello",
+        history=[],
+        input_content=[],
+        input_messages=[],
+        user_parts=[],
+        attachments=[],
+        attachment_results=[],
+        current_attachments=[],
+        current_attachment_results=[],
+        has_current_files=False,
+    )
+    runtime_context = PlatformInvocationContext(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-1",
+        history=[],
+        input_content=[],
+        input_messages=[],
+        input_parts=[],
+        attachments=[],
+        attachment_results=[],
+        current_attachments=[],
+        current_attachment_results=[],
+        has_current_files=False,
+        runner_type="langgraph",
+    )
+
+    payload = _build_runner_request_payload(
+        prepared=prepared,
+        model="demo-model",
+        runtime_context=runtime_context,
+    )
+
+    assert payload["invocation_id"] == "inv-runtime-cancel"
+
+
 @pytest.mark.asyncio
 async def test_invoke_conversation_once_checkpoint_resume_writes_runtime_event(monkeypatch):
     service = InMemorySessionService()
@@ -3202,6 +3269,37 @@ async def test_stream_conversation_turn_records_checkpoint_chunk(monkeypatch):
     assert checkpoint_events[0].metadata["checkpoint_id"] == "ckpt-stream"
     completed = [chunk for chunk in chunks if "response.completed" in chunk][0]
     assert "ckpt-stream" in completed
+
+
+@pytest.mark.asyncio
+async def test_stream_conversation_turn_preserves_checkpoint_phase(monkeypatch):
+    service = InMemorySessionService()
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-1")
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    runner = _CheckpointMetadataPhaseStreamingRunner()
+    chunks = [
+        chunk
+        async for chunk in stream_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-1",
+            messages=[{"role": "user", "content": "hello"}],
+            model="demo-model",
+            prepare_runner=lambda active_runner, model: active_runner.prepare_for_request(model),
+        )
+    ]
+
+    events = await service.get_events("sess-1")
+    checkpoint_events = [event for event in events if event.event_type == "run_checkpoint"]
+    assert len(checkpoint_events) == 1
+    assert checkpoint_events[0].metadata["checkpoint_id"] == "ckpt-business-stage"
+    assert checkpoint_events[0].metadata["phase"] == "数据清洗完成，等待生成报告"
+    assert checkpoint_events[0].metadata["stage"] == "清洗聚合指标"
+    assert checkpoint_events[0].metadata["summary"] == "GMV、转化率和退款率已经聚合完成"
+    assert checkpoint_events[0].metadata["next_action"] == "恢复后继续生成复盘报告"
+    assert any("response.completed" in chunk for chunk in chunks)
 
 
 @pytest.mark.asyncio

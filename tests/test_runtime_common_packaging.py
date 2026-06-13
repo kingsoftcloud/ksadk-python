@@ -1,4 +1,5 @@
 from pathlib import Path
+import zipfile
 import tomllib
 
 
@@ -10,6 +11,51 @@ def test_pyproject_uses_in_repo_runtime_common_source_package():
 
     assert "agentengine-runtime-common" not in pyproject
     assert "ksadk_runtime_common*" in pyproject
+
+
+def test_runtime_common_workspace_router_is_python310_compatible(tmp_path: Path):
+    router_source = (REPO_ROOT / "ksadk_runtime_common" / "workspace_files" / "router.py").read_text(
+        encoding="utf-8"
+    )
+    assert "from datetime import UTC" not in router_source
+    assert "datetime.UTC" not in router_source
+
+    from ksadk_runtime_common.workspace_files.router import _isoformat_timestamp
+
+    target = tmp_path / "demo.txt"
+    target.write_text("ok", encoding="utf-8")
+
+    assert _isoformat_timestamp(target).endswith("Z")
+
+
+def test_distributed_python_sources_do_not_use_python311_datetime_utc():
+    package_roots = [
+        REPO_ROOT / "ksadk",
+        REPO_ROOT / "ksadk_runtime_common",
+    ]
+    offenders: list[str] = []
+
+    for package_root in package_roots:
+        for source_path in package_root.rglob("*.py"):
+            source = source_path.read_text(encoding="utf-8")
+            if "from datetime import UTC" in source or "datetime.UTC" in source:
+                offenders.append(str(source_path.relative_to(REPO_ROOT)))
+
+    assert offenders == []
+
+
+def test_built_wheel_excludes_web_ui_node_modules():
+    wheels = sorted((REPO_ROOT / "dist").glob("ksadk-*.whl"))
+    assert wheels, "请先运行 uv build 生成 dist/ksadk-*.whl"
+
+    with zipfile.ZipFile(wheels[-1]) as archive:
+        leaked = [
+            name
+            for name in archive.namelist()
+            if name.startswith("ksadk/server/web-ui/node_modules/")
+        ]
+
+    assert leaked == []
 
 
 def test_pyproject_declares_python_multipart_for_local_web_ui_uploads():

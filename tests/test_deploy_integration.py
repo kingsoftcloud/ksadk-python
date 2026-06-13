@@ -561,6 +561,128 @@ class TestDeployLogic:
         assert env_vars["OPENAI_MODEL_NAME"] == "test-model"
 
     @pytest.mark.asyncio
+    async def test_deploy_merges_global_env_with_project_env(
+        self,
+        temp_project_dir,
+        sample_package_info,
+        sample_deploy_target,
+    ):
+        """部署环境变量使用全局配置 + 项目 .env，且项目 .env 优先。"""
+        provider = ServerlessProvider()
+        (temp_project_dir / ".env").write_text(
+            "OPENAI_API_KEY=project-key\nPROJECT_ONLY=project-value\n",
+            encoding="utf-8",
+        )
+
+        captured = {}
+        mock_client = AsyncMock()
+
+        async def _fake_create_agent(payload):
+            captured["payload"] = payload
+            return {
+                "agent_id": "ar-20260119-env",
+                "name": "test-agent",
+                "endpoint": "https://test.kspmas.ksyun.com",
+                "api_key": "ak-test-key",
+            }
+
+        mock_client.create_agent = AsyncMock(side_effect=_fake_create_agent)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock()
+
+        with patch.dict(os.environ, {"AGENTENGINE_SERVER_URL": "http://localhost:8080"}), \
+             patch(
+                 "ksadk.deployment.providers.serverless.get_env_from_global_config",
+                 return_value={
+                     "OPENAI_API_KEY": "global-key",
+                     "OPENAI_BASE_URL": "https://model.example.com/v1",
+                 },
+             ), \
+             patch("ksadk.deployment.providers.serverless.AgentEngineClient", return_value=mock_client), \
+             patch("ksadk.common.auth.AWSV4Auth") as MockAuth:
+
+            MockAuth.return_value.access_key_id = "test-ak"
+            MockAuth.return_value.secret_access_key = "test-sk"
+
+            await provider.deploy(sample_package_info, sample_deploy_target)
+
+        env_vars = captured["payload"]["env_vars"]
+        assert env_vars["OPENAI_API_KEY"] == "project-key"
+        assert env_vars["OPENAI_BASE_URL"] == "https://model.example.com/v1"
+        assert env_vars["PROJECT_ONLY"] == "project-value"
+
+    def test_deploy_env_vars_precedence_and_process_env_allowlist(
+        self,
+        temp_project_dir,
+    ):
+        """环境变量优先级: 全局配置 < allowlist shell env < 项目 .env < 显式 env。"""
+        provider = ServerlessProvider()
+        (temp_project_dir / ".env").write_text(
+            "OPENAI_API_KEY=project-key\nPROJECT_ONLY=project-value\n",
+            encoding="utf-8",
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "A": "B",
+                "OPENAI_API_KEY": "shell-key",
+                "KSADK_BUILD_ENABLE_MCP": "true",
+                "KSADK_CUSTOM_RUNTIME_FLAG": "from-shell",
+                "KSADK_SANDBOX_TEMPLATE_ID": "tmpl-shell",
+            },
+            clear=True,
+        ), patch(
+            "ksadk.deployment.providers.serverless.get_env_from_global_config",
+            return_value={
+                "OPENAI_API_KEY": "global-key",
+                "OPENAI_BASE_URL": "https://model.example.com/v1",
+            },
+        ):
+            env_vars, _, _ = provider._load_deploy_env_vars(
+                temp_project_dir,
+                {
+                    "OPENAI_API_KEY": "explicit-key",
+                    "CUSTOM_RUNTIME_FLAG": "enabled",
+                },
+            )
+
+        assert env_vars["OPENAI_API_KEY"] == "explicit-key"
+        assert env_vars["OPENAI_BASE_URL"] == "https://model.example.com/v1"
+        assert env_vars["PROJECT_ONLY"] == "project-value"
+        assert env_vars["KSADK_CUSTOM_RUNTIME_FLAG"] == "from-shell"
+        assert env_vars["KSADK_SANDBOX_TEMPLATE_ID"] == "tmpl-shell"
+        assert env_vars["CUSTOM_RUNTIME_FLAG"] == "enabled"
+        assert "A" not in env_vars
+        assert "KSADK_BUILD_ENABLE_MCP" not in env_vars
+
+    def test_deploy_project_env_overrides_process_env_allowlist(
+        self,
+        temp_project_dir,
+    ):
+        provider = ServerlessProvider()
+        (temp_project_dir / ".env").write_text(
+            "OPENAI_API_KEY=project-key\nOPENAI_MODEL_NAME=project-model\n",
+            encoding="utf-8",
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "OPENAI_API_KEY": "shell-key",
+                "OPENAI_MODEL_NAME": "shell-model",
+            },
+            clear=True,
+        ), patch(
+            "ksadk.deployment.providers.serverless.get_env_from_global_config",
+            return_value={"OPENAI_API_KEY": "global-key"},
+        ):
+            env_vars, _, _ = provider._load_deploy_env_vars(temp_project_dir)
+
+        assert env_vars["OPENAI_API_KEY"] == "project-key"
+        assert env_vars["OPENAI_MODEL_NAME"] == "project-model"
+
+    @pytest.mark.asyncio
     async def test_deploy_forwards_network_configuration_to_create_agent(
         self,
         temp_project_dir,

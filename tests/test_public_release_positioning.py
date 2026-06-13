@@ -34,7 +34,7 @@ def test_public_readme_positions_ksadk_as_runtime_platform():
     assert "```mermaid" not in readme
     assert "```text" in readme
     assert "当前版本：" not in readme
-    assert "候选版本：`0.6.4`" in readme
+    assert "候选版本：`0.6.5`" in readme
 
 
 def test_public_metadata_uses_runtime_platform_positioning():
@@ -42,18 +42,18 @@ def test_public_metadata_uses_runtime_platform_positioning():
     init_text = _read("ksadk/__init__.py")
     version_text = _read("ksadk/version.py")
 
-    assert pyproject["project"]["version"] == "0.6.4"
-    assert 'VERSION = "0.6.4"' in version_text
+    assert pyproject["project"]["version"] == "0.6.5"
+    assert 'VERSION = "0.6.5"' in version_text
     assert "Agent Runtime Platform" in pyproject["project"]["description"]
     assert "Agent Runtime Platform" in init_text
     assert "Agent Development Kit" not in pyproject["project"]["description"]
     assert "Agent Development Kit" not in init_text
 
 
-def test_changelog_marks_0_6_4_unreleased_until_user_review():
+def test_changelog_marks_0_6_5_unreleased_until_user_review():
     changelog = _read("CHANGELOG.md")
 
-    assert "## [0.6.4] - Unreleased" in changelog
+    assert "## [0.6.5] - Unreleased" in changelog
     assert "用户 review 通过前" in changelog
     assert "不创建 tag" in changelog
     assert "不发布 GitHub Release" in changelog

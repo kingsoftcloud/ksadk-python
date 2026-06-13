@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import mimetypes
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
 
@@ -34,7 +34,7 @@ UploadResponse = dict[str, EntryPayload]
 def _isoformat_timestamp(path: Path) -> str:
     """Get an ISO 8601 timestamp for a file modification time."""
     return (
-        datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
+        datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
         .isoformat()
         .replace("+00:00", "Z")
     )
