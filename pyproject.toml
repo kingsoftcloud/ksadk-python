@@ -50,7 +50,7 @@ dependencies = [
     "requests>=2.28.0",
     "requests-aws4auth>=1.2.0",
     # AICP SDK for default knowledge-base and long-term-memory tools
-    "kingsoftcloud-sdk-python>=1.5.8.90",
+    "kingsoftcloud-sdk-python>=1.5.8.94",
     "cryptography>=44.0.0",
     "websockets>=12.0,<16.0",
     "qrcode>=7.4.0",
@@ -149,7 +149,7 @@ include = ["ksadk*", "ksadk_runtime_common*"]
 exclude = ["ksadk.server.web-ui.node_modules*"]
 
 [tool.setuptools.package-data]
-ksadk = ["server/static/**/*", "server/web-ui/dist-hosted/**/*"]
+ksadk = ["server/static/**/*"]
 ksadk_runtime_common = ["schemas/*.json"]
 
 [tool.black]

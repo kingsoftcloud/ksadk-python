@@ -58,6 +58,39 @@ def test_built_wheel_excludes_web_ui_node_modules():
     assert leaked == []
 
 
+def test_built_wheel_includes_synced_web_static_entrypoint():
+    wheels = sorted((REPO_ROOT / "dist").glob("ksadk-*.whl"))
+    assert wheels, "请先运行 uv build 生成 dist/ksadk-*.whl"
+
+    with zipfile.ZipFile(wheels[-1]) as archive:
+        names = set(archive.namelist())
+
+    assert "ksadk/server/static/index.html" in names
+    assert any(name.startswith("ksadk/server/static/assets/") for name in names)
+
+
+def test_built_wheel_excludes_legacy_web_ui_sources_and_build_outputs():
+    wheels = sorted((REPO_ROOT / "dist").glob("ksadk-*.whl"))
+    assert wheels, "请先运行 uv build 生成 dist/ksadk-*.whl"
+
+    with zipfile.ZipFile(wheels[-1]) as archive:
+        leaked = [
+            name
+            for name in archive.namelist()
+            if name.startswith("ksadk/server/web-ui/")
+        ]
+
+    assert leaked == []
+
+
+def test_pyproject_keeps_only_synced_static_as_ksadk_web_package_data():
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+    package_data = pyproject["tool"]["setuptools"]["package-data"]["ksadk"]
+    assert "server/static/**/*" in package_data
+    assert all("server/web-ui" not in entry for entry in package_data)
+
+
 def test_pyproject_declares_python_multipart_for_local_web_ui_uploads():
     pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
@@ -73,7 +106,7 @@ def test_pyproject_declares_python_socks_for_openclaw_gateway_proxy_support():
 def test_pyproject_declares_kingsoftcloud_sdk_as_default_dependency():
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
-    assert "kingsoftcloud-sdk-python>=1.5.8.90" in pyproject["project"]["dependencies"]
+    assert "kingsoftcloud-sdk-python>=1.5.8.94" in pyproject["project"]["dependencies"]
 
 
 def test_pyproject_declares_asyncpg_for_postgres_session_backend():

@@ -62,13 +62,26 @@ def test_changelog_marks_0_6_5_unreleased_until_user_review():
 
 def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     workflow = _read(".github/workflows/publish-pypi.yml")
+    makefile = _read("Makefile")
 
     assert "id-token: write" in workflow
     assert "pypa/gh-action-pypi-publish@release/v1" in workflow
     assert "make sync-ksadk-web-static" in workflow
     assert "make public-preflight" in workflow
+    assert "KSADK_WEB_VERSION ?= latest" in makefile
+    assert "public-build-check: clean-dist sync-ksadk-web-static" in makefile
+    assert "public-preflight: public-audit sync-ksadk-web-static public-test" in makefile
     assert "PYPI_API_TOKEN" not in workflow
     assert "password:" not in workflow
+
+
+def test_source_repository_does_not_track_generated_ksadk_web_static():
+    gitignore = _read(".gitignore")
+    pyproject = _read("pyproject.toml")
+
+    assert "ksadk/server/static/**" in gitignore
+    assert '"server/static/**/*"' in pyproject
+    assert "server/web-ui/dist-hosted" not in pyproject
 
 
 def test_public_release_materials_do_not_include_internal_environment_details():
