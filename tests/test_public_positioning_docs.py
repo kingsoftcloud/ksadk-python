@@ -441,8 +441,7 @@ def test_package_metadata_is_runtime_platform_positioned_for_patch_candidate():
 
 def test_patch_version_changelog_is_ready_for_authorized_release():
     changelog = _read("CHANGELOG.md")
-    assert "## [0.6.5] - Unreleased" in changelog
-    assert "用户 review 通过前" in changelog
-    assert "不创建 tag" in changelog
-    assert "不发布 GitHub Release" in changelog
-    assert "不上传 PyPI" in changelog
+    assert "## [0.6.5] - 2026-06-15" in changelog
+    assert "GitHub Release" in changelog
+    assert "PyPI Trusted Publishing" in changelog
+    assert "@kingsoftcloud/ksadk-web@latest" in changelog

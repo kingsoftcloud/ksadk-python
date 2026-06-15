@@ -48,14 +48,13 @@ def test_public_metadata_uses_runtime_platform_positioning():
     assert "Agent Development Kit" not in init_text
 
 
-def test_changelog_marks_0_6_5_unreleased_until_user_review():
+def test_changelog_marks_0_6_5_ready_for_authorized_release():
     changelog = _read("CHANGELOG.md")
 
-    assert "## [0.6.5] - Unreleased" in changelog
-    assert "用户 review 通过前" in changelog
-    assert "不创建 tag" in changelog
-    assert "不发布 GitHub Release" in changelog
-    assert "不上传 PyPI" in changelog
+    assert "## [0.6.5] - 2026-06-15" in changelog
+    assert "GitHub Release" in changelog
+    assert "PyPI Trusted Publishing" in changelog
+    assert "@kingsoftcloud/ksadk-web@latest" in changelog
 
 
 def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():

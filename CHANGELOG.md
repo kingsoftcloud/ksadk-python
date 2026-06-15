@@ -5,7 +5,7 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
-## [0.6.5] - Unreleased
+## [0.6.5] - 2026-06-15
 
 ### 重点
 
@@ -33,7 +33,7 @@
 
 ### 发布治理
 
-- 0.6.5 在用户 review 通过前不创建 tag、不发布 GitHub Release，也不上传 PyPI。
+- 0.6.5 通过 GitHub Release 和 PyPI Trusted Publishing 发布，发布包在构建时同步 `@kingsoftcloud/ksadk-web@latest` 静态资源。
 - 公开 CHANGELOG 不记录非公开环境名、内网 endpoint、真实账号、真实 Skill Space ID 或临时凭证；这些只允许出现在内部联调记录里。
 
 ## [0.6.4] - 2026-06-10
