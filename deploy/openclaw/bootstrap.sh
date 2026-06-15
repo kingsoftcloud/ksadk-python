@@ -32,7 +32,7 @@ fi
 SAFE_BIN_DIR="${OPENCLAW_SAFE_BIN_DIR:-/opt/openclaw/safe-bin}"
 PRESET_SKILLS_DIR="${OPENCLAW_PRESET_SKILLS_DIR:-/opt/openclaw/preset-skills}"
 DEFAULT_EXTENSIONS_DIR="${OPENCLAW_DEFAULT_EXTENSIONS_DIR:-/opt/openclaw/default-extensions}"
-DEFERRED_DEFAULT_EXTENSIONS="${OPENCLAW_DEFERRED_DEFAULT_EXTENSIONS:-openclaw-mem0}"
+DEFERRED_DEFAULT_EXTENSIONS="${OPENCLAW_DEFERRED_DEFAULT_EXTENSIONS:-openclaw-mem0 memory-lancedb}"
 WORKSPACE_TEMPLATE_DIR="${OPENCLAW_WORKSPACE_TEMPLATE_DIR:-/opt/openclaw/workspace-template}"
 RUNTIME_DIST_DIR="${OPENCLAW_DIST_DIR:-/app/dist}"
 BOOTSTRAP_CACHE_DIR="${OPENCLAW_BOOTSTRAP_CACHE_DIR:-${STATE_DIR}/.bootstrap-cache}"
@@ -145,6 +145,9 @@ default_extension_allowed_by_preset_plugins_allowlist() {
       ;;
     diagnostics-otel)
       extension_allowed_by_preset_plugins_allowlist "${extension_name}" "${allowlist_raw}" diagnostics otel
+      ;;
+    memory-lancedb)
+      extension_allowed_by_preset_plugins_allowlist "${extension_name}" "${allowlist_raw}" lancedb
       ;;
     *)
       extension_allowed_by_preset_plugins_allowlist "${extension_name}" "${allowlist_raw}"

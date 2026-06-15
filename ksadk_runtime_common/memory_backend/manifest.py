@@ -19,7 +19,7 @@ class MemoryBackendManifest(BaseModel):
     """Memory backend manifest for OpenClaw runtime."""
 
     schema_version: Literal["v1"] = "v1"
-    backend_type: Literal["openclaw_default", "mem0"]
+    backend_type: Literal["openclaw_default", "mem0", "lancedb"]
     config: dict[str, Any] = Field(default_factory=dict)
     secrets_env: dict[str, str] = Field(default_factory=dict)
 
