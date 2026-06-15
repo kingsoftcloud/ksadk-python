@@ -5,11 +5,11 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
-## [0.6.5] - Unreleased
+## [0.6.5] - 2026-06-15
 
 ### 亮点
 
-- **公开定位与发布候选收敛**：将项目首页、README、PyPI metadata 和公开发布说明统一为 Agent Runtime Platform 口径，并将候选版本推进到 `0.6.5`。
+- **公开定位与正式发布收敛**：将项目首页、README、PyPI metadata 和公开发布说明统一为 Agent Runtime Platform 口径，并将正式发布版本推进到 `0.6.5`。
 - **Hosted/local UI 真源收敛**：`@kingsoftcloud/ksadk-web@0.2.8` 已发布到 npm，本地 `agentengine web` 静态资源默认从 `@kingsoftcloud/ksadk-web@latest` 的 `dist-ksadk` 同步；共享 UI 源码只在 `ksadk-web` 维护，`ksadk-python` 源码分支不再跟踪生成的 `ksadk/server/static/**`。
 - **部署环境变量边界修复**：`agentengine deploy` 和 `agentengine launch` 新增 `--env` / `--env-file`，显式传入的运行时环境变量进入部署 payload；真实 `.env` / `.env.local` 不再打入 Code、Container 或 MCP 构建上下文，`.env.example` 继续保留。
 - **Sandbox 稳定性兜底**：E2B sandbox 创建后增加命令与文件系统 readiness 探测，默认对短暂 `NotFoundException` / `FileNotFoundException` 做指数退避重试，降低 Pod 内首次调用 `run_code` / `run_command` 的偶发失败。
@@ -20,8 +20,8 @@
 
 ### 发布说明
 
-- 这是修复 0.6.3 公开页面和 PyPI 元数据口径的补丁版本草案；已发布到 PyPI 的 0.6.3 元数据不可覆盖，因此后续需要通过新版本修复。
-- 0.6.5 在用户 review 通过前不创建 tag、不发布 GitHub Release，也不上传 PyPI。
+- 这是修复 0.6.3 公开页面和 PyPI 元数据口径的正式补丁版本；已发布到 PyPI 的 0.6.3 元数据不可覆盖，因此通过 0.6.5 发布修复。
+- 0.6.5 通过 GitHub Release 和 PyPI Trusted Publishing 发布，发布包在构建时同步 `@kingsoftcloud/ksadk-web@latest` 静态资源。
 - `@kingsoftcloud/ksadk-web@0.2.8` 已作为 npm `latest` 发布；`agentengine-hosted-ui` 和 `ksadk-python` 后续默认从 npm release 消费，不再维护共享 UI 源码或本地 tarball。
 
 ### 运行时修复
