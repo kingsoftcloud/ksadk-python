@@ -313,7 +313,7 @@ public-build-check: clean-dist sync-ksadk-web-static
 	@uv run pytest tests/test_runtime_common_packaging.py::test_built_wheel_excludes_web_ui_node_modules -q
 	@uv run --extra dev python -m twine check dist/*
 
-public-preflight: public-audit sync-ksadk-web-static public-test public-docs-build public-build-check
+public-preflight: public-audit public-build-check public-test public-docs-build
 	@git diff --check
 	@$(MAKE) open-source-audit-dist
 	@echo "✅ public preflight passed"
