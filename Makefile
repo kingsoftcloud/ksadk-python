@@ -399,13 +399,13 @@ public-test:
 	@echo "==> test"
 	@uv run pytest
 
-public-build-check: clean-dist
+public-build-check: clean-dist sync-ksadk-web-static
 	@echo "==> build and twine check"
 	@uv build
 	@uv run pytest tests/test_runtime_common_packaging.py::test_built_wheel_excludes_web_ui_node_modules -q
 	@uv run --extra dev python -m twine check dist/*
 
-public-preflight: public-audit public-test public-docs-build public-build-check
+public-preflight: public-audit sync-ksadk-web-static public-test public-docs-build public-build-check
 	@echo "✅ public preflight passed"
 
 public-publish-check:

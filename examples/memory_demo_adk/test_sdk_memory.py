@@ -151,7 +151,7 @@ def create_client():
 
     if aicp_module is None:
         print(f"  {FAIL} 无法导入 ksyun.client.aicp")
-        print(f"  请安装: pip install 'kingsoftcloud-sdk-python>=1.5.8.90'")
+        print(f"  请安装: pip install 'kingsoftcloud-sdk-python>=1.5.8.94'")
         sys.exit(1)
 
     cred = credential.Credential(AK, SK)

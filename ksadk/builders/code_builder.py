@@ -115,7 +115,7 @@ class CodeBuilder(BaseBuilder):
         "python-multipart>=0.0.9,<1.0.0",
         "requests>=2.28.0",
         "requests-aws4auth>=1.2.0",
-        "kingsoftcloud-sdk-python>=1.5.8.90",
+        "kingsoftcloud-sdk-python>=1.5.8.94",
         "cryptography>=44.0.0",
         "websockets>=12.0,<16.0",
         "qrcode>=7.4.0",
