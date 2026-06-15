@@ -286,9 +286,19 @@ public-secret-audit: public-sync-check
 		echo "❌ 发现禁止跟踪的敏感文件"; \
 		exit 1; \
 	fi
-	@if rg -n --hidden -S --glob '!.git/**' --glob '!node_modules/**' --glob '!dist/**' --glob '!build/**' --glob '!*.egg-info/**' 'pypi-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE KEY|SecretAccessKey\s*[:=]\s*[^<\s]+' .; then \
+	@pattern='pypi-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE KEY|SecretAccessKey[[:space:]]*[:=][[:space:]]*[^<[:space:]]+'; \
+	if command -v rg >/dev/null 2>&1; then \
+		rg -n --hidden -S --glob '!.git/**' --glob '!node_modules/**' --glob '!dist/**' --glob '!build/**' --glob '!*.egg-info/**' "$$pattern" .; \
+	else \
+		grep -RInE --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=build --exclude-dir='*.egg-info' "$$pattern" .; \
+	fi; \
+	status=$$?; \
+	if [ $$status -eq 0 ]; then \
 		echo "❌ secret pattern audit failed"; \
 		exit 1; \
+	elif [ $$status -gt 1 ]; then \
+		echo "❌ secret pattern audit command failed"; \
+		exit $$status; \
 	fi
 	@echo "✅ secret audit passed"
 
@@ -310,7 +320,7 @@ public-test:
 public-build-check: clean-dist sync-ksadk-web-static
 	@echo "==> build and twine check"
 	@uv build
-	@uv run pytest tests/test_runtime_common_packaging.py::test_built_wheel_excludes_web_ui_node_modules -q
+	@uv run --extra dev pytest tests/test_runtime_common_packaging.py::test_built_wheel_excludes_web_ui_node_modules -q
 	@uv run --extra dev python -m twine check dist/*
 
 public-preflight: public-audit public-build-check public-test public-docs-build
