@@ -16,7 +16,7 @@
 - **会话连续性与长任务恢复增强**：runner payload 增加 `invocation_id`，LangGraph checkpoint resume 保留 `checkpoint_ns`，checkpoint event 透传业务阶段、摘要、下一步动作和状态，便于 Hosted/local UI 恢复长任务语义。
 - **长期记忆查询兼容修复**：SDK LTM 查询解析兼容上游返回的 `Memory` 字段，避免记忆已写入但 `load_memory` 查询为空。
 - **镜像仓库凭证语义修复**：个人版 KCR 继续允许 `KSYUN_ACCOUNT_ID` 兜底用户名；企业版 KCR 和第三方 registry 必须显式设置 `KCR_USERNAME` / `KCR_PASSWORD`，避免错误把云账号 ID 当企业镜像用户名。
-- **公开门禁增强**：发布构建新增 wheel 内容检查，禁止 `ksadk/server/web-ui/node_modules/` 残留进入 PyPI wheel，并继续执行公开定位、敏感词扫描、PyPI metadata、README 和测试门禁。
+- **公开门禁增强**：发布构建新增 wheel 内容检查，禁止旧 `ksadk/server/web-ui/` 源码或构建产物残留进入 PyPI wheel；源码仓库同样不再跟踪本地 UI 副本，并继续执行公开定位、敏感词扫描、PyPI metadata、README 和测试门禁。
 
 ### 发布说明
 
@@ -39,7 +39,7 @@
 - `make sync-ksadk-web-static` 默认改为 `npm pack @kingsoftcloud/ksadk-web@latest`，并保留 `KSADK_WEB_RELEASE_URL` 显式 tarball 兜底。
 - 新增 GitHub Actions PyPI Trusted Publishing workflow：发布前同步 KSADK Web static、执行 `make public-preflight`，再通过 OIDC 上传到 PyPI，不再依赖长期 PyPI token。
 - PyPI wheel 构建前会同步 `dist-ksadk` 并把 `ksadk/server/static/index.html` 与静态资源打入 wheel；源码 checkout 缺少 static 时只提示运行同步命令，不在运行时联网拉 npm。
-- `public-build-check` 在 `uv build` 和 `twine check` 之间增加 wheel 内容检查，确保 `node_modules` 下的 Python 文件不会混入发布包。
+- `public-build-check` 在 `uv build` 和 `twine check` 之间增加 wheel 内容检查，确保旧 `ksadk/server/web-ui/` 源码、`node_modules` 和历史构建产物不会混入发布包。
 - 知识库/长期记忆 SDK 依赖下限提升到 `kingsoftcloud-sdk-python>=1.5.8.94`，用于适配最新 SDK LTM/KB 返回结构与运行时打包要求。
 - Code、Container、MCP 构建统一排除真实 `.env*`，只保留 `.env.example` / `.env.sample` / `.env.template` 这类模板文件。
 - Container、MCP、OpenClaw、Serverless 镜像凭证解析统一企业版/个人版/第三方 registry 边界，避免生成错误鉴权 payload。
