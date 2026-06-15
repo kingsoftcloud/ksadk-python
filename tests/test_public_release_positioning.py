@@ -60,6 +60,17 @@ def test_changelog_marks_0_6_5_unreleased_until_user_review():
     assert "不上传 PyPI" in changelog
 
 
+def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
+    workflow = _read(".github/workflows/publish-pypi.yml")
+
+    assert "id-token: write" in workflow
+    assert "pypa/gh-action-pypi-publish@release/v1" in workflow
+    assert "make sync-ksadk-web-static" in workflow
+    assert "make public-preflight" in workflow
+    assert "PYPI_API_TOKEN" not in workflow
+    assert "password:" not in workflow
+
+
 def test_public_release_materials_do_not_include_internal_environment_details():
     forbidden = (
         "KSADK_SKILL_SERVICE_REGION=pre-online",

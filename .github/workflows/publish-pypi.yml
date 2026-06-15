@@ -1,0 +1,53 @@
+name: Publish PyPI
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      ksadk_web_version:
+        description: KsADK Web npm version to bundle
+        required: false
+        default: latest
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-pypi-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync KsADK Web static assets
+        run: make sync-ksadk-web-static
+        env:
+          KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || 'latest' }}
+
+      - name: Run public release preflight
+        run: make public-preflight
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

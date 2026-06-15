@@ -175,6 +175,13 @@ make public-preflight
 uv run python -m twine check dist/*
 ```
 
+正式 PyPI 发布默认走 `.github/workflows/publish-pypi.yml`：
+
+- GitHub Release `published` 或手动 `workflow_dispatch` 触发。
+- workflow 先运行 `make sync-ksadk-web-static`，默认从 `@kingsoftcloud/ksadk-web@latest` 同步 `dist-ksadk` 到 `ksadk/server/static`。
+- workflow 再运行 `make public-preflight`，最后通过 PyPI Trusted Publishing/OIDC 上传。
+- 正常路径不配置 `PYPI_API_TOKEN`；如需应急本地发布，必须先明确记录原因并使用 Makefile 的 `make publish` / `make publish-test`。
+
 发布 `ksadk` 后检查：
 
 ```bash
