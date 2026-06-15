@@ -9,7 +9,7 @@
 
 ### 重点
 
-- **UI 真源收敛到 npm 包**：`@kingsoftcloud/ksadk-web@0.2.8` 已作为 npm `latest` 发布；`agentengine web` 静态资源默认从该 npm 包的 `dist-ksadk` 同步，`ksadk-python` 源码分支不再跟踪生成的 `ksadk/server/static/**`。
+- **UI 真源收敛到 npm 包**：`@kingsoftcloud/ksadk-web@0.2.8` 已作为 npm `latest` 发布；`agentengine web` 静态资源默认从该 npm 包的 `dist-ksadk` 同步，`ksadk-python` 源码分支不再跟踪生成的 `ksadk/server/static/**` 或旧 `ksadk/server/web-ui/**` 副本。
 - **PyPI Trusted Publishing**：新增 GitHub Actions PyPI Trusted Publishing workflow，发布前同步 KSADK Web static、运行 `make public-preflight`，再通过 OIDC 上传到 PyPI，不依赖长期 PyPI token。
 - **发布包自包含 static**：PyPI wheel 构建前会同步 `dist-ksadk` 并把 `ksadk/server/static/index.html` 与静态资源打入 wheel；源码 checkout 缺少 static 时只提示运行同步命令，不在运行时联网拉 npm。
 - **知识库/长期记忆 SDK 更新**：`ksadk[kb]` 中的 `kingsoftcloud-sdk-python` 依赖下限提升到 `1.5.8.94`，用于适配最新知识库和长期记忆 SDK 返回结构。
@@ -28,7 +28,7 @@
 ### 构建与发布
 
 - `make sync-ksadk-web-static` 默认改为 `npm pack @kingsoftcloud/ksadk-web@latest`，并保留 `KSADK_WEB_RELEASE_URL` 显式 tarball 兜底。
-- `public-build-check` 在 `uv build` 和 `twine check` 之间增加 wheel 内容检查，确保 legacy Web UI 源码、`node_modules` 和旧构建产物不会混入发布包。
+- `public-build-check` 在 `uv build` 和 `twine check` 之间增加 wheel 内容检查，确保旧 `ksadk/server/web-ui/` 源码、`node_modules` 和历史构建产物不会混入发布包。
 - Code、Container、MCP 构建统一排除真实 `.env*`，只保留 `.env.example` / `.env.sample` / `.env.template` 这类模板文件。
 
 ### 发布治理

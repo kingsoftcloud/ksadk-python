@@ -1,5 +1,5 @@
 # AgentEngine Makefile
-# 用于构建 Web UI 和管理项目
+# 用于同步 KsADK Web static 和管理项目
 
 .PHONY: help install build-webui sync-static sync-ksadk-web-static webui clean clean-cache clean-dist clean-static clean-offline dev dev-webui dev-backend test test-webui publish publish-test open-source-audit open-source-audit-public-repo open-source-audit-dist open-source-audit-ksadk-python-export open-source-audit-ksadk-web open-source-smoke-install open-source-smoke-ksadk-web open-source-review open-source-review-bundle open-source-review-bundle-verify open-source-approval-check open-source-publication-plan open-source-publication-state public-status public-sync-check public-secret-audit public-audit public-test public-build-check public-preflight public-publish-check public-release-tag public-review public-docs-build public-docs-serve public-docs-audit
 
@@ -16,9 +16,9 @@ help:
 	@echo "  \033[1;32mWeb UI 静态产物:\033[0m"
 	@echo "    make sync-ksadk-web-static KSADK_WEB_VERSION=latest"
 	@echo "                         从 @kingsoftcloud/ksadk-web npm 包同步 static"
-	@echo "    make build-webui    校验 ksadk/server/static 已存在"
-	@echo "    make sync-static    校验 ksadk/server/static 已存在"
-	@echo "    make webui          校验已打包的 Web UI 静态产物"
+	@echo "    make build-webui    从 npm 包同步 static（兼容入口）"
+	@echo "    make sync-static    从 npm 包同步 static（兼容入口）"
+	@echo "    make webui          从 npm 包同步已打包的 Web UI 静态产物"
 	@echo "                         可编辑 Web UI 源码位于 https://github.com/kingsoftcloud/ksadk-web"
 	@echo ""
 	@echo "  \033[1;32m版本管理:\033[0m"
@@ -85,7 +85,7 @@ install-webui:
 	@echo "   ksadk-python 公开仓只包含已打包静态产物。"
 
 # ============================================================
-# Web UI 构建
+# Web UI static 同步
 # ============================================================
 
 STATIC_DIR = ksadk/server/static
@@ -115,20 +115,8 @@ sync-ksadk-web-static:
 	cp -R "$(KSADK_WEB_CACHE_DIR)/package/dist-ksadk/." "$(STATIC_DIR)/"
 	@echo "Synced KsADK Web $(KSADK_WEB_VERSION) static assets into $(STATIC_DIR)"
 
-build-webui:
-	@echo "ℹ️  ksadk-python 不包含可编辑 Web UI 源码。"
-	@echo "   请在 https://github.com/kingsoftcloud/ksadk-web 构建，并在 release 时同步静态产物到 $(STATIC_DIR)。"
-	@if [ ! -f "$(STATIC_DIR)/index.html" ]; then \
-		echo "❌ 错误: $(STATIC_DIR)/index.html 不存在"; \
-		exit 1; \
-	fi
-	@echo "✅ 已找到 Web UI 静态产物: $(STATIC_DIR)"
-
-sync-static:
-	@$(MAKE) build-webui
-
-webui: build-webui sync-static
-	@echo "✅ Web UI 静态产物检查完成。"
+build-webui sync-static webui: sync-ksadk-web-static
+	@echo "Deprecated target: Web UI is sourced from $(KSADK_WEB_PACKAGE), not local source."
 
 # ============================================================
 # 开发服务器
@@ -433,7 +421,7 @@ subprocess.run(['sed', '-i', '', f's/^version = \".*\"/version = \"{new_v}\"/', 
 check-build-deps:
 	@python -c "import build" 2>/dev/null || (echo "📦 安装构建依赖..." && pip install build twine)
 
-build: check-build-deps webui
+build: check-build-deps sync-ksadk-web-static
 	@echo "📦 构建 Python 包 v$(VERSION)..."
 	python -m build
 	@# 删除 tar.gz 和临时目录，只保留 whl
@@ -442,11 +430,11 @@ build: check-build-deps webui
 	@echo "✅ 构建完成: dist/"
 	@ls -la dist/
 
-# 仅构建 Python 包（跳过 webui，使用现有静态文件）
+# 仅构建 Python 包（跳过 npm 同步，使用现有静态文件）
 build-only: check-build-deps
 	@echo "📦 构建 Python 包 v$(VERSION)（使用现有静态文件）..."
 	@if [ ! -f "ksadk/server/static/index.html" ]; then \
-		echo "❌ 错误: ksadk/server/static/ 目录为空，请先运行 make webui"; \
+		echo "❌ 错误: ksadk/server/static/ 目录为空，请先运行 make sync-ksadk-web-static"; \
 		exit 1; \
 	fi
 	python -m build
@@ -472,7 +460,7 @@ clean-dist:
 	@echo "🧹 清理 dist/build 临时产物..."
 	@rm -rf $(DIST_DIR)/* build/ *.egg-info/
 
-publish: open-source-approval-check public-preflight public-publish-check clean-dist build-only
+publish: open-source-approval-check public-preflight public-publish-check clean-dist build
 	@echo "🚀 发布 v$(VERSION) 到 PyPI..."
 	@if [ -f ".pypirc" ]; then \
 		echo "❌ 错误: 项目根目录不允许存在 .pypirc，避免 PyPI token 进入仓库"; \
@@ -502,7 +490,7 @@ publish: open-source-approval-check public-preflight public-publish-check clean-
 		python -m twine upload --config-file $(PYPIRC) $$FILES; \
 	fi
 
-publish-test: open-source-approval-check public-preflight public-publish-check clean-dist build-only
+publish-test: open-source-approval-check public-preflight public-publish-check clean-dist build
 	@echo "🧪 发布 v$(VERSION) 到 TestPyPI..."
 	@if [ -f ".pypirc" ]; then \
 		echo "❌ 错误: 项目根目录不允许存在 .pypirc，避免 TestPyPI token 进入仓库"; \

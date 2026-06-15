@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
 import tomllib
 
 
@@ -75,10 +76,19 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
 def test_source_repository_does_not_track_generated_ksadk_web_static():
     gitignore = _read(".gitignore")
     pyproject = _read("pyproject.toml")
+    web_ui_files = subprocess.run(
+        ["git", "ls-files", "ksadk/server/web-ui/**"],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    ).stdout
 
     assert "ksadk/server/static/**" in gitignore
+    assert "ksadk/server/web-ui/" in gitignore
     assert '"server/static/**/*"' in pyproject
-    assert "server/web-ui/dist-hosted" not in pyproject
+    assert "server/web-ui" not in pyproject
+    assert web_ui_files == ""
 
 
 def test_public_release_materials_do_not_include_internal_environment_details():

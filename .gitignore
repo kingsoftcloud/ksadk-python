@@ -84,3 +84,6 @@ webui
 
 # Generated from @kingsoftcloud/ksadk-web during release/build.
 ksadk/server/static/**
+
+# Legacy local UI source is owned by kingsoftcloud/ksadk-web.
+ksadk/server/web-ui/

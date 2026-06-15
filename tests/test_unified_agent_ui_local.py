@@ -5,6 +5,7 @@ import importlib
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -1943,47 +1944,15 @@ async def test_static_routes_serve_unified_agent_ui_shell(monkeypatch):
     assert "overflow" in css_response.text
 
 
-def test_web_ui_source_uses_title_and_summary_in_sidebar():
-    sidebar_source = Path("ksadk/server/web-ui/src/components/chat/ChatSidebar.tsx").read_text(
-        encoding="utf-8"
+def test_source_repository_does_not_track_local_web_ui_source():
+    result = subprocess.run(
+        ["git", "ls-files", "ksadk/server/web-ui/**"],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
     )
-    session_helpers_source = Path("ksadk/server/web-ui/src/utils/session-helpers.ts").read_text(
-        encoding="utf-8"
-    )
-    session_list_source = Path("ksadk/server/web-ui/src/utils/session-list.js").read_text(
-        encoding="utf-8"
-    )
-    assert "session.Title" in session_helpers_source
-    assert "session?.Summary" in session_list_source
-    assert "session.SessionId.slice(0, 12)" not in sidebar_source
 
-
-def test_web_ui_source_supports_clipboard_file_paste():
-    composer_source = Path(
-        "ksadk/server/web-ui/src/components/chat/ConnectedComposer.tsx"
-    ).read_text(encoding="utf-8")
-    attachment_source = Path("ksadk/server/web-ui/src/utils/attachment.ts").read_text(
-        encoding="utf-8"
-    )
-    assert "clipboardData.items" in attachment_source
-    assert "onPaste" in composer_source
-    assert "getAsFile" in attachment_source
-
-
-def test_web_ui_source_prefers_responses_when_runtime_supports_it():
-    bootstrap_source = Path("ksadk/server/web-ui/src/hooks/useBootstrap.ts").read_text(
-        encoding="utf-8"
-    )
-    layout_source = Path("ksadk/server/web-ui/src/utils/layout-constants.ts").read_text(
-        encoding="utf-8"
-    )
-    run_engine_source = Path("ksadk/server/web-ui/src/core/run/engine.ts").read_text(
-        encoding="utf-8"
-    )
-    assert "setAgentFramework" in bootstrap_source
-    assert "if (apiFormats.includes('responses'))" in layout_source
-    assert "return 'responses'" in layout_source
-    assert "resolveRunAgentApiFormat({ agentFramework: this.config.agentFramework, apiFormats: this.config.apiFormats })" in run_engine_source
+    assert result.stdout == ""
 
 
 def test_static_workbench_uses_openai_responses_content_for_inline_attachments():
@@ -1999,112 +1968,3 @@ def test_static_workbench_uses_openai_responses_content_for_inline_attachments()
     assert "file_url:" in source
     assert "inlineData: {" not in source
 
-
-def test_web_ui_run_engine_uses_responses_input_for_responses_protocol():
-    run_engine_source = Path("ksadk/server/web-ui/src/core/run/engine.ts").read_text(
-        encoding="utf-8"
-    )
-
-    assert "body.ResponsesInput = [{ role: 'user', content: parts }]" in run_engine_source
-    assert "body.Messages = [{ role: 'user', content: parts }]" in run_engine_source
-
-
-def test_web_ui_source_supports_workspace_panel_for_owner_access():
-    source = Path("ksadk/server/web-ui/src/App.tsx").read_text(encoding="utf-8")
-    header_source = Path("ksadk/server/web-ui/src/components/chat/ChatHeader.tsx").read_text(
-        encoding="utf-8"
-    )
-    api_facade_source = Path("ksadk/server/web-ui/src/core/api/facade.ts").read_text(
-        encoding="utf-8"
-    )
-    bootstrap_source = Path("ksadk/server/web-ui/src/hooks/useBootstrap.ts").read_text(
-        encoding="utf-8"
-    )
-    layout_source = Path("ksadk/server/web-ui/src/utils/layout-constants.ts").read_text(
-        encoding="utf-8"
-    )
-    run_engine_source = Path("ksadk/server/web-ui/src/core/run/engine.ts").read_text(
-        encoding="utf-8"
-    )
-    workspace_api_source = Path("ksadk/server/web-ui/src/api/workspace.ts").read_text(
-        encoding="utf-8"
-    )
-    workspace_source = Path(
-        "ksadk/server/web-ui/src/components/workspace/WorkspacePanel.tsx"
-    ).read_text(encoding="utf-8")
-    workspace_utils_source = Path("ksadk/server/web-ui/src/utils/workspace.js").read_text(
-        encoding="utf-8"
-    )
-    session_events_source = Path("ksadk/server/web-ui/src/utils/session-events.js").read_text(
-        encoding="utf-8"
-    )
-    responses_stream_source = Path(
-        "ksadk/server/web-ui/src/utils/responses-stream.js"
-    ).read_text(encoding="utf-8")
-    assert "WorkspaceFiles" in source
-    assert "canAccessWorkspaceFiles({ workspaceFiles, accessMode })" in source
-    assert "mode === 'owner' || mode === 'private'" in workspace_utils_source
-    assert "WorkspacePanel" in source
-    assert "flex h-14 flex-shrink-0 items-center" in workspace_source
-    assert "listWorkspaceFiles" in api_facade_source
-    assert "addWorkspaceFile" in api_facade_source
-    assert "capability.ContentPath" in workspace_source
-    assert "DeleteWorkspaceFile" in workspace_api_source
-    assert "workspaceEnabled" in header_source
-    assert "ApiFormat: apiFormat" in run_engine_source
-    assert "Model: this.config.selectedModel || undefined" in run_engine_source
-    assert "chat_completions" in bootstrap_source
-    assert "chat_completions" in layout_source
-    assert "normalizeResponsesStreamEvent" in session_events_source
-    assert "extractCompletedText" in responses_stream_source
-    assert "item.delta" in responses_stream_source
-    assert "response.output_item.added" in responses_stream_source
-    assert "response.function_call_arguments.delta" in responses_stream_source
-    assert "response.ksadk.tool_result" in responses_stream_source
-    assert "response.ksadk.approval_request" in responses_stream_source
-
-
-def test_web_ui_source_supports_streaming_queue_and_refresh_pending_status():
-    source = Path("ksadk/server/web-ui/src/App.tsx").read_text(encoding="utf-8")
-    connected_composer_source = Path(
-        "ksadk/server/web-ui/src/components/chat/ConnectedComposer.tsx"
-    ).read_text(encoding="utf-8")
-    composer_source = Path(
-        "ksadk/server/web-ui/src/components/chat/ChatComposer.tsx"
-    ).read_text(encoding="utf-8")
-    sidebar_source = Path("ksadk/server/web-ui/src/components/chat/ChatSidebar.tsx").read_text(
-        encoding="utf-8"
-    )
-    session_events_source = Path("ksadk/server/web-ui/src/utils/session-events.js").read_text(
-        encoding="utf-8"
-    )
-    assert "queuedDraftRef" in source
-    assert "queuedDrafts={queuedDrafts}" in connected_composer_source
-    assert "latestRunStatusByInvocation" in session_events_source
-    assert "event.EventType !== 'run_status'" in session_events_source
-    assert "meta.running" in sidebar_source
-    assert "disabled={!isStreaming && !input.trim() && attachments.length === 0}" in composer_source
-    assert "发送队列 · {queuedDrafts.length}" in composer_source
-    assert "当前回复完成后依次发送" in composer_source
-    assert "title={isStreaming ? '停止生成' : '发送消息'}" in composer_source
-    assert "flex flex-shrink-0 flex-col gap-2" in sidebar_source
-
-
-def test_web_ui_source_threads_generation_controls_into_message_list():
-    source = Path("ksadk/server/web-ui/src/components/chat/ChatMessageList.tsx").read_text(
-        encoding="utf-8"
-    )
-    assert "onStopGeneration," in source
-    assert "onCancelRemote," in source
-
-
-def test_web_ui_source_uses_adaptive_image_preview_sizing():
-    connected_message_list_source = Path(
-        "ksadk/server/web-ui/src/components/chat/ConnectedMessageList.tsx"
-    ).read_text(encoding="utf-8")
-    preview_source = Path(
-        "ksadk/server/web-ui/src/components/chat/AttachmentPreview.tsx"
-    ).read_text(encoding="utf-8")
-    assert "naturalWidth" in preview_source
-    assert "naturalHeight" in preview_source
-    assert "setPreviewImageSize" in connected_message_list_source
