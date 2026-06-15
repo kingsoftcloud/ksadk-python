@@ -16,15 +16,12 @@ def test_public_readme_positions_ksadk_as_runtime_platform():
     for expected in (
         "Build agents once. Run them anywhere.",
         "Agent Runtime Platform",
-        "Why KsADK",
+        "为什么需要 KsADK",
         "30 秒快速体验",
-        "Architecture",
-        "Comparison",
-        "Examples",
-        "Deployment",
-        "Observability",
-        "Documentation",
-        "Community",
+        "架构",
+        "生态定位对比",
+        "文档与样例",
+        "相关项目",
         "KSYUN_REGION=cn-beijing-6",
     ):
         assert expected in readme
@@ -32,9 +29,9 @@ def test_public_readme_positions_ksadk_as_runtime_platform():
     assert "Agent Development Kit" not in readme
     assert "KSADK_SKILL_SERVICE_REGION=pre-online" not in readme
     assert "```mermaid" not in readme
-    assert "```text" in readme
+    assert "```bash" in readme
     assert "当前版本：" not in readme
-    assert "候选版本：`0.6.5`" in readme
+    assert "候选版本：" not in readme
 
 
 def test_public_metadata_uses_runtime_platform_positioning():

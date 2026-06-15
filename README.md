@@ -18,8 +18,6 @@
 
 <p align="center"><a href="public-docs/assets/ksadk-runtime-platform-hero.png"><img alt="KsADK 真实 CLI 截图：agentengine -h" src="public-docs/assets/ksadk-runtime-platform-hero-wide.png" width="860" /></a></p>
 
-候选版本：`0.6.5`（Unreleased，待用户 review；正式发布版本以 PyPI 和 GitHub Release 为准）。
-
 ## 30 秒快速体验
 
 ```bash
@@ -63,56 +61,7 @@ agentengine web . --no-open
 
 <p align="center"><img alt="KsADK Agent Runtime Platform 架构" src="public-docs/assets/ksadk-runtime-architecture.png" width="860" /></p>
 
-## Comparison
-
-| Capability | ADK | LangGraph | OpenAI Agents SDK | KsADK |
-| --- | --- | --- | --- | --- |
-| Agent Development | Yes | Yes | Yes | Yes |
-| Browser Debugging UI | No | No | No | Yes |
-| Unified CLI | No | No | No | Yes |
-| OpenAI Compatible API | No | No | Partial | Yes |
-| Sandbox Runtime | No | No | No | Yes |
-| Deployment Workflow | No | No | No | Yes |
-| Multi Runtime Backend | No | No | No | Yes |
-
-这张表只比较“项目自带的统一运行时平台能力”。KsADK 的设计目标不是替代这些框架，而是把它们放进同一套运行、调试、部署和观测体验里。
-
-## Examples
-
-样例仓库按场景组织，而不是只按技术框架分类：
-
-- [KSADK Samples](https://github.com/kingsoftcloud/ksadk-samples)
-- Knowledge Assistant：知识库问答和 RAG。
-- Workflow Agent：LangGraph + AgentEngine toolsets。
-- Tool-Using Agent：自定义工具调用。
-- Memory-aware Agent：短期记忆和长期记忆接入。
-
-每个公开 demo 都应包含中文 README、运行命令、环境变量说明、降级行为和验证问题。
-
-## Deployment
-
-KsADK 支持本地优先的开发路径，也提供经过审核后可使用的部署入口：
-
-```bash
-agentengine build .
-agentengine launch . --target serverless
-agentengine dashboard open
-```
-
-Hermes 和 OpenClaw 更新已有实例时默认保留服务端已有 env、storage、network、memory 配置，只在显式传入对应 CLI 参数时覆盖，避免升级镜像时误改用户配置。
-
-## Observability
-
-KsADK is OpenTelemetry-native.
-
-```bash
-OTEL_EXPORTER_OTLP_ENDPOINT=https://otel.example.com
-OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20token
-```
-
-Export once. Observe anywhere.
-
-## Documentation
+## 文档与样例
 
 - 文档：<https://kingsoftcloud.github.io/ksadk-python/>
 - 快速开始：<https://kingsoftcloud.github.io/ksadk-python/getting-started/quickstart/>
@@ -122,7 +71,7 @@ Export once. Observe anywhere.
 - 可观测：<https://kingsoftcloud.github.io/ksadk-python/guides/observability-tracing/>
 - 样例仓库：<https://github.com/kingsoftcloud/ksadk-samples>
 
-## Community
+## 相关项目
 
 - KsADK 仓库：<https://github.com/kingsoftcloud/ksadk-python>
 - Web UI 仓库：<https://github.com/kingsoftcloud/ksadk-web>

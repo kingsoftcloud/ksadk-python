@@ -13,6 +13,23 @@
 - **PyPI Trusted Publishing**：新增 GitHub Actions PyPI Trusted Publishing workflow，发布前同步 KSADK Web static、运行 `make public-preflight`，再通过 OIDC 上传到 PyPI，不依赖长期 PyPI token。
 - **发布包自包含 static**：PyPI wheel 构建前会同步 `dist-ksadk` 并把 `ksadk/server/static/index.html` 与静态资源打入 wheel；源码 checkout 缺少 static 时只提示运行同步命令，不在运行时联网拉 npm。
 - **知识库/长期记忆 SDK 更新**：`ksadk[kb]` 中的 `kingsoftcloud-sdk-python` 依赖下限提升到 `1.5.8.94`，用于适配最新知识库和长期记忆 SDK 返回结构。
+- **长期记忆查询兼容修复**：内置 `load_memory` 查询解析兼容 SDK 返回的 `Memory` 字段，避免记忆已写入但查询结果为空。
+- **Sandbox 稳定性兜底**：E2B sandbox 创建后增加命令与文件系统 readiness 探测，并对短暂 `NotFoundException` / `FileNotFoundException` 做指数退避重试，降低首次调用 `run_code` / `run_command` 的偶发失败。
+- **会话连续性与长任务恢复增强**：runner payload 增加 `invocation_id`，LangGraph checkpoint resume 保留 `checkpoint_ns`，checkpoint event 透传业务阶段、摘要、下一步动作和状态，便于 UI 恢复长任务语义。
+- **部署环境变量边界修复**：`agentengine deploy` 和 `agentengine launch` 支持 `--env` / `--env-file` 显式传入运行时环境变量；真实 `.env` / `.env.local` 不再进入 Code、Container 或 MCP 构建上下文，模板文件继续保留。
+
+### 修复
+
+- `/v1/responses`、`/v1/chat/completions` 和 `RunAgentAction` 支持透传 `account_id` / `AccountId`，并写入 `PlatformInvocationContext`，便于运行时能力按账号边界读取当前调用上下文。
+- 新增 `get_current_invocation_context_or_default()`、`get_current_user_id()` 和 `get_current_account_id()`，工具或业务代码可在当前 turn 内安全读取用户和账号上下文；无调用上下文时返回显式默认值。
+- 修复 LangGraph checkpoint resume 丢失 namespace、checkpoint 列表缺少业务阶段字段的问题。
+- 修复 Python 3.10 环境中 workspace router 误用 Python 3.11 `datetime.UTC` 的兼容性问题。
+
+### 构建与发布
+
+- `make sync-ksadk-web-static` 默认改为 `npm pack @kingsoftcloud/ksadk-web@latest`，并保留 `KSADK_WEB_RELEASE_URL` 显式 tarball 兜底。
+- `public-build-check` 在 `uv build` 和 `twine check` 之间增加 wheel 内容检查，确保 legacy Web UI 源码、`node_modules` 和旧构建产物不会混入发布包。
+- Code、Container、MCP 构建统一排除真实 `.env*`，只保留 `.env.example` / `.env.sample` / `.env.template` 这类模板文件。
 
 ### 发布治理
 
