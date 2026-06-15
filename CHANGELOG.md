@@ -10,7 +10,7 @@
 ### 亮点
 
 - **公开定位与发布候选收敛**：将项目首页、README、PyPI metadata 和公开发布说明统一为 Agent Runtime Platform 口径，并将候选版本推进到 `0.6.5`。
-- **Hosted/local UI 真源收敛**：本地 `agentengine web` 静态资源同步到 `@kingsoftcloud/ksadk-web` 最新候选产物，`ksadk-python` 默认静态资源同步策略改为消费 npm `@kingsoftcloud/ksadk-web@latest`，显式 tarball 仅作为未发布或离线构建兜底。
+- **Hosted/local UI 真源收敛**：`@kingsoftcloud/ksadk-web@0.2.7` 已发布到 npm，本地 `agentengine web` 静态资源默认从 `@kingsoftcloud/ksadk-web@latest` 的 `dist-ksadk` 同步；共享 UI 源码只在 `ksadk-web` 维护。
 - **部署环境变量边界修复**：`agentengine deploy` 和 `agentengine launch` 新增 `--env` / `--env-file`，显式传入的运行时环境变量进入部署 payload；真实 `.env` / `.env.local` 不再打入 Code、Container 或 MCP 构建上下文，`.env.example` 继续保留。
 - **Sandbox 稳定性兜底**：E2B sandbox 创建后增加命令与文件系统 readiness 探测，默认对短暂 `NotFoundException` / `FileNotFoundException` 做指数退避重试，降低 Pod 内首次调用 `run_code` / `run_command` 的偶发失败。
 - **会话连续性与长任务恢复增强**：runner payload 增加 `invocation_id`，LangGraph checkpoint resume 保留 `checkpoint_ns`，checkpoint event 透传业务阶段、摘要、下一步动作和状态，便于 Hosted/local UI 恢复长任务语义。
@@ -22,7 +22,7 @@
 
 - 这是修复 0.6.3 公开页面和 PyPI 元数据口径的补丁版本草案；已发布到 PyPI 的 0.6.3 元数据不可覆盖，因此后续需要通过新版本修复。
 - 0.6.5 在用户 review 通过前不创建 tag、不发布 GitHub Release，也不上传 PyPI。
-- `@kingsoftcloud/ksadk-web` npm 包发布成功前，`agentengine-hosted-ui` 仍使用已校验的 `0.2.7` tarball 过渡；npm 发布后应切换到 `@kingsoftcloud/ksadk-web@latest` 并重新锁定 `package-lock.json`。
+- `@kingsoftcloud/ksadk-web@0.2.7` 已作为 npm `latest` 发布；`agentengine-hosted-ui` 和 `ksadk-python` 后续默认从 npm release 消费，不再维护共享 UI 源码或本地 tarball。
 
 ### 运行时修复
 
@@ -37,6 +37,7 @@
 ### 构建与发布修复
 
 - `make sync-ksadk-web-static` 默认改为 `npm pack @kingsoftcloud/ksadk-web@latest`，并保留 `KSADK_WEB_RELEASE_URL` 显式 tarball 兜底。
+- 新增 GitHub Actions PyPI Trusted Publishing workflow：发布前同步 KSADK Web static、执行 `make public-preflight`，再通过 OIDC 上传到 PyPI，不再依赖长期 PyPI token。
 - `public-build-check` 在 `uv build` 和 `twine check` 之间增加 wheel 内容检查，确保 `node_modules` 下的 Python 文件不会混入发布包。
 - Code、Container、MCP 构建统一排除真实 `.env*`，只保留 `.env.example` / `.env.sample` / `.env.template` 这类模板文件。
 - Container、MCP、OpenClaw、Serverless 镜像凭证解析统一企业版/个人版/第三方 registry 边界，避免生成错误鉴权 payload。
