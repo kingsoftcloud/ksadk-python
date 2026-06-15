@@ -7,7 +7,7 @@
 ```bash
 make open-source-review
 make open-source-review-bundle
-make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.6.4
+make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.6.5
 ```
 
 ## GitHub
@@ -22,7 +22,8 @@ PyPI metadata 指向：
 - Repository: `https://github.com/kingsoftcloud/ksadk-python`
 - Documentation: `https://kingsoftcloud.github.io/ksadk-python/`
 
-上传凭证只放本地或发布系统 secrets，不进入 GitHub。
+上传凭证不进入仓库。推荐使用 PyPI Trusted Publishing / GitHub OIDC；
+如需临时 token，也只能放在发布系统 secrets 或维护者本地环境中。
 
 真正执行 `make publish` 或 `make publish-test` 前，必须填好
 `docs/maintainer-approval-record.md`。该记录需要包含已审核 commit SHA、
