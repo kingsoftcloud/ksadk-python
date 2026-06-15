@@ -866,6 +866,11 @@ def _build_runner_request_payload(
     previous_response_id = prepared.request_metadata.get("previous_response_id")
     if previous_response_id:
         payload["previous_response_id"] = str(previous_response_id)
+    conversation = prepared.request_metadata.get("conversation")
+    if conversation:
+        payload["conversation"] = conversation
+    if prepared.request_metadata.get("responses_conversation"):
+        payload["responses_conversation"] = True
     return payload
 
 

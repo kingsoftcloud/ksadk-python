@@ -1388,7 +1388,13 @@ async def run_agent_action(request: RunAgentActionRequest):
         messages = conversation.normalize_responses_input(request.ResponsesInput)
     else:
         messages = conversation.normalize_kop_messages(request.Messages)
-    request_metadata = {"previous_response_id": request.PreviousResponseId} if request.PreviousResponseId else None
+    request_metadata = (
+        {"previous_response_id": request.PreviousResponseId}
+        if request.PreviousResponseId
+        else {}
+    )
+    if api_format == "responses":
+        request_metadata["responses_conversation"] = True
 
     if request.Stream:
         if api_format == "chat_completions":
@@ -1413,7 +1419,7 @@ async def run_agent_action(request: RunAgentActionRequest):
                 model=request.Model,
                 model_metadata=request.ModelMetadata,
                 model_options=request.ModelOptions,
-                request_metadata=request_metadata,
+                request_metadata=request_metadata or None,
                 resume_input=resume_input,
                 account_id=account_id,
                 prepare_runner=_prepare_runner_for_model,
@@ -1433,7 +1439,7 @@ async def run_agent_action(request: RunAgentActionRequest):
         model=request.Model,
         model_metadata=request.ModelMetadata,
         model_options=request.ModelOptions,
-        request_metadata=request_metadata,
+        request_metadata=request_metadata or None,
         resume_input=resume_input,
         response_id=responses_response_id,
         account_id=account_id,
