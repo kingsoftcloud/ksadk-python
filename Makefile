@@ -1,7 +1,7 @@
 # AgentEngine Makefile
-# 用于构建 Web UI 和管理项目
+# 用于同步 KsADK Web static 和管理项目
 
-.PHONY: help install build-webui sync-static clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-docs-build public-test public-build-check public-preflight public-publish-check public-release-tag public-review openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size docs-check-wiki docs-prepare-source docs-docker-build docs-docker-push docs-helm-lint docs-helm-template docs-deploy docs-deploy-all docs-status docs-logs sync-ksadk-web-static sync-hosted-ui build-frontend build-wheel build-all clean-frontend
+.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-docs-build public-test public-build-check public-preflight public-publish-check public-release-tag public-review openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size docs-check-wiki docs-prepare-source docs-docker-build docs-docker-push docs-helm-lint docs-helm-template docs-deploy docs-deploy-all docs-status docs-logs sync-ksadk-web-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend
 
 # 默认目标
 help:
@@ -9,8 +9,8 @@ help:
 	@echo "  \033[1;36m金山云 AgentEngine\033[0m 开发工具"
 	@echo ""
 	@echo "  \033[1;32m开发命令:\033[0m"
-	@echo "    make install        安装所有依赖 (Python + Node.js)"
-	@echo "    make dev            启动开发服务器 (前后端)"
+	@echo "    make install        安装 Python 依赖"
+	@echo "    make dev            启动本地后端和已打包 Web UI"
 	@echo "    make test           运行测试"
 	@echo ""
 	@echo "  \033[1;32mWeb UI 构建:\033[0m"
@@ -65,46 +65,20 @@ help:
 # 依赖安装
 # ============================================================
 
-install: install-python install-webui
+install: install-python
 
 install-python:
 	@echo "📦 安装 Python 依赖..."
 	pip install -e ".[dev]"
 
-install-webui:
-	@echo "📦 安装 Web UI 依赖..."
-	cd webui && npm install
-
 # ============================================================
-# Web UI 构建
+# Web UI static 同步
 # ============================================================
 
-# Web UI 输出目录 (支持软链接，webui 目录不存在时跳过)
-WEBUI_DIR := $(shell cd webui 2>/dev/null && pwd || echo "")
-WEBUI_DIST = $(WEBUI_DIR)/dist/agent_framework_web/browser
 STATIC_DIR = ksadk/server/static
 
-build-webui:
-	@echo "🔨 构建 Web UI..."
-	cd webui && npm run build
-	@echo "✅ Web UI 构建完成: $(WEBUI_DIST)"
-
-sync-static:
-	@echo "📋 同步静态文件到 $(STATIC_DIR)..."
-	@if [ ! -d "$(WEBUI_DIST)" ]; then \
-		echo "❌ 错误: $(WEBUI_DIST) 不存在，请先运行 make build-webui"; \
-		exit 1; \
-	fi
-	@rm -rf $(STATIC_DIR)/*
-	@cp -r $(WEBUI_DIST)/* $(STATIC_DIR)/
-	@echo "✅ 同步完成！"
-	@echo "📁 文件列表:"
-	@ls -la $(STATIC_DIR)/
-
-# 一键构建 + 同步
-webui: build-webui sync-static
-	@echo ""
-	@echo "🎉 Web UI 构建并同步完成！"
+build-webui sync-static webui: sync-ksadk-web-static
+	@echo "Deprecated target: Web UI is sourced from $(KSADK_WEB_PACKAGE), not local source."
 
 # ============================================================
 # 开发服务器
@@ -113,17 +87,9 @@ webui: build-webui sync-static
 dev:
 	@echo "🚀 启动开发服务器..."
 	@echo "   后端: http://localhost:8000"
-	@echo "   前端: http://localhost:4200"
 	@echo ""
 	@echo "使用 Ctrl+C 停止服务"
-	@# 并行启动前后端
-	(cd webui && npm run serve) & \
-	(python -m ksadk.cli web .) & \
-	wait
-
-dev-webui:
-	@echo "🌐 启动 Web UI 开发服务器..."
-	cd webui && npm run serve
+	python -m ksadk.cli web .
 
 dev-backend:
 	@echo "🔧 启动后端开发服务器..."
@@ -136,10 +102,6 @@ dev-backend:
 test:
 	@echo "🧪 运行 Python 测试..."
 	pytest tests/ -v
-
-test-webui:
-	@echo "🧪 运行 Web UI 测试..."
-	cd webui && npm test
 
 # ============================================================
 # 构建和发布
@@ -211,7 +173,7 @@ subprocess.run(['sed', '-i', '', f's/^version = \".*\"/version = \"{new_v}\"/', 
 check-build-deps:
 	@python -c "import build" 2>/dev/null || (echo "📦 安装构建依赖..." && pip install build twine)
 
-build: check-build-deps webui
+build: check-build-deps sync-ksadk-web-static
 	@echo "📦 构建 Python 包 v$(VERSION)..."
 	python -m build
 	@# 删除 tar.gz 和临时目录，只保留 whl
@@ -220,11 +182,11 @@ build: check-build-deps webui
 	@echo "✅ 构建完成: dist/"
 	@ls -la dist/
 
-# 仅构建 Python 包（跳过 webui，使用现有静态文件）
+# 仅构建 Python 包（跳过 npm 同步，使用现有静态文件）
 build-only: check-build-deps
 	@echo "📦 构建 Python 包 v$(VERSION)（使用现有静态文件）..."
 	@if [ ! -f "ksadk/server/static/index.html" ]; then \
-		echo "❌ 错误: ksadk/server/static/ 目录为空，请先运行 make webui"; \
+		echo "❌ 错误: ksadk/server/static/ 目录为空，请先运行 make sync-ksadk-web-static"; \
 		exit 1; \
 	fi
 	python -m build
@@ -250,7 +212,7 @@ clean-dist:
 	@echo "🧹 清理 dist/build 临时产物..."
 	@rm -rf $(DIST_DIR)/* build/ *.egg-info/
 
-publish: clean-dist build-only
+publish: clean-dist build
 	@echo "🚀 发布 v$(VERSION) 到 PyPI..."
 	@if [ -f ".pypirc" ]; then \
 		echo "❌ 错误: 仓库根目录存在 .pypirc，拒绝发布"; \
@@ -273,7 +235,7 @@ publish: clean-dist build-only
 	echo "$$FILES"; \
 	python -m twine upload --config-file $(PYPIRC) $$FILES
 
-publish-test: clean-dist build-only
+publish-test: clean-dist build
 	@echo "🧪 发布 v$(VERSION) 到 TestPyPI..."
 	@if [ -f ".pypirc" ]; then \
 		echo "❌ 错误: 仓库根目录存在 .pypirc，拒绝发布"; \
@@ -658,13 +620,10 @@ docs-logs:
 
 
 # ============================================================
-# Hosted UI 构建自动化
+# KsADK Web static 同步
 # ============================================================
 
-NODE_DIR := ksadk/server/web-ui
 STATIC_DIR := ksadk/server/static
-HOSTED_DIR := ksadk/server/web-ui/dist-hosted
-HOSTED_UI_SOURCE_DIR ?= ../agentengine-hosted-ui
 KSADK_WEB_VERSION ?= latest
 KSADK_WEB_PACKAGE ?= @kingsoftcloud/ksadk-web
 KSADK_WEB_TARBALL_NAME := kingsoftcloud-ksadk-web-$(patsubst v%,%,$(KSADK_WEB_VERSION)).tgz
@@ -702,8 +661,7 @@ build-all: build-wheel
 	@echo "Build complete. Wheel is in dist/"
 
 clean-frontend:
-	rm -rf $(NODE_DIR)/dist $(NODE_DIR)/dist-hosted
-	rm -rf $(STATIC_DIR)/assets $(STATIC_DIR)/index.html $(STATIC_DIR)/favicon.svg $(STATIC_DIR)/icons.svg
+	rm -rf $(STATIC_DIR)
 
 # ============================================================
 # 清理
@@ -712,7 +670,6 @@ clean-frontend:
 clean:
 	@echo "🧹 清理构建产物和本地缓存..."
 	rm -rf dist/ build/ *.egg-info/ .eggs/
-	rm -rf webui/dist/
 	rm -rf .pytest_cache/ .mypy_cache/ .ruff_cache/ .coverage coverage.xml htmlcov/ .tox/ .nox/
 	rm -rf $(OFFLINE_DIR)/
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true

@@ -146,7 +146,6 @@ Documentation = "https://kingsoftcloud.github.io/ksadk-python/"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["ksadk*", "ksadk_runtime_common*"]
-exclude = ["ksadk.server.web-ui.node_modules*"]
 
 [tool.setuptools.package-data]
 ksadk = ["server/static/**/*"]
