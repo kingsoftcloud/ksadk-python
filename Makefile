@@ -256,14 +256,24 @@ public-status:
 public-sync-check:
 	@echo "==> public candidate branch policy"
 	@branch=$$(git branch --show-current); \
-	case "$$branch" in \
-		$(PUBLIC_BRANCH)|release/public-*|review/public-*|open-source/*) ;; \
-		*) \
-			echo "❌ 当前分支不是公开 main 或公开候选分支: $$branch"; \
-			echo "   公开候选应在 release/public-x.y.z、open-source/* 或等价审核分支运行门禁。"; \
-			exit 1; \
-			;; \
-	esac
+	if [ -z "$$branch" ] && [ "$$GITHUB_ACTIONS" = "true" ]; then \
+		case "$$GITHUB_REF" in \
+			refs/tags/v*|refs/heads/$(PUBLIC_BRANCH)) ;; \
+			*) \
+				echo "❌ GitHub Actions public gate must run from refs/tags/v* or refs/heads/$(PUBLIC_BRANCH): $$GITHUB_REF"; \
+				exit 1; \
+				;; \
+		esac; \
+	else \
+		case "$$branch" in \
+			$(PUBLIC_BRANCH)|release/public-*|review/public-*|open-source/*) ;; \
+			*) \
+				echo "❌ 当前分支不是公开 main 或公开候选分支: $$branch"; \
+				echo "   公开候选应在 release/public-x.y.z、open-source/* 或等价审核分支运行门禁。"; \
+				exit 1; \
+				;; \
+		esac; \
+	fi
 	@if [ -f ".pypirc" ]; then \
 		echo "❌ 仓库根目录存在 .pypirc，必须删除后再进入公开流程"; \
 		exit 1; \
