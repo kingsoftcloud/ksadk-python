@@ -1,7 +1,7 @@
 # AgentEngine Makefile
 # 用于构建 Web UI 和管理项目
 
-.PHONY: help install build-webui sync-static webui clean clean-cache clean-dist clean-static clean-offline dev dev-webui dev-backend test test-webui publish publish-test open-source-audit open-source-audit-public-repo open-source-audit-dist open-source-audit-ksadk-python-export open-source-audit-ksadk-web open-source-smoke-install open-source-smoke-ksadk-web open-source-review open-source-review-bundle open-source-review-bundle-verify open-source-approval-check open-source-publication-plan open-source-publication-state public-status public-sync-check public-secret-audit public-audit public-test public-build-check public-preflight public-publish-check public-release-tag public-review public-docs-build public-docs-serve public-docs-audit
+.PHONY: help install build-webui sync-static sync-ksadk-web-static webui clean clean-cache clean-dist clean-static clean-offline dev dev-webui dev-backend test test-webui publish publish-test open-source-audit open-source-audit-public-repo open-source-audit-dist open-source-audit-ksadk-python-export open-source-audit-ksadk-web open-source-smoke-install open-source-smoke-ksadk-web open-source-review open-source-review-bundle open-source-review-bundle-verify open-source-approval-check open-source-publication-plan open-source-publication-state public-status public-sync-check public-secret-audit public-audit public-test public-build-check public-preflight public-publish-check public-release-tag public-review public-docs-build public-docs-serve public-docs-audit
 
 # 默认目标
 help:
@@ -14,6 +14,8 @@ help:
 	@echo "    make test           运行测试"
 	@echo ""
 	@echo "  \033[1;32mWeb UI 静态产物:\033[0m"
+	@echo "    make sync-ksadk-web-static KSADK_WEB_VERSION=latest"
+	@echo "                         从 @kingsoftcloud/ksadk-web npm 包同步 static"
 	@echo "    make build-webui    校验 ksadk/server/static 已存在"
 	@echo "    make sync-static    校验 ksadk/server/static 已存在"
 	@echo "    make webui          校验已打包的 Web UI 静态产物"
@@ -87,8 +89,31 @@ install-webui:
 # ============================================================
 
 STATIC_DIR = ksadk/server/static
+KSADK_WEB_VERSION ?= latest
+KSADK_WEB_PACKAGE ?= @kingsoftcloud/ksadk-web
+KSADK_WEB_TARBALL_NAME := kingsoftcloud-ksadk-web-$(patsubst v%,%,$(KSADK_WEB_VERSION)).tgz
+KSADK_WEB_RELEASE_URL ?=
+KSADK_WEB_CACHE_DIR ?= .cache/ksadk-web
 OPEN_SOURCE_SMOKE_VENV ?= /tmp/ksadk-open-source-smoke
 OPEN_SOURCE_SMOKE_WHEEL ?= dist/ksadk-$(VERSION)-py3-none-any.whl
+
+sync-ksadk-web-static:
+	@echo "Sync KsADK Web static assets from $(KSADK_WEB_PACKAGE)@$(KSADK_WEB_VERSION)"
+	@rm -rf "$(KSADK_WEB_CACHE_DIR)/package"
+	@mkdir -p "$(KSADK_WEB_CACHE_DIR)" "$(STATIC_DIR)"
+	@if [ -n "$(KSADK_WEB_RELEASE_URL)" ]; then \
+		echo "Using explicit KSADK_WEB_RELEASE_URL=$(KSADK_WEB_RELEASE_URL)"; \
+		curl -fL --retry 3 --retry-delay 2 --retry-all-errors "$(KSADK_WEB_RELEASE_URL)" -o "$(KSADK_WEB_CACHE_DIR)/$(KSADK_WEB_TARBALL_NAME)"; \
+		echo "$(KSADK_WEB_TARBALL_NAME)" > "$(KSADK_WEB_CACHE_DIR)/.tarball-name"; \
+	else \
+		npm pack "$(KSADK_WEB_PACKAGE)@$(patsubst v%,%,$(KSADK_WEB_VERSION))" --pack-destination "$(KSADK_WEB_CACHE_DIR)" > "$(KSADK_WEB_CACHE_DIR)/.tarball-name"; \
+	fi
+	tar -xzf "$(KSADK_WEB_CACHE_DIR)/$$(cat "$(KSADK_WEB_CACHE_DIR)/.tarball-name")" -C "$(KSADK_WEB_CACHE_DIR)"
+	@test -d "$(KSADK_WEB_CACHE_DIR)/package/dist-ksadk" || (echo "ERROR: dist-ksadk missing in $$(cat "$(KSADK_WEB_CACHE_DIR)/.tarball-name")" && exit 1)
+	@rm -rf "$(STATIC_DIR)"
+	@mkdir -p "$(STATIC_DIR)"
+	cp -R "$(KSADK_WEB_CACHE_DIR)/package/dist-ksadk/." "$(STATIC_DIR)/"
+	@echo "Synced KsADK Web $(KSADK_WEB_VERSION) static assets into $(STATIC_DIR)"
 
 build-webui:
 	@echo "ℹ️  ksadk-python 不包含可编辑 Web UI 源码。"
@@ -284,12 +309,13 @@ public-test:
 	@echo "==> public tests"
 	@uv run --extra dev pytest tests/test_open_source_audit.py tests/test_public_positioning_docs.py tests/test_prepare_ksadk_python_export.py tests/test_prepare_ksadk_web_export.py tests/test_runtime_common_packaging.py tests/test_tracing_setup_otlp.py tests/test_check_publication_state.py tests/test_check_approval_record.py tests/test_public_release_gates.py tests/test_markdown_repair.py tests/test_conversation_runtime.py tests/test_server_session_app.py -q
 
-public-build-check: clean-dist
+public-build-check: clean-dist sync-ksadk-web-static
 	@echo "==> build and twine check"
 	@uv build
+	@uv run pytest tests/test_runtime_common_packaging.py::test_built_wheel_excludes_web_ui_node_modules -q
 	@uv run --extra dev python -m twine check dist/*
 
-public-preflight: public-audit public-test public-docs-build public-build-check
+public-preflight: public-audit sync-ksadk-web-static public-test public-docs-build public-build-check
 	@git diff --check
 	@$(MAKE) open-source-audit-dist
 	@echo "✅ public preflight passed"

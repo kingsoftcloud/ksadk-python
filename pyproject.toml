@@ -112,7 +112,7 @@ tracing = [
 ]
 # 知识库 & 记忆库支持
 kb = [
-    "kingsoftcloud-sdk-python>=1.5.8.90",
+    "kingsoftcloud-sdk-python>=1.5.8.94",
 ]
 # Skill Runtime E2B backend
 skills = [

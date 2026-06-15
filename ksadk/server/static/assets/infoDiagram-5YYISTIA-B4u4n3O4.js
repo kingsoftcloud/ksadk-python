@@ -1,2 +1,0 @@
-import{t as e}from"./mermaid-parser.core-CWz7LKCn.js";import{An as t,Zt as n,kn as r,mt as i}from"./MermaidBlock-BWNiw-z-.js";var a={parse:r(async n=>{let r=await e(`info`,n);t.debug(r)},`parse`)},o={version:`11.15.0`},s={parser:a,db:{getVersion:r(()=>o.version,`getVersion`)},renderer:{draw:r((e,r,a)=>{t.debug(`rendering info diagram
-`+e);let o=i(r);n(o,100,400,!0),o.append(`g`).append(`text`).attr(`x`,100).attr(`y`,40).attr(`class`,`version`).attr(`font-size`,32).style(`text-anchor`,`middle`).text(`v${a}`)},`draw`)}};export{s as diagram};

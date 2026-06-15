@@ -81,3 +81,6 @@ local_settings.py
 instance/
 /webui/node_modules/
 webui
+
+# Generated from @kingsoftcloud/ksadk-web during release/build.
+ksadk/server/static/**

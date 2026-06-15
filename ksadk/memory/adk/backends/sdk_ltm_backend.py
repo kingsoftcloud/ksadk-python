@@ -109,7 +109,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
         except ImportError:
             raise ImportError(
                 "kingsoftcloud-sdk-python is required for SDK memory backend. "
-                "Install it with: pip install 'kingsoftcloud-sdk-python>=1.5.8.90'"
+                "Install it with: pip install 'kingsoftcloud-sdk-python>=1.5.8.94'"
             )
 
         # 多版本 fallback
@@ -128,7 +128,7 @@ class SdkLTMBackend(BaseLongTermMemoryBackend):
         if aicp_module is None:
             raise ImportError(
                 "Cannot import ksyun.client.aicp client. "
-                "Ensure kingsoftcloud-sdk-python>=1.5.8.90 is installed."
+                "Ensure kingsoftcloud-sdk-python>=1.5.8.94 is installed."
             )
 
         cred = credential.Credential(self.access_key, self.secret_key)
