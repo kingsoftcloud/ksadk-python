@@ -36,6 +36,7 @@ class _DummyRunner(BaseRunner):
         return {"output": "assistant says hi"}
 
     async def stream(self, input_data: dict):
+        self.calls.append(input_data)
         yield {"type": "final", "output": "assistant says hi"}
 
 
@@ -1924,6 +1925,36 @@ async def test_responses_uses_deprecated_user_when_safety_identifier_missing(mon
     session = await service.get_session("conv-user")
     assert session is not None
     assert session.user_id == "deprecated-user"
+
+
+@pytest.mark.asyncio
+async def test_stream_responses_user_and_account_reach_platform_context(monkeypatch):
+    service = InMemorySessionService()
+    runner = _DummyRunner()
+
+    chunks = [
+        chunk
+        async for chunk in conversation.stream_responses_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="ui-user-1",
+            messages=[{"role": "user", "content": "hello"}],
+            session_id="sess-hosted-stream",
+            model=None,
+            account_id="acct-1",
+            prepare_runner=lambda _runner, _model: None,
+            session_service_provider=lambda: service,
+        )
+    ]
+
+    session = await service.get_session("sess-hosted-stream")
+    assert session is not None
+    assert session.user_id == "ui-user-1"
+    assert runner.calls, chunks
+    platform_context = runner.calls[-1]["platform_context"]
+    assert platform_context["user_id"] == "ui-user-1"
+    assert platform_context["account_id"] == "acct-1"
+    assert platform_context["session_id"] == "sess-hosted-stream"
 
 
 @pytest.mark.asyncio
