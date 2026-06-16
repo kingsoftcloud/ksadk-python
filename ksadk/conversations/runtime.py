@@ -1279,6 +1279,15 @@ def _tool_receipt_metadata(
     }
 
 
+def _tool_receipt_status_from_output(output: Any) -> str:
+    if not isinstance(output, Mapping):
+        return "failed"
+    status = str(output.get("status") or "").strip().lower()
+    if status == "accepted_not_extracted":
+        return "completed"
+    return "completed" if output.get("ok") is not False else "failed"
+
+
 def _tool_resume_run_id(resume_input: Mapping[str, Any]) -> str:
     return str(
         resume_input.get("run_id")
@@ -1430,9 +1439,7 @@ async def _execute_approved_builtin_tool_resume(
     except Exception as exc:
         output = {"ok": False, "error_type": type(exc).__name__, "error_message": str(exc)}
 
-    receipt["status"] = (
-        "completed" if isinstance(output, Mapping) and output.get("ok") is not False else "failed"
-    )
+    receipt["status"] = _tool_receipt_status_from_output(output)
     await append_conversation_event(
         session_id=session_id,
         author="tool",
