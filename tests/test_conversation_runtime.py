@@ -1676,6 +1676,74 @@ async def test_invoke_conversation_once_executes_approved_builtin_tool_resume(
 
 
 @pytest.mark.asyncio
+async def test_invoke_conversation_once_treats_accepted_memory_save_as_completed_receipt(
+    monkeypatch,
+):
+    service = InMemorySessionService()
+    monkeypatch.setenv("KSADK_TOOL_APPROVAL_MODE", "strict")
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime._builtin_tool_callable",
+        lambda name: (
+            lambda **kwargs: {
+                "ok": False,
+                "status": "accepted_not_extracted",
+                "message": "记忆保存请求已被后端受理，但尚未抽取成可检索记忆。",
+                "session_state": 0,
+                "session_id": "sess-memory-accepted",
+            }
+        )
+        if name == "save_memory"
+        else None,
+    )
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-memory-accepted"
+    )
+    await service.append_event(
+        "sess-memory-accepted",
+        SessionEvent(
+            id="evt-approval",
+            author="demo-agent",
+            event_type="approval_request",
+            content={"role": "model", "parts": [{"text": "approval required"}]},
+            metadata={
+                "interrupt_info": {
+                    "approval_request_id": "appr_save_memory",
+                    "tool_name": "save_memory",
+                    "arguments": {"content": "favorite_breakfast: 武汉热干面"},
+                    "run_id": "call_save_memory",
+                    "server_label": "ksadk",
+                }
+            },
+            invocation_id="inv-approval",
+        ),
+    )
+    runner = _StubRunner()
+
+    await invoke_conversation_once(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-memory-accepted",
+        messages=[],
+        model="gpt-4o",
+        resume_input={
+            "type": "mcp_approval_response",
+            "approval_request_id": "appr_save_memory",
+            "approve": True,
+        },
+        prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+    )
+
+    assert runner.calls[-1]["input"]["output"]["status"] == "accepted_not_extracted"
+    events = await service.get_events("sess-memory-accepted")
+    tool_result = next(event for event in events if event.event_type == "tool_result")
+    receipt = tool_result.metadata["tool_receipt"]
+    assert receipt["tool_name"] == "save_memory"
+    assert receipt["status"] == "completed"
+
+
+@pytest.mark.asyncio
 async def test_invoke_conversation_once_replays_existing_tool_receipt_without_side_effect(
     monkeypatch,
     tmp_path: Path,
