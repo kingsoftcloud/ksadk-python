@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Mapping, Optional
 from xml.etree import ElementTree as ET
 
+from ksadk.conversations.attachment_storage import AttachmentStorageService
 from ksadk.sessions.local_service import resolve_local_session_dir
 
 _TEXT_MIME_PREFIXES = ("text/",)
@@ -139,6 +140,10 @@ def resolve_attachment_storage_path(file_uri: str) -> Optional[Path]:
         file_id = normalized_uri.removeprefix(_UPLOAD_URI_SCHEME).strip("/")
         if not file_id:
             return None
+
+        restored = AttachmentStorageService().ensure_local_path(normalized_uri)
+        if restored is not None and restored.is_file():
+            return restored.resolve()
 
         uploads_dir = resolve_uploads_dir().resolve()
         safe_file_id = Path(file_id).name

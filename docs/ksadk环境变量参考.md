@@ -114,8 +114,8 @@
 | `KSADK_LTM_AMBIENT_POLICY` | 否 | 无 | 否 | 平台 / 开发者 | runtime 自动注入长期记忆上下文策略：`on_demand/always/disabled`。 |
 | `KSADK_MEMORY_BACKEND` | 否 | 无 | 否 | 开发者 | 轻量 KV/消息历史 MemoryManager backend，默认 `memory`。 |
 | `KSADK_MEMORY_URL` | 条件必传 | 无 | 是 | 开发者 / Secret | `KSADK_MEMORY_BACKEND=redis` 等远端 backend 连接 URL。 |
-| `KSADK_SESSION_BACKEND` | 否 | `AGENTENGINE_SESSION_BACKEND`、`KSADK_STM_BACKEND` | 否 | 平台 / 开发者 | 会话 backend，默认 `local`。 |
-| `KSADK_SESSION_DSN` | 条件必传 | `KSADK_STM_URL`、`KSADK_STM_DB_URL` | 是 | 平台 Secret | `KSADK_SESSION_BACKEND=postgres` 时必传。 |
+| `KSADK_SESSION_BACKEND` | 否 | `AGENTENGINE_SESSION_BACKEND`、`KSADK_STM_BACKEND` | 否 | 平台 / 开发者 | 会话 backend，默认 `local`。ADK/STM 也会把它作为兜底。 |
+| `KSADK_SESSION_DSN` | 条件必传 | `KSADK_STM_URL`、`KSADK_STM_DB_URL`、`KSADK_ADK_SESSION_URL` | 是 | 平台 Secret | `postgres` / `database` backend 时必传。ADK/STM 也会把它作为兜底。 |
 | `KSADK_SESSION_PATH` | 否 | `KSADK_STM_PATH`、`KSADK_STM_DB_PATH` | 否 | 本地运行时 | 本地 SQLite 会话库路径。 |
 | `KSADK_SESSION_NAMESPACE` | 否 | `KSADK_WORKSPACE_ID`、`AGENTENGINE_WORKSPACE_ID`、`KSADK_TENANT_ID`、`AGENTENGINE_TENANT_ID` | 否 | 平台 / 开发者 | 会话命名空间。 |
 
@@ -240,20 +240,20 @@
 
 | 变量 | 作用层级 | 是否必传 | 默认值 | 别名/兼容 | 敏感 | 配置方/来源 | 是否业务自定义 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `KSADK_SESSION_BACKEND` | Sessions | 否 | `local` | `AGENTENGINE_SESSION_BACKEND`、`KSADK_STM_BACKEND` | 否 | 开发者 / 平台 | 否 | 会话存储 backend。 |
-| `KSADK_SESSION_DSN` | Sessions | 条件必传 | 未设置 | `KSADK_STM_URL`、`KSADK_STM_DB_URL` | 是 | Secret | 否 | PostgreSQL DSN。`KSADK_SESSION_BACKEND=postgres` 时必传。 |
+| `KSADK_SESSION_BACKEND` | Sessions | 否 | `local` | `AGENTENGINE_SESSION_BACKEND`、`KSADK_STM_BACKEND` | 否 | 开发者 / 平台 | 否 | 会话存储 backend。ADK/STM 也会把它作为兜底。 |
+| `KSADK_SESSION_DSN` | Sessions | 条件必传 | 未设置 | `KSADK_STM_URL`、`KSADK_STM_DB_URL`、`KSADK_ADK_SESSION_URL` | 是 | Secret | 否 | PostgreSQL DSN。`postgres` / `database` backend 时必传。ADK/STM 也会把它作为兜底。 |
 | `KSADK_SESSION_PATH` | Sessions | 否 | 项目目录下本地 sqlite 路径 | `KSADK_STM_PATH`、`KSADK_STM_DB_PATH` | 否 | 开发者 / 本地运行时 | 否 | 本地 SQLite 会话路径。 |
 | `KSADK_SESSION_NAMESPACE` | Sessions | 否 | 未设置 | `KSADK_WORKSPACE_ID`、`AGENTENGINE_WORKSPACE_ID`、`KSADK_TENANT_ID`、`AGENTENGINE_TENANT_ID` | 否 | 平台 | 否 | 会话 namespace。 |
 | `KSADK_TENANT_ID` | Sessions | 否 | 未设置 | `AGENTENGINE_TENANT_ID` | 否 | 平台 | 否 | 租户 id。 |
 | `KSADK_WORKSPACE_ID` | Sessions | 否 | 未设置 | `AGENTENGINE_WORKSPACE_ID` | 否 | 平台 | 否 | workspace id。 |
-| `KSADK_STM_BACKEND` | 旧 STM / Sessions fallback | 否 | 未设置 | `KSADK_SESSION_BACKEND` | 否 | 兼容旧部署 | 否 | 旧变量。新部署优先 `KSADK_SESSION_BACKEND`。 |
+| `KSADK_STM_BACKEND` | 旧 STM / Sessions fallback | 否 | 未设置 | `KSADK_SESSION_BACKEND` | 否 | 兼容旧部署 | 否 | 旧变量。新部署优先 `KSADK_SESSION_BACKEND`，但 ADK/STM 仍可读。 |
 | `KSADK_STM_PATH` | 旧 STM / Sessions fallback | 否 | 未设置 | `KSADK_SESSION_PATH` | 否 | 兼容旧部署 | 否 | 旧变量。 |
 | `KSADK_STM_DB_PATH` | 旧 STM / Sessions fallback | 否 | 未设置 | `KSADK_SESSION_PATH` | 否 | 兼容旧部署 | 否 | 旧变量。 |
-| `KSADK_STM_URL` | 旧 STM / Sessions fallback | 条件必传 | 未设置 | `KSADK_SESSION_DSN` | 是 | 兼容旧部署 | 否 | 旧变量。 |
-| `KSADK_STM_DB_URL` | 旧 STM / Sessions fallback | 条件必传 | 未设置 | `KSADK_SESSION_DSN` | 是 | 兼容旧部署 | 否 | 旧变量。 |
+| `KSADK_STM_URL` | 旧 STM / Sessions fallback | 条件必传 | 未设置 | `KSADK_SESSION_DSN` | 是 | 兼容旧部署 | 否 | 旧变量。ADK/STM 仍可读。 |
+| `KSADK_STM_DB_URL` | 旧 STM / Sessions fallback | 条件必传 | 未设置 | `KSADK_SESSION_DSN` | 是 | 兼容旧部署 | 否 | 旧变量。ADK/STM 仍可读。 |
 | `KSADK_ADK_SESSION_BACKEND` | ADK Memory | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | ADK 原生 session backend。 |
 | `KSADK_ADK_SESSION_PATH` | ADK Memory | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | ADK 原生 session sqlite 路径。 |
-| `KSADK_ADK_SESSION_URL` | ADK Memory | 条件必传 | 未设置 | 无 | 是 | Secret | 否 | ADK 原生 session 数据库 URL。 |
+| `KSADK_ADK_SESSION_URL` | ADK Memory | 条件必传 | 未设置 | `KSADK_SESSION_DSN` | 是 | Secret | 否 | ADK 原生 session 数据库 URL。统一 session DSN 也可兜底。 |
 | `KSADK_MEMORY_BACKEND` | MemoryManager | 否 | `memory` | 无 | 否 | 开发者 / 平台 | 否 | 轻量 KV/消息历史 backend。当前内置 `memory`，注册 Redis backend 后可用 `redis`。 |
 | `KSADK_MEMORY_URL` | MemoryManager | 条件必传 | 未设置 | 无 | 是 | Secret | 否 | 远端 MemoryManager backend 连接 URL，例如 Redis URL。 |
 | `KSADK_MEMORY_PREFIX` | MemoryManager | 否 | `ksadk:memory:` | 无 | 否 | 开发者 / 平台 | 否 | MemoryManager key prefix。 |
@@ -335,7 +335,7 @@
 | `KSADK_BUILD_PIP_INSTALL_TIMEOUT_SECONDS` | Code Builder | 否 | `2700` | 无 | 否 | 构建环境 / 开发者 | 否 | 源码构建时 `pip install` 总超时秒数。 |
 | `KSADK_BUILD_ENABLE_ATTACHMENT_OCR` | Code Builder / Container Builder | 否 | `false` | 无 | 否 | 构建环境 / 开发者 | 否 | 是否把平台本地 OCR 依赖打进代码包。不开启不影响多模态模型直接消费 `input_image`。 |
 | `KSADK_BUILD_ENABLE_MCP` | Code Builder / Container Builder | 否 | `false` | 无 | 否 | 构建环境 / 开发者 | 否 | 强制把 `mcp` / `langchain-mcp-adapters` 打进包。通常会根据项目 import 或非空 `KSADK_MCP_SERVERS` 自动启用；`[]` 不会启用。 |
-| `KSADK_BUILD_ENABLE_POSTGRES_SESSION` | Code Builder / Container Builder | 否 | `false` | 无 | 否 | 构建环境 / 开发者 | 否 | 强制把 `asyncpg` 打进包。通常会根据 `KSADK_SESSION_BACKEND=postgres` 或 PostgreSQL DSN 自动启用。 |
+| `KSADK_BUILD_ENABLE_POSTGRES_SESSION` | Code Builder / Container Builder | 否 | `false` | 无 | 否 | 构建环境 / 开发者 | 否 | 强制把 `asyncpg` 打进包。通常会根据 `KSADK_SESSION_BACKEND=postgres`、`KSADK_SESSION_DSN` 或 PostgreSQL DSN 自动启用。 |
 | `KSADK_RUNTIME_PORT` | Runtime image / CLI | 否 | `8080` | 无 | 否 | 平台 | 否 | 模板运行时 HTTP 端口。 |
 | `KSADK_PROJECT_DIR` | Sessions / Web | 否 | 当前工作目录 | 无 | 否 | 本地运行时 | 否 | 本地 session/workspace 状态 project root。 |
 | `KSADK_RESPONSES_SESSION_HEADER` | RemoteRunner | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 远端 Responses session 透传 header 名称。 |

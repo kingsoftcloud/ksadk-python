@@ -26,6 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import ksadk.conversations as conversation
+from ksadk.conversations.attachment_storage import AttachmentStorageService
 from ksadk.conversations.attachments import compact_attachment_result_for_session
 from ksadk.conversations.session_title import (
     HEURISTIC_SESSION_TITLE_SOURCE,
@@ -1498,25 +1499,23 @@ async def subscribe_run_events_action(
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 @app.post("/agentengine/api/v1/UploadFile")
 async def upload_file_action(file: UploadFile = File(...)):
-    uploads_dir = _resolve_uploads_dir()
-    ext = Path(file.filename or "").suffix
     file_id = uuid.uuid4().hex
-    target_path = uploads_dir / f"{file_id}{ext}"
-    size_bytes = 0
-
-    with open(target_path, "wb") as f:
-        while chunk := await file.read(1024 * 1024):
-            size_bytes += len(chunk)
-            f.write(chunk)
+    data = await file.read()
+    file_uri, _local_path = await AttachmentStorageService().store(
+        data=data,
+        file_id=file_id,
+        display_name=file.filename,
+        mime_type=file.content_type,
+    )
 
     return _action_response(
         "UploadFile",
         {
             "FileData": {
-                "fileUri": f"{_UPLOAD_URI_SCHEME}{file_id}",
+                "fileUri": file_uri,
                 "displayName": file.filename or "uploaded_file",
                 "mimeType": file.content_type or "application/octet-stream",
-                "sizeBytes": size_bytes,
+                "sizeBytes": len(data),
             }
         }
     )
@@ -1524,16 +1523,14 @@ async def upload_file_action(file: UploadFile = File(...)):
 
 @app.get("/agentengine/api/v1/AttachmentContent", include_in_schema=False)
 async def attachment_content_action(FileUri: str = Query(...)):
-    storage_path = _resolve_attachment_storage_path(FileUri)
-    if storage_path is None or not storage_path.is_file():
+    loaded = AttachmentStorageService().read(FileUri)
+    if loaded is None:
         raise HTTPException(status_code=404, detail="Attachment not found")
 
-    media_type, _ = mimetypes.guess_type(storage_path.name)
-    return FileResponse(
-        path=storage_path,
-        media_type=media_type or "application/octet-stream",
-        filename=storage_path.name,
-        content_disposition_type="inline",
+    return Response(
+        content=loaded.data,
+        media_type=loaded.mime_type or "application/octet-stream",
+        headers={"Content-Disposition": f'inline; filename="{loaded.display_name}"'},
     )
 
 

@@ -6,8 +6,10 @@
 参考 VeADK: veadk/memory/short_term_memory.py
 
 环境变量:
-    KSADK_STM_BACKEND: 后端类型 (local / sqlite / database)
-    KSADK_STM_DB_URL: 数据库连接 URL (sqlite/database 时需要)
+    KSADK_SESSION_BACKEND: 统一 session 后端类型 (memory / local / sqlite / postgres)
+    KSADK_SESSION_DSN: 统一 session 数据库 DSN
+    KSADK_STM_BACKEND: 旧短期记忆后端类型 (local / sqlite / database)
+    KSADK_STM_DB_URL: 旧数据库连接 URL (sqlite/database 时需要)
 
 使用示例:
     # InMemory (默认，开发测试)
@@ -46,6 +48,8 @@ def _normalize_backend_name(backend: str) -> str:
     normalized = str(backend or "").strip().lower()
     if normalized == "memory":
         return "local"
+    if normalized == "postgres":
+        return "database"
     return normalized
 
 
@@ -63,6 +67,10 @@ def _normalize_database_url(db_url: str) -> str:
     if normalized.startswith("sqlite:"):
         return "sqlite+aiosqlite:" + normalized[len("sqlite:") :]
     return normalized
+
+
+def _session_backend_requires_database_url(backend: str) -> bool:
+    return _normalize_backend_name(backend) == "database"
 
 
 class ShortTermMemory(BaseModel):
@@ -124,11 +132,9 @@ class ShortTermMemory(BaseModel):
 
             case "database":
                 if not self.db_url:
-                    logger.warning(
-                        "ShortTermMemory: backend='database' but no db_url. "
-                        "Falling back to InMemorySessionService."
+                    raise ValueError(
+                        "KSADK_SESSION_DSN is required when ADK session backend resolves to database/postgres"
                     )
-                    self._session_service = InMemorySessionService()
                 else:
                     self._init_database_service(self.db_url)
 
@@ -238,15 +244,22 @@ class ShortTermMemory(BaseModel):
             KSADK_STM_BACKEND: 平台级 STM backend
             KSADK_STM_URL / KSADK_STM_DB_URL: 平台级数据库 URL
             KSADK_STM_PATH / KSADK_STM_DB_PATH: 平台级 SQLite 路径
+            KSADK_SESSION_BACKEND: 统一 session backend fallback
+            KSADK_SESSION_DSN: 统一 session DSN fallback
         """
         explicit_backend = _normalize_backend_name(
-            _env_first("KSADK_ADK_SESSION_BACKEND", "KSADK_STM_BACKEND")
+            _env_first(
+                "KSADK_ADK_SESSION_BACKEND",
+                "KSADK_STM_BACKEND",
+                "KSADK_SESSION_BACKEND",
+            )
         )
         db_url = _normalize_database_url(
             _env_first(
                 "KSADK_ADK_SESSION_URL",
                 "KSADK_STM_URL",
                 "KSADK_STM_DB_URL",
+                "KSADK_SESSION_DSN",
             )
         )
         configured_db_path = _env_first(
@@ -257,6 +270,10 @@ class ShortTermMemory(BaseModel):
         db_path = configured_db_path or "/tmp/ksadk_local_database.db"
 
         backend = explicit_backend
+        if _session_backend_requires_database_url(backend) and not db_url:
+            raise ValueError(
+                "KSADK_SESSION_DSN is required when ADK session backend resolves to database/postgres"
+            )
         if not backend:
             if db_url:
                 backend = "database"
