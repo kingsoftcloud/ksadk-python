@@ -107,7 +107,8 @@ class ADKRunner(BaseRunner):
 
         环境变量:
             KSADK_ADK_SESSION_BACKEND / PATH / URL: ADK 专用 session 配置
-            KSADK_STM_BACKEND / PATH / URL: 平台级 STM 配置
+            KSADK_STM_BACKEND / PATH / URL: 旧平台级 STM 配置
+            KSADK_SESSION_BACKEND / DSN: 统一 session 配置 fallback
         """
         configured_names = (
             "KSADK_ADK_SESSION_BACKEND",
@@ -118,6 +119,8 @@ class ADKRunner(BaseRunner):
             "KSADK_STM_URL",
             "KSADK_STM_DB_PATH",
             "KSADK_STM_DB_URL",
+            "KSADK_SESSION_BACKEND",
+            "KSADK_SESSION_DSN",
         )
         if not any(str(os.environ.get(name, "")).strip() for name in configured_names):
             return None

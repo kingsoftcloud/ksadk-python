@@ -146,6 +146,57 @@ def test_short_term_memory_from_env_prefers_adk_session_override(monkeypatch):
     assert stm.local_database_path == "/tmp/adk-private.sqlite"
 
 
+def test_short_term_memory_from_env_falls_back_to_unified_session_dsn(monkeypatch):
+    from ksadk.memory.adk.short_term_memory import ShortTermMemory
+
+    dsn = "postgresql+asyncpg://user:pass@example.invalid:5432/session_db"
+    monkeypatch.delenv("KSADK_ADK_SESSION_BACKEND", raising=False)
+    monkeypatch.delenv("KSADK_ADK_SESSION_URL", raising=False)
+    monkeypatch.delenv("KSADK_STM_BACKEND", raising=False)
+    monkeypatch.delenv("KSADK_STM_URL", raising=False)
+    monkeypatch.delenv("KSADK_STM_DB_URL", raising=False)
+    monkeypatch.setenv("KSADK_SESSION_BACKEND", "postgres")
+    monkeypatch.setenv("KSADK_SESSION_DSN", dsn)
+
+    stm = ShortTermMemory.from_env()
+
+    assert stm.backend == "database"
+    assert stm.db_url == dsn
+
+
+def test_adk_runner_short_term_memory_initializes_from_unified_session_env(monkeypatch):
+    dsn = "postgresql+asyncpg://user:pass@example.invalid:5432/session_db"
+    monkeypatch.delenv("KSADK_ADK_SESSION_BACKEND", raising=False)
+    monkeypatch.delenv("KSADK_ADK_SESSION_URL", raising=False)
+    monkeypatch.delenv("KSADK_STM_BACKEND", raising=False)
+    monkeypatch.delenv("KSADK_STM_URL", raising=False)
+    monkeypatch.delenv("KSADK_STM_DB_URL", raising=False)
+    monkeypatch.setenv("KSADK_SESSION_BACKEND", "postgres")
+    monkeypatch.setenv("KSADK_SESSION_DSN", dsn)
+    runner = _make_adk_runner()
+
+    stm = runner._init_short_term_memory()
+
+    assert stm is not None
+    assert stm.backend == "database"
+    assert stm.db_url == dsn
+
+
+def test_short_term_memory_from_env_requires_dsn_for_unified_postgres(monkeypatch):
+    from ksadk.memory.adk.short_term_memory import ShortTermMemory
+
+    monkeypatch.delenv("KSADK_ADK_SESSION_BACKEND", raising=False)
+    monkeypatch.delenv("KSADK_ADK_SESSION_URL", raising=False)
+    monkeypatch.delenv("KSADK_STM_BACKEND", raising=False)
+    monkeypatch.delenv("KSADK_STM_URL", raising=False)
+    monkeypatch.delenv("KSADK_STM_DB_URL", raising=False)
+    monkeypatch.setenv("KSADK_SESSION_BACKEND", "postgres")
+    monkeypatch.delenv("KSADK_SESSION_DSN", raising=False)
+
+    with pytest.raises(ValueError, match="KSADK_SESSION_DSN"):
+        ShortTermMemory.from_env()
+
+
 def test_adk_runner_short_term_memory_uses_framework_specific_override(monkeypatch):
     monkeypatch.setenv("KSADK_STM_BACKEND", "sqlite")
     monkeypatch.setenv("KSADK_STM_PATH", "/tmp/shared-sessions.sqlite")

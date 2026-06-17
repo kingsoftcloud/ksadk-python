@@ -900,12 +900,11 @@ class TestShortTermMemory:
         stm = ShortTermMemory(backend="local")
         assert isinstance(stm.session_service, InMemorySessionService)
 
-    def test_init_database_no_url_fallback(self):
+    def test_init_database_no_url_raises(self):
         from ksadk.memory.adk.short_term_memory import ShortTermMemory
-        from google.adk.sessions import InMemorySessionService
 
-        stm = ShortTermMemory(backend="database", db_url="")
-        assert isinstance(stm.session_service, InMemorySessionService)
+        with pytest.raises(ValueError, match="KSADK_SESSION_DSN"):
+            ShortTermMemory(backend="database", db_url="")
 
     def test_init_unknown_backend_raises(self):
         """Pydantic Literal validation rejects unknown backends"""
