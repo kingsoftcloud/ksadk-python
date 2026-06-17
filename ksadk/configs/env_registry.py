@@ -169,6 +169,11 @@ ENV_VAR_REGISTRY: tuple[EnvVarSpec, ...] = (
     EnvVarSpec("KSADK_STM_PATH", "sessions", "Short-term-memory SQLite path."),
     EnvVarSpec("KSADK_STM_URL", "sessions", "Short-term-memory database URL.", sensitive=True),
     EnvVarSpec("KSADK_TENANT_ID", "sessions", "Tenant id used for session namespace scoping."),
+    EnvVarSpec(
+        "KSADK_TERMINAL_EXEC_SUBCOMMAND_ALLOWLIST",
+        "terminal",
+        "Comma-separated remote terminal exec subcommand prefixes appended to the default allowlist.",
+    ),
     EnvVarSpec("KSADK_TOOL_APPROVAL_MODE", "tools", "Built-in tool approval mode: off or strict.", "off"),
     EnvVarSpec("KSADK_UPDATED_AT", "configs", "Internal config update timestamp field."),
     EnvVarSpec("KSADK_VERSION", "configs", "Internal config version field."),

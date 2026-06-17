@@ -79,6 +79,7 @@ from ksadk.builders.container_builder import (
     resolve_registry_credentials,
 )
 from ksadk.openclaw_gateway import OpenClawGatewayClient, OpenClawGatewayError, OpenClawGatewayRequestError
+from ksadk.terminal_exec_policy import OPENCLAW_TERMINAL_EXEC_POLICY
 from ksadk.terminal_client import run_terminal_session
 
 console = get_console()
@@ -1497,6 +1498,7 @@ async def _run_weixin_remote_cli_login(
         api_key=_openclaw_terminal_api_key(detail),
         mode="exec",
         argv=WEIXIN_REMOTE_LOGIN_ARGV,
+        exec_policy=OPENCLAW_TERMINAL_EXEC_POLICY,
     )
     if exit_code:
         raise OpenClawGatewayError(f"微信远端登录流程执行失败，exit_code={exit_code}")
