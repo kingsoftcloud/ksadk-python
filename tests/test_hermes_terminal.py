@@ -149,7 +149,7 @@ def test_validate_hermes_exec_argv_rejects_mutating_or_shell_like_commands(argv)
 
 
 def test_validate_hermes_exec_argv_accepts_env_allowlisted_prefix(monkeypatch):
-    monkeypatch.setenv("KSADK_TERMINAL_EXEC_SUBCOMMAND_ALLOWLIST", "config set")
+    monkeypatch.setenv("KSADK_TERMINAL_EXEC_SUBCOMMAND_ALLOWLIST", "config")
 
     assert validate_hermes_exec_argv(["config", "set", "memory.provider", "hindsight"]) == [
         "config",
@@ -179,12 +179,33 @@ def test_validate_terminal_exec_argv_defaults_to_common_commands(monkeypatch):
         hermes_terminal.validate_terminal_exec_argv(["openclaw", "config", "set", "memory.provider", "hindsight"])
 
 
+def test_validate_terminal_exec_argv_rejection_mentions_allowlist_env(monkeypatch):
+    monkeypatch.delenv("KSADK_TERMINAL_EXEC_SUBCOMMAND_ALLOWLIST", raising=False)
+
+    with pytest.raises(ValueError) as exc_info:
+        hermes_terminal.validate_terminal_exec_argv(["openclaw", "config", "set"])
+
+    message = str(exc_info.value)
+    assert "KSADK_TERMINAL_EXEC_SUBCOMMAND_ALLOWLIST='openclaw'" in message
+    assert "KSADK_TERMINAL_EXEC_SUBCOMMAND_ALLOWLIST='*'" in message
+
+
 def test_validate_terminal_exec_argv_accepts_common_env_allowlisted_prefix(monkeypatch):
-    monkeypatch.setenv("KSADK_TERMINAL_EXEC_SUBCOMMAND_ALLOWLIST", "openclaw config set")
+    monkeypatch.setenv("KSADK_TERMINAL_EXEC_SUBCOMMAND_ALLOWLIST", "openclaw config")
 
     assert hermes_terminal.validate_terminal_exec_argv(
         ["openclaw", "config", "set", "memory.provider", "hindsight"]
     ) == ["openclaw", "config", "set", "memory.provider", "hindsight"]
+
+
+def test_validate_terminal_exec_argv_accepts_wildcard_env_allowlist(monkeypatch):
+    monkeypatch.setenv("KSADK_TERMINAL_EXEC_SUBCOMMAND_ALLOWLIST", "*")
+
+    assert hermes_terminal.validate_terminal_exec_argv(["python", "-c", "print('ok')"]) == [
+        "python",
+        "-c",
+        "print('ok')",
+    ]
 
 
 def test_openclaw_exec_policy_allows_remote_cli_fallback_by_default(monkeypatch):

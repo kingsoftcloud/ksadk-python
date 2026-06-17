@@ -172,7 +172,7 @@ ENV_VAR_REGISTRY: tuple[EnvVarSpec, ...] = (
     EnvVarSpec(
         "KSADK_TERMINAL_EXEC_SUBCOMMAND_ALLOWLIST",
         "terminal",
-        "Comma-separated remote terminal exec subcommand prefixes appended to the default allowlist.",
+        "Comma-separated remote terminal exec prefixes appended to the default allowlist; use * to allow all.",
     ),
     EnvVarSpec("KSADK_TOOL_APPROVAL_MODE", "tools", "Built-in tool approval mode: off or strict.", "off"),
     EnvVarSpec("KSADK_UPDATED_AT", "configs", "Internal config update timestamp field."),
