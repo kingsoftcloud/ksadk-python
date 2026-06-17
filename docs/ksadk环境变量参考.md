@@ -339,7 +339,7 @@
 | `KSADK_RUNTIME_PORT` | Runtime image / CLI | 否 | `8080` | 无 | 否 | 平台 | 否 | 模板运行时 HTTP 端口。 |
 | `KSADK_PROJECT_DIR` | Sessions / Web | 否 | 当前工作目录 | 无 | 否 | 本地运行时 | 否 | 本地 session/workspace 状态 project root。 |
 | `KSADK_RESPONSES_SESSION_HEADER` | RemoteRunner | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 远端 Responses session 透传 header 名称。 |
-| `KSADK_TERMINAL_EXEC_SUBCOMMAND_ALLOWLIST` | Terminal exec | 否 | 默认常见只读命令 | 无 | 否 | 平台 / 开发者 | 否 | 追加允许远程 terminal exec 透传的子命令前缀，多个前缀用逗号、分号或换行分隔，例如 `config set,openclaw config set`。 |
+| `KSADK_TERMINAL_EXEC_SUBCOMMAND_ALLOWLIST` | Terminal exec | 否 | 默认常见只读命令 | 无 | 否 | 平台 / 开发者 | 否 | 追加允许远程 terminal exec 透传的命令前缀，多个前缀用逗号、分号或换行分隔；例如 `config,openclaw config`。设置为 `*` 时允许全部远程 exec 命令。 |
 | `KSADK_TOOL_APPROVAL_MODE` | Built-in tools / Conversations runtime | 否 | `off` | 无 | 否 | 平台 / 开发者 | 否 | 内置工具审批模式；`strict` 时中高风险工具需要审批。 |
 | `KSADK_FEISHU_APP_ID` | OpenClaw diagnostics | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | 飞书辅助 app id。 |
 | `KSADK_FEISHU_RESULT_PATH` | OpenClaw diagnostics | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | 飞书辅助结果路径。 |

@@ -103,18 +103,24 @@ _ALLOWLIST_ENTRY_SPLIT_RE = re.compile(r"[\n;,]+")
 _ALLOWLIST_TOKEN_SPLIT_RE = re.compile(r"\s+")
 
 
-def normalize_exec_argv(argv: Iterable[str], *, policy_name: str = "terminal") -> list[str]:
+def normalize_exec_argv(
+    argv: Iterable[str],
+    *,
+    policy_name: str = "terminal",
+    allow_shell_metachars: bool = False,
+    allow_forbidden_launchers: bool = False,
+) -> list[str]:
     normalized = [str(item).strip() for item in argv]
     if not normalized:
         raise ValueError(f"{policy_name} exec requires argv")
     for index, item in enumerate(normalized):
         if not item:
             raise ValueError(f"{policy_name} exec argv contains an empty argument")
-        if any(char in SHELL_METACHARS for char in item):
+        if not allow_shell_metachars and any(char in SHELL_METACHARS for char in item):
             raise ValueError(f"{policy_name} exec does not allow shell metacharacters: {item}")
         if index == 0 and item.startswith("-"):
             raise ValueError(f"{policy_name} exec command is invalid: {item}")
-        if index == 0 and item in FORBIDDEN_LAUNCHERS:
+        if not allow_forbidden_launchers and index == 0 and item in FORBIDDEN_LAUNCHERS:
             raise ValueError(f"{policy_name} exec launcher is not allowed: {item}")
     return normalized
 
@@ -124,6 +130,14 @@ def validate_terminal_exec_argv(
     *,
     policy: TerminalExecPolicy = GENERIC_TERMINAL_EXEC_POLICY,
 ) -> list[str]:
+    if _env_allowlist_all(policy.env_names):
+        return normalize_exec_argv(
+            argv,
+            policy_name=policy.name,
+            allow_shell_metachars=True,
+            allow_forbidden_launchers=True,
+        )
+
     normalized = normalize_exec_argv(argv, policy_name=policy.name)
     allowed_exact = tuple(tuple(item) for item in policy.default_exact)
     allowed_prefixes = (
@@ -138,7 +152,12 @@ def validate_terminal_exec_argv(
         allowed_bounded_prefixes=policy.default_bounded_prefixes,
     ):
         return normalized
-    raise ValueError(f"{policy.name} exec subcommand is not allowed: {' '.join(normalized)}")
+    suggested_prefix = normalized[0]
+    raise ValueError(
+        f"{policy.name} exec subcommand is not allowed: {' '.join(normalized)}. "
+        f"Set {TERMINAL_EXEC_ALLOWLIST_ENV}='{suggested_prefix}' to allow this prefix, "
+        f"or {TERMINAL_EXEC_ALLOWLIST_ENV}='*' to allow all remote exec commands."
+    )
 
 
 def _env_allowlist_prefixes(
@@ -156,6 +175,17 @@ def _env_allowlist_prefixes(
     return tuple(prefixes)
 
 
+def _env_allowlist_all(env_names: Sequence[str]) -> bool:
+    for env_name in env_names:
+        raw = os.getenv(env_name)
+        if not raw:
+            continue
+        for entry in _ALLOWLIST_ENTRY_SPLIT_RE.split(raw):
+            if entry.strip() == "*":
+                return True
+    return False
+
+
 def _parse_allowlist_prefixes(raw: str | None, *, policy_name: str) -> tuple[tuple[str, ...], ...]:
     if not raw:
         return ()
@@ -163,6 +193,8 @@ def _parse_allowlist_prefixes(raw: str | None, *, policy_name: str) -> tuple[tup
     for entry in _ALLOWLIST_ENTRY_SPLIT_RE.split(raw):
         entry = entry.strip()
         if not entry:
+            continue
+        if entry == "*":
             continue
         tokens = tuple(token for token in _ALLOWLIST_TOKEN_SPLIT_RE.split(entry) if token)
         normalize_exec_argv(tokens, policy_name=policy_name)
