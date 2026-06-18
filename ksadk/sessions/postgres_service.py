@@ -112,6 +112,8 @@ class PostgresSessionService(BaseSessionService):
         self,
         agent_id: str,
         user_id: Optional[str] = None,
+        offset: Optional[int] = None,
+        limit: Optional[int] = None,
     ) -> list[Session]:
         await self._ensure_schema()
         async with self._pool.acquire() as connection:
@@ -123,11 +125,38 @@ class PostgresSessionService(BaseSessionService):
             """
             params: list[Any] = [self.namespace, agent_id]
             if user_id is not None:
-                query += " AND user_id = $3"
                 params.append(user_id)
+                query += f" AND user_id = ${len(params)}"
             query += " ORDER BY updated_at DESC, created_at DESC"
+            if limit is not None:
+                params.append(limit)
+                query += f" LIMIT ${len(params)}"
+                if offset is not None:
+                    params.append(offset)
+                    query += f" OFFSET ${len(params)}"
+            elif offset is not None:
+                params.append(offset)
+                query += f" OFFSET ${len(params)}"
             rows = await connection.fetch(query, *params)
             return [self._session_from_row(row, events=[]) for row in rows]
+
+    async def count_sessions(
+        self,
+        agent_id: str,
+        user_id: Optional[str] = None,
+    ) -> int:
+        await self._ensure_schema()
+        async with self._pool.acquire() as connection:
+            query = f"""
+                SELECT COUNT(*) AS total
+                FROM {KSADK_PG_SESSIONS_TABLE}
+                WHERE namespace = $1 AND agent_id = $2
+            """
+            params: list[Any] = [self.namespace, agent_id]
+            if user_id is not None:
+                params.append(user_id)
+                query += f" AND user_id = ${len(params)}"
+            return int(await connection.fetchval(query, *params) or 0)
 
     async def delete_session(self, session_id: str) -> bool:
         await self._ensure_schema()
@@ -319,6 +348,16 @@ class PostgresSessionService(BaseSessionService):
                 query += f" OFFSET ${len(params)}"
             rows = await connection.fetch(query, *params)
             return [self._event_from_row(row) for row in rows]
+
+    async def count_events(self, session_id: str) -> int:
+        await self._ensure_schema()
+        async with self._pool.acquire() as connection:
+            query = f"""
+                SELECT COUNT(*) AS total
+                FROM {KSADK_PG_EVENTS_TABLE}
+                WHERE namespace = $1 AND session_id = $2
+            """
+            return int(await connection.fetchval(query, self.namespace, session_id) or 0)
 
     async def get_state(
         self,

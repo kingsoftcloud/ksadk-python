@@ -277,7 +277,17 @@ class BaseSessionService(abc.ABC):
         self,
         agent_id: str,
         user_id: Optional[str] = None,
+        offset: Optional[int] = None,
+        limit: Optional[int] = None,
     ) -> list[Session]:
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    async def count_sessions(
+        self,
+        agent_id: str,
+        user_id: Optional[str] = None,
+    ) -> int:
         raise NotImplementedError
 
     @abc.abstractmethod
@@ -308,6 +318,10 @@ class BaseSessionService(abc.ABC):
         offset: Optional[int] = None,
         limit: Optional[int] = None,
     ) -> list[SessionEvent]:
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    async def count_events(self, session_id: str) -> int:
         raise NotImplementedError
 
     @abc.abstractmethod

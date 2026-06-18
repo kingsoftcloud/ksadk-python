@@ -12,7 +12,6 @@ from ksadk.cli.ui import OUTPUT_MODE_PRETTY, configure_ui_runtime, status_rich_s
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-HERMES_DOCKERFILE = REPO_ROOT / "deploy" / "hermes" / "Dockerfile"
 MAKEFILE = REPO_ROOT / "Makefile"
 
 
@@ -286,15 +285,14 @@ class _FakeHermesBootstrapImageClient(_FakeHermesClient):
         }
 
 
-def test_hermes_build_defaults_track_v2026_5_29_2_release():
-    dockerfile = HERMES_DOCKERFILE.read_text(encoding="utf-8")
+def test_hermes_build_defaults_are_externalized_to_agentengine_images_repo():
     makefile = MAKEFILE.read_text(encoding="utf-8")
 
-    assert 'ARG HERMES_AGENT_REF=v2026.5.29.2' in dockerfile
-    assert 'HERMES_TAG ?= 2026.5.29.2-ksadk-v3' in makefile
-    assert 'HERMES_AGENT_REF ?= v2026.5.29.2' in makefile
+    assert not (REPO_ROOT / "deploy" / "hermes" / "Dockerfile").exists()
+    assert "AGENTENGINE_IMAGES_DIR ?= ../agentengine-images" in makefile
+    assert '$(MAKE) -C "$(AGENTENGINE_IMAGES_DIR)" $@' in makefile
+    assert "-f deploy/hermes/Dockerfile" not in makefile
     assert cmd_hermes.DEFAULT_HERMES_IMAGE.endswith(':2026.5.29.2-ksadk-v1')
-    assert '"langfuse>=3.9.0,<4"' in dockerfile
 
 
 def test_hermes_deploy_refreshes_quick_access_when_agent_id_is_immediate(monkeypatch, tmp_path: Path):
@@ -899,15 +897,18 @@ def test_hermes_deploy_defaults_model_base_url_and_omits_api_key(tmp_path: Path,
 
     assert result.exit_code == 0, result.output
     assert "https://kspmas.ksyun.com/v1/" in result.output
-    assert "glm-5.1" in result.output
+    assert "glm-5.2" in result.output
     assert any(
         item["Key"] == "OPENAI_BASE_URL" and item["Value"] == "https://kspmas.ksyun.com/v1/"
         for item in _FakeHermesClient.create_payload["env_vars"]
     )
     assert any(
-        item["Key"] == "OPENAI_MODEL_NAME" and item["Value"] == "glm-5.1"
+        item["Key"] == "OPENAI_MODEL_NAME" and item["Value"] == "glm-5.2"
         for item in _FakeHermesClient.create_payload["env_vars"]
     )
+    env_vars = {item["Key"]: item["Value"] for item in _FakeHermesClient.create_payload["env_vars"]}
+    assert json.loads(env_vars["AGENTENGINE_MODEL_POLICY_JSON"])["fallback"]["model"] == "deepseek-v4-pro"
+    assert env_vars["HERMES_FALLBACK_MODEL"] == "deepseek-v4-pro"
     assert not any(item["Key"] == "OPENAI_API_KEY" for item in _FakeHermesClient.create_payload["env_vars"])
 
 
@@ -1000,26 +1001,21 @@ def test_hermes_deploy_preserves_configured_public_kspmas_url(tmp_path: Path, mo
     )
 
 
-def test_hermes_deploy_sets_glm_51_context_length_and_default_fallback(tmp_path: Path, monkeypatch):
+def test_hermes_deploy_uses_model_policy_fallback_for_kspmas(tmp_path: Path, monkeypatch):
     runner = CliRunner()
     _FakeHermesClient.create_payload = None
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.setenv("OPENAI_BASE_URL", "http://kspmas.ksyun.com/v1")
-    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-5.1")
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-5.2")
     monkeypatch.setattr(cmd_hermes, "AgentEngineClient", _FakeHermesClient)
 
     result = runner.invoke(cmd_hermes.hermes, ["deploy", "--name", "demo-hermes"])
 
     assert result.exit_code == 0, result.output
-    assert any(
-        item["Key"] == "HERMES_CONTEXT_LENGTH" and item["Value"] == "200000"
-        for item in _FakeHermesClient.create_payload["env_vars"]
-    )
-    assert any(
-        item["Key"] == "HERMES_FALLBACK_MODEL" and item["Value"] == "kimi-k2.6"
-        for item in _FakeHermesClient.create_payload["env_vars"]
-    )
+    env_vars = {item["Key"]: item["Value"] for item in _FakeHermesClient.create_payload["env_vars"]}
+    assert env_vars["HERMES_FALLBACK_MODEL"] == "deepseek-v4-pro"
+    assert "kimi-k2.6" not in env_vars.values()
 
 
 def test_hermes_deploy_forwards_explicit_fallback_model(tmp_path: Path, monkeypatch):
@@ -1363,6 +1359,54 @@ def test_hermes_status_shows_langfuse_trace_url(monkeypatch):
     assert result.exit_code == 0, result.output
     assert "Langfuse" in result.output
     assert "https://trace.example.com/project/arhermes1/traces" in result.output
+
+
+class _FakeHermesUpdatingClient(_FakeHermesClient):
+    async def get_agent(self, agent_id=None, name=None, include_api_key=False):
+        return {
+            "basic": {
+                "agent_id": agent_id or "ar-hermes-1",
+                "name": name or "demo-hermes",
+                "status": "UPDATING",
+                "phase": "Updating",
+                "message": "Container 'agent-runtime' failed: ImagePullBackOff",
+                "framework": "hermes",
+                "region": "cn-beijing-6",
+                "replicas": 1,
+                "ready_replicas": 0,
+            },
+            "quick_access": {
+                "public_endpoint": "https://hermes.example.com",
+                "api_key": "ak-hermes" if include_api_key else None,
+            },
+            "advanced": {
+                "observability_url": "https://trace.example.com/project/arhermes1/traces",
+            },
+        }
+
+
+def test_hermes_status_shows_message_and_replicas_when_not_running(monkeypatch):
+    runner = CliRunner()
+    monkeypatch.setattr(cmd_hermes, "AgentEngineClient", _FakeHermesUpdatingClient)
+
+    result = runner.invoke(cmd_hermes.hermes, ["status", "ar-hermes-1"])
+
+    assert result.exit_code == 0, result.output
+    assert "UPDATING" in result.output
+    assert "0/1" in result.output
+    assert "ImagePullBackOff" in result.output
+
+
+def test_hermes_status_hides_message_when_running(monkeypatch):
+    runner = CliRunner()
+    monkeypatch.setattr(cmd_hermes, "AgentEngineClient", _FakeHermesClient)
+
+    result = runner.invoke(cmd_hermes.hermes, ["status", "ar-hermes-1"])
+
+    assert result.exit_code == 0, result.output
+    assert "RUNNING" in result.output
+    assert "消息" not in result.output
+    assert "副本" not in result.output
 
 
 def test_hermes_delete_uses_delete_specific_next_steps(monkeypatch):

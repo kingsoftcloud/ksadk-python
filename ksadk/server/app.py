@@ -26,6 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import ksadk.conversations as conversation
+from ksadk.conversations.attachment_storage import AttachmentStorageService
 from ksadk.conversations.attachments import compact_attachment_result_for_session
 from ksadk.conversations.session_title import (
     HEURISTIC_SESSION_TITLE_SOURCE,
@@ -62,6 +63,7 @@ logger = logging.getLogger(__name__)
 runner: BaseRunner = None
 _runner_loaded = False
 _DETACHED_STREAMS: set[asyncio.Task[Any]] = set()
+_DETACHED_STREAMS_BY_INVOCATION: dict[str, "_DetachedSSEStream"] = {}
 _RUN_TERMINAL_STATUSES = {
     "completed",
     "failed",
@@ -76,14 +78,20 @@ _RUN_TERMINAL_STATUSES = {
 class _DetachedSSEStream:
     _MAX_BACKLOG_CHUNKS = 256
 
-    def __init__(self, source: AsyncIterator[str]):
+    def __init__(self, source: AsyncIterator[str], *, invocation_id: str | None = None):
         self._source = source
+        self.invocation_id = invocation_id
         self._subscribers: set[asyncio.Queue[str | None]] = set()
         self._backlog: list[str] = []
         self._done = False
         self._task = asyncio.create_task(self._consume())
         _DETACHED_STREAMS.add(self._task)
         self._task.add_done_callback(_DETACHED_STREAMS.discard)
+        if self.invocation_id:
+            _DETACHED_STREAMS_BY_INVOCATION[self.invocation_id] = self
+            self._task.add_done_callback(
+                lambda _task: _DETACHED_STREAMS_BY_INVOCATION.pop(self.invocation_id or "", None)
+            )
 
     async def _consume(self) -> None:
         try:
@@ -98,6 +106,8 @@ class _DetachedSSEStream:
                     *(subscriber.put(chunk) for subscriber in subscribers),
                     return_exceptions=True,
                 )
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.exception("Detached SSE stream failed")
             raise
@@ -123,6 +133,11 @@ class _DetachedSSEStream:
     def unsubscribe(self, queue: asyncio.Queue[str | None]) -> None:
         self._subscribers.discard(queue)
 
+    def cancel(self) -> bool:
+        if self._task.done():
+            return False
+        return self._task.cancel()
+
     async def iter_for_client(self) -> AsyncIterator[str]:
         queue = self.subscribe()
         try:
@@ -135,8 +150,10 @@ class _DetachedSSEStream:
             self.unsubscribe(queue)
 
 
-def _detached_streaming_response(source: AsyncIterator[str]) -> StreamingResponse:
-    detached = _DetachedSSEStream(source)
+def _detached_streaming_response(
+    source: AsyncIterator[str], *, invocation_id: str | None = None
+) -> StreamingResponse:
+    detached = _DetachedSSEStream(source, invocation_id=invocation_id)
     return StreamingResponse(detached.iter_for_client(), media_type="text/event-stream")
 
 
@@ -624,10 +641,51 @@ class CreateSessionActionRequest(BaseModel):
 class ListSessionsActionRequest(BaseModel):
     AgentId: str
     UserId: Optional[str] = "user"
+    Page: int = Field(1, ge=1)
+    PageSize: int = Field(20, ge=1, le=200)
 
 
 class SessionIdRequest(BaseModel):
     SessionId: str
+
+
+class ListSessionEventsActionRequest(BaseModel):
+    SessionId: str
+    Offset: Optional[int] = Field(None, ge=0)
+    Limit: Optional[int] = Field(None, ge=1)
+
+
+class ListSessionCheckpointsActionRequest(BaseModel):
+    AgentId: str
+    SessionId: str
+    RunId: Optional[str] = None
+
+
+class ListToolReceiptsActionRequest(BaseModel):
+    AgentId: str
+    SessionId: str
+    RunId: Optional[str] = None
+    CheckpointId: Optional[str] = None
+
+
+class ResumeRunActionRequest(BaseModel):
+    AgentId: str
+    SessionId: str
+    RunId: str
+    CheckpointId: str
+    ResumeAttemptId: Optional[str] = None
+    InvocationId: Optional[str] = None
+    Stream: bool = False
+    Model: Optional[str] = None
+    ModelMetadata: Optional[Dict[str, Any]] = None
+    ModelOptions: Optional[Dict[str, Any]] = None
+
+
+class PreviewCheckpointResumeActionRequest(BaseModel):
+    AgentId: str
+    SessionId: str
+    RunId: str
+    CheckpointId: str
 
 
 class RunAgentActionRequest(BaseModel):
@@ -636,6 +694,7 @@ class RunAgentActionRequest(BaseModel):
     UserId: Optional[str] = "user"
     AccountId: Optional[str] = None
     SessionId: Optional[str] = None
+    InvocationId: Optional[str] = None
     ApiFormat: str = "responses"
     Stream: bool = False
     Model: Optional[str] = None
@@ -733,6 +792,22 @@ def _resolve_responses_session_and_user(request: ResponsesRequest) -> tuple[str 
     return resolved_session_id, resolved_user_id
 
 
+def _runtime_agent_id(active_runner: BaseRunner) -> str:
+    runtime_id = _clean_optional_string(os.getenv("AGENT_RUNTIME_ID"))
+    if runtime_id:
+        return runtime_id
+    return str(getattr(active_runner.detection_result, "name", "") or "agent")
+
+
+def _metadata_invocation_id(metadata: Mapping[str, Any] | None) -> str | None:
+    if not isinstance(metadata, Mapping):
+        return None
+    agentengine_metadata = metadata.get("agentengine")
+    if not isinstance(agentengine_metadata, Mapping):
+        return None
+    return _clean_optional_string(agentengine_metadata.get("invocation_id"))
+
+
 class WorkspaceDeleteActionRequest(BaseModel):
     AgentId: Optional[str] = None
     Path: str
@@ -795,6 +870,196 @@ def _event_to_action_payload(event: SessionEvent) -> dict[str, Any]:
     if event.invocation_id:
         payload["InvocationId"] = event.invocation_id
     return payload
+
+
+def _checkpoint_event_to_action_payload(event: SessionEvent) -> dict[str, Any] | None:
+    if event.event_type != "run_checkpoint":
+        return None
+    metadata = event.metadata or {}
+    run_id = str(metadata.get("run_id") or "").strip()
+    checkpoint_id = str(metadata.get("checkpoint_id") or "").strip()
+    framework = str(metadata.get("framework") or "").strip()
+    framework_ref = metadata.get("framework_ref")
+    if not run_id or not checkpoint_id or not framework or not isinstance(framework_ref, Mapping):
+        return None
+    payload = {
+        "EventId": event.id,
+        "SessionId": event.session_id,
+        "InvocationId": event.invocation_id,
+        "SeqId": event.seq_id,
+        "Timestamp": event.timestamp,
+        "RunId": run_id,
+        "CheckpointId": checkpoint_id,
+        "Framework": framework,
+        "FrameworkRef": dict(framework_ref),
+        "Phase": str(metadata.get("phase") or ""),
+        "Metadata": metadata,
+    }
+    stage = str(metadata.get("stage") or metadata.get("title") or "").strip()
+    summary = str(metadata.get("summary") or metadata.get("description") or "").strip()
+    next_action = str(metadata.get("next_action") or metadata.get("nextAction") or "").strip()
+    status = str(metadata.get("status") or "").strip()
+    if stage:
+        payload["Stage"] = stage
+    if summary:
+        payload["Summary"] = summary
+    if next_action:
+        payload["NextAction"] = next_action
+    if status:
+        payload["Status"] = status
+    return payload
+
+
+_SIDE_EFFECT_TOOL_NAMES = {
+    "write_workspace_file",
+    "write_workspace_files",
+    "delete_workspace_file",
+    "execute_skills",
+    "run_command",
+    "run_code",
+}
+
+
+def _tool_receipt_event_to_action_payload(event: SessionEvent) -> dict[str, Any] | None:
+    if event.event_type != "tool_result":
+        return None
+    metadata = event.metadata or {}
+    receipt = metadata.get("tool_receipt")
+    if not isinstance(receipt, Mapping):
+        return None
+    tool_name = str(receipt.get("tool_name") or metadata.get("tool_name") or "").strip()
+    if not tool_name:
+        return None
+    return {
+        "EventId": event.id,
+        "SessionId": event.session_id,
+        "InvocationId": event.invocation_id,
+        "SeqId": event.seq_id,
+        "Timestamp": event.timestamp,
+        "ReceiptId": str(receipt.get("receipt_id") or ""),
+        "IdempotencyKey": str(receipt.get("idempotency_key") or ""),
+        "ToolName": tool_name,
+        "ToolCallId": str(receipt.get("tool_call_id") or ""),
+        "RunId": str(receipt.get("run_id") or metadata.get("run_id") or ""),
+        "CheckpointId": str(receipt.get("checkpoint_id") or ""),
+        "Status": str(receipt.get("status") or ""),
+        "Replayed": bool(receipt.get("replayed") or metadata.get("replayed")),
+        "Metadata": dict(metadata),
+    }
+
+
+def _build_checkpoint_resume_preview(
+    *,
+    checkpoint: Mapping[str, Any],
+    events: list[SessionEvent],
+) -> dict[str, Any]:
+    checkpoint_seq_id = int(checkpoint.get("SeqId") or 0)
+    run_id = str(checkpoint.get("RunId") or "")
+    receipts: list[dict[str, Any]] = []
+    for event in events:
+        if checkpoint_seq_id and int(event.seq_id or 0) > checkpoint_seq_id:
+            continue
+        receipt = _tool_receipt_event_to_action_payload(event)
+        if receipt is None:
+            continue
+        if run_id and receipt["RunId"] and receipt["RunId"] != run_id:
+            continue
+        receipts.append(receipt)
+
+    side_effect_receipts = [
+        receipt for receipt in receipts if receipt["ToolName"] in _SIDE_EFFECT_TOOL_NAMES
+    ]
+    risk_level = "low"
+    if side_effect_receipts:
+        risk_level = "medium"
+    if any(receipt["Status"] == "failed" for receipt in receipts):
+        risk_level = "high"
+
+    return {
+        "Checkpoint": dict(checkpoint),
+        "Capabilities": {
+            "Checkpoints": True,
+            "CheckpointResume": True,
+            "ToolReceipts": True,
+            "IdempotentToolReplay": True,
+        },
+        "ToolReceipts": receipts,
+        "Risk": {
+            "Level": risk_level,
+            "DuplicateSideEffectRisk": bool(side_effect_receipts),
+            "SideEffectReceiptCount": len(side_effect_receipts),
+            "FailedReceiptCount": len([receipt for receipt in receipts if receipt["Status"] == "failed"]),
+        },
+        "Summary": {
+            "RunId": run_id,
+            "CheckpointId": str(checkpoint.get("CheckpointId") or ""),
+            "Phase": str(checkpoint.get("Phase") or ""),
+            "ToolReceiptCount": len(receipts),
+        },
+    }
+
+
+async def _find_session_checkpoint(
+    *,
+    service: Any,
+    session_id: str,
+    run_id: str,
+    checkpoint_id: str,
+) -> dict[str, Any] | None:
+    for event in reversed(await service.get_events(session_id)):
+        checkpoint = _checkpoint_event_to_action_payload(event)
+        if checkpoint is None:
+            continue
+        if checkpoint["RunId"] != run_id:
+            continue
+        if checkpoint["CheckpointId"] != checkpoint_id:
+            continue
+        return checkpoint
+    return None
+
+
+async def _resolve_checkpoint_resume_input_from_session(
+    *,
+    service: Any,
+    agent_id: str,
+    session_id: str | None,
+    resume_input: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not isinstance(resume_input, Mapping):
+        return None
+    if str(resume_input.get("type") or "").strip() != "agentengine.resume_checkpoint":
+        return dict(resume_input)
+    normalized_session_id = str(session_id or "").strip()
+    if not normalized_session_id:
+        raise HTTPException(status_code=400, detail="Checkpoint resume requires session_id")
+
+    session = await service.get_session(normalized_session_id)
+    if not session or session.agent_id != agent_id:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    run_id = str(resume_input.get("run_id") or "").strip()
+    checkpoint_id = str(resume_input.get("checkpoint_id") or "").strip()
+    if not run_id or not checkpoint_id:
+        raise HTTPException(status_code=400, detail="Checkpoint resume requires run_id and checkpoint_id")
+
+    checkpoint = await _find_session_checkpoint(
+        service=service,
+        session_id=normalized_session_id,
+        run_id=run_id,
+        checkpoint_id=checkpoint_id,
+    )
+    if checkpoint is None:
+        raise HTTPException(status_code=404, detail="Checkpoint not found")
+
+    resume_attempt_id = str(resume_input.get("resume_attempt_id") or "").strip()
+    return {
+        "type": "agentengine.resume_checkpoint",
+        "run_id": run_id,
+        "checkpoint_id": checkpoint_id,
+        "resume_attempt_id": resume_attempt_id or f"resume_{uuid.uuid4().hex}",
+        "framework": checkpoint["Framework"],
+        "framework_ref": checkpoint["FrameworkRef"],
+    }
 
 
 def _feedback_state_key(response_id: str) -> str:
@@ -955,6 +1220,9 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
                     "Enabled": True,
                     "Resume": True,
                     "Abort": True,
+                    "Checkpoints": True,
+                    "CheckpointResume": True,
+                    "CheckpointResumePreview": True,
                 },
                 "MCP": False,
                 "HostedRuntime": False,
@@ -987,11 +1255,23 @@ async def create_session_action(request: CreateSessionActionRequest):
 @app.post("/agentengine/api/v1/ListSessions")
 async def list_sessions_action(request: ListSessionsActionRequest):
     service = resolve_session_service()
-    sessions = await service.list_sessions(request.AgentId, request.UserId or "user")
+    offset = (request.Page - 1) * request.PageSize
+    sessions = await service.list_sessions(
+        request.AgentId,
+        request.UserId or "user",
+        offset=offset,
+        limit=request.PageSize,
+    )
+    total = await service.count_sessions(request.AgentId, request.UserId or "user")
     session_payloads = [await _session_to_action_payload(session) for session in sessions]
     return _action_response(
         "ListSessions",
-        {"Sessions": session_payloads},
+        {
+            "Sessions": session_payloads,
+            "Total": total,
+            "Page": request.Page,
+            "PageSize": request.PageSize,
+        },
     )
 
 
@@ -1014,13 +1294,175 @@ async def delete_session_action(request: SessionIdRequest):
 
 
 @app.post("/agentengine/api/v1/ListSessionEvents")
-async def list_session_events_action(request: SessionIdRequest):
+async def list_session_events_action(request: ListSessionEventsActionRequest):
     service = resolve_session_service()
-    events = await service.get_events(request.SessionId)
+    events = await service.get_events(
+        request.SessionId,
+        offset=request.Offset,
+        limit=request.Limit,
+    )
+    total = await service.count_events(request.SessionId)
     return _action_response(
         "ListSessionEvents",
-        {"Events": [_event_to_action_payload(event) for event in events]},
+        {
+            "Events": [_event_to_action_payload(event) for event in events],
+            "Total": total,
+            "Offset": request.Offset or 0,
+            "Limit": request.Limit if request.Limit is not None else len(events),
+        },
     )
+
+
+@app.post("/agentengine/api/v1/ListSessionCheckpoints")
+async def list_session_checkpoints_action(request: ListSessionCheckpointsActionRequest):
+    service = resolve_session_service()
+    session = await service.get_session(request.SessionId)
+    if not session or session.agent_id != request.AgentId:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    run_id_filter = str(request.RunId or "").strip()
+    checkpoints: list[dict[str, Any]] = []
+    for event in await service.get_events(request.SessionId):
+        checkpoint = _checkpoint_event_to_action_payload(event)
+        if checkpoint is None:
+            continue
+        if run_id_filter and checkpoint["RunId"] != run_id_filter:
+            continue
+        checkpoints.append(checkpoint)
+
+    return _action_response(
+        "ListSessionCheckpoints",
+        {"Checkpoints": checkpoints},
+    )
+
+
+@app.post("/agentengine/api/v1/ListToolReceipts")
+async def list_tool_receipts_action(request: ListToolReceiptsActionRequest):
+    service = resolve_session_service()
+    session = await service.get_session(request.SessionId)
+    if not session or session.agent_id != request.AgentId:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    run_id_filter = str(request.RunId or "").strip()
+    checkpoint_id_filter = str(request.CheckpointId or "").strip()
+    receipts: list[dict[str, Any]] = []
+    for event in await service.get_events(request.SessionId):
+        receipt = _tool_receipt_event_to_action_payload(event)
+        if receipt is None:
+            continue
+        if run_id_filter and receipt["RunId"] != run_id_filter:
+            continue
+        if checkpoint_id_filter and receipt["CheckpointId"] != checkpoint_id_filter:
+            continue
+        receipts.append(receipt)
+
+    return _action_response(
+        "ListToolReceipts",
+        {"ToolReceipts": receipts},
+    )
+
+
+@app.post("/agentengine/api/v1/PreviewCheckpointResume")
+async def preview_checkpoint_resume_action(request: PreviewCheckpointResumeActionRequest):
+    service = resolve_session_service()
+    session = await service.get_session(request.SessionId)
+    if not session or session.agent_id != request.AgentId:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    events = await service.get_events(request.SessionId)
+    checkpoint = None
+    for event in reversed(events):
+        candidate = _checkpoint_event_to_action_payload(event)
+        if candidate is None:
+            continue
+        if candidate["RunId"] != str(request.RunId):
+            continue
+        if candidate["CheckpointId"] != str(request.CheckpointId):
+            continue
+        checkpoint = candidate
+        break
+    if checkpoint is None:
+        raise HTTPException(status_code=404, detail="Checkpoint not found")
+
+    return _action_response(
+        "PreviewCheckpointResume",
+        {"Preview": _build_checkpoint_resume_preview(checkpoint=checkpoint, events=events)},
+    )
+
+
+@app.post("/agentengine/api/v1/ResumeRun")
+async def resume_run_action(request: ResumeRunActionRequest):
+    service = resolve_session_service()
+    session = await service.get_session(request.SessionId)
+    if not session or session.agent_id != request.AgentId:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    checkpoint = await _find_session_checkpoint(
+        service=service,
+        session_id=request.SessionId,
+        run_id=str(request.RunId),
+        checkpoint_id=str(request.CheckpointId),
+    )
+    if checkpoint is None:
+        raise HTTPException(status_code=404, detail="Checkpoint not found")
+
+    resume_input = {
+        "type": "agentengine.resume_checkpoint",
+        "run_id": str(request.RunId),
+        "checkpoint_id": str(request.CheckpointId),
+        "resume_attempt_id": str(request.ResumeAttemptId or f"resume_{uuid.uuid4().hex}"),
+        "framework": checkpoint["Framework"],
+        "framework_ref": checkpoint["FrameworkRef"],
+    }
+    active_runner = _resolve_active_runner()
+    user_id = session.user_id or "user"
+
+    if request.Stream:
+        resume_invocation_id = str(request.InvocationId or resume_input["resume_attempt_id"])
+        return _detached_streaming_response(
+            conversation.stream_responses_conversation_turn(
+                runner=active_runner,
+                agent_id=request.AgentId,
+                user_id=user_id,
+                messages=[],
+                session_id=request.SessionId,
+                model=request.Model,
+                model_metadata=request.ModelMetadata,
+                model_options=request.ModelOptions,
+                request_metadata={"responses_conversation": True},
+                resume_input=resume_input,
+                invocation_id=resume_invocation_id,
+                prepare_runner=_prepare_runner_for_model,
+                session_service_provider=resolve_session_service,
+            ),
+            invocation_id=resume_invocation_id,
+        )
+
+    response_id = f"resp_{uuid.uuid4().hex}"
+    resolved_session_id, result = await conversation.invoke_conversation_once(
+        runner=active_runner,
+        agent_id=request.AgentId,
+        user_id=user_id,
+        messages=[],
+        session_id=request.SessionId,
+        model=request.Model,
+        model_metadata=request.ModelMetadata,
+        model_options=request.ModelOptions,
+        request_metadata={"responses_conversation": True},
+        resume_input=resume_input,
+        response_id=response_id,
+        invocation_id=str(resume_input["resume_attempt_id"]),
+        prepare_runner=_prepare_runner_for_model,
+        session_service_provider=resolve_session_service,
+    )
+    payload = conversation.build_responses_payload(
+        output_text=result["output_text"],
+        model=request.Model,
+        session_id=resolved_session_id,
+        response_id=response_id,
+        metadata=result.get("metadata") if isinstance(result.get("metadata"), dict) else None,
+    )
+    return _action_response("ResumeRun", payload)
 
 
 @app.get("/agentengine/api/v1/SubscribeRunEvents", include_in_schema=False)
@@ -1072,25 +1514,23 @@ async def subscribe_run_events_action(
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 @app.post("/agentengine/api/v1/UploadFile")
 async def upload_file_action(file: UploadFile = File(...)):
-    uploads_dir = _resolve_uploads_dir()
-    ext = Path(file.filename or "").suffix
     file_id = uuid.uuid4().hex
-    target_path = uploads_dir / f"{file_id}{ext}"
-    size_bytes = 0
-
-    with open(target_path, "wb") as f:
-        while chunk := await file.read(1024 * 1024):
-            size_bytes += len(chunk)
-            f.write(chunk)
+    data = await file.read()
+    file_uri, _local_path = await AttachmentStorageService().store(
+        data=data,
+        file_id=file_id,
+        display_name=file.filename,
+        mime_type=file.content_type,
+    )
 
     return _action_response(
         "UploadFile",
         {
             "FileData": {
-                "fileUri": f"{_UPLOAD_URI_SCHEME}{file_id}",
+                "fileUri": file_uri,
                 "displayName": file.filename or "uploaded_file",
                 "mimeType": file.content_type or "application/octet-stream",
-                "sizeBytes": size_bytes,
+                "sizeBytes": len(data),
             }
         }
     )
@@ -1098,16 +1538,14 @@ async def upload_file_action(file: UploadFile = File(...)):
 
 @app.get("/agentengine/api/v1/AttachmentContent", include_in_schema=False)
 async def attachment_content_action(FileUri: str = Query(...)):
-    storage_path = _resolve_attachment_storage_path(FileUri)
-    if storage_path is None or not storage_path.is_file():
+    loaded = AttachmentStorageService().read(FileUri)
+    if loaded is None:
         raise HTTPException(status_code=404, detail="Attachment not found")
 
-    media_type, _ = mimetypes.guess_type(storage_path.name)
-    return FileResponse(
-        path=storage_path,
-        media_type=media_type or "application/octet-stream",
-        filename=storage_path.name,
-        content_disposition_type="inline",
+    return Response(
+        content=loaded.data,
+        media_type=loaded.mime_type or "application/octet-stream",
+        headers={"Content-Disposition": f'inline; filename="{loaded.display_name}"'},
     )
 
 
@@ -1162,13 +1600,36 @@ async def delete_workspace_file_action(request: WorkspaceDeleteActionRequest):
 
 @app.post("/agentengine/api/v1/CancelRun")
 async def cancel_run_action(request: CancelRunActionRequest):
+    detached = _DETACHED_STREAMS_BY_INVOCATION.get(request.InvocationId)
+    found = detached is not None
+    cancel_requested = False
+    if detached is not None:
+        cancel_requested = detached.cancel()
+    runner_cancel_status = "not_found" if found else "unsupported"
     active_runner = _resolve_active_runner()
     if active_runner is not None:
         try:
-            active_runner.request_cancel(request.InvocationId)
+            runner_result = active_runner.request_cancel(request.InvocationId)
+            if isinstance(runner_result, str) and runner_result:
+                runner_cancel_status = runner_result
+            elif runner_result is True:
+                runner_cancel_status = "accepted"
+            elif runner_result is False and not found:
+                runner_cancel_status = "not_found"
         except Exception as exc:
+            runner_cancel_status = "error"
             logger.warning("CancelRun failed: %s", exc)
-    return _action_response("CancelRun", {"Cancelled": True})
+    runner_accepted = runner_cancel_status in {"accepted", "cancelling", "cancelled"}
+    status = "cancelling" if found or runner_accepted else runner_cancel_status
+    return _action_response(
+        "CancelRun",
+        {
+            "Cancelled": bool(cancel_requested or runner_accepted),
+            "Found": found,
+            "Status": status,
+            "RunnerCancelStatus": runner_cancel_status,
+        },
+    )
 
 
 @app.get("/agentengine/api/v1/GetWorkspaceFileContent", include_in_schema=False)
@@ -1377,10 +1838,17 @@ async def run_agent_action(request: RunAgentActionRequest):
     api_format = (request.ApiFormat or "responses").strip().lower()
     run_user_id = _clean_optional_string(request.UserId) or "user"
     account_id = _clean_optional_string(request.AccountId)
+    service = resolve_session_service()
     resume_input = (
         conversation.extract_responses_resume_input(request.ResponsesInput)
         if request.ResponsesInput is not None
         else None
+    )
+    resume_input = await _resolve_checkpoint_resume_input_from_session(
+        service=service,
+        agent_id=request.AgentId,
+        session_id=request.SessionId,
+        resume_input=resume_input,
     )
     if resume_input is not None:
         messages = []
@@ -1422,9 +1890,11 @@ async def run_agent_action(request: RunAgentActionRequest):
                 request_metadata=request_metadata or None,
                 resume_input=resume_input,
                 account_id=account_id,
+                invocation_id=request.InvocationId,
                 prepare_runner=_prepare_runner_for_model,
                 session_service_provider=resolve_session_service,
-            )
+            ),
+            invocation_id=request.InvocationId,
         )
 
     responses_response_id = (
@@ -1443,6 +1913,7 @@ async def run_agent_action(request: RunAgentActionRequest):
         resume_input=resume_input,
         response_id=responses_response_id,
         account_id=account_id,
+        invocation_id=request.InvocationId,
         prepare_runner=_prepare_runner_for_model,
         session_service_provider=resolve_session_service,
     )
@@ -1460,6 +1931,7 @@ async def run_agent_action(request: RunAgentActionRequest):
             model=request.Model,
             session_id=resolved_session_id,
             response_id=responses_response_id,
+            metadata=result.get("metadata") if isinstance(result.get("metadata"), Mapping) else None,
         )
     return _action_response("RunAgent", payload)
 
@@ -2101,10 +2573,16 @@ async def responses(request: ResponsesRequest):
     """OpenAI Responses 兼容接口。"""
     active_runner = _resolve_active_runner()
     resolved_session_id, resolved_user_id = _resolve_responses_session_and_user(request)
+    agent_id = _runtime_agent_id(active_runner)
 
     resume_input = conversation.extract_responses_resume_input(request.input)
+    resume_input = await _resolve_checkpoint_resume_input_from_session(
+        service=resolve_session_service(),
+        agent_id=agent_id,
+        session_id=resolved_session_id,
+        resume_input=resume_input,
+    )
     messages = [] if resume_input is not None else conversation.normalize_responses_input(request.input)
-    agent_id = active_runner.detection_result.name
     request_metadata = dict(request.metadata or {})
     if request.previous_response_id:
         request_metadata.setdefault("previous_response_id", request.previous_response_id)
@@ -2119,9 +2597,10 @@ async def responses(request: ResponsesRequest):
     if request.store is not None:
         request_metadata.setdefault("store", request.store)
     account_id = _clean_optional_string(request.account_id)
+    invocation_id = _metadata_invocation_id(request_metadata)
 
     if request.stream:
-        return StreamingResponse(
+        return _detached_streaming_response(
             conversation.stream_responses_conversation_turn(
                 runner=active_runner,
                 agent_id=agent_id,
@@ -2135,10 +2614,11 @@ async def responses(request: ResponsesRequest):
                 request_metadata=request_metadata,
                 resume_input=resume_input,
                 account_id=account_id,
+                invocation_id=invocation_id,
                 prepare_runner=_prepare_runner_for_model,
                 session_service_provider=resolve_session_service,
             ),
-            media_type="text/event-stream",
+            invocation_id=invocation_id,
         )
 
     response_id = f"resp_{uuid.uuid4().hex}"
@@ -2156,6 +2636,7 @@ async def responses(request: ResponsesRequest):
         resume_input=resume_input,
         response_id=response_id,
         account_id=account_id,
+        invocation_id=invocation_id,
         prepare_runner=_prepare_runner_for_model,
         session_service_provider=resolve_session_service,
     )
@@ -2173,7 +2654,7 @@ async def chat_completions(request: ChatCompletionRequest):
     """OpenAI 兼容的聊天补全接口 (支持流式和非流式)"""
     active_runner = _resolve_active_runner()
     messages = conversation.normalize_kop_messages(request.messages)
-    agent_id = active_runner.detection_result.name
+    agent_id = _runtime_agent_id(active_runner)
     resolved_user_id = _clean_optional_string(request.user) or "user"
     account_id = _clean_optional_string(request.account_id)
 

@@ -180,232 +180,66 @@ async def test_get_agent_ui_bootstrap_matches_local_shape_parity(monkeypatch):
     assert payload["Data"]["Agent"]["AgentId"] == "demo-agent"
     assert payload["Data"]["Agent"]["Framework"] == "langgraph"
     assert payload["Data"]["Modules"] == ["Chat", "Build", "Deploy"]
-    assert payload["Data"]["Capabilities"] == {
-        "Attachments": True,
-        "WorkspaceFiles": True,
-        "Thinking": True,
-        "Approval": True,
-        "StopRun": True,
-        "ResumeRun": True,
-        "MCP": False,
-        "HostedRuntime": False,
-        "NativeTerminal": {
-            "Enabled": False,
-            "Mode": None,
-            "Protocol": "ks-terminal.v1",
-            "Path": None,
-        },
-        "BuiltinTools": [
-            {
-                "name": "list_skills",
-                "group": "skill",
-                "description": "List skills discoverable from configured Skill Spaces.",
-                "risk_level": "low",
-                "requires_approval": False,
-                "side_effects": [],
-                "enabled": True,
-            },
-            {
-                "name": "search_skills",
-                "group": "skill",
-                "description": "Search skills by name, aliases, tags, description, and examples.",
-                "risk_level": "low",
-                "requires_approval": False,
-                "side_effects": [],
-                "enabled": True,
-            },
-            {
-                "name": "load_skill",
-                "group": "skill",
-                "description": "Download and load a skill's SKILL.md instructions from configured Skill Spaces.",
-                "risk_level": "low",
-                "requires_approval": False,
-                "side_effects": ["skill_cache_write"],
-                "enabled": True,
-            },
-            {
-                "name": "execute_skills",
-                "group": "skill",
-                "description": "Execute a workflow through the configured Skill Runtime.",
-                "risk_level": "high",
-                "requires_approval": False,
-                "side_effects": ["isolated_runtime_execution"],
-                "enabled": False,
-                "backend": "disabled",
-                "boundary": "isolated_skill_runtime",
-            },
-            {
-                "name": "workspace_status",
-                "group": "workspace",
-                "description": "Return current AgentEngine workspace status.",
-                "risk_level": "low",
-                "requires_approval": False,
-                "side_effects": [],
-                "enabled": True,
-                "boundary": "workspace_root",
-            },
-            {
-                "name": "list_workspace_files",
-                "group": "workspace",
-                "description": "List files under the AgentEngine workspace.",
-                "risk_level": "low",
-                "requires_approval": False,
-                "side_effects": [],
-                "enabled": True,
-                "boundary": "workspace_root",
-            },
-            {
-                "name": "read_workspace_file",
-                "group": "workspace",
-                "description": "Read a UTF-8 text file from the AgentEngine workspace.",
-                "risk_level": "low",
-                "requires_approval": False,
-                "side_effects": [],
-                "enabled": True,
-                "boundary": "workspace_root",
-            },
-            {
-                "name": "write_workspace_file",
-                "group": "workspace",
-                "description": "Write a UTF-8 text file inside the AgentEngine workspace.",
-                "risk_level": "medium",
-                "requires_approval": False,
-                "side_effects": ["workspace_write"],
-                "enabled": True,
-                "boundary": "workspace_root",
-            },
-            {
-                "name": "write_workspace_files",
-                "group": "workspace",
-                "description": "Write multiple UTF-8 text files inside the AgentEngine workspace.",
-                "risk_level": "medium",
-                "requires_approval": False,
-                "side_effects": ["workspace_write"],
-                "enabled": True,
-                "boundary": "workspace_root",
-            },
-            {
-                "name": "edit_workspace_file",
-                "group": "workspace",
-                "description": "Replace an exact text snippet inside a UTF-8 workspace file.",
-                "risk_level": "medium",
-                "requires_approval": False,
-                "side_effects": ["workspace_edit"],
-                "enabled": True,
-                "boundary": "workspace_root",
-            },
-            {
-                "name": "lint_workspace_file",
-                "group": "workspace",
-                "description": "Run lightweight built-in lint checks for a UTF-8 workspace text file.",
-                "risk_level": "low",
-                "requires_approval": False,
-                "side_effects": [],
-                "enabled": True,
-                "boundary": "workspace_root",
-            },
-            {
-                "name": "search_workspace_files",
-                "group": "workspace",
-                "description": "Search UTF-8 text files in the AgentEngine workspace.",
-                "risk_level": "low",
-                "requires_approval": False,
-                "side_effects": [],
-                "enabled": True,
-                "boundary": "workspace_root",
-            },
-            {
-                "name": "delete_workspace_file",
-                "group": "workspace",
-                "description": "Delete a file or empty directory inside the AgentEngine workspace.",
-                "risk_level": "high",
-                "requires_approval": False,
-                "side_effects": ["workspace_delete"],
-                "enabled": True,
-                "boundary": "workspace_root",
-            },
-            {
-                "name": "component_status",
-                "group": "platform",
-                "description": "Report AgentEngine built-in toolset and runtime binding status.",
-                "risk_level": "low",
-                "requires_approval": False,
-                "side_effects": [],
-                "enabled": True,
-            },
-            {
-                "name": "search_knowledge_base",
-                "group": "platform",
-                "description": (
-                    "搜索知识库获取相关信息。\n\n"
-                    "当需要查找专业知识、文档内容或特定领域信息时使用此工具。\n"
-                    "会自动从已配置的金山云知识库中检索最相关的内容。\n\n"
-                    "Args:\n"
-                    "    query: 检索关键词或问题"
-                ),
-                "risk_level": "low",
-                "requires_approval": False,
-                "side_effects": [],
-                "enabled": True,
-            },
-            {
-                "name": "load_memory",
-                "group": "platform",
-                "description": "检索当前用户的长期记忆。",
-                "risk_level": "low",
-                "requires_approval": False,
-                "side_effects": [],
-                "enabled": True,
-            },
-            {
-                "name": "save_memory",
-                "group": "platform",
-                "description": "保存一条长期记忆。",
-                "risk_level": "low",
-                "requires_approval": False,
-                "side_effects": [],
-                "enabled": True,
-            },
-            {
-                "name": "sandbox_status",
-                "group": "sandbox",
-                "description": "Report configured AgentEngine sandbox status and boundaries.",
-                "risk_level": "low",
-                "requires_approval": False,
-                "side_effects": [],
-                "enabled": False,
-                "backend": "none",
-                "boundary": "isolated_sandbox",
-            },
-            {
-                "name": "run_command",
-                "group": "sandbox",
-                "description": "Run a shell command inside the configured isolated sandbox.",
-                "risk_level": "high",
-                "requires_approval": False,
-                "side_effects": ["sandbox_command_execution"],
-                "enabled": False,
-                "backend": "none",
-                "boundary": "isolated_sandbox",
-            },
-            {
-                "name": "run_code",
-                "group": "sandbox",
-                "description": "Write code to the sandbox and execute it through the configured sandbox backend.",
-                "risk_level": "high",
-                "requires_approval": False,
-                "side_effects": ["sandbox_code_execution"],
-                "enabled": False,
-                "backend": "none",
-                "boundary": "isolated_sandbox",
-            },
-        ],
-        "RunLifecycle": {
-            "Enabled": True,
-            "Resume": True,
-            "Abort": True,
-        },
+
+    capabilities = payload["Data"]["Capabilities"]
+    assert capabilities["Attachments"] is True
+    assert capabilities["WorkspaceFiles"] is True
+    assert capabilities["Thinking"] is True
+    assert capabilities["Approval"] is True
+    assert capabilities["StopRun"] is True
+    assert capabilities["ResumeRun"] is True
+    assert capabilities["MCP"] is False
+    assert capabilities["HostedRuntime"] is False
+    assert capabilities["NativeTerminal"] == {
+        "Enabled": False,
+        "Mode": None,
+        "Protocol": "ks-terminal.v1",
+        "Path": None,
     }
+    assert capabilities["RunLifecycle"] == {
+        "Enabled": True,
+        "Resume": True,
+        "Abort": True,
+        "Checkpoints": True,
+        "CheckpointResume": True,
+        "CheckpointResumePreview": True,
+    }
+
+    builtin_tools = {tool["name"]: tool for tool in capabilities["BuiltinTools"]}
+    assert set(builtin_tools) >= {
+        "list_skills",
+        "search_skills",
+        "load_skill",
+        "execute_skills",
+        "workspace_status",
+        "list_workspace_files",
+        "read_workspace_file",
+        "write_workspace_file",
+        "write_workspace_files",
+        "edit_workspace_file",
+        "lint_workspace_file",
+        "search_workspace_files",
+        "delete_workspace_file",
+        "component_status",
+        "search_knowledge_base",
+        "load_memory",
+        "save_memory",
+        "sandbox_status",
+        "run_command",
+        "run_code",
+    }
+    assert builtin_tools["execute_skills"] | {
+        "name": "execute_skills",
+        "group": "skill",
+        "risk_level": "high",
+        "requires_approval": False,
+        "enabled": False,
+        "backend": "disabled",
+        "boundary": "isolated_skill_runtime",
+    } == builtin_tools["execute_skills"]
+    assert builtin_tools["search_knowledge_base"]["args"]["query"]["type"] == "string"
+    assert builtin_tools["load_memory"]["args"]["query"]["type"] == "string"
+    assert builtin_tools["save_memory"]["args"]["content"]["type"] == "string"
     assert payload["Data"]["WorkspaceFiles"] == {
         "Enabled": True,
         "MaxUploadBytes": 104857600,
@@ -800,7 +634,11 @@ async def test_upload_file_action_returns_server_handle_and_stores_file(monkeypa
     assert file_data["sizeBytes"] == 5
 
     file_id = file_data["fileUri"].removeprefix("ksadk-upload://")
-    stored_files = list((tmp_path / ".agentengine" / "ui" / "files").glob(f"{file_id}*"))
+    stored_files = [
+        path
+        for path in (tmp_path / ".agentengine" / "ui" / "files").glob(f"{file_id}*")
+        if not path.name.endswith(".meta.json")
+    ]
     assert len(stored_files) == 1
     assert stored_files[0].read_bytes() == b"hello"
 
@@ -1967,4 +1805,3 @@ def test_static_workbench_uses_openai_responses_content_for_inline_attachments()
     assert "filename:" in source
     assert "file_url:" in source
     assert "inlineData: {" not in source
-

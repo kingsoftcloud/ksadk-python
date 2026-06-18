@@ -12,9 +12,10 @@ import socket
 import logging
 import mimetypes
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Dict, Any, Sequence, Callable, Iterator
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, unquote, urlparse
 
 import requests
 import urllib3
@@ -25,6 +26,13 @@ logger = logging.getLogger(__name__)
 
 
 HttpErrorLogSuppressor = Callable[..., bool]
+
+
+@dataclass(frozen=True)
+class AttachmentContent:
+    data: bytes
+    content_type: str
+    display_name: str
 
 
 class DryRunExit(Exception):
@@ -71,6 +79,8 @@ class AgentEngineClient:
     """
 
     _DEFAULT_PERMISSION_ROLE = "KsyunAgentEngineDefaultRole"
+    _PUBLIC_AICP_BASE_URL = "https://aicp.api.ksyun.com"
+    _INNER_AICP_BASE_URL = "http://aicp.inner.api.ksyun.com"
     _PERMISSION_PROBE_ACTIONS = {"CreateAgentProduct", "CreateAgent", "ListAgents", "GetAgent"}
     _permission_probe_cache: dict[tuple[str, str, str], bool] = {}
 
@@ -156,8 +166,19 @@ class AgentEngineClient:
             return False
 
     def _detect_default_base_url(self) -> str:
-        """默认使用公开控制面地址。"""
-        return "https://aicp.api.ksyun.com"
+        """默认地址自动探测: inner 优先，失败回落公网。"""
+        inner_url = self._INNER_AICP_BASE_URL
+        public_url = self._PUBLIC_AICP_BASE_URL
+
+        if self._is_connectable(inner_url):
+            logger.info(f"AgentEngineClient endpoint selected (inner): {inner_url}")
+            return inner_url
+
+        logger.warning(
+            f"AgentEngineClient endpoint fallback to public: {public_url} "
+            f"(inner unreachable: {inner_url})"
+        )
+        return public_url
 
     def _get_session(self) -> requests.Session:
         if self._session is None:
@@ -309,6 +330,52 @@ class AgentEngineClient:
         )
         return any(marker in remote_message for marker in markers)
 
+    @staticmethod
+    def _is_inner_account_intranet_error(details: Dict[str, Any]) -> bool:
+        remote_code = str(details.get("remote_error_code") or "").strip().lower()
+        remote_message = str(details.get("remote_error_message") or details.get("message") or "").strip().lower()
+        return (
+            remote_code == "inneraccountcanonlyaccessthroughintranet"
+            or "inner account can only access through intranet" in remote_message
+            or "只能通过内网" in remote_message
+        )
+
+    def _can_retry_with_inner_aicp_endpoint(self, details: Dict[str, Any]) -> bool:
+        if not self._is_inner_account_intranet_error(details):
+            return False
+        parsed = urlparse(self.base_url or "")
+        return parsed.scheme == "https" and parsed.netloc.lower() == "aicp.api.ksyun.com"
+
+    def _switch_to_inner_aicp_endpoint(self) -> None:
+        logger.warning(
+            "AgentEngineClient switching to intranet endpoint after inner-account access error: %s",
+            self._INNER_AICP_BASE_URL,
+        )
+        self.base_url = self._INNER_AICP_BASE_URL
+
+    def _build_action_request_target(self, path: str, action: str) -> tuple[bool, Dict[str, str], str]:
+        kop_mode = self._is_kop_mode()
+        headers = self._build_headers(action=action, kop_mode=kop_mode)
+        if kop_mode:
+            version = os.getenv("AGENTENGINE_API_VERSION", "2024-06-12")
+            full_url = f"{self.base_url.rstrip('/')}/?Action={action}&Version={version}"
+        else:
+            full_url = f"{self.base_url}{path}"
+        return kop_mode, headers, full_url
+
+    def _build_raw_action_request_target(self, action: str, accept: str, has_files: bool) -> tuple[bool, Dict[str, str], str]:
+        kop_mode = self._is_kop_mode()
+        headers = self._build_headers(action=action, kop_mode=kop_mode)
+        headers["Accept"] = accept
+        if has_files:
+            headers.pop("Content-Type", None)
+        full_url = (
+            f"{self.base_url.rstrip('/')}/?Action={action}&Version={os.getenv('AGENTENGINE_API_VERSION', '2024-06-12')}"
+            if kop_mode
+            else f"{self.base_url}/agentengine/api/v1/{action}"
+        )
+        return kop_mode, headers, full_url
+
     @contextmanager
     def suppress_http_error_logging(
         self,
@@ -451,13 +518,7 @@ class AgentEngineClient:
     ) -> Dict[str, Any]:
         """同步 HTTP 请求"""
         action = path.rstrip("/").split("/")[-1] if path else ""
-        kop_mode = self._is_kop_mode()
-        headers = self._build_headers(action=action, kop_mode=kop_mode)
-        if kop_mode:
-            version = os.getenv("AGENTENGINE_API_VERSION", "2024-06-12")
-            full_url = f"{self.base_url.rstrip('/')}/?Action={action}&Version={version}"
-        else:
-            full_url = f"{self.base_url}{path}"
+        _kop_mode, headers, full_url = self._build_action_request_target(path, action)
         body_str = json.dumps(body, ensure_ascii=False) if body else ""
         
         # DryRun 模式
@@ -491,26 +552,35 @@ class AgentEngineClient:
                 },
             )
             
-        logger.debug(f"Request: {method} {full_url}")
-        
         session = self._get_session()
-        
-        response = session.request(
-            method=method,
-            url=full_url,
-            data=body_str.encode("utf-8") if body_str else None,
-            headers=headers,
-            auth=self._auth.get_auth(),  # AWS V4 签名
-            timeout=self.timeout,
-            verify=self._ssl_verify_enabled(),
-        )
-        
-        logger.debug(f"Response: {response.status_code}")
 
-        if response.status_code >= 400:
+        retried_inner_endpoint = False
+        while True:
+            logger.debug(f"Request: {method} {full_url}")
+            response = session.request(
+                method=method,
+                url=full_url,
+                data=body_str.encode("utf-8") if body_str else None,
+                headers=headers,
+                auth=self._auth.get_auth(),  # AWS V4 签名
+                timeout=self.timeout,
+                verify=self._ssl_verify_enabled(),
+            )
+
+            logger.debug(f"Response: {response.status_code}")
+
+            if response.status_code < 400:
+                break
+
             resp_text = response.text or ""
             details = self._extract_http_error_details(resp_text)
             details.setdefault("http_status", response.status_code)
+            if not retried_inner_endpoint and self._can_retry_with_inner_aicp_endpoint(details):
+                retried_inner_endpoint = True
+                self._switch_to_inner_aicp_endpoint()
+                _kop_mode, headers, full_url = self._build_action_request_target(path, action)
+                continue
+
             self._log_http_error(
                 method=method,
                 full_url=full_url,
@@ -613,6 +683,60 @@ class AgentEngineClient:
             namespace, repo = "default", path
 
         return namespace or "default", repo, tag
+
+    @staticmethod
+    def _enterprise_instance_from_image_ref(image_ref: str) -> str | None:
+        """Infer enterprise KCR instance name from a full image reference."""
+        image = (image_ref or "").strip()
+        for prefix in ("http://", "https://"):
+            if image.startswith(prefix):
+                image = image[len(prefix):]
+                break
+        host = image.split("/", 1)[0].strip()
+        if host.endswith("-vpc.ksyunkcr.com"):
+            return host[: -len("-vpc.ksyunkcr.com")] or None
+        if host.endswith(".ksyunkcr.com") and not host.endswith("-vpc.ksyunkcr.com"):
+            return host.split(".", 1)[0] or None
+        return None
+
+    @classmethod
+    def _build_container_config_payload(
+        cls,
+        *,
+        artifact: str,
+        image_credential: Optional[Dict[str, Any]] = None,
+        container: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        container = container or {}
+        artifact = str(artifact or container.get("image_addr") or "").strip()
+        img_ns, img_repo, img_ver = cls._parse_container_image_ref(artifact)
+
+        inferred_enterprise_instance = cls._enterprise_instance_from_image_ref(artifact)
+        image_type = (
+            container.get("image_type")
+            or ("Enterprise" if inferred_enterprise_instance else "Personal")
+        )
+        params: Dict[str, Any] = {
+            "ImageType": image_type,
+            "NameSpace": container.get("name_space") or img_ns,
+            "ImageRepo": container.get("image_repo") or img_repo,
+            "ImageVersion": container.get("image_version") or img_ver,
+            "ImageAddr": container.get("image_addr") or artifact,
+        }
+
+        enterprise_instance = container.get("enterprise_instance") or inferred_enterprise_instance
+        if enterprise_instance:
+            params["EnterpriseInstance"] = enterprise_instance
+        if container.get("enterprise_instance_id"):
+            params["EnterpriseInstanceId"] = container.get("enterprise_instance_id")
+
+        ic = image_credential or {}
+        username = (container.get("username") or ic.get("username") or "").strip()
+        password = (container.get("password") or ic.get("password") or "").strip()
+        if username and password:
+            params["UserName"] = username
+            params["Password"] = password
+        return params
 
     @staticmethod
     def _normalize_framework_name(framework: Optional[str]) -> str:
@@ -766,32 +890,42 @@ class AgentEngineClient:
         files: Dict[str, Any] | None = None,
         accept: str = "application/json",
     ) -> requests.Response:
-        kop_mode = self._is_kop_mode()
-        headers = self._build_headers(action=action, kop_mode=kop_mode)
-        headers["Accept"] = accept
-        if files is not None:
-            headers.pop("Content-Type", None)
-        full_url = (
-            f"{self.base_url.rstrip('/')}/?Action={action}&Version={os.getenv('AGENTENGINE_API_VERSION', '2024-06-12')}"
-            if kop_mode
-            else f"{self.base_url}/agentengine/api/v1/{action}"
+        _kop_mode, headers, full_url = self._build_raw_action_request_target(
+            action,
+            accept,
+            files is not None,
         )
         session = self._get_session()
-        response = session.request(
-            method=method,
-            url=full_url,
-            params=self._compact_params(params),
-            data=self._compact_params(data) if data is not None else None,
-            files=files,
-            headers=headers,
-            auth=self._auth.get_auth(),
-            timeout=self.timeout,
-            verify=self._ssl_verify_enabled(),
-        )
-        if response.status_code >= 400:
+
+        retried_inner_endpoint = False
+        while True:
+            response = session.request(
+                method=method,
+                url=full_url,
+                params=self._compact_params(params),
+                data=self._compact_params(data) if data is not None else None,
+                files=files,
+                headers=headers,
+                auth=self._auth.get_auth(),
+                timeout=self.timeout,
+                verify=self._ssl_verify_enabled(),
+            )
+            if response.status_code < 400:
+                return response
+
             resp_text = response.text or ""
             details = self._extract_http_error_details(resp_text)
             details.setdefault("http_status", response.status_code)
+            if not retried_inner_endpoint and self._can_retry_with_inner_aicp_endpoint(details):
+                retried_inner_endpoint = True
+                self._switch_to_inner_aicp_endpoint()
+                _kop_mode, headers, full_url = self._build_raw_action_request_target(
+                    action,
+                    accept,
+                    files is not None,
+                )
+                continue
+
             self._log_http_error(
                 method=method,
                 full_url=full_url,
@@ -804,7 +938,6 @@ class AgentEngineClient:
                 or resp_text
             )
             raise AgentEngineAPIError(response.status_code, message, details=details or None)
-        return response
 
     async def _resolve_workspace_runtime_access(
         self,
@@ -883,6 +1016,19 @@ class AgentEngineClient:
         annotated["transport_mode"] = transport_mode
         return annotated
 
+    @staticmethod
+    def _display_name_from_content_disposition(value: str) -> str:
+        header = str(value or "").strip()
+        if not header:
+            return ""
+        filename_star_match = re.search(r"filename\*=UTF-8''([^;]+)", header, flags=re.IGNORECASE)
+        if filename_star_match:
+            return Path(unquote(filename_star_match.group(1).strip().strip('"'))).name
+        filename_match = re.search(r'filename="?([^";]+)"?', header, flags=re.IGNORECASE)
+        if filename_match:
+            return Path(filename_match.group(1).strip()).name
+        return ""
+
     def _action(self, action: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
         """通用 Action API 调用"""
         body = params or {}
@@ -907,6 +1053,27 @@ class AgentEngineClient:
             data = self._fix_endpoints_protocol(data)
         
         return data
+
+    def download_attachment_content(self, file_uri: str) -> AttachmentContent:
+        """Download hosted attachment bytes through the signed KOP action API."""
+        normalized_uri = str(file_uri or "").strip()
+        if not normalized_uri:
+            raise AgentEngineAPIError(400, "FileUri is required")
+        response = self._action_raw_request(
+            "GET",
+            "AttachmentContent",
+            params={"FileUri": normalized_uri},
+            accept="application/octet-stream",
+        )
+        return AttachmentContent(
+            data=response.content,
+            content_type=str(response.headers.get("content-type") or "application/octet-stream"),
+            display_name=self._display_name_from_content_disposition(
+                str(response.headers.get("content-disposition") or "")
+            )
+            or Path(normalized_uri.removeprefix("ae-upload://")).name
+            or "uploaded_file",
+        )
 
     # ===== Agent Actions =====
 
@@ -1083,23 +1250,11 @@ class AgentEngineClient:
             }
         else:
             ic = data.get("image_credential", {}) or {}
-            image_username = (ic.get("username") or "").strip()
-            image_password = (ic.get("password") or "").strip()
             artifact = (data.get("artifact_path", "") or "").strip()
-            img_ns, img_repo, img_ver = self._parse_container_image_ref(artifact)
-
-            container_config = {
-                "ImageType": "Personal",
-                "NameSpace": img_ns,
-                "ImageRepo": img_repo,
-                "ImageVersion": img_ver,
-                "ImageAddr": artifact,
-            }
-            # 仅在用户名和密码同时存在时才传鉴权，避免对公共镜像误触发失败鉴权重试。
-            if image_username and image_password:
-                container_config["UserName"] = image_username
-                container_config["Password"] = image_password
-            params["ContainerConfig"] = container_config
+            params["ContainerConfig"] = self._build_container_config_payload(
+                artifact=artifact,
+                image_credential=ic,
+            )
 
         env_vars = []
         envs = data.get("env_vars") or data.get("environment_variables")
@@ -1172,16 +1327,17 @@ class AgentEngineClient:
         agent_id: Optional[str] = None,
         name: Optional[str] = None,
         link_type: str = "private",
-        path: str = "/",
+        path: Optional[str] = None,
         expires_seconds: Optional[int] = None,
         force_new: bool = False,
     ) -> Dict[str, Any]:
         """创建 Dashboard 短链接。"""
         params: Dict[str, Any] = {
             "LinkType": link_type,
-            "Path": path,
             "ForceNew": bool(force_new),
         }
+        if path is not None:
+            params["Path"] = path
         if expires_seconds is not None:
             params["ExpiresSeconds"] = int(expires_seconds)
         if agent_id:
@@ -1339,20 +1495,10 @@ class AgentEngineClient:
             artifact = (data.get("artifact_path", "") or "").strip()
             if (data.get("artifact_type") or "").lower() == "container":
                 ic = data.get("image_credential", {}) or {}
-                image_username = (ic.get("username") or "").strip()
-                image_password = (ic.get("password") or "").strip()
-                img_ns, img_repo, img_ver = self._parse_container_image_ref(artifact)
-                container_config = {
-                    "ImageType": "Personal",
-                    "NameSpace": img_ns,
-                    "ImageRepo": img_repo,
-                    "ImageVersion": img_ver,
-                    "ImageAddr": artifact,
-                }
-                if image_username and image_password:
-                    container_config["UserName"] = image_username
-                    container_config["Password"] = image_password
-                params["ContainerConfig"] = container_config
+                params["ContainerConfig"] = self._build_container_config_payload(
+                    artifact=artifact,
+                    image_credential=ic,
+                )
             else:
                 ks3 = data.get("ks3", {})
                 params["CodeConfig"] = {
@@ -1444,7 +1590,7 @@ class AgentEngineClient:
     
     async def list_sessions(self, agent_id: str, page: int = 1, size: int = 20) -> Dict[str, Any]:
         """列出会话"""
-        return self._action("ListSessions", {"AgentId": agent_id, "Page": page, "Size": size})
+        return self._action("ListSessions", {"AgentId": agent_id, "Page": page, "PageSize": size})
     
     async def delete_session(self, session_id: str) -> bool:
         """删除会话"""
@@ -1727,27 +1873,11 @@ class AgentEngineClient:
         container = data.get("container_config") or {}
         artifact = str(data.get("artifact_path") or container.get("image_addr") or "").strip()
         ic = data.get("image_credential", {}) or {}
-        img_ns, img_repo, img_ver = self._parse_container_image_ref(artifact)
-
-        image_type = container.get("image_type") or "Personal"
-        params: Dict[str, Any] = {
-            "ImageType": image_type,
-            "NameSpace": container.get("name_space") or img_ns,
-            "ImageRepo": container.get("image_repo") or img_repo,
-            "ImageVersion": container.get("image_version") or img_ver,
-            "ImageAddr": container.get("image_addr") or artifact,
-        }
-        if container.get("enterprise_instance"):
-            params["EnterpriseInstance"] = container.get("enterprise_instance")
-        if container.get("enterprise_instance_id"):
-            params["EnterpriseInstanceId"] = container.get("enterprise_instance_id")
-
-        username = (container.get("username") or ic.get("username") or "").strip()
-        password = (container.get("password") or ic.get("password") or "").strip()
-        if username and password:
-            params["UserName"] = username
-            params["Password"] = password
-        return params
+        return self._build_container_config_payload(
+            artifact=artifact,
+            image_credential=ic,
+            container=container,
+        )
 
     def _build_mcp_resource(self, data: Dict[str, Any]) -> Dict[str, Any]:
         resources = data.get("resources", {}) or {}

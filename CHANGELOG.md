@@ -5,66 +5,80 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [0.6.6] - 2026-06-18
+
+### 亮点
+
+- **统一模型策略 v1**：新增 `AGENTENGINE_MODEL_POLICY_JSON` 运行时策略契约，默认主模型为 `glm-5.2`，多模态模型为 `kimi-k2.7-code`，fallback 模型为 `deepseek-v4-pro`，为 Hermes、OpenClaw 和通用 Agent 提供同一套默认模型语义。
+- **通用 Agent fallback**：conversation runtime 对超时、限流、5xx、模型不可用、权限/配额等可恢复模型错误支持 fallback 重试；普通 400 参数错误、业务错误和 tool 错误不会被吞掉。
+- **运行时附件与 Hosted 附件打通**：本地 `ksadk-upload://` 与服务端 `ae-upload://` 上传文件统一解析，支持通过 KOP Action 下载 Hosted 附件内容、恢复本地缓存，并在会话/浏览器刷新后继续读取文件。
+- **会话列表与事件分页增强**：Session service 新增 `count_sessions` / `count_events`，`ListSessions` 返回 `Total/Page/PageSize`，`ListSessionEvents` 支持 `Offset/Limit/Total`，便于 UI 恢复长任务和历史事件。
+- **Hermes 终端执行策略收敛**：抽出共享 terminal exec allowlist policy，OpenClaw/Hermes 终端命令校验共用同一匹配逻辑，简化 allowlist 配置并降低误放行风险。
+
+### 变更
+
+- 默认模型从 `glm-5.1` 升级为 `glm-5.2`，配置向导、项目模板、README、dry-run/help snapshot 和 `DEFAULT_MODEL_NAME` 同步更新。
+- `kimi-k2.7-code` 默认模型参数补齐 `temperature=1`，并透传到 Chat Completions / Responses 的 `temperature`、`top_p`、`max_tokens`、`max_completion_tokens` 等 model options。
+- OpenClaw 默认 catalog 包含 `glm-5.2`、`kimi-k2.7-code` 和 `deepseek-v4-pro`；图像场景默认优先使用 `kimi-k2.7-code`，显式 `OPENCLAW_MODEL_CATALOG_JSON` 仍保持 catalog 首项优先。
+- Hermes deploy 与 OpenClaw deploy 均会注入同一模型策略 env，保留 `OPENAI_MODEL_NAME`、`MODEL_NAME`、`OPENCLAW_DEFAULT_MODEL`、`HERMES_DEFAULT_MODEL`、`HERMES_FALLBACK_MODEL` 等显式覆盖。
+- Hermes 本地默认主模型更新为 `glm-5.2`，不再按 KSPMAS / `glm-5.1` 硬编码 fallback 到 `kimi-k2.6`，fallback 改由统一策略或显式 env 决定。
+- OpenClaw provider catalog 合并逻辑支持在已有 `OPENCLAW_MODEL_CATALOG_JSON` 上补齐 provider metadata，避免请求级 catalog 被平台默认值覆盖。
+- `AgentEngineClient` 新增 `AttachmentContent` 与 `download_attachment_content()`，并修正 `list_sessions()` 请求字段为 `PageSize`。
+- runtime 上传附件会持久化 metadata、本地路径和 MIME 信息；Hosted 附件下载后会写回本地 cache，供 runner、workspace preview 和会话恢复复用。
+
+### 修复
+
+- 修复长期记忆 save 返回 `accepted` 时没有被视为完成 tool receipt，导致 conversation runtime 误判工具调用未完成的问题。
+- 修复 ADK 短期记忆与运行时附件连续性，避免上传文件、memory context 和 runner payload 在多轮会话中丢失。
+- 修复终端执行 allowlist 匹配过复杂、容易误判的问题，统一按共享策略做命令匹配与错误提示。
+- 修复 Hosted UI 上传文件在本地 runtime 中只能看到 `ae-upload://` 引用、无法读取真实内容的问题。
+- 修复 session/event 列表缺少总数和分页字段，导致 UI 无法稳定展示历史会话、历史事件或长任务恢复状态的问题。
+
+### 测试与发布
+
+- 新增模型策略、fallback、流式 fallback、OpenClaw env、Hermes env、LangChain patch、附件恢复、session 分页、Hosted UI 上传文件和终端 allowlist 覆盖测试。
+- 公开发布版本从 `0.6.5` 升级到 `0.6.6`，发布包继续通过 `make public-preflight` 同步 `@kingsoftcloud/ksadk-web@latest` 静态资源并执行 wheel 内容检查；本次发布应先完成 `@kingsoftcloud/ksadk-web@0.2.10` 的 npm release。
+- `make public-preflight` 已覆盖 secret audit、public path audit、全量 pytest、sdist/wheel build 和 `twine check`；0.6.6 wheel/sdist 检查通过。
+- 这是 Hermes/OpenClaw 默认镜像重建前置版本；镜像构建应固定 `KSADK_PACKAGE_SPEC=ksadk==0.6.6`，再走 staging E2E、GitHub Actions / PyPI Trusted Publishing 和环境门禁。
+
 ## [0.6.5] - 2026-06-15
 
-### 重点
+### 亮点
 
-- **UI 真源收敛到 npm 包**：`@kingsoftcloud/ksadk-web@0.2.8` 已作为 npm `latest` 发布；`agentengine web` 静态资源默认从该 npm 包的 `dist-ksadk` 同步，`ksadk-python` 源码分支不再跟踪生成的 `ksadk/server/static/**` 或旧 `ksadk/server/web-ui/**` 副本。
-- **PyPI Trusted Publishing**：新增 GitHub Actions PyPI Trusted Publishing workflow，发布前同步 KSADK Web static、运行 `make public-preflight`，再通过 OIDC 上传到 PyPI，不依赖长期 PyPI token。
-- **发布包自包含 static**：PyPI wheel 构建前会同步 `dist-ksadk` 并把 `ksadk/server/static/index.html` 与静态资源打入 wheel；源码 checkout 缺少 static 时只提示运行同步命令，不在运行时联网拉 npm。
-- **知识库/长期记忆 SDK 更新**：`ksadk[kb]` 中的 `kingsoftcloud-sdk-python` 依赖下限提升到 `1.5.8.94`，用于适配最新知识库和长期记忆 SDK 返回结构。
-- **长期记忆查询兼容修复**：内置 `load_memory` 查询解析兼容 SDK 返回的 `Memory` 字段，避免记忆已写入但查询结果为空。
-- **Sandbox 稳定性兜底**：E2B sandbox 创建后增加命令与文件系统 readiness 探测，并对短暂 `NotFoundException` / `FileNotFoundException` 做指数退避重试，降低首次调用 `run_code` / `run_command` 的偶发失败。
-- **会话连续性与长任务恢复增强**：runner payload 增加 `invocation_id`，LangGraph checkpoint resume 保留 `checkpoint_ns`，checkpoint event 透传业务阶段、摘要、下一步动作和状态，便于 UI 恢复长任务语义。
-- **部署环境变量边界修复**：`agentengine deploy` 和 `agentengine launch` 支持 `--env` / `--env-file` 显式传入运行时环境变量；真实 `.env` / `.env.local` 不再进入 Code、Container 或 MCP 构建上下文，模板文件继续保留。
+- **公开定位与正式发布收敛**：将项目首页、README、PyPI metadata 和公开发布说明统一为 Agent Runtime Platform 口径，并将正式发布版本推进到 `0.6.5`。
+- **Hosted/local UI 真源收敛**：`@kingsoftcloud/ksadk-web@0.2.8` 已发布到 npm，本地 `agentengine web` 静态资源默认从 `@kingsoftcloud/ksadk-web@latest` 的 `dist-ksadk` 同步；共享 UI 源码只在 `ksadk-web` 维护，`ksadk-python` 源码分支不再跟踪生成的 `ksadk/server/static/**`。
+- **部署环境变量边界修复**：`agentengine deploy` 和 `agentengine launch` 新增 `--env` / `--env-file`，显式传入的运行时环境变量进入部署 payload；真实 `.env` / `.env.local` 不再打入 Code、Container 或 MCP 构建上下文，`.env.example` 继续保留。
+- **Sandbox 稳定性兜底**：E2B sandbox 创建后增加命令与文件系统 readiness 探测，默认对短暂 `NotFoundException` / `FileNotFoundException` 做指数退避重试，降低 Pod 内首次调用 `run_code` / `run_command` 的偶发失败。
+- **会话连续性与长任务恢复增强**：runner payload 增加 `invocation_id`，LangGraph checkpoint resume 保留 `checkpoint_ns`，checkpoint event 透传业务阶段、摘要、下一步动作和状态，便于 Hosted/local UI 恢复长任务语义。
+- **长期记忆查询兼容修复**：SDK LTM 查询解析兼容上游返回的 `Memory` 字段，避免记忆已写入但 `load_memory` 查询为空。
+- **镜像仓库凭证语义修复**：个人版 KCR 继续允许 `KSYUN_ACCOUNT_ID` 兜底用户名；企业版 KCR 和第三方 registry 必须显式设置 `KCR_USERNAME` / `KCR_PASSWORD`，避免错误把云账号 ID 当企业镜像用户名。
+- **公开门禁增强**：发布构建新增 wheel 内容检查，禁止旧 `ksadk/server/web-ui/` 源码或构建产物残留进入 PyPI wheel；源码仓库同样不再跟踪本地 UI 副本，并继续执行公开定位、敏感词扫描、PyPI metadata、README 和测试门禁。
 
-### 修复
+### 发布说明
 
-- `/v1/responses`、`/v1/chat/completions` 和 `RunAgentAction` 支持透传 `account_id` / `AccountId`，并写入 `PlatformInvocationContext`，便于运行时能力按账号边界读取当前调用上下文。
-- 新增 `get_current_invocation_context_or_default()`、`get_current_user_id()` 和 `get_current_account_id()`，工具或业务代码可在当前 turn 内安全读取用户和账号上下文；无调用上下文时返回显式默认值。
-- 修复 LangGraph checkpoint resume 丢失 namespace、checkpoint 列表缺少业务阶段字段的问题。
-- 修复 Python 3.10 环境中 workspace router 误用 Python 3.11 `datetime.UTC` 的兼容性问题。
-
-### 构建与发布
-
-- `make sync-ksadk-web-static` 默认改为 `npm pack @kingsoftcloud/ksadk-web@latest`，并保留 `KSADK_WEB_RELEASE_URL` 显式 tarball 兜底。
-- `public-build-check` 在 `uv build` 和 `twine check` 之间增加 wheel 内容检查，确保旧 `ksadk/server/web-ui/` 源码、`node_modules` 和历史构建产物不会混入发布包。
-- Code、Container、MCP 构建统一排除真实 `.env*`，只保留 `.env.example` / `.env.sample` / `.env.template` 这类模板文件。
-
-### 发布治理
-
+- 这是修复 0.6.3 公开页面和 PyPI 元数据口径的正式补丁版本；已发布到 PyPI 的 0.6.3 元数据不可覆盖，因此通过 0.6.5 发布修复。
 - 0.6.5 通过 GitHub Release 和 PyPI Trusted Publishing 发布，发布包在构建时同步 `@kingsoftcloud/ksadk-web@latest` 静态资源。
-- 公开 CHANGELOG 不记录非公开环境名、内网 endpoint、真实账号、真实 Skill Space ID 或临时凭证；这些只允许出现在内部联调记录里。
-
-## [0.6.4] - 2026-06-10
-
-### 重点
-
-- **项目定位重构**：将 README、文档首页和包元数据统一为 Agent Runtime Platform 口径，突出统一运行、浏览器调试、OpenAI-Compatible API、Sandbox、部署和可观测价值。
-- **中文优先首页**：默认 README 与中文文档首页使用中文主叙述，英文 README 作为补充入口保留，避免公开首页变成英文优先材料。
-- **README 简洁化**：README 聚焦项目定位、30 秒上手、真实截图/GIF、核心能力和贡献入口；版本变更迁回 CHANGELOG 与 GitHub Releases，避免首页承担发布公告职责。
-- **真实视觉资产**：首页首屏使用真实浅色 CLI 截图，30 秒体验后展示真实本地 Web UI 截图和 GIF；演示由本地 deterministic LangGraph Runner 生成，不依赖外部模型或云环境。
-- **文档信息架构调整**：MkDocs 导航改为 Getting Started / Build / Run / Deploy / Observe / Extend / Reference，并新增 Why KsADK、Architecture、Comparison 三个认知入口页。
-- **Samples 场景入口对齐**：`ksadk-samples` 根 README 改为场景优先，真实映射 Knowledge Assistant、Workflow Agent、Tool-Using Agent 和 Memory-aware Agent；尚未实现的场景只进入 Roadmap。
-- **默认线上地域说明**：公开 README 和文档首页使用 `KSYUN_REGION=cn-beijing-6` 作为线上默认 region 示例，避免用户把非公开或内网配置照搬到公开 demo。
-
-### 修复
-
-- 新增 `ksadk.markdown.repair_markdown(text, enabled=True)` 可选业务侧 Markdown 形态修复工具，覆盖未闭合 fenced code block、列表/表格/代码块周边空行和换行归一化；默认关闭，运行时不自动改写 raw LLM output。用法见文档 [Agent 最佳实践 / Markdown 输出修复](public-docs/guides/agent-best-practices.md#markdown-输出修复)。
-- 清理 README、CHANGELOG、文档首页和 runtime product 文档中的环境特定表述，避免公开页面出现内部环境名、内部 header 或私有 endpoint 示例。
-- 将公开定位、视觉资产存在性、中文优先标题、敏感词扫描和 README 场景入口要求纳入本地门禁，降低后续发布材料回退风险。
-- 将 `agentengine-sdk-python` 别名包版本占用检查纳入 `public-publish-check`，避免主包与别名包发布状态不一致。
-
-### 发布治理
-
-- 这是修复 0.6.3 公开页面和 PyPI 元数据口径的补丁版本；已发布到 PyPI 的 0.6.3 元数据不可覆盖，因此通过新版本修复。
-- GitHub Release 页面必须保留历史版本 `v0.6.1`、`v0.6.2` 和 `v0.6.3`；0.6.4 只能新增 release，不能清理历史条目。
-- 公开 CHANGELOG 不记录非公开环境名、内网 endpoint、真实账号、真实 Skill Space ID 或临时凭证；这些只允许出现在内部联调记录里。
+- `@kingsoftcloud/ksadk-web@0.2.8` 已作为 npm `latest` 发布；`agentengine-hosted-ui` 和 `ksadk-python` 后续默认从 npm release 消费，不再维护共享 UI 源码或本地 tarball。
 
 ### 运行时修复
 
 - `/v1/responses`、`/v1/chat/completions` 和 `RunAgentAction` 支持透传 `account_id` / `AccountId`，并写入 `PlatformInvocationContext`，便于 Skill、Workspace、Sandbox、Memory 等运行时能力按账号边界读取当前调用上下文。
 - 新增 `get_current_invocation_context_or_default()`、`get_current_user_id()` 和 `get_current_account_id()`，工具或业务代码可在当前 turn 内安全读取用户和账号上下文；无调用上下文时返回显式默认值。
+- 修复 dashboard/open/share 在全局配置注入 `KSYUN_REGION` 时可能覆盖当前 `.agentengine.state` region 的问题；命令行显式 region 仍优先。
+- 修复 LangGraph checkpoint resume 丢失 namespace、checkpoint 列表缺少业务阶段字段的问题。
+- 修复 LTM SDK 查询解析不能识别 `Memory` 字段的问题。
+- 修复 E2B sandbox 创建后立即执行命令或写文件时可能遇到短暂 NotFound 的问题。
+- 修复 Python 3.10 环境中 workspace router 误用 Python 3.11 `datetime.UTC` 的兼容性问题。
+
+### 构建与发布修复
+
+- `make sync-ksadk-web-static` 默认改为 `npm pack @kingsoftcloud/ksadk-web@latest`，并保留 `KSADK_WEB_RELEASE_URL` 显式 tarball 兜底。
+- 新增 GitHub Actions PyPI Trusted Publishing workflow：发布前同步 KSADK Web static、执行 `make public-preflight`，再通过 OIDC 上传到 PyPI，不再依赖长期 PyPI token。
+- PyPI wheel 构建前会同步 `dist-ksadk` 并把 `ksadk/server/static/index.html` 与静态资源打入 wheel；源码 checkout 缺少 static 时只提示运行同步命令，不在运行时联网拉 npm。
+- `public-build-check` 在 `uv build` 和 `twine check` 之间增加 wheel 内容检查，确保旧 `ksadk/server/web-ui/` 源码、`node_modules` 和历史构建产物不会混入发布包。
+- 知识库/长期记忆 SDK 依赖下限提升到 `kingsoftcloud-sdk-python>=1.5.8.94`，用于适配最新 SDK LTM/KB 返回结构与运行时打包要求。
+- Code、Container、MCP 构建统一排除真实 `.env*`，只保留 `.env.example` / `.env.sample` / `.env.template` 这类模板文件。
+- Container、MCP、OpenClaw、Serverless 镜像凭证解析统一企业版/个人版/第三方 registry 边界，避免生成错误鉴权 payload。
 
 ## [0.6.3] - 2026-06-09
 
@@ -251,8 +265,8 @@
 - Dashboard private 链接服务端默认有效期调整为 24 小时；CLI 在未显式传入 `--expires-seconds` 时交给服务端默认处理，以兼容尚未升级的控制面，OpenClaw / Hermes 默认仍进入 `/chat`。
 - `agentengine create` 的快速开始提示按 Windows PowerShell / cmd.exe 与 POSIX shell 分别生成可复制命令，包含空格的项目目录会被正确 quoting。
 - Docker daemon 未运行时，Windows 环境提示用户启动 Docker Desktop，不再输出 Linux `systemctl` 提示。
-- Hermes 默认镜像更新为 `ghcr.io/kingsoftcloud/hermes-agent:2026.5.16-ksadk-v1`，上游 Hermes ref 保持 `v2026.5.16`。
-- OpenClaw 默认镜像更新为 `ghcr.io/kingsoftcloud/openclaw:2026.5.20`，基础镜像 pin 到 `ghcr.io/openclaw/openclaw:2026.5.20-slim@sha256:db199be23add581ef18ca8c8a866af84db13586d5bfcd566c8ac73d8d106eebb`。
+- Hermes 默认镜像更新为 `hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.5.16-ksadk-v1`，上游 Hermes ref 保持 `v2026.5.16`。
+- OpenClaw 默认镜像更新为 `hub.kce.ksyun.com/agentengine-public/openclaw:2026.5.20`，基础镜像 pin 到 `ghcr.io/openclaw/openclaw:2026.5.20-slim@sha256:db199be23add581ef18ca8c8a866af84db13586d5bfcd566c8ac73d8d106eebb`。
 - `deploy/openclaw-user-template` 及示例模板默认基础镜像同步升级到 OpenClaw `2026.5.20-slim`。
 - 文档补充 hosted UI 生产路由与独立部署说明；`ksadk-python` 继续保留本地 SDK UI 静态资源，生产 hosted UI 由独立服务发布。
 
@@ -440,7 +454,7 @@
 - OpenClaw 部署新增 `OPENCLAW_CHANNEL_BOOTSTRAP_JSON`、Agentspace bootstrap 配置与 `OPENCLAW_BROWSER_SSRF_POLICY_JSON` 透传，便于渠道预配置和内网访问策略收口。
 - 新增 `agentengine openclaw repair`，并支持 `agentengine openclaw gateway doctor --fix` 通过控制面直接触发 `doctor-fix` 修复动作。
 - code mode 构建新增 Linux Runtime 兼容性 / ABI 校验，关键原生扩展不兼容时会在打包阶段提前失败。
-- 默认 Hermes 共享 runtime 镜像更新为 `ghcr.io/kingsoftcloud/hermes-agent:2026.4.23`，并把构建默认 `HERMES_AGENT_REF` 同步到上游 `v2026.4.23`。
+- 默认 Hermes 共享 runtime 镜像更新为 `hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.4.23`，并把构建默认 `HERMES_AGENT_REF` 同步到上游 `v2026.4.23`。
 - 默认 OpenClaw 基础镜像 pin 到官方 `ghcr.io/openclaw/openclaw:2026.4.24@sha256:7c4370ff8777555d4c9fe5ab821aaaad7c87188d389a6cf761270725d96ec3e9`，同步刷新自定义镜像模板和一键部署文档。
 
 ### 修复

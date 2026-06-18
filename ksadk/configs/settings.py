@@ -40,31 +40,133 @@ def _get_env(*keys: str, default: str = None) -> Optional[str]:
 
 
 # =============================================================================
+# 网络检测工具 (通用)
+# =============================================================================
+
+# 缓存检测结果 {host: is_reachable}
+_endpoint_cache: Dict[str, bool] = {}
+
+
+def _is_internal_runtime_env() -> bool:
+    return any(
+        os.getenv(key)
+        for key in (
+            "AGENT_RUNTIME_ID",
+            "K_SERVICE",
+            "KUBERNETES_SERVICE_HOST",
+        )
+    )
+
+
+def _is_public_kspmas_url(url: Optional[str]) -> bool:
+    value = (url or "").strip().rstrip("/")
+    if not value:
+        return False
+    return "kspmas.ksyun.com/v1" in value
+
+
+def check_endpoint_reachable(host: str, port: int = 80, timeout: float = 1.0) -> bool:
+    """检测指定端点是否可达
+    
+    通用函数，可用于检测任意服务的内网地址是否可达。
+    结果会被缓存，相同 host 只检测一次。
+    
+    Args:
+        host: 主机名或 IP 地址
+        port: 端口号 (默认 80)
+        timeout: 超时时间 (默认 1.0 秒)
+    
+    Returns:
+        True 如果可达, False 否则
+    
+    Usage:
+        # KSPMAS 内网检测
+        if check_endpoint_reachable("kspmas-internal.sdns.ksyun.com"):
+            api_base = "http://kspmas-internal.sdns.ksyun.com/v1"
+        
+        # KS3 内网检测
+        if check_endpoint_reachable("ks3-cn-beijing-internal.ksyuncs.com"):
+            ks3_endpoint = "http://ks3-cn-beijing-internal.ksyuncs.com"
+    """
+    if host in _endpoint_cache:
+        return _endpoint_cache[host]
+    
+    try:
+        import socket
+        # 尝试建立 TCP 连接 (比 ping 更可靠，且不依赖 ICMP)
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect((host, port))
+        s.close()
+        
+        _endpoint_cache[host] = True
+        logger.debug(f"Endpoint reachable: {host}:{port}")
+    except (socket.timeout, socket.error, OSError):
+        _endpoint_cache[host] = False
+        logger.debug(f"Endpoint not reachable: {host}:{port}")
+    
+    return _endpoint_cache[host]
+
+
+# =============================================================================
 # 金山云模型服务 (KSPMAS)
 # =============================================================================
 
 # 服务地址
+KSPMAS_INTERNAL_HOST = "kspmas-internal.sdns.ksyun.com"
+KSPMAS_INTERNAL_URL = f"http://{KSPMAS_INTERNAL_HOST}/v1"
 KSPMAS_PUBLIC_URL = "https://kspmas.ksyun.com/v1"
 
 # 默认模型
-DEFAULT_MODEL_NAME = "glm-5.1"
+DEFAULT_MODEL_NAME = "glm-5.2"
 
 
 def optimize_kspmas_url(url: str) -> str:
     """优化 KSPMAS URL
     
-    公开 SDK 默认保留用户配置的公开地址。托管环境如需使用专有内网地址，
-    应通过运行时环境变量显式注入，不在开源代码中写死内部 endpoint。
+    如果是 KSPMAS 的公网地址，且检测到内网可达（或在 Serverless 环境），
+    将其替换为内网地址以提高速度和稳定性。
     """
+    if not url:
+        return url
+        
+    # 仅优化 KSPMAS 域名
+    if "kspmas.ksyun.com" in url:
+        # 检测是否应该使用内网
+        use_internal = False
+        
+        # 1. 托管 / 集群环境优先使用内网
+        if _is_internal_runtime_env():
+            use_internal = True
+        # 2. 自动检测内网可达性
+        elif check_endpoint_reachable(KSPMAS_INTERNAL_HOST):
+            use_internal = True
+            
+        if use_internal:
+            # 替换域名 (保持协议和路径不变)
+            # https://kspmas.ksyun.com/v1 -> http://kspmas-internal.sdns.ksyun.com/v1
+            # 注意: 内网通常是 http
+            return url.replace("https://kspmas.ksyun.com", f"http://{KSPMAS_INTERNAL_HOST}") \
+                      .replace("http://kspmas.ksyun.com", f"http://{KSPMAS_INTERNAL_HOST}")
+                      
     return url
 
 
 def get_kspmas_api_base() -> str:
     """获取 KSPMAS 模型服务的 API Base URL
     
-    默认使用公开地址；如需专有网络 endpoint，请设置 OPENAI_BASE_URL /
-    OPENAI_API_BASE / LLM_API_BASE / MODEL_API_BASE。
+    自动检测内网可达性，优先使用内网地址。
+    **特殊逻辑**: 如果在 Serverless 托管环境 (AGENT_RUNTIME_ID 存在)，强制使用内网地址。
     """
+    # 1. 托管 / 集群环境强制使用内网
+    if _is_internal_runtime_env():
+        return KSPMAS_INTERNAL_URL
+
+    # 2. 自动检测内网可达性
+    if check_endpoint_reachable(KSPMAS_INTERNAL_HOST):
+        return KSPMAS_INTERNAL_URL
+    
+    # 3. 默认使用公网
     return KSPMAS_PUBLIC_URL
 
 
@@ -93,8 +195,8 @@ class ModelConfig:
         OPENAI_API_BASE      - API Base URL 别名
     
     默认值:
-        OPENAI_BASE_URL: 金山云模型服务公开地址
-        MODEL_NAME: glm-5.1
+        OPENAI_BASE_URL: 自动检测内网/外网，使用金山云模型服务
+        MODEL_NAME: glm-5.2
     """
     
     @property
@@ -110,7 +212,8 @@ class ModelConfig:
     def api_base(self) -> str:
         """获取模型 API Base URL
         
-        如果未配置，默认使用金山云模型服务公开地址。
+        如果未配置，默认使用金山云模型服务地址（自动检测内网）。
+        如果已配置且为 KSPMAS 公网地址，也会尝试优化为内网地址。
         """
         configured = _get_env(
             "OPENAI_BASE_URL",       # OpenAI 标准 (优先)
@@ -128,7 +231,7 @@ class ModelConfig:
     def model_name(self) -> str:
         """获取模型名称
         
-        如果未配置，默认使用 glm-5.1。
+        如果未配置，默认使用 glm-5.2。
         """
         configured = _get_env(
             "OPENAI_MODEL_NAME",     # OpenAI 格式 (优先)
@@ -145,7 +248,7 @@ class ModelConfig:
     @property
     def is_using_internal_network(self) -> bool:
         """是否使用内网地址"""
-        return False
+        return KSPMAS_INTERNAL_URL in self.api_base
     
     def to_dict(self) -> dict:
         """转换为字典 (用于 LiteLLM 等)"""
@@ -545,6 +648,14 @@ def setup_environment(agent_path: "Path"):
         if env_file.exists():
             # override=False: 保留通过 API/Serverless 平台注入的环境变量 (优先级高)
             load_dotenv(env_file, override=False)
+
+    # 1.5. 托管运行时里不要保留公网 KSPMAS 地址，否则用户代码优先读取 OPENAI_BASE_URL
+    # 会绕开后续的内网自动探测，导致 Serverless Pod 访问公网模型网关超时。
+    if _is_internal_runtime_env():
+        for env_key in ("OPENAI_BASE_URL", "OPENAI_API_BASE"):
+            raw_value = os.getenv(env_key, "")
+            if _is_public_kspmas_url(raw_value):
+                os.environ.pop(env_key, None)
 
     # 2. Coze SDK 兼容映射
     # 某些 Coze 导出项目（tool 内使用 coze_coding_dev_sdk）会强依赖 COZE_* 环境变量，

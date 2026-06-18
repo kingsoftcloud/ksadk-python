@@ -74,7 +74,13 @@ from ksadk.cli.ui import (
 from ksadk.deployment.agent_access import get_latest_agent_access
 from ksadk.cli.model_catalog import fetch_provider_model_catalog, find_model_in_catalog
 from ksadk.conversations.model_context import normalize_model_metadata
+from ksadk.model_policy import build_runtime_model_policy_env
+from ksadk.builders.container_builder import (
+    registry_kind_label,
+    resolve_registry_credentials,
+)
 from ksadk.openclaw_gateway import OpenClawGatewayClient, OpenClawGatewayError, OpenClawGatewayRequestError
+from ksadk.terminal_exec_policy import OPENCLAW_TERMINAL_EXEC_POLICY
 from ksadk.terminal_client import run_terminal_session
 
 console = get_console()
@@ -366,6 +372,12 @@ def _resolve_env(*keys: str, default: Optional[str] = None) -> Optional[str]:
     return default
 
 
+def _openclaw_registry_env() -> dict[str, str]:
+    env = {str(k): str(v) for k, v in os.environ.items()}
+    env.update(_get_global_env())
+    return env
+
+
 def _resolve_model_base_url(cli_value: Optional[str]) -> Optional[str]:
     """解析模型 Base URL，缺失时回退到 settings.model.api_base（KSPMAS 自动探测）。"""
     if cli_value and str(cli_value).strip():
@@ -519,7 +531,7 @@ def _strip_provider_prefix(provider_id: str, model_id: str) -> str:
 
 
 def _default_openclaw_model_inputs(provider_id: str, model_id: str) -> list[str]:
-    if str(provider_id or "").strip().lower() == "ksyun" and str(model_id or "").strip().lower() == "glm-5.1":
+    if str(provider_id or "").strip().lower() == "ksyun" and str(model_id or "").strip().lower() in {"glm-5.1", "glm-5.2"}:
         return ["text"]
     return ["text", "image"]
 
@@ -597,13 +609,28 @@ def _apply_openclaw_provider_model_catalog(
     env: Dict[str, str],
     raw_models: list[Any],
 ) -> bool:
-    if not raw_models or str(env.get("OPENCLAW_MODEL_CATALOG_JSON") or "").strip():
+    if not raw_models:
         return False
 
     provider_id = str(env.get("OPENCLAW_MODEL_PROVIDER_ID") or "ksyun").strip() or "ksyun"
     provider_api = str(env.get("OPENCLAW_MODEL_API") or "openai-completions").strip() or "openai-completions"
+    raw_catalog = str(env.get("OPENCLAW_MODEL_CATALOG_JSON") or "").strip()
     catalog: list[Dict[str, Any]] = []
+    if raw_catalog:
+        try:
+            parsed_catalog = json.loads(raw_catalog)
+        except Exception:
+            parsed_catalog = []
+        if isinstance(parsed_catalog, list):
+            catalog = [dict(item) for item in parsed_catalog if isinstance(item, dict)]
+
     seen: set[str] = set()
+    for item in catalog:
+        model_key = str(item.get("id") or item.get("name") or "").strip()
+        if model_key:
+            seen.add(model_key)
+
+    changed = False
     for raw_model in raw_models:
         if not isinstance(raw_model, dict):
             raw_model = {"id": str(raw_model or "").strip()}
@@ -615,12 +642,25 @@ def _apply_openclaw_provider_model_catalog(
         if not item:
             continue
         model_key = str(item["id"])
-        if model_key in seen:
+        existing_index = next(
+            (
+                index
+                for index, existing in enumerate(catalog)
+                if str(existing.get("id") or existing.get("name") or "").strip() == model_key
+            ),
+            None,
+        )
+        if existing_index is not None:
+            merged = {**catalog[existing_index], **item}
+            if merged != catalog[existing_index]:
+                catalog[existing_index] = merged
+                changed = True
             continue
         seen.add(model_key)
         catalog.append(item)
+        changed = True
 
-    if not catalog:
+    if not catalog or not changed:
         return False
     env["OPENCLAW_MODEL_CATALOG_JSON"] = json.dumps(
         catalog,
@@ -716,7 +756,7 @@ def _build_openclaw_env_vars(
         model_api_key
         or _resolve_env("OPENCLAW_MODEL_API_KEY", "OPENAI_API_KEY", "LLM_API_KEY", "MODEL_API_KEY")
     )
-    model = model_preference or "glm-5.1"
+    model = model_preference or "glm-5.2"
     explicit_provider_id = model_provider_id or _resolve_env("OPENCLAW_MODEL_PROVIDER_ID")
     inferred_provider_id = explicit_provider_id
     if not inferred_provider_id and model and "/" in model:
@@ -906,7 +946,8 @@ def _build_openclaw_env_vars(
         if passthrough_value:
             env[passthrough_key] = passthrough_value
 
-    return _normalize_openclaw_gateway_auth_env(env)
+    env = _normalize_openclaw_gateway_auth_env(env)
+    return build_runtime_model_policy_env(env, runtime="openclaw")
 
 
 def _normalize_allowed_origins(raw: str) -> str:
@@ -1487,6 +1528,7 @@ async def _run_weixin_remote_cli_login(
         api_key=_openclaw_terminal_api_key(detail),
         mode="exec",
         argv=WEIXIN_REMOTE_LOGIN_ARGV,
+        exec_policy=OPENCLAW_TERMINAL_EXEC_POLICY,
     )
     if exit_code:
         raise OpenClawGatewayError(f"微信远端登录流程执行失败，exit_code={exit_code}")
@@ -3416,21 +3458,31 @@ async def _deploy_openclaw(
     if network_payload:
         request_data["network"] = network_payload
 
-    # KCR 凭证：仅在显式提供用户名+密码时注入，避免公共镜像触发无效鉴权重试。
+    # 镜像凭证：按目标镜像地址判断仓库类型，避免企业版/第三方误用 KSYUN_ACCOUNT_ID。
     image_credential = None
-    kcr_username = _resolve_env("KCR_USERNAME", "KSYUN_ACCOUNT_ID")
-    kcr_password = _resolve_env("KCR_PASSWORD")
+    kcr_username, kcr_password, registry_kind = resolve_registry_credentials(
+        image_ref,
+        environ=_openclaw_registry_env(),
+    )
     if kcr_username and kcr_password:
         image_credential = {
             "username": kcr_username,
             "password": kcr_password,
         }
         request_data["image_credential"] = image_credential
-    elif kcr_password and not kcr_username:
-        print_warn("检测到 KCR_PASSWORD 但缺少 KCR_USERNAME，已忽略镜像凭证")
+    elif kcr_password and not kcr_username and registry_kind != "personal_kcr":
+        print_warn(
+            f"检测到 KCR_PASSWORD 但缺少 KCR_USERNAME，已忽略{registry_kind_label(registry_kind)}镜像凭证；"
+            "企业版 KCR 和第三方镜像仓库必须配置 KCR_USERNAME + KCR_PASSWORD"
+        )
     elif "/agentengine-public/" not in image_ref:
-        print_warn("未配置 KCR_PASSWORD，私有镜像可能无法拉取 (公共镜像可忽略)")
-        print_info("获取方式: https://kcr.console.ksyun.com/ → 访问凭证")
+        if registry_kind == "personal_kcr":
+            print_warn("未配置个人版 KCR 镜像凭证 (KSYUN_ACCOUNT_ID/KCR_PASSWORD)，私有镜像可能无法拉取")
+        else:
+            print_warn(
+                f"未配置{registry_kind_label(registry_kind)}镜像凭证 "
+                "(KCR_USERNAME/KCR_PASSWORD)，私有镜像可能无法拉取"
+            )
 
     if dry_run:
         async with AgentEngineClient(region=region, dry_run=True) as client:

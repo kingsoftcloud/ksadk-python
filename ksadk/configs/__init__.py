@@ -12,8 +12,8 @@ AgentEngine 统一配置管理
     Agent:    AGENT_ID > AGENT_RUNTIME_ID
 
 默认值:
-    OPENAI_API_BASE: 金山云模型服务公开地址
-    MODEL_NAME: glm-5.1
+    OPENAI_API_BASE: 自动检测内网/外网，使用金山云模型服务
+    MODEL_NAME: glm-5.2
 """
 
 from ksadk.configs.settings import (
@@ -27,8 +27,12 @@ from ksadk.configs.settings import (
     KingsoftCloudConfig,
     CodeModeConfig,
     OTelConfig,
+    # 通用网络检测工具
+    check_endpoint_reachable,
     # KSPMAS 服务
     get_kspmas_api_base,
+    KSPMAS_INTERNAL_HOST,
+    KSPMAS_INTERNAL_URL,
     KSPMAS_PUBLIC_URL,
     DEFAULT_MODEL_NAME,
     setup_environment,
@@ -45,8 +49,12 @@ __all__ = [
     "KingsoftCloudConfig",
     "CodeModeConfig",
     "OTelConfig",
+    # 网络工具 (通用)
+    "check_endpoint_reachable",
     # KSPMAS 服务
     "get_kspmas_api_base",
+    "KSPMAS_INTERNAL_HOST",
+    "KSPMAS_INTERNAL_URL",
     "KSPMAS_PUBLIC_URL",
     "DEFAULT_MODEL_NAME",
     "setup_environment",
