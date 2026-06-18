@@ -1998,9 +1998,8 @@ def test_openclaw_deploy_writes_only_configured_model_from_provider_catalog(monk
         for item in _FakeOpenClawCreateClient.create_payload["env_vars"]
     }
     catalog = json.loads(env_vars["OPENCLAW_MODEL_CATALOG_JSON"])
-    assert [item["id"] for item in catalog] == ["deepseek-v4-pro"]
-    assert catalog[0]["contextWindow"] == 1_000_000
-    assert catalog[0]["maxTokens"] == 384_000
+    assert [item["id"] for item in catalog] == ["glm-5.2", "kimi-k2.7-code", "deepseek-v4-pro"]
+    assert catalog[1]["options"] == {"temperature": 1}
 
 
 def test_openclaw_deploy_writes_allowlisted_models_from_provider_catalog(monkeypatch, tmp_path):
@@ -2053,7 +2052,7 @@ def test_openclaw_deploy_writes_allowlisted_models_from_provider_catalog(monkeyp
         for item in _FakeOpenClawCreateClient.create_payload["env_vars"]
     }
     catalog = json.loads(env_vars["OPENCLAW_MODEL_CATALOG_JSON"])
-    assert [item["id"] for item in catalog] == ["deepseek-v4-pro", "glm-5.1"]
+    assert [item["id"] for item in catalog] == ["glm-5.2", "kimi-k2.7-code", "deepseek-v4-pro"]
     assert "kimi-k2.6" not in {item["id"] for item in catalog}
 
 

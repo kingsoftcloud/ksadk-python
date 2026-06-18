@@ -62,6 +62,27 @@ class _StubRunner:
         return {"output": "assistant says hi"}
 
 
+class _TransientFallbackRunner(_StubRunner):
+    def __init__(self):
+        super().__init__()
+        self.fail_once = True
+
+    async def invoke(self, input_data: dict) -> dict:
+        self.calls.append(input_data)
+        if self.fail_once:
+            self.fail_once = False
+            raise RuntimeError("model unavailable")
+        return {"output": "assistant says hi"}
+
+    async def stream(self, input_data: dict):
+        self.calls.append(input_data)
+        if self.fail_once:
+            self.fail_once = False
+            raise RuntimeError("model unavailable")
+        yield {"type": "text", "delta": "fallback answer"}
+        yield {"type": "final", "output": "fallback answer"}
+
+
 class _CheckpointMetadataRunner(_StubRunner):
     async def invoke(self, input_data: dict) -> dict:
         self.calls.append(input_data)
@@ -1437,6 +1458,51 @@ async def test_invoke_conversation_once_passes_model_options_to_runner(monkeypat
         "reasoning": {"effort": "none"},
         "max_reasoning_tokens": 0,
     }
+
+
+@pytest.mark.asyncio
+async def test_invoke_conversation_once_falls_back_on_transient_model_error(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _TransientFallbackRunner()
+
+    await invoke_conversation_once(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id=None,
+        messages=[{"role": "user", "content": "hello"}],
+        model="glm-5.2",
+        prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+    )
+
+    assert runner.prepared_models == ["glm-5.2", "deepseek-v4-pro"]
+    assert runner.calls[-1]["model"] == "deepseek-v4-pro"
+
+
+@pytest.mark.asyncio
+async def test_stream_conversation_turn_falls_back_before_first_delta(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _TransientFallbackRunner()
+
+    events = [
+        event
+        async for event in stream_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id=None,
+            messages=[{"role": "user", "content": "hello"}],
+            model="glm-5.2",
+            prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+        )
+    ]
+
+    assert runner.prepared_models == ["glm-5.2", "deepseek-v4-pro"]
+    assert runner.calls[-1]["model"] == "deepseek-v4-pro"
+    assert any("fallback answer" in event for event in events)
+    assert any("response.completed" in event for event in events)
 
 
 @pytest.mark.asyncio

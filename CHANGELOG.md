@@ -5,6 +5,42 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [0.6.6] - 2026-06-18
+
+### 亮点
+
+- **统一模型策略 v1**：新增 `AGENTENGINE_MODEL_POLICY_JSON` 运行时策略契约，默认主模型为 `glm-5.2`，多模态模型为 `kimi-k2.7-code`，fallback 模型为 `deepseek-v4-pro`，为 Hermes、OpenClaw 和通用 Agent 提供同一套默认模型语义。
+- **通用 Agent fallback**：conversation runtime 对超时、限流、5xx、模型不可用、权限/配额等可恢复模型错误支持 fallback 重试；普通 400 参数错误、业务错误和 tool 错误不会被吞掉。
+- **运行时附件与 Hosted 附件打通**：本地 `ksadk-upload://` 与服务端 `ae-upload://` 上传文件统一解析，支持通过 KOP Action 下载 Hosted 附件内容、恢复本地缓存，并在会话/浏览器刷新后继续读取文件。
+- **会话列表与事件分页增强**：Session service 新增 `count_sessions` / `count_events`，`ListSessions` 返回 `Total/Page/PageSize`，`ListSessionEvents` 支持 `Offset/Limit/Total`，便于 UI 恢复长任务和历史事件。
+- **Hermes 终端执行策略收敛**：抽出共享 terminal exec allowlist policy，OpenClaw/Hermes 终端命令校验共用同一匹配逻辑，简化 allowlist 配置并降低误放行风险。
+
+### 变更
+
+- 默认模型从 `glm-5.1` 升级为 `glm-5.2`，配置向导、项目模板、README、dry-run/help snapshot 和 `DEFAULT_MODEL_NAME` 同步更新。
+- `kimi-k2.7-code` 默认模型参数补齐 `temperature=1`，并透传到 Chat Completions / Responses 的 `temperature`、`top_p`、`max_tokens`、`max_completion_tokens` 等 model options。
+- OpenClaw 默认 catalog 包含 `glm-5.2`、`kimi-k2.7-code` 和 `deepseek-v4-pro`；图像场景默认优先使用 `kimi-k2.7-code`，显式 `OPENCLAW_MODEL_CATALOG_JSON` 仍保持 catalog 首项优先。
+- Hermes deploy 与 OpenClaw deploy 均会注入同一模型策略 env，保留 `OPENAI_MODEL_NAME`、`MODEL_NAME`、`OPENCLAW_DEFAULT_MODEL`、`HERMES_DEFAULT_MODEL`、`HERMES_FALLBACK_MODEL` 等显式覆盖。
+- Hermes 本地默认主模型更新为 `glm-5.2`，不再按 KSPMAS / `glm-5.1` 硬编码 fallback 到 `kimi-k2.6`，fallback 改由统一策略或显式 env 决定。
+- OpenClaw provider catalog 合并逻辑支持在已有 `OPENCLAW_MODEL_CATALOG_JSON` 上补齐 provider metadata，避免请求级 catalog 被平台默认值覆盖。
+- `AgentEngineClient` 新增 `AttachmentContent` 与 `download_attachment_content()`，并修正 `list_sessions()` 请求字段为 `PageSize`。
+- runtime 上传附件会持久化 metadata、本地路径和 MIME 信息；Hosted 附件下载后会写回本地 cache，供 runner、workspace preview 和会话恢复复用。
+
+### 修复
+
+- 修复长期记忆 save 返回 `accepted` 时没有被视为完成 tool receipt，导致 conversation runtime 误判工具调用未完成的问题。
+- 修复 ADK 短期记忆与运行时附件连续性，避免上传文件、memory context 和 runner payload 在多轮会话中丢失。
+- 修复终端执行 allowlist 匹配过复杂、容易误判的问题，统一按共享策略做命令匹配与错误提示。
+- 修复 Hosted UI 上传文件在本地 runtime 中只能看到 `ae-upload://` 引用、无法读取真实内容的问题。
+- 修复 session/event 列表缺少总数和分页字段，导致 UI 无法稳定展示历史会话、历史事件或长任务恢复状态的问题。
+
+### 测试与发布
+
+- 新增模型策略、fallback、流式 fallback、OpenClaw env、Hermes env、LangChain patch、附件恢复、session 分页、Hosted UI 上传文件和终端 allowlist 覆盖测试。
+- 公开发布版本从 `0.6.5` 升级到 `0.6.6`，发布包继续通过 `make public-preflight` 同步 `@kingsoftcloud/ksadk-web@latest` 静态资源并执行 wheel 内容检查；本次发布应先完成 `@kingsoftcloud/ksadk-web@0.2.10` 的 npm release。
+- `make public-preflight` 已覆盖 secret audit、public path audit、全量 pytest、sdist/wheel build 和 `twine check`；0.6.6 wheel/sdist 检查通过。
+- 这是 Hermes/OpenClaw 默认镜像重建前置版本；镜像构建应固定 `KSADK_PACKAGE_SPEC=ksadk==0.6.6`，再走 staging E2E、GitHub Actions / PyPI Trusted Publishing 和环境门禁。
+
 ## [0.6.5] - 2026-06-15
 
 ### 亮点

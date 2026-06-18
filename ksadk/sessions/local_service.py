@@ -80,9 +80,25 @@ class LocalSessionService(BaseSessionService):
         self,
         agent_id: str,
         user_id: Optional[str] = None,
+        offset: Optional[int] = None,
+        limit: Optional[int] = None,
     ) -> list[Session]:
         async with self._lock:
-            return await asyncio.to_thread(self._list_sessions_sync, agent_id, user_id)
+            return await asyncio.to_thread(
+                self._list_sessions_sync,
+                agent_id,
+                user_id,
+                offset,
+                limit,
+            )
+
+    async def count_sessions(
+        self,
+        agent_id: str,
+        user_id: Optional[str] = None,
+    ) -> int:
+        async with self._lock:
+            return await asyncio.to_thread(self._count_sessions_sync, agent_id, user_id)
 
     async def delete_session(self, session_id: str) -> bool:
         async with self._lock:
@@ -121,6 +137,10 @@ class LocalSessionService(BaseSessionService):
     ) -> list[SessionEvent]:
         async with self._lock:
             return await asyncio.to_thread(self._get_events_sync, session_id, offset, limit)
+
+    async def count_events(self, session_id: str) -> int:
+        async with self._lock:
+            return await asyncio.to_thread(self._count_events_sync, session_id)
 
     async def get_state(
         self,
@@ -413,6 +433,8 @@ class LocalSessionService(BaseSessionService):
         self,
         agent_id: str,
         user_id: Optional[str],
+        offset: Optional[int] = None,
+        limit: Optional[int] = None,
     ) -> list[Session]:
         with self._connection() as connection:
             query = f"""
@@ -427,6 +449,15 @@ class LocalSessionService(BaseSessionService):
                 query += " AND user_id = ?"
                 params.append(user_id)
             query += " ORDER BY updated_at DESC, created_at DESC"
+            if limit is not None:
+                query += " LIMIT ?"
+                params.append(limit)
+                if offset is not None:
+                    query += " OFFSET ?"
+                    params.append(offset)
+            elif offset is not None:
+                query += " LIMIT -1 OFFSET ?"
+                params.append(offset)
             rows = connection.execute(query, params).fetchall()
             return [
                 Session(
@@ -446,6 +477,20 @@ class LocalSessionService(BaseSessionService):
                 )
                 for row in rows
             ]
+
+    def _count_sessions_sync(self, agent_id: str, user_id: Optional[str]) -> int:
+        with self._connection() as connection:
+            query = f"""
+                SELECT COUNT(*) AS total
+                FROM {KSADK_SESSIONS_TABLE}
+                WHERE agent_id = ?
+            """
+            params: list[object] = [agent_id]
+            if user_id is not None:
+                query += " AND user_id = ?"
+                params.append(user_id)
+            row = connection.execute(query, params).fetchone()
+            return int(row["total"] if row else 0)
 
     def _delete_session_sync(self, session_id: str) -> bool:
         with self._connection() as connection:
@@ -665,6 +710,14 @@ class LocalSessionService(BaseSessionService):
         finally:
             if owns_connection:
                 connection.close()
+
+    def _count_events_sync(self, session_id: str) -> int:
+        with self._connection() as connection:
+            row = connection.execute(
+                f"SELECT COUNT(*) AS total FROM {KSADK_EVENTS_TABLE} WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            return int(row["total"] if row else 0)
 
     def _get_state_sync(
         self,

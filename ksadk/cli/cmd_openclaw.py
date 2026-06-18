@@ -74,6 +74,7 @@ from ksadk.cli.ui import (
 from ksadk.deployment.agent_access import get_latest_agent_access
 from ksadk.cli.model_catalog import fetch_provider_model_catalog, find_model_in_catalog
 from ksadk.conversations.model_context import normalize_model_metadata
+from ksadk.model_policy import build_runtime_model_policy_env
 from ksadk.builders.container_builder import (
     registry_kind_label,
     resolve_registry_credentials,
@@ -530,7 +531,7 @@ def _strip_provider_prefix(provider_id: str, model_id: str) -> str:
 
 
 def _default_openclaw_model_inputs(provider_id: str, model_id: str) -> list[str]:
-    if str(provider_id or "").strip().lower() == "ksyun" and str(model_id or "").strip().lower() == "glm-5.1":
+    if str(provider_id or "").strip().lower() == "ksyun" and str(model_id or "").strip().lower() in {"glm-5.1", "glm-5.2"}:
         return ["text"]
     return ["text", "image"]
 
@@ -608,13 +609,28 @@ def _apply_openclaw_provider_model_catalog(
     env: Dict[str, str],
     raw_models: list[Any],
 ) -> bool:
-    if not raw_models or str(env.get("OPENCLAW_MODEL_CATALOG_JSON") or "").strip():
+    if not raw_models:
         return False
 
     provider_id = str(env.get("OPENCLAW_MODEL_PROVIDER_ID") or "ksyun").strip() or "ksyun"
     provider_api = str(env.get("OPENCLAW_MODEL_API") or "openai-completions").strip() or "openai-completions"
+    raw_catalog = str(env.get("OPENCLAW_MODEL_CATALOG_JSON") or "").strip()
     catalog: list[Dict[str, Any]] = []
+    if raw_catalog:
+        try:
+            parsed_catalog = json.loads(raw_catalog)
+        except Exception:
+            parsed_catalog = []
+        if isinstance(parsed_catalog, list):
+            catalog = [dict(item) for item in parsed_catalog if isinstance(item, dict)]
+
     seen: set[str] = set()
+    for item in catalog:
+        model_key = str(item.get("id") or item.get("name") or "").strip()
+        if model_key:
+            seen.add(model_key)
+
+    changed = False
     for raw_model in raw_models:
         if not isinstance(raw_model, dict):
             raw_model = {"id": str(raw_model or "").strip()}
@@ -626,12 +642,25 @@ def _apply_openclaw_provider_model_catalog(
         if not item:
             continue
         model_key = str(item["id"])
-        if model_key in seen:
+        existing_index = next(
+            (
+                index
+                for index, existing in enumerate(catalog)
+                if str(existing.get("id") or existing.get("name") or "").strip() == model_key
+            ),
+            None,
+        )
+        if existing_index is not None:
+            merged = {**catalog[existing_index], **item}
+            if merged != catalog[existing_index]:
+                catalog[existing_index] = merged
+                changed = True
             continue
         seen.add(model_key)
         catalog.append(item)
+        changed = True
 
-    if not catalog:
+    if not catalog or not changed:
         return False
     env["OPENCLAW_MODEL_CATALOG_JSON"] = json.dumps(
         catalog,
@@ -727,7 +756,7 @@ def _build_openclaw_env_vars(
         model_api_key
         or _resolve_env("OPENCLAW_MODEL_API_KEY", "OPENAI_API_KEY", "LLM_API_KEY", "MODEL_API_KEY")
     )
-    model = model_preference or "glm-5.1"
+    model = model_preference or "glm-5.2"
     explicit_provider_id = model_provider_id or _resolve_env("OPENCLAW_MODEL_PROVIDER_ID")
     inferred_provider_id = explicit_provider_id
     if not inferred_provider_id and model and "/" in model:
@@ -917,7 +946,8 @@ def _build_openclaw_env_vars(
         if passthrough_value:
             env[passthrough_key] = passthrough_value
 
-    return _normalize_openclaw_gateway_auth_env(env)
+    env = _normalize_openclaw_gateway_auth_env(env)
+    return build_runtime_model_policy_env(env, runtime="openclaw")
 
 
 def _normalize_allowed_origins(raw: str) -> str:

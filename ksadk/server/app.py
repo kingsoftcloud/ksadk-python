@@ -656,10 +656,18 @@ class CreateSessionActionRequest(BaseModel):
 class ListSessionsActionRequest(BaseModel):
     AgentId: str
     UserId: Optional[str] = "user"
+    Page: int = Field(1, ge=1)
+    PageSize: int = Field(20, ge=1, le=200)
 
 
 class SessionIdRequest(BaseModel):
     SessionId: str
+
+
+class ListSessionEventsActionRequest(BaseModel):
+    SessionId: str
+    Offset: Optional[int] = Field(None, ge=0)
+    Limit: Optional[int] = Field(None, ge=1)
 
 
 class ListSessionCheckpointsActionRequest(BaseModel):
@@ -1262,11 +1270,23 @@ async def create_session_action(request: CreateSessionActionRequest):
 @app.post("/agentengine/api/v1/ListSessions")
 async def list_sessions_action(request: ListSessionsActionRequest):
     service = resolve_session_service()
-    sessions = await service.list_sessions(request.AgentId, request.UserId or "user")
+    offset = (request.Page - 1) * request.PageSize
+    sessions = await service.list_sessions(
+        request.AgentId,
+        request.UserId or "user",
+        offset=offset,
+        limit=request.PageSize,
+    )
+    total = await service.count_sessions(request.AgentId, request.UserId or "user")
     session_payloads = [await _session_to_action_payload(session) for session in sessions]
     return _action_response(
         "ListSessions",
-        {"Sessions": session_payloads},
+        {
+            "Sessions": session_payloads,
+            "Total": total,
+            "Page": request.Page,
+            "PageSize": request.PageSize,
+        },
     )
 
 
@@ -1289,12 +1309,22 @@ async def delete_session_action(request: SessionIdRequest):
 
 
 @app.post("/agentengine/api/v1/ListSessionEvents")
-async def list_session_events_action(request: SessionIdRequest):
+async def list_session_events_action(request: ListSessionEventsActionRequest):
     service = resolve_session_service()
-    events = await service.get_events(request.SessionId)
+    events = await service.get_events(
+        request.SessionId,
+        offset=request.Offset,
+        limit=request.Limit,
+    )
+    total = await service.count_events(request.SessionId)
     return _action_response(
         "ListSessionEvents",
-        {"Events": [_event_to_action_payload(event) for event in events]},
+        {
+            "Events": [_event_to_action_payload(event) for event in events],
+            "Total": total,
+            "Offset": request.Offset or 0,
+            "Limit": request.Limit if request.Limit is not None else len(events),
+        },
     )
 
 

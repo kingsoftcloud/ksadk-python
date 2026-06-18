@@ -7,6 +7,8 @@ import pytest
 
 from ksadk.conversations.attachment_storage import AttachmentStorageService
 from ksadk.conversations.attachments import resolve_attachment_storage_path
+from ksadk.conversations.normalize import normalize_parts_content
+from ksadk.server.api_models import FileData, Part
 
 
 @pytest.mark.asyncio
@@ -89,3 +91,79 @@ def test_resolve_attachment_storage_path_restores_missing_local_cache_from_ks3(
 
     assert restored_path == local_path
     assert restored_path.read_bytes() == b"restored"
+
+
+def test_resolve_attachment_storage_path_downloads_hosted_ae_upload_via_kop(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("AGENTENGINE_UI_DIR", str(tmp_path / ".agentengine" / "ui"))
+    calls = []
+
+    class FakeResponse:
+        status_code = 200
+        headers = {
+            "content-type": "text/markdown; charset=utf-8",
+            "content-disposition": 'inline; filename="brief.md"',
+        }
+        content = b"# Brief\n\nHosted attachment body"
+
+    def fake_action_raw_request(self, method, action, *, params=None, **_kwargs):
+        calls.append({"method": method, "action": action, "params": params})
+        return FakeResponse()
+
+    monkeypatch.setattr(
+        "ksadk.api.client.AgentEngineClient._action_raw_request",
+        fake_action_raw_request,
+    )
+
+    restored_path = resolve_attachment_storage_path("ae-upload://hosted123.md")
+
+    assert calls == [
+        {
+            "method": "GET",
+            "action": "AttachmentContent",
+            "params": {"FileUri": "ae-upload://hosted123.md"},
+        }
+    ]
+    assert restored_path is not None
+    assert restored_path.name == "hosted123.md"
+    assert restored_path.read_bytes() == b"# Brief\n\nHosted attachment body"
+
+
+def test_normalize_parts_content_reads_hosted_markdown_attachment_via_kop(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("AGENTENGINE_UI_DIR", str(tmp_path / ".agentengine" / "ui"))
+
+    class FakeResponse:
+        status_code = 200
+        headers = {
+            "content-type": "text/markdown",
+            "content-disposition": 'inline; filename="brief.md"',
+        }
+        content = b"# Brief\n\nHosted attachment body"
+
+    monkeypatch.setattr(
+        "ksadk.api.client.AgentEngineClient._action_raw_request",
+        lambda self, method, action, *, params=None, **_kwargs: FakeResponse(),
+    )
+
+    payload = normalize_parts_content(
+        [
+            Part(
+                fileData=FileData(
+                    fileUri="ae-upload://hosted123.md",
+                    mimeType="text/markdown",
+                    displayName="brief.md",
+                )
+            )
+        ]
+    )
+
+    result = payload["attachment_results"][0]
+    assert result["status"] == "ok"
+    assert result["kind"] == "text"
+    assert result["text"] == "# Brief\n\nHosted attachment body"
+    assert "Hosted attachment body" in payload["content"]

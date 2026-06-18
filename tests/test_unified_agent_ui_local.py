@@ -634,7 +634,11 @@ async def test_upload_file_action_returns_server_handle_and_stores_file(monkeypa
     assert file_data["sizeBytes"] == 5
 
     file_id = file_data["fileUri"].removeprefix("ksadk-upload://")
-    stored_files = list((tmp_path / ".agentengine" / "ui" / "files").glob(f"{file_id}*"))
+    stored_files = [
+        path
+        for path in (tmp_path / ".agentengine" / "ui" / "files").glob(f"{file_id}*")
+        if not path.name.endswith(".meta.json")
+    ]
     assert len(stored_files) == 1
     assert stored_files[0].read_bytes() == b"hello"
 
@@ -1801,4 +1805,3 @@ def test_static_workbench_uses_openai_responses_content_for_inline_attachments()
     assert "filename:" in source
     assert "file_url:" in source
     assert "inlineData: {" not in source
-

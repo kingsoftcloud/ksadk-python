@@ -707,6 +707,39 @@ async def test_list_sessions_projects_heuristic_title_for_existing_fallback_sess
 
 
 @pytest.mark.asyncio
+async def test_runtime_local_list_sessions_returns_page_metadata(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    for index in range(5):
+        await service.create_session(
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id=f"sess-page-{index}",
+        )
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ListSessions",
+            json={
+                "AgentId": "demo-agent",
+                "UserId": "user-1",
+                "Page": 2,
+                "PageSize": 2,
+            },
+        )
+
+    assert response.status_code == 200
+    data = response.json()["Data"]
+    assert data["Page"] == 2
+    assert data["PageSize"] == 2
+    assert data["Total"] == 5
+    assert len(data["Sessions"]) == 2
+
+
+@pytest.mark.asyncio
 async def test_session_actions_do_not_return_inline_attachment_data_in_state(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()
@@ -2068,6 +2101,46 @@ async def test_responses_events_are_visible_through_runtime_local_list_session_e
     assert [event["Author"] for event in message_events] == ["user", "demo-agent"]
     assert message_events[0]["Content"]["parts"][0]["text"] == "hello"
     assert message_events[1]["Content"]["parts"][0]["text"] == "assistant says hi"
+
+
+@pytest.mark.asyncio
+async def test_runtime_local_list_session_events_returns_total_and_page(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    await service.create_session(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-events-page",
+    )
+    for index in range(4):
+        await service.append_event(
+            "sess-events-page",
+            SessionEvent(
+                author="user",
+                event_type="user_message",
+                content={"index": index},
+            ),
+        )
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ListSessionEvents",
+            json={
+                "SessionId": "sess-events-page",
+                "Offset": 1,
+                "Limit": 2,
+            },
+        )
+
+    assert response.status_code == 200
+    data = response.json()["Data"]
+    assert data["Offset"] == 1
+    assert data["Limit"] == 2
+    assert data["Total"] == 4
+    assert [event["SeqId"] for event in data["Events"]] == [2, 3]
 
 
 @pytest.mark.asyncio
