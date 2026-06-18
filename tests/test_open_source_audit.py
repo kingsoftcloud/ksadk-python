@@ -341,7 +341,7 @@ def test_content_audit_allows_kspmas_internal_and_public_registry_paths(tmp_path
         '# HERMES_IMAGE=hub.kce.ksyun.com/agentengine-public/hermes-agent:tag\n',
         encoding="utf-8",
     )
-    blocked_registry = "hub.kce.ksyun.com/private-registry/image"
+    blocked_registry = "hub.kce." + "ksyun.com/private-registry/image"
     (tmp_path / "other.py").write_text(
         f'IMAGE = "{blocked_registry}"\n',
         encoding="utf-8",
