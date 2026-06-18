@@ -27,11 +27,66 @@ from ksadk.deployment.base import (
 )
 from ksadk.deployment.registry import DeployProviderRegistry
 from ksadk.deployment.ui_config import resolve_ui_config, ui_config_to_state_fields
-from ksadk.builders.container_builder import ContainerBuilder
+from ksadk.builders.container_builder import (
+    ContainerBuilder,
+    registry_kind_label,
+    resolve_registry_credentials,
+)
+from ksadk.configs.env_registry import ENV_VAR_REGISTRY
+from ksadk.configs.global_config import get_env_from_global_config
 from ksadk.api import AgentEngineClient, DryRunExit
 
 
 logger = logging.getLogger(__name__)
+
+
+_DEPLOY_PROCESS_ENV_ALLOWLIST = frozenset(
+    {
+        spec.name
+        for spec in ENV_VAR_REGISTRY
+        if spec.module
+        not in {
+            "builders",
+            "cli",
+            "configs",
+            "web",
+        }
+    }
+) | frozenset(
+    {
+        "E2B_API_KEY",
+        "E2B_API_URL",
+        "OPENAI_API_BASE",
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "OPENAI_MODEL_NAME",
+        "SKILL_SPACE_ID",
+        "KSYUN_ACCESS_KEY",
+        "KSYUN_ACCOUNT_ID",
+        "KSYUN_REGION",
+        "KSYUN_SECRET_KEY",
+    }
+)
+_DEPLOY_PROCESS_ENV_PREFIXES = ("KSADK_", "OPENAI_", "KSYUN_", "E2B_")
+_DEPLOY_PROCESS_ENV_DENYLIST = frozenset(
+    {
+        spec.name
+        for spec in ENV_VAR_REGISTRY
+        if spec.module in {"builders", "cli", "configs", "web"}
+    }
+) | frozenset(
+    {
+        "KSADK_GLOBAL_CONFIG_ENV_KEYS",
+        "KSADK_UPDATED_AT",
+        "KSADK_VERSION",
+    }
+)
+
+
+def _should_forward_process_env(name: str) -> bool:
+    if name in _DEPLOY_PROCESS_ENV_DENYLIST:
+        return False
+    return name in _DEPLOY_PROCESS_ENV_ALLOWLIST or name.startswith(_DEPLOY_PROCESS_ENV_PREFIXES)
 
 
 @DeployProviderRegistry.register("serverless")
@@ -54,6 +109,35 @@ class ServerlessProvider(BaseDeployProvider):
 
     def __init__(self, config: Dict[str, Any] = None):
         self.config = config or {}
+
+    @staticmethod
+    def _image_credential_from_env(image_ref: str) -> Optional[Dict[str, str]]:
+        username, password, registry_kind = resolve_registry_credentials(image_ref)
+        if username and password:
+            return {
+                "endpoint": image_ref.split("/", 1)[0],
+                "username": username,
+                "password": password,
+            }
+
+        if password and not username and registry_kind != "personal_kcr":
+            click.secho(
+                f"   ⚠️  检测到 KCR_PASSWORD 但缺少 KCR_USERNAME，已忽略{registry_kind_label(registry_kind)}镜像凭证；"
+                "企业版 KCR 和第三方镜像仓库必须配置 KCR_USERNAME + KCR_PASSWORD",
+                fg="yellow",
+            )
+        elif registry_kind == "personal_kcr":
+            click.secho(
+                "   ⚠️  未配置个人版 KCR 镜像凭证 (KSYUN_ACCOUNT_ID/KCR_PASSWORD)，私有镜像可能无法拉取",
+                fg="yellow",
+            )
+        else:
+            click.secho(
+                f"   ⚠️  未配置{registry_kind_label(registry_kind)}镜像凭证 "
+                "(KCR_USERNAME/KCR_PASSWORD)，私有镜像可能无法拉取",
+                fg="yellow",
+            )
+        return None
 
     @staticmethod
     def _parse_code_artifact_path(artifact_path: str) -> tuple[Optional[str], Optional[str]]:
@@ -101,6 +185,30 @@ class ServerlessProvider(BaseDeployProvider):
                 continue
             env_vars[clean_key] = str(value)
         return env_vars
+
+    @classmethod
+    def _load_deploy_env_vars(
+        cls,
+        project_dir: str | Path,
+        explicit_env_vars: Optional[Dict[str, str]] = None,
+    ) -> tuple[Dict[str, str], bool, int]:
+        """读取部署时注入到托管运行时的环境变量。
+
+        全局配置作为兜底，项目 .env 作为项目级覆盖；真实 .env 文件不会随
+        Code/Container 制品打包，只通过 deploy payload 注入到 Pod 环境变量。
+        """
+        env_vars: Dict[str, str] = dict(get_env_from_global_config())
+        env_file = Path(project_dir) / ".env"
+        project_env_count = 0
+        for key, value in sorted(os.environ.items()):
+            if value and _should_forward_process_env(key):
+                env_vars.setdefault(key, value)
+        if env_file.exists():
+            project_env = cls._load_project_env_vars(env_file)
+            project_env_count = len(project_env)
+            env_vars.update(project_env)
+        env_vars.update(explicit_env_vars or {})
+        return env_vars, env_file.exists(), project_env_count
 
     @staticmethod
     def _persist_build_metadata(package_info: PackageInfo) -> None:
@@ -515,6 +623,7 @@ class ServerlessProvider(BaseDeployProvider):
                         click.echo(f"   执行热更新 (endpoint 保持不变)...")
                         
                         update_data = {
+                            "artifact_type": artifact_type,
                             "artifact_path": artifact_path,
                             "resources": {
                                 "cpu": target.resources.cpu,
@@ -537,15 +646,28 @@ class ServerlessProvider(BaseDeployProvider):
                         
                         if ks3_config:
                             update_data["ks3"] = ks3_config
+                        elif artifact_type == "Container":
+                            image_credential = self._image_credential_from_env(artifact_path)
+                            if image_credential:
+                                update_data["image_credential"] = image_credential
+                                click.echo(
+                                    f"   🔑 镜像凭证: {image_credential['username']}@{image_credential['endpoint']}"
+                                )
 
-                        # 加载本地 .env 并注入到环境变量 (更新时也同步)
-                        env_file = Path(project_dir) / ".env"
-                        env_vars = {}
-                        if env_file.exists():
-                             env_vars = self._load_project_env_vars(env_file)
-                             if env_vars:
-                                 update_data["env_vars"] = env_vars
-                                 click.echo(f"   📦 更新环境变量: {len(env_vars)} 项 from .env")
+                        # 加载全局配置 + 本地 .env，并通过部署参数注入到运行时环境变量。
+                        env_vars, env_file_exists, project_env_count = self._load_deploy_env_vars(
+                            project_dir,
+                            target.extra.get("env_vars") or {},
+                        )
+                        if env_vars:
+                            update_data["env_vars"] = env_vars
+                            if env_file_exists:
+                                click.echo(
+                                    f"   📦 更新环境变量: {len(env_vars)} 项 "
+                                    f"(全局配置 + {project_env_count} 项 from .env)"
+                                )
+                            else:
+                                click.echo(f"   📦 更新环境变量: {len(env_vars)} 项 from 全局配置")
 
                         network_config = self._serialize_network_config(target)
                         if network_config:
@@ -641,28 +763,27 @@ class ServerlessProvider(BaseDeployProvider):
 
                     # Container 模式: 传递镜像凭证
                     if artifact_type == "Container":
-                        # KCR_USERNAME 默认使用 KSYUN_ACCOUNT_ID
-                        kcr_username = os.getenv("KCR_USERNAME", "") or os.getenv("KSYUN_ACCOUNT_ID", "")
-                        kcr_password = os.getenv("KCR_PASSWORD")
-                        kcr_endpoint = os.getenv("KCR_ENDPOINT", "ghcr.io")
+                        image_credential = self._image_credential_from_env(artifact_path)
+                        if image_credential:
+                            request_data["image_credential"] = image_credential
+                            click.echo(
+                                f"   🔑 镜像凭证: {image_credential['username']}@{image_credential['endpoint']}"
+                            )
 
-                        if kcr_username and kcr_password:
-                            request_data["image_credential"] = {
-                                "endpoint": kcr_endpoint,
-                                "username": kcr_username,
-                                "password": kcr_password,
-                            }
-                            click.echo(f"   🔑 镜像凭证: {kcr_username}@{kcr_endpoint}")
+                    # 加载全局配置 + 本地 .env，并通过部署参数注入到运行时环境变量。
+                    env_vars, env_file_exists, project_env_count = self._load_deploy_env_vars(
+                        project_dir,
+                        target.extra.get("env_vars") or {},
+                    )
+                    if env_vars:
+                        if env_file_exists:
+                            click.echo(
+                                f"   📦 加载环境变量: {len(env_vars)} 项 "
+                                f"(全局配置 + {project_env_count} 项 from .env)"
+                            )
                         else:
-                            click.secho("   ⚠️  未配置镜像凭证 (KCR_USERNAME/KCR_PASSWORD)，私有镜像可能无法拉取", fg="yellow")
+                            click.echo(f"   📦 加载环境变量: {len(env_vars)} 项 from 全局配置")
 
-                    # 加载本地 .env 并注入到环境变量
-                    env_file = Path(project_dir) / ".env"
-                    env_vars = {}
-                    if env_file.exists():
-                        env_vars = self._load_project_env_vars(env_file)
-                        click.echo(f"   📦 加载环境变量: {len(env_vars)} 项 from .env")
-                    
                     if env_vars:
                          request_data["env_vars"] = env_vars
 

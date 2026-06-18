@@ -14,11 +14,13 @@ from ksadk.hermes_terminal import (
     TERMINAL_WS_PATH,
     TerminalSize,
     build_start_frame,
+    build_terminal_exec_validator,
     build_terminal_ws_url,
     detect_terminal_size,
     run_hermes_terminal_session,
     validate_terminal_exec_argv,
 )
+from ksadk.terminal_exec_policy import GENERIC_TERMINAL_EXEC_POLICY, TerminalExecPolicy
 
 
 async def run_terminal_session(
@@ -31,6 +33,7 @@ async def run_terminal_session(
     argv: Sequence[str] | None = None,
     cwd: str | None = None,
     options: Mapping[str, Any] | None = None,
+    exec_policy: TerminalExecPolicy | None = None,
     stdin: Any | None = None,
     stdout: Any | None = None,
 ) -> int:
@@ -47,7 +50,11 @@ async def run_terminal_session(
         options=options,
         stdin=stdin,
         stdout=stdout,
-        exec_argv_validator=validate_terminal_exec_argv,
+        exec_argv_validator=(
+            build_terminal_exec_validator(exec_policy)
+            if exec_policy is not None and exec_policy != GENERIC_TERMINAL_EXEC_POLICY
+            else validate_terminal_exec_argv
+        ),
     )
 
 

@@ -4,6 +4,7 @@ from ksadk.tools.gateway import (
     ToolGateway,
     ToolPolicy,
     approval_interrupt_info_from_result,
+    build_tool_receipt_idempotency_key,
     default_tool_gateway,
     tool_policy_requires_approval,
 )
@@ -44,6 +45,28 @@ def test_tool_gateway_runs_approved_call_in_strict_mode(monkeypatch):
         "ok": True,
         "value": 3,
     }
+
+
+def test_tool_receipt_idempotency_key_is_stable_for_argument_order():
+    left = build_tool_receipt_idempotency_key(
+        session_id="sess-1",
+        run_id="run-1",
+        checkpoint_id="ckpt-1",
+        tool_call_id="call-1",
+        tool_name="write_workspace_file",
+        tool_args={"content": "hello", "path": "notes.txt"},
+    )
+    right = build_tool_receipt_idempotency_key(
+        session_id="sess-1",
+        run_id="run-1",
+        checkpoint_id="ckpt-1",
+        tool_call_id="call-1",
+        tool_name="write_workspace_file",
+        tool_args={"path": "notes.txt", "content": "hello"},
+    )
+
+    assert left == right
+    assert left.startswith("tool_receipt:")
 
 
 def test_approval_interrupt_info_from_result_normalizes_payload():

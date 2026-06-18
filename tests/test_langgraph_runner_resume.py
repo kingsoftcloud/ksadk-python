@@ -12,16 +12,33 @@ class _DummyAgent:
         self.last_ainvoke_state = None
         self.last_astream_state = None
         self.last_ainvoke_context = None
+        self.last_ainvoke_config = None
+        self.last_astream_config = None
+        self.state_config = None
 
     async def ainvoke(self, state, config=None, context=None):
         self.last_ainvoke_state = state
         self.last_ainvoke_context = context
+        self.last_ainvoke_config = config
         return {"messages": [{"content": "ok"}]}
+
+    def get_state(self, config):
+        del config
+        return SimpleNamespace(config=self.state_config)
 
     async def astream_events(self, state, version="v2", config=None):
         self.last_astream_state = state
+        self.last_astream_config = config
         if False:
             yield {}
+
+
+class _AsyncStateAgent(_DummyAgent):
+    async def aget_state(self, config):
+        del config
+        return SimpleNamespace(config=self.state_config)
+
+    get_state = None
 
 
 class _Chunk:
@@ -110,6 +127,32 @@ class _ToolThenAnswerStreamingAgent(_DummyAgent):
         }
 
 
+class _InlineThinkTagStreamingAgent(_DummyAgent):
+    async def astream_events(self, state, version="v2", config=None):
+        self.last_astream_state = state
+        yield {
+            "event": "on_chat_model_stream",
+            "data": {"chunk": _Chunk(content="<think>先分析需求。</think>这是最终回复。")},
+        }
+
+
+class _SplitInlineThinkTagStreamingAgent(_DummyAgent):
+    async def astream_events(self, state, version="v2", config=None):
+        self.last_astream_state = state
+        yield {
+            "event": "on_chat_model_stream",
+            "data": {"chunk": _Chunk(content="<think>先")},
+        }
+        yield {
+            "event": "on_chat_model_stream",
+            "data": {"chunk": _Chunk(content="分析需求。</think>这是")},
+        }
+        yield {
+            "event": "on_chat_model_stream",
+            "data": {"chunk": _Chunk(content="最终回复。")},
+        }
+
+
 def _make_runner(module=None) -> LangGraphRunner:
     detection = SimpleNamespace(entry_point="src/agent.py", agent_variable="root_agent")
     runner = LangGraphRunner(detection, ".")
@@ -140,6 +183,18 @@ def _make_tool_dict_output_streaming_runner() -> LangGraphRunner:
 def _make_tool_then_answer_streaming_runner() -> LangGraphRunner:
     runner = _make_runner()
     runner._agent = _ToolThenAnswerStreamingAgent()
+    return runner
+
+
+def _make_inline_think_tag_streaming_runner() -> LangGraphRunner:
+    runner = _make_runner()
+    runner._agent = _InlineThinkTagStreamingAgent()
+    return runner
+
+
+def _make_split_inline_think_tag_streaming_runner() -> LangGraphRunner:
+    runner = _make_runner()
+    runner._agent = _SplitInlineThinkTagStreamingAgent()
     return runner
 
 
@@ -229,6 +284,186 @@ async def test_stream_resume_uses_command():
 
 
 @pytest.mark.asyncio
+async def test_invoke_checkpoint_resume_uses_checkpoint_id_and_none_input():
+    runner = _make_runner()
+
+    result = await runner.invoke(
+        {
+            "session_id": "sess-1",
+            "checkpoint_resume": True,
+            "framework_ref": {
+                "langgraph": {
+                    "thread_id": "tenant-a:agent-b:sess-1",
+                    "checkpoint_id": "ckpt-123",
+                }
+            },
+        }
+    )
+
+    assert result["output"] == "ok"
+    assert runner._agent.last_ainvoke_state is None
+    assert runner._agent.last_ainvoke_config["configurable"] == {
+        "thread_id": "tenant-a:agent-b:sess-1",
+        "checkpoint_id": "ckpt-123",
+    }
+
+
+@pytest.mark.asyncio
+async def test_invoke_checkpoint_resume_preserves_checkpoint_namespace_when_present():
+    runner = _make_runner()
+
+    await runner.invoke(
+        {
+            "session_id": "sess-1",
+            "checkpoint_resume": True,
+            "framework_ref": {
+                "langgraph": {
+                    "thread_id": "tenant-a:agent-b:sess-1",
+                    "checkpoint_ns": "subgraph-ns",
+                    "checkpoint_id": "ckpt-123",
+                }
+            },
+        }
+    )
+
+    assert runner._agent.last_ainvoke_config["configurable"] == {
+        "thread_id": "tenant-a:agent-b:sess-1",
+        "checkpoint_ns": "subgraph-ns",
+        "checkpoint_id": "ckpt-123",
+    }
+
+
+@pytest.mark.asyncio
+async def test_invoke_reports_latest_langgraph_checkpoint_ref_from_state_config():
+    runner = _make_runner()
+    runner._agent.state_config = {
+        "configurable": {
+            "thread_id": "tenant-a:agent-b:sess-1",
+            "checkpoint_id": "ckpt-after",
+        }
+    }
+
+    result = await runner.invoke({"session_id": "tenant-a:agent-b:sess-1", "input": "hello"})
+
+    assert result["metadata"]["agentengine"] == {
+        "framework": "langgraph",
+        "framework_ref": {
+            "langgraph": {
+                "thread_id": "tenant-a:agent-b:sess-1",
+                "checkpoint_id": "ckpt-after",
+            }
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_invoke_reports_checkpoint_namespace_from_state_config_when_present():
+    runner = _make_runner()
+    runner._agent.state_config = {
+        "configurable": {
+            "thread_id": "tenant-a:agent-b:sess-1",
+            "checkpoint_ns": "subgraph-ns",
+            "checkpoint_id": "ckpt-after",
+        }
+    }
+
+    result = await runner.invoke({"session_id": "tenant-a:agent-b:sess-1", "input": "hello"})
+
+    assert result["metadata"]["agentengine"]["framework_ref"]["langgraph"] == {
+        "thread_id": "tenant-a:agent-b:sess-1",
+        "checkpoint_ns": "subgraph-ns",
+        "checkpoint_id": "ckpt-after",
+    }
+
+
+@pytest.mark.asyncio
+async def test_invoke_reports_latest_langgraph_checkpoint_ref_from_async_state_config():
+    runner = _make_runner()
+    runner._agent = _AsyncStateAgent()
+    runner._agent.state_config = {
+        "configurable": {
+            "thread_id": "tenant-a:agent-b:sess-async",
+            "checkpoint_id": "ckpt-async",
+        }
+    }
+
+    result = await runner.invoke({"session_id": "tenant-a:agent-b:sess-async", "input": "hello"})
+
+    assert result["metadata"]["agentengine"] == {
+        "framework": "langgraph",
+        "framework_ref": {
+            "langgraph": {
+                "thread_id": "tenant-a:agent-b:sess-async",
+                "checkpoint_id": "ckpt-async",
+            }
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_stream_checkpoint_resume_uses_checkpoint_id_and_none_input():
+    runner = _make_runner()
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "sess-1",
+                "checkpoint_resume": True,
+                "framework_ref": {
+                    "langgraph": {
+                        "checkpoint_id": "ckpt-456",
+                    }
+                },
+            }
+        )
+    ]
+
+    assert chunks and chunks[-1]["type"] == "final"
+    assert runner._agent.last_astream_state is None
+    assert runner._agent.last_astream_config["configurable"] == {
+        "thread_id": "sess-1",
+        "checkpoint_id": "ckpt-456",
+    }
+
+
+@pytest.mark.asyncio
+async def test_stream_reports_latest_langgraph_checkpoint_ref_from_state_config():
+    runner = _make_streaming_runner()
+    runner._agent.state_config = {
+        "configurable": {
+            "thread_id": "tenant-a:agent-b:sess-1",
+            "checkpoint_id": "ckpt-stream",
+        }
+    }
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "tenant-a:agent-b:sess-1",
+                "input": "hello",
+            }
+        )
+    ]
+
+    assert chunks[-1] == {
+        "type": "checkpoint",
+        "metadata": {
+            "agentengine": {
+                "framework": "langgraph",
+                "framework_ref": {
+                    "langgraph": {
+                        "thread_id": "tenant-a:agent-b:sess-1",
+                        "checkpoint_id": "ckpt-stream",
+                    }
+                },
+            }
+        },
+    }
+
+
+@pytest.mark.asyncio
 async def test_stream_does_not_mix_reasoning_into_final_text():
     runner = _make_streaming_runner()
 
@@ -267,6 +502,48 @@ async def test_stream_ignores_content_when_chunk_duplicates_reasoning():
         {"delta": "先分析需求。", "type": "thinking"},
         {"delta": "这是最终回复。", "type": "text"},
     ]
+
+
+@pytest.mark.asyncio
+async def test_stream_extracts_inline_think_tags_from_content():
+    runner = _make_inline_think_tag_streaming_runner()
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "s1",
+                "input": "写一个python快排的示例",
+            }
+        )
+    ]
+
+    assert chunks == [
+        {"delta": "先分析需求。", "type": "thinking"},
+        {"delta": "这是最终回复。", "type": "text"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_stream_extracts_split_inline_think_tags_from_content():
+    runner = _make_split_inline_think_tag_streaming_runner()
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "s1",
+                "input": "写一个python快排的示例",
+            }
+        )
+    ]
+
+    thinking_deltas = [chunk["delta"] for chunk in chunks if chunk["type"] == "thinking"]
+    text_deltas = [chunk["delta"] for chunk in chunks if chunk["type"] == "text"]
+
+    assert thinking_deltas == ["先分析需求。"]
+    assert "".join(text_deltas) == "这是最终回复。"
+    assert all("<think" not in chunk.get("delta", "") for chunk in chunks)
 
 
 @pytest.mark.asyncio

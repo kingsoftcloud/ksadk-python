@@ -2,8 +2,10 @@
 通用常量定义
 """
 
-# Serverless Endpoint (public control plane)
-DEFAULT_SERVERLESS_ENDPOINT = "https://aicp.api.ksyun.com"
+# Serverless Endpoint (默认内网预发环境)
+DEFAULT_SERVERLESS_ENDPOINT = (
+    "http://kmr.pre-online.inner.api.ksyun.com"
+)
 
 # KS3 Region 映射表
 # 用户输入的 region (如 cn-beijing-6) -> (外网endpoint, 内网endpoint, region_code)

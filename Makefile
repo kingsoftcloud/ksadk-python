@@ -1,7 +1,7 @@
 # AgentEngine Makefile
 # 用于同步 KsADK Web static 和管理项目
 
-.PHONY: help install build-webui sync-static sync-ksadk-web-static webui clean clean-cache clean-dist clean-static clean-offline dev dev-webui dev-backend test test-webui publish publish-test open-source-audit open-source-audit-public-repo open-source-audit-dist open-source-audit-ksadk-python-export open-source-audit-ksadk-web open-source-smoke-install open-source-smoke-ksadk-web open-source-review open-source-review-bundle open-source-review-bundle-verify open-source-approval-check open-source-publication-plan open-source-publication-state public-status public-sync-check public-secret-audit public-audit public-test public-build-check public-preflight public-publish-check public-release-tag public-review public-docs-build public-docs-serve public-docs-audit
+.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-docs-build public-test public-build-check public-preflight public-publish-check public-release-tag public-review openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size docs-check-wiki docs-prepare-source docs-docker-build docs-docker-push docs-helm-lint docs-helm-template docs-deploy docs-deploy-all docs-status docs-logs sync-ksadk-web-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend
 
 # 默认目标
 help:
@@ -9,17 +9,14 @@ help:
 	@echo "  \033[1;36m金山云 AgentEngine\033[0m 开发工具"
 	@echo ""
 	@echo "  \033[1;32m开发命令:\033[0m"
-	@echo "    make install        安装 Python 开发依赖"
-	@echo "    make dev            启动本地 SDK Web 服务"
+	@echo "    make install        安装 Python 依赖"
+	@echo "    make dev            启动本地后端和已打包 Web UI"
 	@echo "    make test           运行测试"
 	@echo ""
-	@echo "  \033[1;32mWeb UI 静态产物:\033[0m"
+	@echo "  \033[1;32mWeb UI 构建:\033[0m"
 	@echo "    make sync-ksadk-web-static KSADK_WEB_VERSION=latest"
 	@echo "                         从 @kingsoftcloud/ksadk-web npm 包同步 static"
-	@echo "    make build-webui    从 npm 包同步 static（兼容入口）"
-	@echo "    make sync-static    从 npm 包同步 static（兼容入口）"
-	@echo "    make webui          从 npm 包同步已打包的 Web UI 静态产物"
-	@echo "                         可编辑 Web UI 源码位于 https://github.com/kingsoftcloud/ksadk-web"
+	@echo "    make build-frontend 同步 ksadk-web static"
 	@echo ""
 	@echo "  \033[1;32m版本管理:\033[0m"
 	@echo "    make version         显示当前版本"
@@ -32,23 +29,12 @@ help:
 	@echo "    make build           构建 Python 包"
 	@echo "    make release V=x.x.x 指定版本构建"
 	@echo "    make publish         发布到 PyPI"
-	@echo "    make open-source-audit  运行开源公开产物审计"
-		@echo "    make open-source-audit-dist  审计 dist/ 中的 sdist/wheel 文件清单"
-		@echo "    make open-source-audit-ksadk-python-export  生成并审计 ksadk-python 清洁导出候选仓"
-		@echo "    make open-source-audit-ksadk-web  生成并审计 KSADK Web 候选仓"
-		@echo "    make open-source-smoke-install  在干净 venv 安装 wheel 并检查 CLI"
-		@echo "    make open-source-smoke-ksadk-web  在独立候选仓中测试并构建 KSADK Web"
-	@echo "    make open-source-review  运行开源候选本地审核验证"
-	@echo "    make open-source-review-bundle  生成本地维护者审核包"
-	@echo "    make open-source-approval-check  校验公开发布审批记录是否完整"
-	@echo "    make open-source-publication-plan  生成审批后的 GitHub 导入命令计划"
-	@echo "    make open-source-publication-state  只读检查 GitHub/Pages/PyPI 外部发布状态"
-	@echo "    make open-source-review-bundle-verify  校验本地开源审核包完整性"
 	@echo ""
 	@echo "  \033[1;32m公开发布门禁:\033[0m"
 	@echo "    make public-status        查看公开发布相关状态"
+	@echo "    make public-init-worktree 初始化/校验 .worktrees/public-main"
 	@echo "    make public-preflight     GitHub/PyPI/Release 前必须通过的本地门禁"
-	@echo "    make public-release-tag V=x.y.z  在 GitHub main 对齐后创建公开 release 留痕 tag"
+	@echo "    make public-release-tag V=x.y.z  创建公开 release 留痕 tag"
 	@echo "    make public-review        公开候选审核入口"
 	@echo "    make public-publish-check 发布状态核对"
 	@echo ""
@@ -60,9 +46,14 @@ help:
 	@echo "    make offline-windows     Windows x64 离线包"
 	@echo "    make offline-all         打包所有平台"
 	@echo ""
-	@echo "  \033[1;32m公开文档站:\033[0m"
-	@echo "    make public-docs-build  构建 GitHub Pages 候选文档站"
-	@echo "    make public-docs-audit  审计 GitHub Pages 候选文件清单"
+	@echo "  \033[1;32mAgentEngine 镜像:\033[0m"
+	@echo "    Hermes / OpenClaw / Skill Runtime 镜像已迁移到内部 agentengine-images 仓库"
+	@echo "    可设置 AGENTENGINE_IMAGES_DIR=../agentengine-images 后继续使用兼容入口"
+	@echo ""
+	@echo "  \033[1;32mzread 文档站:\033[0m"
+	@echo "    make docs-deploy-all   构建原生 zread 文档镜像 + 推送 + 部署到预发"
+	@echo "    make docs-status       查看预发文档站状态"
+	@echo "    make docs-deploy-all ENV=online DOCS_VERSION=x  # 部署线上"
 	@echo ""
 	@echo "  \033[1;32m清理:\033[0m"
 	@echo "    make clean          清理构建产物和本地测试缓存"
@@ -80,40 +71,11 @@ install-python:
 	@echo "📦 安装 Python 依赖..."
 	pip install -e ".[dev]"
 
-install-webui:
-	@echo "ℹ️  Web UI 源码位于独立仓库: https://github.com/kingsoftcloud/ksadk-web"
-	@echo "   ksadk-python 公开仓只包含已打包静态产物。"
-
 # ============================================================
 # Web UI static 同步
 # ============================================================
 
 STATIC_DIR = ksadk/server/static
-KSADK_WEB_VERSION ?= latest
-KSADK_WEB_PACKAGE ?= @kingsoftcloud/ksadk-web
-KSADK_WEB_TARBALL_NAME := kingsoftcloud-ksadk-web-$(patsubst v%,%,$(KSADK_WEB_VERSION)).tgz
-KSADK_WEB_RELEASE_URL ?=
-KSADK_WEB_CACHE_DIR ?= .cache/ksadk-web
-OPEN_SOURCE_SMOKE_VENV ?= /tmp/ksadk-open-source-smoke
-OPEN_SOURCE_SMOKE_WHEEL ?= dist/ksadk-$(VERSION)-py3-none-any.whl
-
-sync-ksadk-web-static:
-	@echo "Sync KsADK Web static assets from $(KSADK_WEB_PACKAGE)@$(KSADK_WEB_VERSION)"
-	@rm -rf "$(KSADK_WEB_CACHE_DIR)/package"
-	@mkdir -p "$(KSADK_WEB_CACHE_DIR)" "$(STATIC_DIR)"
-	@if [ -n "$(KSADK_WEB_RELEASE_URL)" ]; then \
-		echo "Using explicit KSADK_WEB_RELEASE_URL=$(KSADK_WEB_RELEASE_URL)"; \
-		curl -fL --retry 3 --retry-delay 2 --retry-all-errors "$(KSADK_WEB_RELEASE_URL)" -o "$(KSADK_WEB_CACHE_DIR)/$(KSADK_WEB_TARBALL_NAME)"; \
-		echo "$(KSADK_WEB_TARBALL_NAME)" > "$(KSADK_WEB_CACHE_DIR)/.tarball-name"; \
-	else \
-		npm pack "$(KSADK_WEB_PACKAGE)@$(patsubst v%,%,$(KSADK_WEB_VERSION))" --pack-destination "$(KSADK_WEB_CACHE_DIR)" > "$(KSADK_WEB_CACHE_DIR)/.tarball-name"; \
-	fi
-	tar -xzf "$(KSADK_WEB_CACHE_DIR)/$$(cat "$(KSADK_WEB_CACHE_DIR)/.tarball-name")" -C "$(KSADK_WEB_CACHE_DIR)"
-	@test -d "$(KSADK_WEB_CACHE_DIR)/package/dist-ksadk" || (echo "ERROR: dist-ksadk missing in $$(cat "$(KSADK_WEB_CACHE_DIR)/.tarball-name")" && exit 1)
-	@rm -rf "$(STATIC_DIR)"
-	@mkdir -p "$(STATIC_DIR)"
-	cp -R "$(KSADK_WEB_CACHE_DIR)/package/dist-ksadk/." "$(STATIC_DIR)/"
-	@echo "Synced KsADK Web $(KSADK_WEB_VERSION) static assets into $(STATIC_DIR)"
 
 build-webui sync-static webui: sync-ksadk-web-static
 	@echo "Deprecated target: Web UI is sourced from $(KSADK_WEB_PACKAGE), not local source."
@@ -123,16 +85,11 @@ build-webui sync-static webui: sync-ksadk-web-static
 # ============================================================
 
 dev:
-	@echo "🚀 启动本地 SDK Web 服务..."
-	@echo "   URL: http://localhost:8000"
+	@echo "🚀 启动开发服务器..."
+	@echo "   后端: http://localhost:8000"
 	@echo ""
 	@echo "使用 Ctrl+C 停止服务"
 	python -m ksadk.cli web .
-
-dev-webui:
-	@echo "ℹ️  Web UI 开发服务器请在独立仓库运行:"
-	@echo "   git clone https://github.com/kingsoftcloud/ksadk-web"
-	@echo "   cd ksadk-web && npm ci && npm run dev"
 
 dev-backend:
 	@echo "🔧 启动后端开发服务器..."
@@ -145,231 +102,6 @@ dev-backend:
 test:
 	@echo "🧪 运行 Python 测试..."
 	pytest tests/ -v
-
-open-source-audit: open-source-audit-public-repo
-
-open-source-audit-public-repo:
-	@echo "🔎 生成并审计 ksadk-python 清洁导出候选仓..."
-	@rm -rf /tmp/ksadk-python-export-candidate
-	@python3 scripts/prepare_ksadk_python_export.py --output-dir /tmp/ksadk-python-export-candidate --json > /tmp/ksadk-python-export-candidate.json
-	@python3 scripts/open_source_audit.py --target public-repo --root /tmp/ksadk-python-export-candidate
-
-open-source-audit-dist:
-	@echo "🔎 审计 sdist/wheel 发布产物..."
-	@python3 scripts/audit_release_artifacts.py dist
-
-open-source-audit-ksadk-python-export:
-	@echo "🔎 生成并审计 ksadk-python 清洁导出候选仓..."
-	@rm -rf /tmp/ksadk-python-export-candidate
-	@python3 scripts/prepare_ksadk_python_export.py --output-dir /tmp/ksadk-python-export-candidate --json > /tmp/ksadk-python-export-candidate.json
-	@python3 scripts/open_source_audit.py --target public-repo --root /tmp/ksadk-python-export-candidate
-
-open-source-audit-ksadk-web:
-	@echo "🔎 生成并审计 ksadk-web 候选仓..."
-	@rm -rf /tmp/ksadk-web-export-candidate
-	@python3 scripts/prepare_ksadk_web_export.py --output-dir /tmp/ksadk-web-export-candidate --json > /tmp/ksadk-web-export-candidate.json
-	@python3 scripts/open_source_audit.py --target ksadk-web-candidate --root /tmp/ksadk-web-export-candidate
-
-open-source-smoke-install:
-	@echo "🧪 在干净 venv 中安装 wheel 并检查 CLI..."
-	@if [ ! -f "$(OPEN_SOURCE_SMOKE_WHEEL)" ]; then \
-		echo "❌ 找不到 $(OPEN_SOURCE_SMOKE_WHEEL)，请先运行 uv build"; \
-		exit 1; \
-	fi
-	@rm -rf "$(OPEN_SOURCE_SMOKE_VENV)"
-	@python3 -m venv "$(OPEN_SOURCE_SMOKE_VENV)"
-	@"$(OPEN_SOURCE_SMOKE_VENV)/bin/python" -m pip install --upgrade pip >/tmp/ksadk-open-source-smoke-pip.log
-	@"$(OPEN_SOURCE_SMOKE_VENV)/bin/python" -m pip install "$(OPEN_SOURCE_SMOKE_WHEEL)" >/tmp/ksadk-open-source-smoke-install.log
-	@"$(OPEN_SOURCE_SMOKE_VENV)/bin/agentengine" --help >/tmp/ksadk-open-source-smoke-agentengine-help.txt
-	@"$(OPEN_SOURCE_SMOKE_VENV)/bin/agentengine" web --help >/tmp/ksadk-open-source-smoke-agentengine-web-help.txt
-	@echo "✅ wheel 安装 smoke 通过：agentengine --help 与 agentengine web --help 均可用"
-
-open-source-smoke-ksadk-web:
-	@echo "🧪 在独立候选仓中测试并构建 KSADK Web..."
-	@rm -rf /tmp/ksadk-web-export-candidate
-	@python3 scripts/prepare_ksadk_web_export.py --output-dir /tmp/ksadk-web-export-candidate --json > /tmp/ksadk-web-export-candidate.json
-	@cd /tmp/ksadk-web-export-candidate && npm ci
-	@cd /tmp/ksadk-web-export-candidate && npm test
-	@cd /tmp/ksadk-web-export-candidate && npm run build:ksadk
-	@cd /tmp/ksadk-web-export-candidate && npm run build:hosted
-	@cd /tmp/ksadk-web-export-candidate && npm audit --audit-level=moderate
-	@echo "✅ KSADK Web 独立候选仓测试、双构建与 npm audit 通过"
-
-open-source-review: public-preflight open-source-audit-ksadk-python-export open-source-audit-ksadk-web public-docs-audit open-source-audit-dist open-source-smoke-install
-	@echo "✅ 开源候选本地审核验证完成"
-
-open-source-review-bundle:
-	@echo "📦 生成本地开源审核包..."
-	@python3 scripts/prepare_open_source_review_bundle.py
-	@$(MAKE) open-source-review-bundle-verify
-
-open-source-review-bundle-verify:
-	@echo "🔎 校验本地开源审核包..."
-	@python3 scripts/verify_open_source_review_bundle.py
-
-open-source-approval-check:
-	@echo "🔐 校验公开发布审批记录..."
-	@python3 scripts/check_approval_record.py $(if $(APPROVAL_RECORD),--approval-record "$(APPROVAL_RECORD)",)
-
-open-source-publication-plan:
-	@echo "🧭 生成审批后的 GitHub 导入命令计划..."
-	@python3 scripts/plan_github_publication.py --output /tmp/ksadk-open-source-review-bundle/github-publication-plan.md
-
-open-source-publication-state:
-	@echo "🔎 只读检查公开发布外部状态..."
-	@python3 scripts/check_publication_state.py --phase "$(PUBLIC_PUBLISH_PHASE)" --version "$(VERSION)"
-
-public-docs-build:
-	@echo "📚 构建 GitHub Pages 候选文档站..."
-	@uv run --extra dev python -m mkdocs build --strict
-
-public-docs-serve:
-	@echo "🌐 启动公开文档站预览..."
-	@uv run --extra dev python -m mkdocs serve
-
-public-docs-audit: public-docs-build
-	@echo "🔎 审计 GitHub Pages 候选文档站..."
-	@find site -type f | sed 's|^site/||' | python3 scripts/open_source_audit.py --target github-pages --file-list -
-
-PUBLIC_BRANCH ?= main
-PUBLIC_REPO ?= https://github.com/kingsoftcloud/ksadk-python
-PUBLIC_DOCS_URL ?= https://kingsoftcloud.github.io/ksadk-python/
-PUBLIC_PYPI_PROJECT ?= ksadk
-PUBLIC_ALIAS_PYPI_PROJECT ?= agentengine-sdk-python
-PUBLIC_RELEASE_TAG ?= v$(V)
-PUBLIC_PUBLISH_PHASE ?= pre-publish
-
-public-status:
-	@echo "==> public candidate"
-	@git status --short --branch
-	@echo ""
-	@echo "==> remotes"
-	@git remote -v
-	@echo ""
-	@echo "==> configured public targets"
-	@echo "PUBLIC_BRANCH=$(PUBLIC_BRANCH)"
-	@echo "PUBLIC_REPO=$(PUBLIC_REPO)"
-	@echo "PUBLIC_DOCS_URL=$(PUBLIC_DOCS_URL)"
-	@echo "PUBLIC_PYPI_PROJECT=$(PUBLIC_PYPI_PROJECT)"
-	@echo "PUBLIC_ALIAS_PYPI_PROJECT=$(PUBLIC_ALIAS_PYPI_PROJECT)"
-
-public-sync-check:
-	@echo "==> public candidate branch policy"
-	@branch=$$(git branch --show-current); \
-	if [ -z "$$branch" ] && [ "$$GITHUB_ACTIONS" = "true" ]; then \
-		case "$$GITHUB_REF" in \
-			refs/tags/v*|refs/heads/$(PUBLIC_BRANCH)) ;; \
-			*) \
-				echo "❌ GitHub Actions public gate must run from refs/tags/v* or refs/heads/$(PUBLIC_BRANCH): $$GITHUB_REF"; \
-				exit 1; \
-				;; \
-		esac; \
-	else \
-		case "$$branch" in \
-			$(PUBLIC_BRANCH)|release/public-*|review/public-*|open-source/*) ;; \
-			*) \
-				echo "❌ 当前分支不是公开 main 或公开候选分支: $$branch"; \
-				echo "   公开候选应在 release/public-x.y.z、open-source/* 或等价审核分支运行门禁。"; \
-				exit 1; \
-				;; \
-		esac; \
-	fi
-	@if [ -f ".pypirc" ]; then \
-		echo "❌ 仓库根目录存在 .pypirc，必须删除后再进入公开流程"; \
-		exit 1; \
-	fi
-	@echo "✅ public branch policy passed"
-
-public-secret-audit: public-sync-check
-	@echo "==> secret and sensitive-file audit"
-	@if git ls-files | grep -E '(^|/)(\.pypirc|kubeconfig|.*\.kubeconfig|id_rsa|id_ed25519)$$'; then \
-		echo "❌ 发现禁止跟踪的敏感文件"; \
-		exit 1; \
-	fi
-	@pattern='pypi-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE KEY|SecretAccessKey[[:space:]]*[:=][[:space:]]*[^<[:space:]]+'; \
-	if command -v rg >/dev/null 2>&1; then \
-		rg -n --hidden -S --glob '!.git/**' --glob '!node_modules/**' --glob '!dist/**' --glob '!build/**' --glob '!*.egg-info/**' "$$pattern" .; \
-	else \
-		grep -RInE --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=build --exclude-dir='*.egg-info' "$$pattern" .; \
-	fi; \
-	status=$$?; \
-	if [ $$status -eq 0 ]; then \
-		echo "❌ secret pattern audit failed"; \
-		exit 1; \
-	elif [ $$status -gt 1 ]; then \
-		echo "❌ secret pattern audit command failed"; \
-		exit $$status; \
-	fi
-	@echo "✅ secret audit passed"
-
-public-audit: public-secret-audit
-	@echo "==> public source audit"
-	@blocked=$$(git ls-files | grep -E '^(\.pypirc|docs/internal/|\.zread/(wiki|site)/)' || true); \
-	if [ -n "$$blocked" ]; then \
-		echo "❌ blocked tracked paths:"; \
-		echo "$$blocked"; \
-		exit 1; \
-	fi
-	@$(MAKE) open-source-audit-public-repo
-	@echo "✅ public source audit passed"
-
-public-test:
-	@echo "==> public tests"
-	@uv run --extra dev pytest tests/test_open_source_audit.py tests/test_public_positioning_docs.py tests/test_prepare_ksadk_python_export.py tests/test_prepare_ksadk_web_export.py tests/test_runtime_common_packaging.py tests/test_tracing_setup_otlp.py tests/test_check_publication_state.py tests/test_check_approval_record.py tests/test_public_release_gates.py tests/test_markdown_repair.py tests/test_conversation_runtime.py tests/test_server_session_app.py -q
-
-public-build-check: clean-dist sync-ksadk-web-static
-	@echo "==> build and twine check"
-	@uv build
-	@uv run --extra dev pytest tests/test_runtime_common_packaging.py::test_built_wheel_excludes_web_ui_node_modules -q
-	@uv run --extra dev python -m twine check dist/*
-
-public-preflight: public-audit public-build-check public-test public-docs-build
-	@git diff --check
-	@$(MAKE) open-source-audit-dist
-	@echo "✅ public preflight passed"
-
-public-publish-check:
-	@echo "==> publication state check"
-	@if [ -f "scripts/check_publication_state.py" ]; then \
-		uv run python scripts/check_publication_state.py --phase "$(PUBLIC_PUBLISH_PHASE)" --version "$(VERSION)"; \
-	else \
-		echo "⚠️  scripts/check_publication_state.py 不存在，执行基础 HTTP 检查"; \
-		python3 -c 'import json, urllib.request; targets={"repo":"$(PUBLIC_REPO)","docs":"$(PUBLIC_DOCS_URL)","pypi":"https://pypi.org/pypi/$(PUBLIC_PYPI_PROJECT)/json","alias_pypi":"https://pypi.org/pypi/$(PUBLIC_ALIAS_PYPI_PROJECT)/json"}; [print("%s: HTTP %s%s" % (name, resp.status, ("\n  version=%s" % json.load(resp)["info"].get("version")) if name.endswith("pypi") else "")) for name, url in targets.items() for resp in [urllib.request.urlopen(url, timeout=20)]]'; \
-	fi
-
-public-release-tag: open-source-approval-check public-preflight public-publish-check
-ifndef V
-	$(error ❌ 请指定版本号，例如: make public-release-tag V=$(VERSION))
-endif
-	@branch=$$(git branch --show-current); \
-	if [ "$$branch" != "$(PUBLIC_BRANCH)" ]; then \
-		echo "❌ public release tag 必须在公开 $(PUBLIC_BRANCH) 分支创建，当前分支是 $$branch"; \
-		echo "   请先完成维护者 review，并将已审核候选推送到 GitHub $(PUBLIC_BRANCH)。"; \
-		exit 1; \
-	fi
-	@if ! git rev-parse --verify "github/$(PUBLIC_BRANCH)" >/dev/null 2>&1; then \
-		echo "❌ 找不到 github/$(PUBLIC_BRANCH)，请先 git fetch github $(PUBLIC_BRANCH)"; \
-		exit 1; \
-	fi
-	@if [ "$$(git rev-parse HEAD)" != "$$(git rev-parse github/$(PUBLIC_BRANCH))" ]; then \
-		echo "❌ 当前 HEAD 未与 github/$(PUBLIC_BRANCH) 对齐，不能创建公开 release tag"; \
-		exit 1; \
-	fi
-	@echo "==> creating public release tag: $(PUBLIC_RELEASE_TAG)"
-	@if git rev-parse "$(PUBLIC_RELEASE_TAG)" >/dev/null 2>&1; then \
-		echo "❌ tag already exists: $(PUBLIC_RELEASE_TAG)"; \
-		exit 1; \
-	fi
-	@git tag -a "$(PUBLIC_RELEASE_TAG)" -m "Public release $(PUBLIC_RELEASE_TAG)"
-	@echo "✅ tag created: $(PUBLIC_RELEASE_TAG)"
-	@echo "   push after approval: git push github $(PUBLIC_RELEASE_TAG)"
-
-public-review: public-status public-preflight
-	@echo "✅ public review gate passed"
-
-test-webui:
-	@echo "🧪 运行 Web UI 测试..."
-	cd $(WEBUI_DIR) && npm test
 
 # ============================================================
 # 构建和发布
@@ -472,27 +204,24 @@ endif
 	@$(MAKE) build
 	@echo "🎉 v$(V) 发布包已准备就绪"
 
-# 发布配置文件仅允许放在用户主目录，避免 PyPI/TestPyPI token 进入仓库。
-PYPIRC := ~/.pypirc
+# 发布配置文件只允许使用用户目录凭证。仓库根目录不得存放 .pypirc。
+PYPIRC := $(HOME)/.pypirc
 DIST_DIR := dist
 
 clean-dist:
 	@echo "🧹 清理 dist/build 临时产物..."
 	@rm -rf $(DIST_DIR)/* build/ *.egg-info/
 
-publish: open-source-approval-check public-preflight public-publish-check clean-dist build
+publish: clean-dist build
 	@echo "🚀 发布 v$(VERSION) 到 PyPI..."
 	@if [ -f ".pypirc" ]; then \
-		echo "❌ 错误: 项目根目录不允许存在 .pypirc，避免 PyPI token 进入仓库"; \
-		echo "   请移到 ~/.pypirc 或使用环境变量 TWINE_USERNAME/TWINE_PASSWORD"; \
+		echo "❌ 错误: 仓库根目录存在 .pypirc，拒绝发布"; \
+		echo "   请删除仓库内 .pypirc，只使用 $(PYPIRC) 或 CI Secret。"; \
 		exit 1; \
 	fi
-	@if [ ! -f ~/.pypirc ] && [ -z "$$TWINE_PASSWORD" ]; then \
-		echo "❌ 错误: 找不到 ~/.pypirc，也未设置 TWINE_PASSWORD"; \
-		echo "   请在用户主目录创建 ~/.pypirc 文件:"; \
-		echo "   [pypi]"; \
-		echo "   username = __token__"; \
-		echo "   password = <pypi-api-token>"; \
+	@if [ ! -f "$(PYPIRC)" ]; then \
+		echo "❌ 错误: 找不到 $(PYPIRC)"; \
+		echo "   PyPI 凭证只能放在用户目录或 CI Secret，不能放进仓库。"; \
 		exit 1; \
 	fi
 	@FILES=$$(ls $(DIST_DIR)/ksadk-$(VERSION)-*.whl 2>/dev/null || true); \
@@ -504,21 +233,17 @@ publish: open-source-approval-check public-preflight public-publish-check clean-
 	fi; \
 	echo "📦 将上传文件:"; \
 	echo "$$FILES"; \
-	if [ -n "$$TWINE_PASSWORD" ]; then \
-		python -m twine upload $$FILES; \
-	else \
-		python -m twine upload --config-file $(PYPIRC) $$FILES; \
-	fi
+	python -m twine upload --config-file $(PYPIRC) $$FILES
 
-publish-test: open-source-approval-check public-preflight public-publish-check clean-dist build
+publish-test: clean-dist build
 	@echo "🧪 发布 v$(VERSION) 到 TestPyPI..."
 	@if [ -f ".pypirc" ]; then \
-		echo "❌ 错误: 项目根目录不允许存在 .pypirc，避免 TestPyPI token 进入仓库"; \
-		echo "   请移到 ~/.pypirc 或使用环境变量 TWINE_USERNAME/TWINE_PASSWORD"; \
+		echo "❌ 错误: 仓库根目录存在 .pypirc，拒绝发布"; \
+		echo "   请删除仓库内 .pypirc，只使用 $(PYPIRC) 或 CI Secret。"; \
 		exit 1; \
 	fi
-	@if [ ! -f ~/.pypirc ] && [ -z "$$TWINE_PASSWORD" ]; then \
-		echo "❌ 错误: 找不到 ~/.pypirc，也未设置 TWINE_PASSWORD"; \
+	@if [ ! -f "$(PYPIRC)" ]; then \
+		echo "❌ 错误: 找不到 $(PYPIRC)"; \
 		exit 1; \
 	fi
 	@FILES=$$(ls $(DIST_DIR)/ksadk-$(VERSION)-*.whl 2>/dev/null || true); \
@@ -530,11 +255,145 @@ publish-test: open-source-approval-check public-preflight public-publish-check c
 	fi; \
 	echo "📦 将上传文件:"; \
 	echo "$$FILES"; \
-	if [ -n "$$TWINE_PASSWORD" ]; then \
-		python -m twine upload --repository testpypi $$FILES; \
-	else \
-		python -m twine upload --config-file $(PYPIRC) --repository testpypi $$FILES; \
+	python -m twine upload --config-file $(PYPIRC) --repository testpypi $$FILES
+
+# ============================================================
+# 公开发布门禁
+# ============================================================
+
+PUBLIC_WORKTREE ?= .worktrees/public-main
+PUBLIC_BRANCH ?= main
+PUBLIC_REPO ?= https://github.com/kingsoftcloud/ksadk-python
+PUBLIC_DOCS_URL ?= https://kingsoftcloud.github.io/ksadk-python/
+PUBLIC_PYPI_PROJECT ?= ksadk
+PUBLIC_ALIAS_PYPI_PROJECT ?= agentengine-sdk-python
+PUBLIC_RELEASE_TAG ?= v$(V)
+
+public-status:
+	@echo "==> internal worktree"
+	@git status --short --branch
+	@echo ""
+	@echo "==> remotes"
+	@git remote -v
+	@echo ""
+	@echo "==> configured public targets"
+	@echo "PUBLIC_WORKTREE=$(PUBLIC_WORKTREE)"
+	@echo "PUBLIC_BRANCH=$(PUBLIC_BRANCH)"
+	@echo "PUBLIC_REPO=$(PUBLIC_REPO)"
+	@echo "PUBLIC_DOCS_URL=$(PUBLIC_DOCS_URL)"
+	@echo "PUBLIC_PYPI_PROJECT=$(PUBLIC_PYPI_PROJECT)"
+	@echo "PUBLIC_ALIAS_PYPI_PROJECT=$(PUBLIC_ALIAS_PYPI_PROJECT)"
+	@echo ""
+	@echo "==> worktrees"
+	@git worktree list
+
+public-init-worktree:
+	@if ! git remote get-url github >/dev/null 2>&1; then \
+		echo "==> adding github remote: $(PUBLIC_REPO)"; \
+		git remote add github $(PUBLIC_REPO); \
 	fi
+	@git fetch github $(PUBLIC_BRANCH)
+	@if [ -d "$(PUBLIC_WORKTREE)" ]; then \
+		echo "==> public worktree exists: $(PUBLIC_WORKTREE)"; \
+		git -C "$(PUBLIC_WORKTREE)" status --short --branch; \
+	else \
+		echo "==> creating public worktree: $(PUBLIC_WORKTREE)"; \
+		if git show-ref --verify --quiet "refs/heads/$(PUBLIC_BRANCH)"; then \
+			git worktree add "$(PUBLIC_WORKTREE)" "$(PUBLIC_BRANCH)"; \
+		else \
+			git worktree add -b "$(PUBLIC_BRANCH)" "$(PUBLIC_WORKTREE)" github/$(PUBLIC_BRANCH); \
+		fi; \
+	fi
+
+public-worktree-status:
+	@if [ ! -d "$(PUBLIC_WORKTREE)/.git" ] && [ ! -f "$(PUBLIC_WORKTREE)/.git" ]; then \
+		echo "❌ 公开工作树不存在: $(PUBLIC_WORKTREE)"; \
+		echo "   建议创建: git worktree add $(PUBLIC_WORKTREE) $(PUBLIC_BRANCH)"; \
+		exit 1; \
+	fi
+	@git -C "$(PUBLIC_WORKTREE)" status --short --branch
+
+public-sync-check:
+	@echo "==> public sync policy"
+	@branch=$$(git branch --show-current); \
+	if [ "$$branch" != "master" ]; then \
+		echo "❌ 当前分支不是 master: $$branch"; \
+		echo "   公开候选应从内部 master 的已审核变更生成。"; \
+		exit 1; \
+	fi
+	@if [ -f ".pypirc" ]; then \
+		echo "❌ 仓库根目录存在 .pypirc，必须删除后再进入公开流程"; \
+		exit 1; \
+	fi
+	@echo "✅ sync policy passed"
+
+public-secret-audit:
+	@echo "==> secret and sensitive-file audit"
+	@if git ls-files | grep -E '(^|/)(\.pypirc|kubeconfig|.*\.kubeconfig|id_rsa|id_ed25519)$$'; then \
+		echo "❌ 发现禁止跟踪的敏感文件"; \
+		exit 1; \
+	fi
+	@if rg -n --hidden -S --glob '!.git/**' --glob '!node_modules/**' --glob '!dist/**' --glob '!build/**' --glob '!*.egg-info/**' 'pypi-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE KEY|SecretAccessKey\s*[:=]\s*[^<\s]+' .; then \
+		echo "❌ secret pattern audit failed"; \
+		exit 1; \
+	fi
+	@echo "✅ secret audit passed"
+
+public-audit: public-secret-audit
+	@echo "==> public source audit"
+	@blocked=$$(git ls-files | grep -E '^(\.pypirc$$|\.zread/(wiki|site)/)' || true); \
+	if [ -n "$$blocked" ]; then \
+		echo "❌ blocked tracked paths:"; \
+		echo "$$blocked"; \
+		exit 1; \
+	fi
+	@echo "✅ public path audit passed"
+
+public-docs-build:
+	@echo "==> docs build"
+	@if [ -f "mkdocs.yml" ]; then \
+		uv run mkdocs build --strict; \
+	else \
+		echo "⚠️  mkdocs.yml 不存在，跳过 docs build"; \
+	fi
+
+public-test:
+	@echo "==> test"
+	@uv run pytest
+
+public-build-check: clean-dist sync-ksadk-web-static
+	@echo "==> build and twine check"
+	@uv build
+	@uv run pytest tests/test_runtime_common_packaging.py::test_built_wheel_excludes_web_ui_node_modules -q
+	@uv run --extra dev python -m twine check dist/*
+
+public-preflight: public-audit sync-ksadk-web-static public-test public-docs-build public-build-check
+	@echo "✅ public preflight passed"
+
+public-publish-check:
+	@echo "==> publication state check"
+	@if [ -f "scripts/check_publication_state.py" ]; then \
+		uv run python scripts/check_publication_state.py --phase pre-publish; \
+	else \
+		echo "⚠️  scripts/check_publication_state.py 不存在，执行基础 HTTP 检查"; \
+		python3 -c 'import json, urllib.request; targets={"repo":"$(PUBLIC_REPO)","docs":"$(PUBLIC_DOCS_URL)","pypi":"https://pypi.org/pypi/$(PUBLIC_PYPI_PROJECT)/json","alias_pypi":"https://pypi.org/pypi/$(PUBLIC_ALIAS_PYPI_PROJECT)/json"}; [print((lambda resp, name: f"{name}: HTTP {resp.status}" + (f"\n  version={json.load(resp)[\"info\"].get(\"version\")}" if name.endswith("pypi") else ""))(urllib.request.urlopen(url, timeout=20), name)) for name, url in targets.items()]'; \
+	fi
+
+public-release-tag:
+ifndef V
+	$(error ❌ 请指定版本号，例如: make public-release-tag V=0.6.2)
+endif
+	@echo "==> creating public release tag: $(PUBLIC_RELEASE_TAG)"
+	@if git rev-parse "$(PUBLIC_RELEASE_TAG)" >/dev/null 2>&1; then \
+		echo "❌ tag already exists: $(PUBLIC_RELEASE_TAG)"; \
+		exit 1; \
+	fi
+	@git tag -a "$(PUBLIC_RELEASE_TAG)" -m "Public release $(PUBLIC_RELEASE_TAG)"
+	@echo "✅ tag created: $(PUBLIC_RELEASE_TAG)"
+	@echo "   push after approval: git push github $(PUBLIC_RELEASE_TAG)"
+
+public-review: public-status public-preflight
+	@echo "✅ public review gate passed"
 
 # ============================================================
 # 离线打包 (多平台支持)
@@ -628,13 +487,189 @@ offline-current: build
 	@echo "   pip install --no-index --find-links=$(OFFLINE_DIR)/current ksadk"
 
 # ============================================================
+# AgentEngine 镜像构建兼容入口
+# ============================================================
+
+AGENTENGINE_IMAGES_DIR ?= ../agentengine-images
+
+openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size:
+	@if [ ! -d "$(AGENTENGINE_IMAGES_DIR)" ]; then \
+		echo "❌ AgentEngine 镜像资产已迁移到内部仓库 agentengine-images。"; \
+		echo "   请先克隆仓库，或设置 AGENTENGINE_IMAGES_DIR=/path/to/agentengine-images"; \
+		exit 1; \
+	fi
+	@$(MAKE) -C "$(AGENTENGINE_IMAGES_DIR)" $@
+
+
+# ============================================================
+# zread 文档站发布
+# ============================================================
+#
+# 依赖本地 .zread/wiki/current 指向的完整 wiki 版本。发布镜像会运行
+# zread browse 原生 UI，保留 zread 样式、前端交互和 Mermaid 渲染。
+#
+
+DOCS_PROJECT_NAME ?= ksadk-docs
+DOCS_DOCKER_REGISTRY ?= hub.kce.ksyun.com
+DOCS_DOCKER_NAMESPACE ?= bigdata-ai
+DOCS_WIKI_VERSION ?= $(shell test -f .zread/wiki/current && sed 's|^versions/||' .zread/wiki/current || echo missing-wiki)
+DOCS_VERSION ?= zread-$(DOCS_WIKI_VERSION)
+ENV ?= pre
+DOCS_FORCE_UPDATE ?= 0
+DOCS_FORCE_UPDATE_NONCE ?= $(shell date '+%Y%m%d%H%M%S')
+
+ifeq ($(ENV),online)
+	DOCS_KUBECONFIG_PATH := $(HOME)/.kube/agentengine-online
+	DOCS_VALUES_FILE := deploy/helm/ksadk-docs/values-online.yaml
+else
+	DOCS_KUBECONFIG_PATH := $(HOME)/.kube/agentengine-pre
+	DOCS_VALUES_FILE := deploy/helm/ksadk-docs/values-pre.yaml
+endif
+
+DOCS_IMAGE := $(DOCS_DOCKER_REGISTRY)/$(DOCS_DOCKER_NAMESPACE)/$(DOCS_PROJECT_NAME):$(DOCS_VERSION)
+DOCS_NAMESPACE ?= agentengine
+DOCS_HELM_RELEASE ?= ksadk-docs
+DOCS_HELM_CHART := deploy/helm/ksadk-docs
+DOCS_HELM_TIMEOUT ?= 600s
+DOCS_BASE_PATH ?= /ksadk-docs
+DOCS_BASE_IMAGE ?= hub.kce.ksyun.com/bigdata-ai/agentengine-server-base:v0.4.1
+DOCS_ZREAD_VERSION ?= 0.2.12
+DOCS_ZREAD_SHA256 ?= faf5ef7f2f8edc24d41b84fd838322882846f4bab10f1a9210de29cba2a53a10
+DOCS_HELM_SET_FLAGS := --set image.tag=$(DOCS_VERSION) --set docs.basePath=$(DOCS_BASE_PATH)
+
+ifeq ($(DOCS_FORCE_UPDATE),1)
+	DOCS_HELM_SET_FLAGS += --set-string podAnnotations.force-redeploy=$(DOCS_FORCE_UPDATE_NONCE)
+endif
+
+docs-check-wiki:
+	@if [ ! -f ".zread/wiki/current" ]; then \
+		echo "❌ 缺少 .zread/wiki/current，请先运行 zread generate -y --stdio"; \
+		exit 1; \
+	fi
+	@if [ ! -f ".zread/wiki/versions/$(DOCS_WIKI_VERSION)/wiki.json" ]; then \
+		echo "❌ 缺少 .zread/wiki/versions/$(DOCS_WIKI_VERSION)/wiki.json"; \
+		exit 1; \
+	fi
+	@python3 -c 'import json; from pathlib import Path; version = Path(".zread/wiki/current").read_text().strip().removeprefix("versions/"); root = Path(".zread/wiki/versions", version); wiki = json.loads((root / "wiki.json").read_text()); pages = wiki.get("pages") or []; assert pages, "wiki.json 中没有页面，拒绝发布"; missing = [p.get("file") for p in pages if not (root / p.get("file", "")).exists()]; print(f"✅ zread wiki: {version}, pages={len(pages)}, missing={len(missing)}"); [print(f"❌ 缺失页面文件: {name}") for name in missing]; raise SystemExit(1 if missing else 0)'
+	@if [ -f ".zread/wiki/drafts/wiki.json" ]; then \
+		echo "⚠️  检测到 .zread/wiki/drafts/wiki.json，本次仍发布 current 完整版本: $(DOCS_WIKI_VERSION)"; \
+	fi
+
+docs-prepare-source: docs-check-wiki
+	@python3 scripts/prepare_zread_source_snapshot.py
+
+docs-docker-build: docs-check-wiki docs-prepare-source
+	@echo "🐳 构建 KsADK 原生 zread 文档镜像: $(DOCS_IMAGE)"
+	@DOCKER_BUILDKIT=1 docker build --pull=false --platform linux/amd64 \
+		-f Dockerfile.docs \
+		--build-arg DOCS_BASE_IMAGE=$(DOCS_BASE_IMAGE) \
+		--build-arg ZREAD_VERSION=$(DOCS_ZREAD_VERSION) \
+		--build-arg ZREAD_SHA256=$(DOCS_ZREAD_SHA256) \
+		-t $(DOCS_IMAGE) \
+		.
+
+docs-docker-push: docs-docker-build
+	@echo "📤 推送 KsADK 文档镜像: $(DOCS_IMAGE)"
+	@docker push $(DOCS_IMAGE)
+
+docs-helm-lint:
+	@echo "==> helm lint $(DOCS_HELM_CHART)"
+	@helm lint $(DOCS_HELM_CHART)
+
+docs-helm-template:
+	@echo "==> helm template $(DOCS_HELM_RELEASE) ($(ENV))"
+	@helm template $(DOCS_HELM_RELEASE) $(DOCS_HELM_CHART) \
+		--namespace $(DOCS_NAMESPACE) \
+		--values $(DOCS_VALUES_FILE) \
+		$(DOCS_HELM_SET_FLAGS)
+
+docs-deploy: docs-helm-lint
+	@echo "==> helm upgrade --install $(DOCS_HELM_RELEASE) ($(ENV))"
+	@echo "    namespace=$(DOCS_NAMESPACE) image=$(DOCS_IMAGE) timeout=$(DOCS_HELM_TIMEOUT) force_update=$(DOCS_FORCE_UPDATE)"
+	@set -e; \
+	if helm upgrade --install $(DOCS_HELM_RELEASE) $(DOCS_HELM_CHART) \
+		--kubeconfig $(DOCS_KUBECONFIG_PATH) \
+		--namespace $(DOCS_NAMESPACE) \
+		--create-namespace \
+		--values $(DOCS_VALUES_FILE) \
+		$(DOCS_HELM_SET_FLAGS) \
+		--wait \
+		--timeout $(DOCS_HELM_TIMEOUT); then \
+		echo "==> deployment ready"; \
+		echo "==> url: http://$$(helm get values $(DOCS_HELM_RELEASE) --kubeconfig $(DOCS_KUBECONFIG_PATH) -n $(DOCS_NAMESPACE) -a -o json | python3 -c 'import json,sys; print(json.load(sys.stdin)["ingress"]["host"])')$(DOCS_BASE_PATH)/"; \
+	else \
+		status=$$?; \
+		echo "==> deployment failed, collecting diagnostics..."; \
+		kubectl --kubeconfig $(DOCS_KUBECONFIG_PATH) get deploy,pods,svc,ingress -n $(DOCS_NAMESPACE) -l app.kubernetes.io/name=$(DOCS_PROJECT_NAME) -o wide || true; \
+		latest_pod=$$(kubectl --kubeconfig $(DOCS_KUBECONFIG_PATH) get pods -n $(DOCS_NAMESPACE) -l app.kubernetes.io/name=$(DOCS_PROJECT_NAME) --sort-by=.metadata.creationTimestamp -o name 2>/dev/null | tail -n 1 | cut -d/ -f2); \
+		if [ -n "$$latest_pod" ]; then \
+			echo "==> latest pod: $$latest_pod"; \
+			kubectl --kubeconfig $(DOCS_KUBECONFIG_PATH) describe pod -n $(DOCS_NAMESPACE) "$$latest_pod" | sed -n '/Events:/,$$p' || true; \
+		fi; \
+		exit $$status; \
+	fi
+
+docs-deploy-all: docs-docker-push docs-deploy
+
+docs-status:
+	@kubectl --kubeconfig $(DOCS_KUBECONFIG_PATH) get pods,svc,ingress -n $(DOCS_NAMESPACE) -l app.kubernetes.io/name=$(DOCS_PROJECT_NAME)
+
+docs-logs:
+	@kubectl --kubeconfig $(DOCS_KUBECONFIG_PATH) logs -f -n $(DOCS_NAMESPACE) deployment/$(DOCS_HELM_RELEASE)
+
+
+
+# ============================================================
+# KsADK Web static 同步
+# ============================================================
+
+STATIC_DIR := ksadk/server/static
+KSADK_WEB_VERSION ?= latest
+KSADK_WEB_PACKAGE ?= @kingsoftcloud/ksadk-web
+KSADK_WEB_TARBALL_NAME := kingsoftcloud-ksadk-web-$(patsubst v%,%,$(KSADK_WEB_VERSION)).tgz
+KSADK_WEB_RELEASE_URL ?=
+KSADK_WEB_CACHE_DIR ?= .cache/ksadk-web
+
+sync-ksadk-web-static:
+	@echo "Sync KsADK Web static assets from $(KSADK_WEB_PACKAGE)@$(KSADK_WEB_VERSION)"
+	@rm -rf "$(KSADK_WEB_CACHE_DIR)/package"
+	@mkdir -p "$(KSADK_WEB_CACHE_DIR)" "$(STATIC_DIR)"
+	@if [ -n "$(KSADK_WEB_RELEASE_URL)" ]; then \
+		echo "Using explicit KSADK_WEB_RELEASE_URL=$(KSADK_WEB_RELEASE_URL)"; \
+		curl -fL --retry 3 --retry-delay 2 --retry-all-errors "$(KSADK_WEB_RELEASE_URL)" -o "$(KSADK_WEB_CACHE_DIR)/$(KSADK_WEB_TARBALL_NAME)"; \
+		echo "$(KSADK_WEB_TARBALL_NAME)" > "$(KSADK_WEB_CACHE_DIR)/.tarball-name"; \
+	else \
+		npm pack "$(KSADK_WEB_PACKAGE)@$(patsubst v%,%,$(KSADK_WEB_VERSION))" --pack-destination "$(KSADK_WEB_CACHE_DIR)" > "$(KSADK_WEB_CACHE_DIR)/.tarball-name"; \
+	fi
+	tar -xzf "$(KSADK_WEB_CACHE_DIR)/$$(cat "$(KSADK_WEB_CACHE_DIR)/.tarball-name")" -C "$(KSADK_WEB_CACHE_DIR)"
+	@test -d "$(KSADK_WEB_CACHE_DIR)/package/dist-ksadk" || (echo "ERROR: dist-ksadk missing in $$(cat "$(KSADK_WEB_CACHE_DIR)/.tarball-name")" && exit 1)
+	@rm -rf "$(STATIC_DIR)"
+	@mkdir -p "$(STATIC_DIR)"
+	cp -R "$(KSADK_WEB_CACHE_DIR)/package/dist-ksadk/." "$(STATIC_DIR)/"
+	@echo "Synced KsADK Web $(KSADK_WEB_VERSION) static assets into $(STATIC_DIR)"
+
+sync-hosted-ui: sync-ksadk-web-static
+	@echo "sync-hosted-ui is deprecated; static assets now come from $(KSADK_WEB_PACKAGE)."
+
+build-frontend: sync-ksadk-web-static
+	@echo "Frontend static assets synced from $(KSADK_WEB_VERSION)"
+
+build-wheel: build-frontend
+	uv build
+
+build-all: build-wheel
+	@echo "Build complete. Wheel is in dist/"
+
+clean-frontend:
+	rm -rf $(STATIC_DIR)
+
+# ============================================================
 # 清理
 # ============================================================
 
 clean:
 	@echo "🧹 清理构建产物和本地缓存..."
 	rm -rf dist/ build/ *.egg-info/ .eggs/
-	rm -rf $(WEBUI_DIST)
 	rm -rf .pytest_cache/ .mypy_cache/ .ruff_cache/ .coverage coverage.xml htmlcov/ .tox/ .nox/
 	rm -rf $(OFFLINE_DIR)/
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true

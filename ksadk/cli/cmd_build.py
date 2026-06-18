@@ -71,7 +71,7 @@ def build(
         # 1) 默认构建 (code 模式)
         agentengine build .
         # 2) 显式指定构建参数
-        agentengine build . --mode container --push --registry ghcr.io/your-org
+        agentengine build . --mode container --push --registry hub-cn-beijing-6.kce.ksyun.com
         # 3) 显式指定区域
         KSYUN_REGION=cn-beijing-6 agentengine build . --mode code --push --no-cache
     """

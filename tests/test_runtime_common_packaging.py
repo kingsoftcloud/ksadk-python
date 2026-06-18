@@ -1,6 +1,6 @@
 from pathlib import Path
-import tomllib
 import zipfile
+import tomllib
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -13,16 +13,35 @@ def test_pyproject_uses_in_repo_runtime_common_source_package():
     assert "ksadk_runtime_common*" in pyproject
 
 
-def test_pyproject_declares_python_multipart_for_local_web_ui_uploads():
-    pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+def test_runtime_common_workspace_router_is_python310_compatible(tmp_path: Path):
+    router_source = (REPO_ROOT / "ksadk_runtime_common" / "workspace_files" / "router.py").read_text(
+        encoding="utf-8"
+    )
+    assert "from datetime import UTC" not in router_source
+    assert "datetime.UTC" not in router_source
 
-    assert "python-multipart>=0.0.9,<1.0.0" in pyproject
+    from ksadk_runtime_common.workspace_files.router import _isoformat_timestamp
+
+    target = tmp_path / "demo.txt"
+    target.write_text("ok", encoding="utf-8")
+
+    assert _isoformat_timestamp(target).endswith("Z")
 
 
-def test_pyproject_declares_python_socks_for_openclaw_gateway_proxy_support():
-    pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+def test_distributed_python_sources_do_not_use_python311_datetime_utc():
+    package_roots = [
+        REPO_ROOT / "ksadk",
+        REPO_ROOT / "ksadk_runtime_common",
+    ]
+    offenders: list[str] = []
 
-    assert "python-socks>=2.7.1,<3.0.0" in pyproject
+    for package_root in package_roots:
+        for source_path in package_root.rglob("*.py"):
+            source = source_path.read_text(encoding="utf-8")
+            if "from datetime import UTC" in source or "datetime.UTC" in source:
+                offenders.append(str(source_path.relative_to(REPO_ROOT)))
+
+    assert offenders == []
 
 
 def test_built_wheel_excludes_web_ui_node_modules():
@@ -72,10 +91,22 @@ def test_pyproject_keeps_only_synced_static_as_ksadk_web_package_data():
     assert all("server/web-ui" not in entry for entry in package_data)
 
 
-def test_pyproject_declares_kingsoftcloud_sdk_in_kb_extra():
+def test_pyproject_declares_python_multipart_for_local_web_ui_uploads():
+    pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert "python-multipart>=0.0.9,<1.0.0" in pyproject
+
+
+def test_pyproject_declares_python_socks_for_openclaw_gateway_proxy_support():
+    pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert "python-socks>=2.7.1,<3.0.0" in pyproject
+
+
+def test_pyproject_declares_kingsoftcloud_sdk_as_default_dependency():
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
-    assert "kingsoftcloud-sdk-python>=1.5.8.94" in pyproject["project"]["optional-dependencies"]["kb"]
+    assert "kingsoftcloud-sdk-python>=1.5.8.94" in pyproject["project"]["dependencies"]
 
 
 def test_pyproject_declares_asyncpg_for_postgres_session_backend():
@@ -110,11 +141,11 @@ def test_repo_root_dockerignore_excludes_local_build_artifacts():
         assert entry in dockerignore
 
 
-def test_public_makefile_keeps_runtime_image_building_out_of_repo_root():
+def test_makefile_delegates_runtime_image_builds_to_agentengine_images_repo():
     makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
 
-    assert "OPENCLAW_CONTEXT := ." not in makefile
-    assert "HERMES_CONTEXT := ." not in makefile
+    assert "AGENTENGINE_IMAGES_DIR ?= ../agentengine-images" in makefile
+    assert "$(MAKE) -C \"$(AGENTENGINE_IMAGES_DIR)\" $@" in makefile
     assert "-f deploy/openclaw/Dockerfile" not in makefile
     assert "-f deploy/hermes/Dockerfile" not in makefile
 

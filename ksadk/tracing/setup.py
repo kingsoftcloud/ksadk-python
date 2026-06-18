@@ -57,7 +57,12 @@ def _parse_otlp_headers(raw: str) -> dict[str, str]:
         key = key.strip()
         if not key:
             continue
-        headers[key] = unquote(value.strip())
+        decoded_value = unquote(value.strip())
+        if key.lower() == "authorization":
+            scheme, sep, credential = decoded_value.partition("+")
+            if sep and scheme.lower() in {"basic", "bearer"}:
+                decoded_value = f"{scheme} {credential}"
+        headers[key] = decoded_value
     return headers
 
 

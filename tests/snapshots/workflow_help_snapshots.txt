@@ -1,0 +1,144 @@
+=== build_help ===
+Usage: build [OPTIONS] [AGENT_DIR]
+
+  将 Agent 应用构建为可部署的格式
+
+  AGENT_DIR: Agent 项目目录 (默认: 当前目录)
+
+  模式:
+      code:      打包 zip + 依赖，上传 KS3 (默认)
+      container: 构建 Docker 镜像
+
+  示例:
+      # 1) 默认构建 (code 模式)
+      agentengine build .
+      # 2) 显式指定构建参数
+      agentengine build . --mode container --push --registry hub-cn-beijing-6.kce.ksyun.com
+      # 3) 显式指定区域
+      KSYUN_REGION=cn-beijing-6 agentengine build . --mode code --push --no-cache
+
+Options:
+  -m, --mode [container|code]  构建模式: code (默认, zip+KS3) 或 container (Docker)
+  -t, --tag TEXT               镜像标签 (container 模式)
+  --registry TEXT              镜像仓库地址 (container 模式)
+  --push                       构建后推送 (镜像到仓库 / zip到KS3)
+  --no-cache                   强制重新构建，不使用缓存 (code: 忽略已有 zip；container: docker
+                               --no-cache)
+  --repackage                  Code 模式复用依赖缓存，但强制重新打包当前代码/runtime
+  -r, --region TEXT            KS3 区域 (code 模式)
+  --ks3-bucket TEXT            KS3 bucket 名称 (code 模式, 默认: agentengine-{region})
+  --output [pretty|json]       输出格式
+  -h, --help                   Show this message and exit.
+=== deploy_help ===
+Usage: deploy [OPTIONS] [AGENT_DIR]
+
+  部署 Agent 到云端
+
+  AGENT_DIR: Agent 项目目录 (默认: 当前目录)
+
+  示例:
+      # 1) 默认部署 (serverless)
+      agentengine deploy .
+      # 2) 显式指定部署参数
+      agentengine deploy . --target kcf --account-id X-Ksc-Account-Id
+      # 3) 显式指定区域
+      KSYUN_REGION=cn-beijing-6 agentengine deploy . --target serverless --dry-run
+
+Options:
+  -t, --target [serverless|kcf|kce]
+                                  部署目标 (default: serverless)
+  -n, --name TEXT                 部署名称
+  -r, --region TEXT               区域 (default: cn-beijing-6)
+  --account-id TEXT               金山云账号 ID
+  --artifact-type [Code|Container]
+                                  Serverless 部署模式 (default: Code)
+  --namespace TEXT                K8s 命名空间
+  -p, --port INTEGER              服务端口 (default: 8000)
+  --registry TEXT                 镜像仓库地址 (k8s/serverless Container 模式)
+  --ks3-path TEXT                 KS3 代码包路径 (Serverless Code 模式)
+  --ks3-bucket TEXT               KS3 bucket 名称 (Serverless Code 模式, 默认:
+                                  agentengine-{region})
+  --image TEXT                    Docker 镜像地址 (Container 模式)
+  --ui-profile [auto|adk|langchain|openclaw|hermes|custom]
+                                  Dashboard UI 类型
+  --ui-path TEXT                  Dashboard UI 路径 (例如 /)
+  --ui-url TEXT                   完整 Dashboard URL（自研前端）
+  --storage-size-gi INTEGER       PVC 容量（Gi）  [default: 20]
+  --storage-mount-path TEXT       PVC 挂载目录（默认按框架推导）
+  --no-storage                    禁用默认 PVC 挂载
+  --enable-public-access / --disable-public-access
+                                  是否开启公网访问；未指定时使用配置文件或平台默认值
+  --enable-vpc-access             开启 VPC 私网访问
+  --vpc-id TEXT                   VPC ID（开启 VPC 访问时必填）
+  --subnet-id TEXT                子网 ID（开启 VPC 访问时必填）
+  --security-group-id TEXT        安全组 ID（开启 VPC 访问时必填）
+  --availability-zone TEXT        可用区（可选）
+  --env TEXT                      额外透传运行时环境变量，格式 KEY=VALUE，可重复传入
+  --env-file FILE                 额外运行时环境变量文件，支持 .env 或 JSON 对象
+  --observability / --no-observability
+                                  是否启用可观测性 (默认开启)
+  --push                          构建后推送镜像
+  --no-cache                      强制重新构建，不使用缓存
+  --repackage                     Code 模式复用依赖缓存，但强制重新打包当前代码/runtime
+  --no-version                    部署成功后不自动创建版本快照
+  --auto-rollback                 部署失败时自动回滚到上一版本
+  --dry-run                       只生成配置，打印 curl 请求，不执行部署
+  --list-providers                列出可用的部署目标
+  --output [pretty|json]          输出格式
+  -h, --help                      Show this message and exit.
+=== launch_help ===
+Usage: launch [OPTIONS] [AGENT_DIR]
+
+  一键完成构建和部署 (Build + Deploy)
+
+  此命令会自动执行:
+  1. 代码打包 / 镜像构建
+  2. 上传代码到 KS3 / 推送镜像到 KCR
+  3. 调用 API 创建或更新 Agent
+
+  示例:
+      # 1) 默认一键部署 (serverless)
+      agentengine launch .
+      # 2) 显式指定部署参数
+      agentengine launch . --target kce --artifact-type Container
+      # 3) 显式指定区域
+      KSYUN_REGION=cn-beijing-6 agentengine launch . --target serverless --no-cache
+
+Options:
+  -t, --target [serverless|kcf|kce]
+                                  部署目标 (default: serverless)
+  -n, --name TEXT                 部署名称
+  -r, --region TEXT               区域 (serverless)
+  --account-id TEXT               金山云账号 ID
+  --observability / --no-observability
+                                  是否启用可观测性
+  --no-cache                      强制重新构建，不使用缓存
+  -p, --port INTEGER              服务端口 (default: 8000)
+  --namespace TEXT                K8s 命名空间
+  --registry TEXT                 镜像仓库地址
+  --ks3-bucket TEXT               KS3 bucket 名称
+  --ks3-path TEXT                 KS3 代码包路径
+  --image TEXT                    Docker 镜像地址
+  --ui-profile [auto|adk|langchain|openclaw|hermes|custom]
+                                  Dashboard UI 类型
+  --ui-path TEXT                  Dashboard UI 路径 (例如 /)
+  --ui-url TEXT                   完整 Dashboard URL（自研前端）
+  --storage-size-gi INTEGER       PVC 容量（Gi）  [default: 20]
+  --storage-mount-path TEXT       PVC 挂载目录（默认按框架推导）
+  --no-storage                    禁用默认 PVC 挂载
+  --enable-public-access / --disable-public-access
+                                  是否开启公网访问；未指定时使用配置文件或平台默认值
+  --enable-vpc-access             开启 VPC 私网访问
+  --vpc-id TEXT                   VPC ID（开启 VPC 访问时必填）
+  --subnet-id TEXT                子网 ID（开启 VPC 访问时必填）
+  --security-group-id TEXT        安全组 ID（开启 VPC 访问时必填）
+  --availability-zone TEXT        可用区（可选）
+  --env TEXT                      额外透传运行时环境变量，格式 KEY=VALUE，可重复传入
+  --env-file FILE                 额外运行时环境变量文件，支持 .env 或 JSON 对象
+  --dry-run                       仅打印请求，不执行实际操作
+  --artifact-type [Code|Container]
+                                  部署模式 (serverless default: Code)
+  --no-version                    部署成功后不自动创建版本快照
+  --auto-rollback                 部署失败时自动回滚到上一版本
+  --output [pretty|json]          输出格式
+  -h, --help                      Show this message and exit.

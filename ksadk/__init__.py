@@ -1,7 +1,8 @@
 """
 KsADK: Agent Runtime Platform for AI agents.
 
-统一运行、调试、部署和可观测体验，支持 ADK、LangGraph、LangChain 和 DeepAgents。
+Build with ADK, LangGraph, LangChain or DeepAgents; run, debug, deploy and
+observe through one runtime experience.
 """
 
 from ksadk.version import VERSION
