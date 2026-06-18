@@ -16,6 +16,7 @@ from ksadk.sessions.local_service import resolve_local_session_dir
 logger = logging.getLogger(__name__)
 
 UPLOAD_URI_SCHEME = "ksadk-upload://"
+HOSTED_UPLOAD_URI_SCHEME = "ae-upload://"
 UPLOAD_METADATA_SUFFIX = ".meta.json"
 
 
@@ -45,9 +46,45 @@ def guess_mime_type(display_name: str) -> str:
 
 def parse_file_id(file_uri: str) -> str:
     normalized = str(file_uri or "").strip()
-    if not normalized.startswith(UPLOAD_URI_SCHEME):
-        return ""
-    return normalized.removeprefix(UPLOAD_URI_SCHEME).strip("/")
+    if normalized.startswith(UPLOAD_URI_SCHEME):
+        return normalized.removeprefix(UPLOAD_URI_SCHEME).strip("/")
+    if normalized.startswith(HOSTED_UPLOAD_URI_SCHEME):
+        return normalized.removeprefix(HOSTED_UPLOAD_URI_SCHEME).strip("/")
+    return ""
+
+
+def is_runtime_upload_uri(file_uri: str) -> bool:
+    return str(file_uri or "").strip().startswith(UPLOAD_URI_SCHEME)
+
+
+def is_hosted_upload_uri(file_uri: str) -> bool:
+    return str(file_uri or "").strip().startswith(HOSTED_UPLOAD_URI_SCHEME)
+
+
+def _content_type_without_params(value: str | None) -> str:
+    return str(value or "").split(";", 1)[0].strip() or "application/octet-stream"
+
+
+def _download_hosted_attachment(file_uri: str) -> AttachmentBytes | None:
+    if not is_hosted_upload_uri(file_uri):
+        return None
+    try:
+        from ksadk.api.client import AgentEngineClient
+
+        content = AgentEngineClient().download_attachment_content(file_uri)
+    except Exception as exc:
+        logger.warning("Hosted attachment download failed: %s", exc)
+        return None
+    file_id = parse_file_id(file_uri)
+    display_name = sanitize_name(content.display_name, fallback=file_id or "uploaded_file")
+    return AttachmentBytes(
+        data=content.data,
+        display_name=display_name,
+        mime_type=(
+            _content_type_without_params(content.content_type)
+            or guess_mime_type(display_name)
+        ),
+    )
 
 
 def default_bucket_name() -> str:
@@ -134,6 +171,28 @@ class AttachmentStorageService:
         file_id = parse_file_id(file_uri)
         if not file_id:
             return None
+        if is_hosted_upload_uri(file_uri):
+            hosted = _download_hosted_attachment(file_uri)
+            if hosted is None:
+                return None
+            metadata = {
+                "file_id": file_id,
+                "backend": "hosted",
+                "display_name": hosted.display_name,
+                "mime_type": hosted.mime_type,
+                "size_bytes": len(hosted.data),
+                "local_path": str(
+                    self._local_path(file_id=file_id, display_name=hosted.display_name)
+                ),
+            }
+            local_path = self._restore_local_cache(file_id, metadata, hosted.data)
+            self._write_metadata(file_id, metadata | {"local_path": str(local_path)})
+            return AttachmentBytes(
+                data=hosted.data,
+                display_name=hosted.display_name,
+                mime_type=hosted.mime_type,
+                local_path=local_path,
+            )
         metadata = self._read_metadata(file_id)
         if metadata:
             if metadata.get("backend") == "ks3":

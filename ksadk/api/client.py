@@ -12,6 +12,7 @@ import socket
 import logging
 import mimetypes
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Dict, Any, Sequence, Callable, Iterator
 from urllib.parse import quote, unquote, urlparse, urlsplit
@@ -25,6 +26,13 @@ logger = logging.getLogger(__name__)
 
 
 HttpErrorLogSuppressor = Callable[..., bool]
+
+
+@dataclass(frozen=True)
+class AttachmentContent:
+    data: bytes
+    content_type: str
+    display_name: str
 
 
 class DryRunExit(Exception):
@@ -1022,6 +1030,19 @@ class AgentEngineClient:
         annotated["transport_mode"] = transport_mode
         return annotated
 
+    @staticmethod
+    def _display_name_from_content_disposition(value: str) -> str:
+        header = str(value or "").strip()
+        if not header:
+            return ""
+        filename_star_match = re.search(r"filename\*=UTF-8''([^;]+)", header, flags=re.IGNORECASE)
+        if filename_star_match:
+            return Path(unquote(filename_star_match.group(1).strip().strip('"'))).name
+        filename_match = re.search(r'filename="?([^";]+)"?', header, flags=re.IGNORECASE)
+        if filename_match:
+            return Path(filename_match.group(1).strip()).name
+        return ""
+
     def _action(self, action: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
         """通用 Action API 调用"""
         body = params or {}
@@ -1046,6 +1067,27 @@ class AgentEngineClient:
             data = self._fix_endpoints_protocol(data)
         
         return data
+
+    def download_attachment_content(self, file_uri: str) -> AttachmentContent:
+        """Download hosted attachment bytes through the signed KOP action API."""
+        normalized_uri = str(file_uri or "").strip()
+        if not normalized_uri:
+            raise AgentEngineAPIError(400, "FileUri is required")
+        response = self._action_raw_request(
+            "GET",
+            "AttachmentContent",
+            params={"FileUri": normalized_uri},
+            accept="application/octet-stream",
+        )
+        return AttachmentContent(
+            data=response.content,
+            content_type=str(response.headers.get("content-type") or "application/octet-stream"),
+            display_name=self._display_name_from_content_disposition(
+                str(response.headers.get("content-disposition") or "")
+            )
+            or Path(normalized_uri.removeprefix("ae-upload://")).name
+            or "uploaded_file",
+        )
 
     # ===== Agent Actions =====
 
@@ -1562,7 +1604,7 @@ class AgentEngineClient:
     
     async def list_sessions(self, agent_id: str, page: int = 1, size: int = 20) -> Dict[str, Any]:
         """列出会话"""
-        return self._action("ListSessions", {"AgentId": agent_id, "Page": page, "Size": size})
+        return self._action("ListSessions", {"AgentId": agent_id, "Page": page, "PageSize": size})
     
     async def delete_session(self, session_id: str) -> bool:
         """删除会话"""

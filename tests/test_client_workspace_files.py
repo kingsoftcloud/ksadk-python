@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from ksadk.api import AttachmentContent
 from ksadk.api.client import AgentEngineAPIError, AgentEngineClient
 
 
@@ -48,6 +49,57 @@ class _FakeRuntimeSession:
         if not self._responses:
             raise AssertionError("unexpected runtime request")
         return self._responses.pop(0)
+
+
+def test_attachment_content_is_exported_from_api_package():
+    assert AttachmentContent.__name__ == "AttachmentContent"
+
+
+def test_download_attachment_content_uses_signed_attachment_action(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    calls: list[dict] = []
+
+    def _fake_action_raw_request(
+        method,
+        action,
+        *,
+        params=None,
+        accept="application/json",
+        **kwargs,
+    ):
+        calls.append(
+            {
+                "method": method,
+                "action": action,
+                "params": params,
+                "accept": accept,
+                "extra": kwargs,
+            }
+        )
+        return _FakeRuntimeResponse(
+            content=b"# hosted",
+            headers={
+                "content-type": "text/markdown; charset=utf-8",
+                "content-disposition": "inline; filename*=UTF-8''%E6%B5%8B%E8%AF%95.md",
+            },
+        )
+
+    monkeypatch.setattr(client, "_action_raw_request", _fake_action_raw_request)
+
+    content = client.download_attachment_content("ae-upload://hosted123.md")
+
+    assert calls == [
+        {
+            "method": "GET",
+            "action": "AttachmentContent",
+            "params": {"FileUri": "ae-upload://hosted123.md"},
+            "accept": "application/octet-stream",
+            "extra": {},
+        }
+    ]
+    assert content.data == b"# hosted"
+    assert content.content_type == "text/markdown; charset=utf-8"
+    assert content.display_name == "测试.md"
 
 
 @pytest.mark.asyncio

@@ -1042,7 +1042,9 @@ KsADK 扩展图片引用示例：
 分页返回补充：
 
 - `ListSessions` 的 `Data` 额外包含 `Total`
+- `ListSessions` 的 `Data` 还会包含服务端回显的 `Page` 和 `PageSize`
 - `ListSessionEvents` 的 `Data` 额外包含请求透传的 `Offset` 和 `Limit`
+- `ListSessionEvents` 的 `Data` 还会包含 `Total`，便于客户端按需回加载更早的事件窗口
 
 ### `GET /agentengine/api/v1/SubscribeRunEvents`
 
@@ -1112,13 +1114,14 @@ data: [DONE]
 
 | 参数 | 必填 | 说明 |
 | --- | --- | --- |
-| `FileUri` | 是 | `UploadFile` 返回的 `ksadk-upload://...` URI |
+| `FileUri` | 是 | `UploadFile` 返回的 `ksadk-upload://...` URI，或 Hosted/runtime 持久化的 `ae-upload://...` URI |
 
 返回：
 
 - 原始文件内容
 - `Content-Type` 依据文件类型推断
 - `Content-Disposition: inline`
+- 当 `FileUri` 是 `ae-upload://...` 时，服务端会先解析 Hosted 上传元数据，再返回原始文件内容
 
 ## 6.8 Workspace Files Action 接口
 

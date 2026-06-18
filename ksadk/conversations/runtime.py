@@ -53,6 +53,7 @@ from ksadk.conversations.session_title import (
 )
 from ksadk.knowledge_base.service import KnowledgeBaseService
 from ksadk.memory.service import LongTermMemoryService
+from ksadk.model_policy import fallback_model_for_exception, model_policy_options_for_model
 from ksadk.runtime_context import PlatformInvocationContext, platform_invocation_scope
 from ksadk.sessions import Session, SessionEvent, resolve_session_service
 from ksadk.tools.gateway import (
@@ -2769,7 +2770,11 @@ async def build_run_input(
         model_metadata=model_metadata,
     )
     normalized_request_metadata = dict(request_metadata or {})
-    normalized_model_options = normalize_model_options(model_options)
+    policy_model = model or os.getenv("OPENAI_MODEL_NAME") or os.getenv("MODEL_NAME")
+    normalized_model_options = {
+        **normalize_model_options(model_options),
+        **model_policy_options_for_model(policy_model),
+    }
     normalized_instructions = str(instructions or "").strip()
 
     if resume_input is not None:
@@ -3126,6 +3131,24 @@ async def invoke_conversation_once(
                         prepared = await _refresh_history(prepared, session_service_provider=provider)
                         runtime_context.history = list(prepared.history)
                         continue
+                fallback_model = fallback_model_for_exception(exc, current_model=model)
+                if attempt == 0 and fallback_model:
+                    model = fallback_model
+                    runtime_context.model = fallback_model
+                    runtime_context.model_options = {
+                        **prepared.model_options,
+                        **model_policy_options_for_model(fallback_model),
+                    }
+                    prepare_runner(runner, fallback_model)
+                    await append_run_status_event(
+                        session_id=prepared.session_id,
+                        author=runner_name,
+                        status="in_progress",
+                        invocation_id=prepared.invocation_id,
+                        detail=f"fallback_model:{fallback_model}",
+                        session_service_provider=provider,
+                    )
+                    continue
                 last_invoke_error = exc
                 await append_run_status_event(
                     session_id=prepared.session_id,
@@ -3666,6 +3689,27 @@ async def _iter_conversation_turn_events(
                         }
                         prepared = await _refresh_history(prepared, session_service_provider=provider)
                         runtime_context.history = list(prepared.history)
+                        continue
+                if attempt == 0 and not emitted_anything:
+                    fallback_model = fallback_model_for_exception(exc, current_model=model)
+                    if fallback_model:
+                        model = fallback_model
+                        prepare_runner(runner, fallback_model)
+                        prepared.model_options = {
+                            **prepared.model_options,
+                            **model_policy_options_for_model(fallback_model),
+                        }
+                        runtime_context.model = fallback_model
+                        runtime_context.model_options = prepared.model_options
+                        _set_span_attribute(span, "ksadk.model.fallback", fallback_model)
+                        await append_run_status_event(
+                            session_id=prepared.session_id,
+                            author=runner_name,
+                            status="in_progress",
+                            invocation_id=prepared.invocation_id,
+                            detail=f"fallback_model:{fallback_model}",
+                            session_service_provider=provider,
+                        )
                         continue
                 await append_run_status_event(
                     session_id=prepared.session_id,
