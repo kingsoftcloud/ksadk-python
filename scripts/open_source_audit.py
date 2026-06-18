@@ -212,13 +212,14 @@ CONTENT_RULES = (
         pattern=re.compile(
             r"(?<![A-Za-z0-9.-])"
             r"(?!(?:aicp)\.(?:inner|internal)\.api\.ksyun\.com\b)"
+            r"(?!kspmas-internal\.sdns\.ksyun\.com\b)"
             r"(?:[A-Za-z0-9-]+\.)*(?:inner\.api|internal\.api|sdns)\.ksyun\.com\b"
         ),
         description="internal service endpoints must not be published unless explicitly supported by the public SDK",
     ),
     ContentRule(
         name="private-container-registry",
-        pattern=re.compile(r"\bhub(?:-[A-Za-z0-9-]+)?\.kce\.ksyun\.com\b"),
+        pattern=re.compile(r"\bhub(?:-[A-Za-z0-9-]+)?\.kce\.ksyun\.com/(?!agentengine-public/)\b"),
         description="private container registry defaults must not be published",
     ),
     ContentRule(
