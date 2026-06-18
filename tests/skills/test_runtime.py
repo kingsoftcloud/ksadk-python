@@ -59,6 +59,7 @@ def test_runtime_factory_auto_uses_e2b_when_generic_sandbox_template_is_configur
 
 
 def test_e2b_skill_runtime_backend_from_env_prefers_generic_sandbox_vars(monkeypatch):
+    pytest.importorskip("e2b")
     monkeypatch.setenv("KSADK_SANDBOX_TEMPLATE_ID", "tpl-aio")
     monkeypatch.setenv("KSADK_SKILL_RUNTIME_TEMPLATE_ID", "tpl-legacy")
     monkeypatch.setenv("KSADK_SANDBOX_TIMEOUT", "321")
