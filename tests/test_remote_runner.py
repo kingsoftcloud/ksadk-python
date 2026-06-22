@@ -104,6 +104,36 @@ async def test_remote_runner_responses_invoke_keeps_external_responses_stateless
 
 
 @pytest.mark.asyncio
+async def test_remote_runner_responses_invoke_preserves_usage(monkeypatch):
+    import httpx
+
+    class UsageClient(_FakeAsyncClient):
+        post_payload = {
+            "output_text": "hello responses",
+            "usage": {
+                "input_tokens": 9,
+                "output_tokens": 4,
+                "total_tokens": 13,
+            },
+        }
+
+    UsageClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", UsageClient)
+    runner = RemoteRunner(endpoint="https://agent.example.com", api_format="responses")
+
+    payload = await runner.invoke({"input": "hi"})
+
+    assert payload == {
+        "output": "hello responses",
+        "usage": {
+            "input_tokens": 9,
+            "output_tokens": 4,
+            "total_tokens": 13,
+        },
+    }
+
+
+@pytest.mark.asyncio
 async def test_remote_runner_responses_invoke_forwards_explicit_conversation(monkeypatch):
     import httpx
 
@@ -403,3 +433,39 @@ async def test_remote_runner_responses_stream_surfaces_failed_event(monkeypatch)
     chunks = [chunk async for chunk in runner.stream({"input": "hi"})]
 
     assert chunks == [{"type": "error", "message": "internal error"}]
+
+
+@pytest.mark.asyncio
+async def test_remote_runner_chat_completions_invoke_preserves_usage(monkeypatch):
+    import httpx
+
+    class ChatUsageClient(_FakeAsyncClient):
+        post_payload = {
+            "choices": [
+                {
+                    "message": {
+                        "content": "hello chat",
+                    }
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 15,
+                "completion_tokens": 6,
+                "total_tokens": 21,
+            },
+        }
+
+    ChatUsageClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", ChatUsageClient)
+    runner = RemoteRunner(endpoint="https://agent.example.com", api_format="chat_completions")
+
+    payload = await runner.invoke({"input": "hi"})
+
+    assert payload == {
+        "output": "hello chat",
+        "usage": {
+            "prompt_tokens": 15,
+            "completion_tokens": 6,
+            "total_tokens": 21,
+        },
+    }

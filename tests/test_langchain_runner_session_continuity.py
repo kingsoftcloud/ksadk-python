@@ -19,6 +19,24 @@ class _RecordingAgent:
         return {"output": "ok"}
 
 
+class _UsageMessage:
+    def __init__(self):
+        self.content = "ok"
+        self.usage_metadata = {
+            "input_tokens": 11,
+            "output_tokens": 7,
+            "total_tokens": 18,
+            "input_token_details": {},
+            "output_token_details": {"reasoning": 3},
+        }
+
+
+class _UsageAgent:
+    async def ainvoke(self, payload, config=None):
+        del payload, config
+        return {"messages": [_UsageMessage()]}
+
+
 def _make_runner(agent, module=None) -> LangChainRunner:
     detection = SimpleNamespace(entry_point="src/agent.py", agent_variable="root_agent")
     runner = LangChainRunner(detection, ".")
@@ -227,6 +245,21 @@ async def test_langchain_runner_message_history_includes_instructions_without_am
     assert seen_messages[0][0].__class__.__name__ == "SystemMessage"
     assert "只用中文回答" in seen_messages[0][0].content
     assert seen_messages[0][1].content == "hello"
+
+
+@pytest.mark.asyncio
+async def test_langchain_runner_invoke_extracts_usage_from_message_metadata():
+    runner = _make_runner(_UsageAgent())
+
+    result = await runner.invoke({"session_id": "sess-usage", "input": "hello"})
+
+    assert result["usage"] == {
+        "input_tokens": 11,
+        "output_tokens": 7,
+        "total_tokens": 18,
+        "input_token_details": {},
+        "output_token_details": {"reasoning": 3},
+    }
 
 
 def test_langchain_runner_extracts_wrapped_history_runnable():
