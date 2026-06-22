@@ -406,17 +406,31 @@ class AgentEngineClient:
                 continue
         log_fn = logger.debug if self._is_auth_related_error_details(details) else logger.error
         log_fn(
-            "Request failed: method=%s, target=%s, status=%s, body=%s",
+            "Request failed: method=%s, target=%s, status=%s, error=%s",
             method,
             self._safe_log_target(full_url),
             status_code,
-            resp_text,
+            self._safe_log_error_summary(details=details, resp_text=resp_text),
         )
 
     @staticmethod
     def _safe_log_target(raw_url: str) -> str:
         parsed = urlsplit(str(raw_url or ""))
         return parsed.path or "/"
+
+    @staticmethod
+    def _safe_log_error_summary(*, details: Dict[str, Any], resp_text: str) -> str:
+        code = str(details.get("remote_error_code") or details.get("code") or "").strip()
+        message = str(details.get("remote_error_message") or details.get("message") or "").strip()
+        if not message:
+            message = "non-json response" if str(resp_text or "").strip() else "empty response"
+        message = re.sub(
+            r"(?i)(password|passwd|secret|token|access[_-]?key|api[_-]?key)\s*[:=]\s*[^,\s}\"]+",
+            r"\1=<redacted>",
+            message,
+        )
+        message = " ".join(message.split())[:200]
+        return f"{code}: {message}" if code else message
 
     def _build_headers(self, request_id: str = "", action: str = "", kop_mode: bool = False) -> Dict[str, str]:
         if not request_id:

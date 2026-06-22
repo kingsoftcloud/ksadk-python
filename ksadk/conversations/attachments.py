@@ -163,9 +163,16 @@ def resolve_attachment_storage_path(file_uri: str) -> Optional[Path]:
         safe_file_id = Path(file_id).name
         if not safe_file_id:
             return None
-        for candidate in sorted(uploads_dir.glob(f"{safe_file_id}*")):
-            if candidate.is_file():
-                return candidate.resolve()
+        try:
+            candidates = sorted(uploads_dir.iterdir(), key=lambda item: item.name)
+        except OSError:
+            return None
+        for candidate in candidates:
+            if not candidate.name.startswith(safe_file_id):
+                continue
+            resolved = candidate.resolve(strict=False)
+            if _path_within_root(resolved, uploads_dir) and resolved.is_file():
+                return resolved
 
     return None
 
