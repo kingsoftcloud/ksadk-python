@@ -413,6 +413,21 @@ async def test_create_agent_detects_enterprise_registry_from_image_addr(monkeypa
     }
 
 
+def test_enterprise_registry_detection_uses_exact_hostname():
+    assert (
+        AgentEngineClient._enterprise_instance_from_image_ref(
+            "agenthzzqy-vpc.ksyunkcr.com/testagent-pub/0606agent:v6"
+        )
+        == "agenthzzqy"
+    )
+    assert (
+        AgentEngineClient._enterprise_instance_from_image_ref(
+            "evil.example.com/agenthzzqy-vpc.ksyunkcr.com/demo:v1"
+        )
+        is None
+    )
+
+
 @pytest.mark.asyncio
 async def test_create_agent_keeps_third_party_registry_as_personal_with_credentials(monkeypatch):
     client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
