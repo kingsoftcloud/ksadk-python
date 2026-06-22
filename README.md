@@ -165,7 +165,8 @@ Export once. Observe anywhere.
 - Hosted Workspace 导出修复：Workspace zip 下载通过受控 facade 转发到 runtime export，避免 share link / Hosted UI 下载目录时被公共 action 规则误拦截。
 - 会话与历史事件增强：`ListSessions` / `ListSessionEvents` 补齐分页与总数字段，本地 Web UI 支持更长历史会话列表和按需回加载旧事件。
 - Hosted TUI 会话复用：配合 `@kingsoftcloud/ksadk-web@0.2.11`，原生终端默认按当前业务会话复用 terminal session，并保留显式新建入口。
-- Hosted 长任务与终端链路发布门禁增强：SSE、WebSocket、TUI reconnect、workspace streaming 和长任务恢复需要在 staging 环境完成 E2E 后再进入公开发布。
+- 长任务与终端验证脚本增强：新增 Hosted long-task、checkpoint resume、cancel/resume 和 terminal reconnect 验证脚本，发布前需结合目标环境完成 E2E。
+- CLI 与部署路径增强：dry-run JSON、no-cache、网络参数、环境变量覆盖、framework passthrough、远程 runner、A2A、Skill Runtime 和 sandbox 路径补齐回归覆盖。
 - 将公开定位从普通 SDK 调整为 Agent Runtime Platform，首页补齐 Why KsADK、30 秒体验、架构说明、Deployment、Observability 和 Community。
 - 清理 README、CHANGELOG 和后续 PyPI 元数据中的环境特定表述，避免公开页面出现内部环境名、内部 header 或私有 endpoint 示例。
 - 为公开定位、敏感词和 PyPI metadata 增加回归测试，防止后续回退。

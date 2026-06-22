@@ -15,8 +15,9 @@
 - **Hosted Workspace 导出修复**：Workspace zip 导出路径与 Hosted facade 对齐，修复 share link / Hosted UI 通过数据面下载 workspace 目录时被公共 action 暴露规则拦截的问题。
 - **会话列表与事件分页增强**：Session service 新增 `count_sessions` / `count_events`，`ListSessions` 返回 `Total/Page/PageSize`，`ListSessionEvents` 支持 `Offset/Limit/Total`，便于 UI 恢复长任务和历史事件。
 - **Hosted TUI 会话复用**：配合 `@kingsoftcloud/ksadk-web@0.2.11`，Hosted 原生终端按业务会话复用 terminal session，并保留显式新建终端入口，避免刷新或切换页面时重复创建终端。
-- **长连接发布门禁增强**：Hosted SSE、WebSocket、TUI 与 workspace streaming 路径纳入环境 E2E 检查，避免长任务、终端恢复或大文件导出在代理链路上被短 idle timeout 提前截断。
 - **Hermes 终端执行策略收敛**：抽出共享 terminal exec allowlist policy，OpenClaw/Hermes 终端命令校验共用同一匹配逻辑，简化 allowlist 配置并降低误放行风险。
+- **部署与运行调试体验增强**：CLI dry-run / JSON 输出、构建缓存、framework passthrough、OpenClaw/Hermes 更新语义、网络参数和凭证边界补齐更多测试，减少发布前后手工排障成本。
+- **长任务验证脚本补齐**：新增 Hosted long-task、checkpoint resume、cancel/resume 和长期运行 pilot 验证脚本，作为 SDK 发布候选的环境验收辅助工具。
 
 ### 变更
 
@@ -30,6 +31,10 @@
 - runtime 上传附件会持久化 metadata、本地路径和 MIME 信息；Hosted 附件下载后会写回本地 cache，供 runner、workspace preview 和会话恢复复用。
 - Workspace zip 导出优先走新的 raw runtime export endpoint，并保留 legacy runtime archive fallback，降低新旧 runtime 镜像混跑时的兼容风险。
 - Native terminal session manager 新增 HTTP session lifecycle 与 WebSocket attach 语义，断线默认 detach 而不是杀掉 PTY；Hermes/OpenClaw `--resume` 可以绑定同一 terminal session。
+- `agentengine deploy`、`agentengine launch`、`agentengine mcp deploy` 和 OpenClaw/Hermes 相关命令补齐 no-cache、dry-run JSON envelope、网络参数、环境变量和显式配置覆盖测试。
+- `AgentEngineClient` 与远程 runner 补齐 framework passthrough、权限预检查、错误日志、MCP payload、workspace files 和 attachment content 的契约测试。
+- LangGraph、LangChain、ADK、DeepAgents、A2A、本地 re-exec、session continuity、Postgres session service、sandbox backend 和 Skill Runtime 相关路径补齐回归覆盖。
+- `docs/ksadk环境变量参考.md` 和 `docs/远程Agent运行时接口说明.md` 纳入公开参考文档，集中描述 SDK/runtime 可配置项、Hosted action 与 runtime local API 的边界。
 
 ### 修复
 
@@ -39,18 +44,19 @@
 - 修复 Hosted UI 上传文件在本地 runtime 中只能看到 `ae-upload://` 引用、无法读取真实内容的问题。
 - 修复 Hosted Workspace zip 下载通过数据面访问时返回 `Public action is not exposed on data plane` 的问题，导出请求现在由受控 facade 转发到 runtime workspace export。
 - 修复 session/event 列表缺少总数和分页字段，导致 UI 无法稳定展示历史会话、历史事件或长任务恢复状态的问题。
-- 修复 Hosted 流式会话、workspace 文件/zip streaming 在 server 到 runtime 这一跳仍可能使用短 read timeout 的问题；长流读取现在与 drain 窗口对齐。
 - 修复 Hosted TUI WebSocket keepalive 使用裸换行污染终端输出的问题；`ks-terminal.v1` 和 terminal path 改用结构化 `pong` 消息。
 - 修复 0.6.6 发布候选漏打 `env_options.py`、`reasoning_markup.py`、`terminal_exec_policy.py` 模块，导致部分 CLI、conversation runtime 和终端策略导入失败的问题。
 - 修复 Python 3.10 环境下 workspace files router 使用 `datetime.UTC` 带来的兼容性问题。
+- 修复 E2B sandbox 可选依赖缺失时测试不能跳过的问题，降低最小开发环境运行公开测试的成本。
+- 修复公开仓库审计误拦截受控公开文档和公开镜像仓库示例的问题，并继续禁止内部 endpoint、私有 header、真实凭证和 kubeconfig 进入公开材料。
 
 ### 测试与发布
 
 - 新增模型策略、fallback、流式 fallback、OpenClaw env、Hermes env、LangChain patch、附件恢复、session 分页、Hosted UI 上传文件、workspace zip、终端 session 复用和终端 allowlist 覆盖测试。
 - 公开发布版本从 `0.6.5` 升级到 `0.6.6`，发布包继续通过 `make public-preflight` 同步 `@kingsoftcloud/ksadk-web@latest` 静态资源并执行 wheel 内容检查；本次发布候选应使用 `@kingsoftcloud/ksadk-web@0.2.11` 对应的静态 UI。
 - `make public-preflight` 已覆盖 secret audit、public path audit、全量 pytest、sdist/wheel build 和 `twine check`；0.6.6 wheel/sdist 检查通过。
-- 这是 Hermes/OpenClaw 默认镜像重建前置版本；镜像构建应固定 `KSADK_PACKAGE_SPEC=ksadk==0.6.6`，再走 staging E2E、GitHub Actions / PyPI Trusted Publishing 和环境门禁。
-- GitHub Release / PyPI / npm release actions 必须等待 staging E2E、CI 门禁和人工确认完成后再由对应 GitHub workflow 执行。
+- 运行时镜像如需集成 0.6.6 候选，应使用同一候选 wheel 或发布后的 `KSADK_PACKAGE_SPEC=ksadk==0.6.6`，镜像构建和部署证据由对应内部仓库记录。
+- GitHub Release / PyPI / npm release actions 必须等待环境 E2E、CI 门禁和人工确认完成后再由对应 GitHub workflow 执行。
 - 公开仓库审计规则补充受控白名单，允许受控文档引用与公开镜像仓库示例，并把 `docs/ksadk环境变量参考.md`、`docs/远程Agent运行时接口说明.md` 作为公开参考文档纳入门禁。
 - README 的发布表述在 0.6.6 真正发布前保持候选态文案，避免公开页面提前显示“已发布”，同时保留发布后 wording 的测试兼容。
 
