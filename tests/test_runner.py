@@ -584,7 +584,7 @@ def test_adk_runner_build_adk_content_supports_inline_and_reference_attachments(
         name="demo-agent",
     )
     runner = ADKRunner(detection, str(tmp_path))
-    archive_path = tmp_path / ".agentengine" / "ui" / "files" / "bundle.zip"
+    archive_path = tmp_path / ".agentengine" / "ui" / "files" / "abc123.zip"
     archive_path.parent.mkdir(parents=True, exist_ok=True)
     archive_path.write_bytes(b"PK\x03\x04demo-zip")
 

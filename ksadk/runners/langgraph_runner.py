@@ -15,7 +15,7 @@ from ksadk.runners.base_runner import BaseRunner
 from ksadk.sessions.continuity import LangGraphSessionAdapter
 from ksadk.runners.utils import get_langfuse_callback, get_langfuse_metadata, load_agent_module
 from langgraph.types import Command
-from ksadk.conversations.attachments import classify_attachment_kind, read_resolved_attachment_bytes
+from ksadk.conversations.attachments import classify_attachment_kind, read_attachment_uri_bytes
 from ksadk.conversations.reasoning_markup import ReasoningMarkupParser, strip_reasoning_markup
 
 
@@ -335,11 +335,11 @@ class LangGraphRunner(BaseRunner):
                 )
                 continue
 
-            storage_path = attachment.get("storage_path")
-            if not storage_path:
+            file_uri = attachment.get("file_uri")
+            if not file_uri:
                 continue
 
-            raw = read_resolved_attachment_bytes(storage_path)
+            raw = read_attachment_uri_bytes(file_uri)
             if not raw:
                 continue
 

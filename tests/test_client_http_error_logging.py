@@ -40,5 +40,6 @@ def test_client_error_log_redacts_url_query(caplog):
             details={"http_status": 500},
         )
 
-    assert "http://example.com/" in caplog.text
+    assert "target=/" in caplog.text
+    assert "example.com" not in caplog.text
     assert "Password=secret" not in caplog.text

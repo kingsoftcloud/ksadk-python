@@ -15,7 +15,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Dict, Any, Sequence, Callable, Iterator
-from urllib.parse import quote, unquote, urlparse, urlsplit, urlunsplit
+from urllib.parse import quote, unquote, urlparse, urlsplit
 
 import requests
 import urllib3
@@ -406,19 +406,17 @@ class AgentEngineClient:
                 continue
         log_fn = logger.debug if self._is_auth_related_error_details(details) else logger.error
         log_fn(
-            "Request failed: method=%s, url=%s, status=%s, body=%s",
+            "Request failed: method=%s, target=%s, status=%s, body=%s",
             method,
-            self._safe_log_url(full_url),
+            self._safe_log_target(full_url),
             status_code,
             resp_text,
         )
 
     @staticmethod
-    def _safe_log_url(raw_url: str) -> str:
+    def _safe_log_target(raw_url: str) -> str:
         parsed = urlsplit(str(raw_url or ""))
-        if not parsed.scheme or not parsed.netloc:
-            return str(raw_url or "").split("?", 1)[0]
-        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+        return parsed.path or "/"
 
     def _build_headers(self, request_id: str = "", action: str = "", kop_mode: bool = False) -> Dict[str, str]:
         if not request_id:
@@ -563,7 +561,7 @@ class AgentEngineClient:
 
         retried_inner_endpoint = False
         while True:
-            logger.debug("Request: %s %s", method, self._safe_log_url(full_url))
+            logger.debug("Request: %s", method)
             response = session.request(
                 method=method,
                 url=full_url,
@@ -697,10 +695,12 @@ class AgentEngineClient:
         image = (image_ref or "").strip()
         parsed = urlsplit(image if "://" in image else f"//{image}", allow_fragments=False)
         host = (parsed.hostname or "").strip().lower()
-        if host.endswith("-vpc.ksyunkcr.com"):
-            return host[: -len("-vpc.ksyunkcr.com")] or None
-        if host.endswith(".ksyunkcr.com") and not host.endswith("-vpc.ksyunkcr.com"):
-            return host.split(".", 1)[0] or None
+        vpc_match = re.fullmatch(r"([a-z0-9][a-z0-9-]*)-vpc\.ksyunkcr\.com", host)
+        if vpc_match:
+            return vpc_match.group(1) or None
+        public_match = re.fullmatch(r"([a-z0-9][a-z0-9-]*)\.ksyunkcr\.com", host)
+        if public_match:
+            return public_match.group(1) or None
         return None
 
     @classmethod

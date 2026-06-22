@@ -182,18 +182,15 @@ def read_attachment_bytes(storage_path: Optional[Path], *, size_limit: Optional[
         return None
 
 
-def read_resolved_attachment_bytes(
-    storage_path: Any,
+def read_attachment_uri_bytes(
+    file_uri: Any,
     *,
     size_limit: Optional[int] = None,
 ) -> Optional[bytes]:
+    storage_path = resolve_attachment_storage_path(str(file_uri or ""))
     if storage_path is None:
         return None
-    uploads_dir = resolve_uploads_dir().resolve()
-    resolved_path = Path(str(storage_path)).expanduser().resolve(strict=False)
-    if not _path_within_root(resolved_path, uploads_dir):
-        return None
-    return read_attachment_bytes(resolved_path, size_limit=size_limit)
+    return read_attachment_bytes(storage_path, size_limit=size_limit)
 
 
 def classify_attachment_kind(mime_type: str, display_name: str) -> str:
@@ -583,8 +580,7 @@ def _load_attachment_bytes(attachment: Mapping[str, Any]) -> Optional[bytes]:
             return None
         return raw if len(raw) <= _MAX_PROCESS_BYTES else None
 
-    storage_path_value = attachment.get("storage_path")
-    raw = read_resolved_attachment_bytes(storage_path_value, size_limit=_MAX_PROCESS_BYTES)
+    raw = read_attachment_uri_bytes(attachment.get("file_uri"), size_limit=_MAX_PROCESS_BYTES)
     if raw is not None:
         return raw
     return None
