@@ -163,6 +163,7 @@ Export once. Observe anywhere.
 - 统一模型策略 v1：默认主模型 `glm-5.2`、多模态模型 `kimi-k2.7-code`、fallback 模型 `deepseek-v4-pro`，Hermes、OpenClaw 和通用 Agent 使用同一套默认语义。
 - Hosted 附件内容恢复：本地 runtime 现在可以直接消费服务端 `ae-upload://...` 文件引用，并通过 `AttachmentContent` 恢复真实文件内容与本地缓存。
 - 会话与历史事件增强：`ListSessions` / `ListSessionEvents` 补齐分页与总数字段，本地 Web UI 支持更长历史会话列表和按需回加载旧事件。
+- Hosted TUI 会话复用：配合 `@kingsoftcloud/ksadk-web@0.2.11`，原生终端默认按当前业务会话复用 terminal session，并保留显式新建入口。
 - 将公开定位从普通 SDK 调整为 Agent Runtime Platform，首页补齐 Why KsADK、30 秒体验、架构说明、Deployment、Observability 和 Community。
 - 清理 README、CHANGELOG 和后续 PyPI 元数据中的环境特定表述，避免公开页面出现内部环境名、内部 header 或私有 endpoint 示例。
 - 为公开定位、敏感词和 PyPI metadata 增加回归测试，防止后续回退。
