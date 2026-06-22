@@ -2,9 +2,9 @@
 通用常量定义
 """
 
-# Serverless Endpoint (默认内网预发环境)
+# Serverless Endpoint
 DEFAULT_SERVERLESS_ENDPOINT = (
-    "http://kmr.pre-online.inner.api.ksyun.com"
+    "https://aicp.api.ksyun.com"
 )
 
 # KS3 Region 映射表

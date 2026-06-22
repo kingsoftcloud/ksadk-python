@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import zipfile
 from pathlib import Path
 
 
-FIXTURE = Path("/Users/xiayu/Downloads/web-artifacts-builder.zip")
+FIXTURE = Path(
+    os.environ.get("KSADK_WEB_ARTIFACTS_FIXTURE", "~/Downloads/web-artifacts-builder.zip")
+).expanduser()
 EXPECTED_SHA256 = "b95f0735357fcf879bd53ed85cb242679ec74438e3bc8e85b1f27193169b6ecf"
 
 

@@ -331,7 +331,7 @@ def test_content_audit_allows_aicp_internal_endpoints_but_blocks_other_internal_
     ]
 
 
-def test_content_audit_allows_kspmas_internal_and_public_registry_paths(tmp_path):
+def test_content_audit_allows_supported_internal_and_registry_paths(tmp_path):
     audit = _load_audit_module()
     (tmp_path / "settings.py").write_text(
         'KSPMAS_INTERNAL = "kspmas-internal.sdns.ksyun.com"\n',
@@ -341,18 +341,28 @@ def test_content_audit_allows_kspmas_internal_and_public_registry_paths(tmp_path
         '# HERMES_IMAGE=hub.kce.ksyun.com/agentengine-public/hermes-agent:tag\n',
         encoding="utf-8",
     )
-    blocked_registry = "hub.kce." + "ksyun.com/private-registry/image"
-    (tmp_path / "other.py").write_text(
+    (tmp_path / "builder.py").write_text(
+        'REGISTRY = "hub.kce.ksyun.com/agentengine/demo-agent:latest"\n',
+        encoding="utf-8",
+    )
+    blocked_registry = "hub-cn-beijing-6.kce." + "ksyun.com/private-registry/image"
+    (tmp_path / "regional.py").write_text(
         f'IMAGE = "{blocked_registry}"\n',
+        encoding="utf-8",
+    )
+    blocked_endpoint = "mem-service." + "sdns." + "ksyun.com"
+    (tmp_path / "other.py").write_text(
+        f'INTERNAL_ENDPOINT = "{blocked_endpoint}"\n',
         encoding="utf-8",
     )
 
     result = audit.audit_file_contents(
-        tmp_path, ["settings.py", "cmd_create.py", "other.py"]
+        tmp_path, ["settings.py", "cmd_create.py", "builder.py", "regional.py", "other.py"]
     )
     assert result.ok is False
     assert [(v.path, v.rule) for v in result.violations] == [
-        ("other.py", "private-container-registry")
+        ("regional.py", "private-container-registry"),
+        ("other.py", "internal-service-endpoint")
     ]
 
 

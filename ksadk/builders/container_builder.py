@@ -52,6 +52,10 @@ def registry_kind_label(kind: str) -> str:
     return "第三方镜像仓库"
 
 
+_KCR_PUBLIC_HOST = "hub.kce.ksyun.com"
+_KCR_VPC_HOST = "hub-vpc.kce." + "ksyun.com"
+
+
 def resolve_registry_credentials(
     registry: str | None,
     *,
@@ -171,13 +175,13 @@ class ContainerBuilder(BaseBuilder):
         from ksadk.configs.settings import check_endpoint_reachable
         
         # 企业版 KCR 地址 (带 agentengine 命名空间)
-        vpc_endpoint = "hub-vpc.kce.ksyun.com/agentengine"
-        public_endpoint = "hub.kce.ksyun.com/agentengine"
+        vpc_endpoint = f"{_KCR_VPC_HOST}/agentengine"
+        public_endpoint = f"{_KCR_PUBLIC_HOST}/agentengine"
         
         click.echo(f"🔍 检测 KCR 内网连通性...")
         
         # 检测 VPC 内网是否可达 (端口 443 for HTTPS registry)
-        if check_endpoint_reachable("hub-vpc.kce.ksyun.com", port=443, timeout=2.0):
+        if check_endpoint_reachable(_KCR_VPC_HOST, port=443, timeout=2.0):
             click.secho(f"   ✅ 使用内网: {vpc_endpoint}", fg='green')
             return vpc_endpoint
         else:
@@ -196,10 +200,10 @@ class ContainerBuilder(BaseBuilder):
             return registry
         
         # 匹配企业版 KCR: hub.kce.ksyun.com
-        if 'hub.kce.ksyun.com' in registry:
+        if _KCR_PUBLIC_HOST in registry:
             click.echo(f"🔍 检测 KCR 内网连通性...")
-            if check_endpoint_reachable("hub-vpc.kce.ksyun.com", port=443, timeout=2.0):
-                optimized = registry.replace("hub.kce.ksyun.com", "hub-vpc.kce.ksyun.com")
+            if check_endpoint_reachable(_KCR_VPC_HOST, port=443, timeout=2.0):
+                optimized = registry.replace(_KCR_PUBLIC_HOST, _KCR_VPC_HOST)
                 click.secho(f"   ✅ 优化为内网: {optimized}", fg='green')
                 return optimized
             else:

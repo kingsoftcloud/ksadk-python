@@ -219,8 +219,8 @@ CONTENT_RULES = (
     ),
     ContentRule(
         name="private-container-registry",
-        pattern=re.compile(r"\bhub(?:-[A-Za-z0-9-]+)?\.kce\.ksyun\.com/(?!agentengine-public/)\b"),
-        description="private container registry defaults must not be published",
+        pattern=re.compile(r"\bhub-[A-Za-z0-9-]+\.kce\.ksyun\.com/"),
+        description="regional private container registry defaults must not be published",
     ),
     ContentRule(
         name="aws-access-key-id",

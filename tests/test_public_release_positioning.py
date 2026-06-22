@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import subprocess
 import tomllib
+import re
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -112,6 +113,26 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "public-preflight: public-audit public-sync-ksadk-web-static public-test" in makefile
     assert "PYPI_API_TOKEN" not in workflow
     assert "password:" not in workflow
+
+
+def test_github_public_release_gate_workflows_reference_existing_targets():
+    ci_workflow = _read(".github/workflows/ci.yml")
+    release_check_workflow = _read(".github/workflows/release-check.yml")
+    makefile = _read("Makefile")
+
+    referenced_tests = re.findall(r"(tests/[A-Za-z0-9_./-]+\.py)", ci_workflow)
+    assert referenced_tests
+    missing_tests = [path for path in referenced_tests if not (ROOT / path).is_file()]
+    assert missing_tests == []
+
+    referenced_make_targets = re.findall(r"\bmake\s+([A-Za-z0-9_.-]+)", release_check_workflow)
+    assert "open-source-audit-dist" in referenced_make_targets
+    missing_targets = [
+        target
+        for target in referenced_make_targets
+        if re.search(rf"^{re.escape(target)}\s*:", makefile, flags=re.MULTILINE) is None
+    ]
+    assert missing_targets == []
 
 
 def test_source_repository_does_not_track_generated_ksadk_web_static():

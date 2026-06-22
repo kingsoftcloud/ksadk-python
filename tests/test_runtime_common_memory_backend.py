@@ -68,7 +68,7 @@ def test_render_mem0_manifest_to_openclaw_patch(monkeypatch):
         f"2000104981.{VALID_MEM0_UUID}:mem0-secret",
     )
     monkeypatch.setenv("MEM0_USER_ID", "2000104981")
-    monkeypatch.setenv("MEM0_BASE_URL", "http://mem-service.sdns.ksyun.com")
+    monkeypatch.setenv("MEM0_BASE_URL", "https://mem-service.example.invalid")
 
     result = memory_backend.render_memory_backend_config(
         {
@@ -99,7 +99,7 @@ def test_render_mem0_manifest_to_openclaw_patch(monkeypatch):
                         "config": {
                             "mode": "platform",
                             "apiKey": f"2000104981.{VALID_MEM0_UUID}:mem0-secret",
-                            "baseUrl": "http://mem-service.sdns.ksyun.com",
+                            "baseUrl": "https://mem-service.example.invalid",
                             "userId": "2000104981",
                         },
                     },

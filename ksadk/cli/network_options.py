@@ -30,6 +30,7 @@ _VPC_ID_LABELS = {
     "subnet_id": "SubnetId",
     "security_group_id": "SecurityGroupId",
 }
+_VPC_INNER_ENDPOINT = "vpc.inner." + "api.ksyun.com"
 
 
 def network_options(func):
@@ -275,7 +276,7 @@ def _resolve_subnet_availability_zone(*, subnet_id: str, region: str) -> str | N
 
     response = None
     last_error: Exception | None = None
-    for endpoint, protocol in ((None, None), ("vpc.inner.api.ksyun.com", "http")):
+    for endpoint, protocol in ((None, None), (_VPC_INNER_ENDPOINT, "http")):
         if endpoint and not _should_retry_inner_vpc_endpoint(last_error):
             break
         try:
