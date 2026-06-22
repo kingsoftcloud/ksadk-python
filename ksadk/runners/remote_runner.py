@@ -300,6 +300,7 @@ class RemoteRunner(BaseRunner):
             payload = {
                 "messages": [{"role": "user", "content": user_input}],
                 "stream": True,
+                "stream_options": {"include_usage": True},
             }
         if session_id and self.api_format != "responses":
             payload["session_id"] = session_id
@@ -313,6 +314,8 @@ class RemoteRunner(BaseRunner):
                 response.raise_for_status()
 
                 event_name = ""
+                accumulated_text = ""
+                final_sent = False
                 async for line in response.aiter_lines():
                     if not line:
                         event_name = ""
@@ -339,6 +342,10 @@ class RemoteRunner(BaseRunner):
 
                             # 解析 OpenAI Chat Completions 流式格式
                             choices = data.get("choices", [])
+                            usage = data.get("usage")
+                            if isinstance(usage, Mapping):
+                                yield {"type": "final", "usage": dict(usage)}
+                                final_sent = True
                             if choices:
                                 delta = choices[0].get("delta", {})
                                 content = delta.get("content", "")
@@ -347,10 +354,13 @@ class RemoteRunner(BaseRunner):
                                 if reasoning:
                                     yield {"delta": reasoning, "type": "thinking"}
                                 if content:
+                                    accumulated_text += content
                                     yield {"delta": content, "type": "text"}
 
                         except json.JSONDecodeError:
                             pass
+                if self.api_format != "responses" and accumulated_text and not final_sent:
+                    yield {"output": accumulated_text, "type": "final"}
 
     @staticmethod
     def _extract_responses_output_text(data: Dict[str, Any]) -> str:
@@ -560,11 +570,15 @@ class RemoteRunner(BaseRunner):
             response = data.get("response") if isinstance(data.get("response"), dict) else data
             output = response.get("output") if isinstance(response, dict) else None
             if isinstance(output, list):
-                yield {
+                chunk = {
                     "type": "responses_output",
                     "output": output,
                     "response_id": response.get("id"),
                 }
+                usage = response.get("usage")
+                if isinstance(usage, Mapping):
+                    chunk["usage"] = dict(usage)
+                yield chunk
             return
         if event_type == "response.failed":
             yield {"type": "error", "message": self._responses_error_message(data)}

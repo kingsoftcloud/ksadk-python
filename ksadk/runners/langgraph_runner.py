@@ -148,6 +148,20 @@ class LangGraphRunner(BaseRunner):
             }
         }
 
+    async def _latest_state_usage(self, config: dict[str, Any]) -> dict[str, Any]:
+        state = None
+        try:
+            if callable(getattr(self._agent, "aget_state", None)):
+                state = await self._agent.aget_state(config)
+            elif callable(getattr(self._agent, "get_state", None)):
+                state = self._agent.get_state(config)
+        except Exception:
+            return {}
+        values = getattr(state, "values", None)
+        if values is not None:
+            return self._extract_usage(values)
+        return {}
+
     @staticmethod
     def _ambient_context_text(payload: Dict[str, Any]) -> str:
         sections: list[str] = []
@@ -368,74 +382,6 @@ class LangGraphRunner(BaseRunner):
         )
         return self._agent.invoke(payload, **kwargs)
 
-    @staticmethod
-    def _message_usage(message: Any) -> dict[str, Any]:
-        usage_metadata = getattr(message, "usage_metadata", None)
-        if isinstance(usage_metadata, dict):
-            input_token_details = usage_metadata.get("input_token_details")
-            output_token_details = usage_metadata.get("output_token_details")
-            return {
-                "input_tokens": int(usage_metadata.get("input_tokens") or 0),
-                "output_tokens": int(usage_metadata.get("output_tokens") or 0),
-                "total_tokens": int(
-                    usage_metadata.get("total_tokens")
-                    or (
-                        int(usage_metadata.get("input_tokens") or 0)
-                        + int(usage_metadata.get("output_tokens") or 0)
-                    )
-                ),
-                "input_token_details": (
-                    dict(input_token_details) if isinstance(input_token_details, dict) else {}
-                ),
-                "output_token_details": (
-                    dict(output_token_details) if isinstance(output_token_details, dict) else {}
-                ),
-            }
-
-        response_metadata = getattr(message, "response_metadata", None)
-        if isinstance(response_metadata, dict):
-            token_usage = response_metadata.get("token_usage")
-            if isinstance(token_usage, dict):
-                completion_details = token_usage.get("completion_tokens_details")
-                output_token_details = {}
-                if isinstance(completion_details, dict):
-                    reasoning_tokens = completion_details.get("reasoning_tokens")
-                    if reasoning_tokens is not None:
-                        output_token_details["reasoning"] = int(reasoning_tokens)
-                return {
-                    "input_tokens": int(token_usage.get("prompt_tokens") or 0),
-                    "output_tokens": int(token_usage.get("completion_tokens") or 0),
-                    "total_tokens": int(
-                        token_usage.get("total_tokens")
-                        or (
-                            int(token_usage.get("prompt_tokens") or 0)
-                            + int(token_usage.get("completion_tokens") or 0)
-                        )
-                    ),
-                    "input_token_details": {},
-                    "output_token_details": output_token_details,
-                }
-        return {}
-
-    @classmethod
-    def _extract_usage(cls, result: Any) -> dict[str, Any]:
-        if isinstance(result, dict):
-            direct_usage = result.get("usage")
-            if isinstance(direct_usage, dict):
-                return dict(direct_usage)
-
-            messages = result.get("messages")
-            if isinstance(messages, list):
-                for message in reversed(messages):
-                    usage = cls._message_usage(message)
-                    if usage:
-                        return usage
-
-        usage = cls._message_usage(result)
-        if usage:
-            return usage
-        return {}
-
     async def invoke(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """调用 LangGraph 图
         
@@ -585,10 +531,15 @@ class LangGraphRunner(BaseRunner):
         inline_reasoning_parser = ReasoningMarkupParser()
         emitted_non_text_event = False
         final_output_text = ""
+        final_output_usage: dict[str, Any] = {}
 
         if not hasattr(self._agent, "astream_events"):
             result = await self.invoke(invoke_payload)
-            yield {"output": result.get("output", ""), "type": "final"}
+            final_chunk = {"output": result.get("output", ""), "type": "final"}
+            usage = self._extract_usage(result)
+            if usage:
+                final_chunk["usage"] = usage
+            yield final_chunk
             return
 
         try:
@@ -661,6 +612,7 @@ class LangGraphRunner(BaseRunner):
                     extracted_output = self._extract_output(output)
                     if extracted_output:
                         final_output_text = strip_reasoning_markup(str(extracted_output))
+                    final_output_usage = self._extract_usage(output)
 
         except Exception as e:
             if "Interrupt" in type(e).__name__:
@@ -680,14 +632,27 @@ class LangGraphRunner(BaseRunner):
 
         if not accumulated_text:
             if final_output_text:
-                yield {"output": final_output_text, "type": "final"}
+                final_chunk = {"output": final_output_text, "type": "final"}
+                if final_output_usage:
+                    final_chunk["usage"] = final_output_usage
+                yield final_chunk
             elif not emitted_non_text_event:
                 result = await self.invoke(invoke_payload)
-                yield {"output": result.get("output", ""), "type": "final"}
+                final_chunk = {"output": result.get("output", ""), "type": "final"}
+                usage = self._extract_usage(result)
+                if usage:
+                    final_chunk["usage"] = usage
+                yield final_chunk
                 metadata = result.get("metadata") if isinstance(result, dict) else None
                 if isinstance(metadata, dict) and metadata.get("agentengine"):
                     yield {"type": "checkpoint", "metadata": metadata}
                     return
+        else:
+            final_chunk = {"output": accumulated_text, "type": "final"}
+            usage = await self._latest_state_usage(config)
+            if usage:
+                final_chunk["usage"] = usage
+            yield final_chunk
 
         metadata = await self._latest_checkpoint_metadata(config)
         if metadata:

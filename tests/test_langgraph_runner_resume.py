@@ -173,6 +173,23 @@ class _UsageAgent(_DummyAgent):
         return {"messages": [_UsageMessage()]}
 
 
+class _UsageStateStreamingAgent(_StreamingAgent):
+    def get_state(self, config):
+        del config
+        return SimpleNamespace(values={"messages": [_UsageMessage()]}, config=self.state_config)
+
+
+class _FinalOutputUsageStreamingAgent(_DummyAgent):
+    async def astream_events(self, state, version="v2", config=None):
+        self.last_astream_state = state
+        self.last_astream_config = config
+        yield {
+            "event": "on_chain_end",
+            "name": "LangGraph",
+            "data": {"output": {"answer": "final only", "messages": [_UsageMessage()]}},
+        }
+
+
 def _make_runner(module=None) -> LangGraphRunner:
     detection = SimpleNamespace(entry_point="src/agent.py", agent_variable="root_agent")
     runner = LangGraphRunner(detection, ".")
@@ -221,6 +238,18 @@ def _make_split_inline_think_tag_streaming_runner() -> LangGraphRunner:
 def _make_usage_runner() -> LangGraphRunner:
     runner = _make_runner()
     runner._agent = _UsageAgent()
+    return runner
+
+
+def _make_usage_state_streaming_runner() -> LangGraphRunner:
+    runner = _make_runner()
+    runner._agent = _UsageStateStreamingAgent()
+    return runner
+
+
+def _make_final_output_usage_streaming_runner() -> LangGraphRunner:
+    runner = _make_runner()
+    runner._agent = _FinalOutputUsageStreamingAgent()
     return runner
 
 
@@ -442,6 +471,60 @@ async def test_invoke_extracts_usage_from_langchain_message_metadata():
 
 
 @pytest.mark.asyncio
+async def test_stream_emits_final_usage_from_graph_state_after_text_stream():
+    runner = _make_usage_state_streaming_runner()
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "sess-usage-stream",
+                "input": "hello",
+            }
+        )
+    ]
+
+    assert chunks[-1] == {
+        "output": "这是最终回复。",
+        "type": "final",
+        "usage": {
+            "input_tokens": 8,
+            "output_tokens": 13,
+            "total_tokens": 21,
+            "input_token_details": {},
+            "output_token_details": {"reasoning": 5},
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_stream_final_output_chunk_includes_usage_from_chain_end_output():
+    runner = _make_final_output_usage_streaming_runner()
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "sess-final-usage",
+                "input": "hello",
+            }
+        )
+    ]
+
+    assert chunks[-1] == {
+        "output": "final only",
+        "type": "final",
+        "usage": {
+            "input_tokens": 8,
+            "output_tokens": 13,
+            "total_tokens": 21,
+            "input_token_details": {},
+            "output_token_details": {"reasoning": 5},
+        },
+    }
+
+
+@pytest.mark.asyncio
 async def test_stream_checkpoint_resume_uses_checkpoint_id_and_none_input():
     runner = _make_runner()
 
@@ -518,10 +601,11 @@ async def test_stream_does_not_mix_reasoning_into_final_text():
         )
     ]
 
-    assert chunks == [
+    assert chunks[:-1] == [
         {"delta": "先分析需求。", "type": "thinking"},
         {"delta": "这是最终回复。", "type": "text"},
     ]
+    assert chunks[-1] == {"output": "这是最终回复。", "type": "final"}
     assert all("先分析需求。" not in chunk.get("delta", "") for chunk in chunks if chunk["type"] == "text")
 
 
@@ -539,10 +623,11 @@ async def test_stream_ignores_content_when_chunk_duplicates_reasoning():
         )
     ]
 
-    assert chunks == [
+    assert chunks[:-1] == [
         {"delta": "先分析需求。", "type": "thinking"},
         {"delta": "这是最终回复。", "type": "text"},
     ]
+    assert chunks[-1] == {"output": "这是最终回复。", "type": "final"}
 
 
 @pytest.mark.asyncio
@@ -559,10 +644,11 @@ async def test_stream_extracts_inline_think_tags_from_content():
         )
     ]
 
-    assert chunks == [
+    assert chunks[:-1] == [
         {"delta": "先分析需求。", "type": "thinking"},
         {"delta": "这是最终回复。", "type": "text"},
     ]
+    assert chunks[-1] == {"output": "这是最终回复。", "type": "final"}
 
 
 @pytest.mark.asyncio
