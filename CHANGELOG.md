@@ -12,7 +12,7 @@
 - **统一模型策略 v1**：新增 `AGENTENGINE_MODEL_POLICY_JSON` 运行时策略契约，默认主模型为 `glm-5.2`，多模态模型为 `kimi-k2.7-code`，fallback 模型为 `deepseek-v4-pro`，为 Hermes、OpenClaw 和通用 Agent 提供同一套默认模型语义。
 - **通用 Agent fallback**：conversation runtime 对超时、限流、5xx、模型不可用、权限/配额等可恢复模型错误支持 fallback 重试；普通 400 参数错误、业务错误和 tool 错误不会被吞掉。
 - **运行时附件与 Hosted 附件打通**：本地 `ksadk-upload://` 与服务端 `ae-upload://` 上传文件统一解析，支持通过 KOP Action 下载 Hosted 附件内容、恢复本地缓存，并在会话/浏览器刷新后继续读取文件。
-- **Hosted Workspace 导出修复**：Workspace zip 导出路径与 Hosted facade 对齐，修复 share link / Hosted UI 通过数据面下载 workspace 目录时被公共 action 暴露规则拦截的问题。
+- **Workspace zip 导出修复**：本地与 Hosted 场景统一使用 KsADK runtime workspace 导出契约，修复 share link / Hosted UI 下载 workspace 目录时报错的问题。
 - **会话列表与事件分页增强**：Session service 新增 `count_sessions` / `count_events`，`ListSessions` 返回 `Total/Page/PageSize`，`ListSessionEvents` 支持 `Offset/Limit/Total`，便于 UI 恢复长任务和历史事件。
 - **Hosted TUI 会话复用**：配合 `@kingsoftcloud/ksadk-web@0.2.11`，Hosted 原生终端按业务会话复用 terminal session，并保留显式新建终端入口，避免刷新或切换页面时重复创建终端。
 - **Hermes 终端执行策略收敛**：抽出共享 terminal exec allowlist policy，OpenClaw/Hermes 终端命令校验共用同一匹配逻辑，简化 allowlist 配置并降低误放行风险。
@@ -25,11 +25,11 @@
 - `kimi-k2.7-code` 默认模型参数补齐 `temperature=1`，并透传到 Chat Completions / Responses 的 `temperature`、`top_p`、`max_tokens`、`max_completion_tokens` 等 model options。
 - OpenClaw 默认 catalog 包含 `glm-5.2`、`kimi-k2.7-code` 和 `deepseek-v4-pro`；图像场景默认优先使用 `kimi-k2.7-code`，显式 `OPENCLAW_MODEL_CATALOG_JSON` 仍保持 catalog 首项优先。
 - Hermes deploy 与 OpenClaw deploy 均会注入同一模型策略 env，保留 `OPENAI_MODEL_NAME`、`MODEL_NAME`、`OPENCLAW_DEFAULT_MODEL`、`HERMES_DEFAULT_MODEL`、`HERMES_FALLBACK_MODEL` 等显式覆盖。
-- Hermes 本地默认主模型更新为 `glm-5.2`，不再按 KSPMAS / `glm-5.1` 硬编码 fallback 到 `kimi-k2.6`，fallback 改由统一策略或显式 env 决定。
+- Hermes 本地默认主模型更新为 `glm-5.2`，不再按旧主模型名称硬编码 fallback 到 `kimi-k2.6`，fallback 改由统一策略或显式 env 决定。
 - OpenClaw provider catalog 合并逻辑支持在已有 `OPENCLAW_MODEL_CATALOG_JSON` 上补齐 provider metadata，避免请求级 catalog 被平台默认值覆盖。
 - `AgentEngineClient` 新增 `AttachmentContent` 与 `download_attachment_content()`，并修正 `list_sessions()` 请求字段为 `PageSize`。
 - runtime 上传附件会持久化 metadata、本地路径和 MIME 信息；Hosted 附件下载后会写回本地 cache，供 runner、workspace preview 和会话恢复复用。
-- Workspace zip 导出优先走新的 raw runtime export endpoint，并保留 legacy runtime archive fallback，降低新旧 runtime 镜像混跑时的兼容风险。
+- Workspace zip 导出优先走新的 runtime raw export endpoint，并保留 legacy runtime archive fallback，降低不同 KsADK runtime 版本混跑时的兼容风险。
 - Native terminal session manager 新增 HTTP session lifecycle 与 WebSocket attach 语义，断线默认 detach 而不是杀掉 PTY；Hermes/OpenClaw `--resume` 可以绑定同一 terminal session。
 - `agentengine deploy`、`agentengine launch`、`agentengine mcp deploy` 和 OpenClaw/Hermes 相关命令补齐 no-cache、dry-run JSON envelope、网络参数、环境变量和显式配置覆盖测试。
 - `AgentEngineClient` 与远程 runner 补齐 framework passthrough、权限预检查、错误日志、MCP payload、workspace files 和 attachment content 的契约测试。
@@ -42,7 +42,7 @@
 - 修复 ADK 短期记忆与运行时附件连续性，避免上传文件、memory context 和 runner payload 在多轮会话中丢失。
 - 修复终端执行 allowlist 匹配过复杂、容易误判的问题，统一按共享策略做命令匹配与错误提示。
 - 修复 Hosted UI 上传文件在本地 runtime 中只能看到 `ae-upload://` 引用、无法读取真实内容的问题。
-- 修复 Hosted Workspace zip 下载通过数据面访问时返回 `Public action is not exposed on data plane` 的问题，导出请求现在由受控 facade 转发到 runtime workspace export。
+- 修复 Hosted Workspace zip 下载返回 `Public action is not exposed on data plane` 的问题，导出请求现在统一转到 runtime workspace export 契约。
 - 修复 session/event 列表缺少总数和分页字段，导致 UI 无法稳定展示历史会话、历史事件或长任务恢复状态的问题。
 - 修复 Hosted TUI WebSocket keepalive 使用裸换行污染终端输出的问题；`ks-terminal.v1` 和 terminal path 改用结构化 `pong` 消息。
 - 修复 0.6.6 发布候选漏打 `env_options.py`、`reasoning_markup.py`、`terminal_exec_policy.py` 模块，导致部分 CLI、conversation runtime 和终端策略导入失败的问题。
@@ -53,10 +53,9 @@
 ### 测试与发布
 
 - 新增模型策略、fallback、流式 fallback、OpenClaw env、Hermes env、LangChain patch、附件恢复、session 分页、Hosted UI 上传文件、workspace zip、终端 session 复用和终端 allowlist 覆盖测试。
-- 公开发布版本从 `0.6.5` 升级到 `0.6.6`，发布包继续通过 `make public-preflight` 同步 `@kingsoftcloud/ksadk-web@latest` 静态资源并执行 wheel 内容检查；本次发布候选应使用 `@kingsoftcloud/ksadk-web@0.2.11` 对应的静态 UI。
-- `make public-preflight` 已覆盖 secret audit、public path audit、全量 pytest、sdist/wheel build 和 `twine check`；0.6.6 wheel/sdist 检查通过。
-- 运行时镜像如需集成 0.6.6 候选，应使用同一候选 wheel 或发布后的 `KSADK_PACKAGE_SPEC=ksadk==0.6.6`，镜像构建和部署证据由对应内部仓库记录。
-- GitHub Release / PyPI / npm release actions 必须等待环境 E2E、CI 门禁和人工确认完成后再由对应 GitHub workflow 执行。
+- 公开发布版本从 `0.6.5` 升级到 `0.6.6`，发布包继续通过 `make public-preflight` 同步 `@kingsoftcloud/ksadk-web@latest` 静态资源并执行 wheel 内容检查；本次发布候选对应 `@kingsoftcloud/ksadk-web@0.2.11` 静态 UI。
+- `make public-preflight` 覆盖 secret audit、public path audit、全量 pytest、sdist/wheel build、wheel 内容检查和 `twine check`。
+- GitHub Release / PyPI / npm 发布仍由对应 GitHub workflow 执行，并需要等待 CI 门禁和人工确认。
 - 公开仓库审计规则补充受控白名单，允许受控文档引用与公开镜像仓库示例，并把 `docs/ksadk环境变量参考.md`、`docs/远程Agent运行时接口说明.md` 作为公开参考文档纳入门禁。
 - README 的发布表述在 0.6.6 真正发布前保持候选态文案，避免公开页面提前显示“已发布”，同时保留发布后 wording 的测试兼容。
 

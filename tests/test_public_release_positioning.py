@@ -60,7 +60,10 @@ def test_changelog_marks_0_6_6_ready_for_authorized_release():
     assert "## [0.6.6] - 2026-06-18" in changelog
     assert "统一模型策略 v1" in changelog
     assert "PyPI Trusted Publishing" in changelog
-    assert "KSADK_PACKAGE_SPEC=ksadk==0.6.6" in changelog
+    assert "GitHub workflow" in changelog
+    assert "人工确认" in changelog
+    assert "KSADK_PACKAGE_SPEC=ksadk==0.6.6" not in changelog
+    assert "agentengine-images" not in changelog
 
 
 def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
