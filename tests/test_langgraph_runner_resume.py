@@ -754,10 +754,12 @@ async def test_invoke_with_binary_attachment_does_not_convert_reference_to_image
 
 
 @pytest.mark.asyncio
-async def test_invoke_with_image_attachment_converts_to_multimodal_human_message(tmp_path):
+async def test_invoke_with_image_attachment_converts_to_multimodal_human_message(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENTENGINE_UI_DIR", str(tmp_path / ".agentengine" / "ui"))
     runner = _make_runner()
-    image_path = tmp_path / "diagram.png"
+    image_path = tmp_path / ".agentengine" / "ui" / "files" / "diagram.png"
     image_bytes = b"\x89PNG\r\n\x1a\nfake-image"
+    image_path.parent.mkdir(parents=True, exist_ok=True)
     image_path.write_bytes(image_bytes)
 
     await runner.invoke(
@@ -856,10 +858,15 @@ async def test_invoke_with_remote_image_attachment_preserves_image_url_for_multi
 
 
 @pytest.mark.asyncio
-async def test_invoke_with_image_attachment_keeps_image_block_even_when_catalog_is_stale(tmp_path):
+async def test_invoke_with_image_attachment_keeps_image_block_even_when_catalog_is_stale(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("AGENTENGINE_UI_DIR", str(tmp_path / ".agentengine" / "ui"))
     runner = _make_runner()
-    image_path = tmp_path / "diagram.png"
+    image_path = tmp_path / ".agentengine" / "ui" / "files" / "diagram.png"
     image_bytes = b"\x89PNG\r\n\x1a\nfake-image"
+    image_path.parent.mkdir(parents=True, exist_ok=True)
     image_path.write_bytes(image_bytes)
 
     await runner.invoke(

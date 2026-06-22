@@ -574,16 +574,18 @@ def test_adk_runner_load_agent_skips_skill_runtime_when_not_in_sandbox_mode(
     assert _tool_names(runner._agent.tools) == []
 
 
-def test_adk_runner_build_adk_content_supports_inline_and_reference_attachments(tmp_path):
+def test_adk_runner_build_adk_content_supports_inline_and_reference_attachments(tmp_path, monkeypatch):
     from ksadk.runners.adk_runner import ADKRunner
 
+    monkeypatch.setenv("AGENTENGINE_UI_DIR", str(tmp_path / ".agentengine" / "ui"))
     detection = SimpleNamespace(
         entry_point="agent.py",
         agent_variable="root_agent",
         name="demo-agent",
     )
     runner = ADKRunner(detection, str(tmp_path))
-    archive_path = tmp_path / "bundle.zip"
+    archive_path = tmp_path / ".agentengine" / "ui" / "files" / "bundle.zip"
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
     archive_path.write_bytes(b"PK\x03\x04demo-zip")
 
     content = runner._build_adk_content(
