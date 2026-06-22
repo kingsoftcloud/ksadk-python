@@ -11,7 +11,7 @@
 
 - **统一模型策略 v1**：新增 `AGENTENGINE_MODEL_POLICY_JSON` 运行时策略契约，默认主模型为 `glm-5.2`，多模态模型为 `kimi-k2.7-code`，fallback 模型为 `deepseek-v4-pro`，为 Hermes、OpenClaw 和通用 Agent 提供同一套默认模型语义。
 - **通用 Agent fallback**：conversation runtime 对超时、限流、5xx、模型不可用、权限/配额等可恢复模型错误支持 fallback 重试；普通 400 参数错误、业务错误和 tool 错误不会被吞掉。
-- **运行时附件与 Hosted 附件打通**：本地 `ksadk-upload://` 与服务端 `ae-upload://` 上传文件统一解析，支持通过 KOP Action 下载 Hosted 附件内容、恢复本地缓存，并在会话/浏览器刷新后继续读取文件。
+- **运行时附件与 Hosted 附件打通**：本地 `ksadk-upload://` 与平台 `ae-upload://` 上传引用统一解析，支持通过 KOP Action 下载 Hosted 附件内容、恢复本地缓存，并在会话/浏览器刷新后继续读取文件。
 - **Workspace zip 导出修复**：本地与 Hosted 场景统一使用 KsADK runtime workspace 导出契约，修复 share link / Hosted UI 下载 workspace 目录时报错的问题。
 - **会话列表与事件分页增强**：Session service 新增 `count_sessions` / `count_events`，`ListSessions` 返回 `Total/Page/PageSize`，`ListSessionEvents` 支持 `Offset/Limit/Total`，便于 UI 恢复长任务和历史事件。
 - **Hosted TUI 会话复用**：配合 `@kingsoftcloud/ksadk-web@0.2.11`，Hosted 原生终端按业务会话复用 terminal session，并保留显式新建终端入口，避免刷新或切换页面时重复创建终端。
@@ -48,15 +48,15 @@
 - 修复 0.6.6 发布候选漏打 `env_options.py`、`reasoning_markup.py`、`terminal_exec_policy.py` 模块，导致部分 CLI、conversation runtime 和终端策略导入失败的问题。
 - 修复 Python 3.10 环境下 workspace files router 使用 `datetime.UTC` 带来的兼容性问题。
 - 修复 E2B sandbox 可选依赖缺失时测试不能跳过的问题，降低最小开发环境运行公开测试的成本。
-- 修复公开仓库审计误拦截受控公开文档和公开镜像仓库示例的问题，并继续禁止内部 endpoint、私有 header、真实凭证和 kubeconfig 进入公开材料。
+- 修复公开仓库审计误拦截受控公开文档和受控外部引用的问题，并继续禁止内部 endpoint、私有 header、真实凭证和 kubeconfig 进入公开材料。
 
 ### 测试与发布
 
 - 新增模型策略、fallback、流式 fallback、OpenClaw env、Hermes env、LangChain patch、附件恢复、session 分页、Hosted UI 上传文件、workspace zip、终端 session 复用和终端 allowlist 覆盖测试。
 - 公开发布版本从 `0.6.5` 升级到 `0.6.6`，发布包继续通过 `make public-preflight` 同步 KSADK Web 静态资源并执行 wheel 内容检查；本次发布候选固定使用 `PUBLIC_KSADK_WEB_VERSION=0.2.11` 对应的 `@kingsoftcloud/ksadk-web` 静态 UI。
-- `make public-preflight` 覆盖 secret audit、public path audit、全量 pytest、sdist/wheel build、wheel 内容检查和 `twine check`。
+- `make public-preflight` 覆盖 secret audit、public path audit、全量 pytest、sdist/wheel build、wheel 内容检查和 `twine check`；PyPI 发布继续使用 PyPI Trusted Publishing。
 - GitHub Release / PyPI / npm 发布仍由对应 GitHub workflow 执行，并需要等待 CI 门禁和人工确认。
-- 公开仓库审计规则补充受控白名单，允许受控文档引用与公开镜像仓库示例，并把 `docs/ksadk环境变量参考.md`、`docs/远程Agent运行时接口说明.md` 作为公开参考文档纳入门禁。
+- 公开仓库审计规则补充受控白名单，允许受控文档引用与受控外部引用，并把 `docs/ksadk环境变量参考.md`、`docs/远程Agent运行时接口说明.md` 作为公开参考文档纳入门禁。
 - README 的发布表述在 0.6.6 真正发布前保持候选态文案，避免公开页面提前显示“已发布”，同时保留发布后 wording 的测试兼容。
 
 ## [0.6.5] - 2026-06-15

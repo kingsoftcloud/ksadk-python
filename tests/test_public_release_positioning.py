@@ -12,6 +12,16 @@ def _read(relative_path: str) -> str:
     return (ROOT / relative_path).read_text(encoding="utf-8")
 
 
+def _changelog_section(version: str) -> str:
+    changelog = _read("CHANGELOG.md")
+    start_marker = f"## [{version}]"
+    start = changelog.index(start_marker)
+    next_start = changelog.find("\n## [", start + len(start_marker))
+    if next_start == -1:
+        return changelog[start:]
+    return changelog[start:next_start]
+
+
 def test_public_readme_positions_ksadk_as_runtime_platform():
     readme = _read("README.md")
     for expected in (
@@ -55,7 +65,7 @@ def test_public_metadata_uses_runtime_platform_positioning():
 
 
 def test_changelog_marks_0_6_6_ready_for_authorized_release():
-    changelog = _read("CHANGELOG.md")
+    changelog = _changelog_section("0.6.6")
 
     assert "## [0.6.6] - 2026-06-18" in changelog
     assert "统一模型策略 v1" in changelog
@@ -64,6 +74,27 @@ def test_changelog_marks_0_6_6_ready_for_authorized_release():
     assert "人工确认" in changelog
     assert "KSADK_PACKAGE_SPEC=ksadk==0.6.6" not in changelog
     assert "agentengine-images" not in changelog
+
+
+def test_changelog_0_6_6_only_describes_ksadk_release_surface():
+    changelog = _changelog_section("0.6.6")
+    forbidden = (
+        "agentengine-gateway",
+        "agentengine-server",
+        "agentengine-images",
+        "gateway",
+        "server",
+        "服务端",
+        "预发",
+        "pre-online",
+        "默认镜像",
+        "镜像构建",
+        "镜像仓库",
+        "内部提交",
+    )
+
+    for fragment in forbidden:
+        assert fragment not in changelog, f"0.6.6 changelog contains {fragment}"
 
 
 def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
