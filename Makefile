@@ -359,7 +359,8 @@ public-docs-build:
 
 public-test:
 	@echo "==> test"
-	@uv run pytest
+	@uv sync --extra all
+	@uv run --extra all pytest
 
 public-build-check: clean-dist sync-ksadk-web-static
 	@echo "==> build and twine check"
