@@ -230,6 +230,16 @@ class RemoteRunner(BaseRunner):
             headers[self.responses_session_header] = session_id
         return headers
 
+    @staticmethod
+    def _response_usage_payload(data: Mapping[str, Any]) -> dict[str, Any]:
+        usage = data.get("usage")
+        if isinstance(usage, Mapping):
+            return dict(usage)
+        response = data.get("response")
+        if isinstance(response, Mapping) and isinstance(response.get("usage"), Mapping):
+            return dict(response["usage"])
+        return {}
+
     async def invoke(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """非流式调用远程 Agent"""
         import httpx
@@ -256,8 +266,13 @@ class RemoteRunner(BaseRunner):
             response.raise_for_status()
             data = response.json()
 
+        usage = self._response_usage_payload(data)
+
         if self.api_format == "responses":
-            return {"output": self._extract_responses_output_text(data) or str(data)}
+            result = {"output": self._extract_responses_output_text(data) or str(data)}
+            if usage:
+                result["usage"] = usage
+            return result
 
         # 提取 OpenAI Chat Completions 格式响应
         try:
@@ -265,7 +280,10 @@ class RemoteRunner(BaseRunner):
         except (KeyError, IndexError):
             content = str(data)
 
-        return {"output": content}
+        result = {"output": content}
+        if usage:
+            result["usage"] = usage
+        return result
 
     async def stream(self, input_data: Dict[str, Any]) -> AsyncIterator[Dict[str, Any]]:
         """流式调用远程 Agent"""

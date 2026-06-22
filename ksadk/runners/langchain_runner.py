@@ -6,7 +6,7 @@ import inspect
 import logging
 import os
 import uuid
-from typing import Any, AsyncIterator, Dict, Optional
+from typing import Any, AsyncIterator, Dict, Mapping, Optional
 
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.runners.utils import (
@@ -85,7 +85,11 @@ class LangChainRunner(BaseRunner):
             payload = self._prepare_with_replay(input_data)
             result = await self._invoke_agent(payload, config=config, context=native_context)
 
-        return {"output": self._extract_output(result)}
+        output = {"output": self._extract_output(result)}
+        usage = self._extract_usage(result)
+        if usage:
+            output["usage"] = usage
+        return output
 
     async def stream(self, input_data: Dict[str, Any]) -> AsyncIterator[Dict[str, Any]]:
         session_id = input_data.get("session_id") or str(uuid.uuid4())[:8]
@@ -449,9 +453,92 @@ class LangChainRunner(BaseRunner):
                 history_store.add_ai_message(content)
 
     @staticmethod
+    def _message_usage(message: Any) -> dict[str, Any]:
+        usage_metadata = getattr(message, "usage_metadata", None)
+        if isinstance(usage_metadata, Mapping):
+            input_token_details = usage_metadata.get("input_token_details")
+            output_token_details = usage_metadata.get("output_token_details")
+            return {
+                "input_tokens": int(usage_metadata.get("input_tokens") or 0),
+                "output_tokens": int(usage_metadata.get("output_tokens") or 0),
+                "total_tokens": int(
+                    usage_metadata.get("total_tokens")
+                    or (
+                        int(usage_metadata.get("input_tokens") or 0)
+                        + int(usage_metadata.get("output_tokens") or 0)
+                    )
+                ),
+                "input_token_details": (
+                    dict(input_token_details) if isinstance(input_token_details, Mapping) else {}
+                ),
+                "output_token_details": (
+                    dict(output_token_details) if isinstance(output_token_details, Mapping) else {}
+                ),
+            }
+
+        response_metadata = getattr(message, "response_metadata", None)
+        if isinstance(response_metadata, Mapping):
+            token_usage = response_metadata.get("token_usage")
+            if isinstance(token_usage, Mapping):
+                completion_details = token_usage.get("completion_tokens_details")
+                output_token_details = {}
+                if isinstance(completion_details, Mapping):
+                    reasoning_tokens = completion_details.get("reasoning_tokens")
+                    if reasoning_tokens is not None:
+                        output_token_details["reasoning"] = int(reasoning_tokens)
+                return {
+                    "input_tokens": int(token_usage.get("prompt_tokens") or 0),
+                    "output_tokens": int(token_usage.get("completion_tokens") or 0),
+                    "total_tokens": int(
+                        token_usage.get("total_tokens")
+                        or (
+                            int(token_usage.get("prompt_tokens") or 0)
+                            + int(token_usage.get("completion_tokens") or 0)
+                        )
+                    ),
+                    "input_token_details": {},
+                    "output_token_details": output_token_details,
+                }
+        return {}
+
+    @classmethod
+    def _extract_usage(cls, result: Any) -> dict[str, Any]:
+        if isinstance(result, dict):
+            direct_usage = result.get("usage")
+            if isinstance(direct_usage, Mapping):
+                return dict(direct_usage)
+
+            messages = result.get("messages")
+            if isinstance(messages, list):
+                for message in reversed(messages):
+                    usage = cls._message_usage(message)
+                    if usage:
+                        return usage
+
+        usage = cls._message_usage(result)
+        if usage:
+            return usage
+        return {}
+
+    @staticmethod
     def _extract_output(result: Any) -> str:
         if isinstance(result, dict):
-            return result.get("output", result.get("text", str(result)))
+            if "output" in result:
+                return result["output"]
+            if "text" in result:
+                return result["text"]
+            messages = result.get("messages")
+            if isinstance(messages, list) and messages:
+                last = messages[-1]
+                if isinstance(last, dict):
+                    return str(last.get("content", str(last)))
+                content = getattr(last, "content", None)
+                if content is not None:
+                    return str(content)
+            return str(result)
+        content = getattr(result, "content", None)
+        if content is not None:
+            return str(content)
         return str(result)
 
     def _extract_chunk(self, chunk: Any) -> tuple[Optional[str], Optional[str]]:
