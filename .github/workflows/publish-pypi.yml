@@ -9,7 +9,7 @@ on:
       ksadk_web_version:
         description: KsADK Web npm version to bundle
         required: false
-        default: latest
+        default: "0.2.11"
 
 permissions:
   contents: read
@@ -41,13 +41,10 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Sync KsADK Web static assets
-        run: make sync-ksadk-web-static
-        env:
-          KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || 'latest' }}
-
       - name: Run public release preflight
         run: make public-preflight
+        env:
+          PUBLIC_KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.2.11' }}
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

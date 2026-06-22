@@ -171,7 +171,7 @@ Export once. Observe anywhere.
 - 清理 README、CHANGELOG 和后续 PyPI 元数据中的环境特定表述，避免公开页面出现内部环境名、内部 header 或私有 endpoint 示例。
 - 为公开定位、敏感词和 PyPI metadata 增加回归测试，防止后续回退。
 - 本地 Web UI static 默认从 `@kingsoftcloud/ksadk-web@latest` 的 `dist-ksadk` 同步；共享 UI 源码只在 `ksadk-web` 维护。
-- PyPI 发布默认走 GitHub Actions Trusted Publishing，发布前同步最新 KSADK Web static 并执行 `make public-preflight`。
+- PyPI 发布默认走 GitHub Actions Trusted Publishing，发布前按发布候选固定同步 KSADK Web static，并执行 `make public-preflight`。
 
 ## Documentation
 

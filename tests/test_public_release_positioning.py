@@ -72,11 +72,13 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
 
     assert "id-token: write" in workflow
     assert "pypa/gh-action-pypi-publish@release/v1" in workflow
-    assert "make sync-ksadk-web-static" in workflow
     assert "make public-preflight" in workflow
+    assert "PUBLIC_KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.2.11' }}" in workflow
+    assert "default: \"0.2.11\"" in workflow
     assert "KSADK_WEB_VERSION ?= latest" in makefile
-    assert "public-build-check: clean-dist sync-ksadk-web-static" in makefile
-    assert "public-preflight: public-audit sync-ksadk-web-static public-test" in makefile
+    assert "PUBLIC_KSADK_WEB_VERSION ?= 0.2.11" in makefile
+    assert "public-build-check: clean-dist public-sync-ksadk-web-static" in makefile
+    assert "public-preflight: public-audit public-sync-ksadk-web-static public-test" in makefile
     assert "PYPI_API_TOKEN" not in workflow
     assert "password:" not in workflow
 
@@ -114,6 +116,8 @@ def test_public_release_materials_do_not_include_internal_environment_details():
     for relative_path in (
         "README.md",
         "CHANGELOG.md",
+        "docs/ksadk环境变量参考.md",
+        "docs/远程Agent运行时接口说明.md",
         "pyproject.toml",
         "ksadk/__init__.py",
     ):

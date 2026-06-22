@@ -37,7 +37,7 @@
 | `KSYUN_SECRET_KEY` | 是 | `KS3_SECRET_KEY` | 是 | 开发者 / CI Secret | 金山云 API / KS3 / KOP 签名 SK。 |
 | `KSYUN_ACCOUNT_ID` | 条件必传 | 无 | 否 | 开发者 / 平台账号 | 创建/查询/删除资源、权限预检查、个人版 KCR 用户名兜底等场景需要。 |
 | `KSYUN_REGION` | 否 | 无 | 否 | 开发者 / 平台 | 默认 `cn-beijing-6`。 |
-| `AGENTENGINE_SERVER_URL` | 否 | 无 | 否 | 平台 / 开发者 | 覆盖 AgentEngine Server 地址。内部账号/内网环境建议 `http://aicp.inner.api.ksyun.com`；公网账号通常不设置或使用 `https://aicp.api.ksyun.com`。 |
+| `AGENTENGINE_SERVER_URL` | 否 | 无 | 否 | 平台 / 开发者 | 覆盖 AgentEngine Server 地址。通常不需要设置；如使用专属或内网控制面，请填写平台提供的完整服务地址。 |
 | `AGENTENGINE_API_VERSION` | 否 | 无 | 否 | 平台 / 开发者 | 覆盖 KOP API version。 |
 | `AGENTENGINE_SIGN_SERVICE` | 否 | 无 | 否 | 平台 / 开发者 | 覆盖 KOP signing service。 |
 | `KSADK_AICP_ENDPOINT_MODE` | 否 | 无 | 否 | 平台 / 开发者 | AICP endpoint 选择策略，支持 `auto/detect/internal/inner/public`。内网环境可显式设为 `inner`，跳过自动探测。 |
@@ -76,7 +76,7 @@
 
 | 变量 | 是否必传 | 别名/兼容 | 敏感 | 配置方/来源 | 说明 |
 | --- | --- | --- | --- | --- | --- |
-| `KSADK_SKILL_SERVICE_URL` | 条件必传 | 无 | 否 | 平台 / Skill Service | 配置后 Runtime agent 才会从 Skill Center 拉取 skill。直连 REST 可用 `/agentengine/skill/api/v1`，AICP KOP 可用 `http://aicp.inner.api.ksyun.com`。 |
+| `KSADK_SKILL_SERVICE_URL` | 条件必传 | 无 | 否 | 平台 / Skill Service | 配置后 Runtime agent 才会从 Skill Center 拉取 skill。直连 REST 可用 `/agentengine/skill/api/v1`，AICP/KOP 场景请使用平台提供的服务地址。 |
 | `KSADK_SKILL_SERVICE_ENDPOINT` | 否 | 无 | 否 | 平台 / Skill Service | 未设置 `KSADK_SKILL_SERVICE_URL` 时的 AICP endpoint 覆盖，只写 host/path，不含 scheme。 |
 | `KSADK_SKILL_SERVICE_SCHEME` | 否 | 无 | 否 | 平台 / Skill Service | 未设置 `KSADK_SKILL_SERVICE_URL` 时的 AICP URL scheme 覆盖；内网 endpoint 默认会使用 `http`。 |
 | `KSADK_SKILL_SPACE_IDS` | 条件必传 | `SKILL_SPACE_ID` | 否 | Agent 创建/更新时注入 / Runner 环境 | 逗号分隔 space id；单 space 兼容变量为 `SKILL_SPACE_ID`。 |
@@ -165,7 +165,7 @@
 | `KSYUN_ACCESS_KEY` | CLI / KOP / KS3 / Skill Service fallback | 条件必传 | 未设置 | `KS3_ACCESS_KEY` | 是 | 开发者 / CI Secret / K8S Secret | 否 | 金山云 AK。启用云端资源操作、KS3、KOP 签名时需要。 |
 | `KSYUN_SECRET_KEY` | CLI / KOP / KS3 / Skill Service fallback | 条件必传 | 未设置 | `KS3_SECRET_KEY` | 是 | 开发者 / CI Secret / K8S Secret | 否 | 金山云 SK。 |
 | `KSYUN_ACCOUNT_ID` | CLI / KOP / 权限预检查 / Skill Service fallback | 条件必传 | 未设置 | 无 | 否 | 平台账号 / 开发者 | 否 | 账号 ID。资源管理、租户隔离、个人版 KCR 用户名兜底等场景需要。 |
-| `KSYUN_REGION` | CLI / KOP / KS3 / Skill Service fallback | 否 | `cn-beijing-6` | 无 | 否 | 开发者 / 平台 | 否 | 区域。跨环境、预发、生产联调建议显式设置。 |
+| `KSYUN_REGION` | CLI / KOP / KS3 / Skill Service fallback | 否 | `cn-beijing-6` | 无 | 否 | 开发者 / 平台 | 否 | 区域。跨环境或生产联调建议显式设置。 |
 | `KS_ACCESS_KEY_ID` | 旧 KingsoftCloudConfig | 条件必传 | 未设置 | 建议迁移到 `KSYUN_ACCESS_KEY` | 是 | 兼容旧配置 | 否 | 早期 SDK settings 读取的 AK；不与 `KSYUN_ACCESS_KEY` 自动互通。 |
 | `KS_SECRET_ACCESS_KEY` | 旧 KingsoftCloudConfig | 条件必传 | 未设置 | 建议迁移到 `KSYUN_SECRET_KEY` | 是 | 兼容旧配置 | 否 | 早期 SDK settings 读取的 SK；不与 `KSYUN_SECRET_KEY` 自动互通。 |
 | `KS_REGION` | 旧 KingsoftCloudConfig | 否 | `cn-beijing-6` | 建议迁移到 `KSYUN_REGION` | 否 | 兼容旧配置 | 否 | 早期 SDK settings 读取的 region；不与 `KSYUN_REGION` 自动互通。 |
@@ -303,14 +303,15 @@
 
 | 变量 | 作用层级 | 是否必传 | 默认值 | 别名/兼容 | 敏感 | 配置方/来源 | 是否业务自定义 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `AGENTENGINE_SERVER_URL` | CLI / API client | 否 | 自动探测：优先 `http://aicp.inner.api.ksyun.com`，不可达时回落 `https://aicp.api.ksyun.com` | 无 | 否 | 平台 / 开发者 | 否 | 覆盖 AgentEngine Server 地址。内部账号/内网环境建议显式设为 `http://aicp.inner.api.ksyun.com`；公网账号通常不设置或使用 `https://aicp.api.ksyun.com`。如果公网 AICP 返回 `InnerAccountCanOnlyAccessThroughIntranet`，客户端会自动切内网重试一次。 |
+| `AGENTENGINE_SERVER_URL` | CLI / API client | 否 | 自动探测平台默认控制面 | 无 | 否 | 平台 / 开发者 | 否 | 覆盖 AgentEngine Server 地址。通常不需要设置；如使用专属或内网控制面，请填写平台提供的完整服务地址。 |
 | `AGENTENGINE_API_VERSION` | CLI / API client | 否 | 内置版本 | 无 | 否 | 平台 / 开发者 | 否 | 覆盖 AgentEngine API version。 |
-| `AGENTENGINE_PRE_CONTROL_REGION` | CLI / API client | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 预发控制面 region 覆盖。 |
-| `AGENTENGINE_PRE_CUSTOM_SOURCE` | CLI / API client | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 预发 custom source 覆盖。 |
+| `AGENTENGINE_PRE_CONTROL_REGION` | CLI / API client | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 非默认控制面 region 覆盖，主要用于平台维护或受控环境验证。 |
+| `AGENTENGINE_PRE_CUSTOM_SOURCE` | CLI / API client | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 非默认 custom source 覆盖，主要用于平台维护或受控环境验证。 |
 | `KSADK_AICP_ENDPOINT_MODE` | AICP resolver | 否 | `auto` | 无 | 否 | 平台 / 开发者 | 否 | AICP endpoint 选择策略，支持 `auto/detect/internal/inner/public`。内网环境可显式设为 `inner`，跳过自动探测。 |
 | `AGENTENGINE_MODEL_ALLOWLIST` | CLI model / OpenClaw | 否 | 未设置 | `OPENCLAW_MODEL_ALLOWLIST` | 否 | 平台 / 开发者 | 否 | 模型列表过滤。OpenClaw 场景优先使用 `OPENCLAW_MODEL_ALLOWLIST`。 |
 | `AGENTENGINE_UI_DIR` | 本地 Web UI / Sessions | 否 | 未设置 | 无 | 否 | 本地开发者 | 否 | 本地 UI 静态目录覆盖，主要用于 Web/文件上传本地调试。 |
 | `KSADK_WEB_VERSION` | Hosted Web UI static sync | 否 | `latest` | 可显式设置 `0.2.7` / `v0.2.7` | 否 | 构建环境 / 开发者 | 否 | `make sync-ksadk-web-static` 使用的 `@kingsoftcloud/ksadk-web` npm dist-tag 或版本，默认消费最新 release。 |
+| `PUBLIC_KSADK_WEB_VERSION` | 公开发布门禁 | 否 | `0.2.11` | 无 | 否 | 发布流水线 / Maintainer | 否 | `make public-preflight` 使用的 KSADK Web npm 版本。0.6.6 发布候选固定为 `0.2.11`，避免发布包在 npm `latest` 变化时打入错误静态资源。 |
 | `KSADK_WEB_PACKAGE` | Hosted Web UI static sync | 否 | `@kingsoftcloud/ksadk-web` | 无 | 否 | 构建环境 / 开发者 | 否 | 本地 UI static 同步使用的 npm 包名。 |
 | `KSADK_WEB_TARBALL_NAME` | Hosted Web UI static sync | 否 | 根据 `KSADK_WEB_VERSION` 派生 | 无 | 否 | 构建环境 | 否 | 仅在设置 `KSADK_WEB_RELEASE_URL` 时作为下载保存文件名；npm pack 模式会使用 npm 返回的真实 tarball 文件名。 |
 | `KSADK_WEB_RELEASE_URL` | Hosted Web UI static sync | 否 | 未设置 | 无 | 否 | 构建环境 / 开发者 | 否 | 可选兼容兜底。设置后跳过 npm pack，改从该 tarball URL 下载。 |

@@ -1,7 +1,7 @@
 # AgentEngine Makefile
 # 用于同步 KsADK Web static 和管理项目
 
-.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-docs-build public-test public-build-check public-preflight public-publish-check public-release-tag public-review openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size docs-check-wiki docs-prepare-source docs-docker-build docs-docker-push docs-helm-lint docs-helm-template docs-deploy docs-deploy-all docs-status docs-logs sync-ksadk-web-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend
+.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-docs-build public-test public-sync-ksadk-web-static public-build-check public-preflight public-publish-check public-release-tag public-review openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size docs-check-wiki docs-prepare-source docs-docker-build docs-docker-push docs-helm-lint docs-helm-template docs-deploy docs-deploy-all docs-status docs-logs sync-ksadk-web-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend
 
 # 默认目标
 help:
@@ -361,13 +361,18 @@ public-test:
 	@echo "==> test"
 	@uv run pytest
 
-public-build-check: clean-dist sync-ksadk-web-static
+PUBLIC_KSADK_WEB_VERSION ?= 0.2.11
+
+public-sync-ksadk-web-static:
+	@$(MAKE) sync-ksadk-web-static KSADK_WEB_VERSION="$(PUBLIC_KSADK_WEB_VERSION)"
+
+public-build-check: clean-dist public-sync-ksadk-web-static
 	@echo "==> build and twine check"
 	@uv build
 	@uv run pytest tests/test_runtime_common_packaging.py::test_built_wheel_excludes_web_ui_node_modules -q
 	@uv run --extra dev python -m twine check dist/*
 
-public-preflight: public-audit sync-ksadk-web-static public-test public-docs-build public-build-check
+public-preflight: public-audit public-sync-ksadk-web-static public-test public-docs-build public-build-check
 	@echo "✅ public preflight passed"
 
 public-publish-check:

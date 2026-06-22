@@ -53,7 +53,7 @@
 ### 测试与发布
 
 - 新增模型策略、fallback、流式 fallback、OpenClaw env、Hermes env、LangChain patch、附件恢复、session 分页、Hosted UI 上传文件、workspace zip、终端 session 复用和终端 allowlist 覆盖测试。
-- 公开发布版本从 `0.6.5` 升级到 `0.6.6`，发布包继续通过 `make public-preflight` 同步 `@kingsoftcloud/ksadk-web@latest` 静态资源并执行 wheel 内容检查；本次发布候选对应 `@kingsoftcloud/ksadk-web@0.2.11` 静态 UI。
+- 公开发布版本从 `0.6.5` 升级到 `0.6.6`，发布包继续通过 `make public-preflight` 同步 KSADK Web 静态资源并执行 wheel 内容检查；本次发布候选固定使用 `PUBLIC_KSADK_WEB_VERSION=0.2.11` 对应的 `@kingsoftcloud/ksadk-web` 静态 UI。
 - `make public-preflight` 覆盖 secret audit、public path audit、全量 pytest、sdist/wheel build、wheel 内容检查和 `twine check`。
 - GitHub Release / PyPI / npm 发布仍由对应 GitHub workflow 执行，并需要等待 CI 门禁和人工确认。
 - 公开仓库审计规则补充受控白名单，允许受控文档引用与公开镜像仓库示例，并把 `docs/ksadk环境变量参考.md`、`docs/远程Agent运行时接口说明.md` 作为公开参考文档纳入门禁。

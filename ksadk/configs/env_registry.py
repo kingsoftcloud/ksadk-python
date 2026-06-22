@@ -192,6 +192,7 @@ ENV_VAR_REGISTRY: tuple[EnvVarSpec, ...] = (
     EnvVarSpec("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "tracing", "OTLP traces protocol; takes precedence over the generic protocol."),
     EnvVarSpec("OTEL_RESOURCE_ATTRIBUTES", "tracing", "OpenTelemetry resource attributes in key=value comma-separated form."),
     EnvVarSpec("OTEL_SERVICE_NAME", "tracing", "OpenTelemetry service name."),
+    EnvVarSpec("PUBLIC_KSADK_WEB_VERSION", "web", "KsADK Web npm version bundled by public release preflight.", "0.2.11"),
 )
 
 
