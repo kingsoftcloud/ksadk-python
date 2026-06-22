@@ -368,6 +368,74 @@ class LangGraphRunner(BaseRunner):
         )
         return self._agent.invoke(payload, **kwargs)
 
+    @staticmethod
+    def _message_usage(message: Any) -> dict[str, Any]:
+        usage_metadata = getattr(message, "usage_metadata", None)
+        if isinstance(usage_metadata, dict):
+            input_token_details = usage_metadata.get("input_token_details")
+            output_token_details = usage_metadata.get("output_token_details")
+            return {
+                "input_tokens": int(usage_metadata.get("input_tokens") or 0),
+                "output_tokens": int(usage_metadata.get("output_tokens") or 0),
+                "total_tokens": int(
+                    usage_metadata.get("total_tokens")
+                    or (
+                        int(usage_metadata.get("input_tokens") or 0)
+                        + int(usage_metadata.get("output_tokens") or 0)
+                    )
+                ),
+                "input_token_details": (
+                    dict(input_token_details) if isinstance(input_token_details, dict) else {}
+                ),
+                "output_token_details": (
+                    dict(output_token_details) if isinstance(output_token_details, dict) else {}
+                ),
+            }
+
+        response_metadata = getattr(message, "response_metadata", None)
+        if isinstance(response_metadata, dict):
+            token_usage = response_metadata.get("token_usage")
+            if isinstance(token_usage, dict):
+                completion_details = token_usage.get("completion_tokens_details")
+                output_token_details = {}
+                if isinstance(completion_details, dict):
+                    reasoning_tokens = completion_details.get("reasoning_tokens")
+                    if reasoning_tokens is not None:
+                        output_token_details["reasoning"] = int(reasoning_tokens)
+                return {
+                    "input_tokens": int(token_usage.get("prompt_tokens") or 0),
+                    "output_tokens": int(token_usage.get("completion_tokens") or 0),
+                    "total_tokens": int(
+                        token_usage.get("total_tokens")
+                        or (
+                            int(token_usage.get("prompt_tokens") or 0)
+                            + int(token_usage.get("completion_tokens") or 0)
+                        )
+                    ),
+                    "input_token_details": {},
+                    "output_token_details": output_token_details,
+                }
+        return {}
+
+    @classmethod
+    def _extract_usage(cls, result: Any) -> dict[str, Any]:
+        if isinstance(result, dict):
+            direct_usage = result.get("usage")
+            if isinstance(direct_usage, dict):
+                return dict(direct_usage)
+
+            messages = result.get("messages")
+            if isinstance(messages, list):
+                for message in reversed(messages):
+                    usage = cls._message_usage(message)
+                    if usage:
+                        return usage
+
+        usage = cls._message_usage(result)
+        if usage:
+            return usage
+        return {}
+
     async def invoke(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """调用 LangGraph 图
         
@@ -426,6 +494,9 @@ class LangGraphRunner(BaseRunner):
                 )
 
             output = {"output": self._extract_output(result), "raw": result}
+            usage = self._extract_usage(result)
+            if usage:
+                output["usage"] = usage
             metadata = await self._latest_checkpoint_metadata(config)
             if metadata:
                 output["metadata"] = metadata
