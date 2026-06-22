@@ -36,7 +36,7 @@ def test_client_error_log_redacts_url_query(caplog):
             details={"http_status": 500},
         )
 
-    assert "target=/" in caplog.text
+    assert "status=500" in caplog.text
     assert "example.com" not in caplog.text
     assert "Password=secret" not in caplog.text
 
@@ -52,7 +52,8 @@ def test_client_error_log_redacts_sensitive_response_body(caplog):
             details={"http_status": 500},
         )
 
-    assert "response body omitted" in caplog.text
+    assert "remote_error" in caplog.text
+    assert "response body omitted" not in caplog.text
     assert "password" not in caplog.text
     assert "token" not in caplog.text
     assert "secret" not in caplog.text
