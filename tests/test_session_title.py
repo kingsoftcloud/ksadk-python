@@ -67,3 +67,12 @@ def test_session_title_helpers_strip_inline_think_markup():
 
     assert title == "招聘助手能力"
     assert "<think" not in messages[-1]["content"]
+
+
+def test_session_title_helpers_replace_file_markup_without_regex_backtracking():
+    title = build_heuristic_title(
+        first_prompt="[[[[[[[[[[附件]]]]]]]]]] 请分析一下",
+        assistant_text="",
+    )
+
+    assert title == "附件分析"
