@@ -25,7 +25,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: uv sync --extra all
 
       - name: Sync KsADK Web static assets
         run: make public-sync-ksadk-web-static

@@ -363,7 +363,8 @@ public-docs-build:
 
 public-test:
 	@echo "==> test"
-	@uv run pytest
+	@uv sync --extra all
+	@uv run --extra all pytest
 
 PUBLIC_KSADK_WEB_VERSION ?= 0.2.11
 
