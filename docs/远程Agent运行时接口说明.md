@@ -320,7 +320,7 @@ curl -H "Authorization: Bearer <api_key>" \
       ]
     }
   ],
-  "model": "glm-5.1",
+  "model": "glm-5.2",
   "stream": true,
   "conversation": "conv_customer_001",
   "safety_identifier": "hash_user_001"
@@ -389,7 +389,7 @@ curl -H "Authorization: Bearer <api_key>" \
       ]
     }
   ],
-  "model": "glm-5.1",
+  "model": "glm-5.2",
   "stream": false
 }
 ```
@@ -471,7 +471,7 @@ logger.info(
       ]
     }
   ],
-  "model": "glm-5.1",
+  "model": "glm-5.2",
   "stream": false
 }
 ```
@@ -658,7 +658,7 @@ MCP/tool approval 场景按 OpenAI Responses 标准语义恢复。客户端应�
   "incomplete_details": null,
   "instructions": null,
   "metadata": {},
-  "model": "glm-5.1",
+  "model": "glm-5.2",
   "parallel_tool_calls": true,
   "temperature": null,
   "top_p": null,
@@ -786,7 +786,7 @@ KsADK 兼容扩展附件示例：
   "id": "chatcmpl-123",
   "object": "chat.completion",
   "created": 1710000000,
-  "model": "glm-5.1",
+  "model": "glm-5.2",
   "choices": [
     {
       "index": 0,
@@ -1268,11 +1268,11 @@ data: [DONE]
 {
   "Models": [
     {
-      "id": "glm-5.1",
-      "display_name": "glm-5.1"
+      "id": "glm-5.2",
+      "display_name": "glm-5.2"
     }
   ],
-  "Current": "glm-5.1",
+  "Current": "glm-5.2",
   "Source": "OPENAI_MODEL_NAME"
 }
 ```
