@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import mimetypes
 import io
+import mimetypes
 import zipfile
 from collections.abc import Callable
 from datetime import datetime, timezone

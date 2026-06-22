@@ -48,3 +48,19 @@ def test_export_workspace_zip_does_not_follow_symlink_escape(monkeypatch, tmp_pa
         names = set(archive.namelist())
         assert "safe.txt" in names
         assert "leak.txt" not in names
+
+
+def test_workspace_raw_export_zip_route_matches_public_contract(monkeypatch, tmp_path: Path):
+    client, workspace = _client_with_workspace(monkeypatch, tmp_path)
+    assets = workspace / "slide-deck"
+    assets.mkdir()
+    (assets / "deck.md").write_text("# hello", encoding="utf-8")
+
+    response = client.get("/_ksadk/workspace/v1/export-zip", params={"path": "slide-deck"})
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/zip")
+    assert "workspace-slide-deck.zip" in response.headers["content-disposition"]
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        assert archive.namelist() == ["slide-deck/deck.md"]
+        assert archive.read("slide-deck/deck.md") == b"# hello"
