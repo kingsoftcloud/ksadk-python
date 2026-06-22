@@ -11,7 +11,7 @@ PyPI publication.
 | License | Apache-2.0 |
 | Python repository | kingsoftcloud/ksadk-python |
 | Web UI repository | kingsoftcloud/ksadk-web |
-| Python package version | 0.6.4 |
+| Python package version | 0.6.6 |
 | Public docs URL | https://kingsoftcloud.github.io/ksadk-python/ |
 | Package metadata repository URL | https://github.com/kingsoftcloud/ksadk-python |
 | Package metadata documentation URL | https://kingsoftcloud.github.io/ksadk-python/ |
@@ -40,7 +40,7 @@ changes.
 ## Required Evidence Before Approval
 
 - `make public-preflight` exits successfully.
-- `make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.6.4` confirms
+- `make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.6.6` confirms
   the target version is not already on PyPI.
 - GitHub PR checks are green on the reviewed commit.
 - Release notes and `CHANGELOG.md` were reviewed.

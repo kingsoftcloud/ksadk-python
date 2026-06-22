@@ -12,6 +12,12 @@ put real values in local `.env` files or CI secrets.
 | `OPENAI_BASE_URL` | provider base URL, usually ending in `/v1` |
 | `OPENAI_API_BASE` | compatibility alias for `OPENAI_BASE_URL` |
 | `OPENAI_MODEL_NAME` | default model name used by local runners and UI |
+| `AGENTENGINE_MODEL_POLICY_JSON` | model policy JSON injected by hosted runtimes to declare primary / multimodal / fallback defaults |
+| `OPENAI_FALLBACK_MODEL_NAME` | compatibility fallback model variable read by Hermes-style runtimes |
+| `HERMES_FALLBACK_MODEL` | explicit Hermes fallback model override |
+| `OPENCLAW_DEFAULT_MODEL` | explicit OpenClaw default model override |
+| `OPENCLAW_FALLBACK_MODEL` | explicit OpenClaw fallback model override |
+| `OPENCLAW_IMAGE_MODEL` | explicit OpenClaw multimodal / image model override |
 | `MODEL_NAME` | compatibility alias used by some projects |
 
 Example:
@@ -21,6 +27,12 @@ OPENAI_API_KEY=sk-test
 OPENAI_BASE_URL=https://api.example.com/v1
 OPENAI_MODEL_NAME=my-model
 ```
+
+Hosted deployments can inject a shared policy through
+`AGENTENGINE_MODEL_POLICY_JSON`. In 0.6.6, model policy v1 defaults to
+`glm-5.2` as the primary model, `kimi-k2.7-code` as the multimodal model, and
+`deepseek-v4-pro` as the fallback model. Explicit request fields and explicit
+environment-variable overrides still take precedence over policy defaults.
 
 ## Project And Local UI
 

@@ -101,7 +101,7 @@ cancel 和 model listing。公开 API 客户端优先使用 OpenAI 兼容的 `/v
 | session | 创建、获取、列出、删除会话 |
 | events | 列出或订阅 run events |
 | run | 调用或取消 Agent run |
-| files | 上传文件和管理 workspace 文件 |
+| files | 上传文件、下载附件内容、读取 workspace 文件和导出 workspace archive |
 | bootstrap | 获取 UI bootstrap metadata |
 
 ## Workspace Files
@@ -114,6 +114,12 @@ workspace routes。
 - 新增或更新文件。
 - 允许时删除文件。
 - 支持时导出 workspace archive。
+
+Hosted UI 下载类 surface 通常包括：
+
+- `GET /agentengine/api/v1/AttachmentContent`
+- `GET /agentengine/api/v1/GetWorkspaceFileContent`
+- `GET /agentengine/api/v1/ExportWorkspaceZip`
 
 所有路径都应是 workspace root 下的相对路径。公开示例不要暴露宿主机绝对路径。
 
@@ -163,4 +169,3 @@ Accept: text/event-stream
 公开示例不得包含私有 endpoint hostname、真实 API key、gateway token、cookie、
 kdocs token、内部 forwarded header、kubeconfig 路径、集群名称、私有镜像
 registry、客户数据、session id 或 workspace 路径。
-

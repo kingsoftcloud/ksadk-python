@@ -33,6 +33,8 @@
 - 修复终端执行 allowlist 匹配过复杂、容易误判的问题，统一按共享策略做命令匹配与错误提示。
 - 修复 Hosted UI 上传文件在本地 runtime 中只能看到 `ae-upload://` 引用、无法读取真实内容的问题。
 - 修复 session/event 列表缺少总数和分页字段，导致 UI 无法稳定展示历史会话、历史事件或长任务恢复状态的问题。
+- 修复 0.6.6 发布候选漏打 `env_options.py`、`reasoning_markup.py`、`terminal_exec_policy.py` 模块，导致部分 CLI、conversation runtime 和终端策略导入失败的问题。
+- 修复 Python 3.10 环境下 workspace files router 使用 `datetime.UTC` 带来的兼容性问题。
 
 ### 测试与发布
 
@@ -40,6 +42,8 @@
 - 公开发布版本从 `0.6.5` 升级到 `0.6.6`，发布包继续通过 `make public-preflight` 同步 `@kingsoftcloud/ksadk-web@latest` 静态资源并执行 wheel 内容检查；本次发布应先完成 `@kingsoftcloud/ksadk-web@0.2.10` 的 npm release。
 - `make public-preflight` 已覆盖 secret audit、public path audit、全量 pytest、sdist/wheel build 和 `twine check`；0.6.6 wheel/sdist 检查通过。
 - 这是 Hermes/OpenClaw 默认镜像重建前置版本；镜像构建应固定 `KSADK_PACKAGE_SPEC=ksadk==0.6.6`，再走 staging E2E、GitHub Actions / PyPI Trusted Publishing 和环境门禁。
+- 公开仓库审计规则补充受控白名单，允许受控文档引用与公开镜像仓库示例，并把 `docs/ksadk环境变量参考.md`、`docs/远程Agent运行时接口说明.md` 作为公开参考文档纳入门禁。
+- README 的发布表述在 0.6.6 真正发布前保持候选态文案，避免公开页面提前显示“已发布”，同时保留发布后 wording 的测试兼容。
 
 ## [0.6.5] - 2026-06-15
 

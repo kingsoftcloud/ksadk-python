@@ -1899,6 +1899,7 @@ OpenClaw 会额外起一个本地 `workspace_files_app` sidecar，然后由 gate
 - Hermes 的 `/_ksadk/terminal/ws`
 - `GET /agentengine/api/v1/AttachmentContent`
 - `GET /agentengine/api/v1/GetWorkspaceFileContent`
+- `GET /agentengine/api/v1/ExportWorkspaceZip`
 - Hosted UI action 白名单：
   - `GetAgentUiBootstrap`
   - `CreateSession`
@@ -1927,7 +1928,7 @@ OpenClaw 会额外起一个本地 `workspace_files_app` sidecar，然后由 gate
 不要假设下列内容一定是公网 contract：
 
 - 任意 `/agentengine/api/v1/*` 路径
-- runtime 本地存在但未进入 Hosted UI action 白名单的 UI 辅助路径，例如 `ExportWorkspaceZip`、Workspace HTML 预览路径
+- runtime 本地存在但未进入 Hosted UI action 白名单的 UI 辅助路径，例如 Workspace HTML 预览路径
 - `/debug/*`、`/builder/*`、`/traces`、`eval_sets`、`eval_results` 等开发 / 调试 / 内部辅助入口
 - 任意 Pod 内部监听端口
 - OpenClaw 上游项目的全部原生 API

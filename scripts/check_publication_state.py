@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -74,8 +75,58 @@ def _pypi_version_exists(project: str, version: str) -> bool:
     return True
 
 
+def _github_repo_from_releases_url(url: str) -> str | None:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.hostname != "api.github.com":
+        return None
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) >= 4 and parts[0] == "repos" and parts[3] == "releases":
+        return f"{parts[1]}/{parts[2]}"
+    return None
+
+
+def _github_release_tags_via_gh(url: str) -> set[str]:
+    repo = _github_repo_from_releases_url(url)
+    if not repo:
+        raise RuntimeError("github releases: 无法从 URL 推导 gh release list 的 repo")
+    try:
+        result = subprocess.run(
+            [
+                "gh",
+                "release",
+                "list",
+                "--repo",
+                repo,
+                "--limit",
+                "200",
+                "--json",
+                "tagName",
+            ],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("github releases: gh CLI 不存在，且 GitHub API 已限流") from exc
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(
+            "github releases: GitHub API 已限流，且 gh release list 失败: "
+            f"{exc.stderr.strip() or exc.stdout.strip() or exc}"
+        ) from exc
+    data = json.loads(result.stdout or "[]")
+    if not isinstance(data, list):
+        raise RuntimeError("github releases: gh release list 响应不是 release 列表")
+    return {str(item.get("tagName") or "") for item in data if isinstance(item, dict)}
+
+
 def _github_release_tags(url: str) -> set[str]:
-    status, body = _open(url)
+    try:
+        status, body = _open(url)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 403:
+            return _github_release_tags_via_gh(url)
+        raise
     if status != 200:
         raise RuntimeError(f"github releases: 期望 HTTP 200，实际 {status}: {url}")
     data = json.loads(body)

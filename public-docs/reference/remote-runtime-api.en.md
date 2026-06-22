@@ -104,7 +104,7 @@ hosted UI surface.
 | session | create, get, list, delete sessions |
 | events | list or subscribe to run events |
 | run | invoke or cancel an agent run |
-| files | upload files and manage workspace files |
+| files | upload files, download attachment content, read workspace files, and export workspace archives |
 | bootstrap | fetch UI bootstrap metadata |
 
 ## Workspace Files
@@ -117,6 +117,12 @@ that enable the KsADK workspace surface.
 - add or update a file.
 - delete a file when allowed.
 - export a workspace archive when supported.
+
+Hosted UI download surfaces commonly include:
+
+- `GET /agentengine/api/v1/AttachmentContent`
+- `GET /agentengine/api/v1/GetWorkspaceFileContent`
+- `GET /agentengine/api/v1/ExportWorkspaceZip`
 
 Keep all paths relative to the workspace root. Do not expose host filesystem
 paths in public examples.
@@ -171,4 +177,3 @@ Public examples must not include private endpoint hostnames, real API keys,
 gateway tokens, cookies, kdocs tokens, internal forwarded headers, kubeconfig
 paths, cluster names, private image registries, customer data, session ids, or
 workspace paths.
-
