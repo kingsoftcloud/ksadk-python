@@ -668,3 +668,50 @@ async def test_adk_runner_invoke_forwards_attachment_results_via_state_delta(tmp
         "current_attachment_results": [{"display_name": "resume.pdf", "kind": "document"}],
         "has_current_files": True,
     }
+
+
+@pytest.mark.asyncio
+async def test_adk_runner_invoke_extracts_usage_from_final_event(tmp_path, monkeypatch):
+    from google.genai import types
+    from ksadk.runners.adk_runner import ADKRunner
+
+    detection = SimpleNamespace(
+        entry_point="agent.py",
+        agent_variable="root_agent",
+        name="demo-agent",
+    )
+    runner = ADKRunner(detection, str(tmp_path))
+    runner._agent = SimpleNamespace(name="demo-agent")
+
+    class _FakeRunner:
+        async def run_async(self, *, session_id, user_id, new_message, state_delta=None, run_config=None):
+            del session_id, user_id, new_message, state_delta, run_config
+            yield SimpleNamespace(
+                usage_metadata={
+                    "input_tokens": 12,
+                    "output_tokens": 5,
+                    "total_tokens": 17,
+                    "input_token_details": {},
+                    "output_token_details": {"reasoning": 2},
+                },
+                content=SimpleNamespace(parts=[types.Part(text="ok")]),
+            )
+
+    async def _fake_ensure_session(external_session_id=None):
+        del external_session_id
+        return "adk-session-usage"
+
+    monkeypatch.setattr(runner, "_ensure_session", _fake_ensure_session)
+    monkeypatch.setattr(runner, "_prepare_trace_metadata", lambda session_id: ("", [], "", "demo-agent"))
+    runner._runner = _FakeRunner()
+
+    result = await runner.invoke({"session_id": "external-session", "input": "hello"})
+
+    assert result["output"] == "ok"
+    assert result["usage"] == {
+        "input_tokens": 12,
+        "output_tokens": 5,
+        "total_tokens": 17,
+        "input_token_details": {},
+        "output_token_details": {"reasoning": 2},
+    }

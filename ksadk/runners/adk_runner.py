@@ -11,7 +11,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, Optional
+from typing import Any, AsyncIterator, Dict, Mapping, Optional
 
 from opentelemetry import trace
 
@@ -813,6 +813,72 @@ class ADKRunner(BaseRunner):
                 state_delta[key] = input_data.get(key)
         return state_delta
 
+    @staticmethod
+    def _normalize_usage_metadata(usage_metadata: Any) -> dict[str, Any]:
+        if usage_metadata is None:
+            return {}
+        if hasattr(usage_metadata, "model_dump"):
+            try:
+                usage_metadata = usage_metadata.model_dump(exclude_none=True)
+            except Exception:
+                usage_metadata = None
+        elif hasattr(usage_metadata, "dict"):
+            try:
+                usage_metadata = usage_metadata.dict()
+            except Exception:
+                usage_metadata = None
+        if not isinstance(usage_metadata, Mapping):
+            return {}
+
+        reasoning_tokens = usage_metadata.get("thoughts_token_count")
+        output_token_details = {}
+        if reasoning_tokens is not None:
+            try:
+                output_token_details["reasoning"] = int(reasoning_tokens)
+            except (TypeError, ValueError):
+                pass
+
+        if "input_tokens" in usage_metadata or "output_tokens" in usage_metadata:
+            input_tokens = int(usage_metadata.get("input_tokens") or 0)
+            output_tokens = int(usage_metadata.get("output_tokens") or 0)
+            total_tokens = int(usage_metadata.get("total_tokens") or (input_tokens + output_tokens))
+            input_token_details = usage_metadata.get("input_token_details")
+            normalized = {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": total_tokens,
+                "input_token_details": (
+                    dict(input_token_details) if isinstance(input_token_details, Mapping) else {}
+                ),
+                "output_token_details": output_token_details,
+            }
+            direct_output_details = usage_metadata.get("output_token_details")
+            if isinstance(direct_output_details, Mapping):
+                normalized["output_token_details"] = dict(direct_output_details)
+            return normalized
+
+        input_tokens = int(usage_metadata.get("prompt_token_count") or 0)
+        output_tokens = int(usage_metadata.get("candidates_token_count") or 0)
+        total_tokens = int(usage_metadata.get("total_token_count") or (input_tokens + output_tokens))
+        if not (input_tokens or output_tokens or total_tokens or output_token_details):
+            return {}
+        return {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
+            "input_token_details": {},
+            "output_token_details": output_token_details,
+        }
+
+    @classmethod
+    def _extract_event_usage(cls, event: Any) -> dict[str, Any]:
+        direct_usage = cls._normalize_usage_metadata(getattr(event, "usage_metadata", None))
+        if direct_usage:
+            return direct_usage
+        if isinstance(event, Mapping):
+            return cls._normalize_usage_metadata(event.get("usage") or event.get("usage_metadata"))
+        return {}
+
     async def invoke(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """调用 ADK Agent"""
         from google.genai import types
@@ -855,6 +921,7 @@ class ADKRunner(BaseRunner):
             final_response = ""
 
             events_list = []
+            usage: dict[str, Any] = {}
             async for event in self._runner.run_async(
                 session_id=session_id,
                 user_id="ksadk_user",
@@ -862,6 +929,9 @@ class ADKRunner(BaseRunner):
                 state_delta=state_delta or None,
             ):
                 events_list.append(event)
+                event_usage = self._extract_event_usage(event)
+                if event_usage:
+                    usage = event_usage
                 if hasattr(event, "content") and event.content:
                     if hasattr(event.content, "parts"):
                         for part in event.content.parts:
@@ -873,7 +943,10 @@ class ADKRunner(BaseRunner):
             # Set output.value for Langfuse top-level output display
             span.set_attribute("output.value", final_response[:5000] if final_response else "")
             span.set_attribute("agent.output", final_response[:500] if final_response else "")
-            return {"output": final_response, "events": events_list}
+            result = {"output": final_response, "events": events_list}
+            if usage:
+                result["usage"] = usage
+            return result
 
     async def stream(self, input_data: Dict[str, Any]) -> AsyncIterator[Dict[str, Any]]:
         """流式调用 ADK Agent
