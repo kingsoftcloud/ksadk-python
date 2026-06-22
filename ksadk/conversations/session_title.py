@@ -38,17 +38,37 @@ _ANALYZE_RE = re.compile(r"(分析|解读|评审|review|总结|说明|看下|看
 _PROMPT_FILLERS_RE = re.compile(
     r"^(你好|您好|请问|请|帮我|麻烦|看看这个|看看|看下|分析一下|分析|介绍一下|介绍|解释一下|解释|总结一下|总结|直接开始分析吧|直接开始|这里还有|这边有|给我看下)+",
 )
-_FILE_MARKUP_RE = re.compile(
-    r"(\[[^\]]*(上传文件|上传文件引用|附件)[^\]]*\]|#+\s*附件\s*[-:：]\s*[^\n]+)",
-    re.IGNORECASE,
-)
+_FILE_MARKER_WORDS = ("上传文件", "上传文件引用", "附件")
+
+
+def _replace_file_markup(text: str) -> str:
+    segments: list[str] = []
+    for line in str(text or "").splitlines():
+        stripped = line.lstrip("#").strip()
+        if stripped.startswith("附件") and any(sep in stripped for sep in ("-", ":", "：")):
+            segments.append(" 附件 ")
+            continue
+
+        current = line
+        while "[" in current and "]" in current:
+            start = current.find("[")
+            end = current.find("]", start + 1)
+            if end < 0:
+                break
+            bracketed = current[start : end + 1]
+            if any(word in bracketed for word in _FILE_MARKER_WORDS):
+                current = f"{current[:start]} 附件 {current[end + 1:]}"
+            else:
+                break
+        segments.append(current)
+    return "\n".join(segments)
 
 
 def _normalize_source_text(text: str) -> str:
     value = strip_reasoning_markup(str(text or "")[:SESSION_TITLE_SOURCE_SCAN_LIMIT]).strip()
     if not value:
         return ""
-    value = _FILE_MARKUP_RE.sub(" 附件 ", value)
+    value = _replace_file_markup(value)
     value = re.sub(r"\s+", " ", value)
     return value.strip()
 
@@ -83,7 +103,7 @@ def _truncate_title(text: str) -> str:
 
 def build_fallback_title(text: str) -> str:
     value = _normalize_source_text(text)
-    value = _FILE_MARKUP_RE.sub(" 附件 ", value)
+    value = _replace_file_markup(value)
     value = re.sub(r"\s+", " ", value).strip()
     return _truncate_title(value)
 
