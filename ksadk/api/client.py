@@ -406,10 +406,9 @@ class AgentEngineClient:
                 continue
         log_fn = logger.debug if self._is_auth_related_error_details(details) else logger.error
         log_fn(
-            "Request failed: method=%s, status=%s, error=%s",
+            "Request failed: method=%s, status=%s",
             method,
             status_code,
-            self._safe_log_error_category(details=details),
         )
 
     @staticmethod
@@ -430,11 +429,6 @@ class AgentEngineClient:
         )
         message = " ".join(message.split())[:200]
         return f"{code}: {message}" if code else message
-
-    @staticmethod
-    def _safe_log_error_category(*, details: Dict[str, Any]) -> str:
-        code = str(details.get("remote_error_code") or details.get("code") or "").strip()
-        return code[:80] if code else "remote_error"
 
     def _build_headers(self, request_id: str = "", action: str = "", kop_mode: bool = False) -> Dict[str, str]:
         if not request_id:
