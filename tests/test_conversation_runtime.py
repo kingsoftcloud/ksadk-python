@@ -24,7 +24,9 @@ from ksadk.conversations.runtime import (
     append_context_checkpoint_event,
     append_run_checkpoint_event,
     append_run_resume_event,
+    build_chat_completions_payload,
     build_compaction_sse_event,
+    build_responses_payload,
     build_run_input,
     compact_conversation_history,
     extract_responses_resume_input,
@@ -97,6 +99,20 @@ class _CheckpointMetadataRunner(_StubRunner):
                         }
                     },
                 }
+            },
+        }
+
+
+class _UsageRunner(_StubRunner):
+    async def invoke(self, input_data: dict) -> dict:
+        self.calls.append(input_data)
+        return {
+            "output": "assistant says hi",
+            "usage": {
+                "input_tokens": 8,
+                "output_tokens": 13,
+                "total_tokens": 21,
+                "output_token_details": {"reasoning": 5},
             },
         }
 
@@ -3374,6 +3390,78 @@ async def test_invoke_conversation_once_records_runner_checkpoint_metadata(monke
     assert checkpoint_events[0].metadata["checkpoint_id"] == "ckpt-1"
     assert checkpoint_events[0].metadata["framework_ref"]["langgraph"]["thread_id"] == "tenant:agent:sess-1"
     assert result["metadata"]["agentengine"]["framework_ref"]["langgraph"]["checkpoint_id"] == "ckpt-1"
+
+
+@pytest.mark.asyncio
+async def test_invoke_conversation_once_preserves_runner_usage(monkeypatch):
+    service = InMemorySessionService()
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-usage")
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    runner = _UsageRunner()
+    _, result = await invoke_conversation_once(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-usage",
+        messages=[{"role": "user", "content": "hello"}],
+        model="demo-model",
+        prepare_runner=lambda active_runner, model: active_runner.prepare_for_request(model),
+    )
+
+    assert result["usage"] == {
+        "input_tokens": 8,
+        "output_tokens": 13,
+        "total_tokens": 21,
+        "output_token_details": {"reasoning": 5},
+    }
+    assert result["metadata"]["usage"] == result["usage"]
+
+
+def test_build_chat_completions_payload_uses_real_usage_from_metadata():
+    payload = build_chat_completions_payload(
+        output_text="assistant says hi",
+        model="demo-model",
+        session_id="sess-usage",
+        metadata={
+            "usage": {
+                "input_tokens": 8,
+                "output_tokens": 13,
+                "total_tokens": 21,
+                "output_token_details": {"reasoning": 5},
+            }
+        },
+    )
+
+    assert payload["usage"] == {
+        "prompt_tokens": 8,
+        "completion_tokens": 13,
+        "total_tokens": 21,
+        "completion_tokens_details": {"reasoning_tokens": 5},
+    }
+
+
+def test_build_responses_payload_uses_real_usage_from_metadata():
+    payload = build_responses_payload(
+        output_text="assistant says hi",
+        model="demo-model",
+        session_id="sess-usage",
+        metadata={
+            "usage": {
+                "input_tokens": 8,
+                "output_tokens": 13,
+                "total_tokens": 21,
+                "output_token_details": {"reasoning": 5},
+            }
+        },
+    )
+
+    assert payload["usage"] == {
+        "input_tokens": 8,
+        "output_tokens": 13,
+        "total_tokens": 21,
+        "output_token_details": {"reasoning": 5},
+    }
 
 
 @pytest.mark.asyncio

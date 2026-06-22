@@ -153,6 +153,26 @@ class _SplitInlineThinkTagStreamingAgent(_DummyAgent):
         }
 
 
+class _UsageMessage:
+    def __init__(self):
+        self.content = "ok"
+        self.usage_metadata = {
+            "input_tokens": 8,
+            "output_tokens": 13,
+            "total_tokens": 21,
+            "input_token_details": {},
+            "output_token_details": {"reasoning": 5},
+        }
+
+
+class _UsageAgent(_DummyAgent):
+    async def ainvoke(self, state, config=None, context=None):
+        self.last_ainvoke_state = state
+        self.last_ainvoke_context = context
+        self.last_ainvoke_config = config
+        return {"messages": [_UsageMessage()]}
+
+
 def _make_runner(module=None) -> LangGraphRunner:
     detection = SimpleNamespace(entry_point="src/agent.py", agent_variable="root_agent")
     runner = LangGraphRunner(detection, ".")
@@ -195,6 +215,12 @@ def _make_inline_think_tag_streaming_runner() -> LangGraphRunner:
 def _make_split_inline_think_tag_streaming_runner() -> LangGraphRunner:
     runner = _make_runner()
     runner._agent = _SplitInlineThinkTagStreamingAgent()
+    return runner
+
+
+def _make_usage_runner() -> LangGraphRunner:
+    runner = _make_runner()
+    runner._agent = _UsageAgent()
     return runner
 
 
@@ -397,6 +423,21 @@ async def test_invoke_reports_latest_langgraph_checkpoint_ref_from_async_state_c
                 "checkpoint_id": "ckpt-async",
             }
         },
+    }
+
+
+@pytest.mark.asyncio
+async def test_invoke_extracts_usage_from_langchain_message_metadata():
+    runner = _make_usage_runner()
+
+    result = await runner.invoke({"session_id": "sess-usage", "input": "hello"})
+
+    assert result["usage"] == {
+        "input_tokens": 8,
+        "output_tokens": 13,
+        "total_tokens": 21,
+        "input_token_details": {},
+        "output_token_details": {"reasoning": 5},
     }
 
 

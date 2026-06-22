@@ -79,6 +79,82 @@ _MODEL_CATALOG_CACHE_TTL_SECONDS = 60.0
 _MODEL_CATALOG_CACHE: dict[tuple[str, str], tuple[float, list[dict[str, Any]]]] = {}
 
 
+def _normalize_usage_payload(usage: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(usage, Mapping):
+        return {}
+    normalized: dict[str, Any] = {}
+    for key in (
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "prompt_tokens",
+        "completion_tokens",
+    ):
+        value = usage.get(key)
+        if value is None:
+            continue
+        try:
+            normalized[key] = int(value)
+        except (TypeError, ValueError):
+            continue
+    for key in ("input_token_details", "output_token_details"):
+        value = usage.get(key)
+        if isinstance(value, Mapping):
+            normalized[key] = dict(value)
+    return normalized
+
+
+def _usage_from_metadata(metadata: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(metadata, Mapping):
+        return {}
+    return _normalize_usage_payload(metadata.get("usage"))
+
+
+def _responses_usage_payload(usage: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    normalized = _normalize_usage_payload(usage)
+    if not normalized:
+        return None
+    input_tokens = normalized.get("input_tokens", normalized.get("prompt_tokens", 0))
+    output_tokens = normalized.get("output_tokens", normalized.get("completion_tokens", 0))
+    total_tokens = normalized.get("total_tokens", input_tokens + output_tokens)
+    payload = {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+    }
+    if isinstance(normalized.get("input_token_details"), Mapping):
+        payload["input_token_details"] = dict(normalized["input_token_details"])
+    if isinstance(normalized.get("output_token_details"), Mapping):
+        payload["output_token_details"] = dict(normalized["output_token_details"])
+    return payload
+
+
+def _chat_usage_payload(usage: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    normalized = _normalize_usage_payload(usage)
+    if not normalized:
+        return None
+    prompt_tokens = normalized.get("prompt_tokens", normalized.get("input_tokens", 0))
+    completion_tokens = normalized.get("completion_tokens", normalized.get("output_tokens", 0))
+    total_tokens = normalized.get("total_tokens", prompt_tokens + completion_tokens)
+    payload = {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+    }
+    output_token_details = normalized.get("output_token_details")
+    if isinstance(output_token_details, Mapping) and output_token_details:
+        completion_details: dict[str, Any] = {}
+        reasoning_tokens = output_token_details.get("reasoning")
+        if reasoning_tokens is not None:
+            try:
+                completion_details["reasoning_tokens"] = int(reasoning_tokens)
+            except (TypeError, ValueError):
+                pass
+        if completion_details:
+            payload["completion_tokens_details"] = completion_details
+    return payload
+
+
 def _get_conversation_tracer() -> Any | None:
     try:
         from opentelemetry import trace
@@ -319,6 +395,7 @@ def build_responses_payload(
             output = [message_item, *output]
     else:
         output = [message_item]
+    usage = _responses_usage_payload(_usage_from_metadata(metadata))
     return {
         "id": response_id,
         "object": "response",
@@ -337,11 +414,7 @@ def build_responses_payload(
         "tools": [],
         "output": output,
         "output_text": output_text,
-        "usage": {
-            "input_tokens": 0,
-            "output_tokens": len(output_text),
-            "total_tokens": len(output_text),
-        },
+        "usage": usage,
         "session_id": session_id,
     }
 
@@ -429,6 +502,7 @@ def build_chat_completions_payload(
     session_id: str,
     metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    usage = _chat_usage_payload(_usage_from_metadata(metadata))
     payload = {
         "id": f"chatcmpl-{uuid.uuid4()}",
         "object": "chat.completion",
@@ -441,11 +515,7 @@ def build_chat_completions_payload(
                 "finish_reason": "stop",
             }
         ],
-        "usage": {
-            "prompt_tokens": 0,
-            "completion_tokens": len(output_text),
-            "total_tokens": len(output_text),
-        },
+        "usage": usage,
         "session_id": session_id,
     }
     if isinstance(metadata, Mapping) and metadata:
@@ -3059,6 +3129,7 @@ async def invoke_conversation_once(
             raise last_invoke_error
         result = result or {}
         output_text = strip_reasoning_markup(str(result.get("output", "")))
+        result_usage = _normalize_usage_payload(result.get("usage"))
         _set_conversation_output_attributes(span, output_text)
         result_agentengine_metadata = _extract_agentengine_metadata(result)
         assistant_metadata: dict[str, Any] = {
@@ -3073,6 +3144,8 @@ async def invoke_conversation_once(
             }
             if request_metadata_without_agentengine:
                 assistant_metadata["request_metadata"] = request_metadata_without_agentengine
+        if result_usage:
+            assistant_metadata["usage"] = result_usage
         if response_id:
             assistant_metadata["response_id"] = response_id
         checkpoint_args = _checkpoint_event_args_from_agentengine_metadata(
@@ -3136,6 +3209,9 @@ async def invoke_conversation_once(
                 **_merge_agentengine_metadata(prepared.request_metadata, result_agentengine_metadata),
             },
         }
+        if result_usage:
+            result_payload["usage"] = result_usage
+            result_payload["metadata"]["usage"] = result_usage
         if response_id:
             result_payload["response_id"] = response_id
         return prepared.session_id, result_payload
@@ -3307,6 +3383,7 @@ async def _iter_conversation_turn_events(
         responses_output: list[Any] = []
         responses_response_id: str | None = response_id
         runner_agentengine_metadata: dict[str, Any] = {}
+        stream_usage: dict[str, Any] = {}
         for attempt in range(2):
             try:
                 runtime_context.history = list(prepared.history)
@@ -3531,6 +3608,8 @@ async def _iter_conversation_turn_events(
                             final_text = str(chunk.get("output", ""))
                             if final_text:
                                 accumulated_text = final_text
+                            if isinstance(chunk.get("usage"), Mapping):
+                                stream_usage = _normalize_usage_payload(chunk.get("usage"))
                 break
             except asyncio.CancelledError:
                 await append_run_status_event(
@@ -3616,6 +3695,8 @@ async def _iter_conversation_turn_events(
         }
         if responses_output:
             assistant_metadata["responses_output"] = responses_output
+        if stream_usage:
+            assistant_metadata["usage"] = stream_usage
         if responses_response_id:
             assistant_metadata["response_id"] = responses_response_id
         _set_conversation_output_attributes(span, accumulated_text)
@@ -3660,6 +3741,7 @@ async def _iter_conversation_turn_events(
             "metadata": assistant_metadata,
             "responses_output": responses_output,
             "response_id": responses_response_id,
+            "usage": assistant_metadata.get("usage"),
         }
     finally:
         _finish_span()
