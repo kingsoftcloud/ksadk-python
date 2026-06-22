@@ -838,18 +838,32 @@ class ADKRunner(BaseRunner):
             except (TypeError, ValueError):
                 pass
 
+        input_token_details: dict[str, Any] = {}
+        cached_tokens = usage_metadata.get("cached_content_token_count")
+        if cached_tokens is not None:
+            try:
+                input_token_details["cached"] = int(cached_tokens)
+            except (TypeError, ValueError):
+                pass
+        tool_use_tokens = usage_metadata.get("tool_use_prompt_token_count")
+        if tool_use_tokens is not None:
+            try:
+                input_token_details["tool_use"] = int(tool_use_tokens)
+            except (TypeError, ValueError):
+                pass
+
         if "input_tokens" in usage_metadata or "output_tokens" in usage_metadata:
             input_tokens = int(usage_metadata.get("input_tokens") or 0)
             output_tokens = int(usage_metadata.get("output_tokens") or 0)
             total_tokens = int(usage_metadata.get("total_tokens") or (input_tokens + output_tokens))
-            input_token_details = usage_metadata.get("input_token_details")
+            direct_input_details = usage_metadata.get("input_token_details")
+            if isinstance(direct_input_details, Mapping):
+                input_token_details.update(dict(direct_input_details))
             normalized = {
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
                 "total_tokens": total_tokens,
-                "input_token_details": (
-                    dict(input_token_details) if isinstance(input_token_details, Mapping) else {}
-                ),
+                "input_token_details": input_token_details,
                 "output_token_details": output_token_details,
             }
             direct_output_details = usage_metadata.get("output_token_details")
@@ -860,24 +874,19 @@ class ADKRunner(BaseRunner):
         input_tokens = int(usage_metadata.get("prompt_token_count") or 0)
         output_tokens = int(usage_metadata.get("candidates_token_count") or 0)
         total_tokens = int(usage_metadata.get("total_token_count") or (input_tokens + output_tokens))
-        if not (input_tokens or output_tokens or total_tokens or output_token_details):
+        if not (input_tokens or output_tokens or total_tokens or input_token_details or output_token_details):
             return {}
         return {
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "total_tokens": total_tokens,
-            "input_token_details": {},
+            "input_token_details": input_token_details,
             "output_token_details": output_token_details,
         }
 
     @classmethod
     def _extract_event_usage(cls, event: Any) -> dict[str, Any]:
-        direct_usage = cls._normalize_usage_metadata(getattr(event, "usage_metadata", None))
-        if direct_usage:
-            return direct_usage
-        if isinstance(event, Mapping):
-            return cls._normalize_usage_metadata(event.get("usage") or event.get("usage_metadata"))
-        return {}
+        return cls._normalize_usage_metadata(getattr(event, "usage_metadata", None))
 
     async def invoke(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """调用 ADK Agent"""
@@ -991,6 +1000,7 @@ class ADKRunner(BaseRunner):
             state_delta = self._build_state_delta(input_data)
 
             accumulated_text = ""
+            usage: dict[str, Any] = {}
 
             # 使用 StreamingMode.SSE 启用真正的流式输出
             run_config = RunConfig(streaming_mode=StreamingMode.SSE)
@@ -1002,6 +1012,9 @@ class ADKRunner(BaseRunner):
                 state_delta=state_delta or None,
                 run_config=run_config,
             ):
+                event_usage = self._extract_event_usage(event)
+                if event_usage:
+                    usage = event_usage
                 # Only yield text delta if event is partial to avoid duplication of final summary
                 if hasattr(event, "content") and event.content and getattr(event, "partial", False):
                     if hasattr(event.content, "parts"):
@@ -1029,3 +1042,7 @@ class ADKRunner(BaseRunner):
             # Set output.value for Langfuse top-level output display
             span.set_attribute("output.value", accumulated_text[:5000] if accumulated_text else "")
             span.set_attribute("agent.output", accumulated_text[:500])
+            final_chunk: dict[str, Any] = {"output": accumulated_text, "type": "final"}
+            if usage:
+                final_chunk["usage"] = usage
+            yield final_chunk

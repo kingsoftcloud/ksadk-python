@@ -101,6 +101,24 @@ def _normalize_usage_payload(usage: Mapping[str, Any] | None) -> dict[str, Any]:
         value = usage.get(key)
         if isinstance(value, Mapping):
             normalized[key] = dict(value)
+    prompt_details = usage.get("prompt_tokens_details")
+    if isinstance(prompt_details, Mapping):
+        normalized["prompt_tokens_details"] = dict(prompt_details)
+        cached_tokens = prompt_details.get("cached_tokens")
+        if cached_tokens is not None:
+            try:
+                normalized.setdefault("input_token_details", {})["cached"] = int(cached_tokens)
+            except (TypeError, ValueError):
+                pass
+    completion_details = usage.get("completion_tokens_details")
+    if isinstance(completion_details, Mapping):
+        normalized["completion_tokens_details"] = dict(completion_details)
+        reasoning_tokens = completion_details.get("reasoning_tokens")
+        if reasoning_tokens is not None:
+            try:
+                normalized.setdefault("output_token_details", {})["reasoning"] = int(reasoning_tokens)
+            except (TypeError, ValueError):
+                pass
     return normalized
 
 
@@ -141,9 +159,26 @@ def _chat_usage_payload(usage: Mapping[str, Any] | None) -> dict[str, Any] | Non
         "completion_tokens": completion_tokens,
         "total_tokens": total_tokens,
     }
+    prompt_details = normalized.get("prompt_tokens_details")
+    if isinstance(prompt_details, Mapping):
+        payload["prompt_tokens_details"] = dict(prompt_details)
+    input_token_details = normalized.get("input_token_details")
+    if isinstance(input_token_details, Mapping) and input_token_details:
+        prompt_details = dict(payload.get("prompt_tokens_details") or {})
+        cached_tokens = input_token_details.get("cached")
+        if cached_tokens is not None:
+            try:
+                prompt_details["cached_tokens"] = int(cached_tokens)
+            except (TypeError, ValueError):
+                pass
+        if prompt_details:
+            payload["prompt_tokens_details"] = prompt_details
+    completion_details = normalized.get("completion_tokens_details")
+    if isinstance(completion_details, Mapping):
+        payload["completion_tokens_details"] = dict(completion_details)
     output_token_details = normalized.get("output_token_details")
     if isinstance(output_token_details, Mapping) and output_token_details:
-        completion_details: dict[str, Any] = {}
+        completion_details = dict(payload.get("completion_tokens_details") or {})
         reasoning_tokens = output_token_details.get("reasoning")
         if reasoning_tokens is not None:
             try:
@@ -3428,6 +3463,8 @@ async def _iter_conversation_turn_events(
                                     )
                             continue
                         if chunk_type == "responses_output":
+                            if isinstance(chunk.get("usage"), Mapping):
+                                stream_usage = _normalize_usage_payload(chunk.get("usage"))
                             raw_output = chunk.get("output")
                             responses_output = raw_output if isinstance(raw_output, list) else []
                             raw_response_id = chunk.get("response_id")

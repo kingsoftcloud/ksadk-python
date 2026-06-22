@@ -167,6 +167,23 @@ class _StreamingRunner(_StubRunner):
         yield {"type": "final", "output": "hello"}
 
 
+class _UsageStreamingRunner(_StreamingRunner):
+    async def stream(self, input_data: dict):
+        self.stream_calls.append(input_data)
+        yield {"type": "text", "delta": "hello"}
+        yield {
+            "type": "final",
+            "output": "hello",
+            "usage": {
+                "input_tokens": 8,
+                "output_tokens": 13,
+                "total_tokens": 21,
+                "input_token_details": {"cached": 4},
+                "output_token_details": {"reasoning": 5},
+            },
+        }
+
+
 class _CheckpointMetadataStreamingRunner(_StreamingRunner):
     async def stream(self, input_data: dict):
         self.stream_calls.append(input_data)
@@ -313,6 +330,30 @@ class _CompletedOutputStreamingRunner(_StreamingRunner):
                     "summary": [{"type": "summary_text", "text": "先查资料"}],
                 },
             ],
+        }
+        yield {"type": "final", "output": "需要查询。"}
+
+
+class _CompletedOutputUsageStreamingRunner(_CompletedOutputStreamingRunner):
+    async def stream(self, input_data: dict):
+        self.stream_calls.append(input_data)
+        yield {
+            "type": "responses_output",
+            "response_id": "resp_native_usage",
+            "output": [
+                {
+                    "id": "msg_123",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "需要查询。"}],
+                }
+            ],
+            "usage": {
+                "input_tokens": 9,
+                "output_tokens": 4,
+                "total_tokens": 13,
+                "output_token_details": {"reasoning": 2},
+            },
         }
         yield {"type": "final", "output": "需要查询。"}
 
@@ -3441,6 +3482,72 @@ def test_build_chat_completions_payload_uses_real_usage_from_metadata():
     }
 
 
+def test_build_chat_completions_payload_maps_cached_prompt_details():
+    payload = build_chat_completions_payload(
+        output_text="assistant says hi",
+        model="demo-model",
+        session_id="sess-usage",
+        metadata={
+            "usage": {
+                "input_tokens": 8,
+                "output_tokens": 13,
+                "total_tokens": 21,
+                "input_token_details": {"cached": 4},
+                "output_token_details": {"reasoning": 5},
+            }
+        },
+    )
+
+    assert payload["usage"] == {
+        "prompt_tokens": 8,
+        "completion_tokens": 13,
+        "total_tokens": 21,
+        "prompt_tokens_details": {"cached_tokens": 4},
+        "completion_tokens_details": {"reasoning_tokens": 5},
+    }
+
+
+def test_build_chat_completions_payload_preserves_official_usage_details():
+    payload = build_chat_completions_payload(
+        output_text="assistant says hi",
+        model="demo-model",
+        session_id="sess-usage",
+        metadata={
+            "usage": {
+                "prompt_tokens": 8,
+                "completion_tokens": 13,
+                "total_tokens": 21,
+                "prompt_tokens_details": {
+                    "cached_tokens": 4,
+                    "audio_tokens": 2,
+                },
+                "completion_tokens_details": {
+                    "reasoning_tokens": 5,
+                    "audio_tokens": 1,
+                    "accepted_prediction_tokens": 3,
+                    "rejected_prediction_tokens": 6,
+                },
+            }
+        },
+    )
+
+    assert payload["usage"] == {
+        "prompt_tokens": 8,
+        "completion_tokens": 13,
+        "total_tokens": 21,
+        "prompt_tokens_details": {
+            "cached_tokens": 4,
+            "audio_tokens": 2,
+        },
+        "completion_tokens_details": {
+            "reasoning_tokens": 5,
+            "audio_tokens": 1,
+            "accepted_prediction_tokens": 3,
+            "rejected_prediction_tokens": 6,
+        },
+    }
+
+
 def test_build_responses_payload_uses_real_usage_from_metadata():
     payload = build_responses_payload(
         output_text="assistant says hi",
@@ -3462,6 +3569,71 @@ def test_build_responses_payload_uses_real_usage_from_metadata():
         "total_tokens": 21,
         "output_token_details": {"reasoning": 5},
     }
+
+
+@pytest.mark.asyncio
+async def test_stream_conversation_turn_preserves_final_chunk_usage(monkeypatch):
+    service = InMemorySessionService()
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-stream-usage")
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    runner = _UsageStreamingRunner()
+    chunks = [
+        chunk
+        async for chunk in stream_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-stream-usage",
+            messages=[{"role": "user", "content": "hello"}],
+            model="demo-model",
+            prepare_runner=lambda active_runner, model: active_runner.prepare_for_request(model),
+        )
+    ]
+
+    completed_payload = _extract_sse_payload(chunks, "response.completed")
+    assert completed_payload["usage"] == {
+        "input_tokens": 8,
+        "output_tokens": 13,
+        "total_tokens": 21,
+        "input_token_details": {"cached": 4},
+        "output_token_details": {"reasoning": 5},
+    }
+    events = await service.get_events("sess-stream-usage")
+    assistant_event = next(event for event in events if event.event_type == "assistant_message")
+    assert assistant_event.metadata["usage"] == completed_payload["usage"]
+
+
+@pytest.mark.asyncio
+async def test_stream_responses_conversation_turn_preserves_responses_output_usage(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _CompletedOutputUsageStreamingRunner()
+
+    chunks = [
+        chunk
+        async for chunk in stream_responses_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-native-output-usage",
+            messages=[{"role": "user", "content": "查一下"}],
+            model="gpt-4o",
+            prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+            session_service_provider=lambda: service,
+        )
+    ]
+
+    completed_payload = _extract_sse_payload(chunks, "response.completed")
+    assert completed_payload["usage"] == {
+        "input_tokens": 9,
+        "output_tokens": 4,
+        "total_tokens": 13,
+        "output_token_details": {"reasoning": 2},
+    }
+    events = await service.get_events("sess-native-output-usage")
+    assistant_event = next(event for event in events if event.event_type == "assistant_message")
+    assert assistant_event.metadata["usage"] == completed_payload["usage"]
 
 
 @pytest.mark.asyncio
