@@ -65,6 +65,19 @@ def test_public_metadata_uses_runtime_platform_positioning():
     assert "Agent Development Kit" not in init_text
 
 
+def test_dev_extra_contains_public_docs_build_dependencies():
+    pyproject = tomllib.loads(_read("pyproject.toml"))
+    dev_dependencies = "\n".join(pyproject["project"]["optional-dependencies"]["dev"])
+
+    for dependency in (
+        "mkdocs>=",
+        "mkdocs-material>=",
+        "mkdocs-static-i18n>=",
+        "mkdocstrings[python]>=",
+    ):
+        assert dependency in dev_dependencies
+
+
 def test_changelog_marks_0_6_6_ready_for_authorized_release():
     changelog = _changelog_section("0.6.6")
 
