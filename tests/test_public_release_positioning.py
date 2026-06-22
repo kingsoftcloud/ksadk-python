@@ -134,6 +134,10 @@ def test_github_public_release_gate_workflows_reference_existing_targets():
     ]
     assert missing_targets == []
 
+    assert 'PUBLIC_KSADK_WEB_VERSION: "0.2.11"' in ci_workflow
+    assert ci_workflow.index("- name: Sync KsADK Web static assets") < ci_workflow.index(
+        "- name: Build package artifacts"
+    )
     assert ci_workflow.index("- name: Build package artifacts") < ci_workflow.index(
         "- name: Run public release gate tests"
     )

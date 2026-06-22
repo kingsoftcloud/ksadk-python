@@ -11,6 +11,8 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      PUBLIC_KSADK_WEB_VERSION: "0.2.11"
     steps:
       - uses: actions/checkout@v4
 
@@ -24,6 +26,9 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --extra dev
+
+      - name: Sync KsADK Web static assets
+        run: make public-sync-ksadk-web-static
 
       - name: Build package artifacts
         run: uv build
