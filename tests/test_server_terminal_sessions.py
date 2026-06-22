@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.hermes_terminal import TERMINAL_SUBPROTOCOL
+import ksadk.server.terminal_sessions as terminal_sessions
 from ksadk.server.terminal_sessions import TerminalSession
 
 
@@ -180,7 +181,7 @@ def test_legacy_terminal_websocket_keeps_ephemeral_cleanup_semantics(server_app,
 
 
 def test_terminal_tui_command_binds_product_resume_id(server_app, monkeypatch):
-    monkeypatch.setattr("ksadk.server.terminal_sessions.shutil.which", lambda command: f"/usr/bin/{command}")
+    monkeypatch.setattr(terminal_sessions.shutil, "which", lambda command: f"/usr/bin/{command}")
 
     session = TerminalSession(
         id="term-command",
@@ -206,7 +207,7 @@ def test_terminal_tui_command_binds_product_resume_id(server_app, monkeypatch):
 
 
 def test_terminal_tui_resume_flag_can_be_disabled(server_app, monkeypatch):
-    monkeypatch.setattr("ksadk.server.terminal_sessions.shutil.which", lambda command: f"/usr/bin/{command}")
+    monkeypatch.setattr(terminal_sessions.shutil, "which", lambda command: f"/usr/bin/{command}")
     monkeypatch.setenv("OPENCLAW_TERMINAL_RESUME_ENABLED", "false")
     monkeypatch.setenv("HERMES_TERMINAL_RESUME_ENABLED", "false")
 
