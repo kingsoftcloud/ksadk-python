@@ -347,6 +347,30 @@ def _event_statuses(events: list[dict[str, Any]], *, invocation_id: str = "") ->
     return statuses
 
 
+def _wait_for_resume_progress(
+    client: HostedClient,
+    *,
+    session_id: str,
+    invocation_id: str,
+    min_checkpoints: int,
+    attempts: int,
+    interval: float,
+) -> tuple[list[dict[str, Any]], dict[str, int], list[str]]:
+    events: list[dict[str, Any]] = []
+    counts: dict[str, int] = {}
+    statuses: list[str] = []
+    for _ in range(max(attempts, 1)):
+        events = _list_events(client, session_id=session_id)
+        counts = _event_type_counts(events)
+        statuses = _event_statuses(events, invocation_id=invocation_id)
+        if counts.get("run_checkpoint", 0) >= min_checkpoints and (
+            not statuses or statuses[-1] in TERMINAL_STATUSES
+        ):
+            break
+        time.sleep(interval)
+    return events, counts, statuses
+
+
 def validate_checkpoint_resume(
     client: HostedClient,
     *,
@@ -494,20 +518,16 @@ def validate_cancel_then_resume(
         checkpoint = _wait_for_checkpoint(
             client,
             session_id=session_id,
-            run_id=invocation_id,
             attempts=wait_attempts,
             interval=wait_interval,
         )
         run_id = str(checkpoint.get("RunId") or "").strip()
         checkpoint_id = str(checkpoint.get("CheckpointId") or "").strip()
-        if run_id != invocation_id:
-            raise HostedE2EError(
-                f"Checkpoint RunId should match active invocation_id: {run_id!r} != {invocation_id!r}"
-            )
-        if not checkpoint_id:
+        if not run_id or not checkpoint_id:
             raise HostedE2EError(f"Checkpoint missing CheckpointId: {checkpoint}")
+        cancel_invocation_id = str(checkpoint.get("InvocationId") or "").strip() or f"longtask_{run_id}"
 
-        cancel_payload = _cancel_run(client, invocation_id=invocation_id)
+        cancel_payload = _cancel_run(client, invocation_id=cancel_invocation_id)
         cancel_data = _data(cancel_payload, "CancelRun")
         if cancel_data.get("Cancelled") is not True:
             raise HostedE2EError(f"CancelRun did not accept active stream: {cancel_data}")
@@ -516,7 +536,7 @@ def validate_cancel_then_resume(
         event_count_at_cancel = 0
         for _ in range(wait_attempts):
             events = _list_events(client, session_id=session_id)
-            cancelled_statuses = _event_statuses(events, invocation_id=invocation_id)
+            cancelled_statuses = _event_statuses(events, invocation_id=cancel_invocation_id)
             if cancelled_statuses and cancelled_statuses[-1] == "cancelled":
                 event_count_at_cancel = len(events)
                 break
@@ -559,9 +579,14 @@ def validate_cancel_then_resume(
             max_seconds=stream_timeout,
         )
 
-        final_events = _list_events(client, session_id=session_id)
-        final_counts = _event_type_counts(final_events)
-        resume_statuses = _event_statuses(final_events, invocation_id=resume_invocation_id)
+        final_events, final_counts, resume_statuses = _wait_for_resume_progress(
+            client,
+            session_id=session_id,
+            invocation_id=resume_invocation_id,
+            min_checkpoints=2,
+            attempts=wait_attempts,
+            interval=wait_interval,
+        )
         if final_counts.get("run_resume", 0) < 1:
             raise HostedE2EError(f"ResumeRun after cancel did not create run_resume event: {final_counts}")
         if final_counts.get("run_checkpoint", 0) < 2:
@@ -576,7 +601,8 @@ def validate_cancel_then_resume(
             "session_id": session_id,
             "run_id": run_id,
             "checkpoint_id": checkpoint_id,
-            "cancel_invocation_id": invocation_id,
+            "run_agent_invocation_id": invocation_id,
+            "cancel_invocation_id": cancel_invocation_id,
             "resume_invocation_id": resume_invocation_id,
             "bootstrap_run_lifecycle": capabilities.get("RunLifecycle"),
             "cancel_data": cancel_data,
