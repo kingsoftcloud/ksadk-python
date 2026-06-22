@@ -125,7 +125,9 @@ def test_github_public_release_gate_workflows_reference_existing_targets():
     missing_tests = [path for path in referenced_tests if not (ROOT / path).is_file()]
     assert missing_tests == []
 
-    referenced_make_targets = re.findall(r"\bmake\s+([A-Za-z0-9_.-]+)", release_check_workflow)
+    referenced_make_targets = re.findall(
+        r"\bmake\s+([A-Za-z0-9_.-]+)", "\n".join([ci_workflow, release_check_workflow])
+    )
     assert "open-source-audit-dist" in referenced_make_targets
     missing_targets = [
         target

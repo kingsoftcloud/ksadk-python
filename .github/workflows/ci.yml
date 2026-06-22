@@ -51,7 +51,7 @@ jobs:
         run: uv run --extra dev python scripts/open_source_audit.py --target public-repo
 
       - name: Build and audit public docs
-        run: make public-docs-audit
+        run: make public-docs-build
 
       - name: Check package metadata
         run: uv run --extra dev python -m twine check dist/*
