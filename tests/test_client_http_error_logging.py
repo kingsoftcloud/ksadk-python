@@ -43,3 +43,21 @@ def test_client_error_log_redacts_url_query(caplog):
     assert "target=/" in caplog.text
     assert "example.com" not in caplog.text
     assert "Password=secret" not in caplog.text
+
+
+def test_client_error_log_redacts_sensitive_response_body(caplog):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+
+    with caplog.at_level(logging.ERROR, logger="ksadk.api.client"):
+        client._log_http_error(
+            method="POST",
+            full_url="http://example.com/?Action=GetAgent",
+            status_code=500,
+            resp_text='{"Message":"failed password=secret token=abc"}',
+            details={"message": "failed password=secret token=abc", "http_status": 500},
+        )
+
+    assert "password=<redacted>" in caplog.text
+    assert "token=<redacted>" in caplog.text
+    assert "secret" not in caplog.text
+    assert "abc" not in caplog.text
