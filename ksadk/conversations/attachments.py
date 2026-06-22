@@ -189,7 +189,11 @@ def read_resolved_attachment_bytes(
 ) -> Optional[bytes]:
     if storage_path is None:
         return None
-    return read_attachment_bytes(Path(str(storage_path)), size_limit=size_limit)
+    uploads_dir = resolve_uploads_dir().resolve()
+    resolved_path = Path(str(storage_path)).expanduser().resolve(strict=False)
+    if not _path_within_root(resolved_path, uploads_dir):
+        return None
+    return read_attachment_bytes(resolved_path, size_limit=size_limit)
 
 
 def classify_attachment_kind(mime_type: str, display_name: str) -> str:
