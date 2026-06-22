@@ -34,6 +34,7 @@ from ksadk.conversations.session_title import (
 )
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.server.api_models import AgentRunRequest
+from ksadk.server.terminal_sessions import TerminalSessionManager, register_terminal_routes
 from ksadk_runtime_common.workspace_files import (
     build_workspace_files_bootstrap,
     create_workspace_files_router,
@@ -158,6 +159,7 @@ def _detached_streaming_response(
 
 
 async def _shutdown_runner_resources():
+    terminal_manager.reset_for_tests()
     pending_streams = list(_DETACHED_STREAMS)
     for task in pending_streams:
         task.cancel()
@@ -252,6 +254,13 @@ def _workspace_root_dir() -> Path:
 _NATIVE_TUI_FRAMEWORKS = {"hermes", "openclaw"}
 
 
+def _current_framework() -> str:
+    if not runner:
+        return ""
+    detection_type = getattr(getattr(runner, "detection_result", None), "type", None)
+    return str(getattr(detection_type, "value", detection_type) or "").strip().lower()
+
+
 def _build_native_terminal_capability(framework: str) -> dict[str, Any]:
     enabled = str(framework or "").strip().lower() in _NATIVE_TUI_FRAMEWORKS
     return {
@@ -262,12 +271,18 @@ def _build_native_terminal_capability(framework: str) -> dict[str, Any]:
     }
 
 
+terminal_manager = TerminalSessionManager(
+    workspace_root_getter=_workspace_root_dir,
+    framework_getter=_current_framework,
+)
+
 app.include_router(
     create_workspace_files_router(
         root_getter=_workspace_root_dir,
         enabled_getter=lambda: workspace_files_enabled(default=True),
     )
 )
+register_terminal_routes(app, terminal_manager)
 
 
 def set_runner(r: BaseRunner):
