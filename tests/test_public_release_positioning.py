@@ -35,7 +35,10 @@ def test_public_readme_positions_ksadk_as_runtime_platform():
     assert "```mermaid" not in readme
     assert "```text" in readme
     assert "当前版本：" not in readme
-    assert "发布版本：`0.6.6`" in readme
+    assert (
+        "发布版本：`0.6.6`" in readme
+        or "当前源码版本：`0.6.6`。正式发布通过 GitHub Release 和 PyPI Trusted Publishing 提供。" in readme
+    )
 
 
 def test_public_metadata_uses_runtime_platform_positioning():
