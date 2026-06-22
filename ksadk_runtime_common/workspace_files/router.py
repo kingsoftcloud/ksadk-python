@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import io
 import mimetypes
+import zipfile
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, File, HTTPException, Query, Response, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from ksadk_runtime_common.workspace_files.bootstrap import (
     workspace_files_enabled,
@@ -101,6 +103,37 @@ def create_workspace_files_router(
             "Path": normalized,
             "Entries": [_entry_payload(root, entry) for entry in entries],
         }
+
+    @router.get("/export-zip")
+    async def export_workspace_zip(path: str = Query(".", alias="path")) -> StreamingResponse:
+        _ensure_enabled()
+        root = _resolve_workspace_root(root_getter)
+        normalized, target = _resolve_workspace_target(root, path, allow_root=True)
+        if not target.exists():
+            raise HTTPException(status_code=404, detail="workspace path not found")
+        if not target.is_dir():
+            raise HTTPException(status_code=400, detail="workspace path is not a directory")
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as archive:
+            for entry in sorted(target.rglob("*")):
+                if not entry.exists() or not entry.is_file() or entry.is_symlink():
+                    continue
+                try:
+                    resolved_entry = entry.resolve(strict=True)
+                except OSError:
+                    continue
+                if resolved_entry == root or root not in resolved_entry.parents:
+                    continue
+                archive.write(resolved_entry, resolved_entry.relative_to(root).as_posix())
+
+        buf.seek(0)
+        zip_name = f"workspace-{normalized.replace('/', '-')}.zip" if normalized != "." else "workspace.zip"
+        return StreamingResponse(
+            buf,
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{zip_name}"'},
+        )
 
     @router.head("/files/{file_path:path}")
     async def head_workspace_file(file_path: str) -> Response:
