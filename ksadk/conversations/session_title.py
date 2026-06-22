@@ -13,6 +13,7 @@ from ksadk.conversations.reasoning_markup import strip_reasoning_markup
 DEFAULT_SESSION_TITLE_TIMEOUT_MS = 8_000
 SESSION_TITLE_MAX_CHARS = 24
 HEURISTIC_SESSION_TITLE_SOURCE = "heuristic"
+SESSION_TITLE_SOURCE_SCAN_LIMIT = 8_000
 
 _TITLE_PROMPT = (
     "你是会话标题生成器。"
@@ -44,7 +45,7 @@ _FILE_MARKUP_RE = re.compile(
 
 
 def _normalize_source_text(text: str) -> str:
-    value = strip_reasoning_markup(str(text or "")).strip()
+    value = strip_reasoning_markup(str(text or "")[:SESSION_TITLE_SOURCE_SCAN_LIMIT]).strip()
     if not value:
         return ""
     value = _FILE_MARKUP_RE.sub(" 附件 ", value)
