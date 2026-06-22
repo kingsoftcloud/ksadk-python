@@ -108,10 +108,10 @@ def _github_release_tags_via_gh(url: str) -> set[str]:
             stderr=subprocess.PIPE,
         )
     except FileNotFoundError as exc:
-        raise RuntimeError("github releases: gh CLI 不存在，且 GitHub API 已限流") from exc
+        raise RuntimeError("github releases: gh CLI 不存在，且 GitHub API 当前不可用") from exc
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(
-            "github releases: GitHub API 已限流，且 gh release list 失败: "
+            "github releases: GitHub API 当前不可用，且 gh release list 失败: "
             f"{exc.stderr.strip() or exc.stdout.strip() or exc}"
         ) from exc
     data = json.loads(result.stdout or "[]")
@@ -124,7 +124,7 @@ def _github_release_tags(url: str) -> set[str]:
     try:
         status, body = _open(url)
     except urllib.error.HTTPError as exc:
-        if exc.code == 403:
+        if exc.code in {403, 429} or 500 <= exc.code < 600:
             return _github_release_tags_via_gh(url)
         raise
     if status != 200:

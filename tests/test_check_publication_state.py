@@ -203,3 +203,32 @@ def test_github_release_tags_falls_back_to_gh_cli_on_rate_limit(monkeypatch):
     assert module._github_release_tags(
         "https://api.github.com/repos/kingsoftcloud/ksadk-python/releases?per_page=100"
     ) == {"v0.6.5", "v0.6.4"}
+
+
+def test_github_release_tags_falls_back_to_gh_cli_on_transient_server_error(monkeypatch):
+    module = _load_module()
+
+    def fake_open(_url):
+        raise module.urllib.error.HTTPError(
+            url="https://api.github.com/repos/kingsoftcloud/ksadk-python/releases",
+            code=502,
+            msg="Bad Gateway",
+            hdrs=None,
+            fp=None,
+        )
+
+    def fake_run(argv, check, text, stdout, stderr):
+        assert argv[:5] == ["gh", "release", "list", "--repo", "kingsoftcloud/ksadk-python"]
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout='[{"tagName":"v0.6.5"},{"tagName":"v0.6.4"}]',
+            stderr="",
+        )
+
+    monkeypatch.setattr(module, "_open", fake_open)
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    assert module._github_release_tags(
+        "https://api.github.com/repos/kingsoftcloud/ksadk-python/releases?per_page=100"
+    ) == {"v0.6.5", "v0.6.4"}
