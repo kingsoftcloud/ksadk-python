@@ -25,6 +25,9 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev
 
+      - name: Build package artifacts
+        run: uv build
+
       - name: Run public release gate tests
         run: |
           uv run --extra dev pytest \
@@ -44,9 +47,6 @@ jobs:
 
       - name: Build and audit public docs
         run: make public-docs-audit
-
-      - name: Build package artifacts
-        run: uv build
 
       - name: Check package metadata
         run: uv run --extra dev python -m twine check dist/*

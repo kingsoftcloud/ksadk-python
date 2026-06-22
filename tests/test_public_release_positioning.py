@@ -134,6 +134,10 @@ def test_github_public_release_gate_workflows_reference_existing_targets():
     ]
     assert missing_targets == []
 
+    assert ci_workflow.index("- name: Build package artifacts") < ci_workflow.index(
+        "- name: Run public release gate tests"
+    )
+
 
 def test_source_repository_does_not_track_generated_ksadk_web_static():
     gitignore = _read(".gitignore")
