@@ -391,14 +391,14 @@ class AgentEngineClient:
             if self._http_error_log_suppressors:
                 self._http_error_log_suppressors.pop()
 
-    def _log_http_error(self, *, method: str, full_url: str, status_code: int, resp_text: str, details: Dict[str, Any]) -> None:
+    def _log_http_error(self, *, method: str, full_url: str, status_code: int, details: Dict[str, Any]) -> None:
         for suppressor in reversed(self._http_error_log_suppressors):
             try:
                 if suppressor(
                     method=method,
                     full_url=full_url,
                     status_code=status_code,
-                    resp_text=resp_text,
+                    resp_text="",
                     details=details,
                 ):
                     return
@@ -604,7 +604,6 @@ class AgentEngineClient:
                 method=method,
                 full_url=full_url,
                 status_code=response.status_code,
-                resp_text=resp_text,
                 details=details,
             )
             message = (
@@ -948,7 +947,6 @@ class AgentEngineClient:
                 method=method,
                 full_url=full_url,
                 status_code=response.status_code,
-                resp_text=resp_text,
                 details=details,
             )
             message = (
