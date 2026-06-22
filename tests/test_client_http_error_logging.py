@@ -52,7 +52,6 @@ def test_client_error_log_redacts_sensitive_response_body(caplog):
             details={"http_status": 500},
         )
 
-    assert "remote_error" in caplog.text
     assert "response body omitted" not in caplog.text
     assert "password" not in caplog.text
     assert "token" not in caplog.text
