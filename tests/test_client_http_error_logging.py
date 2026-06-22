@@ -54,10 +54,11 @@ def test_client_error_log_redacts_sensitive_response_body(caplog):
             full_url="http://example.com/?Action=GetAgent",
             status_code=500,
             resp_text='{"Message":"failed password=secret token=abc"}',
-            details={"message": "failed password=secret token=abc", "http_status": 500},
+            details={"http_status": 500},
         )
 
-    assert "password=<redacted>" in caplog.text
-    assert "token=<redacted>" in caplog.text
+    assert "response body omitted" in caplog.text
+    assert "password" not in caplog.text
+    assert "token" not in caplog.text
     assert "secret" not in caplog.text
     assert "abc" not in caplog.text

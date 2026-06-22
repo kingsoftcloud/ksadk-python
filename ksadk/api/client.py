@@ -410,7 +410,7 @@ class AgentEngineClient:
             method,
             self._safe_log_target(full_url),
             status_code,
-            self._safe_log_error_summary(details=details, resp_text=resp_text),
+            self._safe_log_error_summary(details=details),
         )
 
     @staticmethod
@@ -419,11 +419,11 @@ class AgentEngineClient:
         return parsed.path or "/"
 
     @staticmethod
-    def _safe_log_error_summary(*, details: Dict[str, Any], resp_text: str) -> str:
+    def _safe_log_error_summary(*, details: Dict[str, Any]) -> str:
         code = str(details.get("remote_error_code") or details.get("code") or "").strip()
         message = str(details.get("remote_error_message") or details.get("message") or "").strip()
         if not message:
-            message = "non-json response" if str(resp_text or "").strip() else "empty response"
+            message = "response body omitted"
         message = re.sub(
             r"(?i)(password|passwd|secret|token|access[_-]?key|api[_-]?key)\s*[:=]\s*[^,\s}\"]+",
             r"\1=<redacted>",

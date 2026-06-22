@@ -139,14 +139,7 @@ def resolve_attachment_storage_path(file_uri: str) -> Optional[Path]:
         return None
 
     if normalized_uri.startswith("local:"):
-        path = Path(normalized_uri[6:]).expanduser()
-        resolved = path.resolve()
-        uploads_dir = resolve_uploads_dir().resolve()
-        try:
-            resolved.relative_to(uploads_dir)
-        except ValueError:
-            return None
-        return resolved
+        return None
 
     if is_runtime_upload_uri(normalized_uri) or is_hosted_upload_uri(normalized_uri):
         file_id = parse_file_id(normalized_uri)
