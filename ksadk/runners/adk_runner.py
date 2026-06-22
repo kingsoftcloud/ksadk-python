@@ -15,7 +15,7 @@ from typing import Any, AsyncIterator, Dict, Optional
 
 from opentelemetry import trace
 
-from ksadk.conversations.attachments import classify_attachment_kind
+from ksadk.conversations.attachments import classify_attachment_kind, read_resolved_attachment_bytes
 from ksadk.conversations.model_context import supports_native_image_input
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.sessions.continuity import ADKSessionAdapter
@@ -766,10 +766,9 @@ class ADKRunner(BaseRunner):
             if data is None:
                 storage_path = att.get("storage_path")
                 if storage_path:
-                    try:
-                        data = Path(str(storage_path)).read_bytes()
-                    except Exception as e:
-                        logger.warning(f"Failed to load stored attachment {storage_path}: {e}")
+                    data = read_resolved_attachment_bytes(storage_path)
+                    if data is None:
+                        logger.warning("Failed to load stored attachment %s", storage_path)
 
             if data is None:
                 file_uri = att.get("file_uri", "")

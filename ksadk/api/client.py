@@ -15,7 +15,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Dict, Any, Sequence, Callable, Iterator
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import quote, unquote, urlparse, urlsplit, urlunsplit
 
 import requests
 import urllib3
@@ -408,10 +408,17 @@ class AgentEngineClient:
         log_fn(
             "Request failed: method=%s, url=%s, status=%s, body=%s",
             method,
-            full_url,
+            self._safe_log_url(full_url),
             status_code,
             resp_text,
         )
+
+    @staticmethod
+    def _safe_log_url(raw_url: str) -> str:
+        parsed = urlsplit(str(raw_url or ""))
+        if not parsed.scheme or not parsed.netloc:
+            return str(raw_url or "").split("?", 1)[0]
+        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
 
     def _build_headers(self, request_id: str = "", action: str = "", kop_mode: bool = False) -> Dict[str, str]:
         if not request_id:
@@ -556,7 +563,7 @@ class AgentEngineClient:
 
         retried_inner_endpoint = False
         while True:
-            logger.debug(f"Request: {method} {full_url}")
+            logger.debug("Request: %s %s", method, self._safe_log_url(full_url))
             response = session.request(
                 method=method,
                 url=full_url,
@@ -688,11 +695,8 @@ class AgentEngineClient:
     def _enterprise_instance_from_image_ref(image_ref: str) -> str | None:
         """Infer enterprise KCR instance name from a full image reference."""
         image = (image_ref or "").strip()
-        for prefix in ("http://", "https://"):
-            if image.startswith(prefix):
-                image = image[len(prefix):]
-                break
-        host = image.split("/", 1)[0].strip()
+        parsed = urlsplit(image if "://" in image else f"//{image}", allow_fragments=False)
+        host = (parsed.hostname or "").strip().lower()
         if host.endswith("-vpc.ksyunkcr.com"):
             return host[: -len("-vpc.ksyunkcr.com")] or None
         if host.endswith(".ksyunkcr.com") and not host.endswith("-vpc.ksyunkcr.com"):

@@ -26,3 +26,19 @@ def test_client_can_suppress_selected_http_error_logs(caplog):
             )
 
     assert "Request failed" not in caplog.text
+
+
+def test_client_error_log_redacts_url_query(caplog):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+
+    with caplog.at_level(logging.ERROR, logger="ksadk.api.client"):
+        client._log_http_error(
+            method="POST",
+            full_url="http://example.com/?Action=GetAgent&Password=secret",
+            status_code=500,
+            resp_text="failed",
+            details={"http_status": 500},
+        )
+
+    assert "http://example.com/" in caplog.text
+    assert "Password=secret" not in caplog.text

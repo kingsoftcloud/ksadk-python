@@ -127,6 +127,12 @@ def resolve_uploads_dir() -> Path:
     return uploads_dir
 
 
+def _path_within_root(path: Path, root: Path) -> bool:
+    resolved = path.expanduser().resolve(strict=False)
+    resolved_root = root.expanduser().resolve(strict=False)
+    return resolved == resolved_root or resolved_root in resolved.parents
+
+
 def resolve_attachment_storage_path(file_uri: str) -> Optional[Path]:
     normalized_uri = (file_uri or "").strip()
     if not normalized_uri:
@@ -147,11 +153,17 @@ def resolve_attachment_storage_path(file_uri: str) -> Optional[Path]:
         if not file_id:
             return None
 
+        uploads_dir = resolve_uploads_dir().resolve()
         restored = AttachmentStorageService().ensure_local_path(normalized_uri)
-        if restored is not None and restored.is_file():
-            return restored.resolve()
+        if restored is not None:
+            resolved = restored.resolve(strict=False)
+            if _path_within_root(resolved, uploads_dir) and resolved.is_file():
+                return resolved
 
-        for candidate in sorted(resolve_uploads_dir().glob(f"{file_id}*")):
+        safe_file_id = Path(file_id).name
+        if not safe_file_id:
+            return None
+        for candidate in sorted(uploads_dir.glob(f"{safe_file_id}*")):
             if candidate.is_file():
                 return candidate.resolve()
 
@@ -168,6 +180,16 @@ def read_attachment_bytes(storage_path: Optional[Path], *, size_limit: Optional[
         return storage_path.read_bytes()
     except OSError:
         return None
+
+
+def read_resolved_attachment_bytes(
+    storage_path: Any,
+    *,
+    size_limit: Optional[int] = None,
+) -> Optional[bytes]:
+    if storage_path is None:
+        return None
+    return read_attachment_bytes(Path(str(storage_path)), size_limit=size_limit)
 
 
 def classify_attachment_kind(mime_type: str, display_name: str) -> str:
@@ -558,8 +580,7 @@ def _load_attachment_bytes(attachment: Mapping[str, Any]) -> Optional[bytes]:
         return raw if len(raw) <= _MAX_PROCESS_BYTES else None
 
     storage_path_value = attachment.get("storage_path")
-    storage_path = Path(str(storage_path_value)) if storage_path_value else None
-    raw = read_attachment_bytes(storage_path, size_limit=_MAX_PROCESS_BYTES)
+    raw = read_resolved_attachment_bytes(storage_path_value, size_limit=_MAX_PROCESS_BYTES)
     if raw is not None:
         return raw
     return None
