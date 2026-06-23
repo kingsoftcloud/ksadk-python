@@ -13,6 +13,18 @@ from pathlib import Path
 from typing import Sequence
 
 
+REQUIRED_RUNTIME_COMMON_FILES = (
+    "ksadk_runtime_common/__init__.py",
+    "ksadk_runtime_common/workspace_files/__init__.py",
+    "ksadk_runtime_common/workspace_files/router.py",
+    "ksadk_runtime_common/memory_backend/__init__.py",
+    "ksadk_runtime_common/memory_backend/render.py",
+    "ksadk_runtime_common/memory_backend/providers/mem0.py",
+    "ksadk_runtime_common/memory_backend/providers/lancedb.py",
+    "ksadk_runtime_common/schemas/memory_backend_manifest.schema.json",
+)
+
+
 def run_audit(target: str, names: Sequence[str]) -> None:
     subprocess.run(
         [sys.executable, "scripts/open_source_audit.py", "--target", target, "--file-list", "-"],
@@ -39,6 +51,8 @@ def audit_sdist(path: Path) -> None:
             run_extracted_content_audit("sdist", Path(tmpdir))
     print(f"auditing sdist: {path} ({len(names)} files)")
     run_audit("sdist", names)
+    normalized = [_strip_sdist_root(name) for name in names]
+    audit_runtime_common_files(path, normalized)
 
 
 def audit_wheel(path: Path) -> None:
@@ -50,6 +64,20 @@ def audit_wheel(path: Path) -> None:
             run_extracted_content_audit("wheel", Path(tmpdir))
     print(f"auditing wheel: {path} ({len(names)} files)")
     run_audit("wheel", names)
+    audit_runtime_common_files(path, names)
+
+
+def _strip_sdist_root(name: str) -> str:
+    parts = name.split("/", 1)
+    return parts[1] if len(parts) == 2 else name
+
+
+def audit_runtime_common_files(path: Path, names: Sequence[str]) -> None:
+    name_set = set(names)
+    missing = [name for name in REQUIRED_RUNTIME_COMMON_FILES if name not in name_set]
+    if missing:
+        joined = "\n  - ".join(missing)
+        raise RuntimeError(f"{path} is missing required runtime common files:\n  - {joined}")
 
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:

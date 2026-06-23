@@ -13,6 +13,15 @@ def test_pyproject_uses_in_repo_runtime_common_source_package():
     assert "ksadk_runtime_common*" in pyproject
 
 
+def test_runtime_common_schema_uses_public_identifier():
+    schema = (
+        REPO_ROOT / "ksadk_runtime_common" / "schemas" / "memory_backend_manifest.schema.json"
+    ).read_text(encoding="utf-8")
+
+    assert "https://kingsoftcloud.github.io/ksadk-python/" in schema
+    assert "ezone.ksyun.com" not in schema
+
+
 def test_runtime_common_workspace_router_is_python310_compatible(tmp_path: Path):
     router_source = (REPO_ROOT / "ksadk_runtime_common" / "workspace_files" / "router.py").read_text(
         encoding="utf-8"
