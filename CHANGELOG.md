@@ -49,6 +49,7 @@
 - 修复 Python 3.10 环境下 workspace files router 使用 `datetime.UTC` 带来的兼容性问题。
 - 修复 E2B sandbox 可选依赖缺失时测试不能跳过的问题，降低最小开发环境运行公开测试的成本。
 - 修复公开仓库审计误拦截受控公开文档和受控外部引用的问题，并继续禁止内部 endpoint、私有 header、真实凭证和 kubeconfig 进入公开材料。
+- 修复 Hermes / OpenClaw `--dry-run` 在全局 dry-run 下无法读取 bootstrap 只读配置的问题；dry-run 现在会渲染实际将使用的运行时 artifact 与模型策略。
 
 ### 测试与发布
 
