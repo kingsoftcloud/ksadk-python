@@ -7,7 +7,7 @@
 ```bash
 make open-source-review
 make open-source-review-bundle
-make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.6.5
+make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.6.6
 ```
 
 ## GitHub

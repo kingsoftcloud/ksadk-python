@@ -7,7 +7,7 @@ BaseRunner - 运行时基类
 import inspect
 import os
 from abc import ABC, abstractmethod
-from typing import Any, AsyncIterator, Dict, Optional
+from typing import Any, AsyncIterator, Dict, Mapping, Optional
 
 from ksadk.sessions.continuity import RunnerSessionAdapter, TranscriptReplayAdapter
 
@@ -69,9 +69,13 @@ class BaseRunner(ABC):
         """在请求进入实际 runner 前同步模型或做必要刷新。"""
         self.sync_process_model_env(model)
 
-    def request_cancel(self, invocation_id: str) -> None:
-        """请求取消指定调用。默认 no-op，子类可 override 实现真正的取消。"""
-        pass
+    def request_cancel(self, invocation_id: str) -> str:
+        """请求取消指定调用。
+
+        返回值用于 API 层区分真实取消、未命中和不支持取消的边界。
+        子类可返回 ``accepted``、``not_found`` 或 ``unsupported``。
+        """
+        return "unsupported"
 
     async def close(self) -> None:
         """释放 runner 持有的运行期资源。"""
@@ -124,6 +128,98 @@ class BaseRunner(ABC):
             if platform_context.get(key) is not None
         }
         return native_context or None
+
+    @staticmethod
+    def _int_usage_value(value: Any) -> int:
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    @classmethod
+    def _message_usage(cls, message: Any) -> dict[str, Any]:
+        usage_metadata = getattr(message, "usage_metadata", None)
+        if isinstance(usage_metadata, Mapping):
+            input_tokens = cls._int_usage_value(usage_metadata.get("input_tokens"))
+            output_tokens = cls._int_usage_value(usage_metadata.get("output_tokens"))
+            input_token_details = usage_metadata.get("input_token_details")
+            output_token_details = usage_metadata.get("output_token_details")
+            if not any(
+                key in usage_metadata
+                for key in ("input_tokens", "output_tokens", "total_tokens")
+            ) and not (
+                isinstance(input_token_details, Mapping) and input_token_details
+            ) and not (
+                isinstance(output_token_details, Mapping) and output_token_details
+            ):
+                return {}
+            return {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": cls._int_usage_value(
+                    usage_metadata.get("total_tokens") or (input_tokens + output_tokens)
+                ),
+                "input_token_details": (
+                    dict(input_token_details) if isinstance(input_token_details, Mapping) else {}
+                ),
+                "output_token_details": (
+                    dict(output_token_details) if isinstance(output_token_details, Mapping) else {}
+                ),
+            }
+
+        response_metadata = getattr(message, "response_metadata", None)
+        if isinstance(response_metadata, Mapping):
+            token_usage = response_metadata.get("token_usage")
+            if isinstance(token_usage, Mapping):
+                input_tokens = cls._int_usage_value(token_usage.get("prompt_tokens"))
+                output_tokens = cls._int_usage_value(token_usage.get("completion_tokens"))
+                input_token_details: dict[str, Any] = {}
+                prompt_details = token_usage.get("prompt_tokens_details")
+                if isinstance(prompt_details, Mapping):
+                    cached_tokens = prompt_details.get("cached_tokens")
+                    if cached_tokens is not None:
+                        input_token_details["cached"] = cls._int_usage_value(cached_tokens)
+
+                output_token_details: dict[str, Any] = {}
+                completion_details = token_usage.get("completion_tokens_details")
+                if isinstance(completion_details, Mapping):
+                    reasoning_tokens = completion_details.get("reasoning_tokens")
+                    if reasoning_tokens is not None:
+                        output_token_details["reasoning"] = cls._int_usage_value(reasoning_tokens)
+                if not any(
+                    key in token_usage
+                    for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+                ) and not input_token_details and not output_token_details:
+                    return {}
+                return {
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "total_tokens": cls._int_usage_value(
+                        token_usage.get("total_tokens") or (input_tokens + output_tokens)
+                    ),
+                    "input_token_details": input_token_details,
+                    "output_token_details": output_token_details,
+                }
+        return {}
+
+    @classmethod
+    def _extract_usage(cls, result: Any) -> dict[str, Any]:
+        if isinstance(result, Mapping):
+            direct_usage = result.get("usage")
+            if isinstance(direct_usage, Mapping):
+                return dict(direct_usage)
+
+            messages = result.get("messages")
+            if isinstance(messages, list):
+                for message in reversed(messages):
+                    usage = cls._message_usage(message)
+                    if usage:
+                        return usage
+
+        usage = cls._message_usage(result)
+        if usage:
+            return usage
+        return {}
 
 
     def run_server(self, port: int = 8000) -> None:

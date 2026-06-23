@@ -604,6 +604,44 @@ def test_client_respects_global_dry_run_env(monkeypatch):
     assert client.dry_run is True
 
 
+def test_client_bootstrap_config_can_ignore_dry_run(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="", dry_run=True)
+    captured = {}
+
+    def fake_request(method, path, body=None, *, ignore_dry_run=False):
+        captured.update(
+            {
+                "method": method,
+                "path": path,
+                "body": body,
+                "ignore_dry_run": ignore_dry_run,
+            }
+        )
+        return {
+            "Code": 0,
+            "Data": {
+                "Configs": {
+                    "bootstrap.default_image": "registry.example.com/runtime:db",
+                }
+            },
+        }
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    result = asyncio.run(
+        client.get_client_bootstrap_config(
+            product="openclaw",
+            framework="openclaw",
+            region="pre-online",
+            ignore_dry_run=True,
+        )
+    )
+
+    assert captured["ignore_dry_run"] is True
+    assert captured["body"]["Product"] == "openclaw"
+    assert result["configs"]["bootstrap.default_image"] == "registry.example.com/runtime:db"
+
+
 def test_mcp_status_supports_dry_run(monkeypatch):
     runner = CliRunner()
     monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeDryRunClient)
@@ -1998,9 +2036,8 @@ def test_openclaw_deploy_writes_only_configured_model_from_provider_catalog(monk
         for item in _FakeOpenClawCreateClient.create_payload["env_vars"]
     }
     catalog = json.loads(env_vars["OPENCLAW_MODEL_CATALOG_JSON"])
-    assert [item["id"] for item in catalog] == ["deepseek-v4-pro"]
-    assert catalog[0]["contextWindow"] == 1_000_000
-    assert catalog[0]["maxTokens"] == 384_000
+    assert [item["id"] for item in catalog] == ["glm-5.2", "kimi-k2.7-code", "deepseek-v4-pro"]
+    assert catalog[1]["options"] == {"temperature": 1}
 
 
 def test_openclaw_deploy_writes_allowlisted_models_from_provider_catalog(monkeypatch, tmp_path):
@@ -2053,7 +2090,7 @@ def test_openclaw_deploy_writes_allowlisted_models_from_provider_catalog(monkeyp
         for item in _FakeOpenClawCreateClient.create_payload["env_vars"]
     }
     catalog = json.loads(env_vars["OPENCLAW_MODEL_CATALOG_JSON"])
-    assert [item["id"] for item in catalog] == ["deepseek-v4-pro", "glm-5.1"]
+    assert [item["id"] for item in catalog] == ["glm-5.2", "kimi-k2.7-code", "deepseek-v4-pro"]
     assert "kimi-k2.6" not in {item["id"] for item in catalog}
 
 

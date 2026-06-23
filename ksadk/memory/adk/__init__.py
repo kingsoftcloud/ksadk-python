@@ -14,8 +14,12 @@
 
 环境变量:
     # 短期记忆
-    KSADK_STM_BACKEND=local          # local | sqlite | database
-    KSADK_STM_DB_URL=                # 数据库 URL
+    KSADK_ADK_SESSION_BACKEND=database
+    KSADK_ADK_SESSION_URL=           # ADK 数据库 URL
+    KSADK_SESSION_BACKEND=postgres    # unified fallback
+    KSADK_SESSION_DSN=                # unified fallback
+    KSADK_STM_BACKEND=local          # legacy fallback
+    KSADK_STM_DB_URL=                # legacy fallback
 
     # 长期记忆
     KSADK_LTM_BACKEND=http           # local | http

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ksadk"
-version = "0.6.5"
+version = "0.6.6"
 description = "KsADK Agent Runtime Platform - unified runtime, debugging, deployment and observability for AI agents"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -49,6 +49,8 @@ dependencies = [
     # HTTP 请求 + AWS 签名
     "requests>=2.28.0",
     "requests-aws4auth>=1.2.0",
+    # AICP SDK for default knowledge-base and long-term-memory tools
+    "kingsoftcloud-sdk-python>=1.5.8.94",
     "cryptography>=44.0.0",
     "websockets>=12.0,<16.0",
     "qrcode>=7.4.0",
@@ -111,9 +113,7 @@ tracing = [
     "openinference-instrumentation-langchain>=0.1.0",
 ]
 # 知识库 & 记忆库支持
-kb = [
-    "kingsoftcloud-sdk-python>=1.5.8.94",
-]
+kb = []
 # Skill Runtime E2B backend
 skills = [
     "e2b>=2.0.0",
@@ -123,15 +123,15 @@ dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
     "fastmcp>=2.0.0",
+    "build>=1.0.0",
+    "twine>=5.0.0",
     "black>=22.0.0",
     "ruff>=0.1.0",
     "mypy>=1.0.0",
     "mkdocs>=1.6.0,<2.0.0",
     "mkdocs-material>=9.5.0,<10.0.0",
-    "mkdocs-click>=0.8.0,<1.0.0",
     "mkdocs-static-i18n>=1.3.0,<2.0.0",
-    "mkdocstrings[python]>=0.27.0,<1.0.0",
-    "twine>=6.0.0,<7.0.0",
+    "mkdocstrings[python]>=0.25.0,<1.0.0",
 ]
 # 全部依赖
 all = [
@@ -146,9 +146,6 @@ ksadk = "ksadk.cli:main"
 Homepage = "https://github.com/kingsoftcloud/ksadk-python"
 Repository = "https://github.com/kingsoftcloud/ksadk-python"
 Documentation = "https://kingsoftcloud.github.io/ksadk-python/"
-PyPI = "https://pypi.org/project/ksadk/"
-Source = "https://github.com/kingsoftcloud/ksadk-python"
-Issues = "https://github.com/kingsoftcloud/ksadk-python/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -47,6 +47,8 @@ class InMemorySessionService(BaseSessionService):
         self,
         agent_id: str,
         user_id: Optional[str] = None,
+        offset: Optional[int] = None,
+        limit: Optional[int] = None,
     ) -> list[Session]:
         async with self._lock:
             sessions = [
@@ -55,7 +57,21 @@ class InMemorySessionService(BaseSessionService):
                 if session.agent_id == agent_id and (user_id is None or session.user_id == user_id)
             ]
             sessions.sort(key=lambda item: (item.updated_at, item.created_at), reverse=True)
-            return sessions
+            start = offset or 0
+            end = None if limit is None else start + limit
+            return sessions[start:end]
+
+    async def count_sessions(
+        self,
+        agent_id: str,
+        user_id: Optional[str] = None,
+    ) -> int:
+        async with self._lock:
+            return sum(
+                1
+                for session in self._sessions.values()
+                if session.agent_id == agent_id and (user_id is None or session.user_id == user_id)
+            )
 
     async def delete_session(self, session_id: str) -> bool:
         async with self._lock:
@@ -150,6 +166,11 @@ class InMemorySessionService(BaseSessionService):
             end = None if limit is None else start + limit
             events = session.events[start:end]
             return copy.deepcopy(events)
+
+    async def count_events(self, session_id: str) -> int:
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            return len(session.events) if session else 0
 
     async def get_state(
         self,

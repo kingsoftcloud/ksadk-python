@@ -11,6 +11,8 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      PUBLIC_KSADK_WEB_VERSION: "0.2.11"
     steps:
       - uses: actions/checkout@v4
 
@@ -23,20 +25,23 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: uv sync --extra all
+
+      - name: Sync KsADK Web static assets
+        run: make public-sync-ksadk-web-static
+
+      - name: Build package artifacts
+        run: uv build
 
       - name: Run public release gate tests
         run: |
           uv run --extra dev pytest \
             tests/test_open_source_audit.py \
             tests/test_runtime_common_packaging.py \
-            tests/test_public_positioning_docs.py \
-            tests/test_prepare_ksadk_python_export.py \
-            tests/test_prepare_ksadk_web_export.py \
+            tests/test_public_release_positioning.py \
             tests/test_tracing_setup_otlp.py \
             tests/test_check_publication_state.py \
             tests/test_check_approval_record.py \
-            tests/test_public_release_gates.py \
             tests/test_markdown_repair.py \
             tests/test_conversation_runtime.py \
             tests/test_server_session_app.py \
@@ -46,10 +51,7 @@ jobs:
         run: uv run --extra dev python scripts/open_source_audit.py --target public-repo
 
       - name: Build and audit public docs
-        run: make public-docs-audit
-
-      - name: Build package artifacts
-        run: uv build
+        run: make public-docs-build
 
       - name: Check package metadata
         run: uv run --extra dev python -m twine check dist/*

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable
 from collections.abc import Mapping
 from typing import Any
@@ -135,8 +136,8 @@ def describe_agentengine_tools(include: Iterable[str] | None = None) -> list[dic
 def agentengine_tool_dispatcher(
     action: str,
     tool_name: str | None = None,
-    arguments: dict[str, Any] | None = None,
-    include: Iterable[str] | str | None = None,
+    arguments: dict[str, Any] | str | None = None,
+    include: str | Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """List, describe, or call less frequently bound AgentEngine built-in tools."""
 
@@ -172,9 +173,15 @@ def agentengine_tool_dispatcher(
             tools, _ = _select_agentengine_tools(include=[target_name], include_dispatcher=False)
         except ValueError:
             return _unknown_tool_error(target_name)
-        result = _invoke_tool(tools[0], dict(arguments or {}))
+        tool_arguments, arguments_error = _normalize_tool_arguments(arguments)
+        if arguments_error:
+            return arguments_error
+        tool_arguments = _normalize_dispatched_tool_arguments(target_name, tool_arguments)
+        result = _invoke_tool(tools[0], tool_arguments)
         if isinstance(result, dict) and result.get("type") == "approval_required":
             return {**result, "dispatched_tool_name": target_name}
+        if isinstance(result, dict) and result.get("ok") is False:
+            return {"ok": False, "tool_name": target_name, "result": result}
         return {"ok": True, "tool_name": target_name, "result": result}
 
     return {
@@ -256,7 +263,7 @@ def _build_descriptor_registry(*, include_dispatcher: bool) -> dict[str, dict[st
     for platform_tool in get_platform_tools():
         name = _tool_name(platform_tool)
         if name and name not in registry:
-            registry[name] = {
+            spec = {
                 "name": name,
                 "group": "platform",
                 "description": str(getattr(platform_tool, "description", "") or ""),
@@ -265,6 +272,10 @@ def _build_descriptor_registry(*, include_dispatcher: bool) -> dict[str, dict[st
                 "side_effects": [],
                 "enabled": True,
             }
+            args = _tool_args(platform_tool)
+            if args:
+                spec["args"] = args
+            registry[name] = spec
     if include_dispatcher:
         registry[_DISPATCHER_TOOL_NAME] = _tool_spec(
             group="dispatcher",
@@ -296,6 +307,60 @@ def _normalize_include(include: Iterable[str] | str | None) -> list[str]:
 
 def _normalize_tool_name(tool_name: str | None) -> str:
     return str(tool_name or "").strip()
+
+
+def _normalize_tool_arguments(arguments: dict[str, Any] | str | None) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    if arguments is None:
+        return {}, None
+    if isinstance(arguments, dict):
+        return dict(arguments), None
+    if isinstance(arguments, str):
+        text = arguments.strip()
+        if not text:
+            return {}, None
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError as exc:
+            return {}, {
+                "ok": False,
+                "error_type": "invalid_arguments_json",
+                "error_message": f"arguments must be a JSON object string: {exc.msg}",
+                "arguments": arguments,
+            }
+        if isinstance(parsed, dict):
+            return parsed, None
+        return {}, {
+            "ok": False,
+            "error_type": "invalid_arguments_type",
+            "error_message": "arguments JSON string must decode to an object",
+            "arguments_type": type(parsed).__name__,
+        }
+    return {}, {
+        "ok": False,
+        "error_type": "invalid_arguments_type",
+        "error_message": "arguments must be a dictionary or JSON object string",
+        "arguments_type": type(arguments).__name__,
+    }
+
+
+def _normalize_dispatched_tool_arguments(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    if tool_name == "save_memory" and "content" not in arguments:
+        if "key" in arguments and "value" in arguments:
+            return {"content": f"{arguments['key']}: {_stringify_memory_value(arguments['value'])}"}
+    return arguments
+
+
+def _stringify_memory_value(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _tool_args(tool: Any) -> dict[str, Any]:
+    args = getattr(tool, "args", None)
+    if isinstance(args, dict):
+        return dict(args)
+    return {}
 
 
 def _tool_name(tool: Any) -> str:

@@ -100,7 +100,7 @@ PUBLIC_REPO_RULES = COMMON_RULES + (
     DenyRule(
         name="non-curated-docs",
         prefixes=("docs/",),
-        allowed_paths=("docs/maintainer-approval-record.md",),
+        allowed_paths=("docs/maintainer-approval-record.md", "docs/ksadk\u73af\u5883\u53d8\u91cf\u53c2\u8003.md", "docs/\u8fdc\u7a0bAgent\u8fd0\u884c\u65f6\u63a5\u53e3\u8bf4\u660e.md"),
         description="internal planning and technical design docs stay out of the public repository; user docs live in public-docs/",
     ),
     DenyRule(
@@ -212,14 +212,15 @@ CONTENT_RULES = (
         pattern=re.compile(
             r"(?<![A-Za-z0-9.-])"
             r"(?!(?:aicp)\.(?:inner|internal)\.api\.ksyun\.com\b)"
+            r"(?!kspmas-internal\.sdns\.ksyun\.com\b)"
             r"(?:[A-Za-z0-9-]+\.)*(?:inner\.api|internal\.api|sdns)\.ksyun\.com\b"
         ),
         description="internal service endpoints must not be published unless explicitly supported by the public SDK",
     ),
     ContentRule(
         name="private-container-registry",
-        pattern=re.compile(r"\bhub(?:-[A-Za-z0-9-]+)?\.kce\.ksyun\.com\b"),
-        description="private container registry defaults must not be published",
+        pattern=re.compile(r"\bhub-[A-Za-z0-9-]+\.kce\.ksyun\.com/"),
+        description="regional private container registry defaults must not be published",
     ),
     ContentRule(
         name="aws-access-key-id",

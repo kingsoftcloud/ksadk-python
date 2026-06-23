@@ -318,7 +318,7 @@ def test_service_client_routes_pre_online_kop_requests_with_custom_source(monkey
 
     client = SkillServiceClient(
         base_url="http://aicp.inner.api.ksyun.com",
-        account_id="2000003485",
+        account_id="73398439",
         transport=httpx.MockTransport(handler),
     )
 
@@ -334,7 +334,7 @@ def test_service_client_routes_pre_online_kop_requests_with_custom_source(monkey
     )
     assert headers["x-ksc-region"] == "cn-beijing-6"
     assert headers["x-ksc-custom-source"] == "pre"
-    assert headers["x-ksc-account-id"] == "2000003485"
+    assert headers["x-ksc-account-id"] == "73398439"
 
 
 def test_service_client_uses_registered_kop_action_for_available_premade_skills():

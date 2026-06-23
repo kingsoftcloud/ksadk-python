@@ -31,7 +31,7 @@ def _approved_record(python_source: str = "cd5fa22b1e78f03a8a9d025017e97ad414fda
 | License | Apache-2.0 |
 | Python repository | kingsoftcloud/ksadk-python |
 | Web UI repository | kingsoftcloud/ksadk-web |
-| Python package version | 0.6.4 |
+| Python package version | 0.6.6 |
 | Public docs URL | https://kingsoftcloud.github.io/ksadk-python/ |
 | Package metadata repository URL | https://github.com/kingsoftcloud/ksadk-python |
 | Package metadata documentation URL | https://kingsoftcloud.github.io/ksadk-python/ |
@@ -65,7 +65,7 @@ def test_template_approval_record_fails_until_strategy_and_signoffs_are_filled()
 
     checks = module.validate_approval_record(
         REPO_ROOT / "docs" / "maintainer-approval-record.md",
-        version="0.6.4",
+        version="0.6.6",
         expected_current_commit="current-reviewed-commit",
     )
 
@@ -86,7 +86,7 @@ def test_filled_approval_record_passes(tmp_path):
     record = tmp_path / "approval.md"
     record.write_text(_approved_record(), encoding="utf-8")
 
-    checks = module.validate_approval_record(record, version="0.6.4", expected_current_commit="")
+    checks = module.validate_approval_record(record, version="0.6.6", expected_current_commit="")
 
     assert all(check.ok for check in checks)
 
@@ -98,7 +98,7 @@ def test_filled_record_fails_when_source_references_do_not_match_current_commit(
 
     checks = module.validate_approval_record(
         record,
-        version="0.6.4",
+        version="0.6.6",
         expected_current_commit="new-reviewed-commit",
     )
 
@@ -121,7 +121,7 @@ def test_filled_record_passes_when_source_references_include_current_commit(tmp_
 
     checks = module.validate_approval_record(
         record,
-        version="0.6.4",
+        version="0.6.6",
         expected_current_commit="new-reviewed-commit",
     )
 

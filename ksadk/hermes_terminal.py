@@ -12,32 +12,24 @@ import shutil
 import signal
 import ssl
 import sys
+from ctypes import wintypes
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping, Sequence
 from urllib.parse import urlsplit, urlunsplit
-from ctypes import wintypes
 
+from ksadk.terminal_exec_policy import (
+    GENERIC_TERMINAL_EXEC_POLICY,
+    HERMES_TERMINAL_EXEC_POLICY,
+    SHELL_METACHARS,
+    TerminalExecPolicy,
+)
+from ksadk.terminal_exec_policy import (
+    validate_terminal_exec_argv as validate_exec_argv_with_policy,
+)
 
 TERMINAL_SUBPROTOCOL = "ks-terminal.v1"
 TERMINAL_WS_PATH = "/_ksadk/terminal/ws"
 
-_SHELL_METACHARS = set("|&;<>()$`\\\n\r")
-_FORBIDDEN_LAUNCHERS = {
-    "bash",
-    "sh",
-    "zsh",
-    "fish",
-    "python",
-    "python3",
-    "node",
-    "npx",
-    "pnpm",
-    "npm",
-    "yarn",
-    "uv",
-    "uvx",
-    "hermes",
-}
 _PAIRING_PLATFORMS = {
     "discord",
     "dingtalk",
@@ -54,35 +46,7 @@ _PAIRING_PLATFORMS = {
     "webhook",
     "weixin",
     "whatsapp",
-}
-_SINGLE_READONLY_COMMANDS = {"status", "doctor", "version", "insights"}
-_NESTED_READONLY_COMMANDS: dict[str, dict[str, tuple[int, int]]] = {
-    "sessions": {
-        "list": (2, 2),
-        "show": (3, 3),
-        "export": (3, 3),
-    },
-    "config": {
-        "show": (2, 2),
-        "check": (2, 2),
-        "path": (2, 2),
-        "env-path": (2, 2),
-    },
-    "skills": {
-        "list": (2, 2),
-        "audit": (2, 2),
-        "check": (2, 2),
-    },
-    "tools": {
-        "list": (2, 2),
-    },
-    "cron": {
-        "list": (2, 2),
-        "status": (2, 2),
-    },
-    "gateway": {
-        "status": (2, 2),
-    },
+    "wpsxiezuo",
 }
 
 _WINDOWS_INPUT_FLAGS = {
@@ -152,54 +116,18 @@ def detect_terminal_size() -> TerminalSize:
 
 
 def validate_hermes_exec_argv(argv: Iterable[str]) -> list[str]:
-    normalized = [str(item).strip() for item in argv]
-    if not normalized:
-        raise ValueError("Hermes exec requires a subcommand")
-    for item in normalized:
-        if not item:
-            raise ValueError("Hermes exec argv contains an empty argument")
-        if item.startswith("-"):
-            raise ValueError(f"Hermes exec does not allow shell/options: {item}")
-        if any(char in _SHELL_METACHARS for char in item):
-            raise ValueError(f"Hermes exec does not allow shell metacharacters: {item}")
-
-    top = normalized[0]
-    if top in _FORBIDDEN_LAUNCHERS:
-        raise ValueError(f"Hermes exec launcher is not allowed: {top}")
-
-    if top in _SINGLE_READONLY_COMMANDS:
-        if len(normalized) != 1:
-            raise ValueError(f"Hermes exec subcommand is not allowed: {' '.join(normalized)}")
-        return normalized
-
-    nested = _NESTED_READONLY_COMMANDS.get(top)
-    if not nested or len(normalized) < 2:
-        raise ValueError(f"Hermes exec subcommand is not allowed: {' '.join(normalized)}")
-
-    sub = normalized[1]
-    bounds = nested.get(sub)
-    if not bounds:
-        raise ValueError(f"Hermes exec subcommand is not allowed: {' '.join(normalized)}")
-    min_len, max_len = bounds
-    if len(normalized) < min_len or len(normalized) > max_len:
-        raise ValueError(f"Hermes exec subcommand is not allowed: {' '.join(normalized)}")
-    return normalized
+    return validate_exec_argv_with_policy(argv, policy=HERMES_TERMINAL_EXEC_POLICY)
 
 
 def validate_terminal_exec_argv(argv: Iterable[str]) -> list[str]:
-    normalized = [str(item).strip() for item in argv]
-    if not normalized:
-        raise ValueError("terminal exec requires argv")
-    for index, item in enumerate(normalized):
-        if not item:
-            raise ValueError("terminal exec argv contains an empty argument")
-        if any(char in _SHELL_METACHARS for char in item):
-            raise ValueError(f"terminal exec does not allow shell metacharacters: {item}")
-        if index == 0 and item.startswith("-"):
-            raise ValueError(f"terminal exec command is invalid: {item}")
-        if index == 0 and item in _FORBIDDEN_LAUNCHERS:
-            raise ValueError(f"terminal exec launcher is not allowed: {item}")
-    return normalized
+    return validate_exec_argv_with_policy(argv, policy=GENERIC_TERMINAL_EXEC_POLICY)
+
+
+def build_terminal_exec_validator(policy: TerminalExecPolicy) -> Callable[[Iterable[str]], list[str]]:
+    def _validator(argv: Iterable[str]) -> list[str]:
+        return validate_exec_argv_with_policy(argv, policy=policy)
+
+    return _validator
 
 
 def validate_hermes_pairing_argv(argv: Iterable[str]) -> list[str]:
@@ -211,7 +139,7 @@ def validate_hermes_pairing_argv(argv: Iterable[str]) -> list[str]:
             raise ValueError("Hermes pairing argv contains an empty argument")
         if item.startswith("-"):
             raise ValueError(f"Hermes pairing does not allow shell/options: {item}")
-        if any(char in _SHELL_METACHARS for char in item):
+        if any(char in SHELL_METACHARS for char in item):
             raise ValueError(f"Hermes pairing does not allow shell metacharacters: {item}")
 
     action = normalized[0]

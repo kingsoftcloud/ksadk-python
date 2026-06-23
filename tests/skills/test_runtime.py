@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
-import types
 from pathlib import Path
 
 import pytest
 
-from ksadk.skills.runtime import SkillRuntimeError, SkillRuntimeResult, create_skill_runtime_backend
-from ksadk.skills.runtime import SkillWorkflowRequest
+from ksadk.skills.runtime import (
+    SkillRuntimeError,
+    SkillRuntimeResult,
+    SkillWorkflowRequest,
+    create_skill_runtime_backend,
+)
 from ksadk.skills.runtime.backends.e2b import E2BSkillRuntimeBackend
 from ksadk.skills.runtime.backends.local import LocalProcessSkillRuntimeBackend
 
@@ -57,12 +59,13 @@ def test_runtime_factory_auto_uses_e2b_when_generic_sandbox_template_is_configur
 
 
 def test_e2b_skill_runtime_backend_from_env_prefers_generic_sandbox_vars(monkeypatch):
+    pytest.importorskip("e2b")
     monkeypatch.setenv("KSADK_SANDBOX_TEMPLATE_ID", "tpl-aio")
     monkeypatch.setenv("KSADK_SKILL_RUNTIME_TEMPLATE_ID", "tpl-legacy")
     monkeypatch.setenv("KSADK_SANDBOX_TIMEOUT", "321")
     monkeypatch.setenv("KSADK_SKILL_RUNTIME_TIMEOUT", "123")
     monkeypatch.setenv("KSADK_SANDBOX_ALLOW_INTERNET_ACCESS", "false")
-    monkeypatch.setitem(sys.modules, "e2b", types.SimpleNamespace(Sandbox=object))
+    monkeypatch.setattr("e2b.Sandbox", object)
 
     backend = E2BSkillRuntimeBackend.from_env()
 
@@ -156,7 +159,11 @@ def test_e2b_backend_uses_native_env_and_always_kills(monkeypatch):
             },
         },
     ) in calls
-    request_write = next(value for name, value in calls if name == "file_write")
+    request_write = next(
+        value
+        for name, value in calls
+        if name == "file_write" and value[0] == "/tmp/ksadk-workflow-request.json"
+    )
     assert request_write[0] == "/tmp/ksadk-workflow-request.json"
     assert json.loads(request_write[1].decode("utf-8")) == {
         "workflow_prompt": "build artifact",
@@ -215,7 +222,9 @@ def test_e2b_backend_redacts_secret_from_errors(monkeypatch):
     class FakeSandbox:
         @classmethod
         def create(cls, **kwargs):
-            raise RuntimeError("failed with super-secret-token and skill-service-token and skill-service-secret")
+            raise RuntimeError(
+                "failed with super-secret-token and skill-service-token and skill-service-secret"
+            )
 
     backend = E2BSkillRuntimeBackend(sandbox_cls=FakeSandbox, template_id="tpl-1")
 
@@ -269,15 +278,24 @@ def test_e2b_backend_writes_request_file_instead_of_shell_quoting_long_prompt():
         session_id="sess-1",
     )
 
-    request_write = next(value for name, value in calls if name == "file_write")
+    request_write = next(
+        value
+        for name, value in calls
+        if name == "file_write" and value[0] == "/tmp/ksadk-workflow-request.json"
+    )
     request_path, request_bytes = request_write
     assert request_path == "/tmp/ksadk-workflow-request.json"
     assert json.loads(request_bytes.decode("utf-8")) == {
         "workflow_prompt": "hello 'quoted'",
         "skill_names": ["demo-skill"],
     }
-    run_command = next(value for name, value in calls if name == "run")
-    assert run_command == "python -u /home/ksadk/agent.py --request-file /tmp/ksadk-workflow-request.json"
+    run_command = next(
+        value for name, value in calls if name == "run" and "/home/ksadk/agent.py" in value
+    )
+    assert (
+        run_command
+        == "python -u /home/ksadk/agent.py --request-file /tmp/ksadk-workflow-request.json"
+    )
 
 
 def test_local_process_backend_writes_request_file_envelope(monkeypatch, tmp_path: Path):

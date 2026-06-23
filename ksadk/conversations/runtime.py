@@ -35,6 +35,7 @@ from ksadk.conversations.normalize import (
     compact_attachment_for_session,
     normalize_kop_messages,
 )
+from ksadk.conversations.reasoning_markup import strip_reasoning_markup
 from ksadk.conversations.semantic_summary import (
     extract_pinned_state,
     find_pinned_group_indexes,
@@ -52,9 +53,13 @@ from ksadk.conversations.session_title import (
 )
 from ksadk.knowledge_base.service import KnowledgeBaseService
 from ksadk.memory.service import LongTermMemoryService
+from ksadk.model_policy import fallback_model_for_exception, model_policy_options_for_model
 from ksadk.runtime_context import PlatformInvocationContext, platform_invocation_scope
 from ksadk.sessions import Session, SessionEvent, resolve_session_service
-from ksadk.tools.gateway import approval_interrupt_info_from_result
+from ksadk.tools.gateway import (
+    approval_interrupt_info_from_result,
+    build_tool_receipt_idempotency_key,
+)
 
 AUTOCOMPACT_KEEP_TAIL_GROUPS = 4
 PTL_RETRY_KEEP_TAIL_GROUPS = 2
@@ -72,6 +77,117 @@ ATTACHMENT_CONTEXT_STATE_KEY = "__ksadk_attachment_context__"
 logger = logging.getLogger(__name__)
 _MODEL_CATALOG_CACHE_TTL_SECONDS = 60.0
 _MODEL_CATALOG_CACHE: dict[tuple[str, str], tuple[float, list[dict[str, Any]]]] = {}
+
+
+def _normalize_usage_payload(usage: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(usage, Mapping):
+        return {}
+    normalized: dict[str, Any] = {}
+    for key in (
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "prompt_tokens",
+        "completion_tokens",
+    ):
+        value = usage.get(key)
+        if value is None:
+            continue
+        try:
+            normalized[key] = int(value)
+        except (TypeError, ValueError):
+            continue
+    for key in ("input_token_details", "output_token_details"):
+        value = usage.get(key)
+        if isinstance(value, Mapping):
+            normalized[key] = dict(value)
+    prompt_details = usage.get("prompt_tokens_details")
+    if isinstance(prompt_details, Mapping):
+        normalized["prompt_tokens_details"] = dict(prompt_details)
+        cached_tokens = prompt_details.get("cached_tokens")
+        if cached_tokens is not None:
+            try:
+                normalized.setdefault("input_token_details", {})["cached"] = int(cached_tokens)
+            except (TypeError, ValueError):
+                pass
+    completion_details = usage.get("completion_tokens_details")
+    if isinstance(completion_details, Mapping):
+        normalized["completion_tokens_details"] = dict(completion_details)
+        reasoning_tokens = completion_details.get("reasoning_tokens")
+        if reasoning_tokens is not None:
+            try:
+                normalized.setdefault("output_token_details", {})["reasoning"] = int(reasoning_tokens)
+            except (TypeError, ValueError):
+                pass
+    return normalized
+
+
+def _usage_from_metadata(metadata: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(metadata, Mapping):
+        return {}
+    return _normalize_usage_payload(metadata.get("usage"))
+
+
+def _responses_usage_payload(usage: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    normalized = _normalize_usage_payload(usage)
+    if not normalized:
+        return None
+    input_tokens = normalized.get("input_tokens", normalized.get("prompt_tokens", 0))
+    output_tokens = normalized.get("output_tokens", normalized.get("completion_tokens", 0))
+    total_tokens = normalized.get("total_tokens", input_tokens + output_tokens)
+    payload = {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+    }
+    if isinstance(normalized.get("input_token_details"), Mapping):
+        payload["input_token_details"] = dict(normalized["input_token_details"])
+    if isinstance(normalized.get("output_token_details"), Mapping):
+        payload["output_token_details"] = dict(normalized["output_token_details"])
+    return payload
+
+
+def _chat_usage_payload(usage: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    normalized = _normalize_usage_payload(usage)
+    if not normalized:
+        return None
+    prompt_tokens = normalized.get("prompt_tokens", normalized.get("input_tokens", 0))
+    completion_tokens = normalized.get("completion_tokens", normalized.get("output_tokens", 0))
+    total_tokens = normalized.get("total_tokens", prompt_tokens + completion_tokens)
+    payload = {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+    }
+    prompt_details = normalized.get("prompt_tokens_details")
+    if isinstance(prompt_details, Mapping):
+        payload["prompt_tokens_details"] = dict(prompt_details)
+    input_token_details = normalized.get("input_token_details")
+    if isinstance(input_token_details, Mapping) and input_token_details:
+        prompt_details = dict(payload.get("prompt_tokens_details") or {})
+        cached_tokens = input_token_details.get("cached")
+        if cached_tokens is not None:
+            try:
+                prompt_details["cached_tokens"] = int(cached_tokens)
+            except (TypeError, ValueError):
+                pass
+        if prompt_details:
+            payload["prompt_tokens_details"] = prompt_details
+    completion_details = normalized.get("completion_tokens_details")
+    if isinstance(completion_details, Mapping):
+        payload["completion_tokens_details"] = dict(completion_details)
+    output_token_details = normalized.get("output_token_details")
+    if isinstance(output_token_details, Mapping) and output_token_details:
+        completion_details = dict(payload.get("completion_tokens_details") or {})
+        reasoning_tokens = output_token_details.get("reasoning")
+        if reasoning_tokens is not None:
+            try:
+                completion_details["reasoning_tokens"] = int(reasoning_tokens)
+            except (TypeError, ValueError):
+                pass
+        if completion_details:
+            payload["completion_tokens_details"] = completion_details
+    return payload
 
 
 def _get_conversation_tracer() -> Any | None:
@@ -195,6 +311,75 @@ def _set_conversation_output_attributes(span: Any | None, output_text: str | Non
         _set_span_attribute(span, key, text)
 
 
+def _set_conversation_usage_attributes(span: Any | None, usage: Mapping[str, Any] | None) -> None:
+    normalized = _normalize_usage_payload(usage)
+    if not normalized:
+        return
+
+    input_tokens = normalized.get("input_tokens", normalized.get("prompt_tokens"))
+    output_tokens = normalized.get("output_tokens", normalized.get("completion_tokens"))
+    total_tokens = normalized.get("total_tokens")
+    if total_tokens is None and input_tokens is not None and output_tokens is not None:
+        total_tokens = input_tokens + output_tokens
+
+    for value, keys in (
+        (
+            input_tokens,
+            (
+                "gen_ai.usage.input_tokens",
+                "llm.usage.prompt_tokens",
+                "langfuse.observation.usage.input",
+            ),
+        ),
+        (
+            output_tokens,
+            (
+                "gen_ai.usage.output_tokens",
+                "llm.usage.completion_tokens",
+                "langfuse.observation.usage.output",
+            ),
+        ),
+        (
+            total_tokens,
+            (
+                "gen_ai.usage.total_tokens",
+                "llm.usage.total_tokens",
+                "langfuse.observation.usage.total",
+            ),
+        ),
+    ):
+        if value is None:
+            continue
+        for key in keys:
+            _set_span_attribute(span, key, value)
+
+    input_details = normalized.get("input_token_details")
+    if isinstance(input_details, Mapping) and input_details.get("cached") is not None:
+        _set_span_attribute(
+            span,
+            "gen_ai.usage.input_token_details.cached_tokens",
+            input_details.get("cached"),
+        )
+        _set_span_attribute(
+            span,
+            "llm.usage.prompt_tokens_details.cached_tokens",
+            input_details.get("cached"),
+        )
+
+    output_details = normalized.get("output_token_details")
+    if isinstance(output_details, Mapping) and output_details.get("reasoning") is not None:
+        _set_span_attribute(
+            span,
+            "gen_ai.usage.output_token_details.reasoning_tokens",
+            output_details.get("reasoning"),
+        )
+        _set_span_attribute(
+            span,
+            "llm.usage.completion_tokens_details.reasoning_tokens",
+            output_details.get("reasoning"),
+        )
+
+
 def _set_conversation_span_attributes(
     span: Any,
     *,
@@ -314,6 +499,7 @@ def build_responses_payload(
             output = [message_item, *output]
     else:
         output = [message_item]
+    usage = _responses_usage_payload(_usage_from_metadata(metadata))
     return {
         "id": response_id,
         "object": "response",
@@ -332,11 +518,7 @@ def build_responses_payload(
         "tools": [],
         "output": output,
         "output_text": output_text,
-        "usage": {
-            "input_tokens": 0,
-            "output_tokens": len(output_text),
-            "total_tokens": len(output_text),
-        },
+        "usage": usage,
         "session_id": session_id,
     }
 
@@ -354,6 +536,19 @@ def extract_responses_resume_input(input_payload: Any) -> dict[str, Any] | None:
 
     for item in candidates:
         item_type = str(item.get("type") or "").strip()
+        if item_type == "agentengine.resume_checkpoint":
+            resume_input = {"type": "agentengine.resume_checkpoint"}
+            for key in (
+                "run_id",
+                "checkpoint_id",
+                "resume_attempt_id",
+                "framework",
+                "framework_ref",
+            ):
+                if key in item:
+                    resume_input[key] = item.get(key)
+            return resume_input
+
         if item_type == "mcp_approval_response":
             resume_input: dict[str, Any] = {"type": "mcp_approval_response"}
             if item.get("id"):
@@ -411,6 +606,7 @@ def build_chat_completions_payload(
     session_id: str,
     metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    usage = _chat_usage_payload(_usage_from_metadata(metadata))
     payload = {
         "id": f"chatcmpl-{uuid.uuid4()}",
         "object": "chat.completion",
@@ -423,11 +619,7 @@ def build_chat_completions_payload(
                 "finish_reason": "stop",
             }
         ],
-        "usage": {
-            "prompt_tokens": 0,
-            "completion_tokens": len(output_text),
-            "total_tokens": len(output_text),
-        },
+        "usage": usage,
         "session_id": session_id,
     }
     if isinstance(metadata, Mapping) and metadata:
@@ -857,12 +1049,20 @@ def _build_runner_request_payload(
         "platform_context": runtime_context.to_payload(),
         "kb_context": runtime_context.kb_context,
         "memory_context": runtime_context.memory_context,
+        "invocation_id": prepared.invocation_id,
     }
     if prepared.instructions:
         payload["instructions"] = prepared.instructions
     if prepared.resume_input is not None:
-        payload["input"] = prepared.resume_input
-        payload["resume"] = True
+        if _is_checkpoint_resume_input(prepared.resume_input):
+            payload["input"] = prepared.resume_input
+            payload["checkpoint_resume"] = True
+            payload["run_id"] = str(prepared.resume_input.get("run_id") or "")
+            payload["checkpoint_id"] = str(prepared.resume_input.get("checkpoint_id") or "")
+            payload["framework_ref"] = dict(prepared.resume_input.get("framework_ref") or {})
+        else:
+            payload["input"] = prepared.resume_input
+            payload["resume"] = True
     previous_response_id = prepared.request_metadata.get("previous_response_id")
     if previous_response_id:
         payload["previous_response_id"] = str(previous_response_id)
@@ -935,7 +1135,7 @@ def _memory_turn_event_strings(
             )
         )
 
-    assistant_text = str(output_text or "").strip()
+    assistant_text = strip_reasoning_markup(str(output_text or "")).strip()
     if assistant_text:
         event_strings.append(
             json.dumps(
@@ -1094,6 +1294,19 @@ def _pending_approval_events(events: Sequence[SessionEvent]) -> list[SessionEven
     return pending
 
 
+def _approval_request_events(events: Sequence[SessionEvent]) -> list[SessionEvent]:
+    return [
+        event
+        for event in events
+        if canonical_event_type(
+            event.event_type,
+            author=event.author,
+            role=str((event.content or {}).get("role") or ""),
+        )
+        == "approval_request"
+    ]
+
+
 def _parse_approval_arguments(value: Any) -> dict[str, Any]:
     if isinstance(value, Mapping):
         return dict(value)
@@ -1134,6 +1347,8 @@ def _approval_decision_from_resume(resume_input: Mapping[str, Any]) -> dict[str,
 def _normalize_approval_resume_input(
     resume_input: Mapping[str, Any],
     events: Sequence[SessionEvent],
+    *,
+    include_resolved: bool = False,
 ) -> dict[str, Any]:
     normalized = dict(resume_input)
     if not _is_approval_resume_input(normalized):
@@ -1144,7 +1359,7 @@ def _normalize_approval_resume_input(
         or normalized.get("interrupt_id")
         or ""
     )
-    pending_events = _pending_approval_events(events)
+    pending_events = _approval_request_events(events) if include_resolved else _pending_approval_events(events)
     matched_event = None
     for event in reversed(pending_events):
         if not approval_request_id or _approval_request_id_from_event(event) == approval_request_id:
@@ -1205,6 +1420,123 @@ def _builtin_tool_callable(tool_name: str):
     return None
 
 
+def _tool_receipt_metadata(
+    *,
+    session_id: str,
+    run_id: str,
+    tool_name: str,
+    tool_args: Mapping[str, Any],
+    tool_call_id: str | None = None,
+    checkpoint_id: str | None = None,
+    framework: str | None = None,
+    framework_ref: Mapping[str, Any] | None = None,
+    status: str = "completed",
+) -> dict[str, Any]:
+    idempotency_key = build_tool_receipt_idempotency_key(
+        session_id=session_id,
+        run_id=run_id,
+        checkpoint_id=checkpoint_id,
+        tool_call_id=tool_call_id,
+        tool_name=tool_name,
+        tool_args=tool_args,
+    )
+    return {
+        "receipt_id": f"tr_{idempotency_key.removeprefix('tool_receipt:')[:24]}",
+        "idempotency_key": idempotency_key,
+        "tool_name": tool_name,
+        "tool_call_id": tool_call_id or run_id,
+        "run_id": run_id,
+        "checkpoint_id": checkpoint_id or "",
+        "framework": framework or "",
+        "framework_ref": dict(framework_ref or {}),
+        "status": status,
+        "created_at": time.time(),
+    }
+
+
+def _tool_receipt_status_from_output(output: Any) -> str:
+    if not isinstance(output, Mapping):
+        return "failed"
+    status = str(output.get("status") or "").strip().lower()
+    if status == "accepted_not_extracted":
+        return "completed"
+    return "completed" if output.get("ok") is not False else "failed"
+
+
+def _tool_resume_run_id(resume_input: Mapping[str, Any]) -> str:
+    return str(
+        resume_input.get("run_id")
+        or resume_input.get("call_id")
+        or resume_input.get("approval_request_id")
+        or resume_input.get("interrupt_id")
+        or ""
+    )
+
+
+def _tool_receipt_idempotency_key_for_resume(
+    *,
+    session_id: str,
+    resume_input: Mapping[str, Any],
+) -> str | None:
+    tool_name = str(resume_input.get("tool_name") or "").strip()
+    if not tool_name:
+        return None
+    tool_args = resume_input.get("tool_args")
+    if not isinstance(tool_args, Mapping):
+        return None
+    run_id = _tool_resume_run_id(resume_input)
+    if not run_id:
+        return None
+    return build_tool_receipt_idempotency_key(
+        session_id=session_id,
+        run_id=run_id,
+        tool_call_id=run_id,
+        tool_name=tool_name,
+        tool_args=dict(tool_args),
+    )
+
+
+def _find_tool_receipt_event_by_key(
+    events: Sequence[SessionEvent],
+    idempotency_key: str,
+) -> SessionEvent | None:
+    for event in reversed(events):
+        if event.event_type != "tool_result":
+            continue
+        metadata = event.metadata or {}
+        receipt = metadata.get("tool_receipt")
+        if not isinstance(receipt, Mapping):
+            continue
+        if str(receipt.get("idempotency_key") or "") == idempotency_key:
+            return event
+    return None
+
+
+def _latest_checkpoint_metadata_for_run(
+    events: Sequence[SessionEvent],
+    run_id: str,
+) -> dict[str, Any]:
+    normalized_run_id = str(run_id or "").strip()
+    if not normalized_run_id:
+        return {}
+    for event in reversed(events):
+        if event.event_type != "run_checkpoint":
+            continue
+        metadata = event.metadata or {}
+        if str(metadata.get("run_id") or "").strip() != normalized_run_id:
+            continue
+        checkpoint_id = str(metadata.get("checkpoint_id") or "").strip()
+        if not checkpoint_id:
+            continue
+        framework_ref = metadata.get("framework_ref")
+        return {
+            "checkpoint_id": checkpoint_id,
+            "framework": str(metadata.get("framework") or ""),
+            "framework_ref": dict(framework_ref) if isinstance(framework_ref, Mapping) else {},
+        }
+    return {}
+
+
 async def _execute_approved_builtin_tool_resume(
     *,
     session_id: str,
@@ -1224,18 +1556,65 @@ async def _execute_approved_builtin_tool_resume(
     if not isinstance(tool_args, Mapping):
         return None
     call_args = dict(tool_args)
+    run_id = _tool_resume_run_id(resume_input)
+    service = session_service_provider()
+    existing_events = await service.get_events(session_id)
+    checkpoint_metadata = _latest_checkpoint_metadata_for_run(existing_events, run_id)
+    receipt = _tool_receipt_metadata(
+        session_id=session_id,
+        run_id=run_id,
+        tool_call_id=run_id,
+        tool_name=tool_name,
+        tool_args=call_args,
+        checkpoint_id=checkpoint_metadata.get("checkpoint_id"),
+        framework=checkpoint_metadata.get("framework"),
+        framework_ref=checkpoint_metadata.get("framework_ref"),
+    )
+    existing_event = _find_tool_receipt_event_by_key(
+        existing_events,
+        receipt["idempotency_key"],
+    )
+    if existing_event is not None:
+        existing_metadata = existing_event.metadata or {}
+        output = existing_metadata.get("tool_output", "")
+        if isinstance(output, Mapping):
+            output = {**dict(output), "replayed": True}
+        replayed_receipt = {
+            **dict((existing_metadata.get("tool_receipt") or receipt)),
+            "replayed": True,
+            "replayed_from_event_id": existing_event.id,
+        }
+        await append_conversation_event(
+            session_id=session_id,
+            author="tool",
+            role="user",
+            text=str(output),
+            invocation_id=invocation_id,
+            event_type="tool_result",
+            session_service_provider=session_service_provider,
+            metadata={
+                "tool_name": tool_name,
+                "tool_args": call_args,
+                "tool_output": output,
+                "run_id": run_id,
+                "approval_request_id": resume_input.get("approval_request_id")
+                or resume_input.get("interrupt_id"),
+                "tool_receipt": replayed_receipt,
+                "replayed": True,
+            },
+        )
+        return {
+            "type": "function_call_output",
+            "call_id": run_id,
+            "output": output,
+        }
+
     try:
         output = tool_func(**call_args)
     except Exception as exc:
         output = {"ok": False, "error_type": type(exc).__name__, "error_message": str(exc)}
 
-    run_id = str(
-        resume_input.get("run_id")
-        or resume_input.get("call_id")
-        or resume_input.get("approval_request_id")
-        or resume_input.get("interrupt_id")
-        or ""
-    )
+    receipt["status"] = _tool_receipt_status_from_output(output)
     await append_conversation_event(
         session_id=session_id,
         author="tool",
@@ -1251,6 +1630,7 @@ async def _execute_approved_builtin_tool_resume(
             "run_id": run_id,
             "approval_request_id": resume_input.get("approval_request_id")
             or resume_input.get("interrupt_id"),
+            "tool_receipt": receipt,
         },
     )
     return {
@@ -1266,6 +1646,138 @@ def _is_approval_resume_input(resume_input: Mapping[str, Any]) -> bool:
         "ksadk_resume",
         "ksadk.approval_response",
     }
+
+
+def _is_checkpoint_resume_input(resume_input: Mapping[str, Any]) -> bool:
+    return str(resume_input.get("type") or "").strip() == "agentengine.resume_checkpoint"
+
+
+def _normalize_checkpoint_resume_input(resume_input: Mapping[str, Any]) -> dict[str, Any]:
+    run_id = str(resume_input.get("run_id") or "").strip()
+    if not run_id:
+        raise ValueError("Checkpoint resume requires run_id")
+
+    checkpoint_id = str(resume_input.get("checkpoint_id") or "").strip()
+    if not checkpoint_id:
+        raise ValueError("Checkpoint resume requires checkpoint_id")
+
+    framework = str(resume_input.get("framework") or "langgraph").strip() or "langgraph"
+    raw_framework_ref = resume_input.get("framework_ref")
+    framework_ref = dict(raw_framework_ref) if isinstance(raw_framework_ref, Mapping) else {}
+    raw_framework_detail = framework_ref.get(framework)
+    framework_detail = dict(raw_framework_detail) if isinstance(raw_framework_detail, Mapping) else {}
+    framework_detail.setdefault("checkpoint_id", checkpoint_id)
+    if resume_input.get("thread_id") and not framework_detail.get("thread_id"):
+        framework_detail["thread_id"] = str(resume_input.get("thread_id"))
+    framework_ref[framework] = framework_detail
+
+    resume_attempt_id = str(resume_input.get("resume_attempt_id") or "").strip()
+    if not resume_attempt_id:
+        resume_attempt_id = f"resume_{uuid.uuid4().hex}"
+
+    return {
+        "type": "agentengine.resume_checkpoint",
+        "run_id": run_id,
+        "checkpoint_id": checkpoint_id,
+        "resume_attempt_id": resume_attempt_id,
+        "framework": framework,
+        "framework_ref": framework_ref,
+    }
+
+
+def _agentengine_resume_metadata(resume_input: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not resume_input or not _is_checkpoint_resume_input(resume_input):
+        return {}
+    return {
+        "agentengine": {
+            "action": "resume_checkpoint",
+            "run_id": str(resume_input.get("run_id") or ""),
+            "checkpoint_id": str(resume_input.get("checkpoint_id") or ""),
+            "resume_attempt_id": str(resume_input.get("resume_attempt_id") or ""),
+            "framework": str(resume_input.get("framework") or ""),
+            "framework_ref": dict(resume_input.get("framework_ref") or {}),
+        }
+    }
+
+
+def _extract_agentengine_metadata(result: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not result:
+        return {}
+    metadata = result.get("metadata")
+    if not isinstance(metadata, Mapping):
+        return {}
+    agentengine = metadata.get("agentengine")
+    if not isinstance(agentengine, Mapping):
+        return {}
+    return {"agentengine": dict(agentengine)}
+
+
+def _checkpoint_event_args_from_agentengine_metadata(
+    agentengine_metadata: Mapping[str, Any] | None,
+    *,
+    fallback_run_id: str,
+) -> dict[str, Any] | None:
+    if not isinstance(agentengine_metadata, Mapping):
+        return None
+    framework = str(agentengine_metadata.get("framework") or "langgraph").strip() or "langgraph"
+    raw_framework_ref = agentengine_metadata.get("framework_ref")
+    if not isinstance(raw_framework_ref, Mapping):
+        return None
+    framework_ref = dict(raw_framework_ref)
+    raw_framework_detail = framework_ref.get(framework)
+    if not isinstance(raw_framework_detail, Mapping):
+        return None
+    framework_detail = dict(raw_framework_detail)
+    checkpoint_id = str(framework_detail.get("checkpoint_id") or "").strip()
+    if not checkpoint_id:
+        return None
+    run_id = str(agentengine_metadata.get("run_id") or fallback_run_id or "").strip()
+    if not run_id:
+        return None
+    phase = str(agentengine_metadata.get("phase") or "").strip()
+    display_metadata = {
+        key: value
+        for key, value in agentengine_metadata.items()
+        if key
+        not in {
+            "run_id",
+            "checkpoint_id",
+            "framework",
+            "framework_ref",
+            "phase",
+        }
+    }
+    return {
+        "run_id": run_id,
+        "checkpoint_id": checkpoint_id,
+        "framework": framework,
+        "framework_ref": framework_ref,
+        "phase": phase,
+        "metadata": display_metadata,
+    }
+
+
+def _merge_agentengine_metadata(
+    *metadata_items: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for metadata in metadata_items:
+        if not isinstance(metadata, Mapping):
+            continue
+        agentengine = metadata.get("agentengine")
+        if not isinstance(agentengine, Mapping):
+            continue
+        next_agentengine = dict(agentengine)
+        merged.update(next_agentengine)
+        if isinstance(agentengine.get("framework_ref"), Mapping):
+            existing_framework_ref = (
+                merged.get("framework_ref") if isinstance(merged.get("framework_ref"), Mapping) else {}
+            )
+            merged["framework_ref"] = {
+                **dict(existing_framework_ref),
+                **dict(agentengine.get("framework_ref") or {}),
+            }
+    return {"agentengine": merged} if merged else {}
 
 
 def _format_resume_response_text(resume_input: Mapping[str, Any]) -> str:
@@ -1424,7 +1936,7 @@ async def _update_session_metadata_after_assistant_turn(
     assistant_text: str,
     model: str | None,
 ) -> None:
-    summary = _truncate_text(assistant_text, SESSION_SUMMARY_MAX_CHARS)
+    summary = _truncate_text(strip_reasoning_markup(assistant_text), SESSION_SUMMARY_MAX_CHARS)
     if summary:
         await service.update_session_metadata(session_id, summary=summary)
 
@@ -2062,6 +2574,90 @@ async def append_run_status_event(
     )
 
 
+async def append_run_checkpoint_event(
+    *,
+    session_id: str,
+    author: str,
+    run_id: str,
+    checkpoint_id: str,
+    framework: str,
+    framework_ref: Mapping[str, Any],
+    phase: str = "",
+    invocation_id: Optional[str] = None,
+    metadata: Optional[dict[str, Any]] = None,
+    session_service_provider: Callable[[], Any] | None = None,
+) -> SessionEvent:
+    event_metadata = dict(metadata or {})
+    event_metadata.update(
+        {
+            "run_id": str(run_id),
+            "checkpoint_id": str(checkpoint_id),
+            "framework": str(framework),
+            "framework_ref": dict(framework_ref),
+            "phase": str(phase or ""),
+        }
+    )
+    return await append_conversation_event(
+        session_id=session_id,
+        author=author,
+        role="model",
+        text="checkpoint saved",
+        invocation_id=invocation_id,
+        event_type="run_checkpoint",
+        content={
+            "status": "checkpointed",
+            "run_id": str(run_id),
+            "checkpoint_id": str(checkpoint_id),
+            "framework": str(framework),
+            **({"phase": str(phase)} if phase else {}),
+        },
+        metadata=event_metadata,
+        session_service_provider=session_service_provider,
+    )
+
+
+async def append_run_resume_event(
+    *,
+    session_id: str,
+    author: str,
+    run_id: str,
+    checkpoint_id: str,
+    resume_attempt_id: str,
+    framework: str,
+    framework_ref: Mapping[str, Any],
+    invocation_id: Optional[str] = None,
+    metadata: Optional[dict[str, Any]] = None,
+    session_service_provider: Callable[[], Any] | None = None,
+) -> SessionEvent:
+    event_metadata = dict(metadata or {})
+    event_metadata.update(
+        {
+            "run_id": str(run_id),
+            "checkpoint_id": str(checkpoint_id),
+            "resume_attempt_id": str(resume_attempt_id),
+            "framework": str(framework),
+            "framework_ref": dict(framework_ref),
+        }
+    )
+    return await append_conversation_event(
+        session_id=session_id,
+        author=author,
+        role="model",
+        text="checkpoint resume requested",
+        invocation_id=invocation_id,
+        event_type="run_resume",
+        content={
+            "status": "resuming",
+            "run_id": str(run_id),
+            "checkpoint_id": str(checkpoint_id),
+            "resume_attempt_id": str(resume_attempt_id),
+            "framework": str(framework),
+        },
+        metadata=event_metadata,
+        session_service_provider=session_service_provider,
+    )
+
+
 async def append_reasoning_event(
     *,
     session_id: str,
@@ -2243,7 +2839,11 @@ async def build_run_input(
         model_metadata=model_metadata,
     )
     normalized_request_metadata = dict(request_metadata or {})
-    normalized_model_options = normalize_model_options(model_options)
+    policy_model = model or os.getenv("OPENAI_MODEL_NAME") or os.getenv("MODEL_NAME")
+    normalized_model_options = {
+        **normalize_model_options(model_options),
+        **model_policy_options_for_model(policy_model),
+    }
     normalized_instructions = str(instructions or "").strip()
 
     if resume_input is not None:
@@ -2251,9 +2851,65 @@ async def build_run_input(
             raise ValueError("Responses resume input requires session_id")
         existing_events = await service.get_events(resolved_session_id)
         normalized_resume_input = dict(resume_input)
+        if _is_checkpoint_resume_input(normalized_resume_input):
+            normalized_resume_input = _normalize_checkpoint_resume_input(normalized_resume_input)
+            await append_run_resume_event(
+                session_id=resolved_session_id,
+                author=agent_id,
+                run_id=str(normalized_resume_input["run_id"]),
+                checkpoint_id=str(normalized_resume_input["checkpoint_id"]),
+                resume_attempt_id=str(normalized_resume_input["resume_attempt_id"]),
+                framework=str(normalized_resume_input["framework"]),
+                framework_ref=normalized_resume_input["framework_ref"],
+                invocation_id=resolved_invocation_id,
+                session_service_provider=provider,
+            )
+            history = build_history_from_events(await service.get_events(resolved_session_id))
+            return PreparedConversationTurn(
+                session_id=resolved_session_id,
+                invocation_id=resolved_invocation_id,
+                user_input="",
+                user_display_input="",
+                history=history,
+                input_content=[],
+                input_messages=[],
+                user_parts=[],
+                attachments=[],
+                attachment_results=[],
+                current_attachments=[],
+                current_attachment_results=[],
+                has_current_files=False,
+                model_metadata=resolved_model_metadata,
+                model_options=normalized_model_options,
+                instructions=normalized_instructions,
+                request_metadata={
+                    **normalized_request_metadata,
+                    **_agentengine_resume_metadata(normalized_resume_input),
+                },
+                resume_input=normalized_resume_input,
+            )
+
         is_approval_resume = _is_approval_resume_input(normalized_resume_input)
+        existing_tool_receipt_event = None
         if is_approval_resume and not _has_pending_approval(existing_events):
-            raise ValueError("Responses resume input requires a pending approval_request")
+            replay_candidate = _normalize_approval_resume_input(
+                normalized_resume_input,
+                existing_events,
+                include_resolved=True,
+            )
+            receipt_key = _tool_receipt_idempotency_key_for_resume(
+                session_id=resolved_session_id,
+                resume_input=replay_candidate,
+            )
+            if receipt_key:
+                existing_tool_receipt_event = _find_tool_receipt_event_by_key(
+                    existing_events,
+                    receipt_key,
+                )
+            if existing_tool_receipt_event is not None:
+                normalized_resume_input = replay_candidate
+            else:
+                raise ValueError("Responses resume input requires a pending approval_request")
         if is_approval_resume:
             normalized_resume_input = _normalize_approval_resume_input(
                 normalized_resume_input,
@@ -2430,6 +3086,7 @@ async def invoke_conversation_once(
     resume_input: Mapping[str, Any] | None = None,
     response_id: str | None = None,
     account_id: str | None = None,
+    invocation_id: Optional[str] = None,
     session_service_provider: Callable[[], Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """非流式 turn 编排入口。
@@ -2451,6 +3108,7 @@ async def invoke_conversation_once(
         instructions=instructions,
         request_metadata=request_metadata,
         resume_input=resume_input,
+        invocation_id=invocation_id,
         session_service_provider=provider,
     )
     ambient_contexts = _build_runner_ambient_contexts(
@@ -2501,8 +3159,10 @@ async def invoke_conversation_once(
         )
 
         result: dict[str, Any] | None = None
+        last_invoke_error: Exception | None = None
         for attempt in range(2):
             try:
+                last_invoke_error = None
                 runtime_context.history = list(prepared.history)
                 with platform_invocation_scope(runtime_context):
                     result = await runner.invoke(
@@ -2513,6 +3173,16 @@ async def invoke_conversation_once(
                         )
                     )
                 break
+            except asyncio.CancelledError:
+                await append_run_status_event(
+                    session_id=prepared.session_id,
+                    author=runner_name,
+                    status="cancelled",
+                    invocation_id=prepared.invocation_id,
+                    detail="cancel_requested",
+                    session_service_provider=provider,
+                )
+                raise
             except Exception as exc:
                 if attempt == 0 and _is_prompt_too_long_error(exc):
                     checkpoint = await compact_conversation_history(
@@ -2530,6 +3200,25 @@ async def invoke_conversation_once(
                         prepared = await _refresh_history(prepared, session_service_provider=provider)
                         runtime_context.history = list(prepared.history)
                         continue
+                fallback_model = fallback_model_for_exception(exc, current_model=model)
+                if attempt == 0 and fallback_model:
+                    model = fallback_model
+                    runtime_context.model = fallback_model
+                    runtime_context.model_options = {
+                        **prepared.model_options,
+                        **model_policy_options_for_model(fallback_model),
+                    }
+                    prepare_runner(runner, fallback_model)
+                    await append_run_status_event(
+                        session_id=prepared.session_id,
+                        author=runner_name,
+                        status="in_progress",
+                        invocation_id=prepared.invocation_id,
+                        detail=f"fallback_model:{fallback_model}",
+                        session_service_provider=provider,
+                    )
+                    continue
+                last_invoke_error = exc
                 await append_run_status_event(
                     session_id=prepared.session_id,
                     author=runner_name,
@@ -2538,16 +3227,49 @@ async def invoke_conversation_once(
                     detail=str(exc),
                     session_service_provider=provider,
                 )
-                raise
+                break
 
+        if last_invoke_error is not None:
+            raise last_invoke_error
         result = result or {}
-        output_text = str(result.get("output", ""))
+        output_text = strip_reasoning_markup(str(result.get("output", "")))
+        result_usage = _normalize_usage_payload(result.get("usage"))
         _set_conversation_output_attributes(span, output_text)
-        assistant_metadata: dict[str, Any] = dict(trace_metadata)
+        _set_conversation_usage_attributes(span, result_usage)
+        result_agentengine_metadata = _extract_agentengine_metadata(result)
+        assistant_metadata: dict[str, Any] = {
+            **trace_metadata,
+            **_merge_agentengine_metadata(prepared.request_metadata, result_agentengine_metadata),
+        }
         if prepared.request_metadata:
-            assistant_metadata["request_metadata"] = prepared.request_metadata
+            request_metadata_without_agentengine = {
+                key: value
+                for key, value in prepared.request_metadata.items()
+                if key != "agentengine"
+            }
+            if request_metadata_without_agentengine:
+                assistant_metadata["request_metadata"] = request_metadata_without_agentengine
+        if result_usage:
+            assistant_metadata["usage"] = result_usage
         if response_id:
             assistant_metadata["response_id"] = response_id
+        checkpoint_args = _checkpoint_event_args_from_agentengine_metadata(
+            assistant_metadata.get("agentengine") if isinstance(assistant_metadata, Mapping) else None,
+            fallback_run_id=prepared.invocation_id,
+        )
+        if checkpoint_args:
+            await append_run_checkpoint_event(
+                session_id=prepared.session_id,
+                author=runner_name,
+                run_id=checkpoint_args["run_id"],
+                checkpoint_id=checkpoint_args["checkpoint_id"],
+                framework=checkpoint_args["framework"],
+                framework_ref=checkpoint_args["framework_ref"],
+                phase=checkpoint_args.get("phase") or "completed",
+                invocation_id=prepared.invocation_id,
+                metadata=checkpoint_args.get("metadata"),
+                session_service_provider=provider,
+            )
         await append_conversation_event(
             session_id=prepared.session_id,
             author=runner_name,
@@ -2582,8 +3304,19 @@ async def invoke_conversation_once(
         result_payload = {
             "output_text": output_text,
             "model": model,
-            "metadata": {**trace_metadata, **prepared.request_metadata},
+            "metadata": {
+                **trace_metadata,
+                **{
+                    key: value
+                    for key, value in prepared.request_metadata.items()
+                    if key != "agentengine"
+                },
+                **_merge_agentengine_metadata(prepared.request_metadata, result_agentengine_metadata),
+            },
         }
+        if result_usage:
+            result_payload["usage"] = result_usage
+            result_payload["metadata"]["usage"] = result_usage
         if response_id:
             result_payload["response_id"] = response_id
         return prepared.session_id, result_payload
@@ -2610,6 +3343,7 @@ async def _iter_conversation_turn_events(
     resume_input: Mapping[str, Any] | None = None,
     response_id: str | None = None,
     account_id: str | None = None,
+    invocation_id: Optional[str] = None,
     session_service_provider: Callable[[], Any] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Internal semantic event stream shared by protocol serializers."""
@@ -2656,6 +3390,7 @@ async def _iter_conversation_turn_events(
         instructions=instructions,
         request_metadata=request_metadata,
         resume_input=resume_input,
+        invocation_id=invocation_id,
         session_service_provider=provider,
     )
     ambient_contexts = _build_runner_ambient_contexts(
@@ -2752,6 +3487,8 @@ async def _iter_conversation_turn_events(
         emitted_response_artifacts = False
         responses_output: list[Any] = []
         responses_response_id: str | None = response_id
+        runner_agentengine_metadata: dict[str, Any] = {}
+        stream_usage: dict[str, Any] = {}
         for attempt in range(2):
             try:
                 runtime_context.history = list(prepared.history)
@@ -2770,7 +3507,34 @@ async def _iter_conversation_turn_events(
                         except StopAsyncIteration:
                             break
                         chunk_type = chunk.get("type")
+                        if chunk_type == "checkpoint":
+                            chunk_agentengine_metadata = _extract_agentengine_metadata(chunk)
+                            if chunk_agentengine_metadata:
+                                runner_agentengine_metadata.update(chunk_agentengine_metadata)
+                                resume_run_id = ""
+                                if prepared.resume_input and _is_checkpoint_resume_input(prepared.resume_input):
+                                    resume_run_id = str(prepared.resume_input.get("run_id") or "").strip()
+                                checkpoint_args = _checkpoint_event_args_from_agentengine_metadata(
+                                    runner_agentengine_metadata.get("agentengine"),
+                                    fallback_run_id=resume_run_id or prepared.invocation_id,
+                                )
+                                if checkpoint_args:
+                                    await append_run_checkpoint_event(
+                                        session_id=prepared.session_id,
+                                        author=runner_name,
+                                        run_id=checkpoint_args["run_id"],
+                                        checkpoint_id=checkpoint_args["checkpoint_id"],
+                                        framework=checkpoint_args["framework"],
+                                        framework_ref=checkpoint_args["framework_ref"],
+                                        phase=checkpoint_args.get("phase") or "stream",
+                                        invocation_id=prepared.invocation_id,
+                                        metadata=checkpoint_args.get("metadata"),
+                                        session_service_provider=provider,
+                                    )
+                            continue
                         if chunk_type == "responses_output":
+                            if isinstance(chunk.get("usage"), Mapping):
+                                stream_usage = _normalize_usage_payload(chunk.get("usage"))
                             raw_output = chunk.get("output")
                             responses_output = raw_output if isinstance(raw_output, list) else []
                             raw_response_id = chunk.get("response_id")
@@ -2839,11 +3603,20 @@ async def _iter_conversation_turn_events(
                             continue
                         if chunk_type == "tool_result":
                             emitted_response_artifacts = True
+                            tool_name = str(chunk.get("tool_name") or "tool")
+                            tool_args = chunk.get("tool_args", {})
+                            if not isinstance(tool_args, Mapping):
+                                tool_args = {}
+                            tool_run_id = str(chunk.get("run_id") or prepared.invocation_id)
+                            checkpoint_metadata = _latest_checkpoint_metadata_for_run(
+                                await provider().get_events(prepared.session_id),
+                                tool_run_id,
+                            )
                             approval_interrupt_info = approval_interrupt_info_from_result(
                                 chunk.get("tool_output", ""),
-                                fallback_tool_name=str(chunk.get("tool_name") or "tool"),
-                                tool_args=chunk.get("tool_args", {}),
-                                run_id=chunk.get("run_id"),
+                                fallback_tool_name=tool_name,
+                                tool_args=tool_args,
+                                run_id=tool_run_id,
                             )
                             if approval_interrupt_info:
                                 await append_conversation_event(
@@ -2880,9 +3653,25 @@ async def _iter_conversation_turn_events(
                                 invocation_id=prepared.invocation_id,
                                 event_type="tool_result",
                                 metadata={
-                                    "tool_name": chunk.get("tool_name"),
+                                    "tool_name": tool_name,
                                     "tool_output": chunk.get("tool_output", ""),
-                                    "run_id": chunk.get("run_id"),
+                                    "run_id": tool_run_id,
+                                    "tool_receipt": _tool_receipt_metadata(
+                                        session_id=prepared.session_id,
+                                        run_id=tool_run_id,
+                                        tool_call_id=tool_run_id,
+                                        tool_name=tool_name,
+                                        tool_args=tool_args,
+                                        checkpoint_id=checkpoint_metadata.get("checkpoint_id"),
+                                        framework=checkpoint_metadata.get("framework"),
+                                        framework_ref=checkpoint_metadata.get("framework_ref"),
+                                        status=(
+                                            "failed"
+                                            if isinstance(chunk.get("tool_output"), Mapping)
+                                            and chunk.get("tool_output", {}).get("ok") is False
+                                            else "completed"
+                                        ),
+                                    ),
                                 },
                                 session_service_provider=provider,
                             )
@@ -2926,7 +3715,24 @@ async def _iter_conversation_turn_events(
                             final_text = str(chunk.get("output", ""))
                             if final_text:
                                 accumulated_text = final_text
+                            if isinstance(chunk.get("usage"), Mapping):
+                                stream_usage = _normalize_usage_payload(chunk.get("usage"))
                 break
+            except asyncio.CancelledError:
+                await append_run_status_event(
+                    session_id=prepared.session_id,
+                    author=runner_name,
+                    status="cancelled",
+                    invocation_id=prepared.invocation_id,
+                    detail="cancel_requested",
+                    session_service_provider=provider,
+                )
+                yield {
+                    "type": "cancelled",
+                    "session_id": prepared.session_id,
+                    "metadata": {**trace_metadata, **prepared.request_metadata},
+                }
+                return
             except Exception as exc:
                 if attempt == 0 and not emitted_anything and _is_prompt_too_long_error(exc):
                     yield {"type": "compaction", "phase": "start", "trigger": "prompt_too_long"}
@@ -2954,6 +3760,27 @@ async def _iter_conversation_turn_events(
                         prepared = await _refresh_history(prepared, session_service_provider=provider)
                         runtime_context.history = list(prepared.history)
                         continue
+                if attempt == 0 and not emitted_anything:
+                    fallback_model = fallback_model_for_exception(exc, current_model=model)
+                    if fallback_model:
+                        model = fallback_model
+                        prepare_runner(runner, fallback_model)
+                        prepared.model_options = {
+                            **prepared.model_options,
+                            **model_policy_options_for_model(fallback_model),
+                        }
+                        runtime_context.model = fallback_model
+                        runtime_context.model_options = prepared.model_options
+                        _set_span_attribute(span, "ksadk.model.fallback", fallback_model)
+                        await append_run_status_event(
+                            session_id=prepared.session_id,
+                            author=runner_name,
+                            status="in_progress",
+                            invocation_id=prepared.invocation_id,
+                            detail=f"fallback_model:{fallback_model}",
+                            session_service_provider=provider,
+                        )
+                        continue
                 await append_run_status_event(
                     session_id=prepared.session_id,
                     author=runner_name,
@@ -2965,12 +3792,22 @@ async def _iter_conversation_turn_events(
                 yield {"type": "error", "message": str(exc) or "Agent 运行失败"}
                 return
 
-        assistant_metadata = {**trace_metadata, **dict(request_metadata or {})}
+        request_metadata_without_agentengine = {
+            key: value for key, value in dict(request_metadata or {}).items() if key != "agentengine"
+        }
+        assistant_metadata = {
+            **trace_metadata,
+            **request_metadata_without_agentengine,
+            **_merge_agentengine_metadata(request_metadata, runner_agentengine_metadata),
+        }
         if responses_output:
             assistant_metadata["responses_output"] = responses_output
+        if stream_usage:
+            assistant_metadata["usage"] = stream_usage
         if responses_response_id:
             assistant_metadata["response_id"] = responses_response_id
         _set_conversation_output_attributes(span, accumulated_text)
+        _set_conversation_usage_attributes(span, stream_usage)
 
         await append_conversation_event(
             session_id=prepared.session_id,
@@ -3012,6 +3849,7 @@ async def _iter_conversation_turn_events(
             "metadata": assistant_metadata,
             "responses_output": responses_output,
             "response_id": responses_response_id,
+            "usage": assistant_metadata.get("usage"),
         }
     finally:
         _finish_span()
@@ -3033,6 +3871,7 @@ async def stream_conversation_turn(
     request_metadata: Mapping[str, Any] | None = None,
     resume_input: Mapping[str, Any] | None = None,
     account_id: str | None = None,
+    invocation_id: Optional[str] = None,
     session_service_provider: Callable[[], Any] | None = None,
 ) -> AsyncIterator[str]:
     """Legacy ksadk response SSE stream used by hosted chat and chat-completions."""
@@ -3051,6 +3890,7 @@ async def stream_conversation_turn(
         request_metadata=request_metadata,
         resume_input=resume_input,
         account_id=account_id,
+        invocation_id=invocation_id,
         session_service_provider=session_service_provider,
     ):
         event_type = event.get("type")
@@ -3094,6 +3934,8 @@ async def stream_conversation_turn(
             yield _response_sse(
                 "response.error", {"message": event.get("message") or "Agent 运行失败"}
             )
+        elif event_type == "cancelled":
+            yield _response_sse("response.cancelled", {"status": "cancelled"})
         elif event_type == "completed":
             final_payload = build_responses_payload(
                 output_text=str(event.get("output_text") or ""),
@@ -3122,6 +3964,7 @@ async def stream_responses_conversation_turn(
     request_metadata: Mapping[str, Any] | None = None,
     resume_input: Mapping[str, Any] | None = None,
     account_id: str | None = None,
+    invocation_id: Optional[str] = None,
     session_service_provider: Callable[[], Any] | None = None,
 ) -> AsyncIterator[str]:
     """OpenAI Responses-style SSE stream."""
@@ -3199,6 +4042,7 @@ async def stream_responses_conversation_turn(
         resume_input=resume_input,
         response_id=response_id,
         account_id=account_id,
+        invocation_id=invocation_id,
         session_service_provider=session_service_provider,
     ):
         event_metadata = event.get("metadata")
@@ -3381,6 +4225,23 @@ async def stream_responses_conversation_turn(
                 error={"message": event.get("message") or "Agent 运行失败"},
             )
             yield _response_sse("response.failed", failed_payload)
+            return
+
+        if event_type == "cancelled":
+            cancelled_payload = build_responses_payload(
+                output_text=completed_text,
+                model=model,
+                session_id=str(event.get("session_id") or session_id or ""),
+                response_id=response_id,
+                created_at=created_at,
+                status="cancelled",
+                metadata=(
+                    event.get("metadata")
+                    if isinstance(event.get("metadata"), Mapping)
+                    else response_metadata
+                ),
+            )
+            yield _response_sse("response.cancelled", cancelled_payload)
             return
 
         if event_type == "completed":

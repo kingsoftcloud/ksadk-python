@@ -11,6 +11,12 @@
 | `OPENAI_BASE_URL` | provider base URL，通常以 `/v1` 结尾 |
 | `OPENAI_API_BASE` | `OPENAI_BASE_URL` 的兼容别名 |
 | `OPENAI_MODEL_NAME` | 本地 runner 和 UI 使用的默认模型 |
+| `AGENTENGINE_MODEL_POLICY_JSON` | 托管运行时注入的模型策略 JSON，可统一声明 primary / multimodal / fallback 默认值 |
+| `OPENAI_FALLBACK_MODEL_NAME` | 通用 fallback 模型兼容变量，Hermes 等运行时可读取 |
+| `HERMES_FALLBACK_MODEL` | Hermes 显式 fallback 模型覆盖 |
+| `OPENCLAW_DEFAULT_MODEL` | OpenClaw 显式默认模型覆盖 |
+| `OPENCLAW_FALLBACK_MODEL` | OpenClaw 显式 fallback 模型覆盖 |
+| `OPENCLAW_IMAGE_MODEL` | OpenClaw 显式多模态 / 图像模型覆盖 |
 | `MODEL_NAME` | 一些项目使用的兼容别名 |
 
 示例：
@@ -20,6 +26,10 @@ OPENAI_API_KEY=sk-test
 OPENAI_BASE_URL=https://api.example.com/v1
 OPENAI_MODEL_NAME=my-model
 ```
+
+托管部署中，平台可以通过 `AGENTENGINE_MODEL_POLICY_JSON` 注入统一模型策略。0.6.6
+默认策略 v1 使用 `glm-5.2` 作为主模型、`kimi-k2.7-code` 作为多模态模型、
+`deepseek-v4-pro` 作为 fallback；显式请求参数或显式环境变量仍优先于策略默认值。
 
 ## 项目与本地 UI
 

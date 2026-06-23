@@ -15,7 +15,8 @@ from ksadk.runners.base_runner import BaseRunner
 from ksadk.sessions.continuity import LangGraphSessionAdapter
 from ksadk.runners.utils import get_langfuse_callback, get_langfuse_metadata, load_agent_module
 from langgraph.types import Command
-from ksadk.conversations.attachments import classify_attachment_kind, read_attachment_bytes
+from ksadk.conversations.attachments import classify_attachment_kind, read_attachment_uri_bytes
+from ksadk.conversations.reasoning_markup import ReasoningMarkupParser, strip_reasoning_markup
 
 
 class LangGraphRunner(BaseRunner):
@@ -63,6 +64,103 @@ class LangGraphRunner(BaseRunner):
             config["metadata"] = get_langfuse_metadata(session_id)
         
         return config
+
+    @staticmethod
+    def _extract_langgraph_checkpoint_ref(payload: Dict[str, Any]) -> dict[str, Any]:
+        framework_ref = payload.get("framework_ref") or {}
+        if not isinstance(framework_ref, dict):
+            return {}
+        langgraph_ref = framework_ref.get("langgraph") or {}
+        if not isinstance(langgraph_ref, dict):
+            return {}
+        return dict(langgraph_ref)
+
+    @classmethod
+    def _apply_checkpoint_resume_config(
+        cls,
+        config: dict[str, Any],
+        *,
+        session_id: str,
+        checkpoint_ref: dict[str, Any],
+    ) -> dict[str, Any]:
+        checkpoint_id = str(checkpoint_ref.get("checkpoint_id") or "").strip()
+        if not checkpoint_id:
+            raise ValueError("checkpoint_resume requires framework_ref.langgraph.checkpoint_id")
+
+        thread_id = str(checkpoint_ref.get("thread_id") or session_id or "").strip()
+        if not thread_id:
+            raise ValueError("checkpoint_resume requires session_id or framework_ref.langgraph.thread_id")
+
+        next_config = dict(config)
+        configurable = dict(next_config.get("configurable") or {})
+        configurable["thread_id"] = thread_id
+        checkpoint_ns = str(checkpoint_ref.get("checkpoint_ns") or "").strip()
+        if checkpoint_ns:
+            configurable["checkpoint_ns"] = checkpoint_ns
+        configurable["checkpoint_id"] = checkpoint_id
+        next_config["configurable"] = configurable
+        return next_config
+
+    @staticmethod
+    def _checkpoint_ref_from_state(state: Any) -> dict[str, Any]:
+        state_config = None
+        if isinstance(state, dict):
+            state_config = state.get("config")
+        else:
+            state_config = getattr(state, "config", None)
+        if not isinstance(state_config, dict):
+            return {}
+        configurable = state_config.get("configurable") or {}
+        if not isinstance(configurable, dict):
+            return {}
+        thread_id = str(configurable.get("thread_id") or "").strip()
+        checkpoint_id = str(configurable.get("checkpoint_id") or "").strip()
+        if not thread_id or not checkpoint_id:
+            return {}
+        return {
+            "langgraph": {
+                "thread_id": thread_id,
+                **(
+                    {"checkpoint_ns": str(configurable.get("checkpoint_ns")).strip()}
+                    if str(configurable.get("checkpoint_ns") or "").strip()
+                    else {}
+                ),
+                "checkpoint_id": checkpoint_id,
+            }
+        }
+
+    async def _latest_checkpoint_metadata(self, config: dict[str, Any]) -> dict[str, Any]:
+        state = None
+        try:
+            if callable(getattr(self._agent, "aget_state", None)):
+                state = await self._agent.aget_state(config)
+            elif callable(getattr(self._agent, "get_state", None)):
+                state = self._agent.get_state(config)
+        except Exception:
+            return {}
+        framework_ref = self._checkpoint_ref_from_state(state)
+        if not framework_ref:
+            return {}
+        return {
+            "agentengine": {
+                "framework": "langgraph",
+                "framework_ref": framework_ref,
+            }
+        }
+
+    async def _latest_state_usage(self, config: dict[str, Any]) -> dict[str, Any]:
+        state = None
+        try:
+            if callable(getattr(self._agent, "aget_state", None)):
+                state = await self._agent.aget_state(config)
+            elif callable(getattr(self._agent, "get_state", None)):
+                state = self._agent.get_state(config)
+        except Exception:
+            return {}
+        values = getattr(state, "values", None)
+        if values is not None:
+            return self._extract_usage(values)
+        return {}
 
     @staticmethod
     def _ambient_context_text(payload: Dict[str, Any]) -> str:
@@ -237,11 +335,11 @@ class LangGraphRunner(BaseRunner):
                 )
                 continue
 
-            storage_path = attachment.get("storage_path")
-            if not storage_path:
+            file_uri = attachment.get("file_uri")
+            if not file_uri:
                 continue
 
-            raw = read_attachment_bytes(Path(str(storage_path)))
+            raw = read_attachment_uri_bytes(file_uri)
             if not raw:
                 continue
 
@@ -294,14 +392,24 @@ class LangGraphRunner(BaseRunner):
         payload = dict(input_data)
         session_id = payload.pop("session_id", None) or str(uuid.uuid4())[:8]
         is_resume = payload.pop("resume", False)
+        is_checkpoint_resume = bool(payload.pop("checkpoint_resume", False))
+        checkpoint_ref = self._extract_langgraph_checkpoint_ref(payload)
         history = payload.pop("history", [])
         native_context = self.build_native_context(payload.get("platform_context"))
         normalized_payload = self._strip_platform_context_fields(payload)
         
         config = self._get_config(session_id)
+        if is_checkpoint_resume:
+            config = self._apply_checkpoint_resume_config(
+                config,
+                session_id=session_id,
+                checkpoint_ref=checkpoint_ref,
+            )
         
         # 判断输入格式 / resume
-        if self._has_prepare_state_hook():
+        if is_checkpoint_resume:
+            state = None
+        elif self._has_prepare_state_hook():
             state = self._prepare_state_with_hook(payload, session_id, history, is_resume=is_resume)
         elif is_resume:
             if "input" in normalized_payload and len(normalized_payload) == 1:
@@ -312,7 +420,13 @@ class LangGraphRunner(BaseRunner):
             state = self._to_state(payload, history)
 
         try:
-            if is_resume:
+            if is_checkpoint_resume:
+                result = await self._invoke_graph(
+                    None,
+                    config=config,
+                    context=native_context,
+                )
+            elif is_resume:
                 result = await self._invoke_graph(
                     Command(resume=state),
                     config=config,
@@ -325,7 +439,14 @@ class LangGraphRunner(BaseRunner):
                     context=native_context,
                 )
 
-            return {"output": self._extract_output(result), "raw": result}
+            output = {"output": self._extract_output(result), "raw": result}
+            usage = self._extract_usage(result)
+            if usage:
+                output["usage"] = usage
+            metadata = await self._latest_checkpoint_metadata(config)
+            if metadata:
+                output["metadata"] = metadata
+            return output
             
         except Exception as e:
             if "Interrupt" in type(e).__name__:
@@ -371,6 +492,8 @@ class LangGraphRunner(BaseRunner):
         session_id = payload.pop("session_id", None) or str(uuid.uuid4())[:8]
         history = payload.pop("history", [])
         is_resume = payload.pop("resume", False)
+        is_checkpoint_resume = bool(payload.pop("checkpoint_resume", False))
+        checkpoint_ref = self._extract_langgraph_checkpoint_ref(payload)
         native_context = self.build_native_context(payload.get("platform_context"))
         normalized_payload = self._strip_platform_context_fields(payload)
 
@@ -380,10 +503,20 @@ class LangGraphRunner(BaseRunner):
             invoke_payload["history"] = history
         if is_resume:
             invoke_payload["resume"] = True
+        if is_checkpoint_resume:
+            invoke_payload["checkpoint_resume"] = True
         
         config = self._get_config(session_id)
+        if is_checkpoint_resume:
+            config = self._apply_checkpoint_resume_config(
+                config,
+                session_id=session_id,
+                checkpoint_ref=checkpoint_ref,
+            )
 
-        if self._has_prepare_state_hook():
+        if is_checkpoint_resume:
+            state = None
+        elif self._has_prepare_state_hook():
             state = self._prepare_state_with_hook(payload, session_id, history, is_resume=is_resume)
         elif is_resume:
             if "input" in normalized_payload and len(normalized_payload) == 1:
@@ -395,16 +528,22 @@ class LangGraphRunner(BaseRunner):
 
         accumulated_text = ""
         accumulated_reasoning = ""
+        inline_reasoning_parser = ReasoningMarkupParser()
         emitted_non_text_event = False
         final_output_text = ""
+        final_output_usage: dict[str, Any] = {}
 
         if not hasattr(self._agent, "astream_events"):
             result = await self.invoke(invoke_payload)
-            yield {"output": result.get("output", ""), "type": "final"}
+            final_chunk = {"output": result.get("output", ""), "type": "final"}
+            usage = self._extract_usage(result)
+            if usage:
+                final_chunk["usage"] = usage
+            yield final_chunk
             return
 
         try:
-            stream_input = Command(resume=state) if is_resume else state
+            stream_input = None if is_checkpoint_resume else (Command(resume=state) if is_resume else state)
             stream_kwargs = {"version": "v2", "config": config}
             if native_context and self._callable_accepts_keyword(self._agent.astream_events, "context"):
                 stream_kwargs["context"] = native_context
@@ -433,9 +572,16 @@ class LangGraphRunner(BaseRunner):
                                 content = content[len(accumulated_reasoning):]
                             elif reasoning and content.startswith(reasoning):
                                 content = content[len(reasoning):]
-                        if content and content.strip():
-                            accumulated_text += content
-                            yield {"delta": content, "type": "text"}
+                        if content:
+                            for part in inline_reasoning_parser.feed(content):
+                                if not part.text or not part.text.strip():
+                                    continue
+                                if part.kind == "thinking":
+                                    accumulated_reasoning += part.text
+                                    yield {"delta": part.text, "type": "thinking"}
+                                else:
+                                    accumulated_text += part.text
+                                    yield {"delta": part.text, "type": "text"}
 
                 elif event_kind == "on_tool_start":
                     emitted_non_text_event = True
@@ -465,7 +611,8 @@ class LangGraphRunner(BaseRunner):
                         return
                     extracted_output = self._extract_output(output)
                     if extracted_output:
-                        final_output_text = str(extracted_output)
+                        final_output_text = strip_reasoning_markup(str(extracted_output))
+                    final_output_usage = self._extract_usage(output)
 
         except Exception as e:
             if "Interrupt" in type(e).__name__:
@@ -473,12 +620,43 @@ class LangGraphRunner(BaseRunner):
                 return
             raise
 
+        for part in inline_reasoning_parser.flush():
+            if not part.text or not part.text.strip():
+                continue
+            if part.kind == "thinking":
+                accumulated_reasoning += part.text
+                yield {"delta": part.text, "type": "thinking"}
+            else:
+                accumulated_text += part.text
+                yield {"delta": part.text, "type": "text"}
+
         if not accumulated_text:
             if final_output_text:
-                yield {"output": final_output_text, "type": "final"}
+                final_chunk = {"output": final_output_text, "type": "final"}
+                if final_output_usage:
+                    final_chunk["usage"] = final_output_usage
+                yield final_chunk
             elif not emitted_non_text_event:
                 result = await self.invoke(invoke_payload)
-                yield {"output": result.get("output", ""), "type": "final"}
+                final_chunk = {"output": result.get("output", ""), "type": "final"}
+                usage = self._extract_usage(result)
+                if usage:
+                    final_chunk["usage"] = usage
+                yield final_chunk
+                metadata = result.get("metadata") if isinstance(result, dict) else None
+                if isinstance(metadata, dict) and metadata.get("agentengine"):
+                    yield {"type": "checkpoint", "metadata": metadata}
+                    return
+        else:
+            final_chunk = {"output": accumulated_text, "type": "final"}
+            usage = await self._latest_state_usage(config)
+            if usage:
+                final_chunk["usage"] = usage
+            yield final_chunk
+
+        metadata = await self._latest_checkpoint_metadata(config)
+        if metadata:
+            yield {"type": "checkpoint", "metadata": metadata}
 
     def _filter_tool_tags(self, content: str) -> str:
         """过滤 <tool_call> 标签"""

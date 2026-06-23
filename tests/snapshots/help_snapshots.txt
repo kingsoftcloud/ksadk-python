@@ -1,0 +1,350 @@
+=== root_help ===
+Usage: cli [OPTIONS] COMMAND [ARGS]...
+
+AgentEngine CLI
+支持 Hermes / OpenClaw / DeepAgents / LangGraph / LangChain / Google ADK
+的本地运行与云端部署。
+
+工作流命令:
+  agentengine a2a        暴露 A2A 服务与 Agent Card
+  agentengine agent      Agent 资源管理
+  agentengine build      构建部署制品
+  agentengine completion Shell 补全管理
+  agentengine dashboard  打开云端 Agent Dashboard
+  agentengine deploy     部署到云端
+  agentengine files      管理 workspace 文件
+  agentengine hermes     Hermes Agent 资源管理
+  agentengine init       创建新项目
+  agentengine launch     一键构建+部署
+  agentengine mcp        MCP 资源管理
+  agentengine openclaw   OpenClaw 资源管理
+  agentengine run        运行 Agent
+  agentengine version    Agent 版本管理
+  agentengine web        本地调试 Agent Invoke UI
+
+配置:
+  agentengine config     项目配置与模型设置
+
+全局选项:
+  --output       输出格式（pretty/json）
+  --no-color     禁用颜色输出
+  --dry-run      全局 Dry Run（仅打印请求，不执行）
+  --version      显示版本号
+  -h, --help     显示帮助信息
+
+使用 `agentengine <command> --help` 查看子命令帮助。
+
+=== a2a_help ===
+Usage: cli a2a [OPTIONS] COMMAND [ARGS]...
+
+  A2A 协议服务与 Agent Card
+
+Options:
+  -h, --help  Show this message and exit.
+
+Commands:
+  card   输出 Agent Card JSON。
+  serve  启动 A2A 协议服务。
+
+=== a2a_serve_help ===
+Usage: cli a2a serve [OPTIONS] [AGENT_DIR]
+
+  启动 A2A 协议服务。
+
+Options:
+  --host TEXT         服务监听地址  [default: 0.0.0.0]
+  --port INTEGER      服务端口  [default: 8081]
+  --url TEXT          Agent Card 对外宣告地址
+  --name TEXT         覆盖 Agent 名称
+  --description TEXT  覆盖 Agent 描述
+  --skill TEXT        可重复传入，追加 Agent Card 技能
+  --no-trace          禁用 Tracing
+  -h, --help          Show this message and exit.
+
+=== a2a_card_help ===
+Usage: cli a2a card [OPTIONS] [AGENT_DIR]
+
+  输出 Agent Card JSON。
+
+Options:
+  --url TEXT          Agent Card 对外宣告地址  [default: http://127.0.0.1:8081]
+  --name TEXT         覆盖 Agent 名称
+  --description TEXT  覆盖 Agent 描述
+  --skill TEXT        可重复传入，追加 Agent Card 技能
+  -h, --help          Show this message and exit.
+
+=== agent_help ===
+Usage: cli agent [OPTIONS] COMMAND [ARGS]...
+
+  Agent 资源管理。
+
+Options:
+  -h, --help  Show this message and exit.
+
+Commands:
+  delete  删除一个或多个 Agent。
+  invoke  与 Agent 交互。
+  list    列出已部署的 Agent。
+  status  查看单个 Agent 状态。
+
+=== dashboard_help ===
+Usage: cli dashboard [OPTIONS] COMMAND [ARGS]...
+
+  Dashboard 资源管理。
+
+  标准动作:
+      open   打开 Agent Dashboard
+      share  管理 Dashboard 分享链接
+
+  示例:
+      agentengine dashboard open
+      agentengine dashboard open ar-xxxx
+      agentengine dashboard share list ar-xxxx
+
+Options:
+  -h, --help  Show this message and exit.
+
+Commands:
+  open   打开 Agent Dashboard。
+  share  Dashboard 分享链接管理。
+
+=== dashboard_open_help ===
+Usage: cli dashboard open [OPTIONS] [AGENT_REF]
+
+  打开 Agent Dashboard。
+
+Options:
+  -a, --agent, --agent-id TEXT  Agent 名称或 ID
+  -r, --region TEXT             区域
+  --path TEXT                   目标 UI 路径（默认根据配置自动推导）
+  --share                       创建可分享链接（默认创建私有临时链接）
+  --expires-seconds TEXT        链接有效期（秒）；支持 never(=0)
+  --force-new                   强制新建链接（跳过复用）
+  --no-open                     仅打印 URL，不自动打开浏览器
+  --direct                      直接打开 endpoint/path（跳过短链接创建）
+  --output [pretty|json]        输出格式
+  -h, --help                    Show this message and exit.
+
+=== hermes_help ===
+Usage: cli hermes [OPTIONS] COMMAND [ARGS]...
+
+  Hermes Agent 资源管理。
+
+Options:
+  -h, --help  Show this message and exit.
+
+Commands:
+  connect  进入远端 Hermes gateway setup 向导，执行扫码连接。
+  delete   删除 Hermes Agent。
+  deploy   部署 Hermes runtime 到云端。
+  exec     透传受限 Hermes 只读运维子命令。
+  list     列出 Hermes Agent。
+  open     打开 Hermes 管理 UI，或使用 --chat 打开统一聊天页。
+  pairing  透传 Hermes pairing 审批子命令。
+  status   查看 Hermes Agent 状态。
+
+=== mcp_help ===
+Usage: cli mcp [OPTIONS] COMMAND [ARGS]...
+
+  MCP 资源管理。
+
+  标准动作:
+      list    列出已部署的 MCP
+      status  查看单个 MCP 状态
+      delete  删除一个或多个 MCP
+      deploy  部署 MCP 到云端
+      build   构建 MCP 制品
+
+  示例:
+      agentengine mcp deploy .
+      agentengine mcp list
+      KSYUN_REGION=cn-beijing-6 agentengine mcp status <id>
+
+Options:
+  -h, --help  Show this message and exit.
+
+Commands:
+  build   构建 MCP Server 制品。
+  delete  删除 MCP。
+  deploy  部署 MCP Server 到云端
+  list    列出已部署的 MCP
+  status  查看 MCP 状态
+
+=== mcp_build_help ===
+Usage: cli mcp build [OPTIONS] [MCP_DIR]
+
+  构建 MCP Server 制品。
+
+Options:
+  --artifact-type [Code|Container]
+                                  构建模式: Code-代码包 (默认) 或 Container-镜像模式
+  --push                          构建后上传/推送制品
+  --tag TEXT                      镜像标签 (Container 模式)
+  --registry TEXT                 镜像仓库地址 (Container 模式)
+  -r, --region TEXT               构建使用的区域 (Code 模式用于 KS3，Container 模式用于默认镜像仓库推断)
+  --ks3-bucket TEXT               KS3 存储桶名称 (Code 模式，默认:
+                                  agentengine-{account_id}-{region})
+  --no-cache                      强制重新构建，不使用缓存 (Code/Container 模式均适用)
+  --output [pretty|json]          输出格式
+  -h, --help                      Show this message and exit.
+
+=== openclaw_help ===
+Usage: cli openclaw [OPTIONS] COMMAND [ARGS]...
+
+  OpenClaw 资源管理。
+
+  标准动作:
+      deploy   部署 OpenClaw 到云端
+      list     列出已部署的 OpenClaw
+      status   查看单个 OpenClaw 状态
+      gateway  Gateway 入口、日志与诊断
+      tui      连接远端 OpenClaw 原生 TUI
+      repair   通过控制面执行 OpenClaw 修复动作
+      channel  Channel 统一入口
+      delete   删除一个或多个 OpenClaw
+
+  示例:
+      agentengine openclaw deploy
+      agentengine openclaw list
+      agentengine openclaw status <id>
+      agentengine openclaw tui <id>
+      agentengine openclaw gateway open <id>
+      agentengine openclaw repair <id>
+      agentengine openclaw channel status <id> --probe
+      agentengine openclaw channel connect <id> --channel weixin
+      agentengine openclaw delete <id>
+
+Options:
+  -h, --help  Show this message and exit.
+
+Commands:
+  channel  OpenClaw Channel 统一入口。
+  delete   删除 OpenClaw 实例。
+  deploy   部署 OpenClaw 到云端
+  gateway  OpenClaw gateway 入口、日志与诊断。
+  list     列出已部署的 OpenClaw 实例
+  repair   通过控制面执行 OpenClaw 修复动作。
+  status   查看 OpenClaw 状态
+  tui      连接远端 OpenClaw 原生 TUI（不需要本机安装 OpenClaw CLI）。
+
+=== version_help ===
+Usage: cli version [OPTIONS] COMMAND [ARGS]...
+
+  Agent 版本资源管理。
+
+  标准动作:
+      list      列出版本历史
+      release   发布新版本
+      rollback  回滚到指定版本
+
+  示例:
+      agentengine version list
+      agentengine version list --agent ar-xxxx
+      agentengine version release --agent ar-xxxx --tag vX.Y.Z
+      agentengine version rollback --agent ar-xxxx --to vX.Y.Z -y
+
+  说明:
+      在项目目录下可不传 --agent，会自动从本地状态/配置解析目标 Agent
+      也支持显式指定: --agent / --agent-id / 位置参数
+      跨环境执行时请显式设置 KSYUN_REGION
+
+Options:
+  -h, --help  Show this message and exit.
+
+Commands:
+  list      列出版本历史
+  release   发布新版本
+  rollback  回滚到指定版本
+
+=== config_help ===
+Usage: cli config [OPTIONS] COMMAND [ARGS]...
+
+  配置命令组。
+
+  直接运行 `agentengine config` 会进入向导。 标准子命令为 `wizard` / `show` / `set` / `model`。
+
+Options:
+  -h, --help  Show this message and exit.
+
+Commands:
+  model   切换默认模型。
+  set     非交互式设置配置项。
+  show    查看项目配置、全局配置与当前生效环境变量。
+  wizard  通过交互式向导配置项目。
+
+=== config_wizard_help ===
+Usage: cli config wizard [OPTIONS]
+
+  通过交互式向导配置项目。
+
+Options:
+  --file TEXT     配置文件路径（默认自动复用 agentengine.yaml/ksadk.yaml）
+  -s, --set TEXT  设置配置项 key=value
+  --global        强制更新全局配置
+  -h, --help      Show this message and exit.
+
+=== config_show_help ===
+Usage: cli config show [OPTIONS]
+
+  查看项目配置、全局配置与当前生效环境变量。
+
+Options:
+  --output [pretty|json]  输出格式
+  -h, --help              Show this message and exit.
+
+=== config_set_help ===
+Usage: cli config set [OPTIONS] [SET_ITEMS]...
+
+  非交互式设置配置项。
+
+  示例:
+    agentengine config set region=cn-beijing-6
+    agentengine config set OPENAI_MODEL_NAME=glm-5.2 OPENAI_BASE_URL=https://example.com/v1
+    agentengine config set KSYUN_REGION=cn-beijing-6 --global
+
+Options:
+  --global                同时更新全局配置
+  --output [pretty|json]  输出格式
+  -h, --help              Show this message and exit.
+
+=== config_model_help ===
+Usage: cli config model [OPTIONS]
+
+  切换默认模型。
+
+Options:
+  --multi                         交互式多选模型，并按当前框架写入模型 allowlist
+  --env TEXT                      按模型列表生成环境变量，逗号分隔；首个模型作为默认模型，不写入 .env
+  --framework [auto|openclaw|hermes|generic]
+                                  allowlist 变量选择策略；auto 会读取当前目录框架  [default:
+                                  auto]
+  -h, --help                      Show this message and exit.
+
+=== completion_help ===
+Usage: cli completion [OPTIONS] COMMAND [ARGS]...
+
+  Shell 补全管理。
+
+Options:
+  -h, --help  Show this message and exit.
+
+Commands:
+  bash     输出 Bash 补全脚本
+  install  自动安装补全脚本到 Shell 配置文件
+  zsh      输出 Zsh 补全脚本
+
+=== model_alias_help ===
+Usage: cli model [OPTIONS]
+
+这是兼容入口，建议迁移到新的 canonical 命令。
+
+推荐命令: agentengine config model
+查看帮助: agentengine config model --help
+
+=== status_alias_help ===
+Usage: cli status [OPTIONS] [AGENT_REF]
+
+这是兼容入口，建议迁移到新的 canonical 命令。
+
+推荐命令: agentengine agent status
+查看帮助: agentengine agent status --help

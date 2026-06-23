@@ -677,7 +677,9 @@ class CodeBuilder(BaseBuilder):
                 yield file_path
 
     def _should_skip_root_path(self, path: Path) -> bool:
-        if path.name.startswith(".") and path.name != ".env":
+        if self._is_real_dotenv_file(path.name):
+            return True
+        if path.name.startswith(".") and path.name != ".env.example":
             return True
         if path.name in self.IGNORED_ROOT_NAMES:
             return True
@@ -691,6 +693,8 @@ class CodeBuilder(BaseBuilder):
         return dir_name in self.IGNORED_DIR_NAMES
 
     def _should_skip_project_file(self, file_path: Path) -> bool:
+        if self._is_real_dotenv_file(file_path.name):
+            return True
         if file_path.name in self.IGNORED_FILE_NAMES:
             return True
         if file_path.suffix == ".pyc":
@@ -698,6 +702,13 @@ class CodeBuilder(BaseBuilder):
         if "__pycache__" in file_path.parts:
             return True
         return False
+
+    @staticmethod
+    def _is_real_dotenv_file(file_name: str) -> bool:
+        return file_name == ".env" or (
+            file_name.startswith(".env.")
+            and file_name not in {".env.example", ".env.sample", ".env.template"}
+        )
     
     def _prepare_requirements(self, detection_result) -> Path:
         """准备 requirements.txt"""
@@ -1757,7 +1768,8 @@ detection_result = DetectionResult(
     name="{detection_result.name}",
     entry_point="{detection_result.entry_point}",
     package_path=os.path.join(CODE_ROOT, "{package_name}"),
-    agent_variable="{detection_result.agent_variable}"
+    agent_variable="{detection_result.agent_variable}",
+    runner_class="{getattr(detection_result, 'runner_class', '')}"
 )
 
 logger.info(f"框架: {{detection_result.name}}")

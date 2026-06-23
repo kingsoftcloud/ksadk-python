@@ -30,6 +30,7 @@ class DetectionResult:
     entry_point: str
     package_path: str
     agent_variable: str = "root_agent"
+    runner_class: str = ""
     confidence: float = 0.0
     
     @property
@@ -117,6 +118,7 @@ class FrameworkDetector:
             )
             entry_point = config.get("entry_point", default_entry_point)
             agent_variable = config.get("agent_variable", "root_agent")
+            runner_class = str(config.get("runner_class") or "").strip()
             entry_path = self.project_dir / str(entry_point).replace("\\", "/")
             if not entry_path.exists() or not entry_path.is_file():
                 return None
@@ -136,6 +138,7 @@ class FrameworkDetector:
                 entry_point=entry_point,
                 package_path=str(package_path),
                 agent_variable=agent_variable,
+                runner_class=runner_class,
                 confidence=1.0
             )
         except Exception:

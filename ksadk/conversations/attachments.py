@@ -9,6 +9,12 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Mapping, Optional
 from xml.etree import ElementTree as ET
 
+from ksadk.conversations.attachment_storage import (
+    AttachmentStorageService,
+    is_hosted_upload_uri,
+    is_runtime_upload_uri,
+    parse_file_id,
+)
 from ksadk.sessions.local_service import resolve_local_session_dir
 
 _TEXT_MIME_PREFIXES = ("text/",)
@@ -121,29 +127,45 @@ def resolve_uploads_dir() -> Path:
     return uploads_dir
 
 
+def _path_within_root(path: Path, root: Path) -> bool:
+    resolved = path.expanduser().resolve(strict=False)
+    resolved_root = root.expanduser().resolve(strict=False)
+    return resolved == resolved_root or resolved_root in resolved.parents
+
+
 def resolve_attachment_storage_path(file_uri: str) -> Optional[Path]:
     normalized_uri = (file_uri or "").strip()
     if not normalized_uri:
         return None
 
     if normalized_uri.startswith("local:"):
-        path = Path(normalized_uri[6:]).expanduser()
-        resolved = path.resolve()
-        uploads_dir = resolve_uploads_dir().resolve()
-        try:
-            resolved.relative_to(uploads_dir)
-        except ValueError:
-            return None
-        return resolved
+        return None
 
-    if normalized_uri.startswith(_UPLOAD_URI_SCHEME):
-        file_id = normalized_uri.removeprefix(_UPLOAD_URI_SCHEME).strip("/")
+    if is_runtime_upload_uri(normalized_uri) or is_hosted_upload_uri(normalized_uri):
+        file_id = parse_file_id(normalized_uri)
         if not file_id:
             return None
 
-        for candidate in sorted(resolve_uploads_dir().glob(f"{file_id}*")):
-            if candidate.is_file():
-                return candidate.resolve()
+        uploads_dir = resolve_uploads_dir().resolve()
+        restored = AttachmentStorageService().ensure_local_path(normalized_uri)
+        if restored is not None:
+            resolved = restored.resolve(strict=False)
+            if _path_within_root(resolved, uploads_dir) and resolved.is_file():
+                return resolved
+
+        safe_file_id = Path(file_id).name
+        if not safe_file_id:
+            return None
+        try:
+            candidates = sorted(uploads_dir.iterdir(), key=lambda item: item.name)
+        except OSError:
+            return None
+        for candidate in candidates:
+            if not candidate.name.startswith(safe_file_id):
+                continue
+            resolved = candidate.resolve(strict=False)
+            if _path_within_root(resolved, uploads_dir) and resolved.is_file():
+                return resolved
 
     return None
 
@@ -158,6 +180,17 @@ def read_attachment_bytes(storage_path: Optional[Path], *, size_limit: Optional[
         return storage_path.read_bytes()
     except OSError:
         return None
+
+
+def read_attachment_uri_bytes(
+    file_uri: Any,
+    *,
+    size_limit: Optional[int] = None,
+) -> Optional[bytes]:
+    storage_path = resolve_attachment_storage_path(str(file_uri or ""))
+    if storage_path is None:
+        return None
+    return read_attachment_bytes(storage_path, size_limit=size_limit)
 
 
 def classify_attachment_kind(mime_type: str, display_name: str) -> str:
@@ -547,9 +580,7 @@ def _load_attachment_bytes(attachment: Mapping[str, Any]) -> Optional[bytes]:
             return None
         return raw if len(raw) <= _MAX_PROCESS_BYTES else None
 
-    storage_path_value = attachment.get("storage_path")
-    storage_path = Path(str(storage_path_value)) if storage_path_value else None
-    raw = read_attachment_bytes(storage_path, size_limit=_MAX_PROCESS_BYTES)
+    raw = read_attachment_uri_bytes(attachment.get("file_uri"), size_limit=_MAX_PROCESS_BYTES)
     if raw is not None:
         return raw
     return None

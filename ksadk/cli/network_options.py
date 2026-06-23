@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
+import os
 from typing import TYPE_CHECKING, Any, Mapping, Optional
 
 import click
 
 from ksadk.cli.error_utils import validation_error
+from ksadk.cli.ui import print_info, print_warn
 
 if TYPE_CHECKING:
     from ksadk.deployment.base import DeployTarget
@@ -27,6 +30,7 @@ _VPC_ID_LABELS = {
     "subnet_id": "SubnetId",
     "security_group_id": "SecurityGroupId",
 }
+_VPC_INNER_ENDPOINT = "vpc.inner." + "api.ksyun.com"
 
 
 def network_options(func):
@@ -157,6 +161,40 @@ def validate_deploy_target_network(deploy_target: "DeployTarget") -> None:
         )
 
 
+def resolve_deploy_target_network(
+    deploy_target: "DeployTarget",
+    *,
+    region: str | None = None,
+    dry_run: bool = False,
+) -> None:
+    """Fill optional network fields on a DeployTarget when they can be inferred."""
+    network = getattr(deploy_target, "network", None)
+    if network is None:
+        return
+    if str(getattr(network, "availability_zone", "") or "").strip():
+        return
+    if not bool(getattr(network, "enable_vpc_access", False)):
+        return
+    subnet_id = str(getattr(network, "subnet_id", "") or "").strip()
+    if not subnet_id or dry_run:
+        return
+    resolved_region = str(region or getattr(deploy_target, "region", "") or "").strip()
+    if not resolved_region:
+        return
+    availability_zone = _resolve_subnet_availability_zone(
+        subnet_id=subnet_id,
+        region=resolved_region,
+    )
+    if availability_zone:
+        network.availability_zone = availability_zone
+        print_info(f"已根据子网 {subnet_id} 自动推断可用区: {availability_zone}")
+    else:
+        print_warn(
+            "未能根据子网自动推断可用区；如私网 ENI 调度失败，请显式传入 "
+            "`--availability-zone`。"
+        )
+
+
 def build_network_payload(**network_kwargs: Any) -> dict[str, Any] | None:
     """Build lower-case network payload for AgentEngineClient create/update calls."""
     payload: dict[str, Any] = {}
@@ -174,6 +212,7 @@ def build_network_payload(**network_kwargs: Any) -> dict[str, Any] | None:
         payload["enable_vpc_access"] = True
 
     _validate_network_payload(payload)
+    _fill_network_availability_zone(payload, network_kwargs)
     return payload
 
 
@@ -192,3 +231,181 @@ def _validate_network_payload(payload: Mapping[str, Any]) -> None:
                 "`--availability-zone` 是可选字段，不替代子网或安全组。",
             ],
         )
+
+
+def _fill_network_availability_zone(payload: dict[str, Any], network_kwargs: Mapping[str, Any]) -> None:
+    if str(payload.get("availability_zone") or "").strip():
+        return
+    if not bool(payload.get("enable_vpc_access")):
+        return
+    subnet_id = str(payload.get("subnet_id") or "").strip()
+    if not subnet_id:
+        return
+    if bool(network_kwargs.get("dry_run")):
+        return
+    region = str(network_kwargs.get("region") or "").strip()
+    if not region:
+        return
+
+    availability_zone = _resolve_subnet_availability_zone(subnet_id=subnet_id, region=region)
+    if availability_zone:
+        payload["availability_zone"] = availability_zone
+        print_info(f"已根据子网 {subnet_id} 自动推断可用区: {availability_zone}")
+    else:
+        print_warn(
+            "未能根据子网自动推断可用区；如私网 ENI 调度失败，请显式传入 "
+            "`--availability-zone`。"
+        )
+
+
+def _resolve_subnet_availability_zone(*, subnet_id: str, region: str) -> str | None:
+    subnet_id = str(subnet_id or "").strip()
+    region = str(region or "").strip()
+    if not subnet_id or not region:
+        return None
+
+    access_key, secret_key = _resolve_ksyun_credentials()
+    if not access_key or not secret_key:
+        return None
+
+    try:
+        VpcClient, DescribeSubnetsRequest, Credential, ClientProfile, HttpProfile = _import_vpc_sdk()
+    except Exception as exc:
+        print_warn(f"缺少 VPC 子网查询 SDK，跳过可用区自动推断: {exc}")
+        return None
+
+    response = None
+    last_error: Exception | None = None
+    for endpoint, protocol in ((None, None), (_VPC_INNER_ENDPOINT, "http")):
+        if endpoint and not _should_retry_inner_vpc_endpoint(last_error):
+            break
+        try:
+            profile = ClientProfile(
+                httpProfile=HttpProfile(reqTimeout=10, endpoint=endpoint, protocol=protocol)
+            )
+            client = VpcClient(Credential(access_key, secret_key), region, profile)
+            request = DescribeSubnetsRequest()
+            request.SubnetId = {"1": subnet_id}
+            response = client.DescribeSubnets(request)
+            break
+        except Exception as exc:
+            last_error = exc
+
+    if response is None:
+        print_warn(f"查询子网 {subnet_id} 可用区失败，跳过自动推断: {last_error}")
+        return None
+
+    return _extract_subnet_availability_zone(response, subnet_id)
+
+
+def _import_vpc_sdk():
+    from ksyun.client.vpc.v20160304.client import VpcClient
+    from ksyun.client.vpc.v20160304.models import DescribeSubnetsRequest
+    from ksyun.common.credential import Credential
+    from ksyun.common.profile.client_profile import ClientProfile
+    from ksyun.common.profile.http_profile import HttpProfile
+
+    return VpcClient, DescribeSubnetsRequest, Credential, ClientProfile, HttpProfile
+
+
+def _should_retry_inner_vpc_endpoint(error: Exception | None) -> bool:
+    if error is None:
+        return False
+    return "InnerAccountCanOnlyAccessThroughIntranet" in str(error)
+
+
+def _resolve_ksyun_credentials() -> tuple[str, str]:
+    access_key = os.getenv("KSYUN_ACCESS_KEY") or os.getenv("KS3_ACCESS_KEY") or ""
+    secret_key = os.getenv("KSYUN_SECRET_KEY") or os.getenv("KS3_SECRET_KEY") or ""
+    if access_key and secret_key:
+        return access_key.strip(), secret_key.strip()
+
+    try:
+        from ksadk.configs.global_config import get_env_from_global_config
+
+        global_env = get_env_from_global_config()
+    except Exception:
+        global_env = {}
+
+    access_key = access_key or global_env.get("KSYUN_ACCESS_KEY") or global_env.get("KS3_ACCESS_KEY") or ""
+    secret_key = secret_key or global_env.get("KSYUN_SECRET_KEY") or global_env.get("KS3_SECRET_KEY") or ""
+    return str(access_key or "").strip(), str(secret_key or "").strip()
+
+
+def _extract_subnet_availability_zone(response: Any, subnet_id: str) -> str | None:
+    if isinstance(response, str):
+        try:
+            response = json.loads(response)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(response, Mapping):
+        return None
+
+    wanted_subnet_id = str(subnet_id or "").strip()
+    subnets = list(_iter_subnet_dicts(response))
+    for subnet in subnets:
+        current_subnet_id = _pick_text(
+            subnet,
+            "SubnetId",
+            "subnetId",
+            "subnet_id",
+            "id",
+            "Id",
+        )
+        if current_subnet_id and current_subnet_id != wanted_subnet_id:
+            continue
+        availability_zone = _pick_text(
+            subnet,
+            "AvailabilityZone",
+            "AvailabilityZoneName",
+            "availabilityZone",
+            "availabilityZoneName",
+            "availability_zone",
+            "availability_zone_name",
+            "Zone",
+            "zone",
+        )
+        if availability_zone:
+            return availability_zone
+
+    if len(subnets) == 1:
+        return _pick_text(
+            subnets[0],
+            "AvailabilityZone",
+            "AvailabilityZoneName",
+            "availabilityZone",
+            "availabilityZoneName",
+            "availability_zone",
+            "availability_zone_name",
+            "Zone",
+            "zone",
+        )
+    return None
+
+
+def _iter_subnet_dicts(value: Any):
+    if isinstance(value, Mapping):
+        subnet_keys = ("SubnetId", "subnetId", "subnet_id")
+        zone_keys = (
+            "AvailabilityZone",
+            "AvailabilityZoneName",
+            "availabilityZone",
+            "availabilityZoneName",
+            "availability_zone",
+            "availability_zone_name",
+        )
+        if any(key in value for key in subnet_keys) or any(key in value for key in zone_keys):
+            yield value
+        for child in value.values():
+            yield from _iter_subnet_dicts(child)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _iter_subnet_dicts(item)
+
+
+def _pick_text(data: Mapping[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = data.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return ""

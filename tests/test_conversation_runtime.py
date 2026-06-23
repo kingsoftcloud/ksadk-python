@@ -14,12 +14,19 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 
 from ksadk.conversations.context import build_history_from_events
+from ksadk.conversations.context import canonical_event_type
 from ksadk.conversations.model_options import normalize_model_options
 from ksadk.conversations.model_context import estimate_text_tokens
 from ksadk.conversations.runtime import (
+    PreparedConversationTurn,
+    _build_runner_request_payload,
     _build_runner_ambient_contexts,
     append_context_checkpoint_event,
+    append_run_checkpoint_event,
+    append_run_resume_event,
+    build_chat_completions_payload,
     build_compaction_sse_event,
+    build_responses_payload,
     build_run_input,
     compact_conversation_history,
     extract_responses_resume_input,
@@ -55,6 +62,81 @@ class _StubRunner:
         return {"output": "assistant says hi"}
 
 
+class _TransientFallbackRunner(_StubRunner):
+    def __init__(self):
+        super().__init__()
+        self.fail_once = True
+
+    async def invoke(self, input_data: dict) -> dict:
+        self.calls.append(input_data)
+        if self.fail_once:
+            self.fail_once = False
+            raise RuntimeError("model unavailable")
+        return {"output": "assistant says hi"}
+
+    async def stream(self, input_data: dict):
+        self.calls.append(input_data)
+        if self.fail_once:
+            self.fail_once = False
+            raise RuntimeError("model unavailable")
+        yield {"type": "text", "delta": "fallback answer"}
+        yield {"type": "final", "output": "fallback answer"}
+
+
+class _CheckpointMetadataRunner(_StubRunner):
+    async def invoke(self, input_data: dict) -> dict:
+        self.calls.append(input_data)
+        return {
+            "output": "checkpointed",
+            "metadata": {
+                "agentengine": {
+                    "run_id": "run-1",
+                    "framework": "langgraph",
+                    "framework_ref": {
+                        "langgraph": {
+                            "thread_id": "tenant:agent:sess-1",
+                            "checkpoint_id": "ckpt-1",
+                        }
+                    },
+                }
+            },
+        }
+
+
+class _UsageRunner(_StubRunner):
+    async def invoke(self, input_data: dict) -> dict:
+        self.calls.append(input_data)
+        return {
+            "output": "assistant says hi",
+            "usage": {
+                "input_tokens": 8,
+                "output_tokens": 13,
+                "total_tokens": 21,
+                "output_token_details": {"reasoning": 5},
+            },
+        }
+
+
+class _CheckpointResumeAdvancedRunner(_StubRunner):
+    async def invoke(self, input_data: dict) -> dict:
+        self.calls.append(input_data)
+        return {
+            "output": "resumed",
+            "metadata": {
+                "agentengine": {
+                    "run_id": "run-1",
+                    "framework": "langgraph",
+                    "framework_ref": {
+                        "langgraph": {
+                            "thread_id": "tenant:agent:sess-1",
+                            "checkpoint_id": "ckpt-after-resume",
+                        }
+                    },
+                }
+            },
+        }
+
+
 class _PromptTooLongRunner(_StubRunner):
     def __init__(self):
         super().__init__()
@@ -68,6 +150,12 @@ class _PromptTooLongRunner(_StubRunner):
         return {"output": "compacted answer"}
 
 
+class _FailingRunner(_StubRunner):
+    async def invoke(self, input_data: dict) -> dict:
+        self.calls.append(input_data)
+        raise RuntimeError("boom")
+
+
 class _StreamingRunner(_StubRunner):
     def __init__(self):
         super().__init__()
@@ -77,6 +165,94 @@ class _StreamingRunner(_StubRunner):
         self.stream_calls.append(input_data)
         yield {"type": "text", "delta": "hello"}
         yield {"type": "final", "output": "hello"}
+
+
+class _UsageStreamingRunner(_StreamingRunner):
+    async def stream(self, input_data: dict):
+        self.stream_calls.append(input_data)
+        yield {"type": "text", "delta": "hello"}
+        yield {
+            "type": "final",
+            "output": "hello",
+            "usage": {
+                "input_tokens": 8,
+                "output_tokens": 13,
+                "total_tokens": 21,
+                "input_token_details": {"cached": 4},
+                "output_token_details": {"reasoning": 5},
+            },
+        }
+
+
+class _CheckpointMetadataStreamingRunner(_StreamingRunner):
+    async def stream(self, input_data: dict):
+        self.stream_calls.append(input_data)
+        yield {"type": "text", "delta": "hello"}
+        yield {
+            "type": "checkpoint",
+            "metadata": {
+                "agentengine": {
+                    "run_id": "run-1",
+                    "framework": "langgraph",
+                    "framework_ref": {
+                        "langgraph": {
+                            "thread_id": "tenant:agent:sess-1",
+                            "checkpoint_id": "ckpt-stream",
+                        }
+                    },
+                }
+            },
+        }
+
+
+class _CheckpointMetadataPhaseStreamingRunner(_StreamingRunner):
+    async def stream(self, input_data: dict):
+        self.stream_calls.append(input_data)
+        yield {
+            "type": "checkpoint",
+            "metadata": {
+                "agentengine": {
+                    "run_id": "run-1",
+                    "phase": "数据清洗完成，等待生成报告",
+                    "stage": "清洗聚合指标",
+                    "summary": "GMV、转化率和退款率已经聚合完成",
+                    "next_action": "恢复后继续生成复盘报告",
+                    "framework": "langgraph",
+                    "framework_ref": {
+                        "langgraph": {
+                            "thread_id": "tenant:agent:sess-1",
+                            "checkpoint_id": "ckpt-business-stage",
+                        }
+                    },
+                }
+            },
+        }
+
+
+class _CheckpointMetadataWithoutRunIdStreamingRunner(_StreamingRunner):
+    async def stream(self, input_data: dict):
+        self.stream_calls.append(input_data)
+        yield {
+            "type": "checkpoint",
+            "metadata": {
+                "agentengine": {
+                    "framework": "langgraph",
+                    "framework_ref": {
+                        "langgraph": {
+                            "thread_id": "tenant:agent:sess-1",
+                            "checkpoint_id": "ckpt-stream-after-resume",
+                        }
+                    },
+                }
+            },
+        }
+
+
+class _BlockingStreamingRunner(_StreamingRunner):
+    async def stream(self, input_data: dict):
+        self.stream_calls.append(input_data)
+        yield {"type": "text", "delta": "hello"}
+        await asyncio.Event().wait()
 
 
 class _ApprovalToolResultStreamingRunner(_StreamingRunner):
@@ -107,6 +283,25 @@ class _ApprovalToolResultStreamingRunner(_StreamingRunner):
         yield {"type": "final", "output": "should not complete"}
 
 
+class _SuccessfulToolResultStreamingRunner(_StreamingRunner):
+    async def stream(self, input_data: dict):
+        self.stream_calls.append(input_data)
+        yield {
+            "type": "tool_call",
+            "tool_name": "list_skills",
+            "tool_args": {"include": ["focused"]},
+            "run_id": "run-list-skills",
+        }
+        yield {
+            "type": "tool_result",
+            "tool_name": "list_skills",
+            "tool_args": {"include": ["focused"]},
+            "tool_output": {"ok": True, "skills": [{"name": "ppt-translator"}]},
+            "run_id": "run-list-skills",
+        }
+        yield {"type": "final", "output": "done"}
+
+
 class _ResumeStreamingRunner(_StreamingRunner):
     async def stream(self, input_data: dict):
         self.stream_calls.append(input_data)
@@ -135,6 +330,30 @@ class _CompletedOutputStreamingRunner(_StreamingRunner):
                     "summary": [{"type": "summary_text", "text": "先查资料"}],
                 },
             ],
+        }
+        yield {"type": "final", "output": "需要查询。"}
+
+
+class _CompletedOutputUsageStreamingRunner(_CompletedOutputStreamingRunner):
+    async def stream(self, input_data: dict):
+        self.stream_calls.append(input_data)
+        yield {
+            "type": "responses_output",
+            "response_id": "resp_native_usage",
+            "output": [
+                {
+                    "id": "msg_123",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "需要查询。"}],
+                }
+            ],
+            "usage": {
+                "input_tokens": 9,
+                "output_tokens": 4,
+                "total_tokens": 13,
+                "output_token_details": {"reasoning": 2},
+            },
         }
         yield {"type": "final", "output": "需要查询。"}
 
@@ -1242,6 +1461,51 @@ async def test_invoke_conversation_once_passes_model_options_to_runner(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_invoke_conversation_once_falls_back_on_transient_model_error(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _TransientFallbackRunner()
+
+    await invoke_conversation_once(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id=None,
+        messages=[{"role": "user", "content": "hello"}],
+        model="glm-5.2",
+        prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+    )
+
+    assert runner.prepared_models == ["glm-5.2", "deepseek-v4-pro"]
+    assert runner.calls[-1]["model"] == "deepseek-v4-pro"
+
+
+@pytest.mark.asyncio
+async def test_stream_conversation_turn_falls_back_before_first_delta(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _TransientFallbackRunner()
+
+    events = [
+        event
+        async for event in stream_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id=None,
+            messages=[{"role": "user", "content": "hello"}],
+            model="glm-5.2",
+            prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+        )
+    ]
+
+    assert runner.prepared_models == ["glm-5.2", "deepseek-v4-pro"]
+    assert runner.calls[-1]["model"] == "deepseek-v4-pro"
+    assert any("fallback answer" in event for event in events)
+    assert any("response.completed" in event for event in events)
+
+
+@pytest.mark.asyncio
 async def test_invoke_conversation_once_auto_saves_turn_to_sdk_memory_by_default(monkeypatch):
     service = InMemorySessionService()
     monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
@@ -1463,6 +1727,21 @@ async def test_invoke_conversation_once_executes_approved_builtin_tool_resume(
     await service.create_session(
         agent_id="demo-agent", user_id="user-1", session_id="sess-tool-approval"
     )
+    await append_run_checkpoint_event(
+        session_id="sess-tool-approval",
+        author="demo-agent",
+        run_id="call_write",
+        checkpoint_id="ckpt-before-tool",
+        framework="langgraph",
+        framework_ref={
+            "langgraph": {
+                "thread_id": "tenant:agent:sess-tool-approval",
+                "checkpoint_id": "ckpt-before-tool",
+            }
+        },
+        invocation_id="inv-checkpoint",
+        session_service_provider=lambda: service,
+    )
     await service.append_event(
         "sess-tool-approval",
         SessionEvent(
@@ -1508,6 +1787,159 @@ async def test_invoke_conversation_once_executes_approved_builtin_tool_resume(
     tool_result = next(event for event in events if event.event_type == "tool_result")
     assert tool_result.metadata["tool_name"] == "write_workspace_file"
     assert tool_result.metadata["tool_output"]["ok"] is True
+    receipt = tool_result.metadata["tool_receipt"]
+    assert receipt["tool_name"] == "write_workspace_file"
+    assert receipt["tool_call_id"] == "call_write"
+    assert receipt["run_id"] == "call_write"
+    assert receipt["checkpoint_id"] == "ckpt-before-tool"
+    assert receipt["framework"] == "langgraph"
+    assert receipt["framework_ref"]["langgraph"]["thread_id"] == "tenant:agent:sess-tool-approval"
+    assert receipt["status"] == "completed"
+    assert receipt["idempotency_key"].startswith("tool_receipt:")
+
+
+@pytest.mark.asyncio
+async def test_invoke_conversation_once_treats_accepted_memory_save_as_completed_receipt(
+    monkeypatch,
+):
+    service = InMemorySessionService()
+    monkeypatch.setenv("KSADK_TOOL_APPROVAL_MODE", "strict")
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime._builtin_tool_callable",
+        lambda name: (
+            lambda **kwargs: {
+                "ok": False,
+                "status": "accepted_not_extracted",
+                "message": "记忆保存请求已被后端受理，但尚未抽取成可检索记忆。",
+                "session_state": 0,
+                "session_id": "sess-memory-accepted",
+            }
+        )
+        if name == "save_memory"
+        else None,
+    )
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-memory-accepted"
+    )
+    await service.append_event(
+        "sess-memory-accepted",
+        SessionEvent(
+            id="evt-approval",
+            author="demo-agent",
+            event_type="approval_request",
+            content={"role": "model", "parts": [{"text": "approval required"}]},
+            metadata={
+                "interrupt_info": {
+                    "approval_request_id": "appr_save_memory",
+                    "tool_name": "save_memory",
+                    "arguments": {"content": "favorite_breakfast: 武汉热干面"},
+                    "run_id": "call_save_memory",
+                    "server_label": "ksadk",
+                }
+            },
+            invocation_id="inv-approval",
+        ),
+    )
+    runner = _StubRunner()
+
+    await invoke_conversation_once(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-memory-accepted",
+        messages=[],
+        model="gpt-4o",
+        resume_input={
+            "type": "mcp_approval_response",
+            "approval_request_id": "appr_save_memory",
+            "approve": True,
+        },
+        prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+    )
+
+    assert runner.calls[-1]["input"]["output"]["status"] == "accepted_not_extracted"
+    events = await service.get_events("sess-memory-accepted")
+    tool_result = next(event for event in events if event.event_type == "tool_result")
+    receipt = tool_result.metadata["tool_receipt"]
+    assert receipt["tool_name"] == "save_memory"
+    assert receipt["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_invoke_conversation_once_replays_existing_tool_receipt_without_side_effect(
+    monkeypatch,
+    tmp_path: Path,
+):
+    service = InMemorySessionService()
+    workspace_ui = tmp_path / "ui"
+    monkeypatch.setenv("AGENTENGINE_UI_DIR", str(workspace_ui))
+    monkeypatch.setenv("KSADK_TOOL_APPROVAL_MODE", "strict")
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-tool-replay"
+    )
+    await service.append_event(
+        "sess-tool-replay",
+        SessionEvent(
+            id="evt-approval",
+            author="demo-agent",
+            event_type="approval_request",
+            content={"role": "model", "parts": [{"text": "approval required"}]},
+            metadata={
+                "interrupt_info": {
+                    "approval_request_id": "appr_write",
+                    "tool_name": "write_workspace_file",
+                    "arguments": {"path": "notes.txt", "content": "hello"},
+                    "run_id": "call_write",
+                    "server_label": "ksadk",
+                }
+            },
+            invocation_id="inv-approval",
+        ),
+    )
+    runner = _StubRunner()
+    resume_input = {
+        "type": "mcp_approval_response",
+        "approval_request_id": "appr_write",
+        "approve": True,
+    }
+
+    await invoke_conversation_once(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-tool-replay",
+        messages=[],
+        model="gpt-4o",
+        resume_input=resume_input,
+        prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+    )
+    (workspace_ui / "workspace" / "notes.txt").write_text("changed-by-user", encoding="utf-8")
+
+    await invoke_conversation_once(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-tool-replay",
+        messages=[],
+        model="gpt-4o",
+        resume_input=resume_input,
+        prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+    )
+
+    assert (workspace_ui / "workspace" / "notes.txt").read_text(encoding="utf-8") == "changed-by-user"
+    assert runner.calls[-1]["input"]["type"] == "function_call_output"
+    assert runner.calls[-1]["input"]["output"]["ok"] is True
+    assert runner.calls[-1]["input"]["output"]["replayed"] is True
+    events = await service.get_events("sess-tool-replay")
+    tool_results = [event for event in events if event.event_type == "tool_result"]
+    assert len(tool_results) == 2
+    assert tool_results[-1].metadata["tool_receipt"]["replayed"] is True
+    assert (
+        tool_results[-1].metadata["tool_receipt"]["idempotency_key"]
+        == tool_results[0].metadata["tool_receipt"]["idempotency_key"]
+    )
 
 
 @pytest.mark.asyncio
@@ -2016,6 +2448,34 @@ async def test_stream_conversation_turn_passes_session_id_to_runner(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_stream_conversation_turn_emits_final_text_after_tool_events(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _SuccessfulToolResultStreamingRunner()
+
+    chunks = [
+        chunk
+        async for chunk in stream_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id=None,
+            messages=[{"role": "user", "content": "记住这个"}],
+            model="gpt-4o",
+            prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+            session_service_provider=lambda: service,
+        )
+    ]
+
+    assert any("response.completed" in chunk and '"output_text": "done"' in chunk for chunk in chunks)
+    completed_payload = _extract_sse_payload(chunks, "response.completed")
+    session_id = completed_payload["session_id"]
+    events = await service.get_events(session_id)
+    assistant_messages = [event for event in events if event.event_type == "assistant_message"]
+    assert assistant_messages[-1].content["parts"][0]["text"] == "done"
+
+
+@pytest.mark.asyncio
 async def test_stream_responses_conversation_turn_maps_ksadk_resume_to_runner_resume(monkeypatch):
     service = InMemorySessionService()
     monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
@@ -2066,6 +2526,45 @@ async def test_stream_responses_conversation_turn_maps_ksadk_resume_to_runner_re
 
 
 @pytest.mark.asyncio
+async def test_stream_responses_conversation_turn_emits_cancelled_terminal(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _BlockingStreamingRunner()
+    chunks: list[str] = []
+
+    async def consume():
+        async for chunk in stream_responses_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-cancel-stream",
+            messages=[{"role": "user", "content": "cancel me"}],
+            model="gpt-4o",
+            invocation_id="inv-cancel-stream",
+            prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+            session_service_provider=lambda: service,
+        ):
+            chunks.append(chunk)
+
+    task = asyncio.create_task(consume())
+    for _ in range(20):
+        if any("response.output_text.delta" in chunk for chunk in chunks):
+            break
+        await asyncio.sleep(0.01)
+    task.cancel()
+    await task
+
+    events = await service.get_events("sess-cancel-stream")
+    statuses = [
+        event.content.get("status")
+        for event in events
+        if event.event_type == "run_status"
+    ]
+    assert statuses == ["in_progress", "cancelled"]
+    assert any(chunk.startswith("event: response.cancelled\n") for chunk in chunks)
+
+
+@pytest.mark.asyncio
 async def test_stream_responses_conversation_turn_promotes_gateway_approval_result_to_interrupt(monkeypatch):
     service = InMemorySessionService()
     monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
@@ -2109,6 +2608,57 @@ async def test_stream_responses_conversation_turn_promotes_gateway_approval_resu
         "approval_request",
         "run_status",
     ]
+
+
+@pytest.mark.asyncio
+async def test_stream_responses_conversation_turn_adds_tool_receipt_to_tool_result(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _SuccessfulToolResultStreamingRunner()
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-tool-receipt"
+    )
+    await append_run_checkpoint_event(
+        session_id="sess-tool-receipt",
+        author="demo-agent",
+        run_id="run-list-skills",
+        checkpoint_id="ckpt-list-skills",
+        framework="langgraph",
+        framework_ref={
+            "langgraph": {
+                "thread_id": "tenant:agent:sess-tool-receipt",
+                "checkpoint_id": "ckpt-list-skills",
+            }
+        },
+        invocation_id="inv-checkpoint",
+        session_service_provider=lambda: service,
+    )
+
+    chunks = [
+        chunk
+        async for chunk in stream_responses_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-tool-receipt",
+            messages=[{"role": "user", "content": "列出 skills"}],
+            model="gpt-4o",
+            prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+            session_service_provider=lambda: service,
+        )
+    ]
+
+    assert any(chunk.startswith("event: response.completed\n") for chunk in chunks)
+    events = await service.get_events("sess-tool-receipt")
+    tool_result = next(event for event in events if event.event_type == "tool_result")
+    receipt = tool_result.metadata["tool_receipt"]
+    assert receipt["tool_name"] == "list_skills"
+    assert receipt["tool_call_id"] == "run-list-skills"
+    assert receipt["run_id"] == "run-list-skills"
+    assert receipt["checkpoint_id"] == "ckpt-list-skills"
+    assert receipt["framework"] == "langgraph"
+    assert receipt["status"] == "completed"
+    assert receipt["idempotency_key"].startswith("tool_receipt:")
 
 
 @pytest.mark.asyncio
@@ -2473,6 +3023,38 @@ async def test_invoke_conversation_once_uses_heuristic_title_for_agent_intro(mon
 
 
 @pytest.mark.asyncio
+async def test_invoke_conversation_once_strips_inline_think_markup_from_output(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    class _ThinkingTagRunner(_StubRunner):
+        async def invoke(self, input_data: dict) -> dict:
+            self.calls.append(input_data)
+            return {"output": "<think>先判断问题。</think>我是招聘助手。"}
+
+    runner = _ThinkingTagRunner()
+    session_id, result = await invoke_conversation_once(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id=None,
+        messages=[{"role": "user", "content": "你好，请介绍一下你自己"}],
+        model="glm-5.1",
+        prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+    )
+
+    events = await service.get_events(session_id)
+    assistant_event = next(event for event in events if event.event_type == "assistant_message")
+    session = await service.get_session(session_id)
+
+    assert result["output_text"] == "我是招聘助手。"
+    assert assistant_event.content["parts"][0]["text"] == "我是招聘助手。"
+    assert session is not None
+    assert session.summary == "我是招聘助手。"
+    assert session.title == "招聘助手能力"
+
+
+@pytest.mark.asyncio
 async def test_invoke_conversation_once_uses_heuristic_title_for_architecture_attachment(
     monkeypatch,
 ):
@@ -2558,6 +3140,680 @@ def test_session_event_infers_canonical_message_types():
 
     assert user_event.event_type == "user_message"
     assert assistant_event.event_type == "assistant_message"
+
+
+def test_runtime_checkpoint_events_are_canonical_but_not_projected_to_history():
+    events = [
+        SessionEvent(
+            id="evt-1",
+            author="demo-agent",
+            event_type="run_checkpoint",
+            content={"text": "checkpoint saved"},
+            metadata={"run_id": "run-1", "checkpoint_id": "ckpt-1"},
+            seq_id=1,
+        ),
+        SessionEvent(
+            id="evt-2",
+            author="demo-agent",
+            event_type="run_resume",
+            content={"text": "resume requested"},
+            metadata={"run_id": "run-1", "resume_attempt_id": "resume-1"},
+            seq_id=2,
+        ),
+        SessionEvent(
+            id="evt-3",
+            author="user",
+            event_type="user_message",
+            content={"role": "user", "parts": [{"text": "继续"}]},
+            seq_id=3,
+        ),
+    ]
+
+    assert canonical_event_type("run_checkpoint") == "run_checkpoint"
+    assert canonical_event_type("run_resume") == "run_resume"
+    assert build_history_from_events(events) == [{"role": "user", "content": "继续"}]
+
+
+@pytest.mark.asyncio
+async def test_append_run_checkpoint_and_resume_events(monkeypatch):
+    service = InMemorySessionService()
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-1")
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    checkpoint = await append_run_checkpoint_event(
+        session_id="sess-1",
+        author="demo-agent",
+        run_id="run-1",
+        checkpoint_id="ckpt-1",
+        framework="langgraph",
+        framework_ref={
+            "langgraph": {
+                "thread_id": "tenant:agent:sess-1",
+                "checkpoint_id": "ckpt-1",
+            }
+        },
+        phase="tool_result",
+        invocation_id="inv-1",
+    )
+    resume = await append_run_resume_event(
+        session_id="sess-1",
+        author="demo-agent",
+        run_id="run-1",
+        checkpoint_id="ckpt-1",
+        resume_attempt_id="resume-1",
+        framework="langgraph",
+        framework_ref={
+            "langgraph": {
+                "thread_id": "tenant:agent:sess-1",
+                "checkpoint_id": "ckpt-1",
+            }
+        },
+        invocation_id="inv-2",
+    )
+
+    assert checkpoint.event_type == "run_checkpoint"
+    assert checkpoint.metadata["run_id"] == "run-1"
+    assert checkpoint.metadata["checkpoint_id"] == "ckpt-1"
+    assert checkpoint.metadata["framework_ref"]["langgraph"]["thread_id"] == "tenant:agent:sess-1"
+    assert resume.event_type == "run_resume"
+    assert resume.metadata["resume_attempt_id"] == "resume-1"
+
+
+def test_extract_responses_resume_input_accepts_checkpoint_resume_action():
+    resume_input = extract_responses_resume_input(
+        [
+            {
+                "type": "agentengine.resume_checkpoint",
+                "run_id": "run-1",
+                "checkpoint_id": "ckpt-1",
+                "resume_attempt_id": "resume-1",
+                "framework": "langgraph",
+                "framework_ref": {
+                    "langgraph": {
+                        "thread_id": "tenant:agent:sess-1",
+                        "checkpoint_id": "ckpt-1",
+                    }
+                },
+            }
+        ]
+    )
+
+    assert resume_input == {
+        "type": "agentengine.resume_checkpoint",
+        "run_id": "run-1",
+        "checkpoint_id": "ckpt-1",
+        "resume_attempt_id": "resume-1",
+        "framework": "langgraph",
+        "framework_ref": {
+            "langgraph": {
+                "thread_id": "tenant:agent:sess-1",
+                "checkpoint_id": "ckpt-1",
+            }
+        },
+    }
+
+
+def test_build_runner_request_payload_exposes_invocation_id():
+    prepared = PreparedConversationTurn(
+        session_id="sess-1",
+        invocation_id="inv-runtime-cancel",
+        user_input="hello",
+        user_display_input="hello",
+        history=[],
+        input_content=[],
+        input_messages=[],
+        user_parts=[],
+        attachments=[],
+        attachment_results=[],
+        current_attachments=[],
+        current_attachment_results=[],
+        has_current_files=False,
+    )
+    runtime_context = PlatformInvocationContext(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-1",
+        history=[],
+        input_content=[],
+        input_messages=[],
+        input_parts=[],
+        attachments=[],
+        attachment_results=[],
+        current_attachments=[],
+        current_attachment_results=[],
+        has_current_files=False,
+        runner_type="langgraph",
+    )
+
+    payload = _build_runner_request_payload(
+        prepared=prepared,
+        model="demo-model",
+        runtime_context=runtime_context,
+    )
+
+    assert payload["invocation_id"] == "inv-runtime-cancel"
+
+
+@pytest.mark.asyncio
+async def test_invoke_conversation_once_checkpoint_resume_writes_runtime_event(monkeypatch):
+    service = InMemorySessionService()
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-1")
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    runner = _StubRunner()
+    session_id, result = await invoke_conversation_once(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-1",
+        messages=[],
+        model="demo-model",
+        prepare_runner=lambda active_runner, model: active_runner.prepare_for_request(model),
+        resume_input={
+            "type": "agentengine.resume_checkpoint",
+            "run_id": "run-1",
+            "checkpoint_id": "ckpt-1",
+            "resume_attempt_id": "resume-1",
+            "framework": "langgraph",
+            "framework_ref": {
+                "langgraph": {
+                    "thread_id": "tenant:agent:sess-1",
+                    "checkpoint_id": "ckpt-1",
+                }
+            },
+        },
+    )
+
+    events = await service.get_events(session_id)
+    resume_events = [event for event in events if event.event_type == "run_resume"]
+    assert len(resume_events) == 1
+    assert resume_events[0].metadata["run_id"] == "run-1"
+    assert resume_events[0].metadata["checkpoint_id"] == "ckpt-1"
+    assert resume_events[0].metadata["resume_attempt_id"] == "resume-1"
+    assert build_history_from_events(events) == [{"role": "model", "content": "assistant says hi"}]
+    assert runner.calls[0]["checkpoint_resume"] is True
+    assert runner.calls[0]["run_id"] == "run-1"
+    assert runner.calls[0]["framework_ref"]["langgraph"]["checkpoint_id"] == "ckpt-1"
+    assert result["metadata"]["agentengine"]["run_id"] == "run-1"
+    assert result["metadata"]["agentengine"]["resume_attempt_id"] == "resume-1"
+
+
+@pytest.mark.asyncio
+async def test_invoke_conversation_once_failure_does_not_write_completed_or_assistant(monkeypatch):
+    service = InMemorySessionService()
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-fail")
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    runner = _FailingRunner()
+    with pytest.raises(RuntimeError, match="boom"):
+        await invoke_conversation_once(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-fail",
+            messages=[{"role": "user", "content": "hello"}],
+            model="demo-model",
+            prepare_runner=lambda active_runner, model: active_runner.prepare_for_request(model),
+        )
+
+    events = await service.get_events("sess-fail")
+    assert [event.event_type for event in events] == ["user_message", "run_status", "run_status"]
+    assert [event.content.get("status") for event in events if event.event_type == "run_status"] == [
+        "in_progress",
+        "failed",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_resume_response_metadata_prefers_new_checkpoint(monkeypatch):
+    service = InMemorySessionService()
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-1")
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    runner = _CheckpointResumeAdvancedRunner()
+    _, result = await invoke_conversation_once(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-1",
+        messages=[],
+        model="demo-model",
+        prepare_runner=lambda active_runner, model: active_runner.prepare_for_request(model),
+        resume_input={
+            "type": "agentengine.resume_checkpoint",
+            "run_id": "run-1",
+            "checkpoint_id": "ckpt-before-resume",
+            "resume_attempt_id": "resume-1",
+            "framework": "langgraph",
+            "framework_ref": {
+                "langgraph": {
+                    "thread_id": "tenant:agent:sess-1",
+                    "checkpoint_id": "ckpt-before-resume",
+                }
+            },
+        },
+    )
+
+    assert (
+        result["metadata"]["agentengine"]["framework_ref"]["langgraph"]["checkpoint_id"]
+        == "ckpt-after-resume"
+    )
+    events = await service.get_events("sess-1")
+    assert [event.event_type for event in events if event.event_type.startswith("run_")] == [
+        "run_resume",
+        "run_status",
+        "run_checkpoint",
+        "run_status",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_invoke_conversation_once_records_runner_checkpoint_metadata(monkeypatch):
+    service = InMemorySessionService()
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-1")
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    runner = _CheckpointMetadataRunner()
+    session_id, result = await invoke_conversation_once(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-1",
+        messages=[{"role": "user", "content": "hello"}],
+        model="demo-model",
+        prepare_runner=lambda active_runner, model: active_runner.prepare_for_request(model),
+    )
+
+    events = await service.get_events(session_id)
+    checkpoint_events = [event for event in events if event.event_type == "run_checkpoint"]
+    assert len(checkpoint_events) == 1
+    assert checkpoint_events[0].metadata["run_id"] == "run-1"
+    assert checkpoint_events[0].metadata["checkpoint_id"] == "ckpt-1"
+    assert checkpoint_events[0].metadata["framework_ref"]["langgraph"]["thread_id"] == "tenant:agent:sess-1"
+    assert result["metadata"]["agentengine"]["framework_ref"]["langgraph"]["checkpoint_id"] == "ckpt-1"
+
+
+@pytest.mark.asyncio
+async def test_invoke_conversation_once_preserves_runner_usage(monkeypatch):
+    service = InMemorySessionService()
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-usage")
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    runner = _UsageRunner()
+    _, result = await invoke_conversation_once(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-usage",
+        messages=[{"role": "user", "content": "hello"}],
+        model="demo-model",
+        prepare_runner=lambda active_runner, model: active_runner.prepare_for_request(model),
+    )
+
+    assert result["usage"] == {
+        "input_tokens": 8,
+        "output_tokens": 13,
+        "total_tokens": 21,
+        "output_token_details": {"reasoning": 5},
+    }
+    assert result["metadata"]["usage"] == result["usage"]
+
+
+@pytest.mark.asyncio
+async def test_invoke_conversation_once_sets_usage_trace_attributes(
+    monkeypatch,
+    in_memory_trace_exporter,
+):
+    service = InMemorySessionService()
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-usage-span")
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    runner = _UsageRunner()
+    _, result = await invoke_conversation_once(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-usage-span",
+        messages=[{"role": "user", "content": "hello"}],
+        model="demo-model",
+        prepare_runner=lambda active_runner, model: active_runner.prepare_for_request(model),
+    )
+
+    exported_trace = in_memory_trace_exporter.get_trace(result["metadata"]["trace_id"])
+    root_span = next(
+        span for span in exported_trace["spans"] if span["span_id"] == result["metadata"]["root_span_id"]
+    )
+    attrs = root_span["attributes"]
+    assert attrs["gen_ai.usage.input_tokens"] == 8
+    assert attrs["gen_ai.usage.output_tokens"] == 13
+    assert attrs["gen_ai.usage.total_tokens"] == 21
+    assert attrs["llm.usage.prompt_tokens"] == 8
+    assert attrs["llm.usage.completion_tokens"] == 13
+    assert attrs["llm.usage.total_tokens"] == 21
+    assert attrs["langfuse.observation.usage.input"] == 8
+    assert attrs["langfuse.observation.usage.output"] == 13
+    assert attrs["langfuse.observation.usage.total"] == 21
+    assert attrs["gen_ai.usage.output_token_details.reasoning_tokens"] == 5
+    assert attrs["llm.usage.completion_tokens_details.reasoning_tokens"] == 5
+
+
+def test_build_chat_completions_payload_uses_real_usage_from_metadata():
+    payload = build_chat_completions_payload(
+        output_text="assistant says hi",
+        model="demo-model",
+        session_id="sess-usage",
+        metadata={
+            "usage": {
+                "input_tokens": 8,
+                "output_tokens": 13,
+                "total_tokens": 21,
+                "output_token_details": {"reasoning": 5},
+            }
+        },
+    )
+
+    assert payload["usage"] == {
+        "prompt_tokens": 8,
+        "completion_tokens": 13,
+        "total_tokens": 21,
+        "completion_tokens_details": {"reasoning_tokens": 5},
+    }
+
+
+def test_build_chat_completions_payload_maps_cached_prompt_details():
+    payload = build_chat_completions_payload(
+        output_text="assistant says hi",
+        model="demo-model",
+        session_id="sess-usage",
+        metadata={
+            "usage": {
+                "input_tokens": 8,
+                "output_tokens": 13,
+                "total_tokens": 21,
+                "input_token_details": {"cached": 4},
+                "output_token_details": {"reasoning": 5},
+            }
+        },
+    )
+
+    assert payload["usage"] == {
+        "prompt_tokens": 8,
+        "completion_tokens": 13,
+        "total_tokens": 21,
+        "prompt_tokens_details": {"cached_tokens": 4},
+        "completion_tokens_details": {"reasoning_tokens": 5},
+    }
+
+
+def test_build_chat_completions_payload_preserves_official_usage_details():
+    payload = build_chat_completions_payload(
+        output_text="assistant says hi",
+        model="demo-model",
+        session_id="sess-usage",
+        metadata={
+            "usage": {
+                "prompt_tokens": 8,
+                "completion_tokens": 13,
+                "total_tokens": 21,
+                "prompt_tokens_details": {
+                    "cached_tokens": 4,
+                    "audio_tokens": 2,
+                },
+                "completion_tokens_details": {
+                    "reasoning_tokens": 5,
+                    "audio_tokens": 1,
+                    "accepted_prediction_tokens": 3,
+                    "rejected_prediction_tokens": 6,
+                },
+            }
+        },
+    )
+
+    assert payload["usage"] == {
+        "prompt_tokens": 8,
+        "completion_tokens": 13,
+        "total_tokens": 21,
+        "prompt_tokens_details": {
+            "cached_tokens": 4,
+            "audio_tokens": 2,
+        },
+        "completion_tokens_details": {
+            "reasoning_tokens": 5,
+            "audio_tokens": 1,
+            "accepted_prediction_tokens": 3,
+            "rejected_prediction_tokens": 6,
+        },
+    }
+
+
+def test_build_responses_payload_uses_real_usage_from_metadata():
+    payload = build_responses_payload(
+        output_text="assistant says hi",
+        model="demo-model",
+        session_id="sess-usage",
+        metadata={
+            "usage": {
+                "input_tokens": 8,
+                "output_tokens": 13,
+                "total_tokens": 21,
+                "output_token_details": {"reasoning": 5},
+            }
+        },
+    )
+
+    assert payload["usage"] == {
+        "input_tokens": 8,
+        "output_tokens": 13,
+        "total_tokens": 21,
+        "output_token_details": {"reasoning": 5},
+    }
+
+
+@pytest.mark.asyncio
+async def test_stream_conversation_turn_preserves_final_chunk_usage(monkeypatch):
+    service = InMemorySessionService()
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-stream-usage")
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    runner = _UsageStreamingRunner()
+    chunks = [
+        chunk
+        async for chunk in stream_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-stream-usage",
+            messages=[{"role": "user", "content": "hello"}],
+            model="demo-model",
+            prepare_runner=lambda active_runner, model: active_runner.prepare_for_request(model),
+        )
+    ]
+
+    completed_payload = _extract_sse_payload(chunks, "response.completed")
+    assert completed_payload["usage"] == {
+        "input_tokens": 8,
+        "output_tokens": 13,
+        "total_tokens": 21,
+        "input_token_details": {"cached": 4},
+        "output_token_details": {"reasoning": 5},
+    }
+    events = await service.get_events("sess-stream-usage")
+    assistant_event = next(event for event in events if event.event_type == "assistant_message")
+    assert assistant_event.metadata["usage"] == completed_payload["usage"]
+
+
+@pytest.mark.asyncio
+async def test_stream_conversation_turn_sets_usage_trace_attributes(
+    monkeypatch,
+    in_memory_trace_exporter,
+):
+    service = InMemorySessionService()
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-stream-usage-span")
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    runner = _UsageStreamingRunner()
+    chunks = [
+        chunk
+        async for chunk in stream_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-stream-usage-span",
+            messages=[{"role": "user", "content": "hello"}],
+            model="demo-model",
+            prepare_runner=lambda active_runner, model: active_runner.prepare_for_request(model),
+        )
+    ]
+
+    completed_payload = _extract_sse_payload(chunks, "response.completed")
+    exported_trace = in_memory_trace_exporter.get_trace(completed_payload["metadata"]["trace_id"])
+    root_span = next(
+        span
+        for span in exported_trace["spans"]
+        if span["span_id"] == completed_payload["metadata"]["root_span_id"]
+    )
+    attrs = root_span["attributes"]
+    assert attrs["gen_ai.usage.input_tokens"] == 8
+    assert attrs["gen_ai.usage.output_tokens"] == 13
+    assert attrs["gen_ai.usage.total_tokens"] == 21
+    assert attrs["gen_ai.usage.input_token_details.cached_tokens"] == 4
+    assert attrs["gen_ai.usage.output_token_details.reasoning_tokens"] == 5
+    assert attrs["llm.usage.prompt_tokens_details.cached_tokens"] == 4
+    assert attrs["llm.usage.completion_tokens_details.reasoning_tokens"] == 5
+
+
+@pytest.mark.asyncio
+async def test_stream_responses_conversation_turn_preserves_responses_output_usage(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _CompletedOutputUsageStreamingRunner()
+
+    chunks = [
+        chunk
+        async for chunk in stream_responses_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-native-output-usage",
+            messages=[{"role": "user", "content": "查一下"}],
+            model="gpt-4o",
+            prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+            session_service_provider=lambda: service,
+        )
+    ]
+
+    completed_payload = _extract_sse_payload(chunks, "response.completed")
+    assert completed_payload["usage"] == {
+        "input_tokens": 9,
+        "output_tokens": 4,
+        "total_tokens": 13,
+        "output_token_details": {"reasoning": 2},
+    }
+    events = await service.get_events("sess-native-output-usage")
+    assistant_event = next(event for event in events if event.event_type == "assistant_message")
+    assert assistant_event.metadata["usage"] == completed_payload["usage"]
+
+
+@pytest.mark.asyncio
+async def test_stream_conversation_turn_records_checkpoint_chunk(monkeypatch):
+    service = InMemorySessionService()
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-1")
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    runner = _CheckpointMetadataStreamingRunner()
+    chunks = [
+        chunk
+        async for chunk in stream_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-1",
+            messages=[{"role": "user", "content": "hello"}],
+            model="demo-model",
+            prepare_runner=lambda active_runner, model: active_runner.prepare_for_request(model),
+        )
+    ]
+
+    events = await service.get_events("sess-1")
+    checkpoint_events = [event for event in events if event.event_type == "run_checkpoint"]
+    assert len(checkpoint_events) == 1
+    assert checkpoint_events[0].metadata["run_id"] == "run-1"
+    assert checkpoint_events[0].metadata["checkpoint_id"] == "ckpt-stream"
+    completed = [chunk for chunk in chunks if "response.completed" in chunk][0]
+    assert "ckpt-stream" in completed
+
+
+@pytest.mark.asyncio
+async def test_stream_conversation_turn_preserves_checkpoint_phase(monkeypatch):
+    service = InMemorySessionService()
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-1")
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    runner = _CheckpointMetadataPhaseStreamingRunner()
+    chunks = [
+        chunk
+        async for chunk in stream_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-1",
+            messages=[{"role": "user", "content": "hello"}],
+            model="demo-model",
+            prepare_runner=lambda active_runner, model: active_runner.prepare_for_request(model),
+        )
+    ]
+
+    events = await service.get_events("sess-1")
+    checkpoint_events = [event for event in events if event.event_type == "run_checkpoint"]
+    assert len(checkpoint_events) == 1
+    assert checkpoint_events[0].metadata["checkpoint_id"] == "ckpt-business-stage"
+    assert checkpoint_events[0].metadata["phase"] == "数据清洗完成，等待生成报告"
+    assert checkpoint_events[0].metadata["stage"] == "清洗聚合指标"
+    assert checkpoint_events[0].metadata["summary"] == "GMV、转化率和退款率已经聚合完成"
+    assert checkpoint_events[0].metadata["next_action"] == "恢复后继续生成复盘报告"
+    assert any("response.completed" in chunk for chunk in chunks)
+
+
+@pytest.mark.asyncio
+async def test_stream_checkpoint_resume_falls_back_to_original_run_id(monkeypatch):
+    service = InMemorySessionService()
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-1")
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    runner = _CheckpointMetadataWithoutRunIdStreamingRunner()
+    chunks = [
+        chunk
+        async for chunk in stream_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-1",
+            messages=[],
+            model="demo-model",
+            prepare_runner=lambda active_runner, model: active_runner.prepare_for_request(model),
+            invocation_id="resume-attempt-1",
+            resume_input={
+                "type": "agentengine.resume_checkpoint",
+                "run_id": "run-original",
+                "checkpoint_id": "ckpt-before",
+                "resume_attempt_id": "resume-attempt-1",
+                "framework": "langgraph",
+                "framework_ref": {
+                    "langgraph": {
+                        "thread_id": "tenant:agent:sess-1",
+                        "checkpoint_id": "ckpt-before",
+                    }
+                },
+            },
+        )
+    ]
+
+    events = await service.get_events("sess-1")
+    checkpoint_events = [event for event in events if event.event_type == "run_checkpoint"]
+    assert len(checkpoint_events) == 1
+    assert checkpoint_events[0].metadata["run_id"] == "run-original"
+    assert checkpoint_events[0].metadata["checkpoint_id"] == "ckpt-stream-after-resume"
+    assert any("response.completed" in chunk for chunk in chunks)
 
 
 def test_build_history_from_events_prefers_latest_checkpoint_and_tail():

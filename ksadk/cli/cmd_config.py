@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import re
 import click
 from dotenv import dotenv_values
 import questionary
@@ -137,6 +138,13 @@ def _stringify_value(value) -> str:
     return str(value)
 
 
+_ENV_VAR_KEY_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+
+
+def _is_env_assignment_key(key: str) -> bool:
+    return bool(_ENV_VAR_KEY_PATTERN.fullmatch(key))
+
+
 def _parse_set_items(set_items: tuple) -> tuple[dict, dict, list[str]]:
     """Parse KEY=VALUE assignments into project/env updates."""
     updates_yaml = {}
@@ -152,7 +160,7 @@ def _parse_set_items(set_items: tuple) -> tuple[dict, dict, list[str]]:
         key = key.strip()
         value = value.strip()
 
-        if key.startswith("OPENAI_") or key.startswith("KSYUN_"):
+        if _is_env_assignment_key(key):
             updates_env[key] = value
             if key == "KSYUN_REGION":
                 updates_yaml["region"] = value
@@ -170,7 +178,7 @@ def _apply_set_command(set_items: tuple, output_path: Path, env_path: Path, is_g
     if not updates_yaml and not updates_env and invalid_items:
         raise usage_error(
             "至少提供一个有效的 KEY=VALUE 配置项。",
-            hints=["示例: `agentengine config set region=cn-beijing-6 OPENAI_MODEL_NAME=glm-5.1`"],
+            hints=["示例: `agentengine config set region=cn-beijing-6 OPENAI_MODEL_NAME=glm-5.2`"],
         )
 
     result = {
@@ -303,7 +311,7 @@ def _run_config_set_command(*, set_items: tuple, output_path: Path, env_path: Pa
     if not set_items:
         raise usage_error(
             "请至少提供一个 KEY=VALUE 配置项。",
-            hints=["示例: `agentengine config set region=cn-beijing-6 OPENAI_MODEL_NAME=glm-5.1`"],
+            hints=["示例: `agentengine config set region=cn-beijing-6 OPENAI_MODEL_NAME=glm-5.2`"],
         )
     return _apply_set_command(set_items, output_path, env_path, is_global)
 
@@ -432,7 +440,7 @@ def run_config_wizard(config_file: str | None, set_items: tuple, is_global: bool
     ))
     
     new_env['OPENAI_MODEL_NAME'] = _ask_or_exit(questionary.text(
-        "模型名称 (OPENAI_MODEL_NAME) [选填,默认使用金山云星流平台glm-5.1]:",
+        "模型名称 (OPENAI_MODEL_NAME) [选填,默认使用金山云星流平台glm-5.2]:",
         default=existing_env.get('OPENAI_MODEL_NAME', ''),
         style=_questionary_style()
     ))
@@ -527,30 +535,32 @@ def run_config_wizard(config_file: str | None, set_items: tuple, is_global: bool
     ))
 
     if should_config_registry:
-        # 密码 (必填)
+        new_env['KCR_USERNAME'] = _ask_or_exit(questionary.text(
+            "KCR 用户名 (企业版请填写访问凭证用户名):",
+            default=existing_env.get('KCR_USERNAME', ''),
+            style=_questionary_style()
+        ))
+
         new_env['KCR_PASSWORD'] = _ask_or_exit(questionary.password(
-            "KCR 临时密码:",
+            "KCR 密码或 Token:",
             default=existing_env.get('KCR_PASSWORD', ''),
             style=_questionary_style()
         ))
-        
-        # 仓库地址 (选填，默认使用公开占位 registry)
+
         default_registry = existing_env.get('KCR_REGISTRY', '')
-        auto_registry = "ghcr.io/kingsoftcloud/agentengine"
-        
         custom_registry = _ask_or_exit(questionary.text(
-            f"镜像仓库地址 [选填,默认: {auto_registry}]:",
+            "镜像仓库地址 [选填,如: agenthzzqy-vpc.ksyunkcr.com/testagent-pub]:",
             default=default_registry,
             style=_questionary_style()
         ))
         
         if custom_registry:
             new_env['KCR_REGISTRY'] = custom_registry
-        # 不填则不写入，运行时自动根据 KSYUN_REGION 生成
-        
+
         print_info("提示:")
-        print_info("用户名自动使用 KSYUN_ACCOUNT_ID (无需配置)")
-        print_info("KCR 临时密码获取: https://kcr.console.ksyun.com/ → 访问凭证")
+        print_info("个人版 KCR 可留空 KCR_USERNAME，运行时使用 KSYUN_ACCOUNT_ID 作为用户名兜底")
+        print_info("企业版 KCR 和第三方镜像仓库必须配置 KCR_USERNAME + KCR_PASSWORD")
+        print_info("KCR 访问凭证获取: https://kcr.console.ksyun.com/ → 访问凭证")
 
     print_rule()
     
@@ -705,7 +715,7 @@ def config_set(set_items: tuple, is_global: bool, output_mode: str | None):
     \b
     示例:
       agentengine config set region=cn-beijing-6
-      agentengine config set OPENAI_MODEL_NAME=glm-5.1 OPENAI_BASE_URL=https://example.com/v1
+      agentengine config set OPENAI_MODEL_NAME=glm-5.2 OPENAI_BASE_URL=https://example.com/v1
       agentengine config set KSYUN_REGION=cn-beijing-6 --global
     """
     _ = output_mode

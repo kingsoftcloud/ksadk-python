@@ -12,9 +12,9 @@ The first public release should be prepared from an independent branch and revie
 6. Create release tags, GitHub release assets, and TestPyPI/PyPI uploads only
    from the reviewed GitHub `main` commit after public CI passes.
 7. Before publication, verify the external state with
-   `make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.6.5`.
+   `make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.6.6`.
 8. After publication, verify the external state with
-   `make public-publish-check PUBLIC_PUBLISH_PHASE=post-publish V=0.6.5`.
+   `make public-publish-check PUBLIC_PUBLISH_PHASE=post-publish V=0.6.6`.
 
 Public release assets must not be created directly from an unsynced candidate
 branch. `make publish`, `make publish-test`, and `make public-release-tag`

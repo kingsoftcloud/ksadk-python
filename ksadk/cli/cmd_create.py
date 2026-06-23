@@ -74,7 +74,7 @@ from google.adk.agents import Agent
 from google.adk.models.lite_llm import LiteLlm
 
 model = LiteLlm(
-    model=f"openai/{{os.getenv('OPENAI_MODEL_NAME', 'glm-5.1')}}",
+    model=f"openai/{{os.getenv('OPENAI_MODEL_NAME', 'glm-5.2')}}",
     api_base=os.getenv("OPENAI_BASE_URL"),
     api_key=os.getenv("OPENAI_API_KEY"),
     stream=True,  # 启用流式输出
@@ -118,7 +118,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 llm = ChatOpenAI(
-    model=os.getenv("OPENAI_MODEL_NAME", "glm-5.1"),
+    model=os.getenv("OPENAI_MODEL_NAME", "glm-5.2"),
     base_url=os.getenv("OPENAI_BASE_URL"),
     api_key=os.getenv("OPENAI_API_KEY"),
     streaming=True,
@@ -149,7 +149,7 @@ from typing import TypedDict, Annotated
 import operator
 
 llm = ChatOpenAI(
-    model=os.getenv("OPENAI_MODEL_NAME", "glm-5.1"),
+    model=os.getenv("OPENAI_MODEL_NAME", "glm-5.2"),
     base_url=os.getenv("OPENAI_BASE_URL"),
     api_key=os.getenv("OPENAI_API_KEY"),
     streaming=True,
@@ -189,7 +189,7 @@ from deepagents import create_deep_agent
 from langchain_openai import ChatOpenAI
 
 llm = ChatOpenAI(
-    model=os.getenv("OPENAI_MODEL_NAME", "glm-5.1"),
+    model=os.getenv("OPENAI_MODEL_NAME", "glm-5.2"),
     base_url=os.getenv("OPENAI_BASE_URL"),
     api_key=os.getenv("OPENAI_API_KEY"),
     streaming=True,
@@ -2019,7 +2019,7 @@ KSYUN_REGION={ks_region}
         if model_name:
             env_content += f"OPENAI_MODEL_NAME={model_name}\n"
         else:
-            env_content += "# OPENAI_MODEL_NAME=glm-5.1\n"
+            env_content += "# OPENAI_MODEL_NAME=glm-5.2\n"
     elif framework == "hermes":
         env_content = f"""# ======================
 # Hermes 标准部署最小配置
@@ -2044,7 +2044,7 @@ OPENAI_API_KEY={api_key}
         if model_name:
             env_content += f"OPENAI_MODEL_NAME={model_name}\n"
         else:
-            env_content += "# OPENAI_MODEL_NAME=glm-5.1\n"
+            env_content += "# OPENAI_MODEL_NAME=glm-5.2\n"
 
         env_content += """
 # Hermes runtime
@@ -2055,8 +2055,31 @@ HERMES_DASHBOARD_HOST=127.0.0.1
 HERMES_DASHBOARD_PORT=9119
 PORT=8080
 # HERMES_CONTEXT_LENGTH=200000
-# HERMES_FALLBACK_MODEL=kimi-k2.6
-# HERMES_IMAGE=ghcr.io/kingsoftcloud/hermes-agent:2026.5.16
+# HERMES_FALLBACK_MODEL=deepseek-v4-pro
+# HERMES_IMAGE=hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.5.29.2-ksadk-v1
+"""
+        env_example_content = """# ======================
+# Hermes 标准部署最小配置示例
+# ======================
+KSYUN_ACCESS_KEY=your-access-key
+KSYUN_SECRET_KEY=your-secret-key
+KSYUN_REGION=cn-beijing-6
+# KSYUN_ACCOUNT_ID=your-account-id
+
+OPENAI_API_KEY=your-model-api-key
+OPENAI_BASE_URL=https://kspmas.ksyun.com/v1/
+OPENAI_MODEL_NAME=glm-5.2
+
+# Hermes runtime
+API_SERVER_ENABLED=true
+API_SERVER_HOST=127.0.0.1
+API_SERVER_PORT=8642
+HERMES_DASHBOARD_HOST=127.0.0.1
+HERMES_DASHBOARD_PORT=9119
+PORT=8080
+# HERMES_CONTEXT_LENGTH=200000
+# HERMES_FALLBACK_MODEL=deepseek-v4-pro
+# HERMES_IMAGE=hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.5.29.2-ksadk-v1
 """
     else:
         langfuse_public = global_env.get("LANGFUSE_PUBLIC_KEY", "")
@@ -2078,7 +2101,7 @@ OPENAI_API_KEY={api_key}
         if model_name:
             env_content += f"OPENAI_MODEL_NAME={model_name}\n"
         else:
-            env_content += "# OPENAI_MODEL_NAME=glm-5.1\n"
+            env_content += "# OPENAI_MODEL_NAME=glm-5.2\n"
 
         env_content += """
 # ======================
@@ -2124,6 +2147,8 @@ OPENAI_API_KEY={api_key}
     
     # 使用 utf-8-sig 编码 (带 BOM)，确保 Windows 程序正确识别为 UTF-8
     (project_path / ".env").write_text(env_content, encoding="utf-8-sig")
+    if framework == "hermes":
+        (project_path / ".env.example").write_text(env_example_content, encoding="utf-8-sig")
 
     if framework == "openclaw":
         print_success("项目创建成功")

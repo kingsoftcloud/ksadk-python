@@ -51,6 +51,10 @@ from ksadk.cli.workflow_common import (
     render_workflow_result,
     resolve_artifact_build_plan,
 )
+from ksadk.builders.container_builder import (
+    registry_kind_label,
+    resolve_registry_credentials,
+)
 
 console = get_console()
 
@@ -330,7 +334,7 @@ def _default_container_registry(config: dict, registry: str | None) -> str:
         str(registry or "").strip().rstrip("/")
         or str(os.getenv("KCR_REGISTRY") or "").strip().rstrip("/")
         or str((config.get("image") or {}).get("registry") or "").strip().rstrip("/")
-        or "ghcr.io/kingsoftcloud/agentengine"
+        or "hub.kce.ksyun.com/agentengine"
     )
 
 
@@ -558,17 +562,22 @@ def _build_mcp_request_data(
             "bucket": bucket,
         }
     else:
-        kcr_username = os.getenv("KCR_USERNAME", "") or os.getenv("KSYUN_ACCOUNT_ID", "")
-        kcr_password = os.getenv("KCR_PASSWORD")
+        kcr_username, kcr_password, registry_kind = resolve_registry_credentials(artifact_reference)
         if kcr_username and kcr_password:
             request_data["image_credential"] = {
-                "endpoint": os.getenv("KCR_ENDPOINT", "ghcr.io"),
+                "endpoint": artifact_reference.split("/", 1)[0],
                 "username": kcr_username,
                 "password": kcr_password,
             }
             print_kv("镜像凭证", f"{kcr_username}@{request_data['image_credential']['endpoint']}")
         else:
-            print_warn("未配置镜像凭证 (KCR_USERNAME/KCR_PASSWORD)，私有镜像可能无法拉取")
+            if registry_kind == "personal_kcr":
+                print_warn("未配置个人版 KCR 镜像凭证 (KSYUN_ACCOUNT_ID/KCR_PASSWORD)，私有镜像可能无法拉取")
+            else:
+                print_warn(
+                    f"未配置{registry_kind_label(registry_kind)} 镜像凭证 "
+                    "(KCR_USERNAME/KCR_PASSWORD)，私有镜像可能无法拉取"
+                )
 
     return request_data
 
@@ -847,6 +856,8 @@ async def _deploy_mcp_async(
         subnet_id=subnet_id,
         security_group_id=security_group_id,
         availability_zone=availability_zone,
+        region=region,
+        dry_run=dry_run,
     )
     if network_payload:
         request_data["network"] = network_payload

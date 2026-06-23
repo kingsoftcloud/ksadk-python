@@ -50,6 +50,7 @@ from ksadk.deployment.agent_access import (
 )
 from ksadk.deployment.state import clear_state, load_state, save_state
 from ksadk.cli.model_catalog import fetch_provider_model_metadata
+from ksadk.model_policy import build_runtime_model_policy_env
 from ksadk.hermes_terminal import (
     run_hermes_terminal_session,
     validate_hermes_exec_argv,
@@ -61,10 +62,7 @@ DEFAULT_HERMES_IMAGE = "ghcr.io/kingsoftcloud/hermes-agent:2026.5.29.2-ksadk-v1"
 DEFAULT_HERMES_CONTEXT_LENGTHS = (
     ("glm-5.1", "200000"),
 )
-DEFAULT_HERMES_FALLBACK_MODELS = (
-    ("glm-5.1", "kimi-k2.6"),
-)
-DEFAULT_HERMES_MODEL_NAME = "glm-5.1"
+DEFAULT_HERMES_MODEL_NAME = "glm-5.2"
 DEFAULT_HERMES_PUBLIC_BASE_URL = "https://kspmas.ksyun.com/v1/"
 DEFAULT_HERMES_RUNTIME_BASE_URL = DEFAULT_HERMES_PUBLIC_BASE_URL
 KSPMAS_PUBLIC_BASES = (
@@ -240,6 +238,7 @@ async def _fetch_hermes_bootstrap_config(region: str) -> dict[str, Any] | None:
                 client_type="cli",
                 client_version=CLI_VERSION,
                 locale=_env_value("LANG", "LC_ALL"),
+                ignore_dry_run=True,
             )
     except Exception as e:
         print_warn(f"拉取 Hermes 服务端默认配置失败，回退本地默认镜像: {e}")
@@ -266,17 +265,6 @@ def _default_context_length_for_model(model: str | None) -> str:
     return ""
 
 
-def _default_fallback_model_for_model(model: str | None, base_url: str | None) -> str:
-    normalized_model = str(model or "").strip().lower()
-    normalized_base_url = str(base_url or "").strip().lower()
-    for model_fragment, fallback_model in DEFAULT_HERMES_FALLBACK_MODELS:
-        if model_fragment in normalized_model:
-            return fallback_model
-    if "kspmas" in normalized_base_url:
-        return "kimi-k2.6"
-    return ""
-
-
 def _build_hermes_env_vars(
     *,
     model_base_url: str | None = None,
@@ -299,10 +287,6 @@ def _build_hermes_env_vars(
         or metadata_context_length
         or _default_context_length_for_model(resolved_default_model)
     )
-    fallback_model = (
-        _env_value("HERMES_FALLBACK_MODEL", "OPENAI_FALLBACK_MODEL_NAME")
-        or _default_fallback_model_for_model(resolved_default_model, resolved_model_base_url)
-    )
     ui_locale = _normalize_hermes_ui_locale(_env_value("HERMES_UI_LOCALE", "LANG", "LC_ALL"))
     raw = {
         "OPENAI_API_KEY": model_api_key or _env_value("OPENAI_API_KEY"),
@@ -318,6 +302,7 @@ def _build_hermes_env_vars(
     }
     if context_length:
         raw["HERMES_CONTEXT_LENGTH"] = context_length
+    fallback_model = _env_value("HERMES_FALLBACK_MODEL", "OPENAI_FALLBACK_MODEL_NAME")
     if fallback_model:
         raw["HERMES_FALLBACK_PROVIDER"] = _env_value("HERMES_FALLBACK_PROVIDER") or "custom"
         raw["HERMES_FALLBACK_MODEL"] = fallback_model
@@ -356,6 +341,10 @@ def _build_hermes_env_vars(
         value = _env_value(key)
         if value:
             raw[key] = value
+    raw = build_runtime_model_policy_env(raw, runtime="hermes")
+    if raw.get("HERMES_FALLBACK_MODEL"):
+        raw.setdefault("HERMES_FALLBACK_PROVIDER", _env_value("HERMES_FALLBACK_PROVIDER") or "custom")
+        raw.setdefault("HERMES_FALLBACK_BASE_URL", _env_value("HERMES_FALLBACK_BASE_URL") or resolved_model_base_url)
     return [
         {"Key": key, "Value": str(value), "IsSensitive": any(token in key for token in ("KEY", "TOKEN", "SECRET"))}
         for key, value in raw.items()
@@ -385,6 +374,14 @@ def _normalize_hermes_runtime_base_url(base_url: str | None) -> str:
     return normalized
 
 
+_FAILURE_STATUSES = {"FAILED", "ERROR", "TERMINATED"}
+
+
+def _diagnostic_field_style(status_value: str) -> str:
+    """非 RUNNING 诊断行样式：失败用红色，其余用黄色。"""
+    return "bold #f85149" if status_value in _FAILURE_STATUSES else "bold #d29922"
+
+
 def _flatten_agent_detail(agent: dict[str, Any]) -> dict[str, Any]:
     basic = agent.get("basic") if isinstance(agent.get("basic"), dict) else {}
     deployment = agent.get("deployment") if isinstance(agent.get("deployment"), dict) else {}
@@ -393,6 +390,10 @@ def _flatten_agent_detail(agent: dict[str, Any]) -> dict[str, Any]:
         "agent_id": basic.get("agent_id") or agent.get("agent_id"),
         "name": basic.get("name") or agent.get("name"),
         "status": basic.get("status") or agent.get("status") or "UNKNOWN",
+        "phase": basic.get("phase") or "",
+        "message": basic.get("message") or "",
+        "replicas": basic.get("replicas"),
+        "ready_replicas": basic.get("ready_replicas"),
         "framework": deployment.get("framework") or basic.get("framework") or agent.get("framework"),
         "region": basic.get("region") or agent.get("region"),
         "endpoint": quick.get("public_endpoint") or quick.get("private_endpoint") or agent.get("endpoint"),
@@ -866,18 +867,32 @@ def status(agent_ref: Optional[str], region: str, dry_run: bool, output_mode: st
         async with AgentEngineClient(region=region, dry_run=dry_run) as client:
             detail = await _get_hermes_detail_with_client(client, resolved)
         status_value = str(detail.get("status") or "UNKNOWN").upper()
-        render_descriptor_status(
-            HERMES_RESOURCE,
-            subtitle=str(detail.get("name") or resolved),
-        fields=[
+        fields: list[tuple[str, str, str | None]] = [
             ("ID", str(detail.get("agent_id") or "-"), "#58a6ff"),
             ("状态", status_value, status_rich_style(status_value)),
+        ]
+        message = str(detail.get("message") or "").strip()
+        if status_value != "RUNNING":
+            replicas = detail.get("replicas")
+            ready = detail.get("ready_replicas")
+            if replicas is not None or ready is not None:
+                replicas_text = f"{ready if ready is not None else '-'}/{replicas if replicas is not None else '-'}"
+                replica_style = _diagnostic_field_style(status_value)
+                fields.append(("副本", replicas_text, replica_style))
+            if message:
+                message_style = _diagnostic_field_style(status_value)
+                fields.append(("消息", message, message_style))
+        fields.extend([
             ("框架", str(detail.get("framework") or "-"), None),
             ("区域", str(detail.get("region") or region), None),
             ("Endpoint", str(detail.get("endpoint") or "-"), "#58a6ff"),
             ("Langfuse", str(detail.get("langfuse_url") or "-"), "#58a6ff" if detail.get("langfuse_url") else None),
             ("镜像", str(detail.get("artifact_path") or "-"), None),
-        ],
+        ])
+        render_descriptor_status(
+            HERMES_RESOURCE,
+            subtitle=str(detail.get("name") or resolved),
+        fields=fields,
         item={
             "id": str(detail.get("agent_id") or "-"),
             "name": str(detail.get("name") or resolved),
@@ -887,6 +902,10 @@ def status(agent_ref: Optional[str], region: str, dry_run: bool, output_mode: st
             "endpoint": str(detail.get("endpoint") or "-"),
             "langfuse_url": str(detail.get("langfuse_url") or ""),
             "image": str(detail.get("artifact_path") or "-"),
+            "message": message,
+            "phase": str(detail.get("phase") or ""),
+            "replicas": detail.get("replicas"),
+            "ready_replicas": detail.get("ready_replicas"),
         },
     )
 
@@ -924,6 +943,12 @@ def open_hermes(
 ):
     """打开 Hermes 管理 UI，或使用 --chat 打开统一聊天页。"""
     _ = output_mode
+    ctx = click.get_current_context(silent=True)
+    region_source = (
+        ctx.get_parameter_source("region").name.lower()
+        if ctx is not None and ctx.get_parameter_source("region") is not None
+        else ""
+    )
     if manage and chat:
         raise click.ClickException("--manage 与 --chat 不能同时使用")
     try:
@@ -955,6 +980,7 @@ def open_hermes(
         positional_agent=positional_agent,
         agent_option=None,
         region=region,
+        region_source=region_source,
         ui_path=target_path,
         share=share,
         expires_seconds=parsed_expires,
