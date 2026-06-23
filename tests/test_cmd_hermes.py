@@ -681,6 +681,8 @@ def test_hermes_open_defaults_to_manage_and_supports_chat_override(monkeypatch):
     assert chat_result.exit_code == 0, chat_result.output
     assert opened[0]["ui_path"] == "/"
     assert opened[1]["ui_path"] == "/chat"
+    assert opened[0]["region_source"] == "default"
+    assert opened[1]["region_source"] == "default"
 
 
 def test_hermes_open_force_new_forwards_to_dashboard(monkeypatch):
@@ -714,6 +716,7 @@ def test_hermes_open_force_new_forwards_to_dashboard(monkeypatch):
     assert opened[0]["share"] is True
     assert opened[0]["expires_seconds"] == 86400
     assert opened[0]["force_new"] is True
+    assert opened[0]["region_source"] == "default"
 
 
 def test_hermes_open_dry_run_does_not_resolve_or_open(monkeypatch):
