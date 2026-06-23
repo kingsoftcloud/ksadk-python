@@ -14,7 +14,7 @@ jobs:
     env:
       PUBLIC_KSADK_WEB_VERSION: "0.2.11"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
