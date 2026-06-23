@@ -333,10 +333,7 @@ public-secret-audit:
 		echo "❌ 发现禁止跟踪的敏感文件"; \
 		exit 1; \
 	fi
-	@if rg -n --hidden -S --glob '!.git/**' --glob '!node_modules/**' --glob '!dist/**' --glob '!build/**' --glob '!*.egg-info/**' 'pypi-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE KEY|SecretAccessKey\s*[:=]\s*[^<\s]+' .; then \
-		echo "❌ secret pattern audit failed"; \
-		exit 1; \
-	fi
+	@uv run --extra dev python scripts/open_source_audit.py --target public-repo
 	@echo "✅ secret audit passed"
 
 public-audit: public-secret-audit
@@ -377,7 +374,7 @@ public-build-check: clean-dist public-sync-ksadk-web-static
 	@uv run pytest tests/test_runtime_common_packaging.py::test_built_wheel_excludes_web_ui_node_modules -q
 	@uv run --extra dev python -m twine check dist/*
 
-public-preflight: public-audit public-sync-ksadk-web-static public-test public-docs-build public-build-check
+public-preflight: public-audit public-build-check public-test public-docs-build
 	@echo "✅ public preflight passed"
 
 public-publish-check:

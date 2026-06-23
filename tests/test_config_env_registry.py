@@ -1,23 +1,17 @@
 from __future__ import annotations
 
-import subprocess
+import re
 from pathlib import Path
 
 from ksadk.configs.env_registry import ENV_VAR_REGISTRY
 
 
 def _source_ksadk_env_names() -> set[str]:
-    result = subprocess.run(
-        ["rg", "-o", "KSADK_[A-Z0-9_]+", "ksadk"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return {
-        line.rsplit(":", 1)[-1].strip()
-        for line in result.stdout.splitlines()
-        if line.strip()
-    }
+    names: set[str] = set()
+    pattern = re.compile(r"KSADK_[A-Z0-9_]+")
+    for source_path in Path("ksadk").rglob("*.py"):
+        names.update(pattern.findall(source_path.read_text(encoding="utf-8")))
+    return names
 
 
 def test_env_registry_has_unique_sorted_names():
