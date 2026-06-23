@@ -1055,12 +1055,8 @@ class AgentEngineClient:
         """通用 Action API 调用"""
         body = params or {}
         self._maybe_precheck_permission(action, body)
-        result = self._request(
-            "POST",
-            f"/agentengine/api/v1/{action}",
-            body,
-            ignore_dry_run=ignore_dry_run,
-        )
+        request_kwargs = {"ignore_dry_run": True} if ignore_dry_run else {}
+        result = self._request("POST", f"/agentengine/api/v1/{action}", body, **request_kwargs)
         
         # 检查错误 (统一返回格式 {"Code": 0, ...})
         code = result.get("Code", 0)
