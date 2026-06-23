@@ -1181,6 +1181,7 @@ async def _fetch_bootstrap_config(region: str) -> Optional[Dict[str, Any]]:
                 client_type="cli",
                 client_version=CLI_VERSION,
                 locale=_resolve_env("OPENCLAW_UI_LOCALE", "LANG", "LC_ALL"),
+                ignore_dry_run=True,
             )
     except Exception as e:
         print_warn(f"拉取服务端默认配置失败，回退本地默认镜像: {e}")

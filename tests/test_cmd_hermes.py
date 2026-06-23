@@ -275,7 +275,10 @@ class _FakeHermesDryRunClient(_FakeHermesClient):
 
 
 class _FakeHermesBootstrapImageClient(_FakeHermesClient):
+    bootstrap_kwargs = None
+
     async def get_client_bootstrap_config(self, **kwargs):
+        self.__class__.bootstrap_kwargs = dict(kwargs)
         assert kwargs["product"] == "hermes"
         assert kwargs["framework"] == "hermes"
         return {
@@ -1164,6 +1167,7 @@ def test_hermes_deploy_normalizes_ui_locale_from_lang(tmp_path: Path, monkeypatc
 def test_hermes_deploy_prefers_bootstrap_default_image(tmp_path: Path, monkeypatch):
     runner = CliRunner()
     _FakeHermesBootstrapImageClient.create_payload = None
+    _FakeHermesBootstrapImageClient.bootstrap_kwargs = None
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://model.example.com/v1")
@@ -1173,6 +1177,27 @@ def test_hermes_deploy_prefers_bootstrap_default_image(tmp_path: Path, monkeypat
     result = runner.invoke(cmd_hermes.hermes, ["deploy", "--name", "demo-hermes"])
 
     assert result.exit_code == 0, result.output
+    assert (
+        _FakeHermesBootstrapImageClient.create_payload["artifact_path"]
+        == "registry.example.com/agentengine-public/hermes-agent:db-meta"
+    )
+    assert _FakeHermesBootstrapImageClient.bootstrap_kwargs["ignore_dry_run"] is True
+
+
+def test_hermes_deploy_dry_run_still_reads_bootstrap_default_image(tmp_path: Path, monkeypatch):
+    runner = CliRunner()
+    _FakeHermesBootstrapImageClient.create_payload = None
+    _FakeHermesBootstrapImageClient.bootstrap_kwargs = None
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://model.example.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-test")
+    monkeypatch.setattr(cmd_hermes, "AgentEngineClient", _FakeHermesBootstrapImageClient)
+
+    result = runner.invoke(cmd_hermes.hermes, ["deploy", "--name", "demo-hermes", "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert _FakeHermesBootstrapImageClient.bootstrap_kwargs["ignore_dry_run"] is True
     assert (
         _FakeHermesBootstrapImageClient.create_payload["artifact_path"]
         == "registry.example.com/agentengine-public/hermes-agent:db-meta"
