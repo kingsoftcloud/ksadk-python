@@ -1,8 +1,44 @@
+import asyncio
 import re
 import json
 import pytest
 
 from ksadk.cli import cmd_openclaw
+
+
+class _FakeOpenClawBootstrapClient:
+    kwargs = None
+    bootstrap_kwargs = None
+
+    def __init__(self, *args, **kwargs):
+        self.__class__.kwargs = dict(kwargs)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def get_client_bootstrap_config(self, **kwargs):
+        self.__class__.bootstrap_kwargs = dict(kwargs)
+        return {
+            "configs": {
+                "bootstrap.default_image": "registry.example.com/openclaw:db",
+            }
+        }
+
+
+def test_fetch_openclaw_bootstrap_config_ignores_dry_run(monkeypatch):
+    _FakeOpenClawBootstrapClient.kwargs = None
+    _FakeOpenClawBootstrapClient.bootstrap_kwargs = None
+    monkeypatch.setenv("AGENTENGINE_GLOBAL_DRY_RUN", "1")
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawBootstrapClient)
+
+    result = asyncio.run(cmd_openclaw._fetch_bootstrap_config("pre-online"))
+
+    assert result["configs"]["bootstrap.default_image"] == "registry.example.com/openclaw:db"
+    assert _FakeOpenClawBootstrapClient.kwargs["region"] == "pre-online"
+    assert _FakeOpenClawBootstrapClient.bootstrap_kwargs["ignore_dry_run"] is True
 
 
 def test_build_openclaw_env_vars_defaults_to_trusted_proxy(monkeypatch):

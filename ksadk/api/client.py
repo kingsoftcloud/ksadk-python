@@ -532,6 +532,8 @@ class AgentEngineClient:
         method: str,
         path: str, 
         body: Optional[Dict[str, Any]] = None,
+        *,
+        ignore_dry_run: bool = False,
     ) -> Dict[str, Any]:
         """同步 HTTP 请求"""
         action = path.rstrip("/").split("/")[-1] if path else ""
@@ -539,7 +541,7 @@ class AgentEngineClient:
         body_str = json.dumps(body, ensure_ascii=False) if body else ""
         
         # DryRun 模式
-        if self.dry_run:
+        if self.dry_run and not ignore_dry_run:
             signed_headers = headers
             if self._auth.is_enabled:
                 # Dry-run 展示真实即将发送的签名头（不暴露明文 SK）
@@ -1043,11 +1045,22 @@ class AgentEngineClient:
             return Path(filename_match.group(1).strip()).name
         return ""
 
-    def _action(self, action: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
+    def _action(
+        self,
+        action: str,
+        params: Dict[str, Any] = None,
+        *,
+        ignore_dry_run: bool = False,
+    ) -> Dict[str, Any]:
         """通用 Action API 调用"""
         body = params or {}
         self._maybe_precheck_permission(action, body)
-        result = self._request("POST", f"/agentengine/api/v1/{action}", body)
+        result = self._request(
+            "POST",
+            f"/agentengine/api/v1/{action}",
+            body,
+            ignore_dry_run=ignore_dry_run,
+        )
         
         # 检查错误 (统一返回格式 {"Code": 0, ...})
         code = result.get("Code", 0)
@@ -1369,6 +1382,7 @@ class AgentEngineClient:
         client_type: str = "cli",
         client_version: Optional[str] = None,
         locale: Optional[str] = None,
+        ignore_dry_run: bool = False,
     ) -> Dict[str, Any]:
         """获取客户端启动配置（动态默认值/升级提示/公告）。"""
         params: Dict[str, Any] = {
@@ -1384,7 +1398,7 @@ class AgentEngineClient:
             params["ClientVersion"] = client_version
         if locale:
             params["Locale"] = locale
-        return self._action("GetClientBootstrapConfig", params)
+        return self._action("GetClientBootstrapConfig", params, ignore_dry_run=ignore_dry_run)
 
     async def list_dashboard_access_links(
         self,

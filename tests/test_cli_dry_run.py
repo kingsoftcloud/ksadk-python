@@ -604,6 +604,44 @@ def test_client_respects_global_dry_run_env(monkeypatch):
     assert client.dry_run is True
 
 
+def test_client_bootstrap_config_can_ignore_dry_run(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="", dry_run=True)
+    captured = {}
+
+    def fake_request(method, path, body=None, *, ignore_dry_run=False):
+        captured.update(
+            {
+                "method": method,
+                "path": path,
+                "body": body,
+                "ignore_dry_run": ignore_dry_run,
+            }
+        )
+        return {
+            "Code": 0,
+            "Data": {
+                "Configs": {
+                    "bootstrap.default_image": "registry.example.com/runtime:db",
+                }
+            },
+        }
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    result = asyncio.run(
+        client.get_client_bootstrap_config(
+            product="openclaw",
+            framework="openclaw",
+            region="pre-online",
+            ignore_dry_run=True,
+        )
+    )
+
+    assert captured["ignore_dry_run"] is True
+    assert captured["body"]["Product"] == "openclaw"
+    assert result["configs"]["bootstrap.default_image"] == "registry.example.com/runtime:db"
+
+
 def test_mcp_status_supports_dry_run(monkeypatch):
     runner = CliRunner()
     monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeDryRunClient)

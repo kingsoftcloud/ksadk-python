@@ -238,6 +238,7 @@ async def _fetch_hermes_bootstrap_config(region: str) -> dict[str, Any] | None:
                 client_type="cli",
                 client_version=CLI_VERSION,
                 locale=_env_value("LANG", "LC_ALL"),
+                ignore_dry_run=True,
             )
     except Exception as e:
         print_warn(f"拉取 Hermes 服务端默认配置失败，回退本地默认镜像: {e}")
