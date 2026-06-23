@@ -54,7 +54,7 @@ def test_public_metadata_uses_runtime_platform_positioning():
 def test_changelog_marks_0_6_6_ready_for_authorized_release():
     changelog = _read("CHANGELOG.md")
 
-    assert "## [0.6.6] - 2026-06-18" in changelog
+    assert "## [0.6.6] - 2026-06-23" in changelog
     assert "统一模型策略 v1" in changelog
     assert "PyPI Trusted Publishing" in changelog
     assert "KSADK_PACKAGE_SPEC=ksadk==0.6.6" in changelog
