@@ -23,6 +23,7 @@
 - Hermes deploy 与 OpenClaw deploy 均会注入同一模型策略 env，保留 `OPENAI_MODEL_NAME`、`MODEL_NAME`、`OPENCLAW_DEFAULT_MODEL`、`HERMES_DEFAULT_MODEL`、`HERMES_FALLBACK_MODEL` 等显式覆盖。
 - Hermes 本地默认主模型更新为 `glm-5.2`，不再按 KSPMAS / `glm-5.1` 硬编码 fallback 到 `kimi-k2.6`，fallback 改由统一策略或显式 env 决定。
 - OpenClaw provider catalog 合并逻辑支持在已有 `OPENCLAW_MODEL_CATALOG_JSON` 上补齐 provider metadata，避免请求级 catalog 被平台默认值覆盖。
+- Native terminal session manager 中 OpenClaw 使用 `--session` 绑定业务会话，Hermes 继续使用 `--resume`。
 - `AgentEngineClient` 新增 `AttachmentContent` 与 `download_attachment_content()`，并修正 `list_sessions()` 请求字段为 `PageSize`。
 - runtime 上传附件会持久化 metadata、本地路径和 MIME 信息；Hosted 附件下载后会写回本地 cache，供 runner、workspace preview 和会话恢复复用。
 
@@ -33,6 +34,7 @@
 - 修复终端执行 allowlist 匹配过复杂、容易误判的问题，统一按共享策略做命令匹配与错误提示。
 - 修复 Hosted UI 上传文件在本地 runtime 中只能看到 `ae-upload://` 引用、无法读取真实内容的问题。
 - 修复 session/event 列表缺少总数和分页字段，导致 UI 无法稳定展示历史会话、历史事件或长任务恢复状态的问题。
+- 修复 OpenClaw TUI 新建 terminal session 时误传不支持的 `--resume` 参数导致启动失败的问题。
 
 ### 测试与发布
 
