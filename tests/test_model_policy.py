@@ -16,6 +16,9 @@ def test_default_model_policy_matches_release_defaults():
     assert policy["primary"]["model"] == "glm-5.2"
     assert policy["multimodal"]["model"] == "kimi-k2.7-code"
     assert policy["fallback"]["model"] == "deepseek-v4-pro"
+    assert policy["models"]["glm-5.2"]["reasoning"] is True
+    assert policy["models"]["kimi-k2.7-code"]["reasoning"] is True
+    assert policy["models"]["deepseek-v4-pro"]["reasoning"] is True
     assert policy["models"]["kimi-k2.7-code"]["options"]["temperature"] == 1
 
 

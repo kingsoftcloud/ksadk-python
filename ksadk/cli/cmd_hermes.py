@@ -943,6 +943,12 @@ def open_hermes(
 ):
     """打开 Hermes 管理 UI，或使用 --chat 打开统一聊天页。"""
     _ = output_mode
+    ctx = click.get_current_context(silent=True)
+    region_source = (
+        ctx.get_parameter_source("region").name.lower()
+        if ctx is not None and ctx.get_parameter_source("region") is not None
+        else ""
+    )
     if manage and chat:
         raise click.ClickException("--manage 与 --chat 不能同时使用")
     try:
@@ -974,6 +980,7 @@ def open_hermes(
         positional_agent=positional_agent,
         agent_option=None,
         region=region,
+        region_source=region_source,
         ui_path=target_path,
         share=share,
         expires_seconds=parsed_expires,

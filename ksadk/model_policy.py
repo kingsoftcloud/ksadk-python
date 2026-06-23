@@ -39,13 +39,16 @@ DEFAULT_MODEL_POLICY: dict[str, Any] = {
     },
     "models": {
         DEFAULT_MODEL_NAME: {
+            "reasoning": True,
             "options": {},
         },
         DEFAULT_MULTIMODAL_MODEL: {
             "input": ["text", "image"],
+            "reasoning": True,
             "options": {"temperature": 1},
         },
         DEFAULT_FALLBACK_MODEL: {
+            "reasoning": True,
             "options": {},
         },
     },
@@ -168,6 +171,8 @@ def _catalog_from_policy(policy: Mapping[str, Any]) -> list[dict[str, Any]]:
             "api": metadata.get("api") or "openai-completions",
             "input": metadata.get("input") or ["text"],
         }
+        if isinstance(metadata.get("reasoning"), bool):
+            item["reasoning"] = metadata["reasoning"]
         if isinstance(metadata.get("options"), Mapping) and metadata["options"]:
             item["options"] = dict(metadata["options"])
         catalog.append(item)
@@ -195,8 +200,7 @@ def build_runtime_model_policy_env(
     )
     runtime_name = str(runtime or "").strip().lower()
     if runtime_name == "openclaw":
-        has_catalog = bool(str(env.get("OPENCLAW_MODEL_CATALOG_JSON") or "").strip())
-        if primary and not has_primary and not has_catalog:
+        if primary and not has_primary:
             env["OPENAI_MODEL_NAME"] = _provider_ref(primary)
         if fallback:
             env.setdefault("OPENCLAW_FALLBACK_MODEL", _provider_ref(fallback))

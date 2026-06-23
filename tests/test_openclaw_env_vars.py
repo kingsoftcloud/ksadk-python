@@ -275,7 +275,33 @@ def test_build_openclaw_env_vars_injects_default_model_policy(monkeypatch):
     assert "AGENTENGINE_MODEL_POLICY_JSON" in env
     catalog = json.loads(env["OPENCLAW_MODEL_CATALOG_JSON"])
     assert [item["id"] for item in catalog] == ["glm-5.2", "kimi-k2.7-code", "deepseek-v4-pro"]
-    assert catalog[1]["options"] == {"temperature": 1}
+    assert {item["id"]: item["reasoning"] for item in catalog} == {
+        "glm-5.2": True,
+        "kimi-k2.7-code": True,
+        "deepseek-v4-pro": True,
+    }
+    assert "OPENCLAW_MODEL_BASE_URL" not in env
+    assert "OPENCLAW_MODEL_PROVIDER_ID" not in env
+    assert "OPENCLAW_MODEL_API" not in env
+
+
+def test_openclaw_model_policy_env_keeps_default_primary_with_catalog(monkeypatch):
+    monkeypatch.setattr(cmd_openclaw, "_GLOBAL_ENV_CACHE", {})
+    monkeypatch.delenv("OPENCLAW_DEFAULT_MODEL", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL_NAME", raising=False)
+    monkeypatch.delenv("MODEL_NAME", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.delenv("OPENCLAW_MODEL_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_BASE", raising=False)
+    monkeypatch.delenv("OPENCLAW_MODEL_PROVIDER_ID", raising=False)
+    monkeypatch.delenv("OPENCLAW_MODEL_API", raising=False)
+    monkeypatch.setenv("OPENCLAW_MODEL_CATALOG_JSON", '[{"id":"kimi-k2.7-code"},{"id":"glm-5.2"}]')
+
+    env = cmd_openclaw._build_openclaw_env_vars()
+
+    assert env["OPENAI_MODEL_NAME"] == "ksyun/glm-5.2"
+    assert env["OPENCLAW_MODEL_CATALOG_JSON"] == '[{"id":"kimi-k2.7-code"},{"id":"glm-5.2"}]'
     assert "OPENCLAW_MODEL_BASE_URL" not in env
     assert "OPENCLAW_MODEL_PROVIDER_ID" not in env
     assert "OPENCLAW_MODEL_API" not in env
