@@ -11,6 +11,7 @@
 
 - **统一模型策略 v1**：新增 `AGENTENGINE_MODEL_POLICY_JSON` 运行时策略契约，默认主模型为 `glm-5.2`，多模态模型为 `kimi-k2.7-code`，fallback 模型为 `deepseek-v4-pro`，为 Hermes、OpenClaw 和通用 Agent 提供同一套默认模型语义。
 - **通用 Agent fallback**：conversation runtime 对超时、限流、5xx、模型不可用、权限/配额等可恢复模型错误支持 fallback 重试；普通 400 参数错误、业务错误和 tool 错误不会被吞掉。
+- **真实 usage 透传**：Chat Completions、Responses、LangGraph、LangChain、ADK 和 Remote runner 的 invoke/stream 路径统一透传下游真实 token usage，stream 结束补 final usage，不再伪造空 token 统计。
 - **运行时附件与 Hosted 附件打通**：本地 `ksadk-upload://` 与平台 `ae-upload://` 上传引用统一解析，支持通过 KOP Action 下载 Hosted 附件内容、恢复本地缓存，并在会话/浏览器刷新后继续读取文件。
 - **Workspace zip 导出修复**：本地与 Hosted 场景统一使用 KsADK runtime workspace 导出契约，修复 share link / Hosted UI 下载 workspace 目录时报错的问题。
 - **会话列表与事件分页增强**：Session service 新增 `count_sessions` / `count_events`，`ListSessions` 返回 `Total/Page/PageSize`，`ListSessionEvents` 支持 `Offset/Limit/Total`，便于 UI 恢复长任务和历史事件。
@@ -28,6 +29,8 @@
 - Hermes 本地默认主模型更新为 `glm-5.2`，不再按旧主模型名称硬编码 fallback 到 `kimi-k2.6`，fallback 改由统一策略或显式 env 决定。
 - OpenClaw provider catalog 合并逻辑支持在已有 `OPENCLAW_MODEL_CATALOG_JSON` 上补齐 provider metadata，避免请求级 catalog 被平台默认值覆盖。
 - `AgentEngineClient` 新增 `AttachmentContent` 与 `download_attachment_content()`，并修正 `list_sessions()` 请求字段为 `PageSize`。
+- conversation runtime 会把 runner 返回的 usage 写入 assistant event metadata，并在 Chat Completions / Responses 输出中按官方 `usage` 字段返回，同时保留 `prompt_tokens_details`、`completion_tokens_details`、`input_token_details`、`output_token_details` 等明细字段。
+- LangGraph、LangChain、ADK 和 Remote runner 的 invoke/stream 均会从 message metadata、state values、event usage metadata 或 OpenAI-compatible response 中提取真实 usage；流式路径在 final chunk 中带出最终 usage，避免 UI 和调用方只能看到空统计。
 - runtime 上传附件会持久化 metadata、本地路径和 MIME 信息；Hosted 附件下载后会写回本地 cache，供 runner、workspace preview 和会话恢复复用。
 - Workspace zip 导出优先走新的 runtime raw export endpoint，并保留 legacy runtime archive fallback，降低不同 KsADK runtime 版本混跑时的兼容风险。
 - Native terminal session manager 新增 HTTP session lifecycle 与 WebSocket attach 语义，断线默认 detach 而不是杀掉 PTY；Hermes 使用 `--resume`、OpenClaw 使用 `--session` 绑定同一 terminal session。
@@ -56,7 +59,7 @@
 
 ### 测试与发布
 
-- 新增模型策略、fallback、流式 fallback、OpenClaw env、Hermes env、LangChain patch、附件恢复、session 分页、Hosted UI 上传文件、workspace zip、终端 session 复用和终端 allowlist 覆盖测试。
+- 新增模型策略、fallback、流式 fallback、usage 透传、OpenClaw env、Hermes env、LangChain patch、附件恢复、session 分页、Hosted UI 上传文件、workspace zip、终端 session 复用和终端 allowlist 覆盖测试。
 - 公开发布版本从 `0.6.5` 升级到 `0.6.6`，发布包继续通过 `make public-preflight` 同步 KSADK Web 静态资源并执行 wheel 内容检查；本次发布候选固定使用 `PUBLIC_KSADK_WEB_VERSION=0.2.11` 对应的 `@kingsoftcloud/ksadk-web` 静态 UI。
 - `make public-preflight` 覆盖 secret audit、public path audit、全量 pytest、sdist/wheel build、wheel 内容检查和 `twine check`；PyPI 发布继续使用 PyPI Trusted Publishing。
 - GitHub Release / PyPI / npm 发布仍由对应 GitHub workflow 执行，并需要等待 CI 门禁和人工确认。
