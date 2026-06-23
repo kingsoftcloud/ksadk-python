@@ -51,6 +51,7 @@ def _isolate_hermes_model_env(monkeypatch):
         "WPSXIEZUO_ALLOWED_USERS",
         "WPSXIEZUO_ALLOW_ALL_USERS",
         "WPSXIEZUO_HOME_CHANNEL",
+        "KSYUN_REGION",
     ):
         monkeypatch.delenv(key, raising=False)
     cmd_hermes._HERMES_GLOBAL_ENV_CACHE = None
