@@ -193,7 +193,7 @@ def test_terminal_tui_command_binds_product_resume_id(server_app, monkeypatch):
     assert server_app.terminal_manager._resolve_terminal_command(session) == [
         "openclaw",
         "tui",
-        "--resume",
+        "--session",
         "biz-4",
     ]
 
@@ -218,7 +218,31 @@ def test_terminal_tui_resume_flag_can_be_disabled(server_app, monkeypatch):
         framework="openclaw",
     )
 
-    assert server_app.terminal_manager._resolve_terminal_command(session) == ["openclaw", "tui"]
+    assert server_app.terminal_manager._resolve_terminal_command(session) == [
+        "openclaw",
+        "tui",
+        "--session",
+        "biz-4",
+    ]
 
     session.framework = "hermes"
     assert server_app.terminal_manager._resolve_terminal_command(session) == ["hermes", "chat"]
+
+
+def test_terminal_tui_openclaw_session_flag_can_be_overridden(server_app, monkeypatch):
+    monkeypatch.setattr(terminal_sessions.shutil, "which", lambda command: f"/usr/bin/{command}")
+    monkeypatch.setenv("OPENCLAW_TERMINAL_SESSION_FLAG", "--conversation")
+
+    session = TerminalSession(
+        id="term-command",
+        session_id="biz-4",
+        mode="tui",
+        framework="openclaw",
+    )
+
+    assert server_app.terminal_manager._resolve_terminal_command(session) == [
+        "openclaw",
+        "tui",
+        "--conversation",
+        "biz-4",
+    ]

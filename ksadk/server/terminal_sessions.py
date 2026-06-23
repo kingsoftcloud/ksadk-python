@@ -280,8 +280,8 @@ class TerminalSessionManager:
             return command
         if framework == "openclaw" and shutil.which("openclaw"):
             command = ["openclaw", "tui"]
-            if session.session_id and _env_bool("OPENCLAW_TERMINAL_RESUME_ENABLED", True):
-                command.extend([os.getenv("OPENCLAW_TERMINAL_RESUME_FLAG", "--resume"), session.session_id])
+            if session.session_id:
+                command.extend([os.getenv("OPENCLAW_TERMINAL_SESSION_FLAG", "--session"), session.session_id])
             session.argv = command
             return command
         shell = os.getenv("SHELL") or "/bin/sh"

@@ -30,7 +30,7 @@
 - `AgentEngineClient` 新增 `AttachmentContent` 与 `download_attachment_content()`，并修正 `list_sessions()` 请求字段为 `PageSize`。
 - runtime 上传附件会持久化 metadata、本地路径和 MIME 信息；Hosted 附件下载后会写回本地 cache，供 runner、workspace preview 和会话恢复复用。
 - Workspace zip 导出优先走新的 runtime raw export endpoint，并保留 legacy runtime archive fallback，降低不同 KsADK runtime 版本混跑时的兼容风险。
-- Native terminal session manager 新增 HTTP session lifecycle 与 WebSocket attach 语义，断线默认 detach 而不是杀掉 PTY；Hermes/OpenClaw `--resume` 可以绑定同一 terminal session。
+- Native terminal session manager 新增 HTTP session lifecycle 与 WebSocket attach 语义，断线默认 detach 而不是杀掉 PTY；Hermes 使用 `--resume`、OpenClaw 使用 `--session` 绑定同一 terminal session。
 - `agentengine deploy`、`agentengine launch`、`agentengine mcp deploy` 和 OpenClaw/Hermes 相关命令补齐 no-cache、dry-run JSON envelope、网络参数、环境变量和显式配置覆盖测试。
 - `AgentEngineClient` 与远程 runner 补齐 framework passthrough、权限预检查、错误日志、MCP payload、workspace files 和 attachment content 的契约测试。
 - LangGraph、LangChain、ADK、DeepAgents、A2A、本地 re-exec、session continuity、Postgres session service、sandbox backend 和 Skill Runtime 相关路径补齐回归覆盖。
@@ -50,6 +50,7 @@
 - 修复 E2B sandbox 可选依赖缺失时测试不能跳过的问题，降低最小开发环境运行公开测试的成本。
 - 修复公开仓库审计误拦截受控公开文档和受控外部引用的问题，并继续禁止内部 endpoint、私有 header、真实凭证和 kubeconfig 进入公开材料。
 - 修复 Hermes / OpenClaw `--dry-run` 在全局 dry-run 下无法读取 bootstrap 只读配置的问题；dry-run 现在会渲染实际将使用的运行时 artifact 与模型策略。
+- 修复 OpenClaw TUI 新建 terminal session 时误传不支持的 `--resume` 参数导致启动失败的问题。
 
 ### 测试与发布
 
