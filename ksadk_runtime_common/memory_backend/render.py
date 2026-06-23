@@ -17,7 +17,7 @@ from ksadk_runtime_common.memory_backend.registry import (
 )
 
 MANIFEST_ENV_VAR = "MEMORY_BACKEND_MANIFEST"
-MEMORY_BACKEND_PLUGIN_IDS = ["openclaw-mem0"]
+MEMORY_BACKEND_PLUGIN_IDS = ["openclaw-mem0", "memory-lancedb"]
 MEMORY_BACKEND_PLUGIN_SLOTS = ["memory"]
 
 
