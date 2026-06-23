@@ -35,6 +35,8 @@
 - 修复 Hosted UI 上传文件在本地 runtime 中只能看到 `ae-upload://` 引用、无法读取真实内容的问题。
 - 修复 session/event 列表缺少总数和分页字段，导致 UI 无法稳定展示历史会话、历史事件或长任务恢复状态的问题。
 - 修复 OpenClaw TUI 新建 terminal session 时误传不支持的 `--resume` 参数导致启动失败的问题。
+- 修复 `agentengine hermes open --chat` 调用 dashboard open 时缺少 region source，导致命令行打开 Hosted Chat 报错的问题。
+- 修复 OpenClaw 已存在 `OPENCLAW_MODEL_CATALOG_JSON` 时默认主模型可能被 catalog 首项带偏的问题，并在默认模型目录中声明 `reasoning=true` 以启用思考能力。
 
 ### 测试与发布
 
