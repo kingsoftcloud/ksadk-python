@@ -18,6 +18,22 @@ class _FakeMemoryService:
         return True
 
 
+class _AcceptedButUnverifiedMemoryService(_FakeMemoryService):
+    def __init__(self):
+        super().__init__()
+        class SdkLTMBackend:
+            last_error = ""
+
+            def get_session_status(self, *, user_id: str, session_id: str) -> dict:
+                return {"SessionId": session_id, "State": 0}
+
+        self._backend = SdkLTMBackend()
+
+    def search_entries(self, *, user_id: str, query: str, top_k: int | None = None) -> list[str]:
+        self.search_calls.append((user_id, query, top_k))
+        return []
+
+
 class _FailingMemoryService(_FakeMemoryService):
     def __init__(self):
         super().__init__()
@@ -68,7 +84,7 @@ def test_save_memory_persists_agent_and_session_metadata(monkeypatch):
     with platform_invocation_scope(_context()):
         result = save_memory("用户喜欢云主机")
 
-    assert result == "记忆已保存。"
+    assert result == {"ok": True, "status": "persisted", "message": "记忆已保存。"}
     assert service.save_calls == [
         (
             "user-1",
@@ -90,7 +106,8 @@ def test_save_memory_without_runtime_context_returns_diagnostic(monkeypatch):
 
     result = save_memory("no context")
 
-    assert "缺少运行时上下文" in result
+    assert result["ok"] is False
+    assert "缺少运行时上下文" in result["message"]
     assert service.save_calls == []
 
 
@@ -103,5 +120,23 @@ def test_save_memory_failure_includes_backend_error(monkeypatch):
     with platform_invocation_scope(_context()):
         result = save_memory("用户喜欢云主机")
 
-    assert "记忆保存失败" in result
-    assert "NotFound: missing memory" in result
+    assert result["ok"] is False
+    assert "记忆保存失败" in result["message"]
+    assert "NotFound: missing memory" in result["message"]
+
+
+def test_save_memory_reports_unverified_sdk_acceptance(monkeypatch):
+    from ksadk.memory.tool import save_memory
+
+    service = _AcceptedButUnverifiedMemoryService()
+    monkeypatch.setattr("ksadk.memory.tool._get_or_create_service", lambda: service)
+
+    with platform_invocation_scope(_context()):
+        result = save_memory("用户喜欢云主机")
+
+    assert result["ok"] is False
+    assert result["status"] == "accepted_not_extracted"
+    assert "尚未抽取" in result["message"]
+    assert result["session_id"] == "sess-1"
+    assert result["session_state"] == 0
+    assert service.search_calls == [("user-1", "用户喜欢云主机", 1)]

@@ -100,6 +100,31 @@ def test_detector_supports_deepagents_from_config(tmp_path: Path):
     assert result.entry_point.endswith("deepagents_demo/agent.py")
 
 
+def test_detector_reads_custom_runner_class_from_config(tmp_path: Path):
+    package_dir = tmp_path / "demo_agent"
+    package_dir.mkdir()
+    (package_dir / "__init__.py").write_text("", encoding="utf-8")
+    (package_dir / "agent.py").write_text("root_agent = object()\n", encoding="utf-8")
+    (tmp_path / "agentengine.yaml").write_text(
+        yaml.dump(
+            {
+                "name": "demo-agent",
+                "framework": "langgraph",
+                "entry_point": "demo_agent/agent.py",
+                "package": "demo_agent",
+                "agent_variable": "root_agent",
+                "runner_class": "demo_agent.agent.CustomRunner",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = FrameworkDetector(str(tmp_path)).detect()
+
+    assert result.type == FrameworkType.LANGGRAPH
+    assert result.runner_class == "demo_agent.agent.CustomRunner"
+
+
 def test_detector_ignores_config_when_agent_variable_missing_and_finds_src_agent(tmp_path: Path):
     package_dir = tmp_path / "src" / "demo_agent"
     package_dir.mkdir(parents=True)

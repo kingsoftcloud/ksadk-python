@@ -5,6 +5,7 @@ import importlib
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -146,6 +147,11 @@ def active_trace_provider():
 @pytest.mark.asyncio
 async def test_get_agent_ui_bootstrap_matches_local_shape_parity(monkeypatch):
     monkeypatch.setenv("OPENAI_MODEL_NAME", "glm-5.1")
+    monkeypatch.delenv("KSADK_TOOL_APPROVAL_MODE", raising=False)
+    monkeypatch.delenv("KSADK_SANDBOX_BACKEND", raising=False)
+    monkeypatch.delenv("KSADK_SANDBOX_TEMPLATE_ID", raising=False)
+    monkeypatch.delenv("KSADK_SKILL_RUNTIME_BACKEND", raising=False)
+    monkeypatch.delenv("KSADK_SKILL_RUNTIME_TEMPLATE_ID", raising=False)
     _, runner, _, transport = _build_transport(monkeypatch)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
@@ -174,22 +180,66 @@ async def test_get_agent_ui_bootstrap_matches_local_shape_parity(monkeypatch):
     assert payload["Data"]["Agent"]["AgentId"] == "demo-agent"
     assert payload["Data"]["Agent"]["Framework"] == "langgraph"
     assert payload["Data"]["Modules"] == ["Chat", "Build", "Deploy"]
-    assert payload["Data"]["Capabilities"] == {
-        "Attachments": True,
-        "WorkspaceFiles": True,
-        "Thinking": True,
-        "Approval": True,
-        "StopRun": True,
-        "ResumeRun": False,
-        "MCP": False,
-        "HostedRuntime": False,
-        "NativeTerminal": {
-            "Enabled": False,
-            "Mode": None,
-            "Protocol": "ks-terminal.v1",
-            "Path": None,
-        },
+
+    capabilities = payload["Data"]["Capabilities"]
+    assert capabilities["Attachments"] is True
+    assert capabilities["WorkspaceFiles"] is True
+    assert capabilities["Thinking"] is True
+    assert capabilities["Approval"] is True
+    assert capabilities["StopRun"] is True
+    assert capabilities["ResumeRun"] is True
+    assert capabilities["MCP"] is False
+    assert capabilities["HostedRuntime"] is False
+    assert capabilities["NativeTerminal"] == {
+        "Enabled": False,
+        "Mode": None,
+        "Protocol": "ks-terminal.v1",
+        "Path": None,
     }
+    assert capabilities["RunLifecycle"] == {
+        "Enabled": True,
+        "Resume": True,
+        "Abort": True,
+        "Checkpoints": True,
+        "CheckpointResume": True,
+        "CheckpointResumePreview": True,
+    }
+
+    builtin_tools = {tool["name"]: tool for tool in capabilities["BuiltinTools"]}
+    assert set(builtin_tools) >= {
+        "list_skills",
+        "search_skills",
+        "load_skill",
+        "execute_skills",
+        "workspace_status",
+        "list_workspace_files",
+        "read_workspace_file",
+        "write_workspace_file",
+        "write_workspace_files",
+        "edit_workspace_file",
+        "lint_workspace_file",
+        "search_workspace_files",
+        "delete_workspace_file",
+        "component_status",
+        "search_knowledge_base",
+        "load_memory",
+        "save_memory",
+        "sandbox_status",
+        "run_command",
+        "run_code",
+    }
+    assert builtin_tools["execute_skills"] | {
+        "name": "execute_skills",
+        "group": "skill",
+        "risk_level": "high",
+        "requires_approval": False,
+        "enabled": False,
+        "backend": "disabled",
+        "boundary": "isolated_skill_runtime",
+    } == builtin_tools["execute_skills"]
+    assert builtin_tools["search_knowledge_base"]["args"]["query"]["type"] == "string"
+    assert builtin_tools["load_memory"]["args"]["query"]["type"] == "string"
+    assert builtin_tools["save_memory"]["args"]["content"]["type"] == "string"
     assert payload["Data"]["WorkspaceFiles"] == {
         "Enabled": True,
         "MaxUploadBytes": 104857600,
@@ -405,6 +455,7 @@ async def test_run_agent_action_streaming_responses_uses_responses_lifecycle(mon
     assert "event: response.tool_result" not in lines
     assert runner.invocations[-1]["model"] == "glm-5.1"
     assert runner.invocations[-1]["session_id"] == "sess-runagent-responses"
+    assert runner.invocations[-1]["responses_conversation"] is True
     assert await service.get_session("sess-runagent-responses") is not None
     stored_events = await service.get_events("sess-runagent-responses")
     assistant_events = [event for event in stored_events if event.event_type == "assistant_message"]
@@ -583,7 +634,11 @@ async def test_upload_file_action_returns_server_handle_and_stores_file(monkeypa
     assert file_data["sizeBytes"] == 5
 
     file_id = file_data["fileUri"].removeprefix("ksadk-upload://")
-    stored_files = list((tmp_path / ".agentengine" / "ui" / "files").glob(f"{file_id}*"))
+    stored_files = [
+        path
+        for path in (tmp_path / ".agentengine" / "ui" / "files").glob(f"{file_id}*")
+        if not path.name.endswith(".meta.json")
+    ]
     assert len(stored_files) == 1
     assert stored_files[0].read_bytes() == b"hello"
 
@@ -939,6 +994,7 @@ async def test_responses_endpoint_passes_full_request_history_to_runner(monkeypa
 
     assert response.status_code == 200
     assert runner.invocations[-1]["input"] == "用go"
+    assert "responses_conversation" not in runner.invocations[-1]
     assert runner.invocations[-1]["history"] == [
         {"role": "user", "content": "写一个python快排的示例"},
         {"role": "model", "content": "这是 Python 快速排序示例。"},
@@ -974,6 +1030,7 @@ async def test_responses_endpoint_non_streaming_supports_instructions_and_metada
     assert payload["output_text"] == "assistant says hi"
     assert payload["session_id"]
     assert runner.invocations[-1]["instructions"] == "只用中文回答"
+    assert "responses_conversation" not in runner.invocations[-1]
 
     events = await service.get_events(payload["session_id"])
     user_event = next(event for event in events if event.event_type == "user_message")
@@ -1039,7 +1096,13 @@ async def test_responses_endpoint_accepts_mcp_approval_response_resume(monkeypat
             author="demo-agent",
             event_type="approval_request",
             content={"role": "model", "parts": [{"text": "confirm tool"}]},
-            metadata={"interrupt_info": {"approval_request_id": "appr_123", "tool_name": "delete_file"}},
+            metadata={
+                "interrupt_info": {
+                    "approval_request_id": "appr_123",
+                    "tool_name": "delete_file",
+                    "arguments": {"path": "notes.txt"},
+                }
+            },
             invocation_id="inv-approval",
         ),
     )
@@ -1073,9 +1136,82 @@ async def test_responses_endpoint_accepts_mcp_approval_response_resume(monkeypat
         "approval_request_id": "appr_123",
         "approve": True,
         "reason": "approved",
+        "tool_name": "delete_file",
+        "tool_args": {
+            "path": "notes.txt",
+            "approval": {
+                "approved": True,
+                "approval_request_id": "appr_123",
+                "reason": "approved",
+            },
+        },
+        "approval": {
+            "approved": True,
+            "approval_request_id": "appr_123",
+            "reason": "approved",
+        },
     }
     events = await service.get_events("sess-approval")
     assert [event.event_type for event in events[:2]] == ["approval_request", "approval_response"]
+
+
+@pytest.mark.asyncio
+async def test_responses_endpoint_streams_mcp_approval_response_resume(monkeypatch):
+    _, runner, service, transport = _build_transport(monkeypatch)
+    await service.create_session(
+        agent_id="demo-agent", user_id="user", session_id="sess-approval-stream"
+    )
+    await service.append_event(
+        "sess-approval-stream",
+        SessionEvent(
+            author="demo-agent",
+            event_type="approval_request",
+            content={"role": "model", "parts": [{"text": "confirm tool"}]},
+            metadata={
+                "interrupt_info": {
+                    "approval_request_id": "appr_stream",
+                    "tool_name": "write_workspace_file",
+                    "arguments": {"path": "notes.txt", "content": "hello"},
+                    "run_id": "run_stream",
+                }
+            },
+            invocation_id="inv-approval",
+        ),
+    )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/v1/responses",
+            json={
+                "session_id": "sess-approval-stream",
+                "previous_response_id": "resp_previous",
+                "input": [
+                    {
+                        "type": "mcp_approval_response",
+                        "approval_request_id": "appr_stream",
+                        "approve": True,
+                    }
+                ],
+                "stream": True,
+            },
+        )
+
+    assert response.status_code == 200
+    assert "event: response.completed" in response.text
+    assert runner.invocations[-1]["resume"] is True
+    assert runner.invocations[-1]["input"] == {
+        "type": "function_call_output",
+        "call_id": "run_stream",
+        "output": {
+            "ok": True,
+            "path": "notes.txt",
+            "absolute_path": runner.invocations[-1]["input"]["output"]["absolute_path"],
+            "size": 5,
+        },
+    }
+    assert Path(runner.invocations[-1]["input"]["output"]["absolute_path"]).read_text(
+        encoding="utf-8"
+    ) == "hello"
 
 
 @pytest.mark.asyncio
@@ -1646,47 +1782,15 @@ async def test_static_routes_serve_unified_agent_ui_shell(monkeypatch):
     assert "overflow" in css_response.text
 
 
-def test_web_ui_source_uses_title_and_summary_in_sidebar():
-    sidebar_source = Path("ksadk/server/web-ui/src/components/chat/ChatSidebar.tsx").read_text(
-        encoding="utf-8"
+def test_source_repository_does_not_track_local_web_ui_source():
+    result = subprocess.run(
+        ["git", "ls-files", "ksadk/server/web-ui/**"],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
     )
-    session_helpers_source = Path("ksadk/server/web-ui/src/utils/session-helpers.ts").read_text(
-        encoding="utf-8"
-    )
-    session_list_source = Path("ksadk/server/web-ui/src/utils/session-list.js").read_text(
-        encoding="utf-8"
-    )
-    assert "session.Title" in session_helpers_source
-    assert "session?.Summary" in session_list_source
-    assert "session.SessionId.slice(0, 12)" not in sidebar_source
 
-
-def test_web_ui_source_supports_clipboard_file_paste():
-    composer_source = Path(
-        "ksadk/server/web-ui/src/components/chat/ConnectedComposer.tsx"
-    ).read_text(encoding="utf-8")
-    attachment_source = Path("ksadk/server/web-ui/src/utils/attachment.ts").read_text(
-        encoding="utf-8"
-    )
-    assert "clipboardData.items" in attachment_source
-    assert "onPaste" in composer_source
-    assert "getAsFile" in attachment_source
-
-
-def test_web_ui_source_prefers_responses_when_runtime_supports_it():
-    bootstrap_source = Path("ksadk/server/web-ui/src/hooks/useBootstrap.ts").read_text(
-        encoding="utf-8"
-    )
-    layout_source = Path("ksadk/server/web-ui/src/utils/layout-constants.ts").read_text(
-        encoding="utf-8"
-    )
-    run_engine_source = Path("ksadk/server/web-ui/src/core/run/engine.ts").read_text(
-        encoding="utf-8"
-    )
-    assert "setAgentFramework" in bootstrap_source
-    assert "if (apiFormats.includes('responses'))" in layout_source
-    assert "return 'responses'" in layout_source
-    assert "resolveRunAgentApiFormat({ agentFramework: this.config.agentFramework, apiFormats: this.config.apiFormats })" in run_engine_source
+    assert result.stdout == ""
 
 
 def test_static_workbench_uses_openai_responses_content_for_inline_attachments():
@@ -1701,113 +1805,3 @@ def test_static_workbench_uses_openai_responses_content_for_inline_attachments()
     assert "filename:" in source
     assert "file_url:" in source
     assert "inlineData: {" not in source
-
-
-def test_web_ui_run_engine_uses_responses_input_for_responses_protocol():
-    run_engine_source = Path("ksadk/server/web-ui/src/core/run/engine.ts").read_text(
-        encoding="utf-8"
-    )
-
-    assert "body.ResponsesInput = [{ role: 'user', content: parts }]" in run_engine_source
-    assert "body.Messages = [{ role: 'user', content: parts }]" in run_engine_source
-
-
-def test_web_ui_source_supports_workspace_panel_for_owner_access():
-    source = Path("ksadk/server/web-ui/src/App.tsx").read_text(encoding="utf-8")
-    header_source = Path("ksadk/server/web-ui/src/components/chat/ChatHeader.tsx").read_text(
-        encoding="utf-8"
-    )
-    api_facade_source = Path("ksadk/server/web-ui/src/core/api/facade.ts").read_text(
-        encoding="utf-8"
-    )
-    bootstrap_source = Path("ksadk/server/web-ui/src/hooks/useBootstrap.ts").read_text(
-        encoding="utf-8"
-    )
-    layout_source = Path("ksadk/server/web-ui/src/utils/layout-constants.ts").read_text(
-        encoding="utf-8"
-    )
-    run_engine_source = Path("ksadk/server/web-ui/src/core/run/engine.ts").read_text(
-        encoding="utf-8"
-    )
-    workspace_api_source = Path("ksadk/server/web-ui/src/api/workspace.ts").read_text(
-        encoding="utf-8"
-    )
-    workspace_source = Path(
-        "ksadk/server/web-ui/src/components/workspace/WorkspacePanel.tsx"
-    ).read_text(encoding="utf-8")
-    workspace_utils_source = Path("ksadk/server/web-ui/src/utils/workspace.js").read_text(
-        encoding="utf-8"
-    )
-    session_events_source = Path("ksadk/server/web-ui/src/utils/session-events.js").read_text(
-        encoding="utf-8"
-    )
-    responses_stream_source = Path(
-        "ksadk/server/web-ui/src/utils/responses-stream.js"
-    ).read_text(encoding="utf-8")
-    assert "WorkspaceFiles" in source
-    assert "canAccessWorkspaceFiles({ workspaceFiles, accessMode })" in source
-    assert "mode === 'owner' || mode === 'private'" in workspace_utils_source
-    assert "WorkspacePanel" in source
-    assert "flex h-14 flex-shrink-0 items-center" in workspace_source
-    assert "listWorkspaceFiles" in api_facade_source
-    assert "addWorkspaceFile" in api_facade_source
-    assert "capability.ContentPath" in workspace_source
-    assert "DeleteWorkspaceFile" in workspace_api_source
-    assert "workspaceEnabled" in header_source
-    assert "ApiFormat: apiFormat" in run_engine_source
-    assert "Model: this.config.selectedModel || undefined" in run_engine_source
-    assert "chat_completions" in bootstrap_source
-    assert "chat_completions" in layout_source
-    assert "normalizeResponsesStreamEvent" in session_events_source
-    assert "extractCompletedText" in responses_stream_source
-    assert "item.delta" in responses_stream_source
-    assert "response.output_item.added" in responses_stream_source
-    assert "response.function_call_arguments.delta" in responses_stream_source
-    assert "response.ksadk.tool_result" in responses_stream_source
-    assert "response.ksadk.approval_request" in responses_stream_source
-
-
-def test_web_ui_source_supports_streaming_queue_and_refresh_pending_status():
-    source = Path("ksadk/server/web-ui/src/App.tsx").read_text(encoding="utf-8")
-    connected_composer_source = Path(
-        "ksadk/server/web-ui/src/components/chat/ConnectedComposer.tsx"
-    ).read_text(encoding="utf-8")
-    composer_source = Path(
-        "ksadk/server/web-ui/src/components/chat/ChatComposer.tsx"
-    ).read_text(encoding="utf-8")
-    sidebar_source = Path("ksadk/server/web-ui/src/components/chat/ChatSidebar.tsx").read_text(
-        encoding="utf-8"
-    )
-    session_events_source = Path("ksadk/server/web-ui/src/utils/session-events.js").read_text(
-        encoding="utf-8"
-    )
-    assert "queuedDraftRef" in source
-    assert "queuedDrafts={queuedDrafts}" in connected_composer_source
-    assert "latestRunStatusByInvocation" in session_events_source
-    assert "event.EventType !== 'run_status'" in session_events_source
-    assert "meta.running" in sidebar_source
-    assert "disabled={!input.trim() && attachments.length === 0}" in composer_source
-    assert "发送队列 · {queuedDrafts.length}" in composer_source
-    assert "当前回复完成后依次发送" in composer_source
-    assert "加入发送队列" in composer_source
-    assert "flex flex-shrink-0 flex-col gap-2" in sidebar_source
-
-
-def test_web_ui_source_threads_generation_controls_into_message_list():
-    source = Path("ksadk/server/web-ui/src/components/chat/ChatMessageList.tsx").read_text(
-        encoding="utf-8"
-    )
-    assert "onStopGeneration," in source
-    assert "onCancelRemote," in source
-
-
-def test_web_ui_source_uses_adaptive_image_preview_sizing():
-    connected_message_list_source = Path(
-        "ksadk/server/web-ui/src/components/chat/ConnectedMessageList.tsx"
-    ).read_text(encoding="utf-8")
-    preview_source = Path(
-        "ksadk/server/web-ui/src/components/chat/AttachmentPreview.tsx"
-    ).read_text(encoding="utf-8")
-    assert "naturalWidth" in preview_source
-    assert "naturalHeight" in preview_source
-    assert "setPreviewImageSize" in connected_message_list_source

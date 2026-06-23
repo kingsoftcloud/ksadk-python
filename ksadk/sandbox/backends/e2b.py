@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import time
 from typing import Any
 
 from ksadk.sandbox.base import (
@@ -9,6 +11,49 @@ from ksadk.sandbox.base import (
     SandboxSession,
     SandboxSpec,
 )
+
+_TRANSIENT_STARTUP_ERROR_NAMES = {
+    "NotFoundException",
+    "FileNotFoundException",
+    "SandboxNotFoundException",
+}
+
+
+def _startup_retry_attempts() -> int:
+    raw = os.environ.get("KSADK_SANDBOX_STARTUP_RETRY_ATTEMPTS", "6")
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 6
+
+
+def _startup_retry_delay() -> float:
+    raw = os.environ.get("KSADK_SANDBOX_STARTUP_RETRY_DELAY", "0.2")
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 0.2
+
+
+def _is_transient_startup_error(exc: Exception) -> bool:
+    return type(exc).__name__ in _TRANSIENT_STARTUP_ERROR_NAMES
+
+
+def _with_startup_retry(operation):
+    attempts = _startup_retry_attempts()
+    delay = _startup_retry_delay()
+    last_exc: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            return operation()
+        except Exception as exc:
+            if not _is_transient_startup_error(exc) or attempt >= attempts - 1:
+                raise
+            last_exc = exc
+            time.sleep(min(delay * (2**attempt), 1.0))
+    if last_exc is not None:
+        raise last_exc
+    raise SandboxError("E2B sandbox startup retry failed unexpectedly")
 
 
 class E2BSandboxSession:
@@ -92,7 +137,15 @@ class E2BSandboxBackend:
             envs=runtime_env,
             allow_internet_access=self.spec.allow_internet_access,
         )
-        session = E2BSandboxSession(sandbox)
+        session = self._wrap_sandbox(sandbox)
+        self._wait_until_ready(session)
         for item in input_files or []:
             session.write_file(item.target_path, item.source.read_bytes())
         return session
+
+    def _wrap_sandbox(self, sandbox: Any) -> E2BSandboxSession:
+        return E2BSandboxSession(sandbox)
+
+    def _wait_until_ready(self, session: E2BSandboxSession) -> None:
+        _with_startup_retry(lambda: session.run_command("true"))
+        _with_startup_retry(lambda: session.write_file("/tmp/.ksadk-sandbox-ready", ""))

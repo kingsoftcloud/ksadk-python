@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 
 import click
+from click.core import ParameterSource
 from rich.measure import Measurement
 from rich.table import Table as RichTable
 
@@ -73,15 +74,21 @@ from ksadk.cli.ui import (
 from ksadk.deployment.agent_access import get_latest_agent_access
 from ksadk.cli.model_catalog import fetch_provider_model_catalog, find_model_in_catalog
 from ksadk.conversations.model_context import normalize_model_metadata
+from ksadk.model_policy import build_runtime_model_policy_env
+from ksadk.builders.container_builder import (
+    registry_kind_label,
+    resolve_registry_credentials,
+)
 from ksadk.openclaw_gateway import OpenClawGatewayClient, OpenClawGatewayError, OpenClawGatewayRequestError
+from ksadk.terminal_exec_policy import OPENCLAW_TERMINAL_EXEC_POLICY
 from ksadk.terminal_client import run_terminal_session
 
 console = get_console()
-# 默认 OpenClaw 镜像 (KCR 个人版)
+# 默认 OpenClaw 镜像。
 DEFAULT_OPENCLAW_NAMESPACE = "agentengine-public"
 DEFAULT_OPENCLAW_REPO = "openclaw"
-DEFAULT_OPENCLAW_VERSION = "2026.5.22"
-DEFAULT_OPENCLAW_REGISTRY = "hub.kce.ksyun.com"
+DEFAULT_OPENCLAW_VERSION = "2026.6.1"
+DEFAULT_OPENCLAW_REGISTRY = "ghcr.io/kingsoftcloud"
 DEFAULT_OPENCLAW_NAME = "openclaw-gateway"
 DEFAULT_TRUSTED_PROXY_USER_HEADER = "x-forwarded-user"
 DEFAULT_TRUSTED_PROXY_CIDRS = [
@@ -245,6 +252,49 @@ OPENCLAW_RESOURCE = ResourceDescriptor(
 )
 
 
+def _option_was_explicit(ctx: click.Context | None, name: str) -> bool:
+    if ctx is None:
+        return False
+    try:
+        return ctx.get_parameter_source(name) != ParameterSource.DEFAULT
+    except Exception:
+        return False
+
+
+def _build_openclaw_update_payload(
+    *,
+    image_ref: str,
+    cpu: str,
+    memory: str,
+    env_list: list[dict[str, Any]],
+    memory_config: dict[str, Any] | None,
+    image_credential: dict[str, Any] | None,
+    storage_config: dict[str, Any] | None,
+    network_payload: dict[str, Any] | None,
+    include_env: bool,
+    include_storage: bool,
+):
+    """构建已有 OpenClaw 的最小更新请求，默认保留服务端现有配置。"""
+    update_payload: dict[str, Any] = {
+        "artifact_type": "Container",
+        "artifact_path": image_ref,
+        "resources": {"cpu": cpu, "memory": memory},
+        "auth_type": "None",
+        "inbound_identity_auth": "None",
+    }
+    if include_env:
+        update_payload["env_vars"] = env_list
+    if memory_config:
+        update_payload["memory_config"] = memory_config
+    if image_credential:
+        update_payload["image_credential"] = image_credential
+    if include_storage and storage_config:
+        update_payload["storage"] = storage_config
+    if network_payload:
+        update_payload["network"] = network_payload
+    return update_payload
+
+
 def _abort_openclaw_error(
     err: Exception,
     *,
@@ -320,6 +370,12 @@ def _resolve_env(*keys: str, default: Optional[str] = None) -> Optional[str]:
         if val is not None and str(val).strip() != "":
             return str(val).strip()
     return default
+
+
+def _openclaw_registry_env() -> dict[str, str]:
+    env = {str(k): str(v) for k, v in os.environ.items()}
+    env.update(_get_global_env())
+    return env
 
 
 def _resolve_model_base_url(cli_value: Optional[str]) -> Optional[str]:
@@ -475,7 +531,7 @@ def _strip_provider_prefix(provider_id: str, model_id: str) -> str:
 
 
 def _default_openclaw_model_inputs(provider_id: str, model_id: str) -> list[str]:
-    if str(provider_id or "").strip().lower() == "ksyun" and str(model_id or "").strip().lower() == "glm-5.1":
+    if str(provider_id or "").strip().lower() == "ksyun" and str(model_id or "").strip().lower() in {"glm-5.1", "glm-5.2"}:
         return ["text"]
     return ["text", "image"]
 
@@ -553,13 +609,28 @@ def _apply_openclaw_provider_model_catalog(
     env: Dict[str, str],
     raw_models: list[Any],
 ) -> bool:
-    if not raw_models or str(env.get("OPENCLAW_MODEL_CATALOG_JSON") or "").strip():
+    if not raw_models:
         return False
 
     provider_id = str(env.get("OPENCLAW_MODEL_PROVIDER_ID") or "ksyun").strip() or "ksyun"
     provider_api = str(env.get("OPENCLAW_MODEL_API") or "openai-completions").strip() or "openai-completions"
+    raw_catalog = str(env.get("OPENCLAW_MODEL_CATALOG_JSON") or "").strip()
     catalog: list[Dict[str, Any]] = []
+    if raw_catalog:
+        try:
+            parsed_catalog = json.loads(raw_catalog)
+        except Exception:
+            parsed_catalog = []
+        if isinstance(parsed_catalog, list):
+            catalog = [dict(item) for item in parsed_catalog if isinstance(item, dict)]
+
     seen: set[str] = set()
+    for item in catalog:
+        model_key = str(item.get("id") or item.get("name") or "").strip()
+        if model_key:
+            seen.add(model_key)
+
+    changed = False
     for raw_model in raw_models:
         if not isinstance(raw_model, dict):
             raw_model = {"id": str(raw_model or "").strip()}
@@ -571,12 +642,25 @@ def _apply_openclaw_provider_model_catalog(
         if not item:
             continue
         model_key = str(item["id"])
-        if model_key in seen:
+        existing_index = next(
+            (
+                index
+                for index, existing in enumerate(catalog)
+                if str(existing.get("id") or existing.get("name") or "").strip() == model_key
+            ),
+            None,
+        )
+        if existing_index is not None:
+            merged = {**catalog[existing_index], **item}
+            if merged != catalog[existing_index]:
+                catalog[existing_index] = merged
+                changed = True
             continue
         seen.add(model_key)
         catalog.append(item)
+        changed = True
 
-    if not catalog:
+    if not catalog or not changed:
         return False
     env["OPENCLAW_MODEL_CATALOG_JSON"] = json.dumps(
         catalog,
@@ -655,7 +739,7 @@ def _build_openclaw_env_vars(
     env = {}
     default_provider_id = "ksyun"
     default_model_api = "openai-completions"
-    default_model_base_url = "http://kspmas-internal.sdns.ksyun.com/v1"
+    default_model_base_url = "https://kspmas.ksyun.com/v1"
     exec_profile_overrides = _resolve_exec_profile_overrides(security_profile)
 
     # 模型配置：客户端只透传用户显式配置和可选的 API Key；
@@ -672,7 +756,7 @@ def _build_openclaw_env_vars(
         model_api_key
         or _resolve_env("OPENCLAW_MODEL_API_KEY", "OPENAI_API_KEY", "LLM_API_KEY", "MODEL_API_KEY")
     )
-    model = model_preference or "glm-5.1"
+    model = model_preference or "glm-5.2"
     explicit_provider_id = model_provider_id or _resolve_env("OPENCLAW_MODEL_PROVIDER_ID")
     inferred_provider_id = explicit_provider_id
     if not inferred_provider_id and model and "/" in model:
@@ -862,7 +946,8 @@ def _build_openclaw_env_vars(
         if passthrough_value:
             env[passthrough_key] = passthrough_value
 
-    return _normalize_openclaw_gateway_auth_env(env)
+    env = _normalize_openclaw_gateway_auth_env(env)
+    return build_runtime_model_policy_env(env, runtime="openclaw")
 
 
 def _normalize_allowed_origins(raw: str) -> str:
@@ -1011,14 +1096,14 @@ def _parse_image(image: Optional[str]) -> tuple[str, str, str]:
     """解析镜像地址为 (namespace, repo, version)
 
     支持格式:
-    - hub.kce.ksyun.com/ns/repo:tag → (ns, repo, tag)
+    - ghcr.io/kingsoftcloud/ns/repo:tag → (ns, repo, tag)
     - ns/repo:tag → (ns, repo, tag)
     - 无输入 → 使用默认值
     """
     if not image:
         return DEFAULT_OPENCLAW_NAMESPACE, DEFAULT_OPENCLAW_REPO, DEFAULT_OPENCLAW_VERSION
 
-    # 去掉 registry 域名前缀 (hub.kce.ksyun.com/)
+    # 去掉 registry 域名前缀。
     path = image
     if "/" in path:
         parts = path.split("/")
@@ -1096,6 +1181,7 @@ async def _fetch_bootstrap_config(region: str) -> Optional[Dict[str, Any]]:
                 client_type="cli",
                 client_version=CLI_VERSION,
                 locale=_resolve_env("OPENCLAW_UI_LOCALE", "LANG", "LC_ALL"),
+                ignore_dry_run=True,
             )
     except Exception as e:
         print_warn(f"拉取服务端默认配置失败，回退本地默认镜像: {e}")
@@ -1443,6 +1529,7 @@ async def _run_weixin_remote_cli_login(
         api_key=_openclaw_terminal_api_key(detail),
         mode="exec",
         argv=WEIXIN_REMOTE_LOGIN_ARGV,
+        exec_policy=OPENCLAW_TERMINAL_EXEC_POLICY,
     )
     if exit_code:
         raise OpenClawGatewayError(f"微信远端登录流程执行失败，exit_code={exit_code}")
@@ -3137,11 +3224,28 @@ def deploy(
         # 显式指定模型
         agentengine openclaw deploy --model-base-url https://api.example.com/v1 --model-api-key sk-xxx
         # 使用自定义镜像
-        agentengine openclaw deploy --image hub.kce.ksyun.com/myns/openclaw:v2
+        agentengine openclaw deploy --image ghcr.io/my-org/openclaw:v2
         # 透传业务自定义环境变量
         agentengine openclaw deploy --env APP_MODE=prod --env API_BASE=https://example.com
     """
     dry_run = effective_dry_run(dry_run)
+    ctx = click.get_current_context(silent=True)
+    include_env_on_update = any(
+        (
+            _option_was_explicit(ctx, "security_profile"),
+            _option_was_explicit(ctx, "model_base_url"),
+            _option_was_explicit(ctx, "model_api_key"),
+            _option_was_explicit(ctx, "default_model"),
+            bool(extra_env),
+        )
+    )
+    include_storage_on_update = any(
+        (
+            _option_was_explicit(ctx, "storage_size_gi"),
+            _option_was_explicit(ctx, "storage_mount_path"),
+            _option_was_explicit(ctx, "no_storage"),
+        )
+    )
     _build_openclaw_memory_config(
         memory_system=memory_system,
         mem0_instance_id=mem0_instance_id,
@@ -3166,6 +3270,8 @@ def deploy(
                 storage_size_gi=storage_size_gi,
                 storage_mount_path=storage_mount_path,
                 no_storage=no_storage,
+                include_env_on_update=include_env_on_update,
+                include_storage_on_update=include_storage_on_update,
                 **network_cli_kwargs(
                     enable_public_access=enable_public_access,
                     enable_vpc_access=enable_vpc_access,
@@ -3199,6 +3305,8 @@ async def _deploy_openclaw(
     storage_size_gi: int = 20,
     storage_mount_path: Optional[str] = None,
     no_storage: bool = False,
+    include_env_on_update: bool = False,
+    include_storage_on_update: bool = False,
     enable_public_access: Optional[bool] = None,
     enable_vpc_access: bool = False,
     vpc_id: Optional[str] = None,
@@ -3336,6 +3444,8 @@ async def _deploy_openclaw(
     )
     if storage_config:
         request_data["storage"] = storage_config
+    if existing_agent_id and include_storage_on_update and no_storage:
+        print_warn("更新已有 OpenClaw 时 `--no-storage` 不会删除服务端既有挂盘配置；默认保留已有配置。")
     network_payload = build_network_payload(
         enable_public_access=enable_public_access,
         enable_vpc_access=enable_vpc_access,
@@ -3343,45 +3453,53 @@ async def _deploy_openclaw(
         subnet_id=subnet_id,
         security_group_id=security_group_id,
         availability_zone=availability_zone,
+        region=region,
+        dry_run=dry_run,
     )
     if network_payload:
         request_data["network"] = network_payload
 
-    # KCR 凭证：仅在显式提供用户名+密码时注入，避免公共镜像触发无效鉴权重试。
+    # 镜像凭证：按目标镜像地址判断仓库类型，避免企业版/第三方误用 KSYUN_ACCOUNT_ID。
     image_credential = None
-    kcr_username = _resolve_env("KCR_USERNAME", "KSYUN_ACCOUNT_ID")
-    kcr_password = _resolve_env("KCR_PASSWORD")
+    kcr_username, kcr_password, registry_kind = resolve_registry_credentials(
+        image_ref,
+        environ=_openclaw_registry_env(),
+    )
     if kcr_username and kcr_password:
         image_credential = {
             "username": kcr_username,
             "password": kcr_password,
         }
         request_data["image_credential"] = image_credential
-    elif kcr_password and not kcr_username:
-        print_warn("检测到 KCR_PASSWORD 但缺少 KCR_USERNAME，已忽略镜像凭证")
+    elif kcr_password and not kcr_username and registry_kind != "personal_kcr":
+        print_warn(
+            f"检测到 KCR_PASSWORD 但缺少 KCR_USERNAME，已忽略{registry_kind_label(registry_kind)}镜像凭证；"
+            "企业版 KCR 和第三方镜像仓库必须配置 KCR_USERNAME + KCR_PASSWORD"
+        )
     elif "/agentengine-public/" not in image_ref:
-        print_warn("未配置 KCR_PASSWORD，私有镜像可能无法拉取 (公共镜像可忽略)")
-        print_info("获取方式: https://kcr.console.ksyun.com/ → 访问凭证")
+        if registry_kind == "personal_kcr":
+            print_warn("未配置个人版 KCR 镜像凭证 (KSYUN_ACCOUNT_ID/KCR_PASSWORD)，私有镜像可能无法拉取")
+        else:
+            print_warn(
+                f"未配置{registry_kind_label(registry_kind)}镜像凭证 "
+                "(KCR_USERNAME/KCR_PASSWORD)，私有镜像可能无法拉取"
+            )
 
     if dry_run:
         async with AgentEngineClient(region=region, dry_run=True) as client:
             if existing_agent_id:
-                update_payload = {
-                    "artifact_type": "Container",
-                    "artifact_path": image_ref,
-                    "resources": {"cpu": cpu, "memory": memory},
-                    "env_vars": env_list,
-                    "auth_type": "None",
-                    "inbound_identity_auth": "None",
-                }
-                if memory_config:
-                    update_payload["memory_config"] = memory_config
-                if image_credential:
-                    update_payload["image_credential"] = image_credential
-                if storage_config:
-                    update_payload["storage"] = storage_config
-                if network_payload:
-                    update_payload["network"] = network_payload
+                update_payload = _build_openclaw_update_payload(
+                    image_ref=image_ref,
+                    cpu=cpu,
+                    memory=memory,
+                    env_list=env_list,
+                    memory_config=memory_config,
+                    image_credential=image_credential,
+                    storage_config=storage_config,
+                    network_payload=network_payload,
+                    include_env=include_env_on_update,
+                    include_storage=include_storage_on_update,
+                )
                 await client.update_agent(existing_agent_id, update_payload)
             else:
                 await client.create_agent(request_data)
@@ -3396,22 +3514,18 @@ async def _deploy_openclaw(
             if existing_agent_id:
                 print_info(f"检测到本地状态: {existing_agent_id}，执行更新...")
                 try:
-                    update_payload = {
-                        "artifact_type": "Container",
-                        "artifact_path": image_ref,
-                        "resources": {"cpu": cpu, "memory": memory},
-                        "env_vars": env_list,
-                        "auth_type": "None",
-                        "inbound_identity_auth": "None",
-                    }
-                    if memory_config:
-                        update_payload["memory_config"] = memory_config
-                    if image_credential:
-                        update_payload["image_credential"] = image_credential
-                    if storage_config:
-                        update_payload["storage"] = storage_config
-                    if network_payload:
-                        update_payload["network"] = network_payload
+                    update_payload = _build_openclaw_update_payload(
+                        image_ref=image_ref,
+                        cpu=cpu,
+                        memory=memory,
+                        env_list=env_list,
+                        memory_config=memory_config,
+                        image_credential=image_credential,
+                        storage_config=storage_config,
+                        network_payload=network_payload,
+                        include_env=include_env_on_update,
+                        include_storage=include_storage_on_update,
+                    )
                     res = await client.update_agent(existing_agent_id, update_payload)
                     agent_id = existing_agent_id
                     endpoint = res.get("endpoint") or state.get("endpoint")

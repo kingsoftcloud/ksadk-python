@@ -37,6 +37,36 @@ def test_parse_list_skills_by_space_id_preserves_progressive_disclosure_fields()
     assert response.skills[0].archive_uri == "ks3://agentengine-skills/skills/sk-web/v1/web-artifacts-builder.zip"
 
 
+def test_parse_list_skills_preserves_discovery_metadata():
+    response = SkillListResponse.from_payload(
+        {
+            "Data": {
+                "SkillSpaceId": "ss-abc",
+                "Skills": [
+                    {
+                        "SkillId": "sk-report",
+                        "VersionId": "sv-report-v1",
+                        "Name": "report-writer",
+                        "Description": "Write research reports",
+                        "Aliases": ["研究报告", "deep report"],
+                        "Tags": ["writing", "research"],
+                        "Examples": ["生成一份行业研究报告"],
+                        "InputSchema": {"type": "object"},
+                        "RuntimeRequirements": {"sandbox": True},
+                    }
+                ],
+            }
+        }
+    )
+
+    skill = response.skills[0]
+    assert skill.aliases == ("研究报告", "deep report")
+    assert skill.tags == ("writing", "research")
+    assert skill.examples == ("生成一份行业研究报告",)
+    assert skill.input_schema == {"type": "object"}
+    assert skill.runtime_requirements == {"sandbox": True}
+
+
 def test_parse_list_skills_filters_inactive_by_default():
     response = SkillListResponse.from_payload(
         {

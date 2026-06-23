@@ -157,6 +157,103 @@ def test_create_runner_rejects_unknown_framework():
         create_runner(detection, "/workspace/demo")
 
 
+def test_base_runner_extracts_usage_from_langchain_message_metadata():
+    detection = _write_detection(FrameworkType.LANGCHAIN)
+    runner = _StubRunner(detection, "/workspace/demo")
+    message = SimpleNamespace(
+        content="ok",
+        usage_metadata={
+            "input_tokens": 11,
+            "output_tokens": 7,
+            "total_tokens": 18,
+            "input_token_details": {"cached": 3},
+            "output_token_details": {"reasoning": 2},
+        },
+    )
+
+    assert runner._extract_usage({"messages": [SimpleNamespace(content="older"), message]}) == {
+        "input_tokens": 11,
+        "output_tokens": 7,
+        "total_tokens": 18,
+        "input_token_details": {"cached": 3},
+        "output_token_details": {"reasoning": 2},
+    }
+
+
+def test_base_runner_extracts_usage_from_openai_token_usage():
+    detection = _write_detection(FrameworkType.LANGCHAIN)
+    runner = _StubRunner(detection, "/workspace/demo")
+    message = SimpleNamespace(
+        content="ok",
+        response_metadata={
+            "token_usage": {
+                "prompt_tokens": 8,
+                "completion_tokens": 5,
+                "total_tokens": 13,
+                "prompt_tokens_details": {"cached_tokens": 4},
+                "completion_tokens_details": {"reasoning_tokens": 2},
+            }
+        },
+    )
+
+    assert runner._extract_usage(message) == {
+        "input_tokens": 8,
+        "output_tokens": 5,
+        "total_tokens": 13,
+        "input_token_details": {"cached": 4},
+        "output_token_details": {"reasoning": 2},
+    }
+
+
+def test_base_runner_does_not_invent_usage_from_empty_metadata():
+    detection = _write_detection(FrameworkType.LANGCHAIN)
+    runner = _StubRunner(detection, "/workspace/demo")
+
+    assert runner._extract_usage(SimpleNamespace(usage_metadata={})) == {}
+    assert runner._extract_usage(SimpleNamespace(response_metadata={"token_usage": {}})) == {}
+
+
+def test_create_runner_uses_custom_runner_class(monkeypatch, tmp_path):
+    runner_class = _install_runner_module(monkeypatch, "demo_agent.runner", "CustomRunner")
+    detection = DetectionResult(
+        type=FrameworkType.LANGGRAPH,
+        name="demo-agent",
+        entry_point="agent.py",
+        package_path=str(tmp_path),
+        agent_variable="root_agent",
+        runner_class="demo_agent.runner.CustomRunner",
+        confidence=1.0,
+    )
+
+    runner = create_runner(detection, str(tmp_path))
+
+    assert isinstance(runner, runner_class)
+    assert runner.detection_result is detection
+    assert runner.project_dir == str(tmp_path)
+
+
+def test_create_runner_rejects_custom_runner_that_is_not_base_runner(monkeypatch, tmp_path):
+    fake_module = ModuleType("demo_agent.bad_runner")
+
+    class BadRunner:
+        pass
+
+    fake_module.BadRunner = BadRunner
+    monkeypatch.setitem(__import__("sys").modules, "demo_agent.bad_runner", fake_module)
+    detection = DetectionResult(
+        type=FrameworkType.LANGGRAPH,
+        name="demo-agent",
+        entry_point="agent.py",
+        package_path=str(tmp_path),
+        agent_variable="root_agent",
+        runner_class="demo_agent.bad_runner.BadRunner",
+        confidence=1.0,
+    )
+
+    with pytest.raises(TypeError, match="自定义 Runner 必须继承 BaseRunner"):
+        create_runner(detection, str(tmp_path))
+
+
 def test_runners_package_exports_only_create_runner():
     import ksadk.runners as runners
 
@@ -477,16 +574,18 @@ def test_adk_runner_load_agent_skips_skill_runtime_when_not_in_sandbox_mode(
     assert _tool_names(runner._agent.tools) == []
 
 
-def test_adk_runner_build_adk_content_supports_inline_and_reference_attachments(tmp_path):
+def test_adk_runner_build_adk_content_supports_inline_and_reference_attachments(tmp_path, monkeypatch):
     from ksadk.runners.adk_runner import ADKRunner
 
+    monkeypatch.setenv("AGENTENGINE_UI_DIR", str(tmp_path / ".agentengine" / "ui"))
     detection = SimpleNamespace(
         entry_point="agent.py",
         agent_variable="root_agent",
         name="demo-agent",
     )
     runner = ADKRunner(detection, str(tmp_path))
-    archive_path = tmp_path / "bundle.zip"
+    archive_path = tmp_path / ".agentengine" / "ui" / "files" / "abc123.zip"
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
     archive_path.write_bytes(b"PK\x03\x04demo-zip")
 
     content = runner._build_adk_content(
@@ -626,4 +725,106 @@ async def test_adk_runner_invoke_forwards_attachment_results_via_state_delta(tmp
         "current_attachments": [],
         "current_attachment_results": [{"display_name": "resume.pdf", "kind": "document"}],
         "has_current_files": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_adk_runner_invoke_extracts_usage_from_final_event(tmp_path, monkeypatch):
+    from google.genai import types
+    from ksadk.runners.adk_runner import ADKRunner
+
+    detection = SimpleNamespace(
+        entry_point="agent.py",
+        agent_variable="root_agent",
+        name="demo-agent",
+    )
+    runner = ADKRunner(detection, str(tmp_path))
+    runner._agent = SimpleNamespace(name="demo-agent")
+
+    class _FakeRunner:
+        async def run_async(self, *, session_id, user_id, new_message, state_delta=None, run_config=None):
+            del session_id, user_id, new_message, state_delta, run_config
+            yield SimpleNamespace(
+                usage_metadata={
+                    "input_tokens": 12,
+                    "output_tokens": 5,
+                    "total_tokens": 17,
+                    "input_token_details": {},
+                    "output_token_details": {"reasoning": 2},
+                },
+                content=SimpleNamespace(parts=[types.Part(text="ok")]),
+            )
+
+    async def _fake_ensure_session(external_session_id=None):
+        del external_session_id
+        return "adk-session-usage"
+
+    monkeypatch.setattr(runner, "_ensure_session", _fake_ensure_session)
+    monkeypatch.setattr(runner, "_prepare_trace_metadata", lambda session_id: ("", [], "", "demo-agent"))
+    runner._runner = _FakeRunner()
+
+    result = await runner.invoke({"session_id": "external-session", "input": "hello"})
+
+    assert result["output"] == "ok"
+    assert result["usage"] == {
+        "input_tokens": 12,
+        "output_tokens": 5,
+        "total_tokens": 17,
+        "input_token_details": {},
+        "output_token_details": {"reasoning": 2},
+    }
+
+
+@pytest.mark.asyncio
+async def test_adk_runner_stream_extracts_usage_details_from_final_event(tmp_path, monkeypatch):
+    from google.genai import types
+    from ksadk.runners.adk_runner import ADKRunner
+
+    detection = SimpleNamespace(
+        entry_point="agent.py",
+        agent_variable="root_agent",
+        name="demo-agent",
+    )
+    runner = ADKRunner(detection, str(tmp_path))
+    runner._agent = SimpleNamespace(name="demo-agent")
+
+    class _FakeRunner:
+        async def run_async(self, *, session_id, user_id, new_message, state_delta=None, run_config=None):
+            del session_id, user_id, new_message, state_delta, run_config
+            yield SimpleNamespace(
+                partial=True,
+                content=SimpleNamespace(parts=[types.Part(text="hello")]),
+            )
+            yield SimpleNamespace(
+                usage_metadata={
+                    "prompt_token_count": 12,
+                    "candidates_token_count": 5,
+                    "total_token_count": 17,
+                    "cached_content_token_count": 4,
+                    "tool_use_prompt_token_count": 3,
+                    "thoughts_token_count": 2,
+                },
+                content=SimpleNamespace(parts=[]),
+            )
+
+    async def _fake_ensure_session(external_session_id=None):
+        del external_session_id
+        return "adk-session-stream-usage"
+
+    monkeypatch.setattr(runner, "_ensure_session", _fake_ensure_session)
+    monkeypatch.setattr(runner, "_prepare_trace_metadata", lambda session_id: ("", [], "", "demo-agent"))
+    runner._runner = _FakeRunner()
+
+    chunks = [chunk async for chunk in runner.stream({"session_id": "external-session", "input": "hello"})]
+
+    assert chunks[-1] == {
+        "output": "hello",
+        "type": "final",
+        "usage": {
+            "input_tokens": 12,
+            "output_tokens": 5,
+            "total_tokens": 17,
+            "input_token_details": {"cached": 4, "tool_use": 3},
+            "output_token_details": {"reasoning": 2},
+        },
     }

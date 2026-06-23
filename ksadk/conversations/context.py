@@ -15,6 +15,8 @@ CANONICAL_EVENT_TYPES = {
     "attachment_ref",
     "reasoning",
     "run_status",
+    "run_checkpoint",
+    "run_resume",
     "context_checkpoint",
     "compaction_boundary",
 }
@@ -102,6 +104,10 @@ def canonical_event_type(
         return "compaction_boundary"
     if raw in {"status", "run_status"}:
         return "run_status"
+    if raw in {"run_checkpoint", "runtime_checkpoint"}:
+        return "run_checkpoint"
+    if raw in {"run_resume", "runtime_resume"}:
+        return "run_resume"
     if raw in {"assistant", "model"} or role in {"assistant", "model"} or author in {"assistant", "model"}:
         return "assistant_message"
     return "user_message"

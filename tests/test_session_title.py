@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from ksadk.conversations.session_title import SessionTitleClient
+from ksadk.conversations.session_title import (
+    SessionTitleClient,
+    build_heuristic_title,
+    build_session_title_messages,
+)
 
 
 @pytest.mark.asyncio
@@ -49,3 +53,26 @@ async def test_session_title_client_disables_thinking_for_fast_title_generation(
     assert "reasoning_effort" not in captured_payload
     assert captured_payload["extra_body"]["max_reasoning_tokens"] == 0
     assert "thinking" not in captured_payload["extra_body"]
+
+
+def test_session_title_helpers_strip_inline_think_markup():
+    title = build_heuristic_title(
+        first_prompt="你好，请介绍一下你自己",
+        assistant_text="<think>先判断身份。</think>我是招聘助手，可以筛选简历。",
+    )
+    messages = build_session_title_messages(
+        first_prompt="你好，请介绍一下你自己",
+        assistant_text="<think>先判断身份。</think>我是招聘助手，可以筛选简历。",
+    )
+
+    assert title == "招聘助手能力"
+    assert "<think" not in messages[-1]["content"]
+
+
+def test_session_title_helpers_replace_file_markup_without_regex_backtracking():
+    title = build_heuristic_title(
+        first_prompt="[[[[[[[[[[附件]]]]]]]]]] 请分析一下",
+        assistant_text="",
+    )
+
+    assert title == "附件分析"

@@ -81,14 +81,14 @@
 
 - 未经用户明确批准，不得执行发布动作，包括 `make release`、`make publish`、`twine upload`、PyPI/TestPyPI、正式 release 或公开版本号变更。
 - 未经用户明确批准，不得改 `pyproject.toml` / `ksadk/version.py` 版本号，不得新增或改写 CHANGELOG 发版条目。
-- 用户批准发布后，优先使用仓库现有 `make publish` / `make publish-test`，不绕过 Makefile 手写上传命令。
+- 用户批准发布后，正式 PyPI 发布优先走 GitHub Release / `workflow_dispatch` 触发的 Trusted Publishing；本地 `make publish` / `make publish-test` 仅作为明确批准的应急路径，不绕过 Makefile 手写上传命令。
 - 不得在同一轮协作中擅自连续发布多个版本承载中间修复。
 - `master` 是内部开发主干；GitHub `main` 是公开主干。不得直接 `merge master -> main`，公开同步必须走 `release/public-x.y.z` 或等价候选分支。
 - 公开候选必须先推内部 ezone 审核，再推 GitHub、发 GitHub Release、上传 PyPI 或发布 Pages。
 - 公开发布前必须运行 `make public-preflight`。如果只做发布状态核对，运行 `make public-publish-check`。失败时不得发布。
 - 每次公开 GitHub Release 对应的公开提交都必须打 tag 留痕，优先使用 `make public-release-tag V=x.y.z`。
 - 公开分支长期工作树可以保留，但只能作为公开同步/发布工作区，不做日常内部开发。
-- 不得把 `.pypirc`、私有 registry 凭证、kubeconfig、真实 API Key 或临时 token 放入仓库根目录；PyPI 凭证只允许来自 `~/.pypirc`、环境变量或 CI Secret。
+- 不得把 `.pypirc`、私有 registry 凭证、kubeconfig、真实 API Key 或临时 token 放入仓库根目录；正式 PyPI 发布默认使用 Trusted Publishing，只有应急本地发布才允许 PyPI 凭证来自 `~/.pypirc`、环境变量或 CI Secret。
 - 完整公开同步流程见 `docs/public-release-workflow.md`；该文档优先于口头约定。
 
 发布前必须检查：

@@ -7,6 +7,14 @@ from ksadk.skills.loader import LocalSkill
 from ksadk.skills.models import SkillRef
 from ksadk.skills.runtime.base import SkillRuntimeBackend, normalize_skill_names
 from ksadk.skills.service_client import SkillServiceClient
+from ksadk.skills.service_env import (
+    parse_skill_space_ids,
+    public_skill_space_ids,
+    resolve_skill_service_url,
+    should_resolve_child_skill_service_url,
+    skill_space_ids as configured_skill_space_ids,
+    user_skill_space_ids,
+)
 
 RUNTIME_AGENT_ENV_NAMES = (
     "KSADK_SKILL_SERVICE_URL",
@@ -24,33 +32,25 @@ RUNTIME_AGENT_ENV_NAMES = (
     "KSADK_PUBLIC_SKILL_ALLOWLIST",
 )
 
+_SKILL_SERVICE_SECRET_FALLBACKS = {
+    "KSADK_SKILL_SERVICE_ACCESS_KEY": ("KSYUN_ACCESS_KEY", "KS3_ACCESS_KEY"),
+    "KSADK_SKILL_SERVICE_SECRET_KEY": ("KSYUN_SECRET_KEY", "KS3_SECRET_KEY"),
+}
+
 
 def resolve_skill_space_ids() -> list[str]:
-    user_raw = os.environ.get("KSADK_SKILL_SPACE_IDS") or os.environ.get("SKILL_SPACE_ID") or ""
-    public_raw = os.environ.get("KSADK_PUBLIC_SKILL_SPACE_IDS") or ""
-    return _parse_skill_space_ids(user_raw, public_raw)
+    return configured_skill_space_ids()
 
 
 def resolve_user_skill_space_ids() -> list[str]:
-    return _parse_skill_space_ids(
-        os.environ.get("KSADK_SKILL_SPACE_IDS") or os.environ.get("SKILL_SPACE_ID") or ""
-    )
+    return user_skill_space_ids()
 
 
 def _parse_skill_space_ids(*raw_values: str) -> list[str]:
-    spaces: list[str] = []
-    seen: set[str] = set()
-    for raw in raw_values:
-        for part in raw.split(","):
-            space_id = part.strip()
-            if not space_id or space_id in seen:
-                continue
-            seen.add(space_id)
-            spaces.append(space_id)
-    return spaces
+    return parse_skill_space_ids(*raw_values)
 
 
-def runtime_agent_env_from_process() -> dict[str, str]:
+def runtime_agent_env_from_process(skill_space_ids: list[str] | None = None) -> dict[str, str]:
     env = {
         name: value
         for name in RUNTIME_AGENT_ENV_NAMES
@@ -62,6 +62,20 @@ def runtime_agent_env_from_process() -> dict[str, str]:
         env["KSADK_SKILL_SERVICE_ACCOUNT_ID"] = account_id
     if "KSADK_SKILL_SERVICE_REGION" not in env and (region := os.environ.get("KSYUN_REGION")):
         env["KSADK_SKILL_SERVICE_REGION"] = region
+    has_spaces = bool(skill_space_ids) or bool(resolve_skill_space_ids())
+    if has_spaces:
+        for target, sources in _SKILL_SERVICE_SECRET_FALLBACKS.items():
+            if target in env:
+                continue
+            for source in sources:
+                value = os.environ.get(source, "").strip()
+                if value:
+                    env[target] = value
+                    break
+    if has_spaces and should_resolve_child_skill_service_url() and "KSADK_SKILL_SERVICE_URL" not in env:
+        service_url = resolve_skill_service_url(require_spaces=False)
+        if service_url:
+            env["KSADK_SKILL_SERVICE_URL"] = service_url
     return env
 
 
@@ -82,7 +96,7 @@ def build_execute_skills_tool(
             skill_space_ids=spaces,
             skill_names=normalize_skill_names(skill_names),
             session_id=default_session_id,
-            env=runtime_agent_env_from_process(),
+            env=runtime_agent_env_from_process(spaces),
             timeout=int(os.environ.get("KSADK_SKILL_RUNTIME_TIMEOUT", "900")),
         )
         return result.to_dict()
@@ -92,14 +106,14 @@ def build_execute_skills_tool(
 
 
 def load_remote_skill_manifests(skill_space_ids: list[str] | None = None) -> list[dict[str, str]]:
-    service_url = os.environ.get("KSADK_SKILL_SERVICE_URL", "").strip()
-    if not service_url:
-        return []
-
     spaces = list(skill_space_ids or resolve_skill_space_ids())
-    public_spaces = set(_parse_skill_space_ids(os.environ.get("KSADK_PUBLIC_SKILL_SPACE_IDS") or ""))
+    public_spaces = set(public_skill_space_ids())
     user_spaces = [space_id for space_id in spaces if space_id not in public_spaces]
     if not user_spaces and not public_spaces:
+        return []
+
+    service_url = resolve_skill_service_url(require_spaces=True)
+    if not service_url:
         return []
 
     client = SkillServiceClient(
@@ -161,12 +175,17 @@ def build_skill_manifest_instruction(manifests: list[dict[str, str]]) -> str:
 
 
 def _skill_manifest_item(skill: SkillRef, *, space_id: str) -> dict[str, str]:
-    return {
+    item = {
         "name": str(skill.name or "").strip(),
         "description": _single_line(skill.description),
         "version": str(skill.version or "").strip(),
         "space_id": str(space_id or "").strip(),
     }
+    if skill.aliases:
+        item["aliases"] = _single_line(", ".join(skill.aliases))
+    if skill.tags:
+        item["tags"] = _single_line(", ".join(skill.tags))
+    return item
 
 
 def _single_line(value: str, *, limit: int = 240) -> str:

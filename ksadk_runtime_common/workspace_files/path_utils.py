@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import os
 import posixpath
+import re
 from collections.abc import Callable
 from pathlib import Path
 
 from fastapi import HTTPException
 
 from ksadk_runtime_common.workspace_files.constants import WORKSPACE_PATH_ESCAPE_DETAIL
+
+_SAFE_WORKSPACE_SEGMENT_RE = re.compile(r"^[^/\x00]+$")
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -52,7 +55,16 @@ def _resolve_workspace_target(
 ) -> tuple[str, Path]:
     """Resolve a path within the workspace root with an escape check."""
     normalized = _normalize_workspace_path(raw_path, allow_root=allow_root)
-    target = root if normalized == "." else (root / Path(normalized))
+    if normalized == ".":
+        target = root
+    else:
+        segments = tuple(part for part in normalized.split("/") if part)
+        if not segments or any(
+            part in {".", ".."} or not _SAFE_WORKSPACE_SEGMENT_RE.fullmatch(part)
+            for part in segments
+        ):
+            raise HTTPException(status_code=400, detail=WORKSPACE_PATH_ESCAPE_DETAIL)
+        target = root.joinpath(*segments)
     resolved_target = target.resolve(strict=False)
     if resolved_target != root and root not in resolved_target.parents:
         raise HTTPException(status_code=400, detail=WORKSPACE_PATH_ESCAPE_DETAIL)

@@ -11,11 +11,11 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, Optional
+from typing import Any, AsyncIterator, Dict, Mapping, Optional
 
 from opentelemetry import trace
 
-from ksadk.conversations.attachments import classify_attachment_kind
+from ksadk.conversations.attachments import classify_attachment_kind, read_attachment_uri_bytes
 from ksadk.conversations.model_context import supports_native_image_input
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.sessions.continuity import ADKSessionAdapter
@@ -107,7 +107,8 @@ class ADKRunner(BaseRunner):
 
         环境变量:
             KSADK_ADK_SESSION_BACKEND / PATH / URL: ADK 专用 session 配置
-            KSADK_STM_BACKEND / PATH / URL: 平台级 STM 配置
+            KSADK_STM_BACKEND / PATH / URL: 旧平台级 STM 配置
+            KSADK_SESSION_BACKEND / DSN: 统一 session 配置 fallback
         """
         configured_names = (
             "KSADK_ADK_SESSION_BACKEND",
@@ -118,6 +119,8 @@ class ADKRunner(BaseRunner):
             "KSADK_STM_URL",
             "KSADK_STM_DB_PATH",
             "KSADK_STM_DB_URL",
+            "KSADK_SESSION_BACKEND",
+            "KSADK_SESSION_DSN",
         )
         if not any(str(os.environ.get(name, "")).strip() for name in configured_names):
             return None
@@ -761,12 +764,11 @@ class ADKRunner(BaseRunner):
                     logger.warning(f"Failed to decode inline attachment {att.get('display_name', 'uploaded_file')}: {e}")
 
             if data is None:
-                storage_path = att.get("storage_path")
-                if storage_path:
-                    try:
-                        data = Path(str(storage_path)).read_bytes()
-                    except Exception as e:
-                        logger.warning(f"Failed to load stored attachment {storage_path}: {e}")
+                file_uri = att.get("file_uri")
+                if file_uri:
+                    data = read_attachment_uri_bytes(file_uri)
+                    if data is None:
+                        logger.warning("Failed to load stored attachment %s", file_uri)
 
             if data is None:
                 file_uri = att.get("file_uri", "")
@@ -811,6 +813,81 @@ class ADKRunner(BaseRunner):
                 state_delta[key] = input_data.get(key)
         return state_delta
 
+    @staticmethod
+    def _normalize_usage_metadata(usage_metadata: Any) -> dict[str, Any]:
+        if usage_metadata is None:
+            return {}
+        if hasattr(usage_metadata, "model_dump"):
+            try:
+                usage_metadata = usage_metadata.model_dump(exclude_none=True)
+            except Exception:
+                usage_metadata = None
+        elif hasattr(usage_metadata, "dict"):
+            try:
+                usage_metadata = usage_metadata.dict()
+            except Exception:
+                usage_metadata = None
+        if not isinstance(usage_metadata, Mapping):
+            return {}
+
+        reasoning_tokens = usage_metadata.get("thoughts_token_count")
+        output_token_details = {}
+        if reasoning_tokens is not None:
+            try:
+                output_token_details["reasoning"] = int(reasoning_tokens)
+            except (TypeError, ValueError):
+                pass
+
+        input_token_details: dict[str, Any] = {}
+        cached_tokens = usage_metadata.get("cached_content_token_count")
+        if cached_tokens is not None:
+            try:
+                input_token_details["cached"] = int(cached_tokens)
+            except (TypeError, ValueError):
+                pass
+        tool_use_tokens = usage_metadata.get("tool_use_prompt_token_count")
+        if tool_use_tokens is not None:
+            try:
+                input_token_details["tool_use"] = int(tool_use_tokens)
+            except (TypeError, ValueError):
+                pass
+
+        if "input_tokens" in usage_metadata or "output_tokens" in usage_metadata:
+            input_tokens = int(usage_metadata.get("input_tokens") or 0)
+            output_tokens = int(usage_metadata.get("output_tokens") or 0)
+            total_tokens = int(usage_metadata.get("total_tokens") or (input_tokens + output_tokens))
+            direct_input_details = usage_metadata.get("input_token_details")
+            if isinstance(direct_input_details, Mapping):
+                input_token_details.update(dict(direct_input_details))
+            normalized = {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": total_tokens,
+                "input_token_details": input_token_details,
+                "output_token_details": output_token_details,
+            }
+            direct_output_details = usage_metadata.get("output_token_details")
+            if isinstance(direct_output_details, Mapping):
+                normalized["output_token_details"] = dict(direct_output_details)
+            return normalized
+
+        input_tokens = int(usage_metadata.get("prompt_token_count") or 0)
+        output_tokens = int(usage_metadata.get("candidates_token_count") or 0)
+        total_tokens = int(usage_metadata.get("total_token_count") or (input_tokens + output_tokens))
+        if not (input_tokens or output_tokens or total_tokens or input_token_details or output_token_details):
+            return {}
+        return {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
+            "input_token_details": input_token_details,
+            "output_token_details": output_token_details,
+        }
+
+    @classmethod
+    def _extract_event_usage(cls, event: Any) -> dict[str, Any]:
+        return cls._normalize_usage_metadata(getattr(event, "usage_metadata", None))
+
     async def invoke(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """调用 ADK Agent"""
         from google.genai import types
@@ -853,6 +930,7 @@ class ADKRunner(BaseRunner):
             final_response = ""
 
             events_list = []
+            usage: dict[str, Any] = {}
             async for event in self._runner.run_async(
                 session_id=session_id,
                 user_id="ksadk_user",
@@ -860,6 +938,9 @@ class ADKRunner(BaseRunner):
                 state_delta=state_delta or None,
             ):
                 events_list.append(event)
+                event_usage = self._extract_event_usage(event)
+                if event_usage:
+                    usage = event_usage
                 if hasattr(event, "content") and event.content:
                     if hasattr(event.content, "parts"):
                         for part in event.content.parts:
@@ -871,7 +952,10 @@ class ADKRunner(BaseRunner):
             # Set output.value for Langfuse top-level output display
             span.set_attribute("output.value", final_response[:5000] if final_response else "")
             span.set_attribute("agent.output", final_response[:500] if final_response else "")
-            return {"output": final_response, "events": events_list}
+            result = {"output": final_response, "events": events_list}
+            if usage:
+                result["usage"] = usage
+            return result
 
     async def stream(self, input_data: Dict[str, Any]) -> AsyncIterator[Dict[str, Any]]:
         """流式调用 ADK Agent
@@ -916,6 +1000,7 @@ class ADKRunner(BaseRunner):
             state_delta = self._build_state_delta(input_data)
 
             accumulated_text = ""
+            usage: dict[str, Any] = {}
 
             # 使用 StreamingMode.SSE 启用真正的流式输出
             run_config = RunConfig(streaming_mode=StreamingMode.SSE)
@@ -927,6 +1012,9 @@ class ADKRunner(BaseRunner):
                 state_delta=state_delta or None,
                 run_config=run_config,
             ):
+                event_usage = self._extract_event_usage(event)
+                if event_usage:
+                    usage = event_usage
                 # Only yield text delta if event is partial to avoid duplication of final summary
                 if hasattr(event, "content") and event.content and getattr(event, "partial", False):
                     if hasattr(event.content, "parts"):
@@ -954,3 +1042,7 @@ class ADKRunner(BaseRunner):
             # Set output.value for Langfuse top-level output display
             span.set_attribute("output.value", accumulated_text[:5000] if accumulated_text else "")
             span.set_attribute("agent.output", accumulated_text[:500])
+            final_chunk: dict[str, Any] = {"output": accumulated_text, "type": "final"}
+            if usage:
+                final_chunk["usage"] = usage
+            yield final_chunk

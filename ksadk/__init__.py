@@ -1,7 +1,8 @@
 """
-KsADK: Kingsoft Cloud Agent Development Kit
+KsADK: Agent Runtime Platform for AI agents.
 
-支持 LangChain / LangGraph / Google ADK 多框架的本地运行与云端部署
+Build with ADK, LangGraph, LangChain or DeepAgents; run, debug, deploy and
+observe through one runtime experience.
 """
 
 from ksadk.version import VERSION

@@ -23,6 +23,7 @@ import json
 import logging
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit, urlunsplit
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +119,7 @@ KSPMAS_INTERNAL_URL = f"http://{KSPMAS_INTERNAL_HOST}/v1"
 KSPMAS_PUBLIC_URL = "https://kspmas.ksyun.com/v1"
 
 # 默认模型
-DEFAULT_MODEL_NAME = "glm-5.1"
+DEFAULT_MODEL_NAME = "glm-5.2"
 
 
 def optimize_kspmas_url(url: str) -> str:
@@ -130,24 +131,21 @@ def optimize_kspmas_url(url: str) -> str:
     if not url:
         return url
         
-    # 仅优化 KSPMAS 域名
-    if "kspmas.ksyun.com" in url:
-        # 检测是否应该使用内网
-        use_internal = False
-        
-        # 1. 托管 / 集群环境优先使用内网
-        if _is_internal_runtime_env():
-            use_internal = True
-        # 2. 自动检测内网可达性
-        elif check_endpoint_reachable(KSPMAS_INTERNAL_HOST):
-            use_internal = True
-            
-        if use_internal:
-            # 替换域名 (保持协议和路径不变)
-            # https://kspmas.ksyun.com/v1 -> http://kspmas-internal.sdns.ksyun.com/v1
-            # 注意: 内网通常是 http
-            return url.replace("https://kspmas.ksyun.com", f"http://{KSPMAS_INTERNAL_HOST}") \
-                      .replace("http://kspmas.ksyun.com", f"http://{KSPMAS_INTERNAL_HOST}")
+    parsed = urlsplit(url)
+    if parsed.hostname != "kspmas.ksyun.com":
+        return url
+
+    use_internal = False
+    if _is_internal_runtime_env():
+        use_internal = True
+    elif check_endpoint_reachable(KSPMAS_INTERNAL_HOST):
+        use_internal = True
+
+    if use_internal:
+        netloc = KSPMAS_INTERNAL_HOST
+        if parsed.port:
+            netloc = f"{netloc}:{parsed.port}"
+        return urlunsplit(("http", netloc, parsed.path, parsed.query, parsed.fragment))
                       
     return url
 
@@ -196,7 +194,7 @@ class ModelConfig:
     
     默认值:
         OPENAI_BASE_URL: 自动检测内网/外网，使用金山云模型服务
-        MODEL_NAME: glm-5.1
+        MODEL_NAME: glm-5.2
     """
     
     @property
@@ -231,7 +229,7 @@ class ModelConfig:
     def model_name(self) -> str:
         """获取模型名称
         
-        如果未配置，默认使用 glm-5.1。
+        如果未配置，默认使用 glm-5.2。
         """
         configured = _get_env(
             "OPENAI_MODEL_NAME",     # OpenAI 格式 (优先)

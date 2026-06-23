@@ -268,14 +268,14 @@ class TestSdkLTMBackend:
         call_args = mock_client.call.call_args
         assert call_args[0][0] == "CreateMemorySdk"
         params = call_args[0][1]
-        assert params["Namespace"] == "test_ns"
-        assert params["UserId"] == "u1"
+        assert params["MemoryCollectionId"] == "test_ns"
+        assert params["AgentUserId"] == "u1"
         assert params["AgentId"] == "agent-1"
         assert params["SessionId"] == "sess-1"
         assert params["SceneId"] == "_sys_general"
         assert params["DataType"] == "conversation"
-        assert "MemoryCollectionId" not in params
-        assert "AgentUserId" not in params
+        assert "Namespace" not in params
+        assert "UserId" not in params
 
     def test_save_data_conversation_format(self):
         """验证 Data 字段为 {"Conversation": [...]} 结构"""
@@ -370,13 +370,13 @@ class TestSdkLTMBackend:
         call_args = mock_client.call.call_args
         assert call_args[0][0] == "QueryMemorySdk"
         params = call_args[0][1]
-        assert params["Namespace"] == "test_ns"
-        assert params["UserId"] == "u1"
+        assert params["MemoryCollectionId"] == "test_ns"
+        assert params["AgentUserId"] == "u1"
         assert params["SceneId"] == "_sys_general"
         assert params["Query"] == "query"
         assert params["Limit"] == 3
-        assert "MemoryCollectionId" not in params
-        assert "AgentUserId" not in params
+        assert "Namespace" not in params
+        assert "UserId" not in params
 
     def test_search_exception_returns_empty(self):
         backend = self._make_backend()
@@ -385,6 +385,33 @@ class TestSdkLTMBackend:
 
         with patch.object(backend, '_get_client', return_value=mock_client):
             assert backend.search_memory("u1", "query") == []
+
+    def test_get_session_status_calls_list_sessions(self):
+        backend = self._make_backend()
+        mock_client = MagicMock()
+        mock_client.call.return_value = json.dumps({
+            "Code": 200,
+            "Message": "success",
+            "Data": {
+                "Total": 1,
+                "Items": [
+                    {"SessionId": "sess-1", "State": 0, "DataType": "conversation"},
+                ],
+            },
+        })
+
+        with patch.object(backend, '_get_client', return_value=mock_client):
+            status = backend.get_session_status(user_id="u1", session_id="sess-1")
+
+        assert status == {"SessionId": "sess-1", "State": 0, "DataType": "conversation"}
+        call_args = mock_client.call.call_args
+        assert call_args[0][0] == "ListSessions"
+        assert call_args[0][1] == {
+            "MemoryCollectionId": "test_ns",
+            "AgentUserId": "u1",
+            "Page": 1,
+            "PageSize": 20,
+        }
 
     def test_namespace_fallback_to_index(self):
         backend = self._make_backend(namespace="", index="fallback_idx")
@@ -395,7 +422,7 @@ class TestSdkLTMBackend:
             backend.search_memory("u1", "query")
 
         params = mock_client.call.call_args[0][1]
-        assert params["Namespace"] == "fallback_idx"
+        assert params["MemoryCollectionId"] == "fallback_idx"
 
     def test_optional_search_params(self):
         backend = self._make_backend(scene_id="scene_1")
@@ -429,6 +456,37 @@ class TestSdkLTMBackend:
             "Data": [{"Content": "content_1"}, {"Text": "text_1"}]
         })
         assert result == ["content_1", "text_1"]
+
+    def test_parse_response_data_nested_empty_memories_is_empty(self):
+        backend = self._make_backend()
+        result = backend._parse_query_response({
+            "Code": 200,
+            "Message": "success",
+            "Data": [{"Memories": []}],
+        })
+        assert result == []
+
+    def test_parse_response_data_nested_aicp_memory_field(self):
+        backend = self._make_backend()
+        result = backend._parse_query_response({
+            "Code": 200,
+            "Message": "success",
+            "Data": [{
+                "Memories": [
+                    {
+                        "MemoryId": "mem-1",
+                        "Memory": "用户张三喜欢喝桃汁。",
+                        "Score": 0.99,
+                    },
+                    {
+                        "MemoryId": "mem-2",
+                        "Memory": "用户张三不喜欢喝咖啡。",
+                        "Score": 0.98,
+                    },
+                ],
+            }],
+        })
+        assert result == ["用户张三喜欢喝桃汁。", "用户张三不喜欢喝咖啡。"]
 
     def test_parse_response_results_format(self):
         backend = self._make_backend()
@@ -842,12 +900,11 @@ class TestShortTermMemory:
         stm = ShortTermMemory(backend="local")
         assert isinstance(stm.session_service, InMemorySessionService)
 
-    def test_init_database_no_url_fallback(self):
+    def test_init_database_no_url_raises(self):
         from ksadk.memory.adk.short_term_memory import ShortTermMemory
-        from google.adk.sessions import InMemorySessionService
 
-        stm = ShortTermMemory(backend="database", db_url="")
-        assert isinstance(stm.session_service, InMemorySessionService)
+        with pytest.raises(ValueError, match="KSADK_SESSION_DSN"):
+            ShortTermMemory(backend="database", db_url="")
 
     def test_init_unknown_backend_raises(self):
         """Pydantic Literal validation rejects unknown backends"""

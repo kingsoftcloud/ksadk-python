@@ -21,6 +21,7 @@ import uvicorn
 import websockets
 
 from ksadk.runners.base_runner import BaseRunner
+from ksadk.sessions.base import SessionEvent
 from ksadk.sessions.in_memory import InMemorySessionService
 
 
@@ -374,6 +375,56 @@ async def test_real_http_responses_image_and_file_reach_runner_canonical_fields(
 
 
 @pytest.mark.asyncio
+async def test_real_http_responses_approval_resume_executes_builtin_tool(real_http_runtime):
+    base_url, runner, service = real_http_runtime
+    await service.create_session(agent_id="demo-agent", user_id="user", session_id="sess-e2e-approval")
+    await service.append_event(
+        "sess-e2e-approval",
+        SessionEvent(
+            author="demo-agent",
+            event_type="approval_request",
+            content={"role": "model", "parts": [{"text": "confirm write"}]},
+            metadata={
+                "interrupt_info": {
+                    "approval_request_id": "appr_e2e",
+                    "tool_name": "write_workspace_file",
+                    "arguments": {"path": "e2e.txt", "content": "approved"},
+                    "run_id": "call_e2e",
+                    "server_label": "ksadk",
+                }
+            },
+            invocation_id="inv-approval",
+        ),
+    )
+
+    async with httpx.AsyncClient(base_url=base_url, timeout=10, trust_env=False) as client:
+        response = await client.post(
+            "/v1/responses",
+            json={
+                "session_id": "sess-e2e-approval",
+                "input": [
+                    {
+                        "type": "mcp_approval_response",
+                        "approval_request_id": "appr_e2e",
+                        "approve": True,
+                    }
+                ],
+                "stream": False,
+            },
+        )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["status"] == "completed"
+    assert runner.calls[-1]["resume"] is True
+    assert runner.calls[-1]["input"]["type"] == "function_call_output"
+    assert runner.calls[-1]["input"]["call_id"] == "call_e2e"
+    output = runner.calls[-1]["input"]["output"]
+    assert output["ok"] is True
+    assert Path(output["absolute_path"]).read_text(encoding="utf-8") == "approved"
+
+
+@pytest.mark.asyncio
 async def test_real_http_chat_completions_keeps_chat_response_and_converts_image_block(
     real_http_runtime,
 ):
@@ -472,7 +523,25 @@ async def test_real_http_run_agent_uses_responses_input_and_uploaded_file_refere
 
     session_id = payload["Data"]["session_id"]
     events = await service.get_events(session_id)
-    assert events[0].content["parts"][0]["text"] == "请总结上传文件\n\n## 附件\n- report.txt"
+    assert events[0].content["parts"] == [
+        {"type": "input_text", "text": "请总结上传文件"},
+        {
+            "type": "input_file",
+            "filename": "report.txt",
+            "file_url": uploaded["fileUri"],
+        },
+    ]
+    assert events[0].metadata["attachments"] == [
+        {
+            "display_name": "report.txt",
+            "file_uri": uploaded["fileUri"],
+            "is_text": True,
+            "mime_type": "text/plain",
+            "size_bytes": len(attachment_bytes),
+            "transport": "reference",
+        }
+    ]
+    assert events[0].metadata["attachment_results"][0]["text_excerpt"] == "真实上传文件内容"
 
 
 @pytest.mark.asyncio

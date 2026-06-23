@@ -285,6 +285,45 @@ def test_deploy_cli_network_options_override_config(tmp_path: Path, monkeypatch)
     assert provider.last_target.network.availability_zone == "cn-beijing-6b"
 
 
+def test_deploy_cli_forwards_explicit_env_and_env_file(tmp_path: Path, monkeypatch):
+    provider = _FakeProvider()
+    runner = CliRunner()
+    env_file = tmp_path / "runtime-env.json"
+    env_file.write_text(
+        '{"APP_MODE":"file","FILE_ONLY":"1","OVERRIDE_ME":"from-file"}',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("ksadk.detection.FrameworkDetector", lambda *_args, **_kwargs: type("D", (), {"detect": lambda self: _FakeDetectionResult()})())
+    monkeypatch.setattr("ksadk.cli.cmd_deploy._load_config", lambda *_args, **_kwargs: {"name": "demo-agent"})
+    monkeypatch.setattr("ksadk.deployment.DeploymentManager.get_provider", lambda *_args, **_kwargs: provider)
+
+    result = runner.invoke(
+        cmd_deploy.deploy,
+        [
+            str(tmp_path),
+            "--ks3-path",
+            "ks3://bucket/agents/demo-agent/code_manual.zip",
+            "--env-file",
+            str(env_file),
+            "--env",
+            "OVERRIDE_ME=from-cli",
+            "--env",
+            "CLI_ONLY=yes",
+            "--no-version",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert provider.last_target is not None
+    assert provider.last_target.extra["env_vars"] == {
+        "APP_MODE": "file",
+        "FILE_ONLY": "1",
+        "OVERRIDE_ME": "from-cli",
+        "CLI_ONLY": "yes",
+    }
+
+
 def test_deploy_rejects_hermes_and_openclaw_frameworks(tmp_path: Path, monkeypatch):
     runner = CliRunner()
 

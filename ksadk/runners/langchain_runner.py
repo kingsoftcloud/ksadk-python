@@ -85,7 +85,11 @@ class LangChainRunner(BaseRunner):
             payload = self._prepare_with_replay(input_data)
             result = await self._invoke_agent(payload, config=config, context=native_context)
 
-        return {"output": self._extract_output(result)}
+        output = {"output": self._extract_output(result)}
+        usage = self._extract_usage(result)
+        if usage:
+            output["usage"] = usage
+        return output
 
     async def stream(self, input_data: Dict[str, Any]) -> AsyncIterator[Dict[str, Any]]:
         session_id = input_data.get("session_id") or str(uuid.uuid4())[:8]
@@ -102,6 +106,7 @@ class LangChainRunner(BaseRunner):
             payload = self._prepare_with_replay(input_data)
 
         accumulated_text = ""
+        last_chunk: Any = None
 
         try:
             if hasattr(self._agent, "astream"):
@@ -111,6 +116,7 @@ class LangChainRunner(BaseRunner):
                     context=native_context,
                 )
                 async for chunk in self._agent.astream(payload, **kwargs):
+                    last_chunk = chunk
                     delta, chunk_type = self._extract_chunk(chunk)
                     if delta:
                         accumulated_text += delta
@@ -122,6 +128,7 @@ class LangChainRunner(BaseRunner):
                     context=native_context,
                 )
                 for chunk in self._agent.stream(payload, **kwargs):
+                    last_chunk = chunk
                     delta, chunk_type = self._extract_chunk(chunk)
                     if delta:
                         accumulated_text += delta
@@ -131,7 +138,18 @@ class LangChainRunner(BaseRunner):
 
         if not accumulated_text:
             result = await self.invoke(input_data)
-            yield {"output": result.get("output", ""), "type": "final"}
+            final_chunk = {"output": result.get("output", ""), "type": "final"}
+            usage = self._extract_usage(result)
+            if usage:
+                final_chunk["usage"] = usage
+            yield final_chunk
+            return
+
+        final_chunk = {"output": accumulated_text, "type": "final"}
+        usage = self._extract_usage(last_chunk)
+        if usage:
+            final_chunk["usage"] = usage
+        yield final_chunk
 
     def _resolve_request_path(self) -> str:
         module = getattr(self, "_module", None)
@@ -451,7 +469,22 @@ class LangChainRunner(BaseRunner):
     @staticmethod
     def _extract_output(result: Any) -> str:
         if isinstance(result, dict):
-            return result.get("output", result.get("text", str(result)))
+            if "output" in result:
+                return result["output"]
+            if "text" in result:
+                return result["text"]
+            messages = result.get("messages")
+            if isinstance(messages, list) and messages:
+                last = messages[-1]
+                if isinstance(last, dict):
+                    return str(last.get("content", str(last)))
+                content = getattr(last, "content", None)
+                if content is not None:
+                    return str(content)
+            return str(result)
+        content = getattr(result, "content", None)
+        if content is not None:
+            return str(content)
         return str(result)
 
     def _extract_chunk(self, chunk: Any) -> tuple[Optional[str], Optional[str]]:

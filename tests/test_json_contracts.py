@@ -87,6 +87,32 @@ def test_config_set_json_envelope_and_file_updates(tmp_path: Path, monkeypatch):
     assert "KSYUN_REGION=cn-beijing-6" in env_text
 
 
+def test_config_set_uppercase_env_var_updates_project_env(tmp_path: Path, monkeypatch):
+    _register_commands()
+    runner = CliRunner()
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(
+        cli,
+        [
+            "--output",
+            "json",
+            "config",
+            "set",
+            "AGENTENGINE_SERVER_URL=http://aicp.inner.api.ksyun.com",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = _parse_json(result.output)
+    assert payload["result"]["updated_project_keys"] == []
+    assert payload["result"]["updated_env_keys"] == ["AGENTENGINE_SERVER_URL"]
+
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8-sig")
+    assert "AGENTENGINE_SERVER_URL=http://aicp.inner.api.ksyun.com" in env_text
+    assert not (tmp_path / "agentengine.yaml").exists()
+
+
 def test_dashboard_open_json_does_not_open_browser(monkeypatch):
     runner = CliRunner()
     opened_urls: list[str] = []

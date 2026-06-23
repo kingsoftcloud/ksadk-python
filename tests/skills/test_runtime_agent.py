@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import subprocess
 import zipfile
 from pathlib import Path
@@ -9,6 +10,8 @@ from pathlib import Path
 import httpx
 
 from ksadk.skills.loader import load_local_skill
+from ksadk.skills.models import SkillRef
+from ksadk.skills.runtime.registry import select_remote_skill_refs
 from ksadk.skills.runtime import agent as runtime_agent
 from ksadk.skills.runtime.agent import run_agent
 
@@ -64,6 +67,88 @@ def test_runtime_agent_loads_active_skills_from_service(monkeypatch, tmp_path: P
     assert "workflow=使用 demo-skill build something" in out
     assert "loaded_skills=demo-skill" in out
     assert (tmp_path / "cache" / "sk-demo__sv-demo-v1" / "extracted" / "demo-skill" / "SKILL.md").exists()
+
+
+def test_runtime_selects_remote_skill_by_alias_tag_and_description():
+    skills = [
+        SkillRef(
+            skill_id="sk-report",
+            version_id="v1",
+            version="1",
+            name="report-writer",
+            description="Write research reports",
+            aliases=("研究报告",),
+            tags=("research",),
+        ),
+        SkillRef(
+            skill_id="sk-web",
+            version_id="v1",
+            version="1",
+            name="web-builder",
+            description="Build web pages",
+            tags=("frontend",),
+        ),
+    ]
+
+    assert [skill.name for skill in select_remote_skill_refs(skills, "帮我生成一份研究报告")] == ["report-writer"]
+    assert [skill.name for skill in select_remote_skill_refs(skills, "frontend artifact")] == ["web-builder"]
+    assert [skill.name for skill in select_remote_skill_refs(skills, "write a research report")] == ["report-writer"]
+
+
+def test_runtime_agent_auto_resolves_aicp_skill_service_when_url_unset(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+):
+    archive = _zip_bytes()
+    digest = hashlib.sha256(archive).hexdigest()
+    seen_urls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_urls.append(str(request.url))
+        if request.url.params.get("Action") == "ListSkillsBySpaceId":
+            return httpx.Response(
+                200,
+                json={
+                    "Data": {
+                        "SkillSpaceId": "ss-1",
+                        "Skills": [
+                            {
+                                "SkillId": "sk-demo",
+                                "VersionId": "sv-demo-v1",
+                                "Version": "v1",
+                                "Name": "demo-skill",
+                                "Status": "Active",
+                                "ContentHash": f"sha256:{digest}",
+                            }
+                        ],
+                    }
+                },
+            )
+        if request.url.params.get("Action") == "GetSkillDownloadUrl":
+            return httpx.Response(200, json={"Data": {"DownloadUrl": "https://download.example/demo.zip"}})
+        if str(request.url) == "https://download.example/demo.zip":
+            return httpx.Response(200, content=archive)
+        return httpx.Response(404)
+
+    monkeypatch.setenv("KSADK_SKILL_SPACE_IDS", "ss-1")
+    monkeypatch.delenv("KSADK_SKILL_SERVICE_URL", raising=False)
+    monkeypatch.delenv("KSADK_SKILL_SERVICE_ENDPOINT", raising=False)
+    monkeypatch.delenv("KSADK_SKILL_SERVICE_SCHEME", raising=False)
+    monkeypatch.setenv("KSADK_AICP_ENDPOINT_MODE", "internal")
+    monkeypatch.setenv("KSADK_SKILL_CACHE_DIR", str(tmp_path / "cache"))
+
+    code = run_agent(
+        ["使用 demo-skill build something"],
+        service_transport=httpx.MockTransport(handler),
+    )
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "loaded_skills=demo-skill" in out
+    assert seen_urls[0].startswith(
+        "http://aicp.internal.api.ksyun.com/?Action=ListSkillsBySpaceId&Version=2024-06-12"
+    )
 
 
 def test_runtime_agent_downloads_only_prompted_remote_skill(monkeypatch, tmp_path: Path, capsys):
@@ -479,7 +564,9 @@ def test_runtime_agent_can_load_legacy_remote_skill_when_hash_mismatch_is_allowe
 
 def test_runtime_agent_without_service_still_reports_workflow(monkeypatch, capsys):
     monkeypatch.delenv("KSADK_SKILL_SERVICE_URL", raising=False)
-    monkeypatch.setenv("KSADK_SKILL_SPACE_IDS", "ss-1")
+    monkeypatch.delenv("KSADK_SKILL_SPACE_IDS", raising=False)
+    monkeypatch.delenv("SKILL_SPACE_ID", raising=False)
+    monkeypatch.delenv("KSADK_PUBLIC_SKILL_SPACE_IDS", raising=False)
 
     code = run_agent(["noop"])
 
@@ -499,6 +586,128 @@ def test_runtime_agent_reads_prompt_file(tmp_path: Path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert code == 0
     assert "workflow=from file" in out
+
+
+def test_runtime_agent_accepts_request_file_json(tmp_path: Path, monkeypatch, capsys):
+    request_file = tmp_path / "request.json"
+    request_file.write_text(
+        json.dumps(
+            {
+                "workflow_prompt": "from request",
+                "skill_names": ["generic-workflow"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("KSADK_SKILL_SERVICE_URL", raising=False)
+
+    code = run_agent(["--request-file", str(request_file)])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "workflow=from request" in out
+    assert 'selected_skills=["generic-workflow"]' in out
+
+
+def test_runtime_agent_rejects_prompt_file_and_request_file_together(tmp_path: Path, monkeypatch, capsys):
+    prompt_file = tmp_path / "prompt.txt"
+    prompt_file.write_text("from file", encoding="utf-8")
+    request_file = tmp_path / "request.json"
+    request_file.write_text(json.dumps({"workflow_prompt": "from request"}), encoding="utf-8")
+    monkeypatch.delenv("KSADK_SKILL_SERVICE_URL", raising=False)
+
+    code = run_agent(["--prompt-file", str(prompt_file), "--request-file", str(request_file)])
+
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "workflow_result=" in out
+    payload = json.loads(out.split("workflow_result=", 1)[1])
+    assert payload["status"] == "failed"
+    assert "cannot be used together" in payload["error"]
+
+
+def test_runtime_agent_executes_generic_run_workflow_script(monkeypatch, tmp_path: Path):
+    skill_root = tmp_path / "skills" / "generic-workflow"
+    scripts_dir = skill_root / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (skill_root / "SKILL.md").write_text(
+        "---\nname: generic-workflow\ndescription: Generic workflow\n---\n# Demo\n",
+        encoding="utf-8",
+    )
+    (scripts_dir / "run-workflow.sh").write_text(
+        "#!/bin/bash\n"
+        "mkdir -p \"$KSADK_SKILL_WORKDIR/out\"\n"
+        "printf '%s' \"$KSADK_WORKFLOW_PROMPT\" > \"$KSADK_SKILL_WORKDIR/out/prompt.txt\"\n"
+        "echo \"artifact=$KSADK_SKILL_WORKDIR/out/prompt.txt\"\n",
+        encoding="utf-8",
+    )
+    workdir = tmp_path / "work"
+    monkeypatch.setenv("KSADK_SKILL_WORKDIR", str(workdir))
+
+    result = runtime_agent._execute_workflow(
+        "run generic workflow",
+        [load_local_skill(skill_root)],
+        selected_skill_names=["generic-workflow"],
+    )
+
+    artifact = str(workdir / "out" / "prompt.txt")
+    assert result.status == "ok"
+    assert result.executed_skill == "generic-workflow"
+    assert result.selected_skills == ["generic-workflow"]
+    assert result.loaded_skills == ["generic-workflow"]
+    assert result.output_files == [artifact]
+    assert result.artifacts == [artifact]
+    assert result.commands[0]["exit_code"] == 0
+    assert (workdir / "out" / "prompt.txt").read_text(encoding="utf-8") == "run generic workflow"
+
+
+def test_runtime_agent_collects_generic_workflow_output_dir(monkeypatch, tmp_path: Path):
+    skill_root = tmp_path / "skills" / "output-dir-workflow"
+    scripts_dir = skill_root / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (skill_root / "SKILL.md").write_text(
+        "---\nname: output-dir-workflow\ndescription: Output dir workflow\n---\n# Demo\n",
+        encoding="utf-8",
+    )
+    (scripts_dir / "run-workflow.sh").write_text(
+        "#!/bin/bash\n"
+        "mkdir -p \"$KSADK_SKILL_OUTPUT_DIR\"\n"
+        "printf 'generated' > \"$KSADK_SKILL_OUTPUT_DIR/result.txt\"\n",
+        encoding="utf-8",
+    )
+    workdir = tmp_path / "work"
+    monkeypatch.setenv("KSADK_SKILL_WORKDIR", str(workdir))
+
+    result = runtime_agent._execute_workflow(
+        "run output-dir workflow",
+        [load_local_skill(skill_root)],
+        selected_skill_names=["output-dir-workflow"],
+    )
+
+    artifact = str(workdir / "artifacts" / "result.txt")
+    assert result.status == "ok"
+    assert result.output_files == [artifact]
+    assert result.artifacts == [artifact]
+
+
+def test_runtime_agent_warns_when_loaded_skill_has_no_workflow_entrypoint(tmp_path: Path):
+    skill_root = tmp_path / "skills" / "instruction-only"
+    skill_root.mkdir(parents=True)
+    (skill_root / "SKILL.md").write_text(
+        "---\nname: instruction-only\ndescription: Instruction only\n---\n# Demo\n",
+        encoding="utf-8",
+    )
+
+    result = runtime_agent._execute_workflow(
+        "run instruction-only",
+        [load_local_skill(skill_root)],
+        selected_skill_names=["instruction-only"],
+    )
+
+    assert result.status == "skipped"
+    assert result.selected_skills == ["instruction-only"]
+    assert result.loaded_skills == ["instruction-only"]
+    assert result.warnings == ["No loaded skill exposes an executable workflow entrypoint."]
 
 
 def test_runtime_agent_executes_web_artifacts_builder_without_real_npm(monkeypatch, tmp_path: Path):

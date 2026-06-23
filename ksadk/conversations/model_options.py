@@ -5,6 +5,7 @@ from typing import Any, Mapping
 
 _VALID_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
 _CHAT_COMPLETIONS_REASONING_EFFORTS = {"low", "medium", "high"}
+_PASSTHROUGH_OPTION_KEYS = {"temperature", "top_p", "max_tokens", "max_completion_tokens"}
 
 
 def _normalized_effort(value: Any) -> str | None:
@@ -86,6 +87,9 @@ def normalize_model_options(model_options: Mapping[str, Any] | None) -> dict[str
 def model_options_for_chat_completions(model_options: Mapping[str, Any] | None) -> dict[str, Any]:
     normalized = normalize_model_options(model_options)
     payload: dict[str, Any] = {}
+    for key in _PASSTHROUGH_OPTION_KEYS:
+        if key in normalized:
+            payload[key] = normalized[key]
     reasoning = normalized.get("reasoning")
     if isinstance(reasoning, Mapping):
         effort = _normalized_effort(reasoning.get("effort"))
@@ -103,6 +107,9 @@ def model_options_for_chat_completions(model_options: Mapping[str, Any] | None) 
 def model_options_for_responses(model_options: Mapping[str, Any] | None) -> dict[str, Any]:
     normalized = normalize_model_options(model_options)
     payload: dict[str, Any] = {}
+    for key in _PASSTHROUGH_OPTION_KEYS:
+        if key in normalized:
+            payload[key] = normalized[key]
     reasoning = normalized.get("reasoning")
     if isinstance(reasoning, Mapping):
         effort = _normalized_effort(reasoning.get("effort"))

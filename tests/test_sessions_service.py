@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -297,3 +298,46 @@ async def test_legacy_session_service_aliases_remain_compatible(monkeypatch, tmp
 def test_legacy_sqlite_service_import_path_remains_available():
     module = importlib.import_module("ksadk.sessions.sqlite_service")
     assert module.LocalSessionService is LocalSessionService
+
+
+@pytest.mark.asyncio
+async def test_local_session_service_closes_sqlite_connections(monkeypatch, tmp_path):
+    connections: list[sqlite3.Connection] = []
+
+    class TrackingConnection(sqlite3.Connection):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+            return super().close()
+
+    original_connect = sqlite3.connect
+
+    def tracking_connect(*args, **kwargs):
+        kwargs["factory"] = TrackingConnection
+        connection = original_connect(*args, **kwargs)
+        connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(sqlite3, "connect", tracking_connect)
+
+    service = LocalSessionService(db_path=tmp_path / "sessions.sqlite")
+    session = await service.create_session("demo-agent", "user-1", "sess-1")
+    await service.append_event(
+        session.id,
+        SessionEvent(
+            id="evt-1",
+            author="user",
+            event_type="user_message",
+            content={"role": "user", "parts": [{"text": "hello"}]},
+        ),
+    )
+    await service.get_session(session.id)
+    await service.list_sessions("demo-agent")
+    await service.get_events(session.id)
+    await service.delete_session(session.id)
+
+    assert connections
+    assert all(getattr(connection, "closed", False) for connection in connections)
