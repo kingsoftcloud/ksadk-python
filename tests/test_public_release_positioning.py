@@ -81,7 +81,7 @@ def test_dev_extra_contains_public_docs_build_dependencies():
 def test_changelog_marks_0_6_6_ready_for_authorized_release():
     changelog = _changelog_section("0.6.6")
 
-    assert "## [0.6.6] - 2026-06-18" in changelog
+    assert "## [0.6.6] - 2026-06-23" in changelog
     assert "统一模型策略 v1" in changelog
     assert "PyPI Trusted Publishing" in changelog
     assert "GitHub workflow" in changelog
