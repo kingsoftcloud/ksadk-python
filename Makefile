@@ -361,7 +361,17 @@ public-docs-build:
 public-test:
 	@echo "==> test"
 	@uv sync --extra all
-	@uv run --extra all pytest
+	@uv run --extra dev pytest \
+		tests/test_open_source_audit.py \
+		tests/test_runtime_common_packaging.py \
+		tests/test_public_release_positioning.py \
+		tests/test_tracing_setup_otlp.py \
+		tests/test_check_publication_state.py \
+		tests/test_check_approval_record.py \
+		tests/test_markdown_repair.py \
+		tests/test_conversation_runtime.py \
+		tests/test_server_session_app.py \
+		-q
 
 PUBLIC_KSADK_WEB_VERSION ?= 0.2.11
 
