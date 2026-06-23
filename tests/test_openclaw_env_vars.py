@@ -1,8 +1,44 @@
+import asyncio
 import re
 import json
 import pytest
 
 from ksadk.cli import cmd_openclaw
+
+
+class _FakeOpenClawBootstrapClient:
+    kwargs = None
+    bootstrap_kwargs = None
+
+    def __init__(self, *args, **kwargs):
+        self.__class__.kwargs = dict(kwargs)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def get_client_bootstrap_config(self, **kwargs):
+        self.__class__.bootstrap_kwargs = dict(kwargs)
+        return {
+            "configs": {
+                "bootstrap.default_image": "registry.example.com/openclaw:db",
+            }
+        }
+
+
+def test_fetch_openclaw_bootstrap_config_ignores_dry_run(monkeypatch):
+    _FakeOpenClawBootstrapClient.kwargs = None
+    _FakeOpenClawBootstrapClient.bootstrap_kwargs = None
+    monkeypatch.setenv("AGENTENGINE_GLOBAL_DRY_RUN", "1")
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawBootstrapClient)
+
+    result = asyncio.run(cmd_openclaw._fetch_bootstrap_config("pre-online"))
+
+    assert result["configs"]["bootstrap.default_image"] == "registry.example.com/openclaw:db"
+    assert _FakeOpenClawBootstrapClient.kwargs["region"] == "pre-online"
+    assert _FakeOpenClawBootstrapClient.bootstrap_kwargs["ignore_dry_run"] is True
 
 
 def test_build_openclaw_env_vars_defaults_to_trusted_proxy(monkeypatch):
@@ -217,7 +253,7 @@ def test_build_openclaw_env_vars_defaults_exec_to_relaxed_without_explicit_profi
     assert env["OPENCLAW_EXEC_DEFAULT_ALLOWLIST_ENABLED"] == "false"
 
 
-def test_build_openclaw_env_vars_omits_redundant_model_defaults(monkeypatch):
+def test_build_openclaw_env_vars_injects_default_model_policy(monkeypatch):
     monkeypatch.setattr(cmd_openclaw, "_GLOBAL_ENV_CACHE", {})
     monkeypatch.delenv("OPENCLAW_DEFAULT_MODEL", raising=False)
     monkeypatch.delenv("OPENAI_MODEL_NAME", raising=False)
@@ -233,7 +269,13 @@ def test_build_openclaw_env_vars_omits_redundant_model_defaults(monkeypatch):
     env = cmd_openclaw._build_openclaw_env_vars()
 
     assert "OPENCLAW_DEFAULT_MODEL" not in env
-    assert "OPENCLAW_MODEL_CATALOG_JSON" not in env
+    assert env["OPENAI_MODEL_NAME"] == "ksyun/glm-5.2"
+    assert env["OPENCLAW_FALLBACK_MODEL"] == "ksyun/deepseek-v4-pro"
+    assert env["OPENCLAW_IMAGE_MODEL"] == "ksyun/kimi-k2.7-code"
+    assert "AGENTENGINE_MODEL_POLICY_JSON" in env
+    catalog = json.loads(env["OPENCLAW_MODEL_CATALOG_JSON"])
+    assert [item["id"] for item in catalog] == ["glm-5.2", "kimi-k2.7-code", "deepseek-v4-pro"]
+    assert catalog[1]["options"] == {"temperature": 1}
     assert "OPENCLAW_MODEL_BASE_URL" not in env
     assert "OPENCLAW_MODEL_PROVIDER_ID" not in env
     assert "OPENCLAW_MODEL_API" not in env
@@ -249,7 +291,8 @@ def test_build_openclaw_env_vars_global_model_preference_keeps_dual_catalog(monk
 
     assert env["OPENAI_MODEL_NAME"] == "ksyun/glm-5.1"
     assert "OPENCLAW_DEFAULT_MODEL" not in env
-    assert "OPENCLAW_MODEL_CATALOG_JSON" not in env
+    catalog = json.loads(env["OPENCLAW_MODEL_CATALOG_JSON"])
+    assert [item["id"] for item in catalog] == ["glm-5.2", "kimi-k2.7-code", "deepseek-v4-pro"]
 
 
 def test_build_openclaw_env_vars_explicit_glm5_is_forwarded_without_catalog(monkeypatch):
@@ -260,7 +303,8 @@ def test_build_openclaw_env_vars_explicit_glm5_is_forwarded_without_catalog(monk
     env = cmd_openclaw._build_openclaw_env_vars()
 
     assert env["OPENCLAW_DEFAULT_MODEL"] == "ksyun/glm-5.1"
-    assert "OPENCLAW_MODEL_CATALOG_JSON" not in env
+    catalog = json.loads(env["OPENCLAW_MODEL_CATALOG_JSON"])
+    assert [item["id"] for item in catalog] == ["glm-5.2", "kimi-k2.7-code", "deepseek-v4-pro"]
 
 
 def test_build_openclaw_env_vars_preserves_explicit_model_catalog(monkeypatch):
@@ -289,18 +333,50 @@ def test_openclaw_provider_model_metadata_builds_catalog_for_creation(monkeypatc
 
     assert changed is True
     catalog = json.loads(env["OPENCLAW_MODEL_CATALOG_JSON"])
-    assert catalog == [
+    assert [item["id"] for item in catalog] == [
+        "glm-5.2",
+        "kimi-k2.7-code",
+        "deepseek-v4-pro",
+    ]
+    assert catalog[1]["options"] == {"temperature": 1}
+    assert catalog[-1] == {
+        "id": "deepseek-v4-pro",
+        "name": "deepseek-v4-pro",
+        "api": "openai-completions",
+        "reasoning": True,
+        "input": ["text", "image"],
+        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+        "contextWindow": 1_000_000,
+        "maxTokens": 384_000,
+    }
+
+
+def test_openclaw_provider_model_metadata_preserves_explicit_catalog_items(monkeypatch):
+    monkeypatch.setattr(cmd_openclaw, "_GLOBAL_ENV_CACHE", {})
+    monkeypatch.setenv(
+        "OPENCLAW_MODEL_CATALOG_JSON",
+        json.dumps(
+            [
+                {"id": "custom-model", "name": "custom-model"},
+                {"id": "deepseek-v4-pro", "name": "old"},
+            ]
+        ),
+    )
+
+    env = cmd_openclaw._build_openclaw_env_vars()
+    changed = cmd_openclaw._apply_openclaw_provider_model_metadata(
+        env,
         {
             "id": "deepseek-v4-pro",
-            "name": "deepseek-v4-pro",
-            "api": "openai-completions",
-            "reasoning": True,
-            "input": ["text", "image"],
-            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-            "contextWindow": 1_000_000,
-            "maxTokens": 384_000,
+            "context_window_tokens": 1_000_000,
         }
-    ]
+    )
+
+    assert changed is True
+    catalog = json.loads(env["OPENCLAW_MODEL_CATALOG_JSON"])
+    assert catalog[0]["id"] == "custom-model"
+    assert catalog[1]["id"] == "deepseek-v4-pro"
+    assert catalog[1]["contextWindow"] == 1_000_000
 
 
 def test_build_openclaw_env_vars_forwards_explicit_web_tool_overrides(monkeypatch):

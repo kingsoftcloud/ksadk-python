@@ -7,7 +7,9 @@ import json
 import os
 import sqlite3
 import time
+from contextlib import closing, contextmanager
 from pathlib import Path
+from collections.abc import Iterator
 from typing import Optional
 
 from ksadk.sessions.base import (
@@ -78,9 +80,25 @@ class LocalSessionService(BaseSessionService):
         self,
         agent_id: str,
         user_id: Optional[str] = None,
+        offset: Optional[int] = None,
+        limit: Optional[int] = None,
     ) -> list[Session]:
         async with self._lock:
-            return await asyncio.to_thread(self._list_sessions_sync, agent_id, user_id)
+            return await asyncio.to_thread(
+                self._list_sessions_sync,
+                agent_id,
+                user_id,
+                offset,
+                limit,
+            )
+
+    async def count_sessions(
+        self,
+        agent_id: str,
+        user_id: Optional[str] = None,
+    ) -> int:
+        async with self._lock:
+            return await asyncio.to_thread(self._count_sessions_sync, agent_id, user_id)
 
     async def delete_session(self, session_id: str) -> bool:
         async with self._lock:
@@ -119,6 +137,10 @@ class LocalSessionService(BaseSessionService):
     ) -> list[SessionEvent]:
         async with self._lock:
             return await asyncio.to_thread(self._get_events_sync, session_id, offset, limit)
+
+    async def count_events(self, session_id: str) -> int:
+        async with self._lock:
+            return await asyncio.to_thread(self._count_events_sync, session_id)
 
     async def get_state(
         self,
@@ -163,6 +185,12 @@ class LocalSessionService(BaseSessionService):
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
+
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        with closing(self._connect()) as connection:
+            with connection:
+                yield connection
 
     @staticmethod
     def _table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
@@ -226,7 +254,7 @@ class LocalSessionService(BaseSessionService):
             )
 
     def _ensure_schema(self) -> None:
-        with self._connect() as connection:
+        with self._connection() as connection:
             self._migrate_legacy_schema(connection)
             connection.executescript(
                 f"""
@@ -312,7 +340,7 @@ class LocalSessionService(BaseSessionService):
         user_id: str,
         session_id: Optional[str],
     ) -> Session:
-        with self._connect() as connection:
+        with self._connection() as connection:
             if session_id:
                 existing = self._get_session_sync(session_id, connection=connection)
                 if existing is not None:
@@ -405,8 +433,10 @@ class LocalSessionService(BaseSessionService):
         self,
         agent_id: str,
         user_id: Optional[str],
+        offset: Optional[int] = None,
+        limit: Optional[int] = None,
     ) -> list[Session]:
-        with self._connect() as connection:
+        with self._connection() as connection:
             query = f"""
                 SELECT
                     id, agent_id, user_id, title, title_source, summary, first_prompt, last_prompt,
@@ -419,6 +449,15 @@ class LocalSessionService(BaseSessionService):
                 query += " AND user_id = ?"
                 params.append(user_id)
             query += " ORDER BY updated_at DESC, created_at DESC"
+            if limit is not None:
+                query += " LIMIT ?"
+                params.append(limit)
+                if offset is not None:
+                    query += " OFFSET ?"
+                    params.append(offset)
+            elif offset is not None:
+                query += " LIMIT -1 OFFSET ?"
+                params.append(offset)
             rows = connection.execute(query, params).fetchall()
             return [
                 Session(
@@ -439,8 +478,22 @@ class LocalSessionService(BaseSessionService):
                 for row in rows
             ]
 
+    def _count_sessions_sync(self, agent_id: str, user_id: Optional[str]) -> int:
+        with self._connection() as connection:
+            query = f"""
+                SELECT COUNT(*) AS total
+                FROM {KSADK_SESSIONS_TABLE}
+                WHERE agent_id = ?
+            """
+            params: list[object] = [agent_id]
+            if user_id is not None:
+                query += " AND user_id = ?"
+                params.append(user_id)
+            row = connection.execute(query, params).fetchone()
+            return int(row["total"] if row else 0)
+
     def _delete_session_sync(self, session_id: str) -> bool:
-        with self._connect() as connection:
+        with self._connection() as connection:
             row = connection.execute(
                 f"SELECT 1 FROM {KSADK_SESSIONS_TABLE} WHERE id = ?",
                 (session_id,),
@@ -455,7 +508,7 @@ class LocalSessionService(BaseSessionService):
             return True
 
     def _append_event_sync(self, session_id: str, event: SessionEvent) -> SessionEvent:
-        with self._connect() as connection:
+        with self._connection() as connection:
             session_row = connection.execute(
                 f"""
                 SELECT agent_id, user_id, state_json, version
@@ -554,7 +607,7 @@ class LocalSessionService(BaseSessionService):
         first_prompt: Optional[str],
         last_prompt: Optional[str],
     ) -> Session:
-        with self._connect() as connection:
+        with self._connection() as connection:
             row = connection.execute(
                 f"""
                 SELECT
@@ -658,6 +711,14 @@ class LocalSessionService(BaseSessionService):
             if owns_connection:
                 connection.close()
 
+    def _count_events_sync(self, session_id: str) -> int:
+        with self._connection() as connection:
+            row = connection.execute(
+                f"SELECT COUNT(*) AS total FROM {KSADK_EVENTS_TABLE} WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            return int(row["total"] if row else 0)
+
     def _get_state_sync(
         self,
         agent_id: str,
@@ -665,7 +726,7 @@ class LocalSessionService(BaseSessionService):
         session_id: Optional[str],
         scope: str,
     ) -> Optional[SessionState]:
-        with self._connect() as connection:
+        with self._connection() as connection:
             if scope == "session" and session_id:
                 session = self._get_session_sync(session_id, connection=connection)
                 if session is None:
@@ -709,7 +770,7 @@ class LocalSessionService(BaseSessionService):
         scope: str,
         state_delta: dict,
     ) -> SessionState:
-        with self._connect() as connection:
+        with self._connection() as connection:
             updated_at = time.time()
 
             if scope == "session":

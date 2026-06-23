@@ -302,6 +302,8 @@ class ADKSessionAdapter(RunnerSessionAdapter):
                 "KSADK_STM_URL",
                 "KSADK_STM_DB_PATH",
                 "KSADK_STM_DB_URL",
+                "KSADK_SESSION_BACKEND",
+                "KSADK_SESSION_DSN",
             )
         )
         return SessionContinuityStatus(

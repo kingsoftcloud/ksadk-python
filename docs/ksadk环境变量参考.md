@@ -35,7 +35,7 @@
 | --- | --- | --- | --- | --- | --- |
 | `KSYUN_ACCESS_KEY` | 是 | `KS3_ACCESS_KEY` | 是 | 开发者 / CI Secret | 金山云 API / KS3 / KOP 签名 AK。 |
 | `KSYUN_SECRET_KEY` | 是 | `KS3_SECRET_KEY` | 是 | 开发者 / CI Secret | 金山云 API / KS3 / KOP 签名 SK。 |
-| `KSYUN_ACCOUNT_ID` | 条件必传 | 无 | 否 | 开发者 / 平台账号 | 创建/查询/删除资源、KCR 用户名默认值、权限预检查等场景需要。 |
+| `KSYUN_ACCOUNT_ID` | 条件必传 | 无 | 否 | 开发者 / 平台账号 | 创建/查询/删除资源、权限预检查、个人版 KCR 用户名兜底等场景需要。 |
 | `KSYUN_REGION` | 否 | 无 | 否 | 开发者 / 平台 | 默认 `cn-beijing-6`。 |
 | `AGENTENGINE_SERVER_URL` | 否 | 无 | 否 | 平台 / 开发者 | 覆盖 AgentEngine Server 地址。内部账号/内网环境建议 `http://aicp.inner.api.ksyun.com`；公网账号通常不设置或使用 `https://aicp.api.ksyun.com`。 |
 | `AGENTENGINE_API_VERSION` | 否 | 无 | 否 | 平台 / 开发者 | 覆盖 KOP API version。 |
@@ -76,7 +76,7 @@
 
 | 变量 | 是否必传 | 别名/兼容 | 敏感 | 配置方/来源 | 说明 |
 | --- | --- | --- | --- | --- | --- |
-| `KSADK_SKILL_SERVICE_URL` | 条件必传 | 无 | 否 | 平台 / Skill Service | 配置后 Runtime agent 才会从 Skill Center 拉取 skill。直连 REST 可用 `/agentengine/skill/api/v1`，AICP KOP 可用 `http://maicp.inner.api.ksyun.com`。 |
+| `KSADK_SKILL_SERVICE_URL` | 条件必传 | 无 | 否 | 平台 / Skill Service | 配置后 Runtime agent 才会从 Skill Center 拉取 skill。直连 REST 可用 `/agentengine/skill/api/v1`，AICP KOP 可用 `http://aicp.inner.api.ksyun.com`。 |
 | `KSADK_SKILL_SERVICE_ENDPOINT` | 否 | 无 | 否 | 平台 / Skill Service | 未设置 `KSADK_SKILL_SERVICE_URL` 时的 AICP endpoint 覆盖，只写 host/path，不含 scheme。 |
 | `KSADK_SKILL_SERVICE_SCHEME` | 否 | 无 | 否 | 平台 / Skill Service | 未设置 `KSADK_SKILL_SERVICE_URL` 时的 AICP URL scheme 覆盖；内网 endpoint 默认会使用 `http`。 |
 | `KSADK_SKILL_SPACE_IDS` | 条件必传 | `SKILL_SPACE_ID` | 否 | Agent 创建/更新时注入 / Runner 环境 | 逗号分隔 space id；单 space 兼容变量为 `SKILL_SPACE_ID`。 |
@@ -114,8 +114,8 @@
 | `KSADK_LTM_AMBIENT_POLICY` | 否 | 无 | 否 | 平台 / 开发者 | runtime 自动注入长期记忆上下文策略：`on_demand/always/disabled`。 |
 | `KSADK_MEMORY_BACKEND` | 否 | 无 | 否 | 开发者 | 轻量 KV/消息历史 MemoryManager backend，默认 `memory`。 |
 | `KSADK_MEMORY_URL` | 条件必传 | 无 | 是 | 开发者 / Secret | `KSADK_MEMORY_BACKEND=redis` 等远端 backend 连接 URL。 |
-| `KSADK_SESSION_BACKEND` | 否 | `AGENTENGINE_SESSION_BACKEND`、`KSADK_STM_BACKEND` | 否 | 平台 / 开发者 | 会话 backend，默认 `local`。 |
-| `KSADK_SESSION_DSN` | 条件必传 | `KSADK_STM_URL`、`KSADK_STM_DB_URL` | 是 | 平台 Secret | `KSADK_SESSION_BACKEND=postgres` 时必传。 |
+| `KSADK_SESSION_BACKEND` | 否 | `AGENTENGINE_SESSION_BACKEND`、`KSADK_STM_BACKEND` | 否 | 平台 / 开发者 | 会话 backend，默认 `local`。ADK/STM 也会把它作为兜底。 |
+| `KSADK_SESSION_DSN` | 条件必传 | `KSADK_STM_URL`、`KSADK_STM_DB_URL`、`KSADK_ADK_SESSION_URL` | 是 | 平台 Secret | `postgres` / `database` backend 时必传。ADK/STM 也会把它作为兜底。 |
 | `KSADK_SESSION_PATH` | 否 | `KSADK_STM_PATH`、`KSADK_STM_DB_PATH` | 否 | 本地运行时 | 本地 SQLite 会话库路径。 |
 | `KSADK_SESSION_NAMESPACE` | 否 | `KSADK_WORKSPACE_ID`、`AGENTENGINE_WORKSPACE_ID`、`KSADK_TENANT_ID`、`AGENTENGINE_TENANT_ID` | 否 | 平台 / 开发者 | 会话命名空间。 |
 
@@ -163,7 +163,7 @@
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `KSYUN_ACCESS_KEY` | CLI / KOP / KS3 / Skill Service fallback | 条件必传 | 未设置 | `KS3_ACCESS_KEY` | 是 | 开发者 / CI Secret / K8S Secret | 否 | 金山云 AK。启用云端资源操作、KS3、KOP 签名时需要。 |
 | `KSYUN_SECRET_KEY` | CLI / KOP / KS3 / Skill Service fallback | 条件必传 | 未设置 | `KS3_SECRET_KEY` | 是 | 开发者 / CI Secret / K8S Secret | 否 | 金山云 SK。 |
-| `KSYUN_ACCOUNT_ID` | CLI / KOP / 权限预检查 / Skill Service fallback | 条件必传 | 未设置 | 无 | 否 | 平台账号 / 开发者 | 否 | 账号 ID。资源管理、租户隔离、KCR 用户名默认值等场景需要。 |
+| `KSYUN_ACCOUNT_ID` | CLI / KOP / 权限预检查 / Skill Service fallback | 条件必传 | 未设置 | 无 | 否 | 平台账号 / 开发者 | 否 | 账号 ID。资源管理、租户隔离、个人版 KCR 用户名兜底等场景需要。 |
 | `KSYUN_REGION` | CLI / KOP / KS3 / Skill Service fallback | 否 | `cn-beijing-6` | 无 | 否 | 开发者 / 平台 | 否 | 区域。跨环境、预发、生产联调建议显式设置。 |
 | `KS_ACCESS_KEY_ID` | 旧 KingsoftCloudConfig | 条件必传 | 未设置 | 建议迁移到 `KSYUN_ACCESS_KEY` | 是 | 兼容旧配置 | 否 | 早期 SDK settings 读取的 AK；不与 `KSYUN_ACCESS_KEY` 自动互通。 |
 | `KS_SECRET_ACCESS_KEY` | 旧 KingsoftCloudConfig | 条件必传 | 未设置 | 建议迁移到 `KSYUN_SECRET_KEY` | 是 | 兼容旧配置 | 否 | 早期 SDK settings 读取的 SK；不与 `KSYUN_SECRET_KEY` 自动互通。 |
@@ -174,10 +174,10 @@
 | `KS3_ENDPOINT_MODE` | KS3 上传 | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | KS3 endpoint 选择策略。 |
 | `KS3_ENDPOINT_PROBE_TIMEOUT_SECONDS` | KS3 上传 | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | KS3 endpoint 探测超时。 |
 | `KS3_UPLOAD_TIMEOUT_SECONDS` | KS3 上传 | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | KS3 上传超时。 |
-| `KCR_REGISTRY` | 镜像构建 / MCP / Serverless | 条件必传 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | KCR registry 地址。 |
+| `KCR_REGISTRY` | 镜像构建 / MCP / Serverless | 条件必传 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | 镜像仓库地址，通常为 `<registry>/<namespace>`，例如 `agenthzzqy-vpc.ksyunkcr.com/testagent-pub` 或第三方 registry/namespace。 |
 | `KCR_ENDPOINT` | 镜像构建 / MCP / Serverless | 否 | `hub.kce.ksyun.com` | 无 | 否 | 开发者 / 平台 | 否 | KCR endpoint。 |
-| `KCR_USERNAME` | 镜像构建 / MCP / Serverless | 条件必传 | `KSYUN_ACCOUNT_ID` | 无 | 否 | 开发者 / 平台 | 否 | KCR 用户名。 |
-| `KCR_PASSWORD` | 镜像构建 / MCP / Serverless | 条件必传 | 未设置 | 无 | 是 | 开发者 / Secret | 否 | KCR 密码或 token。 |
+| `KCR_USERNAME` | 镜像构建 / MCP / Serverless | 条件必传 | 未设置 | 个人版 KCR 可回退 `KSYUN_ACCOUNT_ID` | 否 | 开发者 / 平台 | 否 | 镜像仓库访问凭证用户名。企业版 KCR 和第三方镜像仓库必须显式设置；个人版 KCR 可留空并使用 `KSYUN_ACCOUNT_ID` 作为用户名兜底。 |
+| `KCR_PASSWORD` | 镜像构建 / MCP / Serverless | 条件必传 | 未设置 | 无 | 是 | 开发者 / Secret | 否 | 镜像仓库访问凭证密码或 token。 |
 
 ## 5. 通用 Sandbox Runtime
 
@@ -188,6 +188,8 @@
 | `KSADK_SANDBOX_TEMPLATE_ID` | Sandbox spec / Skill Runtime E2B backend | 条件必传 | 未设置 | `KSADK_SKILL_RUNTIME_TEMPLATE_ID` | 否 | 沙箱控制台 / 沙箱团队 | 否 | 远程 sandbox 执行时必传。新部署优先使用。 |
 | `KSADK_SANDBOX_TIMEOUT` | Sandbox spec | 否 | `900` | `KSADK_SKILL_RUNTIME_TIMEOUT` | 否 | 平台 / 开发者 | 否 | Sandbox 会话超时秒数。 |
 | `KSADK_SANDBOX_ALLOW_INTERNET_ACCESS` | Sandbox spec | 否 | `true` | `KSADK_SKILL_RUNTIME_ALLOW_INTERNET_ACCESS` | 否 | 平台 / 开发者 | 否 | 是否允许 sandbox 出网。 |
+| `KSADK_SANDBOX_STARTUP_RETRY_ATTEMPTS` | E2B Sandbox backend | 否 | `6` | 无 | 否 | 平台 / 开发者 | 否 | 沙箱创建后 readiness 探测最大重试次数，用于兜底短暂 `NotFoundException` / `FileNotFoundException`。 |
+| `KSADK_SANDBOX_STARTUP_RETRY_DELAY` | E2B Sandbox backend | 否 | `0.2` | 无 | 否 | 平台 / 开发者 | 否 | 沙箱 readiness 首次重试间隔秒数，后续指数退避，单次 sleep 上限 1 秒。 |
 | `E2B_API_URL` | E2B SDK | 条件必传 | 未设置 | 无 | 否 | 沙箱团队 / Secret 配置 | 否 | E2B 兼容 manager endpoint。使用 E2B backend 时必传。 |
 | `E2B_API_KEY` | E2B SDK | 条件必传 | 未设置 | 无 | 是 | 沙箱团队 / Secret 配置 | 否 | E2B API key。严禁写入代码、文档明文、测试 fixture、日志。 |
 
@@ -222,7 +224,10 @@
 | `KSADK_SKILL_ALLOW_HASH_MISMATCH` | Runtime agent / PackageStore | 否 | `false` | 无 | 否 | 调试 / 兼容旧包 | 否 | 允许 ContentHash 校验失败后以 unverified cache 加载旧 skill 包；生产不建议开启。 |
 | `KSADK_SKILL_CACHE_DIR` | Runtime agent / PackageStore | 否 | 系统临时目录下 `ksadk-skill-cache` | 无 | 否 | Runtime agent | 否 | Skill archive 下载与解压缓存。 |
 | `KSADK_SKILL_WORKDIR` | Runtime agent | 否 | 系统临时目录下 `ksadk-skill-workflow` | 无 | 否 | Runtime agent | 否 | workflow 工作目录。 |
+| `KSADK_SKILL_OUTPUT_DIR` | Runtime agent workflow | 否 | `KSADK_SKILL_WORKDIR/artifacts` | 无 | 否 | Runtime agent | 否 | 传给本地 skill workflow 脚本的产物输出目录。 |
+| `KSADK_SKILL_ROOT_DIR` | Runtime agent workflow | 否 | 当前执行 skill 根目录 | 无 | 否 | Runtime agent | 否 | 传给本地 skill workflow 脚本的 skill 根目录。 |
 | `KSADK_SKILL_ARTIFACT_PROJECT` | Runtime agent | 否 | `ksadk-artifact` | 无 | 否 | Runtime agent | 否 | 最小 artifact workflow 项目目录名。 |
+| `KSADK_WORKFLOW_PROMPT` | Runtime agent workflow | 否 | 当前 workflow prompt | 无 | 否 | Runtime agent | 否 | 传给本地 skill workflow 脚本的用户请求文本。 |
 
 ## 7. MCP Runtime
 
@@ -235,20 +240,20 @@
 
 | 变量 | 作用层级 | 是否必传 | 默认值 | 别名/兼容 | 敏感 | 配置方/来源 | 是否业务自定义 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `KSADK_SESSION_BACKEND` | Sessions | 否 | `local` | `AGENTENGINE_SESSION_BACKEND`、`KSADK_STM_BACKEND` | 否 | 开发者 / 平台 | 否 | 会话存储 backend。 |
-| `KSADK_SESSION_DSN` | Sessions | 条件必传 | 未设置 | `KSADK_STM_URL`、`KSADK_STM_DB_URL` | 是 | Secret | 否 | PostgreSQL DSN。`KSADK_SESSION_BACKEND=postgres` 时必传。 |
+| `KSADK_SESSION_BACKEND` | Sessions | 否 | `local` | `AGENTENGINE_SESSION_BACKEND`、`KSADK_STM_BACKEND` | 否 | 开发者 / 平台 | 否 | 会话存储 backend。ADK/STM 也会把它作为兜底。 |
+| `KSADK_SESSION_DSN` | Sessions | 条件必传 | 未设置 | `KSADK_STM_URL`、`KSADK_STM_DB_URL`、`KSADK_ADK_SESSION_URL` | 是 | Secret | 否 | PostgreSQL DSN。`postgres` / `database` backend 时必传。ADK/STM 也会把它作为兜底。 |
 | `KSADK_SESSION_PATH` | Sessions | 否 | 项目目录下本地 sqlite 路径 | `KSADK_STM_PATH`、`KSADK_STM_DB_PATH` | 否 | 开发者 / 本地运行时 | 否 | 本地 SQLite 会话路径。 |
 | `KSADK_SESSION_NAMESPACE` | Sessions | 否 | 未设置 | `KSADK_WORKSPACE_ID`、`AGENTENGINE_WORKSPACE_ID`、`KSADK_TENANT_ID`、`AGENTENGINE_TENANT_ID` | 否 | 平台 | 否 | 会话 namespace。 |
 | `KSADK_TENANT_ID` | Sessions | 否 | 未设置 | `AGENTENGINE_TENANT_ID` | 否 | 平台 | 否 | 租户 id。 |
 | `KSADK_WORKSPACE_ID` | Sessions | 否 | 未设置 | `AGENTENGINE_WORKSPACE_ID` | 否 | 平台 | 否 | workspace id。 |
-| `KSADK_STM_BACKEND` | 旧 STM / Sessions fallback | 否 | 未设置 | `KSADK_SESSION_BACKEND` | 否 | 兼容旧部署 | 否 | 旧变量。新部署优先 `KSADK_SESSION_BACKEND`。 |
+| `KSADK_STM_BACKEND` | 旧 STM / Sessions fallback | 否 | 未设置 | `KSADK_SESSION_BACKEND` | 否 | 兼容旧部署 | 否 | 旧变量。新部署优先 `KSADK_SESSION_BACKEND`，但 ADK/STM 仍可读。 |
 | `KSADK_STM_PATH` | 旧 STM / Sessions fallback | 否 | 未设置 | `KSADK_SESSION_PATH` | 否 | 兼容旧部署 | 否 | 旧变量。 |
 | `KSADK_STM_DB_PATH` | 旧 STM / Sessions fallback | 否 | 未设置 | `KSADK_SESSION_PATH` | 否 | 兼容旧部署 | 否 | 旧变量。 |
-| `KSADK_STM_URL` | 旧 STM / Sessions fallback | 条件必传 | 未设置 | `KSADK_SESSION_DSN` | 是 | 兼容旧部署 | 否 | 旧变量。 |
-| `KSADK_STM_DB_URL` | 旧 STM / Sessions fallback | 条件必传 | 未设置 | `KSADK_SESSION_DSN` | 是 | 兼容旧部署 | 否 | 旧变量。 |
+| `KSADK_STM_URL` | 旧 STM / Sessions fallback | 条件必传 | 未设置 | `KSADK_SESSION_DSN` | 是 | 兼容旧部署 | 否 | 旧变量。ADK/STM 仍可读。 |
+| `KSADK_STM_DB_URL` | 旧 STM / Sessions fallback | 条件必传 | 未设置 | `KSADK_SESSION_DSN` | 是 | 兼容旧部署 | 否 | 旧变量。ADK/STM 仍可读。 |
 | `KSADK_ADK_SESSION_BACKEND` | ADK Memory | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | ADK 原生 session backend。 |
 | `KSADK_ADK_SESSION_PATH` | ADK Memory | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | ADK 原生 session sqlite 路径。 |
-| `KSADK_ADK_SESSION_URL` | ADK Memory | 条件必传 | 未设置 | 无 | 是 | Secret | 否 | ADK 原生 session 数据库 URL。 |
+| `KSADK_ADK_SESSION_URL` | ADK Memory | 条件必传 | 未设置 | `KSADK_SESSION_DSN` | 是 | Secret | 否 | ADK 原生 session 数据库 URL。统一 session DSN 也可兜底。 |
 | `KSADK_MEMORY_BACKEND` | MemoryManager | 否 | `memory` | 无 | 否 | 开发者 / 平台 | 否 | 轻量 KV/消息历史 backend。当前内置 `memory`，注册 Redis backend 后可用 `redis`。 |
 | `KSADK_MEMORY_URL` | MemoryManager | 条件必传 | 未设置 | 无 | 是 | Secret | 否 | 远端 MemoryManager backend 连接 URL，例如 Redis URL。 |
 | `KSADK_MEMORY_PREFIX` | MemoryManager | 否 | `ksadk:memory:` | 无 | 否 | 开发者 / 平台 | 否 | MemoryManager key prefix。 |
@@ -304,6 +309,12 @@
 | `KSADK_AICP_ENDPOINT_MODE` | AICP resolver | 否 | `auto` | 无 | 否 | 平台 / 开发者 | 否 | AICP endpoint 选择策略，支持 `auto/detect/internal/inner/public`。内网环境可显式设为 `inner`，跳过自动探测。 |
 | `AGENTENGINE_MODEL_ALLOWLIST` | CLI model / OpenClaw | 否 | 未设置 | `OPENCLAW_MODEL_ALLOWLIST` | 否 | 平台 / 开发者 | 否 | 模型列表过滤。OpenClaw 场景优先使用 `OPENCLAW_MODEL_ALLOWLIST`。 |
 | `AGENTENGINE_UI_DIR` | 本地 Web UI / Sessions | 否 | 未设置 | 无 | 否 | 本地开发者 | 否 | 本地 UI 静态目录覆盖，主要用于 Web/文件上传本地调试。 |
+| `KSADK_WEB_VERSION` | Hosted Web UI static sync | 否 | `latest` | 可显式设置 `0.2.7` / `v0.2.7` | 否 | 构建环境 / 开发者 | 否 | `make sync-ksadk-web-static` 使用的 `@kingsoftcloud/ksadk-web` npm dist-tag 或版本，默认消费最新 release。 |
+| `KSADK_WEB_PACKAGE` | Hosted Web UI static sync | 否 | `@kingsoftcloud/ksadk-web` | 无 | 否 | 构建环境 / 开发者 | 否 | 本地 UI static 同步使用的 npm 包名。 |
+| `KSADK_WEB_TARBALL_NAME` | Hosted Web UI static sync | 否 | 根据 `KSADK_WEB_VERSION` 派生 | 无 | 否 | 构建环境 | 否 | 仅在设置 `KSADK_WEB_RELEASE_URL` 时作为下载保存文件名；npm pack 模式会使用 npm 返回的真实 tarball 文件名。 |
+| `KSADK_WEB_RELEASE_URL` | Hosted Web UI static sync | 否 | 未设置 | 无 | 否 | 构建环境 / 开发者 | 否 | 可选兼容兜底。设置后跳过 npm pack，改从该 tarball URL 下载。 |
+| `KSADK_WEB_CACHE_DIR` | Hosted Web UI static sync | 否 | `.cache/ksadk-web` | 无 | 否 | 构建环境 / 开发者 | 否 | KsADK Web 包解压缓存目录。 |
+| `KSADK_GLOBAL_CONFIG_ENV_KEYS` | CLI | 否 | 未设置 | 无 | 否 | CLI 内部 | 否 | CLI 启动时记录哪些环境变量由 `~/.agentengine/settings.json` 补入，用于区分用户显式环境变量和全局配置默认值。 |
 | `AGENTENGINE_LOCAL_RUNTIME_VENV_REEXEC` | 本地 runtime CLI | 否 | 自动判断 | 无 | 否 | 本地开发者 / 测试 | 否 | 控制本地 runtime 是否在虚拟环境中 re-exec。普通用户通常无需设置。 |
 | `AGENTENGINE_WEB_VENV_REEXEC` | 本地 Web CLI | 否 | 自动判断 | 无 | 否 | 本地开发者 / 测试 | 否 | 控制本地 Web 命令是否在虚拟环境中 re-exec。普通用户通常无需设置。 |
 | `AGENTENGINE_DEBUG` | CLI | 否 | 未设置 | 无 | 否 | 开发者 | 否 | 开启更详细错误输出。 |
@@ -324,10 +335,12 @@
 | `KSADK_BUILD_PIP_INSTALL_TIMEOUT_SECONDS` | Code Builder | 否 | `2700` | 无 | 否 | 构建环境 / 开发者 | 否 | 源码构建时 `pip install` 总超时秒数。 |
 | `KSADK_BUILD_ENABLE_ATTACHMENT_OCR` | Code Builder / Container Builder | 否 | `false` | 无 | 否 | 构建环境 / 开发者 | 否 | 是否把平台本地 OCR 依赖打进代码包。不开启不影响多模态模型直接消费 `input_image`。 |
 | `KSADK_BUILD_ENABLE_MCP` | Code Builder / Container Builder | 否 | `false` | 无 | 否 | 构建环境 / 开发者 | 否 | 强制把 `mcp` / `langchain-mcp-adapters` 打进包。通常会根据项目 import 或非空 `KSADK_MCP_SERVERS` 自动启用；`[]` 不会启用。 |
-| `KSADK_BUILD_ENABLE_POSTGRES_SESSION` | Code Builder / Container Builder | 否 | `false` | 无 | 否 | 构建环境 / 开发者 | 否 | 强制把 `asyncpg` 打进包。通常会根据 `KSADK_SESSION_BACKEND=postgres` 或 PostgreSQL DSN 自动启用。 |
+| `KSADK_BUILD_ENABLE_POSTGRES_SESSION` | Code Builder / Container Builder | 否 | `false` | 无 | 否 | 构建环境 / 开发者 | 否 | 强制把 `asyncpg` 打进包。通常会根据 `KSADK_SESSION_BACKEND=postgres`、`KSADK_SESSION_DSN` 或 PostgreSQL DSN 自动启用。 |
 | `KSADK_RUNTIME_PORT` | Runtime image / CLI | 否 | `8080` | 无 | 否 | 平台 | 否 | 模板运行时 HTTP 端口。 |
 | `KSADK_PROJECT_DIR` | Sessions / Web | 否 | 当前工作目录 | 无 | 否 | 本地运行时 | 否 | 本地 session/workspace 状态 project root。 |
 | `KSADK_RESPONSES_SESSION_HEADER` | RemoteRunner | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 远端 Responses session 透传 header 名称。 |
+| `KSADK_TERMINAL_EXEC_SUBCOMMAND_ALLOWLIST` | Terminal exec | 否 | 默认常见只读命令 | 无 | 否 | 平台 / 开发者 | 否 | 追加允许远程 terminal exec 透传的命令前缀，多个前缀用逗号、分号或换行分隔；例如 `config,openclaw config`。设置为 `*` 时允许全部远程 exec 命令。 |
+| `KSADK_TOOL_APPROVAL_MODE` | Built-in tools / Conversations runtime | 否 | `off` | 无 | 否 | 平台 / 开发者 | 否 | 内置工具审批模式；`strict` 时中高风险工具需要审批。 |
 | `KSADK_FEISHU_APP_ID` | OpenClaw diagnostics | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | 飞书辅助 app id。 |
 | `KSADK_FEISHU_RESULT_PATH` | OpenClaw diagnostics | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | 飞书辅助结果路径。 |
 | `KSADK_WORKSPACE_FILES_ENABLED` | Hermes/OpenClaw workspace files | 否 | 镜像内通常默认 `1` | `OPENCLAW_WORKSPACE_FILES_ENABLED` | 否 | Runtime 镜像 / 平台 | 否 | 工作区文件服务开关。 |

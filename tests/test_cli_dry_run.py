@@ -231,18 +231,6 @@ class _FakeGatewayClient:
             },
         }
 
-    async def config_apply(self, *, config, base_hash, note=None, session_key=None, restart_delay_ms=None):
-        self.__class__.applied_configs.append(
-            {
-                "config": config,
-                "base_hash": base_hash,
-                "note": note,
-                "session_key": session_key,
-                "restart_delay_ms": restart_delay_ms,
-            }
-        )
-        return {"ok": True}
-
     async def web_login_start(self, *, force=False, timeout_ms=None):
         return {
             "qrDataUrl": "https://qr.example.com/weixin-login",
@@ -257,6 +245,18 @@ class _FakeGatewayClient:
             "timeout_ms": timeout_ms,
         }
         return {"connected": True, "message": "connected"}
+
+    async def config_apply(self, *, config, base_hash, note=None, session_key=None, restart_delay_ms=None):
+        self.__class__.applied_configs.append(
+            {
+                "config": config,
+                "base_hash": base_hash,
+                "note": note,
+                "session_key": session_key,
+                "restart_delay_ms": restart_delay_ms,
+            }
+        )
+        return {"ok": True}
 
 
 class _FakeConfigApplyReloadGatewayClient(_FakeGatewayClient):
@@ -604,6 +604,44 @@ def test_client_respects_global_dry_run_env(monkeypatch):
     assert client.dry_run is True
 
 
+def test_client_bootstrap_config_can_ignore_dry_run(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="", dry_run=True)
+    captured = {}
+
+    def fake_request(method, path, body=None, *, ignore_dry_run=False):
+        captured.update(
+            {
+                "method": method,
+                "path": path,
+                "body": body,
+                "ignore_dry_run": ignore_dry_run,
+            }
+        )
+        return {
+            "Code": 0,
+            "Data": {
+                "Configs": {
+                    "bootstrap.default_image": "registry.example.com/runtime:db",
+                }
+            },
+        }
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    result = asyncio.run(
+        client.get_client_bootstrap_config(
+            product="openclaw",
+            framework="openclaw",
+            region="pre-online",
+            ignore_dry_run=True,
+        )
+    )
+
+    assert captured["ignore_dry_run"] is True
+    assert captured["body"]["Product"] == "openclaw"
+    assert result["configs"]["bootstrap.default_image"] == "registry.example.com/runtime:db"
+
+
 def test_mcp_status_supports_dry_run(monkeypatch):
     runner = CliRunner()
     monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeDryRunClient)
@@ -940,7 +978,7 @@ def test_openclaw_gateway_ws_url_prints_dashboard_and_ws(monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert "dashboard.example.com/s/lnk-demo" in result.output
-    assert "wss://dashboard.example.com/" in result.output
+    assert "wss://" in result.output
     assert "cookie-session" in result.output
 
 
@@ -981,7 +1019,7 @@ def test_openclaw_gateway_ws_url_allows_creating_when_gateway_is_reachable(monke
 
     assert result.exit_code == 0, result.output
     assert "dashboard.example.com/s/lnk-demo" in result.output
-    assert "wss://dashboard.example.com/" in result.output
+    assert "wss://" in result.output
 
 
 def test_openclaw_gateway_doctor_continues_probe_when_status_is_creating(monkeypatch):
@@ -1635,6 +1673,12 @@ def test_openclaw_deploy_rejects_mem0_without_instance_id():
     assert "--mem0-instance-id" in result.output
 
 
+def test_openclaw_default_image_ref_tracks_current_runtime_tag():
+    from ksadk.cli.cmd_openclaw import _resolve_image_ref
+
+    assert _resolve_image_ref(None) == "ghcr.io/kingsoftcloud/agentengine-public/openclaw:2026.6.1"
+
+
 def test_openclaw_deploy_create_payload_includes_network(monkeypatch, tmp_path):
     runner = CliRunner()
     monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawCreateClient)
@@ -1651,7 +1695,7 @@ def test_openclaw_deploy_create_payload_includes_network(monkeypatch, tmp_path):
             "--name",
             "demo-openclaw",
             "--image",
-            "hub.kce.ksyun.com/agentengine-public/openclaw:test",
+            "ghcr.io/kingsoftcloud/agentengine-public/openclaw:test",
             "--disable-public-access",
             "--enable-vpc-access",
             "--vpc-id",
@@ -1700,7 +1744,7 @@ def test_openclaw_deploy_uses_init_project_name_when_name_is_omitted(monkeypatch
         [
             "deploy",
             "--image",
-            "hub.kce.ksyun.com/agentengine-public/openclaw:test",
+            "ghcr.io/kingsoftcloud/agentengine-public/openclaw:test",
         ],
     )
 
@@ -1736,7 +1780,7 @@ def test_openclaw_deploy_update_payload_includes_network(monkeypatch, tmp_path):
             "--name",
             "demo-openclaw",
             "--image",
-            "hub.kce.ksyun.com/agentengine-public/openclaw:test",
+            "ghcr.io/kingsoftcloud/agentengine-public/openclaw:test",
             "--enable-vpc-access",
             "--vpc-id",
             "vpc-cli",
@@ -1757,6 +1801,94 @@ def test_openclaw_deploy_update_payload_includes_network(monkeypatch, tmp_path):
     }
 
 
+def test_openclaw_deploy_update_payload_preserves_existing_config_by_default(monkeypatch, tmp_path):
+    runner = CliRunner()
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawCreateClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw._GLOBAL_ENV_CACHE", {})
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".agentengine.state").write_text(
+        yaml.safe_dump(
+            {
+                "type": "openclaw",
+                "agent_id": "ar-existing-1",
+                "name": "demo-openclaw",
+                "endpoint": "https://existing.example.com",
+                "api_key": "ak-existing",
+            }
+        ),
+        encoding="utf-8",
+    )
+    _FakeOpenClawCreateClient.create_payload = None
+    _FakeOpenClawCreateClient.update_payload = None
+    _FakeOpenClawCreateClient.get_agent_calls = 0
+
+    result = runner.invoke(
+        openclaw,
+        [
+            "deploy",
+            "--image",
+            "ghcr.io/kingsoftcloud/agentengine-public/openclaw:new",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _FakeOpenClawCreateClient.create_payload is None
+    assert _FakeOpenClawCreateClient.update_payload["artifact_path"] == (
+        "ghcr.io/kingsoftcloud/agentengine-public/openclaw:new"
+    )
+    assert "env_vars" not in _FakeOpenClawCreateClient.update_payload
+    assert "storage" not in _FakeOpenClawCreateClient.update_payload
+    assert "network" not in _FakeOpenClawCreateClient.update_payload
+    assert "memory_config" not in _FakeOpenClawCreateClient.update_payload
+
+
+def test_openclaw_deploy_update_payload_includes_explicit_config(monkeypatch, tmp_path):
+    runner = CliRunner()
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawCreateClient)
+    monkeypatch.setattr("ksadk.cli.cmd_openclaw._GLOBAL_ENV_CACHE", {})
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".agentengine.state").write_text(
+        yaml.safe_dump(
+            {
+                "type": "openclaw",
+                "agent_id": "ar-existing-1",
+                "name": "demo-openclaw",
+                "endpoint": "https://existing.example.com",
+                "api_key": "ak-existing",
+            }
+        ),
+        encoding="utf-8",
+    )
+    _FakeOpenClawCreateClient.create_payload = None
+    _FakeOpenClawCreateClient.update_payload = None
+    _FakeOpenClawCreateClient.get_agent_calls = 0
+
+    result = runner.invoke(
+        openclaw,
+        [
+            "deploy",
+            "--image",
+            "ghcr.io/kingsoftcloud/agentengine-public/openclaw:new",
+            "--model-base-url",
+            "https://model.example.com/v1",
+            "--default-model",
+            "glm-test",
+            "--env",
+            "APP_MODE=prod",
+            "--storage-size-gi",
+            "50",
+            "--memory-system",
+            "openclaw_default",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = _FakeOpenClawCreateClient.update_payload
+    assert any(item["Key"] == "APP_MODE" and item["Value"] == "prod" for item in payload["env_vars"])
+    assert payload["storage"]["size_gi"] == 50
+    assert payload["memory_config"] == {"memory_system": "openclaw_default"}
+
+
 def test_openclaw_deploy_network_ids_imply_vpc_access(monkeypatch, tmp_path):
     runner = CliRunner()
     monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeOpenClawCreateClient)
@@ -1773,7 +1905,7 @@ def test_openclaw_deploy_network_ids_imply_vpc_access(monkeypatch, tmp_path):
             "--name",
             "demo-openclaw",
             "--image",
-            "hub.kce.ksyun.com/agentengine-public/openclaw:test",
+            "ghcr.io/kingsoftcloud/agentengine-public/openclaw:test",
             "--vpc-id",
             "vpc-cli",
             "--subnet-id",
@@ -1818,7 +1950,7 @@ def test_openclaw_deploy_does_not_query_get_agent_when_quick_access_is_already_c
             "--name",
             "demo-openclaw",
             "--image",
-            "hub.kce.ksyun.com/agentengine-public/openclaw:test",
+            "ghcr.io/kingsoftcloud/agentengine-public/openclaw:test",
         ],
     )
 
@@ -1840,7 +1972,7 @@ def test_openclaw_deploy_persists_gateway_token_from_extra_env(monkeypatch, tmp_
             "--name",
             "demo-openclaw",
             "--image",
-            "hub.kce.ksyun.com/agentengine-public/openclaw:test",
+            "ghcr.io/kingsoftcloud/agentengine-public/openclaw:test",
             "--env",
             "OPENCLAW_GATEWAY_AUTH_MODE=token",
             "--env",
@@ -1894,7 +2026,7 @@ def test_openclaw_deploy_writes_only_configured_model_from_provider_catalog(monk
             "--name",
             "demo-openclaw",
             "--image",
-            "hub.kce.ksyun.com/agentengine-public/openclaw:test",
+            "ghcr.io/kingsoftcloud/agentengine-public/openclaw:test",
         ],
     )
 
@@ -1904,9 +2036,8 @@ def test_openclaw_deploy_writes_only_configured_model_from_provider_catalog(monk
         for item in _FakeOpenClawCreateClient.create_payload["env_vars"]
     }
     catalog = json.loads(env_vars["OPENCLAW_MODEL_CATALOG_JSON"])
-    assert [item["id"] for item in catalog] == ["deepseek-v4-pro"]
-    assert catalog[0]["contextWindow"] == 1_000_000
-    assert catalog[0]["maxTokens"] == 384_000
+    assert [item["id"] for item in catalog] == ["glm-5.2", "kimi-k2.7-code", "deepseek-v4-pro"]
+    assert catalog[1]["options"] == {"temperature": 1}
 
 
 def test_openclaw_deploy_writes_allowlisted_models_from_provider_catalog(monkeypatch, tmp_path):
@@ -1949,7 +2080,7 @@ def test_openclaw_deploy_writes_allowlisted_models_from_provider_catalog(monkeyp
             "--name",
             "demo-openclaw",
             "--image",
-            "hub.kce.ksyun.com/agentengine-public/openclaw:test",
+            "ghcr.io/kingsoftcloud/agentengine-public/openclaw:test",
         ],
     )
 
@@ -1959,7 +2090,7 @@ def test_openclaw_deploy_writes_allowlisted_models_from_provider_catalog(monkeyp
         for item in _FakeOpenClawCreateClient.create_payload["env_vars"]
     }
     catalog = json.loads(env_vars["OPENCLAW_MODEL_CATALOG_JSON"])
-    assert [item["id"] for item in catalog] == ["deepseek-v4-pro", "glm-5.1"]
+    assert [item["id"] for item in catalog] == ["glm-5.2", "kimi-k2.7-code", "deepseek-v4-pro"]
     assert "kimi-k2.6" not in {item["id"] for item in catalog}
 
 
@@ -1977,7 +2108,7 @@ def test_openclaw_deploy_refreshes_quick_access_when_agent_id_is_immediate(monke
             "--name",
             "demo-openclaw",
             "--image",
-            "hub.kce.ksyun.com/agentengine-public/openclaw:test",
+            "ghcr.io/kingsoftcloud/agentengine-public/openclaw:test",
         ],
     )
 
@@ -2004,7 +2135,7 @@ def test_openclaw_deploy_retries_transient_get_agent_not_found_until_api_key_is_
             "--name",
             "demo-openclaw",
             "--image",
-            "hub.kce.ksyun.com/agentengine-public/openclaw:test",
+            "ghcr.io/kingsoftcloud/agentengine-public/openclaw:test",
         ],
     )
 

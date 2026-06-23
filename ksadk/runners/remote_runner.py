@@ -107,6 +107,100 @@ class RemoteRunner(BaseRunner):
         return str(user_input or "")
 
     @staticmethod
+    def _build_responses_conversation_history(history: Any, current_input: Any) -> list[dict[str, Any]]:
+        if not isinstance(history, Sequence) or isinstance(
+            history, (str, bytes, bytearray)
+        ):
+            return []
+
+        messages: list[dict[str, Any]] = []
+        current_text = RemoteRunner._responses_message_text(
+            {"role": "user", "content": current_input}
+        ).strip()
+        for item in history:
+            if not isinstance(item, Mapping):
+                continue
+            role = str(item.get("role") or "").strip().lower()
+            if role == "model":
+                role = "assistant"
+            if role not in {"user", "assistant"}:
+                continue
+            text = RemoteRunner._responses_message_text(item).strip()
+            if not text:
+                continue
+            if role == "user" and current_text and text == current_text:
+                continue
+            messages.append(
+                {
+                    "role": role,
+                    "content": [{"type": "input_text", "text": text}],
+                }
+            )
+        return messages
+
+    @staticmethod
+    def _responses_conversation_name(input_data: Mapping[str, Any], session_id: Optional[str]) -> str:
+        if not session_id:
+            return ""
+        platform_context = input_data.get("platform_context")
+        agent_id = ""
+        if isinstance(platform_context, Mapping):
+            agent_id = str(platform_context.get("agent_id") or "").strip()
+        if agent_id:
+            return f"agentengine:{agent_id}:{session_id}"
+        return f"agentengine:{session_id}"
+
+    @staticmethod
+    def _responses_conversation_value(value: Any) -> str:
+        if isinstance(value, Mapping):
+            return str(value.get("id") or "").strip()
+        return str(value or "").strip()
+
+    def _build_responses_payload(
+        self,
+        input_data: Mapping[str, Any],
+        *,
+        stream: bool,
+    ) -> dict[str, Any]:
+        user_input = input_data.get("input", "")
+        session_id = input_data.get("session_id") or self.session_id
+        previous_response_id = input_data.get("previous_response_id")
+
+        if self.responses_session_header:
+            payload = {
+                "input": self._build_responses_input(user_input),
+                "stream": stream,
+            }
+        else:
+            payload = {
+                "input": self._build_responses_input(user_input),
+                "stream": stream,
+            }
+            history_enabled = bool(input_data.get("responses_conversation")) and not previous_response_id
+            if history_enabled:
+                history = self._build_responses_conversation_history(
+                    input_data.get("history"),
+                    user_input,
+                )
+                if history:
+                    payload["conversation_history"] = history
+            conversation = self._responses_conversation_value(input_data.get("conversation"))
+            if conversation and not previous_response_id:
+                payload["conversation"] = conversation
+            elif (
+                input_data.get("responses_conversation")
+                and session_id
+                and not previous_response_id
+            ):
+                conversation = self._responses_conversation_name(input_data, str(session_id))
+                if conversation:
+                    payload["conversation"] = conversation
+
+        if previous_response_id:
+            payload["previous_response_id"] = str(previous_response_id)
+        return payload
+
+    @staticmethod
     def _is_chat_style_message(value: Mapping[str, Any]) -> bool:
         return not value.get("type") and ("role" in value or "content" in value)
 
@@ -136,6 +230,16 @@ class RemoteRunner(BaseRunner):
             headers[self.responses_session_header] = session_id
         return headers
 
+    @staticmethod
+    def _response_usage_payload(data: Mapping[str, Any]) -> dict[str, Any]:
+        usage = data.get("usage")
+        if isinstance(usage, Mapping):
+            return dict(usage)
+        response = data.get("response")
+        if isinstance(response, Mapping) and isinstance(response.get("usage"), Mapping):
+            return dict(response["usage"])
+        return {}
+
     async def invoke(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """非流式调用远程 Agent"""
         import httpx
@@ -145,21 +249,15 @@ class RemoteRunner(BaseRunner):
 
         if self.api_format == "responses":
             url = f"{self.endpoint}/v1/responses"
-            payload = {
-                "input": self._build_responses_input(user_input),
-                "stream": False,
-            }
+            payload = self._build_responses_payload(input_data, stream=False)
         else:
             url = f"{self.endpoint}/v1/chat/completions"
             payload = {
                 "messages": [{"role": "user", "content": user_input}],
                 "stream": False,
             }
-        if session_id and not (self.api_format == "responses" and self.responses_session_header):
+        if session_id and self.api_format != "responses":
             payload["session_id"] = session_id
-        previous_response_id = input_data.get("previous_response_id")
-        if self.api_format == "responses" and previous_response_id:
-            payload["previous_response_id"] = str(previous_response_id)
         if self.model:
             payload["model"] = self.model
 
@@ -168,8 +266,13 @@ class RemoteRunner(BaseRunner):
             response.raise_for_status()
             data = response.json()
 
+        usage = self._response_usage_payload(data)
+
         if self.api_format == "responses":
-            return {"output": self._extract_responses_output_text(data) or str(data)}
+            result = {"output": self._extract_responses_output_text(data) or str(data)}
+            if usage:
+                result["usage"] = usage
+            return result
 
         # 提取 OpenAI Chat Completions 格式响应
         try:
@@ -177,7 +280,10 @@ class RemoteRunner(BaseRunner):
         except (KeyError, IndexError):
             content = str(data)
 
-        return {"output": content}
+        result = {"output": content}
+        if usage:
+            result["usage"] = usage
+        return result
 
     async def stream(self, input_data: Dict[str, Any]) -> AsyncIterator[Dict[str, Any]]:
         """流式调用远程 Agent"""
@@ -188,21 +294,16 @@ class RemoteRunner(BaseRunner):
 
         if self.api_format == "responses":
             url = f"{self.endpoint}/v1/responses"
-            payload = {
-                "input": self._build_responses_input(user_input),
-                "stream": True,
-            }
+            payload = self._build_responses_payload(input_data, stream=True)
         else:
             url = f"{self.endpoint}/v1/chat/completions"
             payload = {
                 "messages": [{"role": "user", "content": user_input}],
                 "stream": True,
+                "stream_options": {"include_usage": True},
             }
-        if session_id and not (self.api_format == "responses" and self.responses_session_header):
+        if session_id and self.api_format != "responses":
             payload["session_id"] = session_id
-        previous_response_id = input_data.get("previous_response_id")
-        if self.api_format == "responses" and previous_response_id:
-            payload["previous_response_id"] = str(previous_response_id)
         if self.model:
             payload["model"] = self.model
 
@@ -213,6 +314,8 @@ class RemoteRunner(BaseRunner):
                 response.raise_for_status()
 
                 event_name = ""
+                accumulated_text = ""
+                final_sent = False
                 async for line in response.aiter_lines():
                     if not line:
                         event_name = ""
@@ -239,6 +342,10 @@ class RemoteRunner(BaseRunner):
 
                             # 解析 OpenAI Chat Completions 流式格式
                             choices = data.get("choices", [])
+                            usage = data.get("usage")
+                            if isinstance(usage, Mapping):
+                                yield {"type": "final", "usage": dict(usage)}
+                                final_sent = True
                             if choices:
                                 delta = choices[0].get("delta", {})
                                 content = delta.get("content", "")
@@ -247,10 +354,13 @@ class RemoteRunner(BaseRunner):
                                 if reasoning:
                                     yield {"delta": reasoning, "type": "thinking"}
                                 if content:
+                                    accumulated_text += content
                                     yield {"delta": content, "type": "text"}
 
                         except json.JSONDecodeError:
                             pass
+                if self.api_format != "responses" and accumulated_text and not final_sent:
+                    yield {"output": accumulated_text, "type": "final"}
 
     @staticmethod
     def _extract_responses_output_text(data: Dict[str, Any]) -> str:
@@ -460,11 +570,15 @@ class RemoteRunner(BaseRunner):
             response = data.get("response") if isinstance(data.get("response"), dict) else data
             output = response.get("output") if isinstance(response, dict) else None
             if isinstance(output, list):
-                yield {
+                chunk = {
                     "type": "responses_output",
                     "output": output,
                     "response_id": response.get("id"),
                 }
+                usage = response.get("usage")
+                if isinstance(usage, Mapping):
+                    chunk["usage"] = dict(usage)
+                yield chunk
             return
         if event_type == "response.failed":
             yield {"type": "error", "message": self._responses_error_message(data)}

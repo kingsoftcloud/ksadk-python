@@ -76,3 +76,16 @@ def test_setup_environment_does_not_force_internal_base_from_region_only(
 
     assert os.environ["OPENAI_BASE_URL"] == "http://kspmas.ksyun.com/v1"
     assert os.environ["OPENAI_API_BASE"] == "http://kspmas.ksyun.com/v1"
+
+
+def test_optimize_kspmas_url_only_rewrites_exact_hostname(monkeypatch):
+    monkeypatch.setenv("AGENT_RUNTIME_ID", "ar-test")
+
+    assert (
+        settings_module.optimize_kspmas_url("https://kspmas.ksyun.com/v1?x=1")
+        == "http://kspmas-internal.sdns.ksyun.com/v1?x=1"
+    )
+    assert (
+        settings_module.optimize_kspmas_url("https://evil.example/kspmas.ksyun.com/v1")
+        == "https://evil.example/kspmas.ksyun.com/v1"
+    )

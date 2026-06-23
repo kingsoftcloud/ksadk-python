@@ -95,6 +95,37 @@ async def test_create_agent_forwards_ui_config(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_create_dashboard_access_link_can_omit_path(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    calls = []
+
+    def fake_action(action: str, params: dict):
+        calls.append((action, params.copy()))
+        return {"link_id": "dash-link"}
+
+    monkeypatch.setattr(client, "_action", fake_action)
+
+    await client.create_dashboard_access_link(
+        agent_id="ar-openclaw",
+        link_type="private",
+        path=None,
+        expires_seconds=3600,
+    )
+
+    assert calls == [
+        (
+            "CreateDashboardAccessLink",
+            {
+                "AgentId": "ar-openclaw",
+                "LinkType": "private",
+                "ForceNew": False,
+                "ExpiresSeconds": 3600,
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_create_agent_forwards_storage_configuration(monkeypatch):
     client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
     calls = []
@@ -347,3 +378,83 @@ async def test_run_openclaw_repair_forwards_control_plane_action(monkeypatch):
             },
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_create_agent_detects_enterprise_registry_from_image_addr(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    calls = []
+
+    def fake_action(action: str, params: dict):
+        calls.append((action, params.copy()))
+        return {"agent_id": "ar-enterprise"}
+
+    monkeypatch.setattr(client, "_action", fake_action)
+
+    await client.create_agent(
+        {
+            "name": "enterprise-demo",
+            "framework": "langgraph",
+            "artifact_type": "Container",
+            "artifact_path": "agenthzzqy-vpc.ksyunkcr.com/testagent-pub/0606agent:v6",
+            "image_credential": {"username": "kcr-user", "password": "kcr-pass"},
+        }
+    )
+
+    assert calls[0][1]["ContainerConfig"] == {
+        "ImageType": "Enterprise",
+        "EnterpriseInstance": "agenthzzqy",
+        "NameSpace": "testagent-pub",
+        "ImageRepo": "0606agent",
+        "ImageVersion": "v6",
+        "ImageAddr": "agenthzzqy-vpc.ksyunkcr.com/testagent-pub/0606agent:v6",
+        "UserName": "kcr-user",
+        "Password": "kcr-pass",
+    }
+
+
+def test_enterprise_registry_detection_uses_exact_hostname():
+    assert (
+        AgentEngineClient._enterprise_instance_from_image_ref(
+            "agenthzzqy-vpc.ksyunkcr.com/testagent-pub/0606agent:v6"
+        )
+        == "agenthzzqy"
+    )
+    assert (
+        AgentEngineClient._enterprise_instance_from_image_ref(
+            "evil.example.com/agenthzzqy-vpc.ksyunkcr.com/demo:v1"
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_agent_keeps_third_party_registry_as_personal_with_credentials(monkeypatch):
+    client = AgentEngineClient(base_url="http://example.com", access_key="", secret_key="")
+    calls = []
+
+    def fake_action(action: str, params: dict):
+        calls.append((action, params.copy()))
+        return {"agent_id": "ar-third-party"}
+
+    monkeypatch.setattr(client, "_action", fake_action)
+
+    await client.create_agent(
+        {
+            "name": "dockerhub-demo",
+            "framework": "langgraph",
+            "artifact_type": "Container",
+            "artifact_path": "registry-1.docker.io/acme/agent-runtime:v1",
+            "image_credential": {"username": "docker-user", "password": "docker-pass"},
+        }
+    )
+
+    assert calls[0][1]["ContainerConfig"] == {
+        "ImageType": "Personal",
+        "NameSpace": "acme",
+        "ImageRepo": "agent-runtime",
+        "ImageVersion": "v1",
+        "ImageAddr": "registry-1.docker.io/acme/agent-runtime:v1",
+        "UserName": "docker-user",
+        "Password": "docker-pass",
+    }

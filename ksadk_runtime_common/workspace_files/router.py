@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import io
 import mimetypes
+import zipfile
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, File, HTTPException, Query, Response, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from ksadk_runtime_common.workspace_files.bootstrap import (
     workspace_files_enabled,
@@ -31,10 +33,19 @@ HealthzResponse = dict[str, bool | str]
 UploadResponse = dict[str, EntryPayload]
 
 
+def _trusted_workspace_path(root: Path, path: Path) -> Path:
+    resolved_root = root.resolve(strict=False)
+    resolved_path = path.resolve(strict=False)
+    if resolved_path != resolved_root and resolved_root not in resolved_path.parents:
+        raise HTTPException(status_code=400, detail="workspace path escapes root")
+    return resolved_path
+
+
 def _isoformat_timestamp(path: Path) -> str:
     """Get an ISO 8601 timestamp for a file modification time."""
+    path = path.resolve(strict=False)
     return (
-        datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
+        datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
         .isoformat()
         .replace("+00:00", "Z")
     )
@@ -86,6 +97,7 @@ def create_workspace_files_router(
         _ensure_enabled()
         root = _resolve_workspace_root(root_getter)
         normalized, target = _resolve_workspace_target(root, path, allow_root=True)
+        target = _trusted_workspace_path(root, target)
         if not target.exists():
             raise HTTPException(status_code=404, detail="workspace path not found")
         if not target.is_dir():
@@ -102,11 +114,44 @@ def create_workspace_files_router(
             "Entries": [_entry_payload(root, entry) for entry in entries],
         }
 
+    @router.get("/export-zip")
+    async def export_workspace_zip(path: str = Query(".", alias="path")) -> StreamingResponse:
+        _ensure_enabled()
+        root = _resolve_workspace_root(root_getter)
+        normalized, target = _resolve_workspace_target(root, path, allow_root=True)
+        target = _trusted_workspace_path(root, target)
+        if not target.exists():
+            raise HTTPException(status_code=404, detail="workspace path not found")
+        if not target.is_dir():
+            raise HTTPException(status_code=400, detail="workspace path is not a directory")
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as archive:
+            for entry in sorted(target.rglob("*")):
+                if not entry.exists() or not entry.is_file() or entry.is_symlink():
+                    continue
+                try:
+                    resolved_entry = entry.resolve(strict=True)
+                except OSError:
+                    continue
+                if resolved_entry == root or root not in resolved_entry.parents:
+                    continue
+                archive.write(resolved_entry, resolved_entry.relative_to(root).as_posix())
+
+        buf.seek(0)
+        zip_name = f"workspace-{normalized.replace('/', '-')}.zip" if normalized != "." else "workspace.zip"
+        return StreamingResponse(
+            buf,
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{zip_name}"'},
+        )
+
     @router.head("/files/{file_path:path}")
     async def head_workspace_file(file_path: str) -> Response:
         _ensure_enabled()
         root = _resolve_workspace_root(root_getter)
         _, target = _resolve_workspace_target(root, file_path, allow_root=False)
+        target = _trusted_workspace_path(root, target)
         if not target.exists() or not target.is_file():
             raise HTTPException(status_code=404, detail="workspace file not found")
         media_type, _ = mimetypes.guess_type(target.name)
@@ -124,6 +169,7 @@ def create_workspace_files_router(
         _ensure_enabled()
         root = _resolve_workspace_root(root_getter)
         _, target = _resolve_workspace_target(root, file_path, allow_root=False)
+        target = _trusted_workspace_path(root, target)
         if not target.exists() or not target.is_file():
             raise HTTPException(status_code=404, detail="workspace file not found")
         media_type, _ = mimetypes.guess_type(target.name)
@@ -155,6 +201,7 @@ def create_workspace_files_router(
         _ensure_enabled()
         root = _resolve_workspace_root(root_getter)
         _, target = _resolve_workspace_target(root, file_path, allow_root=False)
+        target = _trusted_workspace_path(root, target)
         target.parent.mkdir(parents=True, exist_ok=True)
 
         size_bytes = 0
@@ -187,6 +234,7 @@ def create_workspace_files_router(
         _ensure_enabled()
         root = _resolve_workspace_root(root_getter)
         _, target = _resolve_workspace_target(root, file_path, allow_root=False)
+        target = _trusted_workspace_path(root, target)
         if not target.exists():
             raise HTTPException(status_code=404, detail="workspace file not found")
         if target.is_dir():

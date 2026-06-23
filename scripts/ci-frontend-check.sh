@@ -1,37 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd "$(dirname "$0")/../ksadk/server/web-ui"
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$repo_root"
 
-# Build both targets
-npm ci
-npm run build:all
+make sync-ksadk-web-static
 
-# Verify both outputs exist
-if [ ! -f dist/index.html ]; then
-  echo "FAIL: dist/index.html missing"
-  exit 1
-fi
-if [ ! -f dist-hosted/index.html ]; then
-  echo "FAIL: dist-hosted/index.html missing"
+if [ ! -f ksadk/server/static/index.html ]; then
+  echo "FAIL: ksadk/server/static/index.html missing"
   exit 1
 fi
 
-# Check timestamps are close (within 60s)
-if command -v stat &>/dev/null; then
-  if [[ "$OSTYPE" == "darwin"* ]]; then
-    dist_time=$(stat -f %m dist/index.html)
-    hosted_time=$(stat -f %m dist-hosted/index.html)
-  else
-    dist_time=$(stat -c %Y dist/index.html)
-    hosted_time=$(stat -c %Y dist-hosted/index.html)
-  fi
-  diff=$((hosted_time - dist_time))
-  if [ "$diff" -lt 0 ]; then diff=$((-diff)); fi
-  if [ "$diff" -gt 60 ]; then
-    echo "FAIL: dist and dist-hosted timestamps differ by ${diff}s (>60s)"
-    exit 1
-  fi
+if ! ls ksadk/server/static/assets/*.js >/dev/null 2>&1; then
+  echo "FAIL: synced static bundle is missing JS assets"
+  exit 1
 fi
 
-echo "PASS: Frontend builds and sync check OK"
+if ! ls ksadk/server/static/assets/*.css >/dev/null 2>&1; then
+  echo "FAIL: synced static bundle is missing CSS assets"
+  exit 1
+fi
+
+echo "PASS: KsADK Web static sync check OK"

@@ -180,11 +180,15 @@ Hermes 终端 WebSocket 额外要求：
 - `POST /agentengine/api/v1/ListSessionEvents`
 - `GET /agentengine/api/v1/SubscribeRunEvents`
 - `POST /agentengine/api/v1/RunAgent`
+- `POST /agentengine/api/v1/ListSessionCheckpoints`
+- `POST /agentengine/api/v1/PreviewCheckpointResume`
+- `POST /agentengine/api/v1/ListToolReceipts`
+- `POST /agentengine/api/v1/ResumeRun`
+- `POST /agentengine/api/v1/CancelRun`
 - `POST /agentengine/api/v1/UploadFile`
 - `POST /agentengine/api/v1/ListWorkspaceFiles`
 - `POST /agentengine/api/v1/AddWorkspaceFile`
 - `POST /agentengine/api/v1/DeleteWorkspaceFile`
-- `POST /agentengine/api/v1/CancelRun`
 - `POST /agentengine/api/v1/ListAgentModels`
 - `GET /agentengine/api/v1/ExportWorkspaceZip`
 - `POST /run_sse`
@@ -854,6 +858,11 @@ KsADK 扩展图片引用示例：
 - `UpsertResponseFeedback`
 - `DeleteResponseFeedback`
 - `RunAgent`
+- `ListSessionCheckpoints`
+- `PreviewCheckpointResume`
+- `ListToolReceipts`
+- `ResumeRun`
+- `CancelRun`
 - `UploadFile`
 - `ListWorkspaceFiles`
 - `AddWorkspaceFile`
@@ -865,7 +874,15 @@ KsADK 扩展图片引用示例：
 - `GET /agentengine/api/v1/AttachmentContent`
 - `GET /agentengine/api/v1/GetWorkspaceFileContent`
 
-本地 runtime 还提供 `CancelRun`、`ExportWorkspaceZip`、`/agentengine/api/v1/ws/{agent_id}/{file_path}` 等 UI 辅助接口。公网 `PublicEndpoint` 是否放行这些接口，以 `agentengine-gateway` 的 Hosted UI 白名单和独立 facade 实现为准；不要把任意 runtime 本地路由都当成公网稳定 contract。
+本地 runtime 还提供 `ExportWorkspaceZip`、`/agentengine/api/v1/ws/{agent_id}/{file_path}` 等 UI 辅助接口。公网 `PublicEndpoint` 是否放行这些接口，以 `agentengine-gateway` 的 Hosted UI 白名单和独立 facade 实现为准；不要把任意 runtime 本地路由都当成公网稳定 contract。
+
+长任务恢复相关 action 的公网链路是：
+
+`agentengine-hosted-ui / ksadk-web -> agentengine-gateway 白名单 -> agentengine-server Hosted facade -> runtime/router -> runtime 本地同名 action`
+
+因此，公网 contract 以 gateway 白名单和 `agentengine-server` facade 为准；runtime 本地实现是最终执行方，但不是浏览器直接依赖的入口。
+
+能力门控以 `GetAgentUiBootstrap.Data.Capabilities.RunLifecycle` 为准。`RunLifecycle.Resume` 只表示普通运行生命周期可继续交互；checkpoint 恢复必须同时看到 `RunLifecycle.Checkpoints=true` 和 `RunLifecycle.CheckpointResume=true`。当前 `adk`、`langchain`、`langgraph`、`deepagents` 可声明 checkpoint lifecycle；`hermes` 虽然有 Hosted Chat、原生 dashboard 和 terminal，但其 Hermes runtime 壳只代理 `/v1/*` 与原生管理路由，不提供 `ListSessionCheckpoints` / `ResumeRun` / `CancelRun` 本地同名 action，因此不应默认点亮 checkpoint 恢复能力。
 
 ## 6.5 Hosted UI Bootstrap
 
@@ -1025,7 +1042,9 @@ KsADK 扩展图片引用示例：
 分页返回补充：
 
 - `ListSessions` 的 `Data` 额外包含 `Total`
+- `ListSessions` 的 `Data` 还会包含服务端回显的 `Page` 和 `PageSize`
 - `ListSessionEvents` 的 `Data` 额外包含请求透传的 `Offset` 和 `Limit`
+- `ListSessionEvents` 的 `Data` 还会包含 `Total`，便于客户端按需回加载更早的事件窗口
 
 ### `GET /agentengine/api/v1/SubscribeRunEvents`
 
@@ -1095,13 +1114,14 @@ data: [DONE]
 
 | 参数 | 必填 | 说明 |
 | --- | --- | --- |
-| `FileUri` | 是 | `UploadFile` 返回的 `ksadk-upload://...` URI |
+| `FileUri` | 是 | `UploadFile` 返回的 `ksadk-upload://...` URI，或 Hosted/runtime 持久化的 `ae-upload://...` URI |
 
 返回：
 
 - 原始文件内容
 - `Content-Type` 依据文件类型推断
 - `Content-Disposition: inline`
+- 当 `FileUri` 是 `ae-upload://...` 时，服务端会先解析 Hosted 上传元数据，再返回原始文件内容
 
 ## 6.8 Workspace Files Action 接口
 
@@ -1505,20 +1525,92 @@ curl -X POST "https://<PublicEndpoint>/agentengine/api/v1/DeleteResponseFeedback
 - `ApiFormat=responses` 时：Responses 风格 SSE
 - `ApiFormat=chat_completions` 时：透传 runtime 的流式返回，实践中通常仍是 ksadk 统一 SSE 事件
 
-### `POST /agentengine/api/v1/CancelRun`
+## 6.12 长任务恢复与运行时取消 Action
 
-说明：
+这组接口用于 Hosted UI / 本地 Web UI 展示 checkpoint、预览恢复、恢复运行和取消运行。公网 `PublicEndpoint` 调用时，请求先经过 `agentengine-gateway` Hosted UI action 白名单，再由 `agentengine-server` 按 `AgentId` 解析目标 runtime 并代理到 runtime/router。前端是否展示入口必须依赖 bootstrap capability，不要仅凭 action 是否在白名单内判断可用性。
 
-- 这是本地 Web UI 的运行取消辅助接口
-- 请求会尝试调用当前 active runner 的 `request_cancel(InvocationId)`
-- 如果 runner 不支持真正取消，接口仍可能返回 `Cancelled=true`，语义是“已请求取消”；前端仍应以后续 `run_status` 或事件流终态为准
-- 公网 `PublicEndpoint` 是否放行该 action，以 Hosted UI facade / gateway 白名单为准
+公网链路验收应使用 `scripts/validate_hosted_long_task_e2e.py`，而不是只跑本地 runtime / ASGI 脚本。该脚本不需要 PG DSN，只访问 `PublicEndpoint`：
+
+```bash
+python scripts/validate_hosted_long_task_e2e.py \
+  --endpoint "https://<PublicEndpoint>" \
+  --agent-id "<AgentId>" \
+  --api-key "$AGENTENGINE_RUNTIME_API_KEY"
+```
+
+如果通过 private/share 短链接打开 Hosted UI，也可以传入 `--cookie "ae_ui_session=<sid>"`。脚本默认覆盖 bootstrap capability、`RunAgent`、`ListSessionCheckpoints`、`ResumeRun(Stream=true)` 和 `ListSessionEvents`；运行时取消可用 `--mode cancel-active --session-id <SessionId> --invocation-id <InvocationId>` 对仍活跃的流式 run 验证 `CancelRun`。
+
+### `POST /agentengine/api/v1/ListSessionCheckpoints`
 
 请求体：
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `AgentId` | `string` | 否 | Agent ID |
+| `AgentId` | `string` | 是 | Agent ID |
+| `SessionId` | `string` | 是 | 会话 ID |
+| `RunId` | `string` | 否 | 只返回指定 run 的 checkpoint |
+
+响应 `Data.Checkpoints` 为 checkpoint 列表。checkpoint 来自 runtime session event 中的 `run_checkpoint`，不是客户端传入的状态。
+
+### `POST /agentengine/api/v1/PreviewCheckpointResume`
+
+请求体：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `AgentId` | `string` | 是 | Agent ID |
+| `SessionId` | `string` | 是 | 会话 ID |
+| `RunId` | `string` | 是 | 原 run ID |
+| `CheckpointId` | `string` | 是 | 要恢复的 checkpoint ID |
+
+响应 `Data.Preview` 返回恢复预览信息，用于 UI 在真正恢复前展示将从哪个 checkpoint 继续、可能涉及哪些 tool receipt。
+
+### `POST /agentengine/api/v1/ListToolReceipts`
+
+请求体：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `AgentId` | `string` | 是 | Agent ID |
+| `SessionId` | `string` | 是 | 会话 ID |
+| `RunId` | `string` | 否 | 只返回指定 run 的 tool receipt |
+| `CheckpointId` | `string` | 否 | 只返回指定 checkpoint 关联的 tool receipt |
+
+响应 `Data.ToolReceipts` 为已记录的工具执行 receipt，用于恢复时展示和幂等治理。
+
+### `POST /agentengine/api/v1/ResumeRun`
+
+请求体：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `AgentId` | `string` | 是 | Agent ID |
+| `SessionId` | `string` | 是 | 会话 ID |
+| `RunId` | `string` | 是 | 原 run ID。恢复语义是同一 run 续跑，不是新建 run |
+| `CheckpointId` | `string` | 是 | 要恢复的 checkpoint ID |
+| `ResumeAttemptId` | `string` | 否 | 本次恢复尝试 ID；不传由 runtime 生成 |
+| `InvocationId` | `string` | 否 | 本次流式恢复的 invocation ID；用于 `SubscribeRunEvents` / `CancelRun` |
+| `Stream` | `boolean` | 否 | 是否流式返回 |
+| `Model` | `string` | 否 | 可选模型名 |
+| `ModelMetadata` | `object` | 否 | 可选模型 metadata |
+| `ModelOptions` | `object` | 否 | 可选模型调用参数 |
+
+`Stream=true` 时返回 SSE，gateway 和 server 都按流式代理处理。runtime 只信任服务端已保存的 checkpoint 事件来解析 `framework_ref`，不会信任客户端传入的 framework 状态。
+
+### `POST /agentengine/api/v1/CancelRun`
+
+说明：
+
+- 这是 Hosted UI / 本地 Web UI 的运行取消接口
+- 公网 `PublicEndpoint` 调用时由 gateway 放行到 `agentengine-server`，再代理到 runtime 本地同名 action
+- runtime 会尝试调用当前 active runner 的 `request_cancel(InvocationId)`，并取消 detached streaming task
+- 如果 runner 不支持真正取消，接口仍可能返回 `Cancelled=true`，语义是“已请求取消”；前端仍应以后续 `run_status` 或事件流终态为准
+
+请求体：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `AgentId` | `string` | 是 | Agent ID |
 | `InvocationId` | `string` | 是 | 需要取消的运行 ID |
 
 响应示例：
@@ -1541,7 +1633,7 @@ curl -X POST "https://<PublicEndpoint>/agentengine/api/v1/DeleteResponseFeedback
 - `Data` 直接放 runtime 返回的 payload
 - 服务端会补齐 `session_id`
 
-## 6.12 Legacy ADK Web 兼容接口
+## 6.13 Legacy ADK Web 兼容接口
 
 ### `POST /run_sse`
 
@@ -1576,7 +1668,7 @@ curl -X POST "https://<PublicEndpoint>/agentengine/api/v1/DeleteResponseFeedback
 
 这组接口是 legacy session 兼容层，主要面向 ADK Web。
 
-## 6.13 Runtime 本地前端壳路径
+## 6.14 Runtime 本地前端壳路径
 
 ### `GET /chat`
 
@@ -1816,6 +1908,11 @@ OpenClaw 会额外起一个本地 `workspace_files_app` sidecar，然后由 gate
   - `ListSessionEvents`
   - `SubscribeRunEvents`
   - `RunAgent`
+  - `ListSessionCheckpoints`
+  - `PreviewCheckpointResume`
+  - `ListToolReceipts`
+  - `ResumeRun`
+  - `CancelRun`
   - `GetResponseFeedback`
   - `UpsertResponseFeedback`
   - `DeleteResponseFeedback`
@@ -1830,7 +1927,7 @@ OpenClaw 会额外起一个本地 `workspace_files_app` sidecar，然后由 gate
 不要假设下列内容一定是公网 contract：
 
 - 任意 `/agentengine/api/v1/*` 路径
-- runtime 本地存在但未进入 Hosted UI action 白名单的 UI 辅助路径，例如 `CancelRun`、`ExportWorkspaceZip`、Workspace HTML 预览路径
+- runtime 本地存在但未进入 Hosted UI action 白名单的 UI 辅助路径，例如 `ExportWorkspaceZip`、Workspace HTML 预览路径
 - `/debug/*`、`/builder/*`、`/traces`、`eval_sets`、`eval_results` 等开发 / 调试 / 内部辅助入口
 - 任意 Pod 内部监听端口
 - OpenClaw 上游项目的全部原生 API

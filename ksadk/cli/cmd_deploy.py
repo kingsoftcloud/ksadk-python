@@ -8,11 +8,11 @@ agentengine deploy - 部署 Agent 到云端
 """
 
 import os
-import json
 import click
 import asyncio
 from pathlib import Path
 from ksadk.api.client import DryRunExit
+from ksadk.cli.env_options import env_options, resolve_explicit_env_vars
 from ksadk.cli.storage import build_storage_config
 from ksadk.common.constants import (
     get_ks3_endpoints,
@@ -25,6 +25,7 @@ from ksadk.cli.network_options import (
     apply_network_config as _apply_network_config_shared,
     network_cli_kwargs,
     network_options,
+    resolve_deploy_target_network,
     validate_deploy_target_network,
 )
 from ksadk.cli.workflow_common import (
@@ -89,6 +90,7 @@ console = get_console()
 @click.option("--storage-mount-path", default=None, help="PVC 挂载目录（默认按框架推导）")
 @click.option("--no-storage", is_flag=True, help="禁用默认 PVC 挂载")
 @network_options
+@env_options
 @click.option(
     "--observability/--no-observability", default=True, help="是否启用可观测性 (默认开启)"
 )
@@ -125,6 +127,8 @@ def deploy(
     subnet_id: str | None,
     security_group_id: str | None,
     availability_zone: str | None,
+    extra_env: tuple[str, ...],
+    env_file: str | None,
     observability: bool,
     push: bool,
     no_cache: bool,
@@ -193,6 +197,8 @@ def deploy(
                 security_group_id=security_group_id,
                 availability_zone=availability_zone,
             ),
+            extra_env=extra_env,
+            env_file=env_file,
             repackage=repackage,
             dry_run_context=dry_run_context,
         ),
@@ -274,6 +280,8 @@ async def _deploy_async(
     subnet_id: str | None = None,
     security_group_id: str | None = None,
     availability_zone: str | None = None,
+    extra_env: tuple[str, ...] = (),
+    env_file: str | None = None,
     dry_run_context: dict[str, object] | None = None,
     *,
     repackage: bool = False,
@@ -284,6 +292,14 @@ async def _deploy_async(
 
     agent_path = Path(agent_dir).resolve()
     config = _load_config(agent_path)
+    try:
+        explicit_env_vars = resolve_explicit_env_vars(
+            env_file=env_file,
+            env_pairs=extra_env,
+            base_dir=agent_path,
+        )
+    except ValueError as e:
+        raise validation_error(str(e))
     effective_artifact_type = _resolve_artifact_type_input(config, artifact_type)
     print_workflow_header(
         title="Agent 部署",
@@ -363,6 +379,7 @@ async def _deploy_async(
             "dry_run": dry_run,
             "no_cache": no_cache,
             "repackage": repackage,
+            "env_vars": explicit_env_vars,
         },
     )
 
@@ -403,6 +420,7 @@ async def _deploy_async(
         availability_zone=availability_zone,
     )
     validate_deploy_target_network(deploy_target)
+    resolve_deploy_target_network(deploy_target, region=region, dry_run=dry_run)
     storage_config = build_storage_config(
         detection_result.type.value,
         target=target,

@@ -1,11 +1,18 @@
 from __future__ import annotations
 
-import os
+import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
-from ksadk.skills.runtime import SkillRuntimeError, SkillRuntimeResult, create_skill_runtime_backend
+from ksadk.skills.runtime import (
+    SkillRuntimeError,
+    SkillRuntimeResult,
+    SkillWorkflowRequest,
+    create_skill_runtime_backend,
+)
 from ksadk.skills.runtime.backends.e2b import E2BSkillRuntimeBackend
 from ksadk.skills.runtime.backends.local import LocalProcessSkillRuntimeBackend
 
@@ -17,6 +24,13 @@ def test_runtime_factory_creates_disabled_backend_by_default(monkeypatch):
 
     with pytest.raises(SkillRuntimeError, match="disabled"):
         backend.run_workflow("hello", skill_space_ids=["ss-1"], session_id="s1")
+
+
+def test_skill_workflow_request_is_public_runtime_protocol():
+    request = SkillWorkflowRequest(workflow_prompt="build", skill_names=["demo-skill"])
+
+    assert request.workflow_prompt == "build"
+    assert request.skill_names == ["demo-skill"]
 
 
 def test_runtime_factory_creates_local_process_backend(monkeypatch, tmp_path: Path):
@@ -144,7 +158,16 @@ def test_e2b_backend_uses_native_env_and_always_kills(monkeypatch):
             },
         },
     ) in calls
-    assert ("file_write", ("/tmp/ksadk-workflow-prompt.txt", b"build artifact")) in calls
+    request_write = next(
+        value
+        for name, value in calls
+        if name == "file_write" and value[0] == "/tmp/ksadk-workflow-request.json"
+    )
+    assert request_write[0] == "/tmp/ksadk-workflow-request.json"
+    assert json.loads(request_write[1].decode("utf-8")) == {
+        "workflow_prompt": "build artifact",
+        "skill_names": ["demo-skill"],
+    }
     assert calls[-1] == ("kill", "sbx-123")
 
 
@@ -198,7 +221,9 @@ def test_e2b_backend_redacts_secret_from_errors(monkeypatch):
     class FakeSandbox:
         @classmethod
         def create(cls, **kwargs):
-            raise RuntimeError("failed with super-secret-token and skill-service-token and skill-service-secret")
+            raise RuntimeError(
+                "failed with super-secret-token and skill-service-token and skill-service-secret"
+            )
 
     backend = E2BSkillRuntimeBackend(sandbox_cls=FakeSandbox, template_id="tpl-1")
 
@@ -212,7 +237,7 @@ def test_e2b_backend_redacts_secret_from_errors(monkeypatch):
     assert "[REDACTED]" in result.error_message
 
 
-def test_e2b_backend_writes_prompt_file_instead_of_shell_quoting_long_prompt():
+def test_e2b_backend_writes_request_file_instead_of_shell_quoting_long_prompt():
     calls: list[tuple[str, object]] = []
 
     class FakeResult:
@@ -245,8 +270,63 @@ def test_e2b_backend_writes_prompt_file_instead_of_shell_quoting_long_prompt():
 
     backend = E2BSkillRuntimeBackend(sandbox_cls=FakeSandbox, template_id="tpl-1")
 
-    backend.run_workflow("hello 'quoted'", skill_space_ids=["ss-1"], session_id="sess-1")
+    backend.run_workflow(
+        "hello 'quoted'",
+        skill_space_ids=["ss-1"],
+        skill_names=["demo-skill"],
+        session_id="sess-1",
+    )
 
-    assert ("file_write", ("/tmp/ksadk-workflow-prompt.txt", b"hello 'quoted'")) in calls
-    run_command = next(value for name, value in calls if name == "run")
-    assert run_command == "python -u /home/ksadk/agent.py --prompt-file /tmp/ksadk-workflow-prompt.txt"
+    request_write = next(
+        value
+        for name, value in calls
+        if name == "file_write" and value[0] == "/tmp/ksadk-workflow-request.json"
+    )
+    request_path, request_bytes = request_write
+    assert request_path == "/tmp/ksadk-workflow-request.json"
+    assert json.loads(request_bytes.decode("utf-8")) == {
+        "workflow_prompt": "hello 'quoted'",
+        "skill_names": ["demo-skill"],
+    }
+    run_command = next(
+        value for name, value in calls if name == "run" and "/home/ksadk/agent.py" in value
+    )
+    assert (
+        run_command
+        == "python -u /home/ksadk/agent.py --request-file /tmp/ksadk-workflow-request.json"
+    )
+
+
+def test_local_process_backend_writes_request_file_envelope(monkeypatch, tmp_path: Path):
+    calls: list[dict[str, object]] = []
+    agent = tmp_path / "agent.py"
+    agent.write_text("print('agent')", encoding="utf-8")
+
+    def fake_run(args, **kwargs):
+        request_path = Path(args[-1])
+        calls.append(
+            {
+                "args": args,
+                "request": json.loads(request_path.read_text(encoding="utf-8")),
+                "env": kwargs["env"],
+            }
+        )
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr("ksadk.skills.runtime.backends.local.subprocess.run", fake_run)
+    backend = LocalProcessSkillRuntimeBackend(agent_path=agent)
+
+    backend.run_workflow(
+        "build artifact",
+        skill_space_ids=["ss-1"],
+        skill_names=["demo-skill"],
+        session_id="sess-1",
+    )
+
+    assert calls[0]["args"][:3] == [sys.executable, "-u", str(agent)]
+    assert calls[0]["args"][3] == "--request-file"
+    assert calls[0]["request"] == {
+        "workflow_prompt": "build artifact",
+        "skill_names": ["demo-skill"],
+    }
+    assert calls[0]["env"]["KSADK_SELECTED_SKILL_NAMES"] == "demo-skill"

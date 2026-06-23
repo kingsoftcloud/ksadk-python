@@ -74,3 +74,16 @@ def test_chat_openai_patch_maps_request_model_options_for_responses_api():
     assert payload["reasoning"] == {"effort": "none"}
     assert payload["extra_body"]["thinking"] == {"type": "disabled"}
     assert payload["extra_body"]["max_reasoning_tokens"] == 0
+
+
+def test_chat_openai_patch_preserves_temperature_override():
+    apply_patch()
+    llm = ChatOpenAI(model="kimi-k2.7-code", api_key="sk-test", use_responses_api=False)
+    context = _context()
+    context.model = "kimi-k2.7-code"
+    context.model_options = {"temperature": 1}
+
+    with platform_invocation_scope(context):
+        payload = llm._get_request_payload([HumanMessage(content="hello")])
+
+    assert payload["temperature"] == 1

@@ -67,7 +67,7 @@ description: Use when troubleshooting AgentEngine 管理集群、算力集群或
 
 服务端辅助命令参考：
 
-- `/Users/xiayu/kingsoft/code/agent-sdk/agentengine-server/Makefile`
+- `/Users/xiayu/kingsoft/code/agent-sdk/agentengine/agentengine-server/Makefile`
 
 常用入口：
 
@@ -100,14 +100,14 @@ description: Use when troubleshooting AgentEngine 管理集群、算力集群或
 
 相关服务端代码入口：
 
-- `/Users/xiayu/kingsoft/code/agent-sdk/agent-runtime-service/api/service/agents/create_agent_runtime.go`
-- `/Users/xiayu/kingsoft/code/agent-sdk/agent-runtime-service/controller/agentctl/agent_runtime.go`
+- `/Users/xiayu/kingsoft/code/agent-sdk/agentengine/agent-runtime-service/api/service/agents/create_agent_runtime.go`
+- `/Users/xiayu/kingsoft/code/agent-sdk/agentengine/agent-runtime-service/controller/agentctl/agent_runtime.go`
 
 ## 算力集群访问前提
 
 获取算力集群 kubeconfig 的工具是：
 
-- `/Users/xiayu/kingsoft/code/agent-sdk/get-kubeconfig/main.go`
+- `/Users/xiayu/kingsoft/code/agent-sdk/agentengine/get-kubeconfig/main.go`
 
 但先看集群类型：
 
@@ -126,7 +126,7 @@ description: Use when troubleshooting AgentEngine 管理集群、算力集群或
 已拿到 `compute cluster id` 且确认目标可直接访问时，使用：
 
 ```bash
-cd /Users/xiayu/kingsoft/code/agent-sdk/get-kubeconfig
+cd /Users/xiayu/kingsoft/code/agent-sdk/agentengine/get-kubeconfig
 go run . \
   --cluster-id <compute-cluster-id> \
   --region cn-beijing-6 \

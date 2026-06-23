@@ -63,7 +63,7 @@ Hermes runtime 资产位于：
 当前 Makefile 已提供与 OpenClaw 并列的发布入口：
 
 ```bash
-cd /Users/xiayu/kingsoft/code/agent-sdk/ksadk-python
+cd /Users/xiayu/kingsoft/code/agent-sdk/agentengine/ksadk-python
 
 make hermes-build
 make hermes-push HERMES_TAG=2026.4.16

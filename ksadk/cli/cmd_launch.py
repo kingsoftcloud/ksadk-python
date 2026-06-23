@@ -8,11 +8,13 @@ from pathlib import Path
 from ksadk.api.client import DryRunExit
 from ksadk.cli.cmd_deploy import _apply_network_config, _resolve_artifact_type_input, _resolve_ui_config_inputs
 from ksadk.cli.dry_run import effective_dry_run, run_async_with_dry_run
+from ksadk.cli.env_options import env_options, resolve_explicit_env_vars
 from ksadk.cli.error_utils import cli_error_from_exception, is_debug_mode_enabled, remote_error, usage_error, validation_error
 from ksadk.cli.network_options import (
     apply_network_cli_overrides,
     network_cli_kwargs,
     network_options,
+    resolve_deploy_target_network,
     validate_deploy_target_network,
 )
 from ksadk.cli.storage import build_storage_config
@@ -69,6 +71,7 @@ from ksadk.cli.ui import (
 @click.option("--storage-mount-path", default=None, help="PVC 挂载目录（默认按框架推导）")
 @click.option("--no-storage", is_flag=True, help="禁用默认 PVC 挂载")
 @network_options
+@env_options
 @click.option("--dry-run", is_flag=True, help="仅打印请求，不执行实际操作")
 @click.option(
     "--artifact-type",
@@ -104,6 +107,8 @@ def launch(
     subnet_id: str | None,
     security_group_id: str | None,
     availability_zone: str | None,
+    extra_env: tuple[str, ...],
+    env_file: str | None,
     dry_run: bool,
     artifact_type: str,
     no_version: bool,
@@ -163,6 +168,8 @@ def launch(
                 security_group_id=security_group_id,
                 availability_zone=availability_zone,
             ),
+            extra_env=extra_env,
+            env_file=env_file,
             dry_run_context=dry_run_context,
         ),
         dry_run=dry_run,
@@ -208,6 +215,8 @@ async def _launch_async(
     subnet_id: str | None = None,
     security_group_id: str | None = None,
     availability_zone: str | None = None,
+    extra_env: tuple[str, ...] = (),
+    env_file: str | None = None,
     dry_run_context: dict[str, object] | None = None,
 ):
     from ksadk.detection import FrameworkDetector
@@ -215,6 +224,14 @@ async def _launch_async(
 
     agent_path = Path(agent_dir).resolve()
     config = _load_config(agent_path)
+    try:
+        explicit_env_vars = resolve_explicit_env_vars(
+            env_file=env_file,
+            env_pairs=extra_env,
+            base_dir=agent_path,
+        )
+    except ValueError as e:
+        raise validation_error(str(e))
     effective_artifact_type = _resolve_artifact_type_input(config, artifact_type) if target == "serverless" else artifact_type
     print_workflow_header(
         title="Agent Launch",
@@ -272,6 +289,7 @@ async def _launch_async(
             "ui_path": resolved_ui_path,
             "ui_url": resolved_ui_url,
             "dry_run": dry_run,
+            "env_vars": explicit_env_vars,
         },
     )
 
@@ -299,6 +317,7 @@ async def _launch_async(
         availability_zone=availability_zone,
     )
     validate_deploy_target_network(deploy_target)
+    resolve_deploy_target_network(deploy_target, region=region, dry_run=dry_run)
     storage_config = build_storage_config(
         detection_result.type.value,
         target=target,

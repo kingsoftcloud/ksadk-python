@@ -12,7 +12,11 @@ logger = logging.getLogger(__name__)
 def save_memory(content: str) -> dict:
     """保存一条长期记忆。"""
 
-    return {"result": _save_memory(content)}
+    result = _save_memory(content)
+    return {
+        "result": result.get("message", ""),
+        **result,
+    }
 
 
 def create_adk_tool():

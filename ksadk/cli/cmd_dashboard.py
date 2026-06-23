@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import webbrowser
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -52,6 +53,7 @@ _PATH_EMBEDDED_OPTION_HINTS = (
 )
 
 DEFAULT_PRIVATE_LINK_EXPIRES_SECONDS = 24 * 60 * 60
+DEFAULT_REGION = "cn-beijing-6"
 
 DASHBOARD_RESOURCE = ResourceDescriptor(
     name="Dashboard",
@@ -167,7 +169,7 @@ def _abort_dashboard_error(
     help=build_resource_group_help(DASHBOARD_RESOURCE),
 )
 @click.option("--agent", "--agent-id", "agent_option", "-a", hidden=True, help="(兼容) Agent 名称或 ID")
-@click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", hidden=True, help="(兼容) 区域")
+@click.option("--region", "-r", default=None, envvar="KSYUN_REGION", hidden=True, help="(兼容) 区域")
 @click.option("--path", "ui_path", default=None, hidden=True, help="(兼容) 目标 UI 路径")
 @click.option("--share", is_flag=True, hidden=True, help="(兼容) 创建可分享链接")
 @click.option(
@@ -186,7 +188,7 @@ def _abort_dashboard_error(
 def dashboard(
     ctx: click.Context,
     agent_option: Optional[str],
-    region: str,
+    region: Optional[str],
     ui_path: Optional[str],
     share: bool,
     expires_seconds: Optional[int],
@@ -196,6 +198,7 @@ def dashboard(
     output_mode: str | None,
 ):
     _ = output_mode
+    ctx.obj["dashboard_region_source"] = _region_parameter_source(ctx, "region")
     if ctx.invoked_subcommand is not None:
         return
 
@@ -211,6 +214,7 @@ def dashboard(
         positional_agent=positional_ref,
         agent_option=agent_option,
         region=region,
+        region_source=str(ctx.obj.get("dashboard_region_source") or ""),
         ui_path=ui_path,
         share=share,
         expires_seconds=expires_seconds,
@@ -223,7 +227,7 @@ def dashboard(
 @dashboard.command("open", context_settings=CONTEXT_SETTINGS)
 @click.argument("agent_ref", required=False)
 @click.option("--agent", "--agent-id", "agent_option", "-a", help="Agent 名称或 ID")
-@click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
+@click.option("--region", "-r", default=None, envvar="KSYUN_REGION", help="区域")
 @click.option("--path", "ui_path", default=None, help="目标 UI 路径（默认根据配置自动推导）")
 @click.option("--share", is_flag=True, help="创建可分享链接（默认创建私有临时链接）")
 @click.option(
@@ -237,10 +241,12 @@ def dashboard(
 @click.option("--no-open", is_flag=True, help="仅打印 URL，不自动打开浏览器")
 @click.option("--direct", is_flag=True, help="直接打开 endpoint/path（跳过短链接创建）")
 @cli_output_option()
+@click.pass_context
 def dashboard_open(
+    ctx: click.Context,
     agent_ref: Optional[str],
     agent_option: Optional[str],
-    region: str,
+    region: Optional[str],
     ui_path: Optional[str],
     share: bool,
     expires_seconds: Optional[int],
@@ -255,6 +261,7 @@ def dashboard_open(
         positional_agent=agent_ref,
         agent_option=agent_option,
         region=region,
+        region_source=_region_parameter_source(ctx, "region"),
         ui_path=ui_path,
         share=share,
         expires_seconds=expires_seconds,
@@ -272,15 +279,17 @@ def dashboard_share():
 @dashboard_share.command("list", context_settings=CONTEXT_SETTINGS)
 @click.argument("agent_ref", required=False)
 @click.option("--agent", "--agent-id", "agent_option", "-a", help="Agent 名称或 ID")
-@click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
+@click.option("--region", "-r", default=None, envvar="KSYUN_REGION", help="区域")
 @click.option("--type", "link_type", type=click.Choice(["private", "share"]), default=None, help="链接类型过滤")
 @click.option("--status", type=click.Choice(["active", "revoked"]), default=None, help="状态过滤")
 @pagination_options(default_page=1, default_size=20)
 @cli_output_option()
+@click.pass_context
 def dashboard_share_list(
+    ctx: click.Context,
     agent_ref: Optional[str],
     agent_option: Optional[str],
-    region: str,
+    region: Optional[str],
     link_type: Optional[str],
     status: Optional[str],
     page: int,
@@ -299,6 +308,7 @@ def dashboard_share_list(
 
     cwd = Path(".").resolve()
     state = load_state(cwd)
+    effective_region = _resolve_effective_region(region, state, region_source=_region_parameter_source(ctx, "region"))
     primary_ref, fallback_ref = _resolve_references(explicit_ref, cwd)
     if not primary_ref:
         _abort_dashboard_error(
@@ -310,7 +320,7 @@ def dashboard_share_list(
         )
 
     try:
-        detail, _, _ = asyncio.run(_resolve_agent_detail(region, primary_ref, fallback_ref))
+        detail, _, _ = asyncio.run(_resolve_agent_detail(effective_region, primary_ref, fallback_ref))
     except Exception as e:
         _abort_dashboard_error(e, context="获取 Agent 信息失败", argv=["dashboard", "share", "list"])
     agent_id = (detail.get("agent_id") or "").strip()
@@ -324,7 +334,7 @@ def dashboard_share_list(
     try:
         result = asyncio.run(
             _list_dashboard_access_links(
-                region=region,
+                region=effective_region,
                 agent_id=agent_id or None,
                 agent_name=agent_name or None,
                 link_type=link_type,
@@ -416,7 +426,8 @@ def _open_dashboard(
     *,
     positional_agent: Optional[str],
     agent_option: Optional[str],
-    region: str,
+    region: Optional[str],
+    region_source: str,
     ui_path: Optional[str],
     share: bool,
     expires_seconds: Optional[int],
@@ -438,6 +449,7 @@ def _open_dashboard(
 
     cwd = Path(".").resolve()
     state = load_state(cwd)
+    effective_region = _resolve_effective_region(region, state, region_source=region_source)
     primary_ref, fallback_ref = _resolve_references(explicit_ref, cwd)
     if not primary_ref:
         _abort_dashboard_error(
@@ -452,7 +464,7 @@ def _open_dashboard(
         print_info(f"未显式指定 Agent，使用 {primary_ref.source_text}: {primary_ref.value}")
 
     try:
-        detail, used_ref, state_stale = asyncio.run(_resolve_agent_detail(region, primary_ref, fallback_ref))
+        detail, used_ref, state_stale = asyncio.run(_resolve_agent_detail(effective_region, primary_ref, fallback_ref))
     except Exception as e:
         _abort_dashboard_error(e, context="获取 Agent 信息失败", argv=["dashboard", "open"])
         return
@@ -476,6 +488,7 @@ def _open_dashboard(
         cli_url=None,
     )
     normalized_path = _normalize_ui_path(resolved_ui.path or "/")
+    link_path = normalized_path if ui_path is not None else None
     base_url = _build_base_ui_url(endpoint, normalized_path)
 
     if direct:
@@ -483,12 +496,17 @@ def _open_dashboard(
         return
 
     if _is_openclaw_target(state=state, detail=detail):
+        openclaw_link_path = _resolve_openclaw_link_path(
+            state=state,
+            cli_path=ui_path,
+            normalized_path=normalized_path,
+        )
         try:
             link_data = asyncio.run(
                 _create_openclaw_gateway_access_link(
-                    region=region,
+                    region=effective_region,
                     detail=detail,
-                    path=normalized_path,
+                    path=openclaw_link_path,
                     link_type="share" if share else "private",
                     expires_seconds=_normalize_expires_seconds(
                         link_type="share" if share else "private",
@@ -508,11 +526,11 @@ def _open_dashboard(
     try:
         link_data = asyncio.run(
                 _create_dashboard_access_link(
-                    region=region,
+                    region=effective_region,
                     agent_id=(detail.get("agent_id") or "").strip() or None,
                     agent_name=(detail.get("name") or "").strip() or None,
                     link_type=link_type,
-                    path=normalized_path,
+                    path=link_path,
                     expires_seconds=validated_expires,
                     force_new=force_new,
                 )
@@ -576,10 +594,64 @@ def _validate_ui_path_option(ui_path: Optional[str]) -> None:
             )
 
 
+def _resolve_effective_region(region: Optional[str], state: Optional[dict], *, region_source: str) -> str:
+    explicit_region = str(region or "").strip()
+    if explicit_region and region_source == "commandline":
+        return explicit_region
+    if explicit_region and region_source == "environment" and not _is_global_config_injected_region():
+        return explicit_region
+    state_region = str((state or {}).get("region") or "").strip()
+    return state_region or explicit_region or DEFAULT_REGION
+
+
+def _region_parameter_source(ctx: click.Context, name: str) -> str:
+    try:
+        source = ctx.get_parameter_source(name)
+    except Exception:
+        return ""
+    if source == click.core.ParameterSource.COMMANDLINE:
+        return "commandline"
+    if source == click.core.ParameterSource.ENVIRONMENT:
+        return "environment"
+    return ""
+
+
+def _is_global_config_injected_region() -> bool:
+    keys = {
+        item.strip()
+        for item in os.environ.get("KSADK_GLOBAL_CONFIG_ENV_KEYS", "").split(",")
+        if item.strip()
+    }
+    return "KSYUN_REGION" in keys
+
+
 def _is_openclaw_target(*, state: Optional[dict], detail: dict) -> bool:
     state_type = str((state or {}).get("type") or "").strip().lower()
     framework = str(detail.get("framework") or "").strip().lower()
     return state_type == "openclaw" or framework == "openclaw"
+
+
+def _resolve_openclaw_link_path(
+    *,
+    state: Optional[dict],
+    cli_path: Optional[str],
+    normalized_path: str,
+) -> Optional[str]:
+    if cli_path is not None:
+        return normalized_path
+
+    state_data = state if isinstance(state, dict) else {}
+    nested = state_data.get("ui") if isinstance(state_data.get("ui"), dict) else {}
+    state_path = state_data.get("ui_path") or nested.get("path")
+    if state_path is None:
+        return None
+
+    # OpenClaw 的历史默认路径曾经落在 / 或 /chat。这里不把 legacy 默认
+    # 当作显式 Path 传给 server，让 server 端按当前运行时规则推导。
+    state_normalized = _normalize_ui_path(str(state_path))
+    if state_normalized in {"/", "/chat"}:
+        return None
+    return normalized_path
 
 
 def _emit_url(title: str, url: str, *, no_open: bool):
@@ -692,7 +764,7 @@ async def _create_dashboard_access_link(
     agent_id: Optional[str],
     agent_name: Optional[str],
     link_type: str,
-    path: str,
+    path: Optional[str],
     expires_seconds: Optional[int],
     force_new: bool,
 ) -> dict:
@@ -724,7 +796,7 @@ async def _create_openclaw_gateway_access_link(
     *,
     region: str,
     detail: dict,
-    path: str = "/",
+    path: Optional[str] = None,
     link_type: str,
     expires_seconds: Optional[int],
     force_new: bool = False,

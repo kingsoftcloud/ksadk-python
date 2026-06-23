@@ -1,31 +1,161 @@
 # 更新日志
 
-本文件记录 **Kingsoft AgentEngine SDK (ksadk)** 的重要变更。
+本文件记录 **KsADK Agent Runtime Platform** 的重要变更。
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
+
+## [0.6.6] - 2026-06-18
+
+### 亮点
+
+- **统一模型策略 v1**：新增 `AGENTENGINE_MODEL_POLICY_JSON` 运行时策略契约，默认主模型为 `glm-5.2`，多模态模型为 `kimi-k2.7-code`，fallback 模型为 `deepseek-v4-pro`，为 Hermes、OpenClaw 和通用 Agent 提供同一套默认模型语义。
+- **通用 Agent fallback**：conversation runtime 对超时、限流、5xx、模型不可用、权限/配额等可恢复模型错误支持 fallback 重试；普通 400 参数错误、业务错误和 tool 错误不会被吞掉。
+- **运行时附件与 Hosted 附件打通**：本地 `ksadk-upload://` 与服务端 `ae-upload://` 上传文件统一解析，支持通过 KOP Action 下载 Hosted 附件内容、恢复本地缓存，并在会话/浏览器刷新后继续读取文件。
+- **会话列表与事件分页增强**：Session service 新增 `count_sessions` / `count_events`，`ListSessions` 返回 `Total/Page/PageSize`，`ListSessionEvents` 支持 `Offset/Limit/Total`，便于 UI 恢复长任务和历史事件。
+- **Hermes 终端执行策略收敛**：抽出共享 terminal exec allowlist policy，OpenClaw/Hermes 终端命令校验共用同一匹配逻辑，简化 allowlist 配置并降低误放行风险。
+
+### 变更
+
+- 默认模型从 `glm-5.1` 升级为 `glm-5.2`，配置向导、项目模板、README、dry-run/help snapshot 和 `DEFAULT_MODEL_NAME` 同步更新。
+- `kimi-k2.7-code` 默认模型参数补齐 `temperature=1`，并透传到 Chat Completions / Responses 的 `temperature`、`top_p`、`max_tokens`、`max_completion_tokens` 等 model options。
+- OpenClaw 默认 catalog 包含 `glm-5.2`、`kimi-k2.7-code` 和 `deepseek-v4-pro`；图像场景默认优先使用 `kimi-k2.7-code`，显式 `OPENCLAW_MODEL_CATALOG_JSON` 仍保持 catalog 首项优先。
+- Hermes deploy 与 OpenClaw deploy 均会注入同一模型策略 env，保留 `OPENAI_MODEL_NAME`、`MODEL_NAME`、`OPENCLAW_DEFAULT_MODEL`、`HERMES_DEFAULT_MODEL`、`HERMES_FALLBACK_MODEL` 等显式覆盖。
+- Hermes 本地默认主模型更新为 `glm-5.2`，不再按 KSPMAS / `glm-5.1` 硬编码 fallback 到 `kimi-k2.6`，fallback 改由统一策略或显式 env 决定。
+- OpenClaw provider catalog 合并逻辑支持在已有 `OPENCLAW_MODEL_CATALOG_JSON` 上补齐 provider metadata，避免请求级 catalog 被平台默认值覆盖。
+- Native terminal session manager 中 OpenClaw 使用 `--session` 绑定业务会话，Hermes 继续使用 `--resume`。
+- `AgentEngineClient` 新增 `AttachmentContent` 与 `download_attachment_content()`，并修正 `list_sessions()` 请求字段为 `PageSize`。
+- runtime 上传附件会持久化 metadata、本地路径和 MIME 信息；Hosted 附件下载后会写回本地 cache，供 runner、workspace preview 和会话恢复复用。
+
+### 修复
+
+- 修复长期记忆 save 返回 `accepted` 时没有被视为完成 tool receipt，导致 conversation runtime 误判工具调用未完成的问题。
+- 修复 ADK 短期记忆与运行时附件连续性，避免上传文件、memory context 和 runner payload 在多轮会话中丢失。
+- 修复终端执行 allowlist 匹配过复杂、容易误判的问题，统一按共享策略做命令匹配与错误提示。
+- 修复 Hosted UI 上传文件在本地 runtime 中只能看到 `ae-upload://` 引用、无法读取真实内容的问题。
+- 修复 session/event 列表缺少总数和分页字段，导致 UI 无法稳定展示历史会话、历史事件或长任务恢复状态的问题。
+- 修复 OpenClaw TUI 新建 terminal session 时误传不支持的 `--resume` 参数导致启动失败的问题。
+
+### 测试与发布
+
+- 新增模型策略、fallback、流式 fallback、OpenClaw env、Hermes env、LangChain patch、附件恢复、session 分页、Hosted UI 上传文件和终端 allowlist 覆盖测试。
+- 公开发布版本从 `0.6.5` 升级到 `0.6.6`，发布包继续通过 `make public-preflight` 同步 `@kingsoftcloud/ksadk-web@latest` 静态资源并执行 wheel 内容检查；本次发布应先完成 `@kingsoftcloud/ksadk-web@0.2.10` 的 npm release。
+- `make public-preflight` 已覆盖 secret audit、public path audit、全量 pytest、sdist/wheel build 和 `twine check`；0.6.6 wheel/sdist 检查通过。
+- 这是 Hermes/OpenClaw 默认镜像重建前置版本；镜像构建应固定 `KSADK_PACKAGE_SPEC=ksadk==0.6.6`，再走 staging E2E、GitHub Actions / PyPI Trusted Publishing 和环境门禁。
+
+## [0.6.5] - 2026-06-15
+
+### 亮点
+
+- **公开定位与正式发布收敛**：将项目首页、README、PyPI metadata 和公开发布说明统一为 Agent Runtime Platform 口径，并将正式发布版本推进到 `0.6.5`。
+- **Hosted/local UI 真源收敛**：`@kingsoftcloud/ksadk-web@0.2.8` 已发布到 npm，本地 `agentengine web` 静态资源默认从 `@kingsoftcloud/ksadk-web@latest` 的 `dist-ksadk` 同步；共享 UI 源码只在 `ksadk-web` 维护，`ksadk-python` 源码分支不再跟踪生成的 `ksadk/server/static/**`。
+- **部署环境变量边界修复**：`agentengine deploy` 和 `agentengine launch` 新增 `--env` / `--env-file`，显式传入的运行时环境变量进入部署 payload；真实 `.env` / `.env.local` 不再打入 Code、Container 或 MCP 构建上下文，`.env.example` 继续保留。
+- **Sandbox 稳定性兜底**：E2B sandbox 创建后增加命令与文件系统 readiness 探测，默认对短暂 `NotFoundException` / `FileNotFoundException` 做指数退避重试，降低 Pod 内首次调用 `run_code` / `run_command` 的偶发失败。
+- **会话连续性与长任务恢复增强**：runner payload 增加 `invocation_id`，LangGraph checkpoint resume 保留 `checkpoint_ns`，checkpoint event 透传业务阶段、摘要、下一步动作和状态，便于 Hosted/local UI 恢复长任务语义。
+- **长期记忆查询兼容修复**：SDK LTM 查询解析兼容上游返回的 `Memory` 字段，避免记忆已写入但 `load_memory` 查询为空。
+- **镜像仓库凭证语义修复**：个人版 KCR 继续允许 `KSYUN_ACCOUNT_ID` 兜底用户名；企业版 KCR 和第三方 registry 必须显式设置 `KCR_USERNAME` / `KCR_PASSWORD`，避免错误把云账号 ID 当企业镜像用户名。
+- **公开门禁增强**：发布构建新增 wheel 内容检查，禁止旧 `ksadk/server/web-ui/` 源码或构建产物残留进入 PyPI wheel；源码仓库同样不再跟踪本地 UI 副本，并继续执行公开定位、敏感词扫描、PyPI metadata、README 和测试门禁。
+
+### 发布说明
+
+- 这是修复 0.6.3 公开页面和 PyPI 元数据口径的正式补丁版本；已发布到 PyPI 的 0.6.3 元数据不可覆盖，因此通过 0.6.5 发布修复。
+- 0.6.5 通过 GitHub Release 和 PyPI Trusted Publishing 发布，发布包在构建时同步 `@kingsoftcloud/ksadk-web@latest` 静态资源。
+- `@kingsoftcloud/ksadk-web@0.2.8` 已作为 npm `latest` 发布；`agentengine-hosted-ui` 和 `ksadk-python` 后续默认从 npm release 消费，不再维护共享 UI 源码或本地 tarball。
+
+### 运行时修复
+
+- `/v1/responses`、`/v1/chat/completions` 和 `RunAgentAction` 支持透传 `account_id` / `AccountId`，并写入 `PlatformInvocationContext`，便于 Skill、Workspace、Sandbox、Memory 等运行时能力按账号边界读取当前调用上下文。
+- 新增 `get_current_invocation_context_or_default()`、`get_current_user_id()` 和 `get_current_account_id()`，工具或业务代码可在当前 turn 内安全读取用户和账号上下文；无调用上下文时返回显式默认值。
+- 修复 dashboard/open/share 在全局配置注入 `KSYUN_REGION` 时可能覆盖当前 `.agentengine.state` region 的问题；命令行显式 region 仍优先。
+- 修复 LangGraph checkpoint resume 丢失 namespace、checkpoint 列表缺少业务阶段字段的问题。
+- 修复 LTM SDK 查询解析不能识别 `Memory` 字段的问题。
+- 修复 E2B sandbox 创建后立即执行命令或写文件时可能遇到短暂 NotFound 的问题。
+- 修复 Python 3.10 环境中 workspace router 误用 Python 3.11 `datetime.UTC` 的兼容性问题。
+
+### 构建与发布修复
+
+- `make sync-ksadk-web-static` 默认改为 `npm pack @kingsoftcloud/ksadk-web@latest`，并保留 `KSADK_WEB_RELEASE_URL` 显式 tarball 兜底。
+- 新增 GitHub Actions PyPI Trusted Publishing workflow：发布前同步 KSADK Web static、执行 `make public-preflight`，再通过 OIDC 上传到 PyPI，不再依赖长期 PyPI token。
+- PyPI wheel 构建前会同步 `dist-ksadk` 并把 `ksadk/server/static/index.html` 与静态资源打入 wheel；源码 checkout 缺少 static 时只提示运行同步命令，不在运行时联网拉 npm。
+- `public-build-check` 在 `uv build` 和 `twine check` 之间增加 wheel 内容检查，确保旧 `ksadk/server/web-ui/` 源码、`node_modules` 和历史构建产物不会混入发布包。
+- 知识库/长期记忆 SDK 依赖下限提升到 `kingsoftcloud-sdk-python>=1.5.8.94`，用于适配最新 SDK LTM/KB 返回结构与运行时打包要求。
+- Code、Container、MCP 构建统一排除真实 `.env*`，只保留 `.env.example` / `.env.sample` / `.env.template` 这类模板文件。
+- Container、MCP、OpenClaw、Serverless 镜像凭证解析统一企业版/个人版/第三方 registry 边界，避免生成错误鉴权 payload。
+
+## [0.6.3] - 2026-06-09
+
+### 亮点
+
+- **Hosted UI 联动收敛**：与最新 gateway / server 对齐 hosted `/hosted-ui/chat/`、share link、SSE 订阅和 native terminal 代理契约；`agentengine dashboard open` 继续优先打开托管入口，本地 `agentengine web` 保持调试用途。
+- **Skill Space demo 可用性修复**：补齐 `ksadk.toolsets`、Tool Gateway、Skill Runtime 和 Skill Service 相关 package 文件，安装后的 LangGraph 样例可以直接绑定 AgentEngine 内置工具。
+- **更新镜像不覆盖用户配置**：OpenClaw / Hermes 更新已有实例时默认只更新镜像和必要运行时字段，不再把本地 shell 或默认值生成的 env/storage/network/memory 配置覆盖到服务端。
+- **开源样例门禁增强**：`ksadk-samples` 主推 LangGraph demo 增加 Skill Space、Skill Runtime、Workspace、Sandbox、知识库和长期记忆配置说明，并加入敏感信息扫描与结构校验。
+
+### 修复
+
+- 修复 LangGraph runner 在工具调用后没有文本流式 chunk 时不会输出最终 answer，导致本地 Web UI 存储空 assistant message 的问题。
+- 修复 Skill Service KOP/AICP client 在环境化路由下没有按 AgentEngine client 规则映射 region 与必要请求头的问题。
+- 修复内置工具 dispatcher 遇到未知 include/tool name 时可能抛异常的问题，现在返回结构化 `unknown_tool` 错误，便于 Agent 继续解释。
+- 修复 OpenClaw / Hermes deploy update payload 默认携带 `env_vars`、`storage`、`network` 等配置组的问题，降低客户更新公共镜像时误改生产配置的风险。
+
+### 兼容性说明
+
+- 新建 OpenClaw / Hermes 实例仍会发送完整 env/storage/network/UI 配置；只有更新已有实例时默认改为最小 payload。
+- 更新已有 OpenClaw / Hermes 时，如需覆盖模型或环境变量，请显式传入 `--model-base-url`、`--model-api-key`、`--default-model` 或 OpenClaw 的 `--env`；如需覆盖挂盘或网络，请显式传入对应 `--storage-*` / `--enable-vpc-access` 等参数。
+- `--no-storage` 在已有实例更新场景下不会删除服务端既有挂盘配置；删除挂盘属于后续需要服务端明确 API 支持的危险操作。
 
 ## [0.6.2] - 2026-06-04
 
 ### 亮点
 
+- **Skill Runtime 重构**：补齐 Skill Space 远端发现、按需下载、`sha256` 校验、安全解压、instruction-first 加载和 workflow 型隔离执行链路，支持 `local_process` 与 E2B backend。
+- **内置 Toolset 渐进式披露**：新增 `get_agentengine_tools(include=[...])` / `describe_agentengine_tools(include=[...])` 的 profile 与工具名选择能力，推荐示例默认使用 `focused + agentengine_tool_dispatcher`，避免每轮上下文暴露所有低频或高风险工具。
+- **Tool Gateway 与人工确认语义**：新增统一 Tool Gateway，Workspace 写入/删除、Skill Runtime 执行、sandbox 命令/代码执行等中高风险工具可在 strict 模式返回 `approval_required`，便于 Hosted/local UI 接入人工确认。
+- **Workspace 与 Sandbox 内置工具增强**：新增 Workspace 精确片段编辑、轻量 lint、sandbox direct `run_command` / `run_code`，并统一限制在 AgentEngine workspace 或 isolated sandbox backend 边界内。
 - **OTel-first 可观测配置**：`setup_tracing()` 优先识别标准 `OTEL_EXPORTER_OTLP_*` HTTP traces 环境变量，业务代码可以只写 OpenTelemetry spans、events 和 attributes，再由后端路由到 Langfuse 或其他 OTLP Collector。
-- **Langfuse 兼容保留**：旧的 `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL` 自动配置仍然可用；当通用 OTLP 已配置时，自动模式不会再额外启用 Langfuse 直连 exporter，避免重复 traces。
-- **观测方案补强**：可观测方案和客户 demo 补充 span event 与子 span 在 Langfuse 等后端中的可见性差异，并建议用 `score.*` attributes 表达评估分数，由平台或 Collector 映射到后端原生 score。
 
 ### 变更
 
+- 新增 `ksadk.toolsets` 内置工具入口：`get_skill_tools()`、`get_workspace_tools()`、`get_platform_tools()`、`get_sandbox_tools()` 和聚合入口 `get_agentengine_tools()`。
+- `get_agentengine_tools()` 无参保持全量工具兼容；新增 `include=["skill"|"workspace"|"platform"|"sandbox"]`、`include=["focused"]` / `include=["core"]`、以及 `include=["focused", "run_code"]` 这类按具体工具名扩展的选择方式。
+- `focused/core` profile 默认只直接暴露 `list_skills`、`search_skills`、`load_skill`、`workspace_status`、`search_workspace_files`、`edit_workspace_file`、`lint_workspace_file`、`component_status`、`sandbox_status`。
+- 新增 `agentengine_tool_dispatcher(action, tool_name=None, arguments=None, include=None)`，支持 `list` / `describe` / `call` KsADK 本地内置工具；dispatcher 不接远端 Tool Space 数据库，也不会递归调用自身。
+- 新增 `describe_agentengine_tools()`，返回工具分组、描述、风险等级、审批需求、side effects、backend/boundary 等元信息，供 Agent Studio、demo、UI 或调试诊断展示。
+- 新增 `list_skills`、`search_skills`、`load_skill`、`execute_skills`，支持按 Skill Space 查询、按 name/alias/tag/description/examples 匹配、下载并读取 `SKILL.md`，以及通过 Skill Runtime 执行 workflow。
+- Skill Runtime 请求协议新增 `--request-file` JSON envelope，携带 `workflow_prompt` 和 `skill_names`；保留 `--prompt-file` 兼容，但二者不能同时使用。
+- Runtime agent 改为按显式 `skill_names` 或 prompt 命中的技能元数据下载所需 Skill，不再默认拉取同一空间下全部 active Skill。
+- 新增公共 Skill Space 追加机制：`KSADK_PUBLIC_SKILL_SPACE_IDS` 会追加在用户 `KSADK_SKILL_SPACE_IDS` / `SKILL_SPACE_ID` 之后，`KSADK_PUBLIC_SKILL_ALLOWLIST` 可限制公共/预置 Skill。
+- Skill Service 地址解析支持 `KSADK_SKILL_SERVICE_URL`，也支持按 `KSADK_AICP_ENDPOINT_MODE`、`KSADK_SKILL_SERVICE_ENDPOINT`、`KSADK_SKILL_SERVICE_SCHEME` 自动选择内外网 AICP endpoint。
+- 新增通用 sandbox 抽象与 E2B backend，优先读取 `KSADK_SANDBOX_TEMPLATE_ID`、`KSADK_SANDBOX_TIMEOUT`、`KSADK_SANDBOX_ALLOW_INTERNET_ACCESS`，兼容旧的 `KSADK_SKILL_RUNTIME_*` 变量。
+- 新增 sandbox direct tools：`sandbox_status`、`run_command`、`run_code`；命令和代码只通过 configured isolated sandbox backend 执行，不退化为宿主机 shell。
+- Workspace toolset 新增 `workspace_status`、`list_workspace_files`、`read_workspace_file`、`write_workspace_file`、`write_workspace_files`、`edit_workspace_file`、`lint_workspace_file`、`search_workspace_files`、`delete_workspace_file`。
+- `edit_workspace_file` 支持 exact snippet replacement，并在未命中或匹配次数不符合预期时返回 `snippet_not_found` / `ambiguous_edit`；`lint_workspace_file` 支持 Python AST、JSON parse 和通用文本轻量检查。
+- ADK Runner、LangGraph Runner 和 DeepAgents Runner 示例/测试接入 Skill Runtime 或 toolset 注入路径；LangGraph demo 默认改为 `focused + agentengine_tool_dispatcher` 绑定方式，并保留业务自定义 tool 与 graph node 示例。
+- `component_status` 展示模型、知识库、长期记忆、Skill Space、Skill Runtime、sandbox 和 Workspace 绑定状态，帮助区分“已绑定”“可发现”“隔离执行已启用”等边界。
 - 新增 `OTEL_EXPORTER_OTLP_ENDPOINT`、`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`、`OTEL_EXPORTER_OTLP_PROTOCOL`、`OTEL_EXPORTER_OTLP_TRACES_PROTOCOL`、`OTEL_EXPORTER_OTLP_HEADERS` 和 `OTEL_EXPORTER_OTLP_TRACES_HEADERS` 的自动 HTTP traces exporter 支持。
 - 当只设置 `OTEL_EXPORTER_OTLP_ENDPOINT` 时，KsADK 会派生 `/v1/traces` 作为 traces endpoint；显式 `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` 优先。
 - HTTP headers 支持标准 OTLP 逗号分隔格式，并对 header value 做 URL decode，例如 `Authorization=Bearer%20token`。
-- `OTEL_EXPORTER_OTLP_TRACES_*` 配置优先于通用 `OTEL_EXPORTER_OTLP_*` 配置。
-- CLI / runtime template 在只配置 OTLP 环境变量时也会初始化 tracing。
-- 环境变量 registry 补齐 AICP endpoint mode、Skill Service endpoint/scheme 和内部 runtime requirement 常量登记。
+- `OTEL_EXPORTER_OTLP_TRACES_*` 配置优先于通用 `OTEL_EXPORTER_OTLP_*` 配置；CLI / runtime template 在只配置 OTLP 环境变量时也会初始化 tracing。
+- 环境变量 registry 补齐 AICP endpoint mode、Skill Service endpoint/scheme、Sandbox、Skill Runtime、Artifact 和 OTel 相关变量登记。
+
+### 修复
+
+- 修复 Skill Runtime 长 prompt 通过 shell quoting 传递时不稳定的问题，改为写入 `/tmp/ksadk-workflow-request.json` 后由 runtime agent 读取。
+- 修复 E2B Skill Runtime 错误信息可能泄漏 `E2B_API_KEY`、Skill Service token 或 secret 的问题，异常回传会做敏感值 redaction。
+- 修复 E2B session 未稳定清理的问题，workflow 执行结束或异常后都会尝试 kill sandbox。
+- 修复 public Skill Space 与用户 Skill Space 混用时的去重和 allowlist 边界，避免重复下载或加载非预期公共 Skill。
+- 修复 workspace 编辑能力只能整文件覆盖的问题，新增片段级替换和轻量 lint 以降低常见代码/文本改动风险。
+- 修复高风险工具直接执行缺少统一审批 envelope 的问题，Tool Gateway strict 模式下会阻止执行并返回 `approval_required`。
+- 修复内置工具全量绑定导致 LangGraph demo 上下文过大的问题，默认改为 focused 工具加 dispatcher 渐进式披露。
 
 ### 兼容性说明
 
-- 显式传入 `setup_tracing(enable_langfuse=True)` 仍可强制启用 Langfuse 兼容路径。
-- `LANGFUSE_USE_CALLBACK=true` 仍用于 LangChain / LangGraph callback-only 模式，避免 callback 与 direct OTLP 双写。
+- `get_agentengine_tools()` 无参仍返回全量内置工具，避免破坏已有 LangGraph/LangChain/DeepAgents 项目；新示例推荐显式使用 `include=["focused", "agentengine_tool_dispatcher"]`。
+- `execute_skills`、`run_command`、`run_code`、Workspace 写入/删除等能力仍可显式绑定或通过 dispatcher 调用；dispatcher 调用真实工具对象，不绕过 Tool Gateway 审批策略。
+- 当前 dispatcher v1 只调度 KsADK 本地内置工具，不连接控制台 Tool Space、数据库动态工具绑定或远端 Tool Gateway 目录；这些属于后续控制面能力。
+- Sandbox 新部署优先使用 `KSADK_SANDBOX_*` 通用变量；`KSADK_SKILL_RUNTIME_TEMPLATE_ID`、`KSADK_SKILL_RUNTIME_TIMEOUT`、`KSADK_SKILL_RUNTIME_ALLOW_INTERNET_ACCESS` 继续作为兼容变量保留。
+- Skill Runtime 默认 backend 仍为 disabled；未显式设置 `KSADK_SKILL_RUNTIME_BACKEND` 但存在 `KSADK_SANDBOX_TEMPLATE_ID` 时会自动走 E2B。
+- 显式传入 `setup_tracing(enable_langfuse=True)` 仍可强制启用 Langfuse 兼容路径；`LANGFUSE_USE_CALLBACK=true` 仍用于 LangChain / LangGraph callback-only 模式，避免 callback 与 direct OTLP 双写。
 - OTel attributes 中的 `score.*` 字段只是后端无关的推荐表达，不直接依赖 Langfuse SDK，也不承诺所有后端都会自动显示为 native score。
 
 ## [0.6.1] - 2026-05-28
@@ -69,7 +199,7 @@
 - 修复 Responses `input_file.file_data` / `file_url` 在会话回放中无法还原为附件展示的问题。
 - 修复 conversation runtime 落库时只保存 display 文本和附件提示，导致刷新后图片变成纯文本占位的问题。
 - 修复 Hosted UI 回放事件时未识别 Responses `input_file.file_data` / `input_file.file_url` 的问题。
-- 修复 server responses session mirror 在 `account_id` 为空或 PostgreSQL duplicate session 错误文本变化时可能失败，导致预发 Hosted UI 上传图片后报“连接断开或生成出错”的问题。
+- 修复 server responses session mirror 在 `account_id` 为空或 PostgreSQL duplicate session 错误文本变化时可能失败，导致 Hosted UI 上传图片后报“连接断开或生成出错”的问题。
 - 修复刷新正在流式输出的会话时，订阅增量事件被单独构建成多条空“思考过程”消息的问题；恢复路径现在先合并完整 session events，再重建消息列表。
 - 修复会话列表重复项、活动 invocation 判定过早失效、运行中会话锁住其他 session 切换等 UI 状态问题。
 - 修复 Workspace 文件列表自动刷新时把当前 Markdown/HTML/文本预览强制切回编辑态的问题。
@@ -449,7 +579,7 @@
 - 修复 Windows 离线安装时核心依赖缺失的问题。
 - 修复 Windows BOM 文件兼容性，统一按 `utf-8-sig` 读取配置。
 - 修复 Web UI 构建阶段 Google Fonts 资源导致的失败问题。
-- 修复预发与生产 serverless 客户端的环境路由问题。
+- 修复多环境 serverless 客户端的路由选择问题。
 - 为 `fastapi` 与 `pydantic` 增加兼容性版本上限约束。
 
 ## [0.1.0] - 2026-01-15

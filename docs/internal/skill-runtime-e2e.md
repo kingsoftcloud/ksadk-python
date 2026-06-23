@@ -48,16 +48,16 @@ Skill Runtime 变量：
 
 当前实现通过 `ksadk.sandbox` 调用 E2B SDK。Sandbox KOP 中的 `GetSandboxInstanceList` 等接口应作为未来 `ksyun_sandbox_kop` backend 或控制面集成，不和 E2B SDK backend 混在一起。
 
-预发 Skill Center 直连 REST 地址可用于 OpenAPI 校验：
+Skill Center 直连 REST 地址可用于 OpenAPI 校验：
 
 ```text
-https://agent-api-pre.kspmas-internal.ksyun.com/agentengine/skill/api/v1
+https://<skill-service-host>/agentengine/skill/api/v1
 ```
 
-内部 AICP 网关需要 KOP 签名：
+AICP 网关需要 KOP 签名：
 
 ```text
-KSADK_SKILL_SERVICE_URL=http://maicp.inner.api.ksyun.com
+KSADK_SKILL_SERVICE_URL=https://<aicp-endpoint>
 KSADK_SKILL_SERVICE_API_VERSION=2024-06-12
 ```
 
@@ -118,7 +118,7 @@ b95f0735357fcf879bd53ed85cb242679ec74438e3bc8e85b1f27193169b6ecf
 - Namespace：`agent-manager`
 - Service：`skill-service-skill-service`
 - Cluster service port：`8000`
-- Ingress host/path：`agent-api-pre.kspmas-internal.ksyun.com/agentengine/skill`
+- Ingress host/path：`<skill-service-host>/agentengine/skill`
 - Image：`hub.kce.ksyun.com/cbd-serverless/skill-service:0.0.1-pre`
 
 直连 REST 服务端需要 `X-Ksc-Account-Id` 做租户隔离。不带该 header 时，`ListSkillSpaces` 和 `ListSkills` 可能返回空租户视图。

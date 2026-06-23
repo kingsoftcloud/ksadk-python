@@ -162,6 +162,32 @@ def test_generic_otlp_env_takes_precedence_over_langfuse_auto_env(monkeypatch):
     assert len(trace_api.provider.processors) == 1
 
 
+def test_generic_otlp_headers_decode_form_encoded_basic_auth(monkeypatch):
+    trace_api = _install_fake_otel(monkeypatch)
+    encoded_auth = base64.b64encode(b"pk-test:sk-test").decode("ascii")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://collector.example.com/otel")
+    monkeypatch.setenv(
+        "OTEL_EXPORTER_OTLP_HEADERS",
+        f"Authorization=Basic+{encoded_auth},x-langfuse-ingestion-version=4",
+    )
+
+    setup = _reload_setup(monkeypatch)
+
+    setup.setup_tracing(
+        enable_inmemory=False,
+        enable_langfuse=None,
+        enable_adk_instrumentation=False,
+    )
+
+    exporter = _FakeHttpOTLPSpanExporter.instances[0]
+    assert exporter.headers == {
+        "Authorization": f"Basic {encoded_auth}",
+        "x-langfuse-ingestion-version": "4",
+    }
+    assert len(trace_api.provider.processors) == 1
+
+
 def test_generic_otlp_endpoint_derives_traces_path(monkeypatch):
     trace_api = _install_fake_otel(monkeypatch)
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf")

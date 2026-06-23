@@ -44,7 +44,7 @@ def test_dashboard_uses_access_link_by_default(monkeypatch):
     result = runner.invoke(cmd_dashboard.dashboard, ["ar-test"])
     assert result.exit_code == 0, result.output
     assert opened == {}
-    assert captured["path"] == "/chat"
+    assert captured["path"] is None
     assert "http://demo.example.com/s/lnk-1" in result.output
 
 
@@ -61,6 +61,132 @@ def test_dashboard_open_is_canonical_command(monkeypatch):
     assert result.exit_code == 0, result.output
     assert opened == {}
     assert "http://demo.example.com/s/lnk-1" in result.output
+
+
+def test_dashboard_open_uses_state_region_when_region_is_not_explicit(tmp_path: Path, monkeypatch):
+    runner = CliRunner()
+    captured = {}
+
+    (tmp_path / ".agentengine.state").write_text(
+        "agent_id: ar-test\n"
+        "region: pre-online\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("KSYUN_REGION", raising=False)
+    monkeypatch.setattr(
+        cmd_dashboard,
+        "load_state",
+        lambda _cwd: {"agent_id": "ar-test", "region": "pre-online"},
+    )
+
+    async def _fake_resolve(region, primary_ref, fallback_ref):
+        captured["region"] = region
+        return await _fake_resolve_agent_detail(region, primary_ref, fallback_ref)
+
+    monkeypatch.setattr(cmd_dashboard, "_resolve_agent_detail", _fake_resolve)
+    monkeypatch.setattr(cmd_dashboard, "_create_dashboard_access_link", _fake_create_access_link)
+    monkeypatch.setattr(cmd_dashboard.webbrowser, "open", lambda _url: None)
+
+    result = runner.invoke(cmd_dashboard.dashboard, ["open"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["region"] == "pre-online"
+
+
+def test_dashboard_open_explicit_region_overrides_state_region(tmp_path: Path, monkeypatch):
+    runner = CliRunner()
+    captured = {}
+
+    (tmp_path / ".agentengine.state").write_text(
+        "agent_id: ar-test\n"
+        "region: pre-online\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("KSYUN_REGION", raising=False)
+    monkeypatch.setattr(
+        cmd_dashboard,
+        "load_state",
+        lambda _cwd: {"agent_id": "ar-test", "region": "pre-online"},
+    )
+
+    async def _fake_resolve(region, primary_ref, fallback_ref):
+        captured["region"] = region
+        return await _fake_resolve_agent_detail(region, primary_ref, fallback_ref)
+
+    monkeypatch.setattr(cmd_dashboard, "_resolve_agent_detail", _fake_resolve)
+    monkeypatch.setattr(cmd_dashboard, "_create_dashboard_access_link", _fake_create_access_link)
+    monkeypatch.setattr(cmd_dashboard.webbrowser, "open", lambda _url: None)
+
+    result = runner.invoke(cmd_dashboard.dashboard, ["open", "--region", "cn-beijing-6"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["region"] == "cn-beijing-6"
+
+
+def test_dashboard_open_prefers_state_region_over_global_config_injected_region(tmp_path: Path, monkeypatch):
+    runner = CliRunner()
+    captured = {}
+
+    (tmp_path / ".agentengine.state").write_text(
+        "agent_id: ar-test\n"
+        "region: pre-online\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("KSYUN_REGION", "cn-beijing-6")
+    monkeypatch.setenv("KSADK_GLOBAL_CONFIG_ENV_KEYS", "KSYUN_REGION")
+    monkeypatch.setattr(
+        cmd_dashboard,
+        "load_state",
+        lambda _cwd: {"agent_id": "ar-test", "region": "pre-online"},
+    )
+
+    async def _fake_resolve(region, primary_ref, fallback_ref):
+        captured["region"] = region
+        return await _fake_resolve_agent_detail(region, primary_ref, fallback_ref)
+
+    monkeypatch.setattr(cmd_dashboard, "_resolve_agent_detail", _fake_resolve)
+    monkeypatch.setattr(cmd_dashboard, "_create_dashboard_access_link", _fake_create_access_link)
+    monkeypatch.setattr(cmd_dashboard.webbrowser, "open", lambda _url: None)
+
+    result = runner.invoke(cmd_dashboard.dashboard, ["open"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["region"] == "pre-online"
+
+
+def test_dashboard_open_env_region_overrides_state_region(tmp_path: Path, monkeypatch):
+    runner = CliRunner()
+    captured = {}
+
+    (tmp_path / ".agentengine.state").write_text(
+        "agent_id: ar-test\n"
+        "region: pre-online\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("KSYUN_REGION", "cn-shanghai-3")
+    monkeypatch.delenv("KSADK_GLOBAL_CONFIG_ENV_KEYS", raising=False)
+    monkeypatch.setattr(
+        cmd_dashboard,
+        "load_state",
+        lambda _cwd: {"agent_id": "ar-test", "region": "pre-online"},
+    )
+
+    async def _fake_resolve(region, primary_ref, fallback_ref):
+        captured["region"] = region
+        return await _fake_resolve_agent_detail(region, primary_ref, fallback_ref)
+
+    monkeypatch.setattr(cmd_dashboard, "_resolve_agent_detail", _fake_resolve)
+    monkeypatch.setattr(cmd_dashboard, "_create_dashboard_access_link", _fake_create_access_link)
+    monkeypatch.setattr(cmd_dashboard.webbrowser, "open", lambda _url: None)
+
+    result = runner.invoke(cmd_dashboard.dashboard, ["open"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["region"] == "cn-shanghai-3"
 
 
 def test_dashboard_open_rejects_path_with_embedded_option(monkeypatch):
@@ -106,7 +232,7 @@ def test_dashboard_remote_open_uses_hosted_chat_path_even_with_custom_ui_state(m
     result = runner.invoke(cmd_dashboard.dashboard, ["open", "ar-test"])
 
     assert result.exit_code == 0, result.output
-    assert captured["path"] == "/custom-chat"
+    assert captured["path"] is None
 
 
 def test_dashboard_open_resolves_openclaw_state_from_cwd(tmp_path: Path, monkeypatch):
@@ -176,12 +302,12 @@ def test_dashboard_open_resolves_openclaw_state_from_cwd(tmp_path: Path, monkeyp
 
     assert result.exit_code == 0, result.output
     assert opened == {}
-    assert captured == {"path": "/chat", "expires_seconds": None, "link_type": "private", "force_new": False}
+    assert captured == {"path": None, "expires_seconds": None, "link_type": "private", "force_new": False}
     assert "未显式指定 Agent，使用 .agentengine.state 的 agent_id: ar-openclaw-1" in result.output
     assert "http://demo.example.com/s/gateway-1" in result.output
 
 
-def test_dashboard_open_defaults_hermes_to_chat_generic_access_link(monkeypatch):
+def test_dashboard_open_omits_path_for_hermes_generic_access_link(monkeypatch):
     runner = CliRunner()
     captured = {}
 
@@ -214,7 +340,7 @@ def test_dashboard_open_defaults_hermes_to_chat_generic_access_link(monkeypatch)
     result = runner.invoke(cmd_dashboard.dashboard, ["open", "ar-hermes-1"])
 
     assert result.exit_code == 0, result.output
-    assert captured["path"] == "/chat"
+    assert captured["path"] is None
     assert captured["expires_seconds"] is None
 
 
@@ -326,7 +452,7 @@ def test_dashboard_open_routes_openclaw_to_gateway_short_link(tmp_path: Path, mo
 
     assert result.exit_code == 0, result.output
     assert opened == {}
-    assert captured == {"path": "/chat", "expires_seconds": 0, "link_type": "share", "force_new": False}
+    assert captured == {"path": None, "expires_seconds": 0, "link_type": "share", "force_new": False}
     assert "http://demo.example.com/s/gateway-1" in result.output
 
 
@@ -459,7 +585,7 @@ def test_dashboard_open_passes_force_new_to_openclaw_gateway_link(tmp_path: Path
     )
 
     assert result.exit_code == 0, result.output
-    assert captured == {"path": "/chat", "expires_seconds": 0, "link_type": "share", "force_new": True}
+    assert captured == {"path": None, "expires_seconds": 0, "link_type": "share", "force_new": True}
     assert "http://demo.example.com/s/gateway-2" in result.output
 
 

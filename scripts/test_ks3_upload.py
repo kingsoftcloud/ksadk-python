@@ -18,8 +18,8 @@ for env_path in [Path(".env"), Path("/tmp/my-agent/.env"), Path.home() / ".env"]
 ak = os.environ.get("KSYUN_ACCESS_KEY")
 sk = os.environ.get("KSYUN_SECRET_KEY")
 
-print(f"AK: {ak[:10]}..." if ak else "AK: 未设置")
-print(f"SK: {sk[:10]}..." if sk else "SK: 未设置")
+print("AK: 已设置" if ak else "AK: 未设置")
+print("SK: 已设置" if sk else "SK: 未设置")
 
 BUCKET_NAME = "agentengine"
 REGION = "cn-beijing"

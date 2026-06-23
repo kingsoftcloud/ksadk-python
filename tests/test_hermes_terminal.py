@@ -1,8 +1,8 @@
-import contextlib
-import json
-import io
-import os
 import asyncio
+import contextlib
+import io
+import json
+import os
 import sys
 from types import SimpleNamespace
 
@@ -21,6 +21,12 @@ from ksadk.hermes_terminal import (
     validate_hermes_pairing_argv,
 )
 from ksadk.terminal_client import run_terminal_session
+from ksadk.terminal_exec_policy import (
+    OPENCLAW_TERMINAL_EXEC_POLICY,
+)
+from ksadk.terminal_exec_policy import (
+    validate_terminal_exec_argv as validate_exec_argv_with_policy,
+)
 
 
 def test_build_terminal_ws_url_uses_terminal_path_and_ws_scheme():
@@ -142,13 +148,84 @@ def test_validate_hermes_exec_argv_rejects_mutating_or_shell_like_commands(argv)
         validate_hermes_exec_argv(argv)
 
 
+def test_validate_hermes_exec_argv_accepts_env_allowlisted_prefix(monkeypatch):
+    monkeypatch.setenv("KSADK_TERMINAL_EXEC_SUBCOMMAND_ALLOWLIST", "config")
+
+    assert validate_hermes_exec_argv(["config", "set", "memory.provider", "hindsight"]) == [
+        "config",
+        "set",
+        "memory.provider",
+        "hindsight",
+    ]
+
+
+def test_validate_hermes_exec_argv_env_allowlist_still_rejects_shell_metacharacters(monkeypatch):
+    monkeypatch.setenv("KSADK_TERMINAL_EXEC_SUBCOMMAND_ALLOWLIST", "config set")
+
+    with pytest.raises(ValueError):
+        validate_hermes_exec_argv(["config", "set", "memory.provider", "hindsight;rm"])
+
+
+def test_validate_terminal_exec_argv_defaults_to_common_commands(monkeypatch):
+    monkeypatch.delenv("KSADK_TERMINAL_EXEC_SUBCOMMAND_ALLOWLIST", raising=False)
+
+    assert hermes_terminal.validate_terminal_exec_argv(["ls", "-la"]) == ["ls", "-la"]
+    assert hermes_terminal.validate_terminal_exec_argv(["git", "status", "--short"]) == [
+        "git",
+        "status",
+        "--short",
+    ]
+    with pytest.raises(ValueError):
+        hermes_terminal.validate_terminal_exec_argv(["openclaw", "config", "set", "memory.provider", "hindsight"])
+
+
+def test_validate_terminal_exec_argv_rejection_mentions_allowlist_env(monkeypatch):
+    monkeypatch.delenv("KSADK_TERMINAL_EXEC_SUBCOMMAND_ALLOWLIST", raising=False)
+
+    with pytest.raises(ValueError) as exc_info:
+        hermes_terminal.validate_terminal_exec_argv(["openclaw", "config", "set"])
+
+    message = str(exc_info.value)
+    assert "KSADK_TERMINAL_EXEC_SUBCOMMAND_ALLOWLIST='openclaw'" in message
+    assert "KSADK_TERMINAL_EXEC_SUBCOMMAND_ALLOWLIST='*'" in message
+
+
+def test_validate_terminal_exec_argv_accepts_common_env_allowlisted_prefix(monkeypatch):
+    monkeypatch.setenv("KSADK_TERMINAL_EXEC_SUBCOMMAND_ALLOWLIST", "openclaw config")
+
+    assert hermes_terminal.validate_terminal_exec_argv(
+        ["openclaw", "config", "set", "memory.provider", "hindsight"]
+    ) == ["openclaw", "config", "set", "memory.provider", "hindsight"]
+
+
+def test_validate_terminal_exec_argv_accepts_wildcard_env_allowlist(monkeypatch):
+    monkeypatch.setenv("KSADK_TERMINAL_EXEC_SUBCOMMAND_ALLOWLIST", "*")
+
+    assert hermes_terminal.validate_terminal_exec_argv(["python", "-c", "print('ok')"]) == [
+        "python",
+        "-c",
+        "print('ok')",
+    ]
+
+
+def test_openclaw_exec_policy_allows_remote_cli_fallback_by_default(monkeypatch):
+    monkeypatch.delenv("KSADK_TERMINAL_EXEC_SUBCOMMAND_ALLOWLIST", raising=False)
+
+    assert validate_exec_argv_with_policy(
+        ["openclaw", "channels", "login", "--channel", "openclaw-weixin"],
+        policy=OPENCLAW_TERMINAL_EXEC_POLICY,
+    ) == ["openclaw", "channels", "login", "--channel", "openclaw-weixin"]
+
+
 @pytest.mark.parametrize(
     "argv",
     [
         ["list"],
         ["approve", "feishu", "ABC123"],
         ["approve", "weixin", "XYZ789"],
+        ["approve", "wpsxiezuo", "WPS123"],
         ["revoke", "feishu", "user-1"],
+        ["revoke", "wpsxiezuo", "user-1"],
         ["clear-pending"],
     ],
 )
@@ -406,7 +483,7 @@ async def test_hermes_terminal_session_uses_windows_raw_terminal_on_windows(monk
 
 
 @pytest.mark.asyncio
-async def test_generic_terminal_exec_allows_openclaw_cli_argv(monkeypatch):
+async def test_terminal_exec_with_openclaw_policy_allows_openclaw_cli_argv(monkeypatch):
     fake_ws = _FakeTerminalWebSocket()
 
     async def _fake_connect(*_args, **_kwargs):
@@ -419,6 +496,7 @@ async def test_generic_terminal_exec_allows_openclaw_cli_argv(monkeypatch):
         endpoint="https://agent.example.com",
         mode="exec",
         argv=["openclaw", "channels", "login", "--channel", "openclaw-weixin"],
+        exec_policy=OPENCLAW_TERMINAL_EXEC_POLICY,
         stdout=io.BytesIO(),
     )
 

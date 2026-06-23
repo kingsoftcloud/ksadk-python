@@ -1,7 +1,7 @@
 # AgentEngine Makefile
-# 用于构建 Web UI 和管理项目
+# 用于同步 KsADK Web static 和管理项目
 
-.PHONY: help install build-webui sync-static clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-docs-build public-test public-build-check public-preflight public-publish-check public-release-tag public-review openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size docs-check-wiki docs-prepare-source docs-docker-build docs-docker-push docs-helm-lint docs-helm-template docs-deploy docs-deploy-all docs-status docs-logs sync-hosted-ui build-frontend build-wheel build-all clean-frontend
+.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-docs-build public-test public-build-check public-preflight public-publish-check public-release-tag public-review openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size docs-check-wiki docs-prepare-source docs-docker-build docs-docker-push docs-helm-lint docs-helm-template docs-deploy docs-deploy-all docs-status docs-logs sync-ksadk-web-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend
 
 # 默认目标
 help:
@@ -9,14 +9,14 @@ help:
 	@echo "  \033[1;36m金山云 AgentEngine\033[0m 开发工具"
 	@echo ""
 	@echo "  \033[1;32m开发命令:\033[0m"
-	@echo "    make install        安装所有依赖 (Python + Node.js)"
-	@echo "    make dev            启动开发服务器 (前后端)"
+	@echo "    make install        安装 Python 依赖"
+	@echo "    make dev            启动本地后端和已打包 Web UI"
 	@echo "    make test           运行测试"
 	@echo ""
 	@echo "  \033[1;32mWeb UI 构建:\033[0m"
-	@echo "    make build-webui    构建 Web UI (Angular)"
-	@echo "    make sync-static    同步构建产物到 ksadk/server/static"
-	@echo "    make webui          构建 + 同步 (一键完成)"
+	@echo "    make sync-ksadk-web-static KSADK_WEB_VERSION=latest"
+	@echo "                         从 @kingsoftcloud/ksadk-web npm 包同步 static"
+	@echo "    make build-frontend 同步 ksadk-web static"
 	@echo ""
 	@echo "  \033[1;32m版本管理:\033[0m"
 	@echo "    make version         显示当前版本"
@@ -46,19 +46,9 @@ help:
 	@echo "    make offline-windows     Windows x64 离线包"
 	@echo "    make offline-all         打包所有平台"
 	@echo ""
-	@echo "  \033[1;32mOpenClaw 镜像:\033[0m"
-	@echo "    make openclaw-build         构建 OpenClaw 镜像 (默认国内源)"
-	@echo "    make openclaw-push          构建 + 推送到 KCR (默认 :2026.5.22)"
-	@echo "    make openclaw-push OPENCLAW_TAG=2026.5.22 OPENCLAW_PRESET_PLUGINS_ALLOWLIST=wps-xiezuo"
-	@echo "    make openclaw-build OPENCLAW_PYPI_INDEX_URL=https://pypi.org/simple  # 海外源"
-	@echo "    make openclaw-size          查看镜像大小"
-	@echo ""
-	@echo "  \033[1;32mHermes 镜像:\033[0m"
-	@echo "    make hermes-build           构建 Hermes runtime 镜像"
-	@echo "    make hermes-push            构建 + 推送 Hermes runtime 镜像"
-	@echo "    make hermes-size            查看 Hermes 镜像大小"
-	@echo "    make hermes-build HERMES_TAG=2026.5.16-ksadk-v1"
-	@echo "    make hermes-build HERMES_AGENT_REF=v2026.5.16  # 切换 Hermes 上游 release"
+	@echo "  \033[1;32mAgentEngine 镜像:\033[0m"
+	@echo "    Hermes / OpenClaw / Skill Runtime 镜像已迁移到内部 agentengine-images 仓库"
+	@echo "    可设置 AGENTENGINE_IMAGES_DIR=../agentengine-images 后继续使用兼容入口"
 	@echo ""
 	@echo "  \033[1;32mzread 文档站:\033[0m"
 	@echo "    make docs-deploy-all   构建原生 zread 文档镜像 + 推送 + 部署到预发"
@@ -75,46 +65,20 @@ help:
 # 依赖安装
 # ============================================================
 
-install: install-python install-webui
+install: install-python
 
 install-python:
 	@echo "📦 安装 Python 依赖..."
 	pip install -e ".[dev]"
 
-install-webui:
-	@echo "📦 安装 Web UI 依赖..."
-	cd webui && npm install
-
 # ============================================================
-# Web UI 构建
+# Web UI static 同步
 # ============================================================
 
-# Web UI 输出目录 (支持软链接，webui 目录不存在时跳过)
-WEBUI_DIR := $(shell cd webui 2>/dev/null && pwd || echo "")
-WEBUI_DIST = $(WEBUI_DIR)/dist/agent_framework_web/browser
 STATIC_DIR = ksadk/server/static
 
-build-webui:
-	@echo "🔨 构建 Web UI..."
-	cd webui && npm run build
-	@echo "✅ Web UI 构建完成: $(WEBUI_DIST)"
-
-sync-static:
-	@echo "📋 同步静态文件到 $(STATIC_DIR)..."
-	@if [ ! -d "$(WEBUI_DIST)" ]; then \
-		echo "❌ 错误: $(WEBUI_DIST) 不存在，请先运行 make build-webui"; \
-		exit 1; \
-	fi
-	@rm -rf $(STATIC_DIR)/*
-	@cp -r $(WEBUI_DIST)/* $(STATIC_DIR)/
-	@echo "✅ 同步完成！"
-	@echo "📁 文件列表:"
-	@ls -la $(STATIC_DIR)/
-
-# 一键构建 + 同步
-webui: build-webui sync-static
-	@echo ""
-	@echo "🎉 Web UI 构建并同步完成！"
+build-webui sync-static webui: sync-ksadk-web-static
+	@echo "Deprecated target: Web UI is sourced from $(KSADK_WEB_PACKAGE), not local source."
 
 # ============================================================
 # 开发服务器
@@ -123,17 +87,9 @@ webui: build-webui sync-static
 dev:
 	@echo "🚀 启动开发服务器..."
 	@echo "   后端: http://localhost:8000"
-	@echo "   前端: http://localhost:4200"
 	@echo ""
 	@echo "使用 Ctrl+C 停止服务"
-	@# 并行启动前后端
-	(cd webui && npm run serve) & \
-	(python -m ksadk.cli web .) & \
-	wait
-
-dev-webui:
-	@echo "🌐 启动 Web UI 开发服务器..."
-	cd webui && npm run serve
+	python -m ksadk.cli web .
 
 dev-backend:
 	@echo "🔧 启动后端开发服务器..."
@@ -146,10 +102,6 @@ dev-backend:
 test:
 	@echo "🧪 运行 Python 测试..."
 	pytest tests/ -v
-
-test-webui:
-	@echo "🧪 运行 Web UI 测试..."
-	cd webui && npm test
 
 # ============================================================
 # 构建和发布
@@ -221,7 +173,7 @@ subprocess.run(['sed', '-i', '', f's/^version = \".*\"/version = \"{new_v}\"/', 
 check-build-deps:
 	@python -c "import build" 2>/dev/null || (echo "📦 安装构建依赖..." && pip install build twine)
 
-build: check-build-deps webui
+build: check-build-deps sync-ksadk-web-static
 	@echo "📦 构建 Python 包 v$(VERSION)..."
 	python -m build
 	@# 删除 tar.gz 和临时目录，只保留 whl
@@ -230,11 +182,11 @@ build: check-build-deps webui
 	@echo "✅ 构建完成: dist/"
 	@ls -la dist/
 
-# 仅构建 Python 包（跳过 webui，使用现有静态文件）
+# 仅构建 Python 包（跳过 npm 同步，使用现有静态文件）
 build-only: check-build-deps
 	@echo "📦 构建 Python 包 v$(VERSION)（使用现有静态文件）..."
 	@if [ ! -f "ksadk/server/static/index.html" ]; then \
-		echo "❌ 错误: ksadk/server/static/ 目录为空，请先运行 make webui"; \
+		echo "❌ 错误: ksadk/server/static/ 目录为空，请先运行 make sync-ksadk-web-static"; \
 		exit 1; \
 	fi
 	python -m build
@@ -260,7 +212,7 @@ clean-dist:
 	@echo "🧹 清理 dist/build 临时产物..."
 	@rm -rf $(DIST_DIR)/* build/ *.egg-info/
 
-publish: clean-dist build-only
+publish: clean-dist build
 	@echo "🚀 发布 v$(VERSION) 到 PyPI..."
 	@if [ -f ".pypirc" ]; then \
 		echo "❌ 错误: 仓库根目录存在 .pypirc，拒绝发布"; \
@@ -283,7 +235,7 @@ publish: clean-dist build-only
 	echo "$$FILES"; \
 	python -m twine upload --config-file $(PYPIRC) $$FILES
 
-publish-test: clean-dist build-only
+publish-test: clean-dist build
 	@echo "🧪 发布 v$(VERSION) 到 TestPyPI..."
 	@if [ -f ".pypirc" ]; then \
 		echo "❌ 错误: 仓库根目录存在 .pypirc，拒绝发布"; \
@@ -389,7 +341,7 @@ public-secret-audit:
 
 public-audit: public-secret-audit
 	@echo "==> public source audit"
-	@blocked=$$(git ls-files | grep -E '^(\.pypirc|docs/internal/|\.zread/(wiki|site)/)' || true); \
+	@blocked=$$(git ls-files | grep -E '^(\.pypirc$$|\.zread/(wiki|site)/)' || true); \
 	if [ -n "$$blocked" ]; then \
 		echo "❌ blocked tracked paths:"; \
 		echo "$$blocked"; \
@@ -407,14 +359,16 @@ public-docs-build:
 
 public-test:
 	@echo "==> test"
-	@uv run pytest
+	@uv sync --extra all
+	@uv run --extra all pytest
 
-public-build-check: clean-dist
+public-build-check: clean-dist sync-ksadk-web-static
 	@echo "==> build and twine check"
 	@uv build
-	@uv run python -m twine check dist/*
+	@uv run pytest tests/test_runtime_common_packaging.py::test_built_wheel_excludes_web_ui_node_modules -q
+	@uv run --extra dev python -m twine check dist/*
 
-public-preflight: public-audit public-test public-docs-build public-build-check
+public-preflight: public-audit sync-ksadk-web-static public-test public-docs-build public-build-check
 	@echo "✅ public preflight passed"
 
 public-publish-check:
@@ -534,145 +488,18 @@ offline-current: build
 	@echo "   pip install --no-index --find-links=$(OFFLINE_DIR)/current ksadk"
 
 # ============================================================
-# OpenClaw 镜像构建
+# AgentEngine 镜像构建兼容入口
 # ============================================================
-#
-# 基于 pinned 官方 ghcr.io/openclaw/openclaw，叠加 chromium + 预装 skills
-# 构建上下文: 仓库根目录 (Dockerfile 通过 -f 指向 deploy/openclaw/)
-#
-# 用法:
-#   make openclaw-build    # 构建镜像
-#   make openclaw-push     # 构建 + 推送到 KCR
-#
 
-# OpenClaw 配置
-OPENCLAW_IMAGE := hub.kce.ksyun.com/agentengine-public/openclaw
-OPENCLAW_VPC_REGISTRY ?= hub-vpc-cn-beijing-6.kce.ksyun.com
-OPENCLAW_VPC_IMAGE ?= $(subst hub.kce.ksyun.com,$(OPENCLAW_VPC_REGISTRY),$(OPENCLAW_IMAGE))
-OPENCLAW_TAG ?= 2026.6.4
-OPENCLAW_CONTEXT := .
-OPENCLAW_BASE_IMAGE ?= ghcr.io/openclaw/openclaw:2026.5.22-slim@sha256:d35b8b681c223a85027502c7a82999aa772d6a09e1b28903951cac7fc27efed5
-OPENCLAW_PRESET_PLUGINS_ALLOWLIST ?=
-OPENCLAW_APT_MIRROR ?= http://mirrors.aliyun.com/debian
-OPENCLAW_APT_SECURITY_MIRROR ?= http://mirrors.aliyun.com/debian-security
-OPENCLAW_PYPI_INDEX_URL ?= https://mirrors.aliyun.com/pypi/simple
-OPENCLAW_NPM_REGISTRY ?= https://registry.npmmirror.com
-OPENCLAW_MEM0_PLUGIN_URL ?= https://memory-engine.ks3-cn-beijing.ksyuncs.com/ksc-openclaw-mem0-1.0.11.tgz
-OPENCLAW_MEM0_PLUGIN_SHA256 ?=
-OPENCLAW_LANCEDB_PLUGIN_SPEC ?= @openclaw/memory-lancedb
-DOCKER_BUILDKIT ?= 1
+AGENTENGINE_IMAGES_DIR ?= ../agentengine-images
 
-## 构建 OpenClaw 镜像 (chromium + preset-skills)
-openclaw-build:
-	@echo "🐳 构建 OpenClaw 镜像..."
-	@echo "============================================================"
-	@echo "   基础镜像: $(OPENCLAW_BASE_IMAGE)"
-	@echo "   目标镜像: $(OPENCLAW_IMAGE):$(OPENCLAW_TAG)"
-	@echo "   内网地址: $(OPENCLAW_VPC_IMAGE):$(OPENCLAW_TAG)"
-	@echo "   APT 源:   $(OPENCLAW_APT_MIRROR)"
-	@echo "   PyPI 源:  $(OPENCLAW_PYPI_INDEX_URL)"
-	@echo "   NPM 源:   $(OPENCLAW_NPM_REGISTRY)"
-	@echo "   Mem0 包:  $(OPENCLAW_MEM0_PLUGIN_URL)"
-	@echo "   插件白名单: $(if $(OPENCLAW_PRESET_PLUGINS_ALLOWLIST),$(OPENCLAW_PRESET_PLUGINS_ALLOWLIST),<未设置，内置默认插件>)"
-	@echo "   构建上下文: $(OPENCLAW_CONTEXT)"
-	@echo "============================================================"
-	@if [ ! -f "deploy/openclaw/Dockerfile" ]; then \
-		echo "❌ 错误: deploy/openclaw/Dockerfile 不存在"; \
+openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size:
+	@if [ ! -d "$(AGENTENGINE_IMAGES_DIR)" ]; then \
+		echo "❌ AgentEngine 镜像资产已迁移到内部仓库 agentengine-images。"; \
+		echo "   请先克隆仓库，或设置 AGENTENGINE_IMAGES_DIR=/path/to/agentengine-images"; \
 		exit 1; \
 	fi
-	@DOCKER_BUILDKIT=$(DOCKER_BUILDKIT) docker build --platform linux/amd64 \
-		-f deploy/openclaw/Dockerfile \
-		--build-arg OPENCLAW_BASE_IMAGE=$(OPENCLAW_BASE_IMAGE) \
-		--build-arg OPENCLAW_PRESET_PLUGINS_ALLOWLIST="$(OPENCLAW_PRESET_PLUGINS_ALLOWLIST)" \
-		--build-arg APT_MIRROR=$(OPENCLAW_APT_MIRROR) \
-		--build-arg APT_SECURITY_MIRROR=$(OPENCLAW_APT_SECURITY_MIRROR) \
-		--build-arg PYPI_INDEX_URL=$(OPENCLAW_PYPI_INDEX_URL) \
-		--build-arg NPM_REGISTRY=$(OPENCLAW_NPM_REGISTRY) \
-		--build-arg OPENCLAW_MEM0_PLUGIN_URL=$(OPENCLAW_MEM0_PLUGIN_URL) \
-		--build-arg OPENCLAW_MEM0_PLUGIN_SHA256=$(OPENCLAW_MEM0_PLUGIN_SHA256) \
-		--build-arg OPENCLAW_LANCEDB_PLUGIN_SPEC=$(OPENCLAW_LANCEDB_PLUGIN_SPEC) \
-		-t $(OPENCLAW_IMAGE):$(OPENCLAW_TAG) \
-		-t $(OPENCLAW_VPC_IMAGE):$(OPENCLAW_TAG) \
-		$(OPENCLAW_CONTEXT)
-	@echo "✅ 构建完成: $(OPENCLAW_IMAGE):$(OPENCLAW_TAG)"
-	@echo "🔗 对应内网地址: $(OPENCLAW_VPC_IMAGE):$(OPENCLAW_TAG)"
-
-## 推送 OpenClaw 镜像到 KCR (构建 + 推送)
-openclaw-push: openclaw-build
-	@echo "📤 推送 OpenClaw 镜像: $(OPENCLAW_IMAGE):$(OPENCLAW_TAG)"
-	@echo "🔗 对应内网地址: $(OPENCLAW_VPC_IMAGE):$(OPENCLAW_TAG)"
-	@docker push $(OPENCLAW_IMAGE):$(OPENCLAW_TAG)
-	@docker push $(OPENCLAW_VPC_IMAGE):$(OPENCLAW_TAG)
-	@echo "✅ 推送完成"
-
-## 查看 OpenClaw 镜像大小
-openclaw-size:
-	@docker images $(OPENCLAW_IMAGE):$(OPENCLAW_TAG) --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}"
-
-
-# ============================================================
-# Hermes 镜像构建
-# ============================================================
-#
-# 基于 deploy/hermes/ 里的 Dockerfile + wrapper runtime 构建 Hermes runtime
-#
-# 用法:
-#   make hermes-build
-#   make hermes-push HERMES_TAG=2026.5.16-ksadk-v1
-#
-
-HERMES_IMAGE := hub.kce.ksyun.com/agentengine-public/hermes-agent
-HERMES_VPC_REGISTRY ?= hub-vpc-cn-beijing-6.kce.ksyun.com
-HERMES_VPC_IMAGE ?= $(subst hub.kce.ksyun.com,$(HERMES_VPC_REGISTRY),$(HERMES_IMAGE))
-HERMES_TAG ?= 2026.5.16-ksadk-v1
-HERMES_CONTEXT := .
-HERMES_PYPI_INDEX_URL ?= https://mirrors.aliyun.com/pypi/simple
-HERMES_AGENT_REF ?= v2026.5.16
-HERMES_APT_MIRROR ?= https://mirrors.aliyun.com/debian
-HERMES_NPM_REGISTRY ?= https://registry.npmmirror.com
-HERMES_NODE_BASE_IMAGE ?= hub.kce.ksyun.com/agentengine-public/hermes-base-node:20-bookworm-slim
-HERMES_PYTHON_BASE_IMAGE ?= hub.kce.ksyun.com/agentengine-public/hermes-base-python:3.12-bookworm
-
-hermes-build:
-	@echo "🐳 构建 Hermes runtime 镜像..."
-	@echo "============================================================"
-	@echo "   目标镜像: $(HERMES_IMAGE):$(HERMES_TAG)"
-	@echo "   内网地址: $(HERMES_VPC_IMAGE):$(HERMES_TAG)"
-	@echo "   Hermes Git ref: $(HERMES_AGENT_REF)"
-	@echo "   PyPI 源:  $(HERMES_PYPI_INDEX_URL)"
-	@echo "   APT 源:   $(HERMES_APT_MIRROR)"
-	@echo "   NPM 源:   $(HERMES_NPM_REGISTRY)"
-	@echo "   Node 基础镜像:   $(HERMES_NODE_BASE_IMAGE)"
-	@echo "   Python 基础镜像: $(HERMES_PYTHON_BASE_IMAGE)"
-	@echo "   构建上下文: $(HERMES_CONTEXT)"
-	@echo "============================================================"
-	@if [ ! -f "deploy/hermes/Dockerfile" ]; then \
-		echo "❌ 错误: deploy/hermes/Dockerfile 不存在"; \
-		exit 1; \
-	fi
-	@DOCKER_BUILDKIT=$(DOCKER_BUILDKIT) docker build --platform linux/amd64 \
-		-f deploy/hermes/Dockerfile \
-		--build-arg HERMES_NODE_BASE_IMAGE=$(HERMES_NODE_BASE_IMAGE) \
-		--build-arg HERMES_PYTHON_BASE_IMAGE=$(HERMES_PYTHON_BASE_IMAGE) \
-		--build-arg PYPI_INDEX_URL=$(HERMES_PYPI_INDEX_URL) \
-		--build-arg HERMES_AGENT_REF=$(HERMES_AGENT_REF) \
-		--build-arg APT_MIRROR=$(HERMES_APT_MIRROR) \
-		--build-arg NPM_REGISTRY=$(HERMES_NPM_REGISTRY) \
-		-t $(HERMES_IMAGE):$(HERMES_TAG) \
-		-t $(HERMES_VPC_IMAGE):$(HERMES_TAG) \
-		$(HERMES_CONTEXT)
-	@echo "✅ 构建完成: $(HERMES_IMAGE):$(HERMES_TAG)"
-	@echo "🔗 对应内网地址: $(HERMES_VPC_IMAGE):$(HERMES_TAG)"
-
-hermes-push: hermes-build
-	@echo "📤 推送 Hermes 镜像: $(HERMES_IMAGE):$(HERMES_TAG)"
-	@echo "🔗 对应内网地址: $(HERMES_VPC_IMAGE):$(HERMES_TAG)"
-	@docker push $(HERMES_IMAGE):$(HERMES_TAG)
-	@docker push $(HERMES_VPC_IMAGE):$(HERMES_TAG)
-	@echo "✅ 推送完成"
-
-hermes-size:
-	@docker images $(HERMES_IMAGE):$(HERMES_TAG) --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}"
+	@$(MAKE) -C "$(AGENTENGINE_IMAGES_DIR)" $@
 
 
 # ============================================================
@@ -794,33 +621,39 @@ docs-logs:
 
 
 # ============================================================
-# Hosted UI 构建自动化
+# KsADK Web static 同步
 # ============================================================
 
-NODE_DIR := ksadk/server/web-ui
 STATIC_DIR := ksadk/server/static
-HOSTED_DIR := ksadk/server/web-ui/dist-hosted
-HOSTED_UI_SOURCE_DIR ?= ../agentengine-hosted-ui
+KSADK_WEB_VERSION ?= latest
+KSADK_WEB_PACKAGE ?= @kingsoftcloud/ksadk-web
+KSADK_WEB_TARBALL_NAME := kingsoftcloud-ksadk-web-$(patsubst v%,%,$(KSADK_WEB_VERSION)).tgz
+KSADK_WEB_RELEASE_URL ?=
+KSADK_WEB_CACHE_DIR ?= .cache/ksadk-web
 
-sync-hosted-ui:
-	@if [ ! -d "$(HOSTED_UI_SOURCE_DIR)" ]; then \
-		echo "ERROR: HOSTED_UI_SOURCE_DIR not found: $(HOSTED_UI_SOURCE_DIR)"; \
-		exit 1; \
+sync-ksadk-web-static:
+	@echo "Sync KsADK Web static assets from $(KSADK_WEB_PACKAGE)@$(KSADK_WEB_VERSION)"
+	@rm -rf "$(KSADK_WEB_CACHE_DIR)/package"
+	@mkdir -p "$(KSADK_WEB_CACHE_DIR)" "$(STATIC_DIR)"
+	@if [ -n "$(KSADK_WEB_RELEASE_URL)" ]; then \
+		echo "Using explicit KSADK_WEB_RELEASE_URL=$(KSADK_WEB_RELEASE_URL)"; \
+		curl -fL --retry 3 --retry-delay 2 --retry-all-errors "$(KSADK_WEB_RELEASE_URL)" -o "$(KSADK_WEB_CACHE_DIR)/$(KSADK_WEB_TARBALL_NAME)"; \
+		echo "$(KSADK_WEB_TARBALL_NAME)" > "$(KSADK_WEB_CACHE_DIR)/.tarball-name"; \
+	else \
+		npm pack "$(KSADK_WEB_PACKAGE)@$(patsubst v%,%,$(KSADK_WEB_VERSION))" --pack-destination "$(KSADK_WEB_CACHE_DIR)" > "$(KSADK_WEB_CACHE_DIR)/.tarball-name"; \
 	fi
-	@echo "Sync Hosted UI source into embedded KsADK web-ui"
-	rsync -a --delete $(HOSTED_UI_SOURCE_DIR)/src/ $(NODE_DIR)/src/
-	rsync -a --delete \
-		--exclude='makefile-contract.test.mjs' \
-		--exclude='helm-contract.test.mjs' \
-		--exclude='sync-static.test.mjs' \
-		--exclude='hosted-ui-sync.test.mjs' \
-		$(HOSTED_UI_SOURCE_DIR)/tests/ $(NODE_DIR)/tests/
-	rsync -a --delete $(HOSTED_UI_SOURCE_DIR)/public/ $(NODE_DIR)/public/
-	rsync -a $(HOSTED_UI_SOURCE_DIR)/package.json $(HOSTED_UI_SOURCE_DIR)/package-lock.json $(NODE_DIR)/
-	rsync -a $(HOSTED_UI_SOURCE_DIR)/index.html $(HOSTED_UI_SOURCE_DIR)/vite.config.ts $(HOSTED_UI_SOURCE_DIR)/tsconfig*.json $(HOSTED_UI_SOURCE_DIR)/tailwind.config.ts $(HOSTED_UI_SOURCE_DIR)/postcss.config.js $(HOSTED_UI_SOURCE_DIR)/components.json $(HOSTED_UI_SOURCE_DIR)/eslint.config.js $(NODE_DIR)/
+	tar -xzf "$(KSADK_WEB_CACHE_DIR)/$$(cat "$(KSADK_WEB_CACHE_DIR)/.tarball-name")" -C "$(KSADK_WEB_CACHE_DIR)"
+	@test -d "$(KSADK_WEB_CACHE_DIR)/package/dist-ksadk" || (echo "ERROR: dist-ksadk missing in $$(cat "$(KSADK_WEB_CACHE_DIR)/.tarball-name")" && exit 1)
+	@rm -rf "$(STATIC_DIR)"
+	@mkdir -p "$(STATIC_DIR)"
+	cp -R "$(KSADK_WEB_CACHE_DIR)/package/dist-ksadk/." "$(STATIC_DIR)/"
+	@echo "Synced KsADK Web $(KSADK_WEB_VERSION) static assets into $(STATIC_DIR)"
 
-build-frontend: sync-hosted-ui
-	cd $(NODE_DIR) && npm ci && npm run build:all
+sync-hosted-ui: sync-ksadk-web-static
+	@echo "sync-hosted-ui is deprecated; static assets now come from $(KSADK_WEB_PACKAGE)."
+
+build-frontend: sync-ksadk-web-static
+	@echo "Frontend static assets synced from $(KSADK_WEB_VERSION)"
 
 build-wheel: build-frontend
 	uv build
@@ -829,8 +662,7 @@ build-all: build-wheel
 	@echo "Build complete. Wheel is in dist/"
 
 clean-frontend:
-	rm -rf $(NODE_DIR)/dist $(NODE_DIR)/dist-hosted
-	rm -rf $(STATIC_DIR)/assets $(STATIC_DIR)/index.html $(STATIC_DIR)/favicon.svg $(STATIC_DIR)/icons.svg
+	rm -rf $(STATIC_DIR)
 
 # ============================================================
 # 清理
@@ -839,7 +671,6 @@ clean-frontend:
 clean:
 	@echo "🧹 清理构建产物和本地缓存..."
 	rm -rf dist/ build/ *.egg-info/ .eggs/
-	rm -rf webui/dist/
 	rm -rf .pytest_cache/ .mypy_cache/ .ruff_cache/ .coverage coverage.xml htmlcov/ .tox/ .nox/
 	rm -rf $(OFFLINE_DIR)/
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true

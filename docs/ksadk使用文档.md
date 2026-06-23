@@ -26,9 +26,10 @@ pip install "ksadk[langgraph]"
 pip install "ksadk[langchain]"
 pip install "ksadk[deepagents]"
 pip install "ksadk[adk]"
-pip install "ksadk[kb]"
 pip install "ksadk[skills]"
 ```
+
+知识库和长期记忆使用的 `kingsoftcloud-sdk-python` 已包含在默认依赖中，不需要额外安装 `ksadk[kb]`。
 
 命令入口等价：
 
@@ -116,6 +117,50 @@ cd my-openclaw
 agentengine openclaw deploy
 agentengine openclaw status
 ```
+
+### 4.5 Skill Runtime 与内置工具接入
+
+`0.6.2` 新增 `ksadk.toolsets`，开发者可以在 LangGraph、LangChain、DeepAgents 或自定义 runner 中显式绑定 AgentEngine 内置工具。推荐默认使用渐进式披露，避免把所有低频或高风险工具直接塞进模型上下文：
+
+```python
+from ksadk.toolsets import describe_agentengine_tools, get_agentengine_tools
+
+tools = get_agentengine_tools(include=["focused", "agentengine_tool_dispatcher"])
+tool_specs = describe_agentengine_tools(include=["focused", "agentengine_tool_dispatcher"])
+```
+
+`focused` 默认直接暴露这些高频工具：
+
+- Skill Space：`list_skills`、`search_skills`、`load_skill`
+- Workspace：`workspace_status`、`search_workspace_files`、`edit_workspace_file`、`lint_workspace_file`
+- Platform：`component_status`
+- Sandbox：`sandbox_status`
+
+低频、高风险或上下文较重的工具通过 `agentengine_tool_dispatcher` 按需 `list` / `describe` / `call`：
+
+```python
+from ksadk.toolsets import agentengine_tool_dispatcher
+
+agentengine_tool_dispatcher("describe", tool_name="run_code")
+agentengine_tool_dispatcher(
+    "call",
+    tool_name="run_code",
+    arguments={"code": "print(42)", "language": "python"},
+)
+```
+
+`get_agentengine_tools()` 无参仍返回全量工具，兼容旧项目；新项目建议显式写 `include=["focused", "agentengine_tool_dispatcher"]`。如果只需要某个分组，也可以写 `include=["skill"]`、`include=["workspace"]`、`include=["platform"]` 或 `include=["sandbox"]`。
+
+Skill Runtime 执行入口是 `execute_skills`。它只用于 workflow 型任务，普通 instruction-first Skill 推荐先 `load_skill` 读取 `SKILL.md`，再由外层 agent 按指令完成。隔离执行 backend 由环境变量决定：
+
+- `KSADK_SKILL_RUNTIME_BACKEND=local_process`：走本地 agent 进程
+- `KSADK_SKILL_RUNTIME_BACKEND=e2b`：走远程 sandbox / E2B backend
+- 未设置 backend 但存在 `KSADK_SANDBOX_TEMPLATE_ID`：自动走 E2B
+- 显式 `KSADK_SKILL_RUNTIME_BACKEND=disabled`：禁用隔离执行
+
+Workspace 内置工具只访问 AgentEngine UI workspace，不访问任意宿主机路径。`edit_workspace_file` 是 exact snippet replacement；匹配不到返回 `snippet_not_found`，匹配次数不符合预期返回 `ambiguous_edit`。`lint_workspace_file` 提供 Python AST、JSON parse 和通用文本轻量检查。
+
+Sandbox direct tools 只通过 configured isolated sandbox backend 执行。`run_command` / `run_code` 不会退化为宿主机 shell；未配置 sandbox 时会返回诊断。`execute_skills`、Workspace 写入/删除、sandbox command/code 等中高风险工具会经过 Tool Gateway；strict 模式下会返回 `approval_required`，由 UI 或调用方回传批准后继续。
 
 ## 5. `/v1/responses` OpenAI 兼容接口
 

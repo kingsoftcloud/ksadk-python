@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 import click
+from click.core import ParameterSource
 
 from ksadk.api import AgentEngineClient
 from ksadk.cli.agent_ref import merge_agent_inputs, resolve_agent_ref
@@ -49,6 +50,7 @@ from ksadk.deployment.agent_access import (
 )
 from ksadk.deployment.state import clear_state, load_state, save_state
 from ksadk.cli.model_catalog import fetch_provider_model_metadata
+from ksadk.model_policy import build_runtime_model_policy_env
 from ksadk.hermes_terminal import (
     run_hermes_terminal_session,
     validate_hermes_exec_argv,
@@ -56,21 +58,18 @@ from ksadk.hermes_terminal import (
 )
 
 
-DEFAULT_HERMES_IMAGE = "hub.kce.ksyun.com/agentengine-public/hermes-agent:2026.5.16-ksadk-v1"
+DEFAULT_HERMES_IMAGE = "ghcr.io/kingsoftcloud/hermes-agent:2026.5.29.2-ksadk-v1"
 DEFAULT_HERMES_CONTEXT_LENGTHS = (
     ("glm-5.1", "200000"),
 )
-DEFAULT_HERMES_FALLBACK_MODELS = (
-    ("glm-5.1", "kimi-k2.6"),
-)
-DEFAULT_HERMES_MODEL_NAME = "glm-5.1"
+DEFAULT_HERMES_MODEL_NAME = "glm-5.2"
 DEFAULT_HERMES_PUBLIC_BASE_URL = "https://kspmas.ksyun.com/v1/"
-DEFAULT_HERMES_RUNTIME_BASE_URL = "http://kspmas-internal.sdns.ksyun.com/v1"
+DEFAULT_HERMES_RUNTIME_BASE_URL = DEFAULT_HERMES_PUBLIC_BASE_URL
 KSPMAS_PUBLIC_BASES = (
     "http://kspmas.ksyun.com",
     "https://kspmas.ksyun.com",
 )
-KSPMAS_INTERNAL_BASE = "http://kspmas-internal.sdns.ksyun.com"
+KSPMAS_INTERNAL_BASE = DEFAULT_HERMES_PUBLIC_BASE_URL.rstrip("/")
 _HERMES_GLOBAL_ENV_CACHE: dict[str, str] | None = None
 
 HERMES_RESOURCE = ResourceDescriptor(
@@ -116,11 +115,50 @@ HERMES_RESOURCE = ResourceDescriptor(
         "agentengine hermes open ar-xxxx --chat",
         "agentengine hermes exec ar-xxxx -- status",
         "agentengine hermes pairing ar-xxxx -- list",
+        "agentengine hermes pairing ar-xxxx -- approve wpsxiezuo <code>",
         "agentengine hermes delete ar-xxxx",
     ),
     missing_ref_message="未找到 Hermes Agent，请指定 Agent（--agent 或位置参数）",
     resolution_commands=("agentengine hermes list",),
 )
+
+
+def _option_was_explicit(ctx: click.Context | None, name: str) -> bool:
+    if ctx is None:
+        return False
+    try:
+        return ctx.get_parameter_source(name) != ParameterSource.DEFAULT
+    except Exception:
+        return False
+
+
+def _build_hermes_update_payload(
+    *,
+    payload: dict[str, Any],
+    storage_config: dict[str, Any] | None,
+    network_payload: dict[str, Any] | None,
+    include_env: bool,
+    include_storage: bool,
+) -> dict[str, Any]:
+    """构建已有 Hermes 的最小更新请求，避免镜像更新覆盖用户配置。"""
+    update_payload: dict[str, Any] = {
+        "name": payload["name"],
+        "description": payload["description"],
+        "framework": payload["framework"],
+        "artifact_type": payload["artifact_type"],
+        "artifact_path": payload["artifact_path"],
+        "region": payload["region"],
+        "resources": payload["resources"],
+        "scaling": payload["scaling"],
+        "ui_config": payload["ui_config"],
+    }
+    if include_env:
+        update_payload["env_vars"] = payload["env_vars"]
+    if include_storage and storage_config:
+        update_payload["storage"] = storage_config
+    if network_payload:
+        update_payload["network"] = network_payload
+    return update_payload
 
 
 @click.group("hermes", context_settings=CONTEXT_SETTINGS)
@@ -200,6 +238,7 @@ async def _fetch_hermes_bootstrap_config(region: str) -> dict[str, Any] | None:
                 client_type="cli",
                 client_version=CLI_VERSION,
                 locale=_env_value("LANG", "LC_ALL"),
+                ignore_dry_run=True,
             )
     except Exception as e:
         print_warn(f"拉取 Hermes 服务端默认配置失败，回退本地默认镜像: {e}")
@@ -226,17 +265,6 @@ def _default_context_length_for_model(model: str | None) -> str:
     return ""
 
 
-def _default_fallback_model_for_model(model: str | None, base_url: str | None) -> str:
-    normalized_model = str(model or "").strip().lower()
-    normalized_base_url = str(base_url or "").strip().lower()
-    for model_fragment, fallback_model in DEFAULT_HERMES_FALLBACK_MODELS:
-        if model_fragment in normalized_model:
-            return fallback_model
-    if "kspmas" in normalized_base_url:
-        return "kimi-k2.6"
-    return ""
-
-
 def _build_hermes_env_vars(
     *,
     model_base_url: str | None = None,
@@ -259,10 +287,6 @@ def _build_hermes_env_vars(
         or metadata_context_length
         or _default_context_length_for_model(resolved_default_model)
     )
-    fallback_model = (
-        _env_value("HERMES_FALLBACK_MODEL", "OPENAI_FALLBACK_MODEL_NAME")
-        or _default_fallback_model_for_model(resolved_default_model, resolved_model_base_url)
-    )
     ui_locale = _normalize_hermes_ui_locale(_env_value("HERMES_UI_LOCALE", "LANG", "LC_ALL"))
     raw = {
         "OPENAI_API_KEY": model_api_key or _env_value("OPENAI_API_KEY"),
@@ -278,6 +302,7 @@ def _build_hermes_env_vars(
     }
     if context_length:
         raw["HERMES_CONTEXT_LENGTH"] = context_length
+    fallback_model = _env_value("HERMES_FALLBACK_MODEL", "OPENAI_FALLBACK_MODEL_NAME")
     if fallback_model:
         raw["HERMES_FALLBACK_PROVIDER"] = _env_value("HERMES_FALLBACK_PROVIDER") or "custom"
         raw["HERMES_FALLBACK_MODEL"] = fallback_model
@@ -303,6 +328,23 @@ def _build_hermes_env_vars(
             value = _env_value(*source_keys)
             if value:
                 raw[target_key] = value
+    for key in (
+        "WPSXIEZUO_APP_ID",
+        "WPSXIEZUO_APP_KEY",
+        "WPSXIEZUO_API_BASE",
+        "WPSXIEZUO_WS_ENDPOINT",
+        "WPSXIEZUO_GROUP_AT_ONLY",
+        "WPSXIEZUO_ALLOWED_USERS",
+        "WPSXIEZUO_ALLOW_ALL_USERS",
+        "WPSXIEZUO_HOME_CHANNEL",
+    ):
+        value = _env_value(key)
+        if value:
+            raw[key] = value
+    raw = build_runtime_model_policy_env(raw, runtime="hermes")
+    if raw.get("HERMES_FALLBACK_MODEL"):
+        raw.setdefault("HERMES_FALLBACK_PROVIDER", _env_value("HERMES_FALLBACK_PROVIDER") or "custom")
+        raw.setdefault("HERMES_FALLBACK_BASE_URL", _env_value("HERMES_FALLBACK_BASE_URL") or resolved_model_base_url)
     return [
         {"Key": key, "Value": str(value), "IsSensitive": any(token in key for token in ("KEY", "TOKEN", "SECRET"))}
         for key, value in raw.items()
@@ -329,12 +371,15 @@ def _validate_hermes_model_config(
 
 def _normalize_hermes_runtime_base_url(base_url: str | None) -> str:
     normalized = str(base_url or "").strip()
-    if not normalized:
-        return normalized
-    for prefix in KSPMAS_PUBLIC_BASES:
-        if normalized.startswith(prefix):
-            return normalized.replace(prefix, KSPMAS_INTERNAL_BASE, 1)
     return normalized
+
+
+_FAILURE_STATUSES = {"FAILED", "ERROR", "TERMINATED"}
+
+
+def _diagnostic_field_style(status_value: str) -> str:
+    """非 RUNNING 诊断行样式：失败用红色，其余用黄色。"""
+    return "bold #f85149" if status_value in _FAILURE_STATUSES else "bold #d29922"
 
 
 def _flatten_agent_detail(agent: dict[str, Any]) -> dict[str, Any]:
@@ -345,6 +390,10 @@ def _flatten_agent_detail(agent: dict[str, Any]) -> dict[str, Any]:
         "agent_id": basic.get("agent_id") or agent.get("agent_id"),
         "name": basic.get("name") or agent.get("name"),
         "status": basic.get("status") or agent.get("status") or "UNKNOWN",
+        "phase": basic.get("phase") or "",
+        "message": basic.get("message") or "",
+        "replicas": basic.get("replicas"),
+        "ready_replicas": basic.get("ready_replicas"),
         "framework": deployment.get("framework") or basic.get("framework") or agent.get("framework"),
         "region": basic.get("region") or agent.get("region"),
         "endpoint": quick.get("public_endpoint") or quick.get("private_endpoint") or agent.get("endpoint"),
@@ -488,6 +537,21 @@ def deploy(
     """部署 Hermes runtime 到云端。"""
     _ = output_mode
     dry_run = effective_dry_run(dry_run)
+    ctx = click.get_current_context(silent=True)
+    include_env_on_update = any(
+        (
+            _option_was_explicit(ctx, "model_base_url"),
+            _option_was_explicit(ctx, "model_api_key"),
+            _option_was_explicit(ctx, "default_model"),
+        )
+    )
+    include_storage_on_update = any(
+        (
+            _option_was_explicit(ctx, "storage_size_gi"),
+            _option_was_explicit(ctx, "storage_mount_path"),
+            _option_was_explicit(ctx, "no_storage"),
+        )
+    )
     run_async_with_dry_run(
         _deploy_hermes(
             name=name,
@@ -501,6 +565,8 @@ def deploy(
             storage_size_gi=storage_size_gi,
             storage_mount_path=storage_mount_path,
             no_storage=no_storage,
+            include_env_on_update=include_env_on_update,
+            include_storage_on_update=include_storage_on_update,
             **network_cli_kwargs(
                 enable_public_access=enable_public_access,
                 enable_vpc_access=enable_vpc_access,
@@ -530,6 +596,8 @@ async def _deploy_hermes(
     storage_size_gi: int,
     storage_mount_path: str | None,
     no_storage: bool,
+    include_env_on_update: bool,
+    include_storage_on_update: bool,
     enable_public_access: bool | None,
     enable_vpc_access: bool,
     vpc_id: str | None,
@@ -589,6 +657,8 @@ async def _deploy_hermes(
     )
     if storage_config:
         payload["storage"] = storage_config
+    if existing_agent_id and include_storage_on_update and no_storage:
+        print_warn("更新已有 Hermes 时 `--no-storage` 不会删除服务端既有挂盘配置；默认保留已有配置。")
     network_payload = build_network_payload(
         enable_public_access=enable_public_access,
         enable_vpc_access=enable_vpc_access,
@@ -596,6 +666,8 @@ async def _deploy_hermes(
         subnet_id=subnet_id,
         security_group_id=security_group_id,
         availability_zone=availability_zone,
+        region=region,
+        dry_run=dry_run,
     )
     if network_payload:
         payload["network"] = network_payload
@@ -606,7 +678,14 @@ async def _deploy_hermes(
 
     async with AgentEngineClient(region=region, dry_run=dry_run) as client:
         if existing_agent_id:
-            res = await client.update_agent(existing_agent_id, payload)
+            update_payload = _build_hermes_update_payload(
+                payload=payload,
+                storage_config=storage_config,
+                network_payload=network_payload,
+                include_env=include_env_on_update,
+                include_storage=include_storage_on_update,
+            )
+            res = await client.update_agent(existing_agent_id, update_payload)
             if res is None:
                 res = {}
             res.setdefault("agent_id", existing_agent_id)
@@ -788,18 +867,32 @@ def status(agent_ref: Optional[str], region: str, dry_run: bool, output_mode: st
         async with AgentEngineClient(region=region, dry_run=dry_run) as client:
             detail = await _get_hermes_detail_with_client(client, resolved)
         status_value = str(detail.get("status") or "UNKNOWN").upper()
-        render_descriptor_status(
-            HERMES_RESOURCE,
-            subtitle=str(detail.get("name") or resolved),
-        fields=[
+        fields: list[tuple[str, str, str | None]] = [
             ("ID", str(detail.get("agent_id") or "-"), "#58a6ff"),
             ("状态", status_value, status_rich_style(status_value)),
+        ]
+        message = str(detail.get("message") or "").strip()
+        if status_value != "RUNNING":
+            replicas = detail.get("replicas")
+            ready = detail.get("ready_replicas")
+            if replicas is not None or ready is not None:
+                replicas_text = f"{ready if ready is not None else '-'}/{replicas if replicas is not None else '-'}"
+                replica_style = _diagnostic_field_style(status_value)
+                fields.append(("副本", replicas_text, replica_style))
+            if message:
+                message_style = _diagnostic_field_style(status_value)
+                fields.append(("消息", message, message_style))
+        fields.extend([
             ("框架", str(detail.get("framework") or "-"), None),
             ("区域", str(detail.get("region") or region), None),
             ("Endpoint", str(detail.get("endpoint") or "-"), "#58a6ff"),
             ("Langfuse", str(detail.get("langfuse_url") or "-"), "#58a6ff" if detail.get("langfuse_url") else None),
             ("镜像", str(detail.get("artifact_path") or "-"), None),
-        ],
+        ])
+        render_descriptor_status(
+            HERMES_RESOURCE,
+            subtitle=str(detail.get("name") or resolved),
+        fields=fields,
         item={
             "id": str(detail.get("agent_id") or "-"),
             "name": str(detail.get("name") or resolved),
@@ -809,6 +902,10 @@ def status(agent_ref: Optional[str], region: str, dry_run: bool, output_mode: st
             "endpoint": str(detail.get("endpoint") or "-"),
             "langfuse_url": str(detail.get("langfuse_url") or ""),
             "image": str(detail.get("artifact_path") or "-"),
+            "message": message,
+            "phase": str(detail.get("phase") or ""),
+            "replicas": detail.get("replicas"),
+            "ready_replicas": detail.get("ready_replicas"),
         },
     )
 
@@ -965,7 +1062,11 @@ def pairing_hermes(
     dry_run: bool,
     output_mode: str | None,
 ):
-    """透传 Hermes pairing 审批子命令。"""
+    """透传 Hermes pairing 审批子命令。
+
+    WPS 协作配对码来自未授权用户私聊机器人时 Hermes 返回的 pairing code，
+    审批示例：agentengine hermes pairing <agent> -- approve wpsxiezuo <code>
+    """
     _ = output_mode
     try:
         agent_ref, validated_argv = _split_terminal_agent_ref_and_argv(

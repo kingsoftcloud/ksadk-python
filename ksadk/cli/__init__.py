@@ -499,9 +499,13 @@ def main():
     try:
         from ksadk.configs.global_config import get_env_from_global_config
         global_env = get_env_from_global_config()
+        injected_keys = []
         for key, value in global_env.items():
             if not os.environ.get(key):
                 os.environ[key] = value
+                injected_keys.append(key)
+        if injected_keys:
+            os.environ["KSADK_GLOBAL_CONFIG_ENV_KEYS"] = ",".join(sorted(injected_keys))
     except Exception:
         pass
 
