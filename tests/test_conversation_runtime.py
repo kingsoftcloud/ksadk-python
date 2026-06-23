@@ -3459,6 +3459,44 @@ async def test_invoke_conversation_once_preserves_runner_usage(monkeypatch):
     assert result["metadata"]["usage"] == result["usage"]
 
 
+@pytest.mark.asyncio
+async def test_invoke_conversation_once_sets_usage_trace_attributes(
+    monkeypatch,
+    in_memory_trace_exporter,
+):
+    service = InMemorySessionService()
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-usage-span")
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    runner = _UsageRunner()
+    _, result = await invoke_conversation_once(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-usage-span",
+        messages=[{"role": "user", "content": "hello"}],
+        model="demo-model",
+        prepare_runner=lambda active_runner, model: active_runner.prepare_for_request(model),
+    )
+
+    exported_trace = in_memory_trace_exporter.get_trace(result["metadata"]["trace_id"])
+    root_span = next(
+        span for span in exported_trace["spans"] if span["span_id"] == result["metadata"]["root_span_id"]
+    )
+    attrs = root_span["attributes"]
+    assert attrs["gen_ai.usage.input_tokens"] == 8
+    assert attrs["gen_ai.usage.output_tokens"] == 13
+    assert attrs["gen_ai.usage.total_tokens"] == 21
+    assert attrs["llm.usage.prompt_tokens"] == 8
+    assert attrs["llm.usage.completion_tokens"] == 13
+    assert attrs["llm.usage.total_tokens"] == 21
+    assert attrs["langfuse.observation.usage.input"] == 8
+    assert attrs["langfuse.observation.usage.output"] == 13
+    assert attrs["langfuse.observation.usage.total"] == 21
+    assert attrs["gen_ai.usage.output_token_details.reasoning_tokens"] == 5
+    assert attrs["llm.usage.completion_tokens_details.reasoning_tokens"] == 5
+
+
 def test_build_chat_completions_payload_uses_real_usage_from_metadata():
     payload = build_chat_completions_payload(
         output_text="assistant says hi",
@@ -3602,6 +3640,46 @@ async def test_stream_conversation_turn_preserves_final_chunk_usage(monkeypatch)
     events = await service.get_events("sess-stream-usage")
     assistant_event = next(event for event in events if event.event_type == "assistant_message")
     assert assistant_event.metadata["usage"] == completed_payload["usage"]
+
+
+@pytest.mark.asyncio
+async def test_stream_conversation_turn_sets_usage_trace_attributes(
+    monkeypatch,
+    in_memory_trace_exporter,
+):
+    service = InMemorySessionService()
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-stream-usage-span")
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    runner = _UsageStreamingRunner()
+    chunks = [
+        chunk
+        async for chunk in stream_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-stream-usage-span",
+            messages=[{"role": "user", "content": "hello"}],
+            model="demo-model",
+            prepare_runner=lambda active_runner, model: active_runner.prepare_for_request(model),
+        )
+    ]
+
+    completed_payload = _extract_sse_payload(chunks, "response.completed")
+    exported_trace = in_memory_trace_exporter.get_trace(completed_payload["metadata"]["trace_id"])
+    root_span = next(
+        span
+        for span in exported_trace["spans"]
+        if span["span_id"] == completed_payload["metadata"]["root_span_id"]
+    )
+    attrs = root_span["attributes"]
+    assert attrs["gen_ai.usage.input_tokens"] == 8
+    assert attrs["gen_ai.usage.output_tokens"] == 13
+    assert attrs["gen_ai.usage.total_tokens"] == 21
+    assert attrs["gen_ai.usage.input_token_details.cached_tokens"] == 4
+    assert attrs["gen_ai.usage.output_token_details.reasoning_tokens"] == 5
+    assert attrs["llm.usage.prompt_tokens_details.cached_tokens"] == 4
+    assert attrs["llm.usage.completion_tokens_details.reasoning_tokens"] == 5
 
 
 @pytest.mark.asyncio

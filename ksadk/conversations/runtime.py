@@ -311,6 +311,75 @@ def _set_conversation_output_attributes(span: Any | None, output_text: str | Non
         _set_span_attribute(span, key, text)
 
 
+def _set_conversation_usage_attributes(span: Any | None, usage: Mapping[str, Any] | None) -> None:
+    normalized = _normalize_usage_payload(usage)
+    if not normalized:
+        return
+
+    input_tokens = normalized.get("input_tokens", normalized.get("prompt_tokens"))
+    output_tokens = normalized.get("output_tokens", normalized.get("completion_tokens"))
+    total_tokens = normalized.get("total_tokens")
+    if total_tokens is None and input_tokens is not None and output_tokens is not None:
+        total_tokens = input_tokens + output_tokens
+
+    for value, keys in (
+        (
+            input_tokens,
+            (
+                "gen_ai.usage.input_tokens",
+                "llm.usage.prompt_tokens",
+                "langfuse.observation.usage.input",
+            ),
+        ),
+        (
+            output_tokens,
+            (
+                "gen_ai.usage.output_tokens",
+                "llm.usage.completion_tokens",
+                "langfuse.observation.usage.output",
+            ),
+        ),
+        (
+            total_tokens,
+            (
+                "gen_ai.usage.total_tokens",
+                "llm.usage.total_tokens",
+                "langfuse.observation.usage.total",
+            ),
+        ),
+    ):
+        if value is None:
+            continue
+        for key in keys:
+            _set_span_attribute(span, key, value)
+
+    input_details = normalized.get("input_token_details")
+    if isinstance(input_details, Mapping) and input_details.get("cached") is not None:
+        _set_span_attribute(
+            span,
+            "gen_ai.usage.input_token_details.cached_tokens",
+            input_details.get("cached"),
+        )
+        _set_span_attribute(
+            span,
+            "llm.usage.prompt_tokens_details.cached_tokens",
+            input_details.get("cached"),
+        )
+
+    output_details = normalized.get("output_token_details")
+    if isinstance(output_details, Mapping) and output_details.get("reasoning") is not None:
+        _set_span_attribute(
+            span,
+            "gen_ai.usage.output_token_details.reasoning_tokens",
+            output_details.get("reasoning"),
+        )
+        _set_span_attribute(
+            span,
+            "llm.usage.completion_tokens_details.reasoning_tokens",
+            output_details.get("reasoning"),
+        )
+
+
 def _set_conversation_span_attributes(
     span: Any,
     *,
@@ -3166,6 +3235,7 @@ async def invoke_conversation_once(
         output_text = strip_reasoning_markup(str(result.get("output", "")))
         result_usage = _normalize_usage_payload(result.get("usage"))
         _set_conversation_output_attributes(span, output_text)
+        _set_conversation_usage_attributes(span, result_usage)
         result_agentengine_metadata = _extract_agentengine_metadata(result)
         assistant_metadata: dict[str, Any] = {
             **trace_metadata,
@@ -3737,6 +3807,7 @@ async def _iter_conversation_turn_events(
         if responses_response_id:
             assistant_metadata["response_id"] = responses_response_id
         _set_conversation_output_attributes(span, accumulated_text)
+        _set_conversation_usage_attributes(span, stream_usage)
 
         await append_conversation_event(
             session_id=prepared.session_id,
