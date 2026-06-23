@@ -26,30 +26,33 @@ def _changelog_section(version: str) -> str:
 def test_public_readme_positions_ksadk_as_runtime_platform():
     readme = _read("README.md")
     for expected in (
-        "Build agents once. Run them anywhere.",
+        "一次构建 Agent，到处运行。",
         "Agent Runtime Platform",
-        "Why KsADK",
+        "简体中文（默认）",
+        "README.en.md",
         "30 秒快速体验",
-        "Architecture",
-        "Comparison",
-        "Examples",
-        "Deployment",
-        "Observability",
-        "Documentation",
-        "Community",
-        "KSYUN_REGION=cn-beijing-6",
+        "为什么需要 KsADK",
+        "KsADK 解决“如何运行、调试、部署和观测 Agent”",
+        "文档与样例",
+        "相关项目",
+        "参与贡献",
     ):
         assert expected in readme
+
+    english_readme = _read("README.en.md")
+    for expected in (
+        "Build agents once. Run them anywhere.",
+        "Agent Runtime Platform",
+        "30 Seconds Quick Start",
+        "Why KsADK",
+        "Docs And Examples",
+    ):
+        assert expected in english_readme
 
     assert "Agent Development Kit" not in readme
     assert "KSADK_SKILL_SERVICE_REGION=pre-online" not in readme
     assert "```mermaid" not in readme
-    assert "```text" in readme
     assert "当前版本：" not in readme
-    assert (
-        "发布版本：`0.6.6`" in readme
-        or "当前源码版本：`0.6.6`。正式发布通过 GitHub Release 和 PyPI Trusted Publishing 提供。" in readme
-    )
 
 
 def test_public_metadata_uses_runtime_platform_positioning():
