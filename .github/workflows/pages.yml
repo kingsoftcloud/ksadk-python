@@ -51,7 +51,7 @@ jobs:
         run: find site -type f | sed 's#^site/##' | uv run --extra dev python scripts/open_source_audit.py --target github-pages --file-list -
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: site
 
