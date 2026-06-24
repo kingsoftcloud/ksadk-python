@@ -10,7 +10,7 @@ from typing import Any, AsyncIterator, Dict, Optional
 
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.runners.utils import (
-    get_langfuse_callback,
+    get_langfuse_callbacks,
     get_langfuse_metadata,
     load_agent_module,
     prepare_trace_metadata,
@@ -51,9 +51,9 @@ class LangChainRunner(BaseRunner):
     def _get_config(self, session_id: Optional[str] = None) -> Optional[dict[str, Any]]:
         config: dict[str, Any] = {}
 
-        langfuse_cb = get_langfuse_callback()
-        if langfuse_cb:
-            config["callbacks"] = [langfuse_cb]
+        langfuse_callbacks = get_langfuse_callbacks()
+        if langfuse_callbacks:
+            config["callbacks"] = langfuse_callbacks
 
             metadata = get_langfuse_metadata(session_id)
             user_id, tags, _, _ = prepare_trace_metadata(session_id)
