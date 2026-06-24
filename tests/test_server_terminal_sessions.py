@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import importlib
 import json
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from ksadk.runners.base_runner import BaseRunner
-from ksadk.hermes_terminal import TERMINAL_SUBPROTOCOL
 import ksadk.server.terminal_sessions as terminal_sessions
+from ksadk.hermes_terminal import TERMINAL_SUBPROTOCOL
+from ksadk.runners.base_runner import BaseRunner
 from ksadk.server.terminal_sessions import TerminalSession
 
 
@@ -32,6 +34,37 @@ class _OpenClawRunner(BaseRunner):
 
     async def stream(self, input_data: dict):
         yield {"type": "final", "output": "ok"}
+
+
+def test_server_app_imports_when_posix_terminal_modules_are_unavailable():
+    code = """
+import builtins
+real_import = builtins.__import__
+def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+    if name in {'pty', 'termios'}:
+        raise ImportError(f'No module named {name!r}')
+    return real_import(name, globals, locals, fromlist, level)
+builtins.__import__ = guarded_import
+import ksadk.server.app
+print('ok')
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=".",
+        text=True,
+        capture_output=True,
+        timeout=20,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ok"
+
+
+def test_native_terminal_support_reports_false_without_posix_modules(monkeypatch):
+    monkeypatch.setattr(terminal_sessions, "pty", None)
+    monkeypatch.setattr(terminal_sessions, "termios", None)
+
+    assert terminal_sessions.native_terminal_supported() is False
 
 
 @pytest.fixture()
