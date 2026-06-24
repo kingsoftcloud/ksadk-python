@@ -91,6 +91,13 @@ def test_pyproject_keeps_only_synced_static_as_ksadk_web_package_data():
     assert all("server/web-ui" not in entry for entry in package_data)
 
 
+def test_pyproject_excludes_legacy_web_ui_from_package_discovery():
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+    package_find = pyproject["tool"]["setuptools"]["packages"]["find"]
+    assert "ksadk.server.web-ui*" in package_find["exclude"]
+
+
 def test_pyproject_declares_python_multipart_for_local_web_ui_uploads():
     pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
 

@@ -164,13 +164,13 @@ Export once. Observe anywhere.
 - Hosted 附件内容恢复：本地 runtime 现在可以直接消费服务端 `ae-upload://...` 文件引用，并通过 `AttachmentContent` 恢复真实文件内容与本地缓存。
 - Hosted Workspace 导出修复：Workspace zip 下载通过受控 facade 转发到 runtime export，避免 share link / Hosted UI 下载目录时被公共 action 规则误拦截。
 - 会话与历史事件增强：`ListSessions` / `ListSessionEvents` 补齐分页与总数字段，本地 Web UI 支持更长历史会话列表和按需回加载旧事件。
-- Hosted TUI 会话复用：配合 `@kingsoftcloud/ksadk-web@0.2.11`，原生终端默认按当前业务会话复用 terminal session，并保留显式新建入口。
+- Hosted TUI 会话复用：配合 `@kingsoftcloud/ksadk-web@0.2.12`，原生终端默认按当前业务会话复用 terminal session，并保留显式新建入口；Hosted UI 会随请求透传选中模型的 metadata，保证模型热切换、图片输入和 reasoning 能力判断一致。
 - 长任务与终端验证脚本增强：新增 Hosted long-task、checkpoint resume、cancel/resume 和 terminal reconnect 验证脚本，发布前需结合目标环境完成 E2E。
 - CLI 与部署路径增强：dry-run JSON、no-cache、网络参数、环境变量覆盖、framework passthrough、远程 runner、A2A、Skill Runtime 和 sandbox 路径补齐回归覆盖。
 - 将公开定位从普通 SDK 调整为 Agent Runtime Platform，首页补齐 Why KsADK、30 秒体验、架构说明、Deployment、Observability 和 Community。
 - 清理 README、CHANGELOG 和后续 PyPI 元数据中的环境特定表述，避免公开页面出现内部环境名、内部 header 或私有 endpoint 示例。
 - 为公开定位、敏感词和 PyPI metadata 增加回归测试，防止后续回退。
-- 本地开发可从 `@kingsoftcloud/ksadk-web@latest` 同步 Web UI static；0.6.6 发布候选固定使用 `@kingsoftcloud/ksadk-web@0.2.11`，避免 npm `latest` 变化影响发布包。
+- 本地开发可从 `@kingsoftcloud/ksadk-web@latest` 同步 Web UI static；0.6.6 发布候选固定使用 `@kingsoftcloud/ksadk-web@0.2.12`，避免 npm `latest` 变化影响发布包。
 - PyPI 发布默认走 GitHub Actions Trusted Publishing，发布前按发布候选固定同步 KSADK Web static，并执行 `make public-preflight`。
 
 ## Documentation
