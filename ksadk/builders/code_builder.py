@@ -1735,13 +1735,24 @@ logger.info(f"Python: {{sys.version}}")
 logger.info(f"PYTHONPATH: {{os.environ.get('PYTHONPATH', 'N/A')}}")
 
 # 打印关键环境变量 (隐藏敏感信息)
-env_keys = ["AGENT_RUNTIME_NAME", "AGENT_RUNTIME_ID", "ACCOUNT_ID", "PORT", 
-            "LANGFUSE_BASE_URL", "LANGCHAIN_TRACING_V2", "MODEL_NAME"]
+env_keys = [
+    "AGENT_RUNTIME_NAME", "AGENT_RUNTIME_ID", "ACCOUNT_ID", "PORT",
+    "LANGFUSE_BASE_URL", "LANGFUSE_HOST", "LANGFUSE_PUBLIC_KEY",
+    "LANGFUSE_SECRET_KEY", "LANGFUSE_USE_CALLBACK",
+    "OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+    "OTEL_SERVICE_NAME", "CLOUD_MONITOR_APP_KEY",
+    "CLOUD_MONITOR_OTLP_ENABLED", "CLOUD_MONITOR_OTLP_ENDPOINT",
+    "CLOUD_MONITOR_OTLP_TRACES_ENDPOINT", "CLOUD_MONITOR_OTLP_HEADERS",
+    "CLOUD_MONITOR_LANGFUSE_HOST", "CLOUD_MONITOR_LANGFUSE_PUBLIC_KEY",
+    "CLOUD_MONITOR_LANGFUSE_SECRET_KEY", "CLOUD_MONITOR_LANGFUSE_ENABLED",
+    "LANGCHAIN_TRACING_V2", "MODEL_NAME",
+]
 for key in env_keys:
     value = os.environ.get(key)
     if value:
         # 隐藏敏感值
-        if "KEY" in key or "SECRET" in key:
+        if "KEY" in key or "SECRET" in key or "HEADERS" in key:
             value = value[:8] + "****" if len(value) > 8 else "****"
         logger.info(f"  {{key}}: {{value}}")
 
@@ -1775,16 +1786,31 @@ detection_result = DetectionResult(
 logger.info(f"框架: {{detection_result.name}}")
 logger.info(f"入口: {{detection_result.entry_point}}")
 
-# 初始化 Tracing (如果配置了 Langfuse 或标准 OTLP HTTP)
+# 初始化 Tracing (如果配置了 Langfuse、标准 OTLP HTTP 或 CloudMonitor OTLP)
 has_otlp = bool(os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT") or os.environ.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"))
-if os.environ.get("LANGFUSE_PUBLIC_KEY") or has_otlp:
+has_cloud_monitor_otlp = bool(
+    os.environ.get("CLOUD_MONITOR_APP_KEY")
+    or os.environ.get("CLOUD_MONITOR_OTLP_ENDPOINT")
+    or os.environ.get("CLOUD_MONITOR_OTLP_TRACES_ENDPOINT")
+)
+has_cloud_monitor_langfuse = bool(
+    os.environ.get("CLOUD_MONITOR_LANGFUSE_PUBLIC_KEY")
+    or os.environ.get("CLOUD_MONITOR_LANGFUSE_SECRET_KEY")
+    or os.environ.get("CLOUD_MONITOR_LANGFUSE_HOST")
+)
+if os.environ.get("LANGFUSE_PUBLIC_KEY") or has_otlp or has_cloud_monitor_otlp or has_cloud_monitor_langfuse:
     try:
         from ksadk.tracing import setup_tracing
         
         use_callback_only = os.environ.get("LANGFUSE_USE_CALLBACK", "").strip().lower() in ("1", "true", "yes", "on")
 
         setup_tracing(use_callback_only=use_callback_only)
-        logger.info(f"Tracing 已启用 (OTLP={{has_otlp}}, CallbackOnly={{use_callback_only}})")
+        logger.info(
+            f"Tracing 已启用 (OTLP={{has_otlp}}, "
+            f"CloudMonitorOTLP={{has_cloud_monitor_otlp}}, "
+            f"CloudMonitorLangfuse={{has_cloud_monitor_langfuse}}, "
+            f"CallbackOnly={{use_callback_only}})"
+        )
     except Exception as e:
         logger.warning(f"Tracing 初始化失败: {{e}}")
 

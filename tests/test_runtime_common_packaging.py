@@ -157,10 +157,17 @@ def test_makefile_delegates_runtime_image_builds_to_agentengine_images_repo():
     assert "-f deploy/hermes/Dockerfile" not in makefile
 
 
-def test_runtime_templates_initialize_tracing_for_generic_otlp_env():
+def test_runtime_templates_initialize_tracing_for_otlp_envs():
     for rel_path in ["ksadk/builders/code_builder.py", "ksadk/builders/container_builder.py"]:
         source = (REPO_ROOT / rel_path).read_text(encoding="utf-8")
 
         assert "OTEL_EXPORTER_OTLP_ENDPOINT" in source
         assert "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" in source
+        assert "CLOUD_MONITOR_APP_KEY" in source
+        assert "CLOUD_MONITOR_OTLP_ENDPOINT" in source
+        assert "CLOUD_MONITOR_OTLP_TRACES_ENDPOINT" in source
+        assert "CLOUD_MONITOR_LANGFUSE_PUBLIC_KEY" in source
+        assert "CLOUD_MONITOR_LANGFUSE_SECRET_KEY" in source
+        assert "CLOUD_MONITOR_LANGFUSE_HOST" in source
         assert 'os.environ.get("LANGFUSE_PUBLIC_KEY") or has_otlp' in source
+        assert "or has_cloud_monitor_otlp or has_cloud_monitor_langfuse" in source
