@@ -2848,6 +2848,40 @@ async def test_stream_responses_conversation_turn_persists_reasoning_events(monk
 
 
 @pytest.mark.asyncio
+async def test_stream_responses_conversation_turn_suppresses_reasoning_when_disabled(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _CompletedOutputStreamingRunner()
+
+    chunks = [
+        chunk
+        async for chunk in stream_responses_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-no-reasoning",
+            messages=[{"role": "user", "content": "查一下"}],
+            model="gpt-4o",
+            model_options={"thinking": {"type": "disabled"}},
+            prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+            session_service_provider=lambda: service,
+        )
+    ]
+
+    event_names = [
+        line.removeprefix("event: ")
+        for chunk in chunks
+        for line in chunk.splitlines()
+        if line.startswith("event: ")
+    ]
+    assert "response.reasoning.delta" not in event_names
+    completed_payload = _extract_sse_payload(chunks, "response.completed")
+    assert not any(item.get("type") == "reasoning" for item in completed_payload["output"])
+    events = await service.get_events("sess-no-reasoning")
+    assert "reasoning" not in [event.event_type for event in events]
+
+
+@pytest.mark.asyncio
 async def test_stream_responses_turn_maps_function_call_output_without_pending_approval(
     monkeypatch,
 ):

@@ -36,6 +36,8 @@ def test_chat_openai_patch_maps_request_model_options_for_chat_completions():
 
     assert "reasoning_effort" not in payload
     assert payload["extra_body"]["max_reasoning_tokens"] == 0
+    assert payload["extra_body"]["enable_thinking"] is False
+    assert payload["extra_body"]["chat_template_kwargs"]["enable_thinking"] is False
     assert "thinking" not in payload["extra_body"]
 
 
@@ -74,6 +76,8 @@ def test_chat_openai_patch_maps_request_model_options_for_responses_api():
     assert payload["reasoning"] == {"effort": "none"}
     assert payload["extra_body"]["thinking"] == {"type": "disabled"}
     assert payload["extra_body"]["max_reasoning_tokens"] == 0
+    assert payload["extra_body"]["enable_thinking"] is False
+    assert payload["extra_body"]["chat_template_kwargs"]["enable_thinking"] is False
 
 
 def test_chat_openai_patch_preserves_temperature_override():

@@ -97,6 +97,11 @@ def model_options_for_chat_completions(model_options: Mapping[str, Any] | None) 
             payload["reasoning_effort"] = effort
 
     extra_body = dict(normalized.get("extra_body") or {})
+    if _is_disabled_thinking(normalized.get("thinking")):
+        extra_body.setdefault("enable_thinking", False)
+        chat_template_kwargs = dict(extra_body.get("chat_template_kwargs") or {})
+        chat_template_kwargs.setdefault("enable_thinking", False)
+        extra_body["chat_template_kwargs"] = chat_template_kwargs
     if "max_reasoning_tokens" in normalized:
         extra_body.setdefault("max_reasoning_tokens", normalized["max_reasoning_tokens"])
     if extra_body:
@@ -119,6 +124,11 @@ def model_options_for_responses(model_options: Mapping[str, Any] | None) -> dict
     extra_body = dict(normalized.get("extra_body") or {})
     if "thinking" in normalized:
         extra_body.setdefault("thinking", normalized["thinking"])
+    if _is_disabled_thinking(normalized.get("thinking")):
+        extra_body.setdefault("enable_thinking", False)
+        chat_template_kwargs = dict(extra_body.get("chat_template_kwargs") or {})
+        chat_template_kwargs.setdefault("enable_thinking", False)
+        extra_body["chat_template_kwargs"] = chat_template_kwargs
     if "max_reasoning_tokens" in normalized:
         extra_body.setdefault("max_reasoning_tokens", normalized["max_reasoning_tokens"])
     if extra_body:
