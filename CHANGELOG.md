@@ -13,7 +13,7 @@
 - **通用 Agent fallback**：conversation runtime 对超时、限流、5xx、模型不可用、权限/配额等可恢复模型错误支持 fallback 重试；普通 400 参数错误、业务错误和 tool 错误不会被吞掉。
 - **运行时附件与 Hosted 附件打通**：本地 `ksadk-upload://` 与服务端 `ae-upload://` 上传文件统一解析，支持通过 KOP Action 下载 Hosted 附件内容、恢复本地缓存，并在会话/浏览器刷新后继续读取文件。
 - **会话列表与事件分页增强**：Session service 新增 `count_sessions` / `count_events`，`ListSessions` 返回 `Total/Page/PageSize`，`ListSessionEvents` 支持 `Offset/Limit/Total`，便于 UI 恢复长任务和历史事件。
-- **Hosted UI 模型热切换修复**：同步 `@kingsoftcloud/ksadk-web@0.2.12` 静态资源，Hosted `RunAgent` 会随请求透传选中模型的 `ModelMetadata`，确保 reasoning、多模态输入和模型能力判断不会退回默认 catalog。
+- **Hosted UI 稳定性与模型热切换修复**：同步 `@kingsoftcloud/ksadk-web@0.2.13` 静态资源，Hosted `RunAgent` 会随请求透传选中模型的 `ModelMetadata`，确保 reasoning、多模态输入和模型能力判断不会退回默认 catalog；同时修复连续问答后流式消息消失、快速切会话/新建会话时旧流输出回写到当前视图，以及流式 Markdown 表格渲染失败的问题。
 - **Hermes 终端执行策略收敛**：抽出共享 terminal exec allowlist policy，OpenClaw/Hermes 终端命令校验共用同一匹配逻辑，简化 allowlist 配置并降低误放行风险。
 
 ### 变更
@@ -27,7 +27,7 @@
 - Native terminal session manager 中 OpenClaw 使用 `--session` 绑定业务会话，Hermes 继续使用 `--resume`。
 - `AgentEngineClient` 新增 `AttachmentContent` 与 `download_attachment_content()`，并修正 `list_sessions()` 请求字段为 `PageSize`。
 - runtime 上传附件会持久化 metadata、本地路径和 MIME 信息；Hosted 附件下载后会写回本地 cache，供 runner、workspace preview 和会话恢复复用。
-- 本地 Web UI static 发布候选固定同步 `@kingsoftcloud/ksadk-web@0.2.12`，避免 PyPI wheel 与 npm latest 漂移。
+- 本地 Web UI static 发布候选固定同步 `@kingsoftcloud/ksadk-web@0.2.13`，避免 PyPI wheel 与 npm latest 漂移。
 
 ### 修复
 
@@ -39,11 +39,12 @@
 - 修复 OpenClaw TUI 新建 terminal session 时误传不支持的 `--resume` 参数导致启动失败的问题。
 - 修复 `agentengine hermes open --chat` 调用 dashboard open 时缺少 region source，导致命令行打开 Hosted Chat 报错的问题。
 - 修复 OpenClaw 已存在 `OPENCLAW_MODEL_CATALOG_JSON` 时默认主模型可能被 catalog 首项带偏的问题，并在默认模型目录中声明 `reasoning=true` 以启用思考能力。
+- 修复 Hosted Chat 关闭 thinking 后，兼容层或下游模型仍返回 reasoning 时继续展示和持久化思考内容的问题；`thinking.disabled` / `reasoning.effort=none` 会在 runtime 事件层过滤 reasoning 输出。
 
 ### 测试与发布
 
 - 新增模型策略、fallback、流式 fallback、OpenClaw env、Hermes env、LangChain patch、附件恢复、session 分页、Hosted UI 上传文件和终端 allowlist 覆盖测试。
-- 公开发布版本从 `0.6.5` 升级到 `0.6.6`，发布包固定同步 `@kingsoftcloud/ksadk-web@0.2.12` 静态资源并执行 wheel 内容检查；本次发布依赖的 npm release 已切到 `@kingsoftcloud/ksadk-web@0.2.12`。
+- 公开发布版本从 `0.6.5` 升级到 `0.6.6`，发布包固定同步 `@kingsoftcloud/ksadk-web@0.2.13` 静态资源并执行 wheel 内容检查；本次发布候选固定使用 `@kingsoftcloud/ksadk-web@0.2.13`。
 - `make public-preflight` 已覆盖 secret audit、public path audit、全量 pytest、sdist/wheel build 和 `twine check`；0.6.6 wheel/sdist 检查通过。
 - 这是 Hermes/OpenClaw 默认镜像重建前置版本；镜像构建应固定 `KSADK_PACKAGE_SPEC=ksadk==0.6.6`，再走 staging E2E、GitHub Actions / PyPI Trusted Publishing 和环境门禁。
 

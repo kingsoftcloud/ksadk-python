@@ -1835,6 +1835,40 @@ def _semantic_events_from_responses_output(output: Sequence[Any]) -> list[dict[s
     return events
 
 
+def _model_options_disable_reasoning(model_options: Mapping[str, Any] | None) -> bool:
+    normalized = normalize_model_options(model_options)
+    reasoning = normalized.get("reasoning")
+    if isinstance(reasoning, Mapping):
+        effort = str(reasoning.get("effort") or "").strip().lower()
+        if effort in {"none", "off", "disabled", "disable", "false", "0"}:
+            return True
+    max_reasoning_tokens = normalized.get("max_reasoning_tokens")
+    if max_reasoning_tokens is not None:
+        try:
+            return int(max_reasoning_tokens) <= 0
+        except (TypeError, ValueError):
+            pass
+    thinking = normalized.get("thinking")
+    if isinstance(thinking, Mapping):
+        raw_type = str(thinking.get("type") or thinking.get("status") or "").strip().lower()
+        return raw_type in {"disabled", "disable", "off", "none", "false", "0"}
+    if isinstance(thinking, bool):
+        return not thinking
+    raw_thinking = str(thinking or "").strip().lower()
+    return raw_thinking in {"disabled", "disable", "off", "none", "false", "0"}
+
+
+def _filter_responses_reasoning_output(output: Sequence[Any]) -> list[Any]:
+    filtered: list[Any] = []
+    for raw_item in output:
+        if isinstance(raw_item, Mapping):
+            item_type = str(raw_item.get("type") or "").strip()
+            if item_type in {"reasoning", "reasoning_summary", "reasoning_summary_text"}:
+                continue
+        filtered.append(raw_item)
+    return filtered
+
+
 def _truncate_text(text: str | None, limit: int) -> str:
     raw = " ".join(str(text or "").strip().split())
     if len(raw) <= limit:
@@ -3419,6 +3453,7 @@ async def _iter_conversation_turn_events(
         responses_response_id: str | None = response_id
         runner_agentengine_metadata: dict[str, Any] = {}
         stream_usage: dict[str, Any] = {}
+        reasoning_disabled = _model_options_disable_reasoning(prepared.model_options)
         for attempt in range(2):
             try:
                 runtime_context.history = list(prepared.history)
@@ -3467,6 +3502,10 @@ async def _iter_conversation_turn_events(
                                 stream_usage = _normalize_usage_payload(chunk.get("usage"))
                             raw_output = chunk.get("output")
                             responses_output = raw_output if isinstance(raw_output, list) else []
+                            if reasoning_disabled:
+                                responses_output = _filter_responses_reasoning_output(
+                                    responses_output
+                                )
                             raw_response_id = chunk.get("response_id")
                             responses_response_id = (
                                 str(raw_response_id) if raw_response_id else responses_response_id
@@ -3487,6 +3526,8 @@ async def _iter_conversation_turn_events(
                                     yield semantic_event
                             continue
                         if chunk_type == "thinking":
+                            if reasoning_disabled:
+                                continue
                             delta = str(chunk.get("delta", ""))
                             if delta:
                                 await append_reasoning_event(
