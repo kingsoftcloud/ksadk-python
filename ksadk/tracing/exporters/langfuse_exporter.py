@@ -245,7 +245,9 @@ class _LangfuseSpanExporter:
             # Add tool spans
             for tool_span in tool_spans:
                 self._add_tool_span(trace, tool_span)
-                
+
+            self._add_score_events(trace_id, spans)
+
         except AttributeError:
             # Fallback: use score/event API if trace() not available
             self._export_via_events(invocation_id, root_span, llm_spans, tool_spans)
@@ -317,6 +319,72 @@ class _LangfuseSpanExporter:
                     "tool_name": tool_name,
                 }
             )
+        except AttributeError:
+            pass
+
+    def _add_score_events(self, trace_id: str, spans) -> None:
+        """Convert OTel score events into Langfuse scores when the client supports it."""
+        for span in spans:
+            for event in getattr(span, "events", ()) or ():
+                attrs = dict(getattr(event, "attributes", None) or {})
+                event_name = str(getattr(event, "name", "") or "")
+                if event_name != "langfuse.score" and not attrs.get("score.name"):
+                    continue
+                self._add_score(trace_id, attrs)
+
+    def _add_score(self, trace_id: str, attrs: dict) -> None:
+        if not self._langfuse or not hasattr(self._langfuse, "score"):
+            return
+        score_name = attrs.get("score.name") or attrs.get("langfuse.score.name")
+        if not score_name:
+            return
+
+        known_keys = {
+            "score.id",
+            "score.name",
+            "score.value",
+            "score.data_type",
+            "score.comment",
+            "langfuse.score.id",
+            "langfuse.score.name",
+            "langfuse.score.value",
+            "langfuse.score.data_type",
+            "langfuse.score.comment",
+            "langfuse.trace_id",
+            "trace_id",
+            "langfuse.observation_id",
+            "observation_id",
+        }
+        score_kwargs = {
+            "trace_id": attrs.get("langfuse.trace_id") or attrs.get("trace_id") or trace_id,
+            "name": score_name,
+            "value": attrs.get("score.value") or attrs.get("langfuse.score.value"),
+        }
+        score_id = attrs.get("score.id") or attrs.get("langfuse.score.id")
+        if score_id:
+            score_kwargs["id"] = score_id
+        data_type = attrs.get("score.data_type") or attrs.get("langfuse.score.data_type")
+        if data_type:
+            score_kwargs["data_type"] = data_type
+        comment = attrs.get("score.comment") or attrs.get("langfuse.score.comment")
+        if comment:
+            score_kwargs["comment"] = comment
+        observation_id = attrs.get("langfuse.observation_id") or attrs.get("observation_id")
+        if observation_id:
+            score_kwargs["observation_id"] = observation_id
+        metadata = {key: value for key, value in attrs.items() if key not in known_keys}
+        if metadata:
+            score_kwargs["metadata"] = metadata
+
+        try:
+            self._langfuse.score(**score_kwargs)
+        except TypeError:
+            score_kwargs["traceId"] = score_kwargs.pop("trace_id")
+            if "observation_id" in score_kwargs:
+                score_kwargs["observationId"] = score_kwargs.pop("observation_id")
+            if "data_type" in score_kwargs:
+                score_kwargs["dataType"] = score_kwargs.pop("data_type")
+            self._langfuse.score(**score_kwargs)
         except AttributeError:
             pass
     

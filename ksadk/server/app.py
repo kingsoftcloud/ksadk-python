@@ -34,7 +34,11 @@ from ksadk.conversations.session_title import (
 )
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.server.api_models import AgentRunRequest
-from ksadk.server.terminal_sessions import TerminalSessionManager, register_terminal_routes
+from ksadk.server.terminal_sessions import (
+    TerminalSessionManager,
+    native_terminal_supported,
+    register_terminal_routes,
+)
 from ksadk_runtime_common.workspace_files import (
     build_workspace_files_bootstrap,
     create_workspace_files_router,
@@ -262,7 +266,10 @@ def _current_framework() -> str:
 
 
 def _build_native_terminal_capability(framework: str) -> dict[str, Any]:
-    enabled = str(framework or "").strip().lower() in _NATIVE_TUI_FRAMEWORKS
+    enabled = (
+        native_terminal_supported()
+        and str(framework or "").strip().lower() in _NATIVE_TUI_FRAMEWORKS
+    )
     return {
         "Enabled": enabled,
         "Mode": "tui" if enabled else None,

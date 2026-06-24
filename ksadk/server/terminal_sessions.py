@@ -4,18 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from dataclasses import dataclass, field
 import json
 import os
-import pty
-import select
 import shutil
 import signal
-import termios
 import time
 import uuid
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Iterable
+from typing import Any, Callable
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
@@ -30,6 +27,21 @@ from ksadk.terminal_exec_policy import (
 from ksadk.terminal_exec_policy import (
     validate_terminal_exec_argv as validate_exec_argv_with_policy,
 )
+
+try:
+    import pty
+except ImportError:  # pragma: no cover - exercised through subprocess import test
+    pty = None  # type: ignore[assignment]
+
+try:
+    import select
+except ImportError:  # pragma: no cover - Windows compatibility
+    select = None  # type: ignore[assignment]
+
+try:
+    import termios
+except ImportError:  # pragma: no cover - exercised through subprocess import test
+    termios = None  # type: ignore[assignment]
 
 
 TERMINAL_REPLAY_BUFFER_BYTES = 64 * 1024
@@ -81,6 +93,15 @@ def _env_bool(name: str, default: bool) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def native_terminal_supported() -> bool:
+    return (
+        os.name != "nt"
+        and pty is not None
+        and select is not None
+        and termios is not None
+    )
 
 
 class TerminalSessionManager:
@@ -315,8 +336,11 @@ class TerminalSessionManager:
     def _spawn_session(self, session: TerminalSession) -> None:
         if session.pid is not None:
             return
+        if not native_terminal_supported():
+            raise ValueError("native terminal sessions are not supported on this platform")
         command = self._resolve_terminal_command(session)
         terminal_cwd = self._resolve_terminal_cwd(session.cwd)
+        assert pty is not None
         pid, fd = pty.fork()
         if pid == 0:
             if terminal_cwd is not None:
@@ -455,6 +479,8 @@ class TerminalSessionManager:
 
 
 def _set_winsize(fd: int, rows: int, cols: int) -> None:
+    if termios is None:
+        return
     with contextlib.suppress(Exception):
         termios.tcsetwinsize(fd, (int(rows or 24), int(cols or 80)))
 
