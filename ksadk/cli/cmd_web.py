@@ -4,6 +4,7 @@ import click
 import webbrowser
 from pathlib import Path
 import os
+import yaml
 from ksadk.cli.error_utils import ensure_json_output_supported, print_exception
 from ksadk.cli.local_runtime import reexec_with_project_venv_if_needed
 from ksadk.cli.ui import (
@@ -26,6 +27,45 @@ _STM_ENV_NAMES = (
     "KSADK_STM_DB_PATH",
     "KSADK_STM_DB_URL",
 )
+
+
+def _normalize_ui_path(path: str | None) -> str:
+    value = str(path or "/").strip() or "/"
+    if not value.startswith("/"):
+        value = "/" + value
+    return value.rstrip("/") or "/"
+
+
+def _load_agentengine_config(agent_path: Path) -> dict:
+    for file_name in ("agentengine.yaml", "ksadk.yaml", "ksadk.yml"):
+        config_path = agent_path / file_name
+        if not config_path.exists():
+            continue
+        try:
+            payload = yaml.safe_load(config_path.read_text(encoding="utf-8-sig")) or {}
+            return payload if isinstance(payload, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _configure_custom_ui_env(agent_path: Path) -> str:
+    config = _load_agentengine_config(agent_path)
+    if str(config.get("ui_profile") or "").strip().lower() != "custom":
+        return "/"
+
+    bundle_path = str(config.get("ui_bundle_path") or "").strip()
+    if not bundle_path:
+        return "/"
+    bundle_dir = agent_path / bundle_path
+    if not (bundle_dir / "index.html").is_file():
+        return "/"
+
+    ui_path = _normalize_ui_path(str(config.get("ui_path") or "/"))
+    os.environ["KSADK_UI_PROFILE"] = "custom"
+    os.environ["KSADK_UI_PATH"] = ui_path
+    os.environ["KSADK_UI_BUNDLE_PATH"] = bundle_path
+    return ui_path
 
 
 def _default_project_stm_if_unset(framework: str, agent_path: Path) -> None:
@@ -98,6 +138,7 @@ def web(agent_dir: str, port: int, model: str, no_open: bool):
     os.environ["KSADK_PROJECT_DIR"] = str(agent_path)
     os.environ.setdefault("AGENTENGINE_UI_DIR", str(agent_path / ".agentengine" / "ui"))
     _default_project_stm_if_unset(result.type.value, agent_path)
+    launch_path = _configure_custom_ui_env(agent_path)
 
     try:
         print_info("初始化 Runner...")
@@ -107,12 +148,13 @@ def web(agent_dir: str, port: int, model: str, no_open: bool):
         raise SystemExit(1)
 
     print_success("启动统一 Web UI")
-    print_kv("Web UI", f"http://localhost:{port}", value_style="#58a6ff")
+    launch_url = f"http://localhost:{port}{launch_path if launch_path != '/' else ''}"
+    print_kv("Web UI", launch_url, value_style="#58a6ff")
     print_kv("Agent", result.name)
     print_info("按 Ctrl+C 停止")
 
     if not no_open:
-        webbrowser.open(f"http://localhost:{port}")
+        webbrowser.open(launch_url)
 
     try:
         runner.run_server(port=port)

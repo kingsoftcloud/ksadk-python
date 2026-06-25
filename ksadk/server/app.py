@@ -22,7 +22,6 @@ from urllib.parse import quote
 from fastapi import FastAPI, HTTPException, Request, File, Form, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import ksadk.conversations as conversation
@@ -32,6 +31,7 @@ from ksadk.conversations.session_title import (
     HEURISTIC_SESSION_TITLE_SOURCE,
     build_heuristic_title,
 )
+from ksadk.runtime_state import load_state as load_runtime_state
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.server.api_models import AgentRunRequest
 from ksadk.server.terminal_sessions import (
@@ -60,6 +60,7 @@ from ksadk.sessions.local_service import resolve_local_session_dir
 from ksadk.tracing import get_memory_exporter
 from ksadk.conversations.model_context import normalize_model_metadata
 from ksadk.toolsets import describe_agentengine_tools
+from ksadk.ui_config import UI_PROFILE_CUSTOM, resolve_ui_config
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,8 @@ runner: BaseRunner = None
 _runner_loaded = False
 _DETACHED_STREAMS: set[asyncio.Task[Any]] = set()
 _DETACHED_STREAMS_BY_INVOCATION: dict[str, "_DetachedSSEStream"] = {}
+_DETACHED_RESUME_KEYS_BY_INVOCATION: dict[str, tuple[str, str]] = {}
+_ACTIVE_DETACHED_RESUME_INVOCATION_BY_KEY: dict[tuple[str, str], str] = {}
 _RUN_TERMINAL_STATUSES = {
     "completed",
     "failed",
@@ -78,6 +81,7 @@ _RUN_TERMINAL_STATUSES = {
     "aborted",
     "interrupted",
 }
+_RESERVED_UI_PATHS = {"/", "/chat", "/build", "/deploy"}
 
 
 class _DetachedSSEStream:
@@ -156,10 +160,58 @@ class _DetachedSSEStream:
 
 
 def _detached_streaming_response(
-    source: AsyncIterator[str], *, invocation_id: str | None = None
+    source: AsyncIterator[str],
+    *,
+    invocation_id: str | None = None,
+    resume_key: tuple[str, str] | None = None,
 ) -> StreamingResponse:
     detached = _DetachedSSEStream(source, invocation_id=invocation_id)
+    if invocation_id and resume_key:
+        _DETACHED_RESUME_KEYS_BY_INVOCATION[invocation_id] = resume_key
+        _ACTIVE_DETACHED_RESUME_INVOCATION_BY_KEY[resume_key] = invocation_id
+        detached._task.add_done_callback(
+            lambda _task: _clear_detached_resume_key(invocation_id, resume_key)
+        )
     return StreamingResponse(detached.iter_for_client(), media_type="text/event-stream")
+
+
+def _clear_detached_resume_key(invocation_id: str, resume_key: tuple[str, str]) -> None:
+    _DETACHED_RESUME_KEYS_BY_INVOCATION.pop(invocation_id, None)
+    if _ACTIVE_DETACHED_RESUME_INVOCATION_BY_KEY.get(resume_key) == invocation_id:
+        _ACTIVE_DETACHED_RESUME_INVOCATION_BY_KEY.pop(resume_key, None)
+
+
+def _detached_resume_key_from_input(
+    session_id: str | None,
+    resume_input: Mapping[str, Any] | None,
+) -> tuple[str, str] | None:
+    if not isinstance(resume_input, Mapping):
+        return None
+    if str(resume_input.get("type") or "").strip() != "agentengine.resume_checkpoint":
+        return None
+    normalized_session_id = str(session_id or "").strip()
+    run_id = str(resume_input.get("run_id") or "").strip()
+    if not normalized_session_id or not run_id:
+        return None
+    return normalized_session_id, run_id
+
+
+def _reject_if_detached_resume_active(resume_key: tuple[str, str] | None) -> None:
+    if resume_key is None:
+        return
+    active_resume_invocation_id = _ACTIVE_DETACHED_RESUME_INVOCATION_BY_KEY.get(resume_key)
+    if not active_resume_invocation_id:
+        return
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "code": "resume_already_running",
+            "message": "A checkpoint resume is already running for this session and run.",
+            "InvocationId": active_resume_invocation_id,
+            "SessionId": resume_key[0],
+            "RunId": resume_key[1],
+        },
+    )
 
 
 async def _shutdown_runner_resources():
@@ -170,6 +222,9 @@ async def _shutdown_runner_resources():
     if pending_streams:
         await asyncio.gather(*pending_streams, return_exceptions=True)
     _DETACHED_STREAMS.clear()
+    _DETACHED_STREAMS_BY_INVOCATION.clear()
+    _DETACHED_RESUME_KEYS_BY_INVOCATION.clear()
+    _ACTIVE_DETACHED_RESUME_INVOCATION_BY_KEY.clear()
 
     active_runner = runner
     if active_runner is None:
@@ -349,6 +404,137 @@ def _build_bootstrap_model_payload() -> Optional[dict[str, Any]]:
     payload = normalize_model_metadata({"id": current_model})
     payload["source"] = source
     return payload
+
+
+def _runner_project_dir() -> Path:
+    if runner and getattr(runner, "project_dir", None):
+        try:
+            return Path(str(runner.project_dir)).resolve()
+        except Exception:
+            pass
+    return Path(".").resolve()
+
+
+def _default_custom_ui_bundle_dir(project_dir: Path) -> Path:
+    return project_dir / "research-ui" / "dist"
+
+
+def _ui_state_with_env_fallback(state: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(state or {})
+    env_fallbacks = {
+        "ui_profile": os.environ.get("KSADK_UI_PROFILE"),
+        "ui_path": os.environ.get("KSADK_UI_PATH"),
+        "ui_url": os.environ.get("KSADK_UI_URL"),
+        "ui_bundle_path": os.environ.get("KSADK_UI_BUNDLE_PATH"),
+    }
+    for key, value in env_fallbacks.items():
+        if value and not merged.get(key):
+            merged[key] = value
+    return merged
+
+
+def _resolve_agent_ui_spec() -> dict[str, Any]:
+    project_dir = _runner_project_dir()
+    state = _ui_state_with_env_fallback(load_runtime_state(project_dir))
+    framework = _current_framework()
+    auto_custom_bundle_dir = _default_custom_ui_bundle_dir(project_dir)
+    if (
+        not state.get("ui_profile")
+        and not state.get("ui_path")
+        and not state.get("ui_url")
+        and (auto_custom_bundle_dir / "index.html").exists()
+    ):
+        state["ui_profile"] = UI_PROFILE_CUSTOM
+        state["ui_path"] = "/"
+        state["ui_bundle_path"] = str(auto_custom_bundle_dir)
+    config = resolve_ui_config(
+        framework=framework,
+        state=state,
+        cli_profile=None,
+        cli_path=None,
+        cli_url=None,
+    )
+
+    if config.profile == UI_PROFILE_CUSTOM:
+        bundle_dir_value = state.get("ui_bundle_path") or state.get("ui_bundle_dir")
+        bundle_dir = None
+        if bundle_dir_value:
+            candidate = Path(str(bundle_dir_value))
+            if not candidate.is_absolute():
+                candidate = project_dir / candidate
+            if candidate.exists():
+                bundle_dir = candidate.resolve()
+        if bundle_dir is None:
+            bundle_dir = _default_custom_ui_bundle_dir(project_dir)
+        index_file = bundle_dir / "index.html"
+        enabled = bundle_dir.exists() and index_file.exists()
+        return {
+            "enabled": enabled,
+            "profile": config.profile,
+            "ui_profile": config.profile,
+            "path": config.path,
+            "ui_path": config.path,
+            "url": config.url,
+            "ui_url": config.url,
+            "bundle_path": str(bundle_dir),
+            "ui_bundle_path": str(bundle_dir),
+            "index_path": str(index_file),
+            "source": "custom",
+        }
+
+    bundle_dir = STATIC_DIR
+    index_file = bundle_dir / "index.html"
+    enabled = bundle_dir.exists() and index_file.exists()
+    return {
+        "enabled": enabled,
+        "profile": config.profile,
+        "ui_profile": config.profile,
+        "path": config.path,
+        "ui_path": config.path,
+        "url": config.url,
+        "ui_url": config.url,
+        "bundle_path": str(bundle_dir),
+        "ui_bundle_path": str(bundle_dir),
+        "index_path": str(index_file),
+        "source": "builtin",
+    }
+
+
+def _normalize_request_ui_path(request_path: str) -> str:
+    path = "/" + str(request_path or "").lstrip("/")
+    return path if path != "//" else "/"
+
+
+def _resolve_ui_static_response(request_path: str) -> Optional[FileResponse]:
+    spec = _resolve_agent_ui_spec()
+    if not spec.get("enabled"):
+        return None
+
+    bundle_dir = Path(str(spec["bundle_path"]))
+    index_file = Path(str(spec["index_path"]))
+    path = _normalize_request_ui_path(request_path)
+
+    if spec.get("source") == "custom":
+        ui_path = _normalize_request_ui_path(str(spec.get("path") or "/")).rstrip("/") or "/"
+        if path == ui_path or path == f"{ui_path}/":
+            return FileResponse(index_file)
+        if ui_path != "/" and not path.startswith(f"{ui_path}/"):
+            return None
+        relative = path[len(ui_path):].lstrip("/") if ui_path != "/" else path.lstrip("/")
+        if not relative:
+            return FileResponse(index_file)
+        candidate = bundle_dir / relative
+        if candidate.exists() and candidate.is_file():
+            return FileResponse(candidate)
+        return None
+
+    if path in _RESERVED_UI_PATHS:
+        return FileResponse(index_file)
+
+    candidate = bundle_dir / path.lstrip("/")
+    if candidate.exists() and candidate.is_file():
+        return FileResponse(candidate)
+    return None
 
 
 def _is_textual_mime(mime_type: str) -> bool:
@@ -701,6 +887,8 @@ class ResumeRunActionRequest(BaseModel):
     Model: Optional[str] = None
     ModelMetadata: Optional[Dict[str, Any]] = None
     ModelOptions: Optional[Dict[str, Any]] = None
+    ResumeInstructionEnabled: bool = False
+    ResumeInstruction: Optional[str] = None
 
 
 class PreviewCheckpointResumeActionRequest(BaseModel):
@@ -1081,6 +1269,15 @@ async def _resolve_checkpoint_resume_input_from_session(
         "resume_attempt_id": resume_attempt_id or f"resume_{uuid.uuid4().hex}",
         "framework": checkpoint["Framework"],
         "framework_ref": checkpoint["FrameworkRef"],
+        "resume_instruction_enabled": bool(
+            resume_input.get("resume_instruction_enabled")
+            or resume_input.get("ResumeInstructionEnabled")
+        ),
+        "resume_instruction": str(
+            resume_input.get("resume_instruction")
+            or resume_input.get("ResumeInstruction")
+            or ""
+        ).strip(),
     }
 
 
@@ -1214,13 +1411,14 @@ async def delete_response_feedback_action(request: ResponseFeedbackRefActionRequ
 
 @app.post("/agentengine/api/v1/GetAgentUiBootstrap")
 async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
-    agent_id = request.AgentId or (runner.detection_result.name if runner else "default-agent")
+    agent_id = request.AgentId or (_runtime_agent_id(runner) if runner else "default-agent")
     description = getattr(runner.detection_result, "description", "") if runner else ""
     framework = ""
     if runner:
         detection_type = getattr(getattr(runner, "detection_result", None), "type", None)
         framework = str(getattr(detection_type, "value", detection_type) or "").strip().lower()
     workspace_enabled = workspace_files_enabled(default=True)
+    ui_spec = _resolve_agent_ui_spec()
     return _action_response(
         "GetAgentUiBootstrap",
         {
@@ -1255,8 +1453,15 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
             "AccessMode": "Owner",
             "SharePermissions": {
                 "Interactive": True,
-                "DefaultPath": "/chat",
-                "SharePath": "/chat",
+                "DefaultPath": ui_spec.get("ui_path") or ui_spec.get("path") or "/chat",
+                "SharePath": ui_spec.get("ui_path") or ui_spec.get("path") or "/chat",
+            },
+            "CustomUI": {
+                "Enabled": bool(ui_spec.get("enabled")),
+                "Profile": ui_spec.get("ui_profile") or ui_spec.get("profile"),
+                "Path": ui_spec.get("ui_path") or ui_spec.get("path"),
+                "Url": ui_spec.get("ui_url") or ui_spec.get("url"),
+                "BundlePath": ui_spec.get("ui_bundle_path") or ui_spec.get("bundle_path"),
             },
             "ApiFormats": ["responses", "chat_completions"],
             "Stream": True,
@@ -1435,12 +1640,16 @@ async def resume_run_action(request: ResumeRunActionRequest):
         "resume_attempt_id": str(request.ResumeAttemptId or f"resume_{uuid.uuid4().hex}"),
         "framework": checkpoint["Framework"],
         "framework_ref": checkpoint["FrameworkRef"],
+        "resume_instruction_enabled": bool(getattr(request, "ResumeInstructionEnabled", False)),
+        "resume_instruction": str(getattr(request, "ResumeInstruction", "") or "").strip(),
     }
     active_runner = _resolve_active_runner()
     user_id = session.user_id or "user"
 
     if request.Stream:
         resume_invocation_id = str(request.InvocationId or resume_input["resume_attempt_id"])
+        resume_key = _detached_resume_key_from_input(request.SessionId, resume_input)
+        _reject_if_detached_resume_active(resume_key)
         return _detached_streaming_response(
             conversation.stream_responses_conversation_turn(
                 runner=active_runner,
@@ -1458,6 +1667,7 @@ async def resume_run_action(request: ResumeRunActionRequest):
                 session_service_provider=resolve_session_service,
             ),
             invocation_id=resume_invocation_id,
+            resume_key=resume_key,
         )
 
     response_id = f"resp_{uuid.uuid4().hex}"
@@ -1899,6 +2109,8 @@ async def run_agent_action(request: RunAgentActionRequest):
                 account_id=account_id,
             )
             return await chat_completions(completion_request)
+        resume_key = _detached_resume_key_from_input(request.SessionId, resume_input)
+        _reject_if_detached_resume_active(resume_key)
         return _detached_streaming_response(
             conversation.stream_responses_conversation_turn(
                 runner=_resolve_active_runner(),
@@ -1917,6 +2129,7 @@ async def run_agent_action(request: RunAgentActionRequest):
                 session_service_provider=resolve_session_service,
             ),
             invocation_id=request.InvocationId,
+            resume_key=resume_key,
         )
 
     responses_response_id = (
@@ -2622,6 +2835,8 @@ async def responses(request: ResponsesRequest):
     invocation_id = _metadata_invocation_id(request_metadata)
 
     if request.stream:
+        resume_key = _detached_resume_key_from_input(resolved_session_id, resume_input)
+        _reject_if_detached_resume_active(resume_key)
         return _detached_streaming_response(
             conversation.stream_responses_conversation_turn(
                 runner=active_runner,
@@ -2641,6 +2856,7 @@ async def responses(request: ResponsesRequest):
                 session_service_provider=resolve_session_service,
             ),
             invocation_id=invocation_id,
+            resume_key=resume_key,
         )
 
     response_id = f"resp_{uuid.uuid4().hex}"
@@ -2783,22 +2999,12 @@ async def get_traces(limit: int = 50):
 
 
 # ============================================================
-# Static File Hosting
-# ============================================================
-
-# 静态文件目录
 STATIC_DIR = Path(__file__).parent / "static"
 
-# 使用 StaticFiles 挂载统一 Agent UI 静态文件
-if STATIC_DIR.exists() and (STATIC_DIR / "index.html").exists():
-    @app.get("/chat", include_in_schema=False)
-    @app.get("/build", include_in_schema=False)
-    @app.get("/deploy", include_in_schema=False)
-    async def serve_agent_workbench_shell():
-        return FileResponse(STATIC_DIR / "index.html")
 
-    app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
-    logger.info(f"Unified Agent UI mounted from: {STATIC_DIR}")
-else:
-    logger.warning(f"Static files not found at: {STATIC_DIR}")
-    logger.warning("Build and sync the unified Agent UI static bundle first")
+@app.get("/{requested_path:path}", include_in_schema=False)
+async def serve_agent_ui_static(requested_path: str):
+    response = _resolve_ui_static_response(requested_path)
+    if response is not None:
+        return response
+    raise HTTPException(status_code=404, detail="Not Found")

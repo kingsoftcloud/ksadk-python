@@ -235,7 +235,18 @@ class ContainerBuilder(BaseBuilder):
             if item.is_dir():
                 if dest.exists():
                     shutil.rmtree(dest)
-                shutil.copytree(item, dest, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+                shutil.copytree(
+                    item,
+                    dest,
+                    ignore=shutil.ignore_patterns(
+                        "__pycache__",
+                        "*.pyc",
+                        "node_modules",
+                        ".pytest_cache",
+                        ".mypy_cache",
+                        ".ruff_cache",
+                    ),
+                )
             else:
                 shutil.copy2(item, dest)
         

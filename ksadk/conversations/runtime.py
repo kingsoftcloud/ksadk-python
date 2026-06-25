@@ -1613,6 +1613,15 @@ def _normalize_checkpoint_resume_input(resume_input: Mapping[str, Any]) -> dict[
         "resume_attempt_id": resume_attempt_id,
         "framework": framework,
         "framework_ref": framework_ref,
+        "resume_instruction_enabled": bool(
+            resume_input.get("resume_instruction_enabled")
+            or resume_input.get("ResumeInstructionEnabled")
+        ),
+        "resume_instruction": str(
+            resume_input.get("resume_instruction")
+            or resume_input.get("ResumeInstruction")
+            or ""
+        ).strip(),
     }
 
 
@@ -2552,6 +2561,18 @@ async def append_run_checkpoint_event(
     metadata: Optional[dict[str, Any]] = None,
     session_service_provider: Callable[[], Any] | None = None,
 ) -> SessionEvent:
+    service = (session_service_provider or resolve_session_service)()
+    for event in reversed(await service.get_events(session_id)):
+        if event.event_type != "run_checkpoint":
+            continue
+        event_metadata = event.metadata or {}
+        if (
+            str(event_metadata.get("run_id") or "") == str(run_id)
+            and str(event_metadata.get("checkpoint_id") or "") == str(checkpoint_id)
+            and str(event_metadata.get("framework") or "") == str(framework)
+        ):
+            return event
+
     event_metadata = dict(metadata or {})
     event_metadata.update(
         {
@@ -2577,7 +2598,7 @@ async def append_run_checkpoint_event(
             **({"phase": str(phase)} if phase else {}),
         },
         metadata=event_metadata,
-        session_service_provider=session_service_provider,
+        session_service_provider=lambda: service,
     )
 
 

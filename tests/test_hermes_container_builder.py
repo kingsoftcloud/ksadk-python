@@ -73,6 +73,38 @@ def test_container_builder_bundles_runtime_common_for_image_mode(tmp_path: Path)
     assert result.stdout.strip() == "ok"
 
 
+def test_container_builder_packages_project_custom_ui_dist_without_node_modules(tmp_path: Path):
+    project = tmp_path / "demo-langgraph"
+    project.mkdir()
+    package_dir = project / "demo_langgraph"
+    package_dir.mkdir()
+    (package_dir / "__init__.py").write_text("", encoding="utf-8")
+    (package_dir / "agent.py").write_text("root_agent = object()\n", encoding="utf-8")
+    custom_dist = project / "research-ui" / "dist" / "assets"
+    custom_dist.mkdir(parents=True)
+    (project / "research-ui" / "dist" / "index.html").write_text("<title>Custom UI</title>", encoding="utf-8")
+    (custom_dist / "index.js").write_text("console.log('custom ui')\n", encoding="utf-8")
+    (project / "research-ui" / "node_modules").mkdir(parents=True)
+    (project / "research-ui" / "node_modules" / "ignored.js").write_text("ignored\n", encoding="utf-8")
+
+    detection = DetectionResult(
+        type=FrameworkType.LANGGRAPH,
+        name="demo-langgraph",
+        entry_point="demo_langgraph/agent.py",
+        package_path=str(package_dir),
+        agent_variable="root_agent",
+        confidence=1.0,
+    )
+
+    package = ContainerBuilder(project)._package(detection)
+    build_dir = Path(package.build_dir)
+
+    assert (build_dir / "research-ui" / "dist" / "index.html").exists()
+    assert (build_dir / "research-ui" / "dist" / "assets" / "index.js").exists()
+    assert not (build_dir / "research-ui" / "node_modules" / "ignored.js").exists()
+    assert 'from ksadk.server import app, set_runner' in (build_dir / "entrypoint.py").read_text(encoding="utf-8")
+
+
 def test_container_builder_excludes_real_dotenv_files_but_keeps_example(tmp_path: Path):
     project = tmp_path / "demo-langgraph"
     project.mkdir()

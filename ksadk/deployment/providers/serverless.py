@@ -211,6 +211,29 @@ class ServerlessProvider(BaseDeployProvider):
         return env_vars, env_file.exists(), project_env_count
 
     @staticmethod
+    def _inject_ui_runtime_env(
+        env_vars: Dict[str, str],
+        ui_state: Dict[str, Any],
+        local_state: Dict[str, Any],
+    ) -> Dict[str, str]:
+        """Expose resolved UI config to the runtime pod without packaging local state."""
+
+        profile = ui_state.get("ui_profile")
+        path = ui_state.get("ui_path")
+        url = ui_state.get("ui_url")
+        bundle_path = local_state.get("ui_bundle_path") or local_state.get("ui_bundle_dir")
+
+        if profile:
+            env_vars["KSADK_UI_PROFILE"] = str(profile)
+        if path:
+            env_vars["KSADK_UI_PATH"] = str(path)
+        if url:
+            env_vars["KSADK_UI_URL"] = str(url)
+        if bundle_path:
+            env_vars["KSADK_UI_BUNDLE_PATH"] = str(bundle_path)
+        return env_vars
+
+    @staticmethod
     def _persist_build_metadata(package_info: PackageInfo) -> None:
         """持久化最近一次成功构建的制品信息，供后续命中缓存。"""
         metadata_file = Path(package_info.project_dir) / ".agentengine" / "build-metadata.json"
@@ -659,6 +682,7 @@ class ServerlessProvider(BaseDeployProvider):
                             project_dir,
                             target.extra.get("env_vars") or {},
                         )
+                        env_vars = self._inject_ui_runtime_env(env_vars, ui_state, local_state)
                         if env_vars:
                             update_data["env_vars"] = env_vars
                             if env_file_exists:
@@ -775,6 +799,7 @@ class ServerlessProvider(BaseDeployProvider):
                         project_dir,
                         target.extra.get("env_vars") or {},
                     )
+                    env_vars = self._inject_ui_runtime_env(env_vars, ui_state, local_state)
                     if env_vars:
                         if env_file_exists:
                             click.echo(

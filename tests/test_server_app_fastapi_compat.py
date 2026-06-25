@@ -25,3 +25,16 @@ def test_server_app_imports_when_fastapi_removes_add_event_handler(monkeypatch):
 
     assert module.app is not None
 
+
+def test_server_app_import_does_not_load_deploy_providers():
+    sys.modules.pop("ksadk.server", None)
+    sys.modules.pop("ksadk.server.app", None)
+    sys.modules.pop("ksadk.deployment", None)
+    sys.modules.pop("ksadk.deployment.providers", None)
+    sys.modules.pop("ksadk.builders.ks3_uploader", None)
+
+    module = importlib.import_module("ksadk.server.app")
+
+    assert module.app is not None
+    assert "ksadk.deployment.providers" not in sys.modules
+    assert "ksadk.builders.ks3_uploader" not in sys.modules

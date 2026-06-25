@@ -40,6 +40,38 @@ def test_code_builder_packages_web_static_assets(tmp_path):
     )
 
 
+def test_code_builder_packages_project_custom_ui_dist(tmp_path):
+    (tmp_path / "agent.py").write_text("print('ok')\n", encoding="utf-8")
+    custom_dist = tmp_path / "research-ui" / "dist" / "assets"
+    custom_dist.mkdir(parents=True)
+    (tmp_path / "research-ui" / "dist" / "index.html").write_text("<title>Custom UI</title>", encoding="utf-8")
+    (custom_dist / "index.js").write_text("console.log('custom ui')\n", encoding="utf-8")
+    (tmp_path / "research-ui" / "node_modules").mkdir(parents=True)
+    (tmp_path / "research-ui" / "node_modules" / "ignored.js").write_text("ignored\n", encoding="utf-8")
+
+    builder = CodeBuilder(tmp_path)
+    builder.build_dir.mkdir(parents=True, exist_ok=True)
+    builder.deps_dir.mkdir(parents=True, exist_ok=True)
+
+    detection_result = SimpleNamespace(
+        package_path=str(tmp_path),
+        type=_FakeType(),
+        name="demo_agent",
+        entry_point="agent.py",
+        agent_variable="root_agent",
+    )
+
+    zip_path = tmp_path / "demo.zip"
+    builder._package_zip(zip_path, detection_result)
+
+    with zipfile.ZipFile(zip_path) as zf:
+        names = set(zf.namelist())
+
+    assert "research-ui/dist/index.html" in names
+    assert "research-ui/dist/assets/index.js" in names
+    assert "research-ui/node_modules/ignored.js" not in names
+
+
 def test_code_builder_packages_runtime_common_sources(tmp_path):
     (tmp_path / "agent.py").write_text("print('ok')\n", encoding="utf-8")
 
