@@ -33,6 +33,11 @@ _SESSION_ENV_NAMES = (
     "KSADK_SESSION_PATH",
     "KSADK_SESSION_DSN",
 )
+_CHECKPOINT_ENV_NAMES = (
+    "KSADK_CHECKPOINT_BACKEND",
+    "KSADK_CHECKPOINT_PATH",
+    "KSADK_LANGGRAPH_CHECKPOINT_DSN",
+)
 
 
 def _normalize_ui_path(path: str | None) -> str:
@@ -74,26 +79,45 @@ def _configure_custom_ui_env(agent_path: Path) -> str:
     return ui_path
 
 
+def _ensure_langgraph_sqlite_checkpoint_available() -> None:
+    try:
+        import langgraph.checkpoint.sqlite.aio  # noqa: F401
+    except ImportError:
+        print_error(
+            "本地 LangGraph checkpoint 需要安装 langgraph-checkpoint-sqlite：\n"
+            "  pip install langgraph-checkpoint-sqlite\n"
+            "或显式设置 KSADK_CHECKPOINT_BACKEND=memory/postgres。"
+        )
+        raise SystemExit(1)
+
+
 def _default_project_stm_if_unset(
     framework: str,
     agent_path: Path,
     *,
     explicit_session_env_names: set[str] | None = None,
+    explicit_checkpoint_env_names: set[str] | None = None,
 ) -> None:
     if framework not in _PERSISTENT_STM_FRAMEWORKS:
         return
     explicit_session_env_names = explicit_session_env_names or set()
+    explicit_checkpoint_env_names = explicit_checkpoint_env_names or set()
     session_db_path = str(agent_path / ".agentengine" / "ui" / "sessions.sqlite")
-    if any(name in os.environ for name in _STM_ENV_NAMES):
-        return
-
-    os.environ["KSADK_STM_BACKEND"] = "sqlite"
-    os.environ["KSADK_STM_PATH"] = session_db_path
+    if not any(name in os.environ for name in _STM_ENV_NAMES):
+        os.environ["KSADK_STM_BACKEND"] = "sqlite"
+        os.environ["KSADK_STM_PATH"] = session_db_path
     if not explicit_session_env_names.intersection(_SESSION_ENV_NAMES):
         os.environ["KSADK_SESSION_BACKEND"] = "local"
         os.environ["KSADK_SESSION_PATH"] = session_db_path
         os.environ.pop("KSADK_SESSION_DSN", None)
         os.environ.pop("AGENTENGINE_SESSION_BACKEND", None)
+    if framework == "langgraph" and not explicit_checkpoint_env_names.intersection(_CHECKPOINT_ENV_NAMES):
+        _ensure_langgraph_sqlite_checkpoint_available()
+        os.environ["KSADK_CHECKPOINT_BACKEND"] = "sqlite"
+        os.environ["KSADK_CHECKPOINT_PATH"] = str(
+            agent_path / ".agentengine" / "ui" / "checkpoints.sqlite"
+        )
+        os.environ.pop("KSADK_LANGGRAPH_CHECKPOINT_DSN", None)
 
 
 @click.command(context_settings=dict(help_option_names=["-h", "--help"]))
@@ -124,6 +148,9 @@ def web(agent_dir: str, port: int, model: str, no_open: bool):
     reexec_with_project_venv_if_needed(agent_path, command_args)
     explicit_session_env_names = {
         name for name in (*_STM_ENV_NAMES, *_SESSION_ENV_NAMES) if name in os.environ
+    }
+    explicit_checkpoint_env_names = {
+        name for name in _CHECKPOINT_ENV_NAMES if name in os.environ
     }
 
     print_title("启动本地调试 Web UI")
@@ -162,6 +189,7 @@ def web(agent_dir: str, port: int, model: str, no_open: bool):
         result.type.value,
         agent_path,
         explicit_session_env_names=explicit_session_env_names,
+        explicit_checkpoint_env_names=explicit_checkpoint_env_names,
     )
     launch_path = _configure_custom_ui_env(agent_path)
 
