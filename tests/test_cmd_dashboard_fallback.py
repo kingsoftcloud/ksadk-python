@@ -232,7 +232,35 @@ def test_dashboard_remote_open_uses_hosted_chat_path_even_with_custom_ui_state(m
     result = runner.invoke(cmd_dashboard.dashboard, ["open", "ar-test"])
 
     assert result.exit_code == 0, result.output
-    assert captured["path"] is None
+    assert captured["path"] == "/custom-chat"
+
+
+def test_dashboard_open_uses_custom_ui_path_for_custom_ui_state(monkeypatch):
+    runner = CliRunner()
+    captured = {}
+
+    monkeypatch.setattr(
+        cmd_dashboard,
+        "load_state",
+        lambda _cwd: {
+            "ui_profile": "custom",
+            "ui_path": "/research",
+            "ui_url": None,
+        },
+    )
+    monkeypatch.setattr(cmd_dashboard, "_resolve_agent_detail", _fake_resolve_agent_detail)
+
+    async def _fake_create(*_args, **kwargs):
+        captured.update(kwargs)
+        return await _fake_create_access_link()
+
+    monkeypatch.setattr(cmd_dashboard, "_create_dashboard_access_link", _fake_create)
+    monkeypatch.setattr(cmd_dashboard.webbrowser, "open", lambda _url: None)
+
+    result = runner.invoke(cmd_dashboard.dashboard, ["open", "ar-test"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["path"] == "/research"
 
 
 def test_dashboard_open_resolves_openclaw_state_from_cwd(tmp_path: Path, monkeypatch):

@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from fastapi.testclient import TestClient
 from click.testing import CliRunner
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
@@ -115,6 +116,10 @@ def _build_transport(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()
     runner = _UiRunner()
+    monkeypatch.delenv("KSADK_UI_PROFILE", raising=False)
+    monkeypatch.delenv("KSADK_UI_PATH", raising=False)
+    monkeypatch.delenv("KSADK_UI_URL", raising=False)
+    monkeypatch.delenv("KSADK_UI_BUNDLE_PATH", raising=False)
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.delenv("OPENAI_API_BASE", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -176,6 +181,7 @@ async def test_get_agent_ui_bootstrap_matches_local_shape_parity(monkeypatch):
         "SessionBackend",
         "HostedRuntime",
         "Model",
+        "CustomUI",
     }
     assert payload["Data"]["Agent"]["AgentId"] == "demo-agent"
     assert payload["Data"]["Agent"]["Framework"] == "langgraph"
@@ -1621,6 +1627,99 @@ def test_cmd_web_defaults_supported_framework_stm_to_persistent_sqlite(
     assert os.environ["KSADK_STM_PATH"] == str(
         project_dir / ".agentengine" / "ui" / "sessions.sqlite"
     )
+
+
+def test_cmd_web_exports_custom_ui_config_and_opens_custom_path(monkeypatch, tmp_path):
+    runner = CliRunner()
+    fake_runner = _UiRunner()
+    project_dir = tmp_path / "demo-langgraph-agent"
+    bundle_dir = project_dir / "research-ui" / "dist"
+    bundle_dir.mkdir(parents=True)
+    (bundle_dir / "index.html").write_text("<title>Custom UI</title>", encoding="utf-8")
+    (project_dir / "agentengine.yaml").write_text(
+        "\n".join(
+            [
+                "name: demo-agent",
+                "framework: langgraph",
+                "entry_point: agent.py",
+                "ui_profile: custom",
+                "ui_path: /research",
+                "ui_bundle_path: research-ui/dist",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    opened = {}
+
+    class _Detector:
+        def __init__(self, path: str):
+            self.path = path
+
+        def detect(self):
+            return SimpleNamespace(
+                type=SimpleNamespace(value="langgraph"),
+                name="demo-agent",
+                entry_point="agent.py",
+            )
+
+    import ksadk.cli.cmd_web as cmd_web_module
+
+    monkeypatch.delenv("KSADK_UI_PROFILE", raising=False)
+    monkeypatch.delenv("KSADK_UI_PATH", raising=False)
+    monkeypatch.delenv("KSADK_UI_BUNDLE_PATH", raising=False)
+    monkeypatch.setattr(cmd_web_module, "FrameworkDetector", _Detector, raising=False)
+    monkeypatch.setattr(cmd_web_module, "setup_environment", lambda path: None, raising=False)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_web.create_runner",
+        lambda result, project_dir: fake_runner,
+        raising=False,
+    )
+    monkeypatch.setattr(cmd_web_module.webbrowser, "open", lambda url: opened.setdefault("url", url))
+    monkeypatch.chdir(project_dir)
+
+    result = runner.invoke(cmd_web_module.web, [str(project_dir), "--port", "8899"])
+
+    assert result.exit_code == 0, result.output
+    assert os.environ["KSADK_UI_PROFILE"] == "custom"
+    assert os.environ["KSADK_UI_PATH"] == "/research"
+    assert os.environ["KSADK_UI_BUNDLE_PATH"] == "research-ui/dist"
+    assert opened["url"] == "http://localhost:8899/research"
+    monkeypatch.delenv("KSADK_UI_PROFILE", raising=False)
+    monkeypatch.delenv("KSADK_UI_PATH", raising=False)
+    monkeypatch.delenv("KSADK_UI_BUNDLE_PATH", raising=False)
+
+
+def test_server_serves_custom_ui_path_and_assets_from_env(monkeypatch, tmp_path):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    project_dir = tmp_path / "agent"
+    bundle_dir = project_dir / "research-ui" / "dist"
+    assets_dir = bundle_dir / "assets"
+    assets_dir.mkdir(parents=True)
+    (bundle_dir / "index.html").write_text(
+        '<html><script src="/research/assets/index.js"></script><body>Custom UI</body></html>',
+        encoding="utf-8",
+    )
+    (assets_dir / "index.js").write_text("window.customUiLoaded = true;", encoding="utf-8")
+    runner = _UiRunner()
+    runner.project_dir = str(project_dir)
+
+    server_app_module.set_runner(runner)
+    monkeypatch.setenv("KSADK_UI_PROFILE", "custom")
+    monkeypatch.setenv("KSADK_UI_PATH", "/research")
+    monkeypatch.setenv("KSADK_UI_BUNDLE_PATH", "research-ui/dist")
+
+    client = TestClient(server_app_module.app)
+    shell_response = client.get("/research")
+    asset_response = client.get("/research/assets/index.js")
+
+    assert shell_response.status_code == 200
+    assert "Custom UI" in shell_response.text
+    assert asset_response.status_code == 200
+    assert "customUiLoaded" in asset_response.text
+    monkeypatch.delenv("KSADK_UI_PROFILE", raising=False)
+    monkeypatch.delenv("KSADK_UI_PATH", raising=False)
+    monkeypatch.delenv("KSADK_UI_BUNDLE_PATH", raising=False)
+    server_app_module.set_runner(_UiRunner())
 
 
 def test_cmd_web_preserves_explicit_stm_configuration(monkeypatch, tmp_path):

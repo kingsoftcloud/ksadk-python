@@ -511,9 +511,65 @@ class TestDeployLogic:
         assert captured["agent_id"] == "ar-20260119-existing"
         assert captured["payload"]["ui_config"] == {
             "profile": "custom",
-            "path": "/chat",
+            "path": "/",
             "url": "https://ui.example.com/custom-ui/",
         }
+
+    @pytest.mark.asyncio
+    async def test_deploy_update_injects_custom_ui_runtime_env(
+        self,
+        temp_project_dir,
+        sample_package_info,
+        sample_deploy_target,
+    ):
+        provider = ServerlessProvider()
+        (temp_project_dir / ".agentengine.state").write_text(
+            yaml.dump(
+                {
+                    "agent_id": "ar-20260119-existing",
+                    "name": "test-agent",
+                    "endpoint": "https://existing.kspmas.ksyun.com",
+                    "ui_profile": "custom",
+                    "ui_path": "/",
+                    "ui_bundle_path": "research-ui/dist",
+                }
+            )
+        )
+
+        captured = {}
+        mock_client = AsyncMock()
+        mock_client.get_agent = AsyncMock(
+            side_effect=[
+                {"basic": {"agent_id": "ar-20260119-existing", "name": "test-agent"}},
+                {"basic": {"agent_id": "ar-20260119-existing", "name": "test-agent"}},
+            ]
+        )
+
+        async def _fake_update_agent(agent_id, payload):
+            captured["payload"] = payload
+            return {
+                "agent_id": agent_id,
+                "name": "test-agent",
+                "endpoint": "https://existing.kspmas.ksyun.com",
+            }
+
+        mock_client.update_agent = AsyncMock(side_effect=_fake_update_agent)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock()
+
+        with patch.dict(os.environ, {"AGENTENGINE_SERVER_URL": "http://localhost:8080"}), \
+             patch("ksadk.deployment.providers.serverless.AgentEngineClient", return_value=mock_client), \
+             patch("ksadk.common.auth.AWSV4Auth") as MockAuth:
+
+            MockAuth.return_value.access_key_id = "test-ak"
+            MockAuth.return_value.secret_access_key = "test-sk"
+
+            await provider.deploy(sample_package_info, sample_deploy_target)
+
+        env_vars = captured["payload"]["env_vars"]
+        assert env_vars["KSADK_UI_PROFILE"] == "custom"
+        assert env_vars["KSADK_UI_PATH"] == "/"
+        assert env_vars["KSADK_UI_BUNDLE_PATH"] == "research-ui/dist"
 
     @pytest.mark.asyncio
     async def test_deploy_strips_bom_from_env_keys(

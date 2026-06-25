@@ -359,6 +359,7 @@ async def test_invoke_checkpoint_resume_uses_checkpoint_id_and_none_input():
     assert runner._agent.last_ainvoke_state is None
     assert runner._agent.last_ainvoke_config["configurable"] == {
         "thread_id": "tenant-a:agent-b:sess-1",
+        "checkpoint_ns": "",
         "checkpoint_id": "ckpt-123",
     }
 
@@ -547,6 +548,7 @@ async def test_stream_checkpoint_resume_uses_checkpoint_id_and_none_input():
     assert runner._agent.last_astream_state is None
     assert runner._agent.last_astream_config["configurable"] == {
         "thread_id": "sess-1",
+        "checkpoint_ns": "",
         "checkpoint_id": "ckpt-456",
     }
 

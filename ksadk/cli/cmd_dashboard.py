@@ -488,7 +488,8 @@ def _open_dashboard(
         cli_url=None,
     )
     normalized_path = _normalize_ui_path(resolved_ui.path or "/")
-    link_path = normalized_path if ui_path is not None else None
+    custom_ui_enabled = str(resolved_ui.profile or "").strip().lower() == "custom"
+    link_path = normalized_path if ui_path is not None or custom_ui_enabled else None
     base_url = _build_base_ui_url(endpoint, normalized_path)
 
     if direct:

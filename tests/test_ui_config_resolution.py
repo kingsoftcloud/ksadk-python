@@ -97,6 +97,22 @@ def test_legacy_root_state_path_is_migrated_to_chat_for_managed_profiles():
     assert cfg.path == "/chat"
 
 
+def test_custom_ui_profile_keeps_root_path_by_default():
+    cfg = resolve_ui_config(
+        framework="langgraph",
+        state={
+            "ui_profile": "custom",
+        },
+        cli_profile=None,
+        cli_path=None,
+        cli_url=None,
+    )
+
+    assert cfg.profile == "custom"
+    assert cfg.path == "/"
+    assert cfg.url is None
+
+
 def test_same_origin_requires_scheme_and_netloc_match():
     assert is_same_origin("https://a.example.com/path", "https://a.example.com/")
     assert not is_same_origin("https://a.example.com/path", "http://a.example.com/")
