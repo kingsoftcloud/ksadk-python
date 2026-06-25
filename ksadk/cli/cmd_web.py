@@ -27,6 +27,12 @@ _STM_ENV_NAMES = (
     "KSADK_STM_DB_PATH",
     "KSADK_STM_DB_URL",
 )
+_SESSION_ENV_NAMES = (
+    "KSADK_SESSION_BACKEND",
+    "AGENTENGINE_SESSION_BACKEND",
+    "KSADK_SESSION_PATH",
+    "KSADK_SESSION_DSN",
+)
 
 
 def _normalize_ui_path(path: str | None) -> str:
@@ -68,14 +74,26 @@ def _configure_custom_ui_env(agent_path: Path) -> str:
     return ui_path
 
 
-def _default_project_stm_if_unset(framework: str, agent_path: Path) -> None:
+def _default_project_stm_if_unset(
+    framework: str,
+    agent_path: Path,
+    *,
+    explicit_session_env_names: set[str] | None = None,
+) -> None:
     if framework not in _PERSISTENT_STM_FRAMEWORKS:
         return
+    explicit_session_env_names = explicit_session_env_names or set()
+    session_db_path = str(agent_path / ".agentengine" / "ui" / "sessions.sqlite")
     if any(name in os.environ for name in _STM_ENV_NAMES):
         return
 
     os.environ["KSADK_STM_BACKEND"] = "sqlite"
-    os.environ["KSADK_STM_PATH"] = str(agent_path / ".agentengine" / "ui" / "sessions.sqlite")
+    os.environ["KSADK_STM_PATH"] = session_db_path
+    if not explicit_session_env_names.intersection(_SESSION_ENV_NAMES):
+        os.environ["KSADK_SESSION_BACKEND"] = "local"
+        os.environ["KSADK_SESSION_PATH"] = session_db_path
+        os.environ.pop("KSADK_SESSION_DSN", None)
+        os.environ.pop("AGENTENGINE_SESSION_BACKEND", None)
 
 
 @click.command(context_settings=dict(help_option_names=["-h", "--help"]))
@@ -104,6 +122,9 @@ def web(agent_dir: str, port: int, model: str, no_open: bool):
     if model:
         command_args.extend(["--model", model])
     reexec_with_project_venv_if_needed(agent_path, command_args)
+    explicit_session_env_names = {
+        name for name in (*_STM_ENV_NAMES, *_SESSION_ENV_NAMES) if name in os.environ
+    }
 
     print_title("启动本地调试 Web UI")
     print_kv("项目目录", str(agent_path))
@@ -137,7 +158,11 @@ def web(agent_dir: str, port: int, model: str, no_open: bool):
     # 本地 UI 的持久化目录与项目根绑定
     os.environ["KSADK_PROJECT_DIR"] = str(agent_path)
     os.environ.setdefault("AGENTENGINE_UI_DIR", str(agent_path / ".agentengine" / "ui"))
-    _default_project_stm_if_unset(result.type.value, agent_path)
+    _default_project_stm_if_unset(
+        result.type.value,
+        agent_path,
+        explicit_session_env_names=explicit_session_env_names,
+    )
     launch_path = _configure_custom_ui_env(agent_path)
 
     try:

@@ -14,6 +14,7 @@ import ksadk.conversations as conversation
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.server.api_models import AgentRunRequest, InlineData, Part
 from ksadk.sessions.base import SessionEvent
+from ksadk.sessions.errors import SessionBackendUnavailable
 from ksadk.sessions.in_memory import InMemorySessionService
 
 
@@ -117,6 +118,17 @@ class _SlowStreamingRunner(_OverrideStreamingRunner):
         await asyncio.sleep(0.05)
         yield {"type": "text", "delta": "lo"}
         yield {"type": "final", "output": "hello"}
+
+
+class _UnavailableSessionService(InMemorySessionService):
+    async def create_session(self, *args, **kwargs):
+        raise SessionBackendUnavailable("Postgres session backend unavailable")
+
+    async def list_sessions(self, *args, **kwargs):
+        raise SessionBackendUnavailable("Postgres session backend unavailable")
+
+    async def count_sessions(self, *args, **kwargs):
+        raise SessionBackendUnavailable("Postgres session backend unavailable")
 
 
 class _CancellableStreamingRunner(_OverrideStreamingRunner):
@@ -849,6 +861,30 @@ async def test_runtime_local_list_sessions_returns_page_metadata(monkeypatch):
     assert data["PageSize"] == 2
     assert data["Total"] == 5
     assert len(data["Sessions"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_session_actions_return_503_when_session_backend_unavailable(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = _UnavailableSessionService()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        create_response = await client.post(
+            "/agentengine/api/v1/CreateSession",
+            json={"AgentId": "demo-agent", "UserId": "user-1"},
+        )
+        list_response = await client.post(
+            "/agentengine/api/v1/ListSessions",
+            json={"AgentId": "demo-agent", "UserId": "user-1"},
+        )
+
+    assert create_response.status_code == 503
+    assert create_response.json()["detail"]["code"] == "session_backend_unavailable"
+    assert list_response.status_code == 503
+    assert list_response.json()["detail"]["code"] == "session_backend_unavailable"
 
 
 @pytest.mark.asyncio

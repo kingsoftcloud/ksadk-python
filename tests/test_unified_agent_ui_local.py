@@ -1608,6 +1608,9 @@ def test_cmd_web_defaults_supported_framework_stm_to_persistent_sqlite(
     monkeypatch.delenv("KSADK_STM_DB_PATH", raising=False)
     monkeypatch.delenv("KSADK_STM_URL", raising=False)
     monkeypatch.delenv("KSADK_STM_DB_URL", raising=False)
+    monkeypatch.delenv("KSADK_SESSION_BACKEND", raising=False)
+    monkeypatch.delenv("KSADK_SESSION_PATH", raising=False)
+    monkeypatch.delenv("KSADK_SESSION_DSN", raising=False)
     monkeypatch.delenv("AGENTENGINE_UI_DIR", raising=False)
     monkeypatch.delenv("KSADK_PROJECT_DIR", raising=False)
     monkeypatch.setattr(cmd_web_module, "FrameworkDetector", _Detector, raising=False)
@@ -1627,6 +1630,63 @@ def test_cmd_web_defaults_supported_framework_stm_to_persistent_sqlite(
     assert os.environ["KSADK_STM_PATH"] == str(
         project_dir / ".agentengine" / "ui" / "sessions.sqlite"
     )
+    assert os.environ["KSADK_SESSION_BACKEND"] == "local"
+    assert os.environ["KSADK_SESSION_PATH"] == str(
+        project_dir / ".agentengine" / "ui" / "sessions.sqlite"
+    )
+
+
+def test_cmd_web_overrides_project_dotenv_postgres_session_for_local_debug(
+    monkeypatch, tmp_path
+):
+    runner = CliRunner()
+    fake_runner = _UiRunner()
+    project_dir = tmp_path / "demo-langgraph-agent"
+    project_dir.mkdir()
+
+    class _Detector:
+        def __init__(self, path: str):
+            self.path = path
+
+        def detect(self):
+            return SimpleNamespace(
+                type=SimpleNamespace(value="langgraph"),
+                name="demo-agent",
+                entry_point="agent.py",
+            )
+
+    import ksadk.cli.cmd_web as cmd_web_module
+
+    monkeypatch.delenv("KSADK_STM_BACKEND", raising=False)
+    monkeypatch.delenv("KSADK_STM_PATH", raising=False)
+    monkeypatch.delenv("KSADK_SESSION_BACKEND", raising=False)
+    monkeypatch.delenv("KSADK_SESSION_PATH", raising=False)
+    monkeypatch.delenv("KSADK_SESSION_DSN", raising=False)
+    monkeypatch.delenv("AGENTENGINE_UI_DIR", raising=False)
+    monkeypatch.delenv("KSADK_PROJECT_DIR", raising=False)
+
+    def fake_setup_environment(_path):
+        os.environ["KSADK_SESSION_BACKEND"] = "postgres"
+        os.environ["KSADK_SESSION_DSN"] = "postgresql://ksadk:secret@db.example.test/session"
+
+    monkeypatch.setattr(cmd_web_module, "FrameworkDetector", _Detector, raising=False)
+    monkeypatch.setattr(cmd_web_module, "setup_environment", fake_setup_environment, raising=False)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_web.create_runner",
+        lambda result, project_dir: fake_runner,
+        raising=False,
+    )
+    monkeypatch.chdir(project_dir)
+
+    result = runner.invoke(cmd_web_module.web, [str(project_dir), "--port", "8899"])
+
+    assert result.exit_code == 0, result.output
+    assert fake_runner.run_server_calls == [8899]
+    assert os.environ["KSADK_SESSION_BACKEND"] == "local"
+    assert os.environ["KSADK_SESSION_PATH"] == str(
+        project_dir / ".agentengine" / "ui" / "sessions.sqlite"
+    )
+    assert "KSADK_SESSION_DSN" not in os.environ
 
 
 def test_cmd_web_exports_custom_ui_config_and_opens_custom_path(monkeypatch, tmp_path):
@@ -1743,6 +1803,8 @@ def test_cmd_web_preserves_explicit_stm_configuration(monkeypatch, tmp_path):
 
     monkeypatch.setenv("KSADK_STM_BACKEND", "local")
     monkeypatch.setenv("KSADK_STM_PATH", "/tmp/custom-sessions.db")
+    monkeypatch.setenv("KSADK_SESSION_BACKEND", "postgres")
+    monkeypatch.setenv("KSADK_SESSION_DSN", "postgresql://ksadk:secret@db.example.test/session")
     monkeypatch.delenv("AGENTENGINE_UI_DIR", raising=False)
     monkeypatch.delenv("KSADK_PROJECT_DIR", raising=False)
     monkeypatch.setattr(cmd_web_module, "FrameworkDetector", _Detector, raising=False)
@@ -1760,6 +1822,8 @@ def test_cmd_web_preserves_explicit_stm_configuration(monkeypatch, tmp_path):
     assert fake_runner.run_server_calls == [8899]
     assert os.environ["KSADK_STM_BACKEND"] == "local"
     assert os.environ["KSADK_STM_PATH"] == "/tmp/custom-sessions.db"
+    assert os.environ["KSADK_SESSION_BACKEND"] == "postgres"
+    assert os.environ["KSADK_SESSION_DSN"] == "postgresql://ksadk:secret@db.example.test/session"
 
 
 def test_cmd_web_preserves_partial_explicit_stm_configuration(monkeypatch, tmp_path):

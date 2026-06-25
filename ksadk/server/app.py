@@ -56,6 +56,7 @@ from ksadk.sessions import (
     describe_session_backend,
     resolve_session_service,
 )
+from ksadk.sessions.errors import SessionBackendUnavailable
 from ksadk.sessions.local_service import resolve_local_session_dir
 from ksadk.tracing import get_memory_exporter
 from ksadk.conversations.model_context import normalize_model_metadata
@@ -345,6 +346,26 @@ app.include_router(
     )
 )
 register_terminal_routes(app, terminal_manager)
+
+
+@app.exception_handler(SessionBackendUnavailable)
+async def session_backend_unavailable_handler(
+    _request: Request,
+    exc: SessionBackendUnavailable,
+):
+    return Response(
+        content=json.dumps(
+            {
+                "detail": {
+                    "code": "session_backend_unavailable",
+                    "message": str(exc),
+                }
+            },
+            ensure_ascii=False,
+        ),
+        status_code=503,
+        media_type="application/json",
+    )
 
 
 def set_runner(r: BaseRunner):
