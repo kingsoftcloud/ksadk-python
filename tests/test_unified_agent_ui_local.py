@@ -1611,6 +1611,9 @@ def test_cmd_web_defaults_supported_framework_stm_to_persistent_sqlite(
     monkeypatch.delenv("KSADK_SESSION_BACKEND", raising=False)
     monkeypatch.delenv("KSADK_SESSION_PATH", raising=False)
     monkeypatch.delenv("KSADK_SESSION_DSN", raising=False)
+    monkeypatch.delenv("KSADK_CHECKPOINT_BACKEND", raising=False)
+    monkeypatch.delenv("KSADK_CHECKPOINT_PATH", raising=False)
+    monkeypatch.delenv("KSADK_LANGGRAPH_CHECKPOINT_DSN", raising=False)
     monkeypatch.delenv("AGENTENGINE_UI_DIR", raising=False)
     monkeypatch.delenv("KSADK_PROJECT_DIR", raising=False)
     monkeypatch.setattr(cmd_web_module, "FrameworkDetector", _Detector, raising=False)
@@ -1634,6 +1637,11 @@ def test_cmd_web_defaults_supported_framework_stm_to_persistent_sqlite(
     assert os.environ["KSADK_SESSION_PATH"] == str(
         project_dir / ".agentengine" / "ui" / "sessions.sqlite"
     )
+    if framework == "langgraph":
+        assert os.environ["KSADK_CHECKPOINT_BACKEND"] == "sqlite"
+        assert os.environ["KSADK_CHECKPOINT_PATH"] == str(
+            project_dir / ".agentengine" / "ui" / "checkpoints.sqlite"
+        )
 
 
 def test_cmd_web_overrides_project_dotenv_postgres_session_for_local_debug(
@@ -1662,12 +1670,17 @@ def test_cmd_web_overrides_project_dotenv_postgres_session_for_local_debug(
     monkeypatch.delenv("KSADK_SESSION_BACKEND", raising=False)
     monkeypatch.delenv("KSADK_SESSION_PATH", raising=False)
     monkeypatch.delenv("KSADK_SESSION_DSN", raising=False)
+    monkeypatch.delenv("KSADK_CHECKPOINT_BACKEND", raising=False)
+    monkeypatch.delenv("KSADK_CHECKPOINT_PATH", raising=False)
+    monkeypatch.delenv("KSADK_LANGGRAPH_CHECKPOINT_DSN", raising=False)
     monkeypatch.delenv("AGENTENGINE_UI_DIR", raising=False)
     monkeypatch.delenv("KSADK_PROJECT_DIR", raising=False)
 
     def fake_setup_environment(_path):
         os.environ["KSADK_SESSION_BACKEND"] = "postgres"
         os.environ["KSADK_SESSION_DSN"] = "postgresql://ksadk:secret@db.example.test/session"
+        os.environ["KSADK_CHECKPOINT_BACKEND"] = "postgres"
+        os.environ["KSADK_LANGGRAPH_CHECKPOINT_DSN"] = "postgresql://ksadk:secret@db.example.test/checkpoints"
 
     monkeypatch.setattr(cmd_web_module, "FrameworkDetector", _Detector, raising=False)
     monkeypatch.setattr(cmd_web_module, "setup_environment", fake_setup_environment, raising=False)
@@ -1687,6 +1700,11 @@ def test_cmd_web_overrides_project_dotenv_postgres_session_for_local_debug(
         project_dir / ".agentengine" / "ui" / "sessions.sqlite"
     )
     assert "KSADK_SESSION_DSN" not in os.environ
+    assert os.environ["KSADK_CHECKPOINT_BACKEND"] == "sqlite"
+    assert os.environ["KSADK_CHECKPOINT_PATH"] == str(
+        project_dir / ".agentengine" / "ui" / "checkpoints.sqlite"
+    )
+    assert "KSADK_LANGGRAPH_CHECKPOINT_DSN" not in os.environ
 
 
 def test_cmd_web_exports_custom_ui_config_and_opens_custom_path(monkeypatch, tmp_path):
@@ -1805,6 +1823,8 @@ def test_cmd_web_preserves_explicit_stm_configuration(monkeypatch, tmp_path):
     monkeypatch.setenv("KSADK_STM_PATH", "/tmp/custom-sessions.db")
     monkeypatch.setenv("KSADK_SESSION_BACKEND", "postgres")
     monkeypatch.setenv("KSADK_SESSION_DSN", "postgresql://ksadk:secret@db.example.test/session")
+    monkeypatch.setenv("KSADK_CHECKPOINT_BACKEND", "postgres")
+    monkeypatch.setenv("KSADK_LANGGRAPH_CHECKPOINT_DSN", "postgresql://ksadk:secret@db.example.test/checkpoints")
     monkeypatch.delenv("AGENTENGINE_UI_DIR", raising=False)
     monkeypatch.delenv("KSADK_PROJECT_DIR", raising=False)
     monkeypatch.setattr(cmd_web_module, "FrameworkDetector", _Detector, raising=False)
@@ -1824,6 +1844,57 @@ def test_cmd_web_preserves_explicit_stm_configuration(monkeypatch, tmp_path):
     assert os.environ["KSADK_STM_PATH"] == "/tmp/custom-sessions.db"
     assert os.environ["KSADK_SESSION_BACKEND"] == "postgres"
     assert os.environ["KSADK_SESSION_DSN"] == "postgresql://ksadk:secret@db.example.test/session"
+    assert os.environ["KSADK_CHECKPOINT_BACKEND"] == "postgres"
+    assert os.environ["KSADK_LANGGRAPH_CHECKPOINT_DSN"] == "postgresql://ksadk:secret@db.example.test/checkpoints"
+
+
+def test_cmd_web_errors_when_langgraph_sqlite_checkpoint_package_missing(
+    monkeypatch, tmp_path
+):
+    runner = CliRunner()
+    fake_runner = _UiRunner()
+    project_dir = tmp_path / "demo-langgraph-agent"
+    project_dir.mkdir()
+
+    class _Detector:
+        def __init__(self, path: str):
+            self.path = path
+
+        def detect(self):
+            return SimpleNamespace(
+                type=SimpleNamespace(value="langgraph"),
+                name="demo-agent",
+                entry_point="agent.py",
+            )
+
+    import builtins
+    import ksadk.cli.cmd_web as cmd_web_module
+
+    original_import = builtins.__import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "langgraph.checkpoint.sqlite.aio":
+            raise ImportError("missing sqlite checkpointer")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.delenv("KSADK_CHECKPOINT_BACKEND", raising=False)
+    monkeypatch.delenv("KSADK_CHECKPOINT_PATH", raising=False)
+    monkeypatch.delenv("KSADK_LANGGRAPH_CHECKPOINT_DSN", raising=False)
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    monkeypatch.setattr(cmd_web_module, "FrameworkDetector", _Detector, raising=False)
+    monkeypatch.setattr(cmd_web_module, "setup_environment", lambda path: None, raising=False)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_web.create_runner",
+        lambda result, project_dir: fake_runner,
+        raising=False,
+    )
+    monkeypatch.chdir(project_dir)
+
+    result = runner.invoke(cmd_web_module.web, [str(project_dir), "--port", "8899"])
+
+    assert result.exit_code == 1
+    assert "pip install langgraph-checkpoint-sqlite" in result.output
+    assert fake_runner.run_server_calls == []
 
 
 def test_cmd_web_preserves_partial_explicit_stm_configuration(monkeypatch, tmp_path):
