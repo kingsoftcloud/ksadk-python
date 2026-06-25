@@ -6,6 +6,7 @@ import asyncio
 import json
 import time
 from typing import Any, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 from ksadk.sessions.base import (
     BaseSessionService,
@@ -14,6 +15,7 @@ from ksadk.sessions.base import (
     SessionState,
     generate_id,
 )
+from ksadk.sessions.errors import SessionBackendUnavailable
 
 KSADK_PG_SESSIONS_TABLE = "ksadk_sessions"
 KSADK_PG_EVENTS_TABLE = "ksadk_events"
@@ -30,6 +32,7 @@ class PostgresSessionService(BaseSessionService):
         workspace_id: str = "default",
         min_size: int = 1,
         max_size: int = 10,
+        connect_timeout: float = 5.0,
     ):
         if not dsn.strip():
             raise ValueError("KSADK_SESSION_DSN is required when KSADK_SESSION_BACKEND=postgres")
@@ -39,6 +42,7 @@ class PostgresSessionService(BaseSessionService):
         self.workspace_id = workspace_id.strip() or "default"
         self.min_size = min_size
         self.max_size = max_size
+        self.connect_timeout = connect_timeout
         self._pool: Any = None
         self._pool_lock = asyncio.Lock()
         self._schema_ready = False
@@ -508,11 +512,18 @@ class PostgresSessionService(BaseSessionService):
                 raise RuntimeError(
                     "asyncpg is required for KSADK_SESSION_BACKEND=postgres"
                 ) from exc
-            self._pool = await asyncpg.create_pool(
-                dsn=self.dsn,
-                min_size=self.min_size,
-                max_size=self.max_size,
-            )
+            try:
+                self._pool = await asyncpg.create_pool(
+                    dsn=self.dsn,
+                    min_size=self.min_size,
+                    max_size=self.max_size,
+                    timeout=self.connect_timeout,
+                )
+            except (TimeoutError, OSError, ConnectionError, asyncio.TimeoutError) as exc:
+                raise SessionBackendUnavailable(
+                    "Postgres session backend unavailable: "
+                    f"could not connect to {mask_postgres_session_dsn(self.dsn)}"
+                ) from exc
 
     async def _ensure_schema(self) -> None:
         if self._schema_ready:
@@ -751,10 +762,27 @@ def create_postgres_session_service(
     )
 
 
+def mask_postgres_session_dsn(dsn: str) -> str:
+    if not dsn:
+        return ""
+    try:
+        parts = urlsplit(dsn)
+    except ValueError:
+        return "***"
+    if not parts.password:
+        return dsn
+    username = parts.username or ""
+    host = parts.hostname or ""
+    port = f":{parts.port}" if parts.port else ""
+    auth = f"{username}:***@" if username else "***@"
+    return urlunsplit((parts.scheme, f"{auth}{host}{port}", parts.path, parts.query, parts.fragment))
+
+
 __all__ = [
     "KSADK_PG_EVENTS_TABLE",
     "KSADK_PG_SESSIONS_TABLE",
     "KSADK_PG_STATES_TABLE",
     "PostgresSessionService",
     "create_postgres_session_service",
+    "mask_postgres_session_dsn",
 ]

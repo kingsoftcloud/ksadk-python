@@ -1,12 +1,39 @@
 from __future__ import annotations
 
 import os
+import sys
+from types import SimpleNamespace
 
 import pytest
 
+from ksadk.sessions.errors import SessionBackendUnavailable
 from ksadk.sessions.base import SessionEvent
 
 pytestmark = pytest.mark.asyncio
+
+
+async def test_postgres_session_service_uses_configured_connect_timeout(monkeypatch):
+    from ksadk.sessions.postgres_service import PostgresSessionService
+
+    observed: dict[str, object] = {}
+
+    async def fake_create_pool(**kwargs):
+        observed.update(kwargs)
+        raise TimeoutError("connect timed out")
+
+    monkeypatch.setitem(sys.modules, "asyncpg", SimpleNamespace(create_pool=fake_create_pool))
+
+    service = PostgresSessionService(
+        dsn="postgresql://ksadk:secret@db.example.test:5432/session",
+        connect_timeout=0.25,
+    )
+
+    with pytest.raises(SessionBackendUnavailable) as exc_info:
+        await service.create_session("demo-agent", "user-1")
+
+    assert observed["timeout"] == 0.25
+    assert "Postgres session backend unavailable" in str(exc_info.value)
+    assert "secret" not in str(exc_info.value)
 
 
 async def test_postgres_session_service_two_instances_share_sessions_events_and_state():
