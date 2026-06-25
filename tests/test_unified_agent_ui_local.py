@@ -1767,6 +1767,87 @@ def test_cmd_web_overrides_dotenv_loaded_before_web_command(monkeypatch, tmp_pat
     assert "KSADK_LANGGRAPH_CHECKPOINT_DSN" not in os.environ
 
 
+def test_cmd_web_overrides_project_dotenv_ui_dir_for_local_debug(monkeypatch, tmp_path):
+    runner = CliRunner()
+    fake_runner = _UiRunner()
+    project_dir = tmp_path / "demo-langgraph-agent"
+    project_dir.mkdir()
+    (project_dir / ".env").write_text(
+        "AGENTENGINE_UI_DIR=/home/node/.agentengine/ui\n",
+        encoding="utf-8",
+    )
+
+    class _Detector:
+        def __init__(self, path: str):
+            self.path = path
+
+        def detect(self):
+            return SimpleNamespace(
+                type=SimpleNamespace(value="langgraph"),
+                name="demo-agent",
+                entry_point="agent.py",
+            )
+
+    import ksadk.cli.cmd_web as cmd_web_module
+
+    monkeypatch.setenv("AGENTENGINE_UI_DIR", "/home/node/.agentengine/ui")
+    monkeypatch.setattr(cmd_web_module, "FrameworkDetector", _Detector, raising=False)
+    monkeypatch.setattr(cmd_web_module, "setup_environment", lambda path: None, raising=False)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_web.create_runner",
+        lambda result, project_dir: fake_runner,
+        raising=False,
+    )
+    monkeypatch.chdir(project_dir)
+
+    result = runner.invoke(cmd_web_module.web, [str(project_dir), "--port", "8899"])
+
+    assert result.exit_code == 0, result.output
+    assert fake_runner.run_server_calls == [8899]
+    assert os.environ["AGENTENGINE_UI_DIR"] == str(project_dir / ".agentengine" / "ui")
+
+
+def test_cmd_web_preserves_explicit_ui_dir_for_local_debug(monkeypatch, tmp_path):
+    runner = CliRunner()
+    fake_runner = _UiRunner()
+    project_dir = tmp_path / "demo-langgraph-agent"
+    project_dir.mkdir()
+    (project_dir / ".env").write_text(
+        "AGENTENGINE_UI_DIR=/home/node/.agentengine/ui\n",
+        encoding="utf-8",
+    )
+    explicit_ui_dir = str(tmp_path / "custom-ui-state")
+
+    class _Detector:
+        def __init__(self, path: str):
+            self.path = path
+
+        def detect(self):
+            return SimpleNamespace(
+                type=SimpleNamespace(value="langgraph"),
+                name="demo-agent",
+                entry_point="agent.py",
+            )
+
+    import ksadk.cli.cmd_web as cmd_web_module
+
+    monkeypatch.setenv("AGENTENGINE_UI_DIR", explicit_ui_dir)
+    monkeypatch.setattr(cmd_web_module, "FrameworkDetector", _Detector, raising=False)
+    monkeypatch.setattr(cmd_web_module, "setup_environment", lambda path: None, raising=False)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_web.create_runner",
+        lambda result, project_dir: fake_runner,
+        raising=False,
+    )
+    monkeypatch.chdir(project_dir)
+
+    result = runner.invoke(cmd_web_module.web, [str(project_dir), "--port", "8899"])
+
+    assert result.exit_code == 0, result.output
+    assert fake_runner.run_server_calls == [8899]
+    assert os.environ["AGENTENGINE_UI_DIR"] == explicit_ui_dir
+
+
 def test_cmd_web_exports_custom_ui_config_and_opens_custom_path(monkeypatch, tmp_path):
     runner = CliRunner()
     fake_runner = _UiRunner()
