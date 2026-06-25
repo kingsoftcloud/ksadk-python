@@ -121,6 +121,36 @@ def _ensure_langgraph_sqlite_checkpoint_available() -> None:
         raise SystemExit(1)
 
 
+def _configure_langgraph_checkpoint_env(
+    agent_path: Path,
+    *,
+    explicit_checkpoint_env_names: set[str],
+) -> None:
+    checkpoint_backend = str(os.environ.get("KSADK_CHECKPOINT_BACKEND") or "").strip().lower()
+    if checkpoint_backend == "local":
+        checkpoint_backend = "sqlite"
+        os.environ["KSADK_CHECKPOINT_BACKEND"] = "sqlite"
+
+    if checkpoint_backend == "sqlite":
+        _ensure_langgraph_sqlite_checkpoint_available()
+        os.environ.setdefault(
+            "KSADK_CHECKPOINT_PATH",
+            str(agent_path / ".agentengine" / "ui" / "checkpoints.sqlite"),
+        )
+        os.environ.pop("KSADK_LANGGRAPH_CHECKPOINT_DSN", None)
+        return
+
+    if explicit_checkpoint_env_names.intersection(_CHECKPOINT_ENV_NAMES):
+        return
+
+    _ensure_langgraph_sqlite_checkpoint_available()
+    os.environ["KSADK_CHECKPOINT_BACKEND"] = "sqlite"
+    os.environ["KSADK_CHECKPOINT_PATH"] = str(
+        agent_path / ".agentengine" / "ui" / "checkpoints.sqlite"
+    )
+    os.environ.pop("KSADK_LANGGRAPH_CHECKPOINT_DSN", None)
+
+
 def _default_project_stm_if_unset(
     framework: str,
     agent_path: Path,
@@ -141,13 +171,11 @@ def _default_project_stm_if_unset(
         os.environ["KSADK_SESSION_PATH"] = session_db_path
         os.environ.pop("KSADK_SESSION_DSN", None)
         os.environ.pop("AGENTENGINE_SESSION_BACKEND", None)
-    if framework == "langgraph" and not explicit_checkpoint_env_names.intersection(_CHECKPOINT_ENV_NAMES):
-        _ensure_langgraph_sqlite_checkpoint_available()
-        os.environ["KSADK_CHECKPOINT_BACKEND"] = "sqlite"
-        os.environ["KSADK_CHECKPOINT_PATH"] = str(
-            agent_path / ".agentengine" / "ui" / "checkpoints.sqlite"
+    if framework == "langgraph":
+        _configure_langgraph_checkpoint_env(
+            agent_path,
+            explicit_checkpoint_env_names=explicit_checkpoint_env_names,
         )
-        os.environ.pop("KSADK_LANGGRAPH_CHECKPOINT_DSN", None)
 
 
 @click.command(context_settings=dict(help_option_names=["-h", "--help"]))

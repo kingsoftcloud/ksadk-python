@@ -1908,6 +1908,47 @@ def test_cmd_web_preserves_explicit_stm_configuration(monkeypatch, tmp_path):
     assert os.environ["KSADK_LANGGRAPH_CHECKPOINT_DSN"] == "postgresql://ksadk:secret@db.example.test/checkpoints"
 
 
+def test_cmd_web_treats_explicit_local_checkpoint_backend_as_sqlite(monkeypatch, tmp_path):
+    runner = CliRunner()
+    fake_runner = _UiRunner()
+    project_dir = tmp_path / "demo-langgraph-agent"
+    project_dir.mkdir()
+
+    class _Detector:
+        def __init__(self, path: str):
+            self.path = path
+
+        def detect(self):
+            return SimpleNamespace(
+                type=SimpleNamespace(value="langgraph"),
+                name="demo-agent",
+                entry_point="agent.py",
+            )
+
+    import ksadk.cli.cmd_web as cmd_web_module
+
+    monkeypatch.setenv("KSADK_CHECKPOINT_BACKEND", "local")
+    monkeypatch.delenv("KSADK_CHECKPOINT_PATH", raising=False)
+    monkeypatch.delenv("KSADK_LANGGRAPH_CHECKPOINT_DSN", raising=False)
+    monkeypatch.setattr(cmd_web_module, "FrameworkDetector", _Detector, raising=False)
+    monkeypatch.setattr(cmd_web_module, "setup_environment", lambda path: None, raising=False)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_web.create_runner",
+        lambda result, project_dir: fake_runner,
+        raising=False,
+    )
+    monkeypatch.chdir(project_dir)
+
+    result = runner.invoke(cmd_web_module.web, [str(project_dir), "--port", "8899"])
+
+    assert result.exit_code == 0, result.output
+    assert fake_runner.run_server_calls == [8899]
+    assert os.environ["KSADK_CHECKPOINT_BACKEND"] == "sqlite"
+    assert os.environ["KSADK_CHECKPOINT_PATH"] == str(
+        project_dir / ".agentengine" / "ui" / "checkpoints.sqlite"
+    )
+
+
 def test_cmd_web_errors_when_langgraph_sqlite_checkpoint_package_missing(
     monkeypatch, tmp_path
 ):
