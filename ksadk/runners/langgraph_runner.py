@@ -7,7 +7,7 @@ LangGraphRunner - LangGraph 框架运行时
 import os
 import uuid
 import re
-from typing import Any, AsyncIterator, Dict
+from typing import Any, AsyncIterator, Dict, Mapping
 import base64
 from pathlib import Path
 
@@ -53,6 +53,69 @@ class LangGraphRunner(BaseRunner):
 
     def get_session_adapter(self):
         return LangGraphSessionAdapter()
+
+    def describe_checkpoint_capability(self) -> dict[str, Any]:
+        agent = getattr(self, "_agent", None)
+        has_checkpointer = bool(
+            getattr(agent, "checkpointer", None) or getattr(agent, "_checkpointer", None)
+        )
+        if not has_checkpointer:
+            return {
+                "Supported": False,
+                "Backend": "none",
+                "Scope": "unknown",
+                "Durable": False,
+                "SharedAcrossPods": False,
+                "Reason": "LangGraph graph has no configured checkpointer",
+            }
+
+        backend = str(os.getenv("KSADK_CHECKPOINT_BACKEND") or "").strip().lower()
+        if backend == "local":
+            backend = "sqlite"
+        if not backend:
+            backend = "unknown"
+        scope = "unknown"
+        durable = False
+        shared = False
+        reason = ""
+        if backend == "postgres":
+            scope = "shared"
+            durable = True
+            shared = True
+        elif backend == "sqlite":
+            scope = "pod_local"
+            durable = True
+            shared = False
+            reason = "SQLite checkpoint is durable for local web debugging but is not shared across pods"
+        elif backend in {"memory", "inmemory"}:
+            backend = "memory"
+            scope = "process_local"
+            durable = False
+            shared = False
+            reason = "In-memory checkpoint cannot be recovered after process restart or across pods"
+
+        return {
+            "Supported": True,
+            "Backend": backend,
+            "Scope": scope,
+            "Durable": durable,
+            "SharedAcrossPods": shared,
+            "Reason": reason,
+        }
+
+    def get_runtime_capabilities(self) -> dict[str, Any]:
+        capabilities = super().get_runtime_capabilities()
+        capabilities["SessionContinuity"] = {
+            "Supported": True,
+            "Type": "checkpoint"
+            if capabilities["Checkpoint"].get("Supported")
+            else "semantic_replay",
+            "Level": "runtime"
+            if capabilities["Checkpoint"].get("Supported")
+            else "semantic",
+            "Reason": "",
+        }
+        return capabilities
 
     def _get_config(self, session_id: str) -> dict:
         """获取运行配置"""
@@ -115,6 +178,17 @@ class LangGraphRunner(BaseRunner):
         checkpoint_id = str(configurable.get("checkpoint_id") or "").strip()
         if not thread_id or not checkpoint_id:
             return {}
+        next_nodes_raw = state.get("next") if isinstance(state, dict) else getattr(state, "next", None)
+        next_nodes: list[str] = []
+        if isinstance(next_nodes_raw, str):
+            if next_nodes_raw.strip():
+                next_nodes = [next_nodes_raw.strip()]
+        elif isinstance(next_nodes_raw, (list, tuple, set)):
+            next_nodes = [
+                str(item).strip()
+                for item in next_nodes_raw
+                if str(item or "").strip()
+            ]
         return {
             "langgraph": {
                 "thread_id": thread_id,
@@ -124,6 +198,7 @@ class LangGraphRunner(BaseRunner):
                     else {}
                 ),
                 "checkpoint_id": checkpoint_id,
+                **({"next_node": next_nodes[0], "next_nodes": next_nodes} if next_nodes else {}),
             }
         }
 
@@ -139,10 +214,33 @@ class LangGraphRunner(BaseRunner):
         framework_ref = self._checkpoint_ref_from_state(state)
         if not framework_ref:
             return {}
+        langgraph_ref = framework_ref.get("langgraph") if isinstance(framework_ref, dict) else {}
+        next_node = ""
+        if isinstance(langgraph_ref, dict):
+            next_node = str(langgraph_ref.get("next_node") or "").strip()
+        checkpoint_capability = self.describe_checkpoint_capability()
+        is_terminal = not bool(next_node)
+        is_resumable = bool(
+            checkpoint_capability.get("Supported")
+            and next_node
+            and checkpoint_capability.get("Scope") != "process_local"
+        )
         return {
             "agentengine": {
                 "framework": "langgraph",
                 "framework_ref": framework_ref,
+                "next_node": next_node,
+                "is_terminal": is_terminal,
+                "is_resumable": is_resumable,
+                "resume_status": "resumable" if is_resumable else "disabled",
+                "resume_disabled_reason": (
+                    "该 checkpoint 已是终态；可选择更早恢复点重跑"
+                    if is_terminal
+                    else str(checkpoint_capability.get("Reason") or "")
+                ),
+                "backend": checkpoint_capability.get("Backend"),
+                "scope": checkpoint_capability.get("Scope"),
+                "durable": bool(checkpoint_capability.get("Durable")),
             }
         }
 
@@ -484,6 +582,63 @@ class LangGraphRunner(BaseRunner):
                             return intr.value
         return {}
 
+    async def _stream_checkpoint_resume_updates(
+        self,
+        *,
+        config: dict[str, Any],
+        context: dict[str, Any] | None,
+    ) -> AsyncIterator[Dict[str, Any]]:
+        if not callable(getattr(self._agent, "astream", None)):
+            return
+
+        kwargs = self._build_optional_call_kwargs(
+            self._agent.astream,
+            config=config,
+            context=context,
+        )
+        if self._callable_accepts_keyword(self._agent.astream, "stream_mode"):
+            kwargs["stream_mode"] = "updates"
+
+        latest_output: Any = None
+        emitted_update = False
+        async for update in self._agent.astream(None, **kwargs):
+            emitted_update = True
+            latest_output = update
+            if isinstance(update, Mapping):
+                for node_name, node_output in update.items():
+                    yield {
+                        "type": "graph_update",
+                        "node": str(node_name),
+                        "output": node_output,
+                    }
+            else:
+                yield {"type": "graph_update", "output": update}
+
+        state_usage = await self._latest_state_usage(config)
+        state_output = ""
+        try:
+            state = None
+            if callable(getattr(self._agent, "aget_state", None)):
+                state = await self._agent.aget_state(config)
+            elif callable(getattr(self._agent, "get_state", None)):
+                state = self._agent.get_state(config)
+            values = getattr(state, "values", None)
+            if values is not None:
+                state_output = self._extract_output(values)
+        except Exception:
+            state_output = ""
+        final_output = state_output or self._extract_output(latest_output)
+        yield {
+            "type": "final",
+            "output": final_output,
+            **({"usage": state_usage} if state_usage else {}),
+            **({"resume_noop": True} if not emitted_update else {}),
+        }
+
+        metadata = await self._latest_checkpoint_metadata(config)
+        if metadata:
+            yield {"type": "checkpoint", "metadata": metadata}
+
     async def stream(self, input_data: Dict[str, Any]) -> AsyncIterator[Dict[str, Any]]:
         """流式调用 LangGraph 图"""
         payload = dict(input_data)
@@ -530,6 +685,23 @@ class LangGraphRunner(BaseRunner):
         emitted_non_text_event = False
         final_output_text = ""
         final_output_usage: dict[str, Any] = {}
+
+        if is_checkpoint_resume and callable(getattr(self._agent, "astream", None)):
+            try:
+                async for chunk in self._stream_checkpoint_resume_updates(
+                    config=config,
+                    context=native_context,
+                ):
+                    yield chunk
+                return
+            except Exception as e:
+                yield {
+                    "type": "error",
+                    "message": str(e) or "LangGraph checkpoint resume failed",
+                    "checkpoint_id": str(checkpoint_ref.get("checkpoint_id") or ""),
+                    "exception_type": type(e).__name__,
+                }
+                return
 
         if not hasattr(self._agent, "astream_events"):
             result = await self.invoke(invoke_payload)

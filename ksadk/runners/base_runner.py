@@ -77,6 +77,56 @@ class BaseRunner(ABC):
         """
         return "unsupported"
 
+    def describe_checkpoint_capability(self) -> dict[str, Any]:
+        """描述框架级 checkpoint 能力。
+
+        默认 runner 只具备语义续聊，不声明可枚举/可回档的框架 checkpoint。
+        """
+        return {
+            "Supported": False,
+            "Backend": "none",
+            "Scope": "unknown",
+            "Durable": False,
+            "SharedAcrossPods": False,
+            "Reason": "runner does not expose framework checkpoints",
+        }
+
+    def get_runtime_capabilities(self) -> dict[str, Any]:
+        """返回控制台可消费的运行时能力声明。"""
+        detection_type = getattr(getattr(self, "detection_result", None), "type", None)
+        framework = str(getattr(detection_type, "value", detection_type) or "").strip().lower()
+        checkpoint = self.describe_checkpoint_capability()
+        checkpoint_supported = bool(checkpoint.get("Supported"))
+        checkpoint_reason = str(checkpoint.get("Reason") or "").strip()
+        cancel_supported = type(self).request_cancel is not BaseRunner.request_cancel
+        return {
+            "Framework": framework or self.__class__.__name__,
+            "CancelRun": {
+                "Supported": cancel_supported,
+                "RequestResults": (
+                    ["accepted", "not_found", "unsupported"]
+                    if cancel_supported
+                    else ["unsupported"]
+                ),
+                "Reason": ""
+                if cancel_supported
+                else "runner does not implement cooperative cancellation",
+            },
+            "Checkpoint": checkpoint,
+            "ResumeRun": {
+                "Supported": checkpoint_supported,
+                "Reason": checkpoint_reason
+                if not checkpoint_supported
+                else str(checkpoint.get("ResumeReason") or ""),
+            },
+            "SessionContinuity": {
+                "Supported": True,
+                "Type": "semantic_replay",
+                "Level": "semantic",
+                "Reason": "conversation transcript can be replayed, but exact runtime checkpoint resume is not available",
+            },
+        }
+
     async def close(self) -> None:
         """释放 runner 持有的运行期资源。"""
         return None

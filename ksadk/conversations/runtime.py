@@ -2574,13 +2574,56 @@ async def append_run_checkpoint_event(
             return event
 
     event_metadata = dict(metadata or {})
+    framework_ref_dict = dict(framework_ref)
+    langgraph_ref = framework_ref_dict.get("langgraph")
+    next_node = ""
+    if isinstance(langgraph_ref, Mapping):
+        next_node = str(langgraph_ref.get("next_node") or "").strip()
+    is_terminal = bool(event_metadata.get("is_terminal", False))
+    if "is_terminal" not in event_metadata and next_node:
+        is_terminal = False
+    raw_is_resumable = event_metadata.get("is_resumable")
+    is_resumable: bool | None
+    if isinstance(raw_is_resumable, bool):
+        is_resumable = raw_is_resumable
+    else:
+        is_resumable = None
+    resume_status = str(event_metadata.get("resume_status") or "").strip()
+    if not resume_status:
+        if is_resumable is True:
+            resume_status = "resumable"
+        elif is_resumable is False:
+            resume_status = "disabled"
+        else:
+            resume_status = "unknown"
+    backend = str(event_metadata.get("backend") or "unknown").strip() or "unknown"
+    scope = str(event_metadata.get("scope") or "unknown").strip() or "unknown"
+    durable = bool(event_metadata.get("durable", False))
     event_metadata.update(
         {
             "run_id": str(run_id),
             "checkpoint_id": str(checkpoint_id),
             "framework": str(framework),
-            "framework_ref": dict(framework_ref),
+            "framework_ref": framework_ref_dict,
             "phase": str(phase or ""),
+            "is_resumable": is_resumable,
+            "is_terminal": is_terminal,
+            "resume_status": resume_status,
+            "resume_disabled_reason": str(event_metadata.get("resume_disabled_reason") or ""),
+            "next_node": str(event_metadata.get("next_node") or next_node or ""),
+            "stage_key": str(event_metadata.get("stage_key") or ""),
+            "stage_name": str(
+                event_metadata.get("stage_name")
+                or event_metadata.get("stage")
+                or event_metadata.get("title")
+                or ""
+            ),
+            "stage_index": event_metadata.get("stage_index"),
+            "total_stages": event_metadata.get("total_stages"),
+            "backend": backend,
+            "scope": scope,
+            "durable": durable,
+            "artifact_preview": event_metadata.get("artifact_preview") or {},
         }
     )
     return await append_conversation_event(
@@ -2595,6 +2638,14 @@ async def append_run_checkpoint_event(
             "run_id": str(run_id),
             "checkpoint_id": str(checkpoint_id),
             "framework": str(framework),
+            "is_resumable": is_resumable,
+            "is_terminal": is_terminal,
+            "resume_status": resume_status,
+            "resume_disabled_reason": event_metadata["resume_disabled_reason"],
+            "next_node": event_metadata["next_node"],
+            "backend": backend,
+            "scope": scope,
+            "durable": durable,
             **({"phase": str(phase)} if phase else {}),
         },
         metadata=event_metadata,

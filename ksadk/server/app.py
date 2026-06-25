@@ -888,6 +888,10 @@ class ListSessionCheckpointsActionRequest(BaseModel):
     AgentId: str
     SessionId: str
     RunId: Optional[str] = None
+    OnlyResumable: bool = False
+    Framework: Optional[str] = None
+    Offset: Optional[int] = Field(None, ge=0)
+    Limit: Optional[int] = Field(None, ge=1, le=500)
 
 
 class ListToolReceiptsActionRequest(BaseModel):
@@ -1113,6 +1117,37 @@ def _checkpoint_event_to_action_payload(event: SessionEvent) -> dict[str, Any] |
     framework_ref = metadata.get("framework_ref")
     if not run_id or not checkpoint_id or not framework or not isinstance(framework_ref, Mapping):
         return None
+    next_node = str(metadata.get("next_node") or "").strip()
+    if not next_node:
+        langgraph_ref = framework_ref.get("langgraph")
+        if isinstance(langgraph_ref, Mapping):
+            next_node = str(langgraph_ref.get("next_node") or "").strip()
+    is_terminal = bool(metadata.get("is_terminal", False))
+    is_resumable_raw = metadata.get("is_resumable")
+    is_resumable = is_resumable_raw if isinstance(is_resumable_raw, bool) else None
+    backend = str(metadata.get("backend") or "unknown").strip() or "unknown"
+    scope = str(metadata.get("scope") or "unknown").strip() or "unknown"
+    durable = bool(metadata.get("durable", False))
+    disabled_reason = str(metadata.get("resume_disabled_reason") or "").strip()
+    if is_terminal:
+        is_resumable = False
+        disabled_reason = disabled_reason or "该 checkpoint 已是终态；可选择更早恢复点重跑"
+    if backend == "memory" or scope == "process_local":
+        is_resumable = False
+        disabled_reason = disabled_reason or "进程内 checkpoint 不能跨实例恢复"
+    resume_status = str(metadata.get("resume_status") or "").strip()
+    if not resume_status:
+        if is_resumable is True:
+            resume_status = "resumable"
+        elif is_resumable is False:
+            resume_status = "disabled"
+        else:
+            resume_status = "unknown"
+    if resume_status == "disabled" and not disabled_reason:
+        disabled_reason = "该 checkpoint 不可恢复"
+    artifact_preview = metadata.get("artifact_preview")
+    if not isinstance(artifact_preview, Mapping):
+        artifact_preview = {}
     payload = {
         "EventId": event.id,
         "SessionId": event.session_id,
@@ -1125,6 +1160,20 @@ def _checkpoint_event_to_action_payload(event: SessionEvent) -> dict[str, Any] |
         "FrameworkRef": dict(framework_ref),
         "Phase": str(metadata.get("phase") or ""),
         "Metadata": metadata,
+        "IsResumable": is_resumable,
+        "ResumeStatus": resume_status,
+        "IsTerminal": is_terminal,
+        "ResumeDisabledReason": disabled_reason,
+        "NextNode": next_node,
+        "StageKey": str(metadata.get("stage_key") or ""),
+        "StageName": str(metadata.get("stage_name") or metadata.get("stage") or metadata.get("title") or ""),
+        "StageIndex": metadata.get("stage_index"),
+        "TotalStages": metadata.get("total_stages"),
+        "Backend": backend,
+        "Scope": scope,
+        "Durable": durable,
+        "CreatedAt": event.timestamp,
+        "ArtifactPreview": dict(artifact_preview),
     }
     stage = str(metadata.get("stage") or metadata.get("title") or "").strip()
     summary = str(metadata.get("summary") or metadata.get("description") or "").strip()
@@ -1210,10 +1259,18 @@ def _build_checkpoint_resume_preview(
         "Checkpoint": dict(checkpoint),
         "Capabilities": {
             "Checkpoints": True,
-            "CheckpointResume": True,
+            "CheckpointResume": checkpoint.get("IsResumable") is not False,
             "ToolReceipts": True,
             "IdempotentToolReplay": True,
         },
+        "CanResume": checkpoint.get("IsResumable") is not False,
+        "Reason": str(checkpoint.get("ResumeDisabledReason") or ""),
+        "NextNode": str(checkpoint.get("NextNode") or ""),
+        "ExpectedAction": (
+            "resume_from_checkpoint"
+            if checkpoint.get("IsResumable") is True
+            else ("preview_required" if checkpoint.get("ResumeStatus") == "unknown" else "disabled")
+        ),
         "ToolReceipts": receipts,
         "Risk": {
             "Level": risk_level,
@@ -1227,6 +1284,20 @@ def _build_checkpoint_resume_preview(
             "Phase": str(checkpoint.get("Phase") or ""),
             "ToolReceiptCount": len(receipts),
         },
+    }
+
+
+def _checkpoint_resume_disabled_detail(checkpoint: Mapping[str, Any]) -> dict[str, Any] | None:
+    if checkpoint.get("IsResumable") is not False:
+        return None
+    reason = str(checkpoint.get("ResumeDisabledReason") or "").strip() or "Checkpoint is not resumable"
+    return {
+        "code": "checkpoint_not_resumable",
+        "reason": reason,
+        "checkpoint_id": str(checkpoint.get("CheckpointId") or ""),
+        "run_id": str(checkpoint.get("RunId") or ""),
+        "resume_status": str(checkpoint.get("ResumeStatus") or "disabled"),
+        "is_terminal": bool(checkpoint.get("IsTerminal")),
     }
 
 
@@ -1440,6 +1511,24 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
         framework = str(getattr(detection_type, "value", detection_type) or "").strip().lower()
     workspace_enabled = workspace_files_enabled(default=True)
     ui_spec = _resolve_agent_ui_spec()
+    runtime_capabilities = (
+        runner.get_runtime_capabilities()
+        if runner and callable(getattr(runner, "get_runtime_capabilities", None))
+        else {}
+    )
+    checkpoint_resume_capability = {
+        "Supported": bool(
+            (runtime_capabilities.get("ResumeRun") or {}).get("Supported")
+            if isinstance(runtime_capabilities, Mapping)
+            else False
+        ),
+        "Checkpoint": (runtime_capabilities.get("Checkpoint") or {})
+        if isinstance(runtime_capabilities, Mapping)
+        else {},
+        "ResumeRun": (runtime_capabilities.get("ResumeRun") or {})
+        if isinstance(runtime_capabilities, Mapping)
+        else {},
+    }
     return _action_response(
         "GetAgentUiBootstrap",
         {
@@ -1457,6 +1546,8 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
                 "Thinking": True,
                 "StopRun": True,
                 "ResumeRun": True,
+                "RuntimeCapabilities": runtime_capabilities,
+                "CheckpointResumeCapability": checkpoint_resume_capability,
                 "RunLifecycle": {
                     "Enabled": True,
                     "Resume": True,
@@ -1569,6 +1660,7 @@ async def list_session_checkpoints_action(request: ListSessionCheckpointsActionR
         raise HTTPException(status_code=404, detail="Session not found")
 
     run_id_filter = str(request.RunId or "").strip()
+    framework_filter = str(request.Framework or "").strip().lower()
     checkpoints: list[dict[str, Any]] = []
     for event in await service.get_events(request.SessionId):
         checkpoint = _checkpoint_event_to_action_payload(event)
@@ -1576,11 +1668,26 @@ async def list_session_checkpoints_action(request: ListSessionCheckpointsActionR
             continue
         if run_id_filter and checkpoint["RunId"] != run_id_filter:
             continue
+        if framework_filter and str(checkpoint["Framework"]).lower() != framework_filter:
+            continue
+        if request.OnlyResumable and checkpoint.get("IsResumable") is not True:
+            continue
         checkpoints.append(checkpoint)
+    total = len(checkpoints)
+    offset = int(request.Offset or 0)
+    if request.Limit is not None:
+        checkpoints = checkpoints[offset : offset + int(request.Limit)]
+    elif offset:
+        checkpoints = checkpoints[offset:]
 
     return _action_response(
         "ListSessionCheckpoints",
-        {"Checkpoints": checkpoints},
+        {
+            "Checkpoints": checkpoints,
+            "Total": total,
+            "Offset": offset,
+            "Limit": request.Limit if request.Limit is not None else len(checkpoints),
+        },
     )
 
 
@@ -1653,6 +1760,41 @@ async def resume_run_action(request: ResumeRunActionRequest):
     )
     if checkpoint is None:
         raise HTTPException(status_code=404, detail="Checkpoint not found")
+    disabled_detail = _checkpoint_resume_disabled_detail(checkpoint)
+    if disabled_detail is not None:
+        if disabled_detail.get("is_terminal"):
+            resume_attempt_id = str(request.ResumeAttemptId or f"resume_{uuid.uuid4().hex}")
+            invocation_id = str(request.InvocationId or resume_attempt_id)
+            await conversation.append_run_resume_event(
+                session_id=request.SessionId,
+                author=request.AgentId,
+                run_id=str(request.RunId),
+                checkpoint_id=str(request.CheckpointId),
+                resume_attempt_id=resume_attempt_id,
+                framework=checkpoint["Framework"],
+                framework_ref=checkpoint["FrameworkRef"],
+                invocation_id=invocation_id,
+                session_service_provider=resolve_session_service,
+            )
+            await conversation.append_run_status_event(
+                session_id=request.SessionId,
+                author=request.AgentId,
+                status="completed",
+                invocation_id=invocation_id,
+                detail="resume_noop_terminal_checkpoint",
+                session_service_provider=resolve_session_service,
+            )
+            return _action_response(
+                "ResumeRun",
+                {
+                    "status": "noop",
+                    "Reason": disabled_detail["reason"],
+                    "CheckpointId": disabled_detail["checkpoint_id"],
+                    "RunId": disabled_detail["run_id"],
+                    "ResumeAttemptId": resume_attempt_id,
+                },
+            )
+        raise HTTPException(status_code=409, detail=disabled_detail)
 
     resume_input = {
         "type": "agentengine.resume_checkpoint",
