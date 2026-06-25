@@ -60,6 +60,36 @@ def _load_agentengine_config(agent_path: Path) -> dict:
     return {}
 
 
+def _project_dotenv_values(agent_path: Path) -> dict[str, str]:
+    env_path = agent_path / ".env"
+    if not env_path.exists():
+        return {}
+    try:
+        from dotenv import dotenv_values
+    except ImportError:
+        return {}
+    values: dict[str, str] = {}
+    for key, value in dotenv_values(env_path, encoding="utf-8-sig").items():
+        if key and value is not None:
+            values[str(key)] = str(value)
+    return values
+
+
+def _explicit_env_names_excluding_project_dotenv(
+    names: tuple[str, ...],
+    project_dotenv: dict[str, str],
+) -> set[str]:
+    explicit: set[str] = set()
+    for name in names:
+        current = os.environ.get(name)
+        if current is None:
+            continue
+        if project_dotenv.get(name) == current:
+            continue
+        explicit.add(name)
+    return explicit
+
+
 def _configure_custom_ui_env(agent_path: Path) -> str:
     config = _load_agentengine_config(agent_path)
     if str(config.get("ui_profile") or "").strip().lower() != "custom":
@@ -146,12 +176,15 @@ def web(agent_dir: str, port: int, model: str, no_open: bool):
     if model:
         command_args.extend(["--model", model])
     reexec_with_project_venv_if_needed(agent_path, command_args)
-    explicit_session_env_names = {
-        name for name in (*_STM_ENV_NAMES, *_SESSION_ENV_NAMES) if name in os.environ
-    }
-    explicit_checkpoint_env_names = {
-        name for name in _CHECKPOINT_ENV_NAMES if name in os.environ
-    }
+    project_dotenv = _project_dotenv_values(agent_path)
+    explicit_session_env_names = _explicit_env_names_excluding_project_dotenv(
+        (*_STM_ENV_NAMES, *_SESSION_ENV_NAMES),
+        project_dotenv,
+    )
+    explicit_checkpoint_env_names = _explicit_env_names_excluding_project_dotenv(
+        _CHECKPOINT_ENV_NAMES,
+        project_dotenv,
+    )
 
     print_title("启动本地调试 Web UI")
     print_kv("项目目录", str(agent_path))

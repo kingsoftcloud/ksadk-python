@@ -1707,6 +1707,66 @@ def test_cmd_web_overrides_project_dotenv_postgres_session_for_local_debug(
     assert "KSADK_LANGGRAPH_CHECKPOINT_DSN" not in os.environ
 
 
+def test_cmd_web_overrides_dotenv_loaded_before_web_command(monkeypatch, tmp_path):
+    runner = CliRunner()
+    fake_runner = _UiRunner()
+    project_dir = tmp_path / "demo-langgraph-agent"
+    project_dir.mkdir()
+    dotenv_text = "\n".join(
+        [
+            "KSADK_SESSION_BACKEND=postgres",
+            "KSADK_SESSION_DSN=postgresql://ksadk:secret@db.example.test/session",
+            "KSADK_LANGGRAPH_CHECKPOINT_DSN=postgresql://ksadk:secret@db.example.test/checkpoints",
+        ]
+    )
+    (project_dir / ".env").write_text(dotenv_text, encoding="utf-8")
+
+    class _Detector:
+        def __init__(self, path: str):
+            self.path = path
+
+        def detect(self):
+            return SimpleNamespace(
+                type=SimpleNamespace(value="langgraph"),
+                name="demo-agent",
+                entry_point="agent.py",
+            )
+
+    import ksadk.cli.cmd_web as cmd_web_module
+
+    monkeypatch.setenv("KSADK_SESSION_BACKEND", "postgres")
+    monkeypatch.setenv("KSADK_SESSION_DSN", "postgresql://ksadk:secret@db.example.test/session")
+    monkeypatch.setenv("KSADK_LANGGRAPH_CHECKPOINT_DSN", "postgresql://ksadk:secret@db.example.test/checkpoints")
+    monkeypatch.delenv("KSADK_SESSION_PATH", raising=False)
+    monkeypatch.delenv("KSADK_CHECKPOINT_BACKEND", raising=False)
+    monkeypatch.delenv("KSADK_CHECKPOINT_PATH", raising=False)
+    monkeypatch.delenv("AGENTENGINE_UI_DIR", raising=False)
+    monkeypatch.delenv("KSADK_PROJECT_DIR", raising=False)
+    monkeypatch.setattr(cmd_web_module, "FrameworkDetector", _Detector, raising=False)
+    monkeypatch.setattr(cmd_web_module, "setup_environment", lambda path: None, raising=False)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_web.create_runner",
+        lambda result, project_dir: fake_runner,
+        raising=False,
+    )
+    monkeypatch.chdir(project_dir)
+
+    result = runner.invoke(cmd_web_module.web, [str(project_dir), "--port", "8899"])
+
+    assert result.exit_code == 0, result.output
+    assert fake_runner.run_server_calls == [8899]
+    assert os.environ["KSADK_SESSION_BACKEND"] == "local"
+    assert os.environ["KSADK_SESSION_PATH"] == str(
+        project_dir / ".agentengine" / "ui" / "sessions.sqlite"
+    )
+    assert "KSADK_SESSION_DSN" not in os.environ
+    assert os.environ["KSADK_CHECKPOINT_BACKEND"] == "sqlite"
+    assert os.environ["KSADK_CHECKPOINT_PATH"] == str(
+        project_dir / ".agentengine" / "ui" / "checkpoints.sqlite"
+    )
+    assert "KSADK_LANGGRAPH_CHECKPOINT_DSN" not in os.environ
+
+
 def test_cmd_web_exports_custom_ui_config_and_opens_custom_path(monkeypatch, tmp_path):
     runner = CliRunner()
     fake_runner = _UiRunner()
