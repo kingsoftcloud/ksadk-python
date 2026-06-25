@@ -38,6 +38,7 @@ _CHECKPOINT_ENV_NAMES = (
     "KSADK_CHECKPOINT_PATH",
     "KSADK_LANGGRAPH_CHECKPOINT_DSN",
 )
+_LOCAL_UI_ENV_NAMES = ("AGENTENGINE_UI_DIR",)
 
 
 def _normalize_ui_path(path: str | None) -> str:
@@ -213,6 +214,10 @@ def web(agent_dir: str, port: int, model: str, no_open: bool):
         _CHECKPOINT_ENV_NAMES,
         project_dotenv,
     )
+    explicit_local_ui_env_names = _explicit_env_names_excluding_project_dotenv(
+        _LOCAL_UI_ENV_NAMES,
+        project_dotenv,
+    )
 
     print_title("启动本地调试 Web UI")
     print_kv("项目目录", str(agent_path))
@@ -245,7 +250,11 @@ def web(agent_dir: str, port: int, model: str, no_open: bool):
 
     # 本地 UI 的持久化目录与项目根绑定
     os.environ["KSADK_PROJECT_DIR"] = str(agent_path)
-    os.environ.setdefault("AGENTENGINE_UI_DIR", str(agent_path / ".agentengine" / "ui"))
+    local_ui_dir = str(agent_path / ".agentengine" / "ui")
+    if "AGENTENGINE_UI_DIR" not in explicit_local_ui_env_names:
+        os.environ["AGENTENGINE_UI_DIR"] = local_ui_dir
+    else:
+        os.environ.setdefault("AGENTENGINE_UI_DIR", local_ui_dir)
     _default_project_stm_if_unset(
         result.type.value,
         agent_path,
