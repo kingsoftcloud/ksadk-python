@@ -213,6 +213,77 @@ def test_base_runner_does_not_invent_usage_from_empty_metadata():
     assert runner._extract_usage(SimpleNamespace(response_metadata={"token_usage": {}})) == {}
 
 
+def test_base_runner_default_runtime_capabilities_are_explicitly_unsupported():
+    detection = _write_detection(FrameworkType.LANGCHAIN)
+    runner = _StubRunner(detection, "/workspace/demo")
+
+    capabilities = runner.get_runtime_capabilities()
+
+    assert capabilities["Framework"] == "langchain"
+    assert capabilities["CancelRun"]["Supported"] is False
+    assert capabilities["CancelRun"]["RequestResults"] == ["unsupported"]
+    assert capabilities["Checkpoint"]["Supported"] is False
+    assert capabilities["Checkpoint"]["Backend"] == "none"
+    assert capabilities["Checkpoint"]["Durable"] is False
+    assert capabilities["ResumeRun"]["Supported"] is False
+    assert capabilities["SessionContinuity"]["Supported"] is True
+    assert capabilities["SessionContinuity"]["Type"] == "semantic_replay"
+
+
+def test_base_runner_runtime_capabilities_detect_cancel_override():
+    class _CancellableRunner(_StubRunner):
+        def request_cancel(self, invocation_id: str) -> str:
+            return "accepted"
+
+    runner = _CancellableRunner(_write_detection(FrameworkType.LANGCHAIN), "/workspace/demo")
+
+    capabilities = runner.get_runtime_capabilities()
+
+    assert capabilities["CancelRun"]["Supported"] is True
+    assert capabilities["CancelRun"]["RequestResults"] == ["accepted", "not_found", "unsupported"]
+
+
+def test_langgraph_runner_checkpoint_ref_extracts_next_node():
+    from ksadk.runners.langgraph_runner import LangGraphRunner
+
+    detection = _write_detection(FrameworkType.LANGGRAPH)
+    runner = LangGraphRunner(detection, "/workspace/demo")
+    state = SimpleNamespace(
+        config={
+            "configurable": {
+                "thread_id": "sess-1",
+                "checkpoint_ns": "ns",
+                "checkpoint_id": "ckpt-1",
+            }
+        },
+        next=("fetch_sources",),
+    )
+
+    framework_ref = runner._checkpoint_ref_from_state(state)
+
+    assert framework_ref["langgraph"]["thread_id"] == "sess-1"
+    assert framework_ref["langgraph"]["checkpoint_id"] == "ckpt-1"
+    assert framework_ref["langgraph"]["checkpoint_ns"] == "ns"
+    assert framework_ref["langgraph"]["next_node"] == "fetch_sources"
+    assert framework_ref["langgraph"]["next_nodes"] == ["fetch_sources"]
+
+
+def test_adk_runner_declares_native_session_continuity_without_checkpoint_resume(tmp_path):
+    from ksadk.runners.adk_runner import ADKRunner
+
+    runner = ADKRunner(_write_detection(FrameworkType.ADK), str(tmp_path))
+    runner._short_term_memory = object()
+
+    capabilities = runner.get_runtime_capabilities()
+
+    assert capabilities["Framework"] == "adk"
+    assert capabilities["SessionContinuity"]["Supported"] is True
+    assert capabilities["SessionContinuity"]["Type"] == "native_session"
+    assert capabilities["Checkpoint"]["Supported"] is False
+    assert capabilities["ResumeRun"]["Supported"] is False
+    assert "ADK native session" in capabilities["ResumeRun"]["Reason"]
+
+
 def test_create_runner_uses_custom_runner_class(monkeypatch, tmp_path):
     runner_class = _install_runner_module(monkeypatch, "demo_agent.runner", "CustomRunner")
     detection = DetectionResult(

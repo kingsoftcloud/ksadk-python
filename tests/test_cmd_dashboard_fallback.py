@@ -409,6 +409,29 @@ def test_dashboard_open_force_new_passes_through(monkeypatch):
     assert captured["force_new"] is True
 
 
+def test_dashboard_open_private_expires_supports_one_year(monkeypatch):
+    runner = CliRunner()
+    captured = {}
+
+    async def _fake_create(*_args, **kwargs):
+        captured.update(kwargs)
+        return await _fake_create_access_link()
+
+    monkeypatch.setattr(cmd_dashboard, "load_state", lambda _cwd: {})
+    monkeypatch.setattr(cmd_dashboard, "_resolve_agent_detail", _fake_resolve_agent_detail)
+    monkeypatch.setattr(cmd_dashboard, "_create_dashboard_access_link", _fake_create)
+    monkeypatch.setattr(cmd_dashboard.webbrowser, "open", lambda _url: None)
+
+    result = runner.invoke(
+        cmd_dashboard.dashboard,
+        ["open", "ar-test", "--expires-seconds", "31536000", "--no-open"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["link_type"] == "private"
+    assert captured["expires_seconds"] == 31536000
+
+
 def test_dashboard_open_routes_openclaw_to_gateway_short_link(tmp_path: Path, monkeypatch):
     runner = CliRunner()
     opened = {}

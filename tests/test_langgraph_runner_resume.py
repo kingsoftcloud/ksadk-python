@@ -190,6 +190,37 @@ class _FinalOutputUsageStreamingAgent(_DummyAgent):
         }
 
 
+class _CheckpointResumeUpdatesAgent(_DummyAgent):
+    def __init__(self):
+        super().__init__()
+        self.last_astream_stream_mode = None
+        self.astream_events_called = False
+
+    async def astream(self, state, config=None, stream_mode=None):
+        self.last_astream_state = state
+        self.last_astream_config = config
+        self.last_astream_stream_mode = stream_mode
+        yield {"search": {"answer": "resumed via updates"}}
+
+    async def astream_events(self, state, version="v2", config=None):
+        self.astream_events_called = True
+        if False:
+            yield {}
+
+    def get_state(self, config):
+        del config
+        return SimpleNamespace(
+            values={"answer": "resumed via updates"},
+            config={
+                "configurable": {
+                    "thread_id": "sess-1",
+                    "checkpoint_id": "ckpt-after",
+                }
+            },
+            next=("report",),
+        )
+
+
 def _make_runner(module=None) -> LangGraphRunner:
     detection = SimpleNamespace(entry_point="src/agent.py", agent_variable="root_agent")
     runner = LangGraphRunner(detection, ".")
@@ -250,6 +281,12 @@ def _make_usage_state_streaming_runner() -> LangGraphRunner:
 def _make_final_output_usage_streaming_runner() -> LangGraphRunner:
     runner = _make_runner()
     runner._agent = _FinalOutputUsageStreamingAgent()
+    return runner
+
+
+def _make_checkpoint_resume_updates_runner() -> LangGraphRunner:
+    runner = _make_runner()
+    runner._agent = _CheckpointResumeUpdatesAgent()
     return runner
 
 
@@ -401,15 +438,14 @@ async def test_invoke_reports_latest_langgraph_checkpoint_ref_from_state_config(
 
     result = await runner.invoke({"session_id": "tenant-a:agent-b:sess-1", "input": "hello"})
 
-    assert result["metadata"]["agentengine"] == {
-        "framework": "langgraph",
-        "framework_ref": {
-            "langgraph": {
-                "thread_id": "tenant-a:agent-b:sess-1",
-                "checkpoint_id": "ckpt-after",
-            }
-        },
+    agentengine_metadata = result["metadata"]["agentengine"]
+    assert agentengine_metadata["framework"] == "langgraph"
+    assert agentengine_metadata["framework_ref"]["langgraph"] == {
+        "thread_id": "tenant-a:agent-b:sess-1",
+        "checkpoint_id": "ckpt-after",
     }
+    assert agentengine_metadata["is_terminal"] is True
+    assert agentengine_metadata["is_resumable"] is False
 
 
 @pytest.mark.asyncio
@@ -445,15 +481,14 @@ async def test_invoke_reports_latest_langgraph_checkpoint_ref_from_async_state_c
 
     result = await runner.invoke({"session_id": "tenant-a:agent-b:sess-async", "input": "hello"})
 
-    assert result["metadata"]["agentengine"] == {
-        "framework": "langgraph",
-        "framework_ref": {
-            "langgraph": {
-                "thread_id": "tenant-a:agent-b:sess-async",
-                "checkpoint_id": "ckpt-async",
-            }
-        },
+    agentengine_metadata = result["metadata"]["agentengine"]
+    assert agentengine_metadata["framework"] == "langgraph"
+    assert agentengine_metadata["framework_ref"]["langgraph"] == {
+        "thread_id": "tenant-a:agent-b:sess-async",
+        "checkpoint_id": "ckpt-async",
     }
+    assert agentengine_metadata["is_terminal"] is True
+    assert agentengine_metadata["is_resumable"] is False
 
 
 @pytest.mark.asyncio
@@ -554,6 +589,35 @@ async def test_stream_checkpoint_resume_uses_checkpoint_id_and_none_input():
 
 
 @pytest.mark.asyncio
+async def test_stream_checkpoint_resume_prefers_astream_updates_over_events():
+    runner = _make_checkpoint_resume_updates_runner()
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "sess-1",
+                "checkpoint_resume": True,
+                "framework_ref": {
+                    "langgraph": {
+                        "checkpoint_id": "ckpt-before",
+                    }
+                },
+            }
+        )
+    ]
+
+    assert runner._agent.last_astream_state is None
+    assert runner._agent.last_astream_stream_mode == "updates"
+    assert runner._agent.astream_events_called is False
+    assert {"type": "final", "output": "resumed via updates"} in chunks
+    checkpoint = chunks[-1]
+    assert checkpoint["type"] == "checkpoint"
+    assert checkpoint["metadata"]["agentengine"]["framework_ref"]["langgraph"]["checkpoint_id"] == "ckpt-after"
+    assert checkpoint["metadata"]["agentengine"]["next_node"] == "report"
+
+
+@pytest.mark.asyncio
 async def test_stream_reports_latest_langgraph_checkpoint_ref_from_state_config():
     runner = _make_streaming_runner()
     runner._agent.state_config = {
@@ -573,20 +637,16 @@ async def test_stream_reports_latest_langgraph_checkpoint_ref_from_state_config(
         )
     ]
 
-    assert chunks[-1] == {
-        "type": "checkpoint",
-        "metadata": {
-            "agentengine": {
-                "framework": "langgraph",
-                "framework_ref": {
-                    "langgraph": {
-                        "thread_id": "tenant-a:agent-b:sess-1",
-                        "checkpoint_id": "ckpt-stream",
-                    }
-                },
-            }
-        },
+    checkpoint = chunks[-1]
+    assert checkpoint["type"] == "checkpoint"
+    agentengine_metadata = checkpoint["metadata"]["agentengine"]
+    assert agentengine_metadata["framework"] == "langgraph"
+    assert agentengine_metadata["framework_ref"]["langgraph"] == {
+        "thread_id": "tenant-a:agent-b:sess-1",
+        "checkpoint_id": "ckpt-stream",
     }
+    assert agentengine_metadata["is_terminal"] is True
+    assert agentengine_metadata["is_resumable"] is False
 
 
 @pytest.mark.asyncio

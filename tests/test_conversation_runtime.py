@@ -3249,6 +3249,15 @@ async def test_append_run_checkpoint_and_resume_events(monkeypatch):
     assert checkpoint.metadata["run_id"] == "run-1"
     assert checkpoint.metadata["checkpoint_id"] == "ckpt-1"
     assert checkpoint.metadata["framework_ref"]["langgraph"]["thread_id"] == "tenant:agent:sess-1"
+    assert checkpoint.metadata["is_terminal"] is False
+    assert checkpoint.metadata["is_resumable"] is None
+    assert checkpoint.metadata["resume_status"] == "unknown"
+    assert checkpoint.metadata["resume_disabled_reason"] == ""
+    assert checkpoint.metadata["backend"] == "unknown"
+    assert checkpoint.metadata["scope"] == "unknown"
+    assert checkpoint.metadata["durable"] is False
+    assert checkpoint.content["is_terminal"] is False
+    assert checkpoint.content["resume_status"] == "unknown"
     assert resume.event_type == "run_resume"
     assert resume.metadata["resume_attempt_id"] == "resume-1"
 

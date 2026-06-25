@@ -142,6 +142,44 @@ class ADKRunner(BaseRunner):
     def get_session_adapter(self):
         return ADKSessionAdapter()
 
+    def describe_checkpoint_capability(self) -> dict[str, Any]:
+        return {
+            "Supported": False,
+            "Backend": "none",
+            "Scope": "unknown",
+            "Durable": False,
+            "SharedAcrossPods": False,
+            "Reason": "ADK native session can continue conversation context, but KSADK does not expose ADK framework checkpoint restore points",
+        }
+
+    def get_runtime_capabilities(self) -> dict[str, Any]:
+        capabilities = super().get_runtime_capabilities()
+        has_native_session = bool(getattr(self, "_short_term_memory", None)) or any(
+            str(os.getenv(name) or "").strip()
+            for name in (
+                "KSADK_ADK_SESSION_BACKEND",
+                "KSADK_ADK_SESSION_PATH",
+                "KSADK_ADK_SESSION_URL",
+                "KSADK_STM_BACKEND",
+                "KSADK_STM_PATH",
+                "KSADK_STM_URL",
+                "KSADK_STM_DB_PATH",
+                "KSADK_STM_DB_URL",
+                "KSADK_SESSION_BACKEND",
+                "KSADK_SESSION_DSN",
+            )
+        )
+        capabilities["SessionContinuity"] = {
+            "Supported": True,
+            "Type": "native_session" if has_native_session else "semantic_replay",
+            "Level": "semantic",
+            "Reason": "ADK native session can continue conversation context"
+            if has_native_session
+            else "conversation transcript can be replayed",
+        }
+        capabilities["ResumeRun"]["Reason"] = capabilities["Checkpoint"]["Reason"]
+        return capabilities
+
     def _init_long_term_memory(self):
         """从环境变量初始化长期记忆
 
