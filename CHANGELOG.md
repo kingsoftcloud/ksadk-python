@@ -13,10 +13,39 @@
 - **控制台 checkpoint 查询 API**：升级 `ListSessionCheckpoints`，返回分页恢复点列表、可恢复性、终态、下一节点、阶段进度、创建时间、恢复审计字段和产物摘要。
 - **长任务事件订阅重连契约**：`SubscribeRunEvents` 的 `AfterSeqId` 续订行为增加自动化覆盖，客户端可在 5 分钟服务端保护超时后重连，不重复消费已读事件。
 - **CancelRun 边界收敛**：明确 KSADK 支持 detached stream 取消与 runner 协作式 `request_cancel()`，不伪装成 LangGraph 节点内强制中断。
+- **自定义 UI 与本地 Web 调试产品化**：`agentengine web` 支持自动探测项目声明的 custom UI bundle，`GetAgentUiBootstrap` 返回 `CustomUI`、`RuntimeCapabilities` 和 checkpoint resume capability，便于控制台和项目自研 UI 共用同一能力协议。
+- **本地 session/checkpoint 默认策略优化**：本地 `agentengine web` 默认使用 local session backend；LangGraph checkpoint 默认走 SQLite，项目 `.env` 作为本地调试默认配置来源，并规范化 checkpoint backend 配置，降低本地恢复链路对 PostgreSQL 的依赖。
+- **LanceDB memory backend 支持**：新增/完善 LanceDB memory backend provider、manifest/schema/registry/render 契约，OpenClaw 可通过统一 memory backend manifest 接入 LanceDB。
+
+### 变更
+
+- `ListSessionCheckpoints` 成为唯一 checkpoint 列表 action；不再新增单独的 `ListCheckpoints` 正向接口，避免控制台接入两个语义重复的入口。
+- checkpoint descriptor 新增 `LastResumedAt`、`ResumeCount`、`ReplayAllowed`、`ExpiresAt`、`CheckpointStatus`，并由服务端基于 `run_resume` 事件聚合恢复审计状态。
+- `PreviewCheckpointResume` 复用同一份 checkpoint descriptor，恢复确认弹窗可直接展示是否已恢复过、是否允许重复恢复、是否过期、下一节点和恢复风险。
+- `ResumeRun` 在真正调用 runner 前执行同一套 checkpoint 禁用规则；过期 checkpoint、`replay_allowed=false` 且已恢复过的 checkpoint、process-local/memory checkpoint 会返回 `409 checkpoint_not_resumable`，不会只停留在 UI 禁用。
+- `ResumeRun` 保持 `(SessionId, RunId)` 维度 detached resume 互斥；同一 run 重复恢复会返回 `409 resume_already_running`。
+- `LangGraphRunner` checkpoint resume 优先使用 `astream(None, stream_mode="updates")`，并将 `StateSnapshot.next` 标准化为 `next_node` / `next_nodes`。
+- `BaseRunner` / `ADKRunner` / `LangGraphRunner` 补齐 runtime capability 描述，默认 runner 明确声明 checkpoint/resume/cancel unsupported，ADK 暂声明 forward-only/后续桥接。
+- `agentengine web` 本地启动会为 local session、SQLite checkpoint、项目 `.env`、项目 UI bundle 路径注入更一致的默认值，并支持覆盖 project UI dir。
+- 本地 Web 启动兼容 Windows 无 `termios` 环境。
+- 同步 ksadk-web 静态资源与 reasoning control 文案/配置，保证本地 UI 与 Hosted UI 的模型、思考能力和 custom UI bootstrap 行为一致。
+- Hermes dashboard open、本地 dry-run bootstrap defaults、OpenClaw terminal session 参数继续保持和 0.6.6 runtime model policy 兼容。
+- LanceDB memory backend manifest 语义收敛，provider 注册、渲染、schema 字段和 OpenClaw 配置生成保持一致。
+
+### 修复
+
+- 修复本地 `agentengine web` 因 PostgreSQL session backend 不可用导致 `CreateSession` / `ListSessions` 503 的问题，本地调试默认回落到 local session。
+- 修复本地 LangGraph checkpoint backend 默认值与 demo/框架路径不一致的问题，默认使用 SQLite checkpoint 以便本地可调试恢复链路。
+- 修复项目 `.env` 没有作为本地 Web 默认配置读取，导致本地调试和远端部署配置表现不一致的问题。
+- 修复自定义 UI bundle 路径解析优先级不足，项目级 `research-ui/dist` 等 bundle 无法被 local web 自动探测的问题。
+- 修复 checkpoint 列表和恢复入口使用不同恢复规则的问题，避免列表/预览显示不可恢复但直接 `ResumeRun` 仍能执行。
+- 修复 LanceDB memory backend manifest 中 provider 字段、schema 和渲染输出不对齐的问题。
 
 ### 测试与发布
 
-- 新增 ResumeMode、ListSessionCheckpoints 分页能力、SubscribeRunEvents 断线续订和 CancelRun 边界回归测试。
+- 新增 ResumeMode、ListSessionCheckpoints 分页/审计字段、PreviewCheckpointResume descriptor、ResumeRun 禁用规则、SubscribeRunEvents 断线续订和 CancelRun 并发边界回归测试。
+- 新增本地 Web UI custom bundle 探测、local session 默认策略、SQLite checkpoint 默认策略、项目 `.env` 读取和 project UI dir 覆盖测试。
+- 新增/更新 LanceDB memory backend manifest、registry、render 和 provider 契约测试。
 - ADK event → checkpoint bridge、`run_async(invocation_id=...)` 接入和 ADK checkpoint descriptor 映射延期到 0.6.8。
 - 公开发布版本从 `0.6.6` 升级到 `0.6.7`，发布前继续执行 `make public-preflight`、sdist/wheel build 和 `twine check`。
 - 镜像构建应固定 `KSADK_PACKAGE_SPEC=ksadk==0.6.7`，再走 staging E2E、GitHub Actions / PyPI Trusted Publishing 和环境门禁。
