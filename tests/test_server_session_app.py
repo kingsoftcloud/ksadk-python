@@ -2707,8 +2707,13 @@ async def test_list_session_checkpoints_is_the_single_checkpoint_listing_endpoin
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
         removed_response = await client.post("/agentengine/api/v1/ListCheckpoints", json=payload)
         response = await client.post("/agentengine/api/v1/ListSessionCheckpoints", json=payload)
+        removed_preview_response = await client.post(
+            "/agentengine/api/v1/PreviewCheckpointResume",
+            json={**payload, "CheckpointId": "ckpt-1"},
+        )
 
     assert removed_response.status_code in {404, 405}
+    assert removed_preview_response.status_code in {404, 405}
     assert response.status_code == 200
     data = response.json()["Data"]
     assert data["Total"] == 3
@@ -2777,7 +2782,7 @@ async def test_list_session_checkpoints_includes_resume_audit_fields(monkeypatch
             json={"AgentId": "demo-agent", "SessionId": "sess-checkpoint-audit"},
         )
         preview_response = await client.post(
-            "/agentengine/api/v1/PreviewCheckpointResume",
+            "/agentengine/api/v1/GetCheckpointResumePreview",
             json={
                 "AgentId": "demo-agent",
                 "SessionId": "sess-checkpoint-audit",
@@ -3106,7 +3111,7 @@ async def test_resume_run_action_rejects_process_local_checkpoint(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_preview_checkpoint_resume_reports_terminal_checkpoint_as_disabled(monkeypatch):
+async def test_get_checkpoint_resume_preview_reports_terminal_checkpoint_as_disabled(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
     service = InMemorySessionService()
@@ -3127,7 +3132,7 @@ async def test_preview_checkpoint_resume_reports_terminal_checkpoint_as_disabled
     transport = httpx.ASGITransport(app=server_app_module.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
         response = await client.post(
-            "/agentengine/api/v1/PreviewCheckpointResume",
+            "/agentengine/api/v1/GetCheckpointResumePreview",
             json={
                 "AgentId": "demo-agent",
                 "SessionId": "sess-preview-terminal",
@@ -3443,7 +3448,7 @@ async def test_append_run_checkpoint_event_deduplicates_same_checkpoint(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_preview_checkpoint_resume_summarizes_checkpoint_and_tool_receipts(monkeypatch):
+async def test_get_checkpoint_resume_preview_summarizes_checkpoint_and_tool_receipts(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
     service = InMemorySessionService()
@@ -3493,7 +3498,7 @@ async def test_preview_checkpoint_resume_summarizes_checkpoint_and_tool_receipts
     transport = httpx.ASGITransport(app=server_app_module.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
         response = await client.post(
-            "/agentengine/api/v1/PreviewCheckpointResume",
+            "/agentengine/api/v1/GetCheckpointResumePreview",
             json={
                 "AgentId": "demo-agent",
                 "SessionId": "sess-preview",

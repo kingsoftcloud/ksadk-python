@@ -21,7 +21,7 @@
 
 - `ListSessionCheckpoints` 成为唯一 checkpoint 列表 action；不再新增单独的 `ListCheckpoints` 正向接口，避免控制台接入两个语义重复的入口。
 - checkpoint descriptor 新增 `LastResumedAt`、`ResumeCount`、`ReplayAllowed`、`ExpiresAt`、`CheckpointStatus`，并由服务端基于 `run_resume` 事件聚合恢复审计状态。
-- `PreviewCheckpointResume` 复用同一份 checkpoint descriptor，恢复确认弹窗可直接展示是否已恢复过、是否允许重复恢复、是否过期、下一节点和恢复风险。
+- `GetCheckpointResumePreview` 复用同一份 checkpoint descriptor，恢复确认弹窗可直接展示是否已恢复过、是否允许重复恢复、是否过期、下一节点和恢复风险。
 - `ResumeRun` 在真正调用 runner 前执行同一套 checkpoint 禁用规则；过期 checkpoint、`replay_allowed=false` 且已恢复过的 checkpoint、process-local/memory checkpoint 会返回 `409 checkpoint_not_resumable`，不会只停留在 UI 禁用。
 - `ResumeRun` 保持 `(SessionId, RunId)` 维度 detached resume 互斥；同一 run 重复恢复会返回 `409 resume_already_running`。
 - `LangGraphRunner` checkpoint resume 优先使用 `astream(None, stream_mode="updates")`，并将 `StateSnapshot.next` 标准化为 `next_node` / `next_nodes`。
@@ -43,7 +43,7 @@
 
 ### 测试与发布
 
-- 新增 ResumeMode、ListSessionCheckpoints 分页/审计字段、PreviewCheckpointResume descriptor、ResumeRun 禁用规则、SubscribeRunEvents 断线续订和 CancelRun 并发边界回归测试。
+- 新增 ResumeMode、ListSessionCheckpoints 分页/审计字段、GetCheckpointResumePreview descriptor、ResumeRun 禁用规则、SubscribeRunEvents 断线续订和 CancelRun 并发边界回归测试。
 - 新增本地 Web UI custom bundle 探测、local session 默认策略、SQLite checkpoint 默认策略、项目 `.env` 读取和 project UI dir 覆盖测试。
 - 新增/更新 LanceDB memory backend manifest、registry、render 和 provider 契约测试。
 - ADK event → checkpoint bridge、`run_async(invocation_id=...)` 接入和 ADK checkpoint descriptor 映射延期到 0.6.8。

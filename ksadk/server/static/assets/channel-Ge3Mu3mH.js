@@ -1,0 +1,1 @@
+import{Dn as e,En as t}from"./MermaidBlock-KbwEsd_1.js";var n=(n,r)=>e.lang.round(t.parse(n)[r]);export{n as t};
