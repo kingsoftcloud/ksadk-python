@@ -268,7 +268,7 @@ def _wait_for_checkpoint(
 def _maybe_preview(client: HostedClient, *, session_id: str, run_id: str, checkpoint_id: str) -> dict[str, Any]:
     try:
         return client.action(
-            "PreviewCheckpointResume",
+            "GetCheckpointResumePreview",
             {
                 "AgentId": client.agent_id,
                 "SessionId": session_id,
