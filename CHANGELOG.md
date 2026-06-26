@@ -16,6 +16,21 @@
 - **自定义 UI 与本地 Web 调试产品化**：`agentengine web` 支持自动探测项目声明的 custom UI bundle，`GetAgentUiBootstrap` 返回 `CustomUI`、`RuntimeCapabilities` 和 checkpoint resume capability，便于控制台和项目自研 UI 共用同一能力协议。
 - **本地 session/checkpoint 默认策略优化**：本地 `agentengine web` 默认使用 local session backend；LangGraph checkpoint 默认走 SQLite，项目 `.env` 作为本地调试默认配置来源，并规范化 checkpoint backend 配置，降低本地恢复链路对 PostgreSQL 的依赖。
 - **LanceDB memory backend 支持**：新增/完善 LanceDB memory backend provider、manifest/schema/registry/render 契约，OpenClaw 可通过统一 memory backend manifest 接入 LanceDB。
+- **云监控可观测性双写**：`setup_tracing()` 自动探测 `CLOUD_MONITOR_*` 环境变量，并行挂载 CloudMonitor OTLP exporter（`Ksc-Appkey` 鉴权）和 CloudMonitor Langfuse SDK CallbackHandler（独立 `TracerProvider`），与自建 Langfuse / 标准 OTLP 互不压制，单条 span 可同时上报自建集群与云监控 trace 平台。
+- **UI 配置体系重构**：`deployment/ui_config.py` 迁移到顶层 `ksadk/ui_config.py`，server 端统一 `_resolve_agent_ui_spec()` 解析 custom/builtin UI，替换原 `StaticFiles` 挂载，支持按 bundle 路径路由静态文件，custom profile 的 `/chat` 路径自动修正为 `/`。
+
+### 新增
+
+- `ResumeRunActionRequest` 新增 `ResumeInstructionEnabled` 和 `ResumeInstruction` 字段，恢复时可附带自定义指令。
+- `model_options.thinking` 为 disabled 时自动向 `extra_body` 注入 `enable_thinking=false` 和 `chat_template_kwargs.enable_thinking=false`，兼容 DeepSeek 等模型；流式输出同步过滤 reasoning 类 output item。
+- `DEFAULT_MODEL_POLICY` 每个模型新增 `reasoning: true` 声明，catalog 输出暴露 `reasoning` 字段，供控制台判断模型是否支持思考能力。
+- `GetAgentUiBootstrap` 返回 `RuntimeCapabilities` 和 `CheckpointResumeCapability`，控制台可据此判断 CancelRun / Checkpoint / ResumeRun / SessionContinuity 能力。
+- Postgres session backend 新增 `KSADK_SESSION_CONNECT_TIMEOUT`（默认 5s），连接失败抛 `SessionBackendUnavailable`、server 返回 503 而非 500；新增 `mask_postgres_session_dsn()` 在日志中脱敏。
+- Serverless 部署时将 `ui_profile` / `ui_path` / `ui_url` / `ui_bundle_path` 注入 pod env，使远端 runtime 可解析 custom UI bundle。
+- `AgentEngineClient.get_client_bootstrap_config()` 新增 `ignore_dry_run` 参数，Hermes / OpenClaw CLI 在 dry-run 模式下也能拉取服务端默认配置。
+- code_builder / container_builder 启动时打印的 env_keys 列表扩展至覆盖 `LANGFUSE_*` / `OTEL_EXPORTER_OTLP_*` / `CLOUD_MONITOR_*` 全部变量，`HEADERS` 类变量同样脱敏；`copytree` ignore 新增 `node_modules` / `.pytest_cache` / `.mypy_cache` / `.ruff_cache`。
+- 新增独立模块 `ksadk/runtime_state.py`（`load_state()` 读取 `.agentengine.state`），避免 server 端导入 deployment 模块。
+- Langfuse exporter 新增 score event 支持：OTel span 上的 `langfuse.score` event 会被转换为 Langfuse score。
 
 ### 变更
 
@@ -31,6 +46,15 @@
 - 同步 ksadk-web 静态资源与 reasoning control 文案/配置，保证本地 UI 与 Hosted UI 的模型、思考能力和 custom UI bootstrap 行为一致。
 - Hermes dashboard open、本地 dry-run bootstrap defaults、OpenClaw terminal session 参数继续保持和 0.6.6 runtime model policy 兼容。
 - LanceDB memory backend manifest 语义收敛，provider 注册、渲染、schema 字段和 OpenClaw 配置生成保持一致。
+- `PreviewCheckpointResume` action 重命名为 `GetCheckpointResumePreview`。
+- `ListSessionCheckpoints` 新增 `OnlyResumable` / `Framework` / `Offset` / `Limit` 过滤参数和 `Total` / `Offset` / `Limit` 返回字段。
+- `ResumeRun` 对终态 checkpoint 返回 noop 响应而非直接拒绝。
+- server 端静态文件路由从 `StaticFiles` 挂载改为 catch-all `/{requested_path:path}` 动态解析。
+- LangGraph runner checkpoint resume 改用 `astream(None, stream_mode="updates")`；checkpoint_ns 不再条件跳过空值。
+- OpenClaw model policy 不再检查 `OPENCLAW_MODEL_CATALOG_JSON` 来决定是否跳过 `OPENAI_MODEL_NAME` 注入。
+- OpenClaw 终端始终使用 `--session` 绑定会话，不再依赖 `OPENCLAW_TERMINAL_RESUME_ENABLED` 开关。
+- Private 链接 `expires-seconds` 上限从 24 小时扩展到 365 天。
+- Hermes dashboard open 传递 `region_source`，区分用户显式指定与默认 region。
 
 ### 修复
 
@@ -46,6 +70,8 @@
 - 新增 ResumeMode、ListSessionCheckpoints 分页/审计字段、GetCheckpointResumePreview descriptor、ResumeRun 禁用规则、SubscribeRunEvents 断线续订和 CancelRun 并发边界回归测试。
 - 新增本地 Web UI custom bundle 探测、local session 默认策略、SQLite checkpoint 默认策略、项目 `.env` 读取和 project UI dir 覆盖测试。
 - 新增/更新 LanceDB memory backend manifest、registry、render 和 provider 契约测试。
+- 新增 CloudMonitor OTLP exporter 并行双写、CloudMonitor Langfuse SDK callback 隔离 provider、token 用量归集（`_prepare_cloud_monitor_spans`）、Langfuse 鉴权 fallback、generic OTLP Langfuse endpoint 自动补 Auth 回归测试，以及本地 HTTP e2e 上报验证。
+- 新增 Runner Langfuse 多 callback、disable-thinking 模型选项透传、Postgres session 超时与降级、UI 配置解析、server session app 与 FastAPI 兼容性回归测试。
 - ADK event → checkpoint bridge、`run_async(invocation_id=...)` 接入和 ADK checkpoint descriptor 映射延期到 0.6.8。
 - 公开发布版本从 `0.6.6` 升级到 `0.6.7`，发布前继续执行 `make public-preflight`、sdist/wheel build 和 `twine check`。
 - 镜像构建应固定 `KSADK_PACKAGE_SPEC=ksadk==0.6.7`，再走 staging E2E、GitHub Actions / PyPI Trusted Publishing 和环境门禁。
