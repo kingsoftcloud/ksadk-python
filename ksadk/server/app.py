@@ -15,6 +15,7 @@ import uuid
 import asyncio
 import zipfile
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, AsyncIterator, Dict, List, Mapping, Optional
 from urllib.parse import quote
@@ -82,6 +83,21 @@ _RUN_TERMINAL_STATUSES = {
     "aborted",
     "interrupted",
 }
+
+
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if raw.endswith("Z"):
+        raw = f"{raw[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 _RESERVED_UI_PATHS = {"/", "/chat", "/build", "/deploy"}
 
 
@@ -1148,6 +1164,23 @@ def _checkpoint_event_to_action_payload(event: SessionEvent) -> dict[str, Any] |
     artifact_preview = metadata.get("artifact_preview")
     if not isinstance(artifact_preview, Mapping):
         artifact_preview = {}
+    resume_count_raw = metadata.get("resume_count")
+    try:
+        resume_count = int(resume_count_raw) if resume_count_raw is not None else 0
+    except (TypeError, ValueError):
+        resume_count = 0
+    last_resumed_at = metadata.get("last_resumed_at")
+    replay_allowed_raw = metadata.get("replay_allowed")
+    replay_allowed = replay_allowed_raw if isinstance(replay_allowed_raw, bool) else True
+    expires_at = metadata.get("expires_at")
+    checkpoint_status = str(metadata.get("checkpoint_status") or "").strip()
+    if not checkpoint_status:
+        if is_terminal:
+            checkpoint_status = "resumed" if resume_count else "terminal"
+        elif is_resumable is False:
+            checkpoint_status = "disabled"
+        else:
+            checkpoint_status = "active"
     payload = {
         "EventId": event.id,
         "SessionId": event.session_id,
@@ -1174,6 +1207,11 @@ def _checkpoint_event_to_action_payload(event: SessionEvent) -> dict[str, Any] |
         "Durable": durable,
         "CreatedAt": event.timestamp,
         "ArtifactPreview": dict(artifact_preview),
+        "LastResumedAt": last_resumed_at,
+        "ResumeCount": resume_count,
+        "ReplayAllowed": replay_allowed,
+        "ExpiresAt": expires_at,
+        "CheckpointStatus": checkpoint_status,
     }
     stage = str(metadata.get("stage") or metadata.get("title") or "").strip()
     summary = str(metadata.get("summary") or metadata.get("description") or "").strip()
@@ -1188,6 +1226,61 @@ def _checkpoint_event_to_action_payload(event: SessionEvent) -> dict[str, Any] |
     if status:
         payload["Status"] = status
     return payload
+
+
+def _resume_audit_by_checkpoint(events: list[SessionEvent]) -> dict[tuple[str, str], dict[str, Any]]:
+    audit: dict[tuple[str, str], dict[str, Any]] = {}
+    for event in events:
+        if event.event_type != "run_resume":
+            continue
+        metadata = event.metadata or {}
+        run_id = str(metadata.get("run_id") or "").strip()
+        checkpoint_id = str(metadata.get("checkpoint_id") or "").strip()
+        if not run_id or not checkpoint_id:
+            continue
+        key = (run_id, checkpoint_id)
+        item = audit.setdefault(key, {"resume_count": 0, "last_resumed_at": None})
+        item["resume_count"] = int(item["resume_count"]) + 1
+        item["last_resumed_at"] = event.timestamp
+    return audit
+
+
+def _apply_checkpoint_resume_audit(
+    checkpoint: dict[str, Any],
+    audit_by_checkpoint: Mapping[tuple[str, str], Mapping[str, Any]],
+) -> dict[str, Any]:
+    audit = audit_by_checkpoint.get(
+        (
+            str(checkpoint.get("RunId") or ""),
+            str(checkpoint.get("CheckpointId") or ""),
+        ),
+        {},
+    )
+    metadata = dict(checkpoint.get("Metadata") or {})
+    resume_count = int(audit.get("resume_count") or checkpoint.get("ResumeCount") or 0)
+    last_resumed_at = audit.get("last_resumed_at") or checkpoint.get("LastResumedAt")
+    checkpoint["ResumeCount"] = resume_count
+    checkpoint["LastResumedAt"] = last_resumed_at
+    metadata["resume_count"] = resume_count
+    metadata["last_resumed_at"] = last_resumed_at
+    if resume_count and checkpoint.get("CheckpointStatus") in {"", "active"}:
+        checkpoint["CheckpointStatus"] = "resumed"
+    expires_at = checkpoint.get("ExpiresAt")
+    expires_at_dt = _parse_iso_datetime(expires_at)
+    if expires_at_dt is not None and expires_at_dt <= datetime.now(timezone.utc):
+        checkpoint["IsResumable"] = False
+        checkpoint["ResumeStatus"] = "disabled"
+        checkpoint["CheckpointStatus"] = "expired"
+        checkpoint["ResumeDisabledReason"] = "该 checkpoint 已过期"
+    elif resume_count and checkpoint.get("ReplayAllowed") is False:
+        checkpoint["IsResumable"] = False
+        checkpoint["ResumeStatus"] = "disabled"
+        checkpoint["ResumeDisabledReason"] = "该 checkpoint 已恢复过，当前策略不允许重复恢复"
+    metadata["checkpoint_status"] = checkpoint.get("CheckpointStatus")
+    metadata["resume_status"] = checkpoint.get("ResumeStatus")
+    metadata["resume_disabled_reason"] = checkpoint.get("ResumeDisabledReason")
+    checkpoint["Metadata"] = metadata
+    return checkpoint
 
 
 _SIDE_EFFECT_TOOL_NAMES = {
@@ -1308,10 +1401,13 @@ async def _find_session_checkpoint(
     run_id: str,
     checkpoint_id: str,
 ) -> dict[str, Any] | None:
-    for event in reversed(await service.get_events(session_id)):
+    events = await service.get_events(session_id)
+    resume_audit = _resume_audit_by_checkpoint(events)
+    for event in reversed(events):
         checkpoint = _checkpoint_event_to_action_payload(event)
         if checkpoint is None:
             continue
+        checkpoint = _apply_checkpoint_resume_audit(checkpoint, resume_audit)
         if checkpoint["RunId"] != run_id:
             continue
         if checkpoint["CheckpointId"] != checkpoint_id:
@@ -1660,11 +1756,14 @@ async def _list_checkpoints_payload(request: ListSessionCheckpointsActionRequest
 
     run_id_filter = str(request.RunId or "").strip()
     framework_filter = str(request.Framework or "").strip().lower()
+    events = await service.get_events(request.SessionId)
+    resume_audit = _resume_audit_by_checkpoint(events)
     checkpoints: list[dict[str, Any]] = []
-    for event in await service.get_events(request.SessionId):
+    for event in events:
         checkpoint = _checkpoint_event_to_action_payload(event)
         if checkpoint is None:
             continue
+        checkpoint = _apply_checkpoint_resume_audit(checkpoint, resume_audit)
         if run_id_filter and checkpoint["RunId"] != run_id_filter:
             continue
         if framework_filter and str(checkpoint["Framework"]).lower() != framework_filter:
@@ -1685,11 +1784,6 @@ async def _list_checkpoints_payload(request: ListSessionCheckpointsActionRequest
         "Offset": offset,
         "Limit": request.Limit if request.Limit is not None else len(checkpoints),
     }
-
-
-@app.post("/agentengine/api/v1/ListCheckpoints")
-async def list_checkpoints_action(request: ListSessionCheckpointsActionRequest):
-    return _action_response("ListCheckpoints", await _list_checkpoints_payload(request))
 
 
 @app.post("/agentengine/api/v1/ListSessionCheckpoints")
@@ -1731,11 +1825,13 @@ async def preview_checkpoint_resume_action(request: PreviewCheckpointResumeActio
         raise HTTPException(status_code=404, detail="Session not found")
 
     events = await service.get_events(request.SessionId)
+    resume_audit = _resume_audit_by_checkpoint(events)
     checkpoint = None
     for event in reversed(events):
         candidate = _checkpoint_event_to_action_payload(event)
         if candidate is None:
             continue
+        candidate = _apply_checkpoint_resume_audit(candidate, resume_audit)
         if candidate["RunId"] != str(request.RunId):
             continue
         if candidate["CheckpointId"] != str(request.CheckpointId):

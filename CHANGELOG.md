@@ -10,13 +10,13 @@
 ### 亮点
 
 - **Checkpoint/Resume 能力协议产品化**：`RuntimeCapabilities.ResumeRun` 新增 `ResumeMode`，LangGraph 声明 `time_travel`，ADK 暂声明 `forward_only`，控制台可据此区分历史回档与语义续跑能力。
-- **控制台 checkpoint 查询 API**：新增 `ListCheckpoints`，返回分页恢复点列表、可恢复性、终态、下一节点、阶段进度、创建时间和产物摘要；`ListSessionCheckpoints` 继续保留为兼容入口。
+- **控制台 checkpoint 查询 API**：升级 `ListSessionCheckpoints`，返回分页恢复点列表、可恢复性、终态、下一节点、阶段进度、创建时间、恢复审计字段和产物摘要。
 - **长任务事件订阅重连契约**：`SubscribeRunEvents` 的 `AfterSeqId` 续订行为增加自动化覆盖，客户端可在 5 分钟服务端保护超时后重连，不重复消费已读事件。
 - **CancelRun 边界收敛**：明确 KSADK 支持 detached stream 取消与 runner 协作式 `request_cancel()`，不伪装成 LangGraph 节点内强制中断。
 
 ### 测试与发布
 
-- 新增 ResumeMode、ListCheckpoints、SubscribeRunEvents 断线续订和 CancelRun 边界回归测试。
+- 新增 ResumeMode、ListSessionCheckpoints 分页能力、SubscribeRunEvents 断线续订和 CancelRun 边界回归测试。
 - ADK event → checkpoint bridge、`run_async(invocation_id=...)` 接入和 ADK checkpoint descriptor 映射延期到 0.6.8。
 - 公开发布版本从 `0.6.6` 升级到 `0.6.7`，发布前继续执行 `make public-preflight`、sdist/wheel build 和 `twine check`。
 - 镜像构建应固定 `KSADK_PACKAGE_SPEC=ksadk==0.6.7`，再走 staging E2E、GitHub Actions / PyPI Trusted Publishing 和环境门禁。
