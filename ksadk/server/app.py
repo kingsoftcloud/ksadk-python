@@ -1652,8 +1652,7 @@ async def list_session_events_action(request: ListSessionEventsActionRequest):
     )
 
 
-@app.post("/agentengine/api/v1/ListSessionCheckpoints")
-async def list_session_checkpoints_action(request: ListSessionCheckpointsActionRequest):
+async def _list_checkpoints_payload(request: ListSessionCheckpointsActionRequest) -> dict[str, Any]:
     service = resolve_session_service()
     session = await service.get_session(request.SessionId)
     if not session or session.agent_id != request.AgentId:
@@ -1680,15 +1679,22 @@ async def list_session_checkpoints_action(request: ListSessionCheckpointsActionR
     elif offset:
         checkpoints = checkpoints[offset:]
 
-    return _action_response(
-        "ListSessionCheckpoints",
-        {
-            "Checkpoints": checkpoints,
-            "Total": total,
-            "Offset": offset,
-            "Limit": request.Limit if request.Limit is not None else len(checkpoints),
-        },
-    )
+    return {
+        "Checkpoints": checkpoints,
+        "Total": total,
+        "Offset": offset,
+        "Limit": request.Limit if request.Limit is not None else len(checkpoints),
+    }
+
+
+@app.post("/agentengine/api/v1/ListCheckpoints")
+async def list_checkpoints_action(request: ListSessionCheckpointsActionRequest):
+    return _action_response("ListCheckpoints", await _list_checkpoints_payload(request))
+
+
+@app.post("/agentengine/api/v1/ListSessionCheckpoints")
+async def list_session_checkpoints_action(request: ListSessionCheckpointsActionRequest):
+    return _action_response("ListSessionCheckpoints", await _list_checkpoints_payload(request))
 
 
 @app.post("/agentengine/api/v1/ListToolReceipts")

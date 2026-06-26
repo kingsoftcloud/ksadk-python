@@ -226,6 +226,7 @@ def test_base_runner_default_runtime_capabilities_are_explicitly_unsupported():
     assert capabilities["Checkpoint"]["Backend"] == "none"
     assert capabilities["Checkpoint"]["Durable"] is False
     assert capabilities["ResumeRun"]["Supported"] is False
+    assert capabilities["ResumeRun"]["ResumeMode"] == "none"
     assert capabilities["SessionContinuity"]["Supported"] is True
     assert capabilities["SessionContinuity"]["Type"] == "semantic_replay"
 
@@ -281,7 +282,25 @@ def test_adk_runner_declares_native_session_continuity_without_checkpoint_resume
     assert capabilities["SessionContinuity"]["Type"] == "native_session"
     assert capabilities["Checkpoint"]["Supported"] is False
     assert capabilities["ResumeRun"]["Supported"] is False
+    assert capabilities["ResumeRun"]["ResumeMode"] == "forward_only"
     assert "ADK native session" in capabilities["ResumeRun"]["Reason"]
+
+
+def test_langgraph_runner_declares_time_travel_resume_mode(monkeypatch):
+    from ksadk.runners.langgraph_runner import LangGraphRunner
+
+    detection = _write_detection(FrameworkType.LANGGRAPH)
+    runner = LangGraphRunner(detection, "/workspace/demo")
+    runner._agent = SimpleNamespace(checkpointer=object())
+    monkeypatch.setenv("KSADK_CHECKPOINT_BACKEND", "postgres")
+
+    capabilities = runner.get_runtime_capabilities()
+
+    assert capabilities["Checkpoint"]["Supported"] is True
+    assert capabilities["Checkpoint"]["Backend"] == "postgres"
+    assert capabilities["ResumeRun"]["Supported"] is True
+    assert capabilities["ResumeRun"]["ResumeMode"] == "time_travel"
+    assert capabilities["ResumeRun"]["Reason"] == ""
 
 
 def test_create_runner_uses_custom_runner_class(monkeypatch, tmp_path):

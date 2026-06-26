@@ -35,7 +35,7 @@ def test_public_readme_positions_ksadk_as_runtime_platform():
     assert "```mermaid" not in readme
     assert "```text" in readme
     assert "当前版本：" not in readme
-    assert "发布版本：`0.6.6`" in readme
+    assert "发布版本：`0.6.7`" in readme
 
 
 def test_public_metadata_uses_runtime_platform_positioning():
@@ -43,21 +43,24 @@ def test_public_metadata_uses_runtime_platform_positioning():
     init_text = _read("ksadk/__init__.py")
     version_text = _read("ksadk/version.py")
 
-    assert pyproject["project"]["version"] == "0.6.6"
-    assert 'VERSION = "0.6.6"' in version_text
+    assert pyproject["project"]["version"] == "0.6.7"
+    assert 'VERSION = "0.6.7"' in version_text
     assert "Agent Runtime Platform" in pyproject["project"]["description"]
     assert "Agent Runtime Platform" in init_text
     assert "Agent Development Kit" not in pyproject["project"]["description"]
     assert "Agent Development Kit" not in init_text
 
 
-def test_changelog_marks_0_6_6_ready_for_authorized_release():
+def test_changelog_marks_0_6_7_ready_for_authorized_release():
     changelog = _read("CHANGELOG.md")
 
-    assert "## [0.6.6] - 2026-06-23" in changelog
-    assert "统一模型策略 v1" in changelog
+    assert "## [0.6.7] - 2026-06-26" in changelog
+    assert "ResumeMode" in changelog
+    assert "ListCheckpoints" in changelog
+    assert "SubscribeRunEvents" in changelog
+    assert "CancelRun" in changelog
     assert "PyPI Trusted Publishing" in changelog
-    assert "KSADK_PACKAGE_SPEC=ksadk==0.6.6" in changelog
+    assert "KSADK_PACKAGE_SPEC=ksadk==0.6.7" in changelog
 
 
 def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():

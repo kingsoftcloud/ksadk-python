@@ -237,6 +237,7 @@ async def test_ui_bootstrap_advertises_checkpoint_resume_capabilities(monkeypatc
     capabilities = response.json()["Data"]["Capabilities"]
     assert capabilities["RuntimeCapabilities"]["Framework"] == "mock"
     assert capabilities["RuntimeCapabilities"]["Checkpoint"]["Supported"] is False
+    assert capabilities["RuntimeCapabilities"]["ResumeRun"]["ResumeMode"] == "none"
     assert capabilities["CheckpointResumeCapability"]["Supported"] is False
 
 
@@ -2663,6 +2664,67 @@ async def test_list_session_checkpoints_filters_resumable_and_framework(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_list_checkpoints_alias_matches_session_checkpoint_pagination(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
+    service = InMemorySessionService()
+
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-list-checkpoints")
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    for index in range(3):
+        await conversation_runtime.append_run_checkpoint_event(
+            session_id="sess-list-checkpoints",
+            author="demo-agent",
+            run_id="run-page",
+            checkpoint_id=f"ckpt-{index}",
+            framework="langgraph",
+            framework_ref={
+                "langgraph": {
+                    "thread_id": "sess-list-checkpoints",
+                    "checkpoint_id": f"ckpt-{index}",
+                    "next_node": "stage",
+                }
+            },
+            metadata={
+                "is_resumable": True,
+                "backend": "postgres",
+                "scope": "shared",
+                "durable": True,
+                "stage_index": index + 1,
+                "total_stages": 3,
+            },
+            session_service_provider=lambda: service,
+        )
+
+    payload = {
+        "AgentId": "demo-agent",
+        "SessionId": "sess-list-checkpoints",
+        "RunId": "run-page",
+        "Offset": 1,
+        "Limit": 1,
+    }
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        alias_response = await client.post("/agentengine/api/v1/ListCheckpoints", json=payload)
+        legacy_response = await client.post("/agentengine/api/v1/ListSessionCheckpoints", json=payload)
+
+    assert alias_response.status_code == 200
+    assert legacy_response.status_code == 200
+    alias_data = alias_response.json()["Data"]
+    legacy_data = legacy_response.json()["Data"]
+    assert alias_data == legacy_data
+    assert alias_data["Total"] == 3
+    assert alias_data["Offset"] == 1
+    assert alias_data["Limit"] == 1
+    assert [item["CheckpointId"] for item in alias_data["Checkpoints"]] == ["ckpt-1"]
+    checkpoint = alias_data["Checkpoints"][0]
+    assert checkpoint["StageIndex"] == 2
+    assert checkpoint["TotalStages"] == 3
+    assert checkpoint["IsResumable"] is True
+    assert checkpoint["CreatedAt"]
+
+
+@pytest.mark.asyncio
 async def test_resume_run_action_reuses_checkpoint_and_records_resume(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
@@ -3404,6 +3466,114 @@ async def test_subscribe_run_events_streams_events_appended_after_subscription(m
     ]
     assert payloads[0]["Content"]["parts"][0]["text"] == "hello"
     assert payloads[-1]["Content"]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_subscribe_run_events_reconnects_without_replaying_consumed_events(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(_DummyRunner())
+
+    session = await service.create_session(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-subscribe-reconnect",
+    )
+    in_progress = await service.append_event(
+        session.id,
+        SessionEvent.from_dict(
+            {
+                "author": "demo-agent",
+                "eventType": "run_status",
+                "invocationId": "inv-reconnect",
+                "content": {"status": "in_progress"},
+            },
+            session_id=session.id,
+        ),
+    )
+    assistant = await service.append_event(
+        session.id,
+        SessionEvent.from_dict(
+            {
+                "author": "demo-agent",
+                "eventType": "assistant_message",
+                "invocationId": "inv-reconnect",
+                "content": {"role": "model", "parts": [{"text": "halfway"}]},
+            },
+            session_id=session.id,
+        ),
+    )
+    await service.append_event(
+        session.id,
+        SessionEvent.from_dict(
+            {
+                "author": "demo-agent",
+                "eventType": "run_status",
+                "invocationId": "other-invocation",
+                "content": {"status": "completed"},
+            },
+            session_id=session.id,
+        ),
+    )
+
+    async def append_completed_later():
+        await asyncio.sleep(0.02)
+        await service.append_event(
+            session.id,
+            SessionEvent.from_dict(
+                {
+                    "author": "demo-agent",
+                    "eventType": "run_status",
+                    "invocationId": "inv-reconnect",
+                    "content": {"status": "completed"},
+                },
+                session_id=session.id,
+            ),
+        )
+
+    task = asyncio.create_task(append_completed_later())
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        first_response = await client.get(
+            "/agentengine/api/v1/SubscribeRunEvents",
+            params={
+                "SessionId": session.id,
+                "InvocationId": "inv-reconnect",
+                "AfterSeqId": 0,
+            },
+        )
+        second_response = await client.get(
+            "/agentengine/api/v1/SubscribeRunEvents",
+            params={
+                "SessionId": session.id,
+                "InvocationId": "inv-reconnect",
+                "AfterSeqId": str(assistant.seq_id),
+            },
+        )
+    await task
+
+    assert first_response.status_code == 200
+    first_payloads = [
+        json.loads(line.removeprefix("data: "))
+        for line in first_response.text.splitlines()
+        if line.startswith("data: ") and line.strip() != "data: [DONE]"
+    ]
+    assert [payload["SeqId"] for payload in first_payloads[:2]] == [
+        in_progress.seq_id,
+        assistant.seq_id,
+    ]
+
+    assert second_response.status_code == 200
+    second_payloads = [
+        json.loads(line.removeprefix("data: "))
+        for line in second_response.text.splitlines()
+        if line.startswith("data: ") and line.strip() != "data: [DONE]"
+    ]
+    assert [payload["EventType"] for payload in second_payloads] == ["run_status"]
+    assert second_payloads[0]["SeqId"] > assistant.seq_id
+    assert second_payloads[0]["Content"]["status"] == "completed"
 
 
 @pytest.mark.asyncio

@@ -149,6 +149,7 @@ class ADKRunner(BaseRunner):
             "Scope": "unknown",
             "Durable": False,
             "SharedAcrossPods": False,
+            "ResumeMode": "forward_only",
             "Reason": "ADK native session can continue conversation context, but KSADK does not expose ADK framework checkpoint restore points",
         }
 
