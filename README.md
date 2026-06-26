@@ -161,7 +161,7 @@ Export once. Observe anywhere.
 ## 0.6.7 重点
 
 - Checkpoint/Resume 能力协议产品化：`RuntimeCapabilities.ResumeRun` 新增 `ResumeMode`，LangGraph 声明 `time_travel`，ADK 暂声明 `forward_only` 并将 event bridge 放到后续版本。
-- 控制台 checkpoint 查询 API：新增 `ListCheckpoints`，返回分页恢复点列表、可恢复性、终态、下一节点、阶段进度和产物摘要；`ListSessionCheckpoints` 保持兼容。
+- 控制台 checkpoint 查询 API：升级 `ListSessionCheckpoints`，返回分页恢复点列表、可恢复性、终态、下一节点、阶段进度、恢复审计字段和产物摘要。
 - 长任务事件订阅契约补强：`SubscribeRunEvents` 支持客户端按 `AfterSeqId` 断线重连，服务端 5 分钟超时后客户端可续订而不重复已消费事件。
 - CancelRun 边界收敛：KSADK 支持 detached stream 取消和 runner 协作式 `request_cancel()`；不承诺 LangGraph 节点内强制中断。
 

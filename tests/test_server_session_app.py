@@ -2664,7 +2664,7 @@ async def test_list_session_checkpoints_filters_resumable_and_framework(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_list_checkpoints_alias_matches_session_checkpoint_pagination(monkeypatch):
+async def test_list_session_checkpoints_is_the_single_checkpoint_listing_endpoint(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
     service = InMemorySessionService()
@@ -2705,23 +2705,261 @@ async def test_list_checkpoints_alias_matches_session_checkpoint_pagination(monk
     }
     transport = httpx.ASGITransport(app=server_app_module.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
-        alias_response = await client.post("/agentengine/api/v1/ListCheckpoints", json=payload)
-        legacy_response = await client.post("/agentengine/api/v1/ListSessionCheckpoints", json=payload)
+        removed_response = await client.post("/agentengine/api/v1/ListCheckpoints", json=payload)
+        response = await client.post("/agentengine/api/v1/ListSessionCheckpoints", json=payload)
 
-    assert alias_response.status_code == 200
-    assert legacy_response.status_code == 200
-    alias_data = alias_response.json()["Data"]
-    legacy_data = legacy_response.json()["Data"]
-    assert alias_data == legacy_data
-    assert alias_data["Total"] == 3
-    assert alias_data["Offset"] == 1
-    assert alias_data["Limit"] == 1
-    assert [item["CheckpointId"] for item in alias_data["Checkpoints"]] == ["ckpt-1"]
-    checkpoint = alias_data["Checkpoints"][0]
+    assert removed_response.status_code in {404, 405}
+    assert response.status_code == 200
+    data = response.json()["Data"]
+    assert data["Total"] == 3
+    assert data["Offset"] == 1
+    assert data["Limit"] == 1
+    assert [item["CheckpointId"] for item in data["Checkpoints"]] == ["ckpt-1"]
+    checkpoint = data["Checkpoints"][0]
     assert checkpoint["StageIndex"] == 2
     assert checkpoint["TotalStages"] == 3
     assert checkpoint["IsResumable"] is True
     assert checkpoint["CreatedAt"]
+
+
+@pytest.mark.asyncio
+async def test_list_session_checkpoints_includes_resume_audit_fields(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
+    service = InMemorySessionService()
+
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-checkpoint-audit")
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    await conversation_runtime.append_run_checkpoint_event(
+        session_id="sess-checkpoint-audit",
+        author="demo-agent",
+        run_id="run-audit",
+        checkpoint_id="ckpt-audit",
+        framework="langgraph",
+        framework_ref={
+            "langgraph": {
+                "thread_id": "sess-checkpoint-audit",
+                "checkpoint_id": "ckpt-audit",
+                "next_node": "report",
+            }
+        },
+        metadata={
+            "is_resumable": True,
+            "backend": "postgres",
+            "scope": "shared",
+            "durable": True,
+            "expires_at": "2026-06-30T12:00:00Z",
+            "checkpoint_status": "active",
+        },
+        session_service_provider=lambda: service,
+    )
+    for attempt_id in ("resume-1", "resume-2"):
+        await conversation_runtime.append_run_resume_event(
+            session_id="sess-checkpoint-audit",
+            author="demo-agent",
+            run_id="run-audit",
+            checkpoint_id="ckpt-audit",
+            resume_attempt_id=attempt_id,
+            framework="langgraph",
+            framework_ref={
+                "langgraph": {
+                    "thread_id": "sess-checkpoint-audit",
+                    "checkpoint_id": "ckpt-audit",
+                }
+            },
+            session_service_provider=lambda: service,
+        )
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ListSessionCheckpoints",
+            json={"AgentId": "demo-agent", "SessionId": "sess-checkpoint-audit"},
+        )
+        preview_response = await client.post(
+            "/agentengine/api/v1/PreviewCheckpointResume",
+            json={
+                "AgentId": "demo-agent",
+                "SessionId": "sess-checkpoint-audit",
+                "RunId": "run-audit",
+                "CheckpointId": "ckpt-audit",
+            },
+        )
+
+    assert response.status_code == 200
+    checkpoint = response.json()["Data"]["Checkpoints"][0]
+    assert checkpoint["ResumeCount"] == 2
+    assert checkpoint["LastResumedAt"]
+    assert checkpoint["ReplayAllowed"] is True
+    assert checkpoint["ExpiresAt"] == "2026-06-30T12:00:00Z"
+    assert checkpoint["CheckpointStatus"] == "resumed"
+    assert checkpoint["Metadata"]["resume_count"] == 2
+    assert checkpoint["Metadata"]["last_resumed_at"] == checkpoint["LastResumedAt"]
+    assert preview_response.status_code == 200
+    preview_checkpoint = preview_response.json()["Data"]["Preview"]["Checkpoint"]
+    assert preview_checkpoint["ResumeCount"] == 2
+    assert preview_checkpoint["LastResumedAt"] == checkpoint["LastResumedAt"]
+
+
+@pytest.mark.asyncio
+async def test_list_session_checkpoints_disables_expired_or_non_replayable_checkpoints(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
+    service = InMemorySessionService()
+
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-checkpoint-policy")
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    await conversation_runtime.append_run_checkpoint_event(
+        session_id="sess-checkpoint-policy",
+        author="demo-agent",
+        run_id="run-policy",
+        checkpoint_id="ckpt-no-replay",
+        framework="langgraph",
+        framework_ref={"langgraph": {"thread_id": "sess-checkpoint-policy", "checkpoint_id": "ckpt-no-replay"}},
+        metadata={"is_resumable": True, "replay_allowed": False},
+        session_service_provider=lambda: service,
+    )
+    await conversation_runtime.append_run_resume_event(
+        session_id="sess-checkpoint-policy",
+        author="demo-agent",
+        run_id="run-policy",
+        checkpoint_id="ckpt-no-replay",
+        resume_attempt_id="resume-1",
+        framework="langgraph",
+        framework_ref={"langgraph": {"thread_id": "sess-checkpoint-policy", "checkpoint_id": "ckpt-no-replay"}},
+        session_service_provider=lambda: service,
+    )
+    await conversation_runtime.append_run_checkpoint_event(
+        session_id="sess-checkpoint-policy",
+        author="demo-agent",
+        run_id="run-policy",
+        checkpoint_id="ckpt-expired",
+        framework="langgraph",
+        framework_ref={"langgraph": {"thread_id": "sess-checkpoint-policy", "checkpoint_id": "ckpt-expired"}},
+        metadata={"is_resumable": True, "expires_at": "2000-01-01T00:00:00Z"},
+        session_service_provider=lambda: service,
+    )
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ListSessionCheckpoints",
+            json={"AgentId": "demo-agent", "SessionId": "sess-checkpoint-policy"},
+        )
+
+    assert response.status_code == 200
+    checkpoints = {
+        item["CheckpointId"]: item
+        for item in response.json()["Data"]["Checkpoints"]
+    }
+    no_replay = checkpoints["ckpt-no-replay"]
+    assert no_replay["ReplayAllowed"] is False
+    assert no_replay["ResumeCount"] == 1
+    assert no_replay["IsResumable"] is False
+    assert no_replay["ResumeStatus"] == "disabled"
+    assert no_replay["CheckpointStatus"] == "resumed"
+    assert "重复恢复" in no_replay["ResumeDisabledReason"]
+    expired = checkpoints["ckpt-expired"]
+    assert expired["IsResumable"] is False
+    assert expired["ResumeStatus"] == "disabled"
+    assert expired["CheckpointStatus"] == "expired"
+    assert "已过期" in expired["ResumeDisabledReason"]
+
+
+@pytest.mark.asyncio
+async def test_resume_run_rejects_checkpoint_policy_disabled_by_audit(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
+    service = InMemorySessionService()
+    runner = _CheckpointResumeRunner()
+
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-resume-policy")
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+    await conversation_runtime.append_run_checkpoint_event(
+        session_id="sess-resume-policy",
+        author="demo-agent",
+        run_id="run-policy",
+        checkpoint_id="ckpt-no-replay",
+        framework="langgraph",
+        framework_ref={"langgraph": {"thread_id": "sess-resume-policy", "checkpoint_id": "ckpt-no-replay"}},
+        metadata={"is_resumable": True, "replay_allowed": False},
+        session_service_provider=lambda: service,
+    )
+    await conversation_runtime.append_run_resume_event(
+        session_id="sess-resume-policy",
+        author="demo-agent",
+        run_id="run-policy",
+        checkpoint_id="ckpt-no-replay",
+        resume_attempt_id="resume-1",
+        framework="langgraph",
+        framework_ref={"langgraph": {"thread_id": "sess-resume-policy", "checkpoint_id": "ckpt-no-replay"}},
+        session_service_provider=lambda: service,
+    )
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ResumeRun",
+            json={
+                "AgentId": "demo-agent",
+                "SessionId": "sess-resume-policy",
+                "RunId": "run-policy",
+                "CheckpointId": "ckpt-no-replay",
+                "ResumeAttemptId": "resume-2",
+                "Stream": False,
+            },
+        )
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["code"] == "checkpoint_not_resumable"
+    assert detail["resume_status"] == "disabled"
+    assert "重复恢复" in detail["reason"]
+    assert runner.calls == []
+
+
+@pytest.mark.asyncio
+async def test_resume_run_rejects_expired_checkpoint(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
+    service = InMemorySessionService()
+    runner = _CheckpointResumeRunner()
+
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-resume-expired")
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+    await conversation_runtime.append_run_checkpoint_event(
+        session_id="sess-resume-expired",
+        author="demo-agent",
+        run_id="run-expired",
+        checkpoint_id="ckpt-expired",
+        framework="langgraph",
+        framework_ref={"langgraph": {"thread_id": "sess-resume-expired", "checkpoint_id": "ckpt-expired"}},
+        metadata={"is_resumable": True, "expires_at": "2000-01-01T00:00:00Z"},
+        session_service_provider=lambda: service,
+    )
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ResumeRun",
+            json={
+                "AgentId": "demo-agent",
+                "SessionId": "sess-resume-expired",
+                "RunId": "run-expired",
+                "CheckpointId": "ckpt-expired",
+                "ResumeAttemptId": "resume-expired",
+                "Stream": False,
+            },
+        )
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["code"] == "checkpoint_not_resumable"
+    assert detail["resume_status"] == "disabled"
+    assert "已过期" in detail["reason"]
+    assert runner.calls == []
 
 
 @pytest.mark.asyncio
