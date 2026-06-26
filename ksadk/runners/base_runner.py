@@ -115,6 +115,7 @@ class BaseRunner(ABC):
             "Checkpoint": checkpoint,
             "ResumeRun": {
                 "Supported": checkpoint_supported,
+                "ResumeMode": str(checkpoint.get("ResumeMode") or "none"),
                 "Reason": checkpoint_reason
                 if not checkpoint_supported
                 else str(checkpoint.get("ResumeReason") or ""),

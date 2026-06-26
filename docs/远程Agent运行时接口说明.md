@@ -882,7 +882,7 @@ KsADK 扩展图片引用示例：
 
 因此，公网 contract 以 gateway 白名单和 `agentengine-server` facade 为准；runtime 本地实现是最终执行方，但不是浏览器直接依赖的入口。
 
-能力门控以 `GetAgentUiBootstrap.Data.Capabilities.RunLifecycle` 为准。`RunLifecycle.Resume` 只表示普通运行生命周期可继续交互；checkpoint 恢复必须同时看到 `RunLifecycle.Checkpoints=true` 和 `RunLifecycle.CheckpointResume=true`。当前 `adk`、`langchain`、`langgraph`、`deepagents` 可声明 checkpoint lifecycle；`hermes` 虽然有 Hosted Chat、原生 dashboard 和 terminal，但其 Hermes runtime 壳只代理 `/v1/*` 与原生管理路由，不提供 `ListSessionCheckpoints` / `ResumeRun` / `CancelRun` 本地同名 action，因此不应默认点亮 checkpoint 恢复能力。
+能力门控以 `GetAgentUiBootstrap.Data.Capabilities.RunLifecycle` 为准。`RunLifecycle.Resume` 只表示普通运行生命周期可继续交互；checkpoint 恢复必须同时看到 `RunLifecycle.Checkpoints=true` 和 `RunLifecycle.CheckpointResume=true`。控制台应优先读取 `RuntimeCapabilities.ResumeRun.ResumeMode`：`time_travel` 表示可选择历史 checkpoint 回档，`forward_only` 表示只能沿框架原生事件或 invocation 连续性继续，`none` 表示没有框架级恢复能力。当前 `adk`、`langchain`、`langgraph`、`deepagents` 可声明 checkpoint lifecycle；`hermes` 虽然有 Hosted Chat、原生 dashboard 和 terminal，但其 Hermes runtime 壳只代理 `/v1/*` 与原生管理路由，不提供 `ListCheckpoints` / `ListSessionCheckpoints` / `ResumeRun` / `CancelRun` 本地同名 action，因此不应默认点亮 checkpoint 恢复能力。
 
 ## 6.5 Hosted UI Bootstrap
 
@@ -1538,9 +1538,14 @@ python scripts/validate_hosted_long_task_e2e.py \
   --api-key "$AGENTENGINE_RUNTIME_API_KEY"
 ```
 
-如果通过 private/share 短链接打开 Hosted UI，也可以传入 `--cookie "ae_ui_session=<sid>"`。脚本默认覆盖 bootstrap capability、`RunAgent`、`ListSessionCheckpoints`、`ResumeRun(Stream=true)` 和 `ListSessionEvents`；运行时取消可用 `--mode cancel-active --session-id <SessionId> --invocation-id <InvocationId>` 对仍活跃的流式 run 验证 `CancelRun`。
+如果通过 private/share 短链接打开 Hosted UI，也可以传入 `--cookie "ae_ui_session=<sid>"`。脚本默认覆盖 bootstrap capability、`RunAgent`、`ListCheckpoints` / `ListSessionCheckpoints`、`ResumeRun(Stream=true)` 和 `ListSessionEvents`；运行时取消可用 `--mode cancel-active --session-id <SessionId> --invocation-id <InvocationId>` 对仍活跃的流式 run 验证 `CancelRun`。
 
-### `POST /agentengine/api/v1/ListSessionCheckpoints`
+### `POST /agentengine/api/v1/ListCheckpoints`
+
+说明：
+
+- 控制台优先使用该接口展示 checkpoint 列表。
+- `ListSessionCheckpoints` 是兼容入口，字段和返回结构与 `ListCheckpoints` 一致。
 
 请求体：
 
@@ -1549,8 +1554,16 @@ python scripts/validate_hosted_long_task_e2e.py \
 | `AgentId` | `string` | 是 | Agent ID |
 | `SessionId` | `string` | 是 | 会话 ID |
 | `RunId` | `string` | 否 | 只返回指定 run 的 checkpoint |
+| `OnlyResumable` | `boolean` | 否 | 只返回可恢复 checkpoint |
+| `Framework` | `string` | 否 | 按框架过滤，例如 `langgraph` |
+| `Offset` | `integer` | 否 | 分页起始偏移 |
+| `Limit` | `integer` | 否 | 分页大小，最大 `500` |
 
-响应 `Data.Checkpoints` 为 checkpoint 列表。checkpoint 来自 runtime session event 中的 `run_checkpoint`，不是客户端传入的状态。
+响应 `Data.Checkpoints` 为 checkpoint 列表。checkpoint 来自 runtime session event 中的 `run_checkpoint`，不是客户端传入的状态。响应还包含 `Total`、`Offset` 和 `Limit`。
+
+### `POST /agentengine/api/v1/ListSessionCheckpoints`
+
+兼容入口。新控制台应使用 `ListCheckpoints`，旧客户端可继续调用该接口。
 
 ### `POST /agentengine/api/v1/PreviewCheckpointResume`
 
@@ -1908,6 +1921,7 @@ OpenClaw 会额外起一个本地 `workspace_files_app` sidecar，然后由 gate
   - `ListSessionEvents`
   - `SubscribeRunEvents`
   - `RunAgent`
+  - `ListCheckpoints`
   - `ListSessionCheckpoints`
   - `PreviewCheckpointResume`
   - `ListToolReceipts`

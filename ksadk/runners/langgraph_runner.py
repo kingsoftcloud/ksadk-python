@@ -100,6 +100,7 @@ class LangGraphRunner(BaseRunner):
             "Scope": scope,
             "Durable": durable,
             "SharedAcrossPods": shared,
+            "ResumeMode": "time_travel",
             "Reason": reason,
         }
 
