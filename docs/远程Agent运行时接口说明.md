@@ -181,7 +181,7 @@ Hermes 终端 WebSocket 额外要求：
 - `GET /agentengine/api/v1/SubscribeRunEvents`
 - `POST /agentengine/api/v1/RunAgent`
 - `POST /agentengine/api/v1/ListSessionCheckpoints`
-- `POST /agentengine/api/v1/PreviewCheckpointResume`
+- `POST /agentengine/api/v1/GetCheckpointResumePreview`
 - `POST /agentengine/api/v1/ListToolReceipts`
 - `POST /agentengine/api/v1/ResumeRun`
 - `POST /agentengine/api/v1/CancelRun`
@@ -859,7 +859,7 @@ KsADK 扩展图片引用示例：
 - `DeleteResponseFeedback`
 - `RunAgent`
 - `ListSessionCheckpoints`
-- `PreviewCheckpointResume`
+- `GetCheckpointResumePreview`
 - `ListToolReceipts`
 - `ResumeRun`
 - `CancelRun`
@@ -1565,7 +1565,7 @@ python scripts/validate_hosted_long_task_e2e.py \
 
 | 字段 | 说明 |
 | --- | --- |
-| `CheckpointId` / `RunId` | 恢复点和运行 ID，传给 `PreviewCheckpointResume` / `ResumeRun` |
+| `CheckpointId` / `RunId` | 恢复点和运行 ID，传给 `GetCheckpointResumePreview` / `ResumeRun` |
 | `Framework` / `FrameworkRef` | 框架与原生 checkpoint 引用 |
 | `IsResumable` / `ResumeStatus` / `ResumeDisabledReason` | 是否可恢复、恢复状态和禁用原因 |
 | `IsTerminal` / `NextNode` | 是否终态、恢复后预期进入的下一个节点 |
@@ -1579,7 +1579,7 @@ python scripts/validate_hosted_long_task_e2e.py \
 
 `ListSessionCheckpoints` 会基于同 session 内的 `run_resume` 事件聚合 `LastResumedAt` 与 `ResumeCount`。若 `ExpiresAt` 已过期，或 `ReplayAllowed=false` 且该 checkpoint 已恢复过，服务端会将 `IsResumable=false` 并填充 `ResumeDisabledReason`，前端不需要重复推导这些禁用规则。
 
-### `POST /agentengine/api/v1/PreviewCheckpointResume`
+### `POST /agentengine/api/v1/GetCheckpointResumePreview`
 
 请求体：
 
@@ -1936,7 +1936,7 @@ OpenClaw 会额外起一个本地 `workspace_files_app` sidecar，然后由 gate
   - `SubscribeRunEvents`
   - `RunAgent`
   - `ListSessionCheckpoints`
-  - `PreviewCheckpointResume`
+  - `GetCheckpointResumePreview`
   - `ListToolReceipts`
   - `ResumeRun`
   - `CancelRun`
