@@ -932,7 +932,7 @@ class ResumeRunActionRequest(BaseModel):
     ResumeInstruction: Optional[str] = None
 
 
-class PreviewCheckpointResumeActionRequest(BaseModel):
+class GetCheckpointResumePreviewActionRequest(BaseModel):
     AgentId: str
     SessionId: str
     RunId: str
@@ -1817,8 +1817,8 @@ async def list_tool_receipts_action(request: ListToolReceiptsActionRequest):
     )
 
 
-@app.post("/agentengine/api/v1/PreviewCheckpointResume")
-async def preview_checkpoint_resume_action(request: PreviewCheckpointResumeActionRequest):
+@app.post("/agentengine/api/v1/GetCheckpointResumePreview")
+async def get_checkpoint_resume_preview_action(request: GetCheckpointResumePreviewActionRequest):
     service = resolve_session_service()
     session = await service.get_session(request.SessionId)
     if not session or session.agent_id != request.AgentId:
@@ -1842,7 +1842,7 @@ async def preview_checkpoint_resume_action(request: PreviewCheckpointResumeActio
         raise HTTPException(status_code=404, detail="Checkpoint not found")
 
     return _action_response(
-        "PreviewCheckpointResume",
+        "GetCheckpointResumePreview",
         {"Preview": _build_checkpoint_resume_preview(checkpoint=checkpoint, events=events)},
     )
 

@@ -57,6 +57,8 @@ def test_changelog_marks_0_6_7_ready_for_authorized_release():
     assert "## [0.6.7] - 2026-06-26" in changelog
     assert "ResumeMode" in changelog
     assert "ListSessionCheckpoints" in changelog
+    assert "GetCheckpointResumePreview" in changelog
+    assert "PreviewCheckpointResume" not in changelog
     assert "SubscribeRunEvents" in changelog
     assert "CancelRun" in changelog
     assert "PyPI Trusted Publishing" in changelog
