@@ -69,3 +69,29 @@ def test_background_field_is_parsed(bg_client):
     # 默认 False（向后兼容）
     assert RunAgentActionRequest(AgentId="a").Background is False
 
+
+async def test_detached_stream_writes_completed_status_when_session_id_set(monkeypatch, tmp_path):
+    """_DetachedSSEStream 持有 session_id 时，_consume 结束后写 run_status=completed 终态。"""
+    monkeypatch.setenv("KSADK_SESSION_BACKEND", "memory")
+    monkeypatch.setenv("AGENTENGINE_UI_DIR", str(tmp_path / "ui"))
+    from ksadk.server.app import _DetachedSSEStream
+    from ksadk.sessions import resolve_session_service
+
+    async def source():
+        yield "data: chunk1\n\n"
+        yield "data: chunk2\n\n"
+
+    invocation_id = "inv_test_completed"
+    session_id = "sess_test_completed"
+    service = resolve_session_service()
+    await service.create_session(agent_id="a", user_id="u", session_id=session_id)
+    detached = _DetachedSSEStream(source(), invocation_id=invocation_id, session_id=session_id)
+    # 等后台 _consume 跑完
+    await detached._task
+    # 查 session 里的 run_status 事件
+    events = await service.get_events(session_id)
+    statuses = [e for e in events if e.event_type == "run_status"]
+    assert any((e.content or {}).get("status") == "completed" for e in statuses), (
+        f"期望 run_status=completed，实际 events: {[(e.event_type, e.content) for e in events]}"
+    )
+

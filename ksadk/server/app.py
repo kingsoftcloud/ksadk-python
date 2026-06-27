@@ -104,12 +104,20 @@ _RESERVED_UI_PATHS = {"/", "/chat", "/build", "/deploy"}
 class _DetachedSSEStream:
     _MAX_BACKLOG_CHUNKS = 256
 
-    def __init__(self, source: AsyncIterator[str], *, invocation_id: str | None = None):
+    def __init__(
+        self,
+        source: AsyncIterator[str],
+        *,
+        invocation_id: str | None = None,
+        session_id: str | None = None,
+    ):
         self._source = source
         self.invocation_id = invocation_id
+        self.session_id = session_id
         self._subscribers: set[asyncio.Queue[str | None]] = set()
         self._backlog: list[str] = []
         self._done = False
+        self._terminal_status = "completed"
         self._task = asyncio.create_task(self._consume())
         _DETACHED_STREAMS.add(self._task)
         self._task.add_done_callback(_DETACHED_STREAMS.discard)
@@ -133,8 +141,10 @@ class _DetachedSSEStream:
                     return_exceptions=True,
                 )
         except asyncio.CancelledError:
+            self._terminal_status = "cancelled"
             raise
         except Exception:
+            self._terminal_status = "failed"
             logger.exception("Detached SSE stream failed")
             raise
         finally:
@@ -145,6 +155,21 @@ class _DetachedSSEStream:
                     *(subscriber.put(None) for subscriber in subscribers),
                     return_exceptions=True,
                 )
+            # background 路径（session_id 非空）写终态 run_status，供 SubscribeRunEvents
+            # 判定 [DONE]。非 background 路径不传 session_id（默认 None），终态由
+            # stream_responses_conversation_turn 内部写，这里用守卫跳过避免重复。
+            if self.session_id:
+                try:
+                    await conversation.append_run_status_event(
+                        session_id=self.session_id,
+                        author="system",
+                        status=self._terminal_status,
+                        invocation_id=self.invocation_id or "",
+                        detail=f"background_{self._terminal_status}:{self.invocation_id or ''}",
+                        session_service_provider=resolve_session_service,
+                    )
+                except Exception:
+                    logger.exception("failed to write background terminal status")
 
     def subscribe(self) -> asyncio.Queue[str | None]:
         queue: asyncio.Queue[str | None] = asyncio.Queue()
