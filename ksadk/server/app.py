@@ -948,6 +948,7 @@ class RunAgentActionRequest(BaseModel):
     InvocationId: Optional[str] = None
     ApiFormat: str = "responses"
     Stream: bool = False
+    Background: bool = False  # 立即返回 job 句柄，后台执行，进度走 SubscribeRunEvents
     Model: Optional[str] = None
     ModelMetadata: Optional[Dict[str, Any]] = None
     ModelOptions: Optional[Dict[str, Any]] = None
