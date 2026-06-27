@@ -165,3 +165,74 @@ async def test_detached_stream_writes_completed_status_when_session_id_set(monke
     assert any((e.content or {}).get("status") == "completed" for e in statuses), (
         f"期望 run_status=completed，实际 events: {[(e.event_type, e.content) for e in events]}"
     )
+
+
+@pytest.mark.asyncio
+async def test_run_agent_background_cancel_writes_cancelled_status(bg_client):
+    """CancelRun 对 background 任务生效，写 run_status=cancelled 终态。"""
+    from ksadk.server.app import _DETACHED_STREAMS_BY_INVOCATION
+    from ksadk.sessions import resolve_session_service
+
+    app, runner = bg_client
+    transport = ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        # 起 background 任务（慢流 0.3s，cancel 前后台还在 sleep）
+        resp = await client.post(
+            "/agentengine/api/v1/RunAgent",
+            json={
+                "AgentId": "a",
+                "SessionId": "sess-bg-cancel",
+                "Messages": [{"role": "user", "content": "研究 X"}],
+                "Background": True,
+                "Stream": False,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        invocation_id = resp.json()["Data"]["InvocationId"]
+        assert invocation_id in _DETACHED_STREAMS_BY_INVOCATION
+        # CancelRun：detached 已注册进 dict，开箱即用
+        cancel_resp = await client.post(
+            "/agentengine/api/v1/CancelRun",
+            json={"InvocationId": invocation_id},
+        )
+        cancel_data = cancel_resp.json()["Data"]
+        assert cancel_data["Found"] is True
+        # 等 detached task 处理取消 + finally 写终态
+        detached = _DETACHED_STREAMS_BY_INVOCATION.get(invocation_id)
+        if detached is not None:
+            try:
+                await detached._task
+            except Exception:
+                pass
+    # 查 session 里的 run_status 事件
+    service = resolve_session_service()
+    events = await service.get_events("sess-bg-cancel")
+    statuses = [
+        (e.content or {}).get("status")
+        for e in events
+        if e.event_type == "run_status" and e.invocation_id == invocation_id
+    ]
+    assert "cancelled" in statuses, f"期望 run_status=cancelled，实际 statuses: {statuses}"
+
+
+@pytest.mark.asyncio
+async def test_run_agent_background_false_preserves_existing_behavior(bg_client):
+    """Background 不传（默认 false）+ Stream=false 走现有同步 invoke 路径，行为不变。"""
+    app, runner = bg_client
+    transport = ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/agentengine/api/v1/RunAgent",
+            json={
+                "AgentId": "a",
+                "SessionId": "sess-bg-compat",
+                "Messages": [{"role": "user", "content": "普通问题"}],
+                # 不传 Background（默认 False），Stream=False
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()["Data"]
+        # 同步 invoke 路径返回普通 payload（含 output），不含 background 句柄字段
+        assert "output" in data, f"同步路径应返回 output，实际 Data: {data}"
+        assert data.get("Background") is not True, "非 background 路径不该返回 Background:true"
+        assert data.get("Status") != "running", "非 background 路径不该返回 Status:running"
