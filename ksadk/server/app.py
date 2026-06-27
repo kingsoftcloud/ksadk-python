@@ -2387,6 +2387,68 @@ async def run_agent_action(request: RunAgentActionRequest):
     if api_format == "responses":
         request_metadata["responses_conversation"] = True
 
+    if request.Background:
+        invocation_id = request.InvocationId or f"inv_{uuid.uuid4().hex}"
+        # 后台 stream 在 detached task 里才被消费（lazy），此时 session 尚未创建。
+        # 先 ensure 出 session，才能立刻写 run_status=in_progress（供 SubscribeRunEvents
+        # 拉到起始态），并把 resolved session_id 回填给 detached stream 的终态写入与 SubscribeUrl。
+        background_session = await conversation.ensure_conversation_session(
+            agent_id=request.AgentId,
+            user_id=run_user_id,
+            session_id=request.SessionId,
+            session_service_provider=resolve_session_service,
+        )
+        resolved_background_session_id = background_session.id
+        resume_key = _detached_resume_key_from_input(resolved_background_session_id, resume_input)
+        _reject_if_detached_resume_active(resume_key)
+        detached = _DetachedSSEStream(
+            conversation.stream_responses_conversation_turn(
+                runner=_resolve_active_runner(),
+                agent_id=request.AgentId,
+                user_id=run_user_id,
+                messages=messages,
+                session_id=resolved_background_session_id,
+                model=request.Model,
+                model_metadata=request.ModelMetadata,
+                model_options=request.ModelOptions,
+                request_metadata=request_metadata or None,
+                resume_input=resume_input,
+                account_id=account_id,
+                invocation_id=invocation_id,
+                prepare_runner=_prepare_runner_for_model,
+                session_service_provider=resolve_session_service,
+            ),
+            invocation_id=invocation_id,
+            session_id=resolved_background_session_id,
+        )
+        if invocation_id and resume_key:
+            _DETACHED_RESUME_KEYS_BY_INVOCATION[invocation_id] = resume_key
+            _ACTIVE_DETACHED_RESUME_INVOCATION_BY_KEY[resume_key] = invocation_id
+            detached._task.add_done_callback(
+                lambda _t, inv=invocation_id, rk=resume_key: _clear_detached_resume_key(inv, rk)
+            )
+        await conversation.append_run_status_event(
+            session_id=resolved_background_session_id,
+            author="system",
+            status="in_progress",
+            invocation_id=invocation_id,
+            detail=f"background_started:{invocation_id}",
+            session_service_provider=resolve_session_service,
+        )
+        return _action_response(
+            "RunAgent",
+            {
+                "InvocationId": invocation_id,
+                "Status": "running",
+                "Background": True,
+                "SubscribeUrl": (
+                    "/agentengine/api/v1/SubscribeRunEvents"
+                    f"?SessionId={resolved_background_session_id}"
+                    f"&InvocationId={invocation_id}"
+                ),
+            },
+        )
+
     if request.Stream:
         if api_format == "chat_completions":
             completion_request = ChatCompletionRequest(
