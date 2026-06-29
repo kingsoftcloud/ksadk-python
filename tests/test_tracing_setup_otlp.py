@@ -4,6 +4,39 @@ import logging
 import sys
 import types
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _isolate_tracing_env(monkeypatch):
+    for key in (
+        "CLOUD_MONITOR_APP_KEY",
+        "CLOUD_MONITOR_LANGFUSE_ENABLED",
+        "CLOUD_MONITOR_LANGFUSE_HOST",
+        "CLOUD_MONITOR_LANGFUSE_PUBLIC_KEY",
+        "CLOUD_MONITOR_LANGFUSE_SECRET_KEY",
+        "CLOUD_MONITOR_OTLP_ENABLED",
+        "CLOUD_MONITOR_OTLP_ENDPOINT",
+        "CLOUD_MONITOR_OTLP_HEADERS",
+        "CLOUD_MONITOR_OTLP_PROTOCOL",
+        "CLOUD_MONITOR_OTLP_TRACES_ENDPOINT",
+        "CLOUD_MONITOR_OTLP_TRACES_PROTOCOL",
+        "LANGFUSE_BASE_URL",
+        "LANGFUSE_HOST",
+        "LANGFUSE_PUBLIC_KEY",
+        "LANGFUSE_SECRET_KEY",
+        "LANGFUSE_USE_CALLBACK",
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_HEADERS",
+        "OTEL_EXPORTER_OTLP_PROTOCOL",
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+        "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
+        "OTEL_RESOURCE_ATTRIBUTES",
+        "OTEL_SERVICE_NAME",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
 
 class _FakeTraceApi:
     def __init__(self):

@@ -43,7 +43,7 @@
 - `BaseRunner` / `ADKRunner` / `LangGraphRunner` 补齐 runtime capability 描述，默认 runner 明确声明 checkpoint/resume/cancel unsupported，ADK 暂声明 forward-only/后续桥接。
 - `agentengine web` 本地启动会为 local session、SQLite checkpoint、项目 `.env`、项目 UI bundle 路径注入更一致的默认值，并支持覆盖 project UI dir。
 - 本地 Web 启动兼容 Windows 无 `termios` 环境。
-- 同步 ksadk-web 静态资源与 reasoning control 文案/配置，保证本地 UI 与 Hosted UI 的模型、思考能力和 custom UI bootstrap 行为一致。
+- 同步 `@kingsoftcloud/ksadk-web@0.2.15` 静态资源与 reasoning control 文案/配置，保证本地 UI 与 Hosted UI 的模型、思考能力、完整会话历史回显和 custom UI bootstrap 行为一致。
 - Hermes dashboard open、本地 dry-run bootstrap defaults、OpenClaw terminal session 参数继续保持和 0.6.6 runtime model policy 兼容。
 - LanceDB memory backend manifest 语义收敛，provider 注册、渲染、schema 字段和 OpenClaw 配置生成保持一致。
 - 旧 checkpoint 预览 action 统一为 `GetCheckpointResumePreview`。
@@ -76,7 +76,7 @@
 - 新增 CloudMonitor OTLP exporter 并行双写、CloudMonitor Langfuse SDK callback 隔离 provider、token 用量归集（`_prepare_cloud_monitor_spans`）、Langfuse 鉴权 fallback、generic OTLP Langfuse endpoint 自动补 Auth 回归测试，以及本地 HTTP e2e 上报验证。
 - 新增 Runner Langfuse 多 callback、disable-thinking 模型选项透传、Postgres session 超时与降级、UI 配置解析、server session app 与 FastAPI 兼容性回归测试。
 - ADK event → checkpoint bridge、`run_async(invocation_id=...)` 接入和 ADK checkpoint descriptor 映射延期到 0.6.8。
-- 公开发布版本从 `0.6.6` 升级到 `0.6.7`，发布前继续执行 `make public-preflight`、sdist/wheel build 和 `twine check`。
+- 公开发布版本从 `0.6.6` 升级到 `0.6.7`，发布候选固定同步 `@kingsoftcloud/ksadk-web@0.2.15` 静态资源，发布前继续执行 `make public-preflight`、sdist/wheel build 和 `twine check`。
 - 镜像构建应固定 `KSADK_PACKAGE_SPEC=ksadk==0.6.7`，再走 staging E2E、GitHub Actions / PyPI Trusted Publishing 和环境门禁。
 
 ## [0.6.6] - 2026-06-23

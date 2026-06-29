@@ -55,7 +55,10 @@ def _create_langfuse_callback(
             base_url=host or None,
             tracer_provider=tracer_provider,
         )
-        handler = CallbackHandler(public_key=public_key)
+        try:
+            handler = CallbackHandler(public_key=public_key)
+        except TypeError:
+            handler = CallbackHandler()
         logger.info(
             "%s Langfuse CallbackHandler initialized "
             "(host: %s public_key_present=%s secret_key_present=%s isolated_provider=True)",

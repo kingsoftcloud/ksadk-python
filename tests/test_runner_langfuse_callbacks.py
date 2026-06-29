@@ -2,6 +2,26 @@ import importlib
 import sys
 import types
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _isolate_langfuse_callback_env(monkeypatch):
+    for key in (
+        "CLOUD_MONITOR_LANGFUSE_ENABLED",
+        "CLOUD_MONITOR_LANGFUSE_HOST",
+        "CLOUD_MONITOR_LANGFUSE_PUBLIC_KEY",
+        "CLOUD_MONITOR_LANGFUSE_SECRET_KEY",
+        "CLOUD_MONITOR_OTLP_ENDPOINT",
+        "LANGFUSE_BASE_URL",
+        "LANGFUSE_HOST",
+        "LANGFUSE_PUBLIC_KEY",
+        "LANGFUSE_SECRET_KEY",
+        "LANGFUSE_USE_CALLBACK",
+        "OTEL_SERVICE_NAME",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
 
 class _FakeLangfuse:
     instances = []
