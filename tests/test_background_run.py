@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 from types import SimpleNamespace
 
 import httpx
@@ -146,6 +147,51 @@ async def test_run_agent_background_returns_immediately_with_job_handle(bg_clien
         from ksadk.server.app import _DETACHED_STREAMS_BY_INVOCATION
 
         assert data["InvocationId"] in _DETACHED_STREAMS_BY_INVOCATION
+
+
+@pytest.mark.asyncio
+async def test_run_agent_background_primes_session_title_before_detached_stream_consumes(bg_client, monkeypatch):
+    """Background=true 返回 job 句柄前先写入首轮 prompt/title，刷新列表不显示空标题。"""
+    server_app_module = importlib.import_module("ksadk.server.app")
+    from ksadk.sessions import resolve_session_service
+
+    class _IdleDetachedStream:
+        def __init__(self, source, *, invocation_id=None, session_id=None):
+            self.source = source
+            self.invocation_id = invocation_id
+            self.session_id = session_id
+            self._task = asyncio.Future()
+
+    monkeypatch.setattr(server_app_module, "_DetachedSSEStream", _IdleDetachedStream)
+
+    app, _runner = bg_client
+    transport = ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        resp = await client.post(
+            "/agentengine/api/v1/RunAgent",
+            json={
+                "AgentId": "a",
+                "SessionId": "sess-bg-title",
+                "ResponsesInput": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "调研 2026 企业 AI Agent 平台趋势"}],
+                    }
+                ],
+                "ApiFormat": "responses",
+                "Background": True,
+                "Stream": False,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+
+    session = await resolve_session_service().get_session("sess-bg-title")
+    assert session is not None
+    assert session.first_prompt == "调研 2026 企业 AI Agent 平台趋势"
+    assert session.last_prompt == "调研 2026 企业 AI Agent 平台趋势"
+    assert session.title
+    assert session.title != "sess-bg-title"
+    assert session.title_source == "fallback_first_prompt"
 
 
 @pytest.mark.asyncio

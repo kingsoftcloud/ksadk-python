@@ -1903,6 +1903,23 @@ async def _update_session_metadata_after_user_turn(
     await service.update_session_metadata(session.id, **updates)
 
 
+async def prime_session_metadata_for_user_turn(
+    *,
+    service: Any,
+    session: Session,
+    messages: Sequence[Mapping[str, Any]] | None = None,
+    user_input: str | None = None,
+) -> None:
+    text = str(user_input or "").strip()
+    if not text and messages:
+        text, _display, _content, _parts, _attachments, _attachment_results = _latest_user_turn(messages)
+    await _update_session_metadata_after_user_turn(
+        service=service,
+        session=session,
+        user_input=text,
+    )
+
+
 async def _update_session_metadata_after_assistant_turn(
     *,
     service: Any,

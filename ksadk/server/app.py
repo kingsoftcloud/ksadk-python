@@ -2408,6 +2408,12 @@ async def run_agent_action(request: RunAgentActionRequest):
             session_service_provider=resolve_session_service,
         )
         resolved_background_session_id = background_session.id
+        if resume_input is None:
+            await conversation.prime_session_metadata_for_user_turn(
+                service=service,
+                session=background_session,
+                messages=messages,
+            )
         resume_key = _detached_resume_key_from_input(resolved_background_session_id, resume_input)
         _reject_if_detached_resume_active(resume_key)
         detached = _DetachedSSEStream(
