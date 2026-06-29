@@ -2702,6 +2702,49 @@ async def test_stream_responses_conversation_turn_adds_tool_receipt_to_tool_resu
 
 
 @pytest.mark.asyncio
+async def test_stream_responses_conversation_turn_preserves_tool_call_display_metadata(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    class DisplayToolCallRunner(_StubRunner):
+        async def stream(self, input_data):
+            yield {
+                "type": "tool_call",
+                "tool_name": "workspace.write",
+                "tool_args": {"stage": "write_report"},
+                "run_id": "run-display-tool-call",
+                "stage": "write_report",
+                "event_kind": "artifact",
+                "display_title": "正在生成研究报告",
+                "display_summary": "7/7 生成研究报告：正在综合证据并写入工作区。",
+            }
+            yield {"type": "final", "output": "done"}
+
+    chunks = [
+        chunk
+        async for chunk in stream_responses_conversation_turn(
+            runner=DisplayToolCallRunner(),
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-tool-call-display",
+            messages=[{"role": "user", "content": "研究 agent runtime"}],
+            model="gpt-4o",
+            invocation_id="inv-tool-call-display",
+            prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+            session_service_provider=lambda: service,
+        )
+    ]
+
+    assert any("正在生成研究报告" in chunk for chunk in chunks)
+    events = await service.get_events("sess-tool-call-display")
+    tool_call = next(event for event in events if event.event_type == "tool_call")
+    assert tool_call.metadata["stage"] == "write_report"
+    assert tool_call.metadata["event_kind"] == "artifact"
+    assert tool_call.metadata["display_title"] == "正在生成研究报告"
+    assert tool_call.metadata["display_summary"].startswith("7/7 生成研究报告")
+
+
+@pytest.mark.asyncio
 async def test_stream_responses_conversation_turn_persists_stage_activity_without_receipt(monkeypatch):
     service = InMemorySessionService()
     monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
