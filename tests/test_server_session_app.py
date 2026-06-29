@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from starlette.background import BackgroundTask
 from fastapi.responses import Response
 
 import ksadk.conversations as conversation
@@ -3105,6 +3106,12 @@ async def test_resume_run_action_reuses_checkpoint_and_records_resume(monkeypatc
         framework="langgraph",
         framework_ref={"langgraph": {"thread_id": "tenant:agent:sess-resume-action", "checkpoint_id": "ckpt-1"}},
         invocation_id="inv-1",
+        metadata={
+            "stage_key": "plan_research",
+            "stage_index": 1,
+            "total_stages": 7,
+            "artifact_preview": {"path": "research/x/01-plan.json", "kind": "json"},
+        },
         session_service_provider=lambda: service,
     )
 
@@ -3128,6 +3135,10 @@ async def test_resume_run_action_reuses_checkpoint_and_records_resume(monkeypatc
     assert payload["metadata"]["agentengine"]["run_id"] == "run-1"
     assert runner.calls[-1]["checkpoint_resume"] is True
     assert runner.calls[-1]["framework_ref"]["langgraph"]["checkpoint_id"] == "ckpt-1"
+    assert runner.calls[-1]["metadata"]["stage_key"] == "plan_research"
+    assert runner.calls[-1]["metadata"]["stage_index"] == 1
+    assert runner.calls[-1]["metadata"]["total_stages"] == 7
+    assert runner.calls[-1]["metadata"]["artifact_preview"]["path"] == "research/x/01-plan.json"
     events = await service.get_events("sess-resume-action")
     resume_events = [event for event in events if event.event_type == "run_resume"]
     assert len(resume_events) == 1
@@ -3314,6 +3325,58 @@ async def test_resume_run_action_stream_uses_invocation_id_for_detached_cancel(m
 
     assert response.status_code == 202
     assert captured_invocations == ["run-ui-resume-1"]
+
+
+@pytest.mark.asyncio
+async def test_resume_run_action_stream_passes_checkpoint_metadata_to_runner(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
+    service = InMemorySessionService()
+    runner = _CheckpointResumeRunner()
+
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-resume-stream-metadata")
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+    await conversation_runtime.append_run_checkpoint_event(
+        session_id="sess-resume-stream-metadata",
+        author="demo-agent",
+        run_id="run-1",
+        checkpoint_id="ckpt-1",
+        framework="langgraph",
+        framework_ref={"langgraph": {"thread_id": "tenant:agent:sess-resume-stream-metadata", "checkpoint_id": "ckpt-1"}},
+        invocation_id="inv-checkpoint",
+        metadata={"stage_key": "plan_research", "stage_index": 1, "total_stages": 7},
+        session_service_provider=lambda: service,
+    )
+
+    async def consume_stream(source):
+        async for _chunk in source:
+            pass
+
+    def fake_detached_streaming_response(source, *, invocation_id=None, **kwargs):
+        del invocation_id, kwargs
+        return Response(status_code=202, background=BackgroundTask(consume_stream, source))
+
+    monkeypatch.setattr(server_app_module, "_detached_streaming_response", fake_detached_streaming_response)
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ResumeRun",
+            json={
+                "AgentId": "demo-agent",
+                "SessionId": "sess-resume-stream-metadata",
+                "RunId": "run-1",
+                "CheckpointId": "ckpt-1",
+                "ResumeAttemptId": "resume-1",
+                "InvocationId": "run-ui-resume-1",
+                "Stream": True,
+            },
+        )
+
+    assert response.status_code == 202
+    assert runner.calls[-1]["checkpoint_resume"] is True
+    assert runner.calls[-1]["metadata"]["stage_key"] == "plan_research"
+    assert runner.calls[-1]["metadata"]["stage_index"] == 1
 
 
 @pytest.mark.asyncio

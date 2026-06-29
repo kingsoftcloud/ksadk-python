@@ -1616,6 +1616,8 @@ async def _resolve_checkpoint_resume_input_from_session(
         "resume_attempt_id": resume_attempt_id or f"resume_{uuid.uuid4().hex}",
         "framework": checkpoint["Framework"],
         "framework_ref": checkpoint["FrameworkRef"],
+        "metadata": dict(checkpoint.get("Metadata") or {}),
+        "checkpoint_metadata": dict(checkpoint.get("Metadata") or {}),
         "resume_instruction_enabled": bool(
             resume_input.get("resume_instruction_enabled")
             or resume_input.get("ResumeInstructionEnabled")
@@ -2065,6 +2067,8 @@ async def resume_run_action(request: ResumeRunActionRequest):
         "resume_attempt_id": str(request.ResumeAttemptId or f"resume_{uuid.uuid4().hex}"),
         "framework": checkpoint["Framework"],
         "framework_ref": checkpoint["FrameworkRef"],
+        "metadata": dict(checkpoint.get("Metadata") or {}),
+        "checkpoint_metadata": dict(checkpoint.get("Metadata") or {}),
         "resume_instruction_enabled": bool(getattr(request, "ResumeInstructionEnabled", False)),
         "resume_instruction": str(getattr(request, "ResumeInstruction", "") or "").strip(),
     }
