@@ -46,7 +46,7 @@
 - 同步 ksadk-web 静态资源与 reasoning control 文案/配置，保证本地 UI 与 Hosted UI 的模型、思考能力和 custom UI bootstrap 行为一致。
 - Hermes dashboard open、本地 dry-run bootstrap defaults、OpenClaw terminal session 参数继续保持和 0.6.6 runtime model policy 兼容。
 - LanceDB memory backend manifest 语义收敛，provider 注册、渲染、schema 字段和 OpenClaw 配置生成保持一致。
-- `PreviewCheckpointResume` action 重命名为 `GetCheckpointResumePreview`。
+- 旧 checkpoint 预览 action 统一为 `GetCheckpointResumePreview`。
 - `ListSessionCheckpoints` 新增 `OnlyResumable` / `Framework` / `Offset` / `Limit` 过滤参数和 `Total` / `Offset` / `Limit` 返回字段。
 - `ResumeRun` 对终态 checkpoint 返回 noop 响应而非直接拒绝。
 - server 端静态文件路由从 `StaticFiles` 挂载改为 catch-all `/{requested_path:path}` 动态解析。
@@ -58,6 +58,7 @@
 
 ### 修复
 
+- 修复 `RunAgent(Background=true)` 完成、失败、取消时同一 `InvocationId` 可能写入重复 terminal `run_status` 的问题；`stream_responses_conversation_turn` 仍为终态主写入者，`_DetachedSSEStream` 仅在异常兜底且无已有终态时补写。
 - 修复本地 `agentengine web` 因 PostgreSQL session backend 不可用导致 `CreateSession` / `ListSessions` 503 的问题，本地调试默认回落到 local session。
 - 修复本地 LangGraph checkpoint backend 默认值与 demo/框架路径不一致的问题，默认使用 SQLite checkpoint 以便本地可调试恢复链路。
 - 修复项目 `.env` 没有作为本地 Web 默认配置读取，导致本地调试和远端部署配置表现不一致的问题。
