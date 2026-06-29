@@ -43,6 +43,7 @@ def _isolate_hermes_model_env(monkeypatch):
         "HERMES_LANGFUSE_SAMPLE_RATE",
         "HERMES_LANGFUSE_MAX_CHARS",
         "HERMES_LANGFUSE_DEBUG",
+        "KSYUN_REGION",
         "WPSXIEZUO_APP_ID",
         "WPSXIEZUO_APP_KEY",
         "WPSXIEZUO_API_BASE",

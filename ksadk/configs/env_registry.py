@@ -12,7 +12,7 @@ class EnvVarSpec:
     sensitive: bool = False
 
 
-ENV_VAR_REGISTRY: tuple[EnvVarSpec, ...] = (
+_ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec("KSADK_ADK_SESSION_BACKEND", "sessions", "ADK-native session backend selector."),
     EnvVarSpec("KSADK_ADK_SESSION_PATH", "sessions", "ADK-native SQLite session database path."),
     EnvVarSpec("KSADK_ADK_SESSION_URL", "sessions", "ADK-native database session URL.", sensitive=True),
@@ -52,6 +52,8 @@ ENV_VAR_REGISTRY: tuple[EnvVarSpec, ...] = (
         "pip install timeout seconds for source builds.",
         "2700",
     ),
+    EnvVarSpec("KSADK_CHECKPOINT_BACKEND", "sessions", "LangGraph checkpoint backend selector.", "local"),
+    EnvVarSpec("KSADK_CHECKPOINT_PATH", "sessions", "Local SQLite checkpoint database path."),
     EnvVarSpec(
         "KSADK_CORE_RUNTIME_REQUIREMENTS",
         "builders",
@@ -72,6 +74,7 @@ ENV_VAR_REGISTRY: tuple[EnvVarSpec, ...] = (
     EnvVarSpec("KSADK_KB_SEARCH_METHOD", "knowledge_base", "Knowledge-base search method.", "intelligence_search"),
     EnvVarSpec("KSADK_KB_SECRET_KEY", "knowledge_base", "Knowledge-base API secret key.", sensitive=True),
     EnvVarSpec("KSADK_KB_TOP_K", "knowledge_base", "Knowledge-base retrieval result count.", "5"),
+    EnvVarSpec("KSADK_LANGGRAPH_CHECKPOINT_DSN", "sessions", "LangGraph PostgreSQL checkpoint DSN.", sensitive=True),
     EnvVarSpec("KSADK_LOCAL_SKILLS_DIR", "skills", "Local directory containing extracted Skill packages."),
     EnvVarSpec("KSADK_LTM", "memory", "AICP long-term-memory connection prefix."),
     EnvVarSpec("KSADK_LTM_ACCESS_KEY", "memory", "Long-term-memory API access key.", sensitive=True),
@@ -128,9 +131,11 @@ ENV_VAR_REGISTRY: tuple[EnvVarSpec, ...] = (
     EnvVarSpec("KSADK_SELECTED_SKILL_NAMES", "skills", "Comma-separated Skill names selected by the outer agent."),
     EnvVarSpec("KSADK_SESSIONS_TABLE", "sessions", "Internal SQLite sessions table constant."),
     EnvVarSpec("KSADK_SESSION_BACKEND", "sessions", "Conversation session backend selector.", "local"),
+    EnvVarSpec("KSADK_SESSION_CONNECT_TIMEOUT", "sessions", "Conversation PostgreSQL connection timeout seconds.", "5"),
     EnvVarSpec("KSADK_SESSION_DSN", "sessions", "Conversation session database DSN.", sensitive=True),
     EnvVarSpec("KSADK_SESSION_NAMESPACE", "sessions", "Conversation session namespace."),
     EnvVarSpec("KSADK_SESSION_PATH", "sessions", "Conversation local SQLite database path."),
+    EnvVarSpec("KSADK_SESSION_PG_CONNECT_TIMEOUT", "sessions", "Legacy PostgreSQL session connection timeout seconds.", "5"),
     EnvVarSpec("KSADK_SKILLS_MODE", "skills", "Skill loading mode: auto, local, or sandbox.", "auto"),
     EnvVarSpec(
         "KSADK_SKILL_ALLOW_HASH_MISMATCH",
@@ -177,6 +182,10 @@ ENV_VAR_REGISTRY: tuple[EnvVarSpec, ...] = (
     EnvVarSpec("KSADK_TOOL_APPROVAL_MODE", "tools", "Built-in tool approval mode: off or strict.", "off"),
     EnvVarSpec("KSADK_UPDATED_AT", "configs", "Internal config update timestamp field."),
     EnvVarSpec("KSADK_VERSION", "configs", "Internal config version field."),
+    EnvVarSpec("KSADK_UI_BUNDLE_PATH", "web", "Custom agent UI bundle path relative to project root."),
+    EnvVarSpec("KSADK_UI_PATH", "web", "Custom agent UI mount path."),
+    EnvVarSpec("KSADK_UI_PROFILE", "web", "Agent UI profile selector, such as builtin or custom."),
+    EnvVarSpec("KSADK_UI_URL", "web", "External custom agent UI URL."),
     EnvVarSpec("KSADK_WEB_CACHE_DIR", "web", "Directory used by hosted Web UI static asset sync cache."),
     EnvVarSpec("KSADK_WEB_PACKAGE", "web", "KsADK Web npm package name.", "@kingsoftcloud/ksadk-web"),
     EnvVarSpec("KSADK_WEB_RELEASE_URL", "web", "Optional KsADK Web tarball URL fallback."),
@@ -246,6 +255,10 @@ ENV_VAR_REGISTRY: tuple[EnvVarSpec, ...] = (
     EnvVarSpec("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "tracing", "OTLP traces protocol; takes precedence over the generic protocol."),
     EnvVarSpec("OTEL_RESOURCE_ATTRIBUTES", "tracing", "OpenTelemetry resource attributes in key=value comma-separated form."),
     EnvVarSpec("OTEL_SERVICE_NAME", "tracing", "OpenTelemetry service name."),
+)
+
+ENV_VAR_REGISTRY: tuple[EnvVarSpec, ...] = tuple(
+    sorted(_ENV_VAR_REGISTRY_ITEMS, key=lambda spec: spec.name)
 )
 
 

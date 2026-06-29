@@ -127,6 +127,8 @@
 | `LANGFUSE_SECRET_KEY` | 条件必传 | 无 | 是 | 平台 Secret / 开发者 | 启用 Langfuse 时需要。 |
 | `LANGFUSE_BASE_URL` | 否 | `LANGFUSE_HOST` | 否 | 平台 / 开发者 | Langfuse endpoint。 |
 | `LANGFUSE_USE_CALLBACK` | 否 | 无 | 否 | 开发者 | 控制是否启用 callback 集成。 |
+| `CLOUD_MONITOR_APP_KEY` | 条件必传 | 无 | 是 | 平台 Secret | 云监控 OTLP AppKey。 |
+| `CLOUD_MONITOR_OTLP_ENDPOINT` | 条件必传 | 无 | 否 | 平台 / 开发者 | CloudMonitor 通用 OTLP HTTP endpoint。 |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | 条件必传 | 无 | 否 | 平台 / 开发者 | OTel Collector endpoint；未设置 traces 专用 endpoint 时，KsADK 会派生 `/v1/traces`。 |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | 否 | 无 | 否 | 平台 / 开发者 | 通用 OTLP 协议；KsADK 自动 HTTP exporter 当前支持 `http/protobuf`。 |
 | `OTEL_EXPORTER_OTLP_HEADERS` | 否 | 无 | 是 | 平台 / 开发者 | 通用 OTLP headers，逗号分隔，值按 URL encoding；可能包含 `Authorization`。 |
@@ -243,7 +245,12 @@
 | `KSADK_SESSION_BACKEND` | Sessions | 否 | `local` | `AGENTENGINE_SESSION_BACKEND`、`KSADK_STM_BACKEND` | 否 | 开发者 / 平台 | 否 | 会话存储 backend。ADK/STM 也会把它作为兜底。 |
 | `KSADK_SESSION_DSN` | Sessions | 条件必传 | 未设置 | `KSADK_STM_URL`、`KSADK_STM_DB_URL`、`KSADK_ADK_SESSION_URL` | 是 | Secret | 否 | PostgreSQL DSN。`postgres` / `database` backend 时必传。ADK/STM 也会把它作为兜底。 |
 | `KSADK_SESSION_PATH` | Sessions | 否 | 项目目录下本地 sqlite 路径 | `KSADK_STM_PATH`、`KSADK_STM_DB_PATH` | 否 | 开发者 / 本地运行时 | 否 | 本地 SQLite 会话路径。 |
+| `KSADK_SESSION_CONNECT_TIMEOUT` | Sessions | 否 | `5` | `KSADK_SESSION_PG_CONNECT_TIMEOUT` | 否 | 开发者 / 平台 | 否 | PostgreSQL 会话 backend 连接超时秒数。 |
+| `KSADK_SESSION_PG_CONNECT_TIMEOUT` | Sessions 旧兼容 | 否 | `5` | `KSADK_SESSION_CONNECT_TIMEOUT` | 否 | 兼容旧部署 | 否 | 旧 PostgreSQL session 连接超时变量。新部署优先 `KSADK_SESSION_CONNECT_TIMEOUT`。 |
 | `KSADK_SESSION_NAMESPACE` | Sessions | 否 | 未设置 | `KSADK_WORKSPACE_ID`、`AGENTENGINE_WORKSPACE_ID`、`KSADK_TENANT_ID`、`AGENTENGINE_TENANT_ID` | 否 | 平台 | 否 | 会话 namespace。 |
+| `KSADK_CHECKPOINT_BACKEND` | LangGraph checkpoint | 否 | `local` | `local` 等价本地 SQLite；也支持 `sqlite`、`memory`、`postgres` | 否 | 开发者 / 平台 | 否 | LangGraph checkpoint backend。`agentengine web` 本地调试默认优先使用 SQLite。 |
+| `KSADK_CHECKPOINT_PATH` | LangGraph checkpoint | 否 | 项目目录下 `.agentengine/ui/checkpoints.sqlite` | 无 | 否 | 开发者 / 本地运行时 | 否 | 本地 SQLite checkpoint 文件路径。 |
+| `KSADK_LANGGRAPH_CHECKPOINT_DSN` | LangGraph checkpoint | 条件必传 | 未设置 | 无 | 是 | Secret | 否 | `KSADK_CHECKPOINT_BACKEND=postgres` 时的 LangGraph checkpointer PostgreSQL DSN。 |
 | `KSADK_TENANT_ID` | Sessions | 否 | 未设置 | `AGENTENGINE_TENANT_ID` | 否 | 平台 | 否 | 租户 id。 |
 | `KSADK_WORKSPACE_ID` | Sessions | 否 | 未设置 | `AGENTENGINE_WORKSPACE_ID` | 否 | 平台 | 否 | workspace id。 |
 | `KSADK_STM_BACKEND` | 旧 STM / Sessions fallback | 否 | 未设置 | `KSADK_SESSION_BACKEND` | 否 | 兼容旧部署 | 否 | 旧变量。新部署优先 `KSADK_SESSION_BACKEND`，但 ADK/STM 仍可读。 |
@@ -309,6 +316,10 @@
 | `KSADK_AICP_ENDPOINT_MODE` | AICP resolver | 否 | `auto` | 无 | 否 | 平台 / 开发者 | 否 | AICP endpoint 选择策略，支持 `auto/detect/internal/inner/public`。内网环境可显式设为 `inner`，跳过自动探测。 |
 | `AGENTENGINE_MODEL_ALLOWLIST` | CLI model / OpenClaw | 否 | 未设置 | `OPENCLAW_MODEL_ALLOWLIST` | 否 | 平台 / 开发者 | 否 | 模型列表过滤。OpenClaw 场景优先使用 `OPENCLAW_MODEL_ALLOWLIST`。 |
 | `AGENTENGINE_UI_DIR` | 本地 Web UI / Sessions | 否 | 未设置 | 无 | 否 | 本地开发者 | 否 | 本地 UI 静态目录覆盖，主要用于 Web/文件上传本地调试。 |
+| `KSADK_UI_PROFILE` | 本地 Web UI / Runtime bootstrap | 否 | `builtin` | 无 | 否 | 开发者 / 平台 | 否 | Agent UI profile。`custom` 时 runtime 会暴露自定义 UI bootstrap 信息。 |
+| `KSADK_UI_PATH` | 本地 Web UI / Runtime bootstrap | 否 | `/` | 无 | 否 | 开发者 / 平台 | 否 | 自定义 UI 挂载路径，例如 `/research`。 |
+| `KSADK_UI_URL` | Runtime bootstrap | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 外部自定义 UI URL。 |
+| `KSADK_UI_BUNDLE_PATH` | Runtime bootstrap | 否 | 自动探测 `research-ui/dist` | 无 | 否 | 开发者 / 平台 | 否 | 自定义 UI 静态 bundle 相对项目路径。 |
 | `KSADK_WEB_VERSION` | Hosted Web UI static sync | 否 | `latest` | 可显式设置 `0.2.7` / `v0.2.7` | 否 | 构建环境 / 开发者 | 否 | `make sync-ksadk-web-static` 使用的 `@kingsoftcloud/ksadk-web` npm dist-tag 或版本，默认消费最新 release。 |
 | `KSADK_WEB_PACKAGE` | Hosted Web UI static sync | 否 | `@kingsoftcloud/ksadk-web` | 无 | 否 | 构建环境 / 开发者 | 否 | 本地 UI static 同步使用的 npm 包名。 |
 | `KSADK_WEB_TARBALL_NAME` | Hosted Web UI static sync | 否 | 根据 `KSADK_WEB_VERSION` 派生 | 无 | 否 | 构建环境 | 否 | 仅在设置 `KSADK_WEB_RELEASE_URL` 时作为下载保存文件名；npm pack 模式会使用 npm 返回的真实 tarball 文件名。 |
@@ -358,6 +369,17 @@
 | `LANGFUSE_USE_CALLBACK` | Tracing | 否 | 未设置 | 无 | 否 | 开发者 | 否 | 是否启用 Langfuse callback。 |
 | `LANGCHAIN_TRACING_V2` | LangChain tracing | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | LangChain v2 tracing 开关。 |
 | `LANGCHAIN_VERBOSE` | Runtime image | 否 | `true` | 无 | 否 | 开发者 / 平台 | 否 | 模板运行时 LangChain verbose 开关。 |
+| `CLOUD_MONITOR_APP_KEY` | CloudMonitor tracing | 条件必传 | 未设置 | 无 | 是 | 平台 Secret | 否 | 云监控 OTLP AppKey；启用 CloudMonitor OTLP 上报时需要。 |
+| `CLOUD_MONITOR_OTLP_ENABLED` | CloudMonitor tracing | 否 | 自动判断 | 无 | 否 | 平台 / 开发者 | 否 | 显式启用或禁用 CloudMonitor OTLP exporter。 |
+| `CLOUD_MONITOR_OTLP_ENDPOINT` | CloudMonitor tracing | 条件必传 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | CloudMonitor 通用 OTLP HTTP endpoint；未设置 traces endpoint 时会派生 `/v1/traces`。 |
+| `CLOUD_MONITOR_OTLP_PROTOCOL` | CloudMonitor tracing | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | CloudMonitor 通用 OTLP 协议，当前支持 `http/protobuf`。 |
+| `CLOUD_MONITOR_OTLP_HEADERS` | CloudMonitor tracing | 否 | 未设置 | 无 | 是 | 平台 / 开发者 | 否 | CloudMonitor OTLP 附加 headers，逗号分隔且 URL encoded。 |
+| `CLOUD_MONITOR_OTLP_TRACES_ENDPOINT` | CloudMonitor tracing | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | CloudMonitor traces 专用 endpoint，优先于通用 endpoint。 |
+| `CLOUD_MONITOR_OTLP_TRACES_PROTOCOL` | CloudMonitor tracing | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | CloudMonitor traces 专用协议，优先于通用 protocol。 |
+| `CLOUD_MONITOR_LANGFUSE_ENABLED` | CloudMonitor Langfuse callback | 否 | 自动判断 | 无 | 否 | 平台 / 开发者 | 否 | 显式启用或禁用 CloudMonitor Langfuse SDK callback。 |
+| `CLOUD_MONITOR_LANGFUSE_HOST` | CloudMonitor Langfuse callback | 条件必传 | 未设置 | `CLOUD_MONITOR_OTLP_ENDPOINT` | 否 | 平台 / 开发者 | 否 | CloudMonitor AppMonitor Langfuse SDK host。 |
+| `CLOUD_MONITOR_LANGFUSE_PUBLIC_KEY` | CloudMonitor Langfuse callback | 条件必传 | 未设置 | 无 | 是 | 平台 Secret | 否 | CloudMonitor AppMonitor Langfuse public key。 |
+| `CLOUD_MONITOR_LANGFUSE_SECRET_KEY` | CloudMonitor Langfuse callback | 条件必传 | 未设置 | 无 | 是 | 平台 Secret | 否 | CloudMonitor AppMonitor Langfuse secret key。 |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OTel | 条件必传 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | OTel Collector endpoint；未设置 traces 专用 endpoint 时，KsADK 会派生 `/v1/traces`。 |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | OTel | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 通用 OTLP 协议；KsADK 自动 HTTP exporter 当前支持 `http/protobuf`。 |
 | `OTEL_EXPORTER_OTLP_HEADERS` | OTel | 否 | 未设置 | 无 | 是 | 平台 / 开发者 | 否 | 通用 OTLP headers，逗号分隔，值按 URL encoding；可能包含 `Authorization`。 |

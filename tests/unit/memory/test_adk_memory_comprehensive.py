@@ -1001,6 +1001,9 @@ class TestADKRunnerMemoryIntegration:
         return runner
 
     def test_init_stm_no_env(self, monkeypatch):
+        monkeypatch.delenv("KSADK_SESSION_BACKEND", raising=False)
+        monkeypatch.delenv("KSADK_SESSION_PATH", raising=False)
+        monkeypatch.delenv("KSADK_SESSION_DSN", raising=False)
         monkeypatch.delenv("KSADK_STM_BACKEND", raising=False)
         monkeypatch.delenv("KSADK_STM_PATH", raising=False)
         monkeypatch.delenv("KSADK_STM_URL", raising=False)
