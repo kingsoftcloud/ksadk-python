@@ -3644,6 +3644,50 @@ async def _iter_conversation_turn_events(
                                 "run_id": chunk.get("run_id"),
                             }
                             continue
+                        if chunk_type in {"stage_tool_call", "stage_tool_result"}:
+                            emitted_response_artifacts = True
+                            tool_name = str(chunk.get("tool_name") or chunk.get("name") or "tool")
+                            tool_args = chunk.get("tool_args", chunk.get("args", {}))
+                            if not isinstance(tool_args, Mapping):
+                                tool_args = {}
+                            tool_output = chunk.get("tool_output", chunk.get("output", ""))
+                            event_kind = str(chunk.get("event_kind") or "")
+                            display_title = str(chunk.get("display_title") or tool_name)
+                            display_summary = str(
+                                chunk.get("display_summary") or chunk.get("text") or ""
+                            )
+                            await append_conversation_event(
+                                session_id=prepared.session_id,
+                                author=runner_name,
+                                role="model" if chunk_type == "stage_tool_call" else "user",
+                                text=display_summary or tool_name,
+                                invocation_id=prepared.invocation_id,
+                                event_type=chunk_type,
+                                metadata={
+                                    "tool_name": tool_name,
+                                    "tool_args": dict(tool_args),
+                                    "tool_output": tool_output,
+                                    "run_id": chunk.get("run_id"),
+                                    "stage": chunk.get("stage") or tool_args.get("stage"),
+                                    "event_kind": event_kind,
+                                    "display_title": display_title,
+                                    "display_summary": display_summary,
+                                },
+                                session_service_provider=provider,
+                            )
+                            emitted_anything = True
+                            yield {
+                                "type": chunk_type,
+                                "name": tool_name,
+                                "args": dict(tool_args),
+                                "output": tool_output,
+                                "run_id": chunk.get("run_id"),
+                                "stage": chunk.get("stage") or tool_args.get("stage"),
+                                "event_kind": event_kind,
+                                "display_title": display_title,
+                                "display_summary": display_summary,
+                            }
+                            continue
                         if chunk_type == "tool_result":
                             emitted_response_artifacts = True
                             tool_name = str(chunk.get("tool_name") or "tool")
@@ -3968,6 +4012,21 @@ async def stream_conversation_turn(
                     "run_id": event.get("run_id"),
                 },
             )
+        elif event_type in {"stage_tool_call", "stage_tool_result"}:
+            yield _response_sse(
+                f"response.ksadk.{event_type}",
+                {
+                    "type": event_type,
+                    "name": event.get("name"),
+                    "args": event.get("args", {}),
+                    "output": event.get("output", ""),
+                    "run_id": event.get("run_id"),
+                    "stage": event.get("stage"),
+                    "event_kind": event.get("event_kind"),
+                    "display_title": event.get("display_title"),
+                    "display_summary": event.get("display_summary"),
+                },
+            )
         elif event_type == "interrupt":
             yield _response_sse(
                 "response.approval_request", {"interrupt_info": event.get("interrupt_info")}
@@ -4197,6 +4256,23 @@ async def stream_responses_conversation_turn(
                     "name": event.get("name"),
                     "output": event.get("output", ""),
                     "run_id": event.get("run_id"),
+                },
+            )
+            continue
+
+        if event_type in {"stage_tool_call", "stage_tool_result"}:
+            yield _response_sse(
+                f"response.ksadk.{event_type}",
+                {
+                    "type": event_type,
+                    "name": event.get("name"),
+                    "args": event.get("args", {}),
+                    "output": event.get("output", ""),
+                    "run_id": event.get("run_id"),
+                    "stage": event.get("stage"),
+                    "event_kind": event.get("event_kind"),
+                    "display_title": event.get("display_title"),
+                    "display_summary": event.get("display_summary"),
                 },
             )
             continue
