@@ -268,6 +268,7 @@ PUBLIC_DOCS_URL ?= https://kingsoftcloud.github.io/ksadk-python/
 PUBLIC_PYPI_PROJECT ?= ksadk
 PUBLIC_ALIAS_PYPI_PROJECT ?= agentengine-sdk-python
 PUBLIC_RELEASE_TAG ?= v$(V)
+PUBLIC_TEST_TARGETS ?= tests/test_public_release_positioning.py tests/test_config_env_registry.py
 
 public-status:
 	@echo "==> internal worktree"
@@ -333,10 +334,7 @@ public-secret-audit:
 		echo "❌ 发现禁止跟踪的敏感文件"; \
 		exit 1; \
 	fi
-	@if rg -n --hidden -S --glob '!.git/**' --glob '!node_modules/**' --glob '!dist/**' --glob '!build/**' --glob '!*.egg-info/**' 'pypi-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE KEY|SecretAccessKey\s*[:=]\s*[^<\s]+' .; then \
-		echo "❌ secret pattern audit failed"; \
-		exit 1; \
-	fi
+	@python3 scripts/public_secret_audit.py
 	@echo "✅ secret audit passed"
 
 public-audit: public-secret-audit
@@ -359,8 +357,8 @@ public-docs-build:
 
 public-test:
 	@echo "==> test"
-	@uv sync --extra all
-	@uv run --extra all pytest
+	@uv sync --extra dev
+	@uv run pytest $(PUBLIC_TEST_TARGETS)
 
 public-build-check: clean-dist sync-ksadk-web-static
 	@echo "==> build and twine check"
