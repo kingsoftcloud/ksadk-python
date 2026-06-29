@@ -117,7 +117,6 @@ class _DetachedSSEStream:
         self._subscribers: set[asyncio.Queue[str | None]] = set()
         self._backlog: list[str] = []
         self._done = False
-        self._terminal_status = "completed"
         self._task = asyncio.create_task(self._consume())
         _DETACHED_STREAMS.add(self._task)
         self._task.add_done_callback(_DETACHED_STREAMS.discard)
@@ -127,7 +126,19 @@ class _DetachedSSEStream:
                 lambda _task: _DETACHED_STREAMS_BY_INVOCATION.pop(self.invocation_id or "", None)
             )
 
+    async def _has_terminal_run_status(self) -> bool:
+        if not self.session_id or not self.invocation_id:
+            return False
+        service = resolve_session_service()
+        for event in reversed(await service.get_events(self.session_id)):
+            if event.invocation_id != self.invocation_id or event.event_type != "run_status":
+                continue
+            status = str((event.content or {}).get("status") or "").strip().lower()
+            return status in _RUN_TERMINAL_STATUSES
+        return False
+
     async def _consume(self) -> None:
+        terminal_fallback_status: str | None = None
         try:
             async for chunk in self._source:
                 self._backlog.append(chunk)
@@ -141,10 +152,10 @@ class _DetachedSSEStream:
                     return_exceptions=True,
                 )
         except asyncio.CancelledError:
-            self._terminal_status = "cancelled"
+            terminal_fallback_status = "cancelled"
             raise
         except Exception:
-            self._terminal_status = "failed"
+            terminal_fallback_status = "failed"
             logger.exception("Detached SSE stream failed")
             raise
         finally:
@@ -155,21 +166,19 @@ class _DetachedSSEStream:
                     *(subscriber.put(None) for subscriber in subscribers),
                     return_exceptions=True,
                 )
-            # background 路径（session_id 非空）写终态 run_status，供 SubscribeRunEvents
-            # 判定 [DONE]。非 background 路径不传 session_id（默认 None），终态由
-            # stream_responses_conversation_turn 内部写，这里用守卫跳过避免重复。
-            if self.session_id:
+            if terminal_fallback_status and self.session_id:
                 try:
-                    await conversation.append_run_status_event(
-                        session_id=self.session_id,
-                        author="system",
-                        status=self._terminal_status,
-                        invocation_id=self.invocation_id or "",
-                        detail=f"background_{self._terminal_status}:{self.invocation_id or ''}",
-                        session_service_provider=resolve_session_service,
-                    )
+                    if not await self._has_terminal_run_status():
+                        await conversation.append_run_status_event(
+                            session_id=self.session_id,
+                            author="system",
+                            status=terminal_fallback_status,
+                            invocation_id=self.invocation_id or "",
+                            detail=f"background_{terminal_fallback_status}:{self.invocation_id or ''}",
+                            session_service_provider=resolve_session_service,
+                        )
                 except Exception:
-                    logger.exception("failed to write background terminal status")
+                    logger.exception("failed to write background terminal status fallback")
 
     def subscribe(self) -> asyncio.Queue[str | None]:
         queue: asyncio.Queue[str | None] = asyncio.Queue()
