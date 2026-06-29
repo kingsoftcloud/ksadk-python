@@ -991,6 +991,8 @@ def _build_runner_request_payload(
             payload["run_id"] = str(prepared.resume_input.get("run_id") or "")
             payload["checkpoint_id"] = str(prepared.resume_input.get("checkpoint_id") or "")
             payload["framework_ref"] = dict(prepared.resume_input.get("framework_ref") or {})
+            payload["metadata"] = dict(prepared.resume_input.get("metadata") or {})
+            payload["checkpoint_metadata"] = dict(prepared.resume_input.get("checkpoint_metadata") or {})
         else:
             payload["input"] = prepared.resume_input
             payload["resume"] = True
@@ -1613,6 +1615,14 @@ def _normalize_checkpoint_resume_input(resume_input: Mapping[str, Any]) -> dict[
         "resume_attempt_id": resume_attempt_id,
         "framework": framework,
         "framework_ref": framework_ref,
+        "metadata": dict(resume_input.get("metadata") or resume_input.get("Metadata") or {}),
+        "checkpoint_metadata": dict(
+            resume_input.get("checkpoint_metadata")
+            or resume_input.get("CheckpointMetadata")
+            or resume_input.get("metadata")
+            or resume_input.get("Metadata")
+            or {}
+        ),
         "resume_instruction_enabled": bool(
             resume_input.get("resume_instruction_enabled")
             or resume_input.get("ResumeInstructionEnabled")
