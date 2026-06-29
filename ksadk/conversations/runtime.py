@@ -2549,6 +2549,21 @@ async def append_run_status_event(
     session_service_provider: Callable[[], Any] | None = None,
 ) -> SessionEvent:
     """记录运行态事件，供 UI/恢复逻辑区分 turn 生命周期。"""
+    service = (session_service_provider or resolve_session_service)()
+    if invocation_id:
+        try:
+            for event in reversed(await service.get_events(session_id)):
+                if event.event_type != "run_status" or event.invocation_id != invocation_id:
+                    continue
+                event_status = str(
+                    (event.metadata or {}).get("status")
+                    or (event.content or {}).get("status")
+                    or ""
+                )
+                if event_status == status:
+                    return event
+        except Exception:
+            pass
     content = {"status": status}
     if detail:
         content["detail"] = detail
@@ -2561,7 +2576,7 @@ async def append_run_status_event(
         event_type="run_status",
         content=content,
         metadata={"status": status, **({"detail": detail} if detail else {})},
-        session_service_provider=session_service_provider,
+        session_service_provider=lambda: service,
     )
 
 
