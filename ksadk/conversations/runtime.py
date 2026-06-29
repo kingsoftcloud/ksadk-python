@@ -3553,6 +3553,7 @@ async def _iter_conversation_turn_events(
         accumulated_text = ""
         emitted_anything = False
         emitted_response_artifacts = False
+        saw_final_chunk = False
         responses_output: list[Any] = []
         responses_response_id: str | None = response_id
         runner_agentengine_metadata: dict[str, Any] = {}
@@ -3577,6 +3578,7 @@ async def _iter_conversation_turn_events(
                             break
                         chunk_type = chunk.get("type")
                         if chunk_type == "checkpoint":
+                            emitted_anything = True
                             chunk_agentengine_metadata = _extract_agentengine_metadata(chunk)
                             if chunk_agentengine_metadata:
                                 runner_agentengine_metadata.update(chunk_agentengine_metadata)
@@ -3831,6 +3833,7 @@ async def _iter_conversation_turn_events(
                             }
                             return
                         if chunk_type == "final":
+                            saw_final_chunk = True
                             final_text = str(chunk.get("output", ""))
                             if final_text:
                                 accumulated_text = final_text
@@ -3925,6 +3928,26 @@ async def _iter_conversation_turn_events(
             assistant_metadata["usage"] = stream_usage
         if responses_response_id:
             assistant_metadata["response_id"] = responses_response_id
+        if emitted_anything and not saw_final_chunk and not accumulated_text:
+            await append_run_status_event(
+                session_id=prepared.session_id,
+                author=runner_name,
+                status="failed",
+                invocation_id=prepared.invocation_id,
+                detail="runner_stream_ended_without_final_output",
+                session_service_provider=provider,
+            )
+            _finish_span()
+            yield {
+                "type": "error",
+                "message": "Agent 运行流已结束，但没有返回最终输出。",
+                "session_id": prepared.session_id,
+                "metadata": {
+                    **assistant_metadata,
+                    "detail": "runner_stream_ended_without_final_output",
+                },
+            }
+            return
         _set_conversation_output_attributes(span, accumulated_text)
 
         await append_conversation_event(

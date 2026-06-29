@@ -32,6 +32,7 @@ from ksadk.builders.container_builder import (
     registry_kind_label,
     resolve_registry_credentials,
 )
+from ksadk.configs.settings import DEFAULT_RUNTIME_TIMEZONE
 from ksadk.configs.env_registry import ENV_VAR_REGISTRY
 from ksadk.configs.global_config import get_env_from_global_config
 from ksadk.api import AgentEngineClient, DryRunExit
@@ -208,6 +209,7 @@ class ServerlessProvider(BaseDeployProvider):
             project_env_count = len(project_env)
             env_vars.update(project_env)
         env_vars.update(explicit_env_vars or {})
+        env_vars.setdefault("TZ", DEFAULT_RUNTIME_TIMEZONE)
         return env_vars, env_file.exists(), project_env_count
 
     @staticmethod

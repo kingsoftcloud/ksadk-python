@@ -327,6 +327,21 @@ class _StageActivityStreamingRunner(_StreamingRunner):
         yield {"type": "final", "output": "done"}
 
 
+class _StageActivityNoFinalStreamingRunner(_StreamingRunner):
+    async def stream(self, input_data: dict):
+        self.stream_calls.append(input_data)
+        yield {
+            "type": "stage_tool_result",
+            "tool_name": "deepresearch_query_agent",
+            "tool_args": {"stage": "search_web", "query": "agent runtime"},
+            "tool_output": {"ok": True, "result_count": 3},
+            "event_kind": "query",
+            "display_title": "检索公开网页",
+            "display_summary": "返回 3 条结果",
+            "run_id": "run-stage-activity",
+        }
+
+
 class _ResumeStreamingRunner(_StreamingRunner):
     async def stream(self, input_data: dict):
         self.stream_calls.append(input_data)
@@ -2724,6 +2739,40 @@ async def test_stream_responses_conversation_turn_persists_stage_activity_withou
 
 
 @pytest.mark.asyncio
+async def test_stream_responses_conversation_turn_marks_non_final_stage_stream_failed(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _StageActivityNoFinalStreamingRunner()
+
+    chunks = [
+        chunk
+        async for chunk in stream_responses_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-stage-no-final",
+            messages=[{"role": "user", "content": "研究 agent runtime"}],
+            model="gpt-4o",
+            invocation_id="inv-stage-no-final",
+            prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+            session_service_provider=lambda: service,
+        )
+    ]
+
+    assert any(chunk.startswith("event: response.failed\n") for chunk in chunks)
+    assert not any(chunk.startswith("event: response.completed\n") for chunk in chunks)
+    events = await service.get_events("sess-stage-no-final")
+    run_statuses = [
+        event.content.get("status")
+        for event in events
+        if event.event_type == "run_status" and event.invocation_id == "inv-stage-no-final"
+    ]
+    assert run_statuses == ["in_progress", "failed"]
+    failed_event = [event for event in events if event.event_type == "run_status"][-1]
+    assert failed_event.metadata["detail"] == "runner_stream_ended_without_final_output"
+
+
+@pytest.mark.asyncio
 async def test_stream_responses_conversation_turn_replays_completed_output_items(monkeypatch):
     service = InMemorySessionService()
     monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
@@ -3798,7 +3847,14 @@ async def test_stream_conversation_turn_preserves_checkpoint_phase(monkeypatch):
     assert checkpoint_events[0].metadata["stage"] == "清洗聚合指标"
     assert checkpoint_events[0].metadata["summary"] == "GMV、转化率和退款率已经聚合完成"
     assert checkpoint_events[0].metadata["next_action"] == "恢复后继续生成复盘报告"
-    assert any("response.completed" in chunk for chunk in chunks)
+    assert any("response.error" in chunk for chunk in chunks)
+    assert not any("response.completed" in chunk for chunk in chunks)
+    run_statuses = [
+        event.content.get("status")
+        for event in events
+        if event.event_type == "run_status"
+    ]
+    assert run_statuses == ["in_progress", "failed"]
 
 
 @pytest.mark.asyncio
@@ -3840,7 +3896,14 @@ async def test_stream_checkpoint_resume_falls_back_to_original_run_id(monkeypatc
     assert len(checkpoint_events) == 1
     assert checkpoint_events[0].metadata["run_id"] == "run-original"
     assert checkpoint_events[0].metadata["checkpoint_id"] == "ckpt-stream-after-resume"
-    assert any("response.completed" in chunk for chunk in chunks)
+    assert any("response.error" in chunk for chunk in chunks)
+    assert not any("response.completed" in chunk for chunk in chunks)
+    run_statuses = [
+        event.content.get("status")
+        for event in events
+        if event.event_type == "run_status"
+    ]
+    assert run_statuses == ["in_progress", "failed"]
 
 
 def test_build_history_from_events_prefers_latest_checkpoint_and_tail():
