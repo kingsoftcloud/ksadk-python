@@ -2436,14 +2436,6 @@ async def run_agent_action(request: RunAgentActionRequest):
             detached._task.add_done_callback(
                 lambda _t, inv=invocation_id, rk=resume_key: _clear_detached_resume_key(inv, rk)
             )
-        await conversation.append_run_status_event(
-            session_id=resolved_background_session_id,
-            author="system",
-            status="in_progress",
-            invocation_id=invocation_id,
-            detail=f"background_started:{invocation_id}",
-            session_service_provider=resolve_session_service,
-        )
         return _action_response(
             "RunAgent",
             {

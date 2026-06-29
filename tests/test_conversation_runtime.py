@@ -302,6 +302,31 @@ class _SuccessfulToolResultStreamingRunner(_StreamingRunner):
         yield {"type": "final", "output": "done"}
 
 
+class _StageActivityStreamingRunner(_StreamingRunner):
+    async def stream(self, input_data: dict):
+        self.stream_calls.append(input_data)
+        yield {
+            "type": "stage_tool_call",
+            "tool_name": "deepresearch_query_agent",
+            "tool_args": {"stage": "search_web", "query": "agent runtime"},
+            "event_kind": "query",
+            "display_title": "检索公开网页",
+            "display_summary": "开始检索 agent runtime",
+            "run_id": "run-stage-activity",
+        }
+        yield {
+            "type": "stage_tool_result",
+            "tool_name": "deepresearch_query_agent",
+            "tool_args": {"stage": "search_web", "query": "agent runtime"},
+            "tool_output": {"ok": True, "result_count": 3},
+            "event_kind": "query",
+            "display_title": "检索公开网页",
+            "display_summary": "返回 3 条结果",
+            "run_id": "run-stage-activity",
+        }
+        yield {"type": "final", "output": "done"}
+
+
 class _ResumeStreamingRunner(_StreamingRunner):
     async def stream(self, input_data: dict):
         self.stream_calls.append(input_data)
@@ -2659,6 +2684,43 @@ async def test_stream_responses_conversation_turn_adds_tool_receipt_to_tool_resu
     assert receipt["framework"] == "langgraph"
     assert receipt["status"] == "completed"
     assert receipt["idempotency_key"].startswith("tool_receipt:")
+
+
+@pytest.mark.asyncio
+async def test_stream_responses_conversation_turn_persists_stage_activity_without_receipt(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _StageActivityStreamingRunner()
+
+    chunks = [
+        chunk
+        async for chunk in stream_responses_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-stage-activity",
+            messages=[{"role": "user", "content": "研究 agent runtime"}],
+            model="gpt-4o",
+            invocation_id="inv-stage-activity",
+            prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+            session_service_provider=lambda: service,
+        )
+    ]
+
+    assert any("response.ksadk.stage_tool_call" in chunk for chunk in chunks)
+    assert any("response.ksadk.stage_tool_result" in chunk for chunk in chunks)
+    events = await service.get_events("sess-stage-activity")
+    activity_events = [
+        event for event in events if event.event_type in {"stage_tool_call", "stage_tool_result"}
+    ]
+    assert [event.event_type for event in activity_events] == [
+        "stage_tool_call",
+        "stage_tool_result",
+    ]
+    assert activity_events[0].metadata["tool_name"] == "deepresearch_query_agent"
+    assert activity_events[0].metadata["tool_args"]["query"] == "agent runtime"
+    assert activity_events[1].metadata["tool_output"]["result_count"] == 3
+    assert "tool_receipt" not in activity_events[1].metadata
 
 
 @pytest.mark.asyncio

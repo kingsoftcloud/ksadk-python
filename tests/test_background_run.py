@@ -184,6 +184,33 @@ async def test_run_agent_background_subscribe_gets_terminal_status(bg_client):
     assert _terminal_statuses(await _run_statuses("sess-bg-2", invocation_id)) == ["completed"]
 
 
+@pytest.mark.asyncio
+async def test_run_agent_background_writes_single_in_progress_status(bg_client):
+    """Background 起始态只由 conversation runtime 写一次，避免刷新/订阅看到重复 running。"""
+    app, runner = bg_client
+    transport = ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        resp = await client.post(
+            "/agentengine/api/v1/RunAgent",
+            json={
+                "AgentId": "a",
+                "SessionId": "sess-bg-single-start",
+                "Messages": [{"role": "user", "content": "研究 X"}],
+                "Background": True,
+                "Stream": False,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        invocation_id = resp.json()["Data"]["InvocationId"]
+        await runner.stream_finished.wait()
+
+    statuses = await _run_statuses("sess-bg-single-start", invocation_id)
+    assert statuses.count("in_progress") == 1, (
+        f"期望同一 InvocationId 只有一个 in_progress，实际 statuses: {statuses}"
+    )
+    assert _terminal_statuses(statuses) == ["completed"]
+
+
 async def test_detached_stream_does_not_write_duplicate_completed_status(monkeypatch, tmp_path):
     """_DetachedSSEStream 正常结束时不补写 completed，终态由 conversation stream 主写入。"""
     monkeypatch.setenv("KSADK_SESSION_BACKEND", "memory")

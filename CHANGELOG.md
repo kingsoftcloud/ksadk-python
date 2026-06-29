@@ -59,6 +59,8 @@
 ### 修复
 
 - 修复 `RunAgent(Background=true)` 完成、失败、取消时同一 `InvocationId` 可能写入重复 terminal `run_status` 的问题；`stream_responses_conversation_turn` 仍为终态主写入者，`_DetachedSSEStream` 仅在异常兜底且无已有终态时补写。
+- 修复 `RunAgent(Background=true)` 起始态重复写入 `in_progress` 的问题；起始态和终态均由 conversation runtime 统一写入，server 只负责返回后台任务句柄。
+- 修复长任务阶段内展示型事件刷新后丢失的问题；conversation runtime 现在持久化并订阅输出 `stage_tool_call` / `stage_tool_result`，但不会为这类展示事件生成 tool receipt，避免子事件错绑 checkpoint。
 - 修复本地 `agentengine web` 因 PostgreSQL session backend 不可用导致 `CreateSession` / `ListSessions` 503 的问题，本地调试默认回落到 local session。
 - 修复本地 LangGraph checkpoint backend 默认值与 demo/框架路径不一致的问题，默认使用 SQLite checkpoint 以便本地可调试恢复链路。
 - 修复项目 `.env` 没有作为本地 Web 默认配置读取，导致本地调试和远端部署配置表现不一致的问题。
