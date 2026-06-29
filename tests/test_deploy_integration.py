@@ -712,6 +712,39 @@ class TestDeployLogic:
         assert "A" not in env_vars
         assert "KSADK_BUILD_ENABLE_MCP" not in env_vars
 
+    def test_deploy_env_vars_default_timezone_to_shanghai(
+        self,
+        temp_project_dir,
+    ):
+        provider = ServerlessProvider()
+        (temp_project_dir / ".env").write_text("OPENAI_API_KEY=project-key\n", encoding="utf-8")
+
+        with patch.dict(os.environ, {}, clear=True), patch(
+            "ksadk.deployment.providers.serverless.get_env_from_global_config",
+            return_value={},
+        ):
+            env_vars, _, _ = provider._load_deploy_env_vars(temp_project_dir)
+
+        assert env_vars["TZ"] == "Asia/Shanghai"
+
+    def test_deploy_env_vars_preserve_explicit_timezone(
+        self,
+        temp_project_dir,
+    ):
+        provider = ServerlessProvider()
+        (temp_project_dir / ".env").write_text("TZ=UTC\n", encoding="utf-8")
+
+        with patch.dict(os.environ, {"TZ": "Asia/Shanghai"}, clear=True), patch(
+            "ksadk.deployment.providers.serverless.get_env_from_global_config",
+            return_value={},
+        ):
+            env_vars, _, _ = provider._load_deploy_env_vars(
+                temp_project_dir,
+                {"CUSTOM_RUNTIME_FLAG": "enabled"},
+            )
+
+        assert env_vars["TZ"] == "UTC"
+
     def test_deploy_project_env_overrides_process_env_allowlist(
         self,
         temp_project_dir,

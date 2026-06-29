@@ -949,6 +949,56 @@ async def test_list_sessions_hydrates_summary_from_event_log_when_session_row_is
 
 
 @pytest.mark.asyncio
+async def test_session_actions_prefer_latest_run_status_when_previous_run_completed(monkeypatch):
+    """切换/刷新会话时，新后台 run 进行中不能被同 session 的旧 completed run 盖掉。"""
+    server_app_module = importlib.import_module("ksadk.server.app")
+    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
+    service = InMemorySessionService()
+    session = await service.create_session(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-new-run-active",
+    )
+
+    await conversation_runtime.append_run_status_event(
+        session_id=session.id,
+        author="demo-agent",
+        status="completed",
+        invocation_id="run_old_completed",
+        session_service_provider=lambda: service,
+    )
+    await conversation_runtime.append_run_status_event(
+        session_id=session.id,
+        author="demo-agent",
+        status="in_progress",
+        invocation_id="run_new_active",
+        session_service_provider=lambda: service,
+    )
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        listed = await client.post(
+            "/agentengine/api/v1/ListSessions",
+            json={"AgentId": "demo-agent", "UserId": "user-1"},
+        )
+        fetched = await client.post(
+            "/agentengine/api/v1/GetSession",
+            json={"SessionId": session.id},
+        )
+
+    assert listed.status_code == 200
+    assert fetched.status_code == 200
+    for payload in (
+        listed.json()["Data"]["Sessions"][0],
+        fetched.json()["Data"]["Session"],
+    ):
+        assert payload["ActiveInvocationId"] == "run_new_active"
+        assert payload["ActiveRunStatus"] == "in_progress"
+
+
+@pytest.mark.asyncio
 async def test_session_actions_return_503_when_session_backend_unavailable(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = _UnavailableSessionService()
@@ -3998,6 +4048,52 @@ async def test_cancel_run_cancels_detached_stream_and_writes_cancelled_status(mo
     assert statuses == ["in_progress", "cancelled"]
     assert "assistant_message" not in event_types
     assert runner.cancel_requests == [invocation_id]
+
+
+@pytest.mark.asyncio
+async def test_delete_session_cancels_active_detached_stream_before_removing_session(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _CancellableStreamingRunner()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    invocation_id = "inv-delete-detached"
+    session_id = "sess-delete-detached"
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        server_app_module._detached_streaming_response(
+            conversation.stream_responses_conversation_turn(
+                runner=runner,
+                agent_id="demo-agent",
+                user_id="user",
+                messages=[{"role": "user", "content": "hello"}],
+                session_id=session_id,
+                model=None,
+                prepare_runner=lambda _runner, _model: None,
+                invocation_id=invocation_id,
+                session_service_provider=lambda: service,
+            ),
+            invocation_id=invocation_id,
+            session_id=session_id,
+        )
+
+        for _ in range(20):
+            events = await service.get_events(session_id)
+            if any(event.event_type == "run_status" for event in events):
+                break
+            await asyncio.sleep(0.02)
+
+        response = await client.post(
+            "/agentengine/api/v1/DeleteSession",
+            json={"SessionId": session_id},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["Data"]["Deleted"] is True
+    assert invocation_id not in server_app_module._DETACHED_STREAMS_BY_INVOCATION
+    assert await service.get_session(session_id) is None
 
 
 @pytest.mark.asyncio

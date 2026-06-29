@@ -1,6 +1,7 @@
 from pathlib import Path
 import os
 import importlib
+import time
 
 from ksadk.configs import setup_environment
 
@@ -19,6 +20,27 @@ def test_setup_environment_mirrors_openai_model_name_to_model_name(monkeypatch, 
     assert str(Path.cwd())  # keep test explicit about no exception
     assert __import__("os").environ["OPENAI_MODEL_NAME"] == "deepseek-v3.2"
     assert __import__("os").environ["MODEL_NAME"] == "deepseek-v3.2"
+
+
+def test_setup_environment_defaults_timezone_to_shanghai(monkeypatch, tmp_path: Path):
+    monkeypatch.delenv("TZ", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL_NAME", raising=False)
+    monkeypatch.delenv("MODEL_NAME", raising=False)
+
+    setup_environment(tmp_path)
+
+    assert os.environ["TZ"] == "Asia/Shanghai"
+    assert time.localtime(0).tm_hour == 8
+
+
+def test_setup_environment_preserves_explicit_timezone(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("TZ", "UTC")
+    monkeypatch.delenv("OPENAI_MODEL_NAME", raising=False)
+    monkeypatch.delenv("MODEL_NAME", raising=False)
+
+    setup_environment(tmp_path)
+
+    assert os.environ["TZ"] == "UTC"
 
 
 def test_setup_environment_rewrites_public_openai_base_url_for_managed_runtime(

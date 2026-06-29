@@ -215,9 +215,10 @@ def _detached_streaming_response(
     source: AsyncIterator[str],
     *,
     invocation_id: str | None = None,
+    session_id: str | None = None,
     resume_key: tuple[str, str] | None = None,
 ) -> StreamingResponse:
-    detached = _DetachedSSEStream(source, invocation_id=invocation_id)
+    detached = _DetachedSSEStream(source, invocation_id=invocation_id, session_id=session_id)
     if invocation_id and resume_key:
         _DETACHED_RESUME_KEYS_BY_INVOCATION[invocation_id] = resume_key
         _ACTIVE_DETACHED_RESUME_INVOCATION_BY_KEY[resume_key] = invocation_id
@@ -225,6 +226,24 @@ def _detached_streaming_response(
             lambda _task: _clear_detached_resume_key(invocation_id, resume_key)
         )
     return StreamingResponse(detached.iter_for_client(), media_type="text/event-stream")
+
+
+async def _cancel_detached_streams_for_session(session_id: str) -> None:
+    target_session_id = str(session_id or "").strip()
+    if not target_session_id:
+        return
+    detached_streams = [
+        detached
+        for detached in list(_DETACHED_STREAMS_BY_INVOCATION.values())
+        if detached.session_id == target_session_id
+    ]
+    for detached in detached_streams:
+        detached.cancel()
+    if detached_streams:
+        await asyncio.gather(
+            *(detached._task for detached in detached_streams),
+            return_exceptions=True,
+        )
 
 
 def _clear_detached_resume_key(invocation_id: str, resume_key: tuple[str, str]) -> None:
@@ -1862,6 +1881,7 @@ async def get_session_action(request: SessionIdRequest):
 @app.post("/agentengine/api/v1/DeleteSession")
 async def delete_session_action(request: SessionIdRequest):
     service = resolve_session_service()
+    await _cancel_detached_streams_for_session(request.SessionId)
     deleted = await service.delete_session(request.SessionId)
     if not deleted:
         raise HTTPException(status_code=404, detail="Session not found")

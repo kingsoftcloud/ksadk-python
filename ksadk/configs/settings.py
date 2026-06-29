@@ -21,6 +21,7 @@ AgentEngine 统一配置管理
 import os
 import json
 import logging
+import time
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit, urlunsplit
@@ -620,6 +621,9 @@ settings = Settings()
 # 环境初始化工具
 # ------------------
 
+DEFAULT_RUNTIME_TIMEZONE = "Asia/Shanghai"
+
+
 def setup_environment(agent_path: "Path"):
     """加载环境变量并注入智能默认配置
     
@@ -646,6 +650,11 @@ def setup_environment(agent_path: "Path"):
         if env_file.exists():
             # override=False: 保留通过 API/Serverless 平台注入的环境变量 (优先级高)
             load_dotenv(env_file, override=False)
+
+    # 本地调试与托管运行时统一默认北京时间；用户通过 shell/.env/平台显式指定 TZ 时不覆盖。
+    os.environ.setdefault("TZ", DEFAULT_RUNTIME_TIMEZONE)
+    if hasattr(time, "tzset"):
+        time.tzset()
 
     # 1.5. 托管运行时里不要保留公网 KSPMAS 地址，否则用户代码优先读取 OPENAI_BASE_URL
     # 会绕开后续的内网自动探测，导致 Serverless Pod 访问公网模型网关超时。
