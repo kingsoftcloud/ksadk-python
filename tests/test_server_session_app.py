@@ -879,6 +879,76 @@ async def test_runtime_local_list_sessions_returns_page_metadata(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_list_sessions_hydrates_summary_from_event_log_when_session_row_is_empty(monkeypatch):
+    """ListSessions 不能只返回空壳 session；event log 已有事实时要回填标题与 active run。"""
+    server_app_module = importlib.import_module("ksadk.server.app")
+    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
+    service = InMemorySessionService()
+    await service.create_session(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-event-backed-summary",
+    )
+    user_prompt = (
+        "请启动 Deep Research 调研任务，不要只做普通聊天回答。\n\n"
+        "研究主题：调研 2026 Q2和Q3金山云股票风险和评估建议\n\n"
+        "研究深度：med。"
+    )
+    await conversation_runtime.append_conversation_event(
+        session_id="sess-event-backed-summary",
+        author="user",
+        role="user",
+        text=user_prompt,
+        invocation_id="run_sess_event_backed_summary",
+        event_type="user_message",
+        metadata={"agent_input": user_prompt},
+        session_service_provider=lambda: service,
+    )
+    await conversation_runtime.append_run_status_event(
+        session_id="sess-event-backed-summary",
+        author="demo-agent",
+        status="in_progress",
+        invocation_id="run_sess_event_backed_summary",
+        session_service_provider=lambda: service,
+    )
+    await conversation_runtime.append_conversation_event(
+        session_id="sess-event-backed-summary",
+        author="demo-agent",
+        role="model",
+        text="Planner 已生成 5 个检索 query。",
+        invocation_id="run_sess_event_backed_summary",
+        event_type="stage_tool_result",
+        metadata={
+            "run_id": "run_sess_event_backed_summary",
+            "tool_output": {
+                "topic": "调研 2026 Q2和Q3金山云股票风险和评估建议",
+            },
+        },
+        session_service_provider=lambda: service,
+    )
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ListSessions",
+            json={"AgentId": "demo-agent", "UserId": "user-1"},
+        )
+
+    assert response.status_code == 200
+    session = response.json()["Data"]["Sessions"][0]
+    normalized_prompt = " ".join(user_prompt.split())
+    assert session["SessionId"] == "sess-event-backed-summary"
+    assert session["FirstPrompt"] == normalized_prompt
+    assert session["LastPrompt"] == normalized_prompt
+    assert session["Title"]
+    assert session["Title"] != "sess-event-backed-summary"
+    assert session["ActiveInvocationId"] == "run_sess_event_backed_summary"
+    assert session["ActiveRunStatus"] == "in_progress"
+
+
+@pytest.mark.asyncio
 async def test_session_actions_return_503_when_session_backend_unavailable(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = _UnavailableSessionService()

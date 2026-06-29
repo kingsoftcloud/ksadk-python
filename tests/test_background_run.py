@@ -184,6 +184,12 @@ async def test_run_agent_background_primes_session_title_before_detached_stream_
             },
         )
         assert resp.status_code == 200, resp.text
+        invocation_id = resp.json()["Data"]["InvocationId"]
+        listed = await client.post(
+            "/agentengine/api/v1/ListSessions",
+            json={"AgentId": "a"},
+        )
+        assert listed.status_code == 200, listed.text
 
     session = await resolve_session_service().get_session("sess-bg-title")
     assert session is not None
@@ -192,6 +198,10 @@ async def test_run_agent_background_primes_session_title_before_detached_stream_
     assert session.title
     assert session.title != "sess-bg-title"
     assert session.title_source == "fallback_first_prompt"
+    listed_session = listed.json()["Data"]["Sessions"][0]
+    assert listed_session["FirstPrompt"] == "调研 2026 企业 AI Agent 平台趋势"
+    assert listed_session["ActiveInvocationId"] == invocation_id
+    assert listed_session["ActiveRunStatus"] == "in_progress"
 
 
 @pytest.mark.asyncio

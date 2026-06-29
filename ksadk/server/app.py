@@ -30,6 +30,7 @@ from ksadk.conversations.attachment_storage import AttachmentStorageService
 from ksadk.conversations.attachments import compact_attachment_result_for_session
 from ksadk.conversations.session_title import (
     HEURISTIC_SESSION_TITLE_SOURCE,
+    build_fallback_title,
     build_heuristic_title,
 )
 from ksadk.runtime_state import load_state as load_runtime_state
@@ -1094,6 +1095,87 @@ def _metadata_invocation_id(metadata: Mapping[str, Any] | None) -> str | None:
     return _clean_optional_string(agentengine_metadata.get("invocation_id"))
 
 
+def _event_text(event: SessionEvent) -> str:
+    parts = (event.content or {}).get("parts")
+    if isinstance(parts, list):
+        text_parts: list[str] = []
+        for part in parts:
+            if isinstance(part, Mapping):
+                text_parts.append(str(part.get("text") or ""))
+            else:
+                text_parts.append(str(part or ""))
+        text = "".join(text_parts).strip()
+        if text:
+            return text
+    return str((event.content or {}).get("text") or "").strip()
+
+
+def _truncate_session_text(text: str, limit: int = 512) -> str:
+    normalized = " ".join(str(text or "").strip().split())
+    if len(normalized) <= limit:
+        return normalized
+    return f"{normalized[: max(limit - 1, 0)].rstrip()}…"
+
+
+def _session_user_prompt_from_event(event: SessionEvent) -> str:
+    metadata = event.metadata or {}
+    content = event.content or {}
+    return str(
+        metadata.get("agent_input")
+        or metadata.get("user_input")
+        or content.get("agent_input")
+        or _event_text(event)
+        or ""
+    ).strip()
+
+
+def _run_status_payload_status(event: SessionEvent) -> str:
+    return str(
+        (event.metadata or {}).get("status")
+        or (event.metadata or {}).get("run_status")
+        or (event.content or {}).get("status")
+        or ""
+    ).strip()
+
+
+def _event_run_id(event: SessionEvent) -> str:
+    return str(
+        (event.metadata or {}).get("run_id")
+        or (event.metadata or {}).get("invocation_id")
+        or event.invocation_id
+        or ""
+    ).strip()
+
+
+def _session_topic_from_events(events: list[SessionEvent]) -> str:
+    for event in reversed(events):
+        metadata = event.metadata or {}
+        tool_output = metadata.get("tool_output")
+        if isinstance(tool_output, Mapping):
+            topic = str(tool_output.get("topic") or tool_output.get("research_title") or "").strip()
+            if topic:
+                return topic
+        topic = str(metadata.get("research_title") or metadata.get("task_title") or "").strip()
+        if topic:
+            return topic
+    return ""
+
+
+def _latest_session_run_status(events: list[SessionEvent]) -> tuple[str, str]:
+    for event in reversed(events):
+        if event.event_type != "run_status":
+            continue
+        status = _run_status_payload_status(event)
+        invocation_id = _event_run_id(event)
+        if status or invocation_id:
+            return invocation_id, status
+    for event in reversed(events):
+        invocation_id = _event_run_id(event)
+        if invocation_id:
+            return invocation_id, ""
+    return "", ""
+
+
 class WorkspaceDeleteActionRequest(BaseModel):
     AgentId: Optional[str] = None
     Path: str
@@ -1105,11 +1187,32 @@ class CancelRunActionRequest(BaseModel):
 
 
 async def _session_to_action_payload(session: Session) -> dict[str, Any]:
+    events = list(session.events or [])
+    if not events:
+        try:
+            events = await resolve_session_service().get_events(session.id)
+        except Exception as exc:
+            logger.debug("Failed to hydrate events for session %s: %s", session.id, exc)
+            events = []
+    event_prompts = [
+        _session_user_prompt_from_event(event)
+        for event in events
+        if event.event_type == "user_message"
+    ]
+    event_prompts = [prompt for prompt in event_prompts if prompt]
+    first_prompt = session.first_prompt or (event_prompts[0] if event_prompts else "")
+    last_prompt = session.last_prompt or (event_prompts[-1] if event_prompts else "")
+    active_invocation_id, active_run_status = _latest_session_run_status(events)
     title = session.title
     title_source = session.title_source
+    if not title:
+        title_seed = _session_topic_from_events(events) or first_prompt
+        if title_seed:
+            title = build_fallback_title(title_seed)
+            title_source = "fallback_first_prompt"
     if title_source == "fallback_first_prompt":
         heuristic = build_heuristic_title(
-            first_prompt=session.first_prompt or title,
+            first_prompt=first_prompt or title,
             assistant_text=session.summary or "",
         )
         if heuristic and heuristic != title:
@@ -1122,8 +1225,10 @@ async def _session_to_action_payload(session: Session) -> dict[str, Any]:
         "Title": title,
         "TitleSource": title_source,
         "Summary": session.summary,
-        "FirstPrompt": session.first_prompt,
-        "LastPrompt": session.last_prompt,
+        "FirstPrompt": _truncate_session_text(first_prompt),
+        "LastPrompt": _truncate_session_text(last_prompt),
+        "ActiveInvocationId": active_invocation_id,
+        "ActiveRunStatus": active_run_status,
         "State": _sanitize_session_state_for_action(session.state),
         "CreatedAt": session.created_at,
         "UpdatedAt": session.updated_at,
@@ -2414,6 +2519,13 @@ async def run_agent_action(request: RunAgentActionRequest):
                 session=background_session,
                 messages=messages,
             )
+        await conversation.append_run_status_event(
+            session_id=resolved_background_session_id,
+            author=_resolve_active_runner().detection_result.name,
+            status="in_progress",
+            invocation_id=invocation_id,
+            session_service_provider=resolve_session_service,
+        )
         resume_key = _detached_resume_key_from_input(resolved_background_session_id, resume_input)
         _reject_if_detached_resume_active(resume_key)
         detached = _DetachedSSEStream(
