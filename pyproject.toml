@@ -73,7 +73,7 @@ dependencies = [
     "langgraph>=1.2.0,<1.3.0",
     # ========= 可观测性 (默认安装) =========
     "opentelemetry-api==1.37.0",
-    "opentelemetry-sdk==1.37.0",
+    "opentelemetry-sdk==1.42.1",
     "opentelemetry-exporter-otlp==1.37.0",
 ]
 
