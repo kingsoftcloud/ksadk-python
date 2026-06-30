@@ -60,12 +60,24 @@ def test_public_metadata_uses_runtime_platform_positioning():
     init_text = _read("ksadk/__init__.py")
     version_text = _read("ksadk/version.py")
 
-    assert pyproject["project"]["version"] == "0.6.6"
-    assert 'VERSION = "0.6.6"' in version_text
+    assert pyproject["project"]["version"] == "0.6.7"
+    assert 'VERSION = "0.6.7"' in version_text
     assert "Agent Runtime Platform" in pyproject["project"]["description"]
     assert "Agent Runtime Platform" in init_text
     assert "Agent Development Kit" not in pyproject["project"]["description"]
     assert "Agent Development Kit" not in init_text
+
+
+def test_public_candidate_tracks_0_6_7_version():
+    pyproject = tomllib.loads(_read("pyproject.toml"))
+    version_text = _read("ksadk/version.py")
+    changelog = _changelog_section("0.6.7")
+
+    assert pyproject["project"]["version"] == "0.6.7"
+    assert 'VERSION = "0.6.7"' in version_text
+    assert "## [0.6.7] - 2026-06-23" in changelog
+    assert "ksadk_runtime_common.memory_backend.providers.lancedb" in changelog
+    assert "public-build-check" in changelog
 
 
 def test_dev_extra_contains_public_docs_build_dependencies():
@@ -81,20 +93,18 @@ def test_dev_extra_contains_public_docs_build_dependencies():
         assert dependency in dev_dependencies
 
 
-def test_changelog_marks_0_6_6_ready_for_authorized_release():
-    changelog = _changelog_section("0.6.6")
+def test_changelog_marks_0_6_7_ready_for_authorized_release():
+    changelog = _changelog_section("0.6.7")
 
-    assert "## [0.6.6] - 2026-06-23" in changelog
-    assert "统一模型策略 v1" in changelog
-    assert "PyPI Trusted Publishing" in changelog
-    assert "GitHub workflow" in changelog
-    assert "人工确认" in changelog
-    assert "KSADK_PACKAGE_SPEC=ksadk==0.6.6" not in changelog
+    assert "## [0.6.7] - 2026-06-23" in changelog
+    assert "ksadk_runtime_common.memory_backend.providers.lancedb" in changelog
+    assert "public-build-check" in changelog
+    assert "KSADK_PACKAGE_SPEC=ksadk==0.6.7" not in changelog
     assert "agentengine-images" not in changelog
 
 
-def test_changelog_0_6_6_only_describes_ksadk_release_surface():
-    changelog = _changelog_section("0.6.6")
+def test_changelog_0_6_7_only_describes_ksadk_release_surface():
+    changelog = _changelog_section("0.6.7")
     forbidden = (
         "agentengine-gateway",
         "agentengine-server",
@@ -111,7 +121,7 @@ def test_changelog_0_6_6_only_describes_ksadk_release_surface():
     )
 
     for fragment in forbidden:
-        assert fragment not in changelog, f"0.6.6 changelog contains {fragment}"
+        assert fragment not in changelog, f"0.6.7 changelog contains {fragment}"
 
 
 def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
