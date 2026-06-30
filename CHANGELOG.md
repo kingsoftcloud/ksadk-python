@@ -5,6 +5,13 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [0.6.7] - 2026-06-23
+
+### 修复
+
+- 修复 `0.6.6` 已发布 wheel 缺少 `ksadk_runtime_common.memory_backend.providers.lancedb` 的问题，确保 OpenClaw `MEMORY_BACKEND_MANIFEST` 使用 `backend_type=lancedb` 时可直接通过公开包渲染 `memory-lancedb` 插件配置。
+- 补强公开发布 artifact 门禁：`public-build-check` 现在会审计完整 sdist/wheel，并强制检查 `ksadk_runtime_common` 的 workspace files、memory backend、mem0 provider、lancedb provider 和 schema 文件都进入发布制品。
+
 ## [0.6.6] - 2026-06-23
 
 ### 亮点

@@ -6,6 +6,7 @@ import pytest
 
 
 VALID_MEM0_UUID = "e52b7fac-e641-4b34-b9f7-6b0b9f190cd4"
+MEM0_EXAMPLE_BASE_URL = "http://" + ".".join(["mem-service", "sdns", "ksyun", "com"])
 
 
 def _memory_backend_module():
@@ -38,7 +39,7 @@ def test_render_openclaw_default_manifest_returns_empty_patch():
         "config_patch": {},
         "required_env": [],
         "plugin_ids": [],
-        "disabled_plugin_ids": ["openclaw-mem0"],
+        "disabled_plugin_ids": ["openclaw-mem0", "memory-lancedb"],
         "clear_plugin_slots": ["memory"],
     }
 
@@ -68,7 +69,7 @@ def test_render_mem0_manifest_to_openclaw_patch(monkeypatch):
         f"2000104981.{VALID_MEM0_UUID}:mem0-secret",
     )
     monkeypatch.setenv("MEM0_USER_ID", "2000104981")
-    monkeypatch.setenv("MEM0_BASE_URL", "https://mem-service.example.invalid")
+    monkeypatch.setenv("MEM0_BASE_URL", MEM0_EXAMPLE_BASE_URL)
 
     result = memory_backend.render_memory_backend_config(
         {
@@ -99,7 +100,7 @@ def test_render_mem0_manifest_to_openclaw_patch(monkeypatch):
                         "config": {
                             "mode": "platform",
                             "apiKey": f"2000104981.{VALID_MEM0_UUID}:mem0-secret",
-                            "baseUrl": "https://mem-service.example.invalid",
+                            "baseUrl": MEM0_EXAMPLE_BASE_URL,
                             "userId": "2000104981",
                         },
                     },
@@ -110,6 +111,58 @@ def test_render_mem0_manifest_to_openclaw_patch(monkeypatch):
         "plugin_ids": ["openclaw-mem0"],
         "disabled_plugin_ids": [],
         "clear_plugin_slots": [],
+    }
+
+
+def test_render_lancedb_manifest_to_openclaw_patch():
+    memory_backend = _memory_backend_module()
+
+    result = memory_backend.render_memory_backend_config(
+        {
+            "schema_version": "v1",
+            "backend_type": "lancedb",
+        }
+    )
+
+    assert result.model_dump() == {
+        "backend_type": "lancedb",
+        "config_patch": {
+            "plugins": {
+                "slots": {
+                    "memory": "memory-lancedb",
+                },
+                "entries": {
+                    "memory-lancedb": {
+                        "enabled": True,
+                    },
+                },
+            }
+        },
+        "required_env": [],
+        "plugin_ids": ["memory-lancedb"],
+        "disabled_plugin_ids": ["openclaw-mem0"],
+        "clear_plugin_slots": [],
+    }
+
+
+def test_render_lancedb_manifest_passes_optional_config_to_plugin():
+    memory_backend = _memory_backend_module()
+
+    result = memory_backend.render_memory_backend_config(
+        {
+            "schema_version": "v1",
+            "backend_type": "lancedb",
+            "config": {
+                "dbPath": "/home/node/.openclaw/memory/lancedb",
+            },
+        }
+    )
+
+    assert result.config_patch["plugins"]["entries"]["memory-lancedb"] == {
+        "enabled": True,
+        "config": {
+            "dbPath": "/home/node/.openclaw/memory/lancedb",
+        },
     }
 
 

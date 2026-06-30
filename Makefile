@@ -381,7 +381,8 @@ public-sync-ksadk-web-static:
 public-build-check: clean-dist public-sync-ksadk-web-static
 	@echo "==> build and twine check"
 	@uv build
-	@uv run pytest tests/test_runtime_common_packaging.py::test_built_wheel_excludes_web_ui_node_modules -q
+	@uv run --extra dev python scripts/audit_release_artifacts.py dist
+	@uv run pytest tests/test_runtime_common_packaging.py -q
 	@uv run --extra dev python -m twine check dist/*
 
 public-preflight: public-audit public-build-check public-test public-docs-build
