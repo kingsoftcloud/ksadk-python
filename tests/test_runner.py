@@ -283,7 +283,30 @@ def test_adk_runner_declares_native_session_continuity_without_checkpoint_resume
     assert capabilities["Checkpoint"]["Supported"] is False
     assert capabilities["ResumeRun"]["Supported"] is False
     assert capabilities["ResumeRun"]["ResumeMode"] == "forward_only"
-    assert "ADK native session" in capabilities["ResumeRun"]["Reason"]
+    assert "ResumabilityConfig not enabled" in capabilities["ResumeRun"]["Reason"]
+
+def test_adk_runner_declares_runtime_resume_when_resumable_enabled(tmp_path):
+    from ksadk.runners.adk_runner import ADKRunner
+
+    runner = ADKRunner(_write_detection(FrameworkType.ADK), str(tmp_path))
+    runner._resumable = True
+
+    capabilities = runner.get_runtime_capabilities()
+
+    assert capabilities["Framework"] == "adk"
+    assert capabilities["SessionContinuity"]["Supported"] is True
+    assert capabilities["SessionContinuity"]["Type"] == "adk_invocation"
+    assert capabilities["SessionContinuity"]["Level"] == "runtime"
+    assert capabilities["Checkpoint"]["Supported"] is True
+    assert capabilities["Checkpoint"]["Backend"] == "adk_invocation"
+    assert capabilities["ResumeRun"]["Supported"] is True
+    assert capabilities["ResumeRun"]["ResumeMode"] == "invocation_id"
+
+    checkpoint_capability = runner.describe_checkpoint_capability()
+    assert checkpoint_capability["Supported"] is True
+    assert checkpoint_capability["Scope"] == "invocation"
+    assert checkpoint_capability["ResumeMode"] == "invocation_id"
+
 
 
 def test_langgraph_runner_declares_time_travel_resume_mode(monkeypatch):

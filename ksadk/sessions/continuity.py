@@ -306,8 +306,18 @@ class ADKSessionAdapter(RunnerSessionAdapter):
                 "KSADK_SESSION_DSN",
             )
         )
+        is_resumable = bool(getattr(runner, "_resumable", False))
+        if is_resumable:
+            level = SessionContinuityLevel.RUNTIME
+            path = "adk_resume"
+        elif has_native_session:
+            level = SessionContinuityLevel.SEMANTIC
+            path = "native_session"
+        else:
+            level = SessionContinuityLevel.SEMANTIC
+            path = "replay"
         return SessionContinuityStatus(
-            level=SessionContinuityLevel.SEMANTIC,
-            path="native_session" if has_native_session else "replay",
+            level=level,
+            path=path,
             runner=self.runner_key(runner),
         )
