@@ -2,7 +2,7 @@
 
 本文档面向部署、运行、运维和 SDK 集成排障。它不是业务代码 `.env` 模板；业务方自己的变量，例如 `APP_ENV`、`DB_URL`、`CUSTOM_API_KEY`，只要不是 KsADK / 平台运行时读取的变量，都属于业务自定义变量，不在本文逐项维护。
 
-本文档基于当前 `feat/skill-runtime` 工作树和 `master` 分支源码扫描整理，覆盖 `ksadk/`、`deploy/`、`tests/` 中已经注册或常见可配置的运行时变量。测试专用变量、PID/marker/cache 等进程内部临时变量、镜像构建脚本内部常量不会逐项列入表格；如果要排查这些高级项，以对应脚本源码和模板 README 为准。
+本文档覆盖 `ksadk/`、`deploy/`、`tests/` 中已经注册或常见可配置的运行时变量，由 `tests/test_config_env_registry.py` 保证 `ENV_VAR_REGISTRY` 注册项与文档一致。测试专用变量、PID/marker/cache 等进程内部临时变量、镜像构建脚本内部常量不会逐项列入表格；如果要排查这些高级项，以对应脚本源码和模板 README 为准。
 
 ## 1. 阅读规则
 
@@ -192,6 +192,16 @@
 | `KSADK_SANDBOX_ALLOW_INTERNET_ACCESS` | Sandbox spec | 否 | `true` | `KSADK_SKILL_RUNTIME_ALLOW_INTERNET_ACCESS` | 否 | 平台 / 开发者 | 否 | 是否允许 sandbox 出网。 |
 | `KSADK_SANDBOX_STARTUP_RETRY_ATTEMPTS` | E2B Sandbox backend | 否 | `6` | 无 | 否 | 平台 / 开发者 | 否 | 沙箱创建后 readiness 探测最大重试次数，用于兜底短暂 `NotFoundException` / `FileNotFoundException`。 |
 | `KSADK_SANDBOX_STARTUP_RETRY_DELAY` | E2B Sandbox backend | 否 | `0.2` | 无 | 否 | 平台 / 开发者 | 否 | 沙箱 readiness 首次重试间隔秒数，后续指数退避，单次 sleep 上限 1 秒。 |
+| `KSADK_SANDBOX_TTL_SECONDS` | Sandbox registry | 否 | `900` | 无 | 否 | 平台 / 开发者 | 否 | sandbox registry 会话硬 TTL 秒数；到期后会话被回收。 |
+| `KSADK_SANDBOX_IDLE_TTL_SECONDS` | Sandbox registry | 否 | `0` | 无 | 否 | 平台 / 开发者 | 否 | sandbox registry 会话空闲 TTL 秒数；`0` 表示不启用空闲回收。 |
+| `KSADK_SANDBOX_MAX_SESSIONS` | Sandbox registry | 否 | `0` | 无 | 否 | 平台 / 开发者 | 否 | sandbox registry 最大并发会话数；`0` 表示不限制。 |
+| `KSADK_SANDBOX_SESSION_ID` | Sandbox registry | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | 显式指定 sandbox registry 会话 id，用于跨工具调用复用同一 sandbox。 |
+| `KSADK_SANDBOX_SYNC_MAX_FILES` | Sandbox workspace sync | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | workspace 同步到 sandbox 时的最大文件数。 |
+| `KSADK_SANDBOX_SYNC_MAX_FILE_BYTES` | Sandbox workspace sync | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | workspace 同步到 sandbox 时的单文件最大字节数。 |
+| `KSADK_SANDBOX_SYNC_MAX_TOTAL_BYTES` | Sandbox workspace sync | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | workspace 同步到 sandbox 时的总字节数上限。 |
+| `KSADK_ALLOW_POD_PROCESS_TOOLS` | Sandbox backend / pod_process tools | 否 | `false` | 无 | 否 | 平台 / 开发者 | 否 | 显式开启 pod_process sandbox backend 内置工具；未开启时 pod_process 工具不会被注入。仅在可信运行时内启用。 |
+| `KSADK_COMMAND_` | Command policy（内部前缀） | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 命令策略环境控制内部前缀；派生变量例如 `KSADK_COMMAND_CWD`，未逐项枚举。 |
+| `KSADK_COMMAND_CWD` | Command policy | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 命令执行策略校验时使用的当前工作目录。 |
 | `E2B_API_URL` | E2B SDK | 条件必传 | 未设置 | 无 | 否 | 沙箱团队 / Secret 配置 | 否 | E2B 兼容 manager endpoint。使用 E2B backend 时必传。 |
 | `E2B_API_KEY` | E2B SDK | 条件必传 | 未设置 | 无 | 是 | 沙箱团队 / Secret 配置 | 否 | E2B API key。严禁写入代码、文档明文、测试 fixture、日志。 |
 
@@ -356,6 +366,23 @@
 | `KSADK_FEISHU_RESULT_PATH` | OpenClaw diagnostics | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | 飞书辅助结果路径。 |
 | `KSADK_WORKSPACE_FILES_ENABLED` | Hermes/OpenClaw workspace files | 否 | 镜像内通常默认 `1` | `OPENCLAW_WORKSPACE_FILES_ENABLED` | 否 | Runtime 镜像 / 平台 | 否 | 工作区文件服务开关。 |
 | `KSADK_WORKSPACE_ROOT` | Hermes/OpenClaw workspace files | 否 | 镜像工作目录 | `OPENCLAW_WORKSPACE_DIR`、`HERMES_WORKDIR` | 否 | Runtime 镜像 / 平台 | 否 | 工作区根目录。 |
+| `KSADK_MAX_TURNS` | Conversations runtime | 否 | `0` | 无 | 否 | 平台 / 开发者 | 否 | 单次会话最大轮次熔断阈值；`0` 表示不限制。 |
+| `KSADK_MAX_TOOL_CALLS` | Conversations runtime | 否 | `0` | 无 | 否 | 平台 / 开发者 | 否 | 单次会话工具调用上限熔断阈值；`0` 表示不限制。 |
+| `KSADK_MAX_CONSECUTIVE_TOOL_FAILURES` | Conversations runtime | 否 | `0` | 无 | 否 | 平台 / 开发者 | 否 | 连续工具失败达到阈值后触发 runtime 熔断；`0` 表示不限制。 |
+| `KSADK_MAX_CONSECUTIVE_APPROVAL_DENIALS` | Conversations runtime | 否 | `0` | 无 | 否 | 平台 / 开发者 | 否 | 连续审批拒绝达到阈值后触发 runtime 熔断；`0` 表示不限制。 |
+| `KSADK_MAX_CONSECUTIVE_COMPACT_FAILURES` | Conversations runtime | 否 | `0` | 无 | 否 | 平台 / 开发者 | 否 | 连续压缩失败达到阈值后触发 runtime 熔断；`0` 表示不限制。 |
+| `KSADK_BUILTIN_TOOLS_MODE` | ADK Runner / Built-in tools | 否 | `off` | 无 | 否 | 平台 / 开发者 | 否 | 内置工具注入模式：`off/dispatcher/focused/deferred`。 |
+| `KSADK_BUILTIN_TOOLS_PROFILE` | ADK Runner / Built-in tools | 否 | `default` | 无 | 否 | 平台 / 开发者 | 否 | 内置工具 profile 选择器，例如 `default/coding`。 |
+| `KSADK_TOOL_RESULT_MAX_CHARS` | Built-in tools / Conversations runtime | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 工具结果内联返回的最大字符数；超出按 budget 策略持久化或截断。 |
+| `KSADK_TOOL_RESULT_PERSIST_THRESHOLD_CHARS` | Built-in tools / Conversations runtime | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 工具结果达到该字符数时转为持久化存储。 |
+| `KSADK_TOOL_RESULT_PREVIEW_CHARS` | Built-in tools / Conversations runtime | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 持久化工具结果回显的预览字符数。 |
+| `KSADK_TOOL_RESULT_DIR` | Built-in tools / Conversations runtime | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 持久化超限工具结果的目录。 |
+| `KSADK_SAFE_` | Tool safety policy（内部前缀） | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 工具安全策略环境控制内部前缀；派生变量未逐项枚举。 |
+| `KSADK_WEB_SEARCH_PROVIDER` | Built-in web tools | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | web search provider 选择器，例如 `fake/http`。 |
+| `KSADK_WEB_SEARCH_BASE_URL` | Built-in web tools | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | HTTP web search provider 的 base URL。 |
+| `KSADK_WEB_SEARCH_API_KEY` | Built-in web tools | 条件必传 | 未设置 | 无 | 是 | 平台 Secret | 否 | HTTP web search provider 的 API key。 |
+| `KSADK_WEB_SSRF_POLICY_JSON` | Built-in web tools | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | `web_fetch` SSRF 校验的 JSON 策略覆盖。 |
+| `KSADK_USER_BACKEND_URL` | Hosted UI | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | hosted UI 集成使用的用户面 backend URL。 |
 
 ## 11. 可观测性
 

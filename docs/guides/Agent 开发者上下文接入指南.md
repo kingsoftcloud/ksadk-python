@@ -23,7 +23,7 @@
 
 1. `LangGraph`
    - 自定义 `ksadk_prepare_state(payload, session_context)`
-   - 具体项目结构、interrupt / resume、Responses approval 写法见 [LangGraph开发最佳实践](./frameworks/LangGraph开发最佳实践.md)
+   - 具体项目结构、interrupt / resume、Responses approval 写法见 [LangGraph开发最佳实践](./LangGraph开发最佳实践.md)
 2. `LangChain`
    - 自定义 `ksadk_prepare_input(payload, session_context)`
 3. `ADK`
@@ -218,7 +218,7 @@ supports_image = bool(
 
 LangGraph 的完整开发写法已经内化到框架专属文档：
 
-- [LangGraph开发最佳实践](./frameworks/LangGraph开发最佳实践.md)
+- [LangGraph开发最佳实践](./LangGraph开发最佳实践.md)
 
 这里只保留平台上下文接入的核心边界：
 
@@ -251,7 +251,7 @@ def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
     }
 ```
 
-如果涉及 human-in-the-loop / MCP 工具审批 / `interrupt()` 断点恢复，请优先阅读 [LangGraph开发最佳实践](./frameworks/LangGraph开发最佳实践.md) 的 interrupt 与 Responses approval 章节。
+如果涉及 human-in-the-loop / MCP 工具审批 / `interrupt()` 断点恢复，请优先阅读 [LangGraph开发最佳实践](./LangGraph开发最佳实践.md) 的 interrupt 与 Responses approval 章节。
 
 ## 7. LangChain 怎么拿上下文
 
@@ -481,7 +481,7 @@ def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
 
 ## 14. 相关文档
 
-- [LangGraph开发最佳实践](./frameworks/LangGraph开发最佳实践.md)
-- [远程Agent运行时接口说明](./远程Agent运行时接口说明.md)
+- [LangGraph开发最佳实践](./LangGraph开发最佳实践.md)
+- [远程Agent运行时接口说明](../reference/远程Agent运行时接口说明.md)
 - [ksadk使用文档](./ksadk使用文档.md)
-- [ksadk技术设计](./ksadk技术设计.md)
+- [ksadk技术设计](../reference/ksadk技术设计.md)

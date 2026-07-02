@@ -237,7 +237,6 @@ agentengine openclaw deploy \
 
 ## 8. 相关文档
 
-- [ksadk使用文档](./ksadk使用文档.md)
+- [ksadk使用文档](../guides/ksadk使用文档.md)
 - [ksadk技术设计](./ksadk技术设计.md)
-- [工作区文件技术设计](./工作区文件技术设计.md)
-- [OpenClaw 用户镜像模板说明](../deploy/openclaw-user-template/README.md)
+- [工作区文件技术设计](../internal/工作区文件技术设计.md)

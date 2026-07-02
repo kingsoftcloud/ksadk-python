@@ -51,4 +51,4 @@ root_agent = create_deep_agent(model=llm)
 ## 4. 相关文档
 
 - [ksadk使用文档](./ksadk使用文档.md)
-- [ksadk技术设计](./ksadk技术设计.md)
+- [ksadk技术设计](../reference/ksadk技术设计.md)

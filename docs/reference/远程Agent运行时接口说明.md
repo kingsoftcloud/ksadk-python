@@ -603,8 +603,8 @@ MCP/tool approval 场景按 OpenAI Responses 标准语义恢复。客户端应�
 
 这部分不属于远程 API 调用 contract。不同框架的业务代码接入方式已经内化到框架专属文档：
 
-- LangGraph: [LangGraph开发最佳实践](./frameworks/LangGraph开发最佳实践.md)
-- 平台公共上下文总览: [Agent 开发者上下文接入指南](./Agent 开发者上下文接入指南.md)
+- LangGraph: [LangGraph开发最佳实践](../guides/LangGraph开发最佳实践.md)
+- 平台公共上下文总览: [Agent 开发者上下文接入指南](../guides/Agent 开发者上下文接入指南.md)
 
 调用方只需要理解：
 

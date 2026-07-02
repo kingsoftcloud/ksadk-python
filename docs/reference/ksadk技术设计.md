@@ -388,7 +388,7 @@ flowchart LR
 
 ## 12. 文档索引
 
-- [ksadk使用文档](./ksadk使用文档.md)
-- [工作区文件技术设计](./工作区文件技术设计.md)
-- [记忆使用指南](./记忆使用指南.md)
+- [ksadk使用文档](../guides/ksadk使用文档.md)
+- [工作区文件技术设计](../internal/工作区文件技术设计.md)
+- [记忆使用指南](../guides/记忆使用指南.md)
 - [OpenClaw一键部署指南](./openclaw一键部署指南.md)

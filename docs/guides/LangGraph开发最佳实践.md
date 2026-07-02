@@ -8,7 +8,7 @@
 - `interrupt()` / `Command(resume=...)` 在 AgentEngine 运行时里的职责边界
 - `/v1/responses` 下 MCP approval 与通用 human-in-the-loop 的恢复写法
 
-本文档只讨论业务代码接入方式，不展开远程部署、网关鉴权和托管 UI 协议。接口字段 contract 见 [远程Agent运行时接口说明](../远程Agent运行时接口说明.md)。
+本文档只讨论业务代码接入方式，不展开远程部署、网关鉴权和托管 UI 协议。接口字段 contract 见 [远程Agent运行时接口说明](../reference/远程Agent运行时接口说明.md)。
 
 ## 1. 推荐结论
 

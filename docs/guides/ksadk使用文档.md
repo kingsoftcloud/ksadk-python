@@ -623,7 +623,7 @@ CLI 内部会在两种模式间切换：
 - 常规 agent：优先使用 `runtime_direct`
 - OpenClaw：优先使用 `action_proxy`
 
-更完整的协议与安全说明见 [工作区文件技术设计](./工作区文件技术设计.md)。
+更完整的协议与安全说明见 [工作区文件技术设计](../internal/工作区文件技术设计.md)。
 
 ## 9. `agentengine agent invoke`
 
@@ -729,7 +729,7 @@ agentengine openclaw deploy \
 - 默认挂载目录：`/home/node/.openclaw`
 - 默认 workspace 根目录：`/home/node/.openclaw/workspace`
 
-更多 OpenClaw 细节见 [OpenClaw一键部署指南](./openclaw一键部署指南.md)。
+更多 OpenClaw 细节见 [OpenClaw一键部署指南](../reference/openclaw一键部署指南.md)。
 
 ## 12. 常见验证项
 
@@ -759,9 +759,9 @@ agentengine openclaw deploy \
 
 ## 13. 相关文档
 
-- [ksadk技术设计](./ksadk技术设计.md)
-- [工作区文件技术设计](./工作区文件技术设计.md)
+- [ksadk技术设计](../reference/ksadk技术设计.md)
+- [工作区文件技术设计](../internal/工作区文件技术设计.md)
 - [记忆使用指南](./记忆使用指南.md)
 - [知识库与记忆示例](./知识库与记忆示例.md)
-- [OpenClaw一键部署指南](./openclaw一键部署指南.md)
+- [OpenClaw一键部署指南](../reference/openclaw一键部署指南.md)
 - [DeepAgents说明](./DeepAgents说明.md)
