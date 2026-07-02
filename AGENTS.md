@@ -89,7 +89,7 @@
 - 每次公开 GitHub Release 对应的公开提交都必须打 tag 留痕，优先使用 `make public-release-tag V=x.y.z`。
 - 公开分支长期工作树可以保留，但只能作为公开同步/发布工作区，不做日常内部开发。
 - 不得把 `.pypirc`、私有 registry 凭证、kubeconfig、真实 API Key 或临时 token 放入仓库根目录；正式 PyPI 发布默认使用 Trusted Publishing，只有应急本地发布才允许 PyPI 凭证来自 `~/.pypirc`、环境变量或 CI Secret。
-- 完整公开同步流程见 `docs/public-release-workflow.md`；该文档优先于口头约定。
+- 完整公开同步流程见 `docs/release/public-release-workflow.md`；该文档优先于口头约定。
 
 发布前必须检查：
 
