@@ -418,7 +418,7 @@
 
 ## 12. Hermes 和 OpenClaw 常见运行时变量
 
-Hermes / OpenClaw 有大量镜像启动和安全策略变量，本文只列常见运行时可配置项。`*_PID`、`*_MARKER`、`*_CACHE_DIR`、`*_SPEC`、`*_PLUGIN_ID`、`*_PATCH_ROOTS`、`*_READY_STATUSES` 等主要是脚本内部状态或模板常量，未逐项列出。完整模板变量以 `deploy/hermes/`、`deploy/openclaw/`、`deploy/openclaw-user-template/` 内 README 和 bootstrap 脚本为准。
+Hermes / OpenClaw 有大量镜像启动和安全策略变量，本文只列常见运行时可配置项。`*_PID`、`*_MARKER`、`*_CACHE_DIR`、`*_SPEC`、`*_PLUGIN_ID`、`*_PATCH_ROOTS`、`*_READY_STATUSES` 等主要是脚本内部状态或模板常量，未逐项列出。完整模板变量以 `agentengine-images` 仓库内 Hermes / OpenClaw / OpenClaw 用户镜像模板的 README 和 bootstrap 脚本为准（原 `deploy/hermes/`、`deploy/openclaw/`、`deploy/openclaw-user-template/` 已迁出本仓库）。
 
 | 变量 | 作用层级 | 是否必传 | 默认值 | 别名/兼容 | 敏感 | 配置方/来源 | 是否业务自定义 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
