@@ -1941,6 +1941,37 @@ def test_server_serves_custom_ui_path_and_assets_from_env(monkeypatch, tmp_path)
     server_app_module.set_runner(_UiRunner())
 
 
+def test_server_serves_custom_ui_spa_routes_from_env(monkeypatch, tmp_path):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    project_dir = tmp_path / "agent"
+    bundle_dir = project_dir / "frontend" / "dist"
+    assets_dir = bundle_dir / "assets"
+    assets_dir.mkdir(parents=True)
+    (bundle_dir / "index.html").write_text(
+        '<html><script src="/luoluo/assets/index.js"></script><body>Custom UI</body></html>',
+        encoding="utf-8",
+    )
+    runner = _UiRunner()
+    runner.project_dir = str(project_dir)
+
+    server_app_module.set_runner(runner)
+    monkeypatch.setenv("KSADK_UI_PROFILE", "custom")
+    monkeypatch.setenv("KSADK_UI_PATH", "/luoluo")
+    monkeypatch.setenv("KSADK_UI_BUNDLE_PATH", "frontend/dist")
+
+    client = TestClient(server_app_module.app)
+    shell_response = client.get("/luoluo/chat")
+    missing_asset_response = client.get("/luoluo/assets/missing.js")
+
+    assert shell_response.status_code == 200
+    assert "Custom UI" in shell_response.text
+    assert missing_asset_response.status_code == 404
+    monkeypatch.delenv("KSADK_UI_PROFILE", raising=False)
+    monkeypatch.delenv("KSADK_UI_PATH", raising=False)
+    monkeypatch.delenv("KSADK_UI_BUNDLE_PATH", raising=False)
+    server_app_module.set_runner(_UiRunner())
+
+
 def test_cmd_web_preserves_explicit_stm_configuration(monkeypatch, tmp_path):
     runner = CliRunner()
     fake_runner = _UiRunner()

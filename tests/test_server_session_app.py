@@ -847,6 +847,65 @@ async def test_list_sessions_projects_heuristic_title_for_existing_fallback_sess
 
 
 @pytest.mark.asyncio
+async def test_list_sessions_prefers_active_resume_invocation_over_old_terminal_run(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    await service.create_session(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-active-resume",
+    )
+    await service.append_event(
+        "sess-active-resume",
+        SessionEvent(
+            author="demo",
+            event_type="run_status",
+            invocation_id="run-original",
+            content={"status": "completed"},
+            metadata={"status": "completed", "run_id": "run-original"},
+        ),
+    )
+    await service.append_event(
+        "sess-active-resume",
+        SessionEvent(
+            author="demo",
+            event_type="run_resume",
+            invocation_id="run-resume-1",
+            content={"checkpoint_id": "ckpt-1"},
+            metadata={
+                "run_id": "run-original",
+                "checkpoint_id": "ckpt-1",
+                "resume_attempt_id": "run-resume-1",
+            },
+        ),
+    )
+    await service.append_event(
+        "sess-active-resume",
+        SessionEvent(
+            author="demo",
+            event_type="run_status",
+            invocation_id="run-resume-1",
+            content={"status": "in_progress"},
+            metadata={"status": "in_progress", "run_id": "run-resume-1"},
+        ),
+    )
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ListSessions",
+            json={"AgentId": "demo-agent", "UserId": "user-1"},
+        )
+
+    assert response.status_code == 200
+    session = response.json()["Data"]["Sessions"][0]
+    assert session["ActiveInvocationId"] == "run-resume-1"
+    assert session["ActiveRunStatus"] == "in_progress"
+
+
+@pytest.mark.asyncio
 async def test_runtime_local_list_sessions_returns_page_metadata(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()
@@ -2583,17 +2642,17 @@ async def test_runtime_local_list_session_events_returns_total_and_page(monkeypa
             "/agentengine/api/v1/ListSessionEvents",
             json={
                 "SessionId": "sess-events-page",
-                "Offset": 1,
+                "Offset": 0,
                 "Limit": 2,
             },
         )
 
     assert response.status_code == 200
     data = response.json()["Data"]
-    assert data["Offset"] == 1
+    assert data["Offset"] == 0
     assert data["Limit"] == 2
     assert data["Total"] == 4
-    assert [event["SeqId"] for event in data["Events"]] == [2, 3]
+    assert [event["SeqId"] for event in data["Events"]] == [3, 4]
 
 
 @pytest.mark.asyncio
@@ -2874,7 +2933,7 @@ async def test_list_session_checkpoints_includes_resume_audit_fields(monkeypatch
             "backend": "postgres",
             "scope": "shared",
             "durable": True,
-            "expires_at": "2026-06-30T12:00:00Z",
+            "expires_at": "2099-06-30T12:00:00Z",
             "checkpoint_status": "active",
         },
         session_service_provider=lambda: service,
@@ -2917,7 +2976,7 @@ async def test_list_session_checkpoints_includes_resume_audit_fields(monkeypatch
     assert checkpoint["ResumeCount"] == 2
     assert checkpoint["LastResumedAt"]
     assert checkpoint["ReplayAllowed"] is True
-    assert checkpoint["ExpiresAt"] == "2026-06-30T12:00:00Z"
+    assert checkpoint["ExpiresAt"] == "2099-06-30T12:00:00Z"
     assert checkpoint["CheckpointStatus"] == "resumed"
     assert checkpoint["Metadata"]["resume_count"] == 2
     assert checkpoint["Metadata"]["last_resumed_at"] == checkpoint["LastResumedAt"]
