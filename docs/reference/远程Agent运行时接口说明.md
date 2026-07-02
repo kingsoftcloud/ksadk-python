@@ -152,7 +152,7 @@ Hermes 终端 WebSocket 额外要求：
 | 运行时类型 | 典型 framework | 主入口实现 | 对外特征 |
 | --- | --- | --- | --- |
 | 通用 Agent 运行时 | `adk` / `langchain` / `langgraph` / `deepagents` | `ksadk.server.app` | `/v1/*` + workspace files；公网 `/chat` 由独立 hosted UI 服务承载并调用 Hosted UI action 接口 |
-| Hermes 托管运行时 | `hermes` | `deploy/hermes/runtime/app.py` 外层 wrapper | `/` dashboard、`/v1/*`、`/_ksadk/terminal/ws`、workspace files；公网 `/chat` 同样由独立 hosted UI 服务承载 |
+| Hermes 托管运行时 | `hermes` | `agentengine-images` 仓库内 `deploy/hermes/runtime/app.py` 外层 wrapper | `/` dashboard、`/v1/*`、`/_ksadk/terminal/ws`、workspace files；公网 `/chat` 同样由独立 hosted UI 服务承载 |
 | OpenClaw 托管运行时 | `openclaw` | OpenClaw gateway + ksadk 补丁 | 以 OpenClaw gateway 为主，平台额外挂出 workspace files |
 
 ## 5. 公网暴露范围总览
@@ -1719,7 +1719,7 @@ python scripts/validate_hosted_long_task_e2e.py \
 
 ## 7. Hermes 运行时详细接口
 
-底层实现：`ksadk-python/deploy/hermes/runtime/app.py`
+底层实现：`agentengine-images` 仓库内 `deploy/hermes/runtime/app.py`
 
 Hermes 不是直接把 `ksadk.server.app` 暴露出去，而是在容器内再包一层 wrapper：
 

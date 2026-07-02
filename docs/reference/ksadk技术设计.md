@@ -50,7 +50,7 @@ flowchart LR
     Toolsets["ksadk.toolsets + Tool Gateway"]:::runtime
     SkillRT["ksadk.skills.runtime"]:::runtime
     Sandbox["ksadk.sandbox"]:::runtime
-    Assets["deploy/hermes + deploy/openclaw"]:::runtime
+    Assets["agentengine-images: deploy/hermes + deploy/openclaw"]:::runtime
   end
 
   subgraph Control["控制面"]
@@ -185,8 +185,8 @@ flowchart TB
   WF["workspace_files"]:::data
   MB["memory_backend"]:::control
   Local["ksadk.server.app"]:::runtime
-  Hermes["deploy/hermes/runtime/app.py"]:::runtime
-  OpenClaw["deploy/openclaw/bootstrap.sh + workspace_files_app.py"]:::runtime
+  Hermes["agentengine-images: deploy/hermes/runtime/app.py"]:::runtime
+  OpenClaw["agentengine-images: deploy/openclaw/bootstrap.sh + workspace_files_app.py"]:::runtime
 
   Common --> WF
   Common --> MB

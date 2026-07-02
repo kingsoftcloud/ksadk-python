@@ -1,6 +1,6 @@
 # OpenClaw一键部署指南
 
-本文档对应当前 `agentengine openclaw` CLI 与 `deploy/openclaw/*` 运行时资产。
+本文档对应当前 `agentengine openclaw` CLI 与 `agentengine-images` 仓库内 `deploy/openclaw/*` 运行时资产。
 
 ## 1. 一条命令部署
 
@@ -187,6 +187,8 @@ docker buildx build \
   -t hub.kce.ksyun.com/agentengine-public/openclaw:2026.5.4 \
   deploy/openclaw
 ```
+
+> 注：`deploy/openclaw` 构建上下文已迁至 `agentengine-images` 仓库，需先 clone 该仓库并以其中 `deploy/openclaw` 为构建上下文。
 
 该变量也会写入镜像运行时环境；bootstrap 会按同一白名单同步和自动启用插件。未设置时保持当前默认行为。
 
