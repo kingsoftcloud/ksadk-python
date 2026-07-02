@@ -37,11 +37,13 @@ from ksadk.conversations.runtime import (
 )
 from ksadk.runtime_context import (
     PlatformInvocationContext,
+    get_current_tool_execution_context_or_default,
     get_current_invocation_context_or_default,
     get_current_account_id,
     get_current_invocation_context,
     get_current_user_id,
     platform_invocation_scope,
+    tool_execution_scope,
 )
 from ksadk.sessions.base import SessionEvent
 from ksadk.sessions.in_memory import InMemorySessionService
@@ -165,6 +167,12 @@ class _StreamingRunner(_StubRunner):
         self.stream_calls.append(input_data)
         yield {"type": "text", "delta": "hello"}
         yield {"type": "final", "output": "hello"}
+
+
+class _PromptTooLongStreamingRunner(_StreamingRunner):
+    async def stream(self, input_data: dict):
+        self.stream_calls.append(input_data)
+        raise RuntimeError("prompt-too-long")
 
 
 class _UsageStreamingRunner(_StreamingRunner):
@@ -302,6 +310,49 @@ class _SuccessfulToolResultStreamingRunner(_StreamingRunner):
         yield {"type": "final", "output": "done"}
 
 
+class _ToolSearchResultStreamingRunner(_StreamingRunner):
+    async def stream(self, input_data: dict):
+        self.stream_calls.append(input_data)
+        yield {
+            "type": "tool_result",
+            "tool_name": "tool_search",
+            "tool_args": {"query": "edit file"},
+            "tool_output": {
+                "ok": True,
+                "deferred_tool_names": ["read_workspace_file", "edit_workspace_file"],
+            },
+            "run_id": "run-tool-search",
+        }
+        yield {"type": "final", "output": "ready"}
+
+
+class _ManyToolCallsStreamingRunner(_StreamingRunner):
+    async def stream(self, input_data: dict):
+        self.stream_calls.append(input_data)
+        for index in range(3):
+            yield {
+                "type": "tool_call",
+                "tool_name": "list_skills",
+                "tool_args": {"index": index},
+                "run_id": f"run-tool-{index}",
+            }
+        yield {"type": "final", "output": "should stop before final"}
+
+
+class _FailingToolResultsStreamingRunner(_StreamingRunner):
+    async def stream(self, input_data: dict):
+        self.stream_calls.append(input_data)
+        for index in range(2):
+            yield {
+                "type": "tool_result",
+                "tool_name": "run_command",
+                "tool_args": {"command": "false"},
+                "tool_output": {"ok": False, "error_type": "boom"},
+                "run_id": f"run-failure-{index}",
+            }
+        yield {"type": "final", "output": "should stop before final"}
+
+
 class _StageActivityStreamingRunner(_StreamingRunner):
     async def stream(self, input_data: dict):
         self.stream_calls.append(input_data)
@@ -410,11 +461,25 @@ class _ContextCapturingRunner(_StubRunner):
     def __init__(self):
         super().__init__()
         self.captured_runtime_context = None
+        self.captured_tool_context = None
 
     async def invoke(self, input_data: dict) -> dict:
         self.calls.append(input_data)
         self.captured_runtime_context = get_current_invocation_context()
+        self.captured_tool_context = get_current_tool_execution_context_or_default()
         return {"output": "captured"}
+
+
+class _ToolContextCapturingStreamingRunner(_StreamingRunner):
+    def __init__(self):
+        super().__init__()
+        self.captured_tool_context = None
+
+    async def stream(self, input_data: dict):
+        self.stream_calls.append(input_data)
+        self.captured_tool_context = get_current_tool_execution_context_or_default()
+        yield {"type": "text", "delta": "hello"}
+        yield {"type": "final", "output": "hello"}
 
 
 class _FakeLongTermMemoryService:
@@ -502,6 +567,22 @@ def test_runtime_context_helpers_read_current_invocation_scope():
     with platform_invocation_scope(context):
         assert get_current_user_id() == "user-1"
         assert get_current_account_id() == "acct-1"
+
+
+def test_tool_execution_context_helpers_return_defaults_and_scope_values():
+    default_context = get_current_tool_execution_context_or_default()
+
+    assert default_context.session_id == ""
+    assert default_context.run_id == ""
+    assert default_context.invocation_id == ""
+
+    with tool_execution_scope(session_id="sess-1", run_id="run-1", invocation_id="inv-1"):
+        context = get_current_tool_execution_context_or_default()
+        assert context.session_id == "sess-1"
+        assert context.run_id == "run-1"
+        assert context.invocation_id == "inv-1"
+
+    assert get_current_tool_execution_context_or_default().session_id == ""
 
 
 @pytest.fixture
@@ -622,6 +703,33 @@ def test_extract_responses_resume_input_accepts_openai_function_call_output():
         "call_id": "call_123",
         "output": {"ok": True},
     }
+
+
+def test_governance_records_approval_denials_and_trips_limit():
+    runtime_module = importlib.import_module("ksadk.conversations.runtime")
+    state = runtime_module.RuntimeGovernanceState(max_consecutive_approval_denials=2)
+
+    runtime_module._governance_record_approval_response(state, {"approved": False})
+    try:
+        runtime_module._governance_record_approval_response(state, {"approved": False})
+    except runtime_module.RuntimeCircuitOpen as exc:
+        assert exc.reason == "consecutive_approval_denials"
+        assert exc.metadata["consecutive_approval_denials"] == 2
+    else:
+        raise AssertionError("expected RuntimeCircuitOpen")
+
+
+def test_governance_records_compact_failures_and_trips_limit():
+    runtime_module = importlib.import_module("ksadk.conversations.runtime")
+    state = runtime_module.RuntimeGovernanceState(max_consecutive_compact_failures=1)
+
+    try:
+        runtime_module._governance_record_compact_failure(state)
+    except runtime_module.RuntimeCircuitOpen as exc:
+        assert exc.reason == "consecutive_compact_failures"
+        assert exc.metadata["consecutive_compact_failures"] == 1
+    else:
+        raise AssertionError("expected RuntimeCircuitOpen")
 
 
 @pytest.mark.asyncio
@@ -2024,6 +2132,10 @@ async def test_invoke_conversation_once_binds_platform_invocation_context_and_am
     assert runner.captured_runtime_context.session_id == session_id
     assert runner.captured_runtime_context.kb_context == {"formatted_text": "KB facts"}
     assert runner.captured_runtime_context.memory_context == {"formatted_text": "Memory facts"}
+    assert runner.captured_tool_context is not None
+    assert runner.captured_tool_context.session_id == session_id
+    assert runner.captured_tool_context.run_id
+    assert runner.captured_tool_context.run_id == runner.captured_tool_context.invocation_id
     assert get_current_invocation_context() is None
 
 
@@ -2488,6 +2600,39 @@ async def test_stream_conversation_turn_passes_session_id_to_runner(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_stream_conversation_turn_binds_tool_execution_context(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _ToolContextCapturingStreamingRunner()
+    session = await service.create_session(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-stream-tool-context",
+    )
+
+    events = [
+        event
+        async for event in stream_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id=session.id,
+            messages=[{"role": "user", "content": "继续"}],
+            model="gpt-4o",
+            invocation_id="inv-stream-1",
+            prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+            session_service_provider=lambda: service,
+        )
+    ]
+
+    assert events
+    assert runner.captured_tool_context is not None
+    assert runner.captured_tool_context.session_id == session.id
+    assert runner.captured_tool_context.run_id == "inv-stream-1"
+    assert runner.captured_tool_context.invocation_id == "inv-stream-1"
+
+
+@pytest.mark.asyncio
 async def test_stream_conversation_turn_emits_final_text_after_tool_events(monkeypatch):
     service = InMemorySessionService()
     monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
@@ -2699,6 +2844,186 @@ async def test_stream_responses_conversation_turn_adds_tool_receipt_to_tool_resu
     assert receipt["framework"] == "langgraph"
     assert receipt["status"] == "completed"
     assert receipt["idempotency_key"].startswith("tool_receipt:")
+
+
+@pytest.mark.asyncio
+async def test_stream_responses_conversation_turn_records_deferred_tools_from_tool_search(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _ToolSearchResultStreamingRunner()
+
+    chunks = [
+        chunk
+        async for chunk in stream_responses_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-deferred-tools",
+            messages=[{"role": "user", "content": "find edit tools"}],
+            model="gpt-4o",
+            prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+            session_service_provider=lambda: service,
+        )
+    ]
+
+    assert any(chunk.startswith("event: response.completed\n") for chunk in chunks)
+    events = await service.get_events("sess-deferred-tools")
+    status = [
+        event
+        for event in events
+        if event.event_type == "run_status"
+        and (event.metadata or {}).get("detail") == "deferred_tools_selected"
+    ][-1]
+    assert status.metadata["deferred_tool_names"] == ["read_workspace_file", "edit_workspace_file"]
+
+
+@pytest.mark.asyncio
+async def test_stream_responses_conversation_turn_stops_at_max_tool_calls(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setenv("KSADK_MAX_TOOL_CALLS", "2")
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _ManyToolCallsStreamingRunner()
+
+    chunks = [
+        chunk
+        async for chunk in stream_responses_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-max-tools",
+            messages=[{"role": "user", "content": "call tools"}],
+            model="gpt-4o",
+            prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+            session_service_provider=lambda: service,
+        )
+    ]
+
+    assert any("response.failed" in chunk for chunk in chunks)
+    assert not any("response.completed" in chunk for chunk in chunks)
+    events = await service.get_events("sess-max-tools")
+    statuses = [event for event in events if event.event_type == "run_status"]
+    assert statuses[-1].content["status"] == "failed"
+    assert statuses[-1].metadata["governance"]["reason"] == "max_tool_calls_exceeded"
+
+
+@pytest.mark.asyncio
+async def test_stream_responses_conversation_turn_stops_on_consecutive_tool_failures(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setenv("KSADK_MAX_CONSECUTIVE_TOOL_FAILURES", "2")
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _FailingToolResultsStreamingRunner()
+
+    chunks = [
+        chunk
+        async for chunk in stream_responses_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-tool-failures",
+            messages=[{"role": "user", "content": "run failing tools"}],
+            model="gpt-4o",
+            prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+            session_service_provider=lambda: service,
+        )
+    ]
+
+    assert any("response.failed" in chunk for chunk in chunks)
+    assert not any("response.completed" in chunk for chunk in chunks)
+    events = await service.get_events("sess-tool-failures")
+    failed_status = [event for event in events if event.event_type == "run_status"][-1]
+    assert failed_status.metadata["governance"]["reason"] == "consecutive_tool_failures"
+    tool_results = [event for event in events if event.event_type == "tool_result"]
+    assert len(tool_results) == 2
+    assert tool_results[-1].metadata["observability"]["tool_name"] == "run_command"
+    assert tool_results[-1].metadata["observability"]["error_type"] == "boom"
+
+
+@pytest.mark.asyncio
+async def test_stream_responses_resume_denial_trips_governance_on_main_path(monkeypatch):
+    service = InMemorySessionService()
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-denial-governance"
+    )
+    await service.append_event(
+        "sess-denial-governance",
+        SessionEvent(
+            id="evt-approval",
+            author="demo-agent",
+            event_type="approval_request",
+            content={"role": "model", "parts": [{"text": "approval required"}]},
+            metadata={
+                "interrupt_info": {
+                    "approval_request_id": "appr_deny",
+                    "tool_name": "write_workspace_file",
+                    "arguments": {"path": "notes.txt"},
+                    "run_id": "run_write",
+                }
+            },
+            invocation_id="inv-approval",
+        ),
+    )
+    monkeypatch.setenv("KSADK_MAX_CONSECUTIVE_APPROVAL_DENIALS", "1")
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _StreamingRunner()
+
+    chunks = [
+        chunk
+        async for chunk in stream_responses_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-denial-governance",
+            messages=[],
+            model="gpt-4o",
+            resume_input={
+                "type": "mcp_approval_response",
+                "approval_request_id": "appr_deny",
+                "approve": False,
+                "reason": "not safe",
+            },
+            prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+            session_service_provider=lambda: service,
+        )
+    ]
+
+    assert any("response.failed" in chunk for chunk in chunks)
+    assert runner.stream_calls == []
+    events = await service.get_events("sess-denial-governance")
+    assert [event.event_type for event in events][:2] == ["approval_request", "approval_response"]
+    failed_status = [event for event in events if event.event_type == "run_status"][-1]
+    assert failed_status.metadata["governance"]["reason"] == "consecutive_approval_denials"
+
+
+@pytest.mark.asyncio
+async def test_stream_responses_prompt_too_long_compaction_failure_trips_governance(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setenv("KSADK_MAX_CONSECUTIVE_COMPACT_FAILURES", "1")
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    async def _broken_compaction(**_kwargs):
+        raise RuntimeError("compact backend down")
+
+    monkeypatch.setattr("ksadk.conversations.runtime.compact_conversation_history", _broken_compaction)
+    runner = _PromptTooLongStreamingRunner()
+
+    chunks = [
+        chunk
+        async for chunk in stream_responses_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-compact-governance",
+            messages=[{"role": "user", "content": "large history"}],
+            model="gpt-4o",
+            prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+            session_service_provider=lambda: service,
+        )
+    ]
+
+    assert any("response.failed" in chunk for chunk in chunks)
+    events = await service.get_events("sess-compact-governance")
+    failed_status = [event for event in events if event.event_type == "run_status"][-1]
+    assert failed_status.metadata["governance"]["reason"] == "consecutive_compact_failures"
 
 
 @pytest.mark.asyncio

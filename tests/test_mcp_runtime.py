@@ -242,6 +242,63 @@ def test_adk_runner_load_agent_injects_mcp_toolsets_and_deduplicates(monkeypatch
     assert keys == ["https://example.com/mcp|weather"]
 
 
+def test_adk_runner_registers_mcp_tool_descriptors_for_tool_search(monkeypatch, tmp_path):
+    import google.adk.runners as adk_runners
+
+    from ksadk.runners.adk_runner import ADKRunner
+    from ksadk.toolsets import clear_external_tools, tool_search
+
+    detection = _write_adk_project(
+        tmp_path,
+        """
+        class DemoAgent:
+            def __init__(self):
+                self.name = "demo-agent"
+                self.tools = []
+                self.instruction = "Be helpful."
+
+        root_agent = DemoAgent()
+        """,
+    )
+
+    class FakeRunner:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class FakeMCPTool:
+        name = "weather_forecast"
+        description = "Get weather forecast from the weather MCP server."
+        args = {"city": {"type": "string"}}
+
+    class FakeToolset:
+        _ksadk_mcp_toolset_key = "https://example.com/mcp|weather"
+        _ksadk_mcp_server_name = "weather"
+
+        def get_tools_with_prefix(self):
+            return [FakeMCPTool()]
+
+    clear_external_tools()
+    monkeypatch.delenv("KSADK_ENABLE_MCP_TOOLS", raising=False)
+    monkeypatch.setattr(ADKRunner, "_apply_json_patch", lambda self: None)
+    monkeypatch.setattr(ADKRunner, "_init_short_term_memory", lambda self: None)
+    monkeypatch.setattr(ADKRunner, "_init_long_term_memory", lambda self: None)
+    monkeypatch.setattr(ADKRunner, "_init_knowledge_base", lambda self: None)
+    monkeypatch.setattr(adk_runners, "Runner", FakeRunner)
+    monkeypatch.setattr("ksadk.mcp_runtime.load_mcp_toolsets_from_env", lambda: [FakeToolset()])
+
+    try:
+        runner = ADKRunner(detection, str(tmp_path))
+        runner.load_agent()
+        result = tool_search("weather forecast", profile="coding", max_results=5)
+    finally:
+        clear_external_tools()
+
+    forecast = next(item for item in result["results"] if item["name"] == "weather_forecast")
+    assert forecast["group"] == "mcp:weather"
+    assert forecast["boundary"] == "ksadk_managed_mcp_tool"
+    assert forecast["execution"] == "external"
+
+
 def test_adk_runner_load_agent_skips_mcp_toolsets_when_disabled(monkeypatch, tmp_path):
     import google.adk.runners as adk_runners
 
