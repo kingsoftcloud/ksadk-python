@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Dict, Iterable, List
 
@@ -117,8 +118,27 @@ def extract_text_from_event_parts(parts: List[Dict[str, Any]]) -> str:
     segments: List[str] = []
     for part in parts or []:
         if isinstance(part, dict) and part.get("text"):
-            segments.append(str(part["text"]))
-    return "".join(segments)
+            segments.append(_stringify_part_text(part["text"]))
+    return "\n".join(segments)
+
+
+def _stringify_part_text(value: Any) -> str:
+    if isinstance(value, dict):
+        preview = (
+            value.get("stdout")
+            or value.get("stderr")
+            or value.get("text")
+            or value.get("content")
+            or value.get("preview")
+            or ""
+        )
+        persisted = value.get("persisted")
+        if isinstance(persisted, dict) and persisted.get("path"):
+            mime_type = str(persisted.get("mime_type") or "text/plain")
+            suffix = f"\n[persisted-output] {persisted['path']} ({mime_type})"
+            return f"{preview}{suffix}".strip()
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return str(value)
 
 
 def build_request_history(messages: Iterable[Dict[str, Any]]) -> List[Dict[str, str]]:

@@ -104,6 +104,77 @@ async def test_remote_runner_responses_invoke_keeps_external_responses_stateless
 
 
 @pytest.mark.asyncio
+async def test_remote_runner_responses_payload_injects_builtin_tool_schemas(monkeypatch):
+    import httpx
+
+    _FakeAsyncClient.calls = []
+    monkeypatch.setenv("KSADK_BUILTIN_TOOLS_MODE", "deferred")
+    monkeypatch.setenv("KSADK_BUILTIN_TOOLS_PROFILE", "coding")
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+    runner = RemoteRunner(endpoint="https://agent.example.com", api_format="responses")
+
+    await runner.invoke({"input": "hi"})
+
+    tools = _FakeAsyncClient.calls[0]["json"]["tools"]
+    names = [tool["name"] for tool in tools]
+    assert names == ["tool_search", "tool_dispatcher"]
+    assert tools[0]["type"] == "function"
+    assert tools[0]["parameters"]["type"] == "object"
+
+
+@pytest.mark.asyncio
+async def test_remote_runner_responses_payload_injects_deferred_direct_tool_schemas(monkeypatch):
+    import httpx
+
+    _FakeAsyncClient.calls = []
+    monkeypatch.setenv("KSADK_BUILTIN_TOOLS_MODE", "deferred")
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+    runner = RemoteRunner(endpoint="https://agent.example.com", api_format="responses")
+
+    await runner.invoke(
+        {
+            "input": "now edit the file",
+            "deferred_tool_names": ["read_workspace_file", "edit_workspace_file"],
+        }
+    )
+
+    names = [tool["name"] for tool in _FakeAsyncClient.calls[0]["json"]["tools"]]
+    assert names == ["tool_search", "tool_dispatcher", "read_workspace_file", "edit_workspace_file"]
+
+
+@pytest.mark.asyncio
+async def test_remote_runner_responses_does_not_inject_external_deferred_tools(monkeypatch):
+    import httpx
+
+    from ksadk.toolsets import clear_external_tools, register_external_tools
+
+    class WeatherForecastTool:
+        name = "weather_forecast"
+        description = "Get weather forecast from an MCP server."
+        args = {"city": {"type": "string"}}
+
+    _FakeAsyncClient.calls = []
+    monkeypatch.setenv("KSADK_BUILTIN_TOOLS_MODE", "deferred")
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+    clear_external_tools()
+    try:
+        register_external_tools([WeatherForecastTool()], group="mcp:weather")
+        runner = RemoteRunner(endpoint="https://agent.example.com", api_format="responses")
+
+        await runner.invoke(
+            {
+                "input": "now check weather",
+                "deferred_tool_names": ["weather_forecast"],
+            }
+        )
+    finally:
+        clear_external_tools()
+
+    names = [tool["name"] for tool in _FakeAsyncClient.calls[0]["json"]["tools"]]
+    assert names == ["tool_search", "tool_dispatcher"]
+
+
+@pytest.mark.asyncio
 async def test_remote_runner_responses_invoke_preserves_usage(monkeypatch):
     import httpx
 

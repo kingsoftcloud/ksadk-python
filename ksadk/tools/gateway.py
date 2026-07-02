@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import hashlib
 import json
+import shlex
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -14,6 +15,15 @@ class ToolPolicy:
     risk_level: str = "low"
     side_effects: Sequence[str] = field(default_factory=tuple)
     requires_approval: bool | None = None
+
+
+_READ_ONLY_GIT_COMMANDS = {"status", "diff", "log", "show", "branch", "ls-files"}
+_DANGEROUS_COMMAND_TOKENS = {
+    "sudo",
+    "kubectl",
+    "docker",
+}
+_DANGEROUS_GIT_COMMANDS = {"reset", "clean", "push", "checkout"}
 
 
 class ToolGateway:
@@ -104,6 +114,50 @@ def tool_policy_requires_approval(
     if mode != "strict":
         return False
     return policy.risk_level.lower() in {"medium", "high", "critical"}
+
+
+def check_command_policy(command: str) -> dict[str, Any]:
+    text = str(command or "").strip()
+    if not text:
+        return {"ok": False, "decision": "reject", "error_type": "command_required", "error_message": "command is required"}
+    try:
+        tokens = shlex.split(text)
+    except ValueError as exc:
+        return {"ok": False, "decision": "reject", "error_type": "invalid_command", "error_message": str(exc)}
+    if not tokens:
+        return {"ok": False, "decision": "reject", "error_type": "command_required", "error_message": "command is required"}
+    if _contains_recursive_rm(tokens):
+        return _command_rejected("recursive rm is not allowed without explicit approval")
+    if any(token in _DANGEROUS_COMMAND_TOKENS for token in tokens):
+        return _command_rejected(f"{tokens[0]} command is not allowed by default policy")
+    if tokens[0] == "git" and len(tokens) > 1:
+        subcommand = tokens[1]
+        if subcommand in _READ_ONLY_GIT_COMMANDS:
+            return {"ok": True, "decision": "allow", "reason": "read_only_git"}
+        if subcommand in _DANGEROUS_GIT_COMMANDS:
+            return _command_rejected(f"git {subcommand} is not allowed without explicit approval")
+    if _references_metadata_endpoint(tokens):
+        return _command_rejected("metadata/private endpoint access is not allowed by default policy")
+    return {"ok": True, "decision": "allow", "reason": "default_allow"}
+
+
+def _command_rejected(message: str) -> dict[str, Any]:
+    return {"ok": False, "decision": "reject", "error_type": "command_rejected", "error_message": message}
+
+
+def _contains_recursive_rm(tokens: Sequence[str]) -> bool:
+    for index, token in enumerate(tokens[:-1]):
+        if token == "rm" and any(
+            flag.startswith("-") and ("r" in flag or "R" in flag)
+            for flag in tokens[index + 1 : index + 3]
+        ):
+            return True
+    return False
+
+
+def _references_metadata_endpoint(tokens: Sequence[str]) -> bool:
+    joined = " ".join(tokens)
+    return "169.254.169.254" in joined or "metadata.google.internal" in joined
 
 
 def _canonical_tool_args(tool_args: Any) -> str:
