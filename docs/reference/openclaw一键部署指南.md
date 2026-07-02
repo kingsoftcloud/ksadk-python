@@ -46,6 +46,48 @@ agentengine openclaw deploy \
 - `mem0` 必须传 `--mem0-instance-id`
 - `openclaw_default` 不能再传 mem0 细节参数
 - 不传 `--memory-system` 时，CLI 不会强制覆盖已有 memory 配置
+- `--memory-system` 的 Choice 仅包含 `openclaw_default` / `mem0`，lancedb 不在 CLI 选项内
+
+!!! info "lancedb 不走 --memory-system CLI（0.6.7 新增）"
+
+    进程内 LanceDB 记忆后端无法通过 `--memory-system` 选择，必须由 server 注入的 `MEMORY_BACKEND_MANIFEST` 声明。manifest 中 `backend_type=lancedb`，可选覆盖 `dbPath` / `embedding` / `storageOptions`。渲染产物 plugin id 为 `memory-lancedb`，bootstrap 会将其 disabled 默认的 `openclaw-mem0` 以避免双后端冲突。
+
+    ```yaml
+    # MEMORY_BACKEND_MANIFEST 示例（base64 后通过 env 注入）
+    backend_type: lancedb
+    config:
+      dbPath: /home/node/.openclaw/lancedb
+      embedding:
+        provider: openai
+        model: text-embedding-3-small
+      storageOptions:
+        mode: local
+    ```
+
+| memory 后端 | 说明 |
+| --- | --- |
+| `openclaw_default` | 内置默认记忆，经 `--memory-system openclaw_default` 选择 |
+| `mem0` | 托管 mem0 实例，经 `--memory-system mem0` + mem0 实例参数选择 |
+| `lancedb` | 进程内 LanceDB 记忆插件，经 `MEMORY_BACKEND_MANIFEST` 声明 `backend_type=lancedb`，不走 `--memory-system` CLI；可选覆盖 `dbPath` / `embedding` / `storageOptions` |
+
+!!! tip "deploy 注入模型策略（0.6.7 新增）"
+
+    `agentengine openclaw deploy` 会按以下策略向 runtime 注入模型相关 env：
+
+    - 优先使用用户显式传入的 `--env OPENCLAW_MODEL_*` / `--env OPENAI_API_BASE` / `--env OPENAI_API_KEY`，显式值不被覆盖。
+    - 未显式指定时，使用默认 catalog 中的平台模型配置（`OPENCLAW_MODEL_CATALOG`），catalog 已内置 `glm-5.2` / `kimi-k2.7-code` 等常用模型的 endpoint 映射。
+    - 若 catalog 与显式 env 均缺失，则回落到 fallback 模型：`OPENCLAW_MODEL_FALLBACK=glm-5.2`，确保 pod 能正常起一个可用 LLM。
+
+    ```bash
+    # 完全自定义模型入口
+    agentengine openclaw deploy \
+      --env OPENAI_API_BASE=https://api.example.com/v1 \
+      --env OPENAI_API_KEY=sk-test \
+      --env OPENCLAW_MODEL_CATALOG=custom \
+      --env OPENCLAW_MODEL_FALLBACK=glm-5.2
+    ```
+
+    模型占位符 endpoint / key 仅作示例，请替换为实际值。
 
 ### 2.3 存储参数
 

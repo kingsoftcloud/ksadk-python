@@ -65,6 +65,7 @@
 | `input_content` | `list[dict]` | 当前 user turn 的 OpenAI Responses content blocks，例如 `input_text / input_image / input_file` |
 | `input_messages` | `list[dict]` | OpenAI Responses 风格 message/input items；需要完整 role/content 结构的 runner 优先读这里 |
 | `input_parts` | `list[dict]` | legacy/internal 归一化片段，保留 `text / inlineData / fileData`；用于兼容已有 runner，不作为 OpenAI 官方协议字段暴露 |
+| `invocation_id` | `str` | 当前运行 ID。0.6.5 起写入 runner payload，用于 transcript 分组、`SubscribeRunEvents` 续订、`CancelRun` 以及 trace 串联 |
 | `attachments` | `list[dict]` | 当前会话最近有效附件上下文，兼容历史 fallback，不应用来判断本轮是否传文件 |
 | `attachment_results` | `list[dict]` | 最近有效附件理解结果，例如 OCR / 文本提取 |
 | `current_attachments` | `list[dict]` | 当前最新 user turn 解析出的附件列表，不包含历史 fallback |
@@ -72,7 +73,7 @@
 | `has_current_files` | `bool` | 当前最新 user turn 是否包含归一化后的 `inlineData` 或 `fileData`，包括 OpenAI `input_image / input_file` |
 | `model` | `str` | 当前请求显式使用的模型名 |
 | `model_metadata` | `dict` | 模型元数据，可能来自请求显式传入，也可能来自上游 `/v1/models` 自动解析 |
-| `platform_context` | `dict` | 平台上下文，例如 `agent_id / user_id / session_id` |
+| `platform_context` | `dict` | 平台上下文，含 `agent_id / user_id / session_id / account_id` |
 | `kb_context` | `dict` | 知识库召回构造的上下文 |
 | `memory_context` | `dict` | 长期记忆构造的上下文 |
 | `instructions` | `str` | 本轮额外系统/开发者指令 |
@@ -188,7 +189,7 @@ has_file = any(
 
 ```python
 {
-    "id": "kimi-k2.6",
+    "id": "kimi-k2.7-code",
     "architecture": {
         "input_modalities": ["文字", "图片", "视频"],
         "output_modalities": ["文字"]
@@ -205,6 +206,9 @@ has_file = any(
     "pricing": {...}
 }
 ```
+
+!!! info "多模态默认模型来源"
+    自策略 v1 起，运行时在请求未显式指定模型时，会按平台多模态默认模型策略挑选默认模型（含图片/视频输入能力的优先模型）。`model_metadata` 仍按下方来源优先级填充，业务侧不需要自己判断"默认模型是否多模态"，直接读 `capabilities.multimodal_input_*` 即可。
 
 业务代码里最常用的判断是：
 
@@ -312,7 +316,9 @@ ctx = get_current_invocation_context()
 if ctx:
     print(ctx.agent_id)
     print(ctx.user_id)
+    print(ctx.account_id)
     print(ctx.session_id)
+    print(ctx.invocation_id)
     print(ctx.model)
     print(ctx.input_content)
     print(ctx.input_messages)
@@ -322,13 +328,16 @@ if ctx:
     print(ctx.has_current_files)
     print(ctx.kb_context)
     print(ctx.memory_context)
+    print(ctx.model_metadata)
 ```
 
 `PlatformInvocationContext` 当前包含：
 
 - `agent_id`
 - `user_id`
+- `account_id`（默认空串 `""`，未携带平台身份时为空）
 - `session_id`
+- `invocation_id`
 - `history`
 - `input_content`
 - `input_messages`
@@ -342,6 +351,77 @@ if ctx:
 - `model`
 - `kb_context`
 - `memory_context`
+- `model_metadata`
+
+### 9.1 不抛异常的安全读取入口（0.6.5 新增）
+
+`get_current_invocation_context()` 在没有上下文时返回 `None`，调用方仍需自己判空。如果你只想要某个具体字段、且希望在没有上下文时拿到一个显式默认值而不是 `None`，可以用下面三个安全入口：
+
+```python
+from ksadk.runtime_context import (
+    get_current_invocation_context_or_default,
+    get_current_user_id,
+    get_current_account_id,
+)
+
+# 无上下文时返回一个空 PlatformInvocationContext 实例，不抛异常
+ctx = get_current_invocation_context_or_default()
+
+# 无上下文或字段缺失时返回传入的 default，不抛异常
+user_id = get_current_user_id(default="")
+account_id = get_current_account_id(default="")
+```
+
+!!! tip "什么时候用安全入口"
+    - 在 tool / 回调 / 后台任务里取身份字段，不希望因为没有运行上下文就中断流程
+    - 写库、打日志、埋点等"best-effort"消费场景，缺失身份时用空串兜底即可
+    - 需要拿到完整 ctx 做多字段消费时，优先用 `get_current_invocation_context_or_default()` 拿到一个非空实例，再按字段读
+
+!!! warning "不要用这些入口做权限决策"
+    这三个入口返回的是"尽力而为"的运行上下文，适合观测、埋点、默认参数；涉及鉴权或租户隔离的判断仍应走平台协议层显式传入的 `platform_context`，不要只依赖 `get_current_account_id()` 的默认值。
+
+### 9.2 Hosted 附件统一解析：`ae-upload://`
+
+Hosted 部署下，用户上传的附件会以 `ae-upload://` 协议的引用地址下发到 runner payload。运行时会按当前部署形态把这类引用统一解析成可消费的 `AttachmentContent`，业务代码不需要自己处理 `ae-upload://` 前缀：
+
+- 调用方先走平台 `UploadFile`，得到 `ae-upload://...` 引用
+- runner 进入前，平台把引用解析为 `AttachmentContent`（含 bytes 或本地可读路径）
+- 业务代码统一从 `current_attachments / attachments` 消费，`transport` 字段标记是 `inline` 还是 `reference`
+
+如果业务代码需要主动下载某个附件引用（例如从 `attachment_results` 拿到 `file_uri` 后再取原始字节），使用 `AttachmentContent` 下载入口：
+
+```python
+from ksadk.attachments import resolve_attachment_content
+
+# file_uri 可以是 ae-upload://... / ksadk-upload://... / https://...
+content = resolve_attachment_content(file_uri)
+# content.bytes: 原始字节
+# content.mime_type: 归一化后的 mime
+# content.display_name: 展示名
+```
+
+!!! info "公开口径"
+    `ae-upload://` 是平台 Hosted 附件引用协议，具体 Host 端点不对外暴露；示例里统一用 `example.com` 占位，业务代码只认协议前缀和 `AttachmentContent` 入口。
+
+### 9.3 `ModelMetadata` 透传与多模态能力判断
+
+`model_metadata` 会在 runner payload 和 `PlatformInvocationContext` 之间透传：请求显式传入的 `model_metadata` 优先，未传入时由 runtime 查询上游 `/v1/models` 自动解析并填充。因此无论 LangGraph / LangChain / ADK 哪条路径，业务代码都可以用同一种方式判断模型多模态能力：
+
+```python
+from ksadk.runtime_context import get_current_invocation_context_or_default
+
+ctx = get_current_invocation_context_or_default()
+capabilities = (ctx.model_metadata or {}).get("capabilities") or {}
+supports_image = bool(capabilities.get("multimodal_input_image"))
+supports_video = bool(capabilities.get("multimodal_input_video"))
+supports_file = bool(capabilities.get("multimodal_input_file"))
+```
+
+多模态分流建议：
+
+- 支持图片/视频输入：优先消费 `input_content / input_messages` 中的原生多模态块
+- 不支持原生多模态：退回 `current_attachment_results[*]["text"]` 走 OCR / 文本提取降级
+- 需要判断当前轮是否真的带了文件：读 `has_current_files`，不要用 `attachments` 判断
 
 ## 10. `HumanMessage` 什么时候需要自己解析
 

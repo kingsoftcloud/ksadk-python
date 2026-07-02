@@ -147,6 +147,7 @@
 | `OPENAI_MODEL_NAME` | 本地运行时 / Runtime 镜像 | 条件必传 | 未设置 | `LLM_MODEL`、`MODEL_NAME`、Hermes fallback 读取 `OPENAI_FALLBACK_MODEL_NAME` | 否 | 开发者 / 平台 | 否 | 默认模型名。 |
 | `OPENAI_CONTEXT_LENGTH` | Hermes / 模型配置 | 否 | 未设置 | `MODEL_CONTEXT_LENGTH`、`HERMES_CONTEXT_LENGTH` | 否 | 开发者 / 平台 | 否 | 模型上下文长度提示。 |
 | `OPENAI_FALLBACK_MODEL_NAME` | Hermes / 模型配置 | 否 | 未设置 | `HERMES_FALLBACK_MODEL` | 否 | 开发者 / 平台 | 否 | Hermes fallback 模型名 fallback。 |
+| `AGENTENGINE_MODEL_POLICY_JSON` | Runtime / 模型策略 | 否 | 内置 v1 默认策略 | 无 | 否 | 平台 / 开发者 | 否 | 运行时模型策略 JSON，统一声明 `primary` / `multimodal` / `fallback` 三档与每个模型的 `reasoning` / `options`，覆盖 `OPENAI_MODEL_NAME` / `OPENCLAW_*` / `HERMES_*` 默认语义。0.6.6 起 v1 默认策略为 `primary=glm-5.2` / `multimodal=kimi-k2.7-code` / `fallback=deepseek-v4-pro`；0.6.7 起每个模型 `reasoning:true`，catalog 输出含 `reasoning` 字段。 |
 | `LLM_API_KEY` | Serverless / 兼容模型配置 | 条件必传 | 未设置 | `OPENAI_API_KEY`、`MODEL_API_KEY` | 是 | 平台 Secret / 开发者 | 否 | Serverless 平台兼容模型 API key。 |
 | `LLM_API_BASE` | Serverless / 兼容模型配置 | 条件必传 | 未设置 | `OPENAI_BASE_URL`、`MODEL_API_BASE` | 否 | 平台 / 开发者 | 否 | Serverless 平台兼容模型 endpoint。 |
 | `LLM_MODEL` | Serverless / OpenClaw | 条件必传 | 未设置 | `OPENAI_MODEL_NAME`、`MODEL_NAME` | 否 | 平台 / 开发者 | 否 | Serverless/OpenClaw 兼容模型名。 |
@@ -172,7 +173,8 @@
 | `KS_REGION` | 旧 KingsoftCloudConfig | 否 | `cn-beijing-6` | 建议迁移到 `KSYUN_REGION` | 否 | 兼容旧配置 | 否 | 早期 SDK settings 读取的 region；不与 `KSYUN_REGION` 自动互通。 |
 | `KS3_ACCESS_KEY` | KS3 / 兼容 fallback | 条件必传 | 未设置 | `KSYUN_ACCESS_KEY` | 是 | 开发者 / Secret | 否 | KS3 专用 AK 兼容变量。 |
 | `KS3_SECRET_KEY` | KS3 / 兼容 fallback | 条件必传 | 未设置 | `KSYUN_SECRET_KEY` | 是 | 开发者 / Secret | 否 | KS3 专用 SK 兼容变量。 |
-| `KS3_BUCKET` | 构建上传 / 版本发布 | 条件必传 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | 自定义 KS3 bucket。 |
+| `KS3_REGION` | KS3 / 附件存储 | 否 | 回退 `KSYUN_REGION`，最终 `cn-beijing-6` | `KSYUN_REGION` | 否 | 开发者 / 平台 | 否 | KS3 bucket 所在区域；未显式设置时回退到 `KSYUN_REGION`，再回退到 `cn-beijing-6`。 |
+| `KS3_BUCKET` | 构建上传 / 版本发布 / 附件存储 | 条件必传 | 未显式设置时附件存储回退为 `agentengine-<account_id>-<region>` | 无 | 否 | 开发者 / 平台 | 否 | 自定义 KS3 bucket。附件存储未设置时会按账号和 region 自动派生 bucket 名，需保证该 bucket 已存在且可写。 |
 | `KS3_ENDPOINT_MODE` | KS3 上传 | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | KS3 endpoint 选择策略。 |
 | `KS3_ENDPOINT_PROBE_TIMEOUT_SECONDS` | KS3 上传 | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | KS3 endpoint 探测超时。 |
 | `KS3_UPLOAD_TIMEOUT_SECONDS` | KS3 上传 | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | KS3 上传超时。 |
@@ -295,6 +297,7 @@
 | `MEM0_API_KEY` | OpenClaw memory backend | 条件必传 | 未设置 | 无 | 是 | 平台 Secret | 否 | 选择 `mem0` memory backend manifest 时需要。 |
 | `MEM0_USER_ID` | OpenClaw memory backend | 条件必传 | 未设置 | 无 | 否 | 平台 / 用户上下文 | 否 | 选择 `mem0` memory backend manifest 时需要。 |
 | `MEM0_BASE_URL` | OpenClaw memory backend | 条件必传 | 未设置 | 无 | 否 | 平台 | 否 | 选择 `mem0` memory backend manifest 时需要。 |
+| `MEMORY_BACKEND_MANIFEST` | OpenClaw memory backend | 条件必传 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | OpenClaw memory backend manifest，声明 `backend_type` 及其连接配置；视 `backend_type` 不同，对应 backend 专有变量（例如 `mem0` 的 `MEM0_*`）条件必传。 |
 
 ## 9. 知识库
 
@@ -386,6 +389,9 @@
 
 ## 11. 可观测性
 
+!!! new "0.6.7 新增：CloudMonitor 双写"
+    0.6.7 起 `setup_tracing()` 自动探测 `CLOUD_MONITOR_*` 环境变量：当检测到 CloudMonitor 配置时，会并行挂载 CloudMonitor OTLP exporter 与 CloudMonitor Langfuse SDK CallbackHandler。这两个通道与自建 Langfuse（`LANGFUSE_*`）和标准 OTLP（`OTEL_EXPORTER_OTLP_*`）互不压制，可以同时上报到多个后端，便于在同一份 trace 上叠加平台可观测与自建链路。
+
 | 变量 | 作用层级 | 是否必传 | 默认值 | 别名/兼容 | 敏感 | 配置方/来源 | 是否业务自定义 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `LANGFUSE_PUBLIC_KEY` | Tracing / Runtime | 条件必传 | 未设置 | 无 | 是 | Secret | 否 | Langfuse public key。 |
@@ -429,7 +435,9 @@ Hermes / OpenClaw 有大量镜像启动和安全策略变量，本文只列常�
 | `HERMES_COMPRESSION_PROVIDER` | Hermes | 否 | `HERMES_MODEL_PROVIDER` | 无 | 否 | 开发者 / 平台 | 否 | 压缩模型 provider。 |
 | `HERMES_COMPRESSION_CONTEXT_LENGTH` | Hermes | 否 | `HERMES_CONTEXT_LENGTH` | 无 | 否 | 开发者 / 平台 | 否 | 压缩模型上下文长度。 |
 | `HERMES_COMPRESSION_TIMEOUT` | Hermes | 否 | `120` | 无 | 否 | 开发者 / 平台 | 否 | 压缩请求超时秒数。 |
-| `HERMES_FALLBACK_MODEL` | Hermes | 否 | `OPENAI_FALLBACK_MODEL_NAME` | 无 | 否 | 开发者 / 平台 | 否 | fallback 模型。 |
+| `HERMES_FALLBACK_MODEL` | Hermes | 否 | `deepseek-v4-pro` | `OPENAI_FALLBACK_MODEL_NAME` | 否 | 开发者 / 平台 | 否 | fallback 模型。 |
+| `HERMES_DEFAULT_MODEL` | Hermes | 否 | `glm-5.2` | `OPENAI_MODEL_NAME` | 否 | 开发者 / 平台 | 否 | Hermes 默认模型，由模型策略 `primary` 派生。 |
+| `HERMES_MODEL_CATALOG_JSON` | Hermes | 否 | 由模型策略自动生成 | 无 | 否 | 平台 / 开发者 | 否 | 覆盖 Hermes 模型 catalog；默认从 `AGENTENGINE_MODEL_POLICY_JSON` 派生，0.6.7 起输出含 `reasoning` 字段。 |
 | `HERMES_FALLBACK_BASE_URL` | Hermes | 否 | `OPENAI_BASE_URL` | 无 | 否 | 开发者 / 平台 | 否 | fallback endpoint。 |
 | `HERMES_FALLBACK_PROVIDER` | Hermes | 否 | `custom` | 无 | 否 | 开发者 / 平台 | 否 | fallback 模型 provider。 |
 | `HERMES_HOSTED_RUNTIME` | Hermes | 否 | `1` | 无 | 否 | Runtime 镜像 / 平台 | 否 | 标识 Hermes 以 hosted runtime 模式运行。 |
@@ -482,10 +490,12 @@ Hermes / OpenClaw 有大量镜像启动和安全策略变量，本文只列常�
 | `OPENCLAW_DISABLE_DEVICE_AUTH` | OpenClaw | 否 | `false` | 无 | 否 | 开发者 / 测试 | 否 | 禁用设备鉴权。 |
 | `OPENCLAW_MODEL_API_KEY` | OpenClaw | 条件必传 | 未设置 | `OPENAI_API_KEY` / `MODEL_API_KEY` | 是 | Secret | 否 | OpenClaw 模型 API key。 |
 | `OPENCLAW_MODEL_BASE_URL` | OpenClaw | 条件必传 | 未设置 | `OPENAI_BASE_URL` / `MODEL_API_BASE` | 否 | 平台 / 开发者 | 否 | OpenClaw 模型 endpoint。 |
-| `OPENCLAW_DEFAULT_MODEL` | OpenClaw | 条件必传 | 未设置 | `OPENAI_MODEL_NAME` / `MODEL_NAME` | 否 | 平台 / 开发者 | 否 | OpenClaw 默认模型。 |
+| `OPENCLAW_DEFAULT_MODEL` | OpenClaw | 否 | `glm-5.2` | `OPENAI_MODEL_NAME` / `MODEL_NAME` | 否 | 平台 / 开发者 | 否 | OpenClaw 默认模型，由模型策略 `primary` 派生。 |
+| `OPENCLAW_FALLBACK_MODEL` | OpenClaw | 否 | `deepseek-v4-pro` | 无 | 否 | 平台 / 开发者 | 否 | OpenClaw fallback 模型，由模型策略 `fallback` 派生。 |
+| `OPENCLAW_IMAGE_MODEL` | OpenClaw | 否 | `kimi-k2.7-code` | 无 | 否 | 平台 / 开发者 | 否 | OpenClaw 多模态/图像模型，由模型策略 `multimodal` 派生。 |
 | `OPENCLAW_MODEL_PROVIDER_ID` | OpenClaw | 否 | `ksyun` | 无 | 否 | 平台 / 开发者 | 否 | OpenClaw 模型 provider id。 |
 | `OPENCLAW_MODEL_API` | OpenClaw | 否 | `openai-completions` | 无 | 否 | 平台 / 开发者 | 否 | OpenClaw 模型 API 类型。 |
-| `OPENCLAW_MODEL_CATALOG_JSON` | OpenClaw | 否 | 自动生成 | 无 | 否 | 平台 / 开发者 | 否 | 覆盖模型 catalog。 |
+| `OPENCLAW_MODEL_CATALOG_JSON` | OpenClaw | 否 | 由模型策略自动生成 | 无 | 否 | 平台 / 开发者 | 否 | 覆盖模型 catalog；默认从 `AGENTENGINE_MODEL_POLICY_JSON` 派生，0.6.7 起输出含 `reasoning` 字段。 |
 | `OPENCLAW_MODEL_ALLOWLIST` | OpenClaw | 否 | 未设置 | `AGENTENGINE_MODEL_ALLOWLIST` | 否 | 平台 / 开发者 | 否 | OpenClaw 模型白名单。 |
 | `OPENCLAW_MODEL_API_KEY_SECRET_SOURCE` | OpenClaw | 否 | 模板默认值 | 无 | 否 | 平台 | 否 | 模型 API key secret 来源，例如 env/file。 |
 | `OPENCLAW_MODEL_API_KEY_SECRET_PROVIDER` | OpenClaw | 否 | 模板默认值 | 无 | 否 | 平台 | 否 | 模型 API key secret provider 标识。 |

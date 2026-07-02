@@ -352,6 +352,10 @@ flowchart LR
 - 渲染在 runtime 内完成
 - `mem0` 需要环境变量齐全，否则 bootstrap 直接失败
 - 插件不是无条件落盘，而是由渲染结果驱动按需同步
+- `lancedb`（`backend_type=lancedb`）走同一 manifest→render 链路，但不依赖 mem0 环境变量；渲染产出 `memory-lancedb` 插件 entry，同时把 `openclaw-mem0` 加入 `disabled_plugin_ids`，避免两个 memory 插件同时生效。manifest 可选 `config.dbPath` / `config.embedding` / `config.storageOptions` 三个 LanceDB 专属字段，由 schema 校验，缺省时插件使用内置默认。
+
+!!! info "0.6.7 新增 backend"
+    LanceDB 作为进程内向量存储 backend，给 OpenClaw 提供无需外部 mem0 实例的长期记忆能力；当 `backend_type=lancedb` 时，`secrets_env` 可留空。
 
 ## 10. Docker 构建与根上下文
 
@@ -376,11 +380,143 @@ flowchart LR
 | Hosted UI bootstrap | 消费方 | 负责 |
 | Workspace Files runtime data plane | 负责 | 不负责 |
 | Workspace Files Hosted Action | 消费方 | 负责 |
-| Memory manifest 渲染 | 负责 | 不负责 |
+| Memory manifest 渲染 | 负责（含 `openclaw_default` / `mem0` / `lancedb` 三种 backend_type） | 不负责 |
 | Memory manifest 生成 | 不负责 | 负责 |
 | endpoint / api_key 写回 | 不负责 | 负责 |
 
-## 12. 文档索引
+## 12. 平台上下文与 invocation_id
+
+!!! new "0.6.5 新增"
+    平台调用上下文（`PlatformInvocationContext`）与 `invocation_id` 贯穿 runner payload 与 OpenAI 兼容接口，为 Skill / Workspace / Sandbox / Memory 工具提供统一的账号边界读取入口。
+
+### 12.1 PlatformInvocationContext
+
+`ksadk.runtime_context.PlatformInvocationContext` 在 runner 执行前由 conversation runtime 注入到 `ContextVar`，携带 `agent_id` / `user_id` / `session_id` / `account_id` 等字段。工具实现优先读取当前调用上下文，而不是裸环境变量。
+
+```python
+from ksadk.runtime_context import (
+    get_current_invocation_context_or_default,
+    get_current_user_id,
+    get_current_account_id,
+)
+
+ctx = get_current_invocation_context_or_default()
+user_id = get_current_user_id()        # ctx.user_id
+account_id = get_current_account_id()  # ctx.account_id，未注入时为空串
+```
+
+`PlatformInvocationContext.account_id` 是 0.6.5 新增字段，用于把控制面透传的账号边界下沉到工具层。
+
+### 12.2 invocation_id 与 account_id 透传
+
+`invocation_id` 作为单次调用的稳定标识，由 runner payload 与 OpenAI 兼容接口共同透传：
+
+- runner payload 携带 `invocation_id`，由 conversation runtime 进入 `platform_invocation_scope` / `tool_execution_scope`。
+- `/v1/responses`、`/v1/chat/completions` 与 `RunAgent` action 都接收并透传 `account_id`，进入 `PlatformInvocationContext`。
+- 后台 stream（`Background=true`）使用 `invocation_id` 作为 detached stream 的索引键，供 `SubscribeRunEvents` 拉起始态。
+
+```python hl_lines="3"
+# RunAgent action 透传示例（伪代码）
+result = await conversation.invoke_conversation_once(
+    runner=active_runner,
+    agent_id=agent_id,
+    user_id=run_user_id,
+    account_id=account_id,        # 控制面透传的账号边界
+    invocation_id=invocation_id,  # 单次调用稳定标识
+    session_id=resolved_session_id,
+)
+```
+
+### 12.3 工具按账号边界读取当前调用上下文
+
+Skill / Workspace / Sandbox / Memory 工具在执行时通过 `get_current_invocation_context_or_default()` 读取当前 `account_id` / `user_id` / `session_id`，使同一 runner 进程内的多账号调用互不串扰：
+
+- Memory 工具使用 `context.user_id` / `context.session_id` 限定长期记忆的读写范围。
+- Skill 工具通过 `KSYUN_ACCOUNT_ID` / `KSADK_SKILL_SERVICE_ACCOUNT_ID` 把账号写入 Skill Service 请求头 `X-Ksc-Account-Id`。
+- Workspace / Sandbox 工具通过 `tool_execution_scope` 读取 `session_id` / `run_id` / `invocation_id`，把执行范围绑定到当前调用。
+
+!!! tip "工具实现建议"
+    自定义工具优先调用 `get_current_invocation_context_or_default()`，不要直接读 `os.environ` 里的账号信息；前者反映当前调用边界，后者只反映进程启动环境。
+
+## 13. Hosted/本地附件统一解析
+
+!!! new "0.6.6 新增"
+    附件 URI 统一为两种 scheme：本地 `ksadk-upload://` 与 Hosted `ae-upload://`。runtime 侧统一解析、按需下载并恢复本地 cache。
+
+### 13.1 双 scheme 解析
+
+`ksadk.conversations.attachment_storage` 同时识别两种 scheme：
+
+| Scheme | 来源 | 解析动作 |
+| --- | --- | --- |
+| `ksadk-upload://` | 本地上传或 KS3 回填 | 直接读本地 cache 或 KS3 object |
+| `ae-upload://` | Hosted 控制面下发 | 走 KOP Action `AttachmentContent` 下载 |
+
+`parse_file_id()` 对两种 scheme 都返回去掉前缀后的 `file_id`；`is_runtime_upload_uri()` / `is_hosted_upload_uri()` 用于分支判断。
+
+### 13.2 KOP Action 下载
+
+Hosted 附件通过 `AgentEngineClient.download_attachment_content(file_uri)` 走签名后的 KOP Action API 拉取字节流，返回 `AttachmentContent`（`data` / `content_type` / `display_name`）。下载失败时返回 `None`，由上层决定是否降级。
+
+### 13.3 本地 cache 恢复链路
+
+`AttachmentStorageService.read()` 按以下顺序恢复附件字节：
+
+1. `ae-upload://` → 调用 KOP Action 下载，写入本地 cache 并落 `.meta.json`。
+2. `ksadk-upload://` 且 metadata 标记 `backend=ks3` → 读 KS3 object，失败时回退本地 cache。
+3. metadata 里有 `local_path` → 直接读本地文件。
+4. 上述都缺失 → 尝试 legacy 本地路径兜底。
+
+`_restore_local_cache()` 负责把下载字节落盘到 session files 目录并回填 `local_path`，保证同一 `invocation_id` 内的重复读取不反复走网络。
+
+## 14. 会话与事件分页
+
+!!! new "0.6.6 新增"
+    `ListSessions` / `ListSessionEvents` 增加 `count_sessions` / `count_events`，返回 `Total` 供 UI 分页。
+
+会话与事件查询在原有 `offset` / `limit` 基础上新增总数统计：
+
+| Action | 入参 | 出参新增 |
+| --- | --- | --- |
+| `ListSessions` | `Page` / `PageSize`（agent_id + user_id） | `Total`（`count_sessions`） |
+| `ListSessionEvents` | `Offset` / `Limit`（session_id） | `Total`（`count_events`） |
+
+`SessionService` 基类与 `LocalSessionService` / `PostgresSessionService` 实现统一提供 `count_sessions` / `count_events`，保证本地 SQLite 与托管 PG 行为一致。
+
+## 15. Workspace 导出 facade
+
+!!! new "0.6.6 新增"
+    `ExportWorkspaceZip` 作为统一 facade，把 workspace 目录打包成 zip 流式下载。
+
+`GET /agentengine/api/v1/ExportWorkspaceZip?path=<dir>` 由 `ksadk_runtime_common.workspace_files.router` 提供，本地 `ksadk.server.app` 与 OpenClaw sidecar 共用同一 handler。`path` 默认为 `.`（workspace 根），导出前做路径逃逸拦截，符号链接逃逸会被拒绝。
+
+## 16. Custom UI 配置体系与 checkpoint/resume
+
+!!! new "0.6.7 新增"
+    Custom UI profile 与 LangGraph checkpoint/resume 能力层在 0.6.7 稳定。
+
+### 16.1 Custom UI 配置体系
+
+`ksadk.ui_config.resolve_ui_config()` 按「CLI 参数 → `.agentengine.state` → framework 默认 → 全局默认」优先级合并出最终 `UIConfig`（`profile` / `path` / `url`）。`ui_profile=custom` 时：
+
+- `path` 默认 `/`（不复用 `/chat`）。
+- 本地 `agentengine web` / `agentengine dashboard` 通过 `_configure_custom_ui_env()` 解析 custom bundle 目录并挂载静态资源。
+- Hosted 侧由控制面把 `ui_profile` / `ui_path` / `ui_url` 写入 state，runtime 读取后路由到 custom bundle。
+
+支持 profile 列表：`auto` / `adk` / `langchain` / `openclaw` / `hermes` / `custom`。
+
+### 16.2 LangGraph checkpoint/resume 能力层
+
+`LangGraphRunner` 暴露 checkpoint 描述与恢复能力：
+
+- `describe_checkpoint_capability()` 返回 `Supported` / `Backend` / `Scope` / `Durable` / `Reason`，供 UI 判断是否可 resume。
+- `_latest_checkpoint_metadata()` 从 `aget_state(config)` 提取 `thread_id` / `checkpoint_ns` / `checkpoint_id` / `next_node`，标注 `is_terminal` / `is_resumable`。
+- resume 时 `_apply_checkpoint_resume_config()` 把 `thread_id` / `checkpoint_ns` / `checkpoint_id` 写入 `configurable`，保留 `checkpoint_ns` 以命中正确的子图状态。
+
+!!! warning "checkpoint_ns 必须保留"
+    LangGraph 的 checkpoint 在子图（subgraph）场景下按 `thread_id` + `checkpoint_ns` + `checkpoint_id` 定位；丢掉 `checkpoint_ns` 会错误恢复到父图状态。`_checkpoint_ref_from_state()` 只在 `checkpoint_ns` 非空时写入 `framework_ref.langgraph.checkpoint_ns`。
+
+## 17. 文档索引
 
 - [ksadk使用文档](../guides/ksadk使用文档.md)
 - [工作区文件技术设计](../internal/工作区文件技术设计.md)

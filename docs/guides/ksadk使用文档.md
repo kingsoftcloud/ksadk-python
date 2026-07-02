@@ -12,6 +12,13 @@
 - Hermes 与 OpenClaw 的部署和常用验证路径
 - PVC 默认值、默认挂载目录、容量约束
 - `agentengine agent invoke` 的 Hermes 远端 native 调用与本地目录同步
+- 统一模型策略与 fallback（`0.6.6` 引入，`0.6.7` 补齐 reasoning 与 thinking 兼容）
+- Hosted 附件 `ae-upload://` scheme 与 `AttachmentContent` action
+- `ListSessions` / `ListSessionEvents` 分页字段
+- Custom UI bundle 与 `RuntimeCapabilities` 能力位
+- `--env` / `--env-file` 运行时环境变量与 `.env` 构建上下文边界
+- KCR 企业版 / 个人版 / 第三方镜像仓库凭证收敛
+- 长任务恢复与 `CancelRun` / `ResumeRun` 用户向流程
 
 ## 2. 安装与入口
 
@@ -172,7 +179,7 @@ Sandbox direct tools 只通过 configured isolated sandbox backend 执行。`run
 curl http://127.0.0.1:8000/v1/responses \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "glm-5.1",
+    "model": "glm-5.2",
     "input": "请用一句话介绍 AgentEngine",
     "instructions": "只用中文回答，语气简洁",
     "metadata": {"source": "local-doc"}
@@ -196,7 +203,7 @@ curl http://127.0.0.1:8000/v1/responses \
 curl -N http://127.0.0.1:8000/v1/responses \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "glm-5.1",
+    "model": "glm-5.2",
     "session_id": "sess-demo-001",
     "input": [{"role": "user", "content": [{"type": "input_text", "text": "分析这个任务"}]}],
     "stream": true
@@ -364,13 +371,160 @@ OpenAI 风格文件示例：
 2. runtime 通过 `OPENAI_BASE_URL` / `OPENAI_API_KEY` 查询上游 `/v1/models` 返回的 `architecture.input_modalities`
 3. 本地默认兜底（按文本模型处理）
 
-### 5.4 当前不支持
+### 5.4 Hosted 附件与 `ae-upload://`
+
+!!! new "0.6.6 新增"
+
+Hosted 部署下，用户在 Hosted UI 上传的附件不再以本地 `ksadk-upload://` 落盘，而是由控制面托管，统一以 `ae-upload://<file_id>` scheme 引用。两类 URI 的区别：
+
+| 附件 URI scheme | 来源 | 存储 | 读取方式 |
+| --- | --- | --- | --- |
+| `ksadk-upload://<file_id>` | 本地 `agentengine run -i` / CLI 上传 | 本地 `files/` 目录 + KS3 兜底 | 本地直读或 KS3 回源 |
+| `ae-upload://<file_id>` | Hosted 控制面上传 | 控制面托管对象 | 经由 `AttachmentContent` action 拉取 |
+
+读取 `ae-upload://` 附件时，conversation runtime 会调用 Hosted 控制面的 `AttachmentContent` action：
+
+```
+GET /agentengine/api/v1/AttachmentContent?FileUri=ae-upload://<file_id>
+```
+
+返回内容包含二进制字节、`display_name` 与 `content_type`。拉取成功后，runtime 会把内容写回本地附件 cache 目录（`<session>/files/`）并落一份 `.meta.json`，后续同一会话内再次读取该附件时优先命中本地 cache，避免重复远端拉取。
+
+会话刷新（refresh / rehydrate）后，已写回本地 cache 的 Hosted 附件会继续以本地 cache 读取；未命中本地 cache 的 `ae-upload://` 附件会再次触发 `AttachmentContent` 拉取。`ensure_local_path` / `read` 会保证返回可用本地路径，业务代码无需关心附件原始来源。
+
+### 5.5 会话与事件分页
+
+`ListSessions` 与 `ListSessionEvents` 支持分页，字段对齐控制面 action 契约：
+
+| Action | 请求字段 | 响应字段 |
+| --- | --- | --- |
+| `ListSessions` | `AgentId`、`UserId`（默认 `user`）、`Page`（≥1）、`PageSize`（1~200，默认 20） | `Sessions`、`Total`、`Page`、`PageSize` |
+| `ListSessionEvents` | `SessionId`、`Offset`（≥0）、`Limit`（≥1） | `Events`、`Total`、`Offset`、`Limit` |
+
+`ListSessions` 用 `Page` / `PageSize` 做页式分页，客户端按 `Total` 计算总页数；`ListSessionEvents` 用 `Offset` / `Limit` 做偏移分页，`Total` 为该会话事件总数。事件按追加顺序返回，分页只读取已落盘事件，不会阻塞正在写入的事件流。
+
+### 5.6 当前不支持
 
 本期不支持 `previous_response_id`、`store`、复杂 `reasoning/text` 控制、完整 tool schema 请求面，也不新增原生 LangGraph state endpoint。自定义 LangGraph State 请使用 `ksadk_prepare_state` 或 `agentengine init --from-agent` 自动生成的 adapter。
 
-## 6. Framework、挂盘与 workspace 约定
+## 6. 统一模型策略与 fallback
 
-### 6.1 默认 PVC 规则
+!!! new "0.6.7 新增"
+
+`0.6.6` 起引入统一模型策略契约，`0.6.7` 补齐 reasoning 声明与 thinking disabled 兼容。Hermes、OpenClaw 与通用 Agent 共用一套默认语义，避免三类 runtime 各自维护一份模型清单。
+
+### 6.1 策略契约
+
+策略以 JSON 描述，可通过环境变量 `AGENTENGINE_MODEL_POLICY_JSON` 整体覆盖。未设置时使用内置默认策略 `DEFAULT_MODEL_POLICY`（版本号 `v1`）：
+
+```json
+{
+  "version": "v1",
+  "primary": {"model": "glm-5.2"},
+  "multimodal": {"model": "kimi-k2.7-code"},
+  "fallback": {
+    "model": "deepseek-v4-pro",
+    "fallback_errors": [
+      "timeout",
+      "temporarily unavailable",
+      "model unavailable",
+      "rate limit",
+      "too many requests",
+      "503",
+      "504"
+    ],
+    "on_errors": [
+      "timeout",
+      "temporarily unavailable",
+      "model unavailable",
+      "rate limit",
+      "too many requests",
+      "503",
+      "504"
+    ]
+  },
+  "models": {
+    "glm-5.2": {"reasoning": true, "options": {}},
+    "kimi-k2.7-code": {"input": ["text", "image"], "reasoning": true, "options": {"temperature": 1}},
+    "deepseek-v4-pro": {"reasoning": true, "options": {}}
+  }
+}
+```
+
+三个角色的语义：
+
+| 角色 | 默认模型 | 用途 |
+| --- | --- | --- |
+| `primary` | `glm-5.2` | 默认文本主模型，未显式指定 `model` 时使用 |
+| `multimodal` | `kimi-k2.7-code` | 图片/多模态输入时路由到的模型 |
+| `fallback` | `deepseek-v4-pro` | 主模型遇到可恢复错误时重试一次的目标模型 |
+
+构建期会把策略序列化后注入 runtime 环境变量，并按 runtime 类型分别填充对应的模型变量：
+
+- 通用 Agent：`OPENAI_MODEL_NAME`（primary）、`OPENAI_FALLBACK_MODEL_NAME`（fallback）
+- `hermes`：`HERMES_DEFAULT_MODEL`（primary）、`HERMES_FALLBACK_MODEL`（fallback）、`HERMES_MODEL_CATALOG_JSON`
+- `openclaw`：`OPENAI_MODEL_NAME`（primary，带 `ksyun/` provider 前缀）、`OPENCLAW_FALLBACK_MODEL`、`OPENCLAW_IMAGE_MODEL`（multimodal）、`OPENCLAW_MODEL_CATALOG_JSON`
+
+!!! info "策略合并"
+`AGENTENGINE_MODEL_POLICY_JSON` 传入的 JSON 会与 `DEFAULT_MODEL_POLICY` 做深度合并（deep merge），未声明的字段保留默认值；只覆盖你想改的部分即可。`fallback.fallback_errors` / `fallback.on_errors` 会被同步成同一份列表。
+
+### 6.2 自动 fallback 与重试
+
+conversation runtime 在主模型调用失败时按错误信息判断是否自动 fallback 重试一次：
+
+- 可恢复错误会触发 fallback：超时、限流（rate limit / too many requests）、模型不可用、`503` / `504` 等临时不可用。
+- 不会吞掉的错误，直接抛回调用方：`400` 参数错误、`invalid request` / `bad request`、业务错误、tool 执行错误。
+- fallback 目标模型等于当前模型时不重试，避免空转。
+- 只重试一次；fallback 仍失败则按原错误返回。
+
+### 6.3 reasoning 声明与 catalog
+
+!!! new "0.6.7 新增"
+
+`0.6.7` 起在 `models.<model>` 中声明 `reasoning: true`。构建期生成的 model catalog（`OPENCLAW_MODEL_CATALOG_JSON` / `HERMES_MODEL_CATALOG_JSON`）会输出 `reasoning` 字段，Hosted UI 可据此判断是否渲染思考内容区。catalog 每条记录形如：
+
+```json
+{
+  "id": "glm-5.2",
+  "name": "glm-5.2",
+  "api": "openai-completions",
+  "input": ["text"],
+  "reasoning": true
+}
+```
+
+`input` 字段用于声明多模态能力（如 `kimi-k2.7-code` 为 `["text", "image"]`）；`options` 透传模型默认参数（如 temperature）。
+
+### 6.4 thinking disabled 兼容
+
+当本轮请求显式关闭思考（`reasoning.effort` 归一化为 `none` / `disabled`，或 `max_reasoning_tokens=0`）时，runtime 会向 OpenAI 兼容请求的 `extra_body` 注入：
+
+```json
+{
+  "enable_thinking": false,
+  "chat_template_kwargs": {"enable_thinking": false}
+}
+```
+
+这套字段是 DeepSeek 系模型关闭 thinking 的兼容写法；对不识别该字段的模型无副作用。流式输出阶段会过滤 reasoning output item，确保关闭思考时不会向客户端回吐思考内容。
+
+```mermaid
+flowchart LR
+  classDef model fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#1e3a8a;
+  classDef fallback fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d;
+  classDef drop fill:#f3f4f6,stroke:#6b7280,stroke-width:2px,color:#374151;
+
+  Req["请求 model=primary"]:::model --> Call1["调用 primary 模型"]:::model
+  Call1 -->|"超时/限流/503/504/模型不可用"| FB["fallback 重试一次 deepseek-v4-pro"]:::fallback
+  Call1 -->|"400/业务错误/tool 错误"| Err["直接抛回调用方，不 fallback"]:::drop
+  FB --> OK["返回结果"]:::model
+  Call1 -->|"成功"| OK
+  FB -->|"仍失败"| Err
+```
+
+## 7. Framework、挂盘与 workspace 约定
+
+### 7.1 默认 PVC 规则
 
 来自 `ksadk/cli/storage.py` 的统一约束：
 
@@ -378,7 +532,7 @@ OpenAI 风格文件示例：
 - 最小容量：`20Gi`
 - 最大容量：`500Gi`
 
-### 6.2 默认挂载目录
+### 7.2 默认挂载目录
 
 | Framework | 默认挂载目录 | workspace 逻辑根 | 当前代码里可直接确认的绝对路径 |
 | --- | --- | --- | --- |
@@ -411,9 +565,9 @@ flowchart TB
   OpenClawRoot --> Logical
 ```
 
-## 7. `build / deploy / launch` 参数
+## 8. `build / deploy / launch` 参数
 
-### 7.1 构建体积与依赖策略
+### 8.1 构建体积与依赖策略
 
 `agentengine build` 默认优先保持源码包轻量，不会把所有平台增强能力的重依赖都打进包：
 
@@ -433,7 +587,7 @@ agentengine build . --mode container --push --registry <registry>
 
 源码包里依赖本身很多时，优先建议业务拆分不必要依赖、使用环境变量显式关闭未用能力、或切到已有的 container 模式；本轮不建议把 `ksadk` 内置进固定 base 镜像，因为 SDK 更新频繁，固定 base 镜像会降低版本灵活性。
 
-### 7.2 部署、存储与网络参数
+### 8.2 部署、存储与网络参数
 
 以下参数在 `deploy`、`launch` 以及对应 framework 命令中统一存在：
 
@@ -512,9 +666,124 @@ deploy:
 - 只要开启 VPC 访问，或传入 `--vpc-id` / `--subnet-id` / `--security-group-id` 中任意一个，就必须同时具备 `VpcId`、`SubnetId`、`SecurityGroupId`。
 - `--availability-zone` 是可选字段，不替代子网或安全组。
 
-## 8. `agentengine files` 工作区文件管理
+### 8.3 运行时环境变量 `--env` / `--env-file`
 
-### 8.1 子命令清单
+!!! new "0.6.7 新增"
+
+`agentengine deploy` 与 `agentengine launch` 支持显式透传运行时环境变量，不再只依赖项目根 `.env`：
+
+```bash
+# 多次 --env 传 KEY=VALUE
+agentengine deploy . --target serverless \
+  --env MODEL_NAME=glm-5.2 \
+  --env LOG_LEVEL=DEBUG
+
+# 或用一个 .env / JSON 对象文件
+agentengine launch . --target kce --env-file ./prod.env
+```
+
+- `--env` 可重复传入，格式 `KEY=VALUE`；变量名必须为合法环境变量名（`[A-Za-z_][A-Za-z0-9_]*`）。
+- `--env-file` 支持 `.env`（dotenv）或 JSON 对象文件；路径不存在或格式不合法会直接报错退出。
+- `--env` 与 `--env-file` 可同时使用，同名变量以 `--env` 为准（命令行优先级高于文件）。
+
+`.env` 构建上下文边界：
+
+- 真实 `.env` 只通过 deploy payload 注入 runtime，不会进入镜像构建上下文或源码包。
+- 构建期会复制 `.env.example`（作为模板），但跳过真实 `.env`，避免凭证被打进镜像。
+- `.git`、`__pycache__`、`node_modules`、`.pytest_cache` 等同样不会进入构建上下文。
+
+### 8.4 镜像仓库凭证（KCR 企业版 / 个人版 / 第三方）
+
+镜像拉取凭证按目标镜像仓库地址自动判别类型，避免企业版/第三方误用 `KSYUN_ACCOUNT_ID`：
+
+| 仓库类型 | 判别规则 | 凭证要求 |
+| --- | --- | --- |
+| 企业版 KCR | host 以 `.ksyunkcr.com` 结尾 | 必须配 `KCR_USERNAME` + `KCR_PASSWORD` |
+| 个人版 KCR | host 以 `.kce.ksyun.com` 结尾 | `KCR_USERNAME` 可留空，运行时用 `KSYUN_ACCOUNT_ID` 兜底；`KCR_PASSWORD` 必填 |
+| 第三方镜像仓库 | 其他 host | 必须配 `KCR_USERNAME` + `KCR_PASSWORD` |
+
+```bash
+agentengine config
+# 个人版 KCR 可留空 KCR_USERNAME，运行时使用 KSYUN_ACCOUNT_ID 作为用户名兜底
+# 企业版 KCR 和第三方镜像仓库必须配置 KCR_USERNAME + KCR_PASSWORD
+```
+
+行为要点：
+
+- 检测到 `KCR_PASSWORD` 但缺少 `KCR_USERNAME`，且仓库不是个人版 KCR 时，CLI 会忽略该凭证并给出告警，不会用错误的用户名去拉私有镜像。
+- 个人版 KCR 在缺 `KCR_USERNAME` 时，会用 `KSYUN_ACCOUNT_ID` 作为用户名兜底。
+- KCR 访问凭证获取：`https://kcr.console.ksyun.com/` → 访问凭证。
+
+### 8.5 Custom UI 与 RuntimeCapabilities
+
+!!! new "0.6.7 新增"
+
+Agent 可以声明自己的 Hosted UI bundle，替代内置统一 UI。两种声明方式：
+
+1. 在项目根 `agentengine.yaml`（或 `ksadk.yaml` / `ksadk.yml`）中声明：
+
+```yaml
+ui_profile: custom
+ui_path: /
+ui_bundle_path: research-ui/dist
+```
+
+2. 不写配置时，`agentengine web` 与 runtime 会自动探测项目根 `research-ui/dist/index.html`：存在即视为 custom UI bundle，自动启用 `ui_profile=custom`。
+
+Hosted 部署下，bootstrap 会返回 `RuntimeCapabilities` 字段，声明当前 runtime 支持的能力位，Hosted UI 据此决定是否渲染对应入口。当前包含的能力位：
+
+| 能力字段 | 含义 |
+| --- | --- |
+| `CancelRun` | 是否支持取消正在运行的 run |
+| `ResumeRun` | 是否支持从 checkpoint 恢复长任务（含 `Supported` 子字段） |
+
+`ResumeRun.Supported=true` 时，`ListSessionCheckpoints` 返回的每条 checkpoint 会带 `ResumeDisabled` / `ResumeDisabledReason`，标记哪些恢复点当前可用。已恢复过的 checkpoint 在当前策略下不允许重复恢复。
+
+## 9. 长任务恢复与 CancelRun / ResumeRun
+
+!!! new "0.6.7 新增"
+
+长任务（长 LLM 生成、多步 tool 编排、流式任务）可能因超时、用户主动中断或异常退出而中断。`0.6.7` 起补齐用户向的恢复流程，避免长任务丢失进度。
+
+用户侧典型流程：
+
+```mermaid
+sequenceDiagram
+  participant U as 用户
+  participant UI as Hosted / Local UI
+  participant RT as Conversation Runtime
+
+  U->>UI: 发起长任务请求
+  UI->>RT: /v1/responses (stream=true)
+  RT-->>UI: response.created / output_text.delta ...
+  U->>UI: 点击「取消」
+  UI->>RT: CancelRun(InvocationId)
+  RT-->>UI: Status=cancelling
+  Note over RT: 运行被中断，写入 checkpoint
+  U->>UI: 刷新会话
+  UI->>RT: ListSessionEvents(SessionId, Offset, Limit)
+  RT-->>UI: 已落盘事件 + Total
+  U->>UI: 选择「从恢复点继续」
+  UI->>RT: ListSessionCheckpoints(AgentId, SessionId)
+  RT-->>UI: checkpoints (含 ResumeDisabled 标记)
+  UI->>RT: ResumeRun(AgentId, SessionId, RunId, CheckpointId)
+  RT-->>UI: 从恢复点继续生成
+```
+
+关键 action：
+
+- `CancelRun`：传入 `InvocationId`（即 `run_id`）取消正在运行的流式任务。runtime 会先尝试取消进程内 detached stream，再调用 runner 的 cancel 接口；返回 `Cancelled`、`Found`、`Status`、`RunnerCancelStatus`。
+- `ListSessionCheckpoints`：列出某个会话可恢复的 checkpoint，支持 `OnlyResumable` 过滤、`Offset` / `Limit` 分页（`Limit` 上限 500）。
+- `ResumeRun`：传入 `AgentId` / `SessionId` / `RunId` / `CheckpointId` 从指定恢复点继续。同一 session+run 已有进行中的 resume 时会返回 `resume_already_running`，避免并发重复恢复。
+
+!!! warning "不可恢复的 checkpoint"
+- 已是终态的 checkpoint 不可恢复（`ResumeDisabledReason` 会提示「选择更早恢复点重跑」）。
+- 进程内 checkpoint 不能跨实例恢复。
+- 同一 checkpoint 在当前策略下不允许重复恢复。
+
+## 10. `agentengine files` 工作区文件管理
+
+### 10.1 子命令清单
 
 - `agentengine files list`
 - `agentengine files upload`
@@ -523,7 +792,7 @@ deploy:
 - `agentengine files push`
 - `agentengine files pull`
 
-### 8.2 路径语义
+### 10.2 路径语义
 
 - 远端路径统一是 workspace 相对路径。
 - `.`、空字符串和 `/` 会被解释为逻辑根 `workspace:/`。
@@ -531,7 +800,7 @@ deploy:
   - 逻辑路径：`workspace:/docs/readme.md`
   - 真实路径：当运行时返回真实根目录时，显示绝对路径
 
-### 8.3 常用示例
+### 10.3 常用示例
 
 列目录：
 
@@ -578,7 +847,7 @@ agentengine files pull \
   --local-dir ./synced
 ```
 
-### 8.4 `push / pull` 覆盖策略
+### 10.4 `push / pull` 覆盖策略
 
 - 默认不会强制覆盖已有文件。
 - 加 `--force` 时，已有同名文件会进入 `overwritten` 结果集。
@@ -587,7 +856,7 @@ agentengine files pull \
   - `overwritten`
   - `skipped`
 
-### 8.5 JSON 输出
+### 10.5 JSON 输出
 
 所有 `files` 子命令都可配合 `--output json` 使用。典型字段包括：
 
@@ -600,7 +869,7 @@ agentengine files pull \
 - `transport_mode`
 - `results.created / overwritten / skipped`
 
-### 8.6 大小限制
+### 10.6 大小限制
 
 当前统一上限来自 `ksadk_runtime_common.workspace_files.constants`：
 
@@ -611,7 +880,7 @@ agentengine files pull \
 - 本地目录中任一单文件不能超过上限
 - 本地目录总大小也不能超过同一个上限
 
-### 8.7 传输模式
+### 10.7 传输模式
 
 CLI 内部会在两种模式间切换：
 
@@ -625,11 +894,11 @@ CLI 内部会在两种模式间切换：
 
 更完整的协议与安全说明见 [工作区文件技术设计](../internal/工作区文件技术设计.md)。
 
-## 9. `agentengine agent invoke`
+## 11. `agentengine agent invoke`
 
 `agentengine agent invoke` 是当前主线命令；`agentengine invoke` 仍保留为兼容别名。
 
-### 9.1 常见用法
+### 11.1 常见用法
 
 ```bash
 agentengine agent invoke my-agent
@@ -637,7 +906,7 @@ agentengine agent invoke my-agent --message "你好"
 agentengine agent invoke my-agent --transport chat
 ```
 
-### 9.2 Hermes 远端 native 模式
+### 11.2 Hermes 远端 native 模式
 
 `--local-workspace` 只支持 Hermes 的远端 native 模式：
 
@@ -663,13 +932,13 @@ agentengine agent invoke my-hermes \
 - 会先读取 `GetAgentUiBootstrap` 中的 `WorkspaceFiles.MaxUploadBytes`
 - 如 bootstrap 获取失败，则回退到默认 `100MB`
 
-### 9.3 约束
+### 11.3 约束
 
 - `--remote-workspace-path` 必须与 `--local-workspace` 一起使用
 - `--local-workspace` 不能和单次 `--message` 模式一起使用
 - 当前只支持 Hermes 远端 native 模式
 
-## 10. Hermes 命令主线
+## 12. Hermes 命令主线
 
 常用命令：
 
@@ -687,7 +956,7 @@ agentengine hermes exec -- status
 - 默认挂载目录：`/home/node/.hermes`
 - 默认 workspace 根目录：`/home/node/.hermes/workspace`
 
-## 11. OpenClaw 命令主线
+## 13. OpenClaw 命令主线
 
 常用命令：
 
@@ -699,7 +968,7 @@ agentengine openclaw gateway doctor
 agentengine openclaw channel status --probe
 ```
 
-### 11.1 当前支持的记忆参数
+### 13.1 当前支持的记忆参数
 
 ```bash
 agentengine openclaw deploy --memory-system openclaw_default
@@ -716,14 +985,14 @@ agentengine openclaw deploy \
 - `--memory-system openclaw_default` 时不能再传 mem0 细节参数
 - 不显式传 `--memory-system` 时，CLI 不会主动覆盖现有服务端配置
 
-### 11.2 当前 mem0 行为
+### 13.2 当前 mem0 行为
 
 - OpenClaw 镜像内置 mem0 插件资产
 - bootstrap 默认把 `openclaw-mem0` 视为延迟同步插件
 - 只有在存在 `MEMORY_BACKEND_MANIFEST` 且渲染结果要求该插件时，才会把插件真正同步到实例目录
 - 不使用 mem0 时，不会把该插件种到实例的持久化状态里
 
-### 11.3 OpenClaw 存储默认值
+### 13.3 OpenClaw 存储默认值
 
 - 默认 PVC 大小：`20Gi`
 - 默认挂载目录：`/home/node/.openclaw`
@@ -731,9 +1000,9 @@ agentengine openclaw deploy \
 
 更多 OpenClaw 细节见 [OpenClaw一键部署指南](../reference/openclaw一键部署指南.md)。
 
-## 12. 常见验证项
+## 14. 常见验证项
 
-### 12.1 验证工作区文件
+### 14.1 验证工作区文件
 
 ```bash
 agentengine files list --output json
@@ -741,7 +1010,7 @@ agentengine files push --local-dir ./workspace --remote-path demo
 agentengine files pull --remote-path demo --local-dir ./downloaded --force
 ```
 
-### 12.2 验证 Hermes remote workspace
+### 14.2 验证 Hermes remote workspace
 
 ```bash
 agentengine agent invoke hermes-demo \
@@ -749,7 +1018,7 @@ agentengine agent invoke hermes-demo \
   --local-workspace ./workspace
 ```
 
-### 12.3 验证 OpenClaw mem0 参数
+### 14.3 验证 OpenClaw mem0 参数
 
 ```bash
 agentengine openclaw deploy \
@@ -757,7 +1026,7 @@ agentengine openclaw deploy \
   --mem0-instance-id e52b7fac-e641-4b34-b9f7-6b0b9f190cd4
 ```
 
-## 13. 相关文档
+## 15. 相关文档
 
 - [ksadk技术设计](../reference/ksadk技术设计.md)
 - [工作区文件技术设计](../internal/工作区文件技术设计.md)

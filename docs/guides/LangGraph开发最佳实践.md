@@ -123,11 +123,12 @@ getattr(module, "ksadk_prepare_state", None)
 | `has_current_files` | `bool` | 当前最新 user turn 是否包含归一化后的 `inlineData` 或 `fileData`，包括 OpenAI `input_image / input_file` |
 | `model` | `str` | 本轮显式模型名 |
 | `model_metadata` | `dict` | 模型能力元数据 |
-| `platform_context` | `dict` | `agent_id / user_id / session_id` 等平台身份 |
+| `platform_context` | `dict` | `agent_id / user_id / account_id / session_id` 等平台身份（`PlatformInvocationContext.to_payload()`） |
 | `kb_context` | `dict` | 知识库召回上下文 |
 | `memory_context` | `dict` | 长期记忆上下文 |
 | `instructions` | `str` | 请求级系统/开发者指令 |
 | `resume` | `bool` | 平台判断本轮是否为断点恢复 |
+| `invocation_id` | `str` | 0.6.5 新增。本次 invocation 的唯一标识，对应 `ToolExecutionContext.invocation_id`，可用于日志/trace 关联；透传给 `ksadk_prepare_state(payload, ...)` 的 `payload["invocation_id"]` |
 
 `input_content` / `input_messages` 是 runner 默认 canonical 输入，沿用 OpenAI Responses content block 形态；`input_parts` 是 legacy/internal normalized parts。`attachments / current_attachments / has_current_files` 等字段是 KsADK 提供给 LangGraph runner 的运行时上下文扩展，不属于 OpenAI 官方请求或响应字段。
 
@@ -208,6 +209,8 @@ def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
 | 最近有效 OCR / 文档抽取结果 | `payload["attachment_results"]` |
 | 会话历史 | `session_context["history"]` |
 | 平台身份 | `session_context["platform_context"]` |
+| account_id（计费/租户隔离） | `session_context["platform_context"]["account_id"]`，等价于 `PlatformInvocationContext.account_id` |
+| invocation_id（本次调用标识） | `payload["invocation_id"]`，对应 `ToolExecutionContext.invocation_id` |
 | 知识库上下文 | `session_context["kb_context"]` |
 | 长期记忆上下文 | `session_context["memory_context"]` |
 | 是否断点恢复 | `session_context["is_resume"]`，只建议在 adapter 中判断，用来返回 resume payload |
@@ -215,6 +218,42 @@ def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
 不要在业务代码里读取平台内部 event store 来拼 history。平台已经把可喂给模型的历史投影成 `history`。
 
 如果你的图使用 LangGraph `interrupt()`，`session_context["is_resume"]` 为 `True` 时，`ksadk_prepare_state` 的返回值会作为 `Command(resume=...)` 的值传回 interrupt 调用点，而不是作为新的 graph state 注入。因此推荐在 resume 分支直接返回 `payload["input"]`，不要继续返回完整业务 state。
+
+!!! info "0.6.5 / 0.6.7 平台上下文字段"
+    `session_context["platform_context"]` 来自平台 `PlatformInvocationContext.to_payload()`，业务代码可通过它稳定拿到：
+
+    - `agent_id` / `user_id` / `session_id`：运行时身份，用于多租户隔离、日志关联
+    - `account_id`（`PlatformInvocationContext.account_id`）：计费与租户归属，0.6.5 起在托管 runtime 里始终填充；本地裸跑可能为空字符串，消费时请用 `or ""` 兜底
+    - `runner_type`：当前 runner 类型，例如 `langgraph`
+
+    本次 invocation 的唯一标识 `invocation_id` 不在 `platform_context` 内，而是作为 `payload["invocation_id"]` 透传给 `ksadk_prepare_state`，对应平台 `ToolExecutionContext.invocation_id`。需要把业务日志、trace span 或外部副作用（写库、调用下游）与单次请求关联时，优先读这个字段而不是自己生成 ID。
+
+    ```python
+    def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
+        platform_ctx = session_context.get("platform_context") or {}
+        return {
+            "query": payload.get("input", ""),
+            "account_id": str(platform_ctx.get("account_id") or ""),
+            "invocation_id": str(payload.get("invocation_id") or ""),
+            # ...其他字段
+        }
+    ```
+
+!!! tip "0.6.5 / 0.6.7 LangGraph checkpoint resume 保留 checkpoint_ns"
+    当通过 `ResumeRun` 从历史 checkpoint 恢复运行时，LangGraph runner 会把 `framework_ref.langgraph.checkpoint_ns` 写回 `configurable.checkpoint_ns`：
+
+    - **0.6.5**：runner 首次在 checkpoint resume 配置里保留 `checkpoint_ns`，此前多命名空间（subgraph）图回档会丢失命名空间上下文
+    - **0.6.7**：runner 无条件保留 `checkpoint_ns`（即便上游未传也会补空串占位），并在 `run_checkpoint` 事件的 `framework_ref.langgraph.checkpoint_ns` 中回写，保证列表 / 预览 / 恢复三段链路一致
+
+    业务代码不需要直接读 `checkpoint_ns`。如果你的图使用了 subgraph 并依赖命名空间隔离，恢复后 LangGraph 会自动定位到正确的 subgraph checkpoint。仅当你在自定义节点里手动调用 `agent.get_state(config)` / `agent.aget_state(config)` 做诊断时，才需要把 `checkpoint_ns` 一并带上。
+
+!!! tip "0.6.5 / 0.6.7 time_travel ResumeMode 使用指导"
+    LangGraph runner 的 `RuntimeCapabilities.ResumeRun.ResumeMode` 声明为 `time_travel`，表示控制台可以选择任意历史 checkpoint 回档重放，而不是只能沿最新 invocation 续跑。使用要点：
+
+    - 前端入口门控以 `GetAgentUiBootstrap.Capabilities.RuntimeCapabilities.Checkpoint` 与 `CheckpointResumeCapability` 为准，不要仅凭 `RunLifecycle.Resume` 判断
+    - `ResumeMode=time_travel` 时优先展示 checkpoint 列表（`ListSessionCheckpoints`）让用户选点，再用 `GetCheckpointResumePreview` 预览、`ResumeRun` 恢复
+    - 恢复语义是“同一 run 续跑”（`RunId` 不变），不是新建 run；终态 checkpoint 返回 `200 noop`，前端按正常完成态收敛
+    - `time_travel` 依赖持久化 checkpointer（`postgres` / `sqlite`）；`memory` 后端 `Scope=process_local` 不可恢复，控制台应隐藏恢复入口
 
 ## 8. 附件、OCR 和图片
 
@@ -430,7 +469,66 @@ runner 收到的输入会是：
 
 业务节点恢复后应按自己约定解析 `value`。
 
-## 13. 完整可跑示例
+## 13. checkpoint resume 用户向使用流程
+
+前面几节讲的是 `interrupt()` / approval 的运行内恢复（同一 invocation 内续跑）。0.6.5 起 ksadk 还支持把整条 run 回档到某个历史 checkpoint 重新执行，这是面向控制台 / Hosted UI 的用户向操作，业务代码不需要写任何 resume 逻辑。
+
+适用场景：
+
+- 用户想“回到第 3 步重新选一个分支”
+- 某一步工具调用结果不对，想从那一步之前重跑
+- 长流程中途想换模型重试某一段
+
+!!! info "0.6.5 / 0.6.7 checkpoint resume 能力门控"
+    是否可回档以 `GetAgentUiBootstrap.Capabilities.RuntimeCapabilities` 为准：
+
+    - `Checkpoint.Supported=true` 才有 checkpoint 列表 / 预览入口
+    - `ResumeRun.Supported=true` 且 `ResumeRun.ResumeMode=time_travel` 才能选任意历史 checkpoint 回档
+    - `CheckpointResumeCapability.Supported / Checkpoint / ResumeRun` 是整体能力总开关，前端应同时校验
+
+    LangGraph runner 在配置了持久化 checkpointer（`postgres` / `sqlite`）且 `ResumeMode=time_travel` 时点亮该链路；`memory` 后端 `Scope=process_local` 不支持跨进程恢复，恢复入口应隐藏。
+
+用户向操作流程（控制台 / Hosted UI 视角）：
+
+```mermaid
+flowchart LR
+    A[ListSessionCheckpoints] --> B{IsResumable?}
+    B -- 是 --> C[GetCheckpointResumePreview]
+    C --> D[ResumeRun]
+    D --> E[SubscribeRunEvents]
+    B -- 否 --> F[引导选其他 checkpoint]
+    D -. 409 .-> F
+```
+
+步骤说明：
+
+1. **列表**：调 `ListSessionCheckpoints(AgentId, SessionId, OnlyResumable=true)` 拿到可恢复 checkpoint 列表。每个 descriptor 含 `CheckpointId / RunId / FrameworkRef / IsResumable / IsTerminal / NextNode / Backend / Scope`
+2. **预览**：选中一个 checkpoint 后调 `GetCheckpointResumePreview(AgentId, SessionId, RunId, CheckpointId)`，展示“将从哪个节点继续、涉及哪些 tool receipt”，避免误恢复
+3. **恢复**：确认后调 `ResumeRun(AgentId, SessionId, RunId, CheckpointId, Stream=true)`。恢复语义是同一 `RunId` 续跑，不是新建 run；可带 `InvocationId` 便于 `SubscribeRunEvents` / `CancelRun`
+4. **订阅**：`Stream=true` 返回 SSE，事件流与普通 run 一致；终态 checkpoint 返回 `200 noop`，前端按正常完成态收敛 UI
+
+```bash hl_lines="6"
+# 恢复调用示例（占位符 endpoint / token）
+curl -X POST https://example.com/agentengine/api/v1/ResumeRun \
+  -H "Authorization: Bearer sk-test" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "AgentId": "agent_xxx",
+    "SessionId": "sess_xxx",
+    "RunId": "run_xxx",
+    "CheckpointId": "ckpt_xxx",
+    "Stream": true
+  }'
+```
+
+业务代码注意事项：
+
+- checkpoint resume **不会** 经过 `ksadk_prepare_state` 的 resume 分支。`session_context["is_resume"]` 描述的是 `interrupt()` 运行内恢复，与 checkpoint 回档是两条独立链路
+- LangGraph runner 会把 `framework_ref.langgraph.checkpoint_ns` 写回 `configurable.checkpoint_ns`（0.6.5 首次保留，0.6.7 无条件保留），subgraph 命名空间上下文自动恢复，业务节点不需要感知
+- 终态 checkpoint（`IsTerminal=true`）不可恢复，`ResumeRun` 返回 `200 noop`；非终态且 `IsResumable=false` 返回 `409 checkpoint_not_resumable`，前端应引导用户选其他 checkpoint 而不是无限重试
+- runtime 只信任服务端已保存的 `run_checkpoint` 事件解析 `framework_ref`，客户端不能自行伪造 checkpoint 状态
+
+## 14. 完整可跑示例
 
 下面示例演示：
 
@@ -544,29 +642,29 @@ workflow.add_edge("answer", END)
 root_agent = workflow.compile()
 ```
 
-## 14. 常见反模式
+## 15. 常见反模式
 
-### 14.1 在业务代码里猜是否 resume
+### 15.1 在业务代码里猜是否 resume
 
 不要通过读取数据库、检查上一轮输出文本、解析 event store 来判断是否恢复。平台会把恢复请求转成 `resume=True`。
 
-### 14.2 让客户端直接传 LangGraph Command
+### 15.2 让客户端直接传 LangGraph Command
 
 外部协议应该是 JSON。`Command(resume=...)` 是 Python / LangGraph runner 内部调用形态，不应该暴露给客户端。
 
-### 14.3 依赖 LangGraph 内部状态结构
+### 15.3 依赖 LangGraph 内部状态结构
 
 不要依赖 `state.tasks[*].interrupts` 这类内部结构做业务判断。LangGraph 版本升级后这些结构可能变化。
 
-### 14.4 把 `HumanMessage.content` 当成永远是字符串
+### 15.4 把 `HumanMessage.content` 当成永远是字符串
 
 多模态模型下它可能是 content block 列表。除非你明确在做 messages-native agent，否则优先使用 `payload / session_context`。
 
-### 14.5 用 attachments 判断当前轮是否传文件
+### 15.5 用 attachments 判断当前轮是否传文件
 
 `attachments` 是最近有效附件上下文，可能来自历史 fallback。当前轮是否传文件看 `has_current_files`，当前轮附件列表看 `current_attachments`；OCR、文档抽取、压缩包摘要仍优先看对应的 `current_attachment_results` 或 `attachment_results`。
 
-## 15. 检查清单
+## 16. 检查清单
 
 上线前建议确认：
 
@@ -580,3 +678,5 @@ root_agent = workflow.compile()
 - 多模态分支读取 `model_metadata.capabilities`
 - interrupt 恢复只依赖 resume payload，不依赖平台内部事件结构
 - `/v1/responses` 恢复调用传同一个 `session_id`
+- checkpoint 回档依赖持久化 checkpointer（`postgres` / `sqlite`），`memory` 后端隐藏恢复入口
+- checkpoint resume 与 `interrupt()` 运行内恢复是两条独立链路，不要在 `ksadk_prepare_state` 里混判

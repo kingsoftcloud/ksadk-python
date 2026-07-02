@@ -293,6 +293,7 @@ curl -H "Authorization: Bearer <api_key>" \
 | `store` | `boolean` | 否 | OpenAI Responses 存储开关；runtime 当前保留到请求 metadata |
 | `stream` | `boolean` | 否 | 是否流式 |
 | `session_id` | `string` | 否 | ksadk legacy extension；兼容旧客户端。新接入应优先使用 `conversation` |
+| `account_id` | `string` | 否 | 0.6.7 新增。账号 ID 透传；写入 `PlatformInvocationContext`，用于多租户隔离与审计 |
 
 最小请求示例：
 
@@ -317,7 +318,7 @@ curl -H "Authorization: Bearer <api_key>" \
       ]
     }
   ],
-  "model": "glm-5.1",
+  "model": "glm-5.2",
   "stream": true,
   "conversation": "conv_customer_001",
   "safety_identifier": "hash_user_001"
@@ -386,7 +387,7 @@ curl -H "Authorization: Bearer <api_key>" \
       ]
     }
   ],
-  "model": "glm-5.1",
+  "model": "glm-5.2",
   "stream": false
 }
 ```
@@ -468,7 +469,7 @@ logger.info(
       ]
     }
   ],
-  "model": "glm-5.1",
+  "model": "glm-5.2",
   "stream": false
 }
 ```
@@ -655,7 +656,7 @@ MCP/tool approval 场景按 OpenAI Responses 标准语义恢复。客户端应�
   "incomplete_details": null,
   "instructions": null,
   "metadata": {},
-  "model": "glm-5.1",
+  "model": "glm-5.2",
   "parallel_tool_calls": true,
   "temperature": null,
   "top_p": null,
@@ -725,6 +726,7 @@ data: <json>
 | `session_id` | `string` | 否 | 会话 ID |
 | `temperature` | `number` | 否 | 当前代码接受，但不保证下游一定使用 |
 | `max_tokens` | `integer` | 否 | 当前代码接受，但不保证下游一定使用 |
+| `account_id` | `string` | 否 | 0.6.7 新增。账号 ID 透传；写入 `PlatformInvocationContext`，用于多租户隔离与审计 |
 
 `messages[].content` 支持：
 
@@ -783,7 +785,7 @@ KsADK 兼容扩展附件示例：
   "id": "chatcmpl-123",
   "object": "chat.completion",
   "created": 1710000000,
-  "model": "glm-5.1",
+  "model": "glm-5.2",
   "choices": [
     {
       "index": 0,
@@ -924,6 +926,17 @@ KsADK 扩展图片引用示例：
 | `Capabilities.Thinking` | 固定 `true` |
 | `Capabilities.HostedRuntime` | 当前公网 Hosted facade 为 `true` |
 | `Capabilities.SlashCommands` | 当前固定 `["/new","/clear","/stop","/help","/attach"]` |
+| `Capabilities.RuntimeCapabilities.Checkpoint` | 0.6.7 新增。是否支持 checkpoint 列表 / 预览 |
+| `Capabilities.RuntimeCapabilities.ResumeRun` | 0.6.7 新增。是否支持从 checkpoint 恢复运行；`ResumeMode` 取值 `time_travel` / `forward_only` / `none` |
+| `Capabilities.RuntimeCapabilities.CancelRun` | 0.6.7 新增。是否支持运行取消 |
+| `Capabilities.CheckpointResumeCapability.Supported` | 0.6.7 新增。是否整体支持 checkpoint 恢复链路 |
+| `Capabilities.CheckpointResumeCapability.Checkpoint` | 0.6.7 新增。是否支持 checkpoint 列表 / 预览 |
+| `Capabilities.CheckpointResumeCapability.ResumeRun` | 0.6.7 新增。是否支持从 checkpoint 恢复运行 |
+| `Capabilities.CustomUI.Enabled` | 0.6.7 新增。是否启用自定义 UI |
+| `Capabilities.CustomUI.Profile` | 0.6.7 新增。自定义 UI profile 标识 |
+| `Capabilities.CustomUI.Path` | 0.6.7 新增。自定义 UI 本地静态资源相对路径 |
+| `Capabilities.CustomUI.Url` | 0.6.7 新增。自定义 UI 远程 URL（与 `Path` 二选一） |
+| `Capabilities.CustomUI.BundlePath` | 0.6.7 新增。自定义 UI 打包产物路径 |
 | `WorkspaceFiles` | 工作区能力描述 |
 | `AccessMode` | `Owner / Private / Share` |
 | `SharePermissions.DefaultPath` | 默认 UI 路径；通常为 `/chat`，Hermes 管理页可为 `/` |
@@ -1003,7 +1016,7 @@ KsADK 扩展图片引用示例：
 | --- | --- | --- | --- |
 | `SessionId` | `string` | 是 | Session ID |
 | `Offset` | `integer` | 否 | 起始偏移，`>= 0` |
-| `Limit` | `integer` | 否 | 返回条数，`>= 1` |
+| `Limit` | `integer` | 否 | 返回条数，`>= 1`；0.6.7 新增：无上限，可一次性拉取全量事件 |
 
 会话响应中 `Session` 的主要字段：
 
@@ -1077,6 +1090,15 @@ data: {"EventId":"evt-14","SessionId":"sess-123","EventType":"run_status","SeqId
 data: [DONE]
 ```
 
+重连与保护超时：
+
+- **5 分钟保护超时**：单次订阅最长 5 分钟；超时后服务端会结束 SSE 流，客户端应使用最后一次收到的 `SeqId` 重新发起订阅续接。
+- **`AfterSeqId` 重连**：重连时传入已确认消费的最大 `SeqId`，服务端只推送 `SeqId > AfterSeqId` 且 `InvocationId` 匹配的事件，避免重复回放。
+- **terminal 后自动结束**：看到 terminal `run_status` 后，服务端会发送 `data: [DONE]` 并结束流，无需客户端再重连。
+
+!!! tip "断线重连推荐做法"
+    客户端应在本地维护“最近确认消费的 `SeqId`”，断线后用该值作为 `AfterSeqId` 重连；不要用时间戳或事件计数估算偏移。
+
 ## 6.7 文件上传与附件内容
 
 ### `POST /agentengine/api/v1/UploadFile`
@@ -1119,6 +1141,12 @@ data: [DONE]
 - `Content-Type` 依据文件类型推断
 - `Content-Disposition: inline`
 - 当 `FileUri` 是 `ae-upload://...` 时，服务端会先解析 Hosted 上传元数据，再返回原始文件内容
+- 0.6.7 新增：下载 `ae-upload://...` 内容时，服务端会将其写回本地 cache，后续同 URI 读取可直接命中本地 cache，减少对 Hosted 存储的重复拉取
+
+!!! info "0.6.7 新增：`ksadk-upload://` 与 `ae-upload://` 区别"
+    - `ksadk-upload://`：由本地 runtime `UploadFile` 生成，文件落在 runtime 本地 workspace 附件区，生命周期随 session/runtime。
+    - `ae-upload://`：由 Hosted 上传链路生成，文件落在平台 Hosted 存储，跨 runtime 实例可见；下载时由服务端解析 Hosted 上传元数据并写回本地 cache。
+    - 两者都可作为 `AttachmentContent` 的 `FileUri`；客户端不需要感知差异，但应理解 `ae-upload://` 在首次下载后会被本地 cache 命中加速。
 
 ## 6.8 Workspace Files Action 接口
 
@@ -1210,6 +1238,7 @@ data: [DONE]
 - 这是本地 Web UI / Workspace 面板使用的目录导出辅助接口
 - 它会读取指定 workspace 目录及其子文件，并返回 zip 文件
 - share link 场景和公网数据面是否可用，以 Hosted UI facade / gateway 白名单为准
+- 0.6.7 新增：服务端会对 `Path` 做安全过滤，拒绝绝对路径、包含 `..` 的相对路径，并跳过 symlink，避免越权读取 workspace 外的文件
 
 请求参数：
 
@@ -1265,11 +1294,11 @@ data: [DONE]
 {
   "Models": [
     {
-      "id": "glm-5.1",
-      "display_name": "glm-5.1"
+      "id": "glm-5.2",
+      "display_name": "glm-5.2"
     }
   ],
-  "Current": "glm-5.1",
+  "Current": "glm-5.2",
   "Source": "OPENAI_MODEL_NAME"
 }
 ```
@@ -1482,7 +1511,12 @@ curl -X POST "https://<PublicEndpoint>/agentengine/api/v1/DeleteResponseFeedback
 | `ApiFormat` | `string` | 否 | 默认 `responses`；可选 `responses` / `chat_completions` |
 | `Stream` | `boolean` | 否 | 是否流式 |
 | `Model` | `string` | 否 | 本次显式模型 |
-| `ModelMetadata` | `object` | 否 | 模型元数据 |
+| `ModelMetadata` | `object` | 否 | 模型元数据；可包含 `reasoning`（推理控制）、`multimodal_input_image`（多模态图片输入能力）、`context_window_tokens`（上下文窗口 token 数），runtime 会据此调整压缩阈值与能力判断 |
+| `Background` | `boolean` | 否 | 0.6.7 新增。是否后台运行；`true` 时不等待完整响应，配合 `InvocationId` + `SubscribeRunEvents` 异步消费 |
+| `InvocationId` | `string` | 否 | 0.6.7 新增。本轮运行 ID；用于 `SubscribeRunEvents` / `CancelRun` 续接与取消 |
+| `AccountId` | `string` | 否 | 0.6.7 新增。账号 ID 透传；写入 `PlatformInvocationContext`，用于多租户隔离与审计 |
+| `PreviousResponseId` | `string` | 否 | 0.6.7 新增。OpenAI Responses 上一轮 response id；用于链式上下文，不能和 `conversation`/`SessionId` 语义混用 |
+| `ModelOptions` | `object` | 否 | 0.6.7 新增。模型调用参数，例如 `temperature` / `max_tokens` 等 |
 
 请求示例：
 
@@ -1576,6 +1610,22 @@ python scripts/validate_hosted_long_task_e2e.py \
 
 `ListSessionCheckpoints` 会基于同 session 内的 `run_resume` 事件聚合 `LastResumedAt` 与 `ResumeCount`。若 `ExpiresAt` 已过期，或 `ReplayAllowed=false` 且该 checkpoint 已恢复过，服务端会将 `IsResumable=false` 并填充 `ResumeDisabledReason`，前端不需要重复推导这些禁用规则。
 
+!!! info "0.6.7 状态机"
+    `CheckpointStatus` 取值为 `active` / `resumed` / `expired` / `disabled` / `terminal`。`ResumeCount` 与 `LastResumedAt` 由服务端从 `run_resume` 事件聚合，不是客户端传入的状态。
+
+```mermaid
+stateDiagram-v2
+    [*] --> active: checkpoint 创建
+    active --> resumed: ResumeRun 成功
+    active --> expired: ExpiresAt 过期
+    active --> disabled: ReplayAllowed=false 且已恢复过
+    resumed --> active: 允许重放
+    resumed --> terminal: 进入终态节点
+    expired --> [*]
+    disabled --> [*]
+    terminal --> [*]
+```
+
 ### `POST /agentengine/api/v1/GetCheckpointResumePreview`
 
 请求体：
@@ -1618,8 +1668,33 @@ python scripts/validate_hosted_long_task_e2e.py \
 | `Model` | `string` | 否 | 可选模型名 |
 | `ModelMetadata` | `object` | 否 | 可选模型 metadata |
 | `ModelOptions` | `object` | 否 | 可选模型调用参数 |
+| `ResumeInstructionEnabled` | `boolean` | 否 | 0.6.7 新增。是否启用恢复指令注入；默认 `false` |
+| `ResumeInstruction` | `string` | 否 | 0.6.7 新增。仅 `ResumeInstructionEnabled=true` 时生效；作为恢复后的指令追加给 runner |
 
 `Stream=true` 时返回 SSE，gateway 和 server 都按流式代理处理。runtime 只信任服务端已保存的 checkpoint 事件来解析 `framework_ref`，不会信任客户端传入的 framework 状态。
+
+#### 禁用规则与错误码
+
+!!! info "0.6.7 新增"
+    `ResumeRun` 引入了显式的可恢复性判断与互斥保护，前端不需要再自行推导禁用规则。
+
+可恢复性判断以服务端 checkpoint 事件的 `IsResumable` 与 `ResumeStatus` 为准：
+
+- **非终态且不可恢复**：checkpoint `IsResumable=false` 且 `IsTerminal=false` 时，返回 `409 checkpoint_not_resumable`。响应体包含：
+    - `reason`：禁用原因
+    - `checkpoint_id`：触发的 checkpoint ID
+    - `run_id`：原 run ID
+    - `resume_status`：当前恢复状态
+    - `is_terminal`：是否终态（此处为 `false`）
+- **终态 checkpoint**：`IsTerminal=true` 时不再报错，返回 `200 noop`。响应 `Data` 包含：
+    - `Reason`：`terminal_noop`
+    - `CheckpointId`
+    - `RunId`
+    - `ResumeAttemptId`：本次恢复尝试 ID
+- **同 `(SessionId, RunId)` detached resume 互斥**：若同一 session+run 已有一个 detached resume 在进行中，重复发起返回 `409 resume_already_running`，响应体包含 `reason`、`checkpoint_id`、`run_id` 与当前活跃的 `resume_attempt_id`。
+
+!!! warning "前端实现提示"
+    终态 `noop` 不是错误；前端应按正常完成态收敛 UI，不要把 `200 noop` 当作失败重试。`409` 系列错误不要自动无限重试，应引导用户选择其他 checkpoint 或重新发起 run。
 
 ### `POST /agentengine/api/v1/CancelRun`
 
@@ -1634,8 +1709,17 @@ python scripts/validate_hosted_long_task_e2e.py \
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `AgentId` | `string` | 是 | Agent ID |
+| `AgentId` | `string` | 否 | 为兼容旧客户端可选；runtime 以 `InvocationId` 为取消主键 |
 | `InvocationId` | `string` | 是 | 需要取消的运行 ID |
+
+响应 `Data` 关键字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `Cancelled` | 是否已请求取消；语义是“已请求取消”，不代表运行已真正终止 |
+| `Found` | 是否找到对应的 active / detached 运行 |
+| `Status` | 取消请求后的运行状态摘要，例如 `cancelling` / `cancelled` / `not_found` |
+| `RunnerCancelStatus` | runner 层返回的细粒度取消状态；runner 不支持真正取消时可能为 `not_supported`，但 `Cancelled` 仍可能为 `true` |
 
 响应示例：
 
@@ -1646,7 +1730,10 @@ python scripts/validate_hosted_long_task_e2e.py \
   "RequestId": "req-xxxx",
   "Action": "CancelRun",
   "Data": {
-    "Cancelled": true
+    "Cancelled": true,
+    "Found": true,
+    "Status": "cancelling",
+    "RunnerCancelStatus": "requested"
   }
 }
 ```
@@ -1656,6 +1743,9 @@ python scripts/validate_hosted_long_task_e2e.py \
 - 外层仍是 `ActionResponse`
 - `Data` 直接放 runtime 返回的 payload
 - 服务端会补齐 `session_id`
+
+!!! warning "终态以前端事件流为准"
+    如果 runner 不支持真正取消，接口仍可能返回 `Cancelled=true`。前端不应仅凭 `Cancelled` 判断运行是否已终止，仍应以后续 `run_status` 或事件流终态为准。
 
 ## 6.13 Legacy ADK Web 兼容接口
 
@@ -1716,6 +1806,26 @@ python scripts/validate_hosted_long_task_e2e.py \
 
 - 这些路径只有在 runtime 镜像内静态资源已构建并同步时才可用
 - 生产 hosted UI 的源码、镜像和发布节奏归属 `agentengine-hosted-ui` 独立仓库；`ksadk-python` 中的静态资源只作为 SDK 本地 UI 副本保留
+
+## 6.15 账号边界与调用上下文
+
+!!! info "0.6.7 新增"
+    三个运行入口统一透传 `account_id`，写入 `PlatformInvocationContext`，用于多租户隔离、审计与配额。
+
+三入口 `account_id` 透传：
+
+| 入口 | 字段 | 说明 |
+| --- | --- | --- |
+| `POST /v1/responses` | `account_id` | 0.6.7 新增请求体字段 |
+| `POST /v1/chat/completions` | `account_id` | 0.6.7 新增请求体字段 |
+| `POST /agentengine/api/v1/RunAgent` | `AccountId` | 0.6.7 新增请求体字段 |
+
+写入与保留语义：
+
+- `account_id` 会写入 `PlatformInvocationContext`，作为本轮调用的账号上下文；runtime 在 runner、tool、审批、附件等环节统一从该上下文读取账号
+- 对 LangGraph 运行时，`account_id` 同时映射为 LangGraph checkpoint namespace（`checkpoint_ns`）的一部分，保证不同账号的 checkpoint 状态彼此隔离，不会被跨账号串读
+- 公网 `PublicEndpoint` 调用时，网关鉴权后注入的 `X-Auth-Account-Id` 与请求体 `account_id` 应一致；不一致以网关注入值为准，请求体 `account_id` 仅作为客户端提示，不能越权覆盖
+- `account_id` 不参与 OpenAI Responses / Chat Completions 官方语义，仅作为 ksadk 平台扩展透传
 
 ## 7. Hermes 运行时详细接口
 
