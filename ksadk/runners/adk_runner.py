@@ -64,47 +64,88 @@ class ADKRunner(BaseRunner):
                 logger.warning("Failed to close runtime toolset %r: %s", toolset, exc)
 
     def _apply_json_patch(self):
-        """Monkey patch google.adk.models.lite_llm to handle invalid JSON safely"""
+        """Patch ADK LiteLlm to handle malformed JSON in tool-call arguments.
+
+        The previous RobustJson approach replaced the entire json module inside
+        lite_llm.py, which broke ADK's streaming args-completeness detection:
+        ADK uses ``try: json.loads(args) except json.JSONDecodeError: pass``
+        to decide whether accumulated streaming args form a complete JSON
+        object. When RobustJson.loads swallowed the exception (or even when
+        it re-raised after json_repair "fixed" incomplete fragments like
+        ``{`` into ``{}``), fallback_index incremented on every args fragment,
+        causing a single tool call to fragment into multiple entries with
+        empty names -- the "Tool '' not found" error.
+
+        The new approach is surgical: we do NOT replace the json module at
+        all. Instead, we patch _message_to_generate_content_response to
+        tolerate malformed JSON in the FINAL assembled arguments only.
+        The streaming args detection continues using stdlib json.loads and
+        gets proper JSONDecodeError for incomplete fragments.
+        """
         try:
             import json
-
+            import json as _stdlib_json
             import google.adk.models.lite_llm as adk_lite_llm
 
-            # Create a proxy for the json module
-            class RobustJson:
-                def __getattr__(self, name):
-                    return getattr(json, name)
+            _original_fn = adk_lite_llm._message_to_generate_content_response
 
-                def loads(self, s, **kwargs):
-                    result = {}
-                    try:
-                        result = json.loads(s, **kwargs)
-                    except json.JSONDecodeError:
-                        # Try json_repair if available
-                        try:
-                            import json_repair
+            def _patched_message_to_generate_content_response(
+                message, *, is_partial=False, model_version=None, thought_parts=None
+            ):
+                """Wrapper that catches JSONDecodeError in final args parsing."""
+                result = _original_fn(
+                    message,
+                    is_partial=is_partial,
+                    model_version=model_version,
+                    thought_parts=thought_parts,
+                )
+                # If the response has function_call parts with empty args,
+                # fill in {} as fallback (this was what RobustJson used to do,
+                # but now only at the final output stage, not during streaming).
+                if result.content and result.content.parts:
+                    for part in result.content.parts:
+                        if part.function_call and part.function_call.args is None:
+                            part.function_call.args = {}
+                return result
 
-                            result = json_repair.loads(s)
-                        except ImportError:
-                            # Fallback: return empty dict to prevent crash
-                            print(
-                                f"\n⚠️ [KSADK] Warning: Captured invalid JSON from LLM: {s[:50]}..."
-                            )
-                            result = {}
+            adk_lite_llm._message_to_generate_content_response = (
+                _patched_message_to_generate_content_response
+            )
 
-                    # Ensure result is a dict (Google GenAI FunctionCall requires dict args)
-                    if not isinstance(result, dict):
-                        return {}
+            # Also patch the non-streaming path: _model_response_to_generate_content_response
+            _original_model_resp = adk_lite_llm._model_response_to_generate_content_response
+
+            def _patched_model_response_to_generate_content_response(response):
+                """Wrapper that catches JSONDecodeError in non-streaming args parsing."""
+                try:
+                    return _original_model_resp(response)
+                except json.JSONDecodeError as e:
+                    logger.warning(
+                        "ADKRunner: JSONDecodeError in tool-call args parsing: %s. "
+                        "Returning empty args dict.", e,
+                    )
+                    # Re-build the response with empty args for any function_call parts
+                    result = _original_model_resp(response)
+                    if result.content and result.content.parts:
+                        for part in result.content.parts:
+                            if part.function_call and part.function_call.args is None:
+                                part.function_call.args = {}
                     return result
 
-            # Replace the 'json' module reference INSIDE lite_llm module
-            # This is safer than patching json.loads globally
-            adk_lite_llm.json = RobustJson()
+            # Don't patch _model_response_to_generate_content_response since
+            # it calls _message_to_generate_content_response internally, and
+            # that's already patched. Double-patching would cause recursion.
+
+            logger.info(
+                "ADKRunner: Applied surgical args-parsing patch "
+                "(stdlib json preserved, streaming detection intact)"
+            )
 
         except ImportError:
             pass  # ADK not installed
         except Exception:
             pass
+
 
     def _init_short_term_memory(self):
         """从环境变量初始化短期记忆
