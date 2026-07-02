@@ -1,0 +1,85 @@
+# Web UI 仓库
+
+KsADK Web UI 源码属于独立仓库 `kingsoftcloud/ksadk-web`，并以 npm 包
+`@kingsoftcloud/ksadk-web` 发布。`ksadk-python` 不再本地构建 UI 源码，统一通过
+`make sync-ksadk-web-static` 从 npm 包的 `dist-ksadk` 目录同步静态产物到
+`ksadk/server/static`，供本地 `agentengine web` 使用。
+
+!!! info "0.6.7 口径"
+    自 0.6.5 起 `ksadk-python` 移除了本地 `npm ci` / `npm run build:ksadk` 构建链路，
+    不再在 wheel 构建时实时拉取 GitHub latest release。所有静态产物来自 npm 包
+    `@kingsoftcloud/ksadk-web`。
+
+## 边界
+
+| 仓库 / 包 | 职责 |
+| --- | --- |
+| `kingsoftcloud/ksadk-web` | 可编辑 React/Vite 源码、测试、Pages demo、npm 发布 |
+| `@kingsoftcloud/ksadk-web` (npm) | 构建产物 `dist-ksadk` / `dist-hosted` 的分发渠道 |
+| `ksadk-python` | Python SDK、CLI、runner、本地 server、嵌入式 `ksadk/server/static` |
+| hosted UI | 生产部署壳、网关、镜像和环境注入，同样从 npm 包消费 |
+
+`ksadk-python` 的公开 clean export 不包含 `ksadk/server/web-ui` 源码，也不包含
+`node_modules`、`dist/`、`dist-hosted/` 等 UI 仓库中间产物。可编辑 UI 源码只在
+`kingsoftcloud/ksadk-web` 仓库维护。
+
+## 同步规则
+
+`make sync-ksadk-web-static` 负责把 npm 包 `@kingsoftcloud/ksadk-web` 的
+`dist-ksadk` 同步到 `ksadk/server/static`：
+
+```bash
+# 默认拉 npm latest
+make sync-ksadk-web-static
+
+# 发布候选固定具体版本（0.6.7 对应 0.2.15）
+make sync-ksadk-web-static KSADK_WEB_VERSION=0.2.15
+```
+
+!!! warning "不要在 wheel 构建时实时拉 GitHub latest release"
+    `latest` 不可复现，会引入网络和供应链风险，也无法保证 wheel 内容与发布记录一致。
+    发布候选必须固定 `KSADK_WEB_VERSION` 到具体版本。如需在受限网络环境兜底，请使用
+    `KSADK_WEB_RELEASE_URL` 指定一个已审计的 tarball。
+
+### make build / build-wheel 自动 sync
+
+`make build` 与 `make build-wheel` 会先执行 `sync-ksadk-web-static`，再构建 wheel，
+保证 wheel 中的静态产物来自受控的 npm 版本：
+
+```bash hl_lines="2"
+make build
+# 1. sync-ksadk-web-static → ksadk/server/static
+# 2. python -m build  /  uv build
+```
+
+若已同步好静态产物、想跳过 sync，可使用 `make build-only`（会校验
+`ksadk/server/static/index.html` 存在）。
+
+### 同步变量
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `KSADK_WEB_VERSION` | `latest` | npm 包版本；发布候选固定为具体版本，如 `0.2.15` |
+| `KSADK_WEB_PACKAGE` | `@kingsoftcloud/ksadk-web` | npm 包名 |
+| `KSADK_WEB_TARBALL_NAME` | `kingsoftcloud-ksadk-web-<version>.tgz` | tarball 文件名，由版本推导 |
+| `KSADK_WEB_RELEASE_URL` | 空 | 显式指定 tarball URL 兜底，优先级高于 npm pack |
+| `KSADK_WEB_CACHE_DIR` | `.cache/ksadk-web` | 本地解包缓存目录 |
+| `KSADK_WEB_REGISTRY` | `https://registry.npmjs.org` | npm registry，仅在无 `npm` CLI 时用于解析 tarball URL |
+
+sync 优先级：`KSADK_WEB_RELEASE_URL` 显式 tarball > `npm pack` > registry 解析。
+无论走哪条路径，最终都会校验 `dist-ksadk` 目录存在，再覆盖到 `ksadk/server/static`。
+
+## 发布记录
+
+每次 `ksadk-python` release note 应记录：
+
+- `ksadk-python` 版本（如 `0.6.7`）。
+- `KSADK_WEB_VERSION` / npm 包版本（如 `0.6.7` 对应 `@kingsoftcloud/ksadk-web@0.2.15`）。
+- sync 命令（如 `make sync-ksadk-web-static KSADK_WEB_VERSION=0.2.15`）。
+- wheel / sdist 审计结果（`make public-build-check` / `twine check dist/*`）。
+
+!!! example "0.6.7 发布记录示例"
+    - `ksadk-python`: `0.6.7`
+    - npm 包: `@kingsoftcloud/ksadk-web@0.2.15`
+    - sync: `make sync-ksadk-web-static KSADK_WEB_VERSION=0.2.15`
+    - 审计: `make public-build-check` 通过，`twine check dist/*` 通过
