@@ -83,7 +83,6 @@ class ADKRunner(BaseRunner):
         gets proper JSONDecodeError for incomplete fragments.
         """
         try:
-            import json
             import json as _stdlib_json
             import google.adk.models.lite_llm as adk_lite_llm
 
@@ -111,26 +110,6 @@ class ADKRunner(BaseRunner):
             adk_lite_llm._message_to_generate_content_response = (
                 _patched_message_to_generate_content_response
             )
-
-            # Also patch the non-streaming path: _model_response_to_generate_content_response
-            _original_model_resp = adk_lite_llm._model_response_to_generate_content_response
-
-            def _patched_model_response_to_generate_content_response(response):
-                """Wrapper that catches JSONDecodeError in non-streaming args parsing."""
-                try:
-                    return _original_model_resp(response)
-                except json.JSONDecodeError as e:
-                    logger.warning(
-                        "ADKRunner: JSONDecodeError in tool-call args parsing: %s. "
-                        "Returning empty args dict.", e,
-                    )
-                    # Re-build the response with empty args for any function_call parts
-                    result = _original_model_resp(response)
-                    if result.content and result.content.parts:
-                        for part in result.content.parts:
-                            if part.function_call and part.function_call.args is None:
-                                part.function_call.args = {}
-                    return result
 
             # Don't patch _model_response_to_generate_content_response since
             # it calls _message_to_generate_content_response internally, and
