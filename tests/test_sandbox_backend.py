@@ -6,6 +6,7 @@ import pytest
 
 from ksadk.sandbox import (
     E2BSandboxBackend,
+    LocalProcessSandboxBackend,
     SandboxCommandResult,
     SandboxError,
     SandboxInputFile,
@@ -13,6 +14,9 @@ from ksadk.sandbox import (
     SandboxType,
     create_sandbox_backend,
 )
+from ksadk.runtime_context import tool_execution_scope
+from ksadk.sandbox.registry import GLOBAL_SANDBOX_REGISTRY, SandboxRegistry
+from ksadk.toolsets.sandbox import run_code, run_command, sandbox_status
 
 
 def test_sandbox_factory_creates_e2b_backend(monkeypatch):
@@ -23,6 +27,72 @@ def test_sandbox_factory_creates_e2b_backend(monkeypatch):
 
     assert isinstance(backend, E2BSandboxBackend)
     assert backend.spec.template_id == "tpl-aio"
+
+
+def test_run_code_returns_snippet_runner_boundary_metadata(monkeypatch):
+    class FakeSession:
+        sandbox_id = "sbx-code"
+
+        def write_file(self, path, data):
+            self.path = path
+            self.data = data
+
+        def run_command(self, command, timeout=None, env=None, cwd=None):
+            return SandboxCommandResult(stdout="42\n", stderr="", exit_code=0)
+
+    class FakeBackend:
+        isolated = True
+
+        def create_session(self, **_kwargs):
+            return FakeSession()
+
+    monkeypatch.setattr("ksadk.toolsets.sandbox.create_sandbox_backend", lambda: FakeBackend())
+    monkeypatch.setenv("KSADK_SANDBOX_BACKEND", "e2b")
+    monkeypatch.setenv("KSADK_SANDBOX_TEMPLATE_ID", "tpl-aio")
+
+    result = run_code("print(42)", language="python")
+
+    assert result["ok"] is True
+    assert result["execution_model"] == "snippet_runner"
+    assert result["boundary"]
+    assert result["sandbox_id"] == "sbx-code"
+
+
+def test_run_code_requires_isolated_backend(monkeypatch, tmp_path):
+    monkeypatch.setenv("KSADK_SANDBOX_BACKEND", "local_process")
+    monkeypatch.setenv("AGENTENGINE_UI_DIR", str(tmp_path / "ui"))
+
+    result = run_code("print('local')", language="python")
+
+    assert result["ok"] is False
+    assert result["error_type"] == "isolated_sandbox_required"
+    assert "requires an isolated sandbox" in result["error_message"]
+
+
+def test_sandbox_factory_refuses_e2b_without_template(monkeypatch):
+    monkeypatch.setenv("KSADK_SANDBOX_BACKEND", "e2b")
+    monkeypatch.delenv("KSADK_SANDBOX_TEMPLATE_ID", raising=False)
+    monkeypatch.delenv("KSADK_SKILL_RUNTIME_TEMPLATE_ID", raising=False)
+
+    with pytest.raises(SandboxError, match="template id"):
+        create_sandbox_backend()
+
+
+def test_sandbox_factory_creates_local_process_backend_when_explicit(monkeypatch):
+    monkeypatch.setenv("KSADK_SANDBOX_BACKEND", "local_process")
+
+    backend = create_sandbox_backend()
+
+    assert isinstance(backend, LocalProcessSandboxBackend)
+    assert backend.isolated is False
+
+
+def test_sandbox_factory_requires_gate_for_pod_process(monkeypatch):
+    monkeypatch.setenv("KSADK_SANDBOX_BACKEND", "pod_process")
+    monkeypatch.delenv("KSADK_ALLOW_POD_PROCESS_TOOLS", raising=False)
+
+    with pytest.raises(SandboxError, match="KSADK_ALLOW_POD_PROCESS_TOOLS"):
+        create_sandbox_backend()
 
 
 def test_sandbox_factory_supports_runtime_template_alias(monkeypatch):
@@ -215,3 +285,290 @@ def test_sandbox_type_parses_console_types():
     assert SandboxType.from_value("CodeInterpreter") is SandboxType.CODE
     assert SandboxType.from_value("Browser") is SandboxType.BROWSER
     assert SandboxType.from_value("Private") is SandboxType.PRIVATE
+
+
+def test_local_process_backend_runs_inside_workspace(tmp_path):
+    backend = LocalProcessSandboxBackend(workspace_root=tmp_path)
+    session = backend.create_session(session_id="sess-1")
+
+    result = session.run_command("pwd && python -c 'print(123)'")
+
+    assert result.exit_code == 0
+    assert str(tmp_path) in result.stdout
+    assert "123" in result.stdout
+
+
+def test_local_process_backend_rejects_cwd_escape(tmp_path):
+    backend = LocalProcessSandboxBackend(workspace_root=tmp_path)
+    session = backend.create_session(session_id="sess-1")
+
+    result = session.run_command("pwd", env={"KSADK_COMMAND_CWD": "/"})
+
+    assert result.exit_code == 126
+    assert "cwd must stay inside" in result.stderr
+
+
+def test_local_process_backend_kills_process_group_on_timeout(tmp_path):
+    backend = LocalProcessSandboxBackend(workspace_root=tmp_path)
+    session = backend.create_session(session_id="sess-1")
+
+    result = session.run_command("python -c 'import subprocess, time; subprocess.Popen([\"sleep\", \"5\"]); time.sleep(5)'", timeout=1)
+
+    assert result.exit_code == 124
+    assert "command timed out" in result.stderr
+
+
+def test_sandbox_registry_reuses_session_and_sweeps_idle_entries():
+    calls: list[str] = []
+
+    class FakeSession:
+        sandbox_id = "fake-1"
+
+        def kill(self):
+            calls.append("kill")
+
+    class FakeBackend:
+        def create_session(self, *, session_id, env=None, input_files=None):
+            calls.append(f"create:{session_id}")
+            return FakeSession()
+
+    registry = SandboxRegistry()
+    first, created_first = registry.get_or_create(
+        key="run-1",
+        backend_name="fake",
+        backend=FakeBackend(),
+        ttl_seconds=100,
+        idle_ttl_seconds=10,
+        isolated=True,
+        now=100.0,
+    )
+    second, created_second = registry.get_or_create(
+        key="run-1",
+        backend_name="fake",
+        backend=FakeBackend(),
+        ttl_seconds=100,
+        idle_ttl_seconds=10,
+        isolated=True,
+        now=105.0,
+    )
+    swept = registry.sweep(now=116.0, idle_ttl_seconds=10)
+
+    assert first is second
+    assert created_first is True
+    assert created_second is False
+    assert swept == 1
+    assert calls == ["create:run-1", "kill"]
+
+
+def test_sandbox_registry_quota_reclaims_oldest_entry():
+    killed: list[str] = []
+
+    class FakeSession:
+        def __init__(self, sandbox_id: str):
+            self.sandbox_id = sandbox_id
+
+        def kill(self):
+            killed.append(self.sandbox_id)
+
+    class FakeBackend:
+        def create_session(self, *, session_id, env=None, input_files=None):
+            return FakeSession(session_id)
+
+    registry = SandboxRegistry()
+    registry.get_or_create(key="old", backend_name="fake", backend=FakeBackend(), ttl_seconds=100, isolated=True, now=100.0, max_sessions=2)
+    registry.get_or_create(key="middle", backend_name="fake", backend=FakeBackend(), ttl_seconds=100, isolated=True, now=101.0, max_sessions=2)
+    registry.get_or_create(key="new", backend_name="fake", backend=FakeBackend(), ttl_seconds=100, isolated=True, now=102.0, max_sessions=2)
+
+    assert killed == ["old"]
+    assert {entry.key for entry in registry.entries()} == {"middle", "new"}
+
+
+def test_run_command_syncs_workspace_files_to_new_sandbox(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENTENGINE_UI_DIR", str(tmp_path / "ui"))
+    monkeypatch.setenv("KSADK_SANDBOX_BACKEND", "e2b")
+    monkeypatch.setenv("KSADK_SANDBOX_TEMPLATE_ID", "tpl-aio")
+    workspace = tmp_path / "ui" / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / "app.py").write_text("print('synced')\n", encoding="utf-8")
+
+    created_input_files: list[SandboxInputFile] = []
+
+    class FakeResult:
+        stdout = "ok\n"
+        stderr = ""
+        exit_code = 0
+
+    class FakeSession:
+        sandbox_id = "sbx-sync"
+
+        def write_file(self, path, data):
+            pass
+
+        def read_file(self, path):
+            return ""
+
+        def run_command(self, command, *, timeout=None, env=None, cwd=None):
+            return FakeResult()
+
+        def get_host(self, port):
+            return "https://example.com"
+
+        def kill(self):
+            pass
+
+    class FakeBackend:
+        def create_session(self, *, session_id, env=None, input_files=None):
+            created_input_files.extend(input_files or [])
+            return FakeSession()
+
+    from ksadk.sandbox.registry import GLOBAL_SANDBOX_REGISTRY
+
+    GLOBAL_SANDBOX_REGISTRY.clear()
+    monkeypatch.setattr("ksadk.toolsets.sandbox.create_sandbox_backend", lambda: FakeBackend())
+
+    result = run_command("python -V")
+
+    assert result["ok"] is True
+    assert [(item.source, item.target_path) for item in created_input_files] == [
+        (workspace / "app.py", "/workspace/app.py")
+    ]
+
+
+def test_run_command_and_run_code_reuse_context_session_sandbox_key(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENTENGINE_UI_DIR", str(tmp_path / "ui"))
+    monkeypatch.setenv("KSADK_SANDBOX_BACKEND", "e2b")
+    monkeypatch.setenv("KSADK_SANDBOX_TEMPLATE_ID", "tpl-aio")
+    (tmp_path / "ui" / "workspace").mkdir(parents=True)
+    created_session_ids: list[str] = []
+    commands: list[str] = []
+
+    class FakeResult:
+        stdout = "ok\n"
+        stderr = ""
+        exit_code = 0
+
+    class FakeSession:
+        sandbox_id = "sbx-shared"
+
+        def write_file(self, path, data):
+            pass
+
+        def run_command(self, command, *, timeout=None, env=None, cwd=None):
+            commands.append(command)
+            return FakeResult()
+
+        def kill(self):
+            pass
+
+    class FakeBackend:
+        def create_session(self, *, session_id, env=None, input_files=None):
+            created_session_ids.append(session_id)
+            return FakeSession()
+
+    GLOBAL_SANDBOX_REGISTRY.clear()
+    monkeypatch.setattr("ksadk.toolsets.sandbox.create_sandbox_backend", lambda: FakeBackend())
+
+    with tool_execution_scope(session_id="sess-1", run_id="run-1", invocation_id="inv-1"):
+        command_result = run_command("python -V")
+        code_result = run_code("print(42)")
+
+    assert command_result["ok"] is True
+    assert code_result["ok"] is True
+    assert created_session_ids == ["ksadk-session:sess-1"]
+    assert commands[0] == "python -V"
+    assert commands[1].startswith("python /tmp/ksadk-run-code-")
+    GLOBAL_SANDBOX_REGISTRY.clear()
+
+
+def test_sandbox_context_key_isolated_by_session_and_env_override_wins(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENTENGINE_UI_DIR", str(tmp_path / "ui"))
+    monkeypatch.setenv("KSADK_SANDBOX_BACKEND", "e2b")
+    monkeypatch.setenv("KSADK_SANDBOX_TEMPLATE_ID", "tpl-aio")
+    (tmp_path / "ui" / "workspace").mkdir(parents=True)
+    created_session_ids: list[str] = []
+
+    class FakeResult:
+        stdout = "ok\n"
+        stderr = ""
+        exit_code = 0
+
+    class FakeSession:
+        def __init__(self, sandbox_id: str):
+            self.sandbox_id = sandbox_id
+
+        def run_command(self, command, *, timeout=None, env=None, cwd=None):
+            return FakeResult()
+
+        def kill(self):
+            pass
+
+    class FakeBackend:
+        def create_session(self, *, session_id, env=None, input_files=None):
+            created_session_ids.append(session_id)
+            return FakeSession(f"sbx-{len(created_session_ids)}")
+
+    GLOBAL_SANDBOX_REGISTRY.clear()
+    monkeypatch.setattr("ksadk.toolsets.sandbox.create_sandbox_backend", lambda: FakeBackend())
+
+    with tool_execution_scope(session_id="sess-a"):
+        assert run_command("python -V")["ok"] is True
+    with tool_execution_scope(session_id="sess-b"):
+        assert run_command("python -V")["ok"] is True
+    monkeypatch.setenv("KSADK_SANDBOX_SESSION_ID", "manual")
+    with tool_execution_scope(session_id="sess-c"):
+        assert run_command("python -V")["ok"] is True
+
+    assert created_session_ids == ["ksadk-session:sess-a", "ksadk-session:sess-b", "manual"]
+    GLOBAL_SANDBOX_REGISTRY.clear()
+
+
+def test_sandbox_direct_calls_retain_prefix_fallback_keys(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENTENGINE_UI_DIR", str(tmp_path / "ui"))
+    monkeypatch.setenv("KSADK_SANDBOX_BACKEND", "e2b")
+    monkeypatch.setenv("KSADK_SANDBOX_TEMPLATE_ID", "tpl-aio")
+    (tmp_path / "ui" / "workspace").mkdir(parents=True)
+    created_session_ids: list[str] = []
+
+    class FakeResult:
+        stdout = "ok\n"
+        stderr = ""
+        exit_code = 0
+
+    class FakeSession:
+        sandbox_id = "sbx-direct"
+
+        def write_file(self, path, data):
+            pass
+
+        def run_command(self, command, *, timeout=None, env=None, cwd=None):
+            return FakeResult()
+
+        def kill(self):
+            pass
+
+    class FakeBackend:
+        def create_session(self, *, session_id, env=None, input_files=None):
+            created_session_ids.append(session_id)
+            return FakeSession()
+
+    GLOBAL_SANDBOX_REGISTRY.clear()
+    monkeypatch.setattr("ksadk.toolsets.sandbox.create_sandbox_backend", lambda: FakeBackend())
+
+    assert run_command("python -V")["ok"] is True
+    assert run_code("print(42)")["ok"] is True
+
+    assert created_session_ids == ["ksadk-direct-shared", "ksadk-code-shared"]
+    GLOBAL_SANDBOX_REGISTRY.clear()
+
+
+def test_sandbox_status_reports_idle_ttl_and_quota(monkeypatch):
+    monkeypatch.setenv("KSADK_SANDBOX_BACKEND", "local_process")
+    monkeypatch.setenv("KSADK_SANDBOX_IDLE_TTL_SECONDS", "12")
+    monkeypatch.setenv("KSADK_SANDBOX_MAX_SESSIONS", "3")
+
+    result = sandbox_status()
+
+    assert result["ok"] is True
+    assert result["isolated"] is False
+    assert result["idle_ttl_seconds"] == 12
+    assert result["max_sessions"] == 3

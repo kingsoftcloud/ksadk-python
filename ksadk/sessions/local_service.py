@@ -673,23 +673,45 @@ class LocalSessionService(BaseSessionService):
         owns_connection = connection is None
         connection = connection or self._connect()
         try:
-            query = f"""
-                SELECT id, session_id, author, event_type, content_json, timestamp,
-                       state_delta_json, seq_id, invocation_id, metadata_json
-                FROM {KSADK_EVENTS_TABLE}
-                WHERE session_id = ?
-                ORDER BY seq_id ASC
-            """
-            params: list[object] = [session_id]
             if limit is not None:
-                query += " LIMIT ?"
-                params.append(limit)
-                if offset is not None:
-                    query += " OFFSET ?"
-                    params.append(offset)
+                query = f"""
+                    SELECT id, session_id, author, event_type, content_json, timestamp,
+                           state_delta_json, seq_id, invocation_id, metadata_json
+                    FROM (
+                        SELECT id, session_id, author, event_type, content_json, timestamp,
+                               state_delta_json, seq_id, invocation_id, metadata_json
+                        FROM {KSADK_EVENTS_TABLE}
+                        WHERE session_id = ?
+                        ORDER BY seq_id DESC
+                        LIMIT ? OFFSET ?
+                    )
+                    ORDER BY seq_id ASC
+                """
+                params: list[object] = [session_id, limit, offset or 0]
             elif offset is not None:
-                query += " LIMIT -1 OFFSET ?"
-                params.append(offset)
+                query = f"""
+                    SELECT id, session_id, author, event_type, content_json, timestamp,
+                           state_delta_json, seq_id, invocation_id, metadata_json
+                    FROM (
+                        SELECT id, session_id, author, event_type, content_json, timestamp,
+                               state_delta_json, seq_id, invocation_id, metadata_json
+                        FROM {KSADK_EVENTS_TABLE}
+                        WHERE session_id = ?
+                        ORDER BY seq_id DESC
+                        LIMIT -1 OFFSET ?
+                    )
+                    ORDER BY seq_id ASC
+                """
+                params = [session_id, offset]
+            else:
+                query = f"""
+                    SELECT id, session_id, author, event_type, content_json, timestamp,
+                           state_delta_json, seq_id, invocation_id, metadata_json
+                    FROM {KSADK_EVENTS_TABLE}
+                    WHERE session_id = ?
+                    ORDER BY seq_id ASC
+                """
+                params = [session_id]
 
             rows = connection.execute(query, params).fetchall()
             return [

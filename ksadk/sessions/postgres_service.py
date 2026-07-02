@@ -333,23 +333,45 @@ class PostgresSessionService(BaseSessionService):
     ) -> list[SessionEvent]:
         await self._ensure_schema()
         async with self._pool.acquire() as connection:
-            query = f"""
-                SELECT id, session_id, author, event_type, content_json, timestamp,
-                       state_delta_json, seq_id, invocation_id, metadata_json
-                FROM {KSADK_PG_EVENTS_TABLE}
-                WHERE namespace = $1 AND session_id = $2
-                ORDER BY seq_id ASC
-            """
-            params: list[Any] = [self.namespace, session_id]
             if limit is not None:
-                params.append(limit)
-                query += f" LIMIT ${len(params)}"
-                if offset is not None:
-                    params.append(offset)
-                    query += f" OFFSET ${len(params)}"
+                query = f"""
+                    SELECT id, session_id, author, event_type, content_json, timestamp,
+                           state_delta_json, seq_id, invocation_id, metadata_json
+                    FROM (
+                        SELECT id, session_id, author, event_type, content_json, timestamp,
+                               state_delta_json, seq_id, invocation_id, metadata_json
+                        FROM {KSADK_PG_EVENTS_TABLE}
+                        WHERE namespace = $1 AND session_id = $2
+                        ORDER BY seq_id DESC
+                        LIMIT $3 OFFSET $4
+                    ) AS latest_events
+                    ORDER BY seq_id ASC
+                """
+                params: list[Any] = [self.namespace, session_id, limit, offset or 0]
             elif offset is not None:
-                params.append(offset)
-                query += f" OFFSET ${len(params)}"
+                query = f"""
+                    SELECT id, session_id, author, event_type, content_json, timestamp,
+                           state_delta_json, seq_id, invocation_id, metadata_json
+                    FROM (
+                        SELECT id, session_id, author, event_type, content_json, timestamp,
+                               state_delta_json, seq_id, invocation_id, metadata_json
+                        FROM {KSADK_PG_EVENTS_TABLE}
+                        WHERE namespace = $1 AND session_id = $2
+                        ORDER BY seq_id DESC
+                        OFFSET $3
+                    ) AS latest_events
+                    ORDER BY seq_id ASC
+                """
+                params = [self.namespace, session_id, offset]
+            else:
+                query = f"""
+                    SELECT id, session_id, author, event_type, content_json, timestamp,
+                           state_delta_json, seq_id, invocation_id, metadata_json
+                    FROM {KSADK_PG_EVENTS_TABLE}
+                    WHERE namespace = $1 AND session_id = $2
+                    ORDER BY seq_id ASC
+                """
+                params = [self.namespace, session_id]
             rows = await connection.fetch(query, *params)
             return [self._event_from_row(row) for row in rows]
 

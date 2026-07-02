@@ -198,7 +198,80 @@ class RemoteRunner(BaseRunner):
 
         if previous_response_id:
             payload["previous_response_id"] = str(previous_response_id)
+        tools = self._builtin_response_tool_schemas(input_data)
+        if tools:
+            payload["tools"] = tools
         return payload
+
+    @staticmethod
+    def _builtin_response_tool_schemas(input_data: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
+        try:
+            from ksadk.toolsets import builtin_tool_descriptors_for_runtime, builtin_tools_mode, describe_agentengine_tools
+
+            mode = builtin_tools_mode(default="off")
+            descriptors = builtin_tool_descriptors_for_runtime(mode=mode)
+        except Exception:
+            return []
+        deferred_names = RemoteRunner._deferred_tool_names(input_data)
+        if deferred_names:
+            try:
+                direct_descriptors = describe_agentengine_tools(include=deferred_names, profile="coding")
+            except Exception:
+                direct_descriptors = []
+            direct_descriptors = [
+                item
+                for item in direct_descriptors
+                if str(item.get("execution") or "builtin") != "external"
+            ]
+            existing_names = {str(item.get("name") or "") for item in descriptors}
+            descriptors = [
+                *descriptors,
+                *[
+                    item
+                    for item in direct_descriptors
+                    if str(item.get("name") or "") not in existing_names
+                ],
+            ]
+        return [RemoteRunner._response_tool_schema(descriptor) for descriptor in descriptors]
+
+    @staticmethod
+    def _deferred_tool_names(input_data: Mapping[str, Any] | None) -> list[str]:
+        if not isinstance(input_data, Mapping):
+            return []
+        raw_names = input_data.get("deferred_tool_names")
+        if not isinstance(raw_names, Sequence) or isinstance(raw_names, (str, bytes, bytearray)):
+            return []
+        names: list[str] = []
+        seen: set[str] = set()
+        for item in raw_names:
+            name = str(item or "").strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            names.append(name)
+        return names
+
+    @staticmethod
+    def _response_tool_schema(descriptor: Mapping[str, Any]) -> dict[str, Any]:
+        args = descriptor.get("args")
+        properties = dict(args) if isinstance(args, Mapping) else {}
+        required = [
+            name
+            for name, schema in properties.items()
+            if isinstance(schema, Mapping) and schema.get("required") is True
+        ]
+        parameters: dict[str, Any] = {
+            "type": "object",
+            "properties": properties,
+        }
+        if required:
+            parameters["required"] = required
+        return {
+            "type": "function",
+            "name": str(descriptor.get("name") or ""),
+            "description": str(descriptor.get("description") or descriptor.get("name") or ""),
+            "parameters": parameters,
+        }
 
     @staticmethod
     def _is_chat_style_message(value: Mapping[str, Any]) -> bool:

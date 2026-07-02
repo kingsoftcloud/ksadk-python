@@ -628,6 +628,7 @@ KSADK_WEB_PACKAGE ?= @kingsoftcloud/ksadk-web
 KSADK_WEB_TARBALL_NAME := kingsoftcloud-ksadk-web-$(patsubst v%,%,$(KSADK_WEB_VERSION)).tgz
 KSADK_WEB_RELEASE_URL ?=
 KSADK_WEB_CACHE_DIR ?= .cache/ksadk-web
+KSADK_WEB_REGISTRY ?= https://registry.npmjs.org
 
 sync-ksadk-web-static:
 	@echo "Sync KsADK Web static assets from $(KSADK_WEB_PACKAGE)@$(KSADK_WEB_VERSION)"
@@ -637,8 +638,19 @@ sync-ksadk-web-static:
 		echo "Using explicit KSADK_WEB_RELEASE_URL=$(KSADK_WEB_RELEASE_URL)"; \
 		curl -fL --retry 3 --retry-delay 2 --retry-all-errors "$(KSADK_WEB_RELEASE_URL)" -o "$(KSADK_WEB_CACHE_DIR)/$(KSADK_WEB_TARBALL_NAME)"; \
 		echo "$(KSADK_WEB_TARBALL_NAME)" > "$(KSADK_WEB_CACHE_DIR)/.tarball-name"; \
-	else \
+	elif command -v npm >/dev/null 2>&1; then \
+		echo "Using npm pack (npm found in PATH)"; \
 		npm pack "$(KSADK_WEB_PACKAGE)@$(patsubst v%,%,$(KSADK_WEB_VERSION))" --pack-destination "$(KSADK_WEB_CACHE_DIR)" > "$(KSADK_WEB_CACHE_DIR)/.tarball-name"; \
+	else \
+		echo "npm not found; resolving tarball from registry $(KSADK_WEB_REGISTRY)"; \
+		REGISTRY_JSON=$$(curl -fsSL "$(KSADK_WEB_REGISTRY)/$(KSADK_WEB_PACKAGE)/$(KSADK_WEB_VERSION)"); \
+		if [ -z "$$REGISTRY_JSON" ]; then echo "ERROR: registry request failed for $(KSADK_WEB_PACKAGE)@$(KSADK_WEB_VERSION)" && exit 1; fi; \
+		TARBALL_URL=$$(echo "$$REGISTRY_JSON" | grep -o '"tarball":"[^"]*"' | cut -d'"' -f4 | head -1); \
+		RESOLVED_VERSION=$$(echo "$$REGISTRY_JSON" | grep -o '"version":"[^"]*"' | cut -d'"' -f4 | head -1); \
+		if [ -z "$$TARBALL_URL" ]; then echo "ERROR: could not resolve tarball URL from registry response" && exit 1; fi; \
+		echo "Resolved version $$RESOLVED_VERSION: $$TARBALL_URL"; \
+		curl -fL --retry 3 --retry-delay 2 --retry-all-errors "$$TARBALL_URL" -o "$(KSADK_WEB_CACHE_DIR)/kingsoftcloud-ksadk-web-$$RESOLVED_VERSION.tgz"; \
+		echo "kingsoftcloud-ksadk-web-$$RESOLVED_VERSION.tgz" > "$(KSADK_WEB_CACHE_DIR)/.tarball-name"; \
 	fi
 	tar -xzf "$(KSADK_WEB_CACHE_DIR)/$$(cat "$(KSADK_WEB_CACHE_DIR)/.tarball-name")" -C "$(KSADK_WEB_CACHE_DIR)"
 	@test -d "$(KSADK_WEB_CACHE_DIR)/package/dist-ksadk" || (echo "ERROR: dist-ksadk missing in $$(cat "$(KSADK_WEB_CACHE_DIR)/.tarball-name")" && exit 1)

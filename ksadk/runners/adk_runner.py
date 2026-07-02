@@ -414,6 +414,7 @@ class ADKRunner(BaseRunner):
                 MCP_TOOLSET_KEY_ATTR,
                 load_mcp_toolsets_from_env,
                 mcp_tools_enabled,
+                register_mcp_toolset_descriptors,
             )
 
             if not mcp_tools_enabled():
@@ -436,11 +437,48 @@ class ADKRunner(BaseRunner):
                 key = getattr(toolset, MCP_TOOLSET_KEY_ATTR, None)
                 if key in added:
                     self._runtime_toolsets.append(toolset)
+                    register_mcp_toolset_descriptors(toolset)
             logger.info("Injected MCP toolsets into agent (added: %s)", ", ".join(added))
         except ImportError as exc:
             logger.warning(f"Failed to import MCP runtime helpers: {exc}")
         except Exception as exc:
             logger.warning(f"Failed to inject MCP toolsets: {exc}")
+
+    def _inject_builtin_tools(self):
+        """Inject ksadk built-in tools according to the runtime profile."""
+        try:
+            from ksadk.toolsets import builtin_tools_for_runtime, builtin_tools_mode
+
+            mode = builtin_tools_mode(default="off")
+            if mode == "off":
+                return
+            tools = builtin_tools_for_runtime(mode=mode)
+            if not tools:
+                return
+            added = self._append_tools_by_name(tools)
+            if added:
+                logger.info("Injected ksadk built-in tools into agent (added: %s)", ", ".join(added))
+            else:
+                logger.debug("ksadk built-in tools already present")
+        except Exception as exc:
+            logger.warning("Failed to inject ksadk built-in tools: %s", exc)
+
+    def inject_deferred_tools_for_request(self, tool_names: list[str] | tuple[str, ...]) -> list[str]:
+        """Append direct built-in tools selected by deferred tool search."""
+        names = [str(name or "").strip() for name in tool_names or [] if str(name or "").strip()]
+        if not names:
+            return []
+        try:
+            from ksadk.toolsets import get_agentengine_tools
+
+            tools = get_agentengine_tools(include=names, profile="coding", mode="direct")
+            added = self._append_tools_by_name(tools)
+            if added:
+                logger.info("Injected deferred ksadk tools for request (added: %s)", ", ".join(added))
+            return added
+        except Exception as exc:
+            logger.warning("Failed to inject deferred ksadk tools for request: %s", exc)
+            return []
 
     @staticmethod
     def _tool_name(tool: Any) -> str:
@@ -566,6 +604,7 @@ class ADKRunner(BaseRunner):
             self._inject_save_memory_tool()
 
         self._inject_skill_runtime_tools()
+        self._inject_builtin_tools()
         self._inject_mcp_toolsets()
 
         # 初始化 Runner (传入 memory_service)
