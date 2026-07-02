@@ -84,6 +84,7 @@ _RUN_TERMINAL_STATUSES = {
     "aborted",
     "interrupted",
 }
+_RUN_ACTIVE_STATUSES = {"in_progress", "running", "resuming", "starting"}
 
 
 def _parse_iso_datetime(value: Any) -> datetime | None:
@@ -100,6 +101,19 @@ def _parse_iso_datetime(value: Any) -> datetime | None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
 _RESERVED_UI_PATHS = {"/", "/chat", "/build", "/deploy"}
+_CUSTOM_API_PROXY_ENV_KEYS = ("KSADK_USER_BACKEND_URL", "LUOLUO_USER_BACKEND_URL")
+_HOP_BY_HOP_HEADERS = {
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+    "host",
+    "content-length",
+}
 
 
 class _DetachedSSEStream:
@@ -596,6 +610,14 @@ def _normalize_request_ui_path(request_path: str) -> str:
     return path if path != "//" else "/"
 
 
+def _is_custom_ui_static_asset_path(relative_path: str) -> bool:
+    path = str(relative_path or "").strip("/")
+    if not path:
+        return False
+    first_segment = path.split("/", 1)[0]
+    return first_segment == "assets" or bool(Path(path).suffix)
+
+
 def _resolve_ui_static_response(request_path: str) -> Optional[FileResponse]:
     spec = _resolve_agent_ui_spec()
     if not spec.get("enabled"):
@@ -617,6 +639,8 @@ def _resolve_ui_static_response(request_path: str) -> Optional[FileResponse]:
         candidate = bundle_dir / relative
         if candidate.exists() and candidate.is_file():
             return FileResponse(candidate)
+        if not _is_custom_ui_static_asset_path(relative):
+            return FileResponse(index_file)
         return None
 
     if path in _RESERVED_UI_PATHS:
@@ -692,6 +716,65 @@ def _resolve_attachment_storage_path(file_uri: str) -> Optional[Path]:
                 return candidate.resolve()
 
     return None
+
+
+def _custom_api_proxy_base_url() -> str:
+    for key in _CUSTOM_API_PROXY_ENV_KEYS:
+        value = os.environ.get(key)
+        if value and value.strip():
+            return value.strip().rstrip("/")
+    return ""
+
+
+def _proxy_headers(headers: Mapping[str, str]) -> dict[str, str]:
+    return {
+        key: value
+        for key, value in headers.items()
+        if key.lower() not in _HOP_BY_HOP_HEADERS
+    }
+
+
+def _response_headers(headers: Mapping[str, str]) -> dict[str, str]:
+    return {
+        key: value
+        for key, value in headers.items()
+        if key.lower() not in _HOP_BY_HOP_HEADERS
+    }
+
+
+@app.api_route(
+    "/api/{proxy_path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    include_in_schema=False,
+)
+async def custom_api_proxy(proxy_path: str, request: Request):
+    base_url = _custom_api_proxy_base_url()
+    if not base_url:
+        raise HTTPException(status_code=404, detail="Custom API backend is not configured")
+
+    path = f"/api/{proxy_path.lstrip('/')}"
+    query = request.url.query
+    target_url = f"{base_url}{path}"
+    if query:
+        target_url = f"{target_url}?{query}"
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            upstream = await client.request(
+                request.method,
+                target_url,
+                content=await request.body(),
+                headers=_proxy_headers(request.headers),
+            )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Custom API backend unavailable: {exc}") from exc
+
+    return Response(
+        content=upstream.content,
+        status_code=upstream.status_code,
+        headers=_response_headers(upstream.headers),
+        media_type=upstream.headers.get("content-type"),
+    )
 
 
 def _read_attachment_bytes(storage_path: Optional[Path], *, size_limit: Optional[int] = None) -> Optional[bytes]:
@@ -1181,13 +1264,23 @@ def _session_topic_from_events(events: list[SessionEvent]) -> str:
 
 
 def _latest_session_run_status(events: list[SessionEvent]) -> tuple[str, str]:
+    latest_by_invocation: dict[str, tuple[str, SessionEvent]] = {}
     for event in reversed(events):
         if event.event_type != "run_status":
             continue
         status = _run_status_payload_status(event)
         invocation_id = _event_run_id(event)
         if status or invocation_id:
+            latest_by_invocation.setdefault(invocation_id, (status, event))
+    for invocation_id, (status, _) in latest_by_invocation.items():
+        if status in _RUN_ACTIVE_STATUSES:
             return invocation_id, status
+    for invocation_id, (status, _) in latest_by_invocation.items():
+        if status not in _RUN_TERMINAL_STATUSES:
+            return invocation_id, status
+    if latest_by_invocation:
+        invocation_id, (status, _) = next(iter(latest_by_invocation.items()))
+        return invocation_id, status
     for event in reversed(events):
         invocation_id = _event_run_id(event)
         if invocation_id:

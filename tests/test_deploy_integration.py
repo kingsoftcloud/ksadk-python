@@ -314,6 +314,68 @@ class TestDeployLogic:
         mock_client.create_agent.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_deploy_uses_project_yaml_ui_bundle_path(
+        self,
+        temp_project_dir,
+        sample_package_info,
+        sample_deploy_target,
+    ):
+        provider = ServerlessProvider()
+
+        (temp_project_dir / "agentengine.yaml").write_text(
+            yaml.dump(
+                {
+                    "name": "test-agent",
+                    "framework": "langgraph",
+                    "ui_profile": "custom",
+                    "ui_path": "/luoluo",
+                    "ui_bundle_path": "frontend/dist",
+                }
+            )
+        )
+        (temp_project_dir / ".agentengine.state").write_text(
+            yaml.dump(
+                {
+                    "agent_id": "ar-20260119-existing",
+                    "name": "test-agent",
+                    "endpoint": "https://existing.kspmas.ksyun.com",
+                }
+            )
+        )
+
+        captured = {}
+        mock_client = AsyncMock()
+        mock_client.get_agent = AsyncMock(
+            return_value={"basic": {"agent_id": "ar-20260119-existing", "name": "test-agent"}}
+        )
+
+        async def _fake_update_agent(agent_id, payload):
+            captured["payload"] = payload
+            return {
+                "agent_id": agent_id,
+                "name": "test-agent",
+                "endpoint": "https://existing.kspmas.ksyun.com",
+            }
+
+        mock_client.update_agent = AsyncMock(side_effect=_fake_update_agent)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock()
+
+        with patch.dict(os.environ, {"AGENTENGINE_SERVER_URL": "http://localhost:8080"}), \
+             patch('ksadk.deployment.providers.serverless.AgentEngineClient', return_value=mock_client), \
+             patch('ksadk.common.auth.AWSV4Auth') as MockAuth:
+
+            MockAuth.return_value.access_key = "test-ak"
+            MockAuth.return_value.secret_key = "test-sk"
+
+            await provider.deploy(sample_package_info, sample_deploy_target)
+
+        env_vars = captured["payload"]["env_vars"]
+        assert env_vars["KSADK_UI_PROFILE"] == "custom"
+        assert env_vars["KSADK_UI_PATH"] == "/luoluo"
+        assert env_vars["KSADK_UI_BUNDLE_PATH"] == "frontend/dist"
+
+    @pytest.mark.asyncio
     async def test_deploy_update_existing_agent_refreshes_quick_access_in_state(
         self,
         temp_project_dir,
