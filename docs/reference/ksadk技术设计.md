@@ -125,13 +125,7 @@ CLI 层负责：
 
 ### 3.3 托管运行时资产
 
-当前仓库直接维护：
-
-- `deploy/hermes/`
-- `deploy/openclaw/`
-- `deploy/openclaw-user-template/`
-
-这些目录不仅是模板，还包含线上运行时镜像的事实约定，例如：
+Hermes / OpenClaw 运行时镜像资产曾在本仓库 `deploy/hermes/`、`deploy/openclaw/`、`deploy/openclaw-user-template/` 下维护，现已迁出至 `agentengine-images` 仓库。这些目录不仅是模板，还包含线上运行时镜像的事实约定，例如：
 
 - Hermes 的 `entrypoint.sh`
 - OpenClaw 的 `bootstrap.sh`

@@ -24,10 +24,7 @@
 - `ksadk-python/ksadk/server/api_models.py`
 - `ksadk-python/ksadk/conversations/runtime.py`
 - `ksadk-python/ksadk_runtime_common/workspace_files/*.py`
-- `ksadk-python/deploy/hermes/runtime/app.py`
-- `ksadk-python/deploy/hermes/README.md`
-- `ksadk-python/deploy/openclaw/bootstrap.sh`
-- `ksadk-python/deploy/openclaw-user-template/Dockerfile`
+- Hermes / OpenClaw 运行时镜像资产（`runtime/app.py`、`README.md`、`bootstrap.sh`、用户镜像 `Dockerfile` 等）已迁出至 `agentengine-images` 仓库，原 `deploy/hermes/`、`deploy/openclaw/`、`deploy/openclaw-user-template/` 路径不再存在于本仓库
 
 ## 2. 入口模型
 
