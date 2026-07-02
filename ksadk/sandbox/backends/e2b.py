@@ -76,12 +76,15 @@ class E2BSandboxSession:
         *,
         timeout: int | None = None,
         env: dict[str, str] | None = None,
+        cwd: str | None = None,
     ) -> SandboxCommandResult:
         kwargs = {}
         if timeout is not None:
             kwargs["timeout"] = timeout
         if env is not None:
             kwargs["envs"] = env
+        if cwd is not None:
+            kwargs["cwd"] = cwd
         result = self._sandbox.commands.run(command, **kwargs)
         return SandboxCommandResult(
             stdout=str(getattr(result, "stdout", "") or ""),

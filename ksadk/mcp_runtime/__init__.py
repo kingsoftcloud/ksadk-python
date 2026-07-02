@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import inspect
 from dataclasses import dataclass
 from typing import Any, Sequence
 from urllib.parse import urlparse
@@ -81,11 +82,37 @@ def build_mcp_toolset(
         tool_name_prefix=config.tool_name_prefix,
     )
     setattr(toolset, MCP_TOOLSET_KEY_ATTR, config.dedupe_key)
+    setattr(toolset, "_ksadk_mcp_server_name", config.name)
     return toolset
 
 
 def load_mcp_toolsets_from_env() -> list[McpToolset]:
     return [build_mcp_toolset(config) for config in load_mcp_server_configs()]
+
+
+def register_mcp_toolset_descriptors(toolset: Any) -> list[str]:
+    """Best-effort registration of MCP tool descriptors for ksadk tool_search.
+
+    Execution stays with the MCP runtime/toolset. This only makes the tools
+    discoverable in ksadk's unified tool catalog.
+    """
+
+    try:
+        from ksadk.toolsets import register_external_tools
+    except Exception:
+        return []
+
+    tools = _mcp_toolset_tools_sync(toolset)
+    if not tools:
+        return []
+    server_name = str(getattr(toolset, "_ksadk_mcp_server_name", "") or "mcp").strip() or "mcp"
+    return register_external_tools(
+        tools,
+        group=f"mcp:{server_name}",
+        boundary="ksadk_managed_mcp_tool",
+        risk_level="medium",
+        enabled=True,
+    )
 
 
 def _default_httpx_client_factory(url: str) -> CheckableMcpHttpClientFactory:
@@ -102,6 +129,34 @@ def _default_httpx_client_factory(url: str) -> CheckableMcpHttpClientFactory:
         )
 
     return _factory
+
+
+def _mcp_toolset_tools_sync(toolset: Any) -> list[Any]:
+    get_tools = getattr(toolset, "get_tools_with_prefix", None)
+    if not callable(get_tools):
+        return []
+    try:
+        result = get_tools()
+    except Exception:
+        return []
+    if inspect.isawaitable(result):
+        try:
+            import asyncio
+
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                result = asyncio.run(result)
+            else:
+                close = getattr(result, "close", None)
+                if callable(close):
+                    close()
+                return []
+        except Exception:
+            return []
+    if isinstance(result, Sequence) and not isinstance(result, (str, bytes, bytearray)):
+        return list(result)
+    return []
 
 
 def _parse_server_config(item: Any, index: int) -> MCPServerConfig:
@@ -172,4 +227,5 @@ __all__ = [
     "load_mcp_server_configs",
     "load_mcp_toolsets_from_env",
     "mcp_tools_enabled",
+    "register_mcp_toolset_descriptors",
 ]

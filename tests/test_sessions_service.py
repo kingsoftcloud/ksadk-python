@@ -87,7 +87,7 @@ async def test_in_memory_session_service_crud_append_event_and_state_updates():
 
 
 @pytest.mark.asyncio
-async def test_in_memory_session_service_get_events_supports_offset_and_limit():
+async def test_in_memory_session_service_get_events_pages_from_latest_and_returns_ascending():
     service = InMemorySessionService()
     await service.create_session(
         agent_id="demo-agent",
@@ -106,9 +106,42 @@ async def test_in_memory_session_service_get_events_supports_offset_and_limit():
             ),
         )
 
-    events = await service.get_events("sess-1", offset=1, limit=2)
+    newest_page = await service.get_events("sess-1", offset=0, limit=2)
+    older_page = await service.get_events("sess-1", offset=2, limit=2)
+    without_latest = await service.get_events("sess-1", offset=2)
 
-    assert [event.seq_id for event in events] == [2, 3]
+    assert [event.seq_id for event in newest_page] == [3, 4]
+    assert [event.seq_id for event in older_page] == [1, 2]
+    assert [event.seq_id for event in without_latest] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_local_session_service_get_events_pages_from_latest_and_returns_ascending(tmp_path):
+    service = LocalSessionService(db_path=tmp_path / "sessions.sqlite")
+    await service.create_session(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-1",
+    )
+
+    for index in range(4):
+        await service.append_event(
+            "sess-1",
+            SessionEvent(
+                id=f"evt-{index + 1}",
+                author="user",
+                event_type="text",
+                content={"index": index},
+            ),
+        )
+
+    newest_page = await service.get_events("sess-1", offset=0, limit=2)
+    older_page = await service.get_events("sess-1", offset=2, limit=2)
+    without_latest = await service.get_events("sess-1", offset=2)
+
+    assert [event.seq_id for event in newest_page] == [3, 4]
+    assert [event.seq_id for event in older_page] == [1, 2]
+    assert [event.seq_id for event in without_latest] == [1, 2]
 
 
 @pytest.mark.asyncio

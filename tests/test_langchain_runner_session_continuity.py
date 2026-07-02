@@ -105,6 +105,25 @@ async def test_langchain_runner_uses_standard_prepare_input_hook():
 
 
 @pytest.mark.asyncio
+async def test_langchain_runner_standard_hook_receives_ksadk_builtin_tool_descriptors(monkeypatch):
+    agent = _RecordingAgent()
+    captured: list[dict] = []
+
+    def ksadk_prepare_input(payload: dict, session_context: dict) -> dict:
+        captured.append(session_context)
+        return payload
+
+    monkeypatch.setenv("KSADK_BUILTIN_TOOLS_MODE", "dispatcher")
+    runner = _make_runner(agent, module=SimpleNamespace(ksadk_prepare_input=ksadk_prepare_input))
+
+    await runner.invoke({"session_id": "sess-tools", "input": "hello"})
+
+    tool_names = [tool["name"] for tool in captured[0]["ksadk_tools"]]
+    assert tool_names == ["tool_dispatcher"]
+    assert captured[0]["ksadk_builtin_tools_mode"] == "dispatcher"
+
+
+@pytest.mark.asyncio
 async def test_langchain_runner_uses_runnable_with_message_history_session_config():
     store: dict[str, InMemoryChatMessageHistory] = {}
 

@@ -54,7 +54,7 @@ from ksadk.conversations.session_title import (
 from ksadk.knowledge_base.service import KnowledgeBaseService
 from ksadk.memory.service import LongTermMemoryService
 from ksadk.model_policy import fallback_model_for_exception, model_policy_options_for_model
-from ksadk.runtime_context import PlatformInvocationContext, platform_invocation_scope
+from ksadk.runtime_context import PlatformInvocationContext, platform_invocation_scope, tool_execution_scope
 from ksadk.sessions import Session, SessionEvent, resolve_session_service
 from ksadk.tools.gateway import (
     approval_interrupt_info_from_result,
@@ -77,6 +77,179 @@ ATTACHMENT_CONTEXT_STATE_KEY = "__ksadk_attachment_context__"
 logger = logging.getLogger(__name__)
 _MODEL_CATALOG_CACHE_TTL_SECONDS = 60.0
 _MODEL_CATALOG_CACHE: dict[tuple[str, str], tuple[float, list[dict[str, Any]]]] = {}
+
+
+@dataclass
+class RuntimeGovernanceState:
+    max_turns: int = 0
+    max_tool_calls: int = 0
+    max_consecutive_tool_failures: int = 0
+    max_consecutive_approval_denials: int = 0
+    max_consecutive_compact_failures: int = 0
+    turn_count: int = 0
+    tool_calls: int = 0
+    consecutive_tool_failures: int = 0
+    consecutive_approval_denials: int = 0
+    consecutive_compact_failures: int = 0
+
+
+class RuntimeCircuitOpen(RuntimeError):
+    def __init__(self, reason: str, message: str, *, metadata: Mapping[str, Any] | None = None):
+        super().__init__(message)
+        self.reason = reason
+        self.metadata = dict(metadata or {})
+
+
+def _int_env(name: str, default: int = 0) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return int(default)
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return int(default)
+
+
+def _runtime_governance_from_env() -> RuntimeGovernanceState:
+    return RuntimeGovernanceState(
+        max_turns=_int_env("KSADK_MAX_TURNS", 0),
+        max_tool_calls=_int_env("KSADK_MAX_TOOL_CALLS", 0),
+        max_consecutive_tool_failures=_int_env("KSADK_MAX_CONSECUTIVE_TOOL_FAILURES", 0),
+        max_consecutive_approval_denials=_int_env("KSADK_MAX_CONSECUTIVE_APPROVAL_DENIALS", 0),
+        max_consecutive_compact_failures=_int_env("KSADK_MAX_CONSECUTIVE_COMPACT_FAILURES", 0),
+    )
+
+
+def _governance_error(reason: str, message: str, state: RuntimeGovernanceState) -> RuntimeCircuitOpen:
+    return RuntimeCircuitOpen(
+        reason,
+        message,
+        metadata={
+            "reason": reason,
+            "max_turns": state.max_turns,
+            "max_tool_calls": state.max_tool_calls,
+            "max_consecutive_tool_failures": state.max_consecutive_tool_failures,
+            "max_consecutive_approval_denials": state.max_consecutive_approval_denials,
+            "max_consecutive_compact_failures": state.max_consecutive_compact_failures,
+            "turn_count": state.turn_count,
+            "tool_calls": state.tool_calls,
+            "consecutive_tool_failures": state.consecutive_tool_failures,
+            "consecutive_approval_denials": state.consecutive_approval_denials,
+            "consecutive_compact_failures": state.consecutive_compact_failures,
+        },
+    )
+
+
+def _governance_record_turn_start(state: RuntimeGovernanceState) -> None:
+    state.turn_count += 1
+    if state.max_turns and state.turn_count > state.max_turns:
+        raise _governance_error("max_turns_exceeded", "runtime max_turns limit exceeded", state)
+
+
+def _governance_record_tool_call(state: RuntimeGovernanceState) -> None:
+    state.tool_calls += 1
+    if state.max_tool_calls and state.tool_calls > state.max_tool_calls:
+        raise _governance_error("max_tool_calls_exceeded", "runtime max_tool_calls limit exceeded", state)
+
+
+def _governance_record_tool_result(state: RuntimeGovernanceState, output: Any) -> None:
+    failed = isinstance(output, Mapping) and output.get("ok") is False
+    state.consecutive_tool_failures = state.consecutive_tool_failures + 1 if failed else 0
+    if (
+        state.max_consecutive_tool_failures
+        and state.consecutive_tool_failures >= state.max_consecutive_tool_failures
+    ):
+        raise _governance_error("consecutive_tool_failures", "runtime consecutive tool failure limit exceeded", state)
+
+
+def _governance_record_approval_response(state: RuntimeGovernanceState, approval: Mapping[str, Any]) -> None:
+    approved = bool(approval.get("approved") or approval.get("approve"))
+    state.consecutive_approval_denials = 0 if approved else state.consecutive_approval_denials + 1
+    if (
+        state.max_consecutive_approval_denials
+        and state.consecutive_approval_denials >= state.max_consecutive_approval_denials
+    ):
+        raise _governance_error("consecutive_approval_denials", "runtime consecutive approval denial limit exceeded", state)
+
+
+def _governance_record_compact_failure(state: RuntimeGovernanceState) -> None:
+    state.consecutive_compact_failures += 1
+    if (
+        state.max_consecutive_compact_failures
+        and state.consecutive_compact_failures >= state.max_consecutive_compact_failures
+    ):
+        raise _governance_error("consecutive_compact_failures", "runtime consecutive compact failure limit exceeded", state)
+
+
+def _governance_record_compact_success(state: RuntimeGovernanceState) -> None:
+    state.consecutive_compact_failures = 0
+
+
+async def _compact_conversation_history_with_governance(
+    governance: RuntimeGovernanceState | None,
+    **kwargs: Any,
+) -> SessionEvent | None:
+    try:
+        checkpoint = await compact_conversation_history(**kwargs)
+    except Exception:
+        if governance is not None:
+            _governance_record_compact_failure(governance)
+        raise
+    if checkpoint is not None and governance is not None:
+        _governance_record_compact_success(governance)
+    return checkpoint
+
+
+def _tool_observability_metadata(tool_name: str, output: Any, *, duration_ms: int | None = None) -> dict[str, Any]:
+    output_text = json.dumps(output, ensure_ascii=False, sort_keys=True) if isinstance(output, Mapping) else str(output)
+    metadata: dict[str, Any] = {
+        "tool_name": tool_name,
+        "duration_ms": int(duration_ms or 0),
+        "output_chars": len(output_text),
+        "truncated": False,
+        "persisted": False,
+        "exit_code": None,
+        "error_type": "",
+    }
+    if isinstance(output, Mapping):
+        persisted = output.get("persisted") or output.get("persisted_outputs")
+        metadata.update(
+            {
+                "truncated": any(bool(output.get(key)) for key in ("truncated", "stdout_truncated", "stderr_truncated", "results_truncated")),
+                "persisted": bool(persisted),
+                "exit_code": output.get("exit_code"),
+                "error_type": str(output.get("error_type") or ""),
+            }
+        )
+    return metadata
+
+
+def _extract_deferred_tool_names(output: Any) -> list[str]:
+    if not isinstance(output, Mapping):
+        return []
+    raw_names = output.get("deferred_tool_names")
+    if not isinstance(raw_names, Sequence) or isinstance(raw_names, (str, bytes, bytearray)):
+        return []
+    names: list[str] = []
+    seen: set[str] = set()
+    for item in raw_names:
+        name = str(item or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        names.append(name)
+    return names
+
+
+def _latest_deferred_tool_names(events: Sequence[SessionEvent]) -> list[str]:
+    for event in reversed(events):
+        if event.event_type != "run_status":
+            continue
+        metadata = event.metadata or {}
+        if metadata.get("detail") != "deferred_tools_selected":
+            continue
+        return _extract_deferred_tool_names(metadata)
+    return []
 
 
 def _normalize_usage_payload(usage: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -1004,7 +1177,23 @@ def _build_runner_request_payload(
         payload["conversation"] = conversation
     if prepared.request_metadata.get("responses_conversation"):
         payload["responses_conversation"] = True
+    deferred_tool_names = _extract_deferred_tool_names(prepared.request_metadata)
+    if deferred_tool_names:
+        payload["deferred_tool_names"] = deferred_tool_names
     return payload
+
+
+def _inject_runner_deferred_tools_for_request(runner: Any, prepared: PreparedConversationTurn) -> None:
+    deferred_tool_names = _extract_deferred_tool_names(prepared.request_metadata)
+    if not deferred_tool_names:
+        return
+    inject = getattr(runner, "inject_deferred_tools_for_request", None)
+    if not callable(inject):
+        return
+    try:
+        inject(deferred_tool_names)
+    except Exception as exc:
+        logger.warning("Failed to inject deferred tools into runner: %s", exc)
 
 
 def _attachment_summary_for_memory(
@@ -1275,6 +1464,28 @@ def _approval_decision_from_resume(resume_input: Mapping[str, Any]) -> dict[str,
     if resume_input.get("reason") is not None:
         decision["reason"] = str(resume_input.get("reason") or "")
     return decision
+
+
+def _consecutive_approval_denials_from_events(events: Sequence[SessionEvent]) -> int:
+    denials = 0
+    for event in reversed(events):
+        event_type = canonical_event_type(
+            event.event_type,
+            author=event.author,
+            role=str((event.content or {}).get("role") or ""),
+        )
+        if event_type != "approval_response":
+            continue
+        resume_input = (event.metadata or {}).get("resume_input")
+        if not isinstance(resume_input, Mapping):
+            break
+        decision = resume_input.get("approval")
+        if not isinstance(decision, Mapping):
+            decision = _approval_decision_from_resume(resume_input)
+        if bool(decision.get("approved") or decision.get("approve")):
+            break
+        denials += 1
+    return denials
 
 
 def _normalize_approval_resume_input(
@@ -2556,6 +2767,7 @@ async def append_run_status_event(
     status: str,
     invocation_id: Optional[str] = None,
     detail: str | None = None,
+    metadata: Mapping[str, Any] | None = None,
     session_service_provider: Callable[[], Any] | None = None,
 ) -> SessionEvent:
     """记录运行态事件，供 UI/恢复逻辑区分 turn 生命周期。"""
@@ -2577,6 +2789,7 @@ async def append_run_status_event(
     content = {"status": status}
     if detail:
         content["detail"] = detail
+    event_metadata = {"status": status, **({"detail": detail} if detail else {}), **dict(metadata or {})}
     return await append_conversation_event(
         session_id=session_id,
         author=author,
@@ -2585,8 +2798,38 @@ async def append_run_status_event(
         invocation_id=invocation_id,
         event_type="run_status",
         content=content,
-        metadata={"status": status, **({"detail": detail} if detail else {})},
+        metadata=event_metadata,
         session_service_provider=lambda: service,
+    )
+
+
+async def append_deferred_tools_event(
+    *,
+    session_id: str,
+    author: str,
+    deferred_tool_names: Sequence[str],
+    invocation_id: Optional[str] = None,
+    source_tool_name: str = "tool_search",
+    session_service_provider: Callable[[], Any] | None = None,
+) -> SessionEvent | None:
+    names = _extract_deferred_tool_names({"deferred_tool_names": list(deferred_tool_names)})
+    if not names:
+        return None
+    return await append_conversation_event(
+        session_id=session_id,
+        author=author,
+        role="model",
+        text="",
+        invocation_id=invocation_id,
+        event_type="run_status",
+        content={"status": "in_progress", "detail": "deferred_tools_selected"},
+        metadata={
+            "status": "in_progress",
+            "detail": "deferred_tools_selected",
+            "source_tool_name": source_tool_name,
+            "deferred_tool_names": names,
+        },
+        session_service_provider=session_service_provider,
     )
 
 
@@ -2894,6 +3137,7 @@ async def build_run_input(
     request_metadata: Mapping[str, Any] | None = None,
     resume_input: Mapping[str, Any] | None = None,
     invocation_id: Optional[str] = None,
+    governance_state: RuntimeGovernanceState | None = None,
     session_service_provider: Callable[[], Any] | None = None,
 ) -> PreparedConversationTurn:
     """构建一次 turn 的标准运行输入，并在进入模型前做上下文投影/压缩。"""
@@ -2994,6 +3238,8 @@ async def build_run_input(
                 normalized_resume_input,
                 existing_events,
             )
+            if governance_state is not None:
+                governance_state.consecutive_approval_denials = _consecutive_approval_denials_from_events(existing_events)
 
         resume_text = _format_resume_response_text(normalized_resume_input)
         await append_conversation_event(
@@ -3006,6 +3252,11 @@ async def build_run_input(
             session_service_provider=provider,
             metadata={"resume_input": normalized_resume_input},
         )
+        if is_approval_resume and governance_state is not None:
+            decision = normalized_resume_input.get("approval")
+            if not isinstance(decision, Mapping):
+                decision = _approval_decision_from_resume(normalized_resume_input)
+            _governance_record_approval_response(governance_state, decision)
         tool_resume_input = None
         if is_approval_resume:
             tool_resume_input = await _execute_approved_builtin_tool_resume(
@@ -3066,6 +3317,9 @@ async def build_run_input(
 
     if normalized_instructions:
         event_metadata["instructions"] = normalized_instructions
+    deferred_tool_names = _latest_deferred_tool_names(await service.get_events(resolved_session_id))
+    if deferred_tool_names and "deferred_tool_names" not in normalized_request_metadata:
+        normalized_request_metadata["deferred_tool_names"] = deferred_tool_names
     if normalized_request_metadata:
         event_metadata["request_metadata"] = normalized_request_metadata
 
@@ -3092,7 +3346,8 @@ async def build_run_input(
         user_input=user_input or user_display_input,
     )
 
-    checkpoint = await compact_conversation_history(
+    checkpoint = await _compact_conversation_history_with_governance(
+        governance_state,
         session_id=resolved_session_id,
         author=agent_id,
         invocation_id=resolved_invocation_id,
@@ -3175,21 +3430,38 @@ async def invoke_conversation_once(
     """
     provider = session_service_provider or resolve_session_service
     prepare_runner(runner, model)
-    prepared = await build_run_input(
-        agent_id=agent_id,
-        user_id=user_id,
-        session_id=session_id,
-        messages=messages,
-        model=model,
-        model_metadata=model_metadata,
-        model_options=model_options,
-        state_delta=state_delta,
-        instructions=instructions,
-        request_metadata=request_metadata,
-        resume_input=resume_input,
-        invocation_id=invocation_id,
-        session_service_provider=provider,
-    )
+    governance = _runtime_governance_from_env()
+    _governance_record_turn_start(governance)
+    try:
+        prepared = await build_run_input(
+            agent_id=agent_id,
+            user_id=user_id,
+            session_id=session_id,
+            messages=messages,
+            model=model,
+            model_metadata=model_metadata,
+            model_options=model_options,
+            state_delta=state_delta,
+            instructions=instructions,
+            request_metadata=request_metadata,
+            resume_input=resume_input,
+            invocation_id=invocation_id,
+            governance_state=governance,
+            session_service_provider=provider,
+        )
+    except RuntimeCircuitOpen as exc:
+        if session_id:
+            await append_run_status_event(
+                session_id=session_id,
+                author=_runner_name(runner),
+                status="failed",
+                invocation_id=invocation_id,
+                detail=str(exc),
+                metadata={"governance": exc.metadata},
+                session_service_provider=provider,
+            )
+        raise
+    _inject_runner_deferred_tools_for_request(runner, prepared)
     ambient_contexts = _build_runner_ambient_contexts(
         runner=runner,
         user_id=user_id,
@@ -3244,13 +3516,18 @@ async def invoke_conversation_once(
                 last_invoke_error = None
                 runtime_context.history = list(prepared.history)
                 with platform_invocation_scope(runtime_context):
-                    result = await runner.invoke(
-                        _build_runner_request_payload(
-                            prepared=prepared,
-                            model=model,
-                            runtime_context=runtime_context,
+                    with tool_execution_scope(
+                        session_id=prepared.session_id,
+                        run_id=prepared.invocation_id,
+                        invocation_id=prepared.invocation_id,
+                    ):
+                        result = await runner.invoke(
+                            _build_runner_request_payload(
+                                prepared=prepared,
+                                model=model,
+                                runtime_context=runtime_context,
+                            )
                         )
-                    )
                 break
             except asyncio.CancelledError:
                 await append_run_status_event(
@@ -3264,17 +3541,30 @@ async def invoke_conversation_once(
                 raise
             except Exception as exc:
                 if attempt == 0 and _is_prompt_too_long_error(exc):
-                    checkpoint = await compact_conversation_history(
-                        session_id=prepared.session_id,
-                        author=runner_name,
-                        invocation_id=prepared.invocation_id,
-                        model=model,
-                        model_metadata=prepared.model_metadata,
-                        force=True,
-                        trigger="prompt_too_long",
-                        keep_tail_groups=PTL_RETRY_KEEP_TAIL_GROUPS,
-                        session_service_provider=provider,
-                    )
+                    try:
+                        checkpoint = await _compact_conversation_history_with_governance(
+                            governance,
+                            session_id=prepared.session_id,
+                            author=runner_name,
+                            invocation_id=prepared.invocation_id,
+                            model=model,
+                            model_metadata=prepared.model_metadata,
+                            force=True,
+                            trigger="prompt_too_long",
+                            keep_tail_groups=PTL_RETRY_KEEP_TAIL_GROUPS,
+                            session_service_provider=provider,
+                        )
+                    except RuntimeCircuitOpen as circuit_exc:
+                        await append_run_status_event(
+                            session_id=prepared.session_id,
+                            author=runner_name,
+                            status="failed",
+                            invocation_id=prepared.invocation_id,
+                            detail=str(circuit_exc),
+                            metadata={"governance": circuit_exc.metadata},
+                            session_service_provider=provider,
+                        )
+                        raise circuit_exc
                     if checkpoint:
                         prepared = await _refresh_history(prepared, session_service_provider=provider)
                         runtime_context.history = list(prepared.history)
@@ -3427,6 +3717,8 @@ async def _iter_conversation_turn_events(
     """Internal semantic event stream shared by protocol serializers."""
     provider = session_service_provider or resolve_session_service
     prepare_runner(runner, model)
+    governance = _runtime_governance_from_env()
+    _governance_record_turn_start(governance)
     if resume_input is None:
         compaction_preview = await preview_auto_compaction(
             agent_id=agent_id,
@@ -3456,21 +3748,37 @@ async def _iter_conversation_turn_events(
             "group_count": compaction_preview.group_count,
             "threshold_percentage": compaction_preview.auto_compact_threshold_percentage,
         }
-    prepared = await build_run_input(
-        agent_id=agent_id,
-        user_id=user_id,
-        session_id=session_id,
-        messages=messages,
-        model=model,
-        model_metadata=model_metadata,
-        model_options=model_options,
-        state_delta=state_delta,
-        instructions=instructions,
-        request_metadata=request_metadata,
-        resume_input=resume_input,
-        invocation_id=invocation_id,
-        session_service_provider=provider,
-    )
+    try:
+        prepared = await build_run_input(
+            agent_id=agent_id,
+            user_id=user_id,
+            session_id=session_id,
+            messages=messages,
+            model=model,
+            model_metadata=model_metadata,
+            model_options=model_options,
+            state_delta=state_delta,
+            instructions=instructions,
+            request_metadata=request_metadata,
+            resume_input=resume_input,
+            invocation_id=invocation_id,
+            governance_state=governance,
+            session_service_provider=provider,
+        )
+    except RuntimeCircuitOpen as exc:
+        if session_id:
+            await append_run_status_event(
+                session_id=session_id,
+                author=_runner_name(runner),
+                status="failed",
+                invocation_id=invocation_id,
+                detail=str(exc),
+                metadata={"governance": exc.metadata},
+                session_service_provider=provider,
+            )
+        yield {"type": "error", "message": str(exc) or "Agent 运行失败"}
+        return
+    _inject_runner_deferred_tools_for_request(runner, prepared)
     ambient_contexts = _build_runner_ambient_contexts(
         runner=runner,
         user_id=user_id,
@@ -3573,194 +3881,277 @@ async def _iter_conversation_turn_events(
             try:
                 runtime_context.history = list(prepared.history)
                 with platform_invocation_scope(runtime_context):
-                    stream = runner.stream(
-                        _build_runner_request_payload(
-                            prepared=prepared,
-                            model=model,
-                            runtime_context=runtime_context,
-                        )
-                    )
-                    while True:
-                        try:
-                            with _span_current_context(span):
-                                chunk = await anext(stream)
-                        except StopAsyncIteration:
-                            break
-                        chunk_type = chunk.get("type")
-                        if chunk_type == "checkpoint":
-                            emitted_anything = True
-                            chunk_agentengine_metadata = _extract_agentengine_metadata(chunk)
-                            if chunk_agentengine_metadata:
-                                runner_agentengine_metadata.update(chunk_agentengine_metadata)
-                                resume_run_id = ""
-                                if prepared.resume_input and _is_checkpoint_resume_input(prepared.resume_input):
-                                    resume_run_id = str(prepared.resume_input.get("run_id") or "").strip()
-                                checkpoint_args = _checkpoint_event_args_from_agentengine_metadata(
-                                    runner_agentengine_metadata.get("agentengine"),
-                                    fallback_run_id=resume_run_id or prepared.invocation_id,
-                                )
-                                if checkpoint_args:
-                                    await append_run_checkpoint_event(
-                                        session_id=prepared.session_id,
-                                        author=runner_name,
-                                        run_id=checkpoint_args["run_id"],
-                                        checkpoint_id=checkpoint_args["checkpoint_id"],
-                                        framework=checkpoint_args["framework"],
-                                        framework_ref=checkpoint_args["framework_ref"],
-                                        phase=checkpoint_args.get("phase") or "stream",
-                                        invocation_id=prepared.invocation_id,
-                                        metadata=checkpoint_args.get("metadata"),
-                                        session_service_provider=provider,
-                                    )
-                            continue
-                        if chunk_type == "responses_output":
-                            if isinstance(chunk.get("usage"), Mapping):
-                                stream_usage = _normalize_usage_payload(chunk.get("usage"))
-                            raw_output = chunk.get("output")
-                            responses_output = raw_output if isinstance(raw_output, list) else []
-                            if reasoning_disabled:
-                                responses_output = _filter_responses_reasoning_output(
-                                    responses_output
-                                )
-                            raw_response_id = chunk.get("response_id")
-                            responses_response_id = (
-                                str(raw_response_id) if raw_response_id else responses_response_id
+                    with tool_execution_scope(
+                        session_id=prepared.session_id,
+                        run_id=prepared.invocation_id,
+                        invocation_id=prepared.invocation_id,
+                    ):
+                        stream = runner.stream(
+                            _build_runner_request_payload(
+                                prepared=prepared,
+                                model=model,
+                                runtime_context=runtime_context,
                             )
-                            if responses_output and not emitted_response_artifacts:
-                                for semantic_event in _semantic_events_from_responses_output(
-                                    responses_output
-                                ):
-                                    if semantic_event.get("type") == "thinking":
-                                        await append_reasoning_event(
+                        )
+                        while True:
+                            try:
+                                with _span_current_context(span):
+                                    chunk = await anext(stream)
+                            except StopAsyncIteration:
+                                break
+                            chunk_type = chunk.get("type")
+                            if chunk_type == "checkpoint":
+                                emitted_anything = True
+                                chunk_agentengine_metadata = _extract_agentengine_metadata(chunk)
+                                if chunk_agentengine_metadata:
+                                    runner_agentengine_metadata.update(chunk_agentengine_metadata)
+                                    resume_run_id = ""
+                                    if prepared.resume_input and _is_checkpoint_resume_input(prepared.resume_input):
+                                        resume_run_id = str(prepared.resume_input.get("run_id") or "").strip()
+                                    checkpoint_args = _checkpoint_event_args_from_agentengine_metadata(
+                                        runner_agentengine_metadata.get("agentengine"),
+                                        fallback_run_id=resume_run_id or prepared.invocation_id,
+                                    )
+                                    if checkpoint_args:
+                                        await append_run_checkpoint_event(
                                             session_id=prepared.session_id,
                                             author=runner_name,
-                                            text=str(semantic_event.get("delta") or ""),
+                                            run_id=checkpoint_args["run_id"],
+                                            checkpoint_id=checkpoint_args["checkpoint_id"],
+                                            framework=checkpoint_args["framework"],
+                                            framework_ref=checkpoint_args["framework_ref"],
+                                            phase=checkpoint_args.get("phase") or "stream",
                                             invocation_id=prepared.invocation_id,
+                                            metadata=checkpoint_args.get("metadata"),
                                             session_service_provider=provider,
                                         )
-                                    emitted_anything = True
-                                    yield semantic_event
-                            continue
-                        if chunk_type == "thinking":
-                            if reasoning_disabled:
                                 continue
-                            delta = str(chunk.get("delta", ""))
-                            if delta:
-                                await append_reasoning_event(
+                            if chunk_type == "responses_output":
+                                if isinstance(chunk.get("usage"), Mapping):
+                                    stream_usage = _normalize_usage_payload(chunk.get("usage"))
+                                raw_output = chunk.get("output")
+                                responses_output = raw_output if isinstance(raw_output, list) else []
+                                if reasoning_disabled:
+                                    responses_output = _filter_responses_reasoning_output(
+                                        responses_output
+                                    )
+                                raw_response_id = chunk.get("response_id")
+                                responses_response_id = (
+                                    str(raw_response_id) if raw_response_id else responses_response_id
+                                )
+                                if responses_output and not emitted_response_artifacts:
+                                    for semantic_event in _semantic_events_from_responses_output(
+                                        responses_output
+                                    ):
+                                        if semantic_event.get("type") == "thinking":
+                                            await append_reasoning_event(
+                                                session_id=prepared.session_id,
+                                                author=runner_name,
+                                                text=str(semantic_event.get("delta") or ""),
+                                                invocation_id=prepared.invocation_id,
+                                                session_service_provider=provider,
+                                            )
+                                        emitted_anything = True
+                                        yield semantic_event
+                                continue
+                            if chunk_type == "thinking":
+                                if reasoning_disabled:
+                                    continue
+                                delta = str(chunk.get("delta", ""))
+                                if delta:
+                                    await append_reasoning_event(
+                                        session_id=prepared.session_id,
+                                        author=runner_name,
+                                        text=delta,
+                                        invocation_id=prepared.invocation_id,
+                                        session_service_provider=provider,
+                                    )
+                                    emitted_anything = True
+                                    emitted_response_artifacts = True
+                                    yield {"type": "thinking", "delta": delta}
+                                continue
+                            if chunk_type == "text":
+                                delta = str(chunk.get("delta", ""))
+                                if delta:
+                                    accumulated_text += delta
+                                    emitted_anything = True
+                                    yield {"type": "text", "delta": delta}
+                                continue
+                            if chunk_type == "tool_call":
+                                _governance_record_tool_call(governance)
+                                emitted_response_artifacts = True
+                                tool_args = chunk.get("tool_args", {})
+                                if not isinstance(tool_args, Mapping):
+                                    tool_args = {}
+                                await append_conversation_event(
                                     session_id=prepared.session_id,
                                     author=runner_name,
-                                    text=delta,
+                                    role="model",
+                                    text=str(chunk.get("tool_name") or "tool"),
                                     invocation_id=prepared.invocation_id,
+                                    event_type="tool_call",
+                                    metadata={
+                                        "tool_name": chunk.get("tool_name"),
+                                        "tool_args": dict(tool_args),
+                                        "run_id": chunk.get("run_id"),
+                                        "stage": chunk.get("stage") or tool_args.get("stage"),
+                                        "event_kind": chunk.get("event_kind"),
+                                        "display_title": chunk.get("display_title"),
+                                        "display_summary": chunk.get("display_summary"),
+                                    },
                                     session_service_provider=provider,
                                 )
                                 emitted_anything = True
-                                emitted_response_artifacts = True
-                                yield {"type": "thinking", "delta": delta}
-                            continue
-                        if chunk_type == "text":
-                            delta = str(chunk.get("delta", ""))
-                            if delta:
-                                accumulated_text += delta
-                                emitted_anything = True
-                                yield {"type": "text", "delta": delta}
-                            continue
-                        if chunk_type == "tool_call":
-                            emitted_response_artifacts = True
-                            tool_args = chunk.get("tool_args", {})
-                            if not isinstance(tool_args, Mapping):
-                                tool_args = {}
-                            await append_conversation_event(
-                                session_id=prepared.session_id,
-                                author=runner_name,
-                                role="model",
-                                text=str(chunk.get("tool_name") or "tool"),
-                                invocation_id=prepared.invocation_id,
-                                event_type="tool_call",
-                                metadata={
-                                    "tool_name": chunk.get("tool_name"),
-                                    "tool_args": dict(tool_args),
+                                yield {
+                                    "type": "tool_call",
+                                    "name": chunk.get("tool_name"),
+                                    "args": dict(tool_args),
                                     "run_id": chunk.get("run_id"),
                                     "stage": chunk.get("stage") or tool_args.get("stage"),
                                     "event_kind": chunk.get("event_kind"),
                                     "display_title": chunk.get("display_title"),
                                     "display_summary": chunk.get("display_summary"),
-                                },
-                                session_service_provider=provider,
-                            )
-                            emitted_anything = True
-                            yield {
-                                "type": "tool_call",
-                                "name": chunk.get("tool_name"),
-                                "args": dict(tool_args),
-                                "run_id": chunk.get("run_id"),
-                                "stage": chunk.get("stage") or tool_args.get("stage"),
-                                "event_kind": chunk.get("event_kind"),
-                                "display_title": chunk.get("display_title"),
-                                "display_summary": chunk.get("display_summary"),
-                            }
-                            continue
-                        if chunk_type in {"stage_tool_call", "stage_tool_result"}:
-                            emitted_response_artifacts = True
-                            tool_name = str(chunk.get("tool_name") or chunk.get("name") or "tool")
-                            tool_args = chunk.get("tool_args", chunk.get("args", {}))
-                            if not isinstance(tool_args, Mapping):
-                                tool_args = {}
-                            tool_output = chunk.get("tool_output", chunk.get("output", ""))
-                            event_kind = str(chunk.get("event_kind") or "")
-                            display_title = str(chunk.get("display_title") or tool_name)
-                            display_summary = str(
-                                chunk.get("display_summary") or chunk.get("text") or ""
-                            )
-                            await append_conversation_event(
-                                session_id=prepared.session_id,
-                                author=runner_name,
-                                role="model" if chunk_type == "stage_tool_call" else "user",
-                                text=display_summary or tool_name,
-                                invocation_id=prepared.invocation_id,
-                                event_type=chunk_type,
-                                metadata={
-                                    "tool_name": tool_name,
-                                    "tool_args": dict(tool_args),
-                                    "tool_output": tool_output,
+                                }
+                                continue
+                            if chunk_type in {"stage_tool_call", "stage_tool_result"}:
+                                emitted_response_artifacts = True
+                                tool_name = str(chunk.get("tool_name") or chunk.get("name") or "tool")
+                                tool_args = chunk.get("tool_args", chunk.get("args", {}))
+                                if not isinstance(tool_args, Mapping):
+                                    tool_args = {}
+                                tool_output = chunk.get("tool_output", chunk.get("output", ""))
+                                event_kind = str(chunk.get("event_kind") or "")
+                                display_title = str(chunk.get("display_title") or tool_name)
+                                display_summary = str(
+                                    chunk.get("display_summary") or chunk.get("text") or ""
+                                )
+                                await append_conversation_event(
+                                    session_id=prepared.session_id,
+                                    author=runner_name,
+                                    role="model" if chunk_type == "stage_tool_call" else "user",
+                                    text=display_summary or tool_name,
+                                    invocation_id=prepared.invocation_id,
+                                    event_type=chunk_type,
+                                    metadata={
+                                        "tool_name": tool_name,
+                                        "tool_args": dict(tool_args),
+                                        "tool_output": tool_output,
+                                        "run_id": chunk.get("run_id"),
+                                        "stage": chunk.get("stage") or tool_args.get("stage"),
+                                        "event_kind": event_kind,
+                                        "display_title": display_title,
+                                        "display_summary": display_summary,
+                                    },
+                                    session_service_provider=provider,
+                                )
+                                emitted_anything = True
+                                yield {
+                                    "type": chunk_type,
+                                    "name": tool_name,
+                                    "args": dict(tool_args),
+                                    "output": tool_output,
                                     "run_id": chunk.get("run_id"),
                                     "stage": chunk.get("stage") or tool_args.get("stage"),
                                     "event_kind": event_kind,
                                     "display_title": display_title,
                                     "display_summary": display_summary,
-                                },
-                                session_service_provider=provider,
-                            )
-                            emitted_anything = True
-                            yield {
-                                "type": chunk_type,
-                                "name": tool_name,
-                                "args": dict(tool_args),
-                                "output": tool_output,
-                                "run_id": chunk.get("run_id"),
-                                "stage": chunk.get("stage") or tool_args.get("stage"),
-                                "event_kind": event_kind,
-                                "display_title": display_title,
-                                "display_summary": display_summary,
-                            }
-                            continue
-                        if chunk_type == "tool_result":
-                            emitted_response_artifacts = True
-                            tool_name = str(chunk.get("tool_name") or "tool")
-                            tool_args = chunk.get("tool_args", {})
-                            if not isinstance(tool_args, Mapping):
-                                tool_args = {}
-                            tool_run_id = str(chunk.get("run_id") or prepared.invocation_id)
-                            checkpoint_metadata = _latest_checkpoint_metadata_for_run(
-                                await provider().get_events(prepared.session_id),
-                                tool_run_id,
-                            )
-                            approval_interrupt_info = approval_interrupt_info_from_result(
-                                chunk.get("tool_output", ""),
-                                fallback_tool_name=tool_name,
-                                tool_args=tool_args,
-                                run_id=tool_run_id,
-                            )
-                            if approval_interrupt_info:
+                                }
+                                continue
+                            if chunk_type == "tool_result":
+                                emitted_response_artifacts = True
+                                tool_name = str(chunk.get("tool_name") or "tool")
+                                tool_args = chunk.get("tool_args", {})
+                                if not isinstance(tool_args, Mapping):
+                                    tool_args = {}
+                                tool_run_id = str(chunk.get("run_id") or prepared.invocation_id)
+                                checkpoint_metadata = _latest_checkpoint_metadata_for_run(
+                                    await provider().get_events(prepared.session_id),
+                                    tool_run_id,
+                                )
+                                approval_interrupt_info = approval_interrupt_info_from_result(
+                                    chunk.get("tool_output", ""),
+                                    fallback_tool_name=tool_name,
+                                    tool_args=tool_args,
+                                    run_id=tool_run_id,
+                                )
+                                if approval_interrupt_info:
+                                    await append_conversation_event(
+                                        session_id=prepared.session_id,
+                                        author=runner_name,
+                                        role="model",
+                                        text="approval requested",
+                                        invocation_id=prepared.invocation_id,
+                                        event_type="approval_request",
+                                        metadata={"interrupt_info": approval_interrupt_info},
+                                        session_service_provider=provider,
+                                    )
+                                    await append_run_status_event(
+                                        session_id=prepared.session_id,
+                                        author=runner_name,
+                                        status="interrupted",
+                                        invocation_id=prepared.invocation_id,
+                                        detail="approval_required",
+                                        session_service_provider=provider,
+                                    )
+                                    emitted_anything = True
+                                    yield {
+                                        "type": "interrupt",
+                                        "interrupt_info": approval_interrupt_info,
+                                        "session_id": prepared.session_id,
+                                        "metadata": {**trace_metadata, **prepared.request_metadata},
+                                    }
+                                    return
+                                await append_conversation_event(
+                                    session_id=prepared.session_id,
+                                    author=runner_name,
+                                    role="user",
+                                    text=str(chunk.get("tool_output", "")),
+                                    invocation_id=prepared.invocation_id,
+                                    event_type="tool_result",
+                                    metadata={
+                                        "tool_name": tool_name,
+                                        "tool_output": chunk.get("tool_output", ""),
+                                        "run_id": tool_run_id,
+                                        "observability": _tool_observability_metadata(tool_name, chunk.get("tool_output", "")),
+                                        "tool_receipt": _tool_receipt_metadata(
+                                            session_id=prepared.session_id,
+                                            run_id=tool_run_id,
+                                            tool_call_id=tool_run_id,
+                                            tool_name=tool_name,
+                                            tool_args=tool_args,
+                                            checkpoint_id=checkpoint_metadata.get("checkpoint_id"),
+                                            framework=checkpoint_metadata.get("framework"),
+                                            framework_ref=checkpoint_metadata.get("framework_ref"),
+                                            status=(
+                                                "failed"
+                                                if isinstance(chunk.get("tool_output"), Mapping)
+                                                and chunk.get("tool_output", {}).get("ok") is False
+                                                else "completed"
+                                            ),
+                                        ),
+                                    },
+                                    session_service_provider=provider,
+                                )
+                                deferred_tool_names = _extract_deferred_tool_names(chunk.get("tool_output", ""))
+                                if tool_name == "tool_search" and deferred_tool_names:
+                                    await append_deferred_tools_event(
+                                        session_id=prepared.session_id,
+                                        author=runner_name,
+                                        deferred_tool_names=deferred_tool_names,
+                                        invocation_id=prepared.invocation_id,
+                                        session_service_provider=provider,
+                                    )
+                                _governance_record_tool_result(governance, chunk.get("tool_output", ""))
+                                emitted_anything = True
+                                yield {
+                                    "type": "tool_result",
+                                    "name": chunk.get("tool_name"),
+                                    "output": chunk.get("tool_output", ""),
+                                    "run_id": chunk.get("run_id"),
+                                }
+                                continue
+                            if chunk_type == "interrupt":
+                                interrupt_info = chunk.get("interrupt_info")
                                 await append_conversation_event(
                                     session_id=prepared.session_id,
                                     author=runner_name,
@@ -3768,7 +4159,7 @@ async def _iter_conversation_turn_events(
                                     text="approval requested",
                                     invocation_id=prepared.invocation_id,
                                     event_type="approval_request",
-                                    metadata={"interrupt_info": approval_interrupt_info},
+                                    metadata={"interrupt_info": interrupt_info},
                                     session_service_provider=provider,
                                 )
                                 await append_run_status_event(
@@ -3782,84 +4173,18 @@ async def _iter_conversation_turn_events(
                                 emitted_anything = True
                                 yield {
                                     "type": "interrupt",
-                                    "interrupt_info": approval_interrupt_info,
+                                    "interrupt_info": interrupt_info,
                                     "session_id": prepared.session_id,
                                     "metadata": {**trace_metadata, **prepared.request_metadata},
                                 }
                                 return
-                            await append_conversation_event(
-                                session_id=prepared.session_id,
-                                author=runner_name,
-                                role="user",
-                                text=str(chunk.get("tool_output", "")),
-                                invocation_id=prepared.invocation_id,
-                                event_type="tool_result",
-                                metadata={
-                                    "tool_name": tool_name,
-                                    "tool_output": chunk.get("tool_output", ""),
-                                    "run_id": tool_run_id,
-                                    "tool_receipt": _tool_receipt_metadata(
-                                        session_id=prepared.session_id,
-                                        run_id=tool_run_id,
-                                        tool_call_id=tool_run_id,
-                                        tool_name=tool_name,
-                                        tool_args=tool_args,
-                                        checkpoint_id=checkpoint_metadata.get("checkpoint_id"),
-                                        framework=checkpoint_metadata.get("framework"),
-                                        framework_ref=checkpoint_metadata.get("framework_ref"),
-                                        status=(
-                                            "failed"
-                                            if isinstance(chunk.get("tool_output"), Mapping)
-                                            and chunk.get("tool_output", {}).get("ok") is False
-                                            else "completed"
-                                        ),
-                                    ),
-                                },
-                                session_service_provider=provider,
-                            )
-                            emitted_anything = True
-                            yield {
-                                "type": "tool_result",
-                                "name": chunk.get("tool_name"),
-                                "output": chunk.get("tool_output", ""),
-                                "run_id": chunk.get("run_id"),
-                            }
-                            continue
-                        if chunk_type == "interrupt":
-                            interrupt_info = chunk.get("interrupt_info")
-                            await append_conversation_event(
-                                session_id=prepared.session_id,
-                                author=runner_name,
-                                role="model",
-                                text="approval requested",
-                                invocation_id=prepared.invocation_id,
-                                event_type="approval_request",
-                                metadata={"interrupt_info": interrupt_info},
-                                session_service_provider=provider,
-                            )
-                            await append_run_status_event(
-                                session_id=prepared.session_id,
-                                author=runner_name,
-                                status="interrupted",
-                                invocation_id=prepared.invocation_id,
-                                detail="approval_required",
-                                session_service_provider=provider,
-                            )
-                            emitted_anything = True
-                            yield {
-                                "type": "interrupt",
-                                "interrupt_info": interrupt_info,
-                                "session_id": prepared.session_id,
-                                "metadata": {**trace_metadata, **prepared.request_metadata},
-                            }
-                            return
-                        if chunk_type == "final":
-                            saw_final_chunk = True
-                            final_text = str(chunk.get("output", ""))
-                            if final_text:
-                                accumulated_text = final_text
-                            if isinstance(chunk.get("usage"), Mapping):
-                                stream_usage = _normalize_usage_payload(chunk.get("usage"))
+                            if chunk_type == "final":
+                                saw_final_chunk = True
+                                final_text = str(chunk.get("output", ""))
+                                if final_text:
+                                    accumulated_text = final_text
+                                if isinstance(chunk.get("usage"), Mapping):
+                                    stream_usage = _normalize_usage_payload(chunk.get("usage"))
                 break
             except asyncio.CancelledError:
                 await append_run_status_event(
@@ -3879,17 +4204,31 @@ async def _iter_conversation_turn_events(
             except Exception as exc:
                 if attempt == 0 and not emitted_anything and _is_prompt_too_long_error(exc):
                     yield {"type": "compaction", "phase": "start", "trigger": "prompt_too_long"}
-                    checkpoint = await compact_conversation_history(
-                        session_id=prepared.session_id,
-                        author=runner_name,
-                        invocation_id=prepared.invocation_id,
-                        model=model,
-                        model_metadata=prepared.model_metadata,
-                        force=True,
-                        trigger="prompt_too_long",
-                        keep_tail_groups=PTL_RETRY_KEEP_TAIL_GROUPS,
-                        session_service_provider=provider,
-                    )
+                    try:
+                        checkpoint = await _compact_conversation_history_with_governance(
+                            governance,
+                            session_id=prepared.session_id,
+                            author=runner_name,
+                            invocation_id=prepared.invocation_id,
+                            model=model,
+                            model_metadata=prepared.model_metadata,
+                            force=True,
+                            trigger="prompt_too_long",
+                            keep_tail_groups=PTL_RETRY_KEEP_TAIL_GROUPS,
+                            session_service_provider=provider,
+                        )
+                    except RuntimeCircuitOpen as circuit_exc:
+                        await append_run_status_event(
+                            session_id=prepared.session_id,
+                            author=runner_name,
+                            status="failed",
+                            invocation_id=prepared.invocation_id,
+                            detail=str(circuit_exc),
+                            metadata={"governance": circuit_exc.metadata},
+                            session_service_provider=provider,
+                        )
+                        yield {"type": "error", "message": str(circuit_exc) or "Agent 运行失败"}
+                        return
                     if checkpoint:
                         yield {
                             "type": "compaction",
@@ -3930,6 +4269,7 @@ async def _iter_conversation_turn_events(
                     status="failed",
                     invocation_id=prepared.invocation_id,
                     detail=str(exc),
+                    metadata={"governance": exc.metadata} if isinstance(exc, RuntimeCircuitOpen) else None,
                     session_service_provider=provider,
                 )
                 yield {"type": "error", "message": str(exc) or "Agent 运行失败"}

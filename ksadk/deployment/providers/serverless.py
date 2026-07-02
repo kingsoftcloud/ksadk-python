@@ -11,6 +11,7 @@ import json
 import logging
 import shutil
 import time
+import yaml
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 import click
@@ -223,7 +224,12 @@ class ServerlessProvider(BaseDeployProvider):
         profile = ui_state.get("ui_profile")
         path = ui_state.get("ui_path")
         url = ui_state.get("ui_url")
-        bundle_path = local_state.get("ui_bundle_path") or local_state.get("ui_bundle_dir")
+        bundle_path = (
+            ui_state.get("ui_bundle_path")
+            or ui_state.get("ui_bundle_dir")
+            or local_state.get("ui_bundle_path")
+            or local_state.get("ui_bundle_dir")
+        )
 
         if profile:
             env_vars["KSADK_UI_PROFILE"] = str(profile)
@@ -493,15 +499,24 @@ class ServerlessProvider(BaseDeployProvider):
         project_dir = package_info.project_dir
         state_file = Path(project_dir) / ".agentengine.state"
         local_state = self._load_state(state_file)
+        project_config = self._load_project_config(Path(project_dir))
+        runtime_state = self._merge_ui_runtime_state(
+            local_state=local_state,
+            project_config=project_config,
+        )
         existing_agent_id = local_state.get("agent_id")
         resolved_ui = resolve_ui_config(
             framework=package_info.framework,
-            state=local_state,
+            state=runtime_state,
             cli_profile=target.extra.get("ui_profile"),
             cli_path=target.extra.get("ui_path"),
             cli_url=target.extra.get("ui_url"),
         )
         ui_state = ui_config_to_state_fields(resolved_ui)
+        if project_config.get("ui_bundle_path") and not ui_state.get("ui_bundle_path"):
+            ui_state["ui_bundle_path"] = project_config.get("ui_bundle_path")
+        if project_config.get("ui_bundle_dir") and not ui_state.get("ui_bundle_dir"):
+            ui_state["ui_bundle_dir"] = project_config.get("ui_bundle_dir")
         
         # 构造请求 payload
         artifact_type = target.extra.get("artifact_type", "Code")
@@ -1039,7 +1054,6 @@ class ServerlessProvider(BaseDeployProvider):
 
     def _load_state(self, state_file: Path) -> Dict[str, Any]:
         """读取本地状态文件"""
-        import yaml
         if state_file.exists():
             try:
                 with open(state_file, 'r', encoding='utf-8') as f:
@@ -1047,6 +1061,33 @@ class ServerlessProvider(BaseDeployProvider):
             except Exception as e:
                 logger.warning(f"Failed to load state file: {e}")
         return {}
+
+    def _load_project_config(self, project_dir: Path) -> Dict[str, Any]:
+        """读取项目配置文件。"""
+        for file_name in ("agentengine.yaml", "ksadk.yaml"):
+            config_file = project_dir / file_name
+            if not config_file.exists():
+                continue
+            try:
+                with open(config_file, "r", encoding="utf-8-sig") as f:
+                    return yaml.safe_load(f) or {}
+            except Exception as e:
+                logger.warning(f"Failed to load project config {config_file}: {e}")
+        return {}
+
+    def _merge_ui_runtime_state(
+        self,
+        *,
+        local_state: Dict[str, Any],
+        project_config: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """合并状态文件与项目配置中的 UI 运行时信息。"""
+        merged = dict(local_state or {})
+        for key in ("ui_profile", "ui_path", "ui_url", "ui_bundle_path", "ui_bundle_dir"):
+            value = project_config.get(key)
+            if value and not merged.get(key):
+                merged[key] = value
+        return merged
 
     def _save_state(self, state_file: Path, state: Dict[str, Any]) -> None:
         """保存状态到本地文件"""

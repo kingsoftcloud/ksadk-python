@@ -56,6 +56,28 @@ agentengine config set OPENAI_BASE_URL=https://api.example.com/v1
 agentengine config set KSYUN_REGION=cn-beijing-6
 ```
 
+## 从源码开发
+
+从 git clone 后运行 `agentengine web` 需要 Web UI 静态资源。本仓库不再跟踪 `ksadk/server/static/`，首次运行或更新 UI 前先同步：
+
+```bash
+make sync-ksadk-web-static
+```
+
+- 本机已装 Node.js / npm：自动用 `npm pack` 拉取 `@kingsoftcloud/ksadk-web`。
+- 本机没有 npm：自动从 npm registry 解析 latest tarball 并用 `curl` 下载，无需安装 Node.js。
+
+指定版本：`make sync-ksadk-web-static KSADK_WEB_VERSION=0.2.13`。
+强制下载 URL：`make sync-ksadk-web-static KSADK_WEB_RELEASE_URL=<tarball-url>`。
+
+```bash
+make sync-ksadk-web-static
+uv pip install -e .
+agentengine web .
+```
+
+`make build` / `make build-wheel` 会自动执行 sync，无需手动同步。
+
 ## Architecture
 
 ```text

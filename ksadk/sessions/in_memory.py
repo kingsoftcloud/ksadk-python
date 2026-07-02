@@ -162,8 +162,8 @@ class InMemorySessionService(BaseSessionService):
             session = self._sessions.get(session_id)
             if not session:
                 return []
-            start = offset or 0
-            end = None if limit is None else start + limit
+            end = max(len(session.events) - (offset or 0), 0)
+            start = 0 if limit is None else max(end - limit, 0)
             events = session.events[start:end]
             return copy.deepcopy(events)
 

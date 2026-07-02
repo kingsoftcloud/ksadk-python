@@ -48,8 +48,20 @@ class PlatformInvocationContext:
         }
 
 
+@dataclass
+class ToolExecutionContext:
+    session_id: str = ""
+    run_id: str = ""
+    invocation_id: str = ""
+
+
 _CURRENT_PLATFORM_INVOCATION_CONTEXT: ContextVar[PlatformInvocationContext | None] = ContextVar(
     "ksadk_platform_invocation_context",
+    default=None,
+)
+
+_CURRENT_TOOL_EXECUTION_CONTEXT: ContextVar[ToolExecutionContext | None] = ContextVar(
+    "ksadk_tool_execution_context",
     default=None,
 )
 
@@ -80,6 +92,13 @@ def get_current_invocation_context_or_default() -> PlatformInvocationContext:
     )
 
 
+def get_current_tool_execution_context_or_default() -> ToolExecutionContext:
+    context = _CURRENT_TOOL_EXECUTION_CONTEXT.get()
+    if context is not None:
+        return context
+    return ToolExecutionContext()
+
+
 def get_current_user_id(default: str = "") -> str:
     context = get_current_invocation_context()
     if context is None:
@@ -106,6 +125,18 @@ def reset_current_invocation_context(
     _CURRENT_PLATFORM_INVOCATION_CONTEXT.reset(token)
 
 
+def set_current_tool_execution_context(
+    context: ToolExecutionContext | None,
+) -> Token[ToolExecutionContext | None]:
+    return _CURRENT_TOOL_EXECUTION_CONTEXT.set(context)
+
+
+def reset_current_tool_execution_context(
+    token: Token[ToolExecutionContext | None],
+) -> None:
+    _CURRENT_TOOL_EXECUTION_CONTEXT.reset(token)
+
+
 @contextmanager
 def platform_invocation_scope(
     context: PlatformInvocationContext | None,
@@ -115,3 +146,21 @@ def platform_invocation_scope(
         yield context
     finally:
         reset_current_invocation_context(token)
+
+
+@contextmanager
+def tool_execution_scope(
+    session_id: str,
+    run_id: str | None = None,
+    invocation_id: str | None = None,
+) -> Iterator[ToolExecutionContext]:
+    context = ToolExecutionContext(
+        session_id=str(session_id or ""),
+        run_id=str(run_id or ""),
+        invocation_id=str(invocation_id or ""),
+    )
+    token = set_current_tool_execution_context(context)
+    try:
+        yield context
+    finally:
+        reset_current_tool_execution_context(token)

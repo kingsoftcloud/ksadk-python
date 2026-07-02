@@ -79,6 +79,7 @@ class SandboxSession(Protocol):
         *,
         timeout: int | None = None,
         env: dict[str, str] | None = None,
+        cwd: str | None = None,
     ) -> SandboxCommandResult:
         ...
 
