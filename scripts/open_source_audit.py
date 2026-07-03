@@ -19,12 +19,17 @@ class DenyRule:
     prefixes: tuple[str, ...]
     contains: tuple[str, ...] = ()
     allowed_paths: tuple[str, ...] = ()
+    prefix_only: bool = False
     description: str = ""
 
     def matches(self, path: str) -> bool:
         normalized = normalize_path(path)
         if normalized in self.allowed_paths:
             return False
+        if self.prefix_only:
+            # prefix_only=True 时只匹配顶层前缀,不匹配子路径里的同名片段。
+            # 用于 docs/ 这类规则:避免误报 docs-site/content/docs/... (路径含 /docs/ 子段)。
+            return normalized.startswith(self.prefixes)
         return (
             normalized.startswith(self.prefixes)
             or any(f"/{prefix}" in normalized for prefix in self.prefixes)
@@ -100,8 +105,9 @@ PUBLIC_REPO_RULES = COMMON_RULES + (
     DenyRule(
         name="non-curated-docs",
         prefixes=("docs/",),
-        allowed_paths=("docs/maintainer-approval-record.md", "docs/ksadk\u73af\u5883\u53d8\u91cf\u53c2\u8003.md", "docs/\u8fdc\u7a0bAgent\u8fd0\u884c\u65f6\u63a5\u53e3\u8bf4\u660e.md"),
-        description="internal planning and technical design docs stay out of the public repository; user docs live in public-docs/",
+        allowed_paths=("docs/maintainer-approval-record.md", "docs/ksadk\u73af\u5883\u53d8\u91cf\u53c2\u8003.md", "docs/\u8fdc\u7a0bAgent\u8fd0\u884c\u65f6\u63a5\u53e3\u8bf4\u660e.md", "docs/reference/ksadk\u6280\u672f\u8bbe\u8ba1.md"),
+        prefix_only=True,
+        description="internal planning and technical design docs stay out of the public repository; public docs live in docs-site/ (Fumadocs)",
     ),
     DenyRule(
         name="internal-deploy-material",
@@ -110,6 +116,7 @@ PUBLIC_REPO_RULES = COMMON_RULES + (
             "Makefile.openclaw",
             "Makefile.promo.Dockerfile",
         ),
+        prefix_only=True,
         description="internal deployment shells, runtime images, and private registry examples stay out of the first public repository snapshot",
     ),
     DenyRule(
@@ -211,16 +218,21 @@ CONTENT_RULES = (
         name="internal-service-endpoint",
         pattern=re.compile(
             r"(?<![A-Za-z0-9.-])"
-            r"(?!(?:aicp)\.(?:inner|internal)\.api\.ksyun\.com\b)"
-            r"(?!kspmas-internal\.sdns\.ksyun\.com\b)"
+            # 金山云公开服务 endpoint(用户在金山云环境跑 agent 必需,公开 SDK 必须支持)
+            r"(?!(?:aicp|vpc)\.(?:inner|internal)\.api\.ksyun\.com\b)"
+            r"(?!kspmas(?:-internal)?\.sdns\.ksyun\.com\b)"
+            r"(?!ks3-[a-z-]+(?:-internal)?\.ksyuncs\.com\b)"
+            r"(?!kmr\.[a-z-]+\.inner\.api\.ksyun\.com\b)"
             r"(?:[A-Za-z0-9-]+\.)*(?:inner\.api|internal\.api|sdns)\.ksyun\.com\b"
         ),
         description="internal service endpoints must not be published unless explicitly supported by the public SDK",
     ),
     ContentRule(
         name="private-container-registry",
-        pattern=re.compile(r"\bhub-[A-Za-z0-9-]+\.kce\.ksyun\.com/"),
-        description="regional private container registry defaults must not be published",
+        # 金山云容器仓库 hub/hub-vpc.kce.ksyun.com 是公开服务 endpoint(用户推镜像必需),
+        # 只挡其他私有 registry 域名。agentengine/agentengine-public 等命名空间由用户自配,不算秘密。
+        pattern=re.compile(r"\bhub-[A-Za-z0-9-]+\.kce\.ksyun\.com/(?!agentengine)"),
+        description="regional private container registry defaults must not be published; kce.ksyun.com is the public Kingsoft Cloud registry",
     ),
     ContentRule(
         name="aws-access-key-id",

@@ -1,4 +1,0 @@
-name: knowledge_base_assistant
-type: adk
-entry_point: knowledge_base_adk/agent.py
-agent_variable: root_agent
