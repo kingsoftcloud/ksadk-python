@@ -63,8 +63,11 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
 
   # 发版时同步部署 Fumadocs 文档站到 GitHub Pages, 文档与 PyPI 版本一致。
+  # 用 if: always() 让文档部署不被 publish 阻塞(workflow_dispatch 重新部署文档时,
+  # publish 会因版本门禁失败(版本未变),但 deploy-pages 仍应运行)。
   deploy-pages:
     needs: publish
+    if: always()
     runs-on: ubuntu-latest
     environment:
       name: github-pages
