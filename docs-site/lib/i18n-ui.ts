@@ -28,7 +28,7 @@ export const translations = i18n
       pageActionsOpen: '打开方式',
       pageActionsViewMarkdown: '查看 Markdown',
       pageActionsOpenGitHub: '在 GitHub 上打开',
-      pageActionsOpenInLLMPrompt: '在 LLM 中打开',
+      pageActionsOpenInLLMPrompt: '请阅读这份 KsADK 文档并回答我的问题: {url}',
       pageActionsOpenChatGPT: '在 ChatGPT 中打开',
       pageActionsOpenClaude: '在 Claude 中打开',
       pageActionsOpenCursor: '在 Cursor 中打开',
