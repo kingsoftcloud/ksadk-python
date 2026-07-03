@@ -1,0 +1,231 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 900" role="img" aria-labelledby="t d">
+  <title id="t">execute_skills 编排流</title>
+  <desc id="d">LLM 调用 execute_skills 经 ToolGateway.invoke 审批后，解析 backend、构造 runtime tool、注入 Skill Service 环境变量，最终在 runtime 内部完成发现→下载→sha256→解压→loader→agent 的隔离执行链路。</desc>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&amp;display=swap');
+    text { font-family: 'JetBrains Mono', 'Noto Sans SC', 'PingFang SC', sans-serif; }
+    @media (prefers-color-scheme: light) {
+      .bg-dark { fill: none; }
+      .grid-pattern { display: none; }
+      text[fill="white"] { fill: #0f172a; }
+      text[fill="#94a3b8"] { fill: #475569; }
+      text[fill="#a7f3d0"] { fill: #047857; }
+      text[fill="#64748b"] { fill: #64748b; }
+      text[fill="#22d3ee"] { fill: #0e7490; }
+      text[fill="#34d399"] { fill: #047857; }
+      text[fill="#fbbf24"] { fill: #b45309; }
+      text[fill="#a78bfa"] { fill: #6d28d9; }
+      text[fill="#fb7185"] { fill: #be123c; }
+      rect[fill="#0f172a"] { fill: none; }
+      rect[stroke="#94a3b8"], rect[stroke="#22d3ee"], rect[stroke="#34d399"], rect[stroke="#fbbf24"], rect[stroke="#a78bfa"], rect[stroke="#fb7185"] { stroke-opacity: 0.8; }
+    }
+  </style>
+  <defs>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/>
+    </pattern>
+    <marker id="ar" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7" fill="#64748b"/></marker>
+    <marker id="ar-c" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7" fill="#22d3ee"/></marker>
+    <marker id="ar-g" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7" fill="#34d399"/></marker>
+    <marker id="ar-a" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7" fill="#fbbf24"/></marker>
+    <marker id="ar-v" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7" fill="#a78bfa"/></marker>
+    <marker id="ar-r" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7" fill="#fb7185"/></marker>
+  </defs>
+
+  <rect class="bg-dark" width="1280" height="900" fill="#0f172a"/>
+  <rect class="grid-pattern" width="1280" height="900" fill="url(#grid)"/>
+
+  <text x="30" y="34" fill="white" font-size="16" font-weight="700">execute_skills 编排流</text>
+  <text x="30" y="52" fill="#94a3b8" font-size="10">ToolGateway 审批 → backend 解析 → runtime tool 构造 → 环境注入 → 隔离执行 → SkillRuntimeResult</text>
+
+  <!-- Entry + Gateway -->
+  <g>
+    <rect x="40" y="100" width="240" height="60" rx="6" fill="#0f172a"/>
+    <rect x="40" y="100" width="240" height="60" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+    <text x="160" y="125" fill="white" font-size="11" font-weight="600" text-anchor="middle">LLM 调用 execute_skills</text>
+    <text x="160" y="141" fill="#94a3b8" font-size="8" text-anchor="middle">workflow_prompt + skill_names</text>
+  </g>
+  <g>
+    <rect x="40" y="185" width="240" height="60" rx="6" fill="#0f172a"/>
+    <rect x="40" y="185" width="240" height="60" rx="6" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+    <text x="160" y="210" fill="white" font-size="11" font-weight="600" text-anchor="middle">ToolGateway.invoke</text>
+    <text x="160" y="226" fill="#94a3b8" font-size="8" text-anchor="middle">读 ToolPolicy risk=high</text>
+  </g>
+
+  <!-- Decide -->
+  <g>
+    <polygon points="160,270 280,310 160,350 40,310" fill="#0f172a"/>
+    <polygon points="160,270 280,310 160,350 40,310" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+    <text x="160" y="305" fill="white" font-size="10" font-weight="600" text-anchor="middle">strict 且</text>
+    <text x="160" y="320" fill="#94a3b8" font-size="8" text-anchor="middle">未带 approval?</text>
+  </g>
+
+  <!-- Approval envelope -->
+  <g>
+    <rect x="40" y="395" width="240" height="70" rx="6" fill="#0f172a"/>
+    <rect x="40" y="395" width="240" height="70" rx="6" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1.5"/>
+    <text x="160" y="422" fill="white" font-size="11" font-weight="600" text-anchor="middle">返回 approval_required 信封</text>
+    <text x="160" y="438" fill="#94a3b8" font-size="8" text-anchor="middle">approval_request.id / risk_level</text>
+    <text x="160" y="452" fill="#64748b" font-size="8" text-anchor="middle">side_effects: isolated_runtime_execution</text>
+  </g>
+
+  <!-- Impl -->
+  <g>
+    <rect x="340" y="270" width="220" height="60" rx="6" fill="#0f172a"/>
+    <rect x="340" y="270" width="220" height="60" rx="6" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+    <text x="450" y="295" fill="white" font-size="11" font-weight="600" text-anchor="middle">_execute_skills_impl</text>
+    <text x="450" y="311" fill="#94a3b8" font-size="8" text-anchor="middle">进入实现</text>
+  </g>
+
+  <!-- Backend resolve -->
+  <rect x="600" y="200" width="280" height="220" rx="10" fill="none" stroke="#a78bfa" stroke-width="1" stroke-dasharray="6,4"/>
+  <text x="612" y="218" fill="#a78bfa" font-size="9" font-weight="600">create_skill_runtime_backend()</text>
+  <g>
+    <polygon points="740,235 850,275 740,315 630,275" fill="#0f172a"/>
+    <polygon points="740,235 850,275 740,315 630,275" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+    <text x="740" y="272" fill="white" font-size="10" font-weight="600" text-anchor="middle">解析 backend</text>
+  </g>
+  <g>
+    <rect x="620" y="335" width="120" height="65" rx="6" fill="#0f172a"/>
+    <rect x="620" y="335" width="120" height="65" rx="6" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+    <text x="680" y="358" fill="white" font-size="10" font-weight="600" text-anchor="middle">local_process</text>
+    <text x="680" y="373" fill="#94a3b8" font-size="8" text-anchor="middle">本地子进程</text>
+    <text x="680" y="387" fill="#64748b" font-size="8" text-anchor="middle">backend</text>
+  </g>
+  <g>
+    <rect x="745" y="335" width="120" height="65" rx="6" fill="#0f172a"/>
+    <rect x="745" y="335" width="120" height="65" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+    <text x="805" y="358" fill="white" font-size="10" font-weight="600" text-anchor="middle">e2b</text>
+    <text x="805" y="373" fill="#94a3b8" font-size="8" text-anchor="middle">E2B sandbox</text>
+    <text x="805" y="387" fill="#64748b" font-size="8" text-anchor="middle">backend</text>
+  </g>
+  <g>
+    <rect x="620" y="415" width="245" height="40" rx="6" fill="#0f172a"/>
+    <rect x="620" y="415" width="245" height="40" rx="6" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1.5"/>
+    <text x="742" y="432" fill="white" font-size="10" font-weight="600" text-anchor="middle">disabled → SkillRuntimeError</text>
+    <text x="742" y="447" fill="#94a3b8" font-size="8" text-anchor="middle">skill_runtime_disabled + hint</text>
+  </g>
+
+  <!-- Build -->
+  <g>
+    <rect x="920" y="200" width="240" height="60" rx="6" fill="#0f172a"/>
+    <rect x="920" y="200" width="240" height="60" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+    <text x="1040" y="225" fill="white" font-size="11" font-weight="600" text-anchor="middle">build_execute_skills_tool</text>
+    <text x="1040" y="241" fill="#94a3b8" font-size="8" text-anchor="middle">backend.run_workflow</text>
+  </g>
+
+  <!-- Resolve env -->
+  <g>
+    <rect x="920" y="290" width="240" height="70" rx="6" fill="#0f172a"/>
+    <rect x="920" y="290" width="240" height="70" rx="6" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+    <text x="1040" y="317" fill="white" font-size="11" font-weight="600" text-anchor="middle">runtime_agent_env_from_process</text>
+    <text x="1040" y="333" fill="#94a3b8" font-size="8" text-anchor="middle">注入 KSADK_SKILL_SERVICE_*</text>
+    <text x="1040" y="347" fill="#64748b" font-size="8" text-anchor="middle">+ space ids / session_id</text>
+  </g>
+
+  <!-- Run workflow -->
+  <g>
+    <rect x="920" y="390" width="240" height="80" rx="6" fill="#0f172a"/>
+    <rect x="920" y="390" width="240" height="80" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+    <text x="1040" y="415" fill="white" font-size="11" font-weight="600" text-anchor="middle">backend.run_workflow</text>
+    <text x="1040" y="431" fill="#a7f3d0" font-size="8" text-anchor="middle">workflow_prompt</text>
+    <text x="1040" y="445" fill="#a7f3d0" font-size="8" text-anchor="middle">skill_space_ids / skill_names</text>
+    <text x="1040" y="459" fill="#64748b" font-size="8" text-anchor="middle">session_id / timeout</text>
+  </g>
+
+  <!-- Runtime internal -->
+  <rect x="340" y="490" width="820" height="170" rx="10" fill="none" stroke="#34d399" stroke-width="1.5" stroke-dasharray="8,4"/>
+  <text x="352" y="510" fill="#34d399" font-size="10" font-weight="700">runtime 内部 · 隔离执行链路</text>
+  <g font-size="9">
+    <rect x="360" y="525" width="120" height="45" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.2"/>
+    <text x="420" y="545" fill="white" font-weight="600" text-anchor="middle">发现</text>
+    <text x="420" y="560" fill="#94a3b8" text-anchor="middle">SkillServiceClient</text>
+    <rect x="500" y="525" width="120" height="45" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.2"/>
+    <text x="560" y="545" fill="white" font-weight="600" text-anchor="middle">下载 archive</text>
+    <text x="560" y="560" fill="#94a3b8" text-anchor="middle">download zip</text>
+    <rect x="640" y="525" width="120" height="45" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.2"/>
+    <text x="700" y="545" fill="white" font-weight="600" text-anchor="middle">sha256 校验</text>
+    <text x="700" y="560" fill="#94a3b8" text-anchor="middle">PackageStore</text>
+    <rect x="780" y="525" width="120" height="45" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.2"/>
+    <text x="840" y="545" fill="white" font-weight="600" text-anchor="middle">安全解压</text>
+    <text x="840" y="560" fill="#94a3b8" text-anchor="middle">_safe_extract</text>
+    <rect x="920" y="525" width="100" height="45" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.2"/>
+    <text x="970" y="545" fill="white" font-weight="600" text-anchor="middle">loader</text>
+    <text x="970" y="560" fill="#94a3b8" text-anchor="middle">LocalSkill</text>
+    <rect x="1040" y="525" width="100" height="45" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.2"/>
+    <text x="1090" y="545" fill="white" font-weight="600" text-anchor="middle">agent</text>
+    <text x="1090" y="560" fill="#94a3b8" text-anchor="middle">runtime 子进程</text>
+  </g>
+  <path d="M 480,547 L 500,547" fill="none" stroke="#34d399" stroke-width="1.2" marker-end="url(#ar-g)"/>
+  <path d="M 620,547 L 640,547" fill="none" stroke="#34d399" stroke-width="1.2" marker-end="url(#ar-g)"/>
+  <path d="M 760,547 L 780,547" fill="none" stroke="#34d399" stroke-width="1.2" marker-end="url(#ar-g)"/>
+  <path d="M 900,547 L 920,547" fill="none" stroke="#34d399" stroke-width="1.2" marker-end="url(#ar-g)"/>
+  <path d="M 1020,547 L 1040,547" fill="none" stroke="#34d399" stroke-width="1.2" marker-end="url(#ar-g)"/>
+  <text x="420" y="595" fill="#64748b" font-size="8" text-anchor="middle">与 Skill 加载时序同构：sha256 + 路径穿越保护 + SKILL.md 定位</text>
+  <text x="420" y="610" fill="#64748b" font-size="8" text-anchor="middle">runtime_agent_env_from_process 把推断的 service URL 写入子进程，避免再次 AICP 推断</text>
+  <rect x="360" y="625" width="800" height="28" rx="4" fill="none" stroke="#34d399" stroke-width="0.8" stroke-dasharray="3,2"/>
+  <text x="760" y="643" fill="#34d399" font-size="9" text-anchor="middle">runtime 内发现→下载→校验→解压→loader→agent 全程隔离</text>
+
+  <!-- Result -->
+  <g>
+    <rect x="340" y="690" width="400" height="70" rx="6" fill="#0f172a"/>
+    <rect x="340" y="690" width="400" height="70" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+    <text x="540" y="717" fill="white" font-size="11" font-weight="600" text-anchor="middle">SkillRuntimeResult.to_dict</text>
+    <text x="540" y="733" fill="#a7f3d0" font-size="8" text-anchor="middle">ok / exit_code / stdout / stderr / duration_ms</text>
+    <text x="540" y="747" fill="#64748b" font-size="8" text-anchor="middle">+ execution_context=f"skill-runtime/{backend}"</text>
+  </g>
+
+  <!-- Out -->
+  <g>
+    <rect x="780" y="690" width="380" height="70" rx="6" fill="#0f172a"/>
+    <rect x="780" y="690" width="380" height="70" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+    <text x="970" y="717" fill="white" font-size="11" font-weight="600" text-anchor="middle">结构化结果返回 LLM</text>
+    <text x="970" y="733" fill="#a7f3d0" font-size="8" text-anchor="middle">runtime 结果 + execution_context</text>
+    <text x="970" y="747" fill="#64748b" font-size="8" text-anchor="middle">timed_out / output_files / error_type</text>
+  </g>
+
+  <!-- Arrows -->
+  <path d="M 160,160 L 160,185" fill="none" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#ar-c)"/>
+  <path d="M 160,245 L 160,270" fill="none" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#ar-a)"/>
+  <path d="M 40,310 L 0,310 L 0,430 L 40,430" fill="none" stroke="#fb7185" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#ar-r)"/>
+  <text x="8" y="375" fill="#fb7185" font-size="8">是</text>
+  <path d="M 280,310 L 340,300" fill="none" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#ar-a)"/>
+  <text x="295" y="295" fill="#fbbf24" font-size="8">否</text>
+  <path d="M 450,270 L 450,235 L 630,275" fill="none" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#ar-v)"/>
+  <text x="500" y="245" fill="#a78bfa" font-size="8">resolve backend</text>
+  <path d="M 680,400 L 680,415" fill="none" stroke="#fb7185" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#ar-r)"/>
+  <text x="688" y="412" fill="#fb7185" font-size="7">disabled</text>
+  <path d="M 680,335 L 680,275 L 630,275" fill="none" stroke="#a78bfa" stroke-width="1.5" stroke-opacity="0"/>
+  <path d="M 850,300 L 920,230" fill="none" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#ar-c)"/>
+  <text x="870" y="255" fill="#22d3ee" font-size="8">e2b</text>
+  <path d="M 630,367 L 920,225" fill="none" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#ar-c)" stroke-opacity="0.5"/>
+  <text x="780" y="280" fill="#22d3ee" font-size="8">local_process</text>
+  <path d="M 1040,260 L 1040,290" fill="none" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#ar-v)"/>
+  <text x="1048" y="280" fill="#64748b" font-size="7">inject env</text>
+  <path d="M 1040,360 L 1040,390" fill="none" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#ar-c)"/>
+  <path d="M 1040,470 L 1040,490 L 420,525" fill="none" stroke="#34d399" stroke-width="1.5" marker-end="url(#ar-g)"/>
+  <text x="700" y="488" fill="#34d399" font-size="8">runtime 内部链路</text>
+  <path d="M 760,525 L 700,690" fill="none" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#ar-c)" stroke-opacity="0.6"/>
+  <path d="M 540,660 L 540,690" fill="none" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#ar-c)"/>
+  <path d="M 740,725 L 780,725" fill="none" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#ar-c)"/>
+  <path d="M 160,465 L 160,725 L 340,725" fill="none" stroke="#fb7185" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#ar-r)" stroke-opacity="0.5"/>
+  <text x="180" y="600" fill="#fb7185" font-size="8">approval 信封</text>
+
+  <!-- Legend -->
+  <g transform="translate(30, 810)">
+    <text x="0" y="0" fill="white" font-size="10" font-weight="700">图例</text>
+    <rect x="0" y="12" width="14" height="14" rx="2" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.2"/>
+    <text x="20" y="23" fill="#94a3b8" font-size="9">入口 / 结果</text>
+    <rect x="120" y="12" width="14" height="14" rx="2" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.2"/>
+    <text x="140" y="23" fill="#94a3b8" font-size="9">Gateway / impl</text>
+    <rect x="280" y="12" width="14" height="14" rx="2" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1.2"/>
+    <text x="300" y="23" fill="#94a3b8" font-size="9">backend / env 注入</text>
+    <rect x="450" y="12" width="14" height="14" rx="2" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.2"/>
+    <text x="470" y="23" fill="#94a3b8" font-size="9">runtime 隔离链路</text>
+    <rect x="600" y="12" width="14" height="14" rx="2" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1.2"/>
+    <text x="620" y="23" fill="#94a3b8" font-size="9">approval / 错误</text>
+    <line x1="760" y1="19" x2="790" y2="19" stroke="#fb7185" stroke-width="1.2" stroke-dasharray="4,3"/>
+    <text x="798" y="23" fill="#94a3b8" font-size="9">虚线 = 信封/错误回退</text>
+    <text x="0" y="50" fill="#64748b" font-size="9">execute_skills risk=high，strict 下先返回 approval_required 信封；runtime 未配置返回 skill_runtime_disabled + hint</text>
+  </g>
+</svg>

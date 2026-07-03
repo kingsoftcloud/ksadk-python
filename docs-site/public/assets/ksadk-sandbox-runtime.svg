@@ -1,0 +1,245 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1460 1080" role="img" aria-labelledby="title desc">
+  <title id="title">KsADK Sandbox Runtime 架构</title>
+  <desc id="desc">通用 Sandbox Runtime 底座:Skill Runtime 与 direct tools 共用;backend 选择 e2b / local_process / pod_process(显式开关);E2B 路径含 session 创建、readiness 重试、run_code/run_command、结果回传;SandboxRegistry 复用 session,idle/hard TTL 回收。</desc>
+  <style>
+    text { font-family: ui-sans-serif, system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif; }
+    @media (prefers-color-scheme: dark) {
+      .bg-light { fill: #0f172a; }
+      rect[fill="#ffffff"] { fill: #1e293b; }
+      rect[fill="#fbfbf9"] { fill: #0f172a; }
+      rect[fill="#f8fafc"] { fill: #0f172a; }
+      rect[fill="#fff7ed"] { fill: #1e1b14; }
+      rect[fill="#ecfdf5"] { fill: #0f1f1a; }
+      rect[fill="#eef2ff"] { fill: #1a1f2e; }
+      rect[fill="#fef2f2"] { fill: #1f1414; }
+      text[fill="#0f172a"] { fill: #f1f5f9; }
+      text[fill="#1e293b"] { fill: #e2e8f0; }
+      text[fill="#334155"] { fill: #cbd5e1; }
+      text[fill="#475569"] { fill: #94a3b8; }
+      text[fill="#64748b"] { fill: #94a3b8; }
+      text[fill="#92400e"] { fill: #fbbf24; }
+      text[fill="#7c2d12"] { fill: #fed7aa; }
+      text[fill="#5b21b6"] { fill: #c4b5fd; }
+      text[fill="#7c3aed"] { fill: #a78bfa; }
+      text[fill="#047857"] { fill: #34d399; }
+      text[fill="#059669"] { fill: #34d399; }
+      text[fill="#b91c1c"] { fill: #fca5a5; }
+      rect[stroke="#cbd5e1"] { stroke: #475569; }
+      rect[stroke="#94a3b8"] { stroke: #64748b; }
+    }
+  </style>
+  <defs>
+    <marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker>
+    <marker id="agn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#059669"/></marker>
+    <marker id="askill" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#7c3aed"/></marker>
+    <marker id="adisp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#d97706"/></marker>
+    <marker id="aalert" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#b91c1c"/></marker>
+  </defs>
+
+  <rect class="bg-light" width="1460" height="1080" fill="#fbfbf9"/>
+
+  <!-- 标题 -->
+  <text x="40" y="38" font-size="18" font-weight="700" fill="#0f172a">KsADK — Sandbox Runtime 架构</text>
+  <text x="40" y="58" font-size="11" fill="#64748b">通用隔离执行底座 · Skill Runtime + direct tools 共用 · backend 选择 · session 复用 · TTL 回收</text>
+
+  <!-- ===== 调用方 ===== -->
+  <rect x="40" y="80" width="1380" height="92" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.2"/>
+  <text x="56" y="100" font-size="11.5" font-weight="700" fill="#334155">调用方（共用同一 Sandbox Runtime）</text>
+  <g>
+    <rect x="180" y="114" width="240" height="48" rx="6" fill="#eef2ff" stroke="#7c3aed" stroke-width="1.2"/>
+    <text x="300" y="136" font-size="11.5" font-weight="600" fill="#1e293b" text-anchor="middle">Skill Runtime</text>
+    <text x="300" y="151" font-size="9" fill="#64748b" text-anchor="middle">execute_skills · workflow 隔离执行</text>
+  </g>
+  <g>
+    <rect x="640" y="114" width="240" height="48" rx="6" fill="#fff7ed" stroke="#d97706" stroke-width="1.2"/>
+    <text x="760" y="136" font-size="11.5" font-weight="600" fill="#1e293b" text-anchor="middle">Sandbox direct tools</text>
+    <text x="760" y="151" font-size="9" fill="#64748b" text-anchor="middle">run_command · run_code · sandbox_status</text>
+  </g>
+  <g>
+    <rect x="1040" y="114" width="240" height="48" rx="6" fill="#fef2f2" stroke="#b91c1c" stroke-width="1.2"/>
+    <text x="1160" y="136" font-size="11.5" font-weight="600" fill="#1e293b" text-anchor="middle">ToolGateway</text>
+    <text x="1160" y="151" font-size="9" fill="#64748b" text-anchor="middle">risk=high 走 approval 信封</text>
+  </g>
+  <path d="M 300,162 L 300,200 L 460,200 L 460,230" fill="none" stroke="#7c3aed" stroke-width="1.2" marker-end="url(#askill)" stroke-opacity="0.55"/>
+  <path d="M 760,162 L 760,200 L 620,200 L 620,230" fill="none" stroke="#d97706" stroke-width="1.2" marker-end="url(#adisp)" stroke-opacity="0.55"/>
+  <path d="M 1160,162 L 1160,200 L 760,200" fill="none" stroke="#b91c1c" stroke-width="1.2" stroke-dasharray="4,3" stroke-opacity="0.4"/>
+
+  <!-- ===== Sandbox Runtime 底座 ===== -->
+  <rect x="40" y="215" width="1380" height="700" rx="12" fill="#ffffff" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="56" y="235" font-size="12" font-weight="700" fill="#7c3aed">Sandbox Runtime · 通用隔离执行底座</text>
+  <text x="300" y="235" font-size="10" fill="#64748b">ksadk/sandbox/ · base · registry · factory · backends</text>
+
+  <!-- 入口: _sandbox_entry / session key -->
+  <g>
+    <rect x="80" y="255" width="380" height="118" rx="6" fill="#eef2ff" stroke="#7c3aed" stroke-width="1.2"/>
+    <text x="270" y="278" font-size="12" font-weight="600" fill="#1e293b" text-anchor="middle">_sandbox_entry(prefix)</text>
+    <text x="270" y="294" font-size="9" fill="#475569" text-anchor="middle">ksadk/toolsets/sandbox.py</text>
+    <line x1="100" y1="304" x2="440" y2="304" stroke="#7c3aed" stroke-width="0.5" stroke-opacity="0.3"/>
+    <text x="96" y="321" font-size="9.5" fill="#7c3aed">_sandbox_session_key(prefix)</text>
+    <text x="96" y="337" font-size="8.5" fill="#64748b">· KSADK_SANDBOX_SESSION_ID 显式</text>
+    <text x="96" y="350" font-size="8.5" fill="#64748b">· ContextVar: ksadk-session:&lt;session_id&gt;</text>
+    <text x="96" y="363" font-size="8.5" fill="#64748b">· 兜底: &lt;prefix&gt;-shared</text>
+  </g>
+  <path d="M 460,314 L 540,314" fill="none" stroke="#7c3aed" stroke-width="1.2" marker-end="url(#askill)"/>
+  <text x="500" y="308" font-size="8.5" fill="#7c3aed" text-anchor="middle">key</text>
+
+  <!-- create_sandbox_backend factory -->
+  <g>
+    <rect x="540" y="255" width="380" height="118" rx="6" fill="#eef2ff" stroke="#7c3aed" stroke-width="1.2"/>
+    <text x="730" y="278" font-size="12" font-weight="600" fill="#1e293b" text-anchor="middle">create_sandbox_backend()</text>
+    <text x="730" y="294" font-size="9" fill="#475569" text-anchor="middle">ksadk/sandbox/factory.py · sandbox_spec_from_env()</text>
+    <line x1="560" y1="304" x2="900" y2="304" stroke="#7c3aed" stroke-width="0.5" stroke-opacity="0.3"/>
+    <text x="556" y="321" font-size="9.5" fill="#7c3aed">backend = KSADK_SANDBOX_BACKEND</text>
+    <text x="556" y="337" font-size="8.5" fill="#64748b">· template_id: KSADK_SANDBOX_TEMPLATE_ID</text>
+    <text x="556" y="350" font-size="8.5" fill="#64748b">· timeout / type / allow_internet_access</text>
+    <text x="556" y="363" font-size="8.5" fill="#64748b">· 默认 e2b(有 template_id),否则 local_process</text>
+  </g>
+
+  <!-- backend 选择 三分支 -->
+  <path d="M 730,373 L 730,408" fill="none" stroke="#7c3aed" stroke-width="1.2" marker-end="url(#askill)"/>
+  <text x="744" y="394" font-size="9" fill="#7c3aed">resolve</text>
+
+  <g>
+    <rect x="80" y="412" width="400" height="150" rx="8" fill="#ecfdf5" stroke="#059669" stroke-width="1.2" stroke-dasharray="4,4"/>
+    <text x="100" y="432" font-size="10.5" font-weight="700" fill="#047857">backend = local_process</text>
+    <text x="100" y="446" font-size="8.5" fill="#64748b">backend_name=local_process · isolated=False</text>
+    <g>
+      <rect x="96" y="456" width="368" height="46" rx="5" fill="#ffffff" stroke="#059669" stroke-width="1.2"/>
+      <text x="280" y="476" font-size="10" font-weight="600" fill="#1e293b" text-anchor="middle">LocalProcessSandboxBackend</text>
+      <text x="280" y="492" font-size="8.5" fill="#475569" text-anchor="middle">workspace_root=&lt;session_dir&gt;/workspace</text>
+    </g>
+    <text x="96" y="520" font-size="8.5" fill="#475569">· subprocess.Popen(shell=True, start_new_session)</text>
+    <text x="96" y="534" font-size="8.5" fill="#475569">· cwd 限定 workspace 内 · env allowlist · SIGKILL timeout</text>
+    <text x="96" y="548" font-size="8.5" fill="#64748b">kill() no-op · 进程退出随宿主</text>
+  </g>
+  <path d="M 600,375 L 600,412" fill="none" stroke="#059669" stroke-width="1.2" marker-end="url(#agn)" stroke-opacity="0.55"/>
+  <text x="560" y="396" font-size="8.5" fill="#059669">local / pod</text>
+
+  <g>
+    <rect x="540" y="412" width="400" height="150" rx="8" fill="#fef2f2" stroke="#b91c1c" stroke-width="1.2" stroke-dasharray="4,4"/>
+    <text x="560" y="432" font-size="10.5" font-weight="700" fill="#b91c1c">backend = pod_process</text>
+    <g>
+      <rect x="556" y="456" width="368" height="46" rx="5" fill="#ffffff" stroke="#b91c1c" stroke-width="1.2"/>
+      <text x="740" y="476" font-size="10" font-weight="600" fill="#1e293b" text-anchor="middle">LocalProcessSandboxBackend</text>
+      <text x="740" y="492" font-size="8.5" fill="#475569" text-anchor="middle">backend_name=pod_process · isolated=False</text>
+    </g>
+    <text x="556" y="520" font-size="8.5" fill="#b91c1c">· 需 KSADK_ALLOW_POD_PROCESS_TOOLS=true 显式开启</text>
+    <text x="556" y="534" font-size="8.5" fill="#475569">· 在 agent pod 内执行,共享 pod fs / network / SA</text>
+    <text x="556" y="548" font-size="8.5" fill="#64748b">· 未开启 raise SandboxError</text>
+  </g>
+  <path d="M 860,375 L 860,412" fill="none" stroke="#b91c1c" stroke-width="1.2" marker-end="url(#aalert)" stroke-opacity="0.5"/>
+  <text x="874" y="396" font-size="8.5" fill="#b91c1c">显式开关</text>
+
+  <g>
+    <rect x="1000" y="412" width="400" height="150" rx="8" fill="#ecfdf5" stroke="#059669" stroke-width="1.2" stroke-dasharray="4,4"/>
+    <text x="1020" y="432" font-size="10.5" font-weight="700" fill="#047857">backend = e2b</text>
+    <text x="1020" y="446" font-size="8.5" fill="#64748b">isolated=True · input_files 同步 workspace</text>
+    <g>
+      <rect x="1016" y="456" width="368" height="46" rx="5" fill="#ffffff" stroke="#059669" stroke-width="1.2"/>
+      <text x="1200" y="476" font-size="10" font-weight="600" fill="#1e293b" text-anchor="middle">E2BSandboxBackend</text>
+      <text x="1200" y="492" font-size="8.5" fill="#475569" text-anchor="middle">spec.template_id 必填 · e2b.Sandbox.create</text>
+    </g>
+    <text x="1016" y="520" font-size="8.5" fill="#475569">· 隔离 VM · metadata: runtime=ksadk, session_id</text>
+    <text x="1016" y="534" font-size="8.5" fill="#475569">· envs / timeout / allow_internet_access</text>
+    <text x="1016" y="548" font-size="8.5" fill="#64748b">· 按 E2B 计费,atexit 兜底 kill</text>
+  </g>
+  <path d="M 860,375 L 1200,412" fill="none" stroke="#059669" stroke-width="1.2" marker-end="url(#agn)" stroke-opacity="0.55"/>
+
+  <!-- E2B 路径细化: create_session -->
+  <rect x="1000" y="585" width="400" height="245" rx="8" fill="none" stroke="#059669" stroke-width="1" stroke-dasharray="3,3"/>
+  <text x="1014" y="604" font-size="9.5" font-weight="700" fill="#047857">E2B create_session 路径</text>
+
+  <g>
+    <rect x="1016" y="612" width="368" height="42" rx="5" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
+    <text x="1200" y="630" font-size="10" font-weight="600" fill="#1e293b" text-anchor="middle">Sandbox.create(template, timeout, metadata, envs)</text>
+    <text x="1200" y="644" font-size="8.5" fill="#475569" text-anchor="middle">e2b SDK · 返回 sandbox 对象</text>
+  </g>
+  <path d="M 1200,654 L 1200,668" fill="none" stroke="#059669" stroke-width="1.2" marker-end="url(#agn)"/>
+
+  <g>
+    <rect x="1016" y="672" width="368" height="60" rx="5" fill="#fef2f2" stroke="#b91c1c" stroke-width="1.2"/>
+    <text x="1200" y="690" font-size="10" font-weight="600" fill="#1e293b" text-anchor="middle">_wait_until_ready · readiness 探测</text>
+    <text x="1200" y="706" font-size="8.5" fill="#475569" text-anchor="middle">run_command("true") + write_file(.ready)</text>
+    <text x="1200" y="722" font-size="8.5" fill="#b91c1c" text-anchor="middle">_with_startup_retry · 重试 NotFoundException</text>
+  </g>
+  <path d="M 1200,732 L 1200,746" fill="none" stroke="#b91c1c" stroke-width="1.2" marker-end="url(#aalert)" stroke-dasharray="3,3"/>
+  <text x="1380" y="744" font-size="8" fill="#b91c1c" text-anchor="end">指数退避 · max 6 次</text>
+
+  <g>
+    <rect x="1016" y="750" width="368" height="42" rx="5" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
+    <text x="1200" y="768" font-size="10" font-weight="600" fill="#1e293b" text-anchor="middle">write input_files → /workspace/*</text>
+    <text x="1200" y="782" font-size="8.5" fill="#475569" text-anchor="middle">workspace rglob · skip .git/.venv · 配额限流</text>
+  </g>
+
+  <!-- SandboxRegistry 复用 (左) -->
+  <g>
+    <rect x="80" y="585" width="540" height="245" rx="8" fill="#eef2ff" stroke="#7c3aed" stroke-width="1.2"/>
+    <text x="100" y="605" font-size="11" font-weight="700" fill="#7c3aed">SandboxRegistry · session 复用</text>
+    <text x="290" y="605" font-size="9" fill="#64748b">GLOBAL_SANDBOX_REGISTRY · RLock · atexit.clear()</text>
+    <line x1="100" y1="614" x2="600" y2="614" stroke="#7c3aed" stroke-width="0.5" stroke-opacity="0.3"/>
+
+    <g>
+      <rect x="100" y="624" width="500" height="56" rx="5" fill="#ffffff" stroke="#7c3aed" stroke-width="1.2"/>
+      <text x="350" y="644" font-size="10" font-weight="600" fill="#1e293b" text-anchor="middle">get_or_create(key, backend, ttl, idle_ttl, max_sessions)</text>
+      <text x="350" y="660" font-size="8.5" fill="#475569" text-anchor="middle">sweep() → 命中且未过期 → last_used_at 更新 → return (entry, created=False)</text>
+      <text x="350" y="674" font-size="8.5" fill="#475569" text-anchor="middle">未命中 → enforce_quota → backend.create_session → expires_at=now+ttl</text>
+    </g>
+
+    <g>
+      <rect x="100" y="690" width="240" height="56" rx="5" fill="#ffffff" stroke="#7c3aed" stroke-width="1.2"/>
+      <text x="220" y="710" font-size="10" font-weight="600" fill="#1e293b" text-anchor="middle">hard TTL</text>
+      <text x="220" y="724" font-size="8.5" fill="#475569" text-anchor="middle">expires_at ≤ now</text>
+      <text x="220" y="738" font-size="8.5" fill="#64748b" text-anchor="middle">KSADK_SANDBOX_TTL_SECONDS=600</text>
+    </g>
+    <g>
+      <rect x="360" y="690" width="240" height="56" rx="5" fill="#ffffff" stroke="#7c3aed" stroke-width="1.2"/>
+      <text x="480" y="710" font-size="10" font-weight="600" fill="#1e293b" text-anchor="middle">idle TTL</text>
+      <text x="480" y="724" font-size="8.5" fill="#475569" text-anchor="middle">now - last_used_at &gt; idle</text>
+      <text x="480" y="738" font-size="8.5" fill="#64748b" text-anchor="middle">KSADK_SANDBOX_IDLE_TTL=300</text>
+    </g>
+    <text x="100" y="766" font-size="8.5" fill="#475569">· 后台 sweep 线程 daemon · KSADK_SANDBOX_SWEEP_INTERVAL=60s</text>
+    <text x="100" y="780" font-size="8.5" fill="#475569">· max_sessions 配额淘汰最久未用 (LRU)</text>
+    <text x="100" y="794" font-size="8.5" fill="#64748b">· kill() 出锁执行,避免持锁阻塞 E2B 网络 IO</text>
+    <text x="100" y="808" font-size="8.5" fill="#64748b">· atexit kill -9 兜底交给 E2B 服务端 timeout</text>
+  </g>
+
+  <!-- registry <-> e2b create_session 连线 -->
+  <path d="M 600,705 L 1016,633" fill="none" stroke="#7c3aed" stroke-width="1.2" marker-end="url(#askill)" stroke-opacity="0.5" stroke-dasharray="4,3"/>
+  <text x="800" y="650" font-size="8.5" fill="#7c3aed">未命中时调 backend.create_session</text>
+
+  <!-- run_code / run_command -->
+  <rect x="80" y="850" width="1320" height="50" rx="8" fill="#fff7ed" stroke="#d97706" stroke-width="1.2"/>
+  <text x="100" y="873" font-size="10.5" font-weight="700" fill="#92400e">执行层 · SandboxSession Protocol</text>
+  <text x="100" y="889" font-size="8.5" fill="#475569">write_file · read_file · run_command(timeout, env, cwd) → SandboxCommandResult(stdout, stderr, exit_code) · get_host(port)</text>
+  <path d="M 740,793 L 740,850" fill="none" stroke="#7c3aed" stroke-width="1.2" marker-end="url(#askill)" stroke-opacity="0.4"/>
+  <path d="M 1200,804 L 1200,850" fill="none" stroke="#059669" stroke-width="1.2" marker-end="url(#agn)" stroke-opacity="0.4"/>
+
+  <!-- 结果回传 -->
+  <path d="M 740,900 L 740,935" fill="none" stroke="#475569" stroke-width="1.2" marker-end="url(#ag)"/>
+  <g>
+    <rect x="380" y="940" width="720" height="46" rx="6" fill="#ffffff" stroke="#475569" stroke-width="1.2"/>
+    <text x="740" y="960" font-size="10.5" font-weight="600" fill="#1e293b" text-anchor="middle">ToolResultBudget · 截断 / 持久化 stdout stderr</text>
+    <text x="740" y="976" font-size="8.5" fill="#64748b" text-anchor="middle">preview + persisted.path · max_chars / persist_threshold · 返回调用方 / LLM</text>
+  </g>
+  <path d="M 380,963 L 180,963 L 180,162" fill="none" stroke="#7c3aed" stroke-width="1.2" marker-end="url(#askill)" stroke-opacity="0.35" stroke-dasharray="3,3"/>
+  <path d="M 1100,963 L 760,162" fill="none" stroke="#d97706" stroke-width="1.2" marker-end="url(#adisp)" stroke-opacity="0.35" stroke-dasharray="3,3"/>
+
+  <!-- 图例 -->
+  <g transform="translate(40, 1010)">
+    <text x="0" y="0" font-size="11" font-weight="700" fill="#1e293b">图例</text>
+    <rect x="0" y="12" width="14" height="14" rx="2" fill="#eef2ff" stroke="#7c3aed" stroke-width="1.2"/>
+    <text x="20" y="23" font-size="9.5" fill="#475569">Sandbox Runtime / Registry / 复用</text>
+    <rect x="220" y="12" width="14" height="14" rx="2" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
+    <text x="240" y="23" font-size="9.5" fill="#475569">e2b / local_process backend</text>
+    <rect x="430" y="12" width="14" height="14" rx="2" fill="#fef2f2" stroke="#b91c1c" stroke-width="1.2"/>
+    <text x="450" y="23" font-size="9.5" fill="#475569">pod_process(显式开关) / 重试</text>
+    <rect x="660" y="12" width="14" height="14" rx="2" fill="#fff7ed" stroke="#d97706" stroke-width="1.2"/>
+    <text x="680" y="23" font-size="9.5" fill="#475569">执行层 / direct tools</text>
+    <line x1="830" y1="19" x2="862" y2="19" stroke="#7c3aed" stroke-width="1.2" marker-end="url(#askill)"/>
+    <text x="870" y="23" font-size="9.5" fill="#475569">session/复用</text>
+    <line x1="970" y1="19" x2="1002" y2="19" stroke="#b91c1c" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#aalert)"/>
+    <text x="1010" y="23" font-size="9.5" fill="#475569">重试/兜底</text>
+    <text x="0" y="46" font-size="9" fill="#64748b">非 Skill 专用底座:Skill Runtime 与 direct tools 共用同一 Registry / backend;isolated 仅 e2b。</text>
+    <text x="0" y="60" font-size="9" fill="#64748b">复用键由 ContextVar(session_id) 决定,同会话复用同一 sandbox,跨会话隔离。</text>
+  </g>
+</svg>

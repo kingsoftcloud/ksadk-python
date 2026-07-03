@@ -1,0 +1,313 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1480 1040" role="img" aria-labelledby="title desc">
+  <title id="title">KsADK Toolsets 层次结构</title>
+  <desc id="desc">get_agentengine_tools 顶层入口,经 Tool Gateway 审批后分发到 5 个 toolset 分组(Skill/Workspace/Sandbox/Web/Platform),tool_dispatcher 可选渐进式披露。</desc>
+  <style>
+    text { font-family: ui-sans-serif, system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif; }
+    @media (prefers-color-scheme: dark) {
+      .bg-light { fill: #0f172a; }
+      rect[fill="#ffffff"] { fill: #1e293b; }
+      rect[fill="#fbfbf9"] { fill: #0f172a; }
+      rect[fill="#f8fafc"] { fill: #0f172a; }
+      rect[fill="#fff7ed"] { fill: #1e1b14; }
+      rect[fill="#ecfdf5"] { fill: #0f1f1a; }
+      rect[fill="#eef2ff"] { fill: #1a1f2e; }
+      rect[fill="#fef2f2"] { fill: #1f1414; }
+      text[fill="#0f172a"] { fill: #f1f5f9; }
+      text[fill="#1e293b"] { fill: #e2e8f0; }
+      text[fill="#334155"] { fill: #cbd5e1; }
+      text[fill="#475569"] { fill: #94a3b8; }
+      text[fill="#64748b"] { fill: #94a3b8; }
+      text[fill="#92400e"] { fill: #fbbf24; }
+      text[fill="#7c2d12"] { fill: #fed7aa; }
+      text[fill="#5b21b6"] { fill: #c4b5fd; }
+      text[fill="#7c3aed"] { fill: #a78bfa; }
+      text[fill="#047857"] { fill: #34d399; }
+      text[fill="#059669"] { fill: #34d399; }
+      text[fill="#b91c1c"] { fill: #fca5a5; }
+      rect[stroke="#cbd5e1"] { stroke: #475569; }
+      rect[stroke="#94a3b8"] { stroke: #64748b; }
+    }
+  </style>
+  <defs>
+    <marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker>
+    <marker id="askill" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5,L0,10 z" fill="#7c3aed"/></marker>
+    <marker id="adisp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5,L0,10 z" fill="#d97706"/></marker>
+    <marker id="agn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5,L0,10 z" fill="#059669"/></marker>
+    <marker id="aalert" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5,L0,10 z" fill="#b91c1c"/></marker>
+    <marker id="aframe" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5,L0,10 z" fill="#6366f1"/></marker>
+  </defs>
+
+  <rect class="bg-light" width="1480" height="1040" fill="#fbfbf9"/>
+
+  <!-- 标题 -->
+  <text x="40" y="36" font-size="18" font-weight="700" fill="#1e293b">KsADK Toolsets · 工具层次结构</text>
+  <text x="40" y="56" font-size="11" fill="#64748b">get_agentengine_tools 顶层入口 · Tool Gateway 执行前审批 · 5 个 toolset 分组 · dispatcher 可选渐进式披露</text>
+
+  <!-- ===== Layer 1: 顶层入口 ===== -->
+  <rect x="40" y="78" width="1400" height="92" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.2"/>
+  <text x="56" y="98" font-size="11.5" font-weight="700" fill="#334155">顶层入口 · ksadk/toolsets/__init__.py</text>
+
+  <!-- Agent 框架调用方 -->
+  <g>
+    <rect x="70" y="112" width="180" height="48" rx="6" fill="#eef2ff" stroke="#6366f1" stroke-width="1.2"/>
+    <text x="160" y="134" font-size="11.5" font-weight="600" fill="#1e293b" text-anchor="middle">Agent 框架调用方</text>
+    <text x="160" y="149" font-size="9" fill="#64748b" text-anchor="middle">ADK / LangGraph / LangChain</text>
+  </g>
+
+  <!-- get_agentengine_tools -->
+  <g>
+    <rect x="300" y="108" width="320" height="56" rx="6" fill="#ecfdf5" stroke="#059669" stroke-width="1.5"/>
+    <text x="460" y="130" font-size="12" font-weight="700" fill="#1e293b" text-anchor="middle">get_agentengine_tools()</text>
+    <text x="460" y="146" font-size="9" fill="#475569" text-anchor="middle">include · profile · mode="direct"</text>
+    <text x="460" y="158" font-size="8.5" fill="#64748b" text-anchor="middle">_select_agentengine_tools → _TOOLSET_FACTORIES</text>
+  </g>
+
+  <!-- tool_dispatcher (deferred) -->
+  <g>
+    <rect x="700" y="108" width="280" height="56" rx="6" fill="#fff7ed" stroke="#d97706" stroke-width="1.5" stroke-dasharray="4 3"/>
+    <text x="840" y="130" font-size="12" font-weight="700" fill="#92400e" text-anchor="middle">tool_dispatcher()</text>
+    <text x="840" y="146" font-size="9" fill="#475569" text-anchor="middle">action ∈ list / describe / call</text>
+    <text x="840" y="158" font-size="8.5" fill="#64748b" text-anchor="middle">可选 · mode="dispatcher" 渐进式披露</text>
+  </g>
+
+  <!-- tool_search -->
+  <g>
+    <rect x="1060" y="112" width="200" height="48" rx="6" fill="#fff7ed" stroke="#d97706" stroke-width="1.2" stroke-dasharray="4 3"/>
+    <text x="1160" y="134" font-size="11.5" font-weight="600" fill="#92400e" text-anchor="middle">tool_search()</text>
+    <text x="1160" y="149" font-size="9" fill="#64748b" text-anchor="middle">按描述检索 · 不执行</text>
+  </g>
+
+  <!-- 箭头: 框架 -> get_agentengine_tools -->
+  <path d="M 250,136 L 300,136" fill="none" stroke="#6366f1" stroke-width="1.2" marker-end="url(#aframe)" stroke-opacity="0.7"/>
+  <!-- get_agentengine_tools -> dispatcher (mode=dispatcher) -->
+  <path d="M 620,136 L 700,136" fill="none" stroke="#475569" stroke-width="1.2" marker-end="url(#ag)" stroke-opacity="0.6"/>
+  <text x="660" y="128" font-size="8.5" fill="#64748b" text-anchor="middle">mode=dispatcher</text>
+  <!-- dispatcher -> tool_search -->
+  <path d="M 980,136 L 1060,136" fill="none" stroke="#d97706" stroke-width="1.2" marker-end="url(#adisp)" stroke-opacity="0.6" stroke-dasharray="3 3"/>
+
+  <!-- ===== Layer 2: Tool Gateway (执行前) ===== -->
+  <rect x="40" y="186" width="1400" height="86" rx="10" fill="#fef2f2" stroke="#b91c1c" stroke-width="1.2"/>
+  <text x="56" y="206" font-size="11.5" font-weight="700" fill="#b91c1c">Tool Gateway · 执行前审批闸口 (_gateway().invoke)</text>
+
+  <g>
+    <rect x="70" y="218" width="240" height="44" rx="6" fill="#ffffff" stroke="#b91c1c" stroke-width="1.2"/>
+    <text x="190" y="238" font-size="11" font-weight="600" fill="#1e293b" text-anchor="middle">读取 ToolPolicy</text>
+    <text x="190" y="253" font-size="9" fill="#64748b" text-anchor="middle">risk_level · side_effects</text>
+  </g>
+  <g>
+    <rect x="340" y="218" width="240" height="44" rx="6" fill="#ffffff" stroke="#b91c1c" stroke-width="1.2"/>
+    <text x="460" y="238" font-size="11" font-weight="600" fill="#1e293b" text-anchor="middle">strict 且 risk≥medium?</text>
+    <text x="460" y="253" font-size="9" fill="#64748b" text-anchor="middle">三态判定</text>
+  </g>
+  <g>
+    <rect x="610" y="218" width="240" height="44" rx="6" fill="#ffffff" stroke="#b91c1c" stroke-width="1.2"/>
+    <text x="730" y="238" font-size="11" font-weight="600" fill="#1e293b" text-anchor="middle">approval_required 信封</text>
+    <text x="730" y="253" font-size="9" fill="#64748b" text-anchor="middle">返回 approval_request.id</text>
+  </g>
+  <g>
+    <rect x="880" y="218" width="240" height="44" rx="6" fill="#ffffff" stroke="#b91c1c" stroke-width="1.2"/>
+    <text x="1000" y="238" font-size="11" font-weight="600" fill="#1e293b" text-anchor="middle">approval_rejected</text>
+    <text x="1000" y="253" font-size="9" fill="#64748b" text-anchor="middle">用户拒绝 / 命令策略拦截</text>
+  </g>
+  <g>
+    <rect x="1150" y="218" width="240" height="44" rx="6" fill="#ffffff" stroke="#059669" stroke-width="1.2"/>
+    <text x="1270" y="238" font-size="11" font-weight="600" fill="#047857" text-anchor="middle">execute → _impl</text>
+    <text x="1270" y="253" font-size="9" fill="#64748b" text-anchor="middle">调用真实实现函数</text>
+  </g>
+
+  <path d="M 310,240 L 340,240" fill="none" stroke="#b91c1c" stroke-width="1.2" marker-end="url(#aalert)"/>
+  <path d="M 580,240 L 610,240" fill="none" stroke="#b91c1c" stroke-width="1.2" marker-end="url(#aalert)"/>
+  <path d="M 850,240 L 880,240" fill="none" stroke="#b91c1c" stroke-width="1.2" marker-end="url(#aalert)"/>
+  <path d="M 1120,240 L 1150,240" fill="none" stroke="#059669" stroke-width="1.2" marker-end="url(#agn)"/>
+
+  <!-- get_agentengine_tools -> Gateway (执行前) -->
+  <path d="M 460,164 L 460,186" fill="none" stroke="#475569" stroke-width="1.2" marker-end="url(#ag)" stroke-opacity="0.6"/>
+  <text x="468" y="180" font-size="8.5" fill="#64748b">每次调用先过闸口</text>
+
+  <!-- ===== Layer 3: 5 个 toolset 分组 ===== -->
+  <rect x="40" y="288" width="1400" height="704" rx="12" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="56" y="308" font-size="12" font-weight="700" fill="#334155">5 个 Toolset 分组 · 每组工具签名取自 ksadk/toolsets/</text>
+  <text x="380" y="308" font-size="10" fill="#64748b">每个工具均经 Tool Gateway.invoke 包裹,审批通过后进入 _impl</text>
+
+  <!-- Gateway -> 5 toolsets 汇流线 -->
+  <path d="M 740,272 L 740,322" fill="none" stroke="#475569" stroke-width="1.2" marker-end="url(#ag)" stroke-opacity="0.5"/>
+
+  <!-- ====== Toolset 1: Skill (紫) ====== -->
+  <rect x="60" y="326" width="430" height="320" rx="10" fill="none" stroke="#7c3aed" stroke-width="1.2" stroke-dasharray="6 4"/>
+  <text x="76" y="348" font-size="12" font-weight="700" fill="#7c3aed">Skill Toolset · skills.py</text>
+  <text x="76" y="362" font-size="9" fill="#64748b">get_skill_tools() · boundary: Skill Space</text>
+
+  <g>
+    <rect x="76" y="372" width="398" height="56" rx="6" fill="#eef2ff" stroke="#7c3aed" stroke-width="1.2"/>
+    <text x="86" y="390" font-size="10.5" font-weight="600" fill="#1e293b">list_skills() → dict</text>
+    <text x="86" y="404" font-size="9" fill="#64748b">列出 Skill Spaces 可发现的 skill manifests</text>
+    <text x="86" y="418" font-size="9" fill="#64748b">returns: skills / skill_space_ids</text>
+  </g>
+  <g>
+    <rect x="76" y="436" width="398" height="56" rx="6" fill="#eef2ff" stroke="#7c3aed" stroke-width="1.2"/>
+    <text x="86" y="454" font-size="10.5" font-weight="600" fill="#1e293b">search_skills(query, max_results=10) → dict</text>
+    <text x="86" y="468" font-size="9" fill="#64748b">按 name/aliases/tags/description/examples 检索</text>
+    <text x="86" y="482" font-size="9" fill="#64748b">returns: results[]</text>
+  </g>
+  <g>
+    <rect x="76" y="500" width="398" height="56" rx="6" fill="#eef2ff" stroke="#7c3aed" stroke-width="1.2"/>
+    <text x="86" y="518" font-size="10.5" font-weight="600" fill="#1e293b">load_skill(skill_name) → dict</text>
+    <text x="86" y="532" font-size="9" fill="#64748b">下载并加载 SKILL.md 指令到 outer agent</text>
+    <text x="86" y="546" font-size="9" fill="#64748b">returns: instructions / script_files / version</text>
+  </g>
+  <g>
+    <rect x="76" y="564" width="398" height="70" rx="6" fill="#eef2ff" stroke="#7c3aed" stroke-width="1.5"/>
+    <text x="86" y="582" font-size="10.5" font-weight="600" fill="#1e293b">execute_skills(workflow_prompt, skill_names=None, approval=None)</text>
+    <text x="86" y="596" font-size="9" fill="#64748b">经 Skill Runtime 执行 workflow(risk=high,需审批)</text>
+    <text x="86" y="610" font-size="9" fill="#64748b">backend: local_process / e2b → isolated_skill_runtime</text>
+    <text x="86" y="624" font-size="9" fill="#92400e">boundary: skill-runtime/&lt;backend&gt;</text>
+  </g>
+
+  <!-- ====== Toolset 2: Workspace (绿) ====== -->
+  <rect x="520" y="326" width="430" height="320" rx="10" fill="none" stroke="#059669" stroke-width="1.2" stroke-dasharray="6 4"/>
+  <text x="536" y="348" font-size="12" font-weight="700" fill="#047857">Workspace Toolset · workspace.py</text>
+  <text x="536" y="362" font-size="9" fill="#64748b">get_workspace_tools() · boundary: workspace_root</text>
+
+  <g>
+    <rect x="536" y="372" width="398" height="44" rx="6" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
+    <text x="546" y="390" font-size="10" font-weight="600" fill="#1e293b">workspace_status() · list_workspace_files(path, glob, recursive, ...)</text>
+    <text x="546" y="406" font-size="9" fill="#64748b">read 系:列出工作区文件</text>
+  </g>
+  <g>
+    <rect x="536" y="424" width="398" height="44" rx="6" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
+    <text x="546" y="442" font-size="10" font-weight="600" fill="#1e293b">read_workspace_file(path, start_line, end_line, max_chars, ...)</text>
+    <text x="546" y="458" font-size="9" fill="#64748b">read 系:读取 UTF-8 文本(可分行/限长)</text>
+  </g>
+  <g>
+    <rect x="536" y="476" width="398" height="44" rx="6" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
+    <text x="546" y="494" font-size="10" font-weight="600" fill="#1e293b">write_workspace_file(path, content, overwrite, approval)</text>
+    <text x="546" y="510" font-size="9" fill="#64748b">write 系:整文件写入(支持 approval)</text>
+  </g>
+  <g>
+    <rect x="536" y="528" width="398" height="44" rx="6" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
+    <text x="546" y="546" font-size="10" font-weight="600" fill="#1e293b">write_workspace_files(files[], overwrite, approval) · multi_edit(...)</text>
+    <text x="546" y="562" font-size="9" fill="#64748b">write 系:批量写 / 多片段原子编辑</text>
+  </g>
+  <g>
+    <rect x="536" y="580" width="398" height="44" rx="6" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
+    <text x="546" y="598" font-size="10" font-weight="600" fill="#1e293b">edit_workspace_file(path, old_text, new_text, replace_all, approval)</text>
+    <text x="546" y="614" font-size="9" fill="#64748b">write 系:精确片段替换</text>
+  </g>
+  <g>
+    <rect x="536" y="632" width="398" height="44" rx="6" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
+    <text x="546" y="650" font-size="10" font-weight="600" fill="#1e293b">lint_workspace_file(path, language="auto")</text>
+    <text x="546" y="666" font-size="9" fill="#64748b">check 系:轻量内置 lint</text>
+  </g>
+  <g>
+    <rect x="536" y="684" width="398" height="44" rx="6" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
+    <text x="546" y="702" font-size="10" font-weight="600" fill="#1e293b">search_workspace_files(query, path, is_regex, glob, ...)</text>
+    <text x="546" y="718" font-size="9" fill="#64748b">check 系:ripgrep 内容检索 + delete_workspace_file</text>
+  </g>
+
+  <!-- ====== Toolset 3: Sandbox (橙) ====== -->
+  <rect x="980" y="326" width="430" height="320" rx="10" fill="none" stroke="#d97706" stroke-width="1.2" stroke-dasharray="6 4"/>
+  <text x="996" y="348" font-size="12" font-weight="700" fill="#92400e">Sandbox Toolset · sandbox.py</text>
+  <text x="996" y="362" font-size="9" fill="#64748b">get_sandbox_tools() · boundary: isolated_sandbox</text>
+
+  <g>
+    <rect x="996" y="372" width="398" height="56" rx="6" fill="#fff7ed" stroke="#d97706" stroke-width="1.2"/>
+    <text x="1006" y="390" font-size="10.5" font-weight="600" fill="#1e293b">sandbox_status() → dict</text>
+    <text x="1006" y="404" font-size="9" fill="#64748b">报告 sandbox backend 与 template 绑定</text>
+    <text x="1006" y="418" font-size="9" fill="#64748b">returns: backend · enabled · template_bound</text>
+  </g>
+  <g>
+    <rect x="996" y="436" width="398" height="70" rx="6" fill="#fff7ed" stroke="#d97706" stroke-width="1.5"/>
+    <text x="1006" y="454" font-size="10.5" font-weight="600" fill="#1e293b">run_command(command, cwd, timeout, env, background, approval)</text>
+    <text x="1006" y="468" font-size="9" fill="#64748b">在隔离 sandbox 内执行 shell 命令</text>
+    <text x="1006" y="482" font-size="9" fill="#92400e">risk: high · 支持后台进程 / approval 信封</text>
+    <text x="1006" y="496" font-size="9" fill="#64748b">boundary: isolated_sandbox</text>
+  </g>
+  <g>
+    <rect x="996" y="514" width="398" height="70" rx="6" fill="#fff7ed" stroke="#d97706" stroke-width="1.5"/>
+    <text x="1006" y="532" font-size="10.5" font-weight="600" fill="#1e293b">run_code(code, language="python", timeout, env, approval)</text>
+    <text x="1006" y="546" font-size="9" fill="#64748b">代码片段执行(非 shell 替代)</text>
+    <text x="1006" y="560" font-size="9" fill="#92400e">risk: high · 多语言归一化</text>
+    <text x="1006" y="574" font-size="9" fill="#64748b">boundary: isolated_sandbox</text>
+  </g>
+
+  <!-- backend 说明 -->
+  <g>
+    <rect x="996" y="592" width="398" height="44" rx="6" fill="#ffffff" stroke="#d97706" stroke-width="0.8" stroke-dasharray="3 3"/>
+    <text x="1006" y="610" font-size="9.5" font-weight="600" fill="#92400e">sandbox backend: local / e2b / ksyun-faas</text>
+    <text x="1006" y="626" font-size="9" fill="#64748b">_sandbox_entry · TTL · _workspace_input_files 注入</text>
+  </g>
+
+  <!-- ====== Toolset 4: Web (橙) ====== -->
+  <rect x="60" y="666" width="680" height="314" rx="10" fill="none" stroke="#d97706" stroke-width="1.2" stroke-dasharray="6 4"/>
+  <text x="76" y="688" font-size="12" font-weight="700" fill="#92400e">Web Toolset · web.py</text>
+  <text x="76" y="702" font-size="9" fill="#64748b">get_web_tools() · boundary: public_http / search_provider</text>
+
+  <g>
+    <rect x="76" y="714" width="648" height="70" rx="6" fill="#fff7ed" stroke="#d97706" stroke-width="1.2"/>
+    <text x="86" y="732" font-size="10.5" font-weight="600" fill="#1e293b">web_fetch(url, max_chars=None, timeout=30) → dict</text>
+    <text x="86" y="746" font-size="9" fill="#64748b">抓取公网 HTTP(S) URL,返回清洗后的纯文本</text>
+    <text x="86" y="760" font-size="9" fill="#92400e">SSRF 防护: _validate_public_http_url · _ssrf_policy</text>
+    <text x="86" y="774" font-size="9" fill="#64748b">boundary: public_http · _html_to_text</text>
+  </g>
+  <g>
+    <rect x="76" y="794" width="648" height="84" rx="6" fill="#fff7ed" stroke="#d97706" stroke-width="1.2"/>
+    <text x="86" y="812" font-size="10.5" font-weight="600" fill="#1e293b">web_search(query, max_results=5, recency_days=None) → dict</text>
+    <text x="86" y="826" font-size="9" fill="#64748b">检索 web,返回 title/url/snippet(不抓全文)</text>
+    <text x="86" y="840" font-size="9" fill="#92400e">provider 三态: 未配置 / fake / http · _web_search_provider()</text>
+    <text x="86" y="854" font-size="9" fill="#64748b">http: _ksyun_search_endpoint + api_key + scope</text>
+    <text x="86" y="868" font-size="9" fill="#64748b">boundary: search_provider</text>
+  </g>
+  <g>
+    <rect x="76" y="888" width="648" height="44" rx="6" fill="#ffffff" stroke="#d97706" stroke-width="0.8" stroke-dasharray="3 3"/>
+    <text x="86" y="906" font-size="9.5" font-weight="600" fill="#92400e">_WEB_TOOL_POLICIES: web_fetch=medium · web_search=medium</text>
+    <text x="86" y="922" font-size="9" fill="#64748b">KSADK_WEB_SEARCH_PROVIDER / KSADK_KSYUN_SEARCH_* 环境变量驱动</text>
+  </g>
+
+  <!-- ====== Toolset 5: Platform (中性/绿) ====== -->
+  <rect x="780" y="666" width="630" height="314" rx="10" fill="none" stroke="#475569" stroke-width="1.2" stroke-dasharray="6 4"/>
+  <text x="796" y="688" font-size="12" font-weight="700" fill="#475569">Platform Toolset · platform.py</text>
+  <text x="796" y="702" font-size="9" fill="#64748b">get_platform_tools() · 反射式绑定 KB / Memory</text>
+
+  <g>
+    <rect x="796" y="714" width="598" height="84" rx="6" fill="#f8fafc" stroke="#475569" stroke-width="1.2"/>
+    <text x="806" y="732" font-size="10.5" font-weight="600" fill="#1e293b">component_status() → dict</text>
+    <text x="806" y="746" font-size="9" fill="#64748b">报告模型 / KB / LTM / skill_space / sandbox 绑定摘要</text>
+    <text x="806" y="760" font-size="9" fill="#64748b">returns: summary · skill_space · skill_runtime · sandbox · workspace</text>
+    <text x="806" y="774" font-size="9" fill="#475569">risk_level: low · 健康检查类</text>
+    <text x="806" y="788" font-size="9" fill="#64748b">_env() / _skill_execution_backend() / sandbox_backend_name()</text>
+  </g>
+  <g>
+    <rect x="796" y="808" width="293" height="70" rx="6" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
+    <text x="806" y="826" font-size="10" font-weight="600" fill="#1e293b">search_knowledge_base</text>
+    <text x="806" y="840" font-size="9" fill="#64748b">ksadk.knowledge_base.langchain_tool</text>
+    <text x="806" y="854" font-size="9" fill="#64748b">需 KSADK_KB_DATASET_ID 绑定</text>
+    <text x="806" y="868" font-size="9" fill="#475569">可选 · try/except 装载</text>
+  </g>
+  <g>
+    <rect x="1101" y="808" width="293" height="70" rx="6" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
+    <text x="1111" y="826" font-size="10" font-weight="600" fill="#1e293b">load_memory · save_memory</text>
+    <text x="1111" y="840" font-size="9" fill="#64748b">ksadk.memory.langchain_tool</text>
+    <text x="1111" y="854" font-size="9" fill="#64748b">需 KSADK_LTM_NAMESPACE 绑定</text>
+    <text x="1111" y="868" font-size="9" fill="#475569">可选 · try/except 装载</text>
+  </g>
+  <g>
+    <rect x="796" y="888" width="598" height="44" rx="6" fill="#ffffff" stroke="#475569" stroke-width="0.8" stroke-dasharray="3 3"/>
+    <text x="806" y="906" font-size="9.5" font-weight="600" fill="#475569">反射式装载: 绑定缺失则静默跳过(不抛错)</text>
+    <text x="806" y="922" font-size="9" fill="#64748b">用于 component_status 自省 + LLM 长期记忆 / 知识库检索</text>
+  </g>
+
+  <!-- ====== 图例 ====== -->
+  <rect x="60" y="990" width="1350" height="40" rx="8" fill="#f8fafc" stroke="#cbd5e1" stroke-width="0.8"/>
+  <text x="76" y="1008" font-size="10" font-weight="700" fill="#334155">图例</text>
+  <rect x="120" y="1002" width="14" height="14" rx="3" fill="#eef2ff" stroke="#7c3aed" stroke-width="1"/>
+  <text x="140" y="1013" font-size="9.5" fill="#475569">Skill(紫)</text>
+  <rect x="220" y="1002" width="14" height="14" rx="3" fill="#ecfdf5" stroke="#059669" stroke-width="1"/>
+  <text x="240" y="1013" font-size="9.5" fill="#475569">Workspace/Platform 运行时(绿)</text>
+  <rect x="410" y="1002" width="14" height="14" rx="3" fill="#fff7ed" stroke="#d97706" stroke-width="1"/>
+  <text x="430" y="1013" font-size="9.5" fill="#475569">Sandbox/Web 工具(橙)</text>
+  <rect x="580" y="1002" width="14" height="14" rx="3" fill="#fef2f2" stroke="#b91c1c" stroke-width="1"/>
+  <text x="600" y="1013" font-size="9.5" fill="#475569">Tool Gateway 审批(红)</text>
+  <rect x="740" y="1002" width="14" height="14" rx="3" fill="#ffffff" stroke="#475569" stroke-width="1" stroke-dasharray="3 2"/>
+  <text x="760" y="1013" font-size="9.5" fill="#475569">虚线 = 可选 / 渐进式披露</text>
+  <text x="930" y="1013" font-size="9" fill="#64748b">所有工具均经 _gateway().invoke() 包裹 · ToolPolicy risk_level 驱动审批</text>
+</svg>
