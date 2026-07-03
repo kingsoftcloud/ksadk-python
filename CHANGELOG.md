@@ -17,7 +17,7 @@
 
 ### 新增
 
-- `ksadk/conversations/compaction_pipeline.py`：L2 `snip_redundant_groups`（按 `metadata.run_id` 精确配对删除覆盖的 tool_call/tool_result，支持 parallel_tool_calls）、L3 `microcompact_cold_groups`（extractive 冷组压缩成合成摘要 event，保留 receipt_key）、L5 `build_working_set_metadata`（保守版，只 metadata 不读文件内容）、`run_pipeline` 编排（渐进停止：L2 释放够则不进 L3/L4）。
+- `ksadk/conversations/compaction_pipeline.py`：L2 `snip_redundant_groups`（按 `metadata.run_id` 精确配对删除覆盖的 tool_call/tool_result，支持 parallel_tool_calls）、L3 `microcompact_cold_groups`（extractive 冷组压缩成合成摘要 event，保留 receipt_key）、L5 `build_working_set_metadata`（保守版，只 metadata 不读文件内容）、`run_pipeline` 编排（渐进停止：L2 释放够则跳过 L3；L4 semantic summarizer 仍处理裁剪后的 candidate）。
 - `ksadk/toolsets/web.py` 新增 `_web_search_ksyun`：POST `https://search.aipro.ksyun.com/v1/aisearch/search`，body `{q, scope, size}`，返回 `webpages` 数组 normalize 成 `title/url/snippet/date/rank/provider`，`_ksyun_search_api_key` 复用 `KSADK_MCP_KEY` 等凭证回退。
 - `ksadk/sandbox/registry.py`：`threading.RLock` 保护 `_entries`（`session.kill()` 网络 IO 放锁外避免阻塞）、`_start_sweep_thread`/`_sweep_loop`（daemon 线程 + `Event.wait(interval)`）、`reset_for_tests`、模块级 `atexit.register(GLOBAL_SANDBOX_REGISTRY.clear)`。
 - `ksadk/server/app.py`：`_shutdown_runner_resources` 末尾调 `GLOBAL_SANDBOX_REGISTRY.clear()`，覆盖 server 优雅退出。
@@ -35,7 +35,7 @@
 - `scripts/open_source_audit.py` 规则修正：`DenyRule` 加 `prefix_only` 标志（`non-curated-docs`/`internal-deploy-material` 设为 True，只匹配顶层前缀，不再误报 `docs-site/content/docs/` 或 `docs-site/public/assets/images/deploy/` 子路径）；`internal-service-endpoint` allowlist 加金山云公开服务 endpoint（vpc.inner.api/ks3-*-internal.ksyuncs/kspmas/kmr）；`private-container-registry` allowlist 加 agentengine 命名空间。
 - `ksadk_runtime_common/schemas/memory_backend_manifest.schema.json`：`$id` 从 `ezone.ksyun.com` 改成 `kingsoftcloud.github.io` 公开 URL。
 - `tests/skills/test_web_artifacts_fixture.py`：本地硬编码路径改成 `KSADK_WEB_ARTIFACTS_FIXTURE` env（无则 skip）。
-- `tests/test_runtime_common_memory_backend.py`：mock endpoint 从 `sdns.ksyun.com` 改成 `example.com`。
+- `tests/test_runtime_common_memory_backend.py`：mock endpoint 从内部服务域名样例改成 `example.com`。
 - `.gitignore` 对齐 main：加 `!.github/`（放行）、`.pypirc`/`pypirc`（防误提交发布凭证）。
 
 ### 修复

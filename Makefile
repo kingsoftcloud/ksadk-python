@@ -1,7 +1,7 @@
 # AgentEngine Makefile
 # 用于同步 KsADK Web static 和管理项目
 
-.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate public-docs-build public-docs-site-build public-test public-build-check public-preflight public-publish-check public-release-tag public-review openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size docs-check-wiki docs-prepare-source docs-docker-build docs-docker-push docs-helm-lint docs-helm-template docs-deploy docs-deploy-all docs-status docs-logs sync-ksadk-web-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend
+.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate public-docs-build public-docs-site-build public-test public-build-check public-preflight public-publish-check public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size docs-check-wiki docs-prepare-source docs-docker-build docs-docker-push docs-helm-lint docs-helm-template docs-deploy docs-deploy-all docs-status docs-logs sync-ksadk-web-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend
 
 # 默认目标
 help:
@@ -346,6 +346,7 @@ public-audit: public-secret-audit
 		echo "$$blocked"; \
 		exit 1; \
 	fi
+	@python3 scripts/open_source_audit.py --target public-repo
 	@echo "✅ public path audit passed"
 
 public-docs-build: public-docs-site-build
@@ -365,11 +366,23 @@ public-test:
 	@uv sync --extra dev
 	@uv run pytest $(PUBLIC_TEST_TARGETS)
 
+public-sync-ksadk-web-static: sync-ksadk-web-static
+
 public-build-check: clean-dist sync-ksadk-web-static
 	@echo "==> build and twine check"
 	@uv build
 	@uv run pytest tests/test_runtime_common_packaging.py -q
 	@uv run --extra dev python -m twine check dist/*
+	@$(MAKE) open-source-audit-dist
+
+open-source-audit-dist:
+	@echo "==> audit wheel and sdist file lists"
+	@if ! ls dist/*.whl dist/*.tar.gz >/dev/null 2>&1; then \
+		echo "❌ dist artifacts missing; run uv build first"; \
+		exit 1; \
+	fi
+	@python3 -c 'import glob, zipfile; [print(name) for path in sorted(glob.glob("dist/*.whl")) for name in zipfile.ZipFile(path).namelist()]' | python3 scripts/open_source_audit.py --target wheel --file-list -
+	@python3 -c 'import glob, tarfile; [print(name) for path in sorted(glob.glob("dist/*.tar.gz")) for name in tarfile.open(path).getnames()]' | python3 scripts/open_source_audit.py --target sdist --file-list -
 
 public-version-gate:
 	@echo "==> release version gate (prevent downgrade/re-publish)"
