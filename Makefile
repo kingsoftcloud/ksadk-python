@@ -1,7 +1,7 @@
 # AgentEngine Makefile
 # 用于同步 KsADK Web static 和管理项目
 
-.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-docs-build public-test public-build-check public-preflight public-publish-check public-release-tag public-review openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size docs-check-wiki docs-prepare-source docs-docker-build docs-docker-push docs-helm-lint docs-helm-template docs-deploy docs-deploy-all docs-status docs-logs sync-ksadk-web-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend
+.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate public-docs-build public-test public-build-check public-preflight public-publish-check public-release-tag public-review openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size docs-check-wiki docs-prepare-source docs-docker-build docs-docker-push docs-helm-lint docs-helm-template docs-deploy docs-deploy-all docs-status docs-logs sync-ksadk-web-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend
 
 # 默认目标
 help:
@@ -32,6 +32,7 @@ help:
 	@echo ""
 	@echo "  \033[1;32m公开发布门禁:\033[0m"
 	@echo "    make public-status        查看公开发布相关状态"
+	@echo "    make public-version-gate  版本号门禁(防降版/重复发版,对比 PyPI 已发版本)"
 	@echo "    make public-init-worktree 初始化/校验 .worktrees/public-main"
 	@echo "    make public-preflight     GitHub/PyPI/Release 前必须通过的本地门禁"
 	@echo "    make public-release-tag V=x.y.z  创建公开 release 留痕 tag"
@@ -366,7 +367,11 @@ public-build-check: clean-dist sync-ksadk-web-static
 	@uv run pytest tests/test_runtime_common_packaging.py -q
 	@uv run --extra dev python -m twine check dist/*
 
-public-preflight: public-audit sync-ksadk-web-static public-test public-docs-build public-build-check
+public-version-gate:
+	@echo "==> release version gate (prevent downgrade/re-publish)"
+	uv run python scripts/check_release_version.py
+
+public-preflight: public-version-gate public-audit sync-ksadk-web-static public-test public-docs-build public-build-check
 	@echo "✅ public preflight passed"
 
 public-publish-check:

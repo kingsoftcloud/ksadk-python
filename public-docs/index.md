@@ -37,12 +37,45 @@ KsADK 解决“如何运行、调试、部署和观测 Agent”。
 
 KsADK 不替换你已经选择的 Agent 框架。它在框架之上提供统一平台层，把开发、调试、运行、沙箱、部署和可观测连接起来：
 
-- 开发：统一项目创建、配置和本地运行。
-- 调试：浏览器调试 UI、会话、附件、workspace 文件和 streaming。
-- 运行：统一 Runner、OpenAI-Compatible API 和多框架入口。
-- Sandbox：Skill Runtime、Workspace 和 sandbox backend 的隔离执行边界。
-- 部署：Serverless、Hermes、OpenClaw 和远端 AgentEngine 入口。
-- 可观测：OpenTelemetry-first tracing，可接入多种观测后端。
+<div class="grid cards" markdown>
+
+-   :hammer_and_wrench: **开发**
+
+    ---
+
+    统一 `agentengine init`、`agentengine config`、`agentengine run` 项目创建与本地运行。
+
+-   :bug: **调试**
+
+    ---
+
+    浏览器调试 UI、会话、附件、workspace 文件和 streaming 流式输出。
+
+-   :arrow_forward: **运行**
+
+    ---
+
+    统一 Runner、OpenAI-Compatible API 和多框架入口。
+
+-   :shield: **Sandbox**
+
+    ---
+
+    Skill Runtime、Workspace 和 sandbox backend 的隔离执行边界。
+
+-   :rocket: **部署**
+
+    ---
+
+    Serverless、Hermes、OpenClaw 和远端 AgentEngine 入口。
+
+-   :heartbeat: **可观测**
+
+    ---
+
+    OpenTelemetry-first tracing，可对接 Langfuse / CloudMonitor / Phoenix。
+
+</div>
 
 ## 30 秒快速体验
 
@@ -162,13 +195,63 @@ OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20token
 
 ## 文档
 
-- [Getting Started 入门](getting-started/quickstart.md)
-- [Build 构建](tutorials/langgraph-agent.md)
-- [Run 运行](guides/local-web-ui.md)
-- [Deploy 部署](guides/build-and-package.md)
-- [Observe 观测](guides/observability-tracing.md)
-- [Extend 扩展](guides/tools-and-skill-runtime.md)
-- [Reference 参考](reference/cli.md)
+<div class="grid cards" markdown>
+
+-   **[快速开始](getting-started/quickstart.md)**
+
+    ---
+
+    几分钟构建并运行第一个智能体。
+
+-   **[运行时架构](guides/runtime-architecture.md)**
+
+    ---
+
+    分层模型、Runner 契约、Streaming 事件与 Session 边界。
+
+-   **[OpenAI 兼容 API](reference/openai-compatible-api.md)**
+
+    ---
+
+    `/v1/responses` 与 `/v1/chat/completions` 接口契约。
+
+-   **[构建与打包](guides/build-and-package.md)**
+
+    ---
+
+    code / container 双制品、发布门禁与 PyPI Trusted Publishing。
+
+-   **[可观测与链路追踪](guides/observability-tracing.md)**
+
+    ---
+
+    OpenTelemetry-first，Langfuse / CloudMonitor 双写。
+
+-   **[工具与 Skill Runtime](guides/tools-and-skill-runtime.md)**
+
+    ---
+
+    内置 toolset、Tool Gateway 审批与 sandbox 执行。
+
+-   **[命令行](reference/cli.md)**
+
+    ---
+
+    `agentengine` CLI 全命令参考。
+
+-   **[环境变量](reference/environment-variables.md)**
+
+    ---
+
+    模型策略、会话、checkpoint、可观测全量变量。
+
+-   **[安全边界](reference/security-boundaries.md)**
+
+    ---
+
+    公开仓库与发布 wheel 的安全围栏。
+
+</div>
 
 ## 社区
 
