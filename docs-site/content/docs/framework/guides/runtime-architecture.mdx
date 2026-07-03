@@ -9,70 +9,9 @@ KsADK 本地运行时的核心职责是：加载用户 Agent 项目，把所选�
 
 ## 分层模型
 
-```mermaid
-flowchart LR
-  classDef brand fill:#5368db,stroke:#3a4ab8,color:#fff
-  classDef accent fill:#59d3d9,stroke:#2fa9af,color:#0a1f2e
-  classDef stop fill:#e0556a,stroke:#b53a4f,color:#fff
+![KsADK 请求生命周期](/assets/ksadk-request-lifecycle.svg)
 
-  subgraph Entry["入口"]
-    CLI["agentengine run / web"]
-  end
-  subgraph Boot["启动"]
-    Detect["framework detection"]
-    Factory["create_runner"]
-    Loader["runner.load_agent"]
-  end
-  subgraph HTTP["HTTP / UI 层"]
-    Server["FastAPI app"]
-    Proto["/v1/responses<br/>/v1/chat/completions<br/>/run_sse<br/>RunAgent"]
-  end
-  subgraph Conv["对话运行时 conversations.runtime"]
-    Build["build_run_input<br/>history + attachments"]
-    Ctx["PlatformInvocationContext<br/>invocation_id"]
-    Status["append run_status<br/>in_progress / completed / failed"]
-    Check["append run_checkpoint<br/>run_resume"]
-    Retry["fallback model retry<br/>PTL compact retry"]
-  end
-  subgraph Store["session service"]
-    Sessions["session + events"]
-  end
-  subgraph Runner["BaseRunner"]
-    Invoke["invoke / stream"]
-  end
-  subgraph Cap["run 能力层 (0.6.7)"]
-    Resume["ResumeRun"]
-    Preview["GetCheckpointResumePreview"]
-    List["ListSessionCheckpoints"]
-    Cancel["CancelRun (cooperative)"]
-    Subscribe["SubscribeRunEvents"]
-  end
-
-  CLI -->|"detect"| Detect
-  Detect -->|"create_runner"| Factory
-  Factory -->|"load_agent"| Loader
-  Loader -->|"server mode"| Server
-  Server -->|"route"| Proto
-  Proto -->|"invoke_conversation_once<br/>/ stream_responses_conversation_turn"| Build
-  Build -->|"build context"| Ctx
-  Ctx -->|"platform_invocation_scope"| Invoke
-  Invoke -->|"output + metadata"| Status
-  Status -->|"persist"| Sessions
-  Check -->|"persist"| Sessions
-  Retry -.->|"on recoverable err"| Invoke
-  Sessions -->|"read events"| Subscribe
-  Resume -->|"find checkpoint"| Sessions
-  Resume -->|"resume_input"| Build
-  Preview -->|"risk + receipts"| Sessions
-  List -->|"list checkpoints"| Sessions
-  Cancel -->|"cooperate at next<br/>chunk / tool boundary"| Invoke
-
-  class CLI,Detect,Factory,Loader,Server,Proto,Build,Ctx,Status,Check,Retry,Invoke,Sessions,Resume,Preview,List,Cancel,Subscribe brand
-```
-
-关键边界是：HTTP server 和对话运行时不需要知道用户项目是 ADK、LangGraph、
-LangChain 还是 DeepAgents。它们调用 `BaseRunner.invoke()` 或
-`BaseRunner.stream()`。
+入口 → 启动 → HTTP/UI → 对话运行时 → Runner → Session 持久化 → 0.6.7 Run 能力层。关键边界是：HTTP server 和对话运行时不需要知道用户项目是 ADK、LangGraph、LangChain 还是 DeepAgents，它们调用 `BaseRunner.invoke()` 或 `BaseRunner.stream()`。
 
 ## 核心包
 
