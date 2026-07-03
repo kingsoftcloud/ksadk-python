@@ -1,252 +1,358 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 820" role="img" aria-labelledby="title desc">
-  <title id="title">Tool Dispatcher 渐进式披露</title>
-  <desc id="desc">tool_dispatcher 三动作: list 过滤 dispatcher 自身返回 tools+tool_count; describe 校验 tool_name 后经 _build_descriptor_registry 返回 spec; call 校验+normalize args 后判 enabled,再走 ToolGateway.invoke,approval_required 则透传 envelope,否则回包 ok+result。</desc>
-  <style>
-    text { font-family: ui-sans-serif, system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif; }
-    @media (prefers-color-scheme: dark) {
-      .bg-light { fill: #0f172a; }
-      rect[fill="#ffffff"] { fill: #1e293b; }
-      rect[fill="#fbfbf9"] { fill: #0f172a; }
-      rect[fill="#fff7ed"] { fill: #1e1b14; }
-      rect[fill="#ecfdf5"] { fill: #0f1f1a; }
-      rect[fill="#eef2ff"] { fill: #1a1f2e; }
-      rect[fill="#fef2f2"] { fill: #1f1414; }
-      text[fill="#0f172a"] { fill: #f1f5f9; }
-      text[fill="#1e293b"] { fill: #e2e8f0; }
-      text[fill="#334155"] { fill: #cbd5e1; }
-      text[fill="#475569"] { fill: #94a3b8; }
-      text[fill="#64748b"] { fill: #94a3b8; }
-      text[fill="#92400e"] { fill: #fbbf24; }
-      text[fill="#7c2d12"] { fill: #fed7aa; }
-      text[fill="#5b21b6"] { fill: #c4b5fd; }
-      text[fill="#7c3aed"] { fill: #a78bfa; }
-      text[fill="#047857"] { fill: #34d399; }
-      text[fill="#059669"] { fill: #34d399; }
-      text[fill="#b91c1c"] { fill: #fca5a5; }
-      rect[stroke="#cbd5e1"] { stroke: #475569; }
-      rect[stroke="#94a3b8"] { stroke: #64748b; }
-    }
-  </style>
-  <defs>
-    <marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker>
-    <marker id="adisp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#d97706"/></marker>
-    <marker id="agn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#059669"/></marker>
-    <marker id="askill" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#7c3aed"/></marker>
-    <marker id="aalert" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#b91c1c"/></marker>
-  </defs>
-
-  <rect class="bg-light" width="1240" height="820" fill="#fbfbf9"/>
-
-  <!-- 标题 -->
-  <text x="40" y="36" font-size="18" font-weight="700" fill="#1e293b">Tool Dispatcher · 渐进式披露</text>
-  <text x="40" y="56" font-size="11" fill="#64748b">tool_dispatcher(action, tool_name, arguments, include, profile) · list → describe → call</text>
-
-  <!-- ===== 入口 ===== -->
-  <g>
-    <rect x="470" y="78" width="300" height="58" rx="8" fill="#fff7ed" stroke="#d97706" stroke-width="1.2"/>
-    <text x="620" y="102" font-size="12.5" font-weight="600" fill="#1e293b" text-anchor="middle">LLM 调用 tool_dispatcher</text>
-    <text x="620" y="120" font-size="9.5" fill="#475569" text-anchor="middle">action ∈ list / describe / call · boundary=local_ksadk_builtin_tools</text>
-  </g>
-
-  <!-- action 路由菱形 -->
-  <g>
-    <path d="M 620,158 L 700,196 L 620,234 L 540,196 Z" fill="#ffffff" stroke="#d97706" stroke-width="1.2"/>
-    <text x="620" y="192" font-size="11" font-weight="600" fill="#92400e" text-anchor="middle">normalized_action</text>
-    <text x="620" y="207" font-size="9.5" fill="#92400e" text-anchor="middle">action 路由</text>
-  </g>
-  <path d="M 620,136 L 620,158" fill="none" stroke="#d97706" stroke-width="1.2" marker-end="url(#adisp)"/>
-
-  <!-- unknown action 错误 -->
-  <g>
-    <rect x="980" y="170" width="220" height="52" rx="6" fill="#fef2f2" stroke="#b91c1c" stroke-width="1.2"/>
-    <text x="1090" y="192" font-size="11" font-weight="600" fill="#b91c1c" text-anchor="middle">unknown_action</text>
-    <text x="1090" y="208" font-size="9" fill="#475569" text-anchor="middle">action must be: list / describe / call</text>
-  </g>
-  <path d="M 700,196 L 980,196" fill="none" stroke="#b91c1c" stroke-width="1.2" marker-end="url(#aalert)" stroke-dasharray="4,3"/>
-  <text x="840" y="189" font-size="9.5" fill="#b91c1c" text-anchor="middle">其它 action</text>
-
-  <!-- ===== list 分支 ===== -->
-  <rect x="40" y="260" width="360" height="290" rx="10" fill="none" stroke="#059669" stroke-width="1.2" stroke-dasharray="5,4"/>
-  <text x="56" y="280" font-size="11.5" font-weight="700" fill="#047857">list 分支</text>
-  <text x="100" y="280" font-size="9.5" fill="#64748b">列出可调度工具</text>
-
-  <g>
-    <rect x="60" y="295" width="320" height="56" rx="6" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
-    <text x="220" y="316" font-size="11" font-weight="600" fill="#1e293b" text-anchor="middle">_select_agentengine_tools</text>
-    <text x="220" y="332" font-size="9" fill="#475569" text-anchor="middle">按 include / profile 展开 (_profile_default_include)</text>
-    <text x="220" y="345" font-size="9" fill="#475569" text-anchor="middle">include_dispatcher=False · 过滤 dispatcher 自身</text>
-  </g>
-  <g>
-    <rect x="60" y="365" width="320" height="48" rx="6" fill="#ffffff" stroke="#94a3b8" stroke-width="1.2"/>
-    <text x="220" y="386" font-size="10.5" font-weight="600" fill="#1e293b" text-anchor="middle">排除 _DISPATCHER_TOOL_NAME</text>
-    <text x="220" y="402" font-size="9" fill="#64748b" text-anchor="middle">及 _LEGACY_DISPATCHER_TOOL_NAME 别名</text>
-  </g>
-  <g>
-    <rect x="60" y="429" width="320" height="56" rx="6" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
-    <text x="220" y="450" font-size="11" font-weight="600" fill="#1e293b" text-anchor="middle">返回 tools + tool_count</text>
-    <text x="220" y="466" font-size="9" fill="#475569" text-anchor="middle">{ok: True, tools: specs, tool_count: len(specs)}</text>
-    <text x="220" y="479" font-size="9" fill="#64748b" text-anchor="middle">未知 include → _unknown_tool_error</text>
-  </g>
-  <path d="M 220,351 L 220,365" fill="none" stroke="#059669" stroke-width="1.2" marker-end="url(#agn)"/>
-  <path d="M 220,413 L 220,429" fill="none" stroke="#059669" stroke-width="1.2" marker-end="url(#agn)"/>
-
-  <!-- ===== describe 分支 ===== -->
-  <rect x="420" y="260" width="380" height="290" rx="10" fill="none" stroke="#7c3aed" stroke-width="1.2" stroke-dasharray="5,4"/>
-  <text x="436" y="280" font-size="11.5" font-weight="700" fill="#7c3aed">describe 分支</text>
-  <text x="488" y="280" font-size="9.5" fill="#64748b">返回单个工具 spec</text>
-
-  <g>
-    <rect x="440" y="295" width="340" height="62" rx="6" fill="#eef2ff" stroke="#7c3aed" stroke-width="1.2"/>
-    <path d="M 460,318 L 472,326 L 460,334 Z" fill="#7c3aed"/>
-    <text x="486" y="316" font-size="11" font-weight="600" fill="#1e293b">校验 tool_name</text>
-    <text x="610" y="316" font-size="9.5" fill="#475569">_normalize_tool_name(tool_name)</text>
-    <text x="486" y="334" font-size="9.5" fill="#475569">空 → missing_tool_name</text>
-    <text x="486" y="349" font-size="9.5" fill="#475569">dispatcher 自身 → dispatcher_self_call</text>
-  </g>
-  <g>
-    <rect x="440" y="371" width="340" height="56" rx="6" fill="#ffffff" stroke="#94a3b8" stroke-width="1.2"/>
-    <text x="610" y="392" font-size="11" font-weight="600" fill="#1e293b" text-anchor="middle">_build_descriptor_registry</text>
-    <text x="610" y="408" font-size="9" fill="#64748b" text-anchor="middle">include=[target_name] · include_dispatcher=False</text>
-    <text x="610" y="421" font-size="9" fill="#64748b" text-anchor="middle">未知 tool → _unknown_tool_error</text>
-  </g>
-  <g>
-    <rect x="440" y="441" width="340" height="62" rx="6" fill="#eef2ff" stroke="#7c3aed" stroke-width="1.2"/>
-    <text x="610" y="462" font-size="11" font-weight="600" fill="#1e293b" text-anchor="middle">返回单个 tool spec</text>
-    <text x="610" y="478" font-size="9" fill="#475569" text-anchor="middle">risk_level · requires_approval · side_effects</text>
-    <text x="610" y="491" font-size="9" fill="#475569" text-anchor="middle">boundary (isolated_sandbox / workspace_root / ...)</text>
-    <text x="610" y="503" font-size="9" fill="#64748b" text-anchor="middle">{ok: True, tool: specs[0]}</text>
-  </g>
-  <path d="M 610,357 L 610,371" fill="none" stroke="#7c3aed" stroke-width="1.2" marker-end="url(#askill)"/>
-  <path d="M 610,427 L 610,441" fill="none" stroke="#7c3aed" stroke-width="1.2" marker-end="url(#askill)"/>
-
-  <!-- ===== call 分支 ===== -->
-  <rect x="820" y="260" width="380" height="290" rx="10" fill="none" stroke="#d97706" stroke-width="1.2" stroke-dasharray="5,4"/>
-  <text x="836" y="280" font-size="11.5" font-weight="700" fill="#92400e">call 分支</text>
-  <text x="888" y="280" font-size="9.5" fill="#64748b">按名调用真实工具</text>
-
-  <g>
-    <rect x="840" y="295" width="340" height="62" rx="6" fill="#fff7ed" stroke="#d97706" stroke-width="1.2"/>
-    <text x="1010" y="316" font-size="11" font-weight="600" fill="#1e293b" text-anchor="middle">校验 tool_name + normalize arguments</text>
-    <text x="1010" y="332" font-size="9" fill="#475569" text-anchor="middle">_normalize_tool_name · 同样排除 dispatcher 自身</text>
-    <text x="1010" y="345" font-size="9" fill="#475569" text-anchor="middle">_normalize_tool_arguments(dict / JSON 字符串)</text>
-    <text x="1010" y="357" font-size="9" fill="#64748b" text-anchor="middle">+ _normalize_dispatched_tool_arguments (save_memory 等)</text>
-  </g>
-
-  <!-- enabled? 判定 -->
-  <g>
-    <path d="M 1010,373 L 1080,402 L 1010,431 L 940,402 Z" fill="#ffffff" stroke="#d97706" stroke-width="1.2"/>
-    <text x="1010" y="400" font-size="10.5" font-weight="600" fill="#92400e" text-anchor="middle">specs[0].enabled?</text>
-    <text x="1010" y="414" font-size="9" fill="#92400e" text-anchor="middle">backend / provider 是否就绪</text>
-  </g>
-
-  <!-- disabled 错误 -->
-  <g>
-    <rect x="836" y="441" width="180" height="62" rx="6" fill="#fef2f2" stroke="#b91c1c" stroke-width="1.2"/>
-    <text x="926" y="462" font-size="11" font-weight="600" fill="#b91c1c" text-anchor="middle">tool_disabled</text>
-    <text x="926" y="478" font-size="8.5" fill="#475569" text-anchor="middle">error_type=tool_disabled</text>
-    <text x="926" y="491" font-size="8.5" fill="#475569" text-anchor="middle">sandbox/web_search backend 未就绪</text>
-  </g>
-  <path d="M 940,402 L 926,441" fill="none" stroke="#b91c1c" stroke-width="1.2" marker-end="url(#aalert)" stroke-dasharray="4,3"/>
-  <text x="888" y="425" font-size="9.5" fill="#b91c1c" text-anchor="middle">False</text>
-
-  <!-- ToolGateway.invoke -->
-  <g>
-    <rect x="1024" y="441" width="172" height="62" rx="6" fill="#fff7ed" stroke="#d97706" stroke-width="1.2"/>
-    <text x="1110" y="462" font-size="11" font-weight="600" fill="#1e293b" text-anchor="middle">ToolGateway.invoke</text>
-    <text x="1110" y="478" font-size="8.5" fill="#475569" text-anchor="middle">_invoke_tool(tools[0], args)</text>
-    <text x="1110" y="491" font-size="8.5" fill="#475569" text-anchor="middle">继承目标 ToolPolicy 风险</text>
-  </g>
-  <path d="M 1080,402 L 1110,441" fill="none" stroke="#d97706" stroke-width="1.2" marker-end="url(#adisp)"/>
-  <text x="1140" y="425" font-size="9.5" fill="#92400e" text-anchor="middle">True</text>
-
-  <path d="M 1010,357 L 1010,373" fill="none" stroke="#d97706" stroke-width="1.2" marker-end="url(#adisp)"/>
-
-  <!-- ===== 路由箭头 ===== -->
-  <path d="M 580,210 L 220,295" fill="none" stroke="#059669" stroke-width="1.2" marker-end="url(#agn)"/>
-  <text x="380" y="245" font-size="10" fill="#047857" text-anchor="middle">list</text>
-  <path d="M 620,234 L 610,295" fill="none" stroke="#7c3aed" stroke-width="1.2" marker-end="url(#askill)"/>
-  <text x="640" y="270" font-size="10" fill="#7c3aed">describe</text>
-  <path d="M 660,210 L 1010,295" fill="none" stroke="#d97706" stroke-width="1.2" marker-end="url(#adisp)"/>
-  <text x="870" y="245" font-size="10" fill="#92400e" text-anchor="middle">call</text>
-
-  <!-- ===== 出口聚合 ===== -->
-  <g>
-    <rect x="380" y="575" width="480" height="56" rx="8" fill="#ffffff" stroke="#475569" stroke-width="1.2"/>
-    <text x="620" y="598" font-size="12" font-weight="600" fill="#1e293b" text-anchor="middle">结构化结果返回 LLM</text>
-    <text x="620" y="614" font-size="9.5" fill="#475569" text-anchor="middle">list → {ok, tools, tool_count} · describe → {ok, tool}</text>
-    <text x="620" y="626" font-size="9.5" fill="#475569" text-anchor="middle">call → {ok, tool_name, result} 或 approval / error envelope</text>
-  </g>
-
-  <!-- 各分支到出口 -->
-  <path d="M 220,485 L 220,640 L 380,610" fill="none" stroke="#059669" stroke-width="1.2" marker-end="url(#agn)" stroke-opacity="0.55"/>
-  <path d="M 610,503 L 610,575" fill="none" stroke="#7c3aed" stroke-width="1.2" marker-end="url(#askill)" stroke-opacity="0.55"/>
-  <path d="M 926,503 L 926,640 L 860,610" fill="none" stroke="#b91c1c" stroke-width="1" marker-end="url(#aalert)" stroke-dasharray="4,3" stroke-opacity="0.6"/>
-  <path d="M 1110,503 L 1110,640 L 860,610" fill="none" stroke="#d97706" stroke-width="1" marker-end="url(#adisp)" stroke-opacity="0.55"/>
-  <path d="M 1090,222 L 1090,640 L 860,610" fill="none" stroke="#b91c1c" stroke-width="1" marker-end="url(#aalert)" stroke-dasharray="4,3" stroke-opacity="0.45"/>
-
-  <!-- ===== call 分支详解: approval 透传 ===== -->
-  <rect x="40" y="560" width="340" height="240" rx="10" fill="none" stroke="#b91c1c" stroke-width="1.2" stroke-dasharray="5,4"/>
-  <text x="56" y="580" font-size="11.5" font-weight="700" fill="#b91c1c">call 出口判定</text>
-  <text x="138" y="580" font-size="9.5" fill="#64748b">approval_required 透传</text>
-
-  <g>
-    <path d="M 210,595 L 290,628 L 210,661 L 130,628 Z" fill="#ffffff" stroke="#b91c1c" stroke-width="1.2"/>
-    <text x="210" y="624" font-size="10.5" font-weight="600" fill="#b91c1c" text-anchor="middle">result.type ==</text>
-    <text x="210" y="640" font-size="10.5" font-weight="600" fill="#b91c1c" text-anchor="middle">approval_required?</text>
-  </g>
-
-  <!-- 是: 透传 envelope -->
-  <g>
-    <rect x="56" y="680" width="160" height="62" rx="6" fill="#fef2f2" stroke="#b91c1c" stroke-width="1.2"/>
-    <text x="136" y="700" font-size="10.5" font-weight="600" fill="#b91c1c" text-anchor="middle">透传 envelope</text>
-    <text x="136" y="716" font-size="8.5" fill="#475569" text-anchor="middle">{type: approval_required,</text>
-    <text x="136" y="728" font-size="8.5" fill="#475569" text-anchor="middle"> approval_request: {id, risk_level},</text>
-    <text x="136" y="740" font-size="8.5" fill="#475569" text-anchor="middle"> dispatched_tool_name}</text>
-  </g>
-
-  <!-- 否: ok+result -->
-  <g>
-    <rect x="224" y="680" width="144" height="62" rx="6" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
-    <text x="296" y="700" font-size="10.5" font-weight="600" fill="#047857" text-anchor="middle">回包 ok + result</text>
-    <text x="296" y="716" font-size="8.5" fill="#475569" text-anchor="middle">{ok: True,</text>
-    <text x="296" y="728" font-size="8.5" fill="#475569" text-anchor="middle"> tool_name: target_name,</text>
-    <text x="296" y="740" font-size="8.5" fill="#475569" text-anchor="middle"> result}</text>
-  </g>
-
-  <path d="M 175,645 L 136,680" fill="none" stroke="#b91c1c" stroke-width="1.2" marker-end="url(#aalert)" stroke-dasharray="4,3"/>
-  <text x="135" y="668" font-size="9.5" fill="#b91c1c" text-anchor="middle">是</text>
-  <path d="M 245,645 L 296,680" fill="none" stroke="#059669" stroke-width="1.2" marker-end="url(#agn)"/>
-  <text x="290" y="668" font-size="9.5" fill="#047857" text-anchor="middle">否</text>
-
-  <!-- 失败分支 (ok is False) -->
-  <g>
-    <rect x="100" y="758" width="220" height="34" rx="6" fill="#ffffff" stroke="#94a3b8" stroke-width="1.2"/>
-    <text x="210" y="775" font-size="9.5" fill="#475569" text-anchor="middle">result.ok is False →</text>
-    <text x="210" y="787" font-size="9.5" fill="#475569" text-anchor="middle">{ok: False, tool_name, result}</text>
-  </g>
-  <path d="M 210,661 L 210,758" fill="none" stroke="#475569" stroke-width="1" marker-end="url(#ag)" stroke-opacity="0.5"/>
-
-  <!-- ===== 图例 ===== -->
-  <g transform="translate(420, 660)">
-    <text x="0" y="0" font-size="11" font-weight="700" fill="#1e293b">图例</text>
-    <rect x="0" y="12" width="14" height="14" rx="2" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
-    <text x="20" y="23" font-size="9.5" fill="#475569">list / Runner 数据流</text>
-    <rect x="170" y="12" width="14" height="14" rx="2" fill="#eef2ff" stroke="#7c3aed" stroke-width="1.2"/>
-    <text x="190" y="23" font-size="9.5" fill="#475569">describe / spec 查询</text>
-    <rect x="350" y="12" width="14" height="14" rx="2" fill="#fff7ed" stroke="#d97706" stroke-width="1.2"/>
-    <text x="370" y="23" font-size="9.5" fill="#475569">call / dispatcher</text>
-    <rect x="490" y="12" width="14" height="14" rx="2" fill="#fef2f2" stroke="#b91c1c" stroke-width="1.2"/>
-    <text x="510" y="23" font-size="9.5" fill="#475569">approval / 错误</text>
-
-    <line x1="0" y1="44" x2="30" y2="44" stroke="#059669" stroke-width="1.2" marker-end="url(#agn)"/>
-    <text x="38" y="48" font-size="9.5" fill="#475569">正常流</text>
-    <line x1="100" y1="44" x2="130" y2="44" stroke="#b91c1c" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#aalert)"/>
-    <text x="138" y="48" font-size="9.5" fill="#475569">审批/错误流</text>
-
-    <text x="0" y="74" font-size="9.5" fill="#64748b">三 action 共享 _build_descriptor_registry，</text>
-    <text x="0" y="88" font-size="9.5" fill="#64748b">均 include_dispatcher=False 避免递归。</text>
-    <text x="0" y="108" font-size="9.5" fill="#64748b">call 最终走 ToolGateway.invoke，</text>
-    <text x="0" y="122" font-size="9.5" fill="#64748b">strict 下 run_command/run_code/execute_skills</text>
-    <text x="0" y="136" font-size="9.5" fill="#64748b">及 workspace 写删工具返回 approval_required。</text>
-  </g>
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+ "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<!-- Generated by graphviz version 12.1.1 (20240910.0053)
+ -->
+<!-- Title: ToolDispatcher Pages: 1 -->
+<svg width="1809pt" height="783pt"
+ viewBox="0.00 0.00 1809.00 782.58" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<style>
+@media (prefers-color-scheme: dark) {
+  svg { background: #0f172a; }
+  polygon[fill="#fbfbf9"] { fill: #0f172a; }
+  path[fill="#ffffff"] { fill: #1e293b; }
+  path[fill="#fff7ed"] { fill: #1e1b14; }
+  path[fill="#ecfdf5"] { fill: #0f1f1a; }
+  path[fill="#eef2ff"] { fill: #1a1f2e; }
+  path[fill="#fef2f2"] { fill: #1f1414; }
+  text { fill: #e2e8f0 !important; }
+  path[stroke="#475569"], path[stroke="#059669"], path[stroke="#7c3aed"], path[stroke="#d97706"], path[stroke="#6366f1"], path[stroke="#b91c1c"] { stroke-opacity: 0.8; }
+}
+</style>
+<g id="graph0" class="graph" transform="scale(1 1) rotate(0) translate(4 778.58)">
+<title>ToolDispatcher</title>
+<polygon fill="#fbfbf9" stroke="none" points="-4,4 -4,-778.58 1805,-778.58 1805,4 -4,4"/>
+<text text-anchor="middle" x="900.5" y="-757.28" font-family="PingFang SC" font-size="14.00">Tool Dispatcher — 渐进式披露 (list / describe / call)</text>
+<text text-anchor="middle" x="900.5" y="-737.03" font-family="PingFang SC" font-size="14.00">LLM 经单一治理入口按需展开内置工具</text>
+<g id="clust1" class="cluster">
+<title>cluster_branches</title>
+<path fill="#ffffff" stroke="#d97706" stroke-dasharray="5,2" d="M677,-8C677,-8 1659,-8 1659,-8 1665,-8 1671,-14 1671,-20 1671,-20 1671,-706.08 1671,-706.08 1671,-712.08 1665,-718.08 1659,-718.08 1659,-718.08 677,-718.08 677,-718.08 671,-718.08 665,-712.08 665,-706.08 665,-706.08 665,-20 665,-20 665,-14 671,-8 677,-8"/>
+<text text-anchor="middle" x="1168" y="-700.78" font-family="PingFang SC" font-size="14.00">action 分支</text>
+</g>
+<g id="clust2" class="cluster">
+<title>cluster_list</title>
+<path fill="#ecfdf5" stroke="#059669" d="M810,-398.68C810,-398.68 958,-398.68 958,-398.68 964,-398.68 970,-404.68 970,-410.68 970,-410.68 970,-669.83 970,-669.83 970,-675.83 964,-681.83 958,-681.83 958,-681.83 810,-681.83 810,-681.83 804,-681.83 798,-675.83 798,-669.83 798,-669.83 798,-410.68 798,-410.68 798,-404.68 804,-398.68 810,-398.68"/>
+<text text-anchor="middle" x="884" y="-664.53" font-family="PingFang SC" font-size="14.00">list · 列出可用工具</text>
+</g>
+<g id="clust3" class="cluster">
+<title>cluster_describe</title>
+<path fill="#ecfdf5" stroke="#059669" d="M1097,-269.62C1097,-269.62 1345,-269.62 1345,-269.62 1351,-269.62 1357,-275.62 1357,-281.62 1357,-281.62 1357,-661.95 1357,-661.95 1357,-667.95 1351,-673.95 1345,-673.95 1345,-673.95 1097,-673.95 1097,-673.95 1091,-673.95 1085,-667.95 1085,-661.95 1085,-661.95 1085,-281.62 1085,-281.62 1085,-275.62 1091,-269.62 1097,-269.62"/>
+<text text-anchor="middle" x="1221" y="-656.65" font-family="PingFang SC" font-size="14.00">describe · 描述单个工具</text>
+</g>
+<g id="clust4" class="cluster">
+<title>cluster_call</title>
+<path fill="#fff7ed" stroke="#d97706" d="M1377,-16C1377,-16 1651,-16 1651,-16 1657,-16 1663,-22 1663,-28 1663,-28 1663,-661.95 1663,-661.95 1663,-667.95 1657,-673.95 1651,-673.95 1651,-673.95 1377,-673.95 1377,-673.95 1371,-673.95 1365,-667.95 1365,-661.95 1365,-661.95 1365,-28 1365,-28 1365,-22 1371,-16 1377,-16"/>
+<text text-anchor="middle" x="1514" y="-656.65" font-family="PingFang SC" font-size="14.00">call · 执行工具</text>
+</g>
+<g id="clust5" class="cluster">
+<title>cluster_legend</title>
+<path fill="#ffffff" stroke="#cbd5e1" d="M1691,-145.01C1691,-145.01 1781,-145.01 1781,-145.01 1787,-145.01 1793,-151.01 1793,-157.01 1793,-157.01 1793,-657.72 1793,-657.72 1793,-663.72 1787,-669.72 1781,-669.72 1781,-669.72 1691,-669.72 1691,-669.72 1685,-669.72 1679,-663.72 1679,-657.72 1679,-657.72 1679,-157.02 1679,-157.02 1679,-151.01 1685,-145.01 1691,-145.01"/>
+<text text-anchor="middle" x="1736" y="-652.42" font-family="PingFang SC" font-size="14.00">图例</text>
+</g>
+<!-- LLM -->
+<g id="node1" class="node">
+<title>LLM</title>
+<path fill="#eef2ff" stroke="#6366f1" d="M345.02,-322.08C345.02,-322.08 300.98,-322.08 300.98,-322.08 294.98,-322.08 288.98,-316.08 288.98,-310.08 288.98,-310.08 288.98,-289.62 288.98,-289.62 288.98,-283.62 294.98,-277.62 300.98,-277.62 300.98,-277.62 345.02,-277.62 345.02,-277.62 351.02,-277.62 357.02,-283.62 357.02,-289.62 357.02,-289.62 357.02,-310.08 357.02,-310.08 357.02,-316.08 351.02,-322.08 345.02,-322.08"/>
+<text text-anchor="middle" x="323" y="-305.15" font-family="PingFang SC" font-size="11.00">LLM</text>
+<text text-anchor="middle" x="323" y="-289.4" font-family="PingFang SC" font-size="11.00">模型决策</text>
+</g>
+<!-- Disp -->
+<g id="node2" class="node">
+<title>Disp</title>
+<path fill="#fff7ed" stroke="#d97706" stroke-width="1.6" d="M377.27,-201.12C377.27,-201.12 202.73,-201.12 202.73,-201.12 196.73,-201.12 190.73,-195.12 190.73,-189.12 190.73,-189.12 190.73,-152.91 190.73,-152.91 190.73,-146.91 196.73,-140.91 202.73,-140.91 202.73,-140.91 377.27,-140.91 377.27,-140.91 383.27,-140.91 389.27,-146.91 389.27,-152.91 389.27,-152.91 389.27,-189.12 389.27,-189.12 389.27,-195.12 383.27,-201.12 377.27,-201.12"/>
+<text text-anchor="middle" x="290" y="-184.19" font-family="PingFang SC" font-size="11.00">tool_dispatcher(action, tool_name,</text>
+<text text-anchor="middle" x="290" y="-168.44" font-family="PingFang SC" font-size="11.00">arguments, include, profile)</text>
+<text text-anchor="middle" x="290" y="-152.69" font-family="PingFang SC" font-size="11.00">单一治理入口 · 排除自身防递归</text>
+</g>
+<!-- LLM&#45;&gt;Disp -->
+<g id="edge1" class="edge">
+<title>LLM&#45;&gt;Disp</title>
+<path fill="none" stroke="#475569" stroke-width="1.2" d="M317.4,-277.33C312.79,-259.6 306.12,-233.96 300.51,-212.41"/>
+<polygon fill="#475569" stroke="#475569" stroke-width="1.2" points="303.97,-211.82 298.07,-203.02 297.2,-213.58 303.97,-211.82"/>
+<text text-anchor="middle" x="329.95" y="-237.57" font-family="PingFang SC" font-size="9.00">tool_call</text>
+</g>
+<!-- Route -->
+<g id="node3" class="node">
+<title>Route</title>
+<path fill="#fff7ed" stroke="#d97706" d="M113.9,-86.85C113.9,-86.85 34.82,-54.39 34.82,-54.39 29.27,-52.11 29.27,-47.55 34.82,-45.27 34.82,-45.27 113.9,-12.81 113.9,-12.81 119.45,-10.53 130.55,-10.53 136.1,-12.81 136.1,-12.81 215.18,-45.27 215.18,-45.27 220.73,-47.55 220.73,-52.11 215.18,-54.39 215.18,-54.39 136.1,-86.85 136.1,-86.85 130.55,-89.13 119.45,-89.13 113.9,-86.85"/>
+<text text-anchor="middle" x="125" y="-55.13" font-family="PingFang SC" font-size="11.00">normalize action</text>
+<text text-anchor="middle" x="125" y="-39.38" font-family="PingFang SC" font-size="11.00">→ 路由分发</text>
+</g>
+<!-- Disp&#45;&gt;Route -->
+<g id="edge2" class="edge">
+<title>Disp&#45;&gt;Route</title>
+<path fill="none" stroke="#475569" stroke-width="1.2" d="M249.21,-140.55C225.37,-123.33 195.22,-101.55 170.6,-83.77"/>
+<polygon fill="#475569" stroke="#475569" stroke-width="1.2" points="172.74,-80.99 162.58,-77.98 168.64,-86.67 172.74,-80.99"/>
+<text text-anchor="middle" x="260.53" y="-114.36" font-family="PingFang SC" font-size="9.00">normalized_action</text>
+</g>
+<!-- L1 -->
+<g id="node4" class="node">
+<title>L1</title>
+<path fill="#ecfdf5" stroke="#059669" d="M949.52,-617.33C949.52,-617.33 818.48,-617.33 818.48,-617.33 812.48,-617.33 806.48,-611.33 806.48,-605.33 806.48,-605.33 806.48,-569.12 806.48,-569.12 806.48,-563.12 812.48,-557.12 818.48,-557.12 818.48,-557.12 949.52,-557.12 949.52,-557.12 955.52,-557.12 961.52,-563.12 961.52,-569.12 961.52,-569.12 961.52,-605.33 961.52,-605.33 961.52,-611.33 955.52,-617.33 949.52,-617.33"/>
+<text text-anchor="middle" x="884" y="-600.39" font-family="PingFang SC" font-size="11.00">_select_agentengine_tools</text>
+<text text-anchor="middle" x="884" y="-584.64" font-family="PingFang SC" font-size="11.00">include=profile_default</text>
+<text text-anchor="middle" x="884" y="-568.89" font-family="PingFang SC" font-size="11.00">include_dispatcher=False</text>
+</g>
+<!-- Route&#45;&gt;L1 -->
+<g id="edge10" class="edge">
+<title>Route&#45;&gt;L1</title>
+<path fill="none" stroke="#059669" stroke-width="1.2" d="M106.46,-84.16C95.2,-107.47 83,-139.74 83,-170.01 83,-429.91 83,-429.91 83,-429.91 83,-591.87 645.26,-508.45 802,-549.24 805.9,-550.25 809.84,-551.44 813.78,-552.75"/>
+<polygon fill="#059669" stroke="#059669" stroke-width="1.2" points="812.54,-556.02 823.13,-556.12 814.91,-549.44 812.54,-556.02"/>
+<text text-anchor="middle" x="89" y="-298.05" font-family="PingFang SC" font-size="9.00">list</text>
+</g>
+<!-- D1 -->
+<g id="node6" class="node">
+<title>D1</title>
+<path fill="#ecfdf5" stroke="#059669" d="M1245.39,-609.45C1245.39,-609.45 1134.61,-609.45 1134.61,-609.45 1128.61,-609.45 1122.61,-603.45 1122.61,-597.45 1122.61,-597.45 1122.61,-576.99 1122.61,-576.99 1122.61,-570.99 1128.61,-564.99 1134.61,-564.99 1134.61,-564.99 1245.39,-564.99 1245.39,-564.99 1251.39,-564.99 1257.39,-570.99 1257.39,-576.99 1257.39,-576.99 1257.39,-597.45 1257.39,-597.45 1257.39,-603.45 1251.39,-609.45 1245.39,-609.45"/>
+<text text-anchor="middle" x="1190" y="-592.52" font-family="PingFang SC" font-size="11.00">_normalize_tool_name</text>
+<text text-anchor="middle" x="1190" y="-576.77" font-family="PingFang SC" font-size="11.00">校验 tool_name</text>
+</g>
+<!-- Route&#45;&gt;D1 -->
+<g id="edge11" class="edge">
+<title>Route&#45;&gt;D1</title>
+<path fill="none" stroke="#059669" stroke-width="1.2" d="M126.23,-91.2C130.39,-196.67 147.76,-476.07 216,-531.24 248.76,-557.72 932.07,-545.18 974,-549.24 1019.59,-553.66 1070.08,-562.1 1110.77,-569.81"/>
+<polygon fill="#059669" stroke="#059669" stroke-width="1.2" points="1109.98,-573.22 1120.46,-571.67 1111.3,-566.34 1109.98,-573.22"/>
+<text text-anchor="middle" x="163.74" y="-298.05" font-family="PingFang SC" font-size="9.00">describe</text>
+</g>
+<!-- C1 -->
+<g id="node9" class="node">
+<title>C1</title>
+<path fill="#fff7ed" stroke="#d97706" d="M1507.89,-609.45C1507.89,-609.45 1430.11,-609.45 1430.11,-609.45 1424.11,-609.45 1418.11,-603.45 1418.11,-597.45 1418.11,-597.45 1418.11,-576.99 1418.11,-576.99 1418.11,-570.99 1424.11,-564.99 1430.11,-564.99 1430.11,-564.99 1507.89,-564.99 1507.89,-564.99 1513.89,-564.99 1519.89,-570.99 1519.89,-576.99 1519.89,-576.99 1519.89,-597.45 1519.89,-597.45 1519.89,-603.45 1513.89,-609.45 1507.89,-609.45"/>
+<text text-anchor="middle" x="1469" y="-592.52" font-family="PingFang SC" font-size="11.00">校验 tool_name</text>
+<text text-anchor="middle" x="1469" y="-576.77" font-family="PingFang SC" font-size="11.00">+ 自调用检查</text>
+</g>
+<!-- Route&#45;&gt;C1 -->
+<g id="edge12" class="edge">
+<title>Route&#45;&gt;C1</title>
+<path fill="none" stroke="#d97706" stroke-width="1.2" d="M136.68,-87.13C147.12,-118.07 163.58,-163.38 182,-201.12 247,-334.33 229.72,-407.03 355,-486.24 544.33,-605.94 1140.66,-508.96 1361,-549.24 1376.07,-551.99 1391.88,-556.46 1406.62,-561.35"/>
+<polygon fill="#d97706" stroke="#d97706" stroke-width="1.2" points="1405.34,-564.61 1415.93,-564.55 1407.62,-557.99 1405.34,-564.61"/>
+<text text-anchor="middle" x="236.84" y="-298.05" font-family="PingFang SC" font-size="9.00">call</text>
+</g>
+<!-- U1 -->
+<g id="node14" class="node">
+<title>U1</title>
+<path fill="#fef2f2" stroke="#b91c1c" d="M776.64,-625.2C776.64,-625.2 685.36,-625.2 685.36,-625.2 679.36,-625.2 673.36,-619.2 673.36,-613.2 673.36,-613.2 673.36,-561.24 673.36,-561.24 673.36,-555.24 679.36,-549.24 685.36,-549.24 685.36,-549.24 776.64,-549.24 776.64,-549.24 782.64,-549.24 788.64,-555.24 788.64,-561.24 788.64,-561.24 788.64,-613.2 788.64,-613.2 788.64,-619.2 782.64,-625.2 776.64,-625.2"/>
+<text text-anchor="middle" x="731" y="-608.27" font-family="PingFang SC" font-size="11.00">unknown_action</text>
+<text text-anchor="middle" x="731" y="-592.52" font-family="PingFang SC" font-size="11.00">→ error_message:</text>
+<text text-anchor="middle" x="731" y="-576.77" font-family="PingFang SC" font-size="11.00">&quot;action must be:</text>
+<text text-anchor="middle" x="731" y="-561.02" font-family="PingFang SC" font-size="11.00">list, describe, call&quot;</text>
+</g>
+<!-- Route&#45;&gt;U1 -->
+<g id="edge13" class="edge">
+<title>Route&#45;&gt;U1</title>
+<path fill="none" stroke="#b91c1c" stroke-width="1.2" d="M77.74,-72.47C42.35,-92.29 0,-125.34 0,-170.01 0,-429.91 0,-429.91 0,-429.91 0,-484.4 21.93,-503.79 69,-531.24 119.27,-560.55 501.73,-577.82 661.36,-583.81"/>
+<polygon fill="#b91c1c" stroke="#b91c1c" stroke-width="1.2" points="660.98,-587.3 671.1,-584.18 661.24,-580.31 660.98,-587.3"/>
+<text text-anchor="middle" x="23.62" y="-298.05" font-family="PingFang SC" font-size="9.00">未知 action</text>
+</g>
+<!-- L2 -->
+<g id="node5" class="node">
+<title>L2</title>
+<path fill="#ecfdf5" stroke="#059669" d="M920.77,-451.14C920.77,-451.14 827.23,-451.14 827.23,-451.14 821.23,-451.14 815.23,-445.14 815.23,-439.14 815.23,-439.14 815.23,-418.68 815.23,-418.68 815.23,-412.68 821.23,-406.68 827.23,-406.68 827.23,-406.68 920.77,-406.68 920.77,-406.68 926.77,-406.68 932.77,-412.68 932.77,-418.68 932.77,-418.68 932.77,-439.14 932.77,-439.14 932.77,-445.14 926.77,-451.14 920.77,-451.14"/>
+<text text-anchor="middle" x="874" y="-434.21" font-family="PingFang SC" font-size="11.00">descriptor_registry</text>
+<text text-anchor="middle" x="874" y="-418.46" font-family="PingFang SC" font-size="11.00">(specs)</text>
+</g>
+<!-- L1&#45;&gt;L2 -->
+<g id="edge3" class="edge">
+<title>L1&#45;&gt;L2</title>
+<path fill="none" stroke="#475569" stroke-width="1.2" d="M882.12,-556.82C880.41,-530.16 877.9,-490.91 876.13,-463.13"/>
+<polygon fill="#475569" stroke="#475569" stroke-width="1.2" points="879.64,-463.2 875.51,-453.44 872.65,-463.65 879.64,-463.2"/>
+<text text-anchor="middle" x="890.61" y="-515.94" font-family="PingFang SC" font-size="9.00">build</text>
+</g>
+<!-- Merge -->
+<g id="node16" class="node">
+<title>Merge</title>
+<path fill="#eef2ff" stroke="#6366f1" stroke-width="1.4" d="M543.89,-451.14C543.89,-451.14 376.11,-451.14 376.11,-451.14 370.11,-451.14 364.11,-445.14 364.11,-439.14 364.11,-439.14 364.11,-418.68 364.11,-418.68 364.11,-412.68 370.11,-406.68 376.11,-406.68 376.11,-406.68 543.89,-406.68 543.89,-406.68 549.89,-406.68 555.89,-412.68 555.89,-418.68 555.89,-418.68 555.89,-439.14 555.89,-439.14 555.89,-445.14 549.89,-451.14 543.89,-451.14"/>
+<text text-anchor="middle" x="460" y="-434.21" font-family="PingFang SC" font-size="11.00">结构化结果返回</text>
+<text text-anchor="middle" x="460" y="-418.46" font-family="PingFang SC" font-size="11.00">{ok, tools/tool/result, tool_count}</text>
+</g>
+<!-- L2&#45;&gt;Merge -->
+<g id="edge16" class="edge">
+<title>L2&#45;&gt;Merge</title>
+<path fill="none" stroke="#059669" stroke-width="1.2" d="M814.73,-428.91C750.46,-428.91 646.51,-428.91 567.72,-428.91"/>
+<polygon fill="#059669" stroke="#059669" stroke-width="1.2" points="568.1,-425.41 558.1,-428.91 568.1,-432.41 568.1,-425.41"/>
+<text text-anchor="middle" x="685.56" y="-436.86" font-family="PingFang SC" font-size="9.00">{ok, tools, tool_count}</text>
+</g>
+<!-- D2 -->
+<g id="node7" class="node">
+<title>D2</title>
+<path fill="#fef2f2" stroke="#b91c1c" d="M1210.06,-481.32C1210.06,-481.32 1104.41,-433.83 1104.41,-433.83 1098.94,-431.37 1098.94,-426.45 1104.41,-423.99 1104.41,-423.99 1210.06,-376.5 1210.06,-376.5 1215.53,-374.04 1226.47,-374.04 1231.94,-376.5 1231.94,-376.5 1337.59,-423.99 1337.59,-423.99 1343.06,-426.45 1343.06,-431.37 1337.59,-433.83 1337.59,-433.83 1231.94,-481.32 1231.94,-481.32 1226.47,-483.78 1215.53,-483.78 1210.06,-481.32"/>
+<text text-anchor="middle" x="1221" y="-442.09" font-family="PingFang SC" font-size="11.00">自调用检查</text>
+<text text-anchor="middle" x="1221" y="-426.34" font-family="PingFang SC" font-size="11.00">tool_dispatcher 自身?</text>
+<text text-anchor="middle" x="1221" y="-410.59" font-family="PingFang SC" font-size="11.00">→ self_call_error</text>
+</g>
+<!-- D1&#45;&gt;D2 -->
+<g id="edge4" class="edge">
+<title>D1&#45;&gt;D2</title>
+<path fill="none" stroke="#475569" stroke-width="1.2" d="M1194.25,-564.81C1197.9,-546.4 1203.36,-518.86 1208.4,-493.46"/>
+<polygon fill="#475569" stroke="#475569" stroke-width="1.2" points="1211.81,-494.25 1210.32,-483.76 1204.94,-492.88 1211.81,-494.25"/>
+</g>
+<!-- D3 -->
+<g id="node8" class="node">
+<title>D3</title>
+<path fill="#ecfdf5" stroke="#059669" d="M1259.39,-322.08C1259.39,-322.08 1130.61,-322.08 1130.61,-322.08 1124.61,-322.08 1118.61,-316.08 1118.61,-310.08 1118.61,-310.08 1118.61,-289.62 1118.61,-289.62 1118.61,-283.62 1124.61,-277.62 1130.61,-277.62 1130.61,-277.62 1259.39,-277.62 1259.39,-277.62 1265.39,-277.62 1271.39,-283.62 1271.39,-289.62 1271.39,-289.62 1271.39,-310.08 1271.39,-310.08 1271.39,-316.08 1265.39,-322.08 1259.39,-322.08"/>
+<text text-anchor="middle" x="1195" y="-305.15" font-family="PingFang SC" font-size="11.00">_build_descriptor_registry</text>
+<text text-anchor="middle" x="1195" y="-289.4" font-family="PingFang SC" font-size="11.00">→ specs[0]</text>
+</g>
+<!-- D2&#45;&gt;D3 -->
+<g id="edge5" class="edge">
+<title>D2&#45;&gt;D3</title>
+<path fill="none" stroke="#475569" stroke-width="1.2" d="M1210.35,-375.86C1207.46,-361.74 1204.41,-346.83 1201.79,-334.05"/>
+<polygon fill="#475569" stroke="#475569" stroke-width="1.2" points="1205.24,-333.43 1199.81,-324.34 1198.38,-334.84 1205.24,-333.43"/>
+<text text-anchor="middle" x="1210.17" y="-345.03" font-family="PingFang SC" font-size="9.00">否</text>
+</g>
+<!-- D2&#45;&gt;Merge -->
+<g id="edge21" class="edge">
+<title>D2&#45;&gt;Merge</title>
+<path fill="none" stroke="#b91c1c" stroke-width="1.2" stroke-dasharray="5,2" d="M1164.38,-460.96C1128.83,-479.21 1081.31,-500.27 1036.25,-509.69 857.24,-547.11 643.24,-491.21 533.25,-455.26"/>
+<polygon fill="#b91c1c" stroke="#b91c1c" stroke-width="1.2" points="534.61,-452.02 524.02,-452.2 532.41,-458.67 534.61,-452.02"/>
+<text text-anchor="middle" x="1007" y="-515.94" font-family="PingFang SC" font-size="9.00">是 → self_call</text>
+</g>
+<!-- D3&#45;&gt;Merge -->
+<g id="edge17" class="edge">
+<title>D3&#45;&gt;Merge</title>
+<path fill="none" stroke="#059669" stroke-width="1.2" d="M1118.18,-314.13C986.59,-336.88 717.76,-383.35 567.58,-409.31"/>
+<polygon fill="#059669" stroke="#059669" stroke-width="1.2" points="567.14,-405.84 557.88,-410.99 568.33,-412.74 567.14,-405.84"/>
+<text text-anchor="middle" x="988.38" y="-345.03" font-family="PingFang SC" font-size="9.00">{ok, tool: spec}</text>
+</g>
+<!-- C2 -->
+<g id="node10" class="node">
+<title>C2</title>
+<path fill="#fef2f2" stroke="#b91c1c" d="M1502.49,-467.1C1502.49,-467.1 1384.48,-432.3 1384.48,-432.3 1378.73,-430.61 1378.73,-427.21 1384.48,-425.52 1384.48,-425.52 1502.49,-390.72 1502.49,-390.72 1508.24,-389.03 1519.76,-389.03 1525.51,-390.72 1525.51,-390.72 1643.52,-425.52 1643.52,-425.52 1649.27,-427.21 1649.27,-430.61 1643.52,-432.3 1643.52,-432.3 1525.51,-467.1 1525.51,-467.1 1519.76,-468.79 1508.24,-468.79 1502.49,-467.1"/>
+<text text-anchor="middle" x="1514" y="-434.21" font-family="PingFang SC" font-size="11.00">enabled? (spec.enabled)</text>
+<text text-anchor="middle" x="1514" y="-418.46" font-family="PingFang SC" font-size="11.00">禁用 → tool_disabled</text>
+</g>
+<!-- C1&#45;&gt;C2 -->
+<g id="edge6" class="edge">
+<title>C1&#45;&gt;C2</title>
+<path fill="none" stroke="#475569" stroke-width="1.2" d="M1475.16,-564.81C1481.52,-542.74 1491.64,-507.57 1499.96,-478.68"/>
+<polygon fill="#475569" stroke="#475569" stroke-width="1.2" points="1503.26,-479.87 1502.66,-469.29 1496.53,-477.93 1503.26,-479.87"/>
+</g>
+<!-- C3 -->
+<g id="node11" class="node">
+<title>C3</title>
+<path fill="#fff7ed" stroke="#d97706" d="M1605.14,-322.08C1605.14,-322.08 1396.86,-322.08 1396.86,-322.08 1390.86,-322.08 1384.86,-316.08 1384.86,-310.08 1384.86,-310.08 1384.86,-289.62 1384.86,-289.62 1384.86,-283.62 1390.86,-277.62 1396.86,-277.62 1396.86,-277.62 1605.14,-277.62 1605.14,-277.62 1611.14,-277.62 1617.14,-283.62 1617.14,-289.62 1617.14,-289.62 1617.14,-310.08 1617.14,-310.08 1617.14,-316.08 1611.14,-322.08 1605.14,-322.08"/>
+<text text-anchor="middle" x="1501" y="-305.15" font-family="PingFang SC" font-size="11.00">_normalize_tool_arguments</text>
+<text text-anchor="middle" x="1501" y="-289.4" font-family="PingFang SC" font-size="11.00">+ _normalize_dispatched_tool_arguments</text>
+</g>
+<!-- C2&#45;&gt;C3 -->
+<g id="edge7" class="edge">
+<title>C2&#45;&gt;C3</title>
+<path fill="none" stroke="#475569" stroke-width="1.2" d="M1509.92,-388.06C1508.14,-370.6 1506.07,-350.37 1504.37,-333.79"/>
+<polygon fill="#475569" stroke="#475569" stroke-width="1.2" points="1507.89,-333.85 1503.4,-324.26 1500.93,-334.56 1507.89,-333.85"/>
+<text text-anchor="middle" x="1523.21" y="-345.03" font-family="PingFang SC" font-size="9.00">enabled</text>
+</g>
+<!-- C2&#45;&gt;Merge -->
+<g id="edge22" class="edge">
+<title>C2&#45;&gt;Merge</title>
+<path fill="none" stroke="#b91c1c" stroke-width="1.2" stroke-dasharray="5,2" d="M1457.75,-454.25C1429.32,-465.95 1393.94,-478.86 1361,-486.24 1077.48,-549.75 732.15,-491.23 563.17,-454.1"/>
+<polygon fill="#b91c1c" stroke="#b91c1c" stroke-width="1.2" points="564.1,-450.72 553.58,-451.97 562.58,-457.56 564.1,-450.72"/>
+<text text-anchor="middle" x="1059" y="-515.94" font-family="PingFang SC" font-size="9.00">disabled</text>
+</g>
+<!-- C4 -->
+<g id="node12" class="node">
+<title>C4</title>
+<path fill="#fff7ed" stroke="#d97706" d="M1569.77,-193.24C1569.77,-193.24 1404.23,-193.24 1404.23,-193.24 1398.23,-193.24 1392.23,-187.24 1392.23,-181.24 1392.23,-181.24 1392.23,-160.78 1392.23,-160.78 1392.23,-154.78 1398.23,-148.78 1404.23,-148.78 1404.23,-148.78 1569.77,-148.78 1569.77,-148.78 1575.77,-148.78 1581.77,-154.78 1581.77,-160.78 1581.77,-160.78 1581.77,-181.24 1581.77,-181.24 1581.77,-187.24 1575.77,-193.24 1569.77,-193.24"/>
+<text text-anchor="middle" x="1487" y="-176.31" font-family="PingFang SC" font-size="11.00">_invoke_tool → tool.invoke(args)</text>
+<text text-anchor="middle" x="1487" y="-160.56" font-family="PingFang SC" font-size="11.00">(经 ToolGateway 审批)</text>
+</g>
+<!-- C3&#45;&gt;C4 -->
+<g id="edge8" class="edge">
+<title>C3&#45;&gt;C4</title>
+<path fill="none" stroke="#475569" stroke-width="1.2" d="M1498.63,-277.33C1496.44,-257.56 1493.18,-227.96 1490.66,-205.17"/>
+<polygon fill="#475569" stroke="#475569" stroke-width="1.2" points="1494.16,-205 1489.59,-195.44 1487.2,-205.77 1494.16,-205"/>
+</g>
+<!-- C5 -->
+<g id="node13" class="node">
+<title>C5</title>
+<path fill="#fef2f2" stroke="#b91c1c" d="M1475.3,-73.01C1475.3,-73.01 1384.67,-52.48 1384.67,-52.48 1378.82,-51.16 1378.82,-48.5 1384.67,-47.18 1384.67,-47.18 1475.3,-26.65 1475.3,-26.65 1481.15,-25.33 1492.85,-25.33 1498.7,-26.65 1498.7,-26.65 1589.33,-47.18 1589.33,-47.18 1595.18,-48.5 1595.18,-51.16 1589.33,-52.48 1589.33,-52.48 1498.7,-73.01 1498.7,-73.01 1492.85,-74.33 1481.15,-74.33 1475.3,-73.01"/>
+<text text-anchor="middle" x="1487" y="-47.25" font-family="PingFang SC" font-size="11.00">approval_required?</text>
+</g>
+<!-- C4&#45;&gt;C5 -->
+<g id="edge9" class="edge">
+<title>C4&#45;&gt;C5</title>
+<path fill="none" stroke="#475569" stroke-width="1.2" d="M1487,-148.43C1487,-131.54 1487,-107.67 1487,-87.76"/>
+<polygon fill="#475569" stroke="#475569" stroke-width="1.2" points="1490.5,-87.79 1487,-77.79 1483.5,-87.79 1490.5,-87.79"/>
+</g>
+<!-- GW -->
+<g id="node15" class="node">
+<title>GW</title>
+<path fill="#fef2f2" stroke="#b91c1c" stroke-width="1.4" d="M645.27,-201.12C645.27,-201.12 494.73,-201.12 494.73,-201.12 488.73,-201.12 482.73,-195.12 482.73,-189.12 482.73,-189.12 482.73,-152.91 482.73,-152.91 482.73,-146.91 488.73,-140.91 494.73,-140.91 494.73,-140.91 645.27,-140.91 645.27,-140.91 651.27,-140.91 657.27,-146.91 657.27,-152.91 657.27,-152.91 657.27,-189.12 657.27,-189.12 657.27,-195.12 651.27,-201.12 645.27,-201.12"/>
+<text text-anchor="middle" x="570" y="-184.19" font-family="PingFang SC" font-size="11.00">ToolGateway.invoke</text>
+<text text-anchor="middle" x="570" y="-168.44" font-family="PingFang SC" font-size="11.00">policy.risk_level / side_effects</text>
+<text text-anchor="middle" x="570" y="-152.69" font-family="PingFang SC" font-size="11.00">approval_mode (env)</text>
+</g>
+<!-- C4&#45;&gt;GW -->
+<g id="edge14" class="edge">
+<title>C4&#45;&gt;GW</title>
+<path fill="none" stroke="#b91c1c" stroke-width="1.2" stroke-dasharray="5,2" d="M1392.07,-171.01C1217.45,-171.01 846.95,-171.01 669.19,-171.01"/>
+<polygon fill="#b91c1c" stroke="#b91c1c" stroke-width="1.2" points="669.33,-167.52 659.33,-171.02 669.33,-174.52 669.33,-167.52"/>
+<text text-anchor="middle" x="1024.75" y="-178.96" font-family="PingFang SC" font-size="9.00">govern</text>
+</g>
+<!-- C5&#45;&gt;Merge -->
+<g id="edge18" class="edge">
+<title>C5&#45;&gt;Merge</title>
+<path fill="none" stroke="#b91c1c" stroke-width="1.2" stroke-dasharray="5,2" d="M1372.54,-50.17C1116.47,-49.71 514.01,-54.52 441,-109.41 399.69,-140.46 411.18,-168.18 402.5,-219.12 399.48,-236.86 399.55,-241.86 402.5,-259.62 410.64,-308.6 431.24,-362.46 445.44,-395.73"/>
+<polygon fill="#b91c1c" stroke="#b91c1c" stroke-width="1.2" points="442.06,-396.75 449.26,-404.52 448.49,-393.96 442.06,-396.75"/>
+<text text-anchor="middle" x="449.75" y="-251.07" font-family="PingFang SC" font-size="9.00">approval_required →</text>
+<text text-anchor="middle" x="449.75" y="-237.57" font-family="PingFang SC" font-size="9.00">透传 envelope +</text>
+<text text-anchor="middle" x="449.75" y="-224.07" font-family="PingFang SC" font-size="9.00">dispatched_tool_name</text>
+</g>
+<!-- C5&#45;&gt;Merge -->
+<g id="edge19" class="edge">
+<title>C5&#45;&gt;Merge</title>
+<path fill="none" stroke="#d97706" stroke-width="1.2" d="M1382.04,-52.32C1135.28,-56.92 534.45,-74.84 474,-140.91 455.94,-160.65 462.28,-177.06 474,-201.12 479.69,-212.79 491.31,-207.45 497,-219.12 504.88,-235.3 498.94,-241.73 497,-259.62 491.8,-307.51 478.5,-361.73 469.35,-395.38"/>
+<polygon fill="#d97706" stroke="#d97706" stroke-width="1.2" points="466.09,-394.05 466.79,-404.62 472.83,-395.92 466.09,-394.05"/>
+<text text-anchor="middle" x="547.48" y="-244.32" font-family="PingFang SC" font-size="9.00">否则 →</text>
+<text text-anchor="middle" x="547.48" y="-230.82" font-family="PingFang SC" font-size="9.00">{ok, tool_name, result}</text>
+</g>
+<!-- U1&#45;&gt;Merge -->
+<g id="edge20" class="edge">
+<title>U1&#45;&gt;Merge</title>
+<path fill="none" stroke="#b91c1c" stroke-width="1.2" stroke-dasharray="5,2" d="M672.86,-552.69C623.56,-524.25 553.7,-483.96 507.65,-457.39"/>
+<polygon fill="#b91c1c" stroke="#b91c1c" stroke-width="1.2" points="509.61,-454.48 499.2,-452.52 506.11,-460.55 509.61,-454.48"/>
+<text text-anchor="middle" x="671.23" y="-522.69" font-family="PingFang SC" font-size="9.00">{ok:false,</text>
+<text text-anchor="middle" x="671.23" y="-509.19" font-family="PingFang SC" font-size="9.00">unknown_action}</text>
+</g>
+<!-- GW&#45;&gt;C5 -->
+<g id="edge15" class="edge">
+<title>GW&#45;&gt;C5</title>
+<path fill="none" stroke="#475569" stroke-width="1.2" d="M657.51,-158.64C834.31,-135.66 1231.88,-83.99 1404.45,-61.56"/>
+<polygon fill="#475569" stroke="#475569" stroke-width="1.2" points="1404.72,-65.05 1414.19,-60.29 1403.82,-58.11 1404.72,-65.05"/>
+<text text-anchor="middle" x="1040.12" y="-114.36" font-family="PingFang SC" font-size="9.00">result</text>
+</g>
+<!-- Merge&#45;&gt;LLM -->
+<g id="edge23" class="edge">
+<title>Merge&#45;&gt;LLM</title>
+<path fill="none" stroke="#6366f1" stroke-width="1.2" d="M401.74,-400.5C381.12,-388.48 359.18,-372.7 343.5,-353.58 336.15,-344.62 331.22,-332.71 328.04,-322.49"/>
+<polygon fill="#6366f1" stroke="#6366f1" stroke-width="1.2" points="400.02,-403.55 410.46,-405.38 403.44,-397.44 400.02,-403.55"/>
+<text text-anchor="middle" x="365.25" y="-345.03" font-family="PingFang SC" font-size="9.00">tool_result</text>
+</g>
+<!-- Leg1 -->
+<g id="node17" class="node">
+<title>Leg1</title>
+<path fill="#ecfdf5" stroke="#059669" d="M1764.39,-605.22C1764.39,-605.22 1707.61,-605.22 1707.61,-605.22 1701.61,-605.22 1695.61,-599.22 1695.61,-593.22 1695.61,-593.22 1695.61,-581.22 1695.61,-581.22 1695.61,-575.22 1701.61,-569.22 1707.61,-569.22 1707.61,-569.22 1764.39,-569.22 1764.39,-569.22 1770.39,-569.22 1776.39,-575.22 1776.39,-581.22 1776.39,-581.22 1776.39,-593.22 1776.39,-593.22 1776.39,-599.22 1770.39,-605.22 1764.39,-605.22"/>
+<text text-anchor="middle" x="1736" y="-584.64" font-family="PingFang SC" font-size="11.00">运行时 · 绿</text>
+</g>
+<!-- Leg2 -->
+<g id="node18" class="node">
+<title>Leg2</title>
+<path fill="#fff7ed" stroke="#d97706" d="M1772.64,-446.91C1772.64,-446.91 1699.36,-446.91 1699.36,-446.91 1693.36,-446.91 1687.36,-440.91 1687.36,-434.91 1687.36,-434.91 1687.36,-422.91 1687.36,-422.91 1687.36,-416.91 1693.36,-410.91 1699.36,-410.91 1699.36,-410.91 1772.64,-410.91 1772.64,-410.91 1778.64,-410.91 1784.64,-416.91 1784.64,-422.91 1784.64,-422.91 1784.64,-434.91 1784.64,-434.91 1784.64,-440.91 1778.64,-446.91 1772.64,-446.91"/>
+<text text-anchor="middle" x="1736" y="-426.34" font-family="PingFang SC" font-size="11.00">工具/调度 · 橙</text>
+</g>
+<!-- Leg1&#45;&gt;Leg2 -->
+<!-- Leg3 -->
+<g id="node19" class="node">
+<title>Leg3</title>
+<path fill="#eef2ff" stroke="#6366f1" d="M1772.64,-317.85C1772.64,-317.85 1699.36,-317.85 1699.36,-317.85 1693.36,-317.85 1687.36,-311.85 1687.36,-305.85 1687.36,-305.85 1687.36,-293.85 1687.36,-293.85 1687.36,-287.85 1693.36,-281.85 1699.36,-281.85 1699.36,-281.85 1772.64,-281.85 1772.64,-281.85 1778.64,-281.85 1784.64,-287.85 1784.64,-293.85 1784.64,-293.85 1784.64,-305.85 1784.64,-305.85 1784.64,-311.85 1778.64,-317.85 1772.64,-317.85"/>
+<text text-anchor="middle" x="1736" y="-297.28" font-family="PingFang SC" font-size="11.00">框架/汇聚 · 靛</text>
+</g>
+<!-- Leg2&#45;&gt;Leg3 -->
+<!-- Leg4 -->
+<g id="node20" class="node">
+<title>Leg4</title>
+<path fill="#fef2f2" stroke="#b91c1c" d="M1772.64,-189.01C1772.64,-189.01 1699.36,-189.01 1699.36,-189.01 1693.36,-189.01 1687.36,-183.01 1687.36,-177.01 1687.36,-177.01 1687.36,-165.01 1687.36,-165.01 1687.36,-159.01 1693.36,-153.01 1699.36,-153.01 1699.36,-153.01 1772.64,-153.01 1772.64,-153.01 1778.64,-153.01 1784.64,-159.01 1784.64,-165.01 1784.64,-165.01 1784.64,-177.01 1784.64,-177.01 1784.64,-183.01 1778.64,-189.01 1772.64,-189.01"/>
+<text text-anchor="middle" x="1736" y="-168.44" font-family="PingFang SC" font-size="11.00">审批/错误 · 红</text>
+</g>
+<!-- Leg3&#45;&gt;Leg4 -->
+</g>
 </svg>

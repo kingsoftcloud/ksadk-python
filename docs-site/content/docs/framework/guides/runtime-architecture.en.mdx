@@ -42,59 +42,9 @@ Entry → Boot → HTTP/UI → Conversations Runtime → Runner → Session pers
 If framework detection returns `unknown`, the CLI stops before importing the user project as a runner.
 </Callout>
 
-```mermaid
-flowchart TD
-  classDef brand fill:#5368db,stroke:#3a4ab8,color:#fff
-  classDef accent fill:#59d3d9,stroke:#2fa9af,color:#0a1f2e
-  classDef stop fill:#e0556a,stroke:#b53a4f,color:#fff
+![KsADK startup lifecycle](/assets/ksadk-startup-lifecycle.svg)
 
-  subgraph CLI["ksadk.cli (entry)"]
-    Entry["agentengine run / web"]
-  end
-  subgraph Boot["startup prep"]
-    Resolve["resolve project dir"]
-    EnvLoad["load .env / agentengine.yaml"]
-  end
-  subgraph Detect["framework detection"]
-    Detector["FrameworkDetector.detect"]
-    Result{"DetectionResult"}
-  end
-  subgraph Factory["runner factory"]
-    Create["create_runner"]
-    ADK["ADKRunner"]
-    LG["LangGraphRunner"]
-    LC["LangChainRunner"]
-    DA["DeepAgentsRunner"]
-    Unknown["stop: project error"]:::stop
-  end
-  subgraph Load["user code load"]
-    LoadAgent["runner.load_agent"]
-  end
-  subgraph Serve["runtime mode"]
-    Terminal["terminal loop"]
-    Server["FastAPI app + local UI"]
-  end
 
-  Entry -->|"resolve project dir"| Resolve
-  Resolve -->|"load env + YAML"| EnvLoad
-  EnvLoad -->|"detect framework"| Detector
-  Detector --> Result
-  Result -->|"adk"| ADK
-  Result -->|"langgraph"| LG
-  Result -->|"langchain"| LC
-  Result -->|"deepagents"| DA
-  Result -->|"unknown"| Unknown
-  ADK --> Create
-  LG --> Create
-  LC --> Create
-  DA --> Create
-  Create -->|"import user module"| LoadAgent
-  LoadAgent -->|"interactive"| Terminal
-  LoadAgent -->|"server / web"| Server
-
-  class Entry,Resolve,EnvLoad,Detector,Create,ADK,LG,LC,DA,LoadAgent,Terminal,Server brand
-  class Result accent
-```
 
 ## Startup Boundaries
 
@@ -131,48 +81,9 @@ packaging checks.
 
 Detection uses explicit configuration first, then convention:
 
-```mermaid
-flowchart TD
-  classDef brand fill:#5368db,stroke:#3a4ab8,color:#fff
-  classDef accent fill:#59d3d9,stroke:#2fa9af,color:#0a1f2e
-  classDef stop fill:#e0556a,stroke:#b53a4f,color:#fff
+![Framework detection flow](/assets/ksadk-framework-detection.svg)
 
-  subgraph Inputs["detection input"]
-    Dir["project directory"]
-  end
-  subgraph Explicit["explicit config first"]
-    Cfg{"agentengine.yaml<br/>ksadk.yaml?"}
-    Validate["validate framework<br/>entry_point<br/>agent_variable"]
-  end
-  subgraph Convention["convention fallback"]
-    LGJson{"langgraph.json?"}
-    GraphTarget["parse graph target"]
-    Scan["scan package dir + entry files<br/>agent.py / main.py / app.py"]
-    Analyze["_analyze_code<br/>AST heuristics"]
-  end
-  subgraph Out["detection output"]
-    Result["DetectionResult"]
-    Unknown["unknown<br/>stop"]:::stop
-  end
-  subgraph Next["next step"]
-    Create["create_runner"]
-  end
 
-  Dir --> Cfg
-  Cfg -->|"yes"| Validate
-  Cfg -->|"no"| LGJson
-  LGJson -->|"yes"| GraphTarget
-  LGJson -->|"no"| Scan
-  Scan --> Analyze
-  Validate --> Result
-  GraphTarget --> Result
-  Analyze --> Result
-  Result -->|"is_valid"| Create
-  Result -->|"unknown"| Unknown
-
-  class Dir,Validate,GraphTarget,Scan,Analyze,Result,Create brand
-  class Cfg,LGJson accent
-```
 
 <Callout type="info">
 Public samples should include `agentengine.yaml` because explicit config is easier to review and less dependent on source-code heuristics.

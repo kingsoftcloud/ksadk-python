@@ -2,6 +2,7 @@
 
 import { use, useEffect, useId, useState } from 'react';
 import { useTheme } from 'next-themes';
+import UncontrolledZoom from 'react-medium-image-zoom';
 
 export function Mermaid({ chart }: { chart: string }) {
   const [mounted, setMounted] = useState(false);
@@ -45,12 +46,15 @@ function MermaidContent({ chart }: { chart: string }) {
   );
 
   return (
-    <div
-      ref={(container) => {
-        if (container) bindFunctions?.(container);
-      }}
-      // biome-ignore lint/security/noDangerouslySetInnerHtml: rendered SVG from mermaid
-      dangerouslySetInnerHTML={{ __html: svg }}
-    />
+    <UncontrolledZoom zoomMargin={20} wrapElement="span">
+      <div
+        ref={(container) => {
+          if (container) bindFunctions?.(container);
+        }}
+        style={{ cursor: 'zoom-in' }}
+        // biome-ignore lint/security/noDangerouslySetInnerHtml: rendered SVG from mermaid
+        dangerouslySetInnerHTML={{ __html: svg }}
+      />
+    </UncontrolledZoom>
   );
 }

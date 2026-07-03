@@ -1,204 +1,223 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1320 920" role="img" aria-labelledby="title desc">
-  <title id="title">KsADK Tool Gateway 审批流</title>
-  <desc id="desc">Agent 调工具 → ToolPolicy 评估风险 → high/medium 触发 approval_required → 用户确认 → execute / reject。三态:直执行 / 审批 / 拒绝。</desc>
-  <style>
-    text { font-family: ui-sans-serif, system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif; }
-    @media (prefers-color-scheme: dark) {
-      .bg-light { fill: #0f172a; }
-      rect[fill="#ffffff"] { fill: #1e293b; }
-      rect[fill="#fbfbf9"] { fill: #0f172a; }
-      rect[fill="#fff7ed"] { fill: #1e1b14; }
-      rect[fill="#ecfdf5"] { fill: #0f1f1a; }
-      rect[fill="#eef2ff"] { fill: #1a1f2e; }
-      rect[fill="#fef2f2"] { fill: #1f1414; }
-      text[fill="#0f172a"] { fill: #f1f5f9; }
-      text[fill="#1e293b"] { fill: #e2e8f0; }
-      text[fill="#334155"] { fill: #cbd5e1; }
-      text[fill="#475569"] { fill: #94a3b8; }
-      text[fill="#64748b"] { fill: #94a3b8; }
-      text[fill="#92400e"] { fill: #fbbf24; }
-      text[fill="#7c2d12"] { fill: #fed7aa; }
-      text[fill="#5b21b6"] { fill: #c4b5fd; }
-      text[fill="#7c3aed"] { fill: #a78bfa; }
-      text[fill="#047857"] { fill: #34d399; }
-      text[fill="#059669"] { fill: #34d399; }
-      text[fill="#b91c1c"] { fill: #fca5a5; }
-      rect[stroke="#cbd5e1"] { stroke: #475569; }
-      rect[stroke="#94a3b8"] { stroke: #64748b; }
-    }
-  </style>
-  <defs>
-    <marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker>
-    <marker id="agn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#059669"/></marker>
-    <marker id="adisp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#d97706"/></marker>
-    <marker id="askill" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#7c3aed"/></marker>
-    <marker id="aalert" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#b91c1c"/></marker>
-  </defs>
-
-  <rect class="bg-light" width="1320" height="920" fill="#fbfbf9"/>
-
-  <!-- 标题 -->
-  <text x="40" y="36" font-size="18" font-weight="700" fill="#1e293b">KsADK — Tool Gateway 审批流</text>
-  <text x="40" y="56" font-size="11" fill="#64748b">ToolPolicy 评估风险 · 三态判定：直执行 / 审批 / 拒绝 · 基于 ksadk/tools/gateway.py</text>
-
-  <!-- ===== Region: Agent 调用方 ===== -->
-  <rect x="40" y="80" width="1240" height="92" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.2" stroke-dasharray="5,4"/>
-  <text x="56" y="100" font-size="11.5" font-weight="700" fill="#334155">Agent 调用方</text>
-  <g>
-    <rect x="490" y="110" width="340" height="50" rx="6" fill="#eef2ff" stroke="#6366f1" stroke-width="1.2"/>
-    <text x="660" y="133" font-size="12" font-weight="600" fill="#1e293b" text-anchor="middle">Agent / tool_dispatcher</text>
-    <text x="660" y="150" font-size="9.5" fill="#64748b" text-anchor="middle">tool_name · func · args · approval?</text>
-  </g>
-  <path d="M 660,160 L 660,205" fill="none" stroke="#475569" stroke-width="1.2" marker-end="url(#ag)"/>
-  <text x="670" y="186" font-size="9.5" fill="#475569">invoke(tool_name, func, *args, approval=None, **kwargs)</text>
-
-  <!-- ===== Region: Tool Gateway ===== -->
-  <rect x="40" y="200" width="1240" height="500" rx="12" fill="#ffffff" stroke="#b91c1c" stroke-width="1.5"/>
-  <text x="56" y="220" font-size="12" font-weight="700" fill="#b91c1c">ToolGateway.invoke · 审批闸口</text>
-  <text x="280" y="220" font-size="10" fill="#64748b">_is_rejected → _is_approved / _requires_approval → func / _approval_required</text>
-
-  <!-- Step 1: 读取 ToolPolicy -->
-  <g>
-    <rect x="490" y="238" width="340" height="62" rx="6" fill="#fff7ed" stroke="#d97706" stroke-width="1.2"/>
-    <text x="660" y="261" font-size="12" font-weight="600" fill="#1e293b" text-anchor="middle">读取 ToolPolicy</text>
-    <text x="660" y="277" font-size="9.5" fill="#475569" text-anchor="middle">risk_level · side_effects · requires_approval</text>
-    <text x="660" y="291" font-size="9" fill="#92400e" text-anchor="middle">policies.get(tool_name, ToolPolicy())</text>
-  </g>
-  <path d="M 660,300 L 660,332" fill="none" stroke="#d97706" stroke-width="1.2" marker-end="url(#adisp)"/>
-
-  <!-- Step 2: 命令策略校验 (check_command_policy) -->
-  <g>
-    <rect x="380" y="336" width="560" height="62" rx="6" fill="#fff7ed" stroke="#d97706" stroke-width="1.2"/>
-    <text x="660" y="359" font-size="12" font-weight="600" fill="#1e293b" text-anchor="middle">命令策略校验（仅 shell 命令工具）check_command_policy(command)</text>
-    <text x="660" y="375" font-size="9.5" fill="#475569" text-anchor="middle">递归 rm · sudo/kubectl/docker · git reset/clean/push · metadata 端点</text>
-    <text x="660" y="389" font-size="9" fill="#92400e" text-anchor="middle">decision = reject → 直接拒绝 · allow → 继续</text>
-  </g>
-
-  <!-- 命令策略 reject 分路（左侧去 S2 拒绝）-->
-  <path d="M 380,367 L 200,367 L 200,560" fill="none" stroke="#b91c1c" stroke-width="1.2" marker-end="url(#aalert)" stroke-dasharray="5,3"/>
-  <text x="210" y="360" font-size="9.5" fill="#b91c1c">命令策略 reject</text>
-
-  <!-- continue path to risk eval -->
-  <path d="M 660,398 L 660,430" fill="none" stroke="#d97706" stroke-width="1.2" marker-end="url(#adisp)"/>
-
-  <!-- Step 3: risk 评估 (diamond) -->
-  <g>
-    <path d="M 660,432 L 770,470 L 660,508 L 550,470 Z" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
-    <text x="660" y="466" font-size="11" font-weight="600" fill="#1e293b" text-anchor="middle">tool_policy_requires_approval</text>
-    <text x="660" y="481" font-size="9" fill="#475569" text-anchor="middle">KSADK_TOOL_APPROVAL_MODE=strict</text>
-    <text x="660" y="494" font-size="9" fill="#047857" text-anchor="middle">risk ∈ {medium, high, critical}</text>
-  </g>
-
-  <!-- 否 → 直执行 -->
-  <path d="M 550,470 L 230,470 L 230,560" fill="none" stroke="#059669" stroke-width="1.2" marker-end="url(#agn)"/>
-  <text x="270" y="463" font-size="9.5" fill="#047857">否 · low / off 模式</text>
-
-  <!-- 已 approved → 直执行 -->
-  <path d="M 660,508 L 660,540 L 350,540 L 350,560" fill="none" stroke="#059669" stroke-width="1.2" marker-end="url(#agn)"/>
-  <text x="470" y="534" font-size="9.5" fill="#047857">approval.approved=true（已确认）</text>
-
-  <!-- 是 → approval_required -->
-  <path d="M 770,470 L 1060,470 L 1060,540" fill="none" stroke="#d97706" stroke-width="1.2" marker-end="url(#adisp)"/>
-  <text x="800" y="463" font-size="9.5" fill="#92400e">是 · 需要审批</text>
-
-  <!-- ===== 三态卡片 ===== -->
-  <!-- S3 直执行 -->
-  <g>
-    <rect x="120" y="562" width="220" height="110" rx="8" fill="#ecfdf5" stroke="#059669" stroke-width="1.4"/>
-    <text x="230" y="586" font-size="12" font-weight="700" fill="#047857" text-anchor="middle">① 直执行 execute</text>
-    <line x1="140" y1="595" x2="320" y2="595" stroke="#059669" stroke-width="0.5" stroke-opacity="0.4"/>
-    <text x="230" y="613" font-size="9.5" fill="#475569" text-anchor="middle">func(*args, **kwargs)</text>
-    <text x="230" y="628" font-size="9.5" fill="#475569" text-anchor="middle">调用真实工具 impl</text>
-    <text x="230" y="648" font-size="9" fill="#64748b" text-anchor="middle">low 风险 · 默认放行</text>
-    <text x="230" y="662" font-size="9" fill="#64748b" text-anchor="middle">或已带 approved=true</text>
-  </g>
-  <!-- S1 审批 -->
-  <g>
-    <rect x="900" y="562" width="320" height="110" rx="8" fill="#fff7ed" stroke="#d97706" stroke-width="1.4"/>
-    <text x="1060" y="586" font-size="12" font-weight="700" fill="#92400e" text-anchor="middle">② 审批 approval_required</text>
-    <line x1="920" y1="595" x2="1200" y2="595" stroke="#d97706" stroke-width="0.5" stroke-opacity="0.4"/>
-    <text x="1060" y="613" font-size="9.5" fill="#475569" text-anchor="middle">返回 envelope: ok=false</text>
-    <text x="1060" y="628" font-size="9.5" fill="#475569" text-anchor="middle">approval_request.id = appr_&lt;uuid&gt;</text>
-    <text x="1060" y="648" font-size="9" fill="#64748b" text-anchor="middle">risk_level + side_effects</text>
-    <text x="1060" y="662" font-size="9" fill="#64748b" text-anchor="middle">→ 中断 run / 等待用户确认</text>
-  </g>
-  <!-- S2 拒绝 -->
-  <g>
-    <rect x="380" y="562" width="220" height="110" rx="8" fill="#fef2f2" stroke="#b91c1c" stroke-width="1.4"/>
-    <text x="490" y="586" font-size="12" font-weight="700" fill="#b91c1c" text-anchor="middle">③ 拒绝 approval_rejected</text>
-    <line x1="400" y1="595" x2="580" y2="595" stroke="#b91c1c" stroke-width="0.5" stroke-opacity="0.4"/>
-    <text x="490" y="613" font-size="9.5" fill="#475569" text-anchor="middle">approved=false / 命令 reject</text>
-    <text x="490" y="628" font-size="9.5" fill="#475569" text-anchor="middle">ok=false · reason 回填</text>
-    <text x="490" y="648" font-size="9" fill="#64748b" text-anchor="middle">用户拒绝 · 不执行</text>
-    <text x="490" y="662" font-size="9" fill="#64748b" text-anchor="middle">命令策略拦截</text>
-  </g>
-
-  <!-- 用户确认回流（approval_required → execute）-->
-  <path d="M 900,617 L 680,617 L 680,640 L 340,640 L 340,672" fill="none" stroke="#059669" stroke-width="1.2" marker-end="url(#agn)" stroke-dasharray="5,3"/>
-  <text x="690" y="610" font-size="9.5" fill="#047857">用户确认 approved=true → 重新 invoke</text>
-
-  <!-- 用户拒绝 → S2 -->
-  <path d="M 960,617 L 600,617" fill="none" stroke="#b91c1c" stroke-width="1.2" marker-end="url(#aalert)" stroke-dasharray="5,3"/>
-  <text x="780" y="635" font-size="9.5" fill="#b91c1c" text-anchor="middle">用户拒绝 approved=false</text>
-
-  <!-- S1 envelope → InterruptInfo (runtime.py) -->
-  <path d="M 1060,672 L 1060,710 L 760,710 L 760,755" fill="none" stroke="#7c3aed" stroke-width="1.2" marker-end="url(#askill)" stroke-opacity="0.55"/>
-
-  <!-- ===== Region: 执行边界 + 结构化结果 ===== -->
-  <rect x="40" y="720" width="1240" height="100" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.2" stroke-dasharray="5,4"/>
-  <text x="56" y="740" font-size="11.5" font-weight="700" fill="#334155">执行边界 + 结构化结果</text>
-
-  <!-- 真实 impl -->
-  <g>
-    <rect x="100" y="752" width="240" height="56" rx="6" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
-    <text x="220" y="775" font-size="12" font-weight="600" fill="#1e293b" text-anchor="middle">工具实现 impl</text>
-    <text x="220" y="791" font-size="9" fill="#475569" text-anchor="middle">workspace · sandbox · web · skill</text>
-    <text x="220" y="803" font-size="9" fill="#64748b" text-anchor="middle">run_command / write_workspace_file …</text>
-  </g>
-  <!-- Sandbox backend -->
-  <g>
-    <rect x="430" y="752" width="240" height="56" rx="6" fill="#eef2ff" stroke="#7c3aed" stroke-width="1.2"/>
-    <text x="550" y="775" font-size="12" font-weight="600" fill="#1e293b" text-anchor="middle">Sandbox backend</text>
-    <text x="550" y="791" font-size="9" fill="#475569" text-anchor="middle">E2B-compatible · 隔离执行</text>
-    <text x="550" y="803" font-size="9" fill="#64748b" text-anchor="middle">local_process / e2b backend</text>
-  </g>
-  <!-- InterruptInfo -->
-  <g>
-    <rect x="660" y="752" width="240" height="56" rx="6" fill="#eef2ff" stroke="#7c3aed" stroke-width="1.2"/>
-    <text x="780" y="775" font-size="12" font-weight="600" fill="#1e293b" text-anchor="middle">approval_interrupt_info</text>
-    <text x="780" y="791" font-size="9" fill="#475569" text-anchor="middle">interrupt_info · 中断 run</text>
-    <text x="780" y="803" font-size="9" fill="#64748b" text-anchor="middle">conversations/runtime.py</text>
-  </g>
-  <!-- 结构化结果 -->
-  <g>
-    <rect x="980" y="752" width="260" height="56" rx="6" fill="#ffffff" stroke="#475569" stroke-width="1.2"/>
-    <text x="1110" y="775" font-size="12" font-weight="600" fill="#1e293b" text-anchor="middle">结构化结果</text>
-    <text x="1110" y="791" font-size="9" fill="#475569" text-anchor="middle">ok · type · result · receipts</text>
-    <text x="1110" y="803" font-size="9" fill="#64748b" text-anchor="middle">idempotency_key (sha256)</text>
-  </g>
-
-  <!-- 连线：impl → sandbox → 结果；reject → 结果 -->
-  <path d="M 340,780 L 430,780" fill="none" stroke="#059669" stroke-width="1.2" marker-end="url(#agn)"/>
-  <path d="M 670,780 L 980,780" fill="none" stroke="#059669" stroke-width="1.2" marker-end="url(#agn)" stroke-opacity="0.5"/>
-  <path d="M 490,672 L 490,710 L 1110,710 L 1110,752" fill="none" stroke="#b91c1c" stroke-width="1.2" marker-end="url(#aalert)" stroke-dasharray="5,3"/>
-  <text x="780" y="704" font-size="9.5" fill="#b91c1c" text-anchor="middle">rejected / envelope 一并写回 transcript</text>
-
-  <!-- ===== 图例 ===== -->
-  <g transform="translate(40, 845)">
-    <text x="0" y="0" font-size="11" font-weight="700" fill="#1e293b">图例</text>
-    <rect x="0" y="12" width="14" height="14" rx="2" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
-    <text x="20" y="23" font-size="9.5" fill="#475569">运行时 / 直接执行</text>
-    <rect x="150" y="12" width="14" height="14" rx="2" fill="#fff7ed" stroke="#d97706" stroke-width="1.2"/>
-    <text x="170" y="23" font-size="9.5" fill="#475569">策略评估 / 审批闸口</text>
-    <rect x="320" y="12" width="14" height="14" rx="2" fill="#fef2f2" stroke="#b91c1c" stroke-width="1.2"/>
-    <text x="340" y="23" font-size="9.5" fill="#475569">拒绝 / 拦截</text>
-    <rect x="450" y="12" width="14" height="14" rx="2" fill="#eef2ff" stroke="#7c3aed" stroke-width="1.2"/>
-    <text x="470" y="23" font-size="9.5" fill="#475569">中断 / 存储侧</text>
-    <line x1="600" y1="19" x2="640" y2="19" stroke="#059669" stroke-width="1.2" marker-end="url(#agn)"/>
-    <text x="648" y="23" font-size="9.5" fill="#475569">直执行 / 确认通过</text>
-    <line x1="780" y1="19" x2="820" y2="19" stroke="#b91c1c" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#aalert)"/>
-    <text x="828" y="23" font-size="9.5" fill="#475569">拒绝 / 拦截流</text>
-    <text x="0" y="48" font-size="9.5" fill="#64748b">三态：low / off 模式 → 直执行；strict 且 risk≥medium → approval_required；approved=false 或命令策略 reject → approval_rejected</text>
-    <text x="0" y="63" font-size="9.5" fill="#64748b">边界：ToolGateway.invoke 在调用真实 impl 前校验 ToolPolicy；shell 命令额外经 check_command_policy；envelope 与 receipts 写回会话 transcript</text>
-  </g>
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+ "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<!-- Generated by graphviz version 12.1.1 (20240910.0053)
+ -->
+<!-- Title: ToolGateway Pages: 1 -->
+<svg width="657pt" height="1013pt"
+ viewBox="0.00 0.00 657.00 1013.38" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<style>
+@media (prefers-color-scheme: dark) {
+  svg { background: #0f172a; }
+  polygon[fill="#fbfbf9"] { fill: #0f172a; }
+  path[fill="#ffffff"] { fill: #1e293b; }
+  path[fill="#fff7ed"] { fill: #1e1b14; }
+  path[fill="#ecfdf5"] { fill: #0f1f1a; }
+  path[fill="#eef2ff"] { fill: #1a1f2e; }
+  path[fill="#fef2f2"] { fill: #1f1414; }
+  text { fill: #e2e8f0 !important; }
+  path[stroke="#475569"], path[stroke="#059669"], path[stroke="#7c3aed"], path[stroke="#d97706"], path[stroke="#6366f1"], path[stroke="#b91c1c"] { stroke-opacity: 0.8; }
+}
+</style>
+<g id="graph0" class="graph" transform="scale(1 1) rotate(0) translate(4 1009.38)">
+<title>ToolGateway</title>
+<polygon fill="#fbfbf9" stroke="none" points="-4,4 -4,-1009.38 653,-1009.38 653,4 -4,4"/>
+<text text-anchor="middle" x="324.5" y="-988.08" font-family="PingFang SC" font-size="14.00">Tool Gateway 审批流</text>
+<text text-anchor="middle" x="324.5" y="-967.83" font-family="PingFang SC" font-size="14.00">三态：直执行 / 审批 / 拒绝</text>
+<g id="clust1" class="cluster">
+<title>cluster_policy</title>
+<path fill="#ffffff" stroke="#7c3aed" d="M227,-685.93C227,-685.93 609,-685.93 609,-685.93 615,-685.93 621,-691.93 621,-697.93 621,-697.93 621,-859.48 621,-859.48 621,-865.48 615,-871.48 609,-871.48 609,-871.48 227,-871.48 227,-871.48 221,-871.48 215,-865.48 215,-859.48 215,-859.48 215,-697.93 215,-697.93 215,-691.93 221,-685.93 227,-685.93"/>
+<text text-anchor="middle" x="418" y="-854.18" font-family="PingFang SC" font-size="14.00">ToolPolicy 风险评估</text>
+</g>
+<g id="clust2" class="cluster">
+<title>cluster_exec</title>
+<path fill="#ffffff" stroke="#059669" d="M20,-74.9C20,-74.9 267,-74.9 267,-74.9 273,-74.9 279,-80.9 279,-86.9 279,-86.9 279,-262.2 279,-262.2 279,-268.2 273,-274.2 267,-274.2 267,-274.2 20,-274.2 20,-274.2 14,-274.2 8,-268.2 8,-262.2 8,-262.2 8,-86.9 8,-86.9 8,-80.9 14,-74.9 20,-74.9"/>
+<text text-anchor="middle" x="143.5" y="-256.9" font-family="PingFang SC" font-size="14.00">态 1 · 直执行（low risk / 已 approved）</text>
+</g>
+<g id="clust3" class="cluster">
+<title>cluster_appr</title>
+<path fill="#ffffff" stroke="#d97706" d="M230,-305.7C230,-305.7 476,-305.7 476,-305.7 482,-305.7 488,-311.7 488,-317.7 488,-317.7 488,-519.39 488,-519.39 488,-525.39 482,-531.39 476,-531.39 476,-531.39 230,-531.39 230,-531.39 224,-531.39 218,-525.39 218,-519.39 218,-519.39 218,-317.7 218,-317.7 218,-311.7 224,-305.7 230,-305.7"/>
+<text text-anchor="middle" x="353" y="-514.09" font-family="PingFang SC" font-size="14.00">态 2 · 审批（high / medium）</text>
+</g>
+<g id="clust4" class="cluster">
+<title>cluster_rej</title>
+<path fill="#ffffff" stroke="#b91c1c" d="M299,-74.9C299,-74.9 629,-74.9 629,-74.9 635,-74.9 641,-80.9 641,-86.9 641,-86.9 641,-153.05 641,-153.05 641,-159.05 635,-165.05 629,-165.05 629,-165.05 299,-165.05 299,-165.05 293,-165.05 287,-159.05 287,-153.05 287,-153.05 287,-86.9 287,-86.9 287,-80.9 293,-74.9 299,-74.9"/>
+<text text-anchor="middle" x="464" y="-147.75" font-family="PingFang SC" font-size="14.00">态 3 · 拒绝</text>
+</g>
+<!-- Agent -->
+<g id="node1" class="node">
+<title>Agent</title>
+<path fill="#eef2ff" stroke="#6366f1" d="M531.17,-956.88C531.17,-956.88 292.82,-956.88 292.82,-956.88 286.82,-956.88 280.82,-950.88 280.82,-944.88 280.82,-944.88 280.82,-922.98 280.82,-922.98 280.82,-916.98 286.82,-910.98 292.82,-910.98 292.82,-910.98 531.17,-910.98 531.17,-910.98 537.17,-910.98 543.17,-916.98 543.17,-922.98 543.17,-922.98 543.17,-944.88 543.17,-944.88 543.17,-950.88 537.17,-956.88 531.17,-956.88"/>
+<text text-anchor="middle" x="412" y="-939.23" font-family="PingFang SC" font-size="11.00">Agent 调用工具</text>
+<text text-anchor="middle" x="412" y="-923.48" font-family="PingFang SC" font-size="11.00">ToolGateway.invoke(tool_name, args, approval)</text>
+</g>
+<!-- Policy -->
+<g id="node2" class="node">
+<title>Policy</title>
+<path fill="#eef2ff" stroke="#7c3aed" d="M484.3,-835.23C484.3,-835.23 339.7,-835.23 339.7,-835.23 333.7,-835.23 327.7,-829.23 327.7,-823.23 327.7,-823.23 327.7,-801.33 327.7,-801.33 327.7,-795.33 333.7,-789.33 339.7,-789.33 339.7,-789.33 484.3,-789.33 484.3,-789.33 490.3,-789.33 496.3,-795.33 496.3,-801.33 496.3,-801.33 496.3,-823.23 496.3,-823.23 496.3,-829.23 490.3,-835.23 484.3,-835.23"/>
+<text text-anchor="middle" x="412" y="-817.58" font-family="PingFang SC" font-size="11.00">ToolPolicy</text>
+<text text-anchor="middle" x="412" y="-801.83" font-family="PingFang SC" font-size="11.00">risk_level / requires_approval</text>
+</g>
+<!-- Agent&#45;&gt;Policy -->
+<g id="edge3" class="edge">
+<title>Agent&#45;&gt;Policy</title>
+<path fill="none" stroke="#475569" stroke-width="1.2" d="M412,-910.71C412,-892.82 412,-867.41 412,-847.02"/>
+<polygon fill="#475569" stroke="#475569" stroke-width="1.2" points="415.5,-847.2 412,-837.2 408.5,-847.2 415.5,-847.2"/>
+<text text-anchor="middle" x="425.5" y="-884.43" font-family="PingFang SC" font-size="9.00">查策略</text>
+</g>
+<!-- Risk -->
+<g id="node3" class="node">
+<title>Risk</title>
+<path fill="#eef2ff" stroke="#7c3aed" d="M384.93,-739.83C384.93,-739.83 235.07,-739.83 235.07,-739.83 229.07,-739.83 223.07,-733.83 223.07,-727.83 223.07,-727.83 223.07,-705.93 223.07,-705.93 223.07,-699.93 229.07,-693.93 235.07,-693.93 235.07,-693.93 384.93,-693.93 384.93,-693.93 390.93,-693.93 396.93,-699.93 396.93,-705.93 396.93,-705.93 396.93,-727.83 396.93,-727.83 396.93,-733.83 390.93,-739.83 384.93,-739.83"/>
+<text text-anchor="middle" x="310" y="-722.18" font-family="PingFang SC" font-size="11.00">风险分级</text>
+<text text-anchor="middle" x="310" y="-706.43" font-family="PingFang SC" font-size="11.00">low / medium / high / critical</text>
+</g>
+<!-- Policy&#45;&gt;Risk -->
+<g id="edge1" class="edge">
+<title>Policy&#45;&gt;Risk</title>
+<path fill="none" stroke="#475569" stroke-width="1.2" d="M387.57,-788.91C374.2,-776.66 357.44,-761.32 342.93,-748.03"/>
+<polygon fill="#475569" stroke="#475569" stroke-width="1.2" points="345.31,-745.47 335.57,-741.3 340.58,-750.63 345.31,-745.47"/>
+</g>
+<!-- CmdPolicy -->
+<g id="node4" class="node">
+<title>CmdPolicy</title>
+<path fill="#fef2f2" stroke="#b91c1c" d="M600.92,-739.83C600.92,-739.83 427.07,-739.83 427.07,-739.83 421.07,-739.83 415.07,-733.83 415.07,-727.83 415.07,-727.83 415.07,-705.93 415.07,-705.93 415.07,-699.93 421.07,-693.93 427.07,-693.93 427.07,-693.93 600.92,-693.93 600.92,-693.93 606.92,-693.93 612.92,-699.93 612.92,-705.93 612.92,-705.93 612.92,-727.83 612.92,-727.83 612.92,-733.83 606.92,-739.83 600.92,-739.83"/>
+<text text-anchor="middle" x="514" y="-722.18" font-family="PingFang SC" font-size="11.00">命令策略 check_command_policy</text>
+<text text-anchor="middle" x="514" y="-706.43" font-family="PingFang SC" font-size="11.00">rm &#45;rf / 危险命令 / metadata 端点</text>
+</g>
+<!-- Policy&#45;&gt;CmdPolicy -->
+<g id="edge2" class="edge">
+<title>Policy&#45;&gt;CmdPolicy</title>
+<path fill="none" stroke="#475569" stroke-width="1.2" d="M436.43,-788.91C449.8,-776.66 466.56,-761.32 481.07,-748.03"/>
+<polygon fill="#475569" stroke="#475569" stroke-width="1.2" points="483.42,-750.63 488.43,-741.3 478.69,-745.47 483.42,-750.63"/>
+<text text-anchor="middle" x="491.61" y="-762.78" font-family="PingFang SC" font-size="9.00">命令类工具</text>
+</g>
+<!-- Decision -->
+<g id="node5" class="node">
+<title>Decision</title>
+<path fill="#fff7ed" stroke="#d97706" d="M248.18,-654.83C248.18,-654.83 29.54,-616.01 29.54,-616.01 23.63,-614.96 23.63,-612.86 29.54,-611.81 29.54,-611.81 248.18,-572.99 248.18,-572.99 254.09,-571.94 265.91,-571.94 271.82,-572.99 271.82,-572.99 490.46,-611.81 490.46,-611.81 496.37,-612.86 496.37,-614.96 490.46,-616.01 490.46,-616.01 271.82,-654.83 271.82,-654.83 265.91,-655.88 254.09,-655.88 248.18,-654.83"/>
+<text text-anchor="middle" x="260" y="-619.21" font-family="PingFang SC" font-size="11.00">requires_approval?</text>
+<text text-anchor="middle" x="260" y="-603.46" font-family="PingFang SC" font-size="11.00">mode != off 且 risk ∈ {medium,high,critical}</text>
+</g>
+<!-- Risk&#45;&gt;Decision -->
+<g id="edge4" class="edge">
+<title>Risk&#45;&gt;Decision</title>
+<path fill="none" stroke="#475569" stroke-width="1.2" d="M298.9,-693.47C294.63,-684.85 289.57,-674.62 284.53,-664.45"/>
+<polygon fill="#475569" stroke="#475569" stroke-width="1.2" points="287.7,-662.97 280.13,-655.56 281.43,-666.07 287.7,-662.97"/>
+</g>
+<!-- CmdReject -->
+<g id="node11" class="node">
+<title>CmdReject</title>
+<path fill="#fef2f2" stroke="#b91c1c" d="M621.05,-128.8C621.05,-128.8 438.95,-128.8 438.95,-128.8 432.95,-128.8 426.95,-122.8 426.95,-116.8 426.95,-116.8 426.95,-94.9 426.95,-94.9 426.95,-88.9 432.95,-82.9 438.95,-82.9 438.95,-82.9 621.05,-82.9 621.05,-82.9 627.05,-82.9 633.05,-88.9 633.05,-94.9 633.05,-94.9 633.05,-116.8 633.05,-116.8 633.05,-122.8 627.05,-128.8 621.05,-128.8"/>
+<text text-anchor="middle" x="530" y="-111.15" font-family="PingFang SC" font-size="11.00">命令策略 reject</text>
+<text text-anchor="middle" x="530" y="-95.4" font-family="PingFang SC" font-size="11.00">command_rejected · error_message</text>
+</g>
+<!-- CmdPolicy&#45;&gt;CmdReject -->
+<g id="edge11" class="edge">
+<title>CmdPolicy&#45;&gt;CmdReject</title>
+<path fill="none" stroke="#b91c1c" stroke-width="1.2" d="M519.6,-693.58C524.21,-673.23 530,-642.24 530,-614.91 530,-614.91 530,-614.91 530,-214 530,-189.43 530,-161.69 530,-140.59"/>
+<polygon fill="#b91c1c" stroke="#b91c1c" stroke-width="1.2" points="533.5,-140.83 530,-130.83 526.5,-140.83 533.5,-140.83"/>
+<text text-anchor="middle" x="542" y="-422.69" font-family="PingFang SC" font-size="9.00">reject</text>
+</g>
+<!-- Invoke -->
+<g id="node6" class="node">
+<title>Invoke</title>
+<path fill="#ecfdf5" stroke="#059669" d="M258.68,-237.95C258.68,-237.95 107.32,-237.95 107.32,-237.95 101.32,-237.95 95.33,-231.95 95.33,-225.95 95.33,-225.95 95.33,-204.05 95.33,-204.05 95.33,-198.05 101.33,-192.05 107.33,-192.05 107.33,-192.05 258.68,-192.05 258.68,-192.05 264.68,-192.05 270.68,-198.05 270.68,-204.05 270.68,-204.05 270.68,-225.95 270.68,-225.95 270.68,-231.95 264.68,-237.95 258.68,-237.95"/>
+<text text-anchor="middle" x="183" y="-220.3" font-family="PingFang SC" font-size="11.00">ToolGateway.invoke 真实 impl</text>
+<text text-anchor="middle" x="183" y="-204.55" font-family="PingFang SC" font-size="11.00">(toolset / sandbox / web)</text>
+</g>
+<!-- Decision&#45;&gt;Invoke -->
+<g id="edge6" class="edge">
+<title>Decision&#45;&gt;Invoke</title>
+<path fill="none" stroke="#059669" stroke-width="1.2" d="M224.86,-576.92C194.08,-542.66 151.55,-488.05 133.75,-431.24 113.82,-367.64 143.68,-291.15 164.89,-248.61"/>
+<polygon fill="#059669" stroke="#059669" stroke-width="1.2" points="167.9,-250.41 169.36,-239.92 161.67,-247.21 167.9,-250.41"/>
+<text text-anchor="middle" x="173.88" y="-422.69" font-family="PingFang SC" font-size="9.00">否 / approved=true</text>
+</g>
+<!-- Required -->
+<g id="node8" class="node">
+<title>Required</title>
+<path fill="#fff7ed" stroke="#d97706" d="M468.05,-495.14C468.05,-495.14 237.95,-495.14 237.95,-495.14 231.95,-495.14 225.95,-489.14 225.95,-483.14 225.95,-483.14 225.95,-461.24 225.95,-461.24 225.95,-455.24 231.95,-449.24 237.95,-449.24 237.95,-449.24 468.05,-449.24 468.05,-449.24 474.05,-449.24 480.05,-455.24 480.05,-461.24 480.05,-461.24 480.05,-483.14 480.05,-483.14 480.05,-489.14 474.05,-495.14 468.05,-495.14"/>
+<text text-anchor="middle" x="353" y="-477.49" font-family="PingFang SC" font-size="11.00">approval_required</text>
+<text text-anchor="middle" x="353" y="-461.74" font-family="PingFang SC" font-size="11.00">approval_request_id · risk_level · side_effects</text>
+</g>
+<!-- Decision&#45;&gt;Required -->
+<g id="edge8" class="edge">
+<title>Decision&#45;&gt;Required</title>
+<path fill="none" stroke="#d97706" stroke-width="1.2" d="M285.17,-575.1C299.78,-553.15 317.97,-525.82 331.84,-504.98"/>
+<polygon fill="#d97706" stroke="#d97706" stroke-width="1.2" points="334.63,-507.11 337.26,-496.84 328.8,-503.23 334.63,-507.11"/>
+<text text-anchor="middle" x="311" y="-544.34" font-family="PingFang SC" font-size="9.00">是</text>
+</g>
+<!-- Result -->
+<g id="node7" class="node">
+<title>Result</title>
+<path fill="#ecfdf5" stroke="#059669" d="M250.55,-128.8C250.55,-128.8 131.45,-128.8 131.45,-128.8 125.45,-128.8 119.45,-122.8 119.45,-116.8 119.45,-116.8 119.45,-94.9 119.45,-94.9 119.45,-88.9 125.45,-82.9 131.45,-82.9 131.45,-82.9 250.55,-82.9 250.55,-82.9 256.55,-82.9 262.55,-88.9 262.55,-94.9 262.55,-94.9 262.55,-116.8 262.55,-116.8 262.55,-122.8 256.55,-128.8 250.55,-128.8"/>
+<text text-anchor="middle" x="191" y="-111.15" font-family="PingFang SC" font-size="11.00">结构化结果</text>
+<text text-anchor="middle" x="191" y="-95.4" font-family="PingFang SC" font-size="11.00">ok / output / receipt_id</text>
+</g>
+<!-- Invoke&#45;&gt;Result -->
+<g id="edge5" class="edge">
+<title>Invoke&#45;&gt;Result</title>
+<path fill="none" stroke="#475569" stroke-width="1.2" d="M184.66,-191.8C185.76,-177 187.24,-157.27 188.48,-140.55"/>
+<polygon fill="#475569" stroke="#475569" stroke-width="1.2" points="191.95,-141.07 189.21,-130.83 184.97,-140.55 191.95,-141.07"/>
+</g>
+<!-- ResultEnd -->
+<g id="node12" class="node">
+<title>ResultEnd</title>
+<path fill="#eef2ff" stroke="#6366f1" d="M409.3,-45.9C409.3,-45.9 294.7,-45.9 294.7,-45.9 288.7,-45.9 282.7,-39.9 282.7,-33.9 282.7,-33.9 282.7,-12 282.7,-12 282.7,-6 288.7,0 294.7,0 294.7,0 409.3,0 409.3,0 415.3,0 421.3,-6 421.3,-12 421.3,-12 421.3,-33.9 421.3,-33.9 421.3,-39.9 415.3,-45.9 409.3,-45.9"/>
+<text text-anchor="middle" x="352" y="-28.25" font-family="PingFang SC" font-size="11.00">Agent 收到结构化结果</text>
+<text text-anchor="middle" x="352" y="-12.5" font-family="PingFang SC" font-size="11.00">(渲染 / 写回 transcript)</text>
+</g>
+<!-- Result&#45;&gt;ResultEnd -->
+<g id="edge12" class="edge">
+<title>Result&#45;&gt;ResultEnd</title>
+<path fill="none" stroke="#475569" stroke-width="1.2" d="M235.42,-82.53C254.43,-72.98 276.83,-61.72 296.89,-51.64"/>
+<polygon fill="#475569" stroke="#475569" stroke-width="1.2" points="298.46,-54.77 305.82,-47.15 295.32,-48.52 298.46,-54.77"/>
+</g>
+<!-- User -->
+<g id="node9" class="node">
+<title>User</title>
+<path fill="#fff7ed" stroke="#d97706" d="M340.66,-395.82C340.66,-395.82 238.81,-360.64 238.81,-360.64 233.14,-358.68 233.14,-354.76 238.81,-352.8 238.81,-352.8 340.66,-317.62 340.66,-317.62 346.33,-315.66 357.67,-315.66 363.34,-317.62 363.34,-317.62 465.19,-352.8 465.19,-352.8 470.86,-354.76 470.86,-358.68 465.19,-360.64 465.19,-360.64 363.34,-395.82 363.34,-395.82 357.67,-397.78 346.33,-397.78 340.66,-395.82"/>
+<text text-anchor="middle" x="352" y="-362.02" font-family="PingFang SC" font-size="11.00">用户确认</text>
+<text text-anchor="middle" x="352" y="-346.27" font-family="PingFang SC" font-size="11.00">approved: true | false</text>
+</g>
+<!-- Required&#45;&gt;User -->
+<g id="edge7" class="edge">
+<title>Required&#45;&gt;User</title>
+<path fill="none" stroke="#475569" stroke-width="1.2" d="M352.8,-448.77C352.71,-437.98 352.59,-424.54 352.47,-411.32"/>
+<polygon fill="#475569" stroke="#475569" stroke-width="1.2" points="355.98,-411.63 352.39,-401.66 348.98,-411.69 355.98,-411.63"/>
+</g>
+<!-- User&#45;&gt;Invoke -->
+<g id="edge9" class="edge">
+<title>User&#45;&gt;Invoke</title>
+<path fill="none" stroke="#059669" stroke-width="1.2" d="M314.97,-326.29C302.89,-316.61 289.45,-305.75 277.25,-295.7 257.39,-279.34 235.43,-260.79 217.7,-245.71"/>
+<polygon fill="#059669" stroke="#059669" stroke-width="1.2" points="220.12,-243.17 210.24,-239.35 215.58,-248.5 220.12,-243.17"/>
+<text text-anchor="middle" x="307.62" y="-287.15" font-family="PingFang SC" font-size="9.00">approved=true</text>
+</g>
+<!-- Reject -->
+<g id="node10" class="node">
+<title>Reject</title>
+<path fill="#fef2f2" stroke="#b91c1c" d="M396.55,-128.8C396.55,-128.8 307.45,-128.8 307.45,-128.8 301.45,-128.8 295.45,-122.8 295.45,-116.8 295.45,-116.8 295.45,-94.9 295.45,-94.9 295.45,-88.9 301.45,-82.9 307.45,-82.9 307.45,-82.9 396.55,-82.9 396.55,-82.9 402.55,-82.9 408.55,-88.9 408.55,-94.9 408.55,-94.9 408.55,-116.8 408.55,-116.8 408.55,-122.8 402.55,-128.8 396.55,-128.8"/>
+<text text-anchor="middle" x="352" y="-111.15" font-family="PingFang SC" font-size="11.00">approval_rejected</text>
+<text text-anchor="middle" x="352" y="-95.4" font-family="PingFang SC" font-size="11.00">reason · risk_level</text>
+</g>
+<!-- User&#45;&gt;Reject -->
+<g id="edge10" class="edge">
+<title>User&#45;&gt;Reject</title>
+<path fill="none" stroke="#b91c1c" stroke-width="1.2" d="M352,-313.22C352,-264.49 352,-185.59 352,-140.78"/>
+<polygon fill="#b91c1c" stroke="#b91c1c" stroke-width="1.2" points="355.5,-140.92 352,-130.92 348.5,-140.92 355.5,-140.92"/>
+<text text-anchor="middle" x="384.25" y="-213.2" font-family="PingFang SC" font-size="9.00">approved=false</text>
+</g>
+<!-- Reject&#45;&gt;ResultEnd -->
+<g id="edge13" class="edge">
+<title>Reject&#45;&gt;ResultEnd</title>
+<path fill="none" stroke="#b91c1c" stroke-width="1.2" stroke-dasharray="5,2" d="M352,-82.74C352,-75.14 352,-66.43 352,-58.09"/>
+<polygon fill="#b91c1c" stroke="#b91c1c" stroke-width="1.2" points="355.5,-58.13 352,-48.13 348.5,-58.13 355.5,-58.13"/>
+</g>
+<!-- CmdReject&#45;&gt;ResultEnd -->
+<g id="edge14" class="edge">
+<title>CmdReject&#45;&gt;ResultEnd</title>
+<path fill="none" stroke="#b91c1c" stroke-width="1.2" stroke-dasharray="5,2" d="M480.89,-82.53C459.58,-72.84 434.42,-61.41 412.01,-51.22"/>
+<polygon fill="#b91c1c" stroke="#b91c1c" stroke-width="1.2" points="413.46,-48.04 402.91,-47.09 410.57,-54.41 413.46,-48.04"/>
+</g>
+</g>
 </svg>

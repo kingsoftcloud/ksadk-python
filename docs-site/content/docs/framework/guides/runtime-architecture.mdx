@@ -41,59 +41,9 @@ KsADK 本地运行时的核心职责是：加载用户 Agent 项目，把所选�
 如果框架检测结果是 `unknown`，CLI 会在导入用户代码作为 Runner 之前停止，避免把不可识别的项目当成 Runner 加载。
 </Callout>
 
-```mermaid
-flowchart TD
-  classDef brand fill:#5368db,stroke:#3a4ab8,color:#fff
-  classDef accent fill:#59d3d9,stroke:#2fa9af,color:#0a1f2e
-  classDef stop fill:#e0556a,stroke:#b53a4f,color:#fff
+![KsADK 启动生命周期](/assets/ksadk-startup-lifecycle.svg)
 
-  subgraph CLI["ksadk.cli (入口)"]
-    Entry["agentengine run / web"]
-  end
-  subgraph Boot["启动准备"]
-    Resolve["解析项目目录"]
-    EnvLoad["加载 .env / agentengine.yaml"]
-  end
-  subgraph Detect["框架检测"]
-    Detector["FrameworkDetector.detect"]
-    Result{"DetectionResult"}
-  end
-  subgraph Factory["Runner Factory"]
-    Create["create_runner"]
-    ADK["ADKRunner"]
-    LG["LangGraphRunner"]
-    LC["LangChainRunner"]
-    DA["DeepAgentsRunner"]
-    Unknown["stop: project error"]:::stop
-  end
-  subgraph Load["用户代码加载"]
-    LoadAgent["runner.load_agent"]
-  end
-  subgraph Serve["运行态"]
-    Terminal["terminal loop"]
-    Server["FastAPI app + local UI"]
-  end
 
-  Entry -->|"resolve project dir"| Resolve
-  Resolve -->|"load env + YAML"| EnvLoad
-  EnvLoad -->|"detect framework"| Detector
-  Detector --> Result
-  Result -->|"adk"| ADK
-  Result -->|"langgraph"| LG
-  Result -->|"langchain"| LC
-  Result -->|"deepagents"| DA
-  Result -->|"unknown"| Unknown
-  ADK --> Create
-  LG --> Create
-  LC --> Create
-  DA --> Create
-  Create -->|"import user module"| LoadAgent
-  LoadAgent -->|"interactive"| Terminal
-  LoadAgent -->|"server / web"| Server
-
-  class Entry,Resolve,EnvLoad,Detector,Create,ADK,LG,LC,DA,LoadAgent,Terminal,Server brand
-  class Result accent
-```
 
 ## 启动边界
 
@@ -124,48 +74,9 @@ agent_variable: root_agent
 
 检测优先使用显式配置，再使用约定：
 
-```mermaid
-flowchart TD
-  classDef brand fill:#5368db,stroke:#3a4ab8,color:#fff
-  classDef accent fill:#59d3d9,stroke:#2fa9af,color:#0a1f2e
-  classDef stop fill:#e0556a,stroke:#b53a4f,color:#fff
+![框架检测流程](/assets/ksadk-framework-detection.svg)
 
-  subgraph Inputs["检测输入"]
-    Dir["项目目录"]
-  end
-  subgraph Explicit["显式配置优先"]
-    Cfg{"agentengine.yaml<br/>ksadk.yaml?"}
-    Validate["校验 framework<br/>entry_point<br/>agent_variable"]
-  end
-  subgraph Convention["约定回退"]
-    LGJson{"langgraph.json?"}
-    GraphTarget["解析 graph target"]
-    Scan["扫描包目录 + 入口文件<br/>agent.py / main.py / app.py"]
-    Analyze["_analyze_code<br/>AST 启发式"]
-  end
-  subgraph Out["检测输出"]
-    Result["DetectionResult"]
-    Unknown["unknown<br/>stop"]:::stop
-  end
-  subgraph Next["下一步"]
-    Create["create_runner"]
-  end
 
-  Dir --> Cfg
-  Cfg -->|"yes"| Validate
-  Cfg -->|"no"| LGJson
-  LGJson -->|"yes"| GraphTarget
-  LGJson -->|"no"| Scan
-  Scan --> Analyze
-  Validate --> Result
-  GraphTarget --> Result
-  Analyze --> Result
-  Result -->|"is_valid"| Create
-  Result -->|"unknown"| Unknown
-
-  class Dir,Validate,GraphTarget,Scan,Analyze,Result,Create brand
-  class Cfg,LGJson accent
-```
 
 <Callout type="info">
 公开 sample 推荐包含 `agentengine.yaml`，因为显式配置更容易审核，也较少依赖源码启发式。
