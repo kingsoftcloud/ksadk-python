@@ -240,6 +240,30 @@ CONTENT_RULES = (
         description="AWS-style access key IDs must not be published",
     ),
     ContentRule(
+        name="aws-secret-access-key",
+        # AWS Secret Access Key: 40 字符 base64-ish,常含 / + =,赋值给 SECRET_KEY/secret_key
+        pattern=re.compile(r"(?i)\b(?:aws_secret_access_key|secret_access_key|secret_key)\b\s*[:=]\s*[\"']?[A-Za-z0-9/+=]{40}"),
+        description="AWS-style secret access keys must not be published",
+    ),
+    ContentRule(
+        name="ksyun-access-key",
+        # 金山云 AK: AKLT 前缀 + 20 字符
+        pattern=re.compile(r"\bAKLT[A-Za-z0-9]{16,}\b"),
+        description="Kingsoft Cloud access keys (AKLT*) must not be published",
+    ),
+    ContentRule(
+        name="ksyun-secret-key-assignment",
+        # 金山云 SK: 赋值给 KSYUN_SECRET_KEY/secret_key,值是 40 字符 base64-ish(常以 OHL/AKL 开头但不确定)
+        pattern=re.compile(r"(?i)\bksyun_secret_key\b\s*[:=]\s*[\"']?[A-Za-z0-9/+=]{32,}"),
+        description="Kingsoft Cloud secret keys must not be published",
+    ),
+    ContentRule(
+        name="uuid-secret-assignment",
+        # UUID 格式 key 赋值给 *_API_KEY/*_TOKEN/*_MCP_KEY 等(如 OPENAI_API_KEY=4fd210b0-...)
+        pattern=re.compile(r"(?i)\b[A-Z0-9_]*(?:API_KEY|MCP_KEY|TOKEN|SECRET)[A-Z0-9_]*\b\s*[:=]\s*[\"']?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"),
+        description="UUID-shaped secrets assigned to *_KEY/*_TOKEN vars must not be published",
+    ),
+    ContentRule(
         name="openai-api-key",
         pattern=re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{40,}\b"),
         description="OpenAI-style API keys must not be published",
@@ -251,15 +275,19 @@ CONTENT_RULES = (
     ),
     ContentRule(
         name="long-lived-secret-assignment",
+        # 长串 secret 赋值:VAR=值 或 VAR: 值,值至少 24 字符,排除明显占位符。
+        # 收紧:值必须含数字或 /+=-(base64/UUID/十六进制特征),排除纯字母函数名/变量名误报
+        # (如 api_key = _resolve_workspace_command_context(...))。值后不能紧跟 ( (函数调用)。
         pattern=re.compile(
-            r"(?i)\b(?:secret_key|access_key|api_key|token|password)\b\s*[:=]\s*"
+            r"(?i)\b(?:secret_key|access_key|api_key|mcp_key|token|password|passwd)\b\s*[:=]\s*"
             r"[\"']?(?!"
-            r"dummy|test|fake|example|placeholder|"
+            r"dummy|test|fake|example|placeholder|<|your_|xxx|"
             r"sk-test|sk-live|secret-token|secret-key|super-secret|skill-service|"
             r"gateway-token-demo|stale-secret|cli-app-secret|secret-demo|"
             r"my-secret-token|kdocs-test-token|mem0-secret"
             r")"
-            r"(?:[A-Za-z0-9_./+=-]{24,})(?:[\"']|\s*$)"
+            r"(?=[A-Za-z0-9_./+=-]*[0-9/+=-])"
+            r"[A-Za-z0-9_./+=-]{24,}"
         ),
         description="Long-lived secret-looking assignments must not be published",
     ),
@@ -341,11 +369,13 @@ def should_scan_text(path: str) -> bool:
 
 
 def audit_file_contents(root: Path, paths: Iterable[str]) -> AuditResult:
+    # audit 自身测试文件含 secret 形态的 fixture(用于测规则),不应被报为违规。
+    ignored_files = {"tests/test_open_source_audit.py"}
     checked = 0
     violations: list[Violation] = []
     for raw_path in paths:
         normalized = normalize_path(raw_path)
-        if not normalized or not should_scan_text(normalized):
+        if not normalized or normalized in ignored_files or not should_scan_text(normalized):
             continue
 
         path = root / normalized
@@ -363,7 +393,8 @@ def audit_file_contents(root: Path, paths: Iterable[str]) -> AuditResult:
                 violations.append(
                     Violation(path=normalized, rule=rule.name, description=rule.description)
                 )
-                break
+                # 不 break:一个文件可能含多种 secret(如 .env 同时有 AWS/KSYUN/OpenAI key),
+                # 全部报出才能反映完整风险。
 
     return AuditResult(
         target="content",
