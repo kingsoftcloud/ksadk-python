@@ -10,23 +10,7 @@ KsADK 的公开架构是一层 **Agent Runtime Platform**：业务 Agent 仍由�
 
 ## 总览
 
-```text title="运行时分层"
-ADK / LangGraph / LangChain / DeepAgents
-                    │
-                    ▼
-                  KsADK
-                    │
-    ┌───────────────┼────────────────┐
-    ▼               ▼                ▼
- Skill Runtime   Workspace        Sandbox
-    │               │                │
-    └───────────────┼────────────────┘
-                    ▼
-              AgentEngine
-                    │
-                    ▼
-          Hermes / OpenClaw Runtime
-```
+上图展示 KsADK 的三层架构:业务 Agent 框架(用户自带)→ KsADK Runtime 数据面(核心)→ 托管控制面。KsADK 在框架之上补齐运行、调试、协议、工具、沙箱、部署与观测,业务逻辑仍留在你选择的 Agent 框架里。
 
 <Callout type="info" title="关键边界">
   KsADK 只接管"怎么跑"，不接管"做什么"。Agent 的业务逻辑、prompt、domain tools 留在你的框架代码里；运行时、会话、工具协议、部署、观测由 KsADK 统一处理。

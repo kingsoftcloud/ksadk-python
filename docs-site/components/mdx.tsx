@@ -6,24 +6,33 @@ import { Callout } from 'fumadocs-ui/components/callout';
 import { Card, Cards } from 'fumadocs-ui/components/card';
 import { TypeTable } from 'fumadocs-ui/components/type-table';
 import { File, Files, Folder } from 'fumadocs-ui/components/files';
-import { ImageZoom } from 'fumadocs-ui/components/image-zoom';
+import UncontrolledZoom from 'react-medium-image-zoom';
+import 'react-medium-image-zoom/dist/styles.css';
 import type { MDXComponents } from 'mdx/types';
 import type { DetailedHTMLProps, ImgHTMLAttributes } from 'react';
 import { Mermaid } from '@/components/mdx/mermaid';
 import { Video } from '@/components/mdx/video';
 
-// markdown ![]() 自动用 ImageZoom 包裹,支持点击放大
+// markdown ![]() 自动包裹 react-medium-image-zoom,支持点击放大。
+// 直接用原生 <img> 不经过 Next/Image,这样 SVG 也能正常显示和缩放
+// (Next/Image 默认拒绝 SVG,会导致 src 变空图渲染不出)。
 function ZoomableImg({
   src,
   alt,
   ...rest
 }: DetailedHTMLProps<ImgHTMLAttributes<HTMLImageElement>, HTMLImageElement>) {
+  // src 可能是 string 或 StaticImport 对象;统一转成字符串
+  const srcStr =
+    typeof src === 'string'
+      ? src
+      : src && typeof src === 'object' && 'src' in src
+        ? String(src.src)
+        : '';
   return (
-    <ImageZoom
-      src={typeof src === 'string' ? src : ''}
-      alt={alt ?? ''}
-      {...rest}
-    />
+    <UncontrolledZoom zoomMargin={20} wrapElement="span">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img {...rest} src={srcStr} alt={alt ?? ''} loading="lazy" />
+    </UncontrolledZoom>
   );
 }
 
