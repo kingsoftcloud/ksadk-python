@@ -147,3 +147,118 @@ def test_web_search_http_provider_uses_configured_endpoint(monkeypatch):
     assert captured["params"] == {"q": "ksadk tools", "max_results": 3, "recency_days": 7}
     assert captured["headers"]["Authorization"] == "Bearer secret"
     assert result["results"][0]["rank"] == 1
+
+
+def test_web_search_ksyun_provider_posts_to_ai_search_endpoint(monkeypatch):
+    captured = {}
+
+    def _fake_post(self, url, **kwargs):
+        captured["url"] = url
+        captured["headers"] = kwargs.get("headers")
+        captured["json"] = kwargs.get("json")
+        return httpx.Response(
+            200,
+            json={
+                "webpages": [
+                    {
+                        "title": "KsADK 文档",
+                        "link": "https://example.com/ksadk",
+                        "snippet": "KsADK 是金山云 Agent 开发工具包。",
+                        "date": "2026年07月01日",
+                        "position": 1,
+                    }
+                ],
+                "credits": 3,
+                "total": 1,
+            },
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setenv("KSADK_WEB_SEARCH_PROVIDER", "ksyun")
+    monkeypatch.setenv("KSADK_WEB_SEARCH_API_KEY", "ksyun-token")
+    monkeypatch.delenv("KSADK_WEB_SEARCH_BASE_URL", raising=False)
+    monkeypatch.setattr("ksadk.toolsets.web.httpx.Client.post", _fake_post)
+
+    result = web_search("ksadk", max_results=5)
+
+    assert result["ok"] is True
+    assert result["provider"] == "ksyun"
+    # 金山云 AI搜索用 POST + JSON body，不是 GET + params。
+    assert captured["url"] == "https://search.aipro.ksyun.com/v1/aisearch/search"
+    assert captured["headers"]["Authorization"] == "Bearer ksyun-token"
+    assert captured["json"] == {"q": "ksadk", "scope": "webpage", "size": 5}
+    assert len(result["results"]) == 1
+    first = result["results"][0]
+    assert first["title"] == "KsADK 文档"
+    assert first["url"] == "https://example.com/ksadk"
+    assert first["snippet"].startswith("KsADK 是金山云")
+    assert first["date"] == "2026年07月01日"
+    assert first["rank"] == 1
+    assert first["provider"] == "ksyun"
+
+
+def test_web_search_ksyun_provider_reuses_metaso_credentials(monkeypatch):
+    # 不设 KSADK_WEB_SEARCH_API_KEY，应回退到 KSADK_MCP_KEY / KSC_AIPRO_API_KEY。
+    monkeypatch.setenv("KSADK_WEB_SEARCH_PROVIDER", "ksyun")
+    monkeypatch.delenv("KSADK_WEB_SEARCH_API_KEY", raising=False)
+    monkeypatch.delenv("OPENCLAW_WEB_SEARCH_API_KEY", raising=False)
+    monkeypatch.setenv("KSADK_MCP_KEY", "shared-metaso-token")
+
+    captured = {}
+
+    def _fake_post(self, url, **kwargs):
+        captured["headers"] = kwargs.get("headers")
+        return httpx.Response(
+            200,
+            json={"webpages": []},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr("ksadk.toolsets.web.httpx.Client.post", _fake_post)
+
+    result = web_search("ksadk")
+
+    assert result["ok"] is True
+    assert captured["headers"]["Authorization"] == "Bearer shared-metaso-token"
+
+
+def test_web_search_ksyun_provider_returns_not_configured_without_api_key(monkeypatch):
+    monkeypatch.setenv("KSADK_WEB_SEARCH_PROVIDER", "ksyun")
+    for key in (
+        "KSADK_WEB_SEARCH_API_KEY",
+        "OPENCLAW_WEB_SEARCH_API_KEY",
+        "KSADK_MCP_KEY",
+        "KSC_AIPRO_API_KEY",
+        "KSC_AIPRO_APIKEY",
+        "AIPRO_API_KEY",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    result = web_search("ksadk")
+
+    assert result["ok"] is False
+    assert result["error_type"] == "provider_not_configured"
+    assert "api key" in result["error_message"]
+
+
+def test_web_search_ksyun_provider_respects_custom_scope(monkeypatch):
+    captured = {}
+
+    def _fake_post(self, url, **kwargs):
+        captured["json"] = kwargs.get("json")
+        return httpx.Response(
+            200,
+            json={"webpages": []},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setenv("KSADK_WEB_SEARCH_PROVIDER", "ksyun")
+    monkeypatch.setenv("KSADK_WEB_SEARCH_API_KEY", "token")
+    monkeypatch.setenv("KSADK_WEB_SEARCH_SCOPE", "scholar")
+    monkeypatch.setattr("ksadk.toolsets.web.httpx.Client.post", _fake_post)
+
+    result = web_search("transformer architecture", max_results=10)
+
+    assert result["ok"] is True
+    assert captured["json"]["scope"] == "scholar"
+    assert captured["json"]["size"] == 10
