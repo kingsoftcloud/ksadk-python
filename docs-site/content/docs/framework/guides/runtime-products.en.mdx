@@ -17,6 +17,7 @@ or ADK project packages user code. Hermes and OpenClaw deploy a maintained
 runtime image plus public configuration.
 
 ```mermaid
+flowchart TD
   CLI["agentengine CLI"] --> Control["AgentEngine control plane"]
   Control --> Image["runtime image"]
   Image --> Hermes["Hermes dashboard / API / terminal"]

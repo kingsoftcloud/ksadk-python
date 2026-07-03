@@ -15,6 +15,7 @@ title: "运行时产品：Hermes 与 OpenClaw"
 代码；Hermes 和 OpenClaw 部署的是平台维护的 runtime image 加公开配置。
 
 ```mermaid
+flowchart TD
   CLI["agentengine CLI"] --> Control["AgentEngine control plane"]
   Control --> Image["runtime image"]
   Image --> Hermes["Hermes dashboard / API / terminal"]

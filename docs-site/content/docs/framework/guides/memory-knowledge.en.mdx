@@ -35,6 +35,7 @@ KsADK separates memory and knowledge into three layers:
 3. backend services, where application-specific storage or retrieval happens.
 
 ```mermaid
+flowchart TD
   User["user request"] --> Runtime["conversation runtime"]
   Runtime --> Policy{"feature enabled?"}
   Policy -->|knowledge| KB["knowledge search"]
@@ -142,6 +143,7 @@ When configured, KsADK can build memory and knowledge context before calling the
 framework runner:
 
 ```mermaid
+flowchart TD
   Input["user input"] --> Runtime["conversation runtime"]
   Runtime --> Policy{"ambient policy"}
   Policy -->|knowledge enabled| KB["knowledge search"]

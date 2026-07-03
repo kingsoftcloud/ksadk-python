@@ -10,6 +10,7 @@ KsADK 本地运行时的核心职责是：加载用户 Agent 项目，把所选�
 ## 分层模型
 
 ```mermaid
+flowchart TD
   CLI["agentengine run / web"] --> Env["环境准备"]
   Env --> Detect["框架检测"]
   Detect --> Factory["Runner Factory"]
@@ -53,6 +54,7 @@ LangChain 还是 DeepAgents。它们调用 `BaseRunner.invoke()` 或
 如果框架检测结果是 `unknown`，CLI 会在导入用户代码作为 Runner 之前停止。
 
 ```mermaid
+flowchart TD
   A["agentengine run / web"] --> B["resolve project dir"]
   B --> C["load .env and YAML"]
   C --> D{"detect framework"}
@@ -98,6 +100,7 @@ agent_variable: root_agent
 检测优先使用显式配置，再使用约定：
 
 ```mermaid
+flowchart TD
   A["项目目录"] --> B{"agentengine.yaml / ksadk.yaml?"}
   B -->|yes| C["校验 framework, entry_point, agent_variable"]
   B -->|no| D{"langgraph.json?"}
@@ -152,6 +155,7 @@ Agent 对象。如果任一值不明确，就添加 `agentengine.yaml`。
 普通非流式 `/v1/responses` 请求路径：
 
 ```mermaid
+sequenceDiagram
   Client->>API: POST /v1/responses
   API->>Conv: invoke_conversation_once
   Conv->>Store: ensure session

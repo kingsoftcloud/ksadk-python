@@ -13,6 +13,7 @@ title: "Agent 最佳实践"
 这样规划、工具执行和最终回答收口互不混在一起。
 
 ```mermaid
+flowchart TD
   User["用户消息 / 文件"] --> Plan["plan_turn<br/>路由与策略"]
   Plan --> Specialist["ReAct specialist<br/>框架工具"]
   Specialist --> Final["finalize_answer<br/>稳定输出"]

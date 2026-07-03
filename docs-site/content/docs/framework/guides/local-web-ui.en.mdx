@@ -52,6 +52,7 @@ assets are already bundled in the wheel. Node.js is only needed when developing
 the UI source itself.
 
 ```mermaid
+flowchart TD
   Browser["Browser UI"] --> Runtime["KsADK local runtime"]
   Runtime --> Runner["Framework runner"]
   Runner --> Agent["User agent project"]

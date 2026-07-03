@@ -15,6 +15,7 @@ business work. This keeps planning, tool execution, and final answer formatting
 separate.
 
 ```mermaid
+flowchart TD
   User["User message / files"] --> Plan["plan_turn<br/>route and policy"]
   Plan --> Specialist["ReAct specialist<br/>framework tools"]
   Specialist --> Final["finalize_answer<br/>stable output"]

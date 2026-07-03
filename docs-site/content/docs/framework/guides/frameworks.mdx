@@ -23,6 +23,7 @@ Server、Web UI、会话存储和 OpenAI 兼容接口不会直接调用框架私
 而是统一调用 runner 契约；具体框架行为由 runner 负责。
 
 ```mermaid
+flowchart TD
   Project["Agent 项目"] --> Config["agentengine.yaml<br/>framework + entry_point"]
   Project --> Shape["项目形态<br/>agent.py / main.py / app.py"]
   Config --> Detect["FrameworkDetector"]
@@ -175,6 +176,7 @@ KsADK 优先读取显式项目配置。如果没有配置文件，再尝试常�
 公开示例建议使用显式 YAML，因为它更容易审查，也不依赖启发式规则。
 
 ```mermaid
+flowchart TD
   Start["开始检测"] --> Explicit{"agentengine.yaml<br/>或 ksadk.yaml?"}
   Explicit -->|是| Validate["校验 entry_point<br/>和 agent_variable"]
   Validate -->|有效| ConfigResult["返回配置 DetectionResult"]

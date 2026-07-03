@@ -26,6 +26,7 @@ Completions content blocks for `/v1/chat/completions`.
 ## Normalization Flow
 
 ```mermaid
+flowchart TD
   Raw["client input"] --> Blocks["canonical content blocks"]
   Blocks --> Parts["normalized parts"]
   Parts --> Attach["attachments"]
@@ -350,6 +351,7 @@ effective context. If a later turn has no new attachment, the runtime can restor
 the most recent attachment context from the same session.
 
 ```mermaid
+flowchart TD
   A["user turn"] --> B{"has current files?"}
   B -->|yes| C["use current attachments"]
   B -->|no| D["restore recent session attachment context"]
@@ -364,6 +366,7 @@ file.
 ## Resume After Refresh
 
 ```mermaid
+flowchart TD
   U["user upload"] --> R["runtime returns file_uri"]
   R --> C["runner consumes current_attachments"]
   R --> W["workspace preview"]
