@@ -37,9 +37,9 @@ agentengine run -i
 agentengine web . --no-open
 ```
 
-<p align="center"><img alt="KsADK 真实 Web UI 调试截图" src="public-docs/assets/ksadk-web-ui-screenshot.png" width="860" /></p>
+<p align="center"><a href="public-docs/assets/ksadk-web-ui-screenshot.png"><img alt="KsADK 真实 Web UI 调试截图" src="public-docs/assets/ksadk-web-ui-screenshot.png" width="860" /></a></p>
 
-<p align="center"><img alt="KsADK 真实本地 Web UI 演示" src="public-docs/assets/ksadk-local-debugging-demo.gif" width="860" /></p>
+<p align="center"><a href="public-docs/assets/ksadk-local-debugging-demo.gif"><img alt="KsADK 真实本地 Web UI 演示" src="public-docs/assets/ksadk-local-debugging-demo.gif" width="860" /></a></p>
 
 ## 为什么需要 KsADK
 
@@ -53,7 +53,7 @@ agentengine web . --no-open
 
 ## 架构
 
-<p align="center"><img alt="KsADK Agent Runtime Platform 架构" src="public-docs/assets/ksadk-runtime-architecture.png" width="860" /></p>
+<p align="center"><a href="public-docs/assets/ksadk-runtime-architecture.png"><img alt="KsADK Agent Runtime Platform 架构" src="public-docs/assets/ksadk-runtime-architecture.png" width="860" /></a></p>
 
 ## 文档与样例
 
