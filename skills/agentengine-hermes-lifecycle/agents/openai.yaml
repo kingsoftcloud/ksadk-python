@@ -1,0 +1,4 @@
+interface:
+  display_name: "AgentEngine Hermes"
+  short_description: "Run Hermes deploy, links, connect, and pairing flows"
+  default_prompt: "Use $agentengine-hermes-lifecycle to deploy Hermes and generate permanent chat and management links."
