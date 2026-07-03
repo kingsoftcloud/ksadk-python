@@ -76,7 +76,7 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "KSADK_WEB_VERSION ?= latest" in makefile
     assert "PUBLIC_TEST_TARGETS ?= tests/test_public_release_positioning.py tests/test_config_env_registry.py" in makefile
     assert "public-build-check: clean-dist sync-ksadk-web-static" in makefile
-    assert "public-preflight: public-audit sync-ksadk-web-static public-test public-docs-build public-build-check" in makefile
+    assert "public-preflight: public-version-gate public-audit sync-ksadk-web-static public-test public-docs-build public-build-check" in makefile
     assert "PYPI_API_TOKEN" not in workflow
     assert "password:" not in workflow
 

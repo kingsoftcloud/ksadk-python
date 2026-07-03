@@ -11,6 +11,7 @@ strict: true
 theme:
   name: material
   language: zh
+  custom_dir: public-docs/overrides
   features:
     - content.action.edit
     - content.action.view
@@ -19,10 +20,32 @@ theme:
     - navigation.footer
     - navigation.path
     - navigation.sections
-    - navigation.tabs
-    - navigation.tabs.sticky
+    - navigation.top
+    - navigation.tracking
     - search.highlight
     - search.share
+    - search.suggest
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-7
+        name: 切换到暗色模式
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-4
+        name: 切换到亮色模式
+  font:
+    text: Noto Sans SC
+    code: JetBrains Mono
+  icon:
+    logo: material/cube-outline
 
 nav:
   - Getting Started 入门:
@@ -71,6 +94,9 @@ nav:
 exclude_docs: |
   internal/
   .zread/
+
+extra_css:
+  - assets/stylesheets/extra.css
 
 not_in_nav: |
   *.en.md
