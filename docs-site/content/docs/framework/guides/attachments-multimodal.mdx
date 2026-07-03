@@ -127,6 +127,7 @@ fallback。多模态能力（视觉/图片）默认路由到 `kimi-k2.7-code`。
 ## 会话与刷新后继续读取
 
 ```mermaid
+flowchart TD
   U["用户上传"] --> R["runtime 返回 file_uri"]
   R --> C["runner 消费 current_attachments"]
   R --> W["workspace preview"]

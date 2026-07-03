@@ -11,6 +11,7 @@ KsADK 可以通过框架原生工具、MCP/A2A 集成和可选的 Skill Runtime 
 ## 工具层次
 
 ```mermaid
+flowchart TD
   Agent["用户 Agent"] --> Framework["框架适配器"]
   Framework --> Builtin["框架原生工具"]
   Framework --> MCP["MCP / A2A 工具"]
@@ -119,6 +120,7 @@ JSON parse 和通用文本检查；它不是项目级 formatter 或完整 lint �
 也避免一次会话中途能力突然变化。
 
 ```mermaid
+sequenceDiagram
   participant Load as ADKRunner.load_agent
   participant Memory as Memory / Knowledge
   participant Skill as Skill Runtime Injector
@@ -161,6 +163,7 @@ ADK runner 会先解析 skills mode。显式设置 `KSADK_SKILLS_MODE` 时直接
 `auto` 模式下按环境与本地目录推断。
 
 ```mermaid
+flowchart TD
   Start["解析 skills mode"] --> Explicit{"KSADK_SKILLS_MODE<br/>不是 auto?"}
   Explicit -->|是| Mode["使用显式 mode"]
   Explicit -->|否| RuntimeBackend{"KSADK_SKILL_RUNTIME_BACKEND<br/>有效且非 disabled?"}
@@ -351,6 +354,7 @@ memory、sandbox、workspace 和 skill 在执行工具或读写状态时，会�
 `invocation_id` 作为单次运行的稳定 ID，贯穿整条链路：
 
 ```mermaid
+flowchart TD
   Req["HTTP / RunAgentAction 请求"] --> Ctx["PlatformInvocationContext"]
   Ctx --> Payload["runner payload"]
   Ctx --> Sub["SubscribeRunEvents"]

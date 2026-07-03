@@ -12,6 +12,7 @@ or local files the agent does not need.
 ## Tool Layers
 
 ```mermaid
+flowchart TD
   Agent["User agent"] --> Framework["Framework adapter"]
   Framework --> Builtin["Framework-native tools"]
   Framework --> MCP["MCP / A2A tools"]
@@ -304,6 +305,7 @@ and skill execution do not leak across accounts.
 the whole path:
 
 ```mermaid
+flowchart TD
   Req["HTTP / RunAgentAction request"] --> Ctx["PlatformInvocationContext"]
   Ctx --> Payload["runner payload"]
   Ctx --> Sub["SubscribeRunEvents"]

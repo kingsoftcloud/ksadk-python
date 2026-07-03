@@ -25,6 +25,7 @@ OpenAI-compatible endpoints do not call framework-specific APIs directly. They
 call the runner contract, and the runner owns the framework details.
 
 ```mermaid
+flowchart TD
   Project["Agent project"] --> Config["agentengine.yaml<br/>framework + entry_point"]
   Project --> Shape["project shape<br/>agent.py / main.py / app.py"]
   Config --> Detect["FrameworkDetector"]
@@ -227,6 +228,7 @@ when reviewing examples or debugging why a project was loaded as the wrong
 framework.
 
 ```mermaid
+flowchart TD
   Start["Start detection"] --> Explicit{"agentengine.yaml<br/>or ksadk.yaml?"}
   Explicit -->|yes| Validate["Validate entry_point<br/>and agent_variable"]
   Validate -->|valid| ConfigResult["Return configured DetectionResult"]

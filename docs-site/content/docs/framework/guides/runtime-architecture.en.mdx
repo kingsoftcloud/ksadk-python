@@ -11,6 +11,7 @@ protocols for terminal, browser, and API clients.
 ## Layer Model
 
 ```mermaid
+flowchart TD
   CLI["agentengine run / web"] --> Env["environment setup"]
   Env --> Detect["framework detection"]
   Detect --> Factory["runner factory"]
@@ -89,6 +90,7 @@ packaging checks.
 Detection uses explicit configuration first, then convention:
 
 ```mermaid
+flowchart TD
   A["project directory"] --> B{"agentengine.yaml / ksadk.yaml?"}
   B -->|yes| C["validate framework, entry_point, agent_variable"]
   B -->|no| D{"langgraph.json?"}
@@ -151,6 +153,7 @@ basic invoke and stream paths are stable.
 A normal non-streaming `/v1/responses` request follows this path:
 
 ```mermaid
+sequenceDiagram
   Client->>API: POST /v1/responses
   API->>Conv: invoke_conversation_once
   Conv->>Store: ensure session

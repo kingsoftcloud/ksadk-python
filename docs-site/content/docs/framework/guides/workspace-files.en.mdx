@@ -34,6 +34,7 @@ The local Web UI uses action-style APIs that proxy into the same workspace file
 router. This keeps path validation and preview behavior centralized.
 
 ```mermaid
+flowchart TD
   UI["local Web UI"] --> Actions["/agentengine/api/v1/* actions"]
   CLI["agentengine files"] --> Transport["runtime or action proxy"]
   Actions --> Router["/_ksadk/workspace/v1"]
