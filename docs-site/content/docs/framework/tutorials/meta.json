@@ -3,6 +3,9 @@
   "pages": [
     "langgraph-agent",
     "adk-agent",
-    "existing-agent"
+    "existing-agent",
+    "---[BookOpen]最佳实践---",
+    "best-practices/long-task-resume",
+    "best-practices/langgraph-toolsets"
   ]
 }

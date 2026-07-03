@@ -1,0 +1,283 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1520 900" font-family="ui-sans-serif, system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif">
+  <defs>
+    <marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker>
+    <marker id="as" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#94a3b8"/></marker>
+    <marker id="aa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#d97706"/></marker>
+    <marker id="ao" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#ea580c"/></marker>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#dc2626"/></marker>
+    <marker id="agn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#059669"/></marker>
+  </defs>
+
+  <rect width="1520" height="900" fill="#fbfbf9"/>
+
+  <!-- ===== 标题 ===== -->
+  <text x="40" y="28" font-size="16" font-weight="700" fill="#0f172a">长任务恢复 Agent · 架构图（agent.py + ksadk runtime · LangGraph 可恢复 Deep Research）</text>
+  <text x="40" y="46" font-size="11" fill="#64748b">主路线：7 个业务安全点（左上紫角标，每点写 checkpoint）；右栏：恢复 / Cancel 链路（橙色序号 1-5）</text>
+
+  <!-- ===== Layer 1：接入层 ===== -->
+  <rect x="40" y="62" width="1090" height="108" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.2"/>
+  <text x="54" y="80" font-size="11.5" font-weight="700" fill="#334155">接入层 · Web UI 与 ksadk runtime</text>
+
+  <rect x="56" y="90" width="430" height="72" rx="7" fill="#f8fafc" stroke="#94a3b8" stroke-width="1"/>
+  <text x="68" y="110" font-size="11" font-weight="700" fill="#1e293b">Web UI · research-ui（React / Vite）</text>
+  <text x="68" y="130" font-size="10" fill="#475569">聊天区：研究主题 / 计划 / 进度 / 来源 / 报告</text>
+  <text x="68" y="150" font-size="10" fill="#475569">恢复区：仅暴露主图 7 个安全点；run_id/checkpoint_id 留会话恢复区</text>
+
+  <rect x="500" y="90" width="615" height="72" rx="7" fill="#f8fafc" stroke="#94a3b8" stroke-width="1"/>
+  <text x="514" y="110" font-size="11" font-weight="700" fill="#1e293b">ksadk runtime · AgentEngine Session Store</text>
+  <text x="514" y="130" font-size="10" fill="#475569">session events：tool_call / tool_result / run_checkpoint（含 framework_ref.langgraph）</text>
+  <text x="514" y="150" font-size="10" fill="#475569">平台自动建 tool_receipt（按 receipt_key 去重）；终态自动收尾；提供 ResumeRun/CancelRun</text>
+
+  <!-- runtime <-> runner -->
+  <line x1="815" y1="162" x2="815" y2="184" stroke="#475569" stroke-width="1.4" marker-end="url(#ag)"/>
+  <text x="822" y="178" font-size="9.5" fill="#64748b">驱动 / 事件回写</text>
+
+  <!-- ===== Layer 2：编排层 Runner ===== -->
+  <rect x="40" y="184" width="1090" height="100" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.2"/>
+  <text x="54" y="202" font-size="11.5" font-weight="700" fill="#334155">编排层 · LongTaskE2ERunner（runner.py，自定义 Runner 接入真实 session event）</text>
+
+  <rect x="56" y="212" width="320" height="62" rx="7" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1"/>
+  <text x="68" y="232" font-size="10.5" font-weight="700" fill="#1e293b">stream() 首次执行</text>
+  <text x="68" y="256" font-size="9.5" fill="#475569">逐阶段 yield tool_call → 执行节点 → checkpoint → tool_result</text>
+
+  <rect x="384" y="212" width="316" height="62" rx="7" fill="#fff7ed" stroke="#ea580c" stroke-width="1.6"/>
+  <text x="396" y="232" font-size="10.5" font-weight="700" fill="#9a3412">_stream_checkpoint_resume（恢复）</text>
+  <text x="396" y="256" font-size="9.5" fill="#7c2d12">_resolve_resume_state 算起点 → graph.astream(None, stream_mode="updates")</text>
+
+  <rect x="708" y="212" width="410" height="62" rx="7" fill="#f8fafc" stroke="#94a3b8" stroke-width="1"/>
+  <text x="720" y="232" font-size="10.5" font-weight="700" fill="#1e293b">图构建 / 状态访问</text>
+  <text x="720" y="256" font-size="9.5" fill="#475569">_build_execution_graph（InMemory / AsyncPostgres）· _latest_thread_state</text>
+
+  <!-- runner -> 主图 -->
+  <line x1="540" y1="274" x2="540" y2="296" stroke="#475569" stroke-width="1.6" marker-end="url(#ag)"/>
+  <text x="548" y="290" font-size="9.5" fill="#64748b">编译并驱动主图</text>
+
+  <!-- ===== Layer 3：主图 ===== -->
+  <rect x="40" y="296" width="1090" height="272" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.2"/>
+  <text x="54" y="314" font-size="11.5" font-weight="700" fill="#334155">LangGraph 主图 · workflow.py _compile_graph（StateGraph(ReportState) + checkpointer）</text>
+  <text x="890" y="314" font-size="9.5" fill="#64748b" font-style="italic">子图：Send 并行 fan-out（web_search / analysis）</text>
+
+  <!-- START -->
+  <ellipse cx="108" cy="350" rx="26" ry="13" fill="#e2e8f0" stroke="#64748b" stroke-width="1"/>
+  <text x="108" y="354" text-anchor="middle" font-size="9.5" font-weight="700" fill="#334155">START</text>
+  <line x1="108" y1="363" x2="108" y2="378" stroke="#475569" stroke-width="1.4" marker-end="url(#ag)"/>
+
+  <!-- 节点 y=378-454 (h76) -->
+  <g font-size="12" font-weight="700" fill="#1e293b">
+    <rect x="60" y="378" width="96" height="76" rx="8" fill="#eef2fb" stroke="#3b5a86" stroke-width="1.4"/>
+    <text x="108" y="402" text-anchor="middle">规划研究</text>
+    <text x="108" y="422" text-anchor="middle" font-size="9" font-weight="400" fill="#64748b">plan_research</text>
+    <text x="108" y="440" text-anchor="middle" font-size="8.5" fill="#94a3b8">llm.plan</text>
+
+    <rect x="179" y="378" width="96" height="76" rx="8" fill="#eef2fb" stroke="#3b5a86" stroke-width="1.4"/>
+    <text x="227" y="402" text-anchor="middle">检索网页</text>
+    <text x="227" y="422" text-anchor="middle" font-size="9" font-weight="400" fill="#64748b">search_web</text>
+    <text x="227" y="440" text-anchor="middle" font-size="8.5" fill="#94a3b8">web.search</text>
+
+    <rect x="298" y="378" width="96" height="76" rx="8" fill="#eef2fb" stroke="#3b5a86" stroke-width="1.4"/>
+    <text x="346" y="402" text-anchor="middle">抓取正文</text>
+    <text x="346" y="422" text-anchor="middle" font-size="9" font-weight="400" fill="#64748b">fetch_sources</text>
+    <text x="346" y="440" text-anchor="middle" font-size="8.5" fill="#94a3b8">web.fetch</text>
+
+    <rect x="417" y="378" width="96" height="76" rx="8" fill="#eef2fb" stroke="#3b5a86" stroke-width="1.4"/>
+    <text x="465" y="402" text-anchor="middle">筛选去重</text>
+    <text x="465" y="422" text-anchor="middle" font-size="9" font-weight="400" fill="#64748b">screen_evidence</text>
+    <text x="465" y="440" text-anchor="middle" font-size="8.5" fill="#94a3b8">evidence.screen</text>
+
+    <rect x="536" y="378" width="96" height="76" rx="8" fill="#fef9e7" stroke="#b45309" stroke-width="1.4"/>
+    <text x="584" y="402" text-anchor="middle">反思·缺口</text>
+    <text x="584" y="422" text-anchor="middle" font-size="9" font-weight="400" fill="#92400e">reflection</text>
+    <text x="584" y="440" text-anchor="middle" font-size="8.5" fill="#b45309">gap_checker</text>
+
+    <rect x="655" y="378" width="96" height="76" rx="8" fill="#eef2fb" stroke="#3b5a86" stroke-width="1.4"/>
+    <text x="703" y="402" text-anchor="middle">交叉分析</text>
+    <text x="703" y="422" text-anchor="middle" font-size="9" font-weight="400" fill="#64748b">analyze_findings</text>
+    <text x="703" y="440" text-anchor="middle" font-size="8.5" fill="#94a3b8">llm.analyze</text>
+
+    <rect x="774" y="378" width="96" height="76" rx="8" fill="#eef2fb" stroke="#3b5a86" stroke-width="1.4"/>
+    <text x="822" y="402" text-anchor="middle">批判质检</text>
+    <text x="822" y="422" text-anchor="middle" font-size="9" font-weight="400" fill="#64748b">critic_review</text>
+    <text x="822" y="440" text-anchor="middle" font-size="8.5" fill="#94a3b8">llm.critic</text>
+
+    <rect x="893" y="378" width="96" height="76" rx="8" fill="#ecfdf5" stroke="#059669" stroke-width="1.4"/>
+    <text x="941" y="402" text-anchor="middle">生成报告</text>
+    <text x="941" y="422" text-anchor="middle" font-size="9" font-weight="400" fill="#047857">write_report</text>
+    <text x="941" y="440" text-anchor="middle" font-size="8.5" fill="#059669">workspace.write</text>
+
+    <rect x="1012" y="378" width="96" height="76" rx="8" fill="#eef2fb" stroke="#3b5a86" stroke-width="1.4"/>
+    <text x="1060" y="402" text-anchor="middle">收尾归档</text>
+    <text x="1060" y="422" text-anchor="middle" font-size="9" font-weight="400" fill="#64748b">finalize_report</text>
+    <text x="1060" y="440" text-anchor="middle" font-size="8.5" fill="#94a3b8">finalize</text>
+  </g>
+
+  <!-- END -->
+  <ellipse cx="1060" cy="482" rx="24" ry="13" fill="#e2e8f0" stroke="#64748b" stroke-width="1"/>
+  <text x="1060" y="486" text-anchor="middle" font-size="9.5" font-weight="700" fill="#334155">END</text>
+  <line x1="1060" y1="454" x2="1060" y2="469" stroke="#475569" stroke-width="1.4" marker-end="url(#ag)"/>
+
+  <!-- 默认主路线箭头 -->
+  <g stroke="#475569" stroke-width="1.4" fill="none">
+    <line x1="156" y1="416" x2="175" y2="416" marker-end="url(#ag)"/>
+    <line x1="275" y1="416" x2="294" y2="416" marker-end="url(#ag)"/>
+    <line x1="394" y1="416" x2="413" y2="416" marker-end="url(#ag)"/>
+    <line x1="513" y1="416" x2="532" y2="416" marker-end="url(#ag)"/>
+    <line x1="632" y1="416" x2="651" y2="416" marker-end="url(#ag)"/>
+    <line x1="751" y1="416" x2="770" y2="416" marker-end="url(#ag)"/>
+    <line x1="870" y1="416" x2="889" y2="416" marker-end="url(#ag)"/>
+    <line x1="989" y1="416" x2="1008" y2="416" marker-end="url(#ag)"/>
+  </g>
+
+  <!-- 条件边：skip 上弧 n5(703,378) -> n7(941,378) -->
+  <path d="M703,378 C703,348 941,348 941,378" stroke="#94a3b8" stroke-width="1.3" stroke-dasharray="5 3" fill="none" marker-end="url(#as)"/>
+  <text x="822" y="344" text-anchor="middle" font-size="9" fill="#64748b">无需质检 → 直出报告</text>
+
+  <!-- 条件边：gap 回边 reflection(584,454) -> search_web(227,454) -->
+  <path d="M584,454 C584,498 227,498 227,454" stroke="#b45309" stroke-width="1.3" stroke-dasharray="5 3" fill="none" marker-end="url(#aa)"/>
+  <text x="405" y="497" text-anchor="middle" font-size="9" fill="#92400e">reflection 判定证据缺口 → 补检（query_expander 追加 gap-fill query）</text>
+
+  <!-- ===== 主图恢复点：7 个安全点左上角紫色角标（不画下垂线，腾空回边通道） ===== -->
+  <text x="56" y="372" font-size="8.5" fill="#7c3aed" font-weight="700">恢复点</text>
+  <g>
+    <polygon points="60,378 78,378 60,396" fill="#7c3aed"/>
+    <polygon points="179,378 197,378 179,396" fill="#7c3aed"/>
+    <polygon points="298,378 316,378 298,396" fill="#7c3aed"/>
+    <polygon points="417,378 435,378 417,396" fill="#7c3aed"/>
+    <polygon points="655,378 673,378 655,396" fill="#7c3aed"/>
+    <polygon points="774,378 792,378 774,396" fill="#7c3aed"/>
+    <polygon points="893,378 911,378 893,396" fill="#7c3aed"/>
+  </g>
+
+  <!-- 琥珀带：checkpoint -->
+  <rect x="60" y="524" width="1050" height="40" rx="7" fill="#fef3c7" stroke="#d97706" stroke-width="1.3"/>
+  <text x="76" y="541" font-size="10.5" font-weight="700" fill="#92400e">每个业务安全点完成 → LangGraph checkpointer 自动写 StateSnapshot</text>
+  <text x="76" y="557" font-size="9.5" fill="#7c2d12">thread_id + checkpoint_ns + checkpoint_id + next_node  ·  runner 转发为 run_checkpoint（仅审计/UI 索引，真实状态在 checkpointer）</text>
+
+  <!-- ===== Layer 4：Checkpointer 后端 + Workspace ===== -->
+  <line x1="320" y1="564" x2="320" y2="588" stroke="#d97706" stroke-width="1.4" marker-end="url(#aa)"/>
+  <text x="328" y="580" font-size="9" fill="#92400e">落盘</text>
+
+  <rect x="40" y="588" width="660" height="158" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.2"/>
+  <text x="54" y="606" font-size="11.5" font-weight="700" fill="#334155">Checkpointer 后端（LONG_TASK_RESUME_DEMO_MODE）</text>
+
+  <rect x="56" y="616" width="194" height="120" rx="7" fill="#f8fafc" stroke="#94a3b8" stroke-width="1"/>
+  <text x="153" y="638" text-anchor="middle" font-size="10.5" font-weight="700" fill="#1e293b">InMemorySaver</text>
+  <text x="153" y="662" text-anchor="middle" font-size="9.5" fill="#64748b">默认 · 本地交互演示</text>
+  <text x="153" y="682" text-anchor="middle" font-size="9.5" fill="#64748b">process_local · 不可跨实例</text>
+
+  <rect x="260" y="616" width="194" height="120" rx="7" fill="#f8fafc" stroke="#94a3b8" stroke-width="1"/>
+  <text x="357" y="638" text-anchor="middle" font-size="10.5" font-weight="700" fill="#1e293b">sqlite / local</text>
+  <text x="357" y="662" text-anchor="middle" font-size="9.5" fill="#64748b">pod_local · 单 Pod 持久</text>
+  <text x="357" y="682" text-anchor="middle" font-size="9.5" fill="#64748b">durable（同 Pod 内）</text>
+
+  <rect x="464" y="616" width="226" height="120" rx="7" fill="#fff7ed" stroke="#d97706" stroke-width="1.8"/>
+  <text x="577" y="638" text-anchor="middle" font-size="10.5" font-weight="700" fill="#9a3412">AsyncPostgresSaver ★</text>
+  <text x="577" y="662" text-anchor="middle" font-size="9.5" fill="#7c2d12">postgres · shared · 跨实例/跨 Pod</text>
+  <text x="577" y="682" text-anchor="middle" font-size="9.5" fill="#7c2d12">KSADK_LANGGRAPH_CHECKPOINT_DSN</text>
+  <text x="577" y="702" text-anchor="middle" font-size="9" fill="#b45309">生产/预发可恢复后端</text>
+
+  <!-- Workspace：从琥珀带右端引出 -->
+  <path d="M1110,544 C1180,544 1180,618 1130,618" stroke="#059669" stroke-width="1.4" fill="none" stroke-dasharray="5 3" marker-end="url(#agn)"/>
+  <text x="1142" y="540" font-size="9" fill="#059669">写产物</text>
+
+  <rect x="720" y="588" width="410" height="158" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.2"/>
+  <text x="734" y="606" font-size="11.5" font-weight="700" fill="#334155">ksadk Workspace 产物（_write_workspace_*）</text>
+  <rect x="734" y="616" width="386" height="120" rx="7" fill="#ecfdf5" stroke="#059669" stroke-width="1"/>
+  <text x="746" y="638" font-size="10" fill="#065f46">每阶段：01-plan · 02-search · 03-fetch</text>
+  <text x="746" y="656" font-size="10" fill="#065f46">04-evidence · 05-analysis · 06-critic</text>
+  <text x="746" y="680" font-size="10" font-weight="700" fill="#047857">终态：report.md/.html + sources.json</text>
+  <text x="746" y="700" font-size="9.5" fill="#065f46">+ research-state.json；恢复后不重写（receipt_key 去重）</text>
+
+  <!-- ===== 右栏：恢复 / Cancel 链路（重点 · 序号 1-5 集中自上而下） ===== -->
+  <rect x="1150" y="62" width="340" height="684" rx="10" fill="#fff7ed" stroke="#ea580c" stroke-width="1.6"/>
+  <text x="1166" y="84" font-size="12" font-weight="700" fill="#9a3412">恢复 / Cancel 链路（重点）</text>
+  <text x="1166" y="100" font-size="9.5" fill="#7c2d12">橙色序号 1-5 为恢复操作顺序，自上而下</text>
+
+  <!-- 步骤1 -->
+  <circle cx="1176" cy="126" r="10" fill="#ea580c"/><text x="1176" y="130" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">1</text>
+  <text x="1196" y="124" font-size="10.5" font-weight="700" fill="#9a3412">列出可恢复 checkpoint</text>
+  <text x="1196" y="140" font-size="9.5" fill="#7c2d12">Web UI 恢复区读 run_checkpoint 事件</text>
+  <text x="1196" y="154" font-size="9.5" fill="#7c2d12">（含 framework_ref.langgraph），仅展示</text>
+  <text x="1196" y="168" font-size="9.5" fill="#7c2d12">主图业务安全点，不暴露内部节点。</text>
+
+  <!-- 步骤2 -->
+  <circle cx="1176" cy="196" r="10" fill="#ea580c"/><text x="1176" y="200" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">2</text>
+  <text x="1196" y="194" font-size="10.5" font-weight="700" fill="#9a3412">选 checkpoint → ResumeRun</text>
+  <text x="1196" y="210" font-size="9.5" fill="#7c2d12">config = StateSnapshot.config：</text>
+  <text x="1196" y="224" font-size="9.5" fill="#7c2d12">thread_id + checkpoint_ns</text>
+  <text x="1196" y="238" font-size="9.5" fill="#7c2d12">+ checkpoint_id（来自快照，勿自造）</text>
+
+  <!-- 步骤3 -->
+  <circle cx="1176" cy="266" r="10" fill="#ea580c"/><text x="1176" y="270" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">3</text>
+  <text x="1196" y="264" font-size="10.5" font-weight="700" fill="#9a3412">解析恢复状态</text>
+  <text x="1196" y="280" font-size="9.5" fill="#7c2d12">graph.aget_state(config) 取快照 →</text>
+  <text x="1196" y="294" font-size="9.5" fill="#7c2d12">_resolve_resume_state 算 start_index，</text>
+  <text x="1196" y="308" font-size="9.5" fill="#7c2d12">可注入 resume_instruction 纠偏提示。</text>
+
+  <!-- 步骤4 -->
+  <circle cx="1176" cy="350" r="10" fill="#ea580c"/><text x="1176" y="354" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">4</text>
+  <text x="1196" y="348" font-size="10.5" font-weight="700" fill="#9a3412">从 checkpoint 续跑</text>
+  <text x="1196" y="364" font-size="9.5" fill="#7c2d12">graph.astream(None, config,</text>
+  <text x="1196" y="378" font-size="9.5" fill="#7c2d12">stream_mode="updates")</text>
+  <text x="1196" y="392" font-size="9.5" font-weight="700" fill="#c2410c">input=None 是关键：</text>
+  <text x="1196" y="406" font-size="9.5" fill="#7c2d12">不重放已完成节点和工具副作用</text>
+  <text x="1196" y="420" font-size="9.5" fill="#7c2d12">（不重复检索/扣费/写文件）。</text>
+
+  <!-- 步骤5 -->
+  <circle cx="1176" cy="448" r="10" fill="#ea580c"/><text x="1176" y="452" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">5</text>
+  <text x="1196" y="446" font-size="10.5" font-weight="700" fill="#9a3412">续跑并再写 checkpoint</text>
+  <text x="1196" y="462" font-size="9.5" fill="#7c2d12">从 checkpoint 后续节点继续执行，</text>
+  <text x="1196" y="476" font-size="9.5" fill="#7c2d12">每阶段完成由 checkpointer 写新快照，</text>
+  <text x="1196" y="490" font-size="9.5" fill="#7c2d12">可再次回到①形成多轮恢复。</text>
+
+  <!-- 分隔 -->
+  <line x1="1166" y1="514" x2="1474" y2="514" stroke="#fdba74" stroke-width="1"/>
+
+  <!-- Cancel 分支（红） -->
+  <circle cx="1176" cy="540" r="10" fill="#dc2626"/><text x="1176" y="544" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">✕</text>
+  <text x="1196" y="538" font-size="10.5" font-weight="700" fill="#991b1b">CancelRun（取消）</text>
+  <text x="1196" y="554" font-size="9.5" fill="#7f1d1d">request_cancel 只写意图；平台触发</text>
+  <text x="1196" y="568" font-size="9.5" fill="#7f1d1d">detached cancellation，生成器收</text>
+  <text x="1196" y="582" font-size="9.5" fill="#7f1d1d">CancelledError 退出，平台写 cancelled。</text>
+  <text x="1196" y="600" font-size="9.5" font-weight="700" fill="#7f1d1d">工具边界检查：</text>
+  <text x="1196" y="614" font-size="9.5" fill="#7f1d1d">不可回滚工具完成后仍写 receipt，</text>
+  <text x="1196" y="628" font-size="9.5" fill="#7f1d1d">避免半完成状态。</text>
+
+  <!-- 终态 -->
+  <line x1="1166" y1="648" x2="1474" y2="648" stroke="#fdba74" stroke-width="1"/>
+  <text x="1166" y="668" font-size="10" font-weight="700" fill="#9a3412">终态收尾（平台自动）</text>
+  <text x="1166" y="684" font-size="9.5" fill="#7c2d12">completed / failed / cancelled</text>
+  <text x="1166" y="700" font-size="9.5" fill="#7c2d12">tool_receipt 按 receipt_key 去重</text>
+  <text x="1166" y="716" font-size="9.5" fill="#7c2d12">stage_events 转发子图/工具节点</text>
+  <text x="1166" y="732" font-size="9.5" fill="#7c2d12">（query_agent / reviewer / critic）</text>
+
+  <!-- ===== 图例 ===== -->
+  <rect x="40" y="760" width="1450" height="118" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.2"/>
+  <text x="54" y="780" font-size="11.5" font-weight="700" fill="#334155">图例</text>
+
+  <rect x="54" y="792" width="22" height="14" rx="3" fill="#eef2fb" stroke="#3b5a86"/>
+  <text x="84" y="803" font-size="9.5" fill="#475569">主图业务节点</text>
+  <rect x="54" y="812" width="22" height="14" rx="3" fill="#fef9e7" stroke="#b45309"/>
+  <text x="84" y="823" font-size="9.5" fill="#475569">反思/缺口判定</text>
+  <rect x="54" y="832" width="22" height="14" rx="3" fill="#ecfdf5" stroke="#059669"/>
+  <text x="84" y="843" font-size="9.5" fill="#475569">写报告/产物</text>
+
+  <rect x="200" y="792" width="22" height="14" rx="3" fill="#fef3c7" stroke="#d97706"/>
+  <text x="230" y="803" font-size="9.5" fill="#475569">Checkpoint / StateSnapshot</text>
+  <polygon points="200,812 218,812 200,830" fill="#7c3aed"/>
+  <text x="230" y="823" font-size="9.5" fill="#475569">主图恢复点（左上紫角标，共 7 个）</text>
+  <rect x="200" y="832" width="22" height="14" rx="3" fill="#fff7ed" stroke="#d97706" stroke-width="1.8"/>
+  <text x="230" y="843" font-size="9.5" fill="#475569">AsyncPostgresSaver（可恢复后端★）</text>
+
+  <line x1="430" y1="800" x2="468" y2="800" stroke="#475569" stroke-width="1.4" marker-end="url(#ag)"/>
+  <text x="476" y="803" font-size="9.5" fill="#475569">主路线默认边</text>
+  <line x1="430" y1="820" x2="468" y2="820" stroke="#94a3b8" stroke-width="1.3" stroke-dasharray="5 3" marker-end="url(#as)"/>
+  <text x="476" y="823" font-size="9.5" fill="#475569">条件路由（skip / gap 补检）</text>
+  <line x1="430" y1="840" x2="468" y2="840" stroke="#ea580c" stroke-width="1.6" marker-end="url(#ao)"/>
+  <text x="476" y="843" font-size="9.5" fill="#475569">恢复执行路径</text>
+
+  <text x="640" y="808" font-size="9.5" fill="#475569">· 主图 7 安全点 + reflection + finalize，每个安全点由 checkpointer 写快照</text>
+  <text x="640" y="832" font-size="9.5" fill="#475569">· run_checkpoint 仅审计索引；真实状态在 LangGraph checkpointer，勿自造</text>
+  <text x="1180" y="808" font-size="9.5" fill="#475569">· 子图用 Send 并行 fan-out：</text>
+  <text x="1180" y="832" font-size="9.5" fill="#475569">  web_search（query_agent×N）/ analysis（market·tech·risk）</text>
+
+</svg>
