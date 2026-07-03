@@ -135,6 +135,26 @@ def _tool_signature(event: SessionEvent) -> str | None:
     return f"{name}:{digest}"
 
 
+def _event_run_id(event: SessionEvent) -> str | None:
+    """取 event 的 run_id(真实 runtime 把 run_id 放 metadata,tool_call/tool_result 都有)。
+
+    用于精确配对 tool_call 和 tool_result:同一工具调用的 call 和 result 共享同一 run_id。
+    比"邻接配对"更可靠,支持 parallel_tool_calls(同一轮多个 tool_call 交错 result)。
+    """
+    metadata = event.metadata or {}
+    run_id = metadata.get("run_id")
+    if run_id:
+        return str(run_id)
+    # 兼容 tool_receipt 里也可能带 run_id/tool_call_id 的形态。
+    receipt = metadata.get("tool_receipt")
+    if isinstance(receipt, Mapping):
+        for key in ("run_id", "tool_call_id"):
+            value = receipt.get(key)
+            if value:
+                return str(value)
+    return None
+
+
 def snip_redundant_groups(
     groups: Sequence[Sequence[SessionEvent]],
     *,
@@ -145,8 +165,10 @@ def snip_redundant_groups(
     只作用于 candidate 副本(浅拷贝 groups + 过滤 event),不改原 SessionEvent,不改 transcript。
 
     移除规则:
-    - 被**后续组**同 tool_name 同参数覆盖的旧 tool_result(含其配对 tool_call)——
-      旧结果已无参考价值,模型只需看最新结果。但**最后一组的 tool_result 保留**(tail 保护)。
+    - 被**后续组**同 tool_name 同参数覆盖的旧 tool_call(含其配对 tool_result)——
+      旧结果已无参考价值,模型只需看最新结果。但**最后一组的 tool 保留**(tail 保护)。
+    - tool_call 与 tool_result 按 **metadata.run_id 精确配对**删除(不靠邻接),
+      支持 parallel_tool_calls=True 时同一轮多 tool_call 交错的场景。
 
     失败 tool_call/tool_result 配对的去重本期不做(保守起见,避免误删有诊断价值的失败记录)。
     pinned_state 里的 pending tool/approval 不动(它们在 pinned 组,不在 groups_to_compact)。
@@ -158,41 +180,53 @@ def snip_redundant_groups(
             stats=SnipStats(tokens_before=tokens_before, tokens_after=tokens_before),
         )
 
-    # 记录每个 tool_signature 最后一次出现的组索引,用于判定旧调用是否被覆盖。
+    # 第一遍:记录每个 tool_signature 最后一次出现的组索引,以及每个 run_id 对应的 signature。
+    # run_id 来自 tool_call 的 metadata,用于精确配对 tool_result。
     last_signature_group: dict[str, int] = {}
+    run_id_to_signature: dict[str, str] = {}
     for index, group in enumerate(groups):
         for event in group:
             sig = _tool_signature(event)
             if sig is not None:
                 last_signature_group[sig] = index
+                run_id = _event_run_id(event)
+                if run_id:
+                    run_id_to_signature[run_id] = sig
+
+    # 被覆盖的 tool_call:其 signature 最后一次出现不在当前组。
+    # 收集这些被覆盖 tool_call 的 run_id,用于精确删除配对 tool_result(不靠邻接)。
+    covered_run_ids: set[str] = set()
+    for index, group in enumerate(groups):
+        for event in group:
+            sig = _tool_signature(event)
+            if sig is not None and last_signature_group.get(sig) != index:
+                run_id = _event_run_id(event)
+                if run_id:
+                    covered_run_ids.add(run_id)
 
     removed_redundant = 0
     result_groups: list[list[SessionEvent]] = []
     for index, group in enumerate(groups):
         kept: list[SessionEvent] = []
-        # 当一个 tool_call 因被覆盖而移除时,紧跟其后的 tool_result 成对跳过(避免遗留孤儿 result)。
-        skip_next_result = False
         for event in group:
             sig = _tool_signature(event)
             if sig is not None:
-                # 被后续组覆盖的旧 tool_call 移除(保留最后一次出现),并标记跳过配对 result。
+                # 被后续组覆盖的旧 tool_call 移除(保留最后一次出现)。
                 if last_signature_group.get(sig) != index:
                     removed_redundant += 1
-                    skip_next_result = True
                     continue
-                skip_next_result = False
             else:
                 event_type = canonical_event_type(
                     event.event_type,
                     author=event.author,
                     role=str((event.content or {}).get("role") or ""),
                 )
-                if event_type == "tool_result" and skip_next_result:
-                    # 紧跟上一个被移除 tool_call 的 tool_result,成对跳过。
-                    removed_redundant += 1
-                    skip_next_result = False
-                    continue
-                skip_next_result = False
+                if event_type == "tool_result":
+                    run_id = _event_run_id(event)
+                    # 配对的 tool_call 已被覆盖删除,按 run_id 精确删除该 result(避免孤儿)。
+                    if run_id and run_id in covered_run_ids:
+                        removed_redundant += 1
+                        continue
             kept.append(event)
         result_groups.append(kept)
 
