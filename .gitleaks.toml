@@ -9,8 +9,10 @@ title = "ksadk-python gitleaks config"
 [extend]
 useDefault = true
 
-# ---- 全局 allowlist: 测试 fixture 假 key (命中当前 tree 与历史 commit) ----
-[allowlist]
+# ---- allowlist 统一用 [[allowlists]] 新语法 (gitleaks 8.21+), 不能与 [allowlist] 旧语法混用 ----
+
+# 测试 fixture 假 key (命中当前 tree 与历史 commit)
+[[allowlists]]
 description = "Allowlist test-fixture placeholders in hermes CLI tests"
 regexes = [
     # tests/test_cmd_hermes.py 的假 Bearer token (curl-auth-header 规则命中)
@@ -21,9 +23,6 @@ regexes = [
 paths = [
     # 精确限定到测试文件, 避免误 allowlist 其它路径的真 key
     '''tests/test_cmd_hermes\.py''',
-    # 已删文档的历史 commit 路径: gitleaks 历史扫描时仍按该 commit 当时的路径报出,
-    # 故 allowlist 的 paths 规则能命中历史版本, 无需特殊语法。
-    '''docs/hermes-agent-v2026\.4\.13_本地安装配置与ksadk接入流程\.md''',
 ]
 
 # ---- 历史已删文档中的 OPENAI_API_KEY (疑似真 kspmas key) ----
@@ -34,6 +33,8 @@ paths = [
 #
 # 已 rotate 后: 历史 commit 里的该 UUID 已是废值, allowlist 让 CI 对此噪声免疫,
 # 同时保留 git scan 抓未来真新增泄漏的能力 (优于改 --no-git 的掩耳盗铃方案)。
+# 已删文档的历史 commit 路径: gitleaks 历史扫描时仍按该 commit 当时的路径报出,
+# 故 allowlist 的 paths 规则能命中历史版本, 无需特殊语法。
 [[allowlists]]
 description = "Historical rotated OPENAI_API_KEY in deleted hermes doc (safe only AFTER rotation)"
 regexes = [
