@@ -47,6 +47,7 @@
 | 变量 | 是否必传 | 别名/兼容 | 敏感 | 配置方/来源 | 说明 |
 | --- | --- | --- | --- | --- | --- |
 | `KSADK_ENABLE_MCP_TOOLS` | 否 | 无 | 否 | 开发者 / 平台 | 默认 `1`，设为 `0/false/no/off` 禁用自动注入。 |
+| `KSADK_MCP_KEY` | 否 | 无 | 是 | 开发者 / 平台 Secret | MCP 服务 API key；ksyun web search provider 未配 `KSADK_WEB_SEARCH_API_KEY` 时也回退到此。 |
 | `KSADK_MCP_SERVERS` | 条件必传 | 无 | 是 | 开发者 / 平台 Secret | JSON 数组，配置 MCP server url、api_key、tool_filter、tool_name_prefix。可能包含 token。 |
 
 ### 2.4 Skill Runtime 本地模式
@@ -67,7 +68,7 @@
 | `E2B_API_KEY` | 是 | 无 | 是 | 沙箱团队 / Secret 配置 | E2B SDK 原生 API key，不能写入代码、文档示例明文、测试 fixture 或日志。 |
 | `KSADK_SANDBOX_BACKEND` | 否 | 无 | 否 | 平台 / 开发者 | 默认 `e2b`。后续可扩展其他 backend。 |
 | `KSADK_SANDBOX_TYPE` | 否 | 无 | 否 | 平台 / 开发者 | `aio/code/browser/private`，默认 `aio`。 |
-| `KSADK_SANDBOX_TIMEOUT` | 否 | `KSADK_SKILL_RUNTIME_TIMEOUT` | 否 | 平台 / 开发者 | Sandbox 会话超时秒数，默认 `900`。 |
+| `KSADK_SANDBOX_TIMEOUT` | 否 | `KSADK_SKILL_RUNTIME_TIMEOUT` | 否 | 平台 / 开发者 | Sandbox 会话超时秒数，默认 `600`（透传 E2B 服务端，上限 86400）。 |
 | `KSADK_SANDBOX_ALLOW_INTERNET_ACCESS` | 否 | `KSADK_SKILL_RUNTIME_ALLOW_INTERNET_ACCESS` | 否 | 平台 / 开发者 | 是否允许 sandbox 出网，默认 `true`。 |
 | `KSADK_SKILLS_MODE` | 否 | 无 | 否 | Runner 环境 | `auto` 下检测到 sandbox backend/template 会注入 `execute_skills`；也可显式设为 `sandbox`。 |
 | `KSADK_SKILL_RUNTIME_BACKEND` | 否 | 无 | 否 | Runner 环境 | 显式设为 `e2b` 会走远程 backend；显式 `disabled` 会禁止 Skill Runtime 注入。未设置且存在 `KSADK_SANDBOX_TEMPLATE_ID` 时自动使用 `e2b`。 |
@@ -190,12 +191,13 @@
 | `KSADK_SANDBOX_BACKEND` | Sandbox backend factory | 否 | `e2b` | 无 | 否 | 平台 / 开发者 | 否 | 通用 sandbox backend。首版支持 `e2b`。 |
 | `KSADK_SANDBOX_TYPE` | Sandbox spec | 否 | `aio` | 无 | 否 | 沙箱控制台 / 平台 | 否 | `aio/code/browser/private`。Skill Runtime 默认推荐 `aio`。 |
 | `KSADK_SANDBOX_TEMPLATE_ID` | Sandbox spec / Skill Runtime E2B backend | 条件必传 | 未设置 | `KSADK_SKILL_RUNTIME_TEMPLATE_ID` | 否 | 沙箱控制台 / 沙箱团队 | 否 | 远程 sandbox 执行时必传。新部署优先使用。 |
-| `KSADK_SANDBOX_TIMEOUT` | Sandbox spec | 否 | `900` | `KSADK_SKILL_RUNTIME_TIMEOUT` | 否 | 平台 / 开发者 | 否 | Sandbox 会话超时秒数。 |
+| `KSADK_SANDBOX_TIMEOUT` | Sandbox spec | 否 | `600` | `KSADK_SKILL_RUNTIME_TIMEOUT` | 否 | 平台 / 开发者 | 否 | Sandbox 会话超时秒数（透传 E2B 服务端，上限 86400）。 |
 | `KSADK_SANDBOX_ALLOW_INTERNET_ACCESS` | Sandbox spec | 否 | `true` | `KSADK_SKILL_RUNTIME_ALLOW_INTERNET_ACCESS` | 否 | 平台 / 开发者 | 否 | 是否允许 sandbox 出网。 |
 | `KSADK_SANDBOX_STARTUP_RETRY_ATTEMPTS` | E2B Sandbox backend | 否 | `6` | 无 | 否 | 平台 / 开发者 | 否 | 沙箱创建后 readiness 探测最大重试次数，用于兜底短暂 `NotFoundException` / `FileNotFoundException`。 |
 | `KSADK_SANDBOX_STARTUP_RETRY_DELAY` | E2B Sandbox backend | 否 | `0.2` | 无 | 否 | 平台 / 开发者 | 否 | 沙箱 readiness 首次重试间隔秒数，后续指数退避，单次 sleep 上限 1 秒。 |
-| `KSADK_SANDBOX_TTL_SECONDS` | Sandbox registry | 否 | `900` | 无 | 否 | 平台 / 开发者 | 否 | sandbox registry 会话硬 TTL 秒数；到期后会话被回收。 |
-| `KSADK_SANDBOX_IDLE_TTL_SECONDS` | Sandbox registry | 否 | `0` | 无 | 否 | 平台 / 开发者 | 否 | sandbox registry 会话空闲 TTL 秒数；`0` 表示不启用空闲回收。 |
+| `KSADK_SANDBOX_SWEEP_INTERVAL_SECONDS` | Sandbox registry | 否 | `60` | 无 | 否 | 平台 / 开发者 | 否 | 后台 sweep 间隔秒数；周期回收过期/空闲 sandbox 避免按秒计费泄漏；`0` 禁用后台 sweep。 |
+| `KSADK_SANDBOX_TTL_SECONDS` | Sandbox registry | 否 | `900` | `KSADK_SANDBOX_TIMEOUT` | 否 | 平台 / 开发者 | 否 | sandbox registry 会话硬 TTL 秒数；到期后被后台 sweep 或下次 get_or_create 回收。 |
+| `KSADK_SANDBOX_IDLE_TTL_SECONDS` | Sandbox registry | 否 | `300` | 无 | 否 | 平台 / 开发者 | 否 | sandbox registry 会话空闲 TTL 秒数；距上次使用超过该值即回收；`0` 禁用空闲回收。 |
 | `KSADK_SANDBOX_MAX_SESSIONS` | Sandbox registry | 否 | `0` | 无 | 否 | 平台 / 开发者 | 否 | sandbox registry 最大并发会话数；`0` 表示不限制。 |
 | `KSADK_SANDBOX_SESSION_ID` | Sandbox registry | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | 显式指定 sandbox registry 会话 id，用于跨工具调用复用同一 sandbox。 |
 | `KSADK_SANDBOX_SYNC_MAX_FILES` | Sandbox workspace sync | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | workspace 同步到 sandbox 时的最大文件数。 |
@@ -248,6 +250,7 @@
 | 变量 | 作用层级 | 是否必传 | 默认值 | 别名/兼容 | 敏感 | 配置方/来源 | 是否业务自定义 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `KSADK_ENABLE_MCP_TOOLS` | ADK Runner | 否 | `1` | 无 | 否 | 开发者 / 平台 | 否 | 控制远端 MCP tools 自动注入。 |
+| `KSADK_MCP_KEY` | MCP runtime | 否 | 未设置 | 无 | 是 | 开发者 / 平台 Secret | 否 | MCP 服务 API key；ksyun web search provider 未配 `KSADK_WEB_SEARCH_API_KEY` 时也回退到此。 |
 | `KSADK_MCP_SERVERS` | MCP runtime | 条件必传 | 未设置 | 无 | 是 | 开发者 / 平台 Secret | 否 | JSON 数组。可能包含 MCP server api_key。 |
 
 ## 8. 会话、短期记忆和长期记忆
@@ -374,6 +377,11 @@
 | `KSADK_MAX_CONSECUTIVE_TOOL_FAILURES` | Conversations runtime | 否 | `0` | 无 | 否 | 平台 / 开发者 | 否 | 连续工具失败达到阈值后触发 runtime 熔断；`0` 表示不限制。 |
 | `KSADK_MAX_CONSECUTIVE_APPROVAL_DENIALS` | Conversations runtime | 否 | `0` | 无 | 否 | 平台 / 开发者 | 否 | 连续审批拒绝达到阈值后触发 runtime 熔断；`0` 表示不限制。 |
 | `KSADK_MAX_CONSECUTIVE_COMPACT_FAILURES` | Conversations runtime | 否 | `0` | 无 | 否 | 平台 / 开发者 | 否 | 连续压缩失败达到阈值后触发 runtime 熔断；`0` 表示不限制。 |
+| `KSADK_MAX_CONSECUTIVE_SEMANTIC_FAILURES` | Conversations runtime | 否 | `0` | 无 | 否 | 平台 / 开发者 | 否 | semantic LLM 摘要连续失败达到阈值后跳过 semantic 改用 extractive；`0` 禁用熔断（默认关闭 opt-in，避免临时失败永久禁用 semantic）。 |
+| `KSADK_COMPACT_SNIP_ENABLED` | Conversations runtime | 否 | `true` | 无 | 否 | 平台 / 开发者 | 否 | compaction pipeline L2 snip 确定性去重开关；只作用于 candidate 投影，不删 transcript。 |
+| `KSADK_COMPACT_MICROCOMPACT_ENABLED` | Conversations runtime | 否 | `true` | 无 | 否 | 平台 / 开发者 | 否 | compaction pipeline L3 microcompact 冷组压缩开关；只作用于 candidate 投影。 |
+| `KSADK_COMPACT_MICROCOMPACT_COLD_ROUNDS` | Conversations runtime | 否 | `3` | 无 | 否 | 平台 / 开发者 | 否 | L3 microcompact 视为冷组的轮次阈值（尾部 N 组保留）。 |
+| `KSADK_WORKING_SET_MAX_FILES` | Conversations runtime | 否 | `5` | 无 | 否 | 平台 / 开发者 | 否 | compaction working set metadata 记录的最近文件数上限（只记路径不读内容）。 |
 | `KSADK_BUILTIN_TOOLS_MODE` | ADK Runner / Built-in tools | 否 | `off` | 无 | 否 | 平台 / 开发者 | 否 | 内置工具注入模式：`off/dispatcher/focused/deferred`。 |
 | `KSADK_BUILTIN_TOOLS_PROFILE` | ADK Runner / Built-in tools | 否 | `default` | 无 | 否 | 平台 / 开发者 | 否 | 内置工具 profile 选择器，例如 `default/coding`。 |
 | `KSADK_TOOL_RESULT_MAX_CHARS` | Built-in tools / Conversations runtime | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 工具结果内联返回的最大字符数；超出按 budget 策略持久化或截断。 |
@@ -381,9 +389,10 @@
 | `KSADK_TOOL_RESULT_PREVIEW_CHARS` | Built-in tools / Conversations runtime | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 持久化工具结果回显的预览字符数。 |
 | `KSADK_TOOL_RESULT_DIR` | Built-in tools / Conversations runtime | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 持久化超限工具结果的目录。 |
 | `KSADK_SAFE_` | Tool safety policy（内部前缀） | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 工具安全策略环境控制内部前缀；派生变量未逐项枚举。 |
-| `KSADK_WEB_SEARCH_PROVIDER` | Built-in web tools | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | web search provider 选择器，例如 `fake/http`。 |
-| `KSADK_WEB_SEARCH_BASE_URL` | Built-in web tools | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | HTTP web search provider 的 base URL。 |
-| `KSADK_WEB_SEARCH_API_KEY` | Built-in web tools | 条件必传 | 未设置 | 无 | 是 | 平台 Secret | 否 | HTTP web search provider 的 API key。 |
+| `KSADK_WEB_SEARCH_PROVIDER` | Built-in web tools | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | web search provider 选择器：`fake`（演示桩）、`http`（自定义 REST 搜索后端）、`ksyun`（金山云星流 AI搜索，复用 `KSADK_MCP_KEY`/`KSC_AIPRO_API_KEY` 凭证）。 |
+| `KSADK_WEB_SEARCH_BASE_URL` | Built-in web tools | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | `http` provider 的 base URL；`ksyun` provider 默认 `https://search.aipro.ksyun.com/v1/aisearch/search`，可覆盖。 |
+| `KSADK_WEB_SEARCH_API_KEY` | Built-in web tools | 条件必传 | 未设置 | 无 | 是 | 平台 Secret | 否 | `http` provider 的 API key；`ksyun` provider 未设时回退到 `KSADK_MCP_KEY`/`KSC_AIPRO_API_KEY`。 |
+| `KSADK_WEB_SEARCH_SCOPE` | Built-in web tools | 否 | `webpage` | 无 | 否 | 平台 / 开发者 | 否 | `ksyun` provider 的搜索范围：`webpage`/`document`/`scholar`/`podcast`/`video`。 |
 | `KSADK_WEB_SSRF_POLICY_JSON` | Built-in web tools | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | `web_fetch` SSRF 校验的 JSON 策略覆盖。 |
 | `KSADK_USER_BACKEND_URL` | Hosted UI | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | hosted UI 集成使用的用户面 backend URL。 |
 

@@ -19,6 +19,37 @@ DEFAULT_COMPACTION_SUMMARY_TIMEOUT_MS = 45_000
 DEFAULT_COMPACTION_SUMMARY_MAX_GROUPS = 12
 SUMMARY_PREFIX = "Earlier conversation summary:"
 
+# L4 semantic 熔断:独立计数 semantic LLM 调用失败(不复用 governance compact failure counter,
+# 因为 summarize_compaction 捕获异常后返回 extractive,外层看是成功,governance 不触发)。
+# 超过阈值后直接走 extractive,避免 Claude Code 的"1279 会话连续失败 50+ 次"浪费。
+_semantic_summary_failures: int = 0
+
+
+def _max_consecutive_semantic_failures() -> int:
+    raw = os.environ.get("KSADK_MAX_CONSECUTIVE_SEMANTIC_FAILURES", "3")
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 3
+
+
+def _semantic_circuit_open() -> bool:
+    """semantic 熔断是否打开(超阈值则跳过 LLM 直接走 extractive)。0 = 禁用熔断。"""
+    threshold = _max_consecutive_semantic_failures()
+    if threshold <= 0:
+        return False
+    return _semantic_summary_failures >= threshold
+
+
+def _record_semantic_failure() -> None:
+    global _semantic_summary_failures
+    _semantic_summary_failures += 1
+
+
+def _reset_semantic_failures() -> None:
+    global _semantic_summary_failures
+    _semantic_summary_failures = 0
+
 
 @dataclass
 class CompactionSummaryResult:
@@ -268,6 +299,14 @@ async def summarize_compaction(
             fallback_reason="semantic summarizer disabled",
         )
 
+    # L4 semantic 熔断:连续失败超阈值则跳过 LLM 直接走 extractive,直到进程重启或显式 reset。
+    if _semantic_circuit_open():
+        return CompactionSummaryResult(
+            summary_text=fallback_summary,
+            summary_strategy="extractive",
+            fallback_reason="semantic_circuit_open",
+        )
+
     summary_model = resolve_summary_model(model)
     client = resolve_summary_model_client()
     if not client.is_available:
@@ -298,6 +337,8 @@ async def summarize_compaction(
         summary_text = extract_summary_text(raw_text)
         if not summary_text:
             raise RuntimeError("summary model returned empty <summary> block")
+        # LLM 调用成功,清零 semantic 失败计数。
+        _reset_semantic_failures()
         return CompactionSummaryResult(
             summary_text=_ensure_summary_prefix(summary_text),
             summary_strategy="semantic",
@@ -305,6 +346,8 @@ async def summarize_compaction(
             summary_usage=usage,
         )
     except Exception as exc:
+        # LLM 调用失败(非 extractive 主动选择),记录 semantic 失败用于熔断判定。
+        _record_semantic_failure()
         return CompactionSummaryResult(
             summary_text=fallback_summary,
             summary_strategy="extractive",

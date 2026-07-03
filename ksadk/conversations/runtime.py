@@ -36,6 +36,7 @@ from ksadk.conversations.normalize import (
     normalize_kop_messages,
 )
 from ksadk.conversations.reasoning_markup import strip_reasoning_markup
+from ksadk.conversations.compaction_pipeline import build_working_set_metadata, run_pipeline
 from ksadk.conversations.semantic_summary import (
     extract_pinned_state,
     find_pinned_group_indexes,
@@ -3090,13 +3091,30 @@ async def compact_conversation_history(
 
     compacted_until_seq_id_value = int(plan.compacted_until_seq_id or 0)
     resolved_model_metadata = _resolve_model_metadata(model, model_metadata=model_metadata)
+    threshold_tokens = get_auto_compact_threshold_tokens(resolved_model_metadata)
+
+    # P0.5 分层 compaction pipeline:L2 Snip + L3 Microcompact(零 LLM 成本确定性裁剪),
+    # 只作用于送 summarizer 的 candidate 投影,绝不删 append-only transcript。
+    # 详见 ksadk/conversations/compaction_pipeline.py。
+    pipeline_result = run_pipeline(
+        plan.groups_to_compact,
+        threshold_tokens=threshold_tokens,
+        pinned_state=plan.pinned_state,
+        previous_summary=previous_summary,
+    )
+    candidate_groups = pipeline_result["candidate_groups"]
+
     summary_result = await summarize_compaction(
-        groups_to_compact=plan.groups_to_compact,
+        groups_to_compact=candidate_groups,
         previous_summary=previous_summary,
         pinned_state=plan.pinned_state,
         model_metadata=resolved_model_metadata,
         model=model,
     )
+
+    # L5 working set 恢复(保守版):只记 metadata,不读文件内容。
+    working_set = build_working_set_metadata(pinned_state=plan.pinned_state)
+
     return await append_context_checkpoint_event(
         session_id=session_id,
         author=author,
@@ -3118,6 +3136,26 @@ async def compact_conversation_history(
             "summary_model": summary_result.summary_model,
             "summary_usage": summary_result.summary_usage,
             "fallback_reason": summary_result.fallback_reason,
+            # P0.5 pipeline 审计字段(原始 transcript 未改,这里只记投影统计)。
+            "pipeline_stages": pipeline_result["pipeline_stages"],
+            "tokens_before": pipeline_result["tokens_before"],
+            "tokens_after": pipeline_result["tokens_after"],
+            "snip_stats": {
+                "removed_redundant_tool_results": pipeline_result["snip_stats"].removed_redundant_tool_results,
+                "snip_released_tokens": pipeline_result["snip_released_tokens"],
+                "covered_seq_range": list(pipeline_result["snip_stats"].covered_seq_range or []),
+            },
+            "microcompact_stats": (
+                {
+                    "compacted_groups": pipeline_result["microcompact_stats"].compacted_groups,
+                    "tokens_before": pipeline_result["microcompact_stats"].tokens_before,
+                    "tokens_after": pipeline_result["microcompact_stats"].tokens_after,
+                    "preserved_receipts": pipeline_result["microcompact_stats"].preserved_receipts,
+                }
+                if pipeline_result["microcompact_stats"] is not None
+                else None
+            ),
+            "working_set": working_set,
         },
         session_service_provider=provider,
     )
