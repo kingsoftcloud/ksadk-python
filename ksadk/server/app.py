@@ -318,6 +318,15 @@ async def _shutdown_runner_resources():
     if callable(close):
         await close()
 
+    # 释放 sandbox registry 占用的 E2B sandbox,避免进程退出后仍按秒计费到 E2B 服务端 timeout。
+    # clear() 幂等,与模块级 atexit 重复调用安全。
+    try:
+        from ksadk.sandbox.registry import GLOBAL_SANDBOX_REGISTRY
+
+        GLOBAL_SANDBOX_REGISTRY.clear()
+    except Exception:
+        logger.exception("failed to clear sandbox registry on shutdown")
+
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
