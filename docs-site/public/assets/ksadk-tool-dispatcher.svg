@@ -1,0 +1,252 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 820" role="img" aria-labelledby="title desc">
+  <title id="title">Tool Dispatcher 渐进式披露</title>
+  <desc id="desc">tool_dispatcher 三动作: list 过滤 dispatcher 自身返回 tools+tool_count; describe 校验 tool_name 后经 _build_descriptor_registry 返回 spec; call 校验+normalize args 后判 enabled,再走 ToolGateway.invoke,approval_required 则透传 envelope,否则回包 ok+result。</desc>
+  <style>
+    text { font-family: ui-sans-serif, system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif; }
+    @media (prefers-color-scheme: dark) {
+      .bg-light { fill: #0f172a; }
+      rect[fill="#ffffff"] { fill: #1e293b; }
+      rect[fill="#fbfbf9"] { fill: #0f172a; }
+      rect[fill="#fff7ed"] { fill: #1e1b14; }
+      rect[fill="#ecfdf5"] { fill: #0f1f1a; }
+      rect[fill="#eef2ff"] { fill: #1a1f2e; }
+      rect[fill="#fef2f2"] { fill: #1f1414; }
+      text[fill="#0f172a"] { fill: #f1f5f9; }
+      text[fill="#1e293b"] { fill: #e2e8f0; }
+      text[fill="#334155"] { fill: #cbd5e1; }
+      text[fill="#475569"] { fill: #94a3b8; }
+      text[fill="#64748b"] { fill: #94a3b8; }
+      text[fill="#92400e"] { fill: #fbbf24; }
+      text[fill="#7c2d12"] { fill: #fed7aa; }
+      text[fill="#5b21b6"] { fill: #c4b5fd; }
+      text[fill="#7c3aed"] { fill: #a78bfa; }
+      text[fill="#047857"] { fill: #34d399; }
+      text[fill="#059669"] { fill: #34d399; }
+      text[fill="#b91c1c"] { fill: #fca5a5; }
+      rect[stroke="#cbd5e1"] { stroke: #475569; }
+      rect[stroke="#94a3b8"] { stroke: #64748b; }
+    }
+  </style>
+  <defs>
+    <marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker>
+    <marker id="adisp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#d97706"/></marker>
+    <marker id="agn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#059669"/></marker>
+    <marker id="askill" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#7c3aed"/></marker>
+    <marker id="aalert" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#b91c1c"/></marker>
+  </defs>
+
+  <rect class="bg-light" width="1240" height="820" fill="#fbfbf9"/>
+
+  <!-- 标题 -->
+  <text x="40" y="36" font-size="18" font-weight="700" fill="#1e293b">Tool Dispatcher · 渐进式披露</text>
+  <text x="40" y="56" font-size="11" fill="#64748b">tool_dispatcher(action, tool_name, arguments, include, profile) · list → describe → call</text>
+
+  <!-- ===== 入口 ===== -->
+  <g>
+    <rect x="470" y="78" width="300" height="58" rx="8" fill="#fff7ed" stroke="#d97706" stroke-width="1.2"/>
+    <text x="620" y="102" font-size="12.5" font-weight="600" fill="#1e293b" text-anchor="middle">LLM 调用 tool_dispatcher</text>
+    <text x="620" y="120" font-size="9.5" fill="#475569" text-anchor="middle">action ∈ list / describe / call · boundary=local_ksadk_builtin_tools</text>
+  </g>
+
+  <!-- action 路由菱形 -->
+  <g>
+    <path d="M 620,158 L 700,196 L 620,234 L 540,196 Z" fill="#ffffff" stroke="#d97706" stroke-width="1.2"/>
+    <text x="620" y="192" font-size="11" font-weight="600" fill="#92400e" text-anchor="middle">normalized_action</text>
+    <text x="620" y="207" font-size="9.5" fill="#92400e" text-anchor="middle">action 路由</text>
+  </g>
+  <path d="M 620,136 L 620,158" fill="none" stroke="#d97706" stroke-width="1.2" marker-end="url(#adisp)"/>
+
+  <!-- unknown action 错误 -->
+  <g>
+    <rect x="980" y="170" width="220" height="52" rx="6" fill="#fef2f2" stroke="#b91c1c" stroke-width="1.2"/>
+    <text x="1090" y="192" font-size="11" font-weight="600" fill="#b91c1c" text-anchor="middle">unknown_action</text>
+    <text x="1090" y="208" font-size="9" fill="#475569" text-anchor="middle">action must be: list / describe / call</text>
+  </g>
+  <path d="M 700,196 L 980,196" fill="none" stroke="#b91c1c" stroke-width="1.2" marker-end="url(#aalert)" stroke-dasharray="4,3"/>
+  <text x="840" y="189" font-size="9.5" fill="#b91c1c" text-anchor="middle">其它 action</text>
+
+  <!-- ===== list 分支 ===== -->
+  <rect x="40" y="260" width="360" height="290" rx="10" fill="none" stroke="#059669" stroke-width="1.2" stroke-dasharray="5,4"/>
+  <text x="56" y="280" font-size="11.5" font-weight="700" fill="#047857">list 分支</text>
+  <text x="100" y="280" font-size="9.5" fill="#64748b">列出可调度工具</text>
+
+  <g>
+    <rect x="60" y="295" width="320" height="56" rx="6" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
+    <text x="220" y="316" font-size="11" font-weight="600" fill="#1e293b" text-anchor="middle">_select_agentengine_tools</text>
+    <text x="220" y="332" font-size="9" fill="#475569" text-anchor="middle">按 include / profile 展开 (_profile_default_include)</text>
+    <text x="220" y="345" font-size="9" fill="#475569" text-anchor="middle">include_dispatcher=False · 过滤 dispatcher 自身</text>
+  </g>
+  <g>
+    <rect x="60" y="365" width="320" height="48" rx="6" fill="#ffffff" stroke="#94a3b8" stroke-width="1.2"/>
+    <text x="220" y="386" font-size="10.5" font-weight="600" fill="#1e293b" text-anchor="middle">排除 _DISPATCHER_TOOL_NAME</text>
+    <text x="220" y="402" font-size="9" fill="#64748b" text-anchor="middle">及 _LEGACY_DISPATCHER_TOOL_NAME 别名</text>
+  </g>
+  <g>
+    <rect x="60" y="429" width="320" height="56" rx="6" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
+    <text x="220" y="450" font-size="11" font-weight="600" fill="#1e293b" text-anchor="middle">返回 tools + tool_count</text>
+    <text x="220" y="466" font-size="9" fill="#475569" text-anchor="middle">{ok: True, tools: specs, tool_count: len(specs)}</text>
+    <text x="220" y="479" font-size="9" fill="#64748b" text-anchor="middle">未知 include → _unknown_tool_error</text>
+  </g>
+  <path d="M 220,351 L 220,365" fill="none" stroke="#059669" stroke-width="1.2" marker-end="url(#agn)"/>
+  <path d="M 220,413 L 220,429" fill="none" stroke="#059669" stroke-width="1.2" marker-end="url(#agn)"/>
+
+  <!-- ===== describe 分支 ===== -->
+  <rect x="420" y="260" width="380" height="290" rx="10" fill="none" stroke="#7c3aed" stroke-width="1.2" stroke-dasharray="5,4"/>
+  <text x="436" y="280" font-size="11.5" font-weight="700" fill="#7c3aed">describe 分支</text>
+  <text x="488" y="280" font-size="9.5" fill="#64748b">返回单个工具 spec</text>
+
+  <g>
+    <rect x="440" y="295" width="340" height="62" rx="6" fill="#eef2ff" stroke="#7c3aed" stroke-width="1.2"/>
+    <path d="M 460,318 L 472,326 L 460,334 Z" fill="#7c3aed"/>
+    <text x="486" y="316" font-size="11" font-weight="600" fill="#1e293b">校验 tool_name</text>
+    <text x="610" y="316" font-size="9.5" fill="#475569">_normalize_tool_name(tool_name)</text>
+    <text x="486" y="334" font-size="9.5" fill="#475569">空 → missing_tool_name</text>
+    <text x="486" y="349" font-size="9.5" fill="#475569">dispatcher 自身 → dispatcher_self_call</text>
+  </g>
+  <g>
+    <rect x="440" y="371" width="340" height="56" rx="6" fill="#ffffff" stroke="#94a3b8" stroke-width="1.2"/>
+    <text x="610" y="392" font-size="11" font-weight="600" fill="#1e293b" text-anchor="middle">_build_descriptor_registry</text>
+    <text x="610" y="408" font-size="9" fill="#64748b" text-anchor="middle">include=[target_name] · include_dispatcher=False</text>
+    <text x="610" y="421" font-size="9" fill="#64748b" text-anchor="middle">未知 tool → _unknown_tool_error</text>
+  </g>
+  <g>
+    <rect x="440" y="441" width="340" height="62" rx="6" fill="#eef2ff" stroke="#7c3aed" stroke-width="1.2"/>
+    <text x="610" y="462" font-size="11" font-weight="600" fill="#1e293b" text-anchor="middle">返回单个 tool spec</text>
+    <text x="610" y="478" font-size="9" fill="#475569" text-anchor="middle">risk_level · requires_approval · side_effects</text>
+    <text x="610" y="491" font-size="9" fill="#475569" text-anchor="middle">boundary (isolated_sandbox / workspace_root / ...)</text>
+    <text x="610" y="503" font-size="9" fill="#64748b" text-anchor="middle">{ok: True, tool: specs[0]}</text>
+  </g>
+  <path d="M 610,357 L 610,371" fill="none" stroke="#7c3aed" stroke-width="1.2" marker-end="url(#askill)"/>
+  <path d="M 610,427 L 610,441" fill="none" stroke="#7c3aed" stroke-width="1.2" marker-end="url(#askill)"/>
+
+  <!-- ===== call 分支 ===== -->
+  <rect x="820" y="260" width="380" height="290" rx="10" fill="none" stroke="#d97706" stroke-width="1.2" stroke-dasharray="5,4"/>
+  <text x="836" y="280" font-size="11.5" font-weight="700" fill="#92400e">call 分支</text>
+  <text x="888" y="280" font-size="9.5" fill="#64748b">按名调用真实工具</text>
+
+  <g>
+    <rect x="840" y="295" width="340" height="62" rx="6" fill="#fff7ed" stroke="#d97706" stroke-width="1.2"/>
+    <text x="1010" y="316" font-size="11" font-weight="600" fill="#1e293b" text-anchor="middle">校验 tool_name + normalize arguments</text>
+    <text x="1010" y="332" font-size="9" fill="#475569" text-anchor="middle">_normalize_tool_name · 同样排除 dispatcher 自身</text>
+    <text x="1010" y="345" font-size="9" fill="#475569" text-anchor="middle">_normalize_tool_arguments(dict / JSON 字符串)</text>
+    <text x="1010" y="357" font-size="9" fill="#64748b" text-anchor="middle">+ _normalize_dispatched_tool_arguments (save_memory 等)</text>
+  </g>
+
+  <!-- enabled? 判定 -->
+  <g>
+    <path d="M 1010,373 L 1080,402 L 1010,431 L 940,402 Z" fill="#ffffff" stroke="#d97706" stroke-width="1.2"/>
+    <text x="1010" y="400" font-size="10.5" font-weight="600" fill="#92400e" text-anchor="middle">specs[0].enabled?</text>
+    <text x="1010" y="414" font-size="9" fill="#92400e" text-anchor="middle">backend / provider 是否就绪</text>
+  </g>
+
+  <!-- disabled 错误 -->
+  <g>
+    <rect x="836" y="441" width="180" height="62" rx="6" fill="#fef2f2" stroke="#b91c1c" stroke-width="1.2"/>
+    <text x="926" y="462" font-size="11" font-weight="600" fill="#b91c1c" text-anchor="middle">tool_disabled</text>
+    <text x="926" y="478" font-size="8.5" fill="#475569" text-anchor="middle">error_type=tool_disabled</text>
+    <text x="926" y="491" font-size="8.5" fill="#475569" text-anchor="middle">sandbox/web_search backend 未就绪</text>
+  </g>
+  <path d="M 940,402 L 926,441" fill="none" stroke="#b91c1c" stroke-width="1.2" marker-end="url(#aalert)" stroke-dasharray="4,3"/>
+  <text x="888" y="425" font-size="9.5" fill="#b91c1c" text-anchor="middle">False</text>
+
+  <!-- ToolGateway.invoke -->
+  <g>
+    <rect x="1024" y="441" width="172" height="62" rx="6" fill="#fff7ed" stroke="#d97706" stroke-width="1.2"/>
+    <text x="1110" y="462" font-size="11" font-weight="600" fill="#1e293b" text-anchor="middle">ToolGateway.invoke</text>
+    <text x="1110" y="478" font-size="8.5" fill="#475569" text-anchor="middle">_invoke_tool(tools[0], args)</text>
+    <text x="1110" y="491" font-size="8.5" fill="#475569" text-anchor="middle">继承目标 ToolPolicy 风险</text>
+  </g>
+  <path d="M 1080,402 L 1110,441" fill="none" stroke="#d97706" stroke-width="1.2" marker-end="url(#adisp)"/>
+  <text x="1140" y="425" font-size="9.5" fill="#92400e" text-anchor="middle">True</text>
+
+  <path d="M 1010,357 L 1010,373" fill="none" stroke="#d97706" stroke-width="1.2" marker-end="url(#adisp)"/>
+
+  <!-- ===== 路由箭头 ===== -->
+  <path d="M 580,210 L 220,295" fill="none" stroke="#059669" stroke-width="1.2" marker-end="url(#agn)"/>
+  <text x="380" y="245" font-size="10" fill="#047857" text-anchor="middle">list</text>
+  <path d="M 620,234 L 610,295" fill="none" stroke="#7c3aed" stroke-width="1.2" marker-end="url(#askill)"/>
+  <text x="640" y="270" font-size="10" fill="#7c3aed">describe</text>
+  <path d="M 660,210 L 1010,295" fill="none" stroke="#d97706" stroke-width="1.2" marker-end="url(#adisp)"/>
+  <text x="870" y="245" font-size="10" fill="#92400e" text-anchor="middle">call</text>
+
+  <!-- ===== 出口聚合 ===== -->
+  <g>
+    <rect x="380" y="575" width="480" height="56" rx="8" fill="#ffffff" stroke="#475569" stroke-width="1.2"/>
+    <text x="620" y="598" font-size="12" font-weight="600" fill="#1e293b" text-anchor="middle">结构化结果返回 LLM</text>
+    <text x="620" y="614" font-size="9.5" fill="#475569" text-anchor="middle">list → {ok, tools, tool_count} · describe → {ok, tool}</text>
+    <text x="620" y="626" font-size="9.5" fill="#475569" text-anchor="middle">call → {ok, tool_name, result} 或 approval / error envelope</text>
+  </g>
+
+  <!-- 各分支到出口 -->
+  <path d="M 220,485 L 220,640 L 380,610" fill="none" stroke="#059669" stroke-width="1.2" marker-end="url(#agn)" stroke-opacity="0.55"/>
+  <path d="M 610,503 L 610,575" fill="none" stroke="#7c3aed" stroke-width="1.2" marker-end="url(#askill)" stroke-opacity="0.55"/>
+  <path d="M 926,503 L 926,640 L 860,610" fill="none" stroke="#b91c1c" stroke-width="1" marker-end="url(#aalert)" stroke-dasharray="4,3" stroke-opacity="0.6"/>
+  <path d="M 1110,503 L 1110,640 L 860,610" fill="none" stroke="#d97706" stroke-width="1" marker-end="url(#adisp)" stroke-opacity="0.55"/>
+  <path d="M 1090,222 L 1090,640 L 860,610" fill="none" stroke="#b91c1c" stroke-width="1" marker-end="url(#aalert)" stroke-dasharray="4,3" stroke-opacity="0.45"/>
+
+  <!-- ===== call 分支详解: approval 透传 ===== -->
+  <rect x="40" y="560" width="340" height="240" rx="10" fill="none" stroke="#b91c1c" stroke-width="1.2" stroke-dasharray="5,4"/>
+  <text x="56" y="580" font-size="11.5" font-weight="700" fill="#b91c1c">call 出口判定</text>
+  <text x="138" y="580" font-size="9.5" fill="#64748b">approval_required 透传</text>
+
+  <g>
+    <path d="M 210,595 L 290,628 L 210,661 L 130,628 Z" fill="#ffffff" stroke="#b91c1c" stroke-width="1.2"/>
+    <text x="210" y="624" font-size="10.5" font-weight="600" fill="#b91c1c" text-anchor="middle">result.type ==</text>
+    <text x="210" y="640" font-size="10.5" font-weight="600" fill="#b91c1c" text-anchor="middle">approval_required?</text>
+  </g>
+
+  <!-- 是: 透传 envelope -->
+  <g>
+    <rect x="56" y="680" width="160" height="62" rx="6" fill="#fef2f2" stroke="#b91c1c" stroke-width="1.2"/>
+    <text x="136" y="700" font-size="10.5" font-weight="600" fill="#b91c1c" text-anchor="middle">透传 envelope</text>
+    <text x="136" y="716" font-size="8.5" fill="#475569" text-anchor="middle">{type: approval_required,</text>
+    <text x="136" y="728" font-size="8.5" fill="#475569" text-anchor="middle"> approval_request: {id, risk_level},</text>
+    <text x="136" y="740" font-size="8.5" fill="#475569" text-anchor="middle"> dispatched_tool_name}</text>
+  </g>
+
+  <!-- 否: ok+result -->
+  <g>
+    <rect x="224" y="680" width="144" height="62" rx="6" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
+    <text x="296" y="700" font-size="10.5" font-weight="600" fill="#047857" text-anchor="middle">回包 ok + result</text>
+    <text x="296" y="716" font-size="8.5" fill="#475569" text-anchor="middle">{ok: True,</text>
+    <text x="296" y="728" font-size="8.5" fill="#475569" text-anchor="middle"> tool_name: target_name,</text>
+    <text x="296" y="740" font-size="8.5" fill="#475569" text-anchor="middle"> result}</text>
+  </g>
+
+  <path d="M 175,645 L 136,680" fill="none" stroke="#b91c1c" stroke-width="1.2" marker-end="url(#aalert)" stroke-dasharray="4,3"/>
+  <text x="135" y="668" font-size="9.5" fill="#b91c1c" text-anchor="middle">是</text>
+  <path d="M 245,645 L 296,680" fill="none" stroke="#059669" stroke-width="1.2" marker-end="url(#agn)"/>
+  <text x="290" y="668" font-size="9.5" fill="#047857" text-anchor="middle">否</text>
+
+  <!-- 失败分支 (ok is False) -->
+  <g>
+    <rect x="100" y="758" width="220" height="34" rx="6" fill="#ffffff" stroke="#94a3b8" stroke-width="1.2"/>
+    <text x="210" y="775" font-size="9.5" fill="#475569" text-anchor="middle">result.ok is False →</text>
+    <text x="210" y="787" font-size="9.5" fill="#475569" text-anchor="middle">{ok: False, tool_name, result}</text>
+  </g>
+  <path d="M 210,661 L 210,758" fill="none" stroke="#475569" stroke-width="1" marker-end="url(#ag)" stroke-opacity="0.5"/>
+
+  <!-- ===== 图例 ===== -->
+  <g transform="translate(420, 660)">
+    <text x="0" y="0" font-size="11" font-weight="700" fill="#1e293b">图例</text>
+    <rect x="0" y="12" width="14" height="14" rx="2" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
+    <text x="20" y="23" font-size="9.5" fill="#475569">list / Runner 数据流</text>
+    <rect x="170" y="12" width="14" height="14" rx="2" fill="#eef2ff" stroke="#7c3aed" stroke-width="1.2"/>
+    <text x="190" y="23" font-size="9.5" fill="#475569">describe / spec 查询</text>
+    <rect x="350" y="12" width="14" height="14" rx="2" fill="#fff7ed" stroke="#d97706" stroke-width="1.2"/>
+    <text x="370" y="23" font-size="9.5" fill="#475569">call / dispatcher</text>
+    <rect x="490" y="12" width="14" height="14" rx="2" fill="#fef2f2" stroke="#b91c1c" stroke-width="1.2"/>
+    <text x="510" y="23" font-size="9.5" fill="#475569">approval / 错误</text>
+
+    <line x1="0" y1="44" x2="30" y2="44" stroke="#059669" stroke-width="1.2" marker-end="url(#agn)"/>
+    <text x="38" y="48" font-size="9.5" fill="#475569">正常流</text>
+    <line x1="100" y1="44" x2="130" y2="44" stroke="#b91c1c" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#aalert)"/>
+    <text x="138" y="48" font-size="9.5" fill="#475569">审批/错误流</text>
+
+    <text x="0" y="74" font-size="9.5" fill="#64748b">三 action 共享 _build_descriptor_registry，</text>
+    <text x="0" y="88" font-size="9.5" fill="#64748b">均 include_dispatcher=False 避免递归。</text>
+    <text x="0" y="108" font-size="9.5" fill="#64748b">call 最终走 ToolGateway.invoke，</text>
+    <text x="0" y="122" font-size="9.5" fill="#64748b">strict 下 run_command/run_code/execute_skills</text>
+    <text x="0" y="136" font-size="9.5" fill="#64748b">及 workspace 写删工具返回 approval_required。</text>
+  </g>
+</svg>

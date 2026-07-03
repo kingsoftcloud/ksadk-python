@@ -1,4 +1,35 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1520 900" font-family="ui-sans-serif, system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif">
+  <style>
+    /* Dark theme: invert the light-bg / white-panel design so it blends into a dark page. */
+    @media (prefers-color-scheme: dark) {
+      .bg-light { fill: #0f172a; }
+      /* white / near-white panels → dark slate panels */
+      rect[fill="#ffffff"] { fill: #1e293b; }
+      rect[fill="#fbfbf9"] { fill: #0f172a; }
+      rect[fill="#f8fafc"] { fill: #0f172a; }
+      rect[fill="#f1f5f9"] { fill: #1e293b; }
+      /* headings / body text → light */
+      text[fill="#0f172a"] { fill: #f1f5f9; }
+      text[fill="#1e293b"] { fill: #e2e8f0; }
+      text[fill="#334155"] { fill: #cbd5e1; }
+      text[fill="#475569"] { fill: #94a3b8; }
+      text[fill="#64748b"] { fill: #94a3b8; }
+      text[fill="#94a3b8"] { fill: #64748b; }
+      /* keep semantic accent text readable on dark */
+      text[fill="#9a3412"] { fill: #fdba74; }
+      text[fill="#7c2d12"] { fill: #fed7aa; }
+      text[fill="#92400e"] { fill: #fbbf24; }
+      text[fill="#b45309"] { fill: #fbbf24; }
+      text[fill="#5b21b6"] { fill: #c4b5fd; }
+      text[fill="#7c3aed"] { fill: #a78bfa; }
+      text[fill="#047857"] { fill: #34d399; }
+      text[fill="#059669"] { fill: #34d399; }
+      text[fill="#065f46"] { fill: #6ee7b7; }
+      /* neutral borders a touch brighter for contrast on dark */
+      rect[stroke="#cbd5e1"] { stroke: #475569; }
+      rect[stroke="#94a3b8"] { stroke: #64748b; }
+    }
+  </style>
   <defs>
     <marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker>
     <marker id="askill" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#7c3aed"/></marker>
@@ -7,7 +38,7 @@
     <marker id="aorange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#d97706"/></marker>
   </defs>
 
-  <rect width="1520" height="900" fill="#fbfbf9"/>
+  <rect class="bg-light" width="1520" height="900" fill="#fbfbf9"/>
 
   <!-- ===== 标题 ===== -->
   <text x="40" y="28" font-size="16" font-weight="700" fill="#0f172a">AgentEngine Toolsets 架构图 · LangGraph 路由 + ReAct 自主调工具</text>

@@ -2,8 +2,6 @@
 title: "Tools And Skill Runtime"
 ---
 
-# Tools And Skill Runtime
-
 KsADK can expose tools to an agent through framework-native tools, MCP/A2A
 integrations, and the optional Skill Runtime. The public rule is simple: tools
 should be declared explicitly, validated at runtime, and isolated from secrets
@@ -11,47 +9,7 @@ or local files the agent does not need.
 
 ## Tool Layers
 
-```mermaid
-flowchart TD
-  subgraph Agent["Agent caller"]
-    Call["tool_dispatcher / framework-native tool call"]
-  end
-  subgraph Gateway["Tool Gateway approval gate"]
-    Policy["read ToolPolicy<br/>risk_level + side_effects"]
-    Decide{"approval required?<br/>strict and risk>=medium"}
-  end
-  subgraph States["three-state decision"]
-    S1["approval_required<br/>return approval_request envelope"]
-    S2["approval_rejected<br/>user rejects / command policy reject"]
-    S3["execute<br/>invoke real impl"]
-  end
-  subgraph Exec["execution boundary"]
-    Impl["tool implementation function"]
-    Sandbox["sandbox backend<br/>isolated execution"]
-  end
-  Result["structured result<br/>ok / error_type / receipts"]
-
-  Call --> Policy
-  Policy --> Decide
-  Decide -->|"yes"| S1
-  Decide -->|"no"| S3
-  S1 -->|"user confirms approved=true"| S3
-  S1 -->|"user rejects approved=false"| S2
-  S1 -->|"command policy reject"| S2
-  S3 --> Impl
-  Impl --> Sandbox
-  Sandbox --> Result
-  S2 --> Result
-
-  classDef brand fill:#5368db,stroke:#3a4ab8,color:#fff
-  classDef cyan fill:#59d3d9,stroke:#2fa9af,color:#0b2530
-  classDef warn fill:#f5a623,stroke:#c47d0a,color:#2a1a00
-  classDef state fill:#fff4d6,stroke:#c4a30a,color:#2a1a00
-  class Call,Gateway,Exec,States brand
-  class Policy,Decide,S3,S1,S2 state
-  class Sandbox,Result cyan
-  class S2 warn
-```
+![Tool Gateway approval flow](/assets/ksadk-tool-gateway.svg)
 
 The framework adapter normalizes tool definitions before an agent run. The agent
 receives a stable tool description, a narrow input schema, and a structured
@@ -79,6 +37,8 @@ Use the simplest path that gives the agent enough capability. Do not route a pla
 </Callout>
 
 ## AgentEngine Built-In Tools
+
+![KsADK Toolsets Layers](/assets/ksadk-toolsets-layers.svg)
 
 `ksadk.toolsets` provides SDK built-in tool entry points. Calling
 `get_agentengine_tools()` with no arguments still returns the full built-in
@@ -121,56 +81,7 @@ list, describe, and call KsADK local built-in tools by name only when needed,
 keeping the model context smaller. It invokes the real tool object, so it still
 goes through Tool Gateway approval policy.
 
-```mermaid
-flowchart TD
-  Entry["LLM calls tool_dispatcher<br/>action in list/describe/call"]
-  Route{"action routing"}
-
-  subgraph List["list branch"]
-    L1["_select_agentengine_tools<br/>expand by include / profile"]
-    L2["exclude dispatcher itself"]
-    L3["return tools + tool_count"]
-  end
-
-  subgraph Describe["describe branch"]
-    D1{"tool_name valid?<br/>not a dispatcher self-call"}
-    D2["_build_descriptor_registry"]
-    D3["return single tool spec<br/>risk_level / approval / boundary"]
-  end
-
-  subgraph Call["call branch"]
-    C1["validate tool_name + normalize arguments"]
-    C2{"enabled?"}
-    C3["ToolGateway.invoke<br/>real tool impl"]
-    C4{"returns approval_required?"}
-    C5["forward envelope + dispatched_tool_name"]
-    C6["return ok + tool_name + result"]
-  end
-
-  Entry --> Route
-  Route -->|"list"| L1 --> L2 --> L3
-  Route -->|"describe"| D1
-  D1 -->|"invalid / self-call"| Err["missing_tool_name / dispatcher_self_call"]
-  D1 -->|"valid"| D2 --> D3
-  Route -->|"call"| C1 --> C2
-  C2 -->|"disabled"| DisErr["tool_disabled"]
-  C2 -->|"enabled"| C3 --> C4
-  C4 -->|"yes"| C5
-  C4 -->|"no"| C6
-  C5 --> Out["structured result back to LLM"]
-  C6 --> Out
-  Err --> Out
-  DisErr --> Out
-
-  classDef brand fill:#5368db,stroke:#3a4ab8,color:#fff
-  classDef cyan fill:#59d3d9,stroke:#2fa9af,color:#0b2530
-  classDef warn fill:#f5a623,stroke:#c47d0a,color:#2a1a00
-  classDef state fill:#eef2ff,stroke:#5368db,color:#1a2240
-  class Entry,Route brand
-  class List,Describe,Call state
-  class L3,D3,C6,Out cyan
-  class Err,DisErr,C5 warn
-```
+![tool_dispatcher progressive disclosure](/assets/ksadk-tool-dispatcher.svg)
 
 | action | Behavior |
 | --- | --- |
@@ -572,6 +483,10 @@ through the Skill Service, then their download URL is fetched, the archive is
 sha256-verified and safely extracted, and finally handed to
 `load_local_skill()` to become a `LocalSkill`.
 
+![KsADK Skill Loading Sequence](/assets/ksadk-skill-loading.svg)
+
+The mermaid sequence below is the text version of the same flow:
+
 ```mermaid
 sequenceDiagram
   autonumber
@@ -756,35 +671,7 @@ After `ToolGateway.invoke` approves the call, `execute_skills` enters
 `_execute_skills_impl` and finally reaches the runtime tool built by
 `build_execute_skills_tool`. The flow:
 
-```mermaid
-flowchart TD
-  Entry["LLM calls execute_skills<br/>workflow_prompt + skill_names"] --> GW["ToolGateway.invoke<br/>read ToolPolicy risk=high"]
-  Decide{"strict and<br/>no approval?"}
-  GW --> Decide
-  Decide -->|"yes"| Appr["return approval_required envelope<br/>approval_request.id / risk_level"]
-  Decide -->|"no"| Impl["_execute_skills_impl"]
-  Impl --> Backend{"create_skill_runtime_backend()<br/>resolve backend"}
-  Backend -->|"disabled"| DisabledErr["SkillRuntimeError<br/>skill_runtime_disabled + hint"]
-  Backend -->|"local_process"| Local["local subprocess backend"]
-  Backend -->|"e2b"| E2B["E2B sandbox backend"]
-  Local --> Build["build_execute_skills_tool<br/>backend.run_workflow"]
-  E2B --> Build
-  Build --> Resolve["runtime_agent_env_from_process<br/>inject KSADK_SKILL_SERVICE_* / space ids"]
-  Resolve --> Run["backend.run_workflow<br/>workflow_prompt / skill_space_ids / skill_names / session_id / timeout"]
-  Run --> Discover["runtime internal:<br/>discover -> download archive -> sha256 -> extract -> loader -> agent"]
-  Discover --> Result["SkillRuntimeResult.to_dict<br/>+ execution_context"]
-  Result --> Out["structured result back to LLM"]
-  Appr --> Out
-
-  classDef brand fill:#5368db,stroke:#3a4ab8,color:#fff
-  classDef cyan fill:#59d3d9,stroke:#2fa9af,color:#0b2530
-  classDef warn fill:#f5a623,stroke:#c47d0a,color:#2a1a00
-  classDef state fill:#eef2ff,stroke:#5368db,color:#1a2240
-  class Entry,GW,Build,Run brand
-  class Backend,Resolve,Discover state
-  class Result,Out cyan
-  class Appr,DisabledErr warn
-```
+![execute_skills orchestration flow](/assets/ksadk-execute-skills.svg)
 
 <Callout type="info">
 The runtime-internal "discover -> download -> sha256 -> extract -> loader -> agent" mirrors the Skill Loading Sequence above: `SkillServiceClient` lists skills, `download_skill_archive` fetches the zip, `PackageStore.store_archive` verifies sha256 and guards against path traversal, then `load_local_skill` loads it into the agent running inside the runtime subprocess.
@@ -969,6 +856,8 @@ runtime:
 | `KSADK_BUILTIN_TOOLS_PROFILE` | `default` | all built-in groups (skill/workspace/platform/sandbox/web) |
 | | `coding` | focused subset (workspace read/write, search, sandbox status, web, ...) |
 
+![Built-in tool injection mode decision](/assets/ksadk-builtin-tools-mode.svg)
+
 ```python title="agent.py"
 from ksadk.toolsets import builtin_tools_for_runtime
 
@@ -1139,26 +1028,6 @@ Internal account IDs, private images, registry hosts, hosted control-plane URLs,
 The backend is selected by `KSADK_SANDBOX_BACKEND`, and `sandbox_status` reports
 the effective boundary.
 
-```mermaid
-flowchart LR
-  Status["sandbox_status<br/>risk=low"] --> Repo["read backend / ttl / session<br/>no command run"]
-  Cmd["run_command<br/>risk=high"] --> GW1{"strict?"}
-  Code["run_code<br/>risk=high"] --> GW2{"strict?"}
-  GW1 -->|"yes"| Appr1["approval_required"]
-  GW1 -->|"no"| SB1["sandbox.run_command"]
-  GW2 -->|"yes"| Appr2["approval_required"]
-  GW2 -->|"no"| SB2["write file -> sandbox.run_command"]
-  SB1 --> Budget["ToolResultBudget<br/>truncate/persist stdout stderr"]
-  SB2 --> Budget
-
-  classDef brand fill:#5368db,stroke:#3a4ab8,color:#fff
-  classDef cyan fill:#59d3d9,stroke:#2fa9af,color:#0b2530
-  classDef warn fill:#f5a623,stroke:#c47d0a,color:#2a1a00
-  class Status,Repo cyan
-  class Cmd,Code,Appr1,Appr2 warn
-  class GW1,GW2,SB1,SB2,Budget brand
-```
-
 ### `sandbox_status`
 
 Reports AgentEngine sandbox status and boundary. It runs no command.
@@ -1291,6 +1160,8 @@ assert result["ok"]
 ```
 
 ### E2B Sandbox Backend
+
+![Sandbox Runtime architecture: shared base, backend selection, E2B readiness retry, Registry reuse and TTL reclamation](/assets/ksadk-sandbox-runtime.svg)
 
 When `KSADK_SANDBOX_BACKEND=e2b` (or a template id is configured, which auto-selects
 `e2b`), `create_sandbox_backend()` returns an `E2BSandboxBackend` that boots an
@@ -1462,19 +1333,7 @@ stdout/text is not pushed into the model context. `run_command` / `run_code`
 call `budget_text_fields` on `stdout`/`stderr`; `web_fetch` calls
 `budget_tool_output` on `text`.
 
-```mermaid
-flowchart TD
-  Out["raw tool output<br/>stdout / stderr / text"] --> Len{"len > persist_threshold<br/>or > max_chars?"}
-  Len -->|"no"| Inline["inline directly<br/>truncated to max_chars"]
-  Len -->|"yes"| Persist["write file to persist_dir"]
-  Persist --> Envelope["return preview + persisted.path"]
-  Inline --> Envelope
-
-  classDef brand fill:#5368db,stroke:#3a4ab8,color:#fff
-  classDef cyan fill:#59d3d9,stroke:#2fa9af,color:#0b2530
-  class Out,Persist,Envelope brand
-  class Len,Inline cyan
-```
+![ToolResultBudget truncation and persistence](/assets/ksadk-tool-result-budget.svg)
 
 | Env var | Purpose | Default |
 | --- | --- | --- |

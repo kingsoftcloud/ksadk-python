@@ -2,55 +2,13 @@
 title: "工具与 Skill Runtime"
 ---
 
-# 工具与 Skill Runtime
-
 KsADK 可以通过框架原生工具、MCP/A2A 集成和可选的 Skill Runtime 向 Agent
 暴露工具。公开规则是：工具必须显式声明，在运行时可验证，并且和 Agent 不
 需要的密钥或本地文件隔离。
 
 ## 工具层次
 
-```mermaid
-flowchart TD
-  subgraph Agent["Agent 调用方"]
-    Call["tool_dispatcher / 框架原生工具调用"]
-  end
-  subgraph Gateway["Tool Gateway 审批闸口"]
-    Policy["读取 ToolPolicy<br/>risk_level + side_effects"]
-    Decide{"需要审批?<br/>strict 且 risk≥medium"}
-  end
-  subgraph States["三态判定"]
-    S1["approval_required<br/>返回 approval_request envelope"]
-    S2["approval_rejected<br/>用户拒绝 / 命令策略拦截"]
-    S3["execute<br/>调用真实 impl"]
-  end
-  subgraph Exec["执行边界"]
-    Impl["工具实现函数"]
-    Sandbox["sandbox backend<br/>隔离执行"]
-  end
-  Result["结构化结果<br/>ok / error_type / receipts"]
-
-  Call --> Policy
-  Policy --> Decide
-  Decide -->|"是"| S1
-  Decide -->|"否"| S3
-  S1 -->|"用户确认 approved=true"| S3
-  S1 -->|"用户拒绝 approved=false"| S2
-  S1 -->|"命令策略 reject"| S2
-  S3 --> Impl
-  Impl --> Sandbox
-  Sandbox --> Result
-  S2 --> Result
-
-  classDef brand fill:#5368db,stroke:#3a4ab8,color:#fff
-  classDef cyan fill:#59d3d9,stroke:#2fa9af,color:#0b2530
-  classDef warn fill:#f5a623,stroke:#c47d0a,color:#2a1a00
-  classDef state fill:#fff4d6,stroke:#c4a30a,color:#2a1a00
-  class Call,Gateway,Exec,States brand
-  class Policy,Decide,S3,S1,S2 state
-  class Sandbox,Result cyan
-  class S2 warn
-```
+![Tool Gateway 审批流](/assets/ksadk-tool-gateway.svg)
 
 框架适配器在 Agent 执行前归一化工具定义。Agent 拿到的是稳定工具描述、收窄的
 输入 schema 和可在本地 Web UI 渲染或写回会话历史的结构化结果；而 `ToolGateway.invoke()`
@@ -75,6 +33,8 @@ flowchart TD
 | 低频或高风险内置能力 | `agentengine_tool_dispatcher` 按需列出、描述和调用 |
 
 ## AgentEngine 内置工具
+
+![KsADK Toolsets 层次结构](/assets/ksadk-toolsets-layers.svg)
 
 `ksadk.toolsets` 提供 SDK 内置工具入口。`get_agentengine_tools()` 无参时仍返回
 全量内置工具，保持历史兼容；新项目推荐显式选择工具集合：
@@ -115,56 +75,7 @@ tool_descriptions = describe_agentengine_tools(include=["focused", "agentengine_
 KsADK 本地内置工具，从而压缩上下文里的工具描述数量。它调用真实工具对象，因此仍受 Tool Gateway
 审批策略约束。
 
-```mermaid
-flowchart TD
-  Entry["LLM 调用 tool_dispatcher<br/>action ∈ list/describe/call"]
-  Route{"action 路由"}
-
-  subgraph List["list 分支"]
-    L1["_select_agentengine_tools<br/>按 include / profile 展开"]
-    L2["过滤 dispatcher 自身"]
-    L3["返回 tools + tool_count"]
-  end
-
-  subgraph Describe["describe 分支"]
-    D1{"tool_name 合法?<br/>非 dispatcher 自调用"}
-    D2["_build_descriptor_registry"]
-    D3["返回单个 tool spec<br/>risk_level / approval / boundary"]
-  end
-
-  subgraph Call["call 分支"]
-    C1["校验 tool_name + 规范化 arguments"]
-    C2{"enabled?"}
-    C3["ToolGateway.invoke<br/>真实工具 impl"]
-    C4{"返回 approval_required?"}
-    C5["透传 envelope + dispatched_tool_name"]
-    C6["回包 ok + tool_name + result"]
-  end
-
-  Entry --> Route
-  Route -->|"list"| L1 --> L2 --> L3
-  Route -->|"describe"| D1
-  D1 -->|"非法 / 自调用"| Err["missing_tool_name / dispatcher_self_call"]
-  D1 -->|"合法"| D2 --> D3
-  Route -->|"call"| C1 --> C2
-  C2 -->|"disabled"| DisErr["tool_disabled"]
-  C2 -->|"enabled"| C3 --> C4
-  C4 -->|"是"| C5
-  C4 -->|"否"| C6
-  C5 --> Out["结构化结果返回 LLM"]
-  C6 --> Out
-  Err --> Out
-  DisErr --> Out
-
-  classDef brand fill:#5368db,stroke:#3a4ab8,color:#fff
-  classDef cyan fill:#59d3d9,stroke:#2fa9af,color:#0b2530
-  classDef warn fill:#f5a623,stroke:#c47d0a,color:#2a1a00
-  classDef state fill:#eef2ff,stroke:#5368db,color:#1a2240
-  class Entry,Route brand
-  class List,Describe,Call state
-  class L3,D3,C6,Out cyan
-  class Err,DisErr,C5 warn
-```
+![tool_dispatcher 三分支渐进式披露](/assets/ksadk-tool-dispatcher.svg)
 
 三种 action 共享同一份内置工具注册表，且都排除了 `tool_dispatcher` /
 `agentengine_tool_dispatcher` 自身，避免递归调用。`call` 分支最终走的是
@@ -550,6 +461,10 @@ strict 模式下，medium / high / critical 风险工具会先返回结构化 `a
 远程技能 manifest 合并。远程技能先经 Skill Service 列举、获取下载地址，再做 sha256
 校验与安全解压，最后交给 `load_local_skill()` 装入 `LocalSkill`。
 
+![KsADK Skill 加载时序](/assets/ksadk-skill-loading.svg)
+
+下面的时序图给出同一流程的 mermaid 文本版本：
+
 ```mermaid
 sequenceDiagram
   autonumber
@@ -725,35 +640,7 @@ runtime 未配置时返回 `skill_runtime_disabled` + hint。
 `execute_skills` 经 `ToolGateway.invoke` 审批后进入 `_execute_skills_impl`，
 最终落到 `build_execute_skills_tool` 构造的 runtime tool。链路如下：
 
-```mermaid
-flowchart TD
-  Entry["LLM 调用 execute_skills<br/>workflow_prompt + skill_names"] --> GW["ToolGateway.invoke<br/>读 ToolPolicy risk=high"]
-  Decide{"strict 且<br/>未带 approval?"}
-  GW --> Decide
-  Decide -->|"是"| Appr["返回 approval_required 信封<br/>approval_request.id / risk_level"]
-  Decide -->|"否"| Impl["_execute_skills_impl"]
-  Impl --> Backend{"create_skill_runtime_backend()<br/>解析 backend"}
-  Backend -->|"disabled"| DisabledErr["SkillRuntimeError<br/>skill_runtime_disabled + hint"]
-  Backend -->|"local_process"| Local["本地子进程 backend"]
-  Backend -->|"e2b"| E2B["E2B sandbox backend"]
-  Local --> Build["build_execute_skills_tool<br/>backend.run_workflow"]
-  E2B --> Build
-  Build --> Resolve["runtime_agent_env_from_process<br/>注入 KSADK_SKILL_SERVICE_* / space ids"]
-  Resolve --> Run["backend.run_workflow<br/>workflow_prompt / skill_space_ids / skill_names / session_id / timeout"]
-  Run --> Discover["runtime 内部：<br/>发现 → 下载 archive → sha256 → 解压 → loader → agent"]
-  Discover --> Result["SkillRuntimeResult.to_dict<br/>+ execution_context"]
-  Result --> Out["结构化结果返回 LLM"]
-  Appr --> Out
-
-  classDef brand fill:#5368db,stroke:#3a4ab8,color:#fff
-  classDef cyan fill:#59d3d9,stroke:#2fa9af,color:#0b2530
-  classDef warn fill:#f5a623,stroke:#c47d0a,color:#2a1a00
-  classDef state fill:#eef2ff,stroke:#5368db,color:#1a2240
-  class Entry,GW,Build,Run brand
-  class Backend,Resolve,Discover state
-  class Result,Out cyan
-  class Appr,DisabledErr warn
-```
+![execute_skills 编排流](/assets/ksadk-execute-skills.svg)
 
 <Callout type="info">
 runtime 内部的「发现 → 下载 → sha256 → 解压 → loader → agent」与上面 Skill 加载时序同构：`SkillServiceClient` 列举技能、`download_skill_archive` 拉取 zip、`PackageStore.store_archive` 做 sha256 校验和路径穿越保护，再交给 `load_local_skill` 装入 runtime 子进程内的 Agent。
@@ -933,6 +820,8 @@ hits = tool_search("read file", profile="coding", max_results=5)
 | `KSADK_BUILTIN_TOOLS_PROFILE` | `default` | 全部内置工具组（skill/workspace/platform/sandbox/web） |
 | | `coding` | focused 子集（workspace 读写、search、sandbox status、web 等） |
 
+![内置工具注入模式决策](/assets/ksadk-builtin-tools-mode.svg)
+
 ```python title="agent.py"
 from ksadk.toolsets import builtin_tools_for_runtime
 
@@ -1046,20 +935,7 @@ Skill 工具的策略：
 ADK runner 会先解析 skills mode。显式设置 `KSADK_SKILLS_MODE` 时直接生效；
 `auto` 模式下按环境与本地目录推断。
 
-```mermaid
-flowchart TD
-  Start["解析 skills mode"] --> Explicit{"KSADK_SKILLS_MODE<br/>不是 auto?"}
-  Explicit -->|是| Mode["使用显式 mode"]
-  Explicit -->|否| RuntimeBackend{"KSADK_SKILL_RUNTIME_BACKEND<br/>有效且非 disabled?"}
-  RuntimeBackend -->|是| Sandbox["sandbox mode"]
-  RuntimeBackend -->|否| SandboxBackend{"KSADK_SANDBOX_BACKEND<br/>有效且非 disabled?"}
-  SandboxBackend -->|是| Sandbox
-  SandboxBackend -->|否| Template{"配置 sandbox/template id?"}
-  Template -->|是| Sandbox
-  Template -->|否| LocalSkills{"本地 skills 目录包含 SKILL.md?"}
-  LocalSkills -->|是| Local["local mode"]
-  LocalSkills -->|否| Auto["auto，不注入 Skill Runtime"]
-```
+![Skills Mode 判定](/assets/ksadk-skills-mode.svg)
 
 ## Skill Runtime Backend
 
@@ -1178,25 +1054,7 @@ sandbox backend 适合需要更强隔离、网络策略或依赖控制的场景�
 `ksadk.toolsets.sandbox` 暴露三个工具，全部经 `ToolGateway`。backend 由
 `KSADK_SANDBOX_BACKEND` 决定，`sandbox_status` 报告实际生效的边界。
 
-```mermaid
-flowchart LR
-  Status["sandbox_status<br/>risk=low"] --> Repo["读 backend / ttl / session<br/>不执行命令"]
-  Cmd["run_command<br/>risk=high"] --> GW1{"strict?"}
-  Code["run_code<br/>risk=high"] --> GW2{"strict?"}
-  GW1 -->|"是"| Appr1["approval_required"]
-  GW1 -->|"否"| SB1["sandbox.run_command"]
-  GW2 -->|"是"| Appr2["approval_required"]
-  GW2 -->|"否"| SB2["写文件 -> sandbox.run_command"]
-  SB1 --> Budget["ToolResultBudget<br/>截断/持久化 stdout stderr"]
-  SB2 --> Budget
-
-  classDef brand fill:#5368db,stroke:#3a4ab8,color:#fff
-  classDef cyan fill:#59d3d9,stroke:#2fa9af,color:#0b2530
-  classDef warn fill:#f5a623,stroke:#c47d0a,color:#2a1a00
-  class Status,Repo cyan
-  class Cmd,Code,Appr1,Appr2 warn
-  class GW1,GW2,SB1,SB2,Budget brand
-```
+![Sandbox 工具审批与执行边界](/assets/ksadk-sandbox-tools.svg)
 
 ### `sandbox_status`
 
@@ -1325,6 +1183,8 @@ assert result["ok"]
 ```
 
 ### E2B Sandbox Backend
+
+![Sandbox Runtime 架构：调用方共用底座、backend 选择、E2B readiness 重试、Registry 复用与 TTL 回收](/assets/ksadk-sandbox-runtime.svg)
 
 `KSADK_SANDBOX_BACKEND=e2b`（或配置了 template id 自动选 `e2b`）时，
 `create_sandbox_backend()` 返回 `E2BSandboxBackend`，通过
@@ -1492,19 +1352,7 @@ res = web_search("anything")  # 测试用，不发起真实请求
 `run_command` / `run_code` 对 `stdout`/`stderr` 调用 `budget_text_fields`，`web_fetch` 对
 `text` 调用 `budget_tool_output`。
 
-```mermaid
-flowchart TD
-  Out["工具原始输出<br/>stdout / stderr / text"] --> Len{"len > persist_threshold<br/>或 > max_chars?"}
-  Len -->|"否"| Inline["直接内联<br/>截到 max_chars"]
-  Len -->|"是"| Persist["写文件到 persist_dir"]
-  Persist --> Envelope["返回 preview + persisted.path"]
-  Inline --> Envelope
-
-  classDef brand fill:#5368db,stroke:#3a4ab8,color:#fff
-  classDef cyan fill:#59d3d9,stroke:#2fa9af,color:#0b2530
-  class Out,Persist,Envelope brand
-  class Len,Inline cyan
-```
+![ToolResultBudget 截断与持久化](/assets/ksadk-tool-result-budget.svg)
 
 | 环境变量 | 作用 | 默认 |
 | --- | --- | --- |
@@ -1589,14 +1437,7 @@ memory、sandbox、workspace 和 skill 在执行工具或读写状态时，会�
 
 `invocation_id` 作为单次运行的稳定 ID，贯穿整条链路：
 
-```mermaid
-flowchart TD
-  Req["HTTP / RunAgentAction 请求"] --> Ctx["PlatformInvocationContext"]
-  Ctx --> Payload["runner payload"]
-  Ctx --> Sub["SubscribeRunEvents"]
-  Ctx --> Cancel["CancelRun"]
-  Ctx --> Trace["trace / 观测"]
-```
+![invocation_id 贯穿链路](/assets/ksadk-invocation-id.svg)
 
 - runner payload 带上 `invocation_id`，便于本地与远端对齐。
 - `SubscribeRunEvents`、`CancelRun` 以 `invocation_id` 定位运行实例。
