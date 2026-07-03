@@ -24,6 +24,12 @@ const config = {
   images: {
     unoptimized: true,
   },
+  // 旧链接 /docs/cli 兼容:重定向到 references/cli (cli 在 references 下)
+  async redirects() {
+    return [
+      { source: '/:lang/docs/cli', destination: '/:lang/docs/references/cli', permanent: false },
+    ];
+  },
   ...(basePath ? { basePath, assetPrefix: basePath } : {}),
 };
 
