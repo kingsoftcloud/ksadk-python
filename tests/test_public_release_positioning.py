@@ -20,24 +20,38 @@ def test_public_readme_positions_ksadk_as_runtime_platform():
         "构建、部署、调试、观测企业级 AI 智能体的一站式云原生框架",
         "OpenClaw",
         "Hermes",
-        "Why KsADK",
         "30 秒快速体验",
-        "Architecture",
-        "Comparison",
-        "Examples",
-        "Deployment",
-        "Observability",
-        "Documentation",
-        "Community",
-        "KSYUN_REGION=cn-beijing-6",
+        "为什么需要 KsADK",
+        "架构",
+        "文档与样例",
+        "相关项目",
+        "参与贡献",
+        "public-docs/assets/ksadk-runtime-platform-hero-wide.png",
+        "public-docs/assets/ksadk-web-ui-screenshot.png",
+        "public-docs/assets/ksadk-local-debugging-demo.gif",
+        "public-docs/assets/ksadk-runtime-architecture.png",
     ):
         assert expected in readme
 
     assert "KSADK_SKILL_SERVICE_REGION=pre-online" not in readme
     assert "```mermaid" not in readme
-    assert "```text" in readme
     assert "当前版本：" not in readme
-    assert "发布版本：`0.6.8`" in readme
+    assert "发布版本：" not in readme
+    assert "## 0.6." not in readme
+
+
+def test_public_readme_language_variants_keep_homepage_shape():
+    zh_readme = _read("README.zh-CN.md")
+    en_readme = _read("README.en.md")
+
+    for text in (zh_readme, en_readme):
+        assert "Kingsoft Cloud Agent Development Kit" in text
+        assert "public-docs/assets/ksadk-runtime-platform-hero-wide.png" in text
+        assert "public-docs/assets/ksadk-web-ui-screenshot.png" in text
+        assert "public-docs/assets/ksadk-local-debugging-demo.gif" in text
+        assert "public-docs/assets/ksadk-runtime-architecture.png" in text
+        assert "发布版本：" not in text
+        assert "## 0.6." not in text
 
 
 def test_public_metadata_uses_runtime_platform_positioning():
@@ -105,7 +119,9 @@ def test_public_ci_runs_gitleaks_and_documents_branch_protection():
     branch_protection = _read(".github/BRANCH_PROTECTION.md")
     approval_record = _read("docs/maintainer-approval-record.md")
 
-    assert "gitleaks/gitleaks-action@v2" in secret_workflow
+    assert 'GITLEAKS_VERSION: "8.28.0"' in secret_workflow
+    assert "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" in secret_workflow
+    assert "/tmp/gitleaks detect --source ." in secret_workflow
     assert "fetch-depth: 0" in secret_workflow
     assert "python3 scripts/open_source_audit.py --target public-repo" in secret_workflow
     assert "Require a pull request before merging" in branch_protection
