@@ -6,7 +6,7 @@ Build agents once. Run them anywhere.
 
 KsADK 是面向 AI Agent 的 Agent Runtime Platform。你可以继续使用 Google ADK、LangGraph、LangChain 或 DeepAgents 编写业务 Agent，再用 KsADK 获得统一的本地运行、浏览器调试、OpenAI-Compatible API、沙箱执行、部署和可观测体验。
 
-发布版本：`0.6.7`（通过 GitHub Release 和 PyPI Trusted Publishing 发布）。
+发布版本：`0.6.8`（通过 GitHub Release 和 PyPI Trusted Publishing 发布）。
 
 ## Why KsADK
 
@@ -180,12 +180,13 @@ Compatible with:
 
 Export once. Observe anywhere.
 
-## 0.6.7 重点
+## 0.6.8 重点
 
-- Checkpoint/Resume 能力协议产品化：`RuntimeCapabilities.ResumeRun` 新增 `ResumeMode`，LangGraph 声明 `time_travel`，ADK 暂声明 `forward_only` 并将 event bridge 放到后续版本。
-- 控制台 checkpoint 查询 API：升级 `ListSessionCheckpoints`，返回分页恢复点列表、可恢复性、终态、下一节点、阶段进度、恢复审计字段和产物摘要。
-- 长任务事件订阅契约补强：`SubscribeRunEvents` 支持客户端按 `AfterSeqId` 断线重连，服务端 5 分钟超时后客户端可续订而不重复已消费事件。
-- CancelRun 边界收敛：KSADK 支持 detached stream 取消和 runner 协作式 `request_cancel()`；不承诺 LangGraph 节点内强制中断。
+- 分层 Compaction Pipeline：`compact_conversation_history` 升级为 L2 Snip → L3 Microcompact → L4 LLM compact → L5 working set 恢复，L2/L3 零 LLM 成本确定性裁剪，长会话省钱且稳定。
+- Sandbox 生命周期管理：后台 sweep daemon + atexit 清理 + server shutdown clear，避免 idle sandbox 按秒计费浪费；默认 timeout 600s / idle_ttl 300s（cost-saving）。
+- 金山云星流 AI搜索：`web_search` 新增 `ksyun` provider，复用 `KSADK_MCP_KEY` 凭证，返回真实时效结果。
+- 公开仓治理对齐：补齐 CONTRIBUTING/SECURITY/双语 README/.github workflows + open_source_audit 体系，为统一公开主干做准备。
+- Fumadocs 文档站：从 mkdocs 迁移到 Fumadocs，发版时同步部署到 GitHub Pages。
 
 ## 0.6.6 重点
 
