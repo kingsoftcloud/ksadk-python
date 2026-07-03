@@ -1,7 +1,7 @@
 # AgentEngine Makefile
 # 用于同步 KsADK Web static 和管理项目
 
-.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate public-docs-build public-test public-build-check public-preflight public-publish-check public-release-tag public-review openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size docs-check-wiki docs-prepare-source docs-docker-build docs-docker-push docs-helm-lint docs-helm-template docs-deploy docs-deploy-all docs-status docs-logs sync-ksadk-web-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend
+.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate public-docs-build public-docs-site-build public-test public-build-check public-preflight public-publish-check public-release-tag public-review openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size docs-check-wiki docs-prepare-source docs-docker-build docs-docker-push docs-helm-lint docs-helm-template docs-deploy docs-deploy-all docs-status docs-logs sync-ksadk-web-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend
 
 # 默认目标
 help:
@@ -348,12 +348,21 @@ public-audit: public-secret-audit
 	fi
 	@echo "✅ public path audit passed"
 
-public-docs-build:
+public-docs-build: public-docs-site-build
 	@echo "==> docs build"
 	@if [ -f "mkdocs.yml" ]; then \
 		uv run mkdocs build --strict; \
 	else \
-		echo "⚠️  mkdocs.yml 不存在，跳过 docs build"; \
+		echo "⚠️  mkdocs.yml 不存在，跳过 mkdocs build (master 内部文档站)"; \
+	fi
+
+# Fumadocs 文档站 (docs-site/) 构建 + 类型检查, 公开发布前验证
+public-docs-site-build:
+	@echo "==> docs-site (Fumadocs) build"
+	@if [ -d "docs-site" ] && [ -f "docs-site/package.json" ]; then \
+		cd docs-site && pnpm install --frozen-lockfile && pnpm build; \
+	else \
+		echo "⚠️  docs-site 不存在，跳过 Fumadocs build"; \
 	fi
 
 public-test:
