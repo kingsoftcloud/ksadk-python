@@ -5,8 +5,9 @@
 ## Validation
 
 - [ ] `uv run --extra dev pytest -q`
-- [ ] `make open-source-audit`
-- [ ] `make public-docs-audit`
+- [ ] `make public-audit`
+- [ ] `make public-docs-build`
+- [ ] `make open-source-audit-dist` if package artifacts changed.
 - [ ] `uv build`
 - [ ] `uv run --extra dev python -m twine check dist/*`
 
@@ -25,3 +26,4 @@
 
 - [ ] Release notes impact is documented.
 - [ ] Maintainer review is required before public release or publish actions.
+- [ ] Branch protection and `pypi` environment protection stay enabled for publishable changes.

@@ -12,7 +12,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     env:
-      PUBLIC_KSADK_WEB_VERSION: "0.2.11"
+      KSADK_WEB_VERSION: "0.2.15"
     steps:
       - uses: actions/checkout@v4
 
@@ -55,3 +55,6 @@ jobs:
 
       - name: Check package metadata
         run: uv run --extra dev python -m twine check dist/*
+
+      - name: Audit wheel and sdist file lists
+        run: make open-source-audit-dist

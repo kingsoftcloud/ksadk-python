@@ -11,7 +11,7 @@ PyPI publication.
 | License | Apache-2.0 |
 | Python repository | kingsoftcloud/ksadk-python |
 | Web UI repository | kingsoftcloud/ksadk-web |
-| Python package version | 0.6.6 |
+| Python package version | 0.6.8 |
 | Public docs URL | https://kingsoftcloud.github.io/ksadk-python/ |
 | Package metadata repository URL | https://github.com/kingsoftcloud/ksadk-python |
 | Package metadata documentation URL | https://kingsoftcloud.github.io/ksadk-python/ |
@@ -40,8 +40,10 @@ changes.
 ## Required Evidence Before Approval
 
 - `make public-preflight` exits successfully.
-- `make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.6.6` confirms
+- `make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.6.8` confirms
   the target version is not already on PyPI.
+- Branch protection and publish environment are configured according to
+  `.github/BRANCH_PROTECTION.md`.
 - Staging E2E for the reviewed runtime images and control-plane candidate exits
   successfully before GitHub Release, PyPI, or npm workflows are approved.
 - Hosted workspace zip export, model policy defaults, fallback behavior,
