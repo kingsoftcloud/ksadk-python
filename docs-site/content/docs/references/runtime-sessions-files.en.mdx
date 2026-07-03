@@ -302,17 +302,605 @@ error handling and retry behavior. The Web UI reconnect path is a KsADK local UI
 capability, not a promise that every HTTP client can resume an original TCP
 connection.
 
-## SubscribeRunEvents
+## Checkpoint, Resume, Cancel
+
+<Callout type="info" title="Added in 0.6.7">
+  KsADK introduces framework-level checkpoint/resume, covering list, preview,
+  resume, and cancel actions, with new fields such as `ResumeInstruction` and
+  `CheckpointStatus`. The implementation is backed by persisted `run_checkpoint`
+  / `run_resume` / `tool_result` events and supports cross-instance recovery.
+</Callout>
+
+The runtime exposes five hosted UI actions for run-level checkpoint, resume,
+cancel, and tool receipts. Every action is `POST /agentengine/api/v1/<Action>`
+with a JSON body, and the response is a uniform
+`{ Code, Message, RequestId, Action, Data }` envelope.
+
+| Action | Path | Purpose |
+| --- | --- | --- |
+| `ListSessionCheckpoints` | `POST /agentengine/api/v1/ListSessionCheckpoints` | list checkpoints under a session for resume selection |
+| `GetCheckpointResumePreview` | `POST /agentengine/api/v1/GetCheckpointResumePreview` | preview the content and impact of resuming from a checkpoint |
+| `ResumeRun` | `POST /agentengine/api/v1/ResumeRun` | resume run execution from a checkpoint |
+| `CancelRun` | `POST /agentengine/api/v1/CancelRun` | cancel an in-progress run (keyed by `InvocationId`) |
+| `ListToolReceipts` | `POST /agentengine/api/v1/ListToolReceipts` | list tool-call receipts under a run / checkpoint |
+
+<Callout type="warning" title="Auth and boundaries">
+  Local `agentengine web` isolates per owner by default. Hosted deployments must
+  send `Authorization: Bearer <api_key>`, and `account_id` is injected by the
+  gateway — the business agent must never forge it. Session, checkpoint, and
+  tool receipt state is never visible across `account_id` boundaries.
+</Callout>
+
+### Checkpoint State Machine
+
+Each checkpoint returned by `ListSessionCheckpoints` or
+`GetCheckpointResumePreview` carries a `CheckpointStatus`, derived at read time
+from `is_terminal`, `is_resumable`, `resume_count`, `expires_at`, and
+`replay_allowed`. The runtime does not persist this field; it is computed on read:
+
+```mermaid
+stateDiagram-v2
+  direction LR
+  [*] --> active
+  active --> resumed : ResumeRun<br/>(resume_count + 1)
+  active --> terminal : is_terminal=true and never resumed
+  active --> expired : now > expires_at
+  active --> disabled : is_resumable=false<br/>or replay_allowed=false
+  resumed --> [*]
+  terminal --> [*]
+  expired --> [*]
+  disabled --> [*]
+```
+
+| State | Trigger |
+| --- | --- |
+| `active` | default; the checkpoint can still be resumed |
+| `resumed` | already resumed by `ResumeRun` (`resume_count >= 1`, not terminal) |
+| `terminal` | `is_terminal=true` and `resume_count=0`; the run reached a terminal state |
+| `expired` | `expires_at` has passed; `IsResumable` forced to false |
+| `disabled` | `is_resumable=false`, or `replay_allowed=false` after a prior resume |
+
+<Callout type="info">
+  `CheckpointStatus` is derived at read time, not persisted on the event;
+  `resume_count` and `last_resumed_at` come from `run_resume` event audit.
+  `GetCheckpointResumePreview` is only required before resume when
+  `ResumeStatus=unknown`.
+</Callout>
+
+### Checkpoint Descriptor Fields
+
+Each checkpoint is a projection of a `run_checkpoint` event. Beyond the common
+event fields, it carries the following resume descriptor fields
+(all added/aligned in 0.6.7):
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `EventId` | str | checkpoint event id |
+| `SessionId` | str | owning session id |
+| `InvocationId` | str | invocation that produced the checkpoint |
+| `RunId` | str | owning run id |
+| `CheckpointId` | str | checkpoint id (referenced when resuming) |
+| `Framework` | str | framework that produced the checkpoint, e.g. `langgraph`, `adk` |
+| `FrameworkRef` | dict | framework-specific reference, e.g. LangGraph `next_node` |
+| `Phase` | str | checkpoint phase label |
+| `NextNode` | str | next node to continue from after resume |
+| `IsResumable` | bool or null | whether resume is allowed; forced `false` when disabled |
+| `ResumeStatus` | str | `resumable` / `disabled` / `unknown` |
+| `IsTerminal` | bool | whether this is a terminal checkpoint |
+| `ResumeDisabledReason` | str | human-readable reason when not resumable |
+| `Backend` | str | checkpoint storage backend, e.g. `memory`, `langgraph_store` |
+| `Scope` | str | checkpoint scope, e.g. `process_local` |
+| `Durable` | bool | whether it is persisted (recoverable across instances) |
+| `ArtifactPreview` | dict | checkpoint artifact preview |
+| `StageKey` / `StageName` / `StageIndex` / `TotalStages` | various | multi-stage run information |
+| `CreatedAt` | str | checkpoint event timestamp |
+| `LastResumedAt` | str or null | timestamp of the most recent resume, from `run_resume` audit |
+| `ResumeCount` | int | number of resumes so far, from `run_resume` audit; `0` means never resumed |
+| `ReplayAllowed` | bool | policy flag for whether the same checkpoint may be resumed again; defaults to `true` |
+| `ExpiresAt` | str or null | checkpoint expiry; once passed, `IsResumable` is forced `false` |
+| `CheckpointStatus` | str | read-time-derived state: `active` / `resumed` / `terminal` / `expired` / `disabled` |
+| `Metadata` | dict | raw checkpoint event metadata, including the raw values above |
+
+<Callout type="warning" title="In-process checkpoints are not recoverable">
+  When `Backend == "memory"` or `Scope == "process_local"`, `IsResumable` is
+  forced `false` with the reason "进程内 checkpoint 不能跨实例恢复". Such
+  checkpoints are only valid for in-process preview during local development —
+  do not treat them as recoverable resume points.
+</Callout>
+
+### ListSessionCheckpoints
+
+List checkpoints under a session, optionally filtered by `RunId` or `Framework`,
+with pagination.
+
+<Tabs>
+<Tab value="Request">
+
+| Field | Default | Constraint | Meaning |
+| --- | --- | --- | --- |
+| `AgentId` | — | required | target agent id; must match the session's `agent_id` |
+| `SessionId` | — | required | target session id |
+| `RunId` | — | optional | only return checkpoints for this run |
+| `Framework` | — | optional | only return checkpoints for this framework, e.g. `langgraph` |
+| `OnlyResumable` | `false` | optional | only return checkpoints with `IsResumable=true` |
+| `Offset` | `0` | `>=0` | pagination offset |
+| `Limit` | unset | `1..500` | page size, capped at 500 |
+
+```bash title="list_checkpoints.sh"
+curl -sS -X POST "https://<public-endpoint>/agentengine/api/v1/ListSessionCheckpoints" \
+  -H "Authorization: Bearer <api_key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "AgentId": "my-agent",
+    "SessionId": "<sid>",
+    "OnlyResumable": true,
+    "Limit": 50
+  }'
+```
+
+</Tab>
+<Tab value="Response">
+
+```json title="list_checkpoints_response.json"
+{
+  "Code": 0,
+  "Message": "Success",
+  "RequestId": "req-abc123",
+  "Action": "ListSessionCheckpoints",
+  "Data": {
+    "Checkpoints": [
+      {
+        "EventId": "evt_001",
+        "SessionId": "<sid>",
+        "InvocationId": "inv_xyz",
+        "RunId": "run_001",
+        "CheckpointId": "ckpt_002",
+        "Framework": "langgraph",
+        "IsResumable": true,
+        "ResumeStatus": "resumable",
+        "IsTerminal": false,
+        "ResumeDisabledReason": "",
+        "NextNode": "research_summarize",
+        "Backend": "langgraph_store",
+        "Scope": "session",
+        "Durable": true,
+        "LastResumedAt": null,
+        "ResumeCount": 0,
+        "ReplayAllowed": true,
+        "ExpiresAt": "2026-07-04T12:00:00Z",
+        "CheckpointStatus": "active"
+      }
+    ],
+    "Total": 1,
+    "Offset": 0,
+    "Limit": 50
+  }
+}
+```
+
+</Tab>
+<Tab value="Error">
+
+| HTTP | detail.code | Trigger |
+| --- | --- | --- |
+| `404` | — | session not found, or `AgentId` does not match the session's `agent_id` |
+
+</Tab>
+</Tabs>
+
+### GetCheckpointResumePreview
+
+Preview the impact of resuming from a checkpoint: tool receipts, side-effect
+risk level, and whether a preview is required before resume.
+
+<Tabs>
+<Tab value="Request">
+
+| Field | Constraint | Meaning |
+| --- | --- | --- |
+| `AgentId` | required | target agent id |
+| `SessionId` | required | target session id |
+| `RunId` | required | target run id |
+| `CheckpointId` | required | checkpoint id to preview |
+
+```bash title="get_resume_preview.sh"
+curl -sS -X POST "https://<public-endpoint>/agentengine/api/v1/GetCheckpointResumePreview" \
+  -H "Authorization: Bearer <api_key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "AgentId": "my-agent",
+    "SessionId": "<sid>",
+    "RunId": "run_001",
+    "CheckpointId": "ckpt_002"
+  }'
+```
+
+</Tab>
+<Tab value="Response">
+
+```json title="resume_preview_response.json"
+{
+  "Code": 0,
+  "Message": "Success",
+  "RequestId": "req_def456",
+  "Action": "GetCheckpointResumePreview",
+  "Data": {
+    "Preview": {
+      "Checkpoint": { "CheckpointId": "ckpt_002", "IsResumable": true },
+      "Capabilities": {
+        "Checkpoints": true,
+        "CheckpointResume": true,
+        "ToolReceipts": true,
+        "IdempotentToolReplay": true
+      },
+      "CanResume": true,
+      "Reason": "",
+      "NextNode": "research_summarize",
+      "ExpectedAction": "resume_from_checkpoint",
+      "ToolReceipts": [
+        {
+          "ReceiptId": "rcpt_001",
+          "ToolName": "write_workspace_file",
+          "ToolCallId": "call_01",
+          "RunId": "run_001",
+          "CheckpointId": "ckpt_001",
+          "Status": "succeeded",
+          "Replayed": false
+        }
+      ],
+      "Risk": {
+        "Level": "medium",
+        "DuplicateSideEffectRisk": true,
+        "SideEffectReceiptCount": 1,
+        "FailedReceiptCount": 0
+      },
+      "Summary": {
+        "RunId": "run_001",
+        "CheckpointId": "ckpt_002",
+        "Phase": "after_research",
+        "ToolReceiptCount": 1
+      }
+    }
+  }
+}
+```
+
+`ExpectedAction` values: `resume_from_checkpoint` (safe to resume directly),
+`preview_required` (`ResumeStatus=unknown`, a preview must be fetched first),
+`disabled` (not resumable).
+
+`Risk.Level` values:
+
+| Level | Trigger |
+| --- | --- |
+| `low` | no side-effect tool receipts and no failed receipts |
+| `medium` | at least one side-effect tool receipt (`write_workspace_file`, etc.) |
+| `high` | at least one receipt with `Status=failed` |
+
+</Tab>
+<Tab value="Error">
+
+| HTTP | detail | Trigger |
+| --- | --- | --- |
+| `404` | `"Session not found"` | session not found or `AgentId` mismatch |
+| `404` | `"Checkpoint not found"` | the `RunId` + `CheckpointId` pair does not exist |
+
+</Tab>
+</Tabs>
+
+### ResumeRun
+
+Resume run execution from a checkpoint. In 0.6.7 the
+`ResumeInstructionEnabled` / `ResumeInstruction` fields were added so an extra
+instruction can be injected on resume, and `409` error codes distinguish
+non-resumable checkpoints from duplicate resumes.
+
+<Tabs>
+<Tab value="Request">
+
+| Field | Default | Constraint | Meaning |
+| --- | --- | --- | --- |
+| `AgentId` | — | required | target agent id; must match the session's `agent_id` |
+| `SessionId` | — | required | target session id |
+| `RunId` | — | required | run id to resume |
+| `CheckpointId` | — | required | checkpoint id to resume from |
+| `ResumeAttemptId` | — | optional | resume attempt id; defaults to `resume_<hex>` generated by the runtime |
+| `InvocationId` | — | optional | new invocation id; defaults to `ResumeAttemptId` |
+| `Stream` | `false` | optional | `true` returns an SSE stream (same shape as RunAgent stream) |
+| `Model` | — | optional | model override for this resume |
+| `ModelMetadata` | — | optional | model capability hints (0.6.7) |
+| `ModelOptions` | — | optional | provider-specific options |
+| `ResumeInstructionEnabled` | `false` | optional | 0.6.7; whether to inject a resume instruction |
+| `ResumeInstruction` | — | optional | 0.6.7; extra instruction text to inject on resume |
+
+```bash title="resume_run.sh"
+curl -sS -X POST "https://<public-endpoint>/agentengine/api/v1/ResumeRun" \
+  -H "Authorization: Bearer <api_key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "AgentId": "my-agent",
+    "SessionId": "<sid>",
+    "RunId": "run_001",
+    "CheckpointId": "ckpt_002",
+    "ResumeInstructionEnabled": true,
+    "ResumeInstruction": "redo the summary in a more concise tone",
+    "Stream": false
+  }'
+```
+
+</Tab>
+<Tab value="Response">
+
+In non-stream mode a Responses-style payload is returned:
+
+```json title="resume_run_response.json"
+{
+  "Code": 0,
+  "Message": "Success",
+  "RequestId": "req_ghi789",
+  "Action": "ResumeRun",
+  "Data": {
+    "id": "resp_<hex>",
+    "object": "response",
+    "model": "my-agent",
+    "output": [
+      { "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": "..." }] }
+    ]
+  }
+}
+```
+
+Resuming a terminal checkpoint is a no-op: the runtime appends a `run_resume`
+plus a `run_status=completed` event and returns `status=noop` without executing:
+
+```json title="resume_run_noop.json"
+{
+  "Code": 0,
+  "Action": "ResumeRun",
+  "Data": {
+    "status": "noop",
+    "Reason": "该 checkpoint 已是终态;可选择更早恢复点重跑",
+    "CheckpointId": "ckpt_002",
+    "RunId": "run_001",
+    "ResumeAttemptId": "resume_<hex>"
+  }
+}
+```
+
+</Tab>
+<Tab value="Stream">
+
+When `Stream=true`, the response is a `text/event-stream` with the same
+semantics as the RunAgent stream. Each event is `data: { ... }\n\n` with the
+event body shaped like `_event_to_action_payload`. After a terminal
+`run_status`, the server sends `data: [DONE]`.
+
+```bash title="resume_run_stream.sh"
+curl -sS -N -X POST "https://<public-endpoint>/agentengine/api/v1/ResumeRun" \
+  -H "Authorization: Bearer <api_key>" \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  -d '{
+    "AgentId": "my-agent",
+    "SessionId": "<sid>",
+    "RunId": "run_001",
+    "CheckpointId": "ckpt_002",
+    "Stream": true
+  }'
+```
+
+</Tab>
+<Tab value="Error">
+
+| HTTP | detail.code | Trigger |
+| --- | --- | --- |
+| `404` | — | session not found or `AgentId` mismatch |
+| `404` | — | `RunId` + `CheckpointId` pair does not exist |
+| `409` | `checkpoint_not_resumable` | checkpoint is not resumable (`IsResumable=false`), with a reason |
+| `409` | `resume_already_running` | a resume is already running for this session + run |
+
+`checkpoint_not_resumable` body:
+
+```json title="409_checkpoint_not_resumable.json"
+{
+  "detail": {
+    "code": "checkpoint_not_resumable",
+    "reason": "该 checkpoint 已恢复过,当前策略不允许重复恢复",
+    "checkpoint_id": "ckpt_002",
+    "run_id": "run_001",
+    "resume_status": "disabled",
+    "is_terminal": false
+  }
+}
+```
+
+`resume_already_running` body:
+
+```json title="409_resume_already_running.json"
+{
+  "detail": {
+    "code": "resume_already_running",
+    "message": "A checkpoint resume is already running for this session and run.",
+    "InvocationId": "inv_existing",
+    "SessionId": "<sid>",
+    "RunId": "run_001"
+  }
+}
+```
+
+<Callout type="warning" title="Concurrent resume debounce">
+  If a resume is already in progress for a given `(session_id, run_id)`, a new
+  request is rejected with `409 resume_already_running`. The client should wait
+  for the existing resume to reach a terminal state (or be cancelled) before
+  retrying, and never fire multiple resumes concurrently against the same run.
+</Callout>
+
+</Tab>
+</Tabs>
+
+### CancelRun
+
+Cancel an in-progress run. As of 0.6.7, `InvocationId` is the primary key and
+`AgentId` is optional (it is only used as runner cancel context and no longer
+performs session ownership validation).
+
+<Tabs>
+<Tab value="Request">
+
+| Field | Default | Constraint | Meaning |
+| --- | --- | --- | --- |
+| `InvocationId` | — | required | invocation id to cancel; primary key since 0.6.7 |
+| `AgentId` | — | optional | optional in 0.6.7; used as runner cancel context |
+
+```bash title="cancel_run.sh"
+curl -sS -X POST "https://<public-endpoint>/agentengine/api/v1/CancelRun" \
+  -H "Authorization: Bearer <api_key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "InvocationId": "inv_xyz"
+  }'
+```
+
+</Tab>
+<Tab value="Response">
+
+```json title="cancel_run_response.json"
+{
+  "Code": 0,
+  "Message": "Success",
+  "RequestId": "req_jkl012",
+  "Action": "CancelRun",
+  "Data": {
+    "Cancelled": true,
+    "Found": true,
+    "Status": "cancelling",
+    "RunnerCancelStatus": "accepted"
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `Cancelled` | whether cancel was requested (detached stream or runner accepted) |
+| `Found` | whether a detached stream was found for the invocation |
+| `Status` | `cancelling` / `not_found` / `unsupported` / `error` |
+| `RunnerCancelStatus` | runner-side cancel result: `accepted` / `cancelling` / `cancelled` / `not_found` / `unsupported` / `error` |
+
+</Tab>
+<Tab value="Error">
+
+`CancelRun` never returns 4xx. Even when the invocation does not exist it
+returns `{ Cancelled: false, Found: false, Status: "not_found" }`, which the
+client can use to decide next steps.
+
+</Tab>
+</Tabs>
+
+### ListToolReceipts
+
+List tool-call receipts under a run / checkpoint, useful for assessing
+side-effects before resume or for after-the-fact auditing.
+
+<Tabs>
+<Tab value="Request">
+
+| Field | Default | Constraint | Meaning |
+| --- | --- | --- | --- |
+| `AgentId` | — | required | target agent id; must match the session's `agent_id` |
+| `SessionId` | — | required | target session id |
+| `RunId` | — | optional | only return receipts for this run |
+| `CheckpointId` | — | optional | only return receipts for this checkpoint |
+
+```bash title="list_tool_receipts.sh"
+curl -sS -X POST "https://<public-endpoint>/agentengine/api/v1/ListToolReceipts" \
+  -H "Authorization: Bearer <api_key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "AgentId": "my-agent",
+    "SessionId": "<sid>",
+    "RunId": "run_001"
+  }'
+```
+
+</Tab>
+<Tab value="Response">
+
+```json title="list_tool_receipts_response.json"
+{
+  "Code": 0,
+  "Message": "Success",
+  "RequestId": "req_mno345",
+  "Action": "ListToolReceipts",
+  "Data": {
+    "ToolReceipts": [
+      {
+        "EventId": "evt_010",
+        "SessionId": "<sid>",
+        "InvocationId": "inv_xyz",
+        "SeqId": 10,
+        "Timestamp": "2026-07-03T10:00:00Z",
+        "ReceiptId": "rcpt_001",
+        "IdempotencyKey": "idem_abc",
+        "ToolName": "write_workspace_file",
+        "ToolCallId": "call_01",
+        "RunId": "run_001",
+        "CheckpointId": "ckpt_001",
+        "Status": "succeeded",
+        "Replayed": false,
+        "Metadata": { "tool_name": "write_workspace_file" }
+      }
+    ]
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `ReceiptId` | receipt id, keyed by idempotency |
+| `IdempotencyKey` | idempotency key, used for deduplication on replay |
+| `ToolName` | tool name; side-effect tools (`write_workspace_file`, etc.) flag `DuplicateSideEffectRisk` |
+| `ToolCallId` | the corresponding tool call id |
+| `RunId` / `CheckpointId` | owning run / checkpoint |
+| `Status` | `succeeded` / `failed` |
+| `Replayed` | whether this receipt was produced by a replay |
+
+</Tab>
+<Tab value="Error">
+
+| HTTP | detail | Trigger |
+| --- | --- | --- |
+| `404` | `"Session not found"` | session not found or `AgentId` mismatch |
+
+</Tab>
+</Tabs>
+
+### ResumeMode
+
+`GetAgentUiBootstrap` returns `RuntimeCapabilities.ResumeRun.ResumeMode`, which
+describes the framework-level resume capability:
+
+| ResumeMode | Meaning |
+| --- | --- |
+| `time_travel` | can rewind to a historical checkpoint (LangGraph runner) |
+| `forward_only` | can only continue forward along invocation continuity, cannot rewind (ADK runner) |
+| `none` | the framework has no framework-level resume capability |
+
+### RunLifecycle Gating
+
+The frontend resume entry point must not look at `ResumeMode` alone. It must
+also check the two `RunLifecycle` flags returned by bootstrap:
+
+- `RunLifecycle.Checkpoints = true`: the session has usable checkpoints.
+- `RunLifecycle.CheckpointResume = true`: the runtime supports resuming from a checkpoint.
+
+If either is `false`, treat resume as unsupported and do not surface the
+`ResumeRun` entry point. `RunLifecycle.CheckpointResumePreview` indicates
+whether `GetCheckpointResumePreview` is available.
+
+### SubscribeRunEvents
 
 The local UI reconnect flow is based on persisted events, not on resuming the
-same HTTP stream. A client should keep:
-
-- `SessionId`
-- `InvocationId`
-- the last consumed event `seq_id`
-
-Then it can subscribe for later events from the same invocation via
-`GET /agentengine/api/v1/SubscribeRunEvents`:
+same HTTP stream:
 
 ```bash
 curl -sS -N "https://<public-endpoint>/agentengine/api/v1/SubscribeRunEvents?SessionId=<sid>&InvocationId=<iid>&AfterSeqId=42" \
@@ -326,9 +914,6 @@ curl -sS -N "https://<public-endpoint>/agentengine/api/v1/SubscribeRunEvents?Ses
 | `InvocationId` | target invocation id |
 | `AfterSeqId` | subscription starting `seq_id`; the stream returns events with `seq_id > AfterSeqId`. Defaults to `0`, which subscribes from the beginning |
 
-The stream ends when a terminal `run_status` event is observed, such as `completed`,
-`failed`, `cancelled`, or `interrupted`.
-
 <Callout type="warning" title="5-minute server-side guard timeout">
   `SubscribeRunEvents` has a **5-minute** (`5 * 60` seconds) server-side guard
   timeout. When the timeout elapses the server closes the SSE stream on its own.
@@ -336,44 +921,33 @@ The stream ends when a terminal `run_status` event is observed, such as `complet
   the new `AfterSeqId`, and keep doing so until a terminal `run_status` is observed.
 </Callout>
 
-The important implementation detail for client authors is that token-level SSE
-chunks and stored run events are different layers. If you need robust recovery,
-recover from stored events.
+```mermaid
+sequenceDiagram
+  autonumber
+  participant C as Client
+  participant S as Server SSE
+  participant Store as Session Store
 
-### ResumeMode And RunLifecycle Gating
+  C->>S: GET SubscribeRunEvents<br/>(SessionId, InvocationId, AfterSeqId=last)
+  S->>Store: get_events(session_id)
+  Store-->>S: events[seq_id > AfterSeqId]
+  loop 0.25s polling window
+    S->>C: data: {event} (seq_id advances)
+    C->>C: record last_seq_id
+  end
+  alt terminal run_status observed
+    S->>C: data: [DONE]
+    S-->>C: close stream
+  else 5min deadline reached
+    S-->>C: close stream (no [DONE])
+    C->>C: re-issue with last_seq_id
+    C->>S: GET SubscribeRunEvents<br/>(AfterSeqId=last_seq_id)
+  end
+```
 
-<Callout type="info" title="Added in 0.6.7">
-  Framework-level checkpoint/resume is described through bootstrap capabilities.
-</Callout>
-
-`GetAgentUiBootstrap` returns `RuntimeCapabilities.ResumeRun.ResumeMode`, which
-describes the framework-level resume capability:
-
-| ResumeMode | Meaning |
-| --- | --- |
-| `time_travel` | can rewind to a historical checkpoint (LangGraph runner) |
-| `forward_only` | can only continue forward along invocation continuity, cannot rewind (ADK runner) |
-| `none` | the framework has no framework-level resume capability |
-
-The frontend resume entry point must not look at `ResumeMode` alone. It must
-also check the two `RunLifecycle` flags returned by bootstrap:
-
-- `RunLifecycle.Checkpoints = true`: the session has usable checkpoints.
-- `RunLifecycle.CheckpointResume = true`: the runtime supports resuming from a checkpoint.
-
-If either is `false`, treat resume as unsupported and do not surface the
-`ResumeRun` entry point. `RunLifecycle.CheckpointResumePreview` indicates
-whether `GetCheckpointResumePreview` is available.
-
-The four checkpoint/resume action routes are listed in
-[Remote Runtime API](remote-runtime-api):
-
-| Action | Path | Purpose |
-| --- | --- | --- |
-| `ListSessionCheckpoints` | `POST /agentengine/api/v1/ListSessionCheckpoints` | list checkpoints under a session for resume selection |
-| `GetCheckpointResumePreview` | `POST /agentengine/api/v1/GetCheckpointResumePreview` | preview the content and impact of resuming from a checkpoint |
-| `ResumeRun` | `POST /agentengine/api/v1/ResumeRun` | resume run execution from a checkpoint |
-| `CancelRun` | `POST /agentengine/api/v1/CancelRun` | cancel an in-progress run |
+Once a terminal `run_status` (`completed`, `failed`, `cancelled`, `interrupted`)
+appears, the server sends `data: [DONE]` and ends the stream; otherwise the
+client must re-subscribe with the latest `seq_id` after the 5-minute timeout.
 
 ## Upload References
 

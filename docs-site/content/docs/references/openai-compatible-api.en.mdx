@@ -2,35 +2,89 @@
 title: OpenAI-Compatible API
 ---
 
-The local KsADK runtime exposes OpenAI-compatible endpoints for development and
+The local KsADK runtime exposes three OpenAI-compatible endpoints for development and
 debugging. Use the term OpenAI-compatible only for public protocol shapes. Mark
 SDK-specific fields as KsADK extensions.
 
+<Callout type="warning" title="Auth: Bearer Token">
+  The hosted runtime requires `Authorization: Bearer <token>`. The local dev server does
+  not enforce auth by default, but the gateway injects and validates Bearer in production.
+  Clients should always send it so local and hosted behavior stay consistent.
+</Callout>
+
 Start a local server before calling these endpoints:
 
-```bash
+```bash title="terminal"
 agentengine run . --port 8080
 ```
 
 ## Endpoint Summary
 
-| Endpoint | Status | Primary use |
+| Endpoint | Method | Use |
 | --- | --- | --- |
-| `POST /v1/responses` | preferred | Responses-style local agent calls |
-| `POST /v1/chat/completions` | compatibility | Chat Completions clients |
-| `POST /agentengine/api/v1/RunAgent` | UI/runtime action | local Web UI and AgentEngine-style callers |
-| `POST /run_sse` | ADK Web compatibility | ADK-style local UI flows |
+| `/v1/responses` | `POST` | Responses-style local agent calls (preferred) |
+| `/v1/chat/completions` | `POST` | Chat Completions compatibility clients |
+| `/v1/models` | `GET` | List the available model catalog |
 
-The first two endpoints are the public protocol surface for local development.
-Action-style endpoints exist so the bundled UI can call the local runtime.
+`/v1/responses` is the recommended local runtime protocol; `/v1/chat/completions` targets
+existing Chat clients; `/v1/models` returns the current model catalog (with `current` /
+`source` local extensions).
 
-## Responses API
+## Request Lifecycle
 
-`POST /v1/responses` is the preferred local runtime protocol.
+```mermaid
+sequenceDiagram
+  participant C as Client
+  participant API as /v1/* Endpoint
+  participant Conv as Conversations Runtime
+  participant R as Framework Runner
+
+  C->>API: POST /v1/responses (model, input, stream)
+  API->>Conv: resolve conversation/session and resume input
+  Conv->>Conv: normalize messages and attachments
+  Conv->>R: canonical runner payload (account_id, invocation_id)
+  R-->>Conv: streamed chunks / final output
+  Conv-->>API: Responses payload or SSE event stream
+  API-->>C: JSON response or text/event-stream
+```
+
+## POST /v1/responses
+
+`POST /v1/responses` is the preferred local runtime protocol. It supports non-streaming
+JSON, streaming SSE, checkpoint resume, and approval payloads.
+
+<Tabs>
+<Tab value="Request">
+
+Request body fields (based on the `ResponsesRequest` schema):
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `input` | string \| object \| array | yes | string, message object, or input item list |
+| `model` | string | no | model or agent name override; falls back to runtime default |
+| `stream` | boolean | no | `true` returns SSE, default `false` |
+| `instructions` | string | no | additional system-level instruction |
+| `metadata` | object | no | caller metadata, preserved and passed through |
+| `conversation` | string \| `{id}` | no | conversation id or object with `id` (preferred over `session_id`) |
+| `previous_response_id` | string | no | previous response reference; mutually exclusive with `conversation` |
+| `session_id` | string | no | legacy local session id; prefer `conversation` |
+| `user` | string | no | caller/user identifier, default `user` |
+| `safety_identifier` | string | no | safety identifier, falls back to user_id |
+| `prompt_cache_key` | string | no | prompt cache key, written into metadata |
+| `store` | boolean | no | whether to persist, written into metadata |
+| `model_metadata` | object | no | KsADK extension: model capability hints |
+| `model_options` | object | no | KsADK extension: provider-specific options passthrough |
+| `account_id` | string | no | KsADK extension (0.6.5+): isolates Skill/Workspace/Sandbox/Memory by account |
+
+<Callout type="warning" title="Field exclusivity">
+  `conversation` and `session_id` must not disagree; `conversation` and
+  `previous_response_id` are mutually exclusive. If both appear and target different
+  sessions, the runtime returns `400`.
+</Callout>
 
 Minimal request:
 
-```json
+```json title="request.json"
 {
   "model": "my-agent",
   "input": "Explain what this agent can do.",
@@ -38,89 +92,124 @@ Minimal request:
 }
 ```
 
-Typical response shape:
+With conversation and account_id:
 
-```json
+```json title="request.json"
 {
-  "id": "resp_...",
+  "model": "my-agent",
+  "conversation": {"id": "local-demo-session"},
+  "input": "Continue from the previous answer.",
+  "account_id": "acct_42",
+  "stream": false
+}
+```
+
+</Tab>
+<Tab value="Response">
+
+The non-streaming response returns OpenAI-compatible top-level fields plus a small number
+of KsADK extensions:
+
+| Field | Status | Notes |
+| --- | --- | --- |
+| `id` | compatible | response id generated by the runtime, e.g. `resp_<hex>` |
+| `object` | compatible | `response` |
+| `created_at` | compatible | creation timestamp |
+| `status` | compatible | `completed` / `failed` / `incomplete` |
+| `model` | compatible | model or agent used for the request |
+| `output` | compatible | output item, usually an assistant message |
+| `metadata` | compatible | caller metadata |
+| `usage` | compatible-shaped | usage info when available |
+| `output_text` | KsADK extension | convenient concatenated text |
+| `session_id` | KsADK extension | local session id |
+
+```json title="response.json"
+{
+  "id": "resp_a1b2c3",
   "object": "response",
+  "created_at": 1719900000,
+  "status": "completed",
   "model": "my-agent",
   "output": [
     {
       "type": "message",
       "role": "assistant",
       "content": [
-        {
-          "type": "output_text",
-          "text": "..."
-        }
+        {"type": "output_text", "text": "This agent can..."}
       ]
     }
-  ]
+  ],
+  "output_text": "This agent can...",
+  "session_id": "local-demo-session"
 }
 ```
 
-Use streaming when the client supports server-sent events:
+Consumers aiming for broad compatibility should read `output` first and treat
+`output_text` as a convenience field.
 
-```json
-{
-  "model": "my-agent",
-  "input": "Stream a short answer.",
-  "stream": true
-}
+</Tab>
+<Tab value="Stream">
+
+With `stream: true` the runtime returns `text/event-stream`, serializing streamed chunks
+as Responses-style SSE events.
+
+```bash title="sse"
+curl -N http://127.0.0.1:8080/v1/responses \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"my-agent","input":"count to three","stream":true}'
 ```
 
-### Request Fields
+Example SSE output (each `data:` line is one JSON object, blank line separates events):
 
-| Field | Status | Meaning |
+```text title="responses.sse"
+event: response.created
+data: {"type":"response.created","response":{"id":"resp_a1b2c3","status":"in_progress"}}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"one"}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"two"}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_a1b2c3","status":"completed"}}
+```
+
+<Callout type="info" title="invocation_id passthrough (0.6.5+)">
+  Pass a custom invocation id in `metadata.agentengine.invocation_id`; the runtime passes
+  it through to the runner for transcript grouping and event resume. If omitted, the
+  runtime generates one automatically.
+</Callout>
+
+</Tab>
+<Tab value="Error">
+
+Errors use standard HTTP status codes plus a JSON `detail`:
+
+| Status | Scenario | detail example |
 | --- | --- | --- |
-| `model` | compatible | model or agent name override for this request |
-| `input` | compatible | string, message object, or list of input items |
-| `instructions` | compatible | additional system-level instruction text |
-| `metadata` | compatible | caller metadata preserved by the runtime |
-| `conversation` | compatible | conversation identifier or object with `id` |
-| `previous_response_id` | compatible | previous response reference when not using `conversation` |
-| `stream` | compatible | return server-sent events |
-| `model_metadata` | KsADK extension | model capability hints for local runtime/UI behavior |
-| `model_options` | KsADK extension | provider-specific options passed through supported runners |
-| `account_id` | KsADK extension | isolates Skill/Workspace/Sandbox/Memory by account boundary, written into the runtime PlatformInvocationContext |
-| `session_id` | legacy KsADK extension | older local session identifier; prefer `conversation` |
+| `400` | `conversation` conflicts with `session_id` | `Responses field 'conversation' conflicts with ksadk legacy field 'session_id'.` |
+| `400` | `conversation` used with `previous_response_id` | `Responses fields 'conversation' and 'previous_response_id' cannot be used together.` |
+| `400` | invalid `conversation` type | `Responses field 'conversation' must be a string or an object with an 'id'.` |
+| `404` | checkpoint resume cannot find session/checkpoint | `Checkpoint not found` |
+| `409` | checkpoint resume already running | `{"code":"resume_already_running",...}` |
+| `500` | Runner not initialized or failed to load | `Runner 未初始化` |
 
-`conversation` and `session_id` must not disagree. `conversation` and
-`previous_response_id` are mutually exclusive in the local runtime.
-
-### Conversation IDs
-
-Prefer the Responses-style `conversation` field:
-
-```json
+```json title="error.json"
 {
-  "model": "my-agent",
-  "conversation": {"id": "local-demo-session"},
-  "input": "Continue from the previous answer.",
-  "stream": false
+  "detail": "Responses field 'conversation' conflicts with ksadk legacy field 'session_id'. Use 'conversation' for OpenAI-compatible calls."
 }
 ```
 
-Older local clients can still send `session_id`:
+</Tab>
+</Tabs>
 
-```json
-{
-  "model": "my-agent",
-  "session_id": "local-demo-session",
-  "input": "Continue from the previous answer."
-}
-```
+### Input Items Shapes
 
-Use one style consistently. If both are sent and refer to different sessions,
-the local runtime rejects the request.
+`input` can be a string, a message object, or an array of input items. Multimodal examples
+use OpenAI-compatible content block names:
 
-### Input Items
-
-Responses input can be a string, a message object, or an array of input items.
-Use OpenAI-compatible content block names in public examples:
-
-```json
+```json title="multimodal.json"
 {
   "model": "my-agent",
   "input": [
@@ -135,9 +224,9 @@ Use OpenAI-compatible content block names in public examples:
 }
 ```
 
-For files:
+File example:
 
-```json
+```json title="file-input.json"
 {
   "model": "my-agent",
   "input": [
@@ -156,16 +245,16 @@ For files:
 }
 ```
 
-Remote `file_url` values are preserved as references. KsADK does not document a
-public guarantee that the local runtime will fetch arbitrary remote files for
-extraction. Use `file_data` or a local upload reference when you need local
-attachment processing.
+Remote `file_url` values are preserved as references. KsADK does not document a public
+guarantee that the local runtime will fetch arbitrary remote files for extraction. Use
+`file_data` or a local upload reference when you need local attachment processing.
 
-### Resume And Approval Inputs
+### Resume and Approval Inputs
 
-The runtime recognizes common resume payloads in `input`, including:
+The runtime recognizes common resume payloads in `input`, including function call output
+and MCP approval:
 
-```json
+```json title="function-call-output.json"
 {
   "type": "function_call_output",
   "call_id": "call_123",
@@ -173,9 +262,7 @@ The runtime recognizes common resume payloads in `input`, including:
 }
 ```
 
-and:
-
-```json
+```json title="mcp-approval.json"
 {
   "type": "mcp_approval_response",
   "approval_request_id": "approval_123",
@@ -184,54 +271,54 @@ and:
 }
 ```
 
-These payloads are passed to framework adapters as resume input. Application
-code should still own business-specific approval semantics.
+These payloads are passed to framework adapters as resume input. Application code still
+owns business-specific approval semantics.
 
-### Non-Streaming Response
+<Steps>
+  1. Put a resume payload (e.g. `function_call_output`) into the `input` of `/v1/responses`.
+  2. The runtime calls `extract_responses_resume_input` to identify the resume type.
+  3. For checkpoint resume, it locates by `session_id` + `run_id` + `checkpoint_id`.
+  4. When found, it is converted to a runner resume input, skipping new-message normalization.
+  5. The runner continues from the original checkpoint instead of restarting.
+</Steps>
 
-The runtime returns a response object with OpenAI-compatible top-level fields
-plus a small number of local extensions:
+## POST /v1/chat/completions
 
-| Field | Status | Meaning |
-| --- | --- | --- |
-| `id` | compatible | response identifier generated by the runtime |
-| `object` | compatible | `response` |
-| `created_at` | compatible | creation timestamp |
-| `status` | compatible | `completed`, `failed`, or `incomplete` |
-| `model` | compatible | model or agent used for the request |
-| `output` | compatible | output items, usually an assistant message |
-| `metadata` | compatible | caller metadata |
-| `usage` | compatible-shaped | usage information when available |
-| `output_text` | KsADK extension | convenient concatenated text |
-| `session_id` | KsADK extension | local session identifier |
+`POST /v1/chat/completions` is the compatibility protocol for Chat Completions clients. It
+supports streaming and non-streaming.
 
-Consumers that aim for broad compatibility should read `output` first and treat
-`output_text` as a convenience field.
+<Tabs>
+<Tab value="Request">
 
-## Chat Completions API
+Request body fields (based on the `ChatCompletionRequest` schema):
 
-`POST /v1/chat/completions` is the compatibility protocol for clients that use
-Chat Completions.
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `messages` | array | yes | chat message list |
+| `model` | string | no | model or agent name override |
+| `stream` | boolean | no | `true` returns SSE, default `false` |
+| `user` | string | no | caller/user identifier, default `user` |
+| `temperature` | number | no | provider option, default `0.7` |
+| `max_tokens` | integer | no | provider option |
+| `session_id` | string | no | KsADK extension: local session id |
+| `model_metadata` | object | no | KsADK extension: model capability hints |
+| `model_options` | object | no | KsADK extension: provider-specific runtime options |
+| `account_id` | string | no | KsADK extension (0.6.5+): isolates by account |
 
-```json
+```json title="request.json"
 {
   "model": "my-agent",
   "messages": [
-    {
-      "role": "user",
-      "content": "Say hello from KsADK."
-    }
+    {"role": "user", "content": "Say hello from KsADK."}
   ],
-  "stream": false
+  "stream": false,
+  "account_id": "acct_42"
 }
 ```
 
-The runtime converts supported Chat Completions requests into the canonical
-runner input used by KsADK.
+Multimodal Chat-style content blocks:
 
-Multimodal Chat Completions examples should use Chat-style content blocks:
-
-```json
+```json title="multimodal.json"
 {
   "model": "my-agent",
   "messages": [
@@ -246,87 +333,110 @@ Multimodal Chat Completions examples should use Chat-style content blocks:
 }
 ```
 
-### Request Fields
+</Tab>
+<Tab value="Response">
 
-| Field | Status | Meaning |
-| --- | --- | --- |
-| `model` | compatible | model or agent name override |
-| `messages` | compatible | chat message list |
-| `stream` | compatible | return server-sent events |
-| `user` | compatible | caller/user identifier |
-| `temperature` | compatible | provider option when supported |
-| `max_tokens` | compatible | provider option when supported |
-| `session_id` | KsADK extension | local session identifier |
-| `model_metadata` | KsADK extension | model capability hints |
-| `model_options` | KsADK extension | provider-specific runtime options |
-| `account_id` | KsADK extension | isolates Skill/Workspace/Sandbox/Memory by account boundary, written into the runtime PlatformInvocationContext |
+The non-streaming response returns a Chat Completions-compatible shape:
 
-## KsADK Extensions
-
-Fields such as `attachments`, `current_attachments`, and `has_current_files` are
-KsADK runner extensions. Do not describe them as official OpenAI fields.
-
-Legacy `inlineData` and `fileData` shapes may still be accepted for compatibility
-in some local UI flows, but new public docs should prefer Responses-style input
-items.
-
-Internally, framework runners may receive fields such as:
-
-| Field | Meaning |
-| --- | --- |
-| `input_content` | canonical current-turn content blocks |
-| `input_messages` | canonical message/input item list |
-| `input_parts` | legacy normalized parts |
-| `current_attachments` | files/images from the current user turn |
-| `current_attachment_results` | extraction results from the current user turn |
-| `attachments` | current or recent effective attachment context |
-| `attachment_results` | current or recent effective extraction context |
-| `kb_context` | optional knowledge retrieval context |
-| `memory_context` | optional long-term memory context |
-| `invocation_id` | current run id, used for transcript grouping and event resume |
-
-These fields are runner payload fields, not wire-protocol fields.
-
-<Callout type="info" title="model_options and thinking control">
-  `model_options` passes provider-specific options through to supported runners. As of
-  0.6.7, when thinking is disabled (`reasoning.effort=none`, `thinking.type=disabled`, or
-  `max_reasoning_tokens<=0`), the runtime automatically injects `enable_thinking=false` and
-  `chat_template_kwargs.enable_thinking=false` into `extra_body` (DeepSeek compatibility) and
-  filters streaming reasoning output items.
-
-  - CHAT-style `reasoning.effort` values: `low` / `medium` / `high` / `none`.
-  - Responses-style values: `none` / `minimal` / `low` / `medium` / `high` / `xhigh`.
-
-  The `response.reasoning.delta` event is not emitted when thinking is disabled (filtered by the
-  runtime).
-</Callout>
-
-<Callout type="info" title="Added in 0.6.7">
-  - DeepSeek-compatible `extra_body` injection and streaming reasoning output item filtering
-    when thinking is disabled.
-  - `account_id` isolates Skill/Workspace/Sandbox/Memory by account boundary.
-  - Runner-internal `invocation_id` for transcript grouping and event resume.
-</Callout>
-
-## Streaming
-
-Streaming responses use `text/event-stream`.
-
-```bash
-curl http://127.0.0.1:8080/v1/responses \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"my-agent","input":"count to three","stream":true}'
+```json title="response.json"
+{
+  "id": "chatcmpl-<uuid>",
+  "object": "chat.completion",
+  "created": 1719900000,
+  "model": "my-agent",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Hello from KsADK!"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "session_id": "<resolved-session-id>"
+}
 ```
 
-Clients should handle:
+The runtime converts supported Chat Completions requests into the KsADK canonical runner
+input.
 
-- incremental text events.
-- output item events.
-- final completion events.
-- error events.
-- reconnect or cancellation behavior owned by the client.
+</Tab>
+<Tab value="Stream">
 
-Common Responses streaming event names include:
+With `stream: true` the runtime returns `text/event-stream` using Chat Completions-style
+chunks:
+
+```bash title="sse"
+curl -N http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "my-agent",
+    "messages": [{"role": "user", "content": "count to three"}],
+    "stream": true
+  }'
+```
+
+```text title="chat.sse"
+data: {"id":"chatcmpl-abc","object":"chat.completion.chunk","created":1719900000,"model":"my-agent","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-abc","object":"chat.completion.chunk","created":1719900000,"model":"my-agent","choices":[{"index":0,"delta":{"content":"one"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-abc","object":"chat.completion.chunk","created":1719900000,"model":"my-agent","choices":[{"index":0,"delta":{"content":"two"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-abc","object":"chat.completion.chunk","created":1719900000,"model":"my-agent","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+```
+
+</Tab>
+<Tab value="Error">
+
+| Status | Scenario | Notes |
+| --- | --- | --- |
+| `400` | `messages` missing or invalid | Pydantic validation failure |
+| `500` | Runner not initialized or failed to load | `Runner 未初始化` |
+
+```json title="error.json"
+{
+  "detail": "Runner 未初始化"
+}
+```
+
+</Tab>
+</Tabs>
+
+## GET /v1/models
+
+Lists the current available model catalog. The local runtime first fetches upstream
+`/v1/models` from `OPENAI_BASE_URL` / `OPENAI_API_BASE`; on failure it falls back to a
+single-item catalog from the local `MODEL_NAME`.
+
+```bash title="terminal"
+curl http://127.0.0.1:8080/v1/models
+```
+
+```json title="response.json"
+{
+  "object": "list",
+  "data": [
+    {"id": "deepseek-v3.2", "object": "model", "owned_by": "kspmas"}
+  ],
+  "current": "deepseek-v3.2",
+  "source": "MODEL_NAME"
+}
+```
+
+| Field | Notes |
+| --- | --- |
+| `object` | `list` |
+| `data` | array of models, each with `id`, `object`, `owned_by` and other canonical metadata |
+| `current` | KsADK extension: the currently effective model id |
+| `source` | KsADK extension: source env var name (`OPENAI_MODEL_NAME` / `MODEL_NAME` / `COZE_MODEL_NAME`) |
+
+## Streaming Event Reference
+
+`/v1/responses` streaming event names follow the OpenAI Responses style:
 
 | Event | Meaning |
 | --- | --- |
@@ -336,65 +446,79 @@ Common Responses streaming event names include:
 | `response.content_part.added` | message content part started |
 | `response.output_text.delta` | text delta |
 | `response.output_text.done` | text content completed |
-| `response.reasoning.delta` | reasoning delta when provided by the runner; not emitted when thinking is disabled (filtered by the runtime) |
+| `response.reasoning.delta` | reasoning delta; not emitted when thinking is disabled |
 | `response.function_call_arguments.delta` | function-call arguments delta |
 | `response.function_call_arguments.done` | function-call arguments completed |
-| `response.ksadk.tool_result` | KsADK extension for tool results |
+| `response.ksadk.tool_result` | KsADK tool result extension |
 | `response.incomplete` | interrupted or waiting for approval/resume |
 | `response.completed` | final successful response |
 | `response.failed` | terminal error |
 
-Clients should ignore unknown events they do not support. This keeps them
-forward-compatible with new runner event types.
+Clients should ignore unknown events they do not support, to remain forward-compatible
+with new runner event types.
 
-## Local Endpoint Examples
+## KsADK Extension Fields
 
-Responses:
+`model_metadata`, `model_options`, `account_id`, `session_id`, and `output_text` are
+KsADK extensions and must not be described as official OpenAI fields.
 
-```bash
-curl http://127.0.0.1:8080/v1/responses \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"my-agent","input":"hello","stream":false}'
-```
+<Callout type="info" title="account_id passthrough (0.6.5+)">
+  `account_id` isolates Skill / Workspace / Sandbox / Memory by account boundary, written
+  into the runtime `PlatformInvocationContext`. Supported by both `/v1/responses` and
+  `/v1/chat/completions`.
+</Callout>
 
-Chat Completions:
+<Callout type="info" title="invocation_id passthrough (0.6.5+)">
+  Pass a custom invocation id in `metadata.agentengine.invocation_id`; the runtime passes
+  it through to the runner for transcript grouping and event resume. If omitted, the
+  runtime generates one automatically.
+</Callout>
 
-```bash
-curl http://127.0.0.1:8080/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "my-agent",
-    "messages": [{"role": "user", "content": "hello"}],
-    "stream": false
-  }'
-```
+<Callout type="info" title="thinking-disable injection (0.6.7)">
+  `model_options` passes provider-specific options through to supported runners. As of
+  0.6.7, when thinking is disabled (`reasoning.effort=none`, `thinking.type=disabled`, or
+  `max_reasoning_tokens<=0`), the runtime automatically injects `enable_thinking=false`
+  and `chat_template_kwargs.enable_thinking=false` into `extra_body` (DeepSeek
+  compatibility) and filters streaming reasoning output items.
 
-## Compatibility Notes
+  - CHAT-style `reasoning.effort` values: `low` / `medium` / `high` / `none`
+  - Responses-style values: `none` / `minimal` / `low` / `medium` / `high` / `xhigh`
 
-- Provider-specific model names belong in local configuration.
-- The local runtime may support SDK-specific fields for debugging.
-- Public docs should separate OpenAI-compatible protocol fields from KsADK
-  extensions.
-- Hosted runtime behavior should be documented only after public infrastructure
-  and credentials are approved.
-- For framework-specific tool, memory, or file behavior, document the framework
-  adapter and runtime extension explicitly instead of implying a hidden OpenAI
-  standard field.
+  The `response.reasoning.delta` event is not emitted when thinking is disabled (filtered
+  by the runtime).
+</Callout>
 
 ## Implementation Boundary
 
-At runtime, protocol handlers normalize incoming requests into a common runner
-payload, then call the active framework runner through a narrow interface:
+At runtime, protocol handlers normalize incoming requests into a common runner payload,
+then call the active framework runner through a narrow interface:
 
 ```mermaid
 flowchart LR
-  Client["client"] --> API["/v1/responses or /v1/chat/completions"]
+  Client["client"] -->|HTTP/SSE| API["/v1/responses or /v1/chat/completions"]
   API --> Normalize["message and attachment normalization"]
   Normalize --> Session["session and history preparation"]
   Session --> Runner["framework runner"]
   Runner --> Serialize["Responses or Chat response serialization"]
-  Serialize --> Client
+  Serialize -->|HTTP/SSE| Client
+
+  subgraph ingress["ingress and normalization"]
+    API
+    Normalize
+    Session
+  end
+  subgraph exec["execution and serialization"]
+    Runner
+    Serialize
+  end
+
+  classDef brand fill:#5368db,stroke:#3b4cc7,color:#fff
+  classDef accent fill:#59d3d9,stroke:#3fb8be,color:#0a2540
+  classDef neutral fill:#f5f7ff,stroke:#c9d2f5,color:#1a2240
+  class Client brand
+  class API,Runner accent
+  class Normalize,Session,Serialize neutral
 ```
 
-The public contract is the endpoint behavior. Internal event names, session
-storage details, and runner payload extensions may evolve across releases.
+The public contract is the endpoint behavior. Internal event names, session storage
+details, and runner payload extensions may evolve across releases.

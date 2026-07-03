@@ -18,11 +18,16 @@ then package reviewed artifacts when a deployment path is approved.
 
 ```mermaid
 flowchart LR
-  A["Develop<br/>agent code"] --> B["Run<br/>terminal or local server"]
-  B --> C["Debug<br/>Web UI and protocol traces"]
-  C --> D["Integrate<br/>tools, files, memory"]
-  D --> E["Review<br/>package and release gates"]
-  E --> A
+  A["Develop<br/>agent code"] -->|run| B["Run<br/>terminal or local server"]
+  B -->|inspect| C["Debug<br/>Web UI and protocol traces"]
+  C -->|wire| D["Integrate<br/>tools, files, memory"]
+  D -->|review| E["Review<br/>package and release gates"]
+  E -->|iterate| A
+
+  classDef brand fill:#5368db,stroke:#3b4cc7,color:#fff
+  classDef accent fill:#59d3d9,stroke:#3fb8be,color:#0a2540
+  class A,E brand
+  class B,C,D accent
 ```
 
 <Callout type="info">
@@ -79,6 +84,29 @@ flowchart LR
   LG --> Contract
   LC --> Contract
   DA --> Contract
+
+  subgraph detect["detection"]
+    Project
+    Config
+    Detector
+  end
+  subgraph factory["runner factory"]
+    Factory
+    ADK
+    LG
+    LC
+    DA
+  end
+  subgraph contract["public contract"]
+    Contract
+  end
+
+  classDef brand fill:#5368db,stroke:#3b4cc7,color:#fff
+  classDef accent fill:#59d3d9,stroke:#3fb8be,color:#0a2540
+  classDef neutral fill:#f5f7ff,stroke:#c9d2f5,color:#1a2240
+  class Project,Contract brand
+  class Detector,Factory accent
+  class Config,ADK,LG,LC,DA neutral
 ```
 
 <Callout type="info">

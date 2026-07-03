@@ -107,14 +107,14 @@ Your chain decides how to map this dictionary into prompts, tools, retrievers, o
 ## Current Turn Versus Session Context
 
 <Tabs>
-  <Tab name="Current turn" value="Current turn">
+  <Tab value="Current turn" value="Current turn">
     Use current-turn fields when the answer should depend on files the user just uploaded:
     ```python
     if payload.get("has_current_files"):
         results = payload.get("current_attachment_results", [])
     ```
   </Tab>
-  <Tab name="Session context" value="Session context">
+  <Tab value="Session context" value="Session context">
     Use effective context fields when the user is following up on an earlier file in the same session:
     ```python
     results = payload.get("attachment_results", [])

@@ -17,17 +17,17 @@ Workspace、Sandbox、部署和 OpenTelemetry 观测能力。
 ## 与其他框架的关系
 
 <Tabs>
-  <Tab name="ADK" value="ADK">
+  <Tab value="ADK" value="ADK">
     Google ADK 主要解决 Agent 建模、工具、多 Agent 协作、Session/Memory、本地运行与 Web 调试。ADK 解决 Agent 开发；KsADK 解决 Agent 运行。
 
     KsADK 不替代 ADK，而是让 ADK Agent 与 LangGraph、LangChain、DeepAgents 项目共用同一套本地运行、浏览器调试、OpenAI-Compatible API 和部署入口。适合：团队同时有 ADK 和 LangGraph 项目、需要同一套 Web UI 调试不同框架、要把本地 Agent 暴露成 OpenAI-Compatible API、要接入金山云 AgentEngine/Skill/Workspace/Sandbox/部署链路。
   </Tab>
-  <Tab name="LangGraph" value="LangGraph">
+  <Tab value="LangGraph" value="LangGraph">
     LangGraph 擅长图状态编排、checkpoint、streaming、人机协作和 LangChain 生态。
 
     KsADK 不重写 LangGraph 的图执行能力，在 LangGraph 项目之外补上运行时平台层：`agentengine run` 本地交互、`agentengine web` 浏览器调试、`/v1/responses` 与 `/v1/chat/completions` 本地协议、Skill Runtime/Workspace/Sandbox toolsets、AgentEngine/Hermes/OpenClaw/Serverless 部署入口。
   </Tab>
-  <Tab name="OpenAI Agents SDK" value="OpenAI Agents SDK">
+  <Tab value="OpenAI Agents SDK" value="OpenAI Agents SDK">
     OpenAI Agents SDK 面向 OpenAI Responses API，提供 Agent 编排、工具调用、handoff、guardrails 和 tracing。
 
     KsADK 面向多框架和多运行后端，不要求业务 Agent 一定采用 OpenAI Agents SDK 编写，而是把 ADK、LangGraph、LangChain、DeepAgents 项目统一包装到本地运行、调试、OpenAI-Compatible API 和部署链路里。

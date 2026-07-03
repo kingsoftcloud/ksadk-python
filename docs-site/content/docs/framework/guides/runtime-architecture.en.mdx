@@ -11,17 +11,64 @@ protocols for terminal, browser, and API clients.
 ## Layer Model
 
 ```mermaid
-flowchart TD
-  CLI["agentengine run / web"] --> Env["environment setup"]
-  Env --> Detect["framework detection"]
-  Detect --> Factory["runner factory"]
-  Factory --> Runner["BaseRunner implementation"]
-  Runner --> Server["FastAPI app"]
-  Server --> Protocol["/v1/responses<br/>/v1/chat/completions<br/>/run_sse<br/>/agentengine/api/v1/RunAgent"]
-  Protocol --> Conversation["conversation runtime"]
-  Conversation --> Sessions["session service"]
-  Conversation --> Context["PlatformInvocationContext"]
-  Conversation --> RunnerCall["runner.invoke / runner.stream"]
+flowchart LR
+  classDef brand fill:#5368db,stroke:#3a4ab8,color:#fff
+  classDef accent fill:#59d3d9,stroke:#2fa9af,color:#0a1f2e
+  classDef stop fill:#e0556a,stroke:#b53a4f,color:#fff
+
+  subgraph Entry["entry"]
+    CLI["agentengine run / web"]
+  end
+  subgraph Boot["startup"]
+    Detect["framework detection"]
+    Factory["create_runner"]
+    Loader["runner.load_agent"]
+  end
+  subgraph HTTP["HTTP / UI layer"]
+    Server["FastAPI app"]
+    Proto["/v1/responses<br/>/v1/chat/completions<br/>/run_sse<br/>RunAgent"]
+  end
+  subgraph Conv["conversation runtime conversations.runtime"]
+    Build["build_run_input<br/>history + attachments"]
+    Ctx["PlatformInvocationContext<br/>invocation_id"]
+    Status["append run_status<br/>in_progress / completed / failed"]
+    Check["append run_checkpoint<br/>run_resume"]
+    Retry["fallback model retry<br/>PTL compact retry"]
+  end
+  subgraph Store["session service"]
+    Sessions["session + events"]
+  end
+  subgraph Runner["BaseRunner"]
+    Invoke["invoke / stream"]
+  end
+  subgraph Cap["run capability layer (0.6.7)"]
+    Resume["ResumeRun"]
+    Preview["GetCheckpointResumePreview"]
+    List["ListSessionCheckpoints"]
+    Cancel["CancelRun (cooperative)"]
+    Subscribe["SubscribeRunEvents"]
+  end
+
+  CLI -->|"detect"| Detect
+  Detect -->|"create_runner"| Factory
+  Factory -->|"load_agent"| Loader
+  Loader -->|"server mode"| Server
+  Server -->|"route"| Proto
+  Proto -->|"invoke_conversation_once<br/>/ stream_responses_conversation_turn"| Build
+  Build -->|"build context"| Ctx
+  Ctx -->|"platform_invocation_scope"| Invoke
+  Invoke -->|"output + metadata"| Status
+  Status -->|"persist"| Sessions
+  Check -->|"persist"| Sessions
+  Retry -.->|"on recoverable err"| Invoke
+  Sessions -->|"read events"| Subscribe
+  Resume -->|"find checkpoint"| Sessions
+  Resume -->|"resume_input"| Build
+  Preview -->|"risk + receipts"| Sessions
+  List -->|"list checkpoints"| Sessions
+  Cancel -->|"cooperate at next<br/>chunk / tool boundary"| Invoke
+
+  class CLI,Detect,Factory,Loader,Server,Proto,Build,Ctx,Status,Check,Retry,Invoke,Sessions,Resume,Preview,List,Cancel,Subscribe brand
 ```
 
 The important boundary is that the HTTP server and conversation runtime do not
@@ -57,6 +104,60 @@ DeepAgents. They call `BaseRunner.invoke()` or `BaseRunner.stream()`.
 <Callout type="warning">
 If framework detection returns `unknown`, the CLI stops before importing the user project as a runner.
 </Callout>
+
+```mermaid
+flowchart TD
+  classDef brand fill:#5368db,stroke:#3a4ab8,color:#fff
+  classDef accent fill:#59d3d9,stroke:#2fa9af,color:#0a1f2e
+  classDef stop fill:#e0556a,stroke:#b53a4f,color:#fff
+
+  subgraph CLI["ksadk.cli (entry)"]
+    Entry["agentengine run / web"]
+  end
+  subgraph Boot["startup prep"]
+    Resolve["resolve project dir"]
+    EnvLoad["load .env / agentengine.yaml"]
+  end
+  subgraph Detect["framework detection"]
+    Detector["FrameworkDetector.detect"]
+    Result{"DetectionResult"}
+  end
+  subgraph Factory["runner factory"]
+    Create["create_runner"]
+    ADK["ADKRunner"]
+    LG["LangGraphRunner"]
+    LC["LangChainRunner"]
+    DA["DeepAgentsRunner"]
+    Unknown["stop: project error"]:::stop
+  end
+  subgraph Load["user code load"]
+    LoadAgent["runner.load_agent"]
+  end
+  subgraph Serve["runtime mode"]
+    Terminal["terminal loop"]
+    Server["FastAPI app + local UI"]
+  end
+
+  Entry -->|"resolve project dir"| Resolve
+  Resolve -->|"load env + YAML"| EnvLoad
+  EnvLoad -->|"detect framework"| Detector
+  Detector --> Result
+  Result -->|"adk"| ADK
+  Result -->|"langgraph"| LG
+  Result -->|"langchain"| LC
+  Result -->|"deepagents"| DA
+  Result -->|"unknown"| Unknown
+  ADK --> Create
+  LG --> Create
+  LC --> Create
+  DA --> Create
+  Create -->|"import user module"| LoadAgent
+  LoadAgent -->|"interactive"| Terminal
+  LoadAgent -->|"server / web"| Server
+
+  class Entry,Resolve,EnvLoad,Detector,Create,ADK,LG,LC,DA,LoadAgent,Terminal,Server brand
+  class Result accent
+```
 
 ## Startup Boundaries
 
@@ -95,15 +196,45 @@ Detection uses explicit configuration first, then convention:
 
 ```mermaid
 flowchart TD
-  A["project directory"] --> B{"agentengine.yaml / ksadk.yaml?"}
-  B -->|yes| C["validate framework, entry_point, agent_variable"]
-  B -->|no| D{"langgraph.json?"}
-  D -->|yes| E["parse graph target"]
-  D -->|no| F["scan package and entry files"]
-  C --> G["DetectionResult"]
-  E --> G
-  F --> G
-  G --> H["create_runner"]
+  classDef brand fill:#5368db,stroke:#3a4ab8,color:#fff
+  classDef accent fill:#59d3d9,stroke:#2fa9af,color:#0a1f2e
+  classDef stop fill:#e0556a,stroke:#b53a4f,color:#fff
+
+  subgraph Inputs["detection input"]
+    Dir["project directory"]
+  end
+  subgraph Explicit["explicit config first"]
+    Cfg{"agentengine.yaml<br/>ksadk.yaml?"}
+    Validate["validate framework<br/>entry_point<br/>agent_variable"]
+  end
+  subgraph Convention["convention fallback"]
+    LGJson{"langgraph.json?"}
+    GraphTarget["parse graph target"]
+    Scan["scan package dir + entry files<br/>agent.py / main.py / app.py"]
+    Analyze["_analyze_code<br/>AST heuristics"]
+  end
+  subgraph Out["detection output"]
+    Result["DetectionResult"]
+    Unknown["unknown<br/>stop"]:::stop
+  end
+  subgraph Next["next step"]
+    Create["create_runner"]
+  end
+
+  Dir --> Cfg
+  Cfg -->|"yes"| Validate
+  Cfg -->|"no"| LGJson
+  LGJson -->|"yes"| GraphTarget
+  LGJson -->|"no"| Scan
+  Scan --> Analyze
+  Validate --> Result
+  GraphTarget --> Result
+  Analyze --> Result
+  Result -->|"is_valid"| Create
+  Result -->|"unknown"| Unknown
+
+  class Dir,Validate,GraphTarget,Scan,Analyze,Result,Create brand
+  class Cfg,LGJson accent
 ```
 
 <Callout type="info">
@@ -157,18 +288,39 @@ A normal non-streaming `/v1/responses` request follows this path:
 
 ```mermaid
 sequenceDiagram
-  Client->>API: POST /v1/responses
+  autonumber
+  participant C as Client
+  participant API as FastAPI endpoint
+  participant Conv as conversations.runtime
+  participant Store as session service
+  participant Runner as BaseRunner
+
+  C->>API: POST /v1/responses
   API->>Conv: invoke_conversation_once
   Conv->>Store: ensure session
   Conv->>Store: append user_message
-  Conv->>Conv: build history and context
+  Conv->>Conv: build_run_input (history + context)
+  Conv->>Conv: PlatformInvocationContext
   Conv->>Store: append run_status=in_progress
-  Conv->>Runner: invoke(payload)
-  Runner-->>Conv: output
+  Conv->>Runner: platform_invocation_scope → invoke(payload)
+  alt recoverable error
+    Runner-->>Conv: raise exception
+    Conv->>Conv: fallback_model retry (one attempt)
+    Conv->>Store: append run_status=in_progress (fallback)
+    Conv->>Runner: invoke(payload) again
+  else prompt-too-long
+    Runner-->>Conv: raise PTL exception
+    Conv->>Store: compact_conversation_history
+    Conv->>Runner: invoke(payload) again
+  end
+  Runner-->>Conv: result (output + metadata)
+  opt checkpoint metadata present
+    Conv->>Store: append run_checkpoint
+  end
   Conv->>Store: append assistant_message
   Conv->>Store: append run_status=completed
-  Conv-->>API: output text and metadata
-  API-->>Client: response object
+  Conv-->>API: output text + metadata
+  API-->>C: response object
 ```
 
 Streaming uses the same preparation path, then serializes internal semantic

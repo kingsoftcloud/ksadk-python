@@ -40,6 +40,22 @@ flowchart TD
   LTM --> Payload
   Payload --> Hook["ksadk_prepare_state / ksadk_prepare_input"]
   Hook --> Agent["business agent"]
+
+  subgraph ctx["ambient context"]
+    KB
+    LTM
+  end
+  subgraph contract["public contract"]
+    Payload
+    Hook
+  end
+
+  classDef brand fill:#5368db,stroke:#3b4cc7,color:#fff
+  classDef accent fill:#59d3d9,stroke:#3fb8be,color:#0a2540
+  classDef neutral fill:#f5f7ff,stroke:#c9d2f5,color:#1a2240
+  class User,Agent brand
+  class Runtime,Payload,Hook accent
+  class Policy,KB,LTM neutral
 ```
 
 <Callout type="info">
@@ -141,6 +157,25 @@ flowchart TD
   MemCtx --> Payload
   Payload --> Runner["framework runner"]
   Runner --> Agent["agent code"]
+
+  subgraph ctx["ambient context"]
+    KB
+    LTM
+    KBCtx
+    MemCtx
+  end
+  subgraph runtime["conversation runtime"]
+    Runtime
+    Policy
+    Payload
+  end
+
+  classDef brand fill:#5368db,stroke:#3b4cc7,color:#fff
+  classDef accent fill:#59d3d9,stroke:#3fb8be,color:#0a2540
+  classDef neutral fill:#f5f7ff,stroke:#c9d2f5,color:#1a2240
+  class Input,Agent brand
+  class Runtime,Payload,Runner accent
+  class Policy,KB,LTM,KBCtx,MemCtx neutral
 ```
 
 <Callout type="info">
