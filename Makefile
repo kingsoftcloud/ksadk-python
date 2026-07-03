@@ -349,12 +349,7 @@ public-audit: public-secret-audit
 	@echo "✅ public path audit passed"
 
 public-docs-build: public-docs-site-build
-	@echo "==> docs build"
-	@if [ -f "mkdocs.yml" ]; then \
-		uv run mkdocs build --strict; \
-	else \
-		echo "⚠️  mkdocs.yml 不存在，跳过 mkdocs build (master 内部文档站)"; \
-	fi
+	@echo "==> docs build (Fumadocs docs-site)"
 
 # Fumadocs 文档站 (docs-site/) 构建 + 类型检查, 公开发布前验证
 public-docs-site-build:
