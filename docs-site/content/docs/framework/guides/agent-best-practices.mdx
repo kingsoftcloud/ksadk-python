@@ -22,6 +22,26 @@ flowchart TD
   Specialist --> Skills["Skill Runtime"]
   Specialist --> MCP["MCP / A2A 工具"]
   Specialist --> Workspace["workspace 文件"]
+
+  subgraph flow["多轮编排"]
+    Plan
+    Specialist
+    Final
+  end
+  subgraph tools["specialist 可用工具"]
+    KB
+    Mem
+    Skills
+    MCP
+    Workspace
+  end
+
+  classDef brand fill:#5368db,stroke:#3b4cc7,color:#fff
+  classDef accent fill:#59d3d9,stroke:#3fb8be,color:#0a2540
+  classDef neutral fill:#f5f7ff,stroke:#c9d2f5,color:#1a2240
+  class User,Final brand
+  class Plan,Specialist accent
+  class KB,Mem,Skills,MCP,Workspace neutral
 ```
 
 LangGraph 很适合这个结构：外层 `StateGraph` 管状态流转，内层

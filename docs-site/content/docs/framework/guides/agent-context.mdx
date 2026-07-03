@@ -41,13 +41,13 @@ KsADK 把运行时上下文收敛到一个 `PlatformInvocationContext`，runner 
 ## 框架接入
 
 <Tabs>
-  <Tab name="LangGraph" value="LangGraph">
+  <Tab value="LangGraph" value="LangGraph">
     用 `ksadk_prepare_state` 把 payload 与 session context 映射到自定义 state。
   </Tab>
-  <Tab name="LangChain" value="LangChain">
+  <Tab value="LangChain" value="LangChain">
     用 `ksadk_prepare_input` 组织输入。
   </Tab>
-  <Tab name="ADK" value="ADK">
+  <Tab value="ADK" value="ADK">
     优先使用 ADK 原生工具和服务，消费 runner 产出的 ADK message/session primitives。
   </Tab>
 </Tabs>

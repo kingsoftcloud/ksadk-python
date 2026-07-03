@@ -18,12 +18,31 @@ runtime image plus public configuration.
 
 ```mermaid
 flowchart TD
-  CLI["agentengine CLI"] --> Control["AgentEngine control plane"]
-  Control --> Image["runtime image"]
-  Image --> Hermes["Hermes dashboard / API / terminal"]
-  Image --> OpenClaw["OpenClaw gateway"]
-  Hermes --> Workspace["/_ksadk/workspace/v1/*"]
-  OpenClaw --> Workspace
+  CLI["agentengine CLI"] -->|submit artifact| Control["AgentEngine control plane"]
+  Control -->|build / pull| Image["runtime image"]
+  Image -->|deploy| Hermes["Hermes<br/>dashboard / API / terminal"]
+  Image -->|deploy| OpenClaw["OpenClaw gateway"]
+  Hermes -->|mount| Workspace["/_ksadk/workspace/v1/*"]
+  OpenClaw -->|mount| Workspace
+
+  subgraph hosted["hosted layer"]
+    Control
+    Image
+  end
+  subgraph products["runtime products"]
+    Hermes
+    OpenClaw
+  end
+  subgraph shared["shared workspace contract"]
+    Workspace
+  end
+
+  classDef brand fill:#5368db,stroke:#3b4cc7,color:#fff
+  classDef accent fill:#59d3d9,stroke:#3fb8be,color:#0a2540
+  classDef neutral fill:#f5f7ff,stroke:#c9d2f5,color:#1a2240
+  class CLI,Workspace brand
+  class Control,Image accent
+  class Hermes,OpenClaw neutral
 ```
 
 ## When To Use Which Runtime
@@ -46,7 +65,7 @@ Typical flow and command shape for each runtime. Same concept, two runtimes —
 use the tabs below:
 
 <Tabs>
-  <Tab name="Hermes" value="Hermes">
+  <Tab value="Hermes" value="Hermes">
 
 Typical flow:
 
@@ -77,7 +96,7 @@ as part of the remote runtime contract.
 </Callout>
 
   </Tab>
-  <Tab name="OpenClaw" value="OpenClaw">
+  <Tab value="OpenClaw" value="OpenClaw">
 
 Typical flow:
 

@@ -15,10 +15,26 @@ https://<public-endpoint>
 
 ```mermaid
 flowchart LR
-  Client["SDK / CLI / browser"] --> Public["PublicEndpoint"]
-  Public --> Gateway["gateway auth and routing"]
-  Gateway --> Runtime["runtime pod"]
-  Runtime --> Agent["agent or runtime product"]
+  Client["SDK / CLI / browser"] -->|公网| Public["PublicEndpoint"]
+  Public -->|鉴权| Gateway["gateway auth and routing"]
+  Gateway -->|转发| Runtime["runtime pod"]
+  Runtime -->|加载| Agent["agent or runtime product"]
+
+  subgraph edge["edge / 公开入口"]
+    Public
+    Gateway
+  end
+  subgraph pod["runtime pod"]
+    Runtime
+    Agent
+  end
+
+  classDef brand fill:#5368db,stroke:#3b4cc7,color:#fff
+  classDef accent fill:#59d3d9,stroke:#3fb8be,color:#0a2540
+  classDef neutral fill:#f5f7ff,stroke:#c9d2f5,color:#1a2240
+  class Client,Agent brand
+  class Public,Gateway accent
+  class Runtime neutral
 ```
 
 runtime pod 可能实现本地路由，但外部调用方应以 gateway 暴露的
@@ -34,6 +50,11 @@ runtime pod 可能实现本地路由，但外部调用方应以 gateway 暴露�
 
 外部调用方不要手工构造 `X-Auth-Agent-Id`、`X-Auth-Account-Id` 或运行时专用
 forwarded header。
+
+<Callout type="warning" title="Bearer Token 校验">
+  托管运行时要求 `Authorization: Bearer <token>`。本地开发 server 默认不强制鉴权，
+  但上线时由 gateway 注入并校验 Bearer。客户端应始终携带，避免本地与托管行为不一致。
+</Callout>
 
 ## 常见 Header
 
@@ -98,20 +119,1051 @@ Hosted UI 使用 action 风格路由管理 session、event、upload、workspace 
 cancel 和 model listing。公开 API 客户端优先使用 OpenAI 兼容的 `/v1/*` 路由；
 只有明确集成 hosted UI surface 时才直接对接 action 路由。
 
-| 类别 | 用途 |
-| --- | --- |
-| session | 创建、获取、列出、删除会话 |
-| events | 列出或订阅 run events |
-| run | 调用或取消 Agent run |
-| checkpoint-resume | 列出 checkpoint、预览 resume、resume 或 cancel 受 checkpoint 管控的 run（0.6.7 新增） |
-| files | 上传文件、下载附件内容、读取 workspace 文件和导出 workspace archive |
-| bootstrap | 获取 UI bootstrap metadata，含 CustomUI、RuntimeCapabilities、CheckpointResumeCapability、RunLifecycle |
+所有 action 路径都挂在 `POST /agentengine/api/v1/*`（下载类 surface 为 `GET`），
+返回统一的 action envelope：
+
+```json title="envelope.json"
+{
+  "Code": 0,
+  "Message": "Success",
+  "RequestId": "req_abc123",
+  "Action": "RunAgent",
+  "Data": { /* action-specific payload */ }
+}
+```
+
+| 分组 | 用途 | Actions |
+| --- | --- | --- |
+| 会话 Sessions | 创建、获取、列出、删除会话 | `CreateSession`、`GetSession`、`ListSessions`、`DeleteSession` |
+| 运行 Runs | 调用或取消 Agent run、订阅事件 | `RunAgent`、`SubscribeRunEvents`、`CancelRun` |
+| 事件 Events | 列出 session 历史 events | `ListSessionEvents` |
+| 文件 Files | 上传、下载附件、workspace 文件、导出 archive | `UploadFile`、`AttachmentContent`、`ListWorkspaceFiles`、`AddWorkspaceFile`、`DeleteWorkspaceFile`、`GetWorkspaceFileContent`、`ExportWorkspaceZip` |
+| 模型 Models | 列出可用模型目录 | `ListAgentModels` |
+| UI Bootstrap | 获取 UI 渲染与能力探测所需 metadata | `GetAgentUiBootstrap` |
 
 <Callout type="info" title="0.6.7 新增">
   checkpoint/resume 与 `GetAgentUiBootstrap` 能力可见性均以 bootstrap 返回的
   `RuntimeCapabilities` 与 `RunLifecycle` 为准；公开 API 客户端通常不直接对接这些
   action 路由，优先使用 OpenAI 兼容的 `/v1/*`。
 </Callout>
+
+### 会话 Sessions
+
+<Steps>
+1. **探测能力**：先调用 `GetAgentUiBootstrap`，确认 `Capabilities.WorkspaceFiles`、`Capabilities.ResumeRun` 等。
+2. **创建会话**：`CreateSession`，拿到 `Session.SessionId`。
+3. **拉取历史**：`ListSessions` / `ListSessionEvents` 渲染侧栏与时间线。
+4. **发起运行**：`RunAgent`（前台或后台），用 `SubscribeRunEvents` 续订进度。
+5. **回收会话**：`DeleteSession` 释放持久化记录。
+</Steps>
+
+#### CreateSession
+
+创建（或复用）一个会话。`SessionId` 缺省时由运行时生成。
+
+<Tabs>
+<Tab value="Request">
+
+`POST /agentengine/api/v1/CreateSession`，body 为 JSON：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `AgentId` | string | 是 | 目标 Agent id |
+| `UserId` | string | 否 | 缺省 `user` |
+| `SessionId` | string | 否 | 复用已有 session；缺省运行时生成 |
+
+```json title="request.json"
+{
+  "AgentId": "my-agent",
+  "UserId": "user",
+  "SessionId": "local-demo-session"
+}
+```
+
+</Tab>
+<Tab value="Response">
+
+```json title="response.json"
+{
+  "Code": 0,
+  "Message": "Success",
+  "RequestId": "req_abc123",
+  "Action": "CreateSession",
+  "Data": {
+    "Session": {
+      "SessionId": "local-demo-session",
+      "AgentId": "my-agent",
+      "UserId": "user",
+      "Title": "New session",
+      "TitleSource": "fallback_first_prompt",
+      "Summary": null,
+      "FirstPrompt": "",
+      "LastPrompt": "",
+      "ActiveInvocationId": "",
+      "ActiveRunStatus": "",
+      "State": {},
+      "CreatedAt": 1719900000.0,
+      "UpdatedAt": 1719900000.0,
+      "Version": 1
+    }
+  }
+}
+```
+
+`Session` payload 字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `SessionId` / `AgentId` / `UserId` | 会话主键三元组 |
+| `Title` / `TitleSource` | 会话标题及其来源（`fallback_first_prompt`、`heuristic` 等） |
+| `Summary` | 运行时维护的会话摘要 |
+| `FirstPrompt` / `LastPrompt` | 截断后的首/末用户消息预览 |
+| `ActiveInvocationId` / `ActiveRunStatus` | 当前会话活跃 run 的 invocation 与状态 |
+| `State` | 会话状态 dict（已脱敏） |
+| `CreatedAt` / `UpdatedAt` / `Version` | 时间戳与版本号 |
+| `Continuity` | 可选：runner 适配器描述的连续性信息 |
+
+</Tab>
+<Tab value="Error">
+
+| 状态码 | 场景 | detail |
+| --- | --- | --- |
+| `400` | `AgentId` 缺失 | Pydantic 校验失败 |
+| `503` | session backend 不可用 | `{"code":"session_backend_unavailable","message":...}` |
+
+</Tab>
+</Tabs>
+
+#### ListSessions
+
+分页列出某 Agent / User 下的会话，按 page-based 分页。
+
+<Tabs>
+<Tab value="Request">
+
+`POST /agentengine/api/v1/ListSessions`：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `AgentId` | string | 是 | 目标 Agent id |
+| `UserId` | string | 否 | 缺省 `user` |
+| `Page` | int | 否 | 1-based，缺省 `1`，最小 `1` |
+| `PageSize` | int | 否 | 缺省 `20`，范围 `1..200` |
+
+```json title="request.json"
+{
+  "AgentId": "my-agent",
+  "UserId": "user",
+  "Page": 1,
+  "PageSize": 20
+}
+```
+
+</Tab>
+<Tab value="Response">
+
+```json title="response.json"
+{
+  "Code": 0,
+  "Message": "Success",
+  "RequestId": "req_abc123",
+  "Action": "ListSessions",
+  "Data": {
+    "Sessions": [ /* Session payload，同 CreateSession */ ],
+    "Total": 42,
+    "Page": 1,
+    "PageSize": 20
+  }
+}
+```
+
+分页字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `Total` | 该 Agent/User 下的会话总数 |
+| `Page` / `PageSize` | 当前页与每页大小（原样回填） |
+
+实际 offset 由运行时按 `(Page - 1) * PageSize` 计算。
+
+</Tab>
+</Tabs>
+
+#### GetSession
+
+获取单个会话及其最新事件。
+
+<Tabs>
+<Tab value="Request">
+
+`POST /agentengine/api/v1/GetSession`：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `SessionId` | string | 是 | 目标会话 id |
+
+```json title="request.json"
+{ "SessionId": "local-demo-session" }
+```
+
+</Tab>
+<Tab value="Response">
+
+```json title="response.json"
+{
+  "Code": 0,
+  "Message": "Success",
+  "RequestId": "req_abc123",
+  "Action": "GetSession",
+  "Data": {
+    "Session": { /* 同 CreateSession 的 Session payload */ }
+  }
+}
+```
+
+</Tab>
+<Tab value="Error">
+
+| 状态码 | 场景 | detail |
+| --- | --- | --- |
+| `404` | session 不存在 | `Session not found` |
+
+</Tab>
+</Tabs>
+
+#### DeleteSession
+
+删除会话，并取消该会话上仍在进行的 detached stream。
+
+<Tabs>
+<Tab value="Request">
+
+`POST /agentengine/api/v1/DeleteSession`：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `SessionId` | string | 是 | 目标会话 id |
+
+```json title="request.json"
+{ "SessionId": "local-demo-session" }
+```
+
+</Tab>
+<Tab value="Response">
+
+```json title="response.json"
+{
+  "Code": 0,
+  "Message": "Success",
+  "RequestId": "req_abc123",
+  "Action": "DeleteSession",
+  "Data": { "Deleted": true }
+}
+```
+
+<Callout type="info" title="副作用">
+  删除前会先取消该 session 关联的 detached 后台 stream，避免悬挂的 in-progress
+  run_status 事件。
+</Callout>
+
+</Tab>
+<Tab value="Error">
+
+| 状态码 | 场景 | detail |
+| --- | --- | --- |
+| `404` | session 不存在 | `Session not found` |
+
+</Tab>
+</Tabs>
+
+### 运行 Runs
+
+#### RunAgent
+
+调用 Agent 执行一轮对话。支持前台同步、前台流式、后台执行三种模式。
+
+<Tabs>
+<Tab value="Request">
+
+`POST /agentengine/api/v1/RunAgent`，body 为 JSON（基于 `RunAgentActionRequest`）：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `AgentId` | string | 是 | 目标 Agent id |
+| `Messages` | array | 否 | 消息数组（Chat Completions 风格）；与 `ResponsesInput` 二选一 |
+| `ResponsesInput` | any | 否 | Responses 风格 input；与 `Messages` 二选一 |
+| `UserId` | string | 否 | 缺省 `user` |
+| `AccountId` | string | 否 | 0.6.5+ 账号隔离 id，透传给 runner |
+| `SessionId` | string | 否 | 关联会话；缺省由运行时创建 |
+| `InvocationId` | string | 否 | 调用方传入的 invocation id；缺省运行时生成 |
+| `ApiFormat` | string | 否 | `responses`（缺省）或 `chat_completions` |
+| `Stream` | bool | 否 | `true` 返回 SSE；缺省 `false` |
+| `Background` | bool | 否 | 0.6.5+ `true` 立即返回 job 句柄，后台执行，进度走 `SubscribeRunEvents`；缺省 `false` |
+| `Model` | string | 否 | 模型或 Agent 名称覆盖 |
+| `ModelMetadata` | object | 否 | 模型元数据，含 reasoning / multimodal / context_window_tokens 等 |
+| `ModelOptions` | object | 否 | 请求级模型选项（temperature、max_tokens 等）透传给 runner |
+| `PreviousResponseId` | string | 否 | Responses 续聊 handle；写入 request metadata |
+
+前台同步调用：
+
+```json title="request.json"
+{
+  "AgentId": "my-agent",
+  "Messages": [{"role": "user", "content": "hello"}],
+  "ApiFormat": "responses",
+  "Stream": false
+}
+```
+
+后台执行：
+
+```json title="background.json"
+{
+  "AgentId": "my-agent",
+  "Messages": [{"role": "user", "content": "summarize the workspace"}],
+  "Background": true,
+  "InvocationId": "inv_demo_001",
+  "AccountId": "acct_42",
+  "Model": "glm-5.1",
+  "ModelMetadata": {"reasoning": true, "multimodal": false, "context_window_tokens": 128000},
+  "ModelOptions": {"temperature": 0.2, "max_tokens": 4096}
+}
+```
+
+<Callout type="warning" title="Background 与 Stream 互斥">
+  `Background: true` 时忽略 `Stream`，立即返回 job 句柄；前台 `Stream: true` 返回 SSE，
+  两者不能同时启用。
+</Callout>
+
+</Tab>
+<Tab value="Response">
+
+**前台同步**（`Background: false`，`Stream: false`）返回 Responses 或 Chat
+Completions 形态的 payload，外层包 action envelope：
+
+```json title="response.json"
+{
+  "Code": 0,
+  "Message": "Success",
+  "RequestId": "req_abc123",
+  "Action": "RunAgent",
+  "Data": {
+    "id": "resp_a1b2c3",
+    "object": "response",
+    "status": "completed",
+    "model": "glm-5.1",
+    "output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "..."}]}],
+    "output_text": "...",
+    "session_id": "local-demo-session"
+  }
+}
+```
+
+**后台执行**（`Background: true`）立即返回 job 句柄：
+
+```json title="background-response.json"
+{
+  "Code": 0,
+  "Message": "Success",
+  "RequestId": "req_abc123",
+  "Action": "RunAgent",
+  "Data": {
+    "InvocationId": "inv_demo_001",
+    "Status": "running",
+    "Background": true,
+    "SubscribeUrl": "/agentengine/api/v1/SubscribeRunEvents?SessionId=local-demo-session&InvocationId=inv_demo_001"
+  }
+}
+```
+
+后台返回字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `InvocationId` | run 的 invocation id，用于订阅与取消 |
+| `Status` | `running` 表示后台任务已就绪 |
+| `Background` | 始终 `true` |
+| `SubscribeUrl` | 相对路径，拼接 host 即可作为 SSE 订阅入口 |
+
+</Tab>
+<Tab value="Stream">
+
+前台 `Stream: true` 时返回 `text/event-stream`，事件经 runtime 归一化后下发：
+
+```bash title="sse"
+curl -N https://<public-endpoint>/agentengine/api/v1/RunAgent \
+  -H "Authorization: Bearer <api_key>" \
+  -H "Content-Type: application/json" \
+  -d '{"AgentId":"my-agent","Messages":[{"role":"user","content":"count to three"}],"Stream":true}'
+```
+
+客户端应处理文本 delta、工具事件、错误和完成事件。
+
+</Tab>
+<Tab value="Error">
+
+| 状态码 | 场景 | detail |
+| --- | --- | --- |
+| `400` | `Messages` 与 `ResponsesInput` 同传或都缺 | Pydantic / runtime 校验失败 |
+| `409` | 同 session 的 resume 已在运行 | `{"code":"resume_already_running",...}` |
+| `500` | Runner 未初始化或加载失败 | `Runner 未初始化` |
+
+</Tab>
+</Tabs>
+
+<Callout type="info" title="0.6.5+ 透传字段">
+  `AccountId`、`InvocationId`、`ModelMetadata`、`ModelOptions` 会原样透传给 runner，
+  用于按账号隔离 Skill/Workspace/Sandbox/Memory，并支持请求级模型参数覆盖。`AccountId`
+  缺省时 runner 侧按运行时默认账号处理。
+</Callout>
+
+#### SubscribeRunEvents
+
+订阅某个 invocation 的 run events，SSE 推送。支持 5 分钟重连窗口。
+
+<Tabs>
+<Tab value="Request">
+
+`GET /agentengine/api/v1/SubscribeRunEvents`，参数走 query string：
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `SessionId` | string | 是 | 目标会话 id |
+| `InvocationId` | string | 是 | 目标 run 的 invocation id |
+| `AfterSeqId` | int | 否 | 仅推送 `SeqId > AfterSeqId` 的事件，缺省 `0` |
+
+```text title="subscribe-url"
+/agentengine/api/v1/SubscribeRunEvents?SessionId=local-demo-session&InvocationId=inv_demo_001&AfterSeqId=12
+```
+
+</Tab>
+<Tab value="Stream">
+
+`Accept: text/event-stream`。每个事件为 `data: <json>\n\n`，终态后下发
+`data: [DONE]\n\n` 并关闭流：
+
+```text title="events.sse"
+data: {"EventId":"evt_1","SessionId":"local-demo-session","InvocationId":"inv_demo_001","EventType":"run_status","Content":{"status":"in_progress"},"SeqId":13,"Timestamp":1719900001.0}
+
+data: {"EventId":"evt_2","EventType":"tool_result","Content":{...},"SeqId":14,...}
+
+data: {"EventId":"evt_3","EventType":"run_status","Content":{"status":"completed"},"SeqId":15,...}
+
+data: [DONE]
+```
+
+事件 payload 字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `EventId` / `SessionId` | 事件与所属会话 |
+| `InvocationId` | 关联的 run invocation id |
+| `Author` | 事件作者（agent 或 user） |
+| `EventType` | 事件类型（`run_status`、`tool_result`、`run_checkpoint` 等） |
+| `Content` | 事件内容 dict |
+| `Timestamp` | 事件时间戳 |
+| `SeqId` | 单调递增的会话内序列号，用于断点续传 |
+| `Metadata` | 事件 metadata |
+
+<Callout type="info" title="5 分钟重连窗口">
+  流式连接的最长生命周期为 5 分钟（`deadline = now + 5min`）。超时后连接会静默关闭，
+  **不会**下发 `[DONE]`。客户端应记录已消费的最大 `SeqId`，作为下一次 `AfterSeqId`
+  重连续订的起点；只要 run 未到终态，重连后即可继续收到后续事件。
+</Callout>
+
+终态状态（任一出现即下发 `[DONE]`）：
+
+| status | 说明 |
+| --- | --- |
+| `completed` | 正常完成 |
+| `failed` / `error` | 失败 |
+| `cancelled` / `canceled` | 已取消 |
+| `aborted` | 中止 |
+| `interrupted` | 中断 |
+
+</Tab>
+<Tab value="Error">
+
+| 状态码 | 场景 | detail |
+| --- | --- | --- |
+| `400` | `SessionId` 或 `InvocationId` 缺失 | `SessionId and InvocationId are required` |
+
+</Tab>
+</Tabs>
+
+#### CancelRun
+
+请求取消一个正在进行的 run（detached stream 与 runner 双通道）。
+
+<Tabs>
+<Tab value="Request">
+
+`POST /agentengine/api/v1/CancelRun`：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `AgentId` | string | 否 | 目标 Agent id（当前未强制校验） |
+| `InvocationId` | string | 是 | 要取消的 run invocation id |
+
+```json title="request.json"
+{ "AgentId": "my-agent", "InvocationId": "inv_demo_001" }
+```
+
+</Tab>
+<Tab value="Response">
+
+```json title="response.json"
+{
+  "Code": 0,
+  "Message": "Success",
+  "RequestId": "req_abc123",
+  "Action": "CancelRun",
+  "Data": {
+    "Cancelled": true,
+    "Found": true,
+    "Status": "cancelling",
+    "RunnerCancelStatus": "accepted"
+  }
+}
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `Cancelled` | 是否已发起取消（detached stream 或 runner 任一接受即 `true`） |
+| `Found` | 是否找到 detached stream |
+| `Status` | 汇总状态：`cancelling` / `not_found` / `unsupported` / `error` |
+| `RunnerCancelStatus` | runner 侧取消结果：`accepted` / `cancelling` / `cancelled` / `not_found` / `unsupported` / `error` |
+
+</Tab>
+</Tabs>
+
+### 事件 Events
+
+#### ListSessionEvents
+
+分页列出某 session 的历史 events，offset-based 分页。
+
+<Tabs>
+<Tab value="Request">
+
+`POST /agentengine/api/v1/ListSessionEvents`：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `SessionId` | string | 是 | 目标会话 id |
+| `Offset` | int | 否 | 0-based 偏移，缺省 `0` |
+| `Limit` | int | 否 | 每页大小，最小 `1` |
+
+```json title="request.json"
+{ "SessionId": "local-demo-session", "Offset": 0, "Limit": 50 }
+```
+
+</Tab>
+<Tab value="Response">
+
+```json title="response.json"
+{
+  "Code": 0,
+  "Message": "Success",
+  "RequestId": "req_abc123",
+  "Action": "ListSessionEvents",
+  "Data": {
+    "Events": [ /* event payload，同 SubscribeRunEvents */ ],
+    "Total": 128,
+    "Offset": 0,
+    "Limit": 50
+  }
+}
+```
+
+分页字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `Total` | 该 session 的事件总数 |
+| `Offset` | 当前偏移（缺省回填 `0`） |
+| `Limit` | 当前页大小（未传时回填为实际返回数） |
+
+</Tab>
+</Tabs>
+
+### 文件 Files
+
+#### UploadFile
+
+上传一个附件，返回 `ae-upload://` 句柄，供后续 RunAgent / AttachmentContent 引用。
+
+<Tabs>
+<Tab value="Request">
+
+`POST /agentengine/api/v1/UploadFile`，`multipart/form-data`：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `file` | binary | 是 | 上传文件内容 |
+
+```bash title="upload"
+curl -sS https://<public-endpoint>/agentengine/api/v1/UploadFile \
+  -H "Authorization: Bearer <api_key>" \
+  -F "file=@report.pdf"
+```
+
+</Tab>
+<Tab value="Response">
+
+```json title="response.json"
+{
+  "Code": 0,
+  "Message": "Success",
+  "RequestId": "req_abc123",
+  "Action": "UploadFile",
+  "Data": {
+    "FileData": {
+      "fileUri": "ae-upload://abc123_report.pdf",
+      "displayName": "report.pdf",
+      "mimeType": "application/pdf",
+      "sizeBytes": 204800
+    }
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+#### AttachmentContent
+
+按 `ae-upload://` 句柄读取已上传附件的字节流，原样返回原始 content-type。
+
+<Tabs>
+<Tab value="Request">
+
+`GET /agentengine/api/v1/AttachmentContent?FileUri=...`：
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `FileUri` | string | 是 | `UploadFile` 返回的 `fileUri` |
+
+```text title="download-url"
+/agentengine/api/v1/AttachmentContent?FileUri=ae-upload://abc123_report.pdf
+```
+
+</Tab>
+<Tab value="Response">
+
+```text title="binary"
+HTTP/1.1 200 OK
+Content-Type: application/pdf
+Content-Disposition: inline; filename="report.pdf"
+
+<binary bytes>
+```
+
+<Callout type="info" title="前缀解析">
+  `ae-upload://` 前缀的路径定位托管上传内容并返回字节流；非 `ae-upload://` 前缀的
+  路径按 workspace 相对路径处理。
+</Callout>
+
+</Tab>
+<Tab value="Error">
+
+| 状态码 | 场景 | detail |
+| --- | --- | --- |
+| `404` | 附件不存在 | `Attachment not found` |
+
+</Tab>
+</Tabs>
+
+#### ListWorkspaceFiles
+
+列出 workspace 文件条目（透传到 `/_ksadk/workspace/v1/entries`）。
+
+<Tabs>
+<Tab value="Request">
+
+`POST /agentengine/api/v1/ListWorkspaceFiles`：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `AgentId` | string | 否 | 目标 Agent id（当前未强制校验） |
+| `Path` | string | 否 | workspace 下相对路径，缺省 `.` |
+| `Recursive` | bool | 否 | 是否递归列出，缺省 `false` |
+
+```json title="request.json"
+{ "Path": ".", "Recursive": true }
+```
+
+</Tab>
+<Tab value="Response">
+
+```json title="response.json"
+{
+  "Code": 0,
+  "Message": "Success",
+  "RequestId": "req_abc123",
+  "Action": "ListWorkspaceFiles",
+  "Data": {
+    "Entries": [
+      { "Path": "notes/todo.md", "Type": "file" },
+      { "Path": "notes/", "Type": "dir" }
+    ]
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+#### AddWorkspaceFile
+
+新增或覆盖一个 workspace 文件（透传到 `/_ksadk/workspace/v1/files/<path>`）。
+
+<Tabs>
+<Tab value="Request">
+
+`POST /agentengine/api/v1/AddWorkspaceFile`，`multipart/form-data`：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `file` | binary | 是 | 上传文件内容 |
+| `Path` | string | 是 | workspace 下相对路径 |
+| `AgentId` | string | 否 | 目标 Agent id（当前未强制校验） |
+
+```bash title="upload"
+curl -sS https://<public-endpoint>/agentengine/api/v1/AddWorkspaceFile \
+  -H "Authorization: Bearer <api_key>" \
+  -F "Path=notes/todo.md" \
+  -F "file=@todo.md"
+```
+
+</Tab>
+<Tab value="Response">
+
+```json title="response.json"
+{
+  "Code": 0,
+  "Message": "Success",
+  "RequestId": "req_abc123",
+  "Action": "AddWorkspaceFile",
+  "Data": { "Path": "notes/todo.md", "Size": 128 }
+}
+```
+
+</Tab>
+</Tabs>
+
+#### DeleteWorkspaceFile
+
+删除一个 workspace 文件（透传到 `/_ksadk/workspace/v1/files/<path>`）。
+
+<Tabs>
+<Tab value="Request">
+
+`POST /agentengine/api/v1/DeleteWorkspaceFile`：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `AgentId` | string | 否 | 目标 Agent id（当前未强制校验） |
+| `Path` | string | 是 | workspace 下相对路径 |
+
+```json title="request.json"
+{ "Path": "notes/old.md" }
+```
+
+</Tab>
+<Tab value="Response">
+
+```json title="response.json"
+{
+  "Code": 0,
+  "Message": "Success",
+  "RequestId": "req_abc123",
+  "Action": "DeleteWorkspaceFile",
+  "Data": { "Deleted": true }
+}
+```
+
+</Tab>
+</Tabs>
+
+#### GetWorkspaceFileContent
+
+读取 workspace 文件内容，原样返回原始 content-type 与 content-disposition。
+
+<Tabs>
+<Tab value="Request">
+
+`GET /agentengine/api/v1/GetWorkspaceFileContent?FilePath=...`：
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `FilePath` | string | 是 | workspace 下相对路径 |
+| `AgentId` | string | 否 | 目标 Agent id（当前未强制校验） |
+
+```text title="download-url"
+/agentengine/api/v1/GetWorkspaceFileContent?FilePath=notes/todo.md
+```
+
+</Tab>
+<Tab value="Response">
+
+```text title="binary"
+HTTP/1.1 200 OK
+Content-Type: text/markdown
+Content-Disposition: inline; filename="todo.md"
+
+<file bytes>
+```
+
+HTML 文件会经 preview CSP 注入后返回，便于在 hosted UI 内嵌预览。
+
+</Tab>
+</Tabs>
+
+#### ExportWorkspaceZip
+
+把 workspace（或其子目录）打包成 zip 下载。
+
+<Tabs>
+<Tab value="Request">
+
+`GET /agentengine/api/v1/ExportWorkspaceZip`：
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `Path` | string | 否 | workspace 下相对目录，缺省 `.` |
+| `AgentId` | string | 否 | 目标 Agent id（当前未强制校验） |
+
+```text title="download-url"
+/agentengine/api/v1/ExportWorkspaceZip?Path=.
+```
+
+</Tab>
+<Tab value="Response">
+
+```text title="binary"
+HTTP/1.1 200 OK
+Content-Type: application/zip
+Content-Disposition: attachment; filename="workspace.zip"
+
+<zip bytes>
+```
+
+文件名按 `Path` 派生：根目录为 `workspace.zip`，子目录为
+`workspace-<dir-with-dashes>.zip`。打包时会跳过符号链接与越界路径，保证只含
+workspace root 内的常规文件。
+
+</Tab>
+</Tabs>
+
+### 模型 Models
+
+#### ListAgentModels
+
+列出运行时可用模型目录，含当前模型与来源。
+
+<Tabs>
+<Tab value="Request">
+
+`POST /agentengine/api/v1/ListAgentModels`：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `AgentId` | string | 否 | 目标 Agent id（当前未使用） |
+| `Name` | string | 否 | 模型名过滤（当前未使用） |
+
+```json title="request.json"
+{}
+```
+
+</Tab>
+<Tab value="Response">
+
+```json title="response.json"
+{
+  "Code": 0,
+  "Message": "Success",
+  "RequestId": "req_abc123",
+  "Action": "ListAgentModels",
+  "Data": {
+    "Models": [
+      {
+        "id": "glm-5.1",
+        "display_name": "glm-5.1",
+        "context_window_tokens": 128000,
+        "max_output_tokens": 32000,
+        "capabilities": {
+          "multimodal_input_image": true,
+          "multimodal_input_video": false,
+          "multimodal_input_file": false
+        },
+        "limits": {
+          "context_window_tokens": 128000,
+          "max_input_tokens": 128000,
+          "max_output_tokens": 32000,
+          "max_reasoning_tokens": 8192,
+          "rpm": 600,
+          "tpm": 200000
+        },
+        "pricing": {},
+        "auto_compact_threshold_tokens": 102400,
+        "auto_compact_threshold_percentage": 0.8
+      }
+    ],
+    "Current": "glm-5.1",
+    "Source": "OPENAI_MODEL_NAME"
+  }
+}
+```
+
+`Models` 元素字段（经 `normalize_model_metadata` 规范化）：
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` / `display_name` | 模型 id 与展示名 |
+| `context_window_tokens` / `max_output_tokens` / `max_input_tokens` / `max_reasoning_tokens` | token 上下文限制 |
+| `capabilities` | 能力集，含 `multimodal_input_image/video/file` 等 |
+| `limits` | 规范化后的限制 dict（rpm / tpm 等） |
+| `pricing` | 价格 dict |
+| `auto_compact_threshold_tokens` / `_percentage` | 自动压缩阈值 |
+
+`Current` 为运行时当前模型，`Source` 标注来源环境变量
+（`OPENAI_MODEL_NAME` / `MODEL_NAME` / `COZE_MODEL_NAME`）。OpenAI 兼容入口
+`GET /v1/models` 返回相同 data，仅顶层 envelope 不同。
+
+</Tab>
+</Tabs>
+
+### UI Bootstrap
+
+#### GetAgentUiBootstrap
+
+返回 hosted UI 渲染与能力探测所需的 bootstrap metadata。是 hosted UI 启动的
+第一个调用。
+
+<Tabs>
+<Tab value="Request">
+
+`POST /agentengine/api/v1/GetAgentUiBootstrap`：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `AgentId` | string | 否 | 目标 Agent id；缺省取运行时 Agent 名 |
+| `SessionId` | string | 否 | 关联会话（原样回填到响应） |
+
+```json title="request.json"
+{ "AgentId": "my-agent", "SessionId": "local-demo-session" }
+```
+
+</Tab>
+<Tab value="Response">
+
+```json title="response.json"
+{
+  "Code": 0,
+  "Message": "Success",
+  "RequestId": "req_abc123",
+  "Action": "GetAgentUiBootstrap",
+  "Data": {
+    "Agent": {
+      "AgentId": "my-agent",
+      "Name": "my-agent",
+      "Description": "demo agent",
+      "Framework": "langgraph"
+    },
+    "Modules": ["Chat", "Build", "Deploy"],
+    "Capabilities": {
+      "Attachments": true,
+      "WorkspaceFiles": true,
+      "Approval": true,
+      "Thinking": true,
+      "StopRun": true,
+      "ResumeRun": true,
+      "RuntimeCapabilities": { /* runner.get_runtime_capabilities() 原样返回 */ },
+      "CheckpointResumeCapability": {
+        "Supported": true,
+        "Checkpoint": {},
+        "ResumeRun": {}
+      },
+      "RunLifecycle": {
+        "Enabled": true,
+        "Resume": true,
+        "Abort": true,
+        "Checkpoints": true,
+        "CheckpointResume": true,
+        "CheckpointResumePreview": true
+      },
+      "MCP": false,
+      "HostedRuntime": false,
+      "NativeTerminal": { "Enabled": false, "Mode": null, "Protocol": "ks-terminal.v1", "Path": null },
+      "BuiltinTools": []
+    },
+    "WorkspaceFiles": { "Enabled": true },
+    "AccessMode": "Owner",
+    "SharePermissions": { "Interactive": true, "DefaultPath": "/chat", "SharePath": "/chat" },
+    "CustomUI": {
+      "Enabled": false,
+      "Profile": null,
+      "Path": null,
+      "Url": null,
+      "BundlePath": null
+    },
+    "ApiFormats": ["responses", "chat_completions"],
+    "Stream": true,
+    "SessionId": "local-demo-session",
+    "SessionBackend": "memory",
+    "HostedRuntime": null,
+    "Model": { "id": "glm-5.1", "source": "OPENAI_MODEL_NAME", /* ... */ }
+  }
+}
+```
+
+顶层 `Data` 字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `Agent` | Agent id / 名 / 描述 / 框架（来自 detection_result） |
+| `Modules` | UI 模块清单 |
+| `Capabilities` | 运行时能力集合，见下表 |
+| `WorkspaceFiles` | workspace files bootstrap |
+| `AccessMode` | 访问模式，固定 `Owner` |
+| `SharePermissions` | 分享与默认路径 |
+| `CustomUI` | 自定义 UI 资源信息（0.6.7 规范化） |
+| `ApiFormats` | 支持的 API 形态：`responses`、`chat_completions` |
+| `Stream` | 是否支持流式 |
+| `SessionBackend` | session 后端描述（memory / postgres 等） |
+| `Model` | 当前模型元数据 |
+
+`Capabilities` 子字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `Attachments` / `WorkspaceFiles` | 附件与 workspace files 能力 |
+| `Approval` / `Thinking` / `StopRun` / `ResumeRun` | run 控制类能力 |
+| `RuntimeCapabilities` | runner 原样返回的能力集合（含 `Checkpoint`、`ResumeRun` 等） |
+| `CheckpointResumeCapability` | 0.6.7 规范化：`Supported` + `Checkpoint` + `ResumeRun` 详情 |
+| `RunLifecycle` | 0.6.7 规范化：run 生命周期语义（`Resume`、`Abort`、`Checkpoints`、`CheckpointResume`、`CheckpointResumePreview`） |
+| `MCP` / `HostedRuntime` | 平台能力标记，当前固定 `false` |
+| `NativeTerminal` | 终端能力（含 `Enabled` / `Mode` / `Protocol` / `Path`） |
+| `BuiltinTools` | 内置工具描述 |
+
+`CustomUI` 子字段（0.6.7）：
+
+| 字段 | 说明 |
+| --- | --- |
+| `Enabled` | 是否启用自定义 UI |
+| `Profile` | UI profile 名 |
+| `Path` / `Url` | 自定义 UI 路径或外链 URL |
+| `BundlePath` | 自定义 UI bundle 路径 |
+
+<Callout type="info" title="0.6.7 能力可见性">
+  `CheckpointResumeCapability` 与 `RunLifecycle` 是 0.6.7 规范化的能力描述。调用方
+  应以这两个字段为准判断 checkpoint/resume 是否可用；若 `Supported` 为 `false` 或
+  `RunLifecycle.CheckpointResume` 为 `false`，应视为不支持 checkpoint/resume。
+</Callout>
+
+</Tab>
+</Tabs>
 
 ## Checkpoint 与 Resume Actions
 
@@ -131,25 +1183,67 @@ cancel 和 model listing。公开 API 客户端优先使用 OpenAI 兼容的 `/v
 `RuntimeCapabilities`（含 `CheckpointResumeCapability`）为准。若 bootstrap 未声明该
 能力，调用方应视为不支持 checkpoint/resume。
 
+### ListSessionCheckpoints
+
+`POST /agentengine/api/v1/ListSessionCheckpoints`：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `AgentId` / `SessionId` | string | 是 | 会话定位 |
+| `RunId` | string | 否 | 按 run 过滤 |
+| `Framework` | string | 否 | 按框架过滤 |
+| `OnlyResumable` | bool | 否 | 仅返回可恢复 checkpoint，缺省 `false` |
+| `Offset` / `Limit` | int | 否 | 分页，`Limit` 范围 `1..500` |
+
+返回 `Checkpoints` 数组，每个元素含 `RunId`、`CheckpointId`、`Framework`、
+`FrameworkRef`、`IsResumable`、`ResumeStatus`、`IsTerminal`、`CheckpointStatus`、
+`Backend`、`Scope`、`Durable`、`ResumeCount`、`ReplayAllowed`、`ExpiresAt` 等。
+
+### GetCheckpointResumePreview
+
+`POST /agentengine/api/v1/GetCheckpointResumePreview`：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `AgentId` / `SessionId` | string | 是 | 会话定位 |
+| `RunId` / `CheckpointId` | string | 是 | checkpoint 定位 |
+
+返回 `Preview`，含 `Checkpoint`、`Capabilities`、`CanResume`、`Reason`、
+`NextNode`、`ExpectedAction`、`ToolReceipts`、`Risk`（含 `Level` 与副作用计数）、
+`Summary`。
+
+### ResumeRun
+
+`POST /agentengine/api/v1/ResumeRun`：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `AgentId` / `SessionId` | string | 是 | 会话定位 |
+| `RunId` / `CheckpointId` | string | 是 | checkpoint 定位 |
+| `ResumeAttemptId` | string | 否 | resume 尝试 id；缺省运行时生成 |
+| `InvocationId` | string | 否 | 透传给 runner 的 invocation id |
+| `Stream` | bool | 否 | `true` 返回 SSE |
+| `Model` / `ModelMetadata` / `ModelOptions` | string / object | 否 | 模型参数透传 |
+| `ResumeInstructionEnabled` | bool | 否 | 0.6.7 是否允许注入 resume instruction |
+| `ResumeInstruction` | string | 否 | 0.6.7 resume instruction 文本 |
+
+终态 checkpoint 会返回 `status: "noop"` 而非 `409`，避免阻塞 UI。非终态但不可恢复
+时返回 `409`。
+
 ## GetAgentUiBootstrap
 
-`GetAgentUiBootstrap` 返回 hosted UI 渲染与能力探测所需的 bootstrap metadata：
-
-| 字段 | 含义 |
-| --- | --- |
-| `CustomUI` | 自定义 UI 资源信息（custom UI path、入口等） |
-| `RuntimeCapabilities` | 运行时能力集合，标注 checkpoint/resume 等是否可用 |
-| `CheckpointResumeCapability` | checkpoint/resume 能力详情 |
-| `RunLifecycle` | run 生命周期语义，如是否支持 resume、cancel |
+`GetAgentUiBootstrap` 返回 hosted UI 渲染与能力探测所需的 bootstrap metadata，
+字段表见上文 [UI Bootstrap](#getagentuibootstrap) 小节。
 
 ## 列表与分页字段
 
-`ListSessions`、`ListSessionEvents` 支持分页。两套字段命名均可接受：
+`ListSessions`、`ListSessionEvents` 支持分页，但使用不同字段命名：
 
-| 字段组 | 字段 |
-| --- | --- |
-| page-based | `Page`、`PageSize`、`Total` |
-| offset-based | `Offset`、`Limit`、`Total` |
+| 端点 | 字段组 | 字段 |
+| --- | --- | --- |
+| `ListSessions` | page-based | `Page`、`PageSize`、`Total` |
+| `ListSessionEvents` | offset-based | `Offset`、`Limit`、`Total` |
+| `ListSessionCheckpoints` | offset-based | `Offset`、`Limit`、`Total` |
 
 `AttachmentContent` 在解析 `ae-upload://` 协议的 attachment 时，会按
 `ae-upload://` 前缀定位托管上传内容并返回其字节流；非 `ae-upload://` 前缀的路径

@@ -26,23 +26,62 @@ call the runner contract, and the runner owns the framework details.
 
 ```mermaid
 flowchart TD
-  Project["Agent project"] --> Config["agentengine.yaml<br/>framework + entry_point"]
-  Project --> Shape["project shape<br/>agent.py / main.py / app.py"]
-  Config --> Detect["FrameworkDetector"]
-  Shape --> Detect
-  Detect --> Result["DetectionResult<br/>type / entry_point / agent_variable"]
-  Result --> Factory["create_runner()"]
-  Factory --> ADK["ADKRunner"]
-  Factory --> LG["LangGraphRunner"]
-  Factory --> LC["LangChainRunner"]
-  Factory --> DA["DeepAgentsRunner"]
-  ADK --> Contract["BaseRunner<br/>load_agent / invoke / stream / close"]
-  LG --> Contract
-  LC --> Contract
-  DA --> Contract
-  Contract --> Server["FastAPI server"]
-  Server --> Protocols["/run_sse<br/>/v1/responses<br/>/v1/chat/completions"]
-  Server --> Web["Local Web UI"]
+  classDef brandNode fill:#5368db,stroke:#3a4fb5,color:#fff,stroke-width:1px
+  classDef brandAccent fill:#59d3d9,stroke:#3fa9af,color:#0a2540,stroke-width:1px
+  classDef inputNode fill:#eef1ff,stroke:#5368db,color:#1a2240,stroke-width:1px
+
+  subgraph Project["Project inputs"]
+    direction LR
+    Config["agentengine.yaml<br/>framework + entry_point"]:::inputNode
+    Shape["project shape<br/>agent.py / main.py / app.py"]:::inputNode
+  end
+
+  subgraph Detect["Detection stage - static"]
+    Detector["FrameworkDetector"]:::brandNode
+    Result["DetectionResult<br/>type / entry_point /<br/>package_path / agent_variable"]:::brandAccent
+    Detector --> Result
+  end
+
+  subgraph Factory["Factory layer"]
+    create["create_runner(result, project_dir)"]:::brandNode
+    Patch["patch_langchain<br/>reasoning_content"]:::inputNode
+    create -.patch.-> Patch
+  end
+
+  subgraph Runners["Framework adapters"]
+    direction LR
+    ADK["ADKRunner"]:::brandAccent
+    LG["LangGraphRunner"]:::brandAccent
+    LC["LangChainRunner"]:::brandAccent
+    DA["DeepAgentsRunner"]:::brandAccent
+  end
+
+  subgraph Contract["Unified contract - BaseRunner"]
+    ContractNode["load / invoke / stream / close"]:::brandNode
+  end
+
+  subgraph Surface["Exposed surface"]
+    direction LR
+    Server["FastAPI server"]:::brandNode
+    Protocols["/run_sse<br/>/v1/responses<br/>/v1/chat/completions"]:::inputNode
+    Web["Local Web UI"]:::inputNode
+  end
+
+  Config --> Detector
+  Shape --> Detector
+  Result --> create
+  Result -.type mapping.-> create
+  create -->|"ADK"| ADK
+  create -->|"langgraph"| LG
+  create -->|"langchain"| LC
+  create -->|"deepagents"| DA
+  ADK --> ContractNode
+  LG --> ContractNode
+  LC --> ContractNode
+  DA --> ContractNode
+  ContractNode --> Server
+  Server --> Protocols
+  Server --> Web
 ```
 
 The important design point is that framework detection is static while runner
@@ -235,20 +274,70 @@ framework.
 
 ```mermaid
 flowchart TD
-  Start["Start detection"] --> Explicit{"agentengine.yaml<br/>or ksadk.yaml?"}
-  Explicit -->|yes| Validate["Validate entry_point<br/>and agent_variable"]
-  Validate -->|valid| ConfigResult["Return configured DetectionResult"]
-  Validate -->|invalid| LangGraphJson{"langgraph.json?"}
-  Explicit -->|no| LangGraphJson
-  LangGraphJson -->|yes| LangGraphResult["Return LangGraph DetectionResult"]
-  LangGraphJson -->|no| Package["Find package or script-style project"]
-  Package --> AgentFile{"agent.py / main.py / app.py<br/>or __init__.py export?"}
-  AgentFile -->|no| Unknown["Return unknown"]
-  AgentFile -->|yes| StaticScan["AST and source-text scan"]
-  StaticScan --> Kind{"ADK / LangGraph<br/>LangChain / DeepAgents?"}
-  Kind -->|matched| Result["DetectionResult"]
-  Kind -->|not matched| Unknown
-  Result --> Factory["create_runner(result, project_dir)"]
+  classDef brandNode fill:#5368db,stroke:#3a4fb5,color:#fff,stroke-width:1px
+  classDef brandAccent fill:#59d3d9,stroke:#3fa9af,color:#0a2540,stroke-width:1px
+  classDef inputNode fill:#eef1ff,stroke:#5368db,color:#1a2240,stroke-width:1px
+  classDef warnNode fill:#fff3cd,stroke:#d39e00,color:#5a4500,stroke-width:1px
+
+  Start["Start detection"]:::inputNode
+
+  subgraph S1["1. Explicit config"]
+    Explicit{"agentengine.yaml<br/>or ksadk.yaml?"}:::brandNode
+    Validate["Validate entry_point exists<br/>and exports agent_variable"]:::brandAccent
+    ConfigResult["Return configured DetectionResult<br/>confidence=1.0"]:::brandNode
+    ConfigInvalid["Config invalid -> fall through"]:::warnNode
+  end
+
+  subgraph S2["2. LangGraph manifest"]
+    LangGraphJson{"langgraph.json?"}:::brandNode
+    GraphTarget["Parse graphs[].target<br/>module:variable"]:::brandAccent
+    LangGraphResult["Return LangGraph DetectionResult<br/>confidence=0.95"]:::brandNode
+  end
+
+  subgraph S3["3. Convention scan"]
+    Package["Find package dir<br/>same-name pkg / __init__.py / src/<br/>script-style agent.py"]:::brandAccent
+    AgentFile{"Found agent.py / main.py / app.py<br/>or __init__.py export?"}:::brandNode
+    Unknown1["Return unknown"]:::warnNode
+    StaticScan["AST + source-text scan<br/>_extract_imports"]:::brandAccent
+  end
+
+  subgraph S4["4. Framework decision"]
+    Kind{"import / text match?"}:::brandNode
+    IsADK["google.adk import<br/>-> ADK"]:::inputNode
+    IsDeep["deepagents import /<br/>create_deep_agent() -> DeepAgents"]:::inputNode
+    IsLG["langgraph / StateGraph<br/>-> LangGraph"]:::inputNode
+    IsLC["langchain_openai /<br/>langchain_core -> LangChain"]:::inputNode
+    Unknown2["Return unknown"]:::warnNode
+  end
+
+  subgraph S5["5. Factory"]
+    Factory["create_runner(result, project_dir)"]:::brandNode
+  end
+
+  Start --> Explicit
+  Explicit -->|"yes"| Validate
+  Validate -->|"valid"| ConfigResult
+  Validate -->|"invalid"| ConfigInvalid
+  ConfigInvalid --> LangGraphJson
+  Explicit -->|"no"| LangGraphJson
+  LangGraphJson -->|"yes"| GraphTarget
+  GraphTarget -->|"target exposes var"| LangGraphResult
+  LangGraphJson -->|"no"| Package
+  LangGraphResult --> Factory
+  ConfigResult --> Factory
+  Package --> AgentFile
+  AgentFile -->|"no"| Unknown1
+  AgentFile -->|"yes"| StaticScan
+  StaticScan --> Kind
+  Kind -->|"ADK"| IsADK
+  Kind -->|"DeepAgents"| IsDeep
+  Kind -->|"LangGraph"| IsLG
+  Kind -->|"LangChain"| IsLC
+  Kind -->|"no match"| Unknown2
+  IsADK --> Factory
+  IsDeep --> Factory
+  IsLG --> Factory
+  IsLC --> Factory
 ```
 
 The runner factory applies a small LangChain compatibility patch, then creates

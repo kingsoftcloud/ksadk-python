@@ -11,11 +11,29 @@ CLI. Let the importer create the wrapper first, then review the generated
 
 ```mermaid
 flowchart LR
-  Source["existing agent.py or package"] --> Import["agentengine init --from-agent"]
-  Import --> Wrapper["new KsADK project wrapper"]
-  Wrapper --> Review["review agentengine.yaml"]
-  Review --> Run["agentengine run . -i"]
-  Run --> Web["agentengine web . --no-open"]
+  Source["existing agent.py or package"] -->|import| Import["agentengine init --from-agent"]
+  Import -->|generate| Wrapper["new KsADK project wrapper"]
+  Wrapper -->|review| Review["review agentengine.yaml"]
+  Review -->|local| Run["agentengine run . -i"]
+  Run -->|debug| Web["agentengine web . --no-open"]
+
+  subgraph import["import and generate"]
+    Source
+    Import
+    Wrapper
+  end
+  subgraph verify["verify and run"]
+    Review
+    Run
+    Web
+  end
+
+  classDef brand fill:#5368db,stroke:#3b4cc7,color:#fff
+  classDef accent fill:#59d3d9,stroke:#3fb8be,color:#0a2540
+  classDef neutral fill:#f5f7ff,stroke:#c9d2f5,color:#1a2240
+  class Source,Web brand
+  class Import,Wrapper,Run accent
+  class Review neutral
 ```
 
 Manual `agentengine.yaml` authoring is the fallback for unusual projects, not

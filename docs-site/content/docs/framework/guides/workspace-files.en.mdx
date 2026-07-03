@@ -42,6 +42,28 @@ flowchart TD
   Router --> Guard["path normalization and root containment"]
   Guard --> FS["workspace root"]
   Router --> Preview["HTML preview isolation"]
+
+  subgraph clients["clients"]
+    UI
+    CLI
+  end
+  subgraph proxy["action / runtime proxy"]
+    Actions
+    Transport
+    Router
+  end
+  subgraph safe["safety + storage"]
+    Guard
+    FS
+    Preview
+  end
+
+  classDef brand fill:#5368db,stroke:#3b4cc7,color:#fff
+  classDef accent fill:#59d3d9,stroke:#3fb8be,color:#0a2540
+  classDef neutral fill:#f5f7ff,stroke:#c9d2f5,color:#1a2240
+  class UI,FS brand
+  class Router,Guard accent
+  class Actions,Transport,CLI,Preview neutral
 ```
 
 ## Capabilities

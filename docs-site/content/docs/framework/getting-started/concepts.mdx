@@ -14,11 +14,16 @@ KsADK 聚焦 Agent 项目的本地开发闭环：创建或导入 Agent，配置�
 
 ```mermaid
 flowchart LR
-  A["开发<br/>Agent 代码"] --> B["运行<br/>终端或本地服务"]
-  B --> C["调试<br/>Web UI 与协议 trace"]
-  C --> D["集成<br/>工具、文件、记忆"]
-  D --> E["审核<br/>打包与发布 gate"]
-  E --> A
+  A["开发<br/>Agent 代码"] -->|运行| B["运行<br/>终端或本地服务"]
+  B -->|检查| C["调试<br/>Web UI 与协议 trace"]
+  C -->|接入| D["集成<br/>工具、文件、记忆"]
+  D -->|审核| E["审核<br/>打包与发布 gate"]
+  E -->|迭代| A
+
+  classDef brand fill:#5368db,stroke:#3b4cc7,color:#fff
+  classDef accent fill:#59d3d9,stroke:#3fb8be,color:#0a2540
+  class A,E brand
+  class B,C,D accent
 ```
 
 <Callout type="info">
@@ -69,6 +74,29 @@ flowchart LR
   LG --> Contract
   LC --> Contract
   DA --> Contract
+
+  subgraph detect["检测"]
+    Project
+    Config
+    Detector
+  end
+  subgraph factory["runner factory"]
+    Factory
+    ADK
+    LG
+    LC
+    DA
+  end
+  subgraph contract["公开契约"]
+    Contract
+  end
+
+  classDef brand fill:#5368db,stroke:#3b4cc7,color:#fff
+  classDef accent fill:#59d3d9,stroke:#3fb8be,color:#0a2540
+  classDef neutral fill:#f5f7ff,stroke:#c9d2f5,color:#1a2240
+  class Project,Contract brand
+  class Detector,Factory accent
+  class Config,ADK,LG,LC,DA neutral
 ```
 
 <Callout type="info">

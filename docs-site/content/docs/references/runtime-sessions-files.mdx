@@ -105,44 +105,583 @@ workspace.mkdir(parents=True, exist_ok=True)
 ## Checkpoint 与 Resume
 
 <Callout type="info" title="新增：0.6.7">
-  KsADK 引入框架级 checkpoint/resume 能力，覆盖 list、preview、resume、cancel 四个动作。
+  KsADK 引入框架级 checkpoint/resume 能力,覆盖 list、preview、resume、cancel 四个动作,
+  并新增 `ResumeInstruction`、`CheckpointStatus` 等字段。底层基于持久化 `run_checkpoint` /
+  `run_resume` / `tool_result` 事件,支持跨实例恢复。
 </Callout>
 
-运行时通过四个 hosted UI action 管理 run 级 checkpoint 与恢复，路径见
-[远程运行时 API](remote-runtime-api)：
+运行时通过五个 hosted UI action 管理 run 级 checkpoint、恢复、取消与工具回执。所有
+action 走 `POST /agentengine/api/v1/<Action>`,请求体为 JSON,响应统一为
+`{ Code, Message, RequestId, Action, Data }` envelope。
 
 | Action | 路径 | 用途 |
 | --- | --- | --- |
-| `ListSessionCheckpoints` | `POST /agentengine/api/v1/ListSessionCheckpoints` | 列出某 session 下的 checkpoint，供 resume 选择 |
+| `ListSessionCheckpoints` | `POST /agentengine/api/v1/ListSessionCheckpoints` | 列出某 session 下的 checkpoint,供 resume 选择 |
 | `GetCheckpointResumePreview` | `POST /agentengine/api/v1/GetCheckpointResumePreview` | 预览从某 checkpoint resume 的内容与影响面 |
 | `ResumeRun` | `POST /agentengine/api/v1/ResumeRun` | 从 checkpoint 恢复 run 执行 |
-| `CancelRun` | `POST /agentengine/api/v1/CancelRun` | 取消正在进行的 run |
+| `CancelRun` | `POST /agentengine/api/v1/CancelRun` | 取消正在进行的 run(以 `InvocationId` 为主键) |
+| `ListToolReceipts` | `POST /agentengine/api/v1/ListToolReceipts` | 列出某 run / checkpoint 下的工具调用回执 |
+
+<Callout type="warning" title="鉴权与边界">
+  本地 `agentengine web` 默认 owner 隔离;hosted 链路需在请求头携带
+  `Authorization: Bearer <api_key>`,且 `account_id` 由 gateway 注入,业务 Agent 不可伪造。
+  跨 `account_id` 的 session / checkpoint / tool receipt 互不可见。
+</Callout>
+
+### Checkpoint 状态机
+
+`ListSessionCheckpoints` 与 `GetCheckpointResumePreview` 返回的每个 checkpoint 携带
+`CheckpointStatus`,由 `is_terminal`、`is_resumable`、`resume_count`、`expires_at` 与
+`replay_allowed` 联合推导。运行时不持久化该字段,读取时实时计算:
+
+```mermaid
+stateDiagram-v2
+  direction LR
+  [*] --> active
+  active --> resumed : ResumeRun<br/>(resume_count + 1)
+  active --> terminal : is_terminal=true 且未恢复
+  active --> expired : now > expires_at
+  active --> disabled : is_resumable=false<br/>或 replay_allowed=false
+  resumed --> [*]
+  terminal --> [*]
+  expired --> [*]
+  disabled --> [*]
+```
+
+| 状态 | 触发条件 |
+| --- | --- |
+| `active` | 默认;checkpoint 仍可被 resume |
+| `resumed` | 已被 `ResumeRun` 恢复过(`resume_count >= 1`,且未到终态) |
+| `terminal` | `is_terminal=true` 且 `resume_count=0`,run 已到终态 |
+| `expired` | `expires_at` 已过期,`IsResumable` 被强制置 false |
+| `disabled` | `is_resumable=false`,或 `replay_allowed=false` 且已恢复过 |
+
+<Callout type="info">
+  `CheckpointStatus` 由运行时在读取时实时推导,不写入持久化事件;`resume_count` 与
+  `last_resumed_at` 来自 `run_resume` 事件审计。`GetCheckpointResumePreview` 仅当
+  `ResumeStatus=unknown` 时才要求先 preview 再 resume。
+</Callout>
+
+### Checkpoint descriptor 字段表
+
+每个 checkpoint 是一个 `run_checkpoint` 事件投影后的对象。除通用事件字段外,还包含
+以下 resume 描述字段(0.6.7 全量新增/补齐):
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `EventId` | str | checkpoint 事件 id |
+| `SessionId` | str | 所属 session id |
+| `InvocationId` | str | 触发该 checkpoint 的 invocation id |
+| `RunId` | str | 所属 run id |
+| `CheckpointId` | str | checkpoint id(resume 时引用) |
+| `Framework` | str | 产生 checkpoint 的框架,如 `langgraph`、`adk` |
+| `FrameworkRef` | dict | 框架特定引用,如 LangGraph 的 `next_node` |
+| `Phase` | str | checkpoint 阶段标签 |
+| `NextNode` | str | resume 后续跑的下一节点 |
+| `IsResumable` | bool 或 null | 是否可 resume;`false` 时被强制禁用 |
+| `ResumeStatus` | str | `resumable` / `disabled` / `unknown` |
+| `IsTerminal` | bool | 是否终态 checkpoint |
+| `ResumeDisabledReason` | str | 不可恢复时的原因文案 |
+| `Backend` | str | checkpoint 存储后端,如 `memory`、`langgraph_store` |
+| `Scope` | str | checkpoint 作用域,如 `process_local` |
+| `Durable` | bool | 是否持久化(可跨实例恢复) |
+| `ArtifactPreview` | dict | checkpoint artifact 预览 |
+| `StageKey` / `StageName` / `StageIndex` / `TotalStages` | 各种 | 多阶段 run 的阶段信息 |
+| `CreatedAt` | str | checkpoint 事件时间戳 |
+| `LastResumedAt` | str 或 null | 最近一次 resume 时间戳,来自 `run_resume` 审计 |
+| `ResumeCount` | int | 已 resume 次数,来自 `run_resume` 审计;`0` 表示从未恢复 |
+| `ReplayAllowed` | bool | 策略是否允许重复 resume 同一 checkpoint;默认 `true` |
+| `ExpiresAt` | str 或 null | checkpoint 过期时间;过期后 `IsResumable` 强制 `false` |
+| `CheckpointStatus` | str | 实时推导的状态:`active` / `resumed` / `terminal` / `expired` / `disabled` |
+| `Metadata` | dict | 原始 checkpoint 事件 metadata,含上述字段原始值 |
+
+<Callout type="warning" title="进程内 checkpoint 不可恢复">
+  当 `Backend == "memory"` 或 `Scope == "process_local"` 时,`IsResumable` 会被强制置
+  `false`,原因文案为"进程内 checkpoint 不能跨实例恢复"。本地开发时这类 checkpoint 仅供
+  当次进程内 preview,不要把它们当作可恢复点。
+</Callout>
+
+### ListSessionCheckpoints
+
+列出某 session 下的 checkpoint,支持按 `RunId`、`Framework` 过滤与分页。
+
+<Tabs>
+<Tab value="Request">
+
+| 字段 | 默认 | 约束 | 含义 |
+| --- | --- | --- | --- |
+| `AgentId` | — | 必填 | 目标 Agent id,必须与 session 的 `agent_id` 一致 |
+| `SessionId` | — | 必填 | 目标 session id |
+| `RunId` | — | 可选 | 仅返回该 run 的 checkpoint |
+| `Framework` | — | 可选 | 仅返回该框架的 checkpoint,如 `langgraph` |
+| `OnlyResumable` | `false` | 可选 | 仅返回 `IsResumable=true` 的 checkpoint |
+| `Offset` | `0` | `>=0` | 分页偏移 |
+| `Limit` | 不限 | `1..500` | 每页上限 500 |
+
+```bash title="list_checkpoints.sh"
+curl -sS -X POST "https://<public-endpoint>/agentengine/api/v1/ListSessionCheckpoints" \
+  -H "Authorization: Bearer <api_key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "AgentId": "my-agent",
+    "SessionId": "<sid>",
+    "OnlyResumable": true,
+    "Limit": 50
+  }'
+```
+
+</Tab>
+<Tab value="Response">
+
+```json title="list_checkpoints_response.json"
+{
+  "Code": 0,
+  "Message": "Success",
+  "RequestId": "req-abc123",
+  "Action": "ListSessionCheckpoints",
+  "Data": {
+    "Checkpoints": [
+      {
+        "EventId": "evt_001",
+        "SessionId": "<sid>",
+        "InvocationId": "inv_xyz",
+        "RunId": "run_001",
+        "CheckpointId": "ckpt_002",
+        "Framework": "langgraph",
+        "IsResumable": true,
+        "ResumeStatus": "resumable",
+        "IsTerminal": false,
+        "ResumeDisabledReason": "",
+        "NextNode": "research_summarize",
+        "Backend": "langgraph_store",
+        "Scope": "session",
+        "Durable": true,
+        "LastResumedAt": null,
+        "ResumeCount": 0,
+        "ReplayAllowed": true,
+        "ExpiresAt": "2026-07-04T12:00:00Z",
+        "CheckpointStatus": "active"
+      }
+    ],
+    "Total": 1,
+    "Offset": 0,
+    "Limit": 50
+  }
+}
+```
+
+</Tab>
+<Tab value="Error">
+
+| HTTP | detail.code | 触发条件 |
+| --- | --- | --- |
+| `404` | — | session 不存在,或 `AgentId` 与 session 的 `agent_id` 不一致 |
+
+</Tab>
+</Tabs>
+
+### GetCheckpointResumePreview
+
+预览从某 checkpoint resume 的影响面:包括工具回执、副作用风险等级、是否需要先 preview。
+
+<Tabs>
+<Tab value="Request">
+
+| 字段 | 约束 | 含义 |
+| --- | --- | --- |
+| `AgentId` | 必填 | 目标 Agent id |
+| `SessionId` | 必填 | 目标 session id |
+| `RunId` | 必填 | 目标 run id |
+| `CheckpointId` | 必填 | 要预览的 checkpoint id |
+
+```bash title="get_resume_preview.sh"
+curl -sS -X POST "https://<public-endpoint>/agentengine/api/v1/GetCheckpointResumePreview" \
+  -H "Authorization: Bearer <api_key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "AgentId": "my-agent",
+    "SessionId": "<sid>",
+    "RunId": "run_001",
+    "CheckpointId": "ckpt_002"
+  }'
+```
+
+</Tab>
+<Tab value="Response">
+
+```json title="resume_preview_response.json"
+{
+  "Code": 0,
+  "Message": "Success",
+  "RequestId": "req_def456",
+  "Action": "GetCheckpointResumePreview",
+  "Data": {
+    "Preview": {
+      "Checkpoint": { "CheckpointId": "ckpt_002", "IsResumable": true },
+      "Capabilities": {
+        "Checkpoints": true,
+        "CheckpointResume": true,
+        "ToolReceipts": true,
+        "IdempotentToolReplay": true
+      },
+      "CanResume": true,
+      "Reason": "",
+      "NextNode": "research_summarize",
+      "ExpectedAction": "resume_from_checkpoint",
+      "ToolReceipts": [
+        {
+          "ReceiptId": "rcpt_001",
+          "ToolName": "write_workspace_file",
+          "ToolCallId": "call_01",
+          "RunId": "run_001",
+          "CheckpointId": "ckpt_001",
+          "Status": "succeeded",
+          "Replayed": false
+        }
+      ],
+      "Risk": {
+        "Level": "medium",
+        "DuplicateSideEffectRisk": true,
+        "SideEffectReceiptCount": 1,
+        "FailedReceiptCount": 0
+      },
+      "Summary": {
+        "RunId": "run_001",
+        "CheckpointId": "ckpt_002",
+        "Phase": "after_research",
+        "ToolReceiptCount": 1
+      }
+    }
+  }
+}
+```
+
+`ExpectedAction` 取值:`resume_from_checkpoint`(可直接 resume)、
+`preview_required`(`ResumeStatus=unknown`,必须先 preview)、`disabled`(不可恢复)。
+
+`Risk.Level` 取值:
+
+| Level | 触发条件 |
+| --- | --- |
+| `low` | 无副作用工具回执,且无失败回执 |
+| `medium` | 存在副作用工具回执(`write_workspace_file` 等) |
+| `high` | 存在 `Status=failed` 的回执 |
+
+</Tab>
+<Tab value="Error">
+
+| HTTP | detail | 触发条件 |
+| --- | --- | --- |
+| `404` | `"Session not found"` | session 不存在或 `AgentId` 不匹配 |
+| `404` | `"Checkpoint not found"` | 指定 `RunId` + `CheckpointId` 组合不存在 |
+
+</Tab>
+</Tabs>
+
+### ResumeRun
+
+从 checkpoint 恢复 run 执行。0.6.7 新增 `ResumeInstructionEnabled` / `ResumeInstruction`
+字段,允许在 resume 时注入额外指令;并补充 `409` 错误码区分不可恢复与重复 resume。
+
+<Tabs>
+<Tab value="Request">
+
+| 字段 | 默认 | 约束 | 含义 |
+| --- | --- | --- | --- |
+| `AgentId` | — | 必填 | 目标 Agent id,须与 session `agent_id` 一致 |
+| `SessionId` | — | 必填 | 目标 session id |
+| `RunId` | — | 必填 | 要恢复的 run id |
+| `CheckpointId` | — | 必填 | 恢复起点 checkpoint id |
+| `ResumeAttemptId` | — | 可选 | resume 尝试 id;缺省由运行时生成 `resume_<hex>` |
+| `InvocationId` | — | 可选 | 新 invocation id;缺省用 `ResumeAttemptId` |
+| `Stream` | `false` | 可选 | `true` 返回 SSE 流(同 RunAgent stream) |
+| `Model` | — | 可选 | 本次 resume 的模型覆盖 |
+| `ModelMetadata` | — | 可选 | 模型能力提示(0.6.7) |
+| `ModelOptions` | — | 可选 | provider 特定选项 |
+| `ResumeInstructionEnabled` | `false` | 可选 | 0.6.7;是否启用 resume 指令注入 |
+| `ResumeInstruction` | — | 可选 | 0.6.7;resume 注入的额外指令文本 |
+
+```bash title="resume_run.sh"
+curl -sS -X POST "https://<public-endpoint>/agentengine/api/v1/ResumeRun" \
+  -H "Authorization: Bearer <api_key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "AgentId": "my-agent",
+    "SessionId": "<sid>",
+    "RunId": "run_001",
+    "CheckpointId": "ckpt_002",
+    "ResumeInstructionEnabled": true,
+    "ResumeInstruction": "用更简洁的语气重做总结",
+    "Stream": false
+  }'
+```
+
+</Tab>
+<Tab value="Response">
+
+非 stream 模式返回 Responses 风格 payload:
+
+```json title="resume_run_response.json"
+{
+  "Code": 0,
+  "Message": "Success",
+  "RequestId": "req_ghi789",
+  "Action": "ResumeRun",
+  "Data": {
+    "id": "resp_<hex>",
+    "object": "response",
+    "model": "my-agent",
+    "output": [
+      { "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": "..." }] }
+    ]
+  }
+}
+```
+
+终态 checkpoint 的 resume 会被视为 noop,直接返回 `status=noop` 并写一条
+`run_resume` + `run_status=completed` 事件,不再实际执行:
+
+```json title="resume_run_noop.json"
+{
+  "Code": 0,
+  "Action": "ResumeRun",
+  "Data": {
+    "status": "noop",
+    "Reason": "该 checkpoint 已是终态;可选择更早恢复点重跑",
+    "CheckpointId": "ckpt_002",
+    "RunId": "run_001",
+    "ResumeAttemptId": "resume_<hex>"
+  }
+}
+```
+
+</Tab>
+<Tab value="Stream">
+
+`Stream=true` 时返回 `text/event-stream`,语义同 RunAgent stream。每个事件为
+`data: { ... }\n\n`,事件体见 [_event_to_action_payload](#) 形态。终态
+`run_status` 后服务端发送 `data: [DONE]`。
+
+```bash title="resume_run_stream.sh"
+curl -sS -N -X POST "https://<public-endpoint>/agentengine/api/v1/ResumeRun" \
+  -H "Authorization: Bearer <api_key>" \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  -d '{
+    "AgentId": "my-agent",
+    "SessionId": "<sid>",
+    "RunId": "run_001",
+    "CheckpointId": "ckpt_002",
+    "Stream": true
+  }'
+```
+
+</Tab>
+<Tab value="Error">
+
+| HTTP | detail.code | 触发条件 |
+| --- | --- | --- |
+| `404` | — | session 不存在或 `AgentId` 不匹配 |
+| `404` | — | `RunId` + `CheckpointId` 不存在 |
+| `409` | `checkpoint_not_resumable` | checkpoint 不可恢复(`IsResumable=false`),含原因 |
+| `409` | `resume_already_running` | 同一 session+run 已有 resume 在执行 |
+
+`checkpoint_not_resumable` 响应体:
+
+```json title="409_checkpoint_not_resumable.json"
+{
+  "detail": {
+    "code": "checkpoint_not_resumable",
+    "reason": "该 checkpoint 已恢复过,当前策略不允许重复恢复",
+    "checkpoint_id": "ckpt_002",
+    "run_id": "run_001",
+    "resume_status": "disabled",
+    "is_terminal": false
+  }
+}
+```
+
+`resume_already_running` 响应体:
+
+```json title="409_resume_already_running.json"
+{
+  "detail": {
+    "code": "resume_already_running",
+    "message": "A checkpoint resume is already running for this session and run.",
+    "InvocationId": "inv_existing",
+    "SessionId": "<sid>",
+    "RunId": "run_001"
+  }
+}
+```
+
+<Callout type="warning" title="并发 resume 防抖">
+  同一 `(session_id, run_id)` 上若已有 resume 在执行,新请求会被 `409
+  resume_already_running` 拒绝。客户端应等待既有 resume 终态或取消后再重试,
+  不要并发对同一 run 发起多个 resume。
+</Callout>
+
+</Tab>
+</Tabs>
+
+### CancelRun
+
+取消正在进行的 run。0.6.7 起 `InvocationId` 成为主键,`AgentId` 改为可选(仅用于
+runner 端 cancel 上下文,不再做 session 归属校验)。
+
+<Tabs>
+<Tab value="Request">
+
+| 字段 | 默认 | 约束 | 含义 |
+| --- | --- | --- | --- |
+| `InvocationId` | — | 必填 | 要取消的 invocation id;0.6.7 起为主键 |
+| `AgentId` | — | 可选 | 0.6.7 改为可选;用于 runner cancel 上下文 |
+
+```bash title="cancel_run.sh"
+curl -sS -X POST "https://<public-endpoint>/agentengine/api/v1/CancelRun" \
+  -H "Authorization: Bearer <api_key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "InvocationId": "inv_xyz"
+  }'
+```
+
+</Tab>
+<Tab value="Response">
+
+```json title="cancel_run_response.json"
+{
+  "Code": 0,
+  "Message": "Success",
+  "RequestId": "req_jkl012",
+  "Action": "CancelRun",
+  "Data": {
+    "Cancelled": true,
+    "Found": true,
+    "Status": "cancelling",
+    "RunnerCancelStatus": "accepted"
+  }
+}
+```
+
+| 字段 | 含义 |
+| --- | --- |
+| `Cancelled` | 是否已请求取消(detached stream 或 runner 接受) |
+| `Found` | 是否找到该 invocation 的 detached stream |
+| `Status` | `cancelling` / `not_found` / `unsupported` / `error` |
+| `RunnerCancelStatus` | runner 端 cancel 结果:`accepted` / `cancelling` / `cancelled` / `not_found` / `unsupported` / `error` |
+
+</Tab>
+<Tab value="Error">
+
+`CancelRun` 不返回 4xx,即便 invocation 不存在也返回
+`{ Cancelled: false, Found: false, Status: "not_found" }`,客户端据此判断。
+
+</Tab>
+</Tabs>
+
+### ListToolReceipts
+
+列出某 run / checkpoint 下的工具调用回执,用于 resume 前评估副作用或事后审计。
+
+<Tabs>
+<Tab value="Request">
+
+| 字段 | 默认 | 约束 | 含义 |
+| --- | --- | --- | --- |
+| `AgentId` | — | 必填 | 目标 Agent id,须与 session `agent_id` 一致 |
+| `SessionId` | — | 必填 | 目标 session id |
+| `RunId` | — | 可选 | 仅返回该 run 的回执 |
+| `CheckpointId` | — | 可选 | 仅返回该 checkpoint 的回执 |
+
+```bash title="list_tool_receipts.sh"
+curl -sS -X POST "https://<public-endpoint>/agentengine/api/v1/ListToolReceipts" \
+  -H "Authorization: Bearer <api_key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "AgentId": "my-agent",
+    "SessionId": "<sid>",
+    "RunId": "run_001"
+  }'
+```
+
+</Tab>
+<Tab value="Response">
+
+```json title="list_tool_receipts_response.json"
+{
+  "Code": 0,
+  "Message": "Success",
+  "RequestId": "req_mno345",
+  "Action": "ListToolReceipts",
+  "Data": {
+    "ToolReceipts": [
+      {
+        "EventId": "evt_010",
+        "SessionId": "<sid>",
+        "InvocationId": "inv_xyz",
+        "SeqId": 10,
+        "Timestamp": "2026-07-03T10:00:00Z",
+        "ReceiptId": "rcpt_001",
+        "IdempotencyKey": "idem_abc",
+        "ToolName": "write_workspace_file",
+        "ToolCallId": "call_01",
+        "RunId": "run_001",
+        "CheckpointId": "ckpt_001",
+        "Status": "succeeded",
+        "Replayed": false,
+        "Metadata": { "tool_name": "write_workspace_file" }
+      }
+    ]
+  }
+}
+```
+
+| 字段 | 含义 |
+| --- | --- |
+| `ReceiptId` | 回执 id,幂等键对应 |
+| `IdempotencyKey` | 幂等键,重复 replay 时用于去重 |
+| `ToolName` | 工具名;副作用工具(`write_workspace_file` 等)会标记 `DuplicateSideEffectRisk` |
+| `ToolCallId` | 对应的 tool call id |
+| `RunId` / `CheckpointId` | 归属 run / checkpoint |
+| `Status` | `succeeded` / `failed` |
+| `Replayed` | 是否为 replay 产生的回执 |
+
+</Tab>
+<Tab value="Error">
+
+| HTTP | detail | 触发条件 |
+| --- | --- | --- |
+| `404` | `"Session not found"` | session 不存在或 `AgentId` 不匹配 |
+
+</Tab>
+</Tabs>
 
 ### ResumeMode
 
 `GetAgentUiBootstrap` 返回的 `RuntimeCapabilities.ResumeRun.ResumeMode` 描述框架级
-resume 能力，取值与框架适配相关：
+resume 能力,取值与框架适配相关:
 
 | ResumeMode | 含义 |
 | --- | --- |
-| `time_travel` | 可回档到历史 checkpoint（LangGraph runner） |
-| `forward_only` | 只能沿 invocation 连续性向前续跑，不能回档（ADK runner） |
+| `time_travel` | 可回档到历史 checkpoint(LangGraph runner) |
+| `forward_only` | 只能沿 invocation 连续性向前续跑,不能回档(ADK runner) |
 | `none` | 该框架无框架级 resume 能力 |
 
 ### RunLifecycle 能力门控
 
-前端 resume 入口不能只看 `ResumeMode`，必须同时满足 `GetAgentUiBootstrap` 返回的
-`RunLifecycle` 两个标志：
+前端 resume 入口不能只看 `ResumeMode`,必须同时满足 `GetAgentUiBootstrap` 返回的
+`RunLifecycle` 两个标志:
 
-- `RunLifecycle.Checkpoints = true`：session 存在可用 checkpoint。
-- `RunLifecycle.CheckpointResume = true`：运行时支持从 checkpoint resume。
+- `RunLifecycle.Checkpoints = true`:session 存在可用 checkpoint。
+- `RunLifecycle.CheckpointResume = true`:运行时支持从 checkpoint resume。
 
-任一为 `false` 时，应视为不支持 resume，前端不应展示 `ResumeRun` 入口。
+任一为 `false` 时,应视为不支持 resume,前端不应展示 `ResumeRun` 入口。
 `CheckpointResumePreview` 标注是否提供 preview 能力。
 
 ### SubscribeRunEvents 续订
 
-`SubscribeRunEvents` 是 hosted UI 的重连入口，基于持久化事件而非原 TCP 流：
+`SubscribeRunEvents` 是 hosted UI 的重连入口,基于持久化事件而非原 TCP 流:
 
 ```bash
 curl -sS -N "https://<public-endpoint>/agentengine/api/v1/SubscribeRunEvents?SessionId=<sid>&InvocationId=<iid>&AfterSeqId=42" \
@@ -154,13 +693,40 @@ curl -sS -N "https://<public-endpoint>/agentengine/api/v1/SubscribeRunEvents?Ses
 | --- | --- |
 | `SessionId` | 目标 session id |
 | `InvocationId` | 目标 invocation id |
-| `AfterSeqId` | 续订起点 seq_id，返回 `seq_id > AfterSeqId` 的事件；默认 `0` 表示从头订阅 |
+| `AfterSeqId` | 续订起点 seq_id,返回 `seq_id > AfterSeqId` 的事件;默认 `0` 表示从头订阅 |
 
 <Callout type="warning" title="5 分钟服务端保护超时">
-  `SubscribeRunEvents` 服务端保护超时为 **5 分钟**（`5 * 60` 秒）。超时后服务端主动关闭
-  SSE 流，客户端必须用最后消费的 `seq_id` 作为新的 `AfterSeqId` 重新发起续订，直到
-  观察到终态 `run_status`（`completed`、`failed`、`cancelled` 或 `interrupted`）。
+  `SubscribeRunEvents` 服务端保护超时为 **5 分钟**(`5 * 60` 秒)。超时后服务端主动关闭
+  SSE 流,客户端必须用最后消费的 `seq_id` 作为新的 `AfterSeqId` 重新发起续订,直到
+  观察到终态 `run_status`(`completed`、`failed`、`cancelled` 或 `interrupted`)。
 </Callout>
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant C as 客户端
+  participant S as 服务端 SSE
+  participant Store as Session Store
+
+  C->>S: GET SubscribeRunEvents<br/>(SessionId, InvocationId, AfterSeqId=last)
+  S->>Store: get_events(session_id)
+  Store-->>S: events[seq_id > AfterSeqId]
+  loop 0.25s 轮询窗口
+    S->>C: data: {event} (seq_id 推进)
+    C->>C: 记录 last_seq_id
+  end
+  alt 观察到终态 run_status
+    S->>C: data: [DONE]
+    S-->>C: 关闭流
+  else 5min deadline 到
+    S-->>C: 关闭流(无 [DONE])
+    C->>C: 用 last_seq_id 重发
+    C->>S: GET SubscribeRunEvents<br/>(AfterSeqId=last_seq_id)
+  end
+```
+
+终态 `run_status`(`completed`、`failed`、`cancelled`、`interrupted`)出现后服务端
+发送 `data: [DONE]` 并结束流;否则客户端在 5 分钟超时后必须用最新 `seq_id` 重连续订。
 
 ## 会话列表与事件分页
 

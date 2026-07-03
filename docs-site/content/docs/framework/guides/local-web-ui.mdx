@@ -53,11 +53,32 @@ UI 调用本地 KsADK 运行时，运行时再调用配置好的框架 Runner。
 ```mermaid
 flowchart TD
   Browser["Browser UI"] --> Runtime["KsADK 本地运行时"]
-  Runtime --> Runner["Framework Runner"]
+  Runtime -->|invoke / stream| Runner["Framework Runner"]
+  Runtime -->|读写| Sessions["本地 session store"]
+  Runtime -->|读写| Files["工作区文件 API"]
+  Runtime -->|暴露| Responses["/v1/responses<br/>/v1/chat/completions"]
   Runner --> Agent["用户 Agent 项目"]
-  Runtime --> Sessions["本地 session store"]
-  Runtime --> Files["工作区文件 API"]
-  Runtime --> Responses["/v1/responses"]
+
+  subgraph client["浏览器侧"]
+    Browser
+  end
+  subgraph runtime["KsADK 运行时"]
+    Runtime
+    Sessions
+    Files
+    Responses
+  end
+  subgraph agent["Agent 侧"]
+    Runner
+    Agent
+  end
+
+  classDef brand fill:#5368db,stroke:#3b4cc7,color:#fff
+  classDef accent fill:#59d3d9,stroke:#3fb8be,color:#0a2540
+  classDef neutral fill:#f5f7ff,stroke:#c9d2f5,color:#1a2240
+  class Browser,Agent brand
+  class Runtime accent
+  class Sessions,Files,Responses,Runner neutral
 ```
 
 ## 本地状态

@@ -24,23 +24,62 @@ Server、Web UI、会话存储和 OpenAI 兼容接口不会直接调用框架私
 
 ```mermaid
 flowchart TD
-  Project["Agent 项目"] --> Config["agentengine.yaml<br/>framework + entry_point"]
-  Project --> Shape["项目形态<br/>agent.py / main.py / app.py"]
-  Config --> Detect["FrameworkDetector"]
-  Shape --> Detect
-  Detect --> Result["DetectionResult<br/>type / entry_point / agent_variable"]
-  Result --> Factory["create_runner()"]
-  Factory --> ADK["ADKRunner"]
-  Factory --> LG["LangGraphRunner"]
-  Factory --> LC["LangChainRunner"]
-  Factory --> DA["DeepAgentsRunner"]
-  ADK --> Contract["BaseRunner<br/>load_agent / invoke / stream / close"]
-  LG --> Contract
-  LC --> Contract
-  DA --> Contract
-  Contract --> Server["FastAPI Server"]
-  Server --> Protocols["/run_sse<br/>/v1/responses<br/>/v1/chat/completions"]
-  Server --> Web["本地 Web UI"]
+  classDef brandNode fill:#5368db,stroke:#3a4fb5,color:#fff,stroke-width:1px
+  classDef brandAccent fill:#59d3d9,stroke:#3fa9af,color:#0a2540,stroke-width:1px
+  classDef inputNode fill:#eef1ff,stroke:#5368db,color:#1a2240,stroke-width:1px
+
+  subgraph Project["项目输入"]
+    direction LR
+    Config["agentengine.yaml<br/>framework + entry_point"]:::inputNode
+    Shape["项目形态<br/>agent.py / main.py / app.py"]:::inputNode
+  end
+
+  subgraph Detect["检测阶段 - 静态"]
+    Detector["FrameworkDetector"]:::brandNode
+    Result["DetectionResult<br/>type / entry_point /<br/>package_path / agent_variable"]:::brandAccent
+    Detector --> Result
+  end
+
+  subgraph Factory["工厂层"]
+    create["create_runner(result, project_dir)"]:::brandNode
+    Patch["patch_langchain<br/>reasoning_content"]:::inputNode
+    create -.补丁.-> Patch
+  end
+
+  subgraph Runners["框架适配器"]
+    direction LR
+    ADK["ADKRunner"]:::brandAccent
+    LG["LangGraphRunner"]:::brandAccent
+    LC["LangChainRunner"]:::brandAccent
+    DA["DeepAgentsRunner"]:::brandAccent
+  end
+
+  subgraph Contract["统一契约 - BaseRunner"]
+    ContractNode["load / invoke / stream / close"]:::brandNode
+  end
+
+  subgraph Surface["对外暴露"]
+    direction LR
+    Server["FastAPI Server"]:::brandNode
+    Protocols["/run_sse<br/>/v1/responses<br/>/v1/chat/completions"]:::inputNode
+    Web["本地 Web UI"]:::inputNode
+  end
+
+  Config --> Detector
+  Shape --> Detector
+  Result --> create
+  Result -.type 映射.-> create
+  create -->|"ADK"| ADK
+  create -->|"langgraph"| LG
+  create -->|"langchain"| LC
+  create -->|"deepagents"| DA
+  ADK --> ContractNode
+  LG --> ContractNode
+  LC --> ContractNode
+  DA --> ContractNode
+  ContractNode --> Server
+  Server --> Protocols
+  Server --> Web
 ```
 
 关键点是：框架检测是静态步骤，runner 加载是可执行步骤。检测阶段读取
@@ -187,20 +226,70 @@ KsADK 优先读取显式项目配置。如果没有配置文件，再尝试常�
 
 ```mermaid
 flowchart TD
-  Start["开始检测"] --> Explicit{"agentengine.yaml<br/>或 ksadk.yaml?"}
-  Explicit -->|是| Validate["校验 entry_point<br/>和 agent_variable"]
-  Validate -->|有效| ConfigResult["返回配置 DetectionResult"]
-  Validate -->|无效| LangGraphJson{"langgraph.json?"}
-  Explicit -->|否| LangGraphJson
-  LangGraphJson -->|是| LangGraphResult["返回 LangGraph DetectionResult"]
-  LangGraphJson -->|否| Package["查找包目录或脚本式项目"]
-  Package --> AgentFile{"agent.py / main.py / app.py<br/>或 __init__.py 导出?"}
-  AgentFile -->|否| Unknown["返回 unknown"]
-  AgentFile -->|是| StaticScan["AST 与源码文本扫描"]
-  StaticScan --> Kind{"ADK / LangGraph<br/>LangChain / DeepAgents?"}
-  Kind -->|匹配| Result["DetectionResult"]
-  Kind -->|未匹配| Unknown
-  Result --> Factory["create_runner(result, project_dir)"]
+  classDef brandNode fill:#5368db,stroke:#3a4fb5,color:#fff,stroke-width:1px
+  classDef brandAccent fill:#59d3d9,stroke:#3fa9af,color:#0a2540,stroke-width:1px
+  classDef inputNode fill:#eef1ff,stroke:#5368db,color:#1a2240,stroke-width:1px
+  classDef warnNode fill:#fff3cd,stroke:#d39e00,color:#5a4500,stroke-width:1px
+
+  Start["开始检测"]:::inputNode
+
+  subgraph S1["1. 显式配置"]
+    Explicit{"agentengine.yaml<br/>或 ksadk.yaml?"}:::brandNode
+    Validate["校验 entry_point 存在<br/>且导出 agent_variable"]:::brandAccent
+    ConfigResult["返回配置 DetectionResult<br/>confidence=1.0"]:::brandNode
+    ConfigInvalid["配置无效 → 回退"]:::warnNode
+  end
+
+  subgraph S2["2. LangGraph 清单"]
+    LangGraphJson{"langgraph.json?"}:::brandNode
+    GraphTarget["解析 graphs[].target<br/>模块:变量"]:::brandAccent
+    LangGraphResult["返回 LangGraph DetectionResult<br/>confidence=0.95"]:::brandNode
+  end
+
+  subgraph S3["3. 约定式扫描"]
+    Package["查找包目录<br/>同名包 / __init__.py / src/<br/>脚本式 agent.py"]:::brandAccent
+    AgentFile{"找到 agent.py / main.py / app.py<br/>或 __init__.py 导出?"}:::brandNode
+    Unknown1["返回 unknown"]:::warnNode
+    StaticScan["AST + 源码文本扫描<br/>_extract_imports"]:::brandAccent
+  end
+
+  subgraph S4["4. 框架判定"]
+    Kind{"import / 文本匹配?"}:::brandNode
+    IsADK["google.adk 导入<br/>→ ADK"]:::inputNode
+    IsDeep["deepagents 导入 /<br/>create_deep_agent() → DeepAgents"]:::inputNode
+    IsLG["langgraph / StateGraph<br/>→ LangGraph"]:::inputNode
+    IsLC["langchain_openai /<br/>langchain_core → LangChain"]:::inputNode
+    Unknown2["返回 unknown"]:::warnNode
+  end
+
+  subgraph S5["5. 工厂"]
+    Factory["create_runner(result, project_dir)"]:::brandNode
+  end
+
+  Start --> Explicit
+  Explicit -->|"是"| Validate
+  Validate -->|"有效"| ConfigResult
+  Validate -->|"无效"| ConfigInvalid
+  ConfigInvalid --> LangGraphJson
+  Explicit -->|"否"| LangGraphJson
+  LangGraphJson -->|"是"| GraphTarget
+  GraphTarget -->|"target 暴露变量"| LangGraphResult
+  LangGraphJson -->|"否"| Package
+  LangGraphResult --> Factory
+  ConfigResult --> Factory
+  Package --> AgentFile
+  AgentFile -->|"否"| Unknown1
+  AgentFile -->|"是"| StaticScan
+  StaticScan --> Kind
+  Kind -->|"ADK"| IsADK
+  Kind -->|"DeepAgents"| IsDeep
+  Kind -->|"LangGraph"| IsLG
+  Kind -->|"LangChain"| IsLC
+  Kind -->|"未匹配"| Unknown2
+  IsADK --> Factory
+  IsDeep --> Factory
+  IsLG --> Factory
+  IsLC --> Factory
 ```
 
 ## Runner 加载行为
