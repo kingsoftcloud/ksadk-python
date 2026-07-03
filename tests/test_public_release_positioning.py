@@ -26,10 +26,10 @@ def test_public_readme_positions_ksadk_as_runtime_platform():
         "文档与样例",
         "相关项目",
         "参与贡献",
-        "public-docs/assets/ksadk-runtime-platform-hero-wide.png",
-        "public-docs/assets/ksadk-web-ui-screenshot.png",
-        "public-docs/assets/ksadk-local-debugging-demo.gif",
-        "public-docs/assets/ksadk-runtime-architecture.png",
+        "ksadk-runtime-platform-hero-wide.png",
+        "ksadk-web-ui-screenshot.png",
+        "ksadk-local-debugging-demo.gif",
+        "ksadk-runtime-architecture.png",
     ):
         assert expected in readme
 
@@ -46,10 +46,10 @@ def test_public_readme_language_variants_keep_homepage_shape():
 
     for text in (zh_readme, en_readme):
         assert "Kingsoft Cloud Agent Development Kit" in text
-        assert "public-docs/assets/ksadk-runtime-platform-hero-wide.png" in text
-        assert "public-docs/assets/ksadk-web-ui-screenshot.png" in text
-        assert "public-docs/assets/ksadk-local-debugging-demo.gif" in text
-        assert "public-docs/assets/ksadk-runtime-architecture.png" in text
+        assert "ksadk-runtime-platform-hero-wide.png" in text
+        assert "ksadk-web-ui-screenshot.png" in text
+        assert "ksadk-local-debugging-demo.gif" in text
+        assert "ksadk-runtime-architecture.png" in text
         assert "发布版本：" not in text
         assert "## 0.6." not in text
 

@@ -4,7 +4,7 @@ import { docs } from 'collections/server';
 import { loader } from 'fumadocs-core/source';
 import { statusBadgesPlugin } from 'fumadocs-core/source/plugins/status-badges';
 import { i18n } from './i18n';
-import { docsContentRoute, docsImageRoute, docsRoute } from './shared';
+import { docsContentRoute, docsImageRoute, docsRoute, assetPath } from './shared';
 
 // See https://fumadocs.dev/docs/headless/source-api for more info
 export const source = loader({
@@ -47,7 +47,8 @@ export function getPageMarkdownUrl(page: (typeof source)['$inferPage']) {
 
   return {
     segments,
-    url: `${docsContentRoute}/${segments.join('/')}`,
+    // GitHub Pages 在 /<repo> 子路径,markdown URL 需带 basePath,否则复制出来 404。
+    url: assetPath(`${docsContentRoute}/${segments.join('/')}`),
   };
 }
 
