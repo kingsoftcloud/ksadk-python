@@ -64,7 +64,8 @@ Options:
   --ui-path TEXT                  Dashboard UI 路径 (例如 /)
   --ui-url TEXT                   完整 Dashboard URL（自研前端）
   --storage-size-gi INTEGER       PVC 容量（Gi）  [default: 20]
-  --storage-mount-path TEXT       PVC 挂载目录（默认按框架推导）
+  --storage-mount-path TEXT       PVC 挂载目录（hermes/openclaw 默认按框架推导；adk/langgraph
+                                  等其他框架默认不挂盘，需显式指定）
   --no-storage                    禁用默认 PVC 挂载
   --enable-public-access / --disable-public-access
                                   是否开启公网访问；未指定时使用配置文件或平台默认值
@@ -124,7 +125,8 @@ Options:
   --ui-path TEXT                  Dashboard UI 路径 (例如 /)
   --ui-url TEXT                   完整 Dashboard URL（自研前端）
   --storage-size-gi INTEGER       PVC 容量（Gi）  [default: 20]
-  --storage-mount-path TEXT       PVC 挂载目录（默认按框架推导）
+  --storage-mount-path TEXT       PVC 挂载目录（hermes/openclaw 默认按框架推导；adk/langgraph
+                                  等其他框架默认不挂盘，需显式指定）
   --no-storage                    禁用默认 PVC 挂载
   --enable-public-access / --disable-public-access
                                   是否开启公网访问；未指定时使用配置文件或平台默认值
