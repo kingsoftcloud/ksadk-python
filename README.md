@@ -204,11 +204,23 @@ Export once. Observe anywhere.
 
 ## Documentation
 
-- 文档：<https://kingsoftcloud.github.io/ksadk-python/>
-- 中文文档：<https://kingsoftcloud.github.io/ksadk-python/zh/>
-- English documentation：<https://kingsoftcloud.github.io/ksadk-python/en/>
-- 命令行参考：<https://kingsoftcloud.github.io/ksadk-python/reference/cli/>
-- OpenAI-Compatible API：<https://kingsoftcloud.github.io/ksadk-python/reference/openai-compatible-api/>
+文档站基于 Fumadocs（Next.js）构建，源码在 `docs-site/`。
+
+- 文档首页：<https://kingsoftcloud.github.io/ksadk-python/cn/>
+- English：<https://kingsoftcloud.github.io/ksadk-python/en/>
+- 命令行参考：<https://kingsoftcloud.github.io/ksadk-python/cn/docs/cli/>
+- OpenAI-Compatible API：<https://kingsoftcloud.github.io/ksadk-python/cn/docs/references/openai-compatible-api/>
+
+从源码运行文档站：
+
+```bash
+cd docs-site
+pnpm install
+pnpm dev          # http://localhost:3000
+pnpm build        # 生产构建
+```
+
+`master` 分支的 `docs/` 是内部工作文档；`docs-site/` 是公开发布的文档站源码，同步到 GitHub `main` 分支后由 GitHub Pages 部署。
 
 ## Community
 
