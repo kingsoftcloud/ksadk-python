@@ -26,28 +26,29 @@ export default async function HomePage({ params }: { params: Promise<{ lang: str
   const docsHref = `/${lang}/docs/framework`;
 
   return (
-    <main className="flex flex-1 flex-col items-center justify-center text-center px-4 py-24">
-      <h1 className="text-5xl md:text-6xl font-bold mb-3 ksadk-hero-gradient">
+    <main className="relative flex flex-1 flex-col items-center justify-center text-center px-4 py-24 overflow-hidden">
+      <div className="ksadk-hero-bg" aria-hidden="true" />
+      <h1 className="text-5xl md:text-6xl font-bold mb-3 ksadk-hero-gradient relative">
         {t.title}
       </h1>
-      <p className="text-xl font-semibold text-fd-foreground mb-2">{t.subtitle}</p>
-      <p className="max-w-2xl text-fd-muted-foreground mb-8">{t.desc}</p>
-      <div className="flex flex-wrap items-center justify-center gap-3 mb-8">
+      <p className="text-xl font-semibold text-fd-foreground mb-2 relative">{t.subtitle}</p>
+      <p className="max-w-2xl text-fd-muted-foreground mb-8 relative">{t.desc}</p>
+      <div className="flex flex-wrap items-center justify-center gap-3 mb-8 relative">
         <Link
           href={docsHref}
-          className="rounded-full px-6 py-2.5 font-medium text-white hover:opacity-90 transition"
+          className="rounded-full px-6 py-2.5 font-medium text-white hover:opacity-90 transition shadow-lg"
           style={{ background: 'linear-gradient(135deg, #5368db 0%, #59d3d9 100%)' }}
         >
           {t.cta}
         </Link>
         <a
           href="https://github.com/kingsoftcloud/ksadk-python"
-          className="rounded-full border border-fd-border px-6 py-2.5 font-medium hover:bg-fd-accent hover:text-fd-accent-foreground transition"
+          className="rounded-full border border-fd-border px-6 py-2.5 font-medium hover:bg-fd-accent hover:text-fd-accent-foreground transition backdrop-blur-sm"
         >
           {t.ctaSecondary}
         </a>
       </div>
-      <div className="w-full max-w-md">
+      <div className="w-full max-w-md relative">
         <p className="text-sm text-fd-muted-foreground mb-1.5 text-left">{t.installLabel}</p>
         <ServerCodeBlock
           lang="bash"
