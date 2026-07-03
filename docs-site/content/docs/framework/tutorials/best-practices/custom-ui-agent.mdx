@@ -1,0 +1,394 @@
+---
+title: 自定义 UI Agent 托管
+---
+
+这个教程讲清楚一件事:业务自带的前端 bundle,如何在一个托管 runtime 上跑起来——本地调试和云端部署共用同一套 bootstrap 契约,前端代码不写"是不是本地"的分支。
+
+它不是"换个皮肤"。核心是 `ksadk.server.app` 把 UI 当成一个可解析的 spec(profile / path / url / bundle_path),在 FastAPI 里替换 StaticFiles 挂载点,并通过 `GetAgentUiBootstrap` 把这个 spec 透传给前端。hosted UI 和本地 Web UI 读同一个 action,所以同一个 bundle 在两端行为一致。
+
+![自定义 UI Agent 托管架构](/assets/ksadk-custom-ui-architecture.svg)
+
+## 它要解决什么问题
+
+<Callout type="info" title="为什么不能直接让业务前端自己起一个静态服务器">
+业务前端要调 runtime API(`/v1/responses`、`/agentengine/api/v1/*`、WebSocket),还要读 runtime 能力(checkpoint resume、attachments、workspace)。如果前端单独部署,会面临跨域、能力发现、路径硬编码三个问题。把 bundle 挂到 runtime 同源下,bootstrap 一次性告诉前端"我是谁、我能干什么、UI 在哪",前端只管渲染。
+</Callout>
+
+适用场景:
+
+- Agent 配套的业务前端不是 ksadk 内置聊天界面,而是带研究工作台、数据看板或多步表单的自研 UI。
+- 你希望本地 `agentengine web` 和托管部署后用同一个前端 bundle,不维护两套构建。
+- 前端需要消费 `CustomUI` / `RuntimeCapabilities` / `CheckpointResumeCapability` 等 bootstrap 字段做能力探测。
+
+## 解析链路:UI spec 从哪来
+
+`_resolve_agent_ui_spec()` 是入口。它合并四个来源,按优先级取值:
+
+1. `agentengine.yaml` 里的 `ui_profile` / `ui_path` / `ui_url` / `ui_bundle_path`。
+2. `.agentengine/state` 持久化的 UI 状态(本地调试写过一次后缓存)。
+3. `KSADK_UI_PROFILE` / `KSADK_UI_PATH` / `KSADK_UI_URL` / `KSADK_UI_BUNDLE_PATH` 环境变量(serverless pod 注入)。
+4. `research-ui/dist/index.html` 自动探测——没有显式声明且该文件存在时,自动判为 custom profile。
+
+```python title="ksadk/server/app.py" {1-3} /[!code highlight]/
+def _resolve_agent_ui_spec() -> dict[str, Any]:
+    project_dir = _runner_project_dir()
+    state = _ui_state_with_env_fallback(load_runtime_state(project_dir))
+    framework = _current_framework()
+    auto_custom_bundle_dir = _default_custom_ui_bundle_dir(project_dir)
+    if (
+        not state.get("ui_profile")
+        and not state.get("ui_path")
+        and not state.get("ui_url")
+        and (auto_custom_bundle_dir / "index.html").exists()
+    ):
+        state["ui_profile"] = UI_PROFILE_CUSTOM
+        state["ui_path"] = "/"
+        state["ui_bundle_path"] = str(auto_custom_bundle_dir)
+```
+
+`_ui_state_with_env_fallback` 把环境变量叠到 state 上,pod 里没有 `.agentengine/` 状态时仍能还原 UI 配置:
+
+```python title="ksadk/server/app.py"
+env_fallbacks = {
+    "ui_profile": os.environ.get("KSADK_UI_PROFILE"),
+    "ui_path": os.environ.get("KSADK_UI_PATH"),
+    "ui_url": os.environ.get("KSADK_UI_URL"),
+    "ui_bundle_path": os.environ.get("KSADK_UI_BUNDLE_PATH"),
+}
+```
+
+profile 确定后,`resolve_ui_config()` 做规范化:custom profile 默认 path 是 `/`,且 `/chat` 会被自动修正回 `/`——bundle 内不需要为内置聊天界面的旧路径打补丁。
+
+```python title="ksadk/ui_config.py" {3-4} /[!code highlight]/
+_DEFAULT_PATH_BY_PROFILE = {
+    UI_PROFILE_ADK: "/chat",
+    UI_PROFILE_LANGCHAIN: "/chat",
+    UI_PROFILE_OPENCLAW: "/chat",
+    UI_PROFILE_HERMES: "/chat",
+    UI_PROFILE_CUSTOM: "/",
+}
+
+if profile == UI_PROFILE_CUSTOM and path == "/chat":
+    path = "/"
+```
+
+<Callout type="warning" title="ui_path 必须以 / 开头">
+`normalize_ui_path` 会给没有前导 `/` 的 path 补一个 `/`。custom profile 下如果你写 `ui_path: research`,实际生效是 `/research`。建议直接写 `/` 或 `/your-route`,避免和 SPA 路由混淆。
+</Callout>
+
+## 静态路由:替换 StaticFiles 挂载
+
+custom profile 下,runtime 不用内置 `STATIC_DIR`,而是把 catch-all 路由 `/{requested_path:path}` 指向 bundle 目录。`_resolve_ui_static_response()` 负责按 bundle 路径解析:
+
+- 请求落在 `ui_path` 本身 → 返回 `index.html`。
+- 请求是 `assets/*` 或带文件后缀 → 返回对应静态文件,找不到才 404。
+- 其它路径(SPA 子路由) → 回退 `index.html`,让前端路由接管。
+
+```python title="ksadk/server/app.py" {6-11} /[!code highlight]/
+def _resolve_ui_static_response(request_path: str) -> Optional[FileResponse]:
+    spec = _resolve_agent_ui_spec()
+    if not spec.get("enabled"):
+        return None
+
+    bundle_dir = Path(str(spec["bundle_path"]))
+    index_file = Path(str(spec["index_path"]))
+    path = _normalize_request_ui_path(request_path)
+
+    if spec.get("source") == "custom":
+        ui_path = _normalize_request_ui_path(str(spec.get("path") or "/")).rstrip("/") or "/"
+        if path == ui_path or path == f"{ui_path}/":
+            return FileResponse(index_file)
+        if ui_path != "/" and not path.startswith(f"{ui_path}/"):
+            return None
+        relative = path[len(ui_path):].lstrip("/") if ui_path != "/" else path.lstrip("/")
+        if not relative:
+            return FileResponse(index_file)
+        candidate = bundle_dir / relative
+        if candidate.exists() and candidate.is_file():
+            return FileResponse(candidate)
+        if not _is_custom_ui_static_asset_path(relative):
+            return FileResponse(index_file)
+        return None
+```
+
+<Callout type="info" title="enabled 判定看 index.html 是否存在">
+spec 里 `enabled = bundle_dir.exists() and index_file.exists()`。bundle 目录在但 `index.html` 缺失,会被判为未启用,前端会落到内置 UI 或 404。生产部署一定要确认 `ui_bundle_path` 指向的目录里有 `index.html`。
+</Callout>
+
+## GetAgentUiBootstrap:透传 CustomUI
+
+前端不直接读 `agentengine.yaml`,而是调 `GetAgentUiBootstrap` 拿到一份描述 runtime 自身的 JSON。custom UI 的关键字段在 `CustomUI` 块:
+
+```python title="ksadk/server/app.py" {2-7} /[!code highlight]/
+"CustomUI": {
+    "Enabled": bool(ui_spec.get("enabled")),
+    "Profile": ui_spec.get("ui_profile") or ui_spec.get("profile"),
+    "Path": ui_spec.get("ui_path") or ui_spec.get("path"),
+    "Url": ui_spec.get("ui_url") or ui_spec.get("url"),
+    "BundlePath": ui_spec.get("ui_bundle_path") or ui_spec.get("bundle_path"),
+},
+```
+
+同一个 action 还带 `Capabilities.RuntimeCapabilities`、`CheckpointResumeCapability`、`SharePermissions`、`ApiFormats`、`Stream`。前端用这些字段决定是否渲染 checkpoint 恢复面板、是否启用流式、是否展示附件上传。
+
+<Callout type="info" title="hosted 和 local 共用同一 action">
+这是"托管"的关键:hosted UI 和本地 Web UI 调的都是 `/agentengine/api/v1/GetAgentUiBootstrap`,字段契约一致。你的 bundle 不需要判断"我在哪跑",只读 `CustomUI` 和 `Capabilities` 即可。
+</Callout>
+
+## 开发自定义 UI bundle
+
+<Steps>
+
+1. **创建 research-ui/ 目录**
+
+bundle 默认探测路径是项目根下的 `research-ui/dist`。所以前端工程放 `research-ui/`,构建产物输出到 `research-ui/dist/`。
+
+```text
+my-agent/
+├── agentengine.yaml
+├── agent.py
+└── research-ui/
+    ├── package.json
+    └── (Next.js / Vite 工程)
+```
+
+2. **配置静态导出到 dist**
+
+<Tabs>
+<Tab value="Vite">
+
+```json title="research-ui/package.json"
+{
+  "scripts": {
+    "build": "vite build"
+  }
+}
+```
+
+```js title="research-ui/vite.config.js"
+import { defineConfig } from "vite";
+
+export default defineConfig({
+  build: {
+    outDir: "dist",
+    emptyOutDir: true,
+  },
+});
+```
+
+Vite 默认输出 `dist/index.html` + `dist/assets/*`,正好命中 custom bundle 静态路由的判定。
+
+</Tab>
+<Tab value="Next.js">
+
+```js title="research-ui/next.config.js"
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  output: "export",
+  distDir: "dist",
+  trailingSlash: true,
+};
+
+module.exports = nextConfig;
+```
+
+`output: "export"` 生成纯静态站点,`distDir: "dist"` 让产物落在 runtime 默认探测路径上。
+
+</Tab>
+</Tabs>
+
+3. **接 runtime API**
+
+bundle 运行时同源调以下端点,不需要配 base URL:
+
+- `POST /v1/responses` — OpenAI 兼容 Responses API,流式对话主入口。
+- `POST /agentengine/api/v1/RunAgent` — AgentEngine 原生 action,带 `Stream` / `Background`。
+- `POST /agentengine/api/v1/GetAgentUiBootstrap` — 启动时拉一次,读 `CustomUI` 和 `Capabilities`。
+- `POST /agentengine/api/v1/CancelRun` / `ResumeRun` — 长任务取消与恢复。
+- `GET /agentengine/api/v1/SubscribeRunEvents` — 后台任务事件订阅(SSE)。
+
+```ts title="research-ui/src/bootstrap.ts" {2-4} /[!code highlight]/
+const res = await fetch("/agentengine/api/v1/GetAgentUiBootstrap", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ AgentId: null, SessionId: null }),
+});
+const { Data } = await res.json();
+const { CustomUI, Capabilities, SharePermissions } = Data;
+```
+
+<Callout type="warning" title="WebSocket 走同源相对路径">
+如果用 WebSocket(workspace 文件变更、终端),路径形如 `/agentengine/api/v1/ws/{agent_id}/{file_path}`。前端构造 WebSocket URL 时用 `location.protocol` 判断 wss/ws、`location.host` 拼 host,不要硬编码 host。
+</Callout>
+
+4. **构建并验证产物**
+
+```bash title="构建 bundle"
+cd research-ui
+npm install
+npm run build
+ls dist/index.html
+```
+
+`dist/index.html` 存在,custom bundle 才会被判为 `enabled`。
+
+</Steps>
+
+## 配置 agentengine.yaml
+
+显式声明 custom profile,覆盖自动探测(推荐,避免依赖探测行为):
+
+```yaml title="agentengine.yaml"
+name: my-custom-ui-agent
+framework: adk
+entry_point: agent.py
+agent_variable: root_agent
+ui_profile: custom
+ui_path: /
+ui_bundle_path: research-ui/dist
+```
+
+<Callout type="info" title="ui_bundle_path 支持相对路径">
+`_resolve_agent_ui_spec` 会把相对路径解析到 `project_dir` 下。写 `research-ui/dist` 即可,不需要写绝对路径。绝对路径在解析时直接用,不做 project_dir 拼接。
+</Callout>
+
+<Callout type="warning" title="custom 下 ui_path 不要写 /chat">
+`resolve_ui_config` 会把 custom profile 下的 `/chat` 修正为 `/`。如果你确实想挂在子路由(例如 `/research`),写 `ui_path: /research`,前端 SPA 路由要能处理这个前缀。
+</Callout>
+
+## 本地调试
+
+`agentengine web` 通过 `_configure_custom_ui_env()` 把 `agentengine.yaml` 里的 UI 配置转成环境变量,再启动 runtime——这样本地和 serverless pod 走的是同一条 env fallback 链路:
+
+```python title="ksadk/cli/cmd_web.py" {5-8} /[!code highlight]/
+def _configure_custom_ui_env(agent_path: Path) -> str:
+    config = _load_agentengine_config(agent_path)
+    if str(config.get("ui_profile") or "").strip().lower() != "custom":
+        return "/"
+
+    bundle_path = str(config.get("ui_bundle_path") or "").strip()
+    bundle_dir = agent_path / bundle_path
+    if not (bundle_dir / "index.html").is_file():
+        return "/"
+
+    ui_path = _normalize_ui_path(str(config.get("ui_path") or "/"))
+    os.environ["KSADK_UI_PROFILE"] = "custom"
+    os.environ["KSADK_UI_PATH"] = ui_path
+    os.environ["KSADK_UI_BUNDLE_PATH"] = bundle_path
+    return ui_path
+```
+
+即使不写 `agentengine.yaml`,只要 `research-ui/dist/index.html` 存在,runtime 也会自动探测并启用 custom bundle。
+
+```bash title="启动本地 Web UI"
+cd my-agent
+agentengine web .
+```
+
+<Callout type="info" title="本地自动探测的条件">
+自动探测要求 `ui_profile`、`ui_path`、`ui_url` 三个字段都未显式声明,且 `research-ui/dist/index.html` 存在。一旦你在 `agentengine.yaml` 写了 `ui_profile: custom`,以声明为准,探测逻辑被跳过。
+</Callout>
+
+## 部署到托管
+
+serverless 部署通过 `_inject_ui_runtime_env()` 把解析后的 UI 配置注入 pod env——不打包本地 `.agentengine/` 状态:
+
+```python title="ksadk/deployment/providers/serverless.py" {7-12} /[!code highlight]/
+if profile:
+    env_vars["KSADK_UI_PROFILE"] = str(profile)
+if path:
+    env_vars["KSADK_UI_PATH"] = str(path)
+if url:
+    env_vars["KSADK_UI_URL"] = str(url)
+if bundle_path:
+    env_vars["KSADK_UI_BUNDLE_PATH"] = str(bundle_path)
+```
+
+<Tabs>
+<Tab value="Serverless">
+
+serverless provider 会读 `agentengine.yaml` 的 `ui_bundle_path` 并把 `research-ui/dist` 构建进镜像,运行时注入 `KSADK_UI_*` 四个环境变量。pod 内 `ksadk.server.app` 通过 `_ui_state_with_env_fallback` 还原配置。
+
+```bash title="部署"
+agentengine build .
+agentengine deploy --provider serverless
+```
+
+确认 bundle 在镜像里:`dist/index.html` 必须随镜像一起打包,否则 `enabled=false`。
+
+</Tab>
+<Tab value="Hermes">
+
+Hermes runtime 走 TUI,不消费 custom UI bundle 的静态路由。如果你的 agent 同时要 hosted UI,把 bundle 构建产物交给前端工程单独托管,并在 `agentengine.yaml` 写 `ui_url` 指向前端地址——`CustomUI.Url` 会透传给 hosted UI 做跳转。
+
+</Tab>
+<Tab value="OpenClaw">
+
+OpenClaw 与 Hermes 同属 TUI 框架(`_NATIVE_TUI_FRAMEWORKS`),custom bundle 静态路由不生效。需要 hosted UI 时同 Hermes,用 `ui_url` 声明外部前端地址。
+
+</Tab>
+</Tabs>
+
+<Callout type="warning" title="Hermes / OpenClaw 不挂 custom bundle 静态路由">
+`_resolve_agent_ui_spec` 的 custom 分支只在 profile 解析为 `custom` 时触发。Hermes / OpenClaw 的 profile 是 `hermes` / `openclaw`,走内置 `STATIC_DIR`。这两类 runtime 要接自定义前端,用 `ui_url` 而不是 `ui_bundle_path`。
+</Callout>
+
+## 验证
+
+部署后调 `GetAgentUiBootstrap`,确认 `CustomUI` 块符合预期:
+
+```bash title="验证 bootstrap"
+curl -s -X POST https://<your-runtime>/agentengine/api/v1/GetAgentUiBootstrap \
+  -H "Content-Type: application/json" \
+  -d '{"AgentId": null, "SessionId": null}' | jq '.Data.CustomUI'
+```
+
+预期输出(serverless):
+
+```json
+{
+  "Enabled": true,
+  "Profile": "custom",
+  "Path": "/",
+  "Url": null,
+  "BundlePath": "/app/research-ui/dist"
+}
+```
+
+`Enabled: true` 表示 bundle 目录和 `index.html` 都在;`BundlePath` 是 pod 内绝对路径。如果 `Enabled: false`,检查 `KSADK_UI_BUNDLE_PATH` 指向的目录在镜像里是否存在、`index.html` 是否随构建产物一起打包。
+
+## 项目结构
+
+<Files>
+  <Folder name="my-agent/" defaultOpen>
+    <File name="agentengine.yaml" />
+    <File name="agent.py" />
+    <Folder name="research-ui/">
+      <File name="package.json" />
+      <File name="vite.config.js" />
+      <Folder name="src/">
+        <File name="bootstrap.ts" />
+      </Folder>
+      <Folder name="dist/">
+        <File name="index.html" />
+      </Folder>
+    </Folder>
+  </Folder>
+</Files>
+
+## 后续阅读
+
+<Cards>
+  <Card title="本地 Web UI" href="../../guides/local-web-ui">
+    自定义 bundle 自动探测、流式修复与常见失败排查。
+  </Card>
+  <Card title="构建与打包" href="../../guides/build-and-package">
+    serverless 镜像构建如何把 `research-ui/dist` 打进制品,以及 UI 配置环境变量注入细节。
+  </Card>
+  <Card title="长任务恢复与 Deep Research 续跑" href="../long-task-resume">
+    自定义研究工作台如何消费 `CheckpointResumeCapability` 渲染恢复面板。
+  </Card>
+  <Card title="ksadk-samples 仓库" href="https://github.com/kingsoftcloud/ksadk-samples">
+    含 `research-ui/` 工作台的完整可运行 demo 源码。
+  </Card>
+</Cards>

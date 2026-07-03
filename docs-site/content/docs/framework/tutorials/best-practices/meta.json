@@ -3,6 +3,7 @@
   "pages": [
     "langgraph-toolsets",
     "long-task-resume",
+    "custom-ui-agent",
     "agent-best-practices"
   ]
 }
