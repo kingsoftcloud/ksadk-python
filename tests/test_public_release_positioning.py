@@ -67,21 +67,56 @@ def test_changelog_marks_0_6_7_ready_for_authorized_release():
 
 def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     workflow = _read(".github/workflows/publish-pypi.yml")
+    ci_workflow = _read(".github/workflows/ci.yml")
     makefile = _read("Makefile")
 
     assert "id-token: write" in workflow
     assert "pypa/gh-action-pypi-publish@release/v1" in workflow
+    assert "push:" not in workflow
+    assert "release:" in workflow
+    assert "- published" in workflow
+    assert "workflow_dispatch:" in workflow
     assert "make sync-ksadk-web-static" in workflow
     assert "make public-preflight" in workflow
+    assert "make public-publish-gate" in workflow
+    assert "make open-source-audit-dist" in ci_workflow
+    assert 'KSADK_WEB_VERSION: "0.2.15"' in ci_workflow
+    assert "PUBLIC_KSADK_WEB_VERSION" not in ci_workflow
     assert "KSADK_WEB_VERSION ?= latest" in makefile
     assert "PUBLIC_TEST_TARGETS ?= tests/test_public_release_positioning.py tests/test_config_env_registry.py" in makefile
     assert "public-sync-ksadk-web-static: sync-ksadk-web-static" in makefile
     assert "python3 scripts/open_source_audit.py --target public-repo" in makefile
     assert "open-source-audit-dist:" in makefile
+    assert "public-release-approval-check:" in makefile
+    assert "public-publish-gate: public-release-approval-check" in makefile
+    assert "scripts/check_approval_record.py" in makefile
     assert "public-build-check: clean-dist sync-ksadk-web-static" in makefile
     assert "public-preflight: public-version-gate public-audit sync-ksadk-web-static public-test public-docs-build public-build-check" in makefile
     assert "PYPI_API_TOKEN" not in workflow
     assert "password:" not in workflow
+
+
+def test_public_ci_runs_gitleaks_and_documents_branch_protection():
+    secret_workflow = _read(".github/workflows/secret-patterns.yml")
+    branch_protection = _read(".github/BRANCH_PROTECTION.md")
+    approval_record = _read("docs/maintainer-approval-record.md")
+
+    assert "gitleaks/gitleaks-action@v2" in secret_workflow
+    assert "fetch-depth: 0" in secret_workflow
+    assert "python3 scripts/open_source_audit.py --target public-repo" in secret_workflow
+    assert "Require a pull request before merging" in branch_protection
+    assert "CI / test" in branch_protection
+    assert "Secret Pattern Audit / scan" in branch_protection
+    assert "CodeQL / analyze" in branch_protection
+    assert "pypi environment" in branch_protection
+    assert "Branch protection and publish environment are configured" in approval_record
+
+
+def test_public_release_approval_template_tracks_current_version():
+    approval_record = _read("docs/maintainer-approval-record.md")
+
+    assert "| Python package version | 0.6.8 |" in approval_record
+    assert "make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.6.8" in approval_record
 
 
 def test_source_repository_does_not_track_generated_ksadk_web_static():

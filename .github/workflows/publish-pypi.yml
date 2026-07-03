@@ -51,6 +51,9 @@ jobs:
       - name: Run public release preflight
         run: make public-preflight
 
+      - name: Verify release approval gate
+        run: make public-publish-gate
+
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
 
