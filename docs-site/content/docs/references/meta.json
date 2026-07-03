@@ -1,0 +1,17 @@
+{
+  "title": "参考",
+  "icon": "BookMarked",
+  "root": true,
+  "pages": [
+    "index",
+    "cli",
+    "environment-variables",
+    "openai-compatible-api",
+    "project-config",
+    "remote-runtime-api",
+    "runtime-sessions-files",
+    "security-boundaries",
+    "troubleshooting",
+    "contributing"
+  ]
+}

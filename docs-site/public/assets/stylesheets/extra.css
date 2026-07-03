@@ -1,0 +1,213 @@
+/* KsADK public docs — 金山云品牌色主题
+ * 主色: 金山云蓝 #0066FF
+ * 辅助: 青绿 #00B8A9 (呼应现有 architecture.svg 的 #22d3ee)
+ * 渐变: #0066FF → #00B8A9
+ */
+
+/* === Material 主题色变量 (primary: custom / accent: custom) === */
+:root {
+  --md-primary-fg-color: #0066FF;
+  --md-primary-fg-color--light: #4d94ff;
+  --md-primary-fg-color--dark: #0052cc;
+  --md-primary-bg-color: #0066FF;
+  --md-primary-bg-color--light: #e6f0ff;
+  --md-accent-fg-color: #00B8A9;
+  --md-accent-fg-color--transparent: rgba(0, 184, 169, 0.1);
+  --md-accent-bg-color: #00B8A9;
+  --md-accent-bg-color--light: #e6f7f5;
+
+  /* ksadk 自有渐变 */
+  --ksadk-gradient: linear-gradient(90deg, #0066FF, #00B8A9);
+  --ksadk-blue: #0066FF;
+  --ksadk-teal: #00B8A9;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #0066FF;
+  --md-primary-fg-color--light: #4d94ff;
+  --md-primary-fg-color--dark: #0052cc;
+  --md-accent-fg-color: #00B8A9;
+  --md-accent-fg-color--transparent: rgba(0, 184, 169, 0.15);
+  --md-default-fg-color--lightest: rgba(255,255,255,0.12);
+}
+
+/* === Hero 区 (对标 veadk Fumadocs home page) === */
+.ksadk-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 3.5rem 1rem 2rem;
+}
+
+.ksadk-hero h1 {
+  margin: 0 0 0.75rem;
+  font-size: clamp(2.25rem, 5vw, 3.5rem);
+  font-weight: 800;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  background: var(--ksadk-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+.ksadk-hero .ksadk-subtitle {
+  font-size: 1.3rem;
+  font-weight: 600;
+  margin: 0 0 0.6rem;
+  color: var(--md-default-fg-color);
+}
+
+.ksadk-hero .ksadk-desc {
+  max-width: 44rem;
+  font-size: 1.05rem;
+  line-height: 1.65;
+  margin: 0 0 2rem;
+  color: var(--md-default-fg-color--light);
+}
+
+.ksadk-hero .ksadk-cta-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  justify-content: center;
+  margin-bottom: 2rem;
+}
+
+.ksadk-hero .ksadk-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+  padding: 0.7rem 1.75rem;
+  font-size: 1.02rem;
+  font-weight: 600;
+  color: #fff !important;
+  background: var(--ksadk-gradient);
+  border-radius: 9999px;
+  text-decoration: none !important;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  box-shadow: 0 6px 20px rgba(0, 102, 255, 0.3);
+}
+
+.ksadk-hero .ksadk-cta:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 28px rgba(0, 102, 255, 0.4);
+  color: #fff !important;
+}
+
+.ksadk-hero .ksadk-cta-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+  padding: 0.7rem 1.75rem;
+  font-size: 1.02rem;
+  font-weight: 600;
+  color: var(--md-default-fg-color) !important;
+  background: transparent;
+  border: 2px solid var(--md-default-fg-color--lightest);
+  border-radius: 9999px;
+  text-decoration: none !important;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.ksadk-hero .ksadk-cta-secondary:hover {
+  border-color: var(--ksadk-teal);
+  color: var(--ksadk-teal) !important;
+}
+
+.ksadk-hero .ksadk-install {
+  width: 100%;
+  max-width: 30rem;
+  margin: 0 auto;
+}
+
+.ksadk-hero .ksadk-install pre {
+  margin: 0;
+  border-radius: 0.75rem;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.08);
+  text-align: left;
+}
+
+[data-md-color-scheme="slate"] .ksadk-hero .ksadk-install pre {
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.3);
+}
+
+/* === 分区标题 === */
+.ksadk-section-title {
+  text-align: center;
+  font-size: 1.6rem;
+  font-weight: 700;
+  margin: 3rem 0 1.75rem;
+  letter-spacing: -0.01em;
+  position: relative;
+}
+
+.ksadk-section-title::after {
+  content: "";
+  display: block;
+  width: 3rem;
+  height: 3px;
+  background: var(--ksadk-gradient);
+  border-radius: 2px;
+  margin: 0.6rem auto 0;
+}
+
+/* === 卡片网格增强 (对标 veadk <Card>) === */
+.grid.cards > ul > li {
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.75rem;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+}
+
+.grid.cards > ul > li:hover {
+  border-color: var(--ksadk-teal);
+  box-shadow: 0 8px 24px rgba(0, 184, 169, 0.15);
+  transform: translateY(-3px);
+}
+
+.grid.cards > ul > li a {
+  color: var(--md-default-fg-color);
+}
+
+.grid.cards > ul > li strong {
+  font-size: 1.08rem;
+  display: inline-flex;
+  align-items: center;
+}
+
+.grid.cards > ul > li img.twemoji {
+  height: 1.6em;
+  width: 1.6em;
+  vertical-align: middle;
+  margin-right: 0.35em;
+}
+
+/* === 顶栏 logo 文字 === */
+.md-header__topic:first-child {
+  font-weight: 700;
+}
+
+/* === 链接颜色用品牌蓝 === */
+.md-content a {
+  color: var(--ksadk-blue);
+  text-decoration: none;
+}
+
+.md-content a:hover {
+  text-decoration: underline;
+}
+
+[data-md-color-scheme="slate"] .md-content a {
+  color: #4d94ff;
+}
+
+/* === 暗色模式下渐变文字保持可读 === */
+[data-md-color-scheme="slate"] .ksadk-hero h1 {
+  background: linear-gradient(90deg, #4d94ff, #00d4c4);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}

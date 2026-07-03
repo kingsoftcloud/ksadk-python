@@ -1,0 +1,91 @@
+---
+title: "智能体上下文"
+---
+
+# 智能体上下文
+
+KsADK 在每轮调用前构造运行时上下文，帮助 runner 和业务 Agent 取得稳定的用户、
+会话、附件、模型和平台信息。
+
+## 核心字段
+
+KsADK 把运行时上下文收敛到一个 `PlatformInvocationContext`，runner 与业务代码统一从它读取。
+核心字段如下：
+
+| 字段 | 含义 |
+| --- | --- |
+| `agent_id` | Agent 标识 |
+| `user_id` | 用户标识 |
+| `account_id` | 账号标识，默认空串；按账号边界隔离 Skill / Workspace / Sandbox / Memory |
+| `session_id` | 当前会话 |
+| `invocation_id` | 本次调用标识，可用于 trace 关联与 resume |
+| `model` | 当前请求模型 |
+| `attachments` | 当前 turn 文件或图片 |
+| `memory_context` | 可选长期记忆上下文 |
+| `kb_context` | 可选知识库上下文 |
+
+<Callout type="info" title="0.6.7 新增">
+`account_id` 默认空串。Skill / Workspace / Sandbox / Memory 等托管资源按
+`account_id` 做账号边界读取：同一账号下数据互相可见，跨账号隔离。
+</Callout>
+
+
+## HTTP 入口与 account_id 透传
+
+以下三个公开 HTTP 入口都会把请求里的账号标识透传进 `PlatformInvocationContext`：
+
+| 入口 | 请求字段 | 写入位置 |
+| --- | --- | --- |
+| `POST /v1/responses` | `account_id` | `PlatformInvocationContext.account_id` |
+| `POST /v1/chat/completions` | `account_id` | `PlatformInvocationContext.account_id` |
+| `POST /v1/RunAgent`（RunAgentAction） | `AccountId` | `PlatformInvocationContext.account_id` |
+
+账号标识进入上下文后，Skill / Workspace / Sandbox / Memory 在读取时统一按
+`account_id` 做账号边界，无需业务代码自行传递。
+
+## 框架接入
+
+LangGraph 项目可用 `ksadk_prepare_state` 映射到自定义 state；LangChain 项目可用
+`ksadk_prepare_input` 组织输入。ADK 项目优先使用 ADK 原生工具和服务。
+
+不要从私有 server globals 读取上下文；公开代码应使用 runner payload 和 documented hook。
+
+## 运行时上下文 Helper
+
+业务工具或公共 helper 如果需要拿到当前调用的上下文，应使用运行时上下文 Helper，
+而不是去解析私有事件存储或网关 header。
+
+<Callout type="info" title="0.6.5 新增">
+新增安全读取入口，在无上下文时不会抛异常：
+
+- `get_current_invocation_context_or_default()`：无上下文时返回一个全空字段的
+  `PlatformInvocationContext`（`agent_id` / `user_id` / `account_id` / `session_id`
+  等均为空串，列表字段均为空列表），便于在工具/后台任务里安全调用。
+- `get_current_user_id(default='')`：返回当前 `user_id`，无上下文返回 `default`。
+- `get_current_account_id(default='')`：返回当前 `account_id`，无上下文返回 `default`。
+</Callout>
+
+
+```python
+from ksadk.runtime_context import (
+    get_current_invocation_context_or_default,
+    get_current_user_id,
+    get_current_account_id,
+)
+
+# 安全读取，离线/后台任务里也不会抛异常
+ctx = get_current_invocation_context_or_default()
+print(ctx.agent_id)
+print(ctx.account_id)
+
+# 取单个标识，无上下文走默认值
+user_id = get_current_user_id()          # 默认 ''
+account_id = get_current_account_id()    # 默认 ''
+```
+
+<Callout type="warning" title="账号边界">
+Skill / Workspace / Sandbox / Memory 按 `account_id` 做账号边界读取。
+在工具代码里应优先用 `get_current_account_id()` 取当前账号，而不是自己从请求里
+解析，以保证与托管运行时一致的隔离语义。
+</Callout>
+

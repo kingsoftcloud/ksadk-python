@@ -1,0 +1,18 @@
+{
+  "title": "核心",
+  "pages": [
+    "runtime-architecture",
+    "agent-context",
+    "attachments-multimodal",
+    "local-web-ui",
+    "workspace-files",
+    "tools-and-skill-runtime",
+    "memory-knowledge",
+    "observability-tracing",
+    "runtime-products",
+    "build-and-package",
+    "frameworks",
+    "agent-best-practices",
+    "web-ui-source"
+  ]
+}
