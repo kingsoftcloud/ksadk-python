@@ -62,7 +62,7 @@ KsADK 保留 ADK 的编程模型。应用仍然导出 Google ADK `Agent`；KsADK
 项目、导入配置对象、用本地 runner 包装它，并暴露与其他框架一致的 CLI、
 Web UI 和 HTTP 协议。
 
-```python
+```python title="agent.py"
 from google.adk.agents import Agent
 
 def hello(name: str) -> dict:
@@ -78,7 +78,7 @@ root_agent = Agent(
 
 项目配置：
 
-```yaml
+```yaml title="agentengine.yaml"
 name: hello-agent
 framework: adk
 entry_point: agent.py
@@ -87,7 +87,7 @@ agent_variable: root_agent
 
 本地运行：
 
-```bash
+```bash title="bash"
 python -m venv .venv
 source .venv/bin/activate
 pip install -U "ksadk[adk]"
@@ -95,13 +95,13 @@ agentengine run . -i
 agentengine web . --no-open
 ```
 
-对于 ADK 项目，知识库、长期记忆、MCP toolset 和 Skill Runtime 工具都在
-ADK runner 加载阶段按环境变量注入。最小示例应先不启用这些可选变量，
-确保第一轮运行只依赖 Agent 对象和模型配置。
+<Callout type="info">
+ADK 项目的知识库、长期记忆、MCP toolset 和 Skill Runtime 工具都在 ADK runner 加载阶段按环境变量注入。最小示例应先不启用这些可选变量，确保第一轮运行只依赖 Agent 对象和模型配置。
+</Callout>
 
 ## LangGraph
 
-```python
+```python title="agent.py"
 from langgraph.graph import END, StateGraph
 
 class State(TypedDict):
@@ -120,7 +120,7 @@ graph.add_edge("chat", END)
 root_agent = graph.compile()
 ```
 
-```yaml
+```yaml title="agentengine.yaml"
 name: langgraph-agent
 framework: langgraph
 entry_point: agent.py
@@ -129,7 +129,7 @@ agent_variable: root_agent
 
 ## LangChain
 
-```python
+```python title="agent.py"
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
@@ -143,7 +143,7 @@ prompt = ChatPromptTemplate.from_messages([
 root_agent = prompt | llm | StrOutputParser()
 ```
 
-```yaml
+```yaml title="agentengine.yaml"
 name: langchain-agent
 framework: langchain
 entry_point: agent.py
@@ -152,12 +152,12 @@ agent_variable: root_agent
 
 ## DeepAgents
 
-```python
+```python title="agent.py"
 llm = ChatOpenAI(model="my-model", base_url="https://api.example.com/v1", api_key="sk-test")
 root_agent = create_deep_agent(model=llm)
 ```
 
-```yaml
+```yaml title="agentengine.yaml"
 name: deep-agent
 framework: deepagents
 entry_point: agent.py
@@ -168,12 +168,22 @@ agent_variable: root_agent
 
 KsADK 优先读取显式项目配置。如果没有配置文件，再尝试常见项目形态：
 
-- `langgraph.json`
+<Files>
+  <Folder name="my_agent" defaultOpen>
+    <File name="__init__.py" />
+    <File name="agent.py" />
+  </Folder>
+  <File name="agentengine.yaml" />
+  <File name="langgraph.json" />
+</Files>
+
 - 包目录内的 `agent.py`、`main.py` 或 `app.py`
 - 包目录 `__init__.py` 导出的常见 Agent 变量
 - 当前目录直接包含 `agent.py`、`main.py` 或 `app.py` 的脚本式项目
 
+<Callout type="info">
 公开示例建议使用显式 YAML，因为它更容易审查，也不依赖启发式规则。
+</Callout>
 
 ```mermaid
 flowchart TD
@@ -227,7 +237,7 @@ HTTP Server 和 Web UI 因此不依赖具体框架对象。框架相关行为应
 LangGraph 和 LangChain 应用常见自定义 state。默认映射不够时，可以在入口
 模块里增加 hook：
 
-```python
+```python title="agent.py"
 def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
     return {
         "messages": payload.get("input_messages", []),
@@ -237,7 +247,7 @@ def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
     }
 ```
 
-```python
+```python title="agent.py"
 def ksadk_prepare_input(payload: dict, session_context: dict) -> dict:
     return {
         "question": payload.get("input", ""),
@@ -246,8 +256,7 @@ def ksadk_prepare_input(payload: dict, session_context: dict) -> dict:
     }
 ```
 
-hook 能让业务代码拿到稳定、显式的字典，而不是读取本地 UI 事件或会话内部
-结构。
+hook 能让业务代码拿到稳定、显式的字典，而不是读取本地 UI 事件或会话内部结构。
 
 ## 模型覆盖
 
@@ -299,9 +308,11 @@ bootstrap capability 为准。
 
 所有框架示例都应支持同一组本地命令：
 
-```bash
+```bash title="bash"
 agentengine run . -i
 agentengine web . --no-open
 ```
 
+<Callout type="info">
 托管部署示例可以作为进阶内容，但必须提供本地 fallback。
+</Callout>

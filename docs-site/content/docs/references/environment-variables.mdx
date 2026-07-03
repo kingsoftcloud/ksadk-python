@@ -2,10 +2,15 @@
 title: 环境变量参考
 ---
 
-这页列出本地运行和发布流水线中最常用的 KsADK 环境变量。提交到仓库的文件只放
-占位值，真实值放本地 `.env` 或 CI secrets。
+<Callout type="info">
+  本页列出本地运行和发布流水线中最常用的 KsADK 环境变量。提交到仓库的文件只放占位值，真实值放本地 `.env` 或 CI secrets。
+</Callout>
 
 ## 模型 Provider
+
+<Callout type="info">
+  OpenAI 兼容 provider 与托管运行时模型策略相关变量。
+</Callout>
 
 | 变量 | 用途 |
 | --- | --- |
@@ -26,7 +31,7 @@ title: 环境变量参考
 
 示例：
 
-```bash
+```bash title="bash"
 OPENAI_API_KEY=sk-test
 OPENAI_BASE_URL=https://api.example.com/v1
 OPENAI_MODEL_NAME=my-model
@@ -77,7 +82,7 @@ OPENAI_MODEL_NAME=my-model
 
 本地 UI 通常设置：
 
-```bash
+```bash title="bash"
 KSADK_STM_BACKEND=sqlite
 KSADK_STM_PATH=.agentengine/ui/sessions.sqlite
 ```
@@ -199,7 +204,7 @@ KSADK_STM_PATH=.agentengine/ui/sessions.sqlite
 
 示例：
 
-```bash
+```bash title="bash"
 KSADK_ENABLE_MCP_TOOLS=1
 KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
 ```
@@ -230,7 +235,9 @@ KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
 | `KCR_USERNAME` | 镜像仓库用户名；企业版 KCR 和第三方 registry 必传（敏感） |
 | `KCR_PASSWORD` | 镜像仓库密码；企业版 KCR 和第三方 registry 必传（敏感） |
 
-个人版 KCR（`*.kce.ksyun.com`）允许 `KSYUN_ACCOUNT_ID` 兜底用户名；企业版 KCR（`*.ksyunkcr.com`）和第三方 registry 必须显式设置 `KCR_USERNAME` / `KCR_PASSWORD`，避免错误把云账号 ID 当企业镜像用户名（0.6.5）。
+<Callout type="warning">
+  个人版 KCR（`*.kce.ksyun.com`）允许 `KSYUN_ACCOUNT_ID` 兜底用户名；企业版 KCR（`*.ksyunkcr.com`）和第三方 registry 必须显式设置 `KCR_USERNAME` / `KCR_PASSWORD`，避免错误把云账号 ID 当企业镜像用户名（0.6.5）。
+</Callout>
 
 ## 镜像构建上下文 .env 边界
 
@@ -246,7 +253,9 @@ KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
 | `KSADK_WEB_RELEASE_URL` | 可选兜底；设置后跳过 npm pack，改从该 tarball URL 下载 |
 | `KSADK_WEB_CACHE_DIR` | KsADK Web 包解压缓存目录，默认 `.cache/ksadk-web` |
 
-`make build` / `make build-wheel` 会自动执行 `sync-ksadk-web-static`，无需手动同步。
+<Callout type="info">
+  `make build` / `make build-wheel` 会自动执行 `sync-ksadk-web-static`，无需手动同步。
+</Callout>
 
 ## 可观测
 
@@ -293,6 +302,8 @@ KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
 
 ## 安全规则
 
-- 不提交真实 key、token、DSN、私有 endpoint、客户数据集 id 或 kubeconfig。
-- 开发环境用本地 `.env`，自动化用 CI secrets。
-- 公开文档只使用 `sk-test`、`my-model`、`https://api.example.com/v1` 这类占位值。
+<Callout type="warning">
+  - 不提交真实 key、token、DSN、私有 endpoint、客户数据集 id 或 kubeconfig。
+  - 开发环境用本地 `.env`，自动化用 CI secrets。
+  - 公开文档只使用 `sk-test`、`my-model`、`https://api.example.com/v1` 这类占位值。
+</Callout>

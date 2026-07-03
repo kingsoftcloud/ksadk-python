@@ -10,7 +10,7 @@ take precedence for that run.
 
 ## Precedence
 
-For a single local run, think about configuration in this order:
+<Steps>
 
 1. command-line flags such as `--model` and `--port`.
 2. environment variables exported in the shell.
@@ -18,8 +18,12 @@ For a single local run, think about configuration in this order:
 4. project YAML such as `agentengine.yaml`.
 5. global developer defaults.
 
-Use command-line flags for temporary experiments and project files for settings
-that should travel with the sample application.
+</Steps>
+
+<Callout type="info">
+  Use command-line flags for temporary experiments and project files for settings
+  that should travel with the sample application.
+</Callout>
 
 ## Configuration Sources
 
@@ -34,14 +38,16 @@ that should travel with the sample application.
 
 The local runtime uses OpenAI-compatible settings for many examples:
 
-```bash
+```bash title=".env"
 OPENAI_API_KEY=sk-test
 OPENAI_BASE_URL=https://api.example.com/v1
 OPENAI_MODEL_NAME=my-model
 ```
 
-Use placeholder values in docs and tests. Use real values only in local `.env`
-files or CI secrets.
+<Callout type="warning">
+  Use placeholder values in docs and tests. Use real values only in local `.env`
+  files or CI secrets.
+</Callout>
 
 Common model-related variables:
 
@@ -76,12 +82,27 @@ semantics, see
 Project-level settings are stored in `agentengine.yaml`. `ksadk.yaml` and
 `ksadk.yml` are also detected for compatibility.
 
-```yaml
+<Tabs>
+  <Tab name="agentengine.yaml" value="agentengine.yaml">
+
+```yaml title="agentengine.yaml"
 name: my-agent
 framework: langgraph
 entry_point: agent.py
 agent_variable: root_agent
 ```
+
+  </Tab>
+  <Tab name=".env" value=".env">
+
+```bash title=".env"
+OPENAI_API_KEY=sk-test
+OPENAI_BASE_URL=https://api.example.com/v1
+OPENAI_MODEL_NAME=my-model
+```
+
+  </Tab>
+</Tabs>
 
 Common fields:
 
@@ -93,8 +114,10 @@ Common fields:
 | `agent_variable` | exported object name | `root_agent` |
 | `region` | optional cloud region for deployment-shaped commands | `cn-beijing-6` |
 
-Prefer explicit project YAML in public samples. It is easier for contributors to
-review than relying on framework auto-detection.
+<Callout type="info">
+  Prefer explicit project YAML in public samples. It is easier for contributors to
+  review than relying on framework auto-detection.
+</Callout>
 
 ## Framework-Specific Notes
 
@@ -105,34 +128,33 @@ review than relying on framework auto-detection.
 | LangChain | set `framework: langchain`, export the chain/runnable object |
 | DeepAgents | set `framework: deepagents`, keep service-only startup code out of import side effects |
 
-If the project uses custom state or input preparation, keep those hooks in the
-configured entry module so the runner can import them consistently.
+<Callout type="warning">
+  If the project uses custom state or input preparation, keep those hooks in the
+  configured entry module so the runner can import them consistently.
+</Callout>
 
 ## Config Commands
 
-Interactive wizard:
+<Steps>
 
-```bash
-agentengine config
-```
+1. Interactive wizard:
+   ```bash
+   agentengine config
+   ```
+2. Show effective settings:
+   ```bash
+   agentengine config show
+   ```
+3. Set values non-interactively:
+   ```bash
+   agentengine config set region=cn-beijing-6 OPENAI_MODEL_NAME=my-model
+   ```
+4. Switch the default model:
+   ```bash
+   agentengine config model
+   ```
 
-Show effective settings:
-
-```bash
-agentengine config show
-```
-
-Set values non-interactively:
-
-```bash
-agentengine config set region=cn-beijing-6 OPENAI_MODEL_NAME=my-model
-```
-
-Switch the default model:
-
-```bash
-agentengine config model
-```
+</Steps>
 
 ## Precedence And Local Overrides
 
@@ -160,25 +182,28 @@ clearly optional:
 | `KSADK_KB_TOP_K` | set knowledge retrieval count |
 | `KSADK_BUILD_ENABLE_ATTACHMENT_OCR` | include OCR-related dependencies in build flows when intentionally needed |
 
-Leave these unset in the first quickstart unless the page is specifically about
-that capability.
+<Callout type="info">
+  Leave these unset in the first quickstart unless the page is specifically about
+  that capability.
+</Callout>
 
 ## Secrets And Files
 
 Recommended local layout:
 
-```text
-my-agent/
-  agentengine.yaml
-  agent.py
-  requirements.txt
-  .env              # local only
-  .gitignore
-```
+<Files>
+  <Folder name="my-agent" defaultOpen>
+    <File name="agentengine.yaml" />
+    <File name="agent.py" />
+    <File name="requirements.txt" />
+    <File name=".env" />
+    <File name=".gitignore" />
+  </Folder>
+</Files>
 
 Recommended `.gitignore` entries:
 
-```text
+```text title=".gitignore"
 .env
 .agentengine/
 dist/
@@ -186,17 +211,18 @@ build/
 *.egg-info/
 ```
 
-Never commit `.pypirc`, API keys, cookies, kubeconfig files, private registry
-credentials, customer data, local session databases, or uploaded files.
+<Callout type="warning">
+  Never commit `.pypirc`, API keys, cookies, kubeconfig files, private registry
+  credentials, customer data, local session databases, or uploaded files.
+</Callout>
 
 ## Public Documentation Rule
 
-Do not publish real internal endpoints, access keys, cookies, kubeconfig paths,
-registry names, customer data, or private support URLs in examples.
-
-For public docs:
-
-- use `https://api.example.com/v1` for placeholder provider URLs.
-- use `sk-test` or `<YOUR_API_KEY>` for placeholder tokens.
-- mark cloud settings as optional.
-- prefer local runtime examples over hosted infrastructure examples.
+<Callout type="warning">
+  Do not publish real internal endpoints, access keys, cookies, kubeconfig paths,
+  registry names, customer data, or private support URLs in examples. For public docs:
+  - use `https://api.example.com/v1` for placeholder provider URLs.
+  - use `sk-test` or `<YOUR_API_KEY>` for placeholder tokens.
+  - mark cloud settings as optional.
+  - prefer local runtime examples over hosted infrastructure examples.
+</Callout>

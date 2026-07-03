@@ -44,37 +44,41 @@ DeepAgents. They call `BaseRunner.invoke()` or `BaseRunner.stream()`.
 
 `agentengine run` and `agentengine web` follow the same broad path:
 
-1. resolve the project directory.
-2. re-execute inside the project virtual environment when needed.
-3. load environment and project settings.
-4. detect the framework and entry point.
-5. create the matching runner.
-6. load the user agent.
-7. run terminal mode or start the local HTTP server.
+<Steps>
+  1. resolve the project directory.
+  2. re-execute inside the project virtual environment when needed.
+  3. load environment and project settings.
+  4. detect the framework and entry point.
+  5. create the matching runner.
+  6. load the user agent.
+  7. run terminal mode or start the local HTTP server.
+</Steps>
 
-If framework detection returns `unknown`, the CLI stops before importing the
-user project as a runner.
+<Callout type="warning">
+If framework detection returns `unknown`, the CLI stops before importing the user project as a runner.
+</Callout>
 
 ## Startup Boundaries
 
 The local runtime has a strict startup boundary:
 
-1. CLI code resolves paths, configuration, environment variables, and the
-   project virtual environment.
-2. detection code decides which framework adapter should be used.
-3. the runner factory creates a framework-specific runner.
-4. the runner loads user code.
-5. the server layer exposes HTTP protocols and delegates execution to the
-   runner.
+<Steps>
+  1. CLI code resolves paths, configuration, environment variables, and the
+     project virtual environment.
+  2. detection code decides which framework adapter should be used.
+  3. the runner factory creates a framework-specific runner.
+  4. the runner loads user code.
+  5. the server layer exposes HTTP protocols and delegates execution to the
+     runner.
+</Steps>
 
-Detection happens before user code is imported. That distinction is important
-for safety and debuggability: a broken module import should be reported as an
-agent loading problem, while a missing `agentengine.yaml`, invalid entry point,
-or unsupported framework should be reported as a project detection problem.
+<Callout type="info">
+Detection happens before user code is imported. That distinction is important for safety and debuggability: a broken module import should be reported as an agent loading problem, while a missing `agentengine.yaml`, invalid entry point, or unsupported framework should be reported as a project detection problem.
+</Callout>
 
 For public examples, keep project setup explicit:
 
-```yaml
+```yaml title="agentengine.yaml"
 name: support-agent
 framework: langgraph
 entry_point: agent.py
@@ -102,8 +106,9 @@ flowchart TD
   G --> H["create_runner"]
 ```
 
-Public samples should include `agentengine.yaml` because explicit config is
-easier to review and less dependent on source-code heuristics.
+<Callout type="info">
+Public samples should include `agentengine.yaml` because explicit config is easier to review and less dependent on source-code heuristics.
+</Callout>
 
 The convention-based fallback is still useful for quick experiments. It checks
 common project layouts such as:
@@ -113,10 +118,9 @@ common project layouts such as:
 - a `src/<package>` layout.
 - `langgraph.json` graph targets.
 
-When convention detection is used, the runtime still needs two concrete facts:
-which file should be imported and which variable inside that file is the agent
-object. If either value is ambiguous, add `agentengine.yaml` instead of relying
-on heuristics.
+<Callout type="warning">
+When convention detection is used, the runtime still needs two concrete facts: which file should be imported and which variable inside that file is the agent object. If either value is ambiguous, add `agentengine.yaml` instead of relying on heuristics.
+</Callout>
 
 ## Runner Contract
 
@@ -143,10 +147,9 @@ The narrow contract also defines where custom behavior should live:
 | framework-native session continuity | runner session adapter |
 | protocol-specific JSON/SSE formatting | server and conversation runtime |
 
-If you are adding a new framework adapter, start with `BaseRunner` and implement
-`load_agent()`, `invoke()`, and `stream()` first. Add session continuity,
-dynamic model overrides, or protocol-specific event mapping only after the
-basic invoke and stream paths are stable.
+<Callout type="info">
+If you are adding a new framework adapter, start with `BaseRunner` and implement `load_agent()`, `invoke()`, and `stream()` first. Add session continuity, dynamic model overrides, or protocol-specific event mapping only after the basic invoke and stream paths are stable.
+</Callout>
 
 ## Request Lifecycle
 
@@ -285,11 +288,12 @@ and the 5-minute server protection timeout see
 | `POST /agentengine/api/v1/UploadFile` | local file upload for UI flows |
 | `/_ksadk/workspace/v1/*` | workspace file list/read/write/delete routes |
 
-External clients should prefer `/v1/responses` unless they are integrating with
-the local Web UI itself.
+<Callout type="info">
+External clients should prefer `/v1/responses` unless they are integrating with the local Web UI itself.
+</Callout>
 
 ## Public Documentation Boundary
 
-This page describes the public local runtime architecture. It intentionally does
-not publish private gateway behavior, internal cluster deployment details,
-internal kubeconfig paths, private registry names, or customer-specific runbooks.
+<Callout type="warning">
+This page describes the public local runtime architecture. It intentionally does not publish private gateway behavior, internal cluster deployment details, internal kubeconfig paths, private registry names, or customer-specific runbooks.
+</Callout>

@@ -4,15 +4,13 @@ title: Architecture
 
 # Architecture
 
-KsADK's public architecture is an Agent Runtime Platform layer. You keep building
-business agents with your chosen framework, while KsADK unifies runtime,
-debugging, protocols, tools, sandboxing, deployment, and observability.
+KsADK's public architecture is an **Agent Runtime Platform** layer. You keep building business agents with your chosen framework, while KsADK unifies runtime, debugging, protocols, tools, sandboxing, deployment, and observability.
 
 ![KsADK Agent Runtime Platform architecture](/assets/ksadk-runtime-architecture.png)
 
 ## Overview
 
-```text
+```text title="Runtime layers"
 ADK / LangGraph / LangChain / DeepAgents
                     │
                     ▼
@@ -30,6 +28,10 @@ ADK / LangGraph / LangChain / DeepAgents
           Hermes / OpenClaw Runtime
 ```
 
+<Callout type="info" title="Key boundary">
+  KsADK owns "how the agent runs", not "what it does". Agent logic, prompts, and domain tools stay in your framework code; runtime, sessions, tool protocols, deployment, and observability are handled by KsADK.
+</Callout>
+
 ## Main Boundaries
 
 | Layer | Responsibility |
@@ -44,15 +46,20 @@ ADK / LangGraph / LangChain / DeepAgents
 
 ## Local Runtime Path
 
-When you run `agentengine run` or `agentengine web`:
+The flow when you run `agentengine run` or `agentengine web`:
 
-1. the CLI resolves the project directory, `.env`, and `agentengine.yaml`.
-2. framework detection identifies ADK, LangGraph, LangChain, or DeepAgents.
-3. the runner factory creates the matching runner.
-4. the runner loads the user agent.
-5. the terminal, Web UI, or OpenAI-Compatible API invokes the runner.
-6. sessions, attachments, workspace files, tool calls, and tracing use the KsADK
-   runtime path.
+<Steps>
+  1. The CLI resolves the project directory, `.env`, and `agentengine.yaml`.
+  2. Framework detection identifies ADK, LangGraph, LangChain, or DeepAgents.
+  3. The runner factory creates the matching runner.
+  4. The runner loads the user agent.
+  5. The terminal, Web UI, or OpenAI-Compatible API invokes the runner.
+  6. Sessions, attachments, workspace files, tool calls, and tracing use the KsADK runtime path.
+</Steps>
+
+<Callout type="info">
+  Sessions, attachments, workspace, and tracing all flow through the same KsADK runtime path — local and remote behavior match, so you can debug locally and migrate to the hosted runtime seamlessly.
+</Callout>
 
 ## Why This Architecture Matters
 

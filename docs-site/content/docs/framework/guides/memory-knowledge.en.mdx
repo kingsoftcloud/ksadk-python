@@ -4,9 +4,7 @@ title: "Memory And Knowledge"
 
 # Memory And Knowledge
 
-KsADK includes memory and knowledge integration points for agent applications.
-The public documentation treats these as optional capabilities layered on top of
-the local runtime.
+KsADK includes memory and knowledge integration points for agent applications. The public documentation treats these as optional capabilities layered on top of the local runtime.
 
 ## Capability Model
 
@@ -20,18 +18,16 @@ Memory and knowledge are related, but they solve different problems:
 | Framework tools | Let the agent explicitly call memory or search tools | agent implementation | document the hook surface |
 | Ambient context | Add retrieved memory or knowledge text before the runner call | runtime payload | mark as KsADK runtime behavior |
 
-Session history is always part of the local conversation runtime. Long-term
-memory and knowledge base retrieval are opt-in integrations. Public quickstarts
-should run without any hosted memory or private knowledge service.
+<Callout type="info">
+Session history is always part of the local conversation runtime. Long-term memory and knowledge base retrieval are opt-in integrations. Public quickstarts should run without any hosted memory or private knowledge service.
+</Callout>
 
 ## Runtime Boundary
 
 KsADK separates memory and knowledge into three layers:
 
-1. framework tools, where the agent explicitly calls `load_memory`,
-   `save_memory`, or a knowledge search tool.
-2. ambient context, where the runtime retrieves short formatted context before
-   calling the runner.
+1. framework tools, where the agent explicitly calls `load_memory`, `save_memory`, or a knowledge search tool.
+2. ambient context, where the runtime retrieves short formatted context before calling the runner.
 3. backend services, where application-specific storage or retrieval happens.
 
 ```mermaid
@@ -46,22 +42,22 @@ flowchart TD
   Hook --> Agent["business agent"]
 ```
 
-The public contract is the payload and hook shape. A concrete hosted memory or
-knowledge backend is an optional deployment choice.
+<Callout type="info">
+The public contract is the payload and hook shape. A concrete hosted memory or knowledge backend is an optional deployment choice.
+</Callout>
 
 ## What To Use Locally
 
-For open-source examples, prefer storage that a developer can run without a
-private account:
+For open-source examples, prefer storage that a developer can run without a private account:
 
 - in-memory state for quick tests.
 - local files for deterministic examples.
 - SQLite for small persistent demos.
 - a local Redis instance only when the guide explicitly needs Redis behavior.
 
-Use hosted memory or hosted knowledge base examples only after the credential
-model and dataset boundary are public. Until then, document those features as
-optional extension points.
+<Callout type="warning">
+Use hosted memory or hosted knowledge base examples only after the credential model and dataset boundary are public. Until then, document those features as optional extension points.
+</Callout>
 
 ## Long-Term Memory
 
@@ -72,18 +68,15 @@ Long-term memory is accessed through a small backend contract:
 | `save_memory(user_id, event_strings, **kwargs)` | persist one or more user-scoped facts or events |
 | `search_memory(user_id, query, top_k, **kwargs)` | retrieve relevant memories for a query |
 
-The runtime service chooses a backend from environment configuration, formats
-results into prompt text, and exposes framework tools such as `load_memory` and
-`save_memory`. If no long-term memory backend is configured, the public runtime
-should continue to work normally.
+The runtime service chooses a backend from environment configuration, formats results into prompt text, and exposes framework tools such as `load_memory` and `save_memory`. If no long-term memory backend is configured, the public runtime should continue to work normally.
 
-Backend options can include local test stores, HTTP services, or cloud SDK
-integrations. For open-source examples, document the interface first and make
-hosted backends optional.
+<Callout type="info">
+Backend options can include local test stores, HTTP services, or cloud SDK integrations. For open-source examples, document the interface first and make hosted backends optional.
+</Callout>
 
 Example local shape:
 
-```python
+```python title="memory_local.py"
 def save_preference(memory_store: dict[str, list[str]], user_id: str, value: str) -> None:
     memory_store.setdefault(user_id, []).append(value)
 
@@ -92,17 +85,15 @@ def search_preferences(memory_store: dict[str, list[str]], user_id: str, query: 
     return [item for item in memory_store.get(user_id, []) if query.lower() in item.lower()]
 ```
 
-This intentionally uses an in-process dictionary. It is enough for a tutorial,
-but production applications should choose a durable backend and define retention
-and privacy policies.
+<Callout type="warning">
+This intentionally uses an in-process dictionary. It is enough for a tutorial, but production applications should choose a durable backend and define retention and privacy policies.
+</Callout>
 
 ## Knowledge Retrieval
 
-Knowledge retrieval is for external facts, manuals, or product data. The public
-SDK should not assume a private hosted dataset. A public example can use a small
-local file corpus:
+Knowledge retrieval is for external facts, manuals, or product data. The public SDK should not assume a private hosted dataset. A public example can use a small local file corpus:
 
-```python
+```python title="knowledge_local.py"
 DOCUMENTS = [
     {"title": "refund-policy.md", "text": "Refunds are reviewed within 5 business days."},
     {"title": "shipping.md", "text": "Standard shipping takes 3 to 7 business days."},
@@ -115,17 +106,13 @@ def search_documents(query: str, top_k: int = 3) -> list[dict[str, str]]:
     return matches[:top_k]
 ```
 
-Hosted knowledge integrations can follow the same visible shape: a query enters
-the retriever, the retriever returns scored snippets, and the runner receives a
-short formatted context block. Keep raw private document IDs, account IDs, and
-dataset names out of public examples.
+<Callout type="warning">
+Hosted knowledge integrations can follow the same visible shape: a query enters the retriever, the retriever returns scored snippets, and the runner receives a short formatted context block. Keep raw private document IDs, account IDs, and dataset names out of public examples.
+</Callout>
 
 ## ADK Versus Other Frameworks
 
-ADK projects can receive memory and knowledge through ADK-compatible tools and,
-when configured, an ADK memory service. LangGraph, LangChain, and DeepAgents
-projects should usually receive context through the runner payload or explicit
-hook functions.
+ADK projects can receive memory and knowledge through ADK-compatible tools and, when configured, an ADK memory service. LangGraph, LangChain, and DeepAgents projects should usually receive context through the runner payload or explicit hook functions.
 
 | Framework path | Recommended public pattern |
 | --- | --- |
@@ -134,13 +121,13 @@ hook functions.
 | LangChain | compose context into the chain input with `ksadk_prepare_input` |
 | DeepAgents | pass context through model/tool configuration used by the app |
 
-This distinction matters because ADK has native tool and memory concepts, while
-message/state frameworks often need application-specific state mapping.
+<Callout type="info">
+This distinction matters because ADK has native tool and memory concepts, while message/state frameworks often need application-specific state mapping.
+</Callout>
 
 ## Runtime Context Flow
 
-When configured, KsADK can build memory and knowledge context before calling the
-framework runner:
+When configured, KsADK can build memory and knowledge context before calling the framework runner:
 
 ```mermaid
 flowchart TD
@@ -156,8 +143,9 @@ flowchart TD
   Runner --> Agent["agent code"]
 ```
 
-`kb_context` and `memory_context` are KsADK runtime extensions. They should be
-described as local runner context, not as official OpenAI protocol fields.
+<Callout type="info">
+`kb_context` and `memory_context` are KsADK runtime extensions. They should be described as local runner context, not as official OpenAI protocol fields.
+</Callout>
 
 ## Framework Integration
 
@@ -168,17 +156,15 @@ Memory and knowledge features should be exposed through normal framework hooks:
 - LangGraph state and checkpointers.
 - DeepAgents model/tool configuration.
 
-The exact implementation should be selected by the application. KsADK should
-provide runtime compatibility and examples, not force one hosted backend in the
-public quickstart.
+<Callout type="info">
+The exact implementation should be selected by the application. KsADK should provide runtime compatibility and examples, not force one hosted backend in the public quickstart.
+</Callout>
 
 ### LangGraph
 
-For LangGraph projects with custom state, expose a top-level
-`ksadk_prepare_state(payload, session_context)` function. Use the payload for
-the current input and the session context for runtime-provided context:
+For LangGraph projects with custom state, expose a top-level `ksadk_prepare_state(payload, session_context)` function. Use the payload for the current input and the session context for runtime-provided context:
 
-```python
+```python title="prepare_state.py"
 def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
     return {
         "messages": payload.get("input_messages", []),
@@ -188,15 +174,15 @@ def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
     }
 ```
 
-For messages-native graphs, the default runner can often build the state
-without a custom hook. Add a hook when your graph uses fields beyond `messages`.
+<Callout type="info">
+For messages-native graphs, the default runner can often build the state without a custom hook. Add a hook when your graph uses fields beyond `messages`.
+</Callout>
 
 ### LangChain
 
-For LangChain projects, expose `ksadk_prepare_input(payload, session_context)`
-when the application needs direct access to memory or knowledge context:
+For LangChain projects, expose `ksadk_prepare_input(payload, session_context)` when the application needs direct access to memory or knowledge context:
 
-```python
+```python title="prepare_input.py"
 def ksadk_prepare_input(payload: dict, session_context: dict) -> str:
     sections = []
     if session_context.get("kb_context"):
@@ -209,15 +195,13 @@ def ksadk_prepare_input(payload: dict, session_context: dict) -> str:
 
 ### ADK
 
-ADK projects should prefer ADK-native tools and services. KsADK can expose
-memory and knowledge tools in ADK-compatible form when those optional
-integrations are configured. Public samples should still run with local or fake
-data unless hosted credentials are intentionally part of the sample.
+<Callout type="info">
+ADK projects should prefer ADK-native tools and services. KsADK can expose memory and knowledge tools in ADK-compatible form when those optional integrations are configured. Public samples should still run with local or fake data unless hosted credentials are intentionally part of the sample.
+</Callout>
 
 ## Environment Variables
 
-Use placeholders in public docs. The exact backend configuration may vary by
-deployment, but these names define the public-facing configuration family:
+Use placeholders in public docs. The exact backend configuration may vary by deployment, but these names define the public-facing configuration family:
 
 | Variable | Purpose |
 | --- | --- |
@@ -229,19 +213,17 @@ deployment, but these names define the public-facing configuration family:
 | `KSADK_KB_SEARCH_METHOD` | retrieval method when supported by the backend |
 | `KSADK_KB_SCORE_THRESHOLD` | optional relevance threshold |
 
-Do not commit real values for dataset IDs, tokens, access keys, or customer
-collection names. Put private values in local `.env` files or CI secrets.
+<Callout type="warning">
+Do not commit real values for dataset IDs, tokens, access keys, or customer collection names. Put private values in local `.env` files or CI secrets.
+</Callout>
 
 ## OpenClaw Memory Backend (Optional)
 
 <Callout type="info" title="New in 0.6.7">
-The OpenClaw runtime can declare a memory backend through a manifest. An
-in-process LanceDB memory plugin has been added.
+The OpenClaw runtime can declare a memory backend through a manifest. An in-process LanceDB memory plugin has been added.
 </Callout>
 
-
-The OpenClaw runtime declares a memory backend through `MEMORY_BACKEND_MANIFEST`.
-The `backend_type` can be one of:
+The OpenClaw runtime declares a memory backend through `MEMORY_BACKEND_MANIFEST`. The `backend_type` can be one of:
 
 | `backend_type` | Description | When to use |
 | --- | --- | --- |
@@ -251,19 +233,12 @@ The `backend_type` can be one of:
 
 Notes:
 
-- `lancedb` maps to an in-process LanceDB memory plugin (plugin id
-  `memory-lancedb`) and is **not** exposed through the
-  `agentengine openclaw deploy --memory-system` CLI; that CLI choice is limited
-  to `openclaw_default` / `mem0`.
-- When `mem0` is selected, `MEM0_API_KEY` / `MEM0_USER_ID` / `MEM0_BASE_URL`
-  are required (injected by the hosted platform).
-- Rendering the `memory-lancedb` output disables `openclaw-mem0` to avoid
-  loading both backends at once.
-- The manifest `config` can optionally override `dbPath`, `embedding`, and
-  `storageOptions`.
+- `lancedb` maps to an in-process LanceDB memory plugin (plugin id `memory-lancedb`) and is **not** exposed through the `agentengine openclaw deploy --memory-system` CLI; that CLI choice is limited to `openclaw_default` / `mem0`.
+- When `mem0` is selected, `MEM0_API_KEY` / `MEM0_USER_ID` / `MEM0_BASE_URL` are required (injected by the hosted platform).
+- Rendering the `memory-lancedb` output disables `openclaw-mem0` to avoid loading both backends at once.
+- The manifest `config` can optionally override `dbPath`, `embedding`, and `storageOptions`.
 
-```yaml
-# MEMORY_BACKEND_MANIFEST example (injected by the hosted platform)
+```yaml title="MEMORY_BACKEND_MANIFEST example (injected by the hosted platform)"
 backend_type: lancedb
 config:
   dbPath: /data/agent-memory/lance
@@ -275,51 +250,48 @@ config:
 ```
 
 <Callout type="info" title="Public surface">
-The manifest and secrets above are injected by the hosted platform. Public
-docs do not expose internal endpoints, accounts, or tokens; examples use
-placeholders such as `example.com` / `sk-test` / `cm-appkey-placeholder`.
+The manifest and secrets above are injected by the hosted platform. Public docs do not expose internal endpoints, accounts, or tokens; examples use placeholders such as `example.com` / `sk-test` / `cm-appkey-placeholder`.
 </Callout>
 
-
-For the full variable list, see
-[ksadk environment variables reference](../reference/environment-variables).
+For the full variable list, see [ksadk environment variables reference](../reference/environment-variables).
 
 ## Failure Behavior
 
+<Callout type="warning">
 Memory and knowledge integrations should be best-effort in local development:
-
 - missing optional configuration should not stop a normal quickstart.
-- retrieval errors should be surfaced as diagnostics, not hidden as successful
-  empty context.
+- retrieval errors should be surfaced as diagnostics, not hidden as successful empty context.
 - agent code should handle `None`, empty context, and partial results.
 - tests should cover behavior with integrations disabled.
+</Callout>
 
 ## Hosted Integrations
 
-Hosted memory, knowledge base, and Skill Service integrations can be documented
-as optional capabilities after their public credential model is approved.
+Hosted memory, knowledge base, and Skill Service integrations can be documented as optional capabilities after their public credential model is approved.
 
+<Callout type="warning">
 Public docs must not require:
-
 - internal service tokens.
 - customer datasets.
 - private traces or logs.
 - internal object storage.
 - private support URLs.
+</Callout>
 
 ## Recommended Public Example Pattern
 
 When adding a memory or knowledge example to the public repository:
 
+<Steps>
 1. make the first run work with no hosted credentials.
 2. use a tiny local corpus or in-memory store.
 3. show where to swap in a real backend.
 4. keep user data, extracted document text, and traces out of the repository.
-5. document whether the example uses session history, long-term memory, or
-   knowledge retrieval.
+5. document whether the example uses session history, long-term memory, or knowledge retrieval.
+</Steps>
 
 ## Example Data Rule
 
-Examples should use fake data or public sample data. Treat logs, traces, memory
-snapshots, uploaded files, and knowledge base records as potentially sensitive
-until reviewed.
+<Callout type="warning">
+Examples should use fake data or public sample data. Treat logs, traces, memory snapshots, uploaded files, and knowledge base records as potentially sensitive until reviewed.
+</Callout>

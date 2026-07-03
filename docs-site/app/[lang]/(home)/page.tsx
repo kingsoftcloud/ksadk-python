@@ -27,7 +27,7 @@ export default async function HomePage({ params }: { params: Promise<{ lang: str
 
   return (
     <main className="flex flex-1 flex-col items-center justify-center text-center px-4 py-24">
-      <h1 className="text-5xl md:text-6xl font-bold mb-3 bg-gradient-to-r from-blue-600 to-cyan-500 bg-clip-text text-transparent">
+      <h1 className="text-5xl md:text-6xl font-bold mb-3 ksadk-hero-gradient">
         {t.title}
       </h1>
       <p className="text-xl font-semibold text-fd-foreground mb-2">{t.subtitle}</p>
@@ -35,7 +35,8 @@ export default async function HomePage({ params }: { params: Promise<{ lang: str
       <div className="flex flex-wrap items-center justify-center gap-3 mb-8">
         <Link
           href={docsHref}
-          className="rounded-full bg-fd-primary text-fd-primary-foreground px-6 py-2.5 font-medium hover:opacity-90 transition"
+          className="rounded-full px-6 py-2.5 font-medium text-white hover:opacity-90 transition"
+          style={{ background: 'linear-gradient(135deg, #5368db 0%, #59d3d9 100%)' }}
         >
           {t.cta}
         </Link>

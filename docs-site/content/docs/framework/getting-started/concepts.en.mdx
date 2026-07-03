@@ -2,10 +2,13 @@
 title: Concepts
 ---
 
-# Concepts
-
 KsADK has four public building blocks: a project template, a framework adapter,
 a local runtime, and a local debugging UI.
+
+<Callout type="info">
+  Understand these four blocks and you can decide whether an issue belongs in
+  agent code, project config, the Runner, the protocol layer, or the Web UI.
+</Callout>
 
 ## KsADK And The Agent Lifecycle
 
@@ -22,27 +25,39 @@ flowchart LR
   E --> A
 ```
 
-The public SDK intentionally keeps this loop local-first. Hosted AgentEngine
-deployment and cloud packaging are optional capabilities, not prerequisites for
-learning the open-source runtime.
+<Callout type="info">
+  The public SDK intentionally keeps this loop local-first. Hosted AgentEngine
+  deployment and cloud packaging are optional capabilities, not prerequisites for
+  learning the open-source runtime.
+</Callout>
 
 ## Project
 
 A KsADK project is a normal Python project with an agent entry point and optional
-configuration files. The default convention is:
+configuration files. The default convention:
+
+<Files>
+  <Folder name="my_agent" defaultOpen>
+    <File name="agent.py" />
+    <File name="agentengine.yaml" />
+    <File name=".env" />
+  </Folder>
+</Files>
 
 - `agent.py` or a package-level agent module exports `root_agent`.
 - `agentengine.yaml`, `ksadk.yaml`, or `ksadk.yml` describes the framework and entry point.
 - `.env` stores local credentials and model settings.
 
-The detector can also infer a project from common files such as `agent.py`,
-`main.py`, `app.py`, package directories, and `langgraph.json`.
+<Callout type="info">
+  The detector can also infer a project from common files such as `agent.py`,
+  `main.py`, `app.py`, package directories, and `langgraph.json`.
+</Callout>
 
 ## Framework Adapter
 
 KsADK does not replace framework APIs. It wraps common framework outputs so they
-can be invoked through a consistent runtime. The first public release focuses on
-these framework families:
+can be invoked through a consistent runtime with one set of local commands, one
+Web UI, and one OpenAI-compatible protocol.
 
 | Framework | Typical exported object |
 | --- | --- |
@@ -66,18 +81,22 @@ flowchart LR
   DA --> Contract
 ```
 
-The runner contract is the key public abstraction: framework-specific details
-stay inside adapters, while the server and conversation runtime only depend on
-`invoke`, `stream`, model overrides, sessions, and context.
+<Callout type="info">
+  The runner contract is the key public abstraction: framework-specific details
+  stay inside adapters, while the server and conversation runtime only depend on
+  `invoke`, `stream`, model overrides, sessions, and context.
+</Callout>
 
 ## Local Runtime
 
 `agentengine run` loads the project, detects the framework, and starts a local
-runtime. In interactive mode it can run directly in the terminal. In server mode
-it exposes HTTP endpoints that the Web UI and API clients can call.
+runtime. In interactive mode it runs directly in the terminal. In server mode it
+exposes HTTP endpoints that the Web UI and API clients can call.
 
-The local runtime is the safest default for public examples because it does not
-require private Kingsoft Cloud infrastructure.
+<Callout type="info">
+  The local runtime is the safest default for public examples because it does not
+  require private Kingsoft Cloud infrastructure.
+</Callout>
 
 ```mermaid
 sequenceDiagram
@@ -100,13 +119,12 @@ sequenceDiagram
 `agentengine web` starts the browser debugging experience for local projects.
 Users install the Python package and do not need Node.js for the bundled UI.
 
-The editable UI source is planned as a separate public repository:
-
-- Python SDK repository: `kingsoftcloud/ksadk-python`
-- Web UI repository: `kingsoftcloud/ksadk-web`
-
-The Python package embeds generated static assets. Future UI source changes
-should be made in `ksadk-web`, then consumed by the Python SDK and hosted UI.
+<Callout type="info" title="Repository boundaries">
+  The Python SDK repository `kingsoftcloud/ksadk-python` and the Web UI repository
+  `kingsoftcloud/ksadk-web` are separate. The Python package embeds generated
+  static assets; future UI source changes should be made in `ksadk-web`, then
+  consumed by the Python SDK and hosted UI.
+</Callout>
 
 ## Public Versus Hosted Capabilities
 
@@ -121,8 +139,10 @@ Local-first docs should prefer:
 - local files, SQLite, or in-memory stores.
 - `--dry-run` when explaining deployment-shaped commands.
 
-Public examples must not require internal kubeconfig files, private registries,
-private gateways, private object storage, or customer data.
+<Callout type="warning">
+  Public examples must not require internal kubeconfig files, private registries,
+  private gateways, private object storage, or customer data.
+</Callout>
 
 ## Documentation Layers
 
@@ -141,6 +161,7 @@ reference page should say what fields mean and which values are accepted.
 
 ## Repository Boundaries
 
-The Python repository owns Python SDK behavior. The planned `ksadk-web` repository owns editable UI behavior. The
-Python package should consume a reviewed UI build artifact or pinned source ref,
-not carry a divergent editable UI implementation forever.
+The Python repository owns Python SDK behavior. The planned `ksadk-web` repository
+owns editable UI behavior. The Python package should consume a reviewed UI build
+artifact or pinned source ref, not carry a divergent editable UI implementation
+forever.

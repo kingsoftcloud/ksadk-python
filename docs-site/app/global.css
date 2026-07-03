@@ -10,3 +10,57 @@ html > body[data-scroll-locked] {
   margin-right: 0px !important;
   --removed-body-scroll-bar-size: 0px !important;
 }
+
+/* === KsADK 冷青品牌色 (参考 motion-gradient.css 色板) ===
+ * 主色: 冷青蓝紫渐变 #5368db → #7d89dc → #91c5e2 → #afe4e4 → #dfd2f3
+ * 替代默认 Fumadocs neutral 主题色,用于 hero/CTA/链接/卡片
+ */
+:root {
+  --ksadk-blue: #5368db;
+  --ksadk-blue-light: #7d89dc;
+  --ksadk-cyan: #59d3d9;
+  --ksadk-cyan-soft: #afe4e4;
+  --ksadk-purple: #b29cec;
+  --ksadk-purple-soft: #dfd2f3;
+  --ksadk-gradient: linear-gradient(135deg, #5368db 0%, #7d89dc 30%, #59d3d9 65%, #afe4e4 100%);
+  --ksadk-gradient-soft: linear-gradient(135deg, #dfd2f3 0%, #afe4e4 50%, #91c5e2 100%);
+}
+
+/* Fumadocs primary 用品牌蓝紫 */
+:root {
+  --fd-primary: #5368db;
+  --fd-primary-foreground: #ffffff;
+}
+[data-theme='dark'] {
+  --fd-primary: #7d89dc;
+  --fd-primary-foreground: #ffffff;
+}
+
+/* hero 渐变文字 */
+.ksadk-hero-gradient {
+  background: var(--ksadk-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+/* 链接品牌色 */
+.fd-content a {
+  color: var(--ksadk-blue);
+  text-decoration-color: color-mix(in srgb, var(--ksadk-blue) 30%, transparent);
+}
+.fd-content a:hover {
+  text-decoration-color: var(--ksadk-blue);
+}
+
+[data-theme='dark'] .fd-content a {
+  color: #91c5e2;
+}
+
+/* 卡片 hover 冷青边框 */
+.fd-card:hover {
+  border-color: var(--ksadk-cyan);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--ksadk-cyan) 20%, transparent);
+}
+

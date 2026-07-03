@@ -5,10 +5,8 @@ export function baseOptions(locale: string): BaseLayoutProps {
   return {
     nav: {
       title: (
-        <span className="font-bold">
-          <span className="bg-gradient-to-r from-blue-600 to-cyan-500 bg-clip-text text-transparent">
-            {appName}
-          </span>
+        <span className="font-bold ksadk-hero-gradient">
+          {appName}
         </span>
       ),
       url: `/${locale}`,

@@ -4,24 +4,49 @@ title: "Attachments And Multimodal Input"
 
 # Attachments And Multimodal Input
 
-KsADK normalizes text, image, file, and uploaded attachment inputs before they
-reach a framework runner. This lets local UI, Responses API, Chat Completions,
-and ADK-style parts share one execution path.
+KsADK normalizes text, image, file, and uploaded attachment inputs before they reach a framework runner. Local UI, Responses API, Chat Completions, and ADK-style parts all share one execution path.
+
+<Callout type="info">
+Application code should use the normalized runner payload instead of branching on which public protocol the client used. See [Consume Structured Attachment Fields](#consume-structured-attachment-fields).
+</Callout>
+
+## Recommended Practices
+
+- Route image analysis to a vision-capable model (see [Default Multimodal Model](#default-multimodal-model)).
+- Do not paste large files directly into the prompt; extract a summary or structured content first.
+- When a tool needs a file, use the workspace or an attachment reference; do not guess browser upload paths.
+- Do not write attachment bytes into long-term memory.
 
 ## Input Shapes
 
-| Shape | Public protocol | Runtime behavior |
-| --- | --- | --- |
-| `input_text` | Responses | text content block |
-| `input_image` | Responses | image URL or data URL |
-| `input_file` | Responses | file data, file URL, file URI, or file ID |
-| `text` | legacy/ADK-style part | text part |
-| `inlineData` | legacy/ADK-style part | base64 attachment |
-| `fileData` | legacy/ADK-style part | uploaded or referenced file |
-| `image_url` | Chat Completions content block | image URL content |
+Common protocol shapes:
 
-Public examples should prefer Responses item names for `/v1/responses` and Chat
-Completions content blocks for `/v1/chat/completions`.
+<Tabs>
+  <Tab name="Text" value="text">
+
+  ```json title="input_text"
+  {"type": "input_text", "text": "..."}
+  ```
+  </Tab>
+  <Tab name="Image" value="image">
+
+  ```json title="input_image"
+  {"type": "input_image", "image_url": "data:image/png;base64,..."}
+  ```
+  </Tab>
+  <Tab name="File" value="file">
+
+  ```json title="input_file"
+  {"type": "input_file", "filename": "note.txt", "file_data": "data:text/plain;base64,..."}
+  ```
+  </Tab>
+  <Tab name="Metadata/Ref" value="meta">
+
+  File metadata and workspace references such as `ksadk-upload://<file_id>`.
+  </Tab>
+</Tabs>
+
+Business agents should handle missing, expired, or unsupported attachment references and return a clear error.
 
 ## Normalization Flow
 
@@ -198,7 +223,7 @@ durable URL.
 The hosted runtime downloads `ae-upload://` attachment bytes through the KOP
 Action endpoint:
 
-```text
+```text title="GET request"
 GET /agentengine/api/v1/AttachmentContent?FileUri=<uri>
 ```
 
@@ -221,8 +246,7 @@ re-downloading.
 
 ## Consume Structured Attachment Fields
 
-Business agents should not guess upload paths or parse `file_uri` themselves.
-Consume the structured attachment fields from the runner payload instead:
+Business agents should not guess upload paths or parse `file_uri` themselves. Consume the structured attachment fields from the runner payload instead:
 
 | Field | Use when |
 | --- | --- |
@@ -231,7 +255,7 @@ Consume the structured attachment fields from the runner payload instead:
 | `attachments` | the effective file context for this turn (including session carryover) |
 | `attachment_results` | follow-up questions that should keep working with the prior file |
 
-```python
+```python title="agent.py"
 def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
     return {
         "messages": payload.get("input_messages", []),
@@ -242,14 +266,13 @@ def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
     }
 ```
 
-- Use `current_attachment_results` for workflows such as "process the file I just
-  uploaded".
-- Use `attachment_results` for follow-ups such as "now summarize the second
-  section"; `current_attachment_results` is expected to be empty on a text-only
-  follow-up.
-- When a tool needs a file handle, take the `file_uri` from
-  `current_attachments` / `attachments` and hand it to the runtime for unified
-  resolution. Do not assemble host-absolute paths yourself.
+- Use `current_attachment_results` for workflows such as "process the file I just uploaded".
+- Use `attachment_results` for follow-ups such as "now summarize the second section"; `current_attachment_results` is expected to be empty on a text-only follow-up.
+- When a tool needs a file handle, take the `file_uri` from `current_attachments` / `attachments` and hand it to the runtime for unified resolution.
+
+<Callout type="warning">
+Do not assemble host-absolute paths yourself or parse `file_uri` manually. Hand `file_uri` to the runtime for unified resolution.
+</Callout>
 
 ## Display Content Versus Runner Content
 
@@ -399,10 +422,11 @@ as the fallback. Multimodal capability (vision / image) is routed to
 | `OPENCLAW_IMAGE_MODEL` | explicit OpenClaw multimodal / image model override, takes precedence over the policy default |
 | `HERMES_DEFAULT_MODEL` / `OPENCLAW_FALLBACK_MODEL` | explicit environment-variable overrides still take precedence over policy defaults |
 
-Precedence: explicit request-level model options > explicit environment variables
-> policy defaults. When you need to switch the image / vision model, prefer
-setting it explicitly in request `model_options`, or set `OPENCLAW_IMAGE_MODEL`
-to override the default multimodal model.
+Precedence: explicit request-level model options > explicit environment variables > policy defaults.
+
+<Callout type="info">
+To switch the image / vision model, set it explicitly in request `model_options`, or set `OPENCLAW_IMAGE_MODEL` to override the default multimodal model.
+</Callout>
 
 ## Safety Rules
 

@@ -4,14 +4,13 @@ title: 架构
 
 # 架构
 
-KsADK 的公开架构可以理解为一层 Agent Runtime Platform：业务 Agent 仍由你选择的框架
-编写，KsADK 负责统一运行、调试、协议、工具、沙箱、部署和观测。
+KsADK 的公开架构是一层 **Agent Runtime Platform**：业务 Agent 仍由你选择的框架编写，KsADK 统一负责运行、调试、协议、工具、沙箱、部署与观测。
 
 ![KsADK Agent Runtime Platform 架构](/assets/ksadk-runtime-architecture.png)
 
 ## 总览
 
-```text
+```text title="运行时分层"
 ADK / LangGraph / LangChain / DeepAgents
                     │
                     ▼
@@ -29,6 +28,10 @@ ADK / LangGraph / LangChain / DeepAgents
           Hermes / OpenClaw Runtime
 ```
 
+<Callout type="info" title="关键边界">
+  KsADK 只接管"怎么跑"，不接管"做什么"。Agent 的业务逻辑、prompt、domain tools 留在你的框架代码里；运行时、会话、工具协议、部署、观测由 KsADK 统一处理。
+</Callout>
+
 ## 核心边界
 
 | 层 | 责任 |
@@ -43,14 +46,20 @@ ADK / LangGraph / LangChain / DeepAgents
 
 ## 本地运行路径
 
-当你执行 `agentengine run` 或 `agentengine web`：
+执行 `agentengine run` 或 `agentengine web` 时的处理流程：
 
-1. CLI 解析项目目录、`.env` 和 `agentengine.yaml`。
-2. 框架检测器识别 ADK、LangGraph、LangChain 或 DeepAgents。
-3. Runner Factory 创建对应 Runner。
-4. Runner 加载用户 Agent。
-5. 本地终端、Web UI 或 OpenAI-Compatible API 调用 Runner。
-6. 会话、附件、workspace 文件、工具调用和 tracing 由 KsADK 统一处理。
+<Steps>
+  1. CLI 解析项目目录、`.env` 和 `agentengine.yaml`。
+  2. 框架检测器识别 ADK、LangGraph、LangChain 或 DeepAgents。
+  3. Runner Factory 创建对应 Runner。
+  4. Runner 加载用户 Agent。
+  5. 本地终端、Web UI 或 OpenAI-Compatible API 调用 Runner。
+  6. 会话、附件、workspace 文件、工具调用和 tracing 由 KsADK 统一处理。
+</Steps>
+
+<Callout type="info">
+  会话、附件、workspace 与 tracing 都走同一条 KsADK 运行时路径——本地与远端行为一致，方便本地调试后无缝迁移到托管 runtime。
+</Callout>
 
 ## 为什么这个架构重要
 

@@ -43,15 +43,19 @@ LangChain 还是 DeepAgents。它们调用 `BaseRunner.invoke()` 或
 
 `agentengine run` 和 `agentengine web` 大体路径一致：
 
-1. 解析项目目录。
-2. 必要时重新进入项目虚拟环境执行。
-3. 加载环境变量和项目设置。
-4. 检测框架和入口点。
-5. 创建匹配的 Runner。
-6. 加载用户 Agent。
-7. 进入终端模式或启动本地 HTTP server。
+<Steps>
+  1. 解析项目目录。
+  2. 必要时重新进入项目虚拟环境执行。
+  3. 加载环境变量和项目设置。
+  4. 检测框架和入口点。
+  5. 创建匹配的 Runner。
+  6. 加载用户 Agent。
+  7. 进入终端模式或启动本地 HTTP server。
+</Steps>
 
-如果框架检测结果是 `unknown`，CLI 会在导入用户代码作为 Runner 之前停止。
+<Callout type="warning">
+如果框架检测结果是 `unknown`，CLI 会在导入用户代码作为 Runner 之前停止，避免把不可识别的项目当成 Runner 加载。
+</Callout>
 
 ```mermaid
 flowchart TD
@@ -76,19 +80,21 @@ flowchart TD
 
 本地运行时有严格启动边界：
 
-1. CLI 代码解析路径、配置、环境变量和项目虚拟环境。
-2. detection 代码决定使用哪个框架适配器。
-3. runner factory 创建框架特定 Runner。
-4. runner 加载用户代码。
-5. server 层暴露 HTTP 协议并委托给 runner。
+<Steps>
+  1. CLI 代码解析路径、配置、环境变量和项目虚拟环境。
+  2. detection 代码决定使用哪个框架适配器。
+  3. runner factory 创建框架特定 Runner。
+  4. runner 加载用户代码。
+  5. server 层暴露 HTTP 协议并委托给 runner。
+</Steps>
 
-检测发生在导入用户代码之前。这个区别对安全和调试很重要：模块导入失败应报告为
-Agent 加载问题；缺少 `agentengine.yaml`、入口点无效或框架不受支持，应报告为项目
-检测问题。
+<Callout type="info">
+检测发生在导入用户代码之前。这个区别对安全和调试很重要：模块导入失败应报告为 Agent 加载问题；缺少 `agentengine.yaml`、入口点无效或框架不受支持，应报告为项目检测问题。
+</Callout>
 
 公开示例应保持项目配置明确：
 
-```yaml
+```yaml title="agentengine.yaml"
 name: support-agent
 framework: langgraph
 entry_point: agent.py
@@ -112,8 +118,9 @@ flowchart TD
   G --> H["create_runner"]
 ```
 
-公开 sample 推荐包含 `agentengine.yaml`，因为显式配置更容易审核，也较少依赖源码
-启发式。
+<Callout type="info">
+公开 sample 推荐包含 `agentengine.yaml`，因为显式配置更容易审核，也较少依赖源码启发式。
+</Callout>
 
 约定检测仍适合快速实验。它会检查：
 
@@ -122,8 +129,9 @@ flowchart TD
 - `src/<package>` 布局。
 - `langgraph.json` graph target。
 
-当使用约定检测时，运行时仍然需要两个事实：导入哪个文件，以及该文件里的哪个变量是
-Agent 对象。如果任一值不明确，就添加 `agentengine.yaml`。
+<Callout type="warning">
+当使用约定检测时，运行时仍然需要两个事实：导入哪个文件，以及该文件里的哪个变量是 Agent 对象。如果任一值不明确，就添加 `agentengine.yaml`。
+</Callout>
 
 ## Runner 契约
 
@@ -147,8 +155,9 @@ Agent 对象。如果任一值不明确，就添加 `agentengine.yaml`。
 | 框架原生 session continuity | Runner session adapter |
 | 协议 JSON/SSE 格式化 | server 和对话运行时 |
 
-新增框架 adapter 时，先从 `BaseRunner` 开始实现 `load_agent()`、`invoke()` 和
-`stream()`。session continuity、动态模型覆盖或协议事件映射应在基础路径稳定后再加。
+<Callout type="info">
+新增框架 adapter 时，先从 `BaseRunner` 开始实现 `load_agent()`、`invoke()` 和 `stream()`。session continuity、动态模型覆盖或协议事件映射应在基础路径稳定后再加。
+</Callout>
 
 ## 请求生命周期
 
@@ -268,9 +277,12 @@ resume 能力受 `GetAgentUiBootstrap` 返回的 `RuntimeCapabilities.ResumeRun.
 | `POST /agentengine/api/v1/UploadFile` | UI 流程的本地文件上传 |
 | `/_ksadk/workspace/v1/*` | 工作区文件 list/read/write/delete 路由 |
 
+<Callout type="info">
 外部客户端应优先使用 `/v1/responses`，除非它正在集成本地 Web UI 本身。
+</Callout>
 
 ## 公开文档边界
 
-本页描述公开本地运行时架构。它不会发布私有网关行为、内部集群部署细节、内部
-kubeconfig 路径、私有 registry 名称或客户特定 runbook。
+<Callout type="warning">
+本页描述公开本地运行时架构。它不会发布私有网关行为、内部集群部署细节、内部 kubeconfig 路径、私有 registry 名称或客户特定 runbook。
+</Callout>

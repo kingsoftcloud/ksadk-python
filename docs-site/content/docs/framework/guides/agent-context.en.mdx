@@ -4,13 +4,11 @@ title: "Agent Context"
 
 # Agent Context
 
-This guide explains what context reaches business agent code when KsADK invokes
-ADK, LangGraph, LangChain, or DeepAgents projects.
+This guide explains what context reaches business agent code when KsADK invokes ADK, LangGraph, LangChain, or DeepAgents projects.
 
 ## Recommended Pattern
 
-Do not make business code parse raw UI events or internal session records. Use a
-framework hook or runner payload boundary:
+Do not make business code parse raw UI events or internal session records. Use a framework hook or runner payload boundary:
 
 | Framework | Recommended integration |
 | --- | --- |
@@ -19,8 +17,9 @@ framework hook or runner payload boundary:
 | ADK | consume ADK message/session primitives produced by the runner |
 | DeepAgents | configure the model/tools and consume normalized input |
 
-For LangGraph and LangChain, the hook must be visible from the configured
-`entry_point` module.
+<Callout type="info">
+  For LangGraph and LangChain, the hook must be visible from the configured `entry_point` module.
+</Callout>
 
 ## Standard Payload Fields
 
@@ -54,15 +53,12 @@ Session context can include:
 | `is_resume` | whether the request is resuming an interrupted run |
 
 <Callout type="info" title="New in 0.6.7">
-`platform_context.account_id` defaults to an empty string. Skill / Workspace /
-Sandbox / Memory isolate per account boundary: data is visible within the same
-account and isolated across accounts.
+  `platform_context.account_id` defaults to an empty string. Skill / Workspace / Sandbox / Memory isolate per account boundary: data is visible within the same account and isolated across accounts.
 </Callout>
-
 
 ## LangGraph Hook
 
-```python
+```python title="ksadk_prepare_state"
 def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
     if session_context.get("is_resume"):
         return payload.get("input")
@@ -84,12 +80,13 @@ def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
     }
 ```
 
-When `is_resume` is true, return the resume payload directly. Do not wrap it as
-a new graph state unless your graph explicitly expects that.
+<Callout type="warning">
+  When `is_resume` is true, return the resume payload directly. Do not wrap it as a new graph state unless your graph explicitly expects that.
+</Callout>
 
 ## LangChain Hook
 
-```python
+```python title="ksadk_prepare_input"
 def ksadk_prepare_input(payload: dict, session_context: dict) -> dict:
     return {
         "question": payload["input"],
@@ -105,41 +102,41 @@ def ksadk_prepare_input(payload: dict, session_context: dict) -> dict:
     }
 ```
 
-Your chain decides how to map this dictionary into prompts, tools, retrievers, or
-model-native multimodal inputs.
+Your chain decides how to map this dictionary into prompts, tools, retrievers, or model-native multimodal inputs.
 
 ## Current Turn Versus Session Context
 
-Use current-turn fields when the answer should depend on files the user just
-uploaded:
+<Tabs>
+  <Tab name="Current turn" value="Current turn">
+    Use current-turn fields when the answer should depend on files the user just uploaded:
+    ```python
+    if payload.get("has_current_files"):
+        results = payload.get("current_attachment_results", [])
+    ```
+  </Tab>
+  <Tab name="Session context" value="Session context">
+    Use effective context fields when the user is following up on an earlier file in the same session:
+    ```python
+    results = payload.get("attachment_results", [])
+    ```
+  </Tab>
+</Tabs>
 
-```python
-if payload.get("has_current_files"):
-    results = payload.get("current_attachment_results", [])
-```
-
-Use effective context fields when the user is following up on an earlier file in
-the same session:
-
-```python
-results = payload.get("attachment_results", [])
-```
-
-This distinction matters for workflows such as "summarize this PDF" followed by
-"expand the second risk".
+This distinction matters for workflows such as "summarize this PDF" followed by "expand the second risk".
 
 ## Model Metadata
 
 `model_metadata` can describe input modalities and capabilities. A common check:
 
-```python
+```python title="Check multimodal capability"
 supports_image = bool(
     ((model_metadata or {}).get("capabilities") or {}).get("multimodal_input_image")
 )
 ```
 
-If a model does not support native image input, prefer extracted OCR/document
-text from `attachment_results`.
+<Callout type="info">
+  If a model does not support native image input, prefer extracted OCR/document text from `attachment_results`.
+</Callout>
 
 ## Core Fields
 
@@ -174,25 +171,17 @@ read it per account boundary uniformly, without business code needing to forward
 
 ## Runtime Context Helper
 
-Business tools or shared helpers that need the active invocation context should use
-the runtime context helpers rather than parsing private event-store internals or
-gateway headers.
+Business tools or shared helpers that need the active invocation context should use the runtime context helpers rather than parsing private event-store internals or gateway headers.
 
 <Callout type="info" title="New in 0.6.5">
-New safe-read entrypoints that never raise when no context is active:
+  New safe-read entrypoints that never raise when no context is active:
 
-- `get_current_invocation_context_or_default()`: returns a fully empty
-  `PlatformInvocationContext` when no context is active (`agent_id` / `user_id` /
-  `account_id` / `session_id` are empty strings, list fields are empty), so it is
-  safe to call from tools or background tasks.
-- `get_current_user_id(default='')`: returns the current `user_id`, or `default`
-  when no context is active.
-- `get_current_account_id(default='')`: returns the current `account_id`, or
-  `default` when no context is active.
+  - `get_current_invocation_context_or_default()`: returns a fully empty `PlatformInvocationContext` when no context is active (`agent_id` / `user_id` / `account_id` / `session_id` are empty strings, list fields are empty), so it is safe to call from tools or background tasks.
+  - `get_current_user_id(default='')`: returns the current `user_id`, or `default` when no context is active.
+  - `get_current_account_id(default='')`: returns the current `account_id`, or `default` when no context is active.
 </Callout>
 
-
-```python
+```python title="Use runtime_context helpers"
 from ksadk.runtime_context import (
     get_current_invocation_context_or_default,
     get_current_user_id,
@@ -211,21 +200,19 @@ account_id = get_current_account_id()    # default ''
 ```
 
 <Callout type="warning" title="Account boundary">
-Skill / Workspace / Sandbox / Memory read per `account_id` boundary. In tool code
-prefer `get_current_account_id()` over parsing the request yourself, so the
-isolation semantics match the hosted runtime.
+  Skill / Workspace / Sandbox / Memory read per `account_id` boundary. In tool code prefer `get_current_account_id()` over parsing the request yourself, so the isolation semantics match the hosted runtime.
 </Callout>
 
-
-Use this for cross-cutting helpers. Business graph state should still prefer
-explicit hook inputs because they are easier to test.
+Use this for cross-cutting helpers. Business graph state should still prefer explicit hook inputs because they are easier to test.
 
 ## What Not To Do
 
-Avoid:
+<Callout type="error">
+  Avoid:
 
-- reading private event-store internals from business code.
-- assuming `attachments` means "files uploaded in this turn".
-- treating `inlineData` and `fileData` as official OpenAI fields.
-- mixing hosted gateway headers into local examples.
-- storing secrets in graph state, logs, traces, or public fixtures.
+  - reading private event-store internals from business code.
+  - assuming `attachments` means "files uploaded in this turn".
+  - treating `inlineData` and `fileData` as official OpenAI fields.
+  - mixing hosted gateway headers into local examples.
+  - storing secrets in graph state, logs, traces, or public fixtures.
+</Callout>

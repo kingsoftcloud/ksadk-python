@@ -4,8 +4,7 @@ title: "记忆与知识库"
 
 # 记忆与知识库
 
-记忆和知识库都是可选能力。公开 quickstart 应在不配置 hosted 服务时也能运行；
-生产项目再按需接入长期记忆、知识库检索和框架工具。
+记忆和知识库都是可选能力。公开 quickstart 应在不配置 hosted 服务时也能运行；生产项目再按需接入长期记忆、知识库检索和框架工具。
 
 ## 能力边界
 
@@ -17,11 +16,13 @@ title: "记忆与知识库"
 | 框架工具 | 让 Agent 主动调用记忆或检索 | Agent 实现 |
 | Ambient context | 运行时在调用 runner 前补充上下文 | KsADK 扩展 |
 
+<Callout type="warning">
 长期记忆不适合保存完整客户数据、token、图片二进制或长附件。
+</Callout>
 
 ## LangGraph 接入
 
-```python
+```python title="prepare_state.py"
 def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
     return {
         "messages": payload.get("input_messages", []),
@@ -31,21 +32,22 @@ def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
     }
 ```
 
+<Callout type="info">
 如果图只使用 `messages`，通常不需要 hook；当 graph state 有自定义字段时，再显式映射。
+</Callout>
 
 ## ADK 接入
 
-ADK 项目优先使用 ADK 原生 tool 和 memory service。最小示例先只依赖模型调用；
-需要平台能力时再加入：
+ADK 项目优先使用 ADK 原生 tool 和 memory service。最小示例先只依赖模型调用；需要平台能力时再加入：
 
-```python
+```python title="agent.py"
 from ksadk.knowledge_base.tool import search_knowledge
 from ksadk.memory.tool import load_memory, save_memory
 ```
 
 ## 知识库工具
 
-```python
+```python title="tools.py"
 from langchain_core.tools import tool
 
 @tool
@@ -54,11 +56,13 @@ def search_knowledge_base(query: str) -> str:
     return search_knowledge(query)
 ```
 
+<Callout type="warning">
 知识库检索失败时要返回诊断，不要伪造成空结果。
+</Callout>
 
 ## 记忆工具
 
-```python
+```python title="tools.py"
 from langchain_core.tools import tool
 
 @tool
@@ -72,7 +76,9 @@ def load_user_memory(query: str) -> str:
     return load_memory(query)
 ```
 
-推荐保存短事实，例如“发布说明先写结论，再写风险和验证方式”。
+<Callout type="info">
+推荐保存短事实，例如「发布说明先写结论，再写风险和验证方式」。
+</Callout>
 
 ## 环境变量
 
@@ -92,7 +98,6 @@ def load_user_memory(query: str) -> str:
 OpenClaw runtime 支持通过 manifest 声明记忆 backend，新增进程内 LanceDB 记忆插件。
 </Callout>
 
-
 OpenClaw runtime 通过 `MEMORY_BACKEND_MANIFEST` 声明记忆 backend，`backend_type` 可选：
 
 | `backend_type` | 说明 | 适用场景 |
@@ -108,8 +113,7 @@ OpenClaw runtime 通过 `MEMORY_BACKEND_MANIFEST` 声明记忆 backend，`backen
 - 渲染产物 `memory-lancedb` 会 disable `openclaw-mem0`，避免重复加载。
 - manifest 的 `config` 可选覆盖 `dbPath`、`embedding`、`storageOptions`。
 
-```yaml
-# MEMORY_BACKEND_MANIFEST 示例（由托管平台注入）
+```yaml title="MEMORY_BACKEND_MANIFEST 示例（由托管平台注入）"
 backend_type: lancedb
 config:
   dbPath: /data/agent-memory/lance
@@ -123,6 +127,5 @@ config:
 <Callout type="info" title="公开口径">
 上述 manifest 与 secret 均由托管平台注入；公开文档不暴露内部 endpoint、account 或 token，示例值使用占位符（如 `example.com` / `sk-test` / `cm-appkey-placeholder`）。
 </Callout>
-
 
 完整变量列表见 [ksadk 环境变量参考](../reference/environment-variables)。

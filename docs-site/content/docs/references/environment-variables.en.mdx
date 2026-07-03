@@ -2,11 +2,15 @@
 title: Environment Variables
 ---
 
-This reference lists the environment variables most projects need when running
-KsADK locally or in a release pipeline. Use placeholders in committed files and
-put real values in local `.env` files or CI secrets.
+<Callout type="info">
+  This reference lists the environment variables most projects need when running KsADK locally or in a release pipeline. Use placeholders in committed files and put real values in local `.env` files or CI secrets.
+</Callout>
 
 ## Model Provider
+
+<Callout type="info">
+  OpenAI-compatible provider and hosted runtime model policy variables.
+</Callout>
 
 | Variable | Purpose |
 | --- | --- |
@@ -27,7 +31,7 @@ put real values in local `.env` files or CI secrets.
 
 Example:
 
-```bash
+```bash title="bash"
 OPENAI_API_KEY=sk-test
 OPENAI_BASE_URL=https://api.example.com/v1
 OPENAI_MODEL_NAME=my-model
@@ -78,7 +82,7 @@ Hosted deployments can inject a shared policy through `AGENTENGINE_MODEL_POLICY_
 
 Local UI usually sets:
 
-```bash
+```bash title="bash"
 KSADK_STM_BACKEND=sqlite
 KSADK_STM_PATH=.agentengine/ui/sessions.sqlite
 ```
@@ -200,7 +204,7 @@ Local `agentengine web` defaults to local session backend and SQLite LangGraph c
 
 Example:
 
-```bash
+```bash title="bash"
 KSADK_ENABLE_MCP_TOOLS=1
 KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
 ```
@@ -231,7 +235,9 @@ KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
 | `KCR_USERNAME` | image registry username; required for enterprise KCR and third-party registries (sensitive) |
 | `KCR_PASSWORD` | image registry password; required for enterprise KCR and third-party registries (sensitive) |
 
-Personal KCR (`*.kce.ksyun.com`) allows `KSYUN_ACCOUNT_ID` to fall back as the username; enterprise KCR (`*.ksyunkcr.com`) and third-party registries must set `KCR_USERNAME` / `KCR_PASSWORD` explicitly, to avoid wrongly using the cloud account id as an enterprise image username (0.6.5).
+<Callout type="warning">
+  Personal KCR (`*.kce.ksyun.com`) allows `KSYUN_ACCOUNT_ID` to fall back as the username; enterprise KCR (`*.ksyunkcr.com`) and third-party registries must set `KCR_USERNAME` / `KCR_PASSWORD` explicitly, to avoid wrongly using the cloud account id as an enterprise image username (0.6.5).
+</Callout>
 
 ## Build Context .env Boundary
 
@@ -247,7 +253,9 @@ Personal KCR (`*.kce.ksyun.com`) allows `KSYUN_ACCOUNT_ID` to fall back as the u
 | `KSADK_WEB_RELEASE_URL` | optional fallback; when set, skips npm pack and downloads from this tarball URL |
 | `KSADK_WEB_CACHE_DIR` | KsADK Web package extraction cache directory; default `.cache/ksadk-web` |
 
-`make build` / `make build-wheel` automatically run `sync-ksadk-web-static`; no manual sync needed.
+<Callout type="info">
+  `make build` / `make build-wheel` automatically run `sync-ksadk-web-static`; no manual sync needed.
+</Callout>
 
 ## Observability
 
@@ -294,8 +302,8 @@ Set `CLOUD_MONITOR_OTLP_ENABLED=false` or `CLOUD_MONITOR_LANGFUSE_ENABLED=false`
 
 ## Safety Rules
 
-- Never commit real values for keys, tokens, DSNs, private endpoints, customer
-  dataset ids, or kubeconfigs.
-- Prefer local `.env` for development and CI secrets for automation.
-- Keep public docs on placeholders such as `sk-test`, `my-model`, and
-  `https://api.example.com/v1`.
+<Callout type="warning">
+  - Never commit real values for keys, tokens, DSNs, private endpoints, customer dataset ids, or kubeconfigs.
+  - Prefer local `.env` for development and CI secrets for automation.
+  - Keep public docs on placeholders such as `sk-test`, `my-model`, and `https://api.example.com/v1`.
+</Callout>
