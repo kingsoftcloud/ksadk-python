@@ -22,15 +22,19 @@ SUMMARY_PREFIX = "Earlier conversation summary:"
 # L4 semantic 熔断:独立计数 semantic LLM 调用失败(不复用 governance compact failure counter,
 # 因为 summarize_compaction 捕获异常后返回 extractive,外层看是成功,governance 不触发)。
 # 超过阈值后直接走 extractive,避免 Claude Code 的"1279 会话连续失败 50+ 次"浪费。
+# 已知局限(有意取舍,对齐 Claude Code 行为):
+# - 默认 0(opt-in),避免 transient 失败永久禁用 semantic;用户显式设 N>0 才启用。
+# - 打开后无 half-open 探测,需进程重启或显式 _reset_semantic_failures 恢复(CC 同样如此)。
+# - 计数为模块级全局,跨 session/model 共享;per-model key 化留作 follow-up(对齐 governance per-session 范式)。
 _semantic_summary_failures: int = 0
 
 
 def _max_consecutive_semantic_failures() -> int:
-    raw = os.environ.get("KSADK_MAX_CONSECUTIVE_SEMANTIC_FAILURES", "3")
+    raw = os.environ.get("KSADK_MAX_CONSECUTIVE_SEMANTIC_FAILURES", "0")
     try:
         return max(0, int(raw))
     except (TypeError, ValueError):
-        return 3
+        return 0
 
 
 def _semantic_circuit_open() -> bool:

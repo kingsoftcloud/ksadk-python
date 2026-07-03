@@ -11,12 +11,19 @@ from ksadk.conversations.compaction_pipeline import (
 from ksadk.sessions.base import SessionEvent
 
 
-def _tool_call_event(seq: int, name: str, arguments: str | dict, invocation_id: str = "inv1") -> SessionEvent:
+def _tool_call_event(seq: int, name: str, arguments: str | dict, invocation_id: str = "inv1", run_id: str | None = None) -> SessionEvent:
     """构造真实 runtime 形态的 tool_call event。
 
     真实 runtime 把 tool_name/tool_args 放在 metadata(不是 content),content.role="model",
-    content.text 是工具名字符串。这里严格对齐,确保 L2 在生产 event 上生效。
+    content.text 是工具名字符串。run_id 关联配对的 tool_result(同一 call/result 共享 run_id)。
+    这里严格对齐,确保 L2 在生产 event 上生效。
     """
+    metadata = {
+        "tool_name": name,
+        "tool_args": arguments if isinstance(arguments, dict) else {"_raw": arguments},
+    }
+    if run_id is not None:
+        metadata["run_id"] = run_id
     return SessionEvent(
         id=f"tc-{seq}",
         seq_id=seq,
@@ -24,17 +31,20 @@ def _tool_call_event(seq: int, name: str, arguments: str | dict, invocation_id: 
         author="runner",
         invocation_id=invocation_id,
         content={"role": "model", "text": name},
-        metadata={"tool_name": name, "tool_args": arguments if isinstance(arguments, dict) else {"_raw": arguments}},
+        metadata=metadata,
     )
 
 
-def _tool_result_event(seq: int, ok: bool = True, error_type: str = "") -> SessionEvent:
+def _tool_result_event(seq: int, ok: bool = True, error_type: str = "", run_id: str | None = None) -> SessionEvent:
     """构造真实 runtime 形态的 tool_result event。
 
     真实 runtime 的失败状态在 metadata.tool_receipt.status,不在 content.ok。
+    run_id 关联配对的 tool_call(与 _tool_call_event 共享同一 run_id)。
     """
     content = {"role": "tool", "text": "result content"}
     metadata = {"tool_name": "some_tool"}
+    if run_id is not None:
+        metadata["run_id"] = run_id
     if not ok:
         metadata["tool_receipt"] = {"status": "failed"}
         if error_type:
@@ -91,21 +101,75 @@ class TestSnipDoesNotMutateTranscript:
 
 class TestSnipRedundancyRemoval:
     def test_removes_tool_result_covered_by_later_group(self):
-        # 组1: search(query=a) → result_a;组2: search(query=a) → result_a2(覆盖)
-        group1 = [_tool_call_event(1, "search", "query=a"), _tool_result_event(2)]
-        group2 = [_tool_call_event(3, "search", "query=a"), _tool_result_event(4)]
+        # 组1: search(query=a) [run_id=r1] → result [run_id=r1];组2: search(query=a) [run_id=r2] → result [run_id=r2](覆盖)
+        group1 = [_tool_call_event(1, "search", "query=a", run_id="r1"), _tool_result_event(2, run_id="r1")]
+        group2 = [_tool_call_event(3, "search", "query=a", run_id="r2"), _tool_result_event(4, run_id="r2")]
         groups = [group1, group2]
 
         result = snip_redundant_groups(groups)
 
-        # 组1 的 tool_call/tool_result 被覆盖移除,组2 保留。
+        # 组1 的 tool_call/tool_result 按 run_id 精确配对移除,组2 保留。
         flat = [e for g in result.groups for e in g]
         seq_ids = [e.seq_id for e in flat]
         assert 1 not in seq_ids  # 旧 tool_call 被移除
-        assert 2 not in seq_ids  # 旧 tool_result 被移除
+        assert 2 not in seq_ids  # 配对 tool_result(run_id=r1)被精确移除,不留孤儿
         assert 3 in seq_ids
         assert 4 in seq_ids
-        assert result.stats.removed_redundant_tool_results >= 1
+        assert result.stats.removed_redundant_tool_results >= 2  # call+result 成对
+
+    def test_parallel_tool_calls_no_orphan_result(self):
+        """Codex Finding 1:parallel_tool_calls=True 时同一轮多 tool_call 交错,按 run_id 精确配对不留孤儿。
+
+        场景:同一组内两个 tool_call(search + web_fetch)交错,search 被后续组覆盖。
+        旧实现(邻接配对)会误删 web_fetch 的 result 或留 search 的孤儿 result;
+        新实现(按 run_id 配对)只删 search 的 call+result,web_fetch 完整保留。
+        """
+        # 组1: 两个并行 tool_call + 交错 result(search[r1] 被 web_fetch[r2] 隔开)
+        group1 = [
+            _tool_call_event(1, "search", "query=a", run_id="r1"),
+            _tool_call_event(2, "web_fetch", "url=x", run_id="r2"),
+            _tool_result_event(3, run_id="r1"),   # search 的 result(被覆盖,应删)
+            _tool_result_event(4, run_id="r2"),   # web_fetch 的 result(保留)
+        ]
+        # 组2: search(query=a) 覆盖组1 的 search
+        group2 = [_tool_call_event(5, "search", "query=a", run_id="r3"), _tool_result_event(6, run_id="r3")]
+        groups = [group1, group2]
+
+        result = snip_redundant_groups(groups)
+
+        flat = [e for g in result.groups for e in g]
+        seq_ids = [e.seq_id for e in flat]
+        # search[r1] 的 call(1) 和 result(3) 都被移除(按 run_id 精确配对)。
+        assert 1 not in seq_ids
+        assert 3 not in seq_ids
+        # web_fetch[r2] 的 call(2) 和 result(4) 完整保留(不因邻接被误删)。
+        assert 2 in seq_ids
+        assert 4 in seq_ids
+        # 组2 的 search[r3] 保留。
+        assert 5 in seq_ids
+        assert 6 in seq_ids
+
+    def test_missing_run_id_keeps_results_conservatively(self):
+        """run_id 缺失时(退化到 invocation_id 共享)保守不误删 tool_result。
+
+        真实 LangGraph 路径 chunk 始终带 per-tool run_id,但若 chunk 无 run_id,
+        tool_result 退化到 prepared.invocation_id(整轮共享)。此时 covered_run_ids
+        不收录(配对退化),tool_result 全部保留,避免误删未配对结果。
+        """
+        # 两个 tool_call 都无 run_id(模拟退化路径),即使 search 被覆盖,result 也保留。
+        group1 = [_tool_call_event(1, "search", "query=a"), _tool_result_event(2)]  # 无 run_id
+        group2 = [_tool_call_event(3, "search", "query=a"), _tool_result_event(4)]  # 无 run_id
+        groups = [group1, group2]
+
+        result = snip_redundant_groups(groups)
+
+        flat = [e for g in result.groups for e in g]
+        seq_ids = [e.seq_id for e in flat]
+        # tool_call(1)被覆盖移除(signature 覆盖判定不依赖 run_id);但 tool_result(2)因无 run_id
+        # 无法精确配对,保守保留(不误删)。这是有意的保守行为,避免 run_id 缺失时误删 result。
+        assert 1 not in seq_ids  # tool_call 覆盖移除(不依赖 run_id)
+        assert 2 in seq_ids  # tool_result 无 run_id,保守保留
+        assert 3 in seq_ids and 4 in seq_ids
 
     def test_keeps_different_tool_results(self):
         group1 = [_tool_call_event(1, "search", "query=a"), _tool_result_event(2)]
