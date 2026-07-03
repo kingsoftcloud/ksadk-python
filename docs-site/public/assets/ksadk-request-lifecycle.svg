@@ -1,218 +1,362 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1620 760" role="img" aria-labelledby="t d">
-  <title id="t">KsADK 请求生命周期</title>
-  <desc id="d">从 agentengine 入口到对话运行时、Runner、session 持久化与 0.6.7 run 能力层的完整链路。</desc>
-  <style>
-    text { font-family: ui-sans-serif, system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif; }
-    @media (prefers-color-scheme: dark) {
-      .bg-light { fill: #0f172a; }
-      rect[fill="#ffffff"] { fill: #1e293b; }
-      rect[fill="#fbfbf9"] { fill: #0f172a; }
-      rect[fill="#fff7ed"] { fill: #1e1b14; }
-      rect[fill="#ecfdf5"] { fill: #0f1f1a; }
-      rect[fill="#eef2ff"] { fill: #1a1f2e; }
-      rect[fill="#fef2f2"] { fill: #1f1414; }
-      text[fill="#0f172a"] { fill: #f1f5f9; }
-      text[fill="#1e293b"] { fill: #e2e8f0; }
-      text[fill="#334155"] { fill: #cbd5e1; }
-      text[fill="#475569"] { fill: #94a3b8; }
-      text[fill="#64748b"] { fill: #94a3b8; }
-      text[fill="#92400e"] { fill: #fbbf24; }
-      text[fill="#5b21b6"] { fill: #c4b5fd; }
-      text[fill="#7c3aed"] { fill: #a78bfa; }
-      text[fill="#047857"] { fill: #34d399; }
-      text[fill="#059669"] { fill: #34d399; }
-      text[fill="#b91c1c"] { fill: #fca5a5; }
-      rect[stroke="#cbd5e1"] { stroke: #475569; }
-      rect[stroke="#94a3b8"] { stroke: #64748b; }
-    }
-  </style>
-  <defs>
-    <marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5,L0,10 z" fill="#475569"/></marker>
-    <marker id="agn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5,L0,10 z" fill="#059669"/></marker>
-    <marker id="askill" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5,L0,10 z" fill="#7c3aed"/></marker>
-    <marker id="adisp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5,L0,10 z" fill="#d97706"/></marker>
-    <marker id="aalert" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5,L0,10 z" fill="#b91c1c"/></marker>
-  </defs>
-
-  <rect class="bg-light" width="1620" height="760" fill="#fbfbf9"/>
-
-  <text x="30" y="34" font-size="16" font-weight="700" fill="#0f172a">KsADK 请求生命周期</text>
-  <text x="30" y="52" font-size="10" fill="#64748b">入口 → 启动 → HTTP/UI → 对话运行时 → Runner → Session 持久化 → Run 能力层</text>
-
-  <!-- Region: Entry -->
-  <rect x="30" y="80" width="180" height="120" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.2"/>
-  <text x="42" y="98" font-size="9.5" font-weight="600" fill="#334155">入口 Entry</text>
-  <g>
-    <rect x="50" y="115" width="140" height="70" rx="6" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
-    <text x="120" y="142" font-size="11.5" font-weight="600" fill="#1e293b" text-anchor="middle">agentengine</text>
-    <text x="120" y="158" font-size="9" fill="#475569" text-anchor="middle">run / web</text>
-    <text x="120" y="172" font-size="8.5" fill="#64748b" text-anchor="middle">CLI · 本地 UI</text>
-  </g>
-
-  <!-- Region: Boot -->
-  <rect x="240" y="80" width="200" height="200" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.2"/>
-  <text x="252" y="98" font-size="9.5" font-weight="600" fill="#334155">启动 Boot</text>
-  <g>
-    <rect x="260" y="115" width="160" height="50" rx="6" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
-    <text x="340" y="138" font-size="11" font-weight="600" fill="#1e293b" text-anchor="middle">framework detection</text>
-    <text x="340" y="153" font-size="8.5" fill="#475569" text-anchor="middle">FrameworkDetector</text>
-  </g>
-  <g>
-    <rect x="260" y="180" width="160" height="45" rx="6" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
-    <text x="340" y="200" font-size="11" font-weight="600" fill="#1e293b" text-anchor="middle">create_runner</text>
-    <text x="340" y="215" font-size="8.5" fill="#475569" text-anchor="middle">Runner Factory</text>
-  </g>
-  <g>
-    <rect x="260" y="240" width="160" height="45" rx="6" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
-    <text x="340" y="260" font-size="11" font-weight="600" fill="#1e293b" text-anchor="middle">runner.load_agent</text>
-    <text x="340" y="275" font-size="8.5" fill="#475569" text-anchor="middle">用户代码加载</text>
-  </g>
-
-  <!-- Region: HTTP/UI -->
-  <rect x="470" y="80" width="220" height="200" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.2"/>
-  <text x="482" y="98" font-size="9.5" font-weight="600" fill="#334155">HTTP / UI 层</text>
-  <g>
-    <rect x="490" y="115" width="180" height="50" rx="6" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
-    <text x="580" y="138" font-size="11" font-weight="600" fill="#1e293b" text-anchor="middle">FastAPI app</text>
-    <text x="580" y="153" font-size="8.5" fill="#475569" text-anchor="middle">ksadk.server.app</text>
-  </g>
-  <g>
-    <rect x="490" y="180" width="180" height="80" rx="6" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
-    <text x="580" y="202" font-size="11" font-weight="600" fill="#1e293b" text-anchor="middle">路由协议</text>
-    <text x="580" y="218" font-size="8.5" fill="#047857" text-anchor="middle">/v1/responses</text>
-    <text x="580" y="232" font-size="8.5" fill="#047857" text-anchor="middle">/v1/chat/completions</text>
-    <text x="580" y="246" font-size="8.5" fill="#047857" text-anchor="middle">/run_sse · RunAgent</text>
-  </g>
-
-  <!-- Region: Conversations Runtime -->
-  <rect x="720" y="80" width="280" height="290" rx="12" fill="#ffffff" stroke="#059669" stroke-width="1.5"/>
-  <text x="732" y="100" font-size="10" font-weight="700" fill="#047857">Conversations Runtime · 数据面核心</text>
-  <g>
-    <rect x="740" y="115" width="240" height="48" rx="6" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
-    <text x="860" y="136" font-size="11" font-weight="600" fill="#1e293b" text-anchor="middle">build_run_input</text>
-    <text x="860" y="151" font-size="8.5" fill="#475569" text-anchor="middle">history + attachments</text>
-  </g>
-  <g>
-    <rect x="740" y="173" width="240" height="48" rx="6" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
-    <text x="860" y="194" font-size="11" font-weight="600" fill="#1e293b" text-anchor="middle">PlatformInvocationContext</text>
-    <text x="860" y="209" font-size="8.5" fill="#475569" text-anchor="middle">invocation_id · account_id</text>
-  </g>
-  <g>
-    <rect x="740" y="231" width="240" height="48" rx="6" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
-    <text x="860" y="252" font-size="11" font-weight="600" fill="#1e293b" text-anchor="middle">append run_status</text>
-    <text x="860" y="267" font-size="8.5" fill="#475569" text-anchor="middle">in_progress / completed / failed</text>
-  </g>
-  <g>
-    <rect x="740" y="289" width="115" height="48" rx="6" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
-    <text x="797" y="310" font-size="10" font-weight="600" fill="#1e293b" text-anchor="middle">run_checkpoint</text>
-    <text x="797" y="325" font-size="8.5" fill="#475569" text-anchor="middle">run_resume</text>
-  </g>
-  <g>
-    <rect x="865" y="289" width="115" height="48" rx="6" fill="#fef2f2" stroke="#b91c1c" stroke-width="1.2"/>
-    <text x="922" y="310" font-size="10" font-weight="600" fill="#1e293b" text-anchor="middle">retry</text>
-    <text x="922" y="325" font-size="8.5" fill="#475569" text-anchor="middle">fallback / PTL</text>
-  </g>
-  <text x="860" y="362" font-size="8.5" fill="#b91c1c" text-anchor="middle">可恢复错误时回退重试</text>
-
-  <!-- Region: Runner -->
-  <rect x="1030" y="80" width="180" height="120" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.2"/>
-  <text x="1042" y="98" font-size="9.5" font-weight="600" fill="#334155">Runner</text>
-  <g>
-    <rect x="1050" y="115" width="140" height="70" rx="6" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
-    <text x="1120" y="140" font-size="11" font-weight="600" fill="#1e293b" text-anchor="middle">BaseRunner</text>
-    <text x="1120" y="156" font-size="9" fill="#475569" text-anchor="middle">invoke / stream</text>
-    <text x="1120" y="170" font-size="8.5" fill="#64748b" text-anchor="middle">ADK · LangGraph · LC · DA</text>
-  </g>
-
-  <!-- Region: Session Service -->
-  <rect x="1030" y="220" width="180" height="120" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.2"/>
-  <text x="1042" y="238" font-size="9.5" font-weight="600" fill="#334155">Session Service</text>
-  <g>
-    <rect x="1050" y="255" width="140" height="70" rx="6" fill="#eef2ff" stroke="#7c3aed" stroke-width="1.2"/>
-    <text x="1120" y="280" font-size="11" font-weight="600" fill="#1e293b" text-anchor="middle">session + events</text>
-    <text x="1120" y="296" font-size="8.5" fill="#475569" text-anchor="middle">持久化</text>
-    <text x="1120" y="310" font-size="8.5" fill="#64748b" text-anchor="middle">transcript · checkpoint</text>
-  </g>
-
-  <!-- Region: Run 能力层 -->
-  <rect x="1240" y="80" width="350" height="400" rx="12" fill="#ffffff" stroke="#d97706" stroke-width="1.5"/>
-  <text x="1252" y="100" font-size="10" font-weight="700" fill="#92400e">Run 能力层 · 0.6.7</text>
-  <g>
-    <rect x="1260" y="115" width="310" height="42" rx="6" fill="#fff7ed" stroke="#d97706" stroke-width="1.2"/>
-    <text x="1415" y="134" font-size="11" font-weight="600" fill="#1e293b" text-anchor="middle">ResumeRun</text>
-    <text x="1415" y="149" font-size="8.5" fill="#475569" text-anchor="middle">find checkpoint · resume_input</text>
-  </g>
-  <g>
-    <rect x="1260" y="167" width="310" height="42" rx="6" fill="#fff7ed" stroke="#d97706" stroke-width="1.2"/>
-    <text x="1415" y="186" font-size="11" font-weight="600" fill="#1e293b" text-anchor="middle">GetCheckpointResumePreview</text>
-    <text x="1415" y="201" font-size="8.5" fill="#475569" text-anchor="middle">risk + receipts</text>
-  </g>
-  <g>
-    <rect x="1260" y="219" width="310" height="42" rx="6" fill="#fff7ed" stroke="#d97706" stroke-width="1.2"/>
-    <text x="1415" y="238" font-size="11" font-weight="600" fill="#1e293b" text-anchor="middle">ListSessionCheckpoints</text>
-    <text x="1415" y="253" font-size="8.5" fill="#475569" text-anchor="middle">分页 + 审计字段</text>
-  </g>
-  <g>
-    <rect x="1260" y="271" width="310" height="42" rx="6" fill="#fef2f2" stroke="#b91c1c" stroke-width="1.2"/>
-    <text x="1415" y="290" font-size="11" font-weight="600" fill="#1e293b" text-anchor="middle">CancelRun</text>
-    <text x="1415" y="305" font-size="8.5" fill="#475569" text-anchor="middle">cooperative · next chunk/tool boundary</text>
-  </g>
-  <g>
-    <rect x="1260" y="323" width="310" height="42" rx="6" fill="#fff7ed" stroke="#d97706" stroke-width="1.2"/>
-    <text x="1415" y="342" font-size="11" font-weight="600" fill="#1e293b" text-anchor="middle">SubscribeRunEvents</text>
-    <text x="1415" y="357" font-size="8.5" fill="#475569" text-anchor="middle">AfterSeqId · 5min 重连窗口</text>
-  </g>
-
-  <!-- 主链路箭头 -->
-  <path d="M 190,150 L 260,140" fill="none" stroke="#475569" stroke-width="1.2" marker-end="url(#ag)"/>
-  <text x="222" y="134" font-size="8" fill="#475569">detect</text>
-  <path d="M 340,165 L 340,180" fill="none" stroke="#059669" stroke-width="1.2" marker-end="url(#agn)"/>
-  <path d="M 340,225 L 340,240" fill="none" stroke="#059669" stroke-width="1.2" marker-end="url(#agn)"/>
-  <path d="M 420,262 L 490,140" fill="none" stroke="#059669" stroke-width="1.2" marker-end="url(#agn)"/>
-  <text x="438" y="200" font-size="8" fill="#059669">server mode</text>
-  <path d="M 670,140 L 740,139" fill="none" stroke="#475569" stroke-width="1.2" marker-end="url(#ag)"/>
-  <text x="680" y="132" font-size="8" fill="#475569">route</text>
-  <path d="M 860,163 L 860,173" fill="none" stroke="#059669" stroke-width="1.2" marker-end="url(#agn)"/>
-  <path d="M 980,197 L 1050,150" fill="none" stroke="#059669" stroke-width="1.2" marker-end="url(#agn)"/>
-  <text x="990" y="180" font-size="8" fill="#059669">invoke</text>
-  <path d="M 1050,170 L 980,250" fill="none" stroke="#059669" stroke-width="1.2" marker-end="url(#agn)"/>
-  <text x="985" y="225" font-size="8" fill="#059669">output+meta</text>
-  <path d="M 980,255 L 1050,290" fill="none" stroke="#7c3aed" stroke-width="1.2" marker-end="url(#askill)"/>
-  <text x="985" y="278" font-size="8" fill="#7c3aed">persist</text>
-  <path d="M 855,255 L 1050,285" fill="none" stroke="#7c3aed" stroke-width="1.2" marker-end="url(#askill)" stroke-opacity="0.5"/>
-
-  <!-- retry 虚线回 Runner -->
-  <path d="M 980,313 L 1120,185" fill="none" stroke="#b91c1c" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#aalert)"/>
-  <text x="1018" y="258" font-size="8" fill="#b91c1c">recoverable</text>
-
-  <!-- 能力层 → session -->
-  <path d="M 1260,335 L 1190,295" fill="none" stroke="#7c3aed" stroke-width="1.2" marker-end="url(#askill)" stroke-opacity="0.5"/>
-  <text x="1180" y="328" font-size="8" fill="#7c3aed">read events</text>
-  <path d="M 1260,136 L 1190,260" fill="none" stroke="#7c3aed" stroke-width="1.2" marker-end="url(#askill)" stroke-opacity="0.3"/>
-  <path d="M 1260,188 L 1190,275" fill="none" stroke="#7c3aed" stroke-width="1.2" marker-end="url(#askill)" stroke-opacity="0.3"/>
-  <path d="M 1260,240 L 1190,285" fill="none" stroke="#7c3aed" stroke-width="1.2" marker-end="url(#askill)" stroke-opacity="0.3"/>
-
-  <!-- ResumeRun → build_run_input -->
-  <path d="M 1260,136 L 980,140" fill="none" stroke="#d97706" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#adisp)" stroke-opacity="0.5"/>
-  <text x="990" y="118" font-size="8" fill="#d97706">resume_input</text>
-
-  <!-- CancelRun → Runner -->
-  <path d="M 1260,292 L 1190,150" fill="none" stroke="#b91c1c" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#aalert)" stroke-opacity="0.5"/>
-  <text x="1195" y="225" font-size="8" fill="#b91c1c">cooperate</text>
-
-  <!-- 图例 -->
-  <g transform="translate(30, 560)">
-    <text x="0" y="0" font-size="11" font-weight="700" fill="#1e293b">图例</text>
-    <rect x="0" y="12" width="14" height="14" rx="2" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
-    <text x="20" y="23" font-size="9.5" fill="#475569">入口 / API / Runner</text>
-    <rect x="160" y="12" width="14" height="14" rx="2" fill="#eef2ff" stroke="#7c3aed" stroke-width="1.2"/>
-    <text x="180" y="23" font-size="9.5" fill="#475569">Session 持久化</text>
-    <rect x="300" y="12" width="14" height="14" rx="2" fill="#fff7ed" stroke="#d97706" stroke-width="1.2"/>
-    <text x="320" y="23" font-size="9.5" fill="#475569">Run 能力层</text>
-    <rect x="440" y="12" width="14" height="14" rx="2" fill="#fef2f2" stroke="#b91c1c" stroke-width="1.2"/>
-    <text x="460" y="23" font-size="9.5" fill="#475569">retry / cancel</text>
-    <line x1="580" y1="19" x2="610" y2="19" stroke="#b91c1c" stroke-width="1" stroke-dasharray="4,3"/>
-    <text x="618" y="23" font-size="9.5" fill="#475569">虚线 = 异步/回退</text>
-    <text x="0" y="50" font-size="9.5" fill="#64748b">基于 ksadk/server/app.py + conversations/runtime.py 真实代码路径</text>
-  </g>
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+ "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<!-- Generated by graphviz version 12.1.1 (20240910.0053)
+ -->
+<!-- Title: RequestLifecycle Pages: 1 -->
+<svg width="1753pt" height="688pt"
+ viewBox="0.00 0.00 1752.70 687.50" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><style>
+@media (prefers-color-scheme: dark) {
+  svg { background: #0f172a; }
+  polygon[fill="#fbfbf9"] { fill: #0f172a; }
+  path[fill="#ffffff"] { fill: #1e293b; }
+  path[fill="#fff7ed"] { fill: #1e1b14; }
+  path[fill="#ecfdf5"] { fill: #0f1f1a; }
+  path[fill="#eef2ff"] { fill: #1a1f2e; }
+  path[fill="#fef2f2"] { fill: #1f1414; }
+  text { fill: #e2e8f0 !important; }
+  path[stroke="#475569"], path[stroke="#059669"], path[stroke="#7c3aed"], path[stroke="#d97706"], path[stroke="#6366f1"], path[stroke="#b91c1c"] { stroke-opacity: 0.8; }
+}
+</style>
+<g id="graph0" class="graph" transform="scale(1 1) rotate(0) translate(4 683.5)">
+<title>RequestLifecycle</title>
+<polygon fill="#fbfbf9" stroke="none" points="-4,4 -4,-683.5 1748.7,-683.5 1748.7,4 -4,4"/>
+<text text-anchor="middle" x="872.35" y="-662.2" font-family="PingFang SC" font-size="14.00">KsADK — 请求生命周期</text>
+<text text-anchor="middle" x="872.35" y="-641.95" font-family="PingFang SC" font-size="14.00">入口 → 启动 → HTTP/UI → 对话运行时 → Runner → Session → Run 能力层</text>
+<g id="clust1" class="cluster">
+<title>cluster_entry</title>
+<path fill="#ffffff" stroke="#6366f1" stroke-width="1.4" d="M56.38,-348C56.38,-348 153.22,-348 153.22,-348 159.22,-348 165.22,-354 165.22,-360 165.22,-360 165.22,-485 165.22,-485 165.22,-491 159.22,-497 153.22,-497 153.22,-497 56.38,-497 56.38,-497 50.37,-497 44.38,-491 44.38,-485 44.38,-485 44.38,-360 44.38,-360 44.38,-354 50.38,-348 56.38,-348"/>
+<text text-anchor="middle" x="104.8" y="-479.7" font-family="PingFang SC" font-size="14.00">① 入口</text>
+</g>
+<g id="clust2" class="cluster">
+<title>cluster_boot</title>
+<path fill="#ffffff" stroke="#6366f1" stroke-width="1.4" d="M260.6,-298C260.6,-298 954.52,-298 954.52,-298 960.52,-298 966.52,-304 966.52,-310 966.52,-310 966.52,-374 966.52,-374 966.52,-380 960.52,-386 954.52,-386 954.52,-386 260.6,-386 260.6,-386 254.6,-386 248.6,-380 248.6,-374 248.6,-374 248.6,-310 248.6,-310 248.6,-304 254.6,-298 260.6,-298"/>
+<text text-anchor="middle" x="607.56" y="-368.7" font-family="PingFang SC" font-size="14.00">② 启动</text>
+</g>
+<g id="clust3" class="cluster">
+<title>cluster_http</title>
+<path fill="#ffffff" stroke="#059669" stroke-width="1.4" d="M297.72,-408C297.72,-408 728.92,-408 728.92,-408 734.92,-408 740.92,-414 740.92,-420 740.92,-420 740.92,-499 740.92,-499 740.92,-505 734.92,-511 728.92,-511 728.92,-511 297.72,-511 297.72,-511 291.72,-511 285.72,-505 285.72,-499 285.72,-499 285.72,-420 285.72,-420 285.72,-414 291.72,-408 297.72,-408"/>
+<text text-anchor="middle" x="513.32" y="-493.7" font-family="PingFang SC" font-size="14.00">③ HTTP / UI</text>
+</g>
+<g id="clust4" class="cluster">
+<title>cluster_conv</title>
+<path fill="#ffffff" stroke="#059669" stroke-width="1.5" d="M816.8,-398C816.8,-398 1227.75,-398 1227.75,-398 1233.75,-398 1239.75,-404 1239.75,-410 1239.75,-410 1239.75,-611 1239.75,-611 1239.75,-617 1233.75,-623 1227.75,-623 1227.75,-623 816.8,-623 816.8,-623 810.8,-623 804.8,-617 804.8,-611 804.8,-611 804.8,-410 804.8,-410 804.8,-404 810.8,-398 816.8,-398"/>
+<text text-anchor="middle" x="1022.27" y="-605.7" font-family="PingFang SC" font-size="14.00">④ 对话运行时 Conversations</text>
+</g>
+<g id="clust5" class="cluster">
+<title>cluster_runner</title>
+<path fill="#ffffff" stroke="#059669" stroke-width="1.4" d="M1093.77,-302C1093.77,-302 1523.85,-302 1523.85,-302 1529.85,-302 1535.85,-308 1535.85,-314 1535.85,-314 1535.85,-378 1535.85,-378 1535.85,-384 1529.85,-390 1523.85,-390 1523.85,-390 1093.77,-390 1093.77,-390 1087.77,-390 1081.77,-384 1081.77,-378 1081.77,-378 1081.77,-314 1081.77,-314 1081.77,-308 1087.77,-302 1093.77,-302"/>
+<text text-anchor="middle" x="1308.81" y="-372.7" font-family="PingFang SC" font-size="14.00">⑤ Runner 编排</text>
+</g>
+<g id="clust6" class="cluster">
+<title>cluster_session</title>
+<path fill="#ffffff" stroke="#7c3aed" stroke-width="1.4" d="M1354.25,-206C1354.25,-206 1724.7,-206 1724.7,-206 1730.7,-206 1736.7,-212 1736.7,-218 1736.7,-218 1736.7,-282 1736.7,-282 1736.7,-288 1730.7,-294 1724.7,-294 1724.7,-294 1354.25,-294 1354.25,-294 1348.25,-294 1342.25,-288 1342.25,-282 1342.25,-282 1342.25,-218 1342.25,-218 1342.25,-212 1348.25,-206 1354.25,-206"/>
+<text text-anchor="middle" x="1539.47" y="-276.7" font-family="PingFang SC" font-size="14.00">⑥ Session 持久化</text>
+</g>
+<g id="clust7" class="cluster">
+<title>cluster_runapi</title>
+<path fill="#ffffff" stroke="#d97706" stroke-width="1.4" d="M20,-8C20,-8 189.6,-8 189.6,-8 195.6,-8 201.6,-14 201.6,-20 201.6,-20 201.6,-328 201.6,-328 201.6,-334 195.6,-340 189.6,-340 189.6,-340 20,-340 20,-340 14,-340 8,-334 8,-328 8,-328 8,-20 8,-20 8,-14 14,-8 20,-8"/>
+<text text-anchor="middle" x="104.8" y="-322.7" font-family="PingFang SC" font-size="14.00">⑦ Run 能力层 (0.6.7)</text>
+</g>
+<!-- CLI -->
+<g id="node1" class="node">
+<title>CLI</title>
+<path fill="#eef2ff" stroke="#6366f1" d="M145.22,-399.51C145.22,-399.51 64.37,-399.51 64.37,-399.51 58.37,-399.51 52.37,-393.51 52.37,-387.51 52.37,-387.51 52.37,-368.49 52.37,-368.49 52.37,-362.49 58.37,-356.49 64.37,-356.49 64.37,-356.49 145.22,-356.49 145.22,-356.49 151.22,-356.49 157.22,-362.49 157.22,-368.49 157.22,-368.49 157.22,-387.51 157.22,-387.51 157.22,-393.51 151.22,-399.51 145.22,-399.51"/>
+<text text-anchor="middle" x="104.8" y="-383.3" font-family="PingFang SC" font-size="11.00">agentengine CLI</text>
+<text text-anchor="middle" x="104.8" y="-367.55" font-family="PingFang SC" font-size="11.00">run · web</text>
+</g>
+<!-- Detect -->
+<g id="node3" class="node">
+<title>Detect</title>
+<path fill="#eef2ff" stroke="#6366f1" d="M401.2,-349.51C401.2,-349.51 268.6,-349.51 268.6,-349.51 262.6,-349.51 256.6,-343.51 256.6,-337.51 256.6,-337.51 256.6,-318.49 256.6,-318.49 256.6,-312.49 262.6,-306.49 268.6,-306.49 268.6,-306.49 401.2,-306.49 401.2,-306.49 407.2,-306.49 413.2,-312.49 413.2,-318.49 413.2,-318.49 413.2,-337.51 413.2,-337.51 413.2,-343.51 407.2,-349.51 401.2,-349.51"/>
+<text text-anchor="middle" x="334.9" y="-333.3" font-family="PingFang SC" font-size="11.00">Framework Detection</text>
+<text text-anchor="middle" x="334.9" y="-317.55" font-family="PingFang SC" font-size="11.00">FrameworkDetector.detect</text>
+</g>
+<!-- CLI&#45;&gt;Detect -->
+<g id="edge1" class="edge">
+<title>CLI&#45;&gt;Detect</title>
+<path fill="none" stroke="#475569" stroke-width="1.2" d="M157.5,-363.08C174.64,-358.41 193.87,-353.44 211.6,-349.5 222.3,-347.12 233.57,-344.84 244.77,-342.71"/>
+<polygon fill="#475569" stroke="#475569" stroke-width="1.2" points="245.41,-346.16 254.6,-340.88 244.13,-339.27 245.41,-346.16"/>
+<text text-anchor="middle" x="225.1" y="-354.45" font-family="PingFang SC" font-size="9.00">detect</text>
+</g>
+<!-- FastAPI -->
+<g id="node6" class="node">
+<title>FastAPI</title>
+<path fill="#ecfdf5" stroke="#059669" d="M364.07,-457C364.07,-457 305.72,-457 305.72,-457 299.72,-457 293.72,-451 293.72,-445 293.72,-445 293.72,-433 293.72,-433 293.72,-427 299.72,-421 305.72,-421 305.72,-421 364.07,-421 364.07,-421 370.07,-421 376.07,-427 376.07,-433 376.07,-433 376.07,-445 376.07,-445 376.07,-451 370.07,-457 364.07,-457"/>
+<text text-anchor="middle" x="334.9" y="-436.43" font-family="PingFang SC" font-size="11.00">FastAPI app</text>
+</g>
+<!-- CLI&#45;&gt;FastAPI -->
+<g id="edge6" class="edge">
+<title>CLI&#45;&gt;FastAPI</title>
+<path fill="none" stroke="#94a3b8" stroke-width="1.2" stroke-dasharray="5,2" d="M157.56,-391.84C194.84,-401.81 244.94,-415.21 282.21,-425.18"/>
+<polygon fill="#94a3b8" stroke="#94a3b8" stroke-width="1.2" points="281.02,-428.48 291.58,-427.68 282.83,-421.72 281.02,-428.48"/>
+<text text-anchor="middle" x="225.1" y="-417.1" font-family="PingFang SC" font-size="9.00">serve</text>
+</g>
+<!-- Web -->
+<g id="node2" class="node">
+<title>Web</title>
+<path fill="#eef2ff" stroke="#6366f1" d="M138.1,-460.51C138.1,-460.51 71.5,-460.51 71.5,-460.51 65.5,-460.51 59.5,-454.51 59.5,-448.51 59.5,-448.51 59.5,-429.49 59.5,-429.49 59.5,-423.49 65.5,-417.49 71.5,-417.49 71.5,-417.49 138.1,-417.49 138.1,-417.49 144.1,-417.49 150.1,-423.49 150.1,-429.49 150.1,-429.49 150.1,-448.51 150.1,-448.51 150.1,-454.51 144.1,-460.51 138.1,-460.51"/>
+<text text-anchor="middle" x="104.8" y="-444.3" font-family="PingFang SC" font-size="11.00">本地 Web UI</text>
+<text text-anchor="middle" x="104.8" y="-428.55" font-family="PingFang SC" font-size="11.00">(浏览器/终端)</text>
+</g>
+<!-- Web&#45;&gt;FastAPI -->
+<g id="edge2" class="edge">
+<title>Web&#45;&gt;FastAPI</title>
+<path fill="none" stroke="#475569" stroke-width="1.2" d="M150.59,-439C188.22,-439 242.03,-439 281.62,-439"/>
+<polygon fill="#475569" stroke="#475569" stroke-width="1.2" points="281.6,-442.5 291.6,-439 281.6,-435.5 281.6,-442.5"/>
+<text text-anchor="middle" x="225.1" y="-443.95" font-family="PingFang SC" font-size="9.00">HTTP</text>
+</g>
+<!-- CreateR -->
+<g id="node4" class="node">
+<title>CreateR</title>
+<path fill="#eef2ff" stroke="#6366f1" d="M733.3,-349.51C733.3,-349.51 517.45,-349.51 517.45,-349.51 511.45,-349.51 505.45,-343.51 505.45,-337.51 505.45,-337.51 505.45,-318.49 505.45,-318.49 505.45,-312.49 511.45,-306.49 517.45,-306.49 517.45,-306.49 733.3,-306.49 733.3,-306.49 739.3,-306.49 745.3,-312.49 745.3,-318.49 745.3,-318.49 745.3,-337.51 745.3,-337.51 745.3,-343.51 739.3,-349.51 733.3,-349.51"/>
+<text text-anchor="middle" x="625.37" y="-333.3" font-family="PingFang SC" font-size="11.00">create_runner</text>
+<text text-anchor="middle" x="625.37" y="-317.55" font-family="PingFang SC" font-size="11.00">(ADK/LangGraph/LangChain/DeepAgents)</text>
+</g>
+<!-- Detect&#45;&gt;CreateR -->
+<g id="edge3" class="edge">
+<title>Detect&#45;&gt;CreateR</title>
+<path fill="none" stroke="#475569" stroke-width="1.2" d="M413.59,-328C438.19,-328 466.1,-328 493.38,-328"/>
+<polygon fill="#475569" stroke="#475569" stroke-width="1.2" points="493.2,-331.5 503.2,-328 493.2,-324.5 493.2,-331.5"/>
+<text text-anchor="middle" x="459.32" y="-332.95" font-family="PingFang SC" font-size="9.00">framework</text>
+</g>
+<!-- LoadA -->
+<g id="node5" class="node">
+<title>LoadA</title>
+<path fill="#eef2ff" stroke="#6366f1" d="M946.52,-349.51C946.52,-349.51 866.42,-349.51 866.42,-349.51 860.42,-349.51 854.42,-343.51 854.42,-337.51 854.42,-337.51 854.42,-318.49 854.42,-318.49 854.42,-312.49 860.42,-306.49 866.42,-306.49 866.42,-306.49 946.52,-306.49 946.52,-306.49 952.52,-306.49 958.52,-312.49 958.52,-318.49 958.52,-318.49 958.52,-337.51 958.52,-337.51 958.52,-343.51 952.52,-349.51 946.52,-349.51"/>
+<text text-anchor="middle" x="906.47" y="-333.3" font-family="PingFang SC" font-size="11.00">load_agent</text>
+<text text-anchor="middle" x="906.47" y="-317.55" font-family="PingFang SC" font-size="11.00">用户 Agent 实例</text>
+</g>
+<!-- CreateR&#45;&gt;LoadA -->
+<g id="edge4" class="edge">
+<title>CreateR&#45;&gt;LoadA</title>
+<path fill="none" stroke="#475569" stroke-width="1.2" d="M745.55,-328C778.88,-328 813.81,-328 842.48,-328"/>
+<polygon fill="#475569" stroke="#475569" stroke-width="1.2" points="842.14,-331.5 852.14,-328 842.14,-324.5 842.14,-331.5"/>
+<text text-anchor="middle" x="779.05" y="-332.95" font-family="PingFang SC" font-size="9.00">runner</text>
+</g>
+<!-- BaseR -->
+<g id="node13" class="node">
+<title>BaseR</title>
+<path fill="#ecfdf5" stroke="#059669" d="M1204.37,-353.51C1204.37,-353.51 1101.77,-353.51 1101.77,-353.51 1095.77,-353.51 1089.77,-347.51 1089.77,-341.51 1089.77,-341.51 1089.77,-322.49 1089.77,-322.49 1089.77,-316.49 1095.77,-310.49 1101.77,-310.49 1101.77,-310.49 1204.37,-310.49 1204.37,-310.49 1210.37,-310.49 1216.37,-316.49 1216.37,-322.49 1216.37,-322.49 1216.37,-341.51 1216.37,-341.51 1216.37,-347.51 1210.37,-353.51 1204.37,-353.51"/>
+<text text-anchor="middle" x="1153.07" y="-337.3" font-family="PingFang SC" font-size="11.00">BaseRunner.invoke()</text>
+<text text-anchor="middle" x="1153.07" y="-321.55" font-family="PingFang SC" font-size="11.00">BaseRunner.stream()</text>
+</g>
+<!-- LoadA&#45;&gt;BaseR -->
+<g id="edge5" class="edge">
+<title>LoadA&#45;&gt;BaseR</title>
+<path fill="none" stroke="#475569" stroke-width="1.2" d="M958.75,-311.69C987.43,-304.55 1023.86,-298.76 1056.4,-303.5 1063.49,-304.53 1070.79,-305.98 1078.04,-307.67"/>
+<polygon fill="#475569" stroke="#475569" stroke-width="1.2" points="1077.04,-311.03 1087.59,-310.07 1078.75,-304.24 1077.04,-311.03"/>
+<text text-anchor="middle" x="1037.27" y="-308.45" font-family="PingFang SC" font-size="9.00">agent</text>
+</g>
+<!-- Route -->
+<g id="node7" class="node">
+<title>Route</title>
+<path fill="#ecfdf5" stroke="#059669" d="M720.92,-474.38C720.92,-474.38 529.82,-474.38 529.82,-474.38 523.82,-474.38 517.82,-468.38 517.82,-462.38 517.82,-462.38 517.82,-427.62 517.82,-427.62 517.82,-421.62 523.82,-415.62 529.82,-415.62 529.82,-415.62 720.92,-415.62 720.92,-415.62 726.92,-415.62 732.92,-421.62 732.92,-427.62 732.92,-427.62 732.92,-462.38 732.92,-462.38 732.92,-468.38 726.92,-474.38 720.92,-474.38"/>
+<text text-anchor="middle" x="625.37" y="-458.18" font-family="PingFang SC" font-size="11.00">路由层</text>
+<text text-anchor="middle" x="625.37" y="-442.43" font-family="PingFang SC" font-size="11.00">/v1/responses · /v1/chat/completions</text>
+<text text-anchor="middle" x="625.37" y="-426.68" font-family="PingFang SC" font-size="11.00">run · cancel · events · checkpoints</text>
+</g>
+<!-- FastAPI&#45;&gt;Route -->
+<g id="edge7" class="edge">
+<title>FastAPI&#45;&gt;Route</title>
+<path fill="none" stroke="#475569" stroke-width="1.2" d="M376.31,-439.84C409.98,-440.54 459.7,-441.57 505.8,-442.53"/>
+<polygon fill="#475569" stroke="#475569" stroke-width="1.2" points="505.54,-446.03 515.61,-442.74 505.69,-439.03 505.54,-446.03"/>
+</g>
+<!-- BuildIn -->
+<g id="node8" class="node">
+<title>BuildIn</title>
+<path fill="#ecfdf5" stroke="#059669" d="M961.15,-525.51C961.15,-525.51 851.8,-525.51 851.8,-525.51 845.8,-525.51 839.8,-519.51 839.8,-513.51 839.8,-513.51 839.8,-494.49 839.8,-494.49 839.8,-488.49 845.8,-482.49 851.8,-482.49 851.8,-482.49 961.15,-482.49 961.15,-482.49 967.15,-482.49 973.15,-488.49 973.15,-494.49 973.15,-494.49 973.15,-513.51 973.15,-513.51 973.15,-519.51 967.15,-525.51 961.15,-525.51"/>
+<text text-anchor="middle" x="906.47" y="-509.3" font-family="PingFang SC" font-size="11.00">build_run_input</text>
+<text text-anchor="middle" x="906.47" y="-493.55" font-family="PingFang SC" font-size="11.00">规范化消息/工具/附件</text>
+</g>
+<!-- Route&#45;&gt;BuildIn -->
+<g id="edge8" class="edge">
+<title>Route&#45;&gt;BuildIn</title>
+<path fill="none" stroke="#475569" stroke-width="1.2" d="M733.35,-466.65C753.76,-470.85 774.95,-475.27 794.8,-479.5 805.51,-481.78 816.8,-484.23 827.91,-486.67"/>
+<polygon fill="#475569" stroke="#475569" stroke-width="1.2" points="827.09,-490.07 837.61,-488.8 828.59,-483.23 827.09,-490.07"/>
+<text text-anchor="middle" x="779.05" y="-484.45" font-family="PingFang SC" font-size="9.00">request</text>
+</g>
+<!-- PIC -->
+<g id="node9" class="node">
+<title>PIC</title>
+<path fill="#ecfdf5" stroke="#059669" d="M1219.75,-510.51C1219.75,-510.51 1086.4,-510.51 1086.4,-510.51 1080.4,-510.51 1074.4,-504.51 1074.4,-498.51 1074.4,-498.51 1074.4,-479.49 1074.4,-479.49 1074.4,-473.49 1080.4,-467.49 1086.4,-467.49 1086.4,-467.49 1219.75,-467.49 1219.75,-467.49 1225.75,-467.49 1231.75,-473.49 1231.75,-479.49 1231.75,-479.49 1231.75,-498.51 1231.75,-498.51 1231.75,-504.51 1225.75,-510.51 1219.75,-510.51"/>
+<text text-anchor="middle" x="1153.07" y="-494.3" font-family="PingFang SC" font-size="11.00">PlatformInvocationContext</text>
+<text text-anchor="middle" x="1153.07" y="-478.55" font-family="PingFang SC" font-size="11.00">invocation_id · account_id</text>
+</g>
+<!-- BuildIn&#45;&gt;PIC -->
+<g id="edge9" class="edge">
+<title>BuildIn&#45;&gt;PIC</title>
+<path fill="none" stroke="#475569" stroke-width="1.2" d="M973.35,-499.96C1000.7,-498.28 1032.88,-496.31 1062.34,-494.5"/>
+<polygon fill="#475569" stroke="#475569" stroke-width="1.2" points="1062.34,-498.01 1072.1,-493.9 1061.91,-491.02 1062.34,-498.01"/>
+<text text-anchor="middle" x="1037.27" y="-501.9" font-family="PingFang SC" font-size="9.00">context</text>
+</g>
+<!-- PIC&#45;&gt;BaseR -->
+<g id="edge10" class="edge">
+<title>PIC&#45;&gt;BaseR</title>
+<path fill="none" stroke="#475569" stroke-width="1.2" d="M1086.11,-467.08C1081.97,-464.64 1078.03,-461.96 1074.4,-459 1054.76,-442.99 1026.99,-419.4 1041.74,-394.25 1050.52,-379.29 1064.35,-367.65 1079.32,-358.71"/>
+<polygon fill="#475569" stroke="#475569" stroke-width="1.2" points="1073.5,-366.35 1080.22,-358.16 1069.86,-360.37 1073.5,-366.35"/>
+<text text-anchor="middle" x="1037.27" y="-399.2" font-family="PingFang SC" font-size="9.00">invoke</text>
+</g>
+<!-- Status -->
+<g id="node10" class="node">
+<title>Status</title>
+<path fill="#ecfdf5" stroke="#059669" d="M988.15,-464.38C988.15,-464.38 824.8,-464.38 824.8,-464.38 818.8,-464.38 812.8,-458.38 812.8,-452.38 812.8,-452.38 812.8,-417.62 812.8,-417.62 812.8,-411.62 818.8,-405.62 824.8,-405.62 824.8,-405.62 988.15,-405.62 988.15,-405.62 994.15,-405.62 1000.15,-411.62 1000.15,-417.62 1000.15,-417.62 1000.15,-452.38 1000.15,-452.38 1000.15,-458.38 994.15,-464.38 988.15,-464.38"/>
+<text text-anchor="middle" x="906.47" y="-448.18" font-family="PingFang SC" font-size="11.00">run_status</text>
+<text text-anchor="middle" x="906.47" y="-432.43" font-family="PingFang SC" font-size="11.00">preparing · running · completed</text>
+<text text-anchor="middle" x="906.47" y="-416.68" font-family="PingFang SC" font-size="11.00">failed · cancelled · interrupted</text>
+</g>
+<!-- Ckpt -->
+<g id="node11" class="node">
+<title>Ckpt</title>
+<path fill="#ecfdf5" stroke="#059669" d="M1190.5,-449.51C1190.5,-449.51 1115.65,-449.51 1115.65,-449.51 1109.65,-449.51 1103.65,-443.51 1103.65,-437.51 1103.65,-437.51 1103.65,-418.49 1103.65,-418.49 1103.65,-412.49 1109.65,-406.49 1115.65,-406.49 1115.65,-406.49 1190.5,-406.49 1190.5,-406.49 1196.5,-406.49 1202.5,-412.49 1202.5,-418.49 1202.5,-418.49 1202.5,-437.51 1202.5,-437.51 1202.5,-443.51 1196.5,-449.51 1190.5,-449.51"/>
+<text text-anchor="middle" x="1153.07" y="-433.3" font-family="PingFang SC" font-size="11.00">run_checkpoint</text>
+<text text-anchor="middle" x="1153.07" y="-417.55" font-family="PingFang SC" font-size="11.00">快照持久化</text>
+</g>
+<!-- Status&#45;&gt;Ckpt -->
+<g id="edge13" class="edge">
+<title>Status&#45;&gt;Ckpt</title>
+<path fill="none" stroke="#475569" stroke-width="1.2" d="M1000.65,-432.33C1031.11,-431.46 1064.12,-430.52 1091.53,-429.73"/>
+<polygon fill="#475569" stroke="#475569" stroke-width="1.2" points="1091.59,-433.23 1101.49,-429.45 1091.39,-426.24 1091.59,-433.23"/>
+<text text-anchor="middle" x="1037.27" y="-436.66" font-family="PingFang SC" font-size="9.00">snapshot</text>
+</g>
+<!-- Retry -->
+<g id="node12" class="node">
+<title>Retry</title>
+<path fill="#ecfdf5" stroke="#059669" d="M939.02,-586.51C939.02,-586.51 873.92,-586.51 873.92,-586.51 867.92,-586.51 861.92,-580.51 861.92,-574.51 861.92,-574.51 861.92,-555.49 861.92,-555.49 861.92,-549.49 867.92,-543.49 873.92,-543.49 873.92,-543.49 939.02,-543.49 939.02,-543.49 945.02,-543.49 951.02,-549.49 951.02,-555.49 951.02,-555.49 951.02,-574.51 951.02,-574.51 951.02,-580.51 945.02,-586.51 939.02,-586.51"/>
+<text text-anchor="middle" x="906.47" y="-570.3" font-family="PingFang SC" font-size="11.00">retry</text>
+<text text-anchor="middle" x="906.47" y="-554.55" font-family="PingFang SC" font-size="11.00">失败重试策略</text>
+</g>
+<!-- Status&#45;&gt;Retry -->
+<g id="edge17" class="edge">
+<title>Status&#45;&gt;Retry</title>
+<path fill="none" stroke="#b91c1c" stroke-width="1.2" stroke-dasharray="5,2" d="M812.56,-464.82C795.42,-476.03 784.45,-491.01 790,-510.75 793.41,-522.91 794.78,-527.31 804.8,-535 817.96,-545.1 834.45,-551.81 850.3,-556.26"/>
+<polygon fill="#b91c1c" stroke="#b91c1c" stroke-width="1.2" points="849.36,-559.63 859.91,-558.68 851.07,-552.84 849.36,-559.63"/>
+<text text-anchor="middle" x="779.05" y="-502.2" font-family="PingFang SC" font-size="9.00">failed</text>
+</g>
+<!-- Retry&#45;&gt;BaseR -->
+<g id="edge16" class="edge">
+<title>Retry&#45;&gt;BaseR</title>
+<path fill="none" stroke="#b91c1c" stroke-width="1.2" stroke-dasharray="5,2" d="M951.21,-561.23C969.08,-557.37 988.3,-549.78 1000.15,-535 1026.88,-501.65 987.8,-373.6 1018.15,-343.5 1033.74,-328.04 1055.96,-322.39 1077.83,-321.43"/>
+<polygon fill="#b91c1c" stroke="#b91c1c" stroke-width="1.2" points="1077.76,-324.93 1087.73,-321.35 1077.71,-317.93 1077.76,-324.93"/>
+<text text-anchor="middle" x="1037.27" y="-348.45" font-family="PingFang SC" font-size="9.00">retry</text>
+</g>
+<!-- BaseR&#45;&gt;Status -->
+<g id="edge12" class="edge">
+<title>BaseR&#45;&gt;Status</title>
+<path fill="none" stroke="#475569" stroke-width="1.2" d="M1081.78,-350.66C1060.73,-357.48 1037.99,-366.12 1018.15,-376.5 1009.29,-381.14 1008.69,-384.79 1000.15,-390 994.57,-393.4 988.7,-396.75 982.74,-399.99"/>
+<polygon fill="#475569" stroke="#475569" stroke-width="1.2" points="981.45,-396.71 974.24,-404.48 984.72,-402.9 981.45,-396.71"/>
+<text text-anchor="middle" x="1037.27" y="-381.45" font-family="PingFang SC" font-size="9.00">status</text>
+</g>
+<!-- FrameAdapt -->
+<g id="node14" class="node">
+<title>FrameAdapt</title>
+<path fill="#ecfdf5" stroke="#059669" d="M1515.85,-353.51C1515.85,-353.51 1307.5,-353.51 1307.5,-353.51 1301.5,-353.51 1295.5,-347.51 1295.5,-341.51 1295.5,-341.51 1295.5,-322.49 1295.5,-322.49 1295.5,-316.49 1301.5,-310.49 1307.5,-310.49 1307.5,-310.49 1515.85,-310.49 1515.85,-310.49 1521.85,-310.49 1527.85,-316.49 1527.85,-322.49 1527.85,-322.49 1527.85,-341.51 1527.85,-341.51 1527.85,-347.51 1521.85,-353.51 1515.85,-353.51"/>
+<text text-anchor="middle" x="1411.67" y="-337.3" font-family="PingFang SC" font-size="11.00">框架适配</text>
+<text text-anchor="middle" x="1411.67" y="-321.55" font-family="PingFang SC" font-size="11.00">ADK/LangGraph/LangChain/DeepAgents</text>
+</g>
+<!-- BaseR&#45;&gt;FrameAdapt -->
+<g id="edge11" class="edge">
+<title>BaseR&#45;&gt;FrameAdapt</title>
+<path fill="none" stroke="#475569" stroke-width="1.2" d="M1216.85,-332C1237.09,-332 1260.31,-332 1283.48,-332"/>
+<polygon fill="#475569" stroke="#475569" stroke-width="1.2" points="1283.39,-335.5 1293.39,-332 1283.39,-328.5 1283.39,-335.5"/>
+</g>
+<!-- Session -->
+<g id="node15" class="node">
+<title>Session</title>
+<path fill="#eef2ff" stroke="#7c3aed" d="M1461.1,-257.51C1461.1,-257.51 1362.25,-257.51 1362.25,-257.51 1356.25,-257.51 1350.25,-251.51 1350.25,-245.51 1350.25,-245.51 1350.25,-226.49 1350.25,-226.49 1350.25,-220.49 1356.25,-214.49 1362.25,-214.49 1362.25,-214.49 1461.1,-214.49 1461.1,-214.49 1467.1,-214.49 1473.1,-220.49 1473.1,-226.49 1473.1,-226.49 1473.1,-245.51 1473.1,-245.51 1473.1,-251.51 1467.1,-257.51 1461.1,-257.51"/>
+<text text-anchor="middle" x="1411.67" y="-241.3" font-family="PingFang SC" font-size="11.00">Session</text>
+<text text-anchor="middle" x="1411.67" y="-225.55" font-family="PingFang SC" font-size="11.00">session_id · user_id</text>
+</g>
+<!-- BaseR&#45;&gt;Session -->
+<g id="edge14" class="edge">
+<title>BaseR&#45;&gt;Session</title>
+<path fill="none" stroke="#475569" stroke-width="1.2" d="M1234.26,-302C1268.43,-289.22 1307.93,-274.44 1340.88,-262.11"/>
+<polygon fill="#475569" stroke="#475569" stroke-width="1.2" points="1342.09,-265.39 1350.23,-258.61 1339.64,-258.84 1342.09,-265.39"/>
+<text text-anchor="middle" x="1263.62" y="-300.37" font-family="PingFang SC" font-size="9.00">persist</text>
+</g>
+<!-- Events -->
+<g id="node16" class="node">
+<title>Events</title>
+<path fill="#eef2ff" stroke="#7c3aed" d="M1716.7,-257.51C1716.7,-257.51 1607.35,-257.51 1607.35,-257.51 1601.35,-257.51 1595.35,-251.51 1595.35,-245.51 1595.35,-245.51 1595.35,-226.49 1595.35,-226.49 1595.35,-220.49 1601.35,-214.49 1607.35,-214.49 1607.35,-214.49 1716.7,-214.49 1716.7,-214.49 1722.7,-214.49 1728.7,-220.49 1728.7,-226.49 1728.7,-226.49 1728.7,-245.51 1728.7,-245.51 1728.7,-251.51 1722.7,-257.51 1716.7,-257.51"/>
+<text text-anchor="middle" x="1662.02" y="-241.3" font-family="PingFang SC" font-size="11.00">Events</text>
+<text text-anchor="middle" x="1662.02" y="-225.55" font-family="PingFang SC" font-size="11.00">消息/工具/状态事件流</text>
+</g>
+<!-- Session&#45;&gt;Events -->
+<g id="edge15" class="edge">
+<title>Session&#45;&gt;Events</title>
+<path fill="none" stroke="#475569" stroke-width="1.2" d="M1473.43,-236C1506.59,-236 1547.99,-236 1583.46,-236"/>
+<polygon fill="#475569" stroke="#475569" stroke-width="1.2" points="1583.42,-239.5 1593.42,-236 1583.42,-232.5 1583.42,-239.5"/>
+<text text-anchor="middle" x="1561.6" y="-240.95" font-family="PingFang SC" font-size="9.00">append</text>
+</g>
+<!-- Resume -->
+<g id="node17" class="node">
+<title>Resume</title>
+<path fill="#fff7ed" stroke="#d97706" d="M135.85,-59.51C135.85,-59.51 73.75,-59.51 73.75,-59.51 67.75,-59.51 61.75,-53.51 61.75,-47.51 61.75,-47.51 61.75,-28.49 61.75,-28.49 61.75,-22.49 67.75,-16.49 73.75,-16.49 73.75,-16.49 135.85,-16.49 135.85,-16.49 141.85,-16.49 147.85,-22.49 147.85,-28.49 147.85,-28.49 147.85,-47.51 147.85,-47.51 147.85,-53.51 141.85,-59.51 135.85,-59.51"/>
+<text text-anchor="middle" x="104.8" y="-43.3" font-family="PingFang SC" font-size="11.00">ResumeRun</text>
+<text text-anchor="middle" x="104.8" y="-27.55" font-family="PingFang SC" font-size="11.00">恢复中断 run</text>
+</g>
+<!-- Resume&#45;&gt;BuildIn -->
+<g id="edge21" class="edge">
+<title>Resume&#45;&gt;BuildIn</title>
+<path fill="none" stroke="#d97706" stroke-width="1.2" stroke-dasharray="5,2" d="M148.16,-50.01C164.96,-55.1 184.35,-61.38 201.6,-68 340.25,-121.18 366.49,-154.61 505.45,-207 631.1,-254.38 711.7,-188.52 794.8,-294 819.45,-325.29 780.25,-441.62 804.8,-473 811.1,-481.06 819.46,-487.07 828.67,-491.56"/>
+<polygon fill="#d97706" stroke="#d97706" stroke-width="1.2" points="827.12,-494.7 837.69,-495.3 829.8,-488.23 827.12,-494.7"/>
+<text text-anchor="middle" x="459.32" y="-204.81" font-family="PingFang SC" font-size="9.00">resume_input</text>
+</g>
+<!-- Preview -->
+<g id="node18" class="node">
+<title>Preview</title>
+<path fill="#fff7ed" stroke="#d97706" d="M181.6,-120.51C181.6,-120.51 28,-120.51 28,-120.51 22,-120.51 16,-114.51 16,-108.51 16,-108.51 16,-89.49 16,-89.49 16,-83.49 22,-77.49 28,-77.49 28,-77.49 181.6,-77.49 181.6,-77.49 187.6,-77.49 193.6,-83.49 193.6,-89.49 193.6,-89.49 193.6,-108.51 193.6,-108.51 193.6,-114.51 187.6,-120.51 181.6,-120.51"/>
+<text text-anchor="middle" x="104.8" y="-104.3" font-family="PingFang SC" font-size="11.00">GetCheckpointResumePreview</text>
+<text text-anchor="middle" x="104.8" y="-88.55" font-family="PingFang SC" font-size="11.00">快照预览</text>
+</g>
+<!-- Preview&#45;&gt;Ckpt -->
+<g id="edge19" class="edge">
+<title>Preview&#45;&gt;Ckpt</title>
+<path fill="none" stroke="#7c3aed" stroke-width="1.2" stroke-dasharray="5,2" d="M193.94,-106.98C358.75,-122.55 701.03,-158.21 745.3,-189.5 759.42,-199.48 751.67,-211.2 763.3,-224 778.1,-240.29 784.37,-242.82 804.8,-251 910.41,-293.27 975.93,-217.59 1056.4,-298 1087.11,-328.69 1047.38,-360.02 1074.4,-394 1079.5,-400.42 1086.06,-405.65 1093.2,-409.91"/>
+<polygon fill="#7c3aed" stroke="#7c3aed" stroke-width="1.2" points="1091.12,-412.77 1101.6,-414.3 1094.36,-406.57 1091.12,-412.77"/>
+<text text-anchor="middle" x="625.37" y="-194.45" font-family="PingFang SC" font-size="9.00">read</text>
+</g>
+<!-- ListCk -->
+<g id="node19" class="node">
+<title>ListCk</title>
+<path fill="#fff7ed" stroke="#d97706" d="M164.35,-181.51C164.35,-181.51 45.25,-181.51 45.25,-181.51 39.25,-181.51 33.25,-175.51 33.25,-169.51 33.25,-169.51 33.25,-150.49 33.25,-150.49 33.25,-144.49 39.25,-138.49 45.25,-138.49 45.25,-138.49 164.35,-138.49 164.35,-138.49 170.35,-138.49 176.35,-144.49 176.35,-150.49 176.35,-150.49 176.35,-169.51 176.35,-169.51 176.35,-175.51 170.35,-181.51 164.35,-181.51"/>
+<text text-anchor="middle" x="104.8" y="-165.3" font-family="PingFang SC" font-size="11.00">ListSessionCheckpoints</text>
+<text text-anchor="middle" x="104.8" y="-149.55" font-family="PingFang SC" font-size="11.00">列快照</text>
+</g>
+<!-- ListCk&#45;&gt;Session -->
+<g id="edge18" class="edge">
+<title>ListCk&#45;&gt;Session</title>
+<path fill="none" stroke="#7c3aed" stroke-width="1.2" stroke-dasharray="5,2" d="M176.75,-151C242.57,-143.13 343.32,-132.31 431.2,-128 456.17,-126.78 462.45,-127.52 487.45,-128 602.11,-130.22 634.86,-107.09 745.3,-138 754.11,-140.47 754.68,-144.94 763.3,-148 871.7,-186.46 904.29,-176.73 1018.15,-193 1129.5,-208.91 1259.36,-222.09 1338.26,-229.5"/>
+<polygon fill="#7c3aed" stroke="#7c3aed" stroke-width="1.2" points="1337.91,-232.99 1348.19,-230.43 1338.56,-226.02 1337.91,-232.99"/>
+<text text-anchor="middle" x="779.05" y="-163.12" font-family="PingFang SC" font-size="9.00">read</text>
+</g>
+<!-- Cancel -->
+<g id="node20" class="node">
+<title>Cancel</title>
+<path fill="#fef2f2" stroke="#b91c1c" d="M130.6,-242.51C130.6,-242.51 79,-242.51 79,-242.51 73,-242.51 67,-236.51 67,-230.51 67,-230.51 67,-211.49 67,-211.49 67,-205.49 73,-199.49 79,-199.49 79,-199.49 130.6,-199.49 130.6,-199.49 136.6,-199.49 142.6,-205.49 142.6,-211.49 142.6,-211.49 142.6,-230.51 142.6,-230.51 142.6,-236.51 136.6,-242.51 130.6,-242.51"/>
+<text text-anchor="middle" x="104.8" y="-226.3" font-family="PingFang SC" font-size="11.00">CancelRun</text>
+<text text-anchor="middle" x="104.8" y="-210.55" font-family="PingFang SC" font-size="11.00">取消 run</text>
+</g>
+<!-- Cancel&#45;&gt;BaseR -->
+<g id="edge22" class="edge">
+<title>Cancel&#45;&gt;BaseR</title>
+<path fill="none" stroke="#b91c1c" stroke-width="1.2" stroke-dasharray="5,2" d="M142.74,-211.1C160.76,-205.86 182.6,-198.87 201.6,-191 307.98,-146.95 319.38,-98.46 431.2,-71 517.41,-49.83 636.25,-28.26 745.3,-93.5 757.84,-101 753.38,-110.28 763.3,-121 779.12,-138.09 784.6,-141.41 804.8,-153 909.45,-213.06 952.38,-193.85 1056.4,-255 1079.25,-268.43 1102.47,-286.98 1120.32,-302.51"/>
+<polygon fill="#b91c1c" stroke="#b91c1c" stroke-width="1.2" points="1117.96,-305.09 1127.77,-309.1 1122.6,-299.85 1117.96,-305.09"/>
+<text text-anchor="middle" x="625.37" y="-98.45" font-family="PingFang SC" font-size="9.00">cooperate</text>
+</g>
+<!-- Sub -->
+<g id="node21" class="node">
+<title>Sub</title>
+<path fill="#fff7ed" stroke="#d97706" d="M154.97,-303.51C154.97,-303.51 54.62,-303.51 54.62,-303.51 48.62,-303.51 42.62,-297.51 42.62,-291.51 42.62,-291.51 42.62,-272.49 42.62,-272.49 42.62,-266.49 48.62,-260.49 54.62,-260.49 54.62,-260.49 154.97,-260.49 154.97,-260.49 160.97,-260.49 166.97,-266.49 166.97,-272.49 166.97,-272.49 166.97,-291.51 166.97,-291.51 166.97,-297.51 160.97,-303.51 154.97,-303.51"/>
+<text text-anchor="middle" x="104.8" y="-287.3" font-family="PingFang SC" font-size="11.00">SubscribeRunEvents</text>
+<text text-anchor="middle" x="104.8" y="-271.55" font-family="PingFang SC" font-size="11.00">事件订阅</text>
+</g>
+<!-- Sub&#45;&gt;Events -->
+<g id="edge20" class="edge">
+<title>Sub&#45;&gt;Events</title>
+<path fill="none" stroke="#7c3aed" stroke-width="1.2" stroke-dasharray="5,2" d="M167.38,-266.79C179.1,-262.77 191.01,-257.87 201.6,-252 319.19,-186.79 308.15,-109.2 431.2,-55 461.62,-41.6 472.27,-48 505.45,-46 967.98,-18.07 1083.71,-103.6 1535.85,-205 1551.32,-208.47 1567.81,-212.39 1583.57,-216.25"/>
+<polygon fill="#7c3aed" stroke="#7c3aed" stroke-width="1.2" points="1582.58,-219.61 1593.13,-218.61 1584.26,-212.81 1582.58,-219.61"/>
+<text text-anchor="middle" x="906.47" y="-76.28" font-family="PingFang SC" font-size="9.00">subscribe</text>
+</g>
+</g>
 </svg>
