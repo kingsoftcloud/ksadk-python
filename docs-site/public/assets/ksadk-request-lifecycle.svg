@@ -1,0 +1,239 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1620 760" role="img" aria-labelledby="t d">
+  <title id="t">KsADK 请求生命周期</title>
+  <desc id="d">从 agentengine 入口到对话运行时、Runner、session 持久化与 0.6.7 run 能力层的完整链路。</desc>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&amp;display=swap');
+    text { font-family: 'JetBrains Mono', 'Noto Sans SC', 'PingFang SC', sans-serif; }
+  </style>
+  <defs>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/>
+    </pattern>
+    <marker id="ar" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7" fill="#64748b"/></marker>
+    <marker id="ar-c" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7" fill="#22d3ee"/></marker>
+    <marker id="ar-g" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7" fill="#34d399"/></marker>
+    <marker id="ar-v" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7" fill="#a78bfa"/></marker>
+    <marker id="ar-a" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7" fill="#fbbf24"/></marker>
+    <marker id="ar-r" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7" fill="#fb7185"/></marker>
+  </defs>
+
+  <rect width="1620" height="760" fill="#0f172a"/>
+  <rect width="1620" height="760" fill="url(#grid)"/>
+
+  <text x="30" y="34" fill="white" font-size="16" font-weight="700">KsADK 请求生命周期</text>
+  <text x="30" y="52" fill="#94a3b8" font-size="10">入口 → 启动 → HTTP/UI → 对话运行时 → Runner → Session 持久化 → Run 能力层</text>
+
+  <!-- Region: Entry -->
+  <rect x="30" y="80" width="180" height="120" rx="10" fill="none" stroke="#22d3ee" stroke-width="1" stroke-dasharray="6,4"/>
+  <text x="42" y="98" fill="#22d3ee" font-size="9" font-weight="600">入口 Entry</text>
+  <g>
+    <rect x="50" y="115" width="140" height="70" rx="6" fill="#0f172a"/>
+    <rect x="50" y="115" width="140" height="70" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+    <text x="120" y="142" fill="white" font-size="11" font-weight="600" text-anchor="middle">agentengine</text>
+    <text x="120" y="158" fill="#94a3b8" font-size="9" text-anchor="middle">run / web</text>
+    <text x="120" y="172" fill="#64748b" font-size="8" text-anchor="middle">CLI · 本地 UI</text>
+  </g>
+
+  <!-- Region: Boot -->
+  <rect x="240" y="80" width="200" height="200" rx="10" fill="none" stroke="#34d399" stroke-width="1" stroke-dasharray="6,4"/>
+  <text x="252" y="98" fill="#34d399" font-size="9" font-weight="600">启动 Boot</text>
+  <g>
+    <rect x="260" y="115" width="160" height="50" rx="6" fill="#0f172a"/>
+    <rect x="260" y="115" width="160" height="50" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+    <text x="340" y="138" fill="white" font-size="11" font-weight="600" text-anchor="middle">framework detection</text>
+    <text x="340" y="153" fill="#94a3b8" font-size="8" text-anchor="middle">FrameworkDetector</text>
+  </g>
+  <g>
+    <rect x="260" y="180" width="160" height="45" rx="6" fill="#0f172a"/>
+    <rect x="260" y="180" width="160" height="45" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+    <text x="340" y="200" fill="white" font-size="11" font-weight="600" text-anchor="middle">create_runner</text>
+    <text x="340" y="215" fill="#94a3b8" font-size="8" text-anchor="middle">Runner Factory</text>
+  </g>
+  <g>
+    <rect x="260" y="240" width="160" height="45" rx="6" fill="#0f172a"/>
+    <rect x="260" y="240" width="160" height="45" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+    <text x="340" y="260" fill="white" font-size="11" font-weight="600" text-anchor="middle">runner.load_agent</text>
+    <text x="340" y="275" fill="#94a3b8" font-size="8" text-anchor="middle">用户代码加载</text>
+  </g>
+
+  <!-- Region: HTTP/UI -->
+  <rect x="470" y="80" width="220" height="200" rx="10" fill="none" stroke="#22d3ee" stroke-width="1" stroke-dasharray="6,4"/>
+  <text x="482" y="98" fill="#22d3ee" font-size="9" font-weight="600">HTTP / UI 层</text>
+  <g>
+    <rect x="490" y="115" width="180" height="50" rx="6" fill="#0f172a"/>
+    <rect x="490" y="115" width="180" height="50" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+    <text x="580" y="138" fill="white" font-size="11" font-weight="600" text-anchor="middle">FastAPI app</text>
+    <text x="580" y="153" fill="#94a3b8" font-size="8" text-anchor="middle">ksadk.server.app</text>
+  </g>
+  <g>
+    <rect x="490" y="180" width="180" height="80" rx="6" fill="#0f172a"/>
+    <rect x="490" y="180" width="180" height="80" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+    <text x="580" y="202" fill="white" font-size="11" font-weight="600" text-anchor="middle">路由协议</text>
+    <text x="580" y="218" fill="#a7f3d0" font-size="8" text-anchor="middle">/v1/responses</text>
+    <text x="580" y="232" fill="#a7f3d0" font-size="8" text-anchor="middle">/v1/chat/completions</text>
+    <text x="580" y="246" fill="#a7f3d0" font-size="8" text-anchor="middle">/run_sse · RunAgent</text>
+  </g>
+
+  <!-- Region: Conversations Runtime (core) -->
+  <rect x="720" y="80" width="280" height="290" rx="12" fill="none" stroke="#34d399" stroke-width="1.5" stroke-dasharray="8,4"/>
+  <text x="732" y="100" fill="#34d399" font-size="10" font-weight="700">Conversations Runtime · 数据面核心</text>
+  <g>
+    <rect x="740" y="115" width="240" height="48" rx="6" fill="#0f172a"/>
+    <rect x="740" y="115" width="240" height="48" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+    <text x="860" y="136" fill="white" font-size="11" font-weight="600" text-anchor="middle">build_run_input</text>
+    <text x="860" y="151" fill="#94a3b8" font-size="8" text-anchor="middle">history + attachments</text>
+  </g>
+  <g>
+    <rect x="740" y="173" width="240" height="48" rx="6" fill="#0f172a"/>
+    <rect x="740" y="173" width="240" height="48" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+    <text x="860" y="194" fill="white" font-size="11" font-weight="600" text-anchor="middle">PlatformInvocationContext</text>
+    <text x="860" y="209" fill="#94a3b8" font-size="8" text-anchor="middle">invocation_id · account_id</text>
+  </g>
+  <g>
+    <rect x="740" y="231" width="240" height="48" rx="6" fill="#0f172a"/>
+    <rect x="740" y="231" width="240" height="48" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+    <text x="860" y="252" fill="white" font-size="11" font-weight="600" text-anchor="middle">append run_status</text>
+    <text x="860" y="267" fill="#94a3b8" font-size="8" text-anchor="middle">in_progress / completed / failed</text>
+  </g>
+  <g>
+    <rect x="740" y="289" width="115" height="48" rx="6" fill="#0f172a"/>
+    <rect x="740" y="289" width="115" height="48" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+    <text x="797" y="310" fill="white" font-size="10" font-weight="600" text-anchor="middle">run_checkpoint</text>
+    <text x="797" y="325" fill="#94a3b8" font-size="8" text-anchor="middle">run_resume</text>
+  </g>
+  <g>
+    <rect x="865" y="289" width="115" height="48" rx="6" fill="#0f172a"/>
+    <rect x="865" y="289" width="115" height="48" rx="6" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1.5"/>
+    <text x="922" y="310" fill="white" font-size="10" font-weight="600" text-anchor="middle">retry</text>
+    <text x="922" y="325" fill="#94a3b8" font-size="8" text-anchor="middle">fallback / PTL</text>
+  </g>
+  <g>
+    <rect x="740" y="347" width="240" height="22" rx="4" fill="none" stroke="#fb7185" stroke-width="0.8" stroke-dasharray="3,2"/>
+    <text x="860" y="362" fill="#fb7185" font-size="8" text-anchor="middle">可恢复错误时回退重试</text>
+  </g>
+
+  <!-- Region: Runner -->
+  <rect x="1030" y="80" width="180" height="120" rx="10" fill="none" stroke="#34d399" stroke-width="1" stroke-dasharray="6,4"/>
+  <text x="1042" y="98" fill="#34d399" font-size="9" font-weight="600">Runner</text>
+  <g>
+    <rect x="1050" y="115" width="140" height="70" rx="6" fill="#0f172a"/>
+    <rect x="1050" y="115" width="140" height="70" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+    <text x="1120" y="140" fill="white" font-size="11" font-weight="600" text-anchor="middle">BaseRunner</text>
+    <text x="1120" y="156" fill="#94a3b8" font-size="9" text-anchor="middle">invoke / stream</text>
+    <text x="1120" y="170" fill="#64748b" font-size="8" text-anchor="middle">ADK · LangGraph · LC · DA</text>
+  </g>
+
+  <!-- Region: Session Service -->
+  <rect x="1030" y="220" width="180" height="120" rx="10" fill="none" stroke="#a78bfa" stroke-width="1" stroke-dasharray="6,4"/>
+  <text x="1042" y="238" fill="#a78bfa" font-size="9" font-weight="600">Session Service</text>
+  <g>
+    <rect x="1050" y="255" width="140" height="70" rx="6" fill="#0f172a"/>
+    <rect x="1050" y="255" width="140" height="70" rx="6" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+    <text x="1120" y="280" fill="white" font-size="11" font-weight="600" text-anchor="middle">session + events</text>
+    <text x="1120" y="296" fill="#94a3b8" font-size="8" text-anchor="middle">持久化</text>
+    <text x="1120" y="310" fill="#64748b" font-size="8" text-anchor="middle">transcript · checkpoint</text>
+  </g>
+
+  <!-- Region: Run 能力层 -->
+  <rect x="1240" y="80" width="350" height="400" rx="12" fill="none" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="8,4"/>
+  <text x="1252" y="100" fill="#fbbf24" font-size="10" font-weight="700">Run 能力层 · 0.6.7</text>
+  <g>
+    <rect x="1260" y="115" width="310" height="42" rx="6" fill="#0f172a"/>
+    <rect x="1260" y="115" width="310" height="42" rx="6" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+    <text x="1415" y="134" fill="white" font-size="11" font-weight="600" text-anchor="middle">ResumeRun</text>
+    <text x="1415" y="149" fill="#94a3b8" font-size="8" text-anchor="middle">find checkpoint · resume_input</text>
+  </g>
+  <g>
+    <rect x="1260" y="167" width="310" height="42" rx="6" fill="#0f172a"/>
+    <rect x="1260" y="167" width="310" height="42" rx="6" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+    <text x="1415" y="186" fill="white" font-size="11" font-weight="600" text-anchor="middle">GetCheckpointResumePreview</text>
+    <text x="1415" y="201" fill="#94a3b8" font-size="8" text-anchor="middle">risk + receipts</text>
+  </g>
+  <g>
+    <rect x="1260" y="219" width="310" height="42" rx="6" fill="#0f172a"/>
+    <rect x="1260" y="219" width="310" height="42" rx="6" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+    <text x="1415" y="238" fill="white" font-size="11" font-weight="600" text-anchor="middle">ListSessionCheckpoints</text>
+    <text x="1415" y="253" fill="#94a3b8" font-size="8" text-anchor="middle">分页 + 审计字段</text>
+  </g>
+  <g>
+    <rect x="1260" y="271" width="310" height="42" rx="6" fill="#0f172a"/>
+    <rect x="1260" y="271" width="310" height="42" rx="6" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1.5"/>
+    <text x="1415" y="290" fill="white" font-size="11" font-weight="600" text-anchor="middle">CancelRun</text>
+    <text x="1415" y="305" fill="#94a3b8" font-size="8" text-anchor="middle">cooperative · next chunk/tool boundary</text>
+  </g>
+  <g>
+    <rect x="1260" y="323" width="310" height="42" rx="6" fill="#0f172a"/>
+    <rect x="1260" y="323" width="310" height="42" rx="6" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+    <text x="1415" y="342" fill="white" font-size="11" font-weight="600" text-anchor="middle">SubscribeRunEvents</text>
+    <text x="1415" y="357" fill="#94a3b8" font-size="8" text-anchor="middle">AfterSeqId · 5min 重连窗口</text>
+  </g>
+
+  <!-- 主链路箭头 -->
+  <path d="M 190,150 L 260,140" fill="none" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#ar-c)"/>
+  <text x="225" y="135" fill="#22d3ee" font-size="8">detect</text>
+
+  <path d="M 340,165 L 340,180" fill="none" stroke="#34d399" stroke-width="1.5" marker-end="url(#ar-g)"/>
+  <text x="348" y="178" fill="#64748b" font-size="7">create_runner</text>
+
+  <path d="M 340,225 L 340,240" fill="none" stroke="#34d399" stroke-width="1.5" marker-end="url(#ar-g)"/>
+  <text x="348" y="238" fill="#64748b" font-size="7">load_agent</text>
+
+  <path d="M 420,262 L 490,140" fill="none" stroke="#34d399" stroke-width="1.5" marker-end="url(#ar-g)"/>
+  <text x="440" y="200" fill="#34d399" font-size="8">server mode</text>
+
+  <path d="M 670,140 L 740,139" fill="none" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#ar-c)"/>
+  <text x="680" y="132" fill="#22d3ee" font-size="8">route</text>
+
+  <path d="M 860,163 L 860,173" fill="none" stroke="#34d399" stroke-width="1.5" marker-end="url(#ar-g)"/>
+  <text x="868" y="172" fill="#64748b" font-size="7">build context</text>
+
+  <path d="M 980,197 L 1050,150" fill="none" stroke="#34d399" stroke-width="1.5" marker-end="url(#ar-g)"/>
+  <text x="990" y="180" fill="#34d399" font-size="8">platform_invocation_scope</text>
+
+  <path d="M 1050,170 L 980,250" fill="none" stroke="#34d399" stroke-width="1.5" marker-end="url(#ar-g)"/>
+  <text x="985" y="225" fill="#34d399" font-size="8">output + metadata</text>
+
+  <path d="M 980,255 L 1050,290" fill="none" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#ar-v)"/>
+  <text x="985" y="278" fill="#a78bfa" font-size="8">persist</text>
+
+  <path d="M 855,255 L 1050,285" fill="none" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#ar-v)" stroke-opacity="0.6"/>
+  <text x="890" y="265" fill="#a78bfa" font-size="8">persist</text>
+
+  <!-- retry 虚线回 Runner -->
+  <path d="M 980,313 L 1120,185" fill="none" stroke="#fb7185" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#ar-r)"/>
+  <text x="1015" y="260" fill="#fb7185" font-size="8">on recoverable err</text>
+
+  <!-- 能力层 → session -->
+  <path d="M 1260,335 L 1190,295" fill="none" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#ar-v)" stroke-opacity="0.5"/>
+  <text x="1180" y="328" fill="#a78bfa" font-size="8">read events</text>
+
+  <path d="M 1260,136 L 1190,260" fill="none" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#ar-v)" stroke-opacity="0.4"/>
+  <path d="M 1260,188 L 1190,275" fill="none" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#ar-v)" stroke-opacity="0.4"/>
+  <path d="M 1260,240 L 1190,285" fill="none" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#ar-v)" stroke-opacity="0.4"/>
+
+  <!-- ResumeRun → build_run_input (resume_input) -->
+  <path d="M 1260,136 L 980,140" fill="none" stroke="#fbbf24" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#ar-a)" stroke-opacity="0.5"/>
+  <text x="990" y="118" fill="#fbbf24" font-size="8">resume_input</text>
+
+  <!-- CancelRun → Runner -->
+  <path d="M 1260,292 L 1190,150" fill="none" stroke="#fb7185" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#ar-r)" stroke-opacity="0.5"/>
+  <text x="1195" y="225" fill="#fb7185" font-size="8">cooperate</text>
+
+  <!-- Legend -->
+  <g transform="translate(30, 560)">
+    <text x="0" y="0" fill="white" font-size="10" font-weight="700">图例</text>
+    <rect x="0" y="12" width="14" height="14" rx="2" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.2"/>
+    <text x="20" y="23" fill="#94a3b8" font-size="9">入口 / API</text>
+    <rect x="120" y="12" width="14" height="14" rx="2" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.2"/>
+    <text x="140" y="23" fill="#94a3b8" font-size="9">运行时 / Runner</text>
+    <rect x="270" y="12" width="14" height="14" rx="2" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1.2"/>
+    <text x="290" y="23" fill="#94a3b8" font-size="9">Session 持久化</text>
+    <rect x="430" y="12" width="14" height="14" rx="2" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.2"/>
+    <text x="450" y="23" fill="#94a3b8" font-size="9">Run 能力层</text>
+    <rect x="560" y="12" width="14" height="14" rx="2" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1.2"/>
+    <text x="580" y="23" fill="#94a3b8" font-size="9">retry / cancel</text>
+    <line x1="700" y1="19" x2="730" y2="19" stroke="#fb7185" stroke-width="1.2" stroke-dasharray="4,3"/>
+    <text x="738" y="23" fill="#94a3b8" font-size="9">虚线 = 异步/回退</text>
+    <text x="0" y="50" fill="#64748b" font-size="9">基于 ksadk/server/app.py + conversations/runtime.py 真实代码路径</text>
+  </g>
+</svg>
