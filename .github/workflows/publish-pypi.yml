@@ -41,6 +41,11 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
