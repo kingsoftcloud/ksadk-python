@@ -12,19 +12,7 @@ KsADK 有四个公开基础块：项目模板、框架适配器、本地运行�
 
 KsADK 聚焦 Agent 项目的本地开发闭环：创建或导入 Agent，配置模型 provider，本地运行，检查执行路径，然后在部署路径获批后打包经过审核的制品。
 
-```mermaid
-flowchart LR
-  A["开发<br/>Agent 代码"] -->|运行| B["运行<br/>终端或本地服务"]
-  B -->|检查| C["调试<br/>Web UI 与协议 trace"]
-  C -->|接入| D["集成<br/>工具、文件、记忆"]
-  D -->|审核| E["审核<br/>打包与发布 gate"]
-  E -->|迭代| A
-
-  classDef brand fill:#5368db,stroke:#3b4cc7,color:#fff
-  classDef accent fill:#59d3d9,stroke:#3fb8be,color:#0a2540
-  class A,E brand
-  class B,C,D accent
-```
+![KsADK 与 Agent 生命周期](/assets/ksadk-agent-lifecycle.svg)
 
 <Callout type="info">
   公开 SDK 刻意保持 local-first。Hosted AgentEngine 部署和云端打包是可选能力，不是学习开源运行时的前置条件。
@@ -61,43 +49,7 @@ KsADK 不替换框架 API，把常见框架输出包进统一运行时，让不�
 | LangChain | runnable chain 或 agent 赋值给 `root_agent` |
 | DeepAgents | `root_agent = create_deep_agent(...)` |
 
-```mermaid
-flowchart LR
-  Project["Python 项目"] --> Config["agentengine.yaml / ksadk.yaml"]
-  Config --> Detector["FrameworkDetector"]
-  Detector --> Factory["Runner Factory"]
-  Factory --> ADK["ADKRunner"]
-  Factory --> LG["LangGraphRunner"]
-  Factory --> LC["LangChainRunner"]
-  Factory --> DA["DeepAgentsRunner"]
-  ADK --> Contract["BaseRunner invoke / stream"]
-  LG --> Contract
-  LC --> Contract
-  DA --> Contract
-
-  subgraph detect["检测"]
-    Project
-    Config
-    Detector
-  end
-  subgraph factory["runner factory"]
-    Factory
-    ADK
-    LG
-    LC
-    DA
-  end
-  subgraph contract["公开契约"]
-    Contract
-  end
-
-  classDef brand fill:#5368db,stroke:#3b4cc7,color:#fff
-  classDef accent fill:#59d3d9,stroke:#3fb8be,color:#0a2540
-  classDef neutral fill:#f5f7ff,stroke:#c9d2f5,color:#1a2240
-  class Project,Contract brand
-  class Detector,Factory accent
-  class Config,ADK,LG,LC,DA neutral
-```
+![框架适配器与 Runner 契约](/assets/ksadk-runner-contract.svg)
 
 <Callout type="info">
   Runner 契约是公开文档中最重要的抽象：框架细节留在 adapter 内，服务器和对话运行时只关心 `invoke`、`stream`、模型覆盖、session 以及上下文。

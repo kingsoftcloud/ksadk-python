@@ -209,15 +209,7 @@ runtime appends a compaction boundary and a context checkpoint that records the
 summary and the event sequence range it covers. Later history projection keeps
 the checkpoint summary and the uncompressed tail events.
 
-```mermaid
-flowchart LR
-  Events["full session events"] --> Plan["compaction plan"]
-  Plan --> Boundary["compaction boundary"]
-  Boundary --> Checkpoint["context checkpoint"]
-  Checkpoint --> History["projected model history"]
-  Events --> Tail["newer tail events"]
-  Tail --> History
-```
+![Context compaction flow](/assets/ksadk-session-compaction.svg)
 
 This means deleting local UI state is the right way to reset a development
 session, but compaction itself should not be treated as data deletion.
@@ -288,14 +280,7 @@ disconnects, then persist the final run events to the session store. A client
 that reconnects should use the session id, invocation id, and last consumed
 sequence id to subscribe to later run events.
 
-```mermaid
-flowchart LR
-  Stream["RunAgent stream"] --> Store["session events"]
-  Browser["browser tab"] --> Stream
-  Browser -. "disconnect" .-> Store
-  Browser2["reopened tab"] --> Subscribe["SubscribeRunEvents"]
-  Subscribe --> Store
-```
+![RunAgent stream and reconnect](/assets/ksadk-session-resume-stream.svg)
 
 Public API clients using `/v1/responses` should still implement normal SSE
 error handling and retry behavior. The Web UI reconnect path is a KsADK local UI

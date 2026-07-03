@@ -13,29 +13,7 @@ https://<public-endpoint>
 
 ## 入口模型
 
-```mermaid
-flowchart LR
-  Client["SDK / CLI / browser"] -->|公网| Public["PublicEndpoint"]
-  Public -->|鉴权| Gateway["gateway auth and routing"]
-  Gateway -->|转发| Runtime["runtime pod"]
-  Runtime -->|加载| Agent["agent or runtime product"]
-
-  subgraph edge["edge / 公开入口"]
-    Public
-    Gateway
-  end
-  subgraph pod["runtime pod"]
-    Runtime
-    Agent
-  end
-
-  classDef brand fill:#5368db,stroke:#3b4cc7,color:#fff
-  classDef accent fill:#59d3d9,stroke:#3fb8be,color:#0a2540
-  classDef neutral fill:#f5f7ff,stroke:#c9d2f5,color:#1a2240
-  class Client,Agent brand
-  class Public,Gateway accent
-  class Runtime neutral
-```
+![Remote runtime 接入与运行时类型](/assets/ksadk-remote-runtime-type.svg)
 
 runtime pod 可能实现本地路由，但外部调用方应以 gateway 暴露的
 `PublicEndpoint` 路由作为 contract。

@@ -493,32 +493,7 @@ KsADK extensions and must not be described as official OpenAI fields.
 At runtime, protocol handlers normalize incoming requests into a common runner payload,
 then call the active framework runner through a narrow interface:
 
-```mermaid
-flowchart LR
-  Client["client"] -->|HTTP/SSE| API["/v1/responses or /v1/chat/completions"]
-  API --> Normalize["message and attachment normalization"]
-  Normalize --> Session["session and history preparation"]
-  Session --> Runner["framework runner"]
-  Runner --> Serialize["Responses or Chat response serialization"]
-  Serialize -->|HTTP/SSE| Client
-
-  subgraph ingress["ingress and normalization"]
-    API
-    Normalize
-    Session
-  end
-  subgraph exec["execution and serialization"]
-    Runner
-    Serialize
-  end
-
-  classDef brand fill:#5368db,stroke:#3b4cc7,color:#fff
-  classDef accent fill:#59d3d9,stroke:#3fb8be,color:#0a2540
-  classDef neutral fill:#f5f7ff,stroke:#c9d2f5,color:#1a2240
-  class Client brand
-  class API,Runner accent
-  class Normalize,Session,Serialize neutral
-```
+![OpenAI-compatible API request and response flow](/assets/ksadk-openai-api-flow.svg)
 
 The public contract is the endpoint behavior. Internal event names, session storage
 details, and runner payload extensions may evolve across releases.

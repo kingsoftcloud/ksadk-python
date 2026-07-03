@@ -147,38 +147,7 @@ fallback。多模态能力（视觉/图片）默认路由到 `kimi-k2.7-code`。
 
 ## 会话与刷新后继续读取
 
-```mermaid
-flowchart TD
-  classDef upload fill:#5368db,stroke:#3b46b8,color:#fff
-  classDef uri fill:#59d3d9,stroke:#3aaeb4,color:#062b2d
-  classDef cache fill:#eef6ff,stroke:#5368db,color:#1b2350
-  classDef hosted fill:#fff4e6,stroke:#e0933a,color:#5a3a0a
-
-  subgraph upload_path["上传与归一化"]
-    U["用户上传 file"]:::upload --> UF["UploadFile<br/>POST /v1/UploadFile"]:::upload
-    UF --> S["AttachmentStorageService.store"]:::upload
-    S --> LC1["本地 files/ 写入字节"]:::cache
-    S --> KS3["KS3 镜像<br/>(backend=ks3/local)"]:::cache
-    S --> R["返回 file_uri<br/>ksadk-upload://file_id"]:::uri
-  end
-
-  subgraph consume["消费"]
-    R -->|"当前 turn"| CA["current_attachments<br/>current_attachment_results"]:::uri
-    R -->|"回填上下文"| AR["attachment_results"]:::uri
-    R --> WP["workspace preview"]:::uri
-  end
-
-  subgraph refresh["刷新/会话恢复"]
-    F["浏览器刷新 / 会话恢复"]:::hosted --> RC["运行时统一解析 file_uri"]:::uri
-    RC -->|"ksadk-upload://"| LCR["读本地 cache<br/>缺失回退 KS3"]:::cache
-    RC -->|"ae-upload://"| AE["AttachmentContent<br/>KOP Action 下载字节"]:::hosted
-    AE --> MZ["物化到本地 files/<br/>写 .meta.json<br/>(backend=hosted)"]:::cache
-    MZ --> C2["runner 继续读到真实文件"]:::cache
-    LCR --> C2
-    LCR --> W2["workspace preview 继续读到真实文件"]:::cache
-    MZ --> W2
-  end
-```
+![刷新 / 会话恢复后继续读取](/assets/ksadk-attachment-refresh-resume.svg)
 
 只要 `file_uri` 仍有效（本地 cache 或 Hosted `ae-upload://` 可解析），刷新或会话恢复后
 runner 与 workspace preview 都能继续读到真实文件内容，业务代码无需特殊处理。

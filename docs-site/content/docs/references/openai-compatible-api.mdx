@@ -475,32 +475,7 @@ KsADK 扩展，不应描述成 OpenAI 官方字段。
 运行时把协议处理器收到的请求规范化为统一 runner payload，再通过窄接口调用当前框架
 Runner：
 
-```mermaid
-flowchart LR
-  Client["client"] -->|HTTP/SSE| API["/v1/responses 或 /v1/chat/completions"]
-  API --> Normalize["消息和附件规范化"]
-  Normalize --> Session["session 与历史准备"]
-  Session --> Runner["framework runner"]
-  Runner --> Serialize["Responses 或 Chat response 序列化"]
-  Serialize -->|HTTP/SSE| Client
-
-  subgraph ingress["入口与规范化"]
-    API
-    Normalize
-    Session
-  end
-  subgraph exec["执行与序列化"]
-    Runner
-    Serialize
-  end
-
-  classDef brand fill:#5368db,stroke:#3b4cc7,color:#fff
-  classDef accent fill:#59d3d9,stroke:#3fb8be,color:#0a2540
-  classDef neutral fill:#f5f7ff,stroke:#c9d2f5,color:#1a2240
-  class Client brand
-  class API,Runner accent
-  class Normalize,Session,Serialize neutral
-```
+![OpenAI 兼容 API 请求/响应流](/assets/ksadk-openai-api-flow.svg)
 
 公开契约是 endpoint 行为。内部事件名、session 存储细节和 runner payload 扩展可能在
 不同 release 中演进。

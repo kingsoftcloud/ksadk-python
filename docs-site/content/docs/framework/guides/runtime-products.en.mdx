@@ -14,34 +14,7 @@ These are runtime products, not ordinary local framework projects. A LangGraph
 or ADK project packages user code. Hermes and OpenClaw deploy a maintained
 runtime image plus public configuration.
 
-```mermaid
-flowchart TD
-  CLI["agentengine CLI"] -->|submit artifact| Control["AgentEngine control plane"]
-  Control -->|build / pull| Image["runtime image"]
-  Image -->|deploy| Hermes["Hermes<br/>dashboard / API / terminal"]
-  Image -->|deploy| OpenClaw["OpenClaw gateway"]
-  Hermes -->|mount| Workspace["/_ksadk/workspace/v1/*"]
-  OpenClaw -->|mount| Workspace
-
-  subgraph hosted["hosted layer"]
-    Control
-    Image
-  end
-  subgraph products["runtime products"]
-    Hermes
-    OpenClaw
-  end
-  subgraph shared["shared workspace contract"]
-    Workspace
-  end
-
-  classDef brand fill:#5368db,stroke:#3b4cc7,color:#fff
-  classDef accent fill:#59d3d9,stroke:#3fb8be,color:#0a2540
-  classDef neutral fill:#f5f7ff,stroke:#c9d2f5,color:#1a2240
-  class CLI,Workspace brand
-  class Control,Image accent
-  class Hermes,OpenClaw neutral
-```
+![Runtime products: Hermes and OpenClaw](/assets/ksadk-runtime-products.svg)
 
 ## When To Use Which Runtime
 

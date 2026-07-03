@@ -12,37 +12,7 @@ Use a small outer graph for routing and a focused tool-using specialist for
 business work. This keeps planning, tool execution, and final answer formatting
 separate.
 
-```mermaid
-flowchart TD
-  User["User message / files"] --> Plan["plan_turn<br/>route and policy"]
-  Plan --> Specialist["ReAct specialist<br/>framework tools"]
-  Specialist --> Final["finalize_answer<br/>stable output"]
-  Specialist --> KB["knowledge base"]
-  Specialist --> Mem["memory"]
-  Specialist --> Skills["Skill Runtime"]
-  Specialist --> MCP["MCP / A2A tools"]
-  Specialist --> Workspace["workspace files"]
-
-  subgraph flow["multi-turn orchestration"]
-    Plan
-    Specialist
-    Final
-  end
-  subgraph tools["specialist toolset"]
-    KB
-    Mem
-    Skills
-    MCP
-    Workspace
-  end
-
-  classDef brand fill:#5368db,stroke:#3b4cc7,color:#fff
-  classDef accent fill:#59d3d9,stroke:#3fb8be,color:#0a2540
-  classDef neutral fill:#f5f7ff,stroke:#c9d2f5,color:#1a2240
-  class User,Final brand
-  class Plan,Specialist accent
-  class KB,Mem,Skills,MCP,Workspace neutral
-```
+![plan_turn routing and orchestration](/assets/ksadk-plan-turn-routing.svg)
 
 This pattern works well for LangGraph because the outer `StateGraph` owns state
 transitions, while the specialist can stay close to the framework-native

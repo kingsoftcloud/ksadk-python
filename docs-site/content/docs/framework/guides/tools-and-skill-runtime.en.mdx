@@ -1468,14 +1468,7 @@ and skill execution do not leak across accounts.
 `invocation_id` is the stable identifier for a single run and threads through
 the whole path:
 
-```mermaid
-flowchart TD
-  Req["HTTP / RunAgentAction request"] --> Ctx["PlatformInvocationContext"]
-  Ctx --> Payload["runner payload"]
-  Ctx --> Sub["SubscribeRunEvents"]
-  Ctx --> Cancel["CancelRun"]
-  Ctx --> Trace["trace / observability"]
-```
+![invocation_id through the call chain](/assets/ksadk-invocation-id.svg)
 
 - The runner payload carries `invocation_id` so local and remote views line up.
 - `SubscribeRunEvents` and `CancelRun` locate the run instance by

@@ -48,16 +48,7 @@ Business agents should handle missing, expired, or unsupported attachment refere
 
 ## Normalization Flow
 
-```mermaid
-flowchart TD
-  Raw["client input"] --> Blocks["canonical content blocks"]
-  Blocks --> Parts["normalized parts"]
-  Parts --> Attach["attachments"]
-  Attach --> Extract["attachment_results"]
-  Extract --> Prompt["text prompt context"]
-  Blocks --> Payload["runner payload"]
-  Extract --> Payload
-```
+![Attachment normalization flow](/assets/ksadk-attachment-normalization.svg)
 
 The runner receives both canonical content (`input_content`, `input_messages`)
 and structured attachment results (`attachment_results`,
@@ -371,14 +362,7 @@ If the current user turn includes attachments, those attachments become the
 effective context. If a later turn has no new attachment, the runtime can restore
 the most recent attachment context from the same session.
 
-```mermaid
-flowchart TD
-  A["user turn"] --> B{"has current files?"}
-  B -->|yes| C["use current attachments"]
-  B -->|no| D["restore recent session attachment context"]
-  C --> E["runner payload"]
-  D --> E
-```
+![Session attachment carryover](/assets/ksadk-attachment-session-carryover.svg)
 
 Use `current_attachment_results` when the user just uploaded a file. Use
 `attachment_results` when follow-up questions should keep working with the prior
@@ -386,38 +370,7 @@ file.
 
 ## Resume After Refresh
 
-```mermaid
-flowchart TD
-  classDef upload fill:#5368db,stroke:#3b46b8,color:#fff
-  classDef uri fill:#59d3d9,stroke:#3aaeb4,color:#062b2d
-  classDef cache fill:#eef6ff,stroke:#5368db,color:#1b2350
-  classDef hosted fill:#fff4e6,stroke:#e0933a,color:#5a3a0a
-
-  subgraph upload_path["Upload and normalize"]
-    U["user uploads file"]:::upload --> UF["UploadFile<br/>POST /v1/UploadFile"]:::upload
-    UF --> S["AttachmentStorageService.store"]:::upload
-    S --> LC1["write bytes to local files/"]:::cache
-    S --> KS3["mirror to KS3<br/>(backend=ks3/local)"]:::cache
-    S --> R["return file_uri<br/>ksadk-upload://file_id"]:::uri
-  end
-
-  subgraph consume["Consume"]
-    R -->|"current turn"| CA["current_attachments<br/>current_attachment_results"]:::uri
-    R -->|"carryover context"| AR["attachment_results"]:::uri
-    R --> WP["workspace preview"]:::uri
-  end
-
-  subgraph refresh["Refresh / session resume"]
-    F["browser refresh / session resume"]:::hosted --> RC["runtime unified resolution of file_uri"]:::uri
-    RC -->|"ksadk-upload://"| LCR["read local cache<br/>fall back to KS3 when missing"]:::cache
-    RC -->|"ae-upload://"| AE["AttachmentContent<br/>KOP Action downloads bytes"]:::hosted
-    AE --> MZ["materialize to local files/<br/>write .meta.json<br/>(backend=hosted)"]:::cache
-    MZ --> C2["runner keeps reading real file content"]:::cache
-    LCR --> C2
-    LCR --> W2["workspace preview keeps reading real file content"]:::cache
-    MZ --> W2
-  end
-```
+![Resume after refresh](/assets/ksadk-attachment-refresh-resume.svg)
 
 As long as the `file_uri` is still resolvable (local cache or a reachable
 `ae-upload://` backend), the runner and workspace preview keep reading real file
