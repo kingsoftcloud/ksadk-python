@@ -2,8 +2,6 @@
 title: "可观测与链路追踪"
 ---
 
-# 可观测与链路追踪
-
 KsADK 提供本地 spans、Langfuse 兼容路径和标准 OTLP HTTP traces exporter。tracing 是可选诊断能力，不应成为 quickstart 的前置条件。
 
 从 `0.6.2` 开始，推荐把业务代码写成 **OTel-first**：应用只创建 OpenTelemetry spans、span events 和 attributes，后端通过 `OTEL_EXPORTER_OTLP_*` 环境变量路由到 Langfuse、OTel Collector 或其他兼容后端。

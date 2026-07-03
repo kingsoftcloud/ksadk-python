@@ -2,8 +2,6 @@
 title: LangGraph with AgentEngine Built-in Toolsets
 ---
 
-# LangGraph with AgentEngine Built-in Toolsets
-
 This tutorial is distilled from a real, runnable demo. The outer LangGraph graph only does routing and context injection; the actual tool selection and invocation is delegated to a ReAct subgraph built with `create_agent`, which talks to KSADK built-in toolsets — Skill Space, Workspace, Sandbox, Knowledge Base, and Long-Term Memory.
 
 It is not a "chat template". It demonstrates a transferable engineering pattern: **the graph orchestrates, the model decides, the tools are hosted by AgentEngine**.

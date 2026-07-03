@@ -2,8 +2,6 @@
 title: Long-Task Resume and Deep Research Continuation
 ---
 
-# Long-Task Resume and Deep Research Continuation
-
 This tutorial is derived from a real, runnable demo: a 7-stage Deep Research workflow persisted with a LangGraph checkpointer. It shows how to select a state snapshot in the Web UI and continue execution via `ResumeRun` reusing the same `run_id`, instead of re-running from scratch.
 
 It is not a fake progress bar: every stage calls real external tools (`web_search` / `web_fetch` / LLM / Workspace file writes), and the task may be interrupted by a process restart, a network blip, the user closing the Web UI, or an explicit cancel. On resume, the agent must avoid repeating side-effecting tool calls (double billing, duplicate file writes, duplicate workspace writes).
