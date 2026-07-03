@@ -61,6 +61,9 @@ jobs:
   deploy-pages:
     needs: publish
     runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
     defaults:
       run:
         working-directory: docs-site
@@ -94,6 +97,3 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deploy
         uses: actions/deploy-pages@v4
-        environment:
-          name: github-pages
-          url: ${{ steps.deploy.outputs.page_url }}
