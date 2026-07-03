@@ -5,9 +5,6 @@
     "adk-agent",
     "existing-agent",
     "---[BookOpen]最佳实践---",
-    "best-practices/long-task-resume",
-    "best-practices/custom-ui-agent",
-    "best-practices/langgraph-toolsets",
-    "best-practices/agent-best-practices"
+    "best-practices"
   ]
 }
