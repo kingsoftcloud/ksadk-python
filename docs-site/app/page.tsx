@@ -6,7 +6,9 @@ import { useEffect } from 'react';
 // Uses a relative path so it works under a GitHub Pages base path.
 export default function RootRedirect() {
   useEffect(() => {
-    window.location.replace('cn/');
+    const preferredLanguage = navigator.languages?.[0] ?? navigator.language ?? 'zh';
+    const locale = preferredLanguage.toLowerCase().startsWith('en') ? 'en' : 'cn';
+    window.location.replace(`${locale}/`);
   }, []);
 
   return (

@@ -403,7 +403,7 @@ public-publish-check:
 
 public-release-approval-check:
 	@echo "==> release approval record check"
-	@uv run python scripts/check_approval_record.py
+	@uv run python scripts/check_approval_record.py --expected-current-commit "$${KSADK_APPROVED_SOURCE_COMMIT:-}"
 
 public-publish-gate: public-release-approval-check
 	@echo "✅ public publish gate passed"

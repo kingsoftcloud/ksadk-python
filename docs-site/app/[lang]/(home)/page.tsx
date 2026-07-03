@@ -3,17 +3,17 @@ import { ServerCodeBlock } from 'fumadocs-ui/components/codeblock.rsc';
 
 const copy = {
   cn: {
-    title: 'KsADK',
-    subtitle: '一次构建 Agent，到处运行。',
-    desc: 'KsADK 是面向 AI Agent 的运行时平台（Agent Runtime Platform）。继续使用 Google ADK、LangGraph、LangChain 或 DeepAgents 编写业务 Agent，再用 KsADK 获得统一的本地运行、浏览器调试、OpenAI-Compatible API、沙箱执行、部署和可观测体验。',
+    title: 'Kingsoft Cloud Agent Development Kit',
+    subtitle: '金山云智能体开发套件',
+    desc: '构建、部署、调试、观测企业级 AI 智能体的一站式云原生框架。兼容 Google ADK、LangGraph、LangChain 与 DeepAgents，并支持一键拉起 OpenClaw 和 Hermes 运行时。',
     cta: '阅读文档',
     ctaSecondary: 'GitHub 仓库',
     installLabel: '安装',
   },
   en: {
-    title: 'KsADK',
-    subtitle: 'Build agents once. Run them anywhere.',
-    desc: 'KsADK is an Agent Runtime Platform. Keep writing business agents with Google ADK, LangGraph, LangChain, or DeepAgents — KsADK adds unified local run, browser debugging, OpenAI-Compatible API, sandbox execution, deployment, and observability.',
+    title: 'Kingsoft Cloud Agent Development Kit',
+    subtitle: 'Agent development kit for Kingsoft Cloud',
+    desc: 'A cloud-native framework to build, deploy, debug, and observe enterprise AI agents. It works with Google ADK, LangGraph, LangChain, and DeepAgents, with one-command OpenClaw and Hermes runtime launch paths.',
     cta: 'Read the docs',
     ctaSecondary: 'GitHub',
     installLabel: 'Install',

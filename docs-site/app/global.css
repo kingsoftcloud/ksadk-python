@@ -22,7 +22,7 @@ html > body[data-scroll-locked] {
   --ksadk-cyan-soft: #afe4e4;
   --ksadk-purple: #b29cec;
   --ksadk-purple-soft: #dfd2f3;
-  --ksadk-gradient: linear-gradient(135deg, #5368db 0%, #7d89dc 30%, #59d3d9 65%, #afe4e4 100%);
+  --ksadk-gradient: linear-gradient(135deg, #5368db 0%, #6f7fda 30%, #3fb8c5 68%, #247f9d 100%);
   --ksadk-gradient-soft: linear-gradient(135deg, #dfd2f3 0%, #afe4e4 50%, #91c5e2 100%);
   --motion-duration: 10s;
 }
@@ -140,4 +140,3 @@ html > body[data-scroll-locked] {
   border-color: var(--ksadk-cyan);
   box-shadow: 0 8px 24px color-mix(in srgb, var(--ksadk-cyan) 20%, transparent);
 }
-
