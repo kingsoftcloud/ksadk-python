@@ -10,23 +10,7 @@ KsADK's public architecture is an **Agent Runtime Platform** layer. You keep bui
 
 ## Overview
 
-```text title="Runtime layers"
-ADK / LangGraph / LangChain / DeepAgents
-                    │
-                    ▼
-                  KsADK
-                    │
-    ┌───────────────┼────────────────┐
-    ▼               ▼                ▼
- Skill Runtime   Workspace        Sandbox
-    │               │                │
-    └───────────────┼────────────────┘
-                    ▼
-              AgentEngine
-                    │
-                    ▼
-          Hermes / OpenClaw Runtime
-```
+The diagram above shows KsADK's three-layer architecture: business Agent frameworks (user-provided) → KsADK Runtime data plane (core) → hosted control plane. KsADK layers runtime, debugging, protocols, tools, sandbox, deployment, and observability on top of your chosen Agent framework, while business logic stays in your framework code.
 
 <Callout type="info" title="Key boundary">
   KsADK owns "how the agent runs", not "what it does". Agent logic, prompts, and domain tools stay in your framework code; runtime, sessions, tool protocols, deployment, and observability are handled by KsADK.
