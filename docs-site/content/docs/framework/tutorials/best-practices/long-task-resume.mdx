@@ -2,8 +2,6 @@
 title: 长任务恢复与 Deep Research 续跑
 ---
 
-# 长任务恢复与 Deep Research 续跑
-
 这个教程来自一个真实可运行的 demo:用 LangGraph checkpointer 把一个 7 阶段 Deep Research 流程持久化,演示在 Web UI 里选中某个状态快照后,通过 `ResumeRun` 沿用同一个 `run_id` 继续执行,而不是从头重跑。
 
 它不是"假进度条":每个阶段都调用真实外部工具(`web_search` / `web_fetch` / LLM / Workspace 写文件),中途可能因为进程重启、网络抖动、用户关闭 Web UI 或主动取消而中断。恢复后必须避免重复调用付费工具、重复写文件、重复写入工作区。

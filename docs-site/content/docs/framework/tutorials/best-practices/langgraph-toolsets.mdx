@@ -2,8 +2,6 @@
 title: LangGraph 接入 AgentEngine 内置工具集
 ---
 
-# LangGraph 接入 AgentEngine 内置工具集
-
 这个教程来自一个真实可运行的 demo:外层 LangGraph 图只做路由和上下文注入,真正的工具选择与调用交给 `create_agent` 形成的 ReAct 子图,后者通过 KSADK 内置 toolsets 与 Skill Space、Workspace、Sandbox、知识库、长期记忆等能力交互。
 
 它不是"聊天模板",而是演示一套可迁移的工程范式:**图负责编排,模型负责决策,工具由 AgentEngine 托管**。
