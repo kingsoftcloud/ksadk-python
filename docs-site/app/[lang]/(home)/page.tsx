@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { ServerCodeBlock } from 'fumadocs-ui/components/codeblock.rsc';
 
 const copy = {
   cn: {
@@ -47,9 +48,11 @@ export default async function HomePage({ params }: { params: Promise<{ lang: str
       </div>
       <div className="w-full max-w-md">
         <p className="text-sm text-fd-muted-foreground mb-1.5 text-left">{t.installLabel}</p>
-        <pre className="rounded-lg border border-fd-border bg-fd-muted/40 p-3 text-left text-sm">
-          <code>pip install -U &quot;ksadk[all]&quot;</code>
-        </pre>
+        <ServerCodeBlock
+          lang="bash"
+          code='pip install -U "ksadk[all]"'
+          codeblock={{ className: 'text-left text-sm' }}
+        />
       </div>
     </main>
   );
