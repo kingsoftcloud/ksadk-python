@@ -60,11 +60,50 @@ The approved strategy must name the commit, tag, or export archive used for:
 """.format(python_source=python_source)
 
 
-def test_template_approval_record_fails_until_strategy_and_signoffs_are_filled():
+def _template_record() -> str:
+    return """# ksadk Public Release Approval Record
+
+## Required Approval Decisions
+
+| Decision | Approved value |
+| --- | --- |
+| License | Apache-2.0 |
+| Python repository | kingsoftcloud/ksadk-python |
+| Web UI repository | kingsoftcloud/ksadk-web |
+| Python package version | 0.6.8 |
+| Public docs URL | https://kingsoftcloud.github.io/ksadk-python/ |
+| Package metadata repository URL | https://github.com/kingsoftcloud/ksadk-python |
+| Package metadata documentation URL | https://kingsoftcloud.github.io/ksadk-python/ |
+| Security contact | security@kingsoft.com |
+
+## Publication Strategy
+
+| Strategy | Approved |
+| --- | --- |
+| Reviewed GitHub pull request | No |
+| Clean export from reviewed candidate | No |
+| Rewritten Git history after secret scan | No |
+
+- `ksadk-python`: TBD
+- `ksadk-web`: TBD
+
+## Approval Sign-Off
+
+| Role | Name | Decision | Date |
+| --- | --- | --- | --- |
+| Maintainer |  |  |  |
+| Security reviewer |  |  |  |
+| Release owner |  |  |  |
+"""
+
+
+def test_template_approval_record_fails_until_strategy_and_signoffs_are_filled(tmp_path):
     module = _load_module()
+    record = tmp_path / "approval-template.md"
+    record.write_text(_template_record(), encoding="utf-8")
 
     checks = module.validate_approval_record(
-        REPO_ROOT / "docs" / "maintainer-approval-record.md",
+        record,
         version="0.6.8",
         expected_current_commit="current-reviewed-commit",
     )
@@ -129,8 +168,19 @@ def test_filled_record_passes_when_source_references_include_current_commit(tmp_
 
 
 def test_cli_json_reports_failed_template_record():
+    template = REPO_ROOT / "build" / "approval-template-test.md"
+    template.parent.mkdir(exist_ok=True)
+    template.write_text(_template_record(), encoding="utf-8")
     result = subprocess.run(
-        [sys.executable, str(SCRIPT_PATH), "--json"],
+        [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--approval-record",
+            str(template),
+            "--expected-current-commit",
+            "current-reviewed-commit",
+            "--json",
+        ],
         cwd=REPO_ROOT,
         check=False,
         text=True,

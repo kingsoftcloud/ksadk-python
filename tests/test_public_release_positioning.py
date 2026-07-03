@@ -15,8 +15,11 @@ def _read(relative_path: str) -> str:
 def test_public_readme_positions_ksadk_as_runtime_platform():
     readme = _read("README.md")
     for expected in (
-        "Build agents once. Run them anywhere.",
-        "Agent Runtime Platform",
+        "Kingsoft Cloud Agent Development Kit",
+        "金山云智能体开发套件",
+        "构建、部署、调试、观测企业级 AI 智能体的一站式云原生框架",
+        "OpenClaw",
+        "Hermes",
         "Why KsADK",
         "30 秒快速体验",
         "Architecture",
@@ -30,7 +33,6 @@ def test_public_readme_positions_ksadk_as_runtime_platform():
     ):
         assert expected in readme
 
-    assert "Agent Development Kit" not in readme
     assert "KSADK_SKILL_SERVICE_REGION=pre-online" not in readme
     assert "```mermaid" not in readme
     assert "```text" in readme
@@ -76,11 +78,13 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "release:" in workflow
     assert "- published" in workflow
     assert "workflow_dispatch:" in workflow
+    assert 'default: "0.2.16"' in workflow
+    assert "KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.2.16' }}" in workflow
     assert "make sync-ksadk-web-static" in workflow
     assert "make public-preflight" in workflow
     assert "make public-publish-gate" in workflow
     assert "make open-source-audit-dist" in ci_workflow
-    assert 'KSADK_WEB_VERSION: "0.2.15"' in ci_workflow
+    assert 'KSADK_WEB_VERSION: "0.2.16"' in ci_workflow
     assert "PUBLIC_KSADK_WEB_VERSION" not in ci_workflow
     assert "KSADK_WEB_VERSION ?= latest" in makefile
     assert "PUBLIC_TEST_TARGETS ?= tests/test_public_release_positioning.py tests/test_config_env_registry.py" in makefile
@@ -147,7 +151,6 @@ def test_public_release_materials_do_not_include_internal_environment_details():
         "X-KSC-CUSTOM-SOURCE",
         "aicp.inner.api",
         "m" + "aicp.",
-        "Kingsoft Cloud Agent Development Kit",
     )
     for relative_path in (
         "README.md",

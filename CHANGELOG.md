@@ -40,6 +40,7 @@
 - semantic summary 增加可配置失败熔断；LLM 摘要失败时可回退到 extractive 摘要，避免长会话压缩因为临时模型错误而中断。
 - sandbox 默认超时和空闲回收策略收紧，降低托管运行时的资源占用。
 - Serverless 部署默认挂盘策略收敛：仅 Hermes / OpenClaw 默认挂盘，其他框架需显式配置挂盘路径。
+- 发布候选同步 `@kingsoftcloud/ksadk-web@0.2.16` 静态资源，确保 PyPI wheel 内置 Web UI 与最新 npm 发布版本一致。
 - 公开审计规则更准确，减少文档站和公开服务 endpoint 的误报，同时继续拦截内部路径、私有地址、凭证样例和不应发布的构建产物。
 - 公开包元数据和 schema URL 统一指向 GitHub / GitHub Pages。
 - 清理测试和示例中的本地路径、内部域名样例，避免公开仓携带开发机或内部环境信息。

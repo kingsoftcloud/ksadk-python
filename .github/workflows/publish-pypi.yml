@@ -9,7 +9,7 @@ on:
       ksadk_web_version:
         description: KsADK Web npm version to bundle
         required: false
-        default: latest
+        default: "0.2.16"
 
 permissions:
   contents: read
@@ -25,6 +25,8 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
+    env:
+      KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.2.16' }}
     permissions:
       contents: read
       id-token: write
@@ -45,8 +47,6 @@ jobs:
 
       - name: Sync KsADK Web static assets
         run: make sync-ksadk-web-static
-        env:
-          KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || 'latest' }}
 
       - name: Run public release preflight
         run: make public-preflight

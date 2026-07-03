@@ -1,10 +1,10 @@
-<h1 align="center">KsADK</h1>
+<h1 align="center">Kingsoft Cloud Agent Development Kit</h1>
 
-<p align="center"><strong>一次构建 Agent，到处运行。</strong></p>
+<p align="center"><strong>金山云智能体开发套件</strong></p>
 
 <p align="center">
-  KsADK 是面向 AI Agent 的运行时平台（Agent Runtime Platform）。
-  继续使用 Google ADK、LangGraph、LangChain 或 DeepAgents 编写业务 Agent，再用统一 CLI、Web UI、OpenAI-Compatible API、工具运行时、沙箱、部署和可观测链路把它跑起来。
+  构建、部署、调试、观测企业级 AI 智能体的一站式云原生框架。
+  兼容 Google ADK、LangGraph、LangChain 与 DeepAgents，并支持一键拉起 OpenClaw 和 Hermes 运行时。
 </p>
 
 <p align="center"><a href="README.md">简体中文（默认）</a> · <a href="README.en.md">English</a></p>
@@ -49,7 +49,7 @@ agentengine web . --no-open
 - 统一调试：浏览器 Web UI、streaming、附件、workspace 文件、工具调用和会话。
 - 统一协议：本地 `/v1/responses` 与 `/v1/chat/completions`。
 - 工具边界：Skill Runtime、Workspace、Sandbox、Memory、Knowledge。
-- 工程链路：打包、部署、OpenTelemetry 可观测。
+- 工程链路：打包、部署、OpenClaw / Hermes 运行时、OpenTelemetry 可观测。
 
 ## 架构
 

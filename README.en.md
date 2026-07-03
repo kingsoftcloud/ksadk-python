@@ -1,10 +1,10 @@
-<h1 align="center">KsADK</h1>
+<h1 align="center">Kingsoft Cloud Agent Development Kit</h1>
 
-<p align="center"><strong>Build agents once. Run them anywhere.</strong></p>
+<p align="center"><strong>Agent development kit for Kingsoft Cloud</strong></p>
 
 <p align="center">
-  KsADK is the Agent Runtime Platform for AI agents.
-  Keep building with Google ADK, LangGraph, LangChain, or DeepAgents, then run, debug, expose, sandbox, deploy, and observe them through one runtime experience.
+  A cloud-native framework to build, deploy, debug, and observe enterprise AI agents.
+  It works with Google ADK, LangGraph, LangChain, and DeepAgents, with one-command OpenClaw and Hermes runtime launch paths.
 </p>
 
 <p align="center"><a href="README.md">简体中文</a> · <a href="README.en.md">English</a></p>
@@ -49,7 +49,7 @@ Most agent frameworks solve how to build agents. KsADK solves how to run, debug,
 - Unified debugging: browser Web UI, streaming, attachments, workspace files, tool calls, and sessions.
 - Unified protocol: local `/v1/responses` and `/v1/chat/completions`.
 - Tool boundaries: Skill Runtime, Workspace, Sandbox, Memory, Knowledge.
-- Engineering workflow: packaging, deployment, OpenTelemetry observability.
+- Engineering workflow: packaging, deployment, OpenClaw / Hermes runtimes, OpenTelemetry observability.
 
 ## Architecture
 
