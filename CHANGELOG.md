@@ -5,6 +5,60 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [0.6.8] - 2026-07-03
+
+### 亮点
+
+- **分层 Compaction Pipeline**：`compact_conversation_history` 从单点 LLM 摘要升级为 L2→L3→L4→L5 分层管道，长会话成本与稳定性显著改善。L2 Snip / L3 Microcompact 是零 LLM 成本的确定性裁剪，仅作用投影层，绝不删 append-only transcript；L5 在 compact 后恢复 working set metadata（最近文件路径、激活工具、pinned state），降低模型失忆。
+- **Sandbox 生命周期管理**：SandboxRegistry 新增后台 sweep daemon 线程（懒启动，不启用沙箱则不启动）+ atexit 清理 + server lifespan shutdown clear，避免 idle sandbox 活到 E2B 服务端 timeout 才销毁的按秒计费浪费。默认 timeout 900→600、idle_ttl 0→300（cost-saving），`KSADK_SANDBOX_SWEEP_INTERVAL_SECONDS` 可配。
+- **金山云星流 AI搜索 Provider**：`web_search` 新增 `ksyun` provider，对接金山云星流平台 AI搜索（POST + `webpages` 数组），复用 `KSADK_MCP_KEY`/`KSC_AIPRO_API_KEY` 凭证，返回真实时效 `date` 字段，`KSADK_WEB_SEARCH_SCOPE` 支持 webpage/document/scholar/podcast/video。
+- **公开仓治理对齐**：补齐 main 独有的公开治理文件（CONTRIBUTING/SECURITY/双语 README/Issue+PR 模板/.github workflows）+ open_source_audit 体系（330 行路径 denylist + 11 条 CONTENT_RULES + 产物清单审计），为统一公开主干做准备。
+- **Fumadocs 文档站**：文档站从 mkdocs 迁移到 Fumadocs（docs-site/），对标 veadk github.io，发版时同步部署到 GitHub Pages。
+
+### 新增
+
+- `ksadk/conversations/compaction_pipeline.py`：L2 `snip_redundant_groups`（按 `metadata.run_id` 精确配对删除覆盖的 tool_call/tool_result，支持 parallel_tool_calls）、L3 `microcompact_cold_groups`（extractive 冷组压缩成合成摘要 event，保留 receipt_key）、L5 `build_working_set_metadata`（保守版，只 metadata 不读文件内容）、`run_pipeline` 编排（渐进停止：L2 释放够则不进 L3/L4）。
+- `ksadk/toolsets/web.py` 新增 `_web_search_ksyun`：POST `https://search.aipro.ksyun.com/v1/aisearch/search`，body `{q, scope, size}`，返回 `webpages` 数组 normalize 成 `title/url/snippet/date/rank/provider`，`_ksyun_search_api_key` 复用 `KSADK_MCP_KEY` 等凭证回退。
+- `ksadk/sandbox/registry.py`：`threading.RLock` 保护 `_entries`（`session.kill()` 网络 IO 放锁外避免阻塞）、`_start_sweep_thread`/`_sweep_loop`（daemon 线程 + `Event.wait(interval)`）、`reset_for_tests`、模块级 `atexit.register(GLOBAL_SANDBOX_REGISTRY.clear)`。
+- `ksadk/server/app.py`：`_shutdown_runner_resources` 末尾调 `GLOBAL_SANDBOX_REGISTRY.clear()`，覆盖 server 优雅退出。
+- `scripts/open_source_audit.py`（从 main 迁入）：330 行 audit 脚本，路径 denylist（internal-docs/internal-deploy-material/internal-agent-ops-material/non-curated-docs/non-curated-examples/env-example 等）+ 内容 denylist（internal-git-remote/internal-service-endpoint/private-container-registry/aws-access-key-id 等 11 条），支持 `--target public-repo/sdist/wheel/github-pages`、`--file-list`、`--json`。
+- `.github/workflows/`：`ci.yml`（PR/push 触发）、`codeql.yml`（CodeQL 静态分析）、`release-check.yml`（改发版路径文件时审 dist）、`secret-patterns.yml`（公开仓内容审计）。
+- 治理文件：`CONTRIBUTING.md`、`SECURITY.md`、`README.en.md`、`README.zh-CN.md`、`.gitattributes`、`.github/ISSUE_TEMPLATE/`、`.github/pull_request_template.md`、`.github/dependabot.yml`。
+- 环境变量：`KSADK_SANDBOX_SWEEP_INTERVAL_SECONDS`（默认 60，0 禁用后台 sweep）、`KSADK_MAX_CONSECUTIVE_SEMANTIC_FAILURES`（默认 0 opt-in）、`KSADK_COMPACT_SNIP_ENABLED`/`KSADK_COMPACT_MICROCOMPACT_ENABLED`/`KSADK_COMPACT_MICROCOMPACT_COLD_ROUNDS`、`KSADK_WORKING_SET_MAX_FILES`、`KSADK_WEB_SEARCH_SCOPE`、`KSADK_MCP_KEY`（注册到 env_registry）。
+
+### 变更
+
+- `compact_conversation_history`（`ksadk/conversations/runtime.py`）：接入 pipeline，L2/L3 在送 `summarize_compaction` 前做投影裁剪；checkpoint metadata 扩展 `pipeline_stages`/`tokens_before`/`tokens_after`/`snip_stats`/`microcompact_stats`/`working_set` 字段，便于审计和恢复。原始 transcript 不变（append-only）。
+- `summarize_compaction`（`ksadk/conversations/semantic_summary.py`）：新增独立 semantic 熔断计数器（`_semantic_summary_failures`），LLM 调用失败时累加，超 `KSADK_MAX_CONSECUTIVE_SEMANTIC_FAILURES`（默认 0=禁用）跳过 semantic 走 extractive；成功清零。不复用 governance compact failure counter（因 semantic 失败回退 extractive 时外层看是成功，governance 不触发）。
+- sandbox 默认值优化（cost-saving）：`KSADK_SANDBOX_TIMEOUT` 900→600（10 分钟，够单次任务）、`KSADK_SANDBOX_IDLE_TTL_SECONDS` 0→300（5 分钟空闲回收）。`ksadk/toolsets/sandbox.py` 的 `_sandbox_ttl_seconds`/`_sandbox_status_impl` 默认值同步。
+- `ksadk/cli/storage.py`：`build_storage_config` 新增 `DEFAULT_STORAGE_FRAMEWORKS` 白名单，仅 hermes/openclaw 在 serverless target 下默认挂盘；langgraph/adk 等框架需用户显式 `--storage-mount-path` 才挂，与控制面 `default_storage_by_framework` 行为对齐。
+- `scripts/open_source_audit.py` 规则修正：`DenyRule` 加 `prefix_only` 标志（`non-curated-docs`/`internal-deploy-material` 设为 True，只匹配顶层前缀，不再误报 `docs-site/content/docs/` 或 `docs-site/public/assets/images/deploy/` 子路径）；`internal-service-endpoint` allowlist 加金山云公开服务 endpoint（vpc.inner.api/ks3-*-internal.ksyuncs/kspmas/kmr）；`private-container-registry` allowlist 加 agentengine 命名空间。
+- `ksadk_runtime_common/schemas/memory_backend_manifest.schema.json`：`$id` 从 `ezone.ksyun.com` 改成 `kingsoftcloud.github.io` 公开 URL。
+- `tests/skills/test_web_artifacts_fixture.py`：本地硬编码路径改成 `KSADK_WEB_ARTIFACTS_FIXTURE` env（无则 skip）。
+- `tests/test_runtime_common_memory_backend.py`：mock endpoint 从 `sdns.ksyun.com` 改成 `example.com`。
+- `.gitignore` 对齐 main：加 `!.github/`（放行）、`.pypirc`/`pypirc`（防误提交发布凭证）。
+
+### 修复
+
+- **L2 孤儿 tool_result bug**（Codex review）：`snip_redundant_groups` 原用邻接配对（删 covered tool_call 后跳过紧跟的 tool_result），parallel_tool_calls=True 时会留孤儿 result。改为按 `metadata.run_id` 精确配对删除。
+- **semantic breaker 默认值不一致**（Codex review）：代码默认 3 与 env_registry/文档默认 0 不一致，统一为 0（opt-in，避免临时失败永久禁用 semantic）。
+- **L2 真实 event 不生效**（Codex review）：`_tool_signature` 原只从 `content.name/arguments` 取，真实 runtime 把 tool_name/tool_args 放 `metadata`。改为优先取 `metadata.tool_name/tool_args`，回退 `content`。
+- **失败配对占位移除**（Codex review）：删掉永远返回 False 的 `_is_failed_tool_result`/`_is_failed_tool_result_for_call`/`_tool_signature_for_result` 占位函数和 `removed_failed_tool_pairs` 字段，metadata 不再误导已支持。
+
+### 移除
+
+- 内部部署材料：`Makefile.openclaw`、`Makefile.promo.Dockerfile`、`.pypirc.example`、`deploy/helm/ksadk-docs/`（文档站已迁 github.io）。
+- 内部文档：`docs/internal/`、`docs/archive/`、`docs/superpowers/`、`docs/preview/`、`docs/reference/OpenClaw*`、`docs/reference/assets/openclaw_*`、`docs/README.md`、`docs/release/`。
+- 内部运维 skills：`skills/agentengine-cli-ops`、`skills/agentengine-cluster-debug`、`skills/agentengine-hermes-lifecycle`、`skills/agentengine-openclaw-oneclick-deploy`。
+- `examples/`（已迁移到 [ksadk-samples](https://github.com/kingsoftcloud/ksadk-samples) 仓库）。
+- `.env.example`（ksadk 本体不需要，各 demo 自带）。
+
+### 文档
+
+- 文档站从 mkdocs（public-docs/）迁移到 Fumadocs（docs-site/），对标 veadk github.io：品牌色、hero 动效、架构图 SVG、mermaid 时序图、ImageZoom、双语切换、CLI 顶层入口、best-practices 教程、llms.mdx 等。
+- `docs/reference/ksadk环境变量参考.md`：补齐 0.6.8 新增环境变量（sandbox sweep/compaction pipeline/web search ksyun）。
+- 发版时同步部署 Fumadocs 文档站到 GitHub Pages。
+
 ## [0.6.7] - 2026-06-26
 
 ### 亮点

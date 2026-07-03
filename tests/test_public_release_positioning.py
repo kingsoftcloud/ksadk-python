@@ -35,7 +35,7 @@ def test_public_readme_positions_ksadk_as_runtime_platform():
     assert "```mermaid" not in readme
     assert "```text" in readme
     assert "当前版本：" not in readme
-    assert "发布版本：`0.6.7`" in readme
+    assert "发布版本：`0.6.8`" in readme
 
 
 def test_public_metadata_uses_runtime_platform_positioning():
@@ -43,8 +43,8 @@ def test_public_metadata_uses_runtime_platform_positioning():
     init_text = _read("ksadk/__init__.py")
     version_text = _read("ksadk/version.py")
 
-    assert pyproject["project"]["version"] == "0.6.7"
-    assert 'VERSION = "0.6.7"' in version_text
+    assert pyproject["project"]["version"] == "0.6.8"
+    assert 'VERSION = "0.6.8"' in version_text
     assert "Agent Runtime Platform" in pyproject["project"]["description"]
     assert "Agent Runtime Platform" in init_text
     assert "Agent Development Kit" not in pyproject["project"]["description"]
