@@ -4,7 +4,7 @@ title: CLI Reference
 
 `agentengine` is the public command-line entry point for KsADK.
 
-```bash
+```bash title="bash"
 agentengine [OPTIONS] COMMAND [ARGS]...
 ```
 
@@ -20,7 +20,7 @@ Global options:
 
 ## Core Commands
 
-```bash
+```bash title="bash"
 agentengine --help
 agentengine init --help
 agentengine run --help
@@ -56,7 +56,7 @@ must state their credential and infrastructure prerequisites.
 
 Create a new project.
 
-```bash
+```bash title="bash"
 agentengine init my-agent -f langgraph
 agentengine init my-agent -f adk
 agentengine init my-agent --from-agent ./existing_agent.py
@@ -66,13 +66,15 @@ Supported framework flags include `adk`, `langchain`, `langgraph`,
 `deepagents`, `openclaw`, and `hermes`. Public examples should prefer the
 frameworks that can run locally without internal infrastructure.
 
-After importing existing code, inspect `agentengine.yaml` before running.
+<Callout type="info">
+  After importing existing code, inspect `agentengine.yaml` before running.
+</Callout>
 
 ### `agentengine config`
 
 Manage project and model settings.
 
-```bash
+```bash title="bash"
 agentengine config
 agentengine config show
 agentengine config set OPENAI_MODEL_NAME=my-model
@@ -83,7 +85,7 @@ agentengine config model
 
 Run an agent project.
 
-```bash
+```bash title="bash"
 agentengine run .
 agentengine run . -i
 agentengine run . --port 8080
@@ -103,7 +105,7 @@ Common options:
 
 Use interactive mode for manual testing and server mode for API clients:
 
-```bash
+```bash title="bash"
 agentengine run . -i
 agentengine run . --port 8080
 ```
@@ -112,7 +114,7 @@ agentengine run . --port 8080
 
 Start the local invoke/debug UI.
 
-```bash
+```bash title="bash"
 agentengine web .
 agentengine web . --port 7860
 agentengine web . --model my-model
@@ -125,7 +127,7 @@ agentengine web . --no-open
 
 Expose A2A protocol surfaces and Agent Card metadata.
 
-```bash
+```bash title="bash"
 agentengine a2a card --help
 agentengine a2a serve --help
 ```
@@ -134,7 +136,7 @@ agentengine a2a serve --help
 
 Manage MCP-related resources and runtime flows where configured.
 
-```bash
+```bash title="bash"
 agentengine mcp --help
 ```
 
@@ -143,7 +145,7 @@ agentengine mcp --help
 These commands are part of the SDK surface, but may require Kingsoft Cloud
 credentials or approved hosted infrastructure.
 
-```bash
+```bash title="bash"
 agentengine build --help
 agentengine deploy --help
 agentengine launch --help
@@ -154,15 +156,16 @@ agentengine hermes --help
 agentengine openclaw --help
 ```
 
-Use `--dry-run` where supported when documenting or reviewing deployment-shaped
-commands.
+<Callout type="info">
+  Use `--dry-run` where supported when documenting or reviewing deployment-shaped commands.
+</Callout>
 
 ### Runtime env pass-through
 
 `agentengine deploy` and `agentengine launch` support passing custom
 environment variables to the hosted runtime (0.6.5):
 
-```bash
+```bash title="bash"
 agentengine deploy . \
   --env OPENAI_API_KEY=sk-test \
   --env LOG_LEVEL=debug \
@@ -187,7 +190,7 @@ agentengine launch . --env KEY=VALUE --env-file ./runtime.env
 Deploy a prebuilt OpenClaw image to the cloud runtime; model configuration is
 reused from `OPENAI_*` environment variables.
 
-```bash
+```bash title="bash"
 agentengine openclaw deploy my-openclaw --region cn-beijing-6
 agentengine openclaw deploy my-openclaw --memory-system mem0 \
   --mem0-instance-id inst-xxxx \
@@ -219,15 +222,15 @@ Memory backend options (0.6.7):
   `--mem0-instance-name` and `--mem0-region` are optional metadata.
 </Callout>
 
-OpenClaw deploy also supports `--env KEY=VALUE` (repeatable) and `--env-file` for
-runtime environment variable pass-through, with the same semantics as the
-generic deploy/launch (0.6.5).
+<Callout type="info">
+  OpenClaw deploy also supports `--env KEY=VALUE` (repeatable) and `--env-file` for runtime environment variable pass-through, with the same semantics as the generic deploy/launch (0.6.5).
+</Callout>
 
 ## JSON Output
 
 Some commands support structured output:
 
-```bash
+```bash title="bash"
 agentengine --output json agent status
 agentengine --output json build --help
 ```
@@ -241,9 +244,13 @@ Before publishing CLI docs, regenerate help output from the release candidate an
 check it for internal URLs, credentials, private registry names, kubeconfig
 paths, and deployment assumptions.
 
+<Callout type="warning">
+  Recommended check items: internal URLs, credentials, private registry names, kubeconfig paths, and deployment assumptions must not appear in public help output.
+</Callout>
+
 Recommended checks:
 
-```bash
+```bash title="bash"
 agentengine --help
 agentengine init --help
 agentengine run --help

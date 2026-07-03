@@ -4,28 +4,47 @@ title: "附件与多模态输入"
 
 # 附件与多模态输入
 
-KsADK 支持文本、图片和文件输入。运行时会把上传内容归一化到当前 turn 的消息和附件
-metadata 中，再交给框架 runner。本地 UI 上传、Hosted 托管上传、Responses / Chat
-Completions / ADK 风格 part 都会收敛到同一条 attachment 解析路径。
+KsADK 把文本、图片、文件和上传附件在进入框架 runner 之前归一化。本地 UI、Hosted 托管上传、Responses / Chat Completions / ADK 风格 part 都收敛到同一条 attachment 解析路径。
+
+<Callout type="info">
+业务 Agent 应消费 runner payload 里的 `current_attachments` / `current_attachment_results`，而不是猜测上传路径或自行解析 URI，详见[业务 Agent 消费建议](#业务-agent-消费建议)。
+</Callout>
 
 ## 推荐做法
 
-- 图片分析优先交给支持视觉的模型（见 默认多模态模型）。
-- 大文件不要直接塞进 prompt；先抽取摘要或结构化内容。
+- 图片分析优先交给支持视觉的模型（见[默认多模态模型](#默认多模态模型)）。
+- 大文件不要直接塞进 prompt，先抽取摘要或结构化内容。
 - 工具需要文件时使用 workspace 或附件引用，不猜测浏览器上传路径。
 - 不把附件二进制写入长期记忆。
-- 业务 Agent 应消费 runner payload 里的 `current_attachments` /
-  `current_attachment_results`，而不是猜测上传路径或自行解析 URI（见
-  业务 Agent 消费建议）。
 
 ## 输入类型
 
-常见协议形态包括：
+常见协议形态：
 
-- `input_text`
-- `input_image`
-- `input_file`
-- 文件 metadata 和 workspace 引用
+<Tabs>
+  <Tab name="文本" value="text">
+
+  ```json title="input_text"
+  {"type": "input_text", "text": "..."}
+  ```
+  </Tab>
+  <Tab name="图片" value="image">
+
+  ```json title="input_image"
+  {"type": "input_image", "image_url": "data:image/png;base64,..."}
+  ```
+  </Tab>
+  <Tab name="文件" value="file">
+
+  ```json title="input_file"
+  {"type": "input_file", "filename": "note.txt", "file_data": "data:text/plain;base64,..."}
+  ```
+  </Tab>
+  <Tab name="metadata/引用" value="meta">
+
+  文件 metadata 和 workspace 引用，如 `ksadk-upload://<file_id>`。
+  </Tab>
+</Tabs>
 
 业务 Agent 应处理缺失、过期或不支持的附件引用，并给出明确错误。
 
@@ -59,7 +78,7 @@ Completions / ADK 风格 part 都会收敛到同一条 attachment 解析路径�
 
 Hosted 托管 runtime 通过 KOP Action 端点下载 `ae-upload://` 附件字节流：
 
-```text
+```text title="GET 请求"
 GET /agentengine/api/v1/AttachmentContent?FileUri=<uri>
 ```
 
@@ -79,8 +98,7 @@ runner 与 workspace preview 直接从本地 cache 读取真实文件内容，�
 
 ## 业务 Agent 消费建议
 
-业务 Agent 不应猜测上传路径或自行解析 `file_uri`，应直接消费 runner payload 里的
-结构化附件字段：
+业务 Agent 应直接消费 runner payload 里的结构化附件字段，不猜测上传路径或自行解析 `file_uri`：
 
 | 字段 | 适用场景 |
 | --- | --- |
@@ -89,7 +107,7 @@ runner 与 workspace preview 直接从本地 cache 读取真实文件内容，�
 | `attachments` | 本 turn 有效附件上下文（含会话回填） |
 | `attachment_results` | follow-up 问题需要继续引用上一轮文件时使用 |
 
-```python
+```python title="agent.py"
 def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
     return {
         "messages": payload.get("input_messages", []),
@@ -101,10 +119,12 @@ def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
 ```
 
 - 「处理我刚上传的文件」这类工作流用 `current_attachment_results`。
-- 「现在总结第二段」这类 follow-up 用 `attachment_results`，文本后续轮次
-  `current_attachment_results` 预期为空。
-- 工具需要文件句柄时，从 `current_attachments` / `attachments` 拿 `file_uri` 交给
-  运行时统一解析，不要拼接本地绝对路径。
+- 「现在总结第二段」这类 follow-up 用 `attachment_results`，文本后续轮次 `current_attachment_results` 预期为空。
+- 工具需要文件句柄时，从 `current_attachments` / `attachments` 拿 `file_uri` 交给运行时统一解析，不要拼接本地绝对路径。
+
+<Callout type="warning">
+不要拼接本地绝对路径或自行解析 `file_uri`，把 `file_uri` 交给运行时统一解析即可。
+</Callout>
 
 ## 默认多模态模型
 
@@ -121,8 +141,11 @@ fallback。多模态能力（视觉/图片）默认路由到 `kimi-k2.7-code`。
 | `OPENCLAW_IMAGE_MODEL` | OpenClaw 显式多模态 / 图像模型覆盖，优先于策略默认值 |
 | `HERMES_DEFAULT_MODEL` / `OPENCLAW_FALLBACK_MODEL` | 显式环境变量覆盖仍优先于策略默认 |
 
-显式请求级模型参数 > 显式环境变量 > 策略默认值。需要切换图像/视觉模型时，优先在
-请求 `model_options` 中显式指定，或设置 `OPENCLAW_IMAGE_MODEL` 覆盖默认多模态模型。
+显式请求级模型参数 > 显式环境变量 > 策略默认值。
+
+<Callout type="info">
+需要切换图像/视觉模型时，优先在请求 `model_options` 中显式指定，或设置 `OPENCLAW_IMAGE_MODEL` 覆盖默认多模态模型。
+</Callout>
 
 ## 会话与刷新后继续读取
 

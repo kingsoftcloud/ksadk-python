@@ -40,9 +40,9 @@ into session history.
 | Common AgentEngine built-ins | the `ksadk.toolsets` focused profile |
 | Infrequent or higher-risk built-ins | `agentengine_tool_dispatcher` list/describe/call |
 
-Use the simplest path that gives the agent enough capability. Do not route a
-plain deterministic helper through a remote runtime just to make it look like a
-tool.
+<Callout type="info">
+Use the simplest path that gives the agent enough capability. Do not route a plain deterministic helper through a remote runtime just to make it look like a tool.
+</Callout>
 
 ## AgentEngine Built-In Tools
 
@@ -50,7 +50,7 @@ tool.
 `get_agentengine_tools()` with no arguments still returns the full built-in
 tool list for compatibility. New projects should choose an explicit set:
 
-```python
+```python title="agent.py"
 from ksadk.toolsets import describe_agentengine_tools, get_agentengine_tools
 
 tools = get_agentengine_tools(include=["focused", "agentengine_tool_dispatcher"])
@@ -73,8 +73,11 @@ tool_descriptions = describe_agentengine_tools(include=["focused", "agentengine_
 - `component_status`, `sandbox_status`
 
 `execute_skills`, `run_command`, `run_code`, `delete_workspace_file`, and
-whole-file write tools are not part of the focused profile by default. Bind
-them explicitly or call them through the dispatcher when needed.
+whole-file write tools are not part of the focused profile by default.
+
+<Callout type="info">
+Bind these tools explicitly, or call them through the dispatcher when needed.
+</Callout>
 
 ## Dispatcher And Progressive Disclosure
 
@@ -87,11 +90,9 @@ is a low-risk index tool that keeps the model context smaller.
 | `describe` | return one tool description, risk level, approval requirement, and boundary |
 | `call` | call a KsADK local built-in tool by name |
 
-The dispatcher only schedules KsADK local built-in tools. It does not connect to
-a console Tool Space database or perform remote dynamic tool binding. It calls
-the real tool object, so it does not bypass Tool Gateway approval policies. For
-example, in strict mode `run_command`, `run_code`, `execute_skills`, and
-workspace write/delete calls still return an `approval_required` envelope.
+<Callout type="warning">
+The dispatcher only schedules KsADK local built-in tools. It does not connect to a console Tool Space database or perform remote dynamic tool binding. It calls the real tool object, so it does not bypass Tool Gateway approval policies. For example, in strict mode `run_command`, `run_code`, `execute_skills`, and workspace write/delete calls still return an `approval_required` envelope.
+</Callout>
 
 ## Tool Gateway And Human Approval
 
@@ -101,10 +102,9 @@ perform context compression. Enable strict approval with:
 ```bash
 ```
 
-In strict mode, medium / high / critical risk tools return a structured
-`approval_required` result before execution. A UI or outer runtime can show the
-approval request, then pass the approval result back into the tool call after
-the user confirms.
+<Callout type="warning" title="Strict mode approval">
+In strict mode, medium / high / critical risk tools return a structured `approval_required` result before execution. A UI or outer runtime can show the approval request, then pass the approval result back into the tool call after the user confirms.
+</Callout>
 
 | Tool type | Default risk | Behavior |
 | --- | --- | --- |
@@ -114,11 +114,9 @@ the user confirms.
 | `execute_skills` | high | approval required in strict mode |
 | `run_command` / `run_code` | high | approval required in strict mode, sandbox backend only |
 
-`edit_workspace_file` performs exact snippet replacement. It returns
-`snippet_not_found` when `old_text` is absent, and `ambiguous_edit` when the
-match count does not equal `expected_replacements`. `lint_workspace_file` is a
-lightweight built-in check for Python AST parsing, JSON parsing, and generic
-text issues; it is not a project formatter or a full lint pipeline.
+<Callout type="info">
+`edit_workspace_file` performs exact snippet replacement. It returns `snippet_not_found` when `old_text` is absent, and `ambiguous_edit` when the match count does not equal `expected_replacements`. `lint_workspace_file` is a lightweight built-in check for Python AST parsing, JSON parsing, and generic text issues; it is not a project formatter or a full lint pipeline.
+</Callout>
 
 ## Public Skill Runtime Contract
 
@@ -132,14 +130,15 @@ A public Skill Runtime integration should document:
 - which environment variables are needed.
 - file, network, and execution limits.
 
-The tool description should be precise enough for an LLM to decide when not to
-call it. Avoid descriptions that imply broad filesystem, shell, network, or
-credential access.
+<Callout type="warning">
+The tool description should be precise enough for an LLM to decide when not to call it. Avoid descriptions that imply broad filesystem, shell, network, or credential access.
+</Callout>
 
 ## Environment Configuration
 
-Keep secrets out of source control. Store local development values in `.env` or
-your shell environment, and publish only placeholder names in examples.
+<Callout type="warning">
+Keep secrets out of source control. Store local development values in `.env` or your shell environment, and publish only placeholder names in examples.
+</Callout>
 
 Common public examples:
 
@@ -149,12 +148,13 @@ Common public examples:
 If a backend requires credentials, document the variable names and setup steps
 without publishing actual values:
 
-```bash
+```bash title=".env"
 export EXAMPLE_SANDBOX_API_KEY=...
 ```
 
-Do not commit `.env`, `.pypirc`, PyPI tokens, kubeconfig files, private registry
-credentials, cloud access keys, or generated runtime state.
+<Callout type="warning">
+Do not commit `.env`, `.pypirc`, PyPI tokens, kubeconfig files, private registry credentials, cloud access keys, or generated runtime state.
+</Callout>
 
 ## Local Backend
 
@@ -184,8 +184,9 @@ not private provider wiring:
 | errors | stable error codes or categories |
 | cleanup | whether the sandbox is disposable per run |
 
-Internal account IDs, private images, registry hosts, hosted control-plane URLs,
-and provider-specific support runbooks should stay out of the public repository.
+<Callout type="warning">
+Internal account IDs, private images, registry hosts, hosted control-plane URLs, and provider-specific support runbooks should stay out of the public repository.
+</Callout>
 
 ## Runner Payload
 
@@ -201,7 +202,9 @@ typical result includes:
 | `artifacts` | file references created by the tool, when supported |
 | `error` | stable error summary for failed runs |
 
+<Callout type="warning">
 Business code should read structured fields instead of parsing local UI text.
+</Callout>
 
 ## ADK Integration
 
@@ -210,7 +213,7 @@ loading when optional dependencies and configuration are available. Keep a
 minimal ADK example free of optional runtime variables first, then add tools in
 a separate example:
 
-```python
+```python title="agent.py"
 from google.adk.agents import Agent
 
 root_agent = Agent(
@@ -221,13 +224,14 @@ root_agent = Agent(
 
 Then document the runtime setup beside the example:
 
-```bash
+```bash title="bash"
 pip install -U "ksadk[adk,skills]"
 agentengine web . --no-open
 ```
 
-If the tool is not available, the agent project should still fail with a clear
-setup error instead of silently running with a different capability set.
+<Callout type="info">
+If the tool is not available, the agent project should still fail with a clear setup error instead of silently running with a different capability set.
+</Callout>
 
 ## Testing Tool Integrations
 
@@ -240,8 +244,9 @@ Public tests should cover the boundary, not a private service account:
 - Web UI request shape when the tool result is displayed.
 - audit checks that no credentials or private endpoints appear in fixtures.
 
-Prefer fake clients, temporary files, and local HTTP servers for public tests.
-Only run provider-backed tests behind explicit environment gates.
+<Callout type="info">
+Prefer fake clients, temporary files, and local HTTP servers for public tests. Only run provider-backed tests behind explicit environment gates.
+</Callout>
 
 ## Security Checklist
 
@@ -281,7 +286,7 @@ downstream components isolate data by account boundary.
 Downstream modules read the current account through the runtime-provided
 context accessors instead of parsing request headers themselves:
 
-```python
+```python title="agent.py"
 from ksadk.runtime_context import get_current_account_id, get_current_invocation_context
 
 account_id = get_current_account_id()

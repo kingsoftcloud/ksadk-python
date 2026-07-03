@@ -4,7 +4,7 @@ title: 命令行参考
 
 `agentengine` 是 KsADK 的公开命令行入口。
 
-```bash
+```bash title="bash"
 agentengine [OPTIONS] COMMAND [ARGS]...
 ```
 
@@ -20,7 +20,7 @@ agentengine [OPTIONS] COMMAND [ARGS]...
 
 ## 核心命令
 
-```bash
+```bash title="bash"
 agentengine --help
 agentengine init --help
 agentengine run --help
@@ -56,7 +56,7 @@ agentengine web --help
 
 创建新项目：
 
-```bash
+```bash title="bash"
 agentengine init my-agent -f langgraph
 agentengine init my-agent -f adk
 agentengine init my-agent --from-agent ./existing_agent.py
@@ -65,13 +65,15 @@ agentengine init my-agent --from-agent ./existing_agent.py
 支持的 framework flag 包括 `adk`、`langchain`、`langgraph`、`deepagents`、
 `openclaw` 和 `hermes`。公开示例应优先使用不依赖内部基础设施就能本地运行的框架。
 
-导入已有代码后，先检查 `agentengine.yaml` 再运行。
+<Callout type="info">
+  导入已有代码后，先检查 `agentengine.yaml` 再运行。
+</Callout>
 
 ### `agentengine config`
 
 管理项目和模型设置：
 
-```bash
+```bash title="bash"
 agentengine config
 agentengine config show
 agentengine config set OPENAI_MODEL_NAME=my-model
@@ -82,7 +84,7 @@ agentengine config model
 
 运行 Agent 项目：
 
-```bash
+```bash title="bash"
 agentengine run .
 agentengine run . -i
 agentengine run . --port 8080
@@ -100,7 +102,7 @@ agentengine run . --model my-model
 
 手动测试用交互模式，API 客户端用 server 模式：
 
-```bash
+```bash title="bash"
 agentengine run . -i
 agentengine run . --port 8080
 ```
@@ -109,7 +111,7 @@ agentengine run . --port 8080
 
 启动本地调用和调试 UI：
 
-```bash
+```bash title="bash"
 agentengine web .
 agentengine web . --port 7860
 agentengine web . --model my-model
@@ -122,7 +124,7 @@ agentengine web . --no-open
 
 暴露 A2A 协议 surface 和 Agent Card metadata：
 
-```bash
+```bash title="bash"
 agentengine a2a card --help
 agentengine a2a serve --help
 ```
@@ -131,7 +133,7 @@ agentengine a2a serve --help
 
 管理 MCP 相关资源和运行时流程：
 
-```bash
+```bash title="bash"
 agentengine mcp --help
 ```
 
@@ -139,7 +141,7 @@ agentengine mcp --help
 
 这些命令属于 SDK surface，但可能需要金山云凭证或经过批准的 hosted 基础设施。
 
-```bash
+```bash title="bash"
 agentengine build --help
 agentengine deploy --help
 agentengine launch --help
@@ -150,13 +152,15 @@ agentengine hermes --help
 agentengine openclaw --help
 ```
 
-解释或审核部署形态命令时，在支持的地方使用 `--dry-run`。
+<Callout type="info">
+  解释或审核部署形态命令时，在支持的地方使用 `--dry-run`。
+</Callout>
 
 ### 运行时 env 透传
 
 `agentengine deploy` 和 `agentengine launch` 支持向 hosted runtime 透传自定义环境变量（0.6.5）：
 
-```bash
+```bash title="bash"
 agentengine deploy . \
   --env OPENAI_API_KEY=sk-test \
   --env LOG_LEVEL=debug \
@@ -180,7 +184,7 @@ agentengine launch . --env KEY=VALUE --env-file ./runtime.env
 
 部署预构建的 OpenClaw 镜像到云端运行时，模型配置自动复用 `OPENAI_*` 环境变量。
 
-```bash
+```bash title="bash"
 agentengine openclaw deploy my-openclaw --region cn-beijing-6
 agentengine openclaw deploy my-openclaw --memory-system mem0 \
   --mem0-instance-id inst-xxxx \
@@ -212,14 +216,15 @@ agentengine openclaw --help
   `--mem0-region` 为可选补充信息。
 </Callout>
 
-OpenClaw 部署同样支持 `--env KEY=VALUE`（可重复）和 `--env-file` 透传运行时
-环境变量，语义与通用 deploy/launch 一致（0.6.5）。
+<Callout type="info">
+  OpenClaw 部署同样支持 `--env KEY=VALUE`（可重复）和 `--env-file` 透传运行时环境变量，语义与通用 deploy/launch 一致（0.6.5）。
+</Callout>
 
 ## JSON 输出
 
 部分命令支持结构化输出：
 
-```bash
+```bash title="bash"
 agentengine --output json agent status
 agentengine --output json build --help
 ```
@@ -231,9 +236,13 @@ agentengine --output json build --help
 发布 CLI 文档前，应从 release candidate 重新生成 help 输出，并检查是否包含内部 URL、
 凭证、私有 registry 名称、kubeconfig 路径和部署假设。
 
+<Callout type="warning">
+  推荐检查项：内部 URL、凭证、私有 registry 名称、kubeconfig 路径和部署假设均不应出现在公开 help 输出中。
+</Callout>
+
 推荐检查：
 
-```bash
+```bash title="bash"
 agentengine --help
 agentengine init --help
 agentengine run --help

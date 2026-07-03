@@ -6,15 +6,19 @@ title: 项目结构
 
 一个显式配置的 KsADK 项目通常包含：
 
-```text
-my-agent/
-├── agentengine.yaml
-├── .env
-├── requirements.txt
-└── my_agent/
-    ├── __init__.py
-    └── agent.py
-```
+<Files>
+  <Folder name="my-agent" defaultOpen>
+    <File name="agentengine.yaml" />
+    <File name=".env" />
+    <File name="requirements.txt" />
+    <Folder name="my_agent" defaultOpen>
+      <File name="__init__.py" />
+      <File name="agent.py" />
+    </Folder>
+  </Folder>
+</Files>
+
+兼容模式下也会检测 `ksadk.yaml` 和 `ksadk.yml`。
 
 ## 文件说明
 
@@ -27,9 +31,6 @@ my-agent/
 
 ## 不应提交
 
-- 真实 `.env`。
-- `.agentengine/ui/sessions.sqlite`。
-- 构建产物、缓存和日志。
-- token、kubeconfig、私有 registry 凭证。
-
-公开示例可以提供 `.env.example`，但只能包含占位值。
+<Callout type="warning">
+  不要提交真实 `.env`、`.agentengine/ui/sessions.sqlite`、构建产物/缓存/日志，以及 token、kubeconfig、私有 registry 凭证。公开示例可以提供 `.env.example`，但只能包含占位值。
+</Callout>

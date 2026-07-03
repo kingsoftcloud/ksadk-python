@@ -67,7 +67,7 @@ Google ADK `Agent`; KsADK detects the project, imports the configured object,
 wraps it in the local runner, and exposes the same local CLI, Web UI, and HTTP
 protocols used by other framework families.
 
-```python
+```python title="agent.py"
 from google.adk.agents import Agent
 
 def hello(name: str) -> dict:
@@ -83,7 +83,7 @@ root_agent = Agent(
 
 Project config:
 
-```yaml
+```yaml title="agentengine.yaml"
 name: hello-agent
 framework: adk
 entry_point: agent.py
@@ -92,7 +92,7 @@ agent_variable: root_agent
 
 Recommended setup:
 
-```bash
+```bash title="bash"
 python -m venv .venv
 source .venv/bin/activate
 pip install -U "ksadk[adk]"
@@ -100,11 +100,9 @@ agentengine run . -i
 agentengine web . --no-open
 ```
 
-For ADK projects, optional KsADK integrations such as knowledge search,
-long-term memory tools, MCP toolsets, and Skill Runtime tools are injected
-during ADK runner loading when their environment variables are configured. A
-minimal ADK tutorial should leave those variables unset so the first run only
-depends on the ADK agent object and model configuration.
+<Callout type="info">
+For ADK projects, optional KsADK integrations such as knowledge search, long-term memory tools, MCP toolsets, and Skill Runtime tools are injected during ADK runner loading when their environment variables are configured. A minimal ADK tutorial should leave those variables unset so the first run only depends on the ADK agent object and model configuration.
+</Callout>
 
 Common ADK loading failures:
 
@@ -117,7 +115,7 @@ Common ADK loading failures:
 
 ## LangGraph
 
-```python
+```python title="agent.py"
 from langgraph.graph import END, StateGraph
 
 class State(TypedDict):
@@ -138,7 +136,7 @@ root_agent = graph.compile()
 
 Project config:
 
-```yaml
+```yaml title="agentengine.yaml"
 name: langgraph-agent
 framework: langgraph
 entry_point: agent.py
@@ -147,7 +145,7 @@ agent_variable: root_agent
 
 ## LangChain
 
-```python
+```python title="agent.py"
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
@@ -163,7 +161,7 @@ root_agent = prompt | llm | StrOutputParser()
 
 Project config:
 
-```yaml
+```yaml title="agentengine.yaml"
 name: langchain-agent
 framework: langchain
 entry_point: agent.py
@@ -172,14 +170,14 @@ agent_variable: root_agent
 
 ## DeepAgents
 
-```python
+```python title="agent.py"
 llm = ChatOpenAI(model="my-model", base_url="https://api.example.com/v1", api_key="sk-test")
 root_agent = create_deep_agent(model=llm)
 ```
 
 Project config:
 
-```yaml
+```yaml title="agentengine.yaml"
 name: deep-agent
 framework: deepagents
 entry_point: agent.py
@@ -188,16 +186,24 @@ agent_variable: root_agent
 
 ## Detection Order
 
-KsADK first checks explicit project configuration. If no config file exists, it
-tries common project shapes:
+KsADK first checks explicit project configuration. If no config file exists, it tries common project shapes:
 
-- `langgraph.json`
+<Files>
+  <Folder name="my_agent" defaultOpen>
+    <File name="__init__.py" />
+    <File name="agent.py" />
+  </Folder>
+  <File name="agentengine.yaml" />
+  <File name="langgraph.json" />
+</Files>
+
 - a package with `agent.py`, `main.py`, or `app.py`
 - a package `__init__.py` that exports common agent variables
 - a script-style project with `agent.py`, `main.py`, or `app.py`
 
-Explicit YAML is recommended for public examples because it is easier to review
-and less dependent on heuristics.
+<Callout type="info">
+Explicit YAML is recommended for public examples because it is easier to review and less dependent on heuristics.
+</Callout>
 
 ## Detection Details
 
@@ -286,7 +292,7 @@ application's own hook functions.
 LangGraph and LangChain applications often use custom state shapes. Add a hook
 in the configured entry module when the default mapping is not enough:
 
-```python
+```python title="agent.py"
 def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
     return {
         "messages": payload.get("input_messages", []),
@@ -296,7 +302,7 @@ def ksadk_prepare_state(payload: dict, session_context: dict) -> dict:
     }
 ```
 
-```python
+```python title="agent.py"
 def ksadk_prepare_input(payload: dict, session_context: dict) -> dict:
     return {
         "question": payload.get("input", ""),
@@ -305,8 +311,7 @@ def ksadk_prepare_input(payload: dict, session_context: dict) -> dict:
     }
 ```
 
-Hooks make examples easier to test because business code receives a stable,
-explicit dictionary instead of reading local UI events or session internals.
+Hooks make examples easier to test because business code receives a stable, explicit dictionary instead of reading local UI events or session internals.
 
 ## Model Overrides
 
@@ -363,9 +368,11 @@ whether they are enabled follows the bootstrap capability.
 
 All framework examples should support the same local commands:
 
-```bash
+```bash title="bash"
 agentengine run . -i
 agentengine web . --no-open
 ```
 
+<Callout type="info">
 Hosted deployment examples are optional and must provide a local fallback.
+</Callout>
