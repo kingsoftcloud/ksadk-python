@@ -101,6 +101,8 @@ def _web_search_impl(query: str, max_results: int = 5, recency_days: int | None 
         }
     if provider == "http":
         return _web_search_http(text, max_results=max_results, recency_days=recency_days)
+    if provider == "ksyun":
+        return _web_search_ksyun(text, max_results=max_results)
     return {"ok": False, "error_type": "provider_not_configured", "error_message": f"unsupported web search provider: {provider}"}
 
 
@@ -153,6 +155,77 @@ def _web_search_http(query: str, *, max_results: int = 5, recency_days: int | No
         if len(results) >= params["max_results"]:
             break
     return {"ok": True, "query": query, "provider": "http", "results": results}
+
+
+def _ksyun_search_endpoint() -> str:
+    return (
+        os.environ.get("KSADK_WEB_SEARCH_BASE_URL")
+        or os.environ.get("OPENCLAW_WEB_SEARCH_BASE_URL")
+        or "https://search.aipro.ksyun.com/v1/aisearch/search"
+    ).strip()
+
+
+def _ksyun_search_api_key() -> str:
+    # 金山云 AI搜索与 metaso 同属星流平台，复用 KSADK_MCP_KEY / KSC_AIPRO_API_KEY 凭证。
+    for key in (
+        "KSADK_WEB_SEARCH_API_KEY",
+        "OPENCLAW_WEB_SEARCH_API_KEY",
+        "KSADK_MCP_KEY",
+        "KSC_AIPRO_API_KEY",
+        "KSC_AIPRO_APIKEY",
+        "AIPRO_API_KEY",
+    ):
+        value = os.environ.get(key, "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _ksyun_search_scope() -> str:
+    # 金山云 AI搜索 scope：webpage/document/scholar/podcast/video，默认 webpage。
+    return (os.environ.get("KSADK_WEB_SEARCH_SCOPE") or "webpage").strip().lower() or "webpage"
+
+
+def _web_search_ksyun(query: str, *, max_results: int = 5) -> dict[str, Any]:
+    endpoint = _ksyun_search_endpoint()
+    api_key = _ksyun_search_api_key()
+    if not api_key:
+        return {"ok": False, "error_type": "provider_not_configured", "error_message": "ksyun web search api key is not configured (KSADK_WEB_SEARCH_API_KEY / KSADK_MCP_KEY / KSC_AIPRO_API_KEY)"}
+    size = max(1, min(int(max_results or 5), 200))
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+    payload_body = {"q": query, "scope": _ksyun_search_scope(), "size": size}
+    try:
+        with httpx.Client(timeout=30) as client:
+            response = client.post(endpoint, headers=headers, json=payload_body)
+        response.raise_for_status()
+        payload = response.json()
+    except httpx.TimeoutException:
+        return {"ok": False, "error_type": "timeout", "error_message": "web_search timed out"}
+    except Exception as exc:
+        return {"ok": False, "error_type": type(exc).__name__, "error_message": str(exc)}
+    raw_results = payload.get("webpages") if isinstance(payload, dict) else None
+    if not isinstance(raw_results, list):
+        # 兼容返回 results/data 的情形。
+        raw_results = payload.get("results") if isinstance(payload, dict) else None
+    if not isinstance(raw_results, list):
+        raw_results = payload.get("data") if isinstance(payload, dict) else []
+    results = []
+    for index, item in enumerate(raw_results or [], start=1):
+        if not isinstance(item, dict):
+            continue
+        results.append(
+            {
+                "title": str(item.get("title") or ""),
+                "url": str(item.get("url") or item.get("link") or ""),
+                "snippet": str(item.get("snippet") or item.get("summary") or ""),
+                "date": str(item.get("date") or item.get("published_at") or ""),
+                "rank": index,
+                "provider": "ksyun",
+            }
+        )
+        if len(results) >= size:
+            break
+    return {"ok": True, "query": query, "provider": "ksyun", "results": results}
 
 
 def _validate_public_http_url(url: str) -> dict | None:
