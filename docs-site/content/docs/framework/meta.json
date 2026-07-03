@@ -24,7 +24,6 @@
     "guides/runtime-products",
     "guides/build-and-package",
     "guides/frameworks",
-    "guides/agent-best-practices",
     "guides/web-ui-source",
     "---[BookOpen]教程---",
     "tutorials/langgraph-agent",
