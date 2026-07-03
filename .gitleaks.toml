@@ -1,0 +1,44 @@
+# .gitleaks.toml — ksadk-python
+# 继承 gitleaks 默认规则 (useDefault = true), 仅追加项目级 allowlist。
+# workflow 用法 (见 .github/workflows/secret-patterns.yml):
+#   gitleaks detect --source . --config .gitleaks.toml --no-banner --redact --verbose
+# detect 子命令 + fetch-depth:0 扫全 history; allowlist 同时覆盖历史与当前 tree。
+
+title = "ksadk-python gitleaks config"
+
+[extend]
+useDefault = true
+
+# ---- 全局 allowlist: 测试 fixture 假 key (命中当前 tree 与历史 commit) ----
+[allowlist]
+description = "Allowlist test-fixture placeholders in hermes CLI tests"
+regexes = [
+    # tests/test_cmd_hermes.py 的假 Bearer token (curl-auth-header 规则命中)
+    '''sk-live-secret''',
+    # tests/test_cmd_hermes.py 的假 secret value (generic-api-key 兜底)
+    '''sk-test-secret''',
+]
+paths = [
+    # 精确限定到测试文件, 避免误 allowlist 其它路径的真 key
+    '''tests/test_cmd_hermes\.py''',
+    # 已删文档的历史 commit 路径: gitleaks 历史扫描时仍按该 commit 当时的路径报出,
+    # 故 allowlist 的 paths 规则能命中历史版本, 无需特殊语法。
+    '''docs/hermes-agent-v2026\.4\.13_本地安装配置与ksadk接入流程\.md''',
+]
+
+# ---- 历史已删文档中的 OPENAI_API_KEY (疑似真 kspmas key) ----
+# !!! 安全前置条件 !!!
+# 启用本 allowlist 之前, 必须先在金山云 kspmas 控制台 rotate (吊销并重发) 该 key,
+# 确认 4fd210b0-eee5-4c64-a23c-dc7fb3f86717 已失效。rotate 之前不要启用——
+# allowlist 只让 CI 不报, 不消除 "真 key 已暴露在 public history" 这个事实。
+#
+# 已 rotate 后: 历史 commit 里的该 UUID 已是废值, allowlist 让 CI 对此噪声免疫,
+# 同时保留 git scan 抓未来真新增泄漏的能力 (优于改 --no-git 的掩耳盗铃方案)。
+[[allowlists]]
+description = "Historical rotated OPENAI_API_KEY in deleted hermes doc (safe only AFTER rotation)"
+regexes = [
+    '''4fd210b0-eee5-4c64-a23c-dc7fb3f86717''',
+]
+paths = [
+    '''docs/hermes-agent-v2026\.4\.13_本地安装配置与ksadk接入流程\.md''',
+]
