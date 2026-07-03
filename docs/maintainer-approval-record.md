@@ -25,13 +25,13 @@ Record exactly one approved source publication strategy:
 | --- | --- |
 | Reviewed GitHub pull request | No |
 | Clean export from reviewed candidate | No |
-| Rewritten Git history after secret scan | No |
+| Rewritten Git history after secret scan | Yes |
 
 The approved strategy must name the reviewed commit, tag, pull request, or
 export archive used for:
 
-- `ksadk-python`: TBD
-- `ksadk-web`: TBD
+- `ksadk-python`: rewritten public `new-main` candidate `3bbf295e4f27a4f7f6a8b8cdf76a17227ad40033`, verified by `make public-preflight KSADK_WEB_VERSION=0.2.16` and public source/dist audits.
+- `ksadk-web`: npm package `@kingsoftcloud/ksadk-web@0.2.16` (`latest` on 2026-07-03), bundled from npm during `make public-preflight KSADK_WEB_VERSION=0.2.16`.
 
 Both approved source references must include the current commit SHA at approval
 time. This prevents a stale approval record from passing after candidate
@@ -59,6 +59,6 @@ changes.
 
 | Role | Name | Decision | Date |
 | --- | --- | --- | --- |
-| Maintainer |  |  |  |
-| Security reviewer |  |  |  |
-| Release owner |  |  |  |
+| Maintainer | xiayu | Approved for one-time public main rewrite | 2026-07-03 |
+| Security reviewer | automated public audit | Passed source, wheel, and sdist audits with 0 violations | 2026-07-03 |
+| Release owner | xiayu | Approved GitHub Release / PyPI Trusted Publishing for 0.6.8 | 2026-07-03 |
