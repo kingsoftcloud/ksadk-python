@@ -1067,11 +1067,21 @@ class ADKRunner(BaseRunner):
         *,
         ksadk_invocation_id: str,
         session_id: str,
+        checkpoint_run_id: str = "",
     ):
         """包装 event 迭代器，在首个 event 到达时采集 ADK invocation_id 并存储映射，
-        同时在可恢复边界写入 checkpoint 事件。"""
+        同时在可恢复边界写入 checkpoint 事件。
+
+        checkpoint_run_id 用于 checkpoint 的 run_id 字段，恢复模式下沿用原始 RunId
+        以保证同一长任务的 checkpoint 时间线连贯；ksadk_invocation_id 用于
+        invocation_id 映射和 event 级 invocation_id 字段。
+        """
+        effective_run_id = checkpoint_run_id or ksadk_invocation_id
         first_event_captured = False
-        checkpoint_seq = 1
+        checkpoint_seq = await self._next_checkpoint_seq_for_run(
+            session_id=session_id,
+            ksadk_invocation_id=effective_run_id,
+        )
         async for event in events_async:
             if not first_event_captured and hasattr(event, "invocation_id") and event.invocation_id:
                 first_event_captured = True
@@ -1090,6 +1100,7 @@ class ADKRunner(BaseRunner):
                     ksadk_invocation_id=ksadk_invocation_id,
                     adk_invocation_id=self._last_adk_invocation_id or "",
                     checkpoint_seq=checkpoint_seq,
+                    checkpoint_run_id=effective_run_id,
                 )
                 if next_seq is not None:
                     checkpoint_seq = next_seq
@@ -1171,6 +1182,45 @@ class ADKRunner(BaseRunner):
         except Exception:
             return None
 
+    async def _next_checkpoint_seq_for_run(
+        self,
+        *,
+        session_id: str,
+        ksadk_invocation_id: str,
+    ) -> int:
+        """查询该 session + RunId 下已有的最大 ADK checkpoint_seq，返回 max+1。
+
+        恢复场景下 checkpoint_seq 应从原始运行的最大序号接续，而非从 1 重新开始，
+        这样 CheckpointId 也不会重复，UI 可以看到一条连贯的 checkpoint 时间线。
+        如果找不到任何已有 checkpoint（首次运行），返回 1。
+        """
+        try:
+            from ksadk.sessions import resolve_session_service
+
+            service = resolve_session_service()
+            max_seq = 0
+            for event in await service.get_events(session_id):
+                if event.event_type != "run_checkpoint":
+                    continue
+                metadata = event.metadata or {}
+                if str(metadata.get("run_id") or "") != ksadk_invocation_id:
+                    continue
+                if str(metadata.get("framework") or "") != "adk":
+                    continue
+                framework_ref = metadata.get("framework_ref")
+                if not isinstance(framework_ref, dict):
+                    continue
+                adk_ref = framework_ref.get("adk")
+                if not isinstance(adk_ref, dict):
+                    continue
+                seq = adk_ref.get("checkpoint_seq")
+                if isinstance(seq, int) and seq > max_seq:
+                    max_seq = seq
+            return max_seq + 1
+        except Exception as exc:
+            logger.warning("Failed to query existing checkpoint_seq for run %s: %s", ksadk_invocation_id, exc)
+            return 1
+
     def _is_resumable_boundary(self, event: Any) -> bool:
         """判断 ADK event 是否为可恢复边界。"""
         # 工具调用请求
@@ -1192,8 +1242,13 @@ class ADKRunner(BaseRunner):
         ksadk_invocation_id: str,
         adk_invocation_id: str,
         checkpoint_seq: int,
+        checkpoint_run_id: str = "",
     ) -> int | None:
-        """如果是可恢复边界，写入 run_checkpoint 事件。返回下一个 checkpoint_seq 或 None。"""
+        """如果是可恢复边界，写入 run_checkpoint 事件。返回下一个 checkpoint_seq 或 None。
+
+        checkpoint_run_id 用于 checkpoint 的 run_id 字段（恢复模式下沿用原始 RunId），
+        ksadk_invocation_id 用于 event 级 invocation_id 字段。
+        """
         if not self._is_resumable_boundary(event):
             return None
 
@@ -1201,10 +1256,11 @@ class ADKRunner(BaseRunner):
 
         metadata = self._extract_checkpoint_metadata(event)
 
+        effective_run_id = checkpoint_run_id or ksadk_invocation_id
         await append_run_checkpoint_event(
             session_id=session_id,
             author=self._agent.name,
-            run_id=ksadk_invocation_id,
+            run_id=effective_run_id,
             checkpoint_id=f"adk-ckpt-{checkpoint_seq}",
             framework="adk",
             framework_ref={
@@ -1297,6 +1353,14 @@ class ADKRunner(BaseRunner):
 
             ksadk_invocation_id = str(input_data.get("invocation_id") or input_data.get("run_id") or "")
 
+            # 恢复模式下 checkpoint 的 run_id 应沿用原始 RunId，而非新生成的
+            # resume invocation_id，以保证同一长任务的 checkpoint 时间线连贯。
+            checkpoint_run_id = (
+                str(input_data.get("run_id") or "").strip()
+                if is_resume and str(input_data.get("run_id") or "").strip()
+                else ""
+            )
+
             if is_resume and self._resumable:
                 # 恢复模式：使用 ADK invocation_id
                 adk_invocation_id = None
@@ -1324,7 +1388,7 @@ class ADKRunner(BaseRunner):
                         await append_run_resume_event(
                             session_id=session_id,
                             author=self._agent.name,
-                            run_id=ksadk_invocation_id,
+                            run_id=checkpoint_run_id or ksadk_invocation_id,
                             checkpoint_id=str(input_data.get("checkpoint_id") or ""),
                             resume_attempt_id=f"resume_{os.urandom(8).hex()}",
                             framework="adk",
@@ -1358,6 +1422,7 @@ class ADKRunner(BaseRunner):
                     events_async,
                     ksadk_invocation_id=ksadk_invocation_id,
                     session_id=session_id,
+                    checkpoint_run_id=checkpoint_run_id,
                 )
             else:
                 wrapped_async = self._collect_adk_invocation_id_if_present(
@@ -1445,6 +1510,13 @@ class ADKRunner(BaseRunner):
 
             ksadk_invocation_id = str(input_data.get("invocation_id") or input_data.get("run_id") or "")
 
+            # 恢复模式下 checkpoint 的 run_id 应沿用原始 RunId
+            checkpoint_run_id = (
+                str(input_data.get("run_id") or "").strip()
+                if is_resume and str(input_data.get("run_id") or "").strip()
+                else ""
+            )
+
             # 使用 StreamingMode.SSE 启用真正的流式输出
             run_config = RunConfig(streaming_mode=StreamingMode.SSE)
 
@@ -1473,7 +1545,7 @@ class ADKRunner(BaseRunner):
                         await append_run_resume_event(
                             session_id=session_id,
                             author=self._agent.name,
-                            run_id=ksadk_invocation_id,
+                            run_id=checkpoint_run_id or ksadk_invocation_id,
                             checkpoint_id=str(input_data.get("checkpoint_id") or ""),
                             resume_attempt_id=f"resume_{os.urandom(8).hex()}",
                             framework="adk",
@@ -1508,6 +1580,7 @@ class ADKRunner(BaseRunner):
                     events_async,
                     ksadk_invocation_id=ksadk_invocation_id,
                     session_id=session_id,
+                    checkpoint_run_id=checkpoint_run_id,
                 )
             else:
                 wrapped_async = self._collect_adk_invocation_id_if_present(
