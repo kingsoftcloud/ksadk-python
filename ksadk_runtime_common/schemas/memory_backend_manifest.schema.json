@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://https://github.com/kingsoftcloud/ksadk-python",
+  "$id": "https://kingsoftcloud.github.io/ksadk-python/schemas/memory_backend_manifest/v1",
   "title": "MemoryBackendManifest",
   "description": "Memory backend manifest for OpenClaw runtime configuration.",
   "type": "object",
