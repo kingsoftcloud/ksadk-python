@@ -6,32 +6,7 @@ title: 接入已有智能体
 生成 KsADK 项目包装，再检查生成的 `agentengine.yaml`。手写 YAML 是少数异常
 项目的兜底，不是第一步。
 
-```mermaid
-flowchart LR
-  Source["已有 agent.py 或 package"] -->|导入| Import["agentengine init --from-agent"]
-  Import -->|生成| Wrapper["新的 KsADK 项目包装"]
-  Wrapper -->|核对| Review["检查 agentengine.yaml"]
-  Review -->|本地| Run["agentengine run . -i"]
-  Run -->|调试| Web["agentengine web . --no-open"]
-
-  subgraph import["导入与生成"]
-    Source
-    Import
-    Wrapper
-  end
-  subgraph verify["校验与运行"]
-    Review
-    Run
-    Web
-  end
-
-  classDef brand fill:#5368db,stroke:#3b4cc7,color:#fff
-  classDef accent fill:#59d3d9,stroke:#3fb8be,color:#0a2540
-  classDef neutral fill:#f5f7ff,stroke:#c9d2f5,color:#1a2240
-  class Source,Web brand
-  class Import,Wrapper,Run accent
-  class Review neutral
-```
+![接入已有智能体流程](/assets/ksadk-existing-agent.svg)
 
 ## 支持的输入
 

@@ -28,33 +28,7 @@ KsADK separates memory and knowledge into three layers:
 2. ambient context, where the runtime retrieves short formatted context before calling the runner.
 3. backend services, where application-specific storage or retrieval happens.
 
-```mermaid
-flowchart TD
-  User["user request"] --> Runtime["conversation runtime"]
-  Runtime --> Policy{"feature enabled?"}
-  Policy -->|knowledge| KB["knowledge search"]
-  Policy -->|memory| LTM["long-term memory search"]
-  KB --> Payload["runner payload"]
-  LTM --> Payload
-  Payload --> Hook["ksadk_prepare_state / ksadk_prepare_input"]
-  Hook --> Agent["business agent"]
-
-  subgraph ctx["ambient context"]
-    KB
-    LTM
-  end
-  subgraph contract["public contract"]
-    Payload
-    Hook
-  end
-
-  classDef brand fill:#5368db,stroke:#3b4cc7,color:#fff
-  classDef accent fill:#59d3d9,stroke:#3fb8be,color:#0a2540
-  classDef neutral fill:#f5f7ff,stroke:#c9d2f5,color:#1a2240
-  class User,Agent brand
-  class Runtime,Payload,Hook accent
-  class Policy,KB,LTM neutral
-```
+![Memory and knowledge runtime boundary](/assets/ksadk-memory-runtime-boundary.svg)
 
 <Callout type="info">
 The public contract is the payload and hook shape. A concrete hosted memory or knowledge backend is an optional deployment choice.
@@ -143,38 +117,7 @@ This distinction matters because ADK has native tool and memory concepts, while 
 
 When configured, KsADK can build memory and knowledge context before calling the framework runner:
 
-```mermaid
-flowchart TD
-  Input["user input"] --> Runtime["conversation runtime"]
-  Runtime --> Policy{"ambient policy"}
-  Policy -->|knowledge enabled| KB["knowledge search"]
-  Policy -->|memory enabled| LTM["long-term memory search"]
-  KB --> KBCtx["kb_context"]
-  LTM --> MemCtx["memory_context"]
-  KBCtx --> Payload["runner payload"]
-  MemCtx --> Payload
-  Payload --> Runner["framework runner"]
-  Runner --> Agent["agent code"]
-
-  subgraph ctx["ambient context"]
-    KB
-    LTM
-    KBCtx
-    MemCtx
-  end
-  subgraph runtime["conversation runtime"]
-    Runtime
-    Policy
-    Payload
-  end
-
-  classDef brand fill:#5368db,stroke:#3b4cc7,color:#fff
-  classDef accent fill:#59d3d9,stroke:#3fb8be,color:#0a2540
-  classDef neutral fill:#f5f7ff,stroke:#c9d2f5,color:#1a2240
-  class Input,Agent brand
-  class Runtime,Payload,Runner accent
-  class Policy,KB,LTM,KBCtx,MemCtx neutral
-```
+![Runtime context flow](/assets/ksadk-memory-context-flow.svg)
 
 <Callout type="info">
 `kb_context` and `memory_context` are KsADK runtime extensions. They should be described as local runner context, not as official OpenAI protocol fields.

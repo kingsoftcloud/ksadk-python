@@ -16,19 +16,7 @@ KsADK focuses on the local development loop for agent projects: create or import
 an agent, configure a model provider, run it locally, inspect the execution path,
 then package reviewed artifacts when a deployment path is approved.
 
-```mermaid
-flowchart LR
-  A["Develop<br/>agent code"] -->|run| B["Run<br/>terminal or local server"]
-  B -->|inspect| C["Debug<br/>Web UI and protocol traces"]
-  C -->|wire| D["Integrate<br/>tools, files, memory"]
-  D -->|review| E["Review<br/>package and release gates"]
-  E -->|iterate| A
-
-  classDef brand fill:#5368db,stroke:#3b4cc7,color:#fff
-  classDef accent fill:#59d3d9,stroke:#3fb8be,color:#0a2540
-  class A,E brand
-  class B,C,D accent
-```
+![KsADK and the agent lifecycle](/assets/ksadk-agent-lifecycle.svg)
 
 <Callout type="info">
   The public SDK intentionally keeps this loop local-first. Hosted AgentEngine
@@ -71,43 +59,7 @@ Web UI, and one OpenAI-compatible protocol.
 | LangChain | runnable chain or agent assigned to `root_agent` |
 | DeepAgents | `root_agent = create_deep_agent(...)` |
 
-```mermaid
-flowchart LR
-  Project["Python project"] --> Config["agentengine.yaml / ksadk.yaml"]
-  Config --> Detector["FrameworkDetector"]
-  Detector --> Factory["Runner Factory"]
-  Factory --> ADK["ADKRunner"]
-  Factory --> LG["LangGraphRunner"]
-  Factory --> LC["LangChainRunner"]
-  Factory --> DA["DeepAgentsRunner"]
-  ADK --> Contract["BaseRunner invoke / stream"]
-  LG --> Contract
-  LC --> Contract
-  DA --> Contract
-
-  subgraph detect["detection"]
-    Project
-    Config
-    Detector
-  end
-  subgraph factory["runner factory"]
-    Factory
-    ADK
-    LG
-    LC
-    DA
-  end
-  subgraph contract["public contract"]
-    Contract
-  end
-
-  classDef brand fill:#5368db,stroke:#3b4cc7,color:#fff
-  classDef accent fill:#59d3d9,stroke:#3fb8be,color:#0a2540
-  classDef neutral fill:#f5f7ff,stroke:#c9d2f5,color:#1a2240
-  class Project,Contract brand
-  class Detector,Factory accent
-  class Config,ADK,LG,LC,DA neutral
-```
+![Framework adapter and runner contract](/assets/ksadk-runner-contract.svg)
 
 <Callout type="info">
   The runner contract is the key public abstraction: framework-specific details

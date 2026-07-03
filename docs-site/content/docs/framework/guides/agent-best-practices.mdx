@@ -10,37 +10,7 @@ title: "Agent 最佳实践"
 用一个外层图负责路由和策略，再把业务工作交给一个可调用工具的 specialist。
 这样规划、工具执行和最终回答收口互不混在一起。
 
-```mermaid
-flowchart TD
-  User["用户消息 / 文件"] --> Plan["plan_turn<br/>路由与策略"]
-  Plan --> Specialist["ReAct specialist<br/>框架工具"]
-  Specialist --> Final["finalize_answer<br/>稳定输出"]
-  Specialist --> KB["知识库"]
-  Specialist --> Mem["记忆库"]
-  Specialist --> Skills["Skill Runtime"]
-  Specialist --> MCP["MCP / A2A 工具"]
-  Specialist --> Workspace["workspace 文件"]
-
-  subgraph flow["多轮编排"]
-    Plan
-    Specialist
-    Final
-  end
-  subgraph tools["specialist 可用工具"]
-    KB
-    Mem
-    Skills
-    MCP
-    Workspace
-  end
-
-  classDef brand fill:#5368db,stroke:#3b4cc7,color:#fff
-  classDef accent fill:#59d3d9,stroke:#3fb8be,color:#0a2540
-  classDef neutral fill:#f5f7ff,stroke:#c9d2f5,color:#1a2240
-  class User,Final brand
-  class Plan,Specialist accent
-  class KB,Mem,Skills,MCP,Workspace neutral
-```
+![plan_turn 路由与编排](/assets/ksadk-plan-turn-routing.svg)
 
 LangGraph 很适合这个结构：外层 `StateGraph` 管状态流转，内层
 `create_react_agent()` 保持框架原生工具调用体验。

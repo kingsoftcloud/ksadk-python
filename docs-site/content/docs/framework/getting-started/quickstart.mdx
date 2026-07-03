@@ -154,32 +154,7 @@ Python 包内置的静态资源，终端用户不需要 Node.js。
   本地 UI 默认把调试状态写入 `.agentengine/`。不要提交这个目录。
 </Callout>
 
-```mermaid
-flowchart LR
-  Browser["浏览器"] --> Web["本地 Web UI"]
-  Web -->|HTTP/SSE| Runtime["KsADK 本地运行时"]
-  Runtime -->|invoke / stream| Runner["LangGraphRunner"]
-  Runner --> Agent["root_agent"]
-  Runtime -->|持久化| Store[".agentengine/ui/sessions.sqlite"]
-
-  subgraph client["客户端"]
-    Browser
-    Web
-  end
-  subgraph runtime["运行时与状态"]
-    Runtime
-    Runner
-    Agent
-    Store
-  end
-
-  classDef brand fill:#5368db,stroke:#3b4cc7,color:#fff
-  classDef accent fill:#59d3d9,stroke:#3fb8be,color:#0a2540
-  classDef neutral fill:#f5f7ff,stroke:#c9d2f5,color:#1a2240
-  class Browser,Agent brand
-  class Runtime,Runner accent
-  class Web,Store neutral
-```
+![本地运行流程](/assets/ksadk-local-run-flow.svg)
 
 ## 启动本地 API Server
 
