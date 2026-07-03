@@ -19,6 +19,15 @@ from ksadk.sandbox.registry import GLOBAL_SANDBOX_REGISTRY, SandboxRegistry
 from ksadk.toolsets.sandbox import run_code, run_command, sandbox_status
 
 
+@pytest.fixture(autouse=True)
+def _reset_sandbox_registry(monkeypatch):
+    # 禁用后台 sweep 线程,避免测试间相互干扰。
+    monkeypatch.setenv("KSADK_SANDBOX_SWEEP_INTERVAL_SECONDS", "0")
+    GLOBAL_SANDBOX_REGISTRY.reset_for_tests()
+    yield
+    GLOBAL_SANDBOX_REGISTRY.reset_for_tests()
+
+
 def test_sandbox_factory_creates_e2b_backend(monkeypatch):
     monkeypatch.setenv("KSADK_SANDBOX_BACKEND", "e2b")
     monkeypatch.setenv("KSADK_SANDBOX_TEMPLATE_ID", "tpl-aio")
@@ -572,3 +581,123 @@ def test_sandbox_status_reports_idle_ttl_and_quota(monkeypatch):
     assert result["isolated"] is False
     assert result["idle_ttl_seconds"] == 12
     assert result["max_sessions"] == 3
+
+
+def test_sandbox_registry_clear_is_idempotent():
+    # clear() 幂等:多次调用不抛异常(atexit 和 server shutdown 都可能调)。
+    GLOBAL_SANDBOX_REGISTRY.clear()
+    GLOBAL_SANDBOX_REGISTRY.clear()
+    assert GLOBAL_SANDBOX_REGISTRY.entries() == []
+
+
+def test_sandbox_registry_sweep_thread_disabled_when_interval_zero(monkeypatch):
+    monkeypatch.setenv("KSADK_SANDBOX_SWEEP_INTERVAL_SECONDS", "0")
+    registry = SandboxRegistry()
+    registry._start_sweep_thread()
+    assert registry._sweep_thread is None
+    registry.reset_for_tests()
+
+
+def test_sandbox_registry_sweep_thread_starts_when_interval_positive(monkeypatch):
+    monkeypatch.setenv("KSADK_SANDBOX_SWEEP_INTERVAL_SECONDS", "1")
+    registry = SandboxRegistry()
+
+    class FakeSession:
+        sandbox_id = "sweep-1"
+        killed = False
+
+        def kill(self):
+            self.killed = True
+
+    class FakeBackend:
+        def create_session(self, *, session_id, env=None, input_files=None):
+            return FakeSession()
+
+    # 首次 get_or_create 创建 entry 后应懒启动后台 sweep 线程。
+    registry.get_or_create(
+        key="sweep-test",
+        backend_name="fake",
+        backend=FakeBackend(),
+        ttl_seconds=1,
+        idle_ttl_seconds=1,
+        isolated=True,
+        now=0.0,
+    )
+    assert registry._sweep_thread is not None
+    assert registry._sweep_thread.is_alive()
+    registry.reset_for_tests()
+    assert registry._sweep_thread is None
+    assert registry.entries() == []
+
+
+def test_sandbox_registry_concurrent_get_or_create_does_not_deadlock(monkeypatch):
+    monkeypatch.setenv("KSADK_SANDBOX_SWEEP_INTERVAL_SECONDS", "0")
+    import threading
+
+    class FakeSession:
+        def __init__(self, sid):
+            self.sandbox_id = sid
+            self.killed = False
+
+        def kill(self):
+            self.killed = True
+
+    class FakeBackend:
+        def __init__(self):
+            self._counter = 0
+            self._lock = threading.Lock()
+
+        def create_session(self, *, session_id, env=None, input_files=None):
+            with self._lock:
+                self._counter += 1
+            return FakeSession(f"sbx-{session_id}-{self._counter}")
+
+    registry = SandboxRegistry()
+    backend = FakeBackend()
+    errors: list[Exception] = []
+
+    def worker(idx: int):
+        try:
+            registry.get_or_create(
+                key=f"concurrent-{idx}",
+                backend_name="fake",
+                backend=backend,
+                ttl_seconds=100,
+                isolated=True,
+            )
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5.0)
+    assert not errors
+    assert len(registry.entries()) == 8
+    registry.reset_for_tests()
+
+
+def test_shutdown_runner_resources_clears_sandbox_registry(monkeypatch):
+    import asyncio
+    import sys
+
+    import ksadk.server.app  # noqa: F401  触发模块注册到 sys.modules
+    app_module = sys.modules["ksadk.server.app"]
+
+    # 用一个带空 close() 的 mock runner,触发完整 shutdown 路径(含 sandbox clear)。
+    class FakeRunner:
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(app_module, "runner", FakeRunner())
+    calls: list[bool] = []
+    monkeypatch.setattr(
+        GLOBAL_SANDBOX_REGISTRY,
+        "clear",
+        lambda: calls.append(True),
+    )
+
+    asyncio.run(app_module._shutdown_runner_resources())
+
+    assert calls == [True]
