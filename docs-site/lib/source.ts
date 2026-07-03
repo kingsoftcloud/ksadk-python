@@ -56,5 +56,25 @@ export async function getLLMText(page: (typeof source)['$inferPage']) {
 
   return `# ${page.data.title} (${page.url})
 
-${processed}`;
+${cleanForLLM(processed)}`;
+}
+
+// 剥离 Fumadocs JSX 组件标签和锚点语法,输出干净的 markdown 给 LLM/llms.mdx。
+// - <Callout>...</Callout> / <Tabs>..</Tabs> / <Card>..</Card> 等:保留内部文本,去掉标签
+// - 自闭合 <Files/> <Folder/> <File/> 等:去掉
+// - 标题锚点 ## 标题 [#锚点]:去掉 [#...] 部分
+// - ```mermaid 代码块原样保留
+function cleanForLLM(md: string): string {
+  return md
+    // 去掉标题行尾的锚点 [#xxx] / (#xxx)
+    .replace(/\s*\[#[^\]]+\]/g, '')
+    // 自闭合组件 <X .../> 换行成空(Files/Folder/File/Cards 等容器,内容已在子节点)
+    .replace(/<[A-Z][A-Za-z]*[^>]*\/>/g, '')
+    // 去掉开标签 <Callout ...> <Tabs> <Tab ...> <Card ...> <Steps> <Step ...> <Accordion ...>
+    .replace(/<[A-Z][A-Za-z]*[^>]*>/g, '')
+    // 去掉闭标签 </Callout> </Tabs> 等
+    .replace(/<\/[A-Z][A-Za-z]*>/g, '')
+    // 合并多余空行(组件去掉后可能留多行空)
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }

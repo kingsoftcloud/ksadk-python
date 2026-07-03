@@ -24,7 +24,7 @@ html > body[data-scroll-locked] {
   --ksadk-purple-soft: #dfd2f3;
   --ksadk-gradient: linear-gradient(135deg, #5368db 0%, #7d89dc 30%, #59d3d9 65%, #afe4e4 100%);
   --ksadk-gradient-soft: linear-gradient(135deg, #dfd2f3 0%, #afe4e4 50%, #91c5e2 100%);
-  --motion-duration: 14s;
+  --motion-duration: 10s;
 }
 
 /* === Hero 背景动效 (冷青流动, 参考用户 motion-gradient.css) === */
@@ -34,7 +34,7 @@ html > body[data-scroll-locked] {
   z-index: -1;
   overflow: hidden;
   isolation: isolate;
-  opacity: 0.35;
+  opacity: 0.6;
   pointer-events: none;
   background:
     radial-gradient(ellipse 54% 50% at 4% 38%, #cfdef3 0 9%, #9fbee8 34%, #98aee8 53%, transparent 68%),
@@ -88,20 +88,20 @@ html > body[data-scroll-locked] {
   80% { background-position: 20% 48%, 62% 16%, 46% 76%, 88% 44%, 54% 24%, 0 0; filter: saturate(1.12) contrast(1.05); }
 }
 @keyframes ksadk-drift-a {
-  0%, 100% { transform: translate3d(-16%,-9%,0) scale(1.04,1.12) rotate(-6deg); opacity: .9; }
-  20% { transform: translate3d(5%,-15%,0) scale(1.16,1.01) rotate(2deg); opacity: .98; }
-  40% { transform: translate3d(16%,2%,0) scale(1.1,1.15) rotate(7deg); opacity: .9; }
-  60% { transform: translate3d(7%,15%,0) scale(1.17,1.06) rotate(4deg); opacity: .96; }
-  80% { transform: translate3d(-12%,10%,0) scale(1.08,1.17) rotate(-4deg); opacity: .92; }
+  0%, 100% { transform: translate3d(-22%,-14%,0) scale(1.06,1.18) rotate(-9deg); opacity: .92; }
+  20% { transform: translate3d(8%,-22%,0) scale(1.2,1.02) rotate(4deg); opacity: 1; }
+  40% { transform: translate3d(22%,4%,0) scale(1.14,1.2) rotate(10deg); opacity: .92; }
+  60% { transform: translate3d(10%,20%,0) scale(1.22,1.08) rotate(6deg); opacity: .98; }
+  80% { transform: translate3d(-16%,14%,0) scale(1.12,1.22) rotate(-6deg); opacity: .94; }
 }
 @keyframes ksadk-drift-b {
-  0%, 100% { transform: translate3d(16%,12%,0) scale(1.14,1.03) rotate(5deg); opacity: .7; }
-  20% { transform: translate3d(1%,17%,0) scale(1.04,1.17) rotate(-1deg); opacity: .62; }
-  40% { transform: translate3d(-16%,5%,0) scale(1,1.14) rotate(-7deg); opacity: .72; }
-  60% { transform: translate3d(-12%,-13%,0) scale(1.11,1.04) rotate(-5deg); opacity: .66; }
-  80% { transform: translate3d(8%,-14%,0) scale(1.18,1.02) rotate(3deg); opacity: .7; }
+  0%, 100% { transform: translate3d(22%,16%,0) scale(1.18,1.05) rotate(7deg); opacity: .72; }
+  20% { transform: translate3d(2%,22%,0) scale(1.06,1.2) rotate(-2deg); opacity: .64; }
+  40% { transform: translate3d(-22%,7%,0) scale(1.02,1.18) rotate(-10deg); opacity: .74; }
+  60% { transform: translate3d(-16%,-18%,0) scale(1.15,1.06) rotate(-7deg); opacity: .68; }
+  80% { transform: translate3d(12%,-20%,0) scale(1.22,1.03) rotate(5deg); opacity: .72; }
 }
-[data-theme="dark"] .ksadk-hero-bg { opacity: 0.22; }
+[data-theme="dark"] .ksadk-hero-bg { opacity: 0.3; }
 
 /* Fumadocs primary 用品牌蓝紫 */
 :root {
