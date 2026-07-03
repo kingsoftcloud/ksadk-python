@@ -4,7 +4,6 @@
   "root": true,
   "pages": [
     "index",
-    "cli",
     "environment-variables",
     "openai-compatible-api",
     "project-config",
