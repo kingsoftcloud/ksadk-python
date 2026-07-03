@@ -1,0 +1,38 @@
+name: Release Check
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "pyproject.toml"
+      - "MANIFEST.in"
+      - "ksadk/**"
+      - "ksadk_runtime_common/**"
+      - "scripts/open_source_audit.py"
+      - ".github/workflows/release-check.yml"
+
+jobs:
+  artifacts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Build artifacts
+        run: uv build
+
+      - name: Check package metadata
+        run: uv run --extra dev python -m twine check dist/*
+
+      - name: Audit wheel and sdist file lists
+        run: make open-source-audit-dist
