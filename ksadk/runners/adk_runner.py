@@ -1609,15 +1609,66 @@ class ADKRunner(BaseRunner):
                                     "type": "thinking" if is_thought else "text",
                                 }
 
-                # 处理工具调用事件
+                # 处理工具调用事件 — ADK 通过 event.content.parts[].function_call
+                # 发出工具调用（即 event.get_function_calls()），而非
+                # event.actions.tool_calls。此处需同时检测两种路径：
+                # (a) get_function_calls() — ADK 标准 Event 模型
+                # (b) actions.tool_calls — 某些旧版或自定义 runner 可能使用
+                emitted_tool_call_ids: set[str] = set()
+                if hasattr(event, "get_function_calls") and event.get_function_calls():
+                    for fc in event.get_function_calls():
+                        fc_id = getattr(fc, "id", "") or getattr(fc, "name", "unknown")
+                        if fc_id in emitted_tool_call_ids:
+                            continue
+                        emitted_tool_call_ids.add(fc_id)
+                        # fc.args 可能是 dict 或 None；确保可序列化
+                        fc_args = getattr(fc, "args", None) or {}
+                        if not isinstance(fc_args, dict):
+                            try:
+                                import json as _json
+                                fc_args = _json.loads(fc_args) if isinstance(fc_args, str) else {}
+                            except Exception:
+                                fc_args = {}
+                        yield {
+                            "type": "tool_call",
+                            "tool_name": getattr(fc, "name", "unknown"),
+                            "tool_args": fc_args,
+                        }
                 if hasattr(event, "actions") and event.actions:
                     tool_calls = getattr(event.actions, "tool_calls", None)
                     if tool_calls:
                         for tool_call in tool_calls:
+                            tc_name = getattr(tool_call, "name", "unknown")
+                            tc_id = getattr(tool_call, "id", "") or tc_name
+                            if tc_id in emitted_tool_call_ids:
+                                continue
+                            emitted_tool_call_ids.add(tc_id)
                             yield {
                                 "type": "tool_call",
-                                "tool_name": getattr(tool_call, "name", "unknown"),
+                                "tool_name": tc_name,
                                 "tool_args": getattr(tool_call, "input", {}),
+                            }
+
+                # 处理工具返回结果 — ADK 通过 event.content.parts[].function_response
+                # 发出工具执行结果。当工具执行完毕后 ADK 会产生一个包含
+                # function_response 的事件，此处将其转为 tool_result 语义事件，
+                # 让前端可以感知"某个工具已完成执行"并展示结果。
+                if hasattr(event, "content") and event.content and hasattr(event.content, "parts"):
+                    for part in event.content.parts:
+                        fr = getattr(part, "function_response", None)
+                        if fr is not None:
+                            fr_name = getattr(fr, "name", "unknown")
+                            fr_output = getattr(fr, "response", None) or {}
+                            if not isinstance(fr_output, dict):
+                                try:
+                                    import json as _json2
+                                    fr_output = _json2.loads(fr_output) if isinstance(fr_output, str) else {"raw": str(fr_output)}
+                                except Exception:
+                                    fr_output = {"raw": str(fr_output)}
+                            yield {
+                                "type": "tool_result",
+                                "tool_name": fr_name,
+                                "tool_output": fr_output,
                             }
 
             # Set output.value for Langfuse top-level output display
