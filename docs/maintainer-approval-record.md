@@ -1,0 +1,64 @@
+# KsADK Public Release Approval Record
+
+This record must be filled after maintainer review and before any external
+write action, including GitHub release tags, GitHub Releases, TestPyPI, or
+PyPI publication.
+
+## Required Approval Decisions
+
+| Decision | Approved value |
+| --- | --- |
+| License | Apache-2.0 |
+| Python repository | kingsoftcloud/ksadk-python |
+| Web UI repository | kingsoftcloud/ksadk-web |
+| Python package version | 0.6.8 |
+| Public docs URL | https://kingsoftcloud.github.io/ksadk-python/ |
+| Package metadata repository URL | https://github.com/kingsoftcloud/ksadk-python |
+| Package metadata documentation URL | https://kingsoftcloud.github.io/ksadk-python/ |
+| Security contact | security@kingsoft.com |
+
+## Publication Strategy
+
+Record exactly one approved source publication strategy:
+
+| Strategy | Approved |
+| --- | --- |
+| Reviewed GitHub pull request | No |
+| Clean export from reviewed candidate | No |
+| Rewritten Git history after secret scan | Yes |
+
+The approved strategy must name the reviewed commit, tag, pull request, or
+export archive used for:
+
+- `ksadk-python`: rewritten public `new-main` candidate `3bbf295e4f27a4f7f6a8b8cdf76a17227ad40033`, verified by `make public-preflight KSADK_WEB_VERSION=0.2.16` and public source/dist audits.
+- `ksadk-web`: npm package `@kingsoftcloud/ksadk-web@0.2.16` (`latest` on 2026-07-03), bundled from npm during `make public-preflight KSADK_WEB_VERSION=0.2.16`.
+
+Both approved source references must include the current commit SHA at approval
+time. This prevents a stale approval record from passing after candidate
+changes.
+
+## Required Evidence Before Approval
+
+- `make public-preflight` exits successfully.
+- `make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.6.8` confirms
+  the target version is not already on PyPI.
+- Branch protection and publish environment are configured according to
+  `.github/BRANCH_PROTECTION.md`.
+- Staging E2E for the reviewed runtime images and control-plane candidate exits
+  successfully before GitHub Release, PyPI, or npm workflows are approved.
+- Hosted workspace zip export, model policy defaults, fallback behavior,
+  Hermes/OpenClaw default images, long-task resume, and terminal reconnect are
+  covered by the staging E2E evidence.
+- GitHub PR checks are green on the reviewed commit.
+- Release notes and `CHANGELOG.md` were reviewed.
+- Public README and docs were reviewed for sensitive environment names,
+  internal endpoints, tokens, customer data, and inaccurate competitor claims.
+- PyPI/TestPyPI credentials stay outside the repository.
+
+## Approval Sign-Off
+
+| Role | Name | Decision | Date |
+| --- | --- | --- | --- |
+| Maintainer | xiayu | Approved for one-time public main rewrite | 2026-07-03 |
+| Security reviewer | automated public audit | Passed source, wheel, and sdist audits with 0 violations | 2026-07-03 |
+| Release owner | xiayu | Approved GitHub Release / PyPI Trusted Publishing for 0.6.8 | 2026-07-03 |

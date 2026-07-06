@@ -1,0 +1,225 @@
+---
+title: Quickstart
+---
+
+This quickstart creates a local LangGraph agent, configures an
+OpenAI-compatible model provider, runs the agent in the terminal, and opens the
+local Web UI.
+
+<Callout type="info">
+  The flow is local-first. It does not require internal Kingsoft Cloud accounts,
+  private gateways, internal object storage, or private Kubernetes clusters.
+</Callout>
+
+## Requirements
+
+- Python 3.10 or newer.
+- A shell with `python` and `pip`.
+- An OpenAI-compatible chat model endpoint and API key that you control.
+
+Optional framework extras can be installed as needed. The default quickstart uses
+LangGraph.
+
+## Create A Clean Workspace
+
+```bash title="shell"
+mkdir ksadk-quickstart
+cd ksadk-quickstart
+```
+
+<Callout type="info">
+  Keep the virtual environment inside the workspace while learning. For production
+  projects, use your team's normal Python environment manager.
+</Callout>
+
+## Install
+
+<Steps>
+
+1. Create and activate a virtual environment, then install `ksadk`:
+
+   ```bash title="shell"
+   python -m venv .venv
+   source .venv/bin/activate
+   pip install ksadk
+   ```
+
+2. Install a framework extra when your project needs it:
+
+   ```bash title="shell"
+   pip install "ksadk[langgraph]"
+   ```
+
+3. Check that the CLI is installed:
+
+   ```bash title="shell"
+   agentengine --help
+   agentengine --version
+   ```
+
+</Steps>
+
+## Create A Project
+
+```bash title="shell"
+agentengine init my-agent -f langgraph
+cd my-agent
+```
+
+The generated project contains an agent entry file and a project configuration
+file. See [Project Structure](./project-structure) for details.
+
+Expected files:
+
+<Files>
+  <Folder name="my-agent" defaultOpen>
+    <File name="agent.py" />
+    <File name="agentengine.yaml" />
+  </Folder>
+</Files>
+
+## Configure A Model
+
+Use the non-interactive config command for reproducible setup:
+
+```bash title="shell"
+agentengine config set \
+  OPENAI_API_KEY=sk-test \
+  OPENAI_BASE_URL=https://api.example.com/v1 \
+  OPENAI_MODEL_NAME=my-model
+```
+
+<Callout type="warning">
+  Use real provider values only in your local `.env`. Do not commit `.env`.
+</Callout>
+
+Check the effective configuration:
+
+```bash title="shell"
+agentengine config show
+```
+
+You can also run the interactive wizard:
+
+```bash title="shell"
+agentengine config
+```
+
+## Inspect The Agent
+
+Open `agent.py` and confirm that the configured agent variable exists. The
+default generated LangGraph project should expose:
+
+```python title="agent.py"
+root_agent = graph.compile()  # [!code highlight]
+```
+
+Open `agentengine.yaml` and confirm:
+
+```yaml title="agentengine.yaml"
+framework: langgraph
+entry_point: agent.py
+agent_variable: root_agent
+```
+
+## Run In The Terminal
+
+```bash title="shell"
+agentengine run . -i
+```
+
+Useful flags:
+
+- `--model <name>` overrides the configured model for one run.
+- `--show-thinking` displays model reasoning output when the provider returns it.
+- `--no-stream` waits for a complete response before rendering.
+- `--no-trace` disables tracing.
+
+Send a basic prompt:
+
+```text title="prompt"
+What can this agent do?
+```
+
+If the model provider is reachable, the CLI should stream or print a response.
+If it fails, check [Troubleshooting](../reference/troubleshooting#model-calls-fail).
+
+## Start The Local Web UI
+
+```bash title="shell"
+agentengine web . --no-open
+```
+
+The command prints a local URL. Open it in a browser and send a test message to
+the agent. `agentengine web` uses static assets bundled in the Python package, so
+end users do not need Node.js.
+
+<Callout type="warning">
+  The local UI stores browser debugging state under `.agentengine/` by default.
+  Do not commit that directory.
+</Callout>
+
+## Start A Local API Server
+
+```bash title="shell"
+agentengine run . --port 8080
+```
+
+Then call the local OpenAI-compatible endpoint:
+
+```bash title="shell"
+curl http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "my-agent",
+    "messages": [
+      {"role": "user", "content": "Say hello from KsADK"}
+    ],
+    "stream": false
+}'
+```
+
+Call the Responses endpoint:
+
+```bash title="shell"
+curl http://127.0.0.1:8080/v1/responses \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "my-agent",
+    "input": "Return a one sentence status.",
+    "stream": false
+  }'
+```
+
+<Callout type="info">
+  Use `stream: true` only when your client can consume server-sent events.
+</Callout>
+
+## Stop Local Processes
+
+Press `Ctrl+C` in each terminal running `agentengine run` or `agentengine web`.
+To reset local UI state, remove:
+
+```bash title="shell"
+rm -rf .agentengine/
+```
+
+## What You Have Built
+
+You now have:
+
+- a local Python agent project.
+- explicit KsADK project configuration.
+- local model settings in `.env`.
+- a terminal loop for quick tests.
+- a browser UI for debugging sessions.
+- an OpenAI-compatible local HTTP server for client integration.
+
+## Next Steps
+
+- Build a complete example in [Build A LangGraph Agent](../tutorials/langgraph-agent).
+- Wrap an existing project in [Bring An Existing Agent](../tutorials/existing-agent).
+- Configure more settings in [Configuration](./configuration).
+- Learn framework conventions in [Frameworks](../guides/frameworks).
+- Debug with the [Local Web UI](../guides/local-web-ui).
+- Check commands in the [CLI Reference](../reference/cli).

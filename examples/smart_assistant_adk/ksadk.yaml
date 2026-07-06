@@ -1,6 +1,0 @@
-# KsADK 项目配置
-name: smart_assistant_adk
-framework: adk
-entry_point: smart_assistant_adk/agent.py
-package: smart_assistant_adk
-agent_variable: root_agent

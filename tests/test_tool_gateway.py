@@ -5,6 +5,7 @@ from ksadk.tools.gateway import (
     ToolPolicy,
     approval_interrupt_info_from_result,
     build_tool_receipt_idempotency_key,
+    check_command_policy,
     default_tool_gateway,
     tool_policy_requires_approval,
 )
@@ -93,3 +94,26 @@ def test_approval_interrupt_info_from_result_normalizes_payload():
         "server_label": "ksadk",
         "run_id": "run_1",
     }
+
+
+def test_check_command_policy_allows_read_only_git_commands():
+    result = check_command_policy("git diff -- ksadk/toolsets/workspace.py")
+
+    assert result["ok"] is True
+    assert result["decision"] == "allow"
+
+
+def test_check_command_policy_rejects_dangerous_commands():
+    result = check_command_policy("git reset --hard HEAD")
+
+    assert result["ok"] is False
+    assert result["decision"] == "reject"
+    assert result["error_type"] == "command_rejected"
+
+
+def test_check_command_policy_rejects_recursive_rm_without_force():
+    result = check_command_policy("rm -r workspace")
+
+    assert result["ok"] is False
+    assert result["decision"] == "reject"
+    assert result["error_type"] == "command_rejected"

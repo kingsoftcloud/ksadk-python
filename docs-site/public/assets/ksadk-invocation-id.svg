@@ -1,0 +1,144 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 480" role="img" aria-labelledby="t d">
+  <title id="t">invocation_id 贯穿链路</title>
+  <desc id="d">HTTP / RunAgentAction 请求携带账号标识，运行时写入 PlatformInvocationContext，单次运行的 invocation_id 贯穿 runner payload、SubscribeRunEvents、CancelRun 与 trace 观测。</desc>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&amp;display=swap');
+    text { font-family: 'JetBrains Mono', 'Noto Sans SC', 'PingFang SC', sans-serif; }
+    @media (prefers-color-scheme: light) {
+      .bg-dark { fill: none; }
+      .grid-pattern { display: none; }
+      text[fill="white"] { fill: #0f172a; }
+      text[fill="#94a3b8"] { fill: #475569; }
+      text[fill="#a7f3d0"] { fill: #047857; }
+      text[fill="#64748b"] { fill: #64748b; }
+      text[fill="#22d3ee"] { fill: #0e7490; }
+      text[fill="#34d399"] { fill: #047857; }
+      text[fill="#fbbf24"] { fill: #b45309; }
+      text[fill="#a78bfa"] { fill: #6d28d9; }
+      text[fill="#fb7185"] { fill: #be123c; }
+      rect[fill="#0f172a"] { fill: none; }
+      rect[stroke="#94a3b8"], rect[stroke="#22d3ee"], rect[stroke="#34d399"], rect[stroke="#fbbf24"], rect[stroke="#a78bfa"], rect[stroke="#fb7185"] { stroke-opacity: 0.8; }
+    }
+  </style>
+  <defs>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/>
+    </pattern>
+    <marker id="ar-c" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7" fill="#22d3ee"/></marker>
+    <marker id="ar-g" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7" fill="#34d399"/></marker>
+    <marker id="ar-a" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7" fill="#fbbf24"/></marker>
+    <marker id="ar-v" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7" fill="#a78bfa"/></marker>
+  </defs>
+
+  <rect class="bg-dark" width="1080" height="480" fill="#0f172a"/>
+  <rect class="grid-pattern" width="1080" height="480" fill="url(#grid)"/>
+
+  <text x="30" y="34" fill="white" font-size="16" font-weight="700">invocation_id 贯穿链路</text>
+  <text x="30" y="52" fill="#94a3b8" font-size="10">HTTP / RunAgentAction 请求 → PlatformInvocationContext → runner payload / SubscribeRunEvents / CancelRun / trace 观测</text>
+
+  <!-- Request -->
+  <g>
+    <rect x="40" y="100" width="240" height="80" rx="6" fill="#0f172a"/>
+    <rect x="40" y="100" width="240" height="80" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+    <text x="160" y="128" fill="white" font-size="11" font-weight="600" text-anchor="middle">HTTP / RunAgentAction 请求</text>
+    <text x="160" y="146" fill="#a7f3d0" font-size="8" text-anchor="middle">/v1/responses</text>
+    <text x="160" y="160" fill="#a7f3d0" font-size="8" text-anchor="middle">/v1/chat/completions</text>
+    <text x="160" y="174" fill="#64748b" font-size="8" text-anchor="middle">RunAgentAction.AccountId</text>
+  </g>
+
+  <!-- PlatformInvocationContext -->
+  <g>
+    <rect x="340" y="90" width="260" height="100" rx="6" fill="#0f172a"/>
+    <rect x="340" y="90" width="260" height="100" rx="6" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+    <text x="470" y="115" fill="white" font-size="11" font-weight="600" text-anchor="middle">PlatformInvocationContext</text>
+    <text x="470" y="133" fill="#94a3b8" font-size="8" text-anchor="middle">account_id · agent_id</text>
+    <text x="470" y="147" fill="#94a3b8" font-size="8" text-anchor="middle">user_id · session_id</text>
+    <text x="470" y="161" fill="#a7f3d0" font-size="8" text-anchor="middle">invocation_id（单次运行稳定 ID）</text>
+    <text x="470" y="175" fill="#64748b" font-size="8" text-anchor="middle">attachment / memory / knowledge</text>
+  </g>
+
+  <!-- runtime context reader -->
+  <g>
+    <rect x="660" y="100" width="200" height="80" rx="6" fill="#0f172a"/>
+    <rect x="660" y="100" width="200" height="80" rx="6" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+    <text x="760" y="128" fill="white" font-size="11" font-weight="600" text-anchor="middle">runtime_context</text>
+    <text x="760" y="146" fill="#a7f3d0" font-size="8" text-anchor="middle">get_current_account_id()</text>
+    <text x="760" y="160" fill="#a7f3d0" font-size="8" text-anchor="middle">get_current_invocation</text>
+    <text x="760" y="174" fill="#94a3b8" font-size="8" text-anchor="middle">_context()</text>
+  </g>
+
+  <!-- Fan-out targets -->
+  <g>
+    <rect x="900" y="80" width="160" height="50" rx="6" fill="#0f172a"/>
+    <rect x="900" y="80" width="160" height="50" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+    <text x="980" y="103" fill="white" font-size="10" font-weight="600" text-anchor="middle">runner payload</text>
+    <text x="980" y="118" fill="#94a3b8" font-size="8" text-anchor="middle">本地与远端对齐</text>
+  </g>
+  <g>
+    <rect x="900" y="145" width="160" height="50" rx="6" fill="#0f172a"/>
+    <rect x="900" y="145" width="160" height="50" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+    <text x="980" y="168" fill="white" font-size="10" font-weight="600" text-anchor="middle">SubscribeRunEvents</text>
+    <text x="980" y="183" fill="#94a3b8" font-size="8" text-anchor="middle">定位运行实例</text>
+  </g>
+  <g>
+    <rect x="900" y="210" width="160" height="50" rx="6" fill="#0f172a"/>
+    <rect x="900" y="210" width="160" height="50" rx="6" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1.5"/>
+    <text x="980" y="233" fill="white" font-size="10" font-weight="600" text-anchor="middle">CancelRun</text>
+    <text x="980" y="248" fill="#94a3b8" font-size="8" text-anchor="middle">协作式取消</text>
+  </g>
+  <g>
+    <rect x="900" y="275" width="160" height="50" rx="6" fill="#0f172a"/>
+    <rect x="900" y="275" width="160" height="50" rx="6" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+    <text x="980" y="298" fill="white" font-size="10" font-weight="600" text-anchor="middle">trace / 观测</text>
+    <text x="980" y="313" fill="#94a3b8" font-size="8" text-anchor="middle">排查卡顿与失败</text>
+  </g>
+
+  <!-- ToolExecutionContext carries invocation_id -->
+  <g>
+    <rect x="340" y="230" width="260" height="60" rx="6" fill="#0f172a"/>
+    <rect x="340" y="230" width="260" height="60" rx="6" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+    <text x="470" y="254" fill="white" font-size="11" font-weight="600" text-anchor="middle">ToolExecutionContext</text>
+    <text x="470" y="271" fill="#94a3b8" font-size="8" text-anchor="middle">携带 invocation_id 贯穿一次执行</text>
+  </g>
+
+  <!-- Arrows -->
+  <path d="M 280,140 L 340,140" fill="none" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#ar-c)"/>
+  <text x="290" y="133" fill="#22d3ee" font-size="8">account_id</text>
+
+  <path d="M 600,140 L 660,140" fill="none" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#ar-v)"/>
+  <text x="610" y="133" fill="#a78bfa" font-size="8">read context</text>
+
+  <path d="M 760,180 L 760,360 L 470,360 L 470,290" fill="none" stroke="#fbbf24" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#ar-a)"/>
+  <text x="600" y="355" fill="#fbbf24" font-size="8">注入 invocation_id</text>
+
+  <path d="M 470,190 L 470,230" fill="none" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#ar-a)"/>
+
+  <path d="M 600,260 L 900,105" fill="none" stroke="#34d399" stroke-width="1.5" marker-end="url(#ar-g)"/>
+  <path d="M 600,260 L 900,170" fill="none" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#ar-c)"/>
+  <path d="M 600,260 L 900,235" fill="none" stroke="#fb7185" stroke-width="1.5" marker-end="url(#ar-v)"/>
+  <path d="M 600,260 L 900,300" fill="none" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#ar-a)"/>
+
+  <text x="640" y="220" fill="#64748b" font-size="8">invocation_id 贯穿下游</text>
+
+  <!-- Account boundary note -->
+  <rect x="40" y="320" width="820" height="40" rx="6" fill="none" stroke="#34d399" stroke-width="0.8" stroke-dasharray="3,2"/>
+  <text x="450" y="338" fill="#34d399" font-size="9" font-weight="600" text-anchor="middle">账号边界优先用上下文读取器</text>
+  <text x="450" y="352" fill="#94a3b8" font-size="8" text-anchor="middle">memory / sandbox / workspace / skill 读 PlatformInvocationContext，避免沙箱或异步分支拿到错误账号</text>
+
+  <!-- Legend -->
+  <g transform="translate(40, 400)">
+    <text x="0" y="0" fill="white" font-size="10" font-weight="700">图例</text>
+    <rect x="0" y="12" width="14" height="14" rx="2" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.2"/>
+    <text x="20" y="23" fill="#94a3b8" font-size="9">HTTP 入口 / 订阅</text>
+    <rect x="140" y="12" width="14" height="14" rx="2" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.2"/>
+    <text x="160" y="23" fill="#94a3b8" font-size="9">Context / invocation_id</text>
+    <rect x="320" y="12" width="14" height="14" rx="2" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1.2"/>
+    <text x="340" y="23" fill="#94a3b8" font-size="9">上下文读取器</text>
+    <rect x="460" y="12" width="14" height="14" rx="2" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.2"/>
+    <text x="480" y="23" fill="#94a3b8" font-size="9">runner payload</text>
+    <rect x="600" y="12" width="14" height="14" rx="2" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1.2"/>
+    <text x="620" y="23" fill="#94a3b8" font-size="9">CancelRun</text>
+    <line x1="730" y1="19" x2="760" y2="19" stroke="#fbbf24" stroke-width="1.2" stroke-dasharray="4,3"/>
+    <text x="768" y="23" fill="#94a3b8" font-size="9">虚线 = 注入 invocation_id</text>
+  </g>
+</svg>

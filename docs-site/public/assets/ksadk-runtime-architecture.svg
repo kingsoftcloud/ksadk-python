@@ -1,0 +1,230 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1500 940" role="img" aria-labelledby="t d">
+  <title id="t">KsADK Agent Runtime Platform 架构</title>
+  <desc id="d">三层架构:业务 Agent 框架、KsADK Runtime 数据面、托管控制面。</desc>
+  <style>
+    text { font-family: ui-sans-serif, system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #0f172a; }
+      rect[fill="#fbfbf9"], rect[fill="#ffffff"] { fill: #1e293b; }
+      rect[fill="#f8fafc"] { fill: #0f172a; }
+      rect[fill="#eff6ff"] { fill: #1a1f2e; }
+      rect[fill="#ecfdf5"] { fill: #0f1f1a; }
+      rect[fill="#fff7ed"] { fill: #1e1b14; }
+      rect[fill="#f5f3ff"] { fill: #1f1a2e; }
+      text[fill="#0f172a"] { fill: #f1f5f9; }
+      text[fill="#1e293b"] { fill: #e2e8f0; }
+      text[fill="#334155"] { fill: #cbd5e1; }
+      text[fill="#475569"] { fill: #94a3b8; }
+      text[fill="#64748b"] { fill: #94a3b8; }
+    }
+  </style>
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker>
+    <marker id="ar-g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#059669"/></marker>
+    <marker id="ar-o" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#d97706"/></marker>
+    <marker id="ar-p" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#7c3aed"/></marker>
+  </defs>
+
+  <rect class="bg" width="1500" height="940" fill="#fbfbf9"/>
+
+  <!-- 标题 -->
+  <text x="40" y="38" font-size="20" font-weight="700" fill="#0f172a">KsADK — Agent Runtime Platform</text>
+  <text x="40" y="60" font-size="12" fill="#64748b">用户写 agent 做什么 · 平台管怎么跑</text>
+
+  <!-- ===== Layer 1: 业务 Agent 框架 (x:40..1460, padding 20) ===== -->
+  <!-- region: x=40..1460 (w=1420), y=85..205 (h=120) -->
+  <rect x="40" y="85" width="1420" height="120" rx="12" fill="#eff6ff" stroke="#6366f1" stroke-width="1.5"/>
+  <text x="60" y="110" font-size="13" font-weight="700" fill="#4338ca">业务 Agent 框架（用户自带）</text>
+  <!-- 4 卡片 W=325, gap=30, pad=20: x=60,415,770,1125 ; y=120..190 (h=70) -->
+  <rect x="60" y="120" width="325" height="70" rx="8" fill="#ffffff" stroke="#6366f1" stroke-width="1.2"/>
+  <text x="222" y="148" font-size="13" font-weight="600" fill="#1e293b" text-anchor="middle">Google ADK</text>
+  <text x="222" y="168" font-size="10" fill="#64748b" text-anchor="middle">agent.py · root_agent</text>
+
+  <rect x="415" y="120" width="325" height="70" rx="8" fill="#ffffff" stroke="#6366f1" stroke-width="1.2"/>
+  <text x="577" y="148" font-size="13" font-weight="600" fill="#1e293b" text-anchor="middle">LangGraph</text>
+  <text x="577" y="168" font-size="10" fill="#64748b" text-anchor="middle">StateGraph</text>
+
+  <rect x="770" y="120" width="325" height="70" rx="8" fill="#ffffff" stroke="#6366f1" stroke-width="1.2"/>
+  <text x="932" y="148" font-size="13" font-weight="600" fill="#1e293b" text-anchor="middle">LangChain</text>
+  <text x="932" y="168" font-size="10" fill="#64748b" text-anchor="middle">Runnable · chain</text>
+
+  <rect x="1125" y="120" width="325" height="70" rx="8" fill="#ffffff" stroke="#6366f1" stroke-width="1.2"/>
+  <text x="1287" y="148" font-size="13" font-weight="600" fill="#1e293b" text-anchor="middle">DeepAgents</text>
+  <text x="1287" y="168" font-size="10" fill="#64748b" text-anchor="middle">create_deep_agent</text>
+
+  <!-- 4 框架 → Runner/Conv 汇聚 (走 region 下方 y=222 空隙, 不穿卡片) -->
+  <path d="M 222,190 L 222,222 L 577,222" fill="none" stroke="#6366f1" stroke-width="1.2" stroke-opacity="0.55"/>
+  <path d="M 577,190 L 577,240" fill="none" stroke="#6366f1" stroke-width="1.2" marker-end="url(#ar)" stroke-opacity="0.6"/>
+  <path d="M 932,190 L 932,222 L 577,222" fill="none" stroke="#6366f1" stroke-width="1.2" stroke-opacity="0.55"/>
+  <path d="M 1287,190 L 1287,222 L 932,222 L 932,240" fill="none" stroke="#6366f1" stroke-width="1.2" stroke-opacity="0.55"/>
+
+  <!-- ===== Layer 2: KsADK Runtime 数据面 ===== -->
+  <!-- region: x=40..1460 (w=1420), y=240..740 (h=500) -->
+  <rect x="40" y="240" width="1420" height="500" rx="12" fill="#ecfdf5" stroke="#059669" stroke-width="2"/>
+  <text x="60" y="266" font-size="14" font-weight="700" fill="#047857">KsADK Runtime · 数据面</text>
+  <text x="250" y="266" font-size="11" fill="#64748b">runner · session/transcript · toolsets · sandbox · API</text>
+
+  <!-- 上排 4 列等宽 (W=325, gap=30, pad=20): x=60,415,770,1125 ; y=285..415
+       列1 CLI+WebUI 竖排, 列2 Runner, 列3 Conversations, 列4 API+Mem 竖排 -->
+  <!-- 列1: CLI(上) + WebUI(下) -->
+  <rect x="60" y="285" width="325" height="60" rx="8" fill="#ffffff" stroke="#059669" stroke-width="1.5"/>
+  <text x="222" y="312" font-size="13" font-weight="600" fill="#1e293b" text-anchor="middle">agentengine CLI</text>
+  <text x="222" y="330" font-size="10" fill="#64748b" text-anchor="middle">init · run · web · build · launch</text>
+  <rect x="60" y="355" width="325" height="60" rx="8" fill="#ffffff" stroke="#059669" stroke-width="1.5"/>
+  <text x="222" y="382" font-size="13" font-weight="600" fill="#1e293b" text-anchor="middle">本地 Web UI</text>
+  <text x="222" y="400" font-size="10" fill="#64748b" text-anchor="middle">会话 · 附件 · workspace</text>
+
+  <!-- 列2: Runner 编排 (大卡片, y=285..415) -->
+  <rect x="415" y="285" width="325" height="130" rx="10" fill="#d1fae5" stroke="#059669" stroke-width="2"/>
+  <text x="577" y="313" font-size="14" font-weight="700" fill="#064e3b" text-anchor="middle">Runner 编排</text>
+  <text x="577" y="331" font-size="10" fill="#475569" text-anchor="middle">BaseRunner · 框架适配</text>
+  <line x1="435" y1="343" x2="720" y2="343" stroke="#059669" stroke-width="0.6" stroke-opacity="0.4"/>
+  <text x="577" y="361" font-size="10" fill="#047857" text-anchor="middle">ADKRunner</text>
+  <text x="577" y="377" font-size="10" fill="#047857" text-anchor="middle">LangGraphRunner</text>
+  <text x="577" y="393" font-size="10" fill="#047857" text-anchor="middle">LangChain · DeepAgents</text>
+  <text x="577" y="408" font-size="9" fill="#64748b" text-anchor="middle">invoke · stream · request_cancel</text>
+
+  <!-- 列3: Conversations Runtime (核心, y=285..415) -->
+  <rect x="770" y="285" width="325" height="130" rx="10" fill="#d1fae5" stroke="#059669" stroke-width="2"/>
+  <text x="932" y="313" font-size="14" font-weight="700" fill="#064e3b" text-anchor="middle">Conversations Runtime</text>
+  <text x="932" y="331" font-size="10" fill="#475569" text-anchor="middle">对话运行时 · 数据面核心</text>
+  <line x1="790" y1="343" x2="1075" y2="343" stroke="#059669" stroke-width="0.6" stroke-opacity="0.4"/>
+  <text x="795" y="361" font-size="10" fill="#047857">session / transcript</text>
+  <text x="795" y="377" font-size="10" fill="#047857">PlatformInvocationContext</text>
+  <text x="795" y="393" font-size="10" fill="#047857">invocation_id · account_id</text>
+  <text x="795" y="408" font-size="9" fill="#64748b">checkpoint / resume · SubscribeRunEvents</text>
+
+  <!-- 列4: OpenAI API(上) + 记忆知识库(下) -->
+  <rect x="1125" y="285" width="325" height="60" rx="8" fill="#ffffff" stroke="#059669" stroke-width="1.5"/>
+  <text x="1287" y="312" font-size="13" font-weight="600" fill="#1e293b" text-anchor="middle">OpenAI 兼容 API</text>
+  <text x="1287" y="330" font-size="10" fill="#64748b" text-anchor="middle">/v1/responses · /v1/chat/completions</text>
+  <rect x="1125" y="355" width="325" height="60" rx="8" fill="#f5f3ff" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="1287" y="382" font-size="13" font-weight="600" fill="#1e293b" text-anchor="middle">记忆与知识库</text>
+  <text x="1287" y="400" font-size="10" fill="#64748b" text-anchor="middle">LTM · KB · LanceDB</text>
+
+  <!-- 连线 (全部正交折线, 走卡片之间空隙, 不穿卡片) -->
+  <path d="M 385,345 L 415,345" fill="none" stroke="#059669" stroke-width="1.5" marker-end="url(#ar-g)"/>
+  <!-- WebUI → Conv (绕开 Runner: 下到 y=430, 右行到列3 下方, 上入 Conv 底) -->
+  <path d="M 385,385 L 400,385 L 400,430 L 770,430 L 770,415" fill="none" stroke="#059669" stroke-width="1.5" marker-end="url(#ar-g)" stroke-opacity="0.6"/>
+  <!-- Runner ↔ Conv (水平直连) -->
+  <path d="M 740,350 L 770,350" fill="none" stroke="#059669" stroke-width="1.5" marker-end="url(#ar-g)" marker-start="url(#ar-g)"/>
+  <!-- Conv → OpenAI API (水平) -->
+  <path d="M 1095,315 L 1125,315" fill="none" stroke="#059669" stroke-width="1.5" marker-end="url(#ar-g)"/>
+  <!-- Conv → 记忆知识库 (水平) -->
+  <path d="M 1095,385 L 1125,385" fill="none" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#ar-p)"/>
+
+  <!-- ===== 内置 Toolsets 子层: x=60..1440 (w=1380), y=450..580 (h=130) ===== -->
+  <!-- 6 卡片等宽 W=200, gap=30, pad=20: x=80,310,540,770,1000,1230 ; y=490..565 (h=75) -->
+  <rect x="60" y="450" width="1380" height="130" rx="10" fill="#fff7ed" stroke="#d97706" stroke-width="1.2" stroke-dasharray="5,3"/>
+  <text x="80" y="475" font-size="12" font-weight="700" fill="#92400e">内置 Toolsets</text>
+  <!-- 6 卡片等宽 W=200, gap=30, pad=20: x=80,310,540,770,1000,1230 ; y=490..565 (h=75) -->
+  <rect x="80" y="490" width="200" height="75" rx="8" fill="#ffffff" stroke="#d97706" stroke-width="1.2"/>
+  <text x="180" y="516" font-size="12" font-weight="600" fill="#1e293b" text-anchor="middle">Skill 工具</text>
+  <text x="180" y="534" font-size="9" fill="#64748b" text-anchor="middle">list · load · search · execute</text>
+  <text x="180" y="549" font-size="9" fill="#64748b" text-anchor="middle">Skill Space · SkillService</text>
+
+  <rect x="310" y="490" width="200" height="75" rx="8" fill="#ffffff" stroke="#d97706" stroke-width="1.2"/>
+  <text x="410" y="516" font-size="12" font-weight="600" fill="#1e293b" text-anchor="middle">Workspace 工具</text>
+  <text x="410" y="534" font-size="9" fill="#64748b" text-anchor="middle">read · write · list · edit</text>
+  <text x="410" y="549" font-size="9" fill="#64748b" text-anchor="middle">search · lint</text>
+
+  <rect x="540" y="490" width="200" height="75" rx="8" fill="#ffffff" stroke="#d97706" stroke-width="1.2"/>
+  <text x="640" y="516" font-size="12" font-weight="600" fill="#1e293b" text-anchor="middle">Sandbox 工具</text>
+  <text x="640" y="534" font-size="9" fill="#64748b" text-anchor="middle">run_command · run_code</text>
+  <text x="640" y="549" font-size="9" fill="#64748b" text-anchor="middle">E2B backend</text>
+
+  <rect x="770" y="490" width="200" height="75" rx="8" fill="#ffffff" stroke="#d97706" stroke-width="1.2"/>
+  <text x="870" y="516" font-size="12" font-weight="600" fill="#1e293b" text-anchor="middle">Web 工具</text>
+  <text x="870" y="534" font-size="9" fill="#64748b" text-anchor="middle">web_fetch · web_search</text>
+  <text x="870" y="549" font-size="9" fill="#64748b" text-anchor="middle">SSRF 校验</text>
+
+  <rect x="1000" y="490" width="200" height="75" rx="8" fill="#ffffff" stroke="#d97706" stroke-width="1.2"/>
+  <text x="1100" y="516" font-size="12" font-weight="600" fill="#1e293b" text-anchor="middle">Platform 工具</text>
+  <text x="1100" y="534" font-size="9" fill="#64748b" text-anchor="middle">component_status</text>
+  <text x="1100" y="549" font-size="9" fill="#64748b" text-anchor="middle">memory · knowledge</text>
+
+  <!-- Tool Gateway (alert) -->
+  <rect x="1230" y="490" width="200" height="75" rx="8" fill="#fee2e2" stroke="#b91c1c" stroke-width="1.5"/>
+  <text x="1330" y="516" font-size="12" font-weight="600" fill="#1e293b" text-anchor="middle">Tool Gateway</text>
+  <text x="1330" y="534" font-size="9" fill="#64748b" text-anchor="middle">审批 envelope</text>
+  <text x="1330" y="549" font-size="9" fill="#64748b" text-anchor="middle">approval_required</text>
+
+  <!-- Toolsets → Conv (工具注入, 垂直从子层顶部上去到 Conv 底)
+       Conv 底 y=415, 子层顶 y=450, 中间空白 415..450. 用 x=932 (Conv 中心) 下行 -->
+  <path d="M 932,415 L 932,450" fill="none" stroke="#d97706" stroke-width="1.5" marker-end="url(#ar-o)" stroke-dasharray="4,3" stroke-opacity="0.6"/>
+  <text x="942" y="438" font-size="9" fill="#d97706">工具注入</text>
+
+  <!-- ===== 下方 runtime 三联: x=60..1440 (w=1380), y=600..690 (h=90) ===== -->
+  <!-- 3 卡片等宽 W=430, gap=35, pad=20: x=80,545,1010 -->
+  <rect x="80" y="600" width="430" height="90" rx="10" fill="#f5f3ff" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="295" y="628" font-size="13" font-weight="700" fill="#5b21b6" text-anchor="middle">Sandbox Runtime</text>
+  <text x="295" y="648" font-size="10" fill="#475569" text-anchor="middle">通用隔离执行底座 · E2B-compatible backend</text>
+  <text x="295" y="668" font-size="9" fill="#64748b" text-anchor="middle">Skill Runtime + sandbox direct tools 共用 · KSADK_SANDBOX_TEMPLATE_ID</text>
+
+  <rect x="545" y="600" width="430" height="90" rx="10" fill="#d1fae5" stroke="#059669" stroke-width="1.5"/>
+  <text x="760" y="628" font-size="13" font-weight="700" fill="#064e3b" text-anchor="middle">Skill Runtime</text>
+  <text x="760" y="648" font-size="10" fill="#475569" text-anchor="middle">发现 · 下载 · sha256 校验 · 安全解压 · loader</text>
+  <text x="760" y="668" font-size="9" fill="#64748b" text-anchor="middle">local_process / e2b backend · execute_skills</text>
+
+  <rect x="1010" y="600" width="430" height="90" rx="10" fill="#fef3c7" stroke="#d97706" stroke-width="1.5"/>
+  <text x="1225" y="628" font-size="13" font-weight="700" fill="#92400e" text-anchor="middle">Tool Dispatcher · 渐进式披露</text>
+  <text x="1225" y="648" font-size="10" fill="#475569" text-anchor="middle">list · describe · call</text>
+  <text x="1225" y="668" font-size="9" fill="#64748b" text-anchor="middle">KSADK_BUILTIN_TOOLS_MODE: off/dispatcher/focused/deferred</text>
+
+  <!-- Toolsets → 下方 runtime (垂直折线, 走卡片列空隙, 不穿卡片) -->
+  <path d="M 180,565 L 180,585 L 295,585 L 295,600" fill="none" stroke="#7c3aed" stroke-width="1.2" marker-end="url(#ar-p)" stroke-opacity="0.5"/>
+  <path d="M 640,565 L 640,585 L 760,585 L 760,600" fill="none" stroke="#059669" stroke-width="1.2" marker-end="url(#ar-g)" stroke-opacity="0.5"/>
+  <path d="M 1100,565 L 1100,585 L 1225,585 L 1225,600" fill="none" stroke="#d97706" stroke-width="1.2" marker-end="url(#ar-o)" stroke-opacity="0.5"/>
+
+  <!-- ===== Layer 3: 托管控制面: x=40..1460 (w=1420), y=760..880 (h=120) ===== -->
+  <!-- 5 卡片 W=248, gap=30, pad=30: x=70,348,626,904,1182 ; y=800..870 (h=70) -->
+  <rect x="40" y="760" width="1420" height="120" rx="12" fill="#fff7ed" stroke="#d97706" stroke-width="1.5"/>
+  <text x="60" y="785" font-size="13" font-weight="700" fill="#92400e">托管层 · 控制面</text>
+  <text x="200" y="785" font-size="11" fill="#64748b">agentengine-server · 部署后端 · 平台服务</text>
+  <!-- 5 卡片 W=248, gap=30, pad=30: x=70,348,626,904,1182 ; y=800..870 (h=70) -->
+  <rect x="70" y="800" width="248" height="70" rx="8" fill="#ffffff" stroke="#d97706" stroke-width="1.2"/>
+  <text x="194" y="826" font-size="13" font-weight="600" fill="#1e293b" text-anchor="middle">AgentEngine Server</text>
+  <text x="194" y="844" font-size="10" fill="#64748b" text-anchor="middle">artifact · runtime lifecycle</text>
+  <text x="194" y="858" font-size="10" fill="#64748b" text-anchor="middle">route · auth · observe · policy</text>
+
+  <rect x="348" y="800" width="248" height="70" rx="8" fill="#ffffff" stroke="#d97706" stroke-width="1.2"/>
+  <text x="472" y="826" font-size="12" font-weight="600" fill="#1e293b" text-anchor="middle">部署后端</text>
+  <text x="472" y="844" font-size="10" fill="#64748b" text-anchor="middle">Serverless · Hermes · OpenClaw</text>
+
+  <rect x="626" y="800" width="248" height="70" rx="8" fill="#d1fae5" stroke="#059669" stroke-width="1.2"/>
+  <text x="750" y="826" font-size="12" font-weight="600" fill="#1e293b" text-anchor="middle">Skill Service</text>
+  <text x="750" y="844" font-size="10" fill="#64748b" text-anchor="middle">Skill Space / Version 治理</text>
+  <text x="750" y="858" font-size="10" fill="#64748b" text-anchor="middle">manifest · download url</text>
+
+  <rect x="904" y="800" width="248" height="70" rx="8" fill="#f5f3ff" stroke="#7c3aed" stroke-width="1.2"/>
+  <text x="1028" y="826" font-size="12" font-weight="600" fill="#1e293b" text-anchor="middle">Sandbox Service</text>
+  <text x="1028" y="844" font-size="10" fill="#64748b" text-anchor="middle">template · instance · token</text>
+  <text x="1028" y="858" font-size="10" fill="#64748b" text-anchor="middle">AIO / Code / Browser / Private</text>
+
+  <rect x="1182" y="800" width="248" height="70" rx="8" fill="#f5f3ff" stroke="#7c3aed" stroke-width="1.2"/>
+  <text x="1306" y="826" font-size="12" font-weight="600" fill="#1e293b" text-anchor="middle">金山云基础设施</text>
+  <text x="1306" y="844" font-size="10" fill="#64748b" text-anchor="middle">KS3 · KCR · KOP</text>
+  <text x="1306" y="858" font-size="10" fill="#64748b" text-anchor="middle">对象存储 · 镜像仓库 · 签名</text>
+
+  <!-- Runtime → 托管层 连线 (走 region 间空隙 y=690..760, 全部正交, 不穿卡片) -->
+  <path d="M 295,690 L 295,725 L 194,725 L 194,800" fill="none" stroke="#7c3aed" stroke-width="1.2" marker-end="url(#ar-p)" stroke-opacity="0.5"/>
+  <path d="M 760,690 L 760,730 L 750,730 L 750,800" fill="none" stroke="#059669" stroke-width="1.2" marker-end="url(#ar-g)" stroke-opacity="0.5"/>
+  <path d="M 760,690 L 760,735 L 1028,735 L 1028,800" fill="none" stroke="#059669" stroke-width="1.2" marker-end="url(#ar-g)" stroke-opacity="0.4"/>
+  <path d="M 1225,690 L 1225,735 L 1306,735 L 1306,800" fill="none" stroke="#d97706" stroke-width="1.2" marker-end="url(#ar-o)" stroke-opacity="0.5"/>
+
+  <!-- 图例 -->
+  <g transform="translate(40, 900)">
+    <text x="0" y="0" font-size="11" font-weight="700" fill="#1e293b">图例</text>
+    <rect x="0" y="10" width="14" height="14" rx="2" fill="#eff6ff" stroke="#6366f1" stroke-width="1.2"/>
+    <text x="20" y="21" font-size="10" fill="#475569">业务 Agent 框架</text>
+    <rect x="150" y="10" width="14" height="14" rx="2" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
+    <text x="170" y="21" font-size="10" fill="#475569">KsADK Runtime (Runner/API/运行时)</text>
+    <rect x="430" y="10" width="14" height="14" rx="2" fill="#fff7ed" stroke="#d97706" stroke-width="1.2"/>
+    <text x="450" y="21" font-size="10" fill="#475569">工具 / 控制面</text>
+    <rect x="580" y="10" width="14" height="14" rx="2" fill="#f5f3ff" stroke="#7c3aed" stroke-width="1.2"/>
+    <text x="600" y="21" font-size="10" fill="#475569">存储 / Sandbox</text>
+    <rect x="730" y="10" width="14" height="14" rx="2" fill="#fee2e2" stroke="#b91c1c" stroke-width="1.2"/>
+    <text x="750" y="21" font-size="10" fill="#475569">审批 / 安全</text>
+    <text x="900" y="21" font-size="10" fill="#64748b">边界:业务 Agent 写「做什么」;KsADK 管「怎么跑」(runner·session·toolsets·sandbox·API·部署·观测)</text>
+  </g>
+</svg>

@@ -129,15 +129,26 @@ ADK Runner 行为：
 
 | 名称 | 说明 |
 | --- | --- |
-| `KSADK_SANDBOX_BACKEND` | 通用 Sandbox backend。当前支持 `e2b`。 |
+| `KSADK_SANDBOX_BACKEND` | 通用 Sandbox backend。当前支持 `e2b`、`local_process`、`pod_process`。 |
 | `KSADK_SANDBOX_TYPE` | `aio`、`code`、`browser` 或 `private`。默认 `aio`。 |
 | `KSADK_SANDBOX_TEMPLATE_ID` | 沙箱控制台创建的模板 ID。 |
 | `KSADK_SANDBOX_TIMEOUT` | Sandbox 会话超时秒数。 |
+| `KSADK_SANDBOX_TTL_SECONDS` | 会话级 sandbox hard TTL。 |
+| `KSADK_SANDBOX_IDLE_TTL_SECONDS` | 会话级 sandbox idle TTL，`0` 表示不启用 idle 回收。 |
+| `KSADK_SANDBOX_MAX_SESSIONS` | 当前进程内 sandbox registry 最大会话数，`0` 表示不限制。 |
+| `KSADK_ALLOW_POD_PROCESS_TOOLS` | `pod_process` backend 的显式安全开关，必须为 `true` 才允许启用。 |
 | `KSADK_SANDBOX_ALLOW_INTERNET_ACCESS` | 是否允许会话出网。 |
 | `E2B_API_URL` | E2B 兼容 manager endpoint。 |
 | `E2B_API_KEY` | E2B API key，只能通过 Secret 或本地环境变量注入。 |
 
 Skill Runtime 变量继续使用 `KSADK_SKILL_*` 前缀，不作为通用 Sandbox 契约。迁移期内 `KSADK_SKILL_RUNTIME_TEMPLATE_ID` 保留为 template id 兼容别名。
+
+安全约束：
+
+- 托管默认只使用 `e2b` 这类隔离 backend。
+- `local_process` 仅用于本地或私有化显式配置。
+- `pod_process` 不会自动 fallback，必须同时配置 `KSADK_SANDBOX_BACKEND=pod_process` 和 `KSADK_ALLOW_POD_PROCESS_TOOLS=true`。
+- `sandbox_status()` 会把 `local_process/pod_process` 标记为 `isolated=false`，并说明其共享文件系统、网络、环境 allowlist 以及 pod service account 边界。
 
 ## 7. 当前限制
 

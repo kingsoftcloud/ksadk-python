@@ -605,6 +605,88 @@ def test_adk_runner_load_agent_does_not_inject_legacy_sandbox_tools_by_default(
     assert len(FakeRunner.instances) == 1
 
 
+def test_adk_runner_load_agent_injects_builtin_tools_when_enabled(
+    monkeypatch, tmp_path
+):
+    import google.adk.runners as adk_runners
+
+    from ksadk.runners.adk_runner import ADKRunner
+
+    detection = _write_adk_project(
+        tmp_path,
+        """
+        class DemoAgent:
+            def __init__(self):
+                self.name = "demo-agent"
+                self.tools = []
+                self.instruction = "Be helpful."
+
+        root_agent = DemoAgent()
+        """,
+    )
+
+    class FakeRunner:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.setenv("KSADK_BUILTIN_TOOLS_MODE", "deferred")
+    monkeypatch.setenv("KSADK_BUILTIN_TOOLS_PROFILE", "coding")
+    monkeypatch.setattr(ADKRunner, "_apply_json_patch", lambda self: None)
+    monkeypatch.setattr(ADKRunner, "_init_short_term_memory", lambda self: None)
+    monkeypatch.setattr(ADKRunner, "_init_long_term_memory", lambda self: None)
+    monkeypatch.setattr(ADKRunner, "_init_knowledge_base", lambda self: None)
+    monkeypatch.setattr(adk_runners, "Runner", FakeRunner)
+
+    runner = ADKRunner(detection, str(tmp_path))
+    runner.load_agent()
+
+    tool_names = _tool_names(runner._agent.tools)
+    assert tool_names == ["tool_search", "tool_dispatcher"]
+    assert "execute_bash" not in tool_names
+    assert "execute_python" not in tool_names
+
+
+def test_adk_runner_injects_deferred_direct_tools_for_request(monkeypatch, tmp_path):
+    import google.adk.runners as adk_runners
+
+    from ksadk.runners.adk_runner import ADKRunner
+
+    detection = _write_adk_project(
+        tmp_path,
+        """
+        class DemoAgent:
+            def __init__(self):
+                self.name = "demo-agent"
+                self.tools = []
+                self.instruction = "Be helpful."
+
+        root_agent = DemoAgent()
+        """,
+    )
+
+    class FakeRunner:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.setenv("KSADK_BUILTIN_TOOLS_MODE", "deferred")
+    monkeypatch.setattr(ADKRunner, "_apply_json_patch", lambda self: None)
+    monkeypatch.setattr(ADKRunner, "_init_short_term_memory", lambda self: None)
+    monkeypatch.setattr(ADKRunner, "_init_long_term_memory", lambda self: None)
+    monkeypatch.setattr(ADKRunner, "_init_knowledge_base", lambda self: None)
+    monkeypatch.setattr(adk_runners, "Runner", FakeRunner)
+
+    runner = ADKRunner(detection, str(tmp_path))
+    runner.load_agent()
+    runner.inject_deferred_tools_for_request(["read_workspace_file", "edit_workspace_file"])
+
+    assert _tool_names(runner._agent.tools) == [
+        "tool_search",
+        "tool_dispatcher",
+        "read_workspace_file",
+        "edit_workspace_file",
+    ]
+
+
 def test_adk_runner_load_agent_deduplicates_existing_execute_skills(monkeypatch, tmp_path):
     import google.adk.runners as adk_runners
 

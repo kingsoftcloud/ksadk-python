@@ -1,7 +1,7 @@
 # AgentEngine Makefile
 # 用于同步 KsADK Web static 和管理项目
 
-.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-docs-build public-test public-build-check public-preflight public-publish-check public-release-tag public-review openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size docs-check-wiki docs-prepare-source docs-docker-build docs-docker-push docs-helm-lint docs-helm-template docs-deploy docs-deploy-all docs-status docs-logs sync-ksadk-web-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend
+.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate public-docs-build public-docs-site-build public-test public-build-check public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size docs-check-wiki docs-prepare-source docs-docker-build docs-docker-push docs-helm-lint docs-helm-template docs-deploy docs-deploy-all docs-status docs-logs sync-ksadk-web-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend
 
 # 默认目标
 help:
@@ -32,8 +32,10 @@ help:
 	@echo ""
 	@echo "  \033[1;32m公开发布门禁:\033[0m"
 	@echo "    make public-status        查看公开发布相关状态"
+	@echo "    make public-version-gate  版本号门禁(防降版/重复发版,对比 PyPI 已发版本)"
 	@echo "    make public-init-worktree 初始化/校验 .worktrees/public-main"
 	@echo "    make public-preflight     GitHub/PyPI/Release 前必须通过的本地门禁"
+	@echo "    make public-publish-gate  PyPI/GitHub Release 写操作前的审批门禁"
 	@echo "    make public-release-tag V=x.y.z  创建公开 release 留痕 tag"
 	@echo "    make public-review        公开候选审核入口"
 	@echo "    make public-publish-check 发布状态核对"
@@ -345,14 +347,19 @@ public-audit: public-secret-audit
 		echo "$$blocked"; \
 		exit 1; \
 	fi
+	@python3 scripts/open_source_audit.py --target public-repo
 	@echo "✅ public path audit passed"
 
-public-docs-build:
-	@echo "==> docs build"
-	@if [ -f "mkdocs.yml" ]; then \
-		uv run mkdocs build --strict; \
+public-docs-build: public-docs-site-build
+	@echo "==> docs build (Fumadocs docs-site)"
+
+# Fumadocs 文档站 (docs-site/) 构建 + 类型检查, 公开发布前验证
+public-docs-site-build:
+	@echo "==> docs-site (Fumadocs) build"
+	@if [ -d "docs-site" ] && [ -f "docs-site/package.json" ]; then \
+		cd docs-site && pnpm install --frozen-lockfile && pnpm build; \
 	else \
-		echo "⚠️  mkdocs.yml 不存在，跳过 docs build"; \
+		echo "⚠️  docs-site 不存在，跳过 Fumadocs build"; \
 	fi
 
 public-test:
@@ -360,13 +367,29 @@ public-test:
 	@uv sync --extra dev
 	@uv run pytest $(PUBLIC_TEST_TARGETS)
 
+public-sync-ksadk-web-static: sync-ksadk-web-static
+
 public-build-check: clean-dist sync-ksadk-web-static
 	@echo "==> build and twine check"
 	@uv build
 	@uv run pytest tests/test_runtime_common_packaging.py -q
 	@uv run --extra dev python -m twine check dist/*
+	@$(MAKE) open-source-audit-dist
 
-public-preflight: public-audit sync-ksadk-web-static public-test public-docs-build public-build-check
+open-source-audit-dist:
+	@echo "==> audit wheel and sdist file lists"
+	@if ! ls dist/*.whl dist/*.tar.gz >/dev/null 2>&1; then \
+		echo "❌ dist artifacts missing; run uv build first"; \
+		exit 1; \
+	fi
+	@python3 -c 'import glob, zipfile; [print(name) for path in sorted(glob.glob("dist/*.whl")) for name in zipfile.ZipFile(path).namelist()]' | python3 scripts/open_source_audit.py --target wheel --file-list -
+	@python3 -c 'import glob, tarfile; [print(name) for path in sorted(glob.glob("dist/*.tar.gz")) for name in tarfile.open(path).getnames()]' | python3 scripts/open_source_audit.py --target sdist --file-list -
+
+public-version-gate:
+	@echo "==> release version gate (prevent downgrade/re-publish)"
+	uv run python scripts/check_release_version.py
+
+public-preflight: public-version-gate public-audit sync-ksadk-web-static public-test public-docs-build public-build-check
 	@echo "✅ public preflight passed"
 
 public-publish-check:
@@ -377,6 +400,13 @@ public-publish-check:
 		echo "⚠️  scripts/check_publication_state.py 不存在，执行基础 HTTP 检查"; \
 		python3 -c 'import json, urllib.request; targets={"repo":"$(PUBLIC_REPO)","docs":"$(PUBLIC_DOCS_URL)","pypi":"https://pypi.org/pypi/$(PUBLIC_PYPI_PROJECT)/json","alias_pypi":"https://pypi.org/pypi/$(PUBLIC_ALIAS_PYPI_PROJECT)/json"}; [print((lambda resp, name: f"{name}: HTTP {resp.status}" + (f"\n  version={json.load(resp)[\"info\"].get(\"version\")}" if name.endswith("pypi") else ""))(urllib.request.urlopen(url, timeout=20), name)) for name, url in targets.items()]'; \
 	fi
+
+public-release-approval-check:
+	@echo "==> release approval record check"
+	@uv run python scripts/check_approval_record.py --expected-current-commit "$${KSADK_APPROVED_SOURCE_COMMIT:-}"
+
+public-publish-gate: public-release-approval-check
+	@echo "✅ public publish gate passed"
 
 public-release-tag:
 ifndef V
@@ -628,6 +658,7 @@ KSADK_WEB_PACKAGE ?= @kingsoftcloud/ksadk-web
 KSADK_WEB_TARBALL_NAME := kingsoftcloud-ksadk-web-$(patsubst v%,%,$(KSADK_WEB_VERSION)).tgz
 KSADK_WEB_RELEASE_URL ?=
 KSADK_WEB_CACHE_DIR ?= .cache/ksadk-web
+KSADK_WEB_REGISTRY ?= https://registry.npmjs.org
 
 sync-ksadk-web-static:
 	@echo "Sync KsADK Web static assets from $(KSADK_WEB_PACKAGE)@$(KSADK_WEB_VERSION)"
@@ -637,8 +668,19 @@ sync-ksadk-web-static:
 		echo "Using explicit KSADK_WEB_RELEASE_URL=$(KSADK_WEB_RELEASE_URL)"; \
 		curl -fL --retry 3 --retry-delay 2 --retry-all-errors "$(KSADK_WEB_RELEASE_URL)" -o "$(KSADK_WEB_CACHE_DIR)/$(KSADK_WEB_TARBALL_NAME)"; \
 		echo "$(KSADK_WEB_TARBALL_NAME)" > "$(KSADK_WEB_CACHE_DIR)/.tarball-name"; \
-	else \
+	elif command -v npm >/dev/null 2>&1; then \
+		echo "Using npm pack (npm found in PATH)"; \
 		npm pack "$(KSADK_WEB_PACKAGE)@$(patsubst v%,%,$(KSADK_WEB_VERSION))" --pack-destination "$(KSADK_WEB_CACHE_DIR)" > "$(KSADK_WEB_CACHE_DIR)/.tarball-name"; \
+	else \
+		echo "npm not found; resolving tarball from registry $(KSADK_WEB_REGISTRY)"; \
+		REGISTRY_JSON=$$(curl -fsSL "$(KSADK_WEB_REGISTRY)/$(KSADK_WEB_PACKAGE)/$(KSADK_WEB_VERSION)"); \
+		if [ -z "$$REGISTRY_JSON" ]; then echo "ERROR: registry request failed for $(KSADK_WEB_PACKAGE)@$(KSADK_WEB_VERSION)" && exit 1; fi; \
+		TARBALL_URL=$$(echo "$$REGISTRY_JSON" | grep -o '"tarball":"[^"]*"' | cut -d'"' -f4 | head -1); \
+		RESOLVED_VERSION=$$(echo "$$REGISTRY_JSON" | grep -o '"version":"[^"]*"' | cut -d'"' -f4 | head -1); \
+		if [ -z "$$TARBALL_URL" ]; then echo "ERROR: could not resolve tarball URL from registry response" && exit 1; fi; \
+		echo "Resolved version $$RESOLVED_VERSION: $$TARBALL_URL"; \
+		curl -fL --retry 3 --retry-delay 2 --retry-all-errors "$$TARBALL_URL" -o "$(KSADK_WEB_CACHE_DIR)/kingsoftcloud-ksadk-web-$$RESOLVED_VERSION.tgz"; \
+		echo "kingsoftcloud-ksadk-web-$$RESOLVED_VERSION.tgz" > "$(KSADK_WEB_CACHE_DIR)/.tarball-name"; \
 	fi
 	tar -xzf "$(KSADK_WEB_CACHE_DIR)/$$(cat "$(KSADK_WEB_CACHE_DIR)/.tarball-name")" -C "$(KSADK_WEB_CACHE_DIR)"
 	@test -d "$(KSADK_WEB_CACHE_DIR)/package/dist-ksadk" || (echo "ERROR: dist-ksadk missing in $$(cat "$(KSADK_WEB_CACHE_DIR)/.tarball-name")" && exit 1)

@@ -177,8 +177,30 @@ class LangChainRunner(BaseRunner):
             "kb_context": input_data.get("kb_context"),
             "memory_context": input_data.get("memory_context"),
         }
+        builtin_context = self._ksadk_builtin_tool_context()
+        if builtin_context:
+            session_context.update(builtin_context)
         prepared = prepare_input(payload, session_context)
         return prepared if isinstance(prepared, dict) else payload
+
+    @staticmethod
+    def _ksadk_builtin_tool_context() -> dict[str, Any]:
+        try:
+            from ksadk.toolsets import builtin_tool_descriptors_for_runtime, builtin_tools_mode, builtin_tools_profile
+
+            mode = builtin_tools_mode(default="off")
+            descriptors = builtin_tool_descriptors_for_runtime(mode=mode)
+            if not descriptors:
+                return {}
+            return {
+                "ksadk_tools": descriptors,
+                "ksadk_builtin_tools_mode": mode,
+                "ksadk_builtin_tools_profile": builtin_tools_profile("default"),
+                "deferred_direct_injection_supported": False,
+            }
+        except Exception as exc:
+            logger.warning("Failed to prepare ksadk built-in tool descriptors: %s", exc)
+            return {}
 
     def _prepare_with_replay(self, input_data: Dict[str, Any]) -> dict[str, Any]:
         user_input = str(input_data.get("input", "") or "")

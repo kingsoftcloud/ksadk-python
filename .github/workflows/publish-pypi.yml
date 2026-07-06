@@ -9,10 +9,12 @@ on:
       ksadk_web_version:
         description: KsADK Web npm version to bundle
         required: false
-        default: latest
+        default: "0.2.16"
 
 permissions:
   contents: read
+  pages: write
+  id-token: write
 
 concurrency:
   group: publish-pypi-${{ github.ref }}
@@ -23,6 +25,8 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
+    env:
+      KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.2.16' }}
     permissions:
       contents: read
       id-token: write
@@ -37,17 +41,67 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
 
       - name: Sync KsADK Web static assets
         run: make sync-ksadk-web-static
-        env:
-          KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || 'latest' }}
 
       - name: Run public release preflight
         run: make public-preflight
 
+      - name: Verify release approval gate
+        run: make public-publish-gate
+
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+
+  # 发版时同步部署 Fumadocs 文档站到 GitHub Pages, 文档与 PyPI 版本一致。
+  # 用 if: always() 让文档部署不被 publish 阻塞(workflow_dispatch 重新部署文档时,
+  # publish 会因版本门禁失败(版本未变),但 deploy-pages 仍应运行)。
+  deploy-pages:
+    needs: publish
+    if: always()
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    defaults:
+      run:
+        working-directory: docs-site
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.33.2 --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build static site (Fumadocs)
+        run: pnpm build:static
+        env:
+          # GitHub Pages project site serves from /<repo>, 需设 base path
+          NEXT_PUBLIC_BASE_PATH: /${{ github.event.repository.name }}
+          NEXT_STATIC_EXPORT: "1"
+
+      - name: Upload artifact for GitHub Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs-site/out
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
