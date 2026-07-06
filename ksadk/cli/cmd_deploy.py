@@ -70,7 +70,7 @@ console = get_console()
 )
 @click.option("--name", "-n", help="部署名称")
 @click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域 (default: cn-beijing-6)")
-@click.option("--account-id", envvar="KSYUN_ACCOUNT_ID", help="金山云账号 ID")
+@click.option("--account-id", envvar="KSYUN_ACCOUNT_ID", help="金山云账号 ID（可选；未设置时从 AK/SK 反查）")
 @click.option(
     "--artifact-type",
     type=click.Choice(["Code", "Container"]),

@@ -128,6 +128,9 @@ class AgentEngineClient:
             
         self._session: Optional[requests.Session] = None
         self._http_error_log_suppressors: list[HttpErrorLogSuppressor] = []
+        # 反查身份的实例缓存（避免同会话重复调 IAM）；None=未尝试，ResolvedIdentity|None=已反查
+        self._resolved_identity: Any = None
+        self._identity_resolve_attempted: bool = False
 
     @staticmethod
     def _ssl_verify_enabled() -> bool:
@@ -446,21 +449,87 @@ class AgentEngineClient:
             headers["X-Version"] = os.getenv("AGENTENGINE_API_VERSION", "2024-06-12")
         if self.custom_source:
             headers["X-KSC-CUSTOM-SOURCE"] = self.custom_source
-        
-        # 统一使用 X-Ksc-Account-Id (废弃 X-Ksc-Account-Id)
-        account_id = os.getenv("KSYUN_ACCOUNT_ID")
-        if account_id:
-            headers["X-Ksc-Account-Id"] = account_id
+
+        # 先合并 extra_headers（key 归一为 Title-Case，避免大小写重复 header）
         if self.extra_headers:
-            headers.update(self.extra_headers)
+            for ek, ev in self.extra_headers.items():
+                # 归一常见 identity header 大小写，避免 X-Ksc-User-uuid 与 x-ksc-user-uuid 共存
+                normalized = ek
+                lower = str(ek or "").lower()
+                if lower == "x-ksc-user-uuid":
+                    normalized = "X-Ksc-User-uuid"
+                elif lower == "x-ksc-account-id":
+                    normalized = "X-Ksc-Account-Id"
+                headers[normalized] = ev
+
+        # 注入子账号身份：extra_headers 显式 > 反查（反查结果不覆盖已显式设置的值）
+        if "X-Ksc-User-uuid" not in headers:
+            user_uuid = self._resolve_user_uuid()
+            if user_uuid:
+                headers["X-Ksc-User-uuid"] = user_uuid
+        if "X-Ksc-Account-Id" not in headers:
+            account_id = self._resolve_account_id()
+            if account_id:
+                headers["X-Ksc-Account-Id"] = account_id
         return headers
 
+    def _resolve_user_uuid(self) -> Optional[str]:
+        """解析子账号 user uuid（X-Ksc-User-uuid 值）。
+
+        优先级：extra_headers 显式 > 实例缓存 > 反查（dry-run 只读缓存）。
+        反查失败返回 None（不抛异常，不阻塞主流程）。
+        """
+        # 1. extra_headers 显式覆盖
+        for key, value in self.extra_headers.items():
+            if key.lower() == "x-ksc-user-uuid" and str(value or "").strip():
+                return str(value).strip()
+        # 2. 实例缓存（同会话已反查过）
+        if self._identity_resolve_attempted:
+            identity = self._resolved_identity
+            return identity.user_uuid if identity else None
+        # 3. 反查
+        identity = self._get_resolved_identity()
+        return identity.user_uuid if identity else None
+
+    def _get_resolved_identity(self) -> Any:
+        """反查身份并缓存到实例。dry-run 只读文件缓存不联网。"""
+        if self._identity_resolve_attempted:
+            return self._resolved_identity
+        self._identity_resolve_attempted = True
+        ak = getattr(self._auth, "access_key_id", "") or ""
+        sk = getattr(self._auth, "secret_access_key", "") or ""
+        if not ak or not sk:
+            self._resolved_identity = None
+            return None
+        try:
+            from ksadk.identity import get_cached_identity, resolve_identity
+
+            if self.dry_run:
+                # dry-run 不联网，只读缓存
+                self._resolved_identity = get_cached_identity(ak)
+            else:
+                self._resolved_identity = resolve_identity(
+                    access_key=ak, secret_key=sk
+                )
+        except Exception as e:
+            logger.warning("反查子账号身份失败: %s", e)
+            self._resolved_identity = None
+        return self._resolved_identity
+
     def _resolve_account_id(self) -> Optional[str]:
+        # 1. extra_headers 显式
         for key, value in self.extra_headers.items():
             if key.lower() == "x-ksc-account-id" and str(value or "").strip():
                 return str(value).strip()
+        # 2. env KSYUN_ACCOUNT_ID
         account_id = os.getenv("KSYUN_ACCOUNT_ID", "").strip()
-        return account_id or None
+        if account_id:
+            return account_id
+        # 3. 反查主账号 ID（复用 _get_resolved_identity 的反查，不重复调）
+        identity = self._get_resolved_identity()
+        if identity and getattr(identity, "main_account_id", None):
+            return str(identity.main_account_id).strip() or None
+        return None
 
     def _resolve_permission_role_name(self, action: str, params: Dict[str, Any]) -> str:
         if action in {"CreateAgentProduct", "CreateAgent"}:

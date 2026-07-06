@@ -22,7 +22,7 @@ def agent():
 @agent.command("list", context_settings=CONTEXT_SETTINGS)
 @pagination_options(default_page=1, default_size=20)
 @click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
-@click.option("--account-id", envvar="KSYUN_ACCOUNT_ID", help="金山云账号 ID")
+@click.option("--account-id", envvar="KSYUN_ACCOUNT_ID", help="金山云账号 ID（可选；未设置时从 AK/SK 反查）")
 @click.option("--framework", help="按框架过滤，支持逗号分隔多个值，如 langgraph,adk")
 @dry_run_option()
 @cli_output_option()
@@ -59,7 +59,7 @@ def list_agents(
 @click.option("--watch", "-w", is_flag=True, help="Watch 模式，持续刷新")
 @click.option("--interval", "-i", default=2, help="Watch 刷新间隔 (秒)")
 @click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
-@click.option("--account-id", envvar="KSYUN_ACCOUNT_ID", help="金山云账号 ID")
+@click.option("--account-id", envvar="KSYUN_ACCOUNT_ID", help="金山云账号 ID（可选；未设置时从 AK/SK 反查）")
 @dry_run_option()
 @cli_output_option()
 def status_agent(
@@ -176,7 +176,7 @@ def invoke_agent(
 @click.option("--yes", "-y", "assume_yes", is_flag=True, help="跳过确认")
 @click.option("--force", "-f", "assume_yes", is_flag=True, hidden=True, help="(兼容) 跳过确认")
 @click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
-@click.option("--account-id", envvar="KSYUN_ACCOUNT_ID", help="金山云账号 ID")
+@click.option("--account-id", envvar="KSYUN_ACCOUNT_ID", help="金山云账号 ID（可选；未设置时从 AK/SK 反查）")
 @dry_run_option()
 @cli_output_option()
 def delete_agent(
