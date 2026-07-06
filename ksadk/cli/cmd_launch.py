@@ -68,7 +68,11 @@ from ksadk.cli.ui import (
 @click.option("--ui-path", help="Dashboard UI 路径 (例如 /)")
 @click.option("--ui-url", help="完整 Dashboard URL（自研前端）")
 @click.option("--storage-size-gi", type=int, default=20, show_default=True, help="PVC 容量（Gi）")
-@click.option("--storage-mount-path", default=None, help="PVC 挂载目录（默认按框架推导）")
+@click.option(
+    "--storage-mount-path",
+    default=None,
+    help="PVC 挂载目录（hermes/openclaw 默认按框架推导；adk/langgraph 等其他框架默认不挂盘，需显式指定）",
+)
 @click.option("--no-storage", is_flag=True, help="禁用默认 PVC 挂载")
 @network_options
 @env_options

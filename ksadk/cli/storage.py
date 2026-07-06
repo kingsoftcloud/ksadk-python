@@ -12,6 +12,11 @@ MIN_STORAGE_SIZE_GI = 20
 MAX_STORAGE_SIZE_GI = 500
 SERVERLESS_TARGETS = {"serverless", "kcf", "kce"}
 
+# 默认挂盘框架（hermes/openclaw 有持久化状态目录）；其他框架需显式 --storage-mount-path。
+DEFAULT_STORAGE_FRAMEWORKS = {"hermes", "openclaw"}
+
+# 各框架默认挂载目录。hermes/openclaw 由 build_storage_config 默认挂载；
+# adk/langgraph 等条目保留供 resolve_default_storage_mount_path 契约与测试，默认不挂盘。
 _DEFAULT_MOUNT_PATHS = {
     "adk": "/home/node/.agentengine",
     "langchain": "/home/node/.agentengine",
@@ -60,6 +65,12 @@ def build_storage_config(
     if target is not None and not should_enable_storage(target=target, no_storage=no_storage):
         return None
     if no_storage:
+        return None
+
+    normalized_framework = str(framework or "").strip().lower()
+    mount_path_explicit = mount_path is not None
+    # 仅 hermes/openclaw 默认挂盘；其他框架需用户显式指定 --storage-mount-path 才挂
+    if not mount_path_explicit and normalized_framework not in DEFAULT_STORAGE_FRAMEWORKS:
         return None
 
     resolved_mount_path = (

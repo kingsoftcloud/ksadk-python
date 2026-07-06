@@ -1,0 +1,65 @@
+---
+title: 安全边界
+---
+
+公开仓库、包、文档和 GitHub Pages 都必须使用最小公开面。任何 token、私有 registry、
+kubeconfig、客户数据和内部部署细节都不能进入 GitHub。
+
+## 禁止进入公开仓库
+
+- `.pypirc`、PyPI/TestPyPI token。
+- 私有 registry 凭证和 kubeconfig。
+- 真实 API Key、长期 token、数据库 DSN。
+- 内部 Helm values、部署脚本和生产路由。
+- `.zread/`、内部分析快照和客户资料。
+- 真实 `.env` / `.env.local`,Code/Container/MCP 构建上下文只保留 `.env.example` / `.env.sample` / `.env.template` 模板文件(0.6.7)。
+
+## 包边界
+
+`ksadk-python` wheel 保留运行所需 Python 代码和 `ksadk/server/static` 静态 UI
+产物,不包含 `ksadk/server/web-ui` 可编辑源码或 hosted bundle。
+
+Web UI 源码属于独立 `kingsoftcloud/ksadk-web` 仓库。构建静态产物时应固定
+`ksadk-web` tag 或 commit。
+
+<Callout type="info" title="新增：0.6.7">
+  - `ksadk/server/web-ui` 旧可编辑源码、`node_modules/`、历史构建产物不进入
+    wheel,由 `tests/test_runtime_common_packaging.py` 在 `make public-build-check`
+    阶段强制校验。
+  - wheel 必须含 `ksadk/server/static/index.html`,由 `make sync-ksadk-web-static`
+    写入,缺失会直接 fail build。
+  - 真实 `.env` / `.env.local` 不进入 Code / Container / MCP 构建上下文,只保留
+    `.env.example` / `.env.sample` / `.env.template`。运行时 env 经
+    `--env KEY=VALUE`(可重复)和 `--env-file` 进入部署 payload `env_vars`,不写入
+    wheel 或构建上下文。
+</Callout>
+
+## 镜像仓库凭证边界
+
+镜像推送/拉取凭证按 registry 类型区分,避免把金山云账号 ID 误当企业镜像用户名:
+
+| Registry 类型 | 域名特征 | 凭证要求 |
+| --- | --- | --- |
+| 个人版 KCR | `*.kce.ksyun.com` | 允许 `KSYUN_ACCOUNT_ID` 兜底为用户名 |
+| 企业版 KCR | `*.ksyunkcr.com` | 必须显式 `KCR_USERNAME` / `KCR_PASSWORD` |
+| 第三方 registry | 其他 | 必须显式 `KCR_USERNAME` / `KCR_PASSWORD` |
+
+<Callout type="warning" title="凭证兜底范围">
+  `KSYUN_ACCOUNT_ID` 仅作个人版 KCR(`*.kce.ksyun.com`)用户名兜底;企业版 KCR
+  和第三方 registry 必须显式设置 `KCR_USERNAME` / `KCR_PASSWORD`,否则鉴权失败。
+  模板示例使用占位符 `cm-appkey-placeholder` / `sk-test`,不要提交真实凭证。
+</Callout>
+
+## 文档边界
+
+公开文档使用 GitHub Pages URL 和占位配置。不要写入：
+
+- 内部文档地址。
+- 真实服务 endpoint。
+- 客户截图、日志和数据集 id。
+- 内部排障流程或值班信息。
+
+## 发布边界
+
+公开 GitHub source import、Pages、release、PyPI/TestPyPI 上传必须在维护者 review
+和维护者审批之后执行。审批前公开仓只保留 placeholder。

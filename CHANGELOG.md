@@ -5,6 +5,68 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [0.6.8] - 2026-07-03
+
+### 亮点
+
+- **Coding Agent 内置工具升级**：内置工具从基础 toolset 升级为可组合的 coding agent 工具层，覆盖文件读取、目录浏览、搜索、单点编辑、批量编辑、命令/代码运行和 Web 访问，并能通过 dispatcher、tool search 或 direct tools 在主流框架中稳定接入。
+- **Workspace 编辑体验增强**：读取文件会返回行号、读取范围和文件元数据；搜索会返回搜索范围、匹配数量、上下文行和实际搜索后端；编辑前要求先读取并校验文件状态，片段缺失或多处命中时会给出可重试诊断；新增原子批量编辑能力。
+- **Web 工具主线化**：新增 `web_fetch` 和 `web_search`，`web_fetch` 带 SSRF 防护、redirect 后重复校验和 HTML 转文本；`web_search` 支持 fake/http/ksyun provider，只返回 title/url/snippet/rank，不自动抓全文。
+- **分层 Compaction Pipeline**：`compact_conversation_history` 从单点 LLM 摘要升级为 L2→L3→L4→L5 分层管道，长会话成本与稳定性显著改善。L2 Snip / L3 Microcompact 是零 LLM 成本的确定性裁剪，仅作用投影层，绝不删 append-only transcript；L5 在 compact 后恢复 working set metadata（最近文件路径、激活工具、pinned state），降低模型失忆。
+- **Sandbox 生命周期管理**：会话级 sandbox 支持后台清理、进程退出清理和服务关闭清理，避免空闲 sandbox 长时间占用资源；默认执行超时缩短到 10 分钟，空闲 5 分钟后回收。
+- **金山云星流 AI搜索 Provider**：`web_search` 新增 `ksyun` provider，对接金山云星流平台 AI搜索（POST + `webpages` 数组），复用 `KSADK_MCP_KEY`/`KSC_AIPRO_API_KEY` 凭证，返回真实时效 `date` 字段，`KSADK_WEB_SEARCH_SCOPE` 支持 webpage/document/scholar/podcast/video。
+- **Hermes / OpenClaw 默认镜像刷新**：Hermes 与 OpenClaw 的默认运行时镜像跟随最新发布版本刷新；具体镜像构建和发布仍以 agentengine-images 仓库为准，ksadk changelog 仅记录 SDK 侧默认消费语义。
+- **公开仓治理对齐**：补齐公开仓所需的贡献指南、安全策略、双语 README、Issue/PR 模板、CI、CodeQL、Gitleaks、源码审计、产物审计和发布审批门禁，为统一公开主干做准备。
+- **Fumadocs 文档站**：文档站从 mkdocs 迁移到 Fumadocs（docs-site/），对标 veadk github.io，发版时同步部署到 GitHub Pages。
+
+### 新增
+
+- 新增 `tool_dispatcher` 和 `tool_search`：模型可以先搜索工具，再通过统一 dispatcher 调用；旧的 `agentengine_tool_dispatcher` 继续兼容。
+- 新增 `get_ksadk_builtin_tools()`、工具描述接口和 built-in tools profile，便于 ADK、LangChain/LangGraph、Remote Responses 等框架接入同一套内置工具。
+- Workspace 工具新增批量编辑、行号读取、带上下文搜索、编辑失败诊断和大 diff 输出预算，减少 coding agent 改文件时的误改风险。
+- 新增 `web_fetch`，支持公开网页抓取、HTML 转文本、大输出预算和 SSRF 防护。
+- 新增分层上下文压缩管道：先做低成本的确定性裁剪和冷上下文压缩，再进入语义摘要，并在压缩后保留最近文件、激活工具和 pinned state 等工作集信息。
+- 新增 sandbox 会话管理与自动回收能力，服务退出或会话空闲时会主动释放 sandbox 资源。
+- 新增公开发布审计和产物审计命令，覆盖源码、wheel、sdist 和 GitHub Pages 候选内容。
+- 新增 GitHub Actions：CI、CodeQL、Release Check、Secret Pattern Audit 和 Publish PyPI；PyPI 发布只由 GitHub Release 发布或手工触发，普通 push `main` 不会发版。
+- 新增公开治理文件：贡献指南、安全策略、双语 README、Issue/PR 模板、Dependabot 配置和分支保护基线说明。
+- 环境变量：`KSADK_SANDBOX_SWEEP_INTERVAL_SECONDS`（默认 60，0 禁用后台 sweep）、`KSADK_MAX_CONSECUTIVE_SEMANTIC_FAILURES`（默认 0 opt-in）、`KSADK_COMPACT_SNIP_ENABLED`/`KSADK_COMPACT_MICROCOMPACT_ENABLED`/`KSADK_COMPACT_MICROCOMPACT_COLD_ROUNDS`、`KSADK_WORKING_SET_MAX_FILES`、`KSADK_WEB_SEARCH_SCOPE`、`KSADK_MCP_KEY`（注册到 env_registry）。
+
+### 变更
+
+- 长会话压缩接入主流程，并在 checkpoint metadata 中记录压缩阶段、token 变化和工作集信息，便于审计和恢复；原始 transcript 仍保持 append-only。
+- ADK 和 Remote Responses 支持 deferred tools 动态注入：模型先通过 `tool_search` 选择工具，下一轮请求再注入对应 direct tool；无法动态绑定 direct tool 的框架继续使用 dispatcher fallback。
+- `run_code` 明确定位为 sandbox snippet runner，不作为 shell 替代品；`run_command` 和 `run_code` 继续走 sandbox backend，托管环境不会自动退化到 pod local process。
+- semantic summary 增加可配置失败熔断；LLM 摘要失败时可回退到 extractive 摘要，避免长会话压缩因为临时模型错误而中断。
+- sandbox 默认超时和空闲回收策略收紧，降低托管运行时的资源占用。
+- Serverless 部署默认挂盘策略收敛：仅 Hermes / OpenClaw 默认挂盘，其他框架需显式配置挂盘路径。
+- 发布候选同步 `@kingsoftcloud/ksadk-web@0.2.16` 静态资源，确保 PyPI wheel 内置 Web UI 与最新 npm 发布版本一致。
+- 公开审计规则更准确，减少文档站和公开服务 endpoint 的误报，同时继续拦截内部路径、私有地址、凭证样例和不应发布的构建产物。
+- 公开包元数据和 schema URL 统一指向 GitHub / GitHub Pages。
+- 清理测试和示例中的本地路径、内部域名样例，避免公开仓携带开发机或内部环境信息。
+- `.gitignore` 补齐公开仓规则，继续放行 `.github/`，并防止 `.pypirc` 等发布凭证误提交。
+
+### 修复
+
+- 修复并行工具调用场景下，压缩裁剪可能留下孤立 tool result 的问题。
+- 修复 semantic summary 熔断默认值与文档不一致的问题，默认保持关闭，由用户显式启用。
+- 修复真实运行事件中工具名称和参数位置不同导致 L2 裁剪无法生效的问题。
+- 清理未完成的失败工具配对统计，避免 checkpoint metadata 误导排障。
+
+### 移除
+
+- 内部部署材料：`Makefile.openclaw`、`Makefile.promo.Dockerfile`、`.pypirc.example`、`deploy/helm/ksadk-docs/`（文档站已迁 github.io）。
+- 内部文档：`docs/internal/`、`docs/archive/`、`docs/superpowers/`、`docs/preview/`、`docs/reference/OpenClaw*`、`docs/reference/assets/openclaw_*`、`docs/README.md`、`docs/release/`。
+- 内部运维 skills：`skills/agentengine-cli-ops`、`skills/agentengine-cluster-debug`、`skills/agentengine-hermes-lifecycle`、`skills/agentengine-openclaw-oneclick-deploy`。
+- `examples/`（已迁移到 [ksadk-samples](https://github.com/kingsoftcloud/ksadk-samples) 仓库）。
+- `.env.example`（ksadk 本体不需要，各 demo 自带）。
+
+### 文档
+
+- 文档站从 mkdocs（public-docs/）迁移到 Fumadocs（docs-site/），对标 veadk github.io：品牌色、hero 动效、架构图 SVG、mermaid 时序图、ImageZoom、双语切换、CLI 顶层入口、best-practices 教程、llms.mdx 等。
+- `docs/reference/ksadk环境变量参考.md`：补齐 0.6.8 新增环境变量（sandbox sweep/compaction pipeline/web search ksyun）。
+- 发版时同步部署 Fumadocs 文档站到 GitHub Pages。
+
 ## [0.6.7] - 2026-06-26
 
 ### 亮点

@@ -52,8 +52,8 @@ def sandbox_status() -> dict:
 
 def _sandbox_status_impl() -> dict[str, Any]:
     backend = sandbox_backend_name()
-    timeout = int(os.environ.get("KSADK_SANDBOX_TIMEOUT") or os.environ.get("KSADK_SKILL_RUNTIME_TIMEOUT") or "900")
-    idle_ttl = _int_env("KSADK_SANDBOX_IDLE_TTL_SECONDS", 0)
+    timeout = int(os.environ.get("KSADK_SANDBOX_TIMEOUT") or os.environ.get("KSADK_SKILL_RUNTIME_TIMEOUT") or "600")
+    idle_ttl = _int_env("KSADK_SANDBOX_IDLE_TTL_SECONDS", 300)
     max_sessions = _int_env("KSADK_SANDBOX_MAX_SESSIONS", 0)
     template_id = os.environ.get("KSADK_SANDBOX_TEMPLATE_ID") or os.environ.get("KSADK_SKILL_RUNTIME_TEMPLATE_ID") or ""
     isolated = backend not in {"local", "local_process", "pod", "pod_process"}
@@ -216,7 +216,7 @@ def _sandbox_entry(prefix: str):
     backend_name = _sandbox_execution_backend_name()
     backend = create_sandbox_backend()
     ttl = _sandbox_ttl_seconds()
-    idle_ttl = _int_env("KSADK_SANDBOX_IDLE_TTL_SECONDS", 0)
+    idle_ttl = _int_env("KSADK_SANDBOX_IDLE_TTL_SECONDS", 300)
     max_sessions = _int_env("KSADK_SANDBOX_MAX_SESSIONS", 0) or None
     key = _sandbox_session_key(prefix)
     isolated = _sandbox_backend_isolated(backend_name)
@@ -285,7 +285,7 @@ def _workspace_input_files() -> list[SandboxInputFile]:
 
 
 def _sandbox_ttl_seconds() -> int:
-    return _int_env("KSADK_SANDBOX_TTL_SECONDS", _int_env("KSADK_SANDBOX_TIMEOUT", 900))
+    return _int_env("KSADK_SANDBOX_TTL_SECONDS", _int_env("KSADK_SANDBOX_TIMEOUT", 600))
 
 
 def _int_env(name: str, default: int) -> int:

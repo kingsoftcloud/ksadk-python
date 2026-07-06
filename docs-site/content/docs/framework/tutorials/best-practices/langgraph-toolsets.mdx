@@ -1,0 +1,245 @@
+---
+title: LangGraph 接入 AgentEngine 内置工具集
+---
+
+这个教程来自一个真实可运行的 demo:外层 LangGraph 图只做路由和上下文注入,真正的工具选择与调用交给 `create_agent` 形成的 ReAct 子图,后者通过 KSADK 内置 toolsets 与 Skill Space、Workspace、Sandbox、知识库、长期记忆等能力交互。
+
+它不是"聊天模板",而是演示一套可迁移的工程范式:**图负责编排,模型负责决策,工具由 AgentEngine 托管**。
+
+![LangGraph + AgentEngine Toolsets 架构](/assets/ksadk-langgraph-toolsets-architecture.svg)
+
+## 核心设计
+
+<Callout type="info" title="为什么要这样分层">
+把"选哪个工具"完全交给外层 `if/else` 是脆弱的:每加一个工具就要改路由表,而且无法处理用户的多轮追问。本 demo 把工具决策下沉到 ReAct 子图,外层只做语义路由(知识库?沙箱?Skill Space?),把场景提示和上下文注入子图。模型在子图里读 system prompt 与上下文,自主 `list_skills` / `search_skills` / `run_command` / `search_knowledge_base`。
+</Callout>
+
+整张图由四个节点构成:
+
+1. **`route_turn`** — 根据用户最近一条消息,识别场景(知识库 / 长期记忆 / Workspace / Sandbox / Skill Space / 图结构 / 发布评审),只产出 `route` 字典,**不调用任何工具**。
+2. **`prepare_custom_context`** — 把路由建议、Skill Space ID、平台身份(agent_id / user_id / account_id / session_id)拼成 `custom_context`,注入下游。
+3. **`run_specialist`** — 用 `langchain.agents.create_agent` 构建 ReAct 子图,绑定 KSADK focused toolsets + 三个业务自定义工具,把上下文作为 SystemMessage 前置,让模型自主调用工具。
+4. **`finalize_answer`** — 从子图消息流里回溯最后一条 `AIMessage`,作为最终答案返回给 AgentEngine。
+
+```python title="agent.py"
+workflow = StateGraph(AgentState)
+workflow.add_node("route_turn", route_turn)
+workflow.add_node("prepare_custom_context", prepare_custom_context)
+workflow.add_node("run_specialist", run_specialist)
+workflow.add_node("finalize_answer", finalize_answer)
+workflow.add_edge(START, "route_turn")  # [!code highlight]
+workflow.add_edge("route_turn", "prepare_custom_context")  # [!code highlight]
+workflow.add_edge("prepare_custom_context", "run_specialist")  # [!code highlight]
+workflow.add_edge("run_specialist", "finalize_answer")  # [!code highlight]
+workflow.add_edge("finalize_answer", END)  # [!code highlight]
+
+root_agent = workflow.compile()
+```
+
+## 绑定工具:focused + dispatcher
+
+KSADK 把内置工具分成若干组。本 demo 只直接绑定 `focused` 组高频工具和 `agentengine_tool_dispatcher`,其余低频或高风险工具(Skill、Sandbox、知识库、长期记忆)通过 dispatcher 间接调用。
+
+```python title="agent.py"
+FOCUSED_TOOLSETS = ["focused", "agentengine_tool_dispatcher"]  # [!code highlight]
+AGENTENGINE_TOOL_DESCRIPTIONS = describe_agentengine_tools(include=FOCUSED_TOOLSETS)  # [!code highlight]
+
+def _build_tools() -> list[BaseTool]:
+    agentengine_tools = [
+        tool_item
+        for tool_item in get_agentengine_tools(include=FOCUSED_TOOLSETS)
+        if _tool_name(tool_item) != "component_status"
+    ]
+    return [*agentengine_tools, graph_status, component_status, release_risk_matrix]
+```
+
+<Callout type="warning" title="0.6.8 起 Skill 工具不在 focused 直绑">
+`list_skills` / `search_skills` / `load_skill` 从 0.6.8 起不再属于 focused。要让 ReAct 子图调用它们,必须通过 `agentengine_tool_dispatcher(include="skill")` 间接 list/describe/call。这样做的目的是把"枚举组织 Skill"这种低频、可能触发外部服务调用的动作与高频工具隔离,避免模型每次都把整个 Skill 列表塞进上下文。
+</Callout>
+
+`describe_agentengine_tools(include=...)` 在绑定前先拿到工具的 schema 描述,这样 `component_status` 能在不真正调用工具的情况下,把"已绑定哪些工具组、每组含哪些工具名"汇报给用户。这对调试和可观测性很有用。
+
+## ReAct 子图:让模型自己选工具
+
+`run_specialist` 是整个 demo 的核心。它不写任何 `if 工具名 == ...` 分支,而是把路由结果和上下文塞进 SystemMessage,把工具列表交给 `create_agent`,让模型在 ReAct 循环里自主决定。
+
+```python title="agent.py"
+def run_specialist(state: AgentState) -> dict[str, Any]:
+    model = make_chat_model()
+    specialist = create_agent(  # [!code highlight]
+        model,
+        TOOLS,
+        system_prompt=SYSTEM_PROMPT,
+        name="agentengine_toolsets_specialist",
+    )
+    route = state.get("route") or {}
+    custom_context = state.get("custom_context") or {}
+    messages = [  # [!code highlight]
+        SystemMessage(
+            content=(
+                f"外层 LangGraph 路由: {route}. "
+                f"自定义上下文: {custom_context}. "
+                "优先使用 suggested_tools 中的工具;工具不可用时说明缺少哪些环境变量。"
+            )
+        ),
+        *state["messages"],
+    ]
+    result = specialist.invoke({"messages": messages})
+    return {"specialist_messages": result.get("messages", [])}
+```
+
+<Callout type="info" title='system prompt 是这套范式的"契约"'>
+注意 `SYSTEM_PROMPT` 里明确写了"沙箱每次调用即用即弃,生成与读取必须合并到同一次调用""未配置时返回真实错误,不要伪造 Skill 列表"。这些不是文档注释,而是模型行为约束。把易错的运行时语义(沙箱生命周期、降级策略)写进 system prompt,比写在代码注释里有效得多——因为模型会真的读到它。
+</Callout>
+
+## 关键坑:沙箱生命周期
+
+这是本 demo 最值得讲的一条工程教训。
+
+<Callout type="error" title="Sandbox 每次调用即用即弃,文件不跨调用保留">
+`run_command` / `run_code` 每次都在全新隔离沙箱里执行,命令结束沙箱立即销毁。如果你"先用一次调用生成产物,再用下一次调用读取",第二次必然返回 `No such file or directory`。
+</Callout>
+
+正确做法是把"生成 + 读取"合并到同一次调用:
+
+- 简单操作:`run_command` 用 `&&` 串成一条命令,例如 `python3 -c "..." && cat /home/user/outputs/x.html`。
+- 多步操作:`run_code(language="bash")` 写成脚本一次执行。
+
+这条规则同时被写进了 system prompt 和 `component_status` 返回的 `multi_step_hint`,方便模型在调用前自查。
+
+## 关键坑:e2b 版本与 KSYUN UUID key
+
+KSYUN sandbox manager 当前使用 UUID 风格的 `E2B_API_KEY`。上游 `e2b>=2.25.0` 会在 SDK 本地强制校验 key 必须是 `e2b_` 前缀,导致 UUID key 在发请求前就被拒绝。
+
+```bash title="requirements.txt"
+ksadk[langgraph,skills]>=0.6.8
+# KSYUN sandbox manager currently uses UUID-style E2B_API_KEY values.
+# Upstream e2b>=2.25.0 rejects those keys client-side before contacting E2B_API_URL.
+e2b==2.24.0
+```
+
+<Callout type="warning" title="锁定 e2b==2.24.0">
+如果你看到 `Invalid API key format: expected "e2b_"` 这类错误,说明本地装到了 `e2b>=2.25.0`。先 `uv pip install -r requirements.txt` 降回 2.24.0。demo 还内置了 `_e2b_key_compatibility()` 帮你自检 key 形状与已装 SDK 的兼容性,`component_status` 会把结果一并汇报。
+</Callout>
+
+## 运行步骤
+
+<Steps>
+
+1. **安装依赖**
+
+```bash
+cd 0611agent-xiayu
+uv venv
+uv pip install -r requirements.txt
+```
+
+推荐用 `uv run` 启动,确保用的是项目 `.venv` 里的依赖(尤其是锁定的 `e2b==2.24.0`)。
+
+2. **配置环境变量**
+
+```bash
+cp .env.example .env
+```
+
+最少需要 OpenAI 兼容模型配置(`OPENAI_API_KEY`、`OPENAI_MODEL_NAME`)。`OPENAI_BASE_URL` 可以不填,`agentengine run/web` 会按当前网络环境自动判断。要启用 Skill Space,再填 `KSADK_SKILL_SPACE_IDS` 和 Skill Service 凭证。
+
+3. **交互式运行**
+
+```bash
+uv run agentengine run -i .
+```
+
+4. **或启动 Web UI / API Server**
+
+```bash
+uv run agentengine web .
+```
+
+5. **验证能力矩阵**
+
+依次试这几条 prompt,观察模型如何通过 dispatcher 间接调用不同工具组:
+
+```text
+当前组件状态如何?哪些能力需要额外配置?
+space 下有哪些 skill?
+用沙箱运行 python3 --version。
+在沙箱里生成 /home/user/outputs/ksadk-intro.html 并把内容打印出来。
+查询一下知识库里关于部署的内容。
+保存一条长期记忆:我偏好先看根因再看修复方案。
+```
+
+</Steps>
+
+## 项目结构
+
+<Files>
+  <Folder name="0611agent-xiayu/" defaultOpen>
+    <File name="agentengine.yaml" />
+    <File name="requirements.txt" />
+    <File name=".env.example" />
+    <Folder name="0611agent/">
+      <File name="agent.py" />
+      <File name="__init__.py" />
+    </Folder>
+    <Folder name="docs/">
+      <File name="architecture.svg" />
+    </Folder>
+    <Folder name="tests/">
+      <File name="test_component_status.py" />
+    </Folder>
+  </Folder>
+</Files>
+
+`agentengine.yaml` 声明框架与入口,AgentEngine 据此加载 `root_agent`:
+
+```yaml title="agentengine.yaml"
+name: 0611agent-xiayu
+version: "1.0.0"
+framework: langgraph
+entry_point: 0611agent-xiayu/agent.py
+agent_variable: root_agent
+```
+
+## 改造成业务 Agent
+
+<Tabs>
+<Tab value="替换路由规则">
+
+`_route_for_text` 是纯函数,按关键词把用户消息映射到 `scenario` + `suggested_tools`。把它的关键词换成你的业务领域(订单、工单、合规、运维),并在 `prepare_custom_context` 里追加业务上下文(如当前租户、最近工单摘要),就能复用整张图。
+
+</Tab>
+<Tab value="追加业务工具">
+
+在 `_build_tools()` 里把你的业务工具(查订单、调内部 API)追加到 `[*agentengine_tools, ...]` 列表。模型会同时看到 KSADK 内置工具和你的业务工具,自主选择。注意给业务工具写清楚的 docstring——这是模型选工具的唯一依据。
+</Tab>
+<Tab value="扩展图节点">
+
+如果你有强编排需求(如必须先鉴权再调外部系统),在 `route_turn` 与 `run_specialist` 之间插入 `authorize` 节点,用 `workflow.add_node` / `add_edge` 串起来。保持"外层只编排、不替模型调工具"的边界,可维护性最好。
+</Tab>
+<Tab value="裁剪 toolsets">
+
+不需要沙箱或知识库时,把 `FOCUSED_TOOLSETS` 收窄,或在 dispatcher 调用时限定 `include`。减少工具数量既降低 token 成本,也减少模型误选工具的概率。
+</Tab>
+</Tabs>
+
+<Callout type="info" title="可观测性提示">
+`component_status` 和 `graph_status` 两个内置工具不只是给用户看的。在本地 Web UI 调试时,先问"当前组件状态",就能立刻知道哪些 toolset 没配好、哪些环境变量缺失,省去翻日志的时间。建议在你的业务 agent 里保留类似的"自省工具"。
+</Callout>
+
+## 后续阅读
+
+<Cards>
+  <Card title="ksadk-samples" href="https://github.com/kingsoftcloud/ksadk-samples">
+    本 demo 的完整源码与更多示例(占位链接,以仓库实际地址为准)。
+  </Card>
+  <Card title="构建 LangGraph 智能体" href="../langgraph-agent">
+    从零开始的最小 LangGraph agent,适合先跑通基础链路。
+  </Card>
+  <Card title="框架接入" href="../../guides/frameworks">
+    框架适配与 runner 加载边界的参考。
+  </Card>
+  <Card title="会话与文件" href="../../reference/runtime-sessions-files">
+    session、上传和 workspace 文件的运行时语义。
+  </Card>
+</Cards>

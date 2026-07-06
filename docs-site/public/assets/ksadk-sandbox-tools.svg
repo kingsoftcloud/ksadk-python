@@ -1,0 +1,166 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1300 620" role="img" aria-labelledby="t d">
+  <title id="t">Sandbox 工具审批与执行边界</title>
+  <desc id="d">sandbox_status 只读报告边界；run_command 与 run_code 风险 high，strict 下先返回 approval_required，放行后进入 sandbox backend 执行，输出经 ToolResultBudget 截断或持久化。</desc>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&amp;display=swap');
+    text { font-family: 'JetBrains Mono', 'Noto Sans SC', 'PingFang SC', sans-serif; }
+    @media (prefers-color-scheme: light) {
+      .bg-dark { fill: none; }
+      .grid-pattern { display: none; }
+      text[fill="white"] { fill: #0f172a; }
+      text[fill="#94a3b8"] { fill: #475569; }
+      text[fill="#a7f3d0"] { fill: #047857; }
+      text[fill="#64748b"] { fill: #64748b; }
+      text[fill="#22d3ee"] { fill: #0e7490; }
+      text[fill="#34d399"] { fill: #047857; }
+      text[fill="#fbbf24"] { fill: #b45309; }
+      text[fill="#a78bfa"] { fill: #6d28d9; }
+      text[fill="#fb7185"] { fill: #be123c; }
+      rect[fill="#0f172a"] { fill: none; }
+      rect[stroke="#94a3b8"], rect[stroke="#22d3ee"], rect[stroke="#34d399"], rect[stroke="#fbbf24"], rect[stroke="#a78bfa"], rect[stroke="#fb7185"] { stroke-opacity: 0.8; }
+    }
+  </style>
+  <defs>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/>
+    </pattern>
+    <marker id="ar-c" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7" fill="#22d3ee"/></marker>
+    <marker id="ar-g" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7" fill="#34d399"/></marker>
+    <marker id="ar-a" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7" fill="#fbbf24"/></marker>
+    <marker id="ar-r" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7" fill="#fb7185"/></marker>
+  </defs>
+
+  <rect class="bg-dark" width="1300" height="620" fill="#0f172a"/>
+  <rect class="grid-pattern" width="1300" height="620" fill="url(#grid)"/>
+
+  <text x="30" y="34" fill="white" font-size="16" font-weight="700">Sandbox 工具审批与执行边界</text>
+  <text x="30" y="52" fill="#94a3b8" font-size="10">sandbox_status 只读 · run_command / run_code risk=high · strict 下审批 → sandbox backend → ToolResultBudget</text>
+
+  <!-- sandbox_status (read-only) -->
+  <g>
+    <rect x="40" y="90" width="200" height="60" rx="6" fill="#0f172a"/>
+    <rect x="40" y="90" width="200" height="60" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+    <text x="140" y="115" fill="white" font-size="11" font-weight="600" text-anchor="middle">sandbox_status</text>
+    <text x="140" y="131" fill="#a7f3d0" font-size="8" text-anchor="middle">risk=low · 只读</text>
+  </g>
+  <g>
+    <rect x="270" y="90" width="220" height="60" rx="6" fill="#0f172a"/>
+    <rect x="270" y="90" width="220" height="60" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+    <text x="380" y="115" fill="white" font-size="11" font-weight="600" text-anchor="middle">读 backend / ttl / session</text>
+    <text x="380" y="131" fill="#94a3b8" font-size="8" text-anchor="middle">不执行命令</text>
+  </g>
+
+  <!-- run_command -->
+  <g>
+    <rect x="40" y="210" width="200" height="60" rx="6" fill="#0f172a"/>
+    <rect x="40" y="210" width="200" height="60" rx="6" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1.5"/>
+    <text x="140" y="235" fill="white" font-size="11" font-weight="600" text-anchor="middle">run_command</text>
+    <text x="140" y="251" fill="#a7f3d0" font-size="8" text-anchor="middle">risk=high</text>
+  </g>
+
+  <!-- run_code -->
+  <g>
+    <rect x="40" y="330" width="200" height="60" rx="6" fill="#0f172a"/>
+    <rect x="40" y="330" width="200" height="60" rx="6" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1.5"/>
+    <text x="140" y="355" fill="white" font-size="11" font-weight="600" text-anchor="middle">run_code</text>
+    <text x="140" y="371" fill="#a7f3d0" font-size="8" text-anchor="middle">risk=high · 仅隔离 backend</text>
+  </g>
+
+  <!-- Gateway decisions -->
+  <g>
+    <polygon points="380,210 480,240 380,270 280,240" fill="#0f172a"/>
+    <polygon points="380,210 480,240 380,270 280,240" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+    <text x="380" y="237" fill="white" font-size="10" font-weight="600" text-anchor="middle">strict?</text>
+    <text x="380" y="252" fill="#94a3b8" font-size="8" text-anchor="middle">run_command</text>
+  </g>
+  <g>
+    <polygon points="380,330 480,360 380,390 280,360" fill="#0f172a"/>
+    <polygon points="380,330 480,360 380,390 280,360" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+    <text x="380" y="357" fill="white" font-size="10" font-weight="600" text-anchor="middle">strict?</text>
+    <text x="380" y="372" fill="#94a3b8" font-size="8" text-anchor="middle">run_code</text>
+  </g>
+
+  <!-- Approval envelopes -->
+  <g>
+    <rect x="520" y="210" width="200" height="60" rx="6" fill="#0f172a"/>
+    <rect x="520" y="210" width="200" height="60" rx="6" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1.5"/>
+    <text x="620" y="235" fill="white" font-size="11" font-weight="600" text-anchor="middle">approval_required</text>
+    <text x="620" y="251" fill="#94a3b8" font-size="8" text-anchor="middle">run_command 信封</text>
+  </g>
+  <g>
+    <rect x="520" y="330" width="200" height="60" rx="6" fill="#0f172a"/>
+    <rect x="520" y="330" width="200" height="60" rx="6" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1.5"/>
+    <text x="620" y="355" fill="white" font-size="11" font-weight="600" text-anchor="middle">approval_required</text>
+    <text x="620" y="371" fill="#94a3b8" font-size="8" text-anchor="middle">run_code 信封</text>
+  </g>
+
+  <!-- Sandbox backends -->
+  <g>
+    <rect x="780" y="210" width="240" height="60" rx="6" fill="#0f172a"/>
+    <rect x="780" y="210" width="240" height="60" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+    <text x="900" y="235" fill="white" font-size="11" font-weight="600" text-anchor="middle">sandbox.run_command</text>
+    <text x="900" y="251" fill="#94a3b8" font-size="8" text-anchor="middle">隔离 backend 执行 shell</text>
+  </g>
+  <g>
+    <rect x="780" y="330" width="240" height="80" rx="6" fill="#0f172a"/>
+    <rect x="780" y="330" width="240" height="80" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+    <text x="900" y="355" fill="white" font-size="11" font-weight="600" text-anchor="middle">写文件 → sandbox.run_command</text>
+    <text x="900" y="371" fill="#94a3b8" font-size="8" text-anchor="middle">/tmp/ksadk-run-code-*</text>
+    <text x="900" y="385" fill="#64748b" font-size="8" text-anchor="middle">python / js / bash 解释器</text>
+  </g>
+
+  <!-- ToolResultBudget -->
+  <g>
+    <rect x="1070" y="200" width="210" height="120" rx="6" fill="#0f172a"/>
+    <rect x="1070" y="200" width="210" height="120" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+    <text x="1175" y="225" fill="white" font-size="11" font-weight="600" text-anchor="middle">ToolResultBudget</text>
+    <text x="1175" y="245" fill="#a7f3d0" font-size="8" text-anchor="middle">截断 / 持久化</text>
+    <text x="1175" y="263" fill="#94a3b8" font-size="8" text-anchor="middle">stdout / stderr</text>
+    <text x="1175" y="278" fill="#94a3b8" font-size="8" text-anchor="middle">超阈值落盘</text>
+    <text x="1175" y="293" fill="#64748b" font-size="8" text-anchor="middle">persisted_outputs</text>
+    <text x="1175" y="308" fill="#64748b" font-size="8" text-anchor="middle">preview + path</text>
+  </g>
+
+  <!-- Arrows -->
+  <path d="M 240,120 L 270,120" fill="none" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#ar-c)"/>
+  <text x="248" y="113" fill="#22d3ee" font-size="7">read</text>
+
+  <path d="M 240,240 L 280,240" fill="none" stroke="#fb7185" stroke-width="1.5" marker-end="url(#ar-r)"/>
+  <text x="248" y="233" fill="#64748b" font-size="7">invoke</text>
+
+  <path d="M 480,240 L 520,240" fill="none" stroke="#fb7185" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#ar-r)"/>
+  <text x="485" y="233" fill="#fb7185" font-size="8">是</text>
+
+  <path d="M 380,270 L 760,240" fill="none" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#ar-c)"/>
+  <text x="565" y="262" fill="#22d3ee" font-size="8">否 → sandbox</text>
+
+  <path d="M 240,360 L 280,360" fill="none" stroke="#fb7185" stroke-width="1.5" marker-end="url(#ar-r)"/>
+  <text x="248" y="353" fill="#64748b" font-size="7">invoke</text>
+
+  <path d="M 480,360 L 520,360" fill="none" stroke="#fb7185" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#ar-r)"/>
+  <text x="485" y="353" fill="#fb7185" font-size="8">是</text>
+
+  <path d="M 380,390 L 760,365" fill="none" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#ar-c)"/>
+  <text x="565" y="380" fill="#22d3ee" font-size="8">否 → sandbox</text>
+
+  <path d="M 1020,240 L 1070,255" fill="none" stroke="#34d399" stroke-width="1.5" marker-end="url(#ar-g)"/>
+  <path d="M 1020,370 L 1070,290" fill="none" stroke="#34d399" stroke-width="1.5" marker-end="url(#ar-g)"/>
+  <text x="1030" y="320" fill="#34d399" font-size="8">budget</text>
+
+  <!-- Legend -->
+  <g transform="translate(30, 470)">
+    <text x="0" y="0" fill="white" font-size="10" font-weight="700">图例</text>
+    <rect x="0" y="12" width="14" height="14" rx="2" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.2"/>
+    <text x="20" y="23" fill="#94a3b8" font-size="9">只读 / sandbox backend</text>
+    <rect x="180" y="12" width="14" height="14" rx="2" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1.2"/>
+    <text x="200" y="23" fill="#94a3b8" font-size="9">高风险工具 / approval 信封</text>
+    <rect x="380" y="12" width="14" height="14" rx="2" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.2"/>
+    <text x="400" y="23" fill="#94a3b8" font-size="9">strict 判定</text>
+    <rect x="500" y="12" width="14" height="14" rx="2" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.2"/>
+    <text x="520" y="23" fill="#94a3b8" font-size="9">ToolResultBudget</text>
+    <line x1="660" y1="19" x2="690" y2="19" stroke="#fb7185" stroke-width="1.2" stroke-dasharray="4,3"/>
+    <text x="698" y="23" fill="#94a3b8" font-size="9">虚线 = approval 信封</text>
+    <text x="0" y="50" fill="#64748b" font-size="9">run_code 仅接受隔离 backend（e2b）；local_process / pod_process 返回 isolated_sandbox_required</text>
+    <text x="0" y="66" fill="#64748b" font-size="9">命令策略 check_command_policy 默认拦截递归 rm / sudo / kubectl / docker / git reset / 元数据端点</text>
+  </g>
+</svg>

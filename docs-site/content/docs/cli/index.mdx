@@ -1,0 +1,251 @@
+---
+title: 命令行参考
+---
+
+`agentengine` 是 KsADK 的公开命令行入口。
+
+```bash title="bash"
+agentengine [OPTIONS] COMMAND [ARGS]...
+```
+
+全局参数：
+
+| 参数 | 含义 |
+| --- | --- |
+| `--output pretty/json` | 在支持时选择人类可读或 JSON 输出 |
+| `--no-color` | 关闭彩色终端输出 |
+| `--dry-run` | 对支持的操作打印计划请求，而不实际执行 |
+| `--version` | 显示包版本 |
+| `-h, --help` | 显示帮助 |
+
+## 核心命令
+
+```bash title="bash"
+agentengine --help
+agentengine init --help
+agentengine run --help
+agentengine web --help
+```
+
+## 命令分组
+
+| 分组 | 公开角色 | 是否本地优先 |
+| --- | --- | --- |
+| `init` | 创建或包装项目 | 是 |
+| `config` | 管理模型和项目设置 | 是 |
+| `run` | 运行终端循环或本地 API server | 是 |
+| `web` | 启动本地浏览器 UI | 是 |
+| `a2a` | 在配置后暴露 A2A surface | 是 |
+| `mcp` | 构建或管理 MCP 资源 | 取决于目标 |
+| `build` | 准备部署制品 | 取决于目标 |
+| `deploy` | 部署到配置的云端运行时 | 否 |
+| `launch` | 一次性构建并部署 | 否 |
+| `agent` | 管理 hosted Agent 资源 | 否 |
+| `dashboard` | 打开 hosted dashboard 链接 | 否 |
+| `files` | 管理 hosted 工作区文件 | 否 |
+| `version` | 管理 hosted Agent 版本 | 否 |
+| `hermes` | 管理 Hermes 资源 | 否 |
+| `openclaw` | 管理 OpenClaw 资源 | 否 |
+
+公开 quickstart 应聚焦本地优先命令。Hosted 命令文档必须说明它们的凭证和基础设施
+前置条件。
+
+## 本地开发
+
+### `agentengine init`
+
+创建新项目：
+
+```bash title="bash"
+agentengine init my-agent -f langgraph
+agentengine init my-agent -f adk
+agentengine init my-agent --from-agent ./existing_agent.py
+```
+
+支持的 framework flag 包括 `adk`、`langchain`、`langgraph`、`deepagents`、
+`openclaw` 和 `hermes`。公开示例应优先使用不依赖内部基础设施就能本地运行的框架。
+
+<Callout type="info">
+  导入已有代码后，先检查 `agentengine.yaml` 再运行。
+</Callout>
+
+### `agentengine config`
+
+管理项目和模型设置：
+
+```bash title="bash"
+agentengine config
+agentengine config show
+agentengine config set OPENAI_MODEL_NAME=my-model
+agentengine config model
+```
+
+### `agentengine run`
+
+运行 Agent 项目：
+
+```bash title="bash"
+agentengine run .
+agentengine run . -i
+agentengine run . --port 8080
+agentengine run . --model my-model
+```
+
+| 参数 | 含义 |
+| --- | --- |
+| `--port` | 本地 server 端口，默认 `8080` |
+| `--interactive` / `-i` | 终端交互模式 |
+| `--model` | 单次模型覆盖 |
+| `--show-thinking` | provider 可用时展示 reasoning 输出 |
+| `--no-stream` | 关闭流式渲染 |
+| `--no-trace` | 关闭 tracing |
+
+手动测试用交互模式，API 客户端用 server 模式：
+
+```bash title="bash"
+agentengine run . -i
+agentengine run . --port 8080
+```
+
+### `agentengine web`
+
+启动本地调用和调试 UI：
+
+```bash title="bash"
+agentengine web .
+agentengine web . --port 7860
+agentengine web . --model my-model
+agentengine web . --no-open
+```
+
+## 协议和集成
+
+### `agentengine a2a`
+
+暴露 A2A 协议 surface 和 Agent Card metadata：
+
+```bash title="bash"
+agentengine a2a card --help
+agentengine a2a serve --help
+```
+
+### `agentengine mcp`
+
+管理 MCP 相关资源和运行时流程：
+
+```bash title="bash"
+agentengine mcp --help
+```
+
+## 构建与 Hosted 操作
+
+这些命令属于 SDK surface，但可能需要金山云凭证或经过批准的 hosted 基础设施。
+
+```bash title="bash"
+agentengine build --help
+agentengine deploy --help
+agentengine launch --help
+agentengine agent --help
+agentengine dashboard --help
+agentengine files --help
+agentengine hermes --help
+agentengine openclaw --help
+```
+
+<Callout type="info">
+  解释或审核部署形态命令时，在支持的地方使用 `--dry-run`。
+</Callout>
+
+### 运行时 env 透传
+
+`agentengine deploy` 和 `agentengine launch` 支持向 hosted runtime 透传自定义环境变量（0.6.5）：
+
+```bash title="bash"
+agentengine deploy . \
+  --env OPENAI_API_KEY=sk-test \
+  --env LOG_LEVEL=debug \
+  --env-file ./runtime.env
+agentengine launch . --env KEY=VALUE --env-file ./runtime.env
+```
+
+| 参数 | 含义 |
+| --- | --- |
+| `--env KEY=VALUE` | 额外运行时环境变量，可重复传入；显式 env 进入部署 payload `env_vars` |
+| `--env-file PATH` | 额外运行时环境变量文件，支持 `.env` 或 JSON 对象 |
+
+<Callout type="info" title="env 文件边界">
+  传入的 `--env-file` 用于显式注入运行时 env。真实的 `.env` / `.env.local`
+  不会进入 Code、Container 或 MCP 构建上下文，构建只保留 `.env.example` /
+  `.env.sample` / `.env.template` 模板文件。详见
+  [环境变量参考](./environment-variables)。
+</Callout>
+
+### `agentengine openclaw`
+
+部署预构建的 OpenClaw 镜像到云端运行时，模型配置自动复用 `OPENAI_*` 环境变量。
+
+```bash title="bash"
+agentengine openclaw deploy my-openclaw --region cn-beijing-6
+agentengine openclaw deploy my-openclaw --memory-system mem0 \
+  --mem0-instance-id inst-xxxx \
+  --mem0-region cn-beijing-6
+agentengine openclaw list
+agentengine openclaw status
+agentengine openclaw --help
+```
+
+记忆后端选项（0.6.7）：
+
+| 参数 | 含义 |
+| --- | --- |
+| `--memory-system {openclaw_default\|mem0}` | 记忆后端类型；`openclaw_default` 使用内置默认，`mem0` 切换到 mem0 后端 |
+| `--mem0-instance-id ID` | mem0 实例 ID，`--memory-system mem0` 时必填 |
+| `--mem0-instance-name NAME` | mem0 实例名称（可选） |
+| `--mem0-region REGION` | mem0 实例区域（可选） |
+
+<Callout type="warning" title="lancedb 不在 CLI 暴露">
+  `--memory-system` CLI 选项只暴露 `openclaw_default` 与 `mem0`。`lancedb`
+  后端需要通过 `MEMORY_BACKEND_MANIFEST` 在运行时侧声明 manifest，不走 CLI
+  参数；详见
+  [环境变量参考](./environment-variables)。
+</Callout>
+
+<Callout type="info" title="mem0 参数约束">
+  传入 `--memory-system openclaw_default` 时不能再带任何 mem0 参数；选择
+  `mem0` 时 `--mem0-instance-id` 必填，`--mem0-instance-name` 与
+  `--mem0-region` 为可选补充信息。
+</Callout>
+
+<Callout type="info">
+  OpenClaw 部署同样支持 `--env KEY=VALUE`（可重复）和 `--env-file` 透传运行时环境变量，语义与通用 deploy/launch 一致（0.6.5）。
+</Callout>
+
+## JSON 输出
+
+部分命令支持结构化输出：
+
+```bash title="bash"
+agentengine --output json agent status
+agentengine --output json build --help
+```
+
+交互命令和浏览器 UI 命令在结构化输出可能误导时可以拒绝 JSON。
+
+## 公开发布 gate
+
+发布 CLI 文档前，应从 release candidate 重新生成 help 输出，并检查是否包含内部 URL、
+凭证、私有 registry 名称、kubeconfig 路径和部署假设。
+
+<Callout type="warning">
+  推荐检查项：内部 URL、凭证、私有 registry 名称、kubeconfig 路径和部署假设均不应出现在公开 help 输出中。
+</Callout>
+
+推荐检查：
+
+```bash title="bash"
+agentengine --help
+agentengine init --help
+agentengine run --help
+agentengine web --help
+agentengine config --help
+```

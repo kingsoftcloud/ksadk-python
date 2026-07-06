@@ -1,0 +1,194 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 1140" role="img" aria-labelledby="title desc">
+  <title id="title">KsADK Skill 加载时序</title>
+  <desc id="desc">load_skills() 合并本地与远程技能:本地扫描、Skill Service 列举与去重、缓存命中跳过、下载、sha256 校验、路径穿越防护、安全解压与装入。hash 不匹配走 alt 分支。</desc>
+  <style>
+    text { font-family: ui-sans-serif, system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif; }
+    .mono { font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+    @media (prefers-color-scheme: dark) {
+      .bg-light { fill: #0f172a; }
+      rect[fill="#ffffff"] { fill: #1e293b; }
+      rect[fill="#fbfbf9"] { fill: #0f172a; }
+      rect[fill="#fff7ed"] { fill: #1e1b14; }
+      rect[fill="#ecfdf5"] { fill: #0f1f1a; }
+      rect[fill="#eef2ff"] { fill: #1a1f2e; }
+      rect[fill="#fef2f2"] { fill: #1f1414; }
+      text[fill="#0f172a"] { fill: #f1f5f9; }
+      text[fill="#1e293b"] { fill: #e2e8f0; }
+      text[fill="#334155"] { fill: #cbd5e1; }
+      text[fill="#475569"] { fill: #94a3b8; }
+      text[fill="#64748b"] { fill: #94a3b8; }
+      text[fill="#92400e"] { fill: #fbbf24; }
+      text[fill="#7c2d12"] { fill: #fed7aa; }
+      text[fill="#5b21b6"] { fill: #c4b5fd; }
+      text[fill="#7c3aed"] { fill: #a78bfa; }
+      text[fill="#047857"] { fill: #34d399; }
+      text[fill="#059669"] { fill: #34d399; }
+      text[fill="#b91c1c"] { fill: #fca5a5; }
+      rect[stroke="#cbd5e1"] { stroke: #475569; }
+      rect[stroke="#94a3b8"] { stroke: #64748b; }
+      line[stroke="#94a3b8"] { stroke: #64748b; }
+      line[stroke="#cbd5e1"] { stroke: #475569; }
+    }
+  </style>
+  <defs>
+    <marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker>
+    <marker id="agn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#059669"/></marker>
+    <marker id="askill" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#7c3aed"/></marker>
+    <marker id="adisp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#d97706"/></marker>
+    <marker id="aalert" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#b91c1c"/></marker>
+  </defs>
+
+  <rect class="bg-light" width="1280" height="1120" fill="#fbfbf9"/>
+
+  <!-- 标题 -->
+  <text x="40" y="36" font-size="18" font-weight="700" fill="#0f172a">KsADK — Skill 加载时序</text>
+  <text x="40" y="56" font-size="11" fill="#64748b">load_skills() · 本地合并 + 远程 manifest · sha256 校验 · 路径穿越防护</text>
+
+  <!-- ===== 参与者生命线头部 ===== -->
+  <!-- P1: load_skills -->
+  <rect x="70" y="86" width="140" height="44" rx="6" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
+  <text x="140" y="108" font-size="11.5" font-weight="600" fill="#1e293b" text-anchor="middle">load_skills()</text>
+  <text x="140" y="122" font-size="8.5" fill="#475569" text-anchor="middle">skills/runtime/loader.py</text>
+  <!-- P2: load_local_skills -->
+  <rect x="250" y="86" width="150" height="44" rx="6" fill="#ecfdf5" stroke="#059669" stroke-width="1.2"/>
+  <text x="325" y="108" font-size="11.5" font-weight="600" fill="#1e293b" text-anchor="middle">load_local_skills()</text>
+  <text x="325" y="122" font-size="8.5" fill="#475569" text-anchor="middle">本地目录扫描</text>
+  <!-- P3: SkillServiceClient -->
+  <rect x="430" y="86" width="160" height="44" rx="6" fill="#fff7ed" stroke="#d97706" stroke-width="1.2"/>
+  <text x="510" y="108" font-size="11.5" font-weight="600" fill="#1e293b" text-anchor="middle">SkillServiceClient</text>
+  <text x="510" y="122" font-size="8.5" fill="#475569" text-anchor="middle">skills/service_client.py</text>
+  <!-- P4: registry -->
+  <rect x="620" y="86" width="150" height="44" rx="6" fill="#eef2ff" stroke="#7c3aed" stroke-width="1.2"/>
+  <text x="695" y="108" font-size="11.5" font-weight="600" fill="#1e293b" text-anchor="middle">registry</text>
+  <text x="695" y="122" font-size="8.5" fill="#475569" text-anchor="middle">select + dedupe</text>
+  <!-- P5: PackageStore -->
+  <rect x="800" y="86" width="160" height="44" rx="6" fill="#eef2ff" stroke="#7c3aed" stroke-width="1.2"/>
+  <text x="880" y="108" font-size="11.5" font-weight="600" fill="#1e293b" text-anchor="middle">PackageStore</text>
+  <text x="880" y="122" font-size="8.5" fill="#475569" text-anchor="middle">skills/package_store.py</text>
+  <!-- P6: KS3 DownloadUrl -->
+  <rect x="1000" y="86" width="170" height="44" rx="6" fill="#fff7ed" stroke="#d97706" stroke-width="1.2"/>
+  <text x="1085" y="108" font-size="11.5" font-weight="600" fill="#1e293b" text-anchor="middle">KS3 DownloadUrl</text>
+  <text x="1085" y="122" font-size="8.5" fill="#475569" text-anchor="middle">对象存储 · 预签名</text>
+
+  <!-- 生命线 -->
+  <line x1="140" y1="130" x2="140" y2="1115" stroke="#94a3b8" stroke-width="1" stroke-dasharray="3,3" stroke-opacity="0.5"/>
+  <line x1="325" y1="130" x2="325" y2="1115" stroke="#94a3b8" stroke-width="1" stroke-dasharray="3,3" stroke-opacity="0.5"/>
+  <line x1="510" y1="130" x2="510" y2="1115" stroke="#94a3b8" stroke-width="1" stroke-dasharray="3,3" stroke-opacity="0.5"/>
+  <line x1="695" y1="130" x2="695" y2="1115" stroke="#94a3b8" stroke-width="1" stroke-dasharray="3,3" stroke-opacity="0.5"/>
+  <line x1="880" y1="130" x2="880" y2="1115" stroke="#94a3b8" stroke-width="1" stroke-dasharray="3,3" stroke-opacity="0.5"/>
+  <line x1="1085" y1="130" x2="1085" y2="1115" stroke="#94a3b8" stroke-width="1" stroke-dasharray="3,3" stroke-opacity="0.5"/>
+
+  <!-- ===== 1. 本地加载 ===== -->
+  <text x="40" y="160" font-size="10.5" font-weight="700" fill="#047857">① 本地技能</text>
+  <line x1="140" y1="180" x2="325" y2="180" stroke="#059669" stroke-width="1.2" marker-end="url(#agn)"/>
+  <text x="232" y="174" font-size="9.5" fill="#475569" text-anchor="middle">load_local_skills()</text>
+  <text x="232" y="192" font-size="8" fill="#64748b" text-anchor="middle">扫描 KSADK_LOCAL_SKILLS_DIR · 取含 SKILL.md 的子目录</text>
+
+  <line x1="325" y1="218" x2="140" y2="218" stroke="#059669" stroke-width="1.2" stroke-dasharray="5,3" marker-end="url(#agn)"/>
+  <text x="232" y="212" font-size="9.5" fill="#475569" text-anchor="middle">本地 LocalSkill[]</text>
+  <text x="232" y="230" font-size="8" fill="#64748b" text-anchor="middle">seen_names 记录本地名,用于后续去重</text>
+
+  <!-- ===== 2. 解析 service url + 列举 ===== -->
+  <text x="40" y="262" font-size="10.5" font-weight="700" fill="#92400e">② Skill Service 列举</text>
+  <text x="40" y="276" font-size="8.5" fill="#64748b">resolve_skill_service_url(require_spaces=True)</text>
+  <text x="40" y="288" font-size="8.5" fill="#64748b">未配置 → 直接返回本地结果</text>
+
+  <!-- region: 用户 space 循环 -->
+  <rect x="30" y="300" width="1160" height="180" rx="8" fill="none" stroke="#d97706" stroke-width="1" stroke-dasharray="5,4"/>
+  <text x="44" y="316" font-size="9.5" font-weight="700" fill="#92400e">loop · 每个 user_skill_space_id</text>
+
+  <line x1="140" y1="338" x2="510" y2="338" stroke="#d97706" stroke-width="1.2" marker-end="url(#adisp)"/>
+  <text x="325" y="332" font-size="9.5" fill="#475569" text-anchor="middle">list_skills_by_space_id(space_id)</text>
+  <text x="325" y="350" font-size="8" fill="#64748b" text-anchor="middle">KOP 签名 / Bearer token · Action=ListSkillsBySpaceId</text>
+
+  <line x1="510" y1="378" x2="140" y2="378" stroke="#d97706" stroke-width="1.2" stroke-dasharray="5,3" marker-end="url(#adisp)"/>
+  <text x="325" y="372" font-size="9.5" fill="#475569" text-anchor="middle">SkillListResponse · active_skills()</text>
+
+  <line x1="140" y1="408" x2="695" y2="408" stroke="#7c3aed" stroke-width="1.2" marker-end="url(#askill)"/>
+  <text x="417" y="402" font-size="9.5" fill="#475569" text-anchor="middle">select_remote_skill_refs(listing, prompt, skill_names)</text>
+  <text x="417" y="420" font-size="8" fill="#64748b" text-anchor="middle">match_skill_refs · name/alias/tag/metadata 打分</text>
+
+  <line x1="695" y1="448" x2="140" y2="448" stroke="#7c3aed" stroke-width="1.2" stroke-dasharray="5,3" marker-end="url(#askill)"/>
+  <text x="417" y="442" font-size="9.5" fill="#475569" text-anchor="middle">dedupe_skill_refs(refs, seen_names)</text>
+  <text x="417" y="460" font-size="8" fill="#64748b" text-anchor="middle">cache_key / skill_id / name 三级去重</text>
+  <!-- /region -->
+
+  <!-- region: 公共预置 -->
+  <rect x="30" y="496" width="1160" height="92" rx="8" fill="none" stroke="#d97706" stroke-width="1" stroke-dasharray="5,4"/>
+  <text x="44" y="512" font-size="9.5" font-weight="700" fill="#92400e">opt · public_skill_space_ids() 非空</text>
+
+  <line x1="140" y1="534" x2="510" y2="534" stroke="#d97706" stroke-width="1.2" marker-end="url(#adisp)"/>
+  <text x="325" y="528" font-size="9.5" fill="#475569" text-anchor="middle">list_available_premade_skills()</text>
+  <text x="325" y="546" font-size="8" fill="#64748b" text-anchor="middle">Action=ListAvailablePremadeSkills</text>
+
+  <line x1="510" y1="572" x2="140" y2="572" stroke="#7c3aed" stroke-width="1.2" stroke-dasharray="5,3" marker-end="url(#askill)"/>
+  <text x="325" y="566" font-size="9.5" fill="#475569" text-anchor="middle">select_public_skill_refs + dedupe → selected_refs</text>
+  <!-- /region -->
+
+  <!-- ===== 3. 循环每个 SkillRef: 缓存/下载/校验/解压/装入 ===== -->
+  <rect x="30" y="606" width="1160" height="495" rx="8" fill="none" stroke="#7c3aed" stroke-width="1" stroke-dasharray="5,4"/>
+  <text x="44" y="622" font-size="10.5" font-weight="700" fill="#5b21b6">③ loop · 每个 selected SkillRef</text>
+
+  <!-- get_cached -->
+  <line x1="140" y1="648" x2="880" y2="648" stroke="#7c3aed" stroke-width="1.2" marker-end="url(#askill)"/>
+  <text x="510" y="642" font-size="9.5" fill="#475569" text-anchor="middle">store.get_cached(ref)</text>
+  <text x="510" y="660" font-size="8" fill="#64748b" text-anchor="middle">读 archive.zip + extracted · 复验 sha256</text>
+
+  <line x1="880" y1="688" x2="140" y2="688" stroke="#7c3aed" stroke-width="1.2" stroke-dasharray="5,3" marker-end="url(#askill)"/>
+  <text x="510" y="682" font-size="9.5" fill="#475569" text-anchor="middle">SkillPackage | None</text>
+
+  <!-- alt: cache miss -->
+  <rect x="60" y="708" width="1100" height="290" rx="6" fill="#eef2ff" stroke="#7c3aed" stroke-width="0.8" stroke-opacity="0.5"/>
+  <text x="76" y="724" font-size="9.5" font-weight="700" fill="#5b21b6">alt · cache miss (package is None)</text>
+
+  <!-- get_skill_download_url -->
+  <line x1="140" y1="748" x2="510" y2="748" stroke="#d97706" stroke-width="1.2" marker-end="url(#adisp)"/>
+  <text x="325" y="742" font-size="9.5" fill="#475569" text-anchor="middle">download_skill_archive(ref)</text>
+  <text x="325" y="760" font-size="8" fill="#64748b" text-anchor="middle">内含 get_skill_download_url(SkillId, VersionId)</text>
+
+  <line x1="510" y1="788" x2="1085" y2="788" stroke="#d97706" stroke-width="1.2" marker-end="url(#adisp)"/>
+  <text x="797" y="782" font-size="9.5" fill="#475569" text-anchor="middle">GetSkillDownloadUrl / GetPremadeSkillDownloadUrl</text>
+
+  <line x1="1085" y1="816" x2="510" y2="816" stroke="#d97706" stroke-width="1.2" stroke-dasharray="5,3" marker-end="url(#adisp)"/>
+  <text x="797" y="810" font-size="9.5" fill="#475569" text-anchor="middle">DownloadUrl (预签名)</text>
+
+  <line x1="510" y1="844" x2="1085" y2="844" stroke="#d97706" stroke-width="1.2" marker-end="url(#adisp)"/>
+  <text x="797" y="838" font-size="9.5" fill="#475569" text-anchor="middle">GET DownloadUrl</text>
+
+  <line x1="1085" y1="872" x2="140" y2="872" stroke="#d97706" stroke-width="1.2" stroke-dasharray="5,3" marker-end="url(#adisp)"/>
+  <text x="612" y="866" font-size="9.5" fill="#475569" text-anchor="middle">archive bytes (zip)</text>
+
+  <!-- store_archive: verify + extract -->
+  <line x1="140" y1="900" x2="880" y2="900" stroke="#7c3aed" stroke-width="1.2" marker-end="url(#askill)"/>
+  <text x="510" y="894" font-size="9.5" fill="#475569" text-anchor="middle">store.store_archive(ref, archive)</text>
+
+  <!-- verify hash 内部步骤 -->
+  <rect x="120" y="918" width="980" height="44" rx="5" fill="#ffffff" stroke="#b91c1c" stroke-width="0.8" stroke-dasharray="3,3"/>
+  <text x="610" y="935" font-size="9" font-weight="600" fill="#b91c1c" text-anchor="middle">_verify_hash · ref.content_hash.algorithm == "sha256"</text>
+  <text x="610" y="951" font-size="8.5" fill="#64748b" text-anchor="middle">hashlib.sha256(content).hexdigest() == content_hash.value (忽略大小写)</text>
+
+  <line x1="880" y1="976" x2="140" y2="976" stroke="#7c3aed" stroke-width="1.2" stroke-dasharray="5,3" marker-end="url(#askill)"/>
+  <text x="510" y="970" font-size="9.5" fill="#475569" text-anchor="middle">SkillPackage(cache_hit=False) · root_dir = _find_skill_root(SKILL.md)</text>
+  <text x="510" y="988" font-size="8" fill="#64748b" text-anchor="middle">_safe_extract · 路径穿越 guard (target 必须在 extract_dir 之下)</text>
+
+  <!-- alt else: hash mismatch -->
+  <line x1="60" y1="1004" x2="1160" y2="1004" stroke="#b91c1c" stroke-width="0.8" stroke-dasharray="4,4"/>
+  <text x="76" y="1020" font-size="9.5" font-weight="700" fill="#b91c1c">alt · hash mismatch (SkillPackageError)</text>
+
+  <text x="76" y="1036" font-size="8.5" fill="#b91c1c">未允许 → raise SkillPackageError (中止加载)</text>
+  <text x="600" y="1036" font-size="8.5" fill="#92400e">KSADK_SKILL_ALLOW_HASH_MISMATCH=true → _store_unverified_archive + warnings</text>
+  <!-- /alt -->
+
+  <!-- ===== 4. load_local_skill 装入 (loop 内) ===== -->
+  <line x1="140" y1="1056" x2="325" y2="1056" stroke="#059669" stroke-width="1.2" marker-end="url(#agn)"/>
+  <text x="232" y="1050" font-size="9.5" fill="#475569" text-anchor="middle">load_local_skill(package.root_dir)</text>
+  <text x="232" y="1068" font-size="8" fill="#64748b" text-anchor="middle">读 SKILL.md · 解析 frontmatter</text>
+
+  <line x1="325" y1="1088" x2="140" y2="1088" stroke="#059669" stroke-width="1.2" stroke-dasharray="5,3" marker-end="url(#agn)"/>
+  <text x="232" y="1082" font-size="9.5" fill="#475569" text-anchor="middle">LocalSkill</text>
+  <!-- /loop -->
+
+  <!-- ===== 返回结果 ===== -->
+  <line x1="140" y1="1110" x2="140" y2="1110" stroke="#059669" stroke-width="0"/>
+  <text x="140" y="1108" font-size="9" fill="#047857" text-anchor="middle">return SkillLoadResult(skills, warnings)</text>
+</svg>

@@ -29,7 +29,7 @@ def test_env_registry_covers_ksadk_env_vars_in_source():
 
 
 def test_env_registry_docs_cover_registered_names():
-    doc_text = Path("docs/ksadk环境变量参考.md").read_text(encoding="utf-8")
+    doc_text = Path("docs/reference/ksadk环境变量参考.md").read_text(encoding="utf-8")
 
     for item in ENV_VAR_REGISTRY:
         assert item.name in doc_text
@@ -44,7 +44,7 @@ def test_env_registry_defaults_ksadk_web_static_sync_to_latest_npm_release():
 
 
 def test_env_reference_documents_operational_metadata_and_common_runtime_vars():
-    doc_text = Path("docs/ksadk环境变量参考.md").read_text(encoding="utf-8")
+    doc_text = Path("docs/reference/ksadk环境变量参考.md").read_text(encoding="utf-8")
 
     for heading in ("是否必传", "别名/兼容", "配置方/来源", "是否业务自定义"):
         assert heading in doc_text

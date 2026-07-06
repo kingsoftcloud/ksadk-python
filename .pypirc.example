@@ -1,8 +1,0 @@
-[pypi]
-username = __token__
-password = <your-pypi-api-token>
-
-[testpypi]
-repository = https://test.pypi.org/legacy/
-username = __token__
-password = <your-testpypi-api-token>

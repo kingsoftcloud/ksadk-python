@@ -1,0 +1,394 @@
+---
+title: Hosting a Custom UI Agent
+---
+
+This tutorial explains one thing clearly: how a business-owned frontend bundle runs on a hosted runtime — local debugging and cloud deployment share the same bootstrap contract, so the frontend never branches on "am I local?".
+
+It is not "swap a skin". The core is that `ksadk.server.app` treats the UI as a resolvable spec (profile / path / url / bundle_path), replaces the StaticFiles mount point in FastAPI, and forwards that spec to the frontend via `GetAgentUiBootstrap`. The hosted UI and the local Web UI call the same action, so one bundle behaves identically in both.
+
+![Custom UI agent hosting architecture](/assets/ksadk-custom-ui-architecture.svg)
+
+## What problem does it solve
+
+<Callout type="info" title="Why not just let the business frontend run its own static server">
+The business frontend needs to call runtime APIs (`/v1/responses`, `/agentengine/api/v1/*`, WebSocket) and read runtime capabilities (checkpoint resume, attachments, workspace). Deploying the frontend separately creates three problems: CORS, capability discovery, and hardcoded paths. Mounting the bundle same-origin under the runtime, the bootstrap tells the frontend "who I am, what I can do, where the UI is" in one shot, and the frontend just renders.
+</Callout>
+
+Suitable scenarios:
+
+- The agent's business frontend is not the ksadk built-in chat, but a custom UI with a research workbench, dashboard, or multi-step form.
+- You want the same frontend bundle for local `agentengine web` and hosted deployment, without maintaining two builds.
+- The frontend needs to consume bootstrap fields like `CustomUI` / `RuntimeCapabilities` / `CheckpointResumeCapability` for capability discovery.
+
+## Resolution chain: where the UI spec comes from
+
+`_resolve_agent_ui_spec()` is the entry point. It merges four sources, by priority:
+
+1. `ui_profile` / `ui_path` / `ui_url` / `ui_bundle_path` in `agentengine.yaml`.
+2. UI state persisted in `.agentengine/state` (cached after the first local debug run).
+3. `KSADK_UI_PROFILE` / `KSADK_UI_PATH` / `KSADK_UI_URL` / `KSADK_UI_BUNDLE_PATH` environment variables (injected into serverless pods).
+4. Auto-detection of `research-ui/dist/index.html` — when nothing is declared explicitly and that file exists, the profile is auto-set to custom.
+
+```python title="ksadk/server/app.py" {1-3} /[!code highlight]/
+def _resolve_agent_ui_spec() -> dict[str, Any]:
+    project_dir = _runner_project_dir()
+    state = _ui_state_with_env_fallback(load_runtime_state(project_dir))
+    framework = _current_framework()
+    auto_custom_bundle_dir = _default_custom_ui_bundle_dir(project_dir)
+    if (
+        not state.get("ui_profile")
+        and not state.get("ui_path")
+        and not state.get("ui_url")
+        and (auto_custom_bundle_dir / "index.html").exists()
+    ):
+        state["ui_profile"] = UI_PROFILE_CUSTOM
+        state["ui_path"] = "/"
+        state["ui_bundle_path"] = str(auto_custom_bundle_dir)
+```
+
+`_ui_state_with_env_fallback` layers environment variables on top of state, so a pod without `.agentengine/` state still restores the UI config:
+
+```python title="ksadk/server/app.py"
+env_fallbacks = {
+    "ui_profile": os.environ.get("KSADK_UI_PROFILE"),
+    "ui_path": os.environ.get("KSADK_UI_PATH"),
+    "ui_url": os.environ.get("KSADK_UI_URL"),
+    "ui_bundle_path": os.environ.get("KSADK_UI_BUNDLE_PATH"),
+}
+```
+
+Once the profile is set, `resolve_ui_config()` normalizes it: the custom profile defaults `path` to `/`, and `/chat` is auto-corrected back to `/` — the bundle does not need to patch the legacy chat path.
+
+```python title="ksadk/ui_config.py" {3-4} /[!code highlight]/
+_DEFAULT_PATH_BY_PROFILE = {
+    UI_PROFILE_ADK: "/chat",
+    UI_PROFILE_LANGCHAIN: "/chat",
+    UI_PROFILE_OPENCLAW: "/chat",
+    UI_PROFILE_HERMES: "/chat",
+    UI_PROFILE_CUSTOM: "/",
+}
+
+if profile == UI_PROFILE_CUSTOM and path == "/chat":
+    path = "/"
+```
+
+<Callout type="warning" title="ui_path must start with /">
+`normalize_ui_path` prepends `/` to any path without a leading slash. Under the custom profile, `ui_path: research` actually resolves to `/research`. Prefer writing `/` or `/your-route` directly to avoid confusing SPA routing.
+</Callout>
+
+## Static routing: replacing the StaticFiles mount
+
+Under the custom profile, the runtime does not use the built-in `STATIC_DIR`. Instead it points the catch-all route `/{requested_path:path}` at the bundle directory. `_resolve_ui_static_response()` resolves by bundle path:
+
+- A request that lands on `ui_path` itself → returns `index.html`.
+- A request for `assets/*` or with a file suffix → returns the matching static file, 404 only if missing.
+- Any other path (an SPA sub-route) → falls back to `index.html` for the frontend router to handle.
+
+```python title="ksadk/server/app.py" {6-11} /[!code highlight]/
+def _resolve_ui_static_response(request_path: str) -> Optional[FileResponse]:
+    spec = _resolve_agent_ui_spec()
+    if not spec.get("enabled"):
+        return None
+
+    bundle_dir = Path(str(spec["bundle_path"]))
+    index_file = Path(str(spec["index_path"]))
+    path = _normalize_request_ui_path(request_path)
+
+    if spec.get("source") == "custom":
+        ui_path = _normalize_request_ui_path(str(spec.get("path") or "/")).rstrip("/") or "/"
+        if path == ui_path or path == f"{ui_path}/":
+            return FileResponse(index_file)
+        if ui_path != "/" and not path.startswith(f"{ui_path}/"):
+            return None
+        relative = path[len(ui_path):].lstrip("/") if ui_path != "/" else path.lstrip("/")
+        if not relative:
+            return FileResponse(index_file)
+        candidate = bundle_dir / relative
+        if candidate.exists() and candidate.is_file():
+            return FileResponse(candidate)
+        if not _is_custom_ui_static_asset_path(relative):
+            return FileResponse(index_file)
+        return None
+```
+
+<Callout type="info" title="enabled depends on index.html existing">
+In the spec, `enabled = bundle_dir.exists() and index_file.exists()`. If the bundle directory exists but `index.html` is missing, it is treated as disabled and the frontend falls back to the built-in UI or 404. Always confirm `ui_bundle_path` points to a directory that contains `index.html` in production.
+</Callout>
+
+## GetAgentUiBootstrap: forwarding CustomUI
+
+The frontend does not read `agentengine.yaml` directly. It calls `GetAgentUiBootstrap` to get a JSON description of the runtime. The custom UI fields live in the `CustomUI` block:
+
+```python title="ksadk/server/app.py" {2-7} /[!code highlight]/
+"CustomUI": {
+    "Enabled": bool(ui_spec.get("enabled")),
+    "Profile": ui_spec.get("ui_profile") or ui_spec.get("profile"),
+    "Path": ui_spec.get("ui_path") or ui_spec.get("path"),
+    "Url": ui_spec.get("ui_url") or ui_spec.get("url"),
+    "BundlePath": ui_spec.get("ui_bundle_path") or ui_spec.get("bundle_path"),
+},
+```
+
+The same action also carries `Capabilities.RuntimeCapabilities`, `CheckpointResumeCapability`, `SharePermissions`, `ApiFormats`, and `Stream`. The frontend uses these to decide whether to render a checkpoint-resume panel, enable streaming, or show attachment upload.
+
+<Callout type="info" title="hosted and local share the same action">
+This is the key to "hosting": both the hosted UI and the local Web UI call `/agentengine/api/v1/GetAgentUiBootstrap` with the same field contract. Your bundle does not need to know "where am I running"; it just reads `CustomUI` and `Capabilities`.
+</Callout>
+
+## Building a custom UI bundle
+
+<Steps>
+
+1. **Create the research-ui/ directory**
+
+The default detection path is `research-ui/dist` under the project root. So the frontend project lives in `research-ui/` and its build output goes to `research-ui/dist/`.
+
+```text
+my-agent/
+├── agentengine.yaml
+├── agent.py
+└── research-ui/
+    ├── package.json
+    └── (Next.js / Vite project)
+```
+
+2. **Configure static export to dist**
+
+<Tabs>
+<Tab value="Vite">
+
+```json title="research-ui/package.json"
+{
+  "scripts": {
+    "build": "vite build"
+  }
+}
+```
+
+```js title="research-ui/vite.config.js"
+import { defineConfig } from "vite";
+
+export default defineConfig({
+  build: {
+    outDir: "dist",
+    emptyOutDir: true,
+  },
+});
+```
+
+Vite outputs `dist/index.html` + `dist/assets/*` by default, which matches the custom bundle static-route detection.
+
+</Tab>
+<Tab value="Next.js">
+
+```js title="research-ui/next.config.js"
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  output: "export",
+  distDir: "dist",
+  trailingSlash: true,
+};
+
+module.exports = nextConfig;
+```
+
+`output: "export"` produces a static site, and `distDir: "dist"` puts the output on the runtime's default detection path.
+
+</Tab>
+</Tabs>
+
+3. **Wire up the runtime API**
+
+The bundle calls the following endpoints same-origin at runtime; no base URL configuration is needed:
+
+- `POST /v1/responses` — OpenAI-compatible Responses API, the main streaming chat entry.
+- `POST /agentengine/api/v1/RunAgent` — AgentEngine native action, with `Stream` / `Background`.
+- `POST /agentengine/api/v1/GetAgentUiBootstrap` — fetch once on startup to read `CustomUI` and `Capabilities`.
+- `POST /agentengine/api/v1/CancelRun` / `ResumeRun` — long-task cancel and resume.
+- `GET /agentengine/api/v1/SubscribeRunEvents` — background task event subscription (SSE).
+
+```ts title="research-ui/src/bootstrap.ts" {2-4} /[!code highlight]/
+const res = await fetch("/agentengine/api/v1/GetAgentUiBootstrap", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ AgentId: null, SessionId: null }),
+});
+const { Data } = await res.json();
+const { CustomUI, Capabilities, SharePermissions } = Data;
+```
+
+<Callout type="warning" title="WebSocket uses same-origin relative paths">
+If you use WebSocket (workspace file changes, terminal), the path looks like `/agentengine/api/v1/ws/{agent_id}/{file_path}`. When building the WebSocket URL in the frontend, use `location.protocol` to pick wss/ws and `location.host` for the host — never hardcode the host.
+</Callout>
+
+4. **Build and verify the output**
+
+```bash title="Build the bundle"
+cd research-ui
+npm install
+npm run build
+ls dist/index.html
+```
+
+`dist/index.html` must exist for the custom bundle to be marked `enabled`.
+
+</Steps>
+
+## Configure agentengine.yaml
+
+Declare the custom profile explicitly to override auto-detection (recommended, to avoid depending on detection behavior):
+
+```yaml title="agentengine.yaml"
+name: my-custom-ui-agent
+framework: adk
+entry_point: agent.py
+agent_variable: root_agent
+ui_profile: custom
+ui_path: /
+ui_bundle_path: research-ui/dist
+```
+
+<Callout type="info" title="ui_bundle_path supports relative paths">
+`_resolve_agent_ui_spec` resolves relative paths against `project_dir`. Writing `research-ui/dist` is enough — no absolute path needed. Absolute paths are used as-is without project_dir joining.
+</Callout>
+
+<Callout type="warning" title="Do not set ui_path to /chat under custom">
+`resolve_ui_config` corrects `/chat` to `/` under the custom profile. If you really want a sub-route (e.g. `/research`), set `ui_path: /research` and make sure your SPA router handles that prefix.
+</Callout>
+
+## Local debugging
+
+`agentengine web` converts the `agentengine.yaml` UI config into environment variables via `_configure_custom_ui_env()` before starting the runtime — so local and serverless pods use the same env-fallback chain:
+
+```python title="ksadk/cli/cmd_web.py" {5-8} /[!code highlight]/
+def _configure_custom_ui_env(agent_path: Path) -> str:
+    config = _load_agentengine_config(agent_path)
+    if str(config.get("ui_profile") or "").strip().lower() != "custom":
+        return "/"
+
+    bundle_path = str(config.get("ui_bundle_path") or "").strip()
+    bundle_dir = agent_path / bundle_path
+    if not (bundle_dir / "index.html").is_file():
+        return "/"
+
+    ui_path = _normalize_ui_path(str(config.get("ui_path") or "/"))
+    os.environ["KSADK_UI_PROFILE"] = "custom"
+    os.environ["KSADK_UI_PATH"] = ui_path
+    os.environ["KSADK_UI_BUNDLE_PATH"] = bundle_path
+    return ui_path
+```
+
+Even without an `agentengine.yaml`, as long as `research-ui/dist/index.html` exists, the runtime auto-detects and enables the custom bundle.
+
+```bash title="Start the local Web UI"
+cd my-agent
+agentengine web .
+```
+
+<Callout type="info" title="Conditions for local auto-detection">
+Auto-detection requires that `ui_profile`, `ui_path`, and `ui_url` are all undeclared, and `research-ui/dist/index.html` exists. Once you set `ui_profile: custom` in `agentengine.yaml`, the declaration wins and detection is skipped.
+</Callout>
+
+## Deploy to hosted
+
+The serverless deployment injects the resolved UI config into the pod env via `_inject_ui_runtime_env()` — it does not package the local `.agentengine/` state:
+
+```python title="ksadk/deployment/providers/serverless.py" {7-12} /[!code highlight]/
+if profile:
+    env_vars["KSADK_UI_PROFILE"] = str(profile)
+if path:
+    env_vars["KSADK_UI_PATH"] = str(path)
+if url:
+    env_vars["KSADK_UI_URL"] = str(url)
+if bundle_path:
+    env_vars["KSADK_UI_BUNDLE_PATH"] = str(bundle_path)
+```
+
+<Tabs>
+<Tab value="Serverless">
+
+The serverless provider reads `ui_bundle_path` from `agentengine.yaml`, builds `research-ui/dist` into the image, and injects the four `KSADK_UI_*` environment variables at runtime. Inside the pod, `ksadk.server.app` restores the config via `_ui_state_with_env_fallback`.
+
+```bash title="Deploy"
+agentengine build .
+agentengine deploy --provider serverless
+```
+
+Confirm the bundle is in the image: `dist/index.html` must be packaged with the image, otherwise `enabled=false`.
+
+</Tab>
+<Tab value="Hermes">
+
+The Hermes runtime runs a TUI and does not consume the custom bundle static route. If your agent also needs a hosted UI, hand the build output to a separate frontend project and set `ui_url` in `agentengine.yaml` to point at it — `CustomUI.Url` is forwarded to the hosted UI for redirection.
+
+</Tab>
+<Tab value="OpenClaw">
+
+OpenClaw is a TUI framework like Hermes (`_NATIVE_TUI_FRAMEWORKS`); the custom bundle static route does not apply. To attach a custom frontend, use `ui_url` to declare an external frontend URL, same as Hermes.
+
+</Tab>
+</Tabs>
+
+<Callout type="warning" title="Hermes / OpenClaw do not mount the custom bundle static route">
+The custom branch of `_resolve_agent_ui_spec` only triggers when the profile resolves to `custom`. Hermes / OpenClaw resolve to the `hermes` / `openclaw` profile and use the built-in `STATIC_DIR`. To attach a custom frontend to these runtimes, use `ui_url`, not `ui_bundle_path`.
+</Callout>
+
+## Verify
+
+After deployment, call `GetAgentUiBootstrap` and confirm the `CustomUI` block matches expectations:
+
+```bash title="Verify the bootstrap"
+curl -s -X POST https://<your-runtime>/agentengine/api/v1/GetAgentUiBootstrap \
+  -H "Content-Type: application/json" \
+  -d '{"AgentId": null, "SessionId": null}' | jq '.Data.CustomUI'
+```
+
+Expected output (serverless):
+
+```json
+{
+  "Enabled": true,
+  "Profile": "custom",
+  "Path": "/",
+  "Url": null,
+  "BundlePath": "/app/research-ui/dist"
+}
+```
+
+`Enabled: true` means the bundle directory and `index.html` both exist; `BundlePath` is the absolute path inside the pod. If `Enabled: false`, check whether the directory pointed to by `KSADK_UI_BUNDLE_PATH` exists in the image and whether `index.html` was packaged with the build output.
+
+## Project structure
+
+<Files>
+  <Folder name="my-agent/" defaultOpen>
+    <File name="agentengine.yaml" />
+    <File name="agent.py" />
+    <Folder name="research-ui/">
+      <File name="package.json" />
+      <File name="vite.config.js" />
+      <Folder name="src/">
+        <File name="bootstrap.ts" />
+      </Folder>
+      <Folder name="dist/">
+        <File name="index.html" />
+      </Folder>
+    </Folder>
+  </Folder>
+</Files>
+
+## Further reading
+
+<Cards>
+  <Card title="Local Web UI" href="../../guides/local-web-ui">
+    Custom bundle auto-detection, streaming fixes, and common-failure troubleshooting.
+  </Card>
+  <Card title="Build and package" href="../../guides/build-and-package">
+    How the serverless image build packages `research-ui/dist` into the artifact, and UI config env injection details.
+  </Card>
+  <Card title="Long-task resume and Deep Research continuation" href="../long-task-resume">
+    How a custom research workbench consumes `CheckpointResumeCapability` to render a resume panel.
+  </Card>
+  <Card title="ksadk-samples repo" href="https://github.com/kingsoftcloud/ksadk-samples">
+    Full runnable demo source including a `research-ui/` workbench.
+  </Card>
+</Cards>
