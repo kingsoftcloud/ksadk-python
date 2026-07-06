@@ -11,7 +11,7 @@ PyPI publication.
 | License | Apache-2.0 |
 | Python repository | kingsoftcloud/ksadk-python |
 | Web UI repository | kingsoftcloud/ksadk-web |
-| Python package version | 0.6.8 |
+| Python package version | 0.6.9 |
 | Public docs URL | https://kingsoftcloud.github.io/ksadk-python/ |
 | Package metadata repository URL | https://github.com/kingsoftcloud/ksadk-python |
 | Package metadata documentation URL | https://kingsoftcloud.github.io/ksadk-python/ |
@@ -40,7 +40,7 @@ changes.
 ## Required Evidence Before Approval
 
 - `make public-preflight` exits successfully.
-- `make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.6.8` confirms
+- `make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.6.9` confirms
   the target version is not already on PyPI.
 - Branch protection and publish environment are configured according to
   `.github/BRANCH_PROTECTION.md`.
@@ -61,4 +61,4 @@ changes.
 | --- | --- | --- | --- |
 | Maintainer | xiayu | Approved for one-time public main rewrite | 2026-07-03 |
 | Security reviewer | automated public audit | Passed source, wheel, and sdist audits with 0 violations | 2026-07-03 |
-| Release owner | xiayu | Approved GitHub Release / PyPI Trusted Publishing for 0.6.8 | 2026-07-03 |
+| Release owner | xiayu | Approved GitHub Release / PyPI Trusted Publishing for 0.6.9 | 2026-07-03 |
