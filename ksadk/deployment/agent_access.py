@@ -80,6 +80,39 @@ def is_agent_not_visible_yet_error(exc: Exception) -> bool:
     )
 
 
+def is_agent_not_found_error(exc: Exception) -> bool:
+    """判断异常是否表示目标 Agent 在服务端不存在（用于 deploy update 失效后回退 create）。
+
+    优先用结构化属性（AgentEngineAPIError.code / details.http_status）判定，回退到文案匹配。
+    与 is_agent_not_visible_yet_error 的区别：后者专用于 create 后短窗口内的 GetAgent 404
+    （要求状态码与文案同时命中），本函数面向 update/get 对已删除 agent 的 404，
+    要求 404 状态码与 not-found 文案同时命中，避免误判其他 404（如鉴权/路由 404）。
+    """
+    if exc is None:
+        return False
+
+    # 结构化判定：AgentEngineAPIError 的 code 或 details.http_status 为 404
+    code = getattr(exc, "code", None)
+    if isinstance(code, int) and code == 404:
+        return True
+    details = getattr(exc, "details", None)
+    if isinstance(details, Mapping):
+        http_status = details.get("http_status")
+        try:
+            if int(http_status) == 404:
+                return True
+        except (TypeError, ValueError):
+            pass
+
+    # 文案回退：覆盖 update_agent / get_agent 404 的常见文案（需状态码与文案同时命中）
+    text = str(exc or "").lower()
+    if not text:
+        return False
+    has_404 = "http 404" in text or "status=404" in text or "code: 404" in text
+    has_agent_not_found = "未找到对应的 agent" in text or "agent not found" in text
+    return has_404 and has_agent_not_found
+
+
 def should_suppress_transient_get_agent_not_found_log(
     *,
     method: str,
