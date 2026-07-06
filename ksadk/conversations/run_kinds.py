@@ -49,7 +49,12 @@ def trigger_from_resume_input(resume_input: dict | Mapping | None) -> str:
     resume_type = str(resume_input.get("type") or "").strip()
     if resume_type == "agentengine.resume_checkpoint":
         return RUN_TRIGGER_CHECKPOINT_RESUME
-    if resume_type == "mcp_approval_response":
+    if resume_type in {
+        "mcp_approval_response",
+        "function_call_output",
+        "ksadk.approval_response",
+        "ksadk_resume",
+    }:
         return RUN_TRIGGER_APPROVAL_RESUME
     if not resume_type:
         return RUN_TRIGGER_NEW_RUN

@@ -2671,6 +2671,21 @@ async def test_stream_responses_conversation_turn_maps_ksadk_resume_to_runner_re
     await service.append_event(
         "sess-resume-stream",
         SessionEvent(
+            id="evt-background-status",
+            author="demo-agent",
+            event_type="run_status",
+            content={"status": "interrupted"},
+            metadata={
+                "status": "interrupted",
+                "run_mode": "background",
+                "run_trigger": "new_run",
+            },
+            invocation_id="inv-approval",
+        ),
+    )
+    await service.append_event(
+        "sess-resume-stream",
+        SessionEvent(
             id="evt-approval",
             author="demo-agent",
             event_type="approval_request",
@@ -2708,6 +2723,9 @@ async def test_stream_responses_conversation_turn_maps_ksadk_resume_to_runner_re
     assert any(chunk.startswith("event: response.completed\n") for chunk in chunks)
     events = await service.get_events("sess-resume-stream")
     assert "approval_response" in [event.event_type for event in events]
+    run_status_events = [event for event in events if event.event_type == "run_status"]
+    assert run_status_events[-1].metadata["run_mode"] == "background"
+    assert run_status_events[-1].metadata["run_trigger"] == "approval_resume"
 
 
 @pytest.mark.asyncio
@@ -2863,6 +2881,7 @@ async def test_stream_responses_conversation_turn_records_deferred_tools_from_to
             model="gpt-4o",
             prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
             session_service_provider=lambda: service,
+            run_mode="background",
         )
     ]
 
@@ -2875,6 +2894,10 @@ async def test_stream_responses_conversation_turn_records_deferred_tools_from_to
         and (event.metadata or {}).get("detail") == "deferred_tools_selected"
     ][-1]
     assert status.metadata["deferred_tool_names"] == ["read_workspace_file", "edit_workspace_file"]
+    assert status.metadata["run_mode"] == "background"
+    assert status.metadata["run_trigger"] == "new_run"
+    assert status.state_delta["active_run"]["run_mode"] == "background"
+    assert status.state_delta["active_run"]["run_trigger"] == "new_run"
 
 
 @pytest.mark.asyncio
@@ -3402,6 +3425,9 @@ async def test_stream_responses_turn_maps_function_call_output_without_pending_a
     events = await service.get_events("sess-tool-output")
     assert "tool_result" in [event.event_type for event in events]
     assert "approval_response" not in [event.event_type for event in events]
+    run_status_events = [event for event in events if event.event_type == "run_status"]
+    assert run_status_events[-1].metadata["run_mode"] == "foreground"
+    assert run_status_events[-1].metadata["run_trigger"] == "approval_resume"
 
 
 @pytest.mark.asyncio

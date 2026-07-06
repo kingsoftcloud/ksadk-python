@@ -1489,6 +1489,43 @@ def _approval_request_events(events: Sequence[SessionEvent]) -> list[SessionEven
     ]
 
 
+def _approval_resume_run_mode(
+    events: Sequence[SessionEvent],
+    resume_input: Mapping[str, Any],
+    *,
+    fallback: str,
+) -> str:
+    target_ids = {
+        str(value)
+        for value in (
+            resume_input.get("approval_request_id"),
+            resume_input.get("interrupt_id"),
+            resume_input.get("id"),
+        )
+        if value
+    }
+    approval_events = _pending_approval_events(events) or _approval_request_events(events)
+    for approval_event in reversed(approval_events):
+        approval_id = _approval_request_id_from_event(approval_event)
+        if target_ids and approval_id not in target_ids:
+            continue
+        approval_invocation_id = str(approval_event.invocation_id or "")
+        if not approval_invocation_id:
+            continue
+        for event in reversed(events):
+            if event.event_type != "run_status" or event.invocation_id != approval_invocation_id:
+                continue
+            metadata = event.metadata or {}
+            state_delta = event.state_delta or {}
+            active_run = state_delta.get("active_run") if isinstance(state_delta, Mapping) else None
+            state_mode = active_run.get("run_mode") if isinstance(active_run, Mapping) else None
+            mode = validate_run_mode(str(metadata.get("run_mode") or state_mode or ""))
+            if mode != RUN_MODE_UNKNOWN:
+                return mode
+            break
+    return validate_run_mode(fallback)
+
+
 def _parse_approval_arguments(value: Any) -> dict[str, Any]:
     if isinstance(value, Mapping):
         return dict(value)
@@ -2920,10 +2957,14 @@ async def append_deferred_tools_event(
     invocation_id: Optional[str] = None,
     source_tool_name: str = "tool_search",
     session_service_provider: Callable[[], Any] | None = None,
+    run_mode: str = RUN_MODE_UNKNOWN,
+    run_trigger: str = RUN_TRIGGER_UNKNOWN,
 ) -> SessionEvent | None:
     names = _extract_deferred_tool_names({"deferred_tool_names": list(deferred_tool_names)})
     if not names:
         return None
+    run_mode = validate_run_mode(run_mode)
+    run_trigger = validate_run_trigger(run_trigger)
     return await append_conversation_event(
         session_id=session_id,
         author=author,
@@ -2935,8 +2976,18 @@ async def append_deferred_tools_event(
         metadata={
             "status": "in_progress",
             "detail": "deferred_tools_selected",
+            "run_mode": run_mode,
+            "run_trigger": run_trigger,
             "source_tool_name": source_tool_name,
             "deferred_tool_names": names,
+        },
+        state_delta={
+            "active_run": {
+                "invocation_id": invocation_id or "",
+                "status": "in_progress",
+                "run_mode": run_mode,
+                "run_trigger": run_trigger,
+            }
         },
         session_service_provider=session_service_provider,
     )
@@ -3409,6 +3460,11 @@ async def build_run_input(
                 normalized_resume_input,
                 existing_events,
             )
+            caller_run_mode = _approval_resume_run_mode(
+                existing_events,
+                normalized_resume_input,
+                fallback=caller_run_mode,
+            )
             if governance_state is not None:
                 governance_state.consecutive_approval_denials = (
                     _consecutive_approval_denials_from_events(existing_events)
@@ -3754,8 +3810,8 @@ async def invoke_conversation_once(
                             detail=str(circuit_exc),
                             metadata={"governance": circuit_exc.metadata},
                             session_service_provider=provider,
-                            run_mode=entry_run_mode,
-                            run_trigger=entry_run_trigger,
+                            run_mode=run_mode,
+                            run_trigger=run_trigger,
                         )
                         raise circuit_exc
                     if checkpoint:
@@ -3780,8 +3836,8 @@ async def invoke_conversation_once(
                         invocation_id=prepared.invocation_id,
                         detail=f"fallback_model:{fallback_model}",
                         session_service_provider=provider,
-                        run_mode=entry_run_mode,
-                        run_trigger=entry_run_trigger,
+                        run_mode=run_mode,
+                        run_trigger=run_trigger,
                     )
                     continue
                 last_invoke_error = exc
@@ -3792,8 +3848,8 @@ async def invoke_conversation_once(
                     invocation_id=prepared.invocation_id,
                     detail=str(exc),
                     session_service_provider=provider,
-                    run_mode=entry_run_mode,
-                    run_trigger=entry_run_trigger,
+                    run_mode=run_mode,
+                    run_trigger=run_trigger,
                 )
                 break
 
@@ -3869,8 +3925,8 @@ async def invoke_conversation_once(
             status="completed",
             invocation_id=prepared.invocation_id,
             session_service_provider=provider,
-            run_mode=entry_run_mode,
-            run_trigger=entry_run_trigger,
+            run_mode=run_mode,
+            run_trigger=run_trigger,
         )
         result_payload = {
             "output_text": output_text,
@@ -4374,6 +4430,8 @@ async def _iter_conversation_turn_events(
                                         deferred_tool_names=deferred_tool_names,
                                         invocation_id=prepared.invocation_id,
                                         session_service_provider=provider,
+                                        run_mode=run_mode,
+                                        run_trigger=run_trigger,
                                     )
                                 _governance_record_tool_result(
                                     governance, chunk.get("tool_output", "")
@@ -4466,8 +4524,8 @@ async def _iter_conversation_turn_events(
                             detail=str(circuit_exc),
                             metadata={"governance": circuit_exc.metadata},
                             session_service_provider=provider,
-                            run_mode=entry_run_mode,
-                            run_trigger=entry_run_trigger,
+                            run_mode=run_mode,
+                            run_trigger=run_trigger,
                         )
                         yield {"type": "error", "message": str(circuit_exc) or "Agent 运行失败"}
                         return
@@ -4505,8 +4563,8 @@ async def _iter_conversation_turn_events(
                             invocation_id=prepared.invocation_id,
                             detail=f"fallback_model:{fallback_model}",
                             session_service_provider=provider,
-                            run_mode=entry_run_mode,
-                            run_trigger=entry_run_trigger,
+                            run_mode=run_mode,
+                            run_trigger=run_trigger,
                         )
                         continue
                 await append_run_status_event(
@@ -4519,8 +4577,8 @@ async def _iter_conversation_turn_events(
                     if isinstance(exc, RuntimeCircuitOpen)
                     else None,
                     session_service_provider=provider,
-                    run_mode=entry_run_mode,
-                    run_trigger=entry_run_trigger,
+                    run_mode=run_mode,
+                    run_trigger=run_trigger,
                 )
                 yield {"type": "error", "message": str(exc) or "Agent 运行失败"}
                 return
@@ -4549,8 +4607,8 @@ async def _iter_conversation_turn_events(
                 invocation_id=prepared.invocation_id,
                 detail="runner_stream_ended_without_final_output",
                 session_service_provider=provider,
-                run_mode=entry_run_mode,
-                run_trigger=entry_run_trigger,
+                run_mode=run_mode,
+                run_trigger=run_trigger,
             )
             _finish_span()
             yield {
@@ -4595,8 +4653,8 @@ async def _iter_conversation_turn_events(
             status="completed",
             invocation_id=prepared.invocation_id,
             session_service_provider=provider,
-            run_mode=entry_run_mode,
-            run_trigger=entry_run_trigger,
+            run_mode=run_mode,
+            run_trigger=run_trigger,
         )
         _finish_span()
         yield {
