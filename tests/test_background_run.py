@@ -141,6 +141,8 @@ async def test_run_agent_background_returns_immediately_with_job_handle(bg_clien
         assert data["Status"] == "running"
         assert data["Background"] is True
         assert "InvocationId" in data and data["InvocationId"]
+        # SessionId 顶层字段（与 SubscribeUrl 一致，避免前端从 URL 反解）
+        assert "SessionId" in data and data["SessionId"]
         # 关键：响应返回时后台慢流（0.3s）还没跑完，证明是立即返回而非阻塞
         assert not runner.stream_finished.is_set(), "background 应立即返回，不该等 stream 完成"
         # InvocationId 落入 _DETACHED_STREAMS_BY_INVOCATION，CancelRun 能查到

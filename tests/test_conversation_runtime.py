@@ -3924,9 +3924,13 @@ async def test_checkpoint_resume_response_metadata_prefers_new_checkpoint(monkey
     assert [event.event_type for event in events if event.event_type.startswith("run_")] == [
         "run_resume",
         "run_status",
+        "run_status",
         "run_checkpoint",
         "run_status",
     ]
+    # resume 现在先写 run_status(resuming) 再写 run_status(in_progress)
+    run_statuses = [e.content["status"] for e in events if e.event_type == "run_status"]
+    assert run_statuses == ["resuming", "in_progress", "completed"]
 
 
 @pytest.mark.asyncio
@@ -4271,7 +4275,9 @@ async def test_stream_checkpoint_resume_falls_back_to_original_run_id(monkeypatc
         for event in events
         if event.event_type == "run_status"
     ]
-    assert run_statuses == ["in_progress", "failed"]
+    # checkpoint resume 失败现在写 resume_failed（独立终态），而非 failed。
+    # 状态序列：resuming（build_run_input 补写）→ in_progress → resume_failed（失败改写）。
+    assert run_statuses == ["resuming", "in_progress", "resume_failed"]
 
 
 def test_build_history_from_events_prefers_latest_checkpoint_and_tail():

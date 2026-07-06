@@ -14,6 +14,7 @@ import httpx
 from fastapi import HTTPException
 
 from ksadk.conversations.attachments import compact_attachment_result_for_session
+from ksadk.conversations.compaction_pipeline import build_working_set_metadata, run_pipeline
 from ksadk.conversations.context import (
     TRANSCRIPT_EVENT_TYPES,
     build_history_from_events,
@@ -36,7 +37,6 @@ from ksadk.conversations.normalize import (
     normalize_kop_messages,
 )
 from ksadk.conversations.reasoning_markup import strip_reasoning_markup
-from ksadk.conversations.compaction_pipeline import build_working_set_metadata, run_pipeline
 from ksadk.conversations.semantic_summary import (
     extract_pinned_state,
     find_pinned_group_indexes,
@@ -55,7 +55,11 @@ from ksadk.conversations.session_title import (
 from ksadk.knowledge_base.service import KnowledgeBaseService
 from ksadk.memory.service import LongTermMemoryService
 from ksadk.model_policy import fallback_model_for_exception, model_policy_options_for_model
-from ksadk.runtime_context import PlatformInvocationContext, platform_invocation_scope, tool_execution_scope
+from ksadk.runtime_context import (
+    PlatformInvocationContext,
+    platform_invocation_scope,
+    tool_execution_scope,
+)
 from ksadk.sessions import Session, SessionEvent, resolve_session_service
 from ksadk.tools.gateway import (
     approval_interrupt_info_from_result,
@@ -121,7 +125,9 @@ def _runtime_governance_from_env() -> RuntimeGovernanceState:
     )
 
 
-def _governance_error(reason: str, message: str, state: RuntimeGovernanceState) -> RuntimeCircuitOpen:
+def _governance_error(
+    reason: str, message: str, state: RuntimeGovernanceState
+) -> RuntimeCircuitOpen:
     return RuntimeCircuitOpen(
         reason,
         message,
@@ -150,7 +156,9 @@ def _governance_record_turn_start(state: RuntimeGovernanceState) -> None:
 def _governance_record_tool_call(state: RuntimeGovernanceState) -> None:
     state.tool_calls += 1
     if state.max_tool_calls and state.tool_calls > state.max_tool_calls:
-        raise _governance_error("max_tool_calls_exceeded", "runtime max_tool_calls limit exceeded", state)
+        raise _governance_error(
+            "max_tool_calls_exceeded", "runtime max_tool_calls limit exceeded", state
+        )
 
 
 def _governance_record_tool_result(state: RuntimeGovernanceState, output: Any) -> None:
@@ -160,17 +168,25 @@ def _governance_record_tool_result(state: RuntimeGovernanceState, output: Any) -
         state.max_consecutive_tool_failures
         and state.consecutive_tool_failures >= state.max_consecutive_tool_failures
     ):
-        raise _governance_error("consecutive_tool_failures", "runtime consecutive tool failure limit exceeded", state)
+        raise _governance_error(
+            "consecutive_tool_failures", "runtime consecutive tool failure limit exceeded", state
+        )
 
 
-def _governance_record_approval_response(state: RuntimeGovernanceState, approval: Mapping[str, Any]) -> None:
+def _governance_record_approval_response(
+    state: RuntimeGovernanceState, approval: Mapping[str, Any]
+) -> None:
     approved = bool(approval.get("approved") or approval.get("approve"))
     state.consecutive_approval_denials = 0 if approved else state.consecutive_approval_denials + 1
     if (
         state.max_consecutive_approval_denials
         and state.consecutive_approval_denials >= state.max_consecutive_approval_denials
     ):
-        raise _governance_error("consecutive_approval_denials", "runtime consecutive approval denial limit exceeded", state)
+        raise _governance_error(
+            "consecutive_approval_denials",
+            "runtime consecutive approval denial limit exceeded",
+            state,
+        )
 
 
 def _governance_record_compact_failure(state: RuntimeGovernanceState) -> None:
@@ -179,7 +195,11 @@ def _governance_record_compact_failure(state: RuntimeGovernanceState) -> None:
         state.max_consecutive_compact_failures
         and state.consecutive_compact_failures >= state.max_consecutive_compact_failures
     ):
-        raise _governance_error("consecutive_compact_failures", "runtime consecutive compact failure limit exceeded", state)
+        raise _governance_error(
+            "consecutive_compact_failures",
+            "runtime consecutive compact failure limit exceeded",
+            state,
+        )
 
 
 def _governance_record_compact_success(state: RuntimeGovernanceState) -> None:
@@ -201,8 +221,14 @@ async def _compact_conversation_history_with_governance(
     return checkpoint
 
 
-def _tool_observability_metadata(tool_name: str, output: Any, *, duration_ms: int | None = None) -> dict[str, Any]:
-    output_text = json.dumps(output, ensure_ascii=False, sort_keys=True) if isinstance(output, Mapping) else str(output)
+def _tool_observability_metadata(
+    tool_name: str, output: Any, *, duration_ms: int | None = None
+) -> dict[str, Any]:
+    output_text = (
+        json.dumps(output, ensure_ascii=False, sort_keys=True)
+        if isinstance(output, Mapping)
+        else str(output)
+    )
     metadata: dict[str, Any] = {
         "tool_name": tool_name,
         "duration_ms": int(duration_ms or 0),
@@ -216,7 +242,15 @@ def _tool_observability_metadata(tool_name: str, output: Any, *, duration_ms: in
         persisted = output.get("persisted") or output.get("persisted_outputs")
         metadata.update(
             {
-                "truncated": any(bool(output.get(key)) for key in ("truncated", "stdout_truncated", "stderr_truncated", "results_truncated")),
+                "truncated": any(
+                    bool(output.get(key))
+                    for key in (
+                        "truncated",
+                        "stdout_truncated",
+                        "stderr_truncated",
+                        "results_truncated",
+                    )
+                ),
                 "persisted": bool(persisted),
                 "exit_code": output.get("exit_code"),
                 "error_type": str(output.get("error_type") or ""),
@@ -290,7 +324,9 @@ def _normalize_usage_payload(usage: Mapping[str, Any] | None) -> dict[str, Any]:
         reasoning_tokens = completion_details.get("reasoning_tokens")
         if reasoning_tokens is not None:
             try:
-                normalized.setdefault("output_token_details", {})["reasoning"] = int(reasoning_tokens)
+                normalized.setdefault("output_token_details", {})["reasoning"] = int(
+                    reasoning_tokens
+                )
             except (TypeError, ValueError):
                 pass
     return normalized
@@ -413,7 +449,9 @@ def _span_current_context(span: Any | None):
     try:
         from opentelemetry.trace import use_span
 
-        return use_span(span, end_on_exit=False, record_exception=False, set_status_on_exception=False)
+        return use_span(
+            span, end_on_exit=False, record_exception=False, set_status_on_exception=False
+        )
     except Exception:
         return nullcontext()
 
@@ -1166,7 +1204,9 @@ def _build_runner_request_payload(
             payload["checkpoint_id"] = str(prepared.resume_input.get("checkpoint_id") or "")
             payload["framework_ref"] = dict(prepared.resume_input.get("framework_ref") or {})
             payload["metadata"] = dict(prepared.resume_input.get("metadata") or {})
-            payload["checkpoint_metadata"] = dict(prepared.resume_input.get("checkpoint_metadata") or {})
+            payload["checkpoint_metadata"] = dict(
+                prepared.resume_input.get("checkpoint_metadata") or {}
+            )
         else:
             payload["input"] = prepared.resume_input
             payload["resume"] = True
@@ -1184,7 +1224,9 @@ def _build_runner_request_payload(
     return payload
 
 
-def _inject_runner_deferred_tools_for_request(runner: Any, prepared: PreparedConversationTurn) -> None:
+def _inject_runner_deferred_tools_for_request(
+    runner: Any, prepared: PreparedConversationTurn
+) -> None:
     deferred_tool_names = _extract_deferred_tool_names(prepared.request_metadata)
     if not deferred_tool_names:
         return
@@ -1207,7 +1249,9 @@ def _attachment_summary_for_memory(
             continue
         summary = {
             "kind": str(item.get("kind") or "file"),
-            "display_name": str(item.get("display_name") or item.get("filename") or "uploaded_file"),
+            "display_name": str(
+                item.get("display_name") or item.get("filename") or "uploaded_file"
+            ),
             "mime_type": str(item.get("mime_type") or "application/octet-stream"),
         }
         summaries.append(summary)
@@ -1500,11 +1544,11 @@ def _normalize_approval_resume_input(
         return normalized
 
     approval_request_id = str(
-        normalized.get("approval_request_id")
-        or normalized.get("interrupt_id")
-        or ""
+        normalized.get("approval_request_id") or normalized.get("interrupt_id") or ""
     )
-    pending_events = _approval_request_events(events) if include_resolved else _pending_approval_events(events)
+    pending_events = (
+        _approval_request_events(events) if include_resolved else _pending_approval_events(events)
+    )
     matched_event = None
     for event in reversed(pending_events):
         if not approval_request_id or _approval_request_id_from_event(event) == approval_request_id:
@@ -1797,6 +1841,17 @@ def _is_checkpoint_resume_input(resume_input: Mapping[str, Any]) -> bool:
     return str(resume_input.get("type") or "").strip() == "agentengine.resume_checkpoint"
 
 
+def _failed_status_for_resume(resume_input: Mapping[str, Any] | None) -> str:
+    """checkpoint resume 失败时返回 resume_failed，否则返回 failed。
+
+    仅 checkpoint resume 的失败才写 resume_failed（独立终态，触发 SSE [DONE]
+    并让前端展示"恢复失败"）；approval/ksadk_resume 等其他 resume 失败仍写 failed。
+    """
+    if resume_input is not None and _is_checkpoint_resume_input(resume_input):
+        return "resume_failed"
+    return "failed"
+
+
 def _normalize_checkpoint_resume_input(resume_input: Mapping[str, Any]) -> dict[str, Any]:
     run_id = str(resume_input.get("run_id") or "").strip()
     if not run_id:
@@ -1810,7 +1865,9 @@ def _normalize_checkpoint_resume_input(resume_input: Mapping[str, Any]) -> dict[
     raw_framework_ref = resume_input.get("framework_ref")
     framework_ref = dict(raw_framework_ref) if isinstance(raw_framework_ref, Mapping) else {}
     raw_framework_detail = framework_ref.get(framework)
-    framework_detail = dict(raw_framework_detail) if isinstance(raw_framework_detail, Mapping) else {}
+    framework_detail = (
+        dict(raw_framework_detail) if isinstance(raw_framework_detail, Mapping) else {}
+    )
     framework_detail.setdefault("checkpoint_id", checkpoint_id)
     if resume_input.get("thread_id") and not framework_detail.get("thread_id"):
         framework_detail["thread_id"] = str(resume_input.get("thread_id"))
@@ -1840,9 +1897,7 @@ def _normalize_checkpoint_resume_input(resume_input: Mapping[str, Any]) -> dict[
             or resume_input.get("ResumeInstructionEnabled")
         ),
         "resume_instruction": str(
-            resume_input.get("resume_instruction")
-            or resume_input.get("ResumeInstruction")
-            or ""
+            resume_input.get("resume_instruction") or resume_input.get("ResumeInstruction") or ""
         ).strip(),
     }
 
@@ -1933,7 +1988,9 @@ def _merge_agentengine_metadata(
         merged.update(next_agentengine)
         if isinstance(agentengine.get("framework_ref"), Mapping):
             existing_framework_ref = (
-                merged.get("framework_ref") if isinstance(merged.get("framework_ref"), Mapping) else {}
+                merged.get("framework_ref")
+                if isinstance(merged.get("framework_ref"), Mapping)
+                else {}
             )
             merged["framework_ref"] = {
                 **dict(existing_framework_ref),
@@ -2134,7 +2191,9 @@ async def prime_session_metadata_for_user_turn(
 ) -> None:
     text = str(user_input or "").strip()
     if not text and messages:
-        text, _display, _content, _parts, _attachments, _attachment_results = _latest_user_turn(messages)
+        text, _display, _content, _parts, _attachments, _attachment_results = _latest_user_turn(
+            messages
+        )
     await _update_session_metadata_after_user_turn(
         service=service,
         session=session,
@@ -2361,7 +2420,14 @@ def _latest_user_turn(
     user_parts = list(latest_user_message.get("parts") or [])
     attachments = list(latest_user_message.get("attachments") or [])
     attachment_results = list(latest_user_message.get("attachment_results") or [])
-    return user_input, user_display_input, input_content, user_parts, attachments, attachment_results
+    return (
+        user_input,
+        user_display_input,
+        input_content,
+        user_parts,
+        attachments,
+        attachment_results,
+    )
 
 
 def _canonical_input_messages(
@@ -2790,7 +2856,21 @@ async def append_run_status_event(
     content = {"status": status}
     if detail:
         content["detail"] = detail
-    event_metadata = {"status": status, **({"detail": detail} if detail else {}), **dict(metadata or {})}
+    event_metadata = {
+        "status": status,
+        **({"detail": detail} if detail else {}),
+        **dict(metadata or {}),
+    }
+    # state_delta.active_run：与 agentengine-server _append_run_status 对齐，
+    # 让 session.state.active_run 反映当前 run 状态（postgres/local backend 会自动合并）。
+    # server 侧 ActiveRunStatus 来源是 state_delta 而非扫事件，不写则 server 在 resume
+    # 期间仍持旧 active_run 值。
+    state_delta = {
+        "active_run": {
+            "invocation_id": invocation_id or "",
+            "status": status,
+        }
+    }
     return await append_conversation_event(
         session_id=session_id,
         author=author,
@@ -2800,6 +2880,7 @@ async def append_run_status_event(
         event_type="run_status",
         content=content,
         metadata=event_metadata,
+        state_delta=state_delta,
         session_service_provider=lambda: service,
     )
 
@@ -3141,7 +3222,9 @@ async def compact_conversation_history(
             "tokens_before": pipeline_result["tokens_before"],
             "tokens_after": pipeline_result["tokens_after"],
             "snip_stats": {
-                "removed_redundant_tool_results": pipeline_result["snip_stats"].removed_redundant_tool_results,
+                "removed_redundant_tool_results": pipeline_result[
+                    "snip_stats"
+                ].removed_redundant_tool_results,
                 "snip_released_tokens": pipeline_result["snip_released_tokens"],
                 "covered_seq_range": list(pipeline_result["snip_stats"].covered_seq_range or []),
             },
@@ -3225,6 +3308,18 @@ async def build_run_input(
                 invocation_id=resolved_invocation_id,
                 session_service_provider=provider,
             )
+            # 补写 run_status(resuming)：让 ActiveRunStatus 在 resume 期间正确反映"恢复中"。
+            # append_run_resume_event 写的是 run_resume 事件（status=resuming），而
+            # _latest_session_run_status 只扫 run_status 事件 → 不补写则
+            # resuming 不进 ActiveRunStatus。
+            await append_run_status_event(
+                session_id=resolved_session_id,
+                author=agent_id,
+                status="resuming",
+                invocation_id=resolved_invocation_id,
+                detail="checkpoint_resume",
+                session_service_provider=provider,
+            )
             history = build_history_from_events(await service.get_events(resolved_session_id))
             return PreparedConversationTurn(
                 session_id=resolved_session_id,
@@ -3277,7 +3372,9 @@ async def build_run_input(
                 existing_events,
             )
             if governance_state is not None:
-                governance_state.consecutive_approval_denials = _consecutive_approval_denials_from_events(existing_events)
+                governance_state.consecutive_approval_denials = (
+                    _consecutive_approval_denials_from_events(existing_events)
+                )
 
         resume_text = _format_resume_response_text(normalized_resume_input)
         await append_conversation_event(
@@ -3492,7 +3589,7 @@ async def invoke_conversation_once(
             await append_run_status_event(
                 session_id=session_id,
                 author=_runner_name(runner),
-                status="failed",
+                status=_failed_status_for_resume(resume_input),
                 invocation_id=invocation_id,
                 detail=str(exc),
                 metadata={"governance": exc.metadata},
@@ -3596,7 +3693,7 @@ async def invoke_conversation_once(
                         await append_run_status_event(
                             session_id=prepared.session_id,
                             author=runner_name,
-                            status="failed",
+                            status=_failed_status_for_resume(resume_input),
                             invocation_id=prepared.invocation_id,
                             detail=str(circuit_exc),
                             metadata={"governance": circuit_exc.metadata},
@@ -3604,7 +3701,9 @@ async def invoke_conversation_once(
                         )
                         raise circuit_exc
                     if checkpoint:
-                        prepared = await _refresh_history(prepared, session_service_provider=provider)
+                        prepared = await _refresh_history(
+                            prepared, session_service_provider=provider
+                        )
                         runtime_context.history = list(prepared.history)
                         continue
                 fallback_model = fallback_model_for_exception(exc, current_model=model)
@@ -3629,7 +3728,7 @@ async def invoke_conversation_once(
                 await append_run_status_event(
                     session_id=prepared.session_id,
                     author=runner_name,
-                    status="failed",
+                    status=_failed_status_for_resume(resume_input),
                     invocation_id=prepared.invocation_id,
                     detail=str(exc),
                     session_service_provider=provider,
@@ -3660,7 +3759,9 @@ async def invoke_conversation_once(
         if response_id:
             assistant_metadata["response_id"] = response_id
         checkpoint_args = _checkpoint_event_args_from_agentengine_metadata(
-            assistant_metadata.get("agentengine") if isinstance(assistant_metadata, Mapping) else None,
+            assistant_metadata.get("agentengine")
+            if isinstance(assistant_metadata, Mapping)
+            else None,
             fallback_run_id=prepared.invocation_id,
         )
         if checkpoint_args:
@@ -3717,7 +3818,9 @@ async def invoke_conversation_once(
                     for key, value in prepared.request_metadata.items()
                     if key != "agentengine"
                 },
-                **_merge_agentengine_metadata(prepared.request_metadata, result_agentengine_metadata),
+                **_merge_agentengine_metadata(
+                    prepared.request_metadata, result_agentengine_metadata
+                ),
             },
         }
         if result_usage:
@@ -3808,7 +3911,7 @@ async def _iter_conversation_turn_events(
             await append_run_status_event(
                 session_id=session_id,
                 author=_runner_name(runner),
-                status="failed",
+                status=_failed_status_for_resume(resume_input),
                 invocation_id=invocation_id,
                 detail=str(exc),
                 metadata={"governance": exc.metadata},
@@ -3944,11 +4047,17 @@ async def _iter_conversation_turn_events(
                                 if chunk_agentengine_metadata:
                                     runner_agentengine_metadata.update(chunk_agentengine_metadata)
                                     resume_run_id = ""
-                                    if prepared.resume_input and _is_checkpoint_resume_input(prepared.resume_input):
-                                        resume_run_id = str(prepared.resume_input.get("run_id") or "").strip()
-                                    checkpoint_args = _checkpoint_event_args_from_agentengine_metadata(
-                                        runner_agentengine_metadata.get("agentengine"),
-                                        fallback_run_id=resume_run_id or prepared.invocation_id,
+                                    if prepared.resume_input and _is_checkpoint_resume_input(
+                                        prepared.resume_input
+                                    ):
+                                        resume_run_id = str(
+                                            prepared.resume_input.get("run_id") or ""
+                                        ).strip()
+                                    checkpoint_args = (
+                                        _checkpoint_event_args_from_agentengine_metadata(
+                                            runner_agentengine_metadata.get("agentengine"),
+                                            fallback_run_id=resume_run_id or prepared.invocation_id,
+                                        )
                                     )
                                     if checkpoint_args:
                                         await append_run_checkpoint_event(
@@ -3968,14 +4077,18 @@ async def _iter_conversation_turn_events(
                                 if isinstance(chunk.get("usage"), Mapping):
                                     stream_usage = _normalize_usage_payload(chunk.get("usage"))
                                 raw_output = chunk.get("output")
-                                responses_output = raw_output if isinstance(raw_output, list) else []
+                                responses_output = (
+                                    raw_output if isinstance(raw_output, list) else []
+                                )
                                 if reasoning_disabled:
                                     responses_output = _filter_responses_reasoning_output(
                                         responses_output
                                     )
                                 raw_response_id = chunk.get("response_id")
                                 responses_response_id = (
-                                    str(raw_response_id) if raw_response_id else responses_response_id
+                                    str(raw_response_id)
+                                    if raw_response_id
+                                    else responses_response_id
                                 )
                                 if responses_output and not emitted_response_artifacts:
                                     for semantic_event in _semantic_events_from_responses_output(
@@ -4053,7 +4166,9 @@ async def _iter_conversation_turn_events(
                                 continue
                             if chunk_type in {"stage_tool_call", "stage_tool_result"}:
                                 emitted_response_artifacts = True
-                                tool_name = str(chunk.get("tool_name") or chunk.get("name") or "tool")
+                                tool_name = str(
+                                    chunk.get("tool_name") or chunk.get("name") or "tool"
+                                )
                                 tool_args = chunk.get("tool_args", chunk.get("args", {}))
                                 if not isinstance(tool_args, Mapping):
                                     tool_args = {}
@@ -4150,7 +4265,9 @@ async def _iter_conversation_turn_events(
                                         "tool_name": tool_name,
                                         "tool_output": chunk.get("tool_output", ""),
                                         "run_id": tool_run_id,
-                                        "observability": _tool_observability_metadata(tool_name, chunk.get("tool_output", "")),
+                                        "observability": _tool_observability_metadata(
+                                            tool_name, chunk.get("tool_output", "")
+                                        ),
                                         "tool_receipt": _tool_receipt_metadata(
                                             session_id=prepared.session_id,
                                             run_id=tool_run_id,
@@ -4170,7 +4287,9 @@ async def _iter_conversation_turn_events(
                                     },
                                     session_service_provider=provider,
                                 )
-                                deferred_tool_names = _extract_deferred_tool_names(chunk.get("tool_output", ""))
+                                deferred_tool_names = _extract_deferred_tool_names(
+                                    chunk.get("tool_output", "")
+                                )
                                 if tool_name == "tool_search" and deferred_tool_names:
                                     await append_deferred_tools_event(
                                         session_id=prepared.session_id,
@@ -4179,7 +4298,9 @@ async def _iter_conversation_turn_events(
                                         invocation_id=prepared.invocation_id,
                                         session_service_provider=provider,
                                     )
-                                _governance_record_tool_result(governance, chunk.get("tool_output", ""))
+                                _governance_record_tool_result(
+                                    governance, chunk.get("tool_output", "")
+                                )
                                 emitted_anything = True
                                 yield {
                                     "type": "tool_result",
@@ -4259,7 +4380,7 @@ async def _iter_conversation_turn_events(
                         await append_run_status_event(
                             session_id=prepared.session_id,
                             author=runner_name,
-                            status="failed",
+                            status=_failed_status_for_resume(resume_input),
                             invocation_id=prepared.invocation_id,
                             detail=str(circuit_exc),
                             metadata={"governance": circuit_exc.metadata},
@@ -4277,7 +4398,9 @@ async def _iter_conversation_turn_events(
                             )
                             or None,
                         }
-                        prepared = await _refresh_history(prepared, session_service_provider=provider)
+                        prepared = await _refresh_history(
+                            prepared, session_service_provider=provider
+                        )
                         runtime_context.history = list(prepared.history)
                         continue
                 if attempt == 0 and not emitted_anything:
@@ -4304,17 +4427,21 @@ async def _iter_conversation_turn_events(
                 await append_run_status_event(
                     session_id=prepared.session_id,
                     author=runner_name,
-                    status="failed",
+                    status=_failed_status_for_resume(resume_input),
                     invocation_id=prepared.invocation_id,
                     detail=str(exc),
-                    metadata={"governance": exc.metadata} if isinstance(exc, RuntimeCircuitOpen) else None,
+                    metadata={"governance": exc.metadata}
+                    if isinstance(exc, RuntimeCircuitOpen)
+                    else None,
                     session_service_provider=provider,
                 )
                 yield {"type": "error", "message": str(exc) or "Agent 运行失败"}
                 return
 
         request_metadata_without_agentengine = {
-            key: value for key, value in dict(request_metadata or {}).items() if key != "agentengine"
+            key: value
+            for key, value in dict(request_metadata or {}).items()
+            if key != "agentengine"
         }
         assistant_metadata = {
             **trace_metadata,
@@ -4331,7 +4458,7 @@ async def _iter_conversation_turn_events(
             await append_run_status_event(
                 session_id=prepared.session_id,
                 author=runner_name,
-                status="failed",
+                status=_failed_status_for_resume(resume_input),
                 invocation_id=prepared.invocation_id,
                 detail="runner_stream_ended_without_final_output",
                 session_service_provider=provider,
