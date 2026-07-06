@@ -28,6 +28,15 @@ import ksadk.conversations as conversation
 from ksadk.conversations.attachment_storage import AttachmentStorageService
 from ksadk.conversations.attachments import compact_attachment_result_for_session
 from ksadk.conversations.model_context import normalize_model_metadata
+from ksadk.conversations.run_kinds import (
+    RUN_MODE_BACKGROUND,
+    RUN_MODE_FOREGROUND,
+    RUN_MODE_UNKNOWN,
+    RUN_TRIGGER_CHECKPOINT_RESUME,
+    RUN_TRIGGER_NEW_RUN,
+    RUN_TRIGGER_UNKNOWN,
+    trigger_from_resume_input,
+)
 from ksadk.conversations.run_status import RUN_STATUS_ACTIVE, RUN_STATUS_TERMINAL
 from ksadk.conversations.session_title import (
     HEURISTIC_SESSION_TITLE_SOURCE,
@@ -121,10 +130,14 @@ class _DetachedSSEStream:
         *,
         invocation_id: str | None = None,
         session_id: str | None = None,
+        run_mode: str = "unknown",
+        run_trigger: str = "unknown",
     ):
         self._source = source
         self.invocation_id = invocation_id
         self.session_id = session_id
+        self._run_mode = run_mode
+        self._run_trigger = run_trigger
         self._subscribers: set[asyncio.Queue[str | None]] = set()
         self._backlog: list[str] = []
         self._done = False
@@ -189,6 +202,8 @@ class _DetachedSSEStream:
                                 f"background_{terminal_fallback_status}:{self.invocation_id or ''}"
                             ),
                             session_service_provider=resolve_session_service,
+                            run_mode=self._run_mode,
+                            run_trigger=self._run_trigger,
                         )
                 except Exception:
                     logger.exception("failed to write background terminal status fallback")
@@ -229,8 +244,16 @@ def _detached_streaming_response(
     invocation_id: str | None = None,
     session_id: str | None = None,
     resume_key: tuple[str, str] | None = None,
+    run_mode: str = "unknown",
+    run_trigger: str = "unknown",
 ) -> StreamingResponse:
-    detached = _DetachedSSEStream(source, invocation_id=invocation_id, session_id=session_id)
+    detached = _DetachedSSEStream(
+        source,
+        invocation_id=invocation_id,
+        session_id=session_id,
+        run_mode=run_mode,
+        run_trigger=run_trigger,
+    )
     if invocation_id and resume_key:
         _DETACHED_RESUME_KEYS_BY_INVOCATION[invocation_id] = resume_key
         _ACTIVE_DETACHED_RESUME_INVOCATION_BY_KEY[resume_key] = invocation_id
@@ -1290,6 +1313,29 @@ def _latest_session_run_status(events: list[SessionEvent]) -> tuple[str, str]:
     return "", ""
 
 
+def _latest_session_run_metadata(
+    events: list[SessionEvent],
+) -> tuple[str, str, str, str]:
+    """返回 (invocation_id, status, run_mode, run_trigger)。
+
+    与 _latest_session_run_status 同语义，但额外从最新 run_status 事件的 metadata
+    读取 run_mode/run_trigger。旧事件缺字段降级 unknown。原 _latest_session_run_status
+    不动，保护现有 ActiveInvocationId/ActiveRunStatus 契约。
+    """
+    invocation_id, status = _latest_session_run_status(events)
+    run_mode = RUN_MODE_UNKNOWN
+    run_trigger = RUN_TRIGGER_UNKNOWN
+    if invocation_id:
+        for event in reversed(events):
+            if event.event_type != "run_status" or _event_run_id(event) != invocation_id:
+                continue
+            metadata = event.metadata or {}
+            run_mode = str(metadata.get("run_mode") or RUN_MODE_UNKNOWN)
+            run_trigger = str(metadata.get("run_trigger") or RUN_TRIGGER_UNKNOWN)
+            break
+    return invocation_id, status, run_mode, run_trigger
+
+
 class WorkspaceDeleteActionRequest(BaseModel):
     AgentId: Optional[str] = None
     Path: str
@@ -1316,7 +1362,12 @@ async def _session_to_action_payload(session: Session) -> dict[str, Any]:
     event_prompts = [prompt for prompt in event_prompts if prompt]
     first_prompt = session.first_prompt or (event_prompts[0] if event_prompts else "")
     last_prompt = session.last_prompt or (event_prompts[-1] if event_prompts else "")
-    active_invocation_id, active_run_status = _latest_session_run_status(events)
+    (
+        active_invocation_id,
+        active_run_status,
+        active_run_mode,
+        active_run_trigger,
+    ) = _latest_session_run_metadata(events)
     title = session.title
     title_source = session.title_source
     if not title:
@@ -1343,6 +1394,8 @@ async def _session_to_action_payload(session: Session) -> dict[str, Any]:
         "LastPrompt": _truncate_session_text(last_prompt),
         "ActiveInvocationId": active_invocation_id,
         "ActiveRunStatus": active_run_status,
+        "ActiveRunMode": active_run_mode,
+        "ActiveRunTrigger": active_run_trigger,
         "State": _sanitize_session_state_for_action(session.state),
         "CreatedAt": session.created_at,
         "UpdatedAt": session.updated_at,
@@ -2020,6 +2073,28 @@ async def list_session_events_action(request: ListSessionEventsActionRequest):
     )
 
 
+def _count_resumable_checkpoints(checkpoints: list[dict[str, Any]]) -> int:
+    """统计可恢复 checkpoint 数量。
+
+    规则：IsResumable=True AND ReplayAllowed!=False AND IsTerminal!=True
+    AND CheckpointStatus not in {expired, disabled}。
+    不排除 resumed（已恢复过的仍计入，符合存档点可反复读的回档语义）。
+    """
+    resumable = 0
+    for cp in checkpoints:
+        if cp.get("IsResumable") is not True:
+            continue
+        if cp.get("ReplayAllowed") is False:
+            continue
+        if cp.get("IsTerminal") is True:
+            continue
+        status = str(cp.get("CheckpointStatus") or "").strip().lower()
+        if status in {"expired", "disabled"}:
+            continue
+        resumable += 1
+    return resumable
+
+
 async def _list_checkpoints_payload(request: ListSessionCheckpointsActionRequest) -> dict[str, Any]:
     service = resolve_session_service()
     session = await service.get_session(request.SessionId)
@@ -2040,9 +2115,11 @@ async def _list_checkpoints_payload(request: ListSessionCheckpointsActionRequest
             continue
         if framework_filter and str(checkpoint["Framework"]).lower() != framework_filter:
             continue
-        if request.OnlyResumable and checkpoint.get("IsResumable") is not True:
-            continue
+        # ResumableTotal 在 OnlyResumable 过滤前统计全量可恢复数（RunId/Framework 范围内）
         checkpoints.append(checkpoint)
+    resumable_total = _count_resumable_checkpoints(checkpoints)
+    if request.OnlyResumable:
+        checkpoints = [cp for cp in checkpoints if cp.get("IsResumable") is True]
     total = len(checkpoints)
     offset = int(request.Offset or 0)
     if request.Limit is not None:
@@ -2053,6 +2130,8 @@ async def _list_checkpoints_payload(request: ListSessionCheckpointsActionRequest
     return {
         "Checkpoints": checkpoints,
         "Total": total,
+        "ResumableTotal": resumable_total,
+        "HasResumableCheckpoint": resumable_total > 0,
         "Offset": offset,
         "Limit": request.Limit if request.Limit is not None else len(checkpoints),
     }
@@ -2157,6 +2236,8 @@ async def resume_run_action(request: ResumeRunActionRequest):
                 invocation_id=invocation_id,
                 detail="resume_noop_terminal_checkpoint",
                 session_service_provider=resolve_session_service,
+                run_mode=RUN_MODE_BACKGROUND,
+                run_trigger=RUN_TRIGGER_CHECKPOINT_RESUME,
             )
             return _action_response(
                 "ResumeRun",
@@ -2204,9 +2285,12 @@ async def resume_run_action(request: ResumeRunActionRequest):
                 invocation_id=resume_invocation_id,
                 prepare_runner=_prepare_runner_for_model,
                 session_service_provider=resolve_session_service,
+                run_mode=RUN_MODE_BACKGROUND,
             ),
             invocation_id=resume_invocation_id,
             resume_key=resume_key,
+            run_mode=RUN_MODE_BACKGROUND,
+            run_trigger=RUN_TRIGGER_CHECKPOINT_RESUME,
         )
 
     response_id = f"resp_{uuid.uuid4().hex}"
@@ -2225,6 +2309,7 @@ async def resume_run_action(request: ResumeRunActionRequest):
         invocation_id=str(resume_input["resume_attempt_id"]),
         prepare_runner=_prepare_runner_for_model,
         session_service_provider=resolve_session_service,
+        run_mode=RUN_MODE_FOREGROUND,
     )
     payload = conversation.build_responses_payload(
         output_text=result["output_text"],
@@ -2663,6 +2748,8 @@ async def run_agent_action(request: RunAgentActionRequest):
             status="in_progress",
             invocation_id=invocation_id,
             session_service_provider=resolve_session_service,
+            run_mode=RUN_MODE_BACKGROUND,
+            run_trigger=trigger_from_resume_input(resume_input),
         )
         resume_key = _detached_resume_key_from_input(resolved_background_session_id, resume_input)
         _reject_if_detached_resume_active(resume_key)
@@ -2682,9 +2769,12 @@ async def run_agent_action(request: RunAgentActionRequest):
                 invocation_id=invocation_id,
                 prepare_runner=_prepare_runner_for_model,
                 session_service_provider=resolve_session_service,
+                run_mode=RUN_MODE_BACKGROUND,
             ),
             invocation_id=invocation_id,
             session_id=resolved_background_session_id,
+            run_mode=RUN_MODE_BACKGROUND,
+            run_trigger=trigger_from_resume_input(resume_input),
         )
         if invocation_id and resume_key:
             _DETACHED_RESUME_KEYS_BY_INVOCATION[invocation_id] = resume_key
@@ -2738,9 +2828,12 @@ async def run_agent_action(request: RunAgentActionRequest):
                 invocation_id=request.InvocationId,
                 prepare_runner=_prepare_runner_for_model,
                 session_service_provider=resolve_session_service,
+                run_mode=RUN_MODE_FOREGROUND,
             ),
             invocation_id=request.InvocationId,
             resume_key=resume_key,
+            run_mode=RUN_MODE_FOREGROUND,
+            run_trigger=trigger_from_resume_input(resume_input),
         )
 
     responses_response_id = f"resp_{uuid.uuid4().hex}" if api_format != "chat_completions" else None
@@ -2760,6 +2853,7 @@ async def run_agent_action(request: RunAgentActionRequest):
         invocation_id=request.InvocationId,
         prepare_runner=_prepare_runner_for_model,
         session_service_provider=resolve_session_service,
+        run_mode=RUN_MODE_FOREGROUND,
     )
     output_text = result["output_text"]
     if api_format == "chat_completions":
@@ -2934,6 +3028,8 @@ async def run_sse(request: AgentRunRequest):
             status="in_progress",
             invocation_id=prepared_non_stream.invocation_id,
             session_service_provider=resolve_session_service,
+            run_mode=RUN_MODE_FOREGROUND,
+            run_trigger=RUN_TRIGGER_NEW_RUN,
         )
 
     async def event_generator():
@@ -3007,6 +3103,8 @@ async def run_sse(request: AgentRunRequest):
                     status="completed",
                     invocation_id=invocation_id,
                     session_service_provider=resolve_session_service,
+                    run_mode=RUN_MODE_FOREGROUND,
+                    run_trigger=RUN_TRIGGER_NEW_RUN,
                 )
 
             except Exception as e:
@@ -3018,6 +3116,8 @@ async def run_sse(request: AgentRunRequest):
                     invocation_id=invocation_id,
                     detail=str(e),
                     session_service_provider=resolve_session_service,
+                    run_mode=RUN_MODE_FOREGROUND,
+                    run_trigger=RUN_TRIGGER_NEW_RUN,
                 )
                 error_event = {
                     "id": str(uuid.uuid4()),
@@ -3092,6 +3192,8 @@ async def run_sse(request: AgentRunRequest):
                     status="in_progress",
                     invocation_id=invocation_id,
                     session_service_provider=resolve_session_service,
+                    run_mode=RUN_MODE_FOREGROUND,
+                    run_trigger=RUN_TRIGGER_NEW_RUN,
                 )
 
                 client_visible_text = ""
@@ -3308,6 +3410,8 @@ async def run_sse(request: AgentRunRequest):
                     status="completed",
                     invocation_id=invocation_id,
                     session_service_provider=resolve_session_service,
+                    run_mode=RUN_MODE_FOREGROUND,
+                    run_trigger=RUN_TRIGGER_NEW_RUN,
                 )
 
             except Exception as e:
@@ -3319,6 +3423,8 @@ async def run_sse(request: AgentRunRequest):
                     invocation_id=invocation_id,
                     detail=str(e),
                     session_service_provider=resolve_session_service,
+                    run_mode=RUN_MODE_FOREGROUND,
+                    run_trigger=RUN_TRIGGER_NEW_RUN,
                 )
                 error_event = {
                     "id": str(uuid.uuid4()),
@@ -3503,9 +3609,12 @@ async def responses(request: ResponsesRequest):
                 invocation_id=invocation_id,
                 prepare_runner=_prepare_runner_for_model,
                 session_service_provider=resolve_session_service,
+                run_mode=RUN_MODE_FOREGROUND,
             ),
             invocation_id=invocation_id,
             resume_key=resume_key,
+            run_mode=RUN_MODE_FOREGROUND,
+            run_trigger=trigger_from_resume_input(resume_input),
         )
 
     response_id = f"resp_{uuid.uuid4().hex}"
@@ -3526,6 +3635,7 @@ async def responses(request: ResponsesRequest):
         invocation_id=invocation_id,
         prepare_runner=_prepare_runner_for_model,
         session_service_provider=resolve_session_service,
+        run_mode=RUN_MODE_FOREGROUND,
     )
     return conversation.build_responses_payload(
         output_text=result["output_text"],
@@ -3561,6 +3671,7 @@ async def chat_completions(request: ChatCompletionRequest):
                 account_id=account_id,
                 prepare_runner=_prepare_runner_for_model,
                 session_service_provider=resolve_session_service,
+                run_mode=RUN_MODE_FOREGROUND,
             ),
             media_type="text/event-stream",
         )
@@ -3577,6 +3688,7 @@ async def chat_completions(request: ChatCompletionRequest):
         account_id=account_id,
         prepare_runner=_prepare_runner_for_model,
         session_service_provider=resolve_session_service,
+        run_mode=RUN_MODE_FOREGROUND,
     )
     return conversation.build_chat_completions_payload(
         output_text=result["output_text"],

@@ -37,6 +37,17 @@ from ksadk.conversations.normalize import (
     normalize_kop_messages,
 )
 from ksadk.conversations.reasoning_markup import strip_reasoning_markup
+from ksadk.conversations.run_kinds import (
+    RUN_MODE_FOREGROUND,
+    RUN_MODE_UNKNOWN,
+    RUN_TRIGGER_APPROVAL_RESUME,
+    RUN_TRIGGER_CHECKPOINT_RESUME,
+    RUN_TRIGGER_NEW_RUN,
+    RUN_TRIGGER_UNKNOWN,
+    trigger_from_resume_input,
+    validate_run_mode,
+    validate_run_trigger,
+)
 from ksadk.conversations.semantic_summary import (
     extract_pinned_state,
     find_pinned_group_indexes,
@@ -586,6 +597,10 @@ class PreparedConversationTurn:
     compaction_trigger: str | None = None
     compacted_until_seq_id: int | None = None
     resume_input: dict[str, Any] | None = None
+    # 双维度 run 标识：run_mode=怎么跑（background/foreground），
+    # run_trigger=怎么开始（new_run/checkpoint_resume/approval_resume）
+    run_mode: str = RUN_MODE_FOREGROUND
+    run_trigger: str = RUN_TRIGGER_NEW_RUN
 
 
 @dataclass
@@ -2836,8 +2851,16 @@ async def append_run_status_event(
     detail: str | None = None,
     metadata: Mapping[str, Any] | None = None,
     session_service_provider: Callable[[], Any] | None = None,
+    run_mode: str = RUN_MODE_UNKNOWN,
+    run_trigger: str = RUN_TRIGGER_UNKNOWN,
 ) -> SessionEvent:
-    """记录运行态事件，供 UI/恢复逻辑区分 turn 生命周期。"""
+    """记录运行态事件，供 UI/恢复逻辑区分 turn 生命周期。
+
+    run_mode/run_trigger 是双维度字段（怎么跑/怎么开始），写入 metadata 与
+    state_delta.active_run，供前端区分后台长任务、checkpoint 恢复、approval 续跑。
+    """
+    run_mode = validate_run_mode(run_mode)
+    run_trigger = validate_run_trigger(run_trigger)
     service = (session_service_provider or resolve_session_service)()
     if invocation_id:
         try:
@@ -2859,16 +2882,20 @@ async def append_run_status_event(
     event_metadata = {
         "status": status,
         **({"detail": detail} if detail else {}),
+        "run_mode": run_mode,
+        "run_trigger": run_trigger,
         **dict(metadata or {}),
     }
     # state_delta.active_run：与 agentengine-server _append_run_status 对齐，
     # 让 session.state.active_run 反映当前 run 状态（postgres/local backend 会自动合并）。
     # server 侧 ActiveRunStatus 来源是 state_delta 而非扫事件，不写则 server 在 resume
-    # 期间仍持旧 active_run 值。
+    # 期间仍持旧 active_run 值。run_mode/run_trigger 同步写入，供 _serialize_session 读取。
     state_delta = {
         "active_run": {
             "invocation_id": invocation_id or "",
             "status": status,
+            "run_mode": run_mode,
+            "run_trigger": run_trigger,
         }
     }
     return await append_conversation_event(
@@ -3260,8 +3287,15 @@ async def build_run_input(
     invocation_id: Optional[str] = None,
     governance_state: RuntimeGovernanceState | None = None,
     session_service_provider: Callable[[], Any] | None = None,
+    run_mode: str = RUN_MODE_FOREGROUND,
 ) -> PreparedConversationTurn:
-    """构建一次 turn 的标准运行输入，并在进入模型前做上下文投影/压缩。"""
+    """构建一次 turn 的标准运行输入，并在进入模型前做上下文投影/压缩。
+
+    run_mode 由 caller 按 endpoint 语义传入（Background:true→background，普通→foreground）；
+    run_trigger 由 resume_input 推导（new_run/checkpoint_resume/approval_resume）。
+    """
+    caller_run_mode = validate_run_mode(run_mode)
+    caller_run_trigger = trigger_from_resume_input(resume_input)
     provider = session_service_provider or resolve_session_service
     service = provider()
     resolved_user_id = user_id
@@ -3319,6 +3353,8 @@ async def build_run_input(
                 invocation_id=resolved_invocation_id,
                 detail="checkpoint_resume",
                 session_service_provider=provider,
+                run_mode=caller_run_mode,
+                run_trigger=RUN_TRIGGER_CHECKPOINT_RESUME,
             )
             history = build_history_from_events(await service.get_events(resolved_session_id))
             return PreparedConversationTurn(
@@ -3343,6 +3379,8 @@ async def build_run_input(
                     **_agentengine_resume_metadata(normalized_resume_input),
                 },
                 resume_input=normalized_resume_input,
+                run_mode=caller_run_mode,
+                run_trigger=RUN_TRIGGER_CHECKPOINT_RESUME,
             )
 
         is_approval_resume = _is_approval_resume_input(normalized_resume_input)
@@ -3421,6 +3459,8 @@ async def build_run_input(
             instructions=normalized_instructions,
             request_metadata=normalized_request_metadata,
             resume_input=effective_resume_input,
+            run_mode=caller_run_mode,
+            run_trigger=RUN_TRIGGER_APPROVAL_RESUME,
         )
 
     normalized_messages = _normalized_conversation_messages(messages)
@@ -3525,6 +3565,8 @@ async def build_run_input(
             if checkpoint
             else None
         ),
+        run_mode=caller_run_mode,
+        run_trigger=caller_run_trigger,
     )
 
 
@@ -3557,6 +3599,7 @@ async def invoke_conversation_once(
     account_id: str | None = None,
     invocation_id: Optional[str] = None,
     session_service_provider: Callable[[], Any] | None = None,
+    run_mode: str = RUN_MODE_FOREGROUND,
 ) -> tuple[str, dict[str, Any]]:
     """非流式 turn 编排入口。
 
@@ -3567,6 +3610,9 @@ async def invoke_conversation_once(
     prepare_runner(runner, model)
     governance = _runtime_governance_from_env()
     _governance_record_turn_start(governance)
+    # 入口算 run_trigger（不依赖 prepared，build_run_input 失败时也能用）
+    entry_run_mode = validate_run_mode(run_mode)
+    entry_run_trigger = trigger_from_resume_input(resume_input)
     try:
         prepared = await build_run_input(
             agent_id=agent_id,
@@ -3583,7 +3629,11 @@ async def invoke_conversation_once(
             invocation_id=invocation_id,
             governance_state=governance,
             session_service_provider=provider,
+            run_mode=entry_run_mode,
         )
+        # prepared 之后的 run_status 写入复用 prepared 的 mode/trigger
+        run_mode = prepared.run_mode
+        run_trigger = prepared.run_trigger
     except RuntimeCircuitOpen as exc:
         if session_id:
             await append_run_status_event(
@@ -3594,6 +3644,8 @@ async def invoke_conversation_once(
                 detail=str(exc),
                 metadata={"governance": exc.metadata},
                 session_service_provider=provider,
+                run_mode=entry_run_mode,
+                run_trigger=entry_run_trigger,
             )
         raise
     _inject_runner_deferred_tools_for_request(runner, prepared)
@@ -3642,6 +3694,8 @@ async def invoke_conversation_once(
             status="in_progress",
             invocation_id=prepared.invocation_id,
             session_service_provider=provider,
+            run_mode=run_mode,
+            run_trigger=run_trigger,
         )
 
         result: dict[str, Any] | None = None
@@ -3672,6 +3726,8 @@ async def invoke_conversation_once(
                     invocation_id=prepared.invocation_id,
                     detail="cancel_requested",
                     session_service_provider=provider,
+                    run_mode=run_mode,
+                    run_trigger=run_trigger,
                 )
                 raise
             except Exception as exc:
@@ -3698,6 +3754,8 @@ async def invoke_conversation_once(
                             detail=str(circuit_exc),
                             metadata={"governance": circuit_exc.metadata},
                             session_service_provider=provider,
+                            run_mode=entry_run_mode,
+                            run_trigger=entry_run_trigger,
                         )
                         raise circuit_exc
                     if checkpoint:
@@ -3722,6 +3780,8 @@ async def invoke_conversation_once(
                         invocation_id=prepared.invocation_id,
                         detail=f"fallback_model:{fallback_model}",
                         session_service_provider=provider,
+                        run_mode=entry_run_mode,
+                        run_trigger=entry_run_trigger,
                     )
                     continue
                 last_invoke_error = exc
@@ -3732,6 +3792,8 @@ async def invoke_conversation_once(
                     invocation_id=prepared.invocation_id,
                     detail=str(exc),
                     session_service_provider=provider,
+                    run_mode=entry_run_mode,
+                    run_trigger=entry_run_trigger,
                 )
                 break
 
@@ -3807,6 +3869,8 @@ async def invoke_conversation_once(
             status="completed",
             invocation_id=prepared.invocation_id,
             session_service_provider=provider,
+            run_mode=entry_run_mode,
+            run_trigger=entry_run_trigger,
         )
         result_payload = {
             "output_text": output_text,
@@ -3854,12 +3918,15 @@ async def _iter_conversation_turn_events(
     account_id: str | None = None,
     invocation_id: Optional[str] = None,
     session_service_provider: Callable[[], Any] | None = None,
+    run_mode: str = RUN_MODE_FOREGROUND,
 ) -> AsyncIterator[dict[str, Any]]:
     """Internal semantic event stream shared by protocol serializers."""
     provider = session_service_provider or resolve_session_service
     prepare_runner(runner, model)
     governance = _runtime_governance_from_env()
     _governance_record_turn_start(governance)
+    entry_run_mode = validate_run_mode(run_mode)
+    entry_run_trigger = trigger_from_resume_input(resume_input)
     if resume_input is None:
         compaction_preview = await preview_auto_compaction(
             agent_id=agent_id,
@@ -3905,7 +3972,11 @@ async def _iter_conversation_turn_events(
             invocation_id=invocation_id,
             governance_state=governance,
             session_service_provider=provider,
+            run_mode=entry_run_mode,
         )
+        # prepared 之后的 run_status 写入复用 prepared 的 mode/trigger
+        run_mode = prepared.run_mode
+        run_trigger = prepared.run_trigger
     except RuntimeCircuitOpen as exc:
         if session_id:
             await append_run_status_event(
@@ -3916,6 +3987,8 @@ async def _iter_conversation_turn_events(
                 detail=str(exc),
                 metadata={"governance": exc.metadata},
                 session_service_provider=provider,
+                run_mode=entry_run_mode,
+                run_trigger=entry_run_trigger,
             )
         yield {"type": "error", "message": str(exc) or "Agent 运行失败"}
         return
@@ -4007,6 +4080,8 @@ async def _iter_conversation_turn_events(
             status="in_progress",
             invocation_id=prepared.invocation_id,
             session_service_provider=provider,
+            run_mode=run_mode,
+            run_trigger=run_trigger,
         )
 
         accumulated_text = ""
@@ -4245,6 +4320,8 @@ async def _iter_conversation_turn_events(
                                         invocation_id=prepared.invocation_id,
                                         detail="approval_required",
                                         session_service_provider=provider,
+                                        run_mode=run_mode,
+                                        run_trigger=run_trigger,
                                     )
                                     emitted_anything = True
                                     yield {
@@ -4328,6 +4405,8 @@ async def _iter_conversation_turn_events(
                                     invocation_id=prepared.invocation_id,
                                     detail="approval_required",
                                     session_service_provider=provider,
+                                    run_mode=run_mode,
+                                    run_trigger=run_trigger,
                                 )
                                 emitted_anything = True
                                 yield {
@@ -4353,6 +4432,8 @@ async def _iter_conversation_turn_events(
                     invocation_id=prepared.invocation_id,
                     detail="cancel_requested",
                     session_service_provider=provider,
+                    run_mode=run_mode,
+                    run_trigger=run_trigger,
                 )
                 yield {
                     "type": "cancelled",
@@ -4385,6 +4466,8 @@ async def _iter_conversation_turn_events(
                             detail=str(circuit_exc),
                             metadata={"governance": circuit_exc.metadata},
                             session_service_provider=provider,
+                            run_mode=entry_run_mode,
+                            run_trigger=entry_run_trigger,
                         )
                         yield {"type": "error", "message": str(circuit_exc) or "Agent 运行失败"}
                         return
@@ -4422,6 +4505,8 @@ async def _iter_conversation_turn_events(
                             invocation_id=prepared.invocation_id,
                             detail=f"fallback_model:{fallback_model}",
                             session_service_provider=provider,
+                            run_mode=entry_run_mode,
+                            run_trigger=entry_run_trigger,
                         )
                         continue
                 await append_run_status_event(
@@ -4434,6 +4519,8 @@ async def _iter_conversation_turn_events(
                     if isinstance(exc, RuntimeCircuitOpen)
                     else None,
                     session_service_provider=provider,
+                    run_mode=entry_run_mode,
+                    run_trigger=entry_run_trigger,
                 )
                 yield {"type": "error", "message": str(exc) or "Agent 运行失败"}
                 return
@@ -4462,6 +4549,8 @@ async def _iter_conversation_turn_events(
                 invocation_id=prepared.invocation_id,
                 detail="runner_stream_ended_without_final_output",
                 session_service_provider=provider,
+                run_mode=entry_run_mode,
+                run_trigger=entry_run_trigger,
             )
             _finish_span()
             yield {
@@ -4506,6 +4595,8 @@ async def _iter_conversation_turn_events(
             status="completed",
             invocation_id=prepared.invocation_id,
             session_service_provider=provider,
+            run_mode=entry_run_mode,
+            run_trigger=entry_run_trigger,
         )
         _finish_span()
         yield {
@@ -4540,6 +4631,7 @@ async def stream_conversation_turn(
     account_id: str | None = None,
     invocation_id: Optional[str] = None,
     session_service_provider: Callable[[], Any] | None = None,
+    run_mode: str = RUN_MODE_FOREGROUND,
 ) -> AsyncIterator[str]:
     """Legacy ksadk response SSE stream used by hosted chat and chat-completions."""
     async for event in _iter_conversation_turn_events(
@@ -4559,6 +4651,7 @@ async def stream_conversation_turn(
         account_id=account_id,
         invocation_id=invocation_id,
         session_service_provider=session_service_provider,
+        run_mode=run_mode,
     ):
         event_type = event.get("type")
         if event_type == "compaction":
@@ -4652,6 +4745,7 @@ async def stream_responses_conversation_turn(
     account_id: str | None = None,
     invocation_id: Optional[str] = None,
     session_service_provider: Callable[[], Any] | None = None,
+    run_mode: str = RUN_MODE_FOREGROUND,
 ) -> AsyncIterator[str]:
     """OpenAI Responses-style SSE stream."""
     response_id = f"resp_{uuid.uuid4().hex}"
@@ -4730,6 +4824,7 @@ async def stream_responses_conversation_turn(
         account_id=account_id,
         invocation_id=invocation_id,
         session_service_provider=session_service_provider,
+        run_mode=run_mode,
     ):
         event_metadata = event.get("metadata")
         if isinstance(event_metadata, Mapping):

@@ -381,6 +381,9 @@ async def test_run_sse_uses_new_session_service(monkeypatch):
     # completed 后 active_run 反映终态。
     assert session.state["topic"] == "billing"
     assert session.state["active_run"]["status"] == "completed"
+    # active_run 现含 run_mode/run_trigger（普通前台 run 默认 foreground/new_run）
+    assert session.state["active_run"]["run_mode"] == "foreground"
+    assert session.state["active_run"]["run_trigger"] == "new_run"
 
     events = await service.get_events(session_id)
     assert [event.author for event in events] == ["user", "demo-agent", "demo-agent", "demo-agent"]
