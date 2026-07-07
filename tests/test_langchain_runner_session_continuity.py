@@ -305,6 +305,15 @@ async def test_langchain_runner_stream_emits_final_usage_from_last_chunk():
                 "input_token_details": {},
                 "output_token_details": {"reasoning": 3},
             },
+            "metadata": {
+                "last_usage": {
+                    "input_tokens": 11,
+                    "output_tokens": 7,
+                    "total_tokens": 18,
+                    "input_token_details": {},
+                    "output_token_details": {"reasoning": 3},
+                },
+            },
         },
     ]
 

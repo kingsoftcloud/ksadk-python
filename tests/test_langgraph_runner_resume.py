@@ -530,6 +530,15 @@ async def test_stream_emits_final_usage_from_graph_state_after_text_stream():
             "input_token_details": {},
             "output_token_details": {"reasoning": 5},
         },
+        "metadata": {
+            "last_usage": {
+                "input_tokens": 8,
+                "output_tokens": 13,
+                "total_tokens": 21,
+                "input_token_details": {},
+                "output_token_details": {"reasoning": 5},
+            },
+        },
     }
 
 
@@ -556,6 +565,15 @@ async def test_stream_final_output_chunk_includes_usage_from_chain_end_output():
             "total_tokens": 21,
             "input_token_details": {},
             "output_token_details": {"reasoning": 5},
+        },
+        "metadata": {
+            "last_usage": {
+                "input_tokens": 8,
+                "output_tokens": 13,
+                "total_tokens": 21,
+                "input_token_details": {},
+                "output_token_details": {"reasoning": 5},
+            },
         },
     }
 

@@ -540,9 +540,12 @@ class LangGraphRunner(BaseRunner):
             usage = self._extract_usage(result)
             if usage:
                 output["usage"] = usage
+            last_usage = self._extract_last_usage(result)
+            if last_usage:
+                output.setdefault("metadata", {})["last_usage"] = last_usage
             metadata = await self._latest_checkpoint_metadata(config)
             if metadata:
-                output["metadata"] = metadata
+                output["metadata"] = {**(output.get("metadata") or {}), **metadata}
             return output
             
         except Exception as e:
@@ -710,6 +713,9 @@ class LangGraphRunner(BaseRunner):
             usage = self._extract_usage(result)
             if usage:
                 final_chunk["usage"] = usage
+            last_usage = self._extract_last_usage(result)
+            if last_usage:
+                final_chunk.setdefault("metadata", {})["last_usage"] = last_usage
             yield final_chunk
             return
 
@@ -784,6 +790,7 @@ class LangGraphRunner(BaseRunner):
                     if extracted_output:
                         final_output_text = strip_reasoning_markup(str(extracted_output))
                     final_output_usage = self._extract_usage(output)
+                    final_output_last_usage = self._extract_last_usage(output)
 
         except Exception as e:
             if "Interrupt" in type(e).__name__:
@@ -806,6 +813,8 @@ class LangGraphRunner(BaseRunner):
                 final_chunk = {"output": final_output_text, "type": "final"}
                 if final_output_usage:
                     final_chunk["usage"] = final_output_usage
+                if final_output_last_usage:
+                    final_chunk.setdefault("metadata", {})["last_usage"] = final_output_last_usage
                 yield final_chunk
             elif not emitted_non_text_event:
                 result = await self.invoke(invoke_payload)
@@ -813,6 +822,9 @@ class LangGraphRunner(BaseRunner):
                 usage = self._extract_usage(result)
                 if usage:
                     final_chunk["usage"] = usage
+                last_usage = self._extract_last_usage(result)
+                if last_usage:
+                    final_chunk.setdefault("metadata", {})["last_usage"] = last_usage
                 yield final_chunk
                 metadata = result.get("metadata") if isinstance(result, dict) else None
                 if isinstance(metadata, dict) and metadata.get("agentengine"):
@@ -823,6 +835,8 @@ class LangGraphRunner(BaseRunner):
             usage = await self._latest_state_usage(config)
             if usage:
                 final_chunk["usage"] = usage
+                # _latest_state_usage 返回末个 message usage,单次调用场景即 last_usage
+                final_chunk.setdefault("metadata", {})["last_usage"] = usage
             yield final_chunk
 
         metadata = await self._latest_checkpoint_metadata(config)
