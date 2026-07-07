@@ -19,19 +19,20 @@ PyPI publication.
 
 ## Publication Strategy
 
-Record exactly one approved source publication strategy:
+Record exactly one approved source publication strategy. This candidate has
+not been approved for external writes yet.
 
 | Strategy | Approved |
 | --- | --- |
 | Reviewed GitHub pull request | No |
 | Clean export from reviewed candidate | No |
-| Rewritten Git history after secret scan | Yes |
+| Rewritten Git history after secret scan | No |
 
 The approved strategy must name the reviewed commit, tag, pull request, or
 export archive used for:
 
-- `ksadk-python`: rewritten public `new-main` candidate `3bbf295e4f27a4f7f6a8b8cdf76a17227ad40033`, verified by `make public-preflight KSADK_WEB_VERSION=0.2.16` and public source/dist audits.
-- `ksadk-web`: npm package `@kingsoftcloud/ksadk-web@0.2.16` (`latest` on 2026-07-03), bundled from npm during `make public-preflight KSADK_WEB_VERSION=0.2.16`.
+- `ksadk-python`: pending clean export candidate from internal commit `dd220443a3ae0b608129c83c446104c6017f784b`; local candidate directory `/tmp/ksadk-python-export-candidate-0.6.9`; verified with `KSADK_WEB_VERSION=0.2.18 KSADK_WEB_RELEASE_URL=file:///tmp/ksadk-web-pack.T9pE2L/kingsoftcloud-ksadk-web-0.2.18.tgz make public-preflight` on 2026-07-08.
+- `ksadk-web`: pending npm package `@kingsoftcloud/ksadk-web@0.2.18` from commit `e3eba982c4aeb3289ff2b4620e348868a9fdebd7`; current Python candidate commit `dd220443a3ae0b608129c83c446104c6017f784b`; npm registry still reports `0.2.17`, so official registry-bundled preflight is still pending.
 
 Both approved source references must include the current commit SHA at approval
 time. This prevents a stale approval record from passing after candidate
@@ -59,6 +60,6 @@ changes.
 
 | Role | Name | Decision | Date |
 | --- | --- | --- | --- |
-| Maintainer | xiayu | Approved for one-time public main rewrite | 2026-07-03 |
-| Security reviewer | automated public audit | Passed source, wheel, and sdist audits with 0 violations | 2026-07-03 |
-| Release owner | xiayu | Approved GitHub Release / PyPI Trusted Publishing for 0.6.9 | 2026-07-03 |
+| Maintainer |  |  |  |
+| Security reviewer |  |  |  |
+| Release owner |  |  |  |
