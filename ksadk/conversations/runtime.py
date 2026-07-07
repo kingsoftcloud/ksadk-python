@@ -3858,6 +3858,9 @@ async def invoke_conversation_once(
         result = result or {}
         output_text = strip_reasoning_markup(str(result.get("output", "")))
         result_usage = _normalize_usage_payload(result.get("usage"))
+        result_last_usage = _normalize_usage_payload(
+            (result.get("metadata") or {}).get("last_usage")
+        ) or (result_usage if result_usage else {})
         _set_conversation_output_attributes(span, output_text)
         result_agentengine_metadata = _extract_agentengine_metadata(result)
         assistant_metadata: dict[str, Any] = {
@@ -3874,6 +3877,8 @@ async def invoke_conversation_once(
                 assistant_metadata["request_metadata"] = request_metadata_without_agentengine
         if result_usage:
             assistant_metadata["usage"] = result_usage
+        if result_last_usage:
+            assistant_metadata["last_usage"] = result_last_usage
         if response_id:
             assistant_metadata["response_id"] = response_id
         checkpoint_args = _checkpoint_event_args_from_agentengine_metadata(
@@ -3946,6 +3951,8 @@ async def invoke_conversation_once(
         if result_usage:
             result_payload["usage"] = result_usage
             result_payload["metadata"]["usage"] = result_usage
+        if result_last_usage:
+            result_payload["metadata"]["last_usage"] = result_last_usage
         if response_id:
             result_payload["response_id"] = response_id
         return prepared.session_id, result_payload
@@ -4148,6 +4155,7 @@ async def _iter_conversation_turn_events(
         responses_response_id: str | None = response_id
         runner_agentengine_metadata: dict[str, Any] = {}
         stream_usage: dict[str, Any] = {}
+        stream_last_usage: dict[str, Any] = {}
         reasoning_disabled = _model_options_disable_reasoning(prepared.model_options)
         for attempt in range(2):
             try:
@@ -4207,6 +4215,9 @@ async def _iter_conversation_turn_events(
                             if chunk_type == "responses_output":
                                 if isinstance(chunk.get("usage"), Mapping):
                                     stream_usage = _normalize_usage_payload(chunk.get("usage"))
+                                chunk_last = (chunk.get("metadata") or {}).get("last_usage")
+                                if isinstance(chunk_last, Mapping):
+                                    stream_last_usage = _normalize_usage_payload(chunk_last) or stream_usage
                                 raw_output = chunk.get("output")
                                 responses_output = (
                                     raw_output if isinstance(raw_output, list) else []
@@ -4481,6 +4492,9 @@ async def _iter_conversation_turn_events(
                                     accumulated_text = final_text
                                 if isinstance(chunk.get("usage"), Mapping):
                                     stream_usage = _normalize_usage_payload(chunk.get("usage"))
+                                chunk_last = (chunk.get("metadata") or {}).get("last_usage")
+                                if isinstance(chunk_last, Mapping):
+                                    stream_last_usage = _normalize_usage_payload(chunk_last) or stream_usage
                 break
             except asyncio.CancelledError:
                 await append_run_status_event(
@@ -4597,6 +4611,10 @@ async def _iter_conversation_turn_events(
             assistant_metadata["responses_output"] = responses_output
         if stream_usage:
             assistant_metadata["usage"] = stream_usage
+        if stream_last_usage:
+            assistant_metadata["last_usage"] = stream_last_usage
+        elif stream_usage:
+            assistant_metadata["last_usage"] = stream_usage
         if responses_response_id:
             assistant_metadata["response_id"] = responses_response_id
         if emitted_anything and not saw_final_chunk and not accumulated_text:

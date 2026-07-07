@@ -189,6 +189,15 @@ class _UsageStreamingRunner(_StreamingRunner):
                 "input_token_details": {"cached": 4},
                 "output_token_details": {"reasoning": 5},
             },
+            "metadata": {
+                "last_usage": {
+                    "input_tokens": 8,
+                    "output_tokens": 13,
+                    "total_tokens": 21,
+                    "input_token_details": {"cached": 4},
+                    "output_token_details": {"reasoning": 5},
+                },
+            },
         }
 
 
@@ -4111,7 +4120,13 @@ def test_build_responses_payload_uses_real_usage_from_metadata():
                 "output_tokens": 13,
                 "total_tokens": 21,
                 "output_token_details": {"reasoning": 5},
-            }
+            },
+            "last_usage": {
+                "input_tokens": 8,
+                "output_tokens": 13,
+                "total_tokens": 21,
+                "input_token_details": {"cached": 4},
+            },
         },
     )
 
@@ -4121,6 +4136,9 @@ def test_build_responses_payload_uses_real_usage_from_metadata():
         "total_tokens": 21,
         "output_token_details": {"reasoning": 5},
     }
+    # last_usage 透传到 metadata(供 server 取窗口占用)
+    assert payload["metadata"]["last_usage"]["input_tokens"] == 8
+    assert payload["metadata"]["last_usage"]["input_token_details"]["cached"] == 4
 
 
 @pytest.mark.asyncio
@@ -4151,9 +4169,13 @@ async def test_stream_conversation_turn_preserves_final_chunk_usage(monkeypatch)
         "input_token_details": {"cached": 4},
         "output_token_details": {"reasoning": 5},
     }
+    # last_usage 透传到 response.completed 的 metadata(供 server 取窗口占用)
+    assert completed_payload["metadata"]["last_usage"]["input_tokens"] == 8
+    assert completed_payload["metadata"]["last_usage"]["input_token_details"]["cached"] == 4
     events = await service.get_events("sess-stream-usage")
     assistant_event = next(event for event in events if event.event_type == "assistant_message")
     assert assistant_event.metadata["usage"] == completed_payload["usage"]
+    assert assistant_event.metadata["last_usage"]["input_tokens"] == 8
 
 
 @pytest.mark.asyncio
