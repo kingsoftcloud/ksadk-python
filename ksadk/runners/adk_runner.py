@@ -46,6 +46,7 @@ class ADKRunner(BaseRunner):
         self._runtime_toolsets: list[Any] = []
         # ADK resumability state
         self._resumable: bool = False
+        self._module = None
         self._last_adk_invocation_id: Optional[str] = None
 
     async def close(self) -> None:
@@ -1416,6 +1417,7 @@ class ADKRunner(BaseRunner):
                     )
 
                 if adk_invocation_id:
+                    logger.info("Resuming ADK run with adk_invocation_id: %s", adk_invocation_id)
                     events_async = self._runner.run_async(
                         session_id=session_id,
                         user_id="ksadk_user",
@@ -1573,6 +1575,7 @@ class ADKRunner(BaseRunner):
                     )
 
                 if adk_invocation_id:
+                    logger.info("Resuming ADK stream with adk_invocation_id: %s", adk_invocation_id)
                     events_async = self._runner.run_async(
                         session_id=session_id,
                         user_id="ksadk_user",
