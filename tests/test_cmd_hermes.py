@@ -1490,3 +1490,117 @@ def test_hermes_delete_resolves_name_to_agent_id_and_rejects_non_hermes(monkeypa
 
     assert non_hermes.exit_code != 0
     assert _FakeHermesClient.deleted == []
+
+
+class _FakeHermesUpdateNotFoundClient(_FakeHermesClient):
+    """update_agent 对已删除 agent 抛 404，create_agent 返回新 agent。"""
+
+    update_called = False
+    create_called = False
+
+    async def update_agent(self, agent_id, payload):
+        self.__class__.update_called = True
+        raise AgentEngineAPIError(
+            404,
+            "未找到对应的 Agent",
+            details={"http_status": 404, "remote_error_message": "未找到对应的 Agent"},
+        )
+
+    async def create_agent(self, payload):
+        self.__class__.create_called = True
+        self.__class__.create_payload = payload
+        return {
+            "agent_id": "ar-hermes-recreated",
+            "name": payload["name"],
+            "endpoint": "https://recreated-hermes.example.com",
+            "api_key": "ak-recreated",
+        }
+
+
+def test_hermes_deploy_falls_back_to_create_when_state_points_to_deleted_agent(
+    monkeypatch, tmp_path: Path
+):
+    """本地 .agentengine.state 缓存的 agent 已在服务端删除时，deploy 应自动回退为新建。"""
+    runner = CliRunner()
+    monkeypatch.setattr(cmd_hermes, "AgentEngineClient", _FakeHermesUpdateNotFoundClient)
+    monkeypatch.chdir(tmp_path)
+    _FakeHermesUpdateNotFoundClient.update_called = False
+    _FakeHermesUpdateNotFoundClient.create_called = False
+
+    # 预置失效的 state（指向一个已删除的 agent）
+    (tmp_path / ".agentengine.state").write_text(
+        "agent_id: ar-20260623102747-3aef1bf8\n"
+        "api_key: ak-stale\n"
+        "endpoint: http://ar-20260623102747-3aef1bf8.agent-pre.kspmas.ksyun.com\n"
+        "framework: hermes\n"
+        "image: hub.kce.ksyun.com/agentengine-public/hermes-agent:stale\n"
+        "name: demo-hermes\n"
+        "region: pre-online\n"
+        "type: hermes\n"
+        "ui_path: /\n"
+        "ui_profile: hermes\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        cmd_hermes.hermes,
+        [
+            "deploy",
+            "--name",
+            "demo-hermes",
+            "--image",
+            "ghcr.io/kingsoftcloud/hermes-agent:test",
+            "--model-base-url",
+            "https://model.example.com/v1",
+            "--model-api-key",
+            "sk-demo",
+            "--default-model",
+            "glm-test",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _FakeHermesUpdateNotFoundClient.update_called is True
+    assert _FakeHermesUpdateNotFoundClient.create_called is True
+    # state 应被清理并写入新 agent_id
+    state = (tmp_path / ".agentengine.state").read_text(encoding="utf-8")
+    assert "ar-20260623102747-3aef1bf8" not in state
+    assert "agent_id: ar-hermes-recreated" in state
+    assert "endpoint: https://recreated-hermes.example.com" in state
+    assert "api_key: ak-recreated" in state
+    # 应有回退提示
+    assert "本地状态失效" in result.output
+
+
+def test_is_agent_not_found_error_matches_structured_404():
+    from ksadk.deployment.agent_access import is_agent_not_found_error
+
+    # AgentEngineAPIError code=404 → 命中
+    assert is_agent_not_found_error(
+        AgentEngineAPIError(404, "未找到对应的 Agent", details={"http_status": 404})
+    ) is True
+    # details.http_status=404（code 非 int）→ 命中
+    assert is_agent_not_found_error(
+        AgentEngineAPIError("NotFound", "x", details={"http_status": 404})
+    ) is True
+
+
+def test_is_agent_not_found_error_matches_text_fallback():
+    from ksadk.deployment.agent_access import is_agent_not_found_error
+
+    # 裸 Exception 文案含 404 + 未找到对应的 agent → 命中
+    assert is_agent_not_found_error(Exception("HTTP 404: 未找到对应的 agent")) is True
+    # code: 404 大写 + agent not found → 命中
+    assert is_agent_not_found_error(Exception("Code: 404 - agent not found")) is True
+
+
+def test_is_agent_not_found_error_rejects_non_agent_404():
+    from ksadk.deployment.agent_access import is_agent_not_found_error
+
+    # 404 但文案不含 agent-not-found（裸 AgentEngineAPIError code=404 结构化判定仍命中，
+    # 因为 Action API code=404 语义就是 agent not found）—— 这是预期行为
+    # 但纯文案 404 无 agent 文案 → 不命中（避免误判鉴权/路由 404）
+    assert is_agent_not_found_error(Exception("HTTP 404: Forbidden")) is False
+    assert is_agent_not_found_error(Exception("model not found")) is False
+    assert is_agent_not_found_error(Exception("network error")) is False
+    assert is_agent_not_found_error(None) is False  # type: ignore[arg-type]

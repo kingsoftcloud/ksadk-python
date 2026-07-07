@@ -2,7 +2,7 @@
 
 本文档面向部署、运行、运维和 SDK 集成排障。它不是业务代码 `.env` 模板；业务方自己的变量，例如 `APP_ENV`、`DB_URL`、`CUSTOM_API_KEY`，只要不是 KsADK / 平台运行时读取的变量，都属于业务自定义变量，不在本文逐项维护。
 
-本文档覆盖 `ksadk/`、`deploy/`、`tests/` 中已经注册或常见可配置的运行时变量，由 `tests/test_config_env_registry.py` 保证 `ENV_VAR_REGISTRY` 注册项与文档一致。测试专用变量、PID/marker/cache 等进程内部临时变量、镜像构建脚本内部常量不会逐项列入表格；如果要排查这些高级项，以对应脚本源码和模板 README 为准。
+本文档基于当前 `feat/skill-runtime` 工作树和 `master` 分支源码扫描整理，覆盖 `ksadk/`、`deploy/`、`tests/` 中已经注册或常见可配置的运行时变量。测试专用变量、PID/marker/cache 等进程内部临时变量、镜像构建脚本内部常量不会逐项列入表格；如果要排查这些高级项，以对应脚本源码和模板 README 为准。
 
 ## 1. 阅读规则
 
@@ -47,7 +47,6 @@
 | 变量 | 是否必传 | 别名/兼容 | 敏感 | 配置方/来源 | 说明 |
 | --- | --- | --- | --- | --- | --- |
 | `KSADK_ENABLE_MCP_TOOLS` | 否 | 无 | 否 | 开发者 / 平台 | 默认 `1`，设为 `0/false/no/off` 禁用自动注入。 |
-| `KSADK_MCP_KEY` | 否 | 无 | 是 | 开发者 / 平台 Secret | MCP 服务 API key；ksyun web search provider 未配 `KSADK_WEB_SEARCH_API_KEY` 时也回退到此。 |
 | `KSADK_MCP_SERVERS` | 条件必传 | 无 | 是 | 开发者 / 平台 Secret | JSON 数组，配置 MCP server url、api_key、tool_filter、tool_name_prefix。可能包含 token。 |
 
 ### 2.4 Skill Runtime 本地模式
@@ -68,7 +67,7 @@
 | `E2B_API_KEY` | 是 | 无 | 是 | 沙箱团队 / Secret 配置 | E2B SDK 原生 API key，不能写入代码、文档示例明文、测试 fixture 或日志。 |
 | `KSADK_SANDBOX_BACKEND` | 否 | 无 | 否 | 平台 / 开发者 | 默认 `e2b`。后续可扩展其他 backend。 |
 | `KSADK_SANDBOX_TYPE` | 否 | 无 | 否 | 平台 / 开发者 | `aio/code/browser/private`，默认 `aio`。 |
-| `KSADK_SANDBOX_TIMEOUT` | 否 | `KSADK_SKILL_RUNTIME_TIMEOUT` | 否 | 平台 / 开发者 | Sandbox 会话超时秒数，默认 `600`（透传 E2B 服务端，上限 86400）。 |
+| `KSADK_SANDBOX_TIMEOUT` | 否 | `KSADK_SKILL_RUNTIME_TIMEOUT` | 否 | 平台 / 开发者 | Sandbox 会话超时秒数，默认 `900`。 |
 | `KSADK_SANDBOX_ALLOW_INTERNET_ACCESS` | 否 | `KSADK_SKILL_RUNTIME_ALLOW_INTERNET_ACCESS` | 否 | 平台 / 开发者 | 是否允许 sandbox 出网，默认 `true`。 |
 | `KSADK_SKILLS_MODE` | 否 | 无 | 否 | Runner 环境 | `auto` 下检测到 sandbox backend/template 会注入 `execute_skills`；也可显式设为 `sandbox`。 |
 | `KSADK_SKILL_RUNTIME_BACKEND` | 否 | 无 | 否 | Runner 环境 | 显式设为 `e2b` 会走远程 backend；显式 `disabled` 会禁止 Skill Runtime 注入。未设置且存在 `KSADK_SANDBOX_TEMPLATE_ID` 时自动使用 `e2b`。 |
@@ -148,7 +147,6 @@
 | `OPENAI_MODEL_NAME` | 本地运行时 / Runtime 镜像 | 条件必传 | 未设置 | `LLM_MODEL`、`MODEL_NAME`、Hermes fallback 读取 `OPENAI_FALLBACK_MODEL_NAME` | 否 | 开发者 / 平台 | 否 | 默认模型名。 |
 | `OPENAI_CONTEXT_LENGTH` | Hermes / 模型配置 | 否 | 未设置 | `MODEL_CONTEXT_LENGTH`、`HERMES_CONTEXT_LENGTH` | 否 | 开发者 / 平台 | 否 | 模型上下文长度提示。 |
 | `OPENAI_FALLBACK_MODEL_NAME` | Hermes / 模型配置 | 否 | 未设置 | `HERMES_FALLBACK_MODEL` | 否 | 开发者 / 平台 | 否 | Hermes fallback 模型名 fallback。 |
-| `AGENTENGINE_MODEL_POLICY_JSON` | Runtime / 模型策略 | 否 | 内置 v1 默认策略 | 无 | 否 | 平台 / 开发者 | 否 | 运行时模型策略 JSON，统一声明 `primary` / `multimodal` / `fallback` 三档与每个模型的 `reasoning` / `options`，覆盖 `OPENAI_MODEL_NAME` / `OPENCLAW_*` / `HERMES_*` 默认语义。0.6.6 起 v1 默认策略为 `primary=glm-5.2` / `multimodal=kimi-k2.7-code` / `fallback=deepseek-v4-pro`；0.6.7 起每个模型 `reasoning:true`，catalog 输出含 `reasoning` 字段。 |
 | `LLM_API_KEY` | Serverless / 兼容模型配置 | 条件必传 | 未设置 | `OPENAI_API_KEY`、`MODEL_API_KEY` | 是 | 平台 Secret / 开发者 | 否 | Serverless 平台兼容模型 API key。 |
 | `LLM_API_BASE` | Serverless / 兼容模型配置 | 条件必传 | 未设置 | `OPENAI_BASE_URL`、`MODEL_API_BASE` | 否 | 平台 / 开发者 | 否 | Serverless 平台兼容模型 endpoint。 |
 | `LLM_MODEL` | Serverless / OpenClaw | 条件必传 | 未设置 | `OPENAI_MODEL_NAME`、`MODEL_NAME` | 否 | 平台 / 开发者 | 否 | Serverless/OpenClaw 兼容模型名。 |
@@ -174,8 +172,7 @@
 | `KS_REGION` | 旧 KingsoftCloudConfig | 否 | `cn-beijing-6` | 建议迁移到 `KSYUN_REGION` | 否 | 兼容旧配置 | 否 | 早期 SDK settings 读取的 region；不与 `KSYUN_REGION` 自动互通。 |
 | `KS3_ACCESS_KEY` | KS3 / 兼容 fallback | 条件必传 | 未设置 | `KSYUN_ACCESS_KEY` | 是 | 开发者 / Secret | 否 | KS3 专用 AK 兼容变量。 |
 | `KS3_SECRET_KEY` | KS3 / 兼容 fallback | 条件必传 | 未设置 | `KSYUN_SECRET_KEY` | 是 | 开发者 / Secret | 否 | KS3 专用 SK 兼容变量。 |
-| `KS3_REGION` | KS3 / 附件存储 | 否 | 回退 `KSYUN_REGION`，最终 `cn-beijing-6` | `KSYUN_REGION` | 否 | 开发者 / 平台 | 否 | KS3 bucket 所在区域；未显式设置时回退到 `KSYUN_REGION`，再回退到 `cn-beijing-6`。 |
-| `KS3_BUCKET` | 构建上传 / 版本发布 / 附件存储 | 条件必传 | 未显式设置时附件存储回退为 `agentengine-<account_id>-<region>` | 无 | 否 | 开发者 / 平台 | 否 | 自定义 KS3 bucket。附件存储未设置时会按账号和 region 自动派生 bucket 名，需保证该 bucket 已存在且可写。 |
+| `KS3_BUCKET` | 构建上传 / 版本发布 | 条件必传 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | 自定义 KS3 bucket。 |
 | `KS3_ENDPOINT_MODE` | KS3 上传 | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | KS3 endpoint 选择策略。 |
 | `KS3_ENDPOINT_PROBE_TIMEOUT_SECONDS` | KS3 上传 | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | KS3 endpoint 探测超时。 |
 | `KS3_UPLOAD_TIMEOUT_SECONDS` | KS3 上传 | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | KS3 上传超时。 |
@@ -191,21 +188,10 @@
 | `KSADK_SANDBOX_BACKEND` | Sandbox backend factory | 否 | `e2b` | 无 | 否 | 平台 / 开发者 | 否 | 通用 sandbox backend。首版支持 `e2b`。 |
 | `KSADK_SANDBOX_TYPE` | Sandbox spec | 否 | `aio` | 无 | 否 | 沙箱控制台 / 平台 | 否 | `aio/code/browser/private`。Skill Runtime 默认推荐 `aio`。 |
 | `KSADK_SANDBOX_TEMPLATE_ID` | Sandbox spec / Skill Runtime E2B backend | 条件必传 | 未设置 | `KSADK_SKILL_RUNTIME_TEMPLATE_ID` | 否 | 沙箱控制台 / 沙箱团队 | 否 | 远程 sandbox 执行时必传。新部署优先使用。 |
-| `KSADK_SANDBOX_TIMEOUT` | Sandbox spec | 否 | `600` | `KSADK_SKILL_RUNTIME_TIMEOUT` | 否 | 平台 / 开发者 | 否 | Sandbox 会话超时秒数（透传 E2B 服务端，上限 86400）。 |
+| `KSADK_SANDBOX_TIMEOUT` | Sandbox spec | 否 | `900` | `KSADK_SKILL_RUNTIME_TIMEOUT` | 否 | 平台 / 开发者 | 否 | Sandbox 会话超时秒数。 |
 | `KSADK_SANDBOX_ALLOW_INTERNET_ACCESS` | Sandbox spec | 否 | `true` | `KSADK_SKILL_RUNTIME_ALLOW_INTERNET_ACCESS` | 否 | 平台 / 开发者 | 否 | 是否允许 sandbox 出网。 |
 | `KSADK_SANDBOX_STARTUP_RETRY_ATTEMPTS` | E2B Sandbox backend | 否 | `6` | 无 | 否 | 平台 / 开发者 | 否 | 沙箱创建后 readiness 探测最大重试次数，用于兜底短暂 `NotFoundException` / `FileNotFoundException`。 |
 | `KSADK_SANDBOX_STARTUP_RETRY_DELAY` | E2B Sandbox backend | 否 | `0.2` | 无 | 否 | 平台 / 开发者 | 否 | 沙箱 readiness 首次重试间隔秒数，后续指数退避，单次 sleep 上限 1 秒。 |
-| `KSADK_SANDBOX_SWEEP_INTERVAL_SECONDS` | Sandbox registry | 否 | `60` | 无 | 否 | 平台 / 开发者 | 否 | 后台 sweep 间隔秒数；周期回收过期/空闲 sandbox 避免按秒计费泄漏；`0` 禁用后台 sweep。 |
-| `KSADK_SANDBOX_TTL_SECONDS` | Sandbox registry | 否 | `900` | `KSADK_SANDBOX_TIMEOUT` | 否 | 平台 / 开发者 | 否 | sandbox registry 会话硬 TTL 秒数；到期后被后台 sweep 或下次 get_or_create 回收。 |
-| `KSADK_SANDBOX_IDLE_TTL_SECONDS` | Sandbox registry | 否 | `300` | 无 | 否 | 平台 / 开发者 | 否 | sandbox registry 会话空闲 TTL 秒数；距上次使用超过该值即回收；`0` 禁用空闲回收。 |
-| `KSADK_SANDBOX_MAX_SESSIONS` | Sandbox registry | 否 | `0` | 无 | 否 | 平台 / 开发者 | 否 | sandbox registry 最大并发会话数；`0` 表示不限制。 |
-| `KSADK_SANDBOX_SESSION_ID` | Sandbox registry | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | 显式指定 sandbox registry 会话 id，用于跨工具调用复用同一 sandbox。 |
-| `KSADK_SANDBOX_SYNC_MAX_FILES` | Sandbox workspace sync | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | workspace 同步到 sandbox 时的最大文件数。 |
-| `KSADK_SANDBOX_SYNC_MAX_FILE_BYTES` | Sandbox workspace sync | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | workspace 同步到 sandbox 时的单文件最大字节数。 |
-| `KSADK_SANDBOX_SYNC_MAX_TOTAL_BYTES` | Sandbox workspace sync | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | workspace 同步到 sandbox 时的总字节数上限。 |
-| `KSADK_ALLOW_POD_PROCESS_TOOLS` | Sandbox backend / pod_process tools | 否 | `false` | 无 | 否 | 平台 / 开发者 | 否 | 显式开启 pod_process sandbox backend 内置工具；未开启时 pod_process 工具不会被注入。仅在可信运行时内启用。 |
-| `KSADK_COMMAND_` | Command policy（内部前缀） | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 命令策略环境控制内部前缀；派生变量例如 `KSADK_COMMAND_CWD`，未逐项枚举。 |
-| `KSADK_COMMAND_CWD` | Command policy | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 命令执行策略校验时使用的当前工作目录。 |
 | `E2B_API_URL` | E2B SDK | 条件必传 | 未设置 | 无 | 否 | 沙箱团队 / Secret 配置 | 否 | E2B 兼容 manager endpoint。使用 E2B backend 时必传。 |
 | `E2B_API_KEY` | E2B SDK | 条件必传 | 未设置 | 无 | 是 | 沙箱团队 / Secret 配置 | 否 | E2B API key。严禁写入代码、文档明文、测试 fixture、日志。 |
 
@@ -250,7 +236,6 @@
 | 变量 | 作用层级 | 是否必传 | 默认值 | 别名/兼容 | 敏感 | 配置方/来源 | 是否业务自定义 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `KSADK_ENABLE_MCP_TOOLS` | ADK Runner | 否 | `1` | 无 | 否 | 开发者 / 平台 | 否 | 控制远端 MCP tools 自动注入。 |
-| `KSADK_MCP_KEY` | MCP runtime | 否 | 未设置 | 无 | 是 | 开发者 / 平台 Secret | 否 | MCP 服务 API key；ksyun web search provider 未配 `KSADK_WEB_SEARCH_API_KEY` 时也回退到此。 |
 | `KSADK_MCP_SERVERS` | MCP runtime | 条件必传 | 未设置 | 无 | 是 | 开发者 / 平台 Secret | 否 | JSON 数组。可能包含 MCP server api_key。 |
 
 ## 8. 会话、短期记忆和长期记忆
@@ -300,7 +285,6 @@
 | `MEM0_API_KEY` | OpenClaw memory backend | 条件必传 | 未设置 | 无 | 是 | 平台 Secret | 否 | 选择 `mem0` memory backend manifest 时需要。 |
 | `MEM0_USER_ID` | OpenClaw memory backend | 条件必传 | 未设置 | 无 | 否 | 平台 / 用户上下文 | 否 | 选择 `mem0` memory backend manifest 时需要。 |
 | `MEM0_BASE_URL` | OpenClaw memory backend | 条件必传 | 未设置 | 无 | 否 | 平台 | 否 | 选择 `mem0` memory backend manifest 时需要。 |
-| `MEMORY_BACKEND_MANIFEST` | OpenClaw memory backend | 条件必传 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | OpenClaw memory backend manifest，声明 `backend_type` 及其连接配置；视 `backend_type` 不同，对应 backend 专有变量（例如 `mem0` 的 `MEM0_*`）条件必传。 |
 
 ## 9. 知识库
 
@@ -372,34 +356,8 @@
 | `KSADK_FEISHU_RESULT_PATH` | OpenClaw diagnostics | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | 飞书辅助结果路径。 |
 | `KSADK_WORKSPACE_FILES_ENABLED` | Hermes/OpenClaw workspace files | 否 | 镜像内通常默认 `1` | `OPENCLAW_WORKSPACE_FILES_ENABLED` | 否 | Runtime 镜像 / 平台 | 否 | 工作区文件服务开关。 |
 | `KSADK_WORKSPACE_ROOT` | Hermes/OpenClaw workspace files | 否 | 镜像工作目录 | `OPENCLAW_WORKSPACE_DIR`、`HERMES_WORKDIR` | 否 | Runtime 镜像 / 平台 | 否 | 工作区根目录。 |
-| `KSADK_MAX_TURNS` | Conversations runtime | 否 | `0` | 无 | 否 | 平台 / 开发者 | 否 | 单次会话最大轮次熔断阈值；`0` 表示不限制。 |
-| `KSADK_MAX_TOOL_CALLS` | Conversations runtime | 否 | `0` | 无 | 否 | 平台 / 开发者 | 否 | 单次会话工具调用上限熔断阈值；`0` 表示不限制。 |
-| `KSADK_MAX_CONSECUTIVE_TOOL_FAILURES` | Conversations runtime | 否 | `0` | 无 | 否 | 平台 / 开发者 | 否 | 连续工具失败达到阈值后触发 runtime 熔断；`0` 表示不限制。 |
-| `KSADK_MAX_CONSECUTIVE_APPROVAL_DENIALS` | Conversations runtime | 否 | `0` | 无 | 否 | 平台 / 开发者 | 否 | 连续审批拒绝达到阈值后触发 runtime 熔断；`0` 表示不限制。 |
-| `KSADK_MAX_CONSECUTIVE_COMPACT_FAILURES` | Conversations runtime | 否 | `0` | 无 | 否 | 平台 / 开发者 | 否 | 连续压缩失败达到阈值后触发 runtime 熔断；`0` 表示不限制。 |
-| `KSADK_MAX_CONSECUTIVE_SEMANTIC_FAILURES` | Conversations runtime | 否 | `0` | 无 | 否 | 平台 / 开发者 | 否 | semantic LLM 摘要连续失败达到阈值后跳过 semantic 改用 extractive；`0` 禁用熔断（默认关闭 opt-in，避免临时失败永久禁用 semantic）。 |
-| `KSADK_COMPACT_SNIP_ENABLED` | Conversations runtime | 否 | `true` | 无 | 否 | 平台 / 开发者 | 否 | compaction pipeline L2 snip 确定性去重开关；只作用于 candidate 投影，不删 transcript。 |
-| `KSADK_COMPACT_MICROCOMPACT_ENABLED` | Conversations runtime | 否 | `true` | 无 | 否 | 平台 / 开发者 | 否 | compaction pipeline L3 microcompact 冷组压缩开关；只作用于 candidate 投影。 |
-| `KSADK_COMPACT_MICROCOMPACT_COLD_ROUNDS` | Conversations runtime | 否 | `3` | 无 | 否 | 平台 / 开发者 | 否 | L3 microcompact 视为冷组的轮次阈值（尾部 N 组保留）。 |
-| `KSADK_WORKING_SET_MAX_FILES` | Conversations runtime | 否 | `5` | 无 | 否 | 平台 / 开发者 | 否 | compaction working set metadata 记录的最近文件数上限（只记路径不读内容）。 |
-| `KSADK_BUILTIN_TOOLS_MODE` | ADK Runner / Built-in tools | 否 | `off` | 无 | 否 | 平台 / 开发者 | 否 | 内置工具注入模式：`off/dispatcher/focused/deferred`。 |
-| `KSADK_BUILTIN_TOOLS_PROFILE` | ADK Runner / Built-in tools | 否 | `default` | 无 | 否 | 平台 / 开发者 | 否 | 内置工具 profile 选择器，例如 `default/coding`。 |
-| `KSADK_TOOL_RESULT_MAX_CHARS` | Built-in tools / Conversations runtime | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 工具结果内联返回的最大字符数；超出按 budget 策略持久化或截断。 |
-| `KSADK_TOOL_RESULT_PERSIST_THRESHOLD_CHARS` | Built-in tools / Conversations runtime | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 工具结果达到该字符数时转为持久化存储。 |
-| `KSADK_TOOL_RESULT_PREVIEW_CHARS` | Built-in tools / Conversations runtime | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 持久化工具结果回显的预览字符数。 |
-| `KSADK_TOOL_RESULT_DIR` | Built-in tools / Conversations runtime | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 持久化超限工具结果的目录。 |
-| `KSADK_SAFE_` | Tool safety policy（内部前缀） | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 工具安全策略环境控制内部前缀；派生变量未逐项枚举。 |
-| `KSADK_WEB_SEARCH_PROVIDER` | Built-in web tools | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | web search provider 选择器：`fake`（演示桩）、`http`（自定义 REST 搜索后端）、`ksyun`（金山云星流 AI搜索，复用 `KSADK_MCP_KEY`/`KSC_AIPRO_API_KEY` 凭证）。 |
-| `KSADK_WEB_SEARCH_BASE_URL` | Built-in web tools | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | `http` provider 的 base URL；`ksyun` provider 默认 `https://search.aipro.ksyun.com/v1/aisearch/search`，可覆盖。 |
-| `KSADK_WEB_SEARCH_API_KEY` | Built-in web tools | 条件必传 | 未设置 | 无 | 是 | 平台 Secret | 否 | `http` provider 的 API key；`ksyun` provider 未设时回退到 `KSADK_MCP_KEY`/`KSC_AIPRO_API_KEY`。 |
-| `KSADK_WEB_SEARCH_SCOPE` | Built-in web tools | 否 | `webpage` | 无 | 否 | 平台 / 开发者 | 否 | `ksyun` provider 的搜索范围：`webpage`/`document`/`scholar`/`podcast`/`video`。 |
-| `KSADK_WEB_SSRF_POLICY_JSON` | Built-in web tools | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | `web_fetch` SSRF 校验的 JSON 策略覆盖。 |
-| `KSADK_USER_BACKEND_URL` | Hosted UI | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | hosted UI 集成使用的用户面 backend URL。 |
 
 ## 11. 可观测性
-
-!!! new "0.6.7 新增：CloudMonitor 双写"
-    0.6.7 起 `setup_tracing()` 自动探测 `CLOUD_MONITOR_*` 环境变量：当检测到 CloudMonitor 配置时，会并行挂载 CloudMonitor OTLP exporter 与 CloudMonitor Langfuse SDK CallbackHandler。这两个通道与自建 Langfuse（`LANGFUSE_*`）和标准 OTLP（`OTEL_EXPORTER_OTLP_*`）互不压制，可以同时上报到多个后端，便于在同一份 trace 上叠加平台可观测与自建链路。
 
 | 变量 | 作用层级 | 是否必传 | 默认值 | 别名/兼容 | 敏感 | 配置方/来源 | 是否业务自定义 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -428,13 +386,12 @@
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | OTel | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | traces 专用 endpoint；设置后优先于通用 endpoint。 |
 | `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` | OTel | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | traces 专用 OTLP 协议；设置后优先于通用 protocol。 |
 | `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | OTel | 否 | 未设置 | 无 | 是 | 平台 / 开发者 | 否 | traces 专用 OTLP headers；设置后优先于通用 headers。 |
-| `KSADK_OTLP_MAX_EXPORT_BATCH_SIZE` | OTel | 否 | `64` | 无 | 否 | 平台 / 开发者 | 否 | 单次 OTLP export 的最大 span 数，降低 collector 413 风险。 |
 | `OTEL_SERVICE_NAME` | OTel | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | service name。 |
 | `OTEL_RESOURCE_ATTRIBUTES` | OTel | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | resource attributes。 |
 
 ## 12. Hermes 和 OpenClaw 常见运行时变量
 
-Hermes / OpenClaw 有大量镜像启动和安全策略变量，本文只列常见运行时可配置项。`*_PID`、`*_MARKER`、`*_CACHE_DIR`、`*_SPEC`、`*_PLUGIN_ID`、`*_PATCH_ROOTS`、`*_READY_STATUSES` 等主要是脚本内部状态或模板常量，未逐项列出。完整模板变量以 `agentengine-images` 仓库内 Hermes / OpenClaw / OpenClaw 用户镜像模板的 README 和 bootstrap 脚本为准（原 `deploy/hermes/`、`deploy/openclaw/`、`deploy/openclaw-user-template/` 已迁出本仓库）。
+Hermes / OpenClaw 有大量镜像启动和安全策略变量，本文只列常见运行时可配置项。`*_PID`、`*_MARKER`、`*_CACHE_DIR`、`*_SPEC`、`*_PLUGIN_ID`、`*_PATCH_ROOTS`、`*_READY_STATUSES` 等主要是脚本内部状态或模板常量，未逐项列出。完整模板变量以 `deploy/hermes/`、`deploy/openclaw/`、`deploy/openclaw-user-template/` 内 README 和 bootstrap 脚本为准。
 
 | 变量 | 作用层级 | 是否必传 | 默认值 | 别名/兼容 | 敏感 | 配置方/来源 | 是否业务自定义 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -445,9 +402,7 @@ Hermes / OpenClaw 有大量镜像启动和安全策略变量，本文只列常�
 | `HERMES_COMPRESSION_PROVIDER` | Hermes | 否 | `HERMES_MODEL_PROVIDER` | 无 | 否 | 开发者 / 平台 | 否 | 压缩模型 provider。 |
 | `HERMES_COMPRESSION_CONTEXT_LENGTH` | Hermes | 否 | `HERMES_CONTEXT_LENGTH` | 无 | 否 | 开发者 / 平台 | 否 | 压缩模型上下文长度。 |
 | `HERMES_COMPRESSION_TIMEOUT` | Hermes | 否 | `120` | 无 | 否 | 开发者 / 平台 | 否 | 压缩请求超时秒数。 |
-| `HERMES_FALLBACK_MODEL` | Hermes | 否 | `deepseek-v4-pro` | `OPENAI_FALLBACK_MODEL_NAME` | 否 | 开发者 / 平台 | 否 | fallback 模型。 |
-| `HERMES_DEFAULT_MODEL` | Hermes | 否 | `glm-5.2` | `OPENAI_MODEL_NAME` | 否 | 开发者 / 平台 | 否 | Hermes 默认模型，由模型策略 `primary` 派生。 |
-| `HERMES_MODEL_CATALOG_JSON` | Hermes | 否 | 由模型策略自动生成 | 无 | 否 | 平台 / 开发者 | 否 | 覆盖 Hermes 模型 catalog；默认从 `AGENTENGINE_MODEL_POLICY_JSON` 派生，0.6.7 起输出含 `reasoning` 字段。 |
+| `HERMES_FALLBACK_MODEL` | Hermes | 否 | `OPENAI_FALLBACK_MODEL_NAME` | 无 | 否 | 开发者 / 平台 | 否 | fallback 模型。 |
 | `HERMES_FALLBACK_BASE_URL` | Hermes | 否 | `OPENAI_BASE_URL` | 无 | 否 | 开发者 / 平台 | 否 | fallback endpoint。 |
 | `HERMES_FALLBACK_PROVIDER` | Hermes | 否 | `custom` | 无 | 否 | 开发者 / 平台 | 否 | fallback 模型 provider。 |
 | `HERMES_HOSTED_RUNTIME` | Hermes | 否 | `1` | 无 | 否 | Runtime 镜像 / 平台 | 否 | 标识 Hermes 以 hosted runtime 模式运行。 |
@@ -500,12 +455,10 @@ Hermes / OpenClaw 有大量镜像启动和安全策略变量，本文只列常�
 | `OPENCLAW_DISABLE_DEVICE_AUTH` | OpenClaw | 否 | `false` | 无 | 否 | 开发者 / 测试 | 否 | 禁用设备鉴权。 |
 | `OPENCLAW_MODEL_API_KEY` | OpenClaw | 条件必传 | 未设置 | `OPENAI_API_KEY` / `MODEL_API_KEY` | 是 | Secret | 否 | OpenClaw 模型 API key。 |
 | `OPENCLAW_MODEL_BASE_URL` | OpenClaw | 条件必传 | 未设置 | `OPENAI_BASE_URL` / `MODEL_API_BASE` | 否 | 平台 / 开发者 | 否 | OpenClaw 模型 endpoint。 |
-| `OPENCLAW_DEFAULT_MODEL` | OpenClaw | 否 | `glm-5.2` | `OPENAI_MODEL_NAME` / `MODEL_NAME` | 否 | 平台 / 开发者 | 否 | OpenClaw 默认模型，由模型策略 `primary` 派生。 |
-| `OPENCLAW_FALLBACK_MODEL` | OpenClaw | 否 | `deepseek-v4-pro` | 无 | 否 | 平台 / 开发者 | 否 | OpenClaw fallback 模型，由模型策略 `fallback` 派生。 |
-| `OPENCLAW_IMAGE_MODEL` | OpenClaw | 否 | `kimi-k2.7-code` | 无 | 否 | 平台 / 开发者 | 否 | OpenClaw 多模态/图像模型，由模型策略 `multimodal` 派生。 |
+| `OPENCLAW_DEFAULT_MODEL` | OpenClaw | 条件必传 | 未设置 | `OPENAI_MODEL_NAME` / `MODEL_NAME` | 否 | 平台 / 开发者 | 否 | OpenClaw 默认模型。 |
 | `OPENCLAW_MODEL_PROVIDER_ID` | OpenClaw | 否 | `ksyun` | 无 | 否 | 平台 / 开发者 | 否 | OpenClaw 模型 provider id。 |
 | `OPENCLAW_MODEL_API` | OpenClaw | 否 | `openai-completions` | 无 | 否 | 平台 / 开发者 | 否 | OpenClaw 模型 API 类型。 |
-| `OPENCLAW_MODEL_CATALOG_JSON` | OpenClaw | 否 | 由模型策略自动生成 | 无 | 否 | 平台 / 开发者 | 否 | 覆盖模型 catalog；默认从 `AGENTENGINE_MODEL_POLICY_JSON` 派生，0.6.7 起输出含 `reasoning` 字段。 |
+| `OPENCLAW_MODEL_CATALOG_JSON` | OpenClaw | 否 | 自动生成 | 无 | 否 | 平台 / 开发者 | 否 | 覆盖模型 catalog。 |
 | `OPENCLAW_MODEL_ALLOWLIST` | OpenClaw | 否 | 未设置 | `AGENTENGINE_MODEL_ALLOWLIST` | 否 | 平台 / 开发者 | 否 | OpenClaw 模型白名单。 |
 | `OPENCLAW_MODEL_API_KEY_SECRET_SOURCE` | OpenClaw | 否 | 模板默认值 | 无 | 否 | 平台 | 否 | 模型 API key secret 来源，例如 env/file。 |
 | `OPENCLAW_MODEL_API_KEY_SECRET_PROVIDER` | OpenClaw | 否 | 模板默认值 | 无 | 否 | 平台 | 否 | 模型 API key secret provider 标识。 |

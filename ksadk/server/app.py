@@ -3,16 +3,14 @@
 FastAPI 应用 - 提供 HTTP API 接口 (ADK Web 兼容)
 """
 
+import asyncio
 import base64
-import httpx
 import io
 import json
 import logging
-import mimetypes
 import os
 import time
 import uuid
-import asyncio
 import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -20,7 +18,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any, AsyncIterator, Dict, List, Mapping, Optional
 from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException, Request, File, Form, Query, UploadFile
+import httpx
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
@@ -28,28 +27,29 @@ from pydantic import BaseModel, Field
 import ksadk.conversations as conversation
 from ksadk.conversations.attachment_storage import AttachmentStorageService
 from ksadk.conversations.attachments import compact_attachment_result_for_session
+from ksadk.conversations.model_context import normalize_model_metadata
+from ksadk.conversations.run_kinds import (
+    RUN_MODE_BACKGROUND,
+    RUN_MODE_FOREGROUND,
+    RUN_MODE_UNKNOWN,
+    RUN_TRIGGER_CHECKPOINT_RESUME,
+    RUN_TRIGGER_NEW_RUN,
+    RUN_TRIGGER_UNKNOWN,
+    trigger_from_resume_input,
+)
+from ksadk.conversations.run_status import RUN_STATUS_ACTIVE, RUN_STATUS_TERMINAL
 from ksadk.conversations.session_title import (
     HEURISTIC_SESSION_TITLE_SOURCE,
     build_fallback_title,
     build_heuristic_title,
 )
-from ksadk.runtime_state import load_state as load_runtime_state
 from ksadk.runners.base_runner import BaseRunner
+from ksadk.runtime_state import load_state as load_runtime_state
 from ksadk.server.api_models import AgentRunRequest
 from ksadk.server.terminal_sessions import (
     TerminalSessionManager,
     native_terminal_supported,
     register_terminal_routes,
-)
-from ksadk_runtime_common.workspace_files import (
-    build_workspace_files_bootstrap,
-    create_workspace_files_router,
-    workspace_files_enabled,
-)
-from ksadk_runtime_common.workspace_files.preview import (
-    build_workspace_file_base_href,
-    build_workspace_preview_csp,
-    inject_workspace_html_preview,
 )
 from ksadk.sessions import (
     ConversationSessionCore,
@@ -60,10 +60,19 @@ from ksadk.sessions import (
 )
 from ksadk.sessions.errors import SessionBackendUnavailable
 from ksadk.sessions.local_service import resolve_local_session_dir
-from ksadk.tracing import get_memory_exporter
-from ksadk.conversations.model_context import normalize_model_metadata
 from ksadk.toolsets import describe_agentengine_tools
+from ksadk.tracing import get_memory_exporter
 from ksadk.ui_config import UI_PROFILE_CUSTOM, resolve_ui_config
+from ksadk_runtime_common.workspace_files import (
+    build_workspace_files_bootstrap,
+    create_workspace_files_router,
+    workspace_files_enabled,
+)
+from ksadk_runtime_common.workspace_files.preview import (
+    build_workspace_file_base_href,
+    build_workspace_preview_csp,
+    inject_workspace_html_preview,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -75,16 +84,10 @@ _DETACHED_STREAMS: set[asyncio.Task[Any]] = set()
 _DETACHED_STREAMS_BY_INVOCATION: dict[str, "_DetachedSSEStream"] = {}
 _DETACHED_RESUME_KEYS_BY_INVOCATION: dict[str, tuple[str, str]] = {}
 _ACTIVE_DETACHED_RESUME_INVOCATION_BY_KEY: dict[tuple[str, str], str] = {}
-_RUN_TERMINAL_STATUSES = {
-    "completed",
-    "failed",
-    "error",
-    "cancelled",
-    "canceled",
-    "aborted",
-    "interrupted",
-}
-_RUN_ACTIVE_STATUSES = {"in_progress", "running", "resuming", "starting"}
+# run_status 事件状态集合：canonical 定义在 ksadk.conversations.run_status，
+# 这里保留旧名做兼容别名（RUN_STATUS_TERMINAL 已含 resume_failed）。
+_RUN_TERMINAL_STATUSES = RUN_STATUS_TERMINAL
+_RUN_ACTIVE_STATUSES = RUN_STATUS_ACTIVE
 
 
 def _parse_iso_datetime(value: Any) -> datetime | None:
@@ -100,6 +103,8 @@ def _parse_iso_datetime(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
 _RESERVED_UI_PATHS = {"/", "/chat", "/build", "/deploy"}
 _CUSTOM_API_PROXY_ENV_KEYS = ("KSADK_USER_BACKEND_URL", "LUOLUO_USER_BACKEND_URL")
 _HOP_BY_HOP_HEADERS = {
@@ -125,10 +130,14 @@ class _DetachedSSEStream:
         *,
         invocation_id: str | None = None,
         session_id: str | None = None,
+        run_mode: str = "unknown",
+        run_trigger: str = "unknown",
     ):
         self._source = source
         self.invocation_id = invocation_id
         self.session_id = session_id
+        self._run_mode = run_mode
+        self._run_trigger = run_trigger
         self._subscribers: set[asyncio.Queue[str | None]] = set()
         self._backlog: list[str] = []
         self._done = False
@@ -189,8 +198,12 @@ class _DetachedSSEStream:
                             author="system",
                             status=terminal_fallback_status,
                             invocation_id=self.invocation_id or "",
-                            detail=f"background_{terminal_fallback_status}:{self.invocation_id or ''}",
+                            detail=(
+                                f"background_{terminal_fallback_status}:{self.invocation_id or ''}"
+                            ),
                             session_service_provider=resolve_session_service,
+                            run_mode=self._run_mode,
+                            run_trigger=self._run_trigger,
                         )
                 except Exception:
                     logger.exception("failed to write background terminal status fallback")
@@ -231,8 +244,16 @@ def _detached_streaming_response(
     invocation_id: str | None = None,
     session_id: str | None = None,
     resume_key: tuple[str, str] | None = None,
+    run_mode: str = "unknown",
+    run_trigger: str = "unknown",
 ) -> StreamingResponse:
-    detached = _DetachedSSEStream(source, invocation_id=invocation_id, session_id=session_id)
+    detached = _DetachedSSEStream(
+        source,
+        invocation_id=invocation_id,
+        session_id=session_id,
+        run_mode=run_mode,
+        run_trigger=run_trigger,
+    )
     if invocation_id and resume_key:
         _DETACHED_RESUME_KEYS_BY_INVOCATION[invocation_id] = resume_key
         _ACTIVE_DETACHED_RESUME_INVOCATION_BY_KEY[resume_key] = invocation_id
@@ -292,9 +313,9 @@ def _reject_if_detached_resume_active(resume_key: tuple[str, str] | None) -> Non
         detail={
             "code": "resume_already_running",
             "message": "A checkpoint resume is already running for this session and run.",
-            "InvocationId": active_resume_invocation_id,
-            "SessionId": resume_key[0],
-            "RunId": resume_key[1],
+            "invocation_id": active_resume_invocation_id,
+            "session_id": resume_key[0],
+            "run_id": resume_key[1],
         },
     )
 
@@ -344,6 +365,7 @@ app = FastAPI(
     lifespan=_lifespan,
 )
 
+
 # Middleware for disabling cache on frontend entry points
 @app.middleware("http")
 async def no_cache_frontend(request: Request, call_next):
@@ -354,6 +376,7 @@ async def no_cache_frontend(request: Request, call_next):
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
     return response
+
 
 # Configure CORS (permissive by default for ADK tools)
 app.add_middleware(
@@ -642,7 +665,7 @@ def _resolve_ui_static_response(request_path: str) -> Optional[FileResponse]:
             return FileResponse(index_file)
         if ui_path != "/" and not path.startswith(f"{ui_path}/"):
             return None
-        relative = path[len(ui_path):].lstrip("/") if ui_path != "/" else path.lstrip("/")
+        relative = path[len(ui_path) :].lstrip("/") if ui_path != "/" else path.lstrip("/")
         if not relative:
             return FileResponse(index_file)
         candidate = bundle_dir / relative
@@ -736,19 +759,11 @@ def _custom_api_proxy_base_url() -> str:
 
 
 def _proxy_headers(headers: Mapping[str, str]) -> dict[str, str]:
-    return {
-        key: value
-        for key, value in headers.items()
-        if key.lower() not in _HOP_BY_HOP_HEADERS
-    }
+    return {key: value for key, value in headers.items() if key.lower() not in _HOP_BY_HOP_HEADERS}
 
 
 def _response_headers(headers: Mapping[str, str]) -> dict[str, str]:
-    return {
-        key: value
-        for key, value in headers.items()
-        if key.lower() not in _HOP_BY_HOP_HEADERS
-    }
+    return {key: value for key, value in headers.items() if key.lower() not in _HOP_BY_HOP_HEADERS}
 
 
 @app.api_route(
@@ -776,7 +791,9 @@ async def custom_api_proxy(proxy_path: str, request: Request):
                 headers=_proxy_headers(request.headers),
             )
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"Custom API backend unavailable: {exc}") from exc
+        raise HTTPException(
+            status_code=502, detail=f"Custom API backend unavailable: {exc}"
+        ) from exc
 
     return Response(
         content=upstream.content,
@@ -786,7 +803,9 @@ async def custom_api_proxy(proxy_path: str, request: Request):
     )
 
 
-def _read_attachment_bytes(storage_path: Optional[Path], *, size_limit: Optional[int] = None) -> Optional[bytes]:
+def _read_attachment_bytes(
+    storage_path: Optional[Path], *, size_limit: Optional[int] = None
+) -> Optional[bytes]:
     if storage_path is None or not storage_path.is_file():
         return None
 
@@ -825,10 +844,7 @@ def _attachment_prompt_text(attachment: Dict[str, Any]) -> str:
         data_b64 = str(attachment.get("data") or "").strip()
         if len(data_b64) > _MAX_INLINE_BASE64_CHARS:
             return (
-                "[上传文件: "
-                f"{display_name}, "
-                f"mime={mime_type or 'unknown'}, "
-                "内容过大，未直接展开]"
+                f"[上传文件: {display_name}, mime={mime_type or 'unknown'}, 内容过大，未直接展开]"
             )
 
         try:
@@ -885,11 +901,7 @@ def _attachment_prompt_text(attachment: Dict[str, Any]) -> str:
         )
 
     file_uri = attachment.get("file_uri") or ""
-    return (
-        "[上传文件引用: "
-        f"{display_name or file_uri}, "
-        f"mime={mime_type or 'unknown'}]"
-    )
+    return f"[上传文件引用: {display_name or file_uri}, mime={mime_type or 'unknown'}]"
 
 
 def _extract_user_input_from_parts(parts: List[Any]) -> str:
@@ -956,7 +968,9 @@ def _request_id() -> str:
     return f"req-{uuid.uuid4().hex[:12]}"
 
 
-def _action_response(action: str, data: Any, *, request_id: Optional[str] = None, message: str = "Success") -> dict:
+def _action_response(
+    action: str, data: Any, *, request_id: Optional[str] = None, message: str = "Success"
+) -> dict:
     payload = {
         "Code": 0,
         "Message": message,
@@ -992,7 +1006,9 @@ async def _workspace_runtime_request(
             payload = None
         if isinstance(payload, dict):
             detail = str(payload.get("detail") or detail)
-        raise HTTPException(status_code=response.status_code, detail=detail or "Workspace request failed")
+        raise HTTPException(
+            status_code=response.status_code, detail=detail or "Workspace request failed"
+        )
     return response
 
 
@@ -1044,6 +1060,7 @@ class ListSessionEventsActionRequest(BaseModel):
     SessionId: str
     Offset: Optional[int] = Field(None, ge=0)
     Limit: Optional[int] = Field(None, ge=1)
+    AfterSeqId: Optional[int] = Field(None, ge=0)
 
 
 class ListSessionCheckpointsActionRequest(BaseModel):
@@ -1297,6 +1314,29 @@ def _latest_session_run_status(events: list[SessionEvent]) -> tuple[str, str]:
     return "", ""
 
 
+def _latest_session_run_metadata(
+    events: list[SessionEvent],
+) -> tuple[str, str, str, str]:
+    """返回 (invocation_id, status, run_mode, run_trigger)。
+
+    与 _latest_session_run_status 同语义，但额外从最新 run_status 事件的 metadata
+    读取 run_mode/run_trigger。旧事件缺字段降级 unknown。原 _latest_session_run_status
+    不动，保护现有 ActiveInvocationId/ActiveRunStatus 契约。
+    """
+    invocation_id, status = _latest_session_run_status(events)
+    run_mode = RUN_MODE_UNKNOWN
+    run_trigger = RUN_TRIGGER_UNKNOWN
+    if invocation_id:
+        for event in reversed(events):
+            if event.event_type != "run_status" or _event_run_id(event) != invocation_id:
+                continue
+            metadata = event.metadata or {}
+            run_mode = str(metadata.get("run_mode") or RUN_MODE_UNKNOWN)
+            run_trigger = str(metadata.get("run_trigger") or RUN_TRIGGER_UNKNOWN)
+            break
+    return invocation_id, status, run_mode, run_trigger
+
+
 class WorkspaceDeleteActionRequest(BaseModel):
     AgentId: Optional[str] = None
     Path: str
@@ -1323,7 +1363,12 @@ async def _session_to_action_payload(session: Session) -> dict[str, Any]:
     event_prompts = [prompt for prompt in event_prompts if prompt]
     first_prompt = session.first_prompt or (event_prompts[0] if event_prompts else "")
     last_prompt = session.last_prompt or (event_prompts[-1] if event_prompts else "")
-    active_invocation_id, active_run_status = _latest_session_run_status(events)
+    (
+        active_invocation_id,
+        active_run_status,
+        active_run_mode,
+        active_run_trigger,
+    ) = _latest_session_run_metadata(events)
     title = session.title
     title_source = session.title_source
     if not title:
@@ -1350,6 +1395,8 @@ async def _session_to_action_payload(session: Session) -> dict[str, Any]:
         "LastPrompt": _truncate_session_text(last_prompt),
         "ActiveInvocationId": active_invocation_id,
         "ActiveRunStatus": active_run_status,
+        "ActiveRunMode": active_run_mode,
+        "ActiveRunTrigger": active_run_trigger,
         "State": _sanitize_session_state_for_action(session.state),
         "CreatedAt": session.created_at,
         "UpdatedAt": session.updated_at,
@@ -1460,7 +1507,9 @@ def _checkpoint_event_to_action_payload(event: SessionEvent) -> dict[str, Any] |
         "ResumeDisabledReason": disabled_reason,
         "NextNode": next_node,
         "StageKey": str(metadata.get("stage_key") or ""),
-        "StageName": str(metadata.get("stage_name") or metadata.get("stage") or metadata.get("title") or ""),
+        "StageName": str(
+            metadata.get("stage_name") or metadata.get("stage") or metadata.get("title") or ""
+        ),
         "StageIndex": metadata.get("stage_index"),
         "TotalStages": metadata.get("total_stages"),
         "Backend": backend,
@@ -1489,7 +1538,9 @@ def _checkpoint_event_to_action_payload(event: SessionEvent) -> dict[str, Any] |
     return payload
 
 
-def _resume_audit_by_checkpoint(events: list[SessionEvent]) -> dict[tuple[str, str], dict[str, Any]]:
+def _resume_audit_by_checkpoint(
+    events: list[SessionEvent],
+) -> dict[tuple[str, str], dict[str, Any]]:
     audit: dict[tuple[str, str], dict[str, Any]] = {}
     for event in events:
         if event.event_type != "run_resume":
@@ -1630,7 +1681,9 @@ def _build_checkpoint_resume_preview(
             "Level": risk_level,
             "DuplicateSideEffectRisk": bool(side_effect_receipts),
             "SideEffectReceiptCount": len(side_effect_receipts),
-            "FailedReceiptCount": len([receipt for receipt in receipts if receipt["Status"] == "failed"]),
+            "FailedReceiptCount": len(
+                [receipt for receipt in receipts if receipt["Status"] == "failed"]
+            ),
         },
         "Summary": {
             "RunId": run_id,
@@ -1644,7 +1697,9 @@ def _build_checkpoint_resume_preview(
 def _checkpoint_resume_disabled_detail(checkpoint: Mapping[str, Any]) -> dict[str, Any] | None:
     if checkpoint.get("IsResumable") is not False:
         return None
-    reason = str(checkpoint.get("ResumeDisabledReason") or "").strip() or "Checkpoint is not resumable"
+    reason = (
+        str(checkpoint.get("ResumeDisabledReason") or "").strip() or "Checkpoint is not resumable"
+    )
     return {
         "code": "checkpoint_not_resumable",
         "reason": reason,
@@ -1699,7 +1754,9 @@ async def _resolve_checkpoint_resume_input_from_session(
     run_id = str(resume_input.get("run_id") or "").strip()
     checkpoint_id = str(resume_input.get("checkpoint_id") or "").strip()
     if not run_id or not checkpoint_id:
-        raise HTTPException(status_code=400, detail="Checkpoint resume requires run_id and checkpoint_id")
+        raise HTTPException(
+            status_code=400, detail="Checkpoint resume requires run_id and checkpoint_id"
+        )
 
     checkpoint = await _find_session_checkpoint(
         service=service,
@@ -1725,9 +1782,7 @@ async def _resolve_checkpoint_resume_input_from_session(
             or resume_input.get("ResumeInstructionEnabled")
         ),
         "resume_instruction": str(
-            resume_input.get("resume_instruction")
-            or resume_input.get("ResumeInstruction")
-            or ""
+            resume_input.get("resume_instruction") or resume_input.get("ResumeInstruction") or ""
         ).strip(),
     }
 
@@ -1769,7 +1824,10 @@ async def _find_feedback_assistant_event(
         if normalized_event_id and event.id != normalized_event_id:
             continue
         metadata = event.metadata or {}
-        if normalized_response_id and str(metadata.get("response_id") or "") != normalized_response_id:
+        if (
+            normalized_response_id
+            and str(metadata.get("response_id") or "") != normalized_response_id
+        ):
             continue
         event_type = conversation.canonical_event_type(
             event.event_type,
@@ -1789,7 +1847,9 @@ async def get_response_feedback_action(request: ResponseFeedbackRefActionRequest
     feedbacks = session.state.get("__ksadk_response_feedback__")
     feedback = None
     if isinstance(feedbacks, Mapping):
-        feedback = _feedback_payload_from_state(feedbacks.get(_feedback_state_key(request.ResponseId)))
+        feedback = _feedback_payload_from_state(
+            feedbacks.get(_feedback_state_key(request.ResponseId))
+        )
     return _action_response("GetResponseFeedback", {"Feedback": feedback})
 
 
@@ -1815,7 +1875,9 @@ async def upsert_response_feedback_action(request: UpsertResponseFeedbackActionR
     now = str(time.time())
     existing_feedbacks = session.state.get("__ksadk_response_feedback__")
     feedbacks = dict(existing_feedbacks) if isinstance(existing_feedbacks, Mapping) else {}
-    existing = _feedback_payload_from_state(feedbacks.get(_feedback_state_key(request.ResponseId))) or {}
+    existing = (
+        _feedback_payload_from_state(feedbacks.get(_feedback_state_key(request.ResponseId))) or {}
+    )
     metadata = assistant_event.metadata or {}
     feedback = {
         "AgentId": request.AgentId,
@@ -1999,8 +2061,9 @@ async def list_session_events_action(request: ListSessionEventsActionRequest):
         request.SessionId,
         offset=request.Offset,
         limit=request.Limit,
+        after_seq_id=request.AfterSeqId,
     )
-    total = await service.count_events(request.SessionId)
+    total = await service.count_events(request.SessionId, after_seq_id=request.AfterSeqId)
     return _action_response(
         "ListSessionEvents",
         {
@@ -2008,8 +2071,31 @@ async def list_session_events_action(request: ListSessionEventsActionRequest):
             "Total": total,
             "Offset": request.Offset or 0,
             "Limit": request.Limit if request.Limit is not None else len(events),
+            "AfterSeqId": request.AfterSeqId,
         },
     )
+
+
+def _count_resumable_checkpoints(checkpoints: list[dict[str, Any]]) -> int:
+    """统计可恢复 checkpoint 数量。
+
+    规则：IsResumable=True AND ReplayAllowed!=False AND IsTerminal!=True
+    AND CheckpointStatus not in {expired, disabled}。
+    不排除 resumed（已恢复过的仍计入，符合存档点可反复读的回档语义）。
+    """
+    resumable = 0
+    for cp in checkpoints:
+        if cp.get("IsResumable") is not True:
+            continue
+        if cp.get("ReplayAllowed") is False:
+            continue
+        if cp.get("IsTerminal") is True:
+            continue
+        status = str(cp.get("CheckpointStatus") or "").strip().lower()
+        if status in {"expired", "disabled"}:
+            continue
+        resumable += 1
+    return resumable
 
 
 async def _list_checkpoints_payload(request: ListSessionCheckpointsActionRequest) -> dict[str, Any]:
@@ -2032,9 +2118,11 @@ async def _list_checkpoints_payload(request: ListSessionCheckpointsActionRequest
             continue
         if framework_filter and str(checkpoint["Framework"]).lower() != framework_filter:
             continue
-        if request.OnlyResumable and checkpoint.get("IsResumable") is not True:
-            continue
+        # ResumableTotal 在 OnlyResumable 过滤前统计全量可恢复数（RunId/Framework 范围内）
         checkpoints.append(checkpoint)
+    resumable_total = _count_resumable_checkpoints(checkpoints)
+    if request.OnlyResumable:
+        checkpoints = [cp for cp in checkpoints if cp.get("IsResumable") is True]
     total = len(checkpoints)
     offset = int(request.Offset or 0)
     if request.Limit is not None:
@@ -2045,6 +2133,8 @@ async def _list_checkpoints_payload(request: ListSessionCheckpointsActionRequest
     return {
         "Checkpoints": checkpoints,
         "Total": total,
+        "ResumableTotal": resumable_total,
+        "HasResumableCheckpoint": resumable_total > 0,
         "Offset": offset,
         "Limit": request.Limit if request.Limit is not None else len(checkpoints),
     }
@@ -2149,6 +2239,8 @@ async def resume_run_action(request: ResumeRunActionRequest):
                 invocation_id=invocation_id,
                 detail="resume_noop_terminal_checkpoint",
                 session_service_provider=resolve_session_service,
+                run_mode=RUN_MODE_BACKGROUND,
+                run_trigger=RUN_TRIGGER_CHECKPOINT_RESUME,
             )
             return _action_response(
                 "ResumeRun",
@@ -2196,9 +2288,12 @@ async def resume_run_action(request: ResumeRunActionRequest):
                 invocation_id=resume_invocation_id,
                 prepare_runner=_prepare_runner_for_model,
                 session_service_provider=resolve_session_service,
+                run_mode=RUN_MODE_BACKGROUND,
             ),
             invocation_id=resume_invocation_id,
             resume_key=resume_key,
+            run_mode=RUN_MODE_BACKGROUND,
+            run_trigger=RUN_TRIGGER_CHECKPOINT_RESUME,
         )
 
     response_id = f"resp_{uuid.uuid4().hex}"
@@ -2217,6 +2312,7 @@ async def resume_run_action(request: ResumeRunActionRequest):
         invocation_id=str(resume_input["resume_attempt_id"]),
         prepare_runner=_prepare_runner_for_model,
         session_service_provider=resolve_session_service,
+        run_mode=RUN_MODE_FOREGROUND,
     )
     payload = conversation.build_responses_payload(
         output_text=result["output_text"],
@@ -2244,11 +2340,13 @@ async def subscribe_run_events_action(
         last_seq_id = int(AfterSeqId or 0)
         deadline = time.monotonic() + 5 * 60
         while True:
-            events = await service.get_events(session_id)
+            # 增量查询：把 after_seq_id 下推到后端，只取 seq_id > last_seq_id 的事件，
+            # 避免每轮全量拉取。invocation_id 过滤仍在 Python 侧。
+            events = await service.get_events(session_id, after_seq_id=last_seq_id)
             matched_events = [
                 event
                 for event in events
-                if event.seq_id > last_seq_id and event.invocation_id == invocation_id
+                if event.invocation_id == invocation_id
             ]
             for event in matched_events:
                 last_seq_id = max(last_seq_id, event.seq_id)
@@ -2262,19 +2360,25 @@ async def subscribe_run_events_action(
                     yield "data: [DONE]\n\n"
                     return
 
-            latest_status = None
-            for event in events:
-                if event.invocation_id != invocation_id or event.event_type != "run_status":
-                    continue
-                latest_status = str((event.content or {}).get("status") or "").strip().lower()
-            if latest_status in _RUN_TERMINAL_STATUSES:
-                yield "data: [DONE]\n\n"
-                return
+            # 重连兜底：本轮无新事件时，查全量确认 run 是否已有 terminal（客户端断连期间 run 已结束）。
+            # 正常流式期间不触发此查询，保持增量收益。
+            if not matched_events:
+                all_events = await service.get_events(session_id)
+                latest_status = None
+                for event in all_events:
+                    if event.invocation_id != invocation_id or event.event_type != "run_status":
+                        continue
+                    latest_status = str((event.content or {}).get("status") or "").strip().lower()
+                if latest_status in _RUN_TERMINAL_STATUSES:
+                    yield "data: [DONE]\n\n"
+                    return
             if time.monotonic() > deadline:
                 return
             await asyncio.sleep(0.25)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
 @app.post("/agentengine/api/v1/UploadFile")
 async def upload_file_action(file: UploadFile = File(...)):
     file_id = uuid.uuid4().hex
@@ -2295,7 +2399,7 @@ async def upload_file_action(file: UploadFile = File(...)):
                 "mimeType": file.content_type or "application/octet-stream",
                 "sizeBytes": len(data),
             }
-        }
+        },
     )
 
 
@@ -2519,6 +2623,7 @@ def _normalize_model_catalog_items(raw_models: list[Any]) -> list[dict[str, Any]
 
 async def _build_models_payload() -> dict[str, Any]:
     import os
+
     import httpx
 
     api_base = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE")
@@ -2556,7 +2661,9 @@ async def _build_models_payload() -> dict[str, Any]:
                 models = _normalize_model_catalog_items(list(data))
             else:
                 models = _normalize_model_catalog_items(list(data.get("data", [])))
-            if current_model and all(str(item.get("id") or "").strip() != current_model for item in models):
+            if current_model and all(
+                str(item.get("id") or "").strip() != current_model for item in models
+            ):
                 models = _normalize_model_catalog_items([*models, current_model])
             return {"data": models, "current": current_model, "source": source}
     except Exception as e:
@@ -2564,6 +2671,7 @@ async def _build_models_payload() -> dict[str, Any]:
         fallback = _fallback_catalog()
         fallback["error"] = str(e)
         return fallback
+
 
 class ListAgentModelsRequest(BaseModel):
     AgentId: Optional[str] = None
@@ -2620,9 +2728,7 @@ async def run_agent_action(request: RunAgentActionRequest):
     else:
         messages = conversation.normalize_kop_messages(request.Messages)
     request_metadata = (
-        {"previous_response_id": request.PreviousResponseId}
-        if request.PreviousResponseId
-        else {}
+        {"previous_response_id": request.PreviousResponseId} if request.PreviousResponseId else {}
     )
     if api_format == "responses":
         request_metadata["responses_conversation"] = True
@@ -2651,6 +2757,8 @@ async def run_agent_action(request: RunAgentActionRequest):
             status="in_progress",
             invocation_id=invocation_id,
             session_service_provider=resolve_session_service,
+            run_mode=RUN_MODE_BACKGROUND,
+            run_trigger=trigger_from_resume_input(resume_input),
         )
         resume_key = _detached_resume_key_from_input(resolved_background_session_id, resume_input)
         _reject_if_detached_resume_active(resume_key)
@@ -2670,9 +2778,12 @@ async def run_agent_action(request: RunAgentActionRequest):
                 invocation_id=invocation_id,
                 prepare_runner=_prepare_runner_for_model,
                 session_service_provider=resolve_session_service,
+                run_mode=RUN_MODE_BACKGROUND,
             ),
             invocation_id=invocation_id,
             session_id=resolved_background_session_id,
+            run_mode=RUN_MODE_BACKGROUND,
+            run_trigger=trigger_from_resume_input(resume_input),
         )
         if invocation_id and resume_key:
             _DETACHED_RESUME_KEYS_BY_INVOCATION[invocation_id] = resume_key
@@ -2683,6 +2794,7 @@ async def run_agent_action(request: RunAgentActionRequest):
         return _action_response(
             "RunAgent",
             {
+                "SessionId": resolved_background_session_id,
                 "InvocationId": invocation_id,
                 "Status": "running",
                 "Background": True,
@@ -2725,14 +2837,15 @@ async def run_agent_action(request: RunAgentActionRequest):
                 invocation_id=request.InvocationId,
                 prepare_runner=_prepare_runner_for_model,
                 session_service_provider=resolve_session_service,
+                run_mode=RUN_MODE_FOREGROUND,
             ),
             invocation_id=request.InvocationId,
             resume_key=resume_key,
+            run_mode=RUN_MODE_FOREGROUND,
+            run_trigger=trigger_from_resume_input(resume_input),
         )
 
-    responses_response_id = (
-        f"resp_{uuid.uuid4().hex}" if api_format != "chat_completions" else None
-    )
+    responses_response_id = f"resp_{uuid.uuid4().hex}" if api_format != "chat_completions" else None
     resolved_session_id, result = await conversation.invoke_conversation_once(
         runner=_resolve_active_runner(),
         agent_id=request.AgentId,
@@ -2749,6 +2862,7 @@ async def run_agent_action(request: RunAgentActionRequest):
         invocation_id=request.InvocationId,
         prepare_runner=_prepare_runner_for_model,
         session_service_provider=resolve_session_service,
+        run_mode=RUN_MODE_FOREGROUND,
     )
     output_text = result["output_text"]
     if api_format == "chat_completions":
@@ -2764,7 +2878,9 @@ async def run_agent_action(request: RunAgentActionRequest):
             model=request.Model,
             session_id=resolved_session_id,
             response_id=responses_response_id,
-            metadata=result.get("metadata") if isinstance(result.get("metadata"), Mapping) else None,
+            metadata=result.get("metadata")
+            if isinstance(result.get("metadata"), Mapping)
+            else None,
         )
     return _action_response("RunAgent", payload)
 
@@ -2884,7 +3000,9 @@ async def run_sse(request: AgentRunRequest):
     active_runner = _ensure_runner_loaded()
     _prepare_runner_for_model(active_runner, request.model)
     use_streaming = request.streaming
-    normalized_message = conversation.normalize_parts_content(request.newMessage.parts if request.newMessage else [])
+    normalized_message = conversation.normalize_parts_content(
+        request.newMessage.parts if request.newMessage else []
+    )
     user_message = {
         "role": "user",
         "content": str(normalized_message.get("content") or ""),
@@ -2919,6 +3037,8 @@ async def run_sse(request: AgentRunRequest):
             status="in_progress",
             invocation_id=prepared_non_stream.invocation_id,
             session_service_provider=resolve_session_service,
+            run_mode=RUN_MODE_FOREGROUND,
+            run_trigger=RUN_TRIGGER_NEW_RUN,
         )
 
     async def event_generator():
@@ -2992,6 +3112,8 @@ async def run_sse(request: AgentRunRequest):
                     status="completed",
                     invocation_id=invocation_id,
                     session_service_provider=resolve_session_service,
+                    run_mode=RUN_MODE_FOREGROUND,
+                    run_trigger=RUN_TRIGGER_NEW_RUN,
                 )
 
             except Exception as e:
@@ -3003,6 +3125,8 @@ async def run_sse(request: AgentRunRequest):
                     invocation_id=invocation_id,
                     detail=str(e),
                     session_service_provider=resolve_session_service,
+                    run_mode=RUN_MODE_FOREGROUND,
+                    run_trigger=RUN_TRIGGER_NEW_RUN,
                 )
                 error_event = {
                     "id": str(uuid.uuid4()),
@@ -3044,8 +3168,12 @@ async def run_sse(request: AgentRunRequest):
                         phase="done",
                         trigger=str(prepared.compaction_trigger or "auto"),
                         compacted_until_seq_id=prepared.compacted_until_seq_id,
-                        total_chars=compaction_preview.total_chars if compaction_preview.should_compact else None,
-                        group_count=compaction_preview.group_count if compaction_preview.should_compact else None,
+                        total_chars=compaction_preview.total_chars
+                        if compaction_preview.should_compact
+                        else None,
+                        group_count=compaction_preview.group_count
+                        if compaction_preview.should_compact
+                        else None,
                     )
 
                 session_id = prepared.session_id
@@ -3073,6 +3201,8 @@ async def run_sse(request: AgentRunRequest):
                     status="in_progress",
                     invocation_id=invocation_id,
                     session_service_provider=resolve_session_service,
+                    run_mode=RUN_MODE_FOREGROUND,
+                    run_trigger=RUN_TRIGGER_NEW_RUN,
                 )
 
                 client_visible_text = ""
@@ -3108,7 +3238,9 @@ async def run_sse(request: AgentRunRequest):
                         raw_output = chunk.get("output")
                         responses_output = raw_output if isinstance(raw_output, list) else []
                         raw_response_id = chunk.get("response_id")
-                        responses_response_id = str(raw_response_id) if raw_response_id else responses_response_id
+                        responses_response_id = (
+                            str(raw_response_id) if raw_response_id else responses_response_id
+                        )
                         continue
                     if chunk.get("type") == "thinking":
                         delta = str(chunk.get("delta", ""))
@@ -3120,7 +3252,10 @@ async def run_sse(request: AgentRunRequest):
                                 invocation_id=invocation_id,
                                 session_service_provider=resolve_session_service,
                             )
-                            yield f"event: response.reasoning.delta\ndata: {json.dumps({'delta': delta}, ensure_ascii=False)}\n\n"
+                            yield (
+                                "event: response.reasoning.delta\n"
+                                f"data: {json.dumps({'delta': delta}, ensure_ascii=False)}\n\n"
+                            )
                         continue
                     if chunk.get("type") == "text":
                         delta_text = chunk.get("delta", "")
@@ -3140,7 +3275,15 @@ async def run_sse(request: AgentRunRequest):
                     if chunk.get("type") == "tool_call":
                         yield (
                             "event: response.tool_call\n"
-                            f"data: {json.dumps({'name': chunk.get('tool_name'), 'args': chunk.get('tool_args', {})}, ensure_ascii=False)}\n\n"
+                            "data: "
+                            + json.dumps(
+                                {
+                                    "name": chunk.get("tool_name"),
+                                    "args": chunk.get("tool_args", {}),
+                                },
+                                ensure_ascii=False,
+                            )
+                            + "\n\n"
                         )
                         tool_event = {
                             "id": event_id,
@@ -3196,7 +3339,15 @@ async def run_sse(request: AgentRunRequest):
                         )
                         yield (
                             "event: response.tool_result\n"
-                            f"data: {json.dumps({'name': chunk.get('tool_name'), 'output': chunk.get('tool_output', {})}, ensure_ascii=False)}\n\n"
+                            "data: "
+                            + json.dumps(
+                                {
+                                    "name": chunk.get("tool_name"),
+                                    "output": chunk.get("tool_output", {}),
+                                },
+                                ensure_ascii=False,
+                            )
+                            + "\n\n"
                         )
                         continue
                     if chunk.get("type") == "interrupt":
@@ -3212,7 +3363,12 @@ async def run_sse(request: AgentRunRequest):
                         )
                         yield (
                             "event: response.approval_request\n"
-                            f"data: {json.dumps({'interrupt_info': chunk.get('interrupt_info')}, ensure_ascii=False)}\n\n"
+                            "data: "
+                            + json.dumps(
+                                {"interrupt_info": chunk.get("interrupt_info")},
+                                ensure_ascii=False,
+                            )
+                            + "\n\n"
                         )
                         continue
                     if chunk.get("type") == "final":
@@ -3249,7 +3405,11 @@ async def run_sse(request: AgentRunRequest):
                         event_type="assistant_message",
                         metadata={
                             **({"responses_output": responses_output} if responses_output else {}),
-                            **({"response_id": responses_response_id} if responses_response_id else {}),
+                            **(
+                                {"response_id": responses_response_id}
+                                if responses_response_id
+                                else {}
+                            ),
                         },
                         session_service_provider=resolve_session_service,
                     )
@@ -3259,6 +3419,8 @@ async def run_sse(request: AgentRunRequest):
                     status="completed",
                     invocation_id=invocation_id,
                     session_service_provider=resolve_session_service,
+                    run_mode=RUN_MODE_FOREGROUND,
+                    run_trigger=RUN_TRIGGER_NEW_RUN,
                 )
 
             except Exception as e:
@@ -3270,6 +3432,8 @@ async def run_sse(request: AgentRunRequest):
                     invocation_id=invocation_id,
                     detail=str(e),
                     session_service_provider=resolve_session_service,
+                    run_mode=RUN_MODE_FOREGROUND,
+                    run_trigger=RUN_TRIGGER_NEW_RUN,
                 )
                 error_event = {
                     "id": str(uuid.uuid4()),
@@ -3415,7 +3579,9 @@ async def responses(request: ResponsesRequest):
         session_id=resolved_session_id,
         resume_input=resume_input,
     )
-    messages = [] if resume_input is not None else conversation.normalize_responses_input(request.input)
+    messages = (
+        [] if resume_input is not None else conversation.normalize_responses_input(request.input)
+    )
     request_metadata = dict(request.metadata or {})
     if request.previous_response_id:
         request_metadata.setdefault("previous_response_id", request.previous_response_id)
@@ -3452,9 +3618,12 @@ async def responses(request: ResponsesRequest):
                 invocation_id=invocation_id,
                 prepare_runner=_prepare_runner_for_model,
                 session_service_provider=resolve_session_service,
+                run_mode=RUN_MODE_FOREGROUND,
             ),
             invocation_id=invocation_id,
             resume_key=resume_key,
+            run_mode=RUN_MODE_FOREGROUND,
+            run_trigger=trigger_from_resume_input(resume_input),
         )
 
     response_id = f"resp_{uuid.uuid4().hex}"
@@ -3475,13 +3644,16 @@ async def responses(request: ResponsesRequest):
         invocation_id=invocation_id,
         prepare_runner=_prepare_runner_for_model,
         session_service_provider=resolve_session_service,
+        run_mode=RUN_MODE_FOREGROUND,
     )
     return conversation.build_responses_payload(
         output_text=result["output_text"],
         model=request.model,
         session_id=resolved_session_id,
         response_id=response_id,
-        metadata=result.get("metadata") if isinstance(result.get("metadata"), dict) else request_metadata,
+        metadata=result.get("metadata")
+        if isinstance(result.get("metadata"), dict)
+        else request_metadata,
     )
 
 
@@ -3508,6 +3680,7 @@ async def chat_completions(request: ChatCompletionRequest):
                 account_id=account_id,
                 prepare_runner=_prepare_runner_for_model,
                 session_service_provider=resolve_session_service,
+                run_mode=RUN_MODE_FOREGROUND,
             ),
             media_type="text/event-stream",
         )
@@ -3524,6 +3697,7 @@ async def chat_completions(request: ChatCompletionRequest):
         account_id=account_id,
         prepare_runner=_prepare_runner_for_model,
         session_service_provider=resolve_session_service,
+        run_mode=RUN_MODE_FOREGROUND,
     )
     return conversation.build_chat_completions_payload(
         output_text=result["output_text"],

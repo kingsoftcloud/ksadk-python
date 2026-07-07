@@ -220,6 +220,7 @@ CONTENT_RULES = (
             r"(?<![A-Za-z0-9.-])"
             # 金山云公开服务 endpoint(用户在金山云环境跑 agent 必需,公开 SDK 必须支持)
             r"(?!(?:aicp|vpc)\.(?:inner|internal)\.api\.ksyun\.com\b)"
+            r"(?!iam\.inner\.api\.ksyun\.com\b)"
             r"(?!kspmas(?:-internal)?\.sdns\.ksyun\.com\b)"
             r"(?!ks3-[a-z-]+(?:-internal)?\.ksyuncs\.com\b)"
             r"(?!kmr\.[a-z-]+\.inner\.api\.ksyun\.com\b)"

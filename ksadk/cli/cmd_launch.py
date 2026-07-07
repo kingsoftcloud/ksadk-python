@@ -55,7 +55,7 @@ from ksadk.cli.ui import (
 )
 @click.option("--name", "-n", help="部署名称")
 @click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域 (serverless)")
-@click.option("--account-id", envvar="KSYUN_ACCOUNT_ID", help="金山云账号 ID")
+@click.option("--account-id", envvar="KSYUN_ACCOUNT_ID", help="金山云账号 ID（可选；未设置时从 AK/SK 反查）")
 @click.option("--observability/--no-observability", default=True, help="是否启用可观测性")
 @click.option("--no-cache", is_flag=True, help="强制重新构建，不使用缓存")
 @click.option("--port", "-p", default=8000, help="服务端口 (default: 8000)")

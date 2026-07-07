@@ -333,6 +333,10 @@ def test_content_audit_allows_aicp_internal_endpoints_but_blocks_other_internal_
 
 def test_content_audit_allows_supported_internal_and_registry_paths(tmp_path):
     audit = _load_audit_module()
+    (tmp_path / "iam.py").write_text(
+        'IAM_INNER = "iam.inner.api.ksyun.com"\n',
+        encoding="utf-8",
+    )
     (tmp_path / "settings.py").write_text(
         'KSPMAS_INTERNAL = "kspmas-internal.sdns.ksyun.com"\n',
         encoding="utf-8",
@@ -357,7 +361,7 @@ def test_content_audit_allows_supported_internal_and_registry_paths(tmp_path):
     )
 
     result = audit.audit_file_contents(
-        tmp_path, ["settings.py", "cmd_create.py", "builder.py", "regional.py", "other.py"]
+        tmp_path, ["iam.py", "settings.py", "cmd_create.py", "builder.py", "regional.py", "other.py"]
     )
     assert result.ok is False
     assert [(v.path, v.rule) for v in result.violations] == [
