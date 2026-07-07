@@ -317,6 +317,7 @@ class BaseSessionService(abc.ABC):
         session_id: str,
         offset: Optional[int] = None,
         limit: Optional[int] = None,
+        after_seq_id: Optional[int] = None,
     ) -> list[SessionEvent]:
         raise NotImplementedError
 

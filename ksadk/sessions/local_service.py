@@ -134,9 +134,10 @@ class LocalSessionService(BaseSessionService):
         session_id: str,
         offset: Optional[int] = None,
         limit: Optional[int] = None,
+        after_seq_id: Optional[int] = None,
     ) -> list[SessionEvent]:
         async with self._lock:
-            return await asyncio.to_thread(self._get_events_sync, session_id, offset, limit)
+            return await asyncio.to_thread(self._get_events_sync, session_id, offset, limit, after_seq_id)
 
     async def count_events(self, session_id: str) -> int:
         async with self._lock:
@@ -667,12 +668,15 @@ class LocalSessionService(BaseSessionService):
         session_id: str,
         offset: Optional[int] = None,
         limit: Optional[int] = None,
+        after_seq_id: Optional[int] = None,
         *,
         connection: Optional[sqlite3.Connection] = None,
     ) -> list[SessionEvent]:
         owns_connection = connection is None
         connection = connection or self._connect()
         try:
+            # after_seq_id 先过滤 seq_id > N,再对结果集应用"最新 N 条" offset/limit 语义。
+            seq_clause = "AND seq_id > ?" if after_seq_id is not None else ""
             if limit is not None:
                 query = f"""
                     SELECT id, session_id, author, event_type, content_json, timestamp,
@@ -681,13 +685,16 @@ class LocalSessionService(BaseSessionService):
                         SELECT id, session_id, author, event_type, content_json, timestamp,
                                state_delta_json, seq_id, invocation_id, metadata_json
                         FROM {KSADK_EVENTS_TABLE}
-                        WHERE session_id = ?
+                        WHERE session_id = ? {seq_clause}
                         ORDER BY seq_id DESC
                         LIMIT ? OFFSET ?
                     )
                     ORDER BY seq_id ASC
                 """
-                params: list[object] = [session_id, limit, offset or 0]
+                params: list[object] = [session_id]
+                if after_seq_id is not None:
+                    params.append(after_seq_id)
+                params.extend([limit, offset or 0])
             elif offset is not None:
                 query = f"""
                     SELECT id, session_id, author, event_type, content_json, timestamp,
@@ -696,22 +703,27 @@ class LocalSessionService(BaseSessionService):
                         SELECT id, session_id, author, event_type, content_json, timestamp,
                                state_delta_json, seq_id, invocation_id, metadata_json
                         FROM {KSADK_EVENTS_TABLE}
-                        WHERE session_id = ?
+                        WHERE session_id = ? {seq_clause}
                         ORDER BY seq_id DESC
                         LIMIT -1 OFFSET ?
                     )
                     ORDER BY seq_id ASC
                 """
-                params = [session_id, offset]
+                params = [session_id]
+                if after_seq_id is not None:
+                    params.append(after_seq_id)
+                params.append(offset)
             else:
                 query = f"""
                     SELECT id, session_id, author, event_type, content_json, timestamp,
                            state_delta_json, seq_id, invocation_id, metadata_json
                     FROM {KSADK_EVENTS_TABLE}
-                    WHERE session_id = ?
+                    WHERE session_id = ? {seq_clause}
                     ORDER BY seq_id ASC
                 """
                 params = [session_id]
+                if after_seq_id is not None:
+                    params.append(after_seq_id)
 
             rows = connection.execute(query, params).fetchall()
             return [

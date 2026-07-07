@@ -330,48 +330,95 @@ class PostgresSessionService(BaseSessionService):
         session_id: str,
         offset: Optional[int] = None,
         limit: Optional[int] = None,
+        after_seq_id: Optional[int] = None,
     ) -> list[SessionEvent]:
         await self._ensure_schema()
+        # after_seq_id 先过滤 seq_id > N,再对结果集应用"最新 N 条" offset/limit 语义。
+        # 占位符顺序:namespace=$1, session_id=$2, [after_seq_id=$3], limit=$N, offset=$M。
+        seq_clause = "AND seq_id > $3" if after_seq_id is not None else ""
         async with self._pool.acquire() as connection:
             if limit is not None:
-                query = f"""
-                    SELECT id, session_id, author, event_type, content_json, timestamp,
-                           state_delta_json, seq_id, invocation_id, metadata_json
-                    FROM (
+                # $3=after_seq_id(可选), $4=limit, $5=offset —— 或 $3=limit, $4=offset(无 after_seq_id)
+                if after_seq_id is not None:
+                    query = f"""
                         SELECT id, session_id, author, event_type, content_json, timestamp,
                                state_delta_json, seq_id, invocation_id, metadata_json
-                        FROM {KSADK_PG_EVENTS_TABLE}
-                        WHERE namespace = $1 AND session_id = $2
-                        ORDER BY seq_id DESC
-                        LIMIT $3 OFFSET $4
-                    ) AS latest_events
-                    ORDER BY seq_id ASC
-                """
-                params: list[Any] = [self.namespace, session_id, limit, offset or 0]
+                        FROM (
+                            SELECT id, session_id, author, event_type, content_json, timestamp,
+                                   state_delta_json, seq_id, invocation_id, metadata_json
+                            FROM {KSADK_PG_EVENTS_TABLE}
+                            WHERE namespace = $1 AND session_id = $2 {seq_clause}
+                            ORDER BY seq_id DESC
+                            LIMIT $4 OFFSET $5
+                        ) AS latest_events
+                        ORDER BY seq_id ASC
+                    """
+                    params: list[Any] = [self.namespace, session_id, after_seq_id, limit, offset or 0]
+                else:
+                    query = f"""
+                        SELECT id, session_id, author, event_type, content_json, timestamp,
+                               state_delta_json, seq_id, invocation_id, metadata_json
+                        FROM (
+                            SELECT id, session_id, author, event_type, content_json, timestamp,
+                                   state_delta_json, seq_id, invocation_id, metadata_json
+                            FROM {KSADK_PG_EVENTS_TABLE}
+                            WHERE namespace = $1 AND session_id = $2
+                            ORDER BY seq_id DESC
+                            LIMIT $3 OFFSET $4
+                        ) AS latest_events
+                        ORDER BY seq_id ASC
+                    """
+                    params = [self.namespace, session_id, limit, offset or 0]
             elif offset is not None:
-                query = f"""
-                    SELECT id, session_id, author, event_type, content_json, timestamp,
-                           state_delta_json, seq_id, invocation_id, metadata_json
-                    FROM (
+                if after_seq_id is not None:
+                    query = f"""
+                        SELECT id, session_id, author, event_type, content_json, timestamp,
+                               state_delta_json, seq_id, invocation_id, metadata_json
+                        FROM (
+                            SELECT id, session_id, author, event_type, content_json, timestamp,
+                                   state_delta_json, seq_id, invocation_id, metadata_json
+                            FROM {KSADK_PG_EVENTS_TABLE}
+                            WHERE namespace = $1 AND session_id = $2 {seq_clause}
+                            ORDER BY seq_id DESC
+                            OFFSET $4
+                        ) AS latest_events
+                        ORDER BY seq_id ASC
+                    """
+                    params = [self.namespace, session_id, after_seq_id, offset]
+                else:
+                    query = f"""
+                        SELECT id, session_id, author, event_type, content_json, timestamp,
+                               state_delta_json, seq_id, invocation_id, metadata_json
+                        FROM (
+                            SELECT id, session_id, author, event_type, content_json, timestamp,
+                                   state_delta_json, seq_id, invocation_id, metadata_json
+                            FROM {KSADK_PG_EVENTS_TABLE}
+                            WHERE namespace = $1 AND session_id = $2
+                            ORDER BY seq_id DESC
+                            OFFSET $3
+                        ) AS latest_events
+                        ORDER BY seq_id ASC
+                    """
+                    params = [self.namespace, session_id, offset]
+            else:
+                if after_seq_id is not None:
+                    query = f"""
+                        SELECT id, session_id, author, event_type, content_json, timestamp,
+                               state_delta_json, seq_id, invocation_id, metadata_json
+                        FROM {KSADK_PG_EVENTS_TABLE}
+                        WHERE namespace = $1 AND session_id = $2 {seq_clause}
+                        ORDER BY seq_id ASC
+                    """
+                    params = [self.namespace, session_id, after_seq_id]
+                else:
+                    query = f"""
                         SELECT id, session_id, author, event_type, content_json, timestamp,
                                state_delta_json, seq_id, invocation_id, metadata_json
                         FROM {KSADK_PG_EVENTS_TABLE}
                         WHERE namespace = $1 AND session_id = $2
-                        ORDER BY seq_id DESC
-                        OFFSET $3
-                    ) AS latest_events
-                    ORDER BY seq_id ASC
-                """
-                params = [self.namespace, session_id, offset]
-            else:
-                query = f"""
-                    SELECT id, session_id, author, event_type, content_json, timestamp,
-                           state_delta_json, seq_id, invocation_id, metadata_json
-                    FROM {KSADK_PG_EVENTS_TABLE}
-                    WHERE namespace = $1 AND session_id = $2
-                    ORDER BY seq_id ASC
-                """
-                params = [self.namespace, session_id]
+                        ORDER BY seq_id ASC
+                    """
+                    params = [self.namespace, session_id]
             rows = await connection.fetch(query, *params)
             return [self._event_from_row(row) for row in rows]
 
