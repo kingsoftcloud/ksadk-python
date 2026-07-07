@@ -108,6 +108,7 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "public-release-approval-check:" in makefile
     assert "public-publish-gate: public-release-approval-check" in makefile
     assert "scripts/check_approval_record.py" in makefile
+    assert '--expected-current-commit "$${KSADK_APPROVED_SOURCE_COMMIT:-}"' not in makefile
     assert "public-build-check: clean-dist sync-ksadk-web-static" in makefile
     assert "public-preflight: public-version-gate public-audit sync-ksadk-web-static public-test public-docs-build public-build-check" in makefile
     assert "PYPI_API_TOKEN" not in workflow

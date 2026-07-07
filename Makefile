@@ -403,7 +403,11 @@ public-publish-check:
 
 public-release-approval-check:
 	@echo "==> release approval record check"
-	@uv run python scripts/check_approval_record.py --expected-current-commit "$${KSADK_APPROVED_SOURCE_COMMIT:-}"
+	@if [ -n "$${KSADK_APPROVED_SOURCE_COMMIT:-}" ]; then \
+		uv run python scripts/check_approval_record.py --expected-current-commit "$$KSADK_APPROVED_SOURCE_COMMIT"; \
+	else \
+		uv run python scripts/check_approval_record.py; \
+	fi
 
 public-publish-gate: public-release-approval-check
 	@echo "✅ public publish gate passed"
