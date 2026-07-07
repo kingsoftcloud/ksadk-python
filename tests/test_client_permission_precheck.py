@@ -18,6 +18,17 @@ def clear_permission_probe_cache():
         cache.clear()
 
 
+@pytest.fixture(autouse=True)
+def _stub_identity_resolve(monkeypatch):
+    """这些测试用假 AK/SK，mock 掉身份反查避免联网 + warning 干扰 caplog 断言。"""
+    monkeypatch.setattr(
+        "ksadk.identity.resolve_identity", lambda **kw: None
+    )
+    monkeypatch.setattr(
+        "ksadk.identity.get_cached_identity", lambda ak: None
+    )
+
+
 def _build_client() -> AgentEngineClient:
     return AgentEngineClient(
         base_url="https://aicp.api.ksyun.com",

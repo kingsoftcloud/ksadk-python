@@ -15,6 +15,26 @@ from ksadk.tracing.exporters.inmemory_exporter import InMemoryExporter
 
 logger = logging.getLogger(__name__)
 
+
+def _batch_span_processor_kwargs() -> dict:
+    """BatchSpanProcessor 参数：限制单次 export 体积，避免 OTLP collector 413。
+
+    默认 max_export_batch_size=64（OTel 默认 512），单 batch 过大会触发 collector
+    `Request Entity Too Large (413)`。可用 KSADK_OTLP_MAX_EXPORT_BATCH_SIZE 覆盖。
+    """
+    try:
+        max_batch = int(os.environ.get("KSADK_OTLP_MAX_EXPORT_BATCH_SIZE", "64"))
+    except ValueError:
+        max_batch = 64
+    if max_batch <= 0:
+        max_batch = 64
+    return {
+        "max_queue_size": max(512, max_batch * 8),
+        "max_export_batch_size": max_batch,
+        "export_timeout_millis": 30000,
+    }
+
+
 _exporter_instance: Optional[InMemoryExporter] = None
 _langfuse_exporter: Optional[Any] = None
 _tracing_initialized: bool = False
@@ -462,7 +482,9 @@ def _is_langfuse_otlp_endpoint(endpoint: str) -> bool:
 
 
 def _is_langfuse_callback_endpoint(endpoint: str) -> bool:
-    return _env_flag_enabled(os.getenv("LANGFUSE_USE_CALLBACK", "")) and _is_langfuse_otlp_endpoint(endpoint)
+    return _env_flag_enabled(os.getenv("LANGFUSE_USE_CALLBACK", "")) and _is_langfuse_otlp_endpoint(
+        endpoint
+    )
 
 
 def _apply_langfuse_auth_fallback(endpoint: str, headers: dict[str, str]) -> bool:
@@ -613,7 +635,12 @@ def setup_tracing(
                 service_name=_get_service_name(),
                 header_keys=sorted(generic_otlp_config["headers"]),
             )
-            provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
+            provider.add_span_processor(
+                BatchSpanProcessor(
+                    otlp_exporter,
+                    **_batch_span_processor_kwargs(),
+                )
+            )
             logger.info(
                 "Generic OTLP HTTP exporter enabled: %s (%s) headers=%s",
                 generic_otlp_config["endpoint"],
@@ -645,7 +672,12 @@ def setup_tracing(
                 header_keys=sorted(cloud_monitor_config.headers),
                 span_transform=_prepare_cloud_monitor_spans,
             )
-            provider.add_span_processor(BatchSpanProcessor(cloud_monitor_exporter))
+            provider.add_span_processor(
+                BatchSpanProcessor(
+                    cloud_monitor_exporter,
+                    **_batch_span_processor_kwargs(),
+                )
+            )
             logger.info(
                 "CloudMonitor OTLP exporter enabled: endpoint=%s protocol=%s service_name=%s",
                 cloud_monitor_config.endpoint,
@@ -690,7 +722,12 @@ def setup_tracing(
                     service_name=_get_service_name(),
                     header_keys=sorted(config["headers"]),
                 )
-                provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
+                provider.add_span_processor(
+                BatchSpanProcessor(
+                    otlp_exporter,
+                    **_batch_span_processor_kwargs(),
+                )
+            )
                 logger.info(
                     "Langfuse OTLP exporter enabled: %s (%s) headers=%s",
                     config["endpoint"],
@@ -712,7 +749,12 @@ def setup_tracing(
         try:
             from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
             otlp_exporter = OTLPSpanExporter(endpoint=otlp_endpoint)
-            provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
+            provider.add_span_processor(
+                BatchSpanProcessor(
+                    otlp_exporter,
+                    **_batch_span_processor_kwargs(),
+                )
+            )
             logger.info(f"OTLP exporter enabled: {otlp_endpoint}")
         except ImportError:
             logger.warning("OTLP exporter not installed")

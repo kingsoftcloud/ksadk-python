@@ -263,6 +263,12 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec("KSADK_USER_BACKEND_URL", "web", "User-facing backend URL used by hosted UI integrations."),
     EnvVarSpec("KSADK_WORKFLOW_PROMPT", "skills", "Prompt text exposed to local Skill workflow scripts."),
     EnvVarSpec("KSADK_WORKSPACE_ID", "sessions", "Workspace id used for session namespace scoping."),
+    EnvVarSpec(
+        "KSADK_OTLP_MAX_EXPORT_BATCH_SIZE",
+        "tracing",
+        "Maximum spans exported per OTLP batch; defaults to 64 to avoid collector request-size limits.",
+        "64",
+    ),
     EnvVarSpec("CLOUD_MONITOR_APP_KEY", "tracing", "CloudMonitor AppKey for optional OTLP ingestion.", sensitive=True),
     EnvVarSpec(
         "CLOUD_MONITOR_LANGFUSE_ENABLED",

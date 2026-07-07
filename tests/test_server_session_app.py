@@ -377,7 +377,13 @@ async def test_run_sse_uses_new_session_service(monkeypatch):
 
     session = await service.get_session(session_id)
     assert session is not None
-    assert session.state == {"topic": "billing"}
+    # run_status 事件现在携带 state_delta.active_run（与 agentengine-server 对齐），
+    # completed 后 active_run 反映终态。
+    assert session.state["topic"] == "billing"
+    assert session.state["active_run"]["status"] == "completed"
+    # active_run 现含 run_mode/run_trigger（普通前台 run 默认 foreground/new_run）
+    assert session.state["active_run"]["run_mode"] == "foreground"
+    assert session.state["active_run"]["run_trigger"] == "new_run"
 
     events = await service.get_events(session_id)
     assert [event.author for event in events] == ["user", "demo-agent", "demo-agent", "demo-agent"]
@@ -2052,8 +2058,15 @@ async def test_responses_accepts_agentengine_checkpoint_resume_input(monkeypatch
         "run_checkpoint",
         "run_resume",
         "run_status",
+        "run_status",
         "assistant_message",
         "run_status",
+    ]
+    # resume 现在会先写 run_status(resuming) 再写 run_status(in_progress)
+    assert [event.content["status"] for event in events if event.event_type == "run_status"] == [
+        "resuming",
+        "in_progress",
+        "completed",
     ]
     assert len([event for event in events if event.event_type == "run_checkpoint"]) == 1
 
@@ -2174,7 +2187,12 @@ async def test_stream_responses_checkpoint_resume_rejects_concurrent_resume_for_
 
     assert first_response.status_code == 202
     assert second_response.status_code == 409
-    assert second_response.json()["detail"]["code"] == "resume_already_running"
+    detail = second_response.json()["detail"]
+    assert detail["code"] == "resume_already_running"
+    # 409 detail 字段契约：snake_case（与 checkpoint_not_resumable 对齐）
+    assert isinstance(detail["session_id"], str) and detail["session_id"]
+    assert isinstance(detail["invocation_id"], str) and detail["invocation_id"]
+    assert isinstance(detail["run_id"], str) and detail["run_id"]
 
 
 @pytest.mark.asyncio
@@ -2653,6 +2671,44 @@ async def test_runtime_local_list_session_events_returns_total_and_page(monkeypa
     assert data["Limit"] == 2
     assert data["Total"] == 4
     assert [event["SeqId"] for event in data["Events"]] == [3, 4]
+
+
+@pytest.mark.asyncio
+async def test_runtime_local_list_session_events_filters_by_after_seq_id(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    await service.create_session(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-events-after",
+    )
+    for index in range(4):
+        await service.append_event(
+            "sess-events-after",
+            SessionEvent(
+                author="user",
+                event_type="user_message",
+                content={"index": index},
+            ),
+        )
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ListSessionEvents",
+            json={
+                "SessionId": "sess-events-after",
+                "AfterSeqId": 2,
+            },
+        )
+
+    assert response.status_code == 200
+    data = response.json()["Data"]
+    assert [event["SeqId"] for event in data["Events"]] == [3, 4]
+    assert data["Total"] == 2
+    assert data["AfterSeqId"] == 2
 
 
 @pytest.mark.asyncio
@@ -3499,7 +3555,7 @@ async def test_resume_run_action_stream_registers_detached_cancel(monkeypatch):
                 for event in events
                 if event.event_type == "run_status"
             ]
-            if statuses == ["in_progress"]:
+            if "in_progress" in statuses and "cancelled" not in statuses:
                 break
             await asyncio.sleep(0.02)
 
@@ -3522,7 +3578,7 @@ async def test_resume_run_action_stream_registers_detached_cancel(monkeypatch):
             for event in events
             if event.event_type == "run_status"
         ]
-        if statuses == ["in_progress", "cancelled"]:
+        if "cancelled" in statuses:
             break
         await asyncio.sleep(0.02)
 
@@ -3532,7 +3588,8 @@ async def test_resume_run_action_stream_registers_detached_cancel(monkeypatch):
         for event in events
         if event.event_type == "run_status"
     ]
-    assert statuses == ["in_progress", "cancelled"]
+    # resume 现在先写 run_status(resuming) 再写 in_progress，cancel 后写 cancelled。
+    assert statuses == ["resuming", "in_progress", "cancelled"]
     assert runner.cancel_requests == [invocation_id]
 
 

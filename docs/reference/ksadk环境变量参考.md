@@ -428,6 +428,7 @@
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | OTel | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | traces 专用 endpoint；设置后优先于通用 endpoint。 |
 | `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` | OTel | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | traces 专用 OTLP 协议；设置后优先于通用 protocol。 |
 | `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | OTel | 否 | 未设置 | 无 | 是 | 平台 / 开发者 | 否 | traces 专用 OTLP headers；设置后优先于通用 headers。 |
+| `KSADK_OTLP_MAX_EXPORT_BATCH_SIZE` | OTel | 否 | `64` | 无 | 否 | 平台 / 开发者 | 否 | 单次 OTLP export 的最大 span 数，降低 collector 413 风险。 |
 | `OTEL_SERVICE_NAME` | OTel | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | service name。 |
 | `OTEL_RESOURCE_ATTRIBUTES` | OTel | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | resource attributes。 |
 

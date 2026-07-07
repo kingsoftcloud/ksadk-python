@@ -13,7 +13,7 @@ from typing import Sequence
 from ksadk.api.client import DryRunExit
 from ksadk.cli.agent_ref import merge_agent_inputs, resolve_agent_ref
 from ksadk.cli.dry_run import dry_run_option, run_async_with_dry_run, effective_dry_run
-from ksadk.cli.error_utils import print_exception, resolution_error, usage_error, validation_error
+from ksadk.cli.error_utils import print_exception, resolution_error, usage_error
 from ksadk.cli.resource_common import (
     CONTEXT_SETTINGS,
     CompatibilityAliasCommand,
@@ -55,7 +55,7 @@ AGENT_LIST_HIDDEN_FRAMEWORK_LABELS = {
 @click.option("--watch", "-w", is_flag=True, help="Watch 模式，持续刷新")
 @click.option("--interval", "-i", default=2, help="Watch 刷新间隔 (秒)")
 @click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
-@click.option("--account-id", envvar="KSYUN_ACCOUNT_ID", help="金山云账号 ID")
+@click.option("--account-id", envvar="KSYUN_ACCOUNT_ID", help="金山云账号 ID（可选；未设置时从 AK/SK 反查）")
 @dry_run_option()
 def status(
     agent_ref: str,
@@ -131,12 +131,7 @@ def run_status_command(
         if resolved.source != "cli":
             print_info(f"未显式指定 Agent，使用 {resolved.source_text}: {agent}")
 
-    # 检查账号 ID
-    if not account_id:
-        raise validation_error(
-            "需要金山云账号 ID",
-            hints=["设置 KSYUN_ACCOUNT_ID 环境变量或使用 --account-id 参数。"],
-        )
+    # account_id 由 client 层解析（env KSYUN_ACCOUNT_ID > AK/SK 反查），命令层不再强制校验
 
     if watch and dry_run:
         raise usage_error("Watch 模式不支持 dry-run，请去掉 --watch 或取消 dry-run。")

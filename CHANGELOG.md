@@ -5,6 +5,32 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [0.6.9] - 2026-07-07
+
+### 亮点
+
+- **run 状态双维度字段**：新增 `run_mode`（background/foreground/unknown）和 `run_trigger`（new_run/checkpoint_resume/approval_resume/unknown）两个独立维度字段，区分"怎么跑"和"怎么开始"，替代单字段 `run_kind` 的语义错误。后台长任务从 checkpoint 恢复时不再丢失"这是后台任务"的信息，前端可直接消费 `ActiveRunMode` / `ActiveRunTrigger` 判断长任务会话，无需从事件流推断。
+- **checkpoint 可恢复性聚合字段**：`ListSessionCheckpoints` 响应新增 `ResumableTotal` / `HasResumableCheckpoint`，解决 `Total > 0` 不能代表"可恢复"的误判（终态/过期/memory_local checkpoint 会让 Total 非空但不可恢复）。恢复按钮可用性应看 `HasResumableCheckpoint`。
+- **state_delta.active_run 对齐**：ksadk 与 agentengine-server 现都把 `run_mode` / `run_trigger` 写入 `state_delta.active_run`，Session 对象的 `ActiveRunMode` / `ActiveRunTrigger` 由 state 重建，刷新/分享链接/切 session 都能恢复一致状态。
+
+### 新增
+
+- 新增 `ksadk/conversations/run_kinds.py`：`run_mode` / `run_trigger` 枚举常量 + `validate_run_mode` / `validate_run_trigger` + `trigger_from_resume_input`（从 resume_input 推导 trigger）。
+- `append_run_status_event` 新增 `run_mode` / `run_trigger` 参数，写入事件 `metadata` 与 `state_delta.active_run`。
+- `PreparedConversationTurn` 新增 `run_mode` / `run_trigger` 字段，`build_run_input` 按 checkpoint_resume / approval_resume / new_run 分支回填。
+- `invoke_conversation_once` / `_iter_conversation_turn_events` / `stream_responses_conversation_turn` / `stream_conversation_turn` 透传 `run_mode`；18+ 处 `append_run_status_event` 调用点按 endpoint 语义传值。
+- 各 endpoint 按产品语义标记 run_mode：`RunAgent Background:true` 与 `ResumeRun Stream:true` 标 `background`；普通 `RunAgent Stream:true`、`ResumeRun Stream:false`、`/v1/responses`、`/v1/chat/completions`、`/run_sse` 标 `foreground`。
+- `_DetachedSSEStream` 构造与终态 fallback 写入 `run_mode` / `run_trigger`。
+- 新增 `_latest_session_run_metadata` helper（不改原 `_latest_session_run_status`，保护现有契约），`_session_to_action_payload` 顶层新增 `ActiveRunMode` / `ActiveRunTrigger`。
+- `_list_checkpoints_payload` 新增 `ResumableTotal` / `HasResumableCheckpoint` 聚合字段。规则：`IsResumable===true && ReplayAllowed!==false && IsTerminal!==true && CheckpointStatus not in {expired, disabled}`，不排除 `resumed`（已恢复过的仍计入，符合存档点可反复读）。
+- agentengine-server 侧新建 `app/services/run_kinds.py`（独立维护，不 import ksadk，用测试约束一致性），`_append_run_status` 与 `_serialize_session` 同步写入/读取新字段。
+
+### 变更
+
+- `run_status` 事件 `metadata` 与 `state_delta.active_run` 扩展为含 `run_mode` / `run_trigger`；旧 session 缺字段降级 `unknown`，不破坏现有 `ActiveInvocationId` / `ActiveRunStatus` 契约。
+- approval 续跑的 `run_mode` 跟随原 run（不写死 foreground），需从原 run 上下文透传。
+- server 侧 `run_status` 事件 `content` 仍为 `{status, detail}`，`run_mode` / `run_trigger` 只写进 `state_delta`，避免破坏现有消费方。
+
 ## [0.6.8] - 2026-07-03
 
 ### 亮点

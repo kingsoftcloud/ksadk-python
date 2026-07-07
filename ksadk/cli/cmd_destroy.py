@@ -7,7 +7,7 @@ import asyncio
 from pathlib import Path
 from ksadk.cli.agent_ref import resolve_agent_ref
 from ksadk.cli.dry_run import dry_run_option, run_async_with_dry_run, effective_dry_run
-from ksadk.cli.error_utils import abort_with_cli_error, remote_error, resolution_error, usage_error, validation_error
+from ksadk.cli.error_utils import abort_with_cli_error, remote_error, resolution_error, usage_error
 from ksadk.cli.resource_common import (
     CONTEXT_SETTINGS,
     CompatibilityAliasCommand,
@@ -52,12 +52,7 @@ def _destroy_impl(
     dry_run = effective_dry_run(dry_run)
     agents = _collect_agent_refs(agent_refs=agent_refs, agent_options=agent_options)
 
-    # 检查账号 ID
-    if not account_id:
-        raise validation_error(
-            "需要金山云账号 ID",
-            hints=["设置 KSYUN_ACCOUNT_ID 环境变量或使用 --account-id 参数。"],
-        )
+    # account_id 由 client 层解析（env KSYUN_ACCOUNT_ID > AK/SK 反查），命令层不再强制校验
 
     resolved_agent_ids = agents
     if not dry_run:
@@ -223,7 +218,7 @@ def run_delete_command(
 @click.option("--force", "-f", "assume_yes", is_flag=True, help="跳过确认")
 @click.option("--yes", "-y", "assume_yes", is_flag=True, help="跳过确认")
 @click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
-@click.option("--account-id", envvar="KSYUN_ACCOUNT_ID", help="金山云账号 ID")
+@click.option("--account-id", envvar="KSYUN_ACCOUNT_ID", help="金山云账号 ID（可选；未设置时从 AK/SK 反查）")
 @dry_run_option()
 def destroy(
     agent_refs: tuple[str, ...],
@@ -256,7 +251,7 @@ def destroy(
 @click.option("--yes", "-y", "assume_yes", is_flag=True, help="跳过确认")
 @click.option("--force", "-f", "assume_yes", is_flag=True, help="跳过确认")
 @click.option("--region", "-r", default="cn-beijing-6", envvar="KSYUN_REGION", help="区域")
-@click.option("--account-id", envvar="KSYUN_ACCOUNT_ID", help="金山云账号 ID")
+@click.option("--account-id", envvar="KSYUN_ACCOUNT_ID", help="金山云账号 ID（可选；未设置时从 AK/SK 反查）")
 @dry_run_option()
 def delete(
     agent_refs: tuple[str, ...],
