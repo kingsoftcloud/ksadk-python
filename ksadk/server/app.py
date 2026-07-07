@@ -1061,6 +1061,7 @@ class ListSessionEventsActionRequest(BaseModel):
     Offset: Optional[int] = Field(None, ge=0)
     Limit: Optional[int] = Field(None, ge=1)
     AfterSeqId: Optional[int] = Field(None, ge=0)
+    BeforeSeqId: Optional[int] = Field(None, ge=1)
 
 
 class ListSessionCheckpointsActionRequest(BaseModel):
@@ -2062,8 +2063,13 @@ async def list_session_events_action(request: ListSessionEventsActionRequest):
         offset=request.Offset,
         limit=request.Limit,
         after_seq_id=request.AfterSeqId,
+        before_seq_id=request.BeforeSeqId,
     )
-    total = await service.count_events(request.SessionId, after_seq_id=request.AfterSeqId)
+    total = await service.count_events(
+        request.SessionId,
+        after_seq_id=request.AfterSeqId,
+        before_seq_id=request.BeforeSeqId,
+    )
     return _action_response(
         "ListSessionEvents",
         {
@@ -2072,6 +2078,7 @@ async def list_session_events_action(request: ListSessionEventsActionRequest):
             "Offset": request.Offset or 0,
             "Limit": request.Limit if request.Limit is not None else len(events),
             "AfterSeqId": request.AfterSeqId,
+            "BeforeSeqId": request.BeforeSeqId,
         },
     )
 
