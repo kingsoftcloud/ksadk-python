@@ -171,10 +171,17 @@ class InMemorySessionService(BaseSessionService):
             sliced = events[start:end]
             return copy.deepcopy(sliced)
 
-    async def count_events(self, session_id: str) -> int:
+    async def count_events(
+        self, session_id: str, after_seq_id: Optional[int] = None
+    ) -> int:
         async with self._lock:
             session = self._sessions.get(session_id)
-            return len(session.events) if session else 0
+            if not session:
+                return 0
+            events = session.events
+            if after_seq_id is not None:
+                return sum(1 for event in events if event.seq_id > after_seq_id)
+            return len(events)
 
     async def get_state(
         self,

@@ -2674,6 +2674,44 @@ async def test_runtime_local_list_session_events_returns_total_and_page(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_runtime_local_list_session_events_filters_by_after_seq_id(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    await service.create_session(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-events-after",
+    )
+    for index in range(4):
+        await service.append_event(
+            "sess-events-after",
+            SessionEvent(
+                author="user",
+                event_type="user_message",
+                content={"index": index},
+            ),
+        )
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ListSessionEvents",
+            json={
+                "SessionId": "sess-events-after",
+                "AfterSeqId": 2,
+            },
+        )
+
+    assert response.status_code == 200
+    data = response.json()["Data"]
+    assert [event["SeqId"] for event in data["Events"]] == [3, 4]
+    assert data["Total"] == 2
+    assert data["AfterSeqId"] == 2
+
+
+@pytest.mark.asyncio
 async def test_list_session_checkpoints_filters_by_agent_session_and_run(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     conversation_runtime = importlib.import_module("ksadk.conversations.runtime")

@@ -139,9 +139,11 @@ class LocalSessionService(BaseSessionService):
         async with self._lock:
             return await asyncio.to_thread(self._get_events_sync, session_id, offset, limit, after_seq_id)
 
-    async def count_events(self, session_id: str) -> int:
+    async def count_events(
+        self, session_id: str, after_seq_id: Optional[int] = None
+    ) -> int:
         async with self._lock:
-            return await asyncio.to_thread(self._count_events_sync, session_id)
+            return await asyncio.to_thread(self._count_events_sync, session_id, after_seq_id)
 
     async def get_state(
         self,
@@ -745,12 +747,20 @@ class LocalSessionService(BaseSessionService):
             if owns_connection:
                 connection.close()
 
-    def _count_events_sync(self, session_id: str) -> int:
+    def _count_events_sync(
+        self, session_id: str, after_seq_id: Optional[int] = None
+    ) -> int:
         with self._connection() as connection:
-            row = connection.execute(
-                f"SELECT COUNT(*) AS total FROM {KSADK_EVENTS_TABLE} WHERE session_id = ?",
-                (session_id,),
-            ).fetchone()
+            if after_seq_id is not None:
+                row = connection.execute(
+                    f"SELECT COUNT(*) AS total FROM {KSADK_EVENTS_TABLE} WHERE session_id = ? AND seq_id > ?",
+                    (session_id, after_seq_id),
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    f"SELECT COUNT(*) AS total FROM {KSADK_EVENTS_TABLE} WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
             return int(row["total"] if row else 0)
 
     def _get_state_sync(

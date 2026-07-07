@@ -422,9 +422,20 @@ class PostgresSessionService(BaseSessionService):
             rows = await connection.fetch(query, *params)
             return [self._event_from_row(row) for row in rows]
 
-    async def count_events(self, session_id: str) -> int:
+    async def count_events(
+        self, session_id: str, after_seq_id: Optional[int] = None
+    ) -> int:
         await self._ensure_schema()
         async with self._pool.acquire() as connection:
+            if after_seq_id is not None:
+                query = f"""
+                    SELECT COUNT(*) AS total
+                    FROM {KSADK_PG_EVENTS_TABLE}
+                    WHERE namespace = $1 AND session_id = $2 AND seq_id > $3
+                """
+                return int(
+                    await connection.fetchval(query, self.namespace, session_id, after_seq_id) or 0
+                )
             query = f"""
                 SELECT COUNT(*) AS total
                 FROM {KSADK_PG_EVENTS_TABLE}

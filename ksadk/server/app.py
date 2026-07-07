@@ -1060,6 +1060,7 @@ class ListSessionEventsActionRequest(BaseModel):
     SessionId: str
     Offset: Optional[int] = Field(None, ge=0)
     Limit: Optional[int] = Field(None, ge=1)
+    AfterSeqId: Optional[int] = Field(None, ge=0)
 
 
 class ListSessionCheckpointsActionRequest(BaseModel):
@@ -2060,8 +2061,9 @@ async def list_session_events_action(request: ListSessionEventsActionRequest):
         request.SessionId,
         offset=request.Offset,
         limit=request.Limit,
+        after_seq_id=request.AfterSeqId,
     )
-    total = await service.count_events(request.SessionId)
+    total = await service.count_events(request.SessionId, after_seq_id=request.AfterSeqId)
     return _action_response(
         "ListSessionEvents",
         {
@@ -2069,6 +2071,7 @@ async def list_session_events_action(request: ListSessionEventsActionRequest):
             "Total": total,
             "Offset": request.Offset or 0,
             "Limit": request.Limit if request.Limit is not None else len(events),
+            "AfterSeqId": request.AfterSeqId,
         },
     )
 
@@ -2337,11 +2340,13 @@ async def subscribe_run_events_action(
         last_seq_id = int(AfterSeqId or 0)
         deadline = time.monotonic() + 5 * 60
         while True:
-            events = await service.get_events(session_id)
+            # 增量查询：把 after_seq_id 下推到后端，只取 seq_id > last_seq_id 的事件，
+            # 避免每轮全量拉取。invocation_id 过滤仍在 Python 侧。
+            events = await service.get_events(session_id, after_seq_id=last_seq_id)
             matched_events = [
                 event
                 for event in events
-                if event.seq_id > last_seq_id and event.invocation_id == invocation_id
+                if event.invocation_id == invocation_id
             ]
             for event in matched_events:
                 last_seq_id = max(last_seq_id, event.seq_id)
@@ -2355,14 +2360,18 @@ async def subscribe_run_events_action(
                     yield "data: [DONE]\n\n"
                     return
 
-            latest_status = None
-            for event in events:
-                if event.invocation_id != invocation_id or event.event_type != "run_status":
-                    continue
-                latest_status = str((event.content or {}).get("status") or "").strip().lower()
-            if latest_status in _RUN_TERMINAL_STATUSES:
-                yield "data: [DONE]\n\n"
-                return
+            # 重连兜底：本轮无新事件时，查全量确认 run 是否已有 terminal（客户端断连期间 run 已结束）。
+            # 正常流式期间不触发此查询，保持增量收益。
+            if not matched_events:
+                all_events = await service.get_events(session_id)
+                latest_status = None
+                for event in all_events:
+                    if event.invocation_id != invocation_id or event.event_type != "run_status":
+                        continue
+                    latest_status = str((event.content or {}).get("status") or "").strip().lower()
+                if latest_status in _RUN_TERMINAL_STATUSES:
+                    yield "data: [DONE]\n\n"
+                    return
             if time.monotonic() > deadline:
                 return
             await asyncio.sleep(0.25)

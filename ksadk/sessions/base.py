@@ -322,7 +322,9 @@ class BaseSessionService(abc.ABC):
         raise NotImplementedError
 
     @abc.abstractmethod
-    async def count_events(self, session_id: str) -> int:
+    async def count_events(
+        self, session_id: str, after_seq_id: Optional[int] = None
+    ) -> int:
         raise NotImplementedError
 
     @abc.abstractmethod
