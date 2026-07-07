@@ -66,8 +66,9 @@ class _FakeSimpleSpanProcessor:
 
 
 class _FakeBatchSpanProcessor:
-    def __init__(self, exporter):
+    def __init__(self, exporter, **kwargs):
         self.exporter = exporter
+        self.kwargs = kwargs
 
 
 class _FakeHttpOTLPSpanExporter:
