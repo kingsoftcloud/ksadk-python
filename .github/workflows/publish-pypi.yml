@@ -9,7 +9,7 @@ on:
       ksadk_web_version:
         description: KsADK Web npm version to bundle
         required: false
-        default: "0.2.16"
+        default: "0.2.18"
 
 permissions:
   contents: read
@@ -26,7 +26,7 @@ jobs:
     environment:
       name: pypi
     env:
-      KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.2.16' }}
+      KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.2.18' }}
     permissions:
       contents: read
       id-token: write

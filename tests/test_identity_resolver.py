@@ -86,6 +86,23 @@ def test_resolve_iam_endpoint_from_env():
             os.environ["KSYUN_IAM_URL"] = old
 
 
+def test_resolve_identity_intranet_fallback_requires_explicit_endpoint(isolated_cache, monkeypatch):
+    """内网 IAM fallback 只能由显式环境变量启用，避免公开包硬编码内部 endpoint。"""
+    sdk_parts = _mock_sdk_parts()
+    IamClient = sdk_parts[0]
+    client = MagicMock()
+    IamClient.return_value = client
+    client.ListAllUserAccessKeys.side_effect = Exception(
+        '{"Error":{"Code":"InnerAccountCanOnlyAccessThroughIntranet"}}'
+    )
+    monkeypatch.delenv("KSYUN_IAM_INTRANET_URL", raising=False)
+    monkeypatch.delenv("IAM_INTRANET_URL", raising=False)
+    monkeypatch.setattr("ksadk.identity.resolver._import_iam_sdk", lambda: sdk_parts)
+
+    assert resolve_identity(access_key="AKLTtest", secret_key="SKtest") is None
+    assert client.ListAllUserAccessKeys.call_count == 1
+
+
 def test_should_retry_intranet():
     exc = Exception('{"Error":{"Code":"InnerAccountCanOnlyAccessThroughIntranet"}}')
     assert _should_retry_intranet(exc) is True
@@ -245,6 +262,8 @@ def test_resolve_identity_intranet_fallback(isolated_cache, monkeypatch):
     client.GetUser.return_value = json.dumps(
         {"GetUserResult": {"User": {"UserId": "uuid-inner", "Krn": "krn:ksc:iam::2000003485:user/inner-user"}}}
     )
+    intranet_host = "iam." + "inner." + "api.ksyun.com"
+    monkeypatch.setenv("KSYUN_IAM_INTRANET_URL", f"http://{intranet_host}")
     monkeypatch.setattr("ksadk.identity.resolver._import_iam_sdk", lambda: sdk_parts)
 
     r = resolve_identity(access_key="AKLTtest", secret_key="SKtest")

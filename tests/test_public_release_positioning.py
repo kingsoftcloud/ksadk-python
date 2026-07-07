@@ -92,13 +92,13 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "release:" in workflow
     assert "- published" in workflow
     assert "workflow_dispatch:" in workflow
-    assert 'default: "0.2.16"' in workflow
-    assert "KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.2.16' }}" in workflow
+    assert 'default: "0.2.18"' in workflow
+    assert "KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.2.18' }}" in workflow
     assert "make sync-ksadk-web-static" in workflow
     assert "make public-preflight" in workflow
     assert "make public-publish-gate" in workflow
     assert "make open-source-audit-dist" in ci_workflow
-    assert 'KSADK_WEB_VERSION: "0.2.16"' in ci_workflow
+    assert 'KSADK_WEB_VERSION: "0.2.18"' in ci_workflow
     assert "PUBLIC_KSADK_WEB_VERSION" not in ci_workflow
     assert "KSADK_WEB_VERSION ?= latest" in makefile
     assert "PUBLIC_TEST_TARGETS ?= tests/test_public_release_positioning.py tests/test_config_env_registry.py" in makefile
@@ -142,13 +142,16 @@ def test_public_release_approval_template_tracks_current_version():
 def test_source_repository_does_not_track_generated_ksadk_web_static():
     gitignore = _read(".gitignore")
     pyproject = _read("pyproject.toml")
-    web_ui_files = subprocess.run(
-        ["git", "ls-files", "ksadk/server/web-ui/**"],
-        cwd=ROOT,
-        check=True,
-        text=True,
-        stdout=subprocess.PIPE,
-    ).stdout
+    if (ROOT / ".git").exists():
+        web_ui_files = subprocess.run(
+            ["git", "ls-files", "ksadk/server/web-ui/**"],
+            cwd=ROOT,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        ).stdout
+    else:
+        web_ui_files = "\n".join(str(path.relative_to(ROOT)) for path in (ROOT / "ksadk/server/web-ui").glob("**/*") if path.is_file())
 
     assert "ksadk/server/static/**" in gitignore
     assert "ksadk/server/web-ui/" in gitignore

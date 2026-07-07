@@ -269,6 +269,7 @@ KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | traces-specific OTLP HTTP endpoint; takes precedence over the generic endpoint |
 | `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` | traces-specific OTLP protocol; takes precedence over the generic protocol |
 | `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | traces-specific OTLP HTTP headers; takes precedence over generic headers and may contain auth data |
+| `KSADK_OTLP_MAX_EXPORT_BATCH_SIZE` | maximum spans exported per OTLP batch, default `64`, to avoid oversized collector requests |
 | `LANGFUSE_PUBLIC_KEY` | compatibility path for older Langfuse tracing auto-configuration |
 | `LANGFUSE_SECRET_KEY` | Langfuse secret |
 | `LANGFUSE_BASE_URL` | Langfuse base URL |

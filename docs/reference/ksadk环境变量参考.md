@@ -138,6 +138,7 @@
 | `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | 否 | 无 | 是 | 平台 / 开发者 | traces 专用 OTLP headers；设置后优先于通用 headers。 |
 | `OTEL_SERVICE_NAME` | 否 | 无 | 否 | 平台 / 开发者 | OTel service name。 |
 | `OTEL_RESOURCE_ATTRIBUTES` | 否 | 无 | 否 | 平台 / 开发者 | OTel resource attributes。 |
+| `KSADK_OTLP_MAX_EXPORT_BATCH_SIZE` | 否 | 无 | 否 | 平台 / 开发者 | OTLP 单次 export 最大 span 数，默认 `64`，用于避免 collector 请求过大。 |
 
 ## 3. 通用模型与 LLM 变量
 
@@ -431,6 +432,7 @@
 | `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | OTel | 否 | 未设置 | 无 | 是 | 平台 / 开发者 | 否 | traces 专用 OTLP headers；设置后优先于通用 headers。 |
 | `OTEL_SERVICE_NAME` | OTel | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | service name。 |
 | `OTEL_RESOURCE_ATTRIBUTES` | OTel | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | resource attributes。 |
+| `KSADK_OTLP_MAX_EXPORT_BATCH_SIZE` | OTel | 否 | `64` | 无 | 否 | 平台 / 开发者 | 否 | OTLP 单次 export 最大 span 数，用于避免 collector 请求过大。 |
 
 ## 12. Hermes 和 OpenClaw 常见运行时变量
 

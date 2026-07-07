@@ -28,10 +28,12 @@ DOCUMENTATION_URL = "https://kingsoftcloud.github.io/ksadk-python/"
 DEFAULT_OUTPUT_DIR = Path("/tmp/ksadk-python-export-candidate")
 
 CURATED_DOCS: set[str] = {"docs/maintainer-approval-record.md"}
+CURATED_REFERENCE_DOCS: set[str] = {"docs/reference/ksadk环境变量参考.md"}
 
 ROOT_EXPORT_FILES = {
     ".dockerignore",
     ".gitattributes",
+    ".github/BRANCH_PROTECTION.md",
     ".github/ISSUE_TEMPLATE/bug_report.md",
     ".github/ISSUE_TEMPLATE/feature_request.md",
     ".github/dependabot.yml",
@@ -39,6 +41,7 @@ ROOT_EXPORT_FILES = {
     ".github/workflows/ci.yml",
     ".github/workflows/codeql.yml",
     ".github/workflows/pages.yml",
+    ".github/workflows/publish-pypi.yml",
     ".github/workflows/release-check.yml",
     ".github/workflows/secret-patterns.yml",
     ".gitignore",
@@ -53,31 +56,46 @@ ROOT_EXPORT_FILES = {
     "README.en.md",
     "README.zh-CN.md",
     "SECURITY.md",
-    "mkdocs.yml",
     "pyproject.toml",
     "uv.lock",
 }
 
 EXPORT_PREFIXES = (
+    "docs-site/",
     "ksadk/",
     "ksadk_runtime_common/",
     "public-docs/",
 )
 
+REQUIRED_PUBLIC_FILES = {
+    "AGENTS.md",
+    "CLAUDE.md",
+    "LICENSE",
+    "README.md",
+    "README.en.md",
+    "README.zh-CN.md",
+    "docs-site/package.json",
+    "docs-site/pnpm-lock.yaml",
+    "pyproject.toml",
+}
+
 SCRIPT_EXPORT_FILES = {
     "scripts/audit_release_artifacts.py",
     "scripts/check_approval_record.py",
     "scripts/check_publication_state.py",
+    "scripts/check_release_version.py",
     "scripts/generate_public_assets.py",
     "scripts/open_source_audit.py",
     "scripts/prepare_ksadk_python_export.py",
     "scripts/prepare_ksadk_web_export.py",
+    "scripts/public_secret_audit.py",
 }
 
 PUBLIC_TEST_FILES = {
     "tests/conftest.py",
     "tests/test_check_approval_record.py",
     "tests/test_check_publication_state.py",
+    "tests/test_config_env_registry.py",
     "tests/test_markdown_repair.py",
     "tests/test_open_source_audit.py",
     "tests/test_public_release_positioning.py",
@@ -196,7 +214,9 @@ def is_excluded(path: str) -> bool:
         return True
     if normalized.startswith("deploy/helm/ksadk-docs/"):
         return True
-    if normalized.startswith("docs/") and normalized not in CURATED_DOCS:
+    if normalized.startswith("docs/reference/") and normalized not in CURATED_REFERENCE_DOCS:
+        return True
+    if normalized.startswith("docs/") and normalized not in CURATED_DOCS and normalized not in CURATED_REFERENCE_DOCS:
         return True
     if normalized.endswith(EXCLUDED_SUFFIXES):
         return True
@@ -211,6 +231,7 @@ def is_included_by_policy(path: str) -> bool:
     return (
         normalized in ROOT_EXPORT_FILES
         or normalized in CURATED_DOCS
+        or normalized in CURATED_REFERENCE_DOCS
         or normalized in SCRIPT_EXPORT_FILES
         or normalized in PUBLIC_TEST_FILES
         or normalized.startswith(EXPORT_PREFIXES)
@@ -233,17 +254,7 @@ def build_export_plan(repo_root: Path) -> ExportPlan:
     export_paths = sorted(path for path in discovered if not is_excluded(path))
     excluded_paths = sorted(path for path in discovered if is_excluded(path))
 
-    required_paths = {
-        "AGENTS.md",
-        "CLAUDE.md",
-        "LICENSE",
-        "README.md",
-        "README.en.md",
-        "README.zh-CN.md",
-        "pyproject.toml",
-        "mkdocs.yml",
-    }
-    for required_path in sorted(required_paths):
+    for required_path in sorted(REQUIRED_PUBLIC_FILES):
         if required_path not in export_paths:
             violations.append(f"missing required public file: {required_path}")
 
@@ -283,6 +294,7 @@ def copy_export(plan: ExportPlan, output_dir: Path) -> None:
             "rootFiles": sorted(ROOT_EXPORT_FILES),
             "prefixes": list(EXPORT_PREFIXES),
             "curatedDocs": sorted(CURATED_DOCS),
+            "curatedReferenceDocs": sorted(CURATED_REFERENCE_DOCS),
             "scripts": sorted(SCRIPT_EXPORT_FILES),
             "tests": sorted(PUBLIC_TEST_FILES),
         },
