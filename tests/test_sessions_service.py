@@ -181,6 +181,37 @@ async def test_in_memory_session_service_get_events_filters_by_after_seq_id():
 
 
 @pytest.mark.asyncio
+async def test_in_memory_session_service_get_events_filters_by_before_seq_id():
+    service = InMemorySessionService()
+    await service.create_session(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-before",
+    )
+    for index in range(5):
+        await service.append_event(
+            "sess-before",
+            SessionEvent(
+                id=f"evt-{index + 1}",
+                author="user",
+                event_type="text",
+                content={"index": index},
+            ),
+        )
+
+    before4 = await service.get_events("sess-before", before_seq_id=4)
+    assert [event.seq_id for event in before4] == [1, 2, 3]
+    assert await service.count_events("sess-before", before_seq_id=4) == 3
+
+    # before_seq_id + limit keeps the latest N events from the older-history window.
+    before4_limit = await service.get_events("sess-before", before_seq_id=4, limit=2)
+    assert [event.seq_id for event in before4_limit] == [2, 3]
+
+    before1 = await service.get_events("sess-before", before_seq_id=1)
+    assert before1 == []
+
+
+@pytest.mark.asyncio
 async def test_local_session_service_get_events_filters_by_after_seq_id(tmp_path):
     service = LocalSessionService(db_path=tmp_path / "sessions.sqlite")
     await service.create_session(
@@ -213,6 +244,36 @@ async def test_local_session_service_get_events_filters_by_after_seq_id(tmp_path
 
     after_limit = await service.get_events("sess-after", after_seq_id=2, limit=1)
     assert [event.seq_id for event in after_limit] == [4]
+
+
+@pytest.mark.asyncio
+async def test_local_session_service_get_events_filters_by_before_seq_id(tmp_path):
+    service = LocalSessionService(db_path=tmp_path / "sessions.sqlite")
+    await service.create_session(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-before",
+    )
+    for index in range(5):
+        await service.append_event(
+            "sess-before",
+            SessionEvent(
+                id=f"evt-{index + 1}",
+                author="user",
+                event_type="text",
+                content={"index": index},
+            ),
+        )
+
+    before4 = await service.get_events("sess-before", before_seq_id=4)
+    assert [event.seq_id for event in before4] == [1, 2, 3]
+    assert await service.count_events("sess-before", before_seq_id=4) == 3
+
+    before4_limit = await service.get_events("sess-before", before_seq_id=4, limit=2)
+    assert [event.seq_id for event in before4_limit] == [2, 3]
+
+    before1 = await service.get_events("sess-before", before_seq_id=1)
+    assert before1 == []
 
 
 @pytest.mark.asyncio

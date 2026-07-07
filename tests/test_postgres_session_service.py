@@ -149,6 +149,49 @@ async def test_postgres_session_service_get_events_filters_by_after_seq_id():
         await service.aclose()
 
 
+async def test_postgres_session_service_get_events_filters_by_before_seq_id():
+    dsn = os.getenv("KSADK_TEST_POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("Set KSADK_TEST_POSTGRES_DSN to run Postgres session integration tests")
+
+    from ksadk.sessions.postgres_service import PostgresSessionService
+
+    namespace = "pytest_before_seq"
+    service = PostgresSessionService(dsn=dsn, namespace=namespace)
+    session_id = "pytest-sess-before-seq"
+
+    try:
+        await service.delete_session(session_id)
+        await service.create_session(
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id=session_id,
+        )
+        for index in range(5):
+            await service.append_event(
+                session_id,
+                SessionEvent(
+                    id=f"pytest-evt-before-{index + 1}",
+                    author="user",
+                    event_type="text",
+                    content={"index": index},
+                ),
+            )
+
+        before4 = await service.get_events(session_id, before_seq_id=4)
+        assert [event.seq_id for event in before4] == [1, 2, 3]
+        assert await service.count_events(session_id, before_seq_id=4) == 3
+
+        before4_limit = await service.get_events(session_id, before_seq_id=4, limit=2)
+        assert [event.seq_id for event in before4_limit] == [2, 3]
+
+        before1 = await service.get_events(session_id, before_seq_id=1)
+        assert before1 == []
+    finally:
+        await service.delete_session(session_id)
+        await service.aclose()
+
+
 async def test_postgres_session_service_namespaces_isolate_same_session_id():
     dsn = os.getenv("KSADK_TEST_POSTGRES_DSN")
     if not dsn:

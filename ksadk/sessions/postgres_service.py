@@ -331,117 +331,87 @@ class PostgresSessionService(BaseSessionService):
         offset: Optional[int] = None,
         limit: Optional[int] = None,
         after_seq_id: Optional[int] = None,
+        before_seq_id: Optional[int] = None,
     ) -> list[SessionEvent]:
         await self._ensure_schema()
-        # after_seq_id 先过滤 seq_id > N,再对结果集应用"最新 N 条" offset/limit 语义。
-        # 占位符顺序:namespace=$1, session_id=$2, [after_seq_id=$3], limit=$N, offset=$M。
-        seq_clause = "AND seq_id > $3" if after_seq_id is not None else ""
+        # seq 过滤先应用,再对结果集应用"最新 N 条" offset/limit 语义。
+        conditions = ["namespace = $1", "session_id = $2"]
+        params: list[Any] = [self.namespace, session_id]
+        if after_seq_id is not None:
+            params.append(after_seq_id)
+            conditions.append(f"seq_id > ${len(params)}")
+        if before_seq_id is not None:
+            params.append(before_seq_id)
+            conditions.append(f"seq_id < ${len(params)}")
+        where_clause = " AND ".join(conditions)
         async with self._pool.acquire() as connection:
             if limit is not None:
-                # $3=after_seq_id(可选), $4=limit, $5=offset —— 或 $3=limit, $4=offset(无 after_seq_id)
-                if after_seq_id is not None:
-                    query = f"""
+                params.extend([limit, offset or 0])
+                limit_param = len(params) - 1
+                offset_param = len(params)
+                query = f"""
+                    SELECT id, session_id, author, event_type, content_json, timestamp,
+                           state_delta_json, seq_id, invocation_id, metadata_json
+                    FROM (
                         SELECT id, session_id, author, event_type, content_json, timestamp,
                                state_delta_json, seq_id, invocation_id, metadata_json
-                        FROM (
-                            SELECT id, session_id, author, event_type, content_json, timestamp,
-                                   state_delta_json, seq_id, invocation_id, metadata_json
-                            FROM {KSADK_PG_EVENTS_TABLE}
-                            WHERE namespace = $1 AND session_id = $2 {seq_clause}
-                            ORDER BY seq_id DESC
-                            LIMIT $4 OFFSET $5
-                        ) AS latest_events
-                        ORDER BY seq_id ASC
-                    """
-                    params: list[Any] = [self.namespace, session_id, after_seq_id, limit, offset or 0]
-                else:
-                    query = f"""
-                        SELECT id, session_id, author, event_type, content_json, timestamp,
-                               state_delta_json, seq_id, invocation_id, metadata_json
-                        FROM (
-                            SELECT id, session_id, author, event_type, content_json, timestamp,
-                                   state_delta_json, seq_id, invocation_id, metadata_json
-                            FROM {KSADK_PG_EVENTS_TABLE}
-                            WHERE namespace = $1 AND session_id = $2
-                            ORDER BY seq_id DESC
-                            LIMIT $3 OFFSET $4
-                        ) AS latest_events
-                        ORDER BY seq_id ASC
-                    """
-                    params = [self.namespace, session_id, limit, offset or 0]
+                        FROM {KSADK_PG_EVENTS_TABLE}
+                        WHERE {where_clause}
+                        ORDER BY seq_id DESC
+                        LIMIT ${limit_param} OFFSET ${offset_param}
+                    ) AS latest_events
+                    ORDER BY seq_id ASC
+                """
             elif offset is not None:
-                if after_seq_id is not None:
-                    query = f"""
+                params.append(offset)
+                offset_param = len(params)
+                query = f"""
+                    SELECT id, session_id, author, event_type, content_json, timestamp,
+                           state_delta_json, seq_id, invocation_id, metadata_json
+                    FROM (
                         SELECT id, session_id, author, event_type, content_json, timestamp,
                                state_delta_json, seq_id, invocation_id, metadata_json
-                        FROM (
-                            SELECT id, session_id, author, event_type, content_json, timestamp,
-                                   state_delta_json, seq_id, invocation_id, metadata_json
-                            FROM {KSADK_PG_EVENTS_TABLE}
-                            WHERE namespace = $1 AND session_id = $2 {seq_clause}
-                            ORDER BY seq_id DESC
-                            OFFSET $4
-                        ) AS latest_events
-                        ORDER BY seq_id ASC
-                    """
-                    params = [self.namespace, session_id, after_seq_id, offset]
-                else:
-                    query = f"""
-                        SELECT id, session_id, author, event_type, content_json, timestamp,
-                               state_delta_json, seq_id, invocation_id, metadata_json
-                        FROM (
-                            SELECT id, session_id, author, event_type, content_json, timestamp,
-                                   state_delta_json, seq_id, invocation_id, metadata_json
-                            FROM {KSADK_PG_EVENTS_TABLE}
-                            WHERE namespace = $1 AND session_id = $2
-                            ORDER BY seq_id DESC
-                            OFFSET $3
-                        ) AS latest_events
-                        ORDER BY seq_id ASC
-                    """
-                    params = [self.namespace, session_id, offset]
+                        FROM {KSADK_PG_EVENTS_TABLE}
+                        WHERE {where_clause}
+                        ORDER BY seq_id DESC
+                        OFFSET ${offset_param}
+                    ) AS latest_events
+                    ORDER BY seq_id ASC
+                """
             else:
-                if after_seq_id is not None:
-                    query = f"""
-                        SELECT id, session_id, author, event_type, content_json, timestamp,
-                               state_delta_json, seq_id, invocation_id, metadata_json
-                        FROM {KSADK_PG_EVENTS_TABLE}
-                        WHERE namespace = $1 AND session_id = $2 {seq_clause}
-                        ORDER BY seq_id ASC
-                    """
-                    params = [self.namespace, session_id, after_seq_id]
-                else:
-                    query = f"""
-                        SELECT id, session_id, author, event_type, content_json, timestamp,
-                               state_delta_json, seq_id, invocation_id, metadata_json
-                        FROM {KSADK_PG_EVENTS_TABLE}
-                        WHERE namespace = $1 AND session_id = $2
-                        ORDER BY seq_id ASC
-                    """
-                    params = [self.namespace, session_id]
+                query = f"""
+                    SELECT id, session_id, author, event_type, content_json, timestamp,
+                           state_delta_json, seq_id, invocation_id, metadata_json
+                    FROM {KSADK_PG_EVENTS_TABLE}
+                    WHERE {where_clause}
+                    ORDER BY seq_id ASC
+                """
             rows = await connection.fetch(query, *params)
             return [self._event_from_row(row) for row in rows]
 
     async def count_events(
-        self, session_id: str, after_seq_id: Optional[int] = None
+        self,
+        session_id: str,
+        after_seq_id: Optional[int] = None,
+        before_seq_id: Optional[int] = None,
     ) -> int:
         await self._ensure_schema()
+        conditions = ["namespace = $1", "session_id = $2"]
+        params: list[Any] = [self.namespace, session_id]
+        if after_seq_id is not None:
+            params.append(after_seq_id)
+            conditions.append(f"seq_id > ${len(params)}")
+        if before_seq_id is not None:
+            params.append(before_seq_id)
+            conditions.append(f"seq_id < ${len(params)}")
+        where_clause = " AND ".join(conditions)
         async with self._pool.acquire() as connection:
-            if after_seq_id is not None:
-                query = f"""
-                    SELECT COUNT(*) AS total
-                    FROM {KSADK_PG_EVENTS_TABLE}
-                    WHERE namespace = $1 AND session_id = $2 AND seq_id > $3
-                """
-                return int(
-                    await connection.fetchval(query, self.namespace, session_id, after_seq_id) or 0
-                )
             query = f"""
                 SELECT COUNT(*) AS total
                 FROM {KSADK_PG_EVENTS_TABLE}
-                WHERE namespace = $1 AND session_id = $2
+                WHERE {where_clause}
             """
-            return int(await connection.fetchval(query, self.namespace, session_id) or 0)
+            return int(await connection.fetchval(query, *params) or 0)
 
     async def get_state(
         self,
