@@ -10,6 +10,9 @@ on:
         description: KsADK Web npm version to bundle
         required: false
         default: "0.2.18"
+      approved_source_commit:
+        description: Reviewed source commit SHA recorded in docs/maintainer-approval-record.md
+        required: false
 
 permissions:
   contents: read
@@ -27,6 +30,7 @@ jobs:
       name: pypi
     env:
       KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.2.18' }}
+      KSADK_APPROVED_SOURCE_COMMIT: ${{ github.event.inputs.approved_source_commit || vars.KSADK_APPROVED_SOURCE_COMMIT }}
     permissions:
       contents: read
       id-token: write

@@ -403,11 +403,12 @@ public-publish-check:
 
 public-release-approval-check:
 	@echo "==> release approval record check"
-	@if [ -n "$${KSADK_APPROVED_SOURCE_COMMIT:-}" ]; then \
-		uv run python scripts/check_approval_record.py --expected-current-commit "$$KSADK_APPROVED_SOURCE_COMMIT"; \
-	else \
-		uv run python scripts/check_approval_record.py; \
+	@if [ -z "$${KSADK_APPROVED_SOURCE_COMMIT:-}" ]; then \
+		echo "❌ KSADK_APPROVED_SOURCE_COMMIT is required before external release writes"; \
+		echo "   Set it to the reviewed source commit recorded in docs/maintainer-approval-record.md"; \
+		exit 1; \
 	fi
+	@uv run python scripts/check_approval_record.py --expected-current-commit "$$KSADK_APPROVED_SOURCE_COMMIT"
 
 public-publish-gate: public-release-approval-check
 	@echo "✅ public publish gate passed"

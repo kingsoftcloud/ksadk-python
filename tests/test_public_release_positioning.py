@@ -93,7 +93,10 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "- published" in workflow
     assert "workflow_dispatch:" in workflow
     assert 'default: "0.2.18"' in workflow
+    assert "approved_source_commit:" in workflow
+    assert "Reviewed source commit SHA recorded in docs/maintainer-approval-record.md" in workflow
     assert "KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.2.18' }}" in workflow
+    assert "KSADK_APPROVED_SOURCE_COMMIT: ${{ github.event.inputs.approved_source_commit || vars.KSADK_APPROVED_SOURCE_COMMIT }}" in workflow
     assert "make sync-ksadk-web-static" in workflow
     assert "make public-preflight" in workflow
     assert "make public-publish-gate" in workflow
@@ -109,6 +112,7 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "public-publish-gate: public-release-approval-check" in makefile
     assert "scripts/check_approval_record.py" in makefile
     assert '--expected-current-commit "$${KSADK_APPROVED_SOURCE_COMMIT:-}"' not in makefile
+    assert "KSADK_APPROVED_SOURCE_COMMIT is required" in makefile
     assert "public-build-check: clean-dist sync-ksadk-web-static" in makefile
     assert "public-preflight: public-version-gate public-audit sync-ksadk-web-static public-test public-docs-build public-build-check" in makefile
     assert "PYPI_API_TOKEN" not in workflow
