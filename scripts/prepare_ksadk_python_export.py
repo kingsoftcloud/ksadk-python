@@ -125,15 +125,6 @@ EXCLUDED_PREFIXES = (
 EXCLUDED_PATHS = {
     ".pypirc",
     ".pypirc.example",
-    "deploy/helm/ksadk-docs/Chart.yaml",
-    "deploy/helm/ksadk-docs/templates/_helpers.tpl",
-    "deploy/helm/ksadk-docs/templates/deployment.yaml",
-    "deploy/helm/ksadk-docs/templates/ingress.yaml",
-    "deploy/helm/ksadk-docs/templates/service.yaml",
-    "deploy/helm/ksadk-docs/values-online.yaml",
-    "deploy/helm/ksadk-docs/values-pre.yaml",
-    "deploy/helm/ksadk-docs/values.yaml",
-    "scripts/zread_subpath_proxy.py",
 }
 
 EXCLUDED_SUFFIXES = (
@@ -209,8 +200,6 @@ def is_excluded(path: str) -> bool:
     if not is_included_by_policy(normalized):
         return True
     if normalized in EXCLUDED_PATHS:
-        return True
-    if normalized.startswith("deploy/helm/ksadk-docs/"):
         return True
     if normalized.startswith("docs/reference/") and normalized not in CURATED_REFERENCE_DOCS:
         return True
