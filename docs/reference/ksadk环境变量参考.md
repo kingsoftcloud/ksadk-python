@@ -2,7 +2,7 @@
 
 本文档面向部署、运行、运维和 SDK 集成排障。它不是业务代码 `.env` 模板；业务方自己的变量，例如 `APP_ENV`、`DB_URL`、`CUSTOM_API_KEY`，只要不是 KsADK / 平台运行时读取的变量，都属于业务自定义变量，不在本文逐项维护。
 
-本文档覆盖 `ksadk/`、`deploy/`、`tests/` 中已经注册或常见可配置的运行时变量，由 `tests/test_config_env_registry.py` 保证 `ENV_VAR_REGISTRY` 注册项与文档一致。测试专用变量、PID/marker/cache 等进程内部临时变量、镜像构建脚本内部常量不会逐项列入表格；如果要排查这些高级项，以对应脚本源码和模板 README 为准。
+本文档覆盖 `ksadk/` 中已经注册或常见可配置的运行时变量，由 `tests/test_config_env_registry.py` 保证 `ENV_VAR_REGISTRY` 注册项与文档一致。测试专用变量、PID/marker/cache 等进程内部临时变量、镜像构建脚本内部常量不会逐项列入表格；如果要排查这些高级项，以对应脚本源码和模板 README 为准。
 
 ## 1. 阅读规则
 
