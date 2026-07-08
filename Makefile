@@ -1,7 +1,7 @@
 # AgentEngine Makefile
 # 用于同步 KsADK Web static 和管理项目
 
-.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate public-docs-build public-docs-site-build public-test public-build-check public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size docs-check-wiki docs-prepare-source docs-docker-build docs-docker-push docs-helm-lint docs-helm-template docs-deploy docs-deploy-all docs-status docs-logs sync-ksadk-web-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend
+.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate public-docs-build public-docs-site-build public-test public-build-check public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size docs-check-wiki docs-prepare-source docs-helm-lint docs-helm-template docs-deploy docs-status docs-logs sync-ksadk-web-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend
 
 # 默认目标
 help:
@@ -53,9 +53,9 @@ help:
 	@echo "    可设置 AGENTENGINE_IMAGES_DIR=../agentengine-images 后继续使用兼容入口"
 	@echo ""
 	@echo "  \033[1;32mzread 文档站:\033[0m"
-	@echo "    make docs-deploy-all   构建原生 zread 文档镜像 + 推送 + 部署到预发"
-	@echo "    make docs-status       查看预发文档站状态"
-	@echo "    make docs-deploy-all ENV=online DOCS_VERSION=x  # 部署线上"
+	@echo "    make docs-deploy        部署文档镜像到预发(镜像需已构建)"
+	@echo "    make docs-status        查看预发文档站状态"
+	@echo "    make docs-deploy ENV=online DOCS_VERSION=x  # 部署线上"
 	@echo ""
 	@echo "  \033[1;32m清理:\033[0m"
 	@echo "    make clean          清理构建产物和本地测试缓存"
@@ -566,9 +566,6 @@ DOCS_HELM_RELEASE ?= ksadk-docs
 DOCS_HELM_CHART := deploy/helm/ksadk-docs
 DOCS_HELM_TIMEOUT ?= 600s
 DOCS_BASE_PATH ?= /ksadk-docs
-DOCS_BASE_IMAGE ?= hub.kce.ksyun.com/bigdata-ai/agentengine-server-base:v0.4.1
-DOCS_ZREAD_VERSION ?= 0.2.12
-DOCS_ZREAD_SHA256 ?= faf5ef7f2f8edc24d41b84fd838322882846f4bab10f1a9210de29cba2a53a10
 DOCS_HELM_SET_FLAGS := --set image.tag=$(DOCS_VERSION) --set docs.basePath=$(DOCS_BASE_PATH)
 
 ifeq ($(DOCS_FORCE_UPDATE),1)
@@ -591,20 +588,6 @@ docs-check-wiki:
 
 docs-prepare-source: docs-check-wiki
 	@python3 scripts/prepare_zread_source_snapshot.py
-
-docs-docker-build: docs-check-wiki docs-prepare-source
-	@echo "🐳 构建 KsADK 原生 zread 文档镜像: $(DOCS_IMAGE)"
-	@DOCKER_BUILDKIT=1 docker build --pull=false --platform linux/amd64 \
-		-f Dockerfile.docs \
-		--build-arg DOCS_BASE_IMAGE=$(DOCS_BASE_IMAGE) \
-		--build-arg ZREAD_VERSION=$(DOCS_ZREAD_VERSION) \
-		--build-arg ZREAD_SHA256=$(DOCS_ZREAD_SHA256) \
-		-t $(DOCS_IMAGE) \
-		.
-
-docs-docker-push: docs-docker-build
-	@echo "📤 推送 KsADK 文档镜像: $(DOCS_IMAGE)"
-	@docker push $(DOCS_IMAGE)
 
 docs-helm-lint:
 	@echo "==> helm lint $(DOCS_HELM_CHART)"
@@ -642,8 +625,6 @@ docs-deploy: docs-helm-lint
 		fi; \
 		exit $$status; \
 	fi
-
-docs-deploy-all: docs-docker-push docs-deploy
 
 docs-status:
 	@kubectl --kubeconfig $(DOCS_KUBECONFIG_PATH) get pods,svc,ingress -n $(DOCS_NAMESPACE) -l app.kubernetes.io/name=$(DOCS_PROJECT_NAME)
