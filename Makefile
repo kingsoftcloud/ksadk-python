@@ -1,7 +1,7 @@
 # AgentEngine Makefile
 # 用于同步 KsADK Web static 和管理项目
 
-.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate public-docs-build public-docs-site-build public-test public-build-check public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size docs-check-wiki docs-prepare-source docs-helm-lint docs-helm-template docs-deploy docs-status docs-logs sync-ksadk-web-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend
+.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size docs-check-wiki docs-prepare-source docs-helm-lint docs-helm-template docs-deploy docs-status docs-logs sync-ksadk-web-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend
 
 # 默认目标
 help:
@@ -39,6 +39,8 @@ help:
 	@echo "    make public-release-tag V=x.y.z  创建公开 release 留痕 tag"
 	@echo "    make public-review        公开候选审核入口"
 	@echo "    make public-publish-check 发布状态核对"
+	@echo "    make docs-site-build      本地构建 Fumadocs 静态站点"
+	@echo "    make docs-site-dev        本地预览 Fumadocs 文档站"
 	@echo ""
 	@echo "  \033[1;32m离线打包:\033[0m"
 	@echo "    make offline-current     当前平台离线包"
@@ -350,16 +352,20 @@ public-audit: public-secret-audit
 	@python3 scripts/open_source_audit.py --target public-repo
 	@echo "✅ public path audit passed"
 
-public-docs-build: public-docs-site-build
-	@echo "==> docs build (Fumadocs docs-site)"
-
-# Fumadocs 文档站 (docs-site/) 构建 + 类型检查, 公开发布前验证
-public-docs-site-build:
+docs-site-build:
 	@echo "==> docs-site (Fumadocs) build"
 	@if [ -d "docs-site" ] && [ -f "docs-site/package.json" ]; then \
-		cd docs-site && pnpm install --frozen-lockfile && pnpm build; \
+		cd docs-site && pnpm install --frozen-lockfile && NEXT_PUBLIC_BASE_PATH=/ksadk-python pnpm build:static; \
 	else \
 		echo "⚠️  docs-site 不存在，跳过 Fumadocs build"; \
+	fi
+
+docs-site-dev:
+	@echo "==> docs-site (Fumadocs) dev server"
+	@if [ -d "docs-site" ] && [ -f "docs-site/package.json" ]; then \
+		cd docs-site && pnpm install --frozen-lockfile && pnpm dev; \
+	else \
+		echo "⚠️  docs-site 不存在，无法启动 Fumadocs dev server"; \
 	fi
 
 public-test:
@@ -389,7 +395,7 @@ public-version-gate:
 	@echo "==> release version gate (prevent downgrade/re-publish)"
 	uv run python scripts/check_release_version.py
 
-public-preflight: public-version-gate public-audit sync-ksadk-web-static public-test public-docs-build public-build-check
+public-preflight: public-version-gate public-audit sync-ksadk-web-static public-test docs-site-build public-build-check
 	@echo "✅ public preflight passed"
 
 public-publish-check:

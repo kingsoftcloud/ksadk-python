@@ -58,11 +58,11 @@ agentengine web . --no-open
 ## 文档与样例
 
 - 文档：<https://kingsoftcloud.github.io/ksadk-python/>
-- 快速开始：<https://kingsoftcloud.github.io/ksadk-python/getting-started/quickstart/>
-- 为什么需要 KsADK：<https://kingsoftcloud.github.io/ksadk-python/getting-started/why-ksadk/>
-- 架构：<https://kingsoftcloud.github.io/ksadk-python/getting-started/architecture/>
-- 生态定位对比：<https://kingsoftcloud.github.io/ksadk-python/getting-started/comparison/>
-- 可观测：<https://kingsoftcloud.github.io/ksadk-python/guides/observability-tracing/>
+- 快速开始：<https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/getting-started/quickstart/>
+- 为什么需要 KsADK：<https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/getting-started/why-ksadk/>
+- 架构：<https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/getting-started/architecture/>
+- 生态定位对比：<https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/getting-started/comparison/>
+- 可观测：<https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/observability-tracing/>
 - 样例仓库：<https://github.com/kingsoftcloud/ksadk-samples>
 
 ## 相关项目

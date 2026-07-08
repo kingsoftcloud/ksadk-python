@@ -64,7 +64,6 @@ EXPORT_PREFIXES = (
     "docs-site/",
     "ksadk/",
     "ksadk_runtime_common/",
-    "public-docs/",
 )
 
 REQUIRED_PUBLIC_FILES = {

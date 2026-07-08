@@ -100,7 +100,7 @@ make public-preflight
 - `.pypirc`、kubeconfig、私钥、token pattern 等安全围栏。
 - 公开路径 denylist 检查。
 - `uv run pytest`。
-- `mkdocs build --strict`。
+- `make docs-site-build`（Fumadocs 静态站点，GitHub Pages 同源构建）。
 - `uv build`。
 - `twine check dist/*`。
 

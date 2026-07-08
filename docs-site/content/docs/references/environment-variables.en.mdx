@@ -57,6 +57,21 @@ Hosted deployments can inject a shared policy through `AGENTENGINE_MODEL_POLICY_
 | `KSADK_UI_BUNDLE_PATH` | custom UI static bundle path relative to project; local auto-detects `research-ui/dist` (0.6.7) |
 | `KSYUN_REGION` | region used by cloud actions and some SDK clients |
 
+## Cloud Account Identity Resolution
+
+| Variable | Purpose |
+| --- | --- |
+| `KSYUN_IAM_ENDPOINT` | Optional public IAM endpoint override; defaults to `iam.api.ksyun.com` when unset |
+| `KSYUN_IAM_INTRANET_URL` | Optional IAM intranet endpoint fallback override; defaults to `iam.inner.api.ksyun.com` when unset |
+| `IAM_INTRANET_URL` | Compatibility alias for `KSYUN_IAM_INTRANET_URL` |
+
+<Callout type="info">
+  When public IAM returns an error such as “inner account can only access through
+  intranet”, the runtime retries the intranet endpoint. Public environments
+  normally do not hit this branch; internal environments can override the address
+  with `KSYUN_IAM_INTRANET_URL` or `IAM_INTRANET_URL`.
+</Callout>
+
 ## Session Storage
 
 | Variable | Purpose |

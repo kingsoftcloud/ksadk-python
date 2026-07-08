@@ -23,6 +23,7 @@ def test_export_plan_requires_fumadocs_site_not_legacy_mkdocs():
 
     assert "mkdocs.yml" not in module.ROOT_EXPORT_FILES
     assert "docs-site/" in module.EXPORT_PREFIXES
+    assert "public-docs/" not in module.EXPORT_PREFIXES
     assert "docs-site/package.json" in module.REQUIRED_PUBLIC_FILES
     assert "docs-site/pnpm-lock.yaml" in module.REQUIRED_PUBLIC_FILES
 

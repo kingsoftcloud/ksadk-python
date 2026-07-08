@@ -1,15 +1,36 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import subprocess
 import tomllib
+from urllib.parse import urlparse
 
 
 ROOT = Path(__file__).resolve().parents[1]
+DOCS_ROOT_URL = "https://kingsoftcloud.github.io/ksadk-python/"
+ZH_DOC_URLS = {
+    f"{DOCS_ROOT_URL}cn/docs/framework/getting-started/quickstart/",
+    f"{DOCS_ROOT_URL}cn/docs/framework/getting-started/why-ksadk/",
+    f"{DOCS_ROOT_URL}cn/docs/framework/getting-started/architecture/",
+    f"{DOCS_ROOT_URL}cn/docs/framework/getting-started/comparison/",
+    f"{DOCS_ROOT_URL}cn/docs/framework/guides/observability-tracing/",
+}
+EN_DOC_URLS = {
+    f"{DOCS_ROOT_URL}en/docs/framework/getting-started/quickstart/",
+    f"{DOCS_ROOT_URL}en/docs/framework/getting-started/why-ksadk/",
+    f"{DOCS_ROOT_URL}en/docs/framework/getting-started/architecture/",
+    f"{DOCS_ROOT_URL}en/docs/framework/getting-started/comparison/",
+    f"{DOCS_ROOT_URL}en/docs/framework/guides/observability-tracing/",
+}
 
 
 def _read(relative_path: str) -> str:
     return (ROOT / relative_path).read_text(encoding="utf-8")
+
+
+def _github_pages_urls(markdown: str) -> set[str]:
+    return set(re.findall(r"https://kingsoftcloud\.github\.io/ksadk-python/[^>\s)\"]*", markdown))
 
 
 def test_public_readme_positions_ksadk_as_runtime_platform():
@@ -41,10 +62,11 @@ def test_public_readme_positions_ksadk_as_runtime_platform():
 
 
 def test_public_readme_language_variants_keep_homepage_shape():
+    root_readme = _read("README.md")
     zh_readme = _read("README.zh-CN.md")
     en_readme = _read("README.en.md")
 
-    for text in (zh_readme, en_readme):
+    for text in (root_readme, zh_readme, en_readme):
         assert "Kingsoft Cloud Agent Development Kit" in text
         assert "ksadk-runtime-platform-hero-wide.png" in text
         assert "ksadk-web-ui-screenshot.png" in text
@@ -52,6 +74,45 @@ def test_public_readme_language_variants_keep_homepage_shape():
         assert "ksadk-runtime-architecture.png" in text
         assert "发布版本：" not in text
         assert "## 0.6." not in text
+
+    assert _github_pages_urls(root_readme) == {DOCS_ROOT_URL, *ZH_DOC_URLS}
+    assert _github_pages_urls(zh_readme) == {DOCS_ROOT_URL, *ZH_DOC_URLS}
+    assert _github_pages_urls(en_readme) == {DOCS_ROOT_URL, *EN_DOC_URLS}
+    for stale_path in (
+        "ksadk-python/getting-started/quickstart/",
+        "ksadk-python/guides/observability-tracing/",
+        "ksadk-python/en/getting-started/quickstart/",
+        "ksadk-python/en/guides/observability-tracing/",
+        "public-docs/assets/",
+    ):
+        assert stale_path not in root_readme
+        assert stale_path not in zh_readme
+        assert stale_path not in en_readme
+
+
+def test_public_readme_docs_links_match_fumadocs_routes():
+    docs_site = ROOT / "docs-site" / "content" / "docs"
+    checks = {
+        "README.md": "cn",
+        "README.zh-CN.md": "cn",
+        "README.en.md": "en",
+    }
+
+    for readme_path, expected_locale in checks.items():
+        text = _read(readme_path)
+        urls = _github_pages_urls(text)
+        docs_urls = [url for url in urls if "/docs/" in url]
+        assert docs_urls, f"{readme_path} should link to Fumadocs pages"
+        for url in docs_urls:
+            path = urlparse(url).path.removeprefix("/ksadk-python/").strip("/")
+            parts = path.split("/")
+            assert parts[0] == expected_locale
+            assert parts[1] == "docs"
+            doc_segments = parts[2:]
+            suffix = ".en.mdx" if expected_locale == "en" else ".mdx"
+            candidate = docs_site.joinpath(*doc_segments).with_suffix(suffix)
+            index_candidate = docs_site.joinpath(*doc_segments, f"index{suffix}")
+            assert candidate.exists() or index_candidate.exists(), url
 
 
 def test_public_metadata_uses_runtime_platform_positioning():
@@ -114,7 +175,8 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert '--expected-current-commit "$${KSADK_APPROVED_SOURCE_COMMIT:-}"' not in makefile
     assert "KSADK_APPROVED_SOURCE_COMMIT is required" in makefile
     assert "public-build-check: clean-dist sync-ksadk-web-static" in makefile
-    assert "public-preflight: public-version-gate public-audit sync-ksadk-web-static public-test public-docs-build public-build-check" in makefile
+    assert "public-preflight: public-version-gate public-audit sync-ksadk-web-static public-test docs-site-build public-build-check" in makefile
+    assert "NEXT_PUBLIC_BASE_PATH=/ksadk-python pnpm build:static" in makefile
     assert "PYPI_API_TOKEN" not in workflow
     assert "password:" not in workflow
 

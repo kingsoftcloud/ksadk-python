@@ -57,6 +57,20 @@ OPENAI_MODEL_NAME=my-model
 | `KSADK_UI_BUNDLE_PATH` | 自定义 UI 静态 bundle 相对项目路径；本地默认自动探测 `research-ui/dist`（0.6.7） |
 | `KSYUN_REGION` | 云端 action 和部分 SDK client 使用的区域 |
 
+## 云账号身份解析
+
+| 变量 | 用途 |
+| --- | --- |
+| `KSYUN_IAM_ENDPOINT` | 可选：覆盖 IAM 公网 endpoint；未配置时使用 `iam.api.ksyun.com` |
+| `KSYUN_IAM_INTRANET_URL` | 可选：覆盖 IAM 内网 endpoint fallback；未配置时使用默认 `iam.inner.api.ksyun.com` |
+| `IAM_INTRANET_URL` | `KSYUN_IAM_INTRANET_URL` 的兼容别名 |
+
+<Callout type="info">
+  当公网 IAM 返回“inner account can only access through intranet”这类错误时，
+  运行时会尝试内网 endpoint。外部环境通常不会命中该分支；内部环境如需覆盖地址，
+  可设置 `KSYUN_IAM_INTRANET_URL` 或 `IAM_INTRANET_URL`。
+</Callout>
+
 ## 会话存储
 
 | 变量 | 用途 |
