@@ -6,7 +6,7 @@
 // export build, restore it, and write a `.nojekyll` file so GitHub Pages serves
 // the `_next/` directory.
 //
-// Usage: NEXT_PUBLIC_BASE_PATH=/veadk-python node scripts/build-static.mjs
+// Usage: NEXT_PUBLIC_BASE_PATH=/ksadk-python node scripts/build-static.mjs
 
 import { execSync } from 'node:child_process';
 import { existsSync, renameSync, writeFileSync, mkdirSync } from 'node:fs';

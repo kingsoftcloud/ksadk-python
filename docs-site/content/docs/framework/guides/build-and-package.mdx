@@ -8,7 +8,7 @@ title: "构建与打包"
 
 ```bash
 uv run --extra dev python -m twine check dist/*
-make open-source-review
+make public-review
 ```
 
 ## Web UI 产物
@@ -58,7 +58,7 @@ agentengine --dry-run deploy .
 - wheel 含同步后的 `ksadk/server/static/index.html` 及 `assets/` 入口，保证安装即可打开本地 UI。
 
 <Callout type="info" title="本地门禁与正式发布一致">
-`make public-preflight` 在 `public-build-check` 之上追加 `public-audit`、`public-test`、`public-docs-build`，是推 GitHub/PyPI/Release 前必须通过的完整本地门禁。
+`make public-preflight` 在 `public-build-check` 之上追加 `public-audit`、`public-test`、`docs-site-build`，是推 GitHub/PyPI/Release 前必须通过的完整本地门禁。
 </Callout>
 
 ## Artifact 规则

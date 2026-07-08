@@ -38,8 +38,7 @@ publication strategy, and maintainer sign-offs.
 ## Local Commands
 
 ```bash
-make open-source-review
-make open-source-review-bundle
+make public-review
 python3 scripts/audit_public_history_paths.py --json --allow-violations
 git diff --check
 ```
@@ -93,7 +92,7 @@ The workflow runs the following steps:
    it into the packaging tree. When triggered via `workflow_dispatch`, the
    `ksadk_web_version` input pins a specific npm version (for example `1.2.3`).
 2. **Release preflight**: `make public-preflight` chains `public-audit`,
-   `public-test`, `public-docs-build`, and `public-build-check`.
+   `public-test`, `docs-site-build`, and `public-build-check`.
 3. **Build and content check**: inside `public-build-check`, `uv build`
    produces the artifacts and `twine check dist/*` validates wheel and sdist
    metadata.

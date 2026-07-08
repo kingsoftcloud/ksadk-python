@@ -6,7 +6,7 @@
 
 - [ ] `uv run --extra dev pytest -q`
 - [ ] `make public-audit`
-- [ ] `make public-docs-build`
+- [ ] `make docs-site-build`
 - [ ] `make open-source-audit-dist` if package artifacts changed.
 - [ ] `uv build`
 - [ ] `uv run --extra dev python -m twine check dist/*`

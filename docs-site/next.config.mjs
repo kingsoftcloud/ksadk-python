@@ -2,7 +2,7 @@ import { createMDX } from 'fumadocs-mdx/next';
 
 const withMDX = createMDX();
 
-// For GitHub Pages project sites, set NEXT_PUBLIC_BASE_PATH=/veadk-python at
+// For GitHub Pages project sites, set NEXT_PUBLIC_BASE_PATH=/ksadk-python at
 // build time. Left empty for local dev so the site is served from `/`.
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
 

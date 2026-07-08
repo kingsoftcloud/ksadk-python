@@ -118,8 +118,8 @@ of KsADK extensions:
 | `status` | compatible | `completed` / `failed` / `incomplete` |
 | `model` | compatible | model or agent used for the request |
 | `output` | compatible | output item, usually an assistant message |
-| `metadata` | compatible | caller metadata |
-| `usage` | compatible-shaped | usage info when available |
+| `metadata` | compatible | caller metadata; KsADK 0.6.9+ adds `metadata.last_usage` when available |
+| `usage` | compatible-shaped | per-response accumulated usage when available, used for the real cost of this response |
 | `output_text` | KsADK extension | convenient concatenated text |
 | `session_id` | KsADK extension | local session id |
 
@@ -139,6 +139,20 @@ of KsADK extensions:
       ]
     }
   ],
+  "usage": {
+    "input_tokens": 1250,
+    "output_tokens": 180,
+    "total_tokens": 1430,
+    "input_token_details": {"cached": 900}
+  },
+  "metadata": {
+    "last_usage": {
+      "input_tokens": 980,
+      "output_tokens": 180,
+      "total_tokens": 1160,
+      "input_token_details": {"cached": 700}
+    }
+  },
   "output_text": "This agent can...",
   "session_id": "local-demo-session"
 }
@@ -146,6 +160,14 @@ of KsADK extensions:
 
 Consumers aiming for broad compatibility should read `output` first and treat
 `output_text` as a convenience field.
+
+<Callout type="info" title="usage and last_usage">
+  `usage` keeps the OpenAI-style accumulated usage for this response; if an
+  agent loop calls the model multiple times, those calls are summed. The
+  KsADK-specific `metadata.last_usage` is the final model-call usage snapshot,
+  used by higher layers to compute current context-window occupancy. It is not a
+  cumulative session total.
+</Callout>
 
 </Tab>
 <Tab value="Stream">

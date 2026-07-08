@@ -16,7 +16,7 @@ publishable artifacts.
 | ASGI service tests | FastAPI routes without opening a real port | service and session pytest files |
 | HTTP protocol E2E | `/v1/responses`, `/v1/chat/completions`, upload, session events | protocol E2E tests |
 | browser E2E | local Web UI request construction and upload behavior | browser-capable E2E tests |
-| open-source audits | public tree, clean exports, Pages, sdist, wheel | `make open-source-review` |
+| open-source audits | public tree, clean exports, Pages, sdist, wheel | `make public-preflight` |
 
 Use the narrowest test that proves the change, then run the broader gate when a
 change touches public behavior, packaging, docs, or release boundaries.
@@ -31,15 +31,14 @@ uv run --extra dev pytest tests/ -q
 For documentation changes:
 
 ```bash
-make public-docs-build
-make public-docs-audit
+make docs-site-build
+make public-audit
 ```
 
 For release or open-source boundary changes:
 
 ```bash
-make open-source-review
-make open-source-review-bundle
+make public-review
 ```
 
 ## Snapshot Tests
@@ -88,7 +87,7 @@ Use browser E2E for:
 
 ## Open-Source Review Gate
 
-`make open-source-review` is the local gate for the public release candidate. It
+`make public-review` is the local gate for the public release candidate. It
 checks:
 
 - open-source contract tests.
@@ -111,7 +110,7 @@ publication.
 | CLI help, options, or error text | focused CLI tests and affected snapshots |
 | runtime request/response behavior | focused runtime tests plus protocol E2E |
 | attachments or workspace files | protocol tests and workspace security tests |
-| public docs | `make public-docs-build` and `make public-docs-audit` |
+| public docs | `make docs-site-build` and `make public-audit` |
 | package metadata or release scripts | `uv build`, `twine check`, artifact audit |
 | open-source export policy | export tests, open-source audit, review bundle |
 

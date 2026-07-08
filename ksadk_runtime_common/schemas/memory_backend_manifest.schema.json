@@ -101,10 +101,7 @@
           "description": "S3-compatible storage secret access key. Mapped into storageOptions.secretAccessKey."
         },
         "storage_allow_http": {
-          "type": [
-            "boolean",
-            "string"
-          ],
+          "type": ["boolean", "string"],
           "description": "Allow plain HTTP for S3-compatible storage. Mapped into storageOptions.allowHttp as a string (\"true\"/\"false\")."
         }
       }
@@ -135,20 +132,14 @@
     {
       "if": {
         "properties": {
-          "backend_type": {
-            "const": "mem0"
-          }
+          "backend_type": { "const": "mem0" }
         }
       },
       "then": {
-        "required": [
-          "config"
-        ],
+        "required": ["config"],
         "properties": {
           "config": {
-            "required": [
-              "mem0_instance_id"
-            ]
+            "required": ["mem0_instance_id"]
           }
         }
       }
