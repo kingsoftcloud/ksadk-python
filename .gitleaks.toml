@@ -1,0 +1,27 @@
+# .gitleaks.toml — ksadk-python
+# 继承 gitleaks 默认规则 (useDefault = true), 仅追加项目级 allowlist。
+# workflow 用法 (见 .github/workflows/secret-patterns.yml):
+#   gitleaks detect --source . --config .gitleaks.toml --no-banner --redact --verbose
+# detect 子命令 + fetch-depth:0 扫全 history; allowlist 同时覆盖历史与当前 tree。
+
+title = "ksadk-python gitleaks config"
+
+[extend]
+useDefault = true
+
+# ---- allowlist 统一用 [[allowlists]] 新语法 (gitleaks 8.21+), 不能与 [allowlist] 旧语法混用 ----
+
+# 测试 fixture 假 key (命中当前 tree 与历史 commit)
+[[allowlists]]
+description = "Allowlist test-fixture placeholders in hermes CLI tests"
+regexes = [
+    # tests/test_cmd_hermes.py 的假 Bearer token (curl-auth-header 规则命中)
+    '''sk-live-secret''',
+    # tests/test_cmd_hermes.py 的假 secret value (generic-api-key 兜底)
+    '''sk-test-secret''',
+]
+paths = [
+    # 精确限定到测试文件, 避免误 allowlist 其它路径的真 key
+    '''tests/test_cmd_hermes\.py''',
+]
+

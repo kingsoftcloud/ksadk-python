@@ -37,7 +37,7 @@
 - `ksadk.skills` / `ksadk.skills.runtime` 是 Skill Runtime 上层应用，负责 Skill Center 消费、包校验、安全解压、loader、工具定义和 `execute_skills` 编排。
 - E2B backend 是当前优先实现路径；后续可扩展 KOP / 平台私有 backend，但业务逻辑不要写死到 E2B 特定对象。
 - ADK Runner 可做自动工具注入；LangGraph / DeepAgents 等已编译 graph 默认提供 helper 或显式接入，不强行魔改用户 graph。
-- 沙箱镜像内最小 agent 交付物以 `deploy/skill-runtime/` 为准。
+- 沙箱镜像内最小 agent 交付物以 `ksadk/skills/runtime/agent.py` 为准；顶层 `deploy/` 已迁出本仓。
 - Skill Service 管注册、CRUD、版本治理；KsADK 只消费运行时必要接口，例如 `ListSkillsBySpaceId`、`GetSkillDownloadUrl`。
 
 ## 5. 跨仓边界
