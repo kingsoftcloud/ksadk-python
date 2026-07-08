@@ -122,7 +122,7 @@ def test_resolve_identity_intranet_endpoint_overridable_by_env(isolated_cache, m
     client.ListAllUserAccessKeys.side_effect = Exception(
         '{"Error":{"Code":"InnerAccountCanOnlyAccessThroughIntranet"}}'
     )
-    monkeypatch.setenv("IAM_INTRANET_URL", "http://iam-vpc.internal.api.ksyun.com")
+    monkeypatch.setenv("IAM_INTRANET_URL", "http://iam-intranet.example.test")
     monkeypatch.setattr("ksadk.identity.resolver._import_iam_sdk", lambda: sdk_parts)
 
     assert resolve_identity(access_key="AKLTtest", secret_key="SKtest") is None
