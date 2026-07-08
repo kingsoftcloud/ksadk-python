@@ -27,7 +27,10 @@ DOCUMENTATION_URL = "https://kingsoftcloud.github.io/ksadk-python/"
 
 DEFAULT_OUTPUT_DIR = Path("/tmp/ksadk-python-export-candidate")
 
-CURATED_DOCS: set[str] = {"docs/maintainer-approval-record.md"}
+CURATED_DOCS: set[str] = {
+    "docs/maintainer-approval-record.md",
+    "docs/public-release-workflow.md",
+}
 CURATED_REFERENCE_DOCS: set[str] = {"docs/reference/ksadk环境变量参考.md"}
 
 ROOT_EXPORT_FILES = {

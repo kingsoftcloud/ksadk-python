@@ -1,9 +1,9 @@
 {
-  "generatedAt": "2026-07-08T04:45:14.107433+00:00",
+  "generatedAt": "2026-07-08T04:58:29.018956+00:00",
   "targetRepository": "https://github.com/kingsoftcloud/ksadk-python",
   "documentation": "https://kingsoftcloud.github.io/ksadk-python/",
-  "exportPathCount": 556,
-  "excludedPathCount": 201,
+  "exportPathCount": 557,
+  "excludedPathCount": 200,
   "excludedPaths": [
     "docs/Agent 开发者上下文接入指南.md",
     "docs/DeepAgents说明.md",
@@ -47,7 +47,6 @@
     "docs/preview/images/claw_robot.png",
     "docs/preview/images/wps_support_group.jpg",
     "docs/prompt-driven-agent-creation-draft.md",
-    "docs/public-release-workflow.md",
     "docs/reference/ksadk技术设计.md",
     "docs/reference/远程Agent运行时接口说明.md",
     "docs/superpowers/plans/2026-04-16-hosted-hermes-gateway.md",
@@ -244,7 +243,8 @@
       "ksadk_runtime_common/"
     ],
     "curatedDocs": [
-      "docs/maintainer-approval-record.md"
+      "docs/maintainer-approval-record.md",
+      "docs/public-release-workflow.md"
     ],
     "curatedReferenceDocs": [
       "docs/reference/ksadk环境变量参考.md"

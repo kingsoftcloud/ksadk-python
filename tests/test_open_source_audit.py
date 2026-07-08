@@ -124,6 +124,7 @@ def test_public_repo_audit_allows_curated_environment_reference_doc():
         "public-repo",
         [
             "docs/maintainer-approval-record.md",
+            "docs/public-release-workflow.md",
             "docs/reference/ksadk环境变量参考.md",
         ],
     )
