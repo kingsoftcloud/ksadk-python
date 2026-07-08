@@ -181,6 +181,9 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "make public-preflight" in workflow
     assert "make public-publish-gate" in workflow
     assert "make open-source-audit-dist" in ci_workflow
+    assert "make public-test" in ci_workflow
+    assert "tests/test_conversation_runtime.py" not in ci_workflow
+    assert "tests/test_server_session_app.py" not in ci_workflow
     assert 'KSADK_WEB_VERSION: "0.2.18"' in ci_workflow
     assert "PUBLIC_KSADK_WEB_VERSION" not in ci_workflow
     assert "KSADK_WEB_VERSION ?= latest" in makefile
