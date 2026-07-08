@@ -167,9 +167,11 @@ git push github v<version>
 正式发布只走 `.github/workflows/publish-pypi.yml`：
 
 - 触发条件：GitHub Release `published` 或手动 `workflow_dispatch`。
-- 输入：`ksadk_web_version` 和 `approved_source_commit`。
+- 输入：`ksadk_web_version`、`approved_source_commit` 和 `publish_target`。
+- 正常发版使用 `publish_target=full`：workflow 会跑完整 `make public-preflight`，发布 `ksadk` 主包，构建并发布 `agentengine-sdk-python` 别名包，并部署 GitHub Pages。
+- 补发别名包使用 `publish_target=alias-only`：workflow 只跑公开审计、公开测试、别名包构建审计和 approval gate，只发布 `agentengine-sdk-python`，不重发 `ksadk`，也不部署 GitHub Pages。
 - workflow 先同步 npm registry 中的 UI 静态资源。
-- workflow 再运行 `make public-preflight`。
+- workflow 再按 `publish_target` 运行对应发布前检查。
 - workflow 再运行 `make public-publish-gate`，校验 approval record。
 - PyPI 上传使用 OIDC Trusted Publishing。
 - GitHub Pages 由同一个 workflow 构建 `docs-site` 并部署。

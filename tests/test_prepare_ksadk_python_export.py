@@ -36,6 +36,7 @@ def test_export_plan_includes_public_preflight_contract_files():
         ".github/BRANCH_PROTECTION.md",
         ".github/workflows/publish-pypi.yml",
         "scripts/build_alias_distribution.py",
+        "docs/public-release-workflow.md",
         "docs/reference/ksadk环境变量参考.md",
         "scripts/check_release_version.py",
         "scripts/open_source_audit.py",
