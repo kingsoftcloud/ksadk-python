@@ -82,6 +82,7 @@ REQUIRED_PUBLIC_FILES = {
 
 SCRIPT_EXPORT_FILES = {
     "scripts/audit_release_artifacts.py",
+    "scripts/build_alias_distribution.py",
     "scripts/check_approval_record.py",
     "scripts/check_publication_state.py",
     "scripts/check_release_version.py",

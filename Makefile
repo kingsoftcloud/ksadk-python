@@ -1,7 +1,7 @@
 # AgentEngine Makefile
 # 用于同步 KsADK Web static 和管理项目
 
-.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend
+.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend
 
 # 默认目标
 help:
@@ -377,6 +377,13 @@ public-build-check: clean-dist sync-ksadk-web-static
 	@uv run --extra dev python -m twine check dist/*
 	@$(MAKE) open-source-audit-dist
 
+public-build-alias-check: sync-ksadk-web-static
+	@echo "==> build and twine check alias distribution"
+	@rm -rf dist-alias
+	@uv run python scripts/build_alias_distribution.py --alias-project "$(PUBLIC_ALIAS_PYPI_PROJECT)" --out-dir dist-alias
+	@uv run --extra dev python -m twine check dist-alias/*
+	@$(MAKE) open-source-audit-alias-dist
+
 open-source-audit-dist:
 	@echo "==> audit wheel and sdist file lists"
 	@if ! ls dist/*.whl dist/*.tar.gz >/dev/null 2>&1; then \
@@ -385,6 +392,15 @@ open-source-audit-dist:
 	fi
 	@python3 -c 'import glob, zipfile; [print(name) for path in sorted(glob.glob("dist/*.whl")) for name in zipfile.ZipFile(path).namelist()]' | python3 scripts/open_source_audit.py --target wheel --file-list -
 	@python3 -c 'import glob, tarfile; [print(name) for path in sorted(glob.glob("dist/*.tar.gz")) for name in tarfile.open(path).getnames()]' | python3 scripts/open_source_audit.py --target sdist --file-list -
+
+open-source-audit-alias-dist:
+	@echo "==> audit alias wheel and sdist file lists"
+	@if ! ls dist-alias/*.whl dist-alias/*.tar.gz >/dev/null 2>&1; then \
+		echo "❌ alias dist artifacts missing; run make public-build-alias-check first"; \
+		exit 1; \
+	fi
+	@python3 -c 'import glob, zipfile; [print(name) for path in sorted(glob.glob("dist-alias/*.whl")) for name in zipfile.ZipFile(path).namelist()]' | python3 scripts/open_source_audit.py --target wheel --file-list -
+	@python3 -c 'import glob, tarfile; [print(name) for path in sorted(glob.glob("dist-alias/*.tar.gz")) for name in tarfile.open(path).getnames()]' | python3 scripts/open_source_audit.py --target sdist --file-list -
 
 public-version-gate:
 	@echo "==> release version gate (prevent downgrade/re-publish)"

@@ -1,8 +1,8 @@
 {
-  "generatedAt": "2026-07-08T04:10:29.360629+00:00",
+  "generatedAt": "2026-07-08T04:45:14.107433+00:00",
   "targetRepository": "https://github.com/kingsoftcloud/ksadk-python",
   "documentation": "https://kingsoftcloud.github.io/ksadk-python/",
-  "exportPathCount": 555,
+  "exportPathCount": 556,
   "excludedPathCount": 201,
   "excludedPaths": [
     "docs/Agent 开发者上下文接入指南.md",
@@ -251,6 +251,7 @@
     ],
     "scripts": [
       "scripts/audit_release_artifacts.py",
+      "scripts/build_alias_distribution.py",
       "scripts/check_approval_record.py",
       "scripts/check_publication_state.py",
       "scripts/check_release_version.py",
