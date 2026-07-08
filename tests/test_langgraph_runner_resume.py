@@ -290,6 +290,7 @@ class _MissingRunIdCumulativeStreamUsageAgent(_DummyAgent):
         yield {
             "event": "on_chat_model_stream",
             "name": "ChatOpenAI",
+            "parent_ids": ["chain-1", "chunk-a"],
             "data": {
                 "chunk": _Chunk(
                     content="fi",
@@ -304,6 +305,7 @@ class _MissingRunIdCumulativeStreamUsageAgent(_DummyAgent):
         yield {
             "event": "on_chat_model_stream",
             "name": "ChatOpenAI",
+            "parent_ids": ["chain-1", "chunk-b"],
             "data": {
                 "chunk": _Chunk(
                     content="nal",

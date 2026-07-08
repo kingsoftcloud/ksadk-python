@@ -744,12 +744,7 @@ class LangGraphRunner(BaseRunner):
         model_run_usages: dict[str, dict[str, Any]] = {}
         model_run_order: list[str] = []
 
-        def fallback_model_run_key(event: Mapping[str, Any]) -> str:
-            name = str(event.get("name") or "chat_model")
-            parent_ids = event.get("parent_ids")
-            if isinstance(parent_ids, list) and parent_ids:
-                return f"missing-run-id:{name}:{'/'.join(str(item) for item in parent_ids)}"
-            return f"missing-run-id:{name}"
+        missing_run_id_stream_key = "missing-run-id:chat-model-stream"
 
         def record_model_usage(
             event: Mapping[str, Any],
@@ -834,7 +829,7 @@ class LangGraphRunner(BaseRunner):
                         record_model_usage(
                             event,
                             chunk_usage,
-                            fallback_key=fallback_model_run_key(event),
+                            fallback_key=missing_run_id_stream_key,
                         )
 
                     # 推理内容
@@ -872,9 +867,8 @@ class LangGraphRunner(BaseRunner):
                     last_usage = self._extract_last_usage(output) or self._extract_last_usage(data)
                     end_fallback_key = None
                     if not event.get("run_id"):
-                        candidate_key = fallback_model_run_key(event)
-                        if candidate_key in model_run_usages:
-                            end_fallback_key = candidate_key
+                        if missing_run_id_stream_key in model_run_usages:
+                            end_fallback_key = missing_run_id_stream_key
                     record_model_usage(event, last_usage or usage, fallback_key=end_fallback_key)
 
                 elif event_kind == "on_tool_start":
