@@ -33,6 +33,7 @@ CURATED_REFERENCE_DOCS: set[str] = {"docs/reference/ksadk环境变量参考.md"}
 ROOT_EXPORT_FILES = {
     ".dockerignore",
     ".gitattributes",
+    ".gitleaks.toml",
     ".github/BRANCH_PROTECTION.md",
     ".github/ISSUE_TEMPLATE/bug_report.md",
     ".github/ISSUE_TEMPLATE/feature_request.md",
@@ -73,6 +74,7 @@ REQUIRED_PUBLIC_FILES = {
     "README.md",
     "README.en.md",
     "README.zh-CN.md",
+    ".gitleaks.toml",
     "docs-site/package.json",
     "docs-site/pnpm-lock.yaml",
     "pyproject.toml",
