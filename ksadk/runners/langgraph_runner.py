@@ -744,11 +744,27 @@ class LangGraphRunner(BaseRunner):
         model_run_usages: dict[str, dict[str, Any]] = {}
         model_run_order: list[str] = []
 
-        def record_model_usage(event: Mapping[str, Any], usage: dict[str, Any]) -> None:
+        def fallback_model_run_key(event: Mapping[str, Any]) -> str:
+            name = str(event.get("name") or "chat_model")
+            parent_ids = event.get("parent_ids")
+            if isinstance(parent_ids, list) and parent_ids:
+                return f"missing-run-id:{name}:{'/'.join(str(item) for item in parent_ids)}"
+            return f"missing-run-id:{name}"
+
+        def record_model_usage(
+            event: Mapping[str, Any],
+            usage: dict[str, Any],
+            *,
+            fallback_key: str | None = None,
+        ) -> None:
             if not usage:
                 return
             raw_run_id = event.get("run_id")
-            run_key = str(raw_run_id) if raw_run_id else f"model-event-{len(model_run_order)}"
+            run_key = (
+                str(raw_run_id)
+                if raw_run_id
+                else fallback_key or f"model-event-{len(model_run_order)}"
+            )
             if run_key not in model_run_usages:
                 model_run_order.append(run_key)
             model_run_usages[run_key] = dict(usage)
@@ -811,7 +827,15 @@ class LangGraphRunner(BaseRunner):
                         continue
                     chunk_usage = self._extract_usage(chunk)
                     if chunk_usage:
-                        record_model_usage(event, chunk_usage)
+                        # Some LangChain providers attach cumulative usage to
+                        # every stream chunk. If LangGraph omits run_id, use a
+                        # stable fallback key so later chunks overwrite earlier
+                        # snapshots instead of multiplying prompt tokens.
+                        record_model_usage(
+                            event,
+                            chunk_usage,
+                            fallback_key=fallback_model_run_key(event),
+                        )
 
                     # 推理内容
                     reasoning = getattr(chunk, "reasoning_content", None)
@@ -846,7 +870,12 @@ class LangGraphRunner(BaseRunner):
                     output = data.get("output") if isinstance(data, Mapping) else None
                     usage = self._extract_usage(output) or self._extract_usage(data)
                     last_usage = self._extract_last_usage(output) or self._extract_last_usage(data)
-                    record_model_usage(event, last_usage or usage)
+                    end_fallback_key = None
+                    if not event.get("run_id"):
+                        candidate_key = fallback_model_run_key(event)
+                        if candidate_key in model_run_usages:
+                            end_fallback_key = candidate_key
+                    record_model_usage(event, last_usage or usage, fallback_key=end_fallback_key)
 
                 elif event_kind == "on_tool_start":
                     emitted_non_text_event = True

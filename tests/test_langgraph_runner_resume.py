@@ -42,11 +42,13 @@ class _AsyncStateAgent(_DummyAgent):
 
 
 class _Chunk:
-    def __init__(self, content="", reasoning_content=None):
+    def __init__(self, content="", reasoning_content=None, usage_metadata=None):
         self.content = content
         self.additional_kwargs = {}
         if reasoning_content is not None:
             self.additional_kwargs["reasoning_content"] = reasoning_content
+        if usage_metadata is not None:
+            self.usage_metadata = usage_metadata
 
 
 class _StreamingAgent(_DummyAgent):
@@ -277,6 +279,44 @@ class _MultipleModelUsageStreamingAgent(_DummyAgent):
         }
 
 
+class _MissingRunIdCumulativeStreamUsageAgent(_DummyAgent):
+    def get_state(self, config):
+        del config
+        return SimpleNamespace(values={"messages": [SimpleNamespace(content="final")]})
+
+    async def astream_events(self, state, version="v2", config=None):
+        self.last_astream_state = state
+        self.last_astream_config = config
+        yield {
+            "event": "on_chat_model_stream",
+            "name": "ChatOpenAI",
+            "data": {
+                "chunk": _Chunk(
+                    content="fi",
+                    usage_metadata={
+                        "input_tokens": 100,
+                        "output_tokens": 1,
+                        "total_tokens": 101,
+                    },
+                )
+            },
+        }
+        yield {
+            "event": "on_chat_model_stream",
+            "name": "ChatOpenAI",
+            "data": {
+                "chunk": _Chunk(
+                    content="nal",
+                    usage_metadata={
+                        "input_tokens": 100,
+                        "output_tokens": 2,
+                        "total_tokens": 102,
+                    },
+                )
+            },
+        }
+
+
 class _CheckpointResumeUpdatesAgent(_DummyAgent):
     def __init__(self):
         super().__init__()
@@ -380,6 +420,12 @@ def _make_dropped_final_state_usage_streaming_runner() -> LangGraphRunner:
 def _make_multiple_model_usage_streaming_runner() -> LangGraphRunner:
     runner = _make_runner()
     runner._agent = _MultipleModelUsageStreamingAgent()
+    return runner
+
+
+def _make_missing_run_id_cumulative_stream_usage_runner() -> LangGraphRunner:
+    runner = _make_runner()
+    runner._agent = _MissingRunIdCumulativeStreamUsageAgent()
     return runner
 
 
@@ -765,6 +811,42 @@ async def test_stream_accumulates_model_event_usage_across_agent_loop():
                 "total_tokens": 18,
                 "input_token_details": {},
                 "output_token_details": {"reasoning": 3},
+            },
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_stream_does_not_accumulate_cumulative_usage_chunks_without_run_id():
+    runner = _make_missing_run_id_cumulative_stream_usage_runner()
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "sess-missing-run-id-stream-usage",
+                "input": "hello",
+            }
+        )
+    ]
+
+    assert chunks[-1] == {
+        "output": "final",
+        "type": "final",
+        "usage": {
+            "input_tokens": 100,
+            "output_tokens": 2,
+            "total_tokens": 102,
+            "input_token_details": {},
+            "output_token_details": {},
+        },
+        "metadata": {
+            "last_usage": {
+                "input_tokens": 100,
+                "output_tokens": 2,
+                "total_tokens": 102,
+                "input_token_details": {},
+                "output_token_details": {},
             },
         },
     }
