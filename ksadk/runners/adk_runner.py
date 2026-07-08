@@ -86,26 +86,51 @@ class ADKRunner(BaseRunner):
         try:
             import json as _stdlib_json
             import google.adk.models.lite_llm as adk_lite_llm
+            import inspect as _inspect
 
             _original_fn = adk_lite_llm._message_to_generate_content_response
+            # Determine which kwargs the original function actually accepts,
+            # so the patch is compatible across ADK versions that may have
+            # added or removed `model_version` / `thought_parts`.
+            _orig_params = set(
+                _inspect.signature(_original_fn).parameters.keys()
+            )
 
             def _patched_message_to_generate_content_response(
                 message, *, is_partial=False, model_version=None, thought_parts=None
             ):
                 """Wrapper that catches JSONDecodeError in final args parsing."""
-                result = _original_fn(
-                    message,
-                    is_partial=is_partial,
-                    model_version=model_version,
-                    thought_parts=thought_parts,
-                )
+                # Only forward kwargs that the original function accepts,
+                # avoiding TypeError on older ADK versions that lack
+                # `model_version` or `thought_parts`.
+                forward_kwargs = {"is_partial": is_partial}
+                if "model_version" in _orig_params:
+                    forward_kwargs["model_version"] = model_version
+                if "thought_parts" in _orig_params:
+                    forward_kwargs["thought_parts"] = thought_parts
+                result = _original_fn(message, **forward_kwargs)
                 # If the response has function_call parts with empty args,
                 # fill in {} as fallback (this was what RobustJson used to do,
                 # but now only at the final output stage, not during streaming).
+                # Also strip phantom function_calls whose name is empty or
+                # whitespace-only — these are streaming artifacts produced by
+                # the old ADK fallback_index mechanism when parallel tool-call
+                # fragments are mis-assembled.
+                phantom_indices = set()
                 if result.content and result.content.parts:
-                    for part in result.content.parts:
+                    for i, part in enumerate(result.content.parts):
                         if part.function_call and part.function_call.args is None:
                             part.function_call.args = {}
+                        if (
+                            part.function_call
+                            and not (part.function_call.name or "").strip()
+                        ):
+                            phantom_indices.add(i)
+                if phantom_indices:
+                    result.content.parts = [
+                        p for i, p in enumerate(result.content.parts)
+                        if i not in phantom_indices
+                    ]
                 return result
 
             adk_lite_llm._message_to_generate_content_response = (
@@ -123,6 +148,47 @@ class ADKRunner(BaseRunner):
 
         except ImportError:
             pass  # ADK not installed
+        except Exception:
+            pass
+
+
+    def _apply_mcp_result_patch(self):
+        """Patch ADK McpTool to convert CallToolResult to dict.
+
+        Old ADK (1.14.1) McpTool._run_async_impl returns the raw
+        CallToolResult Pydantic object from session.call_tool(), which
+        cannot be JSON-serialized when ADK builds the FunctionResponse.
+        New ADK (1.34.0) added response.model_dump(exclude_none=True,
+        mode="json") before returning. This patch replicates that fix
+        for the old version.
+        """
+        try:
+            from google.adk.tools.mcp_tool.mcp_tool import McpTool
+
+            _original_run_async = McpTool._run_async_impl
+
+            async def _patched_run_async_impl(
+                self, *, args, tool_context, credential
+            ):
+                response = await _original_run_async(
+                    self, args=args, tool_context=tool_context,
+                    credential=credential,
+                )
+                # If response is a Pydantic model (e.g. CallToolResult),
+                # convert to dict so it can be JSON-serialized downstream.
+                if hasattr(response, "model_dump"):
+                    return response.model_dump(exclude_none=True, mode="json")
+                return response
+
+            McpTool._run_async_impl = _patched_run_async_impl
+
+            logger.info(
+                "ADKRunner: Applied MCP result serialization patch "
+                "(CallToolResult -> dict via model_dump)"
+            )
+
+        except ImportError:
+            pass  # ADK or MCP not installed
         except Exception:
             pass
 
@@ -680,6 +746,7 @@ class ADKRunner(BaseRunner):
         warnings.filterwarnings("ignore", category=UserWarning, module="pydantic.main")
 
         self._apply_json_patch()
+        self._apply_mcp_result_patch()
 
         # 添加项目目录到 Python 路径
         project_path = Path(self.project_dir).resolve()
@@ -1487,7 +1554,25 @@ class ADKRunner(BaseRunner):
                             # 过滤掉思考内容 (thought=True)，只保留最终答案
                             is_thought = getattr(part, "thought", False)
                             if hasattr(part, "text") and part.text and not is_thought:
-                                final_response = part.text
+                                final_response += part.text
+
+            # Prefer the last event's text (usually the complete answer).
+            # When the loop aborts early (MCP error, phantom tool-call),
+            # final_response may hold only intermediate fragments.
+            last_event_text = ""
+            if hasattr(event, "content") and event.content:
+                for part in (event.content.parts or []):
+                    is_thought = getattr(part, "thought", False)
+                    if hasattr(part, "text") and part.text and not is_thought:
+                        last_event_text += part.text
+            if last_event_text:
+                final_response = last_event_text
+
+            if not final_response and events_list:
+                logger.warning(
+                    "ADK invoke finished with events but no final text — "
+                    "likely mid-loop abort or tool-call error"
+                )
 
             # Set output.value for Langfuse top-level output display
             span.set_attribute("output.value", final_response[:5000] if final_response else "")
