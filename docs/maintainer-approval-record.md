@@ -30,8 +30,8 @@ Record exactly one approved source publication strategy.
 The approved strategy must name the reviewed commit, tag, pull request, or
 export archive used for:
 
-- `ksadk-python`: clean export candidate from reviewed internal commit `eb76b17d7d3c176f7cf6126ceb001ab00f5d651d`; local candidate directory `/tmp/ksadk-python-export-candidate-0.6.9`; verified on 2026-07-08 with public source audit, registry-bundled `make public-preflight` in the public candidate worktree, Fumadocs static build, wheel/sdist build, twine check, and source/dist package audits.
-- `ksadk-web`: npm package `@kingsoftcloud/ksadk-web@0.2.18` from commit `24551d0f290e5a4efc5b5d60d02fa298cccd2efa`; Python candidate commit `eb76b17d7d3c176f7cf6126ceb001ab00f5d651d`; published by the trusted GitHub npm workflow on 2026-07-08 and consumed from the npm registry during `make public-preflight`.
+- `ksadk-python`: clean export candidate from reviewed internal commit `0ac219f0aea2214647f9a373537d39e27297c0ec`; local candidate directory `/tmp/ksadk-python-export-candidate-0.6.9-alias`; verified on 2026-07-08 with public source audit, release workflow contract tests, alias wheel/sdist build, twine check, and source/dist package audits. This candidate preserves the already-published `ksadk==0.6.9` release and adds trusted GitHub workflow support for publishing the compatibility alias package `agentengine-sdk-python==0.6.9`.
+- `ksadk-web`: npm package `@kingsoftcloud/ksadk-web@0.2.18` from commit `24551d0f290e5a4efc5b5d60d02fa298cccd2efa`; Python candidate commit `0ac219f0aea2214647f9a373537d39e27297c0ec`; published by the trusted GitHub npm workflow on 2026-07-08 and consumed from the npm registry during alias distribution verification.
 
 Both approved source references must include the current commit SHA at approval
 time. This prevents a stale approval record from passing after candidate
@@ -50,7 +50,7 @@ changes.
   Hermes/OpenClaw default images, long-task resume, and terminal reconnect are
   covered by the staging E2E evidence.
 - GitHub PR checks are green on the reviewed commit.
-- Release notes and `CHANGELOG.md` were reviewed.
+- Release notes and `CHANGELOG.md` were reviewed, including the concise 0.6.9 summary.
 - Public README and docs were reviewed for sensitive environment names,
   internal endpoints, tokens, customer data, and inaccurate competitor claims.
 - PyPI/TestPyPI credentials stay outside the repository.

@@ -13,6 +13,14 @@ on:
       approved_source_commit:
         description: Reviewed source commit SHA recorded in docs/maintainer-approval-record.md
         required: false
+      publish_target:
+        description: Publish target
+        required: false
+        default: full
+        type: choice
+        options:
+          - full
+          - alias-only
 
 permissions:
   contents: read
@@ -31,6 +39,7 @@ jobs:
     env:
       KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.2.18' }}
       KSADK_APPROVED_SOURCE_COMMIT: ${{ github.event.inputs.approved_source_commit || vars.KSADK_APPROVED_SOURCE_COMMIT }}
+      PUBLISH_TARGET: ${{ github.event.inputs.publish_target || 'full' }}
     permissions:
       contents: read
       id-token: write
@@ -58,20 +67,35 @@ jobs:
         run: make sync-ksadk-web-static
 
       - name: Run public release preflight
+        if: env.PUBLISH_TARGET == 'full'
         run: make public-preflight
+
+      - name: Run alias-only release checks
+        if: env.PUBLISH_TARGET == 'alias-only'
+        run: make public-audit public-test public-build-alias-check
 
       - name: Verify release approval gate
         run: make public-publish-gate
 
       - name: Publish to PyPI
+        if: env.PUBLISH_TARGET == 'full'
         uses: pypa/gh-action-pypi-publish@release/v1
+
+      - name: Build alias distribution
+        if: env.PUBLISH_TARGET == 'full'
+        run: make public-build-alias-check
+
+      - name: Publish alias package to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist-alias
 
   # 发版时同步部署 Fumadocs 文档站到 GitHub Pages, 文档与 PyPI 版本一致。
   # 用 if: always() 让文档部署不被 publish 阻塞(workflow_dispatch 重新部署文档时,
   # publish 会因版本门禁失败(版本未变),但 deploy-pages 仍应运行)。
   deploy-pages:
     needs: publish
-    if: always()
+    if: always() && (github.event_name != 'workflow_dispatch' || github.event.inputs.publish_target != 'alias-only')
     runs-on: ubuntu-latest
     environment:
       name: github-pages

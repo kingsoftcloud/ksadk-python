@@ -172,6 +172,8 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "release:" in workflow
     assert "- published" in workflow
     assert "workflow_dispatch:" in workflow
+    assert "publish_target:" in workflow
+    assert "alias-only" in workflow
     assert 'default: "0.2.18"' in workflow
     assert "approved_source_commit:" in workflow
     assert "Reviewed source commit SHA recorded in docs/maintainer-approval-record.md" in workflow
@@ -179,7 +181,12 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "KSADK_APPROVED_SOURCE_COMMIT: ${{ github.event.inputs.approved_source_commit || vars.KSADK_APPROVED_SOURCE_COMMIT }}" in workflow
     assert "make sync-ksadk-web-static" in workflow
     assert "make public-preflight" in workflow
+    assert "make public-audit public-test public-build-alias-check" in workflow
     assert "make public-publish-gate" in workflow
+    assert "if: env.PUBLISH_TARGET == 'full'" in workflow
+    assert "Publish alias package to PyPI" in workflow
+    assert "packages-dir: dist-alias" in workflow
+    assert "github.event.inputs.publish_target != 'alias-only'" in workflow
     assert "make open-source-audit-dist" in ci_workflow
     assert "make public-test" in ci_workflow
     assert "tests/test_conversation_runtime.py" not in ci_workflow
