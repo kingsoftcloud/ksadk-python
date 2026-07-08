@@ -743,8 +743,7 @@ class LangGraphRunner(BaseRunner):
         final_output_last_usage: dict[str, Any] = {}
         model_run_usages: dict[str, dict[str, Any]] = {}
         model_run_order: list[str] = []
-
-        missing_run_id_stream_key = "missing-run-id:chat-model-stream"
+        latest_stream_usage: dict[str, Any] = {}
 
         def record_model_usage(
             event: Mapping[str, Any],
@@ -823,14 +822,11 @@ class LangGraphRunner(BaseRunner):
                     chunk_usage = self._extract_usage(chunk)
                     if chunk_usage:
                         # Some LangChain providers attach cumulative usage to
-                        # every stream chunk. If LangGraph omits run_id, use a
-                        # stable fallback key so later chunks overwrite earlier
-                        # snapshots instead of multiplying prompt tokens.
-                        record_model_usage(
-                            event,
-                            chunk_usage,
-                            fallback_key=missing_run_id_stream_key,
-                        )
+                        # every stream chunk. Treat stream usage as a fallback
+                        # snapshot only; the per-run accumulator is driven by
+                        # on_chat_model_end to avoid multiplying prompt tokens
+                        # by the number of streamed chunks.
+                        latest_stream_usage = dict(chunk_usage)
 
                     # 推理内容
                     reasoning = getattr(chunk, "reasoning_content", None)
@@ -865,11 +861,7 @@ class LangGraphRunner(BaseRunner):
                     output = data.get("output") if isinstance(data, Mapping) else None
                     usage = self._extract_usage(output) or self._extract_usage(data)
                     last_usage = self._extract_last_usage(output) or self._extract_last_usage(data)
-                    end_fallback_key = None
-                    if not event.get("run_id"):
-                        if missing_run_id_stream_key in model_run_usages:
-                            end_fallback_key = missing_run_id_stream_key
-                    record_model_usage(event, last_usage or usage, fallback_key=end_fallback_key)
+                    record_model_usage(event, last_usage or usage)
 
                 elif event_kind == "on_tool_start":
                     emitted_non_text_event = True
@@ -922,8 +914,8 @@ class LangGraphRunner(BaseRunner):
         if not accumulated_text:
             if final_output_text:
                 final_chunk = {"output": final_output_text, "type": "final"}
-                usage = accumulated_model_usage() or final_output_usage
-                last_usage = latest_model_usage() or final_output_last_usage or usage
+                usage = accumulated_model_usage() or final_output_usage or latest_stream_usage
+                last_usage = latest_model_usage() or final_output_last_usage or latest_stream_usage or usage
                 if usage:
                     final_chunk["usage"] = usage
                 if last_usage:
@@ -948,10 +940,10 @@ class LangGraphRunner(BaseRunner):
         else:
             final_chunk = {"output": accumulated_text, "type": "final"}
             state_usage = await self._latest_state_usage(config)
-            usage = accumulated_model_usage() or state_usage or final_output_usage
+            usage = accumulated_model_usage() or state_usage or final_output_usage or latest_stream_usage
             if usage:
                 final_chunk["usage"] = usage
-                last_usage = latest_model_usage() or state_usage or final_output_last_usage or usage
+                last_usage = latest_model_usage() or state_usage or final_output_last_usage or latest_stream_usage or usage
                 final_chunk.setdefault("metadata", {})["last_usage"] = last_usage
             yield final_chunk
 
