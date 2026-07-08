@@ -743,7 +743,20 @@ class LangGraphRunner(BaseRunner):
         final_output_last_usage: dict[str, Any] = {}
         model_run_usages: dict[str, dict[str, Any]] = {}
         model_run_order: list[str] = []
+        stream_usage_run_keys: set[str] = set()
         latest_stream_usage: dict[str, Any] = {}
+
+        def model_run_key(
+            event: Mapping[str, Any],
+            *,
+            fallback_key: str | None = None,
+        ) -> str:
+            raw_run_id = event.get("run_id")
+            return (
+                str(raw_run_id)
+                if raw_run_id
+                else fallback_key or f"model-event-{len(model_run_order)}"
+            )
 
         def record_model_usage(
             event: Mapping[str, Any],
@@ -753,12 +766,7 @@ class LangGraphRunner(BaseRunner):
         ) -> None:
             if not usage:
                 return
-            raw_run_id = event.get("run_id")
-            run_key = (
-                str(raw_run_id)
-                if raw_run_id
-                else fallback_key or f"model-event-{len(model_run_order)}"
-            )
+            run_key = model_run_key(event, fallback_key=fallback_key)
             if run_key not in model_run_usages:
                 model_run_order.append(run_key)
             model_run_usages[run_key] = dict(usage)
@@ -822,11 +830,16 @@ class LangGraphRunner(BaseRunner):
                     chunk_usage = self._extract_usage(chunk)
                     if chunk_usage:
                         # Some LangChain providers attach cumulative usage to
-                        # every stream chunk. Treat stream usage as a fallback
-                        # snapshot only; the per-run accumulator is driven by
-                        # on_chat_model_end to avoid multiplying prompt tokens
-                        # by the number of streamed chunks.
+                        # every stream chunk, and LangChain may then sum those
+                        # cumulative snapshots into an inflated
+                        # on_chat_model_end usage. For a concrete model run,
+                        # keep the latest stream snapshot and ignore the later
+                        # end usage for that same run_id.
                         latest_stream_usage = dict(chunk_usage)
+                        if event.get("run_id"):
+                            run_key = model_run_key(event)
+                            stream_usage_run_keys.add(run_key)
+                            record_model_usage(event, latest_stream_usage)
 
                     # 推理内容
                     reasoning = getattr(chunk, "reasoning_content", None)
@@ -861,7 +874,9 @@ class LangGraphRunner(BaseRunner):
                     output = data.get("output") if isinstance(data, Mapping) else None
                     usage = self._extract_usage(output) or self._extract_usage(data)
                     last_usage = self._extract_last_usage(output) or self._extract_last_usage(data)
-                    record_model_usage(event, last_usage or usage)
+                    run_key = model_run_key(event)
+                    if run_key not in stream_usage_run_keys:
+                        record_model_usage(event, last_usage or usage)
 
                 elif event_kind == "on_tool_start":
                     emitted_non_text_event = True

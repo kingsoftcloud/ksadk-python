@@ -32,6 +32,7 @@ from ksadk.conversations.runtime import (
     extract_responses_resume_input,
     invoke_conversation_once,
     preview_auto_compaction,
+    _set_conversation_usage_attributes,
     stream_conversation_turn,
     stream_responses_conversation_turn,
 )
@@ -199,6 +200,14 @@ class _UsageStreamingRunner(_StreamingRunner):
                 },
             },
         }
+
+
+class _FakeSpan:
+    def __init__(self):
+        self.attributes = {}
+
+    def set_attribute(self, key, value):
+        self.attributes[key] = value
 
 
 class _CheckpointMetadataStreamingRunner(_StreamingRunner):
@@ -4018,6 +4027,30 @@ async def test_invoke_conversation_once_preserves_runner_usage(monkeypatch):
         "output_token_details": {"reasoning": 5},
     }
     assert result["metadata"]["usage"] == result["usage"]
+
+
+def test_set_conversation_usage_attributes_writes_genai_and_llm_token_fields():
+    span = _FakeSpan()
+
+    _set_conversation_usage_attributes(
+        span,
+        {
+            "input_tokens": 2944,
+            "output_tokens": 69,
+            "total_tokens": 3013,
+            "input_token_details": {"cache_read": 1800},
+            "output_token_details": {"reasoning": 15},
+        },
+    )
+
+    assert span.attributes["gen_ai.usage.input_tokens"] == 2944
+    assert span.attributes["gen_ai.usage.output_tokens"] == 69
+    assert span.attributes["gen_ai.usage.total_tokens"] == 3013
+    assert span.attributes["gen_ai.usage.cache_read.input_tokens"] == 1800
+    assert span.attributes["gen_ai.usage.reasoning.output_tokens"] == 15
+    assert span.attributes["llm.usage.prompt_tokens"] == 2944
+    assert span.attributes["llm.usage.completion_tokens"] == 69
+    assert span.attributes["llm.usage.total_tokens"] == 3013
 
 
 def test_build_chat_completions_payload_uses_real_usage_from_metadata():

@@ -534,6 +534,59 @@ def _set_conversation_output_attributes(span: Any | None, output_text: str | Non
         _set_span_attribute(span, key, text)
 
 
+def _set_conversation_usage_attributes(
+    span: Any | None,
+    usage: Mapping[str, Any] | None,
+) -> None:
+    normalized = _normalize_usage_payload(usage)
+    if not normalized:
+        return
+
+    def _usage_int(value: Any) -> int:
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    input_tokens = _usage_int(normalized.get("input_tokens"))
+    output_tokens = _usage_int(normalized.get("output_tokens"))
+    total_tokens = _usage_int(normalized.get("total_tokens") or (input_tokens + output_tokens))
+    input_details = normalized.get("input_token_details")
+    output_details = normalized.get("output_token_details")
+    cache_read_tokens = 0
+    reasoning_tokens = 0
+    if isinstance(input_details, Mapping):
+        cache_read_tokens = _usage_int(
+            input_details.get("cache_read")
+            or input_details.get("cached")
+            or input_details.get("cached_tokens")
+        )
+    if isinstance(output_details, Mapping):
+        reasoning_tokens = _usage_int(
+            output_details.get("reasoning")
+            or output_details.get("reasoning_tokens")
+        )
+
+    attributes = {
+        "gen_ai.usage.input_tokens": input_tokens,
+        "gen_ai.usage.output_tokens": output_tokens,
+        "gen_ai.usage.total_tokens": total_tokens,
+        "llm.usage.prompt_tokens": input_tokens,
+        "llm.usage.completion_tokens": output_tokens,
+        "llm.usage.total_tokens": total_tokens,
+    }
+    if cache_read_tokens:
+        attributes["gen_ai.usage.cache_read.input_tokens"] = cache_read_tokens
+        attributes["llm.usage.cache_read.input_tokens"] = cache_read_tokens
+    if reasoning_tokens:
+        attributes["gen_ai.usage.reasoning.output_tokens"] = reasoning_tokens
+        attributes["llm.usage.reasoning_tokens"] = reasoning_tokens
+
+    for key, value in attributes.items():
+        if value:
+            _set_span_attribute(span, key, value)
+
+
 def _set_conversation_span_attributes(
     span: Any,
     *,
@@ -3862,6 +3915,7 @@ async def invoke_conversation_once(
             (result.get("metadata") or {}).get("last_usage")
         ) or (result_usage if result_usage else {})
         _set_conversation_output_attributes(span, output_text)
+        _set_conversation_usage_attributes(span, result_usage)
         result_agentengine_metadata = _extract_agentengine_metadata(result)
         assistant_metadata: dict[str, Any] = {
             **trace_metadata,
@@ -4674,6 +4728,7 @@ async def _iter_conversation_turn_events(
             run_mode=run_mode,
             run_trigger=run_trigger,
         )
+        _set_conversation_usage_attributes(span, assistant_metadata.get("usage"))
         _finish_span()
         yield {
             "type": "completed",

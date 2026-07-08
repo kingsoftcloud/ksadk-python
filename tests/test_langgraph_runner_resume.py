@@ -319,6 +319,62 @@ class _MissingRunIdCumulativeStreamUsageAgent(_DummyAgent):
         }
 
 
+class _InflatedEndUsageAfterStreamUsageAgent(_DummyAgent):
+    def get_state(self, config):
+        del config
+        return SimpleNamespace(values={"messages": [SimpleNamespace(content="final")]})
+
+    async def astream_events(self, state, version="v2", config=None):
+        self.last_astream_state = state
+        self.last_astream_config = config
+        yield {
+            "event": "on_chat_model_stream",
+            "name": "ChatOpenAI",
+            "run_id": "llm-1",
+            "data": {
+                "chunk": _Chunk(
+                    content="",
+                    usage_metadata={
+                        "input_tokens": 2873,
+                        "output_tokens": 55,
+                        "total_tokens": 2928,
+                        "input_token_details": {},
+                        "output_token_details": {"reasoning": 55},
+                    },
+                )
+            },
+        }
+        yield {
+            "event": "on_chat_model_stream",
+            "name": "ChatOpenAI",
+            "run_id": "llm-1",
+            "data": {
+                "chunk": _Chunk(
+                    content="final",
+                    usage_metadata={
+                        "input_tokens": 2873,
+                        "output_tokens": 99,
+                        "total_tokens": 2972,
+                        "input_token_details": {},
+                        "output_token_details": {"reasoning": 55},
+                    },
+                )
+            },
+        }
+        yield {
+            "event": "on_chat_model_end",
+            "name": "ChatOpenAI",
+            "run_id": "llm-1",
+            "data": {
+                "output": _UsageMessage(
+                    input_tokens=109174,
+                    output_tokens=1835,
+                    reasoning_tokens=1455,
+                )
+            },
+        }
+
+
 class _CheckpointResumeUpdatesAgent(_DummyAgent):
     def __init__(self):
         super().__init__()
@@ -428,6 +484,12 @@ def _make_multiple_model_usage_streaming_runner() -> LangGraphRunner:
 def _make_missing_run_id_cumulative_stream_usage_runner() -> LangGraphRunner:
     runner = _make_runner()
     runner._agent = _MissingRunIdCumulativeStreamUsageAgent()
+    return runner
+
+
+def _make_inflated_end_usage_after_stream_usage_runner() -> LangGraphRunner:
+    runner = _make_runner()
+    runner._agent = _InflatedEndUsageAfterStreamUsageAgent()
     return runner
 
 
@@ -852,6 +914,64 @@ async def test_stream_does_not_accumulate_cumulative_usage_chunks_without_run_id
             },
         },
     }
+
+
+@pytest.mark.asyncio
+async def test_stream_prefers_latest_stream_usage_when_end_usage_is_inflated():
+    runner = _make_inflated_end_usage_after_stream_usage_runner()
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "sess-inflated-end-usage",
+                "input": "hello",
+            }
+        )
+    ]
+
+    assert chunks[-1] == {
+        "output": "final",
+        "type": "final",
+        "usage": {
+            "input_tokens": 2873,
+            "output_tokens": 99,
+            "total_tokens": 2972,
+            "input_token_details": {},
+            "output_token_details": {"reasoning": 55},
+        },
+        "metadata": {
+            "last_usage": {
+                "input_tokens": 2873,
+                "output_tokens": 99,
+                "total_tokens": 2972,
+                "input_token_details": {},
+                "output_token_details": {"reasoning": 55},
+            },
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_invoke_prefers_latest_stream_usage_when_end_usage_is_inflated():
+    runner = _make_inflated_end_usage_after_stream_usage_runner()
+
+    result = await runner.invoke(
+        {
+            "session_id": "sess-inflated-end-usage-invoke",
+            "input": "hello",
+        }
+    )
+
+    assert result["output"] == "final"
+    assert result["usage"] == {
+        "input_tokens": 2873,
+        "output_tokens": 99,
+        "total_tokens": 2972,
+        "input_token_details": {},
+        "output_token_details": {"reasoning": 55},
+    }
+    assert result["metadata"]["last_usage"] == result["usage"]
 
 
 @pytest.mark.asyncio
