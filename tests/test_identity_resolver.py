@@ -86,12 +86,14 @@ def test_resolve_iam_endpoint_from_env():
             os.environ["KSYUN_IAM_URL"] = old
 
 
-def test_resolve_identity_intranet_fallback_requires_explicit_endpoint(isolated_cache, monkeypatch):
-    """内网 IAM fallback 只能由显式环境变量启用，避免公开包硬编码内部 endpoint。"""
+def test_resolve_identity_intranet_fallback_defaults_when_no_env(isolated_cache, monkeypatch):
+    """内网 IAM fallback:env 未配置时默认 fallback iam.inner.api.ksyun.com(内部账号开箱即用)。
+    该地址外部不可访问,open_source_audit 白名单已放行。"""
     sdk_parts = _mock_sdk_parts()
     IamClient = sdk_parts[0]
     client = MagicMock()
     IamClient.return_value = client
+    # 公网和内网都失败(内部账号内网也拒),最终返回 None
     client.ListAllUserAccessKeys.side_effect = Exception(
         '{"Error":{"Code":"InnerAccountCanOnlyAccessThroughIntranet"}}'
     )
@@ -100,7 +102,8 @@ def test_resolve_identity_intranet_fallback_requires_explicit_endpoint(isolated_
     monkeypatch.setattr("ksadk.identity.resolver._import_iam_sdk", lambda: sdk_parts)
 
     assert resolve_identity(access_key="AKLTtest", secret_key="SKtest") is None
-    assert client.ListAllUserAccessKeys.call_count == 1
+    # 公网失败后默认 fallback 内网(2 次调用:公网 + 内网),无需显式配 env
+    assert client.ListAllUserAccessKeys.call_count == 2
 
 
 def test_should_retry_intranet():
@@ -108,6 +111,23 @@ def test_should_retry_intranet():
     assert _should_retry_intranet(exc) is True
     assert _should_retry_intranet(Exception("other error")) is False
     assert _should_retry_intranet(None) is False
+
+
+def test_resolve_identity_intranet_endpoint_overridable_by_env(isolated_cache, monkeypatch):
+    """显式配置 IAM_INTRANET_URL 时覆盖默认内网地址(灵活覆盖)。"""
+    sdk_parts = _mock_sdk_parts()
+    IamClient = sdk_parts[0]
+    client = MagicMock()
+    IamClient.return_value = client
+    client.ListAllUserAccessKeys.side_effect = Exception(
+        '{"Error":{"Code":"InnerAccountCanOnlyAccessThroughIntranet"}}'
+    )
+    monkeypatch.setenv("IAM_INTRANET_URL", "http://iam-vpc.internal.api.ksyun.com")
+    monkeypatch.setattr("ksadk.identity.resolver._import_iam_sdk", lambda: sdk_parts)
+
+    assert resolve_identity(access_key="AKLTtest", secret_key="SKtest") is None
+    # 公网失败 + 自定义内网 fallback(2 次)
+    assert client.ListAllUserAccessKeys.call_count == 2
 
 
 # ---------------------------------------------------------------------------

@@ -271,16 +271,17 @@ def resolve_identity(
                 ak_fingerprint=fingerprint,
             )
 
-    # 2. 调 IAM 反查。内网 fallback 只在显式配置 IAM_INTRANET_URL 时启用，
-    # 避免公开包硬编码内部 service endpoint。
+    # 2. 调 IAM 反查。公网失败时 fallback 内网 endpoint（内部账号只能内网访问时）。
+    # 内网地址优先用显式配置的 IAM_INTRANET_URL，未配置时用默认 iam.inner.api.ksyun.com。
+    # 该地址外部不可访问（内网专属），open_source_audit 白名单已放行，内部账号开箱即用。
     sdk_parts = _import_iam_sdk()
     if sdk_parts is None:
         return None
 
     host, scheme = _resolve_iam_endpoint()
     candidates = [(host, scheme)]
-    intranet_endpoint = _resolve_iam_intranet_endpoint()
-    if intranet_endpoint and intranet_endpoint not in candidates:
+    intranet_endpoint = _resolve_iam_intranet_endpoint() or ("iam.inner.api.ksyun.com", "http")
+    if intranet_endpoint not in candidates:
         candidates.append(intranet_endpoint)
 
     user_name: Optional[str] = None
