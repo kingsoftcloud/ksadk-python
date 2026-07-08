@@ -12,7 +12,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     env:
-      KSADK_WEB_VERSION: "0.2.16"
+      KSADK_WEB_VERSION: "0.2.18"
     steps:
       - uses: actions/checkout@v4
 
@@ -46,24 +46,13 @@ jobs:
         run: uv build
 
       - name: Run public release gate tests
-        run: |
-          uv run --extra dev pytest \
-            tests/test_open_source_audit.py \
-            tests/test_runtime_common_packaging.py \
-            tests/test_public_release_positioning.py \
-            tests/test_tracing_setup_otlp.py \
-            tests/test_check_publication_state.py \
-            tests/test_check_approval_record.py \
-            tests/test_markdown_repair.py \
-            tests/test_conversation_runtime.py \
-            tests/test_server_session_app.py \
-            -q
+        run: make public-test
 
       - name: Audit public repository candidate
         run: uv run --extra dev python scripts/open_source_audit.py --target public-repo
 
       - name: Build and audit public docs
-        run: make public-docs-build
+        run: make docs-site-build
 
       - name: Check package metadata
         run: uv run --extra dev python -m twine check dist/*

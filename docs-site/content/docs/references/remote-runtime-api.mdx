@@ -112,9 +112,9 @@ cancel 和 model listing。公开 API 客户端优先使用 OpenAI 兼容的 `/v
 
 | 分组 | 用途 | Actions |
 | --- | --- | --- |
-| 会话 Sessions | 创建、获取、列出、删除会话 | `CreateSession`、`GetSession`、`ListSessions`、`DeleteSession` |
+| 会话 Sessions | 创建、获取、列出、删除会话，读取投影后的聊天消息 | `CreateSession`、`GetSession`、`ListSessions`、`ListSessionMessages`、`DeleteSession` |
 | 运行 Runs | 调用或取消 Agent run、订阅事件 | `RunAgent`、`SubscribeRunEvents`、`CancelRun` |
-| 事件 Events | 列出 session 历史 events | `ListSessionEvents` |
+| 事件 Events | 列出 session 历史 events，支持增量续订与向前翻页 | `ListSessionEvents` |
 | 文件 Files | 上传、下载附件、workspace 文件、导出 archive | `UploadFile`、`AttachmentContent`、`ListWorkspaceFiles`、`AddWorkspaceFile`、`DeleteWorkspaceFile`、`GetWorkspaceFileContent`、`ExportWorkspaceZip` |
 | 模型 Models | 列出可用模型目录 | `ListAgentModels` |
 | UI Bootstrap | 获取 UI 渲染与能力探测所需 metadata | `GetAgentUiBootstrap` |
@@ -130,7 +130,7 @@ cancel 和 model listing。公开 API 客户端优先使用 OpenAI 兼容的 `/v
 <Steps>
 1. **探测能力**：先调用 `GetAgentUiBootstrap`，确认 `Capabilities.WorkspaceFiles`、`Capabilities.ResumeRun` 等。
 2. **创建会话**：`CreateSession`，拿到 `Session.SessionId`。
-3. **拉取历史**：`ListSessions` / `ListSessionEvents` 渲染侧栏与时间线。
+3. **拉取历史**：`ListSessions` 渲染侧栏，`ListSessionMessages` 渲染聊天历史；只有调试或原始时间线才直接读 `ListSessionEvents`。
 4. **发起运行**：`RunAgent`（前台或后台），用 `SubscribeRunEvents` 续订进度。
 5. **回收会话**：`DeleteSession` 释放持久化记录。
 </Steps>
@@ -179,6 +179,12 @@ cancel 和 model listing。公开 API 客户端优先使用 OpenAI 兼容的 `/v
       "LastPrompt": "",
       "ActiveInvocationId": "",
       "ActiveRunStatus": "",
+      "ActiveRunMode": "unknown",
+      "ActiveRunTrigger": "unknown",
+      "ActiveRunUpdatedAt": "",
+      "Model": null,
+      "ContextUsage": null,
+      "TokenUsage": null,
       "State": {},
       "CreatedAt": 1719900000.0,
       "UpdatedAt": 1719900000.0,
@@ -196,7 +202,12 @@ cancel 和 model listing。公开 API 客户端优先使用 OpenAI 兼容的 `/v
 | `Title` / `TitleSource` | 会话标题及其来源（`fallback_first_prompt`、`heuristic` 等） |
 | `Summary` | 运行时维护的会话摘要 |
 | `FirstPrompt` / `LastPrompt` | 截断后的首/末用户消息预览 |
-| `ActiveInvocationId` / `ActiveRunStatus` | 当前会话活跃 run 的 invocation 与状态 |
+| `ActiveInvocationId` / `ActiveRunStatus` | 当前会话活跃 run 的 invocation 与状态；读侧会把超时孤儿活跃态兜底显示为 `interrupted` |
+| `ActiveRunMode` / `ActiveRunTrigger` | 0.6.9+ run 状态双维度：`background` / `foreground` / `unknown` 与 `new_run` / `checkpoint_resume` / `approval_resume` / `unknown` |
+| `ActiveRunUpdatedAt` | 0.6.9+ active_run 自身更新时间，主要用于诊断；孤儿判定使用 session `UpdatedAt` 心跳 |
+| `Model` | 最近一次 run 的模型 metadata（如可用） |
+| `ContextUsage` | 0.6.9+ 最近一轮上下文窗口占用：`used_tokens`、`cached_tokens`、`context_window_tokens`、`percent` |
+| `TokenUsage` | 0.6.9+ 会话累计 token 消耗：`input_tokens`、`output_tokens`、`total_tokens`、`turns`、`last_response_id` 与明细字段 |
 | `State` | 会话状态 dict（已脱敏） |
 | `CreatedAt` / `UpdatedAt` / `Version` | 时间戳与版本号 |
 | `Continuity` | 可选：runner 适配器描述的连续性信息 |
@@ -619,7 +630,8 @@ data: [DONE]
 
 #### ListSessionEvents
 
-分页列出某 session 的历史 events，offset-based 分页。
+分页列出某 session 的历史 events。无游标时 `Offset` / `Limit` 表示从最新事件窗口向前分页；
+`AfterSeqId` 用于断线后增量读取，`BeforeSeqId` 用于向上翻更早历史。
 
 <Tabs>
 <Tab value="Request">
@@ -631,6 +643,8 @@ data: [DONE]
 | `SessionId` | string | 是 | 目标会话 id |
 | `Offset` | int | 否 | 0-based 偏移，缺省 `0` |
 | `Limit` | int | 否 | 每页大小，最小 `1` |
+| `AfterSeqId` | int | 否 | 0.6.9+ 返回 `SeqId > AfterSeqId` 的事件，用于重连补齐 |
+| `BeforeSeqId` | int | 否 | 0.6.9+ 返回 `SeqId < BeforeSeqId` 的事件，用于向前翻页 |
 
 ```json title="request.json"
 { "SessionId": "local-demo-session", "Offset": 0, "Limit": 50 }
@@ -649,7 +663,9 @@ data: [DONE]
     "Events": [ /* event payload，同 SubscribeRunEvents */ ],
     "Total": 128,
     "Offset": 0,
-    "Limit": 50
+    "Limit": 50,
+    "AfterSeqId": null,
+    "BeforeSeqId": null
   }
 }
 ```
@@ -661,6 +677,102 @@ data: [DONE]
 | `Total` | 该 session 的事件总数 |
 | `Offset` | 当前偏移（缺省回填 `0`） |
 | `Limit` | 当前页大小（未传时回填为实际返回数） |
+| `AfterSeqId` / `BeforeSeqId` | 请求中的 seq 游标原样回填；二者语义相反，不应混用 |
+
+</Tab>
+</Tabs>
+
+#### ListSessionMessages
+
+把原始 event log 投影为前端可直接渲染的聊天消息列表。它会在服务端完成
+assistant snapshot 去重、reasoning 归并、tool / approval 配对和附件规范化，避免客户端
+从 `ListSessionEvents` 自行筛消息。
+
+<Tabs>
+<Tab value="Request">
+
+`POST /agentengine/api/v1/ListSessionMessages`：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `AgentId` | string | 否 | 传入时 server 调 runtime `ListSessionEvents` 再统一投影；不传则 hosted 直连 session store |
+| `SessionId` | string | 是 | 目标会话 id |
+| `Limit` | int | 否 | 返回消息条数上限，默认 `50`，范围 `1..200` |
+| `AfterSeqId` | int | 否 | 返回 `SeqId > AfterSeqId` 的增量消息；用于重连补齐，不截断到 `Limit` |
+| `BeforeSeqId` | int | 否 | 返回 `SeqId < BeforeSeqId` 之前的最新一页消息；用于向上加载更早历史 |
+| `IncludeReasoning` | bool | 否 | 是否在 assistant 消息中返回 `Reasoning[]` |
+| `IncludeToolEvents` | bool | 否 | 是否在 assistant 消息中返回 `ToolEvents[]` |
+| `IncludeAttachments` | bool | 否 | 是否在 user 消息中返回 `Attachments[]`，默认 `true` |
+
+```json title="request.json"
+{
+  "SessionId": "local-demo-session",
+  "Limit": 50,
+  "IncludeAttachments": true
+}
+```
+
+</Tab>
+<Tab value="Response">
+
+```json title="response.json"
+{
+  "Code": 0,
+  "Message": "Success",
+  "RequestId": "req_abc123",
+  "Action": "ListSessionMessages",
+  "Data": {
+    "SessionId": "local-demo-session",
+    "Messages": [
+      {
+        "MessageId": "evt_user_1",
+        "Role": "user",
+        "Content": {"text": "总结这个文件"},
+        "SeqId": 21,
+        "InvocationId": "inv_demo_001",
+        "Timestamp": 1719900001.0,
+        "Attachments": [
+          {
+            "file_uri": "ae-upload://abc123_report.pdf",
+            "name": "report.pdf",
+            "mime": "application/pdf",
+            "size": 204800,
+            "url": "/agentengine/api/v1/AttachmentContent?FileUri=ae-upload%3A%2F%2Fabc123_report.pdf",
+            "is_image": false
+          }
+        ]
+      },
+      {
+        "MessageId": "evt_assistant_1",
+        "Role": "assistant",
+        "Content": {"text": "文件摘要如下..."},
+        "SeqId": 24,
+        "InvocationId": "inv_demo_001",
+        "ResponseId": "resp_a1b2c3",
+        "TraceId": "trace_abc",
+        "RootSpanId": "span_root"
+      }
+    ],
+    "LatestSeqId": 24,
+    "HasMore": true,
+    "NextCursor": 20
+  }
+}
+```
+
+分页语义：
+
+| 字段 | 说明 |
+| --- | --- |
+| `LatestSeqId` | 本页最后一条消息的 `SeqId`；可作为 `SubscribeRunEvents(AfterSeqId=...)` 的续订起点 |
+| `HasMore` | 是否还有更早消息可取 |
+| `NextCursor` | 向前翻页游标；下一次请求传 `BeforeSeqId=NextCursor` |
+
+<Callout type="info" title="重连判断">
+  `ListSessionMessages` 只负责历史消息投影。是否需要重连运行中的 SSE，应读取
+  `GetSession.ActiveRunStatus` / `ActiveInvocationId`，再用
+  `SubscribeRunEvents(AfterSeqId=LatestSeqId)` 续订。
+</Callout>
 
 </Tab>
 </Tabs>

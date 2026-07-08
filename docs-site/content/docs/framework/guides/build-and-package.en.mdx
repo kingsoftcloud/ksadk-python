@@ -9,7 +9,7 @@ itself.
 
 ```bash
 uv run --extra dev python -m twine check dist/*
-make open-source-review
+make public-review
 ```
 
 ## Web UI Artifacts
@@ -69,7 +69,7 @@ The assertions guarantee:
 
 <Callout type="info" title="Match the official release gate locally">
 `make public-preflight` layers `public-audit`, `public-test`, and
-`public-docs-build` on top of `public-build-check`. It is the mandatory local
+`docs-site-build` on top of `public-build-check`. It is the mandatory local
 gate before pushing to GitHub, PyPI, or a Release.
 </Callout>
 

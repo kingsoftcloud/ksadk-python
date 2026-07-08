@@ -17,22 +17,21 @@ pytest
 本地构建文档：
 
 ```bash
-make public-docs-build
-make public-docs-serve
+make docs-site-build
 ```
 
 运行开源检查：
 
 ```bash
 make open-source-audit
-make public-docs-audit
+make public-audit
 ```
 
 如果变更影响 packaging、公开文档、release metadata 或仓库布局，请在请求 release
 approval 前运行更完整的审核目标：
 
 ```bash
-make open-source-review
+make public-preflight
 ```
 
 ## 公开 CI 期望
@@ -42,7 +41,7 @@ make open-source-review
 提交公开 PR 前：
 
 - 运行变更区域的 focused tests。
-- 修改 `public-docs/` 或 `mkdocs.yml` 时运行文档构建。
+- 修改 `docs-site/` 时运行 `make docs-site-build`，需要本地预览时运行 `make docs-site-dev`。
 - 命令行为变化时更新 CLI 文档。
 - packaging 或公开 API 变化时更新 release notes。
 - 示例应保持本地优先，除非某个 hosted feature 已明确批准公开。
@@ -56,7 +55,7 @@ make open-source-review
 | ASGI service tests | 不启动真实网络 server 验证 FastAPI routes 和 session events | service/session pytest 文件 |
 | HTTP protocol E2E | 验证 `/v1/responses`、`/v1/chat/completions`、upload 和本地 Web UI action payload | OpenAI protocol E2E tests |
 | browser E2E | Chromium 可用时验证构建后的 UI 行为 | browser-tagged E2E tests |
-| open-source audits | 验证公开 tree、docs、Pages artifact、sdist、wheel 和 clean export 边界 | `make open-source-review` |
+| open-source audits | 验证公开 tree、docs、Pages artifact、sdist、wheel 和 clean export 边界 | `make public-preflight` |
 
 当变更影响协议形态、附件处理、session event 或本地 Web UI payload 时，优先写一个
 跨越真实客户端边界的测试。
@@ -78,7 +77,7 @@ make open-source-review
 - 真实 token 或客户数据。
 - 把生成的 `.zread/` 输出当作发布源引用。
 
-本地 zread wiki 输出可以作为工程笔记来源，但公开文档应是 `public-docs/` 下经过整理的
+本地 zread wiki 输出可以作为工程笔记来源，但公开文档应是 `docs-site/` 下经过整理的
 Markdown。不要发布生成的 wiki 目录，也不要让公开 CI 依赖它。
 
 ## 开源审核边界

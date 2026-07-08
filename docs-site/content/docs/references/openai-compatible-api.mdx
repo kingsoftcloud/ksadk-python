@@ -113,8 +113,8 @@ checkpoint resume 与 approval payload。
 | `status` | compatible | `completed` / `failed` / `incomplete` |
 | `model` | compatible | 本次请求使用的模型或 Agent |
 | `output` | compatible | output item，通常是 assistant message |
-| `metadata` | compatible | 调用方 metadata |
-| `usage` | compatible-shaped | 可用时的 usage 信息 |
+| `metadata` | compatible | 调用方 metadata；KsADK 0.6.9+ 会在可用时追加 `metadata.last_usage` |
+| `usage` | compatible-shaped | 可用时的本轮累计 usage，用于统计本次响应真实消耗 |
 | `output_text` | KsADK 扩展 | 拼接后的便捷文本 |
 | `session_id` | KsADK 扩展 | 本地 session id |
 
@@ -134,12 +134,32 @@ checkpoint resume 与 approval payload。
       ]
     }
   ],
+  "usage": {
+    "input_tokens": 1250,
+    "output_tokens": 180,
+    "total_tokens": 1430,
+    "input_token_details": {"cached": 900}
+  },
+  "metadata": {
+    "last_usage": {
+      "input_tokens": 980,
+      "output_tokens": 180,
+      "total_tokens": 1160,
+      "input_token_details": {"cached": 700}
+    }
+  },
   "output_text": "This agent can...",
   "session_id": "local-demo-session"
 }
 ```
 
 追求广泛兼容的消费者应优先读取 `output`，把 `output_text` 视为便捷字段。
+
+<Callout type="info" title="usage 与 last_usage">
+  `usage` 保持 OpenAI 风格的本轮累计 usage（agent loop 内多次 LLM 调用会累加）。
+  `metadata.last_usage` 是 KsADK 扩展，表示最后一次 LLM 调用的 usage 快照，用于
+  上层计算当前上下文窗口占用；它不是会话累计值。
+</Callout>
 
 </Tab>
 <Tab value="Stream">

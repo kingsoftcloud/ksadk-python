@@ -57,6 +57,20 @@ OPENAI_MODEL_NAME=my-model
 | `KSADK_UI_BUNDLE_PATH` | 自定义 UI 静态 bundle 相对项目路径；本地默认自动探测 `research-ui/dist`（0.6.7） |
 | `KSYUN_REGION` | 云端 action 和部分 SDK client 使用的区域 |
 
+## 云账号身份解析
+
+| 变量 | 用途 |
+| --- | --- |
+| `KSYUN_IAM_ENDPOINT` | 可选：覆盖 IAM 公网 endpoint；未配置时使用 `iam.api.ksyun.com` |
+| `KSYUN_IAM_INTRANET_URL` | 可选：覆盖 IAM 内网 endpoint fallback；未配置时使用默认 `iam.inner.api.ksyun.com` |
+| `IAM_INTRANET_URL` | `KSYUN_IAM_INTRANET_URL` 的兼容别名 |
+
+<Callout type="info">
+  当公网 IAM 返回“inner account can only access through intranet”这类错误时，
+  运行时会尝试内网 endpoint。外部环境通常不会命中该分支；内部环境如需覆盖地址，
+  可设置 `KSYUN_IAM_INTRANET_URL` 或 `IAM_INTRANET_URL`。
+</Callout>
+
 ## 会话存储
 
 | 变量 | 用途 |
@@ -269,6 +283,7 @@ KSADK_MCP_SERVERS='[{"name":"docs","url":"http://127.0.0.1:9000/mcp"}]'
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | traces 专用 OTLP HTTP endpoint，优先于通用 endpoint |
 | `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` | traces 专用 OTLP protocol，优先于通用 protocol |
 | `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | traces 专用 OTLP HTTP headers，优先于通用 headers，可能包含鉴权信息 |
+| `KSADK_OTLP_MAX_EXPORT_BATCH_SIZE` | OTLP 单次 export 最大 span 数，默认 `64`，用于避免 collector 请求过大 |
 | `LANGFUSE_PUBLIC_KEY` | 兼容旧 Langfuse tracing 自动配置 |
 | `LANGFUSE_SECRET_KEY` | Langfuse secret |
 | `LANGFUSE_BASE_URL` | Langfuse base URL |

@@ -117,9 +117,9 @@ All action paths live under `POST /agentengine/api/v1/*` (download surfaces are
 
 | Group | Purpose | Actions |
 | --- | --- | --- |
-| Sessions | Create, get, list, delete sessions | `CreateSession`, `GetSession`, `ListSessions`, `DeleteSession` |
+| Sessions | Create, get, list, delete sessions, read projected chat messages | `CreateSession`, `GetSession`, `ListSessions`, `ListSessionMessages`, `DeleteSession` |
 | Runs | Invoke or cancel a run, subscribe to events | `RunAgent`, `SubscribeRunEvents`, `CancelRun` |
-| Events | List historical session events | `ListSessionEvents` |
+| Events | List historical session events with incremental resume and older-page cursors | `ListSessionEvents` |
 | Files | Upload, download attachments, workspace files, export archive | `UploadFile`, `AttachmentContent`, `ListWorkspaceFiles`, `AddWorkspaceFile`, `DeleteWorkspaceFile`, `GetWorkspaceFileContent`, `ExportWorkspaceZip` |
 | Models | List the available model catalog | `ListAgentModels` |
 | UI Bootstrap | Bootstrap metadata for UI rendering and capability discovery | `GetAgentUiBootstrap` |
@@ -136,7 +136,7 @@ All action paths live under `POST /agentengine/api/v1/*` (download surfaces are
 <Steps>
 1. **Probe capabilities**: call `GetAgentUiBootstrap` first to check `Capabilities.WorkspaceFiles`, `Capabilities.ResumeRun`, etc.
 2. **Create a session**: `CreateSession`, take `Session.SessionId`.
-3. **Pull history**: `ListSessions` / `ListSessionEvents` to render the sidebar and timeline.
+3. **Pull history**: `ListSessions` for the sidebar and `ListSessionMessages` for chat history; use `ListSessionEvents` directly only for debugging or raw timelines.
 4. **Start a run**: `RunAgent` (foreground or background), subscribe to progress via `SubscribeRunEvents`.
 5. **Reclaim a session**: `DeleteSession` to release persisted records.
 </Steps>
@@ -185,6 +185,12 @@ Creates (or reuses) a session. When `SessionId` is omitted, the runtime generate
       "LastPrompt": "",
       "ActiveInvocationId": "",
       "ActiveRunStatus": "",
+      "ActiveRunMode": "unknown",
+      "ActiveRunTrigger": "unknown",
+      "ActiveRunUpdatedAt": "",
+      "Model": null,
+      "ContextUsage": null,
+      "TokenUsage": null,
       "State": {},
       "CreatedAt": 1719900000.0,
       "UpdatedAt": 1719900000.0,
@@ -202,7 +208,12 @@ Creates (or reuses) a session. When `SessionId` is omitted, the runtime generate
 | `Title` / `TitleSource` | Session title and its source (`fallback_first_prompt`, `heuristic`, etc.) |
 | `Summary` | Runtime-maintained session summary |
 | `FirstPrompt` / `LastPrompt` | Truncated first/last user message preview |
-| `ActiveInvocationId` / `ActiveRunStatus` | Active run invocation and status for this session |
+| `ActiveInvocationId` / `ActiveRunStatus` | Active run invocation and status for this session; stale orphaned active runs are read as `interrupted` |
+| `ActiveRunMode` / `ActiveRunTrigger` | 0.6.9+ two independent run dimensions: `background` / `foreground` / `unknown` and `new_run` / `checkpoint_resume` / `approval_resume` / `unknown` |
+| `ActiveRunUpdatedAt` | 0.6.9+ timestamp from `active_run` itself, mainly for diagnostics; orphan detection uses the session `UpdatedAt` heartbeat |
+| `Model` | Model metadata from the most recent run when available |
+| `ContextUsage` | 0.6.9+ latest-turn context-window usage: `used_tokens`, `cached_tokens`, `context_window_tokens`, `percent` |
+| `TokenUsage` | 0.6.9+ cumulative session token usage: `input_tokens`, `output_tokens`, `total_tokens`, `turns`, `last_response_id`, and detail fields |
 | `State` | Session state dict (sanitized) |
 | `CreatedAt` / `UpdatedAt` / `Version` | Timestamps and version |
 | `Continuity` | Optional: continuity info from the runner adapter |
@@ -632,7 +643,9 @@ Request cancellation of an in-flight run (both detached stream and runner channe
 
 #### ListSessionEvents
 
-Paginated list of historical events for a session, offset-based pagination.
+Paginated list of historical events for a session. Without a seq cursor,
+`Offset` / `Limit` page backward from the latest event window. `AfterSeqId` is
+for reconnect/incremental reads; `BeforeSeqId` is for loading older history.
 
 <Tabs>
 <Tab value="Request">
@@ -644,6 +657,8 @@ Paginated list of historical events for a session, offset-based pagination.
 | `SessionId` | string | yes | Target session id |
 | `Offset` | int | no | 0-based offset, default `0` |
 | `Limit` | int | no | Page size, min `1` |
+| `AfterSeqId` | int | no | 0.6.9+ return events with `SeqId > AfterSeqId` for reconnect catch-up |
+| `BeforeSeqId` | int | no | 0.6.9+ return events with `SeqId < BeforeSeqId` for older pages |
 
 ```json title="request.json"
 { "SessionId": "local-demo-session", "Offset": 0, "Limit": 50 }
@@ -662,7 +677,9 @@ Paginated list of historical events for a session, offset-based pagination.
     "Events": [ /* event payload, same as SubscribeRunEvents */ ],
     "Total": 128,
     "Offset": 0,
-    "Limit": 50
+    "Limit": 50,
+    "AfterSeqId": null,
+    "BeforeSeqId": null
   }
 }
 ```
@@ -674,6 +691,103 @@ Pagination fields:
 | `Total` | Total event count for this session |
 | `Offset` | Current offset (defaults to `0`) |
 | `Limit` | Current page size (falls back to the returned count when not sent) |
+| `AfterSeqId` / `BeforeSeqId` | Echoed seq cursors; they move in opposite directions and should not be mixed |
+
+</Tab>
+</Tabs>
+
+#### ListSessionMessages
+
+Project the raw event log into chat messages that the Web UI can render
+directly. The server handles assistant snapshot de-duplication, reasoning
+merging, tool / approval pairing, and attachment normalization so clients do not
+need to reconstruct messages from `ListSessionEvents`.
+
+<Tabs>
+<Tab value="Request">
+
+`POST /agentengine/api/v1/ListSessionMessages`:
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `AgentId` | string | no | When present, the server fetches runtime `ListSessionEvents` and projects them in one place; when omitted, hosted reads the local session store |
+| `SessionId` | string | yes | Target session id |
+| `Limit` | int | no | Maximum messages to return, default `50`, range `1..200` |
+| `AfterSeqId` | int | no | Return incremental messages with `SeqId > AfterSeqId`; used for reconnect catch-up and not truncated to `Limit` |
+| `BeforeSeqId` | int | no | Return the latest page before `SeqId < BeforeSeqId`; used for loading older history |
+| `IncludeReasoning` | bool | no | Include `Reasoning[]` inside assistant messages |
+| `IncludeToolEvents` | bool | no | Include `ToolEvents[]` inside assistant messages |
+| `IncludeAttachments` | bool | no | Include `Attachments[]` on user messages, default `true` |
+
+```json title="request.json"
+{
+  "SessionId": "local-demo-session",
+  "Limit": 50,
+  "IncludeAttachments": true
+}
+```
+
+</Tab>
+<Tab value="Response">
+
+```json title="response.json"
+{
+  "Code": 0,
+  "Message": "Success",
+  "RequestId": "req_abc123",
+  "Action": "ListSessionMessages",
+  "Data": {
+    "SessionId": "local-demo-session",
+    "Messages": [
+      {
+        "MessageId": "evt_user_1",
+        "Role": "user",
+        "Content": {"text": "Summarize this file"},
+        "SeqId": 21,
+        "InvocationId": "inv_demo_001",
+        "Timestamp": 1719900001.0,
+        "Attachments": [
+          {
+            "file_uri": "ae-upload://abc123_report.pdf",
+            "name": "report.pdf",
+            "mime": "application/pdf",
+            "size": 204800,
+            "url": "/agentengine/api/v1/AttachmentContent?FileUri=ae-upload%3A%2F%2Fabc123_report.pdf",
+            "is_image": false
+          }
+        ]
+      },
+      {
+        "MessageId": "evt_assistant_1",
+        "Role": "assistant",
+        "Content": {"text": "Here is the summary..."},
+        "SeqId": 24,
+        "InvocationId": "inv_demo_001",
+        "ResponseId": "resp_a1b2c3",
+        "TraceId": "trace_abc",
+        "RootSpanId": "span_root"
+      }
+    ],
+    "LatestSeqId": 24,
+    "HasMore": true,
+    "NextCursor": 20
+  }
+}
+```
+
+Pagination fields:
+
+| Field | Notes |
+| --- | --- |
+| `LatestSeqId` | `SeqId` of the last message in the page; pass it to `SubscribeRunEvents(AfterSeqId=...)` as the reconnect starting point |
+| `HasMore` | Whether older messages remain |
+| `NextCursor` | Older-page cursor; pass it as `BeforeSeqId=NextCursor` on the next request |
+
+<Callout type="info" title="Reconnect detection">
+  `ListSessionMessages` only projects historical messages. To decide whether an
+  SSE stream should reconnect, read `GetSession.ActiveRunStatus` /
+  `ActiveInvocationId`, then call `SubscribeRunEvents(AfterSeqId=LatestSeqId)`.
+</Callout>
 
 </Tab>
 </Tabs>

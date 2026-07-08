@@ -117,6 +117,21 @@ def test_public_repo_audit_allows_curated_root_ai_guidance_files():
     assert result.violations == []
 
 
+def test_public_repo_audit_allows_curated_environment_reference_doc():
+    audit = _load_audit_module()
+
+    result = audit.audit_paths(
+        "public-repo",
+        [
+            "docs/maintainer-approval-record.md",
+            "docs/reference/ksadk环境变量参考.md",
+        ],
+    )
+
+    assert result.ok is True
+    assert result.violations == []
+
+
 def test_wheel_audit_blocks_hosted_ui_bundle_and_zread_snapshot():
     audit = _load_audit_module()
 

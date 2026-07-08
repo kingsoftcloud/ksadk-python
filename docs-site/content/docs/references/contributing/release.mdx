@@ -7,8 +7,7 @@ title: 发布流程
 ## 发布前
 
 ```bash
-make open-source-review
-make open-source-review-bundle
+make public-review
 make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.6.7
 ```
 
@@ -48,7 +47,7 @@ workflow 执行步骤如下：
    通过 `workflow_dispatch` 触发时可传 `ksadk_web_version` 输入指定版本
    （如 `1.2.3`）。
 2. **发布前预检**：`make public-preflight`，串起 `public-audit`、
-   `public-test`、`public-docs-build` 以及 `public-build-check`。
+   `public-test`、`docs-site-build` 以及 `public-build-check`。
 3. **构建与内容检查**：`public-build-check` 内执行 `uv build` 并
    `twine check dist/*`，校验 wheel 与 sdist 元数据。
 4. **OIDC 上传**：用 `pypa/gh-action-pypi-publish` 通过 Trusted Publishing
