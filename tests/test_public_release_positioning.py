@@ -115,6 +115,25 @@ def test_public_readme_docs_links_match_fumadocs_routes():
             assert candidate.exists() or index_candidate.exists(), url
 
 
+def test_legacy_deploy_and_examples_are_not_tracked_in_source_repo():
+    if not (ROOT / ".git").exists():
+        return
+
+    tracked = subprocess.run(
+        ["git", "ls-files", "deploy", "examples"],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    ).stdout
+    makefile = _read("Makefile")
+
+    assert tracked == ""
+    assert "-f deploy/hermes/Dockerfile" not in makefile
+    assert "-f deploy/openclaw/Dockerfile" not in makefile
+    assert "-f deploy/openclaw-user-template/Dockerfile" not in makefile
+
+
 def test_public_metadata_uses_runtime_platform_positioning():
     pyproject = tomllib.loads(_read("pyproject.toml"))
     init_text = _read("ksadk/__init__.py")

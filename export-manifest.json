@@ -1,11 +1,10 @@
 {
-  "generatedAt": "2026-07-08T03:54:48.013854+00:00",
+  "generatedAt": "2026-07-08T04:05:37.590232+00:00",
   "targetRepository": "https://github.com/kingsoftcloud/ksadk-python",
   "documentation": "https://kingsoftcloud.github.io/ksadk-python/",
-  "exportPathCount": 554,
-  "excludedPathCount": 202,
+  "exportPathCount": 555,
+  "excludedPathCount": 201,
   "excludedPaths": [
-    ".gitleaks.toml",
     "docs/Agent 开发者上下文接入指南.md",
     "docs/DeepAgents说明.md",
     "docs/archive/kb-memory/knowledge_base_integration_plan.md",
@@ -224,6 +223,7 @@
       ".github/workflows/release-check.yml",
       ".github/workflows/secret-patterns.yml",
       ".gitignore",
+      ".gitleaks.toml",
       "AGENTS.md",
       "CHANGELOG.md",
       "CLAUDE.md",
