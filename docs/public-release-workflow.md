@@ -2,189 +2,183 @@
 
 本文档定义内部 `master` 与 GitHub 公开 `main` 的长期维护方式。它是发布和公开同步的执行依据。
 
-## 分支职责
+## 当前模型
 
-| 分支 / 工作区 | 职责 | 允许内容 | 禁止内容 |
-| --- | --- | --- | --- |
-| `master` | 内部开发主干 | 内部文档、内部部署适配、ezone 流程、平台联调材料 | 真实凭证、真实 kubeconfig、未脱敏 token |
-| `main` | GitHub 公开主干 | 可公开源码、公开 README、公开 docs、公开 CI、公开 release 资产 | 内部运行手册、私有部署资产、内部绝对路径、未脱敏示例 |
-| `release/public-x.y.z` | 公开候选分支 | 从 `master` 挑选的公开变更、脱敏修正、发布文档 | 未审核的大范围内部改动 |
-| `.worktrees/public-main` | 长期公开同步工作树 | 公开候选、公开 `main` 检查、发布前验证 | 日常内部开发 |
+`master` 是内部源主干，GitHub `main` 是公开发布主干。两者不应该长期维护两套功能代码或两套发布门禁。公开版本由内部 `master` 的已审核状态通过 clean export 生成，导出脚本只移除不适合公开的材料。
 
-公开 `main` 工作树可以长期保留。它的定位是发布工作区，不是第二条开发主线。
+公开 `main` 应包含：
 
-## 基本规则
+- 公开 SDK 源码：`ksadk/`、`ksadk_runtime_common/`。
+- 公开构建与发布门禁：`Makefile`、`scripts/open_source_audit.py`、`scripts/check_*`、`.github/workflows/*`。
+- 公开文档站：`docs-site/`。
+- 公开 README、CHANGELOG、LICENSE、CONTRIBUTING、AGENTS、CLAUDE。
+- 公开发布所需的最小测试集。
 
-1. 不直接 `merge master -> main`。
-2. 公开变更从 `master` 通过 cherry-pick、patch 或 clean export 进入 `release/public-x.y.z`。
-3. 公开候选先推内部 ezone 审核，再推 GitHub `main`。
-4. 公开 release tag、GitHub Release 资产、PyPI、别名包、Pages 必须基于 GitHub `main` 上已审核同步后的公开提交。
-5. 发布动作必须有用户明确批准。
-6. `.pypirc` 不得放在仓库根目录。PyPI 凭证只允许来自 `~/.pypirc`、环境变量或 CI Secret。
-7. 每次公开 GitHub Release 对应的 `main` 提交都必须打 tag 留痕。
+内部 `master` 可以额外包含：
 
-## 推荐目录
+- 内部 docs、archive、runbook、设计草稿和预览材料。
+- 内部 agent skills / operator playbooks。
+- 内部验证脚本、E2E、长任务和平台集成测试。
+- 内部部署资产、临时缓存、zread/site/build 产物等。
 
-```text
-ksadk-python/
-  master 工作区
-  .worktrees/
-    public-main/              # 长期保留的公开 main / 公开候选工作树
-```
+因此不能简单理解为“只差 docs 和 skills 两个目录”。准确说法是：**公开导出的源码和发布门禁必须与 `master` 的公开子集一致；非公开材料由导出脚本排除**。
 
-创建公开工作树：
+## 硬性规则
 
-```bash
-git fetch github main
-git worktree add .worktrees/public-main github/main
-```
+1. 不直接 `merge master -> main`，也不把内部 `master` 直接 push 到 GitHub。
+2. 公开同步必须走 clean export candidate 或等价的公开候选分支。
+3. 公开候选必须先通过 `make public-preflight`。
+4. npm、PyPI、GitHub Pages 都必须由可信 GitHub workflow 发布；不使用本地 `npm publish`、本地 `twine upload` 或手工上传 Pages。
+5. GitHub Release、PyPI 包、Pages 文档必须能追溯到同一个已审核 GitHub `main` 提交。
+6. `.pypirc`、私有 registry 凭证、kubeconfig、真实 API key、临时 token 不得进入仓库。
 
-如果本地没有 `github` remote，先添加：
+## 准备 ksadk-web
+
+`ksadk-web` 是共享 UI 源头。需要新 UI 时，先在 `agentengine/ksadk-web` 发 npm 版本，再让 `ksadk-python` 和 `agentengine-hosted-ui` 消费 registry 里的固定版本。
+
+本地只做验证：
 
 ```bash
-git remote add github git@github.com:kingsoftcloud/ksadk-python.git
-git fetch github
+cd agentengine/ksadk-web
+npm test
+node --test tests/*.test.mjs
+npm run build:all
+npm pack --dry-run --access public
 ```
 
-## 日常开发
+正式 npm 发布只走 GitHub workflow：
 
-日常开发只在内部 `master` 或内部 feature 分支进行。
+- 推送 `ksadk-web` 代码到 GitHub `main`。
+- 创建 GitHub Release 或手动触发 `publish-npm.yml`。
+- workflow 使用 `npm publish --provenance` 发布。
+- 发布后用 `npm view @kingsoftcloud/ksadk-web@<version>` 确认 registry 可见。
+
+## 准备内部 master
+
+在 `agentengine/ksadk-python` 内部主干完成代码、文档、版本和审批记录：
 
 ```bash
 git checkout master
-git pull --ff-only origin master
-```
-
-完成变更后先跑相关验证：
-
-```bash
+git status --short --branch
 uv run pytest <相关测试>
 git diff --check
 ```
 
-涉及部署、鉴权、环境变量、发布路径、CLI payload 的改动，必须补对应测试和文档。
+如果本次需要绑定新的 UI 版本，确认 `KSADK_WEB_VERSION` 默认值、README、docs-site、approval record 都引用同一个 npm 版本。
 
-## 公开同步
-
-从内部主干准备公开候选：
+更新审批记录：
 
 ```bash
-git checkout master
-git pull --ff-only origin master
-make public-sync-check
+uv run python scripts/check_approval_record.py \
+  --expected-current-commit <reviewed-internal-master-commit>
+uv run pytest tests/test_check_approval_record.py tests/test_public_release_positioning.py -q
+```
 
+审批记录必须写清：
+
+- reviewed internal `ksadk-python` commit。
+- `ksadk-web` npm version 和 source commit。
+- 已执行的 public preflight / docs build / package audit 证据。
+- Maintainer、Security reviewer、Release owner sign-off。
+
+## 生成公开候选
+
+公开候选从内部 master clean export 生成：
+
+```bash
+cd agentengine/ksadk-python
+rm -rf /tmp/ksadk-python-export-candidate-<version>
+python scripts/prepare_ksadk_python_export.py \
+  --output-dir /tmp/ksadk-python-export-candidate-<version> \
+  --summary
+python3 scripts/open_source_audit.py \
+  --target public-repo \
+  --root /tmp/ksadk-python-export-candidate-<version>
+```
+
+同步到长期 public worktree：
+
+```bash
+git fetch github main
+git worktree add .worktrees/public-main github/main  # 首次需要
+rsync -a --delete --exclude .git \
+  /tmp/ksadk-python-export-candidate-<version>/ \
+  .worktrees/public-main/
+```
+
+`.worktrees/public-main` 是公开候选工作区，不做日常内部开发。
+
+## 公开候选门禁
+
+在 public worktree 运行完整门禁：
+
+```bash
 cd .worktrees/public-main
-git fetch github main
-git checkout -B release/public-0.6.2 github/main
-```
-
-同步变更时优先选择最小公开补丁：
-
-```bash
-git cherry-pick <commit>
-```
-
-如果内部 commit 包含不适合公开的文件，改用 patch 或 clean export，只带公开安全内容。
-
-## 发布前门禁
-
-公开候选分支上必须运行：
-
-```bash
 make public-preflight
 ```
 
-该目标至少覆盖：
+该门禁至少覆盖：
 
-- 工作区与分支策略检查。
-- `.pypirc`、kubeconfig、私钥、token pattern 等安全围栏。
-- 公开路径 denylist 检查。
-- `uv run pytest`。
-- `make docs-site-build`（Fumadocs 静态站点，GitHub Pages 同源构建）。
-- `uv build`。
+- PyPI 版本未重复发布。
+- secret 和公开路径 audit。
+- 从 npm registry 同步 `@kingsoftcloud/ksadk-web` 静态资源。
+- 公开测试集。
+- `docs-site` Fumadocs 静态构建。
+- wheel/sdist 构建。
 - `twine check dist/*`。
+- wheel/sdist 文件列表 audit。
 
-失败即停止发布。不要用“只改了文档”跳过门禁；可以在最终说明里明确某项因环境缺失无法运行，但不能把未验证状态说成已通过。
+失败即停止，不创建 Release，不触发 PyPI，不部署 Pages。
 
-## 内部 ezone 审核
+## 同步 GitHub main
 
-公开候选通过本地门禁后，先推内部 ezone 审核分支：
+公开候选通过门禁后，通过 GitHub PR 或受保护 main 策略合入 GitHub `main`。推荐路径：
 
-```bash
-git push origin release/public-0.6.2
-```
+1. 在 `.worktrees/public-main` 提交候选。
+2. 推送到 GitHub release candidate 分支。
+3. 开 PR 到 GitHub `main`。
+4. 等 CI / release-check / docs-site build 通过并完成 review。
+5. 合并 PR，使 GitHub `main` 成为唯一公开发布源。
 
-审核材料至少包含：
+如果维护者明确选择 fast-forward 或直接更新 `main`，也必须满足同样门禁和 review 条件。不要从内部 `master` 创建公开 release 资产。
 
-- diff 摘要。
-- `make public-preflight` 输出摘要。
-- 是否涉及版本号、PyPI、GitHub Release、Pages。
-- 是否同步别名包 `agentengine-sdk-python`。
-- 不能运行的 E2E 及原因。
+## Tag 与 GitHub Release
 
-内部审核通过前，不得推 GitHub `main`、创建 GitHub Release、上传 PyPI 或更新 Pages。
-
-## GitHub 同步
-
-审核通过后：
-
-```bash
-git push github release/public-0.6.2:main
-```
-
-推送后检查 GitHub Actions、Pages 和仓库状态：
-
-```bash
-make public-publish-check
-```
-
-如果 `scripts/check_publication_state.py` 存在，优先使用脚本输出；否则执行 Makefile 内置基础 HTTP 检查。
-
-## 公开 release tag
-
-公开候选分支只用于门禁和内部审核。内部审核通过并推送到 GitHub `main` 后，先确认本地 `main` 与 `github/main` 指向同一个已审核公开提交，再创建 tag：
+tag 必须指向 GitHub `main` 上已审核、已合入的公开提交：
 
 ```bash
 git fetch github main
-git checkout main
+git checkout .worktrees/public-main
 git pull --ff-only github main
-make public-release-tag V=0.6.2
+make public-release-tag V=<version>
+git push github v<version>
 ```
 
-默认 tag 名是 `v0.6.2`。如果需要单独的公开留痕 tag，可以覆盖：
+创建 GitHub Release 时使用该 tag。发布说明应引用：
+
+- GitHub `main` commit。
+- tag。
+- `ksadk-web` npm version。
+- `make public-preflight` 结果。
+- PyPI/Pages workflow run。
+
+## PyPI 与 GitHub Pages
+
+正式发布只走 `.github/workflows/publish-pypi.yml`：
+
+- 触发条件：GitHub Release `published` 或手动 `workflow_dispatch`。
+- 输入：`ksadk_web_version` 和 `approved_source_commit`。
+- workflow 先同步 npm registry 中的 UI 静态资源。
+- workflow 再运行 `make public-preflight`。
+- workflow 再运行 `make public-publish-gate`，校验 approval record。
+- PyPI 上传使用 OIDC Trusted Publishing。
+- GitHub Pages 由同一个 workflow 构建 `docs-site` 并部署。
+
+发布后核对：
 
 ```bash
-make public-release-tag V=0.6.2 PUBLIC_RELEASE_TAG=public-release-v0.6.2
-```
-
-确认 tag 指向 GitHub `main` 上的公开提交后，再推送 tag：
-
-```bash
-git push github v0.6.2
-```
-
-GitHub Release 资产、PyPI 版本、别名包版本和文档站应能通过该 tag 追溯到同一个 GitHub `main` 公开提交。不要从内部 `master` 或未同步的 `release/public-x.y.z` 候选分支直接创建公开 release 资产。
-
-## PyPI 与 GitHub Release
-
-发布前确认：
-
-```bash
-git status --short --branch
-make public-preflight
-uv run python -m twine check dist/*
-```
-
-正式 PyPI 发布默认走 `.github/workflows/publish-pypi.yml`：
-
-- GitHub Release `published` 或手动 `workflow_dispatch` 触发。
-- workflow 先运行 `make sync-ksadk-web-static`，默认从 `@kingsoftcloud/ksadk-web@latest` 同步 `dist-ksadk` 到 `ksadk/server/static`。
-- workflow 再运行 `make public-preflight`，最后通过 PyPI Trusted Publishing/OIDC 上传。
-- 正常路径不配置 `PYPI_API_TOKEN`；如需应急本地发布，必须先明确记录原因并使用 Makefile 的 `make publish` / `make publish-test`。
-
-发布 `ksadk` 后检查：
-
-```bash
+python scripts/check_publication_state.py --phase post-publish --version <version>
+npm view @kingsoftcloud/ksadk-web@<web-version> version
 python - <<'PY'
 import json, urllib.request
 for name in ["ksadk", "agentengine-sdk-python"]:
@@ -194,21 +188,18 @@ for name in ["ksadk", "agentengine-sdk-python"]:
 PY
 ```
 
-如果 `ksadk` 版本变更，必须判断别名包 `agentengine-sdk-python` 是否同步发布。不同步必须写明原因。
+## 最短可执行清单
 
-## 客户问题修复策略
+一次正常公开发布的最短路径是：
 
-| 类型 | 修复位置 | 公开同步 |
-| --- | --- | --- |
-| SDK 通用 bug | 先修 `master` | cherry-pick 到公开候选，发 patch |
-| 内部账号 / 内网兼容，但不泄露敏感细节 | 先修 `master` | 可公开，文档只写必要 endpoint 和错误处理 |
-| 内部平台专用 runbook | 只留 `master` | 不进 `main` |
-| 凭证、kubeconfig、私有 registry 细节 | 不进代码仓 | 通过 Secret / 本地配置管理 |
+1. `ksadk-web` 合入 GitHub `main`，由 GitHub workflow 发布 npm。
+2. 内部 `ksadk-python/master` 记录版本、文档、approval evidence。
+3. 从内部 master 生成 clean export。
+4. 在 public candidate 运行 `make public-preflight`。
+5. public candidate 通过 GitHub PR 合入公开 `main`。
+6. 在公开 `main` commit 上打 `v<version>` tag。
+7. 创建 GitHub Release 或手动触发 `publish-pypi.yml`。
+8. workflow 发布 PyPI 并部署 GitHub Pages。
+9. 运行 post-publish publication check。
 
-## 长期维护建议
-
-- `master` 保持高频开发。
-- `main` 保持低频、可发布、可审计。
-- 每个公开版本用一个 `release/public-x.y.z` 候选分支。
-- `.worktrees/public-main` 长期保留，但定期 `git fetch` 和清理已合并候选分支。
-- 每次发布后记录 GitHub commit、tag、PyPI version、Pages URL 和别名包状态。
+这不是“提交 PR 到 main 后手工打 tag 和 release 文件”就结束。PR 到 `main` 只是公开源码同步；真正的 npm、PyPI、Pages 发布必须由 GitHub workflow 完成并通过发布后核对。
