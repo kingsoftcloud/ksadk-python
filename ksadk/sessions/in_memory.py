@@ -157,20 +157,39 @@ class InMemorySessionService(BaseSessionService):
         session_id: str,
         offset: Optional[int] = None,
         limit: Optional[int] = None,
+        after_seq_id: Optional[int] = None,
+        before_seq_id: Optional[int] = None,
     ) -> list[SessionEvent]:
         async with self._lock:
             session = self._sessions.get(session_id)
             if not session:
                 return []
-            end = max(len(session.events) - (offset or 0), 0)
+            events = list(session.events)
+            if after_seq_id is not None:
+                events = [event for event in events if event.seq_id > after_seq_id]
+            if before_seq_id is not None:
+                events = [event for event in events if event.seq_id < before_seq_id]
+            end = max(len(events) - (offset or 0), 0)
             start = 0 if limit is None else max(end - limit, 0)
-            events = session.events[start:end]
-            return copy.deepcopy(events)
+            sliced = events[start:end]
+            return copy.deepcopy(sliced)
 
-    async def count_events(self, session_id: str) -> int:
+    async def count_events(
+        self,
+        session_id: str,
+        after_seq_id: Optional[int] = None,
+        before_seq_id: Optional[int] = None,
+    ) -> int:
         async with self._lock:
             session = self._sessions.get(session_id)
-            return len(session.events) if session else 0
+            if not session:
+                return 0
+            events = list(session.events)
+            if after_seq_id is not None:
+                events = [event for event in events if event.seq_id > after_seq_id]
+            if before_seq_id is not None:
+                events = [event for event in events if event.seq_id < before_seq_id]
+            return len(events)
 
     async def get_state(
         self,

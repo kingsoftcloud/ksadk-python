@@ -89,6 +89,9 @@ class LangChainRunner(BaseRunner):
         usage = self._extract_usage(result)
         if usage:
             output["usage"] = usage
+        last_usage = self._extract_last_usage(result)
+        if last_usage:
+            output.setdefault("metadata", {})["last_usage"] = last_usage
         return output
 
     async def stream(self, input_data: Dict[str, Any]) -> AsyncIterator[Dict[str, Any]]:
@@ -142,6 +145,9 @@ class LangChainRunner(BaseRunner):
             usage = self._extract_usage(result)
             if usage:
                 final_chunk["usage"] = usage
+            last_usage = self._extract_last_usage(result)
+            if last_usage:
+                final_chunk.setdefault("metadata", {})["last_usage"] = last_usage
             yield final_chunk
             return
 
@@ -149,6 +155,9 @@ class LangChainRunner(BaseRunner):
         usage = self._extract_usage(last_chunk)
         if usage:
             final_chunk["usage"] = usage
+        last_usage = self._extract_last_usage(last_chunk)
+        if last_usage:
+            final_chunk.setdefault("metadata", {})["last_usage"] = last_usage
         yield final_chunk
 
     def _resolve_request_path(self) -> str:

@@ -49,10 +49,23 @@ class KS3Uploader:
             # Bucket 名称格式: agentengine-{account_id}-{region}
             account_id = os.getenv("KSYUN_ACCOUNT_ID")
             if not account_id:
+                # fallback: 从 AK/SK 反查主账号 ID
+                try:
+                    from ksadk.cli.network_options import _resolve_ksyun_credentials
+                    from ksadk.identity import resolve_identity
+
+                    ak, sk = _resolve_ksyun_credentials()
+                    if ak and sk:
+                        identity = resolve_identity(access_key=ak, secret_key=sk)
+                        account_id = identity.main_account_id if identity else None
+                except Exception:
+                    account_id = None
+            if not account_id:
                 raise ValueError(
-                    "❌ 缺少 KSYUN_ACCOUNT_ID 环境变量\n"
+                    "❌ 缺少 KSYUN_ACCOUNT_ID 且 AK/SK 反查主账号 ID 失败\n"
                     "   Bucket 名称格式必须为: agentengine-{account_id}-{region}\n"
-                    "   请在 .env 文件中设置: KSYUN_ACCOUNT_ID=你的账号ID"
+                    "   请在 .env 文件中设置: KSYUN_ACCOUNT_ID=你的账号ID\n"
+                    "   或设置 KS3_BUCKET 显式指定 bucket 名称"
                 )
             self.bucket_name = f"agentengine-{account_id}-{region}"
         

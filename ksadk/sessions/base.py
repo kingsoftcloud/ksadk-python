@@ -317,11 +317,18 @@ class BaseSessionService(abc.ABC):
         session_id: str,
         offset: Optional[int] = None,
         limit: Optional[int] = None,
+        after_seq_id: Optional[int] = None,
+        before_seq_id: Optional[int] = None,
     ) -> list[SessionEvent]:
         raise NotImplementedError
 
     @abc.abstractmethod
-    async def count_events(self, session_id: str) -> int:
+    async def count_events(
+        self,
+        session_id: str,
+        after_seq_id: Optional[int] = None,
+        before_seq_id: Optional[int] = None,
+    ) -> int:
         raise NotImplementedError
 
     @abc.abstractmethod

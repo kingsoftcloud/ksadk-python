@@ -24,7 +24,7 @@ from rich.terminal_theme import TerminalTheme
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ASSETS_DIR = ROOT / "public-docs" / "assets"
+ASSETS_DIR = ROOT / "docs-site" / "public" / "assets"
 ARCH_SVG = ASSETS_DIR / "ksadk-runtime-architecture.svg"
 ARCH_PNG = ASSETS_DIR / "ksadk-runtime-architecture.png"
 HERO_PNG = ASSETS_DIR / "ksadk-runtime-platform-hero.png"

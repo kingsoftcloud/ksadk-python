@@ -37,7 +37,7 @@
 - `ksadk.skills` / `ksadk.skills.runtime` 是 Skill Runtime 上层应用，负责 Skill Center 消费、包校验、安全解压、loader、工具定义和 `execute_skills` 编排。
 - E2B backend 是当前优先实现路径；后续可扩展 KOP / 平台私有 backend，但业务逻辑不要写死到 E2B 特定对象。
 - ADK Runner 可做自动工具注入；LangGraph / DeepAgents 等已编译 graph 默认提供 helper 或显式接入，不强行魔改用户 graph。
-- 沙箱镜像内最小 agent 交付物以 `deploy/skill-runtime/` 为准。
+- 沙箱镜像内最小 agent 交付物以 `ksadk/skills/runtime/agent.py` 为准；顶层 `deploy/` 已迁出本仓。
 - Skill Service 管注册、CRUD、版本治理；KsADK 只消费运行时必要接口，例如 `ListSkillsBySpaceId`、`GetSkillDownloadUrl`。
 
 ## 5. 跨仓边界
@@ -83,13 +83,14 @@
 - 未经用户明确批准，不得改 `pyproject.toml` / `ksadk/version.py` 版本号，不得新增或改写 CHANGELOG 发版条目。
 - 用户批准发布后，正式 PyPI 发布优先走 GitHub Release / `workflow_dispatch` 触发的 Trusted Publishing；本地 `make publish` / `make publish-test` 仅作为明确批准的应急路径，不绕过 Makefile 手写上传命令。
 - 不得在同一轮协作中擅自连续发布多个版本承载中间修复。
-- `master` 是内部开发主干；GitHub `main` 是公开主干。不得直接 `merge master -> main`，公开同步必须走 `release/public-x.y.z` 或等价候选分支。
-- 公开候选必须先推内部 ezone 审核，再推 GitHub、发 GitHub Release、上传 PyPI 或发布 Pages。
+- `master` 是内部开发主干；GitHub `main` 是公开主干。不得直接 `merge master -> main`，公开同步必须走 clean export candidate、GitHub PR 或等价的受审核公开候选流程。
+- GitHub 侧不得存在可写的 `master` 公开分支，也不得把内部 `master` 直接 push 到 GitHub；如果误推到了 `github/master`，第一时间删除远端分支并清理本地跟踪引用，再重新走公开候选流程。
+- 公开候选必须先通过 `make public-preflight` 和 review，再合入 GitHub `main`；npm、PyPI、GitHub Pages 都必须由可信 GitHub workflow 发布，不走本地 publish/upload。
 - 公开发布前必须运行 `make public-preflight`。如果只做发布状态核对，运行 `make public-publish-check`。失败时不得发布。
 - 每次公开 GitHub Release 对应的公开提交都必须打 tag 留痕，优先使用 `make public-release-tag V=x.y.z`。
 - 公开分支长期工作树可以保留，但只能作为公开同步/发布工作区，不做日常内部开发。
 - 不得把 `.pypirc`、私有 registry 凭证、kubeconfig、真实 API Key 或临时 token 放入仓库根目录；正式 PyPI 发布默认使用 Trusted Publishing，只有应急本地发布才允许 PyPI 凭证来自 `~/.pypirc`、环境变量或 CI Secret。
-- 完整公开同步流程见 `docs/release/public-release-workflow.md`；该文档优先于口头约定。
+- 完整公开同步流程见 `docs/public-release-workflow.md`；该文档优先于口头约定。
 
 发布前必须检查：
 

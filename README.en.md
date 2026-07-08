@@ -16,7 +16,7 @@
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-Apache--2.0-blue?style=flat" /></a>
 </p>
 
-<p align="center"><a href="public-docs/assets/ksadk-runtime-platform-hero.png"><img alt="Real KsADK CLI screenshot: agentengine -h" src="public-docs/assets/ksadk-runtime-platform-hero-wide.png" width="860" /></a></p>
+<p align="center"><a href="docs-site/public/assets/ksadk-runtime-platform-hero.png"><img alt="Real KsADK CLI screenshot: agentengine -h" src="docs-site/public/assets/ksadk-runtime-platform-hero-wide.png" width="860" /></a></p>
 
 ## 30 Seconds Quick Start
 
@@ -37,9 +37,9 @@ Start the local debugging Web UI:
 agentengine web . --no-open
 ```
 
-<p align="center"><img alt="Real KsADK Web UI debugging screenshot" src="public-docs/assets/ksadk-web-ui-screenshot.png" width="860" /></p>
+<p align="center"><img alt="Real KsADK Web UI debugging screenshot" src="docs-site/public/assets/ksadk-web-ui-screenshot.png" width="860" /></p>
 
-<p align="center"><img alt="Real local Web UI demo" src="public-docs/assets/ksadk-local-debugging-demo.gif" width="860" /></p>
+<p align="center"><img alt="Real local Web UI demo" src="docs-site/public/assets/ksadk-local-debugging-demo.gif" width="860" /></p>
 
 ## Why KsADK
 
@@ -53,16 +53,16 @@ Most agent frameworks solve how to build agents. KsADK solves how to run, debug,
 
 ## Architecture
 
-<p align="center"><img alt="KsADK Agent Runtime Platform architecture" src="public-docs/assets/ksadk-runtime-architecture.png" width="860" /></p>
+<p align="center"><img alt="KsADK Agent Runtime Platform architecture" src="docs-site/public/assets/ksadk-runtime-architecture.png" width="860" /></p>
 
 ## Docs And Examples
 
 - Documentation: <https://kingsoftcloud.github.io/ksadk-python/>
-- Quick Start: <https://kingsoftcloud.github.io/ksadk-python/en/getting-started/quickstart/>
-- Why KsADK: <https://kingsoftcloud.github.io/ksadk-python/en/getting-started/why-ksadk/>
-- Architecture: <https://kingsoftcloud.github.io/ksadk-python/en/getting-started/architecture/>
-- Ecosystem Positioning: <https://kingsoftcloud.github.io/ksadk-python/en/getting-started/comparison/>
-- Observability: <https://kingsoftcloud.github.io/ksadk-python/en/guides/observability-tracing/>
+- Quick Start: <https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/getting-started/quickstart/>
+- Why KsADK: <https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/getting-started/why-ksadk/>
+- Architecture: <https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/getting-started/architecture/>
+- Ecosystem Positioning: <https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/getting-started/comparison/>
+- Observability: <https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/observability-tracing/>
 - Samples: <https://github.com/kingsoftcloud/ksadk-samples>
 
 ## Related Projects

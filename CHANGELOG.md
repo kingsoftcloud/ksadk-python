@@ -5,6 +5,46 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [0.6.9] - 2026-07-07
+
+### 亮点
+
+- **run 状态双维度字段**：新增 `run_mode`（background/foreground/unknown）和 `run_trigger`（new_run/checkpoint_resume/approval_resume/unknown）两个独立维度字段，区分"怎么跑"和"怎么开始"，替代单字段 `run_kind` 的语义错误。后台长任务从 checkpoint 恢复时不再丢失"这是后台任务"的信息，前端可直接消费 `ActiveRunMode` / `ActiveRunTrigger` 判断长任务会话，无需从事件流推断。
+- **checkpoint 可恢复性聚合字段**：`ListSessionCheckpoints` 响应新增 `ResumableTotal` / `HasResumableCheckpoint`，解决 `Total > 0` 不能代表"可恢复"的误判（终态/过期/memory_local checkpoint 会让 Total 非空但不可恢复）。恢复按钮可用性应看 `HasResumableCheckpoint`。
+- **state_delta.active_run 对齐**：ksadk 与 agentengine-server 现都把 `run_mode` / `run_trigger` 写入 `state_delta.active_run`，Session 对象的 `ActiveRunMode` / `ActiveRunTrigger` 由 state 重建，刷新/分享链接/切 session 都能恢复一致状态。
+- **会话事件续订与历史分页收敛**：runtime `ListSessionEvents` / `SubscribeRunEvents` 支持 `AfterSeqId` 增量续订，session backends 支持 `BeforeSeqId` 向前翻页，控制台可从最新窗口进入历史并稳定重连，不再依赖全量扫事件。
+- **真实 token usage 契约补齐**：ADK、LangChain、LangGraph runner 在单轮内累计多次 LLM 调用 usage，同时保留 `last_usage`，让服务端可以同时得到会话累计 token 消耗和最后一轮上下文窗口占用，避免用累计值误当窗口占用。
+
+### 新增
+
+- 新增 `ksadk/conversations/run_kinds.py`：`run_mode` / `run_trigger` 枚举常量 + `validate_run_mode` / `validate_run_trigger` + `trigger_from_resume_input`（从 resume_input 推导 trigger）。
+- `append_run_status_event` 新增 `run_mode` / `run_trigger` 参数，写入事件 `metadata` 与 `state_delta.active_run`。
+- `PreparedConversationTurn` 新增 `run_mode` / `run_trigger` 字段，`build_run_input` 按 checkpoint_resume / approval_resume / new_run 分支回填。
+- `invoke_conversation_once` / `_iter_conversation_turn_events` / `stream_responses_conversation_turn` / `stream_conversation_turn` 透传 `run_mode`；18+ 处 `append_run_status_event` 调用点按 endpoint 语义传值。
+- 各 endpoint 按产品语义标记 run_mode：`RunAgent Background:true` 与 `ResumeRun Stream:true` 标 `background`；普通 `RunAgent Stream:true`、`ResumeRun Stream:false`、`/v1/responses`、`/v1/chat/completions`、`/run_sse` 标 `foreground`。
+- `_DetachedSSEStream` 构造与终态 fallback 写入 `run_mode` / `run_trigger`。
+- 新增 `_latest_session_run_metadata` helper（不改原 `_latest_session_run_status`，保护现有契约），`_session_to_action_payload` 顶层新增 `ActiveRunMode` / `ActiveRunTrigger`。
+- `_list_checkpoints_payload` 新增 `ResumableTotal` / `HasResumableCheckpoint` 聚合字段。规则：`IsResumable===true && ReplayAllowed!==false && IsTerminal!==true && CheckpointStatus not in {expired, disabled}`，不排除 `resumed`（已恢复过的仍计入，符合存档点可反复读）。
+- agentengine-server 侧新建 `app/services/run_kinds.py`（独立维护，不 import ksadk，用测试约束一致性），`_append_run_status` 与 `_serialize_session` 同步写入/读取新字段。
+- 新增 `ksadk/runners/usage_accumulator.py`，统一归一化并累加 OpenAI/ADK/LangChain/LangGraph usage 字段，覆盖 `input_tokens`、`output_tokens`、`total_tokens` 及 token details。
+- runtime `ListSessionEvents` 新增 `AfterSeqId` / `BeforeSeqId` 过滤能力；`SubscribeRunEvents` 支持 `AfterSeqId`，用于断线后只推送已读序号之后的新事件。
+- `SessionService.get_events()` 在 in-memory、local SQLite、Postgres 后端补齐 `after_seq_id` / `before_seq_id` 过滤，保持最新窗口、向后增量、向前翻页三类语义一致。
+
+### 变更
+
+- `run_status` 事件 `metadata` 与 `state_delta.active_run` 扩展为含 `run_mode` / `run_trigger`；旧 session 缺字段降级 `unknown`，不破坏现有 `ActiveInvocationId` / `ActiveRunStatus` 契约。
+- approval 续跑的 `run_mode` 跟随原 run（不写死 foreground），需从原 run 上下文透传。
+- server 侧 `run_status` 事件 `content` 仍为 `{status, detail}`，`run_mode` / `run_trigger` 只写进 `state_delta`，避免破坏现有消费方。
+- runner 返回 `metadata.usage` 继续表示单次响应的累计真实消耗；新增 `metadata.last_usage` 表示最后一次模型调用的 usage，供上层计算 `ContextUsage` 等窗口占用指标。
+- LangChain / LangGraph 的 final chunk metadata 增加 `usage` 与 `last_usage`，保留原响应内容结构，避免只取最后一个 chunk 或最后一次 LLM 调用造成 token 少算。
+
+### 修复
+
+- 修复 ADK runner 单轮内多次 LLM 调用时只保留最后一次 usage，导致会话累计 token 消耗少算的问题。
+- 修复 BaseRunner 从响应列表尾部反向取 usage，遇到多段模型调用时无法聚合的问题。
+- 修复 runtime 事件分页只支持 offset/limit，前端重连和历史向上翻页需要额外扫全量事件的问题。
+- 修复 `SubscribeRunEvents` hosted/runtime 双链路续订语义不一致，断线重连可能重复消费旧事件的问题。
+
 ## [0.6.8] - 2026-07-03
 
 ### 亮点

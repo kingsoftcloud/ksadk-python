@@ -491,7 +491,7 @@ class CodeBuilder(BaseBuilder):
             if self._should_skip_project_file(py_file):
                 continue
             try:
-                tree = ast.parse(py_file.read_text(encoding="utf-8"))
+                tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
             except (OSError, SyntaxError, UnicodeDecodeError):
                 continue
             for node in ast.walk(tree):

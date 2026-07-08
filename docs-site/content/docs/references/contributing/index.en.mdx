@@ -18,22 +18,21 @@ pytest
 Build docs locally:
 
 ```bash
-make public-docs-build
-make public-docs-serve
+make docs-site-build
 ```
 
 Run open-source checks:
 
 ```bash
 make open-source-audit
-make public-docs-audit
+make public-audit
 ```
 
 For changes that touch packaging, public docs, release metadata, or repository
 layout, run the broader review target before asking for release approval:
 
 ```bash
-make open-source-review
+make public-preflight
 ```
 
 ## Public CI Expectations
@@ -43,7 +42,7 @@ Public CI must not require internal kubeconfig files, internal registries, inter
 Before submitting a public PR:
 
 - run focused tests for the changed area.
-- run docs build when editing `public-docs/` or `mkdocs.yml`.
+- run `make docs-site-build` when editing `docs-site/`; use `make docs-site-dev` for local preview.
 - update CLI docs when command behavior changes.
 - update release notes when changing packaging or public API behavior.
 - keep examples local-first unless a hosted feature is explicitly approved.
@@ -59,7 +58,7 @@ KsADK keeps public confidence through layered tests:
 | ASGI service tests | validate FastAPI routes and session events without a real network server | service/session pytest files |
 | HTTP protocol E2E | validate `/v1/responses`, `/v1/chat/completions`, upload, and local Web UI action payloads | OpenAI protocol E2E tests |
 | browser E2E | validate built UI behavior when Chromium is available | browser-tagged E2E tests |
-| open-source audits | verify public tree, docs, Pages artifact, sdist, wheel, and clean export boundaries | `make open-source-review` |
+| open-source audits | verify public tree, docs, Pages artifact, sdist, wheel, and clean export boundaries | `make public-preflight` |
 
 When a change affects protocol shape, attachment handling, session events, or
 the local Web UI payload, prefer a test that crosses the same boundary a real
@@ -98,7 +97,7 @@ Avoid:
 - references to generated `.zread/` output as the published source.
 
 Local zread wiki output can be useful as an engineering note source, but public
-documentation should be curated Markdown under `public-docs/`. Do not publish
+documentation should be curated Markdown under `docs-site/`. Do not publish
 the generated wiki directory or depend on it during public CI.
 
 ## Open-Source Review Boundary

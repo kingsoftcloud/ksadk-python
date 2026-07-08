@@ -272,6 +272,29 @@ class BaseRunner(ABC):
             return usage
         return {}
 
+    @classmethod
+    def _extract_last_usage(cls, result: Any) -> dict[str, Any]:
+        """取最后一次 LLM 调用的 usage 快照(作 last_usage,窗口占用=input_tokens)。
+
+        方案 C:累积值走 stream on_chain_end 逐 event;invoke 非流式拿不到中间 call,
+        last_usage 作窗口占用(末次 input = 当前上下文占用)。优先 metadata.last_usage
+        (ADK 透传),否则 messages 末个。
+        """
+        if isinstance(result, Mapping):
+            metadata = result.get("metadata")
+            if isinstance(metadata, Mapping):
+                last_usage = metadata.get("last_usage")
+                if isinstance(last_usage, Mapping) and last_usage:
+                    return dict(last_usage)
+            messages = result.get("messages")
+            if isinstance(messages, list):
+                for message in reversed(messages):
+                    usage = cls._message_usage(message)
+                    if usage:
+                        return usage
+        usage = cls._message_usage(result)
+        return usage if usage else {}
+
 
     def run_server(self, port: int = 8000) -> None:
         """启动 HTTP Server"""

@@ -325,6 +325,12 @@ _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
     EnvVarSpec("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "tracing", "OTLP traces protocol; takes precedence over the generic protocol."),
     EnvVarSpec("OTEL_RESOURCE_ATTRIBUTES", "tracing", "OpenTelemetry resource attributes in key=value comma-separated form."),
     EnvVarSpec("OTEL_SERVICE_NAME", "tracing", "OpenTelemetry service name."),
+    EnvVarSpec(
+        "KSADK_OTLP_MAX_EXPORT_BATCH_SIZE",
+        "tracing",
+        "Maximum spans exported per OTLP batch to avoid oversized collector requests.",
+        "64",
+    ),
 )
 
 ENV_VAR_REGISTRY: tuple[EnvVarSpec, ...] = tuple(

@@ -234,14 +234,14 @@ short:
 Run:
 
 ```bash
-uv run --extra dev python -m mkdocs build --strict
+make docs-site-build
 ```
 
 Common causes:
 
 - broken relative links.
-- page added to `nav` but not created.
-- duplicate Markdown extension entries.
+- page added to the docs tree but not linked correctly.
+- invalid MDX or duplicated frontmatter fields.
 - generated files under `site/` accidentally committed.
 - docs referencing private files excluded from the public repository.
 

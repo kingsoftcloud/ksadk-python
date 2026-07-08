@@ -46,6 +46,7 @@ from ksadk.cli.ui import (
 )
 from ksadk.deployment.agent_access import (
     get_latest_agent_access,
+    is_agent_not_found_error,
     normalize_deployment_status,
 )
 from ksadk.deployment.state import clear_state, load_state, save_state
@@ -685,13 +686,29 @@ async def _deploy_hermes(
                 include_env=include_env_on_update,
                 include_storage=include_storage_on_update,
             )
-            res = await client.update_agent(existing_agent_id, update_payload)
-            if res is None:
-                res = {}
-            res.setdefault("agent_id", existing_agent_id)
-            res.setdefault("endpoint", state.get("endpoint"))
-            res.setdefault("api_key", state.get("api_key"))
-        else:
+            try:
+                res = await client.update_agent(existing_agent_id, update_payload)
+            except Exception as update_err:
+                if not is_agent_not_found_error(update_err):
+                    raise
+                # 本地 state 缓存的 agent_id 在服务端已不存在（已删除），
+                # 清掉失效 state 后回退为新建，避免 404 卡住用户。
+                print_warn(
+                    f"本地状态失效 ({existing_agent_id})，将自动回退为新建: {update_err}"
+                )
+                cleared = clear_state(project_dir, key=existing_agent_id)
+                if cleared:
+                    print_info("已清理失效的 .agentengine.state")
+                existing_agent_id = None
+                res = None
+            else:
+                if res is None:
+                    res = {}
+                res.setdefault("agent_id", existing_agent_id)
+                res.setdefault("endpoint", state.get("endpoint"))
+                res.setdefault("api_key", state.get("api_key"))
+
+        if not existing_agent_id:
             res = await client.create_agent(payload)
             if isinstance(res, dict):
                 if res.get("order_id") and not res.get("agent_id"):
