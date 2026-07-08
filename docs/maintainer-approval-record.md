@@ -30,8 +30,8 @@ Record exactly one approved source publication strategy.
 The approved strategy must name the reviewed commit, tag, pull request, or
 export archive used for:
 
-- `ksadk-python`: clean export candidate from reviewed internal commit `1f3c0d844dc4df2630c8e1d410bcd9f7c9b595cc`; local candidate directory `/tmp/ksadk-python-export-candidate-0.6.9`; verified on 2026-07-08 with public source audit, registry-bundled `make public-preflight` in the public candidate worktree, Fumadocs static build, wheel/sdist build, twine check, and source/dist package audits.
-- `ksadk-web`: npm package `@kingsoftcloud/ksadk-web@0.2.18` from commit `24551d0f290e5a4efc5b5d60d02fa298cccd2efa`; Python candidate commit `1f3c0d844dc4df2630c8e1d410bcd9f7c9b595cc`; published by the trusted GitHub npm workflow on 2026-07-08 and consumed from the npm registry during `make public-preflight`.
+- `ksadk-python`: clean export candidate from reviewed internal commit `651e9f60c49be3de2847b3aff1366dea0af0f2ba`; local candidate directory `/tmp/ksadk-python-export-candidate-0.6.9`; verified on 2026-07-08 with public source audit, registry-bundled `make public-preflight` in the public candidate worktree, Fumadocs static build, wheel/sdist build, twine check, and source/dist package audits.
+- `ksadk-web`: npm package `@kingsoftcloud/ksadk-web@0.2.18` from commit `24551d0f290e5a4efc5b5d60d02fa298cccd2efa`; Python candidate commit `651e9f60c49be3de2847b3aff1366dea0af0f2ba`; published by the trusted GitHub npm workflow on 2026-07-08 and consumed from the npm registry during `make public-preflight`.
 
 Both approved source references must include the current commit SHA at approval
 time. This prevents a stale approval record from passing after candidate
