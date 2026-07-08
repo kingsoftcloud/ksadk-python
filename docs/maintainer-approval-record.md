@@ -31,8 +31,8 @@ not been approved for external writes yet.
 The approved strategy must name the reviewed commit, tag, pull request, or
 export archive used for:
 
-- `ksadk-python`: pending clean export candidate from internal commit `dd220443a3ae0b608129c83c446104c6017f784b`; local candidate directory `/tmp/ksadk-python-export-candidate-0.6.9`; verified with `KSADK_WEB_VERSION=0.2.18 KSADK_WEB_RELEASE_URL=file:///tmp/ksadk-web-pack.T9pE2L/kingsoftcloud-ksadk-web-0.2.18.tgz make public-preflight` on 2026-07-08.
-- `ksadk-web`: pending npm package `@kingsoftcloud/ksadk-web@0.2.18` from commit `e3eba982c4aeb3289ff2b4620e348868a9fdebd7`; current Python candidate commit `dd220443a3ae0b608129c83c446104c6017f784b`; npm registry still reports `0.2.17`, so official registry-bundled preflight is still pending.
+- `ksadk-python`: pending clean export candidate from internal commit `91c3bb9f39c009bb5f491b9db390c8d910aaa33a`; local candidate directory `/tmp/ksadk-python-export-candidate-0.6.9`; verified on 2026-07-08 with focused public docs/release-gate tests, `make docs-site-build`, publication pre-publish state check, and public export audit. Official registry-bundled `make public-preflight` is still pending until `@kingsoftcloud/ksadk-web@0.2.18` is published by the trusted GitHub workflow.
+- `ksadk-web`: pending npm package `@kingsoftcloud/ksadk-web@0.2.18` from commit `24551d0f290e5a4efc5b5d60d02fa298cccd2efa`; current Python candidate commit `91c3bb9f39c009bb5f491b9db390c8d910aaa33a`; verified locally with `npm test`, `node --test tests/*.test.mjs`, `npm run build:all`, and `npm pack --dry-run --access public`. npm registry still reports `0.2.17`, so publication must be performed by the trusted GitHub npm workflow before hosted-ui or ksadk-python consume `0.2.18` from registry.
 
 Both approved source references must include the current commit SHA at approval
 time. This prevents a stale approval record from passing after candidate
