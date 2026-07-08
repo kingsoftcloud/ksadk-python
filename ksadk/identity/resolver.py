@@ -77,6 +77,21 @@ def _resolve_iam_endpoint() -> tuple[str, str]:
     return host, scheme
 
 
+def _resolve_iam_intranet_endpoint() -> tuple[str, str] | None:
+    """解析显式配置的 IAM 内网 endpoint。未配置时不启用内网 fallback。"""
+    raw = (os.getenv("KSYUN_IAM_INTRANET_URL") or os.getenv("IAM_INTRANET_URL") or "").strip()
+    if not raw:
+        return None
+    if "://" not in raw:
+        raw = "http://" + raw
+    parsed = urlparse(raw)
+    host = (parsed.netloc or parsed.path or "").strip()
+    if not host:
+        return None
+    scheme = (parsed.scheme or "http").strip().lower() or "http"
+    return host, scheme
+
+
 def _should_retry_intranet(error: Exception | None) -> bool:
     """判断是否应回退到内网 endpoint（内部账号只能内网访问时）。"""
     if error is None:
@@ -256,16 +271,18 @@ def resolve_identity(
                 ak_fingerprint=fingerprint,
             )
 
-    # 2. 调 IAM 反查（公网失败时自动 fallback 内网，处理 InnerAccountCanOnlyAccessThroughIntranet）
+    # 2. 调 IAM 反查。公网失败时 fallback 内网 endpoint（内部账号只能内网访问时）。
+    # 内网地址优先用显式配置的 IAM_INTRANET_URL，未配置时用默认 iam.inner.api.ksyun.com。
+    # 该地址外部不可访问（内网专属），open_source_audit 白名单已放行，内部账号开箱即用。
     sdk_parts = _import_iam_sdk()
     if sdk_parts is None:
         return None
 
     host, scheme = _resolve_iam_endpoint()
-    # 候选 endpoint 列表：(host, scheme, is_intranet)；首个用解析出的默认，失败再试内网
     candidates = [(host, scheme)]
-    if host != "iam.inner.api.ksyun.com":
-        candidates.append(("iam.inner.api.ksyun.com", "http"))
+    intranet_endpoint = _resolve_iam_intranet_endpoint() or ("iam.inner.api.ksyun.com", "http")
+    if intranet_endpoint not in candidates:
+        candidates.append(intranet_endpoint)
 
     user_name: Optional[str] = None
     user: dict = {}

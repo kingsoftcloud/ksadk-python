@@ -19,19 +19,19 @@ PyPI publication.
 
 ## Publication Strategy
 
-Record exactly one approved source publication strategy:
+Record exactly one approved source publication strategy.
 
 | Strategy | Approved |
 | --- | --- |
 | Reviewed GitHub pull request | No |
-| Clean export from reviewed candidate | No |
-| Rewritten Git history after secret scan | Yes |
+| Clean export from reviewed candidate | Yes |
+| Rewritten Git history after secret scan | No |
 
 The approved strategy must name the reviewed commit, tag, pull request, or
 export archive used for:
 
-- `ksadk-python`: rewritten public `new-main` candidate `3bbf295e4f27a4f7f6a8b8cdf76a17227ad40033`, verified by `make public-preflight KSADK_WEB_VERSION=0.2.16` and public source/dist audits.
-- `ksadk-web`: npm package `@kingsoftcloud/ksadk-web@0.2.16` (`latest` on 2026-07-03), bundled from npm during `make public-preflight KSADK_WEB_VERSION=0.2.16`.
+- `ksadk-python`: clean export candidate from reviewed internal commit `1f3c0d844dc4df2630c8e1d410bcd9f7c9b595cc`; local candidate directory `/tmp/ksadk-python-export-candidate-0.6.9`; verified on 2026-07-08 with public source audit, registry-bundled `make public-preflight` in the public candidate worktree, Fumadocs static build, wheel/sdist build, twine check, and source/dist package audits.
+- `ksadk-web`: npm package `@kingsoftcloud/ksadk-web@0.2.18` from commit `24551d0f290e5a4efc5b5d60d02fa298cccd2efa`; Python candidate commit `1f3c0d844dc4df2630c8e1d410bcd9f7c9b595cc`; published by the trusted GitHub npm workflow on 2026-07-08 and consumed from the npm registry during `make public-preflight`.
 
 Both approved source references must include the current commit SHA at approval
 time. This prevents a stale approval record from passing after candidate
@@ -59,6 +59,6 @@ changes.
 
 | Role | Name | Decision | Date |
 | --- | --- | --- | --- |
-| Maintainer | xiayu | Approved for one-time public main rewrite | 2026-07-03 |
-| Security reviewer | automated public audit | Passed source, wheel, and sdist audits with 0 violations | 2026-07-03 |
-| Release owner | xiayu | Approved GitHub Release / PyPI Trusted Publishing for 0.6.9 | 2026-07-03 |
+| Maintainer | xiayu | Approved clean export candidate for ksadk 0.6.9 | 2026-07-08 |
+| Security reviewer | automated public audit | Passed source, wheel, and sdist audits with 0 violations | 2026-07-08 |
+| Release owner | xiayu | Approved trusted GitHub PyPI and Pages workflow for 0.6.9 | 2026-07-08 |

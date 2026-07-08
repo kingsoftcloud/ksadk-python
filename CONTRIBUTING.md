@@ -17,14 +17,16 @@ Run focused checks before sending a change:
 ```bash
 uv run --extra dev pytest -q
 make open-source-audit
-make public-docs-audit
+make docs-site-build
+make public-audit
 uv build
 uv run --extra dev python -m twine check dist/*
 ```
 
-`public-docs-audit` builds the curated GitHub Pages candidate from
-`public-docs/`. It must not publish `.zread/wiki`, `.zread/site`, internal
-deployment notes, or private generated snapshots.
+`docs-site-build` builds the Fumadocs GitHub Pages candidate from
+`docs-site/`. `public-audit` checks that public repository candidates do not
+publish `.zread/wiki`, `.zread/site`, internal deployment notes, or private
+generated snapshots.
 
 `open-source-audit` checks the current public repository candidate for files
 that should not enter the open-source surface.

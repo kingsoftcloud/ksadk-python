@@ -138,6 +138,7 @@
 | `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | 否 | 无 | 是 | 平台 / 开发者 | traces 专用 OTLP headers；设置后优先于通用 headers。 |
 | `OTEL_SERVICE_NAME` | 否 | 无 | 否 | 平台 / 开发者 | OTel service name。 |
 | `OTEL_RESOURCE_ATTRIBUTES` | 否 | 无 | 否 | 平台 / 开发者 | OTel resource attributes。 |
+| `KSADK_OTLP_MAX_EXPORT_BATCH_SIZE` | 否 | 无 | 否 | 平台 / 开发者 | OTLP 单次 export 最大 span 数，默认 `64`，用于避免 collector 请求过大。 |
 
 ## 3. 通用模型与 LLM 变量
 
@@ -342,6 +343,7 @@
 | `KSADK_WEB_RELEASE_URL` | Hosted Web UI static sync | 否 | 未设置 | 无 | 否 | 构建环境 / 开发者 | 否 | 可选兼容兜底。设置后跳过 npm pack，改从该 tarball URL 下载。 |
 | `KSADK_WEB_CACHE_DIR` | Hosted Web UI static sync | 否 | `.cache/ksadk-web` | 无 | 否 | 构建环境 / 开发者 | 否 | KsADK Web 包解压缓存目录。 |
 | `KSADK_GLOBAL_CONFIG_ENV_KEYS` | CLI | 否 | 未设置 | 无 | 否 | CLI 内部 | 否 | CLI 启动时记录哪些环境变量由 `~/.agentengine/settings.json` 补入，用于区分用户显式环境变量和全局配置默认值。 |
+| `KSYUN_IAM_URL` | 身份反查 | 否 | `https://iam.api.ksyun.com` | 无 | 否 | CLI | 否 | 覆盖 IAM endpoint，用于 AK/SK 反查子账号 user uuid。内部账号 AK 公网访问被拒时，CLI 自动 fallback 到 `http://iam.inner.api.ksyun.com`。 |
 | `AGENTENGINE_LOCAL_RUNTIME_VENV_REEXEC` | 本地 runtime CLI | 否 | 自动判断 | 无 | 否 | 本地开发者 / 测试 | 否 | 控制本地 runtime 是否在虚拟环境中 re-exec。普通用户通常无需设置。 |
 | `AGENTENGINE_WEB_VENV_REEXEC` | 本地 Web CLI | 否 | 自动判断 | 无 | 否 | 本地开发者 / 测试 | 否 | 控制本地 Web 命令是否在虚拟环境中 re-exec。普通用户通常无需设置。 |
 | `AGENTENGINE_DEBUG` | CLI | 否 | 未设置 | 无 | 否 | 开发者 | 否 | 开启更详细错误输出。 |
@@ -428,9 +430,9 @@
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | OTel | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | traces 专用 endpoint；设置后优先于通用 endpoint。 |
 | `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` | OTel | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | traces 专用 OTLP 协议；设置后优先于通用 protocol。 |
 | `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | OTel | 否 | 未设置 | 无 | 是 | 平台 / 开发者 | 否 | traces 专用 OTLP headers；设置后优先于通用 headers。 |
-| `KSADK_OTLP_MAX_EXPORT_BATCH_SIZE` | OTel | 否 | `64` | 无 | 否 | 平台 / 开发者 | 否 | 单次 OTLP export 的最大 span 数，降低 collector 413 风险。 |
 | `OTEL_SERVICE_NAME` | OTel | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | service name。 |
 | `OTEL_RESOURCE_ATTRIBUTES` | OTel | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | resource attributes。 |
+| `KSADK_OTLP_MAX_EXPORT_BATCH_SIZE` | OTel | 否 | `64` | 无 | 否 | 平台 / 开发者 | 否 | OTLP 单次 export 最大 span 数，用于避免 collector 请求过大。 |
 
 ## 12. Hermes 和 OpenClaw 常见运行时变量
 

@@ -16,7 +16,7 @@
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-Apache--2.0-blue?style=flat" /></a>
 </p>
 
-<p align="center"><a href="public-docs/assets/ksadk-runtime-platform-hero.png"><img alt="KsADK 真实 CLI 截图：agentengine -h" src="public-docs/assets/ksadk-runtime-platform-hero-wide.png" width="860" /></a></p>
+<p align="center"><a href="docs-site/public/assets/ksadk-runtime-platform-hero.png"><img alt="KsADK 真实 CLI 截图：agentengine -h" src="docs-site/public/assets/ksadk-runtime-platform-hero-wide.png" width="860" /></a></p>
 
 ## 30 秒快速体验
 
@@ -37,9 +37,9 @@ agentengine run -i
 agentengine web . --no-open
 ```
 
-<p align="center"><img alt="KsADK 真实 Web UI 调试截图" src="public-docs/assets/ksadk-web-ui-screenshot.png" width="860" /></p>
+<p align="center"><img alt="KsADK 真实 Web UI 调试截图" src="docs-site/public/assets/ksadk-web-ui-screenshot.png" width="860" /></p>
 
-<p align="center"><img alt="KsADK 真实本地 Web UI 演示" src="public-docs/assets/ksadk-local-debugging-demo.gif" width="860" /></p>
+<p align="center"><img alt="KsADK 真实本地 Web UI 演示" src="docs-site/public/assets/ksadk-local-debugging-demo.gif" width="860" /></p>
 
 ## 为什么需要 KsADK
 
@@ -53,16 +53,16 @@ agentengine web . --no-open
 
 ## 架构
 
-<p align="center"><img alt="KsADK Agent Runtime Platform 架构" src="public-docs/assets/ksadk-runtime-architecture.png" width="860" /></p>
+<p align="center"><img alt="KsADK Agent Runtime Platform 架构" src="docs-site/public/assets/ksadk-runtime-architecture.png" width="860" /></p>
 
 ## 文档与样例
 
 - 文档：<https://kingsoftcloud.github.io/ksadk-python/>
-- 快速开始：<https://kingsoftcloud.github.io/ksadk-python/getting-started/quickstart/>
-- 为什么需要 KsADK：<https://kingsoftcloud.github.io/ksadk-python/getting-started/why-ksadk/>
-- 架构：<https://kingsoftcloud.github.io/ksadk-python/getting-started/architecture/>
-- 生态定位对比：<https://kingsoftcloud.github.io/ksadk-python/getting-started/comparison/>
-- 可观测：<https://kingsoftcloud.github.io/ksadk-python/guides/observability-tracing/>
+- 快速开始：<https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/getting-started/quickstart/>
+- 为什么需要 KsADK：<https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/getting-started/why-ksadk/>
+- 架构：<https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/getting-started/architecture/>
+- 生态定位对比：<https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/getting-started/comparison/>
+- 可观测：<https://kingsoftcloud.github.io/ksadk-python/cn/docs/framework/guides/observability-tracing/>
 - 样例仓库：<https://github.com/kingsoftcloud/ksadk-samples>
 
 ## 相关项目
