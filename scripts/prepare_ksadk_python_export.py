@@ -126,7 +126,6 @@ EXCLUDED_PREFIXES = (
 EXCLUDED_PATHS = {
     ".pypirc",
     ".pypirc.example",
-    "Dockerfile.docs",
     "deploy/helm/ksadk-docs/Chart.yaml",
     "deploy/helm/ksadk-docs/templates/_helpers.tpl",
     "deploy/helm/ksadk-docs/templates/deployment.yaml",
