@@ -107,6 +107,7 @@ PUBLIC_REPO_RULES = COMMON_RULES + (
         prefixes=("docs/",),
         allowed_paths=(
             "docs/maintainer-approval-record.md",
+            "docs/public-release-workflow.md",
             "docs/ksadk\u73af\u5883\u53d8\u91cf\u53c2\u8003.md",
             "docs/\u8fdc\u7a0bAgent\u8fd0\u884c\u65f6\u63a5\u53e3\u8bf4\u660e.md",
             "docs/reference/ksadk\u6280\u672f\u8bbe\u8ba1.md",
