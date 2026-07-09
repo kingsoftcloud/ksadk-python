@@ -747,6 +747,7 @@ class ADKRunner(BaseRunner):
         warnings.filterwarnings("ignore", category=UserWarning, module="pydantic.main")
 
         self._apply_json_patch()
+        self._apply_mcp_result_patch()
 
         # 添加项目目录到 Python 路径
         project_path = Path(self.project_dir).resolve()
@@ -766,6 +767,7 @@ class ADKRunner(BaseRunner):
 
         try:
             module = __import__(module_name, fromlist=[self.detection_result.agent_variable])
+            self._module = module
             self._agent = getattr(module, self.detection_result.agent_variable)
 
             # Inject safety instruction for DeepSeek/LLMs to prevent empty tool names
@@ -797,7 +799,6 @@ class ADKRunner(BaseRunner):
             self._inject_search_knowledge_tool()
 
         # 初始化 SessionService
-        from google.adk.runners import Runner
         from google.adk.sessions import InMemorySessionService
 
         if self._short_term_memory:
@@ -1646,9 +1647,6 @@ class ADKRunner(BaseRunner):
                 if is_resume and str(input_data.get("run_id") or "").strip()
                 else ""
             )
-            accumulated_text = ""
-            usage: dict[str, Any] = {}
-            last_usage: dict[str, Any] = {}
 
             # 使用 StreamingMode.SSE 启用真正的流式输出
             run_config = RunConfig(streaming_mode=StreamingMode.SSE)
@@ -1725,6 +1723,7 @@ class ADKRunner(BaseRunner):
 
             accumulated_text = ""
             usage: dict[str, Any] = {}
+            last_usage: dict[str, Any] = {}
 
             async for event in wrapped_async:
                 event_usage = self._extract_event_usage(event)
