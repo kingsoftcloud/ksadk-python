@@ -105,7 +105,14 @@ PUBLIC_REPO_RULES = COMMON_RULES + (
     DenyRule(
         name="non-curated-docs",
         prefixes=("docs/",),
-        allowed_paths=("docs/maintainer-approval-record.md", "docs/ksadk\u73af\u5883\u53d8\u91cf\u53c2\u8003.md", "docs/\u8fdc\u7a0bAgent\u8fd0\u884c\u65f6\u63a5\u53e3\u8bf4\u660e.md", "docs/reference/ksadk\u6280\u672f\u8bbe\u8ba1.md"),
+        allowed_paths=(
+            "docs/maintainer-approval-record.md",
+            "docs/public-release-workflow.md",
+            "docs/ksadk\u73af\u5883\u53d8\u91cf\u53c2\u8003.md",
+            "docs/\u8fdc\u7a0bAgent\u8fd0\u884c\u65f6\u63a5\u53e3\u8bf4\u660e.md",
+            "docs/reference/ksadk\u6280\u672f\u8bbe\u8ba1.md",
+            "docs/reference/ksadk\u73af\u5883\u53d8\u91cf\u53c2\u8003.md",
+        ),
         prefix_only=True,
         description="internal planning and technical design docs stay out of the public repository; public docs live in docs-site/ (Fumadocs)",
     ),
@@ -220,6 +227,7 @@ CONTENT_RULES = (
             r"(?<![A-Za-z0-9.-])"
             # 金山云公开服务 endpoint(用户在金山云环境跑 agent 必需,公开 SDK 必须支持)
             r"(?!(?:aicp|vpc)\.(?:inner|internal)\.api\.ksyun\.com\b)"
+            r"(?!iam\.inner\.api\.ksyun\.com\b)"
             r"(?!kspmas(?:-internal)?\.sdns\.ksyun\.com\b)"
             r"(?!ks3-[a-z-]+(?:-internal)?\.ksyuncs\.com\b)"
             r"(?!kmr\.[a-z-]+\.inner\.api\.ksyun\.com\b)"

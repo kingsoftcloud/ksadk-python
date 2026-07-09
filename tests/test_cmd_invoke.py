@@ -182,7 +182,9 @@ def test_run_invoke_command_refreshes_stale_state_from_remote(monkeypatch, tmp_p
     }
 
 
-def test_run_invoke_command_persists_generated_session_id(monkeypatch, tmp_path: Path):
+def test_run_invoke_command_single_shot_uses_fresh_session_each_call(monkeypatch, tmp_path: Path):
+    """单次 --message 每次开新 session 并持久化，不复用 .agentengine.state 里的上次
+    session，避免长上下文导致首包变慢。续聊需显式传 --session 或进入交互 TUI。"""
     captured_sessions = []
 
     async def _fake_invoke_once(endpoint, message, api_key, session_id, stream, insecure, model, api_format="chat_completions"):
@@ -226,7 +228,94 @@ def test_run_invoke_command_persists_generated_session_id(monkeypatch, tmp_path:
         show_thinking=False,
     )
 
-    assert captured_sessions[1] == captured_sessions[0]
+    # 第二次单次调用必须用新 session，不复用上次
+    state = yaml.safe_load(state_file.read_text(encoding="utf-8"))
+    assert captured_sessions[1]
+    assert captured_sessions[1] != captured_sessions[0]
+    assert state["session_id"] == captured_sessions[1]
+
+
+def test_run_invoke_command_single_shot_respects_explicit_session(monkeypatch, tmp_path: Path):
+    """单次 --message + 显式 --session：用指定 session，不生成新的。"""
+    captured = []
+
+    async def _fake_invoke_once(endpoint, message, api_key, session_id, stream, insecure, model, api_format="chat_completions"):
+        captured.append(session_id)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("ksadk.cli.cmd_invoke._invoke_once", _fake_invoke_once)
+
+    run_invoke_command(
+        agent_ref=None,
+        agent_option=None,
+        endpoint=None,
+        api_key=None,
+        message="hello",
+        session="my-sess",
+        region="pre-online",
+        local=True,
+        insecure=False,
+        transport="auto",
+        model=None,
+        show_thinking=False,
+    )
+
+    assert captured[0] == "my-sess"
+
+
+def test_run_invoke_command_tui_reuses_state_session(monkeypatch, tmp_path: Path):
+    """交互 TUI（不带 --message）：复用 .agentengine.state 里的上次 session。"""
+    state_file = tmp_path / ".agentengine.state"
+    state_file.write_text(
+        yaml.safe_dump(
+            {
+                "agent_id": "ar-demo",
+                "name": "demo-agent",
+                "endpoint": "http://demo.example.com",
+                "api_key": "ak-demo",
+                "session_id": "sess-from-state",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    captured = {}
+
+    def _fake_tui(
+        endpoint,
+        api_key=None,
+        session_id=None,
+        insecure=False,
+        model=None,
+        show_thinking=False,
+        api_format=None,
+        responses_session_header=None,
+    ):
+        captured["session_id"] = session_id
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("ksadk.cli.cmd_invoke._invoke_tui", _fake_tui)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_invoke._resolve_remote_api_format",
+        lambda **_kwargs: asyncio.sleep(0, result="chat_completions"),
+    )
+
+    run_invoke_command(
+        agent_ref=None,
+        agent_option=None,
+        endpoint="http://demo.example.com",
+        api_key="ak-demo",
+        message=None,
+        session=None,
+        region="cn-beijing-6",
+        local=False,
+        insecure=False,
+        transport="auto",
+        model=None,
+        show_thinking=False,
+    )
+
+    assert captured["session_id"] == "sess-from-state"
 
 
 def test_extract_content_supports_response_output_text_delta():

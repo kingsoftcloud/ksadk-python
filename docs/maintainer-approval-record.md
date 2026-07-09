@@ -11,7 +11,7 @@ PyPI publication.
 | License | Apache-2.0 |
 | Python repository | kingsoftcloud/ksadk-python |
 | Web UI repository | kingsoftcloud/ksadk-web |
-| Python package version | 0.6.8 |
+| Python package version | 0.6.9 |
 | Public docs URL | https://kingsoftcloud.github.io/ksadk-python/ |
 | Package metadata repository URL | https://github.com/kingsoftcloud/ksadk-python |
 | Package metadata documentation URL | https://kingsoftcloud.github.io/ksadk-python/ |
@@ -19,19 +19,19 @@ PyPI publication.
 
 ## Publication Strategy
 
-Record exactly one approved source publication strategy:
+Record exactly one approved source publication strategy.
 
 | Strategy | Approved |
 | --- | --- |
 | Reviewed GitHub pull request | No |
-| Clean export from reviewed candidate | No |
-| Rewritten Git history after secret scan | Yes |
+| Clean export from reviewed candidate | Yes |
+| Rewritten Git history after secret scan | No |
 
 The approved strategy must name the reviewed commit, tag, pull request, or
 export archive used for:
 
-- `ksadk-python`: rewritten public `new-main` candidate `3bbf295e4f27a4f7f6a8b8cdf76a17227ad40033`, verified by `make public-preflight KSADK_WEB_VERSION=0.2.16` and public source/dist audits.
-- `ksadk-web`: npm package `@kingsoftcloud/ksadk-web@0.2.16` (`latest` on 2026-07-03), bundled from npm during `make public-preflight KSADK_WEB_VERSION=0.2.16`.
+- `ksadk-python`: clean export candidate from reviewed internal commit `0ac219f0aea2214647f9a373537d39e27297c0ec`; local candidate directory `/tmp/ksadk-python-export-candidate-0.6.9-alias`; verified on 2026-07-08 with public source audit, release workflow contract tests, alias wheel/sdist build, twine check, and source/dist package audits. This candidate preserves the already-published `ksadk==0.6.9` release and adds trusted GitHub workflow support for publishing the compatibility alias package `agentengine-sdk-python==0.6.9`.
+- `ksadk-web`: npm package `@kingsoftcloud/ksadk-web@0.2.18` from commit `24551d0f290e5a4efc5b5d60d02fa298cccd2efa`; Python candidate commit `0ac219f0aea2214647f9a373537d39e27297c0ec`; published by the trusted GitHub npm workflow on 2026-07-08 and consumed from the npm registry during alias distribution verification.
 
 Both approved source references must include the current commit SHA at approval
 time. This prevents a stale approval record from passing after candidate
@@ -40,7 +40,7 @@ changes.
 ## Required Evidence Before Approval
 
 - `make public-preflight` exits successfully.
-- `make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.6.8` confirms
+- `make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.6.9` confirms
   the target version is not already on PyPI.
 - Branch protection and publish environment are configured according to
   `.github/BRANCH_PROTECTION.md`.
@@ -50,7 +50,7 @@ changes.
   Hermes/OpenClaw default images, long-task resume, and terminal reconnect are
   covered by the staging E2E evidence.
 - GitHub PR checks are green on the reviewed commit.
-- Release notes and `CHANGELOG.md` were reviewed.
+- Release notes and `CHANGELOG.md` were reviewed, including the concise 0.6.9 summary.
 - Public README and docs were reviewed for sensitive environment names,
   internal endpoints, tokens, customer data, and inaccurate competitor claims.
 - PyPI/TestPyPI credentials stay outside the repository.
@@ -59,6 +59,6 @@ changes.
 
 | Role | Name | Decision | Date |
 | --- | --- | --- | --- |
-| Maintainer | xiayu | Approved for one-time public main rewrite | 2026-07-03 |
-| Security reviewer | automated public audit | Passed source, wheel, and sdist audits with 0 violations | 2026-07-03 |
-| Release owner | xiayu | Approved GitHub Release / PyPI Trusted Publishing for 0.6.8 | 2026-07-03 |
+| Maintainer | xiayu | Approved clean export candidate for ksadk 0.6.9 | 2026-07-08 |
+| Security reviewer | automated public audit | Passed source, wheel, and sdist audits with 0 violations | 2026-07-08 |
+| Release owner | xiayu | Approved trusted GitHub PyPI and Pages workflow for 0.6.9 | 2026-07-08 |

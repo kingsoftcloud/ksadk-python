@@ -20,7 +20,7 @@ export const docs = defineDocs({
   },
 });
 
-// GitHub Pages serves under a base path (e.g. /veadk-python). Next prefixes
+// GitHub Pages serves under a base path (e.g. /ksadk-python). Next prefixes
 // `_next/` assets and next/link hrefs automatically, but NOT raw <img src>
 // from markdown. Prepend the base path to absolute image sources at build time.
 const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH || '';

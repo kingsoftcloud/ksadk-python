@@ -507,9 +507,12 @@ def run_invoke_command(
 
     # API Key
     api_key = api_key or latest_access.get("api_key") or state.get("api_key")
+    # 单次 --message 调用默认开新 session，避免复用 .agentengine.state 里长上下文
+    # 导致首包变慢；交互 TUI 与显式 --session 仍复用 / 指定 session。
+    is_single_shot = bool(message)
     session_id = (
         session
-        or (state.get("session_id") if reuse_state_session else None)
+        or (state.get("session_id") if (reuse_state_session and not is_single_shot) else None)
         or str(uuid.uuid4())[:8]
     )
 

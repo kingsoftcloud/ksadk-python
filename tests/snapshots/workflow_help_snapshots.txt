@@ -49,7 +49,7 @@ Options:
                                   部署目标 (default: serverless)
   -n, --name TEXT                 部署名称
   -r, --region TEXT               区域 (default: cn-beijing-6)
-  --account-id TEXT               金山云账号 ID
+  --account-id TEXT               金山云账号 ID（可选；未设置时从 AK/SK 反查）
   --artifact-type [Code|Container]
                                   Serverless 部署模式 (default: Code)
   --namespace TEXT                K8s 命名空间
@@ -110,7 +110,7 @@ Options:
                                   部署目标 (default: serverless)
   -n, --name TEXT                 部署名称
   -r, --region TEXT               区域 (serverless)
-  --account-id TEXT               金山云账号 ID
+  --account-id TEXT               金山云账号 ID（可选；未设置时从 AK/SK 反查）
   --observability / --no-observability
                                   是否启用可观测性
   --no-cache                      强制重新构建，不使用缓存

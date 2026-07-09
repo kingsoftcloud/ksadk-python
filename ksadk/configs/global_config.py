@@ -39,6 +39,9 @@ CONFIG_GROUPS = {
         "KSYUN_SECRET_KEY",
         "KSYUN_ACCOUNT_ID",
         "KSYUN_REGION",
+        # 反查身份缓存：{ak_fingerprint: {user_uuid, main_account_id, ...}}
+        # 嵌套对象，get_env_from_global_config 跳过它（不当 env-var），build 保留它
+        "IDENTITY_CACHE",
     ],
     # 未来可扩展更多分组
     # "observability": ["LANGFUSE_PUBLIC_KEY", ...],
@@ -133,11 +136,14 @@ def get_env_from_global_config() -> Dict[str, str]:
         return {}
 
     env_vars = {}
-    
+
     # 从各分组中提取环境变量
     for group_name, keys in CONFIG_GROUPS.items():
         group_config = config.get(group_name, {})
         for key in keys:
+            if key == "IDENTITY_CACHE":
+                # 嵌套对象，不作为 env-var 暴露（由 identity 模块直接读写）
+                continue
             if key in group_config and group_config[key]:
                 env_vars[key] = group_config[key]
 
@@ -156,14 +162,39 @@ def build_global_config_from_env(env_vars: Dict[str, str]) -> Dict[str, Any]:
         dict: 全局配置结构 (嵌套格式)
     """
     config = {}
-    
+
     # 按分组构建嵌套结构
     for group_name, keys in CONFIG_GROUPS.items():
         group_config = {}
         for key in keys:
+            if key == "IDENTITY_CACHE":
+                continue  # 由 identity 模块单独管理，不参与重建
             if key in env_vars and env_vars[key]:
                 group_config[key] = env_vars[key]
         if group_config:
             config[group_name] = group_config
+
+    # 保留现有 settings.json 里不在 CONFIG_GROUPS 的未知字段（含 IDENTITY_CACHE 嵌套对象）
+    # 避免 config set/wizard 保存时丢失 identity 缓存
+    existing = load_global_config()
+    if isinstance(existing, dict):
+        for group_name, group_config in existing.items():
+            if group_name == "version":
+                continue
+            if group_name not in CONFIG_GROUPS:
+                config[group_name] = group_config
+                continue
+            merged = dict(config.get(group_name) or {})
+            for key, value in (group_config or {}).items():
+                if key not in CONFIG_GROUPS[group_name] and key not in merged:
+                    merged[key] = value
+            if merged:
+                config[group_name] = merged
+        # 保留 IDENTITY_CACHE（在 cloud 组但非 env-var，重建会丢，这里补回）
+        existing_cloud = existing.get("cloud") or {}
+        if isinstance(existing_cloud.get("IDENTITY_CACHE"), dict):
+            cloud_config = dict(config.get("cloud") or {})
+            cloud_config["IDENTITY_CACHE"] = existing_cloud["IDENTITY_CACHE"]
+            config["cloud"] = cloud_config
 
     return config

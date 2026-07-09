@@ -42,11 +42,13 @@ class _AsyncStateAgent(_DummyAgent):
 
 
 class _Chunk:
-    def __init__(self, content="", reasoning_content=None):
+    def __init__(self, content="", reasoning_content=None, usage_metadata=None):
         self.content = content
         self.additional_kwargs = {}
         if reasoning_content is not None:
             self.additional_kwargs["reasoning_content"] = reasoning_content
+        if usage_metadata is not None:
+            self.usage_metadata = usage_metadata
 
 
 class _StreamingAgent(_DummyAgent):
@@ -154,14 +156,20 @@ class _SplitInlineThinkTagStreamingAgent(_DummyAgent):
 
 
 class _UsageMessage:
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        input_tokens: int = 8,
+        output_tokens: int = 13,
+        reasoning_tokens: int = 5,
+    ):
         self.content = "ok"
         self.usage_metadata = {
-            "input_tokens": 8,
-            "output_tokens": 13,
-            "total_tokens": 21,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
             "input_token_details": {},
-            "output_token_details": {"reasoning": 5},
+            "output_token_details": {"reasoning": reasoning_tokens},
         }
 
 
@@ -187,6 +195,183 @@ class _FinalOutputUsageStreamingAgent(_DummyAgent):
             "event": "on_chain_end",
             "name": "LangGraph",
             "data": {"output": {"answer": "final only", "messages": [_UsageMessage()]}},
+        }
+
+
+class _DroppedFinalStateUsageStreamingAgent(_DummyAgent):
+    async def ainvoke(self, state, config=None, context=None):
+        self.last_ainvoke_state = state
+        self.last_ainvoke_context = context
+        self.last_ainvoke_config = config
+        return {
+            "answer": "这是最终回复。",
+            "messages": [SimpleNamespace(content="final without usage")],
+        }
+
+    def get_state(self, config):
+        del config
+        return SimpleNamespace(values={"messages": [SimpleNamespace(content="final without usage")]})
+
+    async def astream_events(self, state, version="v2", config=None):
+        self.last_astream_state = state
+        self.last_astream_config = config
+        yield {
+            "event": "on_chat_model_stream",
+            "run_id": "llm-1",
+            "data": {"chunk": _Chunk(content="这是")},
+        }
+        yield {
+            "event": "on_chat_model_stream",
+            "run_id": "llm-1",
+            "data": {"chunk": _Chunk(content="最终回复。")},
+        }
+        yield {
+            "event": "on_chat_model_end",
+            "run_id": "llm-1",
+            "data": {"output": _UsageMessage()},
+        }
+        yield {
+            "event": "on_chain_end",
+            "name": "LangGraph",
+            "data": {
+                "output": {
+                    "answer": "这是最终回复。",
+                    "messages": [SimpleNamespace(content="final without usage")],
+                }
+            },
+        }
+
+
+class _MultipleModelUsageStreamingAgent(_DummyAgent):
+    def get_state(self, config):
+        del config
+        return SimpleNamespace(values={"messages": [SimpleNamespace(content="final without usage")]})
+
+    async def astream_events(self, state, version="v2", config=None):
+        self.last_astream_state = state
+        self.last_astream_config = config
+        yield {
+            "event": "on_chat_model_end",
+            "run_id": "llm-1",
+            "data": {
+                "output": _UsageMessage(
+                    input_tokens=4,
+                    output_tokens=6,
+                    reasoning_tokens=2,
+                )
+            },
+        }
+        yield {
+            "event": "on_chat_model_stream",
+            "run_id": "llm-2",
+            "data": {"chunk": _Chunk(content="final")},
+        }
+        yield {
+            "event": "on_chat_model_end",
+            "run_id": "llm-2",
+            "data": {
+                "output": _UsageMessage(
+                    input_tokens=8,
+                    output_tokens=10,
+                    reasoning_tokens=3,
+                )
+            },
+        }
+
+
+class _MissingRunIdCumulativeStreamUsageAgent(_DummyAgent):
+    def get_state(self, config):
+        del config
+        return SimpleNamespace(values={"messages": [SimpleNamespace(content="final")]})
+
+    async def astream_events(self, state, version="v2", config=None):
+        self.last_astream_state = state
+        self.last_astream_config = config
+        yield {
+            "event": "on_chat_model_stream",
+            "name": "ChatOpenAI",
+            "parent_ids": ["chain-1", "chunk-a"],
+            "data": {
+                "chunk": _Chunk(
+                    content="fi",
+                    usage_metadata={
+                        "input_tokens": 100,
+                        "output_tokens": 1,
+                        "total_tokens": 101,
+                    },
+                )
+            },
+        }
+        yield {
+            "event": "on_chat_model_stream",
+            "name": "ChatOpenAI",
+            "parent_ids": ["chain-1", "chunk-b"],
+            "data": {
+                "chunk": _Chunk(
+                    content="nal",
+                    usage_metadata={
+                        "input_tokens": 100,
+                        "output_tokens": 2,
+                        "total_tokens": 102,
+                    },
+                )
+            },
+        }
+
+
+class _InflatedEndUsageAfterStreamUsageAgent(_DummyAgent):
+    def get_state(self, config):
+        del config
+        return SimpleNamespace(values={"messages": [SimpleNamespace(content="final")]})
+
+    async def astream_events(self, state, version="v2", config=None):
+        self.last_astream_state = state
+        self.last_astream_config = config
+        yield {
+            "event": "on_chat_model_stream",
+            "name": "ChatOpenAI",
+            "run_id": "llm-1",
+            "data": {
+                "chunk": _Chunk(
+                    content="",
+                    usage_metadata={
+                        "input_tokens": 2873,
+                        "output_tokens": 55,
+                        "total_tokens": 2928,
+                        "input_token_details": {},
+                        "output_token_details": {"reasoning": 55},
+                    },
+                )
+            },
+        }
+        yield {
+            "event": "on_chat_model_stream",
+            "name": "ChatOpenAI",
+            "run_id": "llm-1",
+            "data": {
+                "chunk": _Chunk(
+                    content="final",
+                    usage_metadata={
+                        "input_tokens": 2873,
+                        "output_tokens": 99,
+                        "total_tokens": 2972,
+                        "input_token_details": {},
+                        "output_token_details": {"reasoning": 55},
+                    },
+                )
+            },
+        }
+        yield {
+            "event": "on_chat_model_end",
+            "name": "ChatOpenAI",
+            "run_id": "llm-1",
+            "data": {
+                "output": _UsageMessage(
+                    input_tokens=109174,
+                    output_tokens=1835,
+                    reasoning_tokens=1455,
+                )
+            },
         }
 
 
@@ -281,6 +466,30 @@ def _make_usage_state_streaming_runner() -> LangGraphRunner:
 def _make_final_output_usage_streaming_runner() -> LangGraphRunner:
     runner = _make_runner()
     runner._agent = _FinalOutputUsageStreamingAgent()
+    return runner
+
+
+def _make_dropped_final_state_usage_streaming_runner() -> LangGraphRunner:
+    runner = _make_runner()
+    runner._agent = _DroppedFinalStateUsageStreamingAgent()
+    return runner
+
+
+def _make_multiple_model_usage_streaming_runner() -> LangGraphRunner:
+    runner = _make_runner()
+    runner._agent = _MultipleModelUsageStreamingAgent()
+    return runner
+
+
+def _make_missing_run_id_cumulative_stream_usage_runner() -> LangGraphRunner:
+    runner = _make_runner()
+    runner._agent = _MissingRunIdCumulativeStreamUsageAgent()
+    return runner
+
+
+def _make_inflated_end_usage_after_stream_usage_runner() -> LangGraphRunner:
+    runner = _make_runner()
+    runner._agent = _InflatedEndUsageAfterStreamUsageAgent()
     return runner
 
 
@@ -530,6 +739,15 @@ async def test_stream_emits_final_usage_from_graph_state_after_text_stream():
             "input_token_details": {},
             "output_token_details": {"reasoning": 5},
         },
+        "metadata": {
+            "last_usage": {
+                "input_tokens": 8,
+                "output_tokens": 13,
+                "total_tokens": 21,
+                "input_token_details": {},
+                "output_token_details": {"reasoning": 5},
+            },
+        },
     }
 
 
@@ -557,7 +775,203 @@ async def test_stream_final_output_chunk_includes_usage_from_chain_end_output():
             "input_token_details": {},
             "output_token_details": {"reasoning": 5},
         },
+        "metadata": {
+            "last_usage": {
+                "input_tokens": 8,
+                "output_tokens": 13,
+                "total_tokens": 21,
+                "input_token_details": {},
+                "output_token_details": {"reasoning": 5},
+            },
+        },
     }
+
+
+@pytest.mark.asyncio
+async def test_stream_preserves_model_event_usage_when_final_state_drops_usage_metadata():
+    runner = _make_dropped_final_state_usage_streaming_runner()
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "sess-dropped-final-usage",
+                "input": "hello",
+            }
+        )
+    ]
+
+    assert chunks[-1] == {
+        "output": "这是最终回复。",
+        "type": "final",
+        "usage": {
+            "input_tokens": 8,
+            "output_tokens": 13,
+            "total_tokens": 21,
+            "input_token_details": {},
+            "output_token_details": {"reasoning": 5},
+        },
+        "metadata": {
+            "last_usage": {
+                "input_tokens": 8,
+                "output_tokens": 13,
+                "total_tokens": 21,
+                "input_token_details": {},
+                "output_token_details": {"reasoning": 5},
+            },
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_invoke_preserves_model_event_usage_when_final_state_drops_usage_metadata():
+    runner = _make_dropped_final_state_usage_streaming_runner()
+
+    result = await runner.invoke(
+        {
+            "session_id": "sess-dropped-final-usage-invoke",
+            "input": "hello",
+        }
+    )
+
+    assert result["output"] == "这是最终回复。"
+    assert result["usage"] == {
+        "input_tokens": 8,
+        "output_tokens": 13,
+        "total_tokens": 21,
+        "input_token_details": {},
+        "output_token_details": {"reasoning": 5},
+    }
+    assert result["metadata"]["last_usage"] == result["usage"]
+
+
+@pytest.mark.asyncio
+async def test_stream_accumulates_model_event_usage_across_agent_loop():
+    runner = _make_multiple_model_usage_streaming_runner()
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "sess-agent-loop-usage",
+                "input": "hello",
+            }
+        )
+    ]
+
+    assert chunks[-1] == {
+        "output": "final",
+        "type": "final",
+        "usage": {
+            "input_tokens": 12,
+            "output_tokens": 16,
+            "total_tokens": 28,
+            "output_token_details": {"reasoning": 5},
+        },
+        "metadata": {
+            "last_usage": {
+                "input_tokens": 8,
+                "output_tokens": 10,
+                "total_tokens": 18,
+                "input_token_details": {},
+                "output_token_details": {"reasoning": 3},
+            },
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_stream_does_not_accumulate_cumulative_usage_chunks_without_run_id():
+    runner = _make_missing_run_id_cumulative_stream_usage_runner()
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "sess-missing-run-id-stream-usage",
+                "input": "hello",
+            }
+        )
+    ]
+
+    assert chunks[-1] == {
+        "output": "final",
+        "type": "final",
+        "usage": {
+            "input_tokens": 100,
+            "output_tokens": 2,
+            "total_tokens": 102,
+            "input_token_details": {},
+            "output_token_details": {},
+        },
+        "metadata": {
+            "last_usage": {
+                "input_tokens": 100,
+                "output_tokens": 2,
+                "total_tokens": 102,
+                "input_token_details": {},
+                "output_token_details": {},
+            },
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_stream_prefers_latest_stream_usage_when_end_usage_is_inflated():
+    runner = _make_inflated_end_usage_after_stream_usage_runner()
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "sess-inflated-end-usage",
+                "input": "hello",
+            }
+        )
+    ]
+
+    assert chunks[-1] == {
+        "output": "final",
+        "type": "final",
+        "usage": {
+            "input_tokens": 2873,
+            "output_tokens": 99,
+            "total_tokens": 2972,
+            "input_token_details": {},
+            "output_token_details": {"reasoning": 55},
+        },
+        "metadata": {
+            "last_usage": {
+                "input_tokens": 2873,
+                "output_tokens": 99,
+                "total_tokens": 2972,
+                "input_token_details": {},
+                "output_token_details": {"reasoning": 55},
+            },
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_invoke_prefers_latest_stream_usage_when_end_usage_is_inflated():
+    runner = _make_inflated_end_usage_after_stream_usage_runner()
+
+    result = await runner.invoke(
+        {
+            "session_id": "sess-inflated-end-usage-invoke",
+            "input": "hello",
+        }
+    )
+
+    assert result["output"] == "final"
+    assert result["usage"] == {
+        "input_tokens": 2873,
+        "output_tokens": 99,
+        "total_tokens": 2972,
+        "input_token_details": {},
+        "output_token_details": {"reasoning": 55},
+    }
+    assert result["metadata"]["last_usage"] == result["usage"]
 
 
 @pytest.mark.asyncio

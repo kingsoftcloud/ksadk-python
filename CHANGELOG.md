@@ -5,6 +5,28 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [0.6.9] - 2026-07-07
+
+### 亮点
+
+- **控制台会话恢复更稳**：Session 直接返回活跃 run 的结构化状态，刷新、切会话和分享链接进入时不再依赖前端全量扫描事件流来猜测是否需要重连。
+- **checkpoint 恢复按钮更准**：`ListSessionCheckpoints` 返回可恢复 checkpoint 聚合结果，避免把终态、过期或禁用 checkpoint 误判成可恢复。
+- **长会话历史加载更可靠**：事件列表补齐向后增量续订和向前翻页语义，in-memory、SQLite、Postgres 后端保持一致，支持从最新窗口进入再加载更早历史。
+- **token usage 不再少算**：ADK、LangChain、LangGraph runner 会聚合同一轮里的多次模型调用，同时保留最后一次模型调用的 usage，便于服务端同时计算累计消耗和上下文窗口占用。
+- **公开发布门禁收敛**：公开仓 CI、源码审计、产物审计、Trusted Publishing 和 GitHub Pages 部署边界继续收紧，发版依赖 GitHub 可信流水线。
+
+### 变更
+
+- Session 响应新增活跃 run 的模式和触发来源字段，用于替代从事件流猜测运行形态的前端逻辑。
+- `run_status` 事件继续保持原 `content` 结构，新元数据写入 `metadata` / `state_delta.active_run`，避免破坏旧消费方。
+- Runtime event paging 的语义明确为：`AfterSeqId` 用于向后增量，`BeforeSeqId` 用于加载更早历史。
+
+### 修复
+
+- 修复多次 LLM 调用只统计最后一次 usage，导致会话累计 token 消耗少算的问题。
+- 修复 runtime 历史分页只靠 offset/limit，长会话首次打开、向上翻页和重连补事件容易错页的问题。
+- 修复 `SubscribeRunEvents` hosted/runtime 双链路续订语义不一致，断线重连可能重复消费旧事件的问题。
+
 ## [0.6.8] - 2026-07-03
 
 ### 亮点

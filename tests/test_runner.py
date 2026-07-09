@@ -961,13 +961,60 @@ async def test_adk_runner_invoke_extracts_usage_from_final_event(tmp_path, monke
     result = await runner.invoke({"session_id": "external-session", "input": "hello"})
 
     assert result["output"] == "ok"
+    # 累积后空 input_token_details 不保留(无意义),output_token_details 有值保留
     assert result["usage"] == {
         "input_tokens": 12,
         "output_tokens": 5,
         "total_tokens": 17,
-        "input_token_details": {},
         "output_token_details": {"reasoning": 2},
     }
+    # last_usage = 最后一次调用快照(单 event 时 = usage 自身)
+    assert result["metadata"]["last_usage"]["input_tokens"] == 12
+
+
+@pytest.mark.asyncio
+async def test_adk_runner_invoke_accumulates_usage_across_events(tmp_path, monkeypatch):
+    """多 event(agent loop 多次 LLM 调用)usage 累加,last_usage = 末个 event。"""
+    from google.genai import types
+    from ksadk.runners.adk_runner import ADKRunner
+
+    detection = SimpleNamespace(
+        entry_point="agent.py", agent_variable="root_agent", name="demo-agent",
+    )
+    runner = ADKRunner(detection, str(tmp_path))
+    runner._agent = SimpleNamespace(name="demo-agent")
+
+    class _FakeRunner:
+        async def run_async(self, *, session_id, user_id, new_message, state_delta=None, run_config=None):
+            del session_id, user_id, new_message, state_delta, run_config
+            # 两次 LLM 调用(tool loop):第一次 input=4000,第二次 input=5000(含历史)
+            yield SimpleNamespace(
+                usage_metadata={"input_tokens": 4000, "output_tokens": 100, "total_tokens": 4100},
+                content=SimpleNamespace(parts=[]),
+            )
+            yield SimpleNamespace(
+                usage_metadata={"input_tokens": 5000, "output_tokens": 800, "total_tokens": 5800,
+                                "input_token_details": {"cached": 4500}},
+                content=SimpleNamespace(parts=[types.Part(text="final")]),
+            )
+
+    async def _fake_ensure_session(external_session_id=None):
+        return "adk-session-accum"
+
+    monkeypatch.setattr(runner, "_ensure_session", _fake_ensure_session)
+    monkeypatch.setattr(runner, "_prepare_trace_metadata", lambda session_id: ("", [], "", "demo-agent"))
+    runner._runner = _FakeRunner()
+
+    result = await runner.invoke({"session_id": "external-session", "input": "hello"})
+
+    # 累积值:input/output/total 相加,details 逐键求和
+    assert result["usage"]["input_tokens"] == 9000
+    assert result["usage"]["output_tokens"] == 900
+    assert result["usage"]["total_tokens"] == 9900
+    assert result["usage"]["input_token_details"]["cached"] == 4500
+    # last_usage = 最后一次调用(窗口占用 = 末次 input)
+    assert result["metadata"]["last_usage"]["input_tokens"] == 5000
+    assert result["metadata"]["last_usage"]["input_token_details"]["cached"] == 4500
 
 
 @pytest.mark.asyncio
@@ -1012,14 +1059,16 @@ async def test_adk_runner_stream_extracts_usage_details_from_final_event(tmp_pat
 
     chunks = [chunk async for chunk in runner.stream({"session_id": "external-session", "input": "hello"})]
 
-    assert chunks[-1] == {
-        "output": "hello",
-        "type": "final",
-        "usage": {
-            "input_tokens": 12,
-            "output_tokens": 5,
-            "total_tokens": 17,
-            "input_token_details": {"cached": 4, "tool_use": 3},
-            "output_token_details": {"reasoning": 2},
-        },
+    final = chunks[-1]
+    assert final["output"] == "hello"
+    assert final["type"] == "final"
+    assert final["usage"] == {
+        "input_tokens": 12,
+        "output_tokens": 5,
+        "total_tokens": 17,
+        "input_token_details": {"cached": 4, "tool_use": 3},
+        "output_token_details": {"reasoning": 2},
     }
+    # last_usage = 最后一次调用快照
+    assert final["metadata"]["last_usage"]["input_tokens"] == 12
+    assert final["metadata"]["last_usage"]["input_token_details"]["cached"] == 4

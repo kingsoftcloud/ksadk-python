@@ -2,7 +2,7 @@
 
 本文档面向部署、运行、运维和 SDK 集成排障。它不是业务代码 `.env` 模板；业务方自己的变量，例如 `APP_ENV`、`DB_URL`、`CUSTOM_API_KEY`，只要不是 KsADK / 平台运行时读取的变量，都属于业务自定义变量，不在本文逐项维护。
 
-本文档基于当前 `feat/skill-runtime` 工作树和 `master` 分支源码扫描整理，覆盖 `ksadk/`、`deploy/`、`tests/` 中已经注册或常见可配置的运行时变量。测试专用变量、PID/marker/cache 等进程内部临时变量、镜像构建脚本内部常量不会逐项列入表格；如果要排查这些高级项，以对应脚本源码和模板 README 为准。
+本文档基于当前 `master` 分支源码扫描整理，覆盖 `ksadk/` 中已经注册或常见可配置的运行时变量。测试专用变量、PID/marker/cache 等进程内部临时变量、镜像构建脚本内部常量不会逐项列入表格；如果要排查这些高级项，以对应脚本源码和模板 README 为准。
 
 ## 1. 阅读规则
 
@@ -391,7 +391,7 @@
 
 ## 12. Hermes 和 OpenClaw 常见运行时变量
 
-Hermes / OpenClaw 有大量镜像启动和安全策略变量，本文只列常见运行时可配置项。`*_PID`、`*_MARKER`、`*_CACHE_DIR`、`*_SPEC`、`*_PLUGIN_ID`、`*_PATCH_ROOTS`、`*_READY_STATUSES` 等主要是脚本内部状态或模板常量，未逐项列出。完整模板变量以 `deploy/hermes/`、`deploy/openclaw/`、`deploy/openclaw-user-template/` 内 README 和 bootstrap 脚本为准。
+Hermes / OpenClaw 有大量镜像启动和安全策略变量，本文只列常见运行时可配置项。`*_PID`、`*_MARKER`、`*_CACHE_DIR`、`*_SPEC`、`*_PLUGIN_ID`、`*_PATCH_ROOTS`、`*_READY_STATUSES` 等主要是脚本内部状态或模板常量，未逐项列出。完整模板变量以 `agentengine-images` 仓库内 Hermes / OpenClaw / OpenClaw 用户镜像模板的 README 和 bootstrap 脚本为准（原 `deploy/hermes/`、`deploy/openclaw/`、`deploy/openclaw-user-template/` 已迁出本仓库）。
 
 | 变量 | 作用层级 | 是否必传 | 默认值 | 别名/兼容 | 敏感 | 配置方/来源 | 是否业务自定义 | 说明 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |

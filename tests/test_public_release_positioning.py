@@ -1,15 +1,36 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import subprocess
 import tomllib
+from urllib.parse import urlparse
 
 
 ROOT = Path(__file__).resolve().parents[1]
+DOCS_ROOT_URL = "https://kingsoftcloud.github.io/ksadk-python/"
+ZH_DOC_URLS = {
+    f"{DOCS_ROOT_URL}cn/docs/framework/getting-started/quickstart/",
+    f"{DOCS_ROOT_URL}cn/docs/framework/getting-started/why-ksadk/",
+    f"{DOCS_ROOT_URL}cn/docs/framework/getting-started/architecture/",
+    f"{DOCS_ROOT_URL}cn/docs/framework/getting-started/comparison/",
+    f"{DOCS_ROOT_URL}cn/docs/framework/guides/observability-tracing/",
+}
+EN_DOC_URLS = {
+    f"{DOCS_ROOT_URL}en/docs/framework/getting-started/quickstart/",
+    f"{DOCS_ROOT_URL}en/docs/framework/getting-started/why-ksadk/",
+    f"{DOCS_ROOT_URL}en/docs/framework/getting-started/architecture/",
+    f"{DOCS_ROOT_URL}en/docs/framework/getting-started/comparison/",
+    f"{DOCS_ROOT_URL}en/docs/framework/guides/observability-tracing/",
+}
 
 
 def _read(relative_path: str) -> str:
     return (ROOT / relative_path).read_text(encoding="utf-8")
+
+
+def _github_pages_urls(markdown: str) -> set[str]:
+    return set(re.findall(r"https://kingsoftcloud\.github\.io/ksadk-python/[^>\s)\"]*", markdown))
 
 
 def test_public_readme_positions_ksadk_as_runtime_platform():
@@ -41,10 +62,11 @@ def test_public_readme_positions_ksadk_as_runtime_platform():
 
 
 def test_public_readme_language_variants_keep_homepage_shape():
+    root_readme = _read("README.md")
     zh_readme = _read("README.zh-CN.md")
     en_readme = _read("README.en.md")
 
-    for text in (zh_readme, en_readme):
+    for text in (root_readme, zh_readme, en_readme):
         assert "Kingsoft Cloud Agent Development Kit" in text
         assert "ksadk-runtime-platform-hero-wide.png" in text
         assert "ksadk-web-ui-screenshot.png" in text
@@ -53,14 +75,72 @@ def test_public_readme_language_variants_keep_homepage_shape():
         assert "发布版本：" not in text
         assert "## 0.6." not in text
 
+    assert _github_pages_urls(root_readme) == {DOCS_ROOT_URL, *ZH_DOC_URLS}
+    assert _github_pages_urls(zh_readme) == {DOCS_ROOT_URL, *ZH_DOC_URLS}
+    assert _github_pages_urls(en_readme) == {DOCS_ROOT_URL, *EN_DOC_URLS}
+    for stale_path in (
+        "ksadk-python/getting-started/quickstart/",
+        "ksadk-python/guides/observability-tracing/",
+        "ksadk-python/en/getting-started/quickstart/",
+        "ksadk-python/en/guides/observability-tracing/",
+        "public-docs/assets/",
+    ):
+        assert stale_path not in root_readme
+        assert stale_path not in zh_readme
+        assert stale_path not in en_readme
+
+
+def test_public_readme_docs_links_match_fumadocs_routes():
+    docs_site = ROOT / "docs-site" / "content" / "docs"
+    checks = {
+        "README.md": "cn",
+        "README.zh-CN.md": "cn",
+        "README.en.md": "en",
+    }
+
+    for readme_path, expected_locale in checks.items():
+        text = _read(readme_path)
+        urls = _github_pages_urls(text)
+        docs_urls = [url for url in urls if "/docs/" in url]
+        assert docs_urls, f"{readme_path} should link to Fumadocs pages"
+        for url in docs_urls:
+            path = urlparse(url).path.removeprefix("/ksadk-python/").strip("/")
+            parts = path.split("/")
+            assert parts[0] == expected_locale
+            assert parts[1] == "docs"
+            doc_segments = parts[2:]
+            suffix = ".en.mdx" if expected_locale == "en" else ".mdx"
+            candidate = docs_site.joinpath(*doc_segments).with_suffix(suffix)
+            index_candidate = docs_site.joinpath(*doc_segments, f"index{suffix}")
+            assert candidate.exists() or index_candidate.exists(), url
+
+
+def test_legacy_deploy_and_examples_are_not_tracked_in_source_repo():
+    if not (ROOT / ".git").exists():
+        return
+
+    tracked = subprocess.run(
+        ["git", "ls-files", "deploy", "examples"],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    ).stdout
+    makefile = _read("Makefile")
+
+    assert tracked == ""
+    assert "-f deploy/hermes/Dockerfile" not in makefile
+    assert "-f deploy/openclaw/Dockerfile" not in makefile
+    assert "-f deploy/openclaw-user-template/Dockerfile" not in makefile
+
 
 def test_public_metadata_uses_runtime_platform_positioning():
     pyproject = tomllib.loads(_read("pyproject.toml"))
     init_text = _read("ksadk/__init__.py")
     version_text = _read("ksadk/version.py")
 
-    assert pyproject["project"]["version"] == "0.6.8"
-    assert 'VERSION = "0.6.8"' in version_text
+    assert pyproject["project"]["version"] == "0.6.9"
+    assert 'VERSION = "0.6.9"' in version_text
     assert "Agent Runtime Platform" in pyproject["project"]["description"]
     assert "Agent Runtime Platform" in init_text
     assert "Agent Development Kit" not in pyproject["project"]["description"]
@@ -92,13 +172,26 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "release:" in workflow
     assert "- published" in workflow
     assert "workflow_dispatch:" in workflow
-    assert 'default: "0.2.16"' in workflow
-    assert "KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.2.16' }}" in workflow
+    assert "publish_target:" in workflow
+    assert "alias-only" in workflow
+    assert 'default: "0.2.18"' in workflow
+    assert "approved_source_commit:" in workflow
+    assert "Reviewed source commit SHA recorded in docs/maintainer-approval-record.md" in workflow
+    assert "KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.2.18' }}" in workflow
+    assert "KSADK_APPROVED_SOURCE_COMMIT: ${{ github.event.inputs.approved_source_commit || vars.KSADK_APPROVED_SOURCE_COMMIT }}" in workflow
     assert "make sync-ksadk-web-static" in workflow
     assert "make public-preflight" in workflow
+    assert "make public-audit public-test public-build-alias-check" in workflow
     assert "make public-publish-gate" in workflow
+    assert "if: env.PUBLISH_TARGET == 'full'" in workflow
+    assert "Publish alias package to PyPI" in workflow
+    assert "packages-dir: dist-alias" in workflow
+    assert "github.event.inputs.publish_target != 'alias-only'" in workflow
     assert "make open-source-audit-dist" in ci_workflow
-    assert 'KSADK_WEB_VERSION: "0.2.16"' in ci_workflow
+    assert "make public-test" in ci_workflow
+    assert "tests/test_conversation_runtime.py" not in ci_workflow
+    assert "tests/test_server_session_app.py" not in ci_workflow
+    assert 'KSADK_WEB_VERSION: "0.2.18"' in ci_workflow
     assert "PUBLIC_KSADK_WEB_VERSION" not in ci_workflow
     assert "KSADK_WEB_VERSION ?= latest" in makefile
     assert "PUBLIC_TEST_TARGETS ?= tests/test_public_release_positioning.py tests/test_config_env_registry.py" in makefile
@@ -108,8 +201,11 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "public-release-approval-check:" in makefile
     assert "public-publish-gate: public-release-approval-check" in makefile
     assert "scripts/check_approval_record.py" in makefile
+    assert '--expected-current-commit "$${KSADK_APPROVED_SOURCE_COMMIT:-}"' not in makefile
+    assert "KSADK_APPROVED_SOURCE_COMMIT is required" in makefile
     assert "public-build-check: clean-dist sync-ksadk-web-static" in makefile
-    assert "public-preflight: public-version-gate public-audit sync-ksadk-web-static public-test public-docs-build public-build-check" in makefile
+    assert "public-preflight: public-version-gate public-audit sync-ksadk-web-static public-test docs-site-build public-build-check" in makefile
+    assert "NEXT_PUBLIC_BASE_PATH=/ksadk-python pnpm build:static" in makefile
     assert "PYPI_API_TOKEN" not in workflow
     assert "password:" not in workflow
 
@@ -135,20 +231,23 @@ def test_public_ci_runs_gitleaks_and_documents_branch_protection():
 def test_public_release_approval_template_tracks_current_version():
     approval_record = _read("docs/maintainer-approval-record.md")
 
-    assert "| Python package version | 0.6.8 |" in approval_record
-    assert "make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.6.8" in approval_record
+    assert "| Python package version | 0.6.9 |" in approval_record
+    assert "make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.6.9" in approval_record
 
 
 def test_source_repository_does_not_track_generated_ksadk_web_static():
     gitignore = _read(".gitignore")
     pyproject = _read("pyproject.toml")
-    web_ui_files = subprocess.run(
-        ["git", "ls-files", "ksadk/server/web-ui/**"],
-        cwd=ROOT,
-        check=True,
-        text=True,
-        stdout=subprocess.PIPE,
-    ).stdout
+    if (ROOT / ".git").exists():
+        web_ui_files = subprocess.run(
+            ["git", "ls-files", "ksadk/server/web-ui/**"],
+            cwd=ROOT,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        ).stdout
+    else:
+        web_ui_files = "\n".join(str(path.relative_to(ROOT)) for path in (ROOT / "ksadk/server/web-ui").glob("**/*") if path.is_file())
 
     assert "ksadk/server/static/**" in gitignore
     assert "ksadk/server/web-ui/" in gitignore

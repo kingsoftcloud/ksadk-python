@@ -46,15 +46,63 @@
           "type": "string",
           "description": "Optional LanceDB plugin dbPath override."
         },
+        "database_uri": {
+          "type": "string",
+          "description": "Database URI for LanceDB storage (e.g. s3://bucket/prefix). Mapped to dbPath when dbPath is absent."
+        },
         "embedding": {
           "type": "object",
           "description": "Optional LanceDB plugin embedding configuration.",
           "additionalProperties": true
         },
+        "embedding_provider": {
+          "type": "string",
+          "description": "Embedding provider for LanceDB (e.g. openai)."
+        },
+        "embedding_model": {
+          "type": "string",
+          "description": "Embedding model name for LanceDB."
+        },
+        "embedding_dimensions": {
+          "type": "integer",
+          "description": "Embedding vector dimensions for LanceDB."
+        },
+        "embedding_base_url": {
+          "type": "string",
+          "description": "Embedding provider base URL for LanceDB."
+        },
         "storageOptions": {
           "type": "object",
           "description": "Optional LanceDB plugin storage options.",
           "additionalProperties": true
+        },
+        "storage_endpoint": {
+          "type": "string",
+          "description": "S3-compatible storage endpoint URL. Mapped into storageOptions.endpoint."
+        },
+        "storage_region": {
+          "type": "string",
+          "description": "S3-compatible storage region. Mapped into storageOptions.region."
+        },
+        "storage_bucket": {
+          "type": "string",
+          "description": "S3-compatible storage bucket. Mapped into storageOptions.bucket."
+        },
+        "storage_prefix": {
+          "type": "string",
+          "description": "S3-compatible storage key prefix. Mapped into storageOptions.prefix."
+        },
+        "storage_access_key_id": {
+          "type": "string",
+          "description": "S3-compatible storage access key id. Mapped into storageOptions.accessKeyId."
+        },
+        "storage_secret_access_key": {
+          "type": "string",
+          "description": "S3-compatible storage secret access key. Mapped into storageOptions.secretAccessKey."
+        },
+        "storage_allow_http": {
+          "type": ["boolean", "string"],
+          "description": "Allow plain HTTP for S3-compatible storage. Mapped into storageOptions.allowHttp as a string (\"true\"/\"false\")."
         }
       }
     },

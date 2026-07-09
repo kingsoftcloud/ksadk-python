@@ -32,6 +32,7 @@ from ksadk.conversations.runtime import (
     extract_responses_resume_input,
     invoke_conversation_once,
     preview_auto_compaction,
+    _set_conversation_usage_attributes,
     stream_conversation_turn,
     stream_responses_conversation_turn,
 )
@@ -189,7 +190,24 @@ class _UsageStreamingRunner(_StreamingRunner):
                 "input_token_details": {"cached": 4},
                 "output_token_details": {"reasoning": 5},
             },
+            "metadata": {
+                "last_usage": {
+                    "input_tokens": 8,
+                    "output_tokens": 13,
+                    "total_tokens": 21,
+                    "input_token_details": {"cached": 4},
+                    "output_token_details": {"reasoning": 5},
+                },
+            },
         }
+
+
+class _FakeSpan:
+    def __init__(self):
+        self.attributes = {}
+
+    def set_attribute(self, key, value):
+        self.attributes[key] = value
 
 
 class _CheckpointMetadataStreamingRunner(_StreamingRunner):
@@ -2671,6 +2689,21 @@ async def test_stream_responses_conversation_turn_maps_ksadk_resume_to_runner_re
     await service.append_event(
         "sess-resume-stream",
         SessionEvent(
+            id="evt-background-status",
+            author="demo-agent",
+            event_type="run_status",
+            content={"status": "interrupted"},
+            metadata={
+                "status": "interrupted",
+                "run_mode": "background",
+                "run_trigger": "new_run",
+            },
+            invocation_id="inv-approval",
+        ),
+    )
+    await service.append_event(
+        "sess-resume-stream",
+        SessionEvent(
             id="evt-approval",
             author="demo-agent",
             event_type="approval_request",
@@ -2708,6 +2741,9 @@ async def test_stream_responses_conversation_turn_maps_ksadk_resume_to_runner_re
     assert any(chunk.startswith("event: response.completed\n") for chunk in chunks)
     events = await service.get_events("sess-resume-stream")
     assert "approval_response" in [event.event_type for event in events]
+    run_status_events = [event for event in events if event.event_type == "run_status"]
+    assert run_status_events[-1].metadata["run_mode"] == "background"
+    assert run_status_events[-1].metadata["run_trigger"] == "approval_resume"
 
 
 @pytest.mark.asyncio
@@ -2863,6 +2899,7 @@ async def test_stream_responses_conversation_turn_records_deferred_tools_from_to
             model="gpt-4o",
             prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
             session_service_provider=lambda: service,
+            run_mode="background",
         )
     ]
 
@@ -2875,6 +2912,10 @@ async def test_stream_responses_conversation_turn_records_deferred_tools_from_to
         and (event.metadata or {}).get("detail") == "deferred_tools_selected"
     ][-1]
     assert status.metadata["deferred_tool_names"] == ["read_workspace_file", "edit_workspace_file"]
+    assert status.metadata["run_mode"] == "background"
+    assert status.metadata["run_trigger"] == "new_run"
+    assert status.state_delta["active_run"]["run_mode"] == "background"
+    assert status.state_delta["active_run"]["run_trigger"] == "new_run"
 
 
 @pytest.mark.asyncio
@@ -3402,6 +3443,9 @@ async def test_stream_responses_turn_maps_function_call_output_without_pending_a
     events = await service.get_events("sess-tool-output")
     assert "tool_result" in [event.event_type for event in events]
     assert "approval_response" not in [event.event_type for event in events]
+    run_status_events = [event for event in events if event.event_type == "run_status"]
+    assert run_status_events[-1].metadata["run_mode"] == "foreground"
+    assert run_status_events[-1].metadata["run_trigger"] == "approval_resume"
 
 
 @pytest.mark.asyncio
@@ -3924,9 +3968,13 @@ async def test_checkpoint_resume_response_metadata_prefers_new_checkpoint(monkey
     assert [event.event_type for event in events if event.event_type.startswith("run_")] == [
         "run_resume",
         "run_status",
+        "run_status",
         "run_checkpoint",
         "run_status",
     ]
+    # resume 现在先写 run_status(resuming) 再写 run_status(in_progress)
+    run_statuses = [e.content["status"] for e in events if e.event_type == "run_status"]
+    assert run_statuses == ["resuming", "in_progress", "completed"]
 
 
 @pytest.mark.asyncio
@@ -3979,6 +4027,30 @@ async def test_invoke_conversation_once_preserves_runner_usage(monkeypatch):
         "output_token_details": {"reasoning": 5},
     }
     assert result["metadata"]["usage"] == result["usage"]
+
+
+def test_set_conversation_usage_attributes_writes_genai_and_llm_token_fields():
+    span = _FakeSpan()
+
+    _set_conversation_usage_attributes(
+        span,
+        {
+            "input_tokens": 2944,
+            "output_tokens": 69,
+            "total_tokens": 3013,
+            "input_token_details": {"cache_read": 1800},
+            "output_token_details": {"reasoning": 15},
+        },
+    )
+
+    assert span.attributes["gen_ai.usage.input_tokens"] == 2944
+    assert span.attributes["gen_ai.usage.output_tokens"] == 69
+    assert span.attributes["gen_ai.usage.total_tokens"] == 3013
+    assert span.attributes["gen_ai.usage.cache_read.input_tokens"] == 1800
+    assert span.attributes["gen_ai.usage.reasoning.output_tokens"] == 15
+    assert span.attributes["llm.usage.prompt_tokens"] == 2944
+    assert span.attributes["llm.usage.completion_tokens"] == 69
+    assert span.attributes["llm.usage.total_tokens"] == 3013
 
 
 def test_build_chat_completions_payload_uses_real_usage_from_metadata():
@@ -4081,7 +4153,13 @@ def test_build_responses_payload_uses_real_usage_from_metadata():
                 "output_tokens": 13,
                 "total_tokens": 21,
                 "output_token_details": {"reasoning": 5},
-            }
+            },
+            "last_usage": {
+                "input_tokens": 8,
+                "output_tokens": 13,
+                "total_tokens": 21,
+                "input_token_details": {"cached": 4},
+            },
         },
     )
 
@@ -4091,6 +4169,9 @@ def test_build_responses_payload_uses_real_usage_from_metadata():
         "total_tokens": 21,
         "output_token_details": {"reasoning": 5},
     }
+    # last_usage 透传到 metadata(供 server 取窗口占用)
+    assert payload["metadata"]["last_usage"]["input_tokens"] == 8
+    assert payload["metadata"]["last_usage"]["input_token_details"]["cached"] == 4
 
 
 @pytest.mark.asyncio
@@ -4121,9 +4202,13 @@ async def test_stream_conversation_turn_preserves_final_chunk_usage(monkeypatch)
         "input_token_details": {"cached": 4},
         "output_token_details": {"reasoning": 5},
     }
+    # last_usage 透传到 response.completed 的 metadata(供 server 取窗口占用)
+    assert completed_payload["metadata"]["last_usage"]["input_tokens"] == 8
+    assert completed_payload["metadata"]["last_usage"]["input_token_details"]["cached"] == 4
     events = await service.get_events("sess-stream-usage")
     assistant_event = next(event for event in events if event.event_type == "assistant_message")
     assert assistant_event.metadata["usage"] == completed_payload["usage"]
+    assert assistant_event.metadata["last_usage"]["input_tokens"] == 8
 
 
 @pytest.mark.asyncio
@@ -4271,7 +4356,9 @@ async def test_stream_checkpoint_resume_falls_back_to_original_run_id(monkeypatc
         for event in events
         if event.event_type == "run_status"
     ]
-    assert run_statuses == ["in_progress", "failed"]
+    # checkpoint resume 失败现在写 resume_failed（独立终态），而非 failed。
+    # 状态序列：resuming（build_run_input 补写）→ in_progress → resume_failed（失败改写）。
+    assert run_statuses == ["resuming", "in_progress", "resume_failed"]
 
 
 def test_build_history_from_events_prefers_latest_checkpoint_and_tail():

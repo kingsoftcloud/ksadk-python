@@ -34,6 +34,7 @@ def _run_main(monkeypatch, module, *, phase: str, version_exists: dict[tuple[str
         ],
     )
     monkeypatch.setattr(module, "_expect_http_ok", lambda name, url: None)
+    monkeypatch.setattr(module, "_expect_github_repo_homepage", lambda url, expected_docs_url: None)
     monkeypatch.setattr(
         module,
         "_github_release_tags",
@@ -98,6 +99,7 @@ def test_publication_state_fails_when_historical_github_release_is_missing(monke
         ],
     )
     monkeypatch.setattr(module, "_expect_http_ok", lambda name, url: None)
+    monkeypatch.setattr(module, "_expect_github_repo_homepage", lambda url, expected_docs_url: None)
     monkeypatch.setattr(module, "_github_release_tags", lambda url: {"v0.6.1", "v0.6.3"})
 
     with pytest.raises(RuntimeError, match="v0.6.2"):
@@ -203,6 +205,35 @@ def test_github_release_tags_falls_back_to_gh_cli_on_rate_limit(monkeypatch):
     assert module._github_release_tags(
         "https://api.github.com/repos/kingsoftcloud/ksadk-python/releases?per_page=100"
     ) == {"v0.6.5", "v0.6.4"}
+
+
+def test_publication_state_fails_when_github_homepage_points_elsewhere(monkeypatch):
+    module = _load_module()
+
+    def fake_open(_url):
+        return 200, b'{"homepage":"https://kingsoftcloud.github.io/ksadk-python/getting-started/quickstart/"}'
+
+    monkeypatch.setattr(module, "_open", fake_open)
+
+    with pytest.raises(RuntimeError, match="github repo homepage"):
+        module._expect_github_repo_homepage(
+            "https://api.github.com/repos/kingsoftcloud/ksadk-python",
+            "https://kingsoftcloud.github.io/ksadk-python/",
+        )
+
+
+def test_publication_state_accepts_github_homepage_without_trailing_slash(monkeypatch):
+    module = _load_module()
+
+    def fake_open(_url):
+        return 200, b'{"homepage":"https://kingsoftcloud.github.io/ksadk-python"}'
+
+    monkeypatch.setattr(module, "_open", fake_open)
+
+    module._expect_github_repo_homepage(
+        "https://api.github.com/repos/kingsoftcloud/ksadk-python",
+        "https://kingsoftcloud.github.io/ksadk-python/",
+    )
 
 
 def test_github_release_tags_falls_back_to_gh_cli_on_transient_server_error(monkeypatch):

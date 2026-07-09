@@ -1,7 +1,7 @@
 # AgentEngine Makefile
 # 用于同步 KsADK Web static 和管理项目
 
-.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate public-docs-build public-docs-site-build public-test public-build-check public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size docs-check-wiki docs-prepare-source docs-docker-build docs-docker-push docs-helm-lint docs-helm-template docs-deploy docs-deploy-all docs-status docs-logs sync-ksadk-web-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend
+.PHONY: help install clean clean-cache clean-dist clean-static clean-offline dev test publish publish-test public-status public-init-worktree public-worktree-status public-sync-check public-secret-audit public-audit public-version-gate docs-site-build docs-site-dev public-test public-build-check public-build-alias-check public-preflight public-publish-check public-release-approval-check public-publish-gate public-release-tag public-review public-sync-ksadk-web-static open-source-audit-dist open-source-audit-alias-dist openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size sync-ksadk-web-static sync-hosted-ui build-frontend build-webui sync-static webui build-wheel build-all clean-frontend
 
 # 默认目标
 help:
@@ -39,6 +39,8 @@ help:
 	@echo "    make public-release-tag V=x.y.z  创建公开 release 留痕 tag"
 	@echo "    make public-review        公开候选审核入口"
 	@echo "    make public-publish-check 发布状态核对"
+	@echo "    make docs-site-build      本地构建 Fumadocs 静态站点"
+	@echo "    make docs-site-dev        本地预览 Fumadocs 文档站"
 	@echo ""
 	@echo "  \033[1;32m离线打包:\033[0m"
 	@echo "    make offline-current     当前平台离线包"
@@ -51,11 +53,6 @@ help:
 	@echo "  \033[1;32mAgentEngine 镜像:\033[0m"
 	@echo "    Hermes / OpenClaw / Skill Runtime 镜像已迁移到内部 agentengine-images 仓库"
 	@echo "    可设置 AGENTENGINE_IMAGES_DIR=../agentengine-images 后继续使用兼容入口"
-	@echo ""
-	@echo "  \033[1;32mzread 文档站:\033[0m"
-	@echo "    make docs-deploy-all   构建原生 zread 文档镜像 + 推送 + 部署到预发"
-	@echo "    make docs-status       查看预发文档站状态"
-	@echo "    make docs-deploy-all ENV=online DOCS_VERSION=x  # 部署线上"
 	@echo ""
 	@echo "  \033[1;32m清理:\033[0m"
 	@echo "    make clean          清理构建产物和本地测试缓存"
@@ -350,16 +347,20 @@ public-audit: public-secret-audit
 	@python3 scripts/open_source_audit.py --target public-repo
 	@echo "✅ public path audit passed"
 
-public-docs-build: public-docs-site-build
-	@echo "==> docs build (Fumadocs docs-site)"
-
-# Fumadocs 文档站 (docs-site/) 构建 + 类型检查, 公开发布前验证
-public-docs-site-build:
+docs-site-build:
 	@echo "==> docs-site (Fumadocs) build"
 	@if [ -d "docs-site" ] && [ -f "docs-site/package.json" ]; then \
-		cd docs-site && pnpm install --frozen-lockfile && pnpm build; \
+		cd docs-site && pnpm install --frozen-lockfile && NEXT_PUBLIC_BASE_PATH=/ksadk-python pnpm build:static; \
 	else \
 		echo "⚠️  docs-site 不存在，跳过 Fumadocs build"; \
+	fi
+
+docs-site-dev:
+	@echo "==> docs-site (Fumadocs) dev server"
+	@if [ -d "docs-site" ] && [ -f "docs-site/package.json" ]; then \
+		cd docs-site && pnpm install --frozen-lockfile && pnpm dev; \
+	else \
+		echo "⚠️  docs-site 不存在，无法启动 Fumadocs dev server"; \
 	fi
 
 public-test:
@@ -376,6 +377,13 @@ public-build-check: clean-dist sync-ksadk-web-static
 	@uv run --extra dev python -m twine check dist/*
 	@$(MAKE) open-source-audit-dist
 
+public-build-alias-check: sync-ksadk-web-static
+	@echo "==> build and twine check alias distribution"
+	@rm -rf dist-alias
+	@uv run python scripts/build_alias_distribution.py --alias-project "$(PUBLIC_ALIAS_PYPI_PROJECT)" --out-dir dist-alias
+	@uv run --extra dev python -m twine check dist-alias/*
+	@$(MAKE) open-source-audit-alias-dist
+
 open-source-audit-dist:
 	@echo "==> audit wheel and sdist file lists"
 	@if ! ls dist/*.whl dist/*.tar.gz >/dev/null 2>&1; then \
@@ -385,11 +393,20 @@ open-source-audit-dist:
 	@python3 -c 'import glob, zipfile; [print(name) for path in sorted(glob.glob("dist/*.whl")) for name in zipfile.ZipFile(path).namelist()]' | python3 scripts/open_source_audit.py --target wheel --file-list -
 	@python3 -c 'import glob, tarfile; [print(name) for path in sorted(glob.glob("dist/*.tar.gz")) for name in tarfile.open(path).getnames()]' | python3 scripts/open_source_audit.py --target sdist --file-list -
 
+open-source-audit-alias-dist:
+	@echo "==> audit alias wheel and sdist file lists"
+	@if ! ls dist-alias/*.whl dist-alias/*.tar.gz >/dev/null 2>&1; then \
+		echo "❌ alias dist artifacts missing; run make public-build-alias-check first"; \
+		exit 1; \
+	fi
+	@python3 -c 'import glob, zipfile; [print(name) for path in sorted(glob.glob("dist-alias/*.whl")) for name in zipfile.ZipFile(path).namelist()]' | python3 scripts/open_source_audit.py --target wheel --file-list -
+	@python3 -c 'import glob, tarfile; [print(name) for path in sorted(glob.glob("dist-alias/*.tar.gz")) for name in tarfile.open(path).getnames()]' | python3 scripts/open_source_audit.py --target sdist --file-list -
+
 public-version-gate:
 	@echo "==> release version gate (prevent downgrade/re-publish)"
 	uv run python scripts/check_release_version.py
 
-public-preflight: public-version-gate public-audit sync-ksadk-web-static public-test public-docs-build public-build-check
+public-preflight: public-version-gate public-audit sync-ksadk-web-static public-test docs-site-build public-build-check
 	@echo "✅ public preflight passed"
 
 public-publish-check:
@@ -403,7 +420,12 @@ public-publish-check:
 
 public-release-approval-check:
 	@echo "==> release approval record check"
-	@uv run python scripts/check_approval_record.py --expected-current-commit "$${KSADK_APPROVED_SOURCE_COMMIT:-}"
+	@if [ -z "$${KSADK_APPROVED_SOURCE_COMMIT:-}" ]; then \
+		echo "❌ KSADK_APPROVED_SOURCE_COMMIT is required before external release writes"; \
+		echo "   Set it to the reviewed source commit recorded in docs/maintainer-approval-record.md"; \
+		exit 1; \
+	fi
+	@uv run python scripts/check_approval_record.py --expected-current-commit "$$KSADK_APPROVED_SOURCE_COMMIT"
 
 public-publish-gate: public-release-approval-check
 	@echo "✅ public publish gate passed"
@@ -528,123 +550,6 @@ openclaw-build openclaw-push openclaw-size hermes-build hermes-push hermes-size:
 		exit 1; \
 	fi
 	@$(MAKE) -C "$(AGENTENGINE_IMAGES_DIR)" $@
-
-
-# ============================================================
-# zread 文档站发布
-# ============================================================
-#
-# 依赖本地 .zread/wiki/current 指向的完整 wiki 版本。发布镜像会运行
-# zread browse 原生 UI，保留 zread 样式、前端交互和 Mermaid 渲染。
-#
-
-DOCS_PROJECT_NAME ?= ksadk-docs
-DOCS_DOCKER_REGISTRY ?= hub.kce.ksyun.com
-DOCS_DOCKER_NAMESPACE ?= bigdata-ai
-DOCS_WIKI_VERSION ?= $(shell test -f .zread/wiki/current && sed 's|^versions/||' .zread/wiki/current || echo missing-wiki)
-DOCS_VERSION ?= zread-$(DOCS_WIKI_VERSION)
-ENV ?= pre
-DOCS_FORCE_UPDATE ?= 0
-DOCS_FORCE_UPDATE_NONCE ?= $(shell date '+%Y%m%d%H%M%S')
-
-ifeq ($(ENV),online)
-	DOCS_KUBECONFIG_PATH := $(HOME)/.kube/agentengine-online
-	DOCS_VALUES_FILE := deploy/helm/ksadk-docs/values-online.yaml
-else
-	DOCS_KUBECONFIG_PATH := $(HOME)/.kube/agentengine-pre
-	DOCS_VALUES_FILE := deploy/helm/ksadk-docs/values-pre.yaml
-endif
-
-DOCS_IMAGE := $(DOCS_DOCKER_REGISTRY)/$(DOCS_DOCKER_NAMESPACE)/$(DOCS_PROJECT_NAME):$(DOCS_VERSION)
-DOCS_NAMESPACE ?= agentengine
-DOCS_HELM_RELEASE ?= ksadk-docs
-DOCS_HELM_CHART := deploy/helm/ksadk-docs
-DOCS_HELM_TIMEOUT ?= 600s
-DOCS_BASE_PATH ?= /ksadk-docs
-DOCS_BASE_IMAGE ?= hub.kce.ksyun.com/bigdata-ai/agentengine-server-base:v0.4.1
-DOCS_ZREAD_VERSION ?= 0.2.12
-DOCS_ZREAD_SHA256 ?= faf5ef7f2f8edc24d41b84fd838322882846f4bab10f1a9210de29cba2a53a10
-DOCS_HELM_SET_FLAGS := --set image.tag=$(DOCS_VERSION) --set docs.basePath=$(DOCS_BASE_PATH)
-
-ifeq ($(DOCS_FORCE_UPDATE),1)
-	DOCS_HELM_SET_FLAGS += --set-string podAnnotations.force-redeploy=$(DOCS_FORCE_UPDATE_NONCE)
-endif
-
-docs-check-wiki:
-	@if [ ! -f ".zread/wiki/current" ]; then \
-		echo "❌ 缺少 .zread/wiki/current，请先运行 zread generate -y --stdio"; \
-		exit 1; \
-	fi
-	@if [ ! -f ".zread/wiki/versions/$(DOCS_WIKI_VERSION)/wiki.json" ]; then \
-		echo "❌ 缺少 .zread/wiki/versions/$(DOCS_WIKI_VERSION)/wiki.json"; \
-		exit 1; \
-	fi
-	@python3 -c 'import json; from pathlib import Path; version = Path(".zread/wiki/current").read_text().strip().removeprefix("versions/"); root = Path(".zread/wiki/versions", version); wiki = json.loads((root / "wiki.json").read_text()); pages = wiki.get("pages") or []; assert pages, "wiki.json 中没有页面，拒绝发布"; missing = [p.get("file") for p in pages if not (root / p.get("file", "")).exists()]; print(f"✅ zread wiki: {version}, pages={len(pages)}, missing={len(missing)}"); [print(f"❌ 缺失页面文件: {name}") for name in missing]; raise SystemExit(1 if missing else 0)'
-	@if [ -f ".zread/wiki/drafts/wiki.json" ]; then \
-		echo "⚠️  检测到 .zread/wiki/drafts/wiki.json，本次仍发布 current 完整版本: $(DOCS_WIKI_VERSION)"; \
-	fi
-
-docs-prepare-source: docs-check-wiki
-	@python3 scripts/prepare_zread_source_snapshot.py
-
-docs-docker-build: docs-check-wiki docs-prepare-source
-	@echo "🐳 构建 KsADK 原生 zread 文档镜像: $(DOCS_IMAGE)"
-	@DOCKER_BUILDKIT=1 docker build --pull=false --platform linux/amd64 \
-		-f Dockerfile.docs \
-		--build-arg DOCS_BASE_IMAGE=$(DOCS_BASE_IMAGE) \
-		--build-arg ZREAD_VERSION=$(DOCS_ZREAD_VERSION) \
-		--build-arg ZREAD_SHA256=$(DOCS_ZREAD_SHA256) \
-		-t $(DOCS_IMAGE) \
-		.
-
-docs-docker-push: docs-docker-build
-	@echo "📤 推送 KsADK 文档镜像: $(DOCS_IMAGE)"
-	@docker push $(DOCS_IMAGE)
-
-docs-helm-lint:
-	@echo "==> helm lint $(DOCS_HELM_CHART)"
-	@helm lint $(DOCS_HELM_CHART)
-
-docs-helm-template:
-	@echo "==> helm template $(DOCS_HELM_RELEASE) ($(ENV))"
-	@helm template $(DOCS_HELM_RELEASE) $(DOCS_HELM_CHART) \
-		--namespace $(DOCS_NAMESPACE) \
-		--values $(DOCS_VALUES_FILE) \
-		$(DOCS_HELM_SET_FLAGS)
-
-docs-deploy: docs-helm-lint
-	@echo "==> helm upgrade --install $(DOCS_HELM_RELEASE) ($(ENV))"
-	@echo "    namespace=$(DOCS_NAMESPACE) image=$(DOCS_IMAGE) timeout=$(DOCS_HELM_TIMEOUT) force_update=$(DOCS_FORCE_UPDATE)"
-	@set -e; \
-	if helm upgrade --install $(DOCS_HELM_RELEASE) $(DOCS_HELM_CHART) \
-		--kubeconfig $(DOCS_KUBECONFIG_PATH) \
-		--namespace $(DOCS_NAMESPACE) \
-		--create-namespace \
-		--values $(DOCS_VALUES_FILE) \
-		$(DOCS_HELM_SET_FLAGS) \
-		--wait \
-		--timeout $(DOCS_HELM_TIMEOUT); then \
-		echo "==> deployment ready"; \
-		echo "==> url: http://$$(helm get values $(DOCS_HELM_RELEASE) --kubeconfig $(DOCS_KUBECONFIG_PATH) -n $(DOCS_NAMESPACE) -a -o json | python3 -c 'import json,sys; print(json.load(sys.stdin)["ingress"]["host"])')$(DOCS_BASE_PATH)/"; \
-	else \
-		status=$$?; \
-		echo "==> deployment failed, collecting diagnostics..."; \
-		kubectl --kubeconfig $(DOCS_KUBECONFIG_PATH) get deploy,pods,svc,ingress -n $(DOCS_NAMESPACE) -l app.kubernetes.io/name=$(DOCS_PROJECT_NAME) -o wide || true; \
-		latest_pod=$$(kubectl --kubeconfig $(DOCS_KUBECONFIG_PATH) get pods -n $(DOCS_NAMESPACE) -l app.kubernetes.io/name=$(DOCS_PROJECT_NAME) --sort-by=.metadata.creationTimestamp -o name 2>/dev/null | tail -n 1 | cut -d/ -f2); \
-		if [ -n "$$latest_pod" ]; then \
-			echo "==> latest pod: $$latest_pod"; \
-			kubectl --kubeconfig $(DOCS_KUBECONFIG_PATH) describe pod -n $(DOCS_NAMESPACE) "$$latest_pod" | sed -n '/Events:/,$$p' || true; \
-		fi; \
-		exit $$status; \
-	fi
-
-docs-deploy-all: docs-docker-push docs-deploy
-
-docs-status:
-	@kubectl --kubeconfig $(DOCS_KUBECONFIG_PATH) get pods,svc,ingress -n $(DOCS_NAMESPACE) -l app.kubernetes.io/name=$(DOCS_PROJECT_NAME)
-
-docs-logs:
-	@kubectl --kubeconfig $(DOCS_KUBECONFIG_PATH) logs -f -n $(DOCS_NAMESPACE) deployment/$(DOCS_HELM_RELEASE)
 
 
 

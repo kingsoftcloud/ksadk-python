@@ -48,6 +48,30 @@ def _expect_http_ok(name: str, url: str) -> None:
     print(f"{name}: HTTP {status}")
 
 
+def _normalize_url(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    path = parsed.path or "/"
+    if not path.endswith("/"):
+        path = f"{path}/"
+    return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))
+
+
+def _expect_github_repo_homepage(url: str, expected_docs_url: str) -> None:
+    status, body = _open(url)
+    if status != 200:
+        raise RuntimeError(f"github repo: 期望 HTTP 200，实际 {status}: {url}")
+    data = json.loads(body)
+    if not isinstance(data, dict):
+        raise RuntimeError("github repo: 响应不是 repo object")
+    homepage = str(data.get("homepage") or "")
+    if _normalize_url(homepage) != _normalize_url(expected_docs_url):
+        raise RuntimeError(
+            "github repo homepage 与文档地址不一致: "
+            f"homepage={homepage or '<empty>'}, expected={expected_docs_url}"
+        )
+    print(f"github repo homepage: {homepage}")
+
+
 def _pypi_project_version(project: str) -> str | None:
     url = f"https://pypi.org/pypi/{project}/json"
     try:
@@ -153,6 +177,10 @@ def main() -> int:
     parser.add_argument("--alias-project", default="agentengine-sdk-python")
     parser.add_argument("--docs-url", default="https://kingsoftcloud.github.io/ksadk-python/")
     parser.add_argument(
+        "--github-repo-url",
+        default="https://api.github.com/repos/kingsoftcloud/ksadk-python",
+    )
+    parser.add_argument(
         "--github-releases-url",
         default="https://api.github.com/repos/kingsoftcloud/ksadk-python/releases?per_page=100",
     )
@@ -164,6 +192,7 @@ def main() -> int:
     args = parser.parse_args()
 
     _expect_http_ok("docs", args.docs_url)
+    _expect_github_repo_homepage(args.github_repo_url, args.docs_url)
     required_tags = [tag.strip() for tag in args.required_release_tags.split(",") if tag.strip()]
     _expect_release_history(args.github_releases_url, required_tags)
 

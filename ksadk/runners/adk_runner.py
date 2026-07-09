@@ -19,6 +19,7 @@ from opentelemetry import trace
 from ksadk.conversations.attachments import classify_attachment_kind, read_attachment_uri_bytes
 from ksadk.conversations.model_context import supports_native_image_input
 from ksadk.runners.base_runner import BaseRunner
+from ksadk.runners.usage_accumulator import accumulate_usage
 from ksadk.sessions.continuity import ADKSessionAdapter
 
 logger = logging.getLogger(__name__)
@@ -746,7 +747,6 @@ class ADKRunner(BaseRunner):
         warnings.filterwarnings("ignore", category=UserWarning, module="pydantic.main")
 
         self._apply_json_patch()
-        self._apply_mcp_result_patch()
 
         # 添加项目目录到 Python 路径
         project_path = Path(self.project_dir).resolve()
@@ -766,7 +766,6 @@ class ADKRunner(BaseRunner):
 
         try:
             module = __import__(module_name, fromlist=[self.detection_result.agent_variable])
-            self._module = module
             self._agent = getattr(module, self.detection_result.agent_variable)
 
             # Inject safety instruction for DeepSeek/LLMs to prevent empty tool names
@@ -798,6 +797,7 @@ class ADKRunner(BaseRunner):
             self._inject_search_knowledge_tool()
 
         # 初始化 SessionService
+        from google.adk.runners import Runner
         from google.adk.sessions import InMemorySessionService
 
         if self._short_term_memory:
@@ -1543,11 +1543,13 @@ class ADKRunner(BaseRunner):
 
             events_list = []
             usage: dict[str, Any] = {}
+            last_usage: dict[str, Any] = {}
             async for event in wrapped_async:
                 events_list.append(event)
                 event_usage = self._extract_event_usage(event)
                 if event_usage:
-                    usage = event_usage
+                    usage = accumulate_usage(usage, event_usage)
+                    last_usage = event_usage  # 保留最后一个非空(窗口占用=最后一次 input)
                 if hasattr(event, "content") and event.content:
                     if hasattr(event.content, "parts"):
                         for part in event.content.parts:
@@ -1580,6 +1582,8 @@ class ADKRunner(BaseRunner):
             result = {"output": final_response, "events": events_list}
             if usage:
                 result["usage"] = usage
+                # last_usage = 最后一次 LLM 调用快照(input_tokens = 当前上下文窗口占用)
+                result.setdefault("metadata", {})["last_usage"] = last_usage
             return result
 
     async def stream(self, input_data: Dict[str, Any]) -> AsyncIterator[Dict[str, Any]]:
@@ -1642,6 +1646,9 @@ class ADKRunner(BaseRunner):
                 if is_resume and str(input_data.get("run_id") or "").strip()
                 else ""
             )
+            accumulated_text = ""
+            usage: dict[str, Any] = {}
+            last_usage: dict[str, Any] = {}
 
             # 使用 StreamingMode.SSE 启用真正的流式输出
             run_config = RunConfig(streaming_mode=StreamingMode.SSE)
@@ -1722,7 +1729,8 @@ class ADKRunner(BaseRunner):
             async for event in wrapped_async:
                 event_usage = self._extract_event_usage(event)
                 if event_usage:
-                    usage = event_usage
+                    usage = accumulate_usage(usage, event_usage)
+                    last_usage = event_usage  # 保留最后一个非空
                 # Only yield text delta if event is partial to avoid duplication of final summary
                 if hasattr(event, "content") and event.content and getattr(event, "partial", False):
                     if hasattr(event.content, "parts"):
@@ -1804,4 +1812,6 @@ class ADKRunner(BaseRunner):
             final_chunk: dict[str, Any] = {"output": accumulated_text, "type": "final"}
             if usage:
                 final_chunk["usage"] = usage
+                # last_usage = 最后一次 LLM 调用快照(input_tokens = 当前上下文窗口占用)
+                final_chunk.setdefault("metadata", {})["last_usage"] = last_usage
             yield final_chunk
