@@ -641,3 +641,27 @@ async def test_remote_runner_chat_completions_invoke_preserves_usage(monkeypatch
             "total_tokens": 21,
         },
     }
+
+
+@pytest.mark.asyncio
+async def test_remote_runner_chat_stream_parses_top_level_delta(monkeypatch):
+    """runtime 非标准简化流：SSE 直接发顶层 {"delta":"..."}（无 choices 包装），
+    RemoteRunner 应兜底提取为 text，否则 TUI 拿不到正文（只有 usage）。"""
+    import httpx
+
+    class TopLevelDeltaClient(_FakeAsyncClient):
+        stream_lines = [
+            'data: {"delta":"你"}',
+            'data: {"delta":"好"}',
+            'data: {"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}',
+            "data: [DONE]",
+        ]
+
+    monkeypatch.setattr(httpx, "AsyncClient", TopLevelDeltaClient)
+    runner = RemoteRunner(endpoint="https://agent.example.com", api_format="chat_completions")
+
+    chunks = [chunk async for chunk in runner.stream({"input": "hi"})]
+
+    text_chunks = [c["delta"] for c in chunks if c.get("type") == "text"]
+    assert text_chunks == ["你", "好"]
+    assert any(c.get("type") == "final" and c.get("usage", {}).get("total_tokens") == 7 for c in chunks)

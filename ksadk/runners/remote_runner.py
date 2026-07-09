@@ -429,6 +429,13 @@ class RemoteRunner(BaseRunner):
                                 if content:
                                     accumulated_text += content
                                     yield {"delta": content, "type": "text"}
+                            else:
+                                # 非标准简化流（runtime 直发顶层 delta，无 choices 包装）：
+                                # 兜底提取顶层 delta 作为正文，与 _extract_content 口径一致。
+                                top_delta = data.get("delta")
+                                if isinstance(top_delta, str) and top_delta:
+                                    accumulated_text += top_delta
+                                    yield {"delta": top_delta, "type": "text"}
 
                         except json.JSONDecodeError:
                             pass
