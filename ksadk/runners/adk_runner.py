@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, Mapping, Optional
 
+from importlib.metadata import version as _pkg_version, PackageNotFoundError
+
 from opentelemetry import trace
 
 from ksadk.conversations.attachments import classify_attachment_kind, read_attachment_uri_bytes
@@ -47,7 +49,9 @@ class ADKRunner(BaseRunner):
         self._runtime_toolsets: list[Any] = []
         # ADK resumability state
         self._resumable: bool = False
+        self._resume_disabled_reason: Optional[str] = None
         self._module = None
+        self._adk_resume_min_version = os.environ.get("GOOGLE_ADK_RESUME_MIN_VERSION", "1.16.0").strip()
         self._last_adk_invocation_id: Optional[str] = None
 
     async def close(self) -> None:
@@ -259,7 +263,10 @@ class ADKRunner(BaseRunner):
             "Durable": False,
             "SharedAcrossPods": False,
             "ResumeMode": "forward_only",
-            "Reason": "ADK ResumabilityConfig not enabled; set KSADK_ADK_RESUMABLE=1 or configure App with resumability_config",
+            "Reason": (
+                self._resume_disabled_reason
+                or "ADK ResumabilityConfig not enabled; set KSADK_ADK_RESUMABLE=1 or configure App with resumability_config"
+            ),
         }
 
     def get_runtime_capabilities(self) -> dict[str, Any]:
@@ -334,11 +341,51 @@ class ADKRunner(BaseRunner):
 
         return self._ResolvabilityResult(enabled=False, source="default", app=None)
 
+    @staticmethod
+    def _get_adk_version() -> Optional[str]:
+        """返回当前安装的 google-adk 版本号，无法获取时返回 None。"""
+        try:
+            return _pkg_version("google-adk")
+        except PackageNotFoundError:
+            return None
+
+    def _check_adk_resume_compatibility(self) -> tuple[bool, str]:
+        """检查当前 google-adk 版本是否支持恢复 (invocation_id)。
+
+        Returns:
+            (compatible, reason) — compatible=True 表示版本足够；reason 为不兼容时的说明文本。
+        """
+        adk_ver = self._get_adk_version()
+        if adk_ver is None:
+            # 无法获取版本信息，保守地认为不兼容
+            return False, "google-adk version unknown, cannot guarantee invocation_id support"
+        try:
+            from packaging.version import Version
+            if Version(adk_ver) < Version(self._adk_resume_min_version):
+                return (
+                    False,
+                    f"google-adk {adk_ver} < {self._adk_resume_min_version}, "
+                    f"run_async() does not accept invocation_id",
+                )
+        except Exception:
+            # packaging 不可用时，保守地认为不兼容
+            return False, "cannot compare google-adk version, assuming incompatible"
+        return True, ""
+
     def _build_runner(self) -> None:
         """构造 ADK Runner，优先使用 App 对象以启用 ResumabilityConfig。"""
         from google.adk.runners import Runner
 
         resumable = self._resolve_resumability()
+
+        # 版本兼容性检查：低于最低版本时强制关闭恢复
+        resume_compatible, resume_reason = self._check_adk_resume_compatibility()
+        if not resume_compatible and resumable.enabled:
+            logger.warning(
+                "ADKRunner: resumability disabled — %s", resume_reason
+            )
+            resumable = self._ResolvabilityResult(enabled=False, source="version_check", app=None)
+            self._resume_disabled_reason = resume_reason
 
         if resumable.app is not None:
             runner_kwargs = dict(
