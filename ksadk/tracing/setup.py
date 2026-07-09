@@ -174,6 +174,16 @@ def _has_nonzero_token_usage(usage: dict[str, int]) -> bool:
     return any(value > 0 for value in usage.values())
 
 
+def _instrumentation_scope_name(span: Any) -> str:
+    scope = getattr(span, "instrumentation_scope", None)
+    name = getattr(scope, "name", None)
+    if name:
+        return str(name)
+    info = getattr(span, "instrumentation_info", None)
+    name = getattr(info, "name", None)
+    return str(name or "")
+
+
 def _clone_span_with_attributes(span: Any, attributes: dict[str, Any]) -> Any:
     try:
         from opentelemetry.sdk.trace import ReadableSpan
@@ -196,6 +206,53 @@ def _clone_span_with_attributes(span: Any, attributes: dict[str, Any]) -> Any:
     except Exception:
         logger.debug("Failed to clone span for CloudMonitor token compatibility", exc_info=True)
         return span
+
+
+def _prepare_langfuse_spans(spans: Any) -> Any:
+    """Keep ksadk response usage authoritative for Langfuse exports.
+
+    OpenInference LangChain instrumentation can emit llm.token_count.* on nested
+    ChatOpenAI spans. In LangGraph streaming these counts can be cumulative and
+    disagree with the usage returned by ksadk to RunAgent/session state. When a
+    trace already has a ksadk.conversations span with gen_ai.usage.*, strip token
+    attrs from nested OpenInference LangChain spans before exporting to
+    Langfuse. The child spans remain useful for timing and structure, but cannot
+    pollute token accounting.
+    """
+    if not spans:
+        return spans
+    span_list = list(spans)
+    authoritative_trace_ids = {
+        _trace_id(span)
+        for span in span_list
+        if _trace_id(span) is not None
+        and _instrumentation_scope_name(span) == "ksadk.conversations"
+        and _has_nonzero_token_usage(_span_token_usage(span))
+    }
+    if not authoritative_trace_ids:
+        return spans
+
+    strip_prefixes = ("llm.token_count.", "llm.usage.", "gen_ai.usage.")
+    replacements: dict[int, Any] = {}
+    for span in span_list:
+        if _trace_id(span) not in authoritative_trace_ids:
+            continue
+        if _instrumentation_scope_name(span) != "openinference.instrumentation.langchain":
+            continue
+        attributes = dict(getattr(span, "attributes", None) or {})
+        stripped = {
+            key: value
+            for key, value in attributes.items()
+            if not any(str(key).startswith(prefix) for prefix in strip_prefixes)
+        }
+        if len(stripped) != len(attributes):
+            if str(stripped.get("openinference.span.kind") or "").upper() == "LLM":
+                stripped["openinference.span.kind"] = "CHAIN"
+            replacements[id(span)] = _clone_span_with_attributes(span, stripped)
+
+    if not replacements:
+        return spans
+    return [replacements.get(id(span), span) for span in span_list]
 
 
 def _prepare_cloud_monitor_spans(spans: Any) -> Any:
@@ -634,6 +691,11 @@ def setup_tracing(
                 endpoint=generic_otlp_config["endpoint"],
                 service_name=_get_service_name(),
                 header_keys=sorted(generic_otlp_config["headers"]),
+                span_transform=(
+                    _prepare_langfuse_spans
+                    if _is_langfuse_otlp_endpoint(generic_otlp_config["endpoint"])
+                    else None
+                ),
             )
             provider.add_span_processor(
                 BatchSpanProcessor(
@@ -721,6 +783,7 @@ def setup_tracing(
                     endpoint=config["endpoint"],
                     service_name=_get_service_name(),
                     header_keys=sorted(config["headers"]),
+                    span_transform=_prepare_langfuse_spans,
                 )
                 provider.add_span_processor(
                 BatchSpanProcessor(
