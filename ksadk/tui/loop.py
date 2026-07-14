@@ -1,19 +1,123 @@
-"""Agent TUI based on a full-screen prompt_toolkit application.
+"""Agent TUI based on a Codex-style inline prompt_toolkit application.
 
-Transcript 使用 ANSI 保留 rich 颜色和 Markdown 落定格式，底部提供可编辑输入框
-和状态栏。支持键盘/鼠标滚动、流式跟底、输入排队及 ``--no-alt-screen``。
+Transcript 使用 ANSI 保留 rich 颜色和 Markdown 落定格式，composer 紧跟内容，
+终端原生 scrollback 保留。支持键盘滚动、流式跟底和输入排队。
 """
 from __future__ import annotations
 
 import asyncio
 import json
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
 from prompt_toolkit.completion import Completer
+
 from ksadk.tui.stream_render import clean_response, extract_stream_delta
+
+_TERMINAL_BG_PROBED = False
+_TERMINAL_BG: tuple[int, int, int] | None = None
+
+
+def _parse_terminal_rgb(response: str) -> tuple[int, int, int] | None:
+    """Parse OSC 11 ``rgb:rrrr/gggg/bbbb`` or ``#rrggbb`` responses."""
+    import re
+
+    match = re.search(r"(?:rgb:)([0-9a-fA-F]+)/([0-9a-fA-F]+)/([0-9a-fA-F]+)", response)
+    if match:
+        channels: list[int] = []
+        for value in match.groups():
+            maximum = (16 ** len(value)) - 1
+            channels.append(int(int(value, 16) / maximum * 255) if maximum else 0)
+        return channels[0], channels[1], channels[2]
+    match = re.search(r"#([0-9a-fA-F]{6})", response)
+    if match:
+        value = match.group(1)
+        return int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16)
+    return None
+
+
+def _terminal_background() -> tuple[int, int, int] | None:
+    """Query the terminal default background using the same OSC 11 signal as Codex."""
+    global _TERMINAL_BG, _TERMINAL_BG_PROBED
+    if _TERMINAL_BG_PROBED:
+        return _TERMINAL_BG
+    _TERMINAL_BG_PROBED = True
+
+    try:
+        import fcntl
+        import os
+        import select
+        import sys
+        import termios
+        import tty
+
+        if os.name != "posix" or os.getenv("TERM", "") == "dumb":
+            return None
+        if not sys.stdin.isatty() or not sys.stdout.isatty():
+            return None
+        fd = sys.stdin.fileno()
+        previous_termios = termios.tcgetattr(fd)
+        previous_flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+        data = bytearray()
+        try:
+            tty.setcbreak(fd)
+            fcntl.fcntl(fd, fcntl.F_SETFL, previous_flags | os.O_NONBLOCK)
+            sys.stdout.write("\x1b]11;?\x1b\\")
+            sys.stdout.flush()
+            deadline = time.monotonic() + 0.12
+            while time.monotonic() < deadline:
+                readable, _, _ = select.select([fd], [], [], deadline - time.monotonic())
+                if not readable:
+                    break
+                try:
+                    chunk = os.read(fd, 128)
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    break
+                data.extend(chunk)
+                if b"\x07" in data or b"\x1b\\" in data:
+                    break
+        finally:
+            fcntl.fcntl(fd, fcntl.F_SETFL, previous_flags)
+            termios.tcsetattr(fd, termios.TCSADRAIN, previous_termios)
+        _TERMINAL_BG = _parse_terminal_rgb(data.decode("ascii", errors="ignore"))
+    except Exception:
+        _TERMINAL_BG = None
+    return _TERMINAL_BG
+
+
+def _codex_surface_rgb(
+    background: tuple[int, int, int] | None,
+    *,
+    composer: bool = False,
+) -> tuple[int, int, int] | None:
+    """Match Codex's user-message/composer surface blend for light and dark terminals."""
+    if background is None:
+        return None
+    r, g, b = background
+    is_light = (0.299 * r + 0.587 * g + 0.114 * b) > 128.0
+    top = (0, 0, 0) if is_light else (255, 255, 255)
+    # Keep Codex's 4% user-message blend. The composer spans the whole width,
+    # so 4% black on a light terminal is visually imperceptible; 8% gives the
+    # input surface a stable edge without introducing a border.
+    alpha = 0.08 if is_light and composer else 0.04 if is_light else 0.12
+    return tuple(int(top[i] * alpha + background[i] * (1.0 - alpha)) for i in range(3))
+
+
+def _codex_surface_style(background: tuple[int, int, int] | None) -> str:
+    blended = _codex_surface_rgb(background, composer=True)
+    if blended is None:
+        return ""
+    return f"bg:#{blended[0]:02x}{blended[1]:02x}{blended[2]:02x}"
+
+
+def _terminal_clear_sequence() -> str:
+    """Reset the inline viewport and purge terminal scrollback, like Codex ``/clear``."""
+    return "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H"
 
 
 class InterruptPending(Exception):
@@ -199,6 +303,7 @@ class SlashCommandCompleter(Completer):
         "/clear": "clear transcript",
         "/session": "show session id",
         "/model": "show/switch model",
+        "/tools": "toggle tool details",
         "/help": "show commands",
     }
 
@@ -229,11 +334,9 @@ class SlashCommandCompleter(Completer):
 class RichLiveRenderer:
     """Renderer adapter used by `render_stream` inside the inline TUI。
 
-    streaming 期间：assistant 文本 + 到达的 tool 行一起在动态区累积显示
-    （tool 就地出现在文本流里，用户能看到工具在跑）。
-    turn 结束：整条 assistant 文本落定为 assistant entry，各 tool 行按到达
-    顺序追加落定为 tool entries（穿插位置以 streaming 期动态区为准，落定后
-    tool 跟在 assistant 文本之后——对“先思考再调工具”的 agent 顺序自然）。
+    文本和工具事件按到达顺序保存在 ``_ordered_entries``。同一个 call_id 的
+    running/result 更新原位置，工具后的新文本进入新的 assistant 段，因此落定
+    后不会把已完成工具统一搬到最终回复下面。
     """
 
     def __init__(
@@ -247,14 +350,20 @@ class RichLiveRenderer:
         self.assistant_entry = assistant_entry
         self.show_thinking = show_thinking
         self._tool_entries: list[TranscriptEntry] = []
+        self._ordered_entries: list[TranscriptEntry] = []
+        self._tool_entries_by_key: dict[str, TranscriptEntry] = {}
+        self._active_text_entry: TranscriptEntry | None = None
+        self._last_full_text = ""
 
     def _compose_streaming(self) -> str:
-        parts = []
-        if self.assistant_entry is not None and self.assistant_entry.content:
-            parts.append(self.assistant_entry.content)
-        for te in self._tool_entries:
-            # streaming 期 tool 就地显示（对标 Codex 单 bullet）：• tool_name [status]
-            name = (te.content or "").split("\n", 1)[0]
+        parts: list[str] = []
+        for entry in self._ordered_entries:
+            if entry.role == "assistant":
+                if entry.content:
+                    parts.append(entry.content)
+                continue
+            # streaming 期 tool 就地显示；完成态仍更新同一行，不改变事件位置。
+            name = (entry.content or "").split("\n", 1)[0]
             parts.append(f"• {name}")
         return "\n".join(parts)
 
@@ -262,6 +371,26 @@ class RichLiveRenderer:
         if self.loop is not None and self.assistant_entry is not None:
             self.assistant_entry.content = full_text
             self.assistant_entry.status = "streaming"
+            if full_text.startswith(self._last_full_text):
+                delta = full_text[len(self._last_full_text):]
+            else:
+                # A final/snapshot event can replace the cumulative text. Preserve
+                # ordering when possible; without tools it is safe to replace the
+                # sole assistant segment directly.
+                delta = full_text
+                if not self._tool_entries:
+                    self._ordered_entries.clear()
+                    self._active_text_entry = None
+            if delta:
+                if self._active_text_entry is None:
+                    self._active_text_entry = TranscriptEntry(
+                        role="assistant",
+                        content="",
+                        status="streaming",
+                    )
+                    self._ordered_entries.append(self._active_text_entry)
+                self._active_text_entry.content += delta
+            self._last_full_text = full_text
             self.loop._set_streaming(self._compose_streaming())
 
     async def on_thinking(self, full_thinking: str) -> None:
@@ -279,15 +408,17 @@ class RichLiveRenderer:
         # 同一调用按 call_id 覆盖（running → result 状态变化）；无 call_id 回退按 name 覆盖。
         # 不同 call_id（同名多次调用）各自追加，不互相覆盖。
         merge_key = call_id or tool_name
-        replaced = False
-        for i, te in enumerate(self._tool_entries):
-            existing_key = te._tool_call_id or (te.content.split(" [")[0] if " [" in te.content else te.content)
-            if existing_key == merge_key:
-                self._tool_entries[i] = entry
-                replaced = True
-                break
-        if not replaced:
+        existing = self._tool_entries_by_key.get(merge_key)
+        if existing is None:
             self._tool_entries.append(entry)
+            self._ordered_entries.append(entry)
+            self._tool_entries_by_key[merge_key] = entry
+            # The next text delta belongs after this tool event.
+            self._active_text_entry = None
+        else:
+            existing.content = entry.content
+            existing.status = entry.status
+            entry = existing
         entry._tool_call_id = merge_key  # type: ignore[attr-defined]
         # tool 行立即进动态区（就地在文本流里显示），不中途落定避免时序错乱。
         self.loop._set_streaming(self._compose_streaming())
@@ -307,9 +438,42 @@ class RichLiveRenderer:
         if self.loop is not None:
             self.loop._clear_streaming()
 
+    def final_entries(self, response: str) -> list[TranscriptEntry]:
+        """Return finalized display cells in the original stream event order."""
+        if response and response.startswith(self._last_full_text):
+            delta = response[len(self._last_full_text):]
+            if delta:
+                if self._active_text_entry is None:
+                    self._active_text_entry = TranscriptEntry(role="assistant")
+                    self._ordered_entries.append(self._active_text_entry)
+                self._active_text_entry.content += delta
+        elif response and not self._tool_entries:
+            if self._ordered_entries:
+                self._ordered_entries[0].content = response
+            else:
+                self._ordered_entries.append(TranscriptEntry(role="assistant", content=response))
+
+        assistants = [entry for entry in self._ordered_entries if entry.role == "assistant"]
+        if self.assistant_entry is not None and self.assistant_entry.thinking:
+            if not assistants:
+                thinking_entry = TranscriptEntry(role="assistant")
+                self._ordered_entries.insert(0, thinking_entry)
+                assistants = [thinking_entry]
+            assistants[0].thinking = self.assistant_entry.thinking
+        if self.assistant_entry is not None and self.assistant_entry.usage and assistants:
+            assistants[-1].usage = self.assistant_entry.usage
+
+        for entry in assistants:
+            entry.status = ""
+        return [
+            entry
+            for entry in self._ordered_entries
+            if entry.role != "assistant" or entry.content or entry.thinking
+        ]
+
 
 class InteractionLoop:
-    """Full-screen prompt_toolkit interaction loop."""
+    """Inline Codex-style prompt_toolkit interaction loop."""
 
     def __init__(
         self,
@@ -330,6 +494,8 @@ class InteractionLoop:
         self._model_name = _resolve_model_name(runner)
         self._queued_inputs: list[QueuedInput] = []
         self._active_task: Any = None
+        self._status_refresh_task: Any = None
+        self._turn_started_at: float | None = None
         self._pending_interrupt: tuple[InterruptPending, dict[str, Any]] | None = None
         self._app = None
         self._input_buffer = None
@@ -340,9 +506,13 @@ class InteractionLoop:
         self._user_scroll = 0  # 用户手动滚动位置（pin bottom 时忽略）
         self._pin_to_bottom = True
         self._last_max_scroll = 0
+        self._history_pager_active = False
         self._entry_ansi_cache: dict[int, str] = {}  # 历史 entries ANSI 缓存（避免 streaming 全量重渲）
         self._last_usage: dict[str, Any] | None = None
         self._showed_help = False  # 首次运行显示帮助列表
+        self._welcome_ansi: str | None = None
+        self._emitted_entry_ids: set[int] = set()
+        self._show_tool_details = False
         # 交互式模型选择器状态
         self._model_picker_active = False
         self._model_picker_index = 0
@@ -353,15 +523,65 @@ class InteractionLoop:
 
     async def run_async(self) -> None:
         app = self._build_application()
+        self._print_initial_history(app)
         await app.run_async()
+
+    def _print_initial_history(self, app) -> None:
+        """Write the startup card and any preloaded entries once before live rendering."""
+        from prompt_toolkit.formatted_text import ANSI
+
+        chunks = [self._welcome_history_ansi()]
+        for entry in self._entries:
+            chunks.append(self._history_entry_ansi(entry))
+            self._emitted_entry_ids.add(id(entry))
+        app.print_text(ANSI("\n".join(chunks)))
+
+    def _welcome_history_ansi(self) -> str:
+        if self._welcome_ansi is None:
+            self._welcome_ansi = _welcome_block(
+                self.session_id,
+                self._current_model_name(),
+                self.project_dir,
+                show_help=True,
+            )
+            self._showed_help = True
+        return self._welcome_ansi
+
+    def _history_entry_ansi(self, entry: TranscriptEntry) -> str:
+        key = id(entry)
+        ansi = self._entry_ansi_cache.get(key)
+        if ansi is None:
+            ansi = _render_entry_ansi(
+                entry,
+                show_thinking=self.show_thinking,
+                show_tool_details=self._show_tool_details,
+            )
+            self._entry_ansi_cache[key] = ansi
+        return ansi.rstrip("\n")
+
+    async def _emit_history_entry(self, entry: TranscriptEntry) -> None:
+        """Commit one history cell above the live prompt, matching Codex scrollback."""
+        from prompt_toolkit.application import run_in_terminal
+        from prompt_toolkit.formatted_text import ANSI
+
+        if id(entry) in self._emitted_entry_ids:
+            return
+        self._emitted_entry_ids.add(id(entry))
+        if self._app is not None and self._app.is_running:
+            await run_in_terminal(
+                lambda: self._app.print_text(ANSI(self._history_entry_ansi(entry) + "\n"))
+            )
 
     def _build_application(self):
         from prompt_toolkit.application import Application
         from prompt_toolkit.buffer import Buffer
+        from prompt_toolkit.cursor_shapes import CursorShape
+        from prompt_toolkit.filters import Condition
         from prompt_toolkit.history import InMemoryHistory
         from prompt_toolkit.key_binding import KeyBindings
         from prompt_toolkit.layout import Layout
         from prompt_toolkit.layout.containers import (
+            ConditionalContainer,
             Float,
             FloatContainer,
             HSplit,
@@ -371,6 +591,7 @@ class InteractionLoop:
         from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
         from prompt_toolkit.layout.dimension import Dimension
         from prompt_toolkit.layout.menus import CompletionsMenu
+        from prompt_toolkit.layout.processors import AfterInput, ConditionalProcessor
         from prompt_toolkit.styles import Style
 
         self._input_buffer = Buffer(
@@ -380,94 +601,162 @@ class InteractionLoop:
             history=InMemoryHistory(),
         )
 
-        # transcript 区：FormattedTextControl + ANSI 保留 rich 颜色。wrap_lines=True
-        # 下 prompt_toolkit 用 cursor 驱动滚动（_scroll_when_linewrapping），get_vertical_scroll
-        # 回调在该模式不生效。用 get_cursor_position：pin bottom → cursor 末行（跟底），
-        # 用户翻上去 → cursor 视口顶（保持）。左缩进 2 列。
-        # transcript：wrap_lines=False（rich 已按窗口 width 预折行）+ get_vertical_scroll
-        # transcript：wrap_lines=True（prompt_toolkit 按当前宽度折行，resize 适配）+
-        # get_cursor_position 驱动滚动（pin bottom → cursor 末行跟底；用户翻 → cursor 视口顶）。
-        # wrap_lines=False 会让 rich 固定 width 折行，resize 缩小内容消失，不可用。
+        # Codex uses an inline, content-first viewport: short transcripts keep
+        # the composer directly below the content and a filler absorbs the rest
+        # of the terminal. Long transcripts shrink to the available viewport.
+        self._transcript_height = lambda: Dimension(
+            min=1,
+            preferred=self._transcript_line_count(),
+            max=self._transcript_line_count(),
+        )
         self._transcript_window = Window(
             FormattedTextControl(
                 self._transcript_fragments,
                 get_cursor_position=self._transcript_cursor,
                 show_cursor=False,
             ),
+            height=self._transcript_height,
             wrap_lines=True,
             allow_scroll_beyond_bottom=True,
             style="class:transcript",
         )
-        self._transcript_window_left = Window(width=2, char=" ", style="class:transcript")
+        self._transcript_window_left = Window(
+            width=2,
+            height=self._transcript_height,
+            char=" ",
+            style="class:transcript",
+        )
         transcript_row = VSplit([self._transcript_window_left, self._transcript_window])
 
-        # 输入框上分隔线（可视分隔 transcript 与输入框，对标 Codex bottom pane 边界）
-        separator = Window(char="─", height=1, style="class:separator")
-
-        # 输入框：左 › 提示符 + BufferControl。高度 = 文字行数（min 1），不强制 min 3
-        # （Codex 的 3 行含 padding；我们用分隔线代替上 padding，故 1 行内容即可）。
+        # Codex composer: a three-row input band, with the prompt vertically
+        # centered and a muted placeholder while the buffer is empty.
         prompt_window = Window(
             FormattedTextControl(lambda: [("class:prompt", "› ")]),
             width=2,
             dont_extend_width=True,
         )
-        # 输入框高度 = 文字行数（min 1,封顶 4），max 紧贴 preferred，避免 HSplit 在
-        # transcript 内容少时把多余空间塞给输入框撑高它（Codex 输入框也只随内容长）。
-        self._input_height = lambda: Dimension(min=1, preferred=self._input_display_height(), max=max(1, self._input_display_height()))
-        input_window = Window(
-            BufferControl(buffer=self._input_buffer),
+        self._input_height = lambda: Dimension(
+            min=1,
+            preferred=self._input_display_height(),
+            max=max(1, self._input_display_height()),
+        )
+        placeholder = ConditionalProcessor(
+            processor=AfterInput(
+                "Ask KsADK to do anything",
+                style="class:input-placeholder",
+            ),
+            filter=Condition(lambda: not self._input_buffer.text),
+        )
+        self._input_window = Window(
+            BufferControl(
+                buffer=self._input_buffer,
+                input_processors=[placeholder],
+            ),
             height=self._input_height,
             wrap_lines=True,
             style="class:input",
         )
-        input_row = VSplit([prompt_window, input_window], style="class:input-frame")
+        input_row = VSplit(
+            [prompt_window, self._input_window],
+            style="class:input-frame",
+        )
+        composer = HSplit(
+            [
+                Window(height=1, char=" ", style="class:input-frame"),
+                input_row,
+                Window(height=1, char=" ", style="class:input-frame"),
+            ],
+            style="class:input-frame",
+        )
 
-        # 输入框下分隔线（输入框与 footer 之间的可视边界，和上分隔线对称）
-        separator_bottom = Window(char="─", height=1, style="class:separator")
+        self._status_condition = Condition(
+            lambda: self._streaming_entry is not None or self._pending_interrupt is not None
+        )
+        self._status_window = Window(
+            FormattedTextControl(self._status_fragments),
+            height=1,
+            style="class:status",
+        )
+        status_block = ConditionalContainer(
+            HSplit(
+                [
+                    Window(height=1),
+                    self._status_window,
+                    Window(height=1),
+                ]
+            ),
+            filter=self._status_condition,
+        )
 
-        # footer：模型 · 目录 · session · streaming · Context n% left · used · window
-        footer = Window(
+        self._footer_window = Window(
             FormattedTextControl(self._footer_fragments),
             height=1,
             style="class:footer",
         )
 
+        self._picker_condition = Condition(lambda: self._model_picker_active)
+        picker_reserve = ConditionalContainer(
+            Window(
+                height=lambda: Dimension(
+                    preferred=5 + min(12, max(3, len(self._model_picker_models)))
+                ),
+                char=" ",
+                style="class:app",
+            ),
+            filter=self._picker_condition,
+        )
+
         body = HSplit(
             [
                 transcript_row,
-                separator,
-                input_row,
-                separator_bottom,
-                footer,
+                status_block,
+                Window(height=1),
+                picker_reserve,
+                composer,
+                self._footer_window,
+                Window(char=" ", style="class:app"),
             ],
             style="class:app",
         )
-        # 模型选择器浮层：ConditionalContainer 只在 _model_picker_active 时显示
-        from prompt_toolkit.filters import Condition
-        from prompt_toolkit.layout.containers import ConditionalContainer
-        from prompt_toolkit.widgets import Frame
-
-        self._picker_condition = Condition(lambda: self._model_picker_active)
-        # picker 窗口：get_cursor_position 跟随选中项行号，让 Window 自动把视口滚到
-        # 选中项可见（同 transcript 的 cursor 驱动滚动原理）。封顶 8 行。
+        # Codex-style model selection surface: unframed title/subtitle, numbered
+        # rows, and a short confirmation hint above the composer.
+        picker_width = Dimension(min=32, preferred=68, max=88)
         self._picker_window = Window(
             FormattedTextControl(
                 self._model_picker_fragments,
                 get_cursor_position=self._picker_cursor,
                 show_cursor=False,
             ),
-            width=44,
-            height=lambda: Dimension(preferred=min(8, max(3, len(self._model_picker_models) + 2))),
+            width=picker_width,
+            height=lambda: Dimension(preferred=min(12, max(3, len(self._model_picker_models)))),
             wrap_lines=False,
             allow_scroll_beyond_bottom=True,
             style="class:model-picker",
         )
+        picker_body = HSplit(
+            [
+                Window(
+                    FormattedTextControl(self._model_picker_header_fragments),
+                    width=picker_width,
+                    height=3,
+                    style="class:model-picker-header",
+                ),
+                self._picker_window,
+                Window(
+                    FormattedTextControl(self._model_picker_footer_fragments),
+                    width=picker_width,
+                    height=2,
+                    style="class:model-picker-footer",
+                ),
+            ],
+            style="class:model-picker",
+        )
         picker_float = Float(
-            # 贴输入框上方：距底部 2 行（footer 1 + 下分隔线 1），左侧缩进 2 对齐 ›
-            bottom=2,
+            # Sit above composer (3 rows), footer (1), and trailing app row (1).
+            bottom=5,
             left=2,
             content=ConditionalContainer(
-                Frame(self._picker_window, title="select model (↑↓ Enter Esc)"),
+                picker_body,
                 filter=self._picker_condition,
             ),
         )
@@ -483,7 +772,7 @@ class InteractionLoop:
         @bindings.add("enter")
         def _submit(event) -> None:
             text = self._input_buffer.text
-            self._input_buffer.text = ""
+            self._input_buffer.reset(append_to_history=bool(text.strip()))
             self._submit_text(text)
 
         @bindings.add("escape", "enter")
@@ -530,20 +819,17 @@ class InteractionLoop:
             self._scroll_transcript(12)
             event.app.invalidate()
 
-        # 输入为空时 ↑/↓ 逐行滚 transcript；输入非空时保留 Buffer 的光标/历史行为。
-        transcript_arrow_filter = Condition(
-            lambda: not self._model_picker_active and not self._input_buffer.text
-        )
+        composer_arrow_filter = Condition(lambda: not self._model_picker_active)
 
-        @bindings.add("up", filter=transcript_arrow_filter)
-        def _scroll_line_up(event) -> None:
-            self._scroll_transcript(-1)
-            event.app.invalidate()
+        @bindings.add("up", filter=composer_arrow_filter)
+        def _composer_up(event) -> None:
+            # prompt_toolkit auto_up implements the desired priority:
+            # completion popup -> multiline cursor -> submitted input history.
+            event.current_buffer.auto_up()
 
-        @bindings.add("down", filter=transcript_arrow_filter)
-        def _scroll_line_down(event) -> None:
-            self._scroll_transcript(1)
-            event.app.invalidate()
+        @bindings.add("down", filter=composer_arrow_filter)
+        def _composer_down(event) -> None:
+            event.current_buffer.auto_down()
 
         # 模型选择器键：仅 picker 激活时生效
         @bindings.add("up", filter=self._picker_condition)
@@ -574,27 +860,37 @@ class InteractionLoop:
             event.app.invalidate()
 
         layout = Layout(root)
-        layout.focus(input_window)
+        layout.focus(self._input_window)
+        composer_surface = _codex_surface_style(_terminal_background())
         app = Application(
             layout=layout,
             key_bindings=bindings,
-            full_screen=not getattr(self, "_no_alt_screen", False),
-            mouse_support=False,  # 避免 mouse_support=True 捕获鼠标导致终端原生选择/复制失效；滚动用 PageUp/PgDn/↑↓
+            full_screen=False,
+            mouse_support=False,
+            min_redraw_interval=0.05,
+            cursor=CursorShape.BLINKING_BEAM,
             style=Style.from_dict(
                 {
                     "app": "",
                     "transcript": "",
-                    "prompt": "ansicyan bold",
-                    "input": "",
-                    "input-frame": "",
-                    "separator": "ansibrightblack",
+                    "prompt": f"bold {composer_surface}".strip(),
+                    "input": composer_surface,
+                    "input-frame": composer_surface,
+                    "input-placeholder": f"dim {composer_surface}".strip(),
                     "footer": "ansigray",
                     "footer-warn": "ansired bold",
+                    "status": "ansigray",
+                    "status-bullet": "ansiwhite bold",
                     "system": "ansigray",
                     "welcome-border": "ansigray",
-                    "model-picker": "bg:ansiblue",
+                    "model-picker": "",
+                    "model-picker-header": "",
+                    "model-picker-title": "bold",
+                    "model-picker-subtitle": "ansigray",
                     "model-picker-item": "",
-                    "model-picker-selected": "bg:ansicyan fg:ansiblack bold",
+                    "model-picker-selected": "bold",
+                    "model-picker-current": "bold",
+                    "model-picker-footer": "ansigray",
                 }
             ),
         )
@@ -637,6 +933,8 @@ class InteractionLoop:
         input_data: dict[str, Any] | None = None,
         is_resume: bool = False,
     ) -> None:
+        self._turn_started_at = time.monotonic()
+
         async def _run():
             if not is_resume:
                 if user_entry is not None:
@@ -659,6 +957,7 @@ class InteractionLoop:
             await self._run_turn_async(turn_input, assistant_entry, is_resume=is_resume)
 
         self._create_background_task(_run())
+        self._ensure_status_refresh()
 
     async def _run_turn_async(
         self,
@@ -677,9 +976,9 @@ class InteractionLoop:
         except InterruptPending as exc:
             self._clear_streaming()
             assistant_entry.status = ""
-            # 中断时仍把已流式到达的 tool 调用落定（用户能看到中断前发生了什么）。
-            for te in renderer._tool_entries:
-                await self._commit_entry(te)
+            # 中断时仍按原始事件顺序保留已产生的文本和工具调用。
+            for entry in renderer.final_entries(renderer._last_full_text):
+                await self._commit_entry(entry)
             if is_resume:
                 await self._commit_entry(TranscriptEntry(role="system", content="该 runtime 暂不支持审批续跑，已取消"))
                 self._clear_current_task()
@@ -688,15 +987,11 @@ class InteractionLoop:
                 self._handle_interrupt(exc, input_data)
             return
         except asyncio.CancelledError:
-            # 取消流式：保留已产生的 assistant 内容（落定），只停后续输出。
-            # 先清动态区（_streaming_entry），再落定 assistant，避免 _refresh_transcript
-            # 同时渲染已落定 entry + streaming entry 导致重复显示。
+            # 取消流式：保留已产生内容，并维持文本/工具的原始到达顺序。
             self._clear_streaming()
             assistant_entry.status = ""
-            if assistant_entry.content:
-                await self._commit_entry(assistant_entry)
-            for te in renderer._tool_entries:
-                await self._commit_entry(te)
+            for entry in renderer.final_entries(renderer._last_full_text):
+                await self._commit_entry(entry)
             await self._commit_entry(TranscriptEntry(role="system", content="已取消（保留已产生内容）"))
             self._clear_current_task()
             self._drain_queue()
@@ -712,13 +1007,8 @@ class InteractionLoop:
         self._clear_streaming()
         if response or assistant_entry.thinking:
             self.history.append({"role": "model", "content": response})
-            await self._commit_entry(assistant_entry)
-        # tool 调用按到达顺序落定（跟在 assistant 文本之后）。首个 tool 前插横线
-        # 分隔符（对标 Codex FinalMessageSeparator：assistant 文本 → ─ → tool）。
-        if renderer._tool_entries and (response or assistant_entry.thinking):
-            await self._commit_entry(TranscriptEntry(role="separator", content="─" * 40))
-        for te in renderer._tool_entries:
-            await self._commit_entry(te)
+        for entry in renderer.final_entries(response):
+            await self._commit_entry(entry)
         self._drain_queue()
 
     def _handle_interrupt(self, exc: InterruptPending, input_data: dict[str, Any]) -> None:
@@ -781,6 +1071,7 @@ class InteractionLoop:
         current = asyncio.current_task()
         if self._active_task is current:
             self._active_task = None
+            self._turn_started_at = None
 
     def _create_background_task(self, coro) -> None:
         if self._app is not None:
@@ -788,18 +1079,42 @@ class InteractionLoop:
         else:
             self._active_task = asyncio.create_task(coro)
 
+    def _ensure_status_refresh(self) -> None:
+        """Refresh elapsed-time status only while a turn is actively running."""
+        if self._app is None or not self._app.is_running:
+            return
+        if self._status_refresh_task is None or self._status_refresh_task.done():
+            self._status_refresh_task = self._app.create_background_task(
+                self._status_refresh_loop()
+            )
+
+    async def _status_refresh_loop(self) -> None:
+        current_task = asyncio.current_task()
+        try:
+            while self._has_active_turn():
+                await asyncio.sleep(0.5)
+                if self._app is not None and self._app.is_running:
+                    self._app.invalidate()
+        finally:
+            if self._status_refresh_task is current_task:
+                self._status_refresh_task = None
+
     def _ack(self, content: str) -> None:
         """命令的系统提示落定到 transcript 列表。"""
         self._commit_entry_sync(TranscriptEntry(role="system", content=content))
 
     def _commit_entry_sync(self, entry: TranscriptEntry) -> None:
-        """把一条 entry 追加到 transcript 列表并刷新（全屏渲染由 _refresh_transcript 统一）。"""
+        """Record a history cell and schedule its one-time scrollback emission."""
         self._entries.append(entry)
+        if self._app is not None and self._app.is_running:
+            self._app.create_background_task(self._emit_history_entry(entry))
         self._refresh_transcript()
 
     async def _commit_entry(self, entry: TranscriptEntry) -> None:
-        """async 包装（兼容 _run_turn_async 的 await 调用点）。"""
-        self._commit_entry_sync(entry)
+        """Record and emit a history cell before resuming the live prompt."""
+        self._entries.append(entry)
+        await self._emit_history_entry(entry)
+        self._refresh_transcript()
 
     def _handle_command(self, user_input: str) -> str:
         """分派命令。返回: 'quit'=退出, 'send'=发给 agent, 'handled'=命令已处理不发送。"""
@@ -817,6 +1132,8 @@ class InteractionLoop:
             self._pending_interrupt = None
             self._entries = []
             self._entry_ansi_cache.clear()
+            self._welcome_ansi = None
+            self._history_pager_active = False
             self._reset_scroll()
             self._clear_streaming()
             self._ack(f"新会话: {self.session_id}")
@@ -826,18 +1143,24 @@ class InteractionLoop:
                 return "handled"
             self._entries = []
             self._entry_ansi_cache.clear()
+            self._history_pager_active = False
             self._reset_scroll()
             self._clear_streaming()
             self._refresh_transcript()
-            self._ack("已清空当前会话视图")
+            if self._app is not None and self._app.is_running:
+                self._create_background_task(self._clear_terminal_scrollback())
         elif user_input == "/session":
             self._ack(f"session: {self.session_id}")
         elif user_input == "/model" or user_input.startswith("/model "):
             self._handle_model_command(user_input)
+        elif user_input == "/tools":
+            self._show_tool_details = not self._show_tool_details
+            self._entry_ansi_cache.clear()
+            self._ack(f"工具详情已{'展开' if self._show_tool_details else '折叠'}")
         elif user_input in {"?", "/help", "/?"}:
             self._ack(_help_text())
         elif user_input.startswith("/"):
-            self._ack(f"未知命令: {user_input}（可用: /new /clear /session /model ? exit）")
+            self._ack(f"未知命令: {user_input}（可用: /new /clear /session /model /tools ? exit）")
         else:
             return "send"  # 普通输入，发给 agent
         return "handled"
@@ -901,14 +1224,14 @@ class InteractionLoop:
     def _scroll_picker_to_selected(self) -> None:
         """让选中项始终在 picker 可见区内（列表超长时跟随滚动）。
 
-        picker 窗口封顶 8 行（见 _build_application 的 height lambda）。render_info
-        首帧可能为 None，按 8 估算可见高度；渲染后 Window 会用设的 vertical_scroll。
+        picker 窗口封顶 12 行（见 _build_application 的 height lambda）。render_info
+        首帧可能为 None，按 12 估算可见高度；渲染后 Window 会用设的 vertical_scroll。
         """
         w = self._picker_window
         if w is None or not self._model_picker_models:
             return
         ri = getattr(w, "render_info", None)
-        visible = int(getattr(ri, "window_height", 0) or 0) or 8
+        visible = int(getattr(ri, "window_height", 0) or 0) or 12
         # 选中项偏上 1/3 处可见，避免紧贴边缘
         target = max(0, self._model_picker_index - max(1, visible // 3))
         max_scroll = max(0, len(self._model_picker_models) - visible)
@@ -919,23 +1242,33 @@ class InteractionLoop:
         from prompt_toolkit.layout.screen import Point
 
         return Point(x=0, y=self._model_picker_index)
+
+    def _model_picker_header_fragments(self):
+        return [
+            ("class:model-picker-title", "Select Model and Effort\n"),
+            (
+                "class:model-picker-subtitle",
+                "Access legacy models by running codex -m <model_name> or in your config.toml\n\n",
+            ),
+        ]
+
+    def _model_picker_footer_fragments(self):
+        return [("class:model-picker-footer", "\nPress enter to confirm or esc to go back")]
+
     def _model_picker_fragments(self):
-        """浮层列表：高亮当前选中项，当前模型标 *。"""
+        """Codex-style numbered list with a selection chevron and current marker."""
         from prompt_toolkit.formatted_text import FormattedText
 
         current = self._current_model_name()
         frags: list[tuple[str, str]] = []
         for i, m in enumerate(self._model_picker_models):
             mid = str(m.get("id") or m.get("name") or "")
-            disp = str(m.get("display_name") or mid)
             is_cur_model = (mid == current)
             is_selected = (i == self._model_picker_index)
-            marker = "▶" if is_selected else " "
-            line = f"{marker} {mid}"
-            if disp != mid:
-                line += f"  {disp}"
+            marker = "›" if is_selected else " "
+            line = f"{marker} {i + 1}. {mid}"
             if is_cur_model:
-                line += "  *"
+                line += " (current)"
             style = "class:model-picker-selected" if is_selected else "class:model-picker-item"
             frags.append((style, f"{line}\n"))
         return FormattedText(frags) if frags else FormattedText([("", "(no models)")])
@@ -954,32 +1287,21 @@ class InteractionLoop:
         self._refresh_transcript()
 
     def _refresh_transcript(self) -> None:
-        """渲染 entries + streaming entry → _transcript_ansi，刷新视图。
-
-        历史 entries 落定后 content 不变，缓存其 ANSI（避免 streaming 每 token 全量重渲，
-        导致满页后渲染卡顿/不输出）。streaming entry 每帧重渲。
-        """
+        """Render only the mutable live tail; completed history lives in scrollback."""
         parts: list[str] = []
-        for entry in self._entries:
-            if entry.role == "streaming":
-                ansi = _render_entry_ansi(entry, show_thinking=self.show_thinking)
-            else:
-                key = id(entry)
-                ansi = self._entry_ansi_cache.get(key)
-                if ansi is None:
-                    ansi = _render_entry_ansi(entry, show_thinking=self.show_thinking)
-                    self._entry_ansi_cache[key] = ansi
-            if ansi and ansi.strip():
-                parts.append(ansi.rstrip("\n"))
-        if self._streaming_entry is not None and (self._streaming_entry.content or self._streaming_entry.status):
+        if self._history_pager_active:
+            parts = [
+                self._history_entry_ansi(entry).rstrip("\n")
+                for entry in self._entries
+                if self._history_entry_ansi(entry).strip()
+            ]
+        elif self._streaming_entry is not None and (
+            self._streaming_entry.content or self._streaming_entry.status
+        ):
             ansi = _render_entry_ansi(self._streaming_entry, show_thinking=self.show_thinking)
             if ansi.strip():
                 parts.append(ansi.rstrip("\n"))
-        # 首次运行显示 welcome 圆角框 + 帮助列表
-        if not self._entries and not self._streaming_entry:
-            parts.append(_welcome_block(self.session_id, self._current_model_name(), self.project_dir, show_help=not self._showed_help))
-            self._showed_help = True
-        self._transcript_ansi = "\n\n".join(parts) + "\n"
+        self._transcript_ansi = ("\n\n".join(parts) + "\n") if parts else ""
         # follow 快照（对标 Codex is_scrolled_to_bottom）：若当前在底才跟新内容到底，
         # 用户翻走（vertical_scroll < max_scroll）则保持位置不覆盖。这样鼠标滚轮/键盘
         # 翻后不被 streaming 刷新拽回底部。
@@ -1017,23 +1339,25 @@ class InteractionLoop:
         用户翻页不生效。改用 cursor 跟随视口顶，手动设 vertical_scroll 控制位置。）
         """
         from prompt_toolkit.layout.screen import Point
+
         vs = int(getattr(self._transcript_window, "vertical_scroll", 0) or 0)
-        # 显示行数（含折行）：优先 render_info.ui_content.line_count，否则逻辑行
-        line_count = 0
-        ri = getattr(self._transcript_window, "render_info", None)
-        ui_content = getattr(ri, "ui_content", None) if ri else None
-        if ui_content is not None:
-            line_count = int(getattr(ui_content, "line_count", 0) or 0)
-        if line_count <= 0:
-            line_count = max(1, self._transcript_ansi.count("\n"))
+        # render_info belongs to the previous frame. During streaming finalize,
+        # clear, or resize it can have more lines than the current fragments and
+        # would make prompt_toolkit index past UIContent.get_line().
+        line_count = self._transcript_line_count()
         return Point(x=0, y=min(vs, line_count - 1))
+
+    def _transcript_line_count(self) -> int:
+        """Return the logical line count of the fragments for the next frame."""
+        return max(1, self._transcript_ansi.count("\n") + 1)
 
     def _max_scroll(self) -> int:
         """算 max_scroll：显示行数 - window_height。
 
-        优先用 render_info.ui_content.line_count（含折行的显示行数，准确）；
-        否则回退逻辑行 _transcript_ansi.count。render_info 有值时用 window_height，
-        否则按终端行数估算。
+        Line count must come from the current transcript. ``render_info`` is a
+        snapshot of the previous frame and can be stale while streaming content
+        is replaced or cleared. Window height still comes from the last render,
+        with a terminal-size fallback before the first frame.
         """
         if self._transcript_window is None:
             return 0
@@ -1042,13 +1366,7 @@ class InteractionLoop:
         if height <= 0:
             import shutil
             height = max(10, (shutil.get_terminal_size(fallback=(80, 24)).lines or 24) - 6)
-        # 显示行数：render_info.ui_content.line_count（含折行），否则逻辑行
-        line_count = 0
-        ui_content = getattr(ri, "ui_content", None) if ri else None
-        if ui_content is not None:
-            line_count = int(getattr(ui_content, "line_count", 0) or 0)
-        if line_count <= 0:
-            line_count = max(1, self._transcript_ansi.count("\n"))
+        line_count = self._transcript_line_count()
         return max(0, line_count - height)
 
     def _reset_scroll(self) -> None:
@@ -1060,11 +1378,22 @@ class InteractionLoop:
             self._transcript_window.vertical_scroll = 0
 
     def _scroll_transcript(self, delta: int) -> None:
-        """PageUp/PgDn 滚动。手动设 vertical_scroll（cursor 跟随视口顶，不钳制）。"""
+        """Scroll the live tail or open the retained-history pager on demand."""
         if self._transcript_window is None:
             return
+        if not self._history_pager_active and self._entries:
+            if delta >= 0:
+                return
+            self._history_pager_active = True
+            self._pin_to_bottom = True
+            self._refresh_transcript()
         max_scroll = self._max_scroll()
         current = max_scroll if self._pin_to_bottom else self._user_scroll
+        if self._history_pager_active and delta > 0 and current + delta >= max_scroll:
+            self._history_pager_active = False
+            self._reset_scroll()
+            self._refresh_transcript()
+            return
         new_scroll = max(0, min(current + delta, max_scroll))
         self._user_scroll = new_scroll
         self._pin_to_bottom = new_scroll >= max_scroll
@@ -1078,23 +1407,31 @@ class InteractionLoop:
         """动态取模型名：metadata 到达后（_fetch_tui_model_metadata 挂载）优先用真实名。"""
         return _resolve_model_name(self.runner)
 
-    def _footer_fragments(self):
+    def _status_fragments(self):
         if self._pending_interrupt is not None:
-            return [("class:footer-warn", " approval pending: type y then Enter to confirm, else cancel ")]
-        parts = [f"KsADK · {self._current_model_name()}"]
+            return [
+                ("class:status-bullet", "• "),
+                ("class:footer-warn", "Approval required (type y then Enter to confirm)"),
+            ]
+        elapsed = 0
+        if self._turn_started_at is not None:
+            elapsed = max(0, int(time.monotonic() - self._turn_started_at))
+        queued = f" · {len(self._queued_inputs)} queued" if self._queued_inputs else ""
+        return [
+            ("class:status-bullet", "• "),
+            ("class:status", f"Working ({elapsed}s · Ctrl-C to interrupt{queued})"),
+        ]
+
+    def _footer_fragments(self):
+        parts = [self._current_model_name()]
         try:
             short = "~/" + str(self.project_dir.relative_to(Path.home()))
         except ValueError:
             short = str(self.project_dir)
-        parts.append(short)
-        parts.append(f"session {self.session_id}")
-        if self._has_active_turn():
-            parts.append("streaming")
-        if self._queued_inputs:
-            parts.append(f"queued {len(self._queued_inputs)}")
         ctx = self._context_percent()
         if ctx:
-            parts.append(ctx)
+            parts.append(ctx.split(" · ", 1)[0])
+        parts.append(short)
         return [("class:footer", "  " + " · ".join(parts) + "  ")]
 
     def _context_percent(self) -> str | None:
@@ -1161,6 +1498,19 @@ class InteractionLoop:
         if self._app is not None:
             self._app.exit()
 
+    async def _clear_terminal_scrollback(self) -> None:
+        if self._app is None or not self._app.is_running:
+            return
+        from prompt_toolkit.application import run_in_terminal
+
+        def _write_clear() -> None:
+            import sys
+
+            sys.stdout.write(_terminal_clear_sequence())
+            sys.stdout.flush()
+
+        await run_in_terminal(_write_clear)
+
 
 def _resolve_model_name(runner) -> str:
     import os
@@ -1173,16 +1523,15 @@ def _resolve_model_name(runner) -> str:
     observed = getattr(runner, "_observed_model", None)
     if observed:
         return observed
-    return os.getenv("MODEL_NAME") or getattr(runner, "model", None) or "unknown"
+    return getattr(runner, "model", None) or os.getenv("MODEL_NAME") or "unknown"
 
 
 def _help_text() -> str:
-    return "命令: /new 新会话 · /clear 清屏 · /session 查看 · exit 退出 · Ctrl-C 中断/退出"
+    return "命令: /new 新会话 · /clear 清屏 · /session 查看 · /tools 展开工具 · exit 退出 · Ctrl-C 中断/退出"
 
 
 def _welcome_block(session_id: str, model_name: str, project_dir: Path, *, show_help: bool) -> str:
-    """启动屏：圆角框（对标 Codex 首次运行 session.rs:32-72）含 model/session/dir/version，
-    下方 2 空格缩进命令帮助列表。框宽按终端实际列数算，留左缩进2+右margin，不溢出。"""
+    """Render the compact Codex-style session card and one-line tip."""
     try:
         from ksadk.version import VERSION
         version = VERSION
@@ -1192,13 +1541,13 @@ def _welcome_block(session_id: str, model_name: str, project_dir: Path, *, show_
         short = "~/" + str(project_dir.relative_to(Path.home()))
     except ValueError:
         short = str(project_dir)
-    title = f">_ KsADK v{version}" if version else ">_ KsADK"
+    title = f">_ KsADK (v{version})" if version else ">_ KsADK"
     inner_lines = [
         title,
         "",
-        f"model: {model_name}",
-        f"session: {session_id}",
+        f"model:     {model_name}   /model to change",
         f"directory: {short}",
+        f"session:   {session_id}",
     ]
     # 按终端宽度算框宽，留 transcript 左缩进 2 + 右 margin 2，上限 56（Codex 同款）。
     try:
@@ -1215,30 +1564,74 @@ def _welcome_block(session_id: str, model_name: str, project_dir: Path, *, show_
         # CJK 宽度近似：用 len 简化（圆角框对齐以纯文本宽度为准，rich 不再二次渲染框线）
         return s + " " * max(0, inner - len(s))
 
-    top = f"╭{'─' * inner}╮"
-    bottom = f"╰{'─' * inner}╯"
+    # Middle rows include one padding cell on both sides of the content, so
+    # the horizontal rules must span ``inner + 2`` cells as well.
+    outer_inner = inner + 2
+    top = f"╭{'─' * outer_inner}╮"
+    bottom = f"╰{'─' * outer_inner}╯"
     mid = [f"│ {_pad(line)} │" for line in inner_lines]
     block = [top, *mid, bottom]
 
     lines = ["", *block, ""]
     if show_help:
-        lines.append("  To get started, describe a task or try:")
-        lines.append("")
-        for cmd, desc in [
-            ("/new", "start a new session"),
-            ("/clear", "clear transcript"),
-            ("/session", "show session id"),
-            ("/model", "show/switch model (/model <name>)"),
-            ("exit", "quit"),
-        ]:
-            lines.append(f"  {cmd} - {desc}")
-        lines.append("")
-        lines.append("  Enter send · Esc+Enter newline · PgUp/PgDn scroll · Ctrl-C cancel/exit")
+        lines.append("Tip: describe a task, or type /help to see available commands.")
     lines.append("")
     return "\n".join(lines)
 
 
-def _render_entry_ansi(entry: TranscriptEntry, *, show_thinking: bool) -> str:
+def _normalize_markdown(source: str) -> str:
+    """Normalize common model markdown typos without touching fenced code."""
+    import re
+
+    source_lines = str(source).replace("\r\n", "\n").split("\n")
+    if (
+        len(source_lines) >= 2
+        and source_lines[0].strip().lower() in {"```md", "```markdown"}
+        and source_lines[-1].strip() == "```"
+    ):
+        source_lines = source_lines[1:-1]
+
+    lines: list[str] = []
+    in_fence = False
+    for raw_line in source_lines:
+        line = raw_line
+        stripped = line.lstrip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            lines.append(line)
+            continue
+        if not in_fence:
+            # Models frequently emit ``###1.`` for numbered cards. Treat it as
+            # a list item, otherwise Rich displays the hashes literally.
+            line = re.sub(r"^(\s*)#{1,6}\s*(\d+)[.)]\s*", r"\1\2. ", line)
+            # Common heading/list omissions: ``##标题`` and ``1) item``.
+            line = re.sub(r"^(\s*)(#{1,6})(\S)", r"\1\2 \3", line)
+            line = re.sub(r"^(\s*)(\d+)[)]\s*", r"\1\2. ", line)
+            # Some model responses concatenate numbered emoji cards on one line
+            # (``...技能2. 📄 ...3. 🌐 ...``). Split only when the marker is
+            # followed by an icon/CJK lead, avoiding decimal numbers in prose.
+            lead = r"[\u2600-\u27bf\U0001f000-\U0001faff\u4e00-\u9fff]"
+            line = re.sub(
+                rf"(?<=[^\d\s])\s*(?=\d{{1,2}}[.)]?\s+{lead})",
+                "\n",
+                line,
+            )
+            line = re.sub(
+                rf"^(\s*)(\d{{1,2}})\s+(?={lead})",
+                r"\1\2. ",
+                line,
+                flags=re.MULTILINE,
+            )
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _render_entry_ansi(
+    entry: TranscriptEntry,
+    *,
+    show_thinking: bool,
+    show_tool_details: bool = True,
+) -> str:
     """用 rich 把单条 entry 渲染成带前景色的 ANSI 字符串（去背景，适配浅/深色终端）。"""
     try:
         from rich.console import Console
@@ -1278,7 +1671,16 @@ def _render_entry_ansi(entry: TranscriptEntry, *, show_thinking: bool) -> str:
 
     if entry.role == "user":
         suffix = f" · {entry.status}" if entry.status else ""
-        console.print(Text(f"› {body}{suffix}", style="bold"))
+        surface = _codex_surface_rgb(_terminal_background())
+        surface_style = "bold"
+        if surface is not None:
+            surface_style += f" on #{surface[0]:02x}{surface[1]:02x}{surface[2]:02x}"
+        lines = str(body).splitlines() or [""]
+        for index, line in enumerate(lines):
+            prefix = "› " if index == 0 else "  "
+            text = Text(f"{prefix}{line}{suffix if index == 0 else ''}", style=surface_style)
+            text.pad_right(max(0, width - text.cell_len))
+            console.print(text, no_wrap=True, overflow="crop")
         return console.export_text(styles=True).rstrip() + "\n"
 
     if entry.role == "assistant":
@@ -1286,15 +1688,15 @@ def _render_entry_ansi(entry: TranscriptEntry, *, show_thinking: bool) -> str:
         suffix = f" · {entry.status}" if entry.status and entry.status != "streaming" else ""
         if entry.thinking and show_thinking:
             console.print(Text("* thinking", style="yellow"))
-            console.print(Markdown(entry.thinking))
-        console.print(Text("● ", style="cyan bold"), end="")
+            console.print(Markdown(_normalize_markdown(entry.thinking)))
+        console.print(Text("• ", style="dim"), end="")
         if body:
             if entry.status == "streaming":
                 # streaming 期用纯文本（不 rich Markdown），避免每 token 重渲增长的长内容卡顿。
                 # 落定后（status=""）才 Markdown 渲染完整格式（表格/代码块等）。
                 console.print(Text(str(body)))
             else:
-                console.print(Markdown(f"{body}{suffix}"))
+                console.print(Markdown(_normalize_markdown(f"{body}{suffix}")))
         else:
             console.print(Text(suffix.lstrip(), style="dim") if suffix else Text("...", style="dim"))
         return _strip_ansi_backgrounds(console.export_text(styles=True)).rstrip() + "\n"
@@ -1311,12 +1713,44 @@ def _render_entry_ansi(entry: TranscriptEntry, *, show_thinking: bool) -> str:
         title = "Ran" if done else "Running"
         console.print(bullet, end="")
         console.print(Text(f"{title} {tool_name}", style="bold" if done else ""))
-        if output:
+        if output and show_tool_details:
             # 尝试 JSON 美化（单行长 JSON → 多行可读），再按显示行数折叠
             display_output = output
             try:
                 import json as _json
                 parsed = _json.loads(output)
+                # Tool adapters often JSON-encode an already serialized result.
+                # Unwrap that second layer so structured output folds by fields
+                # instead of rendering as one escaped line.
+                if isinstance(parsed, str):
+                    nested = parsed.strip()
+                    # Some adapters wrap the JSON in a repr-like
+                    # ``content='...' name='...'`` envelope.
+                    if nested.startswith("content="):
+                        import ast as _ast
+
+                        quote = nested[len("content="):len("content=") + 1]
+                        if quote in {"'", '"'}:
+                            body_start = len("content=") + 1
+                            body_end = body_start
+                            while body_end < len(nested):
+                                if nested[body_end] == quote:
+                                    backslashes = 0
+                                    cursor = body_end - 1
+                                    while cursor >= body_start and nested[cursor] == "\\":
+                                        backslashes += 1
+                                        cursor -= 1
+                                    if backslashes % 2 == 0:
+                                        break
+                                body_end += 1
+                            try:
+                                nested = _ast.literal_eval(
+                                    quote + nested[body_start:body_end] + quote
+                                ).strip()
+                            except (SyntaxError, ValueError):
+                                pass
+                    if nested.startswith(("{", "[")):
+                        parsed = _json.loads(nested)
                 display_output = _json.dumps(parsed, ensure_ascii=False, indent=2)
             except Exception:
                 pass
@@ -1368,7 +1802,7 @@ def _render_entry_plain(entry: TranscriptEntry, *, show_thinking: bool) -> str:
     if entry.role == "user":
         return _prefix_block(f"› {body}{suffix}", continuation="  ") + "\n"
     if entry.role == "assistant":
-        return _prefix_block(f"● {body}{suffix}", continuation="  ") + "\n"
+        return _prefix_block(f"• {body}{suffix}", continuation="  ") + "\n"
     if entry.role == "tool":
         return _prefix_block(f"↳ {body}", continuation="  ") + "\n"
     if entry.role == "error":
@@ -1433,7 +1867,7 @@ def _strip_ansi_backgrounds(text: str) -> str:
 def run_tui(runner, *, show_thinking: bool = False, project_dir: str = ".", no_alt_screen: bool = False) -> None:
     """TUI 入口：被 cmd_invoke._invoke_tui / cmd_run._run_custom 调用。
 
-    no_alt_screen=True 时不进 alternate screen（对标 Codex --no-alt-screen，保留 scrollback）。
+    ``no_alt_screen`` 作为兼容参数保留；TUI 现在默认使用 Codex-style inline viewport。
     """
     InteractionLoop(
         runner,

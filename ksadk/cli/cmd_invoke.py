@@ -96,7 +96,7 @@ except ImportError:
     "--no-alt-screen",
     "no_alt_screen",
     is_flag=True,
-    help="TUI 不进 alternate screen，保留终端 scrollback 历史（对标 codex --no-alt-screen）",
+    help="兼容参数；TUI 已默认使用 inline viewport 并保留终端 scrollback",
 )
 def invoke(
     agent_ref: str,
