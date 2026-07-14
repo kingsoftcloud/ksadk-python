@@ -5,16 +5,17 @@ ADKRunner - Google ADK 框架运行时
 支持通过环境变量配置记忆体 (ShortTermMemory / LongTermMemory)。
 """
 
+import asyncio
 import base64
 import inspect
 import logging
 import os
 import sys
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, Mapping, Optional
-
-from importlib.metadata import version as _pkg_version, PackageNotFoundError
 
 from opentelemetry import trace
 
@@ -50,6 +51,9 @@ class ADKRunner(BaseRunner):
         # ADK resumability state
         self._resumable: bool = False
         self._resume_disabled_reason: Optional[str] = None
+        # P1.1 sub-issue: guard invocation_map read-modify-write so concurrent
+        # invocations on the same session don't lose each other's mappings.
+        self._invocation_map_lock = asyncio.Lock()
         self._module = None
         self._adk_resume_min_version = os.environ.get(
             "GOOGLE_ADK_RESUME_MIN_VERSION", "1.16.0"
@@ -90,9 +94,10 @@ class ADKRunner(BaseRunner):
         gets proper JSONDecodeError for incomplete fragments.
         """
         try:
-            import json as _stdlib_json
-            import google.adk.models.lite_llm as adk_lite_llm
             import inspect as _inspect
+            import json as _stdlib_json
+
+            import google.adk.models.lite_llm as adk_lite_llm
 
             _original_fn = adk_lite_llm._message_to_generate_content_response
             # Determine which kwargs the original function actually accepts,
@@ -1339,19 +1344,22 @@ class ADKRunner(BaseRunner):
 
             service = resolve_session_service()
             core = ConversationSessionCore(service)
-            binding = await core.get_binding_by_session_id(session_id, "adk")
-            invocation_map = dict(binding.get("invocation_map") or {})
-            invocation_map[ksadk_invocation_id] = adk_invocation_id
+            # P1.1 sub-issue: hold the lock across the entire read-modify-write
+            # so concurrent invocations on the same session can't lose mappings.
+            async with self._invocation_map_lock:
+                binding = await core.get_binding_by_session_id(session_id, "adk")
+                invocation_map = dict(binding.get("invocation_map") or {})
+                invocation_map[ksadk_invocation_id] = adk_invocation_id
 
-            await core.set_binding_by_session_id(
-                session_id,
-                "adk",
-                {
-                    "external_session_id": str(session_id),
-                    "internal_session_id": str(session_id),
-                    "invocation_map": invocation_map,
-                },
-            )
+                await core.set_binding_by_session_id(
+                    session_id,
+                    "adk",
+                    {
+                        "external_session_id": str(session_id),
+                        "internal_session_id": str(session_id),
+                        "invocation_map": invocation_map,
+                    },
+                )
         except Exception as exc:
             logger.warning("Failed to persist ADK invocation mapping: %s", exc)
 
@@ -1462,6 +1470,11 @@ class ADKRunner(BaseRunner):
         metadata["backend"] = stm_backend or "in_memory"
         metadata["scope"] = "invocation"
         metadata["durable"] = stm_backend is not None and stm_backend != "local"
+        # P1.4: ADK only supports invocation-level (forward-only) resume, not
+        # arbitrary checkpoint rollback like LangGraph time_travel. Consumers
+        # should treat only the latest checkpoint as independently resumable.
+        metadata["resume_mode"] = "invocation_id"
+        metadata["only_latest_resumable"] = True
 
         return metadata
 
@@ -1504,6 +1517,78 @@ class ADKRunner(BaseRunner):
             )
         return adk_invocation_id
 
+    async def _prepare_run_events(
+        self,
+        *,
+        input_data: Dict[str, Any],
+        session_id: str,
+        user_input: str,
+        is_resume: bool,
+        run_config: Optional[Any] = None,
+    ) -> AsyncIterator[Any]:
+        """Prepare the wrapped event stream shared by invoke() and stream().
+
+        Handles new_message construction, resume invocation_id resolution,
+        run_async (with optional run_config for streaming), and event wrapping
+        for checkpoint writing. Returns the wrapped async iterator.
+        """
+        if not is_resume:
+            new_message = self._build_adk_content(
+                user_input,
+                input_data.get("attachments", []),
+                model_metadata=input_data.get("model_metadata"),
+            )
+        else:
+            new_message = None
+
+        ksadk_invocation_id = str(
+            input_data.get("invocation_id") or input_data.get("run_id") or ""
+        )
+
+        checkpoint_run_id = (
+            str(input_data.get("run_id") or "").strip()
+            if is_resume and str(input_data.get("run_id") or "").strip()
+            else ""
+        )
+
+        run_kwargs: Dict[str, Any] = {
+            "session_id": session_id,
+            "user_id": "ksadk_user",
+        }
+        if run_config is not None:
+            run_kwargs["run_config"] = run_config
+
+        if is_resume and self._resumable:
+            adk_invocation_id = await self._resolve_resume_invocation_id(
+                input_data=input_data,
+                session_id=session_id,
+                ksadk_invocation_id=ksadk_invocation_id,
+            )
+            logger.info("Resuming ADK run with adk_invocation_id: %s", adk_invocation_id)
+            run_kwargs["invocation_id"] = adk_invocation_id
+        else:
+            run_kwargs["new_message"] = (
+                new_message or self._build_adk_content("[empty message]", [])
+            )
+            run_kwargs["state_delta"] = self._build_state_delta(input_data) or None
+
+        events_async = self._runner.run_async(**run_kwargs)
+
+        if ksadk_invocation_id and self._resumable:
+            wrapped_async = self._collect_adk_invocation_id(
+                events_async,
+                ksadk_invocation_id=ksadk_invocation_id,
+                session_id=session_id,
+                checkpoint_run_id=checkpoint_run_id,
+            )
+        else:
+            wrapped_async = self._collect_adk_invocation_id_if_present(
+                events_async,
+                session_id=session_id,
+                ksadk_invocation_id=ksadk_invocation_id,
+            )
+        return wrapped_async
+
     async def invoke(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """调用 ADK Agent"""
 
@@ -1541,66 +1626,12 @@ class ADKRunner(BaseRunner):
             if tags:
                 span.set_attribute("langfuse.tags", ",".join(tags))
 
-            # 恢复模式不构建 new_message
-            if not is_resume:
-                new_message = self._build_adk_content(
-                    user_input,
-                    input_data.get("attachments", []),
-                    model_metadata=input_data.get("model_metadata"),
-                )
-            else:
-                new_message = None
-            state_delta = self._build_state_delta(input_data)
-
-            ksadk_invocation_id = str(input_data.get("invocation_id") or input_data.get("run_id") or "")
-
-            # 恢复模式下 checkpoint 的 run_id 应沿用原始 RunId，而非新生成的
-            # resume invocation_id，以保证同一长任务的 checkpoint 时间线连贯。
-            checkpoint_run_id = (
-                str(input_data.get("run_id") or "").strip()
-                if is_resume and str(input_data.get("run_id") or "").strip()
-                else ""
+            wrapped_async = await self._prepare_run_events(
+                input_data=input_data,
+                session_id=session_id,
+                user_input=user_input,
+                is_resume=is_resume,
             )
-
-            if is_resume and self._resumable:
-                # 恢复模式：使用 ADK invocation_id (via shared helper)
-                adk_invocation_id = await self._resolve_resume_invocation_id(
-                    input_data=input_data,
-                    session_id=session_id,
-                    ksadk_invocation_id=ksadk_invocation_id,
-                )
-                logger.info("Resuming ADK run with adk_invocation_id: %s", adk_invocation_id)
-                events_async = self._runner.run_async(
-                    session_id=session_id,
-                    user_id="ksadk_user",
-                    invocation_id=adk_invocation_id,
-                )
-                # P2: Resume audit event ownership belongs to conversation runtime
-                # (runtime.py), which writes the correct ResumeAttemptId. The
-                # duplicate call here caused ResumeCount=2 per single resume click.
-            else:
-                # 正常模式
-                events_async = self._runner.run_async(
-                    session_id=session_id,
-                    user_id="ksadk_user",
-                    new_message=new_message or self._build_adk_content("[empty message]", []),
-                    state_delta=state_delta or None,
-                )
-
-            # Wrap events for invocation_id collection and checkpoint writing
-            if ksadk_invocation_id and self._resumable:
-                wrapped_async = self._collect_adk_invocation_id(
-                    events_async,
-                    ksadk_invocation_id=ksadk_invocation_id,
-                    session_id=session_id,
-                    checkpoint_run_id=checkpoint_run_id,
-                )
-            else:
-                wrapped_async = self._collect_adk_invocation_id_if_present(
-                    events_async,
-                    session_id=session_id,
-                    ksadk_invocation_id=ksadk_invocation_id,
-                )
 
             final_response = ""
 
@@ -1693,67 +1724,14 @@ class ADKRunner(BaseRunner):
             if tags:
                 span.set_attribute("langfuse.tags", ",".join(tags))
 
-            # 恢复模式不构建 new_message
-            if not is_resume:
-                new_message = self._build_adk_content(
-                    user_input,
-                    input_data.get("attachments", []),
-                    model_metadata=input_data.get("model_metadata"),
-                )
-            else:
-                new_message = None
-            state_delta = self._build_state_delta(input_data)
-
-            ksadk_invocation_id = str(input_data.get("invocation_id") or input_data.get("run_id") or "")
-
-            # 恢复模式下 checkpoint 的 run_id 应沿用原始 RunId
-            checkpoint_run_id = (
-                str(input_data.get("run_id") or "").strip()
-                if is_resume and str(input_data.get("run_id") or "").strip()
-                else ""
-            )
-
-            # 使用 StreamingMode.SSE 启用真正的流式输出
             run_config = RunConfig(streaming_mode=StreamingMode.SSE)
-
-            if is_resume and self._resumable:
-                # 恢复模式：使用 ADK invocation_id (via shared helper)
-                adk_invocation_id = await self._resolve_resume_invocation_id(
-                    input_data=input_data,
-                    session_id=session_id,
-                    ksadk_invocation_id=ksadk_invocation_id,
-                )
-                logger.info("Resuming ADK stream with adk_invocation_id: %s", adk_invocation_id)
-                events_async = self._runner.run_async(
-                    session_id=session_id,
-                    user_id="ksadk_user",
-                    invocation_id=adk_invocation_id,
-                    run_config=run_config,
-                )
-                # P2: Same as invoke() — resume audit owned by conversation runtime.
-            else:
-                events_async = self._runner.run_async(
-                    session_id=session_id,
-                    user_id="ksadk_user",
-                    new_message=new_message or self._build_adk_content("[empty message]", []),
-                    state_delta=state_delta or None,
-                    run_config=run_config,
-                )
-
-            # Wrap events for invocation_id collection and checkpoint writing
-            if ksadk_invocation_id and self._resumable:
-                wrapped_async = self._collect_adk_invocation_id(
-                    events_async,
-                    ksadk_invocation_id=ksadk_invocation_id,
-                    session_id=session_id,
-                    checkpoint_run_id=checkpoint_run_id,
-                )
-            else:
-                wrapped_async = self._collect_adk_invocation_id_if_present(
-                    events_async,
-                    session_id=session_id,
-                    ksadk_invocation_id=ksadk_invocation_id,
-                )
+            wrapped_async = await self._prepare_run_events(
+                input_data=input_data,
+                session_id=session_id,
+                user_input=user_input,
+                is_resume=is_resume,
+                run_config=run_config,
+            )
 
             accumulated_text = ""
             usage: dict[str, Any] = {}

@@ -5,8 +5,7 @@ from __future__ import annotations
 import base64
 import os
 import textwrap
-from types import SimpleNamespace
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
@@ -314,8 +313,9 @@ def test_adk_runner_declares_runtime_resume_when_resumable_enabled(tmp_path):
 
 def test_adk_runner_reports_runtime_level_with_durable_backend(tmp_path):
     """P1.3: Level should be 'runtime' when a durable session backend is present."""
-    from ksadk.runners.adk_runner import ADKRunner
     from types import SimpleNamespace
+
+    from ksadk.runners.adk_runner import ADKRunner
 
     runner = ADKRunner(_write_detection(FrameworkType.ADK), str(tmp_path))
     runner._resumable = True
@@ -397,7 +397,8 @@ def test_adk_runner_checkpoint_metadata_includes_backend_info(tmp_path):
 
 
 def test_adk_runner_single_checkpoint_per_invocation(tmp_path):
-    """P1.4: Single checkpoint id per invocation (adk-ckpt-latest), updated at every boundary."""
+    """P1.4: _next_checkpoint_seq_for_run removed; each boundary writes an incrementing
+    adk-ckpt-{seq} so the latest checkpoint always reflects the newest state."""
     from ksadk.runners.adk_runner import ADKRunner
 
     runner = ADKRunner(_write_detection(FrameworkType.ADK), str(tmp_path))
@@ -410,8 +411,9 @@ def test_adk_runner_single_checkpoint_per_invocation(tmp_path):
 async def test_adk_runner_checkpoint_writes_latest_boundary(tmp_path, monkeypatch):
     """Checkpoint should be written at every boundary so the latest
     recovery point is always available even if the process crashes mid-stream."""
-    from ksadk.runners.adk_runner import ADKRunner
     from types import SimpleNamespace
+
+    from ksadk.runners.adk_runner import ADKRunner
 
     runner = ADKRunner(_write_detection(FrameworkType.ADK), str(tmp_path))
     runner._resumable = True
@@ -466,6 +468,219 @@ async def test_adk_runner_checkpoint_writes_latest_boundary(tmp_path, monkeypatc
     assert written_events[1]["metadata"]["tool_names"] == ["tool_b"]
     assert written_events[2]["metadata"]["tool_names"] == ["tool_c"]
 
+
+@pytest.mark.asyncio
+async def test_adk_runner_concurrent_invocation_ids_no_cross_pollution(tmp_path):
+    """P1.1: Two interleaved invocations on different sessions must not
+    cross-pollute invocation_id.  The old instance-level _last_adk_invocation_id
+    would cause A's checkpoint to reference B's invocation."""
+    from ksadk.runners.adk_runner import ADKRunner
+
+    runner = ADKRunner(_write_detection(FrameworkType.ADK), str(tmp_path))
+
+    persisted = {}
+
+    async def fake_persist(*, session_id, ksadk_invocation_id, adk_invocation_id, **kw):
+        persisted[ksadk_invocation_id] = (session_id, adk_invocation_id)
+
+    runner._persist_invocation_mapping = fake_persist
+
+    async def make_events(invocation_id, count):
+        for i in range(count):
+            ev = SimpleNamespace(
+                id=f"evt-{invocation_id}-{i}",
+                author="agent",
+                invocation_id=invocation_id,
+                content=SimpleNamespace(parts=[]),
+                actions=None,
+            )
+            ev.get_function_calls = lambda: None
+            yield ev
+
+    # Interleave two invocations A and B on the same session.
+    import asyncio
+
+    gen_a = runner._collect_adk_invocation_id_if_present(
+        make_events("adk-A", 3),
+        session_id="sess-1",
+        ksadk_invocation_id="ksadk-A",
+    )
+    gen_b = runner._collect_adk_invocation_id_if_present(
+        make_events("adk-B", 3),
+        session_id="sess-1",
+        ksadk_invocation_id="ksadk-B",
+    )
+
+    # Drain both concurrently.
+    results_a = []
+    results_b = []
+
+    async def drain(gen, out):
+        async for e in gen:
+            out.append(e)
+
+    await asyncio.gather(drain(gen_a, results_a), drain(gen_b, results_b))
+
+    # Each invocation should persist its own ADK invocation_id, not the other's.
+    assert persisted["ksadk-A"] == ("sess-1", "adk-A")
+    assert persisted["ksadk-B"] == ("sess-1", "adk-B")
+    assert len(results_a) == 3
+    assert len(results_b) == 3
+
+
+@pytest.mark.asyncio
+async def test_adk_runner_zero_events_resume_no_unbound_error(tmp_path):
+    """P1.4 sub-issue: Resuming a completed invocation returns zero events.
+    The last_event guard must prevent UnboundLocalError on the 'event' variable."""
+    from types import SimpleNamespace
+
+    from ksadk.runners.adk_runner import ADKRunner
+
+    runner = ADKRunner(_write_detection(FrameworkType.ADK), str(tmp_path))
+    runner._resumable = True
+    runner._agent = SimpleNamespace(name="test-agent")
+    runner._short_term_memory = None
+
+    # Simulate ADK returning zero events for a completed invocation.
+    async def empty_events():
+        return
+        yield  # pragma: no cover -- unreachable, satisfies async generator
+
+    wrapped = runner._collect_adk_invocation_id(
+        empty_events(),
+        ksadk_invocation_id="ksadk-inv-1",
+        session_id="sess-1",
+        checkpoint_run_id="run-1",
+    )
+
+    results = [e async for e in wrapped]
+    assert results == []
+
+    # The generator should not raise — no UnboundLocalError on 'last_event'.
+    # (The actual usage in invoke() uses last_event to avoid referencing
+    # an unbound 'event' variable.)
+
+
+@pytest.mark.asyncio
+async def test_adk_runner_resume_does_not_write_duplicate_audit(tmp_path, monkeypatch):
+    """P2: ADKRunner must NOT call append_run_resume_event — that's owned by
+    conversation runtime.  Verify no resume event is written by the runner."""
+    from types import SimpleNamespace
+
+    from ksadk.runners.adk_runner import ADKRunner
+
+    runner = ADKRunner(_write_detection(FrameworkType.ADK), str(tmp_path))
+    runner._resumable = True
+    runner._agent = SimpleNamespace(name="test-agent")
+    runner._short_term_memory = None
+
+    resume_calls = []
+
+    original_append = None
+
+    async def fake_append_resume(*args, **kwargs):
+        resume_calls.append(kwargs)
+
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.append_run_resume_event", fake_append_resume
+    )
+
+    # Simulate events with invocation_id — checkpoint writing is fine,
+    # but resume audit must NOT be written by the runner.
+    async def fake_events():
+        for i in range(2):
+            ev = SimpleNamespace(
+                id=f"evt-{i}",
+                author="agent",
+                invocation_id="adk-inv-1",
+                content=SimpleNamespace(parts=[]),
+                actions=None,
+            )
+            ev.get_function_calls = lambda: [SimpleNamespace(name="tool", id="tc")]
+            yield ev
+
+    # Patch checkpoint writing to avoid needing a real session service.
+    async def fake_checkpoint(**kw):
+        pass
+
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.append_run_checkpoint_event", fake_checkpoint
+    )
+
+    wrapped = runner._collect_adk_invocation_id(
+        fake_events(),
+        ksadk_invocation_id="ksadk-inv-1",
+        session_id="sess-1",
+        checkpoint_run_id="run-1",
+    )
+    results = [e async for e in wrapped]
+
+    assert len(results) == 2
+    assert resume_calls == [], "Runner must not write run_resume events (P2 fix)"
+
+
+@pytest.mark.asyncio
+async def test_adk_runner_invocation_map_lock_prevents_lost_update(tmp_path):
+    """P1.1 sub-issue: concurrent _persist_invocation_mapping calls must not
+    lose mappings.  The lock serializes the read-modify-write."""
+    from ksadk.runners.adk_runner import ADKRunner
+
+    runner = ADKRunner(_write_detection(FrameworkType.ADK), str(tmp_path))
+
+    # Simulate a backing store with non-atomic read-modify-write.
+    store = {}
+    call_count = 0
+
+    class FakeCore:
+        async def get_binding_by_session_id(self, session_id, runner_key):
+            return dict(store)
+
+        async def set_binding_by_session_id(self, session_id, runner_key, delta):
+            # Simulate merge: the real service does next_state.update(delta).
+            store.update(delta)
+
+    def fake_resolve_service():
+        return object()
+
+    fake_core = FakeCore()
+
+    import ksadk.sessions.continuity as continuity_mod
+
+    original_core_cls = continuity_mod.ConversationSessionCore
+
+    def fake_core_factory(service):
+        return fake_core
+
+    monkeypatch_local = pytest.MonkeyPatch()
+    monkeypatch_local.setattr(continuity_mod, "ConversationSessionCore", fake_core_factory)
+
+    import ksadk.sessions as sessions_mod
+    monkeypatch_local.setattr(sessions_mod, "resolve_session_service", fake_resolve_service)
+
+    # Run two concurrent persist calls — without the lock, the second would
+    # overwrite the first's entry because both read the same starting state.
+    import asyncio
+
+    await asyncio.gather(
+        runner._persist_invocation_mapping(
+            session_id="sess-1",
+            ksadk_invocation_id="ksadk-A",
+            adk_invocation_id="adk-A",
+        ),
+        runner._persist_invocation_mapping(
+            session_id="sess-1",
+            ksadk_invocation_id="ksadk-B",
+            adk_invocation_id="adk-B",
+        ),
+    )
+
+    # Both mappings must survive — the lock prevented the lost update.
+    binding = await fake_core.get_binding_by_session_id("sess-1", "adk")
+    inv_map = binding.get("invocation_map", {})
+    assert inv_map.get("ksadk-A") == "adk-A"
+    assert inv_map.get("ksadk-B") == "adk-B"
+
+    monkeypatch_local.undo()
 
 
 def test_langgraph_runner_declares_time_travel_resume_mode(monkeypatch):
@@ -1030,6 +1245,7 @@ def test_adk_runner_build_adk_content_skips_images_for_text_only_models(tmp_path
 @pytest.mark.asyncio
 async def test_adk_runner_invoke_forwards_attachment_results_via_state_delta(tmp_path, monkeypatch):
     from google.genai import types
+
     from ksadk.runners.adk_runner import ADKRunner
 
     detection = SimpleNamespace(
@@ -1085,6 +1301,7 @@ async def test_adk_runner_invoke_forwards_attachment_results_via_state_delta(tmp
 @pytest.mark.asyncio
 async def test_adk_runner_invoke_extracts_usage_from_final_event(tmp_path, monkeypatch):
     from google.genai import types
+
     from ksadk.runners.adk_runner import ADKRunner
 
     detection = SimpleNamespace(
@@ -1135,6 +1352,7 @@ async def test_adk_runner_invoke_extracts_usage_from_final_event(tmp_path, monke
 async def test_adk_runner_invoke_accumulates_usage_across_events(tmp_path, monkeypatch):
     """多 event(agent loop 多次 LLM 调用)usage 累加,last_usage = 末个 event。"""
     from google.genai import types
+
     from ksadk.runners.adk_runner import ADKRunner
 
     detection = SimpleNamespace(
@@ -1179,6 +1397,7 @@ async def test_adk_runner_invoke_accumulates_usage_across_events(tmp_path, monke
 @pytest.mark.asyncio
 async def test_adk_runner_stream_extracts_usage_details_from_final_event(tmp_path, monkeypatch):
     from google.genai import types
+
     from ksadk.runners.adk_runner import ADKRunner
 
     detection = SimpleNamespace(
@@ -1231,3 +1450,213 @@ async def test_adk_runner_stream_extracts_usage_details_from_final_event(tmp_pat
     # last_usage = 最后一次调用快照
     assert final["metadata"]["last_usage"]["input_tokens"] == 12
     assert final["metadata"]["last_usage"]["input_token_details"]["cached"] == 4
+
+
+@pytest.mark.asyncio
+async def test_adk_runner_checkpoint_metadata_includes_resume_mode_annotation(tmp_path):
+    """P1.4: checkpoint metadata must include resume_mode and only_latest_resumable
+    so consumers know ADK only supports forward-only invocation resume, not
+    arbitrary checkpoint rollback like LangGraph time_travel."""
+    from ksadk.runners.adk_runner import ADKRunner
+
+    runner = ADKRunner(_write_detection(FrameworkType.ADK), str(tmp_path))
+
+    event = SimpleNamespace(
+        get_function_calls=lambda: [SimpleNamespace(name="tool", id="tc1")],
+        content=SimpleNamespace(parts=[]),
+        actions=None,
+    )
+
+    metadata = runner._extract_checkpoint_metadata(event)
+
+    assert metadata["resume_mode"] == "invocation_id"
+    assert metadata["only_latest_resumable"] is True
+    assert metadata["backend"] == "in_memory"
+    assert metadata["scope"] == "invocation"
+    assert metadata["durable"] is False
+    assert metadata["is_resumable"] is False  # in_memory -> not durable -> not resumable
+
+
+def test_apply_adk_only_latest_resumable_marks_older_checkpoints():
+    """P1.4: _apply_adk_only_latest_resumable should set IsResumable=False
+    on older ADK checkpoints within the same RunId, keeping only the latest
+    one resumable."""
+    from ksadk.server.app import _apply_adk_only_latest_resumable
+
+    checkpoints = [
+        {
+            "CheckpointId": "adk-ckpt-1",
+            "RunId": "run-001",
+            "SeqId": 1,
+            "IsResumable": True,
+            "Metadata": {"only_latest_resumable": True},
+        },
+        {
+            "CheckpointId": "adk-ckpt-2",
+            "RunId": "run-001",
+            "SeqId": 2,
+            "IsResumable": True,
+            "Metadata": {"only_latest_resumable": True},
+        },
+        {
+            "CheckpointId": "adk-ckpt-3",
+            "RunId": "run-001",
+            "SeqId": 3,
+            "IsResumable": True,
+            "Metadata": {"only_latest_resumable": True},
+        },
+    ]
+
+    result = _apply_adk_only_latest_resumable(checkpoints)
+
+    # Only the latest (seq=3) stays resumable
+    assert result[0]["IsResumable"] is False
+    assert result[1]["IsResumable"] is False
+    assert result[2]["IsResumable"] is True
+
+    # Older ones get the reason
+    assert result[0]["ResumeDisabledReason"] == "新的恢复点已生成，此恢复点暂停恢复能力"
+    assert result[1]["ResumeDisabledReason"] == "新的恢复点已生成，此恢复点暂停恢复能力"
+
+    # Latest one has no disabled reason
+    assert "ResumeDisabledReason" not in result[2] or result[2].get("ResumeDisabledReason") is None
+
+
+def test_apply_adk_only_latest_resumable_separate_run_ids():
+    """P1.4: Different RunIds should each keep their own latest checkpoint resumable."""
+    from ksadk.server.app import _apply_adk_only_latest_resumable
+
+    checkpoints = [
+        {
+            "CheckpointId": "adk-ckpt-1",
+            "RunId": "run-A",
+            "SeqId": 1,
+            "IsResumable": True,
+            "Metadata": {"only_latest_resumable": True},
+        },
+        {
+            "CheckpointId": "adk-ckpt-1",
+            "RunId": "run-B",
+            "SeqId": 1,
+            "IsResumable": True,
+            "Metadata": {"only_latest_resumable": True},
+        },
+    ]
+
+    result = _apply_adk_only_latest_resumable(checkpoints)
+    # Both are the latest for their own RunId -> both stay resumable
+    assert result[0]["IsResumable"] is True
+    assert result[1]["IsResumable"] is True
+
+
+def test_apply_adk_only_latest_resumable_skips_non_adk():
+    """P1.4: Non-ADK checkpoints (no only_latest_resumable flag) should be untouched."""
+    from ksadk.server.app import _apply_adk_only_latest_resumable
+
+    checkpoints = [
+        {
+            "CheckpointId": "lg-ckpt-1",
+            "RunId": "run-X",
+            "SeqId": 1,
+            "IsResumable": True,
+            "Metadata": {"resume_mode": "time_travel"},  # langgraph, no only_latest flag
+        },
+        {
+            "CheckpointId": "lg-ckpt-2",
+            "RunId": "run-X",
+            "SeqId": 2,
+            "IsResumable": True,
+            "Metadata": {"resume_mode": "time_travel"},
+        },
+    ]
+
+    result = _apply_adk_only_latest_resumable(checkpoints)
+    # Both should remain resumable since they're not ADK only_latest_resumable
+    assert result[0]["IsResumable"] is True
+    assert result[1]["IsResumable"] is True
+
+
+def test_check_adk_latest_resumable_marks_non_latest():
+    """P1.4: _check_adk_latest_resumable should disable a checkpoint that is
+    not the latest for its RunId, based on event history."""
+    from ksadk.server.app import _check_adk_latest_resumable
+
+    checkpoint = {
+        "CheckpointId": "adk-ckpt-1",
+        "RunId": "run-001",
+        "SeqId": 1,
+        "IsResumable": True,
+        "Metadata": {"only_latest_resumable": True},
+    }
+
+    # Events show a later checkpoint (seq=3) for the same run
+    events = [
+        SimpleNamespace(
+            event_type="run_checkpoint",
+            seq_id=1,
+            metadata={"run_id": "run-001"},
+        ),
+        SimpleNamespace(
+            event_type="run_checkpoint",
+            seq_id=3,
+            metadata={"run_id": "run-001"},
+        ),
+    ]
+
+    result = _check_adk_latest_resumable(checkpoint, events)
+    assert result["IsResumable"] is False
+    assert result["ResumeDisabledReason"] == "新的恢复点已生成，此恢复点暂停恢复能力"
+
+
+def test_check_adk_latest_resumable_keeps_latest():
+    """P1.4: _check_adk_latest_resumable should keep the latest checkpoint resumable."""
+    from ksadk.server.app import _check_adk_latest_resumable
+
+    checkpoint = {
+        "CheckpointId": "adk-ckpt-3",
+        "RunId": "run-001",
+        "SeqId": 3,
+        "IsResumable": True,
+        "Metadata": {"only_latest_resumable": True},
+    }
+
+    events = [
+        SimpleNamespace(
+            event_type="run_checkpoint",
+            seq_id=1,
+            metadata={"run_id": "run-001"},
+        ),
+        SimpleNamespace(
+            event_type="run_checkpoint",
+            seq_id=3,
+            metadata={"run_id": "run-001"},
+        ),
+    ]
+
+    result = _check_adk_latest_resumable(checkpoint, events)
+    assert result["IsResumable"] is True
+    assert "ResumeDisabledReason" not in result or result.get("ResumeDisabledReason") is None
+
+
+def test_check_adk_latest_resumable_skips_non_adk():
+    """P1.4: Non-ADK checkpoints should be passed through unchanged."""
+    from ksadk.server.app import _check_adk_latest_resumable
+
+    checkpoint = {
+        "CheckpointId": "lg-ckpt-1",
+        "RunId": "run-001",
+        "SeqId": 1,
+        "IsResumable": True,
+        "Metadata": {"resume_mode": "time_travel"},
+    }
+
+    events = [
+        SimpleNamespace(
+            event_type="run_checkpoint",
+            seq_id=5,
+            metadata={"run_id": "run-001"},
+        ),
+    ]
+
+    result = _check_adk_latest_resumable(checkpoint, events)
+    assert result["IsResumable"] is True
