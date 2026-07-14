@@ -212,7 +212,9 @@ def _sse_events(response_text: str) -> list[tuple[str, dict]]:
 
 
 @pytest.mark.asyncio
-async def test_ui_bootstrap_advertises_checkpoint_resume_capabilities(monkeypatch):
+async def test_ui_bootstrap_disables_checkpoint_controls_when_runner_does_not_support_them(
+    monkeypatch,
+):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()
     runner = _DummyRunner()
@@ -232,14 +234,38 @@ async def test_ui_bootstrap_advertises_checkpoint_resume_capabilities(monkeypatc
     assert run_lifecycle["Enabled"] is True
     assert run_lifecycle["Resume"] is True
     assert run_lifecycle["Abort"] is True
-    assert run_lifecycle["Checkpoints"] is True
-    assert run_lifecycle["CheckpointResume"] is True
-    assert run_lifecycle["CheckpointResumePreview"] is True
+    assert run_lifecycle["Checkpoints"] is False
+    assert run_lifecycle["CheckpointResume"] is False
+    assert run_lifecycle["CheckpointResumePreview"] is False
     capabilities = response.json()["Data"]["Capabilities"]
     assert capabilities["RuntimeCapabilities"]["Framework"] == "mock"
     assert capabilities["RuntimeCapabilities"]["Checkpoint"]["Supported"] is False
     assert capabilities["RuntimeCapabilities"]["ResumeRun"]["ResumeMode"] == "none"
     assert capabilities["CheckpointResumeCapability"]["Supported"] is False
+
+
+@pytest.mark.asyncio
+async def test_ui_bootstrap_enables_checkpoint_controls_from_runtime_capability(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _CheckpointResumeRunner()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/GetAgentUiBootstrap",
+            json={"AgentId": "demo-agent"},
+        )
+
+    assert response.status_code == 200
+    capabilities = response.json()["Data"]["Capabilities"]
+    assert capabilities["CheckpointResumeCapability"]["Supported"] is True
+    assert capabilities["RunLifecycle"]["Checkpoints"] is True
+    assert capabilities["RunLifecycle"]["CheckpointResume"] is True
+    assert capabilities["RunLifecycle"]["CheckpointResumePreview"] is True
 
 
 @pytest.mark.asyncio

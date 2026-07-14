@@ -109,6 +109,12 @@ ADK 恢复基于 **事件（Events）+ 事件动作（Event Actions）** 的增�
 - 当前 event 包含 `long_running_tool_ids`（长时间运行函数工具）
 - 暂停后，调用方需要保存 `invocation_id`，后续通过传入该 ID 恢复
 
+这里描述的是 ADK 正常执行过程中的**主动暂停**条件，不等同于 Pod/进程异常退出后的
+checkpoint 边界。`Runner.run_async(invocation_id=...)` 恢复未完成 invocation 时不要求最后
+一个历史 event 带 `long_running_tool_ids`；它会重建 invocation context 并从已持久化的 agent
+状态继续。因此 crash recovery 仍可在普通 function call、agent state 和 end-of-agent 边界记录
+最新恢复点，详见 4.5；工具调用保持 at-least-once 语义。
+
 ### 2.6 ResumeMode 语义差异
 
 ADK 与 LangGraph 的恢复语义本质不同，ksadk 不抹平这个差异：
@@ -302,8 +308,13 @@ checkpoint 事件的 metadata 包含以下字段，供消费方做门控和 UI �
 | `backend` | session backend 类型（`in_memory` / `sqlite` / `database`） |
 | `scope` | 固定 `invocation` |
 | `durable` | 是否持久化（`stm_backend is not None and stm_backend != "local"`） |
+| `shared_across_pods` | 是否使用 PostgreSQL 等共享 backend |
+| `resume_disabled_reason` | backend 非共享或恢复能力关闭时的禁用原因 |
 | `resume_mode` | 固定 `invocation_id` |
 | `only_latest_resumable` | 固定 `True`，标识此 checkpoint 只能取最新恢复点 |
+
+只有 `ResumabilityConfig` 已启用且 backend 为共享 `database` 时，`is_resumable=True`。
+in-memory、local 和 SQLite checkpoint 会保留用于审计，但不会向控制台声明可跨 Pod 恢复。
 
 #### framework_ref 结构
 
@@ -388,18 +399,19 @@ if last_event is not None and hasattr(last_event, "content") and last_event.cont
 
 ```python
 {
-    "Supported": True,
+    "Supported": resumable and stm_backend == "database",
     "Backend": "adk_invocation" | "adk_invocation+sqlite" | "adk_invocation+postgres",
     "Scope": "invocation",
     "Durable": stm_backend is not None and stm_backend != "local",
     "SharedAcrossPods": stm_backend == "database",
+    "LocalOnly": stm_backend != "database",
     "ResumeMode": "invocation_id",
-    "Reason": "ADK ResumabilityConfig enabled; resume via invocation_id",
+    "Reason": "...shared database session backend enabled...",
 }
 ```
 
-不可恢复时 `Supported=False`，`ResumeMode="forward_only"`，`Reason` 回传
-`_resume_disabled_reason`（版本不兼容时为版本信息）。
+未启用 ADK resumability 时 `Supported=False`、`ResumeMode="forward_only"`；已启用但
+backend 非共享时仍为 `Supported=False`，同时返回 `LocalOnly=True` 和明确降级原因。
 
 #### `get_runtime_capabilities`
 
@@ -503,9 +515,9 @@ json.JSONDecodeError: pass`）。兼容不同 ADK 版本（按原始函数签名
 - 遇到 `run_status` 终态事件时发送 `[DONE]` 并结束
 - 无新事件时查全量确认 run 是否已有终态（断线重连兜底）
 
-**已知限制**：当前只读本地 session service 事件，没有代理到 runtime SSE 事件源。
-如果 runtime resume 事件未被写入 session service，客户端断线 / 刷新后可能订阅不到恢复
-事件（详见第 8 节）。
+外部控制台经 KOP 调用时，已鉴权请求由 `agentengine-server` 代理到当前 Agent runtime 的
+同名端点，因此 `ResumeRun` 与断线后的 `SubscribeRunEvents(AfterSeqId)` 读取同一 runtime
+session service。未携带 Agent 鉴权上下文的内部兼容调用仍可读取 server-local 事件。
 
 ### 5.5 GetAgentUiBootstrap
 
@@ -665,22 +677,18 @@ server: _checkpoint_resume_disabled_detail
   └─ 刷新 checkpoint 列表，不启动 SSE
 ```
 
+KOP facade 会检查 runtime `Content-Type`：`application/json` 原样作为 JSON 返回，只有
+`text/event-stream` 才包装成 StreamingResponse，避免控制台把 noop JSON 当作 SSE 解析。
+
 ---
 
-## 8 已知限制与后续工作
+## 8 边界与后续工作
 
-### 8.1 SubscribeRunEvents 事件源一致性
+### 8.1 SubscribeRunEvents 事件源一致性（已处理）
 
-**问题**：`ResumeRun` 走 `_detached_streaming_response` 直接从 runner 流式消费事件；
-`SubscribeRunEvents` 只从 session service 数据库读已持久化事件。两条路径是否指向同一
-事件源，取决于 detached streaming 是否可靠地将所有事件落库。
-
-当前代码没有显式的 runtime → session service 事件镜像，也没有专门的"resume 后断线续订"
-测试。如果 runtime resume 事件未被写入 session service，客户端断线 / 刷新后订阅不到恢复
-事件。
-
-**后续方向**：让 `SubscribeRunEvents` 解析 `AgentId` 并代理到与 `ResumeRun` 相同的
-runtime 事件源，或确保 detached streaming 路径将 resume 事件可靠写入 session service。
+KOP 的已鉴权 `SubscribeRunEvents` 现在通过 `X-Auth-Agent-Id`（或显式 `AgentId`）解析
+runtime，并代理到与 `ResumeRun` 相同的 runtime 事件源。`SessionId`、`InvocationId` 和
+`AfterSeqId` 原样透传；定向测试覆盖代理路由、游标和流资源关闭。
 
 ### 8.2 真实 resume E2E
 
@@ -719,8 +727,10 @@ PostgreSQL 等持久化存储）。但 ADK Runner 实例是进程内的，恢复
 | `test_adk_runner_invocation_map_lock_prevents_lost_update` | P1.1：映射加锁 |
 | `test_adk_runner_resume_raises_on_missing_invocation_id` | P1.2：丢失引用抛错 |
 | `test_adk_runner_resolve_resume_from_framework_ref` | P1.2：从 framework_ref 解析 |
-| `test_adk_runner_declares_runtime_resume_when_resumable_enabled` | P1.3：Level 随 backend 降级 |
+| `test_adk_runner_does_not_advertise_in_memory_resume` | P1.3：内存 backend 不对外声明可恢复 |
 | `test_adk_runner_checkpoint_metadata_includes_backend_info` | P1.3：metadata 含 backend/scope/durable |
+| `test_adk_runner_rejects_resume_when_resumability_disabled` | 禁止恢复请求降级为空消息新任务 |
+| `test_adk_json_patch_returns_llm_response_and_is_idempotent` | LiteLLM 补丁返回类型与幂等性 |
 | `test_adk_runner_zero_events_resume_no_unbound_error` | P1.4：零事件无 UnboundLocalError |
 | `test_adk_runner_checkpoint_metadata_includes_resume_mode_annotation` | P1.4：`only_latest_resumable` |
 | `test_apply_adk_only_latest_resumable_marks_older_checkpoints` | P1.4：旧 checkpoint 禁用 |

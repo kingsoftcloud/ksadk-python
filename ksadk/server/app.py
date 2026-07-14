@@ -2028,6 +2028,12 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
         if isinstance(runtime_capabilities, Mapping)
         else {},
     }
+    checkpoint_resume_supported = bool(checkpoint_resume_capability["Supported"])
+    cancel_run_supported = bool(
+        (runtime_capabilities.get("CancelRun") or {}).get("Supported")
+        if isinstance(runtime_capabilities, Mapping)
+        else False
+    )
     return _action_response(
         "GetAgentUiBootstrap",
         {
@@ -2043,17 +2049,17 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
                 "WorkspaceFiles": workspace_enabled,
                 "Approval": True,
                 "Thinking": True,
-                "StopRun": True,
-                "ResumeRun": True,
+                "StopRun": cancel_run_supported,
+                "ResumeRun": checkpoint_resume_supported,
                 "RuntimeCapabilities": runtime_capabilities,
                 "CheckpointResumeCapability": checkpoint_resume_capability,
                 "RunLifecycle": {
                     "Enabled": True,
                     "Resume": True,
                     "Abort": True,
-                    "Checkpoints": True,
-                    "CheckpointResume": True,
-                    "CheckpointResumePreview": True,
+                    "Checkpoints": checkpoint_resume_supported,
+                    "CheckpointResume": checkpoint_resume_supported,
+                    "CheckpointResumePreview": checkpoint_resume_supported,
                 },
                 "MCP": False,
                 "HostedRuntime": False,

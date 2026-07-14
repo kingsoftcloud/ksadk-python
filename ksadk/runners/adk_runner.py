@@ -101,6 +101,8 @@ class ADKRunner(BaseRunner):
             import google.adk.models.lite_llm as adk_lite_llm
 
             _original_fn = adk_lite_llm._message_to_generate_content_response
+            if getattr(_original_fn, "__ksadk_json_patch__", False):
+                return
             # Determine which kwargs the original function actually accepts,
             # so the patch is compatible across ADK versions that may have
             # added or removed `model_version` / `thought_parts`.
@@ -123,15 +125,17 @@ class ADKRunner(BaseRunner):
                 try:
                     result = _original_fn(message, **forward_kwargs)
                 except _stdlib_json.JSONDecodeError:
-                    # P1.5: Malformed JSON in tool-call arguments — return an
-                    # empty response so the agent can retry rather than crashing.
                     logger.warning(
                         "ADKRunner: caught JSONDecodeError in args parsing, "
                         "returning empty response"
                     )
+                    from google.adk.models import LlmResponse
                     from google.genai import types as _genai_types
-                    return _genai_types.GenerateContentResponse(
-                        candidates=[],
+
+                    return LlmResponse(
+                        content=_genai_types.Content(role="model", parts=[]),
+                        partial=is_partial,
+                        model_version=model_version,
                     )
                 # If the response has function_call parts with empty args,
                 # fill in {} as fallback (this was what RobustJson used to do,
@@ -157,6 +161,7 @@ class ADKRunner(BaseRunner):
                     ]
                 return result
 
+            _patched_message_to_generate_content_response.__ksadk_json_patch__ = True
             adk_lite_llm._message_to_generate_content_response = (
                 _patched_message_to_generate_content_response
             )
@@ -190,6 +195,8 @@ class ADKRunner(BaseRunner):
             from google.adk.tools.mcp_tool.mcp_tool import McpTool
 
             _original_run_async = McpTool._run_async_impl
+            if getattr(_original_run_async, "__ksadk_mcp_result_patch__", False):
+                return
 
             async def _patched_run_async_impl(
                 self, *, args, tool_context, credential
@@ -204,6 +211,7 @@ class ADKRunner(BaseRunner):
                     return response.model_dump(exclude_none=True, mode="json")
                 return response
 
+            _patched_run_async_impl.__ksadk_mcp_result_patch__ = True
             McpTool._run_async_impl = _patched_run_async_impl
 
             logger.info(
@@ -269,14 +277,22 @@ class ADKRunner(BaseRunner):
                 backend = "adk_invocation+sqlite"
             elif stm_backend == "database":
                 backend = "adk_invocation+postgres"
+            shared_across_pods = stm_backend == "database"
             return {
-                "Supported": True,
+                "Supported": shared_across_pods,
                 "Backend": backend,
                 "Scope": "invocation",
                 "Durable": stm_backend is not None and stm_backend != "local",
-                "SharedAcrossPods": stm_backend == "database",
+                "SharedAcrossPods": shared_across_pods,
+                "LocalOnly": not shared_across_pods,
                 "ResumeMode": "invocation_id",
-                "Reason": "ADK ResumabilityConfig enabled; resume via invocation_id",
+                "Reason": (
+                    "ADK ResumabilityConfig and shared database session backend enabled; "
+                    "resume via invocation_id"
+                    if shared_across_pods
+                    else "ADK ResumabilityConfig enabled, but the session backend is "
+                    "process-local or SQLite and cannot support cross-pod recovery"
+                ),
             }
         return {
             "Supported": False,
@@ -417,6 +433,7 @@ class ADKRunner(BaseRunner):
         from google.adk.runners import Runner
 
         resumable = self._resolve_resumability()
+        resumability_enabled = resumable.enabled
 
         # 版本兼容性检查：低于最低版本时强制关闭恢复
         resume_compatible, resume_reason = self._check_adk_resume_compatibility()
@@ -425,6 +442,7 @@ class ADKRunner(BaseRunner):
                 "ADKRunner: resumability disabled — %s", resume_reason
             )
             resumable = self._ResolvabilityResult(enabled=False, source="version_check", app=None)
+            resumability_enabled = False
             self._resume_disabled_reason = resume_reason
 
         if resumable.app is not None:
@@ -454,6 +472,8 @@ class ADKRunner(BaseRunner):
                     session_service=self._session_service,
                     app_name=self._agent.name,
                 )
+                resumability_enabled = False
+                self._resume_disabled_reason = "ADK ResumabilityConfig is unavailable"
         else:
             runner_kwargs = dict(
                 agent=self._agent,
@@ -466,9 +486,9 @@ class ADKRunner(BaseRunner):
             logger.info("ADKRunner: LongTermMemory injected as memory_service")
 
         self._runner = Runner(**runner_kwargs)
-        self._resumable = resumable.enabled
+        self._resumable = resumability_enabled
 
-        if resumable.enabled:
+        if resumability_enabled:
             stm_backend = (
                 getattr(self._short_term_memory, "backend", None)
                 if self._short_term_memory else None
@@ -1540,17 +1560,25 @@ class ADKRunner(BaseRunner):
                 metadata["end_of_agent"] = True
 
         # 是否可恢复
-        metadata["is_resumable"] = self._resumable
-        metadata["resume_status"] = "resumable" if self._resumable else "disabled"
-        # P1.3: Include backend/scope/durable so consumers can distinguish
-        # in-memory (lost on pod restart) from durable checkpoints.
         stm_backend = (
             getattr(self._short_term_memory, "backend", None)
             if self._short_term_memory else None
         )
+        shared_across_pods = stm_backend == "database"
+        platform_resumable = self._resumable and shared_across_pods
+        metadata["is_resumable"] = platform_resumable
+        metadata["resume_status"] = "resumable" if platform_resumable else "disabled"
         metadata["backend"] = stm_backend or "in_memory"
         metadata["scope"] = "invocation"
         metadata["durable"] = stm_backend is not None and stm_backend != "local"
+        metadata["shared_across_pods"] = shared_across_pods
+        if not platform_resumable:
+            metadata["resume_disabled_reason"] = (
+                self._resume_disabled_reason
+                if not self._resumable and self._resume_disabled_reason
+                else "ADK checkpoint uses an in-memory or local-only session backend; "
+                "cross-pod resume is unavailable"
+            )
         # P1.4: ADK only supports invocation-level (forward-only) resume, not
         # arbitrary checkpoint rollback like LangGraph time_travel. Consumers
         # should treat only the latest checkpoint as independently resumable.
@@ -1639,7 +1667,12 @@ class ADKRunner(BaseRunner):
         if run_config is not None:
             run_kwargs["run_config"] = run_config
 
-        if is_resume and self._resumable:
+        if is_resume:
+            if not self._resumable:
+                raise ValueError(
+                    "checkpoint_not_resumable: ADK resumability is disabled for "
+                    f"session={session_id}, ksadk_invocation_id={ksadk_invocation_id}."
+                )
             adk_invocation_id = await self._resolve_resume_invocation_id(
                 input_data=input_data,
                 session_id=session_id,
@@ -1648,16 +1681,7 @@ class ADKRunner(BaseRunner):
             logger.info("Resuming ADK run with adk_invocation_id: %s", adk_invocation_id)
             run_kwargs["invocation_id"] = adk_invocation_id
         else:
-            if is_resume:
-                logger.warning(
-                    "ADKRunner: checkpoint resume requested but resumability is "
-                    "disabled — starting a new invocation with placeholder message "
-                    "(session=%s, ksadk_inv=%s)",
-                    session_id, ksadk_invocation_id,
-                )
-            run_kwargs["new_message"] = (
-                new_message or self._build_adk_content("[empty message]", [])
-            )
+            run_kwargs["new_message"] = new_message
             run_kwargs["state_delta"] = self._build_state_delta(input_data) or None
 
         events_async = self._runner.run_async(**run_kwargs)
