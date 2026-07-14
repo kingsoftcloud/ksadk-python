@@ -192,8 +192,8 @@ async def test_get_agent_ui_bootstrap_matches_local_shape_parity(monkeypatch):
     assert capabilities["WorkspaceFiles"] is True
     assert capabilities["Thinking"] is True
     assert capabilities["Approval"] is True
-    assert capabilities["StopRun"] is True
-    assert capabilities["ResumeRun"] is True
+    assert capabilities["StopRun"] is False
+    assert capabilities["ResumeRun"] is False
     assert capabilities["MCP"] is False
     assert capabilities["HostedRuntime"] is False
     assert capabilities["NativeTerminal"] == {
@@ -206,9 +206,9 @@ async def test_get_agent_ui_bootstrap_matches_local_shape_parity(monkeypatch):
         "Enabled": True,
         "Resume": True,
         "Abort": True,
-        "Checkpoints": True,
-        "CheckpointResume": True,
-        "CheckpointResumePreview": True,
+        "Checkpoints": False,
+        "CheckpointResume": False,
+        "CheckpointResumePreview": False,
     }
 
     builtin_tools = {tool["name"]: tool for tool in capabilities["BuiltinTools"]}

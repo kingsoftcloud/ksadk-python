@@ -284,7 +284,7 @@ def test_adk_runner_declares_native_session_continuity_without_checkpoint_resume
     assert capabilities["ResumeRun"]["ResumeMode"] == "forward_only"
     assert "ResumabilityConfig not enabled" in capabilities["ResumeRun"]["Reason"]
 
-def test_adk_runner_declares_runtime_resume_when_resumable_enabled(tmp_path):
+def test_adk_runner_does_not_advertise_in_memory_resume(tmp_path):
     from ksadk.runners.adk_runner import ADKRunner
 
     runner = ADKRunner(_write_detection(FrameworkType.ADK), str(tmp_path))
@@ -299,16 +299,17 @@ def test_adk_runner_declares_runtime_resume_when_resumable_enabled(tmp_path):
     assert capabilities["SessionContinuity"]["Type"] == "adk_invocation"
     assert capabilities["SessionContinuity"]["Level"] == "semantic"
     assert "in-memory" in capabilities["SessionContinuity"]["Reason"]
-    assert capabilities["Checkpoint"]["Supported"] is True
+    assert capabilities["Checkpoint"]["Supported"] is False
     assert capabilities["Checkpoint"]["Backend"] == "adk_invocation"
-    assert capabilities["ResumeRun"]["Supported"] is True
+    assert capabilities["ResumeRun"]["Supported"] is False
     assert capabilities["ResumeRun"]["ResumeMode"] == "invocation_id"
 
     checkpoint_capability = runner.describe_checkpoint_capability()
-    assert checkpoint_capability["Supported"] is True
+    assert checkpoint_capability["Supported"] is False
     assert checkpoint_capability["Scope"] == "invocation"
     assert checkpoint_capability["ResumeMode"] == "invocation_id"
     assert checkpoint_capability["Durable"] is False
+    assert checkpoint_capability["LocalOnly"] is True
 
 
 def test_adk_runner_reports_runtime_level_with_durable_backend(tmp_path):
@@ -327,8 +328,24 @@ def test_adk_runner_reports_runtime_level_with_durable_backend(tmp_path):
     assert "durable" in capabilities["SessionContinuity"]["Reason"]
 
     checkpoint_capability = runner.describe_checkpoint_capability()
+    assert checkpoint_capability["Supported"] is True
     assert checkpoint_capability["Durable"] is True
     assert checkpoint_capability["SharedAcrossPods"] is True
+
+
+def test_adk_runner_does_not_advertise_sqlite_resume_across_pods(tmp_path):
+    from ksadk.runners.adk_runner import ADKRunner
+
+    runner = ADKRunner(_write_detection(FrameworkType.ADK), str(tmp_path))
+    runner._resumable = True
+    runner._short_term_memory = SimpleNamespace(backend="sqlite")
+
+    checkpoint_capability = runner.describe_checkpoint_capability()
+
+    assert checkpoint_capability["Supported"] is False
+    assert checkpoint_capability["Durable"] is True
+    assert checkpoint_capability["SharedAcrossPods"] is False
+    assert checkpoint_capability["LocalOnly"] is True
 
 
 def test_adk_runner_no_cross_session_invocation_id_corruption(tmp_path):
@@ -373,6 +390,29 @@ async def test_adk_runner_resolve_resume_from_framework_ref(tmp_path):
     assert result == "adk-inv-123"
 
 
+@pytest.mark.asyncio
+async def test_adk_runner_rejects_resume_when_resumability_disabled(tmp_path):
+    """A resume request must never be converted into a new empty-message run."""
+    from ksadk.runners.adk_runner import ADKRunner
+
+    runner = ADKRunner(_write_detection(FrameworkType.ADK), str(tmp_path))
+    runner._resumable = False
+
+    class FakeRunner:
+        def run_async(self, **kwargs):
+            raise AssertionError(f"run_async must not be called: {kwargs}")
+
+    runner._runner = FakeRunner()
+
+    with pytest.raises(ValueError, match="checkpoint_not_resumable"):
+        await runner._prepare_run_events(
+            input_data={"checkpoint_resume": True, "run_id": "run-1"},
+            session_id="session-1",
+            user_input="",
+            is_resume=True,
+        )
+
+
 def test_adk_runner_checkpoint_metadata_includes_backend_info(tmp_path):
     """P1.3: Checkpoint metadata must include backend/scope/durable."""
     from ksadk.runners.adk_runner import ADKRunner
@@ -394,6 +434,40 @@ def test_adk_runner_checkpoint_metadata_includes_backend_info(tmp_path):
     assert metadata["backend"] == "in_memory"
     assert metadata["scope"] == "invocation"
     assert metadata["durable"] is False
+    assert metadata["is_resumable"] is False
+    assert metadata["resume_status"] == "disabled"
+    assert "in-memory" in metadata["resume_disabled_reason"]
+
+
+def test_adk_json_patch_returns_llm_response_and_is_idempotent(tmp_path, monkeypatch):
+    import json
+
+    import google.adk.models.lite_llm as adk_lite_llm
+    from google.adk.models import LlmResponse
+
+    from ksadk.runners.adk_runner import ADKRunner
+
+    def raise_malformed_json(*args, **kwargs):
+        del args, kwargs
+        raise json.JSONDecodeError("invalid tool arguments", "{bad", 1)
+
+    monkeypatch.setattr(
+        adk_lite_llm,
+        "_message_to_generate_content_response",
+        raise_malformed_json,
+    )
+    runner = ADKRunner(_write_detection(FrameworkType.ADK), str(tmp_path))
+
+    runner._apply_json_patch()
+    patched = adk_lite_llm._message_to_generate_content_response
+    result = patched(object(), is_partial=True, model_version="test-model")
+
+    assert isinstance(result, LlmResponse)
+    assert result.partial is True
+    assert result.model_version == "test-model"
+
+    runner._apply_json_patch()
+    assert adk_lite_llm._message_to_generate_content_response is patched
 
 
 def test_adk_runner_single_checkpoint_per_invocation(tmp_path):
