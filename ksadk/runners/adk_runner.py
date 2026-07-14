@@ -17,6 +17,7 @@ from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, Mapping, Optional
 
+from google.genai import types
 from opentelemetry import trace
 
 from ksadk.conversations.attachments import classify_attachment_kind, read_attachment_uri_bytes
@@ -687,7 +688,9 @@ class ADKRunner(BaseRunner):
         backend = (os.environ.get("KSADK_SANDBOX_BACKEND") or "").strip().lower()
         if backend and backend not in {"disabled", "none", "off"}:
             return "sandbox"
-        if os.environ.get("KSADK_SANDBOX_TEMPLATE_ID") or os.environ.get("KSADK_SKILL_RUNTIME_TEMPLATE_ID"):
+        if os.environ.get("KSADK_SANDBOX_TEMPLATE_ID") or os.environ.get(
+            "KSADK_SKILL_RUNTIME_TEMPLATE_ID"
+        ):
             return "sandbox"
         skills_dir = Path(
             os.environ.get("KSADK_LOCAL_SKILLS_DIR")
@@ -754,13 +757,18 @@ class ADKRunner(BaseRunner):
                 return
             added = self._append_tools_by_name(tools)
             if added:
-                logger.info("Injected ksadk built-in tools into agent (added: %s)", ", ".join(added))
+                logger.info(
+                    "Injected ksadk built-in tools into agent (added: %s)",
+                    ", ".join(added),
+                )
             else:
                 logger.debug("ksadk built-in tools already present")
         except Exception as exc:
             logger.warning("Failed to inject ksadk built-in tools: %s", exc)
 
-    def inject_deferred_tools_for_request(self, tool_names: list[str] | tuple[str, ...]) -> list[str]:
+    def inject_deferred_tools_for_request(
+        self, tool_names: list[str] | tuple[str, ...]
+    ) -> list[str]:
         """Append direct built-in tools selected by deferred tool search."""
         names = [str(name or "").strip() for name in tool_names or [] if str(name or "").strip()]
         if not names:
@@ -771,7 +779,10 @@ class ADKRunner(BaseRunner):
             tools = get_agentengine_tools(include=names, profile="coding", mode="direct")
             added = self._append_tools_by_name(tools)
             if added:
-                logger.info("Injected deferred ksadk tools for request (added: %s)", ", ".join(added))
+                logger.info(
+                    "Injected deferred ksadk tools for request (added: %s)",
+                    ", ".join(added),
+                )
             return added
         except Exception as exc:
             logger.warning("Failed to inject deferred ksadk tools for request: %s", exc)
@@ -1018,7 +1029,8 @@ class ADKRunner(BaseRunner):
             return
         if self._agent is not None:
             self._apply_model_to_agent_tree(self._agent, normalized)
-            self._active_model_name = self._discover_model_reference(self._agent) or target_reference
+            discovered = self._discover_model_reference(self._agent)
+            self._active_model_name = discovered or target_reference
             return
         self._active_model_name = target_reference
 
@@ -1107,8 +1119,7 @@ class ADKRunner(BaseRunner):
         attachments: list[Dict[str, Any]],
         *,
         model_metadata: Dict[str, Any] | None = None,
-    ) -> "types.Content":
-        from google.genai import types
+    ) -> types.Content:
         parts = []
         if text:
             parts.append(types.Part(text=text))
@@ -1117,7 +1128,10 @@ class ADKRunner(BaseRunner):
         for att in attachments:
             mime_type = att.get("mime_type", "application/octet-stream")
             display_name = att.get("display_name", "")
-            if classify_attachment_kind(str(mime_type), str(display_name)) == "image" and not image_input_supported:
+            if (
+                classify_attachment_kind(str(mime_type), str(display_name)) == "image"
+                and not image_input_supported
+            ):
                 skipped_images.append(str(display_name or "未命名图片"))
                 continue
 
@@ -1128,7 +1142,8 @@ class ADKRunner(BaseRunner):
                 try:
                     data = base64.b64decode(str(inline_data).strip() + "===")
                 except Exception as e:
-                    logger.warning(f"Failed to decode inline attachment {att.get('display_name', 'uploaded_file')}: {e}")
+                    att_name = att.get("display_name", "uploaded_file")
+                    logger.warning(f"Failed to decode inline attachment {att_name}: {e}")
 
             if data is None:
                 file_uri = att.get("file_uri")
@@ -1141,7 +1156,10 @@ class ADKRunner(BaseRunner):
                 file_uri = att.get("file_uri", "")
                 if file_uri.startswith("local:"):
                     logger.warning(
-                        "Ignoring direct local attachment reference %s; only resolved storage paths are allowed.",
+                        (
+                            "Ignoring direct local attachment reference %s; "
+                            "only resolved storage paths are allowed."
+                        ),
                         file_uri,
                     )
 
@@ -1240,8 +1258,13 @@ class ADKRunner(BaseRunner):
 
         input_tokens = int(usage_metadata.get("prompt_token_count") or 0)
         output_tokens = int(usage_metadata.get("candidates_token_count") or 0)
-        total_tokens = int(usage_metadata.get("total_token_count") or (input_tokens + output_tokens))
-        if not (input_tokens or output_tokens or total_tokens or input_token_details or output_token_details):
+        total_tokens = int(
+            usage_metadata.get("total_token_count") or (input_tokens + output_tokens)
+        )
+        if not (
+            input_tokens or output_tokens or total_tokens
+            or input_token_details or output_token_details
+        ):
             return {}
         return {
             "input_tokens": input_tokens,
@@ -1433,7 +1456,11 @@ class ADKRunner(BaseRunner):
                     "author": getattr(event, "author", ""),
                 }
             },
-            phase="tool_call" if (hasattr(event, "get_function_calls") and event.get_function_calls()) else "agent_state",
+            phase=(
+                "tool_call"
+                if (hasattr(event, "get_function_calls") and event.get_function_calls())
+                else "agent_state"
+            ),
             invocation_id=ksadk_invocation_id,
             metadata=metadata,
         )
@@ -1453,7 +1480,10 @@ class ADKRunner(BaseRunner):
         if hasattr(event, "actions") and event.actions:
             agent_state = getattr(event.actions, "agent_state", None)
             if agent_state is not None:
-                metadata["agent_state_keys"] = list(agent_state.keys()) if isinstance(agent_state, dict) else []
+                if isinstance(agent_state, dict):
+                    metadata["agent_state_keys"] = list(agent_state.keys())
+                else:
+                    metadata["agent_state_keys"] = []
             if getattr(event.actions, "end_of_agent", False):
                 metadata["is_terminal"] = True
                 metadata["end_of_agent"] = True
@@ -1610,7 +1640,12 @@ class ADKRunner(BaseRunner):
         with tracer.start_as_current_span(trace_name) as span:
             # Set input.value for Langfuse top-level input display
             span.set_attribute("input.value", user_input)
-            span.set_attribute("user.input", user_input[:200] if isinstance(user_input, str) else str(user_input)[:200])
+            truncated_input = (
+                user_input[:200]
+                if isinstance(user_input, str)
+                else str(user_input)[:200]
+            )
+            span.set_attribute("user.input", truncated_input)
 
             # Use external session ID if provided
             req_session_id = input_data.get("session_id")
@@ -1709,7 +1744,12 @@ class ADKRunner(BaseRunner):
         with tracer.start_as_current_span(trace_name) as span:
             # Set input.value for Langfuse top-level input display
             span.set_attribute("input.value", user_input)
-            span.set_attribute("user.input", user_input[:200] if isinstance(user_input, str) else str(user_input)[:200])
+            truncated_input = (
+                user_input[:200]
+                if isinstance(user_input, str)
+                else str(user_input)[:200]
+            )
+            span.set_attribute("user.input", truncated_input)
 
             # Use external session ID if provided
             req_session_id = input_data.get("session_id")
@@ -1808,7 +1848,10 @@ class ADKRunner(BaseRunner):
                             if not isinstance(fr_output, dict):
                                 try:
                                     import json as _json2
-                                    fr_output = _json2.loads(fr_output) if isinstance(fr_output, str) else {"raw": str(fr_output)}
+                                    if isinstance(fr_output, str):
+                                        fr_output = _json2.loads(fr_output)
+                                    else:
+                                        fr_output = {"raw": str(fr_output)}
                                 except Exception:
                                     fr_output = {"raw": str(fr_output)}
                             yield {

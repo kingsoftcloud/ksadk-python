@@ -576,8 +576,6 @@ async def test_adk_runner_resume_does_not_write_duplicate_audit(tmp_path, monkey
 
     resume_calls = []
 
-    original_append = None
-
     async def fake_append_resume(*args, **kwargs):
         resume_calls.append(kwargs)
 
@@ -629,7 +627,6 @@ async def test_adk_runner_invocation_map_lock_prevents_lost_update(tmp_path):
 
     # Simulate a backing store with non-atomic read-modify-write.
     store = {}
-    call_count = 0
 
     class FakeCore:
         async def get_binding_by_session_id(self, session_id, runner_key):
@@ -645,8 +642,6 @@ async def test_adk_runner_invocation_map_lock_prevents_lost_update(tmp_path):
     fake_core = FakeCore()
 
     import ksadk.sessions.continuity as continuity_mod
-
-    original_core_cls = continuity_mod.ConversationSessionCore
 
     def fake_core_factory(service):
         return fake_core
@@ -803,7 +798,10 @@ def test_langchain_runner_prepare_for_request_reloads_agent_when_model_changes(
 
     loaded_models: list[tuple[str | None, bool]] = []
 
-    def fake_load_agent_module(project_dir: str, entry_point: str, agent_variable: str, *, force_reload: bool = False):
+    def fake_load_agent_module(
+        project_dir: str, entry_point: str, agent_variable: str, *,
+        force_reload: bool = False,
+    ):
         loaded_models.append((os.getenv("OPENAI_MODEL_NAME"), force_reload))
         return SimpleNamespace(invoke=lambda *args, **kwargs: None), ModuleType("demo.agent")
 
@@ -829,7 +827,10 @@ def test_langgraph_runner_prepare_for_request_reloads_agent_when_model_changes(
 
     loaded_models: list[tuple[str | None, bool]] = []
 
-    def fake_load_agent_module(project_dir: str, entry_point: str, agent_variable: str, *, force_reload: bool = False):
+    def fake_load_agent_module(
+        project_dir: str, entry_point: str, agent_variable: str, *,
+        force_reload: bool = False,
+    ):
         loaded_models.append((os.getenv("OPENAI_MODEL_NAME"), force_reload))
         return SimpleNamespace(invoke=lambda *args, **kwargs: None), ModuleType("demo.agent")
 
@@ -882,7 +883,10 @@ def test_adk_runner_prepare_for_request_restores_default_model_when_request_omit
             self.model = model
 
     child_agent = SimpleNamespace(model=FakeLiteLlm("openai/deepseek-v3.2"), sub_agents=[])
-    root_agent = SimpleNamespace(model=FakeLiteLlm("openai/deepseek-v3.2"), sub_agents=[child_agent])
+    root_agent = SimpleNamespace(
+        model=FakeLiteLlm("openai/deepseek-v3.2"),
+        sub_agents=[child_agent],
+    )
 
     runner = ADKRunner(_write_detection(FrameworkType.ADK), str(tmp_path))
     runner._agent = root_agent
@@ -1143,7 +1147,9 @@ def test_adk_runner_load_agent_skips_skill_runtime_when_not_in_sandbox_mode(
     assert _tool_names(runner._agent.tools) == []
 
 
-def test_adk_runner_build_adk_content_supports_inline_and_reference_attachments(tmp_path, monkeypatch):
+def test_adk_runner_build_adk_content_supports_inline_and_reference_attachments(
+    tmp_path, monkeypatch,
+):
     from ksadk.runners.adk_runner import ADKRunner
 
     monkeypatch.setenv("AGENTENGINE_UI_DIR", str(tmp_path / ".agentengine" / "ui"))
@@ -1259,7 +1265,10 @@ async def test_adk_runner_invoke_forwards_attachment_results_via_state_delta(tmp
     captured: dict[str, Any] = {}
 
     class _FakeRunner:
-        async def run_async(self, *, session_id, user_id, new_message, state_delta=None, run_config=None):
+        async def run_async(
+            self, *, session_id, user_id, new_message,
+            state_delta=None, run_config=None,
+        ):
             captured["session_id"] = session_id
             captured["user_id"] = user_id
             captured["new_message"] = new_message
@@ -1270,7 +1279,10 @@ async def test_adk_runner_invoke_forwards_attachment_results_via_state_delta(tmp
         return "adk-session-1"
 
     monkeypatch.setattr(runner, "_ensure_session", _fake_ensure_session)
-    monkeypatch.setattr(runner, "_prepare_trace_metadata", lambda session_id: ("", [], "", "demo-agent"))
+    monkeypatch.setattr(
+        runner, "_prepare_trace_metadata",
+        lambda session_id: ("", [], "", "demo-agent"),
+    )
     runner._runner = _FakeRunner()
 
     result = await runner.invoke(
@@ -1313,7 +1325,10 @@ async def test_adk_runner_invoke_extracts_usage_from_final_event(tmp_path, monke
     runner._agent = SimpleNamespace(name="demo-agent")
 
     class _FakeRunner:
-        async def run_async(self, *, session_id, user_id, new_message, state_delta=None, run_config=None):
+        async def run_async(
+            self, *, session_id, user_id, new_message,
+            state_delta=None, run_config=None,
+        ):
             del session_id, user_id, new_message, state_delta, run_config
             yield SimpleNamespace(
                 usage_metadata={
@@ -1331,7 +1346,10 @@ async def test_adk_runner_invoke_extracts_usage_from_final_event(tmp_path, monke
         return "adk-session-usage"
 
     monkeypatch.setattr(runner, "_ensure_session", _fake_ensure_session)
-    monkeypatch.setattr(runner, "_prepare_trace_metadata", lambda session_id: ("", [], "", "demo-agent"))
+    monkeypatch.setattr(
+        runner, "_prepare_trace_metadata",
+        lambda session_id: ("", [], "", "demo-agent"),
+    )
     runner._runner = _FakeRunner()
 
     result = await runner.invoke({"session_id": "external-session", "input": "hello"})
@@ -1362,7 +1380,10 @@ async def test_adk_runner_invoke_accumulates_usage_across_events(tmp_path, monke
     runner._agent = SimpleNamespace(name="demo-agent")
 
     class _FakeRunner:
-        async def run_async(self, *, session_id, user_id, new_message, state_delta=None, run_config=None):
+        async def run_async(
+            self, *, session_id, user_id, new_message,
+            state_delta=None, run_config=None,
+        ):
             del session_id, user_id, new_message, state_delta, run_config
             # 两次 LLM 调用(tool loop):第一次 input=4000,第二次 input=5000(含历史)
             yield SimpleNamespace(
@@ -1379,7 +1400,10 @@ async def test_adk_runner_invoke_accumulates_usage_across_events(tmp_path, monke
         return "adk-session-accum"
 
     monkeypatch.setattr(runner, "_ensure_session", _fake_ensure_session)
-    monkeypatch.setattr(runner, "_prepare_trace_metadata", lambda session_id: ("", [], "", "demo-agent"))
+    monkeypatch.setattr(
+        runner, "_prepare_trace_metadata",
+        lambda session_id: ("", [], "", "demo-agent"),
+    )
     runner._runner = _FakeRunner()
 
     result = await runner.invoke({"session_id": "external-session", "input": "hello"})
@@ -1409,7 +1433,10 @@ async def test_adk_runner_stream_extracts_usage_details_from_final_event(tmp_pat
     runner._agent = SimpleNamespace(name="demo-agent")
 
     class _FakeRunner:
-        async def run_async(self, *, session_id, user_id, new_message, state_delta=None, run_config=None):
+        async def run_async(
+            self, *, session_id, user_id, new_message,
+            state_delta=None, run_config=None,
+        ):
             del session_id, user_id, new_message, state_delta, run_config
             yield SimpleNamespace(
                 partial=True,
@@ -1432,10 +1459,18 @@ async def test_adk_runner_stream_extracts_usage_details_from_final_event(tmp_pat
         return "adk-session-stream-usage"
 
     monkeypatch.setattr(runner, "_ensure_session", _fake_ensure_session)
-    monkeypatch.setattr(runner, "_prepare_trace_metadata", lambda session_id: ("", [], "", "demo-agent"))
+    monkeypatch.setattr(
+        runner, "_prepare_trace_metadata",
+        lambda session_id: ("", [], "", "demo-agent"),
+    )
     runner._runner = _FakeRunner()
 
-    chunks = [chunk async for chunk in runner.stream({"session_id": "external-session", "input": "hello"})]
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {"session_id": "external-session", "input": "hello"}
+        )
+    ]
 
     final = chunks[-1]
     assert final["output"] == "hello"

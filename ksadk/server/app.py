@@ -2447,7 +2447,8 @@ async def subscribe_run_events_action(
                     yield "data: [DONE]\n\n"
                     return
 
-            # 重连兜底：本轮无新事件时，查全量确认 run 是否已有 terminal（客户端断连期间 run 已结束）。
+            # 重连兜底：本轮无新事件时，查全量确认 run 是否已有 terminal
+            # （客户端断连期间 run 已结束）。
             # 正常流式期间不触发此查询，保持增量收益。
             if not matched_events:
                 all_events = await service.get_events(session_id)

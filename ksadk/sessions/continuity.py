@@ -79,7 +79,9 @@ class ConversationSessionCore:
         )
         return dict(state.state)
 
-    async def get_runtime_state_by_session_id(self, session_id: str, runner_key: str) -> dict[str, Any]:
+    async def get_runtime_state_by_session_id(
+        self, session_id: str, runner_key: str
+    ) -> dict[str, Any]:
         session = await self._load_session(session_id)
         if session is None:
             return {}
@@ -271,7 +273,11 @@ class LangGraphSessionAdapter(RunnerSessionAdapter):
         else:
             path = "replay"
         return SessionContinuityStatus(
-            level=SessionContinuityLevel.RUNTIME if has_checkpointer else SessionContinuityLevel.SEMANTIC,
+            level=(
+                SessionContinuityLevel.RUNTIME
+                if has_checkpointer
+                else SessionContinuityLevel.SEMANTIC
+            ),
             path=path,
             runner=self.runner_key(runner),
         )
