@@ -414,3 +414,108 @@ async def test_resilient_service_recovers_after_probe(monkeypatch, caplog):
     assert service.degraded is False
     assert "session persistence recovered" in caplog.text
     await service.aclose()
+
+
+class _FailsFirstThenRecoversPrimary(InMemorySessionService):
+    """Primary that fails create_session but succeeds after get_session recovers."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._down = True
+
+    async def _maybe_fail(self):
+        if self._down:
+            raise ConnectionError("pg down")
+
+    async def get_session(self, session_id, *args, **kwargs):
+        await self._maybe_fail()
+        return await super().get_session(session_id, *args, **kwargs)
+
+    async def create_session(self, *args, **kwargs):
+        await self._maybe_fail()
+        return await super().create_session(*args, **kwargs)
+
+    async def append_event(self, *args, **kwargs):
+        await self._maybe_fail()
+        return await super().append_event(*args, **kwargs)
+
+    async def update_session_metadata(self, *args, **kwargs):
+        await self._maybe_fail()
+        return await super().update_session_metadata(*args, **kwargs)
+
+
+class _ProbeRecoveringPrimary(InMemorySessionService):
+    """Primary that fails until probed via get_session with sentinel id, then works."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._recovered = False
+
+    async def get_session(self, session_id, *args, **kwargs):
+        if not self._recovered:
+            if session_id == "__ksadk_probe__":
+                self._recovered = True
+                return None
+            raise ConnectionError("pg down")
+        return await super().get_session(session_id, *args, **kwargs)
+
+    async def create_session(self, *args, **kwargs):
+        if not self._recovered:
+            raise ConnectionError("pg down")
+        return await super().create_session(*args, **kwargs)
+
+    async def append_event(self, session_id, *args, **kwargs):
+        if not self._recovered:
+            raise ConnectionError("pg down")
+        return await super().append_event(session_id, *args, **kwargs)
+
+    async def update_session_metadata(self, *args, **kwargs):
+        if not self._recovered:
+            raise ConnectionError("pg down")
+        return await super().update_session_metadata(*args, **kwargs)
+
+
+async def test_degraded_session_backfills_to_pg_after_recovery(caplog):
+    """Session created during degradation should appear in PG after recovery."""
+    primary = _ProbeRecoveringPrimary()
+    service = ResilientSessionService(primary)
+    service._probe_interval_seconds = 0.05
+    caplog.set_level(logging.INFO)
+
+    # Create session while PG is down — lives only in memory
+    session = await service.create_session("agent-1", "user-1", session_id="sess-degraded")
+    assert service.degraded is True
+
+    # Append an event while degraded
+    await service.append_event(
+        "sess-degraded",
+        SessionEvent(
+            id="evt-1",
+            author="user",
+            event_type="user_message",
+            content={"role": "user", "parts": [{"text": "hello"}]},
+        ),
+    )
+
+    # Wait for probe to recover PG
+    await asyncio.sleep(0.15)
+    assert service.degraded is False
+
+    # Append a new event after recovery — should create session in PG + write event
+    await service.append_event(
+        "sess-degraded",
+        SessionEvent(
+            id="evt-2",
+            author="assistant",
+            event_type="assistant_message",
+            content={"role": "assistant", "parts": [{"text": "hi back"}]},
+        ),
+    )
+
+    # Verify the session now exists in PG (primary)
+    pg_session = await primary.get_session("sess-degraded")
+    assert pg_session is not None
+    pg_events = await primary.get_events("sess-degraded")
+    pg_event_ids = [e.id for e in pg_events]
+    assert "evt-2" in pg_event_ids
+    await service.aclose()

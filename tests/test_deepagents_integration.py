@@ -27,7 +27,8 @@ from typing import Any
 from deepagents import create_deep_agent
 from langchain_core.language_models import LanguageModelInput
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, AIMessageChunk
+from langchain_core.outputs import ChatGenerationChunk
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 
@@ -41,6 +42,26 @@ class FixedGenericFakeChatModel(GenericFakeChatModel):
         **kwargs: Any,
     ) -> Runnable[LanguageModelInput, AIMessage]:
         return self
+
+    def _stream(self, messages, stop=None, run_manager=None, **kwargs):
+        chat_result = self._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+        message = chat_result.generations[0].message
+        if message.content:
+            yield ChatGenerationChunk(
+                message=AIMessageChunk(content=message.content, id=message.id)
+            )
+        if message.tool_calls:
+            yield ChatGenerationChunk(
+                message=AIMessageChunk(
+                    content="", tool_calls=message.tool_calls, id=message.id
+                )
+            )
+        elif message.additional_kwargs:
+            yield ChatGenerationChunk(
+                message=AIMessageChunk(
+                    content="", additional_kwargs=message.additional_kwargs, id=message.id
+                )
+            )
 
 
 fake_model = FixedGenericFakeChatModel(

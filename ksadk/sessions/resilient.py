@@ -203,6 +203,7 @@ class ResilientSessionService(BaseSessionService):
             first_prompt=first_prompt,
             last_prompt=last_prompt,
         )
+        await self._ensure_primary_session(session_id)
         await self._call_primary(
             "update_session_metadata",
             session_id,
@@ -214,10 +215,24 @@ class ResilientSessionService(BaseSessionService):
         )
         return live
 
+    async def _ensure_primary_session(self, session_id: str) -> None:
+        """Create the session in PG if it only exists in memory (degraded-era)."""
+        ok, durable = await self._call_primary("get_session", session_id)
+        if ok and durable is None:
+            live = await self.fallback.get_session(session_id)
+            if live is not None:
+                await self._call_primary(
+                    "create_session",
+                    live.agent_id,
+                    live.user_id,
+                    session_id=live.id,
+                )
+
     async def append_event(self, session_id: str, event: SessionEvent) -> SessionEvent:
         if await self.fallback.get_session(session_id) is None:
             await self.get_session(session_id)
         live = await self.fallback.append_event(session_id, event)
+        await self._ensure_primary_session(session_id)
         await self._call_primary("append_event", session_id, event)
         return live
 
@@ -300,6 +315,8 @@ class ResilientSessionService(BaseSessionService):
             scope=scope,
             state_delta=state_delta,
         )
+        if session_id:
+            await self._ensure_primary_session(session_id)
         await self._call_primary(
             "update_state",
             agent_id=agent_id,
