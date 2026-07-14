@@ -308,7 +308,15 @@ class ADKSessionAdapter(RunnerSessionAdapter):
         )
         is_resumable = bool(getattr(runner, "_resumable", False))
         if is_resumable:
-            level = SessionContinuityLevel.RUNTIME
+            # P1.3: Level must degrade with backend — in-memory session state
+            # cannot survive pod restarts, so RUNTIME is misleading.
+            _stm = getattr(runner, "_short_term_memory", None)
+            stm_backend = getattr(_stm, "backend", None) if _stm is not None else None
+            is_durable = stm_backend is not None and stm_backend != "local"
+            level = (
+                SessionContinuityLevel.RUNTIME if is_durable
+                else SessionContinuityLevel.SEMANTIC
+            )
             path = "adk_resume"
         elif has_native_session:
             level = SessionContinuityLevel.SEMANTIC

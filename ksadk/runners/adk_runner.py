@@ -51,8 +51,9 @@ class ADKRunner(BaseRunner):
         self._resumable: bool = False
         self._resume_disabled_reason: Optional[str] = None
         self._module = None
-        self._adk_resume_min_version = os.environ.get("GOOGLE_ADK_RESUME_MIN_VERSION", "1.16.0").strip()
-        self._last_adk_invocation_id: Optional[str] = None
+        self._adk_resume_min_version = os.environ.get(
+            "GOOGLE_ADK_RESUME_MIN_VERSION", "1.16.0"
+        ).strip()
 
     async def close(self) -> None:
         """Close runtime toolsets owned by this runner."""
@@ -113,7 +114,19 @@ class ADKRunner(BaseRunner):
                     forward_kwargs["model_version"] = model_version
                 if "thought_parts" in _orig_params:
                     forward_kwargs["thought_parts"] = thought_parts
-                result = _original_fn(message, **forward_kwargs)
+                try:
+                    result = _original_fn(message, **forward_kwargs)
+                except _stdlib_json.JSONDecodeError:
+                    # P1.5: Malformed JSON in tool-call arguments — return an
+                    # empty response so the agent can retry rather than crashing.
+                    logger.warning(
+                        "ADKRunner: caught JSONDecodeError in args parsing, "
+                        "returning empty response"
+                    )
+                    from google.genai import types as _genai_types
+                    return _genai_types.GenerateContentResponse(
+                        candidates=[],
+                    )
                 # If the response has function_call parts with empty args,
                 # fill in {} as fallback (this was what RobustJson used to do,
                 # but now only at the final output stage, not during streaming).
@@ -240,7 +253,10 @@ class ADKRunner(BaseRunner):
 
     def describe_checkpoint_capability(self) -> dict[str, Any]:
         resumable = getattr(self, "_resumable", False)
-        stm_backend = getattr(self._short_term_memory, "backend", None) if self._short_term_memory else None
+        stm_backend = (
+            getattr(self._short_term_memory, "backend", None)
+            if self._short_term_memory else None
+        )
         if resumable:
             backend = "adk_invocation"
             if stm_backend == "sqlite":
@@ -265,19 +281,34 @@ class ADKRunner(BaseRunner):
             "ResumeMode": "forward_only",
             "Reason": (
                 self._resume_disabled_reason
-                or "ADK ResumabilityConfig not enabled; set KSADK_ADK_RESUMABLE=1 or configure App with resumability_config"
+                or "ADK ResumabilityConfig not enabled; set "
+                "KSADK_ADK_RESUMABLE=1 or configure App with resumability_config"
             ),
         }
 
     def get_runtime_capabilities(self) -> dict[str, Any]:
         capabilities = super().get_runtime_capabilities()
         resumable = getattr(self, "_resumable", False)
+        stm_backend = (
+            getattr(self._short_term_memory, "backend", None)
+            if self._short_term_memory else None
+        )
+        is_durable = stm_backend is not None and stm_backend != "local"
         if resumable:
+            # P1.3: Level must degrade with backend — in_memory session state
+            # cannot survive pod restarts, so "runtime" is misleading.
+            level = "runtime" if is_durable else "semantic"
             capabilities["SessionContinuity"] = {
                 "Supported": True,
                 "Type": "adk_invocation",
-                "Level": "runtime",
-                "Reason": "ADK ResumabilityConfig enabled, invocation_id-based checkpoint resume available",
+                "Level": level,
+                "Reason": (
+                    "ADK ResumabilityConfig enabled with durable session backend, "
+                    "invocation_id-based checkpoint resume available"
+                    if is_durable
+                    else "ADK ResumabilityConfig enabled but session state is in-memory; "
+                    "resume only works within the same process lifetime"
+                ),
             }
         else:
             has_native_session = bool(getattr(self, "_short_term_memory", None)) or any(
@@ -334,7 +365,10 @@ class ADKRunner(BaseRunner):
             return self._ResolvabilityResult(enabled=True, source="env", app=None)
 
         # Priority 3: persistent session backend auto-enable
-        stm_backend = getattr(self._short_term_memory, "backend", None) if self._short_term_memory else None
+        stm_backend = (
+            getattr(self._short_term_memory, "backend", None)
+            if self._short_term_memory else None
+        )
         if stm_backend and stm_backend != "local":
             return self._ResolvabilityResult(
                 enabled=True, source="auto_persistent_session", app=None)
@@ -429,7 +463,10 @@ class ADKRunner(BaseRunner):
         self._resumable = resumable.enabled
 
         if resumable.enabled:
-            stm_backend = getattr(self._short_term_memory, "backend", None) if self._short_term_memory else None
+            stm_backend = (
+                getattr(self._short_term_memory, "backend", None)
+                if self._short_term_memory else None
+            )
             logger.info(
                 "ADKRunner: resumability enabled (source=%s, backend=%s)",
                 resumable.source,
@@ -1233,32 +1270,31 @@ class ADKRunner(BaseRunner):
         """
         effective_run_id = checkpoint_run_id or ksadk_invocation_id
         first_event_captured = False
-        checkpoint_seq = await self._next_checkpoint_seq_for_run(
-            session_id=session_id,
-            ksadk_invocation_id=effective_run_id,
-        )
+        captured_adk_invocation_id = ""
+        checkpoint_seq = 0
         async for event in events_async:
             if not first_event_captured and hasattr(event, "invocation_id") and event.invocation_id:
                 first_event_captured = True
-                adk_inv_id = event.invocation_id
-                self._last_adk_invocation_id = adk_inv_id
+                # P1.1: Use local variable instead of self._last_adk_invocation_id
+                # to avoid cross-session corruption under concurrent runner access.
+                captured_adk_invocation_id = event.invocation_id
                 await self._persist_invocation_mapping(
                     session_id=session_id,
                     ksadk_invocation_id=ksadk_invocation_id,
-                    adk_invocation_id=adk_inv_id,
+                    adk_invocation_id=captured_adk_invocation_id,
                 )
-            # Write checkpoint at resumable boundaries
-            if self._resumable and first_event_captured:
-                next_seq = await self._maybe_write_checkpoint(
+            # 每个 resumable boundary 都立即写 checkpoint，用递增 seq 保证
+            # 即使程序崩溃也有最新恢复点。
+            if self._resumable and first_event_captured and self._is_resumable_boundary(event):
+                checkpoint_seq += 1
+                await self._maybe_write_checkpoint(
                     event=event,
                     session_id=session_id,
                     ksadk_invocation_id=ksadk_invocation_id,
-                    adk_invocation_id=self._last_adk_invocation_id or "",
+                    adk_invocation_id=captured_adk_invocation_id,
                     checkpoint_seq=checkpoint_seq,
                     checkpoint_run_id=effective_run_id,
                 )
-                if next_seq is not None:
-                    checkpoint_seq = next_seq
             yield event
 
     async def _collect_adk_invocation_id_if_present(
@@ -1273,13 +1309,14 @@ class ADKRunner(BaseRunner):
         async for event in events_async:
             if not first_event_captured and hasattr(event, "invocation_id") and event.invocation_id:
                 first_event_captured = True
-                adk_inv_id = event.invocation_id
-                self._last_adk_invocation_id = adk_inv_id
+                # P1.1: Local variable — self._last_adk_invocation_id was removed
+                # to prevent cross-session corruption under concurrent runner access.
+                local_adk_invocation_id = event.invocation_id
                 if ksadk_invocation_id:
                     await self._persist_invocation_mapping(
                         session_id=session_id,
                         ksadk_invocation_id=ksadk_invocation_id,
-                        adk_invocation_id=adk_inv_id,
+                        adk_invocation_id=local_adk_invocation_id,
                     )
             yield event
 
@@ -1337,44 +1374,6 @@ class ADKRunner(BaseRunner):
         except Exception:
             return None
 
-    async def _next_checkpoint_seq_for_run(
-        self,
-        *,
-        session_id: str,
-        ksadk_invocation_id: str,
-    ) -> int:
-        """查询该 session + RunId 下已有的最大 ADK checkpoint_seq，返回 max+1。
-
-        恢复场景下 checkpoint_seq 应从原始运行的最大序号接续，而非从 1 重新开始，
-        这样 CheckpointId 也不会重复，UI 可以看到一条连贯的 checkpoint 时间线。
-        如果找不到任何已有 checkpoint（首次运行），返回 1。
-        """
-        try:
-            from ksadk.sessions import resolve_session_service
-
-            service = resolve_session_service()
-            max_seq = 0
-            for event in await service.get_events(session_id):
-                if event.event_type != "run_checkpoint":
-                    continue
-                metadata = event.metadata or {}
-                if str(metadata.get("run_id") or "") != ksadk_invocation_id:
-                    continue
-                if str(metadata.get("framework") or "") != "adk":
-                    continue
-                framework_ref = metadata.get("framework_ref")
-                if not isinstance(framework_ref, dict):
-                    continue
-                adk_ref = framework_ref.get("adk")
-                if not isinstance(adk_ref, dict):
-                    continue
-                seq = adk_ref.get("checkpoint_seq")
-                if isinstance(seq, int) and seq > max_seq:
-                    max_seq = seq
-            return max_seq + 1
-        except Exception as exc:
-            logger.warning("Failed to query existing checkpoint_seq for run %s: %s", ksadk_invocation_id, exc)
-            return 1
 
     def _is_resumable_boundary(self, event: Any) -> bool:
         """判断 ADK event 是否为可恢复边界。"""
@@ -1399,10 +1398,10 @@ class ADKRunner(BaseRunner):
         checkpoint_seq: int,
         checkpoint_run_id: str = "",
     ) -> int | None:
-        """如果是可恢复边界，写入 run_checkpoint 事件。返回下一个 checkpoint_seq 或 None。
+        """Write a run_checkpoint event at a resumable boundary.
 
-        checkpoint_run_id 用于 checkpoint 的 run_id 字段（恢复模式下沿用原始 RunId），
-        ksadk_invocation_id 用于 event 级 invocation_id 字段。
+        Each boundary gets its own incrementing checkpoint_id so the latest
+        checkpoint always reflects the latest state for crash recovery.
         """
         if not self._is_resumable_boundary(event):
             return None
@@ -1454,12 +1453,59 @@ class ADKRunner(BaseRunner):
         # 是否可恢复
         metadata["is_resumable"] = self._resumable
         metadata["resume_status"] = "resumable" if self._resumable else "disabled"
+        # P1.3: Include backend/scope/durable so consumers can distinguish
+        # in-memory (lost on pod restart) from durable checkpoints.
+        stm_backend = (
+            getattr(self._short_term_memory, "backend", None)
+            if self._short_term_memory else None
+        )
+        metadata["backend"] = stm_backend or "in_memory"
+        metadata["scope"] = "invocation"
+        metadata["durable"] = stm_backend is not None and stm_backend != "local"
 
         return metadata
 
+    async def _resolve_resume_invocation_id(
+        self,
+        *,
+        input_data: Dict[str, Any],
+        session_id: str,
+        ksadk_invocation_id: str,
+    ) -> str:
+        """Resolve the ADK invocation_id needed for resume.
+
+        Looks up from framework_ref or session binding mapping.
+        Raises ValueError when the resume reference is missing (P1.2:
+        never silently downgrade to a new invocation).
+        """
+        adk_invocation_id = None
+        framework_ref = input_data.get("framework_ref") or {}
+        if isinstance(framework_ref, dict):
+            adk_ref = framework_ref.get("adk") or {}
+            if isinstance(adk_ref, dict):
+                adk_invocation_id = adk_ref.get("invocation_id")
+        # Fallback: resolve from session binding
+        if not adk_invocation_id and ksadk_invocation_id:
+            adk_invocation_id = await self._resolve_adk_invocation_id(
+                session_id=session_id,
+                ksadk_invocation_id=ksadk_invocation_id,
+            )
+        if not adk_invocation_id:
+            logger.error(
+                "Resume requested but ADK invocation_id not found for "
+                "session=%s ksadk_inv=%s",
+                session_id, ksadk_invocation_id,
+            )
+            raise ValueError(
+                f"checkpoint_not_resumable: ADK invocation_id not found for "
+                f"session={session_id}, ksadk_invocation_id={ksadk_invocation_id}. "
+                f"The checkpoint data may have been lost or the invocation was "
+                f"never persisted."
+            )
+        return adk_invocation_id
+
     async def invoke(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """调用 ADK Agent"""
-        from google.genai import types
 
         # 判断是否为恢复调用 — 提前判断以避免将 resume_input dict 当作 string 处理
         is_resume = bool(input_data.get("checkpoint_resume"))
@@ -1517,52 +1563,21 @@ class ADKRunner(BaseRunner):
             )
 
             if is_resume and self._resumable:
-                # 恢复模式：使用 ADK invocation_id
-                adk_invocation_id = None
-                framework_ref = input_data.get("framework_ref") or {}
-                if isinstance(framework_ref, dict):
-                    adk_ref = framework_ref.get("adk") or {}
-                    if isinstance(adk_ref, dict):
-                        adk_invocation_id = adk_ref.get("invocation_id")
-                # Fallback: resolve from session binding
-                if not adk_invocation_id and ksadk_invocation_id:
-                    adk_invocation_id = await self._resolve_adk_invocation_id(
-                        session_id=session_id,
-                        ksadk_invocation_id=ksadk_invocation_id,
-                    )
-
-                if adk_invocation_id:
-                    logger.info("Resuming ADK run with adk_invocation_id: %s", adk_invocation_id)
-                    events_async = self._runner.run_async(
-                        session_id=session_id,
-                        user_id="ksadk_user",
-                        invocation_id=adk_invocation_id,
-                    )
-                    # Write resume event
-                    try:
-                        from ksadk.conversations.runtime import append_run_resume_event
-                        await append_run_resume_event(
-                            session_id=session_id,
-                            author=self._agent.name,
-                            run_id=checkpoint_run_id or ksadk_invocation_id,
-                            checkpoint_id=str(input_data.get("checkpoint_id") or ""),
-                            resume_attempt_id=f"resume_{os.urandom(8).hex()}",
-                            framework="adk",
-                            framework_ref={"adk": {"invocation_id": adk_invocation_id}},
-                            invocation_id=ksadk_invocation_id,
-                        )
-                    except Exception as exc:
-                        logger.warning("Failed to write ADK resume event: %s", exc)
-                else:
-                    logger.warning(
-                        "Resume requested but ADK invocation_id not found, falling back to new invocation"
-                    )
-                    events_async = self._runner.run_async(
-                        session_id=session_id,
-                        user_id="ksadk_user",
-                        new_message=new_message or self._build_adk_content("[empty message]", []),
-                        state_delta=state_delta or None,
-                    )
+                # 恢复模式：使用 ADK invocation_id (via shared helper)
+                adk_invocation_id = await self._resolve_resume_invocation_id(
+                    input_data=input_data,
+                    session_id=session_id,
+                    ksadk_invocation_id=ksadk_invocation_id,
+                )
+                logger.info("Resuming ADK run with adk_invocation_id: %s", adk_invocation_id)
+                events_async = self._runner.run_async(
+                    session_id=session_id,
+                    user_id="ksadk_user",
+                    invocation_id=adk_invocation_id,
+                )
+                # P2: Resume audit event ownership belongs to conversation runtime
+                # (runtime.py), which writes the correct ResumeAttemptId. The
+                # duplicate call here caused ResumeCount=2 per single resume click.
             else:
                 # 正常模式
                 events_async = self._runner.run_async(
@@ -1590,10 +1605,14 @@ class ADKRunner(BaseRunner):
             final_response = ""
 
             events_list = []
+            # P1.4: Track last_event to avoid UnboundLocalError when ADK returns
+            # zero events (e.g. resuming a completed invocation).
+            last_event = None
             usage: dict[str, Any] = {}
             last_usage: dict[str, Any] = {}
             async for event in wrapped_async:
                 events_list.append(event)
+                last_event = event
                 event_usage = self._extract_event_usage(event)
                 if event_usage:
                     usage = accumulate_usage(usage, event_usage)
@@ -1610,8 +1629,8 @@ class ADKRunner(BaseRunner):
             # When the loop aborts early (MCP error, phantom tool-call),
             # final_response may hold only intermediate fragments.
             last_event_text = ""
-            if hasattr(event, "content") and event.content:
-                for part in (event.content.parts or []):
+            if last_event is not None and hasattr(last_event, "content") and last_event.content:
+                for part in (last_event.content.parts or []):
                     is_thought = getattr(part, "thought", False)
                     if hasattr(part, "text") and part.text and not is_thought:
                         last_event_text += part.text
@@ -1640,7 +1659,6 @@ class ADKRunner(BaseRunner):
         使用 StreamingMode.SSE 启用真正的流式 token 输出
         """
         from google.adk.agents.run_config import RunConfig, StreamingMode
-        from google.genai import types
 
         # 判断是否为恢复调用 — 提前判断以避免将 resume_input dict 当作 string 处理
         is_resume = bool(input_data.get("checkpoint_resume"))
@@ -1699,51 +1717,20 @@ class ADKRunner(BaseRunner):
             run_config = RunConfig(streaming_mode=StreamingMode.SSE)
 
             if is_resume and self._resumable:
-                adk_invocation_id = None
-                framework_ref = input_data.get("framework_ref") or {}
-                if isinstance(framework_ref, dict):
-                    adk_ref = framework_ref.get("adk") or {}
-                    if isinstance(adk_ref, dict):
-                        adk_invocation_id = adk_ref.get("invocation_id")
-                if not adk_invocation_id and ksadk_invocation_id:
-                    adk_invocation_id = await self._resolve_adk_invocation_id(
-                        session_id=session_id,
-                        ksadk_invocation_id=ksadk_invocation_id,
-                    )
-
-                if adk_invocation_id:
-                    logger.info("Resuming ADK stream with adk_invocation_id: %s", adk_invocation_id)
-                    events_async = self._runner.run_async(
-                        session_id=session_id,
-                        user_id="ksadk_user",
-                        invocation_id=adk_invocation_id,
-                        run_config=run_config,
-                    )
-                    try:
-                        from ksadk.conversations.runtime import append_run_resume_event
-                        await append_run_resume_event(
-                            session_id=session_id,
-                            author=self._agent.name,
-                            run_id=checkpoint_run_id or ksadk_invocation_id,
-                            checkpoint_id=str(input_data.get("checkpoint_id") or ""),
-                            resume_attempt_id=f"resume_{os.urandom(8).hex()}",
-                            framework="adk",
-                            framework_ref={"adk": {"invocation_id": adk_invocation_id}},
-                            invocation_id=ksadk_invocation_id,
-                        )
-                    except Exception as exc:
-                        logger.warning("Failed to write ADK resume event: %s", exc)
-                else:
-                    logger.warning(
-                        "Resume requested but ADK invocation_id not found, falling back to new invocation"
-                    )
-                    events_async = self._runner.run_async(
-                        session_id=session_id,
-                        user_id="ksadk_user",
-                        new_message=new_message or self._build_adk_content("[empty message]", []),
-                        state_delta=state_delta or None,
-                        run_config=run_config,
-                    )
+                # 恢复模式：使用 ADK invocation_id (via shared helper)
+                adk_invocation_id = await self._resolve_resume_invocation_id(
+                    input_data=input_data,
+                    session_id=session_id,
+                    ksadk_invocation_id=ksadk_invocation_id,
+                )
+                logger.info("Resuming ADK stream with adk_invocation_id: %s", adk_invocation_id)
+                events_async = self._runner.run_async(
+                    session_id=session_id,
+                    user_id="ksadk_user",
+                    invocation_id=adk_invocation_id,
+                    run_config=run_config,
+                )
+                # P2: Same as invoke() — resume audit owned by conversation runtime.
             else:
                 events_async = self._runner.run_async(
                     session_id=session_id,

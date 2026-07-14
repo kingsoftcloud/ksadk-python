@@ -291,12 +291,15 @@ def test_adk_runner_declares_runtime_resume_when_resumable_enabled(tmp_path):
     runner = ADKRunner(_write_detection(FrameworkType.ADK), str(tmp_path))
     runner._resumable = True
 
+    # P1.3: Without a durable session backend, Level must degrade to "semantic"
+    # because in-memory state cannot survive pod restarts.
     capabilities = runner.get_runtime_capabilities()
 
     assert capabilities["Framework"] == "adk"
     assert capabilities["SessionContinuity"]["Supported"] is True
     assert capabilities["SessionContinuity"]["Type"] == "adk_invocation"
-    assert capabilities["SessionContinuity"]["Level"] == "runtime"
+    assert capabilities["SessionContinuity"]["Level"] == "semantic"
+    assert "in-memory" in capabilities["SessionContinuity"]["Reason"]
     assert capabilities["Checkpoint"]["Supported"] is True
     assert capabilities["Checkpoint"]["Backend"] == "adk_invocation"
     assert capabilities["ResumeRun"]["Supported"] is True
@@ -306,6 +309,162 @@ def test_adk_runner_declares_runtime_resume_when_resumable_enabled(tmp_path):
     assert checkpoint_capability["Supported"] is True
     assert checkpoint_capability["Scope"] == "invocation"
     assert checkpoint_capability["ResumeMode"] == "invocation_id"
+    assert checkpoint_capability["Durable"] is False
+
+
+def test_adk_runner_reports_runtime_level_with_durable_backend(tmp_path):
+    """P1.3: Level should be 'runtime' when a durable session backend is present."""
+    from ksadk.runners.adk_runner import ADKRunner
+    from types import SimpleNamespace
+
+    runner = ADKRunner(_write_detection(FrameworkType.ADK), str(tmp_path))
+    runner._resumable = True
+    runner._short_term_memory = SimpleNamespace(backend="database")
+
+    capabilities = runner.get_runtime_capabilities()
+
+    assert capabilities["SessionContinuity"]["Level"] == "runtime"
+    assert "durable" in capabilities["SessionContinuity"]["Reason"]
+
+    checkpoint_capability = runner.describe_checkpoint_capability()
+    assert checkpoint_capability["Durable"] is True
+    assert checkpoint_capability["SharedAcrossPods"] is True
+
+
+def test_adk_runner_no_cross_session_invocation_id_corruption(tmp_path):
+    """P1.1: _last_adk_invocation_id was removed; invocation_id is per-invocation local."""
+    from ksadk.runners.adk_runner import ADKRunner
+
+    runner = ADKRunner(_write_detection(FrameworkType.ADK), str(tmp_path))
+
+    # The instance attribute should not exist
+    assert not hasattr(runner, "_last_adk_invocation_id")
+
+
+@pytest.mark.asyncio
+async def test_adk_runner_resume_raises_on_missing_invocation_id(tmp_path):
+    """P1.2: Resume with missing invocation_id must raise, not start a new task."""
+    from ksadk.runners.adk_runner import ADKRunner
+
+    runner = ADKRunner(_write_detection(FrameworkType.ADK), str(tmp_path))
+    runner._resumable = True
+
+    with pytest.raises(ValueError, match="checkpoint_not_resumable"):
+        await runner._resolve_resume_invocation_id(
+            input_data={},
+            session_id="test-session",
+            ksadk_invocation_id="test-inv",
+        )
+
+
+@pytest.mark.asyncio
+async def test_adk_runner_resolve_resume_from_framework_ref(tmp_path):
+    """P1.2: _resolve_resume_invocation_id should find invocation_id from framework_ref."""
+    from ksadk.runners.adk_runner import ADKRunner
+
+    runner = ADKRunner(_write_detection(FrameworkType.ADK), str(tmp_path))
+    runner._resumable = True
+
+    result = await runner._resolve_resume_invocation_id(
+        input_data={"framework_ref": {"adk": {"invocation_id": "adk-inv-123"}}},
+        session_id="test-session",
+        ksadk_invocation_id="test-inv",
+    )
+    assert result == "adk-inv-123"
+
+
+def test_adk_runner_checkpoint_metadata_includes_backend_info(tmp_path):
+    """P1.3: Checkpoint metadata must include backend/scope/durable."""
+    from ksadk.runners.adk_runner import ADKRunner
+
+    runner = ADKRunner(_write_detection(FrameworkType.ADK), str(tmp_path))
+    runner._resumable = True
+
+    # Create a mock event with function calls
+    from types import SimpleNamespace
+    mock_event = SimpleNamespace(
+        id="evt-1",
+        author="agent",
+        content=SimpleNamespace(parts=[]),
+        actions=None,
+    )
+    mock_event.get_function_calls = lambda: [SimpleNamespace(name="tool1", id="tc1")]
+
+    metadata = runner._extract_checkpoint_metadata(mock_event)
+    assert metadata["backend"] == "in_memory"
+    assert metadata["scope"] == "invocation"
+    assert metadata["durable"] is False
+
+
+def test_adk_runner_single_checkpoint_per_invocation(tmp_path):
+    """P1.4: Single checkpoint id per invocation (adk-ckpt-latest), updated at every boundary."""
+    from ksadk.runners.adk_runner import ADKRunner
+
+    runner = ADKRunner(_write_detection(FrameworkType.ADK), str(tmp_path))
+
+    # _next_checkpoint_seq_for_run should have been removed
+    assert not hasattr(runner, "_next_checkpoint_seq_for_run")
+
+
+@pytest.mark.asyncio
+async def test_adk_runner_checkpoint_writes_latest_boundary(tmp_path, monkeypatch):
+    """Checkpoint should be written at every boundary so the latest
+    recovery point is always available even if the process crashes mid-stream."""
+    from ksadk.runners.adk_runner import ADKRunner
+    from types import SimpleNamespace
+
+    runner = ADKRunner(_write_detection(FrameworkType.ADK), str(tmp_path))
+    runner._resumable = True
+    runner._agent = SimpleNamespace(name="test-agent")
+    runner._short_term_memory = None
+
+    written_events = []
+
+    async def fake_append(*, session_id, author, run_id, checkpoint_id,
+                          framework, framework_ref, phase, invocation_id,
+                          metadata, **kw):
+        written_events.append({"metadata": metadata, "checkpoint_id": checkpoint_id})
+        return SimpleNamespace(id="evt")
+
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.append_run_checkpoint_event", fake_append
+    )
+
+    def make_event(tool_name):
+        ev = SimpleNamespace(
+            id=f"evt-{tool_name}",
+            author="agent",
+            invocation_id="adk-inv-1",
+            content=SimpleNamespace(parts=[]),
+            actions=None,
+        )
+        ev.get_function_calls = lambda: [SimpleNamespace(name=tool_name, id=f"tc-{tool_name}")]
+        return ev
+
+    async def fake_events():
+        for name in ["tool_a", "tool_b", "tool_c"]:
+            yield make_event(name)
+
+    wrapped = runner._collect_adk_invocation_id(
+        fake_events(),
+        ksadk_invocation_id="ksadk-inv-1",
+        session_id="sess-1",
+        checkpoint_run_id="",
+    )
+    results = [e async for e in wrapped]
+
+    # All three events should pass through
+    assert len(results) == 3
+    # Checkpoint should be written at EVERY boundary (crash recovery)
+    assert len(written_events) == 3
+    # Each checkpoint gets an incrementing id
+    assert written_events[0]["checkpoint_id"] == "adk-ckpt-1"
+    assert written_events[1]["checkpoint_id"] == "adk-ckpt-2"
+    assert written_events[2]["checkpoint_id"] == "adk-ckpt-3"
+    # Each write reflects its own boundary event
+    assert written_events[0]["metadata"]["tool_names"] == ["tool_a"]
+    assert written_events[1]["metadata"]["tool_names"] == ["tool_b"]
+    assert written_events[2]["metadata"]["tool_names"] == ["tool_c"]
 
 
 
