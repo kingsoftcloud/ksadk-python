@@ -82,11 +82,14 @@ rejects the request.
 
 When PostgreSQL is configured, it is a durable session replica rather than an
 availability prerequisite for agent execution. If a connection or write fails,
-the runtime continues with its in-process live session and emits one structured
-error with `session_backend_state=degraded`. A degraded session stays local for
-the rest of that process so it cannot jump back to stale PostgreSQL history.
-Events that were not persisted during the outage are not guaranteed to survive
-a pod restart or relocation.
+the runtime continues with its in-process live session and emits a structured
+error when it enters `session_backend_state=degraded`. The runtime periodically
+probes PostgreSQL; after recovery, new sessions and subsequent events are written
+to PostgreSQL again and `session_backend_state=recovered` is logged. Older events
+missed during the outage are not backfilled automatically and are not guaranteed
+to survive a pod restart or relocation. While PostgreSQL is unavailable, only
+history already loaded by the current process is available. A request routed to
+another pod may have reduced context, but the current agent request still runs.
 
 ### Readable PostgreSQL View
 

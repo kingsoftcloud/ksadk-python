@@ -13,6 +13,8 @@ from google.adk.sessions.base_session_service import (
 )
 from google.adk.sessions.session import Session
 
+from ksadk.sessions.resilience import is_session_backend_failure
+
 logger = logging.getLogger(__name__)
 
 
@@ -45,6 +47,12 @@ class ResilientADKSessionService(BaseSessionService):
             },
         )
         self._start_probe()
+
+    def _handle_primary_failure(self, exc: Exception) -> bool:
+        if not is_session_backend_failure(exc):
+            return False
+        self._degrade(exc)
+        return True
 
     def _start_probe(self) -> None:
         if self._probe_task is not None and not self._probe_task.done():
@@ -90,7 +98,9 @@ class ResilientADKSessionService(BaseSessionService):
                 state=durable.state,
                 session_id=durable.id,
             )
-            for event in durable.events:
+        existing_ids = {event.id for event in existing.events}
+        for event in durable.events:
+            if event.id not in existing_ids:
                 await self.live.append_event(existing, event)
         self._primary_sessions[self._key(durable.app_name, durable.user_id, durable.id)] = durable
         hydrated = await self.live.get_session(
@@ -116,8 +126,6 @@ class ResilientADKSessionService(BaseSessionService):
                 user_id=user_id,
                 session_id=session_id,
             )
-            if existing is not None:
-                return existing
             if self._primary_enabled:
                 try:
                     durable = await self.primary.get_session(
@@ -128,7 +136,10 @@ class ResilientADKSessionService(BaseSessionService):
                     if durable is not None:
                         return await self._hydrate(durable)
                 except Exception as exc:
-                    self._degrade(exc)
+                    if not self._handle_primary_failure(exc):
+                        raise
+            if existing is not None:
+                return existing
 
         live = await self.live.create_session(
             app_name=app_name,
@@ -146,7 +157,8 @@ class ResilientADKSessionService(BaseSessionService):
                 )
                 self._primary_sessions[self._key(app_name, user_id, live.id)] = durable
             except Exception as exc:
-                self._degrade(exc)
+                if not self._handle_primary_failure(exc):
+                    raise
         return live
 
     async def get_session(
@@ -163,10 +175,8 @@ class ResilientADKSessionService(BaseSessionService):
             session_id=session_id,
             config=config,
         )
-        if live is not None:
-            return live
         if not self._primary_enabled:
-            return None
+            return live
         try:
             durable = await self.primary.get_session(
                 app_name=app_name,
@@ -174,10 +184,11 @@ class ResilientADKSessionService(BaseSessionService):
                 session_id=session_id,
                 config=config,
             )
-            return await self._hydrate(durable) if durable is not None else None
+            return await self._hydrate(durable) if durable is not None else live
         except Exception as exc:
-            self._degrade(exc)
-            return None
+            if not self._handle_primary_failure(exc):
+                raise
+            return live
 
     async def list_sessions(
         self,
@@ -191,7 +202,8 @@ class ResilientADKSessionService(BaseSessionService):
                 for session in durable.sessions:
                     await self._hydrate(session)
             except Exception as exc:
-                self._degrade(exc)
+                if not self._handle_primary_failure(exc):
+                    raise
         return await self.live.list_sessions(app_name=app_name, user_id=user_id)
 
     async def delete_session(self, *, app_name: str, user_id: str, session_id: str) -> None:
@@ -205,7 +217,8 @@ class ResilientADKSessionService(BaseSessionService):
                     session_id=session_id,
                 )
             except Exception as exc:
-                self._degrade(exc)
+                if not self._handle_primary_failure(exc):
+                    raise
 
     async def append_event(self, session: Session, event: Event) -> Event:
         stored = await self.live.append_event(session, event)
@@ -230,7 +243,8 @@ class ResilientADKSessionService(BaseSessionService):
                 self._primary_sessions[key] = durable_session
             await self.primary.append_event(durable_session, event)
         except Exception as exc:
-            self._degrade(exc)
+            if not self._handle_primary_failure(exc):
+                raise
         return stored
 
     async def flush(self) -> None:
@@ -239,7 +253,8 @@ class ResilientADKSessionService(BaseSessionService):
             try:
                 await self.primary.flush()
             except Exception as exc:
-                self._degrade(exc)
+                if not self._handle_primary_failure(exc):
+                    raise
 
     async def close(self) -> None:
         if self._probe_task is not None and not self._probe_task.done():

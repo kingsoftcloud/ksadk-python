@@ -15,6 +15,11 @@ class AppendFailingSessionService(InMemorySessionService):
         raise ConnectionError("postgres connection lost")
 
 
+class InvalidADKSessionService(InMemorySessionService):
+    async def create_session(self, **kwargs):
+        raise ValueError("invalid ADK session payload")
+
+
 @pytest.mark.asyncio
 async def test_adk_session_persistence_failure_does_not_abort_live_session(caplog):
     primary = AppendFailingSessionService()
@@ -38,6 +43,21 @@ async def test_adk_session_persistence_failure_does_not_abort_live_session(caplo
     assert [item.id for item in fetched.events] == [event.id]
     assert service.degraded is True
     assert "ADK session persistence degraded" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_adk_non_backend_error_is_not_hidden_by_fail_open():
+    service = ResilientADKSessionService(InvalidADKSessionService())
+
+    with pytest.raises(ValueError, match="invalid ADK session payload"):
+        await service.create_session(
+            app_name="demo-agent",
+            user_id="user-1",
+            session_id="sess-invalid",
+        )
+
+    assert service.degraded is False
+    await service.close()
 
 
 @pytest.mark.asyncio
@@ -72,6 +92,44 @@ async def test_adk_session_keeps_hydrated_events_after_primary_failure(caplog):
     assert [event.id for event in fetched.events] == [old_event.id, new_event.id]
     assert service.degraded is True
     assert caplog.text.count("ADK session persistence degraded") == 1
+
+
+@pytest.mark.asyncio
+async def test_adk_session_refreshes_events_written_by_another_replica():
+    primary = InMemorySessionService()
+    durable = await primary.create_session(
+        app_name="demo-agent",
+        user_id="user-1",
+        session_id="sess-1",
+    )
+    first_event = Event(author="user", invocation_id="inv-1")
+    await primary.append_event(durable, first_event)
+
+    service = ResilientADKSessionService(primary)
+    hydrated = await service.get_session(
+        app_name="demo-agent",
+        user_id="user-1",
+        session_id="sess-1",
+    )
+    assert hydrated is not None
+    assert [event.id for event in hydrated.events] == [first_event.id]
+
+    durable = await primary.get_session(
+        app_name="demo-agent",
+        user_id="user-1",
+        session_id="sess-1",
+    )
+    assert durable is not None
+    second_event = Event(author="demo-agent", invocation_id="inv-2")
+    await primary.append_event(durable, second_event)
+
+    refreshed = await service.get_session(
+        app_name="demo-agent",
+        user_id="user-1",
+        session_id="sess-1",
+    )
+    assert refreshed is not None
+    assert [event.id for event in refreshed.events] == [first_event.id, second_event.id]
 
 
 class _RecoverableADKPrimary(InMemorySessionService):

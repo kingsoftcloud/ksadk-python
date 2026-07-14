@@ -6,6 +6,7 @@ from typing import Any, Optional, cast
 
 from ksadk.sessions.base import BaseSessionService, Session, SessionEvent, SessionState
 from ksadk.sessions.in_memory import InMemorySessionService
+from ksadk.sessions.resilience import is_session_backend_failure
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,8 @@ class ResilientSessionService(BaseSessionService):
         self.fallback = fallback or InMemorySessionService()
         self._primary_enabled = True
         self._hydrate_lock = asyncio.Lock()
+        self._primary_session_lock = asyncio.Lock()
+        self._primary_session_ids: set[str] = set()
         self._probe_task: asyncio.Task[None] | None = None
 
     @property
@@ -44,6 +47,8 @@ class ResilientSessionService(BaseSessionService):
             method = getattr(self.primary, method_name)
             return True, await method(*args, **kwargs)
         except Exception as exc:
+            if not is_session_backend_failure(exc):
+                raise
             self._disable_primary(exc)
             return False, None
 
@@ -86,6 +91,7 @@ class ResilientSessionService(BaseSessionService):
 
     async def _hydrate(self, session: Session) -> Session:
         async with self._hydrate_lock:
+            self._primary_session_ids.add(session.id)
             existing = await self.fallback.get_session(session.id)
             if existing is None:
                 await self.fallback.create_session(
@@ -142,6 +148,7 @@ class ResilientSessionService(BaseSessionService):
             session_id=live.id,
         )
         if ok and durable is not None:
+            self._primary_session_ids.add(durable.id)
             return await self._hydrate(durable)
         return live
 
@@ -181,6 +188,8 @@ class ResilientSessionService(BaseSessionService):
     async def delete_session(self, session_id: str) -> bool:
         deleted = await self.fallback.delete_session(session_id)
         ok, durable_deleted = await self._call_primary("delete_session", session_id)
+        if ok:
+            self._primary_session_ids.discard(session_id)
         return deleted or bool(durable_deleted) if ok else deleted
 
     async def update_session_metadata(
@@ -217,16 +226,27 @@ class ResilientSessionService(BaseSessionService):
 
     async def _ensure_primary_session(self, session_id: str) -> None:
         """Create the session in PG if it only exists in memory (degraded-era)."""
-        ok, durable = await self._call_primary("get_session", session_id)
-        if ok and durable is None:
-            live = await self.fallback.get_session(session_id)
-            if live is not None:
-                await self._call_primary(
+        if not self._primary_enabled or session_id in self._primary_session_ids:
+            return
+        async with self._primary_session_lock:
+            if not self._primary_enabled or session_id in self._primary_session_ids:
+                return
+            ok, durable = await self._call_primary("get_session", session_id)
+            if not ok:
+                return
+            if durable is None:
+                live = await self.fallback.get_session(session_id)
+                if live is None:
+                    return
+                ok, durable = await self._call_primary(
                     "create_session",
                     live.agent_id,
                     live.user_id,
                     session_id=live.id,
                 )
+                if not ok or durable is None:
+                    return
+            self._primary_session_ids.add(session_id)
 
     async def append_event(self, session_id: str, event: SessionEvent) -> SessionEvent:
         if await self.fallback.get_session(session_id) is None:

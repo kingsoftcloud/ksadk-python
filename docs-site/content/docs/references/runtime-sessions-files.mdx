@@ -41,9 +41,11 @@ KSADK_SESSION_DSN=postgresql://user:pass@example.invalid:5432/ksadk
 公开文档只使用占位 DSN，不提交真实连接串。
 
 PostgreSQL 是会话的持久化副本，不是 Agent 执行的可用性前置条件。连接或写入失败时，
-运行时继续使用当前进程内的 live session，并记录一次结构化错误日志
-`session_backend_state=degraded`。同一进程内已降级的 session 不会自动切回可能落后的
-PostgreSQL 历史；Pod 重启或迁移后，降级期间尚未持久化的事件不保证恢复。
+运行时继续使用当前进程内的 live session，并在进入降级态时记录结构化错误日志
+`session_backend_state=degraded`。运行时会定期探测 PostgreSQL；恢复后新会话和后续事件
+继续写入 PostgreSQL，并记录 `session_backend_state=recovered`。降级期间尚未持久化的旧事件
+不会自动补写，因此 Pod 重启或迁移后不保证恢复这些事件。PG 不可用期间，只能使用当前
+进程已经加载的历史；请求切换到其他 Pod 时可能缺少会话上下文，但 Agent 当前请求仍继续执行。
 
 ### PostgreSQL 可读视图
 

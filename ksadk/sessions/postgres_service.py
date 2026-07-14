@@ -549,10 +549,15 @@ class PostgresSessionService(BaseSessionService):
                 )
 
     async def aclose(self) -> None:
-        if self._pool is not None:
-            await self._pool.close()
-            self._pool = None
-            self._schema_ready = False
+        pool = self._pool
+        self._pool = None
+        self._schema_ready = False
+        if pool is None:
+            return
+        try:
+            await asyncio.wait_for(pool.close(), timeout=self.connect_timeout)
+        except (TimeoutError, OSError, ConnectionError, asyncio.TimeoutError):
+            pool.terminate()
 
     async def _ensure_pool(self) -> None:
         if self._pool is not None:
@@ -572,6 +577,7 @@ class PostgresSessionService(BaseSessionService):
                     min_size=self.min_size,
                     max_size=self.max_size,
                     timeout=self.connect_timeout,
+                    command_timeout=self.connect_timeout,
                 )
             except (TimeoutError, OSError, ConnectionError, asyncio.TimeoutError) as exc:
                 raise SessionBackendUnavailable(

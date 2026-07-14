@@ -148,19 +148,9 @@ def _create_postgres_backend(
 
 
 def _postgres_connect_timeout_seconds() -> float:
-    raw = (
-        os.getenv("KSADK_SESSION_CONNECT_TIMEOUT")
-        or os.getenv("KSADK_SESSION_PG_CONNECT_TIMEOUT")
-        or ""
-    ).strip()
-    if not raw:
-        return 5.0
-    try:
-        value = float(raw)
-    except ValueError:
-        logger.warning("Invalid KSADK_SESSION_CONNECT_TIMEOUT=%r; using 5 seconds", raw)
-        return 5.0
-    return max(0.1, value)
+    from ksadk.sessions.resilience import session_backend_timeout_seconds
+
+    return session_backend_timeout_seconds()
 
 
 def _register_builtin_backends() -> None:

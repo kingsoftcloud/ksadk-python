@@ -476,6 +476,13 @@ class _ThinkingStreamingRunner(_StreamingRunner):
         yield {"type": "final", "output": "你好"}
 
 
+class _ThinkingNoFinalStreamingRunner(_StreamingRunner):
+    async def stream(self, input_data: dict):
+        self.stream_calls.append(input_data)
+        yield {"type": "thinking", "delta": "先分析"}
+        yield {"type": "thinking", "delta": "失败原因"}
+
+
 class _ContextCapturingRunner(_StubRunner):
     def __init__(self):
         super().__init__()
@@ -3366,6 +3373,33 @@ async def test_stream_responses_conversation_turn_persists_reasoning_events(monk
         "run_status",
     ]
     assert events[2].content["parts"][0]["text"] == "先分析问题"
+
+
+@pytest.mark.asyncio
+async def test_stream_failure_still_persists_aggregated_reasoning(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _ThinkingNoFinalStreamingRunner()
+
+    chunks = [
+        chunk
+        async for chunk in stream_responses_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-reasoning-failed",
+            messages=[{"role": "user", "content": "你好"}],
+            model="gpt-4o",
+            prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+            session_service_provider=lambda: service,
+        )
+    ]
+
+    assert any(chunk.startswith("event: response.failed\n") for chunk in chunks)
+    events = await service.get_events("sess-reasoning-failed")
+    reasoning_events = [event for event in events if event.event_type == "reasoning"]
+    assert len(reasoning_events) == 1
+    assert reasoning_events[0].content["parts"][0]["text"] == "先分析失败原因"
 
 
 @pytest.mark.asyncio

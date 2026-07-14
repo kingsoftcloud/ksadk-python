@@ -37,8 +37,37 @@ async def test_postgres_session_service_uses_configured_connect_timeout(monkeypa
         await service.create_session("demo-agent", "user-1")
 
     assert observed["timeout"] == 0.25
+    assert observed["command_timeout"] == 0.25
     assert "Postgres session backend unavailable" in str(exc_info.value)
     assert "secret" not in str(exc_info.value)
+
+
+async def test_postgres_session_service_forces_pool_termination_when_close_times_out():
+    class HangingPool:
+        def __init__(self) -> None:
+            self.terminated = False
+
+        async def close(self):
+            await asyncio.sleep(60)
+
+        def terminate(self):
+            self.terminated = True
+
+    from ksadk.sessions.postgres_service import PostgresSessionService
+
+    service = PostgresSessionService(
+        dsn="postgresql://user@db.example.test/session",
+        connect_timeout=0.01,
+    )
+    pool = HangingPool()
+    service._pool = pool
+    service._schema_ready = True
+
+    await service.aclose()
+
+    assert pool.terminated is True
+    assert service._pool is None
+    assert service._schema_ready is False
 
 
 async def test_configured_postgres_backend_fails_open_to_memory(monkeypatch, caplog):
@@ -372,12 +401,10 @@ async def test_postgres_session_service_namespaces_isolate_same_session_id():
         await service_a.create_session("agent-a", "user-1", session_id=session_id)
         await service_b.create_session("agent-b", "user-1", session_id=session_id)
 
-        assert [session.agent_id for session in await service_a.list_sessions("agent-a", "user-1")] == [
-            "agent-a"
-        ]
-        assert [session.agent_id for session in await service_b.list_sessions("agent-b", "user-1")] == [
-            "agent-b"
-        ]
+        sessions_a = await service_a.list_sessions("agent-a", "user-1")
+        sessions_b = await service_b.list_sessions("agent-b", "user-1")
+        assert [session.agent_id for session in sessions_a] == ["agent-a"]
+        assert [session.agent_id for session in sessions_b] == ["agent-b"]
         assert await service_a.list_sessions("agent-b", "user-1") == []
         assert await service_b.list_sessions("agent-a", "user-1") == []
     finally:
@@ -401,6 +428,51 @@ class _RecoverablePrimary(InMemorySessionService):
         return await super().get_session(session_id, *args, **kwargs)
 
 
+class _CountingPrimary(InMemorySessionService):
+    def __init__(self) -> None:
+        super().__init__()
+        self.get_session_calls = 0
+
+    async def get_session(self, session_id, *args, **kwargs):
+        self.get_session_calls += 1
+        return await super().get_session(session_id, *args, **kwargs)
+
+
+async def test_healthy_event_write_does_not_query_primary_session_each_time():
+    primary = _CountingPrimary()
+    service = ResilientSessionService(primary)
+    session = await service.create_session("agent-1", "user-1", session_id="sess-1")
+    primary.get_session_calls = 0
+
+    await service.append_event(
+        session.id,
+        SessionEvent(
+            id="evt-1",
+            author="user",
+            event_type="user_message",
+            content={"role": "user", "parts": [{"text": "hello"}]},
+        ),
+    )
+
+    assert primary.get_session_calls == 0
+    await service.aclose()
+
+
+class _InvalidPrimary(InMemorySessionService):
+    async def create_session(self, *args, **kwargs):
+        raise ValueError("invalid session payload")
+
+
+async def test_non_backend_error_is_not_hidden_by_fail_open():
+    service = ResilientSessionService(_InvalidPrimary())
+
+    with pytest.raises(ValueError, match="invalid session payload"):
+        await service.create_session("agent-1", "user-1", session_id="sess-invalid")
+
+    assert service.degraded is False
+    await service.aclose()
+
+
 async def test_resilient_service_recovers_after_probe(monkeypatch, caplog):
     primary = _RecoverablePrimary(fail_count=1)
     service = ResilientSessionService(primary)
@@ -414,34 +486,6 @@ async def test_resilient_service_recovers_after_probe(monkeypatch, caplog):
     assert service.degraded is False
     assert "session persistence recovered" in caplog.text
     await service.aclose()
-
-
-class _FailsFirstThenRecoversPrimary(InMemorySessionService):
-    """Primary that fails create_session but succeeds after get_session recovers."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._down = True
-
-    async def _maybe_fail(self):
-        if self._down:
-            raise ConnectionError("pg down")
-
-    async def get_session(self, session_id, *args, **kwargs):
-        await self._maybe_fail()
-        return await super().get_session(session_id, *args, **kwargs)
-
-    async def create_session(self, *args, **kwargs):
-        await self._maybe_fail()
-        return await super().create_session(*args, **kwargs)
-
-    async def append_event(self, *args, **kwargs):
-        await self._maybe_fail()
-        return await super().append_event(*args, **kwargs)
-
-    async def update_session_metadata(self, *args, **kwargs):
-        await self._maybe_fail()
-        return await super().update_session_metadata(*args, **kwargs)
 
 
 class _ProbeRecoveringPrimary(InMemorySessionService):
@@ -475,15 +519,15 @@ class _ProbeRecoveringPrimary(InMemorySessionService):
         return await super().update_session_metadata(*args, **kwargs)
 
 
-async def test_degraded_session_backfills_to_pg_after_recovery(caplog):
-    """Session created during degradation should appear in PG after recovery."""
+async def test_degraded_session_resumes_pg_writes_after_recovery(caplog):
+    """A degraded-era session should send subsequent events to PG after recovery."""
     primary = _ProbeRecoveringPrimary()
     service = ResilientSessionService(primary)
     service._probe_interval_seconds = 0.05
     caplog.set_level(logging.INFO)
 
     # Create session while PG is down — lives only in memory
-    session = await service.create_session("agent-1", "user-1", session_id="sess-degraded")
+    await service.create_session("agent-1", "user-1", session_id="sess-degraded")
     assert service.degraded is True
 
     # Append an event while degraded

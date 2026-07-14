@@ -28,3 +28,4 @@ async def test_failopen_framework_matrix_runs_without_postgres():
     assert all(item["status"] == "pass" for item in report["frameworks"])
     assert all(item["degraded"] is True for item in report["frameworks"])
     assert report["postgres_readability"] == {"status": "skipped"}
+    assert report["postgres_recovery"] == {"status": "skipped"}

@@ -4202,7 +4202,7 @@ async def _iter_conversation_turn_events(
         )
 
         accumulated_text = ""
-        accumulated_reasoning = ""
+        accumulated_reasoning_parts: list[str] = []
         emitted_anything = False
         emitted_response_artifacts = False
         saw_final_chunk = False
@@ -4212,6 +4212,20 @@ async def _iter_conversation_turn_events(
         stream_usage: dict[str, Any] = {}
         stream_last_usage: dict[str, Any] = {}
         reasoning_disabled = _model_options_disable_reasoning(prepared.model_options)
+
+        async def _persist_accumulated_reasoning() -> None:
+            if not accumulated_reasoning_parts:
+                return
+            reasoning = "".join(accumulated_reasoning_parts)
+            accumulated_reasoning_parts.clear()
+            await append_reasoning_event(
+                session_id=prepared.session_id,
+                author=runner_name,
+                text=reasoning,
+                invocation_id=prepared.invocation_id,
+                session_service_provider=provider,
+            )
+
         for attempt in range(2):
             try:
                 runtime_context.history = list(prepared.history)
@@ -4292,8 +4306,8 @@ async def _iter_conversation_turn_events(
                                         responses_output
                                     ):
                                         if semantic_event.get("type") == "thinking":
-                                            accumulated_reasoning += str(
-                                                semantic_event.get("delta") or ""
+                                            accumulated_reasoning_parts.append(
+                                                str(semantic_event.get("delta") or "")
                                             )
                                         emitted_anything = True
                                         yield semantic_event
@@ -4303,7 +4317,7 @@ async def _iter_conversation_turn_events(
                                     continue
                                 delta = str(chunk.get("delta", ""))
                                 if delta:
-                                    accumulated_reasoning += delta
+                                    accumulated_reasoning_parts.append(delta)
                                     emitted_anything = True
                                     emitted_response_artifacts = True
                                     yield {"type": "thinking", "delta": delta}
@@ -4340,6 +4354,7 @@ async def _iter_conversation_turn_events(
                                     session_service_provider=provider,
                                 )
                                 emitted_anything = True
+                                await _persist_accumulated_reasoning()
                                 yield {
                                     "type": "tool_call",
                                     "name": chunk.get("tool_name"),
@@ -4436,6 +4451,7 @@ async def _iter_conversation_turn_events(
                                         run_trigger=run_trigger,
                                     )
                                     emitted_anything = True
+                                    await _persist_accumulated_reasoning()
                                     yield {
                                         "type": "interrupt",
                                         "interrupt_info": approval_interrupt_info,
@@ -4493,6 +4509,7 @@ async def _iter_conversation_turn_events(
                                     governance, chunk.get("tool_output", "")
                                 )
                                 emitted_anything = True
+                                await _persist_accumulated_reasoning()
                                 yield {
                                     "type": "tool_result",
                                     "name": chunk.get("tool_name"),
@@ -4542,6 +4559,7 @@ async def _iter_conversation_turn_events(
                                     stream_last_usage = _normalize_usage_payload(chunk_last) or stream_usage
                 break
             except asyncio.CancelledError:
+                await _persist_accumulated_reasoning()
                 await append_run_status_event(
                     session_id=prepared.session_id,
                     author=runner_name,
@@ -4586,6 +4604,7 @@ async def _iter_conversation_turn_events(
                             run_mode=run_mode,
                             run_trigger=run_trigger,
                         )
+                        await _persist_accumulated_reasoning()
                         yield {"type": "error", "message": str(circuit_exc) or "Agent 运行失败"}
                         return
                     if checkpoint:
@@ -4639,6 +4658,7 @@ async def _iter_conversation_turn_events(
                     run_mode=run_mode,
                     run_trigger=run_trigger,
                 )
+                await _persist_accumulated_reasoning()
                 yield {"type": "error", "message": str(exc) or "Agent 运行失败"}
                 return
 
@@ -4673,6 +4693,7 @@ async def _iter_conversation_turn_events(
                 run_mode=run_mode,
                 run_trigger=run_trigger,
             )
+            await _persist_accumulated_reasoning()
             _finish_span()
             yield {
                 "type": "error",
@@ -4686,14 +4707,7 @@ async def _iter_conversation_turn_events(
             return
         _set_conversation_output_attributes(span, accumulated_text)
 
-        if accumulated_reasoning:
-            await append_reasoning_event(
-                session_id=prepared.session_id,
-                author=runner_name,
-                text=accumulated_reasoning,
-                invocation_id=prepared.invocation_id,
-                session_service_provider=provider,
-            )
+        await _persist_accumulated_reasoning()
         await append_conversation_event(
             session_id=prepared.session_id,
             author=runner_name,

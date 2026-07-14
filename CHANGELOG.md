@@ -5,6 +5,25 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)，
 版本遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [Unreleased]
+
+### 亮点
+
+- **PostgreSQL 会话故障不阻断 Agent**：配置 PostgreSQL 时，连接或写入异常会进入进程内存降级态并记录结构化告警；后台探活恢复后，新会话和后续事件自动恢复写入 PostgreSQL。
+- **会话事件更易排查**：新增 `ksadk_session_events_readable` PostgreSQL 视图，将原始事件拍平为消息角色、文本、工具名称、生命周期状态和时间等字段。
+
+### 变更
+
+- reasoning delta 仍实时流式返回，但每轮聚合为一条 `reasoning` 事件持久化，减少 PostgreSQL 写放大。
+- 降级期间未写入 PostgreSQL 的旧事件不会自动补写；Pod 重启、迁移或请求切换到其他 Pod 时，历史上下文可能不完整，但当前 Agent 请求继续执行。
+- PostgreSQL 连接池操作和关闭增加超时边界，避免数据库网络异常拖住请求或 Pod 退出。
+
+### 修复
+
+- 修复 PostgreSQL 恢复后，降级期间创建的 session 无法继续写入 PG 的问题。
+- 修复 ADK session 在健康 PostgreSQL 下不刷新其他副本新增事件的问题。
+- 修复 DeepAgents 测试 fake model 对空内容 tool call 不产生 stream chunk 的兼容问题。
+
 ## [0.6.9] - 2026-07-07
 
 ### 亮点

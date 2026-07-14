@@ -6,8 +6,10 @@ import asyncio
 import json
 import os
 import uuid
+from contextlib import suppress
 from types import SimpleNamespace
 from typing import Any
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from google.adk.events.event import Event as ADKEvent
 from google.adk.sessions import DatabaseSessionService
@@ -52,6 +54,70 @@ class _ADKNativeRunner:
         )
         await self.session_service.append_event(session, event)
         yield event
+
+
+class _PostgresTcpProxy:
+    def __init__(self, target_host: str, target_port: int) -> None:
+        self.target_host = target_host
+        self.target_port = target_port
+        self.port = 0
+        self._server: asyncio.Server | None = None
+        self._writers: set[asyncio.StreamWriter] = set()
+
+    async def start(self) -> None:
+        self._server = await asyncio.start_server(self._handle_client, "127.0.0.1", self.port)
+        socket = self._server.sockets[0]
+        self.port = int(socket.getsockname()[1])
+
+    async def pause(self) -> None:
+        if self._server is not None:
+            self._server.close()
+        writers = list(self._writers)
+        self._writers.clear()
+        for writer in writers:
+            writer.close()
+        if self._server is not None:
+            with suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self._server.wait_closed(), timeout=1.0)
+            self._server = None
+
+    async def resume(self) -> None:
+        await self.start()
+
+    async def close(self) -> None:
+        await self.pause()
+
+    async def _handle_client(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        upstream_writer: asyncio.StreamWriter | None = None
+        try:
+            upstream_reader, upstream_writer = await asyncio.open_connection(
+                self.target_host,
+                self.target_port,
+            )
+            self._writers.update({writer, upstream_writer})
+            with suppress(ConnectionError, OSError, asyncio.CancelledError):
+                await asyncio.gather(
+                    self._pipe(reader, upstream_writer),
+                    self._pipe(upstream_reader, writer),
+                )
+        finally:
+            for active_writer in (writer, upstream_writer):
+                if active_writer is None:
+                    continue
+                self._writers.discard(active_writer)
+                active_writer.close()
+                with suppress(Exception):
+                    await active_writer.wait_closed()
+
+    @staticmethod
+    async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        while data := await reader.read(65536):
+            writer.write(data)
+            await writer.drain()
 
 
 async def _run_canonical_framework(framework: str, unavailable_dsn: str) -> dict[str, Any]:
@@ -124,6 +190,147 @@ def _sqlalchemy_dsn(dsn: str) -> str:
     if dsn.startswith("postgresql+asyncpg://"):
         return dsn
     return dsn.replace("postgresql://", "postgresql+asyncpg://", 1)
+
+
+def _proxy_dsn(dsn: str, port: int) -> str:
+    parsed = urlsplit(_asyncpg_dsn(dsn))
+    userinfo = ""
+    if parsed.username is not None:
+        userinfo = quote(parsed.username, safe="")
+        if parsed.password is not None:
+            userinfo += f":{quote(parsed.password, safe='')}"
+        userinfo += "@"
+    return urlunsplit(
+        (
+            parsed.scheme,
+            f"{userinfo}127.0.0.1:{port}",
+            parsed.path,
+            parsed.query,
+            parsed.fragment,
+        )
+    )
+
+
+async def _wait_for_recovery(service: ResilientSessionService, timeout: float = 5.0) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while service.degraded and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.05)
+    if service.degraded:
+        raise RuntimeError("PostgreSQL session backend did not recover before timeout")
+
+
+async def _validate_postgres_recovery(dsn: str) -> dict[str, Any]:
+    import asyncpg
+
+    parsed = urlsplit(_asyncpg_dsn(dsn))
+    if parsed.hostname is None:
+        raise ValueError("PostgreSQL DSN must include a host")
+    proxy = _PostgresTcpProxy(parsed.hostname, parsed.port or 5432)
+    await proxy.start()
+    namespace = f"preprod_recovery_{uuid.uuid4().hex[:8]}"
+    existing_session_id = f"sess-existing-{uuid.uuid4().hex[:8]}"
+    new_session_id = f"sess-new-{uuid.uuid4().hex[:8]}"
+    service = ResilientSessionService(
+        PostgresSessionService(
+            dsn=_proxy_dsn(dsn, proxy.port),
+            namespace=namespace,
+            connect_timeout=0.5,
+        )
+    )
+    service._probe_interval_seconds = 0.2
+    direct = await asyncpg.connect(_asyncpg_dsn(dsn))
+    try:
+        await service.create_session("recovery-e2e", "preprod-e2e", existing_session_id)
+        await service.append_event(
+            existing_session_id,
+            SessionEvent(
+                id="evt-before-outage",
+                author="user",
+                event_type="user_message",
+                content={"role": "user", "parts": [{"text": "before outage"}]},
+            ),
+        )
+
+        await proxy.pause()
+        await asyncio.wait_for(
+            service.append_event(
+                existing_session_id,
+                SessionEvent(
+                    id="evt-during-outage",
+                    author="recovery-e2e",
+                    event_type="assistant_message",
+                    content={"role": "assistant", "parts": [{"text": "during outage"}]},
+                ),
+            ),
+            timeout=2.0,
+        )
+        if not service.degraded:
+            raise RuntimeError(
+                "PostgreSQL outage did not put the session backend into degraded mode"
+            )
+
+        await proxy.resume()
+        await _wait_for_recovery(service)
+        await service.append_event(
+            existing_session_id,
+            SessionEvent(
+                id="evt-after-recovery",
+                author="user",
+                event_type="user_message",
+                content={"role": "user", "parts": [{"text": "after recovery"}]},
+            ),
+        )
+        await service.create_session("recovery-e2e", "preprod-e2e", new_session_id)
+        await service.append_event(
+            new_session_id,
+            SessionEvent(
+                id="evt-new-session",
+                author="user",
+                event_type="user_message",
+                content={"role": "user", "parts": [{"text": "new session"}]},
+            ),
+        )
+
+        rows = await direct.fetch(
+            """
+            SELECT session_id, id
+            FROM ksadk_events
+            WHERE namespace = $1 AND session_id = ANY($2::text[])
+            ORDER BY session_id, seq_id
+            """,
+            namespace,
+            [existing_session_id, new_session_id],
+        )
+        persisted = {(row["session_id"], row["id"]) for row in rows}
+        expected = {
+            (existing_session_id, "evt-before-outage"),
+            (existing_session_id, "evt-after-recovery"),
+            (new_session_id, "evt-new-session"),
+        }
+        if not expected.issubset(persisted):
+            raise RuntimeError(f"PostgreSQL recovery persistence mismatch: {persisted!r}")
+        return {
+            "status": "pass",
+            "recovered": not service.degraded,
+            "new_session_persisted": (new_session_id, "evt-new-session") in persisted,
+            "existing_session_resumed": (
+                existing_session_id,
+                "evt-after-recovery",
+            )
+            in persisted,
+            "outage_event_persisted": (
+                existing_session_id,
+                "evt-during-outage",
+            )
+            in persisted,
+        }
+    finally:
+        await service.aclose()
+        await proxy.close()
+        await direct.execute("DELETE FROM ksadk_states WHERE namespace = $1", namespace)
+        await direct.execute("DELETE FROM ksadk_events WHERE namespace = $1", namespace)
+        await direct.execute("DELETE FROM ksadk_sessions WHERE namespace = $1", namespace)
+        await direct.close()
 
 
 async def _validate_postgres_view(dsn: str) -> dict[str, Any]:
@@ -206,10 +413,12 @@ async def run_validation(*, dsn: str, unavailable_dsn: str) -> dict[str, Any]:
     ]
     framework_results.append(await _run_adk_native(unavailable_dsn))
     postgres_result = await _validate_postgres_view(dsn) if dsn else {"status": "skipped"}
+    recovery_result = await _validate_postgres_recovery(dsn) if dsn else {"status": "skipped"}
     return {
         "overall_status": "pass",
         "frameworks": framework_results,
         "postgres_readability": postgres_result,
+        "postgres_recovery": recovery_result,
     }
 
 
