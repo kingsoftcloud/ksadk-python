@@ -17,6 +17,7 @@
 - reasoning delta 仍实时流式返回，但每轮聚合为一条 `reasoning` 事件持久化，减少 PostgreSQL 写放大。
 - 降级期间未写入 PostgreSQL 的旧事件不会自动补写；Pod 重启、迁移或请求切换到其他 Pod 时，历史上下文可能不完整，但当前 Agent 请求继续执行。
 - PostgreSQL 连接池操作和关闭增加超时边界，避免数据库网络异常拖住请求或 Pod 退出。
+- PostgreSQL session 创建改为数据库级幂等，多个 Pod 并发恢复或创建同一 session 时不会因唯一键竞争误触发降级。
 
 ### 修复
 
