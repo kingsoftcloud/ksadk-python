@@ -38,7 +38,7 @@ def network_options(func):
         click.option(
             "--enable-public-access/--disable-public-access",
             default=None,
-            help="是否开启公网访问；未指定时使用配置文件或平台默认值",
+            help="是否开启公网访问；创建时默认开启，更新已有 Agent 时未指定则保留现有配置（显式传入才覆盖）",
         ),
         click.option("--enable-vpc-access", is_flag=True, default=False, help="开启 VPC 私网访问"),
         click.option("--vpc-id", default=None, help="VPC ID（开启 VPC 访问时必填）"),
@@ -92,9 +92,11 @@ def apply_network_config(config: Mapping[str, Any] | None, deploy_target: "Deplo
                 return raw_network[key]
         return default
 
-    deploy_target.network.enable_public_access = bool(
-        _pick("enable_public_access", "enablePublicAccess", "EnablePublicAccess", default=deploy_target.network.enable_public_access)
+    _picked_public_access = _pick(
+        "enable_public_access", "enablePublicAccess", "EnablePublicAccess", default=None
     )
+    if _picked_public_access is not None:
+        deploy_target.network.enable_public_access = bool(_picked_public_access)
     deploy_target.network.enable_vpc_access = bool(
         _pick("enable_vpc_access", "enableVpcAccess", "EnableVpcAccess", default=deploy_target.network.enable_vpc_access)
     )

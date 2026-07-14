@@ -783,6 +783,7 @@ def test_hermes_deploy_creates_container_framework_and_persists_state(tmp_path: 
     assert _FakeHermesClient.create_payload["artifact_type"] == "Container"
     assert _FakeHermesClient.create_payload["artifact_path"] == "registry/hermes:test"
     assert _FakeHermesClient.create_payload["ui_config"] == {"profile": "hermes", "path": "/", "url": None}
+    assert _FakeHermesClient.create_payload["network"] == {"enable_public_access": True}
     assert any(item["Key"] == "OPENAI_API_KEY" and item["Value"] == "sk-test" for item in _FakeHermesClient.create_payload["env_vars"])
     assert "agent_id: ar-hermes-1" in (tmp_path / ".agentengine.state").read_text(encoding="utf-8")
 
@@ -865,6 +866,7 @@ def test_hermes_deploy_infers_availability_zone_from_subnet(tmp_path: Path, monk
 
     assert result.exit_code == 0, result.output
     assert _FakeHermesClient.create_payload["network"] == {
+        "enable_public_access": True,
         "enable_vpc_access": True,
         "vpc_id": "vpc-cli",
         "subnet_id": "subnet-cli",
@@ -873,7 +875,7 @@ def test_hermes_deploy_infers_availability_zone_from_subnet(tmp_path: Path, monk
     }
 
 
-def test_hermes_deploy_omits_network_when_not_configured(tmp_path: Path, monkeypatch):
+def test_hermes_deploy_enables_public_access_by_default(tmp_path: Path, monkeypatch):
     runner = CliRunner()
     _FakeHermesClient.create_payload = None
     monkeypatch.chdir(tmp_path)
@@ -887,7 +889,7 @@ def test_hermes_deploy_omits_network_when_not_configured(tmp_path: Path, monkeyp
     )
 
     assert result.exit_code == 0, result.output
-    assert "network" not in _FakeHermesClient.create_payload
+    assert _FakeHermesClient.create_payload["network"] == {"enable_public_access": True}
 
 
 def test_hermes_deploy_defaults_model_base_url_and_omits_api_key(tmp_path: Path, monkeypatch):

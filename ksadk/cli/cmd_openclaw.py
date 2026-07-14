@@ -3456,8 +3456,12 @@ async def _deploy_openclaw(
         region=region,
         dry_run=dry_run,
     )
-    if network_payload:
-        request_data["network"] = network_payload
+    # create 默认开公网（network_payload 未显式 enable_public_access 时补 True）；update 分支用原始 network_payload（None=保留现有配置）
+    create_network_payload = dict(network_payload) if network_payload is not None else {}
+    if "enable_public_access" not in create_network_payload:
+        create_network_payload["enable_public_access"] = True
+    if create_network_payload:
+        request_data["network"] = create_network_payload
 
     # 镜像凭证：按目标镜像地址判断仓库类型，避免企业版/第三方误用 KSYUN_ACCOUNT_ID。
     image_credential = None

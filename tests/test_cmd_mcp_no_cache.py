@@ -35,8 +35,8 @@ class _FakeDryRunClient:
     async def create_mcp(self, request):
         raise DryRunExit("dry-run", payload={"body": request})
 
-    async def update_mcp(self, *_args, **_kwargs):
-        raise DryRunExit("dry-run", payload={"body": {}})
+    async def update_mcp(self, _mcp_id, request):
+        raise DryRunExit("dry-run", payload={"body": request})
 
     async def close(self):
         return None
@@ -72,3 +72,30 @@ def test_mcp_deploy_dry_run_skips_local_build_and_relies_on_plan(tmp_path: Path,
     assert body["region"] == "cn-beijing-6"
     assert body["artifact_path"].startswith("ks3://agentengine-test/")
     assert "dry-run" in body["artifact_path"]
+    assert body["network"] == {"enable_public_access": True}
+
+
+def test_mcp_update_without_network_options_preserves_existing_config(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("ksadk.detection.mcp_detector.MCPDetector", _FakeMCPDetector)
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _FakeDryRunClient)
+    (tmp_path / ".agentengine.state").write_text(
+        "type: mcp\nmcp_id: mcp-existing\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(DryRunExit) as exc_info:
+        asyncio.run(
+            cmd_mcp._deploy_mcp_async(
+                mcp_dir=str(tmp_path),
+                name=None,
+                region="cn-beijing-6",
+                ks3_bucket="agentengine-test",
+                enable_auth=False,
+                dry_run=True,
+                artifact_type="Code",
+                no_cache=True,
+            )
+        )
+
+    body = (exc_info.value.payload or {}).get("body") or {}
+    assert "network" not in body

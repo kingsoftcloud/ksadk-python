@@ -68,7 +68,8 @@ Options:
                                   等其他框架默认不挂盘，需显式指定）
   --no-storage                    禁用默认 PVC 挂载
   --enable-public-access / --disable-public-access
-                                  是否开启公网访问；未指定时使用配置文件或平台默认值
+                                  是否开启公网访问；创建时默认开启，更新已有 Agent
+                                  时未指定则保留现有配置（显式传入才覆盖）
   --enable-vpc-access             开启 VPC 私网访问
   --vpc-id TEXT                   VPC ID（开启 VPC 访问时必填）
   --subnet-id TEXT                子网 ID（开启 VPC 访问时必填）
@@ -129,7 +130,8 @@ Options:
                                   等其他框架默认不挂盘，需显式指定）
   --no-storage                    禁用默认 PVC 挂载
   --enable-public-access / --disable-public-access
-                                  是否开启公网访问；未指定时使用配置文件或平台默认值
+                                  是否开启公网访问；创建时默认开启，更新已有 Agent
+                                  时未指定则保留现有配置（显式传入才覆盖）
   --enable-vpc-access             开启 VPC 私网访问
   --vpc-id TEXT                   VPC ID（开启 VPC 访问时必填）
   --subnet-id TEXT                子网 ID（开启 VPC 访问时必填）

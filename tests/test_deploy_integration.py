@@ -118,6 +118,20 @@ class TestLocalStateFile:
 
 class TestDeployLogic:
     """部署逻辑测试"""
+
+    def test_network_serialization_defaults_public_access_only_for_create(self):
+        provider = ServerlessProvider()
+        target = DeployTarget(provider="serverless")
+
+        assert provider._serialize_network_config(target, is_update=False) == {
+            "enable_public_access": True,
+        }
+        assert provider._serialize_network_config(target, is_update=True) is None
+
+        target.network.enable_public_access = False
+        assert provider._serialize_network_config(target, is_update=True) == {
+            "enable_public_access": False,
+        }
     
     @pytest.mark.asyncio
     async def test_deploy_create_new_agent(
@@ -152,6 +166,8 @@ class TestDeployLogic:
         assert result.status == DeployStatus.DEPLOYING
         assert result.agent_name == "test-agent"
         assert "首次部署" in result.message
+        create_payload = mock_client.create_agent.await_args.args[0]
+        assert create_payload["network"] == {"enable_public_access": True}
         
         # 验证状态文件已创建
         state_file = temp_project_dir / ".agentengine.state"

@@ -680,6 +680,7 @@ def test_mcp_deploy_dry_run_json_plan(monkeypatch, tmp_path: Path):
     assert payload["action"] == "deploy"
     assert payload["kind"] == "dry_run"
     assert payload["request"]["body"]["artifact_type"] == "Code"
+    assert payload["request"]["body"]["network"] == {"enable_public_access": True}
     assert payload["plan"]["artifact"]["reference"].startswith("ks3://agentengine-test/")
 
 
@@ -1750,6 +1751,7 @@ def test_openclaw_deploy_uses_init_project_name_when_name_is_omitted(monkeypatch
 
     assert result.exit_code == 0, result.output
     assert _FakeOpenClawCreateClient.create_payload["name"] == "custom-openclaw"
+    assert _FakeOpenClawCreateClient.create_payload["network"] == {"enable_public_access": True}
 
 
 def test_openclaw_deploy_update_payload_includes_network(monkeypatch, tmp_path):
