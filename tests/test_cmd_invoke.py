@@ -11,12 +11,23 @@ from ksadk.cli import cmd_invoke
 from ksadk.cli.cmd_invoke import (
     _extract_content,
     _extract_response_content,
+    _fetch_tui_model_metadata,
     _invoke_hermes_terminal_tui,
     _invoke_openclaw_terminal_tui,
     _resolve_remote_api_format,
     _select_remote_api_format,
     run_invoke_command,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clear_responses_route_cache():
+    """每个测试前清空 responses probe 缓存，避免测试间互相污染。"""
+    from ksadk.cli import cmd_invoke as _ci
+
+    _ci._RESPONSES_ROUTE_CACHE.clear()
+    yield
+    _ci._RESPONSES_ROUTE_CACHE.clear()
 
 
 class _FakeInvokeClient:
@@ -128,6 +139,56 @@ class _FakeStreamClient:
                 ]
             )
         )
+
+
+@pytest.mark.asyncio
+async def test_fetch_tui_model_metadata_matches_requested_model(monkeypatch):
+    async def _fake_catalog(**_kwargs):
+        return [
+            {
+                "id": "glm-5.1",
+                "context_window_tokens": 200_000,
+                "_provider_raw_model": {
+                    "id": "glm-5.1",
+                    "context_window_tokens": 200_000,
+                },
+            },
+            {
+                "id": "deepseek-v3.2",
+                "context_window_tokens": 128_000,
+                "_provider_raw_model": {
+                    "id": "deepseek-v3.2",
+                    "context_window_tokens": 128_000,
+                },
+            },
+        ]
+
+    monkeypatch.setattr("ksadk.cli.model_catalog.fetch_provider_model_catalog", _fake_catalog)
+
+    metadata = await _fetch_tui_model_metadata(
+        endpoint="https://agent.example.com",
+        api_key="ak-demo",
+        model="deepseek-v3.2",
+    )
+
+    assert metadata["id"] == "deepseek-v3.2"
+    assert metadata["context_window_tokens"] == 128_000
+
+
+@pytest.mark.asyncio
+async def test_fetch_tui_model_metadata_uses_single_catalog_model_when_unspecified(monkeypatch):
+    async def _fake_catalog(**_kwargs):
+        return [{"id": "glm-5.1", "context_window_tokens": 200_000}]
+
+    monkeypatch.setattr("ksadk.cli.model_catalog.fetch_provider_model_catalog", _fake_catalog)
+
+    metadata = await _fetch_tui_model_metadata(
+        endpoint="https://agent.example.com",
+        api_key="ak-demo",
+        model=None,
+    )
+
+    assert metadata == {"id": "glm-5.1", "context_window_tokens": 200_000}
 
 
 def test_run_invoke_command_refreshes_stale_state_from_remote(monkeypatch, tmp_path: Path):
@@ -263,8 +324,10 @@ def test_run_invoke_command_single_shot_respects_explicit_session(monkeypatch, t
     assert captured[0] == "my-sess"
 
 
-def test_run_invoke_command_tui_reuses_state_session(monkeypatch, tmp_path: Path):
-    """交互 TUI（不带 --message）：复用 .agentengine.state 里的上次 session。"""
+def test_run_invoke_command_tui_uses_fresh_session_by_default(monkeypatch, tmp_path: Path):
+    """交互 TUI（不带 --message，未显式 --session）：默认开新 session，不复用
+    .agentengine.state 里的上次 session，避免长上下文导致首包慢。TUI 内多轮
+    续聊由 InteractionLoop.session_id 维持，每次启动 TUI 是新会话。"""
     state_file = tmp_path / ".agentengine.state"
     state_file.write_text(
         yaml.safe_dump(
@@ -290,6 +353,9 @@ def test_run_invoke_command_tui_reuses_state_session(monkeypatch, tmp_path: Path
         show_thinking=False,
         api_format=None,
         responses_session_header=None,
+        no_alt_screen=False,
+        region="cn-beijing-6",
+        agent_id=None,
     ):
         captured["session_id"] = session_id
 
@@ -315,7 +381,8 @@ def test_run_invoke_command_tui_reuses_state_session(monkeypatch, tmp_path: Path
         show_thinking=False,
     )
 
-    assert captured["session_id"] == "sess-from-state"
+    assert captured["session_id"]
+    assert captured["session_id"] != "sess-from-state"  # 不复用 state session
 
 
 def test_extract_content_supports_response_output_text_delta():
@@ -408,29 +475,99 @@ def test_select_remote_api_format_prefers_responses_for_hermes():
     assert _select_remote_api_format(state, {}) == "responses"
 
 
-def test_select_remote_api_format_keeps_chat_completions_for_default_agents():
-    assert _select_remote_api_format({}, {}) == "chat_completions"
+def test_select_remote_api_format_prefers_responses_for_default_agents():
+    """auto 模式下普通框架也首选 responses（probe 不通再回退）。"""
+    assert _select_remote_api_format({}, {}) == "responses"
 
 
-def test_resolve_remote_api_format_rejects_openclaw_when_responses_route_missing(monkeypatch):
+def test_resolve_remote_api_format_falls_back_to_chat_when_responses_route_missing(monkeypatch):
+    """responses 路由 probe 不通时回退 chat_completions，不抛错（auto 回退）。"""
     async def _fake_probe(**_kwargs):
         return False
 
-    monkeypatch.setattr(cmd_invoke, "_probe_openclaw_responses_route", _fake_probe)
+    monkeypatch.setattr(cmd_invoke, "_probe_responses_route", _fake_probe)
 
-    with pytest.raises(click.ClickException) as exc_info:
-        asyncio.run(
+    api_format = asyncio.run(
+        _resolve_remote_api_format(
+            endpoint="https://agent.example.com",
+            api_key="ak-demo",
+            insecure=False,
+            state={"framework": "openclaw"},
+            latest_access={},
+        )
+    )
+
+    assert api_format == "chat_completions"
+
+
+def test_resolve_remote_api_format_probes_responses_for_default_framework(monkeypatch):
+    """普通框架（LangGraph 等）auto 时也 probe /v1/responses，通则用 responses。"""
+    captured = {}
+
+    async def _fake_probe(**kwargs):
+        captured.update(kwargs)
+        return True
+
+    monkeypatch.setattr(cmd_invoke, "_probe_responses_route", _fake_probe)
+
+    api_format = asyncio.run(
+        _resolve_remote_api_format(
+            endpoint="https://agent.example.com",
+            api_key="ak-demo",
+            insecure=False,
+            state={},
+            latest_access={},
+        )
+    )
+
+    assert api_format == "responses"
+    assert captured["endpoint"] == "https://agent.example.com"
+
+
+def test_resolve_remote_api_format_skips_probe_when_api_format_overridden(monkeypatch):
+    """显式 api_format=chat_completions 时不 probe，直接返回。"""
+    async def _fake_probe(**_kwargs):
+        raise AssertionError("should not probe when api_format overridden")
+
+    monkeypatch.setattr(cmd_invoke, "_probe_responses_route", _fake_probe)
+
+    api_format = asyncio.run(
+        _resolve_remote_api_format(
+            endpoint="https://agent.example.com",
+            api_key="ak-demo",
+            insecure=False,
+            state={},
+            latest_access={},
+            api_format="chat_completions",
+        )
+    )
+
+    assert api_format == "chat_completions"
+
+
+def test_resolve_remote_api_format_caches_probe_result(monkeypatch):
+    """probe 结果短缓存，同一 endpoint 不重复 probe。"""
+    calls = {"n": 0}
+
+    async def _fake_probe(**_kwargs):
+        calls["n"] += 1
+        return True
+
+    monkeypatch.setattr(cmd_invoke, "_probe_responses_route", _fake_probe)
+
+    for _ in range(3):
+        api_format = asyncio.run(
             _resolve_remote_api_format(
-                endpoint="https://openclaw.example.com",
-                api_key="ak-openclaw",
+                endpoint="https://agent.example.com",
+                api_key="ak-demo",
                 insecure=False,
-                state={"framework": "openclaw"},
+                state={},
                 latest_access={},
             )
         )
+        assert api_format == "responses"
 
-    assert "/v1/responses" in str(exc_info.value)
-    assert "agentengine dashboard open" in str(exc_info.value)
+    assert calls["n"] == 1
 
 
 def test_resolve_remote_api_format_probes_openclaw_with_runtime_gateway_token(monkeypatch):
@@ -440,7 +577,7 @@ def test_resolve_remote_api_format_probes_openclaw_with_runtime_gateway_token(mo
         captured.update(kwargs)
         return True
 
-    monkeypatch.setattr(cmd_invoke, "_probe_openclaw_responses_route", _fake_probe)
+    monkeypatch.setattr(cmd_invoke, "_probe_responses_route", _fake_probe)
 
     api_format = asyncio.run(
         _resolve_remote_api_format(
@@ -534,6 +671,9 @@ def test_run_invoke_command_defaults_to_openclaw_native_tui_for_openclaw_state(m
         show_thinking=False,
         api_format=None,
         responses_session_header=None,
+        no_alt_screen=False,
+        region="cn-beijing-6",
+        agent_id=None,
     ):
         captured["chat"] += 1
         captured["endpoint"] = endpoint
@@ -597,6 +737,9 @@ def test_run_invoke_command_transport_chat_uses_responses_tui_for_openclaw_state
         show_thinking=False,
         api_format=None,
         responses_session_header=None,
+        no_alt_screen=False,
+        region="cn-beijing-6",
+        agent_id=None,
     ):
         captured["chat"] += 1
         captured["endpoint"] = endpoint
@@ -660,6 +803,9 @@ def test_run_invoke_command_uses_openclaw_gateway_token_env_for_runtime_calls(mo
         show_thinking=False,
         api_format=None,
         responses_session_header=None,
+        no_alt_screen=False,
+        region="cn-beijing-6",
+        agent_id=None,
     ):
         captured["endpoint"] = endpoint
         captured["runtime_api_key"] = api_key
@@ -723,6 +869,9 @@ def test_run_invoke_command_uses_openclaw_gateway_token_state_for_runtime_calls(
         show_thinking=False,
         api_format=None,
         responses_session_header=None,
+        no_alt_screen=False,
+        region="cn-beijing-6",
+        agent_id=None,
     ):
         captured["endpoint"] = endpoint
         captured["runtime_api_key"] = api_key
@@ -1682,3 +1831,94 @@ def test_sync_local_workspace_for_hermes_invoke_wraps_remote_errors(monkeypatch,
     assert "同步远端 workspace 失败" in message
     assert "上传 demo-workspace/a.txt" in message
     assert "runtime exploded" in message
+
+
+def test_run_invoke_command_passes_explicit_api_format_to_resolver(monkeypatch, tmp_path: Path):
+    """run_invoke_command 接受 api_format 参数并传给 _resolve_remote_api_format，绕过 probe。"""
+    captured = {}
+
+    async def _fake_resolve(**kwargs):
+        captured.update(kwargs)
+        return kwargs.get("api_format") or "chat_completions"
+
+    async def _fake_invoke_once(endpoint, message, api_key, session_id, stream, insecure, model, api_format="chat_completions"):
+        return None
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("ksadk.cli.cmd_invoke._resolve_remote_api_format", _fake_resolve)
+    monkeypatch.setattr("ksadk.cli.cmd_invoke._invoke_once", _fake_invoke_once)
+
+    run_invoke_command(
+        agent_ref=None,
+        agent_option=None,
+        endpoint="http://demo.example.com",
+        api_key="ak-demo",
+        message="hello",
+        session=None,
+        region="cn-beijing-6",
+        local=True,
+        insecure=False,
+        transport="auto",
+        model=None,
+        show_thinking=False,
+        api_format="chat_completions",
+    )
+
+    assert captured.get("api_format") == "chat_completions"
+
+
+def test_probe_responses_route_treats_401_as_unavailable_for_default_framework(monkeypatch):
+    """普通框架带 api_key GET /v1/responses 返回 401 = 鉴权不通，应判为不可用（回退 chat）。
+    否则 auto 会走 responses 然后真实 POST 也 401。"""
+    from ksadk.cli import cmd_invoke
+
+    class _Resp:
+        status_code = 401
+
+    class _Client:
+        def __init__(self, *a, **kw):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+        async def get(self, url, headers=None):
+            return _Resp()
+
+    import httpx as _httpx_mod
+    monkeypatch.setattr(_httpx_mod, "AsyncClient", _Client)
+
+    available = asyncio.run(
+        cmd_invoke._probe_responses_route(
+            endpoint="https://agent.example.com", api_key="ak-demo", insecure=False
+        )
+    )
+    assert available is False  # 401 = 鉴权不通，不应当作路由可用
+
+
+def test_probe_responses_route_treats_405_as_available(monkeypatch):
+    """405/422/400 = 路由存在且鉴权通过（只是方法/参数不对），应判可用。"""
+    from ksadk.cli import cmd_invoke
+
+    class _Resp:
+        status_code = 405
+
+    class _Client:
+        def __init__(self, *a, **kw):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+        async def get(self, url, headers=None):
+            return _Resp()
+
+    import httpx as _httpx_mod
+    monkeypatch.setattr(_httpx_mod, "AsyncClient", _Client)
+
+    available = asyncio.run(
+        cmd_invoke._probe_responses_route(
+            endpoint="https://agent.example.com", api_key="ak-demo", insecure=False
+        )
+    )
+    assert available is True

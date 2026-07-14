@@ -32,7 +32,13 @@ from ksadk.cli.ui import (
 @click.option("--model", help="指定模型名称 (覆盖 .env 配置)")
 @click.option("--show-thinking", is_flag=True, help="显示模型思考过程")
 @click.option("--no-stream", is_flag=True, help="禁用流式渲染 (等待完整响应后再渲染)")
-def run(agent_dir: str, port: int, interactive: bool, no_trace: bool, model: str, show_thinking: bool, no_stream: bool):
+@click.option(
+    "--no-alt-screen",
+    "no_alt_screen",
+    is_flag=True,
+    help="TUI 不进 alternate screen，保留终端 scrollback 历史（对标 codex --no-alt-screen）",
+)
+def run(agent_dir: str, port: int, interactive: bool, no_trace: bool, model: str, show_thinking: bool, no_stream: bool, no_alt_screen: bool):
     """运行 Agent (支持 LangChain / LangGraph / DeepAgents / ADK)
 
     AGENT_DIR: Agent 项目目录 (默认: 当前目录)
@@ -96,7 +102,7 @@ def run(agent_dir: str, port: int, interactive: bool, no_trace: bool, model: str
     # 2. 根据框架类型选择处理方式
     # 所有框架统一使用 _run_custom() 以支持 Langfuse 自动插桩
     # (Langfuse instrumentation 需要在同一进程内生效)
-    _run_custom(result, agent_path, port, interactive, no_trace, show_thinking, no_stream)
+    _run_custom(result, agent_path, port, interactive, no_trace, show_thinking, no_stream, no_alt_screen)
 
 
 def _run_adk_cli(agent_path: Path, port: int = 8080, command: str = "run"):
@@ -164,6 +170,7 @@ def _run_custom(
     no_trace: bool,
     show_thinking: bool,
     no_stream: bool = False,
+    no_alt_screen: bool = False,
 ):
     """使用自定义实现 (LangChain/LangGraph/DeepAgents)"""
     from ksadk.runners.factory import create_runner
@@ -217,13 +224,13 @@ def _run_custom(
     # 运行
     if interactive:
         # TUI 交互模式
-        from ksadk.tui import AgentTUI
-        app = AgentTUI(
-            runner=runner,
+        from ksadk.tui.loop import run_tui
+        run_tui(
+            runner,
             show_thinking=show_thinking,
             project_dir=str(agent_path),
+            no_alt_screen=no_alt_screen,
         )
-        app.run()
     else:
         print_success(f"Server running at http://0.0.0.0:{port}")
         print_kv("API Docs", f"http://0.0.0.0:{port}/docs")

@@ -35,8 +35,9 @@ dependencies = [
     "pydantic>=2.0.0,<3.0.0",
     "jsonschema>=4.0.0,<5.0.0",
     "questionary>=2.0.0",
-    # TUI 交互界面 (Textual 包含 Rich，无需单独安装)
-    "textual>=0.50.0",
+    # TUI 交互界面（prompt_toolkit 全屏布局 + rich 单次渲染依赖）
+    "prompt_toolkit>=3.0.0",
+    "rich>=13.0.0",
     # API 服务 (run/web 命令)
     "fastapi>=0.100.0,<1.0.0",
     "uvicorn>=0.23.0",

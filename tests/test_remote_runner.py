@@ -428,21 +428,23 @@ async def test_remote_runner_responses_stream_parses_native_tool_items(monkeypat
     chunks = [chunk async for chunk in runner.stream({"input": "hi"})]
 
     assert chunks == [
-        {"type": "tool_call", "tool_name": "search", "tool_args": "", "status": "running"},
-        {"type": "tool_call", "tool_name": "search", "tool_args": '{"q":', "status": "running"},
+        {"type": "tool_call", "tool_name": "search", "tool_args": "", "status": "running", "call_id": "fc_1"},
+        {"type": "tool_call", "tool_name": "search", "tool_args": '{"q":', "status": "running", "call_id": "fc_1"},
         {
             "type": "tool_call",
             "tool_name": "search",
             "tool_args": '{"q":"openclaw"}',
             "status": "running",
+            "call_id": "fc_1",
         },
         {
             "type": "tool_call",
             "tool_name": "search",
             "tool_args": '{"q":"openclaw"}',
             "status": "running",
+            "call_id": "fc_1",
         },
-        {"type": "tool_result", "tool_name": "search", "tool_output": '{\n  "ok": true\n}'},
+        {"type": "tool_result", "tool_name": "search", "tool_output": '{\n  "ok": true\n}', "call_id": "fc_1"},
         {
             "type": "responses_output",
             "output": [
@@ -543,6 +545,40 @@ async def test_remote_runner_chat_completions_stream_requests_and_preserves_usag
 
 
 @pytest.mark.asyncio
+async def test_remote_runner_chat_completions_stream_preserves_usage_metadata(monkeypatch):
+    import httpx
+
+    class ChatStreamUsageMetadataClient(_FakeAsyncClient):
+        stream_lines = [
+            (
+                'data: {"choices":[],"usage":{"prompt_tokens":15,'
+                '"completion_tokens":6,"total_tokens":21},'
+                '"metadata":{"last_usage":{"input_tokens":15000}}}'
+            ),
+            "",
+            "data: [DONE]",
+        ]
+
+    ChatStreamUsageMetadataClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", ChatStreamUsageMetadataClient)
+    runner = RemoteRunner(endpoint="https://agent.example.com", api_format="chat_completions")
+
+    chunks = [chunk async for chunk in runner.stream({"input": "hi"})]
+
+    assert chunks == [
+        {
+            "type": "final",
+            "usage": {
+                "prompt_tokens": 15,
+                "completion_tokens": 6,
+                "total_tokens": 21,
+            },
+            "metadata": {"last_usage": {"input_tokens": 15000}},
+        },
+    ]
+
+
+@pytest.mark.asyncio
 async def test_remote_runner_chat_completions_stream_emits_final_without_usage(monkeypatch):
     import httpx
 
@@ -588,6 +624,7 @@ async def test_remote_runner_responses_stream_preserves_completed_usage(monkeypa
     chunks = [chunk async for chunk in runner.stream({"input": "hi"})]
 
     assert chunks == [
+        {"delta": "hello", "type": "text"},
         {
             "type": "responses_output",
             "output": [
@@ -603,6 +640,218 @@ async def test_remote_runner_responses_stream_preserves_completed_usage(monkeypa
                 "output_tokens": 4,
                 "total_tokens": 13,
             },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_remote_runner_responses_completed_output_projects_tool_items(monkeypatch):
+    import httpx
+
+    class ResponsesCompletedToolClient(_FakeAsyncClient):
+        stream_lines = [
+            "event: response.completed",
+            (
+                'data: {"response":{"id":"resp_1","output":[{"id":"fc_1",'
+                '"type":"function_call","name":"search","arguments":"{\\"q\\":\\"openclaw\\"}"},'
+                '{"id":"out_1","type":"function_call_output","call_id":"fc_1",'
+                '"output":{"ok":true}},{"id":"msg_1","type":"message",'
+                '"content":[{"type":"output_text","text":"done"}]}],'
+                '"usage":{"input_tokens":9,"output_tokens":4,"total_tokens":13}}}'
+            ),
+            "",
+            "data: [DONE]",
+        ]
+
+    ResponsesCompletedToolClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", ResponsesCompletedToolClient)
+    runner = RemoteRunner(endpoint="https://agent.example.com", api_format="responses")
+
+    chunks = [chunk async for chunk in runner.stream({"input": "hi"})]
+
+    assert chunks[:2] == [
+        {
+            "type": "tool_call",
+            "tool_name": "search",
+            "tool_args": '{"q":"openclaw"}',
+            "status": "completed",
+            "call_id": "fc_1",
+        },
+        {"type": "tool_result", "tool_name": "search", "tool_output": '{\n  "ok": true\n}', "call_id": "fc_1"},
+    ]
+    assert chunks[-1]["type"] == "responses_output"
+    assert chunks[-1]["usage"]["total_tokens"] == 13
+
+
+@pytest.mark.asyncio
+async def test_remote_runner_uses_runtime_run_id_for_tool_call_and_result(monkeypatch):
+    import httpx
+
+    class RuntimeToolClient(_FakeAsyncClient):
+        stream_lines = [
+            "event: response.tool_call",
+            'data: {"name":"read_file","args":{"path":"a"},"run_id":"run-1"}',
+            "",
+            "event: response.tool_result",
+            'data: {"name":"read_file","output":"ok","run_id":"run-1"}',
+            "",
+            "event: response.ksadk.stage_tool_call",
+            'data: {"name":"stage","args":{},"run_id":"stage-1"}',
+            "",
+            "event: response.ksadk.stage_tool_result",
+            'data: {"name":"stage","output":"done","run_id":"stage-1"}',
+            "",
+            "data: [DONE]",
+        ]
+
+    RuntimeToolClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", RuntimeToolClient)
+    runner = RemoteRunner(endpoint="https://agent.example.com", api_format="responses")
+
+    chunks = [chunk async for chunk in runner.stream({"input": "hi"})]
+
+    assert [(chunk["type"], chunk["call_id"]) for chunk in chunks] == [
+        ("tool_call", "run-1"),
+        ("tool_result", "run-1"),
+        ("tool_call", "stage-1"),
+        ("tool_result", "stage-1"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_remote_runner_surfaces_completed_only_message(monkeypatch):
+    import httpx
+
+    class CompletedOnlyMessageClient(_FakeAsyncClient):
+        stream_lines = [
+            "event: response.completed",
+            (
+                'data: {"response":{"id":"resp_1","output":[{"id":"msg_1",'
+                '"type":"message","content":[{"type":"output_text","text":"hello"}]}]}}'
+            ),
+            "",
+            "data: [DONE]",
+        ]
+
+    CompletedOnlyMessageClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", CompletedOnlyMessageClient)
+    runner = RemoteRunner(endpoint="https://agent.example.com", api_format="responses")
+
+    chunks = [chunk async for chunk in runner.stream({"input": "hi"})]
+
+    assert chunks[0] == {"delta": "hello", "type": "text"}
+    assert chunks[-1]["type"] == "responses_output"
+
+
+@pytest.mark.asyncio
+async def test_remote_runner_does_not_replay_completed_message_after_text_delta(monkeypatch):
+    import httpx
+
+    class DeltaThenCompletedClient(_FakeAsyncClient):
+        stream_lines = [
+            "event: response.output_text.delta",
+            'data: {"delta":"hello"}',
+            "",
+            "event: response.output_text.done",
+            'data: {"text":"hello"}',
+            "",
+            "event: response.completed",
+            (
+                'data: {"response":{"id":"resp_1","output":[{"id":"msg_1",'
+                '"type":"message","content":[{"type":"output_text","text":"hello"}]}]}}'
+            ),
+            "",
+            "data: [DONE]",
+        ]
+
+    DeltaThenCompletedClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", DeltaThenCompletedClient)
+    runner = RemoteRunner(endpoint="https://agent.example.com", api_format="responses")
+
+    chunks = [chunk async for chunk in runner.stream({"input": "hi"})]
+
+    assert [chunk for chunk in chunks if chunk.get("type") == "text"] == [
+        {"delta": "hello", "type": "text"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_remote_runner_resets_tool_replay_state_between_streams(monkeypatch):
+    import httpx
+
+    class ReusedCallIdClient(_FakeAsyncClient):
+        stream_lines = [
+            "event: response.completed",
+            (
+                'data: {"response":{"id":"resp_1","output":[{"id":"fc_1",'
+                '"type":"function_call","name":"search","arguments":"{}"},'
+                '{"id":"out_1","type":"function_call_output","call_id":"fc_1",'
+                '"output":{"ok":true}}]}}'
+            ),
+            "",
+            "data: [DONE]",
+        ]
+
+    ReusedCallIdClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", ReusedCallIdClient)
+    runner = RemoteRunner(endpoint="https://agent.example.com", api_format="responses")
+
+    first = [chunk async for chunk in runner.stream({"input": "first"})]
+    second = [chunk async for chunk in runner.stream({"input": "second"})]
+
+    assert [chunk["type"] for chunk in first] == [
+        "tool_call",
+        "tool_result",
+        "responses_output",
+    ]
+    assert [chunk["type"] for chunk in second] == [
+        "tool_call",
+        "tool_result",
+        "responses_output",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_remote_runner_responses_stream_preserves_completed_usage_metadata(monkeypatch):
+    import httpx
+
+    class ResponsesStreamUsageMetadataClient(_FakeAsyncClient):
+        stream_lines = [
+            "event: response.completed",
+            (
+                'data: {"response":{"id":"resp_1","output":[{"id":"msg_1",'
+                '"type":"message","content":[{"type":"output_text","text":"hello"}]}],'
+                '"usage":{"input_tokens":9,"output_tokens":4,"total_tokens":13},'
+                '"metadata":{"last_usage":{"input_tokens":9000}}}}'
+            ),
+            "",
+            "data: [DONE]",
+        ]
+
+    ResponsesStreamUsageMetadataClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", ResponsesStreamUsageMetadataClient)
+    runner = RemoteRunner(endpoint="https://agent.example.com", api_format="responses")
+
+    chunks = [chunk async for chunk in runner.stream({"input": "hi"})]
+
+    assert chunks == [
+        {"delta": "hello", "type": "text"},
+        {
+            "type": "responses_output",
+            "output": [
+                {
+                    "id": "msg_1",
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "hello"}],
+                }
+            ],
+            "response_id": "resp_1",
+            "usage": {
+                "input_tokens": 9,
+                "output_tokens": 4,
+                "total_tokens": 13,
+            },
+            "metadata": {"last_usage": {"input_tokens": 9000}},
         }
     ]
 

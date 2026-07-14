@@ -2305,6 +2305,9 @@ def test_root_invoke_alias_still_callable_with_hint(monkeypatch):
         show_thinking,
         api_format=None,
         responses_session_header=None,
+        no_alt_screen=False,
+        region="cn-beijing-6",
+        agent_id=None,
     ):
         return invoked.setdefault("endpoint", endpoint)
 

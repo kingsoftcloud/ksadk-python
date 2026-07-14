@@ -84,6 +84,20 @@ except ImportError:
 )
 @click.option("--model", help="指定模型名称")
 @click.option("--show-thinking", is_flag=True, help="显示模型思考过程")
+@click.option(
+    "--api-format",
+    "api_format",
+    type=click.Choice(["auto", "responses", "chat_completions"], case_sensitive=False),
+    default="auto",
+    show_default=True,
+    help="HTTP 协议: auto(优先 responses,不通回退 chat), responses, chat_completions",
+)
+@click.option(
+    "--no-alt-screen",
+    "no_alt_screen",
+    is_flag=True,
+    help="TUI 不进 alternate screen，保留终端 scrollback 历史（对标 codex --no-alt-screen）",
+)
 def invoke(
     agent_ref: str,
     agent_option: str,
@@ -101,6 +115,8 @@ def invoke(
     verbose_workspace_sync: bool,
     model: str,
     show_thinking: bool,
+    api_format: str,
+    no_alt_screen: bool,
 ):
     """与 Agent 进行交互 (本地或远程)。"""
     run_invoke_command(
@@ -121,6 +137,8 @@ def invoke(
         model=model,
         show_thinking=show_thinking,
         compatibility_alias=True,
+        api_format=None if (api_format or "auto").lower() == "auto" else api_format,
+        no_alt_screen=no_alt_screen,
     )
 
 
@@ -432,6 +450,8 @@ def run_invoke_command(
     show_thinking: bool,
     openclaw_gateway_token: str | None = None,
     compatibility_alias: bool = False,
+    api_format: str | None = None,
+    no_alt_screen: bool = False,
 ):
     """与 Agent 进行交互 (本地或远程)。"""
     if compatibility_alias:
@@ -458,7 +478,6 @@ def run_invoke_command(
     # 加载本地状态
     state = _load_state()
     latest_access: dict[str, Any] = {}
-    reuse_state_session = True
     target_agent: str | None = None
     
     normalized_transport = (transport or "auto").strip().lower() or "auto"
@@ -493,7 +512,6 @@ def run_invoke_command(
             state=state,
             persist=_state_matches_target(state, target_agent),
         )
-        reuse_state_session = not agent_input or _state_matches_target(state, target_agent)
 
         # 优先使用 state 里的 endpoint (如果是对应的 agent)
         if latest_access.get("endpoint"):
@@ -508,13 +526,10 @@ def run_invoke_command(
     # API Key
     api_key = api_key or latest_access.get("api_key") or state.get("api_key")
     # 单次 --message 调用默认开新 session，避免复用 .agentengine.state 里长上下文
-    # 导致首包变慢；交互 TUI 与显式 --session 仍复用 / 指定 session。
-    is_single_shot = bool(message)
-    session_id = (
-        session
-        or (state.get("session_id") if (reuse_state_session and not is_single_shot) else None)
-        or str(uuid.uuid4())[:8]
-    )
+    # 默认每次调用开新 session（单次 -m 与交互 TUI 都是），不复用 .agentengine.state
+    # 里的上次 session，避免长上下文累积导致首包变慢。TUI 内多轮续聊由
+    # InteractionLoop.session_id 维持；跨次想续聊上次会话用显式 --session 指定。
+    session_id = session or str(uuid.uuid4())[:8]
 
     next_state = _load_state() or dict(state)
     for key in ("agent_id", "name", "endpoint", "api_key", "framework"):
@@ -552,7 +567,7 @@ def run_invoke_command(
 
     if message:
         # 单次调用模式
-        api_format = asyncio.run(
+        api_format_resolved = asyncio.run(
             _resolve_remote_api_format(
                 endpoint=endpoint,
                 api_key=api_key,
@@ -560,9 +575,21 @@ def run_invoke_command(
                 insecure=insecure,
                 state=next_state,
                 latest_access=latest_access,
+                api_format=api_format,
             )
         )
-        asyncio.run(_invoke_once(endpoint, message, runtime_api_key, session_id, True, insecure, model, api_format))
+        asyncio.run(
+            _invoke_once(
+                endpoint,
+                message,
+                runtime_api_key,
+                session_id,
+                True,
+                insecure,
+                model,
+                api_format_resolved,
+            )
+        )
     else:
         is_hermes_target = _is_hermes_target(next_state, latest_access)
         is_openclaw_target = _is_openclaw_target(next_state, latest_access)
@@ -637,7 +664,7 @@ def run_invoke_command(
                 insecure=insecure,
             )
         else:
-            api_format = asyncio.run(
+            api_format_resolved = asyncio.run(
                 _resolve_remote_api_format(
                     endpoint=endpoint,
                     api_key=api_key,
@@ -645,7 +672,15 @@ def run_invoke_command(
                     insecure=insecure,
                     state=next_state,
                     latest_access=latest_access,
+                    api_format=api_format,
                 )
+            )
+            tui_agent_id = (
+                latest_access.get("agent_id")
+                or next_state.get("agent_id")
+                or target_agent
+                or latest_access.get("name")
+                or next_state.get("name")
             )
             _invoke_tui(
                 endpoint,
@@ -654,10 +689,13 @@ def run_invoke_command(
                 insecure,
                 model,
                 show_thinking,
-                api_format=api_format,
+                api_format=api_format_resolved,
                 responses_session_header=(
                     "x-openclaw-session-key" if _is_openclaw_target(next_state, latest_access) else None
                 ),
+                no_alt_screen=no_alt_screen,
+                region=region,
+                agent_id=tui_agent_id,
             )
 
 
@@ -672,10 +710,13 @@ def _invoke_tui(
     show_thinking: bool = False,
     api_format: str = "chat_completions",
     responses_session_header: str | None = None,
+    no_alt_screen: bool = False,
+    region: str = "cn-beijing-6",
+    agent_id: str | None = None,
 ):
     """使用 TUI 模式调用"""
     from ksadk.runners.remote_runner import RemoteRunner
-    from ksadk.tui import AgentTUI
+    from ksadk.tui.loop import run_tui
 
     runner = RemoteRunner(
         endpoint=endpoint,
@@ -686,13 +727,90 @@ def _invoke_tui(
         api_format=api_format,
         responses_session_header=responses_session_header,
     )
+    # 优先用 ListAgentModels（控制面 action，server 侧封装 runtime catalog，
+    # 避开 CLI 直连 runtime /v1/models 对 openclaw/hermes 的鉴权坑）拿模型列表 +
+    # 当前模型 metadata。失败 fallback 到 _fetch_tui_model_metadata（直连 /v1/models）。
+    model_list = asyncio.run(_fetch_tui_model_list(region=region, agent_id=agent_id))
+    if model_list:
+        runner.available_models = model_list.get("models") or []
+        current_id = model_list.get("current")
+        matched = None
+        if current_id:
+            matched = next((m for m in runner.available_models if m.get("id") == current_id), None)
+        if matched is None and runner.available_models:
+            matched = runner.available_models[0]
+        if matched:
+            runner.model_metadata = matched
+            # 用户未指定 --model 时，用 ListAgentModels 的 current 作为 runner.model，
+            # 让 TUI 启动即显示真实模型名（而非 unknown）。
+            if not runner.model and matched.get("id"):
+                runner.model = str(matched["id"])
+    else:
+        # fallback：直连 runtime /v1/models（旧路径，托管 runtime 常失败但不阻断）
+        model_metadata = asyncio.run(
+            _fetch_tui_model_metadata(endpoint=endpoint, api_key=api_key, model=model)
+        )
+        if model_metadata:
+            runner.model_metadata = model_metadata
 
-    app = AgentTUI(
-        runner=runner,
-        show_thinking=show_thinking,
-        project_dir=".",
-    )
-    app.run()
+    run_tui(runner, show_thinking=show_thinking, project_dir=".", no_alt_screen=no_alt_screen)
+
+
+async def _fetch_tui_model_list(
+    *,
+    region: str,
+    agent_id: str | None,
+) -> dict[str, Any] | None:
+    """通过控制面 ListAgentModels action 拿 Agent 可选模型列表（对标 hosted UI）。
+
+    需 KSYUN access/secret key（env），与 _fetch_remote_access 同套鉴权。
+    失败返回 None（不阻断 TUI，由 _fetch_tui_model_metadata fallback）。
+    """
+    if not agent_id:
+        return None
+    try:
+        from ksadk.api.client import AgentEngineClient
+
+        async with AgentEngineClient(region=region) as client:
+            return await client.list_agent_models(agent_id=agent_id)
+    except Exception:
+        return None
+
+
+async def _fetch_tui_model_metadata(
+    *,
+    endpoint: str,
+    api_key: str | None,
+    model: str | None,
+) -> dict[str, Any] | None:
+    try:
+        from ksadk.cli.model_catalog import (
+            fetch_provider_model_catalog,
+            find_model_in_catalog,
+        )
+        from ksadk.conversations.model_context import normalize_model_metadata
+
+        catalog = await fetch_provider_model_catalog(
+            api_base=endpoint,
+            api_key=api_key,
+            timeout=3.0,
+        )
+    except Exception:
+        return None
+
+    if not catalog:
+        return None
+    raw_models = [item.get("_provider_raw_model") or item for item in catalog]
+    matched = find_model_in_catalog(raw_models, model)
+    if matched is not None:
+        return normalize_model_metadata(matched)
+    if model:
+        return None
+    if len(catalog) == 1:
+        item = dict(catalog[0])
+        item.pop("_provider_raw_model", None)
+        return item
+    return None
 
 
 def _load_state() -> dict:
@@ -860,15 +978,14 @@ def _select_runtime_api_key(
 
 
 def _select_remote_api_format(state: dict, latest_access: dict) -> str:
-    framework = str(
-        latest_access.get("framework")
-        or state.get("framework")
-        or state.get("type")
-        or ""
-    ).strip().lower()
-    if framework in {"openclaw", "hermes"}:
-        return "responses"
-    return "chat_completions"
+    """auto 模式下所有框架首选 responses（probe 不通再回退 chat_completions）。"""
+    return "responses"
+
+
+# probe 结果进程内短缓存，key=endpoint，value=(过期时间戳, 是否暴露 responses)。
+# 避免每次 invoke 都多打一跳 GET /v1/responses。
+_RESPONSES_ROUTE_CACHE: dict[tuple, tuple[float, bool]] = {}
+_RESPONSES_ROUTE_CACHE_TTL = 30.0
 
 
 async def _resolve_remote_api_format(
@@ -879,23 +996,65 @@ async def _resolve_remote_api_format(
     insecure: bool,
     state: dict,
     latest_access: dict,
+    api_format: str | None = None,
 ) -> str:
-    api_format = _select_remote_api_format(state, latest_access)
-    if api_format != "responses" or not _is_openclaw_target(state, latest_access):
-        return api_format
+    # 显式指定 api_format（非 auto）时直接用，不 probe。
+    explicit = str(api_format or "").strip().lower()
+    if explicit in {"responses", "chat_completions"}:
+        return explicit
 
+    # auto：按框架决定首选格式，probe /v1/responses 不通回退 chat_completions。
+    preferred = _select_remote_api_format(state, latest_access)
+    if preferred != "responses":
+        return preferred
     probe_api_key = runtime_api_key if runtime_api_key is not None else api_key
-    if await _probe_openclaw_responses_route(endpoint=endpoint, api_key=probe_api_key, insecure=insecure):
-        return api_format
+    # openclaw/hermes 的 responses 用独立 gateway 鉴权头，GET 401 不代表 POST 401，
+    # 保留 401=可用的既有行为；普通框架 401=鉴权不通，回退 chat。
+    treat_401 = _is_openclaw_target(state, latest_access) or _is_hermes_target(state, latest_access)
+    if await _probe_responses_route_cached(
+        endpoint=endpoint,
+        api_key=probe_api_key,
+        insecure=insecure,
+        treat_401_as_available=treat_401,
+    ):
+        return "responses"
+    return "chat_completions"
 
-    raise click.ClickException(
-        "当前 OpenClaw endpoint 未暴露 /v1/responses，不能使用 agentengine invoke 的 HTTP TUI。\n"
-        "可先使用: agentengine dashboard open\n"
-        "如果要命令行交互，请升级/修复 OpenClaw 镜像或 bootstrap，使 Gateway 暴露 OpenResponses API。"
+
+# probe 结果进程内短缓存。cache key 含 treat_401：同一 endpoint 在 openclaw/hermes
+# 与普通框架下对 401 的解读不同，分开缓存避免串味。
+async def _probe_responses_route_cached(
+    *,
+    endpoint: str,
+    api_key: str | None,
+    insecure: bool,
+    treat_401_as_available: bool = False,
+) -> bool:
+    import time as _time
+
+    cache_key = (endpoint.rstrip("/"), treat_401_as_available)
+    now = _time.time()
+    cached = _RESPONSES_ROUTE_CACHE.get(cache_key)
+    if cached and cached[0] > now:
+        return cached[1]
+
+    available = await _probe_responses_route(
+        endpoint=endpoint,
+        api_key=api_key,
+        insecure=insecure,
+        treat_401_as_available=treat_401_as_available,
     )
+    _RESPONSES_ROUTE_CACHE[cache_key] = (now + _RESPONSES_ROUTE_CACHE_TTL, available)
+    return available
 
 
-async def _probe_openclaw_responses_route(*, endpoint: str, api_key: str | None, insecure: bool) -> bool:
+async def _probe_responses_route(
+    *,
+    endpoint: str,
+    api_key: str | None,
+    insecure: bool,
+    treat_401_as_available: bool = False,
+) -> bool:
     try:
         import httpx
     except ImportError:
@@ -915,9 +1074,14 @@ async def _probe_openclaw_responses_route(*, endpoint: str, api_key: str | None,
     except Exception:
         return False
 
-    # POST-only API routes usually answer GET with 405/422/400. A 404 or HTML 200
-    # means the request fell through to the OpenClaw UI/router instead of the API.
-    return response.status_code in {400, 401, 405, 422}
+    # POST-only API routes usually answer GET with 405/422/400 = 路由存在且鉴权通过。
+    # 401 = 未鉴权：带 key 仍 401 说明该 key 不被 responses 路由接受，走 responses 也会 401，
+    # 应回退 chat。openclaw/hermes 的 responses 用独立 gateway 鉴权头，GET 401 不代表 POST 401，
+    # 由 treat_401_as_available 保留其既有行为。404/HTML 200 = 路由不存在。
+    available = response.status_code in {400, 405, 422}
+    if treat_401_as_available and response.status_code == 401:
+        available = True
+    return available
 
 
 def _should_use_hermes_native_tui(*, transport: str, local: bool, state: dict, latest_access: dict) -> bool:
