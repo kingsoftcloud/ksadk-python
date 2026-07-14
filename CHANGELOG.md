@@ -9,18 +9,33 @@
 
 ### 亮点
 
+- **交互终端改为内容优先的 inline TUI**：`agentengine run` / `invoke` 的聊天界面不再占用 alternate screen，保留终端原生 scrollback；流式文本、工具调用和工具结果按实际到达顺序展示，并支持 `/tools` 折叠或展开工具详情。
 - **PostgreSQL 会话故障不阻断 Agent**：配置 PostgreSQL 时，连接或写入异常会进入进程内存降级态并记录结构化告警；后台探活恢复后，新会话和后续事件自动恢复写入 PostgreSQL。
 - **会话事件更易排查**：新增 `ksadk_session_events_readable` PostgreSQL 视图，将原始事件拍平为消息角色、文本、工具名称、生命周期状态和时间等字段。
+- **usage 与可观测数据更准确**：LangGraph 流式 usage 会去重、聚合并优先作为当前轮权威值；Langfuse trace 保留 KsADK 已计算的 usage，避免 exporter 二次推断覆盖正确结果。
+
+### 新增
+
+- TUI 新增 `/tools` 命令、模型选择、输入排队、处理中耗时状态、终端背景自适应和 `/clear` 原生 scrollback 清理。
+- 新增 PostgreSQL 会话故障恢复 E2E 校验脚本，覆盖 LangGraph、LangChain、ADK、可读视图以及数据库中断后恢复写入。
 
 ### 变更
 
+- 新建 Agent、Hermes、OpenClaw 和 MCP 部署时默认开启公网访问；更新已有资源时，未显式传入网络选项则不覆盖服务端现有配置，仍可通过 `--disable-public-access` 明确关闭。
+- `agentengine invoke --message` 默认创建新 session，只有显式传入 session 时才复用，避免多次单次调用意外共享上下文。
+- 模型上下文窗口区分 provider 返回的原始上限与扣除系统预留后的有效上限，避免 UI 展示值和运行时裁剪阈值混用。
 - reasoning delta 仍实时流式返回，但每轮聚合为一条 `reasoning` 事件持久化，减少 PostgreSQL 写放大。
 - 降级期间未写入 PostgreSQL 的旧事件不会自动补写；Pod 重启、迁移或请求切换到其他 Pod 时，历史上下文可能不完整，但当前 Agent 请求继续执行。
 - PostgreSQL 连接池操作和关闭增加超时边界，避免数据库网络异常拖住请求或 Pod 退出。
 - PostgreSQL session 创建改为数据库级幂等，多个 Pod 并发恢复或创建同一 session 时不会因唯一键竞争误触发降级。
+- 公开发布流程统一为内部 `master` 经 clean export 生成公开候选，再通过 GitHub PR、Trusted Publishing 发布主包和兼容别名包；移除旧文档部署路径并补齐导出审计边界。
 
 ### 修复
 
+- 修复 inline TUI 中工具调用完成后被统一移动到回复末尾、历史重绘影响原生滚动、浅色终端输入区域不清晰等问题。
+- 修复 Remote Runner 的 chat stream 将文本 delta 放在顶层时无法解析，导致远程回复内容缺失的问题。
+- 修复 LangGraph 流式 usage chunk 重复、缺少 run id 或与最终事件并存时可能重复累计或丢失的问题。
+- 修复 Langfuse exporter 覆盖 KsADK 权威 usage，导致 trace 中 token 数据与运行时不一致的问题。
 - 修复 PostgreSQL 恢复后，降级期间创建的 session 无法继续写入 PG 的问题。
 - 修复 ADK session 在健康 PostgreSQL 下不刷新其他副本新增事件的问题。
 - 修复 DeepAgents 测试 fake model 对空内容 tool call 不产生 stream chunk 的兼容问题。
