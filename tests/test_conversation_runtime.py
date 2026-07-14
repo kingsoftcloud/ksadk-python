@@ -470,7 +470,8 @@ class _CompletedOutputUsageStreamingRunner(_CompletedOutputStreamingRunner):
 class _ThinkingStreamingRunner(_StreamingRunner):
     async def stream(self, input_data: dict):
         self.stream_calls.append(input_data)
-        yield {"type": "thinking", "delta": "先分析问题"}
+        yield {"type": "thinking", "delta": "先分析"}
+        yield {"type": "thinking", "delta": "问题"}
         yield {"type": "text", "delta": "你好"}
         yield {"type": "final", "output": "你好"}
 

@@ -90,6 +90,8 @@ def test_describe_session_backend_marks_postgres_as_shared(monkeypatch):
     assert payload["Shared"] is True
     assert payload["ProductionSafe"] is True
     assert payload["ContinuityDefault"] == "semantic/replay"
+    assert payload["FailureMode"] == "fail_open"
+    assert payload["FallbackBackend"] == "memory"
     assert "Dsn" not in payload
     assert "Namespace" not in payload
 

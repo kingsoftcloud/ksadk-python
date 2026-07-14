@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from typing import Any, Optional
 from urllib.parse import urlsplit, urlunsplit
@@ -20,6 +21,9 @@ from ksadk.sessions.errors import SessionBackendUnavailable
 KSADK_PG_SESSIONS_TABLE = "ksadk_sessions"
 KSADK_PG_EVENTS_TABLE = "ksadk_events"
 KSADK_PG_STATES_TABLE = "ksadk_states"
+PG_READABLE_EVENTS_VIEW = "ksadk_session_events_readable"
+
+logger = logging.getLogger(__name__)
 
 
 class PostgresSessionService(BaseSessionService):
@@ -656,6 +660,57 @@ class PostgresSessionService(BaseSessionService):
                     ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';
                     """
                 )
+                try:
+                    await connection.execute(
+                        f"""
+                    CREATE OR REPLACE VIEW {PG_READABLE_EVENTS_VIEW} AS
+                    SELECT
+                        event_row.namespace,
+                        event_row.tenant_id,
+                        event_row.workspace_id,
+                        session_row.agent_id,
+                        session_row.user_id,
+                        session_row.title AS session_title,
+                        event_row.session_id,
+                        event_row.seq_id,
+                        event_row.id AS event_id,
+                        event_row.invocation_id,
+                        event_row.author,
+                        event_row.event_type,
+                        CASE
+                            WHEN event_row.event_type = 'user_message' THEN 'user'
+                            WHEN event_row.event_type IN (
+                                'assistant_message', 'reasoning', 'tool_call'
+                            ) THEN 'assistant'
+                            WHEN event_row.event_type = 'tool_result' THEN 'tool'
+                            ELSE NULL
+                        END AS message_role,
+                        COALESCE(
+                            NULLIF(event_row.content_json #>> '{{parts,0,text}}', ''),
+                            NULLIF(event_row.content_json ->> 'text', ''),
+                            NULLIF(event_row.metadata_json ->> 'reasoning', ''),
+                            NULLIF(event_row.metadata_json ->> 'tool_output', '')
+                        ) AS message_text,
+                        event_row.metadata_json ->> 'tool_name' AS tool_name,
+                        CASE
+                            WHEN event_row.event_type = 'run_status' THEN COALESCE(
+                                event_row.content_json ->> 'status',
+                                event_row.metadata_json ->> 'status'
+                            )
+                            ELSE NULL
+                        END AS lifecycle_status,
+                        to_timestamp(event_row.timestamp) AS created_at,
+                        event_row.content_json,
+                        event_row.state_delta_json,
+                        event_row.metadata_json
+                    FROM {KSADK_PG_EVENTS_TABLE} AS event_row
+                    JOIN {KSADK_PG_SESSIONS_TABLE} AS session_row
+                      ON session_row.namespace = event_row.namespace
+                     AND session_row.id = event_row.session_id;
+                        """
+                    )
+                except Exception as exc:
+                    logger.warning("Postgres readable session view unavailable: %s", exc)
             self._schema_ready = True
 
     async def _get_session_with_connection(

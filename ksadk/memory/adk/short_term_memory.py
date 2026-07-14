@@ -150,8 +150,11 @@ class ShortTermMemory(BaseModel):
         normalized_db_url = _normalize_database_url(db_url)
         try:
             from google.adk.sessions import DatabaseSessionService
+            from ksadk.memory.adk.resilient_session_service import ResilientADKSessionService
 
-            self._session_service = DatabaseSessionService(db_url=normalized_db_url)
+            self._session_service = ResilientADKSessionService(
+                DatabaseSessionService(db_url=normalized_db_url)
+            )
             logger.info(
                 f"ShortTermMemory: using DatabaseSessionService "
                 f"({normalized_db_url[:30]}...)"

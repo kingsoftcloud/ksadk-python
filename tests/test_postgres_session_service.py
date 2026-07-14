@@ -6,8 +6,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from ksadk.sessions.errors import SessionBackendUnavailable
+from ksadk.sessions import create_session_service
 from ksadk.sessions.base import SessionEvent
+from ksadk.sessions.errors import SessionBackendUnavailable
+from ksadk.sessions.in_memory import InMemorySessionService
+from ksadk.sessions.resilient import ResilientSessionService
 
 pytestmark = pytest.mark.asyncio
 
@@ -34,6 +37,164 @@ async def test_postgres_session_service_uses_configured_connect_timeout(monkeypa
     assert observed["timeout"] == 0.25
     assert "Postgres session backend unavailable" in str(exc_info.value)
     assert "secret" not in str(exc_info.value)
+
+
+async def test_configured_postgres_backend_fails_open_to_memory(monkeypatch, caplog):
+    observed = {"attempts": 0}
+
+    async def fake_create_pool(**_kwargs):
+        observed["attempts"] += 1
+        raise TimeoutError("connect timed out")
+
+    monkeypatch.setitem(sys.modules, "asyncpg", SimpleNamespace(create_pool=fake_create_pool))
+    monkeypatch.setenv("KSADK_SESSION_BACKEND", "postgres")
+    monkeypatch.setenv(
+        "KSADK_SESSION_DSN",
+        "postgresql://ksadk:secret@db.example.test:5432/session",
+    )
+
+    service = create_session_service()
+    session = await service.create_session("demo-agent", "user-1", session_id="sess-1")
+    stored = await service.append_event(
+        session.id,
+        SessionEvent(
+            id="evt-1",
+            author="user",
+            event_type="user_message",
+            content={"role": "user", "parts": [{"text": "hello"}]},
+        ),
+    )
+    events = await service.get_events(session.id)
+
+    assert session.id == "sess-1"
+    assert stored.seq_id == 1
+    assert [event.id for event in events] == ["evt-1"]
+    assert observed["attempts"] == 1
+    assert "session persistence degraded" in caplog.text
+
+
+async def test_postgres_schema_creates_readable_session_event_view(monkeypatch):
+    executed: list[str] = []
+
+    class FakeConnection:
+        async def execute(self, sql, *_args):
+            executed.append(sql)
+
+    class AcquireContext:
+        async def __aenter__(self):
+            return FakeConnection()
+
+        async def __aexit__(self, *_args):
+            return None
+
+    class FakePool:
+        def acquire(self):
+            return AcquireContext()
+
+    async def fake_create_pool(**_kwargs):
+        return FakePool()
+
+    monkeypatch.setitem(sys.modules, "asyncpg", SimpleNamespace(create_pool=fake_create_pool))
+
+    from ksadk.sessions.postgres_service import PostgresSessionService
+
+    service = PostgresSessionService(dsn="postgresql://user@db.example.test/session")
+    await service._ensure_schema()
+
+    schema_sql = "\n".join(executed)
+    assert "CREATE OR REPLACE VIEW ksadk_session_events_readable" in schema_sql
+    assert "message_text" in schema_sql
+    assert "lifecycle_status" in schema_sql
+
+
+async def test_resilient_session_keeps_hydrated_history_when_primary_fails(caplog):
+    primary = InMemorySessionService()
+    await primary.create_session("demo-agent", "user-1", session_id="sess-1")
+    await primary.append_event(
+        "sess-1",
+        SessionEvent(
+            id="evt-old",
+            author="user",
+            event_type="user_message",
+            content={"role": "user", "parts": [{"text": "old"}]},
+        ),
+    )
+    service = ResilientSessionService(primary)
+
+    hydrated = await service.get_session("sess-1")
+    assert hydrated is not None
+    assert [event.id for event in await service.get_events("sess-1")] == ["evt-old"]
+
+    async def fail_append(*_args, **_kwargs):
+        raise ConnectionError("postgres connection lost")
+
+    primary.append_event = fail_append
+    await service.append_event(
+        "sess-1",
+        SessionEvent(
+            id="evt-new",
+            author="demo-agent",
+            event_type="assistant_message",
+            content={"role": "assistant", "parts": [{"text": "new"}]},
+        ),
+    )
+
+    assert [event.id for event in await service.get_events("sess-1")] == [
+        "evt-old",
+        "evt-new",
+    ]
+    assert service.degraded is True
+    assert caplog.text.count("session persistence degraded") == 1
+
+
+async def test_resilient_session_refreshes_healthy_primary_history():
+    primary = InMemorySessionService()
+    await primary.create_session("demo-agent", "user-1", session_id="sess-1")
+    service = ResilientSessionService(primary)
+    assert await service.get_events("sess-1") == []
+
+    await primary.append_event(
+        "sess-1",
+        SessionEvent(
+            id="evt-other-pod",
+            author="user",
+            event_type="user_message",
+            content={"role": "user", "parts": [{"text": "from another pod"}]},
+        ),
+    )
+
+    assert [event.id for event in await service.get_events("sess-1")] == ["evt-other-pod"]
+
+
+async def test_postgres_readable_view_failure_does_not_disable_core_schema(monkeypatch, caplog):
+    class FakeConnection:
+        async def execute(self, sql, *_args):
+            if "CREATE OR REPLACE VIEW" in sql:
+                raise PermissionError("view creation denied")
+
+    class AcquireContext:
+        async def __aenter__(self):
+            return FakeConnection()
+
+        async def __aexit__(self, *_args):
+            return None
+
+    class FakePool:
+        def acquire(self):
+            return AcquireContext()
+
+    async def fake_create_pool(**_kwargs):
+        return FakePool()
+
+    monkeypatch.setitem(sys.modules, "asyncpg", SimpleNamespace(create_pool=fake_create_pool))
+
+    from ksadk.sessions.postgres_service import PostgresSessionService
+
+    service = PostgresSessionService(dsn="postgresql://user@db.example.test/session")
+    await service._ensure_schema()
+
+    assert service._schema_ready is True
+    assert "readable session view unavailable" in caplog.text
 
 
 async def test_postgres_session_service_two_instances_share_sessions_events_and_state():

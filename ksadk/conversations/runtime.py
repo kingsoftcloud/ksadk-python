@@ -4202,6 +4202,7 @@ async def _iter_conversation_turn_events(
         )
 
         accumulated_text = ""
+        accumulated_reasoning = ""
         emitted_anything = False
         emitted_response_artifacts = False
         saw_final_chunk = False
@@ -4291,12 +4292,8 @@ async def _iter_conversation_turn_events(
                                         responses_output
                                     ):
                                         if semantic_event.get("type") == "thinking":
-                                            await append_reasoning_event(
-                                                session_id=prepared.session_id,
-                                                author=runner_name,
-                                                text=str(semantic_event.get("delta") or ""),
-                                                invocation_id=prepared.invocation_id,
-                                                session_service_provider=provider,
+                                            accumulated_reasoning += str(
+                                                semantic_event.get("delta") or ""
                                             )
                                         emitted_anything = True
                                         yield semantic_event
@@ -4306,13 +4303,7 @@ async def _iter_conversation_turn_events(
                                     continue
                                 delta = str(chunk.get("delta", ""))
                                 if delta:
-                                    await append_reasoning_event(
-                                        session_id=prepared.session_id,
-                                        author=runner_name,
-                                        text=delta,
-                                        invocation_id=prepared.invocation_id,
-                                        session_service_provider=provider,
-                                    )
+                                    accumulated_reasoning += delta
                                     emitted_anything = True
                                     emitted_response_artifacts = True
                                     yield {"type": "thinking", "delta": delta}
@@ -4695,6 +4686,14 @@ async def _iter_conversation_turn_events(
             return
         _set_conversation_output_attributes(span, accumulated_text)
 
+        if accumulated_reasoning:
+            await append_reasoning_event(
+                session_id=prepared.session_id,
+                author=runner_name,
+                text=accumulated_reasoning,
+                invocation_id=prepared.invocation_id,
+                session_service_provider=provider,
+            )
         await append_conversation_event(
             session_id=prepared.session_id,
             author=runner_name,
