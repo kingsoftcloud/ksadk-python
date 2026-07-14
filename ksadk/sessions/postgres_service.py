@@ -74,6 +74,7 @@ class PostgresSessionService(BaseSessionService):
                         first_prompt, last_prompt, state_json, created_at, updated_at, version
                     )
                     VALUES ($1, $2, $3, $4, $5, $6, '', '', '', '', '', $7::jsonb, $8, $9, 0)
+                    ON CONFLICT (namespace, id) DO NOTHING
                     """,
                     self.namespace,
                     self.tenant_id,
@@ -85,6 +86,13 @@ class PostgresSessionService(BaseSessionService):
                     now,
                     now,
                 )
+                persisted = await self._get_session_with_connection(
+                    connection,
+                    session_key,
+                    for_update=True,
+                )
+                if persisted is None:
+                    raise RuntimeError(f"Failed to create Postgres session {session_key}")
                 await connection.execute(
                     f"""
                     INSERT INTO {KSADK_PG_STATES_TABLE} (
@@ -97,19 +105,13 @@ class PostgresSessionService(BaseSessionService):
                     self.namespace,
                     self.tenant_id,
                     self.workspace_id,
-                    agent_id,
-                    user_id,
+                    persisted.agent_id,
+                    persisted.user_id,
                     session_key,
                     "{}",
                     now,
                 )
-                return Session(
-                    id=session_key,
-                    agent_id=agent_id,
-                    user_id=user_id,
-                    created_at=now,
-                    updated_at=now,
-                )
+                return persisted
 
     async def get_session(self, session_id: str) -> Optional[Session]:
         await self._ensure_schema()

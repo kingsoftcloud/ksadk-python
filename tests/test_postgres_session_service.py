@@ -293,6 +293,35 @@ async def test_postgres_session_service_two_instances_share_sessions_events_and_
         await service_b.aclose()
 
 
+async def test_postgres_session_create_is_idempotent_across_instances():
+    dsn = os.getenv("KSADK_TEST_POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("Set KSADK_TEST_POSTGRES_DSN to run Postgres session integration tests")
+
+    from ksadk.sessions.postgres_service import PostgresSessionService
+
+    namespace = "pytest_concurrent_create"
+    service_a = PostgresSessionService(dsn=dsn, namespace=namespace)
+    service_b = PostgresSessionService(dsn=dsn, namespace=namespace)
+    session_id = "pytest-sess-concurrent-create"
+
+    try:
+        await service_a.delete_session(session_id)
+        created_a, created_b = await asyncio.gather(
+            service_a.create_session("demo-agent", "user-1", session_id=session_id),
+            service_b.create_session("demo-agent", "user-1", session_id=session_id),
+        )
+
+        assert created_a.id == session_id
+        assert created_b.id == session_id
+        assert created_a.agent_id == created_b.agent_id == "demo-agent"
+        assert created_a.user_id == created_b.user_id == "user-1"
+    finally:
+        await service_a.delete_session(session_id)
+        await service_a.aclose()
+        await service_b.aclose()
+
+
 async def test_postgres_session_service_get_events_filters_by_after_seq_id():
     dsn = os.getenv("KSADK_TEST_POSTGRES_DSN")
     if not dsn:
