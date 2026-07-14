@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import logging
+
 import pytest
 from google.adk.events.event import Event
 from google.adk.sessions import InMemorySessionService
@@ -69,3 +72,41 @@ async def test_adk_session_keeps_hydrated_events_after_primary_failure(caplog):
     assert [event.id for event in fetched.events] == [old_event.id, new_event.id]
     assert service.degraded is True
     assert caplog.text.count("ADK session persistence degraded") == 1
+
+
+class _RecoverableADKPrimary(InMemorySessionService):
+    """Mock primary that fails N times then recovers."""
+
+    def __init__(self, fail_count: int = 1) -> None:
+        super().__init__()
+        self._fail_remaining = fail_count
+
+    async def get_session(self, *, app_name, user_id, session_id, config=None):
+        if self._fail_remaining > 0:
+            self._fail_remaining -= 1
+            raise ConnectionError("pg temporarily down")
+        return await super().get_session(
+            app_name=app_name, user_id=user_id, session_id=session_id, config=config
+        )
+
+
+@pytest.mark.asyncio
+async def test_adk_session_recovers_after_probe(caplog):
+    primary = _RecoverableADKPrimary(fail_count=1)
+    service = ResilientADKSessionService(primary)
+    service._probe_interval_seconds = 0.05
+    caplog.set_level(logging.INFO)
+
+    session = await service.create_session(
+        app_name="demo-agent",
+        user_id="user-1",
+        session_id="sess-1",
+    )
+    event = Event(author="demo-agent", invocation_id="inv-1")
+    await service.append_event(session, event)
+
+    assert service.degraded is True
+    await asyncio.sleep(0.15)
+    assert service.degraded is False
+    assert "ADK session persistence recovered" in caplog.text
+    await service.close()

@@ -15,9 +15,12 @@ class ResilientSessionService(BaseSessionService):
 
     The in-memory service is authoritative for the lifetime of this process. The
     configured durable service is used as a read-through source and a best-effort
-    write-through sink. After its first failure it stays disabled so a session
-    cannot jump back to stale durable history without a reconciliation protocol.
+    write-through sink. After its first failure it stays disabled until a
+    background probe confirms the durable backend is reachable again, at which
+    point it is re-enabled and an INFO log is emitted.
     """
+
+    _probe_interval_seconds: float = 30.0
 
     def __init__(
         self,
@@ -28,6 +31,7 @@ class ResilientSessionService(BaseSessionService):
         self.fallback = fallback or InMemorySessionService()
         self._primary_enabled = True
         self._hydrate_lock = asyncio.Lock()
+        self._probe_task: asyncio.Task[None] | None = None
 
     @property
     def degraded(self) -> bool:
@@ -40,16 +44,45 @@ class ResilientSessionService(BaseSessionService):
             method = getattr(self.primary, method_name)
             return True, await method(*args, **kwargs)
         except Exception as exc:
-            self._primary_enabled = False
-            logger.error(
-                "KSADK session persistence degraded; using in-memory live session: %s",
-                exc,
+            self._disable_primary(exc)
+            return False, None
+
+    def _disable_primary(self, exc: Exception) -> None:
+        if not self._primary_enabled:
+            return
+        self._primary_enabled = False
+        logger.error(
+            "KSADK session persistence degraded; using in-memory live session: %s",
+            exc,
+            extra={
+                "session_backend_state": "degraded",
+                "session_backend": type(self.primary).__name__,
+            },
+        )
+        self._start_probe()
+
+    def _start_probe(self) -> None:
+        if self._probe_task is not None and not self._probe_task.done():
+            return
+        self._probe_task = asyncio.create_task(self._probe_loop())
+
+    async def _probe_loop(self) -> None:
+        while not self._primary_enabled:
+            await asyncio.sleep(self._probe_interval_seconds)
+            if self._primary_enabled:
+                break
+            try:
+                await self.primary.get_session("__ksadk_probe__")
+            except Exception:
+                continue
+            self._primary_enabled = True
+            logger.info(
+                "KSADK session persistence recovered; durable backend re-enabled",
                 extra={
-                    "session_backend_state": "degraded",
+                    "session_backend_state": "recovered",
                     "session_backend": type(self.primary).__name__,
                 },
             )
-            return False, None
 
     async def _hydrate(self, session: Session) -> Session:
         async with self._hydrate_lock:
@@ -278,6 +311,12 @@ class ResilientSessionService(BaseSessionService):
         return live
 
     async def aclose(self) -> None:
+        if self._probe_task is not None and not self._probe_task.done():
+            self._probe_task.cancel()
+            try:
+                await self._probe_task
+            except asyncio.CancelledError:
+                pass
         for service in (self.primary, self.fallback):
             close = getattr(service, "aclose", None)
             if close is not None:

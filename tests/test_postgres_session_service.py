@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 import sys
 from types import SimpleNamespace
@@ -383,3 +385,32 @@ async def test_postgres_session_service_namespaces_isolate_same_session_id():
         await service_b.delete_session(session_id)
         await service_a.aclose()
         await service_b.aclose()
+
+
+class _RecoverablePrimary(InMemorySessionService):
+    """Mock primary that fails N times then recovers."""
+
+    def __init__(self, fail_count: int = 1) -> None:
+        super().__init__()
+        self._fail_remaining = fail_count
+
+    async def get_session(self, session_id, *args, **kwargs):
+        if self._fail_remaining > 0:
+            self._fail_remaining -= 1
+            raise ConnectionError("pg temporarily down")
+        return await super().get_session(session_id, *args, **kwargs)
+
+
+async def test_resilient_service_recovers_after_probe(monkeypatch, caplog):
+    primary = _RecoverablePrimary(fail_count=1)
+    service = ResilientSessionService(primary)
+    service._probe_interval_seconds = 0.05
+    caplog.set_level(logging.INFO)
+
+    await service.create_session("agent-1", "user-1", session_id="sess-1")
+    assert service.degraded is True
+
+    await asyncio.sleep(0.15)
+    assert service.degraded is False
+    assert "session persistence recovered" in caplog.text
+    await service.aclose()

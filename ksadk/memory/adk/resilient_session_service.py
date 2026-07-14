@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Optional
 
@@ -18,11 +19,14 @@ logger = logging.getLogger(__name__)
 class ResilientADKSessionService(BaseSessionService):
     """Run ADK sessions locally while mirroring them to durable storage."""
 
+    _probe_interval_seconds: float = 30.0
+
     def __init__(self, primary: BaseSessionService) -> None:
         self.primary = primary
         self.live = InMemorySessionService()
         self._primary_sessions: dict[tuple[str, str, str], Session] = {}
         self._primary_enabled = True
+        self._probe_task: asyncio.Task[None] | None = None
 
     @property
     def degraded(self) -> bool:
@@ -40,6 +44,34 @@ class ResilientADKSessionService(BaseSessionService):
                 "session_backend": type(self.primary).__name__,
             },
         )
+        self._start_probe()
+
+    def _start_probe(self) -> None:
+        if self._probe_task is not None and not self._probe_task.done():
+            return
+        self._probe_task = asyncio.create_task(self._probe_loop())
+
+    async def _probe_loop(self) -> None:
+        while not self._primary_enabled:
+            await asyncio.sleep(self._probe_interval_seconds)
+            if self._primary_enabled:
+                break
+            try:
+                await self.primary.get_session(
+                    app_name="__ksadk_probe__",
+                    user_id="__ksadk_probe__",
+                    session_id="__ksadk_probe__",
+                )
+            except Exception:
+                continue
+            self._primary_enabled = True
+            logger.info(
+                "ADK session persistence recovered; durable backend re-enabled",
+                extra={
+                    "session_backend_state": "recovered",
+                    "session_backend": type(self.primary).__name__,
+                },
+            )
 
     @staticmethod
     def _key(app_name: str, user_id: str, session_id: str) -> tuple[str, str, str]:
@@ -210,6 +242,12 @@ class ResilientADKSessionService(BaseSessionService):
                 self._degrade(exc)
 
     async def close(self) -> None:
+        if self._probe_task is not None and not self._probe_task.done():
+            self._probe_task.cancel()
+            try:
+                await self._probe_task
+            except asyncio.CancelledError:
+                pass
         close = getattr(self.primary, "close", None)
         if close is not None:
             await close()
