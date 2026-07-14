@@ -470,6 +470,92 @@ async def test_adk_runner_checkpoint_writes_latest_boundary(tmp_path, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_adk_runner_checkpoint_seq_continues_on_resume(tmp_path, monkeypatch):
+    """Resume should continue checkpoint_seq from the existing max for the
+    same run_id, not restart from 0.  Otherwise IDs collide and
+    append_run_checkpoint_event silently drops the new checkpoints."""
+    from types import SimpleNamespace
+
+    from ksadk.runners.adk_runner import ADKRunner
+
+    runner = ADKRunner(_write_detection(FrameworkType.ADK), str(tmp_path))
+    runner._resumable = True
+    runner._agent = SimpleNamespace(name="test-agent")
+    runner._short_term_memory = None
+
+    # Pre-existing checkpoints from the original invocation (run-1)
+    existing_events = [
+        SimpleNamespace(
+            event_type="run_checkpoint",
+            metadata={"run_id": "run-1", "framework": "adk",
+                       "checkpoint_id": "adk-ckpt-1"},
+        ),
+        SimpleNamespace(
+            event_type="run_checkpoint",
+            metadata={"run_id": "run-1", "framework": "adk",
+                       "checkpoint_id": "adk-ckpt-2"},
+        ),
+        SimpleNamespace(
+            event_type="run_checkpoint",
+            metadata={"run_id": "run-1", "framework": "adk",
+                       "checkpoint_id": "adk-ckpt-3"},
+        ),
+    ]
+
+    async def fake_get_events(session_id):
+        return existing_events
+
+    monkeypatch.setattr(
+        "ksadk.sessions.resolve_session_service",
+        lambda: SimpleNamespace(get_events=fake_get_events),
+    )
+
+    written_events = []
+
+    async def fake_append(*, session_id, author, run_id, checkpoint_id,
+                          framework, framework_ref, phase, invocation_id,
+                          metadata, **kw):
+        written_events.append({"checkpoint_id": checkpoint_id})
+        return SimpleNamespace(id="evt")
+
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime.append_run_checkpoint_event", fake_append
+    )
+
+    def make_event(tool_name):
+        ev = SimpleNamespace(
+            id=f"evt-{tool_name}",
+            author="agent",
+            invocation_id="adk-inv-1",
+            content=SimpleNamespace(parts=[]),
+            actions=None,
+        )
+        ev.get_function_calls = lambda: [
+            SimpleNamespace(name=tool_name, id=f"tc-{tool_name}")
+        ]
+        return ev
+
+    async def fake_events():
+        for name in ["tool_d", "tool_e"]:
+            yield make_event(name)
+
+    # Simulate resume: checkpoint_run_id = original run_id
+    wrapped = runner._collect_adk_invocation_id(
+        fake_events(),
+        ksadk_invocation_id="ksadk-resume-1",
+        session_id="sess-1",
+        checkpoint_run_id="run-1",
+    )
+    results = [e async for e in wrapped]
+
+    assert len(results) == 2
+    # New checkpoints must continue from seq=4, not restart at 1
+    assert len(written_events) == 2
+    assert written_events[0]["checkpoint_id"] == "adk-ckpt-4"
+    assert written_events[1]["checkpoint_id"] == "adk-ckpt-5"
+
+
+@pytest.mark.asyncio
 async def test_adk_runner_concurrent_invocation_ids_no_cross_pollution(tmp_path):
     """P1.1: Two interleaved invocations on different sessions must not
     cross-pollute invocation_id.  The old instance-level _last_adk_invocation_id

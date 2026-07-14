@@ -213,8 +213,8 @@ class ADKRunner(BaseRunner):
 
         except ImportError:
             pass  # ADK or MCP not installed
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("ADKRunner: MCP result patch failed: %s", exc)
 
 
     def _init_short_term_memory(self):
@@ -1281,6 +1281,50 @@ class ADKRunner(BaseRunner):
 
     # --- ADK invocation_id & checkpoint helpers ---
 
+    async def _get_max_checkpoint_seq_for_run(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+    ) -> int:
+        """扫描已有 run_checkpoint 事件，返回同一 run_id 下的最大 checkpoint_seq。
+
+        恢复模式下 checkpoint_seq 从已有最大值继续递增，避免从 0 重启导致
+        checkpoint_id 碰撞并被 append_run_checkpoint_event 的去重逻辑静默丢弃。
+        """
+        if not run_id:
+            return 0
+        try:
+            from ksadk.sessions import resolve_session_service
+
+            service = resolve_session_service()
+            events = await service.get_events(session_id)
+            max_seq = 0
+            for event in reversed(events):
+                if event.event_type != "run_checkpoint":
+                    continue
+                metadata = event.metadata or {}
+                if str(metadata.get("run_id") or "") != str(run_id):
+                    continue
+                if str(metadata.get("framework") or "") != "adk":
+                    continue
+                checkpoint_id = str(metadata.get("checkpoint_id") or "")
+                if checkpoint_id.startswith("adk-ckpt-"):
+                    try:
+                        seq = int(checkpoint_id.removeprefix("adk-ckpt-"))
+                        if seq > max_seq:
+                            max_seq = seq
+                    except ValueError:
+                        pass
+            return max_seq
+        except Exception as exc:
+            logger.warning(
+                "ADKRunner: failed to query max checkpoint_seq "
+                "for run_id=%s: %s",
+                run_id, exc,
+            )
+            return 0
+
     async def _collect_adk_invocation_id(
         self,
         events_async,
@@ -1299,7 +1343,10 @@ class ADKRunner(BaseRunner):
         effective_run_id = checkpoint_run_id or ksadk_invocation_id
         first_event_captured = False
         captured_adk_invocation_id = ""
-        checkpoint_seq = 0
+        # 从已有 checkpoint 的最大 seq 继续，避免恢复模式下 ID 碰撞被去重丢弃
+        checkpoint_seq = await self._get_max_checkpoint_seq_for_run(
+            session_id=session_id, run_id=effective_run_id,
+        )
         async for event in events_async:
             if not first_event_captured and hasattr(event, "invocation_id") and event.invocation_id:
                 first_event_captured = True
@@ -1428,14 +1475,14 @@ class ADKRunner(BaseRunner):
         adk_invocation_id: str,
         checkpoint_seq: int,
         checkpoint_run_id: str = "",
-    ) -> int | None:
+    ) -> None:
         """Write a run_checkpoint event at a resumable boundary.
 
         Each boundary gets its own incrementing checkpoint_id so the latest
         checkpoint always reflects the latest state for crash recovery.
         """
         if not self._is_resumable_boundary(event):
-            return None
+            return
 
         from ksadk.conversations.runtime import append_run_checkpoint_event
 
@@ -1464,7 +1511,11 @@ class ADKRunner(BaseRunner):
             invocation_id=ksadk_invocation_id,
             metadata=metadata,
         )
-        return checkpoint_seq + 1
+        logger.debug(
+            "ADKRunner: wrote checkpoint adk-ckpt-%d at boundary "
+            "(session=%s, invocation_id=%s)",
+            checkpoint_seq, session_id, adk_invocation_id,
+        )
 
     def _extract_checkpoint_metadata(self, event: Any) -> dict[str, Any]:
         """从 ADK event 中提取 checkpoint 元数据。"""
@@ -1597,6 +1648,13 @@ class ADKRunner(BaseRunner):
             logger.info("Resuming ADK run with adk_invocation_id: %s", adk_invocation_id)
             run_kwargs["invocation_id"] = adk_invocation_id
         else:
+            if is_resume:
+                logger.warning(
+                    "ADKRunner: checkpoint resume requested but resumability is "
+                    "disabled — starting a new invocation with placeholder message "
+                    "(session=%s, ksadk_inv=%s)",
+                    session_id, ksadk_invocation_id,
+                )
             run_kwargs["new_message"] = (
                 new_message or self._build_adk_content("[empty message]", [])
             )
