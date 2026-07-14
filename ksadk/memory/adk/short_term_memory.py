@@ -175,12 +175,14 @@ class ShortTermMemory(BaseModel):
                 "Falling back to InMemorySessionService."
             )
             self._session_service = InMemorySessionService()
+            self.backend = "local"
         except Exception as e:
             logger.error(
                 f"Failed to create DatabaseSessionService: {e}. "
                 f"Falling back to InMemorySessionService."
             )
             self._session_service = InMemorySessionService()
+            self.backend = "local"
 
     @property
     def session_service(self) -> BaseSessionService:

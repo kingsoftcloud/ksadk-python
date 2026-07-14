@@ -5,14 +5,19 @@ ADKRunner - Google ADK 框架运行时
 支持通过环境变量配置记忆体 (ShortTermMemory / LongTermMemory)。
 """
 
+import asyncio
 import base64
 import inspect
 import logging
 import os
 import sys
+from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, Mapping, Optional
 
+from google.genai import types
 from opentelemetry import trace
 
 from ksadk.conversations.attachments import classify_attachment_kind, read_attachment_uri_bytes
@@ -44,6 +49,16 @@ class ADKRunner(BaseRunner):
         self._knowledge_base = None
         # Keep runtime toolsets alive for the lifetime of the runner.
         self._runtime_toolsets: list[Any] = []
+        # ADK resumability state
+        self._resumable: bool = False
+        self._resume_disabled_reason: Optional[str] = None
+        # P1.1 sub-issue: guard invocation_map read-modify-write so concurrent
+        # invocations on the same session don't lose each other's mappings.
+        self._invocation_map_lock = asyncio.Lock()
+        self._module = None
+        self._adk_resume_min_version = os.environ.get(
+            "GOOGLE_ADK_RESUME_MIN_VERSION", "1.16.0"
+        ).strip()
 
     async def close(self) -> None:
         """Close runtime toolsets owned by this runner."""
@@ -61,47 +76,146 @@ class ADKRunner(BaseRunner):
                 logger.warning("Failed to close runtime toolset %r: %s", toolset, exc)
 
     def _apply_json_patch(self):
-        """Monkey patch google.adk.models.lite_llm to handle invalid JSON safely"""
+        """Patch ADK LiteLlm to handle malformed JSON in tool-call arguments.
+
+        The previous RobustJson approach replaced the entire json module inside
+        lite_llm.py, which broke ADK's streaming args-completeness detection:
+        ADK uses ``try: json.loads(args) except json.JSONDecodeError: pass``
+        to decide whether accumulated streaming args form a complete JSON
+        object. When RobustJson.loads swallowed the exception (or even when
+        it re-raised after json_repair "fixed" incomplete fragments like
+        ``{`` into ``{}``), fallback_index incremented on every args fragment,
+        causing a single tool call to fragment into multiple entries with
+        empty names -- the "Tool '' not found" error.
+
+        The new approach is surgical: we do NOT replace the json module at
+        all. Instead, we patch _message_to_generate_content_response to
+        tolerate malformed JSON in the FINAL assembled arguments only.
+        The streaming args detection continues using stdlib json.loads and
+        gets proper JSONDecodeError for incomplete fragments.
+        """
         try:
-            import json
+            import inspect as _inspect
+            import json as _stdlib_json
 
             import google.adk.models.lite_llm as adk_lite_llm
 
-            # Create a proxy for the json module
-            class RobustJson:
-                def __getattr__(self, name):
-                    return getattr(json, name)
+            _original_fn = adk_lite_llm._message_to_generate_content_response
+            # Determine which kwargs the original function actually accepts,
+            # so the patch is compatible across ADK versions that may have
+            # added or removed `model_version` / `thought_parts`.
+            _orig_params = set(
+                _inspect.signature(_original_fn).parameters.keys()
+            )
 
-                def loads(self, s, **kwargs):
-                    result = {}
-                    try:
-                        result = json.loads(s, **kwargs)
-                    except json.JSONDecodeError:
-                        # Try json_repair if available
-                        try:
-                            import json_repair
+            def _patched_message_to_generate_content_response(
+                message, *, is_partial=False, model_version=None, thought_parts=None
+            ):
+                """Wrapper that catches JSONDecodeError in final args parsing."""
+                # Only forward kwargs that the original function accepts,
+                # avoiding TypeError on older ADK versions that lack
+                # `model_version` or `thought_parts`.
+                forward_kwargs = {"is_partial": is_partial}
+                if "model_version" in _orig_params:
+                    forward_kwargs["model_version"] = model_version
+                if "thought_parts" in _orig_params:
+                    forward_kwargs["thought_parts"] = thought_parts
+                try:
+                    result = _original_fn(message, **forward_kwargs)
+                except _stdlib_json.JSONDecodeError:
+                    # P1.5: Malformed JSON in tool-call arguments — return an
+                    # empty response so the agent can retry rather than crashing.
+                    logger.warning(
+                        "ADKRunner: caught JSONDecodeError in args parsing, "
+                        "returning empty response"
+                    )
+                    from google.genai import types as _genai_types
+                    return _genai_types.GenerateContentResponse(
+                        candidates=[],
+                    )
+                # If the response has function_call parts with empty args,
+                # fill in {} as fallback (this was what RobustJson used to do,
+                # but now only at the final output stage, not during streaming).
+                # Also strip phantom function_calls whose name is empty or
+                # whitespace-only — these are streaming artifacts produced by
+                # the old ADK fallback_index mechanism when parallel tool-call
+                # fragments are mis-assembled.
+                phantom_indices = set()
+                if result.content and result.content.parts:
+                    for i, part in enumerate(result.content.parts):
+                        if part.function_call and part.function_call.args is None:
+                            part.function_call.args = {}
+                        if (
+                            part.function_call
+                            and not (part.function_call.name or "").strip()
+                        ):
+                            phantom_indices.add(i)
+                if phantom_indices:
+                    result.content.parts = [
+                        p for i, p in enumerate(result.content.parts)
+                        if i not in phantom_indices
+                    ]
+                return result
 
-                            result = json_repair.loads(s)
-                        except ImportError:
-                            # Fallback: return empty dict to prevent crash
-                            print(
-                                f"\n⚠️ [KSADK] Warning: Captured invalid JSON from LLM: {s[:50]}..."
-                            )
-                            result = {}
+            adk_lite_llm._message_to_generate_content_response = (
+                _patched_message_to_generate_content_response
+            )
 
-                    # Ensure result is a dict (Google GenAI FunctionCall requires dict args)
-                    if not isinstance(result, dict):
-                        return {}
-                    return result
+            # Don't patch _model_response_to_generate_content_response since
+            # it calls _message_to_generate_content_response internally, and
+            # that's already patched. Double-patching would cause recursion.
 
-            # Replace the 'json' module reference INSIDE lite_llm module
-            # This is safer than patching json.loads globally
-            adk_lite_llm.json = RobustJson()
+            logger.info(
+                "ADKRunner: Applied surgical args-parsing patch "
+                "(stdlib json preserved, streaming detection intact)"
+            )
 
         except ImportError:
             pass  # ADK not installed
         except Exception:
             pass
+
+
+    def _apply_mcp_result_patch(self):
+        """Patch ADK McpTool to convert CallToolResult to dict.
+
+        Old ADK (1.14.1) McpTool._run_async_impl returns the raw
+        CallToolResult Pydantic object from session.call_tool(), which
+        cannot be JSON-serialized when ADK builds the FunctionResponse.
+        New ADK (1.34.0) added response.model_dump(exclude_none=True,
+        mode="json") before returning. This patch replicates that fix
+        for the old version.
+        """
+        try:
+            from google.adk.tools.mcp_tool.mcp_tool import McpTool
+
+            _original_run_async = McpTool._run_async_impl
+
+            async def _patched_run_async_impl(
+                self, *, args, tool_context, credential
+            ):
+                response = await _original_run_async(
+                    self, args=args, tool_context=tool_context,
+                    credential=credential,
+                )
+                # If response is a Pydantic model (e.g. CallToolResult),
+                # convert to dict so it can be JSON-serialized downstream.
+                if hasattr(response, "model_dump"):
+                    return response.model_dump(exclude_none=True, mode="json")
+                return response
+
+            McpTool._run_async_impl = _patched_run_async_impl
+
+            logger.info(
+                "ADKRunner: Applied MCP result serialization patch "
+                "(CallToolResult -> dict via model_dump)"
+            )
+
+        except ImportError:
+            pass  # ADK or MCP not installed
+        except Exception as exc:
+            logger.debug("ADKRunner: MCP result patch failed: %s", exc)
+
 
     def _init_short_term_memory(self):
         """从环境变量初始化短期记忆
@@ -144,6 +258,26 @@ class ADKRunner(BaseRunner):
         return ADKSessionAdapter()
 
     def describe_checkpoint_capability(self) -> dict[str, Any]:
+        resumable = getattr(self, "_resumable", False)
+        stm_backend = (
+            getattr(self._short_term_memory, "backend", None)
+            if self._short_term_memory else None
+        )
+        if resumable:
+            backend = "adk_invocation"
+            if stm_backend == "sqlite":
+                backend = "adk_invocation+sqlite"
+            elif stm_backend == "database":
+                backend = "adk_invocation+postgres"
+            return {
+                "Supported": True,
+                "Backend": backend,
+                "Scope": "invocation",
+                "Durable": stm_backend is not None and stm_backend != "local",
+                "SharedAcrossPods": stm_backend == "database",
+                "ResumeMode": "invocation_id",
+                "Reason": "ADK ResumabilityConfig enabled; resume via invocation_id",
+            }
         return {
             "Supported": False,
             "Backend": "none",
@@ -151,36 +285,199 @@ class ADKRunner(BaseRunner):
             "Durable": False,
             "SharedAcrossPods": False,
             "ResumeMode": "forward_only",
-            "Reason": "ADK native session can continue conversation context, but KSADK does not expose ADK framework checkpoint restore points",
+            "Reason": (
+                self._resume_disabled_reason
+                or "ADK ResumabilityConfig not enabled; set "
+                "KSADK_ADK_RESUMABLE=1 or configure App with resumability_config"
+            ),
         }
 
     def get_runtime_capabilities(self) -> dict[str, Any]:
         capabilities = super().get_runtime_capabilities()
-        has_native_session = bool(getattr(self, "_short_term_memory", None)) or any(
-            str(os.getenv(name) or "").strip()
-            for name in (
-                "KSADK_ADK_SESSION_BACKEND",
-                "KSADK_ADK_SESSION_PATH",
-                "KSADK_ADK_SESSION_URL",
-                "KSADK_STM_BACKEND",
-                "KSADK_STM_PATH",
-                "KSADK_STM_URL",
-                "KSADK_STM_DB_PATH",
-                "KSADK_STM_DB_URL",
-                "KSADK_SESSION_BACKEND",
-                "KSADK_SESSION_DSN",
-            )
+        resumable = getattr(self, "_resumable", False)
+        stm_backend = (
+            getattr(self._short_term_memory, "backend", None)
+            if self._short_term_memory else None
         )
-        capabilities["SessionContinuity"] = {
-            "Supported": True,
-            "Type": "native_session" if has_native_session else "semantic_replay",
-            "Level": "semantic",
-            "Reason": "ADK native session can continue conversation context"
-            if has_native_session
-            else "conversation transcript can be replayed",
-        }
+        is_durable = stm_backend is not None and stm_backend != "local"
+        if resumable:
+            # P1.3: Level must degrade with backend — in_memory session state
+            # cannot survive pod restarts, so "runtime" is misleading.
+            level = "runtime" if is_durable else "semantic"
+            capabilities["SessionContinuity"] = {
+                "Supported": True,
+                "Type": "adk_invocation",
+                "Level": level,
+                "Reason": (
+                    "ADK ResumabilityConfig enabled with durable session backend, "
+                    "invocation_id-based checkpoint resume available"
+                    if is_durable
+                    else "ADK ResumabilityConfig enabled but session state is in-memory; "
+                    "resume only works within the same process lifetime"
+                ),
+            }
+        else:
+            has_native_session = bool(getattr(self, "_short_term_memory", None)) or any(
+                str(os.getenv(name) or "").strip()
+                for name in (
+                    "KSADK_ADK_SESSION_BACKEND",
+                    "KSADK_ADK_SESSION_PATH",
+                    "KSADK_ADK_SESSION_URL",
+                    "KSADK_STM_BACKEND",
+                    "KSADK_STM_PATH",
+                    "KSADK_STM_URL",
+                    "KSADK_STM_DB_PATH",
+                    "KSADK_STM_DB_URL",
+                    "KSADK_SESSION_BACKEND",
+                    "KSADK_SESSION_DSN",
+                )
+            )
+            capabilities["SessionContinuity"] = {
+                "Supported": True,
+                "Type": "native_session" if has_native_session else "semantic_replay",
+                "Level": "semantic",
+                "Reason": "ADK native session can continue conversation context"
+                if has_native_session
+                else "conversation transcript can be replayed",
+            }
         capabilities["ResumeRun"]["Reason"] = capabilities["Checkpoint"]["Reason"]
         return capabilities
+
+    @dataclass
+    class _ResolvabilityResult:
+        enabled: bool
+        source: str          # "agent_module" | "env" | "auto_persistent_session" | "default"
+        app: Any             # User module exported App object (if any)
+
+    def _resolve_resumability(self) -> "_ResolvabilityResult":
+        """从环境变量或 agent 模块推断是否启用 ADK 可恢复性。"""
+        # Priority 1: agent module exports app object with resumability_config
+        module = getattr(self, "_module", None)
+        if module is not None:
+            try:
+                from google.adk.apps import App
+                for attr_name in ("app", "application"):
+                    candidate = getattr(module, attr_name, None)
+                    if isinstance(candidate, App) and candidate.resumability_config:
+                        if candidate.resumability_config.is_resumable:
+                            return self._ResolvabilityResult(
+                                enabled=True, source="agent_module", app=candidate)
+            except ImportError:
+                pass
+
+        # Priority 2: environment variable explicit control
+        env_val = os.environ.get("KSADK_ADK_RESUMABLE", "").strip().lower()
+        if env_val in ("1", "true", "yes"):
+            return self._ResolvabilityResult(enabled=True, source="env", app=None)
+
+        # Priority 3: persistent session backend auto-enable
+        stm_backend = (
+            getattr(self._short_term_memory, "backend", None)
+            if self._short_term_memory else None
+        )
+        if stm_backend and stm_backend != "local":
+            return self._ResolvabilityResult(
+                enabled=True, source="auto_persistent_session", app=None)
+
+        return self._ResolvabilityResult(enabled=False, source="default", app=None)
+
+    @staticmethod
+    def _get_adk_version() -> Optional[str]:
+        """返回当前安装的 google-adk 版本号，无法获取时返回 None。"""
+        try:
+            return _pkg_version("google-adk")
+        except PackageNotFoundError:
+            return None
+
+    def _check_adk_resume_compatibility(self) -> tuple[bool, str]:
+        """检查当前 google-adk 版本是否支持恢复 (invocation_id)。
+
+        Returns:
+            (compatible, reason) — compatible=True 表示版本足够；reason 为不兼容时的说明文本。
+        """
+        adk_ver = self._get_adk_version()
+        if adk_ver is None:
+            # 无法获取版本信息，保守地认为不兼容
+            return False, "google-adk version unknown, cannot guarantee invocation_id support"
+        try:
+            from packaging.version import Version
+            if Version(adk_ver) < Version(self._adk_resume_min_version):
+                return (
+                    False,
+                    f"google-adk {adk_ver} < {self._adk_resume_min_version}, "
+                    f"run_async() does not accept invocation_id",
+                )
+        except Exception:
+            # packaging 不可用时，保守地认为不兼容
+            return False, "cannot compare google-adk version, assuming incompatible"
+        return True, ""
+
+    def _build_runner(self) -> None:
+        """构造 ADK Runner，优先使用 App 对象以启用 ResumabilityConfig。"""
+        from google.adk.runners import Runner
+
+        resumable = self._resolve_resumability()
+
+        # 版本兼容性检查：低于最低版本时强制关闭恢复
+        resume_compatible, resume_reason = self._check_adk_resume_compatibility()
+        if not resume_compatible and resumable.enabled:
+            logger.warning(
+                "ADKRunner: resumability disabled — %s", resume_reason
+            )
+            resumable = self._ResolvabilityResult(enabled=False, source="version_check", app=None)
+            self._resume_disabled_reason = resume_reason
+
+        if resumable.app is not None:
+            runner_kwargs = dict(
+                app=resumable.app,
+                session_service=self._session_service,
+            )
+        elif resumable.enabled:
+            try:
+                from google.adk.apps import App, ResumabilityConfig
+                app = App(
+                    name=self._agent.name,
+                    root_agent=self._agent,
+                    resumability_config=ResumabilityConfig(is_resumable=True),
+                )
+                runner_kwargs = dict(
+                    app=app,
+                    session_service=self._session_service,
+                )
+            except ImportError:
+                logger.warning(
+                    "ADK ResumabilityConfig not available (requires google-adk >= 1.14.0); "
+                    "falling back to non-resumable Runner"
+                )
+                runner_kwargs = dict(
+                    agent=self._agent,
+                    session_service=self._session_service,
+                    app_name=self._agent.name,
+                )
+        else:
+            runner_kwargs = dict(
+                agent=self._agent,
+                session_service=self._session_service,
+                app_name=self._agent.name,
+            )
+
+        if self._long_term_memory:
+            runner_kwargs["memory_service"] = self._long_term_memory
+            logger.info("ADKRunner: LongTermMemory injected as memory_service")
+
+        self._runner = Runner(**runner_kwargs)
+        self._resumable = resumable.enabled
+
+        if resumable.enabled:
+            stm_backend = (
+                getattr(self._short_term_memory, "backend", None)
+                if self._short_term_memory else None
+            )
+            logger.info(
+                "ADKRunner: resumability enabled (source=%s, backend=%s)",
+                resumable.source,
+                stm_backend or "in_memory",
+            )
 
     def _init_long_term_memory(self):
         """从环境变量初始化长期记忆
@@ -391,7 +688,9 @@ class ADKRunner(BaseRunner):
         backend = (os.environ.get("KSADK_SANDBOX_BACKEND") or "").strip().lower()
         if backend and backend not in {"disabled", "none", "off"}:
             return "sandbox"
-        if os.environ.get("KSADK_SANDBOX_TEMPLATE_ID") or os.environ.get("KSADK_SKILL_RUNTIME_TEMPLATE_ID"):
+        if os.environ.get("KSADK_SANDBOX_TEMPLATE_ID") or os.environ.get(
+            "KSADK_SKILL_RUNTIME_TEMPLATE_ID"
+        ):
             return "sandbox"
         skills_dir = Path(
             os.environ.get("KSADK_LOCAL_SKILLS_DIR")
@@ -458,13 +757,18 @@ class ADKRunner(BaseRunner):
                 return
             added = self._append_tools_by_name(tools)
             if added:
-                logger.info("Injected ksadk built-in tools into agent (added: %s)", ", ".join(added))
+                logger.info(
+                    "Injected ksadk built-in tools into agent (added: %s)",
+                    ", ".join(added),
+                )
             else:
                 logger.debug("ksadk built-in tools already present")
         except Exception as exc:
             logger.warning("Failed to inject ksadk built-in tools: %s", exc)
 
-    def inject_deferred_tools_for_request(self, tool_names: list[str] | tuple[str, ...]) -> list[str]:
+    def inject_deferred_tools_for_request(
+        self, tool_names: list[str] | tuple[str, ...]
+    ) -> list[str]:
         """Append direct built-in tools selected by deferred tool search."""
         names = [str(name or "").strip() for name in tool_names or [] if str(name or "").strip()]
         if not names:
@@ -475,7 +779,10 @@ class ADKRunner(BaseRunner):
             tools = get_agentengine_tools(include=names, profile="coding", mode="direct")
             added = self._append_tools_by_name(tools)
             if added:
-                logger.info("Injected deferred ksadk tools for request (added: %s)", ", ".join(added))
+                logger.info(
+                    "Injected deferred ksadk tools for request (added: %s)",
+                    ", ".join(added),
+                )
             return added
         except Exception as exc:
             logger.warning("Failed to inject deferred ksadk tools for request: %s", exc)
@@ -540,6 +847,7 @@ class ADKRunner(BaseRunner):
         warnings.filterwarnings("ignore", category=UserWarning, module="pydantic.main")
 
         self._apply_json_patch()
+        self._apply_mcp_result_patch()
 
         # 添加项目目录到 Python 路径
         project_path = Path(self.project_dir).resolve()
@@ -559,6 +867,7 @@ class ADKRunner(BaseRunner):
 
         try:
             module = __import__(module_name, fromlist=[self.detection_result.agent_variable])
+            self._module = module
             self._agent = getattr(module, self.detection_result.agent_variable)
 
             # Inject safety instruction for DeepSeek/LLMs to prevent empty tool names
@@ -590,7 +899,6 @@ class ADKRunner(BaseRunner):
             self._inject_search_knowledge_tool()
 
         # 初始化 SessionService
-        from google.adk.runners import Runner
         from google.adk.sessions import InMemorySessionService
 
         if self._short_term_memory:
@@ -608,17 +916,8 @@ class ADKRunner(BaseRunner):
         self._inject_builtin_tools()
         self._inject_mcp_toolsets()
 
-        # 初始化 Runner (传入 memory_service)
-        runner_kwargs = dict(
-            agent=self._agent,
-            session_service=self._session_service,
-            app_name=self._agent.name,
-        )
-        if self._long_term_memory:
-            runner_kwargs["memory_service"] = self._long_term_memory
-            logger.info("ADKRunner: LongTermMemory injected as memory_service")
-
-        self._runner = Runner(**runner_kwargs)
+        # 初始化 Runner (使用 _build_runner 以支持 ResumabilityConfig)
+        self._build_runner()
         self._default_model_name = self.normalize_requested_model(
             os.getenv("OPENAI_MODEL_NAME") or os.getenv("MODEL_NAME")
         )
@@ -730,7 +1029,8 @@ class ADKRunner(BaseRunner):
             return
         if self._agent is not None:
             self._apply_model_to_agent_tree(self._agent, normalized)
-            self._active_model_name = self._discover_model_reference(self._agent) or target_reference
+            discovered = self._discover_model_reference(self._agent)
+            self._active_model_name = discovered or target_reference
             return
         self._active_model_name = target_reference
 
@@ -819,8 +1119,7 @@ class ADKRunner(BaseRunner):
         attachments: list[Dict[str, Any]],
         *,
         model_metadata: Dict[str, Any] | None = None,
-    ) -> "types.Content":
-        from google.genai import types
+    ) -> types.Content:
         parts = []
         if text:
             parts.append(types.Part(text=text))
@@ -829,7 +1128,10 @@ class ADKRunner(BaseRunner):
         for att in attachments:
             mime_type = att.get("mime_type", "application/octet-stream")
             display_name = att.get("display_name", "")
-            if classify_attachment_kind(str(mime_type), str(display_name)) == "image" and not image_input_supported:
+            if (
+                classify_attachment_kind(str(mime_type), str(display_name)) == "image"
+                and not image_input_supported
+            ):
                 skipped_images.append(str(display_name or "未命名图片"))
                 continue
 
@@ -840,7 +1142,8 @@ class ADKRunner(BaseRunner):
                 try:
                     data = base64.b64decode(str(inline_data).strip() + "===")
                 except Exception as e:
-                    logger.warning(f"Failed to decode inline attachment {att.get('display_name', 'uploaded_file')}: {e}")
+                    att_name = att.get("display_name", "uploaded_file")
+                    logger.warning(f"Failed to decode inline attachment {att_name}: {e}")
 
             if data is None:
                 file_uri = att.get("file_uri")
@@ -853,7 +1156,10 @@ class ADKRunner(BaseRunner):
                 file_uri = att.get("file_uri", "")
                 if file_uri.startswith("local:"):
                     logger.warning(
-                        "Ignoring direct local attachment reference %s; only resolved storage paths are allowed.",
+                        (
+                            "Ignoring direct local attachment reference %s; "
+                            "only resolved storage paths are allowed."
+                        ),
                         file_uri,
                     )
 
@@ -952,8 +1258,13 @@ class ADKRunner(BaseRunner):
 
         input_tokens = int(usage_metadata.get("prompt_token_count") or 0)
         output_tokens = int(usage_metadata.get("candidates_token_count") or 0)
-        total_tokens = int(usage_metadata.get("total_token_count") or (input_tokens + output_tokens))
-        if not (input_tokens or output_tokens or total_tokens or input_token_details or output_token_details):
+        total_tokens = int(
+            usage_metadata.get("total_token_count") or (input_tokens + output_tokens)
+        )
+        if not (
+            input_tokens or output_tokens or total_tokens
+            or input_token_details or output_token_details
+        ):
             return {}
         return {
             "input_tokens": input_tokens,
@@ -967,13 +1278,417 @@ class ADKRunner(BaseRunner):
     def _extract_event_usage(cls, event: Any) -> dict[str, Any]:
         return cls._normalize_usage_metadata(getattr(event, "usage_metadata", None))
 
+
+    # --- ADK invocation_id & checkpoint helpers ---
+
+    async def _get_max_checkpoint_seq_for_run(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+    ) -> int:
+        """扫描已有 run_checkpoint 事件，返回同一 run_id 下的最大 checkpoint_seq。
+
+        恢复模式下 checkpoint_seq 从已有最大值继续递增，避免从 0 重启导致
+        checkpoint_id 碰撞并被 append_run_checkpoint_event 的去重逻辑静默丢弃。
+        """
+        if not run_id:
+            return 0
+        try:
+            from ksadk.sessions import resolve_session_service
+
+            service = resolve_session_service()
+            events = await service.get_events(session_id)
+            max_seq = 0
+            for event in reversed(events):
+                if event.event_type != "run_checkpoint":
+                    continue
+                metadata = event.metadata or {}
+                if str(metadata.get("run_id") or "") != str(run_id):
+                    continue
+                if str(metadata.get("framework") or "") != "adk":
+                    continue
+                checkpoint_id = str(metadata.get("checkpoint_id") or "")
+                if checkpoint_id.startswith("adk-ckpt-"):
+                    try:
+                        seq = int(checkpoint_id.removeprefix("adk-ckpt-"))
+                        if seq > max_seq:
+                            max_seq = seq
+                    except ValueError:
+                        pass
+            return max_seq
+        except Exception as exc:
+            logger.warning(
+                "ADKRunner: failed to query max checkpoint_seq "
+                "for run_id=%s: %s",
+                run_id, exc,
+            )
+            return 0
+
+    async def _collect_adk_invocation_id(
+        self,
+        events_async,
+        *,
+        ksadk_invocation_id: str,
+        session_id: str,
+        checkpoint_run_id: str = "",
+    ):
+        """包装 event 迭代器，在首个 event 到达时采集 ADK invocation_id 并存储映射，
+        同时在可恢复边界写入 checkpoint 事件。
+
+        checkpoint_run_id 用于 checkpoint 的 run_id 字段，恢复模式下沿用原始 RunId
+        以保证同一长任务的 checkpoint 时间线连贯；ksadk_invocation_id 用于
+        invocation_id 映射和 event 级 invocation_id 字段。
+        """
+        effective_run_id = checkpoint_run_id or ksadk_invocation_id
+        first_event_captured = False
+        captured_adk_invocation_id = ""
+        # 从已有 checkpoint 的最大 seq 继续，避免恢复模式下 ID 碰撞被去重丢弃
+        checkpoint_seq = await self._get_max_checkpoint_seq_for_run(
+            session_id=session_id, run_id=effective_run_id,
+        )
+        async for event in events_async:
+            if not first_event_captured and hasattr(event, "invocation_id") and event.invocation_id:
+                first_event_captured = True
+                # P1.1: Use local variable instead of self._last_adk_invocation_id
+                # to avoid cross-session corruption under concurrent runner access.
+                captured_adk_invocation_id = event.invocation_id
+                await self._persist_invocation_mapping(
+                    session_id=session_id,
+                    ksadk_invocation_id=ksadk_invocation_id,
+                    adk_invocation_id=captured_adk_invocation_id,
+                )
+            # 每个 resumable boundary 都立即写 checkpoint，用递增 seq 保证
+            # 即使程序崩溃也有最新恢复点。
+            if self._resumable and first_event_captured and self._is_resumable_boundary(event):
+                checkpoint_seq += 1
+                await self._maybe_write_checkpoint(
+                    event=event,
+                    session_id=session_id,
+                    ksadk_invocation_id=ksadk_invocation_id,
+                    adk_invocation_id=captured_adk_invocation_id,
+                    checkpoint_seq=checkpoint_seq,
+                    checkpoint_run_id=effective_run_id,
+                )
+            yield event
+
+    async def _collect_adk_invocation_id_if_present(
+        self,
+        events_async,
+        *,
+        session_id: str,
+        ksadk_invocation_id: str,
+    ):
+        """轻量版 invocation_id 采集：仅捕获 ID 并持久化映射，不写 checkpoint。"""
+        first_event_captured = False
+        async for event in events_async:
+            if not first_event_captured and hasattr(event, "invocation_id") and event.invocation_id:
+                first_event_captured = True
+                # P1.1: Local variable — self._last_adk_invocation_id was removed
+                # to prevent cross-session corruption under concurrent runner access.
+                local_adk_invocation_id = event.invocation_id
+                if ksadk_invocation_id:
+                    await self._persist_invocation_mapping(
+                        session_id=session_id,
+                        ksadk_invocation_id=ksadk_invocation_id,
+                        adk_invocation_id=local_adk_invocation_id,
+                    )
+            yield event
+
+    async def _persist_invocation_mapping(
+        self,
+        *,
+        session_id: str,
+        ksadk_invocation_id: str,
+        adk_invocation_id: str,
+    ) -> None:
+        """将 ksadk invocation_id → ADK invocation_id 映射持久化到 session binding state。
+
+        存储位置：ksadk_states 表，scope = "runner_binding:adk"
+        state_json 内新增字段 invocation_map: { ksadk_inv_id: adk_inv_id, ... }
+        无需新增数据库表或字段，复用现有 state_json 的 JSON 存储。
+        """
+        try:
+            from ksadk.sessions import resolve_session_service
+            from ksadk.sessions.continuity import ConversationSessionCore
+
+            service = resolve_session_service()
+            core = ConversationSessionCore(service)
+            # P1.1 sub-issue: hold the lock across the entire read-modify-write
+            # so concurrent invocations on the same session can't lose mappings.
+            async with self._invocation_map_lock:
+                binding = await core.get_binding_by_session_id(session_id, "adk")
+                invocation_map = dict(binding.get("invocation_map") or {})
+                invocation_map[ksadk_invocation_id] = adk_invocation_id
+
+                await core.set_binding_by_session_id(
+                    session_id,
+                    "adk",
+                    {
+                        "external_session_id": str(session_id),
+                        "internal_session_id": str(session_id),
+                        "invocation_map": invocation_map,
+                    },
+                )
+        except Exception as exc:
+            logger.warning("Failed to persist ADK invocation mapping: %s", exc)
+
+    async def _resolve_adk_invocation_id(
+        self,
+        *,
+        session_id: str,
+        ksadk_invocation_id: str,
+    ) -> str | None:
+        """从 session binding state 读取 ADK invocation_id 映射。"""
+        try:
+            from ksadk.sessions import resolve_session_service
+            from ksadk.sessions.continuity import ConversationSessionCore
+
+            service = resolve_session_service()
+            core = ConversationSessionCore(service)
+            binding = await core.get_binding_by_session_id(session_id, "adk")
+            invocation_map = dict(binding.get("invocation_map") or {})
+            return invocation_map.get(ksadk_invocation_id)
+        except Exception:
+            return None
+
+
+    def _is_resumable_boundary(self, event: Any) -> bool:
+        """判断 ADK event 是否为可恢复边界。"""
+        # 工具调用请求
+        if hasattr(event, "get_function_calls") and event.get_function_calls():
+            return True
+        # 自定义 Agent 状态保存
+        if hasattr(event, "actions") and event.actions:
+            if getattr(event.actions, "agent_state", None) is not None:
+                return True
+            if getattr(event.actions, "end_of_agent", False):
+                return True
+        return False
+
+    async def _maybe_write_checkpoint(
+        self,
+        *,
+        event: Any,
+        session_id: str,
+        ksadk_invocation_id: str,
+        adk_invocation_id: str,
+        checkpoint_seq: int,
+        checkpoint_run_id: str = "",
+    ) -> None:
+        """Write a run_checkpoint event at a resumable boundary.
+
+        Each boundary gets its own incrementing checkpoint_id so the latest
+        checkpoint always reflects the latest state for crash recovery.
+        """
+        if not self._is_resumable_boundary(event):
+            return
+
+        from ksadk.conversations.runtime import append_run_checkpoint_event
+
+        metadata = self._extract_checkpoint_metadata(event)
+
+        effective_run_id = checkpoint_run_id or ksadk_invocation_id
+        await append_run_checkpoint_event(
+            session_id=session_id,
+            author=self._agent.name,
+            run_id=effective_run_id,
+            checkpoint_id=f"adk-ckpt-{checkpoint_seq}",
+            framework="adk",
+            framework_ref={
+                "adk": {
+                    "invocation_id": adk_invocation_id,
+                    "checkpoint_seq": checkpoint_seq,
+                    "event_id": getattr(event, "id", ""),
+                    "author": getattr(event, "author", ""),
+                }
+            },
+            phase=(
+                "tool_call"
+                if (hasattr(event, "get_function_calls") and event.get_function_calls())
+                else "agent_state"
+            ),
+            invocation_id=ksadk_invocation_id,
+            metadata=metadata,
+        )
+        logger.debug(
+            "ADKRunner: wrote checkpoint adk-ckpt-%d at boundary "
+            "(session=%s, invocation_id=%s)",
+            checkpoint_seq, session_id, adk_invocation_id,
+        )
+
+    def _extract_checkpoint_metadata(self, event: Any) -> dict[str, Any]:
+        """从 ADK event 中提取 checkpoint 元数据。"""
+        metadata: dict[str, Any] = {}
+
+        # 工具调用信息
+        if hasattr(event, "get_function_calls") and event.get_function_calls():
+            fcs = event.get_function_calls()
+            metadata["tool_names"] = [fc.name for fc in fcs if hasattr(fc, "name")]
+            metadata["tool_call_ids"] = [fc.id for fc in fcs if hasattr(fc, "id")]
+
+        # Agent 状态信息
+        if hasattr(event, "actions") and event.actions:
+            agent_state = getattr(event.actions, "agent_state", None)
+            if agent_state is not None:
+                if isinstance(agent_state, dict):
+                    metadata["agent_state_keys"] = list(agent_state.keys())
+                else:
+                    metadata["agent_state_keys"] = []
+            if getattr(event.actions, "end_of_agent", False):
+                metadata["is_terminal"] = True
+                metadata["end_of_agent"] = True
+
+        # 是否可恢复
+        metadata["is_resumable"] = self._resumable
+        metadata["resume_status"] = "resumable" if self._resumable else "disabled"
+        # P1.3: Include backend/scope/durable so consumers can distinguish
+        # in-memory (lost on pod restart) from durable checkpoints.
+        stm_backend = (
+            getattr(self._short_term_memory, "backend", None)
+            if self._short_term_memory else None
+        )
+        metadata["backend"] = stm_backend or "in_memory"
+        metadata["scope"] = "invocation"
+        metadata["durable"] = stm_backend is not None and stm_backend != "local"
+        # P1.4: ADK only supports invocation-level (forward-only) resume, not
+        # arbitrary checkpoint rollback like LangGraph time_travel. Consumers
+        # should treat only the latest checkpoint as independently resumable.
+        metadata["resume_mode"] = "invocation_id"
+        metadata["only_latest_resumable"] = True
+
+        return metadata
+
+    async def _resolve_resume_invocation_id(
+        self,
+        *,
+        input_data: Dict[str, Any],
+        session_id: str,
+        ksadk_invocation_id: str,
+    ) -> str:
+        """Resolve the ADK invocation_id needed for resume.
+
+        Looks up from framework_ref or session binding mapping.
+        Raises ValueError when the resume reference is missing (P1.2:
+        never silently downgrade to a new invocation).
+        """
+        adk_invocation_id = None
+        framework_ref = input_data.get("framework_ref") or {}
+        if isinstance(framework_ref, dict):
+            adk_ref = framework_ref.get("adk") or {}
+            if isinstance(adk_ref, dict):
+                adk_invocation_id = adk_ref.get("invocation_id")
+        # Fallback: resolve from session binding
+        if not adk_invocation_id and ksadk_invocation_id:
+            adk_invocation_id = await self._resolve_adk_invocation_id(
+                session_id=session_id,
+                ksadk_invocation_id=ksadk_invocation_id,
+            )
+        if not adk_invocation_id:
+            logger.error(
+                "Resume requested but ADK invocation_id not found for "
+                "session=%s ksadk_inv=%s",
+                session_id, ksadk_invocation_id,
+            )
+            raise ValueError(
+                f"checkpoint_not_resumable: ADK invocation_id not found for "
+                f"session={session_id}, ksadk_invocation_id={ksadk_invocation_id}. "
+                f"The checkpoint data may have been lost or the invocation was "
+                f"never persisted."
+            )
+        return adk_invocation_id
+
+    async def _prepare_run_events(
+        self,
+        *,
+        input_data: Dict[str, Any],
+        session_id: str,
+        user_input: str,
+        is_resume: bool,
+        run_config: Optional[Any] = None,
+    ) -> AsyncIterator[Any]:
+        """Prepare the wrapped event stream shared by invoke() and stream().
+
+        Handles new_message construction, resume invocation_id resolution,
+        run_async (with optional run_config for streaming), and event wrapping
+        for checkpoint writing. Returns the wrapped async iterator.
+        """
+        if not is_resume:
+            new_message = self._build_adk_content(
+                user_input,
+                input_data.get("attachments", []),
+                model_metadata=input_data.get("model_metadata"),
+            )
+        else:
+            new_message = None
+
+        ksadk_invocation_id = str(
+            input_data.get("invocation_id") or input_data.get("run_id") or ""
+        )
+
+        checkpoint_run_id = (
+            str(input_data.get("run_id") or "").strip()
+            if is_resume and str(input_data.get("run_id") or "").strip()
+            else ""
+        )
+
+        run_kwargs: Dict[str, Any] = {
+            "session_id": session_id,
+            "user_id": "ksadk_user",
+        }
+        if run_config is not None:
+            run_kwargs["run_config"] = run_config
+
+        if is_resume and self._resumable:
+            adk_invocation_id = await self._resolve_resume_invocation_id(
+                input_data=input_data,
+                session_id=session_id,
+                ksadk_invocation_id=ksadk_invocation_id,
+            )
+            logger.info("Resuming ADK run with adk_invocation_id: %s", adk_invocation_id)
+            run_kwargs["invocation_id"] = adk_invocation_id
+        else:
+            if is_resume:
+                logger.warning(
+                    "ADKRunner: checkpoint resume requested but resumability is "
+                    "disabled — starting a new invocation with placeholder message "
+                    "(session=%s, ksadk_inv=%s)",
+                    session_id, ksadk_invocation_id,
+                )
+            run_kwargs["new_message"] = (
+                new_message or self._build_adk_content("[empty message]", [])
+            )
+            run_kwargs["state_delta"] = self._build_state_delta(input_data) or None
+
+        events_async = self._runner.run_async(**run_kwargs)
+
+        if ksadk_invocation_id and self._resumable:
+            wrapped_async = self._collect_adk_invocation_id(
+                events_async,
+                ksadk_invocation_id=ksadk_invocation_id,
+                session_id=session_id,
+                checkpoint_run_id=checkpoint_run_id,
+            )
+        else:
+            wrapped_async = self._collect_adk_invocation_id_if_present(
+                events_async,
+                session_id=session_id,
+                ksadk_invocation_id=ksadk_invocation_id,
+            )
+        return wrapped_async
+
     async def invoke(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """调用 ADK Agent"""
-        from google.genai import types
 
-        user_input = input_data.get("input", "")
+        # 判断是否为恢复调用 — 提前判断以避免将 resume_input dict 当作 string 处理
+        is_resume = bool(input_data.get("checkpoint_resume"))
+        raw_input = input_data.get("input")
+        if is_resume and isinstance(raw_input, dict):
+            user_input = "[checkpoint resume]"
+        else:
+            user_input = str(raw_input or "")
         instructions = str(input_data.get("instructions") or "").strip()
-        if instructions:
+        if instructions and not is_resume:
             user_input = f"{instructions}\n\nCurrent user input:\n{user_input or '[empty message]'}"
 
         # 1. 准备 Metadata (提前以此获取 Agent Name)
@@ -983,7 +1698,12 @@ class ADKRunner(BaseRunner):
         with tracer.start_as_current_span(trace_name) as span:
             # Set input.value for Langfuse top-level input display
             span.set_attribute("input.value", user_input)
-            span.set_attribute("user.input", user_input[:200])
+            truncated_input = (
+                user_input[:200]
+                if isinstance(user_input, str)
+                else str(user_input)[:200]
+            )
+            span.set_attribute("user.input", truncated_input)
 
             # Use external session ID if provided
             req_session_id = input_data.get("session_id")
@@ -999,25 +1719,24 @@ class ADKRunner(BaseRunner):
             if tags:
                 span.set_attribute("langfuse.tags", ",".join(tags))
 
-            new_message = self._build_adk_content(
-                user_input,
-                input_data.get("attachments", []),
-                model_metadata=input_data.get("model_metadata"),
+            wrapped_async = await self._prepare_run_events(
+                input_data=input_data,
+                session_id=session_id,
+                user_input=user_input,
+                is_resume=is_resume,
             )
-            state_delta = self._build_state_delta(input_data)
 
             final_response = ""
 
             events_list = []
+            # P1.4: Track last_event to avoid UnboundLocalError when ADK returns
+            # zero events (e.g. resuming a completed invocation).
+            last_event = None
             usage: dict[str, Any] = {}
             last_usage: dict[str, Any] = {}
-            async for event in self._runner.run_async(
-                session_id=session_id,
-                user_id="ksadk_user",
-                new_message=new_message,
-                state_delta=state_delta or None,
-            ):
+            async for event in wrapped_async:
                 events_list.append(event)
+                last_event = event
                 event_usage = self._extract_event_usage(event)
                 if event_usage:
                     usage = accumulate_usage(usage, event_usage)
@@ -1028,7 +1747,25 @@ class ADKRunner(BaseRunner):
                             # 过滤掉思考内容 (thought=True)，只保留最终答案
                             is_thought = getattr(part, "thought", False)
                             if hasattr(part, "text") and part.text and not is_thought:
-                                final_response = part.text
+                                final_response += part.text
+
+            # Prefer the last event's text (usually the complete answer).
+            # When the loop aborts early (MCP error, phantom tool-call),
+            # final_response may hold only intermediate fragments.
+            last_event_text = ""
+            if last_event is not None and hasattr(last_event, "content") and last_event.content:
+                for part in (last_event.content.parts or []):
+                    is_thought = getattr(part, "thought", False)
+                    if hasattr(part, "text") and part.text and not is_thought:
+                        last_event_text += part.text
+            if last_event_text:
+                final_response = last_event_text
+
+            if not final_response and events_list:
+                logger.warning(
+                    "ADK invoke finished with events but no final text — "
+                    "likely mid-loop abort or tool-call error"
+                )
 
             # Set output.value for Langfuse top-level output display
             span.set_attribute("output.value", final_response[:5000] if final_response else "")
@@ -1046,11 +1783,16 @@ class ADKRunner(BaseRunner):
         使用 StreamingMode.SSE 启用真正的流式 token 输出
         """
         from google.adk.agents.run_config import RunConfig, StreamingMode
-        from google.genai import types
 
-        user_input = input_data.get("input", "")
+        # 判断是否为恢复调用 — 提前判断以避免将 resume_input dict 当作 string 处理
+        is_resume = bool(input_data.get("checkpoint_resume"))
+        raw_input = input_data.get("input")
+        if is_resume and isinstance(raw_input, dict):
+            user_input = "[checkpoint resume]"
+        else:
+            user_input = str(raw_input or "")
         instructions = str(input_data.get("instructions") or "").strip()
-        if instructions:
+        if instructions and not is_resume:
             user_input = f"{instructions}\n\nCurrent user input:\n{user_input or '[empty message]'}"
 
         # 1. 准备 Metadata (提前以此获取 Agent Name)
@@ -1060,7 +1802,12 @@ class ADKRunner(BaseRunner):
         with tracer.start_as_current_span(trace_name) as span:
             # Set input.value for Langfuse top-level input display
             span.set_attribute("input.value", user_input)
-            span.set_attribute("user.input", user_input[:200])
+            truncated_input = (
+                user_input[:200]
+                if isinstance(user_input, str)
+                else str(user_input)[:200]
+            )
+            span.set_attribute("user.input", truncated_input)
 
             # Use external session ID if provided
             req_session_id = input_data.get("session_id")
@@ -1075,27 +1822,20 @@ class ADKRunner(BaseRunner):
             if tags:
                 span.set_attribute("langfuse.tags", ",".join(tags))
 
-            new_message = self._build_adk_content(
-                user_input,
-                input_data.get("attachments", []),
-                model_metadata=input_data.get("model_metadata"),
+            run_config = RunConfig(streaming_mode=StreamingMode.SSE)
+            wrapped_async = await self._prepare_run_events(
+                input_data=input_data,
+                session_id=session_id,
+                user_input=user_input,
+                is_resume=is_resume,
+                run_config=run_config,
             )
-            state_delta = self._build_state_delta(input_data)
 
             accumulated_text = ""
             usage: dict[str, Any] = {}
             last_usage: dict[str, Any] = {}
 
-            # 使用 StreamingMode.SSE 启用真正的流式输出
-            run_config = RunConfig(streaming_mode=StreamingMode.SSE)
-
-            async for event in self._runner.run_async(
-                session_id=session_id,
-                user_id="ksadk_user",
-                new_message=new_message,
-                state_delta=state_delta or None,
-                run_config=run_config,
-            ):
+            async for event in wrapped_async:
                 event_usage = self._extract_event_usage(event)
                 if event_usage:
                     usage = accumulate_usage(usage, event_usage)
@@ -1113,15 +1853,69 @@ class ADKRunner(BaseRunner):
                                     "type": "thinking" if is_thought else "text",
                                 }
 
-                # 处理工具调用事件
+                # 处理工具调用事件 — ADK 通过 event.content.parts[].function_call
+                # 发出工具调用（即 event.get_function_calls()），而非
+                # event.actions.tool_calls。此处需同时检测两种路径：
+                # (a) get_function_calls() — ADK 标准 Event 模型
+                # (b) actions.tool_calls — 某些旧版或自定义 runner 可能使用
+                emitted_tool_call_ids: set[str] = set()
+                if hasattr(event, "get_function_calls") and event.get_function_calls():
+                    for fc in event.get_function_calls():
+                        fc_id = getattr(fc, "id", "") or getattr(fc, "name", "unknown")
+                        if fc_id in emitted_tool_call_ids:
+                            continue
+                        emitted_tool_call_ids.add(fc_id)
+                        # fc.args 可能是 dict 或 None；确保可序列化
+                        fc_args = getattr(fc, "args", None) or {}
+                        if not isinstance(fc_args, dict):
+                            try:
+                                import json as _json
+                                fc_args = _json.loads(fc_args) if isinstance(fc_args, str) else {}
+                            except Exception:
+                                fc_args = {}
+                        yield {
+                            "type": "tool_call",
+                            "tool_name": getattr(fc, "name", "unknown"),
+                            "tool_args": fc_args,
+                        }
                 if hasattr(event, "actions") and event.actions:
                     tool_calls = getattr(event.actions, "tool_calls", None)
                     if tool_calls:
                         for tool_call in tool_calls:
+                            tc_name = getattr(tool_call, "name", "unknown")
+                            tc_id = getattr(tool_call, "id", "") or tc_name
+                            if tc_id in emitted_tool_call_ids:
+                                continue
+                            emitted_tool_call_ids.add(tc_id)
                             yield {
                                 "type": "tool_call",
-                                "tool_name": getattr(tool_call, "name", "unknown"),
+                                "tool_name": tc_name,
                                 "tool_args": getattr(tool_call, "input", {}),
+                            }
+
+                # 处理工具返回结果 — ADK 通过 event.content.parts[].function_response
+                # 发出工具执行结果。当工具执行完毕后 ADK 会产生一个包含
+                # function_response 的事件，此处将其转为 tool_result 语义事件，
+                # 让前端可以感知"某个工具已完成执行"并展示结果。
+                if hasattr(event, "content") and event.content and hasattr(event.content, "parts"):
+                    for part in event.content.parts:
+                        fr = getattr(part, "function_response", None)
+                        if fr is not None:
+                            fr_name = getattr(fr, "name", "unknown")
+                            fr_output = getattr(fr, "response", None) or {}
+                            if not isinstance(fr_output, dict):
+                                try:
+                                    import json as _json2
+                                    if isinstance(fr_output, str):
+                                        fr_output = _json2.loads(fr_output)
+                                    else:
+                                        fr_output = {"raw": str(fr_output)}
+                                except Exception:
+                                    fr_output = {"raw": str(fr_output)}
+                            yield {
+                                "type": "tool_result",
+                                "tool_name": fr_name,
+                                "tool_output": fr_output,
                             }
 
             # Set output.value for Langfuse top-level output display
