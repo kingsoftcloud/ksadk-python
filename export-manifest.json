@@ -1,11 +1,10 @@
 {
-  "generatedAt": "2026-07-15T10:49:30.407984+00:00",
+  "generatedAt": "2026-07-15T15:04:58.326366+00:00",
   "targetRepository": "https://github.com/kingsoftcloud/ksadk-python",
   "documentation": "https://kingsoftcloud.github.io/ksadk-python/",
   "exportPathCount": 556,
-  "excludedPathCount": 208,
+  "excludedPathCount": 207,
   "excludedPaths": [
-    "docs/A2UI-agent驱动UI技术方案.md",
     "docs/Agent 开发者上下文接入指南.md",
     "docs/DeepAgents说明.md",
     "docs/adk-resume-integration-design.md",

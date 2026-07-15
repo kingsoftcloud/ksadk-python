@@ -261,6 +261,15 @@ class LangGraphRunner(BaseRunner):
         return {}
 
     @staticmethod
+    def _latest_checkpoint_config(config: dict[str, Any]) -> dict[str, Any]:
+        """Select the newest state in a resumed thread, not the source checkpoint."""
+        latest_config = dict(config)
+        configurable = dict(latest_config.get("configurable") or {})
+        configurable.pop("checkpoint_id", None)
+        latest_config["configurable"] = configurable
+        return latest_config
+
+    @staticmethod
     def _ambient_context_text(payload: Dict[str, Any]) -> str:
         sections: list[str] = []
         kb_context = payload.get("kb_context") or {}
@@ -668,14 +677,15 @@ class LangGraphRunner(BaseRunner):
             else:
                 yield {"type": "graph_update", "output": update}
 
-        state_usage = await self._latest_state_usage(config)
+        latest_config = self._latest_checkpoint_config(config)
+        state_usage = await self._latest_state_usage(latest_config)
         state_output = ""
         try:
             state = None
             if callable(getattr(self._agent, "aget_state", None)):
-                state = await self._agent.aget_state(config)
+                state = await self._agent.aget_state(latest_config)
             elif callable(getattr(self._agent, "get_state", None)):
-                state = self._agent.get_state(config)
+                state = self._agent.get_state(latest_config)
             values = getattr(state, "values", None)
             if values is not None:
                 state_output = self._extract_output(values)
@@ -689,7 +699,7 @@ class LangGraphRunner(BaseRunner):
             **({"resume_noop": True} if not emitted_update else {}),
         }
 
-        metadata = await self._latest_checkpoint_metadata(config)
+        metadata = await self._latest_checkpoint_metadata(latest_config)
         if metadata:
             yield {"type": "checkpoint", "metadata": metadata}
 
