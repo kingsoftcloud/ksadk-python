@@ -255,6 +255,12 @@ def test_public_release_approval_template_tracks_current_version():
     assert "make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.7.0" in approval_record
 
 
+def test_public_release_sync_compares_exported_file_contents():
+    workflow = _read("docs/public-release-workflow.md")
+
+    assert "rsync -a --checksum --delete --exclude .git" in workflow
+
+
 def test_source_repository_does_not_track_generated_ksadk_web_static():
     gitignore = _read(".gitignore")
     pyproject = _read("pyproject.toml")

@@ -101,7 +101,7 @@ python3 scripts/open_source_audit.py \
 ```bash
 git fetch github main
 git worktree add .worktrees/public-main github/main  # 首次需要
-rsync -a --delete --exclude .git \
+rsync -a --checksum --delete --exclude .git \
   /tmp/ksadk-python-export-candidate-<version>/ \
   .worktrees/public-main/
 ```
