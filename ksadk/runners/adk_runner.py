@@ -860,6 +860,42 @@ class ADKRunner(BaseRunner):
                 added_keys.append(key)
         return added_keys
 
+    def _invalid_agent_name_load_error(self, exc: Exception) -> ValueError | None:
+        """Convert ADK's import-time agent-name validation into an actionable error."""
+        errors = getattr(exc, "errors", None)
+        if not callable(errors):
+            return None
+        try:
+            details = errors()
+        except Exception:
+            return None
+        if not isinstance(details, list):
+            return None
+        for detail in details:
+            if not isinstance(detail, Mapping):
+                continue
+            location = detail.get("loc")
+            message = str(detail.get("msg") or "")
+            name = detail.get("input")
+            if location not in (("name",), ["name"]) or not isinstance(name, str):
+                continue
+            if "valid identifier" not in message.lower():
+                continue
+            safe_name = "".join(
+                char if char.isascii() and (char.isalnum() or char == "_") else "_"
+                for char in name
+            )
+            if not safe_name or safe_name[0].isdigit():
+                safe_name = f"agent_{safe_name}"
+            return ValueError(
+                "ADK Agent 名称不合法: "
+                f"{name!r}。Google ADK 要求 `Agent(name=...)` 以英文字母或下划线开头，"
+                "且仅包含英文字母、数字和下划线。"
+                f"请在 {self.detection_result.entry_point} 中创建 "
+                f"{self.detection_result.agent_variable} 时改为，例如 {safe_name!r}。"
+            )
+        return None
+
     def load_agent(self) -> None:
         """加载 ADK Agent"""
         import warnings
@@ -904,6 +940,11 @@ class ADKRunner(BaseRunner):
             raise AttributeError(
                 f"模块 {module_name} 中未找到 {self.detection_result.agent_variable}"
             )
+        except Exception as exc:
+            name_error = self._invalid_agent_name_load_error(exc)
+            if name_error is not None:
+                raise name_error from exc
+            raise
 
         # 验证是否为 ADK Agent
         if not hasattr(self._agent, "name"):
