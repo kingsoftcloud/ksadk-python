@@ -4,10 +4,13 @@ ksadk create - 创建项目模板
 
 import json
 import platform
+import re
 import shlex
-import click
-from pathlib import Path
 import shutil
+
+from pathlib import Path
+
+import click
 import questionary
 from ksadk.cli.cmd_config import custom_style
 from ksadk.cli.ui import (
@@ -56,6 +59,32 @@ def _quick_start_command_lines(
 def _print_quick_start_commands(project_name: str, commands: list[str]) -> None:
     for line in _quick_start_command_lines(project_name, commands):
         print_info(line)
+
+
+_RUNTIME_AGENT_NAME_MAX_LENGTH = 63
+
+
+def _normalize_runtime_package_name(project_name: str) -> str:
+    """Derive a portable package/runtime name from the project directory name."""
+    package_name = re.sub(r"[^A-Za-z0-9_]", "_", project_name.replace("-", "_"))
+    if not package_name:
+        package_name = "agent"
+    if not re.match(r"^[A-Za-z_]", package_name):
+        package_name = f"agent_{package_name}"
+    if len(package_name) > _RUNTIME_AGENT_NAME_MAX_LENGTH:
+        raise ValueError(
+            "生成的 Agent 名称 "
+            f"'{package_name}' 超过运行时 {_RUNTIME_AGENT_NAME_MAX_LENGTH} 字符限制"
+        )
+    return package_name
+
+
+def _runtime_package_name_or_exit(project_name: str) -> str:
+    try:
+        return _normalize_runtime_package_name(project_name)
+    except ValueError as exc:
+        print_error(str(exc))
+        raise SystemExit(1) from exc
 
 
 TEMPLATES = {
@@ -1062,10 +1091,8 @@ def _write_deepagents_service_adapter(
 
 def _wrap_agent_file(from_agent_path: Path, project_name: str, framework: str, agent_var: str):
     """包装单个 Agent 文件到新项目"""
-    import re
-    
     project_path = Path(project_name)
-    package_name = project_path.name.replace('-', '_')
+    package_name = _runtime_package_name_or_exit(project_path.name)
     
     if project_path.exists():
         print_error(f"目录 '{project_name}' 已存在")
@@ -1200,7 +1227,7 @@ def _wrap_agent_directory(from_agent_dir: Path, project_name: str, framework: st
     import shutil
     
     project_path = Path(project_name)
-    package_name = project_path.name.replace('-', '_')
+    package_name = _runtime_package_name_or_exit(project_path.name)
     source_dir_name = from_agent_dir.name
     
     if project_path.exists():
@@ -1967,7 +1994,7 @@ def create(project_name: str, framework: str, from_agent_path: str):
     print_kv("创建项目", project_name)
     print_kv("框架", framework)
     
-    package_name = project_path.name.replace('-', '_')
+    package_name = _runtime_package_name_or_exit(project_path.name)
     project_path.mkdir(parents=True)
     if framework not in {"openclaw", "hermes"}:
         (project_path / package_name).mkdir(parents=True)

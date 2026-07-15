@@ -457,6 +457,38 @@ def test_create_openclaw_only_generates_env_file(tmp_path: Path, monkeypatch):
     assert "LANGFUSE_" not in env_text
 
 
+def test_create_adk_normalizes_leading_digit_project_name(tmp_path: Path, monkeypatch):
+    runner = CliRunner()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("ksadk.configs.global_config.global_config_exists", lambda: False)
+    monkeypatch.setattr("ksadk.configs.global_config.get_env_from_global_config", lambda: {})
+
+    result = runner.invoke(cmd_create.create, ["0707agent-adk", "-f", "adk"])
+
+    assert result.exit_code == 0, result.output
+    project_dir = tmp_path / "0707agent-adk"
+    package_dir = project_dir / "agent_0707agent_adk"
+    assert package_dir.is_dir()
+    assert "name: agent_0707agent_adk" in (
+        project_dir / "agentengine.yaml"
+    ).read_text(encoding="utf-8-sig")
+    assert 'name="agent_0707agent_adk"' in (
+        package_dir / "agent.py"
+    ).read_text(encoding="utf-8-sig")
+
+
+def test_create_rejects_generated_runtime_name_over_63_characters(tmp_path: Path, monkeypatch):
+    runner = CliRunner()
+    project_name = "a" * 64
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cmd_create.create, [project_name, "-f", "hermes"])
+
+    assert result.exit_code == 1
+    assert "63" in result.output
+    assert not (tmp_path / project_name).exists()
+
+
 def test_create_hermes_generates_container_first_template(tmp_path: Path, monkeypatch):
     runner = CliRunner()
     monkeypatch.chdir(tmp_path)
