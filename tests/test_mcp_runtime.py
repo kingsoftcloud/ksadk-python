@@ -242,6 +242,30 @@ def test_adk_runner_load_agent_injects_mcp_toolsets_and_deduplicates(monkeypatch
     assert keys == ["https://example.com/mcp|weather"]
 
 
+def test_adk_runner_reports_invalid_agent_name_with_actionable_hint(monkeypatch, tmp_path):
+    from ksadk.runners.adk_runner import ADKRunner
+
+    detection = _write_adk_project(
+        tmp_path,
+        """
+        from google.adk.agents import Agent
+
+        root_agent = Agent(name="0707agent_adk")
+        """,
+    )
+    monkeypatch.setattr(ADKRunner, "_apply_json_patch", lambda self: None)
+    monkeypatch.setattr(ADKRunner, "_apply_mcp_result_patch", lambda self: None)
+
+    runner = ADKRunner(detection, str(tmp_path))
+    with pytest.raises(ValueError, match="ADK Agent 名称不合法") as exc_info:
+        runner.load_agent()
+
+    message = str(exc_info.value)
+    assert "0707agent_adk" in message
+    assert "agent_0707agent_adk" in message
+    assert detection.entry_point in message
+
+
 def test_adk_runner_registers_mcp_tool_descriptors_for_tool_search(monkeypatch, tmp_path):
     import google.adk.runners as adk_runners
 
