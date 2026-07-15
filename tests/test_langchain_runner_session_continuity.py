@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 from langchain_core.chat_history import InMemoryChatMessageHistory
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 from langchain_core.runnables import RunnableLambda
 from langchain_core.runnables.history import RunnableWithMessageHistory
 
@@ -41,6 +42,87 @@ class _UsageStreamingAgent:
     async def astream(self, payload, config=None):
         del payload, config
         yield _UsageMessage()
+
+
+class _CreateAgentStreamingAgent:
+    def __init__(self):
+        self.astream_calls = 0
+        self.astream_events_calls = 0
+        self.ainvoke_calls = 0
+
+    async def astream(self, payload, config=None):
+        del payload, config
+        self.astream_calls += 1
+        yield {"messages": [AIMessage(content="state snapshot should not be used")]}
+
+    async def astream_events(self, payload, *, version, config=None):
+        del payload, config
+        self.astream_events_calls += 1
+        assert version == "v2"
+        yield {
+            "event": "on_chat_model_stream",
+            "data": {
+                "chunk": AIMessageChunk(
+                    content="",
+                    additional_kwargs={"reasoning_content": "先分析"},
+                )
+            },
+        }
+        yield {
+            "event": "on_tool_start",
+            "name": "list_catalogs",
+            "run_id": "tool-run-1",
+            "data": {"input": {"account_id": "account-1"}},
+        }
+        yield {
+            "event": "on_tool_end",
+            "name": "list_catalogs",
+            "run_id": "tool-run-1",
+            "data": {
+                "input": {"account_id": "account-1"},
+                "output": {"catalogs": ["sales"]},
+            },
+        }
+        yield {
+            "event": "on_chat_model_stream",
+            "data": {"chunk": AIMessageChunk(content="查")},
+        }
+        yield {
+            "event": "on_chat_model_stream",
+            "data": {"chunk": AIMessageChunk(content="询")},
+        }
+        yield {
+            "event": "on_chain_end",
+            "data": {"output": {"messages": [AIMessage(content="查询")]}}
+        }
+
+    async def ainvoke(self, payload, config=None):
+        del payload, config
+        self.ainvoke_calls += 1
+        return {"messages": [AIMessage(content="fallback invoke")]}
+
+
+class _MessageStateStreamingAgent:
+    def __init__(self):
+        self.ainvoke_calls = 0
+
+    async def astream(self, payload, config=None):
+        del payload, config
+        yield {
+            "agent": {
+                "messages": [AIMessageChunk(content="查", id="message-1")]
+            }
+        }
+        yield {
+            "agent": {
+                "messages": [AIMessageChunk(content="查询", id="message-1")]
+            }
+        }
+
+    async def ainvoke(self, payload, config=None):
+        del payload, config
+        self.ainvoke_calls += 1
+        return {"messages": [AIMessage(content="fallback invoke")]}
 
 
 def _make_runner(agent, module=None) -> LangChainRunner:
@@ -291,7 +373,12 @@ async def test_langchain_runner_invoke_extracts_usage_from_message_metadata():
 async def test_langchain_runner_stream_emits_final_usage_from_last_chunk():
     runner = _make_runner(_UsageStreamingAgent())
 
-    chunks = [chunk async for chunk in runner.stream({"session_id": "sess-usage", "input": "hello"})]
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {"session_id": "sess-usage", "input": "hello"}
+        )
+    ]
 
     assert chunks == [
         {"delta": "ok", "type": "text"},
@@ -316,6 +403,69 @@ async def test_langchain_runner_stream_emits_final_usage_from_last_chunk():
             },
         },
     ]
+
+
+@pytest.mark.asyncio
+async def test_langchain_runner_streams_create_agent_messages_thinking_and_tools():
+    agent = _CreateAgentStreamingAgent()
+
+    def ksadk_prepare_input(payload: dict, _session_context: dict) -> dict:
+        return {"messages": [HumanMessage(content=payload["input"])]}
+
+    runner = _make_runner(
+        agent,
+        module=SimpleNamespace(ksadk_prepare_input=ksadk_prepare_input),
+    )
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {"session_id": "sess-create-agent", "input": "查询目录"}
+        )
+    ]
+
+    assert chunks == [
+        {"delta": "先分析", "type": "thinking"},
+        {
+            "type": "tool_call",
+            "tool_name": "list_catalogs",
+            "tool_args": {"account_id": "account-1"},
+            "run_id": "tool-run-1",
+        },
+        {
+            "type": "tool_result",
+            "tool_name": "list_catalogs",
+            "tool_args": {"account_id": "account-1"},
+            "tool_output": {"catalogs": ["sales"]},
+            "run_id": "tool-run-1",
+        },
+        {"delta": "查", "type": "text"},
+        {"delta": "询", "type": "text"},
+        {"output": "查询", "type": "final"},
+    ]
+    assert agent.astream_events_calls == 1
+    assert agent.astream_calls == 0
+    assert agent.ainvoke_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_langchain_runner_streams_nested_message_state_as_deltas_without_fallback():
+    agent = _MessageStateStreamingAgent()
+    runner = _make_runner(agent)
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {"session_id": "sess-message-state", "input": "查询目录"}
+        )
+    ]
+
+    assert chunks == [
+        {"delta": "查", "type": "text"},
+        {"delta": "询", "type": "text"},
+        {"output": "查询", "type": "final"},
+    ]
+    assert agent.ainvoke_calls == 0
 
 
 def test_langchain_runner_extracts_wrapped_history_runnable():

@@ -2472,7 +2472,7 @@ a2a = [
 adk = [
     { name = "google-adk" },
     { name = "json-repair" },
-    { name = "litellm" },
+    { name = "litellm", marker = "python_full_version < '3.13' or sys_platform != 'win32'" },
 ]
 all = [
     { name = "a2a-sdk", extra = ["http-server"] },
@@ -2487,7 +2487,7 @@ all = [
     { name = "langchain-core" },
     { name = "langchain-openai" },
     { name = "langgraph" },
-    { name = "litellm" },
+    { name = "litellm", marker = "python_full_version < '3.13' or sys_platform != 'win32'" },
     { name = "mypy" },
     { name = "openinference-instrumentation-langchain" },
     { name = "protobuf" },
@@ -2566,7 +2566,7 @@ requires-dist = [
     { name = "langgraph", specifier = ">=1.2.0,<1.3.0" },
     { name = "langgraph", marker = "extra == 'deepagents'", specifier = ">=1.2.0,<1.3.0" },
     { name = "langgraph", marker = "extra == 'langgraph'", specifier = ">=1.2.0,<1.3.0" },
-    { name = "litellm", marker = "extra == 'adk'", specifier = ">=1.0.0" },
+    { name = "litellm", marker = "(python_full_version < '3.13' and extra == 'adk') or (sys_platform != 'win32' and extra == 'adk')", specifier = ">=1.0.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.0.0" },
     { name = "openinference-instrumentation-langchain", marker = "extra == 'tracing'", specifier = ">=0.1.0" },
     { name = "opentelemetry-api", specifier = "==1.37.0" },

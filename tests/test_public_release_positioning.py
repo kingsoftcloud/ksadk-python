@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from pathlib import Path
 import re
 import subprocess
-import tomllib
+from pathlib import Path
 from urllib.parse import urlparse
 
+import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCS_ROOT_URL = "https://kingsoftcloud.github.io/ksadk-python/"
@@ -147,6 +147,16 @@ def test_public_metadata_uses_runtime_platform_positioning():
     assert "Agent Development Kit" not in init_text
 
 
+def test_adk_extra_avoids_litellm_source_build_on_windows_python_3_13():
+    pyproject = tomllib.loads(_read("pyproject.toml"))
+    adk_requirements = pyproject["project"]["optional-dependencies"]["adk"]
+
+    assert (
+        "litellm>=1.0.0; platform_system != 'Windows' or python_version < '3.13'"
+        in adk_requirements
+    )
+
+
 def test_changelog_marks_0_6_7_ready_for_authorized_release():
     changelog = _read("CHANGELOG.md")
 
@@ -178,7 +188,11 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "approved_source_commit:" in workflow
     assert "Reviewed source commit SHA recorded in docs/maintainer-approval-record.md" in workflow
     assert "KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.2.18' }}" in workflow
-    assert "KSADK_APPROVED_SOURCE_COMMIT: ${{ github.event.inputs.approved_source_commit || vars.KSADK_APPROVED_SOURCE_COMMIT }}" in workflow
+    assert (
+        "KSADK_APPROVED_SOURCE_COMMIT: "
+        "${{ github.event.inputs.approved_source_commit || "
+        "vars.KSADK_APPROVED_SOURCE_COMMIT }}" in workflow
+    )
     assert "make sync-ksadk-web-static" in workflow
     assert "make public-preflight" in workflow
     assert "make public-audit public-test public-build-alias-check" in workflow
@@ -194,7 +208,10 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert 'KSADK_WEB_VERSION: "0.2.18"' in ci_workflow
     assert "PUBLIC_KSADK_WEB_VERSION" not in ci_workflow
     assert "KSADK_WEB_VERSION ?= latest" in makefile
-    assert "PUBLIC_TEST_TARGETS ?= tests/test_public_release_positioning.py tests/test_config_env_registry.py" in makefile
+    assert (
+        "PUBLIC_TEST_TARGETS ?= tests/test_public_release_positioning.py "
+        "tests/test_config_env_registry.py" in makefile
+    )
     assert "public-sync-ksadk-web-static: sync-ksadk-web-static" in makefile
     assert "python3 scripts/open_source_audit.py --target public-repo" in makefile
     assert "open-source-audit-dist:" in makefile
@@ -204,7 +221,10 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert '--expected-current-commit "$${KSADK_APPROVED_SOURCE_COMMIT:-}"' not in makefile
     assert "KSADK_APPROVED_SOURCE_COMMIT is required" in makefile
     assert "public-build-check: clean-dist sync-ksadk-web-static" in makefile
-    assert "public-preflight: public-version-gate public-audit sync-ksadk-web-static public-test docs-site-build public-build-check" in makefile
+    assert (
+        "public-preflight: public-version-gate public-audit sync-ksadk-web-static "
+        "public-test docs-site-build public-build-check" in makefile
+    )
     assert "NEXT_PUBLIC_BASE_PATH=/ksadk-python pnpm build:static" in makefile
     assert "PYPI_API_TOKEN" not in workflow
     assert "password:" not in workflow
@@ -247,7 +267,11 @@ def test_source_repository_does_not_track_generated_ksadk_web_static():
             stdout=subprocess.PIPE,
         ).stdout
     else:
-        web_ui_files = "\n".join(str(path.relative_to(ROOT)) for path in (ROOT / "ksadk/server/web-ui").glob("**/*") if path.is_file())
+        web_ui_files = "\n".join(
+            str(path.relative_to(ROOT))
+            for path in (ROOT / "ksadk/server/web-ui").glob("**/*")
+            if path.is_file()
+        )
 
     assert "ksadk/server/static/**" in gitignore
     assert "ksadk/server/web-ui/" in gitignore
