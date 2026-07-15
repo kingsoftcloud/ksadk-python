@@ -41,7 +41,7 @@ class NetworkConfig(BaseModel):
     """网络配置"""
     access_type: str = "public"  # public | private
     enable_https: bool = True
-    enable_public_access: bool = False
+    enable_public_access: Optional[bool] = None
     enable_vpc_access: bool = False
     vpc_id: str = ""
     subnet_id: str = ""

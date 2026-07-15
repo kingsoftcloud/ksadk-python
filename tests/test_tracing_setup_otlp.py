@@ -260,6 +260,7 @@ def test_generic_otlp_langfuse_endpoint_adds_auth_from_langfuse_env(monkeypatch)
         "x-langfuse-ingestion-version": "4",
     }
     assert len(trace_api.provider.processors) == 1
+    assert trace_api.provider.processors[0].exporter._span_transform is setup._prepare_langfuse_spans
 
 
 def test_generic_otlp_langfuse_endpoint_keeps_existing_authorization(monkeypatch):
@@ -586,6 +587,103 @@ def test_cloud_monitor_exporter_rolls_leaf_token_usage_to_root(monkeypatch):
     assert transformed[2] is call_llm
     assert transformed[3] is generation
     assert "gen_ai.usage.input_tokens" not in root.attributes
+
+
+def test_langfuse_transform_strips_openinference_token_counts_when_ksadk_usage_exists(
+    monkeypatch,
+):
+    _install_fake_otel(monkeypatch)
+    setup = _reload_setup(monkeypatch)
+
+    class _SpanContext:
+        def __init__(self, trace_id, span_id):
+            self.trace_id = trace_id
+            self.span_id = span_id
+
+    class _Span:
+        def __init__(self, name, span_id, *, scope_name, attributes=None):
+            self.name = name
+            self.context = _SpanContext("trace-a", span_id)
+            self.parent = None
+            self.attributes = attributes or {}
+            self.instrumentation_scope = types.SimpleNamespace(name=scope_name)
+
+    def clone_span(span, attributes):
+        return _Span(
+            span.name,
+            span.context.span_id,
+            scope_name=span.instrumentation_scope.name,
+            attributes=attributes,
+        )
+
+    monkeypatch.setattr(setup, "_clone_span_with_attributes", clone_span)
+
+    root = _Span(
+        "0611agent",
+        1,
+        scope_name="ksadk.conversations",
+        attributes={
+            "gen_ai.usage.input_tokens": 2427,
+            "gen_ai.usage.output_tokens": 37,
+        },
+    )
+    child = _Span(
+        "ChatOpenAI",
+        2,
+        scope_name="openinference.instrumentation.langchain",
+        attributes={
+            "openinference.span.kind": "LLM",
+            "llm.token_count.prompt": 7860,
+            "llm.token_count.completion": 108,
+            "llm.token_count.total": 7968,
+            "llm.model_name": "deepseek-v4-pro",
+        },
+    )
+
+    transformed = setup._prepare_langfuse_spans([root, child])
+
+    assert transformed[0] is root
+    assert transformed[1] is not child
+    assert transformed[1].attributes == {
+        "openinference.span.kind": "CHAIN",
+        "llm.model_name": "deepseek-v4-pro",
+    }
+    assert child.attributes["llm.token_count.prompt"] == 7860
+
+
+def test_langfuse_transform_keeps_openinference_token_counts_without_ksadk_usage(
+    monkeypatch,
+):
+    _install_fake_otel(monkeypatch)
+    setup = _reload_setup(monkeypatch)
+
+    class _SpanContext:
+        def __init__(self, trace_id, span_id):
+            self.trace_id = trace_id
+            self.span_id = span_id
+
+    class _Span:
+        def __init__(self, name, span_id, *, scope_name, attributes=None):
+            self.name = name
+            self.context = _SpanContext("trace-a", span_id)
+            self.parent = None
+            self.attributes = attributes or {}
+            self.instrumentation_scope = types.SimpleNamespace(name=scope_name)
+
+    child = _Span(
+        "ChatOpenAI",
+        1,
+        scope_name="openinference.instrumentation.langchain",
+        attributes={
+            "openinference.span.kind": "LLM",
+            "llm.token_count.prompt": 7860,
+        },
+    )
+
+    transformed = setup._prepare_langfuse_spans([child])
+
+    assert transformed[0] is child
+    assert transformed[0].attributes["llm.token_count.prompt"] == 7860
 
 
 def test_langfuse_callback_only_skips_otlp_direct(monkeypatch):

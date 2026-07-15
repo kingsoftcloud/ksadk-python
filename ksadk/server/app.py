@@ -1064,6 +1064,16 @@ class ListSessionEventsActionRequest(BaseModel):
     BeforeSeqId: Optional[int] = Field(None, ge=1)
 
 
+class ListSessionMessagesActionRequest(BaseModel):
+    SessionId: str
+    AfterSeqId: Optional[int] = Field(None, ge=0)
+    BeforeSeqId: Optional[int] = Field(None, ge=1)
+    Limit: int = Field(50, ge=1, le=200)
+    IncludeReasoning: bool = False
+    IncludeToolEvents: bool = False
+    IncludeAttachments: bool = True
+
+
 class ListSessionCheckpointsActionRequest(BaseModel):
     AgentId: str
     SessionId: str
@@ -1596,6 +1606,82 @@ def _apply_checkpoint_resume_audit(
     return checkpoint
 
 
+def _apply_adk_only_latest_resumable(
+    checkpoints: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """P1.4: For ADK invocation_id resume mode, only the latest checkpoint per
+    RunId is independently resumable. Older checkpoints get IsResumable=False."""
+    latest_by_run: dict[str, int] = {}
+    for cp in checkpoints:
+        metadata = cp.get("Metadata") or {}
+        if not metadata.get("only_latest_resumable"):
+            continue
+        run_id = str(cp.get("RunId") or "")
+        seq_id = int(cp.get("SeqId") or 0)
+        if run_id not in latest_by_run or seq_id > latest_by_run[run_id]:
+            latest_by_run[run_id] = seq_id
+
+    for cp in checkpoints:
+        metadata = cp.get("Metadata") or {}
+        if not metadata.get("only_latest_resumable"):
+            continue
+        run_id = str(cp.get("RunId") or "")
+        seq_id = int(cp.get("SeqId") or 0)
+        if seq_id < latest_by_run.get(run_id, 0):
+            if cp.get("IsResumable") is True:
+                cp["IsResumable"] = False
+                cp["ResumeStatus"] = "disabled"
+                cp["ResumeDisabledReason"] = (
+                    "新的恢复点已生成，此恢复点暂停恢复能力"
+                )
+                metadata["resume_disabled_reason"] = (
+                    "新的恢复点已生成，此恢复点暂停恢复能力"
+                )
+                metadata["resume_status"] = "disabled"
+                cp["Metadata"] = metadata
+
+    return checkpoints
+
+
+def _check_adk_latest_resumable(
+    checkpoint: dict[str, Any],
+    events: list,
+) -> dict[str, Any]:
+    """P1.4: For a single ADK only_latest_resumable checkpoint, verify it is
+    the latest for its RunId. If not, mark IsResumable=False."""
+    metadata = checkpoint.get("Metadata") or {}
+    if not metadata.get("only_latest_resumable"):
+        return checkpoint
+
+    run_id = str(checkpoint.get("RunId") or "")
+    my_seq_id = int(checkpoint.get("SeqId") or 0)
+
+    max_seq_id = my_seq_id
+    for event in events:
+        if event.event_type != "run_checkpoint":
+            continue
+        ev_meta = event.metadata or {}
+        if str(ev_meta.get("run_id") or "") != run_id:
+            continue
+        seq_id = int(event.seq_id or 0)
+        if seq_id > max_seq_id:
+            max_seq_id = seq_id
+
+    if my_seq_id < max_seq_id and checkpoint.get("IsResumable") is True:
+        checkpoint["IsResumable"] = False
+        checkpoint["ResumeStatus"] = "disabled"
+        checkpoint["ResumeDisabledReason"] = (
+            "新的恢复点已生成，此恢复点暂停恢复能力"
+        )
+        metadata["resume_disabled_reason"] = (
+            "新的恢复点已生成，此恢复点暂停恢复能力"
+        )
+        metadata["resume_status"] = "disabled"
+        checkpoint["Metadata"] = metadata
+
+    return checkpoint
+
+
 _SIDE_EFFECT_TOOL_NAMES = {
     "write_workspace_file",
     "write_workspace_files",
@@ -1729,6 +1815,7 @@ async def _find_session_checkpoint(
             continue
         if checkpoint["CheckpointId"] != checkpoint_id:
             continue
+        checkpoint = _check_adk_latest_resumable(checkpoint, events)
         return checkpoint
     return None
 
@@ -1951,6 +2038,12 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
         if isinstance(runtime_capabilities, Mapping)
         else {},
     }
+    checkpoint_resume_supported = bool(checkpoint_resume_capability["Supported"])
+    cancel_run_supported = bool(
+        (runtime_capabilities.get("CancelRun") or {}).get("Supported")
+        if isinstance(runtime_capabilities, Mapping)
+        else False
+    )
     return _action_response(
         "GetAgentUiBootstrap",
         {
@@ -1966,17 +2059,17 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
                 "WorkspaceFiles": workspace_enabled,
                 "Approval": True,
                 "Thinking": True,
-                "StopRun": True,
-                "ResumeRun": True,
+                "StopRun": cancel_run_supported,
+                "ResumeRun": checkpoint_resume_supported,
                 "RuntimeCapabilities": runtime_capabilities,
                 "CheckpointResumeCapability": checkpoint_resume_capability,
                 "RunLifecycle": {
                     "Enabled": True,
                     "Resume": True,
                     "Abort": True,
-                    "Checkpoints": True,
-                    "CheckpointResume": True,
-                    "CheckpointResumePreview": True,
+                    "Checkpoints": checkpoint_resume_supported,
+                    "CheckpointResume": checkpoint_resume_supported,
+                    "CheckpointResumePreview": checkpoint_resume_supported,
                 },
                 "MCP": False,
                 "HostedRuntime": False,
@@ -2083,6 +2176,51 @@ async def list_session_events_action(request: ListSessionEventsActionRequest):
     )
 
 
+@app.post("/agentengine/api/v1/ListSessionMessages")
+async def list_session_messages_action(request: ListSessionMessagesActionRequest):
+    from ksadk.conversations.message_projection import project_session_messages
+
+    service = resolve_session_service()
+    events = await service.get_events(
+        request.SessionId,
+        offset=0,
+        limit=2000,
+        after_seq_id=request.AfterSeqId,
+        before_seq_id=request.BeforeSeqId,
+    )
+    serialized_events = [_event_to_action_payload(event) for event in events]
+    messages = project_session_messages(
+        serialized_events,
+        include_reasoning=request.IncludeReasoning,
+        include_tool_events=request.IncludeToolEvents,
+        include_attachments=request.IncludeAttachments,
+    )
+    if request.AfterSeqId is not None:
+        page = messages
+        has_more = False
+        next_cursor = None
+    else:
+        page = messages[-request.Limit :]
+        minimum_seq_id = int(page[0].get("SeqId") or 0) if page else 0
+        has_more = minimum_seq_id > 1 or len(serialized_events) >= 2000
+        next_cursor = minimum_seq_id - 1 if has_more else None
+    latest_seq_id = (
+        int(page[-1].get("SeqId") or 0)
+        if page
+        else max((int(event.get("SeqId") or 0) for event in serialized_events), default=0)
+    )
+    return _action_response(
+        "ListSessionMessages",
+        {
+            "SessionId": request.SessionId,
+            "Messages": page,
+            "LatestSeqId": latest_seq_id,
+            "HasMore": has_more,
+            "NextCursor": next_cursor,
+        },
+    )
+
+
 def _count_resumable_checkpoints(checkpoints: list[dict[str, Any]]) -> int:
     """统计可恢复 checkpoint 数量。
 
@@ -2127,6 +2265,7 @@ async def _list_checkpoints_payload(request: ListSessionCheckpointsActionRequest
             continue
         # ResumableTotal 在 OnlyResumable 过滤前统计全量可恢复数（RunId/Framework 范围内）
         checkpoints.append(checkpoint)
+    checkpoints = _apply_adk_only_latest_resumable(checkpoints)
     resumable_total = _count_resumable_checkpoints(checkpoints)
     if request.OnlyResumable:
         checkpoints = [cp for cp in checkpoints if cp.get("IsResumable") is True]
@@ -2201,6 +2340,8 @@ async def get_checkpoint_resume_preview_action(request: GetCheckpointResumePrevi
         break
     if checkpoint is None:
         raise HTTPException(status_code=404, detail="Checkpoint not found")
+
+    checkpoint = _check_adk_latest_resumable(checkpoint, events)
 
     return _action_response(
         "GetCheckpointResumePreview",
@@ -2367,7 +2508,8 @@ async def subscribe_run_events_action(
                     yield "data: [DONE]\n\n"
                     return
 
-            # 重连兜底：本轮无新事件时，查全量确认 run 是否已有 terminal（客户端断连期间 run 已结束）。
+            # 重连兜底：本轮无新事件时，查全量确认 run 是否已有 terminal
+            # （客户端断连期间 run 已结束）。
             # 正常流式期间不触发此查询，保持增量收益。
             if not matched_events:
                 all_events = await service.get_events(session_id)

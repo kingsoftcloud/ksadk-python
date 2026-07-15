@@ -1,12 +1,27 @@
 """
-KsADK TUI - Textual Terminal User Interface
+KsADK TUI - prompt_toolkit 全屏交互（对标 Codex CLI）
 
-提供简洁的交互体验:
-- 流式 Markdown 输出
-- 历史记录支持
-- 思考过程显示
+- 全屏 alternate screen，transcript 区（FormattedTextControl + ANSI 保留 rich 颜色）
+  + 底部输入框 + footer 状态栏
+- 滚动：PageUp/PgDn/↑↓（cursor 跟随视口顶 + 手动 vertical_scroll）
+- 流式：streaming 期动态区累积，turn 结束落定整条 rich 渲染（历史 ANSI 缓存）
+- 命令：/new /clear /session /model（模型热切 picker）? exit；Ctrl-C 取消流式/退出
 """
 
-from ksadk.tui.app import AgentTUI
+from ksadk.tui.loop import (
+    InteractionLoop,
+    InterruptPending,
+    RichLiveRenderer,
+    TranscriptEntry,
+    render_stream,
+    run_tui,
+)
 
-__all__ = ["AgentTUI"]
+__all__ = [
+    "InteractionLoop",
+    "InterruptPending",
+    "RichLiveRenderer",
+    "TranscriptEntry",
+    "render_stream",
+    "run_tui",
+]

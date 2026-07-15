@@ -534,6 +534,59 @@ def _set_conversation_output_attributes(span: Any | None, output_text: str | Non
         _set_span_attribute(span, key, text)
 
 
+def _set_conversation_usage_attributes(
+    span: Any | None,
+    usage: Mapping[str, Any] | None,
+) -> None:
+    normalized = _normalize_usage_payload(usage)
+    if not normalized:
+        return
+
+    def _usage_int(value: Any) -> int:
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    input_tokens = _usage_int(normalized.get("input_tokens"))
+    output_tokens = _usage_int(normalized.get("output_tokens"))
+    total_tokens = _usage_int(normalized.get("total_tokens") or (input_tokens + output_tokens))
+    input_details = normalized.get("input_token_details")
+    output_details = normalized.get("output_token_details")
+    cache_read_tokens = 0
+    reasoning_tokens = 0
+    if isinstance(input_details, Mapping):
+        cache_read_tokens = _usage_int(
+            input_details.get("cache_read")
+            or input_details.get("cached")
+            or input_details.get("cached_tokens")
+        )
+    if isinstance(output_details, Mapping):
+        reasoning_tokens = _usage_int(
+            output_details.get("reasoning")
+            or output_details.get("reasoning_tokens")
+        )
+
+    attributes = {
+        "gen_ai.usage.input_tokens": input_tokens,
+        "gen_ai.usage.output_tokens": output_tokens,
+        "gen_ai.usage.total_tokens": total_tokens,
+        "llm.usage.prompt_tokens": input_tokens,
+        "llm.usage.completion_tokens": output_tokens,
+        "llm.usage.total_tokens": total_tokens,
+    }
+    if cache_read_tokens:
+        attributes["gen_ai.usage.cache_read.input_tokens"] = cache_read_tokens
+        attributes["llm.usage.cache_read.input_tokens"] = cache_read_tokens
+    if reasoning_tokens:
+        attributes["gen_ai.usage.reasoning.output_tokens"] = reasoning_tokens
+        attributes["llm.usage.reasoning_tokens"] = reasoning_tokens
+
+    for key, value in attributes.items():
+        if value:
+            _set_span_attribute(span, key, value)
+
+
 def _set_conversation_span_attributes(
     span: Any,
     *,
@@ -3862,6 +3915,7 @@ async def invoke_conversation_once(
             (result.get("metadata") or {}).get("last_usage")
         ) or (result_usage if result_usage else {})
         _set_conversation_output_attributes(span, output_text)
+        _set_conversation_usage_attributes(span, result_usage)
         result_agentengine_metadata = _extract_agentengine_metadata(result)
         assistant_metadata: dict[str, Any] = {
             **trace_metadata,
@@ -4148,6 +4202,7 @@ async def _iter_conversation_turn_events(
         )
 
         accumulated_text = ""
+        accumulated_reasoning_parts: list[str] = []
         emitted_anything = False
         emitted_response_artifacts = False
         saw_final_chunk = False
@@ -4157,6 +4212,20 @@ async def _iter_conversation_turn_events(
         stream_usage: dict[str, Any] = {}
         stream_last_usage: dict[str, Any] = {}
         reasoning_disabled = _model_options_disable_reasoning(prepared.model_options)
+
+        async def _persist_accumulated_reasoning() -> None:
+            if not accumulated_reasoning_parts:
+                return
+            reasoning = "".join(accumulated_reasoning_parts)
+            accumulated_reasoning_parts.clear()
+            await append_reasoning_event(
+                session_id=prepared.session_id,
+                author=runner_name,
+                text=reasoning,
+                invocation_id=prepared.invocation_id,
+                session_service_provider=provider,
+            )
+
         for attempt in range(2):
             try:
                 runtime_context.history = list(prepared.history)
@@ -4237,12 +4306,8 @@ async def _iter_conversation_turn_events(
                                         responses_output
                                     ):
                                         if semantic_event.get("type") == "thinking":
-                                            await append_reasoning_event(
-                                                session_id=prepared.session_id,
-                                                author=runner_name,
-                                                text=str(semantic_event.get("delta") or ""),
-                                                invocation_id=prepared.invocation_id,
-                                                session_service_provider=provider,
+                                            accumulated_reasoning_parts.append(
+                                                str(semantic_event.get("delta") or "")
                                             )
                                         emitted_anything = True
                                         yield semantic_event
@@ -4252,13 +4317,7 @@ async def _iter_conversation_turn_events(
                                     continue
                                 delta = str(chunk.get("delta", ""))
                                 if delta:
-                                    await append_reasoning_event(
-                                        session_id=prepared.session_id,
-                                        author=runner_name,
-                                        text=delta,
-                                        invocation_id=prepared.invocation_id,
-                                        session_service_provider=provider,
-                                    )
+                                    accumulated_reasoning_parts.append(delta)
                                     emitted_anything = True
                                     emitted_response_artifacts = True
                                     yield {"type": "thinking", "delta": delta}
@@ -4295,6 +4354,7 @@ async def _iter_conversation_turn_events(
                                     session_service_provider=provider,
                                 )
                                 emitted_anything = True
+                                await _persist_accumulated_reasoning()
                                 yield {
                                     "type": "tool_call",
                                     "name": chunk.get("tool_name"),
@@ -4391,6 +4451,7 @@ async def _iter_conversation_turn_events(
                                         run_trigger=run_trigger,
                                     )
                                     emitted_anything = True
+                                    await _persist_accumulated_reasoning()
                                     yield {
                                         "type": "interrupt",
                                         "interrupt_info": approval_interrupt_info,
@@ -4448,6 +4509,7 @@ async def _iter_conversation_turn_events(
                                     governance, chunk.get("tool_output", "")
                                 )
                                 emitted_anything = True
+                                await _persist_accumulated_reasoning()
                                 yield {
                                     "type": "tool_result",
                                     "name": chunk.get("tool_name"),
@@ -4497,6 +4559,7 @@ async def _iter_conversation_turn_events(
                                     stream_last_usage = _normalize_usage_payload(chunk_last) or stream_usage
                 break
             except asyncio.CancelledError:
+                await _persist_accumulated_reasoning()
                 await append_run_status_event(
                     session_id=prepared.session_id,
                     author=runner_name,
@@ -4541,6 +4604,7 @@ async def _iter_conversation_turn_events(
                             run_mode=run_mode,
                             run_trigger=run_trigger,
                         )
+                        await _persist_accumulated_reasoning()
                         yield {"type": "error", "message": str(circuit_exc) or "Agent 运行失败"}
                         return
                     if checkpoint:
@@ -4594,6 +4658,7 @@ async def _iter_conversation_turn_events(
                     run_mode=run_mode,
                     run_trigger=run_trigger,
                 )
+                await _persist_accumulated_reasoning()
                 yield {"type": "error", "message": str(exc) or "Agent 运行失败"}
                 return
 
@@ -4628,6 +4693,7 @@ async def _iter_conversation_turn_events(
                 run_mode=run_mode,
                 run_trigger=run_trigger,
             )
+            await _persist_accumulated_reasoning()
             _finish_span()
             yield {
                 "type": "error",
@@ -4641,6 +4707,7 @@ async def _iter_conversation_turn_events(
             return
         _set_conversation_output_attributes(span, accumulated_text)
 
+        await _persist_accumulated_reasoning()
         await append_conversation_event(
             session_id=prepared.session_id,
             author=runner_name,
@@ -4674,6 +4741,7 @@ async def _iter_conversation_turn_events(
             run_mode=run_mode,
             run_trigger=run_trigger,
         )
+        _set_conversation_usage_attributes(span, assistant_metadata.get("usage"))
         _finish_span()
         yield {
             "type": "completed",

@@ -1413,6 +1413,25 @@ class AgentEngineClient:
             params["SessionId"] = session_id
         return self._action("GetAgentUiBootstrap", params)
 
+    async def list_agent_models(
+        self,
+        *,
+        agent_id: str | None = None,
+        name: str | None = None,
+    ) -> Dict[str, Any]:
+        """获取 Agent 可选模型列表（对标 hosted UI 的 ListAgentModels action）。
+
+        返回 {models: [...], current: "...", source: "..."}（_action 已递归转 snake_case）。
+        server 侧封装了 runtime catalog / provider /v1/models / fallback 三档，
+        CLI 不用直连 runtime /v1/models（对 openclaw/hermes 会因鉴权/endpoint 错而失败）。
+        """
+        params: Dict[str, Any] = {}
+        if agent_id:
+            params["AgentId"] = agent_id
+        if name:
+            params["Name"] = name
+        return self._action("ListAgentModels", params)
+
     async def create_dashboard_access_link(
         self,
         *,

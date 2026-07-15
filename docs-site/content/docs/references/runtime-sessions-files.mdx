@@ -40,6 +40,39 @@ KSADK_SESSION_DSN=postgresql://user:pass@example.invalid:5432/ksadk
 
 公开文档只使用占位 DSN，不提交真实连接串。
 
+PostgreSQL 是会话的持久化副本，不是 Agent 执行的可用性前置条件。连接或写入失败时，
+运行时继续使用当前进程内的 live session，并在进入降级态时记录结构化错误日志
+`session_backend_state=degraded`。运行时会定期探测 PostgreSQL；恢复后新会话和后续事件
+继续写入 PostgreSQL，并记录 `session_backend_state=recovered`。降级期间尚未持久化的旧事件
+不会自动补写，因此 Pod 重启或迁移后不保证恢复这些事件。PG 不可用期间，只能使用当前
+进程已经加载的历史；请求切换到其他 Pod 时可能缺少会话上下文，但 Agent 当前请求仍继续执行。
+
+### PostgreSQL 可读视图
+
+KsADK 初始化 PostgreSQL schema 时会同时创建 `ksadk_session_events_readable` 视图。
+原始的 `ksadk_events.content_json`、`metadata_json` 仍保留完整机器事件；可读视图把常用字段
+拍平成 `message_role`、`message_text`、`tool_name`、`lifecycle_status` 和 `created_at`，便于
+用户和 SRE 直接排查会话：
+
+```sql
+SELECT
+  session_id,
+  seq_id,
+  message_role,
+  event_type,
+  message_text,
+  tool_name,
+  lifecycle_status,
+  created_at
+FROM ksadk_session_events_readable
+WHERE namespace = 'default' AND session_id = '<session-id>'
+ORDER BY seq_id;
+```
+
+流式 reasoning 仍实时返回给客户端，但持久化时按一轮聚合成单条 `reasoning` 事件，避免
+每个 delta 产生一行。`run_status` 等生命周期事件不会伪装成聊天消息，可通过
+`lifecycle_status` 单独查看。
+
 ## 文件上传
 
 本地 UI 上传文件后，运行时会把文件引用归一化到当前 turn 的输入中。业务 Agent
