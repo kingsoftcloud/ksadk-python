@@ -13,7 +13,7 @@
 
 - **Google ADK 长任务支持 invocation 级断点恢复**：KsADK 记录 ADK invocation 映射和最新工具/Agent 状态恢复点，通过共享 PostgreSQL session backend 支持 Pod 重建后继续同一个 run；控制台可按 runtime capability、checkpoint preview 和恢复风险决定是否展示恢复入口。
 - **交互终端改为内容优先的 inline TUI**：`agentengine run` / `invoke` 的聊天界面不再占用 alternate screen，保留终端原生 scrollback；流式文本、工具调用和工具结果按实际到达顺序展示，并支持 `/tools` 折叠或展开工具详情。
-- **PostgreSQL 会话故障不阻断 Agent**：配置 PostgreSQL 时，连接或写入异常会进入进程内存降级态并记录结构化告警；后台探活恢复后，新会话和后续事件自动恢复写入 PostgreSQL。
+- **PostgreSQL 会话故障不阻断 Agent**：配置 PostgreSQL 时，驱动缺失、连接或写入异常会进入进程内存降级态并记录结构化告警；驱动补齐或后台探活恢复后，新会话和后续事件自动恢复写入 PostgreSQL。
 - **会话事件更易排查**：新增 `ksadk_session_events_readable` PostgreSQL 视图，将原始事件拍平为消息角色、文本、工具名称、生命周期状态和时间等字段。
 - **usage 与可观测数据更准确**：LangGraph 流式 usage 会去重、聚合并优先作为当前轮权威值；Langfuse trace 保留 KsADK 已计算的 usage，避免 exporter 二次推断覆盖正确结果。
 
@@ -48,6 +48,8 @@
 - 修复 DeepAgents 测试 fake model 对空内容 tool call 不产生 stream chunk 的兼容问题。
 - 修复 `langchain.agents.create_agent()` 返回 message-state 时，LangChain Runner 丢弃流式文本、思考过程和工具调用/结果并回退为同步执行的问题。
 - 修复 Windows Python 3.13 安装 ADK extra 时可能从源码构建 LiteLLM 并因缺少 MSVC linker 失败的问题；显式使用 `LiteLlm` 的用户可先安装官方二进制 wheel。
+- 修复 coding profile 未直接暴露 workspace 写文件工具，导致新建文件绕行 dispatcher；同时明确 read/edit 必须串行并让无效编辑参数优先返回准确诊断。
+- 修复本地 `agentengine web` 缺少 `ListSessionMessages` action，导致刷新或切换 session 后历史消息无法回显的问题；历史投影保留正文、思考、工具、审批和附件信息。
 
 ## [0.6.9] - 2026-07-07
 
