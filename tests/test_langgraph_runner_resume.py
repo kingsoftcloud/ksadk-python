@@ -406,6 +406,27 @@ class _CheckpointResumeUpdatesAgent(_DummyAgent):
         )
 
 
+class _CheckpointResumeLatestStateAgent(_CheckpointResumeUpdatesAgent):
+    def __init__(self):
+        super().__init__()
+        self.state_configs = []
+
+    async def aget_state(self, config):
+        self.state_configs.append(config)
+        checkpoint_id = (config.get("configurable") or {}).get("checkpoint_id")
+        if checkpoint_id:
+            return SimpleNamespace(values={"answer": "a,b"})
+        return SimpleNamespace(
+            values={"answer": "a,b,c"},
+            config={
+                "configurable": {
+                    "thread_id": "thread-1",
+                    "checkpoint_id": "checkpoint-after",
+                }
+            },
+            next=(),
+        )
+
 def _make_runner(module=None) -> LangGraphRunner:
     detection = SimpleNamespace(entry_point="src/agent.py", agent_variable="root_agent")
     runner = LangGraphRunner(detection, ".")
@@ -496,6 +517,12 @@ def _make_inflated_end_usage_after_stream_usage_runner() -> LangGraphRunner:
 def _make_checkpoint_resume_updates_runner() -> LangGraphRunner:
     runner = _make_runner()
     runner._agent = _CheckpointResumeUpdatesAgent()
+    return runner
+
+
+def _make_checkpoint_resume_latest_state_runner() -> LangGraphRunner:
+    runner = _make_runner()
+    runner._agent = _CheckpointResumeLatestStateAgent()
     return runner
 
 
@@ -1029,6 +1056,36 @@ async def test_stream_checkpoint_resume_prefers_astream_updates_over_events():
     assert checkpoint["type"] == "checkpoint"
     assert checkpoint["metadata"]["agentengine"]["framework_ref"]["langgraph"]["checkpoint_id"] == "ckpt-after"
     assert checkpoint["metadata"]["agentengine"]["next_node"] == "report"
+
+
+@pytest.mark.asyncio
+async def test_stream_checkpoint_resume_reads_latest_state_after_continuation():
+    runner = _make_checkpoint_resume_latest_state_runner()
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "session_id": "sess-1",
+                "checkpoint_resume": True,
+                "framework_ref": {
+                    "langgraph": {
+                        "thread_id": "thread-1",
+                        "checkpoint_id": "checkpoint-before",
+                    }
+                },
+            }
+        )
+    ]
+
+    final = next(chunk for chunk in chunks if chunk["type"] == "final")
+    assert final["output"] == "a,b,c"
+    assert runner._agent.last_astream_config["configurable"]["checkpoint_id"] == "checkpoint-before"
+    assert runner._agent.state_configs
+    assert all(
+        "checkpoint_id" not in (config.get("configurable") or {})
+        for config in runner._agent.state_configs
+    )
 
 
 @pytest.mark.asyncio

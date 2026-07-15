@@ -81,7 +81,9 @@ class CancelThenResumeLangGraphRunner(E2ELangGraphRunner):
                 yield chunk
             return
 
-        result = await self.invoke(payload)
+        # Avoid re-entering this override through LangGraphRunner.invoke(), which
+        # normally implements invoke by consuming self.stream() for event-based graphs.
+        result = await self.invoke({**payload, "_ksadk_force_graph_invoke": True})
         metadata = result.get("metadata") if isinstance(result, dict) else None
         if isinstance(metadata, dict) and metadata.get("agentengine"):
             yield {"type": "checkpoint", "metadata": metadata}

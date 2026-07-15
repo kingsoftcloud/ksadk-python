@@ -9,7 +9,7 @@ import uuid
 from contextlib import suppress
 from types import SimpleNamespace
 from typing import Any
-from urllib.parse import quote, urlsplit, urlunsplit
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 from google.adk.events.event import Event as ADKEvent
 from google.adk.sessions import DatabaseSessionService
@@ -196,9 +196,9 @@ def _proxy_dsn(dsn: str, port: int) -> str:
     parsed = urlsplit(_asyncpg_dsn(dsn))
     userinfo = ""
     if parsed.username is not None:
-        userinfo = quote(parsed.username, safe="")
+        userinfo = quote(unquote(parsed.username), safe="")
         if parsed.password is not None:
-            userinfo += f":{quote(parsed.password, safe='')}"
+            userinfo += f":{quote(unquote(parsed.password), safe='')}"
         userinfo += "@"
     return urlunsplit(
         (

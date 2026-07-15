@@ -43,6 +43,7 @@
 - 修复 inline TUI 中工具调用完成后被统一移动到回复末尾、历史重绘影响原生滚动、浅色终端输入区域不清晰等问题。
 - 修复 Remote Runner 的 chat stream 将文本 delta 放在顶层时无法解析，导致远程回复内容缺失的问题。
 - 修复 LangGraph 流式 usage chunk 重复、缺少 run id 或与最终事件并存时可能重复累计或丢失的问题。
+- 修复 LangGraph checkpoint 恢复完成后仍读取源 checkpoint 快照，导致最终输出和后续 checkpoint 元数据停留在恢复前状态的问题。
 - 修复 Langfuse exporter 覆盖 KsADK 权威 usage，导致 trace 中 token 数据与运行时不一致的问题。
 - 修复 PostgreSQL 恢复后，降级期间创建的 session 无法继续写入 PG 的问题。
 - 修复 ADK session 在健康 PostgreSQL 下不刷新其他副本新增事件的问题。

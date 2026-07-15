@@ -12,6 +12,15 @@ MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
 
+def test_proxy_dsn_preserves_percent_encoded_credentials():
+    proxied = MODULE._proxy_dsn(
+        "postgresql://user:pass%3Aword%40example@postgres.example:5432/ksadk",
+        15432,
+    )
+
+    assert proxied == "postgresql://user:pass%3Aword%40example@127.0.0.1:15432/ksadk"
+
+
 @pytest.mark.asyncio
 async def test_failopen_framework_matrix_runs_without_postgres():
     report = await MODULE.run_validation(
