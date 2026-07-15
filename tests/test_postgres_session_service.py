@@ -104,6 +104,27 @@ async def test_configured_postgres_backend_fails_open_to_memory(monkeypatch, cap
     assert "session persistence degraded" in caplog.text
 
 
+async def test_configured_postgres_backend_fails_open_when_asyncpg_is_missing(
+    monkeypatch,
+    caplog,
+):
+    monkeypatch.setitem(sys.modules, "asyncpg", None)
+    monkeypatch.setenv("KSADK_SESSION_BACKEND", "postgres")
+    monkeypatch.setenv(
+        "KSADK_SESSION_DSN",
+        "postgresql://ksadk:secret@db.example.test:5432/session",
+    )
+
+    service = create_session_service()
+    session = await service.create_session("demo-agent", "user-1", session_id="sess-1")
+
+    assert session.id == "sess-1"
+    assert isinstance(service, ResilientSessionService)
+    assert service.degraded is True
+    assert "asyncpg is required" in caplog.text
+    assert "session persistence degraded" in caplog.text
+
+
 async def test_postgres_schema_creates_readable_session_event_view(monkeypatch):
     executed: list[str] = []
 

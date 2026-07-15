@@ -570,7 +570,7 @@ class PostgresSessionService(BaseSessionService):
             try:
                 import asyncpg
             except ImportError as exc:
-                raise RuntimeError(
+                raise SessionBackendUnavailable(
                     "asyncpg is required for KSADK_SESSION_BACKEND=postgres"
                 ) from exc
             try:

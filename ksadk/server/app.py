@@ -1064,6 +1064,16 @@ class ListSessionEventsActionRequest(BaseModel):
     BeforeSeqId: Optional[int] = Field(None, ge=1)
 
 
+class ListSessionMessagesActionRequest(BaseModel):
+    SessionId: str
+    AfterSeqId: Optional[int] = Field(None, ge=0)
+    BeforeSeqId: Optional[int] = Field(None, ge=1)
+    Limit: int = Field(50, ge=1, le=200)
+    IncludeReasoning: bool = False
+    IncludeToolEvents: bool = False
+    IncludeAttachments: bool = True
+
+
 class ListSessionCheckpointsActionRequest(BaseModel):
     AgentId: str
     SessionId: str
@@ -2162,6 +2172,51 @@ async def list_session_events_action(request: ListSessionEventsActionRequest):
             "Limit": request.Limit if request.Limit is not None else len(events),
             "AfterSeqId": request.AfterSeqId,
             "BeforeSeqId": request.BeforeSeqId,
+        },
+    )
+
+
+@app.post("/agentengine/api/v1/ListSessionMessages")
+async def list_session_messages_action(request: ListSessionMessagesActionRequest):
+    from ksadk.conversations.message_projection import project_session_messages
+
+    service = resolve_session_service()
+    events = await service.get_events(
+        request.SessionId,
+        offset=0,
+        limit=2000,
+        after_seq_id=request.AfterSeqId,
+        before_seq_id=request.BeforeSeqId,
+    )
+    serialized_events = [_event_to_action_payload(event) for event in events]
+    messages = project_session_messages(
+        serialized_events,
+        include_reasoning=request.IncludeReasoning,
+        include_tool_events=request.IncludeToolEvents,
+        include_attachments=request.IncludeAttachments,
+    )
+    if request.AfterSeqId is not None:
+        page = messages
+        has_more = False
+        next_cursor = None
+    else:
+        page = messages[-request.Limit :]
+        minimum_seq_id = int(page[0].get("SeqId") or 0) if page else 0
+        has_more = minimum_seq_id > 1 or len(serialized_events) >= 2000
+        next_cursor = minimum_seq_id - 1 if has_more else None
+    latest_seq_id = (
+        int(page[-1].get("SeqId") or 0)
+        if page
+        else max((int(event.get("SeqId") or 0) for event in serialized_events), default=0)
+    )
+    return _action_response(
+        "ListSessionMessages",
+        {
+            "SessionId": request.SessionId,
+            "Messages": page,
+            "LatestSeqId": latest_seq_id,
+            "HasMore": has_more,
+            "NextCursor": next_cursor,
         },
     )
 

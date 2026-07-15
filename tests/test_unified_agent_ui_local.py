@@ -930,6 +930,62 @@ async def test_session_kop_actions_crud_and_event_listing(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_local_list_session_messages_restores_chat_history(monkeypatch):
+    _, _, _, transport = _build_transport(monkeypatch)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        created = await client.post(
+            "/agentengine/api/v1/CreateSession",
+            json={"AgentId": "demo-agent", "UserId": "user"},
+        )
+        session_id = created.json()["Data"]["Session"]["SessionId"]
+        await client.post(
+            "/agentengine/api/v1/RunAgent",
+            json={
+                "AgentId": "demo-agent",
+                "Messages": [{"role": "user", "content": "hello"}],
+                "SessionId": session_id,
+                "ApiFormat": "responses",
+                "Stream": True,
+            },
+        )
+
+        restored = await client.post(
+            "/agentengine/api/v1/ListSessionMessages",
+            json={
+                "SessionId": session_id,
+                "IncludeReasoning": True,
+                "IncludeToolEvents": True,
+                "IncludeAttachments": True,
+            },
+        )
+
+    assert restored.status_code == 200
+    data = restored.json()["Data"]
+    assert [(message["Role"], message["Content"]["text"]) for message in data["Messages"]] == [
+        ("user", "hello"),
+        ("assistant", "hello world"),
+    ]
+    assistant = data["Messages"][1]
+    assert [item["text"] for item in assistant["Reasoning"]] == ["plan"]
+    assert assistant["ToolEvents"] == [
+        {
+            "SeqId": 3,
+            "Type": "tool_call",
+            "Name": "resume_lookup",
+            "Args": {"keyword": "jd"},
+            "Status": "completed",
+            "ToolCallId": None,
+            "Result": '{"score": 91}',
+            "ResultSeqId": 4,
+        }
+    ]
+    assert data["LatestSeqId"] > 0
+    assert data["HasMore"] is False
+    assert data["NextCursor"] is None
+
+
+@pytest.mark.asyncio
 async def test_responses_endpoint_streams_thinking_and_text_events(monkeypatch):
     _, runner, service, transport = _build_transport(monkeypatch)
 
