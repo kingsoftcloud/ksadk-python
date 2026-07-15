@@ -1,0 +1,206 @@
+---
+title: 云端部署到金山云
+description: 从本地项目、云账号配置到托管 Agent 验证的完整部署流程。
+---
+
+本指南面向已经能在本地运行的 KsADK 项目。先用 `agentengine run . -i` 或
+`agentengine web .` 验证 Agent，再部署到金山云托管运行时。
+
+<Callout type="info">
+  `launch` 适合首次部署：它会构建制品、上传或推送制品，并创建或更新 Agent。已有制品时，使用
+  `build` 加 `deploy` 可以把构建和发布拆开。
+</Callout>
+
+## 选择部署方式
+
+| 目标 | 适用场景 | 默认制品 |
+| --- | --- | --- |
+| `serverless` | 最快把标准 Agent 部署为托管服务 | `Code`，自动构建并上传到 KS3 |
+| `serverless --artifact-type Container` | 代码包体积较大，或依赖系统库 / 自定义镜像 | Container，需 Docker 和镜像仓库 |
+| `kce --artifact-type Container` | 已有 KCE 集群、命名空间和镜像仓库 | Container |
+
+默认目标是 `serverless`，默认制品类型是 `Code`。只有 Code 包超过平台限制、项目依赖必须在镜像中构建，或团队明确使用 KCE 时，才选择 Container。
+
+## 前置条件
+
+1. 安装与项目框架匹配的 KsADK extra，例如 LangGraph：
+
+   ```bash title="shell"
+   pip install "ksadk[langgraph]"
+   agentengine --version
+   ```
+
+2. 本地项目必须有可运行的 `agentengine.yaml`、入口文件和依赖清单。部署前先运行：
+
+   ```bash title="shell"
+   agentengine run . -i
+   ```
+
+3. 准备金山云 AK/SK，并确保该账号有 AgentEngine、KS3 和目标区域的资源权限。Container 部署还需要
+   可推送的镜像仓库权限；本机需要可用的 Docker。
+
+4. 不要把 AK/SK、模型 key 或镜像仓库密码提交到 Git。`.env`、`prod.env` 和 `.agentengine/` 应加入
+   `.gitignore`，仓库中只保留 `.env.example`。
+
+## 配置云账号与模型
+
+最简单的方式是运行交互式向导。它会分别询问模型配置、云账号信息、区域和可选的镜像仓库信息：
+
+```bash title="shell"
+agentengine config
+```
+
+也可以用非交互命令写入当前项目的未提交 `.env`：
+
+```bash title="shell"
+agentengine config set \
+  KSYUN_ACCESS_KEY=<your-access-key> \
+  KSYUN_SECRET_KEY=<your-secret-key> \
+  KSYUN_ACCOUNT_ID=<your-account-id> \
+  KSYUN_REGION=cn-beijing-6
+```
+
+`KSYUN_ACCOUNT_ID` 可省略，SDK 会在可用时根据 AK/SK 反查。模型 provider 配置可以继续保存在
+`.env`，也可在每次部署时通过单独的运行时 env 文件传入。
+
+创建 `prod.env`，只放需要注入到运行时 Pod 的变量，不要把云账号 AK/SK 放进去：
+
+```bash title="prod.env"
+OPENAI_API_KEY=<your-model-api-key>
+OPENAI_BASE_URL=https://api.example.com/v1
+OPENAI_MODEL_NAME=<your-model-name>
+```
+
+<Callout type="warning" title="凭证边界">
+  `--env-file` 的内容会进入托管运行时环境。云账号凭证用于本机调用部署 API，不应作为运行时
+  env 透传；模型 key 是否需要注入取决于你的 Agent 和模型 provider。
+</Callout>
+
+## 一次性部署到 Serverless
+
+先 dry run，确认项目名、区域、网络、制品类型和运行时 env：
+
+```bash title="shell"
+agentengine launch . \
+  --target serverless \
+  --region cn-beijing-6 \
+  --env-file ./prod.env \
+  --dry-run
+```
+
+确认计划后，删除 `--dry-run` 执行部署：
+
+```bash title="shell"
+agentengine launch . \
+  --target serverless \
+  --region cn-beijing-6 \
+  --env-file ./prod.env
+```
+
+这会构建 Code 制品、上传到 KS3，并创建或更新同名托管 Agent。需要重新打包当前源码时加
+`--no-cache`；需要显式命名时加 `--name my-agent`。
+
+## 分开构建与部署
+
+CI 或需要人工审核制品时，先构建，再部署已保存的制品引用：
+
+```bash title="shell"
+agentengine build . --mode code --push --region cn-beijing-6
+agentengine deploy . --target serverless --region cn-beijing-6 --env-file ./prod.env
+```
+
+`build` 会在项目 `.agentengine/` 中保存可复用的构建元数据。要忽略已有 Code 包并重新打包，使用
+`--repackage` 或 `--no-cache`。
+
+## Container 与 KCE
+
+Container 模式适用于需要 Docker 镜像的项目。先准备 `KCR_REGISTRY`、`KCR_USERNAME` 和
+`KCR_PASSWORD`；企业版 KCR 和第三方仓库必须同时设置用户名和密码。个人版 KCR 可以省略
+`KCR_USERNAME`，SDK 会使用 `KSYUN_ACCOUNT_ID` 作为用户名兜底。
+
+```bash title="shell"
+agentengine config set \
+  KCR_REGISTRY=<registry-host/namespace> \
+  KCR_USERNAME=<registry-username> \
+  KCR_PASSWORD=<registry-password>
+
+agentengine launch . \
+  --target serverless \
+  --artifact-type Container \
+  --registry <registry-host/namespace> \
+  --env-file ./prod.env
+```
+
+部署到 KCE 时使用相同的镜像仓库和 Container 制品，并按需指定命名空间：
+
+```bash title="shell"
+agentengine launch . \
+  --target kce \
+  --artifact-type Container \
+  --registry <registry-host/namespace> \
+  --namespace default \
+  --env-file ./prod.env
+```
+
+## 网络和持久化存储
+
+新建 Agent 默认开启公网访问。要仅通过 VPC 访问，必须一次性提供 VPC、子网和安全组：
+
+```bash title="shell"
+agentengine launch . \
+  --target serverless \
+  --disable-public-access \
+  --enable-vpc-access \
+  --vpc-id vpc-xxxx \
+  --subnet-id subnet-xxxx \
+  --security-group-id sg-xxxx \
+  --availability-zone cn-beijing-6a \
+  --env-file ./prod.env
+```
+
+Hermes 与 OpenClaw 默认挂载持久化目录。`adk`、`langchain`、`langgraph` 和 `deepagents`
+只有显式指定挂载路径时才会挂盘；需要跨重启保留工作区或文件时可以这样配置：
+
+```bash title="shell"
+agentengine launch . \
+  --target serverless \
+  --storage-size-gi 20 \
+  --storage-mount-path /home/node/.agentengine \
+  --env-file ./prod.env
+```
+
+存储容量范围为 `20` 到 `500` Gi。明确不需要 PVC 时使用 `--no-storage`。
+
+## 验证与访问
+
+部署完成后，先查看 Agent 列表和状态：
+
+```bash title="shell"
+agentengine agent list --region cn-beijing-6
+agentengine agent status <agent-name-or-id> --region cn-beijing-6
+```
+
+然后打开托管 Dashboard：
+
+```bash title="shell"
+agentengine dashboard open <agent-name-or-id>
+```
+
+部署命令输出的 Agent ID、名称和区域应记录在发布记录中。更新已有 Agent 时，未显式传入的公网访问
+设置会保留远端现有值；需要改变它时显式传入 `--enable-public-access` 或
+`--disable-public-access`。
+
+## 常见问题
+
+| 现象 | 处理方式 |
+| --- | --- |
+| 缺少或无效云凭证 | 检查当前项目 `.env` 或 shell 中的 `KSYUN_ACCESS_KEY`、`KSYUN_SECRET_KEY` 和区域；先执行 `agentengine config show`。 |
+| VPC 参数校验失败 | 同时传入 `--vpc-id`、`--subnet-id`、`--security-group-id`；可用区可选，不能替代这三个 ID。 |
+| Container 构建失败 | 确认 Docker 可运行，`--registry` 可访问，并按仓库类型配置 KCR 凭证。 |
+| Code 包过大 | 先移除不必要依赖；仍无法满足时改用 `--artifact-type Container`。 |
+| 托管运行时找不到模型配置 | 检查 `prod.env` 是否通过 `--env-file` 传入，并确认其中的变量名符合 Agent 使用的模型 provider。 |
+
+<Callout type="info">
+  每次首次部署、切换目标或修改网络设置时都先执行 `--dry-run`。它用于检查请求计划，不会创建或更新
+  云端 Agent。
+</Callout>

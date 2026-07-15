@@ -22,6 +22,7 @@
 - ADK Runner 接入 `ResumabilityConfig`、`invocation_id` 映射、递增 checkpoint、恢复审计和 runtime capability 描述；新增 `KSADK_ADK_RESUMABLE` 显式开关。
 - TUI 新增 `/tools` 命令、模型选择、输入排队、处理中耗时状态、终端背景自适应和 `/clear` 原生 scrollback 清理。
 - 新增 PostgreSQL 会话故障恢复 E2E 校验脚本，覆盖 LangGraph、LangChain、ADK、可读视图以及数据库中断后恢复写入。
+- 公开 Fumadocs 文档站新增中英文云端部署指南，覆盖云账号配置、`launch`、`build`/`deploy`、Code/Container、KCE、VPC、持久化存储、运行时 env 和部署验证；GitHub Pages 子路径下的静态搜索索引改为显式寻址。
 
 ### 变更
 

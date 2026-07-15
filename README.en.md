@@ -63,6 +63,7 @@ Most agent frameworks solve how to build agents. KsADK solves how to run, debug,
 - Architecture: <https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/getting-started/architecture/>
 - Ecosystem Positioning: <https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/getting-started/comparison/>
 - Observability: <https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/observability-tracing/>
+- Cloud Deployment: <https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/cloud-deployment/>
 - Samples: <https://github.com/kingsoftcloud/ksadk-samples>
 
 ## Related Projects

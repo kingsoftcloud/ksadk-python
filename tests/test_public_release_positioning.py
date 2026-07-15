@@ -15,6 +15,7 @@ ZH_DOC_URLS = {
     f"{DOCS_ROOT_URL}cn/docs/framework/getting-started/architecture/",
     f"{DOCS_ROOT_URL}cn/docs/framework/getting-started/comparison/",
     f"{DOCS_ROOT_URL}cn/docs/framework/guides/observability-tracing/",
+    f"{DOCS_ROOT_URL}cn/docs/framework/guides/cloud-deployment/",
 }
 EN_DOC_URLS = {
     f"{DOCS_ROOT_URL}en/docs/framework/getting-started/quickstart/",
@@ -22,6 +23,7 @@ EN_DOC_URLS = {
     f"{DOCS_ROOT_URL}en/docs/framework/getting-started/architecture/",
     f"{DOCS_ROOT_URL}en/docs/framework/getting-started/comparison/",
     f"{DOCS_ROOT_URL}en/docs/framework/guides/observability-tracing/",
+    f"{DOCS_ROOT_URL}en/docs/framework/guides/cloud-deployment/",
 }
 
 
@@ -115,6 +117,17 @@ def test_public_readme_docs_links_match_fumadocs_routes():
             assert candidate.exists() or index_candidate.exists(), url
 
 
+def test_docs_site_cloud_deployment_guides_and_static_search_are_publicly_reachable():
+    docs_root = ROOT / "docs-site"
+    search = _read("docs-site/components/search.tsx")
+
+    assert "from: assetPath('/api/search')" in search
+    assert "import { assetPath } from '@/lib/shared'" in search
+    assert (docs_root / "content/docs/framework/guides/cloud-deployment.mdx").exists()
+    assert (docs_root / "content/docs/framework/guides/cloud-deployment.en.mdx").exists()
+    assert '"guides/cloud-deployment"' in _read("docs-site/content/docs/framework/meta.json")
+
+
 def test_legacy_deploy_and_examples_are_not_tracked_in_source_repo():
     if not (ROOT / ".git").exists():
         return
@@ -184,10 +197,10 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "workflow_dispatch:" in workflow
     assert "publish_target:" in workflow
     assert "alias-only" in workflow
-    assert 'default: "0.2.18"' in workflow
+    assert 'default: "0.2.19"' in workflow
     assert "approved_source_commit:" in workflow
     assert "Reviewed source commit SHA recorded in docs/maintainer-approval-record.md" in workflow
-    assert "KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.2.18' }}" in workflow
+    assert "KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.2.19' }}" in workflow
     assert (
         "KSADK_APPROVED_SOURCE_COMMIT: "
         "${{ github.event.inputs.approved_source_commit || "
@@ -205,7 +218,7 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "make public-test" in ci_workflow
     assert "tests/test_conversation_runtime.py" not in ci_workflow
     assert "tests/test_server_session_app.py" not in ci_workflow
-    assert 'KSADK_WEB_VERSION: "0.2.18"' in ci_workflow
+    assert 'KSADK_WEB_VERSION: "0.2.19"' in ci_workflow
     assert "PUBLIC_KSADK_WEB_VERSION" not in ci_workflow
     assert "KSADK_WEB_VERSION ?= latest" in makefile
     assert (
