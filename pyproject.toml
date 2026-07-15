@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ksadk"
-version = "0.6.9"
+version = "0.7.0"
 description = "KsADK Agent Runtime Platform - unified runtime, debugging, deployment and observability for AI agents"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -35,8 +35,9 @@ dependencies = [
     "pydantic>=2.0.0,<3.0.0",
     "jsonschema>=4.0.0,<5.0.0",
     "questionary>=2.0.0",
-    # TUI 交互界面 (Textual 包含 Rich，无需单独安装)
-    "textual>=0.50.0",
+    # TUI 交互界面（prompt_toolkit 全屏布局 + rich 单次渲染依赖）
+    "prompt_toolkit>=3.0.0",
+    "rich>=13.0.0",
     # API 服务 (run/web 命令)
     "fastapi>=0.100.0,<1.0.0",
     "uvicorn>=0.23.0",
@@ -81,7 +82,7 @@ dependencies = [
 # Google ADK 支持
 adk = [
     "google-adk>=1.34.0,<2.0.0",
-    "litellm>=1.0.0",
+    "litellm>=1.0.0; platform_system != 'Windows' or python_version < '3.13'",
     "json_repair>=0.25.0",  # 用于修复大模型输出的非法 JSON
 ]
 # LangChain 支持

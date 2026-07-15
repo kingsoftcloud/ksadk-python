@@ -182,6 +182,16 @@ def estimate_text_tokens(text: str) -> int:
     return max(1, cjk_tokens + math.ceil(ascii_chars / 4))
 
 
+def get_context_window_tokens(model_metadata: Mapping[str, Any] | None = None) -> int:
+    limits = dict(DEFAULT_MODEL_LIMITS)
+    if isinstance(model_metadata, Mapping):
+        limits.update(dict(model_metadata.get("limits") or {}))
+        if model_metadata.get("context_window_tokens"):
+            limits["context_window_tokens"] = model_metadata["context_window_tokens"]
+
+    return _coerce_positive_int(limits.get("context_window_tokens")) or DEFAULT_CONTEXT_WINDOW_TOKENS
+
+
 def get_effective_context_window_tokens(model_metadata: Mapping[str, Any] | None = None) -> int:
     limits = dict(DEFAULT_MODEL_LIMITS)
     if isinstance(model_metadata, Mapping):
@@ -191,7 +201,7 @@ def get_effective_context_window_tokens(model_metadata: Mapping[str, Any] | None
         if model_metadata.get("max_output_tokens"):
             limits["max_output_tokens"] = model_metadata["max_output_tokens"]
 
-    context_window = _coerce_positive_int(limits.get("context_window_tokens")) or DEFAULT_CONTEXT_WINDOW_TOKENS
+    context_window = get_context_window_tokens(model_metadata)
     max_output_tokens = _coerce_positive_int(limits.get("max_output_tokens")) or DEFAULT_MAX_OUTPUT_TOKENS
     reserved_tokens = min(max_output_tokens, AUTOCOMPACT_SUMMARY_RESERVE_TOKENS)
     return max(1, context_window - reserved_tokens)

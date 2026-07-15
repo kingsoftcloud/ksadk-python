@@ -110,9 +110,66 @@ class LangChainRunner(BaseRunner):
 
         accumulated_text = ""
         last_chunk: Any = None
+        final_output_text = ""
+        emitted_non_text_event = False
+        message_snapshots: dict[str, str] = {}
 
         try:
-            if hasattr(self._agent, "astream"):
+            if self._should_stream_events(payload):
+                kwargs = self._build_optional_call_kwargs(
+                    self._agent.astream_events,
+                    config=config,
+                    context=native_context,
+                )
+                kwargs["version"] = "v2"
+                async for event in self._agent.astream_events(payload, **kwargs):
+                    if not isinstance(event, dict):
+                        continue
+                    event_kind = event.get("event", "")
+                    data = event.get("data") or {}
+
+                    if event_kind == "on_chat_model_stream":
+                        chunk = data.get("chunk") if isinstance(data, dict) else None
+                        if chunk is None:
+                            continue
+                        last_chunk = chunk
+                        delta, chunk_type = self._extract_chunk(chunk)
+                        if delta:
+                            if chunk_type == "text":
+                                accumulated_text += delta
+                            else:
+                                emitted_non_text_event = True
+                            yield {"delta": delta, "type": chunk_type}
+                    elif event_kind == "on_tool_start":
+                        emitted_non_text_event = True
+                        yield {
+                            "type": "tool_call",
+                            "tool_name": event.get("name", "unknown"),
+                            "tool_args": data.get("input", {}) if isinstance(data, dict) else {},
+                            "run_id": event.get("run_id"),
+                        }
+                    elif event_kind == "on_tool_end":
+                        emitted_non_text_event = True
+                        tool_output = data.get("output", "") if isinstance(data, dict) else ""
+                        yield {
+                            "type": "tool_result",
+                            "tool_name": event.get("name", "unknown"),
+                            "tool_args": data.get("input", {}) if isinstance(data, dict) else {},
+                            "tool_output": (
+                                tool_output
+                                if isinstance(tool_output, dict)
+                                else (str(tool_output) if tool_output else "")
+                            ),
+                            "run_id": event.get("run_id"),
+                        }
+                    elif event_kind == "on_chain_end":
+                        output = data.get("output") if isinstance(data, dict) else None
+                        extracted_output = self._extract_recognized_output(output)
+                        if extracted_output:
+                            final_output_text = extracted_output
+                        if self._extract_usage(output):
+                            last_chunk = output
+            elif hasattr(self._agent, "astream"):
                 kwargs = self._build_optional_call_kwargs(
                     self._agent.astream,
                     config=config,
@@ -120,7 +177,15 @@ class LangChainRunner(BaseRunner):
                 )
                 async for chunk in self._agent.astream(payload, **kwargs):
                     last_chunk = chunk
-                    delta, chunk_type = self._extract_chunk(chunk)
+                    message_state = self._extract_message_state(chunk)
+                    if message_state:
+                        content, message_key = message_state
+                        previous = message_snapshots.get(message_key, "")
+                        delta = self._snapshot_delta(content, previous)
+                        message_snapshots[message_key] = content
+                        chunk_type = "text"
+                    else:
+                        delta, chunk_type = self._extract_chunk(chunk)
                     if delta:
                         accumulated_text += delta
                         yield {"delta": delta, "type": chunk_type}
@@ -132,14 +197,32 @@ class LangChainRunner(BaseRunner):
                 )
                 for chunk in self._agent.stream(payload, **kwargs):
                     last_chunk = chunk
-                    delta, chunk_type = self._extract_chunk(chunk)
+                    message_state = self._extract_message_state(chunk)
+                    if message_state:
+                        content, message_key = message_state
+                        previous = message_snapshots.get(message_key, "")
+                        delta = self._snapshot_delta(content, previous)
+                        message_snapshots[message_key] = content
+                        chunk_type = "text"
+                    else:
+                        delta, chunk_type = self._extract_chunk(chunk)
                     if delta:
                         accumulated_text += delta
                         yield {"delta": delta, "type": chunk_type}
         except Exception as exc:
-            print(f"\n⚠️ 流式调用失败: {exc}，回退到同步模式")
+            logger.warning("LangChain stream failed: %s", exc)
 
         if not accumulated_text:
+            if final_output_text or emitted_non_text_event:
+                final_chunk = {"output": final_output_text, "type": "final"}
+                usage = self._extract_usage(last_chunk)
+                if usage:
+                    final_chunk["usage"] = usage
+                last_usage = self._extract_last_usage(last_chunk)
+                if last_usage:
+                    final_chunk.setdefault("metadata", {})["last_usage"] = last_usage
+                yield final_chunk
+                return
             result = await self.invoke(input_data)
             final_chunk = {"output": result.get("output", ""), "type": "final"}
             usage = self._extract_usage(result)
@@ -160,6 +243,12 @@ class LangChainRunner(BaseRunner):
             final_chunk.setdefault("metadata", {})["last_usage"] = last_usage
         yield final_chunk
 
+    def _should_stream_events(self, payload: dict[str, Any]) -> bool:
+        """Use LangGraph events for LangChain create_agent message-state agents."""
+        return isinstance(payload.get("messages"), list) and hasattr(
+            self._agent, "astream_events"
+        )
+
     def _resolve_request_path(self) -> str:
         module = getattr(self, "_module", None)
         if callable(getattr(module, "ksadk_prepare_input", None)):
@@ -168,7 +257,9 @@ class LangChainRunner(BaseRunner):
             return "runnable_with_message_history"
         return "replay"
 
-    def _prepare_with_standard_hook(self, input_data: Dict[str, Any], session_id: str) -> dict[str, Any]:
+    def _prepare_with_standard_hook(
+        self, input_data: Dict[str, Any], session_id: str
+    ) -> dict[str, Any]:
         module = getattr(self, "_module", None)
         prepare_input = getattr(module, "ksadk_prepare_input", None)
         if not callable(prepare_input):
@@ -195,7 +286,11 @@ class LangChainRunner(BaseRunner):
     @staticmethod
     def _ksadk_builtin_tool_context() -> dict[str, Any]:
         try:
-            from ksadk.toolsets import builtin_tool_descriptors_for_runtime, builtin_tools_mode, builtin_tools_profile
+            from ksadk.toolsets import (
+                builtin_tool_descriptors_for_runtime,
+                builtin_tools_mode,
+                builtin_tools_profile,
+            )
 
             mode = builtin_tools_mode(default="off")
             descriptors = builtin_tool_descriptors_for_runtime(mode=mode)
@@ -231,7 +326,11 @@ class LangChainRunner(BaseRunner):
     def _ambient_context_text(input_data: Dict[str, Any]) -> str:
         sections: list[str] = []
         kb_context = input_data.get("kb_context") or {}
-        kb_text = str(kb_context.get("formatted_text") or "").strip() if isinstance(kb_context, dict) else ""
+        kb_text = (
+            str(kb_context.get("formatted_text") or "").strip()
+            if isinstance(kb_context, dict)
+            else ""
+        )
         if kb_text:
             sections.append(f"Knowledge base context:\n{kb_text}")
 
@@ -517,6 +616,92 @@ class LangChainRunner(BaseRunner):
         if content is not None:
             return str(content)
         return str(result)
+
+    @classmethod
+    def _extract_recognized_output(cls, result: Any) -> str:
+        if isinstance(result, dict) and not any(
+            key in result for key in ("output", "text", "messages")
+        ):
+            return ""
+        if result is None:
+            return ""
+        return cls._extract_output(result)
+
+    @classmethod
+    def _extract_message_state(cls, chunk: Any) -> tuple[str, str] | None:
+        """Extract the newest AI message from LangGraph values/updates snapshots."""
+
+        def visit(value: Any, path: tuple[str, ...]) -> tuple[str, str] | None:
+            if not isinstance(value, dict):
+                return None
+
+            messages = value.get("messages")
+            if isinstance(messages, list):
+                for index in range(len(messages) - 1, -1, -1):
+                    message = messages[index]
+                    content = cls._ai_message_content(message)
+                    if content is None:
+                        continue
+                    message_id = (
+                        message.get("id")
+                        if isinstance(message, dict)
+                        else getattr(message, "id", None)
+                    )
+                    fallback_key = "/".join((*path, "messages", str(index)))
+                    return content, str(message_id or fallback_key)
+
+            for key, nested in value.items():
+                if key == "messages" or not isinstance(nested, dict):
+                    continue
+                result = visit(nested, (*path, str(key)))
+                if result:
+                    return result
+            return None
+
+        return visit(chunk, ())
+
+    @staticmethod
+    def _ai_message_content(message: Any) -> str | None:
+        if isinstance(message, dict):
+            role = str(message.get("role") or message.get("type") or "").lower()
+            if role not in {"ai", "assistant", "model", "aimessage", "aimessagechunk"}:
+                return None
+            content = message.get("content")
+        else:
+            role = str(getattr(message, "type", "") or "").lower()
+            class_name = type(message).__name__.lower()
+            if role not in {
+                "ai",
+                "assistant",
+                "model",
+                "aimessage",
+                "aimessagechunk",
+            } and not class_name.startswith("aimessage"):
+                return None
+            content = getattr(message, "content", None)
+
+        if isinstance(content, str):
+            return content
+        if not isinstance(content, list):
+            return None
+
+        parts: list[str] = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict):
+                text = part.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts)
+
+    @staticmethod
+    def _snapshot_delta(content: str, previous: str) -> str:
+        if content.startswith(previous):
+            return content[len(previous) :]
+        if previous.startswith(content):
+            return ""
+        return content
 
     def _extract_chunk(self, chunk: Any) -> tuple[Optional[str], Optional[str]]:
         if isinstance(chunk, dict):

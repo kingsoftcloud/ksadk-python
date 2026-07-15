@@ -1,7 +1,7 @@
 """
 RemoteRunner - 远程 Agent 运行时
 
-与 AgentTUI 配合使用，提供和本地 Runner 一致的接口
+与 InteractionLoop 配合使用，提供和本地 Runner 一致的接口
 """
 
 import json
@@ -43,6 +43,11 @@ class RemoteRunner(BaseRunner):
         self._agent = None  # 兼容 BaseRunner
         self._responses_tool_names: dict[str, str] = {}
         self._responses_tool_args: dict[str, str] = {}
+        self._responses_streamed_item_keys: set[str] = set()
+        self._responses_text_streamed = False
+        self._responses_reasoning_streamed = False
+        self._observed_model: str | None = None  # 流式回包里观察到的真实模型名
+        self.available_models: list[dict[str, Any]] | None = None  # ListAgentModels 拿到的可选模型列表
 
     @staticmethod
     def _normalize_api_format(api_format: Optional[str]) -> str:
@@ -362,6 +367,14 @@ class RemoteRunner(BaseRunner):
         """流式调用远程 Agent"""
         import httpx
 
+        # 工具 item/call_id 只在单次 response 内有效。RemoteRunner 会被 TUI 多轮复用，
+        # 若保留上一轮的追踪状态，runtime 复用 id 时 response.completed 会被误判为重放。
+        self._responses_tool_names.clear()
+        self._responses_tool_args.clear()
+        self._responses_streamed_item_keys.clear()
+        self._responses_text_streamed = False
+        self._responses_reasoning_streamed = False
+
         user_input = input_data.get("input", "")
         session_id = input_data.get("session_id") or self.session_id
 
@@ -406,7 +419,29 @@ class RemoteRunner(BaseRunner):
                         try:
                             data = json.loads(data_str)
 
+                            # 记录回包里的真实模型名：
+                            # chat completions 顶层 data.model；responses 格式在
+                            # data.response.model（response.completed 事件的 response 对象）。
+                            observed = data.get("model") if isinstance(data, Mapping) else None
+                            if not observed and isinstance(data, Mapping):
+                                resp = data.get("response")
+                                if isinstance(resp, Mapping):
+                                    observed = resp.get("model")
+                            if observed and not isinstance(observed, (list, dict)):
+                                self._observed_model = str(observed)
+
                             if self.api_format == "responses":
+                                async for item in self._iter_responses_stream_events(
+                                    data, event_name=event_name
+                                ):
+                                    yield item
+                                continue
+
+                            # 兜底：api_format 标成 chat 但 runtime 实发 responses 格式
+                            # 事件（event_name 或 data.type 以 response. 开头）→ 按 responses
+                            # 解析，否则 response.reasoning.delta 会被 chat 路径当顶层 text 显示。
+                            _ev = event_name or (str(data.get("type")) if isinstance(data, Mapping) else "")
+                            if _ev.startswith("response."):
                                 async for item in self._iter_responses_stream_events(
                                     data, event_name=event_name
                                 ):
@@ -417,7 +452,11 @@ class RemoteRunner(BaseRunner):
                             choices = data.get("choices", [])
                             usage = data.get("usage")
                             if isinstance(usage, Mapping):
-                                yield {"type": "final", "usage": dict(usage)}
+                                final_chunk = {"type": "final", "usage": dict(usage)}
+                                metadata = data.get("metadata")
+                                if isinstance(metadata, Mapping):
+                                    final_chunk["metadata"] = dict(metadata)
+                                yield final_chunk
                                 final_sent = True
                             if choices:
                                 delta = choices[0].get("delta", {})
@@ -429,6 +468,13 @@ class RemoteRunner(BaseRunner):
                                 if content:
                                     accumulated_text += content
                                     yield {"delta": content, "type": "text"}
+                            else:
+                                # 非标准简化流（runtime 直发顶层 delta，无 choices 包装）：
+                                # 兜底提取顶层 delta 作为正文，与 _extract_content 口径一致。
+                                top_delta = data.get("delta")
+                                if isinstance(top_delta, str) and top_delta:
+                                    accumulated_text += top_delta
+                                    yield {"delta": top_delta, "type": "text"}
 
                         except json.JSONDecodeError:
                             pass
@@ -485,10 +531,13 @@ class RemoteRunner(BaseRunner):
         self, key: str, item: Dict[str, Any], name: str, args: str
     ) -> None:
         if key:
+            self._responses_streamed_item_keys.add(key)
+        if key:
             self._responses_tool_names[key] = name
             self._responses_tool_args[key] = args
         call_id = str(item.get("call_id") or "")
         if call_id:
+            self._responses_streamed_item_keys.add(call_id)
             self._responses_tool_names[call_id] = name
             self._responses_tool_args[call_id] = args
 
@@ -526,6 +575,8 @@ class RemoteRunner(BaseRunner):
         data: Dict[str, Any],
         *,
         status: str,
+        replay_completed_text: bool = False,
+        replay_completed_reasoning: bool = False,
     ) -> AsyncIterator[Dict[str, Any]]:
         item = data.get("item") or data.get("output_item") or data
         if not isinstance(item, dict):
@@ -541,15 +592,20 @@ class RemoteRunner(BaseRunner):
                 else item.get("args", item.get("input"))
             )
             self._remember_responses_tool(key, item, name, args)
-            yield {"type": "tool_call", "tool_name": name, "tool_args": args, "status": status}
+            yield {"type": "tool_call", "tool_name": name, "tool_args": args, "status": status, "call_id": key}
             return
 
         if item_type == "function_call_output":
             name = self._responses_tool_name(key, item)
+            if key:
+                self._responses_streamed_item_keys.add(key)
+            call_id = str(item.get("call_id") or "")
+            if call_id:
+                self._responses_streamed_item_keys.add(call_id)
             output = self._stringify_responses_payload(
                 item.get("output") if "output" in item else item.get("result", item.get("content"))
             )
-            yield {"type": "tool_result", "tool_name": name, "tool_output": output}
+            yield {"type": "tool_result", "tool_name": name, "tool_output": output, "call_id": call_id or key}
             return
 
         if item_type == "mcp_approval_request":
@@ -576,13 +632,15 @@ class RemoteRunner(BaseRunner):
 
         if item_type in {"reasoning", "reasoning_summary", "reasoning_summary_text"}:
             text = self._responses_item_text(item)
-            if text:
+            if text and (status != "completed" or replay_completed_reasoning):
+                self._responses_reasoning_streamed = True
                 yield {"delta": text, "type": "thinking"}
             return
 
         if item_type == "message":
             text = self._responses_item_text(item)
-            if text and status != "completed":
+            if text and (status != "completed" or replay_completed_text):
+                self._responses_text_streamed = True
                 yield {"delta": text, "type": "text"}
             return
 
@@ -596,6 +654,7 @@ class RemoteRunner(BaseRunner):
         if event_name == "response.reasoning.delta":
             delta = data.get("delta")
             if delta:
+                self._responses_reasoning_streamed = True
                 yield {"delta": str(delta), "type": "thinking"}
             return
         if event_type in {
@@ -606,12 +665,16 @@ class RemoteRunner(BaseRunner):
         }:
             delta = data.get("delta") or data.get("text")
             if delta:
+                self._responses_reasoning_streamed = True
                 yield {"delta": str(delta), "type": "thinking"}
             return
-        if event_type == "response.output_text.delta":
-            delta = data.get("delta")
-            if delta:
-                yield {"delta": str(delta), "type": "text"}
+        if event_type in {"response.output_text.delta", "response.output_text.done"}:
+            text = data.get("delta") or data.get("text")
+            if text and (
+                event_type == "response.output_text.delta" or not self._responses_text_streamed
+            ):
+                self._responses_text_streamed = True
+                yield {"delta": str(text), "type": "text"}
             return
         if event_type == "response.output_item.added":
             async for item in self._iter_responses_output_item(data, status="running"):
@@ -621,13 +684,35 @@ class RemoteRunner(BaseRunner):
             async for item in self._iter_responses_output_item(data, status="completed"):
                 yield item
             return
+        # ksadk/runtime 特有 tool 事件（对标 hosted UI responses-stream.js:176-186）
+        if event_type in {"response.tool_call", "response.ksadk.stage_tool_call"}:
+            name = str(data.get("name") or data.get("tool_name") or "tool")
+            args = self._stringify_responses_payload(data.get("args") if "args" in data else data.get("arguments"))
+            cid = str(data.get("call_id") or data.get("item_id") or data.get("run_id") or "")
+            yield {"type": "tool_call", "tool_name": name, "tool_args": args, "status": "running", "call_id": cid}
+            return
+        if event_type in {
+            "response.tool_result",
+            "response.ksadk.tool_result",
+            "response.ksadk.stage_tool_result",
+        }:
+            name = str(data.get("name") or data.get("tool_name") or "tool")
+            output = self._stringify_responses_payload(data.get("output") if "output" in data else data.get("result"))
+            cid = str(data.get("call_id") or data.get("item_id") or data.get("run_id") or "")
+            yield {
+                "type": "tool_result",
+                "tool_name": name,
+                "tool_output": output,
+                "call_id": cid,
+            }
+            return
         if event_type == "response.function_call_arguments.delta":
             key = str(data.get("item_id") or data.get("call_id") or "")
             name = self._responses_tool_name(key, data)
             args = f"{self._responses_tool_args.get(key, '')}{str(data.get('delta') or '')}"
             if key:
                 self._responses_tool_args[key] = args
-            yield {"type": "tool_call", "tool_name": name, "tool_args": args, "status": "running"}
+            yield {"type": "tool_call", "tool_name": name, "tool_args": args, "status": "running", "call_id": key}
             return
         if event_type == "response.function_call_arguments.done":
             key = str(data.get("item_id") or data.get("call_id") or "")
@@ -637,12 +722,30 @@ class RemoteRunner(BaseRunner):
             )
             if key:
                 self._responses_tool_args[key] = args
-            yield {"type": "tool_call", "tool_name": name, "tool_args": args, "status": "running"}
+            yield {"type": "tool_call", "tool_name": name, "tool_args": args, "status": "running", "call_id": key}
             return
         if event_type == "response.completed":
             response = data.get("response") if isinstance(data.get("response"), dict) else data
             output = response.get("output") if isinstance(response, dict) else None
             if isinstance(output, list):
+                replayed_item_keys = set(self._responses_streamed_item_keys)
+                replay_completed_text = not self._responses_text_streamed
+                replay_completed_reasoning = not self._responses_reasoning_streamed
+                for item in output:
+                    if isinstance(item, dict):
+                        key = self._responses_item_key(item, {"item": item})
+                        call_id = str(item.get("call_id") or "")
+                        if (key and key in replayed_item_keys) or (
+                            call_id and call_id in replayed_item_keys
+                        ):
+                            continue
+                        async for projected in self._iter_responses_output_item(
+                            {"item": item},
+                            status="completed",
+                            replay_completed_text=replay_completed_text,
+                            replay_completed_reasoning=replay_completed_reasoning,
+                        ):
+                            yield projected
                 chunk = {
                     "type": "responses_output",
                     "output": output,
@@ -651,7 +754,32 @@ class RemoteRunner(BaseRunner):
                 usage = response.get("usage")
                 if isinstance(usage, Mapping):
                     chunk["usage"] = dict(usage)
+                metadata = response.get("metadata")
+                if isinstance(metadata, Mapping):
+                    chunk["metadata"] = dict(metadata)
                 yield chunk
+            return
+        # response.content_part.delta：glm 等模型把 reasoning 走这个事件，
+        # partType 含 "reasoning" → thinking（不显示），否则 text（对标 hosted UI）。
+        if event_type == "response.content_part.delta":
+            part = data.get("part") if isinstance(data.get("part"), dict) else {}
+            delta = data.get("delta")
+            part_type = str(part.get("type") or (delta.get("type") if isinstance(delta, dict) else "") or data.get("content_type") or "")
+            text = ""
+            if isinstance(delta, dict):
+                text = str(delta.get("text") or delta.get("content") or "")
+            elif isinstance(delta, str):
+                text = delta
+            if not text:
+                text = str(data.get("text") or "")
+            if not text:
+                return
+            if "reasoning" in part_type:
+                self._responses_reasoning_streamed = True
+                yield {"delta": text, "type": "thinking"}
+            else:
+                self._responses_text_streamed = True
+                yield {"delta": text, "type": "text"}
             return
         if event_type == "response.failed":
             yield {"type": "error", "message": self._responses_error_message(data)}
@@ -659,9 +787,6 @@ class RemoteRunner(BaseRunner):
         if event_type == "response.incomplete":
             yield {"type": "error", "message": "Agent 响应未完成"}
             return
-        if isinstance(data.get("delta"), str):
-            yield {"delta": str(data["delta"]), "type": "text"}
-            return
-        output_text = RemoteRunner._extract_responses_output_text(data)
-        if output_text and event_type != "response.completed":
-            yield {"delta": output_text, "type": "text"}
+        # 未知事件默认丢弃（对标 hosted UI responses-stream.js: 未知事件 return []）。
+        # 之前默认把 data.delta 当 text 显示，会导致 reasoning 走未识别事件时漏进正文。
+        # 正文已由 output_text.delta / content_part.delta 显式处理，未知事件不该当正文。

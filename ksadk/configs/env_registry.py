@@ -13,6 +13,7 @@ class EnvVarSpec:
 
 
 _ENV_VAR_REGISTRY_ITEMS: tuple[EnvVarSpec, ...] = (
+    EnvVarSpec("KSADK_ADK_RESUMABLE", "runners", "Enable ADK invocation resume support.", "false"),
     EnvVarSpec("KSADK_ADK_SESSION_BACKEND", "sessions", "ADK-native session backend selector."),
     EnvVarSpec("KSADK_ADK_SESSION_PATH", "sessions", "ADK-native SQLite session database path."),
     EnvVarSpec("KSADK_ADK_SESSION_URL", "sessions", "ADK-native database session URL.", sensitive=True),

@@ -134,30 +134,23 @@ def _create_postgres_backend(
     if not config.dsn:
         raise ValueError("KSADK_SESSION_DSN is required when KSADK_SESSION_BACKEND=postgres")
     from ksadk.sessions.postgres_service import PostgresSessionService
+    from ksadk.sessions.resilient import ResilientSessionService
 
-    return PostgresSessionService(
-        dsn=config.dsn,
-        namespace=config.namespace,
-        tenant_id=config.tenant_id,
-        workspace_id=config.workspace_id,
-        connect_timeout=_postgres_connect_timeout_seconds(),
+    return ResilientSessionService(
+        PostgresSessionService(
+            dsn=config.dsn,
+            namespace=config.namespace,
+            tenant_id=config.tenant_id,
+            workspace_id=config.workspace_id,
+            connect_timeout=_postgres_connect_timeout_seconds(),
+        )
     )
 
 
 def _postgres_connect_timeout_seconds() -> float:
-    raw = (
-        os.getenv("KSADK_SESSION_CONNECT_TIMEOUT")
-        or os.getenv("KSADK_SESSION_PG_CONNECT_TIMEOUT")
-        or ""
-    ).strip()
-    if not raw:
-        return 5.0
-    try:
-        value = float(raw)
-    except ValueError:
-        logger.warning("Invalid KSADK_SESSION_CONNECT_TIMEOUT=%r; using 5 seconds", raw)
-        return 5.0
-    return max(0.1, value)
+    from ksadk.sessions.resilience import session_backend_timeout_seconds
+
+    return session_backend_timeout_seconds()
 
 
 def _register_builtin_backends() -> None:
@@ -168,12 +161,15 @@ def _register_builtin_backends() -> None:
 
 def describe_session_backend(*, backend: str | None = None) -> dict[str, object]:
     config = resolve_session_backend_config(backend=backend)
-    return {
+    payload: dict[str, object] = {
         "Backend": config.backend,
         "Shared": config.backend == "postgres",
         "ProductionSafe": config.backend == "postgres",
         "ContinuityDefault": "semantic/replay" if config.backend == "postgres" else "local_only",
     }
+    if config.backend == "postgres":
+        payload.update({"FailureMode": "fail_open", "FallbackBackend": "memory"})
+    return payload
 
 
 def log_session_backend_diagnostics(*, backend: str | None = None) -> None:

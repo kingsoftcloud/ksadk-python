@@ -79,7 +79,9 @@ class ConversationSessionCore:
         )
         return dict(state.state)
 
-    async def get_runtime_state_by_session_id(self, session_id: str, runner_key: str) -> dict[str, Any]:
+    async def get_runtime_state_by_session_id(
+        self, session_id: str, runner_key: str
+    ) -> dict[str, Any]:
         session = await self._load_session(session_id)
         if session is None:
             return {}
@@ -271,7 +273,11 @@ class LangGraphSessionAdapter(RunnerSessionAdapter):
         else:
             path = "replay"
         return SessionContinuityStatus(
-            level=SessionContinuityLevel.RUNTIME if has_checkpointer else SessionContinuityLevel.SEMANTIC,
+            level=(
+                SessionContinuityLevel.RUNTIME
+                if has_checkpointer
+                else SessionContinuityLevel.SEMANTIC
+            ),
             path=path,
             runner=self.runner_key(runner),
         )
@@ -306,8 +312,26 @@ class ADKSessionAdapter(RunnerSessionAdapter):
                 "KSADK_SESSION_DSN",
             )
         )
+        is_resumable = bool(getattr(runner, "_resumable", False))
+        if is_resumable:
+            # P1.3: Level must degrade with backend — in-memory session state
+            # cannot survive pod restarts, so RUNTIME is misleading.
+            _stm = getattr(runner, "_short_term_memory", None)
+            stm_backend = getattr(_stm, "backend", None) if _stm is not None else None
+            is_durable = stm_backend is not None and stm_backend != "local"
+            level = (
+                SessionContinuityLevel.RUNTIME if is_durable
+                else SessionContinuityLevel.SEMANTIC
+            )
+            path = "adk_resume"
+        elif has_native_session:
+            level = SessionContinuityLevel.SEMANTIC
+            path = "native_session"
+        else:
+            level = SessionContinuityLevel.SEMANTIC
+            path = "replay"
         return SessionContinuityStatus(
-            level=SessionContinuityLevel.SEMANTIC,
-            path="native_session" if has_native_session else "replay",
+            level=level,
+            path=path,
             runner=self.runner_key(runner),
         )

@@ -670,8 +670,12 @@ async def _deploy_hermes(
         region=region,
         dry_run=dry_run,
     )
-    if network_payload:
-        payload["network"] = network_payload
+    # create 默认开公网（network_payload 未显式 enable_public_access 时补 True）；update 分支用原始 network_payload（None=保留现有配置）
+    create_network_payload = dict(network_payload) if network_payload is not None else {}
+    if "enable_public_access" not in create_network_payload:
+        create_network_payload["enable_public_access"] = True
+    if create_network_payload:
+        payload["network"] = create_network_payload
 
     print_title("Hermes 云端部署", f"region: {region}")
     print_kv("名称", agent_name)

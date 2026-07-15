@@ -109,9 +109,7 @@ class ShortTermMemory(BaseModel):
     def model_post_init(self, __context: Any) -> None:
         # 优先使用 db_url
         if self.db_url:
-            logger.info(
-                f"ShortTermMemory: using db_url (ignoring backend option)"
-            )
+            logger.info("ShortTermMemory: using db_url (ignoring backend option)")
             self._init_database_service(self.db_url)
             return
 
@@ -133,7 +131,8 @@ class ShortTermMemory(BaseModel):
             case "database":
                 if not self.db_url:
                     raise ValueError(
-                        "KSADK_SESSION_DSN is required when ADK session backend resolves to database/postgres"
+                        "KSADK_SESSION_DSN is required when ADK session backend "
+                        "resolves to database/postgres"
                     )
                 else:
                     self._init_database_service(self.db_url)
@@ -151,7 +150,20 @@ class ShortTermMemory(BaseModel):
         try:
             from google.adk.sessions import DatabaseSessionService
 
-            self._session_service = DatabaseSessionService(db_url=normalized_db_url)
+            from ksadk.memory.adk.resilient_session_service import ResilientADKSessionService
+            from ksadk.sessions.resilience import session_backend_timeout_seconds
+
+            service_kwargs = {}
+            if normalized_db_url.startswith(("postgresql://", "postgresql+asyncpg://")):
+                timeout = session_backend_timeout_seconds()
+                service_kwargs["connect_args"] = {
+                    "timeout": timeout,
+                    "command_timeout": timeout,
+                }
+
+            self._session_service = ResilientADKSessionService(
+                DatabaseSessionService(db_url=normalized_db_url, **service_kwargs)
+            )
             logger.info(
                 f"ShortTermMemory: using DatabaseSessionService "
                 f"({normalized_db_url[:30]}...)"
@@ -163,12 +175,14 @@ class ShortTermMemory(BaseModel):
                 "Falling back to InMemorySessionService."
             )
             self._session_service = InMemorySessionService()
+            self.backend = "local"
         except Exception as e:
             logger.error(
                 f"Failed to create DatabaseSessionService: {e}. "
                 f"Falling back to InMemorySessionService."
             )
             self._session_service = InMemorySessionService()
+            self.backend = "local"
 
     @property
     def session_service(self) -> BaseSessionService:
@@ -272,7 +286,8 @@ class ShortTermMemory(BaseModel):
         backend = explicit_backend
         if _session_backend_requires_database_url(backend) and not db_url:
             raise ValueError(
-                "KSADK_SESSION_DSN is required when ADK session backend resolves to database/postgres"
+                "KSADK_SESSION_DSN is required when ADK session backend "
+                "resolves to database/postgres"
             )
         if not backend:
             if db_url:

@@ -869,7 +869,12 @@ async def _deploy_mcp_async(
             res = await client.update_mcp(existing_mcp_id, request_data)
             mcp_id = existing_mcp_id
         else:
-            res = await client.create_mcp(request_data)
+            # create 默认开公网（network 未显式 enable_public_access 时补 True）；update 分支用原始 request_data（network 缺省=保留服务端现有配置）
+            create_network = dict(request_data.get("network") or {})
+            if "enable_public_access" not in create_network:
+                create_network["enable_public_access"] = True
+            create_request = {**request_data, "network": create_network}
+            res = await client.create_mcp(create_request)
             if not res:
                 raise remote_error("Server 返回空响应，请检查 MCP 名称是否冲突或服务端日志。")
             mcp_id = res.get("mcp_id")

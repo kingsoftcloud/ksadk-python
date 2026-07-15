@@ -80,6 +80,43 @@ Older local clients may use `session_id`:
 Use one style consistently. If both are present and disagree, the local runtime
 rejects the request.
 
+When PostgreSQL is configured, it is a durable session replica rather than an
+availability prerequisite for agent execution. If a connection or write fails,
+the runtime continues with its in-process live session and emits a structured
+error when it enters `session_backend_state=degraded`. The runtime periodically
+probes PostgreSQL; after recovery, new sessions and subsequent events are written
+to PostgreSQL again and `session_backend_state=recovered` is logged. Older events
+missed during the outage are not backfilled automatically and are not guaranteed
+to survive a pod restart or relocation. While PostgreSQL is unavailable, only
+history already loaded by the current process is available. A request routed to
+another pod may have reduced context, but the current agent request still runs.
+
+### Readable PostgreSQL View
+
+KsADK creates `ksadk_session_events_readable` alongside the raw PostgreSQL
+tables. The raw `content_json` and `metadata_json` values remain available, while
+the view exposes flattened `message_role`, `message_text`, `tool_name`,
+`lifecycle_status`, and `created_at` columns for operators:
+
+```sql
+SELECT
+  session_id,
+  seq_id,
+  message_role,
+  event_type,
+  message_text,
+  tool_name,
+  lifecycle_status,
+  created_at
+FROM ksadk_session_events_readable
+WHERE namespace = 'default' AND session_id = '<session-id>'
+ORDER BY seq_id;
+```
+
+Reasoning deltas are still streamed to clients in real time, but they are
+persisted as one aggregated `reasoning` event per turn. Lifecycle events remain
+separate and can be inspected through `lifecycle_status`.
+
 ### Account Boundary
 
 Hosted deployments pass `account_id` through the request chain. It is injected by

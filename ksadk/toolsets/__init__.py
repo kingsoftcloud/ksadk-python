@@ -53,6 +53,8 @@ _FOCUSED_TOOL_NAMES = (
     "workspace_status",
     "list_workspace_files",
     "read_workspace_file",
+    "write_workspace_file",
+    "write_workspace_files",
     "search_workspace_files",
     "edit_workspace_file",
     "multi_edit_workspace_file",
