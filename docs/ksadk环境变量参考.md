@@ -285,6 +285,8 @@
 | `MEM0_API_KEY` | OpenClaw memory backend | 条件必传 | 未设置 | 无 | 是 | 平台 Secret | 否 | 选择 `mem0` memory backend manifest 时需要。 |
 | `MEM0_USER_ID` | OpenClaw memory backend | 条件必传 | 未设置 | 无 | 否 | 平台 / 用户上下文 | 否 | 选择 `mem0` memory backend manifest 时需要。 |
 | `MEM0_BASE_URL` | OpenClaw memory backend | 条件必传 | 未设置 | 无 | 否 | 平台 | 否 | 选择 `mem0` memory backend manifest 时需要。 |
+| `KSADK_ADK_RESUMABLE` | ADK Runner resume | 否 | 未设置 | 无 | 否 | 开发者 / 平台 | 否 | 显式开启 ADK Runner 断点续跑能力。取值 `1`/`true`/`yes` 启用；其他值忽略。启用优先级：agent 模块 `resumability_config` > 本环境变量 > 持久化 session backend 自动启用。未启用时 resume 请求直接抛 `checkpoint_not_resumable` ValueError。 |
+| `GOOGLE_ADK_RESUME_MIN_VERSION` | ADK Runner resume | 否 | `1.16.0` | 无 | 否 | 开发者 | 否 | 要求 google-adk 最低版本。低于此版本时 resumability 自动降级，`_resume_disabled_reason` 记录原因。 |
 
 ## 9. 知识库
 
