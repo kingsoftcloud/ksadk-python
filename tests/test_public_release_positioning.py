@@ -139,8 +139,8 @@ def test_public_metadata_uses_runtime_platform_positioning():
     init_text = _read("ksadk/__init__.py")
     version_text = _read("ksadk/version.py")
 
-    assert pyproject["project"]["version"] == "0.6.9"
-    assert 'VERSION = "0.6.9"' in version_text
+    assert pyproject["project"]["version"] == "0.7.0"
+    assert 'VERSION = "0.7.0"' in version_text
     assert "Agent Runtime Platform" in pyproject["project"]["description"]
     assert "Agent Runtime Platform" in init_text
     assert "Agent Development Kit" not in pyproject["project"]["description"]
@@ -231,8 +231,8 @@ def test_public_ci_runs_gitleaks_and_documents_branch_protection():
 def test_public_release_approval_template_tracks_current_version():
     approval_record = _read("docs/maintainer-approval-record.md")
 
-    assert "| Python package version | 0.6.9 |" in approval_record
-    assert "make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.6.9" in approval_record
+    assert "| Python package version | 0.7.0 |" in approval_record
+    assert "make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.7.0" in approval_record
 
 
 def test_source_repository_does_not_track_generated_ksadk_web_static():
