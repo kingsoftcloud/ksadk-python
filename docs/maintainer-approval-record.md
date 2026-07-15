@@ -59,6 +59,6 @@ changes.
 
 | Role | Name | Decision | Date |
 | --- | --- | --- | --- |
-| Maintainer |  |  |  |
-| Security reviewer |  |  |  |
-| Release owner |  |  |  |
+| Maintainer | xiayu | Approved | 2026-07-15 |
+| Security reviewer | xiayu | Approved | 2026-07-15 |
+| Release owner | xiayu | Approved | 2026-07-15 |
