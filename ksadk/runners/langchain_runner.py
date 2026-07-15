@@ -619,13 +619,40 @@ class LangChainRunner(BaseRunner):
 
     @classmethod
     def _extract_recognized_output(cls, result: Any) -> str:
-        if isinstance(result, dict) and not any(
-            key in result for key in ("output", "text", "messages")
-        ):
-            return ""
         if result is None:
             return ""
-        return cls._extract_output(result)
+        if isinstance(result, str):
+            return result
+
+        if isinstance(result, dict):
+            for key in ("output", "text"):
+                if key not in result:
+                    continue
+                value = result[key]
+                if isinstance(value, str):
+                    return value
+                extracted = cls._extract_recognized_output(value)
+                if extracted:
+                    return extracted
+                if value is not None and not isinstance(value, (dict, list, tuple)):
+                    return str(value)
+
+            message_state = cls._extract_message_state(result)
+            return message_state[0] if message_state else ""
+
+        if isinstance(result, (list, tuple)):
+            for item in reversed(result):
+                extracted = cls._extract_recognized_output(item)
+                if extracted:
+                    return extracted
+            return ""
+
+        command_update = getattr(result, "update", None)
+        if isinstance(command_update, dict):
+            return cls._extract_recognized_output(command_update)
+
+        content = cls._ai_message_content(result)
+        return content if content is not None else ""
 
     @classmethod
     def _extract_message_state(cls, chunk: Any) -> tuple[str, str] | None:

@@ -14,6 +14,7 @@ import { useDocsSearch } from 'fumadocs-core/search/client';
 import { create } from '@orama/orama';
 import { createTokenizer } from '@orama/tokenizers/mandarin';
 import { useI18n } from 'fumadocs-ui/contexts/i18n';
+import { assetPath } from '@/lib/shared';
 
 function initOrama(locale?: string) {
   if (locale === 'cn') {
@@ -35,6 +36,8 @@ export default function DefaultSearchDialog(props: SharedProps) {
     type: 'static',
     initOrama,
     locale,
+    // GitHub Pages project sites live below /<repository>, not the domain root.
+    from: assetPath('/api/search'),
   });
 
   return (

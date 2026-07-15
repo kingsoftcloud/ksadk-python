@@ -15,6 +15,7 @@ ZH_DOC_URLS = {
     f"{DOCS_ROOT_URL}cn/docs/framework/getting-started/architecture/",
     f"{DOCS_ROOT_URL}cn/docs/framework/getting-started/comparison/",
     f"{DOCS_ROOT_URL}cn/docs/framework/guides/observability-tracing/",
+    f"{DOCS_ROOT_URL}cn/docs/framework/guides/cloud-deployment/",
 }
 EN_DOC_URLS = {
     f"{DOCS_ROOT_URL}en/docs/framework/getting-started/quickstart/",
@@ -22,6 +23,7 @@ EN_DOC_URLS = {
     f"{DOCS_ROOT_URL}en/docs/framework/getting-started/architecture/",
     f"{DOCS_ROOT_URL}en/docs/framework/getting-started/comparison/",
     f"{DOCS_ROOT_URL}en/docs/framework/guides/observability-tracing/",
+    f"{DOCS_ROOT_URL}en/docs/framework/guides/cloud-deployment/",
 }
 
 
@@ -66,7 +68,7 @@ def test_public_readme_language_variants_keep_homepage_shape():
     zh_readme = _read("README.zh-CN.md")
     en_readme = _read("README.en.md")
 
-    for text in (root_readme, zh_readme, en_readme):
+    for text in (root_readme, zh_readme):
         assert "Kingsoft Cloud Agent Development Kit" in text
         assert "ksadk-runtime-platform-hero-wide.png" in text
         assert "ksadk-web-ui-screenshot.png" in text
@@ -74,6 +76,15 @@ def test_public_readme_language_variants_keep_homepage_shape():
         assert "ksadk-runtime-architecture.png" in text
         assert "发布版本：" not in text
         assert "## 0.6." not in text
+
+    assert "Kingsoft Cloud Agent Development Kit" in en_readme
+    assert "ksadk-runtime-platform-hero-wide.png" in en_readme
+    assert "ksadk-web-ui-screenshot.png" in en_readme
+    assert "ksadk-local-debugging-demo.gif" in en_readme
+    assert "ksadk-runtime-architecture.en.png" in en_readme
+    assert "ksadk-runtime-architecture.png" not in en_readme
+    assert "发布版本：" not in en_readme
+    assert "## 0.6." not in en_readme
 
     assert _github_pages_urls(root_readme) == {DOCS_ROOT_URL, *ZH_DOC_URLS}
     assert _github_pages_urls(zh_readme) == {DOCS_ROOT_URL, *ZH_DOC_URLS}
@@ -113,6 +124,17 @@ def test_public_readme_docs_links_match_fumadocs_routes():
             candidate = docs_site.joinpath(*doc_segments).with_suffix(suffix)
             index_candidate = docs_site.joinpath(*doc_segments, f"index{suffix}")
             assert candidate.exists() or index_candidate.exists(), url
+
+
+def test_docs_site_cloud_deployment_guides_and_static_search_are_publicly_reachable():
+    docs_root = ROOT / "docs-site"
+    search = _read("docs-site/components/search.tsx")
+
+    assert "from: assetPath('/api/search')" in search
+    assert "import { assetPath } from '@/lib/shared'" in search
+    assert (docs_root / "content/docs/framework/guides/cloud-deployment.mdx").exists()
+    assert (docs_root / "content/docs/framework/guides/cloud-deployment.en.mdx").exists()
+    assert '"guides/cloud-deployment"' in _read("docs-site/content/docs/framework/meta.json")
 
 
 def test_legacy_deploy_and_examples_are_not_tracked_in_source_repo():
@@ -184,10 +206,10 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "workflow_dispatch:" in workflow
     assert "publish_target:" in workflow
     assert "alias-only" in workflow
-    assert 'default: "0.2.18"' in workflow
+    assert 'default: "0.2.19"' in workflow
     assert "approved_source_commit:" in workflow
     assert "Reviewed source commit SHA recorded in docs/maintainer-approval-record.md" in workflow
-    assert "KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.2.18' }}" in workflow
+    assert "KSADK_WEB_VERSION: ${{ github.event.inputs.ksadk_web_version || '0.2.19' }}" in workflow
     assert (
         "KSADK_APPROVED_SOURCE_COMMIT: "
         "${{ github.event.inputs.approved_source_commit || "
@@ -205,7 +227,7 @@ def test_pypi_publish_workflow_uses_trusted_publishing_and_bundles_ksadk_web():
     assert "make public-test" in ci_workflow
     assert "tests/test_conversation_runtime.py" not in ci_workflow
     assert "tests/test_server_session_app.py" not in ci_workflow
-    assert 'KSADK_WEB_VERSION: "0.2.18"' in ci_workflow
+    assert 'KSADK_WEB_VERSION: "0.2.19"' in ci_workflow
     assert "PUBLIC_KSADK_WEB_VERSION" not in ci_workflow
     assert "KSADK_WEB_VERSION ?= latest" in makefile
     assert (

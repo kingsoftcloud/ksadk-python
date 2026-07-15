@@ -25,6 +25,8 @@
     "guides/build-and-package",
     "guides/frameworks",
     "guides/web-ui-source",
+    "---[Cloud]云端部署---",
+    "guides/cloud-deployment",
     "---[BookOpen]教程---",
     "tutorials"
   ]

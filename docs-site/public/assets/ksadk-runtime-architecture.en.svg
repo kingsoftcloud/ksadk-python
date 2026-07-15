@@ -1,0 +1,204 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 900" role="img" aria-labelledby="title desc">
+  <title id="title">KsADK Agent Runtime Platform Architecture</title>
+  <desc id="desc">Agent frameworks flow through the KsADK unified runtime, runtime capabilities, and local or AgentEngine hosted deployment targets.</desc>
+  <style>
+    text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; letter-spacing: 0; }
+    .eyebrow { font-size: 12px; font-weight: 700; fill: #087f9c; }
+    .title { font-size: 34px; font-weight: 750; fill: #111827; }
+    .subtitle { font-size: 15px; font-weight: 450; fill: #64748b; }
+    .section { font-size: 12px; font-weight: 750; fill: #475569; }
+    .section-accent { font-size: 12px; font-weight: 750; fill: #047857; }
+    .card-title { font-size: 17px; font-weight: 680; fill: #18212f; }
+    .card-subtitle { font-size: 12px; font-weight: 450; fill: #64748b; }
+    .small-title { font-size: 14px; font-weight: 650; fill: #26313f; }
+    .small-subtitle { font-size: 11px; font-weight: 450; fill: #64748b; }
+    .micro { font-size: 10px; font-weight: 650; fill: #7a8594; }
+    .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+  </style>
+  <defs>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#dfe5ec" stroke-width="0.7" opacity="0.7"/>
+    </pattern>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10Z" fill="#6b7687"/>
+    </marker>
+    <marker id="arrow-cyan" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10Z" fill="#43c9e8"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10Z" fill="#38d6a5"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1440" height="900" fill="#f8fafc"/>
+  <rect width="1440" height="900" fill="url(#grid)"/>
+  <path d="M0 112H1440" stroke="#d8dee7" stroke-width="1"/>
+
+  <!-- Header -->
+  <text x="44" y="38" class="eyebrow">KSADK / RUNTIME DATA PLANE</text>
+  <text x="44" y="78" class="title">KsADK Agent Runtime Platform</text>
+  <text x="1396" y="51" class="micro" text-anchor="end">LOCAL-FIRST  /  CLOUD-READY</text>
+  <text x="1396" y="78" class="subtitle" text-anchor="end">One agent codebase from local development to hosted runtime</text>
+
+  <!-- Agent code region -->
+  <rect x="40" y="138" width="1360" height="122" rx="8" fill="#ffffff" stroke="#d5dde7" stroke-width="1.2"/>
+  <rect x="40" y="138" width="5" height="122" rx="2.5" fill="#43c9e8"/>
+  <text x="68" y="173" class="section">01  AGENT CODE</text>
+  <text x="68" y="202" class="card-title">Bring your framework</text>
+  <text x="68" y="224" class="card-subtitle">Keep your business logic</text>
+
+  <g>
+    <rect x="300" y="164" width="236" height="70" rx="7" fill="#fbfdff" stroke="#2e78d6" stroke-width="1.2"/>
+    <rect x="300" y="164" width="4" height="70" rx="2" fill="#3b82f6"/>
+    <text x="326" y="194" class="card-title">Google ADK</text>
+    <text x="326" y="216" class="card-subtitle mono">root_agent</text>
+  </g>
+  <g>
+    <rect x="556" y="164" width="236" height="70" rx="7" fill="#fbfefc" stroke="#248e75" stroke-width="1.2"/>
+    <rect x="556" y="164" width="4" height="70" rx="2" fill="#34d399"/>
+    <text x="582" y="194" class="card-title">LangGraph</text>
+    <text x="582" y="216" class="card-subtitle mono">StateGraph</text>
+  </g>
+  <g>
+    <rect x="812" y="164" width="236" height="70" rx="7" fill="#fffdf8" stroke="#ad7a22" stroke-width="1.2"/>
+    <rect x="812" y="164" width="4" height="70" rx="2" fill="#f5b942"/>
+    <text x="838" y="194" class="card-title">LangChain</text>
+    <text x="838" y="216" class="card-subtitle mono">Runnable / chain</text>
+  </g>
+  <g>
+    <rect x="1068" y="164" width="300" height="70" rx="7" fill="#fcfbff" stroke="#7864c8" stroke-width="1.2"/>
+    <rect x="1068" y="164" width="4" height="70" rx="2" fill="#9b87f5"/>
+    <text x="1094" y="194" class="card-title">DeepAgents</text>
+    <text x="1094" y="216" class="card-subtitle mono">create_deep_agent</text>
+  </g>
+
+  <!-- Agent code to runtime -->
+  <path d="M720 260V294" fill="none" stroke="#43c9e8" stroke-width="1.8" marker-end="url(#arrow-cyan)"/>
+  <rect x="648" y="267" width="144" height="18" rx="3" fill="#f8fafc"/>
+  <text x="720" y="279" class="micro" text-anchor="middle">RUNNER ADAPTERS</text>
+
+  <!-- KsADK runtime region -->
+  <rect x="40" y="300" width="1360" height="414" rx="9" fill="#f1faf7" stroke="#2fcfa0" stroke-width="1.8"/>
+  <rect x="40" y="300" width="5" height="414" rx="2.5" fill="#38d6a5"/>
+  <text x="68" y="334" class="section-accent">02  KSADK RUNTIME</text>
+  <text x="68" y="359" class="card-subtitle">One execution model · one protocol surface · one runtime contract</text>
+
+  <!-- Runtime access rail -->
+  <rect x="498" y="320" width="870" height="52" rx="6" fill="#ffffff" stroke="#b9d9cf" stroke-width="1"/>
+  <text x="522" y="341" class="micro">ENTRYPOINTS</text>
+  <text x="522" y="359" class="small-title mono">SDK + CLI</text>
+  <path d="M700 331V361M918 331V361M1136 331V361" stroke="#dbe7e3"/>
+  <text x="724" y="352" class="small-title">Browser UI</text>
+  <text x="942" y="352" class="small-title">OpenAI API</text>
+  <text x="1160" y="352" class="small-title">A2A</text>
+  <text x="1337" y="352" class="small-subtitle" text-anchor="end">invoke · stream · serve</text>
+
+  <!-- Core execution flow -->
+  <path d="M428 428H504M936 428H1012" fill="none" stroke="#38d6a5" stroke-width="1.8" marker-end="url(#arrow-green)"/>
+  <g>
+    <rect x="68" y="394" width="360" height="78" rx="7" fill="#ffffff" stroke="#71ae9d" stroke-width="1.2"/>
+    <text x="92" y="422" class="card-title">Framework Runners</text>
+    <text x="92" y="447" class="card-subtitle">Adapt invoke · stream · tool binding</text>
+    <text x="404" y="444" class="micro mono" text-anchor="end">BaseRunner</text>
+  </g>
+  <g>
+    <rect x="504" y="386" width="432" height="94" rx="8" fill="#dff7ee" stroke="#0aa578" stroke-width="2"/>
+    <text x="720" y="419" class="card-title" text-anchor="middle">Conversation Runtime</text>
+    <text x="720" y="444" class="small-subtitle" text-anchor="middle">invocation · streaming · session events</text>
+    <text x="720" y="464" class="micro" text-anchor="middle">THE DATA-PLANE CORE</text>
+  </g>
+  <g>
+    <rect x="1012" y="394" width="356" height="78" rx="7" fill="#ffffff" stroke="#71ae9d" stroke-width="1.2"/>
+    <text x="1036" y="422" class="card-title">Protocol Surface</text>
+    <text x="1036" y="447" class="card-subtitle">OpenAI-compatible · A2A · streaming</text>
+  </g>
+
+  <!-- Runtime capability matrix -->
+  <text x="68" y="514" class="section">RUNTIME CAPABILITIES</text>
+  <path d="M246 509H1368" stroke="#d8e4e0"/>
+
+  <g>
+    <rect x="68" y="532" width="306" height="62" rx="6" fill="#ffffff" stroke="#d6dee8"/>
+    <circle cx="91" cy="553" r="4" fill="#43c9e8"/>
+    <text x="106" y="558" class="small-title">Session Continuity</text>
+    <text x="91" y="579" class="small-subtitle">state · transcript · resilient store</text>
+  </g>
+  <g>
+    <rect x="390" y="532" width="306" height="62" rx="6" fill="#ffffff" stroke="#d6dee8"/>
+    <circle cx="413" cy="553" r="4" fill="#43c9e8"/>
+    <text x="428" y="558" class="small-title">Checkpoint Control</text>
+    <text x="413" y="579" class="small-subtitle">resume · cancel · run events</text>
+  </g>
+  <g>
+    <rect x="712" y="532" width="306" height="62" rx="6" fill="#ffffff" stroke="#d6dee8"/>
+    <circle cx="735" cy="553" r="4" fill="#f5b942"/>
+    <text x="750" y="558" class="small-title">Toolsets + MCP</text>
+    <text x="735" y="579" class="small-subtitle">discovery · policy · dispatch</text>
+  </g>
+  <g>
+    <rect x="1034" y="532" width="334" height="62" rx="6" fill="#ffffff" stroke="#d6dee8"/>
+    <circle cx="1057" cy="553" r="4" fill="#9b87f5"/>
+    <text x="1072" y="558" class="small-title">Skill Runtime</text>
+    <text x="1057" y="579" class="small-subtitle">discover · load · isolated execute</text>
+  </g>
+
+  <g>
+    <rect x="68" y="610" width="306" height="62" rx="6" fill="#ffffff" stroke="#d6dee8"/>
+    <circle cx="91" cy="631" r="4" fill="#f5b942"/>
+    <text x="106" y="636" class="small-title">Workspace + Artifacts</text>
+    <text x="91" y="657" class="small-subtitle">read · edit · lint · export</text>
+  </g>
+  <g>
+    <rect x="390" y="610" width="306" height="62" rx="6" fill="#ffffff" stroke="#d6dee8"/>
+    <circle cx="413" cy="631" r="4" fill="#ef6f8d"/>
+    <text x="428" y="636" class="small-title">Sandbox + Approval</text>
+    <text x="413" y="657" class="small-subtitle">isolated code · tool safety</text>
+  </g>
+  <g>
+    <rect x="712" y="610" width="306" height="62" rx="6" fill="#ffffff" stroke="#d6dee8"/>
+    <circle cx="735" cy="631" r="4" fill="#9b87f5"/>
+    <text x="750" y="636" class="small-title">Memory + Knowledge</text>
+    <text x="735" y="657" class="small-subtitle">long-term context · retrieval</text>
+  </g>
+  <g>
+    <rect x="1034" y="610" width="334" height="62" rx="6" fill="#ffffff" stroke="#d6dee8"/>
+    <circle cx="1057" cy="631" r="4" fill="#38d6a5"/>
+    <text x="1072" y="636" class="small-title">Observability</text>
+    <text x="1057" y="657" class="small-subtitle">traces · usage · evaluation</text>
+  </g>
+
+  <!-- Runtime to deployment -->
+  <path d="M720 714V744H394V760" fill="none" stroke="#6b7687" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <path d="M720 744H972V760" fill="none" stroke="#6b7687" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <rect x="650" y="720" width="140" height="18" rx="3" fill="#f8fafc"/>
+  <text x="720" y="733" class="micro" text-anchor="middle">ONE RUNTIME CONTRACT</text>
+
+  <!-- Deployment targets -->
+  <text x="44" y="780" class="section">03  RUN ANYWHERE</text>
+  <text x="44" y="803" class="card-subtitle">Local to hosted, one contract</text>
+
+  <g>
+    <rect x="244" y="762" width="300" height="104" rx="8" fill="#f4f8ff" stroke="#3b82f6" stroke-width="1.3"/>
+    <rect x="244" y="762" width="5" height="104" rx="2.5" fill="#3b82f6"/>
+    <text x="274" y="796" class="card-title">Local Runtime</text>
+    <text x="274" y="821" class="card-subtitle">CLI · Browser UI · local process</text>
+    <text x="274" y="846" class="micro">FAST FEEDBACK  /  NO CLOUD REQUIRED</text>
+  </g>
+
+  <g>
+    <rect x="576" y="762" width="792" height="104" rx="8" fill="#fff9ed" stroke="#c69333" stroke-width="1.3"/>
+    <rect x="576" y="762" width="5" height="104" rx="2.5" fill="#f5b942"/>
+    <text x="606" y="793" class="card-title">AgentEngine Hosted Control Plane</text>
+    <text x="606" y="817" class="card-subtitle">artifact · runtime · route · invoke · observe</text>
+    <g>
+      <rect x="1010" y="783" width="100" height="34" rx="5" fill="#fffdf6" stroke="#bba461"/>
+      <text x="1060" y="805" class="small-title" text-anchor="middle">Serverless</text>
+      <rect x="1122" y="783" width="100" height="34" rx="5" fill="#fffdf6" stroke="#bba461"/>
+      <text x="1172" y="805" class="small-title" text-anchor="middle">Hermes</text>
+      <rect x="1234" y="783" width="110" height="34" rx="5" fill="#fffdf6" stroke="#bba461"/>
+      <text x="1289" y="805" class="small-title" text-anchor="middle">OpenClaw</text>
+    </g>
+    <text x="1344" y="846" class="micro" text-anchor="end">HOSTED LIFECYCLE + PLATFORM SERVICES</text>
+  </g>
+</svg>

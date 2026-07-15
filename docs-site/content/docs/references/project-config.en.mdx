@@ -63,6 +63,27 @@ KSADK_STM_PATH=.agentengine/ui/sessions.sqlite
 
 Only commit `.env.example` files with placeholders. Do not commit `.env`.
 
+## Cloud Deployment Configuration
+
+`agentengine.yaml` can keep non-secret network defaults. Explicit CLI arguments
+override file values:
+
+```yaml title="agentengine.yaml"
+network:
+  enable_public_access: false
+  enable_vpc_access: true
+  vpc_id: vpc-xxxx
+  subnet_id: subnet-xxxx
+  security_group_id: sg-xxxx
+  availability_zone: cn-beijing-6a
+```
+
+VPC access requires all of `vpc_id`, `subnet_id`, and `security_group_id`.
+Keep model keys, cloud AK/SK credentials, and registry passwords in an
+uncommitted `.env` or local global configuration, not in YAML. See
+[Deploy to Kingsoft Cloud](../framework/guides/cloud-deployment) for the
+complete prerequisites, commands, and verification steps.
+
 ## Detection Fallback
 
 If no config file exists, KsADK tries to infer project shape from:
