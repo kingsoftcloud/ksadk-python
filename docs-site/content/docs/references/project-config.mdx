@@ -57,6 +57,24 @@ OPENAI_MODEL_NAME=my-model
 
 不要把真实 key、私有 endpoint、kubeconfig 或客户数据提交到 Git。
 
+## 云端部署配置
+
+`agentengine.yaml` 可以保留不含密钥的网络默认值；命令行传参会覆盖文件中的值：
+
+```yaml title="agentengine.yaml"
+network:
+  enable_public_access: false
+  enable_vpc_access: true
+  vpc_id: vpc-xxxx
+  subnet_id: subnet-xxxx
+  security_group_id: sg-xxxx
+  availability_zone: cn-beijing-6a
+```
+
+开启 VPC 时必须同时提供 `vpc_id`、`subnet_id` 和 `security_group_id`。模型 key、云账号
+AK/SK、镜像仓库密码不要写入 YAML；它们应保存在未提交的 `.env` 或本机全局配置中。完整的
+前置条件、命令和验证步骤见[部署到金山云](../framework/guides/cloud-deployment)。
+
 ## 检测规则
 
 运行时优先读取显式 YAML；没有配置时才尝试 `langgraph.json`、`agent.py`、

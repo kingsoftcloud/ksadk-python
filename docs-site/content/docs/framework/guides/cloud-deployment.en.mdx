@@ -1,0 +1,216 @@
+---
+title: Cloud Deployment to Kingsoft Cloud
+description: Deploy a validated KsADK project as a hosted Agent, from credentials to verification.
+---
+
+This guide starts after a KsADK project works locally with `agentengine run . -i`
+or `agentengine web .`. It explains how to deploy that project as a hosted
+Agent on Kingsoft Cloud.
+
+<Callout type="info">
+  Use `launch` for a first deployment: it builds, uploads or pushes the
+  artifact, then creates or updates the Agent. Use `build` plus `deploy` when
+  your CI pipeline needs to review the artifact separately.
+</Callout>
+
+## Choose A Target
+
+| Target | Use it when | Default artifact |
+| --- | --- | --- |
+| `serverless` | You want the fastest hosted deployment for a standard Agent | `Code`, built and uploaded to KS3 automatically |
+| `serverless --artifact-type Container` | The code package is large or needs system dependencies / a custom image | Container; requires Docker and a registry |
+| `kce --artifact-type Container` | You already operate a KCE cluster, namespace, and registry | Container |
+
+`serverless` and the `Code` artifact type are the defaults. Choose Container
+only for a real image requirement, a package-size limit, or an intentional KCE
+deployment.
+
+## Prerequisites
+
+1. Install KsADK with the extra for your framework. For LangGraph:
+
+   ```bash title="shell"
+   pip install "ksadk[langgraph]"
+   agentengine --version
+   ```
+
+2. Your project needs a working `agentengine.yaml`, entry point, and dependency
+   manifest. Test it first:
+
+   ```bash title="shell"
+   agentengine run . -i
+   ```
+
+3. Prepare Kingsoft Cloud AK/SK credentials with permission for AgentEngine,
+   KS3, and the selected region. Container deployment also needs a registry you
+   can push to and a working local Docker installation.
+
+4. Never commit AK/SK credentials, model keys, registry passwords, `.env`,
+   `prod.env`, or `.agentengine/`. Commit only placeholder values in
+   `.env.example`.
+
+## Configure Cloud Credentials And Runtime Variables
+
+The interactive wizard is the simplest setup. It asks for model settings,
+cloud credentials, region, and optional registry information:
+
+```bash title="shell"
+agentengine config
+```
+
+For automation, write cloud credentials to the current project's uncommitted
+`.env`:
+
+```bash title="shell"
+agentengine config set \
+  KSYUN_ACCESS_KEY=<your-access-key> \
+  KSYUN_SECRET_KEY=<your-secret-key> \
+  KSYUN_ACCOUNT_ID=<your-account-id> \
+  KSYUN_REGION=cn-beijing-6
+```
+
+`KSYUN_ACCOUNT_ID` is optional when the SDK can resolve it from AK/SK. Put only
+runtime variables in a separate `prod.env`; do not put cloud AK/SK credentials
+in that file:
+
+```bash title="prod.env"
+OPENAI_API_KEY=<your-model-api-key>
+OPENAI_BASE_URL=https://api.example.com/v1
+OPENAI_MODEL_NAME=<your-model-name>
+```
+
+<Callout type="warning" title="Credential boundary">
+  `--env-file` injects variables into the hosted runtime. Cloud credentials are
+  for the local deployment client and must not be forwarded as runtime env.
+</Callout>
+
+## Deploy To Serverless
+
+Start with a dry run to inspect the target, region, artifact type, network, and
+runtime environment without creating a remote Agent:
+
+```bash title="shell"
+agentengine launch . \
+  --target serverless \
+  --region cn-beijing-6 \
+  --env-file ./prod.env \
+  --dry-run
+```
+
+Remove `--dry-run` after reviewing the plan:
+
+```bash title="shell"
+agentengine launch . \
+  --target serverless \
+  --region cn-beijing-6 \
+  --env-file ./prod.env
+```
+
+This creates a Code artifact, uploads it to KS3, and creates or updates the
+hosted Agent. Add `--name my-agent` to choose the name and `--no-cache` to
+force a new package.
+
+## Build And Deploy Separately
+
+For CI or artifact review, build first and deploy the saved artifact reference:
+
+```bash title="shell"
+agentengine build . --mode code --push --region cn-beijing-6
+agentengine deploy . --target serverless --region cn-beijing-6 --env-file ./prod.env
+```
+
+Build metadata is stored below `.agentengine/`. Use `--repackage` or
+`--no-cache` when the current source must be packaged again.
+
+## Container And KCE
+
+For Container mode, configure `KCR_REGISTRY`, `KCR_USERNAME`, and
+`KCR_PASSWORD`. Enterprise KCR and third-party registries require both username
+and password. Personal KCR may omit `KCR_USERNAME`; the SDK falls back to
+`KSYUN_ACCOUNT_ID`.
+
+```bash title="shell"
+agentengine config set \
+  KCR_REGISTRY=<registry-host/namespace> \
+  KCR_USERNAME=<registry-username> \
+  KCR_PASSWORD=<registry-password>
+
+agentengine launch . \
+  --target serverless \
+  --artifact-type Container \
+  --registry <registry-host/namespace> \
+  --env-file ./prod.env
+```
+
+For KCE, use the same registry and a Container artifact, then choose a
+namespace:
+
+```bash title="shell"
+agentengine launch . \
+  --target kce \
+  --artifact-type Container \
+  --registry <registry-host/namespace> \
+  --namespace default \
+  --env-file ./prod.env
+```
+
+## Network And Persistent Storage
+
+New Agents allow public access by default. For VPC-only access, provide all
+three network identifiers together:
+
+```bash title="shell"
+agentengine launch . \
+  --target serverless \
+  --disable-public-access \
+  --enable-vpc-access \
+  --vpc-id vpc-xxxx \
+  --subnet-id subnet-xxxx \
+  --security-group-id sg-xxxx \
+  --availability-zone cn-beijing-6a \
+  --env-file ./prod.env
+```
+
+Hermes and OpenClaw mount persistent storage by default. `adk`, `langchain`,
+`langgraph`, and `deepagents` mount storage only when you explicitly provide a
+mount path. For a persistent workspace or files across restarts:
+
+```bash title="shell"
+agentengine launch . \
+  --target serverless \
+  --storage-size-gi 20 \
+  --storage-mount-path /home/node/.agentengine \
+  --env-file ./prod.env
+```
+
+Storage sizes range from `20` to `500` Gi. Use `--no-storage` to explicitly
+disable PVC storage.
+
+## Verify And Access
+
+After deployment, inspect the hosted Agent and then open its dashboard:
+
+```bash title="shell"
+agentengine agent list --region cn-beijing-6
+agentengine agent status <agent-name-or-id> --region cn-beijing-6
+agentengine dashboard open <agent-name-or-id>
+```
+
+Record the resulting Agent ID, name, and region with the deployment. When
+updating an Agent, public-access settings are retained unless you explicitly
+pass `--enable-public-access` or `--disable-public-access`.
+
+## Troubleshooting
+
+| Symptom | What to check |
+| --- | --- |
+| Missing or invalid cloud credentials | Inspect `KSYUN_ACCESS_KEY`, `KSYUN_SECRET_KEY`, and the selected region with `agentengine config show`. |
+| VPC validation fails | Supply `--vpc-id`, `--subnet-id`, and `--security-group-id` together. Availability zone is optional and cannot replace them. |
+| Container build fails | Confirm Docker is running, the registry is reachable, and registry credentials match the registry type. |
+| Code package is too large | Remove unnecessary dependencies first; then use `--artifact-type Container` when an image is justified. |
+| Hosted runtime cannot call the model | Confirm `prod.env` was passed with `--env-file` and its variable names match the model provider used by the Agent. |
+
+<Callout type="info">
+  Run `--dry-run` whenever you first deploy, change target, or change network
+  settings. It checks the request plan without creating or updating a cloud Agent.
+</Callout>
