@@ -53,7 +53,7 @@ Most agent frameworks solve how to build agents. KsADK solves how to run, debug,
 
 ## Architecture
 
-<p align="center"><img alt="KsADK Agent Runtime Platform architecture" src="docs-site/public/assets/ksadk-runtime-architecture.png" width="860" /></p>
+<p align="center"><img alt="KsADK Agent Runtime Platform architecture" src="docs-site/public/assets/ksadk-runtime-architecture.en.png" width="860" /></p>
 
 ## Docs And Examples
 

@@ -68,7 +68,7 @@ def test_public_readme_language_variants_keep_homepage_shape():
     zh_readme = _read("README.zh-CN.md")
     en_readme = _read("README.en.md")
 
-    for text in (root_readme, zh_readme, en_readme):
+    for text in (root_readme, zh_readme):
         assert "Kingsoft Cloud Agent Development Kit" in text
         assert "ksadk-runtime-platform-hero-wide.png" in text
         assert "ksadk-web-ui-screenshot.png" in text
@@ -76,6 +76,15 @@ def test_public_readme_language_variants_keep_homepage_shape():
         assert "ksadk-runtime-architecture.png" in text
         assert "发布版本：" not in text
         assert "## 0.6." not in text
+
+    assert "Kingsoft Cloud Agent Development Kit" in en_readme
+    assert "ksadk-runtime-platform-hero-wide.png" in en_readme
+    assert "ksadk-web-ui-screenshot.png" in en_readme
+    assert "ksadk-local-debugging-demo.gif" in en_readme
+    assert "ksadk-runtime-architecture.en.png" in en_readme
+    assert "ksadk-runtime-architecture.png" not in en_readme
+    assert "发布版本：" not in en_readme
+    assert "## 0.6." not in en_readme
 
     assert _github_pages_urls(root_readme) == {DOCS_ROOT_URL, *ZH_DOC_URLS}
     assert _github_pages_urls(zh_readme) == {DOCS_ROOT_URL, *ZH_DOC_URLS}

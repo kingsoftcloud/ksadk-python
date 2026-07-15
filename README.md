@@ -53,7 +53,7 @@ agentengine web . --no-open
 
 ## 架构
 
-<p align="center"><a href="https://raw.githubusercontent.com/kingsoftcloud/ksadk-python/main/docs-site/public/assets/ksadk-runtime-architecture.png"><img alt="KsADK Agent Runtime Platform 架构" src="https://raw.githubusercontent.com/kingsoftcloud/ksadk-python/main/docs-site/public/assets/ksadk-runtime-architecture.png" width="860" /></a></p>
+<p align="center"><a href="https://raw.githubusercontent.com/kingsoftcloud/ksadk-python/main/docs-site/public/assets/ksadk-runtime-architecture.png"><img alt="KsADK 智能体运行时平台架构" src="https://raw.githubusercontent.com/kingsoftcloud/ksadk-python/main/docs-site/public/assets/ksadk-runtime-architecture.png" width="860" /></a></p>
 
 ## 文档与样例
 
