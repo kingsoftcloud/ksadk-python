@@ -15,6 +15,10 @@ source .venv/bin/activate
 pip install -U "ksadk[adk]"
 ```
 
+<Callout type="warning" title="Windows Python 3.13 使用 LiteLlm">
+Windows Python 3.13 不会由 `ksadk[adk]` 自动安装 LiteLLM，避免镜像或缓存误选源码包后要求本机具备 MSVC/Rust 构建链。若 Agent 显式使用 `google.adk.models.lite_llm.LiteLlm`，请先安装官方 wheel：`python -m pip install --only-binary=litellm litellm`。
+</Callout>
+
 创建 `agentengine.yaml`：
 
 ```yaml

@@ -261,22 +261,32 @@ class ServerlessProvider(BaseDeployProvider):
             json.dump(payload, f, indent=2, ensure_ascii=False)
 
     @staticmethod
-    def _serialize_network_config(target: DeployTarget) -> Optional[Dict[str, Any]]:
+    def _serialize_network_config(
+        target: DeployTarget, *, is_update: bool = False
+    ) -> Optional[Dict[str, Any]]:
         network = getattr(target, "network", None)
         if network is None:
             return None
 
-        payload: Dict[str, Any] = {
-            "enable_public_access": bool(getattr(network, "enable_public_access", False)),
-            "enable_vpc_access": bool(getattr(network, "enable_vpc_access", False)),
-        }
+        public_access = getattr(network, "enable_public_access", None)
+        # 三态：None=未指定。create 默认开公网；update 未指定则不发 network 字段（保留服务端现有配置）。
+        if public_access is None:
+            public_value: Optional[bool] = None if is_update else True
+        else:
+            public_value = bool(public_access)
+
+        payload: Dict[str, Any] = {}
+        if public_value is not None:
+            payload["enable_public_access"] = public_value
+        if bool(getattr(network, "enable_vpc_access", False)):
+            payload["enable_vpc_access"] = True
 
         for field in ("vpc_id", "subnet_id", "security_group_id", "availability_zone"):
             value = str(getattr(network, field, "") or "").strip()
             if value:
                 payload[field] = value
 
-        if not payload["enable_public_access"] and not payload["enable_vpc_access"] and len(payload) == 2:
+        if not payload:
             return None
         return payload
 
@@ -710,7 +720,7 @@ class ServerlessProvider(BaseDeployProvider):
                             else:
                                 click.echo(f"   📦 更新环境变量: {len(env_vars)} 项 from 全局配置")
 
-                        network_config = self._serialize_network_config(target)
+                        network_config = self._serialize_network_config(target, is_update=True)
                         if network_config:
                             update_data["network"] = network_config
 
@@ -829,7 +839,7 @@ class ServerlessProvider(BaseDeployProvider):
                     if env_vars:
                          request_data["env_vars"] = env_vars
 
-                    network_config = self._serialize_network_config(target)
+                    network_config = self._serialize_network_config(target, is_update=False)
                     if network_config:
                         request_data["network"] = network_config
 

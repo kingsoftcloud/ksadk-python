@@ -12,6 +12,7 @@ import base64
 from pathlib import Path
 
 from ksadk.runners.base_runner import BaseRunner
+from ksadk.runners.usage_accumulator import accumulate_usage
 from ksadk.sessions.continuity import LangGraphSessionAdapter
 from ksadk.runners.utils import get_langfuse_callbacks, get_langfuse_metadata, load_agent_module
 from langgraph.types import Command
@@ -479,6 +480,51 @@ class LangGraphRunner(BaseRunner):
         )
         return self._agent.invoke(payload, **kwargs)
 
+    async def _invoke_from_stream_events(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
+        chunks: list[dict[str, Any]] = []
+        accumulated_text = ""
+        final_chunk: dict[str, Any] | None = None
+        metadata: dict[str, Any] = {}
+
+        async for chunk in self.stream(input_data):
+            chunks.append(dict(chunk))
+            chunk_type = chunk.get("type")
+            if chunk_type == "text":
+                accumulated_text += str(chunk.get("delta") or "")
+            elif chunk_type == "final":
+                final_chunk = dict(chunk)
+            elif chunk_type == "checkpoint":
+                chunk_metadata = chunk.get("metadata")
+                if isinstance(chunk_metadata, Mapping):
+                    metadata.update(dict(chunk_metadata))
+            elif chunk_type == "interrupt":
+                return {
+                    "type": "interrupt",
+                    "interrupt_info": chunk.get("interrupt_info"),
+                    "session_id": chunk.get("session_id") or input_data.get("session_id"),
+                    "output": (
+                        chunk.get("interrupt_info", {}).get("message", "需要用户确认")
+                        if isinstance(chunk.get("interrupt_info"), Mapping)
+                        else "需要用户确认"
+                    ),
+                    "raw": {"chunks": chunks},
+                }
+
+        if final_chunk:
+            output_text = str(final_chunk.get("output") or accumulated_text)
+            final_metadata = final_chunk.get("metadata")
+            if isinstance(final_metadata, Mapping):
+                metadata = {**dict(final_metadata), **metadata}
+            result: dict[str, Any] = {"output": output_text, "raw": {"chunks": chunks}}
+            usage = final_chunk.get("usage")
+            if isinstance(usage, Mapping) and usage:
+                result["usage"] = dict(usage)
+            if metadata:
+                result["metadata"] = metadata
+            return result
+
+        return {"output": accumulated_text, "raw": {"chunks": chunks}}
+
     async def invoke(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """调用 LangGraph 图
         
@@ -487,6 +533,10 @@ class LangGraphRunner(BaseRunner):
         2. 原生格式: {"messages": [...]} 或自定义 State - 直接透传
         """
         payload = dict(input_data)
+        force_graph_invoke = bool(payload.pop("_ksadk_force_graph_invoke", False))
+        if not force_graph_invoke and hasattr(self._agent, "astream_events"):
+            return await self._invoke_from_stream_events(payload)
+
         session_id = payload.pop("session_id", None) or str(uuid.uuid4())[:8]
         is_resume = payload.pop("resume", False)
         is_checkpoint_resume = bool(payload.pop("checkpoint_resume", False))
@@ -646,6 +696,7 @@ class LangGraphRunner(BaseRunner):
     async def stream(self, input_data: Dict[str, Any]) -> AsyncIterator[Dict[str, Any]]:
         """流式调用 LangGraph 图"""
         payload = dict(input_data)
+        payload.pop("_ksadk_force_graph_invoke", None)
         session_id = payload.pop("session_id", None) or str(uuid.uuid4())[:8]
         history = payload.pop("history", [])
         is_resume = payload.pop("resume", False)
@@ -689,6 +740,51 @@ class LangGraphRunner(BaseRunner):
         emitted_non_text_event = False
         final_output_text = ""
         final_output_usage: dict[str, Any] = {}
+        final_output_last_usage: dict[str, Any] = {}
+        model_run_usages: dict[str, dict[str, Any]] = {}
+        model_run_order: list[str] = []
+        stream_usage_run_keys: set[str] = set()
+        latest_stream_usage: dict[str, Any] = {}
+
+        def model_run_key(
+            event: Mapping[str, Any],
+            *,
+            fallback_key: str | None = None,
+        ) -> str:
+            raw_run_id = event.get("run_id")
+            return (
+                str(raw_run_id)
+                if raw_run_id
+                else fallback_key or f"model-event-{len(model_run_order)}"
+            )
+
+        def record_model_usage(
+            event: Mapping[str, Any],
+            usage: dict[str, Any],
+            *,
+            fallback_key: str | None = None,
+        ) -> None:
+            if not usage:
+                return
+            run_key = model_run_key(event, fallback_key=fallback_key)
+            if run_key not in model_run_usages:
+                model_run_order.append(run_key)
+            model_run_usages[run_key] = dict(usage)
+
+        def accumulated_model_usage() -> dict[str, Any]:
+            if len(model_run_order) == 1:
+                return dict(model_run_usages.get(model_run_order[0]) or {})
+            usage: dict[str, Any] = {}
+            for run_key in model_run_order:
+                usage = accumulate_usage(usage, model_run_usages.get(run_key) or {})
+            return usage
+
+        def latest_model_usage() -> dict[str, Any]:
+            for run_key in reversed(model_run_order):
+                usage = model_run_usages.get(run_key)
+                if usage:
+                    return dict(usage)
+            return {}
 
         if is_checkpoint_resume and callable(getattr(self._agent, "astream", None)):
             try:
@@ -731,6 +827,19 @@ class LangGraphRunner(BaseRunner):
                     chunk = event.get("data", {}).get("chunk")
                     if not chunk:
                         continue
+                    chunk_usage = self._extract_usage(chunk)
+                    if chunk_usage:
+                        # Some LangChain providers attach cumulative usage to
+                        # every stream chunk, and LangChain may then sum those
+                        # cumulative snapshots into an inflated
+                        # on_chat_model_end usage. For a concrete model run,
+                        # keep the latest stream snapshot and ignore the later
+                        # end usage for that same run_id.
+                        latest_stream_usage = dict(chunk_usage)
+                        if event.get("run_id"):
+                            run_key = model_run_key(event)
+                            stream_usage_run_keys.add(run_key)
+                            record_model_usage(event, latest_stream_usage)
 
                     # 推理内容
                     reasoning = getattr(chunk, "reasoning_content", None)
@@ -759,6 +868,15 @@ class LangGraphRunner(BaseRunner):
                                 else:
                                     accumulated_text += part.text
                                     yield {"delta": part.text, "type": "text"}
+
+                elif event_kind == "on_chat_model_end":
+                    data = event.get("data") or {}
+                    output = data.get("output") if isinstance(data, Mapping) else None
+                    usage = self._extract_usage(output) or self._extract_usage(data)
+                    last_usage = self._extract_last_usage(output) or self._extract_last_usage(data)
+                    run_key = model_run_key(event)
+                    if run_key not in stream_usage_run_keys:
+                        record_model_usage(event, last_usage or usage)
 
                 elif event_kind == "on_tool_start":
                     emitted_non_text_event = True
@@ -811,13 +929,17 @@ class LangGraphRunner(BaseRunner):
         if not accumulated_text:
             if final_output_text:
                 final_chunk = {"output": final_output_text, "type": "final"}
-                if final_output_usage:
-                    final_chunk["usage"] = final_output_usage
-                if final_output_last_usage:
-                    final_chunk.setdefault("metadata", {})["last_usage"] = final_output_last_usage
+                usage = accumulated_model_usage() or final_output_usage or latest_stream_usage
+                last_usage = latest_model_usage() or final_output_last_usage or latest_stream_usage or usage
+                if usage:
+                    final_chunk["usage"] = usage
+                if last_usage:
+                    final_chunk.setdefault("metadata", {})["last_usage"] = last_usage
                 yield final_chunk
             elif not emitted_non_text_event:
-                result = await self.invoke(invoke_payload)
+                result = await self.invoke(
+                    {**invoke_payload, "_ksadk_force_graph_invoke": True}
+                )
                 final_chunk = {"output": result.get("output", ""), "type": "final"}
                 usage = self._extract_usage(result)
                 if usage:
@@ -832,11 +954,12 @@ class LangGraphRunner(BaseRunner):
                     return
         else:
             final_chunk = {"output": accumulated_text, "type": "final"}
-            usage = await self._latest_state_usage(config)
+            state_usage = await self._latest_state_usage(config)
+            usage = accumulated_model_usage() or state_usage or final_output_usage or latest_stream_usage
             if usage:
                 final_chunk["usage"] = usage
-                # _latest_state_usage 返回末个 message usage,单次调用场景即 last_usage
-                final_chunk.setdefault("metadata", {})["last_usage"] = usage
+                last_usage = latest_model_usage() or state_usage or final_output_last_usage or latest_stream_usage or usage
+                final_chunk.setdefault("metadata", {})["last_usage"] = last_usage
             yield final_chunk
 
         metadata = await self._latest_checkpoint_metadata(config)

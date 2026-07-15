@@ -150,7 +150,10 @@ def read_workspace_file(
     max_chars: int | None = None,
     include_line_numbers: bool = True,
 ) -> dict[str, Any]:
-    """Read a UTF-8 text file from the AgentEngine workspace."""
+    """Read a UTF-8 workspace file. Inspect the result before editing it.
+
+    Do not issue a dependent read and edit in the same parallel tool-call batch.
+    """
 
     return _gateway().invoke(
         "read_workspace_file",
@@ -313,7 +316,10 @@ def edit_workspace_file(
     replace_all: bool = False,
     approval: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Replace an exact text snippet inside a UTF-8 workspace file."""
+    """Replace exact text after reading the file in a prior model step.
+
+    The read must complete before this call; do not batch a dependent read and edit.
+    """
 
     return _gateway().invoke(
         "edit_workspace_file",
@@ -336,6 +342,9 @@ def _edit_workspace_file_impl(
 ) -> dict[str, Any]:
     target = resolve_workspace_path(path)
     relative = workspace_relative(target)
+    request_error = _validate_single_edit_request(old_text, relative=relative)
+    if request_error is not None:
+        return request_error
     read_error = _validate_read_state(target, relative)
     if read_error is not None:
         return read_error
@@ -376,7 +385,10 @@ def multi_edit_workspace_file(
     replace_all: bool = False,
     approval: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Apply multiple exact snippet edits atomically inside one workspace file."""
+    """Apply atomic exact edits after reading the file in a prior model step.
+
+    The read must complete before this call; do not batch a dependent read and edit.
+    """
 
     return _gateway().invoke(
         "multi_edit_workspace_file",
@@ -395,21 +407,36 @@ def _multi_edit_workspace_file_impl(
 ) -> dict[str, Any]:
     target = resolve_workspace_path(path)
     relative = workspace_relative(target)
+    if not isinstance(edits, list) or not edits:
+        return {
+            "ok": False,
+            "path": relative,
+            "error_type": "invalid_edits",
+            "error_message": "edits must be a non-empty list",
+        }
+    for index, edit in enumerate(edits):
+        if not isinstance(edit, dict):
+            return {
+                "ok": False,
+                "path": relative,
+                "error_type": "invalid_edit",
+                "error_message": f"edit at index {index} must be an object",
+                "failed_edit_index": index,
+            }
+        request_error = _validate_single_edit_request(edit.get("old_text"), relative=relative)
+        if request_error is not None:
+            return {**request_error, "failed_edit_index": index, "edit_count": len(edits)}
     read_error = _validate_read_state(target, relative)
     if read_error is not None:
         return read_error
     text, error = _read_workspace_text(target)
     if error is not None:
         return {**error, "path": path}
-    if not isinstance(edits, list) or not edits:
-        return {"ok": False, "path": relative, "error_type": "invalid_edits", "error_message": "edits must be a non-empty list"}
     original = text or ""
     updated = original
     diagnostics: list[dict[str, Any]] = []
     total_replacements = 0
     for index, edit in enumerate(edits):
-        if not isinstance(edit, dict):
-            return {"ok": False, "path": relative, "error_type": "invalid_edit", "error_message": f"edit at index {index} must be an object", "failed_edit_index": index}
         edit_result = _apply_single_edit(
             updated,
             edit.get("old_text"),
@@ -718,9 +745,10 @@ def _apply_single_edit(
     replace_all: bool = False,
     relative: str,
 ) -> dict[str, Any]:
-    old = str(old_text or "")
-    if not old:
-        return {"ok": False, "path": relative, "error_type": "missing_old_text", "error_message": "old_text is required"}
+    request_error = _validate_single_edit_request(old_text, relative=relative)
+    if request_error is not None:
+        return request_error
+    old = str(old_text)
     expected = max(1, int(expected_replacements or 1))
     actual_old, used_quote_normalization = _find_actual_string(text, old)
     matches = _match_previews(text, actual_old or old) if actual_old else []
@@ -754,6 +782,17 @@ def _apply_single_edit(
         "used_quote_normalization": used_quote_normalization,
         "matches": matches,
     }
+
+
+def _validate_single_edit_request(old_text: Any, *, relative: str) -> dict[str, Any] | None:
+    if not str(old_text or ""):
+        return {
+            "ok": False,
+            "path": relative,
+            "error_type": "missing_old_text",
+            "error_message": "old_text is required",
+        }
+    return None
 
 
 def _match_previews(text: str, needle: str, limit: int = 20) -> list[dict[str, Any]]:
