@@ -46,7 +46,7 @@
 - 修复 PostgreSQL 恢复后，降级期间创建的 session 无法继续写入 PG 的问题。
 - 修复 ADK session 在健康 PostgreSQL 下不刷新其他副本新增事件的问题。
 - 修复 DeepAgents 测试 fake model 对空内容 tool call 不产生 stream chunk 的兼容问题。
-- 修复 `langchain.agents.create_agent()` 返回 message-state 时，LangChain Runner 丢弃流式文本、思考过程和工具调用/结果并回退为同步执行的问题。
+- 修复 `langchain.agents.create_agent()` 返回 message-state 时，LangChain Runner 丢弃流式文本、思考过程和工具调用/结果并回退为同步执行，以及将 `Command(update=...)` 内部控制对象误作最终正文的问题。
 - 修复 Windows Python 3.13 安装 ADK extra 时可能从源码构建 LiteLLM 并因缺少 MSVC linker 失败的问题；显式使用 `LiteLlm` 的用户可先安装官方二进制 wheel。
 - 修复 coding profile 未直接暴露 workspace 写文件工具，导致新建文件绕行 dispatcher；同时明确 read/edit 必须串行并让无效编辑参数优先返回准确诊断。
 - 修复本地 `agentengine web` 缺少 `ListSessionMessages` action，导致刷新或切换 session 后历史消息无法回显的问题；历史投影保留正文、思考、工具、审批和附件信息。

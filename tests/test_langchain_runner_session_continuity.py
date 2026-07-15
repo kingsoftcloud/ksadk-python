@@ -7,6 +7,7 @@ from langchain_core.chat_history import InMemoryChatMessageHistory
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 from langchain_core.runnables import RunnableLambda
 from langchain_core.runnables.history import RunnableWithMessageHistory
+from langgraph.types import Command
 
 from ksadk.runners.langchain_runner import LangChainRunner
 
@@ -94,6 +95,49 @@ class _CreateAgentStreamingAgent:
         yield {
             "event": "on_chain_end",
             "data": {"output": {"messages": [AIMessage(content="查询")]}}
+        }
+
+    async def ainvoke(self, payload, config=None):
+        del payload, config
+        self.ainvoke_calls += 1
+        return {"messages": [AIMessage(content="fallback invoke")]}
+
+
+class _CreateAgentCommandStreamingAgent:
+    def __init__(self, final_content: str):
+        self.final_content = final_content
+        self.ainvoke_calls = 0
+
+    async def astream_events(self, payload, *, version, config=None):
+        del payload, config
+        assert version == "v2"
+        yield {
+            "event": "on_chat_model_stream",
+            "data": {
+                "chunk": AIMessageChunk(
+                    content="",
+                    additional_kwargs={"reasoning_content": "先分析"},
+                )
+            },
+        }
+        yield {
+            "event": "on_chain_end",
+            "data": {
+                "output": [
+                    Command(
+                        update={
+                            "messages": [
+                                AIMessage(
+                                    content=self.final_content,
+                                    additional_kwargs={
+                                        "reasoning_content": "先分析"
+                                    },
+                                )
+                            ]
+                        }
+                    )
+                ]
+            },
         }
 
     async def ainvoke(self, payload, config=None):
@@ -446,6 +490,46 @@ async def test_langchain_runner_streams_create_agent_messages_thinking_and_tools
     assert agent.astream_events_calls == 1
     assert agent.astream_calls == 0
     assert agent.ainvoke_calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("final_content", "expected_output"),
+    [("分析完成", "分析完成"), ("", "")],
+)
+async def test_langchain_runner_unwraps_create_agent_command_outputs(
+    final_content, expected_output
+):
+    agent = _CreateAgentCommandStreamingAgent(final_content)
+
+    def ksadk_prepare_input(payload: dict, _session_context: dict) -> dict:
+        return {"messages": [HumanMessage(content=payload["input"])]}
+
+    runner = _make_runner(
+        agent,
+        module=SimpleNamespace(ksadk_prepare_input=ksadk_prepare_input),
+    )
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {"session_id": "sess-create-agent-command", "input": "分析请求"}
+        )
+    ]
+
+    assert chunks == [
+        {"delta": "先分析", "type": "thinking"},
+        {"output": expected_output, "type": "final"},
+    ]
+    assert "Command(update=" not in str(chunks)
+    assert agent.ainvoke_calls == 0
+
+
+def test_langchain_runner_recognizes_direct_text_without_stringifying_unknown_objects():
+    runner = _make_runner(_RecordingAgent())
+
+    assert runner._extract_recognized_output("direct output") == "direct output"
+    assert runner._extract_recognized_output(object()) == ""
 
 
 @pytest.mark.asyncio
