@@ -113,8 +113,28 @@ def test_coding_profile_exposes_focused_direct_tools_and_deferred_mode_exposes_s
     coding_names = {tool.name for tool in get_agentengine_tools(profile="coding", mode="direct")}
     deferred_names = {tool.name for tool in get_agentengine_tools(profile="coding", mode="deferred")}
 
-    assert {"read_workspace_file", "edit_workspace_file", "multi_edit_workspace_file", "tool_search"} <= coding_names
+    assert {
+        "read_workspace_file",
+        "write_workspace_file",
+        "write_workspace_files",
+        "edit_workspace_file",
+        "multi_edit_workspace_file",
+        "tool_search",
+    } <= coding_names
     assert deferred_names == {"tool_search", "tool_dispatcher"}
+
+
+def test_workspace_edit_tool_descriptions_require_sequential_read_then_edit():
+    tools = {
+        tool.name: tool
+        for tool in get_agentengine_tools(
+            include=["read_workspace_file", "edit_workspace_file", "multi_edit_workspace_file"]
+        )
+    }
+
+    assert "same parallel tool-call batch" in tools["read_workspace_file"].description
+    assert "prior model step" in tools["edit_workspace_file"].description
+    assert "prior model step" in tools["multi_edit_workspace_file"].description
 
 
 def test_dispatcher_langchain_tool_accepts_json_string_arguments():
@@ -242,6 +262,26 @@ def test_workspace_edit_requires_prior_read(monkeypatch, tmp_path):
     assert result["ok"] is False
     assert result["error_type"] == "file_not_read"
     assert "read_workspace_file" in result["suggested_action"]
+
+
+def test_workspace_edit_validates_request_before_prior_read(monkeypatch, tmp_path):
+    clear_read_state()
+    monkeypatch.setattr("ksadk.toolsets.workspace.resolve_local_session_dir", lambda: tmp_path)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "demo.py").write_text("print('hello')\n", encoding="utf-8")
+
+    single = edit_workspace_file("demo.py", "", "replacement")
+    multiple = multi_edit_workspace_file(
+        "demo.py",
+        edits=[{"old_text": "", "new_text": "replacement", "expected_replacements": 0}],
+    )
+
+    assert single["ok"] is False
+    assert single["error_type"] == "missing_old_text"
+    assert multiple["ok"] is False
+    assert multiple["error_type"] == "missing_old_text"
+    assert multiple["failed_edit_index"] == 0
 
 
 def test_workspace_read_state_is_isolated_by_tool_session(monkeypatch, tmp_path):
