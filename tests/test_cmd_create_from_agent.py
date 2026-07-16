@@ -1,7 +1,6 @@
 from pathlib import Path
 import asyncio
 import importlib
-import py_compile
 import sys
 
 from click.testing import CliRunner
@@ -489,7 +488,7 @@ def test_create_rejects_generated_runtime_name_over_63_characters(tmp_path: Path
     assert not (tmp_path / project_name).exists()
 
 
-def test_create_hermes_generates_container_first_template(tmp_path: Path, monkeypatch):
+def test_create_hermes_generates_config_only(tmp_path: Path, monkeypatch):
     runner = CliRunner()
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("ksadk.configs.global_config.global_config_exists", lambda: True)
@@ -512,10 +511,11 @@ def test_create_hermes_generates_container_first_template(tmp_path: Path, monkey
     assert (project_dir / ".env").exists()
     assert (project_dir / ".env.example").exists()
     assert (project_dir / "agentengine.yaml").exists()
-    assert (project_dir / "Dockerfile").exists()
-    assert (project_dir / "entrypoint.sh").exists()
-    assert (project_dir / "runtime" / "app.py").exists()
-    assert (project_dir / "README.md").exists()
+    assert sorted(path.name for path in project_dir.iterdir()) == [
+        ".env",
+        ".env.example",
+        "agentengine.yaml",
+    ]
     assert not (project_dir / "demo_hermes" / "agent.py").exists()
 
     config_text = (project_dir / "agentengine.yaml").read_text(encoding="utf-8-sig")
@@ -523,15 +523,11 @@ def test_create_hermes_generates_container_first_template(tmp_path: Path, monkey
     assert "artifact_type: Container" in config_text
     assert "ui_profile: hermes" in config_text
 
-    readme_text = (project_dir / "README.md").read_text(encoding="utf-8-sig")
-    assert "agentengine hermes deploy" in readme_text
-    assert "agentengine launch . --artifact-type Container" not in readme_text
-
     env_text = (project_dir / ".env").read_text(encoding="utf-8-sig")
     assert "OPENAI_API_KEY=sk-hermes" in env_text
     assert "OPENAI_BASE_URL=https://model.example.com/v1" in env_text
     assert "OPENAI_MODEL_NAME=glm-hermes" in env_text
-    py_compile.compile(str(project_dir / "runtime" / "app.py"), doraise=True)
+    assert "HERMES_IMAGE=" not in env_text
 
 
 def test_deploy_artifact_type_defaults_to_config_for_hermes_template():

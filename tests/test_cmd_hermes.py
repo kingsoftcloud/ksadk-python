@@ -296,7 +296,7 @@ def test_hermes_build_defaults_are_externalized_to_agentengine_images_repo():
     assert "AGENTENGINE_IMAGES_DIR ?= ../agentengine-images" in makefile
     assert '$(MAKE) -C "$(AGENTENGINE_IMAGES_DIR)" $@' in makefile
     assert "-f deploy/hermes/Dockerfile" not in makefile
-    assert cmd_hermes.DEFAULT_HERMES_IMAGE.endswith(':2026.5.29.2-ksadk-v1')
+    assert cmd_hermes.DEFAULT_HERMES_IMAGE.endswith(':v2026.7.7.2-ksadk-v070')
 
 
 def test_hermes_deploy_refreshes_quick_access_when_agent_id_is_immediate(monkeypatch, tmp_path: Path):
@@ -1002,7 +1002,7 @@ def test_hermes_deploy_preserves_configured_public_kspmas_url(tmp_path: Path, mo
     assert result.exit_code == 0, result.output
     assert (
         _FakeHermesClient.create_payload["artifact_path"]
-        == "ghcr.io/kingsoftcloud/hermes-agent:2026.5.29.2-ksadk-v1"
+        == "ghcr.io/kingsoftcloud/hermes-agent:v2026.7.7.2-ksadk-v070"
     )
     assert any(
         item["Key"] == "OPENAI_BASE_URL" and item["Value"] == "http://kspmas.ksyun.com/v1"

@@ -59,7 +59,7 @@ from ksadk.hermes_terminal import (
 )
 
 
-DEFAULT_HERMES_IMAGE = "ghcr.io/kingsoftcloud/hermes-agent:2026.5.29.2-ksadk-v1"
+DEFAULT_HERMES_IMAGE = "ghcr.io/kingsoftcloud/hermes-agent:v2026.7.7.2-ksadk-v070"
 DEFAULT_HERMES_CONTEXT_LENGTHS = (
     ("glm-5.1", "200000"),
 )
