@@ -117,7 +117,7 @@ tracing = [
 kb = []
 # Skill Runtime E2B backend
 skills = [
-    "e2b>=2.0.0",
+    "e2b>=2.15.3,<2.25.0",
 ]
 # 开发依赖
 dev = [

@@ -2541,7 +2541,7 @@ requires-dist = [
     { name = "click", specifier = ">=8.0.0" },
     { name = "cryptography", specifier = ">=44.0.0" },
     { name = "deepagents", marker = "python_full_version >= '3.11' and extra == 'deepagents'", specifier = ">=0.6.2,<1.0.0" },
-    { name = "e2b", marker = "extra == 'skills'", specifier = ">=2.0.0" },
+    { name = "e2b", marker = "extra == 'skills'", specifier = ">=2.15.3,<2.25.0" },
     { name = "fastapi", specifier = ">=0.100.0,<1.0.0" },
     { name = "fastmcp", marker = "extra == 'dev'", specifier = ">=2.0.0" },
     { name = "google-adk", marker = "extra == 'adk'", specifier = ">=1.34.0,<2.0.0" },

@@ -67,6 +67,13 @@ class E2BSandboxSession:
     def write_file(self, path: str, data: str | bytes) -> None:
         self._sandbox.files.write(path, data)
 
+    def write_files(self, files: list[tuple[str, str | bytes]]) -> None:
+        if not files:
+            return
+        self._sandbox.files.write_files(
+            [{"path": path, "data": data} for path, data in files]
+        )
+
     def read_file(self, path: str) -> str:
         return str(self._sandbox.files.read(path))
 
@@ -123,7 +130,9 @@ class E2BSandboxBackend:
             try:
                 from e2b import Sandbox
             except ImportError as exc:
-                raise SandboxError("e2b>=2.0.0 is required for KSADK_SANDBOX_BACKEND=e2b") from exc
+                raise SandboxError(
+                    "e2b>=2.15.3,<2.25.0 is required for KSADK_SANDBOX_BACKEND=e2b"
+                ) from exc
             sandbox_cls = Sandbox
 
         metadata = {
@@ -142,8 +151,12 @@ class E2BSandboxBackend:
         )
         session = self._wrap_sandbox(sandbox)
         self._wait_until_ready(session)
-        for item in input_files or []:
-            session.write_file(item.target_path, item.source.read_bytes())
+        session.write_files(
+            [
+                (item.target_path, item.source.read_bytes())
+                for item in input_files or []
+            ]
+        )
         return session
 
     def _wrap_sandbox(self, sandbox: Any) -> E2BSandboxSession:

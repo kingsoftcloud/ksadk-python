@@ -35,6 +35,7 @@ from ksadk.conversations.runtime import (
     _set_conversation_usage_attributes,
     stream_conversation_turn,
     stream_responses_conversation_turn,
+    _execute_approved_builtin_tool_resume,
 )
 from ksadk.runtime_context import (
     PlatformInvocationContext,
@@ -118,6 +119,46 @@ class _UsageRunner(_StubRunner):
                 "output_token_details": {"reasoning": 5},
             },
         }
+
+
+@pytest.mark.asyncio
+async def test_approved_sandbox_tool_resume_runs_in_thread(monkeypatch):
+    service = InMemorySessionService()
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-threaded-tool"
+    )
+    calls: list[tuple[str, object]] = []
+
+    def fake_tool(**kwargs):
+        calls.append(("tool", kwargs))
+        return {"ok": True, "value": "done"}
+
+    async def fake_to_thread(func, **kwargs):
+        calls.append(("to_thread", func))
+        return func(**kwargs)
+
+    monkeypatch.setattr(
+        "ksadk.conversations.runtime._builtin_tool_callable",
+        lambda name: fake_tool if name == "run_command" else None,
+    )
+    monkeypatch.setattr("ksadk.conversations.runtime.asyncio.to_thread", fake_to_thread)
+
+    result = await _execute_approved_builtin_tool_resume(
+        session_id="sess-threaded-tool",
+        invocation_id="inv-threaded-tool",
+        resume_input={
+            "type": "mcp_approval_response",
+            "approval": {"approved": True},
+            "tool_name": "run_command",
+            "tool_args": {"command": "printf ok"},
+            "run_id": "call-threaded-tool",
+        },
+        session_service_provider=lambda: service,
+    )
+
+    assert result["output"] == {"ok": True, "value": "done"}
+    assert calls[0][0] == "to_thread"
+    assert calls[1] == ("tool", {"command": "printf ok"})
 
 
 class _CheckpointResumeAdvancedRunner(_StubRunner):

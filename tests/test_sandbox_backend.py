@@ -129,6 +129,9 @@ def test_e2b_sandbox_backend_create_write_run_and_kill(tmp_path: Path):
         def write(self, path, data):
             calls.append(("file_write", (path, data)))
 
+        def write_files(self, files):
+            calls.append(("file_write_batch", files))
+
     class FakeCommands:
         def run(self, command: str, **kwargs):
             calls.append(("run", command))
@@ -186,7 +189,7 @@ def test_e2b_sandbox_backend_create_write_run_and_kill(tmp_path: Path):
             "allow_internet_access": True,
         },
     )
-    assert ("file_write", ("/tmp/input.txt", b"hello")) in calls
+    assert ("file_write_batch", [{"path": "/tmp/input.txt", "data": b"hello"}]) in calls
     assert ("run", "python -V") in calls
     assert ("run_kwargs", {"timeout": 30, "envs": {"REQUEST_ENV": "command"}}) in calls
     assert calls[-1] == ("kill", "sbx-123")
@@ -259,6 +262,9 @@ def test_e2b_sandbox_backend_waits_for_startup_filesystem_readiness(monkeypatch)
             if len(calls) == 1:
                 raise FileNotFoundException()
 
+        def write_files(self, files):
+            calls.extend((item["path"], item["data"]) for item in files)
+
     class FakeSandbox:
         sandbox_id = "sbx-123"
         def __init__(self):
@@ -281,7 +287,7 @@ def test_e2b_sandbox_backend_waits_for_startup_filesystem_readiness(monkeypatch)
 
     assert calls[0] == ("/tmp/.ksadk-sandbox-ready", "")
     assert calls[1] == ("/tmp/.ksadk-sandbox-ready", "")
-    assert calls[2][0] == "/tmp/input.txt"
+    assert calls[2] == ("/tmp/input.txt", source.read_bytes())
 
 
 def test_e2b_sandbox_backend_requires_template_id():

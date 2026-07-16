@@ -637,7 +637,7 @@ P1 可选增强：
 沙箱团队已说明当前服务遵循 E2B SDK v2 系列主要协议，并推荐：
 
 ```bash
-pip install "e2b>=2.0.0" "e2b-code-interpreter>=2.0.0"
+pip install "e2b>=2.15.3,<2.25.0" "e2b-code-interpreter>=2.0.0"
 ```
 
 已验证版本：
@@ -784,7 +784,7 @@ Agent Pod
 需要向沙箱团队确认的不是“Pod 能不能出公网”这一项，而是：
 
 - endpoint/base URL 是公网、内网还是 VPC 私网地址；当前样例为 `https://mgr.cn-beijing-6.sandbox.ksyun.com`；
-- E2B-compatible SDK 包名和版本；当前建议 `e2b>=2.0.0`，验证版本 `e2b==2.15.3`；
+- E2B-compatible SDK 包名和版本；当前建议 `e2b>=2.15.3,<2.25.0`，验证版本 `e2b==2.15.3`；
 - `E2B_API_KEY` 的发放方式、权限边界、Secret 注入方式和轮转机制；
 - template id/image id 是什么，是否已经内置 KsADK 最小 agent；
 - create sandbox 时是否支持 env 注入、TTL、cwd、命令超时、stdout/stderr streaming；

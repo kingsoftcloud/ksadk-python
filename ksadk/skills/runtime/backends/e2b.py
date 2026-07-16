@@ -78,7 +78,7 @@ class E2BSkillRuntimeBackend:
             from e2b import Sandbox
         except ImportError as exc:
             raise SkillRuntimeError(
-                "e2b>=2.0.0 is required for KSADK_SKILL_RUNTIME_BACKEND=e2b"
+                "e2b>=2.15.3,<2.25.0 is required for KSADK_SKILL_RUNTIME_BACKEND=e2b"
             ) from exc
         return cls(
             sandbox_cls=Sandbox,

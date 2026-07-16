@@ -1904,7 +1904,10 @@ async def _execute_approved_builtin_tool_resume(
         }
 
     try:
-        output = tool_func(**call_args)
+        if tool_name in {"run_command", "run_code"}:
+            output = await asyncio.to_thread(tool_func, **call_args)
+        else:
+            output = tool_func(**call_args)
     except Exception as exc:
         output = {"ok": False, "error_type": type(exc).__name__, "error_message": str(exc)}
 
