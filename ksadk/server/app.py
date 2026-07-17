@@ -88,6 +88,10 @@ _ACTIVE_DETACHED_RESUME_INVOCATION_BY_KEY: dict[tuple[str, str], str] = {}
 # 这里保留旧名做兼容别名（RUN_STATUS_TERMINAL 已含 resume_failed）。
 _RUN_TERMINAL_STATUSES = RUN_STATUS_TERMINAL
 _RUN_ACTIVE_STATUSES = RUN_STATUS_ACTIVE
+SSE_HEARTBEAT_INTERVAL_SECONDS = max(
+    1.0,
+    float(os.getenv("AGENTENGINE_SSE_HEARTBEAT_SECONDS", "15")),
+)
 
 
 def _parse_iso_datetime(value: Any) -> datetime | None:
@@ -2487,6 +2491,7 @@ async def subscribe_run_events_action(
         service = resolve_session_service()
         last_seq_id = int(AfterSeqId or 0)
         deadline = time.monotonic() + 5 * 60
+        last_heartbeat_at = time.monotonic()
         while True:
             # 增量查询：把 after_seq_id 下推到后端，只取 seq_id > last_seq_id 的事件，
             # 避免每轮全量拉取。invocation_id 过滤仍在 Python 侧。
@@ -2500,6 +2505,7 @@ async def subscribe_run_events_action(
                 last_seq_id = max(last_seq_id, event.seq_id)
                 payload = _event_to_action_payload(event)
                 yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                last_heartbeat_at = time.monotonic()
                 if (
                     event.event_type == "run_status"
                     and str((event.content or {}).get("status") or "").strip().lower()
@@ -2521,7 +2527,11 @@ async def subscribe_run_events_action(
                 if latest_status in _RUN_TERMINAL_STATUSES:
                     yield "data: [DONE]\n\n"
                     return
-            if time.monotonic() > deadline:
+            now = time.monotonic()
+            if now - last_heartbeat_at >= SSE_HEARTBEAT_INTERVAL_SECONDS:
+                yield ": heartbeat\n\n"
+                last_heartbeat_at = now
+            if now > deadline:
                 return
             await asyncio.sleep(0.25)
 

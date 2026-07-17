@@ -686,9 +686,12 @@ KOP facade 会检查 runtime `Content-Type`：`application/json` 原样作为 JS
 
 ### 8.1 SubscribeRunEvents 事件源一致性（已处理）
 
-KOP 的已鉴权 `SubscribeRunEvents` 现在通过 `X-Auth-Agent-Id`（或显式 `AgentId`）解析
-runtime，并代理到与 `ResumeRun` 相同的 runtime 事件源。`SessionId`、`InvocationId` 和
-`AfterSeqId` 原样透传；定向测试覆盖代理路由、游标和流资源关闭。
+`SubscribeRunEvents` 必须和产生 `AfterSeqId` 的历史接口使用同一事件源。带
+`X-Auth-Agent-Id` 的 `ListSessionMessages`、`ListSessionEvents` 和 `SubscribeRunEvents`
+统一使用 runtime session service；KOP 将 `SessionId`、`InvocationId` 和 `AfterSeqId` 原样
+透传。只有不带鉴权上下文的内部兼容调用才读取 server-local 事件。这样可以避免把
+server-local 游标拿去过滤 runtime 的独立事件序列；定向测试覆盖三条接口的路由、游标
+和流资源关闭。
 
 ### 8.2 真实 resume E2E
 

@@ -4076,6 +4076,67 @@ async def test_subscribe_run_events_streams_events_appended_after_subscription(m
 
 
 @pytest.mark.asyncio
+async def test_subscribe_run_events_keeps_idle_reconnect_alive(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    monkeypatch.setattr(server_app_module, "SSE_HEARTBEAT_INTERVAL_SECONDS", 0)
+    server_app_module.set_runner(_DummyRunner())
+
+    session = await service.create_session(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-subscribe-heartbeat",
+    )
+    in_progress = await service.append_event(
+        session.id,
+        SessionEvent.from_dict(
+            {
+                "author": "demo-agent",
+                "eventType": "run_status",
+                "invocationId": "inv-heartbeat",
+                "content": {"status": "in_progress"},
+            },
+            session_id=session.id,
+        ),
+    )
+
+    async def append_completed_later():
+        await asyncio.sleep(0.01)
+        await service.append_event(
+            session.id,
+            SessionEvent.from_dict(
+                {
+                    "author": "demo-agent",
+                    "eventType": "run_status",
+                    "invocationId": "inv-heartbeat",
+                    "content": {"status": "completed"},
+                },
+                session_id=session.id,
+            ),
+        )
+
+    task = asyncio.create_task(append_completed_later())
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.get(
+            "/agentengine/api/v1/SubscribeRunEvents",
+            params={
+                "SessionId": session.id,
+                "InvocationId": "inv-heartbeat",
+                "AfterSeqId": str(in_progress.seq_id),
+            },
+        )
+    await task
+
+    assert response.status_code == 200
+    assert ": heartbeat\n\n" in response.text
+    assert '"status": "completed"' in response.text
+    assert response.text.endswith("data: [DONE]\n\n")
+
+
+@pytest.mark.asyncio
 async def test_subscribe_run_events_reconnects_without_replaying_consumed_events(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()
