@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Iterator
 
 
@@ -22,6 +22,7 @@ class PlatformInvocationContext:
     has_current_files: bool
     runner_type: str
     account_id: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
     model: str | None = None
     model_options: dict[str, Any] | None = None
     kb_context: dict[str, Any] | None = None
@@ -43,6 +44,7 @@ class PlatformInvocationContext:
             "current_attachment_results": list(self.current_attachment_results or []),
             "has_current_files": self.has_current_files,
             "runner_type": self.runner_type,
+            "metadata": dict(self.metadata or {}),
             "model": self.model,
             "model_options": dict(self.model_options or {}),
         }

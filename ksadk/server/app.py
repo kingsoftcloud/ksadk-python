@@ -22,7 +22,7 @@ import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 import ksadk.conversations as conversation
 from ksadk.conversations.attachment_storage import AttachmentStorageService
@@ -1116,6 +1116,7 @@ class ResumeRunActionRequest(BaseModel):
     Model: Optional[str] = None
     ModelMetadata: Optional[Dict[str, Any]] = None
     ModelOptions: Optional[Dict[str, Any]] = None
+    Metadata: Optional[Dict[str, Any]] = None
     ResumeInstructionEnabled: bool = False
     ResumeInstruction: Optional[str] = None
 
@@ -1140,6 +1141,7 @@ class RunAgentActionRequest(BaseModel):
     Model: Optional[str] = None
     ModelMetadata: Optional[Dict[str, Any]] = None
     ModelOptions: Optional[Dict[str, Any]] = None
+    Metadata: Optional[Dict[str, Any]] = None
     ResponsesInput: Optional[Any] = None
     PreviousResponseId: Optional[str] = None
 
@@ -1174,6 +1176,27 @@ class ResponsesRequest(BaseModel):
     previous_response_id: Optional[str] = None
     stream: bool = False
     session_id: Optional[str] = None
+
+    @field_validator("metadata")
+    @classmethod
+    def validate_metadata(cls, value: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if value is None:
+            return None
+        public_items = [
+            (key, item)
+            for key, item in value.items()
+            if not (key == "agentengine" and isinstance(item, Mapping))
+        ]
+        if len(public_items) > 16:
+            raise ValueError("Responses metadata supports at most 16 key-value pairs")
+        for key, item in public_items:
+            if len(key) > 64:
+                raise ValueError("Responses metadata keys must be at most 64 characters")
+            if not isinstance(item, str):
+                raise ValueError("Responses metadata values must be strings")
+            if len(item) > 512:
+                raise ValueError("Responses metadata values must be at most 512 characters")
+        return value
 
 
 class WorkspaceListActionRequest(BaseModel):
@@ -1246,6 +1269,31 @@ def _metadata_invocation_id(metadata: Mapping[str, Any] | None) -> str | None:
     if not isinstance(agentengine_metadata, Mapping):
         return None
     return _clean_optional_string(agentengine_metadata.get("invocation_id"))
+
+
+def _split_custom_metadata(
+    metadata: Mapping[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    public_metadata = dict(metadata or {})
+    runtime_metadata: dict[str, Any] = {}
+    agentengine_metadata = public_metadata.get("agentengine")
+    if isinstance(agentengine_metadata, Mapping):
+        runtime_metadata["agentengine"] = dict(agentengine_metadata)
+        public_metadata.pop("agentengine", None)
+    return public_metadata, runtime_metadata
+
+
+def _run_agent_response_metadata(
+    custom_metadata: Mapping[str, Any] | None,
+    result: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    response_metadata = dict(custom_metadata or {})
+    result_metadata = result.get("metadata") if isinstance(result, Mapping) else None
+    if isinstance(result_metadata, Mapping):
+        agentengine_metadata = result_metadata.get("agentengine")
+        if isinstance(agentengine_metadata, Mapping):
+            response_metadata["agentengine"] = dict(agentengine_metadata)
+    return response_metadata
 
 
 def _event_text(event: SessionEvent) -> str:
@@ -2496,6 +2544,11 @@ async def resume_run_action(request: ResumeRunActionRequest):
     }
     active_runner = _resolve_active_runner()
     user_id = session.user_id or "user"
+    custom_metadata, metadata_runtime_controls = _split_custom_metadata(request.Metadata)
+    resume_request_metadata = {
+        "responses_conversation": True,
+        **metadata_runtime_controls,
+    }
 
     if request.Stream:
         resume_invocation_id = str(request.InvocationId or resume_input["resume_attempt_id"])
@@ -2511,7 +2564,9 @@ async def resume_run_action(request: ResumeRunActionRequest):
                 model=request.Model,
                 model_metadata=request.ModelMetadata,
                 model_options=request.ModelOptions,
-                request_metadata={"responses_conversation": True},
+                request_metadata=resume_request_metadata,
+                custom_metadata=custom_metadata,
+                include_agentengine_metadata=True,
                 resume_input=resume_input,
                 invocation_id=resume_invocation_id,
                 prepare_runner=_prepare_runner_for_model,
@@ -2534,7 +2589,8 @@ async def resume_run_action(request: ResumeRunActionRequest):
         model=request.Model,
         model_metadata=request.ModelMetadata,
         model_options=request.ModelOptions,
-        request_metadata={"responses_conversation": True},
+        request_metadata=resume_request_metadata,
+        custom_metadata=custom_metadata,
         resume_input=resume_input,
         response_id=response_id,
         invocation_id=str(resume_input["resume_attempt_id"]),
@@ -2547,7 +2603,8 @@ async def resume_run_action(request: ResumeRunActionRequest):
         model=request.Model,
         session_id=resolved_session_id,
         response_id=response_id,
-        metadata=result.get("metadata") if isinstance(result.get("metadata"), dict) else None,
+        metadata=_run_agent_response_metadata(custom_metadata, result),
+        usage=result.get("usage") if isinstance(result.get("usage"), Mapping) else None,
     )
     return _action_response("ResumeRun", payload)
 
@@ -2962,14 +3019,16 @@ async def run_agent_action(request: RunAgentActionRequest):
         messages = conversation.normalize_responses_input(request.ResponsesInput)
     else:
         messages = conversation.normalize_kop_messages(request.Messages)
-    request_metadata = (
+    request_metadata: dict[str, Any] = (
         {"previous_response_id": request.PreviousResponseId} if request.PreviousResponseId else {}
     )
+    custom_metadata, metadata_runtime_controls = _split_custom_metadata(request.Metadata)
+    request_metadata.update(metadata_runtime_controls)
     if api_format == "responses":
         request_metadata["responses_conversation"] = True
 
     if request.Background:
-        invocation_id = request.InvocationId or f"inv_{uuid.uuid4().hex}"
+        invocation_id = request.InvocationId or new_run_id(request.SessionId)
         # 后台 stream 在 detached task 里才被消费（lazy），此时 session 尚未创建。
         # 先 ensure 出 session，才能立刻写 run_status=in_progress（供 SubscribeRunEvents
         # 拉到起始态），并把 resolved session_id 回填给 detached stream 的终态写入与 SubscribeUrl。
@@ -3008,6 +3067,8 @@ async def run_agent_action(request: RunAgentActionRequest):
                 model_metadata=request.ModelMetadata,
                 model_options=request.ModelOptions,
                 request_metadata=request_metadata or None,
+                custom_metadata=custom_metadata,
+                include_agentengine_metadata=True,
                 resume_input=resume_input,
                 account_id=account_id,
                 invocation_id=invocation_id,
@@ -3043,17 +3104,25 @@ async def run_agent_action(request: RunAgentActionRequest):
 
     if request.Stream:
         if api_format == "chat_completions":
-            completion_request = ChatCompletionRequest(
-                messages=messages,
-                model=request.Model,
-                model_metadata=request.ModelMetadata,
-                model_options=request.ModelOptions,
-                stream=True,
-                session_id=request.SessionId,
-                user=run_user_id,
-                account_id=account_id,
+            active_runner = _resolve_active_runner()
+            return StreamingResponse(
+                conversation.stream_conversation_turn(
+                    runner=active_runner,
+                    agent_id=_runtime_agent_id(active_runner),
+                    user_id=run_user_id,
+                    messages=messages,
+                    session_id=request.SessionId,
+                    model=request.Model,
+                    model_metadata=request.ModelMetadata,
+                    model_options=request.ModelOptions,
+                    custom_metadata=custom_metadata,
+                    account_id=account_id,
+                    prepare_runner=_prepare_runner_for_model,
+                    session_service_provider=resolve_session_service,
+                    run_mode=RUN_MODE_FOREGROUND,
+                ),
+                media_type="text/event-stream",
             )
-            return await chat_completions(completion_request)
         resume_key = _detached_resume_key_from_input(request.SessionId, resume_input)
         _reject_if_detached_resume_active(resume_key)
         return _detached_streaming_response(
@@ -3067,6 +3136,8 @@ async def run_agent_action(request: RunAgentActionRequest):
                 model_metadata=request.ModelMetadata,
                 model_options=request.ModelOptions,
                 request_metadata=request_metadata or None,
+                custom_metadata=custom_metadata,
+                include_agentengine_metadata=True,
                 resume_input=resume_input,
                 account_id=account_id,
                 invocation_id=request.InvocationId,
@@ -3091,6 +3162,7 @@ async def run_agent_action(request: RunAgentActionRequest):
         model_metadata=request.ModelMetadata,
         model_options=request.ModelOptions,
         request_metadata=request_metadata or None,
+        custom_metadata=custom_metadata,
         resume_input=resume_input,
         response_id=responses_response_id,
         account_id=account_id,
@@ -3113,9 +3185,8 @@ async def run_agent_action(request: RunAgentActionRequest):
             model=request.Model,
             session_id=resolved_session_id,
             response_id=responses_response_id,
-            metadata=result.get("metadata")
-            if isinstance(result.get("metadata"), Mapping)
-            else None,
+            metadata=_run_agent_response_metadata(custom_metadata, result),
+            usage=result.get("usage") if isinstance(result.get("usage"), Mapping) else None,
         )
     return _action_response("RunAgent", payload)
 
@@ -3813,19 +3884,19 @@ async def responses(request: ResponsesRequest):
     messages = (
         [] if resume_input is not None else conversation.normalize_responses_input(request.input)
     )
-    request_metadata = dict(request.metadata or {})
+    custom_metadata, request_metadata = _split_custom_metadata(request.metadata)
     if request.previous_response_id:
-        request_metadata.setdefault("previous_response_id", request.previous_response_id)
+        request_metadata["previous_response_id"] = request.previous_response_id
     if request.prompt_cache_key:
-        request_metadata.setdefault("prompt_cache_key", request.prompt_cache_key)
+        request_metadata["prompt_cache_key"] = request.prompt_cache_key
     if request.safety_identifier:
-        request_metadata.setdefault("safety_identifier", request.safety_identifier)
+        request_metadata["safety_identifier"] = request.safety_identifier
     if request.user:
-        request_metadata.setdefault("user", request.user)
+        request_metadata["user"] = request.user
     if request.conversation is not None:
-        request_metadata.setdefault("conversation", request.conversation)
+        request_metadata["conversation"] = request.conversation
     if request.store is not None:
-        request_metadata.setdefault("store", request.store)
+        request_metadata["store"] = request.store
     account_id = _clean_optional_string(request.account_id)
     invocation_id = _metadata_invocation_id(request_metadata)
 
@@ -3844,6 +3915,7 @@ async def responses(request: ResponsesRequest):
                 model_options=request.model_options,
                 instructions=request.instructions,
                 request_metadata=request_metadata,
+                custom_metadata=custom_metadata,
                 resume_input=resume_input,
                 account_id=account_id,
                 invocation_id=invocation_id,
@@ -3869,6 +3941,7 @@ async def responses(request: ResponsesRequest):
         model_options=request.model_options,
         instructions=request.instructions,
         request_metadata=request_metadata,
+        custom_metadata=custom_metadata,
         resume_input=resume_input,
         response_id=response_id,
         account_id=account_id,
@@ -3882,9 +3955,8 @@ async def responses(request: ResponsesRequest):
         model=request.model,
         session_id=resolved_session_id,
         response_id=response_id,
-        metadata=result.get("metadata")
-        if isinstance(result.get("metadata"), dict)
-        else request_metadata,
+        metadata=custom_metadata,
+        usage=result.get("usage") if isinstance(result.get("usage"), Mapping) else None,
     )
 
 

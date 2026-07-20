@@ -1086,9 +1086,7 @@ async def test_responses_endpoint_non_streaming_supports_instructions_and_metada
     payload = response.json()
     assert payload["object"] == "response"
     assert payload["status"] == "completed"
-    assert payload["metadata"]["trace_label"] == "demo"
-    assert payload["metadata"]["trace_id"]
-    assert payload["metadata"]["root_span_id"]
+    assert payload["metadata"] == {"trace_label": "demo"}
     assert payload["output_text"] == "assistant says hi"
     assert payload["session_id"]
     assert runner.invocations[-1]["instructions"] == "只用中文回答"
@@ -1096,9 +1094,12 @@ async def test_responses_endpoint_non_streaming_supports_instructions_and_metada
 
     events = await service.get_events(payload["session_id"])
     user_event = next(event for event in events if event.event_type == "user_message")
+    assistant_event = next(event for event in events if event.event_type == "assistant_message")
     assert user_event.content["parts"][0]["text"] == "hello"
     assert user_event.metadata["instructions"] == "只用中文回答"
     assert user_event.metadata["request_metadata"] == {"trace_label": "demo"}
+    assert assistant_event.metadata["trace_id"]
+    assert assistant_event.metadata["root_span_id"]
 
 
 @pytest.mark.asyncio
@@ -1190,7 +1191,8 @@ async def test_responses_endpoint_accepts_mcp_approval_response_resume(monkeypat
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == "completed"
-    assert payload["metadata"]["previous_response_id"] == "resp_previous"
+    assert payload["metadata"] == {}
+    assert runner.invocations[-1]["previous_response_id"] == "resp_previous"
     assert runner.invocations[-1]["resume"] is True
     assert runner.invocations[-1]["input"] == {
         "type": "mcp_approval_response",

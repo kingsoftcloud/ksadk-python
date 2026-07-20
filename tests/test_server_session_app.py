@@ -1985,6 +1985,68 @@ async def test_responses_uses_official_conversation_as_runtime_session(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_responses_preserves_public_metadata_without_internal_fields(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _DummyRunner()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    custom_metadata = {"tenant": "acme", "trace_id": "caller-trace"}
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/v1/responses",
+            json={
+                "input": "hello",
+                "metadata": custom_metadata,
+                "previous_response_id": "resp-previous",
+                "stream": False,
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["metadata"] == custom_metadata
+    assert runner.calls[-1]["previous_response_id"] == "resp-previous"
+    assert runner.calls[-1]["platform_context"]["metadata"] == custom_metadata
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {f"key-{index}": str(index) for index in range(17)},
+        {"k" * 65: "value"},
+        {"key": "v" * 513},
+        {"key": 1},
+        {"biz": {"order_id": "o-9"}},
+    ],
+)
+async def test_responses_rejects_metadata_outside_official_limits(monkeypatch, metadata):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _DummyRunner()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/v1/responses",
+            json={
+                "input": "hello",
+                "metadata": metadata,
+                "stream": False,
+            },
+        )
+
+    assert response.status_code == 422
+    assert runner.calls == []
+
+
+@pytest.mark.asyncio
 async def test_responses_uses_runtime_agent_id_for_hosted_session_lifecycle(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()
@@ -2067,18 +2129,22 @@ async def test_responses_accepts_agentengine_checkpoint_resume_input(monkeypatch
                 ],
                 "conversation": "conv-resume",
                 "safety_identifier": "user-a",
+                "metadata": {"tenant": "acme", "trace_id": "responses-resume-trace"},
                 "stream": False,
             },
         )
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["metadata"]["agentengine"]["run_id"] == "run-1"
-    assert payload["metadata"]["agentengine"]["framework_ref"]["langgraph"]["checkpoint_id"] == "ckpt-1"
+    assert payload["metadata"] == {
+        "tenant": "acme",
+        "trace_id": "responses-resume-trace",
+    }
     assert runner.calls[-1]["checkpoint_resume"] is True
     assert runner.calls[-1]["run_id"] == "run-1"
     assert runner.calls[-1]["framework_ref"]["langgraph"]["thread_id"] == "tenant:agent:conv-resume"
     assert runner.calls[-1]["framework_ref"]["langgraph"]["checkpoint_id"] == "ckpt-1"
+    assert runner.calls[-1]["platform_context"]["metadata"] == payload["metadata"]
     events = await service.get_events("conv-resume")
     assert [event.event_type for event in events] == [
         "run_checkpoint",
@@ -2257,6 +2323,7 @@ async def test_run_agent_responses_checkpoint_resume_resolves_framework_ref_from
                 "UserId": "user-1",
                 "ApiFormat": "responses",
                 "Stream": False,
+                "Metadata": {"tenant": "acme", "trace_id": "runagent-resume-trace"},
                 "ResponsesInput": [
                     {
                         "type": "agentengine.resume_checkpoint",
@@ -2283,6 +2350,10 @@ async def test_run_agent_responses_checkpoint_resume_resolves_framework_ref_from
         == "tenant:agent:sess-runagent-resume"
     )
     assert runner.calls[-1]["framework_ref"]["langgraph"]["thread_id"] == "tenant:agent:sess-runagent-resume"
+    assert runner.calls[-1]["platform_context"]["metadata"] == {
+        "tenant": "acme",
+        "trace_id": "runagent-resume-trace",
+    }
 
 
 @pytest.mark.asyncio
@@ -3305,6 +3376,7 @@ async def test_resume_run_action_reuses_checkpoint_and_records_resume(monkeypatc
                 "RunId": "run-1",
                 "CheckpointId": "ckpt-1",
                 "ResumeAttemptId": "resume-1",
+                "Metadata": {"tenant": "acme", "trace_id": "resume-trace"},
                 "Stream": False,
             },
         )
@@ -3312,6 +3384,12 @@ async def test_resume_run_action_reuses_checkpoint_and_records_resume(monkeypatc
     assert response.status_code == 200
     payload = response.json()["Data"]
     assert payload["session_id"] == "sess-resume-action"
+    assert {
+        key: value for key, value in payload["metadata"].items() if key != "agentengine"
+    } == {
+        "tenant": "acme",
+        "trace_id": "resume-trace",
+    }
     assert payload["metadata"]["agentengine"]["run_id"] == "run-1"
     assert runner.calls[-1]["checkpoint_resume"] is True
     assert runner.calls[-1]["framework_ref"]["langgraph"]["checkpoint_id"] == "ckpt-1"
@@ -3319,6 +3397,10 @@ async def test_resume_run_action_reuses_checkpoint_and_records_resume(monkeypatc
     assert runner.calls[-1]["metadata"]["stage_index"] == 1
     assert runner.calls[-1]["metadata"]["total_stages"] == 7
     assert runner.calls[-1]["metadata"]["artifact_preview"]["path"] == "research/x/01-plan.json"
+    assert runner.calls[-1]["platform_context"]["metadata"] == {
+        "tenant": "acme",
+        "trace_id": "resume-trace",
+    }
     events = await service.get_events("sess-resume-action")
     resume_events = [event for event in events if event.event_type == "run_resume"]
     assert len(resume_events) == 1
@@ -3529,9 +3611,11 @@ async def test_resume_run_action_stream_passes_checkpoint_metadata_to_runner(mon
         session_service_provider=lambda: service,
     )
 
+    streamed_chunks: list[str] = []
+
     async def consume_stream(source):
-        async for _chunk in source:
-            pass
+        async for chunk in source:
+            streamed_chunks.append(chunk)
 
     def fake_detached_streaming_response(source, *, invocation_id=None, **kwargs):
         del invocation_id, kwargs
@@ -3549,6 +3633,7 @@ async def test_resume_run_action_stream_passes_checkpoint_metadata_to_runner(mon
                 "CheckpointId": "ckpt-1",
                 "ResumeAttemptId": "resume-1",
                 "InvocationId": "run-ui-resume-1",
+                "Metadata": {"tenant": "acme", "trace_id": "resume-stream-trace"},
                 "Stream": True,
             },
         )
@@ -3557,6 +3642,22 @@ async def test_resume_run_action_stream_passes_checkpoint_metadata_to_runner(mon
     assert runner.calls[-1]["checkpoint_resume"] is True
     assert runner.calls[-1]["metadata"]["stage_key"] == "plan_research"
     assert runner.calls[-1]["metadata"]["stage_index"] == 1
+    assert runner.calls[-1]["platform_context"]["metadata"] == {
+        "tenant": "acme",
+        "trace_id": "resume-stream-trace",
+    }
+    completed_chunk = next(
+        chunk for chunk in streamed_chunks if chunk.startswith("event: response.completed\n")
+    )
+    completed_payload = json.loads(
+        next(
+            line.removeprefix("data: ")
+            for line in completed_chunk.splitlines()
+            if line.startswith("data: ")
+        )
+    )
+    assert completed_payload["metadata"]["tenant"] == "acme"
+    assert completed_payload["metadata"]["agentengine"]["run_id"] == "run-1"
 
 
 @pytest.mark.asyncio
@@ -3993,6 +4094,73 @@ async def test_run_agent_action_passes_model_options_to_runner(monkeypatch):
         "reasoning": {"effort": "none"},
         "max_reasoning_tokens": 0,
     }
+
+
+@pytest.mark.asyncio
+async def test_run_agent_exposes_nested_custom_metadata_to_runtime_context(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _DummyRunner()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    custom_metadata = {
+        "tenant": "acme",
+        "trace_id": "caller-trace",
+        "biz": {"order_id": "o-9"},
+    }
+    request_metadata = {
+        **custom_metadata,
+        "agentengine": {"invocation_id": "internal-invocation"},
+    }
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/RunAgent",
+            json={
+                "AgentId": "demo-agent",
+                "Messages": [{"role": "user", "content": "hello"}],
+                "Metadata": request_metadata,
+                "ApiFormat": "responses",
+                "Stream": False,
+            },
+        )
+
+    assert response.status_code == 200
+    response_metadata = response.json()["Data"]["metadata"]
+    assert {
+        key: value for key, value in response_metadata.items() if key != "agentengine"
+    } == custom_metadata
+    assert response_metadata["agentengine"] == {"invocation_id": "internal-invocation"}
+    assert runner.calls[-1]["platform_context"]["metadata"] == custom_metadata
+
+
+@pytest.mark.asyncio
+async def test_run_agent_chat_completions_stream_exposes_custom_metadata_internally(monkeypatch):
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _DummyRunner()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    custom_metadata = {"tenant": "acme", "biz": {"order_id": "o-9"}}
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/RunAgent",
+            json={
+                "AgentId": "demo-agent",
+                "Messages": [{"role": "user", "content": "hello"}],
+                "Metadata": custom_metadata,
+                "ApiFormat": "chat_completions",
+                "Stream": True,
+            },
+        )
+
+    assert response.status_code == 200
+    assert runner.calls[-1]["platform_context"]["metadata"] == custom_metadata
 
 
 @pytest.mark.asyncio

@@ -6,6 +6,7 @@ import importlib
 import json
 import time
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -549,6 +550,22 @@ class _ToolContextCapturingStreamingRunner(_StreamingRunner):
         yield {"type": "final", "output": "hello"}
 
 
+class _ContextCapturingStreamingRunner(_StreamingRunner):
+    def __init__(self):
+        super().__init__()
+        self.captured_runtime_context = None
+
+    async def stream(self, input_data: dict):
+        self.stream_calls.append(input_data)
+        self.captured_runtime_context = get_current_invocation_context()
+        yield {"type": "text", "delta": "hello"}
+        yield {
+            "type": "final",
+            "output": "hello",
+            "usage": {"input_tokens": 2, "output_tokens": 1, "total_tokens": 3},
+        }
+
+
 class _FakeLongTermMemoryService:
     instances: list["_FakeLongTermMemoryService"] = []
 
@@ -634,6 +651,48 @@ def test_runtime_context_helpers_read_current_invocation_scope():
     with platform_invocation_scope(context):
         assert get_current_user_id() == "user-1"
         assert get_current_account_id() == "acct-1"
+
+
+@pytest.mark.asyncio
+async def test_platform_invocation_scope_isolates_concurrent_request_metadata():
+    release = asyncio.Event()
+    ready = [asyncio.Event(), asyncio.Event()]
+
+    async def read_metadata(index: int, tenant: str) -> dict[str, Any]:
+        context = PlatformInvocationContext(
+            agent_id="demo-agent",
+            user_id=f"user-{index}",
+            session_id=f"session-{index}",
+            history=[],
+            input_content=[],
+            input_messages=[],
+            input_parts=[],
+            attachments=[],
+            attachment_results=[],
+            current_attachments=[],
+            current_attachment_results=[],
+            has_current_files=False,
+            runner_type="mock",
+            metadata={"tenant": tenant},
+        )
+        with platform_invocation_scope(context):
+            ready[index].set()
+            await release.wait()
+            current = get_current_invocation_context()
+            return dict(current.metadata if current else {})
+
+    tasks = [
+        asyncio.create_task(read_metadata(0, "tenant-a")),
+        asyncio.create_task(read_metadata(1, "tenant-b")),
+    ]
+    await asyncio.gather(*(event.wait() for event in ready))
+    release.set()
+
+    assert await asyncio.gather(*tasks) == [
+        {"tenant": "tenant-a"},
+        {"tenant": "tenant-b"},
+    ]
+    assert get_current_invocation_context() is None
 
 
 def test_tool_execution_context_helpers_return_defaults_and_scope_values():
@@ -2206,6 +2265,73 @@ async def test_invoke_conversation_once_binds_platform_invocation_context_and_am
     assert get_current_invocation_context() is None
 
 
+@pytest.mark.asyncio
+async def test_invoke_conversation_once_exposes_custom_metadata_in_platform_context(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _ContextCapturingRunner()
+    custom_metadata = {
+        "tenant": "acme",
+        "trace_id": "caller-trace",
+        "biz": {"order_id": "o-9"},
+    }
+
+    await invoke_conversation_once(
+        runner=runner,
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-custom-metadata",
+        messages=[{"role": "user", "content": "hello"}],
+        model=None,
+        custom_metadata=custom_metadata,
+        prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+        session_service_provider=lambda: service,
+    )
+
+    assert runner.calls[-1]["platform_context"]["metadata"] == custom_metadata
+    assert runner.captured_runtime_context is not None
+    assert runner.captured_runtime_context.metadata == custom_metadata
+    assert get_current_invocation_context() is None
+
+
+@pytest.mark.asyncio
+async def test_stream_responses_keeps_custom_metadata_separate_from_runtime_metadata(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _ContextCapturingStreamingRunner()
+    custom_metadata = {"tenant": "acme", "trace_id": "caller-trace"}
+
+    chunks = [
+        chunk
+        async for chunk in stream_responses_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-stream-custom-metadata",
+            messages=[{"role": "user", "content": "hello"}],
+            model=None,
+            request_metadata={
+                "previous_response_id": "resp_previous",
+                "responses_conversation": True,
+            },
+            custom_metadata=custom_metadata,
+            prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+            session_service_provider=lambda: service,
+        )
+    ]
+
+    created = _extract_sse_payload(chunks, "response.created")
+    completed = _extract_sse_payload(chunks, "response.completed")
+    assert created["metadata"] == custom_metadata
+    assert completed["metadata"] == custom_metadata
+    assert completed["usage"]["total_tokens"] == 3
+    assert runner.stream_calls[-1]["previous_response_id"] == "resp_previous"
+    assert runner.stream_calls[-1]["platform_context"]["metadata"] == custom_metadata
+    assert runner.captured_runtime_context is not None
+    assert runner.captured_runtime_context.metadata == custom_metadata
+    assert get_current_invocation_context() is None
+
+
 def test_build_runner_ambient_contexts_skips_memory_when_disabled(monkeypatch):
     monkeypatch.setenv("KSADK_LTM_AMBIENT_ENABLED", "false")
     monkeypatch.setattr(
@@ -3333,15 +3459,14 @@ async def test_stream_responses_conversation_turn_persists_trace_metadata_for_fe
 
     assert trace_id
     assert root_span_id
-    assert completed_payload["metadata"]["trace_id"] == trace_id
-    assert completed_payload["metadata"]["root_span_id"] == root_span_id
+    assert completed_payload["metadata"] == {}
     exported_trace = in_memory_trace_exporter.get_trace(trace_id)
     assert exported_trace is not None
     assert any(span["span_id"] == root_span_id for span in exported_trace["spans"])
 
 
 @pytest.mark.asyncio
-async def test_stream_responses_conversation_turn_emits_trace_metadata_from_created_event(
+async def test_stream_responses_keeps_trace_metadata_internal_to_session_events(
     monkeypatch,
     in_memory_trace_exporter,
 ):
@@ -3365,19 +3490,17 @@ async def test_stream_responses_conversation_turn_emits_trace_metadata_from_crea
 
     created_payload = _extract_sse_payload(chunks, "response.created")
     completed_payload = _extract_sse_payload(chunks, "response.completed")
-    assert created_payload["metadata"]["trace_id"]
-    assert created_payload["metadata"]["root_span_id"]
-    assert created_payload["metadata"]["trace_id"] == completed_payload["metadata"]["trace_id"]
-    assert (
-        created_payload["metadata"]["root_span_id"]
-        == completed_payload["metadata"]["root_span_id"]
-    )
-
-    exported_trace = in_memory_trace_exporter.get_trace(created_payload["metadata"]["trace_id"])
+    assert created_payload["metadata"] == {}
+    assert completed_payload["metadata"] == {}
+    events = await service.get_events("sess-stream-created-trace")
+    assistant_event = next(event for event in events if event.event_type == "assistant_message")
+    trace_id = assistant_event.metadata["trace_id"]
+    root_span_id = assistant_event.metadata["root_span_id"]
+    exported_trace = in_memory_trace_exporter.get_trace(trace_id)
     root_span = next(
         span
         for span in exported_trace["spans"]
-        if span["span_id"] == created_payload["metadata"]["root_span_id"]
+        if span["span_id"] == root_span_id
     )
     assert root_span["name"] == "demo-agent"
     assert root_span["attributes"]["langfuse.trace.input"] == "hello"

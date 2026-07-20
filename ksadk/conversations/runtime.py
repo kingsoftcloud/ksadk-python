@@ -31,6 +31,7 @@ from ksadk.conversations.model_context import (
     normalize_model_metadata,
 )
 from ksadk.conversations.model_options import normalize_model_options
+from ksadk.ids import new_run_id
 from ksadk.conversations.normalize import (
     canonical_input_content_from_parts,
     compact_attachment_for_session,
@@ -686,6 +687,7 @@ def build_responses_payload(
     created_at: int | None = None,
     status: str = "completed",
     metadata: Mapping[str, Any] | None = None,
+    usage: Mapping[str, Any] | None = None,
     incomplete_details: Mapping[str, Any] | None = None,
     error: Mapping[str, Any] | None = None,
     output_items: Sequence[Mapping[str, Any]] | None = None,
@@ -710,7 +712,7 @@ def build_responses_payload(
             output = [message_item, *output]
     else:
         output = [message_item]
-    usage = _responses_usage_payload(_usage_from_metadata(metadata))
+    usage_payload = _responses_usage_payload(usage or _usage_from_metadata(metadata))
     return {
         "id": response_id,
         "object": "response",
@@ -729,7 +731,7 @@ def build_responses_payload(
         "tools": [],
         "output": output,
         "output_text": output_text,
-        "usage": usage,
+        "usage": usage_payload,
         "session_id": session_id,
     }
 
@@ -3390,6 +3392,7 @@ async def build_run_input(
     state_delta: Optional[dict[str, Any]] = None,
     instructions: Optional[str] = None,
     request_metadata: Mapping[str, Any] | None = None,
+    custom_metadata: Mapping[str, Any] | None = None,
     resume_input: Mapping[str, Any] | None = None,
     invocation_id: Optional[str] = None,
     governance_state: RuntimeGovernanceState | None = None,
@@ -3418,12 +3421,13 @@ async def build_run_input(
         session_service_provider=provider,
     )
     resolved_session_id = session.id
-    resolved_invocation_id = str(invocation_id or uuid.uuid4())
+    resolved_invocation_id = str(invocation_id or new_run_id(resolved_session_id))
     resolved_model_metadata = await _resolve_runtime_model_metadata(
         model,
         model_metadata=model_metadata,
     )
     normalized_request_metadata = dict(request_metadata or {})
+    normalized_custom_metadata = dict(custom_metadata or {})
     policy_model = model or os.getenv("OPENAI_MODEL_NAME") or os.getenv("MODEL_NAME")
     normalized_model_options = {
         **normalize_model_options(model_options),
@@ -3594,7 +3598,7 @@ async def build_run_input(
         attachments=attachments,
         attachment_results=attachment_results,
     )
-    event_metadata = {
+    event_metadata: dict[str, Any] = {
         "agent_input": user_input,
         "attachments": [compact_attachment_for_session(item) for item in attachments if item],
         "attachment_results": [
@@ -3607,8 +3611,10 @@ async def build_run_input(
     deferred_tool_names = _latest_deferred_tool_names(await service.get_events(resolved_session_id))
     if deferred_tool_names and "deferred_tool_names" not in normalized_request_metadata:
         normalized_request_metadata["deferred_tool_names"] = deferred_tool_names
+    if normalized_custom_metadata:
+        event_metadata["request_metadata"] = normalized_custom_metadata
     if normalized_request_metadata:
-        event_metadata["request_metadata"] = normalized_request_metadata
+        event_metadata["runtime_metadata"] = normalized_request_metadata
 
     await append_conversation_event(
         session_id=resolved_session_id,
@@ -3706,6 +3712,7 @@ async def invoke_conversation_once(
     state_delta: Optional[dict[str, Any]] = None,
     instructions: Optional[str] = None,
     request_metadata: Mapping[str, Any] | None = None,
+    custom_metadata: Mapping[str, Any] | None = None,
     resume_input: Mapping[str, Any] | None = None,
     response_id: str | None = None,
     account_id: str | None = None,
@@ -3737,6 +3744,7 @@ async def invoke_conversation_once(
             state_delta=state_delta,
             instructions=instructions,
             request_metadata=request_metadata,
+            custom_metadata=custom_metadata,
             resume_input=resume_input,
             invocation_id=invocation_id,
             governance_state=governance,
@@ -3781,6 +3789,7 @@ async def invoke_conversation_once(
         current_attachment_results=list(prepared.current_attachment_results),
         has_current_files=prepared.has_current_files,
         runner_type=_runner_type_name(runner),
+        metadata=dict(custom_metadata or {}),
         model=model,
         model_options=prepared.model_options,
         kb_context=ambient_contexts.get("kb_context"),
@@ -4033,6 +4042,7 @@ async def _iter_conversation_turn_events(
     state_delta: Optional[dict[str, Any]] = None,
     instructions: Optional[str] = None,
     request_metadata: Mapping[str, Any] | None = None,
+    custom_metadata: Mapping[str, Any] | None = None,
     resume_input: Mapping[str, Any] | None = None,
     response_id: str | None = None,
     account_id: str | None = None,
@@ -4088,6 +4098,7 @@ async def _iter_conversation_turn_events(
             state_delta=state_delta,
             instructions=instructions,
             request_metadata=request_metadata,
+            custom_metadata=custom_metadata,
             resume_input=resume_input,
             invocation_id=invocation_id,
             governance_state=governance,
@@ -4133,6 +4144,7 @@ async def _iter_conversation_turn_events(
         current_attachment_results=list(prepared.current_attachment_results),
         has_current_files=prepared.has_current_files,
         runner_type=_runner_type_name(runner),
+        metadata=dict(custom_metadata or {}),
         model=model,
         model_options=prepared.model_options,
         kb_context=ambient_contexts.get("kb_context"),
@@ -4289,7 +4301,9 @@ async def _iter_conversation_turn_events(
                                     stream_usage = _normalize_usage_payload(chunk.get("usage"))
                                 chunk_last = (chunk.get("metadata") or {}).get("last_usage")
                                 if isinstance(chunk_last, Mapping):
-                                    stream_last_usage = _normalize_usage_payload(chunk_last) or stream_usage
+                                    stream_last_usage = (
+                                        _normalize_usage_payload(chunk_last) or stream_usage
+                                    )
                                 raw_output = chunk.get("output")
                                 responses_output = (
                                     raw_output if isinstance(raw_output, list) else []
@@ -4559,7 +4573,9 @@ async def _iter_conversation_turn_events(
                                     stream_usage = _normalize_usage_payload(chunk.get("usage"))
                                 chunk_last = (chunk.get("metadata") or {}).get("last_usage")
                                 if isinstance(chunk_last, Mapping):
-                                    stream_last_usage = _normalize_usage_payload(chunk_last) or stream_usage
+                                    stream_last_usage = (
+                                        _normalize_usage_payload(chunk_last) or stream_usage
+                                    )
                 break
             except asyncio.CancelledError:
                 await _persist_accumulated_reasoning()
@@ -4667,13 +4683,13 @@ async def _iter_conversation_turn_events(
 
         request_metadata_without_agentengine = {
             key: value
-            for key, value in dict(request_metadata or {}).items()
+            for key, value in prepared.request_metadata.items()
             if key != "agentengine"
         }
         assistant_metadata = {
             **trace_metadata,
             **request_metadata_without_agentengine,
-            **_merge_agentengine_metadata(request_metadata, runner_agentengine_metadata),
+            **_merge_agentengine_metadata(prepared.request_metadata, runner_agentengine_metadata),
         }
         if responses_output:
             assistant_metadata["responses_output"] = responses_output
@@ -4774,6 +4790,7 @@ async def stream_conversation_turn(
     state_delta: Optional[dict[str, Any]] = None,
     instructions: Optional[str] = None,
     request_metadata: Mapping[str, Any] | None = None,
+    custom_metadata: Mapping[str, Any] | None = None,
     resume_input: Mapping[str, Any] | None = None,
     account_id: str | None = None,
     invocation_id: Optional[str] = None,
@@ -4794,6 +4811,7 @@ async def stream_conversation_turn(
         state_delta=state_delta,
         instructions=instructions,
         request_metadata=request_metadata,
+        custom_metadata=custom_metadata,
         resume_input=resume_input,
         account_id=account_id,
         invocation_id=invocation_id,
@@ -4870,6 +4888,7 @@ async def stream_conversation_turn(
                 metadata=(
                     event.get("metadata") if isinstance(event.get("metadata"), Mapping) else None
                 ),
+                usage=event.get("usage") if isinstance(event.get("usage"), Mapping) else None,
             )
             yield _response_sse("response.completed", final_payload)
 
@@ -4888,6 +4907,8 @@ async def stream_responses_conversation_turn(
     state_delta: Optional[dict[str, Any]] = None,
     instructions: Optional[str] = None,
     request_metadata: Mapping[str, Any] | None = None,
+    custom_metadata: Mapping[str, Any] | None = None,
+    include_agentengine_metadata: bool = False,
     resume_input: Mapping[str, Any] | None = None,
     account_id: str | None = None,
     invocation_id: Optional[str] = None,
@@ -4897,7 +4918,7 @@ async def stream_responses_conversation_turn(
     """OpenAI Responses-style SSE stream."""
     response_id = f"resp_{uuid.uuid4().hex}"
     created_at = int(time.time())
-    response_metadata = dict(request_metadata or {})
+    response_metadata = dict(custom_metadata or {})
 
     message_item_id = f"msg_{uuid.uuid4().hex[:12]}"
     reasoning_item_id = f"rs_{uuid.uuid4().hex[:12]}"
@@ -4966,6 +4987,7 @@ async def stream_responses_conversation_turn(
         state_delta=state_delta,
         instructions=instructions,
         request_metadata=request_metadata,
+        custom_metadata=custom_metadata,
         resume_input=resume_input,
         response_id=response_id,
         account_id=account_id,
@@ -4973,9 +4995,15 @@ async def stream_responses_conversation_turn(
         session_service_provider=session_service_provider,
         run_mode=run_mode,
     ):
-        event_metadata = event.get("metadata")
-        if isinstance(event_metadata, Mapping):
-            response_metadata.update(dict(event_metadata))
+        if include_agentengine_metadata:
+            event_metadata = event.get("metadata")
+            agentengine_metadata = (
+                event_metadata.get("agentengine")
+                if isinstance(event_metadata, Mapping)
+                else None
+            )
+            if isinstance(agentengine_metadata, Mapping):
+                response_metadata["agentengine"] = dict(agentengine_metadata)
         if not lifecycle_started:
             for lifecycle_chunk in _start_response_lifecycle(str(event.get("session_id") or "")):
                 yield lifecycle_chunk
@@ -5181,6 +5209,7 @@ async def stream_responses_conversation_turn(
                 created_at=created_at,
                 status="failed",
                 metadata=response_metadata,
+                usage=event.get("usage") if isinstance(event.get("usage"), Mapping) else None,
                 error={"message": event.get("message") or "Agent 运行失败"},
             )
             yield _response_sse("response.failed", failed_payload)
@@ -5194,11 +5223,8 @@ async def stream_responses_conversation_turn(
                 response_id=response_id,
                 created_at=created_at,
                 status="cancelled",
-                metadata=(
-                    event.get("metadata")
-                    if isinstance(event.get("metadata"), Mapping)
-                    else response_metadata
-                ),
+                metadata=response_metadata,
+                usage=event.get("usage") if isinstance(event.get("usage"), Mapping) else None,
             )
             yield _response_sse("response.cancelled", cancelled_payload)
             return
@@ -5260,11 +5286,8 @@ async def stream_responses_conversation_turn(
                 response_id=str(event.get("response_id") or response_id),
                 created_at=created_at,
                 status="completed",
-                metadata=(
-                    event.get("metadata")
-                    if isinstance(event.get("metadata"), Mapping)
-                    else response_metadata
-                ),
+                metadata=response_metadata,
+                usage=event.get("usage") if isinstance(event.get("usage"), Mapping) else None,
                 output_items=(
                     event.get("responses_output")
                     if isinstance(event.get("responses_output"), Sequence)

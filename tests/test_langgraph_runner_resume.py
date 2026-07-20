@@ -1538,14 +1538,22 @@ async def test_invoke_prepare_state_hook_receives_kb_and_memory_context():
         "input": "search",
         "kb_context": {"formatted_text": "KB facts"},
         "memory_context": {"formatted_text": "Memory facts"},
-        "platform_context": {"agent_id": "a1", "user_id": "u1"},
+        "platform_context": {
+            "agent_id": "a1",
+            "user_id": "u1",
+            "metadata": {"tenant": "acme", "biz": {"order_id": "o-9"}},
+        },
     })
 
     payload, session_context = captured[0]
     assert payload == {"input": "search"}
     assert session_context["kb_context"] == {"formatted_text": "KB facts"}
     assert session_context["memory_context"] == {"formatted_text": "Memory facts"}
-    assert session_context["platform_context"] == {"agent_id": "a1", "user_id": "u1"}
+    assert session_context["platform_context"] == {
+        "agent_id": "a1",
+        "user_id": "u1",
+        "metadata": {"tenant": "acme", "biz": {"order_id": "o-9"}},
+    }
     assert session_context["is_resume"] is False
     state = runner._agent.last_ainvoke_state
     assert state == {"query": "search"}

@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from httpx import ASGITransport
 
 from ksadk.runners.base_runner import BaseRunner
+from ksadk.runtime_context import get_current_invocation_context
 
 
 class _SlowBackgroundRunner(BaseRunner):
@@ -26,6 +27,8 @@ class _SlowBackgroundRunner(BaseRunner):
         )
         self.stream_started = asyncio.Event()
         self.stream_finished = asyncio.Event()
+        self.calls: list[dict] = []
+        self.captured_runtime_context = None
 
     def load_agent(self) -> None:
         return None
@@ -34,6 +37,8 @@ class _SlowBackgroundRunner(BaseRunner):
         return {"output": "ok"}
 
     async def stream(self, input_data: dict):
+        self.calls.append(input_data)
+        self.captured_runtime_context = get_current_invocation_context()
         self.stream_started.set()
         await asyncio.sleep(0.3)
         yield {"type": "text", "delta": "hello"}
@@ -149,6 +154,30 @@ async def test_run_agent_background_returns_immediately_with_job_handle(bg_clien
         from ksadk.server.app import _DETACHED_STREAMS_BY_INVOCATION
 
         assert data["InvocationId"] in _DETACHED_STREAMS_BY_INVOCATION
+
+
+@pytest.mark.asyncio
+async def test_run_agent_background_keeps_custom_metadata_in_detached_task(bg_client):
+    app, runner = bg_client
+    custom_metadata = {"tenant": "acme", "biz": {"order_id": "o-9"}}
+    transport = ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/RunAgent",
+            json={
+                "AgentId": "a",
+                "SessionId": "sess-bg-metadata",
+                "Messages": [{"role": "user", "content": "hello"}],
+                "Metadata": custom_metadata,
+                "Background": True,
+            },
+        )
+        assert response.status_code == 200
+        await asyncio.wait_for(runner.stream_started.wait(), timeout=1)
+
+    assert runner.calls[-1]["platform_context"]["metadata"] == custom_metadata
+    assert runner.captured_runtime_context is not None
+    assert runner.captured_runtime_context.metadata == custom_metadata
 
 
 @pytest.mark.asyncio
