@@ -4423,3 +4423,156 @@ async def test_cancel_run_reports_unsupported_when_runner_has_no_cancel_hook(mon
     assert cancel_data["Cancelled"] is False
     assert cancel_data["Status"] == "unsupported"
     assert cancel_data["RunnerCancelStatus"] == "unsupported"
+
+
+async def test_iter_with_idle_heartbeat_survives_slow_generator_frames(monkeypatch):
+    """单帧间隔 > idle timeout 时，helper 发 ping 但不关闭原生 async generator，
+    后续 chunk 仍能拿到（回归 wait_for(__anext__) 会 cancel 关闭 generator 的坑）。
+    """
+    server_app_module = importlib.import_module("ksadk.server.app")
+
+    monkeypatch.setattr(
+        server_app_module,
+        "SSE_HEARTBEAT_INTERVAL_SECONDS",
+        0.05,
+    )
+
+    async def slow_native_gen():
+        for i in range(3):
+            await asyncio.sleep(0.15)  # 单帧间隔 > 0.05s timeout
+            yield {"i": i}
+
+    seen: list[tuple[str, object]] = []
+    async for kind, chunk in server_app_module._iter_with_idle_heartbeat(slow_native_gen()):
+        seen.append((kind, chunk))
+
+    heartbeats = [c for k, c in seen if k == "heartbeat"]
+    chunks = [c for k, c in seen if k == "chunk"]
+    assert heartbeats, "应至少发一次心跳"
+    assert chunks == [{"i": 0}, {"i": 1}, {"i": 2}], (
+        f"所有 chunk 必须完整到达，实际: {chunks}"
+    )
+
+
+async def test_iter_with_idle_heartbeat_propagates_upstream_error():
+    server_app_module = importlib.import_module("ksadk.server.app")
+
+    async def failing_gen():
+        yield {"i": 0}
+        raise RuntimeError("upstream boom")
+
+    with pytest.raises(RuntimeError, match="upstream boom"):
+        async for _ in server_app_module._iter_with_idle_heartbeat(failing_gen()):
+            pass
+
+
+async def test_iter_with_idle_heartbeat_completes_normally():
+    server_app_module = importlib.import_module("ksadk.server.app")
+
+    async def quick_gen():
+        yield {"a": 1}
+        yield {"a": 2}
+
+    out = [c async for k, c in server_app_module._iter_with_idle_heartbeat(quick_gen())]
+    assert out == [{"a": 1}, {"a": 2}]
+
+
+async def test_iter_with_idle_heartbeat_propagates_source_cancelled_error(monkeypatch):
+    """source 自身取消时应及时传播，不能被误判成正常结束或无限 heartbeat。"""
+    server_app_module = importlib.import_module("ksadk.server.app")
+    monkeypatch.setattr(server_app_module, "SSE_HEARTBEAT_INTERVAL_SECONDS", 0.05)
+
+    async def cancelling_gen():
+        yield {"i": 0}
+        await asyncio.sleep(0.01)
+        raise asyncio.CancelledError()
+
+    async def consume() -> None:
+        async for kind, chunk in server_app_module._iter_with_idle_heartbeat(cancelling_gen()):
+            del kind, chunk
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(consume(), timeout=2.0)
+
+
+async def test_iter_with_idle_heartbeat_cleans_pump_on_consumer_break():
+    """队列已满时客户端断开，helper 也必须立即关闭 source，不能卡在终止通知。"""
+    server_app_module = importlib.import_module("ksadk.server.app")
+    source_closed = asyncio.Event()
+    third_chunk_requested = asyncio.Event()
+
+    async def tracked_gen():
+        try:
+            yield {"i": 0}
+            yield {"i": 1}
+            third_chunk_requested.set()
+            yield {"i": 2}
+        finally:
+            source_closed.set()
+
+    agen = server_app_module._iter_with_idle_heartbeat(tracked_gen())
+    kind, chunk = await agen.__anext__()
+    assert (kind, chunk) == ("chunk", {"i": 0})
+    await asyncio.wait_for(third_chunk_requested.wait(), timeout=1.0)
+    await asyncio.wait_for(agen.aclose(), timeout=1.0)
+    await asyncio.wait_for(source_closed.wait(), timeout=1.0)
+
+
+async def test_detached_stream_iter_for_client_emits_heartbeat_when_idle(monkeypatch):
+    """detached 订阅边界：上游空闲时客户端收到 SSE comment 心跳，
+    业务帧完整到达，且心跳不进入 _backlog（断线重连不回放心跳帧）。
+    """
+    server_app_module = importlib.import_module("ksadk.server.app")
+    monkeypatch.setattr(server_app_module, "SSE_HEARTBEAT_INTERVAL_SECONDS", 0.05)
+
+    async def slow_source():
+        yield "data: one\n\n"
+        await asyncio.sleep(0.2)  # > 0.05 idle timeout
+        yield "data: two\n\n"
+
+    detached = server_app_module._DetachedSSEStream(slow_source())
+    frames: list[str] = []
+    async for frame in detached.iter_for_client():
+        frames.append(frame)
+
+    assert ": ping\n\n" in frames
+    assert "data: one\n\n" in frames
+    assert "data: two\n\n" in frames
+    assert ": ping\n\n" not in detached._backlog, "心跳不得进入 backlog"
+
+
+@pytest.mark.asyncio
+async def test_responses_stream_emits_heartbeat_when_runner_idle(monkeypatch):
+    """端点级：/v1/responses(stream=true) 在 runner 单帧间隔超过心跳阈值时，
+    客户端仍能持续收到心跳，且业务帧与终态完整（回归线上 30s 无响应场景）。
+    """
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+
+    class _IdleThenStreamRunner(_DummyRunner):
+        async def stream(self, input_data: dict):
+            self.calls.append(input_data)
+            yield {"type": "text", "delta": "hel"}
+            await asyncio.sleep(0.2)  # 模拟 LLM 长思考，单帧间隔 > 心跳阈值
+            yield {"type": "text", "delta": "lo"}
+            yield {"type": "final", "output": "hello"}
+
+    runner = _IdleThenStreamRunner()
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    monkeypatch.setattr(server_app_module, "SSE_HEARTBEAT_INTERVAL_SECONDS", 0.05)
+    server_app_module.set_runner(runner)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    body = ""
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        async with client.stream(
+            "POST",
+            "/v1/responses",
+            json={"input": "hello", "stream": True},
+        ) as response:
+            assert response.status_code == 200
+            async for line in response.aiter_lines():
+                body += line + "\n"
+
+    assert ": ping" in body, f"空闲期应有心跳，实际响应:\n{body[:500]}"
+    assert "hel" in body and "lo" in body, f"业务帧必须完整，实际响应:\n{body[:500]}"

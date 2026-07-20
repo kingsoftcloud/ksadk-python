@@ -234,7 +234,17 @@ class _DetachedSSEStream:
         queue = self.subscribe()
         try:
             while True:
-                chunk = await queue.get()
+                # 对 queue.get() 计时而不取消上游：cancel queue.get() 只影响本订阅者的等待，
+                # 不影响 _consume 后台 task；心跳直接发给当前客户端，不进 _backlog，
+                # 因此断线重连(SubscribeRunEvents)不会回放心跳帧。
+                try:
+                    chunk = await asyncio.wait_for(
+                        queue.get(),
+                        timeout=SSE_HEARTBEAT_INTERVAL_SECONDS,
+                    )
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"
+                    continue
                 if chunk is None:
                     break
                 yield chunk
@@ -1444,6 +1454,72 @@ def _event_to_action_payload(event: SessionEvent) -> dict[str, Any]:
     if event.invocation_id:
         payload["InvocationId"] = event.invocation_id
     return payload
+
+
+async def _iter_with_idle_heartbeat(source: AsyncIterator[Any]):
+    """转发 source 的 chunk，空闲超时发 ``: ping`` 而不取消 source 迭代器。
+
+    直接用 ``asyncio.wait_for(source.__anext__(), timeout=...)`` 会在超时时 cancel
+    掉正在进行的 ``__anext__()``；若 source 是原生 async generator，cancel 会触发
+    GeneratorExit 把它关闭，下一轮 ``__anext__`` 抛 StopAsyncIteration → 流提前断。
+    用 pump task + queue 隔离：pump 独立消费 source，主循环只对 queue.get() 计时，
+    超时时发心跳而不碰 source。
+    """
+    queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=1)
+
+    async def pump() -> None:
+        async for chunk in source:
+            await queue.put(chunk)
+
+    pump_task = asyncio.create_task(pump())
+    get_task: asyncio.Task[Any] | None = None
+    try:
+        while True:
+            # Drain queued data before observing producer completion so a final
+            # chunk is never lost when the producer exits immediately after it.
+            if not queue.empty():
+                yield ("chunk", queue.get_nowait())
+                continue
+            if pump_task.done():
+                pump_task.result()
+                return
+
+            get_task = asyncio.create_task(queue.get())
+            done, _ = await asyncio.wait(
+                {get_task, pump_task},
+                timeout=SSE_HEARTBEAT_INTERVAL_SECONDS,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if get_task in done:
+                chunk = get_task.result()
+                get_task = None
+                yield ("chunk", chunk)
+                continue
+            if pump_task in done:
+                # The final queue.put() may have completed in the same loop turn
+                # as the producer. Let the pending getter consume it first.
+                if not queue.empty():
+                    chunk = await get_task
+                    get_task = None
+                    yield ("chunk", chunk)
+                    continue
+                get_task.cancel()
+                await asyncio.gather(get_task, return_exceptions=True)
+                get_task = None
+                pump_task.result()
+                return
+
+            get_task.cancel()
+            await asyncio.gather(get_task, return_exceptions=True)
+            get_task = None
+            yield ("heartbeat", None)
+    finally:
+        if get_task is not None and not get_task.done():
+            get_task.cancel()
+            await asyncio.gather(get_task, return_exceptions=True)
+        if not pump_task.done():
+            pump_task.cancel()
+        await asyncio.gather(pump_task, return_exceptions=True)
 
 
 def _checkpoint_event_to_action_payload(event: SessionEvent) -> dict[str, Any] | None:
@@ -3384,12 +3460,8 @@ async def run_sse(request: AgentRunRequest):
                         "model": request.model,
                     }
                 )
-                while True:
-                    try:
-                        chunk = await asyncio.wait_for(stream_iter.__anext__(), timeout=15)
-                    except StopAsyncIteration:
-                        break
-                    except asyncio.TimeoutError:
+                async for kind, chunk in _iter_with_idle_heartbeat(stream_iter):
+                    if kind == "heartbeat":
                         yield ": ping\n\n"
                         continue
                     event_id = str(uuid.uuid4())
