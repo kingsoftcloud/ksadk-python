@@ -119,11 +119,37 @@ class RemoteRunner(BaseRunner):
             return []
 
         messages: list[dict[str, Any]] = []
+        current_output_call_ids: set[str] = set()
+        if isinstance(current_input, Mapping):
+            current_items = [current_input]
+        elif isinstance(current_input, Sequence) and not isinstance(
+            current_input, (str, bytes, bytearray)
+        ):
+            current_items = [item for item in current_input if isinstance(item, Mapping)]
+        else:
+            current_items = []
+        for item in current_items:
+            if str(item.get("type") or "").strip().lower() != "function_call_output":
+                continue
+            call_id = str(item.get("call_id") or "").strip()
+            if call_id:
+                current_output_call_ids.add(call_id)
         current_text = RemoteRunner._responses_message_text(
             {"role": "user", "content": current_input}
         ).strip()
         for item in history:
             if not isinstance(item, Mapping):
+                continue
+            item_type = str(item.get("type") or "").strip().lower()
+            if item_type in {"function_call", "function_call_output"}:
+                # Responses tool items are already protocol-shaped. Do not
+                # reinterpret them as chat messages or they lose call_id.
+                if (
+                    item_type == "function_call_output"
+                    and str(item.get("call_id") or "").strip() in current_output_call_ids
+                ):
+                    continue
+                messages.append(dict(item))
                 continue
             role = str(item.get("role") or "").strip().lower()
             if role == "model":
@@ -181,10 +207,20 @@ class RemoteRunner(BaseRunner):
                 "input": self._build_responses_input(user_input),
                 "stream": stream,
             }
-            history_enabled = bool(input_data.get("responses_conversation")) and not previous_response_id
+            history_enabled = (
+                bool(input_data.get("responses_conversation"))
+                or bool(input_data.get("responses_history"))
+            ) and not previous_response_id
             if history_enabled:
+                structured_history = input_data.get("responses_history")
+                if isinstance(structured_history, Sequence) and not isinstance(
+                    structured_history, (str, bytes, bytearray)
+                ):
+                    history_input = structured_history
+                else:
+                    history_input = input_data.get("history")
                 history = self._build_responses_conversation_history(
-                    input_data.get("history"),
+                    history_input,
                     user_input,
                 )
                 if history:

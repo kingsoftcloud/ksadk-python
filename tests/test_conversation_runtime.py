@@ -34,6 +34,7 @@ from ksadk.conversations.runtime import (
     invoke_conversation_once,
     preview_auto_compaction,
     _set_conversation_usage_attributes,
+    _refresh_history,
     stream_conversation_turn,
     stream_responses_conversation_turn,
     _execute_approved_builtin_tool_resume,
@@ -366,6 +367,24 @@ class _SuccessfulToolResultStreamingRunner(_StreamingRunner):
             "tool_args": {"include": ["focused"]},
             "tool_output": {"ok": True, "skills": [{"name": "ppt-translator"}]},
             "run_id": "run-list-skills",
+        }
+        yield {"type": "final", "output": "done"}
+
+
+class _CallIdToolResultStreamingRunner(_StreamingRunner):
+    async def stream(self, input_data: dict):
+        self.stream_calls.append(input_data)
+        yield {
+            "type": "tool_call",
+            "tool_name": "search",
+            "tool_args": {"query": "openai"},
+            "call_id": "call-remote-1",
+        }
+        yield {
+            "type": "tool_result",
+            "tool_name": "search",
+            "tool_output": {"ok": True},
+            "call_id": "call-remote-1",
         }
         yield {"type": "final", "output": "done"}
 
@@ -895,6 +914,11 @@ async def test_build_run_input_projects_history_from_append_only_events(monkeypa
         {"role": "model", "content": "hi"},
         {"role": "user", "content": "follow up"},
     ]
+    assert prepared.responses_history == [
+        {"role": "user", "content": [{"type": "input_text", "text": "hello"}]},
+        {"role": "assistant", "content": [{"type": "input_text", "text": "hi"}]},
+        {"role": "user", "content": [{"type": "input_text", "text": "follow up"}]},
+    ]
 
     events = await service.get_events("sess-1")
     assert [event.event_type for event in events] == [
@@ -927,6 +951,17 @@ async def test_build_run_input_preserves_responses_request_history_when_runtime_
         {"role": "user", "content": "写一个python快排的示例"},
         {"role": "model", "content": "这是 Python 快速排序示例。"},
         {"role": "user", "content": "用go"},
+    ]
+    assert prepared.responses_history == [
+        {
+            "role": "user",
+            "content": [{"type": "input_text", "text": "写一个python快排的示例"}],
+        },
+        {
+            "role": "assistant",
+            "content": [{"type": "input_text", "text": "这是 Python 快速排序示例。"}],
+        },
+        {"role": "user", "content": [{"type": "input_text", "text": "用go"}]},
     ]
 
 
@@ -971,6 +1006,47 @@ async def test_build_run_input_deduplicates_responses_request_history_against_se
         {"role": "user", "content": "写一个python快排的示例"},
         {"role": "model", "content": "这是 Python 快速排序示例。"},
         {"role": "user", "content": "用go"},
+    ]
+    assert prepared.responses_history == [
+        {
+            "role": "user",
+            "content": [{"type": "input_text", "text": "写一个python快排的示例"}],
+        },
+        {
+            "role": "assistant",
+            "content": [{"type": "input_text", "text": "这是 Python 快速排序示例。"}],
+        },
+        {"role": "user", "content": [{"type": "input_text", "text": "用go"}]},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_refresh_history_preserves_request_history_prefix(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+
+    prepared = await build_run_input(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-refresh-history",
+        messages=[
+            {"role": "user", "content": "旧问题"},
+            {"role": "assistant", "content": "旧回答"},
+            {"role": "user", "content": "当前问题"},
+        ],
+    )
+
+    await _refresh_history(prepared, session_service_provider=lambda: service)
+
+    assert prepared.history == [
+        {"role": "user", "content": "旧问题"},
+        {"role": "model", "content": "旧回答"},
+        {"role": "user", "content": "当前问题"},
+    ]
+    assert prepared.responses_history == [
+        {"role": "user", "content": [{"type": "input_text", "text": "旧问题"}]},
+        {"role": "assistant", "content": [{"type": "input_text", "text": "旧回答"}]},
+        {"role": "user", "content": [{"type": "input_text", "text": "当前问题"}]},
     ]
 
 
@@ -3058,6 +3134,52 @@ async def test_stream_responses_conversation_turn_adds_tool_receipt_to_tool_resu
 
 
 @pytest.mark.asyncio
+async def test_stream_responses_persists_remote_call_id_for_structured_history(monkeypatch):
+    service = InMemorySessionService()
+    monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
+    runner = _CallIdToolResultStreamingRunner()
+
+    chunks = [
+        chunk
+        async for chunk in stream_responses_conversation_turn(
+            runner=runner,
+            agent_id="demo-agent",
+            user_id="user-1",
+            session_id="sess-remote-call-id",
+            messages=[{"role": "user", "content": "搜索 openai"}],
+            model="gpt-4o",
+            prepare_runner=lambda current_runner, model: current_runner.prepare_for_request(model),
+            session_service_provider=lambda: service,
+        )
+    ]
+
+    assert any(chunk.startswith("event: response.completed\n") for chunk in chunks)
+    events = await service.get_events("sess-remote-call-id")
+    tool_call = next(event for event in events if event.event_type == "tool_call")
+    tool_result = next(event for event in events if event.event_type == "tool_result")
+    assert tool_call.metadata["tool_call_id"] == "call-remote-1"
+    assert tool_result.metadata["tool_call_id"] == "call-remote-1"
+
+    prepared = await build_run_input(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-remote-call-id",
+        messages=[{"role": "user", "content": "继续"}],
+    )
+    assert {
+        "type": "function_call",
+        "call_id": "call-remote-1",
+        "name": "search",
+        "arguments": '{"query":"openai"}',
+    } in prepared.responses_history
+    assert {
+        "type": "function_call_output",
+        "call_id": "call-remote-1",
+        "output": '{"ok":true}',
+    } in prepared.responses_history
+
+
+@pytest.mark.asyncio
 async def test_stream_responses_conversation_turn_records_deferred_tools_from_tool_search(monkeypatch):
     service = InMemorySessionService()
     monkeypatch.setattr("ksadk.conversations.runtime.resolve_session_service", lambda: service)
@@ -3642,6 +3764,9 @@ async def test_stream_responses_turn_maps_function_call_output_without_pending_a
     events = await service.get_events("sess-tool-output")
     assert "tool_result" in [event.event_type for event in events]
     assert "approval_response" not in [event.event_type for event in events]
+    tool_result = next(event for event in events if event.event_type == "tool_result")
+    assert tool_result.metadata["tool_call_id"] == "call_123"
+    assert tool_result.metadata["tool_output"] == {"ok": True}
     run_status_events = [event for event in events if event.event_type == "run_status"]
     assert run_status_events[-1].metadata["run_mode"] == "foreground"
     assert run_status_events[-1].metadata["run_trigger"] == "approval_resume"
@@ -4057,6 +4182,65 @@ def test_build_runner_request_payload_exposes_invocation_id():
     )
 
     assert payload["invocation_id"] == "inv-runtime-cancel"
+
+
+def test_build_runner_request_payload_scopes_structured_history_to_responses_runner():
+    responses_history = [
+        {
+            "type": "function_call",
+            "call_id": "call-1",
+            "name": "search",
+            "arguments": "{}",
+        }
+    ]
+    prepared = PreparedConversationTurn(
+        session_id="sess-1",
+        invocation_id="inv-1",
+        user_input="hello",
+        user_display_input="hello",
+        history=[],
+        input_content=[],
+        input_messages=[],
+        user_parts=[],
+        attachments=[],
+        attachment_results=[],
+        current_attachments=[],
+        current_attachment_results=[],
+        has_current_files=False,
+        responses_history=responses_history,
+    )
+    runtime_context = PlatformInvocationContext(
+        agent_id="demo-agent",
+        user_id="user-1",
+        session_id="sess-1",
+        history=[],
+        input_content=[],
+        input_messages=[],
+        input_parts=[],
+        attachments=[],
+        attachment_results=[],
+        current_attachments=[],
+        current_attachment_results=[],
+        has_current_files=False,
+        runner_type="remote",
+    )
+    responses_runner = type("ResponsesRunner", (), {"api_format": "responses"})()
+
+    payload = _build_runner_request_payload(
+        prepared=prepared,
+        model="demo-model",
+        runtime_context=runtime_context,
+        runner=responses_runner,
+    )
+
+    assert payload["responses_history"] == responses_history
+
+    compatibility_payload = _build_runner_request_payload(
+        prepared=prepared,
+        model="demo-model",
+        runtime_context=runtime_context,
+    )
+    assert "responses_history" not in compatibility_payload
 
 
 @pytest.mark.asyncio
@@ -4667,6 +4851,12 @@ async def test_build_run_input_auto_compacts_old_rounds_into_checkpoint(monkeypa
     assert prepared.history[0]["role"] == "model"
     assert "Earlier conversation summary:" in prepared.history[0]["content"]
     assert prepared.history[-1] == {"role": "user", "content": "follow up"}
+    assert prepared.responses_history[0]["role"] == "assistant"
+    assert "Earlier conversation summary:" in prepared.responses_history[0]["content"][0]["text"]
+    assert prepared.responses_history[-1] == {
+        "role": "user",
+        "content": [{"type": "input_text", "text": "follow up"}],
+    }
 
 
 @pytest.mark.asyncio

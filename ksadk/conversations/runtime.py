@@ -19,10 +19,12 @@ from ksadk.conversations.context import (
     TRANSCRIPT_EVENT_TYPES,
     build_history_from_events,
     build_request_history,
+    build_responses_history_from_messages,
     canonical_event_type,
     compacted_until_seq_id,
     extract_event_text,
     group_events_by_api_round,
+    project_responses_history,
 )
 from ksadk.conversations.model_context import (
     estimate_text_tokens,
@@ -31,7 +33,6 @@ from ksadk.conversations.model_context import (
     normalize_model_metadata,
 )
 from ksadk.conversations.model_options import normalize_model_options
-from ksadk.ids import new_run_id
 from ksadk.conversations.normalize import (
     canonical_input_content_from_parts,
     compact_attachment_for_session,
@@ -64,6 +65,7 @@ from ksadk.conversations.session_title import (
     resolve_session_title_client,
     resolve_session_title_model,
 )
+from ksadk.ids import new_run_id
 from ksadk.knowledge_base.service import KnowledgeBaseService
 from ksadk.memory.service import LongTermMemoryService
 from ksadk.model_policy import fallback_model_for_exception, model_policy_options_for_model
@@ -655,6 +657,9 @@ class PreparedConversationTurn:
     # run_trigger=怎么开始（new_run/checkpoint_resume/approval_resume）
     run_mode: str = RUN_MODE_FOREGROUND
     run_trigger: str = RUN_TRIGGER_NEW_RUN
+    request_history: list[dict[str, str]] = field(default_factory=list)
+    request_responses_history: list[dict[str, Any]] = field(default_factory=list)
+    responses_history: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -1243,6 +1248,7 @@ def _build_runner_request_payload(
     prepared: PreparedConversationTurn,
     model: str | None,
     runtime_context: PlatformInvocationContext,
+    runner: Any | None = None,
 ) -> dict[str, Any]:
     payload = {
         "session_id": prepared.session_id,
@@ -1288,6 +1294,8 @@ def _build_runner_request_payload(
         payload["conversation"] = conversation
     if prepared.request_metadata.get("responses_conversation"):
         payload["responses_conversation"] = True
+    if getattr(runner, "api_format", "") == "responses" and prepared.responses_history:
+        payload["responses_history"] = list(prepared.responses_history)
     deferred_tool_names = _extract_deferred_tool_names(prepared.request_metadata)
     if deferred_tool_names:
         payload["deferred_tool_names"] = deferred_tool_names
@@ -1473,6 +1481,28 @@ def _merge_request_history_with_session_history(
     if normalized_request[:prefix_len] == normalized_session[:prefix_len]:
         return [*list(request_history), *list(session_history)[prefix_len:]]
     return [*list(request_history), *list(session_history)]
+
+
+def _merge_responses_history_with_session_history(
+    request_history: Sequence[dict[str, Any]],
+    session_history: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge request-provided Responses items with the session projection."""
+    if not request_history:
+        return [dict(item) for item in session_history]
+    if not session_history:
+        return [dict(item) for item in request_history]
+
+    prefix_len = min(len(request_history), len(session_history))
+    if list(request_history[:prefix_len]) == list(session_history[:prefix_len]):
+        return [
+            *[dict(item) for item in request_history],
+            *[dict(item) for item in session_history[prefix_len:]],
+        ]
+    return [
+        *[dict(item) for item in request_history],
+        *[dict(item) for item in session_history],
+    ]
 
 
 def _has_pending_approval(events: Sequence[SessionEvent]) -> bool:
@@ -3467,13 +3497,16 @@ async def build_run_input(
                 run_mode=caller_run_mode,
                 run_trigger=RUN_TRIGGER_CHECKPOINT_RESUME,
             )
-            history = build_history_from_events(await service.get_events(resolved_session_id))
+            event_history = await service.get_events(resolved_session_id)
+            history = build_history_from_events(event_history)
+            responses_history = project_responses_history(event_history)
             return PreparedConversationTurn(
                 session_id=resolved_session_id,
                 invocation_id=resolved_invocation_id,
                 user_input="",
                 user_display_input="",
                 history=history,
+                responses_history=responses_history,
                 input_content=[],
                 input_messages=[],
                 user_parts=[],
@@ -3531,6 +3564,11 @@ async def build_run_input(
                 )
 
         resume_text = _format_resume_response_text(normalized_resume_input)
+        resume_event_metadata: dict[str, Any] = {"resume_input": normalized_resume_input}
+        if normalized_resume_input.get("call_id"):
+            resume_event_metadata["tool_call_id"] = str(normalized_resume_input["call_id"])
+        if "output" in normalized_resume_input:
+            resume_event_metadata["tool_output"] = normalized_resume_input.get("output")
         await append_conversation_event(
             session_id=resolved_session_id,
             author="user",
@@ -3539,7 +3577,7 @@ async def build_run_input(
             invocation_id=resolved_invocation_id,
             event_type="approval_response" if is_approval_resume else "tool_result",
             session_service_provider=provider,
-            metadata={"resume_input": normalized_resume_input},
+            metadata=resume_event_metadata,
         )
         if is_approval_resume and governance_state is not None:
             decision = normalized_resume_input.get("approval")
@@ -3555,13 +3593,16 @@ async def build_run_input(
                 session_service_provider=provider,
             )
         effective_resume_input = tool_resume_input or normalized_resume_input
-        history = build_history_from_events(await service.get_events(resolved_session_id))
+        event_history = await service.get_events(resolved_session_id)
+        history = build_history_from_events(event_history)
+        responses_history = project_responses_history(event_history)
         return PreparedConversationTurn(
             session_id=resolved_session_id,
             invocation_id=resolved_invocation_id,
             user_input=resume_text,
             user_display_input=resume_text,
             history=history,
+            responses_history=responses_history,
             input_content=[],
             input_messages=[],
             user_parts=[],
@@ -3648,13 +3689,20 @@ async def build_run_input(
         model_metadata=resolved_model_metadata,
         session_service_provider=provider,
     )
-    history = build_history_from_events(await service.get_events(resolved_session_id))
+    event_history = await service.get_events(resolved_session_id)
+    history = build_history_from_events(event_history)
+    responses_history = project_responses_history(event_history)
     request_history = build_request_history(normalized_messages[:-1])
     # Gateway / Responses callers may send full prompt context while the
     # runtime-local session is empty or stale (for example after pod
     # replacement). Preserve that request context, but do not duplicate it when
     # local session events already contain the same prefix.
     history = _merge_request_history_with_session_history(request_history, history)
+    request_responses_history = build_responses_history_from_messages(normalized_messages[:-1])
+    responses_history = _merge_responses_history_with_session_history(
+        request_responses_history,
+        responses_history,
+    )
 
     return PreparedConversationTurn(
         session_id=resolved_session_id,
@@ -3662,6 +3710,9 @@ async def build_run_input(
         user_input=user_input,
         user_display_input=user_display_input or user_input,
         history=history,
+        request_history=request_history,
+        request_responses_history=request_responses_history,
+        responses_history=responses_history,
         input_content=input_content,
         input_messages=input_messages,
         user_parts=user_parts,
@@ -3694,7 +3745,15 @@ async def _refresh_history(
     """在 compaction 后刷新 prepared turn 的 history 视图。"""
     provider = session_service_provider or resolve_session_service
     service = provider()
-    prepared.history = build_history_from_events(await service.get_events(prepared.session_id))
+    event_history = await service.get_events(prepared.session_id)
+    prepared.history = _merge_request_history_with_session_history(
+        prepared.request_history,
+        build_history_from_events(event_history),
+    )
+    prepared.responses_history = _merge_responses_history_with_session_history(
+        prepared.request_responses_history,
+        project_responses_history(event_history),
+    )
     return prepared
 
 
@@ -3836,6 +3895,7 @@ async def invoke_conversation_once(
                                 prepared=prepared,
                                 model=model,
                                 runtime_context=runtime_context,
+                                runner=runner,
                             )
                         )
                 break
@@ -4255,6 +4315,7 @@ async def _iter_conversation_turn_events(
                                 prepared=prepared,
                                 model=model,
                                 runtime_context=runtime_context,
+                                runner=runner,
                             )
                         )
                         while True:
@@ -4352,6 +4413,9 @@ async def _iter_conversation_turn_events(
                                 tool_args = chunk.get("tool_args", {})
                                 if not isinstance(tool_args, Mapping):
                                     tool_args = {}
+                                tool_call_id = str(
+                                    chunk.get("call_id") or chunk.get("run_id") or ""
+                                ).strip()
                                 await append_conversation_event(
                                     session_id=prepared.session_id,
                                     author=runner_name,
@@ -4363,6 +4427,7 @@ async def _iter_conversation_turn_events(
                                         "tool_name": chunk.get("tool_name"),
                                         "tool_args": dict(tool_args),
                                         "run_id": chunk.get("run_id"),
+                                        "tool_call_id": tool_call_id,
                                         "stage": chunk.get("stage") or tool_args.get("stage"),
                                         "event_kind": chunk.get("event_kind"),
                                         "display_title": chunk.get("display_title"),
@@ -4397,6 +4462,9 @@ async def _iter_conversation_turn_events(
                                 display_summary = str(
                                     chunk.get("display_summary") or chunk.get("text") or ""
                                 )
+                                tool_call_id = str(
+                                    chunk.get("call_id") or chunk.get("run_id") or ""
+                                ).strip()
                                 await append_conversation_event(
                                     session_id=prepared.session_id,
                                     author=runner_name,
@@ -4409,6 +4477,7 @@ async def _iter_conversation_turn_events(
                                         "tool_args": dict(tool_args),
                                         "tool_output": tool_output,
                                         "run_id": chunk.get("run_id"),
+                                        "tool_call_id": tool_call_id,
                                         "stage": chunk.get("stage") or tool_args.get("stage"),
                                         "event_kind": event_kind,
                                         "display_title": display_title,
@@ -4436,6 +4505,9 @@ async def _iter_conversation_turn_events(
                                 if not isinstance(tool_args, Mapping):
                                     tool_args = {}
                                 tool_run_id = str(chunk.get("run_id") or prepared.invocation_id)
+                                tool_call_id = str(
+                                    chunk.get("call_id") or chunk.get("run_id") or tool_run_id
+                                ).strip()
                                 checkpoint_metadata = _latest_checkpoint_metadata_for_run(
                                     await provider().get_events(prepared.session_id),
                                     tool_run_id,
@@ -4487,13 +4559,14 @@ async def _iter_conversation_turn_events(
                                         "tool_name": tool_name,
                                         "tool_output": chunk.get("tool_output", ""),
                                         "run_id": tool_run_id,
+                                        "tool_call_id": tool_call_id,
                                         "observability": _tool_observability_metadata(
                                             tool_name, chunk.get("tool_output", "")
                                         ),
                                         "tool_receipt": _tool_receipt_metadata(
                                             session_id=prepared.session_id,
                                             run_id=tool_run_id,
-                                            tool_call_id=tool_run_id,
+                                            tool_call_id=tool_call_id,
                                             tool_name=tool_name,
                                             tool_args=tool_args,
                                             checkpoint_id=checkpoint_metadata.get("checkpoint_id"),

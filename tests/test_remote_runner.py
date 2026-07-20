@@ -354,6 +354,104 @@ async def test_remote_runner_responses_stream_sends_hermes_conversation_and_hist
 
 
 @pytest.mark.asyncio
+async def test_remote_runner_responses_stream_forwards_structured_history_items(
+    monkeypatch,
+):
+    import httpx
+
+    _FakeAsyncClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+    runner = RemoteRunner(endpoint="https://agent.example.com", api_format="responses")
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "input": "继续搜索",
+                "session_id": "sess-1",
+                "responses_conversation": True,
+                "platform_context": {"agent_id": "demo-agent"},
+                "responses_history": [
+                    {"role": "assistant", "content": [{"type": "input_text", "text": "准备搜索"}]},
+                    {
+                        "type": "function_call",
+                        "call_id": "call-1",
+                        "name": "search",
+                        "arguments": '{"query":"openai"}',
+                    },
+                    {
+                        "type": "function_call_output",
+                        "call_id": "call-1",
+                        "output": '{"ok":true}',
+                    },
+                ],
+            }
+        )
+    ]
+
+    assert chunks
+    assert _FakeAsyncClient.calls[0]["json"]["conversation_history"] == [
+        {"role": "assistant", "content": [{"type": "input_text", "text": "准备搜索"}]},
+        {
+            "type": "function_call",
+            "call_id": "call-1",
+            "name": "search",
+            "arguments": '{"query":"openai"}',
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "call-1",
+            "output": '{"ok":true}',
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_remote_runner_responses_deduplicates_current_function_output_from_history(
+    monkeypatch,
+):
+    import httpx
+
+    _FakeAsyncClient.calls = []
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+    runner = RemoteRunner(endpoint="https://agent.example.com", api_format="responses")
+    current_output = {
+        "type": "function_call_output",
+        "call_id": "call-1",
+        "output": '{"ok":true}',
+    }
+
+    chunks = [
+        chunk
+        async for chunk in runner.stream(
+            {
+                "input": current_output,
+                "responses_history": [
+                    {
+                        "type": "function_call",
+                        "call_id": "call-1",
+                        "name": "search",
+                        "arguments": "{}",
+                    },
+                    current_output,
+                ],
+            }
+        )
+    ]
+
+    assert chunks
+    assert _FakeAsyncClient.calls[0]["json"]["input"] == [current_output]
+    assert _FakeAsyncClient.calls[0]["json"]["conversation_history"] == [
+        {
+            "type": "function_call",
+            "call_id": "call-1",
+            "name": "search",
+            "arguments": "{}",
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_remote_runner_responses_stream_does_not_mix_conversation_with_previous_response_id(
     monkeypatch,
 ):
@@ -372,6 +470,9 @@ async def test_remote_runner_responses_stream_does_not_mix_conversation_with_pre
                 "responses_conversation": True,
                 "previous_response_id": "resp_123",
                 "history": [{"role": "user", "content": "旧消息"}],
+                "responses_history": [
+                    {"role": "user", "content": [{"type": "input_text", "text": "旧消息"}]}
+                ],
                 "platform_context": {"agent_id": "demo-agent"},
             }
         )

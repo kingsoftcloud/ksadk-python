@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from ksadk.conversations.context import project_model_messages
+from ksadk.conversations.context import project_model_messages, project_responses_history
 from ksadk.sessions import SessionEvent
 from ksadk.tools.result_budget import ToolResultBudget, budget_tool_output
 
@@ -89,4 +89,85 @@ def test_project_model_messages_projects_persisted_tool_result_preview():
             "role": "user",
             "content": "[tool_result] short preview\n[persisted-output] sessions/sess-1/tool-results/call.stdout.txt (text/plain)",
         }
+    ]
+
+
+def test_project_responses_history_preserves_tool_items_after_checkpoint():
+    events = [
+        SessionEvent(
+            id="evt-checkpoint",
+            session_id="sess-1",
+            author="agent",
+            event_type="context_checkpoint",
+            content={"text": "Earlier conversation summary: found the workspace."},
+            metadata={"compacted_until_seq_id": 3},
+            seq_id=4,
+        ),
+        SessionEvent(
+            id="evt-call",
+            session_id="sess-1",
+            author="agent",
+            event_type="tool_call",
+            content={"role": "model", "parts": [{"text": "search"}]},
+            metadata={
+                "tool_name": "search",
+                "tool_args": {"query": "openai"},
+                "run_id": "call-1",
+            },
+            seq_id=5,
+        ),
+        SessionEvent(
+            id="evt-result",
+            session_id="sess-1",
+            author="tool",
+            event_type="tool_result",
+            content={"role": "tool", "parts": [{"text": "ignored preview"}]},
+            metadata={
+                "tool_name": "search",
+                "tool_output": {"ok": True, "items": ["a"]},
+                "run_id": "call-1",
+            },
+            seq_id=6,
+        ),
+    ]
+
+    assert project_responses_history(events) == [
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": "Earlier conversation summary: found the workspace.",
+                }
+            ],
+        },
+        {
+            "type": "function_call",
+            "call_id": "call-1",
+            "name": "search",
+            "arguments": '{"query":"openai"}',
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "call-1",
+            "output": '{"ok":true,"items":["a"]}',
+        },
+    ]
+
+
+def test_project_responses_history_does_not_emit_orphan_tool_output():
+    events = [
+        SessionEvent(
+            id="evt-result",
+            session_id="sess-1",
+            author="tool",
+            event_type="tool_result",
+            content={"role": "tool", "parts": [{"text": "result"}]},
+            metadata={"tool_output": {"ok": True}, "run_id": "missing-call"},
+            seq_id=1,
+        )
+    ]
+
+    assert project_responses_history(events) == [
+        {"role": "user", "content": [{"type": "input_text", "text": "[tool_result] result"}]}
     ]
