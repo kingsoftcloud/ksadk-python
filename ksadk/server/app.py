@@ -93,6 +93,8 @@ SSE_HEARTBEAT_INTERVAL_SECONDS = max(
     1.0,
     float(os.getenv("AGENTENGINE_SSE_HEARTBEAT_SECONDS", "15")),
 )
+_EVENT_SCAN_PAGE_SIZE = 500
+_MAX_PREVIEW_TOOL_RECEIPTS = 500
 
 
 def _parse_iso_datetime(value: Any) -> datetime | None:
@@ -158,13 +160,12 @@ class _DetachedSSEStream:
     async def _has_terminal_run_status(self) -> bool:
         if not self.session_id or not self.invocation_id:
             return False
-        service = resolve_session_service()
-        for event in reversed(await service.get_events(self.session_id)):
-            if event.invocation_id != self.invocation_id or event.event_type != "run_status":
-                continue
-            status = str((event.content or {}).get("status") or "").strip().lower()
-            return status in _RUN_TERMINAL_STATUSES
-        return False
+        status = await _latest_invocation_status(
+            resolve_session_service(),
+            self.session_id,
+            self.invocation_id,
+        )
+        return status in _RUN_TERMINAL_STATUSES
 
     async def _consume(self) -> None:
         terminal_fallback_status: str | None = None
@@ -1069,6 +1070,8 @@ class ListSessionsActionRequest(BaseModel):
 
 class SessionIdRequest(BaseModel):
     SessionId: str
+    AgentId: Optional[str] = None
+    UserId: Optional[str] = None
 
 
 class ListSessionEventsActionRequest(BaseModel):
@@ -1076,12 +1079,14 @@ class ListSessionEventsActionRequest(BaseModel):
     SessionId: Optional[str] = None
     UserId: Optional[str] = None
     Offset: Optional[int] = Field(None, ge=0)
-    Limit: Optional[int] = Field(None, ge=1)
+    Limit: int = Field(200, ge=1, le=2000)
     AfterSeqId: Optional[int] = Field(None, ge=0)
     BeforeSeqId: Optional[int] = Field(None, ge=1)
 
 
 class ListSessionMessagesActionRequest(BaseModel):
+    AgentId: Optional[str] = None
+    UserId: Optional[str] = None
     SessionId: str
     AfterSeqId: Optional[int] = Field(None, ge=0)
     BeforeSeqId: Optional[int] = Field(None, ge=1)
@@ -1099,18 +1104,22 @@ class ListSessionCheckpointsActionRequest(BaseModel):
     OnlyResumable: bool = False
     Framework: Optional[str] = None
     Offset: Optional[int] = Field(None, ge=0)
-    Limit: Optional[int] = Field(None, ge=1, le=500)
+    Limit: int = Field(100, ge=1, le=500)
 
 
 class ListToolReceiptsActionRequest(BaseModel):
     AgentId: str
+    UserId: Optional[str] = None
     SessionId: str
     RunId: Optional[str] = None
     CheckpointId: Optional[str] = None
+    Offset: int = Field(0, ge=0)
+    Limit: int = Field(200, ge=1, le=500)
 
 
 class ResumeRunActionRequest(BaseModel):
     AgentId: str
+    UserId: Optional[str] = None
     SessionId: str
     RunId: str
     CheckpointId: str
@@ -1127,6 +1136,7 @@ class ResumeRunActionRequest(BaseModel):
 
 class GetCheckpointResumePreviewActionRequest(BaseModel):
     AgentId: str
+    UserId: Optional[str] = None
     SessionId: str
     RunId: str
     CheckpointId: str
@@ -1189,7 +1199,7 @@ class ResponsesRequest(BaseModel):
         public_items = [
             (key, item)
             for key, item in value.items()
-            if not (key == "agentengine" and isinstance(item, Mapping))
+            if key != "agentengine"
         ]
         if len(public_items) > 16:
             raise ValueError("Responses metadata supports at most 16 key-value pairs")
@@ -1281,9 +1291,9 @@ def _split_custom_metadata(
     public_metadata = dict(metadata or {})
     runtime_metadata: dict[str, Any] = {}
     agentengine_metadata = public_metadata.get("agentengine")
+    public_metadata.pop("agentengine", None)
     if isinstance(agentengine_metadata, Mapping):
         runtime_metadata["agentengine"] = dict(agentengine_metadata)
-        public_metadata.pop("agentengine", None)
     return public_metadata, runtime_metadata
 
 
@@ -1421,7 +1431,28 @@ class WorkspaceDeleteActionRequest(BaseModel):
 
 class CancelRunActionRequest(BaseModel):
     AgentId: Optional[str] = None
+    UserId: Optional[str] = None
+    SessionId: Optional[str] = None
     InvocationId: str
+
+
+async def _require_action_session(
+    service,
+    *,
+    session_id: str,
+    agent_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+) -> Session:
+    """Resolve one runtime session while enforcing every supplied scope."""
+
+    session = await service.get_session_metadata(str(session_id or "").strip())
+    if (
+        session is None
+        or (agent_id is not None and session.agent_id != agent_id)
+        or (user_id is not None and session.user_id != user_id)
+    ):
+        raise HTTPException(status_code=404, detail="Session not found")
+    return session
 
 
 async def _session_to_action_payload(session: Session) -> dict[str, Any]:
@@ -1855,28 +1886,16 @@ def _tool_receipt_event_to_action_payload(event: SessionEvent) -> dict[str, Any]
 def _build_checkpoint_resume_preview(
     *,
     checkpoint: Mapping[str, Any],
-    events: list[SessionEvent],
+    receipts: list[dict[str, Any]],
+    receipt_total: int,
+    side_effect_receipt_count: int,
+    failed_receipt_count: int,
 ) -> dict[str, Any]:
-    checkpoint_seq_id = int(checkpoint.get("SeqId") or 0)
     run_id = str(checkpoint.get("RunId") or "")
-    receipts: list[dict[str, Any]] = []
-    for event in events:
-        if checkpoint_seq_id and int(event.seq_id or 0) > checkpoint_seq_id:
-            continue
-        receipt = _tool_receipt_event_to_action_payload(event)
-        if receipt is None:
-            continue
-        if run_id and receipt["RunId"] and receipt["RunId"] != run_id:
-            continue
-        receipts.append(receipt)
-
-    side_effect_receipts = [
-        receipt for receipt in receipts if receipt["ToolName"] in _SIDE_EFFECT_TOOL_NAMES
-    ]
     risk_level = "low"
-    if side_effect_receipts:
+    if side_effect_receipt_count:
         risk_level = "medium"
-    if any(receipt["Status"] == "failed" for receipt in receipts):
+    if failed_receipt_count:
         risk_level = "high"
 
     return {
@@ -1896,19 +1915,18 @@ def _build_checkpoint_resume_preview(
             else ("preview_required" if checkpoint.get("ResumeStatus") == "unknown" else "disabled")
         ),
         "ToolReceipts": receipts,
+        "ToolReceiptsTruncated": receipt_total > len(receipts),
         "Risk": {
             "Level": risk_level,
-            "DuplicateSideEffectRisk": bool(side_effect_receipts),
-            "SideEffectReceiptCount": len(side_effect_receipts),
-            "FailedReceiptCount": len(
-                [receipt for receipt in receipts if receipt["Status"] == "failed"]
-            ),
+            "DuplicateSideEffectRisk": side_effect_receipt_count > 0,
+            "SideEffectReceiptCount": side_effect_receipt_count,
+            "FailedReceiptCount": failed_receipt_count,
         },
         "Summary": {
             "RunId": run_id,
             "CheckpointId": str(checkpoint.get("CheckpointId") or ""),
             "Phase": str(checkpoint.get("Phase") or ""),
-            "ToolReceiptCount": len(receipts),
+            "ToolReceiptCount": receipt_total,
         },
     }
 
@@ -1929,6 +1947,264 @@ def _checkpoint_resume_disabled_detail(checkpoint: Mapping[str, Any]) -> dict[st
     }
 
 
+async def _iter_session_event_pages(
+    service: Any,
+    session_id: str,
+    *,
+    after_seq_id: int | None = None,
+    before_seq_id: int | None = None,
+) -> AsyncIterator[list[SessionEvent]]:
+    remaining = await service.count_events(
+        session_id,
+        after_seq_id=after_seq_id,
+        before_seq_id=before_seq_id,
+    )
+    while remaining > 0:
+        page_size = min(_EVENT_SCAN_PAGE_SIZE, remaining)
+        page = await service.get_events(
+            session_id,
+            offset=remaining - page_size,
+            limit=page_size,
+            after_seq_id=after_seq_id,
+            before_seq_id=before_seq_id,
+        )
+        if not page:
+            return
+        yield page
+        remaining -= len(page)
+
+
+def _event_invocation_id(event: SessionEvent) -> str:
+    return str(event.invocation_id or "").strip()
+
+
+async def _extend_invocation_before_window(
+    service: Any,
+    session_id: str,
+    events: list[SessionEvent],
+    *,
+    after_seq_id: int | None,
+) -> list[SessionEvent]:
+    if not events:
+        return events
+    invocation_id = _event_invocation_id(events[0])
+    if not invocation_id:
+        return events
+    cursor = int(events[0].seq_id or 0)
+    prefix: list[SessionEvent] = []
+    while cursor > 0:
+        page = await service.get_events(
+            session_id,
+            limit=_EVENT_SCAN_PAGE_SIZE,
+            after_seq_id=after_seq_id,
+            before_seq_id=cursor,
+        )
+        if not page:
+            break
+        matching_suffix: list[SessionEvent] = []
+        for event in reversed(page):
+            if _event_invocation_id(event) != invocation_id:
+                break
+            matching_suffix.append(event)
+        if not matching_suffix:
+            break
+        matching_suffix.reverse()
+        prefix[0:0] = matching_suffix
+        cursor = int(matching_suffix[0].seq_id or 0)
+        if len(matching_suffix) < len(page):
+            break
+    return [*prefix, *events]
+
+
+async def _extend_invocation_after_window(
+    service: Any,
+    session_id: str,
+    events: list[SessionEvent],
+    *,
+    before_seq_id: int | None,
+) -> list[SessionEvent]:
+    if not events:
+        return events
+    invocation_id = _event_invocation_id(events[-1])
+    if not invocation_id:
+        return events
+    cursor = int(events[-1].seq_id or 0)
+    suffix: list[SessionEvent] = []
+    while True:
+        remaining = await service.count_events(
+            session_id,
+            after_seq_id=cursor,
+            before_seq_id=before_seq_id,
+        )
+        if remaining <= 0:
+            break
+        page_size = min(_EVENT_SCAN_PAGE_SIZE, remaining)
+        page = await service.get_events(
+            session_id,
+            offset=remaining - page_size,
+            limit=page_size,
+            after_seq_id=cursor,
+            before_seq_id=before_seq_id,
+        )
+        if not page:
+            break
+        matching_prefix: list[SessionEvent] = []
+        for event in page:
+            if _event_invocation_id(event) != invocation_id:
+                break
+            matching_prefix.append(event)
+        if not matching_prefix:
+            break
+        suffix.extend(matching_prefix)
+        cursor = int(matching_prefix[-1].seq_id or 0)
+        if len(matching_prefix) < len(page):
+            break
+    return [*events, *suffix]
+
+
+async def _iter_agent_event_pages(
+    service: Any,
+    agent_id: str,
+    *,
+    user_id: str | None = None,
+) -> AsyncIterator[list[SessionEvent]]:
+    remaining = await service.count_events_for_agent(agent_id, user_id=user_id)
+    while remaining > 0:
+        page_size = min(_EVENT_SCAN_PAGE_SIZE, remaining)
+        page = await service.get_events_for_agent(
+            agent_id,
+            user_id=user_id,
+            offset=remaining - page_size,
+            limit=page_size,
+        )
+        if not page:
+            return
+        yield page
+        remaining -= len(page)
+
+
+async def _iter_scoped_event_pages(
+    service: Any,
+    *,
+    session_id: str | None,
+    agent_id: str,
+    user_id: str | None,
+) -> AsyncIterator[list[SessionEvent]]:
+    if session_id:
+        async for page in _iter_session_event_pages(service, session_id):
+            yield page
+        return
+    async for page in _iter_agent_event_pages(service, agent_id, user_id=user_id):
+        yield page
+
+
+async def _session_contains_invocation(
+    service: Any,
+    session_id: str,
+    invocation_id: str,
+) -> bool:
+    async for page in _iter_session_event_pages(service, session_id):
+        if any(event.invocation_id == invocation_id for event in page):
+            return True
+    return False
+
+
+async def _agent_contains_invocation(
+    service: Any,
+    agent_id: str,
+    invocation_id: str,
+    *,
+    user_id: str | None,
+) -> bool:
+    async for page in _iter_agent_event_pages(service, agent_id, user_id=user_id):
+        if any(event.invocation_id == invocation_id for event in page):
+            return True
+    return False
+
+
+async def _latest_invocation_status(
+    service: Any,
+    session_id: str,
+    invocation_id: str,
+) -> str:
+    offset = 0
+    total = await service.count_events(session_id)
+    while offset < total:
+        page = await service.get_events(
+            session_id,
+            offset=offset,
+            limit=min(_EVENT_SCAN_PAGE_SIZE, total - offset),
+        )
+        if not page:
+            break
+        for event in reversed(page):
+            if event.invocation_id != invocation_id or event.event_type != "run_status":
+                continue
+            return str((event.content or {}).get("status") or "").strip().lower()
+        offset += len(page)
+    return ""
+
+
+async def _oldest_unconsumed_session_events(
+    service: Any,
+    session_id: str,
+    *,
+    after_seq_id: int,
+) -> list[SessionEvent]:
+    remaining = await service.count_events(session_id, after_seq_id=after_seq_id)
+    if remaining <= 0:
+        return []
+    page_size = min(_EVENT_SCAN_PAGE_SIZE, remaining)
+    return await service.get_events(
+        session_id,
+        offset=remaining - page_size,
+        limit=page_size,
+        after_seq_id=after_seq_id,
+    )
+
+
+def _record_resume_audit(
+    audit_by_session: dict[str, dict[tuple[str, str], dict[str, Any]]],
+    event: SessionEvent,
+) -> None:
+    if event.event_type != "run_resume":
+        return
+    metadata = event.metadata or {}
+    run_id = str(metadata.get("run_id") or "").strip()
+    checkpoint_id = str(metadata.get("checkpoint_id") or "").strip()
+    if not run_id or not checkpoint_id:
+        return
+    session_audit = audit_by_session.setdefault(event.session_id, {})
+    item = session_audit.setdefault(
+        (run_id, checkpoint_id),
+        {"resume_count": 0, "last_resumed_at": None},
+    )
+    item["resume_count"] = int(item["resume_count"]) + 1
+    item["last_resumed_at"] = event.timestamp
+
+
+def _apply_latest_checkpoint_policy(
+    checkpoint: dict[str, Any],
+    latest_by_session_run: Mapping[tuple[str, str], int],
+    *,
+    session_id: str,
+) -> dict[str, Any]:
+    metadata = checkpoint.get("Metadata") or {}
+    if not metadata.get("only_latest_resumable"):
+        return checkpoint
+    run_id = str(checkpoint.get("RunId") or "")
+    if int(checkpoint.get("SeqId") or 0) >= latest_by_session_run.get((session_id, run_id), 0):
+        return checkpoint
+    if checkpoint.get("IsResumable") is True:
+        checkpoint["IsResumable"] = False
+        checkpoint["ResumeStatus"] = "disabled"
+        checkpoint["ResumeDisabledReason"] = "新的恢复点已生成，此恢复点暂停恢复能力"
+        metadata["resume_disabled_reason"] = checkpoint["ResumeDisabledReason"]
+        metadata["resume_status"] = "disabled"
+        checkpoint["Metadata"] = metadata
+    return checkpoint
+
+
 async def _find_session_checkpoint(
     *,
     service: Any,
@@ -1936,20 +2212,39 @@ async def _find_session_checkpoint(
     run_id: str,
     checkpoint_id: str,
 ) -> dict[str, Any] | None:
-    events = await service.get_events(session_id)
-    resume_audit = _resume_audit_by_checkpoint(events)
-    for event in reversed(events):
-        checkpoint = _checkpoint_event_to_action_payload(event)
-        if checkpoint is None:
-            continue
-        checkpoint = _apply_checkpoint_resume_audit(checkpoint, resume_audit)
-        if checkpoint["RunId"] != run_id:
-            continue
-        if checkpoint["CheckpointId"] != checkpoint_id:
-            continue
-        checkpoint = _check_adk_latest_resumable(checkpoint, events)
-        return checkpoint
-    return None
+    audit_by_session: dict[str, dict[tuple[str, str], dict[str, Any]]] = {}
+    latest_by_session_run: dict[tuple[str, str], int] = {}
+    candidate_event: SessionEvent | None = None
+    async for page in _iter_session_event_pages(service, session_id):
+        for event in page:
+            _record_resume_audit(audit_by_session, event)
+            checkpoint = _checkpoint_event_to_action_payload(event)
+            if checkpoint is None:
+                continue
+            metadata = checkpoint.get("Metadata") or {}
+            checkpoint_run_id = str(checkpoint.get("RunId") or "")
+            if metadata.get("only_latest_resumable"):
+                key = (session_id, checkpoint_run_id)
+                latest_by_session_run[key] = max(
+                    latest_by_session_run.get(key, 0),
+                    int(checkpoint.get("SeqId") or 0),
+                )
+            if checkpoint_run_id == run_id and checkpoint.get("CheckpointId") == checkpoint_id:
+                candidate_event = event
+    if candidate_event is None:
+        return None
+    checkpoint = _checkpoint_event_to_action_payload(candidate_event)
+    if checkpoint is None:
+        return None
+    checkpoint = _apply_checkpoint_resume_audit(
+        checkpoint,
+        audit_by_session.get(session_id, {}),
+    )
+    return _apply_latest_checkpoint_policy(
+        checkpoint,
+        latest_by_session_run,
+        session_id=session_id,
+    )
 
 
 async def _resolve_checkpoint_resume_input_from_session(
@@ -2259,6 +2554,7 @@ async def list_sessions_action(request: ListSessionsActionRequest):
             "PageSize": request.PageSize,
             "DataSource": "runtime",
             "Degraded": False,
+            "SessionContractVersion": 2,
         },
     )
 
@@ -2266,15 +2562,25 @@ async def list_sessions_action(request: ListSessionsActionRequest):
 @app.post("/agentengine/api/v1/GetSession")
 async def get_session_action(request: SessionIdRequest):
     service = resolve_session_service()
-    session = await _hydrate_session(await service.get_session(request.SessionId))
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+    session = await _require_action_session(
+        service,
+        session_id=request.SessionId,
+        agent_id=request.AgentId,
+        user_id=request.UserId,
+    )
+    session = await _hydrate_session(session)
     return _action_response("GetSession", {"Session": await _session_to_action_payload(session)})
 
 
 @app.post("/agentengine/api/v1/DeleteSession")
 async def delete_session_action(request: SessionIdRequest):
     service = resolve_session_service()
+    await _require_action_session(
+        service,
+        session_id=request.SessionId,
+        agent_id=request.AgentId,
+        user_id=request.UserId,
+    )
     await _cancel_detached_streams_for_session(request.SessionId)
     deleted = await service.delete_session(request.SessionId)
     if not deleted:
@@ -2311,13 +2617,12 @@ async def list_session_events_action(request: ListSessionEventsActionRequest):
                 "ScopedAllSessions": True,
             },
         )
-    session = await service.get_session(session_id)
-    if (
-        session is None
-        or (request.AgentId is not None and session.agent_id != request.AgentId)
-        or (request.UserId is not None and session.user_id != request.UserId)
-    ):
-        raise HTTPException(status_code=404, detail="Session not found")
+    await _require_action_session(
+        service,
+        session_id=session_id,
+        agent_id=request.AgentId,
+        user_id=request.UserId,
+    )
     events = await service.get_events(
         session_id,
         offset=request.Offset,
@@ -2348,33 +2653,119 @@ async def list_session_messages_action(request: ListSessionMessagesActionRequest
     from ksadk.conversations.message_projection import project_session_messages
 
     service = resolve_session_service()
+    await _require_action_session(
+        service,
+        session_id=request.SessionId,
+        agent_id=request.AgentId,
+        user_id=request.UserId,
+    )
+    total_events = await service.count_events(
+        request.SessionId,
+        after_seq_id=request.AfterSeqId,
+        before_seq_id=request.BeforeSeqId,
+    )
+    event_offset = 0
+    if request.AfterSeqId is not None and total_events > 2000:
+        # Storage pagination is tail-based. Offset past the newest surplus so
+        # reconnect starts with the oldest unseen window and cannot skip gaps.
+        event_offset = total_events - 2000
     events = await service.get_events(
         request.SessionId,
-        offset=0,
+        offset=event_offset,
         limit=2000,
         after_seq_id=request.AfterSeqId,
         before_seq_id=request.BeforeSeqId,
     )
-    serialized_events = [_event_to_action_payload(event) for event in events]
-    messages = project_session_messages(
-        serialized_events,
-        include_reasoning=request.IncludeReasoning,
-        include_tool_events=request.IncludeToolEvents,
-        include_attachments=request.IncludeAttachments,
-    )
+    def project(events_to_project: list[SessionEvent]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        serialized = [_event_to_action_payload(event) for event in events_to_project]
+        return serialized, project_session_messages(
+            serialized,
+            include_reasoning=request.IncludeReasoning,
+            include_tool_events=request.IncludeToolEvents,
+            include_attachments=request.IncludeAttachments,
+        )
+
+    serialized_events, messages = project(events)
     if request.AfterSeqId is not None:
+        if total_events > len(events):
+            events = await _extend_invocation_after_window(
+                service,
+                request.SessionId,
+                events,
+                before_seq_id=request.BeforeSeqId,
+            )
+            serialized_events, messages = project(events)
         page = messages
-        has_more = False
+        has_more = total_events > len(serialized_events)
         next_cursor = None
     else:
-        page = messages[-request.Limit :]
-        minimum_seq_id = int(page[0].get("SeqId") or 0) if page else 0
-        has_more = minimum_seq_id > 1 or len(serialized_events) >= 2000
-        next_cursor = minimum_seq_id - 1 if has_more else None
+        page_start = len(messages)
+        while page_start > 0:
+            group_start_seq_id = int(messages[page_start - 1].get("StartSeqId") or 0)
+            group_start_index = next(
+                (
+                    index
+                    for index, message in enumerate(messages[:page_start])
+                    if int(message.get("StartSeqId") or 0) == group_start_seq_id
+                ),
+                page_start - 1,
+            )
+            current_size = len(messages) - page_start
+            group_size = page_start - group_start_index
+            if current_size and current_size + group_size > request.Limit:
+                break
+            page_start = group_start_index
+            if len(messages) - page_start >= request.Limit:
+                break
+        page = messages[page_start:]
+        if (
+            page
+            and events
+            and total_events > len(events)
+            and _event_invocation_id(events[0])
+            and any(
+                str(message.get("InvocationId") or "") == _event_invocation_id(events[0])
+                for message in page
+            )
+        ):
+            events = await _extend_invocation_before_window(
+                service,
+                request.SessionId,
+                events,
+                after_seq_id=request.AfterSeqId,
+            )
+            serialized_events, messages = project(events)
+            page_start = len(messages)
+            while page_start > 0:
+                group_start_seq_id = int(messages[page_start - 1].get("StartSeqId") or 0)
+                group_start_index = next(
+                    (
+                        index
+                        for index, message in enumerate(messages[:page_start])
+                        if int(message.get("StartSeqId") or 0) == group_start_seq_id
+                    ),
+                    page_start - 1,
+                )
+                current_size = len(messages) - page_start
+                group_size = page_start - group_start_index
+                if current_size and current_size + group_size > request.Limit:
+                    break
+                page_start = group_start_index
+                if len(messages) - page_start >= request.Limit:
+                    break
+            page = messages[page_start:]
+        minimum_start_seq_id = int(page[0].get("StartSeqId") or 0) if page else 0
+        has_more = page_start > 0 or total_events > len(serialized_events)
+        # BeforeSeqId is exclusive. Use the invocation group boundary so the
+        # next page cannot duplicate reasoning/tools or skip its user message.
+        next_cursor = minimum_start_seq_id if has_more else None
     latest_seq_id = (
         int(page[-1].get("SeqId") or 0)
         if page
-        else max((int(event.get("SeqId") or 0) for event in serialized_events), default=0)
+        else max(
+            (int(event.get("SeqId") or 0) for event in serialized_events),
+            default=int(request.AfterSeqId or 0),
+        )
     )
     return _action_response(
         "ListSessionMessages",
@@ -2417,65 +2808,101 @@ async def _list_checkpoints_payload(request: ListSessionCheckpointsActionRequest
 
     session_id = str(request.SessionId or "").strip()
     if session_id:
-        session = await service.get_session(session_id)
-        if (
-            not session
-            or session.agent_id != request.AgentId
-            or (request.UserId is not None and session.user_id != request.UserId)
-        ):
-            raise HTTPException(status_code=404, detail="Session not found")
-        scoped_events = await service.get_events(session.id)
-        if run_id_filter and not any(
-            _event_run_id(event) == run_id_filter for event in scoped_events
-        ):
-            raise HTTPException(
-                status_code=409,
-                detail="RunId does not belong to SessionId",
-            )
-        events_by_session: list[tuple[str, list[SessionEvent]]] = [(session.id, scoped_events)]
-    else:
-        # 未传 SessionId：返回该 agent 全部会话的 checkpoint（存储层跨会话查询，无截断）
-        # 全局时间序下同会话事件可能不连续,resume audit 必须按会话分组后逐组计算
-        grouped: dict[str, list[SessionEvent]] = {}
-        for event in await service.get_events_for_agent(
-            request.AgentId,
+        await _require_action_session(
+            service,
+            session_id=session_id,
+            agent_id=request.AgentId,
             user_id=request.UserId,
-        ):
-            grouped.setdefault(event.session_id, []).append(event)
-        events_by_session = list(grouped.items())
+        )
 
-    checkpoints: list[dict[str, Any]] = []
-    for _session_id, events in events_by_session:
-        resume_audit = _resume_audit_by_checkpoint(events)
-        for event in events:
+    audit_by_session: dict[str, dict[tuple[str, str], dict[str, Any]]] = {}
+    latest_by_session_run: dict[tuple[str, str], int] = {}
+    run_seen = not run_id_filter
+    async for page in _iter_scoped_event_pages(
+        service,
+        session_id=session_id or None,
+        agent_id=request.AgentId,
+        user_id=request.UserId,
+    ):
+        for event in page:
+            if run_id_filter and _event_run_id(event) == run_id_filter:
+                run_seen = True
+            _record_resume_audit(audit_by_session, event)
             checkpoint = _checkpoint_event_to_action_payload(event)
+            if checkpoint is None or not (checkpoint.get("Metadata") or {}).get(
+                "only_latest_resumable"
+            ):
+                continue
+            key = (event.session_id, str(checkpoint.get("RunId") or ""))
+            latest_by_session_run[key] = max(
+                latest_by_session_run.get(key, 0),
+                int(checkpoint.get("SeqId") or 0),
+            )
+    if session_id and not run_seen:
+        raise HTTPException(status_code=409, detail="RunId does not belong to SessionId")
+
+    def project_checkpoint(event: SessionEvent) -> dict[str, Any] | None:
+        checkpoint = _checkpoint_event_to_action_payload(event)
+        if checkpoint is None:
+            return None
+        checkpoint = _apply_checkpoint_resume_audit(
+            checkpoint,
+            audit_by_session.get(event.session_id, {}),
+        )
+        checkpoint = _apply_latest_checkpoint_policy(
+            checkpoint,
+            latest_by_session_run,
+            session_id=event.session_id,
+        )
+        if run_id_filter and checkpoint["RunId"] != run_id_filter:
+            return None
+        if framework_filter and str(checkpoint["Framework"]).lower() != framework_filter:
+            return None
+        return checkpoint
+
+    total = 0
+    resumable_total = 0
+    async for page in _iter_scoped_event_pages(
+        service,
+        session_id=session_id or None,
+        agent_id=request.AgentId,
+        user_id=request.UserId,
+    ):
+        for event in page:
+            checkpoint = project_checkpoint(event)
             if checkpoint is None:
                 continue
-            checkpoint = _apply_checkpoint_resume_audit(checkpoint, resume_audit)
-            if run_id_filter and checkpoint["RunId"] != run_id_filter:
+            if checkpoint.get("IsResumable") is True:
+                resumable_total += 1
+            if request.OnlyResumable and checkpoint.get("IsResumable") is not True:
                 continue
-            if framework_filter and str(checkpoint["Framework"]).lower() != framework_filter:
-                continue
-            # ResumableTotal 在 OnlyResumable 过滤前统计全量可恢复数（RunId/Framework 范围内）
-            checkpoints.append(checkpoint)
-    if not session_id:
-        checkpoints.sort(
-            key=lambda cp: (
-                float(cp.get("Timestamp") or 0),
-                int(cp.get("SeqId") or 0),
-                str(cp.get("CheckpointId") or ""),
-            )
-        )
-    checkpoints = _apply_adk_only_latest_resumable(checkpoints)
-    resumable_total = _count_resumable_checkpoints(checkpoints)
-    if request.OnlyResumable:
-        checkpoints = [cp for cp in checkpoints if cp.get("IsResumable") is True]
-    total = len(checkpoints)
+            total += 1
+
     offset = int(request.Offset or 0)
-    if request.Limit is not None:
-        checkpoints = checkpoints[offset : offset + int(request.Limit)]
-    elif offset:
-        checkpoints = checkpoints[offset:]
+    limit = int(request.Limit)
+    window_end = max(total - offset, 0)
+    window_start = max(window_end - limit, 0)
+    checkpoints: list[dict[str, Any]] = []
+    filtered_index = 0
+    async for page in _iter_scoped_event_pages(
+        service,
+        session_id=session_id or None,
+        agent_id=request.AgentId,
+        user_id=request.UserId,
+    ):
+        for event in page:
+            checkpoint = project_checkpoint(event)
+            if checkpoint is None:
+                continue
+            if request.OnlyResumable and checkpoint.get("IsResumable") is not True:
+                continue
+            if window_start <= filtered_index < window_end:
+                checkpoints.append(checkpoint)
+            filtered_index += 1
+            if filtered_index >= window_end:
+                break
+        if filtered_index >= window_end:
+            break
 
     return {
         "Checkpoints": checkpoints,
@@ -2483,7 +2910,7 @@ async def _list_checkpoints_payload(request: ListSessionCheckpointsActionRequest
         "ResumableTotal": resumable_total,
         "HasResumableCheckpoint": resumable_total > 0,
         "Offset": offset,
-        "Limit": request.Limit if request.Limit is not None else len(checkpoints),
+        "Limit": limit,
     }
 
 
@@ -2495,67 +2922,128 @@ async def list_session_checkpoints_action(request: ListSessionCheckpointsActionR
 @app.post("/agentengine/api/v1/ListToolReceipts")
 async def list_tool_receipts_action(request: ListToolReceiptsActionRequest):
     service = resolve_session_service()
-    session = await service.get_session(request.SessionId)
-    if not session or session.agent_id != request.AgentId:
-        raise HTTPException(status_code=404, detail="Session not found")
+    await _require_action_session(
+        service,
+        session_id=request.SessionId,
+        agent_id=request.AgentId,
+        user_id=request.UserId,
+    )
 
     run_id_filter = str(request.RunId or "").strip()
     checkpoint_id_filter = str(request.CheckpointId or "").strip()
+    total = 0
+    async for page in _iter_session_event_pages(service, request.SessionId):
+        for event in page:
+            receipt = _tool_receipt_event_to_action_payload(event)
+            if receipt is None:
+                continue
+            if run_id_filter and receipt["RunId"] != run_id_filter:
+                continue
+            if checkpoint_id_filter and receipt["CheckpointId"] != checkpoint_id_filter:
+                continue
+            total += 1
+
+    offset = int(request.Offset)
+    limit = int(request.Limit)
+    window_end = max(total - offset, 0)
+    window_start = max(window_end - limit, 0)
     receipts: list[dict[str, Any]] = []
-    for event in await service.get_events(request.SessionId):
-        receipt = _tool_receipt_event_to_action_payload(event)
-        if receipt is None:
-            continue
-        if run_id_filter and receipt["RunId"] != run_id_filter:
-            continue
-        if checkpoint_id_filter and receipt["CheckpointId"] != checkpoint_id_filter:
-            continue
-        receipts.append(receipt)
+    filtered_index = 0
+    async for page in _iter_session_event_pages(service, request.SessionId):
+        for event in page:
+            receipt = _tool_receipt_event_to_action_payload(event)
+            if receipt is None:
+                continue
+            if run_id_filter and receipt["RunId"] != run_id_filter:
+                continue
+            if checkpoint_id_filter and receipt["CheckpointId"] != checkpoint_id_filter:
+                continue
+            if window_start <= filtered_index < window_end:
+                receipts.append(receipt)
+            filtered_index += 1
+            if filtered_index >= window_end:
+                break
+        if filtered_index >= window_end:
+            break
 
     return _action_response(
         "ListToolReceipts",
-        {"ToolReceipts": receipts},
+        {
+            "ToolReceipts": receipts,
+            "Total": total,
+            "Offset": offset,
+            "Limit": limit,
+        },
     )
 
 
 @app.post("/agentengine/api/v1/GetCheckpointResumePreview")
 async def get_checkpoint_resume_preview_action(request: GetCheckpointResumePreviewActionRequest):
     service = resolve_session_service()
-    session = await service.get_session(request.SessionId)
-    if not session or session.agent_id != request.AgentId:
-        raise HTTPException(status_code=404, detail="Session not found")
+    await _require_action_session(
+        service,
+        session_id=request.SessionId,
+        agent_id=request.AgentId,
+        user_id=request.UserId,
+    )
 
-    events = await service.get_events(request.SessionId)
-    resume_audit = _resume_audit_by_checkpoint(events)
-    checkpoint = None
-    for event in reversed(events):
-        candidate = _checkpoint_event_to_action_payload(event)
-        if candidate is None:
-            continue
-        candidate = _apply_checkpoint_resume_audit(candidate, resume_audit)
-        if candidate["RunId"] != str(request.RunId):
-            continue
-        if candidate["CheckpointId"] != str(request.CheckpointId):
-            continue
-        checkpoint = candidate
-        break
+    checkpoint = await _find_session_checkpoint(
+        service=service,
+        session_id=request.SessionId,
+        run_id=str(request.RunId),
+        checkpoint_id=str(request.CheckpointId),
+    )
     if checkpoint is None:
         raise HTTPException(status_code=404, detail="Checkpoint not found")
 
-    checkpoint = _check_adk_latest_resumable(checkpoint, events)
+    checkpoint_seq_id = int(checkpoint.get("SeqId") or 0)
+    checkpoint_run_id = str(checkpoint.get("RunId") or "")
+    receipts: list[dict[str, Any]] = []
+    receipt_total = 0
+    side_effect_receipt_count = 0
+    failed_receipt_count = 0
+    async for page in _iter_session_event_pages(
+        service,
+        request.SessionId,
+        before_seq_id=checkpoint_seq_id + 1 if checkpoint_seq_id else None,
+    ):
+        for event in page:
+            receipt = _tool_receipt_event_to_action_payload(event)
+            if receipt is None:
+                continue
+            if checkpoint_run_id and receipt["RunId"] and receipt["RunId"] != checkpoint_run_id:
+                continue
+            receipt_total += 1
+            if receipt["ToolName"] in _SIDE_EFFECT_TOOL_NAMES:
+                side_effect_receipt_count += 1
+            if receipt["Status"] == "failed":
+                failed_receipt_count += 1
+            if len(receipts) < _MAX_PREVIEW_TOOL_RECEIPTS:
+                receipts.append(receipt)
 
     return _action_response(
         "GetCheckpointResumePreview",
-        {"Preview": _build_checkpoint_resume_preview(checkpoint=checkpoint, events=events)},
+        {
+            "Preview": _build_checkpoint_resume_preview(
+                checkpoint=checkpoint,
+                receipts=receipts,
+                receipt_total=receipt_total,
+                side_effect_receipt_count=side_effect_receipt_count,
+                failed_receipt_count=failed_receipt_count,
+            )
+        },
     )
 
 
 @app.post("/agentengine/api/v1/ResumeRun")
 async def resume_run_action(request: ResumeRunActionRequest):
     service = resolve_session_service()
-    session = await service.get_session(request.SessionId)
-    if not session or session.agent_id != request.AgentId:
-        raise HTTPException(status_code=404, detail="Session not found")
+    session = await _require_action_session(
+        service,
+        session_id=request.SessionId,
+        agent_id=request.AgentId,
+        user_id=request.UserId,
+    )
 
     checkpoint = await _find_session_checkpoint(
         service=service,
@@ -2617,10 +3105,9 @@ async def resume_run_action(request: ResumeRunActionRequest):
     }
     active_runner = _resolve_active_runner()
     user_id = session.user_id or "user"
-    custom_metadata, metadata_runtime_controls = _split_custom_metadata(request.Metadata)
+    custom_metadata, _metadata_runtime_controls = _split_custom_metadata(request.Metadata)
     resume_request_metadata = {
         "responses_conversation": True,
-        **metadata_runtime_controls,
     }
 
     if request.Stream:
@@ -2687,17 +3174,21 @@ async def subscribe_run_events_action(
     SessionId: str = Query(...),
     InvocationId: str = Query(...),
     AfterSeqId: int = Query(0),
+    AgentId: Optional[str] = Query(None),
+    UserId: Optional[str] = Query(None),
 ):
     session_id = str(SessionId or "").strip()
     invocation_id = str(InvocationId or "").strip()
     if not session_id or not invocation_id:
         raise HTTPException(status_code=400, detail="SessionId and InvocationId are required")
     service = resolve_session_service()
-    session = await service.get_session(session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="Session not found")
-    existing_events = await service.get_events(session_id)
-    if not any(event.invocation_id == invocation_id for event in existing_events):
+    await _require_action_session(
+        service,
+        session_id=session_id,
+        agent_id=AgentId,
+        user_id=UserId,
+    )
+    if not await _session_contains_invocation(service, session_id, invocation_id):
         raise HTTPException(
             status_code=409,
             detail="InvocationId does not belong to SessionId",
@@ -2707,17 +3198,17 @@ async def subscribe_run_events_action(
         last_seq_id = int(AfterSeqId or 0)
         deadline = time.monotonic() + 5 * 60
         last_heartbeat_at = time.monotonic()
+        last_terminal_check_at = 0.0
         while True:
-            # 增量查询：把 after_seq_id 下推到后端，只取 seq_id > last_seq_id 的事件，
-            # 避免每轮全量拉取。invocation_id 过滤仍在 Python 侧。
-            events = await service.get_events(session_id, after_seq_id=last_seq_id)
-            matched_events = [
-                event
-                for event in events
-                if event.invocation_id == invocation_id
-            ]
-            for event in matched_events:
+            events = await _oldest_unconsumed_session_events(
+                service,
+                session_id,
+                after_seq_id=last_seq_id,
+            )
+            for event in events:
                 last_seq_id = max(last_seq_id, event.seq_id)
+                if event.invocation_id != invocation_id:
+                    continue
                 payload = _event_to_action_payload(event)
                 yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
                 last_heartbeat_at = time.monotonic()
@@ -2729,20 +3220,20 @@ async def subscribe_run_events_action(
                     yield "data: [DONE]\n\n"
                     return
 
-            # 重连兜底：本轮无新事件时，查全量确认 run 是否已有 terminal
-            # （客户端断连期间 run 已结束）。
-            # 正常流式期间不触发此查询，保持增量收益。
-            if not matched_events:
-                all_events = await service.get_events(session_id)
-                latest_status = None
-                for event in all_events:
-                    if event.invocation_id != invocation_id or event.event_type != "run_status":
-                        continue
-                    latest_status = str((event.content or {}).get("status") or "").strip().lower()
+            now = time.monotonic()
+            if (
+                not events
+                and now - last_terminal_check_at >= SSE_HEARTBEAT_INTERVAL_SECONDS
+            ):
+                latest_status = await _latest_invocation_status(
+                    service,
+                    session_id,
+                    invocation_id,
+                )
+                last_terminal_check_at = now
                 if latest_status in _RUN_TERMINAL_STATUSES:
                     yield "data: [DONE]\n\n"
                     return
-            now = time.monotonic()
             if now - last_heartbeat_at >= SSE_HEARTBEAT_INTERVAL_SECONDS:
                 yield ": heartbeat\n\n"
                 last_heartbeat_at = now
@@ -2842,6 +3333,42 @@ async def delete_workspace_file_action(request: WorkspaceDeleteActionRequest):
 @app.post("/agentengine/api/v1/CancelRun")
 async def cancel_run_action(request: CancelRunActionRequest):
     detached = _DETACHED_STREAMS_BY_INVOCATION.get(request.InvocationId)
+    service = resolve_session_service()
+    scoped_session_id = str(request.SessionId or "").strip()
+    detached_session_id = str(detached.session_id or "").strip() if detached is not None else ""
+    if scoped_session_id and detached_session_id and scoped_session_id != detached_session_id:
+        raise HTTPException(
+            status_code=409,
+            detail="InvocationId does not belong to SessionId",
+        )
+    if not scoped_session_id and detached is not None:
+        scoped_session_id = detached_session_id
+    if scoped_session_id:
+        await _require_action_session(
+            service,
+            session_id=scoped_session_id,
+            agent_id=request.AgentId,
+            user_id=request.UserId,
+        )
+        if detached is None and not await _session_contains_invocation(
+            service,
+            scoped_session_id,
+            request.InvocationId,
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="InvocationId does not belong to SessionId",
+            )
+    elif request.UserId:
+        if not request.AgentId:
+            raise HTTPException(status_code=400, detail="AgentId is required with UserId")
+        if not await _agent_contains_invocation(
+            service,
+            request.AgentId,
+            request.InvocationId,
+            user_id=request.UserId,
+        ):
+            raise HTTPException(status_code=404, detail="Invocation not found")
     found = detached is not None
     cancel_requested = False
     if detached is not None:
@@ -3945,6 +4472,7 @@ class ChatCompletionRequest(BaseModel):
     session_id: Optional[str] = None
     user: Optional[str] = None
     account_id: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
     temperature: Optional[float] = 0.7
     max_tokens: Optional[int] = None
 
@@ -4050,6 +4578,8 @@ async def chat_completions(request: ChatCompletionRequest):
     agent_id = _runtime_agent_id(active_runner)
     resolved_user_id = _clean_optional_string(request.user) or "user"
     account_id = _clean_optional_string(request.account_id)
+    custom_metadata, request_metadata = _split_custom_metadata(request.metadata)
+    invocation_id = _metadata_invocation_id(request_metadata)
 
     if request.stream:
         return StreamingResponse(
@@ -4062,6 +4592,9 @@ async def chat_completions(request: ChatCompletionRequest):
                 model=request.model,
                 model_metadata=request.model_metadata,
                 model_options=request.model_options,
+                request_metadata=request_metadata,
+                custom_metadata=custom_metadata,
+                invocation_id=invocation_id,
                 account_id=account_id,
                 prepare_runner=_prepare_runner_for_model,
                 session_service_provider=resolve_session_service,
@@ -4079,6 +4612,9 @@ async def chat_completions(request: ChatCompletionRequest):
         model=request.model,
         model_metadata=request.model_metadata,
         model_options=request.model_options,
+        request_metadata=request_metadata,
+        custom_metadata=custom_metadata,
+        invocation_id=invocation_id,
         account_id=account_id,
         prepare_runner=_prepare_runner_for_model,
         session_service_provider=resolve_session_service,

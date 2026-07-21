@@ -119,6 +119,15 @@ class PostgresSessionService(BaseSessionService):
         async with self._pool.acquire() as connection:
             return await self._get_session_with_connection(connection, session_id)
 
+    async def get_session_metadata(self, session_id: str) -> Optional[Session]:
+        await self._ensure_schema()
+        async with self._pool.acquire() as connection:
+            return await self._get_session_with_connection(
+                connection,
+                session_id,
+                include_events=False,
+            )
+
     async def list_sessions(
         self,
         agent_id: str,
@@ -807,6 +816,7 @@ class PostgresSessionService(BaseSessionService):
         session_id: str,
         *,
         for_update: bool = False,
+        include_events: bool = True,
     ) -> Optional[Session]:
         lock_clause = " FOR UPDATE" if for_update else ""
         row = await connection.fetchrow(
@@ -822,7 +832,11 @@ class PostgresSessionService(BaseSessionService):
         )
         if row is None:
             return None
-        events = [] if for_update else await self._get_events_with_connection(connection, session_id)
+        events = (
+            await self._get_events_with_connection(connection, session_id)
+            if include_events and not for_update
+            else []
+        )
         return self._session_from_row(row, events=events)
 
     async def _get_events_with_connection(self, connection: Any, session_id: str) -> list[SessionEvent]:

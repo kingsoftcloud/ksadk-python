@@ -77,6 +77,14 @@ class LocalSessionService(BaseSessionService):
         async with self._lock:
             return await asyncio.to_thread(self._get_session_sync, session_id)
 
+    async def get_session_metadata(self, session_id: str) -> Optional[Session]:
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._get_session_sync,
+                session_id,
+                include_events=False,
+            )
+
     async def list_sessions(
         self,
         agent_id: str,
@@ -522,6 +530,7 @@ class LocalSessionService(BaseSessionService):
         session_id: str,
         *,
         connection: Optional[sqlite3.Connection] = None,
+        include_events: bool = True,
     ) -> Optional[Session]:
         owns_connection = connection is None
         connection = connection or self._connect()
@@ -548,7 +557,11 @@ class LocalSessionService(BaseSessionService):
                 first_prompt=row["first_prompt"],
                 last_prompt=row["last_prompt"],
                 state=json.loads(row["state_json"] or "{}"),
-                events=self._get_events_sync(session_id, connection=connection),
+                events=(
+                    self._get_events_sync(session_id, connection=connection)
+                    if include_events
+                    else []
+                ),
                 created_at=row["created_at"],
                 updated_at=row["updated_at"],
                 version=row["version"],

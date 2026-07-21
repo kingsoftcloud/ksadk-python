@@ -986,6 +986,435 @@ async def test_local_list_session_messages_restores_chat_history(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_local_list_session_messages_enforces_user_scope_and_exclusive_cursors(monkeypatch):
+    _, _, service, transport = _build_transport(monkeypatch)
+    session = await service.create_session(
+        agent_id="demo-agent",
+        user_id="user-b",
+        session_id="sess-message-scope",
+    )
+    for seq in range(1, 9):
+        role = "user" if seq % 2 else "assistant"
+        await service.append_event(
+            session.id,
+            SessionEvent(
+                author=role,
+                event_type=f"{role}_message",
+                content={"role": role, "parts": [{"text": f"m{seq}"}]},
+                invocation_id=f"inv-{(seq - 1) // 2}",
+            ),
+        )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        wrong_user = await client.post(
+            "/agentengine/api/v1/ListSessionMessages",
+            json={
+                "AgentId": "demo-agent",
+                "UserId": "user-a",
+                "SessionId": session.id,
+            },
+        )
+        latest = await client.post(
+            "/agentengine/api/v1/ListSessionMessages",
+            json={
+                "AgentId": "demo-agent",
+                "UserId": "user-b",
+                "SessionId": session.id,
+                "Limit": 3,
+            },
+        )
+        latest_data = latest.json()["Data"]
+        older = await client.post(
+            "/agentengine/api/v1/ListSessionMessages",
+            json={
+                "AgentId": "demo-agent",
+                "UserId": "user-b",
+                "SessionId": session.id,
+                "BeforeSeqId": latest_data["NextCursor"],
+                "Limit": 3,
+            },
+        )
+        no_delta = await client.post(
+            "/agentengine/api/v1/ListSessionMessages",
+            json={
+                "AgentId": "demo-agent",
+                "UserId": "user-b",
+                "SessionId": session.id,
+                "AfterSeqId": 8,
+            },
+        )
+
+    assert wrong_user.status_code == 404
+    assert [item["SeqId"] for item in latest_data["Messages"]] == [7, 8]
+    assert latest_data["NextCursor"] == 7
+    assert [item["SeqId"] for item in older.json()["Data"]["Messages"]] == [5, 6]
+    assert no_delta.json()["Data"]["LatestSeqId"] == 8
+
+
+@pytest.mark.asyncio
+async def test_local_list_session_messages_keeps_invocation_group_on_one_page(monkeypatch):
+    _, _, service, transport = _build_transport(monkeypatch)
+    session = await service.create_session(
+        agent_id="demo-agent",
+        user_id="user",
+        session_id="sess-message-group-cursor",
+    )
+    events = [
+        ("user", "user_message", "older question", "inv-older", {}),
+        ("assistant", "assistant_message", "older answer", "inv-older", {}),
+        ("user", "user_message", "current question", "inv-current", {}),
+        ("assistant", "reasoning", "plan", "inv-current", {}),
+        (
+            "assistant",
+            "tool_call",
+            "",
+            "inv-current",
+            {"tool_name": "search", "tool_args": {"q": "ksadk"}},
+        ),
+        (
+            "tool",
+            "tool_result",
+            "result",
+            "inv-current",
+            {"tool_name": "search", "tool_output": {"ok": True}},
+        ),
+        ("assistant", "assistant_message", "current answer", "inv-current", {}),
+    ]
+    for author, event_type, text, invocation_id, metadata in events:
+        await service.append_event(
+            session.id,
+            SessionEvent(
+                author=author,
+                event_type=event_type,
+                content={"role": author, "parts": [{"text": text}]},
+                invocation_id=invocation_id,
+                metadata=metadata,
+            ),
+        )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        latest = await client.post(
+            "/agentengine/api/v1/ListSessionMessages",
+            json={
+                "AgentId": "demo-agent",
+                "UserId": "user",
+                "SessionId": session.id,
+                "Limit": 1,
+                "IncludeReasoning": True,
+                "IncludeToolEvents": True,
+            },
+        )
+        latest_data = latest.json()["Data"]
+        older = await client.post(
+            "/agentengine/api/v1/ListSessionMessages",
+            json={
+                "AgentId": "demo-agent",
+                "UserId": "user",
+                "SessionId": session.id,
+                "BeforeSeqId": latest_data["NextCursor"],
+                "Limit": 1,
+                "IncludeReasoning": True,
+                "IncludeToolEvents": True,
+            },
+        )
+
+    assert latest.status_code == 200
+    assert [item["SeqId"] for item in latest_data["Messages"]] == [3, 7]
+    assert {item["StartSeqId"] for item in latest_data["Messages"]} == {3}
+    assert latest_data["Messages"][-1]["Reasoning"] == [{"text": "plan", "SeqId": 4}]
+    assert latest_data["Messages"][-1]["ToolEvents"][0]["Name"] == "search"
+    assert latest_data["NextCursor"] == 3
+    assert [item["SeqId"] for item in older.json()["Data"]["Messages"]] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_local_list_session_messages_completes_group_cut_by_event_window(monkeypatch):
+    _, _, service, transport = _build_transport(monkeypatch)
+    session = await service.create_session(
+        agent_id="demo-agent",
+        user_id="user",
+        session_id="sess-message-window-boundary",
+    )
+    await service.append_event(
+        session.id,
+        SessionEvent(
+            author="user",
+            event_type="user_message",
+            content={"role": "user", "parts": [{"text": "older question"}]},
+            invocation_id="inv-older",
+        ),
+    )
+    for index in range(2000):
+        await service.append_event(
+            session.id,
+            SessionEvent(
+                author="assistant",
+                event_type="reasoning",
+                content={"text": f"step-{index}"},
+                invocation_id="inv-older",
+            ),
+        )
+    await service.append_event(
+        session.id,
+        SessionEvent(
+            author="assistant",
+            event_type="assistant_message",
+            content={"role": "assistant", "parts": [{"text": "older answer"}]},
+            invocation_id="inv-older",
+        ),
+    )
+    for role, text in (("user", "newer question"), ("assistant", "newer answer")):
+        await service.append_event(
+            session.id,
+            SessionEvent(
+                author=role,
+                event_type=f"{role}_message",
+                content={"role": role, "parts": [{"text": text}]},
+                invocation_id="inv-newer",
+            ),
+        )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        latest = await client.post(
+            "/agentengine/api/v1/ListSessionMessages",
+            json={
+                "AgentId": "demo-agent",
+                "UserId": "user",
+                "SessionId": session.id,
+                "Limit": 2,
+                "IncludeReasoning": True,
+            },
+        )
+        latest_data = latest.json()["Data"]
+        older = await client.post(
+            "/agentengine/api/v1/ListSessionMessages",
+            json={
+                "AgentId": "demo-agent",
+                "UserId": "user",
+                "SessionId": session.id,
+                "BeforeSeqId": latest_data["NextCursor"],
+                "Limit": 2,
+                "IncludeReasoning": True,
+            },
+        )
+
+    assert [item["Content"]["text"] for item in latest_data["Messages"]] == [
+        "newer question",
+        "newer answer",
+    ]
+    older_data = older.json()["Data"]
+    assert [item["Content"]["text"] for item in older_data["Messages"]] == [
+        "older question",
+        "older answer",
+    ]
+    assert {item["StartSeqId"] for item in older_data["Messages"]} == {1}
+    assert len(older_data["Messages"][-1]["Reasoning"]) == 2000
+    assert older_data["HasMore"] is False
+    assert older_data["NextCursor"] is None
+
+
+@pytest.mark.asyncio
+async def test_local_list_session_messages_pairs_same_name_tools_by_call_id(monkeypatch):
+    _, _, service, transport = _build_transport(monkeypatch)
+    session = await service.create_session(
+        agent_id="demo-agent",
+        user_id="user",
+        session_id="sess-message-tool-pairing",
+    )
+    events = [
+        ("tool_call", {"tool_name": "search", "tool_args": {"q": "one"}, "call_id": "c1"}),
+        ("tool_call", {"tool_name": "search", "tool_args": {"q": "two"}, "call_id": "c2"}),
+        ("tool_result", {"tool_name": "search", "tool_output": "result-one", "call_id": "c1"}),
+        ("tool_result", {"tool_name": "search", "tool_output": "result-two", "call_id": "c2"}),
+        ("assistant_message", {}),
+    ]
+    for event_type, metadata in events:
+        await service.append_event(
+            session.id,
+            SessionEvent(
+                author="tool" if event_type == "tool_result" else "assistant",
+                event_type=event_type,
+                content={"text": "done" if event_type == "assistant_message" else ""},
+                invocation_id="inv-tools",
+                metadata=metadata,
+            ),
+        )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ListSessionMessages",
+            json={
+                "AgentId": "demo-agent",
+                "UserId": "user",
+                "SessionId": session.id,
+                "IncludeToolEvents": True,
+            },
+        )
+
+    tools = response.json()["Data"]["Messages"][0]["ToolEvents"]
+    assert [(item["ToolCallId"], item["Args"], item["Result"]) for item in tools] == [
+        ("c1", {"q": "one"}, "result-one"),
+        ("c2", {"q": "two"}, "result-two"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_local_list_session_messages_deduplicates_by_response_identity(monkeypatch):
+    _, _, service, transport = _build_transport(monkeypatch)
+    session = await service.create_session(
+        agent_id="demo-agent",
+        user_id="user",
+        session_id="sess-message-response-dedup",
+    )
+    for response_id in ("resp-1", "resp-1", "resp-2"):
+        await service.append_event(
+            session.id,
+            SessionEvent(
+                author="assistant",
+                event_type="assistant_message",
+                content={"role": "assistant", "parts": [{"text": "same text"}]},
+                invocation_id="inv-shared",
+                metadata={"response_id": response_id},
+            ),
+        )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ListSessionMessages",
+            json={
+                "AgentId": "demo-agent",
+                "UserId": "user",
+                "SessionId": session.id,
+            },
+        )
+
+    assert response.status_code == 200
+    messages = response.json()["Data"]["Messages"]
+    assert [item["ResponseId"] for item in messages] == ["resp-1", "resp-2"]
+
+
+@pytest.mark.asyncio
+async def test_local_list_session_messages_does_not_offer_empty_older_page(monkeypatch):
+    _, _, service, transport = _build_transport(monkeypatch)
+    session = await service.create_session(
+        agent_id="demo-agent",
+        user_id="user",
+        session_id="sess-message-no-empty-page",
+    )
+    await service.append_event(
+        session.id,
+        SessionEvent(
+            author="assistant",
+            event_type="reasoning",
+            content={"text": "plan"},
+            invocation_id="inv-1",
+        ),
+    )
+    await service.append_event(
+        session.id,
+        SessionEvent(
+            author="assistant",
+            event_type="assistant_message",
+            content={"role": "assistant", "parts": [{"text": "answer"}]},
+            invocation_id="inv-1",
+        ),
+    )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ListSessionMessages",
+            json={
+                "AgentId": "demo-agent",
+                "UserId": "user",
+                "SessionId": session.id,
+                "IncludeReasoning": True,
+            },
+        )
+
+    assert response.status_code == 200
+    data = response.json()["Data"]
+    assert [item["SeqId"] for item in data["Messages"]] == [2]
+    assert data["HasMore"] is False
+    assert data["NextCursor"] is None
+
+
+@pytest.mark.asyncio
+async def test_local_list_session_messages_restores_snapshot_without_final_message(monkeypatch):
+    _, _, service, transport = _build_transport(monkeypatch)
+    session = await service.create_session(
+        agent_id="demo-agent",
+        user_id="user",
+        session_id="sess-message-snapshot",
+    )
+    await service.append_event(
+        session.id,
+        SessionEvent(
+            author="assistant",
+            event_type="assistant_stream_snapshot",
+            content={"role": "assistant", "parts": [{"text": "partial answer"}]},
+            invocation_id="inv-snapshot",
+        ),
+    )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        restored = await client.post(
+            "/agentengine/api/v1/ListSessionMessages",
+            json={"AgentId": "demo-agent", "UserId": "user", "SessionId": session.id},
+        )
+
+    assert restored.status_code == 200
+    assert restored.json()["Data"]["Messages"] == [
+        {
+            "MessageId": restored.json()["Data"]["Messages"][0]["MessageId"],
+            "Role": "assistant",
+            "Content": {"text": "partial answer"},
+            "Timestamp": restored.json()["Data"]["Messages"][0]["Timestamp"],
+            "SeqId": 1,
+            "StartSeqId": 1,
+            "InvocationId": "inv-snapshot",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_local_list_session_messages_pages_large_increment_from_oldest_unseen_event(monkeypatch):
+    _, _, service, transport = _build_transport(monkeypatch)
+    session = await service.create_session(
+        agent_id="demo-agent",
+        user_id="user",
+        session_id="sess-large-message-delta",
+    )
+    for seq in range(1, 2003):
+        await service.append_event(
+            session.id,
+            SessionEvent(
+                author="user",
+                event_type="user_message",
+                content={"role": "user", "parts": [{"text": f"m{seq}"}]},
+                invocation_id=f"inv-{seq}",
+            ),
+        )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ListSessionMessages",
+            json={
+                "AgentId": "demo-agent",
+                "UserId": "user",
+                "SessionId": session.id,
+                "AfterSeqId": 0,
+            },
+        )
+
+    assert response.status_code == 200
+    data = response.json()["Data"]
+    assert data["Messages"][0]["SeqId"] == 1
+    assert data["Messages"][-1]["SeqId"] == 2000
+    assert data["LatestSeqId"] == 2000
+    assert data["HasMore"] is True
+
+
+@pytest.mark.asyncio
 async def test_responses_endpoint_streams_thinking_and_text_events(monkeypatch):
     _, runner, service, transport = _build_transport(monkeypatch)
 

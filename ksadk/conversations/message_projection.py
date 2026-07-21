@@ -47,6 +47,9 @@ def _project_event_group(
     tool_events = _project_tool_events(events) if include_tool_events else []
     projected: list[dict[str, Any]] = []
     assistant_seen = False
+    latest_snapshot: Mapping[str, Any] | None = None
+    seen_assistant: set[tuple[str, str]] = set()
+    start_seq_id = min((int(event.get("SeqId") or 0) for event in events), default=0)
 
     for event in events:
         event_type = str(event.get("EventType") or "")
@@ -58,6 +61,11 @@ def _project_event_group(
                     message["Attachments"] = attachments
             projected.append(message)
         elif event_type == "assistant_message":
+            metadata = event.get("Metadata") if isinstance(event.get("Metadata"), Mapping) else {}
+            dedup_key = (str(metadata.get("response_id") or ""), _event_text(event))
+            if dedup_key in seen_assistant:
+                continue
+            seen_assistant.add(dedup_key)
             message = _base_message(event, "assistant")
             if include_reasoning and reasoning:
                 message["Reasoning"] = reasoning
@@ -65,8 +73,10 @@ def _project_event_group(
                 message["ToolEvents"] = tool_events
             projected.append(message)
             assistant_seen = True
+        elif event_type == "assistant_stream_snapshot":
+            latest_snapshot = event
 
-    if not assistant_seen and (reasoning or tool_events):
+    if not assistant_seen and (latest_snapshot is not None or reasoning or tool_events):
         anchor = next(
             (
                 event
@@ -76,13 +86,19 @@ def _project_event_group(
             ),
             events[-1],
         )
-        message = _base_message(anchor, "assistant", content="")
+        message = _base_message(
+            anchor,
+            "assistant",
+            content=_event_text(latest_snapshot) if latest_snapshot is not None else "",
+        )
         if include_reasoning and reasoning:
             message["Reasoning"] = reasoning
         if tool_events:
             message["ToolEvents"] = tool_events
         projected.append(message)
 
+    for message in projected:
+        message["StartSeqId"] = start_seq_id
     return projected
 
 
@@ -129,7 +145,9 @@ def _event_text(event: Mapping[str, Any]) -> str:
 
 def _project_tool_events(events: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     projected: list[dict[str, Any]] = []
-    pending_calls: list[tuple[Mapping[str, Any], dict[str, Any]]] = []
+    pending_calls: list[dict[str, Any]] = []
+    pending_by_key: dict[str, dict[str, Any]] = {}
+    seen_result_receipts: set[str] = set()
 
     for event in events:
         event_type = str(event.get("EventType") or "")
@@ -137,25 +155,42 @@ def _project_tool_events(events: Sequence[Mapping[str, Any]]) -> list[dict[str, 
         if event_type == "tool_call":
             entry = _tool_event_from_call(event, metadata)
             projected.append(entry)
-            pending_calls.append((event, entry))
+            pending_calls.append(entry)
+            pair_key = _tool_pair_key(metadata)
+            if pair_key:
+                pending_by_key[pair_key] = entry
             continue
         if event_type != "tool_result":
             continue
 
-        name = str(metadata.get("tool_name") or "tool")
-        match = next(
-            (
-                item
-                for item in reversed(pending_calls)
-                if item[1]["Name"] == name and item[1]["Status"] == "running"
-            ),
-            None,
+        receipt = metadata.get("tool_receipt")
+        receipt_key = (
+            str(receipt.get("idempotency_key") or "")
+            if isinstance(receipt, Mapping)
+            else ""
         )
+        if receipt_key and receipt_key in seen_result_receipts:
+            continue
+        if receipt_key:
+            seen_result_receipts.add(receipt_key)
+
+        name = str(metadata.get("tool_name") or "tool")
+        pair_key = _tool_pair_key(metadata)
+        match = pending_by_key.get(pair_key) if pair_key else None
+        if match is None or match["Status"] != "running":
+            match = next(
+                (
+                    item
+                    for item in reversed(pending_calls)
+                    if item["Name"] == name and item["Status"] == "running"
+                ),
+                None,
+            )
         if match is None:
             entry = _tool_event_from_call(event, metadata)
             projected.append(entry)
         else:
-            entry = match[1]
+            entry = match
         output = metadata.get("tool_output", _event_text(event))
         entry["Status"] = (
             "failed" if isinstance(output, Mapping) and output.get("ok") is False else "completed"
@@ -165,6 +200,19 @@ def _project_tool_events(events: Sequence[Mapping[str, Any]]) -> list[dict[str, 
 
     projected.extend(_project_approval_events(events))
     return projected
+
+
+def _tool_pair_key(metadata: Mapping[str, Any]) -> str:
+    call_id = metadata.get("call_id")
+    if call_id:
+        return f"call:{call_id}"
+    tool_receipt = metadata.get("tool_receipt")
+    if isinstance(tool_receipt, Mapping) and tool_receipt.get("tool_call_id"):
+        return f"call:{tool_receipt['tool_call_id']}"
+    run_id = metadata.get("run_id")
+    if run_id:
+        return f"run:{run_id}:{metadata.get('tool_name') or 'tool'}"
+    return ""
 
 
 def _tool_event_from_call(

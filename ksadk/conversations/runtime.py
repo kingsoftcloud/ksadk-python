@@ -92,6 +92,7 @@ PROMPT_TOO_LONG_MARKERS = (
 )
 SESSION_SUMMARY_MAX_CHARS = 160
 ATTACHMENT_CONTEXT_STATE_KEY = "__ksadk_attachment_context__"
+EVENT_SCAN_PAGE_SIZE = 500
 
 logger = logging.getLogger(__name__)
 _MODEL_CATALOG_CACHE_TTL_SECONDS = 60.0
@@ -1869,6 +1870,7 @@ async def _execute_approved_builtin_tool_resume(
     invocation_id: str,
     resume_input: Mapping[str, Any],
     session_service_provider: Callable[[], Any],
+    existing_events: Sequence[SessionEvent] | None = None,
 ) -> dict[str, Any] | None:
     approval = resume_input.get("approval")
     if not isinstance(approval, Mapping) or not bool(approval.get("approved")):
@@ -1884,7 +1886,8 @@ async def _execute_approved_builtin_tool_resume(
     call_args = dict(tool_args)
     run_id = _tool_resume_run_id(resume_input)
     service = session_service_provider()
-    existing_events = await service.get_events(session_id)
+    if existing_events is None:
+        existing_events = await service.get_events(session_id)
     checkpoint_metadata = _latest_checkpoint_metadata_for_run(existing_events, run_id)
     receipt = _tool_receipt_metadata(
         session_id=session_id,
@@ -2967,6 +2970,28 @@ async def append_conversation_event(
     )
 
 
+async def _find_latest_session_event(
+    service: Any,
+    session_id: str,
+    predicate: Callable[[SessionEvent], bool],
+) -> SessionEvent | None:
+    total = await service.count_events(session_id)
+    offset = 0
+    while offset < total:
+        page = await service.get_events(
+            session_id,
+            offset=offset,
+            limit=min(EVENT_SCAN_PAGE_SIZE, total - offset),
+        )
+        if not page:
+            return None
+        for event in reversed(page):
+            if predicate(event):
+                return event
+        offset += len(page)
+    return None
+
+
 async def append_run_status_event(
     *,
     session_id: str,
@@ -2989,16 +3014,22 @@ async def append_run_status_event(
     service = (session_service_provider or resolve_session_service)()
     if invocation_id:
         try:
-            for event in reversed(await service.get_events(session_id)):
-                if event.event_type != "run_status" or event.invocation_id != invocation_id:
-                    continue
-                event_status = str(
-                    (event.metadata or {}).get("status")
-                    or (event.content or {}).get("status")
-                    or ""
-                )
-                if event_status == status:
-                    return event
+            existing = await _find_latest_session_event(
+                service,
+                session_id,
+                lambda event: (
+                    event.event_type == "run_status"
+                    and event.invocation_id == invocation_id
+                    and str(
+                        (event.metadata or {}).get("status")
+                        or (event.content or {}).get("status")
+                        or ""
+                    )
+                    == status
+                ),
+            )
+            if existing is not None:
+                return existing
         except Exception:
             pass
     content = {"status": status}
@@ -3095,16 +3126,18 @@ async def append_run_checkpoint_event(
     session_service_provider: Callable[[], Any] | None = None,
 ) -> SessionEvent:
     service = (session_service_provider or resolve_session_service)()
-    for event in reversed(await service.get_events(session_id)):
-        if event.event_type != "run_checkpoint":
-            continue
-        event_metadata = event.metadata or {}
-        if (
-            str(event_metadata.get("run_id") or "") == str(run_id)
-            and str(event_metadata.get("checkpoint_id") or "") == str(checkpoint_id)
-            and str(event_metadata.get("framework") or "") == str(framework)
-        ):
-            return event
+    existing = await _find_latest_session_event(
+        service,
+        session_id,
+        lambda event: (
+            event.event_type == "run_checkpoint"
+            and str((event.metadata or {}).get("run_id") or "") == str(run_id)
+            and str((event.metadata or {}).get("checkpoint_id") or "") == str(checkpoint_id)
+            and str((event.metadata or {}).get("framework") or "") == str(framework)
+        ),
+    )
+    if existing is not None:
+        return existing
 
     event_metadata = dict(metadata or {})
     framework_ref_dict = dict(framework_ref)
@@ -3591,8 +3624,10 @@ async def build_run_input(
                 invocation_id=resolved_invocation_id,
                 resume_input=normalized_resume_input,
                 session_service_provider=provider,
+                existing_events=existing_events,
             )
         effective_resume_input = tool_resume_input or normalized_resume_input
+        del existing_events
         event_history = await service.get_events(resolved_session_id)
         history = build_history_from_events(event_history)
         responses_history = project_responses_history(event_history)

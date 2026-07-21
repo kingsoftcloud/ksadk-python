@@ -272,6 +272,14 @@ class BaseSessionService(abc.ABC):
     async def get_session(self, session_id: str) -> Optional[Session]:
         raise NotImplementedError
 
+    async def get_session_metadata(self, session_id: str) -> Optional[Session]:
+        """Return session ownership/state without requiring the event transcript."""
+
+        session = await self.get_session(session_id)
+        if session is not None:
+            session.events = []
+        return session
+
     @abc.abstractmethod
     async def list_sessions(
         self,

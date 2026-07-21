@@ -159,6 +159,12 @@ class ResilientSessionService(BaseSessionService):
             return await self._hydrate(durable)
         return live
 
+    async def get_session_metadata(self, session_id: str) -> Optional[Session]:
+        ok, durable = await self._call_primary("get_session_metadata", session_id)
+        if ok and durable is not None:
+            return cast(Session, durable)
+        return await self.fallback.get_session_metadata(session_id)
+
     async def list_sessions(
         self,
         agent_id: str,

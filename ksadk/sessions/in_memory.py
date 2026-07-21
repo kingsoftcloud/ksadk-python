@@ -44,6 +44,15 @@ class InMemorySessionService(BaseSessionService):
             session = self._sessions.get(session_id)
             return copy.deepcopy(session) if session else None
 
+    async def get_session_metadata(self, session_id: str) -> Optional[Session]:
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None:
+                return None
+            metadata = copy.deepcopy(session)
+            metadata.events = []
+            return metadata
+
     async def list_sessions(
         self,
         agent_id: str,
