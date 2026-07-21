@@ -177,7 +177,7 @@ def build(
         render_workflow_result(action="build", result=result)
 
 
-@mcp.command("deploy", context_settings=CONTEXT_SETTINGS)
+@mcp.command("deploy", context_settings=CONTEXT_SETTINGS, short_help="部署 MCP Server 到云端")
 @click.argument("mcp_dir", default=".", type=click.Path(exists=True))
 @click.option(
     "--name", "-n",
@@ -984,7 +984,7 @@ def list_mcps(region: str, page: int, size: int, dry_run: bool, output_mode: str
         _abort_mcp_error(e, context="获取列表失败", argv=["mcp", "list"])
 
 
-@mcp.command("status", context_settings=CONTEXT_SETTINGS)
+@mcp.command("status", context_settings=CONTEXT_SETTINGS, short_help="查看 MCP 状态")
 @click.argument("mcp_ref", required=False)
 @region_option(default=None, envvar=None, help_text="区域 (默认优先读取 .agentengine.state)")
 @dry_run_option()
