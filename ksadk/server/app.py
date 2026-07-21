@@ -2676,7 +2676,9 @@ async def list_session_messages_action(request: ListSessionMessagesActionRequest
         after_seq_id=request.AfterSeqId,
         before_seq_id=request.BeforeSeqId,
     )
-    def project(events_to_project: list[SessionEvent]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    def project(
+        events_to_project: list[SessionEvent],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         serialized = [_event_to_action_payload(event) for event in events_to_project]
         return serialized, project_session_messages(
             serialized,
@@ -3724,8 +3726,10 @@ async def run_agent_action(request: RunAgentActionRequest):
                     model=request.Model,
                     model_metadata=request.ModelMetadata,
                     model_options=request.ModelOptions,
+                    request_metadata=request_metadata or None,
                     custom_metadata=custom_metadata,
                     account_id=account_id,
+                    invocation_id=request.InvocationId,
                     prepare_runner=_prepare_runner_for_model,
                     session_service_provider=resolve_session_service,
                     run_mode=RUN_MODE_FOREGROUND,

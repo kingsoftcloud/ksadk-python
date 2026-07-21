@@ -4679,6 +4679,7 @@ async def test_run_agent_chat_completions_stream_exposes_custom_metadata_interna
     server_app_module.set_runner(runner)
 
     custom_metadata = {"tenant": "acme", "biz": {"order_id": "o-9"}}
+    invocation_id = "run_chat_metadata_stream"
     transport = httpx.ASGITransport(app=server_app_module.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
         response = await client.post(
@@ -4687,6 +4688,7 @@ async def test_run_agent_chat_completions_stream_exposes_custom_metadata_interna
                 "AgentId": "demo-agent",
                 "Messages": [{"role": "user", "content": "hello"}],
                 "Metadata": custom_metadata,
+                "InvocationId": invocation_id,
                 "ApiFormat": "chat_completions",
                 "Stream": True,
             },
@@ -4694,6 +4696,7 @@ async def test_run_agent_chat_completions_stream_exposes_custom_metadata_interna
 
     assert response.status_code == 200
     assert runner.calls[-1]["platform_context"]["metadata"] == custom_metadata
+    assert runner.calls[-1]["invocation_id"] == invocation_id
 
 
 @pytest.mark.asyncio

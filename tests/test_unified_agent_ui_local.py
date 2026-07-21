@@ -1259,7 +1259,9 @@ async def test_local_list_session_messages_pairs_same_name_tools_by_call_id(monk
 
 
 @pytest.mark.asyncio
-async def test_local_list_session_messages_deduplicates_by_response_identity(monkeypatch):
+async def test_local_list_session_messages_preserves_messages_with_same_response_identity(
+    monkeypatch,
+):
     _, _, service, transport = _build_transport(monkeypatch)
     session = await service.create_session(
         agent_id="demo-agent",
@@ -1290,7 +1292,45 @@ async def test_local_list_session_messages_deduplicates_by_response_identity(mon
 
     assert response.status_code == 200
     messages = response.json()["Data"]["Messages"]
-    assert [item["ResponseId"] for item in messages] == ["resp-1", "resp-2"]
+    assert [item["ResponseId"] for item in messages] == ["resp-1", "resp-1", "resp-2"]
+
+
+@pytest.mark.asyncio
+async def test_local_list_session_messages_keeps_same_text_without_response_identity(monkeypatch):
+    _, _, service, transport = _build_transport(monkeypatch)
+    session = await service.create_session(
+        agent_id="demo-agent",
+        user_id="user",
+        session_id="sess-message-without-response-id",
+    )
+    for event_id in ("evt-assistant-1", "evt-assistant-2"):
+        await service.append_event(
+            session.id,
+            SessionEvent(
+                id=event_id,
+                author="assistant",
+                event_type="assistant_message",
+                content={"role": "assistant", "parts": [{"text": "same text"}]},
+                invocation_id="inv-shared",
+            ),
+        )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/ListSessionMessages",
+            json={
+                "AgentId": "demo-agent",
+                "UserId": "user",
+                "SessionId": session.id,
+            },
+        )
+
+    assert response.status_code == 200
+    messages = response.json()["Data"]["Messages"]
+    assert [item["MessageId"] for item in messages] == [
+        "evt-assistant-1",
+        "evt-assistant-2",
+    ]
 
 
 @pytest.mark.asyncio

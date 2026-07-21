@@ -48,7 +48,6 @@ def _project_event_group(
     projected: list[dict[str, Any]] = []
     assistant_seen = False
     latest_snapshot: Mapping[str, Any] | None = None
-    seen_assistant: set[tuple[str, str]] = set()
     start_seq_id = min((int(event.get("SeqId") or 0) for event in events), default=0)
 
     for event in events:
@@ -61,11 +60,6 @@ def _project_event_group(
                     message["Attachments"] = attachments
             projected.append(message)
         elif event_type == "assistant_message":
-            metadata = event.get("Metadata") if isinstance(event.get("Metadata"), Mapping) else {}
-            dedup_key = (str(metadata.get("response_id") or ""), _event_text(event))
-            if dedup_key in seen_assistant:
-                continue
-            seen_assistant.add(dedup_key)
             message = _base_message(event, "assistant")
             if include_reasoning and reasoning:
                 message["Reasoning"] = reasoning
