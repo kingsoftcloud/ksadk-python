@@ -9,6 +9,7 @@ import time
 from typing import Any, Optional
 from urllib.parse import urlsplit, urlunsplit
 
+from ksadk.ids import new_session_id
 from ksadk.sessions.base import (
     BaseSessionService,
     Session,
@@ -59,7 +60,7 @@ class PostgresSessionService(BaseSessionService):
         session_id: Optional[str] = None,
     ) -> Session:
         await self._ensure_schema()
-        session_key = session_id or generate_id()
+        session_key = session_id or new_session_id()
         async with self._pool.acquire() as connection:
             async with connection.transaction():
                 existing = await self._get_session_with_connection(connection, session_key)
@@ -137,7 +138,7 @@ class PostgresSessionService(BaseSessionService):
             if user_id is not None:
                 params.append(user_id)
                 query += f" AND user_id = ${len(params)}"
-            query += " ORDER BY updated_at DESC, created_at DESC"
+            query += " ORDER BY updated_at DESC, created_at DESC, id DESC"
             if limit is not None:
                 params.append(limit)
                 query += f" LIMIT ${len(params)}"
@@ -417,6 +418,85 @@ class PostgresSessionService(BaseSessionService):
                 FROM {KSADK_PG_EVENTS_TABLE}
                 WHERE {where_clause}
             """
+            return int(await connection.fetchval(query, *params) or 0)
+
+    def _agent_events_query_parts(
+        self,
+        agent_id: str,
+        user_id: Optional[str],
+    ) -> tuple[str, list[Any]]:
+        """跨会话事件查询的公共 JOIN/WHERE。events 表无 agent_id 列，需 join sessions。"""
+        conditions = [
+            "e.namespace = $1",
+            "s.namespace = e.namespace",
+            "s.id = e.session_id",
+            "s.agent_id = $2",
+        ]
+        params: list[Any] = [self.namespace, agent_id]
+        if user_id is not None:
+            params.append(user_id)
+            conditions.append(f"s.user_id = ${len(params)}")
+        where_clause = " AND ".join(conditions)
+        from_clause = (
+            f"FROM {KSADK_PG_EVENTS_TABLE} e "
+            f"JOIN {KSADK_PG_SESSIONS_TABLE} s "
+            "ON s.namespace = e.namespace AND s.id = e.session_id "
+            f"WHERE {where_clause}"
+        )
+        return from_clause, params
+
+    async def get_events_for_agent(
+        self,
+        agent_id: str,
+        user_id: Optional[str] = None,
+        offset: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> list[SessionEvent]:
+        await self._ensure_schema()
+        from_clause, params = self._agent_events_query_parts(agent_id, user_id)
+        columns = (
+            "e.id, e.session_id, e.author, e.event_type, e.content_json, e.timestamp, "
+            "e.state_delta_json, e.seq_id, e.invocation_id, e.metadata_json"
+        )
+        async with self._pool.acquire() as connection:
+            if limit is not None or offset is not None:
+                # 与 get_events 一致的"最新 N 条"尾部语义：先 DESC 取窗口再 ASC 重排
+                if limit is not None:
+                    params.append(limit)
+                    limit_sql = f"LIMIT ${len(params)}"
+                else:
+                    limit_sql = ""
+                params.append(offset or 0)
+                offset_sql = f"OFFSET ${len(params)}"
+                query = f"""
+                    SELECT id, session_id, author, event_type, content_json, timestamp,
+                           state_delta_json, seq_id, invocation_id, metadata_json
+                    FROM (
+                        SELECT {columns}
+                        {from_clause}
+                        ORDER BY e.timestamp DESC, e.seq_id DESC, e.id DESC
+                        {limit_sql} {offset_sql}
+                    ) AS latest_events
+                    ORDER BY timestamp ASC, seq_id ASC, id ASC
+                """
+            else:
+                query = f"""
+                    SELECT {columns}
+                    {from_clause}
+                    ORDER BY e.timestamp ASC, e.seq_id ASC, e.id ASC
+                """
+            rows = await connection.fetch(query, *params)
+            return [self._event_from_row(row) for row in rows]
+
+    async def count_events_for_agent(
+        self,
+        agent_id: str,
+        user_id: Optional[str] = None,
+    ) -> int:
+        await self._ensure_schema()
+        from_clause, params = self._agent_events_query_parts(agent_id, user_id)
+        async with self._pool.acquire() as connection:
+            query = f"SELECT COUNT(*) AS total {from_clause}"
             return int(await connection.fetchval(query, *params) or 0)
 
     async def get_state(

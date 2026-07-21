@@ -7,11 +7,12 @@ import json
 import os
 import sqlite3
 import time
+from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from pathlib import Path
-from collections.abc import Iterator
 from typing import Optional
 
+from ksadk.ids import new_session_id
 from ksadk.sessions.base import (
     BaseSessionService,
     Session,
@@ -160,6 +161,114 @@ class LocalSessionService(BaseSessionService):
                 after_seq_id,
                 before_seq_id,
             )
+
+    async def get_events_for_agent(
+        self,
+        agent_id: str,
+        user_id: Optional[str] = None,
+        offset: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> list[SessionEvent]:
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._get_events_for_agent_sync,
+                agent_id,
+                user_id,
+                offset,
+                limit,
+            )
+
+    async def count_events_for_agent(
+        self,
+        agent_id: str,
+        user_id: Optional[str] = None,
+    ) -> int:
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._count_events_for_agent_sync,
+                agent_id,
+                user_id,
+            )
+
+    def _get_events_for_agent_sync(
+        self,
+        agent_id: str,
+        user_id: Optional[str],
+        offset: Optional[int],
+        limit: Optional[int],
+    ) -> list[SessionEvent]:
+        columns = (
+            "e.id, e.session_id, e.author, e.event_type, e.content_json, e.timestamp, "
+            "e.state_delta_json, e.seq_id, e.invocation_id, e.metadata_json"
+        )
+        user_clause = "AND s.user_id = ?" if user_id is not None else ""
+        from_clause = (
+            f"FROM {KSADK_EVENTS_TABLE} e "
+            f"JOIN {KSADK_SESSIONS_TABLE} s ON s.id = e.session_id "
+            f"WHERE s.agent_id = ? {user_clause}"
+        )
+        base_params: list[object] = [agent_id]
+        if user_id is not None:
+            base_params.append(user_id)
+        with self._connection() as connection:
+            if limit is not None or offset is not None:
+                # 与 get_events 一致的"最新 N 条"尾部语义：先 DESC 取窗口再 ASC 重排
+                query = f"""
+                    SELECT id, session_id, author, event_type, content_json, timestamp,
+                           state_delta_json, seq_id, invocation_id, metadata_json
+                    FROM (
+                        SELECT {columns}
+                        {from_clause}
+                        ORDER BY e.timestamp DESC, e.seq_id DESC, e.id DESC
+                        LIMIT ? OFFSET ?
+                    )
+                    ORDER BY timestamp ASC, seq_id ASC, id ASC
+                """
+                params = [*base_params, limit if limit is not None else -1, offset or 0]
+            else:
+                query = f"""
+                    SELECT {columns}
+                    {from_clause}
+                    ORDER BY e.timestamp ASC, e.seq_id ASC, e.id ASC
+                """
+                params = base_params
+            rows = connection.execute(query, params).fetchall()
+            return [
+                SessionEvent(
+                    id=row["id"],
+                    session_id=row["session_id"],
+                    author=row["author"],
+                    event_type=row["event_type"],
+                    content=json.loads(row["content_json"] or "{}"),
+                    timestamp=row["timestamp"],
+                    state_delta=json.loads(row["state_delta_json"] or "{}"),
+                    seq_id=row["seq_id"],
+                    invocation_id=row["invocation_id"],
+                    metadata=json.loads(row["metadata_json"] or "{}"),
+                )
+                for row in rows
+            ]
+
+    def _count_events_for_agent_sync(
+        self,
+        agent_id: str,
+        user_id: Optional[str],
+    ) -> int:
+        user_clause = "AND s.user_id = ?" if user_id is not None else ""
+        params: list[object] = [agent_id]
+        if user_id is not None:
+            params.append(user_id)
+        with self._connection() as connection:
+            row = connection.execute(
+                f"""
+                SELECT COUNT(*) AS total
+                FROM {KSADK_EVENTS_TABLE} e
+                JOIN {KSADK_SESSIONS_TABLE} s ON s.id = e.session_id
+                WHERE s.agent_id = ? {user_clause}
+                """,
+                params,
+            ).fetchone()
+            return int(row["total"] if row else 0)
 
     async def get_state(
         self,
@@ -367,7 +476,7 @@ class LocalSessionService(BaseSessionService):
 
             now = time.time()
             session = Session(
-                id=session_id or generate_id(),
+                id=session_id or new_session_id(),
                 agent_id=agent_id,
                 user_id=user_id,
                 created_at=now,
@@ -467,7 +576,7 @@ class LocalSessionService(BaseSessionService):
             if user_id is not None:
                 query += " AND user_id = ?"
                 params.append(user_id)
-            query += " ORDER BY updated_at DESC, created_at DESC"
+            query += " ORDER BY updated_at DESC, created_at DESC, id DESC"
             if limit is not None:
                 query += " LIMIT ?"
                 params.append(limit)

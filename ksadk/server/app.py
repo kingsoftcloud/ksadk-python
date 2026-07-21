@@ -43,6 +43,7 @@ from ksadk.conversations.session_title import (
     build_fallback_title,
     build_heuristic_title,
 )
+from ksadk.ids import new_run_id
 from ksadk.runners.base_runner import BaseRunner
 from ksadk.runtime_state import load_state as load_runtime_state
 from ksadk.server.api_models import AgentRunRequest
@@ -1061,7 +1062,7 @@ class CreateSessionActionRequest(BaseModel):
 
 class ListSessionsActionRequest(BaseModel):
     AgentId: str
-    UserId: Optional[str] = "user"
+    UserId: Optional[str] = None
     Page: int = Field(1, ge=1)
     PageSize: int = Field(20, ge=1, le=200)
 
@@ -1071,7 +1072,9 @@ class SessionIdRequest(BaseModel):
 
 
 class ListSessionEventsActionRequest(BaseModel):
-    SessionId: str
+    AgentId: Optional[str] = None
+    SessionId: Optional[str] = None
+    UserId: Optional[str] = None
     Offset: Optional[int] = Field(None, ge=0)
     Limit: Optional[int] = Field(None, ge=1)
     AfterSeqId: Optional[int] = Field(None, ge=0)
@@ -1090,7 +1093,8 @@ class ListSessionMessagesActionRequest(BaseModel):
 
 class ListSessionCheckpointsActionRequest(BaseModel):
     AgentId: str
-    SessionId: str
+    SessionId: Optional[str] = None
+    UserId: Optional[str] = None
     RunId: Optional[str] = None
     OnlyResumable: bool = False
     Framework: Optional[str] = None
@@ -2240,11 +2244,11 @@ async def list_sessions_action(request: ListSessionsActionRequest):
     offset = (request.Page - 1) * request.PageSize
     sessions = await service.list_sessions(
         request.AgentId,
-        request.UserId or "user",
+        request.UserId,
         offset=offset,
         limit=request.PageSize,
     )
-    total = await service.count_sessions(request.AgentId, request.UserId or "user")
+    total = await service.count_sessions(request.AgentId, request.UserId)
     session_payloads = [await _session_to_action_payload(session) for session in sessions]
     return _action_response(
         "ListSessions",
@@ -2253,6 +2257,8 @@ async def list_sessions_action(request: ListSessionsActionRequest):
             "Total": total,
             "Page": request.Page,
             "PageSize": request.PageSize,
+            "DataSource": "runtime",
+            "Degraded": False,
         },
     )
 
@@ -2279,15 +2285,48 @@ async def delete_session_action(request: SessionIdRequest):
 @app.post("/agentengine/api/v1/ListSessionEvents")
 async def list_session_events_action(request: ListSessionEventsActionRequest):
     service = resolve_session_service()
+    session_id = str(request.SessionId or "").strip()
+    if not session_id:
+        # 未传 SessionId：返回该 agent 全部会话的事件（存储层跨会话查询，真分页无截断；
+        # seq 游标是会话内序号，跨会话模式下不适用，直接忽略）
+        agent_id = str(request.AgentId or "").strip() or (
+            _runtime_agent_id(runner) if runner else "default-agent"
+        )
+        events = await service.get_events_for_agent(
+            agent_id,
+            user_id=request.UserId,
+            offset=request.Offset,
+            limit=request.Limit,
+        )
+        total = await service.count_events_for_agent(agent_id, user_id=request.UserId)
+        return _action_response(
+            "ListSessionEvents",
+            {
+                "Events": [_event_to_action_payload(event) for event in events],
+                "Total": total,
+                "Offset": request.Offset or 0,
+                "Limit": request.Limit if request.Limit is not None else len(events),
+                "AfterSeqId": request.AfterSeqId,
+                "BeforeSeqId": request.BeforeSeqId,
+                "ScopedAllSessions": True,
+            },
+        )
+    session = await service.get_session(session_id)
+    if (
+        session is None
+        or (request.AgentId is not None and session.agent_id != request.AgentId)
+        or (request.UserId is not None and session.user_id != request.UserId)
+    ):
+        raise HTTPException(status_code=404, detail="Session not found")
     events = await service.get_events(
-        request.SessionId,
+        session_id,
         offset=request.Offset,
         limit=request.Limit,
         after_seq_id=request.AfterSeqId,
         before_seq_id=request.BeforeSeqId,
     )
     total = await service.count_events(
-        request.SessionId,
+        session_id,
         after_seq_id=request.AfterSeqId,
         before_seq_id=request.BeforeSeqId,
     )
@@ -2373,26 +2412,60 @@ def _count_resumable_checkpoints(checkpoints: list[dict[str, Any]]) -> int:
 
 async def _list_checkpoints_payload(request: ListSessionCheckpointsActionRequest) -> dict[str, Any]:
     service = resolve_session_service()
-    session = await service.get_session(request.SessionId)
-    if not session or session.agent_id != request.AgentId:
-        raise HTTPException(status_code=404, detail="Session not found")
-
     run_id_filter = str(request.RunId or "").strip()
     framework_filter = str(request.Framework or "").strip().lower()
-    events = await service.get_events(request.SessionId)
-    resume_audit = _resume_audit_by_checkpoint(events)
+
+    session_id = str(request.SessionId or "").strip()
+    if session_id:
+        session = await service.get_session(session_id)
+        if (
+            not session
+            or session.agent_id != request.AgentId
+            or (request.UserId is not None and session.user_id != request.UserId)
+        ):
+            raise HTTPException(status_code=404, detail="Session not found")
+        scoped_events = await service.get_events(session.id)
+        if run_id_filter and not any(
+            _event_run_id(event) == run_id_filter for event in scoped_events
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="RunId does not belong to SessionId",
+            )
+        events_by_session: list[tuple[str, list[SessionEvent]]] = [(session.id, scoped_events)]
+    else:
+        # 未传 SessionId：返回该 agent 全部会话的 checkpoint（存储层跨会话查询，无截断）
+        # 全局时间序下同会话事件可能不连续,resume audit 必须按会话分组后逐组计算
+        grouped: dict[str, list[SessionEvent]] = {}
+        for event in await service.get_events_for_agent(
+            request.AgentId,
+            user_id=request.UserId,
+        ):
+            grouped.setdefault(event.session_id, []).append(event)
+        events_by_session = list(grouped.items())
+
     checkpoints: list[dict[str, Any]] = []
-    for event in events:
-        checkpoint = _checkpoint_event_to_action_payload(event)
-        if checkpoint is None:
-            continue
-        checkpoint = _apply_checkpoint_resume_audit(checkpoint, resume_audit)
-        if run_id_filter and checkpoint["RunId"] != run_id_filter:
-            continue
-        if framework_filter and str(checkpoint["Framework"]).lower() != framework_filter:
-            continue
-        # ResumableTotal 在 OnlyResumable 过滤前统计全量可恢复数（RunId/Framework 范围内）
-        checkpoints.append(checkpoint)
+    for _session_id, events in events_by_session:
+        resume_audit = _resume_audit_by_checkpoint(events)
+        for event in events:
+            checkpoint = _checkpoint_event_to_action_payload(event)
+            if checkpoint is None:
+                continue
+            checkpoint = _apply_checkpoint_resume_audit(checkpoint, resume_audit)
+            if run_id_filter and checkpoint["RunId"] != run_id_filter:
+                continue
+            if framework_filter and str(checkpoint["Framework"]).lower() != framework_filter:
+                continue
+            # ResumableTotal 在 OnlyResumable 过滤前统计全量可恢复数（RunId/Framework 范围内）
+            checkpoints.append(checkpoint)
+    if not session_id:
+        checkpoints.sort(
+            key=lambda cp: (
+                float(cp.get("Timestamp") or 0),
+                int(cp.get("SeqId") or 0),
+                str(cp.get("CheckpointId") or ""),
+            )
+        )
     checkpoints = _apply_adk_only_latest_resumable(checkpoints)
     resumable_total = _count_resumable_checkpoints(checkpoints)
     if request.OnlyResumable:
@@ -2619,9 +2692,18 @@ async def subscribe_run_events_action(
     invocation_id = str(InvocationId or "").strip()
     if not session_id or not invocation_id:
         raise HTTPException(status_code=400, detail="SessionId and InvocationId are required")
+    service = resolve_session_service()
+    session = await service.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    existing_events = await service.get_events(session_id)
+    if not any(event.invocation_id == invocation_id for event in existing_events):
+        raise HTTPException(
+            status_code=409,
+            detail="InvocationId does not belong to SessionId",
+        )
 
     async def event_generator() -> AsyncIterator[str]:
-        service = resolve_session_service()
         last_seq_id = int(AfterSeqId or 0)
         deadline = time.monotonic() + 5 * 60
         last_heartbeat_at = time.monotonic()

@@ -159,6 +159,74 @@ async def test_postgres_schema_creates_readable_session_event_view(monkeypatch):
     assert "lifecycle_status" in schema_sql
 
 
+async def test_postgres_events_for_agent_pushes_user_pagination_and_order_to_sql():
+    observed: dict[str, object] = {}
+
+    class FakeConnection:
+        async def fetch(self, sql, *params):
+            observed["fetch_sql"] = sql
+            observed["fetch_params"] = params
+            return [
+                {
+                    "id": "evt-1",
+                    "session_id": "sess-1",
+                    "author": "user",
+                    "event_type": "user_message",
+                    "content_json": {"text": "hello"},
+                    "timestamp": 100.0,
+                    "state_delta_json": {},
+                    "seq_id": 1,
+                    "invocation_id": "run_11111111111111111111111111111111",
+                    "metadata_json": {},
+                }
+            ]
+
+        async def fetchval(self, sql, *params):
+            observed["count_sql"] = sql
+            observed["count_params"] = params
+            return 51
+
+    class AcquireContext:
+        async def __aenter__(self):
+            return FakeConnection()
+
+        async def __aexit__(self, *_args):
+            return None
+
+    class FakePool:
+        def acquire(self):
+            return AcquireContext()
+
+    from ksadk.sessions.postgres_service import PostgresSessionService
+
+    service = PostgresSessionService(
+        dsn="postgresql://user@db.example.test/session",
+        namespace="tenant-a",
+    )
+    service._pool = FakePool()
+    service._schema_ready = True
+
+    events = await service.get_events_for_agent(
+        "demo-agent",
+        user_id="user-a",
+        offset=400,
+        limit=200,
+    )
+    total = await service.count_events_for_agent("demo-agent", user_id="user-a")
+
+    assert [event.id for event in events] == ["evt-1"]
+    assert total == 51
+    assert observed["fetch_params"] == ("tenant-a", "demo-agent", "user-a", 200, 400)
+    assert observed["count_params"] == ("tenant-a", "demo-agent", "user-a")
+    assert "JOIN ksadk_sessions s" in str(observed["fetch_sql"])
+    assert "s.user_id = $3" in str(observed["fetch_sql"])
+    assert "ORDER BY e.timestamp DESC, e.seq_id DESC, e.id DESC" in str(
+        observed["fetch_sql"]
+    )
+    assert "ORDER BY timestamp ASC, seq_id ASC, id ASC" in str(observed["fetch_sql"])
+    assert "JOIN ksadk_sessions s" in str(observed["count_sql"])
+
+
 async def test_resilient_session_keeps_hydrated_history_when_primary_fails(caplog):
     primary = InMemorySessionService()
     await primary.create_session("demo-agent", "user-1", session_id="sess-1")

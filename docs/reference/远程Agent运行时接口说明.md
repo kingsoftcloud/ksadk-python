@@ -975,9 +975,12 @@ KsADK 扩展图片引用示例：
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `AgentId` | `string` | 是 | Agent ID |
-| `UserId` | `string` | 否 | 可选用户 ID |
+| `UserId` | `string` | 否 | 有值时按用户筛选；不传时返回该 Agent 的全部用户 |
 | `SessionId` | `string` | 否 | 显式指定 session ID |
 | `ExpiresHours` | `integer` | 否 | 兼容旧字段，当前忽略 |
+
+经云上 `agentengine-server` facade 创建时，`Data` 额外包含
+`RuntimeSync=synced|pending_create`；本地 runtime 直调不返回该控制面字段。
 
 ### `POST /agentengine/api/v1/ListSessions`
 
@@ -989,6 +992,10 @@ KsADK 扩展图片引用示例：
 | `UserId` | `string` | 否 | 可选用户 ID |
 | `Page` | `integer` | 否 | 默认 `1` |
 | `PageSize` | `integer` | 否 | 默认 `20`，最大 `200` |
+
+响应 `Data` 包含 `DataSource=runtime` 和 `Degraded=false`。云上 server facade 仅在
+runtime 不可达时返回 `DataSource=control_fallback` 和 `Degraded=true`；本地 runtime
+不产生控制面 fallback。
 
 ### `POST /agentengine/api/v1/GetSession`
 
@@ -1008,13 +1015,19 @@ KsADK 扩展图片引用示例：
 | `SessionId` | `string` | 条件 | 与 `Id` 二选一 |
 | `Id` | `string` | 条件 | 兼容旧字段 |
 
+经云上 `agentengine-server` facade 删除时，`Data` 包含 `Deleted` 和
+`RuntimeSync=synced|pending_delete`。`pending_delete` 表示 runtime 尚未删除，server 目录保留；
+本地 runtime 直调只返回 `Deleted`。
+
 ### `POST /agentengine/api/v1/ListSessionEvents`
 
 请求体：
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `SessionId` | `string` | 是 | Session ID |
+| `AgentId` | `string` | 条件 | `SessionId` 不传时必填，用于跨会话查询 |
+| `SessionId` | `string` | 否 | Session ID；不传时返回该 Agent 的全部会话事件 |
+| `UserId` | `string` | 否 | 跨会话查询的可选用户筛选 |
 | `Offset` | `integer` | 否 | 起始偏移，`>= 0` |
 | `Limit` | `integer` | 否 | 返回条数，`>= 1`；0.6.7 新增：无上限，可一次性拉取全量事件 |
 
@@ -1035,6 +1048,9 @@ KsADK 扩展图片引用示例：
 | `UpdatedAt` | 更新时间 |
 | `Version` | 版本号 |
 
+云上 server facade 返回的 `Session` 还包含 `RuntimeSync`，取值为 `synced`、
+`pending_create` 或 `pending_delete`；本地 runtime 直调的 `Session` 不包含该字段。
+
 事件响应中 `Events[]` 的主要字段：
 
 | 字段 | 说明 |
@@ -1052,7 +1068,7 @@ KsADK 扩展图片引用示例：
 分页返回补充：
 
 - `ListSessions` 的 `Data` 额外包含 `Total`
-- `ListSessions` 的 `Data` 还会包含服务端回显的 `Page` 和 `PageSize`
+- `ListSessions` 的 `Data` 还会包含服务端回显的 `Page`、`PageSize`、`DataSource` 和 `Degraded`
 - `ListSessionEvents` 的 `Data` 额外包含请求透传的 `Offset` 和 `Limit`
 - `ListSessionEvents` 的 `Data` 还会包含 `Total`，便于客户端按需回加载更早的事件窗口
 
@@ -1575,7 +1591,7 @@ python scripts/validate_hosted_long_task_e2e.py \
 
 说明：
 
-- 控制台使用该接口展示指定 session 的 checkpoint 列表。
+- 控制台使用该接口展示指定 session，或该 Agent 全部 session 的 checkpoint 列表。
 - 该接口在 0.6.7 起支持分页、可恢复性过滤和框架过滤。
 
 请求体：
@@ -1583,7 +1599,8 @@ python scripts/validate_hosted_long_task_e2e.py \
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `AgentId` | `string` | 是 | Agent ID |
-| `SessionId` | `string` | 是 | 会话 ID |
+| `SessionId` | `string` | 否 | 会话 ID；不传时跨会话查询 |
+| `UserId` | `string` | 否 | 跨会话查询的可选用户筛选 |
 | `RunId` | `string` | 否 | 只返回指定 run 的 checkpoint |
 | `OnlyResumable` | `boolean` | 否 | 只返回可恢复 checkpoint |
 | `Framework` | `string` | 否 | 按框架过滤，例如 `langgraph` |

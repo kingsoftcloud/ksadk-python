@@ -174,16 +174,14 @@ class ResilientSessionService(BaseSessionService):
             limit,
         )
         if ok:
-            for session in durable_sessions or []:
-                await self._hydrate(session)
-        return cast(
-            list[Session],
-            await self.fallback.list_sessions(agent_id, user_id, offset, limit),
-        )
+            return cast(list[Session], durable_sessions or [])
+        return await self.fallback.list_sessions(agent_id, user_id, offset, limit)
 
     async def count_sessions(self, agent_id: str, user_id: Optional[str] = None) -> int:
-        sessions = await self.list_sessions(agent_id, user_id)
-        return len(sessions)
+        ok, total = await self._call_primary("count_sessions", agent_id, user_id)
+        if ok:
+            return int(total or 0)
+        return await self.fallback.count_sessions(agent_id, user_id)
 
     async def delete_session(self, session_id: str) -> bool:
         deleted = await self.fallback.delete_session(session_id)
@@ -287,6 +285,30 @@ class ResilientSessionService(BaseSessionService):
             int,
             await self.fallback.count_events(session_id, after_seq_id, before_seq_id),
         )
+
+    async def get_events_for_agent(
+        self,
+        agent_id: str,
+        user_id: Optional[str] = None,
+        offset: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> list[SessionEvent]:
+        ok, events = await self._call_primary(
+            "get_events_for_agent", agent_id, user_id, offset, limit
+        )
+        if ok:
+            return cast(list[SessionEvent], events)
+        return await self.fallback.get_events_for_agent(agent_id, user_id, offset, limit)
+
+    async def count_events_for_agent(
+        self,
+        agent_id: str,
+        user_id: Optional[str] = None,
+    ) -> int:
+        ok, total = await self._call_primary("count_events_for_agent", agent_id, user_id)
+        if ok:
+            return int(total or 0)
+        return await self.fallback.count_events_for_agent(agent_id, user_id)
 
     async def get_state(
         self,

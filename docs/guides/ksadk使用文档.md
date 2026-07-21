@@ -398,10 +398,12 @@ GET /agentengine/api/v1/AttachmentContent?FileUri=ae-upload://<file_id>
 
 | Action | 请求字段 | 响应字段 |
 | --- | --- | --- |
-| `ListSessions` | `AgentId`、`UserId`（默认 `user`）、`Page`（≥1）、`PageSize`（1~200，默认 20） | `Sessions`、`Total`、`Page`、`PageSize` |
-| `ListSessionEvents` | `SessionId`、`Offset`（≥0）、`Limit`（≥1） | `Events`、`Total`、`Offset`、`Limit` |
+| `ListSessions` | `AgentId`、`UserId`（可选；不传返回该 agent 全部用户）、`Page`（≥1）、`PageSize`（1~200，默认 20） | `Sessions`、`Total`、`Page`、`PageSize` |
+| `ListSessionEvents` | `AgentId`、`SessionId`（可选；不传时跨会话）、`UserId`（可选）、`Offset`（≥0）、`Limit`（≥1） | `Events`、`Total`、`Offset`、`Limit` |
 
 `ListSessions` 用 `Page` / `PageSize` 做页式分页，客户端按 `Total` 计算总页数；`ListSessionEvents` 用 `Offset` / `Limit` 做偏移分页，`Total` 为该会话事件总数。事件按追加顺序返回，分页只读取已落盘事件，不会阻塞正在写入的事件流。
+
+多副本部署要展示完整事件、checkpoint 或执行 resume 时，各 runtime 副本必须连接同一个 PostgreSQL（或等价共享 session backend）。InMemory 和 Local backend 仅用于单副本本地调试；控制面的 session 目录降级不能替代完整 transcript 或 checkpoint 存储。
 
 ### 5.6 当前不支持
 

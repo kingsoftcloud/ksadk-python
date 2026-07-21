@@ -332,6 +332,26 @@ class BaseSessionService(abc.ABC):
         raise NotImplementedError
 
     @abc.abstractmethod
+    async def get_events_for_agent(
+        self,
+        agent_id: str,
+        user_id: Optional[str] = None,
+        offset: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> list[SessionEvent]:
+        """跨会话事件查询，必须由存储后端提供无截断实现。"""
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    async def count_events_for_agent(
+        self,
+        agent_id: str,
+        user_id: Optional[str] = None,
+    ) -> int:
+        """跨会话事件计数，必须由存储后端提供无截断实现。"""
+        raise NotImplementedError
+
+    @abc.abstractmethod
     async def get_state(
         self,
         agent_id: str,
