@@ -3560,6 +3560,67 @@ async def test_resume_run_rejects_checkpoint_policy_disabled_by_audit(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_resume_run_stream_persists_resuming_event_before_response(monkeypatch):
+    """ResumeRun(Stream) 返回响应前必须同步落 resuming 起始事件。
+
+    UI 拿到 ResumeRun 200 响应头后立刻调 SubscribeRunEvents；起始事件若只靠
+    detached turn 异步补写，订阅会抢在首次写入前触发 _session_contains_invocation
+    失败 → 409 "InvocationId does not belong to SessionId"（浏览器里真实命中）。
+    直接调 handler + 慢速 append_run_status_event 做确定性验证（ASGITransport
+    会把 body 跑完，掩盖该竞态）。
+    """
+    server_app_module = importlib.import_module("ksadk.server.app")
+    conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
+    service = InMemorySessionService()
+    runner = _CheckpointResumeRunner()
+
+    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-resume-race")
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+    await conversation_runtime.append_run_checkpoint_event(
+        session_id="sess-resume-race",
+        author="demo-agent",
+        run_id="run-race",
+        checkpoint_id="ckpt-race",
+        framework="langgraph",
+        framework_ref={"langgraph": {"thread_id": "sess-resume-race", "checkpoint_id": "ckpt-race"}},
+        metadata={"is_resumable": True},
+        session_service_provider=lambda: service,
+    )
+
+    real_append = conversation_runtime.append_run_status_event
+
+    async def slow_append_run_status_event(**kwargs):
+        await asyncio.sleep(0.05)
+        return await real_append(**kwargs)
+
+    monkeypatch.setattr(conversation_runtime, "append_run_status_event", slow_append_run_status_event)
+
+    request = server_app_module.ResumeRunActionRequest(
+        AgentId="demo-agent",
+        SessionId="sess-resume-race",
+        RunId="run-race",
+        CheckpointId="ckpt-race",
+        ResumeAttemptId="run-attempt-race",
+        InvocationId="run-attempt-race",
+        Stream=True,
+    )
+    await server_app_module.resume_run_action(request)
+    try:
+        # handler 已返回；此后不做任何 await（不给 detached turn 调度机会），
+        # 同步快照必须已经包含 resuming 起始事件。
+        snapshot = list(service._sessions["sess-resume-race"].events)
+        assert any(
+            event.event_type == "run_status" and event.invocation_id == "run-attempt-race"
+            for event in snapshot
+        )
+    finally:
+        detached = server_app_module._DETACHED_STREAMS_BY_INVOCATION.get("run-attempt-race")
+        if detached is not None:
+            detached._task.cancel()
+
+
+@pytest.mark.asyncio
 async def test_resume_run_rejects_expired_checkpoint(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     conversation_runtime = importlib.import_module("ksadk.conversations.runtime")

@@ -3116,6 +3116,21 @@ async def resume_run_action(request: ResumeRunActionRequest):
         resume_invocation_id = str(request.InvocationId or resume_input["resume_attempt_id"])
         resume_key = _detached_resume_key_from_input(request.SessionId, resume_input)
         _reject_if_detached_resume_active(resume_key)
+        # 与 RunAgent Background 同款：返回 SSE 前同步落 resuming 起始事件。
+        # detached turn 的首个事件要等流被消费才写；UI 拿到响应头会立刻调
+        # SubscribeRunEvents，其 _session_contains_invocation 校验若抢在首次写入前
+        # 会误判 409 "InvocationId does not belong to SessionId"。
+        # append_run_status_event 按 (invocation_id, status) 幂等，turn 内的补写会去重。
+        await conversation.append_run_status_event(
+            session_id=request.SessionId,
+            author=request.AgentId,
+            status="resuming",
+            invocation_id=resume_invocation_id,
+            detail="checkpoint_resume",
+            session_service_provider=resolve_session_service,
+            run_mode=RUN_MODE_BACKGROUND,
+            run_trigger=RUN_TRIGGER_CHECKPOINT_RESUME,
+        )
         return _detached_streaming_response(
             conversation.stream_responses_conversation_turn(
                 runner=active_runner,
