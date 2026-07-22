@@ -9,6 +9,8 @@ from typing import List, Optional
 
 import yaml
 
+from ksadk.detection.detector import FrameworkType
+
 
 @dataclass
 class MCPDetectionResult:
@@ -29,6 +31,11 @@ class MCPDetectionResult:
     @property
     def is_valid(self) -> bool:
         return self.is_mcp
+
+    @property
+    def type(self) -> FrameworkType:
+        """Expose the framework contract expected by shared builders."""
+        return FrameworkType.FASTMCP
 
 
 class MCPDetector:

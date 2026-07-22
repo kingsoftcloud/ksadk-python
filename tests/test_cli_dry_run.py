@@ -2471,6 +2471,38 @@ def test_mcp_delete_passes_result_styles_to_descriptor(monkeypatch):
     )
 
 
+def test_mcp_delete_continues_batch_and_reports_api_errors(monkeypatch):
+    runner = CliRunner()
+    calls = []
+
+    class _PartiallyFailingDeleteClient(_FakeBatchDeleteClient):
+        async def delete_mcp(self, mcp_id):
+            calls.append(mcp_id)
+            if mcp_id == "mcp-failed":
+                raise AgentEngineAPIError(
+                    500,
+                    "runtime cleanup failed",
+                    details={"request_id": "req-delete-failed"},
+                )
+            return True
+
+    monkeypatch.setattr("ksadk.api.AgentEngineClient", _PartiallyFailingDeleteClient)
+    monkeypatch.setattr(
+        "ksadk.cli.cmd_mcp.run_async_with_dry_run",
+        lambda coro, dry_run: asyncio.run(coro),
+    )
+
+    result = runner.invoke(
+        mcp,
+        ["delete", "mcp-failed", "mcp-ok", "--yes"],
+        env={"AGENTENGINE_SERVER_URL": "http://example.com"},
+    )
+
+    assert calls == ["mcp-failed", "mcp-ok"]
+    assert "runtime cleanup failed" in result.output
+    assert "req-delete-failed" in result.output
+
+
 def test_agent_delete_json_requires_yes(monkeypatch):
     runner = CliRunner()
     _register_commands()

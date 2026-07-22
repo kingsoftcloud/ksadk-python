@@ -708,6 +708,8 @@ class AgentEngineClient:
     def _pascal_key(key: str) -> str:
         """PascalCase/camelCase 键名转 snake_case"""
         # "MCPs" -> "mcps", "AgentId" -> "agent_id", "QuickAccess" -> "quick_access"
+        if re.fullmatch(r"[A-Z]+s", key):
+            return key.lower()
         s1 = re.sub('([A-Z]+)([A-Z][a-z])', r'\1_\2', key)
         s2 = re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1)
         return s2.lower()
@@ -1131,7 +1133,12 @@ class AgentEngineClient:
         code = result.get("Code", 0)
         if code != 0:
             msg = result.get("Message", "Unknown API error")
-            raise AgentEngineAPIError(code=code, message=msg)
+            details = {}
+            if result.get("RequestId"):
+                details["request_id"] = str(result["RequestId"])
+            if result.get("Action"):
+                details["action"] = str(result["Action"])
+            raise AgentEngineAPIError(code=code, message=msg, details=details)
             
         if result.get("Error"):
             raise Exception(result["Error"].get("Message", "Unknown error"))
@@ -2059,8 +2066,7 @@ class AgentEngineClient:
         if region:
             params["Region"] = self._normalize_payload_region(region)
         result = self._action("ListMCPs", params)
-        # _action 已统一转 snake_case: "MCPs" -> "m_c_ps"... 
-        # 实际上 MCPs -> mcps, Total -> total
+        # _action 已统一转 snake_case: MCPs -> mcps, Total -> total
         return {"mcps": result.get("mcps", []), "total": result.get("total", 0)}
     
     async def update_mcp(self, mcp_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -2122,11 +2128,8 @@ class AgentEngineClient:
     
     async def delete_mcp(self, mcp_id: str) -> bool:
         """删除 MCP"""
-        try:
-            self._action("DeleteMCP", {"Id": mcp_id})
-            return True
-        except Exception:
-            return False
+        result = self._action("DeleteMCP", {"Id": mcp_id})
+        return bool(result.get("deleted"))
     
     async def get_mcp_by_name(self, name: str, region: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """按名称查询 MCP"""

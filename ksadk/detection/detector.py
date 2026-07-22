@@ -20,6 +20,7 @@ class FrameworkType(Enum):
     LANGGRAPH = "langgraph"
     DEEPAGENTS = "deepagents"
     HERMES = "hermes"
+    FASTMCP = "fastmcp"
     UNKNOWN = "unknown"
 
 

@@ -1093,8 +1093,20 @@ def _delete_impl(mcp_ids: tuple[str, ...], region: str, assume_yes: bool, dry_ru
         async with AgentEngineClient(region=region, dry_run=dry_run) as client:
             failed_ids: list[str] = []
             deleted_ids: list[str] = []
+            failure_reasons: dict[str, str] = {}
             for mcp_id in mcp_ids:
-                success = await client.delete_mcp(mcp_id)
+                try:
+                    success = await client.delete_mcp(mcp_id)
+                except DryRunExit:
+                    raise
+                except Exception as exc:
+                    failed_ids.append(mcp_id)
+                    reason = str(exc)
+                    request_id = str(getattr(exc, "details", {}).get("request_id") or "")
+                    if request_id:
+                        reason = f"{reason} (RequestId: {request_id})"
+                    failure_reasons[mcp_id] = reason
+                    continue
                 if success:
                     deleted_ids.append(mcp_id)
                     print_success(f"MCP 已删除: {mcp_id}")
@@ -1111,11 +1123,19 @@ def _delete_impl(mcp_ids: tuple[str, ...], region: str, assume_yes: bool, dry_ru
                         pass
                 else:
                     failed_ids.append(mcp_id)
+                    failure_reasons[mcp_id] = "服务端未确认删除"
 
             if failed_ids:
+                reason_text = "; ".join(
+                    f"{mcp_id}: {failure_reasons[mcp_id]}" for mcp_id in failed_ids
+                )
                 raise remote_error(
-                    f"以下 MCP 删除失败: {', '.join(failed_ids)}",
-                    details={"deleted": deleted_ids, "failed": failed_ids},
+                    f"以下 MCP 删除失败: {', '.join(failed_ids)}。原因: {reason_text}",
+                    details={
+                        "deleted": deleted_ids,
+                        "failed": failed_ids,
+                        "errors": failure_reasons,
+                    },
                 )
             return {
                 "targets": list(mcp_ids),
