@@ -426,6 +426,16 @@ class LocalSessionService(BaseSessionService):
                 CREATE INDEX IF NOT EXISTS idx_ksadk_events_session_seq
                 ON {KSADK_EVENTS_TABLE} (session_id, seq_id);
 
+                -- 跨会话事件查询（get_events_for_agent）JOIN sessions 按
+                -- s.agent_id 过滤 + ORDER BY e.timestamp；覆盖索引服务 JOIN 键
+                -- s.id=e.session_id + 排序。
+                CREATE INDEX IF NOT EXISTS idx_ksadk_events_session_ts
+                ON {KSADK_EVENTS_TABLE} (session_id, timestamp, id);
+
+                -- ListSessions 按 agent_id 过滤 + updated_at DESC 排序。
+                CREATE INDEX IF NOT EXISTS idx_ksadk_sessions_agent_updated
+                ON {KSADK_SESSIONS_TABLE} (agent_id, updated_at DESC, id);
+
                 CREATE TABLE IF NOT EXISTS {KSADK_STATES_TABLE} (
                     scope TEXT NOT NULL,
                     agent_id TEXT NOT NULL,

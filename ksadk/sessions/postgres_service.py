@@ -729,6 +729,18 @@ class PostgresSessionService(BaseSessionService):
                     CREATE INDEX IF NOT EXISTS idx_ksadk_pg_events_session_seq
                     ON {KSADK_PG_EVENTS_TABLE} (namespace, session_id, seq_id);
 
+                    -- 跨会话事件查询（get_events_for_agent）需 JOIN sessions 按
+                    -- s.agent_id 过滤并按 e.timestamp 排序；events 表无 agent_id 列，
+                    -- 覆盖索引 (namespace, session_id, timestamp, id) 服务 JOIN 键
+                    -- s.id=e.session_id + ORDER BY e.timestamp DESC。
+                    CREATE INDEX IF NOT EXISTS idx_ksadk_pg_events_session_ts
+                    ON {KSADK_PG_EVENTS_TABLE} (namespace, session_id, timestamp, id);
+
+                    -- ListSessions 归并按 agent_id 过滤 + updated_at DESC 排序；
+                    -- sessions 表 PK 是 (namespace, id)，缺 agent_id 前缀索引。
+                    CREATE INDEX IF NOT EXISTS idx_ksadk_pg_sessions_agent_updated
+                    ON {KSADK_PG_SESSIONS_TABLE} (namespace, agent_id, updated_at DESC, id);
+
                     CREATE TABLE IF NOT EXISTS {KSADK_PG_STATES_TABLE} (
                         namespace TEXT NOT NULL,
                         tenant_id TEXT NOT NULL DEFAULT 'default',
