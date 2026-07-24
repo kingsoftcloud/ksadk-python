@@ -215,8 +215,7 @@ class InMemorySessionService(BaseSessionService):
             merged = [
                 copy.deepcopy(event)
                 for session in self._sessions.values()
-                if session.agent_id == agent_id
-                and (user_id is None or session.user_id == user_id)
+                if session.agent_id == agent_id and (user_id is None or session.user_id == user_id)
                 for event in session.events
             ]
             merged.sort(key=lambda event: (event.timestamp, event.seq_id, event.id))
@@ -233,8 +232,7 @@ class InMemorySessionService(BaseSessionService):
             return sum(
                 len(session.events)
                 for session in self._sessions.values()
-                if session.agent_id == agent_id
-                and (user_id is None or session.user_id == user_id)
+                if session.agent_id == agent_id and (user_id is None or session.user_id == user_id)
             )
 
     async def get_state(

@@ -105,7 +105,9 @@ async def test_terminal_sessions_reuse_by_business_session_and_mode(server_app, 
             "/_ksadk/terminal/sessions",
             json={"session_id": "biz-1", "mode": "tui", "force_new": True},
         )
-        listing = await client.get("/_ksadk/terminal/sessions", params={"session_id": "biz-1", "mode": "tui"})
+        listing = await client.get(
+            "/_ksadk/terminal/sessions", params={"session_id": "biz-1", "mode": "tui"}
+        )
 
     assert first.status_code == 200
     assert second.status_code == 200
@@ -118,14 +120,23 @@ async def test_terminal_sessions_reuse_by_business_session_and_mode(server_app, 
     sessions = listing.json()["sessions"]
     assert {item["session_id"] for item in sessions} == {"biz-1"}
     assert {item["mode"] for item in sessions} == {"tui"}
-    state_files = list((server_app.Path(server_app.os.environ["AGENTENGINE_TERMINAL_STATE_DIR"])).glob("term-*.json"))
+    state_files = list(
+        (server_app.Path(server_app.os.environ["AGENTENGINE_TERMINAL_STATE_DIR"])).glob(
+            "term-*.json"
+        )
+    )
     assert state_files
     persisted = [json.loads(path.read_text(encoding="utf-8")) for path in state_files]
-    assert any(item["terminal_session_id"] == first_id and item["session_id"] == "biz-1" for item in persisted)
+    assert any(
+        item["terminal_session_id"] == first_id and item["session_id"] == "biz-1"
+        for item in persisted
+    )
 
 
 @pytest.mark.asyncio
-async def test_terminal_session_delete_marks_deleted_and_removes_from_reuse(server_app, monkeypatch):
+async def test_terminal_session_delete_marks_deleted_and_removes_from_reuse(
+    server_app, monkeypatch
+):
     def fake_spawn(session):
         session.pid = 123
         session.fd = None

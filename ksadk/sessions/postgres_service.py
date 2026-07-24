@@ -71,8 +71,9 @@ class PostgresSessionService(BaseSessionService):
                 await connection.execute(
                     f"""
                     INSERT INTO {KSADK_PG_SESSIONS_TABLE} (
-                        namespace, tenant_id, workspace_id, id, agent_id, user_id, title, title_source, summary,
-                        first_prompt, last_prompt, state_json, created_at, updated_at, version
+                        namespace, tenant_id, workspace_id, id, agent_id, user_id,
+                        title, title_source, summary, first_prompt, last_prompt,
+                        state_json, created_at, updated_at, version
                     )
                     VALUES ($1, $2, $3, $4, $5, $6, '', '', '', '', '', $7::jsonb, $8, $9, 0)
                     ON CONFLICT (namespace, id) DO NOTHING
@@ -97,7 +98,8 @@ class PostgresSessionService(BaseSessionService):
                 await connection.execute(
                     f"""
                     INSERT INTO {KSADK_PG_STATES_TABLE} (
-                        namespace, tenant_id, workspace_id, scope, agent_id, user_id, session_id, state_json, version, updated_at
+                        namespace, tenant_id, workspace_id, scope, agent_id,
+                        user_id, session_id, state_json, version, updated_at
                     )
                     VALUES ($1, $2, $3, 'session', $4, $5, $6, $7::jsonb, 0, $8)
                     ON CONFLICT (namespace, scope, agent_id, user_id, session_id)
@@ -138,7 +140,8 @@ class PostgresSessionService(BaseSessionService):
         await self._ensure_schema()
         async with self._pool.acquire() as connection:
             query = f"""
-                SELECT id, agent_id, user_id, title, title_source, summary, first_prompt, last_prompt,
+                SELECT id, agent_id, user_id, title, title_source, summary,
+                       first_prompt, last_prompt,
                        state_json, created_at, updated_at, version
                 FROM {KSADK_PG_SESSIONS_TABLE}
                 WHERE namespace = $1 AND agent_id = $2
@@ -215,7 +218,8 @@ class PostgresSessionService(BaseSessionService):
             async with connection.transaction():
                 row = await connection.fetchrow(
                     f"""
-                    SELECT id, agent_id, user_id, title, title_source, summary, first_prompt, last_prompt,
+                    SELECT id, agent_id, user_id, title, title_source, summary,
+                           first_prompt, last_prompt,
                            state_json, created_at, updated_at, version
                     FROM {KSADK_PG_SESSIONS_TABLE}
                     WHERE namespace = $1 AND id = $2
@@ -304,10 +308,14 @@ class PostgresSessionService(BaseSessionService):
                 await connection.execute(
                     f"""
                     INSERT INTO {KSADK_PG_EVENTS_TABLE} (
-                        namespace, tenant_id, workspace_id, id, session_id, author, event_type, content_json, timestamp,
+                        namespace, tenant_id, workspace_id, id, session_id, author,
+                        event_type, content_json, timestamp,
                         state_delta_json, seq_id, invocation_id, metadata_json
                     )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10::jsonb, $11, $12, $13::jsonb)
+                    VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9,
+                        $10::jsonb, $11, $12, $13::jsonb
+                    )
                     """,
                     self.namespace,
                     self.tenant_id,
@@ -534,7 +542,8 @@ class PostgresSessionService(BaseSessionService):
                 f"""
                 SELECT scope, agent_id, user_id, session_id, state_json, version, updated_at
                 FROM {KSADK_PG_STATES_TABLE}
-                WHERE namespace = $1 AND scope = $2 AND agent_id = $3 AND user_id = $4 AND session_id = $5
+                WHERE namespace = $1 AND scope = $2 AND agent_id = $3
+                  AND user_id = $4 AND session_id = $5
                 """,
                 self.namespace,
                 scope,
@@ -595,7 +604,8 @@ class PostgresSessionService(BaseSessionService):
                     f"""
                     SELECT state_json, version
                     FROM {KSADK_PG_STATES_TABLE}
-                    WHERE namespace = $1 AND scope = $2 AND agent_id = $3 AND user_id = $4 AND session_id = $5
+                    WHERE namespace = $1 AND scope = $2 AND agent_id = $3
+                      AND user_id = $4 AND session_id = $5
                     FOR UPDATE
                     """,
                     self.namespace,
@@ -610,7 +620,8 @@ class PostgresSessionService(BaseSessionService):
                 await connection.execute(
                     f"""
                     INSERT INTO {KSADK_PG_STATES_TABLE} (
-                        namespace, tenant_id, workspace_id, scope, agent_id, user_id, session_id, state_json, version, updated_at
+                        namespace, tenant_id, workspace_id, scope, agent_id,
+                        user_id, session_id, state_json, version, updated_at
                     )
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)
                     ON CONFLICT (namespace, scope, agent_id, user_id, session_id)
@@ -657,7 +668,7 @@ class PostgresSessionService(BaseSessionService):
             if self._pool is not None:
                 return
             try:
-                import asyncpg
+                import asyncpg  # type: ignore[import-untyped]
             except ImportError as exc:
                 raise SessionBackendUnavailable(
                     "asyncpg is required for KSADK_SESSION_BACKEND=postgres"
@@ -684,8 +695,7 @@ class PostgresSessionService(BaseSessionService):
                 return
             await self._ensure_pool()
             async with self._pool.acquire() as connection:
-                await connection.execute(
-                    f"""
+                await connection.execute(f"""
                     CREATE TABLE IF NOT EXISTS {KSADK_PG_SESSIONS_TABLE} (
                         namespace TEXT NOT NULL,
                         tenant_id TEXT NOT NULL DEFAULT 'default',
@@ -767,11 +777,9 @@ class PostgresSessionService(BaseSessionService):
                     ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default';
                     ALTER TABLE {KSADK_PG_STATES_TABLE}
                     ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default';
-                    """
-                )
+                    """)
                 try:
-                    await connection.execute(
-                        f"""
+                    await connection.execute(f"""
                     CREATE OR REPLACE VIEW {PG_READABLE_EVENTS_VIEW} AS
                     SELECT
                         event_row.namespace,
@@ -816,8 +824,7 @@ class PostgresSessionService(BaseSessionService):
                     JOIN {KSADK_PG_SESSIONS_TABLE} AS session_row
                       ON session_row.namespace = event_row.namespace
                      AND session_row.id = event_row.session_id;
-                        """
-                    )
+                        """)
                 except Exception as exc:
                     logger.warning("Postgres readable session view unavailable: %s", exc)
             self._schema_ready = True
@@ -851,7 +858,9 @@ class PostgresSessionService(BaseSessionService):
         )
         return self._session_from_row(row, events=events)
 
-    async def _get_events_with_connection(self, connection: Any, session_id: str) -> list[SessionEvent]:
+    async def _get_events_with_connection(
+        self, connection: Any, session_id: str
+    ) -> list[SessionEvent]:
         rows = await connection.fetch(
             f"""
             SELECT id, session_id, author, event_type, content_json, timestamp,
@@ -891,7 +900,8 @@ class PostgresSessionService(BaseSessionService):
         await connection.execute(
             f"""
             INSERT INTO {KSADK_PG_STATES_TABLE} (
-                namespace, tenant_id, workspace_id, scope, agent_id, user_id, session_id, state_json, version, updated_at
+                namespace, tenant_id, workspace_id, scope, agent_id,
+                user_id, session_id, state_json, version, updated_at
             )
             VALUES ($1, $2, $3, 'session', $4, $5, $6, $7::jsonb, $8, $9)
             ON CONFLICT (namespace, scope, agent_id, user_id, session_id)
@@ -994,7 +1004,9 @@ def mask_postgres_session_dsn(dsn: str) -> str:
     host = parts.hostname or ""
     port = f":{parts.port}" if parts.port else ""
     auth = f"{username}:***@" if username else "***@"
-    return urlunsplit((parts.scheme, f"{auth}{host}{port}", parts.path, parts.query, parts.fragment))
+    return urlunsplit(
+        (parts.scheme, f"{auth}{host}{port}", parts.path, parts.query, parts.fragment)
+    )
 
 
 __all__ = [

@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-import base64
 import asyncio
+import base64
 import importlib
 import json
 from types import SimpleNamespace
 
 import httpx
 import pytest
-from starlette.background import BackgroundTask
 from fastapi.responses import Response
+from starlette.background import BackgroundTask
 
 import ksadk.conversations as conversation
 from ksadk.runners.base_runner import BaseRunner
@@ -487,7 +487,9 @@ async def test_run_sse_passes_attachment_results_to_runner(monkeypatch):
                             inlineData=InlineData(
                                 displayName="resume.txt",
                                 mimeType="text/plain",
-                                data=base64.b64encode("候选人简历内容".encode("utf-8")).decode("ascii"),
+                                data=base64.b64encode("候选人简历内容".encode("utf-8")).decode(
+                                    "ascii"
+                                ),
                             )
                         ).model_dump(exclude_none=True),
                     ],
@@ -654,7 +656,9 @@ async def test_workspace_files_runtime_routes_use_state_dir_workspace_root(monke
 
     assert upload_response.status_code == 200
     assert upload_response.json()["Entry"]["Path"] == "uploads/report.txt"
-    assert (workspace_dir / "uploads" / "report.txt").read_text(encoding="utf-8") == "workspace upload"
+    assert (workspace_dir / "uploads" / "report.txt").read_text(
+        encoding="utf-8"
+    ) == "workspace upload"
 
     assert download_response.status_code == 200
     assert download_response.content == b"workspace upload"
@@ -738,7 +742,9 @@ async def test_workspace_files_action_route_deletes_empty_directory(monkeypatch,
 
 
 @pytest.mark.asyncio
-async def test_workspace_files_runtime_routes_reject_non_empty_directory_delete(monkeypatch, tmp_path):
+async def test_workspace_files_runtime_routes_reject_non_empty_directory_delete(
+    monkeypatch, tmp_path
+):
     server_app_module = importlib.import_module("ksadk.server.app")
     ui_dir = tmp_path / ".agentengine" / "ui"
     workspace_dir = ui_dir / "workspace"
@@ -848,7 +854,9 @@ async def test_workspace_files_action_routes_match_runtime_contract(monkeypatch,
 
     assert upload_response.status_code == 200
     assert upload_response.json()["Data"]["Entry"]["Path"] == "uploads/report.txt"
-    assert (workspace_dir / "uploads" / "report.txt").read_text(encoding="utf-8") == "workspace upload"
+    assert (workspace_dir / "uploads" / "report.txt").read_text(
+        encoding="utf-8"
+    ) == "workspace upload"
 
     assert download_response.status_code == 200
     assert download_response.content == b"workspace upload"
@@ -1017,9 +1025,7 @@ async def test_runtime_list_sessions_optionally_filters_user(monkeypatch):
     assert all_users.json()["Data"]["SessionContractVersion"] == 2
     assert user_a.status_code == 200
     assert user_a.json()["Data"]["Total"] == 1
-    assert [item["SessionId"] for item in user_a.json()["Data"]["Sessions"]] == [
-        "sess-user-a"
-    ]
+    assert [item["SessionId"] for item in user_a.json()["Data"]["Sessions"]] == ["sess-user-a"]
 
 
 @pytest.mark.asyncio
@@ -1873,7 +1879,9 @@ async def test_list_agent_models_action_normalizes_default_metadata(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_list_agent_models_action_preserves_upstream_fields_and_normalizes_aliases(monkeypatch):
+async def test_list_agent_models_action_preserves_upstream_fields_and_normalizes_aliases(
+    monkeypatch,
+):
     server_app_module = importlib.import_module("ksadk.server.app")
     real_async_client = httpx.AsyncClient
     monkeypatch.setenv("OPENAI_BASE_URL", "https://kspmas.ksyun.com/v1")
@@ -2020,8 +2028,9 @@ async def test_responses_fetches_remote_model_metadata_and_passes_to_runner(monk
     service = InMemorySessionService()
     runner = _DummyRunner()
 
-    monkeypatch.setattr(server_app_module, "runner", runner)
-    monkeypatch.setattr(server_app_module, "_runner_loaded", True)
+    # goal-01: runner 迁至 per-app state(app.state.runtime),不再 monkeypatch 模块全局。
+    monkeypatch.setattr(server_app_module.app.state.runtime, "runner", runner)
+    monkeypatch.setattr(server_app_module.app.state.runtime, "runner_loaded", True)
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     monkeypatch.setenv("OPENAI_BASE_URL", "https://kspmas.ksyun.com/v1")
     monkeypatch.setenv("OPENAI_API_KEY", "secret-key")
@@ -2057,7 +2066,11 @@ async def test_responses_fetches_remote_model_metadata_and_passes_to_runner(monk
 
     assert response.status_code == 200
     assert runner.calls[0]["model_metadata"]["id"] == "kimi-k2.6"
-    assert runner.calls[0]["model_metadata"]["architecture"]["input_modalities"] == ["文字", "图片", "视频"]
+    assert runner.calls[0]["model_metadata"]["architecture"]["input_modalities"] == [
+        "文字",
+        "图片",
+        "视频",
+    ]
     assert runner.calls[0]["model_metadata"]["capabilities"]["multimodal_input_image"] is True
 
 
@@ -2274,12 +2287,16 @@ async def test_responses_accepts_agentengine_checkpoint_resume_input(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_responses_rejects_agentengine_checkpoint_resume_without_server_checkpoint(monkeypatch):
+async def test_responses_rejects_agentengine_checkpoint_resume_without_server_checkpoint(
+    monkeypatch,
+):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()
     runner = _CheckpointResumeRunner()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-a", session_id="conv-resume-missing")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-a", session_id="conv-resume-missing"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     server_app_module.set_runner(runner)
 
@@ -2314,13 +2331,17 @@ async def test_responses_rejects_agentengine_checkpoint_resume_without_server_ch
 
 
 @pytest.mark.asyncio
-async def test_stream_responses_checkpoint_resume_rejects_concurrent_resume_for_same_run(monkeypatch):
+async def test_stream_responses_checkpoint_resume_rejects_concurrent_resume_for_same_run(
+    monkeypatch,
+):
     server_app_module = importlib.import_module("ksadk.server.app")
     conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
     service = InMemorySessionService()
     runner = _CancellableStreamingRunner()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-a", session_id="conv-resume-stream")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-a", session_id="conv-resume-stream"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     server_app_module.set_runner(runner)
     await conversation_runtime.append_run_checkpoint_event(
@@ -2398,13 +2419,17 @@ async def test_stream_responses_checkpoint_resume_rejects_concurrent_resume_for_
 
 
 @pytest.mark.asyncio
-async def test_run_agent_responses_checkpoint_resume_resolves_framework_ref_from_server(monkeypatch):
+async def test_run_agent_responses_checkpoint_resume_resolves_framework_ref_from_server(
+    monkeypatch,
+):
     server_app_module = importlib.import_module("ksadk.server.app")
     conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
     service = InMemorySessionService()
     runner = _CheckpointResumeRunner()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-runagent-resume")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-runagent-resume"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     server_app_module.set_runner(runner)
     await conversation_runtime.append_run_checkpoint_event(
@@ -2459,7 +2484,10 @@ async def test_run_agent_responses_checkpoint_resume_resolves_framework_ref_from
         payload["metadata"]["agentengine"]["framework_ref"]["langgraph"]["thread_id"]
         == "tenant:agent:sess-runagent-resume"
     )
-    assert runner.calls[-1]["framework_ref"]["langgraph"]["thread_id"] == "tenant:agent:sess-runagent-resume"
+    assert (
+        runner.calls[-1]["framework_ref"]["langgraph"]["thread_id"]
+        == "tenant:agent:sess-runagent-resume"
+    )
     assert runner.calls[-1]["platform_context"]["metadata"] == {
         "tenant": "acme",
         "trace_id": "runagent-resume-trace",
@@ -2467,7 +2495,9 @@ async def test_run_agent_responses_checkpoint_resume_resolves_framework_ref_from
 
 
 @pytest.mark.asyncio
-async def test_run_agent_stream_checkpoint_resume_rejects_concurrent_resume_for_same_run(monkeypatch):
+async def test_run_agent_stream_checkpoint_resume_rejects_concurrent_resume_for_same_run(
+    monkeypatch,
+):
     server_app_module = importlib.import_module("ksadk.server.app")
     conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
     service = InMemorySessionService()
@@ -2656,7 +2686,9 @@ async def test_stream_responses_registers_invocation_for_cancel_run(monkeypatch)
         captured_invocations.append(invocation_id)
         return Response(status_code=202)
 
-    monkeypatch.setattr(server_app_module, "_detached_streaming_response", fake_detached_streaming_response)
+    monkeypatch.setattr(
+        server_app_module, "_detached_streaming_response", fake_detached_streaming_response
+    )
     response = await server_app_module.responses(
         server_app_module.ResponsesRequest(
             input="hello",
@@ -2834,7 +2866,9 @@ async def test_responses_events_are_visible_through_runtime_local_list_session_e
     assert run_response.status_code == 200
     assert events_response.status_code == 200
     events = events_response.json()["Data"]["Events"]
-    message_events = [event for event in events if event["EventType"] in {"user_message", "assistant_message"}]
+    message_events = [
+        event for event in events if event["EventType"] in {"user_message", "assistant_message"}
+    ]
     assert [event["Author"] for event in message_events] == ["user", "demo-agent"]
     assert message_events[0]["Content"]["parts"][0]["text"] == "hello"
     assert message_events[1]["Content"]["parts"][0]["text"] == "assistant says hi"
@@ -3003,7 +3037,9 @@ async def test_list_session_checkpoints_filters_by_agent_session_and_run(monkeyp
     service = InMemorySessionService()
     runner = _DummyRunner()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-checkpoints")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-checkpoints"
+    )
     await service.create_session(agent_id="other-agent", user_id="user-1", session_id="sess-other")
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     server_app_module.set_runner(runner)
@@ -3014,7 +3050,9 @@ async def test_list_session_checkpoints_filters_by_agent_session_and_run(monkeyp
         run_id="run-1",
         checkpoint_id="ckpt-1",
         framework="langgraph",
-        framework_ref={"langgraph": {"thread_id": "tenant:agent:sess-checkpoints", "checkpoint_id": "ckpt-1"}},
+        framework_ref={
+            "langgraph": {"thread_id": "tenant:agent:sess-checkpoints", "checkpoint_id": "ckpt-1"}
+        },
         phase="tool_result",
         invocation_id="inv-1",
         session_service_provider=lambda: service,
@@ -3025,7 +3063,9 @@ async def test_list_session_checkpoints_filters_by_agent_session_and_run(monkeyp
         run_id="run-2",
         checkpoint_id="ckpt-2",
         framework="langgraph",
-        framework_ref={"langgraph": {"thread_id": "tenant:agent:sess-checkpoints", "checkpoint_id": "ckpt-2"}},
+        framework_ref={
+            "langgraph": {"thread_id": "tenant:agent:sess-checkpoints", "checkpoint_id": "ckpt-2"}
+        },
         phase="completed",
         invocation_id="inv-2",
         session_service_provider=lambda: service,
@@ -3036,7 +3076,9 @@ async def test_list_session_checkpoints_filters_by_agent_session_and_run(monkeyp
         run_id="run-1",
         checkpoint_id="ckpt-other",
         framework="langgraph",
-        framework_ref={"langgraph": {"thread_id": "tenant:other:sess-other", "checkpoint_id": "ckpt-other"}},
+        framework_ref={
+            "langgraph": {"thread_id": "tenant:other:sess-other", "checkpoint_id": "ckpt-other"}
+        },
         invocation_id="inv-other",
         session_service_provider=lambda: service,
     )
@@ -3057,7 +3099,9 @@ async def test_list_session_checkpoints_filters_by_agent_session_and_run(monkeyp
     assert [item["CheckpointId"] for item in checkpoints] == ["ckpt-1"]
     assert checkpoints[0]["RunId"] == "run-1"
     assert checkpoints[0]["Framework"] == "langgraph"
-    assert checkpoints[0]["FrameworkRef"]["langgraph"]["thread_id"] == "tenant:agent:sess-checkpoints"
+    assert (
+        checkpoints[0]["FrameworkRef"]["langgraph"]["thread_id"] == "tenant:agent:sess-checkpoints"
+    )
     assert wrong_agent.status_code == 404
 
 
@@ -3067,7 +3111,9 @@ async def test_list_session_checkpoints_returns_business_resume_fields(monkeypat
     conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
     service = InMemorySessionService()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-business-checkpoints")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-business-checkpoints"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     await conversation_runtime.append_run_checkpoint_event(
         session_id="sess-business-checkpoints",
@@ -3075,7 +3121,12 @@ async def test_list_session_checkpoints_returns_business_resume_fields(monkeypat
         run_id="run-business",
         checkpoint_id="ckpt-metrics",
         framework="langgraph",
-        framework_ref={"langgraph": {"thread_id": "tenant:agent:sess-business-checkpoints", "checkpoint_id": "ckpt-metrics"}},
+        framework_ref={
+            "langgraph": {
+                "thread_id": "tenant:agent:sess-business-checkpoints",
+                "checkpoint_id": "ckpt-metrics",
+            }
+        },
         phase="指标聚合已完成，等待生成报告",
         invocation_id="inv-business",
         metadata={
@@ -3232,7 +3283,9 @@ async def test_list_session_checkpoints_filters_resumable_and_framework(monkeypa
     conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
     service = InMemorySessionService()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-filter-checkpoints")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-filter-checkpoints"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     await conversation_runtime.append_run_checkpoint_event(
         session_id="sess-filter-checkpoints",
@@ -3304,7 +3357,9 @@ async def test_list_session_checkpoints_is_the_single_checkpoint_listing_endpoin
     conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
     service = InMemorySessionService()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-list-checkpoints")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-list-checkpoints"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     for index in range(3):
         await conversation_runtime.append_run_checkpoint_event(
@@ -3368,7 +3423,9 @@ async def test_list_session_checkpoints_includes_resume_audit_fields(monkeypatch
     conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
     service = InMemorySessionService()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-checkpoint-audit")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-checkpoint-audit"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     await conversation_runtime.append_run_checkpoint_event(
         session_id="sess-checkpoint-audit",
@@ -3447,7 +3504,9 @@ async def test_list_session_checkpoints_disables_expired_or_non_replayable_check
     conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
     service = InMemorySessionService()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-checkpoint-policy")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-checkpoint-policy"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     await conversation_runtime.append_run_checkpoint_event(
         session_id="sess-checkpoint-policy",
@@ -3455,7 +3514,9 @@ async def test_list_session_checkpoints_disables_expired_or_non_replayable_check
         run_id="run-policy",
         checkpoint_id="ckpt-no-replay",
         framework="langgraph",
-        framework_ref={"langgraph": {"thread_id": "sess-checkpoint-policy", "checkpoint_id": "ckpt-no-replay"}},
+        framework_ref={
+            "langgraph": {"thread_id": "sess-checkpoint-policy", "checkpoint_id": "ckpt-no-replay"}
+        },
         metadata={"is_resumable": True, "replay_allowed": False},
         session_service_provider=lambda: service,
     )
@@ -3466,7 +3527,9 @@ async def test_list_session_checkpoints_disables_expired_or_non_replayable_check
         checkpoint_id="ckpt-no-replay",
         resume_attempt_id="resume-1",
         framework="langgraph",
-        framework_ref={"langgraph": {"thread_id": "sess-checkpoint-policy", "checkpoint_id": "ckpt-no-replay"}},
+        framework_ref={
+            "langgraph": {"thread_id": "sess-checkpoint-policy", "checkpoint_id": "ckpt-no-replay"}
+        },
         session_service_provider=lambda: service,
     )
     await conversation_runtime.append_run_checkpoint_event(
@@ -3475,7 +3538,9 @@ async def test_list_session_checkpoints_disables_expired_or_non_replayable_check
         run_id="run-policy",
         checkpoint_id="ckpt-expired",
         framework="langgraph",
-        framework_ref={"langgraph": {"thread_id": "sess-checkpoint-policy", "checkpoint_id": "ckpt-expired"}},
+        framework_ref={
+            "langgraph": {"thread_id": "sess-checkpoint-policy", "checkpoint_id": "ckpt-expired"}
+        },
         metadata={"is_resumable": True, "expires_at": "2000-01-01T00:00:00Z"},
         session_service_provider=lambda: service,
     )
@@ -3488,10 +3553,7 @@ async def test_list_session_checkpoints_disables_expired_or_non_replayable_check
         )
 
     assert response.status_code == 200
-    checkpoints = {
-        item["CheckpointId"]: item
-        for item in response.json()["Data"]["Checkpoints"]
-    }
+    checkpoints = {item["CheckpointId"]: item for item in response.json()["Data"]["Checkpoints"]}
     no_replay = checkpoints["ckpt-no-replay"]
     assert no_replay["ReplayAllowed"] is False
     assert no_replay["ResumeCount"] == 1
@@ -3513,7 +3575,9 @@ async def test_resume_run_rejects_checkpoint_policy_disabled_by_audit(monkeypatc
     service = InMemorySessionService()
     runner = _CheckpointResumeRunner()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-resume-policy")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-resume-policy"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     server_app_module.set_runner(runner)
     await conversation_runtime.append_run_checkpoint_event(
@@ -3522,7 +3586,9 @@ async def test_resume_run_rejects_checkpoint_policy_disabled_by_audit(monkeypatc
         run_id="run-policy",
         checkpoint_id="ckpt-no-replay",
         framework="langgraph",
-        framework_ref={"langgraph": {"thread_id": "sess-resume-policy", "checkpoint_id": "ckpt-no-replay"}},
+        framework_ref={
+            "langgraph": {"thread_id": "sess-resume-policy", "checkpoint_id": "ckpt-no-replay"}
+        },
         metadata={"is_resumable": True, "replay_allowed": False},
         session_service_provider=lambda: service,
     )
@@ -3533,7 +3599,9 @@ async def test_resume_run_rejects_checkpoint_policy_disabled_by_audit(monkeypatc
         checkpoint_id="ckpt-no-replay",
         resume_attempt_id="resume-1",
         framework="langgraph",
-        framework_ref={"langgraph": {"thread_id": "sess-resume-policy", "checkpoint_id": "ckpt-no-replay"}},
+        framework_ref={
+            "langgraph": {"thread_id": "sess-resume-policy", "checkpoint_id": "ckpt-no-replay"}
+        },
         session_service_provider=lambda: service,
     )
 
@@ -3574,7 +3642,9 @@ async def test_resume_run_stream_persists_resuming_event_before_response(monkeyp
     service = InMemorySessionService()
     runner = _CheckpointResumeRunner()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-resume-race")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-resume-race"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     server_app_module.set_runner(runner)
     await conversation_runtime.append_run_checkpoint_event(
@@ -3583,7 +3653,9 @@ async def test_resume_run_stream_persists_resuming_event_before_response(monkeyp
         run_id="run-race",
         checkpoint_id="ckpt-race",
         framework="langgraph",
-        framework_ref={"langgraph": {"thread_id": "sess-resume-race", "checkpoint_id": "ckpt-race"}},
+        framework_ref={
+            "langgraph": {"thread_id": "sess-resume-race", "checkpoint_id": "ckpt-race"}
+        },
         metadata={"is_resumable": True},
         session_service_provider=lambda: service,
     )
@@ -3594,7 +3666,9 @@ async def test_resume_run_stream_persists_resuming_event_before_response(monkeyp
         await asyncio.sleep(0.05)
         return await real_append(**kwargs)
 
-    monkeypatch.setattr(conversation_runtime, "append_run_status_event", slow_append_run_status_event)
+    monkeypatch.setattr(
+        conversation_runtime, "append_run_status_event", slow_append_run_status_event
+    )
 
     request = server_app_module.ResumeRunActionRequest(
         AgentId="demo-agent",
@@ -3627,7 +3701,9 @@ async def test_resume_run_rejects_expired_checkpoint(monkeypatch):
     service = InMemorySessionService()
     runner = _CheckpointResumeRunner()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-resume-expired")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-resume-expired"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     server_app_module.set_runner(runner)
     await conversation_runtime.append_run_checkpoint_event(
@@ -3636,7 +3712,9 @@ async def test_resume_run_rejects_expired_checkpoint(monkeypatch):
         run_id="run-expired",
         checkpoint_id="ckpt-expired",
         framework="langgraph",
-        framework_ref={"langgraph": {"thread_id": "sess-resume-expired", "checkpoint_id": "ckpt-expired"}},
+        framework_ref={
+            "langgraph": {"thread_id": "sess-resume-expired", "checkpoint_id": "ckpt-expired"}
+        },
         metadata={"is_resumable": True, "expires_at": "2000-01-01T00:00:00Z"},
         session_service_provider=lambda: service,
     )
@@ -3670,7 +3748,9 @@ async def test_resume_run_action_reuses_checkpoint_and_records_resume(monkeypatc
     service = InMemorySessionService()
     runner = _CheckpointResumeRunner()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-resume-action")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-resume-action"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     server_app_module.set_runner(runner)
     await conversation_runtime.append_run_checkpoint_event(
@@ -3679,7 +3759,9 @@ async def test_resume_run_action_reuses_checkpoint_and_records_resume(monkeypatc
         run_id="run-1",
         checkpoint_id="ckpt-1",
         framework="langgraph",
-        framework_ref={"langgraph": {"thread_id": "tenant:agent:sess-resume-action", "checkpoint_id": "ckpt-1"}},
+        framework_ref={
+            "langgraph": {"thread_id": "tenant:agent:sess-resume-action", "checkpoint_id": "ckpt-1"}
+        },
         invocation_id="inv-1",
         metadata={
             "stage_key": "plan_research",
@@ -3708,9 +3790,7 @@ async def test_resume_run_action_reuses_checkpoint_and_records_resume(monkeypatc
     assert response.status_code == 200
     payload = response.json()["Data"]
     assert payload["session_id"] == "sess-resume-action"
-    assert {
-        key: value for key, value in payload["metadata"].items() if key != "agentengine"
-    } == {
+    assert {key: value for key, value in payload["metadata"].items() if key != "agentengine"} == {
         "tenant": "acme",
         "trace_id": "resume-trace",
     }
@@ -3738,7 +3818,9 @@ async def test_resume_run_action_returns_noop_for_terminal_checkpoint(monkeypatc
     service = InMemorySessionService()
     runner = _CheckpointResumeRunner()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-resume-disabled")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-resume-disabled"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     server_app_module.set_runner(runner)
     await conversation_runtime.append_run_checkpoint_event(
@@ -3747,7 +3829,9 @@ async def test_resume_run_action_returns_noop_for_terminal_checkpoint(monkeypatc
         run_id="run-1",
         checkpoint_id="ckpt-terminal",
         framework="langgraph",
-        framework_ref={"langgraph": {"thread_id": "sess-resume-disabled", "checkpoint_id": "ckpt-terminal"}},
+        framework_ref={
+            "langgraph": {"thread_id": "sess-resume-disabled", "checkpoint_id": "ckpt-terminal"}
+        },
         metadata={
             "is_terminal": True,
             "is_resumable": False,
@@ -3775,7 +3859,9 @@ async def test_resume_run_action_returns_noop_for_terminal_checkpoint(monkeypatc
     assert data["Reason"]
     assert runner.calls == []
     events = await service.get_events("sess-resume-disabled")
-    assert [event.event_type for event in events if event.event_type in {"run_resume", "run_status"}] == [
+    assert [
+        event.event_type for event in events if event.event_type in {"run_resume", "run_status"}
+    ] == [
         "run_resume",
         "run_status",
     ]
@@ -3789,7 +3875,9 @@ async def test_resume_run_action_rejects_process_local_checkpoint(monkeypatch):
     service = InMemorySessionService()
     runner = _CheckpointResumeRunner()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-resume-local")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-resume-local"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     server_app_module.set_runner(runner)
     await conversation_runtime.append_run_checkpoint_event(
@@ -3798,7 +3886,9 @@ async def test_resume_run_action_rejects_process_local_checkpoint(monkeypatch):
         run_id="run-1",
         checkpoint_id="ckpt-local",
         framework="langgraph",
-        framework_ref={"langgraph": {"thread_id": "sess-resume-local", "checkpoint_id": "ckpt-local"}},
+        framework_ref={
+            "langgraph": {"thread_id": "sess-resume-local", "checkpoint_id": "ckpt-local"}
+        },
         metadata={
             "is_resumable": False,
             "backend": "memory",
@@ -3833,7 +3923,9 @@ async def test_get_checkpoint_resume_preview_reports_terminal_checkpoint_as_disa
     conversation_runtime = importlib.import_module("ksadk.conversations.runtime")
     service = InMemorySessionService()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-preview-terminal")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-preview-terminal"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     await conversation_runtime.append_run_checkpoint_event(
         session_id="sess-preview-terminal",
@@ -3841,7 +3933,9 @@ async def test_get_checkpoint_resume_preview_reports_terminal_checkpoint_as_disa
         run_id="run-1",
         checkpoint_id="ckpt-terminal",
         framework="langgraph",
-        framework_ref={"langgraph": {"thread_id": "sess-preview-terminal", "checkpoint_id": "ckpt-terminal"}},
+        framework_ref={
+            "langgraph": {"thread_id": "sess-preview-terminal", "checkpoint_id": "ckpt-terminal"}
+        },
         metadata={"is_terminal": True, "is_resumable": False},
         session_service_provider=lambda: service,
     )
@@ -3872,7 +3966,9 @@ async def test_resume_run_action_stream_uses_invocation_id_for_detached_cancel(m
     service = InMemorySessionService()
     runner = _CheckpointResumeRunner()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-resume-stream")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-resume-stream"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     server_app_module.set_runner(runner)
     await conversation_runtime.append_run_checkpoint_event(
@@ -3881,7 +3977,9 @@ async def test_resume_run_action_stream_uses_invocation_id_for_detached_cancel(m
         run_id="run-1",
         checkpoint_id="ckpt-1",
         framework="langgraph",
-        framework_ref={"langgraph": {"thread_id": "tenant:agent:sess-resume-stream", "checkpoint_id": "ckpt-1"}},
+        framework_ref={
+            "langgraph": {"thread_id": "tenant:agent:sess-resume-stream", "checkpoint_id": "ckpt-1"}
+        },
         invocation_id="inv-checkpoint",
         session_service_provider=lambda: service,
     )
@@ -3893,7 +3991,9 @@ async def test_resume_run_action_stream_uses_invocation_id_for_detached_cancel(m
         captured_invocations.append(invocation_id)
         return Response(status_code=202)
 
-    monkeypatch.setattr(server_app_module, "_detached_streaming_response", fake_detached_streaming_response)
+    monkeypatch.setattr(
+        server_app_module, "_detached_streaming_response", fake_detached_streaming_response
+    )
     transport = httpx.ASGITransport(app=server_app_module.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
         response = await client.post(
@@ -3920,7 +4020,9 @@ async def test_resume_run_action_stream_passes_checkpoint_metadata_to_runner(mon
     service = InMemorySessionService()
     runner = _CheckpointResumeRunner()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-resume-stream-metadata")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-resume-stream-metadata"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     server_app_module.set_runner(runner)
     await conversation_runtime.append_run_checkpoint_event(
@@ -3929,7 +4031,12 @@ async def test_resume_run_action_stream_passes_checkpoint_metadata_to_runner(mon
         run_id="run-1",
         checkpoint_id="ckpt-1",
         framework="langgraph",
-        framework_ref={"langgraph": {"thread_id": "tenant:agent:sess-resume-stream-metadata", "checkpoint_id": "ckpt-1"}},
+        framework_ref={
+            "langgraph": {
+                "thread_id": "tenant:agent:sess-resume-stream-metadata",
+                "checkpoint_id": "ckpt-1",
+            }
+        },
         invocation_id="inv-checkpoint",
         metadata={"stage_key": "plan_research", "stage_index": 1, "total_stages": 7},
         session_service_provider=lambda: service,
@@ -3945,7 +4052,9 @@ async def test_resume_run_action_stream_passes_checkpoint_metadata_to_runner(mon
         del invocation_id, kwargs
         return Response(status_code=202, background=BackgroundTask(consume_stream, source))
 
-    monkeypatch.setattr(server_app_module, "_detached_streaming_response", fake_detached_streaming_response)
+    monkeypatch.setattr(
+        server_app_module, "_detached_streaming_response", fake_detached_streaming_response
+    )
     transport = httpx.ASGITransport(app=server_app_module.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
         response = await client.post(
@@ -3991,7 +4100,9 @@ async def test_resume_run_action_stream_registers_detached_cancel(monkeypatch):
     service = InMemorySessionService()
     runner = _CancellableStreamingRunner()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-resume-cancel")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-resume-cancel"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     server_app_module.set_runner(runner)
     await conversation_runtime.append_run_checkpoint_event(
@@ -4041,9 +4152,7 @@ async def test_resume_run_action_stream_registers_detached_cancel(monkeypatch):
         for _ in range(20):
             events = await service.get_events("sess-resume-cancel")
             statuses = [
-                event.content.get("status")
-                for event in events
-                if event.event_type == "run_status"
+                event.content.get("status") for event in events if event.event_type == "run_status"
             ]
             if "in_progress" in statuses and "cancelled" not in statuses:
                 break
@@ -4064,20 +4173,14 @@ async def test_resume_run_action_stream_registers_detached_cancel(monkeypatch):
     for _ in range(20):
         events = await service.get_events("sess-resume-cancel")
         statuses = [
-            event.content.get("status")
-            for event in events
-            if event.event_type == "run_status"
+            event.content.get("status") for event in events if event.event_type == "run_status"
         ]
         if "cancelled" in statuses:
             break
         await asyncio.sleep(0.02)
 
     events = await service.get_events("sess-resume-cancel")
-    statuses = [
-        event.content.get("status")
-        for event in events
-        if event.event_type == "run_status"
-    ]
+    statuses = [event.content.get("status") for event in events if event.event_type == "run_status"]
     # resume 现在先写 run_status(resuming) 再写 in_progress，cancel 后写 cancelled。
     assert statuses == ["resuming", "in_progress", "cancelled"]
     assert runner.cancel_requests == [invocation_id]
@@ -4163,7 +4266,9 @@ async def test_resume_run_action_rejects_unknown_checkpoint(monkeypatch):
     service = InMemorySessionService()
     runner = _CheckpointResumeRunner()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-resume-missing")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-resume-missing"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     server_app_module.set_runner(runner)
 
@@ -4375,7 +4480,9 @@ async def test_get_checkpoint_resume_preview_summarizes_checkpoint_and_tool_rece
         run_id="run-1",
         checkpoint_id="ckpt-1",
         framework="langgraph",
-        framework_ref={"langgraph": {"thread_id": "tenant:agent:sess-preview", "checkpoint_id": "ckpt-1"}},
+        framework_ref={
+            "langgraph": {"thread_id": "tenant:agent:sess-preview", "checkpoint_id": "ckpt-1"}
+        },
         phase="tool_result",
         invocation_id="inv-1",
         session_service_provider=lambda: service,
@@ -4491,8 +4598,12 @@ async def test_list_tool_receipts_filters_by_agent_session_run_and_checkpoint(mo
     service = InMemorySessionService()
     runner = _DummyRunner()
 
-    await service.create_session(agent_id="demo-agent", user_id="user-1", session_id="sess-receipts")
-    await service.create_session(agent_id="other-agent", user_id="user-1", session_id="sess-other-receipts")
+    await service.create_session(
+        agent_id="demo-agent", user_id="user-1", session_id="sess-receipts"
+    )
+    await service.create_session(
+        agent_id="other-agent", user_id="user-1", session_id="sess-other-receipts"
+    )
     monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
     server_app_module.set_runner(runner)
 
@@ -4613,9 +4724,7 @@ async def test_checkpoint_and_receipt_lists_page_from_latest_with_bounded_reads(
                     "run_id": "run-pages",
                     "checkpoint_id": f"ckpt-page-{index}",
                     "framework": "langgraph",
-                    "framework_ref": {
-                        "langgraph": {"checkpoint_id": f"ckpt-page-{index}"}
-                    },
+                    "framework_ref": {"langgraph": {"checkpoint_id": f"ckpt-page-{index}"}},
                     "is_resumable": True,
                     "resume_status": "resumable",
                 },
@@ -5152,7 +5261,11 @@ async def test_run_agent_stream_continues_after_client_disconnect(monkeypatch):
 
     for _ in range(20):
         events = await service.get_events("sess-detached-run")
-        if events and events[-1].event_type == "run_status" and events[-1].content.get("status") == "completed":
+        if (
+            events
+            and events[-1].event_type == "run_status"
+            and events[-1].content.get("status") == "completed"
+        ):
             break
         await asyncio.sleep(0.02)
 
@@ -5197,9 +5310,7 @@ async def test_cancel_run_cancels_detached_stream_and_writes_cancelled_status(mo
         for _ in range(20):
             events = await service.get_events("sess-cancel-run")
             statuses = [
-                event.content.get("status")
-                for event in events
-                if event.event_type == "run_status"
+                event.content.get("status") for event in events if event.event_type == "run_status"
             ]
             if statuses == ["in_progress"]:
                 break
@@ -5218,17 +5329,17 @@ async def test_cancel_run_cancels_detached_stream_and_writes_cancelled_status(mo
 
     for _ in range(20):
         events = await service.get_events("sess-cancel-run")
-        if events and events[-1].event_type == "run_status" and events[-1].content.get("status") == "cancelled":
+        if (
+            events
+            and events[-1].event_type == "run_status"
+            and events[-1].content.get("status") == "cancelled"
+        ):
             break
         await asyncio.sleep(0.02)
 
     events = await service.get_events("sess-cancel-run")
     event_types = [event.event_type for event in events]
-    statuses = [
-        event.content.get("status")
-        for event in events
-        if event.event_type == "run_status"
-    ]
+    statuses = [event.content.get("status") for event in events if event.event_type == "run_status"]
     assert statuses == ["in_progress", "cancelled"]
     assert "assistant_message" not in event_types
     assert runner.cancel_requests == [invocation_id]
@@ -5414,9 +5525,7 @@ async def test_iter_with_idle_heartbeat_survives_slow_generator_frames(monkeypat
     heartbeats = [c for k, c in seen if k == "heartbeat"]
     chunks = [c for k, c in seen if k == "chunk"]
     assert heartbeats, "应至少发一次心跳"
-    assert chunks == [{"i": 0}, {"i": 1}, {"i": 2}], (
-        f"所有 chunk 必须完整到达，实际: {chunks}"
-    )
+    assert chunks == [{"i": 0}, {"i": 1}, {"i": 2}], f"所有 chunk 必须完整到达，实际: {chunks}"
 
 
 async def test_iter_with_idle_heartbeat_propagates_upstream_error():
@@ -5659,7 +5768,9 @@ async def test_list_session_checkpoints_without_session_id_returns_all_sessions(
             run_id=f"run_{session_id}",
             checkpoint_id=checkpoint_id,
             framework="langgraph",
-            framework_ref={"langgraph": {"thread_id": f"t:{session_id}", "checkpoint_id": checkpoint_id}},
+            framework_ref={
+                "langgraph": {"thread_id": f"t:{session_id}", "checkpoint_id": checkpoint_id}
+            },
             invocation_id=f"inv-{session_id}",
             session_service_provider=lambda: service,
         )

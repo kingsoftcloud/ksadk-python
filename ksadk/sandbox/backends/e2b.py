@@ -70,9 +70,7 @@ class E2BSandboxSession:
     def write_files(self, files: list[tuple[str, str | bytes]]) -> None:
         if not files:
             return
-        self._sandbox.files.write_files(
-            [{"path": path, "data": data} for path, data in files]
-        )
+        self._sandbox.files.write_files([{"path": path, "data": data} for path, data in files])
 
     def read_file(self, path: str) -> str:
         return str(self._sandbox.files.read(path))
@@ -85,7 +83,7 @@ class E2BSandboxSession:
         env: dict[str, str] | None = None,
         cwd: str | None = None,
     ) -> SandboxCommandResult:
-        kwargs = {}
+        kwargs: dict[str, Any] = {}
         if timeout is not None:
             kwargs["timeout"] = timeout
         if env is not None:
@@ -128,7 +126,7 @@ class E2BSandboxBackend:
         sandbox_cls = self.sandbox_cls
         if sandbox_cls is None:
             try:
-                from e2b import Sandbox
+                from e2b import Sandbox  # type: ignore[import-untyped]
             except ImportError as exc:
                 raise SandboxError(
                     "e2b>=2.15.3,<2.25.0 is required for KSADK_SANDBOX_BACKEND=e2b"
@@ -152,10 +150,7 @@ class E2BSandboxBackend:
         session = self._wrap_sandbox(sandbox)
         self._wait_until_ready(session)
         session.write_files(
-            [
-                (item.target_path, item.source.read_bytes())
-                for item in input_files or []
-            ]
+            [(item.target_path, item.source.read_bytes()) for item in input_files or []]
         )
         return session
 

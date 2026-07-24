@@ -220,9 +220,7 @@ async def test_postgres_events_for_agent_pushes_user_pagination_and_order_to_sql
     assert observed["count_params"] == ("tenant-a", "demo-agent", "user-a")
     assert "JOIN ksadk_sessions s" in str(observed["fetch_sql"])
     assert "s.user_id = $3" in str(observed["fetch_sql"])
-    assert "ORDER BY e.timestamp DESC, e.seq_id DESC, e.id DESC" in str(
-        observed["fetch_sql"]
-    )
+    assert "ORDER BY e.timestamp DESC, e.seq_id DESC, e.id DESC" in str(observed["fetch_sql"])
     assert "ORDER BY timestamp ASC, seq_id ASC, id ASC" in str(observed["fetch_sql"])
     assert "JOIN ksadk_sessions s" in str(observed["count_sql"])
 

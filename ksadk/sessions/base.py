@@ -78,16 +78,11 @@ class SessionEvent:
         return cls(
             id=str(payload.get("id") or generate_id()),
             session_id=str(
-                payload.get("session_id")
-                or payload.get("sessionId")
-                or session_id
-                or ""
+                payload.get("session_id") or payload.get("sessionId") or session_id or ""
             ),
             author=str(payload.get("author") or ""),
             event_type=str(
-                payload.get("event_type")
-                or payload.get("eventType")
-                or _infer_event_type(payload)
+                payload.get("event_type") or payload.get("eventType") or _infer_event_type(payload)
             ),
             content=dict(payload.get("content") or {}),
             timestamp=normalize_timestamp(payload.get("timestamp")),
@@ -190,10 +185,7 @@ class Session:
         return cls(
             id=str(payload.get("id") or generate_id()),
             agent_id=str(
-                payload.get("agent_id")
-                or payload.get("app_name")
-                or payload.get("appName")
-                or ""
+                payload.get("agent_id") or payload.get("app_name") or payload.get("appName") or ""
             ),
             user_id=str(payload.get("user_id") or payload.get("userId") or ""),
             title=str(payload.get("title") or payload.get("Title") or ""),

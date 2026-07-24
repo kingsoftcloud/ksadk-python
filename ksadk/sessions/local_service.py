@@ -375,9 +375,7 @@ class LocalSessionService(BaseSessionService):
             and not self._table_exists(connection, KSADK_EVENTS_TABLE)
             and {"session_id", "author", "event_type"}.issubset(legacy_event_columns)
         ):
-            connection.execute(
-                f"ALTER TABLE {LEGACY_EVENTS_TABLE} RENAME TO {KSADK_EVENTS_TABLE}"
-            )
+            connection.execute(f"ALTER TABLE {LEGACY_EVENTS_TABLE} RENAME TO {KSADK_EVENTS_TABLE}")
 
         legacy_state_columns = self._table_columns(connection, LEGACY_STATES_TABLE)
         if (
@@ -385,15 +383,12 @@ class LocalSessionService(BaseSessionService):
             and not self._table_exists(connection, KSADK_STATES_TABLE)
             and {"scope", "agent_id", "state_json"}.issubset(legacy_state_columns)
         ):
-            connection.execute(
-                f"ALTER TABLE {LEGACY_STATES_TABLE} RENAME TO {KSADK_STATES_TABLE}"
-            )
+            connection.execute(f"ALTER TABLE {LEGACY_STATES_TABLE} RENAME TO {KSADK_STATES_TABLE}")
 
     def _ensure_schema(self) -> None:
         with self._connection() as connection:
             self._migrate_legacy_schema(connection)
-            connection.executescript(
-                f"""
+            connection.executescript(f"""
                 CREATE TABLE IF NOT EXISTS {KSADK_SESSIONS_TABLE} (
                     id TEXT PRIMARY KEY,
                     agent_id TEXT NOT NULL,
@@ -446,8 +441,7 @@ class LocalSessionService(BaseSessionService):
                     updated_at REAL NOT NULL,
                     PRIMARY KEY (scope, agent_id, user_id, session_id)
                 );
-                """
-            )
+                """)
             self._ensure_columns(
                 connection,
                 KSADK_SESSIONS_TABLE,
@@ -652,8 +646,12 @@ class LocalSessionService(BaseSessionService):
             if row is None:
                 return False
 
-            connection.execute(f"DELETE FROM {KSADK_EVENTS_TABLE} WHERE session_id = ?", (session_id,))
-            connection.execute(f"DELETE FROM {KSADK_STATES_TABLE} WHERE session_id = ?", (session_id,))
+            connection.execute(
+                f"DELETE FROM {KSADK_EVENTS_TABLE} WHERE session_id = ?", (session_id,)
+            )
+            connection.execute(
+                f"DELETE FROM {KSADK_STATES_TABLE} WHERE session_id = ?", (session_id,)
+            )
             connection.execute(f"DELETE FROM {KSADK_SESSIONS_TABLE} WHERE id = ?", (session_id,))
             connection.commit()
             return True
@@ -673,7 +671,8 @@ class LocalSessionService(BaseSessionService):
 
             next_seq = int(
                 connection.execute(
-                    f"SELECT COALESCE(MAX(seq_id), 0) + 1 FROM {KSADK_EVENTS_TABLE} WHERE session_id = ?",
+                    f"SELECT COALESCE(MAX(seq_id), 0) + 1 "
+                    f"FROM {KSADK_EVENTS_TABLE} WHERE session_id = ?",
                     (session_id,),
                 ).fetchone()[0]
             )

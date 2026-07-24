@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib
 import sqlite3
 from pathlib import Path
@@ -371,7 +372,9 @@ async def test_sqlite_session_service_persists_sessions_events_and_state(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_in_memory_and_local_session_services_sort_by_updated_at_desc_and_preserve_metadata(tmp_path):
+async def test_in_memory_and_local_session_services_sort_by_updated_at_desc_and_preserve_metadata(
+    tmp_path,
+):
     memory_service = InMemorySessionService()
     local_service = LocalSessionService(db_path=tmp_path / "sessions.sqlite")
 
@@ -436,6 +439,24 @@ def test_resolve_session_service_auto_selects_implementation(monkeypatch):
 
     service = resolve_session_service()
     assert isinstance(service, InMemorySessionService)
+
+
+def test_resolve_session_service_does_not_reuse_a_closed_event_loop(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENTENGINE_UI_DIR", str(tmp_path / ".agentengine" / "ui"))
+    monkeypatch.delenv("KSADK_SESSION_BACKEND", raising=False)
+
+    async def resolve_in_fresh_loop():
+        return resolve_session_service()
+
+    asyncio.run(reset_session_service())
+    first = asyncio.run(resolve_in_fresh_loop())
+    second = asyncio.run(resolve_in_fresh_loop())
+
+    assert isinstance(first, LocalSessionService)
+    assert isinstance(second, LocalSessionService)
+    assert first is not second
+
+    asyncio.run(reset_session_service())
 
 
 def test_create_session_service_hides_backend_selection(monkeypatch, tmp_path):

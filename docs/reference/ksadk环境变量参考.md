@@ -331,6 +331,11 @@
 | `AGENTENGINE_API_VERSION` | CLI / API client | 否 | 内置版本 | 无 | 否 | 平台 / 开发者 | 否 | 覆盖 AgentEngine API version。 |
 | `AGENTENGINE_PRE_CONTROL_REGION` | CLI / API client | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 预发控制面 region 覆盖。 |
 | `AGENTENGINE_PRE_CUSTOM_SOURCE` | CLI / API client | 否 | 未设置 | 无 | 否 | 平台 / 开发者 | 否 | 预发 custom source 覆盖。 |
+| `KSADK_A2A` | A2A discovery | 否 | 按 AICP resolver 自动选择 | `KSADK_A2A_ENDPOINT`、`KSADK_A2A_SCHEME`、`KSADK_A2A_REGION` | 否 | 平台 / 开发者 | 否 | A2A 的 AICP 连接配置前缀；通常只需设置下列显式 service URL 或由部署层绑定 Space。 |
+| `KSADK_A2A_SPACE_ID` | A2A Runtime | 条件必传 | 未设置 | `AGENTENGINE_A2A_SPACE_ID` | 否 | 部署层 / 平台 | 否 | 绑定的 A2A Space ID。启用 A2A Space discovery 时必须设置。 |
+| `KSADK_A2A_SERVICE_URL` | A2A discovery | 否 | AICP 自动探测 | `AGENTENGINE_SERVER_URL` | 否 | 平台 / 开发者 | 否 | A2A discovery 服务基地址；未设置时由 AICP resolver 自动发现。 |
+| `KSADK_A2A_ENABLE_PUBLIC_EGRESS` | A2A Runtime | 否 | `false` | `AGENTENGINE_A2A_ENABLE_PUBLIC_EGRESS` | 否 | 平台 / 开发者 | 否 | 是否允许调用 Space 中标记为 external/public-egress 的 agent；默认拒绝。 |
+| `KSADK_A2UI_GENERATION_TIMEOUT_SECONDS` | A2UI / AG-UI Runtime | 否 | `20` | 无 | 否 | 平台 / 开发者 | 否 | A2UI 结构化生成的超时秒数；有效值会被限制在 `1` 到 `120`。 |
 | `KSADK_AICP_ENDPOINT_MODE` | AICP resolver | 否 | `auto` | 无 | 否 | 平台 / 开发者 | 否 | AICP endpoint 选择策略，支持 `auto/detect/internal/inner/public`。内网环境可显式设为 `inner`，跳过自动探测。 |
 | `AGENTENGINE_MODEL_ALLOWLIST` | CLI model / OpenClaw | 否 | 未设置 | `OPENCLAW_MODEL_ALLOWLIST` | 否 | 平台 / 开发者 | 否 | 模型列表过滤。OpenClaw 场景优先使用 `OPENCLAW_MODEL_ALLOWLIST`。 |
 | `AGENTENGINE_UI_DIR` | 本地 Web UI / Sessions | 否 | 未设置 | 无 | 否 | 本地开发者 | 否 | 本地 UI 静态目录覆盖，主要用于 Web/文件上传本地调试。 |
@@ -344,6 +349,7 @@
 | `KSADK_WEB_RELEASE_URL` | Hosted Web UI static sync | 否 | 未设置 | 无 | 否 | 构建环境 / 开发者 | 否 | 可选兼容兜底。设置后跳过 npm pack，改从该 tarball URL 下载。 |
 | `KSADK_WEB_CACHE_DIR` | Hosted Web UI static sync | 否 | `.cache/ksadk-web` | 无 | 否 | 构建环境 / 开发者 | 否 | KsADK Web 包解压缓存目录。 |
 | `KSADK_GLOBAL_CONFIG_ENV_KEYS` | CLI | 否 | 未设置 | 无 | 否 | CLI 内部 | 否 | CLI 启动时记录哪些环境变量由 `~/.agentengine/settings.json` 补入，用于区分用户显式环境变量和全局配置默认值。 |
+| `KSADK_HOSTED_UI_GUIDELINES` | Hosted A2UI（内部常量） | 否 | 代码常量 | 无 | 否 | SDK 内部 | 否 | Hosted A2UI 的内置生成与设计指引；它不是受支持的环境变量，不应通过部署配置覆盖。 |
 | `KSYUN_IAM_URL` | 身份反查 | 否 | `https://iam.api.ksyun.com` | 无 | 否 | CLI | 否 | 覆盖 IAM endpoint，用于 AK/SK 反查子账号 user uuid。内部账号 AK 公网访问被拒时，CLI 自动 fallback 到 `http://iam.inner.api.ksyun.com`。 |
 | `AGENTENGINE_LOCAL_RUNTIME_VENV_REEXEC` | 本地 runtime CLI | 否 | 自动判断 | 无 | 否 | 本地开发者 / 测试 | 否 | 控制本地 runtime 是否在虚拟环境中 re-exec。普通用户通常无需设置。 |
 | `AGENTENGINE_WEB_VENV_REEXEC` | 本地 Web CLI | 否 | 自动判断 | 无 | 否 | 本地开发者 / 测试 | 否 | 控制本地 Web 命令是否在虚拟环境中 re-exec。普通用户通常无需设置。 |

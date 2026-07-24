@@ -1,12 +1,15 @@
-from typing import List, Optional, Dict, Any, Union
-from pydantic import BaseModel, Field
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel
 
 # --- Consolidating Part Types ---
+
 
 class FunctionCall(BaseModel):
     id: Optional[str] = None
     name: str
     args: Dict[str, Any]
+
 
 class FunctionResponse(BaseModel):
     id: Optional[str] = None
@@ -32,18 +35,21 @@ class Part(BaseModel):
     functionResponse: Optional[FunctionResponse] = None
     inlineData: Optional[InlineData] = None
     fileData: Optional[FileData] = None
-    
-    # Simple alias for JSON field mapping if needed, 
+
+    # Simple alias for JSON field mapping if needed,
     # but Pydantic usually handles this with field aliases if inputs differ.
     # For now we stick to the TS interface names.
+
 
 class GenAiContent(BaseModel):
     role: str = "user"
     parts: List[Part]
 
+
 class NewMessage(BaseModel):
     parts: List[Part]
     role: str = "user"
+
 
 class AgentRunRequest(BaseModel):
     appName: str
@@ -56,11 +62,14 @@ class AgentRunRequest(BaseModel):
     functionCallEventId: Optional[str] = None
     model: Optional[str] = None
 
+
 # --- Response Types ---
+
 
 class LlmResponse(BaseModel):
     content: Optional[GenAiContent] = None
     error: Optional[str] = None
+
 
 class Session(BaseModel):
     id: str
@@ -68,6 +77,7 @@ class Session(BaseModel):
     appName: str
     createdTime: Optional[float] = None
     updatedTime: Optional[float] = None
-    
+
+
 class AppListResponse(BaseModel):
     apps: List[str]
