@@ -841,10 +841,14 @@ async def test_adk_runner_invocation_map_lock_prevents_lost_update(tmp_path):
 def test_langgraph_runner_declares_time_travel_resume_mode(monkeypatch):
     from ksadk.runners.langgraph_runner import LangGraphRunner
 
+    class AsyncPostgresSaver:
+        pass
+
+    AsyncPostgresSaver.__module__ = "langgraph.checkpoint.postgres.aio"
     detection = _write_detection(FrameworkType.LANGGRAPH)
     runner = LangGraphRunner(detection, "/workspace/demo")
-    runner._agent = SimpleNamespace(checkpointer=object())
-    monkeypatch.setenv("KSADK_CHECKPOINT_BACKEND", "postgres")
+    runner._agent = SimpleNamespace(checkpointer=AsyncPostgresSaver())
+    monkeypatch.delenv("KSADK_CHECKPOINT_BACKEND", raising=False)
 
     capabilities = runner.get_runtime_capabilities()
 
@@ -853,6 +857,157 @@ def test_langgraph_runner_declares_time_travel_resume_mode(monkeypatch):
     assert capabilities["ResumeRun"]["Supported"] is True
     assert capabilities["ResumeRun"]["ResumeMode"] == "time_travel"
     assert capabilities["ResumeRun"]["Reason"] == ""
+
+
+def test_langgraph_runner_does_not_advertise_memory_checkpoint_resume(monkeypatch):
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from ksadk.runners.langgraph_runner import LangGraphRunner
+
+    detection = _write_detection(FrameworkType.LANGGRAPH)
+    runner = LangGraphRunner(detection, "/workspace/demo")
+    runner._agent = SimpleNamespace(checkpointer=MemorySaver())
+    monkeypatch.setenv("KSADK_CHECKPOINT_BACKEND", "postgres")
+
+    capabilities = runner.get_runtime_capabilities()
+
+    assert capabilities["Checkpoint"]["Supported"] is False
+    assert capabilities["Checkpoint"]["Backend"] == "memory"
+    assert capabilities["Checkpoint"]["Scope"] == "process_local"
+    assert capabilities["Checkpoint"]["Durable"] is False
+    assert capabilities["ResumeRun"]["Supported"] is False
+    assert capabilities["ResumeRun"]["ResumeMode"] == "none"
+    assert "In-memory checkpoint" in capabilities["ResumeRun"]["Reason"]
+
+
+def test_langgraph_runner_does_not_advertise_sync_in_memory_sqlite_resume():
+    from langgraph.checkpoint.sqlite import SqliteSaver
+
+    from ksadk.runners.langgraph_runner import LangGraphRunner
+
+    detection = _write_detection(FrameworkType.LANGGRAPH)
+    runner = LangGraphRunner(detection, "/workspace/demo")
+    with SqliteSaver.from_conn_string(":memory:") as saver:
+        runner._agent = SimpleNamespace(checkpointer=saver)
+        capabilities = runner.get_runtime_capabilities()
+
+    assert capabilities["Checkpoint"]["Supported"] is False
+    assert capabilities["Checkpoint"]["Backend"] == "sqlite"
+    assert capabilities["Checkpoint"]["Scope"] == "process_local"
+    assert capabilities["Checkpoint"]["Durable"] is False
+    assert capabilities["ResumeRun"]["Supported"] is False
+    assert "in-memory" in capabilities["ResumeRun"]["Reason"].lower()
+
+
+@pytest.mark.asyncio
+async def test_langgraph_runner_does_not_advertise_async_in_memory_sqlite_resume():
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+    from ksadk.runners.langgraph_runner import LangGraphRunner
+
+    detection = _write_detection(FrameworkType.LANGGRAPH)
+    runner = LangGraphRunner(detection, "/workspace/demo")
+    async with AsyncSqliteSaver.from_conn_string(":memory:") as saver:
+        runner._agent = SimpleNamespace(checkpointer=saver)
+        capabilities = runner.get_runtime_capabilities()
+
+    assert capabilities["Checkpoint"]["Supported"] is False
+    assert capabilities["Checkpoint"]["Backend"] == "sqlite"
+    assert capabilities["Checkpoint"]["Scope"] == "process_local"
+    assert capabilities["Checkpoint"]["Durable"] is False
+    assert capabilities["ResumeRun"]["Supported"] is False
+    assert "in-memory" in capabilities["ResumeRun"]["Reason"].lower()
+
+
+def test_langgraph_runner_advertises_file_backed_sqlite_resume(tmp_path):
+    from langgraph.checkpoint.sqlite import SqliteSaver
+
+    from ksadk.runners.langgraph_runner import LangGraphRunner
+
+    detection = _write_detection(FrameworkType.LANGGRAPH)
+    runner = LangGraphRunner(detection, "/workspace/demo")
+    with SqliteSaver.from_conn_string(str(tmp_path / "checkpoints.sqlite")) as saver:
+        runner._agent = SimpleNamespace(checkpointer=saver)
+        capabilities = runner.get_runtime_capabilities()
+
+    assert capabilities["Checkpoint"]["Supported"] is True
+    assert capabilities["Checkpoint"]["Backend"] == "sqlite"
+    assert capabilities["Checkpoint"]["Scope"] == "pod_local"
+    assert capabilities["Checkpoint"]["Durable"] is True
+    assert capabilities["ResumeRun"]["Supported"] is True
+
+
+def test_langgraph_runner_recognizes_postgres_saver_subclass():
+    from ksadk.runners.langgraph_runner import LangGraphRunner
+
+    class AsyncPostgresSaver:
+        pass
+
+    AsyncPostgresSaver.__module__ = "langgraph.checkpoint.postgres.aio"
+
+    class InstrumentedSaver(AsyncPostgresSaver):
+        pass
+
+    detection = _write_detection(FrameworkType.LANGGRAPH)
+    runner = LangGraphRunner(detection, "/workspace/demo")
+    runner._agent = SimpleNamespace(checkpointer=InstrumentedSaver())
+
+    capabilities = runner.get_runtime_capabilities()
+
+    assert capabilities["Checkpoint"]["Supported"] is True
+    assert capabilities["Checkpoint"]["Backend"] == "postgres"
+    assert capabilities["ResumeRun"]["Supported"] is True
+
+
+def test_langgraph_runner_accepts_explicit_lazy_checkpoint_capability():
+    from ksadk.runners.langgraph_runner import LangGraphRunner
+
+    class _LazyPostgresRunner(LangGraphRunner):
+        def describe_lazy_checkpoint_capability(self):
+            return {
+                "Supported": True,
+                "Backend": "postgres",
+                "Scope": "shared",
+                "Durable": True,
+                "SharedAcrossPods": True,
+                "ResumeMode": "time_travel",
+                "Reason": "",
+            }
+
+    detection = _write_detection(FrameworkType.LANGGRAPH)
+    runner = _LazyPostgresRunner(detection, "/workspace/demo")
+
+    capabilities = runner.get_runtime_capabilities()
+
+    assert capabilities["Checkpoint"]["Supported"] is True
+    assert capabilities["Checkpoint"]["Backend"] == "postgres"
+    assert capabilities["ResumeRun"]["Supported"] is True
+    assert capabilities["ResumeRun"]["ResumeMode"] == "time_travel"
+
+
+def test_langgraph_runner_rejects_inconsistent_lazy_checkpoint_capability():
+    from ksadk.runners.langgraph_runner import LangGraphRunner
+
+    class _InvalidLazyRunner(LangGraphRunner):
+        def describe_lazy_checkpoint_capability(self):
+            return {
+                "Supported": True,
+                "Backend": "postgres",
+                "Scope": "shared",
+                "Durable": False,
+                "SharedAcrossPods": True,
+                "ResumeMode": "time_travel",
+                "Reason": "",
+            }
+
+    detection = _write_detection(FrameworkType.LANGGRAPH)
+    runner = _InvalidLazyRunner(detection, "/workspace/demo")
+
+    capabilities = runner.get_runtime_capabilities()
+
+    assert capabilities["Checkpoint"]["Supported"] is False
+    assert capabilities["ResumeRun"]["Supported"] is False
+    assert "invalid" in capabilities["ResumeRun"]["Reason"].lower()
 
 
 def test_create_runner_uses_custom_runner_class(monkeypatch, tmp_path):

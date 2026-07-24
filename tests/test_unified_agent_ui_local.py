@@ -267,7 +267,7 @@ async def test_get_agent_ui_bootstrap_matches_local_shape_parity(monkeypatch):
     assert payload["Data"]["HostedRuntime"] is None
     assert payload["Data"]["Model"]["id"] == "glm-5.1"
     assert payload["Data"]["Model"]["source"] == "OPENAI_MODEL_NAME"
-    assert runner.load_agent_calls == 0
+    assert runner.load_agent_calls == 1
 
 
 @pytest.mark.asyncio

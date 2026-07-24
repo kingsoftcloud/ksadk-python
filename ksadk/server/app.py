@@ -2016,17 +2016,25 @@ async def delete_response_feedback_action(request: ResponseFeedbackRefActionRequ
 
 @app.post("/agentengine/api/v1/GetAgentUiBootstrap")
 async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
-    agent_id = request.AgentId or (_runtime_agent_id(runner) if runner else "default-agent")
-    description = getattr(runner.detection_result, "description", "") if runner else ""
+    active_runner = runner
     framework = ""
-    if runner:
-        detection_type = getattr(getattr(runner, "detection_result", None), "type", None)
+    if active_runner:
+        detection_type = getattr(getattr(active_runner, "detection_result", None), "type", None)
         framework = str(getattr(detection_type, "value", detection_type) or "").strip().lower()
+        if framework == "langgraph":
+            active_runner = _resolve_active_runner()
+    agent_id = request.AgentId or (
+        _runtime_agent_id(active_runner) if active_runner else "default-agent"
+    )
+    description = (
+        getattr(active_runner.detection_result, "description", "") if active_runner else ""
+    )
     workspace_enabled = workspace_files_enabled(default=True)
     ui_spec = _resolve_agent_ui_spec()
     runtime_capabilities = (
-        runner.get_runtime_capabilities()
-        if runner and callable(getattr(runner, "get_runtime_capabilities", None))
+        active_runner.get_runtime_capabilities()
+        if active_runner
+        and callable(getattr(active_runner, "get_runtime_capabilities", None))
         else {}
     )
     checkpoint_resume_capability = {
@@ -2053,7 +2061,7 @@ async def get_agent_ui_bootstrap(request: UiBootstrapRequest):
         {
             "Agent": {
                 "AgentId": agent_id,
-                "Name": runner.detection_result.name if runner else agent_id,
+                "Name": active_runner.detection_result.name if active_runner else agent_id,
                 "Description": description or "",
                 "Framework": framework,
             },

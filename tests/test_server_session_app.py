@@ -269,6 +269,49 @@ async def test_ui_bootstrap_enables_checkpoint_controls_from_runtime_capability(
 
 
 @pytest.mark.asyncio
+async def test_ui_bootstrap_loads_langgraph_before_describing_checkpoint_capability(monkeypatch):
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from ksadk.runners.langgraph_runner import LangGraphRunner
+
+    class _BootstrapLangGraphRunner(LangGraphRunner):
+        def __init__(self):
+            super().__init__(
+                detection_result=SimpleNamespace(
+                    name="langgraph-agent",
+                    type=SimpleNamespace(value="langgraph"),
+                ),
+                project_dir=".",
+            )
+            self.load_calls = 0
+
+        def load_agent(self) -> None:
+            self.load_calls += 1
+            self._agent = SimpleNamespace(checkpointer=MemorySaver())
+
+    server_app_module = importlib.import_module("ksadk.server.app")
+    service = InMemorySessionService()
+    runner = _BootstrapLangGraphRunner()
+
+    monkeypatch.setattr(server_app_module, "resolve_session_service", lambda: service)
+    server_app_module.set_runner(runner)
+
+    transport = httpx.ASGITransport(app=server_app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ksadk.local") as client:
+        response = await client.post(
+            "/agentengine/api/v1/GetAgentUiBootstrap",
+            json={"AgentId": "langgraph-agent"},
+        )
+
+    assert response.status_code == 200
+    checkpoint = response.json()["Data"]["Capabilities"]["RuntimeCapabilities"]["Checkpoint"]
+    assert runner.load_calls == 1
+    assert checkpoint["Backend"] == "memory"
+    assert checkpoint["Scope"] == "process_local"
+    assert checkpoint["Reason"].startswith("In-memory checkpoint")
+
+
+@pytest.mark.asyncio
 async def test_ui_bootstrap_exposes_custom_ui_metadata(monkeypatch):
     server_app_module = importlib.import_module("ksadk.server.app")
     service = InMemorySessionService()

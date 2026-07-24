@@ -7,6 +7,7 @@ LangGraphRunner - LangGraph 框架运行时
 import os
 import uuid
 import re
+import sqlite3
 from typing import Any, AsyncIterator, Dict, Mapping
 import base64
 from pathlib import Path
@@ -55,12 +56,204 @@ class LangGraphRunner(BaseRunner):
     def get_session_adapter(self):
         return LangGraphSessionAdapter()
 
+    def describe_lazy_checkpoint_capability(self) -> dict[str, Any] | None:
+        """Describe a checkpointer created lazily by a custom runner.
+
+        Standard LangGraph runners expose the compiled graph through ``_agent``.
+        Custom runners that construct a graph per invocation can override this
+        hook so bootstrap capability discovery does not depend on a resident
+        graph object.
+        """
+        return None
+
+    @staticmethod
+    def _checkpoint_backend_from_saver(checkpointer: Any) -> str:
+        for saver_type in type(checkpointer).__mro__:
+            qualified_name = f"{saver_type.__module__}.{saver_type.__name__}".lower()
+            if "checkpoint.postgres" in qualified_name or "postgressaver" in qualified_name:
+                return "postgres"
+            if "checkpoint.sqlite" in qualified_name or "sqlitesaver" in qualified_name:
+                return "sqlite"
+            if "checkpoint.memory" in qualified_name or saver_type.__name__.lower() in {
+                "memorysaver",
+                "inmemorysaver",
+            }:
+                return "memory"
+        return "unknown"
+
+    @staticmethod
+    def _sqlite_target_storage(database: Any) -> str:
+        target = os.fspath(database).strip() if isinstance(database, (str, os.PathLike)) else ""
+        if not target:
+            return "memory"
+        lowered = target.lower()
+        if lowered == ":memory:":
+            return "memory"
+        if lowered.startswith("file:"):
+            path, _, query = lowered.partition("?")
+            if path in {"file:", "file::memory:"} or "mode=memory" in query.split("&"):
+                return "memory"
+        return "file"
+
+    @classmethod
+    def _sqlite_checkpoint_storage(cls, checkpointer: Any) -> str:
+        connection = getattr(checkpointer, "conn", None)
+        if isinstance(connection, sqlite3.Connection):
+            try:
+                rows = connection.execute("PRAGMA database_list").fetchall()
+            except Exception:
+                return "unknown"
+            for row in rows:
+                if len(row) >= 3 and row[1] == "main":
+                    return "file" if str(row[2] or "").strip() else "memory"
+            return "unknown"
+
+        # AsyncSqliteSaver keeps the original aiosqlite connector closure. Its
+        # public PRAGMA API is async, while capability discovery is synchronous,
+        # so inspect the connection target and fail closed if it is unavailable.
+        connector = getattr(connection, "_connector", None)
+        code = getattr(connector, "__code__", None)
+        closure = getattr(connector, "__closure__", None)
+        if code is None or closure is None:
+            return "unknown"
+        try:
+            closed_values = {
+                name: cell.cell_contents
+                for name, cell in zip(code.co_freevars, closure)
+            }
+        except (AttributeError, ValueError):
+            return "unknown"
+        if "database" not in closed_values:
+            return "unknown"
+        return cls._sqlite_target_storage(closed_values["database"])
+
+    @classmethod
+    def _checkpoint_capability_for_backend(
+        cls,
+        backend: str,
+        *,
+        checkpointer: Any = None,
+    ) -> dict[str, Any]:
+        if backend == "postgres":
+            return {
+                "Supported": True,
+                "Backend": "postgres",
+                "Scope": "shared",
+                "Durable": True,
+                "SharedAcrossPods": True,
+                "ResumeMode": "time_travel",
+                "Reason": "",
+            }
+        if backend == "sqlite":
+            if checkpointer is not None:
+                storage = cls._sqlite_checkpoint_storage(checkpointer)
+                if storage != "file":
+                    return {
+                        "Supported": False,
+                        "Backend": "sqlite",
+                        "Scope": "process_local" if storage == "memory" else "unknown",
+                        "Durable": False,
+                        "SharedAcrossPods": False,
+                        "ResumeMode": "none",
+                        "Reason": (
+                            "In-memory SQLite checkpoint cannot be recovered after process restart"
+                            if storage == "memory"
+                            else "SQLite checkpoint file target cannot be verified as durable"
+                        ),
+                    }
+            return {
+                "Supported": True,
+                "Backend": "sqlite",
+                "Scope": "pod_local",
+                "Durable": True,
+                "SharedAcrossPods": False,
+                "ResumeMode": "time_travel",
+                "Reason": (
+                    "SQLite checkpoint is durable for local web debugging "
+                    "but is not shared across pods"
+                ),
+            }
+        if backend == "memory":
+            return {
+                "Supported": False,
+                "Backend": "memory",
+                "Scope": "process_local",
+                "Durable": False,
+                "SharedAcrossPods": False,
+                "ResumeMode": "none",
+                "Reason": (
+                    "In-memory checkpoint cannot be recovered after process restart "
+                    "or across pods"
+                ),
+            }
+        return {
+            "Supported": False,
+            "Backend": "unknown",
+            "Scope": "unknown",
+            "Durable": False,
+            "SharedAcrossPods": False,
+            "ResumeMode": "none",
+            "Reason": "LangGraph checkpointer backend is not recognized as durable",
+        }
+
+    @staticmethod
+    def _invalid_lazy_checkpoint_capability(
+        capability: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        source = capability or {}
+        return {
+            "Supported": False,
+            "Backend": str(source.get("Backend") or "unknown").strip().lower(),
+            "Scope": str(source.get("Scope") or "unknown").strip().lower(),
+            "Durable": bool(source.get("Durable")),
+            "SharedAcrossPods": bool(source.get("SharedAcrossPods")),
+            "ResumeMode": "none",
+            "Reason": "Lazy LangGraph checkpoint capability is invalid or not durably resumable",
+        }
+
+    @classmethod
+    def _normalize_lazy_checkpoint_capability(cls, capability: Any) -> dict[str, Any]:
+        if not isinstance(capability, Mapping):
+            return cls._invalid_lazy_checkpoint_capability()
+
+        backend = str(capability.get("Backend") or "unknown").strip().lower()
+        scope = str(capability.get("Scope") or "unknown").strip().lower()
+        durable = capability.get("Durable") is True
+        shared = capability.get("SharedAcrossPods") is True
+        resume_mode = str(capability.get("ResumeMode") or "none").strip().lower()
+        supported = capability.get("Supported") is True
+
+        if supported:
+            valid = (
+                durable
+                and resume_mode == "time_travel"
+                and (
+                    (backend == "postgres" and scope == "shared" and shared)
+                    or (backend == "sqlite" and scope == "pod_local" and not shared)
+                )
+            )
+            if not valid:
+                return cls._invalid_lazy_checkpoint_capability(capability)
+
+        return {
+            "Supported": supported,
+            "Backend": backend,
+            "Scope": scope,
+            "Durable": durable,
+            "SharedAcrossPods": shared,
+            "ResumeMode": resume_mode if supported else "none",
+            "Reason": str(capability.get("Reason") or "").strip(),
+        }
+
     def describe_checkpoint_capability(self) -> dict[str, Any]:
         agent = getattr(self, "_agent", None)
-        has_checkpointer = bool(
-            getattr(agent, "checkpointer", None) or getattr(agent, "_checkpointer", None)
-        )
-        if not has_checkpointer:
+        checkpointer = getattr(agent, "checkpointer", None)
+        if checkpointer is None:
+            checkpointer = getattr(agent, "_checkpointer", None)
+        if checkpointer is None:
+            lazy_capability = self.describe_lazy_checkpoint_capability()
+            if lazy_capability is not None:
+                return self._normalize_lazy_checkpoint_capability(lazy_capability)
             return {
                 "Supported": False,
                 "Backend": "none",
@@ -69,41 +262,8 @@ class LangGraphRunner(BaseRunner):
                 "SharedAcrossPods": False,
                 "Reason": "LangGraph graph has no configured checkpointer",
             }
-
-        backend = str(os.getenv("KSADK_CHECKPOINT_BACKEND") or "").strip().lower()
-        if backend == "local":
-            backend = "sqlite"
-        if not backend:
-            backend = "unknown"
-        scope = "unknown"
-        durable = False
-        shared = False
-        reason = ""
-        if backend == "postgres":
-            scope = "shared"
-            durable = True
-            shared = True
-        elif backend == "sqlite":
-            scope = "pod_local"
-            durable = True
-            shared = False
-            reason = "SQLite checkpoint is durable for local web debugging but is not shared across pods"
-        elif backend in {"memory", "inmemory"}:
-            backend = "memory"
-            scope = "process_local"
-            durable = False
-            shared = False
-            reason = "In-memory checkpoint cannot be recovered after process restart or across pods"
-
-        return {
-            "Supported": True,
-            "Backend": backend,
-            "Scope": scope,
-            "Durable": durable,
-            "SharedAcrossPods": shared,
-            "ResumeMode": "time_travel",
-            "Reason": reason,
-        }
+        backend = self._checkpoint_backend_from_saver(checkpointer)
+        return self._checkpoint_capability_for_backend(backend, checkpointer=checkpointer)
 
     def get_runtime_capabilities(self) -> dict[str, Any]:
         capabilities = super().get_runtime_capabilities()
