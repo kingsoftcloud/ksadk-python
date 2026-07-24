@@ -3,7 +3,7 @@
 
 验收:
 - 命令注册失败显式降级(不静默吞,`except ImportError: pass` 残留为零)。
-- ``agentengine a2a -h`` 可用(a2a 命令确已注册;ksadk 0.7.0 + a2a-sdk 1.1.x 下不再
+- ``agentengine a2a -h`` 可用(a2a 命令确已注册;ksadk 0.8.0 + a2a-sdk 1.1.x 下不再
   "No such command 'a2a'")。
 - ``ksadk replay <session>`` 回放 RuntimeEvent 历史。
 """

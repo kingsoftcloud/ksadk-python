@@ -5,6 +5,7 @@
     "agent-context",
     "attachments-multimodal",
     "local-web-ui",
+    "hosted-ui-events",
     "workspace-files",
     "tools-and-skill-runtime",
     "memory-knowledge",

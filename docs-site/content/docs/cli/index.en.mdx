@@ -36,6 +36,7 @@ agentengine web --help
 | `run` | run terminal loop or local API server | yes |
 | `web` | start local browser UI | yes |
 | `a2a` | expose A2A surfaces where configured | yes |
+| `replay` | read and project RuntimeEvent history | yes |
 | `mcp` | build or manage MCP resources | depends on target |
 | `build` | prepare deployment artifacts | depends on target |
 | `deploy` | deploy to configured cloud runtime | no |
@@ -120,6 +121,18 @@ agentengine web . --port 7860
 agentengine web . --model my-model
 agentengine web . --no-open
 ```
+
+### `ksadk replay` / `agentengine replay`
+
+Project a session's persisted RuntimeEvent log into a readable transcript or JSON. Use it to investigate disconnected streams, restored approval state, A2UI activities, and event ordering across runners. It **never** calls a model, tool, or approval action again.
+
+```bash title="bash"
+ksadk replay session_123
+ksadk replay session_123 --after-seq-id 120 --format json
+agentengine replay session_123 --before-seq-id 260
+```
+
+The command only reads sessions that persist RuntimeEvent v1; it does not convert legacy SessionEvent records. `--after-seq-id` is exclusive and `--before-seq-id` is an exclusive upper bound, so use both to narrow an investigation window.
 
 ## Protocol And Integration
 

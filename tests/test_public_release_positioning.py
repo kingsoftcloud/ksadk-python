@@ -16,6 +16,7 @@ ZH_DOC_URLS = {
     f"{DOCS_ROOT_URL}cn/docs/framework/getting-started/comparison/",
     f"{DOCS_ROOT_URL}cn/docs/framework/guides/observability-tracing/",
     f"{DOCS_ROOT_URL}cn/docs/framework/guides/cloud-deployment/",
+    f"{DOCS_ROOT_URL}cn/docs/framework/guides/hosted-ui-events/",
 }
 EN_DOC_URLS = {
     f"{DOCS_ROOT_URL}en/docs/framework/getting-started/quickstart/",
@@ -24,6 +25,7 @@ EN_DOC_URLS = {
     f"{DOCS_ROOT_URL}en/docs/framework/getting-started/comparison/",
     f"{DOCS_ROOT_URL}en/docs/framework/guides/observability-tracing/",
     f"{DOCS_ROOT_URL}en/docs/framework/guides/cloud-deployment/",
+    f"{DOCS_ROOT_URL}en/docs/framework/guides/hosted-ui-events/",
 }
 
 
@@ -161,8 +163,8 @@ def test_public_metadata_uses_runtime_platform_positioning():
     init_text = _read("ksadk/__init__.py")
     version_text = _read("ksadk/version.py")
 
-    assert pyproject["project"]["version"] == "0.7.0"
-    assert 'VERSION = "0.7.0"' in version_text
+    assert pyproject["project"]["version"] == "0.8.0"
+    assert 'VERSION = "0.8.0"' in version_text
     assert "Agent Runtime Platform" in pyproject["project"]["description"]
     assert "Agent Runtime Platform" in init_text
     assert "Agent Development Kit" not in pyproject["project"]["description"]
@@ -270,11 +272,11 @@ def test_public_ci_runs_gitleaks_and_documents_branch_protection():
     assert "Branch protection and publish environment are configured" in approval_record
 
 
-def test_public_release_approval_template_tracks_current_version():
+def test_public_release_candidate_tracks_current_version():
     approval_record = _read("docs/maintainer-approval-record.md")
 
-    assert "| Python package version | 0.7.0 |" in approval_record
-    assert "make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.7.0" in approval_record
+    assert "| Python package version | 0.8.0 |" in approval_record
+    assert "make public-publish-check PUBLIC_PUBLISH_PHASE=pre-publish V=0.8.0" in approval_record
 
 
 def test_public_release_sync_compares_exported_file_contents():

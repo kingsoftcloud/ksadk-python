@@ -41,6 +41,16 @@ agentengine web . --no-open
 
 <p align="center"><img alt="Real local Web UI demo" src="docs-site/public/assets/ksadk-local-debugging-demo.gif" width="860" /></p>
 
+## 0.8.0 Review Candidate
+
+`0.8.0` is an in-review candidate branch, not a published PyPI or npm release. It brings RuntimeEvent, AG-UI/A2UI, A2A, Harness, and CodexRuntime into one runtime boundary while retaining the `/v1/responses` and `/v1/chat/completions` compatibility surfaces.
+
+- **Hosted UI:** AG-UI/A2UI is capability-selected; the established Responses transport remains the fallback when it is unavailable.
+- **Event diagnosis:** `ksadk replay <session-id>` reads persisted RuntimeEvent history and can narrow investigation by cursor. It never runs a model, tool, or approval side effect again.
+- **Framework migration:** Prefer LangGraph, Google ADK, or the `RuntimeAdapter` contract for new integrations. Legacy LangChain continuity/HITL is not a `0.8` compatibility commitment.
+
+Read the [Hosted UI and event replay guide](https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/hosted-ui-events/) and the [0.8.0 changelog](CHANGELOG.md).
+
 ## Why KsADK
 
 Most agent frameworks solve how to build agents. KsADK solves how to run, debug, deploy, and observe them.
@@ -64,6 +74,7 @@ Most agent frameworks solve how to build agents. KsADK solves how to run, debug,
 - Ecosystem Positioning: <https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/getting-started/comparison/>
 - Observability: <https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/observability-tracing/>
 - Cloud Deployment: <https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/cloud-deployment/>
+- Hosted UI and Event Replay: <https://kingsoftcloud.github.io/ksadk-python/en/docs/framework/guides/hosted-ui-events/>
 - Samples: <https://github.com/kingsoftcloud/ksadk-samples>
 
 ## Related Projects

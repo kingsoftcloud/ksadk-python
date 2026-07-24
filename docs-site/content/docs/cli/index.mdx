@@ -36,6 +36,7 @@ agentengine web --help
 | `run` | 运行终端循环或本地 API server | 是 |
 | `web` | 启动本地浏览器 UI | 是 |
 | `a2a` | 在配置后暴露 A2A surface | 是 |
+| `replay` | 只读回放 RuntimeEvent 历史 | 是 |
 | `mcp` | 构建或管理 MCP 资源 | 取决于目标 |
 | `build` | 准备部署制品 | 取决于目标 |
 | `deploy` | 部署到配置的云端运行时 | 否 |
@@ -117,6 +118,20 @@ agentengine web . --port 7860
 agentengine web . --model my-model
 agentengine web . --no-open
 ```
+
+### `ksadk replay` / `agentengine replay`
+
+从一个 session 的新 RuntimeEvent 日志生成可读 transcript 或 JSON，适合排查断线、刷新后的
+审批状态、A2UI activity 和跨 runner 事件顺序。它**不会**重新调用模型、工具或审批 action。
+
+```bash title="bash"
+ksadk replay session_123
+ksadk replay session_123 --after-seq-id 120 --format json
+agentengine replay session_123 --before-seq-id 260
+```
+
+只有 RuntimeEvent v1 已持久化的 session 可被这个命令读取；旧式 SessionEvent 不会自动转换。
+`--after-seq-id` 是开区间，`--before-seq-id` 是不含上界，可用二者缩小诊断窗口。
 
 ## 协议和集成
 

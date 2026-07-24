@@ -17,6 +17,7 @@
     "guides/agent-context",
     "guides/attachments-multimodal",
     "guides/local-web-ui",
+    "guides/hosted-ui-events",
     "guides/workspace-files",
     "guides/tools-and-skill-runtime",
     "guides/memory-knowledge",
