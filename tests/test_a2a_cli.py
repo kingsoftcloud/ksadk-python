@@ -60,9 +60,13 @@ def test_a2a_card_command_outputs_agent_card_json(monkeypatch, tmp_path):
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["name"] == "demo-agent"
-    assert payload["url"] == "http://127.0.0.1:8081"
+    assert "url" not in payload
     assert payload["description"] == "CLI generated card"
     assert [skill["id"] for skill in payload["skills"]] == ["echo"]
+    assert {interface["url"] for interface in payload["supportedInterfaces"]} == {
+        "http://127.0.0.1:8081/a2a/jsonrpc",
+        "http://127.0.0.1:8081/a2a/v1",
+    }
 
 
 def test_a2a_serve_builds_server_and_exposes_agent_card(monkeypatch, tmp_path):
@@ -119,7 +123,11 @@ def test_a2a_serve_builds_server_and_exposes_agent_card(monkeypatch, tmp_path):
     legacy_card = client.get("/.well-known/agent.json")
 
     assert current_card.status_code == 200
-    assert legacy_card.status_code == 200
+    assert legacy_card.status_code == 404
     assert current_card.json()["name"] == "demo-agent"
-    assert current_card.json()["url"] == "http://127.0.0.1:9091"
+    assert "url" not in current_card.json()
+    assert {interface["url"] for interface in current_card.json()["supportedInterfaces"]} == {
+        "http://0.0.0.0:9091/a2a/jsonrpc",
+        "http://0.0.0.0:9091/a2a/v1",
+    }
     assert [skill["id"] for skill in current_card.json()["skills"]] == ["echo"]
